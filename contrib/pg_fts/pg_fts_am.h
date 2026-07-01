@@ -29,7 +29,8 @@
 #define BM25_DICT			(1 << 1)
 #define BM25_POSTING		(1 << 2)
 #define BM25_PENDING		(1 << 3)
-#define BM25_TRGM			(1 << 4)
+#define BM25_TRGM			(1 << 4)	/* trigram directory page */
+#define BM25_TRGM_DATA		(1 << 5)	/* trigram sparsemap blob page */
 
 typedef struct BM25PageOpaqueData
 {
@@ -114,12 +115,20 @@ typedef struct BM25PendingItem
  * A trigram-index entry: a trigram hash and, inline, a serialized sparsemap of
  * the docids of documents containing at least one term with that trigram.  Used
  * to narrow fuzzy/regex candidates instead of scanning the whole index.
+ *
+ * The trigram index is inverted over the VOCABULARY, not the corpus: a trigram
+ * maps to the set of dictionary term ordinals whose term contains it.  The
+ * vocabulary is far smaller than the document set (Heaps' law), so these sets
+ * are small and dense -- unlike docid sets, where a common trigram would cover
+ * most of the corpus.  Trigrams that occur in more than a threshold fraction of
+ * terms are skipped entirely (they cannot filter), so no stored set is large.
+ * Each entry is fixed-size; the term-ordinal sparsemap is a data-page blob.
  */
 typedef struct BM25TrgmEntry
 {
 	uint32		trgm;			/* trigram hash */
 	uint32		smlen;			/* serialized sparsemap length in bytes */
-	/* char sparsemap[smlen] follows, MAXALIGN'd */
+	BlockNumber firstdata;		/* first BM25_TRGM_DATA page of the term-ord set */
 } BM25TrgmEntry;
 
 /* scan functions (pg_fts_am_scan.c, #included into pg_fts_am.c) */

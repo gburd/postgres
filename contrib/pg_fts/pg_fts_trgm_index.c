@@ -3,17 +3,22 @@
  * pg_fts_trgm_index.c
  *		On-disk trigram index for narrowing fuzzy/regex candidates.
  *
- * Included into pg_fts_am.c.  During index build we map every trigram of every
- * indexed term to the set of docids whose document contains a term with that
- * trigram, stored as a namespaced sparsemap (see pg_fts_sm.h) serialized inline
- * on WAL-logged trigram pages.  At fuzzy/regex query time the candidate docid
- * set is the union of the query pattern's trigram postings -- a sound superset
- * of the true matches (pigeonhole: a term within k edits, or matching a regex
- * whose required trigrams are known, shares a trigram) -- so the scan probes a
- * small candidate set and the heap recheck refines it, instead of scanning the
- * whole index.  This is the pg_tre-style funnel; the AST-tiling trigram
- * extraction for arbitrary regexes is a further refinement (today we use the
- * pattern's literal trigrams, falling back to the full set when too few).
+ * Included into pg_fts_am.c.  Maps every trigram of every indexed term to the
+ * set of docids whose document contains a term with that trigram, stored as a
+ * namespaced sparsemap (see pg_fts_sm.h).  A trigram's serialized sparsemap can
+ * be large (a common trigram covers most docids), so it is stored as a byte
+ * stream spanning a chain of data pages -- NOT packed inline on one page (that
+ * assumption caused a segfault at scale).  A directory (trgm -> first data
+ * block + byte length) lets the query side find a trigram's stream, reassemble
+ * the sparsemap, and iterate its docids.
+ *
+ * At fuzzy/regex query time the candidate docid set is the union of the query
+ * pattern's trigram postings -- a sound superset -- so the scan probes a small
+ * candidate set and the heap recheck applies the exact test.
+ *
+ * Layout (all pages WAL-logged via GenericXLog, one page per Xlog cycle):
+ *   directory pages (BM25_TRGM):      fixed-size BM25TrgmEntry[]
+ *   data pages      (BM25_TRGM_DATA): raw sparsemap bytes, chained by nextblk
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  *
@@ -24,14 +29,6 @@
  */
 
 #include "pg_fts_sm.h"
-
-/*
- * Build trigram -> docid-set sparsemaps from the collected BuildTerms and write
- * them to a chain of trigram pages.  Returns the first trigram block.
- *
- * We accumulate, per distinct trigram, a growable docid array, then build one
- * sparsemap per trigram and pack (trgm, smlen, sparsemap-bytes) onto pages.
- */
 
 typedef struct TrgmAccum
 {
@@ -50,6 +47,93 @@ cmp_uint64(const void *a, const void *b)
 	return (x > y) - (x < y);
 }
 
+/* usable bytes for the raw stream on a data page */
+#define BM25_TRGMDATA_CAP \
+	(BLCKSZ - (int) MAXALIGN(SizeOfPageHeaderData) - (int) MAXALIGN(sizeof(BM25PageOpaqueData)))
+
+/*
+ * Write `len` bytes across a fresh chain of BM25_TRGM_DATA pages (one page per
+ * GenericXLog cycle, so no page-count limit).  Returns the first block.
+ */
+static BlockNumber
+bm25_write_blob(Relation index, const uint8 *data, Size len)
+{
+	BlockNumber first = InvalidBlockNumber;
+	Buffer		prevbuf = InvalidBuffer;
+	Page		prevpage = NULL;
+	GenericXLogState *prevstate = NULL;
+	Size		off = 0;
+
+	do
+	{
+		Buffer		buf = bm25_new_buffer(index);
+		BlockNumber blk = BufferGetBlockNumber(buf);
+		GenericXLogState *state = GenericXLogStart(index);
+		Page		page = GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE);
+		Size		chunk = Min(len - off, (Size) BM25_TRGMDATA_CAP);
+
+		bm25_init_page(page, BM25_TRGM_DATA);
+		if (chunk > 0)
+		{
+			memcpy((char *) PageGetContents(page), data + off, chunk);
+			((PageHeader) page)->pd_lower =
+				((char *) PageGetContents(page) - (char *) page) + chunk;
+		}
+
+		if (prevbuf != InvalidBuffer)
+		{
+			BM25PageGetOpaque(prevpage)->nextblk = blk;
+			GenericXLogFinish(prevstate);
+			UnlockReleaseBuffer(prevbuf);
+		}
+		else
+			first = blk;
+
+		prevbuf = buf;
+		prevpage = page;
+		prevstate = state;
+		off += chunk;
+	} while (off < len);
+
+	if (prevbuf != InvalidBuffer)
+	{
+		GenericXLogFinish(prevstate);
+		UnlockReleaseBuffer(prevbuf);
+	}
+	return first;
+}
+
+/* Read `len` bytes starting at data block `blk` into a palloc'd buffer. */
+static uint8 *
+bm25_read_blob(Relation index, BlockNumber blk, Size len)
+{
+	uint8	   *buf = (uint8 *) palloc(len ? len : 1);
+	Size		off = 0;
+
+	while (blk != InvalidBlockNumber && off < len)
+	{
+		Buffer		b = ReadBuffer(index, blk);
+		Page		page;
+		Size		avail;
+
+		LockBuffer(b, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(b);
+		avail = ((PageHeader) page)->pd_lower -
+			((char *) PageGetContents(page) - (char *) page);
+		avail = Min(avail, len - off);
+		memcpy(buf + off, PageGetContents(page), avail);
+		off += avail;
+		blk = BM25PageGetOpaque(page)->nextblk;
+		UnlockReleaseBuffer(b);
+	}
+	return buf;
+}
+
+/*
+ * Build trigram -> docid-set sparsemaps: each trigram's serialized sparsemap
+ * as a data-page blob, plus a fixed-size directory entry (trgm, smlen,
+ * firstdata) on directory pages.  Returns the first directory block.
+ */
 static BlockNumber
 bm25_write_trigrams(Relation index, BM25BuildState *bs)
 {
@@ -59,11 +143,10 @@ bm25_write_trigrams(Relation index, BM25BuildState *bs)
 	int			maxaccs = 1024;
 	int			i;
 	BlockNumber first = InvalidBlockNumber;
-	Buffer		buffer = InvalidBuffer;
-	GenericXLogState *state = NULL;
-	Page		page = NULL;
+	Buffer		dbuf = InvalidBuffer;
+	GenericXLogState *dstate = NULL;
+	Page		dpage = NULL;
 
-	/* map trigram hash -> index into accs[] */
 	{
 		typedef struct
 		{
@@ -85,7 +168,6 @@ bm25_write_trigrams(Relation index, BM25BuildState *bs)
 			uint32		trg[FTS_MAX_TRIGRAMS];
 			int			ntrg = fts_trigrams(bt->term, bt->len, trg, FTS_MAX_TRIGRAMS);
 			int			g;
-			int			p;
 
 			for (g = 0; g < ntrg; g++)
 			{
@@ -109,40 +191,36 @@ bm25_write_trigrams(Relation index, BM25BuildState *bs)
 					naccs++;
 				}
 				acc = &accs[e->idx];
-
-				/* add this term's docids to the trigram's docid set */
-				for (p = 0; p < bt->nposts; p++)
+				/*
+				 * Inverted over the VOCABULARY: record this term's ordinal (its
+				 * dictionary position i), not its docids.  The vocabulary is
+				 * small, so the set stays small and dense regardless of how many
+				 * documents the term appears in.
+				 */
+				if (acc->ndocids >= acc->maxdocids)
 				{
-					uint64		docid = bm25_tid_to_docid(&bt->tids[p]);
-
-					if (acc->ndocids >= acc->maxdocids)
-					{
-						acc->maxdocids = acc->maxdocids ? acc->maxdocids * 2 : 8;
-						if (acc->docids == NULL)
-							acc->docids = (uint64 *) palloc(acc->maxdocids * sizeof(uint64));
-						else
-							acc->docids = (uint64 *) repalloc(acc->docids,
+					acc->maxdocids = acc->maxdocids ? acc->maxdocids * 2 : 8;
+					if (acc->docids == NULL)
+						acc->docids = (uint64 *) palloc(acc->maxdocids * sizeof(uint64));
+					else
+						acc->docids = (uint64 *) repalloc(acc->docids,
 															  acc->maxdocids * sizeof(uint64));
-					}
-					acc->docids[acc->ndocids++] = docid;
 				}
+				acc->docids[acc->ndocids++] = (uint64) i;
 			}
 		}
 	}
 
-	/* serialize each trigram's docid set as a sparsemap and pack onto pages */
 	for (i = 0; i < naccs; i++)
 	{
 		TrgmAccum  *acc = &accs[i];
-		sm_t		sm;
-		size_t		bufsz;
-		uint8	   *smbuf;
+		sm_t	   *sm;
 		size_t		smlen;
-		Size		need;
+		BlockNumber datablk;
 		int			d,
 					w = 0;
+		Size		need;
 
-		/* dedup docids (multiple terms sharing a trigram can repeat a docid) */
 		if (acc->ndocids > 1)
 		{
 			qsort(acc->docids, acc->ndocids, sizeof(uint64), cmp_uint64);
@@ -152,64 +230,80 @@ bm25_write_trigrams(Relation index, BM25BuildState *bs)
 			acc->ndocids = w + 1;
 		}
 
-		/* build the sparsemap in a generously sized caller buffer */
-		bufsz = 128 + (size_t) acc->ndocids * 16;
-		smbuf = (uint8 *) palloc0(bufsz);
-		sm_init(&sm, smbuf, bufsz);
+		/*
+		 * We do NOT skip "popular" trigrams: the union of the pattern's trigram
+		 * term-sets is only a sound superset of candidate terms if every pattern
+		 * trigram contributes; dropping one silently loses terms that share only
+		 * that trigram.  Because the sets are over the VOCABULARY (small), even a
+		 * common trigram's term-set is bounded and cheap.
+		 *
+		 * Use a library-owned, auto-growing sparsemap (sm_create + sm_add_grow):
+		 * a fixed wrap buffer with plain sm_add silently drops members on ENOSPC,
+		 * which lost candidates for high-cardinality trigrams (the 112-vs-424
+		 * bug).  sm_free releases the malloc'd buffer (not palloc).
+		 */
+		sm = sm_create(256);
 		for (d = 0; d < acc->ndocids; d++)
-			sm_add(&sm, acc->docids[d]);
-		smlen = sm_get_size(&sm);
+			sm_add_grow(&sm, acc->docids[d]);
+		smlen = sm_get_size(sm);
 
-		need = MAXALIGN(offsetof(BM25TrgmEntry, trgm) + sizeof(uint32) * 2 + smlen);
+		/* store this trigram's term-ordinal set as a data-page blob */
+		datablk = bm25_write_blob(index, (const uint8 *) sm_get_data(sm), smlen);
+		sm_free(sm);
 
-		if (buffer == InvalidBuffer ||
-			((PageHeader) page)->pd_lower + need >
+		/* append the fixed-size directory entry, chaining a page if needed */
+		need = MAXALIGN(sizeof(BM25TrgmEntry));
+		if (dbuf == InvalidBuffer ||
+			((PageHeader) dpage)->pd_lower + need >
 			BLCKSZ - MAXALIGN(sizeof(BM25PageOpaqueData)))
 		{
 			Buffer		next = bm25_new_buffer(index);
 			BlockNumber nextblk = BufferGetBlockNumber(next);
 
-			if (buffer != InvalidBuffer)
+			if (dbuf != InvalidBuffer)
 			{
-				BM25PageGetOpaque(page)->nextblk = nextblk;
-				GenericXLogFinish(state);
-				UnlockReleaseBuffer(buffer);
+				BM25PageGetOpaque(dpage)->nextblk = nextblk;
+				GenericXLogFinish(dstate);
+				UnlockReleaseBuffer(dbuf);
 			}
 			else
 				first = nextblk;
-			buffer = next;
-			state = GenericXLogStart(index);
-			page = GenericXLogRegisterBuffer(state, buffer, GENERIC_XLOG_FULL_IMAGE);
-			bm25_init_page(page, BM25_TRGM);
+			dbuf = next;
+			dstate = GenericXLogStart(index);
+			dpage = GenericXLogRegisterBuffer(dstate, dbuf, GENERIC_XLOG_FULL_IMAGE);
+			bm25_init_page(dpage, BM25_TRGM);
 		}
-
 		{
-			char	   *dst = (char *) page + ((PageHeader) page)->pd_lower;
-			BM25TrgmEntry *te = (BM25TrgmEntry *) dst;
+			BM25TrgmEntry *te = (BM25TrgmEntry *) ((char *) dpage +
+												   ((PageHeader) dpage)->pd_lower);
 
 			te->trgm = acc->trgm;
 			te->smlen = (uint32) smlen;
-			memcpy((char *) te + offsetof(BM25TrgmEntry, trgm) + sizeof(uint32) * 2,
-				   sm_get_data(&sm), smlen);
-			((PageHeader) page)->pd_lower += need;
+			te->firstdata = datablk;
+			((PageHeader) dpage)->pd_lower += need;
 		}
 	}
 
-	if (buffer != InvalidBuffer)
+	if (dbuf != InvalidBuffer)
 	{
-		GenericXLogFinish(state);
-		UnlockReleaseBuffer(buffer);
+		GenericXLogFinish(dstate);
+		UnlockReleaseBuffer(dbuf);
 	}
-
 	hash_destroy(ht);
 	return first;
 }
 
 /*
- * Gather candidate docids for a fuzzy/regex query term into a TidSet, using the
- * trigram index: the union of the query term's trigram postings.  Returns true
- * if the trigram index was usable (query had enough trigrams and trgmstart is
- * valid); false means the caller should fall back to the full universe.
+ * Gather candidate docids for a fuzzy/regex query term into a TidSet.
+ *
+ * Two-stage vocabulary funnel: (1) union the query pattern's trigram postings
+ * to get a set of candidate TERM ORDINALS (small: bounded by the vocabulary);
+ * (2) walk the dictionary once, and for each term whose ordinal is a candidate,
+ * union its docid postings.  The heap recheck then applies the exact
+ * fuzzy/regex test.  Popular trigrams were skipped at build time, so a query
+ * trigram with no directory entry does not constrain the candidate set; if the
+ * pattern has too few usable trigrams we return false and the caller falls back
+ * to a full scan (always correct).
  */
 static bool
 bm25_trgm_candidates(Relation index, BlockNumber trgmstart,
@@ -218,14 +312,21 @@ bm25_trgm_candidates(Relation index, BlockNumber trgmstart,
 {
 	uint32		qtrg[FTS_MAX_TRIGRAMS];
 	int			nqtrg;
+	int			g;
+	uint64	   *ords = NULL;		/* candidate term ordinals (sorted, unique) */
+	int			nords = 0,
+				maxords = 0;
+	int			matched_trg = 0;
+	BM25MetaPageData meta;
+	ItemPointerData *tids;
 	int			cap = 64,
 				n = 0;
-	ItemPointerData *tids;
-	int			g;
+	BlockNumber dblk;
+	uint32		ordinal;
+	int			oi;
 
 	out->tids = NULL;
 	out->n = 0;
-
 	if (trgmstart == InvalidBlockNumber)
 		return false;
 	if (is_regex)
@@ -233,11 +334,9 @@ bm25_trgm_candidates(Relation index, BlockNumber trgmstart,
 	else
 		nqtrg = fts_trigrams(term, termlen, qtrg, FTS_MAX_TRIGRAMS);
 	if (nqtrg < min_trigrams)
-		return false;			/* too few trigrams to prune soundly */
+		return false;
 
-	tids = (ItemPointerData *) palloc(cap * sizeof(ItemPointerData));
-
-	/* union the docid sets of the query term's trigrams */
+	/* stage 1: union the pattern trigrams' term-ordinal sets */
 	for (g = 0; g < nqtrg; g++)
 	{
 		BlockNumber blk = trgmstart;
@@ -250,47 +349,137 @@ bm25_trgm_candidates(Relation index, BlockNumber trgmstart,
 			char	   *ptr,
 					   *end;
 			BlockNumber next;
+			uint32		smlen = 0;
+			BlockNumber firstdata = InvalidBlockNumber;
+			bool		found = false;
 
 			LockBuffer(buf, BUFFER_LOCK_SHARE);
 			page = BufferGetPage(buf);
 			ptr = (char *) PageGetContents(page);
 			end = (char *) page + ((PageHeader) page)->pd_lower;
 			next = BM25PageGetOpaque(page)->nextblk;
-
 			while (ptr < end)
 			{
 				BM25TrgmEntry *te = (BM25TrgmEntry *) ptr;
-				Size		esize = MAXALIGN(offsetof(BM25TrgmEntry, trgm) +
-											 sizeof(uint32) * 2 + te->smlen);
 
 				if (te->trgm == qtrg[g])
 				{
-					sm_t		sm;
-					sm_cursor_t cur = SM_CURSOR_INIT;
-					uint64_t	v;
+					smlen = te->smlen;
+					firstdata = te->firstdata;
+					found = true;
+					break;
+				}
+				ptr += MAXALIGN(sizeof(BM25TrgmEntry));
+			}
+			UnlockReleaseBuffer(buf);
 
-					sm_open(&sm, (uint8_t *) te +
-							offsetof(BM25TrgmEntry, trgm) + sizeof(uint32) * 2,
-							te->smlen);
-					for (v = sm_next_member(&sm, (uint64_t) -1, &cur);
-						 v != SM_IDX_MAX;
-						 v = sm_next_member(&sm, v, &cur))
+			if (found)
+			{
+				uint8	   *smbuf = bm25_read_blob(index, firstdata, smlen);
+				sm_t		sm;
+				sm_cursor_t cur = SM_CURSOR_INIT;
+				uint64_t	v;
+
+				sm_open(&sm, smbuf, smlen);
+				for (v = sm_next_member(&sm, (uint64_t) -1, &cur);
+					 v != SM_IDX_MAX;
+					 v = sm_next_member(&sm, v, &cur))
+				{
+					if (nords >= maxords)
+					{
+						maxords = maxords ? maxords * 2 : 64;
+						ords = ords ? repalloc(ords, maxords * sizeof(uint64))
+							: palloc(maxords * sizeof(uint64));
+					}
+					ords[nords++] = v;
+				}
+				pfree(smbuf);
+				matched_trg++;
+				done = true;
+				break;
+			}
+			blk = next;
+		}
+	}
+
+	/* if no pattern trigram had a directory entry (all popular/skipped), we
+	 * cannot prune -- fall back to a full scan */
+	if (matched_trg == 0)
+		return false;
+
+	/* dedup candidate ordinals */
+	if (nords > 1)
+	{
+		int			w = 0,
+					d;
+
+		qsort(ords, nords, sizeof(uint64), cmp_uint64);
+		for (d = 1; d < nords; d++)
+			if (ords[d] != ords[w])
+				ords[++w] = ords[d];
+		nords = w + 1;
+	}
+
+	/* stage 2: walk the dictionary once; for each candidate ordinal, union its
+	 * term's docid postings.  Dictionary entries are written in ordinal order. */
+	bm25_read_meta(index, &meta);
+	tids = (ItemPointerData *) palloc(cap * sizeof(ItemPointerData));
+	ordinal = 0;
+	oi = 0;
+	dblk = meta.dictstart;
+	while (dblk != InvalidBlockNumber && oi < nords)
+	{
+		Buffer		buf = ReadBuffer(index, dblk);
+		Page		page;
+		char	   *ptr,
+				   *end;
+		BlockNumber next;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		ptr = (char *) PageGetContents(page);
+		end = (char *) page + ((PageHeader) page)->pd_lower;
+		next = BM25PageGetOpaque(page)->nextblk;
+		while (ptr < end && oi < nords)
+		{
+			BM25DictEntry *de = (BM25DictEntry *) ptr;
+			Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
+
+			if (ordinal == (uint32) ords[oi])
+			{
+				BlockNumber pblk = de->firstposting;
+
+				while (pblk != InvalidBlockNumber)
+				{
+					Buffer		pb = ReadBuffer(index, pblk);
+					Page		pp;
+					BM25Posting *post;
+					int			np,
+								k;
+
+					LockBuffer(pb, BUFFER_LOCK_SHARE);
+					pp = BufferGetPage(pb);
+					np = bm25_page_decode(pp, &post);
+					for (k = 0; k < np; k++)
 					{
 						if (n >= cap)
 						{
 							cap *= 2;
 							tids = repalloc(tids, cap * sizeof(ItemPointerData));
 						}
-						bm25_docid_to_tid((uint64) v, &tids[n++]);
+						tids[n++] = post[k].tid;
 					}
-					done = true;
-					break;
+					pfree(post);
+					pblk = BM25PageGetOpaque(pp)->nextblk;
+					UnlockReleaseBuffer(pb);
 				}
-				ptr += esize;
+				oi++;
 			}
-			UnlockReleaseBuffer(buf);
-			blk = next;
+			ordinal++;
+			ptr += esize;
 		}
+		UnlockReleaseBuffer(buf);
+		dblk = next;
 	}
 
 	out->tids = tids;

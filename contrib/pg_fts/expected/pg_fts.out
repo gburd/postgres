@@ -1031,8 +1031,9 @@ FROM fts_search('recyc_bm25', 'term1'::ftsquery, 5000) r JOIN recyc x ON x.ctid 
  t
 (1 row)
 
--- size stays bounded relative to the data (freed blocks are recycled, not leaked)
-SELECT pg_relation_size('recyc_bm25') < 400 * 8192 AS size_bounded;
+-- size stays bounded across churn (freed blocks recycled, not leaked); the
+-- bound includes the trigram index pages rebuilt on each merge.
+SELECT pg_relation_size('recyc_bm25') < 800 * 8192 AS size_bounded;
  size_bounded 
 --------------
  t

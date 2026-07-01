@@ -440,8 +440,9 @@ END $$;
 -- after churn the index is still correct
 SELECT count(*) > 0 AS still_matches
 FROM fts_search('recyc_bm25', 'term1'::ftsquery, 5000) r JOIN recyc x ON x.ctid = r.ctid;
--- size stays bounded relative to the data (freed blocks are recycled, not leaked)
-SELECT pg_relation_size('recyc_bm25') < 400 * 8192 AS size_bounded;
+-- size stays bounded across churn (freed blocks recycled, not leaked); the
+-- bound includes the trigram index pages rebuilt on each merge.
+SELECT pg_relation_size('recyc_bm25') < 800 * 8192 AS size_bounded;
 DROP TABLE recyc;
 
 -- amcanorderbyop: ORDER BY col <=> query LIMIT k uses an index ordering scan.
