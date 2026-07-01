@@ -103,3 +103,30 @@ SELECT fts_bm25(to_ftsdoc('rare common'), 'rare'::ftsquery, 1000, 2.0, ARRAY[2.0
 SELECT fts_bm25(to_ftsdoc('fox fox fox'), 'fox'::ftsquery, 1000, 3.0)
      > fts_bm25(to_ftsdoc('fox pad pad'), 'fox'::ftsquery, 1000, 3.0)
        AS more_tf_scores_higher;
+
+-- Stage 3: the bm25 index access method.
+ALTER EXTENSION pg_fts UPDATE TO '1.3';
+
+CREATE TABLE idxdocs (id serial, d ftsdoc);
+INSERT INTO idxdocs (d) VALUES
+  (to_ftsdoc('the quick brown fox')),
+  (to_ftsdoc('a slow green turtle')),
+  (to_ftsdoc('quick turtles are rare')),
+  (to_ftsdoc('brown bears and quick foxes'));
+
+CREATE INDEX idxdocs_bm25 ON idxdocs USING bm25 (d);
+
+-- force index usage and confirm the plan uses a bitmap scan on our AM
+SET enable_seqscan = off;
+EXPLAIN (COSTS OFF) SELECT id FROM idxdocs WHERE d @@@ 'quick'::ftsquery ORDER BY id;
+
+-- results must match a sequential @@@ evaluation
+SELECT id FROM idxdocs WHERE d @@@ 'quick'::ftsquery ORDER BY id;
+SELECT id FROM idxdocs WHERE d @@@ 'quick & fox'::ftsquery ORDER BY id;
+SELECT id FROM idxdocs WHERE d @@@ 'quick | slow'::ftsquery ORDER BY id;
+SELECT id FROM idxdocs WHERE d @@@ 'quick & !fox'::ftsquery ORDER BY id;
+SELECT id FROM idxdocs WHERE d @@@ '!turtle'::ftsquery ORDER BY id;
+SELECT id FROM idxdocs WHERE d @@@ '(quick | slow) & !fox'::ftsquery ORDER BY id;
+RESET enable_seqscan;
+
+DROP TABLE idxdocs;

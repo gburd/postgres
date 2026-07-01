@@ -1,0 +1,80 @@
+/*-------------------------------------------------------------------------
+ *
+ * pg_fts_am.h
+ *		On-disk page layout for the bm25 index access method.
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ *
+ * IDENTIFICATION
+ *	  contrib/pg_fts/pg_fts_am.h
+ *
+ *-------------------------------------------------------------------------
+ */
+#ifndef PG_FTS_AM_H
+#define PG_FTS_AM_H
+
+#include "postgres.h"
+
+#include "access/genam.h"
+#include "access/generic_xlog.h"
+#include "storage/bufpage.h"
+#include "storage/itemptr.h"
+
+#define BM25_MAGIC			0x42324635	/* "B2F5" */
+#define BM25_VERSION		1
+#define BM25_METAPAGE_BLKNO	0
+
+/* page opaque flags */
+#define BM25_META			(1 << 0)
+#define BM25_DICT			(1 << 1)
+#define BM25_POSTING		(1 << 2)
+
+typedef struct BM25PageOpaqueData
+{
+	uint16		flags;
+	uint16		unused;
+	BlockNumber nextblk;		/* next page in a dict/posting chain */
+} BM25PageOpaqueData;
+
+typedef BM25PageOpaqueData *BM25PageOpaque;
+
+#define BM25PageGetOpaque(page) \
+	((BM25PageOpaque) PageGetSpecialPointer(page))
+
+typedef struct BM25MetaPageData
+{
+	uint32		magic;
+	uint32		version;
+	double		ndocs;			/* N */
+	double		sumdoclen;		/* sum of document lengths -> avgdl = /N */
+	uint32		nterms;			/* number of distinct terms (dictionary size) */
+	BlockNumber dictstart;		/* first dictionary page */
+} BM25MetaPageData;
+
+#define BM25PageGetMeta(page) \
+	((BM25MetaPageData *) PageGetContents(page))
+
+/* a dictionary entry; term text is inline, length termlen */
+typedef struct BM25DictEntry
+{
+	uint32		termlen;
+	uint32		df;				/* document frequency */
+	BlockNumber firstposting;	/* first posting page for this term */
+	char		term[FLEXIBLE_ARRAY_MEMBER];
+} BM25DictEntry;
+
+/* a posting: which heap tuple, and the term frequency there */
+typedef struct BM25Posting
+{
+	ItemPointerData tid;
+	uint32		tf;
+} BM25Posting;
+
+/* scan functions (pg_fts_am_scan.c, #included into pg_fts_am.c) */
+extern IndexScanDesc bm25_beginscan(Relation r, int nkeys, int norderbys);
+extern void bm25_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
+						ScanKey orderbys, int norderbys);
+extern int64 bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm);
+extern void bm25_endscan(IndexScanDesc scan);
+
+#endif							/* PG_FTS_AM_H */

@@ -1,0 +1,599 @@
+/*-------------------------------------------------------------------------
+ *
+ * pg_fts_am.c
+ *		The "bm25" index access method for pg_fts.
+ *
+ * Stage 3 of pg_fts: a minimal but real inverted-index access method over an
+ * ftsdoc column, answering the @@@ operator via a bitmap scan.  It also
+ * maintains the corpus statistics BM25 needs (document count N, sum of
+ * document lengths, per-term document frequency), so that later stages can
+ * score index-only.
+ *
+ * On-disk layout (deliberately simple for the skeleton; the segmented,
+ * merge-on-write design with block-max impacts described in the plan is a
+ * later optimization):
+ *
+ *	 block 0            metapage: N, sum(doclen), nterms
+ *	 dictionary pages   sorted (term -> first posting block, df) entries
+ *	 posting pages      arrays of (ItemPointerData tid, uint32 tf), chained
+ *
+ * Because the structure is built once from a heap scan and is not updated in
+ * place, aminsert triggers a note that a REINDEX is needed to reflect new
+ * rows.  Incremental maintenance (a pending list + background merge) is a
+ * later stage; this keeps the skeleton small and correct.  All page writes go
+ * through GenericXLog, so the index is crash-safe and replicated without a
+ * custom resource manager.
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ *
+ * IDENTIFICATION
+ *	  contrib/pg_fts/pg_fts_am.c
+ *
+ *-------------------------------------------------------------------------
+ */
+#include "postgres.h"
+
+#include "pg_fts.h"
+#include "pg_fts_am.h"
+#include "access/generic_xlog.h"
+#include "access/reloptions.h"
+#include "access/relscan.h"
+#include "access/tableam.h"
+#include "catalog/pg_type.h"
+#include "commands/vacuum.h"
+#include "miscadmin.h"
+#include "nodes/pathnodes.h"
+#include "nodes/tidbitmap.h"
+#include "storage/bufmgr.h"
+#include "storage/indexfsm.h"
+#include "utils/memutils.h"
+#include "utils/rel.h"
+#include "utils/selfuncs.h"
+
+PG_FUNCTION_INFO_V1(bm25handler);
+
+/* ----- build: collect postings from the heap ----- */
+
+typedef struct BuildTerm
+{
+	char	   *term;
+	int			len;
+	/* postings for this term */
+	ItemPointerData *tids;
+	uint32	   *tfs;
+	int			nposts;
+	int			maxposts;
+} BuildTerm;
+
+typedef struct BM25BuildState
+{
+	MemoryContext ctx;
+	BuildTerm  *terms;			/* sorted-on-flush; kept in a simple array */
+	int			nterms;
+	int			maxterms;
+	/* term -> index lookup is linear-search-free via a sorted rebuild at end;
+	 * for the skeleton we keep an unsorted array and sort once before writing */
+	double		ndocs;
+	double		sumdoclen;
+} BM25BuildState;
+
+static int
+cmp_buildterm(const void *a, const void *b)
+{
+	const BuildTerm *ta = (const BuildTerm *) a;
+	const BuildTerm *tb = (const BuildTerm *) b;
+	int			min = Min(ta->len, tb->len);
+	int			c = memcmp(ta->term, tb->term, min);
+
+	if (c != 0)
+		return c;
+	return ta->len - tb->len;
+}
+
+/*
+ * Find or create a BuildTerm for (term,len).  We use a dynahash keyed by a
+ * fixed-size padded copy of the term to avoid an O(n^2) linear scan.  Terms
+ * longer than the key buffer fall back to exact comparison via the stored
+ * BuildTerm, which is correct though it may hash-collide slightly; term length
+ * is bounded by MAXSTRLEN in practice.
+ */
+#include "utils/hsearch.h"
+
+#define BM25_TERMKEYLEN 64
+
+typedef struct TermKey
+{
+	char		key[BM25_TERMKEYLEN];
+} TermKey;
+
+typedef struct TermHashEntry
+{
+	TermKey		key;			/* must be first: dynahash key */
+	int			termidx;
+} TermHashEntry;
+
+static HTAB *build_ht;
+
+static void
+make_termkey(TermKey *k, const char *term, int len)
+{
+	memset(k, 0, sizeof(TermKey));
+	memcpy(k->key, term, Min(len, BM25_TERMKEYLEN));
+	/* fold length into the tail so different-length terms sharing a prefix do
+	 * not collide on the key */
+	if (len < BM25_TERMKEYLEN)
+		k->key[len] = '\1';
+}
+
+static void
+add_posting(BM25BuildState *bs, const char *term, int len,
+			ItemPointer tid, uint32 tf)
+{
+	TermKey		key;
+	TermHashEntry *entry;
+	bool		found;
+	BuildTerm  *bt;
+
+	make_termkey(&key, term, len);
+	entry = (TermHashEntry *) hash_search(build_ht, &key, HASH_ENTER, &found);
+
+	/* verify true equality against the stored BuildTerm on a hash hit */
+	if (found)
+	{
+		bt = &bs->terms[entry->termidx];
+		if (!(bt->len == len && memcmp(bt->term, term, len) == 0))
+			found = false;		/* key collision on a truncated/padded key */
+	}
+
+	if (!found)
+	{
+		if (bs->nterms >= bs->maxterms)
+		{
+			bs->maxterms = bs->maxterms ? bs->maxterms * 2 : 1024;
+			if (bs->terms == NULL)
+				bs->terms = (BuildTerm *) palloc(bs->maxterms * sizeof(BuildTerm));
+			else
+				bs->terms = (BuildTerm *) repalloc(bs->terms,
+												   bs->maxterms * sizeof(BuildTerm));
+		}
+		bt = &bs->terms[bs->nterms];
+		bt->term = (char *) palloc(len);
+		memcpy(bt->term, term, len);
+		bt->len = len;
+		bt->maxposts = 4;
+		bt->nposts = 0;
+		bt->tids = (ItemPointerData *) palloc(bt->maxposts * sizeof(ItemPointerData));
+		bt->tfs = (uint32 *) palloc(bt->maxposts * sizeof(uint32));
+		entry->termidx = bs->nterms;
+		bs->nterms++;
+	}
+
+	if (bt->nposts >= bt->maxposts)
+	{
+		bt->maxposts *= 2;
+		bt->tids = (ItemPointerData *) repalloc(bt->tids,
+												bt->maxposts * sizeof(ItemPointerData));
+		bt->tfs = (uint32 *) repalloc(bt->tfs, bt->maxposts * sizeof(uint32));
+	}
+	bt->tids[bt->nposts] = *tid;
+	bt->tfs[bt->nposts] = tf;
+	bt->nposts++;
+}
+
+/* per-heap-tuple callback */
+static void
+bm25_build_callback(Relation index, ItemPointer tid, Datum *values,
+					bool *isnull, bool tupleIsAlive, void *state)
+{
+	BM25BuildState *bs = (BM25BuildState *) state;
+	FtsDoc		doc;
+	FtsTermEntry *entries;
+	uint32		i;
+	MemoryContext old;
+
+	if (isnull[0])
+		return;
+
+	old = MemoryContextSwitchTo(bs->ctx);
+
+	doc = (FtsDoc) PG_DETOAST_DATUM(values[0]);
+	entries = FTS_DOC_ENTRIES(doc);
+
+	for (i = 0; i < doc->nterms; i++)
+		add_posting(bs, FTS_DOC_TERMTEXT(doc, &entries[i]), entries[i].len,
+					tid, entries[i].tf);
+
+	bs->ndocs += 1.0;
+	bs->sumdoclen += doc->doclen;
+
+	MemoryContextSwitchTo(old);
+}
+
+/* ----- writing the index pages ----- */
+
+static Buffer
+bm25_new_buffer(Relation index)
+{
+	Buffer		buffer = ReadBuffer(index, P_NEW);
+
+	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+	return buffer;
+}
+
+static void
+bm25_init_page(Page page, uint16 flags)
+{
+	BM25PageOpaque opaque;
+
+	PageInit(page, BLCKSZ, sizeof(BM25PageOpaqueData));
+	opaque = BM25PageGetOpaque(page);
+	opaque->flags = flags;
+	opaque->nextblk = InvalidBlockNumber;
+}
+
+static void
+bm25_init_metapage(Relation index, double ndocs, double sumdoclen,
+				   uint32 nterms, BlockNumber dictstart)
+{
+	Buffer		buffer;
+	GenericXLogState *state;
+	Page		page;
+	BM25MetaPageData *meta;
+
+	buffer = bm25_new_buffer(index);
+	Assert(BufferGetBlockNumber(buffer) == BM25_METAPAGE_BLKNO);
+
+	state = GenericXLogStart(index);
+	page = GenericXLogRegisterBuffer(state, buffer, GENERIC_XLOG_FULL_IMAGE);
+	bm25_init_page(page, BM25_META);
+	meta = BM25PageGetMeta(page);
+	meta->magic = BM25_MAGIC;
+	meta->version = BM25_VERSION;
+	meta->ndocs = ndocs;
+	meta->sumdoclen = sumdoclen;
+	meta->nterms = nterms;
+	meta->dictstart = dictstart;
+	((PageHeader) page)->pd_lower =
+		((char *) meta + sizeof(BM25MetaPageData)) - (char *) page;
+	GenericXLogFinish(state);
+	UnlockReleaseBuffer(buffer);
+}
+
+/*
+ * Write all postings for one term into a chain of posting pages, returning the
+ * first block.  Each posting is (tid, tf).
+ */
+static BlockNumber
+bm25_write_postings(Relation index, BuildTerm *bt)
+{
+	BlockNumber first = InvalidBlockNumber;
+	Buffer		buffer = InvalidBuffer;
+	GenericXLogState *state = NULL;
+	Page		page = NULL;
+	int			i = 0;
+
+	while (i < bt->nposts)
+	{
+		BM25Posting *slot;
+		BM25PageOpaque opaque;
+		int			avail;
+
+		if (buffer == InvalidBuffer)
+		{
+			buffer = bm25_new_buffer(index);
+			state = GenericXLogStart(index);
+			page = GenericXLogRegisterBuffer(state, buffer, GENERIC_XLOG_FULL_IMAGE);
+			bm25_init_page(page, BM25_POSTING);
+			if (first == InvalidBlockNumber)
+				first = BufferGetBlockNumber(buffer);
+		}
+
+		avail = (BLCKSZ - ((PageHeader) page)->pd_lower -
+				 sizeof(BM25PageOpaqueData) - MAXALIGN(0)) / sizeof(BM25Posting);
+
+		while (i < bt->nposts && avail > 0)
+		{
+			slot = (BM25Posting *) ((char *) page + ((PageHeader) page)->pd_lower);
+			slot->tid = bt->tids[i];
+			slot->tf = bt->tfs[i];
+			((PageHeader) page)->pd_lower += sizeof(BM25Posting);
+			i++;
+			avail--;
+		}
+
+		if (i < bt->nposts)
+		{
+			/* need another page: chain it */
+			Buffer		next = bm25_new_buffer(index);
+			BlockNumber nextblk = BufferGetBlockNumber(next);
+
+			opaque = BM25PageGetOpaque(page);
+			opaque->nextblk = nextblk;
+			GenericXLogFinish(state);
+			UnlockReleaseBuffer(buffer);
+			buffer = next;
+			state = GenericXLogStart(index);
+			page = GenericXLogRegisterBuffer(state, buffer, GENERIC_XLOG_FULL_IMAGE);
+			bm25_init_page(page, BM25_POSTING);
+		}
+		else
+		{
+			GenericXLogFinish(state);
+			UnlockReleaseBuffer(buffer);
+			buffer = InvalidBuffer;
+		}
+	}
+
+	return first;
+}
+
+/*
+ * Write the dictionary: sorted (term, df, firstposting) entries packed into a
+ * chain of dictionary pages.  Returns the first dictionary block.
+ */
+static BlockNumber
+bm25_write_dictionary(Relation index, BM25BuildState *bs,
+					  BlockNumber *postings)
+{
+	BlockNumber first = InvalidBlockNumber;
+	Buffer		buffer = InvalidBuffer;
+	GenericXLogState *state = NULL;
+	Page		page = NULL;
+	int			i;
+
+	for (i = 0; i < bs->nterms; i++)
+	{
+		BuildTerm  *bt = &bs->terms[i];
+		Size		need = MAXALIGN(sizeof(BM25DictEntry) + bt->len);
+		char	   *dst;
+
+		if (buffer == InvalidBuffer ||
+			((PageHeader) page)->pd_lower + need >
+			BLCKSZ - sizeof(BM25PageOpaqueData))
+		{
+			Buffer		next = bm25_new_buffer(index);
+			BlockNumber nextblk = BufferGetBlockNumber(next);
+
+			if (buffer != InvalidBuffer)
+			{
+				BM25PageGetOpaque(page)->nextblk = nextblk;
+				GenericXLogFinish(state);
+				UnlockReleaseBuffer(buffer);
+			}
+			else
+				first = nextblk;
+
+			buffer = next;
+			state = GenericXLogStart(index);
+			page = GenericXLogRegisterBuffer(state, buffer, GENERIC_XLOG_FULL_IMAGE);
+			bm25_init_page(page, BM25_DICT);
+		}
+
+		dst = (char *) page + ((PageHeader) page)->pd_lower;
+		{
+			BM25DictEntry *de = (BM25DictEntry *) dst;
+
+			de->termlen = bt->len;
+			de->df = bt->nposts;
+			de->firstposting = postings[i];
+			memcpy(de->term, bt->term, bt->len);
+		}
+		((PageHeader) page)->pd_lower += need;
+	}
+
+	if (buffer != InvalidBuffer)
+	{
+		GenericXLogFinish(state);
+		UnlockReleaseBuffer(buffer);
+	}
+
+	return first;
+}
+
+static IndexBuildResult *
+bm25_build(Relation heap, Relation index, IndexInfo *indexInfo)
+{
+	IndexBuildResult *result;
+	BM25BuildState bs;
+	double		reltuples;
+	BlockNumber *postings;
+	BlockNumber dictstart;
+	int			i;
+
+	if (RelationGetNumberOfBlocks(index) != 0)
+		elog(ERROR, "index \"%s\" already contains data",
+			 RelationGetRelationName(index));
+
+	bs.ctx = AllocSetContextCreate(CurrentMemoryContext, "bm25 build",
+								   ALLOCSET_DEFAULT_SIZES);
+	bs.terms = NULL;
+	bs.nterms = 0;
+	bs.maxterms = 0;
+	bs.ndocs = 0;
+	bs.sumdoclen = 0;
+
+	{
+		HASHCTL		ctl;
+
+		ctl.keysize = sizeof(TermKey);
+		ctl.entrysize = sizeof(TermHashEntry);
+		ctl.hcxt = bs.ctx;
+		build_ht = hash_create("bm25 build terms", 1024, &ctl,
+							   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+
+	reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
+									   bm25_build_callback, (void *) &bs, NULL);
+
+	/* sort terms so the dictionary is searchable by binary search */
+	if (bs.nterms > 1)
+		qsort(bs.terms, bs.nterms, sizeof(BuildTerm), cmp_buildterm);
+
+	/* metapage occupies block 0; reserve it by writing it last but first
+	 * ensure it is block 0 by writing it before any other page. */
+	bm25_init_metapage(index, bs.ndocs, bs.sumdoclen, bs.nterms,
+					   InvalidBlockNumber);
+
+	/* write each term's postings, remembering the first block */
+	postings = (BlockNumber *) palloc(Max(bs.nterms, 1) * sizeof(BlockNumber));
+	for (i = 0; i < bs.nterms; i++)
+		postings[i] = bm25_write_postings(index, &bs.terms[i]);
+
+	dictstart = bm25_write_dictionary(index, &bs, postings);
+
+	/* rewrite metapage now that we know dictstart */
+	{
+		Buffer		buffer = ReadBuffer(index, BM25_METAPAGE_BLKNO);
+		GenericXLogState *state;
+		Page		page;
+
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		state = GenericXLogStart(index);
+		page = GenericXLogRegisterBuffer(state, buffer, 0);
+		BM25PageGetMeta(page)->dictstart = dictstart;
+		GenericXLogFinish(state);
+		UnlockReleaseBuffer(buffer);
+	}
+
+	MemoryContextDelete(bs.ctx);
+
+	result = (IndexBuildResult *) palloc0(sizeof(IndexBuildResult));
+	result->heap_tuples = reltuples;
+	result->index_tuples = bs.nterms;
+	return result;
+}
+
+static void
+bm25_buildempty(Relation index)
+{
+	bm25_init_metapage(index, 0, 0, 0, InvalidBlockNumber);
+}
+
+/*
+ * aminsert: the skeleton index is built once and not updated in place.  Rather
+ * than silently miss new rows, raise a clear error directing the user to
+ * REINDEX (incremental maintenance is a later stage).
+ */
+static bool
+bm25_insert(Relation index, Datum *values, bool *isnull,
+			ItemPointer ht_ctid, Relation heapRel,
+			IndexUniqueCheck checkUnique, bool indexUnchanged,
+			IndexInfo *indexInfo)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("bm25 index does not support incremental insert yet"),
+			 errhint("Rebuild the index with REINDEX to include new rows.")));
+	return false;
+}
+
+/* ----- scan ----- */
+
+#include "pg_fts_am_scan.c"
+
+/* ----- vacuum / cost / options ----- */
+
+static IndexBulkDeleteResult *
+bm25_bulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
+				IndexBulkDeleteCallback callback, void *callback_state)
+{
+	/* skeleton: no in-place delete; VACUUM cannot prune, REINDEX rebuilds */
+	if (stats == NULL)
+		stats = (IndexBulkDeleteResult *) palloc0(sizeof(IndexBulkDeleteResult));
+	return stats;
+}
+
+static IndexBulkDeleteResult *
+bm25_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
+{
+	if (stats == NULL)
+		stats = (IndexBulkDeleteResult *) palloc0(sizeof(IndexBulkDeleteResult));
+	return stats;
+}
+
+static void
+bm25_costestimate(PlannerInfo *root, IndexPath *path, double loop_count,
+				  Cost *indexStartupCost, Cost *indexTotalCost,
+				  Selectivity *indexSelectivity, double *indexCorrelation,
+				  double *indexPages)
+{
+	/* Delegate to the generic estimator; a WAND-aware estimate comes later. */
+	GenericCosts costs = {0};
+
+	genericcostestimate(root, path, loop_count, &costs);
+
+	*indexStartupCost = costs.indexStartupCost;
+	*indexTotalCost = costs.indexTotalCost;
+	*indexSelectivity = costs.indexSelectivity;
+	*indexCorrelation = costs.indexCorrelation;
+	*indexPages = costs.numIndexPages;
+}
+
+static bytea *
+bm25_options(Datum reloptions, bool validate)
+{
+	return NULL;
+}
+
+static bool
+bm25_validate(Oid opclassoid)
+{
+	return true;
+}
+
+Datum
+bm25handler(PG_FUNCTION_ARGS)
+{
+	IndexAmRoutine *amroutine = makeNode(IndexAmRoutine);
+
+	amroutine->amstrategies = 1;
+	amroutine->amsupport = 0;
+	amroutine->amoptsprocnum = 0;
+	amroutine->amcanorder = false;
+	amroutine->amcanorderbyop = false;
+	amroutine->amcanhash = false;
+	amroutine->amconsistentequality = false;
+	amroutine->amconsistentordering = false;
+	amroutine->amcanbackward = false;
+	amroutine->amcanunique = false;
+	amroutine->amcanmulticol = false;
+	amroutine->amoptionalkey = false;
+	amroutine->amsearcharray = false;
+	amroutine->amsearchnulls = false;
+	amroutine->amstorage = false;
+	amroutine->amclusterable = false;
+	amroutine->ampredlocks = false;
+	amroutine->amcanparallel = false;
+	amroutine->amcanbuildparallel = false;
+	amroutine->amcaninclude = false;
+	amroutine->amusemaintenanceworkmem = false;
+	amroutine->amparallelvacuumoptions = VACUUM_OPTION_NO_PARALLEL;
+	amroutine->amkeytype = InvalidOid;
+
+	amroutine->ambuild = bm25_build;
+	amroutine->ambuildempty = bm25_buildempty;
+	amroutine->aminsert = bm25_insert;
+	amroutine->aminsertcleanup = NULL;
+	amroutine->ambulkdelete = bm25_bulkdelete;
+	amroutine->amvacuumcleanup = bm25_vacuumcleanup;
+	amroutine->amcanreturn = NULL;
+	amroutine->amcostestimate = bm25_costestimate;
+	amroutine->amgettreeheight = NULL;
+	amroutine->amoptions = bm25_options;
+	amroutine->amproperty = NULL;
+	amroutine->ambuildphasename = NULL;
+	amroutine->amvalidate = bm25_validate;
+	amroutine->amadjustmembers = NULL;
+	amroutine->ambeginscan = bm25_beginscan;
+	amroutine->amrescan = bm25_rescan;
+	amroutine->amgettuple = NULL;
+	amroutine->amgetbitmap = bm25_getbitmap;
+	amroutine->amendscan = bm25_endscan;
+	amroutine->ammarkpos = NULL;
+	amroutine->amrestrpos = NULL;
+	amroutine->amestimateparallelscan = NULL;
+	amroutine->aminitparallelscan = NULL;
+	amroutine->amparallelrescan = NULL;
+
+	PG_RETURN_POINTER(amroutine);
+}
