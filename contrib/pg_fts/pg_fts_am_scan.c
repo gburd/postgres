@@ -391,8 +391,10 @@ bm25_eval_query(Relation index, BlockNumber dictstart, FtsQuery q,
 			EvalVal		a = stack[--top];
 			EvalVal		res;
 
-			if (it->op == FTS_OP_AND)
+			if (it->op == FTS_OP_AND || it->op == FTS_OP_PHRASE)
 			{
+				/* PHRASE is treated as AND for candidate generation; the
+				 * bitmap heap recheck (@@@) enforces adjacency exactly. */
 				if (!a.negated && !b.negated)
 				{
 					res.set = tidset_and(a.set, b.set);
@@ -597,7 +599,7 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 
 	if (result.n > 0)
 	{
-		tbm_add_tuples(tbm, result.tids, result.n, false);
+		tbm_add_tuples(tbm, result.tids, result.n, true);
 		ntids = result.n;
 	}
 
@@ -632,7 +634,7 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 
 				if (fts_doc_matches(pdoc, so->query))
 				{
-					tbm_add_tuples(tbm, &pi->tid, 1, false);
+					tbm_add_tuples(tbm, &pi->tid, 1, true);
 					ntids++;
 				}
 				ptr += MAXALIGN(sizeof(BM25PendingItem) + pi->doclen);

@@ -27,42 +27,55 @@
  * ftsdoc -- an analyzed document.
  *
  * A varlena holding a sorted, de-duplicated array of terms.  Each term entry
- * records its term frequency (tf) and, immediately after the entry array, the
- * term text.  Positions are deliberately NOT stored in stage 1: they are only
- * needed for phrase/NEAR (a later stage) and storing them now would bake an
- * on-disk format we have not yet exercised.  The format is versioned so it can
- * grow.
+ * records its term frequency (tf) and, after the entry array, the term text.
+ *
+ * Format version 2 optionally stores per-term token positions (needed for
+ * phrase and NEAR queries).  When the FTS_DOCF_POSITIONS flag is set, a
+ * positions region of uint32 values follows the lexemes; each term entry's
+ * posoff/tf delimit that term's positions (tf positions starting at posoff,
+ * in units of uint32).  Without the flag, posoff is unused and the document is
+ * position-free (smaller; phrase/NEAR then fall back to plain term presence).
  *
  * Layout:
  *	  FtsDocData header
  *	  FtsTermEntry entries[nterms]		(sorted by term text)
  *	  char lexemes[]					(term texts, in entry order)
+ *	  uint32 positions[]				(only if FTS_DOCF_POSITIONS)
  */
 typedef struct FtsTermEntry
 {
 	uint32		off;			/* byte offset of term text within lexemes[] */
 	uint32		len;			/* length of term text in bytes */
-	uint32		tf;				/* term frequency within this document */
+	uint32		tf;				/* term frequency (also # of positions) */
+	uint32		posoff;			/* index of first position in positions[] */
 } FtsTermEntry;
 
 typedef struct FtsDocData
 {
 	int32		vl_len_;		/* varlena header (do not touch directly!) */
-	uint16		version;		/* format version, currently 1 */
-	uint16		flags;			/* reserved, must be 0 in v1 */
+	uint16		version;		/* format version, currently 2 */
+	uint16		flags;			/* FTS_DOCF_* */
 	uint32		nterms;			/* number of distinct terms */
 	uint32		doclen;			/* total token count (sum of tf); needed by BM25 */
+	uint32		lexbytes;		/* total bytes of lexemes[] (to find positions[]) */
 	FtsTermEntry entries[FLEXIBLE_ARRAY_MEMBER];
 } FtsDocData;
 
 typedef FtsDocData *FtsDoc;
 
-#define FTS_DOC_VERSION			1
+#define FTS_DOC_VERSION			2
+#define FTS_DOCF_POSITIONS		0x0001	/* positions[] region is present */
+#define FTS_DOC_HAS_POS(d)		(((d)->flags & FTS_DOCF_POSITIONS) != 0)
 #define FTS_DOC_HDRSIZE			offsetof(FtsDocData, entries)
 #define FTS_DOC_ENTRIES(d)		((d)->entries)
 #define FTS_DOC_LEXEMES(d) \
 	((char *) &(d)->entries[(d)->nterms])
 #define FTS_DOC_TERMTEXT(d, e)	(FTS_DOC_LEXEMES(d) + (e)->off)
+
+/* base of the positions[] region (valid only when FTS_DOC_HAS_POS) */
+#define FTS_DOC_POSITIONS(d) \
+	((uint32 *) MAXALIGN((char *) FTS_DOC_LEXEMES(d) + (d)->lexbytes))
+#define FTS_DOC_TERMPOS(d, e)	(FTS_DOC_POSITIONS(d) + (e)->posoff)
 
 #define DatumGetFtsDoc(X)		((FtsDoc) PG_DETOAST_DATUM(X))
 #define PG_GETARG_FTSDOC(n)		DatumGetFtsDoc(PG_GETARG_DATUM(n))
@@ -87,7 +100,8 @@ typedef enum FtsQueryOp
 {
 	FTS_OP_NOT = 1,
 	FTS_OP_AND,
-	FTS_OP_OR
+	FTS_OP_OR,
+	FTS_OP_PHRASE				/* two operands adjacent within `distance` */
 } FtsQueryOp;
 
 typedef struct FtsQueryItem
@@ -95,6 +109,7 @@ typedef struct FtsQueryItem
 	uint8		type;			/* FtsQueryItemType */
 	uint8		op;				/* FtsQueryOp, valid when type == FTS_QI_OPR */
 	uint16		flags;			/* FTS_QF_* flags, valid for FTS_QI_VAL */
+	uint32		distance;		/* max token gap for FTS_OP_PHRASE (1 = adjacent) */
 	/* for FTS_QI_VAL: */
 	uint32		termoff;		/* offset of term text within the text region */
 	uint32		termlen;		/* length of term text */

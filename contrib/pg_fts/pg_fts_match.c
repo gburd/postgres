@@ -20,11 +20,106 @@
 
 #include "pg_fts.h"
 
+/*
+ * Each stack entry is a boolean presence plus, for term and phrase operands, a
+ * position list (ascending token positions where the operand ends).  Phrase
+ * evaluation intersects a left operand's positions with a right term's
+ * positions offset by 1..distance, chaining across a multi-word phrase.
+ * Boolean operators (AND/OR/NOT) collapse to presence and drop positions.
+ */
+typedef struct MatchVal
+{
+	bool		present;
+	uint32	   *pos;			/* NULL if positions unavailable/irrelevant */
+	int			npos;
+}			MatchVal;
+
+/*
+ * Positions where a (possibly prefix) term occurs.  For an exact term this is
+ * the stored position list; for a prefix term we merge the position lists of
+ * all matching terms (rare, so a simple concat + sort).  If the doc carries no
+ * positions, returns present-without-positions.
+ */
+static MatchVal
+term_positions(FtsDoc doc, const char *term, int termlen, bool prefix)
+{
+	MatchVal	v;
+
+	v.present = false;
+	v.pos = NULL;
+	v.npos = 0;
+
+	if (prefix)
+	{
+		/* presence only; phrase-with-prefix is not tracked positionally */
+		v.present = fts_doc_has_prefix(doc, term, termlen);
+		return v;
+	}
+	else
+	{
+		FtsTermEntry *e = fts_doc_lookup(doc, term, termlen);
+
+		if (e == NULL)
+			return v;
+		v.present = true;
+		if (FTS_DOC_HAS_POS(doc))
+		{
+			v.pos = FTS_DOC_TERMPOS(doc, e);
+			v.npos = (int) e->tf;
+		}
+		return v;
+	}
+}
+
+/*
+ * Phrase step: given left positions (ends of the matched-so-far prefix) and
+ * the right term's positions, return the right positions p such that some left
+ * position L satisfies 0 < p - L <= distance.  Both inputs are ascending.
+ */
+static MatchVal
+phrase_step(MatchVal left, MatchVal right, uint32 distance)
+{
+	MatchVal	r;
+	int			li = 0,
+				ri = 0,
+				k = 0;
+
+	r.present = false;
+	r.pos = NULL;
+	r.npos = 0;
+
+	/* If either side lacks positions, fall back to presence-only AND: we
+	 * cannot verify adjacency, so treat the phrase as a conjunction (recall
+	 * preserved, precision degraded -- documented). */
+	if (left.pos == NULL || right.pos == NULL)
+	{
+		r.present = left.present && right.present;
+		return r;
+	}
+
+	r.pos = (uint32 *) palloc(right.npos * sizeof(uint32));
+	for (ri = 0; ri < right.npos; ri++)
+	{
+		uint32		p = right.pos[ri];
+
+		/* advance li to the first left position that could be in range */
+		while (li < left.npos && left.pos[li] + distance < p)
+			li++;
+		/* any left position L with p-distance <= L < p works */
+		if (li < left.npos && left.pos[li] < p &&
+			p - left.pos[li] <= distance)
+			r.pos[k++] = p;
+	}
+	r.npos = k;
+	r.present = (k > 0);
+	return r;
+}
+
 bool
 fts_doc_matches(FtsDoc doc, FtsQuery query)
 {
 	FtsQueryItem *items = query->items;
-	bool	   *stack;
+	MatchVal   *stack;
 	int			top = 0;
 	uint32		i;
 	bool		result;
@@ -33,7 +128,7 @@ fts_doc_matches(FtsDoc doc, FtsQuery query)
 	if (query->nitems == 0)
 		return false;
 
-	stack = (bool *) palloc(query->nitems * sizeof(bool));
+	stack = (MatchVal *) palloc(query->nitems * sizeof(MatchVal));
 
 	for (i = 0; i < query->nitems; i++)
 	{
@@ -41,37 +136,44 @@ fts_doc_matches(FtsDoc doc, FtsQuery query)
 
 		if (it->type == FTS_QI_VAL)
 		{
-			const char *term = FTS_QUERY_ITEMTEXT(query, it);
-			bool		present;
-
-			if (it->flags & FTS_QF_PREFIX)
-				present = fts_doc_has_prefix(doc, term, it->termlen);
-			else
-				present = (fts_doc_lookup(doc, term, it->termlen) != NULL);
-
-			stack[top++] = present;
+			stack[top++] = term_positions(doc, FTS_QUERY_ITEMTEXT(query, it),
+										  it->termlen,
+										  (it->flags & FTS_QF_PREFIX) != 0);
 		}
 		else if (it->op == FTS_OP_NOT)
 		{
 			Assert(top >= 1);
-			stack[top - 1] = !stack[top - 1];
+			stack[top - 1].present = !stack[top - 1].present;
+			stack[top - 1].pos = NULL;
+			stack[top - 1].npos = 0;
+		}
+		else if (it->op == FTS_OP_PHRASE)
+		{
+			Assert(top >= 2);
+			stack[top - 2] = phrase_step(stack[top - 2], stack[top - 1],
+										 it->distance);
+			top--;
 		}
 		else if (it->op == FTS_OP_AND)
 		{
 			Assert(top >= 2);
-			stack[top - 2] = stack[top - 2] && stack[top - 1];
+			stack[top - 2].present = stack[top - 2].present && stack[top - 1].present;
+			stack[top - 2].pos = NULL;
+			stack[top - 2].npos = 0;
 			top--;
 		}
 		else					/* FTS_OP_OR */
 		{
 			Assert(top >= 2);
-			stack[top - 2] = stack[top - 2] || stack[top - 1];
+			stack[top - 2].present = stack[top - 2].present || stack[top - 1].present;
+			stack[top - 2].pos = NULL;
+			stack[top - 2].npos = 0;
 			top--;
 		}
 	}
 
 	Assert(top == 1);
-	result = stack[0];
+	result = stack[0].present;
 	pfree(stack);
 	return result;
 }

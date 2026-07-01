@@ -198,6 +198,32 @@ SELECT id FROM inc WHERE d @@@ 'alpha'::ftsquery ORDER BY id;
 RESET enable_seqscan;
 DROP TABLE inc;
 
+-- Stage 6 (phrase): quoted phrase queries via per-term positions.
+ALTER EXTENSION pg_fts UPDATE TO '1.9';
+-- phrase renders with <-> and round-trips
+SELECT '"quick brown fox"'::ftsquery;
+-- adjacency is enforced: "quick brown" matches, "quick fox" does not
+SELECT to_ftsdoc('the quick brown fox') @@@ '"quick brown"'::ftsquery AS adj_hit;
+SELECT to_ftsdoc('the quick brown fox') @@@ '"quick fox"'::ftsquery AS adj_miss;
+SELECT to_ftsdoc('the quick brown fox') @@@ '"brown fox"'::ftsquery AS adj_hit2;
+-- word order matters: "fox brown" does not match "...brown fox"
+SELECT to_ftsdoc('the quick brown fox') @@@ '"fox brown"'::ftsquery AS order_miss;
+-- three-word phrase
+SELECT to_ftsdoc('the quick brown fox jumps') @@@ '"quick brown fox"'::ftsquery AS three_hit;
+SELECT to_ftsdoc('quick red brown fox') @@@ '"quick brown fox"'::ftsquery AS three_miss;
+-- phrase combined with boolean operators
+SELECT to_ftsdoc('the quick brown fox') @@@ '"quick brown" & fox'::ftsquery AS combo;
+-- phrase works through the bm25 index (recheck enforces adjacency)
+CREATE TABLE ph (id serial, d ftsdoc);
+INSERT INTO ph (d) VALUES (to_ftsdoc('quick brown fox')),
+                          (to_ftsdoc('brown quick fox')),
+                          (to_ftsdoc('quick brown bear'));
+CREATE INDEX ph_bm25 ON ph USING bm25 (d);
+SET enable_seqscan = off;
+SELECT id FROM ph WHERE d @@@ '"quick brown"'::ftsquery ORDER BY id;   -- 1 and 3
+RESET enable_seqscan;
+DROP TABLE ph;
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 

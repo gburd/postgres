@@ -149,9 +149,10 @@ ftsdoc_recv(PG_FUNCTION_ARGS)
 		doc = (FtsDoc) palloc0(total);
 		SET_VARSIZE(doc, total);
 		doc->version = FTS_DOC_VERSION;
-		doc->flags = 0;
+		doc->flags = 0;			/* recv builds position-free docs */
 		doc->nterms = nterms;
 		doc->doclen = doclen;
+		doc->lexbytes = lexbytes;
 
 		entries = FTS_DOC_ENTRIES(doc);
 		lexemes = FTS_DOC_LEXEMES(doc);

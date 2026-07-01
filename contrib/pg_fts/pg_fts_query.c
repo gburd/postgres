@@ -38,6 +38,7 @@ typedef struct ParsedItem
 	uint8		type;			/* FtsQueryItemType */
 	uint8		op;				/* FtsQueryOp when type == FTS_QI_OPR */
 	uint16		flags;			/* FTS_QF_* for VAL items */
+	uint32		distance;		/* FTS_OP_PHRASE gap */
 	char	   *term;			/* palloc'd folded term when type == FTS_QI_VAL */
 	int			termlen;
 } ParsedItem;
@@ -51,7 +52,8 @@ typedef enum
 	TOK_OR,
 	TOK_NOT,
 	TOK_LPAREN,
-	TOK_RPAREN
+	TOK_RPAREN,
+	TOK_QUOTE					/* " -- starts/ends a phrase */
 } TokKind;
 
 typedef struct Token
@@ -76,6 +78,8 @@ typedef struct ParseState
 } ParseState;
 
 static void parse_or(ParseState *st);
+static void emit_dist(ParseState *st, uint8 type, uint8 op, char *term,
+					  int termlen, uint16 flags, uint32 distance);
 
 static inline bool
 is_token_byte(unsigned char c)
@@ -99,6 +103,13 @@ static void
 emit(ParseState *st, uint8 type, uint8 op, char *term, int termlen,
 	 uint16 flags)
 {
+	emit_dist(st, type, op, term, termlen, flags, 0);
+}
+
+static void
+emit_dist(ParseState *st, uint8 type, uint8 op, char *term, int termlen,
+		  uint16 flags, uint32 distance)
+{
 	if (st->nitems >= st->maxitems)
 	{
 		st->maxitems = st->maxitems ? st->maxitems * 2 : 16;
@@ -111,6 +122,7 @@ emit(ParseState *st, uint8 type, uint8 op, char *term, int termlen,
 	st->items[st->nitems].type = type;
 	st->items[st->nitems].op = op;
 	st->items[st->nitems].flags = flags;
+	st->items[st->nitems].distance = distance;
 	st->items[st->nitems].term = term;
 	st->items[st->nitems].termlen = termlen;
 	st->nitems++;
@@ -162,6 +174,10 @@ lex_raw(ParseState *st)
 			case ')':
 				st->pos++;
 				tok.kind = TOK_RPAREN;
+				return tok;
+			case '"':
+				st->pos++;
+				tok.kind = TOK_QUOTE;
 				return tok;
 			default:
 				st->pos++;		/* ordinary separator */
@@ -231,7 +247,7 @@ peek(ParseState *st)
 	return st->peeked;
 }
 
-/* primary := '(' expr ')' | term */
+/* primary := '(' expr ')' | '"' term+ '"' | term */
 static void
 parse_primary(ParseState *st)
 {
@@ -243,6 +259,31 @@ parse_primary(ParseState *st)
 		tok = next_token(st);
 		if (tok.kind != TOK_RPAREN)
 			st->error = true;
+	}
+	else if (tok.kind == TOK_QUOTE)
+	{
+		/* phrase: emit the terms and join consecutive pairs with PHRASE(1) */
+		int			nterms = 0;
+
+		for (;;)
+		{
+			Token		p = next_token(st);
+
+			if (p.kind == TOK_QUOTE)
+				break;
+			if (p.kind != TOK_TERM)
+			{
+				st->error = true;
+				break;
+			}
+			emit(st, FTS_QI_VAL, 0, p.term, p.termlen,
+				 p.prefix ? FTS_QF_PREFIX : 0);
+			if (nterms > 0)
+				emit_dist(st, FTS_QI_OPR, FTS_OP_PHRASE, NULL, 0, 0, 1);
+			nterms++;
+		}
+		if (nterms == 0)
+			st->error = true;	/* empty phrase "" */
 	}
 	else if (tok.kind == TOK_TERM)
 	{
@@ -287,7 +328,7 @@ parse_and(ParseState *st)
 			emit(st, FTS_QI_OPR, FTS_OP_AND, NULL, 0, 0);
 		}
 		else if (tok.kind == TOK_TERM || tok.kind == TOK_NOT ||
-				 tok.kind == TOK_LPAREN)
+				 tok.kind == TOK_LPAREN || tok.kind == TOK_QUOTE)
 		{
 			/* implicit AND */
 			parse_unary(st);
@@ -376,6 +417,7 @@ fts_parse_query(const char *str, int len)
 		items[i].type = st.items[i].type;
 		items[i].op = st.items[i].op;
 		items[i].flags = st.items[i].flags;
+		items[i].distance = st.items[i].distance;
 		if (st.items[i].type == FTS_QI_VAL)
 		{
 			items[i].termoff = off;
@@ -479,8 +521,21 @@ ftsquery_out(PG_FUNCTION_ARGS)
 		else
 		{
 			StringInfoData s;
-			const char *opstr = (it->op == FTS_OP_AND) ? " & " : " | ";
+			const char *opstr;
 
+			switch (it->op)
+			{
+				case FTS_OP_AND:
+					opstr = " & ";
+					break;
+				case FTS_OP_OR:
+					opstr = " | ";
+					break;
+				case FTS_OP_PHRASE:
+				default:
+					opstr = " <-> ";
+					break;
+			}
 			Assert(top >= 2);
 			initStringInfo(&s);
 			appendStringInfoChar(&s, '(');
@@ -518,6 +573,7 @@ ftsquery_recv(PG_FUNCTION_ARGS)
 	uint8	   *types;
 	uint8	   *ops;
 	uint16	   *flags;
+	uint32	   *dists;
 	char	  **terms;
 	int		   *lens;
 	Size		textbytes = 0;
@@ -535,6 +591,7 @@ ftsquery_recv(PG_FUNCTION_ARGS)
 	types = (uint8 *) palloc(nitems * sizeof(uint8));
 	ops = (uint8 *) palloc(nitems * sizeof(uint8));
 	flags = (uint16 *) palloc(nitems * sizeof(uint16));
+	dists = (uint32 *) palloc(nitems * sizeof(uint32));
 	terms = (char **) palloc(nitems * sizeof(char *));
 	lens = (int *) palloc(nitems * sizeof(int));
 
@@ -543,6 +600,7 @@ ftsquery_recv(PG_FUNCTION_ARGS)
 		types[i] = (uint8) pq_getmsgint(buf, 1);
 		ops[i] = (uint8) pq_getmsgint(buf, 1);
 		flags[i] = (uint16) pq_getmsgint(buf, 2);
+		dists[i] = (uint32) pq_getmsgint(buf, 4);
 		if (types[i] == FTS_QI_VAL)
 		{
 			const char *t;
@@ -561,7 +619,7 @@ ftsquery_recv(PG_FUNCTION_ARGS)
 		{
 			if (types[i] != FTS_QI_OPR ||
 				(ops[i] != FTS_OP_NOT && ops[i] != FTS_OP_AND &&
-				 ops[i] != FTS_OP_OR))
+				 ops[i] != FTS_OP_OR && ops[i] != FTS_OP_PHRASE))
 				ereport(ERROR,
 						(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
 						 errmsg("invalid ftsquery item")));
@@ -587,6 +645,7 @@ ftsquery_recv(PG_FUNCTION_ARGS)
 			items[i].type = types[i];
 			items[i].op = ops[i];
 			items[i].flags = flags[i];
+			items[i].distance = dists[i];
 			if (types[i] == FTS_QI_VAL)
 			{
 				items[i].termoff = off;
@@ -616,6 +675,7 @@ ftsquery_send(PG_FUNCTION_ARGS)
 		pq_sendint8(&buf, items[i].type);
 		pq_sendint8(&buf, items[i].op);
 		pq_sendint16(&buf, items[i].flags);
+		pq_sendint32(&buf, items[i].distance);
 		if (items[i].type == FTS_QI_VAL)
 		{
 			pq_sendint32(&buf, items[i].termlen);

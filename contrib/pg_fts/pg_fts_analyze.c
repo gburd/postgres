@@ -33,7 +33,7 @@ typedef struct RawTerm
 {
 	char	   *term;
 	int			len;
-	uint32		tf;
+	uint32		pos;			/* 1-based token position in the source */
 } RawTerm;
 
 /*
@@ -71,7 +71,14 @@ cmp_rawterm(const void *a, const void *b)
 
 	if (c != 0)
 		return c;
-	return ra->len - rb->len;
+	if (ra->len != rb->len)
+		return ra->len - rb->len;
+	/* same term: order by position so positions come out ascending */
+	if (ra->pos < rb->pos)
+		return -1;
+	if (ra->pos > rb->pos)
+		return 1;
+	return 0;
 }
 
 /*
@@ -120,60 +127,83 @@ fts_analyze_text(const char *str, int len)
 		Assert(nraw < maxraw);
 		raw[nraw].term = folded;
 		raw[nraw].len = flen;
-		raw[nraw].tf = 1;
+		raw[nraw].pos = doclen + 1;	/* 1-based token position */
 		nraw++;
 		doclen++;
 	}
 
-	/* Sort so duplicates are adjacent. */
+	/* Sort by (term, pos) so duplicates are adjacent and positions ascend. */
 	if (nraw > 1)
 		qsort(raw, nraw, sizeof(RawTerm), cmp_rawterm);
 
-	/* Second pass: fold duplicates, counting term frequency. */
+	/* Second pass: fold duplicates, recording tf and positions. */
 	{
 		int			ndistinct = 0;
 		Size		lexbytes = 0;
+		int			npos = nraw;	/* one position per token */
 		FtsDoc		doc;
+		Size		posbase;
 		Size		total;
 		FtsTermEntry *entries;
 		char	   *lexemes;
+		uint32	   *positions;
 		uint32		off;
+		uint32		pidx;
+		int		   *runlen;
+		int		   *runstart;
 
+		/* identify distinct-term runs (term-only equality) */
+		runlen = (int *) palloc(Max(nraw, 1) * sizeof(int));
+		runstart = (int *) palloc(Max(nraw, 1) * sizeof(int));
 		for (i = 0; i < nraw;)
 		{
 			int			run = 1;
 
-			while (i + run < nraw &&
-				   cmp_rawterm(&raw[i], &raw[i + run]) == 0)
+			while (i + run < nraw)
+			{
+				int			min = Min(raw[i].len, raw[i + run].len);
+
+				if (raw[i].len != raw[i + run].len ||
+					memcmp(raw[i].term, raw[i + run].term, min) != 0)
+					break;
 				run++;
-			raw[i].tf = run;
+			}
+			runstart[ndistinct] = i;
+			runlen[ndistinct] = run;
 			lexbytes += raw[i].len;
-			/* compact the run down to its first element */
-			if (ndistinct != i)
-				raw[ndistinct] = raw[i];
 			ndistinct++;
 			i += run;
 		}
 
-		total = FTS_DOC_HDRSIZE +
-			(Size) ndistinct * sizeof(FtsTermEntry) + lexbytes;
+		posbase = MAXALIGN(FTS_DOC_HDRSIZE +
+						   (Size) ndistinct * sizeof(FtsTermEntry) + lexbytes);
+		total = posbase + (Size) npos * sizeof(uint32);
 		doc = (FtsDoc) palloc0(total);
 		SET_VARSIZE(doc, total);
 		doc->version = FTS_DOC_VERSION;
-		doc->flags = 0;
+		doc->flags = FTS_DOCF_POSITIONS;
 		doc->nterms = ndistinct;
 		doc->doclen = doclen;
+		doc->lexbytes = lexbytes;
 
 		entries = FTS_DOC_ENTRIES(doc);
 		lexemes = FTS_DOC_LEXEMES(doc);
+		positions = FTS_DOC_POSITIONS(doc);
 		off = 0;
+		pidx = 0;
 		for (i = 0; i < ndistinct; i++)
 		{
+			int			s = runstart[i];
+			int			k;
+
 			entries[i].off = off;
-			entries[i].len = raw[i].len;
-			entries[i].tf = raw[i].tf;
-			memcpy(lexemes + off, raw[i].term, raw[i].len);
-			off += raw[i].len;
+			entries[i].len = raw[s].len;
+			entries[i].tf = runlen[i];
+			entries[i].posoff = pidx;
+			memcpy(lexemes + off, raw[s].term, raw[s].len);
+			off += raw[s].len;
+			for (k = 0; k < runlen[i]; k++)
+				positions[pidx++] = raw[s + k].pos;
 		}
 
 		return doc;
