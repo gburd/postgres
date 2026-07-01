@@ -324,9 +324,33 @@ SELECT fts_bm25_opts(to_ftsdoc('fox'), 'fox'::ftsquery, 1000, 5.0, 1.2, 0.75, 'b
 SELECT fts_bm25_opts(to_ftsdoc('x'), 'x'::ftsquery, 10, 1.0, 1.2, 0.75, 'bogus');
 ERROR:  unknown bm25 variant "bogus"
 HINT:  Valid variants: lucene, robertson, atire, bm25+.
+-- Stage 8: highlight and snippet.
+ALTER EXTENSION pg_fts UPDATE TO '1.5';
+SELECT fts_highlight('The quick brown fox jumped', 'quick | fox'::ftsquery,
+                     '[', ']');
+         fts_highlight          
+--------------------------------
+ The [quick] brown [fox] jumped
+(1 row)
+
+SELECT fts_snippet(
+  'lorem ipsum dolor the quick brown fox jumps over the lazy dog etcetera etc',
+  'quick & fox'::ftsquery, '<', '>', '...', 6);
+                fts_snippet                
+-------------------------------------------
+ ...ipsum dolor the <quick> brown <fox>...
+(1 row)
+
+-- no match: highlight returns the text unchanged
+SELECT fts_highlight('nothing here matches', 'zebra'::ftsquery, '[', ']');
+    fts_highlight     
+----------------------
+ nothing here matches
+(1 row)
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
-ERROR:  extension "pg_fts" has no update path from version "1.4" to version "1.3"
+ERROR:  extension "pg_fts" has no update path from version "1.5" to version "1.3"
 CREATE TABLE idxdocs (id serial, d ftsdoc);
 INSERT INTO idxdocs (d) VALUES
   (to_ftsdoc('the quick brown fox')),

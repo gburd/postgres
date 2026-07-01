@@ -119,6 +119,16 @@ SELECT fts_bm25_opts(to_ftsdoc('fox'), 'fox'::ftsquery, 1000, 5.0, 1.2, 0.75, 'b
 -- unknown variant errors
 SELECT fts_bm25_opts(to_ftsdoc('x'), 'x'::ftsquery, 10, 1.0, 1.2, 0.75, 'bogus');
 
+-- Stage 8: highlight and snippet.
+ALTER EXTENSION pg_fts UPDATE TO '1.5';
+SELECT fts_highlight('The quick brown fox jumped', 'quick | fox'::ftsquery,
+                     '[', ']');
+SELECT fts_snippet(
+  'lorem ipsum dolor the quick brown fox jumps over the lazy dog etcetera etc',
+  'quick & fox'::ftsquery, '<', '>', '...', 6);
+-- no match: highlight returns the text unchanged
+SELECT fts_highlight('nothing here matches', 'zebra'::ftsquery, '[', ']');
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 
