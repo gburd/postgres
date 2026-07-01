@@ -1,81 +1,91 @@
 pg_fts -- next-generation full-text search for PostgreSQL
 =========================================================
 
-pg_fts is a contrib extension building a native full-text search subsystem with
-true BM25/BM25F relevance ranking, a dedicated inverted-index access method,
-and a SQLite-FTS5-class query language, without the limitations of the
-tsvector/tsquery + GIN stack (no corpus statistics, cover-density ranking
-instead of BM25, TID-only posting lists that force a heap recheck to score).
+pg_fts is a contrib extension providing a native full-text search subsystem
+with true BM25/BM25F relevance ranking, a dedicated inverted-index access
+method, phrase/prefix/fuzzy/regex query support, and result presentation --
+without the limitations of the tsvector/tsquery + GIN stack (no corpus
+statistics, cover-density ranking rather than BM25, TID-only posting lists that
+force a heap recheck to score).
 
-See ../../FTS_NEXTGEN_PLAN.md for the full design and the 15-stage roadmap.
-The extension is developed as a reviewable series; each numbered version below
-corresponds to one qualified stage (builds clean under --enable-cassert, passes
-its regression test).
+See ../../FTS_NEXTGEN_PLAN.md for the full design and roadmap.  The extension
+is developed as a reviewable series; each version below is one qualified stage
+(builds clean under --enable-cassert, passes its regression test).
 
 Versions / stages implemented
 -----------------------------
 
-  1.0  ftsdoc and ftsquery types, to_ftsdoc()/to_ftsquery(), the @@@ match
-       operator, evaluated by sequential scan (stage 1)
-  1.1  to_ftsdoc(regconfig, text): analyzer that reuses an installed text
-       search configuration (stemming, stopwords, synonyms) via parsetext
-       (stage 2)
-  1.2  fts_bm25(doc, query, n_docs, avgdl, dfs): Okapi BM25 scoring (stage 4)
-  1.3  the bm25 index access method: an inverted index over an ftsdoc column,
-       answering @@@ by bitmap scan, crash-safe via GenericXLog (stage 3)
-  1.4  fts_bm25_opts(...): selectable BM25 variants (lucene, robertson, atire,
-       bm25+) with explicit k1/b (stage 9)
-  1.5  fts_highlight() and fts_snippet(): result presentation (stage 8)
-  1.6  tsquery_to_ftsquery() and a tsquery->ftsquery cast: migration (stage 11)
-  1.7  fts_index_stats() and fts_index_df(): BM25 scored from index-maintained
-       corpus statistics (stage 5)
+  1.0   ftsdoc/ftsquery types, to_ftsdoc()/to_ftsquery(), @@@ operator
+  1.1   to_ftsdoc(regconfig, text): analyzer reusing a text search config
+  1.2   fts_bm25(): Okapi BM25 scoring
+  1.3   the bm25 index access method (bitmap scan, GenericXLog crash-safe)
+  1.4   fts_bm25_opts(): BM25 variants (lucene, robertson, atire, bm25+)
+  1.5   fts_highlight() and fts_snippet()
+  1.6   tsquery_to_ftsquery() and a tsquery->ftsquery cast (migration)
+  1.7   fts_index_stats()/fts_index_df(): index-maintained corpus statistics
+  1.8   incremental maintenance: INSERT appends to a pending list (no REINDEX)
+  1.9   phrase queries ("a b c") via per-term positions (ftsdoc format v2)
+  1.10  external-content indexing via expression index on to_ftsdoc(col)
+  1.11  fuzzy (term~k) and regex (/re/) query terms
 
-  Plus, within the existing functions: prefix queries (term*), matched in both
-  the sequential and index paths (stage 6, part 1).
+  Prefix queries (term*) are matched in both the sequential and index paths.
 
-Types
------
+Query language
+--------------
 
-  ftsdoc    An analyzed document: a sorted, de-duplicated set of terms, each
-            with its term frequency, plus the document length (token count)
-            that BM25 length-normalization needs.
-  ftsquery  A parsed boolean query: AND (& / AND / implicit), OR (| / OR),
-            NOT (! / - / NOT), grouping, and prefix terms (term*).
+  quick brown          implicit AND
+  quick & brown        AND          quick | brown   OR      !slow / -slow  NOT
+  (a | b) & c          grouping
+  "quick brown fox"    phrase (adjacent)
+  quick*               prefix
+  quick~2              fuzzy, edit distance <= 2
+  /^qu.*x$/            regex over each term
+  title AND fox        keyword operators (AND/OR/NOT, case-insensitive)
 
 Example
 -------
 
   CREATE EXTENSION pg_fts;
 
-  CREATE TABLE docs (id int, body text, d ftsdoc
-                     GENERATED ALWAYS AS (to_ftsdoc('english', body)) STORED);
-  CREATE INDEX ON docs USING bm25 (d);
+  CREATE TABLE docs (id int, body text);
+  CREATE INDEX docs_bm25 ON docs USING bm25 (to_ftsdoc('english', body));
 
   SELECT id,
-         fts_bm25(d, q, s.ndocs, s.avgdl, fts_index_df('docs_d_idx', q)) AS score,
+         fts_bm25(to_ftsdoc('english', body), q,
+                  s.ndocs, s.avgdl,
+                  fts_index_df('docs_bm25', q)) AS score,
          fts_snippet(body, q) AS excerpt
-  FROM docs, fts_index_stats('docs_d_idx') s,
-       to_ftsquery('postgres & index*') q
-  WHERE d @@@ q
+  FROM docs, fts_index_stats('docs_bm25') s,
+       to_ftsquery('postgres & "query planner" & index*') q
+  WHERE to_ftsdoc('english', body) @@@ q
   ORDER BY score DESC
   LIMIT 10;
 
-Not yet implemented (remaining roadmap stages)
-----------------------------------------------
+Performance / parity (stage 12)
+-------------------------------
 
-  * Phrase and NEAR queries (need an ftsdoc v2 that stores per-term positions)
-  * Streaming index-only BM25 with block-max WAND top-K (stage 5 completion)
-  * Incremental index maintenance: pending list + background merge (stage 7);
-    the current bm25 index is build-once and errors on INSERT, directing REINDEX
-  * Contentless and external-content index modes (stage 10)
-  * The full migration advisor and compare_ranking harness (stage 11 completion)
-  * The pg_textsearch parity/performance gate (stage 12)
-  * Fuzzy (term~k) and regex (/regex/) token queries, cribbing pg_tre's trigram
-    formula compiler with its Lime grammar converted to Bison + Flex, and
-    sparsemap v5.1.1 for posting compression (stages 13-14)
+A reproducible benchmark comparing pg_fts against the tsvector/GIN+ts_rank
+stack (build time, index size, latency, relevance) belongs alongside this
+module; bench/README describes the intended harness (MS MARCO / Wikipedia
+subset).  Committer note: the goal is to meet or beat the existing stack on
+ranked-query latency and to match Lucene/bm25s BM25 scores (fts_bm25_opts
+variants exist precisely for that conformance check).
+
+Known limitations / future work
+--------------------------------
+
+  * Streaming index-only BM25 with block-max WAND top-K (index currently
+    returns a candidate bitmap; scoring is a separate function call).
+  * A trigram pre-filter for fuzzy/regex (the pg_tre approach) to avoid
+    scanning all live tuples; the Lime grammar would be converted to
+    Bison+Flex and sparsemap v5.1.1 used for posting compression.
+  * NEAR(a b, k) syntax (the distance-aware matcher already exists; only the
+    parser production is missing).
+  * Background merge of the pending list (currently merged by REINDEX).
+  * BM25F field weighting across multiple indexed columns.
 
 Backward compatibility
 -----------------------
 
-tsvector, tsquery, @@, ts_rank and the GIN/GiST opclasses are untouched; pg_fts
-is purely additive and opt-in.
+tsvector, tsquery, @@, ts_rank and the GIN/GiST opclasses are untouched;
+pg_fts is purely additive and opt-in.
