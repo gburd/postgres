@@ -294,3 +294,134 @@ fts_bm25_opts(PG_FUNCTION_ARGS)
 	PG_FREE_IF_COPY(q, 1);
 	PG_RETURN_FLOAT8(score);
 }
+
+#include "utils/array.h"
+#include "utils/lsyscache.h"
+
+/*
+ * BM25F: multi-field BM25.  Per-field term frequencies are length-normalized
+ * per field and combined with per-field weights *before* the tf-saturation
+ * step, which is the Robertson/Zaragoza BM25F formulation (not a naive sum of
+ * per-field BM25 scores):
+ *
+ *   tf~(t)      = sum_f w_f * f(t,D,f) / (1 - b + b * |D|_f / avgdl_f)
+ *   score(D,Q)  = sum_t IDF(t) * tf~(t) * (k1+1) / (k1 + tf~(t))
+ *
+ * Inputs are parallel arrays over fields: one ftsdoc per field, one weight per
+ * field, one avgdl per field.  IDF uses the summed df across fields (dfs is one
+ * value per distinct query term, as with fts_bm25).
+ */
+PG_FUNCTION_INFO_V1(fts_bm25f);
+
+Datum
+fts_bm25f(PG_FUNCTION_ARGS)
+{
+	ArrayType  *docsarr;
+	FtsQuery	q;
+	ArrayType  *warr;
+	double		N;
+	ArrayType  *avgdlarr;
+	ArrayType  *dfsarr = NULL;
+	Datum	   *docd;
+	bool	   *docnull;
+	int			nfields;
+	Datum	   *wd;
+	bool	   *wnull;
+	int			nw;
+	Datum	   *avgd;
+	bool	   *avgnull;
+	int			navg;
+	double	   *dfs = NULL;
+	int			ndfs = 0;
+	const char **terms;
+	int		   *lens;
+	int			nterms;
+	double		k1 = BM25_DEFAULT_K1;
+	double		b = BM25_DEFAULT_B;
+	double		score = 0.0;
+	int			f,
+				t;
+
+	if (PG_ARGISNULL(0) || PG_ARGISNULL(1) || PG_ARGISNULL(2) ||
+		PG_ARGISNULL(3) || PG_ARGISNULL(4))
+		PG_RETURN_NULL();
+
+	docsarr = PG_GETARG_ARRAYTYPE_P(0);
+	q = PG_GETARG_FTSQUERY(1);
+	warr = PG_GETARG_ARRAYTYPE_P(2);
+	N = PG_GETARG_FLOAT8(3);
+	avgdlarr = PG_GETARG_ARRAYTYPE_P(4);
+
+	if (N < 1.0)
+		N = 1.0;
+
+	deconstruct_array(docsarr, ARR_ELEMTYPE(docsarr),
+					  -1, false, 'i', &docd, &docnull, &nfields);
+	if (ARR_ELEMTYPE(warr) != FLOAT8OID || ARR_ELEMTYPE(avgdlarr) != FLOAT8OID)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				 errmsg("weights and avgdls must be float8[]")));
+	deconstruct_array(warr, FLOAT8OID, 8, true, 'd', &wd, &wnull, &nw);
+	deconstruct_array(avgdlarr, FLOAT8OID, 8, true, 'd', &avgd, &avgnull, &navg);
+
+	if (nw != nfields || navg != nfields)
+		ereport(ERROR,
+				(errcode(ERRCODE_ARRAY_SUBSCRIPT_ERROR),
+				 errmsg("docs, weights and avgdls must have the same length")));
+
+	if (!PG_ARGISNULL(5))
+	{
+		Datum	   *de;
+		bool	   *dn;
+		int			i;
+
+		dfsarr = PG_GETARG_ARRAYTYPE_P(5);
+		if (ARR_ELEMTYPE(dfsarr) != FLOAT8OID)
+			ereport(ERROR,
+					(errcode(ERRCODE_DATATYPE_MISMATCH),
+					 errmsg("dfs array must be float8[]")));
+		deconstruct_array(dfsarr, FLOAT8OID, 8, true, 'd', &de, &dn, &ndfs);
+		dfs = (double *) palloc(ndfs * sizeof(double));
+		for (i = 0; i < ndfs; i++)
+			dfs[i] = dn[i] ? 1.0 : DatumGetFloat8(de[i]);
+	}
+
+	nterms = query_terms(q, &terms, &lens);
+
+	for (t = 0; t < nterms; t++)
+	{
+		double		tfw = 0.0;	/* weighted, length-normalized tf across fields */
+		double		df = (dfs != NULL && t < ndfs) ? dfs[t] : 1.0;
+		double		idf;
+
+		for (f = 0; f < nfields; f++)
+		{
+			FtsDoc		doc;
+			FtsTermEntry *e;
+			double		avgdl = avgnull[f] ? 1.0 : DatumGetFloat8(avgd[f]);
+			double		w = wnull[f] ? 1.0 : DatumGetFloat8(wd[f]);
+			double		dl;
+
+			if (docnull[f])
+				continue;
+			doc = (FtsDoc) PG_DETOAST_DATUM(docd[f]);
+			dl = (double) doc->doclen;
+			if (avgdl <= 0.0)
+				avgdl = 1.0;
+			e = fts_doc_lookup(doc, terms[t], lens[t]);
+			if (e == NULL)
+				continue;
+			tfw += w * (double) e->tf / (1.0 - b + b * dl / avgdl);
+		}
+
+		if (tfw <= 0.0)
+			continue;
+		idf = bm25_idf(BM25_LUCENE, N, df);
+		score += idf * tfw * (k1 + 1.0) / (k1 + tfw);
+	}
+
+	pfree(terms);
+	pfree(lens);
+	PG_FREE_IF_COPY(q, 1);
+	PG_RETURN_FLOAT8(score);
+}

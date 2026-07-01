@@ -272,6 +272,25 @@ SELECT id FROM fz WHERE d @@@ '/^qu/'::ftsquery ORDER BY id;      -- 1 and 2
 RESET enable_seqscan;
 DROP TABLE fz;
 
+-- BM25F: multi-field weighting.
+ALTER EXTENSION pg_fts UPDATE TO '1.12';
+-- a term in the (heavily weighted) title scores higher than the same term in
+-- only the body
+SELECT fts_bm25f(ARRAY[to_ftsdoc('postgres'), to_ftsdoc('other text here')],
+                'postgres'::ftsquery, ARRAY[5.0, 1.0], 1000, ARRAY[2.0, 3.0], ARRAY[10.0])
+     > fts_bm25f(ARRAY[to_ftsdoc('other title'), to_ftsdoc('postgres here')],
+                'postgres'::ftsquery, ARRAY[5.0, 1.0], 1000, ARRAY[2.0, 3.0], ARRAY[10.0])
+       AS title_weight_wins;
+-- absent term scores 0
+SELECT fts_bm25f(ARRAY[to_ftsdoc('a'), to_ftsdoc('b')],
+                'zebra'::ftsquery, ARRAY[2.0, 1.0], 100, ARRAY[1.0, 1.0]) AS absent_zero;
+-- a match in either field contributes
+SELECT fts_bm25f(ARRAY[to_ftsdoc('nothing'), to_ftsdoc('found fox')],
+                'fox'::ftsquery, ARRAY[2.0, 1.0], 100, ARRAY[2.0, 2.0], ARRAY[5.0]) > 0
+       AS body_match_scores;
+-- mismatched array lengths error
+SELECT fts_bm25f(ARRAY[to_ftsdoc('a')], 'a'::ftsquery, ARRAY[1.0,2.0], 10, ARRAY[1.0]);
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 
