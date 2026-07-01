@@ -35,6 +35,9 @@ typedef struct BM25PageOpaqueData
 	uint16		flags;
 	uint16		unused;
 	BlockNumber nextblk;		/* next page in a dict/posting/pending chain */
+	uint32		block_max_tf;	/* max tf on this posting page (block-max WAND) */
+	uint32		first_docid_hi; /* high 32 bits of first docid on page */
+	uint32		first_docid_lo; /* low 32 bits (for skip decisions) */
 } BM25PageOpaqueData;
 
 typedef BM25PageOpaqueData *BM25PageOpaque;

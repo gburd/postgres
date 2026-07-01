@@ -375,6 +375,28 @@ SELECT count(*) AS after_merge
 FROM fts_search('cmp_bm25', 'common'::ftsquery, 2000) r JOIN cmp c ON c.ctid = r.ctid;
 DROP TABLE cmp;
 
+-- WAND top-k: multi-term query returns correct top-k in descending score.
+CREATE TABLE wnd (id serial, d ftsdoc);
+INSERT INTO wnd (d) VALUES
+  (to_ftsdoc('alpha alpha alpha beta')),   -- high alpha tf
+  (to_ftsdoc('alpha beta beta beta')),     -- high beta tf
+  (to_ftsdoc('alpha beta')),               -- both, low tf
+  (to_ftsdoc('gamma only')),               -- neither
+  (to_ftsdoc('alpha')),                    -- alpha only
+  (to_ftsdoc('beta'));                     -- beta only
+CREATE INDEX wnd_bm25 ON wnd USING bm25 (d);
+-- top-2 for 'alpha | beta': the two docs matching both terms should lead
+SELECT w.id
+FROM fts_search('wnd_bm25', 'alpha | beta'::ftsquery, 3) r
+JOIN wnd w ON w.ctid = r.ctid
+ORDER BY r.score DESC, w.id;
+-- scores are monotonically non-increasing (WAND returns them sorted)
+SELECT bool_and(s >= lead_s) AS descending
+FROM (SELECT r.score AS s, lead(r.score) OVER (ORDER BY r.score DESC) AS lead_s
+      FROM fts_search('wnd_bm25', 'alpha | beta'::ftsquery, 10) r) q
+WHERE lead_s IS NOT NULL;
+DROP TABLE wnd;
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 

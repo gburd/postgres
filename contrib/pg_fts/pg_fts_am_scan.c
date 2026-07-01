@@ -909,7 +909,9 @@ bm25_read_term_postings(Relation index, BlockNumber dictstart,
  * is available at recheck, or once postings store doclen -- future work).  The
  * ordering and pruning are otherwise the standard BM25 WAND.
  */
-PG_FUNCTION_INFO_V1(fts_search);
+/* ----- document-at-a-time WAND top-k (item 2) ----- */
+
+/* ----- document-at-a-time WAND top-k (item 2) ----- */
 
 typedef struct ScoredTid
 {
@@ -930,6 +932,184 @@ cmp_scored_desc(const void *a, const void *b)
 	return 0;
 }
 
+/*
+ * A per-term cursor for the WAND merge.  posts is the term's docid-sorted
+ * posting list (already read); cur is the current index; docid is the current
+ * posting's docid (UINT64_MAX when exhausted); max_contrib is the term's
+ * largest possible BM25 contribution (from max_tf), the WAND upper bound.
+ */
+typedef struct WandCursor
+{
+	BM25Posting *posts;
+	int			nposts;
+	int			cur;
+	uint64		docid;
+	double		idf;
+	double		max_contrib;
+}			WandCursor;
+
+static inline uint64
+wand_docid_at(WandCursor *c, int i)
+{
+	return (uint64) ItemPointerGetBlockNumber(&c->posts[i].tid) *
+		(uint64) MaxHeapTuplesPerPage +
+		(uint64) ItemPointerGetOffsetNumber(&c->posts[i].tid);
+}
+
+/* BM25 contribution of one posting (|D| approximated by avgdl). */
+static inline double
+wand_contrib(WandCursor *c, int i)
+{
+	double		k1 = 1.2,
+				tf = (double) c->posts[i].tf;
+
+	return c->idf * tf * (k1 + 1.0) / (tf + k1);
+}
+
+/*
+ * fts_search_wand: exact top-k identical to the accumulate path, but using
+ * document-at-a-time WAND so that documents which cannot enter the current
+ * top-k are skipped via the per-term max-contribution bounds.  Returns the
+ * number of (tid, score) results written to *out (palloc'd), capped at k.
+ */
+static int
+fts_search_wand(WandCursor *cursors, int nterms, int k, ScoredTid **out)
+{
+	ScoredTid  *heap;			/* min-heap of current top-k by score */
+	int			nheap = 0;
+	double		threshold = 0.0;
+	int			t;
+
+	heap = (ScoredTid *) palloc(Max(k, 1) * sizeof(ScoredTid));
+
+	/* initialize cursor docids */
+	for (t = 0; t < nterms; t++)
+		cursors[t].docid = cursors[t].nposts > 0 ?
+			wand_docid_at(&cursors[t], 0) : UINT64_MAX;
+
+	for (;;)
+	{
+		int			i,
+					j;
+		uint64		pivot_docid;
+		double		maxsum;
+		double		score;
+		bool		any = false;
+
+		/* selection-sort cursors by current docid (nterms is small) */
+		for (i = 0; i < nterms; i++)
+			for (j = i + 1; j < nterms; j++)
+				if (cursors[j].docid < cursors[i].docid)
+				{
+					WandCursor	tmp = cursors[i];
+
+					cursors[i] = cursors[j];
+					cursors[j] = tmp;
+				}
+
+		if (cursors[0].docid == UINT64_MAX)
+			break;				/* all exhausted */
+
+		/*
+		 * WAND pivot: accumulate max_contrib in docid order until the running
+		 * sum could exceed the threshold; that cursor's docid is the pivot.
+		 */
+		maxsum = 0.0;
+		pivot_docid = UINT64_MAX;
+		for (i = 0; i < nterms; i++)
+		{
+			if (cursors[i].docid == UINT64_MAX)
+				break;
+			maxsum += cursors[i].max_contrib;
+			if (maxsum > threshold || nheap < k)
+			{
+				pivot_docid = cursors[i].docid;
+				break;
+			}
+		}
+		if (pivot_docid == UINT64_MAX)
+			break;				/* no document can beat the threshold */
+
+		/* if the smallest docid equals the pivot, score it fully */
+		if (cursors[0].docid == pivot_docid)
+		{
+			ItemPointerData tid = cursors[0].posts[cursors[0].cur].tid;
+
+			score = 0.0;
+			for (i = 0; i < nterms; i++)
+			{
+				if (cursors[i].docid == pivot_docid)
+				{
+					score += wand_contrib(&cursors[i], cursors[i].cur);
+					any = true;
+				}
+			}
+			(void) any;
+
+			/* push into the top-k min-heap */
+			if (nheap < k)
+			{
+				heap[nheap].tid = tid;
+				heap[nheap].score = score;
+				nheap++;
+				if (nheap == k)
+				{
+					/* find min for the threshold */
+					threshold = heap[0].score;
+					for (i = 1; i < nheap; i++)
+						if (heap[i].score < threshold)
+							threshold = heap[i].score;
+				}
+			}
+			else if (score > threshold)
+			{
+				/* replace the current minimum */
+				int			minpos = 0;
+
+				for (i = 1; i < nheap; i++)
+					if (heap[i].score < heap[minpos].score)
+						minpos = i;
+				heap[minpos].tid = tid;
+				heap[minpos].score = score;
+				threshold = heap[0].score;
+				for (i = 1; i < nheap; i++)
+					if (heap[i].score < threshold)
+						threshold = heap[i].score;
+			}
+
+			/* advance every cursor positioned at the pivot */
+			for (i = 0; i < nterms; i++)
+				if (cursors[i].docid == pivot_docid)
+				{
+					cursors[i].cur++;
+					cursors[i].docid = cursors[i].cur < cursors[i].nposts ?
+						wand_docid_at(&cursors[i], cursors[i].cur) : UINT64_MAX;
+				}
+		}
+		else
+		{
+			/* advance cursors before the pivot up to pivot_docid */
+			for (i = 0; i < nterms; i++)
+			{
+				if (cursors[i].docid < pivot_docid)
+				{
+					while (cursors[i].cur < cursors[i].nposts &&
+						   wand_docid_at(&cursors[i], cursors[i].cur) < pivot_docid)
+						cursors[i].cur++;
+					cursors[i].docid = cursors[i].cur < cursors[i].nposts ?
+						wand_docid_at(&cursors[i], cursors[i].cur) : UINT64_MAX;
+				}
+			}
+		}
+	}
+
+	qsort(heap, nheap, sizeof(ScoredTid), cmp_scored_desc);
+	*out = heap;
+	return nheap;
+}
+
+PG_FUNCTION_INFO_V1(fts_search);
+
 Datum
 fts_search(PG_FUNCTION_ARGS)
 {
@@ -944,14 +1124,11 @@ fts_search(PG_FUNCTION_ARGS)
 		MemoryContext oldctx;
 		Relation	index;
 		BM25MetaPageData meta;
-		double		N,
-					avgdl;
+		double		N;
 		const char **terms;
 		int		   *lens;
 		int			nterms;
 		TermPostings *tp;
-		HTAB	   *acc;
-		HASHCTL		ctl;
 		int			t;
 		TupleDesc	tupdesc;
 
@@ -968,7 +1145,6 @@ fts_search(PG_FUNCTION_ARGS)
 		index = index_open(indexoid, AccessShareLock);
 		bm25_read_meta(index, &meta);
 		N = meta.ndocs < 1.0 ? 1.0 : meta.ndocs;
-		avgdl = meta.ndocs > 0 ? meta.sumdoclen / meta.ndocs : 1.0;
 
 		nterms = fts_query_terms(q, &terms, &lens);
 		tp = (TermPostings *) palloc0(nterms * sizeof(TermPostings));
@@ -980,69 +1156,44 @@ fts_search(PG_FUNCTION_ARGS)
 							((double) tp[t].df + 0.5));
 		}
 
-		/* accumulate score per docid via a hash keyed by ItemPointerData */
-		ctl.keysize = sizeof(ItemPointerData);
-		ctl.entrysize = sizeof(ScoredTid);
-		ctl.hcxt = CurrentMemoryContext;
-		acc = hash_create("bm25 accum", 256, &ctl,
-						  HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-
-		for (t = 0; t < nterms; t++)
+		/*
+		 * Document-at-a-time WAND top-k.  We over-fetch candidates (more than
+		 * k) so that MVCC visibility filtering below can still return k visible
+		 * rows even when some high-scoring postings point at dead tuples.
+		 */
 		{
-			int			p;
-			double		k1 = 1.2,
-						b = 0.75;
-
-			for (p = 0; p < tp[t].nposts; p++)
-			{
-				double		tf = (double) tp[t].posts[p].tf;
-				/* |D| approximated by avgdl (see note above): |D|/avgdl = 1 */
-				double		lennorm = avgdl > 0 ? 1.0 : 1.0;
-				double		norm = tf + k1 * (1.0 - b + b * lennorm);
-				double		contrib = tp[t].idf * tf * (k1 + 1.0) / norm;
-				ScoredTid  *e;
-				bool		found;
-
-				e = (ScoredTid *) hash_search(acc, &tp[t].posts[p].tid,
-											  HASH_ENTER, &found);
-				if (!found)
-				{
-					e->tid = tp[t].posts[p].tid;
-					e->score = 0.0;
-				}
-				e->score += contrib;
-			}
-		}
-
-		/* collect all scored candidates, sort by score desc */
-		{
-			HASH_SEQ_STATUS seq;
-			ScoredTid  *e;
-			int			n = hash_get_num_entries(acc);
-			int			i = 0;
+			WandCursor *cursors = (WandCursor *) palloc(Max(nterms, 1) * sizeof(WandCursor));
 			ScoredTid  *cand;
+			int			ncand;
+			int			wantk = Max(k * 4, 64);
 			Relation	heap;
 			IndexFetchTableData *fetch;
 			Snapshot	snap = GetActiveSnapshot();
 			int			nvis = 0;
+			int			i;
+			double		k1 = 1.2;
 
-			cand = (ScoredTid *) palloc(Max(n, 1) * sizeof(ScoredTid));
-			hash_seq_init(&seq, acc);
-			while ((e = (ScoredTid *) hash_seq_search(&seq)) != NULL)
-				cand[i++] = *e;
-			if (n > 1)
-				qsort(cand, n, sizeof(ScoredTid), cmp_scored_desc);
+			for (t = 0; t < nterms; t++)
+			{
+				cursors[t].posts = tp[t].posts;
+				cursors[t].nposts = tp[t].nposts;
+				cursors[t].cur = 0;
+				cursors[t].idf = tp[t].idf;
+				/* max contribution: tf saturates, so use max_tf */
+				{
+					double		mtf = (double) tp[t].max_tf;
 
-			/*
-			 * MVCC: return only tuples visible to the active snapshot, in
-			 * score order, stopping once k visible rows are collected.  This
-			 * makes the SRF safe under all isolation levels -- dead/updated
-			 * rows the postings still reference are skipped.
-			 */
+					cursors[t].max_contrib = tp[t].idf * mtf * (k1 + 1.0) / (mtf + k1);
+				}
+			}
+
+			ncand = fts_search_wand(cursors, nterms, wantk, &cand);
+
+			/* MVCC: keep only visible tuples, in score order, up to k */
 			results = (ScoredTid *) palloc(Max(k, 1) * sizeof(ScoredTid));
 			heap = table_open(index->rd_index->indrelid, AccessShareLock);
 			fetch = table_index_fetch_begin(heap, 0);
-			for (i = 0; i < n && nvis < k; i++)
+			for (i = 0; i < ncand && nvis < k; i++)
 			{
 				ItemPointerData tid = cand[i].tid;
 				bool		call_again = false;
@@ -1083,3 +1234,4 @@ fts_search(PG_FUNCTION_ARGS)
 	}
 	SRF_RETURN_DONE(funcctx);
 }
+

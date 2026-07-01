@@ -404,6 +404,8 @@ bm25_write_postings(Relation index, BuildTerm *bt)
 	BM25PostingPageHdr *hdr = NULL;
 	unsigned char *streamptr = NULL;
 	int			pagecount = 0;
+	uint32		page_max_tf = 0;
+	uint64		page_first_docid = 0;
 
 	/* sort this term's postings by docid for delta encoding */
 	sorted = (BM25PostingSort *) palloc(Max(bt->nposts, 1) * sizeof(BM25PostingSort));
@@ -450,12 +452,16 @@ bm25_write_postings(Relation index, BuildTerm *bt)
 			/* page full: finalize pd_lower, chain a new page */
 			Buffer		next;
 			BlockNumber nextblk;
+			BM25PageOpaque op = BM25PageGetOpaque(page);
 
 			hdr->count = pagecount;
+			op->block_max_tf = page_max_tf;
+			op->first_docid_hi = (uint32) (page_first_docid >> 32);
+			op->first_docid_lo = (uint32) (page_first_docid & 0xFFFFFFFF);
 			((PageHeader) page)->pd_lower = (char *) streamptr - (char *) page;
 			next = bm25_new_buffer(index);
 			nextblk = BufferGetBlockNumber(next);
-			BM25PageGetOpaque(page)->nextblk = nextblk;
+			op->nextblk = nextblk;
 			GenericXLogFinish(state);
 			UnlockReleaseBuffer(buffer);
 			buffer = next;
@@ -467,11 +473,17 @@ bm25_write_postings(Relation index, BuildTerm *bt)
 			streamptr = (unsigned char *) (hdr + 1);
 			prev_docid = 0;
 			pagecount = 0;
+			page_max_tf = 0;
+			page_first_docid = 0;
 			continue;			/* retry this posting on the fresh page */
 		}
 
 		memcpy(streamptr, tmp, enclen);
 		streamptr += enclen;
+		if (pagecount == 0)
+			page_first_docid = sorted[i].docid;
+		if (sorted[i].tf > page_max_tf)
+			page_max_tf = sorted[i].tf;
 		prev_docid = sorted[i].docid;
 		pagecount++;
 		i++;
@@ -479,7 +491,12 @@ bm25_write_postings(Relation index, BuildTerm *bt)
 
 	if (buffer != InvalidBuffer)
 	{
+		BM25PageOpaque op = BM25PageGetOpaque(page);
+
 		hdr->count = pagecount;
+		op->block_max_tf = page_max_tf;
+		op->first_docid_hi = (uint32) (page_first_docid >> 32);
+		op->first_docid_lo = (uint32) (page_first_docid & 0xFFFFFFFF);
 		((PageHeader) page)->pd_lower = (char *) streamptr - (char *) page;
 		GenericXLogFinish(state);
 		UnlockReleaseBuffer(buffer);
