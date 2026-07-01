@@ -425,6 +425,25 @@ SELECT to_ftsdoc('the quick brown red fox jumps') @@@ 'NEAR(quick fox, 3) & jump
 SELECT 'NEAR(onlyone, 2)'::ftsquery;
 SELECT to_ftsdoc('a b c') @@@ 'NEAR(a c)'::ftsquery AS near_default_k;
 
+-- FSM page recycling: repeated merges reuse freed blocks (no unbounded growth).
+CREATE TABLE recyc (id serial, d ftsdoc);
+INSERT INTO recyc (d) SELECT to_ftsdoc('term' || (g % 50)) FROM generate_series(1, 500) g;
+CREATE INDEX recyc_bm25 ON recyc USING bm25 (d);
+-- churn: insert + merge several times; each merge frees the old blocks
+DO $$
+BEGIN
+  FOR i IN 1..5 LOOP
+    INSERT INTO recyc (d) SELECT to_ftsdoc('term' || (g % 50)) FROM generate_series(1, 200) g;
+    PERFORM fts_merge('recyc_bm25');
+  END LOOP;
+END $$;
+-- after churn the index is still correct
+SELECT count(*) > 0 AS still_matches
+FROM fts_search('recyc_bm25', 'term1'::ftsquery, 5000) r JOIN recyc x ON x.ctid = r.ctid;
+-- size stays bounded relative to the data (freed blocks are recycled, not leaked)
+SELECT pg_relation_size('recyc_bm25') < 400 * 8192 AS size_bounded;
+DROP TABLE recyc;
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 

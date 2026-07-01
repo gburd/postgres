@@ -321,8 +321,23 @@ bm25_page_decode(Page page, BM25Posting **out)
 static Buffer
 bm25_new_buffer(Relation index)
 {
-	Buffer		buffer = ReadBuffer(index, P_NEW);
+	Buffer		buffer;
 
+	/* Try to reuse a page freed by a previous merge before extending. */
+	for (;;)
+	{
+		BlockNumber blk = GetFreeIndexPage(index);
+
+		if (blk == InvalidBlockNumber)
+			break;				/* no free page; extend below */
+		buffer = ReadBuffer(index, blk);
+		if (ConditionalLockBuffer(buffer))
+			return buffer;		/* got it */
+		/* someone else is using it; try the next free page */
+		ReleaseBuffer(buffer);
+	}
+
+	buffer = ReadBuffer(index, P_NEW);
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 	return buffer;
 }
@@ -967,6 +982,69 @@ bm25_merge_pending(Relation index)
 		/* ndocs / sumdoclen already include pending; leave them */
 		GenericXLogFinish(state);
 		UnlockReleaseBuffer(mb);
+	}
+
+	/*
+	 * 5. Record the now-unreferenced old blocks in the FSM so bm25_new_buffer
+	 * can reuse them, instead of leaking them until REINDEX.  We follow the
+	 * old dictionary chain (and each entry's posting chain) and the old pending
+	 * chain, freeing every block.  The metapage already points at the new
+	 * structure, so these blocks are safe to recycle.
+	 */
+	{
+		BlockNumber b = meta.dictstart;
+
+		while (b != InvalidBlockNumber)
+		{
+			Buffer		buf = ReadBuffer(index, b);
+			Page		pg;
+			char	   *ptr,
+					   *end;
+			BlockNumber next;
+
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+			pg = BufferGetPage(buf);
+			ptr = (char *) PageGetContents(pg);
+			end = (char *) pg + ((PageHeader) pg)->pd_lower;
+			next = BM25PageGetOpaque(pg)->nextblk;
+			while (ptr < end)
+			{
+				BM25DictEntry *de = (BM25DictEntry *) ptr;
+				Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
+				BlockNumber pb = de->firstposting;
+
+				while (pb != InvalidBlockNumber)
+				{
+					Buffer		pbuf = ReadBuffer(index, pb);
+					BlockNumber pnext;
+
+					LockBuffer(pbuf, BUFFER_LOCK_SHARE);
+					pnext = BM25PageGetOpaque(BufferGetPage(pbuf))->nextblk;
+					UnlockReleaseBuffer(pbuf);
+					RecordFreeIndexPage(index, pb);
+					pb = pnext;
+				}
+				ptr += esize;
+			}
+			UnlockReleaseBuffer(buf);
+			RecordFreeIndexPage(index, b);
+			b = next;
+		}
+
+		b = meta.pendinghead;
+		while (b != InvalidBlockNumber)
+		{
+			Buffer		buf = ReadBuffer(index, b);
+			BlockNumber next;
+
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+			next = BM25PageGetOpaque(BufferGetPage(buf))->nextblk;
+			UnlockReleaseBuffer(buf);
+			RecordFreeIndexPage(index, b);
+			b = next;
+		}
+
+		IndexFreeSpaceMapVacuum(index);
 	}
 
 	MemoryContextDelete(bs.ctx);
