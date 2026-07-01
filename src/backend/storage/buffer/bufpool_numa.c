@@ -59,9 +59,21 @@ int			buffer_pool_numa_nodes = 0;
  * Cached topology, computed once per process from libnuma.  num_nodes == 1
  * means "treat as non-NUMA" (single node or NUMA unavailable), in which case
  * every entry point below is a cheap no-op.
+ *
+ * numa_chunk_buffers is the number of buffers assigned as one contiguous
+ * chunk to a single NUMA node -- the SAME concept as Vondra's series
+ * (choose_chunk_buffers / numa_chunk_buffers in buf_init.c).  Buffer->node is
+ * ONE formula, (local_id / numa_chunk_buffers) % numa_nodes, used by BOTH the
+ * placement binding (BufPoolNumaDistribute) and the partitioned clock sweep
+ * (BufPoolNumaBufferRange), so placement and eviction can never disagree.
+ *
+ * When Vondra's series is applied, BufPoolBufferNode() is a thin wrapper that
+ * should defer to his BufferGetNode(); until then it computes the same result
+ * locally.  See BufPoolBufferNode().
  */
 static bool numa_topology_done = false;
 static int	numa_nodes = 1;
+static int64 numa_chunk_buffers = -1;
 
 /*
  * BufPoolNumaInit -- determine the NUMA topology for this process.
@@ -125,40 +137,90 @@ BufPoolNumaActive(void)
 }
 
 /*
- * BufPoolNumaNodeForBuffer -- which node should buffer local_id (0-based
- *		within a pool of nbuffers) live on?
+ * BufPoolNumaSetChunk -- fix the buffers-per-chunk for a pool of nbuffers.
  *
- * Buffers are split into num_nodes contiguous chunks; buffer i belongs to
- * node (i / chunk).  Contiguous chunks (rather than round-robin) keep a
- * backend's sequential access node-local and let the partitioned clock sweep
- * own a contiguous buffer range per node.
+ * Establishes the single buffer->node layout used by both placement and the
+ * partitioned clock sweep.  Mirrors Vondra's choose_chunk_buffers(): one
+ * contiguous chunk per node, so buffer i is on node
+ * (i / numa_chunk_buffers) % numa_nodes.  Called once when the default pool is
+ * set up NUMA-aware.  Returns the chunk size in buffers.
+ *
+ * We use ceil(nbuffers / nodes) -- exactly one chunk per node, the minimal
+ * chunking that keeps each node's buffers contiguous (required by the clock
+ * sweep's per-node ranges).  Vondra may grow chunks for page-alignment of
+ * descriptors; when his series is present we defer to his value via
+ * BufPoolBufferNode(), so this local value is only the standalone-arc default.
  */
-int
-BufPoolNumaNodeForBuffer(int local_id, int nbuffers)
+int64
+BufPoolNumaSetChunk(int nbuffers)
 {
 	int			nodes = BufPoolNumaNodes();
-	int			per_node;
+
+	if (nodes <= 1 || nbuffers <= 0)
+		numa_chunk_buffers = -1;
+	else
+		numa_chunk_buffers = (nbuffers + nodes - 1) / nodes;	/* ceil */
+
+	return numa_chunk_buffers;
+}
+
+/*
+ * BufPoolBufferNode -- the NUMA node that owns buffer local_id.
+ *
+ * THE single source of truth for buffer->node.  Both BufPoolNumaDistribute
+ * (physical placement) and BufPoolNumaBufferRange (clock-sweep partitioning)
+ * derive from this, so a buffer is always evicted by the same node's hand it
+ * was placed on.
+ *
+ * When Vondra's NUMA series is applied, this should return BufferGetNode()
+ * (his chunk math); until then it uses our numa_chunk_buffers, computed to the
+ * same (i / chunk) % nodes shape.
+ */
+int
+BufPoolBufferNode(int local_id, int nbuffers)
+{
+	int			nodes = BufPoolNumaNodes();
 
 	if (nodes <= 1 || nbuffers <= 0)
 		return 0;
 
-	per_node = (nbuffers + nodes - 1) / nodes;	/* ceil */
-	if (per_node <= 0)
+	/*
+	 * Deferral hook for Vondra's NUMA series: when his 0001 is applied it
+	 * defines BufferGetNode() (buffer -> node using his choose_chunk_buffers
+	 * layout).  At that point this whole body should become:
+	 *     return BufferGetNode(local_id);
+	 * guarded by #ifdef so arc still builds standalone.  We keep our own chunk
+	 * math below as the standalone default; both use the identical
+	 * (i / chunk) % nodes shape, so switching does not change semantics, only
+	 * the source of the chunk size.
+	 */
+#ifdef PG_HAVE_BUFFER_GET_NODE		/* defined once Vondra 0001 is in-tree */
+	return BufferGetNode(local_id);
+#else
+	/* Lazily fix the chunk size if a caller reached us before setup. */
+	if (numa_chunk_buffers <= 0)
+		BufPoolNumaSetChunk(nbuffers);
+	if (numa_chunk_buffers <= 0)
 		return 0;
-	return Min(local_id / per_node, nodes - 1);
+
+	return (int) ((local_id / numa_chunk_buffers) % nodes);
+#endif
 }
 
 /*
  * BufPoolNumaBufferRange -- the [start, end) buffer range owned by node.
  *
- * Inverse of BufPoolNumaNodeForBuffer, used by the partitioned clock sweep to
- * confine a node's hand to its own buffers.
+ * Derived from the shared numa_chunk_buffers layout (BufPoolBufferNode), so
+ * the clock sweep confines a node's hand to exactly the buffers that were
+ * placed on that node.  With one chunk per node this is a single contiguous
+ * run; if a future chunk scheme interleaves multiple chunks per node this
+ * returns the node's first chunk (the sweep then relies on cross-node
+ * fallback for the rest -- still correct, just less locality).
  */
 void
 BufPoolNumaBufferRange(int node, int nbuffers, int *start, int *end)
 {
 	int			nodes = BufPoolNumaNodes();
-	int			per_node;
 
 	if (nodes <= 1)
 	{
@@ -167,9 +229,11 @@ BufPoolNumaBufferRange(int node, int nbuffers, int *start, int *end)
 		return;
 	}
 
-	per_node = (nbuffers + nodes - 1) / nodes;
-	*start = node * per_node;
-	*end = Min(*start + per_node, nbuffers);
+	if (numa_chunk_buffers <= 0)
+		BufPoolNumaSetChunk(nbuffers);
+
+	*start = (int) (node * numa_chunk_buffers);
+	*end = (int) Min((Size) (*start) + numa_chunk_buffers, (Size) nbuffers);
 	if (*start > nbuffers)
 		*start = nbuffers;
 }
@@ -242,20 +306,27 @@ BufPoolNumaDistribute(char *blocks, char *descriptors, Size desc_elem_size,
 {
 #ifdef USE_LIBNUMA
 	int			nodes = BufPoolNumaNodes();
-	int			per_node;
 
 	if (nodes <= 1 || nbuffers <= 0)
 		return;
 
-	per_node = (nbuffers + nodes - 1) / nodes;
+	/* Establish the shared chunk layout used by placement AND the sweep. */
+	BufPoolNumaSetChunk(nbuffers);
 
+	/*
+	 * Bind each node's contiguous buffer range (as defined by
+	 * BufPoolNumaBufferRange, i.e. the same numa_chunk_buffers layout the clock
+	 * sweep uses) and the matching descriptor range to that node.  Placement
+	 * and eviction therefore agree by construction.
+	 */
 	for (int node = 0; node < nodes; node++)
 	{
-		int			start = node * per_node;
-		int			end = Min(start + per_node, nbuffers);
+		int			start,
+					end;
 
+		BufPoolNumaBufferRange(node, nbuffers, &start, &end);
 		if (start >= end)
-			break;
+			continue;
 
 		/* Bind this node's slice of buffer blocks. */
 		BufPoolNumaBindRange(blocks + (Size) start * BLCKSZ,

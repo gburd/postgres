@@ -403,7 +403,8 @@ extern void DetachFromPool(int pool_slot);
 extern int	BufPoolNumaInit(void);
 extern int	BufPoolNumaNodes(void);
 extern bool BufPoolNumaActive(void);
-extern int	BufPoolNumaNodeForBuffer(int local_id, int nbuffers);
+extern int64 BufPoolNumaSetChunk(int nbuffers);
+extern int	BufPoolBufferNode(int local_id, int nbuffers);
 extern void BufPoolNumaBufferRange(int node, int nbuffers, int *start, int *end);
 extern void BufPoolNumaBindRange(void *addr, Size size, int node);
 extern void BufPoolNumaDistribute(char *blocks, char *descriptors,
