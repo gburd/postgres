@@ -295,6 +295,18 @@ fts_doc_has_fuzzy(FtsDoc doc, const char *term, int termlen, int k)
 {
 	FtsTermEntry *entries = FTS_DOC_ENTRIES(doc);
 	uint32		i;
+	uint32		qtrg[FTS_MAX_TRIGRAMS];
+	int			nqtrg;
+	bool		use_trgm;
+
+	/*
+	 * Trigram pre-filter: a term within k edits of the query must share a
+	 * trigram with it, provided the query has more than k trigrams (pigeonhole).
+	 * When it does not, the filter is unsound, so we skip it and scan fully --
+	 * results stay correct, only speed varies.
+	 */
+	nqtrg = fts_trigrams(term, termlen, qtrg, FTS_MAX_TRIGRAMS);
+	use_trgm = (nqtrg > k);
 
 	for (i = 0; i < doc->nterms; i++)
 	{
@@ -305,6 +317,17 @@ fts_doc_has_fuzzy(FtsDoc doc, const char *term, int termlen, int k)
 		/* length difference alone can exceed k -> skip without computing */
 		if (abs(candlen - termlen) > k)
 			continue;
+
+		/* trigram pre-filter: skip candidates that share no trigram */
+		if (use_trgm)
+		{
+			uint32		ctrg[FTS_MAX_TRIGRAMS];
+			int			nctrg = fts_trigrams(cand, candlen, ctrg, FTS_MAX_TRIGRAMS);
+
+			if (!fts_trigrams_overlap(qtrg, nqtrg, ctrg, nctrg))
+				continue;
+		}
+
 		d = varstr_levenshtein_less_equal(term, termlen, cand, candlen,
 										  1, 1, 1, k, true);
 		if (d <= k)

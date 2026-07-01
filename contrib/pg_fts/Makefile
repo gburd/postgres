@@ -11,6 +11,7 @@ OBJS = \
 	pg_fts_am.o \
 	pg_fts_aux.o \
 	pg_fts_migrate.o \
+	pg_fts_trgm.o \
 	pg_fts_match.o
 
 EXTENSION = pg_fts
@@ -26,7 +27,8 @@ DATA = pg_fts--1.0.sql pg_fts--1.0--1.1.sql pg_fts--1.1--1.2.sql \
 	pg_fts--1.10--1.11.sql \
 	pg_fts--1.11--1.12.sql \
 	pg_fts--1.12--1.13.sql \
-	pg_fts--1.13--1.14.sql
+	pg_fts--1.13--1.14.sql \
+	pg_fts--1.14--1.15.sql
 PGFILEDESC = "pg_fts - next-generation full-text search"
 
 REGRESS = pg_fts

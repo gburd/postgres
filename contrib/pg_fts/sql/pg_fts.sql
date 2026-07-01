@@ -334,6 +334,17 @@ SELECT count(*) AS multiterm
 FROM fts_search('srch_bm25', 'quick | brown'::ftsquery, 10) r;
 DROP TABLE srch;
 
+-- Trigram pre-filter for fuzzy matching: correctness must be unchanged.
+ALTER EXTENSION pg_fts UPDATE TO '1.15';
+-- longer terms (>k trigrams) use the trigram filter
+SELECT to_ftsdoc('development environment') @@@ 'developer~3'::ftsquery AS trgm_fuzzy_hit;
+SELECT to_ftsdoc('completely unrelated words') @@@ 'developer~3'::ftsquery AS trgm_fuzzy_miss;
+-- exact-distance edge: 'running' within 2 of 'runnick'? (n->c,g->k = 2 subst)
+SELECT to_ftsdoc('the running man') @@@ 'runnink~2'::ftsquery AS edge_hit;
+-- short terms (<=k trigrams) fall back to full scan, still correct
+SELECT to_ftsdoc('cat hat bat') @@@ 'rat~1'::ftsquery AS short_hit;
+SELECT to_ftsdoc('dog log fog') @@@ 'rat~1'::ftsquery AS short_miss;
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 

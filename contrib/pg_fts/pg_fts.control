@@ -1,6 +1,6 @@
 # pg_fts extension
 comment = 'next-generation full-text search (stage 1: ftsdoc/ftsquery types and @@@ match)'
-default_version = '1.14'
+default_version = '1.15'
 module_pathname = '$libdir/pg_fts'
 relocatable = true
 trusted = true
