@@ -1167,7 +1167,7 @@ wand_load_page(WandCursor *c)
 		return;
 	}
 
-	cap = Min((int) c->df - c->nread, BM25_BLOCK_SIZE * 4);
+	cap = Min((int) c->df - c->nread, BM25_BLOCK_SIZE * 64);
 	cap = Max(cap, 1);
 	posts = (BM25Posting *) palloc(cap * sizeof(BM25Posting));
 	bmax = (uint32 *) palloc(cap * sizeof(uint32));

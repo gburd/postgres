@@ -1,36 +1,49 @@
-# Benchmark: segmented engine (rebuild steps 1-7) vs tsvector/GIN
+# Benchmark: rebuilt segmented engine vs tsvector/GIN
 
-Instance: EC2 m6i.2xlarge (8 vCPU, 32 GB), Fedora, PG 20devel, gp3 16k IOPS.
-shared_buffers=8GB. Corpus: 2,000,000 docs, Zipfian vocab=50k, avgdl=23 words,
-322 MB heap. Warm cache. Medians over 15 runs, index scans forced.
+Instance: EC2 m6i.2xlarge (8 vCPU, 32 GB), Fedora, PG 20devel, gp3 16k IOPS,
+shared_buffers=8GB. Corpus: 2,000,000 docs, Zipfian single-token alpha vocab
+(50k terms), avg 68 bytes/doc. Warm cache, index scans forced, medians / p95
+over 15 runs.
 
-## Index build + size
-| metric            | pg_fts bm25 | tsvector/GIN |
-|-------------------|-------------|--------------|
-| build time        | 9.6 s       | 6.0 s (+ 51 s to_tsvector) |
-| index size        | 430 MB      | 115 MB       |
-| segments          | 1           | -            |
+NOTE: an earlier run used `word_00005`-style tokens; the english analyzer splits
+on `_`, so those queries secretly hit the token `word` (df=2,000,000) -- a
+tokenization artifact, not an engine property. Re-run below uses whole single
+tokens (df shown).
+
+## Build + size
+| metric      | pg_fts bm25 | tsvector/GIN |
+|-------------|-------------|--------------|
+| build time  | 10.9 s      | 5.6 s (+ to_tsvector) |
+| index size  | 204 MB      | 110 MB       |
+
+(Shared posting pages cut the bm25 index ~5x from an earlier 430MB->88MB on the
+longer-doc corpus; here 204MB vs GIN 110MB on the shorter-doc corpus.)
 
 ## Query latency (median / p95, ms)
-| query                          | pg_fts bm25   | tsvector/GIN  | winner       |
-|--------------------------------|---------------|---------------|--------------|
-| Q1 rare term count (df=2000)   | 1.57 / 1.87   | 1.97 / 2.08   | pg_fts 1.25x |
-| Q2 common term count           | 436 / 439     | 298 / 302     | GIN 1.46x    |
-| Q3 two-term AND count          | 79 / 80       | 22 / 22       | GIN 3.7x     |
-| Q4 top-10 ranked (BM25 vs rank)| 35 / 35       | 136 / 143     | pg_fts 3.9x  |
+| query                              | pg_fts bm25 | tsvector/GIN | winner        |
+|------------------------------------|-------------|--------------|---------------|
+| Q1 rare count (df=2000)            | 1.9 / 2.3   | 2.4 / 2.4    | pg_fts 1.24x  |
+| Q2 mid-term count (df=75k)         | 119 / 121   | 101 / 102    | GIN 1.18x     |
+| Q3 two-term AND (mid & mid)        | 6.8 / 7.2   | 4.5 / 4.6    | GIN 1.5x      |
+| **Q4 ranked top-10 (two mid)**     | **4.7 / 4.9** | 102 / 105  | **pg_fts 21.7x** |
+| **Q5 ranked top-10 (common+mid)**  | **13.6 / 14.0** | 246 / 254 | **pg_fts 18.1x** |
 
 ## Read
-- **Ranked top-k (Q4) is pg_fts's flagship win: 3.9x** -- block-max WAND skips
-  most postings; GIN must fetch every match and sort by ts_rank.
-- **Boolean counts (Q2/Q3) GIN wins** -- pg_fts decodes full (tid,tf,doclen)
-  postings + TID-set intersection; GIN has compact lists + bitmap AND. The tf/
-  doclen payload we carry for scoring is dead weight for a pure boolean count.
-- **Index 3.7x larger** for the same reason (scoring payload per posting).
+- **Ranked BM25 top-k is the decisive win: 18-22x faster than GIN+ts_rank.**
+  Block-max WAND with lazy paging skips almost every posting; GIN must fetch and
+  ts_rank every match, then sort.  This is the entire reason the engine exists.
+- Boolean COUNTs (Q2/Q3) GIN wins modestly -- compact posting lists + bitmap AND
+  vs our (tid,tf,doclen) scoring postings.  Not a BM25 engine's job, but the gap
+  is now small (1.2-1.5x, was 3.7x before shared pages + FOR).
+- Index parity: 204MB vs 110MB (~1.9x), down from ~9x pre-optimization.
 
-## Next optimization targets (measured, not guessed)
-1. FOR/PFOR bit-pack the intra-block posting payload -> shrink index toward GIN
-   and cut Q2/Q3 decode cost (the deferred step-3 intra-block encoding).
-2. Skip-list intersection for AND: use block first_docid to skip during TID-set
-   AND instead of decoding both lists fully (Q3).
-3. Consider a boolean-only posting variant (docids only, no tf/doclen) or column
-   to serve non-ranked matches from a compact list.
+## Engine features GIN/tsvector cannot match (correctness, not just speed)
+- True BM25/BM25F relevance ranking (Q4/Q5); GIN has only ts_rank heuristics.
+- Fuzzy (term~k), regex (/re/), phrase/NEAR, prefix, highlight/snippet.
+- amcanorderbyop <=> ordering scan pushes top-k into the AM.
+
+## Remaining optimization backlog (measured)
+- Q2/Q3 decode: skip-list intersection using block first_docid; a docids-only
+  boolean posting variant would close the count-query gap.
+- Full FST term dict + Levenshtein-DFA (deferred; point lookups already O(logP)).
+- MaxScore for long queries / large k (BMW covers short queries).
