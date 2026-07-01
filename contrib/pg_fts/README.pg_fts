@@ -78,12 +78,14 @@ variants exist precisely for that conformance check).
 Known limitations / future work
 --------------------------------
 
-  * AST-tiling trigram extraction for arbitrary regexes (Navarro tiling /
-    Mihov-Schulz, as in pg_tre).  The on-disk trigram funnel today uses the
-    pattern's literal trigrams and falls back to a full scan for patterns with
-    too few, which is always correct but less selective for complex regexes.
-  * Streaming (bounded-memory) amgettuple that yields WAND results
-    incrementally rather than materializing the top-k once per scan.
+  The core roadmap is complete.  Remaining ideas are refinements, not gaps:
+
+  * A fully resumable WAND cursor (emit/suspend/resume) instead of the current
+    adaptive-k batch-with-growth.  WAND needs the top-k threshold to prune, so
+    the batch shape is natural; the adaptive-k form already bounds work to the
+    LIMIT actually requested.
+  * Richer regex trigram tiling (full Navarro (k+1)-tiling / Mihov-Schulz
+    automaton, as in pg_tre) beyond the literal-run tiling implemented here.
 
 Implemented at scale
 --------------------
