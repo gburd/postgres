@@ -78,15 +78,12 @@ variants exist precisely for that conformance check).
 Known limitations / future work
 --------------------------------
 
-  * amcanorderbyop executor path: an ORDER BY <distance-op> LIMIT k ordering
-    scan the planner drives directly.  fts_search(index, query, k) already does
-    MVCC-correct index-only block-max WAND top-k; what remains is wiring an
-    ordering operator so a plain ORDER BY score LIMIT k picks the scan without
-    calling the SRF explicitly.
-  * A persistent on-disk trigram posting index in the bm25 AM for fuzzy/regex
-    candidate pruning (the full pg_tre three-tier funnel).  fts_trigrams()
-    prunes fuzzy candidates at the term level today; the AM still returns a
-    candidate set for fuzzy/regex that the heap recheck refines.
+  * AST-tiling trigram extraction for arbitrary regexes (Navarro tiling /
+    Mihov-Schulz, as in pg_tre).  The on-disk trigram funnel today uses the
+    pattern's literal trigrams and falls back to a full scan for patterns with
+    too few, which is always correct but less selective for complex regexes.
+  * Streaming (bounded-memory) amgettuple that yields WAND results
+    incrementally rather than materializing the top-k once per scan.
 
 Implemented at scale
 --------------------
@@ -95,13 +92,27 @@ Implemented at scale
     length normalization (no heap fetch to score).
   * Document-at-a-time block-max WAND top-k: cursors page postings in lazily
     and skip whole pages via per-page block-max, bounding memory and work.
+  * amcanorderbyop ordering scan: ORDER BY d <=> query LIMIT k plans as an
+    index scan with no Sort node, driven by the block-max WAND top-k.
+  * On-disk trigram index (sparsemap-backed, namespaced __pg_bm25_*) that
+    narrows fuzzy (term~k) and regex (/re/) candidates instead of scanning the
+    whole index; the heap recheck applies the exact test.
   * BM25F multi-field weighting; selectable BM25 variants.
   * Incremental insert (pending list) + background merge (VACUUM / fts_merge)
     with FSM page recycling, so index size stays bounded under churn.
-  * Phrase, NEAR(a b, k), prefix, fuzzy (term~k), regex (/re/) queries.
+  * Phrase, NEAR(a b, k), prefix, fuzzy, regex queries.
   * MVCC-correct throughout: buffer manager for all I/O, GenericXLog WAL for
     replication/crash safety, snapshot visibility on both the @@@ bitmap path
-    and the fts_search SRF.
+    and the fts_search / ordering-scan paths.
+
+Vendored dependencies
+---------------------
+
+  * sparsemap v5.1.1 (contrib/pg_fts/vendor/), a compressed-bitmap library used
+    for the trigram posting sets.  All its public symbols are namespaced to
+    __pg_bm25_* (via SPARSEMAP_PREFIX in vendor/sm.c and the pg_fts_sm.h
+    wrapper), so a second copy loaded by another extension in the same backend
+    cannot cause dynamic-linker symbol collisions.
 
 Backward compatibility
 -----------------------
