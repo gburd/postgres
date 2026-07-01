@@ -1241,6 +1241,47 @@ wand_next(WandCursor *c)
 	}
 }
 
+/*
+ * Skip the cursor to the start of its next 128-block: advance past the rest of
+ * the current block (the run of postings sharing this block's max_tf), or to
+ * the next page.  Used by BMW when the current block cannot beat the top-k
+ * threshold.  Always makes forward progress.
+ */
+static void
+wand_skip_block(WandCursor *c)
+{
+	if (c->cur < c->nposts)
+	{
+		uint32		bm = c->blockmax[c->cur];
+		int			start = c->cur;
+
+		while (c->cur < c->nposts && c->blockmax[c->cur] == bm)
+			c->cur++;
+		if (c->cur == start)
+			c->cur++;			/* whole page one block: step one posting */
+	}
+	if (c->cur < c->nposts)
+	{
+		c->docid = tid_to_docid_s(&c->posts[c->cur].tid);
+		return;
+	}
+	{
+		Buffer		buf;
+		BlockNumber next;
+
+		if (c->curblk == InvalidBlockNumber)
+		{
+			c->docid = UINT64_MAX;
+			return;
+		}
+		buf = ReadBuffer(c->index, c->curblk);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		next = BM25PageGetOpaque(BufferGetPage(buf))->nextblk;
+		UnlockReleaseBuffer(buf);
+		wand_load_page(c, next);
+	}
+}
+
 /* Exact BM25 contribution of the current posting, using stored per-doc |D|.
  * Norm constants (idf*(k1+1), k1*(1-b), k1*b/avgdl) are precomputed per cursor
  * so the hot path is multiplies, not divisions. */
@@ -1315,6 +1356,33 @@ fts_search_wand(WandCursor *cursors, int nterms, int k, ScoredTid **out)
 		}
 		if (pivot_docid == UINT64_MAX)
 			break;				/* no document can beat the threshold */
+
+		/*
+		 * Block-max WAND (BMW) refinement: the pivot passed the term-wide
+		 * bound, but the *current blocks* may bound tighter.  Sum the per-block
+		 * max contribution of every cursor whose docid <= pivot; if even that
+		 * cannot beat the threshold, no document up to the pivot can enter the
+		 * top-k, so skip the earliest cursor past its current 128-block instead
+		 * of scoring.  Sound because block max_tf >= every tf in the block.
+		 */
+		if (nheap >= k)
+		{
+			double		blocksum = 0.0;
+
+			for (i = 0; i < nterms; i++)
+			{
+				if (cursors[i].docid == UINT64_MAX)
+					break;
+				if (cursors[i].docid <= pivot_docid)
+					blocksum += wand_block_max_contrib(&cursors[i]);
+			}
+			if (blocksum <= threshold)
+			{
+				/* advance cursor[0] to the start of its next block */
+				wand_skip_block(&cursors[0]);
+				continue;
+			}
+		}
 
 		/* if the smallest docid equals the pivot, score it fully */
 		if (cursors[0].docid == pivot_docid)

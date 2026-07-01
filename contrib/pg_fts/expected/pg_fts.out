@@ -1400,3 +1400,25 @@ SELECT count(*) AS after_flush FROM voc WHERE d @@@ 'term08050'::ftsquery;  -- 1
 
 RESET enable_seqscan;
 DROP TABLE voc;
+-- Block-Max WAND (BMW): the block-max skip prunes whole 128-blocks that cannot
+-- beat the current top-k threshold, and the exact top-k is unchanged.
+CREATE TABLE bmw (id serial, d ftsdoc);
+INSERT INTO bmw(d) SELECT to_ftsdoc('alpha '||
+    CASE WHEN g%50=0 THEN repeat('beta ',5) ELSE '' END||'w'||g)
+  FROM generate_series(1,12000) g;
+CREATE INDEX bmw_bm25 ON bmw USING bm25 (d);
+SET enable_seqscan = off;
+CREATE TEMP TABLE bmw_top AS SELECT round((d <=> 'alpha beta'::ftsquery)::numeric,6) dist
+  FROM bmw WHERE d @@@ 'alpha beta'::ftsquery ORDER BY dist LIMIT 10;
+SET enable_indexscan = off; SET enable_bitmapscan = off; SET enable_seqscan = on;
+CREATE TEMP TABLE bmw_all AS SELECT round((d <=> 'alpha beta'::ftsquery)::numeric,6) dist
+  FROM bmw WHERE d @@@ 'alpha beta'::ftsquery ORDER BY dist LIMIT 10;
+SELECT (SELECT array_agg(dist ORDER BY dist) FROM bmw_top)
+     = (SELECT array_agg(dist ORDER BY dist) FROM bmw_all) AS bmw_exact_topk;
+ bmw_exact_topk 
+----------------
+ t
+(1 row)
+
+RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
+DROP TABLE bmw;
