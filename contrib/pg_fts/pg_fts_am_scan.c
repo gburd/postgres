@@ -28,6 +28,11 @@ typedef struct TidSet
 	int			n;
 } TidSet;
 
+/* forward decl: trigram-index candidate lookup (pg_fts_trgm_index.c) */
+static bool bm25_trgm_candidates(Relation index, BlockNumber trgmstart,
+								 const char *term, int termlen,
+								 int min_trigrams, TidSet *out);
+
 /* A scored heap tuple (score, or distance in an ordering scan). */
 typedef struct ScoredTid
 {
@@ -680,12 +685,62 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 
 		if (has_fuzzy_regex)
 		{
-			/* return all indexed tuples as candidates; recheck filters */
-			universe = bm25_universe(scan->indexRelation, meta.dictstart);
-			if (universe.n > 0)
+			/*
+			 * Narrow candidates with the on-disk trigram index: the union of
+			 * each fuzzy/regex term's trigram postings is a sound superset of
+			 * the matches, so we probe that instead of the whole index.  The
+			 * bitmap heap recheck (@@@) then applies the exact fuzzy/regex test.
+			 * Terms with too few trigrams (short patterns) fall back to the
+			 * universe for that term, keeping results correct.
+			 */
+			TidSet		cands;
+			bool		any_trgm = false;
+			uint32		qi;
+
+			cands.tids = NULL;
+			cands.n = 0;
+			for (qi = 0; qi < so->query->nitems; qi++)
 			{
-				tbm_add_tuples(tbm, universe.tids, universe.n, true);
-				ntids += universe.n;
+				FtsQueryItem *it = &so->query->items[qi];
+				TidSet		ts;
+
+				if (it->type != FTS_QI_VAL ||
+					!(it->flags & (FTS_QF_FUZZY | FTS_QF_REGEX)))
+					continue;
+
+				if (bm25_trgm_candidates(scan->indexRelation, meta.trgmstart,
+										 FTS_QUERY_ITEMTEXT(so->query, it),
+										 it->termlen, 3, &ts))
+				{
+					TidSet		merged = tidset_or(cands, ts);
+
+					cands = merged;
+					any_trgm = true;
+				}
+				else
+				{
+					/* this term can't be trigram-pruned: fall back fully */
+					any_trgm = false;
+					break;
+				}
+			}
+
+			if (any_trgm)
+			{
+				if (cands.n > 0)
+				{
+					tbm_add_tuples(tbm, cands.tids, cands.n, true);
+					ntids += cands.n;
+				}
+			}
+			else
+			{
+				universe = bm25_universe(scan->indexRelation, meta.dictstart);
+				if (universe.n > 0)
+				{
+					tbm_add_tuples(tbm, universe.tids, universe.n, true);
+					ntids += universe.n;
+				}
 			}
 			/* also all pending docs (searched below), so skip main eval */
 			goto scan_pending;

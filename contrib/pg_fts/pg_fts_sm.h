@@ -22,6 +22,9 @@
 #define SPARSEMAP_PREFIX __pg_bm25_
 #endif
 
+/* expose the sm_t layout so callers can stack-allocate maps (sm_init/sm_open) */
+#define SM_EXPOSE_STRUCT
+
 #include "vendor/sm.h"
 
 #endif							/* PG_FTS_SM_H */

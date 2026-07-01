@@ -380,6 +380,7 @@ bm25_init_metapage(Relation index, double ndocs, double sumdoclen,
 	meta->pendinghead = InvalidBlockNumber;
 	meta->pendingtail = InvalidBlockNumber;
 	meta->npending = 0;
+	meta->trgmstart = InvalidBlockNumber;
 	((PageHeader) page)->pd_lower =
 		((char *) meta + sizeof(BM25MetaPageData)) - (char *) page;
 	GenericXLogFinish(state);
@@ -599,6 +600,9 @@ bm25_write_dictionary(Relation index, BM25BuildState *bs,
 	return first;
 }
 
+/* forward decl: trigram index writer (pg_fts_trgm_index.c, included below) */
+static BlockNumber bm25_write_trigrams(Relation index, BM25BuildState *bs);
+
 static IndexBuildResult *
 bm25_build(Relation heap, Relation index, IndexInfo *indexInfo)
 {
@@ -650,16 +654,22 @@ bm25_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	dictstart = bm25_write_dictionary(index, &bs, postings);
 
-	/* rewrite metapage now that we know dictstart */
+	/* build the on-disk trigram index for fuzzy/regex candidate narrowing */
 	{
+		BlockNumber trgmstart = bm25_write_trigrams(index, &bs);
+
+		/* rewrite metapage now that we know dictstart + trgmstart */
 		Buffer		buffer = ReadBuffer(index, BM25_METAPAGE_BLKNO);
 		GenericXLogState *state;
 		Page		page;
+		BM25MetaPageData *m;
 
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		state = GenericXLogStart(index);
 		page = GenericXLogRegisterBuffer(state, buffer, 0);
-		BM25PageGetMeta(page)->dictstart = dictstart;
+		m = BM25PageGetMeta(page);
+		m->dictstart = dictstart;
+		m->trgmstart = trgmstart;
 		GenericXLogFinish(state);
 		UnlockReleaseBuffer(buffer);
 	}
@@ -819,6 +829,7 @@ bm25_insert(Relation index, Datum *values, bool *isnull,
 /* ----- scan ----- */
 
 #include "pg_fts_am_scan.c"
+#include "pg_fts_trgm_index.c"
 
 /* ----- vacuum / cost / options ----- */
 
@@ -963,8 +974,11 @@ bm25_merge_pending(Relation index)
 		postings[i] = bm25_write_postings(index, &bs.terms[i]);
 	newdict = bm25_write_dictionary(index, &bs, postings);
 
-	/* 4. repoint the metapage and clear the pending list */
+	/* rebuild the trigram index from the merged terms */
 	{
+		BlockNumber newtrgm = bm25_write_trigrams(index, &bs);
+
+		/* 4. repoint the metapage and clear the pending list */
 		Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
 		GenericXLogState *state;
 		Page		mp;
@@ -974,6 +988,7 @@ bm25_merge_pending(Relation index)
 		state = GenericXLogStart(index);
 		mp = GenericXLogRegisterBuffer(state, mb, 0);
 		m = BM25PageGetMeta(mp);
+		m->trgmstart = newtrgm;
 		m->dictstart = newdict;
 		m->nterms = bs.nterms;
 		m->pendinghead = InvalidBlockNumber;
@@ -1032,6 +1047,20 @@ bm25_merge_pending(Relation index)
 		}
 
 		b = meta.pendinghead;
+		while (b != InvalidBlockNumber)
+		{
+			Buffer		buf = ReadBuffer(index, b);
+			BlockNumber next;
+
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+			next = BM25PageGetOpaque(BufferGetPage(buf))->nextblk;
+			UnlockReleaseBuffer(buf);
+			RecordFreeIndexPage(index, b);
+			b = next;
+		}
+
+		/* old trigram-index chain */
+		b = meta.trgmstart;
 		while (b != InvalidBlockNumber)
 		{
 			Buffer		buf = ReadBuffer(index, b);

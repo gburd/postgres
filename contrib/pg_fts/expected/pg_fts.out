@@ -1073,6 +1073,31 @@ ORDER BY d <=> 'quick'::ftsquery LIMIT 3;
 
 RESET enable_seqscan;
 DROP TABLE ord;
+-- On-disk trigram index: fuzzy/regex through the index over many docs.
+-- The trigram funnel narrows candidates (sparsemap postings); recheck refines.
+CREATE TABLE trgm (id serial, d ftsdoc);
+INSERT INTO trgm (d) SELECT to_ftsdoc('document' || g) FROM generate_series(1, 1000) g;
+INSERT INTO trgm (d) VALUES (to_ftsdoc('documemt42'));   -- id 1001, 1 edit from document42
+CREATE INDEX trgm_bm25 ON trgm USING bm25 (d);
+SET enable_seqscan = off;
+-- fuzzy: finds the exact 'document42' (id 43: 'document42') and the typo (1001)
+SELECT count(*) AS fuzzy_via_trigram
+FROM trgm t WHERE t.d @@@ 'document42~2'::ftsquery;
+ fuzzy_via_trigram 
+-------------------
+               424
+(1 row)
+
+-- regex through the trigram index
+SELECT count(*) AS regex_via_trigram
+FROM trgm t WHERE t.d @@@ '/document4[0-9]$/'::ftsquery;
+ regex_via_trigram 
+-------------------
+                10
+(1 row)
+
+RESET enable_seqscan;
+DROP TABLE trgm;
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 ERROR:  extension "pg_fts" has no update path from version "1.16" to version "1.3"

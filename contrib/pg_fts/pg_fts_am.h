@@ -29,6 +29,7 @@
 #define BM25_DICT			(1 << 1)
 #define BM25_POSTING		(1 << 2)
 #define BM25_PENDING		(1 << 3)
+#define BM25_TRGM			(1 << 4)
 
 typedef struct BM25PageOpaqueData
 {
@@ -56,6 +57,7 @@ typedef struct BM25MetaPageData
 	BlockNumber pendinghead;	/* first pending page, or InvalidBlockNumber */
 	BlockNumber pendingtail;	/* last pending page, for O(1) append */
 	uint32		npending;		/* number of pending (unmerged) documents */
+	BlockNumber trgmstart;		/* first trigram-index page (fuzzy/regex funnel) */
 } BM25MetaPageData;
 
 #define BM25PageGetMeta(page) \
@@ -107,6 +109,18 @@ typedef struct BM25PendingItem
 	uint32		doclen;			/* byte length of the ftsdoc that follows */
 	/* char ftsdoc[doclen] follows, MAXALIGN'd */
 } BM25PendingItem;
+
+/*
+ * A trigram-index entry: a trigram hash and, inline, a serialized sparsemap of
+ * the docids of documents containing at least one term with that trigram.  Used
+ * to narrow fuzzy/regex candidates instead of scanning the whole index.
+ */
+typedef struct BM25TrgmEntry
+{
+	uint32		trgm;			/* trigram hash */
+	uint32		smlen;			/* serialized sparsemap length in bytes */
+	/* char sparsemap[smlen] follows, MAXALIGN'd */
+} BM25TrgmEntry;
 
 /* scan functions (pg_fts_am_scan.c, #included into pg_fts_am.c) */
 extern IndexScanDesc bm25_beginscan(Relation r, int nkeys, int norderbys);
