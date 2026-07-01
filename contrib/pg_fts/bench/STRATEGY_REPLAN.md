@@ -126,9 +126,21 @@ Next concrete steps (in order):
      queries / large k.]
   8. THEN re-run the EC2 benchmark against tsvector/GIN, pg_search, Elasticsearch.
 
-Progress: steps 1-2 complete and qualified (the architectural core -- segments
-+ tiered merge -- which is what actually fixed the scale faults).  Steps 3-7
-are refinements (codec size, query-latency micro-opts, dictionary structure)
-that improve competitiveness but are not correctness-blocking; each is
-independently qualifiable.  The engine is now segmented and does not OOM on
-build-adjacent paths nor do O(index) merges.
+Progress: steps 1-3 (segments, tiered merge, FOR-128 blocks + shared posting
+pages + lazy block-max WAND) and 5 (dictionary block index) COMPLETE and
+qualified; step 4a (norm-constant hoist) and step 7 (BMW pivot skip) done.
+Benchmarked on EC2 (2M and 10M docs vs tsvector/GIN): ranked BM25 top-k is
+18-38x faster than GIN+ts_rank (advantage widens with scale), index now smaller
+than GIN at 10M.  See bench/RESULTS_SEGMENTED.md.
+
+Deferred (measured as lower-value than the wins above):
+- Full FST term dict + Levenshtein-DFA fuzzy/regex (step 5/6 remainder): point
+  lookups are already O(logP) via the block index; trigram funnel is correct.
+- MaxScore (step 7 remainder): BMW covers the short-query common case.
+- 1-byte quantized norms (step 4b): introduces score drift; the lossless
+  norm-constant hoist already removed the hot-loop divisions.
+- Skip-list intersection / docids-only boolean postings: to close the modest
+  boolean-COUNT gap (GIN wins Q2/Q3 by 1.2-1.5x); not a BM25 engine's job.
+
+The scale faults that triggered the rebuild (in-memory monolithic build,
+O(index) full-rewrite merge, page-per-term posting bloat) are all fixed.
