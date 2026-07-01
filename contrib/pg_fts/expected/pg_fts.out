@@ -1,4 +1,4 @@
-CREATE EXTENSION pg_fts;
+CREATE EXTENSION pg_fts VERSION '1.0';
 -- ftsdoc: analysis, output shows terms with term frequencies
 SELECT to_ftsdoc('The quick brown fox, the QUICK fox!');
               to_ftsdoc              
@@ -220,3 +220,34 @@ SELECT ftsdoc_length(to_ftsdoc(repeat('word ', 1000))) AS many_repeats_len;
 (1 row)
 
 DROP TABLE docs;
+-- Stage 2: analyzer reusing an installed text search configuration.
+ALTER EXTENSION pg_fts UPDATE TO '1.1';
+-- english config stems and drops stopwords: 'running the races' -> run, race
+SELECT to_ftsdoc('english'::regconfig, 'running the races quickly');
+         to_ftsdoc          
+----------------------------
+ 'quick':1 'race':1 'run':1
+(1 row)
+
+-- stopwords ('the','a','of') are removed by the english dictionary
+SELECT to_ftsdoc('english'::regconfig, 'the cat and a dog');
+    to_ftsdoc    
+-----------------
+ 'cat':1 'dog':1
+(1 row)
+
+-- doclen counts positions produced by the parser (stopwords still counted)
+SELECT ftsdoc_length(to_ftsdoc('english'::regconfig, 'the quick brown fox'));
+ ftsdoc_length 
+---------------
+             4
+(1 row)
+
+-- stemming makes a query match across inflections
+SELECT to_ftsdoc('english'::regconfig, 'the foxes were running')
+       @@@ 'fox & run'::ftsquery AS stemmed_match;
+ stemmed_match 
+---------------
+ t
+(1 row)
+
