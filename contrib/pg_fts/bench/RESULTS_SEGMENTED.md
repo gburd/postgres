@@ -47,3 +47,16 @@ longer-doc corpus; here 204MB vs GIN 110MB on the shorter-doc corpus.)
   boolean posting variant would close the count-query gap.
 - Full FST term dict + Levenshtein-DFA (deferred; point lookups already O(logP)).
 - MaxScore for long queries / large k (BMW covers short queries).
+
+## Scaling: 10,000,000 docs (vocab 100k)
+Index: bm25 498 MB < GIN 569 MB (pg_fts is SMALLER at scale).
+
+| query                         | pg_fts bm25 | GIN+ts_rank | speedup |
+|-------------------------------|-------------|-------------|---------|
+| rare count (df=2000)          | 6.9 ms      | 6.5 ms      | ~par    |
+| ranked top-10 (mid, mid)      | 11.9 ms     | 456 ms      | **38x** |
+| ranked top-10 (common, mid)   | 50 ms       | 1249 ms     | **25x** |
+
+The ranked-query advantage WIDENS with scale (18-22x at 2M -> 25-38x at 10M):
+GIN's ts_rank cost grows linearly with the match set, while block-max WAND stays
+near-constant.  This is the TB-scale thesis confirmed.
