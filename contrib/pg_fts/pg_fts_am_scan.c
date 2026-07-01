@@ -601,6 +601,47 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 		ntids = result.n;
 	}
 
+	/*
+	 * Also search the pending list: newly inserted, not-yet-merged documents
+	 * are stored verbatim, so evaluate each directly with the same per-document
+	 * matcher the sequential @@@ path uses.  This handles all operators
+	 * (including NOT) correctly without needing a pending-side universe.
+	 */
+	if (meta.pendinghead != InvalidBlockNumber)
+	{
+		BlockNumber blk = meta.pendinghead;
+
+		while (blk != InvalidBlockNumber)
+		{
+			Buffer		buffer = ReadBuffer(scan->indexRelation, blk);
+			Page		page;
+			char	   *ptr,
+					   *end;
+			BlockNumber next;
+
+			LockBuffer(buffer, BUFFER_LOCK_SHARE);
+			page = BufferGetPage(buffer);
+			ptr = (char *) PageGetContents(page);
+			end = (char *) page + ((PageHeader) page)->pd_lower;
+			next = BM25PageGetOpaque(page)->nextblk;
+
+			while (ptr < end)
+			{
+				BM25PendingItem *pi = (BM25PendingItem *) ptr;
+				FtsDoc		pdoc = (FtsDoc) ((char *) pi + sizeof(BM25PendingItem));
+
+				if (fts_doc_matches(pdoc, so->query))
+				{
+					tbm_add_tuples(tbm, &pi->tid, 1, false);
+					ntids++;
+				}
+				ptr += MAXALIGN(sizeof(BM25PendingItem) + pi->doclen);
+			}
+			UnlockReleaseBuffer(buffer);
+			blk = next;
+		}
+	}
+
 	return ntids;
 }
 

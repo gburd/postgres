@@ -177,6 +177,27 @@ SELECT (SELECT fts_bm25(to_ftsdoc('common rare'), 'rare'::ftsquery,
 FROM fts_index_stats('corpus_bm25') s;
 DROP TABLE corpus;
 
+-- Stage 7: incremental index maintenance (pending list).
+ALTER EXTENSION pg_fts UPDATE TO '1.8';
+CREATE TABLE inc (id serial, d ftsdoc);
+INSERT INTO inc (d) VALUES (to_ftsdoc('alpha beta')), (to_ftsdoc('gamma delta'));
+CREATE INDEX inc_bm25 ON inc USING bm25 (d);
+SET enable_seqscan = off;
+-- rows present at build time are found via the main structure
+SELECT id FROM inc WHERE d @@@ 'alpha'::ftsquery ORDER BY id;
+-- INSERT after build must be immediately visible (no REINDEX) via pending list
+INSERT INTO inc (d) VALUES (to_ftsdoc('alpha epsilon')), (to_ftsdoc('zeta'));
+SELECT id FROM inc WHERE d @@@ 'alpha'::ftsquery ORDER BY id;   -- 1 and 3
+SELECT id FROM inc WHERE d @@@ 'zeta'::ftsquery ORDER BY id;     -- 4 (pending only)
+SELECT id FROM inc WHERE d @@@ 'alpha & !beta'::ftsquery ORDER BY id;  -- 3
+-- ndocs reflects built + pending
+SELECT ndocs FROM fts_index_stats('inc_bm25');
+-- REINDEX merges pending into the main structure; results unchanged
+REINDEX INDEX inc_bm25;
+SELECT id FROM inc WHERE d @@@ 'alpha'::ftsquery ORDER BY id;
+RESET enable_seqscan;
+DROP TABLE inc;
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 

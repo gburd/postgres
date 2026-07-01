@@ -234,6 +234,8 @@ bm25_init_page(Page page, uint16 flags)
 	opaque = BM25PageGetOpaque(page);
 	opaque->flags = flags;
 	opaque->nextblk = InvalidBlockNumber;
+	/* start item area at the (MAXALIGN'd) contents offset used by readers */
+	((PageHeader) page)->pd_lower = (char *) PageGetContents(page) - (char *) page;
 }
 
 static void
@@ -258,6 +260,9 @@ bm25_init_metapage(Relation index, double ndocs, double sumdoclen,
 	meta->sumdoclen = sumdoclen;
 	meta->nterms = nterms;
 	meta->dictstart = dictstart;
+	meta->pendinghead = InvalidBlockNumber;
+	meta->pendingtail = InvalidBlockNumber;
+	meta->npending = 0;
 	((PageHeader) page)->pd_lower =
 		((char *) meta + sizeof(BM25MetaPageData)) - (char *) page;
 	GenericXLogFinish(state);
@@ -475,9 +480,14 @@ bm25_buildempty(Relation index)
 }
 
 /*
- * aminsert: the skeleton index is built once and not updated in place.  Rather
- * than silently miss new rows, raise a clear error directing the user to
- * REINDEX (incremental maintenance is a later stage).
+ * aminsert: append the new document to the pending list.
+ *
+ * The document is stored verbatim (its ftsdoc bytes) on a chain of pending
+ * pages and is searched directly at scan time, so newly inserted rows are
+ * immediately visible to @@@ without a REINDEX.  The metapage N and sum(doclen)
+ * are updated so BM25 length-normalization stays correct; per-term df in the
+ * dictionary is not updated until a merge (REINDEX), matching GIN fastupdate's
+ * documented staleness.
  */
 static bool
 bm25_insert(Relation index, Datum *values, bool *isnull,
@@ -485,11 +495,126 @@ bm25_insert(Relation index, Datum *values, bool *isnull,
 			IndexUniqueCheck checkUnique, bool indexUnchanged,
 			IndexInfo *indexInfo)
 {
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("bm25 index does not support incremental insert yet"),
-			 errhint("Rebuild the index with REINDEX to include new rows.")));
-	return false;
+	FtsDoc		doc;
+	Size		doclen;
+	Size		need;
+	Buffer		metabuf;
+	GenericXLogState *state;
+	Page		metapage;
+	BM25MetaPageData *meta;
+	BlockNumber tailblk;
+	Buffer		tailbuf;
+	Page		tailpage;
+	bool		appended = false;
+
+	if (isnull[0])
+		return false;
+
+	doc = (FtsDoc) PG_DETOAST_DATUM(values[0]);
+	doclen = VARSIZE(doc);
+	need = MAXALIGN(sizeof(BM25PendingItem) + doclen);
+
+	if (need > BLCKSZ - MAXALIGN(SizeOfPageHeaderData) - MAXALIGN(sizeof(BM25PageOpaqueData)))
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED)),
+				errmsg("ftsdoc too large for a bm25 pending page"));
+
+	/* Lock the metapage for the whole append (serializes inserters; a
+	 * per-inserter fast path is a later optimization). */
+	metabuf = ReadBuffer(index, BM25_METAPAGE_BLKNO);
+	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+	metapage = BufferGetPage(metabuf);
+	meta = BM25PageGetMeta(metapage);
+	tailblk = meta->pendingtail;
+
+	/* Try to append to the current tail page. */
+	if (tailblk != InvalidBlockNumber)
+	{
+		tailbuf = ReadBuffer(index, tailblk);
+		LockBuffer(tailbuf, BUFFER_LOCK_EXCLUSIVE);
+		tailpage = BufferGetPage(tailbuf);
+		if (((PageHeader) tailpage)->pd_lower + need <=
+			BLCKSZ - MAXALIGN(sizeof(BM25PageOpaqueData)))
+		{
+			BM25PendingItem *pi;
+
+			state = GenericXLogStart(index);
+			tailpage = GenericXLogRegisterBuffer(state, tailbuf, 0);
+			pi = (BM25PendingItem *) ((char *) tailpage +
+									 ((PageHeader) tailpage)->pd_lower);
+			pi->tid = *ht_ctid;
+			pi->doclen = doclen;
+			memcpy((char *) pi + sizeof(BM25PendingItem), doc, doclen);
+			((PageHeader) tailpage)->pd_lower += need;
+			metapage = GenericXLogRegisterBuffer(state, metabuf, 0);
+			meta = BM25PageGetMeta(metapage);
+			meta->ndocs += 1.0;
+			meta->sumdoclen += doc->doclen;
+			meta->npending += 1;
+			GenericXLogFinish(state);
+			appended = true;
+		}
+		if (!appended)
+			LockBuffer(tailbuf, BUFFER_LOCK_UNLOCK);
+	}
+
+	/* Need a fresh pending page (either none yet, or the tail is full). */
+	if (!appended)
+	{
+		Buffer		newbuf = bm25_new_buffer(index);
+		BlockNumber newblk = BufferGetBlockNumber(newbuf);
+		BM25PendingItem *pi;
+
+		state = GenericXLogStart(index);
+		{
+			Page		np = GenericXLogRegisterBuffer(state, newbuf,
+													   GENERIC_XLOG_FULL_IMAGE);
+
+			bm25_init_page(np, BM25_PENDING);
+			pi = (BM25PendingItem *) ((char *) np +
+									 ((PageHeader) np)->pd_lower);
+			pi->tid = *ht_ctid;
+			pi->doclen = doclen;
+			memcpy((char *) pi + sizeof(BM25PendingItem), doc, doclen);
+			((PageHeader) np)->pd_lower += need;
+		}
+
+		/* link previous tail (if any) to the new page */
+		if (tailblk != InvalidBlockNumber)
+		{
+			Buffer		oldtail = ReadBuffer(index, tailblk);
+			Page		op;
+
+			LockBuffer(oldtail, BUFFER_LOCK_EXCLUSIVE);
+			op = GenericXLogRegisterBuffer(state, oldtail, 0);
+			BM25PageGetOpaque(op)->nextblk = newblk;
+			metapage = GenericXLogRegisterBuffer(state, metabuf, 0);
+			meta = BM25PageGetMeta(metapage);
+			meta->pendingtail = newblk;
+			meta->ndocs += 1.0;
+			meta->sumdoclen += doc->doclen;
+			meta->npending += 1;
+			GenericXLogFinish(state);
+			UnlockReleaseBuffer(oldtail);
+		}
+		else
+		{
+			metapage = GenericXLogRegisterBuffer(state, metabuf, 0);
+			meta = BM25PageGetMeta(metapage);
+			meta->pendinghead = newblk;
+			meta->pendingtail = newblk;
+			meta->ndocs += 1.0;
+			meta->sumdoclen += doc->doclen;
+			meta->npending += 1;
+			GenericXLogFinish(state);
+		}
+		UnlockReleaseBuffer(newbuf);
+	}
+	else
+		UnlockReleaseBuffer(tailbuf);
+
+	UnlockReleaseBuffer(metabuf);
+	return true;
 }
 
 /* ----- scan ----- */

@@ -28,12 +28,13 @@
 #define BM25_META			(1 << 0)
 #define BM25_DICT			(1 << 1)
 #define BM25_POSTING		(1 << 2)
+#define BM25_PENDING		(1 << 3)
 
 typedef struct BM25PageOpaqueData
 {
 	uint16		flags;
 	uint16		unused;
-	BlockNumber nextblk;		/* next page in a dict/posting chain */
+	BlockNumber nextblk;		/* next page in a dict/posting/pending chain */
 } BM25PageOpaqueData;
 
 typedef BM25PageOpaqueData *BM25PageOpaque;
@@ -45,10 +46,13 @@ typedef struct BM25MetaPageData
 {
 	uint32		magic;
 	uint32		version;
-	double		ndocs;			/* N */
+	double		ndocs;			/* N (built + pending) */
 	double		sumdoclen;		/* sum of document lengths -> avgdl = /N */
 	uint32		nterms;			/* number of distinct terms (dictionary size) */
 	BlockNumber dictstart;		/* first dictionary page */
+	BlockNumber pendinghead;	/* first pending page, or InvalidBlockNumber */
+	BlockNumber pendingtail;	/* last pending page, for O(1) append */
+	uint32		npending;		/* number of pending (unmerged) documents */
 } BM25MetaPageData;
 
 #define BM25PageGetMeta(page) \
@@ -69,6 +73,19 @@ typedef struct BM25Posting
 	ItemPointerData tid;
 	uint32		tf;
 } BM25Posting;
+
+/*
+ * A pending record: a not-yet-merged document stored verbatim on a pending
+ * page.  The ftsdoc varlena follows the header inline (doclen bytes).  Pending
+ * documents are searched directly at scan time and folded into the main
+ * dictionary/postings by a merge (REINDEX for now).
+ */
+typedef struct BM25PendingItem
+{
+	ItemPointerData tid;
+	uint32		doclen;			/* byte length of the ftsdoc that follows */
+	/* char ftsdoc[doclen] follows, MAXALIGN'd */
+} BM25PendingItem;
 
 /* scan functions (pg_fts_am_scan.c, #included into pg_fts_am.c) */
 extern IndexScanDesc bm25_beginscan(Relation r, int nkeys, int norderbys);
