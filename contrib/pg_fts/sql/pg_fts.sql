@@ -360,6 +360,21 @@ JOIN viz v ON v.ctid = r.ctid;
 SELECT count(*) AS srf_live FROM fts_search('viz_bm25', 'apple'::ftsquery, 100);
 DROP TABLE viz;
 
+-- Posting compression: correctness under many clustered docids + merge.
+CREATE TABLE cmp (id serial, d ftsdoc);
+INSERT INTO cmp (d) SELECT to_ftsdoc('common term here')
+FROM generate_series(1, 500);
+CREATE INDEX cmp_bm25 ON cmp USING bm25 (d);
+-- all 500 rows match the compressed posting list
+SELECT count(*) AS all_match
+FROM fts_search('cmp_bm25', 'common'::ftsquery, 1000) r JOIN cmp c ON c.ctid = r.ctid;
+-- incremental inserts (pending) + merge preserve the full posting list
+INSERT INTO cmp (d) SELECT to_ftsdoc('common term here') FROM generate_series(1, 100);
+SELECT fts_merge('cmp_bm25');
+SELECT count(*) AS after_merge
+FROM fts_search('cmp_bm25', 'common'::ftsquery, 2000) r JOIN cmp c ON c.ctid = r.ctid;
+DROP TABLE cmp;
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 

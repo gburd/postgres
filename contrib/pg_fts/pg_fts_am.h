@@ -76,6 +76,21 @@ typedef struct BM25Posting
 } BM25Posting;
 
 /*
+ * Posting pages store postings delta+varint compressed, not as a raw
+ * BM25Posting array.  The page contents begin with a uint32 count, followed by
+ * a varint stream: for each posting, the docid gap (this docid - previous,
+ * where docid = block*MaxHeapTuplesPerPage + offset) and the tf.  docids are
+ * written in ascending order within a term so gaps are small.  Readers use
+ * bm25_page_decode(); writers use the BM25PostingWriter below.  This is the
+ * posting compression that keeps the index compact at scale.
+ */
+typedef struct BM25PostingPageHdr
+{
+	uint32		count;			/* number of postings encoded on this page */
+	/* varint stream follows */
+} BM25PostingPageHdr;
+
+/*
  * A pending record: a not-yet-merged document stored verbatim on a pending
  * page.  The ftsdoc varlena follows the header inline (doclen bytes).  Pending
  * documents are searched directly at scan time and folded into the main

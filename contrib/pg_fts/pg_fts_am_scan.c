@@ -134,10 +134,7 @@ bm25_lookup_term(Relation index, BlockNumber dictstart,
 
 				LockBuffer(pb, BUFFER_LOCK_SHARE);
 				pp = BufferGetPage(pb);
-				post = (BM25Posting *) PageGetContents(pp);
-				np = (((PageHeader) pp)->pd_lower -
-					  ((char *) PageGetContents(pp) - (char *) pp)) /
-					sizeof(BM25Posting);
+				np = bm25_page_decode(pp, &post);
 				for (i = 0; i < np; i++)
 				{
 					if (n >= cap)
@@ -147,6 +144,7 @@ bm25_lookup_term(Relation index, BlockNumber dictstart,
 					}
 					tids[n++] = post[i].tid;
 				}
+				pfree(post);
 				pblk = BM25PageGetOpaque(pp)->nextblk;
 				UnlockReleaseBuffer(pb);
 			}
@@ -302,10 +300,7 @@ bm25_lookup_prefix(Relation index, BlockNumber dictstart,
 
 					LockBuffer(pb, BUFFER_LOCK_SHARE);
 					pp = BufferGetPage(pb);
-					post = (BM25Posting *) PageGetContents(pp);
-					np = (((PageHeader) pp)->pd_lower -
-						  ((char *) PageGetContents(pp) - (char *) pp)) /
-						sizeof(BM25Posting);
+					np = bm25_page_decode(pp, &post);
 					for (k = 0; k < np; k++)
 					{
 						if (n >= cap)
@@ -315,6 +310,7 @@ bm25_lookup_prefix(Relation index, BlockNumber dictstart,
 						}
 						tids[n++] = post[k].tid;
 					}
+					pfree(post);
 					pblk = BM25PageGetOpaque(pp)->nextblk;
 					UnlockReleaseBuffer(pb);
 				}
@@ -492,10 +488,7 @@ bm25_universe(Relation index, BlockNumber dictstart)
 
 				LockBuffer(pb, BUFFER_LOCK_SHARE);
 				pp = BufferGetPage(pb);
-				post = (BM25Posting *) PageGetContents(pp);
-				np = (((PageHeader) pp)->pd_lower -
-					  ((char *) PageGetContents(pp) - (char *) pp)) /
-					sizeof(BM25Posting);
+				np = bm25_page_decode(pp, &post);
 				for (k = 0; k < np; k++)
 				{
 					if (n >= cap)
@@ -505,6 +498,7 @@ bm25_universe(Relation index, BlockNumber dictstart)
 					}
 					tids[n++] = post[k].tid;
 				}
+				pfree(post);
 				pblk = BM25PageGetOpaque(pp)->nextblk;
 				UnlockReleaseBuffer(pb);
 			}
@@ -871,10 +865,7 @@ bm25_read_term_postings(Relation index, BlockNumber dictstart,
 
 				LockBuffer(pb, BUFFER_LOCK_SHARE);
 				pp = BufferGetPage(pb);
-				src = (BM25Posting *) PageGetContents(pp);
-				np = (((PageHeader) pp)->pd_lower -
-					  ((char *) PageGetContents(pp) - (char *) pp)) /
-					sizeof(BM25Posting);
+				np = bm25_page_decode(pp, &src);
 				for (k = 0; k < np; k++)
 				{
 					if (n >= cap)
@@ -884,6 +875,7 @@ bm25_read_term_postings(Relation index, BlockNumber dictstart,
 					}
 					posts[n++] = src[k];
 				}
+				pfree(src);
 				pblk = BM25PageGetOpaque(pp)->nextblk;
 				UnlockReleaseBuffer(pb);
 			}

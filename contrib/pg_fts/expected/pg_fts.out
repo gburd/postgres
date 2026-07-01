@@ -886,6 +886,35 @@ SELECT count(*) AS srf_live FROM fts_search('viz_bm25', 'apple'::ftsquery, 100);
 (1 row)
 
 DROP TABLE viz;
+-- Posting compression: correctness under many clustered docids + merge.
+CREATE TABLE cmp (id serial, d ftsdoc);
+INSERT INTO cmp (d) SELECT to_ftsdoc('common term here')
+FROM generate_series(1, 500);
+CREATE INDEX cmp_bm25 ON cmp USING bm25 (d);
+-- all 500 rows match the compressed posting list
+SELECT count(*) AS all_match
+FROM fts_search('cmp_bm25', 'common'::ftsquery, 1000) r JOIN cmp c ON c.ctid = r.ctid;
+ all_match 
+-----------
+       500
+(1 row)
+
+-- incremental inserts (pending) + merge preserve the full posting list
+INSERT INTO cmp (d) SELECT to_ftsdoc('common term here') FROM generate_series(1, 100);
+SELECT fts_merge('cmp_bm25');
+ fts_merge 
+-----------
+ t
+(1 row)
+
+SELECT count(*) AS after_merge
+FROM fts_search('cmp_bm25', 'common'::ftsquery, 2000) r JOIN cmp c ON c.ctid = r.ctid;
+ after_merge 
+-------------
+         600
+(1 row)
+
+DROP TABLE cmp;
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 ERROR:  extension "pg_fts" has no update path from version "1.15" to version "1.3"

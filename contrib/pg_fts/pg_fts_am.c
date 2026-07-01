@@ -218,6 +218,98 @@ bm25_build_callback(Relation index, ItemPointer tid, Datum *values,
 	MemoryContextSwitchTo(old);
 }
 
+/* ----- posting compression (delta + varint) ----- */
+
+/*
+ * Pack/unpack a heap TID into a monotonic 48-bit docid so that ascending TIDs
+ * yield ascending docids and small gaps.  MaxHeapTuplesPerPage bounds the
+ * offset, so block*factor+offset is monotonic in (block, offset).
+ */
+#define BM25_OFFSET_FACTOR ((uint64) MaxHeapTuplesPerPage)
+
+static inline uint64
+bm25_tid_to_docid(ItemPointer tid)
+{
+	return (uint64) ItemPointerGetBlockNumber(tid) * BM25_OFFSET_FACTOR +
+		(uint64) ItemPointerGetOffsetNumber(tid);
+}
+
+static inline void
+bm25_docid_to_tid(uint64 docid, ItemPointer tid)
+{
+	BlockNumber blk = (BlockNumber) (docid / BM25_OFFSET_FACTOR);
+	OffsetNumber off = (OffsetNumber) (docid % BM25_OFFSET_FACTOR);
+
+	ItemPointerSet(tid, blk, off);
+}
+
+/* LEB128 unsigned varint encode; returns bytes written into buf */
+static inline int
+bm25_varint_encode(uint64 v, unsigned char *buf)
+{
+	int			n = 0;
+
+	do
+	{
+		unsigned char byte = v & 0x7F;
+
+		v >>= 7;
+		if (v)
+			byte |= 0x80;
+		buf[n++] = byte;
+	} while (v);
+	return n;
+}
+
+/* decode one varint from buf, advancing *pos */
+static inline uint64
+bm25_varint_decode(const unsigned char *buf, int *pos)
+{
+	uint64		v = 0;
+	int			shift = 0;
+	unsigned char byte;
+
+	do
+	{
+		byte = buf[(*pos)++];
+		v |= (uint64) (byte & 0x7F) << shift;
+		shift += 7;
+	} while (byte & 0x80);
+	return v;
+}
+
+/* worst-case encoded size of one posting (docid gap up to 48 bits + tf) */
+#define BM25_MAX_POSTING_BYTES (10 + 5)
+
+/*
+ * Decode all postings on a page into a caller-provided (or palloc'd) array.
+ * Returns the count; *out is set to a palloc'd BM25Posting array.
+ */
+static int
+bm25_page_decode(Page page, BM25Posting **out)
+{
+	BM25PostingPageHdr *hdr = (BM25PostingPageHdr *) PageGetContents(page);
+	const unsigned char *stream = (const unsigned char *) (hdr + 1);
+	int			count = hdr->count;
+	BM25Posting *posts;
+	int			pos = 0;
+	uint64		docid = 0;
+	int			i;
+
+	posts = (BM25Posting *) palloc(Max(count, 1) * sizeof(BM25Posting));
+	for (i = 0; i < count; i++)
+	{
+		uint64		gap = bm25_varint_decode(stream, &pos);
+		uint32		tf = (uint32) bm25_varint_decode(stream, &pos);
+
+		docid += gap;
+		bm25_docid_to_tid(docid, &posts[i].tid);
+		posts[i].tf = tf;
+	}
+	*out = posts;
+	return count;
+}
+
 /* ----- writing the index pages ----- */
 
 static Buffer
@@ -275,8 +367,30 @@ bm25_init_metapage(Relation index, double ndocs, double sumdoclen,
 
 /*
  * Write all postings for one term into a chain of posting pages, returning the
- * first block.  Each posting is (tid, tf).
+ * first block.  Postings are sorted by docid and delta+varint encoded per page
+ * (BM25PostingPageHdr + varint stream), which compresses the common case of
+ * many clustered docids into a few bytes each.
  */
+typedef struct BM25PostingSort
+{
+	uint64		docid;
+	uint32		tf;
+	ItemPointerData tid;
+}			BM25PostingSort;
+
+static int
+cmp_posting_docid(const void *a, const void *b)
+{
+	uint64		da = ((const BM25PostingSort *) a)->docid;
+	uint64		db = ((const BM25PostingSort *) b)->docid;
+
+	if (da < db)
+		return -1;
+	if (da > db)
+		return 1;
+	return 0;
+}
+
 static BlockNumber
 bm25_write_postings(Relation index, BuildTerm *bt)
 {
@@ -284,13 +398,31 @@ bm25_write_postings(Relation index, BuildTerm *bt)
 	Buffer		buffer = InvalidBuffer;
 	GenericXLogState *state = NULL;
 	Page		page = NULL;
-	int			i = 0;
+	BM25PostingSort *sorted;
+	int			i;
+	uint64		prev_docid = 0;
+	BM25PostingPageHdr *hdr = NULL;
+	unsigned char *streamptr = NULL;
+	int			pagecount = 0;
 
+	/* sort this term's postings by docid for delta encoding */
+	sorted = (BM25PostingSort *) palloc(Max(bt->nposts, 1) * sizeof(BM25PostingSort));
+	for (i = 0; i < bt->nposts; i++)
+	{
+		sorted[i].docid = bm25_tid_to_docid(&bt->tids[i]);
+		sorted[i].tf = bt->tfs[i];
+		sorted[i].tid = bt->tids[i];
+	}
+	if (bt->nposts > 1)
+		qsort(sorted, bt->nposts, sizeof(BM25PostingSort), cmp_posting_docid);
+
+	i = 0;
 	while (i < bt->nposts)
 	{
-		BM25Posting *slot;
-		BM25PageOpaque opaque;
-		int			avail;
+		unsigned char tmp[BM25_MAX_POSTING_BYTES];
+		int			enclen;
+		uint64		gap;
+		char	   *pageend;
 
 		if (buffer == InvalidBuffer)
 		{
@@ -300,44 +432,60 @@ bm25_write_postings(Relation index, BuildTerm *bt)
 			bm25_init_page(page, BM25_POSTING);
 			if (first == InvalidBlockNumber)
 				first = BufferGetBlockNumber(buffer);
+			hdr = (BM25PostingPageHdr *) PageGetContents(page);
+			hdr->count = 0;
+			streamptr = (unsigned char *) (hdr + 1);
+			prev_docid = 0;
+			pagecount = 0;
 		}
 
-		avail = (BLCKSZ - ((PageHeader) page)->pd_lower -
-				 sizeof(BM25PageOpaqueData) - MAXALIGN(0)) / sizeof(BM25Posting);
+		/* encode (gap, tf) into tmp */
+		gap = sorted[i].docid - prev_docid;
+		enclen = bm25_varint_encode(gap, tmp);
+		enclen += bm25_varint_encode((uint64) sorted[i].tf, tmp + enclen);
 
-		while (i < bt->nposts && avail > 0)
+		pageend = (char *) page + BLCKSZ - MAXALIGN(sizeof(BM25PageOpaqueData));
+		if ((char *) streamptr + enclen > pageend)
 		{
-			slot = (BM25Posting *) ((char *) page + ((PageHeader) page)->pd_lower);
-			slot->tid = bt->tids[i];
-			slot->tf = bt->tfs[i];
-			((PageHeader) page)->pd_lower += sizeof(BM25Posting);
-			i++;
-			avail--;
-		}
+			/* page full: finalize pd_lower, chain a new page */
+			Buffer		next;
+			BlockNumber nextblk;
 
-		if (i < bt->nposts)
-		{
-			/* need another page: chain it */
-			Buffer		next = bm25_new_buffer(index);
-			BlockNumber nextblk = BufferGetBlockNumber(next);
-
-			opaque = BM25PageGetOpaque(page);
-			opaque->nextblk = nextblk;
+			hdr->count = pagecount;
+			((PageHeader) page)->pd_lower = (char *) streamptr - (char *) page;
+			next = bm25_new_buffer(index);
+			nextblk = BufferGetBlockNumber(next);
+			BM25PageGetOpaque(page)->nextblk = nextblk;
 			GenericXLogFinish(state);
 			UnlockReleaseBuffer(buffer);
 			buffer = next;
 			state = GenericXLogStart(index);
 			page = GenericXLogRegisterBuffer(state, buffer, GENERIC_XLOG_FULL_IMAGE);
 			bm25_init_page(page, BM25_POSTING);
+			hdr = (BM25PostingPageHdr *) PageGetContents(page);
+			hdr->count = 0;
+			streamptr = (unsigned char *) (hdr + 1);
+			prev_docid = 0;
+			pagecount = 0;
+			continue;			/* retry this posting on the fresh page */
 		}
-		else
-		{
-			GenericXLogFinish(state);
-			UnlockReleaseBuffer(buffer);
-			buffer = InvalidBuffer;
-		}
+
+		memcpy(streamptr, tmp, enclen);
+		streamptr += enclen;
+		prev_docid = sorted[i].docid;
+		pagecount++;
+		i++;
 	}
 
+	if (buffer != InvalidBuffer)
+	{
+		hdr->count = pagecount;
+		((PageHeader) page)->pd_lower = (char *) streamptr - (char *) page;
+		GenericXLogFinish(state);
+		UnlockReleaseBuffer(buffer);
+	}
+
+	pfree(sorted);
 	return first;
 }
 
@@ -565,7 +713,7 @@ bm25_insert(Relation index, Datum *values, bool *isnull,
 			appended = true;
 		}
 		if (!appended)
-			LockBuffer(tailbuf, BUFFER_LOCK_UNLOCK);
+			UnlockReleaseBuffer(tailbuf);	/* re-read below as oldtail */
 	}
 
 	/* Need a fresh pending page (either none yet, or the tail is full). */
@@ -716,13 +864,11 @@ bm25_merge_pending(Relation index)
 
 				LockBuffer(pb, BUFFER_LOCK_SHARE);
 				pp = BufferGetPage(pb);
-				post = (BM25Posting *) PageGetContents(pp);
-				np = (((PageHeader) pp)->pd_lower -
-					  ((char *) PageGetContents(pp) - (char *) pp)) /
-					sizeof(BM25Posting);
+				np = bm25_page_decode(pp, &post);
 				for (k = 0; k < np; k++)
 					add_posting(&bs, de->term, de->termlen,
 								&post[k].tid, post[k].tf);
+				pfree(post);
 				pblk = BM25PageGetOpaque(pp)->nextblk;
 				UnlockReleaseBuffer(pb);
 			}
