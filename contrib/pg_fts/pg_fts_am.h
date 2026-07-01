@@ -108,19 +108,33 @@ typedef struct BM25Posting
 } BM25Posting;
 
 /*
- * Posting pages store postings delta+varint compressed, not as a raw
- * BM25Posting array.  The page contents begin with a uint32 count, followed by
- * a varint stream: for each posting, the docid gap (this docid - previous,
- * where docid = block*MaxHeapTuplesPerPage + offset), the tf, and the document
- * length.  docids are written in ascending order within a term so gaps are
- * small.  Readers use bm25_page_decode().  This is the posting compression
- * that keeps the index compact at scale; per-posting |D| enables exact BM25
- * length normalization without a heap fetch.
+ * Posting pages hold one or more fixed-size BLOCKS of up to BM25_BLOCK_SIZE
+ * postings (the Lucene/Tantivy 128-doc block design).  Each block is a
+ * BM25BlockHdr followed by a varint stream of (docid-gap, tf, doclen) for its
+ * postings; docid gaps are relative to first_docid within the block.  Per-block
+ * max_tf gives block-max WAND a tight impact bound (finer than per-page), and
+ * first_docid lets a cursor skip an entire block whose docids are all below a
+ * target.  (Varint is the current intra-block encoding; FOR/PFOR bit-packing
+ * is a later drop-in swap of just the block payload.)
+ */
+#define BM25_BLOCK_SIZE 128
+
+typedef struct BM25BlockHdr
+{
+	uint32		count;			/* postings in this block (<= BM25_BLOCK_SIZE) */
+	uint32		max_tf;			/* max tf in this block (block-max WAND bound) */
+	uint32		first_docid_hi;
+	uint32		first_docid_lo;
+	uint32		bytelen;		/* byte length of the varint stream that follows */
+} BM25BlockHdr;
+
+/*
+ * Legacy per-page posting header (format v1); retained only so the struct name
+ * still resolves.  v2 uses BM25BlockHdr blocks.
  */
 typedef struct BM25PostingPageHdr
 {
-	uint32		count;			/* number of postings encoded on this page */
-	/* varint stream follows */
+	uint32		count;
 } BM25PostingPageHdr;
 
 /*

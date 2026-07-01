@@ -1311,3 +1311,31 @@ SELECT fts_index_nsegments('tier_bm25') <= 8 AS segments_bounded;        -- t (c
 
 RESET enable_seqscan;
 DROP TABLE tier;
+-- FOR-128 block posting codec: a term spanning many 128-doc blocks and pages
+-- decodes correctly and block-max WAND top-k matches a full scan+sort.
+CREATE TABLE blk (id serial, d ftsdoc);
+INSERT INTO blk(d) SELECT to_ftsdoc('pop '||repeat('pop ',(g%7))||'w'||g)
+  FROM generate_series(1,3000) g;      -- 'pop' in 3000 docs, >20 blocks/page
+CREATE INDEX blk_bm25 ON blk USING bm25 (d);
+SET enable_seqscan = off;
+SELECT count(*) AS pop_ct FROM blk WHERE d @@@ 'pop'::ftsquery;   -- 3000
+ pop_ct 
+--------
+   3000
+(1 row)
+
+-- WAND top-10 distances equal a full seqscan sort's top-10 distances
+CREATE TEMP TABLE w AS SELECT round((d <=> 'pop'::ftsquery)::numeric,6) dist
+  FROM blk WHERE d @@@ 'pop'::ftsquery ORDER BY dist LIMIT 10;
+SET enable_indexscan = off; SET enable_bitmapscan = off; SET enable_seqscan = on;
+CREATE TEMP TABLE f AS SELECT round((d <=> 'pop'::ftsquery)::numeric,6) dist
+  FROM blk WHERE d @@@ 'pop'::ftsquery ORDER BY dist LIMIT 10;
+SELECT (SELECT array_agg(dist ORDER BY dist) FROM w)
+     = (SELECT array_agg(dist ORDER BY dist) FROM f) AS wand_scores_match_fullsort;
+ wand_scores_match_fullsort 
+----------------------------
+ t
+(1 row)
+
+RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
+DROP TABLE blk;

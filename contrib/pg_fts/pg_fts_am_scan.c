@@ -1073,10 +1073,11 @@ typedef struct WandCursor
 	BlockNumber curblk;			/* block of the currently loaded page */
 	BlockNumber firstblk;		/* first posting block for the term */
 	BM25Posting *posts;			/* decoded postings of the current page */
+	uint32	   *blockmax;		/* per-posting 128-block max_tf (block-max WAND) */
 	int			nposts;			/* count on the current page */
 	int			cur;			/* index within the current page */
 	uint64		docid;			/* current docid (UINT64_MAX = exhausted) */
-	uint32		block_max_tf;	/* block-max tf of the current page */
+	uint32		block_max_tf;	/* unused (kept for ABI of readers) */
 	double		idf;
 	double		avgdl;
 	double		max_contrib;	/* term-wide upper bound (shortest-doc norm) */
@@ -1102,6 +1103,11 @@ wand_load_page(WandCursor *c, BlockNumber blk)
 		pfree(c->posts);
 		c->posts = NULL;
 	}
+	if (c->blockmax)
+	{
+		pfree(c->blockmax);
+		c->blockmax = NULL;
+	}
 	if (blk == InvalidBlockNumber)
 	{
 		c->curblk = InvalidBlockNumber;
@@ -1113,8 +1119,7 @@ wand_load_page(WandCursor *c, BlockNumber blk)
 	buf = ReadBuffer(c->index, blk);
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	page = BufferGetPage(buf);
-	c->nposts = bm25_page_decode(page, &c->posts);
-	c->block_max_tf = BM25PageGetOpaque(page)->block_max_tf;
+	c->nposts = bm25_page_decode_bm(page, &c->posts, &c->blockmax);
 	c->curblk = blk;
 	c->cur = 0;
 	c->docid = c->nposts > 0 ? tid_to_docid_s(&c->posts[0].tid) : UINT64_MAX;
@@ -1130,13 +1135,13 @@ wand_load_page(WandCursor *c, BlockNumber blk)
 	UnlockReleaseBuffer(buf);
 }
 
-/* The block-max contribution upper bound for the current page. */
+/* The block-max contribution upper bound for the current posting's 128-block. */
 static inline double
 wand_block_max_contrib(WandCursor *c)
 {
 	double		k1 = 1.2,
 				b = 0.75;
-	double		mtf = (double) c->block_max_tf;
+	double		mtf = (double) (c->cur < c->nposts ? c->blockmax[c->cur] : 0);
 
 	return c->idf * mtf * (k1 + 1.0) / (mtf + k1 * (1.0 - b));
 }
@@ -1399,6 +1404,7 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 			cursors[nactive].index = index;
 			cursors[nactive].firstblk = firstblk;
 			cursors[nactive].posts = NULL;
+			cursors[nactive].blockmax = NULL;
 			cursors[nactive].nposts = 0;
 			cursors[nactive].cur = 0;
 			cursors[nactive].docid = 0;
