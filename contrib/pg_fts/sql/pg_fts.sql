@@ -157,6 +157,26 @@ SELECT id FROM pfx WHERE d @@@ 'qui*'::ftsquery ORDER BY id;
 RESET enable_seqscan;
 DROP TABLE pfx;
 
+-- Stage 5: index-maintained corpus statistics for BM25.
+ALTER EXTENSION pg_fts UPDATE TO '1.7';
+CREATE TABLE corpus (id serial, d ftsdoc);
+INSERT INTO corpus (d)
+SELECT to_ftsdoc('common ' || CASE WHEN g % 10 = 0 THEN 'rare' ELSE 'filler' END)
+FROM generate_series(1, 100) g;
+CREATE INDEX corpus_bm25 ON corpus USING bm25 (d);
+-- stats reflect the corpus: 100 docs
+SELECT ndocs, nterms FROM fts_index_stats('corpus_bm25');
+-- 'rare' (df=10) scores higher than 'common' (df=100) using index df
+SELECT fts_index_df('corpus_bm25', 'rare'::ftsquery) AS df_rare,
+       fts_index_df('corpus_bm25', 'common'::ftsquery) AS df_common;
+SELECT (SELECT fts_bm25(to_ftsdoc('common rare'), 'rare'::ftsquery,
+                        s.ndocs, s.avgdl, fts_index_df('corpus_bm25', 'rare'::ftsquery)))
+     > (SELECT fts_bm25(to_ftsdoc('common rare'), 'common'::ftsquery,
+                        s.ndocs, s.avgdl, fts_index_df('corpus_bm25', 'common'::ftsquery)))
+       AS rare_outranks_common
+FROM fts_index_stats('corpus_bm25') s;
+DROP TABLE corpus;
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 

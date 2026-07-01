@@ -609,3 +609,125 @@ bm25_endscan(IndexScanDesc scan)
 {
 	/* memory is freed with the scan's context */
 }
+
+/* ----- index-maintained corpus statistics (stage 5) ----- */
+
+/* Look up the document frequency of a term in the index, 0 if absent. */
+static uint32
+bm25_lookup_df(Relation index, BlockNumber dictstart,
+			   const char *term, int termlen)
+{
+	BlockNumber blk = dictstart;
+
+	while (blk != InvalidBlockNumber)
+	{
+		Buffer		buffer = ReadBuffer(index, blk);
+		Page		page;
+		char	   *ptr,
+				   *end;
+		BlockNumber next;
+		uint32		df = 0;
+		bool		found = false;
+
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buffer);
+		ptr = (char *) PageGetContents(page);
+		end = (char *) page + ((PageHeader) page)->pd_lower;
+		next = BM25PageGetOpaque(page)->nextblk;
+
+		while (ptr < end)
+		{
+			BM25DictEntry *de = (BM25DictEntry *) ptr;
+			Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
+
+			if ((int) de->termlen == termlen &&
+				memcmp(de->term, term, termlen) == 0)
+			{
+				df = de->df;
+				found = true;
+				break;
+			}
+			ptr += esize;
+		}
+		UnlockReleaseBuffer(buffer);
+		if (found)
+			return df;
+		blk = next;
+	}
+	return 0;
+}
+
+PG_FUNCTION_INFO_V1(fts_index_stats);
+
+/* fts_index_stats(regclass) -> (ndocs float8, avgdl float8, nterms int) */
+Datum
+fts_index_stats(PG_FUNCTION_ARGS)
+{
+	Oid			indexoid = PG_GETARG_OID(0);
+	Relation	index;
+	BM25MetaPageData meta;
+	TupleDesc	tupdesc;
+	Datum		values[3];
+	bool		nulls[3] = {false, false, false};
+	HeapTuple	tuple;
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	tupdesc = BlessTupleDesc(tupdesc);
+
+	index = index_open(indexoid, AccessShareLock);
+	if (index->rd_rel->relam != get_index_am_oid("bm25", true))
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is not a bm25 index",
+						RelationGetRelationName(index))));
+	bm25_read_meta(index, &meta);
+	index_close(index, AccessShareLock);
+
+	values[0] = Float8GetDatum(meta.ndocs);
+	values[1] = Float8GetDatum(meta.ndocs > 0 ?
+							   meta.sumdoclen / meta.ndocs : 0.0);
+	values[2] = Int32GetDatum((int32) meta.nterms);
+
+	tuple = heap_form_tuple(tupdesc, values, nulls);
+	PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
+}
+
+PG_FUNCTION_INFO_V1(fts_index_df);
+
+/* fts_index_df(regclass, ftsquery) -> float8[] of df per distinct query term */
+Datum
+fts_index_df(PG_FUNCTION_ARGS)
+{
+	Oid			indexoid = PG_GETARG_OID(0);
+	FtsQuery	q = PG_GETARG_FTSQUERY(1);
+	Relation	index;
+	BM25MetaPageData meta;
+	Datum	   *elems;
+	int			n = 0;
+	uint32		i;
+	ArrayType  *result;
+
+	index = index_open(indexoid, AccessShareLock);
+	bm25_read_meta(index, &meta);
+
+	elems = (Datum *) palloc(q->nitems * sizeof(Datum));
+	for (i = 0; i < q->nitems; i++)
+	{
+		FtsQueryItem *it = &q->items[i];
+
+		if (it->type == FTS_QI_VAL)
+		{
+			uint32		df = bm25_lookup_df(index, meta.dictstart,
+											FTS_QUERY_ITEMTEXT(q, it),
+											it->termlen);
+
+			elems[n++] = Float8GetDatum((double) (df == 0 ? 1 : df));
+		}
+	}
+	index_close(index, AccessShareLock);
+
+	result = construct_array(elems, n, FLOAT8OID, 8, true, 'd');
+	PG_FREE_IF_COPY(q, 1);
+	PG_RETURN_ARRAYTYPE_P(result);
+}
