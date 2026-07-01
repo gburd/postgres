@@ -12,6 +12,7 @@ OBJS = \
 	pg_fts_aux.o \
 	pg_fts_migrate.o \
 	pg_fts_trgm.o \
+	vendor/sm.o \
 	pg_fts_match.o
 
 EXTENSION = pg_fts
@@ -44,3 +45,7 @@ top_builddir = ../..
 include $(top_builddir)/src/Makefile.global
 include $(top_srcdir)/contrib/contrib-global.mk
 endif
+
+# Vendored sparsemap uses C99 mixed declarations; suppress that one warning for
+# it only (public symbols are namespaced to __pg_bm25_* via pg_fts_sm.h).
+vendor/sm.o: CFLAGS += -Wno-declaration-after-statement

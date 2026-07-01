@@ -13,6 +13,17 @@ pg_fts_sources = files(
   'pg_fts_match.c',
 )
 
+# Vendored sparsemap: compiled separately with relaxed warnings (it uses C99
+# mixed declarations) and its public symbols namespaced to __pg_bm25_* (see
+# pg_fts_sm.h / vendor/sm.c) so a second copy in another extension cannot
+# collide at load time.
+pg_fts_sparsemap = static_library('pg_fts_sparsemap',
+  files('vendor/sm.c'),
+  c_args: cflags_mod + ['-Wno-declaration-after-statement'],
+  include_directories: postgres_inc,
+  kwargs: default_lib_args,
+)
+
 if host_system == 'windows'
   pg_fts_sources += rc_lib_gen.process(win32ver_rc, extra_args: [
     '--NAME', 'pg_fts',
@@ -21,6 +32,7 @@ endif
 
 pg_fts = shared_module('pg_fts',
   pg_fts_sources,
+  link_with: pg_fts_sparsemap,
   c_pch: pch_postgres_h,
   kwargs: contrib_mod_args,
 )
