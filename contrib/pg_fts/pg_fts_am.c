@@ -286,6 +286,100 @@ bm25_varint_decode(const unsigned char *buf, int *pos)
 #define BM25_MAX_POSTING_BYTES (10 + 5 + 5)
 
 /*
+ * FOR (frame-of-reference) bit-packing of a block's three columns (docid gaps,
+ * tfs, doclens) as Structure-of-Arrays.  Each column is [u8 bitwidth][packed
+ * little-endian bitstream of `n` values].  Small, uniform values (the common
+ * case for delta-coded docids and tf/doclen) pack to a few bits each instead of
+ * a whole varint byte -- this both shrinks the index and cuts decode cost.
+ * Width 0 means every value is 0 (no bits stored).
+ */
+static inline int
+bm25_bitwidth(uint64 maxval)
+{
+	int			w = 0;
+
+	while (maxval)
+	{
+		w++;
+		maxval >>= 1;
+	}
+	return w;				/* 0 if maxval==0 */
+}
+
+/* pack n values at `width` bits each into buf starting at bit offset 0; returns
+ * bytes written (including the leading width byte). */
+static int
+bm25_for_pack(const uint64 *vals, int n, unsigned char *buf)
+{
+	uint64		maxv = 0;
+	int			width;
+	int			i;
+	int			bitpos;
+	int			nbytes;
+
+	for (i = 0; i < n; i++)
+		if (vals[i] > maxv)
+			maxv = vals[i];
+	width = bm25_bitwidth(maxv);
+	buf[0] = (unsigned char) width;
+	if (width == 0)
+		return 1;
+	nbytes = 1 + (n * width + 7) / 8;
+	memset(buf + 1, 0, nbytes - 1);
+	bitpos = 0;
+	for (i = 0; i < n; i++)
+	{
+		uint64		v = vals[i];
+		int			b;
+
+		for (b = 0; b < width; b++)
+		{
+			if (v & ((uint64) 1 << b))
+			{
+				int			abs = bitpos + b;
+
+				buf[1 + (abs >> 3)] |= (unsigned char) (1 << (abs & 7));
+			}
+		}
+		bitpos += width;
+	}
+	return nbytes;
+}
+
+/* unpack n values at the width stored in buf[0]; returns bytes consumed. */
+static int
+bm25_for_unpack(const unsigned char *buf, int n, uint64 *out)
+{
+	int			width = buf[0];
+	int			i;
+	int			bitpos;
+
+	if (width == 0)
+	{
+		for (i = 0; i < n; i++)
+			out[i] = 0;
+		return 1;
+	}
+	bitpos = 0;
+	for (i = 0; i < n; i++)
+	{
+		uint64		v = 0;
+		int			b;
+
+		for (b = 0; b < width; b++)
+		{
+			int			abs = bitpos + b;
+
+			if (buf[1 + (abs >> 3)] & (1 << (abs & 7)))
+				v |= (uint64) 1 << b;
+		}
+		out[i] = v;
+		bitpos += width;
+	}
+	return 1 + (n * width + 7) / 8;
+}
+
+/*
  * Decode all postings on a page (across all its blocks) into a palloc'd array.
  * Returns the total count.  If blockmax != NULL, *blockmax is a palloc'd array
  * (one entry per posting) giving the max_tf of the 128-block that posting
@@ -321,19 +415,25 @@ bm25_page_decode_bm(Page page, BM25Posting **out, uint32 **blockmax)
 				bmax = bmax ? repalloc(bmax, cap * sizeof(uint32))
 					: palloc(cap * sizeof(uint32));
 		}
-		for (i = 0; i < (int) bh->count; i++)
 		{
-			uint64		gap = bm25_varint_decode(stream, &pos);
-			uint32		tf = (uint32) bm25_varint_decode(stream, &pos);
-			uint32		doclen = (uint32) bm25_varint_decode(stream, &pos);
+			uint64		gaps[BM25_BLOCK_SIZE];
+			uint64		tfs[BM25_BLOCK_SIZE];
+			uint64		dls[BM25_BLOCK_SIZE];
+			int			cnt = (int) bh->count;
 
-			docid += gap;		/* first posting has gap 0 from first_docid */
-			bm25_docid_to_tid(docid, &posts[n].tid);
-			posts[n].tf = tf;
-			posts[n].doclen = doclen;
-			if (bmax)
-				bmax[n] = bh->max_tf;
-			n++;
+			pos += bm25_for_unpack(stream + pos, cnt, gaps);
+			pos += bm25_for_unpack(stream + pos, cnt, tfs);
+			pos += bm25_for_unpack(stream + pos, cnt, dls);
+			for (i = 0; i < cnt; i++)
+			{
+				docid += gaps[i];	/* first gap is 0 from first_docid */
+				bm25_docid_to_tid(docid, &posts[n].tid);
+				posts[n].tf = (uint32) tfs[i];
+				posts[n].doclen = (uint32) dls[i];
+				if (bmax)
+					bmax[n] = bh->max_tf;
+				n++;
+			}
 		}
 		p = (char *) (bh + 1) + bh->bytelen;
 		p = (char *) MAXALIGN(p);
@@ -479,7 +579,10 @@ bm25_write_postings(Relation index, BuildTerm *bt)
 	i = 0;
 	while (i < bt->nposts)
 	{
-		unsigned char scratch[BM25_BLOCK_SIZE * BM25_MAX_POSTING_BYTES];
+		uint64		gaps[BM25_BLOCK_SIZE];
+		uint64		tfs[BM25_BLOCK_SIZE];
+		uint64		dls[BM25_BLOCK_SIZE];
+		unsigned char scratch[3 * (1 + (BM25_BLOCK_SIZE * 64 + 7) / 8)];
 		int			sclen = 0;
 		uint32		blk_max_tf = 0;
 		uint64		blk_first_docid = sorted[i].docid;
@@ -490,20 +593,23 @@ bm25_write_postings(Relation index, BuildTerm *bt)
 		char	   *dst;
 		BM25BlockHdr *bh;
 
-		/* encode one block (first posting has gap 0 from blk_first_docid) */
+		/* gather up to BM25_BLOCK_SIZE postings into columns (SoA) */
 		while (i < bt->nposts && bcount < BM25_BLOCK_SIZE)
 		{
-			uint64		gap = sorted[i].docid - prev_docid;
-
-			sclen += bm25_varint_encode(gap, scratch + sclen);
-			sclen += bm25_varint_encode((uint64) sorted[i].tf, scratch + sclen);
-			sclen += bm25_varint_encode((uint64) sorted[i].doclen, scratch + sclen);
+			gaps[bcount] = sorted[i].docid - prev_docid;	/* first gap is 0 */
+			tfs[bcount] = sorted[i].tf;
+			dls[bcount] = sorted[i].doclen;
 			if (sorted[i].tf > blk_max_tf)
 				blk_max_tf = sorted[i].tf;
 			prev_docid = sorted[i].docid;
 			bcount++;
 			i++;
 		}
+
+		/* FOR bit-pack the three columns */
+		sclen += bm25_for_pack(gaps, bcount, scratch + sclen);
+		sclen += bm25_for_pack(tfs, bcount, scratch + sclen);
+		sclen += bm25_for_pack(dls, bcount, scratch + sclen);
 
 		need = MAXALIGN(sizeof(BM25BlockHdr) + sclen);
 
