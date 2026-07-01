@@ -397,6 +397,20 @@ FROM (SELECT r.score AS s, lead(r.score) OVER (ORDER BY r.score DESC) AS lead_s
 WHERE lead_s IS NOT NULL;
 DROP TABLE wnd;
 
+-- Lazy block-max WAND: correct top-k over a multi-page posting list.
+CREATE TABLE lazy (id serial, d ftsdoc);
+-- 2000 docs of 'term': posting list spans many pages; one doc has high tf
+INSERT INTO lazy (d) SELECT to_ftsdoc('term') FROM generate_series(1, 2000);
+INSERT INTO lazy (d) VALUES (to_ftsdoc('term term term term term'));  -- id 2001
+CREATE INDEX lazy_bm25 ON lazy USING bm25 (d);
+-- top-1 must be the high-tf doc (id 2001), found via block-max skipping
+SELECT l.id
+FROM fts_search('lazy_bm25', 'term'::ftsquery, 1) r JOIN lazy l ON l.ctid = r.ctid;
+-- top-3 all correct and the whole list is searchable
+SELECT count(*) AS matched
+FROM fts_search('lazy_bm25', 'term'::ftsquery, 5000) r JOIN lazy l ON l.ctid = r.ctid;
+DROP TABLE lazy;
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 

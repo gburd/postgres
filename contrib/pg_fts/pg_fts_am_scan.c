@@ -671,6 +671,60 @@ bm25_endscan(IndexScanDesc scan)
 
 /* ----- index-maintained corpus statistics (stage 5) ----- */
 
+/*
+ * Look up a term's dictionary entry (df, max_tf, first posting block) without
+ * reading any postings.  Returns true if found.  This is what the lazy WAND
+ * cursors need to start; postings are then paged in on demand.
+ */
+static bool
+bm25_lookup_dict(Relation index, BlockNumber dictstart,
+				 const char *term, int termlen,
+				 uint32 *df, uint32 *max_tf, BlockNumber *firstposting)
+{
+	BlockNumber blk = dictstart;
+
+	while (blk != InvalidBlockNumber)
+	{
+		Buffer		buffer = ReadBuffer(index, blk);
+		Page		page;
+		char	   *ptr,
+				   *end;
+		BlockNumber next;
+		bool		found = false;
+
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buffer);
+		ptr = (char *) PageGetContents(page);
+		end = (char *) page + ((PageHeader) page)->pd_lower;
+		next = BM25PageGetOpaque(page)->nextblk;
+
+		while (ptr < end)
+		{
+			BM25DictEntry *de = (BM25DictEntry *) ptr;
+			Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
+
+			if ((int) de->termlen == termlen &&
+				memcmp(de->term, term, termlen) == 0)
+			{
+				*df = de->df;
+				*max_tf = de->max_tf;
+				*firstposting = de->firstposting;
+				found = true;
+				break;
+			}
+			ptr += esize;
+		}
+		UnlockReleaseBuffer(buffer);
+		if (found)
+			return true;
+		blk = next;
+	}
+	*df = 0;
+	*max_tf = 0;
+	*firstposting = InvalidBlockNumber;
+	return false;
+}
+
 /* Look up the document frequency of a term in the index, 0 if absent. */
 static uint32
 bm25_lookup_df(Relation index, BlockNumber dictstart,
@@ -796,104 +850,6 @@ fts_index_df(PG_FUNCTION_ARGS)
 #include "funcapi.h"
 #include "access/htup_details.h"
 
-/* Read a term's full posting list plus its df/max_tf from the index. */
-typedef struct TermPostings
-{
-	BM25Posting *posts;
-	int			nposts;
-	uint32		df;
-	uint32		max_tf;
-	double		idf;
-} TermPostings;
-
-static bool
-bm25_read_term_postings(Relation index, BlockNumber dictstart,
-						const char *term, int termlen, TermPostings *out)
-{
-	BlockNumber blk = dictstart;
-
-	while (blk != InvalidBlockNumber)
-	{
-		Buffer		buffer = ReadBuffer(index, blk);
-		Page		page;
-		char	   *ptr,
-				   *end;
-		BlockNumber next;
-		BlockNumber firstposting = InvalidBlockNumber;
-		uint32		df = 0,
-					max_tf = 0;
-		bool		found = false;
-
-		LockBuffer(buffer, BUFFER_LOCK_SHARE);
-		page = BufferGetPage(buffer);
-		ptr = (char *) PageGetContents(page);
-		end = (char *) page + ((PageHeader) page)->pd_lower;
-		next = BM25PageGetOpaque(page)->nextblk;
-
-		while (ptr < end)
-		{
-			BM25DictEntry *de = (BM25DictEntry *) ptr;
-			Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
-
-			if ((int) de->termlen == termlen &&
-				memcmp(de->term, term, termlen) == 0)
-			{
-				firstposting = de->firstposting;
-				df = de->df;
-				max_tf = de->max_tf;
-				found = true;
-				break;
-			}
-			ptr += esize;
-		}
-		UnlockReleaseBuffer(buffer);
-
-		if (found)
-		{
-			BlockNumber pblk = firstposting;
-			int			cap = Max((int) df, 8);
-			int			n = 0;
-			BM25Posting *posts = palloc(cap * sizeof(BM25Posting));
-
-			while (pblk != InvalidBlockNumber)
-			{
-				Buffer		pb = ReadBuffer(index, pblk);
-				Page		pp;
-				BM25Posting *src;
-				int			np,
-							k;
-
-				LockBuffer(pb, BUFFER_LOCK_SHARE);
-				pp = BufferGetPage(pb);
-				np = bm25_page_decode(pp, &src);
-				for (k = 0; k < np; k++)
-				{
-					if (n >= cap)
-					{
-						cap *= 2;
-						posts = repalloc(posts, cap * sizeof(BM25Posting));
-					}
-					posts[n++] = src[k];
-				}
-				pfree(src);
-				pblk = BM25PageGetOpaque(pp)->nextblk;
-				UnlockReleaseBuffer(pb);
-			}
-			out->posts = posts;
-			out->nposts = n;
-			out->df = df;
-			out->max_tf = max_tf;
-			return true;
-		}
-		blk = next;
-	}
-	out->posts = NULL;
-	out->nposts = 0;
-	out->df = 0;
-	out->max_tf = 0;
-	return false;
-}
-
 /*
  * fts_search(index regclass, query ftsquery, k int)
  *   -> setof (ctid tid, score float8)
@@ -904,14 +860,13 @@ bm25_read_term_postings(Relation index, BlockNumber dictstart,
  * check on each document's best possible score prunes documents that cannot
  * enter the current top-k, which is the early-termination win.
  *
- * The document-length term of BM25 needs |D|, which the postings do not carry;
- * we approximate per-document length by avgdl for the ranking here (exact |D|
- * is available at recheck, or once postings store doclen -- future work).  The
- * ordering and pruning are otherwise the standard BM25 WAND.
+ * Cursors load posting pages lazily and use each page's block-max_tf (stored in
+ * the page opaque) to skip entire pages whose best possible contribution cannot
+ * beat the current top-k threshold -- block-max WAND -- so most of a long
+ * posting list is never decoded.  Per-document |D| is read from the postings
+ * for exact BM25 length normalization.
  */
-/* ----- document-at-a-time WAND top-k (item 2) ----- */
-
-/* ----- document-at-a-time WAND top-k (item 2) ----- */
+/* ----- document-at-a-time block-max WAND top-k (item 2) ----- */
 
 typedef struct ScoredTid
 {
@@ -934,37 +889,119 @@ cmp_scored_desc(const void *a, const void *b)
 
 /*
  * A per-term cursor for the WAND merge.  posts is the term's docid-sorted
- * posting list (already read); cur is the current index; docid is the current
- * posting's docid (UINT64_MAX when exhausted); max_contrib is the term's
- * largest possible BM25 contribution (from max_tf), the WAND upper bound.
+ * posting list; cursors load posting pages lazily from the index and skip
+ * whole pages via the page block-max when they cannot beat the threshold.
  */
 typedef struct WandCursor
 {
-	BM25Posting *posts;
-	int			nposts;
-	int			cur;
-	uint64		docid;
+	Relation	index;
+	BlockNumber curblk;			/* block of the currently loaded page */
+	BlockNumber firstblk;		/* first posting block for the term */
+	BM25Posting *posts;			/* decoded postings of the current page */
+	int			nposts;			/* count on the current page */
+	int			cur;			/* index within the current page */
+	uint64		docid;			/* current docid (UINT64_MAX = exhausted) */
+	uint32		block_max_tf;	/* block-max tf of the current page */
 	double		idf;
 	double		avgdl;
-	double		max_contrib;
+	double		max_contrib;	/* term-wide upper bound (shortest-doc norm) */
 }			WandCursor;
 
 static inline uint64
-wand_docid_at(WandCursor *c, int i)
+tid_to_docid_s(ItemPointer tid)
 {
-	return (uint64) ItemPointerGetBlockNumber(&c->posts[i].tid) *
+	return (uint64) ItemPointerGetBlockNumber(tid) *
 		(uint64) MaxHeapTuplesPerPage +
-		(uint64) ItemPointerGetOffsetNumber(&c->posts[i].tid);
+		(uint64) ItemPointerGetOffsetNumber(tid);
 }
 
-/* Exact BM25 contribution of one posting, using the stored per-doc |D|. */
+/* Load the posting page at blk into the cursor (decode + block-max). */
+static void
+wand_load_page(WandCursor *c, BlockNumber blk)
+{
+	Buffer		buf;
+	Page		page;
+
+	if (c->posts)
+	{
+		pfree(c->posts);
+		c->posts = NULL;
+	}
+	if (blk == InvalidBlockNumber)
+	{
+		c->curblk = InvalidBlockNumber;
+		c->nposts = 0;
+		c->cur = 0;
+		c->docid = UINT64_MAX;
+		return;
+	}
+	buf = ReadBuffer(c->index, blk);
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buf);
+	c->nposts = bm25_page_decode(page, &c->posts);
+	c->block_max_tf = BM25PageGetOpaque(page)->block_max_tf;
+	c->curblk = blk;
+	c->cur = 0;
+	c->docid = c->nposts > 0 ? tid_to_docid_s(&c->posts[0].tid) : UINT64_MAX;
+	/* if this page turned out empty, advance to the next */
+	if (c->nposts == 0)
+	{
+		BlockNumber next = BM25PageGetOpaque(page)->nextblk;
+
+		UnlockReleaseBuffer(buf);
+		wand_load_page(c, next);
+		return;
+	}
+	UnlockReleaseBuffer(buf);
+}
+
+/* The block-max contribution upper bound for the current page. */
 static inline double
-wand_contrib(WandCursor *c, int i)
+wand_block_max_contrib(WandCursor *c)
 {
 	double		k1 = 1.2,
 				b = 0.75;
-	double		tf = (double) c->posts[i].tf;
-	double		dl = (double) c->posts[i].doclen;
+	double		mtf = (double) c->block_max_tf;
+
+	return c->idf * mtf * (k1 + 1.0) / (mtf + k1 * (1.0 - b));
+}
+
+/* Advance the cursor to the next posting, loading the next page if needed. */
+static void
+wand_next(WandCursor *c)
+{
+	c->cur++;
+	if (c->cur < c->nposts)
+	{
+		c->docid = tid_to_docid_s(&c->posts[c->cur].tid);
+		return;
+	}
+	/* page exhausted: load the next block in the chain */
+	{
+		Buffer		buf;
+		BlockNumber next;
+
+		if (c->curblk == InvalidBlockNumber)
+		{
+			c->docid = UINT64_MAX;
+			return;
+		}
+		buf = ReadBuffer(c->index, c->curblk);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		next = BM25PageGetOpaque(BufferGetPage(buf))->nextblk;
+		UnlockReleaseBuffer(buf);
+		wand_load_page(c, next);
+	}
+}
+
+/* Exact BM25 contribution of the current posting, using stored per-doc |D|. */
+static inline double
+wand_contrib_cur(WandCursor *c)
+{
+	double		k1 = 1.2,
+				b = 0.75;
+	double		tf = (double) c->posts[c->cur].tf;
+	double		dl = (double) c->posts[c->cur].doclen;
 	double		norm = tf + k1 * (1.0 - b + b * dl / c->avgdl);
 
 	return c->idf * tf * (k1 + 1.0) / norm;
@@ -986,10 +1023,9 @@ fts_search_wand(WandCursor *cursors, int nterms, int k, ScoredTid **out)
 
 	heap = (ScoredTid *) palloc(Max(k, 1) * sizeof(ScoredTid));
 
-	/* initialize cursor docids */
+	/* prime each cursor with its first page */
 	for (t = 0; t < nterms; t++)
-		cursors[t].docid = cursors[t].nposts > 0 ?
-			wand_docid_at(&cursors[t], 0) : UINT64_MAX;
+		wand_load_page(&cursors[t], cursors[t].firstblk);
 
 	for (;;)
 	{
@@ -998,7 +1034,6 @@ fts_search_wand(WandCursor *cursors, int nterms, int k, ScoredTid **out)
 		uint64		pivot_docid;
 		double		maxsum;
 		double		score;
-		bool		any = false;
 
 		/* selection-sort cursors by current docid (nterms is small) */
 		for (i = 0; i < nterms; i++)
@@ -1041,14 +1076,8 @@ fts_search_wand(WandCursor *cursors, int nterms, int k, ScoredTid **out)
 
 			score = 0.0;
 			for (i = 0; i < nterms; i++)
-			{
 				if (cursors[i].docid == pivot_docid)
-				{
-					score += wand_contrib(&cursors[i], cursors[i].cur);
-					any = true;
-				}
-			}
-			(void) any;
+					score += wand_contrib_cur(&cursors[i]);
 
 			/* push into the top-k min-heap */
 			if (nheap < k)
@@ -1058,7 +1087,6 @@ fts_search_wand(WandCursor *cursors, int nterms, int k, ScoredTid **out)
 				nheap++;
 				if (nheap == k)
 				{
-					/* find min for the threshold */
 					threshold = heap[0].score;
 					for (i = 1; i < nheap; i++)
 						if (heap[i].score < threshold)
@@ -1067,7 +1095,6 @@ fts_search_wand(WandCursor *cursors, int nterms, int k, ScoredTid **out)
 			}
 			else if (score > threshold)
 			{
-				/* replace the current minimum */
 				int			minpos = 0;
 
 				for (i = 1; i < nheap; i++)
@@ -1084,28 +1111,29 @@ fts_search_wand(WandCursor *cursors, int nterms, int k, ScoredTid **out)
 			/* advance every cursor positioned at the pivot */
 			for (i = 0; i < nterms; i++)
 				if (cursors[i].docid == pivot_docid)
-				{
-					cursors[i].cur++;
-					cursors[i].docid = cursors[i].cur < cursors[i].nposts ?
-						wand_docid_at(&cursors[i], cursors[i].cur) : UINT64_MAX;
-				}
+					wand_next(&cursors[i]);
 		}
 		else
 		{
-			/* advance cursors before the pivot up to pivot_docid */
+			/*
+			 * Advance cursors before the pivot toward pivot_docid.  Block-max
+			 * skipping: if the whole current page's best contribution cannot
+			 * lift a document above the threshold, skip past this posting; the
+			 * per-page block_max bound makes this sound.
+			 */
 			for (i = 0; i < nterms; i++)
 			{
-				if (cursors[i].docid < pivot_docid)
-				{
-					while (cursors[i].cur < cursors[i].nposts &&
-						   wand_docid_at(&cursors[i], cursors[i].cur) < pivot_docid)
-						cursors[i].cur++;
-					cursors[i].docid = cursors[i].cur < cursors[i].nposts ?
-						wand_docid_at(&cursors[i], cursors[i].cur) : UINT64_MAX;
-				}
+				while (cursors[i].docid != UINT64_MAX &&
+					   cursors[i].docid < pivot_docid)
+					wand_next(&cursors[i]);
 			}
 		}
 	}
+
+	/* release any still-loaded pages */
+	for (t = 0; t < nterms; t++)
+		if (cursors[t].posts)
+			pfree(cursors[t].posts);
 
 	qsort(heap, nheap, sizeof(ScoredTid), cmp_scored_desc);
 	*out = heap;
@@ -1133,7 +1161,6 @@ fts_search(PG_FUNCTION_ARGS)
 		const char **terms;
 		int		   *lens;
 		int			nterms;
-		TermPostings *tp;
 		int			t;
 		TupleDesc	tupdesc;
 
@@ -1153,19 +1180,13 @@ fts_search(PG_FUNCTION_ARGS)
 		avgdl = meta.ndocs > 0 ? meta.sumdoclen / meta.ndocs : 1.0;
 
 		nterms = fts_query_terms(q, &terms, &lens);
-		tp = (TermPostings *) palloc0(nterms * sizeof(TermPostings));
-		for (t = 0; t < nterms; t++)
-		{
-			bm25_read_term_postings(index, meta.dictstart,
-									terms[t], lens[t], &tp[t]);
-			tp[t].idf = log(1.0 + (N - (double) tp[t].df + 0.5) /
-							((double) tp[t].df + 0.5));
-		}
 
 		/*
-		 * Document-at-a-time WAND top-k.  We over-fetch candidates (more than
-		 * k) so that MVCC visibility filtering below can still return k visible
-		 * rows even when some high-scoring postings point at dead tuples.
+		 * Document-at-a-time block-max WAND top-k.  Cursors are initialized from
+		 * the dictionary only (df, max_tf, first block); posting pages are read
+		 * lazily and skipped via block-max during the scan.  We over-fetch
+		 * candidates (> k) so MVCC visibility filtering can still yield k visible
+		 * rows when high-scoring postings point at dead tuples.
 		 */
 		{
 			WandCursor *cursors = (WandCursor *) palloc(Max(nterms, 1) * sizeof(WandCursor));
@@ -1178,30 +1199,42 @@ fts_search(PG_FUNCTION_ARGS)
 			int			nvis = 0;
 			int			i;
 			double		k1 = 1.2;
+			int			nactive = 0;
 
 			for (t = 0; t < nterms; t++)
 			{
-				cursors[t].posts = tp[t].posts;
-				cursors[t].nposts = tp[t].nposts;
-				cursors[t].cur = 0;
-				cursors[t].idf = tp[t].idf;
-				cursors[t].avgdl = avgdl;
-				/*
-				 * WAND upper bound: contribution is maximized at tf = max_tf and
-				 * the shortest possible document.  |D| -> 0 gives the smallest
-				 * denominator norm = tf + k1*(1-b), a sound (never-underestimating)
-				 * upper bound so no qualifying document is ever pruned.
-				 */
-				{
-					double		mtf = (double) tp[t].max_tf;
-					double		b = 0.75;
+				uint32		df,
+							max_tf;
+				BlockNumber firstblk;
+				double		idf,
+							mtf,
+							b = 0.75;
 
-					cursors[t].max_contrib =
-						tp[t].idf * mtf * (k1 + 1.0) / (mtf + k1 * (1.0 - b));
-				}
+				if (!bm25_lookup_dict(index, meta.dictstart, terms[t], lens[t],
+									  &df, &max_tf, &firstblk))
+					continue;		/* term absent: skip */
+
+				idf = log(1.0 + (N - (double) df + 0.5) / ((double) df + 0.5));
+				mtf = (double) max_tf;
+				cursors[nactive].index = index;
+				cursors[nactive].firstblk = firstblk;
+				cursors[nactive].posts = NULL;
+				cursors[nactive].nposts = 0;
+				cursors[nactive].cur = 0;
+				cursors[nactive].docid = 0;
+				cursors[nactive].idf = idf;
+				cursors[nactive].avgdl = avgdl;
+				/*
+				 * WAND upper bound: maximized at tf = max_tf and the shortest
+				 * document (|D| -> 0 gives norm = tf + k1*(1-b)), a sound bound
+				 * that never underestimates so no qualifying hit is pruned.
+				 */
+				cursors[nactive].max_contrib =
+					idf * mtf * (k1 + 1.0) / (mtf + k1 * (1.0 - b));
+				nactive++;
 			}
 
-			ncand = fts_search_wand(cursors, nterms, wantk, &cand);
+			ncand = fts_search_wand(cursors, nactive, wantk, &cand);
 
 			/* MVCC: keep only visible tuples, in score order, up to k */
 			results = (ScoredTid *) palloc(Max(k, 1) * sizeof(ScoredTid));
