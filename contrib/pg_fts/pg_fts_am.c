@@ -559,11 +559,12 @@ bm25_write_postings(Relation index, BuildTerm *bt)
 
 /*
  * Write the dictionary: sorted (term, df, firstposting) entries packed into a
- * chain of dictionary pages.  Returns the first dictionary block.
+ * chain of dictionary pages.  Returns the first dictionary block, and via
+ * *indexstart the first page of the sparse block index (Invalid if empty).
  */
 static BlockNumber
 bm25_write_dictionary(Relation index, BM25BuildState *bs,
-					  BlockNumber *postings)
+					  BlockNumber *postings, BlockNumber *indexstart)
 {
 	BlockNumber first = InvalidBlockNumber;
 	Buffer		buffer = InvalidBuffer;
@@ -571,11 +572,20 @@ bm25_write_dictionary(Relation index, BM25BuildState *bs,
 	Page		page = NULL;
 	int			i;
 
+	/* collect (blk, first-term-index) of each dict page for the block index */
+	BlockNumber *pgblk = NULL;
+	int		   *pgterm = NULL;
+	int			npages = 0;
+	int			pgcap = 0;
+
+	*indexstart = InvalidBlockNumber;
+
 	for (i = 0; i < bs->nterms; i++)
 	{
 		BuildTerm  *bt = &bs->terms[i];
 		Size		need = MAXALIGN(sizeof(BM25DictEntry) + bt->len);
 		char	   *dst;
+		bool		newpage = false;
 
 		if (buffer == InvalidBuffer ||
 			((PageHeader) page)->pd_lower + need >
@@ -597,6 +607,22 @@ bm25_write_dictionary(Relation index, BM25BuildState *bs,
 			state = GenericXLogStart(index);
 			page = GenericXLogRegisterBuffer(state, buffer, GENERIC_XLOG_FULL_IMAGE);
 			bm25_init_page(page, BM25_DICT);
+			newpage = true;
+		}
+
+		if (newpage)
+		{
+			if (npages >= pgcap)
+			{
+				pgcap = Max(pgcap * 2, 64);
+				pgblk = pgblk ? repalloc(pgblk, pgcap * sizeof(BlockNumber))
+					: palloc(pgcap * sizeof(BlockNumber));
+				pgterm = pgterm ? repalloc(pgterm, pgcap * sizeof(int))
+					: palloc(pgcap * sizeof(int));
+			}
+			pgblk[npages] = BufferGetBlockNumber(buffer);
+			pgterm[npages] = i;		/* this term is the page's first */
+			npages++;
 		}
 
 		dst = (char *) page + ((PageHeader) page)->pd_lower;
@@ -623,6 +649,61 @@ bm25_write_dictionary(Relation index, BM25BuildState *bs,
 		UnlockReleaseBuffer(buffer);
 	}
 
+	/* write the sparse block index: one entry per dict page, in term order */
+	if (npages > 0)
+	{
+		BlockNumber ifirst = InvalidBlockNumber;
+		Buffer		ib = InvalidBuffer;
+		Page		ip = NULL;
+		GenericXLogState *istate = NULL;
+		int			j;
+
+		for (j = 0; j < npages; j++)
+		{
+			BuildTerm  *bt = &bs->terms[pgterm[j]];
+			Size		need = MAXALIGN(offsetof(BM25DictIndexEntry, term) + bt->len);
+			char	   *dst;
+			BM25DictIndexEntry *ie;
+
+			if (ib == InvalidBuffer ||
+				((PageHeader) ip)->pd_lower + need >
+				BLCKSZ - sizeof(BM25PageOpaqueData))
+			{
+				Buffer		next = bm25_new_buffer(index);
+				BlockNumber nextblk = BufferGetBlockNumber(next);
+
+				if (ib != InvalidBuffer)
+				{
+					BM25PageGetOpaque(ip)->nextblk = nextblk;
+					GenericXLogFinish(istate);
+					UnlockReleaseBuffer(ib);
+				}
+				else
+					ifirst = nextblk;
+				ib = next;
+				istate = GenericXLogStart(index);
+				ip = GenericXLogRegisterBuffer(istate, ib, GENERIC_XLOG_FULL_IMAGE);
+				bm25_init_page(ip, BM25_DICTINDEX);
+			}
+			dst = (char *) ip + ((PageHeader) ip)->pd_lower;
+			ie = (BM25DictIndexEntry *) dst;
+			ie->blk = pgblk[j];
+			ie->termlen = bt->len;
+			memcpy(ie->term, bt->term, bt->len);
+			((PageHeader) ip)->pd_lower += need;
+		}
+		if (ib != InvalidBuffer)
+		{
+			GenericXLogFinish(istate);
+			UnlockReleaseBuffer(ib);
+		}
+		*indexstart = ifirst;
+	}
+	if (pgblk)
+		pfree(pgblk);
+	if (pgterm)
+		pfree(pgterm);
+
 	return first;
 }
 
@@ -646,7 +727,7 @@ bm25_write_segment(Relation index, BM25BuildState *bs, BM25SegMeta *seg)
 		postings[i] = bm25_write_postings(index, &bs->terms[i]);
 
 	MemSet(seg, 0, sizeof(BM25SegMeta));
-	seg->dictstart = bm25_write_dictionary(index, bs, postings);
+	seg->dictstart = bm25_write_dictionary(index, bs, postings, &seg->dictindexstart);
 	seg->trgmstart = bm25_write_trigrams(index, bs);
 	seg->livedocs = InvalidBlockNumber;
 	seg->ndocs = bs->ndocs;
@@ -822,6 +903,8 @@ bm25_free_segment(Relation index, const BM25SegMeta *seg)
 
 	if (seg->livedocs != InvalidBlockNumber)
 		bm25_free_chain(index, seg->livedocs);
+	if (seg->dictindexstart != InvalidBlockNumber)
+		bm25_free_chain(index, seg->dictindexstart);
 }
 
 /*

@@ -595,3 +595,25 @@ SELECT (SELECT array_agg(dist ORDER BY dist) FROM w)
      = (SELECT array_agg(dist ORDER BY dist) FROM f) AS wand_scores_match_fullsort;
 RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
 DROP TABLE blk;
+
+-- Sparse dictionary block index (FST-equivalent point lookup): a many-page
+-- dictionary routes exact lookups to the right page; first/middle/last/absent
+-- terms all resolve correctly, and df via the seek path is exact.
+CREATE TABLE voc (id serial, d ftsdoc);
+INSERT INTO voc(d) SELECT to_ftsdoc('term'||lpad(g::text,5,'0')||' shared')
+  FROM generate_series(1,8000) g;      -- 8000 distinct terms -> multi-page dict
+CREATE INDEX voc_bm25 ON voc USING bm25 (d);
+SET enable_seqscan = off;
+SELECT count(*) AS first_term  FROM voc WHERE d @@@ 'term00001'::ftsquery;  -- 1
+SELECT count(*) AS mid_term    FROM voc WHERE d @@@ 'term04000'::ftsquery;  -- 1
+SELECT count(*) AS last_term   FROM voc WHERE d @@@ 'term08000'::ftsquery;  -- 1
+SELECT count(*) AS absent_term FROM voc WHERE d @@@ 'termzzzzz'::ftsquery;  -- 0
+SELECT count(*) AS shared_all  FROM voc WHERE d @@@ 'shared'::ftsquery;     -- 8000
+SELECT fts_index_df('voc_bm25','term04000'::ftsquery) AS df_mid;            -- {1}
+-- block index survives an insert+flush (new segment gets its own index)
+INSERT INTO voc(d) SELECT to_ftsdoc('term'||lpad(g::text,5,'0')||' shared')
+  FROM generate_series(8001,8100) g;
+SELECT fts_merge('voc_bm25');
+SELECT count(*) AS after_flush FROM voc WHERE d @@@ 'term08050'::ftsquery;  -- 1
+RESET enable_seqscan;
+DROP TABLE voc;

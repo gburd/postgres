@@ -32,6 +32,7 @@
 #define BM25_TRGM			(1 << 4)	/* trigram directory page */
 #define BM25_TRGM_DATA		(1 << 5)	/* trigram sparsemap blob page */
 #define BM25_LIVEDOCS		(1 << 6)	/* per-segment tombstone bitmap page */
+#define BM25_DICTINDEX		(1 << 7)	/* sparse block index over dict pages */
 
 typedef struct BM25PageOpaqueData
 {
@@ -68,7 +69,7 @@ typedef struct BM25SegMeta
 	uint32		nterms;			/* distinct terms in this segment */
 	uint32		ndeleted;		/* tombstoned docs (for merge accounting) */
 	uint32		basedocid;		/* docid-space base for this segment's tids */
-	uint32		unused;
+	BlockNumber dictindexstart; /* sparse block index over dict pages (Invalid = none) */
 } BM25SegMeta;
 
 #define BM25_MAX_SEGMENTS 64	/* tiered merge keeps this small; chain if ever exceeded */
@@ -98,6 +99,22 @@ typedef struct BM25DictEntry
 	BlockNumber firstposting;	/* first posting page for this term */
 	char		term[FLEXIBLE_ARRAY_MEMBER];
 } BM25DictEntry;
+
+/*
+ * Sparse block index over a segment's dictionary pages: one entry per dict
+ * page, recording that page's FIRST term and its block number.  Entries are in
+ * term order (dict pages are written in term order), so a term lookup binary-
+ * searches the (small) index to the one dict page that could hold the term,
+ * then scans just that page -- O(log P + 1) instead of scanning all P dict
+ * pages.  This is the point-lookup win an FST provides; prefix/range scans
+ * still walk the dict chain from the located page.
+ */
+typedef struct BM25DictIndexEntry
+{
+	BlockNumber blk;			/* dictionary page this entry points at */
+	uint32		termlen;		/* length of that page's first term */
+	char		term[FLEXIBLE_ARRAY_MEMBER];
+} BM25DictIndexEntry;
 
 /* a posting: which heap tuple, its term frequency, and the document length */
 typedef struct BM25Posting

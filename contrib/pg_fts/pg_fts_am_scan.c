@@ -93,16 +93,71 @@ bm25_read_meta(Relation index, BM25MetaPageData *out)
 }
 
 /*
+ * Use a segment's sparse block index to find the single dictionary page that
+ * could contain `term`: the last index entry whose term <= target.  Returns
+ * that page's block number, or `dictstart` if the segment has no block index
+ * (empty segment or pre-index format).  The located page is the ONLY page that
+ * can hold the term (the next page's first term is > target), so point lookups
+ * scan just that page.
+ */
+static BlockNumber
+bm25_dict_seek(Relation index, const BM25SegMeta *seg,
+			   const char *term, int termlen)
+{
+	BlockNumber iblk = seg->dictindexstart;
+	BlockNumber best = seg->dictstart;
+
+	while (iblk != InvalidBlockNumber)
+	{
+		Buffer		buf = ReadBuffer(index, iblk);
+		Page		page;
+		char	   *ptr,
+				   *end;
+		BlockNumber next;
+		bool		overshot = false;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		ptr = (char *) PageGetContents(page);
+		end = (char *) page + ((PageHeader) page)->pd_lower;
+		next = BM25PageGetOpaque(page)->nextblk;
+		while (ptr < end)
+		{
+			BM25DictIndexEntry *ie = (BM25DictIndexEntry *) ptr;
+			int			cmplen = Min((int) ie->termlen, termlen);
+			int			c = memcmp(ie->term, term, cmplen);
+
+			if (c == 0)
+				c = (int) ie->termlen - termlen;
+			if (c <= 0)
+				best = ie->blk;		/* entry term <= target: candidate page */
+			else
+			{
+				overshot = true;	/* entries are sorted; no need to go further */
+				break;
+			}
+			ptr += MAXALIGN(offsetof(BM25DictIndexEntry, term) + ie->termlen);
+		}
+		UnlockReleaseBuffer(buf);
+		if (overshot)
+			break;
+		iblk = next;
+	}
+	return best;
+}
+
+/*
  * Look up a term in the dictionary; on hit, read its full posting list into a
  * TidSet.  Returns true if found.  Dictionary pages are scanned linearly
  * within the chain (entries are sorted, but variable-length, so a linear walk
  * is simplest for the skeleton).
  */
 static bool
-bm25_lookup_term(Relation index, BlockNumber dictstart,
+bm25_lookup_term(Relation index, const BM25SegMeta *seg,
 				 const char *term, int termlen, TidSet *out)
 {
-	BlockNumber blk = dictstart;
+	BlockNumber blk = bm25_dict_seek(index, seg, term, termlen);
+	bool		onlyone = (seg->dictindexstart != InvalidBlockNumber);
 
 	out->tids = NULL;
 	out->n = 0;
@@ -175,6 +230,8 @@ bm25_lookup_term(Relation index, BlockNumber dictstart,
 			tidset_sort_uniq(out);
 			return true;
 		}
+		if (onlyone)
+			break;				/* block index located the only possible page */
 	}
 	return false;
 }
@@ -363,9 +420,10 @@ typedef struct EvalVal
 } EvalVal;
 
 static TidSet
-bm25_eval_query(Relation index, BlockNumber dictstart, FtsQuery q,
+bm25_eval_query(Relation index, const BM25SegMeta *seg, FtsQuery q,
 				TidSet universe)
 {
+	BlockNumber dictstart = seg->dictstart;
 	EvalVal    *stack;
 	int			top = 0;
 	uint32		i;
@@ -392,7 +450,7 @@ bm25_eval_query(Relation index, BlockNumber dictstart, FtsQuery q,
 				bm25_lookup_prefix(index, dictstart,
 								   FTS_QUERY_ITEMTEXT(q, it), it->termlen, &s);
 			else
-				bm25_lookup_term(index, dictstart,
+				bm25_lookup_term(index, seg,
 								 FTS_QUERY_ITEMTEXT(q, it), it->termlen, &s);
 			stack[top].set = s;
 			stack[top].negated = false;
@@ -763,7 +821,7 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 
 		{
 			TidSet		result = bm25_eval_query(scan->indexRelation,
-												 sg->dictstart, so->query,
+												 sg, so->query,
 												 universe);
 
 			if (result.n > 0)
@@ -832,11 +890,12 @@ bm25_endscan(IndexScanDesc scan)
  * cursors need to start; postings are then paged in on demand.
  */
 static bool
-bm25_lookup_dict(Relation index, BlockNumber dictstart,
+bm25_lookup_dict(Relation index, const BM25SegMeta *seg,
 				 const char *term, int termlen,
 				 uint32 *df, uint32 *max_tf, BlockNumber *firstposting)
 {
-	BlockNumber blk = dictstart;
+	BlockNumber blk = bm25_dict_seek(index, seg, term, termlen);
+	bool		onlyone = (seg->dictindexstart != InvalidBlockNumber);
 
 	while (blk != InvalidBlockNumber)
 	{
@@ -872,6 +931,8 @@ bm25_lookup_dict(Relation index, BlockNumber dictstart,
 		UnlockReleaseBuffer(buffer);
 		if (found)
 			return true;
+		if (onlyone)
+			break;				/* block index located the only possible page */
 		blk = next;
 	}
 	*df = 0;
@@ -882,10 +943,11 @@ bm25_lookup_dict(Relation index, BlockNumber dictstart,
 
 /* Look up the document frequency of a term in the index, 0 if absent. */
 static uint32
-bm25_lookup_df(Relation index, BlockNumber dictstart,
+bm25_lookup_df(Relation index, const BM25SegMeta *seg,
 			   const char *term, int termlen)
 {
-	BlockNumber blk = dictstart;
+	BlockNumber blk = bm25_dict_seek(index, seg, term, termlen);
+	bool		onlyone = (seg->dictindexstart != InvalidBlockNumber);
 
 	while (blk != InvalidBlockNumber)
 	{
@@ -920,6 +982,8 @@ bm25_lookup_df(Relation index, BlockNumber dictstart,
 		UnlockReleaseBuffer(buffer);
 		if (found)
 			return df;
+		if (onlyone)
+			break;
 		blk = next;
 	}
 	return 0;
@@ -1014,7 +1078,7 @@ fts_index_df(PG_FUNCTION_ARGS)
 
 			/* document frequency is summed across all segments */
 			for (s = 0; s < meta.nsegments; s++)
-				df += bm25_lookup_df(index, meta.segs[s].dictstart,
+				df += bm25_lookup_df(index, &meta.segs[s],
 									 FTS_QUERY_ITEMTEXT(q, it), it->termlen);
 			elems[n++] = Float8GetDatum((double) (df == 0 ? 1 : df));
 		}
@@ -1384,7 +1448,7 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 						max_tf;
 			BlockNumber firstblk;
 
-			if (bm25_lookup_dict(index, meta.segs[s].dictstart, terms[t], lens[t],
+			if (bm25_lookup_dict(index, &meta.segs[s], terms[t], lens[t],
 								 &df, &max_tf, &firstblk))
 				gdf += df;
 		}
@@ -1400,7 +1464,7 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 			BlockNumber firstblk;
 			double		mtf;
 
-			if (!bm25_lookup_dict(index, meta.segs[s].dictstart, terms[t], lens[t],
+			if (!bm25_lookup_dict(index, &meta.segs[s], terms[t], lens[t],
 								  &df, &max_tf, &firstblk))
 				continue;
 			mtf = (double) max_tf;
