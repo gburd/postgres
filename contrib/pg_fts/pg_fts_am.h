@@ -71,21 +71,23 @@ typedef struct BM25DictEntry
 	char		term[FLEXIBLE_ARRAY_MEMBER];
 } BM25DictEntry;
 
-/* a posting: which heap tuple, and the term frequency there */
+/* a posting: which heap tuple, its term frequency, and the document length */
 typedef struct BM25Posting
 {
 	ItemPointerData tid;
 	uint32		tf;
+	uint32		doclen;			/* |D|: total tokens in the document */
 } BM25Posting;
 
 /*
  * Posting pages store postings delta+varint compressed, not as a raw
  * BM25Posting array.  The page contents begin with a uint32 count, followed by
  * a varint stream: for each posting, the docid gap (this docid - previous,
- * where docid = block*MaxHeapTuplesPerPage + offset) and the tf.  docids are
- * written in ascending order within a term so gaps are small.  Readers use
- * bm25_page_decode(); writers use the BM25PostingWriter below.  This is the
- * posting compression that keeps the index compact at scale.
+ * where docid = block*MaxHeapTuplesPerPage + offset), the tf, and the document
+ * length.  docids are written in ascending order within a term so gaps are
+ * small.  Readers use bm25_page_decode().  This is the posting compression
+ * that keeps the index compact at scale; per-posting |D| enables exact BM25
+ * length normalization without a heap fetch.
  */
 typedef struct BM25PostingPageHdr
 {

@@ -805,9 +805,9 @@ JOIN srch s ON s.ctid = r.ctid
 ORDER BY r.score DESC, s.id;
  id | score 
 ----+-------
-  1 | 0.560
-  2 | 0.357
-  4 | 0.357
+  1 | 0.511
+  4 | 0.482
+  2 | 0.344
 (3 rows)
 
 -- k limits the result set

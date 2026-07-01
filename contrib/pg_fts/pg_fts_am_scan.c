@@ -945,6 +945,7 @@ typedef struct WandCursor
 	int			cur;
 	uint64		docid;
 	double		idf;
+	double		avgdl;
 	double		max_contrib;
 }			WandCursor;
 
@@ -956,14 +957,17 @@ wand_docid_at(WandCursor *c, int i)
 		(uint64) ItemPointerGetOffsetNumber(&c->posts[i].tid);
 }
 
-/* BM25 contribution of one posting (|D| approximated by avgdl). */
+/* Exact BM25 contribution of one posting, using the stored per-doc |D|. */
 static inline double
 wand_contrib(WandCursor *c, int i)
 {
 	double		k1 = 1.2,
-				tf = (double) c->posts[i].tf;
+				b = 0.75;
+	double		tf = (double) c->posts[i].tf;
+	double		dl = (double) c->posts[i].doclen;
+	double		norm = tf + k1 * (1.0 - b + b * dl / c->avgdl);
 
-	return c->idf * tf * (k1 + 1.0) / (tf + k1);
+	return c->idf * tf * (k1 + 1.0) / norm;
 }
 
 /*
@@ -1125,6 +1129,7 @@ fts_search(PG_FUNCTION_ARGS)
 		Relation	index;
 		BM25MetaPageData meta;
 		double		N;
+		double		avgdl;
 		const char **terms;
 		int		   *lens;
 		int			nterms;
@@ -1145,6 +1150,7 @@ fts_search(PG_FUNCTION_ARGS)
 		index = index_open(indexoid, AccessShareLock);
 		bm25_read_meta(index, &meta);
 		N = meta.ndocs < 1.0 ? 1.0 : meta.ndocs;
+		avgdl = meta.ndocs > 0 ? meta.sumdoclen / meta.ndocs : 1.0;
 
 		nterms = fts_query_terms(q, &terms, &lens);
 		tp = (TermPostings *) palloc0(nterms * sizeof(TermPostings));
@@ -1179,11 +1185,19 @@ fts_search(PG_FUNCTION_ARGS)
 				cursors[t].nposts = tp[t].nposts;
 				cursors[t].cur = 0;
 				cursors[t].idf = tp[t].idf;
-				/* max contribution: tf saturates, so use max_tf */
+				cursors[t].avgdl = avgdl;
+				/*
+				 * WAND upper bound: contribution is maximized at tf = max_tf and
+				 * the shortest possible document.  |D| -> 0 gives the smallest
+				 * denominator norm = tf + k1*(1-b), a sound (never-underestimating)
+				 * upper bound so no qualifying document is ever pruned.
+				 */
 				{
 					double		mtf = (double) tp[t].max_tf;
+					double		b = 0.75;
 
-					cursors[t].max_contrib = tp[t].idf * mtf * (k1 + 1.0) / (mtf + k1);
+					cursors[t].max_contrib =
+						tp[t].idf * mtf * (k1 + 1.0) / (mtf + k1 * (1.0 - b));
 				}
 			}
 

@@ -70,6 +70,7 @@ typedef struct BuildTerm
 	/* postings for this term */
 	ItemPointerData *tids;
 	uint32	   *tfs;
+	uint32	   *doclens;
 	int			nposts;
 	int			maxposts;
 } BuildTerm;
@@ -136,7 +137,7 @@ make_termkey(TermKey *k, const char *term, int len)
 
 static void
 add_posting(BM25BuildState *bs, const char *term, int len,
-			ItemPointer tid, uint32 tf)
+			ItemPointer tid, uint32 tf, uint32 doclen)
 {
 	TermKey		key;
 	TermHashEntry *entry;
@@ -173,6 +174,7 @@ add_posting(BM25BuildState *bs, const char *term, int len,
 		bt->nposts = 0;
 		bt->tids = (ItemPointerData *) palloc(bt->maxposts * sizeof(ItemPointerData));
 		bt->tfs = (uint32 *) palloc(bt->maxposts * sizeof(uint32));
+		bt->doclens = (uint32 *) palloc(bt->maxposts * sizeof(uint32));
 		entry->termidx = bs->nterms;
 		bs->nterms++;
 	}
@@ -183,9 +185,11 @@ add_posting(BM25BuildState *bs, const char *term, int len,
 		bt->tids = (ItemPointerData *) repalloc(bt->tids,
 												bt->maxposts * sizeof(ItemPointerData));
 		bt->tfs = (uint32 *) repalloc(bt->tfs, bt->maxposts * sizeof(uint32));
+		bt->doclens = (uint32 *) repalloc(bt->doclens, bt->maxposts * sizeof(uint32));
 	}
 	bt->tids[bt->nposts] = *tid;
 	bt->tfs[bt->nposts] = tf;
+	bt->doclens[bt->nposts] = doclen;
 	bt->nposts++;
 }
 
@@ -210,7 +214,7 @@ bm25_build_callback(Relation index, ItemPointer tid, Datum *values,
 
 	for (i = 0; i < doc->nterms; i++)
 		add_posting(bs, FTS_DOC_TERMTEXT(doc, &entries[i]), entries[i].len,
-					tid, entries[i].tf);
+					tid, entries[i].tf, doc->doclen);
 
 	bs->ndocs += 1.0;
 	bs->sumdoclen += doc->doclen;
@@ -278,8 +282,8 @@ bm25_varint_decode(const unsigned char *buf, int *pos)
 	return v;
 }
 
-/* worst-case encoded size of one posting (docid gap up to 48 bits + tf) */
-#define BM25_MAX_POSTING_BYTES (10 + 5)
+/* worst-case encoded size of one posting (docid gap up to 48 bits + tf + doclen) */
+#define BM25_MAX_POSTING_BYTES (10 + 5 + 5)
 
 /*
  * Decode all postings on a page into a caller-provided (or palloc'd) array.
@@ -301,10 +305,12 @@ bm25_page_decode(Page page, BM25Posting **out)
 	{
 		uint64		gap = bm25_varint_decode(stream, &pos);
 		uint32		tf = (uint32) bm25_varint_decode(stream, &pos);
+		uint32		doclen = (uint32) bm25_varint_decode(stream, &pos);
 
 		docid += gap;
 		bm25_docid_to_tid(docid, &posts[i].tid);
 		posts[i].tf = tf;
+		posts[i].doclen = doclen;
 	}
 	*out = posts;
 	return count;
@@ -375,6 +381,7 @@ typedef struct BM25PostingSort
 {
 	uint64		docid;
 	uint32		tf;
+	uint32		doclen;
 	ItemPointerData tid;
 }			BM25PostingSort;
 
@@ -413,6 +420,7 @@ bm25_write_postings(Relation index, BuildTerm *bt)
 	{
 		sorted[i].docid = bm25_tid_to_docid(&bt->tids[i]);
 		sorted[i].tf = bt->tfs[i];
+		sorted[i].doclen = bt->doclens[i];
 		sorted[i].tid = bt->tids[i];
 	}
 	if (bt->nposts > 1)
@@ -441,10 +449,11 @@ bm25_write_postings(Relation index, BuildTerm *bt)
 			pagecount = 0;
 		}
 
-		/* encode (gap, tf) into tmp */
+		/* encode (gap, tf, doclen) into tmp */
 		gap = sorted[i].docid - prev_docid;
 		enclen = bm25_varint_encode(gap, tmp);
 		enclen += bm25_varint_encode((uint64) sorted[i].tf, tmp + enclen);
+		enclen += bm25_varint_encode((uint64) sorted[i].doclen, tmp + enclen);
 
 		pageend = (char *) page + BLCKSZ - MAXALIGN(sizeof(BM25PageOpaqueData));
 		if ((char *) streamptr + enclen > pageend)
@@ -884,7 +893,7 @@ bm25_merge_pending(Relation index)
 				np = bm25_page_decode(pp, &post);
 				for (k = 0; k < np; k++)
 					add_posting(&bs, de->term, de->termlen,
-								&post[k].tid, post[k].tf);
+								&post[k].tid, post[k].tf, post[k].doclen);
 				pfree(post);
 				pblk = BM25PageGetOpaque(pp)->nextblk;
 				UnlockReleaseBuffer(pb);
@@ -922,7 +931,8 @@ bm25_merge_pending(Relation index)
 
 			for (j = 0; j < pdoc->nterms; j++)
 				add_posting(&bs, FTS_DOC_TERMTEXT(pdoc, &entries[j]),
-							entries[j].len, &pi->tid, entries[j].tf);
+							entries[j].len, &pi->tid, entries[j].tf,
+							pdoc->doclen);
 			ptr += MAXALIGN(sizeof(BM25PendingItem) + pi->doclen);
 		}
 		UnlockReleaseBuffer(buffer);
