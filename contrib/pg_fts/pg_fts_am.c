@@ -623,6 +623,173 @@ bm25_insert(Relation index, Datum *values, bool *isnull,
 
 /* ----- vacuum / cost / options ----- */
 
+/*
+ * Read every existing (term, postings) pair from the dictionary + posting
+ * chains and every pending document into a fresh build state, then rewrite the
+ * whole structure into new blocks and repoint the metapage.  This merges the
+ * pending list into the main structure with no heap access.
+ *
+ * The old dictionary/posting/pending blocks are left allocated (they become
+ * unreferenced); their space is reclaimed by REINDEX.  A free-space-map based
+ * page recycler is future work.  Returns true if a merge was performed.
+ */
+static bool
+bm25_merge_pending(Relation index)
+{
+	BM25MetaPageData meta;
+	BM25BuildState bs;
+	BlockNumber *postings;
+	BlockNumber newdict;
+	BlockNumber blk;
+	int			i;
+
+	/* snapshot the metapage */
+	{
+		Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
+
+		LockBuffer(mb, BUFFER_LOCK_SHARE);
+		memcpy(&meta, BM25PageGetMeta(BufferGetPage(mb)), sizeof(meta));
+		UnlockReleaseBuffer(mb);
+	}
+
+	if (meta.npending == 0)
+		return false;			/* nothing to merge */
+
+	bs.ctx = AllocSetContextCreate(CurrentMemoryContext, "bm25 merge",
+								   ALLOCSET_DEFAULT_SIZES);
+	bs.terms = NULL;
+	bs.nterms = 0;
+	bs.maxterms = 0;
+	bs.ndocs = meta.ndocs;
+	bs.sumdoclen = meta.sumdoclen;
+
+	{
+		HASHCTL		ctl;
+
+		ctl.keysize = sizeof(TermKey);
+		ctl.entrysize = sizeof(TermHashEntry);
+		ctl.hcxt = bs.ctx;
+		build_ht = hash_create("bm25 merge terms", 1024, &ctl,
+							   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	}
+
+	/* 1. read existing dictionary + postings back into the build state */
+	blk = meta.dictstart;
+	while (blk != InvalidBlockNumber)
+	{
+		Buffer		buffer = ReadBuffer(index, blk);
+		Page		page;
+		char	   *ptr,
+				   *end;
+		BlockNumber next;
+		MemoryContext old = MemoryContextSwitchTo(bs.ctx);
+
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buffer);
+		ptr = (char *) PageGetContents(page);
+		end = (char *) page + ((PageHeader) page)->pd_lower;
+		next = BM25PageGetOpaque(page)->nextblk;
+
+		while (ptr < end)
+		{
+			BM25DictEntry *de = (BM25DictEntry *) ptr;
+			Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
+			BlockNumber pblk = de->firstposting;
+
+			while (pblk != InvalidBlockNumber)
+			{
+				Buffer		pb = ReadBuffer(index, pblk);
+				Page		pp;
+				BM25Posting *post;
+				int			np,
+							k;
+
+				LockBuffer(pb, BUFFER_LOCK_SHARE);
+				pp = BufferGetPage(pb);
+				post = (BM25Posting *) PageGetContents(pp);
+				np = (((PageHeader) pp)->pd_lower -
+					  ((char *) PageGetContents(pp) - (char *) pp)) /
+					sizeof(BM25Posting);
+				for (k = 0; k < np; k++)
+					add_posting(&bs, de->term, de->termlen,
+								&post[k].tid, post[k].tf);
+				pblk = BM25PageGetOpaque(pp)->nextblk;
+				UnlockReleaseBuffer(pb);
+			}
+			ptr += esize;
+		}
+		UnlockReleaseBuffer(buffer);
+		MemoryContextSwitchTo(old);
+		blk = next;
+	}
+
+	/* 2. add pending documents' postings */
+	blk = meta.pendinghead;
+	while (blk != InvalidBlockNumber)
+	{
+		Buffer		buffer = ReadBuffer(index, blk);
+		Page		page;
+		char	   *ptr,
+				   *end;
+		BlockNumber next;
+		MemoryContext old = MemoryContextSwitchTo(bs.ctx);
+
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buffer);
+		ptr = (char *) PageGetContents(page);
+		end = (char *) page + ((PageHeader) page)->pd_lower;
+		next = BM25PageGetOpaque(page)->nextblk;
+
+		while (ptr < end)
+		{
+			BM25PendingItem *pi = (BM25PendingItem *) ptr;
+			FtsDoc		pdoc = (FtsDoc) ((char *) pi + sizeof(BM25PendingItem));
+			FtsTermEntry *entries = FTS_DOC_ENTRIES(pdoc);
+			uint32		j;
+
+			for (j = 0; j < pdoc->nterms; j++)
+				add_posting(&bs, FTS_DOC_TERMTEXT(pdoc, &entries[j]),
+							entries[j].len, &pi->tid, entries[j].tf);
+			ptr += MAXALIGN(sizeof(BM25PendingItem) + pi->doclen);
+		}
+		UnlockReleaseBuffer(buffer);
+		MemoryContextSwitchTo(old);
+		blk = next;
+	}
+
+	/* 3. rewrite postings + dictionary into fresh blocks */
+	if (bs.nterms > 1)
+		qsort(bs.terms, bs.nterms, sizeof(BuildTerm), cmp_buildterm);
+	postings = (BlockNumber *) palloc(Max(bs.nterms, 1) * sizeof(BlockNumber));
+	for (i = 0; i < bs.nterms; i++)
+		postings[i] = bm25_write_postings(index, &bs.terms[i]);
+	newdict = bm25_write_dictionary(index, &bs, postings);
+
+	/* 4. repoint the metapage and clear the pending list */
+	{
+		Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
+		GenericXLogState *state;
+		Page		mp;
+		BM25MetaPageData *m;
+
+		LockBuffer(mb, BUFFER_LOCK_EXCLUSIVE);
+		state = GenericXLogStart(index);
+		mp = GenericXLogRegisterBuffer(state, mb, 0);
+		m = BM25PageGetMeta(mp);
+		m->dictstart = newdict;
+		m->nterms = bs.nterms;
+		m->pendinghead = InvalidBlockNumber;
+		m->pendingtail = InvalidBlockNumber;
+		m->npending = 0;
+		/* ndocs / sumdoclen already include pending; leave them */
+		GenericXLogFinish(state);
+		UnlockReleaseBuffer(mb);
+	}
+
+	MemoryContextDelete(bs.ctx);
+	return true;
+}
+
 static IndexBulkDeleteResult *
 bm25_bulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 				IndexBulkDeleteCallback callback, void *callback_state)
@@ -638,7 +805,34 @@ bm25_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 {
 	if (stats == NULL)
 		stats = (IndexBulkDeleteResult *) palloc0(sizeof(IndexBulkDeleteResult));
+
+	/* Fold any pending documents into the main structure. */
+	if (!info->analyze_only)
+		(void) bm25_merge_pending(info->index);
+
 	return stats;
+}
+
+PG_FUNCTION_INFO_V1(fts_merge);
+
+/* fts_merge(regclass) -> bool : merge the pending list on demand */
+Datum
+fts_merge(PG_FUNCTION_ARGS)
+{
+	Oid			indexoid = PG_GETARG_OID(0);
+	Relation	index;
+	bool		done;
+
+	index = index_open(indexoid, ShareUpdateExclusiveLock);
+	if (index->rd_rel->relam != get_index_am_oid("bm25", true))
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is not a bm25 index",
+						RelationGetRelationName(index))));
+	done = bm25_merge_pending(index);
+	index_close(index, ShareUpdateExclusiveLock);
+
+	PG_RETURN_BOOL(done);
 }
 
 static void

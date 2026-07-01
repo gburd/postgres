@@ -291,6 +291,27 @@ SELECT fts_bm25f(ARRAY[to_ftsdoc('nothing'), to_ftsdoc('found fox')],
 -- mismatched array lengths error
 SELECT fts_bm25f(ARRAY[to_ftsdoc('a')], 'a'::ftsquery, ARRAY[1.0,2.0], 10, ARRAY[1.0]);
 
+-- Background merge of the pending list.
+ALTER EXTENSION pg_fts UPDATE TO '1.13';
+CREATE TABLE mrg (id serial, d ftsdoc);
+INSERT INTO mrg (d) VALUES (to_ftsdoc('alpha beta'));
+CREATE INDEX mrg_bm25 ON mrg USING bm25 (d);
+INSERT INTO mrg (d) VALUES (to_ftsdoc('alpha gamma')), (to_ftsdoc('delta'));
+-- before merge: 2 docs pending
+SELECT ndocs FROM fts_index_stats('mrg_bm25');
+SET enable_seqscan = off;
+SELECT id FROM mrg WHERE d @@@ 'alpha'::ftsquery ORDER BY id;   -- 1, 2
+-- explicit merge folds pending into the main structure
+SELECT fts_merge('mrg_bm25') AS merged;
+-- after merge: same results, and a term from a formerly-pending doc now has df
+SELECT id FROM mrg WHERE d @@@ 'alpha'::ftsquery ORDER BY id;   -- still 1, 2
+SELECT id FROM mrg WHERE d @@@ 'delta'::ftsquery ORDER BY id;   -- 3
+SELECT fts_index_df('mrg_bm25', 'alpha'::ftsquery) AS df_alpha_after_merge;
+-- merging again is a no-op (nothing pending)
+SELECT fts_merge('mrg_bm25') AS merged_again;
+RESET enable_seqscan;
+DROP TABLE mrg;
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 
