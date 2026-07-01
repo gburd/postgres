@@ -129,6 +129,19 @@ SELECT fts_snippet(
 -- no match: highlight returns the text unchanged
 SELECT fts_highlight('nothing here matches', 'zebra'::ftsquery, '[', ']');
 
+-- Stage 11: migration from tsquery.
+ALTER EXTENSION pg_fts UPDATE TO '1.6';
+-- boolean operators convert directly
+SELECT tsquery_to_ftsquery('quick & brown'::tsquery);
+SELECT tsquery_to_ftsquery('quick | brown'::tsquery);
+SELECT tsquery_to_ftsquery('!slow & quick'::tsquery);
+SELECT tsquery_to_ftsquery('(a | b) & !c'::tsquery);
+-- phrase degrades to AND with a NOTICE
+SELECT tsquery_to_ftsquery('quick <-> brown'::tsquery);
+-- the tsquery -> ftsquery cast makes existing queries usable with @@@
+SELECT to_ftsdoc('the quick brown fox') @@@ ('quick & fox'::tsquery)::ftsquery
+       AS migrated_match;
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 

@@ -8,6 +8,7 @@ pg_fts_sources = files(
   'pg_fts_rank.c',
   'pg_fts_am.c',
   'pg_fts_aux.c',
+  'pg_fts_migrate.c',
   'pg_fts_match.c',
 )
 
@@ -32,6 +33,7 @@ install_data(
   'pg_fts--1.2--1.3.sql',
   'pg_fts--1.3--1.4.sql',
   'pg_fts--1.4--1.5.sql',
+  'pg_fts--1.5--1.6.sql',
   kwargs: contrib_data_args,
 )
 

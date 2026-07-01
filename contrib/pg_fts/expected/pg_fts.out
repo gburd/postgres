@@ -348,9 +348,53 @@ SELECT fts_highlight('nothing here matches', 'zebra'::ftsquery, '[', ']');
  nothing here matches
 (1 row)
 
+-- Stage 11: migration from tsquery.
+ALTER EXTENSION pg_fts UPDATE TO '1.6';
+-- boolean operators convert directly
+SELECT tsquery_to_ftsquery('quick & brown'::tsquery);
+ tsquery_to_ftsquery 
+---------------------
+ ('quick' & 'brown')
+(1 row)
+
+SELECT tsquery_to_ftsquery('quick | brown'::tsquery);
+ tsquery_to_ftsquery 
+---------------------
+ ('quick' | 'brown')
+(1 row)
+
+SELECT tsquery_to_ftsquery('!slow & quick'::tsquery);
+ tsquery_to_ftsquery 
+---------------------
+ (!'slow' & 'quick')
+(1 row)
+
+SELECT tsquery_to_ftsquery('(a | b) & !c'::tsquery);
+ tsquery_to_ftsquery  
+----------------------
+ (('a' | 'b') & !'c')
+(1 row)
+
+-- phrase degrades to AND with a NOTICE
+SELECT tsquery_to_ftsquery('quick <-> brown'::tsquery);
+NOTICE:  tsquery phrase operator (<->) converted to AND
+DETAIL:  ftsquery does not support phrase search yet; adjacency constraints were dropped.
+ tsquery_to_ftsquery 
+---------------------
+ ('quick' & 'brown')
+(1 row)
+
+-- the tsquery -> ftsquery cast makes existing queries usable with @@@
+SELECT to_ftsdoc('the quick brown fox') @@@ ('quick & fox'::tsquery)::ftsquery
+       AS migrated_match;
+ migrated_match 
+----------------
+ t
+(1 row)
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
-ERROR:  extension "pg_fts" has no update path from version "1.5" to version "1.3"
+ERROR:  extension "pg_fts" has no update path from version "1.6" to version "1.3"
 CREATE TABLE idxdocs (id serial, d ftsdoc);
 INSERT INTO idxdocs (d) VALUES
   (to_ftsdoc('the quick brown fox')),
