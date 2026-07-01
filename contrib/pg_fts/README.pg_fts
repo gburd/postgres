@@ -1,70 +1,81 @@
 pg_fts -- next-generation full-text search for PostgreSQL
 =========================================================
 
-This is stage 1 of a larger effort (see FTS_NEXTGEN_PLAN.md at the top of the
-tree) to build a native full-text search subsystem that offers true BM25/BM25F
-relevance ranking, index-only scoring, and a SQLite-FTS5-class query language,
-without the limitations of the tsvector/tsquery + GIN stack.
+pg_fts is a contrib extension building a native full-text search subsystem with
+true BM25/BM25F relevance ranking, a dedicated inverted-index access method,
+and a SQLite-FTS5-class query language, without the limitations of the
+tsvector/tsquery + GIN stack (no corpus statistics, cover-density ranking
+instead of BM25, TID-only posting lists that force a heap recheck to score).
 
-Stage 1 deliberately ships only the foundation: two data types and a match
-operator, evaluated by sequential scan. There is no index access method yet.
-This mirrors exactly how tsvector/tsquery were first introduced -- types and an
-operator first, the index second -- so each layer can be reviewed on its own.
+See ../../FTS_NEXTGEN_PLAN.md for the full design and the 15-stage roadmap.
+The extension is developed as a reviewable series; each numbered version below
+corresponds to one qualified stage (builds clean under --enable-cassert, passes
+its regression test).
+
+Versions / stages implemented
+-----------------------------
+
+  1.0  ftsdoc and ftsquery types, to_ftsdoc()/to_ftsquery(), the @@@ match
+       operator, evaluated by sequential scan (stage 1)
+  1.1  to_ftsdoc(regconfig, text): analyzer that reuses an installed text
+       search configuration (stemming, stopwords, synonyms) via parsetext
+       (stage 2)
+  1.2  fts_bm25(doc, query, n_docs, avgdl, dfs): Okapi BM25 scoring (stage 4)
+  1.3  the bm25 index access method: an inverted index over an ftsdoc column,
+       answering @@@ by bitmap scan, crash-safe via GenericXLog (stage 3)
+  1.4  fts_bm25_opts(...): selectable BM25 variants (lucene, robertson, atire,
+       bm25+) with explicit k1/b (stage 9)
+  1.5  fts_highlight() and fts_snippet(): result presentation (stage 8)
+  1.6  tsquery_to_ftsquery() and a tsquery->ftsquery cast: migration (stage 11)
+  1.7  fts_index_stats() and fts_index_df(): BM25 scored from index-maintained
+       corpus statistics (stage 5)
+
+  Plus, within the existing functions: prefix queries (term*), matched in both
+  the sequential and index paths (stage 6, part 1).
 
 Types
 -----
 
   ftsdoc    An analyzed document: a sorted, de-duplicated set of terms, each
-            with its term frequency. Also records the document length (total
-            token count), which BM25 length-normalization will need.
-
-  ftsquery  A parsed boolean query supporting AND (& / "AND" / implicit),
-            OR (| / "OR"), NOT (! / - / "NOT"), and parenthesised grouping.
-
-Both types are varlena, TOAST-able, and have version-tagged binary send/recv
-formats so they are safe across replication and pg_dump -Fc.
-
-Functions and operator
-----------------------
-
-  to_ftsdoc(text)      -> ftsdoc     analyze text into a document
-  to_ftsquery(text)    -> ftsquery   parse query text
-  ftsdoc_length(ftsdoc)-> integer    total token count (doclen)
-  ftsdoc @@@ ftsquery  -> boolean    does the document match the query?
-  ftsquery @@@ ftsdoc  -> boolean    commutator form
+            with its term frequency, plus the document length (token count)
+            that BM25 length-normalization needs.
+  ftsquery  A parsed boolean query: AND (& / AND / implicit), OR (| / OR),
+            NOT (! / - / NOT), grouping, and prefix terms (term*).
 
 Example
 -------
 
   CREATE EXTENSION pg_fts;
 
-  SELECT id FROM docs
-  WHERE to_ftsdoc(body) @@@ 'postgres & (index | search) & !deprecated'::ftsquery;
+  CREATE TABLE docs (id int, body text, d ftsdoc
+                     GENERATED ALWAYS AS (to_ftsdoc('english', body)) STORED);
+  CREATE INDEX ON docs USING bm25 (d);
 
-Stage-1 tokenizer
------------------
+  SELECT id,
+         fts_bm25(d, q, s.ndocs, s.avgdl, fts_index_df('docs_d_idx', q)) AS score,
+         fts_snippet(body, q) AS excerpt
+  FROM docs, fts_index_stats('docs_d_idx') s,
+       to_ftsquery('postgres & index*') q
+  WHERE d @@@ q
+  ORDER BY score DESC
+  LIMIT 10;
 
-The stage-1 analyzer is intentionally simple and self-contained: fold ASCII
-letters to lowercase, split on non-alphanumeric bytes, and collect distinct
-terms with their frequencies. Non-ASCII (UTF-8) bytes are kept within tokens so
-multibyte words survive, but there is no Unicode case-folding, stemming, or
-stopword removal yet.
+Not yet implemented (remaining roadmap stages)
+----------------------------------------------
 
-The real analyzer -- reusing PostgreSQL's existing text-search parser and
-dictionary pipeline (src/backend/tsearch: the default parser, snowball
-stemmers, ispell, synonyms, thesaurus, stopwords) -- is a later stage.
-Tokenization is isolated behind fts_analyze_text(), so that stage swaps the
-implementation without touching the types, the operator, or the on-disk format.
+  * Phrase and NEAR queries (need an ftsdoc v2 that stores per-term positions)
+  * Streaming index-only BM25 with block-max WAND top-K (stage 5 completion)
+  * Incremental index maintenance: pending list + background merge (stage 7);
+    the current bm25 index is build-once and errors on INSERT, directing REINDEX
+  * Contentless and external-content index modes (stage 10)
+  * The full migration advisor and compare_ranking harness (stage 11 completion)
+  * The pg_textsearch parity/performance gate (stage 12)
+  * Fuzzy (term~k) and regex (/regex/) token queries, cribbing pg_tre's trigram
+    formula compiler with its Lime grammar converted to Bison + Flex, and
+    sparsemap v5.1.1 for posting compression (stages 13-14)
 
-What is NOT here yet (and is coming)
-------------------------------------
+Backward compatibility
+-----------------------
 
-  * BM25 / BM25F scoring and a bm25() ranking function
-  * The bm25 index access method (segmented inverted index, block-max WAND
-    top-K, index-only scoring)
-  * Phrase, NEAR, prefix, field-scoped, and boosted query terms
-  * The pluggable, tsearch-backed analyzer framework
-  * Fuzzy (term~k) and regex (/regex/) token queries
-  * Migration tooling from tsvector/tsquery
-
-See FTS_NEXTGEN_PLAN.md for the full roadmap and the per-stage patch series.
+tsvector, tsquery, @@, ts_rank and the GIN/GiST opclasses are untouched; pg_fts
+is purely additive and opt-in.
