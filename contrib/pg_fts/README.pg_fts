@@ -86,6 +86,13 @@ Known limitations / future work
     LIMIT actually requested.
   * Richer regex trigram tiling (full Navarro (k+1)-tiling / Mihov-Schulz
     automaton, as in pg_tre) beyond the literal-run tiling implemented here.
+  * A+C for the trigram index: the term-ordinal sets (A) are bounded by the
+    vocabulary, but a trigram present in most terms still stores a near-full
+    set that filters nothing.  Option C stores the *complement* (terms lacking
+    the trigram, which is small when the trigram is dense) with an
+    is_complement flag, handled inversely at query time -- keeping every stored
+    set <= half the vocabulary while staying sound (unlike simply skipping
+    popular trigrams, which drops candidates).
 
 Implemented at scale
 --------------------
