@@ -1102,7 +1102,9 @@ cmp_scored_desc(const void *a, const void *b)
 typedef struct WandCursor
 {
 	Relation	index;
-	BlockNumber curblk;			/* unused now (whole term decoded up front) */
+	BlockNumber curblk;			/* page currently being streamed (lazy) */
+	uint32		curoff;			/* resume byte offset on curblk */
+	int			nread;			/* postings streamed so far (stop at df) */
 	BlockNumber firstblk;		/* first posting block for the term */
 	uint32		firstoff;		/* byte offset of the term's first block */
 	uint32		df;				/* term document frequency (postings to read) */
@@ -1128,12 +1130,25 @@ tid_to_docid_s(ItemPointer tid)
 		(uint64) ItemPointerGetOffsetNumber(tid);
 }
 
-/* Prime the cursor: decode the term's entire posting list up front (bounded by
- * df).  Simpler and safe now that terms share posting pages -- per-page lazy
- * loading cannot cheaply know where one term's blocks end within a page. */
+/*
+ * Lazily load the next page-worth of THIS TERM's postings into the cursor.
+ * Decodes blocks starting at (c->curblk, c->curoff) until the page ends or the
+ * term's df is exhausted, remembering where to resume (curblk/curoff) so a huge
+ * term is streamed a page at a time -- WAND/BMW can then skip most of it without
+ * ever decoding it (the whole point of block-max WAND).
+ */
 static void
-wand_prime(WandCursor *c)
+wand_load_page(WandCursor *c)
 {
+	BM25Posting *posts;
+	uint32	   *bmax;
+	int			cap;
+	int			n = 0;
+	Buffer		buf;
+	Page		page;
+	char	   *p,
+			   *pend;
+
 	if (c->posts)
 	{
 		pfree(c->posts);
@@ -1144,6 +1159,93 @@ wand_prime(WandCursor *c)
 		pfree(c->blockmax);
 		c->blockmax = NULL;
 	}
+	if (c->curblk == InvalidBlockNumber || c->nread >= (int) c->df)
+	{
+		c->nposts = 0;
+		c->cur = 0;
+		c->docid = UINT64_MAX;
+		return;
+	}
+
+	cap = Min((int) c->df - c->nread, BM25_BLOCK_SIZE * 4);
+	cap = Max(cap, 1);
+	posts = (BM25Posting *) palloc(cap * sizeof(BM25Posting));
+	bmax = (uint32 *) palloc(cap * sizeof(uint32));
+
+	buf = ReadBuffer(c->index, c->curblk);
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buf);
+	pend = (char *) page + ((PageHeader) page)->pd_lower;
+	p = (char *) page + c->curoff;
+	while (p + sizeof(BM25BlockHdr) <= pend && c->nread + n < (int) c->df)
+	{
+		BM25BlockHdr *bh = (BM25BlockHdr *) p;
+		const unsigned char *stream = (const unsigned char *) (bh + 1);
+		uint64		docid = ((uint64) bh->first_docid_hi << 32) | bh->first_docid_lo;
+		uint64		gaps[BM25_BLOCK_SIZE];
+		uint64		tfs[BM25_BLOCK_SIZE];
+		uint64		dls[BM25_BLOCK_SIZE];
+		int			cnt = (int) bh->count;
+		int			pos = 0;
+		int			i;
+
+		if (cnt == 0)
+			break;
+		/* grow buffer if this block would overflow it */
+		if (n + cnt > cap)
+		{
+			cap = n + cnt;
+			posts = repalloc(posts, cap * sizeof(BM25Posting));
+			bmax = repalloc(bmax, cap * sizeof(uint32));
+		}
+		pos += bm25_for_unpack(stream + pos, cnt, gaps);
+		pos += bm25_for_unpack(stream + pos, cnt, tfs);
+		pos += bm25_for_unpack(stream + pos, cnt, dls);
+		for (i = 0; i < cnt && c->nread + n < (int) c->df; i++)
+		{
+			docid += gaps[i];
+			bm25_docid_to_tid(docid, &posts[n].tid);
+			posts[n].tf = (uint32) tfs[i];
+			posts[n].doclen = (uint32) dls[i];
+			bmax[n] = bh->max_tf;
+			n++;
+		}
+		p = (char *) (bh + 1) + bh->bytelen;
+		p = (char *) MAXALIGN(p);
+	}
+	/* remember where to resume: rest of this page, or the next page */
+	if (p + sizeof(BM25BlockHdr) <= pend && c->nread + n < (int) c->df)
+	{
+		c->curoff = (uint32) ((char *) p - (char *) page);
+		/* curblk stays */
+	}
+	else
+	{
+		c->curblk = BM25PageGetOpaque(page)->nextblk;
+		c->curoff = MAXALIGN(SizeOfPageHeaderData);
+	}
+	UnlockReleaseBuffer(buf);
+
+	c->posts = posts;
+	c->blockmax = bmax;
+	c->nposts = n;
+	c->nread += n;
+	c->cur = 0;
+	if (n > 0)
+		c->docid = tid_to_docid_s(&c->posts[0].tid);
+	else
+		wand_load_page(c);		/* skipped an empty tail; try next page */
+}
+
+/* Prime the cursor at the term's first block/offset and load its first page. */
+static void
+wand_prime(WandCursor *c)
+{
+	c->posts = NULL;
+	c->blockmax = NULL;
+	c->curblk = c->firstblk;
+	c->curoff = c->firstoff;
+	c->nread = 0;
 	if (c->firstblk == InvalidBlockNumber || c->df == 0)
 	{
 		c->nposts = 0;
@@ -1151,10 +1253,7 @@ wand_prime(WandCursor *c)
 		c->docid = UINT64_MAX;
 		return;
 	}
-	c->nposts = bm25_decode_term(c->index, c->firstblk, c->firstoff, c->df,
-								 &c->posts, &c->blockmax);
-	c->cur = 0;
-	c->docid = c->nposts > 0 ? tid_to_docid_s(&c->posts[0].tid) : UINT64_MAX;
+	wand_load_page(c);
 }
 
 /* The block-max contribution upper bound for the current posting's 128-block. */
@@ -1176,7 +1275,7 @@ wand_next(WandCursor *c)
 	if (c->cur < c->nposts)
 		c->docid = tid_to_docid_s(&c->posts[c->cur].tid);
 	else
-		c->docid = UINT64_MAX;
+		wand_load_page(c);		/* stream the next page of this term */
 }
 
 /*
@@ -1200,7 +1299,7 @@ wand_skip_block(WandCursor *c)
 	if (c->cur < c->nposts)
 		c->docid = tid_to_docid_s(&c->posts[c->cur].tid);
 	else
-		c->docid = UINT64_MAX;
+		wand_load_page(c);
 }
 
 /* Exact BM25 contribution of the current posting, using stored per-doc |D|.
