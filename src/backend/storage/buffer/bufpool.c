@@ -1930,8 +1930,13 @@ RebuildPoolPartitions(void)
  */
 #define PG_STAT_GET_BUFFERPOOL_COLS 9
 
-PG_FUNCTION_INFO_V1(pg_stat_get_bufferpool);
-
+/*
+ * pg_stat_get_bufferpool is a built-in function (listed in pg_proc.dat), so
+ * its prototype comes from the generated fmgrprotos.h and it is dispatched
+ * via fmgrtab.  Built-ins must NOT use PG_FUNCTION_INFO_V1 (that macro is for
+ * dynamically-loaded/extension functions); doing so emits a conflicting
+ * declaration that MSVC rejects as "redefinition; different linkage".
+ */
 Datum
 pg_stat_get_bufferpool(PG_FUNCTION_ARGS)
 {

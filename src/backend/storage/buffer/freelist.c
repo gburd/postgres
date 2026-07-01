@@ -33,6 +33,7 @@
 #include "storage/proc.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
+#include "utils/fmgrprotos.h"
 #include "utils/guc.h"
 
 #define INT_ACCESS_ONCE(var)	((int)(*((volatile int *)&(var))))
@@ -1099,8 +1100,6 @@ StrategyCtlShmemInit(void *arg)
  * This follows the access-method handler pattern so that the default
  * pool has a handler like any other pool.
  */
-PG_FUNCTION_INFO_V1(clock_pool_handler);
-
 Datum
 clock_pool_handler(PG_FUNCTION_ARGS)
 {
@@ -1267,8 +1266,6 @@ const BufferPoolRoutine keep_pool_routine = {
 /*
  * keep_pool_handler -- SQL-callable handler returning the KEEP BufferPoolRoutine.
  */
-PG_FUNCTION_INFO_V1(keep_pool_handler);
-
 Datum
 keep_pool_handler(PG_FUNCTION_ARGS)
 {
