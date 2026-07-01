@@ -37,6 +37,7 @@ install_data(
   'pg_fts--1.6--1.7.sql',
   'pg_fts--1.7--1.8.sql',
   'pg_fts--1.8--1.9.sql',
+  'pg_fts--1.9--1.10.sql',
   kwargs: contrib_data_args,
 )
 

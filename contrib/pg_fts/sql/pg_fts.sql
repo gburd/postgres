@@ -224,6 +224,27 @@ SELECT id FROM ph WHERE d @@@ '"quick brown"'::ftsquery ORDER BY id;   -- 1 and 
 RESET enable_seqscan;
 DROP TABLE ph;
 
+-- Stage 10: external-content indexing via an expression index.
+-- The bm25 index stores only postings (no document text), so indexing
+-- to_ftsdoc(body) over a plain text column is the external-content model:
+-- the text lives in the table, the index derives ftsdoc from it.
+ALTER EXTENSION pg_fts UPDATE TO '1.10';
+CREATE TABLE articles (id serial, body text);
+INSERT INTO articles (body) VALUES
+  ('the quick brown fox'),
+  ('lazy dogs sleep'),
+  ('quick foxes are clever');
+CREATE INDEX articles_bm25 ON articles USING bm25 (to_ftsdoc(body));
+SET enable_seqscan = off;
+-- query against the expression index; text is fetched from the table only
+-- for returned rows
+SELECT id, body FROM articles
+WHERE to_ftsdoc(body) @@@ 'quick'::ftsquery ORDER BY id;
+SELECT id FROM articles
+WHERE to_ftsdoc(body) @@@ '"quick brown"'::ftsquery ORDER BY id;
+RESET enable_seqscan;
+DROP TABLE articles;
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 
