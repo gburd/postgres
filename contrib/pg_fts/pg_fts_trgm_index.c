@@ -447,32 +447,22 @@ bm25_trgm_candidates(Relation index, BlockNumber trgmstart,
 
 			if (ordinal == (uint32) ords[oi])
 			{
-				BlockNumber pblk = de->firstposting;
+				BM25Posting *post;
+				int			np = bm25_decode_term(index, de->firstposting,
+												  de->firstoffset, de->df,
+												  &post, NULL);
+				int			k;
 
-				while (pblk != InvalidBlockNumber)
+				for (k = 0; k < np; k++)
 				{
-					Buffer		pb = ReadBuffer(index, pblk);
-					Page		pp;
-					BM25Posting *post;
-					int			np,
-								k;
-
-					LockBuffer(pb, BUFFER_LOCK_SHARE);
-					pp = BufferGetPage(pb);
-					np = bm25_page_decode(pp, &post);
-					for (k = 0; k < np; k++)
+					if (n >= cap)
 					{
-						if (n >= cap)
-						{
-							cap *= 2;
-							tids = repalloc(tids, cap * sizeof(ItemPointerData));
-						}
-						tids[n++] = post[k].tid;
+						cap *= 2;
+						tids = repalloc(tids, cap * sizeof(ItemPointerData));
 					}
-					pfree(post);
-					pblk = BM25PageGetOpaque(pp)->nextblk;
-					UnlockReleaseBuffer(pb);
+					tids[n++] = post[k].tid;
 				}
+				pfree(post);
 				oi++;
 			}
 			ordinal++;

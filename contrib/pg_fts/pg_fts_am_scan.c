@@ -169,6 +169,8 @@ bm25_lookup_term(Relation index, const BM25SegMeta *seg,
 		char	   *ptr;
 		char	   *end;
 		BlockNumber firstposting = InvalidBlockNumber;
+		uint32		firstoffset = 0;
+		uint32		df = 0;
 		bool		found = false;
 
 		LockBuffer(buffer, BUFFER_LOCK_SHARE);
@@ -185,6 +187,8 @@ bm25_lookup_term(Relation index, const BM25SegMeta *seg,
 				memcmp(de->term, term, termlen) == 0)
 			{
 				firstposting = de->firstposting;
+				firstoffset = de->firstoffset;
+				df = de->df;
 				found = true;
 				break;
 			}
@@ -195,36 +199,17 @@ bm25_lookup_term(Relation index, const BM25SegMeta *seg,
 
 		if (found)
 		{
-			/* read the posting chain */
-			BlockNumber pblk = firstposting;
-			int			cap = 16;
+			/* read exactly this term's df postings from the shared chain */
+			BM25Posting *post;
+			int			np = bm25_decode_term(index, firstposting, firstoffset,
+										  df, &post, NULL);
+			ItemPointerData *tids = palloc(Max(np, 1) * sizeof(ItemPointerData));
 			int			n = 0;
-			ItemPointerData *tids = palloc(cap * sizeof(ItemPointerData));
+			int			i;
 
-			while (pblk != InvalidBlockNumber)
-			{
-				Buffer		pb = ReadBuffer(index, pblk);
-				Page		pp;
-				BM25Posting *post;
-				int			np;
-				int			i;
-
-				LockBuffer(pb, BUFFER_LOCK_SHARE);
-				pp = BufferGetPage(pb);
-				np = bm25_page_decode(pp, &post);
-				for (i = 0; i < np; i++)
-				{
-					if (n >= cap)
-					{
-						cap *= 2;
-						tids = repalloc(tids, cap * sizeof(ItemPointerData));
-					}
-					tids[n++] = post[i].tid;
-				}
-				pfree(post);
-				pblk = BM25PageGetOpaque(pp)->nextblk;
-				UnlockReleaseBuffer(pb);
-			}
+			for (i = 0; i < np; i++)
+				tids[n++] = post[i].tid;
+			pfree(post);
 			out->tids = tids;
 			out->n = n;
 			tidset_sort_uniq(out);
@@ -367,32 +352,22 @@ bm25_lookup_prefix(Relation index, BlockNumber dictstart,
 			if ((int) de->termlen >= prefixlen &&
 				memcmp(de->term, prefix, prefixlen) == 0)
 			{
-				BlockNumber pblk = de->firstposting;
+				BM25Posting *post;
+				int			np = bm25_decode_term(index, de->firstposting,
+												  de->firstoffset, de->df,
+												  &post, NULL);
+				int			k;
 
-				while (pblk != InvalidBlockNumber)
+				for (k = 0; k < np; k++)
 				{
-					Buffer		pb = ReadBuffer(index, pblk);
-					Page		pp;
-					BM25Posting *post;
-					int			np,
-								k;
-
-					LockBuffer(pb, BUFFER_LOCK_SHARE);
-					pp = BufferGetPage(pb);
-					np = bm25_page_decode(pp, &post);
-					for (k = 0; k < np; k++)
+					if (n >= cap)
 					{
-						if (n >= cap)
-						{
-							cap *= 2;
-							tids = repalloc(tids, cap * sizeof(ItemPointerData));
-						}
-						tids[n++] = post[k].tid;
+						cap *= 2;
+						tids = repalloc(tids, cap * sizeof(ItemPointerData));
 					}
-					pfree(post);
-					pblk = BM25PageGetOpaque(pp)->nextblk;
-					UnlockReleaseBuffer(pb);
+					tids[n++] = post[k].tid;
 				}
+				pfree(post);
 			}
 			ptr += esize;
 		}
@@ -556,32 +531,22 @@ bm25_universe(Relation index, BlockNumber dictstart)
 		{
 			BM25DictEntry *de = (BM25DictEntry *) ptr;
 			Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
-			BlockNumber pblk = de->firstposting;
+			BM25Posting *post;
+			int			np = bm25_decode_term(index, de->firstposting,
+											  de->firstoffset, de->df,
+											  &post, NULL);
+			int			k;
 
-			while (pblk != InvalidBlockNumber)
+			for (k = 0; k < np; k++)
 			{
-				Buffer		pb = ReadBuffer(index, pblk);
-				Page		pp;
-				BM25Posting *post;
-				int			np,
-							k;
-
-				LockBuffer(pb, BUFFER_LOCK_SHARE);
-				pp = BufferGetPage(pb);
-				np = bm25_page_decode(pp, &post);
-				for (k = 0; k < np; k++)
+				if (n >= cap)
 				{
-					if (n >= cap)
-					{
-						cap *= 2;
-						tids = repalloc(tids, cap * sizeof(ItemPointerData));
-					}
-					tids[n++] = post[k].tid;
+					cap *= 2;
+					tids = repalloc(tids, cap * sizeof(ItemPointerData));
 				}
-				pfree(post);
-				pblk = BM25PageGetOpaque(pp)->nextblk;
-				UnlockReleaseBuffer(pb);
+				tids[n++] = post[k].tid;
 			}
+			pfree(post);
 			ptr += esize;
 		}
 		UnlockReleaseBuffer(buffer);
@@ -892,7 +857,8 @@ bm25_endscan(IndexScanDesc scan)
 static bool
 bm25_lookup_dict(Relation index, const BM25SegMeta *seg,
 				 const char *term, int termlen,
-				 uint32 *df, uint32 *max_tf, BlockNumber *firstposting)
+				 uint32 *df, uint32 *max_tf, BlockNumber *firstposting,
+				 uint32 *firstoffset)
 {
 	BlockNumber blk = bm25_dict_seek(index, seg, term, termlen);
 	bool		onlyone = (seg->dictindexstart != InvalidBlockNumber);
@@ -923,6 +889,7 @@ bm25_lookup_dict(Relation index, const BM25SegMeta *seg,
 				*df = de->df;
 				*max_tf = de->max_tf;
 				*firstposting = de->firstposting;
+				*firstoffset = de->firstoffset;
 				found = true;
 				break;
 			}
@@ -938,6 +905,7 @@ bm25_lookup_dict(Relation index, const BM25SegMeta *seg,
 	*df = 0;
 	*max_tf = 0;
 	*firstposting = InvalidBlockNumber;
+	*firstoffset = 0;
 	return false;
 }
 
@@ -1134,12 +1102,14 @@ cmp_scored_desc(const void *a, const void *b)
 typedef struct WandCursor
 {
 	Relation	index;
-	BlockNumber curblk;			/* block of the currently loaded page */
+	BlockNumber curblk;			/* unused now (whole term decoded up front) */
 	BlockNumber firstblk;		/* first posting block for the term */
-	BM25Posting *posts;			/* decoded postings of the current page */
+	uint32		firstoff;		/* byte offset of the term's first block */
+	uint32		df;				/* term document frequency (postings to read) */
+	BM25Posting *posts;			/* the term's full docid-sorted posting list */
 	uint32	   *blockmax;		/* per-posting 128-block max_tf (block-max WAND) */
-	int			nposts;			/* count on the current page */
-	int			cur;			/* index within the current page */
+	int			nposts;			/* total postings for the term */
+	int			cur;			/* index within posts */
 	uint64		docid;			/* current docid (UINT64_MAX = exhausted) */
 	uint32		block_max_tf;	/* unused (kept for ABI of readers) */
 	double		idf;
@@ -1158,13 +1128,12 @@ tid_to_docid_s(ItemPointer tid)
 		(uint64) ItemPointerGetOffsetNumber(tid);
 }
 
-/* Load the posting page at blk into the cursor (decode + block-max). */
+/* Prime the cursor: decode the term's entire posting list up front (bounded by
+ * df).  Simpler and safe now that terms share posting pages -- per-page lazy
+ * loading cannot cheaply know where one term's blocks end within a page. */
 static void
-wand_load_page(WandCursor *c, BlockNumber blk)
+wand_prime(WandCursor *c)
 {
-	Buffer		buf;
-	Page		page;
-
 	if (c->posts)
 	{
 		pfree(c->posts);
@@ -1175,31 +1144,17 @@ wand_load_page(WandCursor *c, BlockNumber blk)
 		pfree(c->blockmax);
 		c->blockmax = NULL;
 	}
-	if (blk == InvalidBlockNumber)
+	if (c->firstblk == InvalidBlockNumber || c->df == 0)
 	{
-		c->curblk = InvalidBlockNumber;
 		c->nposts = 0;
 		c->cur = 0;
 		c->docid = UINT64_MAX;
 		return;
 	}
-	buf = ReadBuffer(c->index, blk);
-	LockBuffer(buf, BUFFER_LOCK_SHARE);
-	page = BufferGetPage(buf);
-	c->nposts = bm25_page_decode_bm(page, &c->posts, &c->blockmax);
-	c->curblk = blk;
+	c->nposts = bm25_decode_term(c->index, c->firstblk, c->firstoff, c->df,
+								 &c->posts, &c->blockmax);
 	c->cur = 0;
 	c->docid = c->nposts > 0 ? tid_to_docid_s(&c->posts[0].tid) : UINT64_MAX;
-	/* if this page turned out empty, advance to the next */
-	if (c->nposts == 0)
-	{
-		BlockNumber next = BM25PageGetOpaque(page)->nextblk;
-
-		UnlockReleaseBuffer(buf);
-		wand_load_page(c, next);
-		return;
-	}
-	UnlockReleaseBuffer(buf);
 }
 
 /* The block-max contribution upper bound for the current posting's 128-block. */
@@ -1219,33 +1174,15 @@ wand_next(WandCursor *c)
 {
 	c->cur++;
 	if (c->cur < c->nposts)
-	{
 		c->docid = tid_to_docid_s(&c->posts[c->cur].tid);
-		return;
-	}
-	/* page exhausted: load the next block in the chain */
-	{
-		Buffer		buf;
-		BlockNumber next;
-
-		if (c->curblk == InvalidBlockNumber)
-		{
-			c->docid = UINT64_MAX;
-			return;
-		}
-		buf = ReadBuffer(c->index, c->curblk);
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		next = BM25PageGetOpaque(BufferGetPage(buf))->nextblk;
-		UnlockReleaseBuffer(buf);
-		wand_load_page(c, next);
-	}
+	else
+		c->docid = UINT64_MAX;
 }
 
 /*
- * Skip the cursor to the start of its next 128-block: advance past the rest of
- * the current block (the run of postings sharing this block's max_tf), or to
- * the next page.  Used by BMW when the current block cannot beat the top-k
- * threshold.  Always makes forward progress.
+ * Skip the cursor past the rest of its current 128-block (the run of postings
+ * sharing this block's max_tf).  Used by BMW when the current block cannot beat
+ * the top-k threshold.  Always makes forward progress.
  */
 static void
 wand_skip_block(WandCursor *c)
@@ -1258,28 +1195,12 @@ wand_skip_block(WandCursor *c)
 		while (c->cur < c->nposts && c->blockmax[c->cur] == bm)
 			c->cur++;
 		if (c->cur == start)
-			c->cur++;			/* whole page one block: step one posting */
+			c->cur++;			/* guarantee progress */
 	}
 	if (c->cur < c->nposts)
-	{
 		c->docid = tid_to_docid_s(&c->posts[c->cur].tid);
-		return;
-	}
-	{
-		Buffer		buf;
-		BlockNumber next;
-
-		if (c->curblk == InvalidBlockNumber)
-		{
-			c->docid = UINT64_MAX;
-			return;
-		}
-		buf = ReadBuffer(c->index, c->curblk);
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		next = BM25PageGetOpaque(BufferGetPage(buf))->nextblk;
-		UnlockReleaseBuffer(buf);
-		wand_load_page(c, next);
-	}
+	else
+		c->docid = UINT64_MAX;
 }
 
 /* Exact BM25 contribution of the current posting, using stored per-doc |D|.
@@ -1313,7 +1234,7 @@ fts_search_wand(WandCursor *cursors, int nterms, int k, ScoredTid **out)
 
 	/* prime each cursor with its first page */
 	for (t = 0; t < nterms; t++)
-		wand_load_page(&cursors[t], cursors[t].firstblk);
+		wand_prime(&cursors[t]);
 
 	for (;;)
 	{
@@ -1515,9 +1436,10 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 			uint32		df,
 						max_tf;
 			BlockNumber firstblk;
+			uint32		firstoff;
 
 			if (bm25_lookup_dict(index, &meta.segs[s], terms[t], lens[t],
-								 &df, &max_tf, &firstblk))
+								 &df, &max_tf, &firstblk, &firstoff))
 				gdf += df;
 		}
 		if (gdf == 0)
@@ -1530,14 +1452,17 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 			uint32		df,
 						max_tf;
 			BlockNumber firstblk;
+			uint32		firstoff;
 			double		mtf;
 
 			if (!bm25_lookup_dict(index, &meta.segs[s], terms[t], lens[t],
-								  &df, &max_tf, &firstblk))
+								  &df, &max_tf, &firstblk, &firstoff))
 				continue;
 			mtf = (double) max_tf;
 			cursors[nactive].index = index;
 			cursors[nactive].firstblk = firstblk;
+			cursors[nactive].firstoff = firstoff;
+			cursors[nactive].df = df;
 			cursors[nactive].posts = NULL;
 			cursors[nactive].blockmax = NULL;
 			cursors[nactive].nposts = 0;

@@ -380,53 +380,60 @@ bm25_for_unpack(const unsigned char *buf, int n, uint64 *out)
 }
 
 /*
- * Decode all postings on a page (across all its blocks) into a palloc'd array.
- * Returns the total count.  If blockmax != NULL, *blockmax is a palloc'd array
- * (one entry per posting) giving the max_tf of the 128-block that posting
- * belongs to -- this is what block-max WAND uses to skip whole blocks.
+ * Decode exactly one term's postings from the shared posting chain: start at
+ * (firstblk, firstoff) and decode consecutive blocks -- following nextblk
+ * across pages -- until `df` postings have been read.  A term's blocks are
+ * written contiguously, so its run is delimited purely by df.  Returns the
+ * count (== df on a consistent index); *out (and *blockmax if non-NULL) are
+ * palloc'd.  `off` on pages after the first is the contents start.
  */
 static int
-bm25_page_decode_bm(Page page, BM25Posting **out, uint32 **blockmax)
+bm25_decode_term(Relation index, BlockNumber firstblk, uint32 firstoff,
+				 uint32 df, BM25Posting **out, uint32 **blockmax)
 {
-	char	   *pstart = (char *) PageGetContents(page);
-	char	   *pend = (char *) page + ((PageHeader) page)->pd_lower;
-	char	   *p = pstart;
-	BM25Posting *posts = NULL;
+	BM25Posting *posts;
 	uint32	   *bmax = NULL;
 	int			n = 0;
-	int			cap = 0;
+	BlockNumber blk = firstblk;
+	uint32		off = firstoff;
 
-	while (p + sizeof(BM25BlockHdr) <= pend)
+	posts = (BM25Posting *) palloc(Max(df, 1u) * sizeof(BM25Posting));
+	if (blockmax)
+		bmax = (uint32 *) palloc(Max(df, 1u) * sizeof(uint32));
+
+	while (blk != InvalidBlockNumber && n < (int) df)
 	{
-		BM25BlockHdr *bh = (BM25BlockHdr *) p;
-		const unsigned char *stream = (const unsigned char *) (bh + 1);
-		uint64		docid = ((uint64) bh->first_docid_hi << 32) | bh->first_docid_lo;
-		int			pos = 0;
-		int			i;
+		Buffer		buf = ReadBuffer(index, blk);
+		Page		page;
+		char	   *p,
+				   *pend;
+		BlockNumber next;
 
-		if (bh->count == 0)
-			break;
-		if (n + (int) bh->count > cap)
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		pend = (char *) page + ((PageHeader) page)->pd_lower;
+		next = BM25PageGetOpaque(page)->nextblk;
+		p = (char *) page + off;
+		while (p + sizeof(BM25BlockHdr) <= pend && n < (int) df)
 		{
-			cap = Max(cap * 2, n + (int) bh->count);
-			posts = posts ? repalloc(posts, cap * sizeof(BM25Posting))
-				: palloc(cap * sizeof(BM25Posting));
-			if (blockmax)
-				bmax = bmax ? repalloc(bmax, cap * sizeof(uint32))
-					: palloc(cap * sizeof(uint32));
-		}
-		{
+			BM25BlockHdr *bh = (BM25BlockHdr *) p;
+			const unsigned char *stream = (const unsigned char *) (bh + 1);
+			uint64		docid = ((uint64) bh->first_docid_hi << 32) | bh->first_docid_lo;
 			uint64		gaps[BM25_BLOCK_SIZE];
 			uint64		tfs[BM25_BLOCK_SIZE];
 			uint64		dls[BM25_BLOCK_SIZE];
 			int			cnt = (int) bh->count;
+			int			pos = 0;
+			int			i;
 
+			if (cnt == 0)
+				break;
 			pos += bm25_for_unpack(stream + pos, cnt, gaps);
 			pos += bm25_for_unpack(stream + pos, cnt, tfs);
 			pos += bm25_for_unpack(stream + pos, cnt, dls);
-			for (i = 0; i < cnt; i++)
+			for (i = 0; i < cnt && n < (int) df; i++)
 			{
-				docid += gaps[i];	/* first gap is 0 from first_docid */
+				docid += gaps[i];
 				bm25_docid_to_tid(docid, &posts[n].tid);
 				posts[n].tf = (uint32) tfs[i];
 				posts[n].doclen = (uint32) dls[i];
@@ -434,22 +441,17 @@ bm25_page_decode_bm(Page page, BM25Posting **out, uint32 **blockmax)
 					bmax[n] = bh->max_tf;
 				n++;
 			}
+			p = (char *) (bh + 1) + bh->bytelen;
+			p = (char *) MAXALIGN(p);
 		}
-		p = (char *) (bh + 1) + bh->bytelen;
-		p = (char *) MAXALIGN(p);
+		UnlockReleaseBuffer(buf);
+		blk = next;
+		off = MAXALIGN(SizeOfPageHeaderData);	/* later pages: contents start */
 	}
-	if (posts == NULL)
-		posts = palloc(sizeof(BM25Posting));
 	*out = posts;
 	if (blockmax)
-		*blockmax = bmax ? bmax : palloc(sizeof(uint32));
+		*blockmax = bmax;
 	return n;
-}
-
-static int
-bm25_page_decode(Page page, BM25Posting **out)
-{
-	return bm25_page_decode_bm(page, out, NULL);
 }
 
 /* ----- writing the index pages ----- */
@@ -548,17 +550,58 @@ cmp_posting_docid(const void *a, const void *b)
 	return 0;
 }
 
-static BlockNumber
-bm25_write_postings(Relation index, BuildTerm *bt)
+/*
+ * Shared posting-page writer.  All terms in a segment append their blocks into
+ * ONE chain of posting pages, so a rare term (a handful of postings) costs a
+ * few dozen bytes instead of a whole 8 KB page -- critical for a Zipfian
+ * vocabulary where most terms are tiny.  Each term records its start (block +
+ * byte offset); the reader decodes blocks from there, counting postings until
+ * it has read the term's df, following nextblk across page boundaries.
+ */
+typedef struct BM25PostWriter
 {
-	BlockNumber first = InvalidBlockNumber;
-	Buffer		buffer = InvalidBuffer;
-	GenericXLogState *state = NULL;
-	Page		page = NULL;
+	Relation	index;
+	Buffer		buffer;
+	GenericXLogState *state;
+	Page		page;
+} BM25PostWriter;
+
+static void
+pw_begin(BM25PostWriter *pw, Relation index)
+{
+	pw->index = index;
+	pw->buffer = InvalidBuffer;
+	pw->state = NULL;
+	pw->page = NULL;
+}
+
+static void
+pw_finish(BM25PostWriter *pw)
+{
+	if (pw->buffer != InvalidBuffer)
+	{
+		GenericXLogFinish(pw->state);
+		UnlockReleaseBuffer(pw->buffer);
+		pw->buffer = InvalidBuffer;
+	}
+}
+
+/*
+ * Append one term's postings to the shared writer.  Returns the block and byte
+ * offset where the term's first block begins (for its dictionary entry).
+ */
+static void
+bm25_write_postings(BM25PostWriter *pw, BuildTerm *bt,
+					BlockNumber *firstblk, uint32 *firstoff)
+{
+	Relation	index = pw->index;
 	BM25PostingSort *sorted;
 	int			i;
+	bool		start_recorded = false;
 
-	/* sort this term's postings by docid for delta encoding */
+	*firstblk = InvalidBlockNumber;
+	*firstoff = 0;
+
 	sorted = (BM25PostingSort *) palloc(Max(bt->nposts, 1) * sizeof(BM25PostingSort));
 	for (i = 0; i < bt->nposts; i++)
 	{
@@ -570,12 +613,6 @@ bm25_write_postings(Relation index, BuildTerm *bt)
 	if (bt->nposts > 1)
 		qsort(sorted, bt->nposts, sizeof(BM25PostingSort), cmp_posting_docid);
 
-	/*
-	 * Emit fixed-size blocks of up to BM25_BLOCK_SIZE postings.  Each block is
-	 * encoded into a scratch buffer (so its bytelen is known), then placed on
-	 * the current page if it fits, else a new page is chained.  A block never
-	 * spans pages (worst case 128*20 bytes + header < BLCKSZ).
-	 */
 	i = 0;
 	while (i < bt->nposts)
 	{
@@ -606,7 +643,6 @@ bm25_write_postings(Relation index, BuildTerm *bt)
 			i++;
 		}
 
-		/* FOR bit-pack the three columns */
 		sclen += bm25_for_pack(gaps, bcount, scratch + sclen);
 		sclen += bm25_for_pack(tfs, bcount, scratch + sclen);
 		sclen += bm25_for_pack(dls, bcount, scratch + sclen);
@@ -614,35 +650,40 @@ bm25_write_postings(Relation index, BuildTerm *bt)
 		need = MAXALIGN(sizeof(BM25BlockHdr) + sclen);
 
 		/* need a page with room for this block? */
-		if (buffer != InvalidBuffer)
+		if (pw->buffer != InvalidBuffer)
 		{
-			pageend = (char *) page + BLCKSZ - MAXALIGN(sizeof(BM25PageOpaqueData));
-			if ((char *) page + ((PageHeader) page)->pd_lower + need > pageend)
+			pageend = (char *) pw->page + BLCKSZ - MAXALIGN(sizeof(BM25PageOpaqueData));
+			if ((char *) pw->page + ((PageHeader) pw->page)->pd_lower + need > pageend)
 			{
-				/* current page full: chain a new one */
 				Buffer		next = bm25_new_buffer(index);
 				BlockNumber nextblk = BufferGetBlockNumber(next);
 
-				BM25PageGetOpaque(page)->nextblk = nextblk;
-				GenericXLogFinish(state);
-				UnlockReleaseBuffer(buffer);
-				buffer = next;
-				state = GenericXLogStart(index);
-				page = GenericXLogRegisterBuffer(state, buffer, GENERIC_XLOG_FULL_IMAGE);
-				bm25_init_page(page, BM25_POSTING);
+				BM25PageGetOpaque(pw->page)->nextblk = nextblk;
+				GenericXLogFinish(pw->state);
+				UnlockReleaseBuffer(pw->buffer);
+				pw->buffer = next;
+				pw->state = GenericXLogStart(index);
+				pw->page = GenericXLogRegisterBuffer(pw->state, pw->buffer, GENERIC_XLOG_FULL_IMAGE);
+				bm25_init_page(pw->page, BM25_POSTING);
 			}
 		}
-		if (buffer == InvalidBuffer)
+		if (pw->buffer == InvalidBuffer)
 		{
-			buffer = bm25_new_buffer(index);
-			state = GenericXLogStart(index);
-			page = GenericXLogRegisterBuffer(state, buffer, GENERIC_XLOG_FULL_IMAGE);
-			bm25_init_page(page, BM25_POSTING);
-			first = BufferGetBlockNumber(buffer);
+			pw->buffer = bm25_new_buffer(index);
+			pw->state = GenericXLogStart(index);
+			pw->page = GenericXLogRegisterBuffer(pw->state, pw->buffer, GENERIC_XLOG_FULL_IMAGE);
+			bm25_init_page(pw->page, BM25_POSTING);
 		}
 
-		/* place the block at pd_lower */
-		dst = (char *) page + ((PageHeader) page)->pd_lower;
+		/* record the term's start at its first block */
+		if (!start_recorded)
+		{
+			*firstblk = BufferGetBlockNumber(pw->buffer);
+			*firstoff = (uint32) ((PageHeader) pw->page)->pd_lower;
+			start_recorded = true;
+		}
+
+		dst = (char *) pw->page + ((PageHeader) pw->page)->pd_lower;
 		bh = (BM25BlockHdr *) dst;
 		bh->count = (uint32) bcount;
 		bh->max_tf = blk_max_tf;
@@ -650,17 +691,10 @@ bm25_write_postings(Relation index, BuildTerm *bt)
 		bh->first_docid_lo = (uint32) (blk_first_docid & 0xFFFFFFFF);
 		bh->bytelen = (uint32) sclen;
 		memcpy((char *) (bh + 1), scratch, sclen);
-		((PageHeader) page)->pd_lower += need;
-	}
-
-	if (buffer != InvalidBuffer)
-	{
-		GenericXLogFinish(state);
-		UnlockReleaseBuffer(buffer);
+		((PageHeader) pw->page)->pd_lower += need;
 	}
 
 	pfree(sorted);
-	return first;
 }
 
 /*
@@ -670,7 +704,8 @@ bm25_write_postings(Relation index, BuildTerm *bt)
  */
 static BlockNumber
 bm25_write_dictionary(Relation index, BM25BuildState *bs,
-					  BlockNumber *postings, BlockNumber *indexstart)
+					  BlockNumber *postings, uint32 *offsets,
+					  BlockNumber *indexstart)
 {
 	BlockNumber first = InvalidBlockNumber;
 	Buffer		buffer = InvalidBuffer;
@@ -744,6 +779,7 @@ bm25_write_dictionary(Relation index, BM25BuildState *bs,
 					maxtf = bt->tfs[p];
 			de->max_tf = maxtf;
 			de->firstposting = postings[i];
+			de->firstoffset = offsets[i];
 			memcpy(de->term, bt->term, bt->len);
 		}
 		((PageHeader) page)->pd_lower += need;
@@ -826,14 +862,19 @@ static void
 bm25_write_segment(Relation index, BM25BuildState *bs, BM25SegMeta *seg)
 {
 	BlockNumber *postings;
+	uint32	   *offsets;
+	BM25PostWriter pw;
 	int			i;
 
 	postings = (BlockNumber *) palloc(Max(bs->nterms, 1) * sizeof(BlockNumber));
+	offsets = (uint32 *) palloc(Max(bs->nterms, 1) * sizeof(uint32));
+	pw_begin(&pw, index);
 	for (i = 0; i < bs->nterms; i++)
-		postings[i] = bm25_write_postings(index, &bs->terms[i]);
+		bm25_write_postings(&pw, &bs->terms[i], &postings[i], &offsets[i]);
+	pw_finish(&pw);
 
 	MemSet(seg, 0, sizeof(BM25SegMeta));
-	seg->dictstart = bm25_write_dictionary(index, bs, postings, &seg->dictindexstart);
+	seg->dictstart = bm25_write_dictionary(index, bs, postings, offsets, &seg->dictindexstart);
 	seg->trgmstart = bm25_write_trigrams(index, bs);
 	seg->livedocs = InvalidBlockNumber;
 	seg->ndocs = bs->ndocs;
@@ -842,6 +883,7 @@ bm25_write_segment(Relation index, BM25BuildState *bs, BM25SegMeta *seg)
 	seg->ndeleted = 0;
 	seg->basedocid = 0;
 	pfree(postings);
+	pfree(offsets);
 }
 
 /*
@@ -901,26 +943,16 @@ bm25_read_segment_into(Relation index, const BM25SegMeta *seg, BM25BuildState *b
 		{
 			BM25DictEntry *de = (BM25DictEntry *) ptr;
 			Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
-			BlockNumber pblk = de->firstposting;
+			BM25Posting *post;
+			int			np,
+						k;
 
-			while (pblk != InvalidBlockNumber)
-			{
-				Buffer		pb = ReadBuffer(index, pblk);
-				Page		pp;
-				BM25Posting *post;
-				int			np,
-							k;
-
-				LockBuffer(pb, BUFFER_LOCK_SHARE);
-				pp = BufferGetPage(pb);
-				np = bm25_page_decode(pp, &post);
-				for (k = 0; k < np; k++)
-					add_posting(bs, de->term, de->termlen,
-								&post[k].tid, post[k].tf, post[k].doclen);
-				pfree(post);
-				pblk = BM25PageGetOpaque(pp)->nextblk;
-				UnlockReleaseBuffer(pb);
-			}
+			np = bm25_decode_term(index, de->firstposting, de->firstoffset,
+								  de->df, &post, NULL);
+			for (k = 0; k < np; k++)
+				add_posting(bs, de->term, de->termlen,
+							&post[k].tid, post[k].tf, post[k].doclen);
+			pfree(post);
 			ptr += esize;
 		}
 		UnlockReleaseBuffer(buffer);
@@ -952,8 +984,9 @@ static void
 bm25_free_segment(Relation index, const BM25SegMeta *seg)
 {
 	BlockNumber blk = seg->dictstart;
+	BlockNumber postchain = InvalidBlockNumber;
 
-	/* dictionary pages + each entry's posting chain */
+	/* dictionary pages; capture the shared posting chain's first block */
 	while (blk != InvalidBlockNumber)
 	{
 		Buffer		buf = ReadBuffer(index, blk);
@@ -972,13 +1005,17 @@ bm25_free_segment(Relation index, const BM25SegMeta *seg)
 			BM25DictEntry *de = (BM25DictEntry *) ptr;
 			Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
 
-			bm25_free_chain(index, de->firstposting);
+			/* all terms share ONE posting chain; the first term names its head */
+			if (postchain == InvalidBlockNumber)
+				postchain = de->firstposting;
 			ptr += esize;
 		}
 		UnlockReleaseBuffer(buf);
 		RecordFreeIndexPage(index, blk);
 		blk = next;
 	}
+	if (postchain != InvalidBlockNumber)
+		bm25_free_chain(index, postchain);	/* free the shared posting chain once */
 
 	/* trigram directory pages (+ their data blobs) */
 	blk = seg->trgmstart;
