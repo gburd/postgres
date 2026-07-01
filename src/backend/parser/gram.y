@@ -817,7 +817,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 	SAVEPOINT SCALAR SCHEMA SCHEMAS SCROLL SEARCH SECOND_P SECURITY SELECT
 	SEQUENCE SEQUENCES
 	SERIALIZABLE SERVER SESSION SESSION_USER SET SETS SETOF SHARE SHOW
-	SIMILAR SIMPLE SIZE SKIP SMALLINT SNAPSHOT SOME SPLIT SOURCE SQL_P STABLE STANDALONE_P
+	SIMILAR SIMPLE SIZE_P SKIP SMALLINT SNAPSHOT SOME SPLIT SOURCE SQL_P STABLE STANDALONE_P
 	START STATEMENT STATISTICS STDIN STDOUT STORAGE STORED STRICT_P STRING_P STRIP_P
 	SUBSCRIPTION SUBSTRING SUPPORT SYMMETRIC SYSID SYSTEM_P SYSTEM_USER
 
@@ -6199,7 +6199,7 @@ am_type:
  *****************************************************************************/
 
 CreateBufferPoolStmt:
-			CREATE BUFFER POOL name HANDLER handler_name SIZE Sconst
+			CREATE BUFFER POOL name HANDLER handler_name SIZE_P Sconst
 				{
 					CreateBufferPoolStmt *n = makeNode(CreateBufferPoolStmt);
 
@@ -6210,7 +6210,7 @@ CreateBufferPoolStmt:
 					n->is_remainder = false;
 					$$ = (Node *) n;
 				}
-			| CREATE BUFFER POOL name HANDLER handler_name SIZE Sconst WITH '(' generic_option_list ')'
+			| CREATE BUFFER POOL name HANDLER handler_name SIZE_P Sconst WITH '(' generic_option_list ')'
 				{
 					CreateBufferPoolStmt *n = makeNode(CreateBufferPoolStmt);
 
@@ -6235,7 +6235,7 @@ CreateBufferPoolStmt:
 		;
 
 AlterBufferPoolStmt:
-			ALTER BUFFER POOL name SET SIZE Sconst
+			ALTER BUFFER POOL name SET SIZE_P Sconst
 				{
 					AlterBufferPoolStmt *n = makeNode(AlterBufferPoolStmt);
 
@@ -19188,7 +19188,7 @@ unreserved_keyword:
 			| SHARE
 			| SHOW
 			| SIMPLE
-			| SIZE
+			| SIZE_P
 			| SKIP
 			| SNAPSHOT
 			| SOURCE
@@ -19845,7 +19845,7 @@ bare_label_keyword:
 			| SHOW
 			| SIMILAR
 			| SIMPLE
-			| SIZE
+			| SIZE_P
 			| SKIP
 			| SMALLINT
 			| SNAPSHOT
