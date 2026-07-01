@@ -175,7 +175,7 @@ extern PGDLLIMPORT int NBuffers;
  * pools are created or destroyed.  Defined in bufpool.c.
  */
 #ifndef MaxBufferNumber
-extern int *SharedMaxBufferNumber;
+extern PGDLLIMPORT int *SharedMaxBufferNumber;
 #define MaxBufferNumber (*SharedMaxBufferNumber)
 #endif
 

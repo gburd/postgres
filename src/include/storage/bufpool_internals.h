@@ -325,12 +325,12 @@ PoolStatFlush(uint64 *local_counter, pg_atomic_uint64 *shared_counter)
  */
 extern PGDLLIMPORT BufferPoolDesc *BufferPoolDescs;
 extern PGDLLIMPORT pg_atomic_uint32 *UnclaimedBufferCount;
-extern int *SharedNBufferPools;
+extern PGDLLIMPORT int *SharedNBufferPools;
 #ifndef NBufferPools
 #define NBufferPools (*SharedNBufferPools)
 #endif
 #ifndef MaxBufferNumber
-extern int *SharedMaxBufferNumber;
+extern PGDLLIMPORT int *SharedMaxBufferNumber;
 #define MaxBufferNumber (*SharedMaxBufferNumber)
 #endif
 

@@ -39,6 +39,7 @@
 #include "storage/bufpool_internals.h"
 #include "storage/shmem.h"
 #include "storage/spin.h"
+#include "utils/fmgrprotos.h"
 
 /*
  * JAM limits: usage count cap is low since TOAST pages are rarely re-read.
@@ -422,8 +423,6 @@ static const BufferPoolRoutine jam_pool_routine = {
 /*
  * jam_pool_handler -- SQL-callable handler returning the JAM routine.
  */
-PG_FUNCTION_INFO_V1(jam_pool_handler);
-
 Datum
 jam_pool_handler(PG_FUNCTION_ARGS)
 {

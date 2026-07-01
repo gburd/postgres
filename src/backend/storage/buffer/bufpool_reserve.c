@@ -45,10 +45,21 @@
  */
 #include "postgres.h"
 
+/*
+ * Whether the platform supports the same-address reservation mechanism.
+ * Requires memfd_create (Linux) and a non-EXEC_BACKEND build (fork
+ * inheritance of the reservation mapping).  Defined here, before the
+ * POSIX-only headers, so they are only pulled in where they exist -- on
+ * Windows/MSVC (EXEC_BACKEND) sys/mman.h etc. do not exist.
+ */
+#if defined(__linux__) && !defined(EXEC_BACKEND)
+#define BUFPOOL_RESERVE_SUPPORTED 1
+#endif
+
+#ifdef BUFPOOL_RESERVE_SUPPORTED
 #include <sys/mman.h>
 #include <unistd.h>
 #include <fcntl.h>
-#ifdef __linux__
 #include <linux/falloc.h>
 #endif
 
@@ -61,14 +72,6 @@
 #include "storage/shmem.h"
 #include "utils/guc.h"
 
-/*
- * Whether the platform supports the same-address reservation mechanism.
- * Requires memfd_create (Linux) and a non-EXEC_BACKEND build (fork
- * inheritance of the reservation mapping).
- */
-#if defined(__linux__) && !defined(EXEC_BACKEND)
-#define BUFPOOL_RESERVE_SUPPORTED 1
-#endif
 /*
  * Reservation memory model (supports disjoint physical backing).
  *
@@ -530,6 +533,7 @@ BufPoolAttachLocal(Size offset, Size size)
  * Returns true on success.  huge requests MAP_HUGETLB where available; on
  * failure with huge it is the caller's choice whether to retry without.
  */
+#ifdef BUFPOOL_RESERVE_SUPPORTED
 /*
  * bufpool_numa_distribute_window -- spread a dynamic pool's committed window
  *		across NUMA nodes, chunk by chunk.
@@ -539,7 +543,9 @@ BufPoolAttachLocal(Size offset, Size size)
  * and strategy state, so we cannot cleanly co-locate a buffer with its
  * descriptor; we instead bind successive window chunks round-robin to nodes so
  * the pool's pages and traffic are spread rather than concentrated on the
- * creating backend's node.  No-op unless NUMA distribution is active.
+ * creating backend's node.  No-op unless NUMA distribution is active.  Only
+ * needed on the reservation-supported path (its sole caller, BufPoolCommit, is
+ * itself compiled out elsewhere).
  */
 static void
 bufpool_numa_distribute_window(void *addr, Size size)
@@ -560,6 +566,7 @@ bufpool_numa_distribute_window(void *addr, Size size)
 		k++;
 	}
 }
+#endif							/* BUFPOOL_RESERVE_SUPPORTED */
 
 bool
 BufPoolCommit(Size offset, Size size, bool huge)
