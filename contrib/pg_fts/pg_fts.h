@@ -116,6 +116,8 @@ typedef struct FtsQueryItem
 } FtsQueryItem;
 
 #define FTS_QF_PREFIX	0x0001	/* term is a prefix match (term*) */
+#define FTS_QF_FUZZY	0x0002	/* term is a fuzzy match (term~k); k in distance */
+#define FTS_QF_REGEX	0x0004	/* term text is a regular expression (/re/) */
 
 typedef struct FtsQueryData
 {
@@ -155,5 +157,11 @@ extern FtsTermEntry *fts_doc_lookup(FtsDoc doc, const char *term, int termlen);
 
 /* shared: does any term in the doc start with the given prefix? */
 extern bool fts_doc_has_prefix(FtsDoc doc, const char *prefix, int prefixlen);
+
+/* shared: does any doc term match within edit distance k? (stage 13) */
+extern bool fts_doc_has_fuzzy(FtsDoc doc, const char *term, int termlen, int k);
+
+/* shared: does any doc term match the regular expression? (stage 14) */
+extern bool fts_doc_has_regex(FtsDoc doc, const char *re, int relen);
 
 #endif							/* PG_FTS_H */

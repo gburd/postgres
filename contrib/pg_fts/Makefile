@@ -22,7 +22,8 @@ DATA = pg_fts--1.0.sql pg_fts--1.0--1.1.sql pg_fts--1.1--1.2.sql \
 	pg_fts--1.6--1.7.sql \
 	pg_fts--1.7--1.8.sql \
 	pg_fts--1.8--1.9.sql \
-	pg_fts--1.9--1.10.sql
+	pg_fts--1.9--1.10.sql \
+	pg_fts--1.10--1.11.sql
 PGFILEDESC = "pg_fts - next-generation full-text search"
 
 REGRESS = pg_fts

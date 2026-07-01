@@ -62,6 +62,8 @@ typedef struct Token
 	char	   *term;			/* folded term text for TOK_TERM */
 	int			termlen;
 	bool		prefix;			/* TOK_TERM followed by '*' */
+	int			fuzzy_k;		/* TOK_TERM followed by ~k (0 = not fuzzy) */
+	bool		regex;			/* TOK_TERM holds a regex (from /.../ ) */
 } Token;
 
 typedef struct ParseState
@@ -140,7 +142,7 @@ emit_dist(ParseState *st, uint8 type, uint8 op, char *term, int termlen,
 static Token
 lex_raw(ParseState *st)
 {
-	Token		tok = {TOK_EOF, NULL, 0, false};
+	Token		tok = {TOK_EOF, NULL, 0, false, 0, false};
 	int			start;
 	int			flen;
 	int			i;
@@ -179,6 +181,33 @@ lex_raw(ParseState *st)
 				st->pos++;
 				tok.kind = TOK_QUOTE;
 				return tok;
+			case '/':
+				{
+					/* /regex/ : read until the closing slash (not folded) */
+					int			rstart;
+					int			rlen;
+					char	   *rbuf;
+
+					st->pos++;
+					rstart = st->pos;
+					while (st->pos < st->len && st->buf[st->pos] != '/')
+						st->pos++;
+					rlen = st->pos - rstart;
+					if (st->pos < st->len)
+						st->pos++;	/* consume closing slash */
+					else
+					{
+						tok.kind = TOK_EOF;	/* unterminated regex */
+						return tok;
+					}
+					rbuf = (char *) palloc(rlen);
+					memcpy(rbuf, st->buf + rstart, rlen);
+					tok.kind = TOK_TERM;
+					tok.term = rbuf;
+					tok.termlen = rlen;
+					tok.regex = true;
+					return tok;
+				}
 			default:
 				st->pos++;		/* ordinary separator */
 				break;
@@ -215,6 +244,22 @@ lex_raw(ParseState *st)
 		{
 			tok.prefix = true;
 			st->pos++;
+		}
+		/* a trailing '~k' marks a fuzzy term (k defaults to 2) */
+		else if (st->pos < st->len && st->buf[st->pos] == '~')
+		{
+			int			k = 0;
+			bool		havedigit = false;
+
+			st->pos++;
+			while (st->pos < st->len &&
+				   st->buf[st->pos] >= '0' && st->buf[st->pos] <= '9')
+			{
+				k = k * 10 + (st->buf[st->pos] - '0');
+				havedigit = true;
+				st->pos++;
+			}
+			tok.fuzzy_k = havedigit ? Max(k, 1) : 2;
 		}
 	}
 	return tok;
@@ -287,8 +332,16 @@ parse_primary(ParseState *st)
 	}
 	else if (tok.kind == TOK_TERM)
 	{
-		emit(st, FTS_QI_VAL, 0, tok.term, tok.termlen,
-			 tok.prefix ? FTS_QF_PREFIX : 0);
+		uint16		f = 0;
+
+		if (tok.regex)
+			f = FTS_QF_REGEX;
+		else if (tok.fuzzy_k > 0)
+			f = FTS_QF_FUZZY;
+		else if (tok.prefix)
+			f = FTS_QF_PREFIX;
+		emit_dist(st, FTS_QI_VAL, 0, tok.term, tok.termlen, f,
+				  tok.fuzzy_k > 0 ? (uint32) tok.fuzzy_k : 0);
 	}
 	else
 	{
@@ -494,6 +547,14 @@ ftsquery_out(PG_FUNCTION_ARGS)
 			const char *t = FTS_QUERY_ITEMTEXT(q, it);
 
 			initStringInfo(&s);
+			if (it->flags & FTS_QF_REGEX)
+			{
+				appendStringInfoChar(&s, '/');
+				appendBinaryStringInfo(&s, t, it->termlen);
+				appendStringInfoChar(&s, '/');
+				stack[top++] = s;
+				continue;
+			}
 			appendStringInfoChar(&s, '\'');
 			for (j = 0; j < (int) it->termlen; j++)
 			{
@@ -504,6 +565,8 @@ ftsquery_out(PG_FUNCTION_ARGS)
 			appendStringInfoChar(&s, '\'');
 			if (it->flags & FTS_QF_PREFIX)
 				appendStringInfoChar(&s, '*');
+			else if (it->flags & FTS_QF_FUZZY)
+				appendStringInfo(&s, "~%u", it->distance);
 			stack[top++] = s;
 		}
 		else if (it->op == FTS_OP_NOT)

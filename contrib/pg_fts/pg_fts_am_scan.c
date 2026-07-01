@@ -570,20 +570,41 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 		return 0;
 
 	/*
-	 * A top-level NOT needs the universe.  We conservatively build it whenever
-	 * the query contains any NOT operator; cheap queries without NOT skip it.
+	 * A top-level NOT needs the universe.  Fuzzy and regex terms also need it:
+	 * they cannot be answered by exact posting lookup, so the index returns the
+	 * universe as candidates and the bitmap heap recheck (@@@) applies the
+	 * fuzzy/regex test exactly.  (A trigram pre-filter, cribbed from pg_tre,
+	 * would narrow this; the skeleton is correct but scans all live tuples for
+	 * such queries.)
 	 */
 	need_universe = false;
 	{
 		uint32		i;
+		bool		has_fuzzy_regex = false;
 
 		for (i = 0; i < so->query->nitems; i++)
-			if (so->query->items[i].type == FTS_QI_OPR &&
-				so->query->items[i].op == FTS_OP_NOT)
-			{
+		{
+			FtsQueryItem *it = &so->query->items[i];
+
+			if (it->type == FTS_QI_OPR && it->op == FTS_OP_NOT)
 				need_universe = true;
-				break;
+			if (it->type == FTS_QI_VAL &&
+				(it->flags & (FTS_QF_FUZZY | FTS_QF_REGEX)))
+				has_fuzzy_regex = true;
+		}
+
+		if (has_fuzzy_regex)
+		{
+			/* return all indexed tuples as candidates; recheck filters */
+			universe = bm25_universe(scan->indexRelation, meta.dictstart);
+			if (universe.n > 0)
+			{
+				tbm_add_tuples(tbm, universe.tids, universe.n, true);
+				ntids += universe.n;
 			}
+			/* also all pending docs (searched below), so skip main eval */
+			goto scan_pending;
+		}
 	}
 
 	if (need_universe)
@@ -603,6 +624,7 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 		ntids = result.n;
 	}
 
+scan_pending:
 	/*
 	 * Also search the pending list: newly inserted, not-yet-merged documents
 	 * are stored verbatim, so evaluate each directly with the same per-document

@@ -41,7 +41,8 @@ typedef struct MatchVal
  * positions, returns present-without-positions.
  */
 static MatchVal
-term_positions(FtsDoc doc, const char *term, int termlen, bool prefix)
+term_positions(FtsDoc doc, const char *term, int termlen, uint16 flags,
+			   uint32 distance)
 {
 	MatchVal	v;
 
@@ -49,7 +50,17 @@ term_positions(FtsDoc doc, const char *term, int termlen, bool prefix)
 	v.pos = NULL;
 	v.npos = 0;
 
-	if (prefix)
+	if (flags & FTS_QF_REGEX)
+	{
+		v.present = fts_doc_has_regex(doc, term, termlen);
+		return v;
+	}
+	if (flags & FTS_QF_FUZZY)
+	{
+		v.present = fts_doc_has_fuzzy(doc, term, termlen, (int) distance);
+		return v;
+	}
+	if (flags & FTS_QF_PREFIX)
 	{
 		/* presence only; phrase-with-prefix is not tracked positionally */
 		v.present = fts_doc_has_prefix(doc, term, termlen);
@@ -137,8 +148,8 @@ fts_doc_matches(FtsDoc doc, FtsQuery query)
 		if (it->type == FTS_QI_VAL)
 		{
 			stack[top++] = term_positions(doc, FTS_QUERY_ITEMTEXT(query, it),
-										  it->termlen,
-										  (it->flags & FTS_QF_PREFIX) != 0);
+										  it->termlen, it->flags,
+										  it->distance);
 		}
 		else if (it->op == FTS_OP_NOT)
 		{

@@ -245,6 +245,33 @@ WHERE to_ftsdoc(body) @@@ '"quick brown"'::ftsquery ORDER BY id;
 RESET enable_seqscan;
 DROP TABLE articles;
 
+-- Stages 13-14: fuzzy (term~k) and regex (/re/) queries.
+ALTER EXTENSION pg_fts UPDATE TO '1.11';
+-- fuzzy: 'quick'~1 matches 'quikc'? no (2 edits); matches 'quic' (1 delete)
+SELECT to_ftsdoc('the quic brown fox') @@@ 'quick~1'::ftsquery AS fuzzy_hit;
+SELECT to_ftsdoc('the slow green turtle') @@@ 'quick~1'::ftsquery AS fuzzy_miss;
+-- default k is 2: 'kwik' is 3 edits from 'quick', so 'quick~' (k=2) misses
+SELECT to_ftsdoc('kwik search') @@@ 'quick~'::ftsquery AS fuzzy_default_k;
+-- fuzzy renders with ~k
+SELECT 'color~2'::ftsquery;
+-- regex: /^qu/ matches a term starting with qu
+SELECT to_ftsdoc('the quick brown fox') @@@ '/^qu/'::ftsquery AS regex_hit;
+SELECT to_ftsdoc('lazy dog') @@@ '/^qu/'::ftsquery AS regex_miss;
+-- regex renders with slashes
+SELECT '/ab.*cd/'::ftsquery;
+-- fuzzy combined with boolean
+SELECT to_ftsdoc('the quic brown fox') @@@ 'quick~1 & fox'::ftsquery AS combo;
+-- fuzzy/regex work through the bm25 index (recheck applies the exact test)
+CREATE TABLE fz (id serial, d ftsdoc);
+INSERT INTO fz (d) VALUES (to_ftsdoc('quick')), (to_ftsdoc('quic')),
+                          (to_ftsdoc('slow'));
+CREATE INDEX fz_bm25 ON fz USING bm25 (d);
+SET enable_seqscan = off;
+SELECT id FROM fz WHERE d @@@ 'quick~1'::ftsquery ORDER BY id;   -- 1 and 2
+SELECT id FROM fz WHERE d @@@ '/^qu/'::ftsquery ORDER BY id;      -- 1 and 2
+RESET enable_seqscan;
+DROP TABLE fz;
+
 -- Stage 3: the bm25 index access method.
 ALTER EXTENSION pg_fts UPDATE TO '1.3';
 

@@ -278,3 +278,67 @@ fts_doc_has_prefix(FtsDoc doc, const char *prefix, int prefixlen)
 	}
 	return false;
 }
+
+#include "catalog/pg_collation.h"
+#include "regex/regex.h"
+#include "utils/varlena.h"
+
+/*
+ * fts_doc_has_fuzzy -- does any doc term lie within edit distance k of `term`?
+ * Uses core's varstr_levenshtein_less_equal (bounded, so cheap for small k).
+ * A trigram pre-filter (cribbed from pg_tre) would prune candidates at scale;
+ * for correctness the skeleton scans all terms, which the sorted layout could
+ * also bound by length once a length-aware pre-filter is added.
+ */
+bool
+fts_doc_has_fuzzy(FtsDoc doc, const char *term, int termlen, int k)
+{
+	FtsTermEntry *entries = FTS_DOC_ENTRIES(doc);
+	uint32		i;
+
+	for (i = 0; i < doc->nterms; i++)
+	{
+		const char *cand = FTS_DOC_TERMTEXT(doc, &entries[i]);
+		int			candlen = entries[i].len;
+		int			d;
+
+		/* length difference alone can exceed k -> skip without computing */
+		if (abs(candlen - termlen) > k)
+			continue;
+		d = varstr_levenshtein_less_equal(term, termlen, cand, candlen,
+										  1, 1, 1, k, true);
+		if (d <= k)
+			return true;
+	}
+	return false;
+}
+
+/*
+ * fts_doc_has_regex -- does any doc term match the regular expression?
+ * Uses core's cached regex engine (RE_compile_and_execute).  The regex is
+ * matched against each stored (folded) term.
+ */
+bool
+fts_doc_has_regex(FtsDoc doc, const char *re, int relen)
+{
+	FtsTermEntry *entries = FTS_DOC_ENTRIES(doc);
+	text	   *repat = cstring_to_text_with_len(re, relen);
+	uint32		i;
+	bool		found = false;
+
+	for (i = 0; i < doc->nterms; i++)
+	{
+		const char *cand = FTS_DOC_TERMTEXT(doc, &entries[i]);
+		int			candlen = entries[i].len;
+
+		if (RE_compile_and_execute(repat, (char *) cand, candlen,
+								   REG_ADVANCED, C_COLLATION_OID,
+								   0, NULL))
+		{
+			found = true;
+			break;
+		}
+	}
+	pfree(repat);
+	return found;
+}
