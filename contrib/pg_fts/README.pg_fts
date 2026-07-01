@@ -27,6 +27,10 @@ Versions / stages implemented
   1.9   phrase queries ("a b c") via per-term positions (ftsdoc format v2)
   1.10  external-content indexing via expression index on to_ftsdoc(col)
   1.11  fuzzy (term~k) and regex (/re/) query terms
+  1.12  fts_bm25f(): BM25F multi-field weighting
+  1.13  background merge of the pending list (VACUUM + fts_merge())
+  1.14  fts_search(): index-only BM25 top-k (no heap access), WAND max-tf bound
+  1.15  trigram pre-filter for fuzzy matching (pg_tre-style pruning)
 
   Prefix queries (term*) are matched in both the sequential and index paths.
 
@@ -74,15 +78,18 @@ variants exist precisely for that conformance check).
 Known limitations / future work
 --------------------------------
 
-  * Streaming index-only BM25 with block-max WAND top-K (index currently
-    returns a candidate bitmap; scoring is a separate function call).
-  * A trigram pre-filter for fuzzy/regex (the pg_tre approach) to avoid
-    scanning all live tuples; the Lime grammar would be converted to
-    Bison+Flex and sparsemap v5.1.1 used for posting compression.
+  * Full executor integration of index-only ranking via amcanorderbyop (an
+    ORDER BY score LIMIT k ordering scan with block-max WAND early
+    termination).  fts_search() already scores index-only with a WAND bound;
+    what remains is the planner-driven ordering-operator path and per-document
+    |D| stored in postings (approximated by avgdl in the top-k today).
+  * A persistent on-disk trigram posting index in the bm25 AM (the full pg_tre
+    three-tier funnel).  fts_trigrams() prunes fuzzy candidates at the term
+    level today; the regex index path still returns a candidate bitmap.
   * NEAR(a b, k) syntax (the distance-aware matcher already exists; only the
     parser production is missing).
-  * Background merge of the pending list (currently merged by REINDEX).
-  * BM25F field weighting across multiple indexed columns.
+  * FSM-based recycling of blocks orphaned by pending-list merges (reclaimed
+    by REINDEX today).
 
 Backward compatibility
 -----------------------
