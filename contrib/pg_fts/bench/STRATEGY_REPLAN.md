@@ -106,12 +106,21 @@ well-scoped effort, and it's the difference between "works and is correct" and
 "beats the competition," which is the stated goal.
 
 Next concrete steps (in order):
-  1. FOR-128 block posting codec with per-block max-impact (replaces
-     delta+varint; sparsemap stays only for trigram sets or is retired for
-     DFA∩FST).
-  2. 1-byte quantized norms + 256-entry BM25 score cache.
-  3. FST term dictionary (port SuRF/FST + poppy).
-  4. Segment model + tiered merge + MVCC tombstones (crib pg_search seam).
-  5. Re-evaluate fuzzy/regex as Levenshtein-DFA ∩ FST.
+  1. **Segment container first** (revised from the original codec-first order):
+     make the index a set of immutable segments + write buffer, each segment
+     initially holding the *current* varint postings + sorted dict + trigram
+     data.  This is the container every later step slots into; doing it first
+     avoids reworking the codec/dict/norm integration.  Fixes the monolithic
+     build-OOM and O(index) full-rewrite merge (tiered merge over segments).
+     Map tombstones onto MVCC (crib the pg_search seam).
+  2. FOR-128 block posting codec with per-block max-impact, inside a segment
+     (replaces delta+varint; sparsemap stays only for trigram sets or is
+     retired for DFA∩FST).
+  3. 1-byte quantized norms + 256-entry BM25 score cache, per segment.
+  4. FST term dictionary (port SuRF/FST + poppy), per segment.
+  5. Re-evaluate fuzzy/regex as Levenshtein-DFA ∩ FST (needs the FST from 4).
   6. Add MaxScore alongside BMW.
   7. THEN re-run the EC2 benchmark against tsvector/GIN, pg_search, Elasticsearch.
+
+(Original order had the codec first; testing the dependency structure showed
+the segment container must come first so later steps are localized, not reworked.)
