@@ -141,6 +141,7 @@ typedef struct BM25BlockHdr
 {
 	uint32		count;			/* postings in this block (<= BM25_BLOCK_SIZE) */
 	uint32		max_tf;			/* max tf in this block (block-max WAND bound) */
+	uint32		min_doclen;		/* min |D| in this block (tightens block-max WAND) */
 	uint32		first_docid_hi;
 	uint32		first_docid_lo;
 	uint32		bytelen;		/* byte length of the varint stream that follows */

@@ -622,6 +622,7 @@ bm25_write_postings(BM25PostWriter *pw, BuildTerm *bt,
 		unsigned char scratch[3 * (1 + (BM25_BLOCK_SIZE * 64 + 7) / 8)];
 		int			sclen = 0;
 		uint32		blk_max_tf = 0;
+		uint32		blk_min_dl = UINT32_MAX;
 		uint64		blk_first_docid = sorted[i].docid;
 		uint64		prev_docid = sorted[i].docid;
 		int			bcount = 0;
@@ -638,6 +639,8 @@ bm25_write_postings(BM25PostWriter *pw, BuildTerm *bt,
 			dls[bcount] = sorted[i].doclen;
 			if (sorted[i].tf > blk_max_tf)
 				blk_max_tf = sorted[i].tf;
+			if (sorted[i].doclen < blk_min_dl)
+				blk_min_dl = sorted[i].doclen;
 			prev_docid = sorted[i].docid;
 			bcount++;
 			i++;
@@ -687,6 +690,7 @@ bm25_write_postings(BM25PostWriter *pw, BuildTerm *bt,
 		bh = (BM25BlockHdr *) dst;
 		bh->count = (uint32) bcount;
 		bh->max_tf = blk_max_tf;
+		bh->min_doclen = (blk_min_dl == UINT32_MAX ? 0 : blk_min_dl);
 		bh->first_docid_hi = (uint32) (blk_first_docid >> 32);
 		bh->first_docid_lo = (uint32) (blk_first_docid & 0xFFFFFFFF);
 		bh->bytelen = (uint32) sclen;

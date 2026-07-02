@@ -1367,6 +1367,7 @@ typedef struct WandCursor
 	uint32		df;				/* term document frequency (postings to read) */
 	BM25Posting *posts;			/* the term's full docid-sorted posting list */
 	uint32	   *blockmax;		/* per-posting 128-block max_tf (block-max WAND) */
+	uint32	   *blockmindl;		/* per-posting 128-block min |D| (tightens the bound) */
 	int			nposts;			/* total postings for the term */
 	int			cur;			/* index within posts */
 	uint64		docid;			/* current docid (UINT64_MAX = exhausted) */
@@ -1399,6 +1400,7 @@ wand_load_page(WandCursor *c)
 {
 	BM25Posting *posts;
 	uint32	   *bmax;
+	uint32	   *bmindl;
 	int			cap;
 	int			n = 0;
 	Buffer		buf;
@@ -1416,6 +1418,11 @@ wand_load_page(WandCursor *c)
 		pfree(c->blockmax);
 		c->blockmax = NULL;
 	}
+	if (c->blockmindl)
+	{
+		pfree(c->blockmindl);
+		c->blockmindl = NULL;
+	}
 	if (c->curblk == InvalidBlockNumber || c->nread >= (int) c->df)
 	{
 		c->nposts = 0;
@@ -1428,6 +1435,7 @@ wand_load_page(WandCursor *c)
 	cap = Max(cap, 1);
 	posts = (BM25Posting *) palloc(cap * sizeof(BM25Posting));
 	bmax = (uint32 *) palloc(cap * sizeof(uint32));
+	bmindl = (uint32 *) palloc(cap * sizeof(uint32));
 
 	buf = ReadBuffer(c->index, c->curblk);
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
@@ -1454,6 +1462,7 @@ wand_load_page(WandCursor *c)
 			cap = n + cnt;
 			posts = repalloc(posts, cap * sizeof(BM25Posting));
 			bmax = repalloc(bmax, cap * sizeof(uint32));
+			bmindl = repalloc(bmindl, cap * sizeof(uint32));
 		}
 		pos += bm25_for_unpack(stream + pos, cnt, gaps);
 		pos += bm25_for_unpack(stream + pos, cnt, tfs);
@@ -1465,6 +1474,7 @@ wand_load_page(WandCursor *c)
 			posts[n].tf = (uint32) tfs[i];
 			posts[n].doclen = (uint32) dls[i];
 			bmax[n] = bh->max_tf;
+			bmindl[n] = bh->min_doclen;
 			n++;
 		}
 		p = (char *) (bh + 1) + bh->bytelen;
@@ -1485,6 +1495,7 @@ wand_load_page(WandCursor *c)
 
 	c->posts = posts;
 	c->blockmax = bmax;
+	c->blockmindl = bmindl;
 	c->nposts = n;
 	c->nread += n;
 	c->cur = 0;
@@ -1500,6 +1511,7 @@ wand_prime(WandCursor *c)
 {
 	c->posts = NULL;
 	c->blockmax = NULL;
+	c->blockmindl = NULL;
 	c->curblk = c->firstblk;
 	c->curoff = c->firstoff;
 	c->nread = 0;
@@ -1513,15 +1525,18 @@ wand_prime(WandCursor *c)
 	wand_load_page(c);
 }
 
-/* The block-max contribution upper bound for the current posting's 128-block. */
+/* The block-max contribution upper bound for the current posting's 128-block.
+ * Uses the block's max_tf AND min |D|: impact is increasing in tf and
+ * decreasing in |D|, so impact(max_tf, min_dl) is a sound (and much tighter
+ * than the shortest-possible-doc) upper bound for every posting in the block. */
 static inline double
 wand_block_max_contrib(WandCursor *c)
 {
 	double		k1 = 1.2;
 	double		mtf = (double) (c->cur < c->nposts ? c->blockmax[c->cur] : 0);
+	double		mindl = (double) (c->cur < c->nposts ? c->blockmindl[c->cur] : 0);
 
-	/* block-max uses the shortest-doc norm bound (k1*(1-b)); avgdl-independent */
-	return c->idf * mtf * (k1 + 1.0) / (mtf + c->k1_1mb);
+	return c->idf * mtf * (k1 + 1.0) / (mtf + c->k1_1mb + c->k1b_inv_avgdl * mindl);
 }
 
 /* Advance the cursor to the next posting, loading the next page if needed. */
@@ -1991,6 +2006,7 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 			cursors[nactive].df = df;
 			cursors[nactive].posts = NULL;
 			cursors[nactive].blockmax = NULL;
+			cursors[nactive].blockmindl = NULL;
 			cursors[nactive].nposts = 0;
 			cursors[nactive].cur = 0;
 			cursors[nactive].docid = 0;
