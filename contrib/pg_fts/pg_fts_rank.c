@@ -6,10 +6,11 @@
  * Stage 4 of pg_fts.  Implements the Okapi BM25 score of a document against a
  * query.  BM25 needs corpus statistics that an ftsdoc alone does not carry:
  * the document count N, the average document length avgdl, and per-term
- * document frequency df.  Until the bm25 index access method maintains those
- * (a later stage), this file computes the score from statistics supplied by
- * the caller, which is enough to validate the scoring math by sequential scan
- * and to reproduce reference scores (Lucene/bm25s) for conformance testing.
+ * document frequency df.  The bm25 index access method maintains these (in its
+ * metapage and dictionary), and the index scan paths score index-only; this
+ * file computes the score from statistics supplied by the caller, which also
+ * validates the scoring math by sequential scan and reproduces reference
+ * scores (Lucene/bm25s) for conformance testing.
  *
  * Score:
  *	 score(D,Q) = sum_t IDF(t) * ( f(t,D)*(k1+1) )

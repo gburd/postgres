@@ -285,10 +285,10 @@ fts_doc_has_prefix(FtsDoc doc, const char *prefix, int prefixlen)
 
 /*
  * fts_doc_has_fuzzy -- does any doc term lie within edit distance k of `term`?
- * Uses core's varstr_levenshtein_less_equal (bounded, so cheap for small k).
- * A trigram pre-filter (cribbed from pg_tre) would prune candidates at scale;
- * for correctness the skeleton scans all terms, which the sorted layout could
- * also bound by length once a length-aware pre-filter is added.
+ * Uses core's varstr_levenshtein_less_equal (bounded, so cheap for small k),
+ * with two pre-filters to avoid the distance computation on most candidates:
+ * a length filter (||cand|-|q|| <= k) and, when the query has more than k
+ * trigrams (pigeonhole), a trigram-overlap filter.
  */
 bool
 fts_doc_has_fuzzy(FtsDoc doc, const char *term, int termlen, int k)

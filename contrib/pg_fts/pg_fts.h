@@ -86,9 +86,10 @@ typedef FtsDocData *FtsDoc;
  *
  * Stored as a varlena flattened postfix (RPN) list of items.  This mirrors the
  * proven tsquery representation: operands and operators in one array, term
- * text appended after.  Stage 1 supports AND, OR, NOT and parenthesised
- * grouping.  Phrase/NEAR/prefix/field-scope are later stages and get their own
- * item kinds; the version field lets us add them without breaking v1 data.
+ * text appended after.  Supports AND, OR, NOT, parenthesised grouping, phrase,
+ * NEAR, prefix, fuzzy and regex items; field-scope and boosts can be added as
+ * new item kinds without breaking v1 data (the version field guards the
+ * on-disk format).
  */
 typedef enum FtsQueryItemType
 {

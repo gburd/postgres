@@ -14,9 +14,10 @@
  *	  term    := run of token bytes (folded like the analyzer)
  *
  * The parser emits a postfix (RPN) item list, the same shape tsquery uses, so
- * evaluation is a simple stack machine.  Later stages add phrase ("..."),
- * NEAR, prefix (term*), field scoping (field:term) and boosts as new token
- * kinds and item kinds; the version field guards the on-disk format.
+ * evaluation is a simple stack machine.  Supported: AND, OR, NOT, parenthesised
+ * grouping, phrase ("..."), NEAR, prefix (term*), fuzzy (term~k) and regex
+ * (/re/); field scoping (field:term) and boosts remain future item kinds, which
+ * the version field lets us add without breaking the on-disk format.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  *

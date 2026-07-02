@@ -3,25 +3,28 @@
  * pg_fts_am.c
  *		The "bm25" index access method for pg_fts.
  *
- * Stage 3 of pg_fts: a minimal but real inverted-index access method over an
- * ftsdoc column, answering the @@@ operator via a bitmap scan.  It also
- * maintains the corpus statistics BM25 needs (document count N, sum of
- * document lengths, per-term document frequency), so that later stages can
- * score index-only.
+ * A segmented inverted index over an ftsdoc column, answering the @@@ operator
+ * (boolean / phrase / NEAR / prefix / fuzzy / regex) and the <=> ordering
+ * operator (block-max WAND / MaxScore top-k), plus a fast fts_count() path.
+ * It maintains the corpus statistics BM25 needs (document count N, sum of
+ * document lengths, per-term document frequency) and scores index-only.
  *
- * On-disk layout (deliberately simple for the skeleton; the segmented,
- * merge-on-write design with block-max impacts described in the plan is a
- * later optimization):
+ * On-disk layout (the Lucene/Tantivy-style segmented design):
  *
- *	 block 0            metapage: N, sum(doclen), nterms
- *	 dictionary pages   sorted (term -> first posting block, df) entries
- *	 posting pages      arrays of (ItemPointerData tid, uint32 tf), chained
+ *	 block 0            metapage: N, sum(doclen), a directory of segments, and
+ *							the pending write buffer pointers
+ *	 per segment        a term dictionary (+ sparse block index), FOR-packed
+ *							128-doc posting blocks with per-block max-tf/min-|D|
+ *							impacts, a trigram index, and a livedocs tombstone
+ *							bitmap
+ *	 pending pages      newly inserted docs stored verbatim, searched directly
+ *							until folded into a new segment by a flush
  *
- * Because the structure is built once from a heap scan and is not updated in
- * place, aminsert triggers a note that a REINDEX is needed to reflect new
- * rows.  Incremental maintenance (a pending list + background merge) is a
- * later stage; this keeps the skeleton small and correct.  All page writes go
- * through GenericXLog, so the index is crash-safe and replicated without a
+ * Inserts append to the pending buffer and are immediately visible; a flush
+ * (fts_merge() or VACUUM cleanup) folds pending docs into a new segment, and a
+ * size-tiered merge compacts segments (dropping tombstoned docs).  Deletes are
+ * recorded as per-segment livedocs tombstones by ambulkdelete.  All page writes
+ * go through GenericXLog, so the index is crash-safe and replicated without a
  * custom resource manager.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
@@ -83,8 +86,8 @@ typedef struct BM25BuildState
 	BuildTerm  *terms;			/* sorted-on-flush; kept in a simple array */
 	int			nterms;
 	int			maxterms;
-	/* term -> index lookup is linear-search-free via a sorted rebuild at end;
-	 * for the skeleton we keep an unsorted array and sort once before writing */
+	/* build-time term list: an unsorted array collected during the heap scan,
+	 * sorted once before the dictionary is written */
 	double		ndocs;
 	double		sumdoclen;
 } BM25BuildState;

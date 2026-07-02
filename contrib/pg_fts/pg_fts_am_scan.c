@@ -3,15 +3,14 @@
  * pg_fts_am_scan.c
  *		Bitmap scan for the bm25 access method.
  *
- * Included directly into pg_fts_am.c (it shares static page helpers).  The
- * scan evaluates an ftsquery by set algebra over posting lists: a term yields
- * the set of TIDs whose document contains it; AND intersects, OR unions, and
- * NOT complements against the set of all indexed TIDs.  The result is added to
- * the caller's TIDBitmap.  This matches the @@@ semantics exactly and needs no
- * heap access.
- *
- * The skeleton materializes TID sets as sorted arrays.  A later stage replaces
- * this with a streaming WAND top-K when scoring is pushed into the AM.
+ * Included directly into pg_fts_am.c (it shares static page helpers).  It
+ * evaluates an ftsquery by set algebra over posting lists (a term yields the
+ * TIDs whose document contains it; AND intersects, OR unions, NOT complements
+ * against the indexed universe) for the bitmap and index-only scans, and runs
+ * block-max WAND / MaxScore top-k for the <=> ordering scan.  Fuzzy/regex use
+ * a Levenshtein automaton / trigram funnel; counts use a visibility-map-aware
+ * bulk path.  Results are exact against @@@ semantics; the boolean and ranked
+ * paths need no heap access beyond MVCC visibility.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  *
@@ -272,9 +271,9 @@ bm25_dict_seek(Relation index, const BM25SegMeta *seg,
 
 /*
  * Look up a term in the dictionary; on hit, read its full posting list into a
- * TidSet.  Returns true if found.  Dictionary pages are scanned linearly
- * within the chain (entries are sorted, but variable-length, so a linear walk
- * is simplest for the skeleton).
+ * TidSet.  Returns true if found.  bm25_dict_seek uses the segment's sparse
+ * block index to jump straight to the one dictionary page that can hold the
+ * term (scanning the whole chain only for a segment that predates the index).
  */
 static bool
 bm25_lookup_term(Relation index, const BM25SegMeta *seg,
@@ -505,9 +504,10 @@ tidset_andnot(TidSet a, TidSet b)
 
 /*
  * bm25_lookup_prefix -- union the posting lists of every dictionary term that
- * begins with the given prefix.  Dictionary entries are sorted, but a simple
- * full scan is used here (the skeleton's dictionary is small); an FST or
- * front-coded prefix index is a later optimization.
+ * begins with the given prefix.  Entries are sorted, so this could seek to the
+ * first matching page via the block index and stop past the prefix range; today
+ * it scans the (small) dictionary chain fully.  An FST or front-coded prefix
+ * index would make this sublinear -- a future optimization.
  */
 static void
 bm25_lookup_prefix(Relation index, BlockNumber dictstart,

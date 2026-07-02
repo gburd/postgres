@@ -159,8 +159,8 @@ typedef struct BM25PostingPageHdr
 /*
  * A pending record: a not-yet-merged document stored verbatim on a pending
  * page.  The ftsdoc varlena follows the header inline (doclen bytes).  Pending
- * documents are searched directly at scan time and folded into the main
- * dictionary/postings by a merge (REINDEX for now).
+ * documents are searched directly at scan time and folded into a new segment by
+ * a flush -- triggered by fts_merge() or automatically during VACUUM cleanup.
  */
 typedef struct BM25PendingItem
 {

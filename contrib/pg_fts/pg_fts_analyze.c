@@ -3,16 +3,16 @@
  * pg_fts_analyze.c
  *		Stage-1 built-in tokenizer for pg_fts.
  *
- * Produces an ftsdoc from raw text.  The stage-1 analyzer is deliberately
- * simple and self-contained: fold ASCII letters to lowercase, split on any
+ * Produces an ftsdoc from raw text.  This is the simple, self-contained default
+ * analyzer -- to_ftsdoc(text): fold ASCII letters to lowercase, split on any
  * non-alphanumeric byte, and collect the distinct terms with their term
- * frequencies.  It is enough to make ftsdoc real and testable end to end.
+ * frequencies.
  *
- * The pluggable analyzer framework -- reusing PostgreSQL's existing text-search
- * parser and dictionary pipeline (ts_parse.c, the snowball/ispell dictionaries)
- * -- is a later stage.  Isolating tokenization behind fts_analyze_text() now
- * means that later stage swaps the implementation without touching the type,
- * the operator, or the on-disk format.
+ * The configuration-driven analyzer that reuses PostgreSQL's text-search parser
+ * and dictionary pipeline (parsetext(), the snowball/ispell dictionaries) lives
+ * in pg_fts_tsanalyze.c as to_ftsdoc(regconfig, text).  Tokenization is isolated
+ * behind fts_analyze_text() so either analyzer can be used without touching the
+ * type, the operator, or the on-disk format.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  *
