@@ -950,7 +950,8 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 
 			if (result.n > 0)
 			{
-				tbm_add_tuples(tbm, result.tids, result.n, true);
+				/* boolean eval over postings is EXACT -- no heap recheck needed */
+				tbm_add_tuples(tbm, result.tids, result.n, false);
 				ntids += result.n;
 			}
 		}
@@ -987,7 +988,8 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 
 				if (fts_doc_matches(pdoc, so->query))
 				{
-					tbm_add_tuples(tbm, &pi->tid, 1, true);
+					/* pending doc matched by the exact matcher -- no recheck */
+					tbm_add_tuples(tbm, &pi->tid, 1, false);
 					ntids++;
 				}
 				ptr += MAXALIGN(sizeof(BM25PendingItem) + pi->doclen);
