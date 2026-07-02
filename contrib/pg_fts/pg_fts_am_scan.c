@@ -892,7 +892,7 @@ bm25_gettuple(IndexScanDesc scan, ScanDirection dir)
 	{
 		int			prev = so->ordpos;
 
-		so->curk *= 8;
+		so->curk *= 4;
 		so->nordered = bm25_topk_visible(scan->indexRelation, so->query,
 										 so->curk, true, &so->ordered);
 		so->ordpos = prev;		/* resume after the rows already emitted */
