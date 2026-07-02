@@ -1585,9 +1585,11 @@ bm25handler(PG_FUNCTION_ARGS)
 	amroutine->amoptsprocnum = 0;
 	amroutine->amcanorder = false;
 	amroutine->amcanorderbyop = true;
+#if PG_VERSION_NUM >= 180000
 	amroutine->amcanhash = false;
 	amroutine->amconsistentequality = false;
 	amroutine->amconsistentordering = false;
+#endif
 	amroutine->amcanbackward = false;
 	amroutine->amcanunique = false;
 	amroutine->amcanmulticol = false;
@@ -1598,7 +1600,9 @@ bm25handler(PG_FUNCTION_ARGS)
 	amroutine->amclusterable = false;
 	amroutine->ampredlocks = false;
 	amroutine->amcanparallel = false;
+#if PG_VERSION_NUM >= 170000
 	amroutine->amcanbuildparallel = false;
+#endif
 	amroutine->amcaninclude = false;
 	amroutine->amusemaintenanceworkmem = false;
 	amroutine->amparallelvacuumoptions = VACUUM_OPTION_NO_PARALLEL;
@@ -1607,12 +1611,16 @@ bm25handler(PG_FUNCTION_ARGS)
 	amroutine->ambuild = bm25_build;
 	amroutine->ambuildempty = bm25_buildempty;
 	amroutine->aminsert = bm25_insert;
+#if PG_VERSION_NUM >= 170000
 	amroutine->aminsertcleanup = NULL;
+#endif
 	amroutine->ambulkdelete = bm25_bulkdelete;
 	amroutine->amvacuumcleanup = bm25_vacuumcleanup;
 	amroutine->amcanreturn = NULL;
 	amroutine->amcostestimate = bm25_costestimate;
+#if PG_VERSION_NUM >= 180000
 	amroutine->amgettreeheight = NULL;
+#endif
 	amroutine->amoptions = bm25_options;
 	amroutine->amproperty = NULL;
 	amroutine->ambuildphasename = NULL;
