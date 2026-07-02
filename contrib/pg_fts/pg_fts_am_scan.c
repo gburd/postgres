@@ -590,10 +590,15 @@ bm25_fuzzy_terms(Relation index, const BM25SegMeta *seg,
 {
 	FtsLevAut	aut;
 	BlockNumber blk;
-	int			cap = 64;
-	int			n = 0;
 	ItemPointerData *tids;
 	unsigned char nextkey[FTS_LEV_MAXQ + 2];
+
+	/* per-matching-term sorted runs, merged (not sorted) at the end */
+	ItemPointerData **runs = NULL;
+	int		   *runlen = NULL;
+	int			nruns = 0;
+	int			runcap = 0;
+	int64		total = 0;
 
 	if (termlen > FTS_LEV_MAXQ)
 		return false;			/* fall back to trigram funnel + recheck */
@@ -601,7 +606,6 @@ bm25_fuzzy_terms(Relation index, const BM25SegMeta *seg,
 	aut.q = (const unsigned char *) term;
 	aut.m = termlen;
 	aut.k = k;
-	tids = palloc(cap * sizeof(ItemPointerData));
 
 	/*
 	 * Automaton-guided dictionary walk.  Terms are byte-sorted, so when a term
@@ -653,16 +657,27 @@ bm25_fuzzy_terms(Relation index, const BM25SegMeta *seg,
 				int			np = bm25_decode_term(index, de->firstposting,
 												  de->firstoffset, de->df,
 												  &post, NULL);
-				int			i;
 
-				for (i = 0; i < np; i++)
+				/* keep this term's docid-sorted TIDs as a run for k-way merge */
+				if (np > 0)
 				{
-					if (n >= cap)
+					ItemPointerData *run = palloc(np * sizeof(ItemPointerData));
+					int			i;
+
+					for (i = 0; i < np; i++)
+						run[i] = post[i].tid;
+					if (nruns >= runcap)
 					{
-						cap *= 2;
-						tids = repalloc(tids, cap * sizeof(ItemPointerData));
+						runcap = Max(runcap * 2, 16);
+						runs = runs ? repalloc(runs, runcap * sizeof(ItemPointerData *))
+							: palloc(runcap * sizeof(ItemPointerData *));
+						runlen = runlen ? repalloc(runlen, runcap * sizeof(int))
+							: palloc(runcap * sizeof(int));
 					}
-					tids[n++] = post[i].tid;
+					runs[nruns] = run;
+					runlen[nruns] = np;
+					nruns++;
+					total += np;
 				}
 				pfree(post);
 				ptr += esize;
@@ -743,9 +758,87 @@ bm25_fuzzy_terms(Relation index, const BM25SegMeta *seg,
 	}
 
 done:
-	out->tids = tids;
-	out->n = n;
-	tidset_sort_uniq(out);
+	/*
+	 * k-way merge the per-term docid-sorted runs into one sorted, de-duplicated
+	 * TID array.  Each posting list is already docid-ordered, so merging avoids
+	 * the O(n log n) qsort over the whole (up to ~1.3M) union -- which a profiler
+	 * showed was the dominant fuzzy-count cost (a 1.28M qsort with a
+	 * function-pointer comparator is ~400ms) -- replacing it with O(n log k)
+	 * and cheap inline comparisons.
+	 */
+	{
+		int		   *pos;			/* current index into each run */
+		int		   *heap;			/* min-heap of run indices by current head TID */
+		int			hn = 0;
+		int			nout = 0;
+		int			r;
+
+		tids = palloc(Max(total, 1) * sizeof(ItemPointerData));
+		pos = palloc0(Max(nruns, 1) * sizeof(int));
+		heap = palloc(Max(nruns, 1) * sizeof(int));
+
+#define RUN_HEAD(ri) (&runs[(ri)][pos[(ri)]])
+#define HEAP_LESS(x, y) (ItemPointerCompare(RUN_HEAD(heap[x]), RUN_HEAD(heap[y])) < 0)
+		/* build the heap with each non-empty run's head */
+		for (r = 0; r < nruns; r++)
+		{
+			if (runlen[r] > 0)
+			{
+				int			c = hn++;
+
+				heap[c] = r;
+				while (c > 0 && HEAP_LESS(c, (c - 1) / 2))
+				{
+					int			t = heap[c];
+
+					heap[c] = heap[(c - 1) / 2];
+					heap[(c - 1) / 2] = t;
+					c = (c - 1) / 2;
+				}
+			}
+		}
+		while (hn > 0)
+		{
+			int			best = heap[0];
+			int			c = 0;
+
+			if (nout == 0 ||
+				ItemPointerCompare(&tids[nout - 1], RUN_HEAD(best)) != 0)
+				tids[nout++] = *RUN_HEAD(best);
+			pos[best]++;
+			if (pos[best] >= runlen[best])
+			{
+				heap[0] = heap[--hn];	/* drop exhausted run */
+			}
+			/* sift down heap[0] */
+			for (;;)
+			{
+				int			l = 2 * c + 1,
+							ri = 2 * c + 2,
+							sm = c;
+
+				if (hn == 0)
+					break;
+				if (l < hn && HEAP_LESS(l, sm))
+					sm = l;
+				if (ri < hn && HEAP_LESS(ri, sm))
+					sm = ri;
+				if (sm == c)
+					break;
+				{
+					int			t = heap[c];
+
+					heap[c] = heap[sm];
+					heap[sm] = t;
+					c = sm;
+				}
+			}
+		}
+#undef RUN_HEAD
+#undef HEAP_LESS
+		out->tids = tids;
+		out->n = nout;
+	}
 	return true;
 }
 
