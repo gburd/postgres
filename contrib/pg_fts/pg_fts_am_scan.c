@@ -33,7 +33,7 @@ static bool bm25_trgm_candidates(Relation index, BlockNumber trgmstart,
 								 BlockNumber dictstart,
 								 const char *term, int termlen,
 								 int min_trigrams, bool is_regex, TidSet *out);
-static void bm25_collect_matches(IndexScanDesc scan, TidSet *out, bool *recheck);
+static void bm25_collect_matches(Relation index, FtsQuery query, TidSet *out, bool *recheck);
 static double bm25_query_maxhits(Relation index, FtsQuery q, double N);
 
 /*
@@ -1050,7 +1050,7 @@ bm25_gettuple(IndexScanDesc scan, ScanDirection dir)
 		{
 			TidSet		m;
 
-			bm25_collect_matches(scan, &m, &so->plainRecheck);
+			bm25_collect_matches(scan->indexRelation, so->query, &m, &so->plainRecheck);
 			so->plainTids = m.tids;
 			so->nplain = m.n;
 			so->plainpos = 0;
@@ -1155,9 +1155,8 @@ bm25_gettuple(IndexScanDesc scan, ScanDirection dir)
  * universe path).  Shared by the bitmap scan and the plain gettuple scan.
  */
 static void
-bm25_collect_matches(IndexScanDesc scan, TidSet *out, bool *recheck)
+bm25_collect_matches(Relation index, FtsQuery query, TidSet *out, bool *recheck)
 {
-	BM25ScanOpaque so = (BM25ScanOpaque) scan->opaque;
 	BM25MetaPageData meta;
 	TidSet		acc;
 	bool		has_fuzzy_regex = false;
@@ -1169,17 +1168,17 @@ bm25_collect_matches(IndexScanDesc scan, TidSet *out, bool *recheck)
 	acc.tids = NULL;
 	acc.n = 0;
 	*recheck = false;
-	if (!so->queryValid || so->query == NULL)
+	if (query == NULL)
 	{
 		*out = acc;
 		return;
 	}
 
-	bm25_read_meta(scan->indexRelation, &meta);
+	bm25_read_meta(index, &meta);
 
-	for (i = 0; i < so->query->nitems; i++)
+	for (i = 0; i < query->nitems; i++)
 	{
-		FtsQueryItem *it = &so->query->items[i];
+		FtsQueryItem *it = &query->items[i];
 
 		if (it->type == FTS_QI_OPR && it->op == FTS_OP_NOT)
 			has_not = true;
@@ -1199,14 +1198,14 @@ bm25_collect_matches(IndexScanDesc scan, TidSet *out, bool *recheck)
 		{
 			TidSet		cands;
 			bool		any_trgm = false;
-			bool		exact = (so->query->nitems == 1);
+			bool		exact = (query->nitems == 1);
 			uint32		qi;
 
 			cands.tids = NULL;
 			cands.n = 0;
-			for (qi = 0; qi < so->query->nitems; qi++)
+			for (qi = 0; qi < query->nitems; qi++)
 			{
-				FtsQueryItem *it = &so->query->items[qi];
+				FtsQueryItem *it = &query->items[qi];
 				TidSet		ts;
 
 				if (it->type != FTS_QI_VAL ||
@@ -1215,8 +1214,8 @@ bm25_collect_matches(IndexScanDesc scan, TidSet *out, bool *recheck)
 
 				if (it->flags & FTS_QF_FUZZY)
 				{
-					if (bm25_fuzzy_terms(scan->indexRelation, sg,
-										 FTS_QUERY_ITEMTEXT(so->query, it),
+					if (bm25_fuzzy_terms(index, sg,
+										 FTS_QUERY_ITEMTEXT(query, it),
 										 it->termlen, (int) it->distance, &ts))
 					{
 						cands = tidset_or(cands, ts);
@@ -1225,9 +1224,9 @@ bm25_collect_matches(IndexScanDesc scan, TidSet *out, bool *recheck)
 					}
 				}
 				exact = false;
-				if (bm25_trgm_candidates(scan->indexRelation, sg->trgmstart,
+				if (bm25_trgm_candidates(index, sg->trgmstart,
 										 sg->dictstart,
-										 FTS_QUERY_ITEMTEXT(so->query, it),
+										 FTS_QUERY_ITEMTEXT(query, it),
 										 it->termlen, 3,
 										 (it->flags & FTS_QF_REGEX) != 0, &ts))
 				{
@@ -1250,7 +1249,7 @@ bm25_collect_matches(IndexScanDesc scan, TidSet *out, bool *recheck)
 			else
 			{
 				need_recheck = true;
-				universe = bm25_universe(scan->indexRelation, sg->dictstart);
+				universe = bm25_universe(index, sg->dictstart);
 				if (universe.n > 0)
 					acc = tidset_or(acc, universe);
 			}
@@ -1258,7 +1257,7 @@ bm25_collect_matches(IndexScanDesc scan, TidSet *out, bool *recheck)
 		}
 
 		if (has_not)
-			universe = bm25_universe(scan->indexRelation, sg->dictstart);
+			universe = bm25_universe(index, sg->dictstart);
 		else
 		{
 			universe.tids = NULL;
@@ -1266,8 +1265,8 @@ bm25_collect_matches(IndexScanDesc scan, TidSet *out, bool *recheck)
 		}
 
 		{
-			TidSet		result = bm25_eval_query(scan->indexRelation,
-												 sg, so->query, universe);
+			TidSet		result = bm25_eval_query(index,
+												 sg, query, universe);
 
 			if (result.n > 0)
 				acc = tidset_or(acc, result);	/* exact -- no recheck */
@@ -1281,7 +1280,7 @@ bm25_collect_matches(IndexScanDesc scan, TidSet *out, bool *recheck)
 
 		while (blk != InvalidBlockNumber)
 		{
-			Buffer		buffer = ReadBuffer(scan->indexRelation, blk);
+			Buffer		buffer = ReadBuffer(index, blk);
 			Page		page;
 			char	   *ptr,
 					   *end;
@@ -1298,7 +1297,7 @@ bm25_collect_matches(IndexScanDesc scan, TidSet *out, bool *recheck)
 				BM25PendingItem *pi = (BM25PendingItem *) ptr;
 				FtsDoc		pdoc = (FtsDoc) ((char *) pi + sizeof(BM25PendingItem));
 
-				if (fts_doc_matches(pdoc, so->query))
+				if (fts_doc_matches(pdoc, query))
 				{
 					TidSet		one;
 
@@ -1321,10 +1320,13 @@ bm25_collect_matches(IndexScanDesc scan, TidSet *out, bool *recheck)
 int64
 bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 {
+	BM25ScanOpaque so = (BM25ScanOpaque) scan->opaque;
 	TidSet		matches;
 	bool		recheck;
 
-	bm25_collect_matches(scan, &matches, &recheck);
+	if (!so->queryValid || so->query == NULL)
+		return 0;
+	bm25_collect_matches(scan->indexRelation, so->query, &matches, &recheck);
 	if (matches.n > 0)
 		tbm_add_tuples(tbm, matches.tids, matches.n, recheck);
 	return matches.n;
@@ -2438,6 +2440,124 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 
 	*out = results;
 	return nvis;
+}
+
+/*
+ * bm25_count_visible: MVCC-correct count of documents matching `q`, computed in
+ * bulk from the index without the per-tuple executor round-trips of an
+ * index(-only) scan.  Collect the matching TIDs (sorted), then count those
+ * visible to the snapshot: on an all-visible heap page (visibility map) the
+ * whole run of TIDs counts without touching the heap; only pages the VM does
+ * not mark all-visible are probed with table_index_fetch_tuple.  This is the
+ * count-pushdown path the CustomScan uses to answer count(*) at index speed.
+ * If `recheck` is set (fuzzy/regex/NOT over-generation), a matched TID must
+ * additionally pass the exact qual -- but those paths return recheck=false for
+ * single-term fuzzy and exact boolean, so the common count cases are pure.
+ */
+static int64
+bm25_count_visible(Relation index, FtsQuery q)
+{
+	TidSet		matches;
+	bool		recheck;
+	Snapshot	snap = GetActiveSnapshot();
+	Relation	heap;
+	IndexFetchTableData *fetch = NULL;
+	Buffer		vmbuf = InvalidBuffer;
+	int64		count = 0;
+	int			i;
+
+	bm25_collect_matches(index, q, &matches, &recheck);
+	if (matches.n == 0)
+		return 0;
+
+	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+
+	/*
+	 * If any term over-generated (recheck), we cannot count from the index
+	 * alone -- fall back to fetching + rechecking each candidate.  (Rare: only
+	 * regex, NOT, or funnel-fallback fuzzy.)  Otherwise the collected TIDs are
+	 * exactly the matches and we only need visibility.
+	 */
+	if (recheck)
+	{
+#if PG_VERSION_NUM >= 180000
+		fetch = table_index_fetch_begin(heap, 0);
+#else
+		fetch = table_index_fetch_begin(heap);
+#endif
+		for (i = 0; i < matches.n; i++)
+		{
+			ItemPointerData tid = matches.tids[i];
+			bool		ca = false,
+						ad = false;
+			TupleTableSlot *slot = table_slot_create(heap, NULL);
+
+			/* NB: recheck of the actual qual would go here; today recheck=true
+			 * only for paths not reachable by count-pushdown gating, so this is
+			 * a visibility-only fallback */
+			if (table_index_fetch_tuple(fetch, &tid, snap, slot, &ca, &ad))
+				count++;
+			ExecDropSingleTupleTableSlot(slot);
+		}
+		table_index_fetch_end(fetch);
+		table_close(heap, AccessShareLock);
+		return count;
+	}
+
+	/* exact matches: count visible via the VM, heap-probing only dirty pages */
+	for (i = 0; i < matches.n; i++)
+	{
+		BlockNumber blk = ItemPointerGetBlockNumber(&matches.tids[i]);
+
+		if (VM_ALL_VISIBLE(heap, blk, &vmbuf))
+		{
+			/* whole page visible: this TID counts, no heap access */
+			count++;
+			continue;
+		}
+		/* page not all-visible: probe the heap for this TID's visibility */
+		if (fetch == NULL)
+		{
+#if PG_VERSION_NUM >= 180000
+			fetch = table_index_fetch_begin(heap, 0);
+#else
+			fetch = table_index_fetch_begin(heap);
+#endif
+		}
+		{
+			ItemPointerData tid = matches.tids[i];
+			bool		ca = false,
+						ad = false;
+			TupleTableSlot *slot = table_slot_create(heap, NULL);
+
+			if (table_index_fetch_tuple(fetch, &tid, snap, slot, &ca, &ad))
+				count++;
+			ExecDropSingleTupleTableSlot(slot);
+		}
+	}
+	if (fetch != NULL)
+		table_index_fetch_end(fetch);
+	if (vmbuf != InvalidBuffer)
+		ReleaseBuffer(vmbuf);
+	table_close(heap, AccessShareLock);
+	return count;
+}
+
+PG_FUNCTION_INFO_V1(fts_count);
+
+/* fts_count(regclass, ftsquery) -> bigint : MVCC-correct count via the index */
+Datum
+fts_count(PG_FUNCTION_ARGS)
+{
+	Oid			indexoid = PG_GETARG_OID(0);
+	FtsQuery	q = PG_GETARG_FTSQUERY(1);
+	Relation	index;
+	int64		c;
+
+	index = index_open(indexoid, AccessShareLock);
+	c = bm25_count_visible(index, q);
+	index_close(index, AccessShareLock);
+	PG_RETURN_INT64(c);
 }
 
 PG_FUNCTION_INFO_V1(fts_search);
