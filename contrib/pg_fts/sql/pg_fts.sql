@@ -652,3 +652,25 @@ WHERE EXISTS (SELECT 1 FROM unnest(string_to_array(body,' ')) t
 RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
 DROP TABLE fz;
 DROP EXTENSION fuzzystrmatch;
+
+-- MaxScore top-k (chosen for queries with >=4 terms): identical exact top-k to
+-- a full scan+sort, doing less work as low-impact terms become non-essential.
+CREATE TABLE ms (id serial, d ftsdoc);
+INSERT INTO ms(d) SELECT to_ftsdoc(
+  (CASE WHEN g%2=0 THEN 'alpha ' ELSE '' END)||
+  (CASE WHEN g%3=0 THEN 'beta ' ELSE '' END)||
+  (CASE WHEN g%5=0 THEN 'gamma ' ELSE '' END)||
+  (CASE WHEN g%7=0 THEN 'delta ' ELSE '' END)||
+  (CASE WHEN g%11=0 THEN 'epsilon ' ELSE '' END)||'w'||g)
+  FROM generate_series(1,20000) g;
+CREATE INDEX ms_bm25 ON ms USING bm25 (d);
+SET enable_seqscan = off;
+CREATE TEMP TABLE mtop AS SELECT round((d <=> 'alpha beta gamma delta epsilon'::ftsquery)::numeric,6) dist
+  FROM ms WHERE d @@@ 'alpha beta gamma delta epsilon'::ftsquery ORDER BY dist LIMIT 20;
+SET enable_indexscan = off; SET enable_bitmapscan = off; SET enable_seqscan = on;
+CREATE TEMP TABLE mall AS SELECT round((d <=> 'alpha beta gamma delta epsilon'::ftsquery)::numeric,6) dist
+  FROM ms WHERE d @@@ 'alpha beta gamma delta epsilon'::ftsquery ORDER BY dist LIMIT 20;
+SELECT (SELECT array_agg(dist ORDER BY dist) FROM mtop)
+     = (SELECT array_agg(dist ORDER BY dist) FROM mall) AS maxscore_exact_topk;
+RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
+DROP TABLE ms;

@@ -1410,6 +1410,27 @@ wand_contrib_cur(WandCursor *c)
 	return c->idf_k1p1 * tf / norm;
 }
 
+/* Advance a cursor to the first posting with docid >= target (or exhaust). */
+static void
+wand_seek(WandCursor *c, uint64 target)
+{
+	while (c->docid < target)
+	{
+		/* fast-forward within the loaded page */
+		while (c->cur < c->nposts &&
+			   tid_to_docid_s(&c->posts[c->cur].tid) < target)
+			c->cur++;
+		if (c->cur < c->nposts)
+		{
+			c->docid = tid_to_docid_s(&c->posts[c->cur].tid);
+			return;
+		}
+		wand_load_page(c);		/* next page, then re-test the loop guard */
+		if (c->docid == UINT64_MAX)
+			return;
+	}
+}
+
 /*
  * fts_search_wand: exact top-k identical to the accumulate path, but using
  * document-at-a-time WAND so that documents which cannot enter the current
@@ -1417,7 +1438,7 @@ wand_contrib_cur(WandCursor *c)
  * number of (tid, score) results written to *out (palloc'd), capped at k.
  */
 static int
-fts_search_wand(WandCursor *cursors, int nterms, int k, ScoredTid **out)
+fts_search_bmw(WandCursor *cursors, int nterms, int k, ScoredTid **out)
 {
 	ScoredTid  *heap;			/* min-heap of current top-k by score */
 	int			nheap = 0;
@@ -1568,6 +1589,155 @@ fts_search_wand(WandCursor *cursors, int nterms, int k, ScoredTid **out)
 	qsort(heap, nheap, sizeof(ScoredTid), cmp_scored_desc);
 	*out = heap;
 	return nheap;
+}
+
+/*
+ * fts_search_maxscore: exact top-k via the MaxScore algorithm.  Cursors are
+ * split into ESSENTIAL and NON-ESSENTIAL sets by ascending max_contrib: a
+ * suffix of low-impact terms whose cumulative max_contrib cannot, by itself,
+ * reach the current threshold is non-essential -- a document containing only
+ * non-essential terms can never enter the top-k.  We therefore iterate
+ * candidate docids from the ESSENTIAL cursors only (document-at-a-time over the
+ * smallest essential docid), then add the non-essential terms' contributions by
+ * seeking.  As the threshold rises, more terms become non-essential, so long
+ * queries do progressively less work.  Complements BMW (which excels on short
+ * queries); identical exact top-k.
+ */
+static int
+fts_search_maxscore(WandCursor *cursors, int nterms, int k, ScoredTid **out)
+{
+	ScoredTid  *heap;
+	int			nheap = 0;
+	double		threshold = 0.0;
+	double	   *suffix;			/* suffix[i] = sum of max_contrib[i..nterms) */
+	int			t,
+				i,
+				j;
+	int			first_essential;	/* cursors[first_essential..) are essential */
+
+	heap = (ScoredTid *) palloc(Max(k, 1) * sizeof(ScoredTid));
+	suffix = (double *) palloc((nterms + 1) * sizeof(double));
+
+	for (t = 0; t < nterms; t++)
+		wand_prime(&cursors[t]);
+
+	/* order cursors by ascending term-wide max_contrib (once; it is static) */
+	for (i = 0; i < nterms; i++)
+		for (j = i + 1; j < nterms; j++)
+			if (cursors[j].max_contrib < cursors[i].max_contrib)
+			{
+				WandCursor	tmp = cursors[i];
+
+				cursors[i] = cursors[j];
+				cursors[j] = tmp;
+			}
+	suffix[nterms] = 0.0;
+	for (i = nterms - 1; i >= 0; i--)
+		suffix[i] = suffix[i + 1] + cursors[i].max_contrib;
+
+	first_essential = 0;
+
+	for (;;)
+	{
+		uint64		cand = UINT64_MAX;
+		double		score;
+
+		/* recompute the essential boundary from the current threshold: the
+		 * longest low-impact prefix whose max_contrib sum <= threshold is
+		 * non-essential */
+		if (nheap >= k)
+		{
+			while (first_essential < nterms &&
+				   suffix[first_essential + 1] <= threshold)
+				first_essential++;
+		}
+
+		/* smallest docid among essential cursors drives the iteration */
+		for (i = first_essential; i < nterms; i++)
+			if (cursors[i].docid < cand)
+				cand = cursors[i].docid;
+		if (cand == UINT64_MAX)
+			break;				/* essential cursors exhausted */
+
+		/* score cand: essential contributions + upper bound of non-essentials */
+		score = 0.0;
+		for (i = first_essential; i < nterms; i++)
+			if (cursors[i].docid == cand)
+				score += wand_contrib_cur(&cursors[i]);
+
+		/* early-exit check: essential score + all non-essential max <= threshold
+		 * => cand cannot make the top-k, skip the non-essential lookups */
+		if (!(nheap >= k && score + suffix[first_essential] <= threshold))
+		{
+			/* add exact non-essential contributions by seeking to cand */
+			for (i = 0; i < first_essential; i++)
+			{
+				wand_seek(&cursors[i], cand);
+				if (cursors[i].docid == cand)
+					score += wand_contrib_cur(&cursors[i]);
+			}
+
+			if (nheap < k)
+			{
+				ItemPointerData tid;
+
+				bm25_docid_to_tid(cand, &tid);
+				heap[nheap].tid = tid;
+				heap[nheap].score = score;
+				nheap++;
+				if (nheap == k)
+				{
+					threshold = heap[0].score;
+					for (i = 1; i < nheap; i++)
+						if (heap[i].score < threshold)
+							threshold = heap[i].score;
+				}
+			}
+			else if (score > threshold)
+			{
+				ItemPointerData tid;
+				int			minpos = 0;
+
+				bm25_docid_to_tid(cand, &tid);
+				for (i = 1; i < nheap; i++)
+					if (heap[i].score < heap[minpos].score)
+						minpos = i;
+				heap[minpos].tid = tid;
+				heap[minpos].score = score;
+				threshold = heap[0].score;
+				for (i = 1; i < nheap; i++)
+					if (heap[i].score < threshold)
+						threshold = heap[i].score;
+			}
+		}
+
+		/* advance every essential cursor sitting at cand */
+		for (i = first_essential; i < nterms; i++)
+			if (cursors[i].docid == cand)
+				wand_next(&cursors[i]);
+	}
+
+	for (t = 0; t < nterms; t++)
+		if (cursors[t].posts)
+			pfree(cursors[t].posts);
+
+	qsort(heap, nheap, sizeof(ScoredTid), cmp_scored_desc);
+	*out = heap;
+	return nheap;
+}
+
+/*
+ * Dispatch to the top-k algorithm best suited to the query shape.  BMW excels
+ * on short queries (tight block-max pruning, cheap pivot); MaxScore does
+ * progressively less work as terms become non-essential, winning on long
+ * queries / large k.  Both return the identical exact top-k.
+ */
+static int
+fts_search_wand(WandCursor *cursors, int nterms, int k, ScoredTid **out)
+{
+	if (nterms >= 4)
+		return fts_search_maxscore(cursors, nterms, k, out);
+	return fts_search_bmw(cursors, nterms, k, out);
 }
 
 /*
