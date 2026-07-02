@@ -222,6 +222,43 @@ bm25_lookup_term(Relation index, const BM25SegMeta *seg,
 }
 
 /* set operations on sorted TidSets */
+
+/*
+ * Galloping (exponential) search: return the least index >= lo in t[0..n) whose
+ * tid >= key.  Used to skip runs when intersecting a small set against a large
+ * one (O(|small| * log|large|) instead of O(|small|+|large|)).
+ */
+static inline int
+tidset_gallop(const ItemPointerData *t, int n, int lo, const ItemPointerData *key)
+{
+	int			step = 1;
+	int			hi;
+
+	while (lo < n && ItemPointerCompare((ItemPointer) &t[lo], (ItemPointer) key) < 0)
+	{
+		if (lo + step < n &&
+			ItemPointerCompare((ItemPointer) &t[lo + step], (ItemPointer) key) < 0)
+		{
+			lo += step;
+			step <<= 1;
+		}
+		else
+			break;
+	}
+	/* binary search in (lo, min(lo+step, n)] */
+	hi = Min(lo + step, n - 1);
+	while (lo < hi)
+	{
+		int			mid = (lo + hi) / 2;
+
+		if (ItemPointerCompare((ItemPointer) &t[mid], (ItemPointer) key) < 0)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return lo;
+}
+
 static TidSet
 tidset_and(TidSet a, TidSet b)
 {
@@ -231,6 +268,33 @@ tidset_and(TidSet a, TidSet b)
 				k = 0;
 
 	r.tids = palloc(Min(a.n, b.n) * sizeof(ItemPointerData) + 1);
+
+	/*
+	 * When the sets differ greatly in size, gallop the smaller through the
+	 * larger (skip-list style) so a highly selective AND does not touch every
+	 * posting of the common term.  Otherwise a linear merge is cheapest.
+	 */
+	if (a.n > 0 && b.n > 0 && (a.n > 4 * b.n || b.n > 4 * a.n))
+	{
+		const ItemPointerData *sm = a.n <= b.n ? a.tids : b.tids;
+		const ItemPointerData *lg = a.n <= b.n ? b.tids : a.tids;
+		int			sn = Min(a.n, b.n);
+		int			ln = Max(a.n, b.n);
+		int			li = 0;
+		int			si;
+
+		for (si = 0; si < sn; si++)
+		{
+			li = tidset_gallop(lg, ln, li, &sm[si]);
+			if (li >= ln)
+				break;
+			if (ItemPointerCompare((ItemPointer) &lg[li], (ItemPointer) &sm[si]) == 0)
+				r.tids[k++] = sm[si];
+		}
+		r.n = k;
+		return r;
+	}
+
 	while (i < a.n && j < b.n)
 	{
 		int			c = ItemPointerCompare(&a.tids[i], &b.tids[j]);
