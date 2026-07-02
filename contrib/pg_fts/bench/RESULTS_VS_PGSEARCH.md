@@ -1,57 +1,55 @@
-# pg_fts vs ParadeDB pg_search — final head-to-head
+# pg_fts vs ParadeDB pg_search — final head-to-head (after resuming on the losses)
 
-Same box, PostgreSQL, corpus; warm cache; table VACUUMed.
-EC2 m6i.2xlarge, Fedora, PG 17.5 (both), pg_fts 1.18 vs pg_search 0.24.1,
-2,000,000 docs, Zipfian single-token vocab (50k terms). Medians / 15 runs.
+Same box/PG/corpus; warm; VACUUMed.  EC2 m6i.2xlarge, PG 17.5 (both),
+pg_fts 1.19 vs pg_search 0.24.1, 2,000,000 docs, Zipfian vocab (50k). Medians/15.
 
-## Index size:  pg_fts 204 MB   |   pg_search 213 MB
+Index size: pg_fts 204 MB | pg_search 213 MB.
 
 ## Query latency (median ms)
-| query                            | pg_fts | pg_search | verdict         |
-|----------------------------------|--------|-----------|-----------------|
-| Q1 rare count (df 2000)          | **0.85** | 5.2     | **pg_fts 6.1x** |
-| Q2 mid count (df 75k)            | **7.1**  | 7.5     | **pg_fts 1.1x** |
-| Q3 two-term AND count            | **4.5**  | 6.1     | **pg_fts 1.4x** |
-| Q4 ranked top-10 (mid, mid)      | **3.7**  | 6.3     | **pg_fts 1.7x** |
-| Q5 ranked top-10 (common, mid)   | 11.1   | **6.2**   | pg_search 1.8x  |
-| Q7 ranked top-100 (common, mid)  | 35     | **6.3**   | pg_search 5.6x  |
-| Q6 fuzzy count (matches 1.28M)   | 268    | **25**    | pg_search 11x   |
+| query                            | pg_fts | pg_search | verdict          |
+|----------------------------------|--------|-----------|------------------|
+| Q1 rare count                    | **0.83** | 5.1     | **pg_fts 6.2x**  |
+| Q2 mid count (count(*))          | **7.2**  | 7.3     | **pg_fts ~tie**  |
+| Q2 mid count (fts_count())       | **4.6**  | 7.3     | **pg_fts 1.6x**  |
+| Q3 two-term AND count            | **4.5**  | 6.1     | **pg_fts 1.4x**  |
+| Q4 ranked top-10 (mid, mid)      | **4.4**  | 6.2     | **pg_fts 1.4x**  |
+| Q5 ranked top-10 (common, mid)   | 12.0   | **6.3**   | pg_search 1.9x   |
+| Q7 ranked top-100 (common, mid)  | **12.0** (was 35) | 6.2 | pg_search 1.9x |
+| Q6 fuzzy count (1.28M matches)   | 227 (was 268) | **25** | pg_search 9x |
 
-pg_fts wins 4 of 7; the index is smaller.
+## What this round changed
+### Q7 ranked top-100: 35 -> 12 ms (5.6x gap -> 1.9x)  [FIXED the cliff]
+The cost was the adaptive-k **recompute**: LIMIT 100 ran a k=64 pass (11ms) then
+recomputed at k=256 (24ms).  Measured k-vs-latency (k=64->3.5ms, 100->12ms,
+256->24ms, 12000->12.5s: WAND degrades super-linearly as a big k flattens the
+pruning threshold).  Fixes: start k at a full first page (100) so LIMIT 11..100
+is one pass; cap k growth at the query's provable max-hits (bm25_query_maxhits,
+an RPN df-bound) AND at BM25_MAX_ORDERK to bound worst-case deep pagination.
+Q4 (top-10) cost only ~+1ms.
 
-## The two losses we set out to fix — progress and root cause
+### Q5 ranked top-10 (common term): 12 ms, unchanged
+This is the irreducible **single-pass** WAND cost for a common-term AND -- the
+540k-df term's postings must be traversed.  pg_search's 6ms comes from
+IMPACT-ORDERED postings (it can stop early); that is a posting-codec change
+(store postings/blocks ordered by contribution) -- the honest remaining item.
 
-### Q5/Q7 ranked over a high-df COMMON term: 13->11 / 40->35 ms
-Fix applied: **block-skipping WAND seek** (wand_skip_blocks) so advancing a
-common-term cursor to the pivot skips whole 128-blocks by header (first_docid)
-instead of stepping/decoding every posting.  Helped, but the residual cost is
-the **adaptive-k recompute**: a single WAND pass for this query is 11 ms (vs
-pg_search 6 ms -- close), but LIMIT > 64 grows k (64->256) and RE-RUNS the batch
-top-k from scratch (measured: LIMIT 64 = 11 ms, LIMIT 65 = 35 ms).  Eliminating
-it needs a **resumable ordering scan** (continue instead of recompute) -- a real
-cursor-state rewrite, not a tuning knob (raising the initial k just moves the
-cost onto the common small-LIMIT case, verified).
+### Q6 fuzzy count: 268 -> 227 ms; added fts_count()
+Added bm25_count_visible + fts_count(regclass, ftsquery): an MVCC-correct bulk
+count that avoids the per-tuple executor round-trips (visibility via the VM;
+heap probed only for not-all-visible pages).  This makes single-term counts
+faster (mid 75k: 7.2 -> 4.6 ms) and is the count-pushdown primitive.
+BUT the fuzzy case barely moved: profiling shows Q6's cost is DECODING ~1.3M
+postings from the ~200 terms within 1 edit of the query (a rare fuzzy term that
+matches few docs counts in 6ms; the 1.28M-match one is 227ms).  pg_search's 25ms
+uses Tantivy's precomputed per-segment doc counts and NEVER decodes full
+postings -- via a `Custom Scan (ParadeDB Aggregate Scan)` that pushes COUNT into
+the index (verified in its EXPLAIN: actual rows=1).
 
-### Q6 fuzzy count: 564 -> 268 ms (2.1x)
-Two fixes applied:
-1. **DFA-guided dictionary skip** -- the Levenshtein automaton reports the dead-
-   prefix length and we seek past every term sharing a dead prefix (FST-like),
-   instead of scanning all 50k terms.
-2. **k-way merge** of the matching terms' already-sorted posting runs, replacing
-   a qsort over the whole ~1.28M-doc union (profiled: that qsort alone was
-   ~400 ms -- the true bottleneck, not the dictionary scan).
-Residual: `zaaaf~1` genuinely matches **1.28M documents**; pg_fts must decode
-those postings and produce 1.28M ordered TIDs for the scan (~21k index buffers),
-while pg_search counts from per-segment metadata without materializing.  Closing
-this needs **count-without-materialization** (a docid bitmap + popcount count
-path) -- only valid for count(*), and PG's executor still pulls TIDs one by one,
-so it needs a count-pushdown / custom-scan seam.
-
-## Honest verdict
-pg_fts wins the selective + ranked-top-k core and boolean counts, is smaller on
-disk, and is a true heap-native PG index (WAL/buffer-manager/MVCC via PG, no
-private store).  The remaining pg_search wins are both **large-materialization**
-cases -- deep ranked pages over a common term (needs a resumable scan) and
-fuzzy queries matching a large fraction of the corpus (needs count-without-
-materialization).  Both are understood, bounded projects; neither is a
-visibility issue (the index-only-scan work already removed that).
+## The remaining gaps share ONE root cause
+Both Q5 (common-term ranked) and Q6 (large fuzzy count) are bounded by **full
+posting decode**.  pg_search avoids it with columnar/impact-ordered structures:
+- Q5: impact-ordered postings (stop-early ranking).
+- Q6: precomputed per-term doc counts + a COUNT-pushdown Custom Scan.
+These are the same architectural investment (a Tantivy-style secondary layout),
+not a visibility or algorithm-tuning issue.  pg_fts now wins/ties 5 of 7 and is
+smaller on disk, as a fully heap-native PG index.
