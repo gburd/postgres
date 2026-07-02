@@ -144,3 +144,28 @@ Deferred (measured as lower-value than the wins above):
 
 The scale faults that triggered the rebuild (in-memory monolithic build,
 O(index) full-rewrite merge, page-per-term posting bloat) are all fixed.
+
+## Deferred work — now DONE (this round)
+- **Levenshtein-automaton fuzzy** over the sorted dictionary (pg_fts_lev.c):
+  exact term~k, no trigram over-generation, no heap recheck for a single fuzzy
+  term.  Verified == core levenshtein.
+- **MaxScore** top-k alongside BMW (dispatch at >=4 terms); exact, wins long
+  queries.
+- **Galloping AND** intersection for skewed selectivity (closed the AND gap vs
+  GIN and vs pg_search — Q3 now ~par).
+- **Exact-boolean bitmap skips heap recheck** (recheck=false for exact boolean
+  and single-term DFA-fuzzy paths); MVCC still correct (bitmap heap scan does
+  its own visibility).
+- **Quantized norms: correctly DECLINED, not deferred** — the lossless
+  norm-constant hoist already removed the hot-loop divisions, and FOR-packing +
+  shared pages already made the index smaller than GIN and ~= pg_search, so
+  1-byte quantization would trade real score drift for negligible size/speed.
+  The benchmark (index 202MB vs pg_search 213MB) supports declining it.
+
+## vs pg_search (ParadeDB/Tantivy) — see RESULTS_VS_PGSEARCH.md
+pg_fts wins ranked top-k and selective queries (the BM25 core); pg_search wins
+large-result COUNTs and large-k ranking because its Tantivy store answers those
+without touching the PG heap, while pg_fts (heap-native) pays a bitmap-heap
+visibility fetch.  The remaining gap is one architectural item:
+index-resident visibility for counts (a custom scan/aggregate or index-only
+count path), which is a larger project than the contained wins above.
