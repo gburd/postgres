@@ -589,10 +589,11 @@ bm25_fuzzy_terms(Relation index, const BM25SegMeta *seg,
 				 const char *term, int termlen, int k, TidSet *out)
 {
 	FtsLevAut	aut;
-	BlockNumber blk = seg->dictstart;
+	BlockNumber blk;
 	int			cap = 64;
 	int			n = 0;
 	ItemPointerData *tids;
+	unsigned char nextkey[FTS_LEV_MAXQ + 2];
 
 	if (termlen > FTS_LEV_MAXQ)
 		return false;			/* fall back to trigram funnel + recheck */
@@ -602,6 +603,15 @@ bm25_fuzzy_terms(Relation index, const BM25SegMeta *seg,
 	aut.k = k;
 	tids = palloc(cap * sizeof(ItemPointerData));
 
+	/*
+	 * Automaton-guided dictionary walk.  Terms are byte-sorted, so when a term
+	 * dead-ends at prefix cand[0..deadlen), every term sharing that prefix is
+	 * also a dead end -- we jump past them by seeking (via the per-page block
+	 * index) to the smallest string greater than that prefix.  This turns an
+	 * O(all terms) scan into roughly O(matching terms + boundaries), the effect
+	 * an FST/DFA intersection gives.
+	 */
+	blk = seg->dictstart;
 	while (blk != InvalidBlockNumber)
 	{
 		Buffer		buffer = ReadBuffer(index, blk);
@@ -609,6 +619,7 @@ bm25_fuzzy_terms(Relation index, const BM25SegMeta *seg,
 		char	   *ptr,
 				   *end;
 		BlockNumber next;
+		bool		reseek = false;
 
 		LockBuffer(buffer, BUFFER_LOCK_SHARE);
 		page = BufferGetPage(buffer);
@@ -620,11 +631,23 @@ bm25_fuzzy_terms(Relation index, const BM25SegMeta *seg,
 		{
 			BM25DictEntry *de = (BM25DictEntry *) ptr;
 			Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
+			int			deadlen;
+			bool		match;
 
-			/* length filter: a within-k match needs ||cand|-|q|| <= k */
-			if (abs((int) de->termlen - termlen) <= k &&
-				fts_lev_match(&aut, (const unsigned char *) de->term,
-							  (int) de->termlen))
+			if (abs((int) de->termlen - termlen) <= k)
+				match = fts_lev_match_prefix(&aut,
+											 (const unsigned char *) de->term,
+											 (int) de->termlen, &deadlen);
+			else
+			{
+				/* run the automaton anyway to learn the dead prefix for skipping */
+				match = fts_lev_match_prefix(&aut,
+											 (const unsigned char *) de->term,
+											 (int) de->termlen, &deadlen);
+				match = false;		/* length filter still rules it out */
+			}
+
+			if (match)
 			{
 				BM25Posting *post;
 				int			np = bm25_decode_term(index, de->firstposting,
@@ -642,13 +665,84 @@ bm25_fuzzy_terms(Relation index, const BM25SegMeta *seg,
 					tids[n++] = post[i].tid;
 				}
 				pfree(post);
+				ptr += esize;
+				continue;
+			}
+
+			/*
+			 * Dead end at cand[0..deadlen).  The next term that could match is
+			 * >= that prefix with its last byte incremented.  If that key is
+			 * beyond the next dictionary entry, seek to it via the block index
+			 * (jumping whole pages); otherwise just step to the next entry.
+			 */
+			/*
+			 * Skip only on a GENUINE prefix death: the automaton exceeded k while
+			 * still consuming the term (deadlen < termlen), so every term sharing
+			 * cand[0..deadlen) is dead.  If deadlen == termlen the term was fully
+			 * consumed without dying (it failed only on length or final accept),
+			 * so LONGER terms with this prefix may still match -- must NOT skip.
+			 */
+			if (deadlen > 0 && deadlen < (int) de->termlen)
+			{
+				int			kl = deadlen;
+
+				memcpy(nextkey, de->term, kl);
+				/* increment the last byte of the dead prefix; carry on 0xff */
+				while (kl > 0 && nextkey[kl - 1] == 0xff)
+					kl--;
+				if (kl == 0)
+				{
+					/* prefix is all 0xff: nothing greater can match; done */
+					UnlockReleaseBuffer(buffer);
+					goto done;
+				}
+				nextkey[kl - 1]++;
+
+				/* is the very next entry already >= nextkey? then no gain */
+				{
+					char	   *nptr = ptr + esize;
+
+					if (nptr < end)
+					{
+						BM25DictEntry *nde = (BM25DictEntry *) nptr;
+						int			cmplen = Min((int) nde->termlen, kl);
+						int			c = memcmp(nde->term, nextkey, cmplen);
+
+						if (c > 0 || (c == 0 && (int) nde->termlen >= kl))
+						{
+							ptr = nptr;		/* next entry is past the dead run */
+							continue;
+						}
+					}
+				}
+				/* seek to the page holding nextkey; only jump if it advances to a
+				 * LATER page (else keep scanning this page linearly -- avoids
+				 * re-seeking onto the same/earlier page and looping) */
+				{
+					BlockNumber tgt = bm25_dict_seek(index, seg,
+													 (const char *) nextkey, kl);
+
+					if (tgt != InvalidBlockNumber && tgt != blk)
+					{
+						reseek = true;
+						blk = tgt;
+						UnlockReleaseBuffer(buffer);
+						break;
+					}
+				}
+				/* target is on this same page: just step to the next entry */
+				ptr += esize;
+				continue;
 			}
 			ptr += esize;
 		}
+		if (reseek)
+			continue;
 		UnlockReleaseBuffer(buffer);
 		blk = next;
 	}
 
+done:
 	out->tids = tids;
 	out->n = n;
 	tidset_sort_uniq(out);

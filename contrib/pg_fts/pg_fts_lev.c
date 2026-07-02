@@ -99,8 +99,22 @@ fts_lev_accept(const FtsLevAut *aut, const int16 *row)
  * shared prefix of consecutive sorted terms for speed, but this is the
  * correctness reference.
  */
+/*
+ * Like fts_lev_match_prefix below but the simple form; retained as the
+ * correctness reference is fts_lev_match_prefix, which also reports the dead
+ * prefix.  (Plain fts_lev_match removed -- all callers use the prefix form.)
+ */
+
+/*
+ * Match one candidate term and report the DEAD-PREFIX length: the smallest i
+ * such that cand[0..i) already has row-min > k (no string with that prefix can
+ * match).  Returns the match result; *deadlen is set to that i, or candlen if
+ * the automaton never died while consuming cand.  Used to skip, in one jump,
+ * every sorted dictionary term sharing a dead prefix.
+ */
 static bool
-fts_lev_match(const FtsLevAut *aut, const unsigned char *cand, int candlen)
+fts_lev_match_prefix(const FtsLevAut *aut, const unsigned char *cand,
+					 int candlen, int *deadlen)
 {
 	int16		rowa[FTS_LEV_MAXQ + 2];
 	int16		rowb[FTS_LEV_MAXQ + 2];
@@ -108,6 +122,7 @@ fts_lev_match(const FtsLevAut *aut, const unsigned char *cand, int candlen)
 	int16	   *nxt = rowb;
 	int			i;
 
+	*deadlen = candlen;
 	fts_lev_start(aut, cur);
 	for (i = 0; i < candlen; i++)
 	{
@@ -117,7 +132,10 @@ fts_lev_match(const FtsLevAut *aut, const unsigned char *cand, int candlen)
 		cur = nxt;
 		nxt = t;
 		if (rmin > aut->k)
-			return false;		/* dead: no extension can match */
+		{
+			*deadlen = i + 1;	/* prefix cand[0..i] is a dead end */
+			return false;
+		}
 	}
 	return fts_lev_accept(aut, cur);
 }
