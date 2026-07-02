@@ -5,10 +5,9 @@
  *
  * Stage 11 of pg_fts.  tsquery_to_ftsquery() mechanically converts a tsquery
  * into an ftsquery so existing queries port with minimal churn: & -> AND,
- * | -> OR, ! -> NOT.  The phrase operator <-> (OP_PHRASE) has no stage-1
- * ftsquery equivalent yet (phrase support is a later stage), so it is
- * converted to AND with a NOTICE, which preserves recall while losing the
- * adjacency constraint -- a safe, documented degradation for migration.
+ * | -> OR, ! -> NOT, and the phrase operator <N> (OP_PHRASE) -> ftsquery
+ * FTS_OP_PHRASE preserving the token gap, so adjacency is carried over
+ * faithfully.
  *
  * tsquery is stored in prefix (Polish) order; ftsquery is postfix (RPN).  We
  * walk the tsquery tree recursively and emit postfix items.
@@ -32,6 +31,7 @@ typedef struct MigItem
 {
 	uint8		type;
 	uint8		op;
+	uint32		distance;		/* max token gap for FTS_OP_PHRASE (else unused) */
 	char	   *term;			/* folded term (lowercased) for VAL items */
 	int			termlen;
 }			MigItem;
@@ -43,11 +43,10 @@ typedef struct MigState
 	MigItem    *items;
 	int			nitems;
 	int			maxitems;
-	bool		phrase_seen;
 }			MigState;
 
 static void
-mig_emit(MigState *st, uint8 type, uint8 op, char *term, int termlen)
+mig_emit(MigState *st, uint8 type, uint8 op, uint32 distance, char *term, int termlen)
 {
 	if (st->nitems >= st->maxitems)
 	{
@@ -60,6 +59,7 @@ mig_emit(MigState *st, uint8 type, uint8 op, char *term, int termlen)
 	}
 	st->items[st->nitems].type = type;
 	st->items[st->nitems].op = op;
+	st->items[st->nitems].distance = distance;
 	st->items[st->nitems].term = term;
 	st->items[st->nitems].termlen = termlen;
 	st->nitems++;
@@ -80,7 +80,7 @@ mig_walk(MigState *st, QueryItem *item)
 		 * dictionary output, so no further folding is applied). */
 		for (i = 0; i < (int) op->length; i++)
 			folded[i] = src[i];
-		mig_emit(st, FTS_QI_VAL, 0, folded, op->length);
+		mig_emit(st, FTS_QI_VAL, 0, 0, folded, op->length);
 	}
 	else						/* QI_OPR */
 	{
@@ -90,13 +90,14 @@ mig_walk(MigState *st, QueryItem *item)
 		{
 			/* NOT has a single (right) operand at item+1 */
 			mig_walk(st, item + 1);
-			mig_emit(st, FTS_QI_OPR, FTS_OP_NOT, NULL, 0);
+			mig_emit(st, FTS_QI_OPR, FTS_OP_NOT, 0, NULL, 0);
 		}
 		else
 		{
 			QueryItem  *left = item + op->left;
 			QueryItem  *right = item + 1;
 			uint8		ftop;
+			uint32		dist = 1;
 
 			mig_walk(st, left);
 			mig_walk(st, right);
@@ -110,15 +111,15 @@ mig_walk(MigState *st, QueryItem *item)
 					ftop = FTS_OP_OR;
 					break;
 				case OP_PHRASE:
-					/* no phrase yet: degrade to AND (recall preserved) */
-					st->phrase_seen = true;
-					ftop = FTS_OP_AND;
+					/* faithful: tsquery <N> -> ftsquery phrase with the same gap */
+					ftop = FTS_OP_PHRASE;
+					dist = op->distance;
 					break;
 				default:
 					ftop = FTS_OP_AND;
 					break;
 			}
-			mig_emit(st, FTS_QI_OPR, ftop, NULL, 0);
+			mig_emit(st, FTS_QI_OPR, ftop, dist, NULL, 0);
 		}
 	}
 }
@@ -143,16 +144,9 @@ tsquery_to_ftsquery(PG_FUNCTION_ARGS)
 	st.items = NULL;
 	st.nitems = 0;
 	st.maxitems = 0;
-	st.phrase_seen = false;
 
 	if (query->size > 0)
 		mig_walk(&st, GETQUERY(query));
-
-	if (st.phrase_seen)
-		ereport(NOTICE,
-				(errmsg("tsquery phrase operator (<->) converted to AND"),
-				 errdetail("ftsquery does not support phrase search yet; "
-						   "adjacency constraints were dropped.")));
 
 	for (i = 0; i < st.nitems; i++)
 		if (st.items[i].type == FTS_QI_VAL)
@@ -173,6 +167,7 @@ tsquery_to_ftsquery(PG_FUNCTION_ARGS)
 		items[i].type = st.items[i].type;
 		items[i].op = st.items[i].op;
 		items[i].flags = 0;
+		items[i].distance = st.items[i].distance;
 		if (st.items[i].type == FTS_QI_VAL)
 		{
 			items[i].termoff = off;

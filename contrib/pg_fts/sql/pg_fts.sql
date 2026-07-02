@@ -136,7 +136,7 @@ SELECT tsquery_to_ftsquery('quick & brown'::tsquery);
 SELECT tsquery_to_ftsquery('quick | brown'::tsquery);
 SELECT tsquery_to_ftsquery('!slow & quick'::tsquery);
 SELECT tsquery_to_ftsquery('(a | b) & !c'::tsquery);
--- phrase degrades to AND with a NOTICE
+-- phrase operator <-> converts faithfully to an ftsquery phrase
 SELECT tsquery_to_ftsquery('quick <-> brown'::tsquery);
 -- the tsquery -> ftsquery cast makes existing queries usable with @@@
 SELECT to_ftsdoc('the quick brown fox') @@@ ('quick & fox'::tsquery)::ftsquery

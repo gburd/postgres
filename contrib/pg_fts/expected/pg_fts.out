@@ -375,13 +375,11 @@ SELECT tsquery_to_ftsquery('(a | b) & !c'::tsquery);
  (('a' | 'b') & !'c')
 (1 row)
 
--- phrase degrades to AND with a NOTICE
+-- phrase operator <-> converts faithfully to an ftsquery phrase
 SELECT tsquery_to_ftsquery('quick <-> brown'::tsquery);
-NOTICE:  tsquery phrase operator (<->) converted to AND
-DETAIL:  ftsquery does not support phrase search yet; adjacency constraints were dropped.
- tsquery_to_ftsquery 
----------------------
- ('quick' & 'brown')
+  tsquery_to_ftsquery  
+-----------------------
+ ('quick' <-> 'brown')
 (1 row)
 
 -- the tsquery -> ftsquery cast makes existing queries usable with @@@
