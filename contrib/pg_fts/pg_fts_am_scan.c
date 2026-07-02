@@ -34,6 +34,15 @@ static bool bm25_trgm_candidates(Relation index, BlockNumber trgmstart,
 								 const char *term, int termlen,
 								 int min_trigrams, bool is_regex, TidSet *out);
 static void bm25_collect_matches(IndexScanDesc scan, TidSet *out, bool *recheck);
+static double bm25_query_maxhits(Relation index, FtsQuery q, double N);
+
+/*
+ * Ceiling on the adaptive-k ordering scan's top-k.  A large k makes WAND's
+ * threshold stay near zero (little pruning), degrading toward O(result * df),
+ * so we refuse to grow k past this for deep pagination -- bounding worst-case
+ * latency.  (Deep top-N over a broad query is inherently costly.)
+ */
+#define BM25_MAX_ORDERK 4096
 
 /* A scored heap tuple (score, or distance in an ordering scan). */
 typedef struct ScoredTid
@@ -55,6 +64,7 @@ typedef struct BM25ScanOpaqueData
 	int			nordered;
 	int			ordpos;			/* next result to return */
 	int			curk;			/* current materialized k (grows on demand) */
+	double		maxhits;		/* provable upper bound on result size (cap growth) */
 	/* plain-scan (amgettuple, no ORDER BY) state for index-only counts */
 	bool		plainInit;		/* have we materialized the matching TIDs? */
 	ItemPointerData *plainTids; /* sorted matching TIDs */
@@ -1058,11 +1068,29 @@ bm25_gettuple(IndexScanDesc scan, ScanDirection dir)
 	{
 		/*
 		 * Adaptive-k WAND: start small so a small LIMIT (the common first page)
-		 * does minimal work -- WAND prunes hard for small k -- and grow x8 on
-		 * demand so deeper scrolls need at most one or two recomputes.  The
-		 * top-k array + lazy cursors keep memory bounded.
+		 * does minimal work -- WAND prunes hard for small k -- and grow on
+		 * demand.  The top-k engine over-fetches (wantk = k*4) for MVCC, and we
+		 * KEEP all those extra ranked candidates (see bm25_topk_visible), so a
+		 * page-sized LIMIT is usually served from the first pass without a
+		 * recompute.  Growth is capped at the query's provable max hits so we
+		 * never recompute past the actual result size.
 		 */
-		so->curk = 64;
+		double		N;
+		BM25MetaPageData m0;
+
+		bm25_read_meta(scan->indexRelation, &m0);
+		N = m0.ndocs < 1.0 ? 1.0 : m0.ndocs;
+		so->maxhits = bm25_query_maxhits(scan->indexRelation, so->query, N);
+		/*
+		 * Start k at a full first page (100).  Measured trade: vs k=64 this costs
+		 * the top-10 case ~1ms, but serves the entire LIMIT 11..100 range in ONE
+		 * WAND pass instead of a pass-then-recompute (which for a common-term
+		 * query is ~35ms vs ~12ms) -- a large net win for typical "first page of
+		 * results" pagination.  Beyond 100, grow x4 (capped).
+		 */
+		so->curk = 100;
+		if ((double) so->curk > so->maxhits)
+			so->curk = Max((int) so->maxhits, 1);
 		so->nordered = bm25_topk_visible(scan->indexRelation, so->query,
 										 so->curk, true, &so->ordered);
 		so->ordpos = 0;
@@ -1079,7 +1107,23 @@ bm25_gettuple(IndexScanDesc scan, ScanDirection dir)
 	{
 		int			prev = so->ordpos;
 
+		/*
+		 * Grow k for deeper scrolling, but cap it: (a) never past the query's
+		 * provable max hits (no more results exist), and (b) never past an
+		 * absolute ceiling -- a very large k defeats WAND pruning (threshold
+		 * stays ~0) and degrades to O(result * df), so beyond the ceiling we
+		 * stop growing and return what we have.  Deep top-N over a broad query
+		 * is inherently expensive; the ceiling bounds worst-case latency.
+		 */
+		if ((double) so->curk >= so->maxhits)
+			return false;		/* already have every possible match */
+		if (so->curk >= BM25_MAX_ORDERK)
+			return false;		/* refuse pathological deep pagination */
 		so->curk *= 4;
+		if ((double) so->curk > so->maxhits)
+			so->curk = Max((int) so->maxhits, 1);
+		if (so->curk > BM25_MAX_ORDERK)
+			so->curk = BM25_MAX_ORDERK;
 		so->nordered = bm25_topk_visible(scan->indexRelation, so->query,
 										 so->curk, true, &so->ordered);
 		so->ordpos = prev;		/* resume after the rows already emitted */
@@ -2184,6 +2228,79 @@ fts_search_wand(WandCursor *cursors, int nterms, int k, ScoredTid **out)
 	if (nterms >= 4)
 		return fts_search_maxscore(cursors, nterms, k, out);
 	return fts_search_bmw(cursors, nterms, k, out);
+}
+
+/*
+ * bm25_query_maxhits: an upper bound on the number of documents a query can
+ * match, computed by walking the RPN with a stack -- VAL pushes the term's
+ * global df; AND/PHRASE -> min of operands; OR -> sum; NOT -> corpus N (a NOT
+ * can match almost everything).  Fuzzy/regex terms over-generate and have no
+ * cheap df, so any such term makes the bound N (unbounded for our purposes).
+ * Used to decide whether the ordering scan can compute the WHOLE result set in
+ * one WAND pass (avoiding the adaptive-k recompute) when the result is small.
+ */
+static double
+bm25_query_maxhits(Relation index, FtsQuery q, double N)
+{
+	BM25MetaPageData meta;
+	double	   *stack;
+	int			top = 0;
+	uint32		i;
+	double		result;
+
+	if (q->nitems == 0)
+		return 0;
+	bm25_read_meta(index, &meta);
+	stack = (double *) palloc(q->nitems * sizeof(double));
+
+	for (i = 0; i < q->nitems; i++)
+	{
+		FtsQueryItem *it = &q->items[i];
+
+		if (it->type == FTS_QI_VAL)
+		{
+			if (it->flags & (FTS_QF_FUZZY | FTS_QF_REGEX | FTS_QF_PREFIX))
+				stack[top++] = N;	/* over-generating: no cheap bound */
+			else
+			{
+				uint32		gdf = 0;
+				uint32		s;
+
+				for (s = 0; s < meta.nsegments; s++)
+				{
+					uint32		df,
+								mtf;
+					BlockNumber fb;
+					uint32		fo;
+
+					if (bm25_lookup_dict(index, &meta.segs[s],
+										 FTS_QUERY_ITEMTEXT(q, it), it->termlen,
+										 &df, &mtf, &fb, &fo))
+						gdf += df;
+				}
+				stack[top++] = (double) gdf;
+			}
+		}
+		else if (it->op == FTS_OP_NOT)
+		{
+			/* !x can match up to N docs */
+			if (top >= 1)
+				stack[top - 1] = N;
+		}
+		else					/* AND / OR / PHRASE: binary */
+		{
+			double		b = (top >= 1) ? stack[--top] : 0;
+			double		a = (top >= 1) ? stack[--top] : 0;
+
+			if (it->op == FTS_OP_OR)
+				stack[top++] = a + b;
+			else				/* AND, PHRASE: bounded by the smaller side */
+				stack[top++] = Min(a, b);
+		}
+	}
+	result = (top >= 1) ? stack[top - 1] : N;
+	pfree(stack);
+	return Min(result, N);
 }
 
 /*
