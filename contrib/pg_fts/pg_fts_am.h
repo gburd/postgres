@@ -68,7 +68,7 @@ typedef struct BM25SegMeta
 	double		sumdoclen;		/* sum of doclen in this segment */
 	uint32		nterms;			/* distinct terms in this segment */
 	uint32		ndeleted;		/* tombstoned docs (for merge accounting) */
-	uint32		basedocid;		/* docid-space base for this segment's tids */
+	uint32		livedocslen;	/* serialized size of the livedocs tombstone blob */
 	BlockNumber dictindexstart; /* sparse block index over dict pages (Invalid = none) */
 } BM25SegMeta;
 

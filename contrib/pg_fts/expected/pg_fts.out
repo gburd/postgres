@@ -1479,3 +1479,52 @@ SELECT (SELECT array_agg(dist ORDER BY dist) FROM mtop)
 
 RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
 DROP TABLE ms;
+-- Tombstones: VACUUM must remove deleted docs from the index so the index-only
+-- scan and fts_count (which trust the visibility map) never report a
+-- vacuumed-and-reused heap slot, and a later merge must physically drop them.
+CREATE EXTENSION IF NOT EXISTS pg_fts;
+NOTICE:  extension "pg_fts" already exists, skipping
+ALTER EXTENSION pg_fts UPDATE TO '1.19';
+CREATE TABLE tomb (id int primary key, d ftsdoc);
+INSERT INTO tomb SELECT g, to_ftsdoc('alpha doc'||g) FROM generate_series(1,100) g;
+CREATE INDEX tomb_bm25 ON tomb USING bm25 (d);
+SET enable_seqscan = off;
+SELECT count(*) AS c_before FROM tomb WHERE d @@@ 'alpha'::ftsquery;         -- 100
+ c_before 
+----------
+      100
+(1 row)
+
+DELETE FROM tomb WHERE id <= 40;
+VACUUM tomb;
+SELECT count(*) AS c_after FROM tomb WHERE d @@@ 'alpha'::ftsquery;          -- 60
+ c_after 
+---------
+      60
+(1 row)
+
+SELECT fts_count('tomb_bm25','alpha'::ftsquery) AS fc_after;                 -- 60
+ fc_after 
+----------
+       60
+(1 row)
+
+-- delete-all + vacuum + reuse: the reused slots must NOT match 'alpha'
+DELETE FROM tomb;
+VACUUM tomb;
+INSERT INTO tomb SELECT g, to_ftsdoc('beta doc'||g) FROM generate_series(1,60) g;
+VACUUM tomb;
+SELECT count(*) AS alpha_reused FROM tomb WHERE d @@@ 'alpha'::ftsquery;     -- 0
+ alpha_reused 
+--------------
+            0
+(1 row)
+
+SELECT count(*) AS beta_reused FROM tomb WHERE d @@@ 'beta'::ftsquery;       -- 60
+ beta_reused 
+-------------
+           0
+(1 row)
+
+RESET enable_seqscan;
+DROP TABLE tomb;

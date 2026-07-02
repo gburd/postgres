@@ -35,6 +35,7 @@
 
 #include "pg_fts.h"
 #include "pg_fts_am.h"
+#include "pg_fts_sm.h"			/* namespaced sparsemap (tombstones, trigrams) */
 #include <math.h>
 #include "access/genam.h"
 #include "access/generic_xlog.h"
@@ -890,12 +891,15 @@ bm25_write_dictionary(Relation index, BM25BuildState *bs,
 
 /* forward decl: trigram index writer (pg_fts_trgm_index.c, included below) */
 static BlockNumber bm25_write_trigrams(Relation index, BM25BuildState *bs);
+/* forward decls: blob read/write live in pg_fts_trgm_index.c (included below) */
+static BlockNumber bm25_write_blob(Relation index, const uint8 *data, Size len);
+static uint8 *bm25_read_blob(Relation index, BlockNumber blk, Size len);
 
 /*
  * Write one immutable segment (dictionary + postings + trigram index) from a
  * populated build state, filling *seg.  The build state's terms must already
- * be sorted.  livedocs starts empty (no tombstones); basedocid is 0 (segments
- * share the global docid space via heap TIDs).
+ * be sorted.  livedocs starts empty (no tombstones); segments share the global
+ * docid space via heap TIDs.
  */
 static void
 bm25_write_segment(Relation index, BM25BuildState *bs, BM25SegMeta *seg)
@@ -920,7 +924,7 @@ bm25_write_segment(Relation index, BM25BuildState *bs, BM25SegMeta *seg)
 	seg->sumdoclen = bs->sumdoclen;
 	seg->nterms = bs->nterms;
 	seg->ndeleted = 0;
-	seg->basedocid = 0;
+	seg->livedocslen = 0;
 	pfree(postings);
 	pfree(offsets);
 }
@@ -963,6 +967,18 @@ static void
 bm25_read_segment_into(Relation index, const BM25SegMeta *seg, BM25BuildState *bs)
 {
 	BlockNumber blk = seg->dictstart;
+	uint8	   *tombbuf = NULL;
+	sm_t		tomb;
+	bool		hastomb = false;
+
+	/* open this segment's tombstone bitmap so merge physically DROPS deleted
+	 * docs (otherwise re-adding their postings would resurrect them) */
+	if (seg->livedocs != InvalidBlockNumber && seg->livedocslen > 0)
+	{
+		tombbuf = bm25_read_blob(index, seg->livedocs, seg->livedocslen);
+		sm_open(&tomb, (uint8_t *) tombbuf, seg->livedocslen);
+		hastomb = true;
+	}
 
 	while (blk != InvalidBlockNumber)
 	{
@@ -989,8 +1005,17 @@ bm25_read_segment_into(Relation index, const BM25SegMeta *seg, BM25BuildState *b
 			np = bm25_decode_term(index, de->firstposting, de->firstoffset,
 								  de->df, &post, NULL);
 			for (k = 0; k < np; k++)
+			{
+				if (hastomb)
+				{
+					sm_cursor_t c = SM_CURSOR_INIT;
+
+					if (sm_contains(&tomb, bm25_tid_to_docid(&post[k].tid), &c))
+						continue;	/* tombstoned: drop from the merged segment */
+				}
 				add_posting(bs, de->term, de->termlen,
 							&post[k].tid, post[k].tf, post[k].doclen);
+			}
 			pfree(post);
 			ptr += esize;
 		}
@@ -998,6 +1023,8 @@ bm25_read_segment_into(Relation index, const BM25SegMeta *seg, BM25BuildState *b
 		MemoryContextSwitchTo(old);
 		blk = next;
 	}
+	if (tombbuf)
+		pfree(tombbuf);
 	bs->ndocs += seg->ndocs - seg->ndeleted;
 }
 
@@ -1532,17 +1559,206 @@ bm25_flush_pending(Relation index)
 	return true;
 }
 
+/*
+ * Collect the distinct docids present in a segment into a sparsemap (the
+ * segment's docid "universe").  Used by bulkdelete to enumerate the TIDs the
+ * vacuum callback must be asked about.
+ */
+static sm_t *
+bm25_segment_docids(Relation index, const BM25SegMeta *seg)
+{
+	sm_t	   *seen = sm_create(256);
+	BlockNumber blk = seg->dictstart;
+
+	while (blk != InvalidBlockNumber)
+	{
+		Buffer		buffer = ReadBuffer(index, blk);
+		Page		page;
+		char	   *ptr,
+				   *end;
+		BlockNumber next;
+
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buffer);
+		ptr = (char *) PageGetContents(page);
+		end = (char *) page + ((PageHeader) page)->pd_lower;
+		next = BM25PageGetOpaque(page)->nextblk;
+		while (ptr < end)
+		{
+			BM25DictEntry *de = (BM25DictEntry *) ptr;
+			Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
+			BM25Posting *post;
+			int			np,
+						k;
+
+			np = bm25_decode_term(index, de->firstposting, de->firstoffset,
+								  de->df, &post, NULL);
+			for (k = 0; k < np; k++)
+				sm_add_grow(&seen, bm25_tid_to_docid(&post[k].tid));
+			pfree(post);
+			ptr += esize;
+		}
+		UnlockReleaseBuffer(buffer);
+		blk = next;
+	}
+	return seen;
+}
+
+/*
+ * bm25_bulkdelete: VACUUM asks us, via `callback`, which of the TIDs in the
+ * index refer to now-dead heap tuples.  Because postings live in immutable
+ * segments, we cannot cheaply remove individual entries; instead we maintain a
+ * per-segment livedocs TOMBSTONE bitmap (a docid sparsemap of deleted docs).
+ * Scans and counts subtract tombstoned docids, and a later tiered merge
+ * physically drops them.  This is essential for correctness: the index-only
+ * scan and fts_count paths trust the visibility map, so a vacuumed+reused heap
+ * slot MUST NOT still be reported as a match -- the tombstone prevents that.
+ */
 static IndexBulkDeleteResult *
 bm25_bulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 				IndexBulkDeleteCallback callback, void *callback_state)
 {
-	/*
-	 * Tombstoning of deleted TIDs is a later step; MVCC visibility on the heap
-	 * recheck (@@@) and the fts_search fetch keeps results correct even though
-	 * dead postings remain in segments until merge/REINDEX.
-	 */
+	Relation	index = info->index;
+	BM25MetaPageData meta;
+	uint32		s;
+	int64		num_index_tuples = 0;
+	int64		tuples_removed = 0;
+
 	if (stats == NULL)
 		stats = (IndexBulkDeleteResult *) palloc0(sizeof(IndexBulkDeleteResult));
+
+	{
+		Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
+
+		LockBuffer(mb, BUFFER_LOCK_SHARE);
+		memcpy(&meta, BM25PageGetMeta(BufferGetPage(mb)), sizeof(meta));
+		UnlockReleaseBuffer(mb);
+	}
+
+	for (s = 0; s < meta.nsegments; s++)
+	{
+		BM25SegMeta *sg = &meta.segs[s];
+		sm_t	   *seen;
+		sm_t	   *dead;
+		sm_cursor_t cur = SM_CURSOR_INIT;
+		uint64		v;
+		uint32		ndead = 0;
+		BlockNumber oldlivedocs;
+		uint32		oldlen;
+
+		if (sg->dictstart == InvalidBlockNumber)
+			continue;
+
+		seen = bm25_segment_docids(index, sg);
+		dead = sm_create(256);
+
+		/* carry forward any docids already tombstoned in this segment */
+		if (sg->livedocs != InvalidBlockNumber && sg->livedocslen > 0)
+		{
+			uint8	   *buf = bm25_read_blob(index, sg->livedocs, sg->livedocslen);
+			sm_t		old;
+			sm_cursor_t oc = SM_CURSOR_INIT;
+			uint64		dv;
+
+			sm_open(&old, (uint8_t *) buf, sg->livedocslen);
+			for (dv = sm_next_member(&old, (uint64_t) -1, &oc);
+				 dv != SM_IDX_MAX;
+				 dv = sm_next_member(&old, dv, &oc))
+			{
+				sm_add_grow(&dead, dv);
+				ndead++;
+			}
+			pfree(buf);
+		}
+
+		/* ask the callback about each live (not-yet-tombstoned) docid */
+		for (v = sm_next_member(seen, (uint64_t) -1, &cur);
+			 v != SM_IDX_MAX;
+			 v = sm_next_member(seen, v, &cur))
+		{
+			ItemPointerData tid;
+			sm_cursor_t ccur = SM_CURSOR_INIT;
+
+			num_index_tuples++;
+			if (sm_contains(dead, v, &ccur))
+				continue;		/* already tombstoned */
+			bm25_docid_to_tid(v, &tid);
+			if (callback(&tid, callback_state))
+			{
+				sm_add_grow(&dead, v);
+				ndead++;
+				tuples_removed++;
+			}
+		}
+		sm_free(seen);
+
+		oldlivedocs = sg->livedocs;
+		oldlen = sg->livedocslen;
+
+		/* write the updated tombstone bitmap (if any) and patch the metapage */
+		{
+			BlockNumber newblk = InvalidBlockNumber;
+			uint32		newlen = 0;
+
+			if (ndead > 0)
+			{
+				newlen = (uint32) sm_get_size(dead);
+				newblk = bm25_write_blob(index, (const uint8 *) sm_get_data(dead),
+										 newlen);
+			}
+			sm_free(dead);
+
+
+			{
+				Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
+				GenericXLogState *st;
+				Page		mp;
+				BM25MetaPageData *m;
+
+				LockBuffer(mb, BUFFER_LOCK_EXCLUSIVE);
+				st = GenericXLogStart(index);
+				mp = GenericXLogRegisterBuffer(st, mb, 0);
+				m = BM25PageGetMeta(mp);
+				if (s < m->nsegments)
+				{
+					m->segs[s].livedocs = newblk;
+					m->segs[s].livedocslen = newlen;
+					m->segs[s].ndeleted = ndead;
+				}
+				GenericXLogFinish(st);
+				UnlockReleaseBuffer(mb);
+			}
+		}
+
+		/* recycle the previous tombstone blob pages */
+		if (oldlivedocs != InvalidBlockNumber && oldlen > 0)
+			bm25_free_chain(index, oldlivedocs);
+	}
+
+	/* refresh corpus N so IDF/avgdl reflect the deletions */
+	if (tuples_removed > 0)
+	{
+		Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
+		GenericXLogState *st;
+		Page		mp;
+		BM25MetaPageData *m;
+		uint32		i;
+		double		nd = 0;
+
+		LockBuffer(mb, BUFFER_LOCK_EXCLUSIVE);
+		st = GenericXLogStart(index);
+		mp = GenericXLogRegisterBuffer(st, mb, 0);
+		m = BM25PageGetMeta(mp);
+		for (i = 0; i < m->nsegments; i++)
+			nd += m->segs[i].ndocs - m->segs[i].ndeleted;
+		m->ndocs = nd + m->npending;
+		GenericXLogFinish(st);
+		UnlockReleaseBuffer(mb);
+	}
+
+	stats->num_index_tuples = (double) (num_index_tuples - tuples_removed);
+	stats->tuples_removed += (double) tuples_removed;
+	stats->num_pages = RelationGetNumberOfBlocks(index);
 	return stats;
 }
 

@@ -35,6 +35,8 @@ static bool bm25_trgm_candidates(Relation index, BlockNumber trgmstart,
 								 int min_trigrams, bool is_regex, TidSet *out);
 static void bm25_collect_matches(Relation index, FtsQuery query, TidSet *out, bool *recheck);
 static double bm25_query_maxhits(Relation index, FtsQuery q, double N);
+/* forward decl: blob reader (pg_fts_trgm_index.c, included after this file) */
+static uint8 *bm25_read_blob(Relation index, BlockNumber blk, Size len);
 
 /*
  * Ceiling on the adaptive-k ordering scan's top-k.  A large k makes WAND's
@@ -96,6 +98,109 @@ tidset_sort_uniq(TidSet *s)
 		if (ItemPointerCompare(&s->tids[i], &s->tids[j]) != 0)
 			s->tids[++i] = s->tids[j];
 	s->n = i + 1;
+}
+
+/*
+ * Tombstone (deleted-docid) sets, one per segment, loaded from each segment's
+ * livedocs blob.  VACUUM (bm25_bulkdelete) records docids of vacuumed heap
+ * tuples here; scans/counts MUST subtract them, because the index-only and
+ * count paths trust the visibility map and would otherwise report a
+ * vacuumed-and-reused heap slot as a match.  hasany is false (the common,
+ * delete-free case) => zero overhead: no membership checks at all.
+ */
+typedef struct BM25Tombstones
+{
+	bool		hasany;
+	uint32		nseg;
+	uint8	  **blobs;			/* per-segment palloc'd blob, or NULL */
+	sm_t	   *maps;			/* per-segment opened sm_t (valid iff blobs[i]) */
+	bool	   *present;		/* whether segment i has a tombstone map */
+}			BM25Tombstones;
+
+static void
+bm25_tombstones_load(Relation index, const BM25MetaPageData *meta, BM25Tombstones *t)
+{
+	uint32		s;
+
+	t->hasany = false;
+	t->nseg = meta->nsegments;
+	t->blobs = NULL;
+	t->maps = NULL;
+	t->present = NULL;
+	for (s = 0; s < meta->nsegments; s++)
+		if (meta->segs[s].livedocs != InvalidBlockNumber &&
+			meta->segs[s].livedocslen > 0)
+		{
+			t->hasany = true;
+			break;
+		}
+	if (!t->hasany)
+		return;
+
+	t->blobs = (uint8 **) palloc0(meta->nsegments * sizeof(uint8 *));
+	t->maps = (sm_t *) palloc0(meta->nsegments * sizeof(sm_t));
+	t->present = (bool *) palloc0(meta->nsegments * sizeof(bool));
+	for (s = 0; s < meta->nsegments; s++)
+	{
+		const BM25SegMeta *sg = &meta->segs[s];
+
+		if (sg->livedocs != InvalidBlockNumber && sg->livedocslen > 0)
+		{
+			t->blobs[s] = bm25_read_blob(index, sg->livedocs, sg->livedocslen);
+			sm_open(&t->maps[s], (uint8_t *) t->blobs[s], sg->livedocslen);
+			t->present[s] = true;
+		}
+	}
+}
+
+/* Is docid tombstoned in ANY segment?  (A docid appears in the segments that
+ * hold its postings; checking all present maps is correct and cheap -- only
+ * a few segments ever carry tombstones.) */
+static inline bool
+bm25_docid_tombstoned(BM25Tombstones *t, uint64 docid)
+{
+	uint32		s;
+
+	if (!t->hasany)
+		return false;
+	for (s = 0; s < t->nseg; s++)
+	{
+		sm_cursor_t c = SM_CURSOR_INIT;
+
+		if (t->present[s] && sm_contains(&t->maps[s], docid, &c))
+			return true;
+	}
+	return false;
+}
+
+static void
+bm25_tombstones_free(BM25Tombstones *t)
+{
+	uint32		s;
+
+	if (!t->hasany)
+		return;
+	for (s = 0; s < t->nseg; s++)
+		if (t->present[s])
+			pfree(t->blobs[s]);
+	pfree(t->blobs);
+	pfree(t->maps);
+	pfree(t->present);
+}
+
+/* Drop tombstoned TIDs from a sorted/collected TidSet in place. */
+static void
+bm25_filter_tombstoned(BM25Tombstones *t, TidSet *s)
+{
+	int			i,
+				j = 0;
+
+	if (!t->hasany || s->n == 0)
+		return;
+	for (i = 0; i < s->n; i++)
+		if (!bm25_docid_tombstoned(t, bm25_tid_to_docid(&s->tids[i])))
+			s->tids[j++] = s->tids[i];
+	s->n = j;
 }
 
 /* Read the metapage for corpus stats + dictstart. */
@@ -1313,6 +1418,18 @@ bm25_collect_matches(Relation index, FtsQuery query, TidSet *out, bool *recheck)
 	}
 
 	tidset_sort_uniq(&acc);
+	/* drop docs vacuumed away since indexing (tombstones from bm25_bulkdelete);
+	 * essential because the IOS/count paths trust the visibility map */
+	{
+		BM25Tombstones tombs;
+
+		bm25_tombstones_load(index, &meta, &tombs);
+		if (tombs.hasany)
+		{
+			bm25_filter_tombstoned(&tombs, &acc);
+			bm25_tombstones_free(&tombs);
+		}
+	}
 	*out = acc;
 	*recheck = need_recheck;
 }
@@ -2319,6 +2436,7 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 	WandCursor *cursors;
 	ScoredTid  *cand;
 	ScoredTid  *results;
+	BM25Tombstones tombs;
 	int			ncand;
 	int			wantk;
 	Relation	heap;
@@ -2407,13 +2525,19 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 #else
 	fetch = table_index_fetch_begin(heap);
 #endif
+	bm25_tombstones_load(index, &meta, &tombs);
 	for (i = 0; i < ncand && nvis < k; i++)
 	{
 		ItemPointerData tid = cand[i].tid;
 		bool		call_again = false;
 		bool		all_dead = false;
-		TupleTableSlot *slot = table_slot_create(heap, NULL);
+		TupleTableSlot *slot;
 
+		/* skip docs vacuumed away since indexing (tombstone): the heap slot may
+		 * have been reused, so a bare visibility check is not enough */
+		if (tombs.hasany && bm25_docid_tombstoned(&tombs, bm25_tid_to_docid(&cand[i].tid)))
+			continue;
+		slot = table_slot_create(heap, NULL);
 		if (table_index_fetch_tuple(fetch, &tid, snap, slot,
 									&call_again, &all_dead))
 		{
@@ -2424,6 +2548,7 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 		}
 		ExecDropSingleTupleTableSlot(slot);
 	}
+	bm25_tombstones_free(&tombs);
 	table_index_fetch_end(fetch);
 	table_close(heap, AccessShareLock);
 
