@@ -1592,19 +1592,29 @@ cmp_scored_desc(const void *a, const void *b)
 typedef struct WandCursor
 {
 	Relation	index;
-	BlockNumber curblk;			/* page currently being streamed (lazy) */
-	uint32		curoff;			/* resume byte offset on curblk */
-	int			nread;			/* postings streamed so far (stop at df) */
+	BlockNumber curblk;			/* page holding the current block */
+	uint32		curoff;			/* byte offset of the CURRENT block on curblk */
+	int			nread;			/* postings consumed so far (stop at df) */
 	BlockNumber firstblk;		/* first posting block for the term */
 	uint32		firstoff;		/* byte offset of the term's first block */
 	uint32		df;				/* term document frequency (postings to read) */
-	BM25Posting *posts;			/* the term's full docid-sorted posting list */
-	uint32	   *blockmax;		/* per-posting 128-block max_tf (block-max WAND) */
-	uint32	   *blockmindl;		/* per-posting 128-block min |D| (tightens the bound) */
-	int			nposts;			/* total postings for the term */
-	int			cur;			/* index within posts */
+
+	/*
+	 * Current block only, decoded LAZILY: docids are unpacked eagerly (needed
+	 * to pivot/skip), but tf and doclen stay bit-packed in blkbuf and are
+	 * extracted per-posting on demand (bm25_for_get) only when a posting is
+	 * actually scored -- so blocks pruned by block-max never pay for tf/dl.
+	 */
+	unsigned char *blkbuf;		/* copy of the current block's FOR payload */
+	uint64		docids[BM25_BLOCK_SIZE];	/* decoded docids of current block */
+	uint32		tfoff;			/* offset of tf column within blkbuf */
+	uint32		dloff;			/* offset of doclen column within blkbuf */
+	int			blkcount;		/* postings in the current block */
+	uint32		blk_max_tf;		/* block-max tf (from header) */
+	uint32		blk_min_dl;		/* block-min |D| (from header) */
+	int			cur;			/* index within the current block */
 	uint64		docid;			/* current docid (UINT64_MAX = exhausted) */
-	uint32		block_max_tf;	/* unused (kept for ABI of readers) */
+
 	double		idf;
 	double		avgdl;
 	double		k1b_inv_avgdl;	/* precomputed k1*b/avgdl (norm hot path) */
@@ -1629,136 +1639,129 @@ tid_to_docid_s(ItemPointer tid)
  * ever decoding it (the whole point of block-max WAND).
  */
 static void
-wand_load_page(WandCursor *c)
+wand_load_block(WandCursor *c)
 {
-	BM25Posting *posts;
-	uint32	   *bmax;
-	uint32	   *bmindl;
-	int			cap;
-	int			n = 0;
 	Buffer		buf;
 	Page		page;
 	char	   *p,
 			   *pend;
+	BM25BlockHdr *bh;
+	const unsigned char *stream;
+	uint64		gaps[BM25_BLOCK_SIZE];
+	uint64		base;
+	int			cnt;
+	int			glen;
+	int			tflen;
+	int			i;
 
-	if (c->posts)
+	if (c->blkbuf)
 	{
-		pfree(c->posts);
-		c->posts = NULL;
-	}
-	if (c->blockmax)
-	{
-		pfree(c->blockmax);
-		c->blockmax = NULL;
-	}
-	if (c->blockmindl)
-	{
-		pfree(c->blockmindl);
-		c->blockmindl = NULL;
+		pfree(c->blkbuf);
+		c->blkbuf = NULL;
 	}
 	if (c->curblk == InvalidBlockNumber || c->nread >= (int) c->df)
 	{
-		c->nposts = 0;
+		c->blkcount = 0;
 		c->cur = 0;
 		c->docid = UINT64_MAX;
 		return;
 	}
-
-	cap = Min((int) c->df - c->nread, BM25_BLOCK_SIZE * 64);
-	cap = Max(cap, 1);
-	posts = (BM25Posting *) palloc(cap * sizeof(BM25Posting));
-	bmax = (uint32 *) palloc(cap * sizeof(uint32));
-	bmindl = (uint32 *) palloc(cap * sizeof(uint32));
 
 	buf = ReadBuffer(c->index, c->curblk);
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	page = BufferGetPage(buf);
 	pend = (char *) page + ((PageHeader) page)->pd_lower;
 	p = (char *) page + c->curoff;
-	while (p + sizeof(BM25BlockHdr) <= pend && c->nread + n < (int) c->df)
-	{
-		BM25BlockHdr *bh = (BM25BlockHdr *) p;
-		const unsigned char *stream = (const unsigned char *) (bh + 1);
-		uint64		docid = ((uint64) bh->first_docid_hi << 32) | bh->first_docid_lo;
-		uint64		gaps[BM25_BLOCK_SIZE];
-		uint64		tfs[BM25_BLOCK_SIZE];
-		uint64		dls[BM25_BLOCK_SIZE];
-		int			cnt = (int) bh->count;
-		int			pos = 0;
-		int			i;
 
-		if (cnt == 0)
-			break;
-		/* grow buffer if this block would overflow it */
-		if (n + cnt > cap)
-		{
-			cap = n + cnt;
-			posts = repalloc(posts, cap * sizeof(BM25Posting));
-			bmax = repalloc(bmax, cap * sizeof(uint32));
-			bmindl = repalloc(bmindl, cap * sizeof(uint32));
-		}
-		pos += bm25_for_unpack(stream + pos, cnt, gaps);
-		pos += bm25_for_unpack(stream + pos, cnt, tfs);
-		pos += bm25_for_unpack(stream + pos, cnt, dls);
-		for (i = 0; i < cnt && c->nread + n < (int) c->df; i++)
-		{
-			docid += gaps[i];
-			bm25_docid_to_tid(docid, &posts[n].tid);
-			posts[n].tf = (uint32) tfs[i];
-			posts[n].doclen = (uint32) dls[i];
-			bmax[n] = bh->max_tf;
-			bmindl[n] = bh->min_doclen;
-			n++;
-		}
-		p = (char *) (bh + 1) + bh->bytelen;
-		p = (char *) MAXALIGN(p);
-	}
-	/* remember where to resume: rest of this page, or the next page */
-	if (p + sizeof(BM25BlockHdr) <= pend && c->nread + n < (int) c->df)
+	/* skip any empty tail; advance across pages until a real block or EOF */
+	while (!(p + sizeof(BM25BlockHdr) <= pend) ||
+		   ((BM25BlockHdr *) p)->count == 0)
 	{
-		c->curoff = (uint32) ((char *) p - (char *) page);
-		/* curblk stays */
-	}
-	else
-	{
-		c->curblk = BM25PageGetOpaque(page)->nextblk;
+		BlockNumber next = BM25PageGetOpaque(page)->nextblk;
+
+		UnlockReleaseBuffer(buf);
+		if (next == InvalidBlockNumber)
+		{
+			c->curblk = InvalidBlockNumber;
+			c->blkcount = 0;
+			c->cur = 0;
+			c->docid = UINT64_MAX;
+			return;
+		}
+		c->curblk = next;
 		c->curoff = MAXALIGN(SizeOfPageHeaderData);
+		buf = ReadBuffer(c->index, c->curblk);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		pend = (char *) page + ((PageHeader) page)->pd_lower;
+		p = (char *) page + c->curoff;
 	}
-	UnlockReleaseBuffer(buf);
 
-	c->posts = posts;
-	c->blockmax = bmax;
-	c->blockmindl = bmindl;
-	c->nposts = n;
-	c->nread += n;
+	bh = (BM25BlockHdr *) p;
+	stream = (const unsigned char *) (bh + 1);
+	cnt = (int) bh->count;
+	if (cnt > BM25_BLOCK_SIZE)
+		cnt = BM25_BLOCK_SIZE;	/* defensive */
+
+	/* copy the block's FOR payload so tf/dl bytes stay valid after we unlock */
+	c->blkbuf = (unsigned char *) palloc(bh->bytelen);
+	memcpy(c->blkbuf, stream, bh->bytelen);
+
+	/* eagerly decode ONLY docids (gaps); record tf/dl column offsets for lazy
+	 * per-posting access -- pruned blocks never touch tf/dl */
+	glen = bm25_for_unpack(c->blkbuf, cnt, gaps);
+	tflen = bm25_for_bytelen(c->blkbuf + glen, cnt);
+	c->tfoff = (uint32) glen;
+	c->dloff = (uint32) (glen + tflen);
+
+	base = ((uint64) bh->first_docid_hi << 32) | bh->first_docid_lo;
+	for (i = 0; i < cnt; i++)
+	{
+		base += gaps[i];		/* first gap is 0 from first_docid */
+		c->docids[i] = base;
+	}
+	c->blkcount = cnt;
+	c->blk_max_tf = bh->max_tf;
+	c->blk_min_dl = bh->min_doclen;
 	c->cur = 0;
-	if (n > 0)
-		c->docid = tid_to_docid_s(&c->posts[0].tid);
-	else
-		wand_load_page(c);		/* skipped an empty tail; try next page */
+	c->docid = c->docids[0];
+
+	/* advance the resume pointer to the next block (or next page) */
+	{
+		char	   *nextp = (char *) MAXALIGN((char *) (bh + 1) + bh->bytelen);
+
+		if (nextp + sizeof(BM25BlockHdr) <= pend &&
+			c->nread + cnt < (int) c->df)
+			c->curoff = (uint32) (nextp - (char *) page);
+		else
+		{
+			c->curblk = BM25PageGetOpaque(page)->nextblk;
+			c->curoff = MAXALIGN(SizeOfPageHeaderData);
+		}
+	}
+	c->nread += cnt;
+	UnlockReleaseBuffer(buf);
 }
 
-/* Prime the cursor at the term's first block/offset and load its first page. */
+/* Prime the cursor at the term's first block and load it. */
 static void
 wand_prime(WandCursor *c)
 {
-	c->posts = NULL;
-	c->blockmax = NULL;
-	c->blockmindl = NULL;
+	c->blkbuf = NULL;
 	c->curblk = c->firstblk;
 	c->curoff = c->firstoff;
 	c->nread = 0;
 	if (c->firstblk == InvalidBlockNumber || c->df == 0)
 	{
-		c->nposts = 0;
+		c->blkcount = 0;
 		c->cur = 0;
 		c->docid = UINT64_MAX;
 		return;
 	}
-	wand_load_page(c);
+	wand_load_block(c);
 }
 
-/* The block-max contribution upper bound for the current posting's 128-block.
+/* The block-max contribution upper bound for the current 128-block.
  * Uses the block's max_tf AND min |D|: impact is increasing in tf and
  * decreasing in |D|, so impact(max_tf, min_dl) is a sound (and much tighter
  * than the shortest-possible-doc) upper bound for every posting in the block. */
@@ -1766,55 +1769,43 @@ static inline double
 wand_block_max_contrib(WandCursor *c)
 {
 	double		k1 = 1.2;
-	double		mtf = (double) (c->cur < c->nposts ? c->blockmax[c->cur] : 0);
-	double		mindl = (double) (c->cur < c->nposts ? c->blockmindl[c->cur] : 0);
+	double		mtf = (double) c->blk_max_tf;
+	double		mindl = (double) c->blk_min_dl;
 
 	return c->idf * mtf * (k1 + 1.0) / (mtf + c->k1_1mb + c->k1b_inv_avgdl * mindl);
 }
 
-/* Advance the cursor to the next posting, loading the next page if needed. */
+/* Advance the cursor to the next posting, loading the next block if needed. */
 static void
 wand_next(WandCursor *c)
 {
 	c->cur++;
-	if (c->cur < c->nposts)
-		c->docid = tid_to_docid_s(&c->posts[c->cur].tid);
+	if (c->cur < c->blkcount)
+		c->docid = c->docids[c->cur];
 	else
-		wand_load_page(c);		/* stream the next page of this term */
+		wand_load_block(c);		/* stream the next block of this term */
 }
 
 /*
- * Skip the cursor past the rest of its current 128-block (the run of postings
- * sharing this block's max_tf).  Used by BMW when the current block cannot beat
- * the top-k threshold.  Always makes forward progress.
+ * Skip the cursor past the rest of its current 128-block.  Because the cursor
+ * now holds exactly one block, this simply loads the next block -- and the
+ * block just abandoned never had its tf/doclen decoded (block-max pruning pays
+ * only for docids).  Always makes forward progress.
  */
 static void
 wand_skip_block(WandCursor *c)
 {
-	if (c->cur < c->nposts)
-	{
-		uint32		bm = c->blockmax[c->cur];
-		int			start = c->cur;
-
-		while (c->cur < c->nposts && c->blockmax[c->cur] == bm)
-			c->cur++;
-		if (c->cur == start)
-			c->cur++;			/* guarantee progress */
-	}
-	if (c->cur < c->nposts)
-		c->docid = tid_to_docid_s(&c->posts[c->cur].tid);
-	else
-		wand_load_page(c);
+	wand_load_block(c);
 }
 
-/* Exact BM25 contribution of the current posting, using stored per-doc |D|.
- * Norm constants (idf*(k1+1), k1*(1-b), k1*b/avgdl) are precomputed per cursor
- * so the hot path is multiplies, not divisions. */
+/* Exact BM25 contribution of the current posting.  tf and |D| are extracted
+ * from the block's still-packed FOR columns ON DEMAND (bm25_for_get) -- only
+ * for postings actually scored, so pruned blocks never decode tf/dl. */
 static inline double
 wand_contrib_cur(WandCursor *c)
 {
-	double		tf = (double) c->posts[c->cur].tf;
-	double		dl = (double) c->posts[c->cur].doclen;
+	double		tf = (double) bm25_for_get(c->blkbuf + c->tfoff, c->cur);
+	double		dl = (double) bm25_for_get(c->blkbuf + c->dloff, c->cur);
 	double		norm = tf + c->k1_1mb + c->k1b_inv_avgdl * dl;
 
 	return c->idf_k1p1 * tf / norm;
@@ -1896,32 +1887,30 @@ wand_seek(WandCursor *c, uint64 target)
 {
 	if (c->docid >= target)
 		return;
-	/* first, fast-forward within the already-decoded page */
-	while (c->cur < c->nposts &&
-		   tid_to_docid_s(&c->posts[c->cur].tid) < target)
+	/* first, fast-forward within the current (already-decoded) block's docids */
+	while (c->cur < c->blkcount && c->docids[c->cur] < target)
 		c->cur++;
-	if (c->cur < c->nposts)
+	if (c->cur < c->blkcount)
 	{
-		c->docid = tid_to_docid_s(&c->posts[c->cur].tid);
+		c->docid = c->docids[c->cur];
 		return;
 	}
-	/* decoded page exhausted: skip whole undecoded blocks by header, then
-	 * decode the page containing target and land on it */
+	/* current block exhausted: skip whole undecoded blocks by header, then
+	 * load the block containing target and land on it */
 	wand_skip_blocks(c, target);
 	for (;;)
 	{
-		wand_load_page(c);
+		wand_load_block(c);
 		if (c->docid == UINT64_MAX)
 			return;
-		while (c->cur < c->nposts &&
-			   tid_to_docid_s(&c->posts[c->cur].tid) < target)
+		while (c->cur < c->blkcount && c->docids[c->cur] < target)
 			c->cur++;
-		if (c->cur < c->nposts)
+		if (c->cur < c->blkcount)
 		{
-			c->docid = tid_to_docid_s(&c->posts[c->cur].tid);
+			c->docid = c->docids[c->cur];
 			return;
 		}
-		/* target beyond this decoded page; loop to load/skip the next */
+		/* target beyond this block; loop to load/skip the next */
 	}
 }
 
@@ -2017,7 +2006,9 @@ fts_search_bmw(WandCursor *cursors, int nterms, int k, ScoredTid **out)
 		/* if the smallest docid equals the pivot, score it fully */
 		if (cursors[0].docid == pivot_docid)
 		{
-			ItemPointerData tid = cursors[0].posts[cursors[0].cur].tid;
+			ItemPointerData tid;
+
+			bm25_docid_to_tid(pivot_docid, &tid);
 
 			score = 0.0;
 			for (i = 0; i < nterms; i++)
@@ -2073,10 +2064,10 @@ fts_search_bmw(WandCursor *cursors, int nterms, int k, ScoredTid **out)
 		}
 	}
 
-	/* release any still-loaded pages */
+	/* release any still-loaded block buffers */
 	for (t = 0; t < nterms; t++)
-		if (cursors[t].posts)
-			pfree(cursors[t].posts);
+		if (cursors[t].blkbuf)
+			pfree(cursors[t].blkbuf);
 
 	qsort(heap, nheap, sizeof(ScoredTid), cmp_scored_desc);
 	*out = heap;
@@ -2210,8 +2201,8 @@ fts_search_maxscore(WandCursor *cursors, int nterms, int k, ScoredTid **out)
 	}
 
 	for (t = 0; t < nterms; t++)
-		if (cursors[t].posts)
-			pfree(cursors[t].posts);
+		if (cursors[t].blkbuf)
+			pfree(cursors[t].blkbuf);
 
 	qsort(heap, nheap, sizeof(ScoredTid), cmp_scored_desc);
 	*out = heap;
@@ -2392,10 +2383,8 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 			cursors[nactive].firstblk = firstblk;
 			cursors[nactive].firstoff = firstoff;
 			cursors[nactive].df = df;
-			cursors[nactive].posts = NULL;
-			cursors[nactive].blockmax = NULL;
-			cursors[nactive].blockmindl = NULL;
-			cursors[nactive].nposts = 0;
+			cursors[nactive].blkbuf = NULL;
+			cursors[nactive].blkcount = 0;
 			cursors[nactive].cur = 0;
 			cursors[nactive].docid = 0;
 			cursors[nactive].idf = idf;

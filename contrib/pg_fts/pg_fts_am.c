@@ -380,6 +380,40 @@ bm25_for_unpack(const unsigned char *buf, int n, uint64 *out)
 	return 1 + (n * width + 7) / 8;
 }
 
+/* Byte length of a FOR column of n values, given its leading width byte -- used
+ * to skip a column (e.g. tf/doclen) without unpacking any value. */
+static inline int
+bm25_for_bytelen(const unsigned char *buf, int n)
+{
+	int			width = buf[0];
+
+	return (width == 0) ? 1 : 1 + (n * width + 7) / 8;
+}
+
+/* Random-access one value at index i from a FOR column (buf[0] = width).
+ * O(width), no full-column unpack -- lets the WAND hot path decode a posting's
+ * tf/doclen only when it is actually scored, skipping pruned blocks entirely. */
+static inline uint64
+bm25_for_get(const unsigned char *buf, int i)
+{
+	int			width = buf[0];
+	int			bitpos;
+	uint64		v = 0;
+	int			b;
+
+	if (width == 0)
+		return 0;
+	bitpos = i * width;
+	for (b = 0; b < width; b++)
+	{
+		int			abs = bitpos + b;
+
+		if (buf[1 + (abs >> 3)] & (1 << (abs & 7)))
+			v |= (uint64) 1 << b;
+	}
+	return v;
+}
+
 /*
  * Decode exactly one term's postings from the shared posting chain: start at
  * (firstblk, firstoff) and decode consecutive blocks -- following nextblk
