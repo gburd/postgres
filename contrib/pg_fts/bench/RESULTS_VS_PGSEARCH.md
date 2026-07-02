@@ -16,11 +16,11 @@ Same box, same PostgreSQL, same corpus, warm cache, table VACUUMed.
 ## Query latency (median ms) — BEFORE vs AFTER index-only scan
 | query                            | pg_fts BEFORE | pg_fts NOW | pg_search | verdict NOW      |
 |----------------------------------|---------------|------------|-----------|------------------|
-| Q1 rare count (df 2000)          | 1.6           | **0.9**    | 5.4       | **pg_fts 6.0x**  |
-| Q2 mid count (df 75k)            | 87            | **7.3**    | 7.5       | **pg_fts ~ties/wins** |
-| Q3 two-term AND count            | 6.4           | **4.5**    | 6.0       | **pg_fts 1.3x**  |
-| Q4 ranked top-10 (mid, mid)      | 4.5           | **4.3**    | 6.5       | **pg_fts 1.5x**  |
-| Q5 ranked top-10 (common, mid)   | 13            | 13.0       | **6.8**   | pg_search 1.9x   |
+| Q1 rare count (df 2000)          | 1.6           | **1.0**    | 5.9       | **pg_fts 5.9x**  |
+| Q2 mid count (df 75k)            | 87            | **7.6**    | 8.7       | **pg_fts 1.2x**  |
+| Q3 two-term AND count            | 6.4           | **5.0**    | 7.2       | **pg_fts 1.4x**  |
+| Q4 ranked top-10 (mid, mid)      | 4.5           | **4.2**    | 7.8       | **pg_fts 1.9x**  |
+| Q5 ranked top-10 (common, mid)   | 13            | 13.0       | **6.7**   | pg_search 1.9x   |
 | Q7 ranked top-100 (common, mid)  | 41            | 40         | **6.7**   | pg_search 6.0x   |
 | Q6 fuzzy count (zaaaf~1)         | 564           | 370        | **25**    | pg_search 15x    |
 
@@ -49,7 +49,15 @@ pages).  **This closed the single biggest gap vs pg_search.**
      does a DFA-over-FST walk that skips ranges.
 
 ## Remaining work to fully match/beat pg_search everywhere
-- Q5/Q7: tighter block-max WAND on high-df terms (store block-level impact
-  score, not just max_tf; or impact-ordered postings).
-- Q6: DFA range-skip over the sorted dictionary (a real FST, or an
-  ordered-walk-with-skip) so fuzzy doesn't scan every term.
+- Q5/Q7 (ranked over a high-df COMMON term): confirmed NOT a heap or
+  block-skip-bound issue -- a per-block min-|D| tighter WAND bound and adaptive-k
+  tuning did not move it, because the cost is decoding the 540k-df common term's
+  postings during the document-at-a-time merge.  The real fix is
+  IMPACT-ORDERED postings (postings sorted by contribution, so the scan stops
+  once the k-th score is safe) -- a substantial posting-codec change.
+- Q6 (fuzzy count): DFA range-skip over the sorted dictionary (a real FST or
+  ordered-walk-with-skip) so fuzzy does not scan all 50k terms.
+
+Both are bounded, well-understood codec projects; neither is a visibility issue.
+The index-only-scan work removed the ONE architectural disadvantage (heap
+visibility fetches) and made pg_fts win the whole selective + ranked-top-k core.
