@@ -873,6 +873,13 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 		{
 			TidSet		cands;
 			bool		any_trgm = false;
+			/*
+			 * Candidates are exact (no heap recheck) only when the query is a
+			 * SINGLE fuzzy term matched by the DFA: then the unioned postings are
+			 * precisely the answer.  Any boolean composition, regex, or funnel
+			 * fallback needs the recheck to enforce query semantics.
+			 */
+			bool		exact = (so->query->nitems == 1);
 			uint32		qi;
 
 			cands.tids = NULL;
@@ -900,6 +907,8 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 					/* query too long for the automaton: fall through to funnel */
 				}
 
+				/* trigram funnel over-generates -> results need a heap recheck */
+				exact = false;
 				if (bm25_trgm_candidates(scan->indexRelation, sg->trgmstart,
 										 sg->dictstart,
 										 FTS_QUERY_ITEMTEXT(so->query, it),
@@ -919,7 +928,9 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 			{
 				if (cands.n > 0)
 				{
-					tbm_add_tuples(tbm, cands.tids, cands.n, true);
+					/* recheck only if any candidate came from an over-generating
+					 * source (trigram funnel/regex); DFA fuzzy is exact */
+					tbm_add_tuples(tbm, cands.tids, cands.n, !exact);
 					ntids += cands.n;
 				}
 			}
