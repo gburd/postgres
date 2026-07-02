@@ -870,12 +870,12 @@ bm25_gettuple(IndexScanDesc scan, ScanDirection dir)
 	if (!so->orderInit)
 	{
 		/*
-		 * Adaptive-k WAND: start at a k that covers common page-sized LIMITs
-		 * (100) in a single pass so we avoid a recompute-from-scratch for the
-		 * typical first page; grow x4 on demand for deeper scrolling.  WAND still
-		 * prunes hard, and the top-k array + lazy cursors keep memory bounded.
+		 * Adaptive-k WAND: start small so a small LIMIT (the common first page)
+		 * does minimal work -- WAND prunes hard for small k -- and grow x8 on
+		 * demand so deeper scrolls need at most one or two recomputes.  The
+		 * top-k array + lazy cursors keep memory bounded.
 		 */
-		so->curk = 128;
+		so->curk = 64;
 		so->nordered = bm25_topk_visible(scan->indexRelation, so->query,
 										 so->curk, true, &so->ordered);
 		so->ordpos = 0;
@@ -892,7 +892,7 @@ bm25_gettuple(IndexScanDesc scan, ScanDirection dir)
 	{
 		int			prev = so->ordpos;
 
-		so->curk *= 4;
+		so->curk *= 8;
 		so->nordered = bm25_topk_visible(scan->indexRelation, so->query,
 										 so->curk, true, &so->ordered);
 		so->ordpos = prev;		/* resume after the rows already emitted */
