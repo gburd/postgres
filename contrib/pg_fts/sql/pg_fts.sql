@@ -635,3 +635,20 @@ SELECT (SELECT array_agg(dist ORDER BY dist) FROM bmw_top)
      = (SELECT array_agg(dist ORDER BY dist) FROM bmw_all) AS bmw_exact_topk;
 RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
 DROP TABLE bmw;
+
+-- Levenshtein-automaton fuzzy: matches EXACTLY the dictionary terms within k
+-- edits (no trigram over-generation), verified against core levenshtein.
+CREATE EXTENSION IF NOT EXISTS fuzzystrmatch;
+CREATE TABLE fz (id serial, body text, d ftsdoc);
+INSERT INTO fz(body) SELECT 'document'||g||' filler' FROM generate_series(1,5000) g;
+UPDATE fz SET d = to_ftsdoc(body);
+CREATE INDEX fz_bm25 ON fz USING bm25 (d);
+SET enable_seqscan = off;
+SELECT count(*) AS dfa_fuzzy FROM fz WHERE d @@@ 'document42~2'::ftsquery;
+SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off;
+SELECT count(*) AS ground_truth FROM fz
+WHERE EXISTS (SELECT 1 FROM unnest(string_to_array(body,' ')) t
+              WHERE levenshtein_less_equal(t,'document42',2) <= 2);
+RESET enable_seqscan; RESET enable_indexscan; RESET enable_bitmapscan;
+DROP TABLE fz;
+DROP EXTENSION fuzzystrmatch;

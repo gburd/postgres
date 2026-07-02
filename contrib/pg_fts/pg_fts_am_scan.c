@@ -502,6 +502,86 @@ bm25_eval_query(Relation index, const BM25SegMeta *seg, FtsQuery q,
 	return result;
 }
 
+/*
+ * bm25_fuzzy_terms -- collect the postings of every dictionary term within edit
+ * distance k of `term`, using the Levenshtein automaton (pg_fts_lev.c) directly
+ * over the sorted dictionary.  This is EXACT: only true within-k terms are
+ * collected, so no heap recheck is needed (unlike the trigram funnel, which
+ * over-generates candidates that must be re-verified per doc).  Returns true
+ * (always applicable); *out is a sorted TidSet.  For query terms longer than
+ * the automaton bound, returns false so the caller falls back to the funnel.
+ */
+static bool
+bm25_fuzzy_terms(Relation index, const BM25SegMeta *seg,
+				 const char *term, int termlen, int k, TidSet *out)
+{
+	FtsLevAut	aut;
+	BlockNumber blk = seg->dictstart;
+	int			cap = 64;
+	int			n = 0;
+	ItemPointerData *tids;
+
+	if (termlen > FTS_LEV_MAXQ)
+		return false;			/* fall back to trigram funnel + recheck */
+
+	aut.q = (const unsigned char *) term;
+	aut.m = termlen;
+	aut.k = k;
+	tids = palloc(cap * sizeof(ItemPointerData));
+
+	while (blk != InvalidBlockNumber)
+	{
+		Buffer		buffer = ReadBuffer(index, blk);
+		Page		page;
+		char	   *ptr,
+				   *end;
+		BlockNumber next;
+
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buffer);
+		ptr = (char *) PageGetContents(page);
+		end = (char *) page + ((PageHeader) page)->pd_lower;
+		next = BM25PageGetOpaque(page)->nextblk;
+
+		while (ptr < end)
+		{
+			BM25DictEntry *de = (BM25DictEntry *) ptr;
+			Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
+
+			/* length filter: a within-k match needs ||cand|-|q|| <= k */
+			if (abs((int) de->termlen - termlen) <= k &&
+				fts_lev_match(&aut, (const unsigned char *) de->term,
+							  (int) de->termlen))
+			{
+				BM25Posting *post;
+				int			np = bm25_decode_term(index, de->firstposting,
+												  de->firstoffset, de->df,
+												  &post, NULL);
+				int			i;
+
+				for (i = 0; i < np; i++)
+				{
+					if (n >= cap)
+					{
+						cap *= 2;
+						tids = repalloc(tids, cap * sizeof(ItemPointerData));
+					}
+					tids[n++] = post[i].tid;
+				}
+				pfree(post);
+			}
+			ptr += esize;
+		}
+		UnlockReleaseBuffer(buffer);
+		blk = next;
+	}
+
+	out->tids = tids;
+	out->n = n;
+	tidset_sort_uniq(out);
+	return true;
+}
+
 /* Build the universe: all TIDs present in any posting list. We collect it from
  * the dictionary lazily only if a top-level NOT requires it. */
 static TidSet
@@ -741,6 +821,21 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 				if (it->type != FTS_QI_VAL ||
 					!(it->flags & (FTS_QF_FUZZY | FTS_QF_REGEX)))
 					continue;
+
+				if (it->flags & FTS_QF_FUZZY)
+				{
+					/* exact: Levenshtein automaton over the sorted dictionary */
+					if (bm25_fuzzy_terms(scan->indexRelation, sg,
+										 FTS_QUERY_ITEMTEXT(so->query, it),
+										 it->termlen, (int) it->distance, &ts))
+					{
+						cands = tidset_or(cands, ts);
+						any_trgm = true;
+						continue;
+					}
+					/* query too long for the automaton: fall through to funnel */
+				}
+
 				if (bm25_trgm_candidates(scan->indexRelation, sg->trgmstart,
 										 sg->dictstart,
 										 FTS_QUERY_ITEMTEXT(so->query, it),

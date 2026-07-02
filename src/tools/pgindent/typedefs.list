@@ -1058,6 +1058,7 @@ FromCharDateMode
 FromExpr
 FtsDoc
 FtsDocData
+FtsLevAut
 FtsQuery
 FtsQueryData
 FtsQueryItem

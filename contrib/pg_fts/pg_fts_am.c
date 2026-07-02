@@ -1354,6 +1354,7 @@ bm25_insert(Relation index, Datum *values, bool *isnull,
 
 /* ----- scan ----- */
 
+#include "pg_fts_lev.c"
 #include "pg_fts_am_scan.c"
 #include "pg_fts_trgm_index.c"
 
