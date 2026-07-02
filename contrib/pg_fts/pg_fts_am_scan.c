@@ -1587,13 +1587,99 @@ wand_contrib_cur(WandCursor *c)
 	return c->idf_k1p1 * tf / norm;
 }
 
+/*
+ * Advance the cursor's paging state (curblk/curoff/nread) past whole 128-blocks
+ * whose docids are all < target, reading only block HEADERS (no FOR decode).
+ * A block is entirely below target when the NEXT block's first_docid <= target
+ * (blocks are docid-ordered); the last block on a chain we cannot prove-skip
+ * this way, so we stop and let the caller decode it.  This is what lets a seek
+ * over a high-df term skip hundreds of thousands of postings without decoding.
+ */
+static void
+wand_skip_blocks(WandCursor *c, uint64 target)
+{
+	while (c->curblk != InvalidBlockNumber && c->nread < (int) c->df)
+	{
+		Buffer		buf = ReadBuffer(c->index, c->curblk);
+		Page		page;
+		char	   *p,
+				   *pend;
+		BlockNumber nextblk;
+		bool		stopped = false;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		pend = (char *) page + ((PageHeader) page)->pd_lower;
+		nextblk = BM25PageGetOpaque(page)->nextblk;
+		p = (char *) page + c->curoff;
+		while (p + sizeof(BM25BlockHdr) <= pend && c->nread < (int) c->df)
+		{
+			BM25BlockHdr *bh = (BM25BlockHdr *) p;
+			char	   *nextp;
+
+			if (bh->count == 0)
+			{
+				stopped = true;
+				break;
+			}
+			nextp = (char *) MAXALIGN((char *) (bh + 1) + bh->bytelen);
+			/* can we prove this whole block is < target? need the next block's
+			 * first_docid (on this page) to be <= target. */
+			if (nextp + sizeof(BM25BlockHdr) <= pend)
+			{
+				BM25BlockHdr *nb = (BM25BlockHdr *) nextp;
+				uint64		nbfirst = ((uint64) nb->first_docid_hi << 32) | nb->first_docid_lo;
+
+				if (nbfirst <= target)
+				{
+					/* whole block < target: skip it (headers only) */
+					c->nread += (int) bh->count;
+					c->curoff = (uint32) (nextp - (char *) page);
+					p = nextp;
+					continue;
+				}
+			}
+			/* this block may contain target (or is the page's last block): stop
+			 * so the caller decodes from here */
+			stopped = true;
+			break;
+		}
+		if (!stopped)
+		{
+			/* consumed all blocks on this page as skippable; move to next page */
+			c->curblk = nextblk;
+			c->curoff = MAXALIGN(SizeOfPageHeaderData);
+			UnlockReleaseBuffer(buf);
+			continue;
+		}
+		UnlockReleaseBuffer(buf);
+		return;
+	}
+}
+
 /* Advance a cursor to the first posting with docid >= target (or exhaust). */
 static void
 wand_seek(WandCursor *c, uint64 target)
 {
-	while (c->docid < target)
+	if (c->docid >= target)
+		return;
+	/* first, fast-forward within the already-decoded page */
+	while (c->cur < c->nposts &&
+		   tid_to_docid_s(&c->posts[c->cur].tid) < target)
+		c->cur++;
+	if (c->cur < c->nposts)
 	{
-		/* fast-forward within the loaded page */
+		c->docid = tid_to_docid_s(&c->posts[c->cur].tid);
+		return;
+	}
+	/* decoded page exhausted: skip whole undecoded blocks by header, then
+	 * decode the page containing target and land on it */
+	wand_skip_blocks(c, target);
+	for (;;)
+	{
+		wand_load_page(c);
+		if (c->docid == UINT64_MAX)
+			return;
 		while (c->cur < c->nposts &&
 			   tid_to_docid_s(&c->posts[c->cur].tid) < target)
 			c->cur++;
@@ -1602,9 +1688,7 @@ wand_seek(WandCursor *c, uint64 target)
 			c->docid = tid_to_docid_s(&c->posts[c->cur].tid);
 			return;
 		}
-		wand_load_page(c);		/* next page, then re-test the loop guard */
-		if (c->docid == UINT64_MAX)
-			return;
+		/* target beyond this decoded page; loop to load/skip the next */
 	}
 }
 
@@ -1744,17 +1828,15 @@ fts_search_bmw(WandCursor *cursors, int nterms, int k, ScoredTid **out)
 		else
 		{
 			/*
-			 * Advance cursors before the pivot toward pivot_docid.  Block-max
-			 * skipping: if the whole current page's best contribution cannot
-			 * lift a document above the threshold, skip past this posting; the
-			 * per-page block_max bound makes this sound.
+			 * Advance every cursor before the pivot up to pivot_docid.  Use a
+			 * seek (block-skipping) rather than stepping one posting at a time:
+			 * for a high-df term this skips entire 128-blocks whose docids are
+			 * all below the pivot, instead of decoding hundreds of thousands of
+			 * postings individually (the Q5/Q7 cost).
 			 */
 			for (i = 0; i < nterms; i++)
-			{
-				while (cursors[i].docid != UINT64_MAX &&
-					   cursors[i].docid < pivot_docid)
-					wand_next(&cursors[i]);
-			}
+				if (cursors[i].docid < pivot_docid)
+					wand_seek(&cursors[i], pivot_docid);
 		}
 	}
 
