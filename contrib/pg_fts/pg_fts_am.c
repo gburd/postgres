@@ -1616,7 +1616,7 @@ bm25handler(PG_FUNCTION_ARGS)
 #endif
 	amroutine->ambulkdelete = bm25_bulkdelete;
 	amroutine->amvacuumcleanup = bm25_vacuumcleanup;
-	amroutine->amcanreturn = NULL;
+	amroutine->amcanreturn = bm25_canreturn;
 	amroutine->amcostestimate = bm25_costestimate;
 #if PG_VERSION_NUM >= 180000
 	amroutine->amgettreeheight = NULL;

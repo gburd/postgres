@@ -33,6 +33,7 @@ static bool bm25_trgm_candidates(Relation index, BlockNumber trgmstart,
 								 BlockNumber dictstart,
 								 const char *term, int termlen,
 								 int min_trigrams, bool is_regex, TidSet *out);
+static void bm25_collect_matches(IndexScanDesc scan, TidSet *out, bool *recheck);
 
 /* A scored heap tuple (score, or distance in an ordering scan). */
 typedef struct ScoredTid
@@ -54,6 +55,14 @@ typedef struct BM25ScanOpaqueData
 	int			nordered;
 	int			ordpos;			/* next result to return */
 	int			curk;			/* current materialized k (grows on demand) */
+	/* plain-scan (amgettuple, no ORDER BY) state for index-only counts */
+	bool		plainInit;		/* have we materialized the matching TIDs? */
+	ItemPointerData *plainTids; /* sorted matching TIDs */
+	int			nplain;
+	int			plainpos;
+	bool		plainRecheck;	/* results need a heap recheck (fuzzy/regex) */
+	IndexTuple	plainItup;		/* cached all-NULL itup for index-only scans */
+	TupleDesc	plainItupDesc;
 } BM25ScanOpaqueData;
 
 typedef BM25ScanOpaqueData *BM25ScanOpaque;
@@ -715,8 +724,12 @@ bm25_beginscan(Relation r, int nkeys, int norderbys)
 	so->ordered = NULL;
 	so->nordered = 0;
 	so->ordpos = 0;
+	so->plainInit = false;
+	so->plainTids = NULL;
+	so->nplain = 0;
+	so->plainpos = 0;
+	so->plainRecheck = false;
 	scan->opaque = so;
-
 	/* the AM owns allocation of the order-by result arrays */
 	if (norderbys > 0)
 	{
@@ -753,11 +766,59 @@ bm25_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	so->ordered = NULL;
 	so->nordered = 0;
 	so->ordpos = 0;
+	so->plainInit = false;
+	so->plainTids = NULL;
+	so->nplain = 0;
+	so->plainpos = 0;
+	so->plainRecheck = false;
 	if (scan->numberOfOrderBys >= 1)
 	{
 		so->query = DatumGetFtsQuery(scan->orderByData[0].sk_argument);
 		so->queryValid = true;
 	}
+}
+
+/*
+ * bm25_canreturn: report that the index can return tuples for an index-only
+ * scan.  The bm25 index is not covering (it stores analyzed postings, not the
+ * original ftsdoc), so it cannot reproduce a column value -- but count(*) and
+ * EXISTS reference no column, and for those the executor's index-only scan just
+ * needs a TID stream plus the visibility-map check.  We therefore claim IOS
+ * support unconditionally; the plain gettuple path returns an all-NULL itup
+ * whose attributes are never read for a no-column scan.
+ */
+bool
+bm25_canreturn(Relation index, int attno)
+{
+	return true;
+}
+
+/*
+ * Fill scan->xs_itup with a cached all-NULL index tuple when the executor runs
+ * an index-only scan (xs_want_itup).  The bm25 index is not covering, but
+ * count(*)/EXISTS reference no column, so the attribute values are never read.
+ */
+static inline void
+bm25_set_itup(IndexScanDesc scan, BM25ScanOpaque so)
+{
+	if (!scan->xs_want_itup)
+		return;
+	if (so->plainItup == NULL)
+	{
+		TupleDesc	td = RelationGetDescr(scan->indexRelation);
+		Datum	   *values = palloc0(sizeof(Datum) * td->natts);
+		bool	   *isnull = palloc(sizeof(bool) * td->natts);
+		int			a;
+
+		for (a = 0; a < td->natts; a++)
+			isnull[a] = true;
+		so->plainItup = index_form_tuple(td, values, isnull);
+		so->plainItupDesc = td;
+		pfree(values);
+		pfree(isnull);
+	}
+	scan->xs_itup = so->plainItup;
+	scan->xs_itupdesc = so->plainItupDesc;
 }
 
 /*
@@ -777,6 +838,34 @@ bm25_gettuple(IndexScanDesc scan, ScanDirection dir)
 
 	if (!so->queryValid || so->query == NULL)
 		return false;
+
+	/*
+	 * Plain scan (no ORDER BY <=>): stream matching TIDs in heap order.  This
+	 * enables the executor's index-only scan path for count(*)/existence
+	 * queries: for each TID the executor consults the visibility map and skips
+	 * the heap entirely on all-visible pages -- the same mechanism (and same
+	 * MVCC guarantees) as a btree index-only scan, so a count over a VACUUMed
+	 * table does no heap fetches.
+	 */
+	if (scan->numberOfOrderBys == 0)
+	{
+		if (!so->plainInit)
+		{
+			TidSet		m;
+
+			bm25_collect_matches(scan, &m, &so->plainRecheck);
+			so->plainTids = m.tids;
+			so->nplain = m.n;
+			so->plainpos = 0;
+			so->plainInit = true;
+		}
+		if (so->plainpos >= so->nplain)
+			return false;
+		scan->xs_heaptid = so->plainTids[so->plainpos++];
+		scan->xs_recheck = so->plainRecheck;
+		bm25_set_itup(scan, so);
+		return true;
+	}
 
 	if (!so->orderInit)
 	{
@@ -816,6 +905,7 @@ bm25_gettuple(IndexScanDesc scan, ScanDirection dir)
 
 	scan->xs_heaptid = so->ordered[so->ordpos].tid;
 	scan->xs_recheck = false;	/* score computed exactly from the index */
+	bm25_set_itup(scan, so);
 	if (scan->numberOfOrderBys > 0)
 	{
 		IndexOrderByDistance dist;
@@ -829,19 +919,32 @@ bm25_gettuple(IndexScanDesc scan, ScanDirection dir)
 	return true;
 }
 
-int64
-bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
+/*
+ * bm25_collect_matches: evaluate the scan's query across all segments + the
+ * pending list; return matching TIDs (sorted, unique) and a *recheck flag
+ * (true iff any term used the over-generating trigram funnel / regex / NOT-
+ * universe path).  Shared by the bitmap scan and the plain gettuple scan.
+ */
+static void
+bm25_collect_matches(IndexScanDesc scan, TidSet *out, bool *recheck)
 {
 	BM25ScanOpaque so = (BM25ScanOpaque) scan->opaque;
 	BM25MetaPageData meta;
-	int64		ntids = 0;
+	TidSet		acc;
 	bool		has_fuzzy_regex = false;
 	bool		has_not = false;
+	bool		need_recheck = false;
 	uint32		i;
 	uint32		s;
 
+	acc.tids = NULL;
+	acc.n = 0;
+	*recheck = false;
 	if (!so->queryValid || so->query == NULL)
-		return 0;
+	{
+		*out = acc;
+		return;
+	}
 
 	bm25_read_meta(scan->indexRelation, &meta);
 
@@ -855,12 +958,6 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 			has_fuzzy_regex = true;
 	}
 
-	/*
-	 * Evaluate the query independently in each segment and union the resulting
-	 * TID sets.  A segment is a self-contained mini-index; the same per-segment
-	 * logic (boolean eval, or fuzzy/regex trigram-narrowing + recheck) that the
-	 * monolithic design used now runs once per segment.
-	 */
 	for (s = 0; s < meta.nsegments; s++)
 	{
 		BM25SegMeta *sg = &meta.segs[s];
@@ -873,12 +970,6 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 		{
 			TidSet		cands;
 			bool		any_trgm = false;
-			/*
-			 * Candidates are exact (no heap recheck) only when the query is a
-			 * SINGLE fuzzy term matched by the DFA: then the unioned postings are
-			 * precisely the answer.  Any boolean composition, regex, or funnel
-			 * fallback needs the recheck to enforce query semantics.
-			 */
 			bool		exact = (so->query->nitems == 1);
 			uint32		qi;
 
@@ -895,7 +986,6 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 
 				if (it->flags & FTS_QF_FUZZY)
 				{
-					/* exact: Levenshtein automaton over the sorted dictionary */
 					if (bm25_fuzzy_terms(scan->indexRelation, sg,
 										 FTS_QUERY_ITEMTEXT(so->query, it),
 										 it->termlen, (int) it->distance, &ts))
@@ -904,10 +994,7 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 						any_trgm = true;
 						continue;
 					}
-					/* query too long for the automaton: fall through to funnel */
 				}
-
-				/* trigram funnel over-generates -> results need a heap recheck */
 				exact = false;
 				if (bm25_trgm_candidates(scan->indexRelation, sg->trgmstart,
 										 sg->dictstart,
@@ -926,22 +1013,17 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 			}
 			if (any_trgm)
 			{
+				if (!exact)
+					need_recheck = true;
 				if (cands.n > 0)
-				{
-					/* recheck only if any candidate came from an over-generating
-					 * source (trigram funnel/regex); DFA fuzzy is exact */
-					tbm_add_tuples(tbm, cands.tids, cands.n, !exact);
-					ntids += cands.n;
-				}
+					acc = tidset_or(acc, cands);
 			}
 			else
 			{
+				need_recheck = true;
 				universe = bm25_universe(scan->indexRelation, sg->dictstart);
 				if (universe.n > 0)
-				{
-					tbm_add_tuples(tbm, universe.tids, universe.n, true);
-					ntids += universe.n;
-				}
+					acc = tidset_or(acc, universe);
 			}
 			continue;
 		}
@@ -956,24 +1038,14 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 
 		{
 			TidSet		result = bm25_eval_query(scan->indexRelation,
-												 sg, so->query,
-												 universe);
+												 sg, so->query, universe);
 
 			if (result.n > 0)
-			{
-				/* boolean eval over postings is EXACT -- no heap recheck needed */
-				tbm_add_tuples(tbm, result.tids, result.n, false);
-				ntids += result.n;
-			}
+				acc = tidset_or(acc, result);	/* exact -- no recheck */
 		}
 	}
 
-	/*
-	 * Also search the pending list: newly inserted, not-yet-merged documents
-	 * are stored verbatim, so evaluate each directly with the same per-document
-	 * matcher the sequential @@@ path uses.  This handles all operators
-	 * (including NOT) correctly without needing a pending-side universe.
-	 */
+	/* pending list: verbatim docs matched by the exact per-doc matcher */
 	if (meta.pendinghead != InvalidBlockNumber)
 	{
 		BlockNumber blk = meta.pendinghead;
@@ -999,9 +1071,11 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 
 				if (fts_doc_matches(pdoc, so->query))
 				{
-					/* pending doc matched by the exact matcher -- no recheck */
-					tbm_add_tuples(tbm, &pi->tid, 1, false);
-					ntids++;
+					TidSet		one;
+
+					one.tids = &pi->tid;
+					one.n = 1;
+					acc = tidset_or(acc, one);	/* exact per-doc match */
 				}
 				ptr += MAXALIGN(sizeof(BM25PendingItem) + pi->doclen);
 			}
@@ -1010,9 +1084,22 @@ bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 		}
 	}
 
-	return ntids;
+	tidset_sort_uniq(&acc);
+	*out = acc;
+	*recheck = need_recheck;
 }
 
+int64
+bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
+{
+	TidSet		matches;
+	bool		recheck;
+
+	bm25_collect_matches(scan, &matches, &recheck);
+	if (matches.n > 0)
+		tbm_add_tuples(tbm, matches.tids, matches.n, recheck);
+	return matches.n;
+}
 void
 bm25_endscan(IndexScanDesc scan)
 {

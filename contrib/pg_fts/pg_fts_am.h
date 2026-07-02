@@ -194,6 +194,7 @@ extern void bm25_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 						ScanKey orderbys, int norderbys);
 extern int64 bm25_getbitmap(IndexScanDesc scan, TIDBitmap *tbm);
 extern bool bm25_gettuple(IndexScanDesc scan, ScanDirection dir);
+extern bool bm25_canreturn(Relation index, int attno);
 extern void bm25_endscan(IndexScanDesc scan);
 
 #endif							/* PG_FTS_AM_H */

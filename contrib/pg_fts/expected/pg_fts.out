@@ -426,7 +426,9 @@ SET enable_seqscan = off;
 SELECT id FROM pfx WHERE d @@@ 'qui*'::ftsquery ORDER BY id;
  id 
 ----
-(0 rows)
+  1
+  2
+(2 rows)
 
 RESET enable_seqscan;
 DROP TABLE pfx;
@@ -483,17 +485,19 @@ SELECT id FROM inc WHERE d @@@ 'alpha'::ftsquery ORDER BY id;   -- 1 and 3
  id 
 ----
   1
-(1 row)
+  3
+(2 rows)
 
 SELECT id FROM inc WHERE d @@@ 'zeta'::ftsquery ORDER BY id;     -- 4 (pending only)
  id 
 ----
-(0 rows)
+  4
+(1 row)
 
 SELECT id FROM inc WHERE d @@@ 'alpha & !beta'::ftsquery ORDER BY id;  -- 3
  id 
 ----
-  1
+  3
 (1 row)
 
 -- ndocs reflects built + pending
@@ -613,8 +617,7 @@ WHERE to_ftsdoc(body) @@@ '"quick brown"'::ftsquery ORDER BY id;
  id 
 ----
   1
-  3
-(2 rows)
+(1 row)
 
 RESET enable_seqscan;
 DROP TABLE articles;
@@ -684,12 +687,15 @@ SELECT id FROM fz WHERE d @@@ 'quick~1'::ftsquery ORDER BY id;   -- 1 and 2
  id 
 ----
   1
-(1 row)
+  2
+(2 rows)
 
 SELECT id FROM fz WHERE d @@@ '/^qu/'::ftsquery ORDER BY id;      -- 1 and 2
  id 
 ----
-(0 rows)
+  1
+  2
+(2 rows)
 
 RESET enable_seqscan;
 DROP TABLE fz;
@@ -745,7 +751,8 @@ SELECT id FROM mrg WHERE d @@@ 'alpha'::ftsquery ORDER BY id;   -- 1, 2
  id 
 ----
   1
-(1 row)
+  2
+(2 rows)
 
 -- explicit merge folds pending into the main structure
 SELECT fts_merge('mrg_bm25') AS merged;
@@ -1160,9 +1167,7 @@ SELECT id FROM idxdocs WHERE d @@@ 'quick & fox'::ftsquery ORDER BY id;
  id 
 ----
   1
-  3
-  4
-(3 rows)
+(1 row)
 
 SELECT id FROM idxdocs WHERE d @@@ 'quick | slow'::ftsquery ORDER BY id;
  id 
@@ -1176,25 +1181,25 @@ SELECT id FROM idxdocs WHERE d @@@ 'quick | slow'::ftsquery ORDER BY id;
 SELECT id FROM idxdocs WHERE d @@@ 'quick & !fox'::ftsquery ORDER BY id;
  id 
 ----
+  3
+  4
+(2 rows)
+
+SELECT id FROM idxdocs WHERE d @@@ '!turtle'::ftsquery ORDER BY id;
+ id 
+----
   1
   3
   4
 (3 rows)
 
-SELECT id FROM idxdocs WHERE d @@@ '!turtle'::ftsquery ORDER BY id;
- id 
-----
-  2
-(1 row)
-
 SELECT id FROM idxdocs WHERE d @@@ '(quick | slow) & !fox'::ftsquery ORDER BY id;
  id 
 ----
-  1
   2
   3
   4
-(4 rows)
+(3 rows)
 
 RESET enable_seqscan;
 DROP TABLE idxdocs;
