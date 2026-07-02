@@ -870,14 +870,12 @@ bm25_gettuple(IndexScanDesc scan, ScanDirection dir)
 	if (!so->orderInit)
 	{
 		/*
-		 * Adaptive-k WAND: start with a modest k so a small LIMIT does little
-		 * work (WAND prunes hard for small k).  If the executor consumes the
-		 * whole batch we grow k and recompute -- so total work tracks the
-		 * rows actually demanded rather than a fixed ceiling.  The top-k array
-		 * itself is bounded (size k), and the WAND cursors page lazily, so
-		 * memory stays bounded regardless.
+		 * Adaptive-k WAND: start at a k that covers common page-sized LIMITs
+		 * (100) in a single pass so we avoid a recompute-from-scratch for the
+		 * typical first page; grow x4 on demand for deeper scrolling.  WAND still
+		 * prunes hard, and the top-k array + lazy cursors keep memory bounded.
 		 */
-		so->curk = 64;
+		so->curk = 128;
 		so->nordered = bm25_topk_visible(scan->indexRelation, so->query,
 										 so->curk, true, &so->ordered);
 		so->ordpos = 0;
