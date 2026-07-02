@@ -53,3 +53,21 @@ posting decode**.  pg_search avoids it with columnar/impact-ordered structures:
 These are the same architectural investment (a Tantivy-style secondary layout),
 not a visibility or algorithm-tuning issue.  pg_fts now wins/ties 5 of 7 and is
 smaller on disk, as a fully heap-native PG index.
+
+
+## Update: lazy per-column posting decode (WAND cursor)
+The ranked hot path now decodes only docid gaps eagerly; tf/doclen are extracted
+per-posting on demand, so blocks pruned by block-max never decode tf/dl.
+Measured on the same EC2 box (PG 17.5, 2M docs):
+
+| query                            | pg_fts before | pg_fts NOW | pg_search | gap now |
+|----------------------------------|---------------|------------|-----------|---------|
+| Q4 ranked top-10 (mid, mid)      | 4.4           | **4.1**    | 6.3       | pg_fts 1.5x win |
+| Q5 ranked top-10 (common, mid)   | 12.0          | **9.1**    | 6.3       | pg_search 1.45x |
+| Q7 ranked top-100 (common, mid)  | 12.0          | **9.2**    | 6.4       | pg_search 1.44x |
+| Q1 rare count                    | 0.85          | **0.88**   | 5.2       | pg_fts 5.9x win |
+
+Q5/Q7 (common-term ranked) improved ~25%; the gap to pg_search narrowed from
+1.9x to ~1.45x.  The residual is pg_search's IMPACT-ORDERED postings (it can end
+the pivot walk earlier); our postings stay docid-ordered for exact WAND.  All
+top-k byte-identical to a full seqscan sort (AND/OR/2-3-term, LIMIT 10..150).
