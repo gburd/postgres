@@ -129,6 +129,23 @@ typedef struct TermHashEntry
 
 static HTAB *build_ht;
 
+/*
+ * (Re)initialize the build hash table that maps a term key to its BuildTerm
+ * index.  Created in bs->ctx so it is freed when that context is reset between
+ * segment flushes during a large build.
+ */
+static void
+bm25_build_ht_init(BM25BuildState *bs)
+{
+	HASHCTL		ctl;
+
+	ctl.keysize = sizeof(TermKey);
+	ctl.entrysize = sizeof(TermHashEntry);
+	ctl.hcxt = bs->ctx;
+	build_ht = hash_create("bm25 build terms", 1024, &ctl,
+						   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+}
+
 static void
 make_termkey(TermKey *k, const char *term, int len)
 {
@@ -198,6 +215,58 @@ add_posting(BM25BuildState *bs, const char *term, int len,
 	bt->nposts++;
 }
 
+/* forward decls: segment writers are defined later; the build flush uses them */
+static void bm25_write_segment(Relation index, BM25BuildState *bs, BM25SegMeta *seg);
+static void bm25_meta_add_segment(Relation index, const BM25SegMeta *seg);
+
+/*
+ * Memory budget for the in-memory build state before it is flushed to a
+ * segment.  A very large CREATE INDEX would otherwise accumulate the whole
+ * corpus's terms + postings in bs->ctx and exhaust memory; instead, once the
+ * build context grows past this, we write the accumulated terms as a segment
+ * and start fresh.  Derived from maintenance_work_mem (bounded so a small
+ * setting still makes progress).  The later size-tiered merge compacts the
+ * resulting segments.
+ */
+static Size
+bm25_build_mem_budget(void)
+{
+	Size		budget = (Size) maintenance_work_mem * (Size) 1024;
+
+	if (budget < (Size) 32 * 1024 * 1024)
+		budget = (Size) 32 * 1024 * 1024;	/* floor: 32MB */
+	return budget;
+}
+
+/*
+ * Flush the current in-memory build state as one immutable segment and reset
+ * the state (freeing bs->ctx) so the heap scan can continue within a bounded
+ * memory footprint.  A document's terms are always fully accumulated before a
+ * flush (we only flush between tuples), so no document is split across
+ * segments and each segment's ndocs/sumdoclen are self-consistent.
+ */
+static void
+bm25_build_flush_segment(Relation index, BM25BuildState *bs)
+{
+	BM25SegMeta seg;
+
+	if (bs->nterms == 0)
+		return;
+	if (bs->nterms > 1)
+		qsort(bs->terms, bs->nterms, sizeof(BuildTerm), cmp_buildterm);
+	bm25_write_segment(index, bs, &seg);
+	bm25_meta_add_segment(index, &seg);
+
+	/* reset: free everything in the build context and start a fresh segment */
+	MemoryContextReset(bs->ctx);
+	bs->terms = NULL;
+	bs->nterms = 0;
+	bs->maxterms = 0;
+	bs->ndocs = 0;
+	bs->sumdoclen = 0;
+	bm25_build_ht_init(bs);
+}
+
 /* per-heap-tuple callback */
 static void
 bm25_build_callback(Relation index, ItemPointer tid, Datum *values,
@@ -211,6 +280,15 @@ bm25_build_callback(Relation index, ItemPointer tid, Datum *values,
 
 	if (isnull[0])
 		return;
+
+	/*
+	 * Bound build memory: if the accumulated segment has grown past the budget,
+	 * flush it as a segment and continue with a fresh build state.  Checked
+	 * between tuples so a document's terms are never split across segments.
+	 */
+	if (bs->nterms > 0 &&
+		MemoryContextMemAllocated(bs->ctx, false) >= bm25_build_mem_budget())
+		bm25_build_flush_segment(index, bs);
 
 	old = MemoryContextSwitchTo(bs->ctx);
 
@@ -1226,7 +1304,6 @@ bm25_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	IndexBuildResult *result;
 	BM25BuildState bs;
 	double		reltuples;
-	BM25SegMeta seg;
 
 	if (RelationGetNumberOfBlocks(index) != 0)
 		elog(ERROR, "index \"%s\" already contains data",
@@ -1239,16 +1316,7 @@ bm25_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	bs.maxterms = 0;
 	bs.ndocs = 0;
 	bs.sumdoclen = 0;
-
-	{
-		HASHCTL		ctl;
-
-		ctl.keysize = sizeof(TermKey);
-		ctl.entrysize = sizeof(TermHashEntry);
-		ctl.hcxt = bs.ctx;
-		build_ht = hash_create("bm25 build terms", 1024, &ctl,
-							   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-	}
+	bm25_build_ht_init(&bs);
 
 	/* metapage must be block 0 -- write it before any other page */
 	bm25_init_metapage(index);
@@ -1256,24 +1324,20 @@ bm25_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
 									   bm25_build_callback, (void *) &bs, NULL);
 
-	/* sort terms so the dictionary is searchable */
-	if (bs.nterms > 1)
-		qsort(bs.terms, bs.nterms, sizeof(BuildTerm), cmp_buildterm);
-
-	/* write the whole heap as one initial segment (a large CREATE INDEX could
-	 * flush multiple segments to bound memory; that refinement is future work,
-	 * but the segment plumbing is now in place for it). */
-	if (bs.nterms > 0)
-	{
-		bm25_write_segment(index, &bs, &seg);
-		bm25_meta_add_segment(index, &seg);
-	}
+	/*
+	 * Flush the residual terms as the final segment.  A large build may have
+	 * already flushed earlier segments (bm25_build_flush_segment) to bound
+	 * memory; compact the resulting segments with the size-tiered merge so a
+	 * fresh index is not left as many small segments.
+	 */
+	bm25_build_flush_segment(index, &bs);
+	bm25_merge_segments(index);
 
 	MemoryContextDelete(bs.ctx);
 
 	result = (IndexBuildResult *) palloc0(sizeof(IndexBuildResult));
 	result->heap_tuples = reltuples;
-	result->index_tuples = bs.nterms;
+	result->index_tuples = reltuples;
 	return result;
 }
 
