@@ -16,10 +16,12 @@ pg_fts_sources = files(
 # Vendored sparsemap: compiled separately with relaxed warnings (it uses C99
 # mixed declarations) and its public symbols namespaced to __pg_bm25_* (see
 # pg_fts_sm.h / vendor/sm.c) so a second copy in another extension cannot
-# collide at load time.
+# collide at load time.  The extra warning flag is filtered through
+# get_supported_arguments so it is dropped on compilers (e.g. MSVC) that do not
+# accept the GCC-style spelling.
 pg_fts_sparsemap = static_library('pg_fts_sparsemap',
   files('vendor/sm.c'),
-  c_args: cflags_mod + ['-Wno-declaration-after-statement'],
+  c_args: cflags_mod + cc.get_supported_arguments('-Wno-declaration-after-statement'),
   include_directories: postgres_inc,
   kwargs: default_lib_args,
 )
