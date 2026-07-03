@@ -1798,8 +1798,8 @@ bm25_segment_docids(Relation index, const BM25SegMeta *seg)
  * index refer to now-dead heap tuples.  Because postings live in immutable
  * segments, we cannot cheaply remove individual entries; instead we maintain a
  * per-segment livedocs TOMBSTONE bitmap (a docid sparsemap of deleted docs).
- * Scans and counts subtract tombstoned docids, and a later tiered merge
- * physically drops them.  This is essential for correctness: the index-only
+ * Scans and counts subtract tombstoned docids, and the tiered merge physically
+ * drops them.  This is essential for correctness: the index-only
  * scan and fts_count paths trust the visibility map, so a vacuumed+reused heap
  * slot MUST NOT still be reported as a match -- the tombstone prevents that.
  */
