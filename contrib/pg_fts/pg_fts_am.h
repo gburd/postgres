@@ -106,8 +106,8 @@ typedef struct BM25DictEntry
  * term order (dict pages are written in term order), so a term lookup binary-
  * searches the (small) index to the one dict page that could hold the term,
  * then scans just that page -- O(log P + 1) instead of scanning all P dict
- * pages.  This is the point-lookup win an FST provides; prefix/range scans
- * still walk the dict chain from the located page.
+ * pages.  This is the same point-lookup complexity an FST gives; prefix/range
+ * scans still walk the dict chain from the located page.
  */
 typedef struct BM25DictIndexEntry
 {

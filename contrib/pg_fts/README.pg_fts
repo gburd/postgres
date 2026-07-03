@@ -1,15 +1,16 @@
-pg_fts -- next-generation full-text search for PostgreSQL
-=========================================================
+pg_fts -- BM25 full-text search for PostgreSQL
+==============================================
 
-pg_fts is a contrib extension providing a native full-text search subsystem
-with true BM25/BM25F relevance ranking, a dedicated inverted-index access
-method, phrase/prefix/fuzzy/regex query support, and result presentation --
-without the limitations of the tsvector/tsquery + GIN stack (no corpus
-statistics, cover-density ranking rather than BM25, TID-only posting lists that
-force a heap recheck to score).
+pg_fts is a contrib extension providing full-text search with BM25/BM25F
+relevance ranking, a dedicated inverted-index access method, phrase/prefix/
+fuzzy/regex query support, and result presentation.  It differs from the
+tsvector/tsquery + GIN stack in that the index maintains the corpus statistics
+(document count, average length, per-term document frequency) BM25 ranking
+requires, and posting lists carry term frequency and document length, so
+ranking needs no heap recheck.
 
-See ../../FTS_NEXTGEN_PLAN.md for the full design and roadmap.  The extension
-is developed as a reviewable series; each version below is one qualified stage
+The extension is developed as a reviewable series; each version below is one
+qualified stage
 (builds clean under --enable-cassert, passes its regression test).
 
 Versions / stages implemented
@@ -74,10 +75,9 @@ Performance / parity
 
 bench/ contains reproducible benchmarks against the tsvector/GIN + ts_rank
 stack and against ParadeDB pg_search (Tantivy) on EC2 -- build time, index
-size, and per-query-type latency at 2M-50M docs.  See bench/RESULTS_*.md.
-Headline: pg_fts wins ranked top-k and selective queries (the BM25 core) and is
-smaller on disk than GIN at scale, as a fully heap-native PG index; fts_bm25_opts
-variants reproduce Lucene/bm25s scores for conformance.
+size, and per-query-type latency at 2M-50M docs.  See bench/RESULTS_*.md for
+the measurements.  fts_bm25_opts variants reproduce Lucene/bm25s scores for
+conformance.
 
 Known limitations / future work
 --------------------------------

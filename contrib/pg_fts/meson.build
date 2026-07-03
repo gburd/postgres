@@ -27,7 +27,7 @@ pg_fts_sparsemap = static_library('pg_fts_sparsemap',
 if host_system == 'windows'
   pg_fts_sources += rc_lib_gen.process(win32ver_rc, extra_args: [
     '--NAME', 'pg_fts',
-    '--FILEDESC', 'pg_fts - next-generation full-text search',])
+    '--FILEDESC', 'pg_fts - full-text search with BM25 ranking',])
 endif
 
 pg_fts = shared_module('pg_fts',

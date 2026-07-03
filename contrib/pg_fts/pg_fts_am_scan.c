@@ -1213,7 +1213,7 @@ bm25_gettuple(IndexScanDesc scan, ScanDirection dir)
 		 * Start k at a full first page (100).  Measured trade: vs k=64 this costs
 		 * the top-10 case ~1ms, but serves the entire LIMIT 11..100 range in ONE
 		 * WAND pass instead of a pass-then-recompute (which for a common-term
-		 * query is ~35ms vs ~12ms) -- a large net win for typical "first page of
+		 * query is ~35ms vs ~12ms) -- a net reduction for typical "first page of
 		 * results" pagination.  Beyond 100, grow x4 (capped).
 		 */
 		so->curk = 100;

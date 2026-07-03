@@ -1,7 +1,7 @@
 /*-------------------------------------------------------------------------
  *
  * pg_fts.h
- *		Next-generation full-text search for PostgreSQL.
+ *		Full-text search with BM25 ranking for PostgreSQL.
  *
  * pg_fts provides the analyzed document type (ftsdoc) and the parsed query type
  * (ftsquery) with @@@ match evaluation, plus a dedicated bm25 index access
