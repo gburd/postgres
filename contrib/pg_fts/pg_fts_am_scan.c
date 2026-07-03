@@ -152,26 +152,6 @@ bm25_tombstones_load(Relation index, const BM25MetaPageData *meta, BM25Tombstone
 	}
 }
 
-/* Is docid tombstoned in ANY segment?  (A docid appears in the segments that
- * hold its postings; checking all present maps is correct and cheap -- only
- * a few segments ever carry tombstones.) */
-static inline bool
-bm25_docid_tombstoned(BM25Tombstones *t, uint64 docid)
-{
-	uint32		s;
-
-	if (!t->hasany)
-		return false;
-	for (s = 0; s < t->nseg; s++)
-	{
-		sm_cursor_t c = SM_CURSOR_INIT;
-
-		if (t->present[s] && sm_contains(&t->maps[s], docid, &c))
-			return true;
-	}
-	return false;
-}
-
 static void
 bm25_tombstones_free(BM25Tombstones *t)
 {
@@ -187,18 +167,29 @@ bm25_tombstones_free(BM25Tombstones *t)
 	pfree(t->present);
 }
 
-/* Drop tombstoned TIDs from a sorted/collected TidSet in place. */
+/*
+ * Drop TIDs tombstoned in ONE specific segment from a TidSet in place.
+ * Tombstones are per-segment: a docid deleted in segment A must only be
+ * suppressed among matches produced BY segment A -- the same heap TID may have
+ * been reused by a live document in a newer segment or the pending list, and
+ * that document must not be filtered.  Applied to each segment's own match
+ * contribution at collection time.
+ */
 static void
-bm25_filter_tombstoned(BM25Tombstones *t, TidSet *s)
+bm25_filter_tombstoned_seg(BM25Tombstones *t, uint32 segidx, TidSet *s)
 {
 	int			i,
 				j = 0;
 
-	if (!t->hasany || s->n == 0)
+	if (!t->hasany || s->n == 0 || segidx >= t->nseg || !t->present[segidx])
 		return;
 	for (i = 0; i < s->n; i++)
-		if (!bm25_docid_tombstoned(t, bm25_tid_to_docid(&s->tids[i])))
+	{
+		sm_cursor_t c = SM_CURSOR_INIT;
+
+		if (!sm_contains(&t->maps[segidx], bm25_tid_to_docid(&s->tids[i]), &c))
 			s->tids[j++] = s->tids[i];
+	}
 	s->n = j;
 }
 
@@ -1287,6 +1278,8 @@ bm25_collect_matches(Relation index, FtsQuery query, TidSet *out, bool *recheck)
 {
 	BM25MetaPageData meta;
 	TidSet		acc;
+	TidSet		pending_acc;
+	BM25Tombstones seg_tombs;
 	bool		has_fuzzy_regex = false;
 	bool		has_not = false;
 	bool		need_recheck = false;
@@ -1313,6 +1306,14 @@ bm25_collect_matches(Relation index, FtsQuery query, TidSet *out, bool *recheck)
 		if (it->type == FTS_QI_VAL && (it->flags & (FTS_QF_FUZZY | FTS_QF_REGEX)))
 			has_fuzzy_regex = true;
 	}
+
+	/*
+	 * Load per-segment tombstones once.  Each segment's match contribution is
+	 * filtered against THAT segment's own tombstone map before being unioned,
+	 * because a heap TID deleted in one segment may be reused by a live doc in
+	 * another segment or the pending list.
+	 */
+	bm25_tombstones_load(index, &meta, &seg_tombs);
 
 	for (s = 0; s < meta.nsegments; s++)
 	{
@@ -1372,14 +1373,22 @@ bm25_collect_matches(Relation index, FtsQuery query, TidSet *out, bool *recheck)
 				if (!exact)
 					need_recheck = true;
 				if (cands.n > 0)
-					acc = tidset_or(acc, cands);
+				{
+					bm25_filter_tombstoned_seg(&seg_tombs, s, &cands);
+					if (cands.n > 0)
+						acc = tidset_or(acc, cands);
+				}
 			}
 			else
 			{
 				need_recheck = true;
 				universe = bm25_universe(index, sg->dictstart);
 				if (universe.n > 0)
-					acc = tidset_or(acc, universe);
+				{
+					bm25_filter_tombstoned_seg(&seg_tombs, s, &universe);
+					if (universe.n > 0)
+						acc = tidset_or(acc, universe);
+				}
 			}
 			continue;
 		}
@@ -1397,11 +1406,21 @@ bm25_collect_matches(Relation index, FtsQuery query, TidSet *out, bool *recheck)
 												 sg, query, universe);
 
 			if (result.n > 0)
-				acc = tidset_or(acc, result);	/* exact -- no recheck */
+			{
+				bm25_filter_tombstoned_seg(&seg_tombs, s, &result);
+				if (result.n > 0)
+					acc = tidset_or(acc, result);	/* exact -- no recheck */
+			}
 		}
 	}
 
-	/* pending list: verbatim docs matched by the exact per-doc matcher */
+	/* pending list: verbatim docs matched by the exact per-doc matcher.
+	 * Collect these separately from the segment matches: a pending doc is a
+	 * live heap tuple that was just inserted, so it must NOT be subjected to
+	 * the segment tombstone filter below -- a reused heap slot (same TID as a
+	 * previously deleted, tombstoned doc) would otherwise be wrongly dropped. */
+	pending_acc.tids = NULL;
+	pending_acc.n = 0;
 	if (meta.pendinghead != InvalidBlockNumber)
 	{
 		BlockNumber blk = meta.pendinghead;
@@ -1431,7 +1450,7 @@ bm25_collect_matches(Relation index, FtsQuery query, TidSet *out, bool *recheck)
 
 					one.tids = &pi->tid;
 					one.n = 1;
-					acc = tidset_or(acc, one);	/* exact per-doc match */
+					pending_acc = tidset_or(pending_acc, one);	/* exact per-doc match */
 				}
 				ptr += MAXALIGN(sizeof(BM25PendingItem) + pi->doclen);
 			}
@@ -1441,17 +1460,17 @@ bm25_collect_matches(Relation index, FtsQuery query, TidSet *out, bool *recheck)
 	}
 
 	tidset_sort_uniq(&acc);
-	/* drop docs vacuumed away since indexing (tombstones from bm25_bulkdelete);
-	 * essential because the IOS/count paths trust the visibility map */
+	/*
+	 * Segment matches were already filtered against each segment's own
+	 * tombstone map above; pending matches are live tuples and are never
+	 * tombstoned.  Just release the loaded maps.
+	 */
+	bm25_tombstones_free(&seg_tombs);
+	/* fold in the (unfiltered) pending matches and re-uniq */
+	if (pending_acc.n > 0)
 	{
-		BM25Tombstones tombs;
-
-		bm25_tombstones_load(index, &meta, &tombs);
-		if (tombs.hasany)
-		{
-			bm25_filter_tombstoned(&tombs, &acc);
-			bm25_tombstones_free(&tombs);
-		}
+		acc = tidset_or(acc, pending_acc);
+		tidset_sort_uniq(&acc);
 	}
 	*out = acc;
 	*recheck = need_recheck;
@@ -1761,7 +1780,11 @@ typedef struct WandCursor
 	double		k1_1mb;			/* precomputed k1*(1-b) */
 	double		idf_k1p1;		/* precomputed idf*(k1+1) */
 	double		max_contrib;	/* term-wide upper bound (shortest-doc norm) */
+	BM25Tombstones *tombs;		/* loaded per-segment tombstones (or NULL) */
+	uint32		segidx;			/* which segment this cursor's postings belong to */
 }			WandCursor;
+
+static inline void wand_skip_own_tombstoned(WandCursor *c);
 
 static inline uint64
 tid_to_docid_s(ItemPointer tid)
@@ -1865,7 +1888,6 @@ wand_load_block(WandCursor *c)
 	c->blk_min_dl = bh->min_doclen;
 	c->cur = 0;
 	c->docid = c->docids[0];
-
 	/* advance the resume pointer to the next block (or next page) */
 	{
 		char	   *nextp = (char *) MAXALIGN((char *) (bh + 1) + bh->bytelen);
@@ -1899,6 +1921,7 @@ wand_prime(WandCursor *c)
 		return;
 	}
 	wand_load_block(c);
+	wand_skip_own_tombstoned(c);
 }
 
 /* The block-max contribution upper bound for the current 128-block.
@@ -1915,6 +1938,39 @@ wand_block_max_contrib(WandCursor *c)
 	return c->idf * mtf * (k1 + 1.0) / (mtf + c->k1_1mb + c->k1b_inv_avgdl * mindl);
 }
 
+/* True if the cursor's CURRENT docid is tombstoned in the cursor's OWN
+ * segment.  Tombstones are per-segment, so a cursor must ignore only its own
+ * segment's deletions -- a reused heap TID that is live in another segment or
+ * the pending list must still be produced by the segments that legitimately
+ * contain it. */
+static inline bool
+wand_cur_own_tombstoned(WandCursor *c)
+{
+	sm_cursor_t sc = SM_CURSOR_INIT;
+
+	if (c->tombs == NULL || !c->tombs->hasany || c->docid == UINT64_MAX)
+		return false;
+	if (c->segidx >= c->tombs->nseg || !c->tombs->present[c->segidx])
+		return false;
+	return sm_contains(&c->tombs->maps[c->segidx], c->docid, &sc);
+}
+
+/* After the current docid is (re)positioned, skip forward over any docids
+ * deleted in this cursor's own segment.  Loads successive blocks as needed;
+ * wand_load_block does not itself skip, so there is no recursion. */
+static inline void
+wand_skip_own_tombstoned(WandCursor *c)
+{
+	while (wand_cur_own_tombstoned(c))
+	{
+		c->cur++;
+		if (c->cur < c->blkcount)
+			c->docid = c->docids[c->cur];
+		else
+			wand_load_block(c);
+	}
+}
+
 /* Advance the cursor to the next posting, loading the next block if needed. */
 static void
 wand_next(WandCursor *c)
@@ -1924,6 +1980,7 @@ wand_next(WandCursor *c)
 		c->docid = c->docids[c->cur];
 	else
 		wand_load_block(c);		/* stream the next block of this term */
+	wand_skip_own_tombstoned(c);
 }
 
 /*
@@ -1936,6 +1993,7 @@ static void
 wand_skip_block(WandCursor *c)
 {
 	wand_load_block(c);
+	wand_skip_own_tombstoned(c);
 }
 
 /* Exact BM25 contribution of the current posting.  tf and |D| are extracted
@@ -2026,13 +2084,17 @@ static void
 wand_seek(WandCursor *c, uint64 target)
 {
 	if (c->docid >= target)
+	{
+		wand_skip_own_tombstoned(c);
 		return;
+	}
 	/* first, fast-forward within the current (already-decoded) block's docids */
 	while (c->cur < c->blkcount && c->docids[c->cur] < target)
 		c->cur++;
 	if (c->cur < c->blkcount)
 	{
 		c->docid = c->docids[c->cur];
+		wand_skip_own_tombstoned(c);
 		return;
 	}
 	/* current block exhausted: skip whole undecoded blocks by header, then
@@ -2048,6 +2110,7 @@ wand_seek(WandCursor *c, uint64 target)
 		if (c->cur < c->blkcount)
 		{
 			c->docid = c->docids[c->cur];
+			wand_skip_own_tombstoned(c);
 			return;
 		}
 		/* target beyond this block; loop to load/skip the next */
@@ -2492,6 +2555,10 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 	cursors = (WandCursor *) palloc(Max(nterms * Max((int) meta.nsegments, 1), 1) *
 									sizeof(WandCursor));
 
+	/* per-segment tombstones: each cursor skips docids deleted in its own
+	 * segment, so reused heap TIDs live in another segment still rank */
+	bm25_tombstones_load(index, &meta, &tombs);
+
 	for (t = 0; t < nterms; t++)
 	{
 		uint32		gdf = 0;
@@ -2543,6 +2610,8 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 			cursors[nactive].idf_k1p1 = idf * (k1 + 1.0);
 			cursors[nactive].max_contrib =
 				idf * mtf * (k1 + 1.0) / (mtf + k1 * (1.0 - b));
+			cursors[nactive].tombs = &tombs;
+			cursors[nactive].segidx = s;
 			nactive++;
 		}
 	}
@@ -2556,7 +2625,6 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 #else
 	fetch = table_index_fetch_begin(heap);
 #endif
-	bm25_tombstones_load(index, &meta, &tombs);
 	for (i = 0; i < ncand && nvis < k; i++)
 	{
 		ItemPointerData tid = cand[i].tid;
@@ -2564,10 +2632,11 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 		bool		all_dead = false;
 		TupleTableSlot *slot;
 
-		/* skip docs vacuumed away since indexing (tombstone): the heap slot may
-		 * have been reused, so a bare visibility check is not enough */
-		if (tombs.hasany && bm25_docid_tombstoned(&tombs, bm25_tid_to_docid(&cand[i].tid)))
-			continue;
+		/*
+		 * Tombstoned docs were already excluded per-segment inside the WAND
+		 * cursors (a cursor never emits a docid deleted in its own segment), so
+		 * the surviving candidates only need the heap visibility check.
+		 */
 		slot = table_slot_create(heap, NULL);
 		if (table_index_fetch_tuple(fetch, &tid, snap, slot,
 									&call_again, &all_dead))

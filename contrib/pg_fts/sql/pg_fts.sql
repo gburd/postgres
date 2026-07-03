@@ -696,5 +696,6 @@ INSERT INTO tomb SELECT g, to_ftsdoc('beta doc'||g) FROM generate_series(1,60) g
 VACUUM tomb;
 SELECT count(*) AS alpha_reused FROM tomb WHERE d @@@ 'alpha'::ftsquery;     -- 0
 SELECT count(*) AS beta_reused FROM tomb WHERE d @@@ 'beta'::ftsquery;       -- 60
+SELECT fts_count('tomb_bm25','beta'::ftsquery) AS beta_reused_fc;            -- 60
 RESET enable_seqscan;
 DROP TABLE tomb;

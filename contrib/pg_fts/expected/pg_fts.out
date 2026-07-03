@@ -1521,7 +1521,13 @@ SELECT count(*) AS alpha_reused FROM tomb WHERE d @@@ 'alpha'::ftsquery;     -- 
 SELECT count(*) AS beta_reused FROM tomb WHERE d @@@ 'beta'::ftsquery;       -- 60
  beta_reused 
 -------------
-           0
+          60
+(1 row)
+
+SELECT fts_count('tomb_bm25','beta'::ftsquery) AS beta_reused_fc;            -- 60
+ beta_reused_fc 
+----------------
+             60
 (1 row)
 
 RESET enable_seqscan;
