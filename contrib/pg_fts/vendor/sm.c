@@ -1604,7 +1604,7 @@ __sm_chunk_rank(__sm_chunk_rank_t *rank, const bool value,
 					break;
 
 				case SM_PAYLOAD_ONES:
-					rank->rem = UINT64_MAX;
+					rank->rem = SIZE_MAX;
 					if (to >= SM_BITS_PER_VECTOR) {
 						rank->pos += SM_BITS_PER_VECTOR;
 						to -= SM_BITS_PER_VECTOR;
@@ -3641,7 +3641,7 @@ __sm_map_unset(sm_t *map, uint64_t idx, const bool coalesce)
 		/* There are no chunks in the map, there is nothing to clear, this is a
 		 * no-op. */
 		offset =
-		    SM_IDX_MAX; /* gate coalesce off; chunk is uninitialized */
+		    SM_UNSET_NO_COALESCE; /* gate coalesce off; chunk is uninitialized */
 		goto done;
 	}
 
