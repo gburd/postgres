@@ -31,6 +31,10 @@ Versions / stages implemented
   1.13  background merge of the pending list (VACUUM + fts_merge())
   1.14  fts_search(): index-only BM25 top-k (no heap access), WAND max-tf bound
   1.15  trigram pre-filter for fuzzy matching (pg_tre-style pruning)
+  1.16  <=> ordering operator: ORDER BY d <=> q LIMIT k plans as an index scan
+  1.17  to_ftsquery(regconfig, text): config-normalized query terms
+  1.18  fts_index_nsegments(): observe the segment count
+  1.19  fts_count(): MVCC-correct bulk count via the index (fast COUNT path)
 
   Prefix queries (term*) are matched in both the sequential and index paths.
 
@@ -65,15 +69,15 @@ Example
   ORDER BY score DESC
   LIMIT 10;
 
-Performance / parity (stage 12)
--------------------------------
+Performance / parity
+--------------------
 
-A reproducible benchmark comparing pg_fts against the tsvector/GIN+ts_rank
-stack (build time, index size, latency, relevance) belongs alongside this
-module; bench/README describes the intended harness (MS MARCO / Wikipedia
-subset).  Committer note: the goal is to meet or beat the existing stack on
-ranked-query latency and to match Lucene/bm25s BM25 scores (fts_bm25_opts
-variants exist precisely for that conformance check).
+bench/ contains reproducible benchmarks against the tsvector/GIN + ts_rank
+stack and against ParadeDB pg_search (Tantivy) on EC2 -- build time, index
+size, and per-query-type latency at 2M-50M docs.  See bench/RESULTS_*.md.
+Headline: pg_fts wins ranked top-k and selective queries (the BM25 core) and is
+smaller on disk than GIN at scale, as a fully heap-native PG index; fts_bm25_opts
+variants reproduce Lucene/bm25s scores for conformance.
 
 Known limitations / future work
 --------------------------------
@@ -83,36 +87,52 @@ Known limitations / future work
   * A fully resumable WAND cursor (emit/suspend/resume) instead of the current
     adaptive-k batch-with-growth.  WAND needs the top-k threshold to prune, so
     the batch shape is natural; the adaptive-k form already bounds work to the
-    LIMIT actually requested.
+    LIMIT actually requested and starts at a full page so common LIMITs are one
+    pass.
+  * Impact-ordered postings, to let ranked scans over a very common term stop
+    earlier than docid-ordered block-max WAND allows.
   * Richer regex trigram tiling (full Navarro (k+1)-tiling / Mihov-Schulz
     automaton, as in pg_tre) beyond the literal-run tiling implemented here.
-  * A+C for the trigram index: the term-ordinal sets (A) are bounded by the
-    vocabulary, but a trigram present in most terms still stores a near-full
-    set that filters nothing.  Option C stores the *complement* (terms lacking
-    the trigram, which is small when the trigram is dense) with an
-    is_complement flag, handled inversely at query time -- keeping every stored
-    set <= half the vocabulary while staying sound (unlike simply skipping
-    popular trigrams, which drops candidates).
+  * A+C for the trigram index: option C would store the *complement* of a dense
+    trigram's term set (small when the trigram is common) with an is_complement
+    flag, keeping every stored set <= half the vocabulary.
 
-Implemented at scale
+  Evaluated and deliberately not done: patched-FOR (PFOR) block encoding
+  (measured ~<0.5% index saving, not worth the decode complexity); a chained
+  overflow segment directory (the size-tiered merge keeps the count far below
+  the 128 cap, and the cap raises a clear error rather than corrupting).
+
+Storage architecture
 --------------------
 
-  * Delta+varint posting compression with per-posting |D| for exact BM25
-    length normalization (no heap fetch to score).
-  * Document-at-a-time block-max WAND top-k: cursors page postings in lazily
-    and skip whole pages via per-page block-max, bounding memory and work.
-  * amcanorderbyop ordering scan: ORDER BY d <=> query LIMIT k plans as an
-    index scan with no Sort node, driven by the block-max WAND top-k.
-  * On-disk trigram index (sparsemap-backed, namespaced __pg_bm25_*) that
-    narrows fuzzy (term~k) and regex (/re/) candidates instead of scanning the
-    whole index; the heap recheck applies the exact test.
-  * BM25F multi-field weighting; selectable BM25 variants.
-  * Incremental insert (pending list) + background merge (VACUUM / fts_merge)
-    with FSM page recycling, so index size stays bounded under churn.
-  * Phrase, NEAR(a b, k), prefix, fuzzy, regex queries.
-  * MVCC-correct throughout: buffer manager for all I/O, GenericXLog WAL for
-    replication/crash safety, snapshot visibility on both the @@@ bitmap path
-    and the fts_search / ordering-scan paths.
+The bm25 index is a set of immutable SEGMENTS plus a small pending write buffer
+(the Lucene/Tantivy consensus design):
+
+  * Each segment has a term dictionary (with a sparse per-page block index for
+    O(log P) term lookup and sublinear prefix scan), FOR-bit-packed 128-doc
+    posting blocks carrying per-block max-tf and min-|D| impact bounds, a
+    trigram index over the vocabulary (for fuzzy/regex), and a livedocs
+    tombstone bitmap.
+  * INSERT appends to the pending buffer (immediately searchable); a flush
+    (fts_merge() or VACUUM) folds pending docs into a new segment.  CREATE INDEX
+    flushes multiple segments to bound build memory (maintenance_work_mem).
+  * A size-tiered merge coalesces similarly-sized segments (dropping tombstoned
+    docs), keeping the live segment count small so per-term query cost stays low.
+  * DELETE/UPDATE are recorded as per-segment tombstones by VACUUM
+    (ambulkdelete); scans and fts_count subtract them, and merges drop them.
+
+Query execution
+---------------
+
+  * @@@ boolean/phrase/NEAR/prefix/fuzzy/regex plans as a bitmap scan.
+  * ORDER BY d <=> q LIMIT k plans as an index scan (no Sort) driven by
+    document-at-a-time block-max WAND (short queries) or MaxScore (>= 4 terms),
+    with lazy per-column posting decode so pruned blocks never decode tf/doclen.
+  * fts_count(regclass, ftsquery) counts matches in bulk from the index using
+    the visibility map (heap probed only for not-all-visible pages).
+  * Ranked (<=>/fts_search) results cover merged segments; pending (unflushed)
+    docs are found by @@@ and counted by fts_count, and become ranked after the
+    next flush (fts_merge() forces one immediately).
 
 Vendored dependencies
 ---------------------
