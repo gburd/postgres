@@ -1488,6 +1488,23 @@ bm25_insert_oversized_as_segment(Relation index, FtsDoc doc, ItemPointer tid)
 	/* write the one-doc segment (updates corpus N/sumdoclen via add_segment) */
 	bm25_build_flush_segment(index, &bs);
 	MemoryContextDelete(bs.ctx);
+
+	/*
+	 * A bulk INSERT/UPDATE of many oversized documents would create one
+	 * segment each and could approach BM25_MAX_SEGMENTS before the next VACUUM
+	 * gets a chance to merge.  Coalesce eagerly once the count climbs, so the
+	 * segment directory never overflows on a write-heavy oversized workload.
+	 */
+	{
+		BM25MetaPageData meta;
+		Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
+
+		LockBuffer(mb, BUFFER_LOCK_SHARE);
+		memcpy(&meta, BM25PageGetMeta(BufferGetPage(mb)), sizeof(meta));
+		UnlockReleaseBuffer(mb);
+		if (meta.nsegments >= BM25_MAX_SEGMENTS - 16)
+			bm25_merge_segments(index);
+	}
 }
 
 /*
