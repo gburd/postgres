@@ -39,9 +39,6 @@ typedef struct BM25PageOpaqueData
 	uint16		flags;
 	uint16		unused;
 	BlockNumber nextblk;		/* next page in a dict/posting/pending chain */
-	uint32		block_max_tf;	/* max tf on this posting page (block-max WAND) */
-	uint32		first_docid_hi; /* high 32 bits of first docid on page */
-	uint32		first_docid_lo; /* low 32 bits (for skip decisions) */
 } BM25PageOpaqueData;
 
 typedef BM25PageOpaqueData *BM25PageOpaque;
@@ -153,15 +150,6 @@ typedef struct BM25BlockHdr
 } BM25BlockHdr;
 
 /*
- * Legacy per-page posting header (format v1); retained only so the struct name
- * still resolves.  v2 uses BM25BlockHdr blocks.
- */
-typedef struct BM25PostingPageHdr
-{
-	uint32		count;
-} BM25PostingPageHdr;
-
-/*
  * A pending record: a not-yet-merged document stored verbatim on a pending
  * page.  The ftsdoc varlena follows the header inline (doclen bytes).  Pending
  * documents are searched directly at scan time and folded into a new segment by
@@ -183,8 +171,8 @@ typedef struct BM25PendingItem
  * maps to the set of dictionary term ordinals whose term contains it.  The
  * vocabulary is far smaller than the document set (Heaps' law), so these sets
  * are small and dense -- unlike docid sets, where a common trigram would cover
- * most of the corpus.  Trigrams that occur in more than a threshold fraction of
- * terms are skipped entirely (they cannot filter), so no stored set is large.
+ * most of the corpus.  No trigrams are skipped, so the candidate union stays a
+ * sound superset for fuzzy/regex.
  * Each entry is fixed-size; the term-ordinal sparsemap is a data-page blob.
  */
 typedef struct BM25TrgmEntry

@@ -661,10 +661,11 @@ bm25_init_metapage(Relation index)
 }
 
 /*
- * Write all postings for one term into a chain of posting pages, returning the
- * first block.  Postings are sorted by docid and delta+varint encoded per page
- * (BM25PostingPageHdr + varint stream), which compresses the common case of
- * many clustered docids into a few bytes each.
+ * Write all postings for one term into the segment's shared posting-page chain
+ * via a BM25PostWriter, returning the term's first block + byte offset.
+ * Postings are docid-sorted and packed into 128-doc FOR blocks (BM25BlockHdr +
+ * three frame-of-reference bit-packed columns: docid-gaps, tfs, doclens), which
+ * compresses the common case of many clustered docids into a few bits each.
  */
 typedef struct BM25PostingSort
 {
@@ -1777,6 +1778,11 @@ bm25_segment_docids(Relation index, const BM25SegMeta *seg)
 	sm_t	   *seen = sm_create(256);
 	BlockNumber blk = seg->dictstart;
 
+	if (seen == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory building bm25 tombstone map")));
+
 	while (blk != InvalidBlockNumber)
 	{
 		Buffer		buffer = ReadBuffer(index, blk);
@@ -1858,6 +1864,10 @@ bm25_bulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 
 		seen = bm25_segment_docids(index, sg);
 		dead = sm_create(256);
+		if (dead == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("out of memory building bm25 tombstone map")));
 
 		/* carry forward any docids already tombstoned in this segment */
 		if (sg->livedocs != InvalidBlockNumber && sg->livedocslen > 0)

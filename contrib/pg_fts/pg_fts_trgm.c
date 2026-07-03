@@ -18,8 +18,8 @@
  * to a full scan otherwise (so results are always correct, only speed varies).
  *
  * This module implements the trigram extraction and the candidate-narrowing
- * used by the matcher; wiring a persistent on-disk trigram posting index into
- * the bm25 AM (the full three-tier funnel) is the remaining scale work.
+ * used by the matcher; the persistent on-disk trigram posting index that the
+ * bm25 AM uses at query time is in pg_fts_trgm_index.c.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  *
@@ -107,10 +107,11 @@ fts_trigrams_overlap(const uint32 *a, int na, const uint32 *b, int nb)
  * make the preceding character optional (*, ?, {0,...}) or introduce a branch
  * (|), and we only emit trigrams from runs that remain required.
  *
- * The result is a set of trigrams such that every matching string contains at
- * least all of them (they are ANDed by the caller's union-then-recheck: the
- * caller unions per-trigram postings, which is a sound superset).  When no
- * required run yields a trigram (e.g. the regex is all alternation/optional),
+ * The result is a set of trigrams such that every matching string contains all
+ * of them.  The caller UNIONs each trigram's posting set (a sound superset of
+ * candidate terms) and then rechecks exactly -- so a term is a candidate if it
+ * shares any required trigram; correctness comes from the exact recheck.  When
+ * no required run yields a trigram (e.g. the regex is all alternation/optional),
  * we return 0 and the caller falls back to a full scan -- always correct.
  */
 int

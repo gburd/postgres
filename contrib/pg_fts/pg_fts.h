@@ -3,10 +3,11 @@
  * pg_fts.h
  *		Next-generation full-text search for PostgreSQL.
  *
- * Stage 1: on-disk representations and match evaluation for the analyzed
- * document type (ftsdoc) and the parsed query type (ftsquery).  No index
- * access method yet -- matching is evaluated by sequential scan via the
- * @@@ operator, exactly as tsvector/tsquery were first introduced.
+ * pg_fts provides the analyzed document type (ftsdoc) and the parsed query type
+ * (ftsquery) with @@@ match evaluation, plus a dedicated bm25 index access
+ * method (segmented inverted index, block-max WAND ranking) that answers @@@
+ * and the <=> ordering operator; matching is also available by sequential scan
+ * via @@@, exactly as tsvector/tsquery were first introduced.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  *

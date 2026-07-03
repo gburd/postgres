@@ -110,6 +110,17 @@ ftsdoc_recv(PG_FUNCTION_ARGS)
 	nterms = (uint32) pq_getmsgint(buf, 4);
 	doclen = (uint32) pq_getmsgint(buf, 4);
 
+	/*
+	 * Guard against a hostile/corrupt binary message: each term contributes at
+	 * least a 4-byte length + 4-byte tf, so nterms cannot exceed the remaining
+	 * bytes / 8.  Rejects absurd counts before they reach palloc (overflow /
+	 * OOM at a trust boundary).
+	 */
+	if (nterms > (uint32) (buf->len - buf->cursor) / 8)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+				 errmsg("invalid ftsdoc: term count %u exceeds message size", nterms)));
+
 	terms = (char **) palloc(nterms * sizeof(char *));
 	lens = (int *) palloc(nterms * sizeof(int));
 	tfs = (uint32 *) palloc(nterms * sizeof(uint32));

@@ -5,11 +5,9 @@
  *
  * Stage 8 of pg_fts.  These operate on the original text plus a query and are
  * independent of the index access method.  highlight() wraps matched query
- * terms in the source text; snippet() returns the best-matching window;
- * fts_score_explain() returns the per-term BM25 contribution breakdown, the
- * relevance-debugging output every FTS user eventually needs.
+ * terms in the source text; snippet() returns the best-matching window.
  *
- * Term matching folds the source the same way the stage-1 analyzer does, so a
+ * Term matching folds the source the same way the default analyzer does, so a
  * query term matches a source word when their folded forms are equal.  (A
  * configuration-aware variant that stems both sides can follow.)
  *

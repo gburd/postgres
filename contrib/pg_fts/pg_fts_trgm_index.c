@@ -4,15 +4,17 @@
  *		On-disk trigram index for narrowing fuzzy/regex candidates.
  *
  * Included into pg_fts_am.c.  Maps every trigram of every indexed term to the
- * set of docids whose document contains a term with that trigram, stored as a
- * namespaced sparsemap (see pg_fts_sm.h).  A trigram's serialized sparsemap can
- * be large (a common trigram covers most docids), so it is stored as a byte
- * stream spanning a chain of data pages -- NOT packed inline on one page (that
- * assumption caused a segfault at scale).  A directory (trgm -> first data
- * block + byte length) lets the query side find a trigram's stream, reassemble
- * the sparsemap, and iterate its docids.
+ * set of TERM ORDINALS (positions in the segment's sorted dictionary) whose
+ * term contains that trigram, stored as a namespaced sparsemap (see
+ * pg_fts_sm.h).  Keying on the vocabulary rather than the docid space keeps
+ * each set small (bounded by the number of distinct terms, not documents).  A
+ * serialized sparsemap can still span more than one page, so it is stored as a
+ * byte stream across a chain of data pages -- NOT packed inline on one page
+ * (that assumption caused a segfault at scale).  A directory (trgm -> first
+ * data block + byte length) lets the query side find a trigram's stream,
+ * reassemble the sparsemap, and iterate its term ordinals.
  *
- * At fuzzy/regex query time the candidate docid set is the union of the query
+ * At fuzzy/regex query time the candidate term set is the union of the query
  * pattern's trigram postings -- a sound superset -- so the scan probes a small
  * candidate set and the heap recheck applies the exact test.
  *
@@ -243,6 +245,10 @@ bm25_write_trigrams(Relation index, BM25BuildState *bs)
 		 * bug).  sm_free releases the malloc'd buffer (not palloc).
 		 */
 		sm = sm_create(256);
+		if (sm == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("out of memory building bm25 trigram map")));
 		for (d = 0; d < acc->ndocids; d++)
 			sm_add_grow(&sm, acc->docids[d]);
 		smlen = sm_get_size(sm);
@@ -300,10 +306,10 @@ bm25_write_trigrams(Relation index, BM25BuildState *bs)
  * to get a set of candidate TERM ORDINALS (small: bounded by the vocabulary);
  * (2) walk the dictionary once, and for each term whose ordinal is a candidate,
  * union its docid postings.  The heap recheck then applies the exact
- * fuzzy/regex test.  Popular trigrams were skipped at build time, so a query
- * trigram with no directory entry does not constrain the candidate set; if the
- * pattern has too few usable trigrams we return false and the caller falls back
- * to a full scan (always correct).
+ * fuzzy/regex test.  No trigrams are skipped at build time, so every query
+ * trigram that has a directory entry constrains the candidate set; if the
+ * pattern has too few usable trigrams (e.g. it is shorter than a trigram) we
+ * return false and the caller falls back to a full scan (always correct).
  */
 static bool
 bm25_trgm_candidates(Relation index, BlockNumber trgmstart,

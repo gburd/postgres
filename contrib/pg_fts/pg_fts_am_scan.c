@@ -2438,13 +2438,21 @@ bm25_query_maxhits(Relation index, FtsQuery q, double N)
 
 /*
  * bm25_topk_visible: shared top-k engine for both the fts_search SRF and the
- * amgettuple ordering scan.  Runs block-max WAND over the index for `q`,
- * over-fetches candidates so MVCC visibility filtering still yields k visible
- * rows, and returns them (palloc'd in the current context) sorted by
- * descending score.  When as_distance is true, each result's .score field is
- * replaced by the ordering distance 1/(1+score) (ascending distance = the same
- * order).  The index must already be open; the base table is opened here for
- * the visibility check.  Returns the number of visible results.
+ * amgettuple ordering scan.  Runs block-max WAND / MaxScore over the index's
+ * SEGMENTS for `q`, over-fetches candidates so MVCC visibility filtering still
+ * yields k visible rows, drops tombstoned docs, and returns them (palloc'd in
+ * the current context) sorted by descending score.  When as_distance is true,
+ * each result's .score field is replaced by the ordering distance 1/(1+score)
+ * (ascending distance = the same order).  The index must already be open; the
+ * base table is opened here for the visibility check.  Returns the number of
+ * visible results.
+ *
+ * NOTE: ranked results cover the merged SEGMENTS only; documents still in the
+ * pending write buffer (inserted since the last flush) are searchable by @@@
+ * and counted by fts_count(), but are not ranked here until a flush folds them
+ * into a segment (automatic on VACUUM, or immediate via fts_merge()).  Ranking
+ * pending docs would require per-doc scoring outside the WAND cursors; deferred
+ * intentionally, since pending is transient and bounded.
  */
 static int
 bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,

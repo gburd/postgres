@@ -3,11 +3,12 @@
  * pg_fts_match.c
  *		Match evaluation: does an ftsdoc satisfy an ftsquery?
  *
- * The query is a postfix (RPN) item list, so evaluation is a boolean stack
- * machine: a term operand pushes "does this doc contain the term", and each
- * operator pops its arguments and pushes the combined result.  This is the
- * same evaluation strategy tsquery uses (TS_execute), kept deliberately simple
- * for stage 1.  It is O(nitems * log nterms) with the binary-search lookup.
+ * The query is a postfix (RPN) item list, so evaluation is a stack machine: a
+ * term operand pushes "does this doc contain the term", and each operator pops
+ * its arguments and pushes the combined result.  Beyond boolean AND/OR/NOT it
+ * evaluates phrase and NEAR (using per-term positions), prefix, fuzzy (bounded
+ * Levenshtein) and regex operands.  It mirrors tsquery's TS_execute strategy;
+ * O(nitems * log nterms) with the binary-search term lookup.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  *

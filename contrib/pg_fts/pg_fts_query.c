@@ -650,9 +650,10 @@ to_ftsquery_byid(PG_FUNCTION_ARGS)
 }
 
 /*
- * Render an ftsquery as fully parenthesised infix, so the output round-trips
- * back through the parser to an equivalent query.  Postfix RPN is walked with
- * a small string stack.
+ * Render an ftsquery as fully parenthesised infix for display/debugging.  (Note
+ * the phrase operator prints as ` <-> `, which the query lexer does not accept
+ * as input -- the rendering is human-readable, not a guaranteed round-trip.)
+ * Postfix RPN is walked with a small string stack.
  */
 Datum
 ftsquery_out(PG_FUNCTION_ARGS)
@@ -786,6 +787,17 @@ ftsquery_recv(PG_FUNCTION_ARGS)
 				 errmsg("unsupported ftsquery version number %u", version)));
 
 	nitems = (uint32) pq_getmsgint(buf, 4);
+
+	/*
+	 * Guard against a hostile/corrupt binary message: each item is at least a
+	 * few fixed bytes (type+op+flags+distance), so nitems cannot exceed the
+	 * remaining bytes / 8.  Rejects absurd counts before palloc (overflow /
+	 * OOM at a trust boundary).
+	 */
+	if (nitems > (uint32) (buf->len - buf->cursor) / 8)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_BINARY_REPRESENTATION),
+				 errmsg("invalid ftsquery: item count %u exceeds message size", nitems)));
 
 	types = (uint8 *) palloc(nitems * sizeof(uint8));
 	ops = (uint8 *) palloc(nitems * sizeof(uint8));
