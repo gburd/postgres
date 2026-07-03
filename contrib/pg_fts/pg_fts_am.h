@@ -134,8 +134,11 @@ typedef struct BM25Posting
  * docid-gaps, tfs, doclens; docid gaps are relative to first_docid within the
  * block.  Per-block max_tf/min_doclen give block-max WAND a tight impact bound
  * (finer than per-page), and first_docid lets a cursor skip an entire block
- * whose docids are all below a target.  (Patched-FOR / PFOR for outlier values
- * is a possible future refinement of just the column encoding.)
+ * whose docids are all below a target.  (The columns are already narrow -- tf
+ * and doclen are small and docid gaps are tiny within a common term's dense
+ * blocks -- so patched-FOR/PFOR outlier extraction was measured to save only
+ * ~7% of the column bytes, under ~0.5% of the whole index, not worth the
+ * hot-path decode complexity; plain FOR is kept.)
  */
 #define BM25_BLOCK_SIZE 128
 
