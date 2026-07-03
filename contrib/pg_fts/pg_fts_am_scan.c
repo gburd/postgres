@@ -1096,24 +1096,32 @@ bm25_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 }
 
 /*
- * bm25_canreturn: report that the index can return tuples for an index-only
- * scan.  The bm25 index is not covering (it stores analyzed postings, not the
- * original ftsdoc), so it cannot reproduce a column value -- but count(*) and
- * EXISTS reference no column, and for those the executor's index-only scan just
- * needs a TID stream plus the visibility-map check.  We therefore claim IOS
- * support unconditionally; the plain gettuple path returns an all-NULL itup
- * whose attributes are never read for a no-column scan.
+ * bm25_canreturn: whether the index can return a column value for an
+ * index-only scan.  The bm25 index is NOT covering, so it cannot -- see the
+ * body.
  */
 bool
 bm25_canreturn(Relation index, int attno)
 {
-	return true;
+	/*
+	 * The bm25 index is NOT covering: it stores analyzed postings, not the
+	 * original ftsdoc, so it cannot reproduce a column value.  Returning true
+	 * caused an index-only scan that SELECTs the indexed column to yield NULLs
+	 * (a placeholder tuple).  Return false so the planner never uses an
+	 * index-only scan to fetch a real attribute.  (count(*)/EXISTS need no
+	 * attribute but still include the @@@ restriction column in the IOS
+	 * coverage check, so they run through a bitmap/plain index scan; our
+	 * visibility-map-aware fts_count() is the explicit fast count.)
+	 */
+	return false;
 }
 
 /*
- * Fill scan->xs_itup with a cached all-NULL index tuple when the executor runs
- * an index-only scan (xs_want_itup).  The bm25 index is not covering, but
- * count(*)/EXISTS reference no column, so the attribute values are never read.
+ * Fill scan->xs_itup with a cached all-NULL index tuple if the executor ever
+ * requests one for an index-only scan (xs_want_itup).  Currently inactive:
+ * bm25_canreturn() returns false, so the planner never chooses an index-only
+ * scan and xs_want_itup is never set -- this is a guarded no-op kept so the
+ * gettuple paths remain correct if a covering capability is ever added.
  */
 static inline void
 bm25_set_itup(IndexScanDesc scan, BM25ScanOpaque so)
@@ -1157,12 +1165,12 @@ bm25_gettuple(IndexScanDesc scan, ScanDirection dir)
 		return false;
 
 	/*
-	 * Plain scan (no ORDER BY <=>): stream matching TIDs in heap order.  This
-	 * enables the executor's index-only scan path for count(*)/existence
-	 * queries: for each TID the executor consults the visibility map and skips
-	 * the heap entirely on all-visible pages -- the same mechanism (and same
-	 * MVCC guarantees) as a btree index-only scan, so a count over a VACUUMed
-	 * table does no heap fetches.
+	 * Plain scan (no ORDER BY <=>): stream the matching TIDs in heap order for
+	 * a plain Index Scan.  (The common @@@ path is the bitmap scan via
+	 * amgetbitmap; this amgettuple path serves a plain index scan when the
+	 * planner chooses one, e.g. with bitmap scans disabled.)  The matches come
+	 * from the same evaluator, so results are identical; the executor applies
+	 * MVCC visibility on the heap fetch.
 	 */
 	if (scan->numberOfOrderBys == 0)
 	{

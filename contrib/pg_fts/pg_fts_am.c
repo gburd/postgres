@@ -80,6 +80,7 @@ typedef struct BuildTerm
 	uint32	   *doclens;
 	int			nposts;
 	int			maxposts;
+	int			next;			/* next BuildTerm sharing the same hash key, or -1 */
 } BuildTerm;
 
 typedef struct BM25BuildState
@@ -126,7 +127,7 @@ typedef struct TermKey
 typedef struct TermHashEntry
 {
 	TermKey		key;			/* must be first: dynahash key */
-	int			termidx;
+	int			termidx;		/* head of a chain of BuildTerms sharing this key */
 } TermHashEntry;
 
 static HTAB *build_ht;
@@ -166,20 +167,35 @@ add_posting(BM25BuildState *bs, const char *term, int len,
 	TermKey		key;
 	TermHashEntry *entry;
 	bool		found;
-	BuildTerm  *bt;
+	BuildTerm  *bt = NULL;
+	int			idx;
 
 	make_termkey(&key, term, len);
 	entry = (TermHashEntry *) hash_search(build_ht, &key, HASH_ENTER, &found);
 
-	/* verify true equality against the stored BuildTerm on a hash hit */
+	/*
+	 * On a hash hit, walk the chain of BuildTerms sharing this key and pick the
+	 * truly-equal one.  The key is a padded/length-folded prefix, so two DISTINCT
+	 * terms >= BM25_TERMKEYLEN bytes sharing that prefix can land on the same
+	 * key; chaining keeps them as separate BuildTerms instead of clobbering the
+	 * entry (which previously fragmented a term's postings across unreachable
+	 * dictionary entries).
+	 */
 	if (found)
 	{
-		bt = &bs->terms[entry->termidx];
-		if (!(bt->len == len && memcmp(bt->term, term, len) == 0))
-			found = false;		/* key collision on a truncated/padded key */
+		for (idx = entry->termidx; idx >= 0; idx = bs->terms[idx].next)
+		{
+			BuildTerm  *cand = &bs->terms[idx];
+
+			if (cand->len == len && memcmp(cand->term, term, len) == 0)
+			{
+				bt = cand;
+				break;
+			}
+		}
 	}
 
-	if (!found)
+	if (bt == NULL)
 	{
 		if (bs->nterms >= bs->maxterms)
 		{
@@ -199,6 +215,8 @@ add_posting(BM25BuildState *bs, const char *term, int len,
 		bt->tids = (ItemPointerData *) palloc(bt->maxposts * sizeof(ItemPointerData));
 		bt->tfs = (uint32 *) palloc(bt->maxposts * sizeof(uint32));
 		bt->doclens = (uint32 *) palloc(bt->maxposts * sizeof(uint32));
+		/* push onto the head of this key's chain (-1 = end of chain) */
+		bt->next = found ? entry->termidx : -1;
 		entry->termidx = bs->nterms;
 		bs->nterms++;
 	}
