@@ -350,44 +350,6 @@ bm25_docid_to_tid(uint64 docid, ItemPointer tid)
 	ItemPointerSet(tid, blk, off);
 }
 
-/* LEB128 unsigned varint encode; returns bytes written into buf */
-static inline int
-bm25_varint_encode(uint64 v, unsigned char *buf)
-{
-	int			n = 0;
-
-	do
-	{
-		unsigned char byte = v & 0x7F;
-
-		v >>= 7;
-		if (v)
-			byte |= 0x80;
-		buf[n++] = byte;
-	} while (v);
-	return n;
-}
-
-/* decode one varint from buf, advancing *pos */
-static inline uint64
-bm25_varint_decode(const unsigned char *buf, int *pos)
-{
-	uint64		v = 0;
-	int			shift = 0;
-	unsigned char byte;
-
-	do
-	{
-		byte = buf[(*pos)++];
-		v |= (uint64) (byte & 0x7F) << shift;
-		shift += 7;
-	} while (byte & 0x80);
-	return v;
-}
-
-/* worst-case encoded size of one posting (docid gap up to 48 bits + tf + doclen) */
-#define BM25_MAX_POSTING_BYTES (10 + 5 + 5)
-
 /*
  * FOR (frame-of-reference) bit-packing of a block's three columns (docid gaps,
  * tfs, doclens) as Structure-of-Arrays.  Each column is [u8 bitwidth][packed

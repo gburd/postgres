@@ -298,8 +298,13 @@ void __attribute__((format(printf, 4, 5))) __sm_diag_(const char *file,
  * understand __builtin_expect; on gcc/clang they let the optimizer
  * lay out the hot path inline and push the cold path off the icache.
  */
+#if defined(__GNUC__) || defined(__clang__)
 #define SM_LIKELY(cond)   __builtin_expect(!!(cond), 1)
 #define SM_UNLIKELY(cond) __builtin_expect(!!(cond), 0)
+#else
+#define SM_LIKELY(cond)   (cond)
+#define SM_UNLIKELY(cond) (cond)
+#endif
 
 typedef uint64_t __sm_bitvec_t;
 
