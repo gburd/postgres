@@ -24,6 +24,7 @@ tests += {
       't/013_temp_obj_multisession.pl',
       't/014_buffer_pool_reservation.pl',
       't/015_buffer_pool_numa.pl',
+      't/016_default_pool_clock.pl',
     ],
     # The injection points are cluster-wide, so disable installcheck
     'runningcheck': false,
