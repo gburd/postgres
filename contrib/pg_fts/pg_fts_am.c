@@ -56,6 +56,8 @@
 #include "miscadmin.h"
 #include "nodes/pathnodes.h"
 #include "nodes/tidbitmap.h"
+#include "optimizer/cost.h"
+#include "optimizer/optimizer.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
 #include "utils/array.h"
@@ -1988,16 +1990,47 @@ bm25_costestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 				  Selectivity *indexSelectivity, double *indexCorrelation,
 				  double *indexPages)
 {
-	/* Delegate to the generic estimator; a WAND-aware estimate comes later. */
 	GenericCosts costs = {0};
 
+	/* baseline: generic estimate gives selectivity, pages, and row counts */
 	genericcostestimate(root, path, loop_count, &costs);
 
-	*indexStartupCost = costs.indexStartupCost;
-	*indexTotalCost = costs.indexTotalCost;
 	*indexSelectivity = costs.indexSelectivity;
 	*indexCorrelation = costs.indexCorrelation;
 	*indexPages = costs.numIndexPages;
+
+	if (path->indexorderbys != NIL)
+	{
+		/*
+		 * Ordering scan (ORDER BY ftsdoc <=> ftsquery): the AM runs block-max
+		 * WAND / MaxScore and, with a LIMIT pushed down, the executor pulls only
+		 * about k best results -- work is sublinear in the match set, unlike a
+		 * generic full index scan.  Price it as mostly a modest startup plus a
+		 * small per-tuple cost, so the planner prefers the index (which honours
+		 * the ORDER BY) over a seqscan + sort.  We deliberately keep this low
+		 * but nonzero; the LIMIT is applied by the caller (limit_tuples), so a
+		 * cheap-per-tuple total lets a small LIMIT win and a large one still
+		 * scale.
+		 */
+		double		ntuples = costs.numIndexTuples;
+
+		*indexStartupCost = costs.indexStartupCost + 2.0 * cpu_operator_cost;
+		/* WAND touches ~log(N)*k blocks, not all matches: charge a fraction of
+		 * a page fetch per matching tuple plus the per-tuple CPU */
+		*indexTotalCost = *indexStartupCost +
+			ntuples * (cpu_index_tuple_cost + cpu_operator_cost) +
+			0.25 * costs.numIndexPages * costs.spc_random_page_cost;
+	}
+	else
+	{
+		/*
+		 * Plain @@@ scan: the generic estimate (selectivity from clause
+		 * selectivity, pages from the posting lists) is a reasonable model of
+		 * decoding the matching TID sets, so use it as-is.
+		 */
+		*indexStartupCost = costs.indexStartupCost;
+		*indexTotalCost = costs.indexTotalCost;
+	}
 }
 
 static bytea *
