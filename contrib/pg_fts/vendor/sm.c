@@ -21,12 +21,6 @@
  * SOFTWARE.
  */
 
-#include <sys/types.h>
-
-/* Expose the full struct definition from <sm.h> to this translation
- * unit; the library needs the layout, consumers get it only via
- * SM_EXPOSE_STRUCT. */
-#define SM_INTERNAL
 /*
  * pg_fts vendors sparsemap: namespace every public symbol with __pg_bm25_ so a
  * different copy of sparsemap loaded by another extension in the same backend
@@ -35,6 +29,15 @@
 #ifndef SPARSEMAP_PREFIX
 #define SPARSEMAP_PREFIX __pg_bm25_
 #endif
+
+#include "sm_compat.h"
+
+#include <sys/types.h>
+
+/* Expose the full struct definition from <sm.h> to this translation
+ * unit; the library needs the layout, consumers get it only via
+ * SM_EXPOSE_STRUCT. */
+#define SM_INTERNAL
 #include "sm.h"
 #include <errno.h>
 #include <stdarg.h>
@@ -3156,7 +3159,7 @@ sm_free(sm_t *map)
 	switch (__sm_kind(map)) {
 	case SM_OWNED_SPLIT:
 		__sm_free(map->m_data);
-		/* fallthrough */
+		/* FALLTHROUGH */
 	case SM_OWNED_CONTIGUOUS:
 	case SM_WRAPPED:
 	default:

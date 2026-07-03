@@ -49,6 +49,8 @@ include $(top_builddir)/src/Makefile.global
 include $(top_srcdir)/contrib/contrib-global.mk
 endif
 
-# Vendored sparsemap uses C99 mixed declarations; suppress that one warning for
-# it only (public symbols are namespaced to __pg_bm25_* via pg_fts_sm.h).
-vendor/sm.o: CFLAGS += -Wno-declaration-after-statement
+# Vendored sparsemap uses C99 mixed declarations and its own /* FALLTHROUGH */
+# comment convention (not recognized by -Wimplicit-fallthrough=5); suppress those
+# warnings for it only (public symbols are namespaced to __pg_bm25_* via
+# pg_fts_sm.h).
+vendor/sm.o: CFLAGS += -Wno-declaration-after-statement -Wno-implicit-fallthrough

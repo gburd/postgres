@@ -128,6 +128,8 @@
 #ifndef SPARSEMAP_H
 #define SPARSEMAP_H
 
+#include "sm_compat.h"
+
 #include <inttypes.h>
 #include <limits.h>
 #include <stdbool.h>
