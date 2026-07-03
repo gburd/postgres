@@ -1198,24 +1198,53 @@ bm25_free_segment(Relation index, const BM25SegMeta *seg)
 }
 
 /*
- * Size-tiered merge: repeatedly merge the smallest run of segments while the
- * total count exceeds a target, combining them into one new segment and
- * dropping the originals.  Bounds the segment count (query cost is O(nsegments)
- * per term), the Lucene TieredMergePolicy idea in miniature.  Called after a
- * flush and from VACUUM.  Merges the whole set into one when count > threshold;
- * a finer size-tiered policy is a later tuning knob.
+ * Size-tiered segment merge (a Lucene TieredMergePolicy in miniature).
+ *
+ * Rather than merging the whole directory into one segment on every trigger
+ * (O(index) write amplification under steady inserts), we merge only a RUN of
+ * similarly-sized segments at a time: sort the live segments by size (live doc
+ * count) and, if the smallest ones fall within a size factor of each other,
+ * merge just those into one new segment.  Small flushes coalesce cheaply while
+ * large segments are rarely rewritten.  We loop until no tier qualifies and the
+ * count is within budget, so query cost stays O(nsegments) small.  Tombstoned
+ * docs are dropped as segments are read.  Called after a flush, from build, and
+ * from VACUUM.
  */
-#define BM25_MERGE_THRESHOLD 8
+#define BM25_MERGE_THRESHOLD 8		/* keep the live segment count at or below this */
+#define BM25_MERGE_TIER_MIN 4		/* merge when >= this many same-tier segments */
+#define BM25_MERGE_SIZE_FACTOR 3.0	/* "same tier" = within this size ratio */
 
-static void
-bm25_merge_segments(Relation index)
+/* segment (index,size) pair for sorting merge candidates by size */
+typedef struct MergeCand
+{
+	uint32		idx;
+	double		size;
+}			MergeCand;
+
+static int
+cmp_mergecand(const void *a, const void *b)
+{
+	double		sa = ((const MergeCand *) a)->size;
+	double		sb = ((const MergeCand *) b)->size;
+
+	return (sa < sb) ? -1 : (sa > sb) ? 1 : 0;
+}
+
+/*
+ * Merge one selected set of segments (by directory index) into a single new
+ * segment, rewrite the metapage directory to drop the merged ones (preserving
+ * the order of the rest) and append the new segment, then recycle the merged
+ * segments' pages.  Returns true on success, false if the directory changed
+ * underneath (caller stops).
+ */
+static bool
+bm25_merge_selected(Relation index, const uint32 *sel, uint32 nsel)
 {
 	BM25MetaPageData meta;
 	BM25BuildState bs;
 	BM25SegMeta newseg;
-	BM25SegMeta oldsegs[BM25_MAX_SEGMENTS];
-	uint32		nold;
-	uint32		s;
+	BM25SegMeta chosen[BM25_MAX_SEGMENTS];
+	uint32		i;
 
 	{
 		Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
@@ -1224,11 +1253,12 @@ bm25_merge_segments(Relation index)
 		memcpy(&meta, BM25PageGetMeta(BufferGetPage(mb)), sizeof(meta));
 		UnlockReleaseBuffer(mb);
 	}
-	if (meta.nsegments <= BM25_MERGE_THRESHOLD)
-		return;
-
-	memcpy(oldsegs, meta.segs, meta.nsegments * sizeof(BM25SegMeta));
-	nold = meta.nsegments;
+	for (i = 0; i < nsel; i++)
+	{
+		if (sel[i] >= meta.nsegments)
+			return false;		/* directory changed under us */
+		chosen[i] = meta.segs[sel[i]];
+	}
 
 	bs.ctx = AllocSetContextCreate(CurrentMemoryContext, "bm25 merge segs",
 								   ALLOCSET_DEFAULT_SIZES);
@@ -1237,20 +1267,12 @@ bm25_merge_segments(Relation index)
 	bs.maxterms = 0;
 	bs.ndocs = 0;
 	bs.sumdoclen = 0;
-	{
-		HASHCTL		ctl;
+	bm25_build_ht_init(&bs);
 
-		ctl.keysize = sizeof(TermKey);
-		ctl.entrysize = sizeof(TermHashEntry);
-		ctl.hcxt = bs.ctx;
-		build_ht = hash_create("bm25 merge terms", 1024, &ctl,
-							   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
-	}
-
-	for (s = 0; s < nold; s++)
+	for (i = 0; i < nsel; i++)
 	{
-		bs.sumdoclen += oldsegs[s].sumdoclen;
-		bm25_read_segment_into(index, &oldsegs[s], &bs);
+		bs.sumdoclen += chosen[i].sumdoclen;
+		bm25_read_segment_into(index, &chosen[i], &bs);
 	}
 	if (bs.nterms > 1)
 		qsort(bs.terms, bs.nterms, sizeof(BuildTerm), cmp_buildterm);
@@ -1259,43 +1281,136 @@ bm25_merge_segments(Relation index)
 	newseg.ndocs = bs.ndocs;
 	newseg.sumdoclen = bs.sumdoclen;
 
-	/* replace the whole directory with the single merged segment */
 	{
 		Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
 		GenericXLogState *state;
 		Page		mp;
 		BM25MetaPageData *m;
+		bool		same = true;
 
 		LockBuffer(mb, BUFFER_LOCK_EXCLUSIVE);
 		state = GenericXLogStart(index);
 		mp = GenericXLogRegisterBuffer(state, mb, 0);
 		m = BM25PageGetMeta(mp);
-		/* only merge if no concurrent change grew the directory further; here
-		 * we require the same nsegments we snapshotted (single-writer VACUUM/
-		 * flush context makes this safe) */
-		if (m->nsegments == nold)
+
+		/* single-writer (VACUUM/flush/build) context, but re-check the chosen
+		 * descriptors still match before committing the rewrite */
+		if (m->nsegments != meta.nsegments)
+			same = false;
+		for (i = 0; same && i < nsel; i++)
+			if (memcmp(&m->segs[sel[i]], &chosen[i], sizeof(BM25SegMeta)) != 0)
+				same = false;
+
+		if (same)
 		{
-			m->segs[0] = newseg;
-			m->nsegments = 1;
-			/* corpus totals unchanged (same docs, minus tombstones already
-			 * excluded via ndocs-ndeleted in read) */
-			m->ndocs = newseg.ndocs;
-			m->sumdoclen = newseg.sumdoclen;
+			BM25SegMeta kept[BM25_MAX_SEGMENTS];
+			uint32		nkept = 0;
+			uint32		j;
+			bool		issel;
+
+			/* keep every segment not in sel[], preserving order */
+			for (i = 0; i < m->nsegments; i++)
+			{
+				issel = false;
+				for (j = 0; j < nsel; j++)
+					if (sel[j] == i)
+					{
+						issel = true;
+						break;
+					}
+				if (!issel)
+					kept[nkept++] = m->segs[i];
+			}
+			kept[nkept++] = newseg;	/* append the merged segment */
+			memcpy(m->segs, kept, nkept * sizeof(BM25SegMeta));
+			m->nsegments = nkept;
+			/* corpus totals unchanged (same docs, tombstones already excluded) */
 			GenericXLogFinish(state);
 			UnlockReleaseBuffer(mb);
-			for (s = 0; s < nold; s++)
-				bm25_free_segment(index, &oldsegs[s]);
+			for (i = 0; i < nsel; i++)
+				bm25_free_segment(index, &chosen[i]);
 			IndexFreeSpaceMapVacuum(index);
+			MemoryContextDelete(bs.ctx);
+			return true;
 		}
 		else
 		{
-			/* directory changed under us; abandon this merge (new segment leaks
-			 * until next merge/REINDEX -- rare, single-writer path) */
+			/* directory changed; abandon (new segment leaks until next merge/
+			 * REINDEX -- rare, single-writer path) */
 			GenericXLogAbort(state);
 			UnlockReleaseBuffer(mb);
+			MemoryContextDelete(bs.ctx);
+			return false;
 		}
 	}
-	MemoryContextDelete(bs.ctx);
+}
+
+static void
+bm25_merge_segments(Relation index)
+{
+	int			guard;
+
+	/*
+	 * Repeatedly merge one qualifying size-tier until no tier has enough
+	 * segments and the total count is within budget.  The guard bounds the loop
+	 * (each successful merge reduces nsegments).
+	 */
+	for (guard = 0; guard < BM25_MAX_SEGMENTS; guard++)
+	{
+		BM25MetaPageData meta;
+		MergeCand	cand[BM25_MAX_SEGMENTS];
+		uint32		sel[BM25_MAX_SEGMENTS];
+		uint32		nsel = 0;
+		uint32		i;
+
+		{
+			Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
+
+			LockBuffer(mb, BUFFER_LOCK_SHARE);
+			memcpy(&meta, BM25PageGetMeta(BufferGetPage(mb)), sizeof(meta));
+			UnlockReleaseBuffer(mb);
+		}
+		if (meta.nsegments <= 1)
+			return;
+
+		/* candidates sorted by live size (ndocs - ndeleted) */
+		for (i = 0; i < meta.nsegments; i++)
+		{
+			cand[i].idx = i;
+			cand[i].size = meta.segs[i].ndocs - meta.segs[i].ndeleted;
+			if (cand[i].size < 1)
+				cand[i].size = 1;
+		}
+		qsort(cand, meta.nsegments, sizeof(MergeCand), cmp_mergecand);
+
+		/* longest run of same-tier segments from the smallest: each within
+		 * BM25_MERGE_SIZE_FACTOR of the run's smallest member */
+		{
+			double		base = cand[0].size;
+			uint32		run = 0;
+
+			for (i = 0; i < meta.nsegments; i++)
+			{
+				if (cand[i].size <= base * BM25_MERGE_SIZE_FACTOR)
+					run++;
+				else
+					break;
+			}
+			/* merge this tier if large enough, or if we simply have too many
+			 * segments overall (force progress toward the budget) */
+			if (run >= BM25_MERGE_TIER_MIN ||
+				(meta.nsegments > BM25_MERGE_THRESHOLD && run >= 2))
+			{
+				for (i = 0; i < run; i++)
+					sel[nsel++] = cand[i].idx;
+			}
+		}
+
+		if (nsel < 2)
+			return;				/* no tier worth merging */
+		if (!bm25_merge_selected(index, sel, nsel))
+			return;				/* directory changed underneath */
+	}
 }
 
 static IndexBuildResult *
