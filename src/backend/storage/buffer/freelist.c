@@ -304,6 +304,15 @@ typedef struct NumaClockControl
 
 static NumaClockControl *NumaClockCtl = NULL;
 
+/*
+ * Shared-memory control region for an extension-provided algorithm chosen as
+ * the DEFAULT pool (buffer_pool_algorithm != "clock").  Reserved separately
+ * in StrategyCtlShmemRequest() and sized by the algorithm's own shmem_size().
+ * NULL when the default pool uses the built-in clock sweep, which stores its
+ * state directly in StrategyControl.
+ */
+static void *DefaultAlgoCtl = NULL;
+
 const BufferPoolRoutine clock_pool_routine = {
 	.type = T_Invalid,			/* NodeTag not needed for built-in routine */
 	.on_hit = NULL,				/* clock-sweep uses usage_count, not explicit
@@ -971,12 +980,42 @@ StrategyHintVacuum(bool vacuum_active)
  */
 
 /*
+ * ResolveDefaultPoolRoutine -- map the buffer_pool_algorithm GUC to a routine.
+ *
+ * Returns the registered routine for the configured name, or
+ * &clock_pool_routine if the name is unknown/unset.  Shared by the shmem
+ * request and init callbacks so both agree on which algorithm owns the
+ * DEFAULT pool (and therefore how much shared memory to reserve).  Callers
+ * that need to warn about an unknown name pass warn_if_unknown = true.
+ */
+static const BufferPoolRoutine *
+ResolveDefaultPoolRoutine(bool warn_if_unknown)
+{
+	const char *name = buffer_pool_algorithm ? buffer_pool_algorithm
+		: BP_ALGO_CLOCK_NAME;
+	const BufferPoolRoutine *routine = LookupDefaultPoolAlgorithm(name);
+
+	if (routine == NULL)
+	{
+		if (warn_if_unknown)
+			ereport(WARNING,
+					(errmsg("buffer pool algorithm \"%s\" is not registered, using \"%s\"",
+							name, BP_ALGO_CLOCK_NAME),
+					 errhint("Load the providing extension via shared_preload_libraries.")));
+		routine = &clock_pool_routine;
+	}
+	return routine;
+}
+
+/*
  * StrategyCtlShmemRequest -- request shared memory for the buffer
  *		cache replacement strategy.
  */
 static void
 StrategyCtlShmemRequest(void *arg)
 {
+	const BufferPoolRoutine *routine = ResolveDefaultPoolRoutine(false);
+
 	ShmemRequestStruct(.name = "Buffer Strategy Status",
 					   .size = sizeof(BufferStrategyControl),
 					   .ptr = (void **) &StrategyControl
@@ -986,6 +1025,18 @@ StrategyCtlShmemRequest(void *arg)
 					   .alignment = PG_CACHE_LINE_SIZE,
 					   .ptr = (void **) &NumaClockCtl
 		);
+
+	/*
+	 * If an extension algorithm is the DEFAULT pool, reserve its own control
+	 * region sized by the algorithm.  The built-in clock sweep stores its
+	 * state directly in StrategyControl and needs nothing extra here.
+	 */
+	if (routine != &clock_pool_routine && routine->shmem_size != NULL)
+		ShmemRequestStruct(.name = "Default Pool Algorithm Control",
+						   .size = routine->shmem_size(NBuffers),
+						   .alignment = PG_CACHE_LINE_SIZE,
+						   .ptr = (void **) &DefaultAlgoCtl
+			);
 }
 
 /*
@@ -1018,20 +1069,25 @@ StrategyCtlShmemInit(void *arg)
 	 * a documented fallback.
 	 */
 	{
-		const char *name = buffer_pool_algorithm ? buffer_pool_algorithm
-			: BP_ALGO_CLOCK_NAME;
-		const BufferPoolRoutine *routine = LookupDefaultPoolAlgorithm(name);
+		const BufferPoolRoutine *routine = ResolveDefaultPoolRoutine(true);
 
-		if (routine == NULL)
-		{
-			ereport(WARNING,
-					(errmsg("buffer pool algorithm \"%s\" is not registered, using \"%s\"",
-							name, BP_ALGO_CLOCK_NAME),
-					 errhint("Load the providing extension via shared_preload_libraries.")));
-			routine = &clock_pool_routine;
-		}
 		ActivePoolRoutine = routine;
 		ActivePoolData = StrategyControl;
+
+		/*
+		 * An extension algorithm chosen as the DEFAULT pool keeps its state in
+		 * the region reserved for it in StrategyCtlShmemRequest() (DefaultAlgoCtl),
+		 * not in StrategyControl.  Point ActivePoolData there and let the
+		 * algorithm initialize its own spinlocks/lists via shmem_init(), exactly
+		 * like a dynamic pool does.  first_buf_id is 0 for the default pool.
+		 */
+		if (routine != &clock_pool_routine && routine->shmem_size != NULL)
+		{
+			Assert(DefaultAlgoCtl != NULL);
+			ActivePoolData = DefaultAlgoCtl;
+			if (routine->shmem_init)
+				routine->shmem_init(ActivePoolData, NBuffers, 0, true);
+		}
 
 		/*
 		 * If NUMA distribution is active (buffer_pool_numa on + multi-node
@@ -1074,6 +1130,20 @@ StrategyCtlShmemInit(void *arg)
 
 			elog(LOG, "default buffer pool using NUMA-partitioned clock sweep across %d nodes",
 				 NumaClockCtl->nnodes);
+		}
+		else
+		{
+			/*
+			 * Report the resolved default-pool algorithm.  With no config this
+			 * is always the built-in clock-sweep -- matching upstream/master
+			 * behavior (clock for every relation, including TOAST).  Emitting
+			 * it makes the default observable (and regression-testable): a
+			 * zero-config cluster must log "clock-sweep".
+			 */
+			elog(LOG, "default buffer pool using %s replacement algorithm",
+				 (ActivePoolRoutine == &clock_pool_routine)
+				 ? "clock-sweep"
+				 : (buffer_pool_algorithm ? buffer_pool_algorithm : "clock-sweep"));
 		}
 
 		/*
