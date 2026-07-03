@@ -137,7 +137,13 @@ bm25_tombstones_load(Relation index, const BM25MetaPageData *meta, BM25Tombstone
 		return;
 
 	t->blobs = (uint8 **) palloc0(meta->nsegments * sizeof(uint8 *));
-	t->maps = (sm_t *) palloc0(meta->nsegments * sizeof(sm_t));
+	/*
+	 * sm_t (struct sparsemap) is declared with 8-byte alignment; plain palloc
+	 * only guarantees MAXALIGN (4 on ILP32), so allocate the array 8-aligned to
+	 * satisfy that requirement (a misaligned sm_t trips -fsanitize=alignment).
+	 */
+	t->maps = (sm_t *) palloc_aligned(meta->nsegments * sizeof(sm_t), 8, 0);
+	memset(t->maps, 0, meta->nsegments * sizeof(sm_t));
 	t->present = (bool *) palloc0(meta->nsegments * sizeof(bool));
 	for (s = 0; s < meta->nsegments; s++)
 	{

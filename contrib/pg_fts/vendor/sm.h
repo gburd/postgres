@@ -128,14 +128,57 @@
 #ifndef SPARSEMAP_H
 #define SPARSEMAP_H
 
-#include "sm_compat.h"
-
 #include <inttypes.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#if !defined(_MSC_VER)
 #include <sys/types.h>
+#endif
+
+/*
+ * Compiler-portability shims.  The library is written in GNU C style
+ * (bare __attribute__, __builtin_*, POSIX ssize_t); these macros give
+ * MSVC (and any non-GNU compiler) a working spelling or a no-op.  The
+ * bit intrinsics (SM_POPCOUNT64 / SM_CTZ64 / SM_CLZ64 / SM_PREFETCH)
+ * have their own guarded blocks in sm.c.
+ *
+ * SM_ALIGNED(n) attaches to a struct/typedef; SM_UNALIGNED qualifies a
+ * pointer target for byte-granular access.  Each may be overridden by
+ * a consumer with -DSM_ALIGNED=... before including this header.
+ */
+#if defined(_MSC_VER)
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+#endif
+
+#ifndef SM_ALIGNED
+#if defined(__GNUC__) || defined(__clang__)
+#define SM_ALIGNED(n) __attribute__((aligned(n)))
+#elif defined(_MSC_VER)
+#define SM_ALIGNED(n) __declspec(align(n))
+#else
+#define SM_ALIGNED(n)
+#endif
+#endif /* SM_ALIGNED */
+
+/*
+ * SM_ALIGNAS(t): align a declaration to alignof(t).  Used on local
+ * uint8_t[] scratch buffers that a chunk descriptor is built inside,
+ * so the 8-byte descriptor words land aligned.  (Access is
+ * unaligned-safe regardless; this is defense-in-depth.)  Every use in
+ * the library aligns to __sm_bitvec_t, i.e. 8 bytes.
+ */
+#ifndef SM_ALIGNAS
+#if defined(__GNUC__) || defined(__clang__)
+#define SM_ALIGNAS(t) _Alignas(t)
+#elif defined(_MSC_VER)
+#define SM_ALIGNAS(t) __declspec(align(8))
+#else
+#define SM_ALIGNAS(t)
+#endif
+#endif /* SM_ALIGNAS */
 
 /*
  * Symbol prefixing for embedding (Berkeley DB --with-uniquename
@@ -254,10 +297,10 @@ extern "C" {
 #endif
 
 /** Library version (kept in sync with meson.build's project(version: ...)). */
-#define SM_VERSION_STRING "5.1.1"
+#define SM_VERSION_STRING "5.2.0"
 #define SM_VERSION_MAJOR  5
-#define SM_VERSION_MINOR  1
-#define SM_VERSION_PATCH  1
+#define SM_VERSION_MINOR  2
+#define SM_VERSION_PATCH  0
 
 /** Handle to a sparsemap instance.
  *
@@ -336,7 +379,7 @@ void sm_set_allocator(sm_allocator_t a);
  * caller-owned sm_cursor_t (see below).  Nothing here is serialized.
  */
 #if defined(SM_INTERNAL) || defined(SM_EXPOSE_STRUCT)
-struct __attribute__((aligned(8))) sparsemap {
+struct SM_ALIGNED(8) sparsemap {
 	size_t m_capacity;  /* (capacity & ~7) bytes; low 3 bits = lineage */
 	size_t m_data_used; /* used size of m_data, in bytes */
 	uint8_t *m_data;    /* the serialized bitmap data */
@@ -366,8 +409,12 @@ struct __attribute__((aligned(8))) sparsemap {
 typedef struct sm_cursor {
 	size_t offset;      /* byte offset of cached chunk; SIZE_MAX = invalid */
 	uint64_t start_idx; /* cached chunk's start bit */
+	size_t prev_offset; /* byte offset of the chunk immediately BEFORE
+	                     * `offset`, or SIZE_MAX; a free left-neighbor
+	                     * hint captured during the forward walk and used
+	                     * to skip a head-walk in the coalescing path */
 } sm_cursor_t;
-#define SM_CURSOR_INIT { (size_t)-1, 0 }
+#define SM_CURSOR_INIT { (size_t)-1, 0, (size_t)-1 }
 
 /** Sentinel value returned when a lookup finds no matching bit. */
 #define SM_IDX_MAX UINT64_MAX
