@@ -1451,6 +1451,46 @@ bm25_buildempty(Relation index)
 }
 
 /*
+ * Index one oversized document (its analyzed ftsdoc does not fit on a single
+ * pending page) directly as its own one-document segment, bypassing the
+ * verbatim pending buffer.  Segment posting storage is a chain of FOR-packed
+ * pages with no per-document size limit, so arbitrarily large documents (e.g.
+ * long Wikipedia articles) can be indexed.  Rare, so building a whole segment
+ * per such document is acceptable.
+ */
+static void
+bm25_insert_oversized_as_segment(Relation index, FtsDoc doc, ItemPointer tid)
+{
+	BM25BuildState bs;
+	FtsTermEntry *entries = FTS_DOC_ENTRIES(doc);
+	uint32		j;
+
+	bs.ctx = AllocSetContextCreate(CurrentMemoryContext, "bm25 oversized",
+								   ALLOCSET_DEFAULT_SIZES);
+	bs.terms = NULL;
+	bs.nterms = 0;
+	bs.maxterms = 0;
+	bs.ndocs = 0;
+	bs.sumdoclen = 0;
+	bm25_build_ht_init(&bs);
+
+	{
+		MemoryContext old = MemoryContextSwitchTo(bs.ctx);
+
+		for (j = 0; j < doc->nterms; j++)
+			add_posting(&bs, FTS_DOC_TERMTEXT(doc, &entries[j]), entries[j].len,
+						tid, entries[j].tf, doc->doclen);
+		bs.ndocs = 1.0;
+		bs.sumdoclen = doc->doclen;
+		MemoryContextSwitchTo(old);
+	}
+
+	/* write the one-doc segment (updates corpus N/sumdoclen via add_segment) */
+	bm25_build_flush_segment(index, &bs);
+	MemoryContextDelete(bs.ctx);
+}
+
+/*
  * aminsert: append the new document to the pending list.
  *
  * The document is stored verbatim (its ftsdoc bytes) on a chain of pending
@@ -1486,9 +1526,12 @@ bm25_insert(Relation index, Datum *values, bool *isnull,
 	need = MAXALIGN(sizeof(BM25PendingItem) + doclen);
 
 	if (need > BLCKSZ - MAXALIGN(SizeOfPageHeaderData) - MAXALIGN(sizeof(BM25PageOpaqueData)))
-		ereport(ERROR,
-				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED)),
-				errmsg("ftsdoc too large for a bm25 pending page"));
+	{
+		/* Too large for the verbatim pending buffer: index it directly as its
+		 * own one-document segment (no per-doc size limit there). */
+		bm25_insert_oversized_as_segment(index, doc, ht_ctid);
+		return true;
+	}
 
 	/* Lock the metapage for the whole append (serializes inserters; a
 	 * per-inserter fast path is a later optimization). */

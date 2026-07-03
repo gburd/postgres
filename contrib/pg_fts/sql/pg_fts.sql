@@ -699,3 +699,16 @@ SELECT count(*) AS beta_reused FROM tomb WHERE d @@@ 'beta'::ftsquery;       -- 
 SELECT fts_count('tomb_bm25','beta'::ftsquery) AS beta_reused_fc;            -- 60
 RESET enable_seqscan;
 DROP TABLE tomb;
+
+-- oversized document: an analyzed ftsdoc larger than one pending page must be
+-- indexed as its own segment rather than rejected
+CREATE TABLE bigdoc (id int, d ftsdoc);
+CREATE INDEX bigdoc_bm25 ON bigdoc USING bm25 (d);
+INSERT INTO bigdoc SELECT 1, to_ftsdoc(string_agg('term'||g||'x', ' '))
+  FROM generate_series(1,4000) g;
+INSERT INTO bigdoc VALUES (2, to_ftsdoc('small doc with term500x here'));
+SET enable_seqscan=off;
+SELECT count(*) AS big_term500 FROM bigdoc WHERE d @@@ 'term500x'::ftsquery;   -- 2
+SELECT count(*) AS big_term3999 FROM bigdoc WHERE d @@@ 'term3999x'::ftsquery; -- 1
+RESET enable_seqscan;
+DROP TABLE bigdoc;
