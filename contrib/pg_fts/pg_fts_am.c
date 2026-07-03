@@ -1014,8 +1014,11 @@ bm25_write_segment(Relation index, BM25BuildState *bs, BM25SegMeta *seg)
 
 /*
  * Append a segment descriptor to the metapage directory and fold its doc stats
- * into the corpus totals.  Errors if the directory is full (tiered merge keeps
- * the count small; a chained directory page is future work).
+ * into the corpus totals.  The directory is a fixed array in the metapage; the
+ * size-tiered merge keeps the live segment count far below BM25_MAX_SEGMENTS,
+ * so hitting the cap means merging is not keeping up -- we raise a clear error
+ * (data is intact) rather than chain overflow directory pages, which would add
+ * complexity to every reader for a case the merge policy makes unreachable.
  */
 static void
 bm25_meta_add_segment(Relation index, const BM25SegMeta *seg)
@@ -1035,7 +1038,9 @@ bm25_meta_add_segment(Relation index, const BM25SegMeta *seg)
 		UnlockReleaseBuffer(buf);
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
-				 errmsg("bm25 index has too many segments; run VACUUM or REINDEX")));
+				 errmsg("bm25 index \"%s\" reached the maximum of %d segments",
+						RelationGetRelationName(index), BM25_MAX_SEGMENTS),
+				 errhint("Run VACUUM to merge segments, or REINDEX to rebuild.")));
 	}
 	m->segs[m->nsegments] = *seg;
 	m->nsegments++;

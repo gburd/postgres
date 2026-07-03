@@ -72,7 +72,9 @@ typedef struct BM25SegMeta
 	BlockNumber dictindexstart; /* sparse block index over dict pages (Invalid = none) */
 } BM25SegMeta;
 
-#define BM25_MAX_SEGMENTS 64	/* tiered merge keeps this small; chain if ever exceeded */
+#define BM25_MAX_SEGMENTS 128	/* fits the metapage (~6KB of ~8KB); the size-
+										 * tiered merge keeps the live count far below
+										 * this, so it is only a safety backstop */
 
 typedef struct BM25MetaPageData
 {
