@@ -504,21 +504,23 @@ tidset_andnot(TidSet a, TidSet b)
 
 /*
  * bm25_lookup_prefix -- union the posting lists of every dictionary term that
- * begins with the given prefix.  Entries are sorted, so this could seek to the
- * first matching page via the block index and stop past the prefix range; today
- * it scans the (small) dictionary chain fully.  An FST or front-coded prefix
- * index would make this sublinear -- a future optimization.
+ * begins with the given prefix.  Dictionary entries are byte-sorted, so the
+ * matching terms are contiguous: seek (via the sparse per-page block index) to
+ * the page that can hold the prefix, then scan forward only while entries could
+ * still start with the prefix, stopping at the first term that sorts past it.
+ * Sublinear in the dictionary rather than a full scan.
  */
 static void
-bm25_lookup_prefix(Relation index, BlockNumber dictstart,
+bm25_lookup_prefix(Relation index, const BM25SegMeta *seg,
 				   const char *prefix, int prefixlen, TidSet *out)
 {
-	BlockNumber blk = dictstart;
+	BlockNumber blk = bm25_dict_seek(index, seg, prefix, prefixlen);
 	int			cap = 32;
 	int			n = 0;
 	ItemPointerData *tids = palloc(cap * sizeof(ItemPointerData));
+	bool		done = false;
 
-	while (blk != InvalidBlockNumber)
+	while (blk != InvalidBlockNumber && !done)
 	{
 		Buffer		buffer = ReadBuffer(index, blk);
 		Page		page;
@@ -536,9 +538,23 @@ bm25_lookup_prefix(Relation index, BlockNumber dictstart,
 		{
 			BM25DictEntry *de = (BM25DictEntry *) ptr;
 			Size		esize = MAXALIGN(offsetof(BM25DictEntry, term) + de->termlen);
+			int			cmplen = Min((int) de->termlen, prefixlen);
+			int			c = memcmp(de->term, prefix, cmplen);
 
-			if ((int) de->termlen >= prefixlen &&
-				memcmp(de->term, prefix, prefixlen) == 0)
+			if (c < 0 || (c == 0 && (int) de->termlen < prefixlen))
+			{
+				/* term sorts before the prefix: not there yet, keep scanning */
+				ptr += esize;
+				continue;
+			}
+			if (c > 0)
+			{
+				/* first prefixlen bytes exceed the prefix: sorted, so no more
+				 * matches can follow -- stop */
+				done = true;
+				break;
+			}
+			/* c == 0 and de->termlen >= prefixlen: a prefix match */
 			{
 				BM25Posting *post;
 				int			np = bm25_decode_term(index, de->firstposting,
@@ -586,7 +602,6 @@ static TidSet
 bm25_eval_query(Relation index, const BM25SegMeta *seg, FtsQuery q,
 				TidSet universe)
 {
-	BlockNumber dictstart = seg->dictstart;
 	EvalVal    *stack;
 	int			top = 0;
 	uint32		i;
@@ -610,7 +625,7 @@ bm25_eval_query(Relation index, const BM25SegMeta *seg, FtsQuery q,
 			TidSet		s;
 
 			if (it->flags & FTS_QF_PREFIX)
-				bm25_lookup_prefix(index, dictstart,
+				bm25_lookup_prefix(index, seg,
 								   FTS_QUERY_ITEMTEXT(q, it), it->termlen, &s);
 			else
 				bm25_lookup_term(index, seg,
