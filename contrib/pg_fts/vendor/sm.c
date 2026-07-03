@@ -3615,6 +3615,14 @@ sm_contains(const sm_t *map, uint64_t idx, sm_cursor_t *cur)
  * @param[in] coalesce A flag indicating whether to perform chunk coalescing.
  * @return The index of the bit that was unset.
  */
+/*
+ * Sentinel stored in the byte-offset variable `offset` to gate chunk
+ * coalescing off (when the chunk was never touched or its pointers are now
+ * invalid).  It must be the width of size_t -- using a uint64_t sentinel here
+ * truncates on ILP32 targets, so the != test never fires and coalesce runs on
+ * an uninitialized chunk.
+ */
+#define SM_UNSET_NO_COALESCE ((size_t)-1)
 static __sm_idx_t
 __sm_map_unset(sm_t *map, uint64_t idx, const bool coalesce)
 {
@@ -3652,7 +3660,7 @@ __sm_map_unset(sm_t *map, uint64_t idx, const bool coalesce)
 		 * that means there is no chunk that contains this index, so again this is
 		 * a no-op. */
 		offset =
-		    SM_IDX_MAX; /* gate coalesce off; chunk is uninitialized */
+		    SM_UNSET_NO_COALESCE; /* gate coalesce off; chunk is uninitialized */
 		goto done;
 	}
 
@@ -3665,7 +3673,7 @@ __sm_map_unset(sm_t *map, uint64_t idx, const bool coalesce)
 		 * Our search resulted in a chunk however it's capacity doesn't encompass
 		 * this index, so again a no-op.
 		 */
-		offset = SM_IDX_MAX; /* gate coalesce off; chunk untouched */
+		offset = SM_UNSET_NO_COALESCE; /* gate coalesce off; chunk untouched */
 		goto done;
 	}
 
@@ -3711,7 +3719,7 @@ __sm_map_unset(sm_t *map, uint64_t idx, const bool coalesce)
 			                     .capacity = capacity } };
 		SM_ENOUGH_SPACE(__sm_separate_rle_chunk(map, &sep, idx, 0));
 		/* Skip coalescing after RLE separation - the pointers are now invalid */
-		offset = SM_IDX_MAX;
+		offset = SM_UNSET_NO_COALESCE;
 		goto done;
 	}
 
@@ -3749,7 +3757,7 @@ __sm_map_unset(sm_t *map, uint64_t idx, const bool coalesce)
 	}
 
 done:;
-	if (coalesce && offset != SM_IDX_MAX) {
+	if (coalesce && offset != SM_UNSET_NO_COALESCE) {
 		__sm_coalesce_chunk(map, &chunk, chunk_offset, start, p, idx,
 		    false);
 	}
