@@ -1118,34 +1118,26 @@ LirsGetVictim(void *strategy_data, BufferAccessStrategy strategy pg_attribute_un
  */
 
 /*
- * LirsSyncStart -- return Q head position for trickle writer.
+ * LirsSyncStart -- return a monotonic sync position for the bgwriter.
  *
- * HIR pages at Q head are the most likely eviction candidates.
- * The trickle writer should prefer writing these dirty pages.
+ * BgBufferSync requires sync_start to report a position that advances
+ * monotonically with a matching complete_passes count (Assert(strategy_delta
+ * >= 0), bufmgr.c).  LIRS's Q head wanders (buf_ids reorder as HIR pages are
+ * promoted/evicted), so returning its buf_id violated that contract.  We
+ * return a fixed 0/0 like the other list-based algorithms (lru/arc/osic);
+ * real dirty-page writeback is driven by the trickle_iter callbacks, not this
+ * position.
  */
 static int
-LirsSyncStart(void *strategy_data, uint32 *complete_passes,
+LirsSyncStart(void *strategy_data pg_attribute_unused(), uint32 *complete_passes,
 			  uint32 *num_buf_alloc)
 {
-	LirsControl *ctl = (LirsControl *) strategy_data;
-	int			result = 0;
-
 	if (complete_passes)
 		*complete_passes = 0;
 	if (num_buf_alloc)
 		*num_buf_alloc = 0;
 
-	SpinLockAcquire(&ctl->lirs_lock);
-	if (ctl->q_head >= 0)
-	{
-		LirsCDB    *cdb_arr = LIRS_CDB(ctl);
-
-		if (cdb_arr[ctl->q_head].buf_id >= 0)
-			result = cdb_arr[ctl->q_head].buf_id + ctl->first_buf_id;
-	}
-	SpinLockRelease(&ctl->lirs_lock);
-
-	return result;
+	return 0;
 }
 
 static void

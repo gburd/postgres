@@ -141,6 +141,18 @@ typedef struct RcrdControl
 	/* CRD tracking */
 	int			distinct_counter;	/* running count of distinct pages seen */
 
+	/*
+	 * Monotonic sweep position for the bgwriter sync_start contract.
+	 * BgBufferSync requires sync_start to report a position that advances
+	 * monotonically paired with a complete_passes count that increments on
+	 * each wrap past nbuffers (Assert(strategy_delta >= 0), bufmgr.c).  RCRD's
+	 * eviction order (Q head) wanders arbitrarily, so we cannot report a queue
+	 * position directly.  Instead we keep a clock-hand-style counter that is
+	 * bumped once per victim handed out; passes are its high bits, exactly as
+	 * the built-in clock derives completePasses from nextVictimBuffer.
+	 */
+	pg_atomic_uint32 sync_hand;
+
 	/* Ghost hash table */
 	int			ghost_hash_size;
 
@@ -907,6 +919,20 @@ complete_miss:
  * ----------------------------------------------------------------
  */
 
+/*
+ * rcrd_advance_sync_hand -- bump the monotonic sweep position by one.
+ *
+ * Called each time RcrdGetVictim hands out a buffer.  A single lock-free
+ * atomic increment; the wrap into complete_passes is computed in
+ * RcrdSyncStart from the high bits of the counter, so nothing extra is
+ * needed here.  See the sync_hand comment in RcrdControl.
+ */
+static inline void
+rcrd_advance_sync_hand(RcrdControl *ctl)
+{
+	pg_atomic_fetch_add_u32(&ctl->sync_hand, 1);
+}
+
 static BufferDesc *
 RcrdGetVictim(void *strategy_data, BufferAccessStrategy strategy pg_attribute_unused(),
 			  uint64 *buf_state, bool *from_ring)
@@ -957,6 +983,7 @@ RcrdGetVictim(void *strategy_data, BufferAccessStrategy strategy pg_attribute_un
 					{
 						*buf_state = local_buf_state;
 						TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
+						rcrd_advance_sync_hand(ctl);
 						return buf;
 					}
 				}
@@ -1016,6 +1043,7 @@ RcrdGetVictim(void *strategy_data, BufferAccessStrategy strategy pg_attribute_un
 							*buf_state = local_buf_state;
 							SpinLockRelease(&ctl->rcrd_lock);
 							TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
+							rcrd_advance_sync_hand(ctl);
 							return buf;
 						}
 					}
@@ -1056,6 +1084,7 @@ RcrdGetVictim(void *strategy_data, BufferAccessStrategy strategy pg_attribute_un
 				{
 					*buf_state = local_buf_state;
 					TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
+					rcrd_advance_sync_hand(ctl);
 					return buf;
 				}
 			}
@@ -1070,35 +1099,36 @@ RcrdGetVictim(void *strategy_data, BufferAccessStrategy strategy pg_attribute_un
 	pg_unreachable();
 }
 
-
 /* ----------------------------------------------------------------
  *			RCRD sync/trickle/hint support
  * ----------------------------------------------------------------
  */
 
+/*
+ * RcrdSyncStart -- tell BgBufferSync where to start syncing.
+ *
+ * BgBufferSync requires a position that advances monotonically paired with a
+ * complete_passes count that increments on each wrap past nbuffers
+ * (Assert(strategy_delta >= 0), bufmgr.c).  We report the clock-hand-style
+ * sync_hand counter that RcrdGetVictim bumps once per victim: the position is
+ * its low bits (mod nbuffers) and complete_passes its high bits, exactly as
+ * the built-in clock derives its position/passes from nextVictimBuffer.  This
+ * decouples the bgwriter contract from RCRD's internal Q reordering; actual
+ * dirty-page selection for writeback goes through the trickle_iter callbacks.
+ */
 static int
 RcrdSyncStart(void *strategy_data, uint32 *complete_passes,
 			  uint32 *num_buf_alloc)
 {
 	RcrdControl *ctl = (RcrdControl *) strategy_data;
-	int			result = 0;
+	uint32		hand = pg_atomic_read_u32(&ctl->sync_hand);
 
 	if (complete_passes)
-		*complete_passes = 0;
+		*complete_passes = hand / (uint32) ctl->nbuffers;
 	if (num_buf_alloc)
 		*num_buf_alloc = 0;
 
-	SpinLockAcquire(&ctl->rcrd_lock);
-	if (ctl->q_head >= 0)
-	{
-		RcrdEntry  *entries = RCRD_ENTRIES(ctl);
-
-		if (entries[ctl->q_head].buf_id >= 0)
-			result = entries[ctl->q_head].buf_id + ctl->first_buf_id;
-	}
-	SpinLockRelease(&ctl->rcrd_lock);
-
-	return result;
+	return ctl->first_buf_id + (int) (hand % (uint32) ctl->nbuffers);
 }
 
 static void
@@ -1237,6 +1267,8 @@ RcrdShmemInit(void *strategy_data, int nbuffers, int first_buf_id, bool init)
 	ctl->cold_count = 0;
 	ctl->ghost_count = 0;
 	ctl->distinct_counter = 0;
+
+	pg_atomic_init_u32(&ctl->sync_hand, 0);
 
 	ctl->bgwprocno = -1;
 
