@@ -579,6 +579,39 @@ PgRuntimeSetCurrentWork(PgRuntime *runtime, PgCarrier *carrier,
 	PgRuntimeRefreshCurrentWork(rebind_session_gucs);
 }
 
+/*
+ * xtc-carrier: snapshot / restore the calling thread's current-work pointers.
+ *
+ * On the xtc carrier, many backend fibers time-share ONE OS thread, but PG's
+ * "current work" (CurrentPgRuntime/Carrier/Backend/Session/Connection/
+ * Execution) lives in ordinary thread-locals that the coroutine switch does
+ * NOT swap.  When a fiber yields at a socket/latch wait and the loop resumes a
+ * different fiber, that fiber must see ITS OWN current work, not the yielding
+ * fiber's.  The wait seam snapshots current work before parking the fiber and
+ * restores it on resume, making the current-work TLS effectively fiber-local
+ * across the one cooperative yield point a backend fiber has.
+ */
+void
+PgRuntimeSaveCurrentWork(PgCurrentWorkSnapshot *snap)
+{
+	Assert(snap != NULL);
+	snap->runtime = CurrentPgRuntime;
+	snap->carrier = CurrentPgCarrier;
+	snap->backend = CurrentPgBackend;
+	snap->session = CurrentPgSession;
+	snap->connection = CurrentPgConnection;
+	snap->execution = CurrentPgExecution;
+}
+
+void
+PgRuntimeRestoreCurrentWork(const PgCurrentWorkSnapshot *snap)
+{
+	Assert(snap != NULL);
+	PgRuntimeSetCurrentWork(snap->runtime, snap->carrier, snap->backend,
+							snap->session, snap->connection, snap->execution,
+							true);
+}
+
 void
 PgCarrierAttachBackend(PgCarrier *carrier, PgBackend *backend,
 					   PgSession *session, PgConnection *connection,

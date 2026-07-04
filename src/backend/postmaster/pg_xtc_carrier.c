@@ -253,6 +253,7 @@ xtc_pg_backend_fiber_exit(int code)
  */
 #include "storage/waiteventset.h"	/* WL_* */
 #include "xtc_io.h"					/* XTC_IO_* */
+#include "utils/backend_runtime.h"	/* PgCurrentWorkSnapshot, save/restore */
 
 int
 xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)
@@ -262,13 +263,18 @@ xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)
 	int64_t		timeout_ns = (timeout_ms < 0) ? -1 : (int64_t) timeout_ms * 1000000;
 	int			out = 0;
 	int			rc;
+	PgCurrentWorkSnapshot snap;
 
 	if (fd < 0)
 	{
 		/* No fd: honor a finite timeout by sleeping the fiber. */
 		if (timeout_ms >= 0)
 		{
+			PgCurrentWorkSnapshot snap;
+
+			PgRuntimeSaveCurrentWork(&snap);
 			xtc_proc_sleep(timeout_ns);
+			PgRuntimeRestoreCurrentWork(&snap);
 			return WL_TIMEOUT;
 		}
 		return WL_LATCH_SET;	/* caller re-checks */
@@ -302,7 +308,15 @@ xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)
 		}
 	}
 
+	PgRuntimeSaveCurrentWork(&snap);
 	rc = xtc_proc_wait_fd(fd, interest, timeout_ns, &revents);
+
+	/*
+	 * xtc_proc_wait_fd parked this fiber and the loop may have run other
+	 * backend fibers on this OS thread meanwhile, clobbering PG's current-
+	 * work thread-locals.  Restore ours before touching any PG state.
+	 */
+	PgRuntimeRestoreCurrentWork(&snap);
 
 	if (rc != XTC_OK && rc != XTC_E_AGAIN)
 		return WL_LATCH_SET;	/* treat as a wakeup; caller re-checks */

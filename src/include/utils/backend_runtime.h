@@ -3188,6 +3188,24 @@ extern void PgRuntimeSetCurrentWork(PgRuntime *runtime, PgCarrier *carrier,
 									PgConnection *connection,
 									PgExecution *execution,
 									bool rebind_session_gucs);
+
+/*
+ * Snapshot of a thread's current-work pointers, used by the xtc carrier to
+ * make current work fiber-local across a cooperative yield.  See
+ * PgRuntimeSaveCurrentWork / PgRuntimeRestoreCurrentWork.
+ */
+typedef struct PgCurrentWorkSnapshot
+{
+	PgRuntime  *runtime;
+	PgCarrier  *carrier;
+	PgBackend  *backend;
+	PgSession  *session;
+	PgConnection *connection;
+	PgExecution *execution;
+} PgCurrentWorkSnapshot;
+
+extern void PgRuntimeSaveCurrentWork(PgCurrentWorkSnapshot *snap);
+extern void PgRuntimeRestoreCurrentWork(const PgCurrentWorkSnapshot *snap);
 extern void PgCarrierAttachBackend(PgCarrier *carrier, PgBackend *backend,
 								   PgSession *session,
 								   PgConnection *connection,
