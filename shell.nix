@@ -2,6 +2,7 @@
   pkgs,
   pkgs-unstable,
   system,
+  xtc,
 }: let
   # Create a patched glibc only for the dev shell.
   #
@@ -138,6 +139,10 @@
           libselinux
           patchedGlibc
           patchedGlibc.dev
+          # libxtc: PostgreSQL backends run on this runtime.  Provides
+          # xtc.pc (pkg-config), headers, and libxtc.a so meson's
+          # dependency('xtc') probe resolves under -Dxtc=enabled.
+          xtc
         ]
       );
 

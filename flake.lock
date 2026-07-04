@@ -18,6 +18,29 @@
         "type": "github"
       }
     },
+    "libxtc": {
+      "inputs": {
+        "flake-utils": [
+          "flake-utils"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1783187241,
+        "narHash": "sha256-/ZrhZGWdzO7sDpBUIMp1T5fTdayArqv7VQfWJ0TrfyU=",
+        "owner": "gburd",
+        "repo": "libxtc",
+        "rev": "ea4491745c130c082af609afb5bd27b19a99db76",
+        "type": "github"
+      },
+      "original": {
+        "owner": "gburd",
+        "repo": "libxtc",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1767313136,
@@ -53,6 +76,7 @@
     "root": {
       "inputs": {
         "flake-utils": "flake-utils",
+        "libxtc": "libxtc",
         "nixpkgs": "nixpkgs",
         "nixpkgs-unstable": "nixpkgs-unstable"
       }

@@ -5,6 +5,14 @@
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.05";
     nixpkgs-unstable.url = "github:nixos/nixpkgs/nixpkgs-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    # libxtc: the async/concurrency runtime PostgreSQL backends run on.
+    # Defaults to GitHub; for local development point it at a checkout with
+    #   nix develop --override-input libxtc path:$HOME/ws/xtc
+    libxtc = {
+      url = "github:gburd/libxtc";
+      inputs.nixpkgs.follows = "nixpkgs";
+      inputs.flake-utils.follows = "flake-utils";
+    };
   };
 
   outputs = {
@@ -12,6 +20,7 @@
     nixpkgs,
     nixpkgs-unstable,
     flake-utils,
+    libxtc,
   }:
     flake-utils.lib.eachDefaultSystem (
       system: let
@@ -24,7 +33,10 @@
           config.allowUnfree = true;
         };
 
-        shellConfig = import ./shell.nix {inherit pkgs pkgs-unstable system;};
+        # The built libxtc (headers + libxtc.a + xtc.pc under $out).
+        xtc = libxtc.packages.${system}.xtc;
+
+        shellConfig = import ./shell.nix {inherit pkgs pkgs-unstable system xtc;};
       in {
         formatter = pkgs.alejandra;
         devShells = {
