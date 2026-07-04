@@ -603,6 +603,10 @@ extern int	StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc);
 extern void StrategyNotifyBgWriter(int bgwprocno);
 extern void StrategyHintVacuum(bool vacuum_active);
 
+/* freelist.c -- B3 bgwriter-fed per-node free lists (no-op unless numa on) */
+extern void NumaFreeListRefill(int buf_id);
+extern bool NumaFreeListActive(void);
+
 /* bufpool.h -- pluggable buffer pool vtable interface */
 #include "storage/bufpool.h"
 

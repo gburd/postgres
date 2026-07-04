@@ -4383,6 +4383,9 @@ BgBufferSync(WritebackContext *wb_context)
 	long		new_strategy_delta;
 	uint32		new_recent_alloc;
 
+	/* B3: cache free-list activation once per call (no-op unless numa on) */
+	bool		numa_freelists = NumaFreeListActive();
+
 	/*
 	 * Find out where the clock-sweep currently is, and how many buffer
 	 * allocations have happened since our last call.
@@ -4562,7 +4565,8 @@ BgBufferSync(WritebackContext *wb_context)
 	/* Execute the LRU scan */
 	while (num_to_scan > 0 && reusable_buffers < upcoming_alloc_est)
 	{
-		int			sync_state = SyncOneBuffer(next_to_clean, true,
+		int			this_buf = next_to_clean;
+		int			sync_state = SyncOneBuffer(this_buf, true,
 											   wb_context);
 
 		if (++next_to_clean >= NBuffers)
@@ -4582,7 +4586,19 @@ BgBufferSync(WritebackContext *wb_context)
 			}
 		}
 		else if (sync_state & BUF_REUSABLE)
+		{
 			reusable_buffers++;
+
+			/*
+			 * B3: this buffer was already clean and unpinned (BUF_REUSABLE
+			 * without BUF_WRITTEN).  Pre-stage it on its node's free list so a
+			 * backend can grab a node-local victim without touching the global
+			 * clock hand.  Bounded and re-validated on pop, so a lost race is
+			 * harmless.  No-op unless buffer_pool_numa is active.
+			 */
+			if (numa_freelists)
+				NumaFreeListRefill(this_buf);
+		}
 	}
 
 	PendingBgWriterStats.buf_written_clean += num_written;

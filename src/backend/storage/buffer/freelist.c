@@ -305,6 +305,123 @@ typedef struct NumaClockControl
 static NumaClockControl *NumaClockCtl = NULL;
 
 /*
+ * NumaFreeList -- bgwriter-fed per-node free lists (B3).
+ *
+ * Layered on top of the B2 soft-affinity sweep: each node owns a small
+ * fixed-capacity ring of already-clean, unpinned buffer ids that the
+ * background writer deposits while it runs the LRU scan.  A backend that needs
+ * a victim pops from its OWN node's ring first (a cheap, node-local,
+ * contended-only-within-node operation) BEFORE running the soft-affinity probe
+ * on the global clock hand.  Every popped id is RE-VALIDATED with the same
+ * lock-free CAS acquire the clock uses (ClockTryAcquireVictim); anything that
+ * raced (re-pinned, re-dirtied, usage bumped) is dropped and the caller falls
+ * back to the soft-affinity clock sweep.  So the ring is a pure hint -- it can
+ * never hand out a torn or stale victim, and it is byte-irrelevant unless
+ * buffer_pool_numa is active (NumaFreeCtl stays NULL otherwise).
+ *
+ * ponytail: fixed 256 ids/node, single spinlock per node.  The ceiling is the
+ * ring capacity (a backend under a burst just falls back to the clock, exactly
+ * as B2 does today); go lock-free / larger only if the fallback rate is
+ * measurably hot on metal.
+ */
+#define NUMA_FREELIST_CAP 256
+
+typedef struct NumaFreeNode
+{
+	slock_t		lock;
+	int			head;		/* pop index */
+	int			count;		/* live entries */
+	int			ids[NUMA_FREELIST_CAP];
+}			NumaFreeNode;
+
+typedef struct NumaFreeListControl
+{
+	int			nnodes;
+	NumaFreeNode nodes[BUFPOOL_MAX_NUMA_NODES];
+}			NumaFreeListControl;
+
+static NumaFreeListControl *NumaFreeCtl = NULL;
+
+/*
+ * NumaFreePush -- deposit a buffer id on its owning node's ring (bgwriter).
+ * Bounded: silently drops the id if the ring is full.  Caller must have
+ * already confirmed the buffer is clean and unpinned; re-validation on pop
+ * makes a lost race harmless either way.
+ */
+static void
+NumaFreePush(int buf_id)
+{
+	int			node;
+	NumaFreeNode *n;
+
+	if (NumaFreeCtl == NULL)
+		return;
+
+	node = BufPoolBufferNode(buf_id, NBuffers);
+	if (node < 0 || node >= NumaFreeCtl->nnodes)
+		return;
+
+	n = &NumaFreeCtl->nodes[node];
+	SpinLockAcquire(&n->lock);
+	if (n->count < NUMA_FREELIST_CAP)
+	{
+		int			tail = (n->head + n->count) % NUMA_FREELIST_CAP;
+
+		n->ids[tail] = buf_id;
+		n->count++;
+	}
+	SpinLockRelease(&n->lock);
+}
+
+/*
+ * NumaFreePop -- pop one candidate id from node's ring, or -1 if empty.
+ * The id is only a hint; the caller must re-validate it before use.
+ */
+static int
+NumaFreePop(int node)
+{
+	NumaFreeNode *n;
+	int			buf_id = -1;
+
+	if (NumaFreeCtl == NULL || node < 0 || node >= NumaFreeCtl->nnodes)
+		return -1;
+
+	n = &NumaFreeCtl->nodes[node];
+	SpinLockAcquire(&n->lock);
+	if (n->count > 0)
+	{
+		buf_id = n->ids[n->head];
+		n->head = (n->head + 1) % NUMA_FREELIST_CAP;
+		n->count--;
+	}
+	SpinLockRelease(&n->lock);
+	return buf_id;
+}
+
+/*
+ * NumaFreeListRefill -- bgwriter hook to deposit a reusable buffer (bufmgr.c).
+ *
+ * Called from BgBufferSync for a buffer the LRU scan just found clean and
+ * unpinned (BUF_REUSABLE and no BM_DIRTY).  No-op unless the per-node lists
+ * exist (buffer_pool_numa active), so the stock bgwriter path is unchanged.
+ */
+void
+NumaFreeListRefill(int buf_id)
+{
+	NumaFreePush(buf_id);
+}
+
+/*
+ * NumaFreeListActive -- do the bgwriter-fed per-node free lists exist?
+ * False (and thus a total no-op) unless buffer_pool_numa is active.
+ */
+bool
+NumaFreeListActive(void)
+{
+	return NumaFreeCtl != NULL;
+}
+
+/*
  * Shared-memory control region for an extension-provided algorithm chosen as
  * the DEFAULT pool (buffer_pool_algorithm != "clock").  Reserved separately
  * in StrategyCtlShmemRequest() and sized by the algorithm's own shmem_size().
@@ -587,6 +704,34 @@ NumaSoftClockGetVictim(void *strategy_data,
 		}
 	}
 	pg_atomic_fetch_add_u32(&StrategyControl->numBufferAllocs, 1);
+
+	/*
+	 * B3 fast path: pop an already-clean, node-local buffer the bgwriter
+	 * pre-staged for us, skipping the soft-affinity probe entirely.  Every
+	 * popped id is a hint only -- re-validate it with the exact CAS acquire
+	 * the clock uses.  A budget >1 means a candidate that lost a race
+	 * (re-pinned / re-dirtied / usage bumped) returns NULL rather than
+	 * ERRORing; we drop it, try the next pop, and fall through to the B2
+	 * sweep when the home ring is exhausted.  Never hands out a torn victim.
+	 */
+	if (NumaFreeCtl != NULL)
+	{
+		for (int i = 0; i < 8; i++)
+		{
+			int			cand = NumaFreePop(home);
+			int			local_try = 2;	/* >1: raced pin returns NULL, not ERROR */
+			BufferDesc *buf;
+
+			if (cand < 0)
+				break;			/* home ring empty -- fall to the B2 sweep */
+
+			buf = ClockTryAcquireVictim(cand, strategy, buf_state,
+									   &local_try, 2);
+			if (buf != NULL)
+				return buf;
+			/* stale/raced candidate: discard and try the next */
+		}
+	}
 
 	trycounter = NBuffers;
 	for (;;)
@@ -1192,6 +1337,11 @@ StrategyCtlShmemRequest(void *arg)
 					   .alignment = PG_CACHE_LINE_SIZE,
 					   .ptr = (void **) &NumaClockCtl
 		);
+	ShmemRequestStruct(.name = "NUMA Free Lists",
+					   .size = sizeof(NumaFreeListControl),
+					   .alignment = PG_CACHE_LINE_SIZE,
+					   .ptr = (void **) &NumaFreeCtl
+		);
 
 	/*
 	 * If an extension algorithm is the DEFAULT pool, reserve its own control
@@ -1280,6 +1430,20 @@ StrategyCtlShmemInit(void *arg)
 			 */
 			ActivePoolRoutine = &numa_soft_clock_pool_routine;
 			ActivePoolData = StrategyControl;
+
+			/*
+			 * B3: activate the bgwriter-fed per-node free lists that the soft
+			 * sweep pops from.  Reached only on this NUMA path, so NumaFreeCtl
+			 * stays NULL (every free-list op a no-op) for stock single-node /
+			 * numa-off clusters and B2 is otherwise unchanged.
+			 */
+			NumaFreeCtl->nnodes = Min(nnodes, BUFPOOL_MAX_NUMA_NODES);
+			for (int n = 0; n < BUFPOOL_MAX_NUMA_NODES; n++)
+			{
+				SpinLockInit(&NumaFreeCtl->nodes[n].lock);
+				NumaFreeCtl->nodes[n].head = 0;
+				NumaFreeCtl->nodes[n].count = 0;
+			}
 
 			/*
 			 * Bind the default pool's buffer blocks and descriptors to nodes
