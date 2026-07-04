@@ -1545,11 +1545,24 @@ backend_thread_finish(int code)
 
 	ShutdownWaitEventSupport();
 	backend_thread_set_current_start(NULL);
-	backend_thread_start_release(thread_start);
 #ifdef USE_XTC_CARRIER
 	if (xtc_in_backend_fiber)
+	{
+		/*
+		 * xtc-carrier: many backend fibers share ONE carrier OS thread, so
+		 * its thread-local current-work pointers (CurrentPgSession et al.)
+		 * outlive this fiber unless we clear them.  A fresh pthread starts
+		 * with these NULL; the next fiber must too, or its
+		 * PgSessionAdoptEarlyState() resolves GUCMemoryContext through this
+		 * now-freed session and faults.  Reset to the process/early
+		 * fallback before releasing the runtime_state this points into.
+		 */
+		PgRuntimeSetCurrentWork(NULL, NULL, NULL, NULL, NULL, NULL, false);
+		backend_thread_start_release(thread_start);
 		xtc_pg_backend_fiber_exit(exitstatus);
+	}
 #endif
+	backend_thread_start_release(thread_start);
 	pg_thread_exit();
 }
 
