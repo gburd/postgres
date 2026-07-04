@@ -16,6 +16,15 @@
 #include <sys/socket.h>
 #endif
 
+/*
+ * libpq.h macro-izes ssl_loaded_verify_locations into the current-connection
+ * accessor under USE_SSL.  This test manipulates the raw struct field on an
+ * explicit PgConnectionSecurityState *, so drop the macro here.
+ */
+#ifdef ssl_loaded_verify_locations
+#undef ssl_loaded_verify_locations
+#endif
+
 #ifndef WIN32
 static void
 test_close_socket(pgsocket *sock)
