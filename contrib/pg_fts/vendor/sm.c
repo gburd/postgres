@@ -657,7 +657,7 @@ __sm_chunk_rle_set_capacity(const __sm_chunk_t *chunk, const size_t capacity)
 	__sm_assert(capacity <= SM_CHUNK_RLE_MAX_CAPACITY);
 	__sm_bitvec_t w = chunk->m_data[0];
 	w &= ~SM_RLE_CAPACITY_MASK;
-	w |= (capacity << 31) & SM_RLE_CAPACITY_MASK;
+	w |= ((__sm_bitvec_t)capacity << 31) & SM_RLE_CAPACITY_MASK;
 	chunk->m_data[0] = w;
 }
 
@@ -1995,9 +1995,9 @@ __sm_get_chunk_end(const sm_t *map)
  * @return The aligned offset corresponding to the given index.
  */
 static __sm_idx_t
-__sm_get_chunk_aligned_offset(const size_t idx)
+__sm_get_chunk_aligned_offset(const uint64_t idx)
 {
-	const size_t capacity = SM_CHUNK_MAX_CAPACITY;
+	const uint64_t capacity = SM_CHUNK_MAX_CAPACITY;
 	return (idx / capacity * capacity);
 }
 
@@ -2804,13 +2804,44 @@ __sm_separate_rle_chunk(sm_t *map, __sm_chunk_sep_t *sep, const uint64_t idx,
 					SM_CHUNK_SET_FLAGS(
 					    pivot_chunk.m_data[0], bv,
 					    SM_PAYLOAD_MIXED);
-					/* and unset the bits beyond that. */
-					pivot_chunk.m_data[1] =
+					/* Partial run-tail vector: bits [0, first_zero%64) set. */
+					const __sm_bitvec_t tail_mask =
 					    ~(~(__sm_bitvec_t)0 << first_zero %
 					            SM_BITS_PER_VECTOR);
-					if (state == -1) {
+					if (state == 0 && bv == (idx - aligned_idx) /
+					        SM_BITS_PER_VECTOR) {
+						/*
+						 * The cleared bit shares the run-tail
+						 * vector: keep the single MIXED payload
+						 * already written by the state==0 setup
+						 * (all-ones-minus-cleared-bit) and just
+						 * mask off the bits past the run end.  No
+						 * new payload, no size change.
+						 */
+						pivot_chunk.m_data[1] &= tail_mask;
+					} else if (state == 0) {
+						/*
+						 * Distinct vectors (bv > vec_idx, since the
+						 * cleared bit lies within the run).  The
+						 * state==0 setup already placed the cleared
+						 * bit's payload at m_data[1]; the run-tail
+						 * MIXED needs its own payload at m_data[2]
+						 * (higher flag index sorts after).  Writing
+						 * it to m_data[1] as the non-state==0 path
+						 * does would clobber the cleared-bit
+						 * payload and leave pivot.size one vector
+						 * short -- corrupting the chunk stream.
+						 */
+						pivot_chunk.m_data[2] = tail_mask;
 						sep->pivot.size +=
 						    sizeof(__sm_bitvec_t);
+					} else {
+						/* and unset the bits beyond that. */
+						pivot_chunk.m_data[1] = tail_mask;
+						if (state == -1) {
+							sep->pivot.size +=
+							    sizeof(__sm_bitvec_t);
+						}
 					}
 				}
 			}
@@ -2872,6 +2903,23 @@ __sm_separate_rle_chunk(sm_t *map, __sm_chunk_sep_t *sep, const uint64_t idx,
 					sep->pivot.size +=
 					    sizeof(__sm_bitvec_t);
 				}
+				/*
+				 * The incremental size accounting above assumes
+				 * the initial state==1 reservation (one payload
+				 * vector) was consumed by a run-tail MIXED flag.
+				 * When the run tail ended on a vector boundary
+				 * (amt_over % SM_BITS_PER_VECTOR == 0) there is no
+				 * run-tail MIXED, the reserved slot is free, and
+				 * the += above over-counts pivot.size by one
+				 * vector -- inflating expand_by and inserting a
+				 * stray 8 bytes that desync the sequential chunk
+				 * walk.  Recompute the pivot size from the chunk's
+				 * actual flags so it is exact regardless of which
+				 * combination of run-tail / new-bit vectors is
+				 * present.
+				 */
+				sep->pivot.size = SM_SIZEOF_OVERHEAD +
+				    __sm_chunk_get_size(&pivot_chunk);
 			}
 			/* Record information necessary to construct the left chunk. */
 			sep->ex[0].start = sep->target.start;
@@ -2927,10 +2975,20 @@ __sm_separate_rle_chunk(sm_t *map, __sm_chunk_sep_t *sep, const uint64_t idx,
 				break;
 			} else {
 				/*
-				 * Can't fit a pivot in this space; the
-				 * caller must grow the buffer and retry.
+				 * Can't fit a pivot in this space.  This is
+				 * believed unreachable: the enclosing
+				 * `aligned_idx + SM_CHUNK_MAX_CAPACITY <
+				 * capacity` guard plus the earlier
+				 * right-aligned break should have handled
+				 * every in-capacity pivot.  Assert so a
+				 * counter-example surfaces under test rather
+				 * than silently dropping the bit; return
+				 * nonzero (ENOSPC) so a caller grows and
+				 * retries instead of treating it as done.
 				 */
-				return (0);
+				__sm_assert(false &&
+				    "separate: unreachable no-room pivot");
+				return (-1);
 			}
 		}
 
@@ -2994,11 +3052,23 @@ __sm_separate_rle_chunk(sm_t *map, __sm_chunk_sep_t *sep, const uint64_t idx,
 						        sizeof(__sm_bitvec_t));
 					}
 				} else {
-					/* ... right: calculate capacity from original target chunk, not stunt map */
+					/* ... right: capacity spans from THIS
+					 * chunk's start to the end of the original
+					 * target's capacity.  Use ex[i].start (the
+					 * right chunk's actual aligned start), NOT
+					 * aligned_idx (the pivot's start): the two
+					 * differ by SM_CHUNK_MAX_CAPACITY whenever the
+					 * pivot sits to the left of the right chunk
+					 * (every left-aligned and central split).
+					 * Using aligned_idx over-counts the capacity by
+					 * one window, so the right RLE's capacity
+					 * overruns into the following chunk's index
+					 * range and the sequential walk resolves
+					 * lookups against the wrong chunk. */
 					size_t right_cap =
 					    (sep->target.start +
 					        sep->target.capacity) -
-					    aligned_idx;
+					    sep->ex[i].start;
 					if (right_cap >
 					    SM_CHUNK_RLE_MAX_CAPACITY) {
 						right_cap =
@@ -3019,7 +3089,17 @@ __sm_separate_rle_chunk(sm_t *map, __sm_chunk_sep_t *sep, const uint64_t idx,
 				const size_t lrl =
 				    sep->ex[i].end - sep->ex[i].start + 1;
 				/* ... how many flags can we mark as all ones? ... */
-				if (lrl > SM_BITS_PER_VECTOR) {
+				if (lrl >= SM_BITS_PER_VECTOR) {
+					/*
+					 * `>=` not `>`: a run of exactly one vector
+					 * (lrl == SM_BITS_PER_VECTOR) still needs its
+					 * single ONES flag set.  With `>` the lrl ==
+					 * 64 case fell through with an all-zero flags
+					 * word, producing an empty chunk that dropped
+					 * a full vector of set bits.  lrl < 64 is
+					 * handled by the MIXED branch below, so it
+					 * never reaches the UB-shift here.
+					 */
 					lrc.m_data[0] = ~(__sm_bitvec_t)0 >>
 					    (SM_FLAGS_PER_INDEX -
 					        lrl / SM_BITS_PER_VECTOR) *
@@ -3098,7 +3178,19 @@ __sm_separate_rle_chunk(sm_t *map, __sm_chunk_sep_t *sep, const uint64_t idx,
 		return (-1);
 	}
 	sep->expand_by = total - base;
-	if (map->m_data_used + sep->expand_by > __sm_cap(map)) {
+	/*
+	 * __sm_insert_data's memmove length (m_data_used - offset) treats
+	 * `offset` as m_data-relative while the caller passes a data-region
+	 * offset, so the shift writes to m_data + m_data_used + expand_by +
+	 * SM_SIZEOF_OVERHEAD -- SM_SIZEOF_OVERHEAD past m_data_used +
+	 * expand_by.  The SM_ENOUGH_SPACE macro carries the same slack for
+	 * this reason; without it here the separate overruns the buffer by
+	 * SM_SIZEOF_OVERHEAD bytes at the exact-fit boundary (used +
+	 * expand_by == cap) instead of cleanly returning ENOSPC so
+	 * sm_add_grow can grow and retry.
+	 */
+	if (map->m_data_used + sep->expand_by + SM_SIZEOF_OVERHEAD >
+	    __sm_cap(map)) {
 		errno = ENOSPC;
 		return (-1);
 	}
@@ -3774,7 +3866,12 @@ __sm_map_unset(sm_t *map, uint64_t idx, const bool coalesce)
 			                     .start = start,
 			                     .length = length,
 			                     .capacity = capacity } };
-		SM_ENOUGH_SPACE(__sm_separate_rle_chunk(map, &sep, idx, 0));
+		if (__sm_separate_rle_chunk(map, &sep, idx, 0) != 0) {
+			/* Out of space (or invalid): the map was left
+			 * unmodified.  Propagate ENOSPC so sm_add_grow /
+			 * sm_remove callers can grow and retry. */
+			return (SM_IDX_MAX);
+		}
 		/* Skip coalescing after RLE separation - the pointers are now invalid */
 		offset = SM_UNSET_NO_COALESCE;
 		goto done;
@@ -4094,8 +4191,12 @@ __sm_map_set(sm_t *map, uint64_t idx, const bool coalesce, sm_cursor_t *cur)
 				                     .start = start,
 				                     .length = length,
 				                     .capacity = capacity } };
-			SM_ENOUGH_SPACE(
-			    __sm_separate_rle_chunk(map, &sep, idx, 1));
+			if (__sm_separate_rle_chunk(map, &sep, idx, 1) != 0) {
+				/* Out of space (or invalid): the map was left
+				 * unmodified.  Propagate ENOSPC so sm_add_grow
+				 * can grow and retry. */
+				return (SM_IDX_MAX);
+			}
 			left_hint = SIZE_MAX; /* separate shifted layout */
 			goto done;
 		}
