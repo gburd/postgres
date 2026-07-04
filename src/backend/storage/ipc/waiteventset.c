@@ -75,6 +75,9 @@
 #include "storage/pmsignal.h"
 #include "storage/latch.h"
 #include "storage/waiteventset.h"
+#ifdef USE_XTC_CARRIER
+#include "postmaster/pg_xtc_carrier.h"
+#endif
 #include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
@@ -1356,9 +1359,42 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 	WaitEvent  *cur_event;
 	struct epoll_event *cur_epoll_event;
 
+#ifdef USE_XTC_CARRIER
+	/*
+	 * xtc-carrier: while this backend runs as an xtc fiber, do not block the
+	 * carrier thread in epoll_wait().  The epoll fd is itself pollable: it
+	 * becomes readable when any registered event is ready.  Yield the fiber
+	 * on set->epoll_fd via the xtc loop, then harvest with a non-blocking
+	 * epoll_wait(..., 0).  All event decoding below is reused unchanged.
+	 *
+	 * The latch signalfd and postmaster-death fd are among the registered
+	 * events, so a SetLatch wake (which writes the signalfd) also makes the
+	 * epoll fd readable and unparks the fiber -- no separate latch path
+	 * needed for this single-backend bringup.
+	 */
+	if (xtc_in_backend_fiber)
+	{
+		int			wl;
+
+		/* Wait for the epoll fd to become readable (or timeout). */
+		wl = xtc_pg_wait_fd(set->epoll_fd, WL_SOCKET_READABLE,
+							(long) cur_timeout);
+		if (wl & WL_TIMEOUT)
+			return -1;			/* timeout occurred */
+		/* Harvest ready events without blocking. */
+		rc = epoll_wait(set->epoll_fd, set->epoll_ret_events,
+						Min(nevents, set->nevents_space), 0);
+		goto xtc_have_rc;
+	}
+#endif
+
 	/* Sleep */
 	rc = epoll_wait(set->epoll_fd, set->epoll_ret_events,
 					Min(nevents, set->nevents_space), cur_timeout);
+
+#ifdef USE_XTC_CARRIER
+xtc_have_rc:
+#endif
 
 	/* Check return code */
 	if (rc < 0)

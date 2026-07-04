@@ -30,4 +30,8 @@ OBJS = \
 	walsummarizer.o \
 	walwriter.o
 
+ifdef USE_XTC_CARRIER
+OBJS += pg_xtc_carrier.o
+endif
+
 include $(top_srcdir)/src/backend/common.mk

@@ -50,6 +50,9 @@
 #include "postmaster/bgwriter.h"
 #include "postmaster/fork_process.h"
 #include "postmaster/pgarch.h"
+#ifdef USE_XTC_CARRIER
+#include "postmaster/pg_xtc_carrier.h"
+#endif
 #include "postmaster/postmaster.h"
 #include "postmaster/startup.h"
 #include "postmaster/syslogger.h"
@@ -598,6 +601,39 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	if (thread_start->publication.postmaster_latch == NULL)
 		thread_start->publication.postmaster_latch = PgCurrentLocalLatchData();
 	Assert(thread_start->publication.postmaster_latch != NULL);
+
+#ifdef USE_XTC_CARRIER
+	/*
+	 * xtc-carrier: run the client backend as an xtc fiber on the xtc
+	 * scheduler thread instead of a raw pthread.  The fiber body is the
+	 * tree's own backend_thread_entry, so all thread-per-session init and
+	 * the dup()'d MyClientSocket->sock are reused unchanged; only the
+	 * carrier differs.  Its client-socket waits route through the xtc loop
+	 * (see waiteventset.c).
+	 */
+	if (child_type == B_BACKEND)
+	{
+		rc = xtc_pg_launch_backend_fiber(backend_thread_entry, thread_start);
+		if (rc != 0)
+		{
+			closesocket(thread_start->client_sock.sock);
+			backend_thread_start_release(thread_start);
+			errno = rc;
+			return false;
+		}
+		elog(LOG, "xtc: B_BACKEND launched as xtc fiber (child_slot=%d)",
+			 child_slot);
+		postmaster_thread_carriers_started = true;
+		/*
+		 * No PgThread handle for the fiber path.  Publish the logical
+		 * backend so postmaster signal/wake routing still targets it.
+		 */
+		PostmasterChildPublishLogicalBackend(pmchild,
+											 &thread_start->runtime_state.logical.backend);
+		pg_atomic_write_u32(&thread_start->launch_registered, 1);
+		return true;
+	}
+#endif
 
 	rc = pg_thread_create(&thread, "postgres backend",
 						  backend_thread_entry, thread_start);
