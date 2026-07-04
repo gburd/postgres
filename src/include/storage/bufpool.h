@@ -292,4 +292,7 @@ extern PGDLLIMPORT bool buffer_pool_numa;
 /* GUC (developer): force a logical NUMA node count for testing; 0 = auto */
 extern PGDLLIMPORT int buffer_pool_numa_nodes;
 
+/* GUC (developer): batch size for NUMA-partitioned clock-sweep victim claims */
+extern PGDLLIMPORT int buffer_pool_numa_sweep_batch;
+
 #endif							/* BUFPOOL_H */

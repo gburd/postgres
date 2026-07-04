@@ -305,6 +305,64 @@ typedef struct NumaClockControl
 static NumaClockControl *NumaClockCtl = NULL;
 
 /*
+ * B1: batched clock-sweep victim claiming.
+ *
+ * On multi-socket hardware every backend on a node hammers that node's single
+ * nextVictim[node] atomic once per candidate buffer.  Jim Mlodgenski + Greg
+ * Burd's -hackers work (+16-20% read-only pgbench on a 6-node SNC3 box) showed
+ * that claiming a BATCH of consecutive raw hand values per atomic, then handing
+ * them out from backend-local state, de-contends that hot counter.
+ *
+ * This is layered and gated: it lives only in NumaClockGetVictim, which is
+ * reached only when BufPoolNumaActive() (buffer_pool_numa on + >1 node).  With
+ * NUMA off or single-node hardware the plain ClockGetVictim path runs unchanged,
+ * so behavior is byte-identical to the stock clock sweep.
+ *
+ * The batch is claimed on the monotonic raw counter, not on buffer IDs, so
+ * wraparound needs no clamp/split: each raw value maps through (raw % range)
+ * per buffer, exactly as the unbatched path did, and completePasses is
+ * maintained per consumed raw value.  Leftover claims persist in per-backend
+ * state across calls (indexed by node) so a fall-through to another node does
+ * not waste them -- the next call for that node resumes the batch.
+ */
+int			buffer_pool_numa_sweep_batch = 64;
+
+typedef struct NumaSweepBatch
+{
+	uint32		next_raw;		/* next raw hand value to hand out */
+	int			remaining;		/* claimed-but-unused values left in batch */
+}			NumaSweepBatch;
+
+static NumaSweepBatch numa_sweep_batch[BUFPOOL_MAX_NUMA_NODES];
+
+/*
+ * NumaClockNextRaw -- next raw clock-hand value for node, from the batch.
+ *
+ * Refills the backend-local batch with one atomic fetch_add(N) when empty,
+ * clamping N so it never exceeds the node's partition (an over-large batch on
+ * a tiny partition would just churn the same buffers).  Returns the raw
+ * monotonic value; the caller maps it through (raw % range) as before.
+ */
+static inline uint32
+NumaClockNextRaw(NumaClockControl *ctl, int node, int range)
+{
+	NumaSweepBatch *b = &numa_sweep_batch[node];
+
+	if (b->remaining <= 0)
+	{
+		int			n = Min(buffer_pool_numa_sweep_batch, range);
+
+		if (n < 1)
+			n = 1;
+		b->next_raw = pg_atomic_fetch_add_u32(&ctl->nextVictim[node], (uint32) n);
+		b->remaining = n;
+	}
+
+	b->remaining--;
+	return b->next_raw++;
+}
+
+/*
  * Shared-memory control region for an extension-provided algorithm chosen as
  * the DEFAULT pool (buffer_pool_algorithm != "clock").  Reserved separately
  * in StrategyCtlShmemRequest() and sized by the algorithm's own shmem_size().
@@ -414,7 +472,7 @@ NumaClockGetVictim(void *strategy_data,
 		trycounter = range;
 		while (trycounter > 0)
 		{
-			uint32		victim_raw = pg_atomic_fetch_add_u32(&ctl->nextVictim[node], 1);
+			uint32		victim_raw = NumaClockNextRaw(ctl, node, range);
 			int			victim_id = start + (int) (victim_raw % (uint32) range);
 			int			local_try = range;
 			BufferDesc *buf;
@@ -461,17 +519,19 @@ NumaClockSyncStart(void *strategy_data, uint32 *complete_passes,
 	BufPoolNumaBufferRange(0, ctl->nbuffers, &start, &end);
 	range = (end > start) ? (end - start) : 1;
 
+	/*
+	 * BgBufferSync requires that the (passes, position) pair we hand back
+	 * never moves backwards between consecutive calls (it asserts
+	 * strategy_delta >= 0).  Derive BOTH from node 0's single raw counter --
+	 * position = next0 % range, passes = next0 / range -- exactly as the plain
+	 * clock sweep pairs nextVictimBuffer % NBuffers with nextVictimBuffer /
+	 * NBuffers.  The per-node completePasses[] sum is a different clock than
+	 * node 0's hand; mixing it with node 0's position lets the pair go
+	 * backwards, which batched claiming (coarse jumps + abandoned batches)
+	 * makes frequent enough to trip the assert.
+	 */
 	if (complete_passes)
-	{
-		/* Sum per-node passes for a whole-pool view. */
-		uint32		sum = 0;
-
-		SpinLockAcquire(&ctl->lock);
-		for (int n = 0; n < ctl->nnodes; n++)
-			sum += ctl->completePasses[n];
-		SpinLockRelease(&ctl->lock);
-		*complete_passes = sum;
-	}
+		*complete_passes = next0 / (uint32) range;
 	if (num_buf_alloc)
 		*num_buf_alloc = pg_atomic_exchange_u32(&ctl->numBufferAllocs, 0);
 

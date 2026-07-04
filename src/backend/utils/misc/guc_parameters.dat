@@ -418,6 +418,16 @@
   max => '64',
 },
 
+{ name => 'buffer_pool_numa_sweep_batch', type => 'int', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Number of consecutive clock-sweep victim IDs each backend claims per atomic.',
+  long_desc => 'In the NUMA-partitioned clock sweep, each backend claims this many consecutive raw clock-hand values from one atomic fetch-add, then hands them out from backend-local state before touching the shared counter again. Larger values reduce contention on the per-node clock hand at the cost of coarser sweep granularity. Only honored when buffer_pool_numa is on and the system has more than one (logical) NUMA node.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'buffer_pool_numa_sweep_batch',
+  boot_val => '64',
+  min => '1',
+  max => '1024',
+},
+
 { name => 'bytea_output', type => 'enum', context => 'PGC_USERSET', group => 'CLIENT_CONN_STATEMENT',
   short_desc => 'Sets the output format for bytea.',
   variable => 'bytea_output',
