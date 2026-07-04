@@ -1,0 +1,5 @@
+# pg_bp_clir extension
+comment = 'Clock-LIRS: lock-light scan-resistant buffer pool replacement strategy'
+default_version = '1.0'
+module_pathname = '$libdir/pg_bp_clir'
+relocatable = true

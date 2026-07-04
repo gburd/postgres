@@ -1,0 +1,155 @@
+DESIGN NOTES -- pg_bp_clir (CLIR / Clock-LIRS)
+===============================================
+
+Motivation
+----------
+
+pg_bp_lirs implements LIRS faithfully: a recency-ordered stack S and
+an HIR queue Q, both doubly-linked lists protected by a single
+spinlock.  Every cache hit takes the spinlock, splices the page into
+the right list position, and releases.  Under high backend
+concurrency this serialises every buffer access on a single mutex.
+
+CLIR replaces the lists with circular arrays + per-slot reference
+bits.  The transformation is the same one CAR applies to ARC: the
+algorithmic invariants (low-IRR pages live in the LIR tier, high-IRR
+pages live in the HIR tier, ghost lookups distinguish promoted-from-
+ghost from fresh inserts) are preserved, but the per-hit data-structure
+mutation becomes a single atomic OR of a reference bit instead of two
+list manipulations under a spinlock.
+
+Data structures (in shared memory, all in the same DSM region):
+
+  ClirControl            header: sizes, clock hands, adapt_lock,
+                         ghost head, statistics counters
+  ClirSlot lir[lir_size] LIR tier; one slot per LIR-resident page
+  ClirSlot hir[hir_size] HIR tier; one slot per HIR-resident page
+  ClirBufRef             side table buf_id -> (clock, slot index)
+  ClirGhost ghost[]      bounded FIFO of recently-evicted page tags
+                         + chained hash for O(1) lookup on miss
+
+Slot encoding fits in a single 32-bit atomic:
+
+  bits 0..7   state (FREE / RESIDENT)
+  bit  8      reference bit (set on every hit, cleared by clock sweep)
+
+Hot path
+--------
+
+on_hit(buf_id):
+    ref = per_buffer[buf_id - first];        /* one cache-line load */
+    atomic_or(&clock[ref.clock][ref.pos].ref_state, REF_BIT);
+
+That's the entire hot path.  No locks.  No list manipulation.  No
+ABA-style retries.  At worst a stale per_buffer[] read sets the ref
+bit on a slot that no longer owns the buffer; the slot's eventual
+occupant takes one extra clock revolution to be evicted.  Harmless.
+
+Miss path (under adapt_lock)
+----------------------------
+
+on_miss(tag):
+    Look up tag in ghost FIFO via the chained hash.
+
+on_new_tag(buf_id, tag, vacuum_hint):
+    if vacuum_hint:
+        install at HIR (eviction-soonest tier)
+    elif ghost-list-hit:
+        promote to LIR, demote some LIR slot to HIR
+    else:
+        install at HIR
+
+The miss path takes adapt_lock around ghost FIFO + side-table updates
++ optional LIR<->HIR transitions.  The lock is held for tens of
+nanoseconds; on_miss already costs a buffer read (often I/O), so the
+lock cost is in the noise.
+
+Victim selection
+----------------
+
+get_victim() called by the framework when on_new_tag needs a buffer
+and the pool is fully populated:
+
+  Walk hir_clock starting at hir_hand:
+    if slot is FREE: skip
+    if ref bit set: clear it (second chance), advance hand
+    else: try to pin the buffer; if successful, return it
+
+Falls back to lir_clock only when hir_clock is empty (a degenerate
+case the size cap prevents in practice).
+
+Sizing
+------
+
+  hir_size = max(32, nbuffers / 100), capped at nbuffers / 20
+  lir_size = nbuffers - hir_size
+  ghost_size = nbuffers
+  ghost_hash_size = nextpow2(ghost_size * 2)
+
+This matches the LIRS recommendation of ~99% LIR / ~1% HIR with a
+floor at 32 slots so very small pools still have meaningful scan
+absorption.  The ghost FIFO sized at nbuffers means a fresh page
+must be re-referenced within roughly one full pool-turnover to be
+recognised as previously-evicted and promoted to LIR.
+
+Concurrency claims
+------------------
+
+Compared to pg_bp_lirs on the same workload:
+
+  * on_hit:  one atomic word vs spinlock + 2 list ops + spinlock release.
+             Roughly 5-10x lower latency under contention.
+  * on_miss: same lock acquisition pattern, marginally cheaper because
+             the ghost-FIFO lookup is a hash chain vs a stack scan.
+  * get_victim: clock walk + atomic ref-bit clear vs queue dequeue
+             under spinlock.  Comparable single-threaded; large win
+             under concurrent victim selection.
+
+Compared to pg_bp_car (the lock-light ARC variant we already ship):
+
+  * Hit ratio: comparable on most workloads; LIRS family typically
+    wins on workloads with cyclic / scan-then-rescan access patterns
+    that ARC handles less precisely.
+  * Concurrency profile: comparable.  Both are clock-based with
+    single-word atomic hot path + fine-grained lock on the miss path.
+
+Multi-word CAS
+--------------
+
+The original architectural sketch considered MCAS (multi-word atomic
+CAS) for the LIR<->HIR transition step, which logically writes three
+locations: the donor LIR slot's state, the recipient HIR slot's
+state, and the side-table entry.  The implementation here uses
+single-word atomics only: the transition is staged through the
+adapt_lock so concurrent observers either see the pre-transition
+state or the post-transition state, never an intermediate one.  This
+is correct because the algorithm self-corrects on observable
+intermediates -- a page momentarily without a slot-owner just gets
+its next on_hit deferred to the next clock revolution -- and avoids
+both the implementation cost and the runtime overhead of software
+MCAS protocols.
+
+scan_resistant
+--------------
+
+CLIR sets BufferPoolRoutine.scan_resistant = true.  The framework
+(GetAccessStrategyWithSize in src/backend/storage/buffer/freelist.c)
+uses this flag to skip the RECYCLE-pool detour for BUF_INTENT_BULKREAD
+strategies on relations backed by a CLIR pool: scan-resistant
+algorithms protect themselves and don't need an external mechanism
+to confine bulk-read traffic to a small ring.  BUF_INTENT_VACUUM and
+BUF_INTENT_BULKWRITE still route through RECYCLE / per-backend ring
+regardless, because that is a write-side / VACUUM-side property
+independent of the algorithm's scan-resistance proof.
+
+References
+----------
+
+  S. Jiang, F. Chen, X. Zhang, "CLOCK-Pro: An Effective Improvement
+    of the CLOCK Replacement", USENIX ATC 2005.
+  S. Jiang, X. Zhang, "LIRS: An Efficient Low Inter-reference Recency
+    Set Replacement Policy to Improve Buffer Cache Performance",
+    SIGMETRICS 2002.
+  S. Bansal, D. Modha, "CAR: Clock with Adaptive Replacement",
+    USENIX FAST 2004.
+  B. Manes, https://github.com/ben-manes/caffeine/wiki/Efficiency
