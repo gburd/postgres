@@ -1209,6 +1209,18 @@ Keywords_for_list_of_owner_roles, "PUBLIC"
 "  FROM pg_catalog.pg_timezone_names() "\
 " WHERE pg_catalog.quote_literal(pg_catalog.lower(name)) LIKE pg_catalog.lower('%s')"
 
+#define Query_for_list_of_publications \
+"SELECT pubname "\
+"  FROM pg_catalog.pg_publication "\
+" WHERE pubname LIKE '%s'"
+
+#define Query_for_list_of_subscriptions \
+"SELECT s.subname "\
+"  FROM pg_catalog.pg_subscription s, pg_catalog.pg_database d"\
+" WHERE s.subname LIKE '%s' "\
+"   AND d.datname = pg_catalog.current_database() "\
+"   AND s.subdbid = d.oid"
+
 /* Privilege options shared between GRANT and REVOKE */
 #define Privilege_options_of_grant_and_revoke \
 "SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER", \
@@ -1242,32 +1254,6 @@ Copy_common_options, "DEFAULT", "FORCE_NOT_NULL", "FORCE_NULL", "FREEZE", \
 /* COPY TO options */
 #define Copy_to_options \
 Copy_common_options, "FORCE_QUOTE", "FORCE_ARRAY"
-
-/*
- * These object types were introduced later than our support cutoff of
- * server version 9.2.  We use the VersionedQuery infrastructure so that
- * we don't send certain-to-fail queries to older servers.
- */
-
-static const VersionedQuery Query_for_list_of_publications[] = {
-	{100000,
-		" SELECT pubname "
-		"   FROM pg_catalog.pg_publication "
-		"  WHERE pubname LIKE '%s'"
-	},
-	{0, NULL}
-};
-
-static const VersionedQuery Query_for_list_of_subscriptions[] = {
-	{100000,
-		" SELECT s.subname "
-		"   FROM pg_catalog.pg_subscription s, pg_catalog.pg_database d "
-		"  WHERE s.subname LIKE '%s' "
-		"    AND d.datname = pg_catalog.current_database() "
-		"    AND s.subdbid = d.oid"
-	},
-	{0, NULL}
-};
 
  /* Known command-starting keywords. */
 static const char *const sql_commands[] = {
@@ -1346,7 +1332,7 @@ static const pgsql_thing_t words_after_create[] = {
 	{"POLICY", NULL, NULL, NULL},
 	{"PROCEDURE", NULL, NULL, Query_for_list_of_procedures},
 	{"PROPERTY GRAPH", NULL, NULL, &Query_for_list_of_propgraphs},
-	{"PUBLICATION", NULL, Query_for_list_of_publications},
+	{"PUBLICATION", Query_for_list_of_publications},
 	{"ROLE", Query_for_list_of_roles},
 	{"ROUTINE", NULL, NULL, &Query_for_list_of_routines, NULL, THING_NO_CREATE},
 	{"RULE", "SELECT rulename FROM pg_catalog.pg_rules WHERE rulename LIKE '%s'"},
@@ -1354,7 +1340,7 @@ static const pgsql_thing_t words_after_create[] = {
 	{"SEQUENCE", NULL, NULL, &Query_for_list_of_sequences},
 	{"SERVER", Query_for_list_of_servers},
 	{"STATISTICS", NULL, NULL, &Query_for_list_of_statistics},
-	{"SUBSCRIPTION", NULL, Query_for_list_of_subscriptions},
+	{"SUBSCRIPTION", Query_for_list_of_subscriptions},
 	{"SYSTEM", NULL, NULL, NULL, NULL, THING_NO_CREATE | THING_NO_DROP},
 	{"TABLE", NULL, NULL, &Query_for_list_of_tables},
 	{"TABLESPACE", Query_for_list_of_tablespaces},
@@ -2139,12 +2125,12 @@ psql_completion(const char *text, int start, int end)
 	}
 
 	/* free storage */
-	free(previous_words);
-	free(words_buffer);
-	free(text_copy);
-	free(completion_ref_object);
+	pg_free(previous_words);
+	pg_free(words_buffer);
+	pfree(text_copy);
+	pg_free(completion_ref_object);
 	completion_ref_object = NULL;
-	free(completion_ref_schema);
+	pg_free(completion_ref_schema);
 	completion_ref_schema = NULL;
 
 	/* Return our Grand List O' Matches */
@@ -2376,11 +2362,12 @@ match_previous_words(int pattern_id,
 		COMPLETE_WITH("(", "PUBLICATION");
 	/* ALTER SUBSCRIPTION <name> SET ( */
 	else if (Matches("ALTER", "SUBSCRIPTION", MatchAny, MatchAnyN, "SET", "("))
-		COMPLETE_WITH("binary", "disable_on_error", "failover",
-					  "max_retention_duration", "origin",
+		COMPLETE_WITH("binary", "conflict_log_destination", "disable_on_error",
+					  "failover", "max_retention_duration", "origin",
 					  "password_required", "retain_dead_tuples",
 					  "run_as_owner", "slot_name", "streaming",
-					  "synchronous_commit", "two_phase");
+					  "synchronous_commit", "two_phase",
+					  "wal_receiver_timeout");
 	/* ALTER SUBSCRIPTION <name> SKIP ( */
 	else if (Matches("ALTER", "SUBSCRIPTION", MatchAny, MatchAnyN, "SKIP", "("))
 		COMPLETE_WITH("lsn");
@@ -3960,12 +3947,13 @@ match_previous_words(int pattern_id,
 		COMPLETE_WITH("WITH (");
 	/* Complete "CREATE SUBSCRIPTION <name> ...  WITH ( <opt>" */
 	else if (Matches("CREATE", "SUBSCRIPTION", MatchAnyN, "WITH", "("))
-		COMPLETE_WITH("binary", "connect", "copy_data", "create_slot",
-					  "disable_on_error", "enabled", "failover",
+		COMPLETE_WITH("binary", "conflict_log_destination", "connect", "copy_data",
+					  "create_slot", "disable_on_error", "enabled", "failover",
 					  "max_retention_duration", "origin",
 					  "password_required", "retain_dead_tuples",
 					  "run_as_owner", "slot_name", "streaming",
-					  "synchronous_commit", "two_phase");
+					  "synchronous_commit", "two_phase",
+					  "wal_receiver_timeout");
 
 /* CREATE TRIGGER --- is allowed inside CREATE SCHEMA, so use TailMatches */
 
@@ -5667,7 +5655,7 @@ match_previous_words(int pattern_id,
 	else if (TailMatchesCS("\\dew*"))
 		COMPLETE_WITH_QUERY(Query_for_list_of_fdws);
 	else if (TailMatchesCS("\\df*"))
-		COMPLETE_WITH_VERSIONED_SCHEMA_QUERY(Query_for_list_of_functions);
+		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_routines);
 	else if (HeadMatchesCS("\\df*"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_datatypes);
 
@@ -5699,9 +5687,9 @@ match_previous_words(int pattern_id,
 	else if (TailMatchesCS("\\dP*"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_partitioned_relations);
 	else if (TailMatchesCS("\\dRp*"))
-		COMPLETE_WITH_VERSIONED_QUERY(Query_for_list_of_publications);
+		COMPLETE_WITH_QUERY(Query_for_list_of_publications);
 	else if (TailMatchesCS("\\dRs*"))
-		COMPLETE_WITH_VERSIONED_QUERY(Query_for_list_of_subscriptions);
+		COMPLETE_WITH_QUERY(Query_for_list_of_subscriptions);
 	else if (TailMatchesCS("\\ds*"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_sequences);
 	else if (TailMatchesCS("\\dt*"))
@@ -6249,12 +6237,12 @@ _complete_from_query(const char *simple_query,
 
 		/* Clean up */
 		termPQExpBuffer(&query_buffer);
-		free(schemaname);
-		free(objectname);
-		free(e_object_like);
-		free(e_schemaname);
-		free(e_ref_object);
-		free(e_ref_schema);
+		pg_free(schemaname);
+		pg_free(objectname);
+		pg_free(e_object_like);
+		pg_free(e_schemaname);
+		pg_free(e_ref_object);
+		pg_free(e_ref_schema);
 	}
 
 	/* Return the next result, if any, but not if the query failed */
@@ -6549,8 +6537,8 @@ complete_from_variables(const char *text, const char *prefix, const char *suffix
 	COMPLETE_WITH_LIST_CS((const char *const *) varnames);
 
 	for (i = 0; i < nvars; i++)
-		free(varnames[i]);
-	free(varnames);
+		pg_free(varnames[i]);
+	pg_free(varnames);
 
 	return matches;
 }
@@ -6806,7 +6794,7 @@ make_like_pattern(const char *word)
 	*bptr = '\0';
 
 	result = escape_string(buffer);
-	free(buffer);
+	pg_free(buffer);
 	return result;
 }
 
@@ -7192,7 +7180,7 @@ get_previous_words(int point, char **buffer, int *nwords)
 
 	/* Release parsing input workspace, if we made one above */
 	if (buf != rl_line_buffer)
-		free(buf);
+		pg_free(buf);
 
 	*nwords = words_found;
 	return previous_words;
@@ -7319,7 +7307,7 @@ dequote_file_name(char *fname, int quote_char)
 		strcpy(workspace + 1, fname);
 		unquoted_fname = strtokx(workspace, "", NULL, "'", *completion_charp,
 								 false, true, pset.encoding);
-		free(workspace);
+		pg_free(workspace);
 	}
 	else
 		unquoted_fname = strtokx(fname, "", NULL, "'", *completion_charp,

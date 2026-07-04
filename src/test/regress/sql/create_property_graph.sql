@@ -52,6 +52,11 @@ ALTER PROPERTY GRAPH g3
         ADD LABEL t3l3 PROPERTIES ALL COLUMNS;
 ALTER PROPERTY GRAPH g3 ALTER VERTEX TABLE t3 DROP LABEL t3l3x;  -- error
 ALTER PROPERTY GRAPH g3 ALTER VERTEX TABLE t3 DROP LABEL t3l3;
+-- Test that the last label on an element cannot be dropped
+ALTER PROPERTY GRAPH g3 ALTER VERTEX TABLE t3 DROP LABEL t3l2;
+ALTER PROPERTY GRAPH g3 ALTER VERTEX TABLE t3 DROP LABEL t3l1;  -- error: last label
+-- Restore the dropped label for further tests
+ALTER PROPERTY GRAPH g3 ALTER VERTEX TABLE t3 ADD LABEL t3l2 PROPERTIES ALL COLUMNS;
 ALTER PROPERTY GRAPH g3 DROP VERTEX TABLES (t2);  -- fail
 ALTER PROPERTY GRAPH g3 DROP VERTEX TABLES (t2) CASCADE;
 ALTER PROPERTY GRAPH g3 DROP EDGE TABLES (e2);
@@ -75,6 +80,7 @@ CREATE PROPERTY GRAPH g4
 
 ALTER PROPERTY GRAPH g4 ALTER VERTEX TABLE t2 ALTER LABEL t2 ADD PROPERTIES (k * 2 AS kk);
 ALTER PROPERTY GRAPH g4 ALTER VERTEX TABLE t2 ALTER LABEL t2 DROP PROPERTIES (k);
+ALTER PROPERTY GRAPH g4 ALTER VERTEX TABLE t2 ALTER LABEL t2 DROP PROPERTIES (yy);  -- error
 
 CREATE TABLE t11 (a int PRIMARY KEY);
 CREATE TABLE t12 (b int PRIMARY KEY);
@@ -281,21 +287,30 @@ SELECT * FROM information_schema.pg_property_data_types ORDER BY property_graph_
 SELECT * FROM information_schema.pg_property_graph_privileges WHERE grantee LIKE 'regress%' ORDER BY property_graph_name, grantor, grantee, privilege_type;
 
 -- test object address functions
+CREATE TEMPORARY VIEW deps_tree AS
+    WITH RECURSIVE deps (classid, objid, objsubid, refclassid, refobjid, refobjsubid) AS (
+        SELECT classid, objid, objsubid,
+               refclassid, refobjid, refobjsubid
+        FROM pg_depend
+        WHERE refclassid = 'pg_class'::regclass AND
+              refobjid = 'create_property_graph_tests.gt'::regclass AND
+        -- eliminate this view, which is not a real dependency, from the result
+              classid <> 'pg_rewrite'::regclass
+        UNION ALL
+        SELECT d.classid, d.objid, d.objsubid,
+               d.refclassid, d.refobjid, d.refobjsubid
+        FROM pg_depend d
+        JOIN deps dp ON d.refclassid = dp.classid AND d.refobjid = dp.objid AND d.refobjsubid = dp.objsubid
+    ) SELECT DISTINCT * FROM deps;
+
 SELECT pg_describe_object(classid, objid, objsubid) as obj,
-       pg_describe_object(refclassid, refobjid, refobjsubid) as reference_graph
-    FROM pg_depend
-    WHERE refclassid = 'pg_class'::regclass AND
-          refobjid = 'create_property_graph_tests.g2'::regclass
-    ORDER BY 1, 2;
+       pg_describe_object(refclassid, refobjid, refobjsubid) as refobj
+    FROM deps_tree ORDER BY 1, 2;
 SELECT (pg_identify_object_as_address(classid, objid, objsubid)).*
-    FROM pg_depend
-    WHERE refclassid = 'pg_class'::regclass AND
-          refobjid = 'create_property_graph_tests.g2'::regclass
+    FROM (SELECT DISTINCT classid, objid, objsubid FROM deps_tree)
     ORDER BY 1, 2, 3;
 SELECT (pg_identify_object(classid, objid, objsubid)).*
-    FROM pg_depend
-    WHERE refclassid = 'pg_class'::regclass AND
-          refobjid = 'create_property_graph_tests.g2'::regclass
+    FROM (SELECT DISTINCT classid, objid, objsubid FROM deps_tree)
     ORDER BY 1, 2, 3, 4;
 
 \a\t

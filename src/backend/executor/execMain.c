@@ -1063,7 +1063,8 @@ InitPlan(QueryDesc *queryDesc, int eflags)
  */
 void
 CheckValidResultRel(ResultRelInfo *resultRelInfo, CmdType operation,
-					OnConflictAction onConflictAction, List *mergeActions)
+					OnConflictAction onConflictAction, List *mergeActions,
+					ModifyTable *mtnode)
 {
 	Relation	resultRel = resultRelInfo->ri_RelationDesc;
 	FdwRoutine *fdwroutine;
@@ -1126,6 +1127,14 @@ CheckValidResultRel(ResultRelInfo *resultRelInfo, CmdType operation,
 								RelationGetRelationName(resultRel))));
 			break;
 		case RELKIND_FOREIGN_TABLE:
+			/* We don't support FOR PORTION OF FDW queries. */
+			if (mtnode && mtnode->forPortionOf)
+				ereport(ERROR,
+						errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("foreign tables don't support FOR PORTION OF"),
+						errdetail("\"%s\" is a foreign table.",
+								  RelationGetRelationName(resultRel)));
+
 			/* Okay only if the FDW supports it */
 			fdwroutine = resultRelInfo->ri_FdwRoutine;
 			switch (operation)
@@ -1187,6 +1196,24 @@ CheckValidResultRel(ResultRelInfo *resultRelInfo, CmdType operation,
 							RelationGetRelationName(resultRel))));
 			break;
 	}
+
+	/*
+	 * Conflict log tables are managed by the system to record logical
+	 * replication conflicts.  We allow DELETE and TRUNCATE to permit users to
+	 * manually prune these logs, but manual data insertion or modification
+	 * (INSERT, UPDATE, MERGE) is prohibited to maintain the integrity of the
+	 * system-generated logs.
+	 *
+	 * Since TRUNCATE is handled as a separate utility command, we only need
+	 * to explicitly permit CMD_DELETE here.
+	 */
+	if (IsConflictLogTableNamespace(RelationGetNamespace(resultRel)) &&
+		operation != CMD_DELETE)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("cannot modify or insert data into conflict log table \"%s\"",
+						RelationGetRelationName(resultRel)),
+				 errdetail("Conflict log tables are system-managed and only support cleanup using DELETE or TRUNCATE.")));
 }
 
 /*
@@ -1258,6 +1285,16 @@ CheckValidRowMarkRel(Relation rel, RowMarkType markType)
 							RelationGetRelationName(rel))));
 			break;
 	}
+
+	/*
+	 * Conflict log tables are managed by the system to record logical
+	 * replication conflicts.
+	 */
+	if (IsConflictLogTableNamespace(RelationGetNamespace(rel)))
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("cannot lock rows in the conflict log table \"%s\"",
+						RelationGetRelationName(rel))));
 }
 
 /*

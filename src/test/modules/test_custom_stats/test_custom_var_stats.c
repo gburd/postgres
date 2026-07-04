@@ -129,10 +129,6 @@ static const PgStat_KindInfo custom_stats = {
 void
 _PG_init(void)
 {
-	/* Must be loaded via shared_preload_libraries */
-	if (!process_shared_preload_libraries_in_progress)
-		return;
-
 	/* Register custom statistics kind */
 	pgstat_register_kind(PGSTAT_KIND_TEST_CUSTOM_VAR_STATS, &custom_stats);
 }
@@ -600,7 +596,7 @@ test_custom_stats_var_drop(PG_FUNCTION_ARGS)
 
 	/* Drop entry and request GC if the entry could not be freed */
 	if (!pgstat_drop_entry(PGSTAT_KIND_TEST_CUSTOM_VAR_STATS, InvalidOid,
-						   PGSTAT_CUSTOM_VAR_STATS_IDX(stat_name)))
+						   PGSTAT_CUSTOM_VAR_STATS_IDX(stat_name), false))
 		pgstat_request_entry_refs_gc();
 
 	PG_RETURN_VOID();

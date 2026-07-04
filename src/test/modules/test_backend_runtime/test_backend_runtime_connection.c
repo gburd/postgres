@@ -544,7 +544,7 @@ test_connection_warning_state_is_connection_local(PG_FUNCTION_ARGS)
 	PG_TRY();
 	{
 		StoreConnectionWarningForConnection(fake_connection1,
-											"warning one", "detail one");
+											"warning one", "detail one", NULL);
 		warning_context1 =
 			fake_connection1->startup.connection_warning_context;
 		ok = ok && warning_context1 != NULL;
@@ -556,7 +556,7 @@ test_connection_warning_state_is_connection_local(PG_FUNCTION_ARGS)
 						  "detail one") == 0;
 
 		StoreConnectionWarningForConnection(fake_connection2,
-											"warning two", "detail two");
+											"warning two", "detail two", NULL);
 		warning_context2 =
 			fake_connection2->startup.connection_warning_context;
 		ok = ok && warning_context2 != NULL;

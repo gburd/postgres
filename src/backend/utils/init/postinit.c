@@ -80,6 +80,7 @@
 /* content of warnings to send via EmitConnectionWarnings() */
 #define ConnectionWarningMessages (*PgCurrentConnectionWarningMessagesRef())
 #define ConnectionWarningDetails (*PgCurrentConnectionWarningDetailsRef())
+#define ConnectionWarningFilters (*PgCurrentConnectionWarningFiltersRef())
 
 static HeapTuple GetDatabaseTuple(const char *dbname);
 static HeapTuple GetDatabaseTupleByOid(Oid dboid);
@@ -1610,12 +1611,15 @@ ThereIsAtLeastOneRole(void)
  * Stores a warning message to be sent later via EmitConnectionWarnings().
  * Both msg and detail must be non-NULL.  The strings are copied into
  * connection-owned storage so queued warnings can be reclaimed if startup exits
- * before EmitConnectionWarnings().
+ * before EmitConnectionWarnings().  If filter is non-NULL, it is called just
+ * before the warning is emitted, after startup and role/database settings have
+ * been applied.
  */
 void
 StoreConnectionWarningForConnection(PgConnection *connection,
 									const char *msg,
-									const char *detail)
+									const char *detail,
+									ConnectionWarningFilter filter)
 {
 	MemoryContext oldcontext;
 	PgConnectionStartupState *startup;
@@ -1639,14 +1643,18 @@ StoreConnectionWarningForConnection(PgConnection *connection,
 		lappend(startup->connection_warning_messages, saved_msg);
 	startup->connection_warning_details =
 		lappend(startup->connection_warning_details, saved_detail);
+	startup->connection_warning_filters =
+		lappend(startup->connection_warning_filters, (void *) filter);
 
 	MemoryContextSwitchTo(oldcontext);
 }
 
 void
-StoreConnectionWarning(const char *msg, const char *detail)
+StoreConnectionWarning(const char *msg, const char *detail,
+					   ConnectionWarningFilter filter)
 {
-	StoreConnectionWarningForConnection(CurrentPgConnection, msg, detail);
+	StoreConnectionWarningForConnection(CurrentPgConnection, msg, detail,
+										filter);
 }
 
 static MemoryContext
@@ -1677,24 +1685,32 @@ EmitConnectionWarnings(void)
 {
 	ListCell   *lc_msg;
 	ListCell   *lc_detail;
+	ListCell   *lc_filter;
 
 	if (ConnectionWarningsEmitted)
 		elog(ERROR, "EmitConnectionWarnings() called more than once");
 	else
 		ConnectionWarningsEmitted = true;
 
-	forboth(lc_msg, ConnectionWarningMessages,
-			lc_detail, ConnectionWarningDetails)
+	forthree(lc_msg, ConnectionWarningMessages,
+			 lc_detail, ConnectionWarningDetails,
+			 lc_filter, ConnectionWarningFilters)
 	{
-		ereport(WARNING,
-				(errmsg("%s", (char *) lfirst(lc_msg)),
-				 errdetail("%s", (char *) lfirst(lc_detail))));
+		ConnectionWarningFilter filter =
+			(ConnectionWarningFilter) lfirst(lc_filter);
+
+		if (filter == NULL || filter())
+			ereport(WARNING,
+					(errmsg("%s", (char *) lfirst(lc_msg)),
+					 errdetail("%s", (char *) lfirst(lc_detail))));
 	}
 
 	list_free_deep(ConnectionWarningMessages);
 	list_free_deep(ConnectionWarningDetails);
+	list_free(ConnectionWarningFilters);
 	ConnectionWarningMessages = NIL;
 	ConnectionWarningDetails = NIL;
+	ConnectionWarningFilters = NIL;
 
 	if (CurrentPgConnection->startup.connection_warning_context != NULL)
 	{

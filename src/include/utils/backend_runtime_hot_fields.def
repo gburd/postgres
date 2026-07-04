@@ -538,6 +538,11 @@ PG_RUNTIME_HOT_FIELD(PgCurrentBackendHasIOStatsHotRef,
 					 bool,
 					 CurrentPgBackend != NULL ?
 					 &CurrentPgBackend->pgstat_pending.backend_io_stats_pending : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentBackendHasLockStatsHotRef,
+					 backend,
+					 bool,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->pgstat_pending.backend_lock_stats_pending : NULL)
 PG_RUNTIME_HOT_FIELD(PgCurrentPgStatPrevBackendWalUsageHotRef,
 					 backend,
 					 WalUsage,

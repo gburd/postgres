@@ -2450,9 +2450,6 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 				written = pg_pwrite(openLogFile, from, nleft, startoffset);
 				pgstat_report_wait_end();
 
-				pgstat_count_io_op_time(IOOBJECT_WAL, IOCONTEXT_NORMAL,
-										IOOP_WRITE, start, 1, written);
-
 				if (written <= 0)
 				{
 					char		xlogfname[MAXFNAMELEN];
@@ -2470,6 +2467,9 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 							 errmsg("could not write to log file \"%s\" at offset %u, length %zu: %m",
 									xlogfname, startoffset, nleft)));
 				}
+
+				pgstat_count_io_op_time(IOOBJECT_WAL, IOCONTEXT_NORMAL,
+										IOOP_WRITE, start, 1, written);
 				nleft -= written;
 				from += written;
 				startoffset += written;
@@ -3325,14 +3325,6 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 	}
 	pgstat_report_wait_end();
 
-	/*
-	 * A full segment worth of data is written when using wal_init_zero. One
-	 * byte is written when not using it.
-	 */
-	pgstat_count_io_op_time(IOOBJECT_WAL, IOCONTEXT_INIT, IOOP_WRITE,
-							io_start, 1,
-							wal_init_zero ? wal_segment_size : 1);
-
 	if (save_errno)
 	{
 		/*
@@ -3348,6 +3340,14 @@ XLogFileInitInternal(XLogSegNo logsegno, TimeLineID logtli,
 				(errcode_for_file_access(),
 				 errmsg("could not write to file \"%s\": %m", tmppath)));
 	}
+
+	/*
+	 * A full segment worth of data is written when using wal_init_zero. One
+	 * byte is written when not using it.
+	 */
+	pgstat_count_io_op_time(IOOBJECT_WAL, IOCONTEXT_INIT, IOOP_WRITE,
+							io_start, 1,
+							wal_init_zero ? wal_segment_size : 1);
 
 	/* Measure I/O timing when flushing segment */
 	io_start = pgstat_prepare_io_time(track_wal_io_timing);
@@ -6566,6 +6566,8 @@ StartupXLOG(void)
 	/* If this is archive recovery, perform post-recovery cleanup actions. */
 	if (ArchiveRecoveryRequested)
 		CleanupAfterArchiveRecovery(EndOfLogTLI, EndOfLog, newTLI);
+
+	INJECTION_POINT("promotion-after-wal-segment-cleanup", NULL);
 
 	/*
 	 * Local WAL inserts enabled, so it's time to finish initialization of

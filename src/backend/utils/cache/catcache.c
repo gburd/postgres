@@ -1541,6 +1541,8 @@ IndexScanOK(CatCache *cache)
 		case AUTHOID:
 		case AUTHMEMMEMROLE:
 		case DATABASEOID:
+		case PARAMETERACLNAME:
+		case PARAMETERACLOID:
 
 			/*
 			 * Protect authentication lookups occurring before relcache has

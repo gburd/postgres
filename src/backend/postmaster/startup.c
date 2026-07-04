@@ -164,8 +164,8 @@ StartupProcApplyLogicalInterrupts(void)
 /*
  * Re-read the config file.
  *
- * If one of the critical walreceiver options has changed, flag xlog.c
- * to restart it.
+ * If one of the critical walreceiver options has changed, request the startup
+ * process to restart the walreceiver.
  */
 static void
 StartupRereadConfig(void)

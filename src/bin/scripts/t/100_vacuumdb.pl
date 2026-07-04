@@ -336,6 +336,7 @@ $node->issues_sql_unlike(
 $node->safe_psql('postgres',
 	"CREATE TABLE regression_vacuumdb_parted (a INT) PARTITION BY LIST (a);\n"
 	  . "CREATE TABLE regression_vacuumdb_part1 PARTITION OF regression_vacuumdb_parted FOR VALUES IN (1);\n"
+	  . "CREATE INDEX ON regression_vacuumdb_parted ((a + 1));\n"
 	  . "INSERT INTO regression_vacuumdb_parted VALUES (1);\n"
 	  . "ANALYZE regression_vacuumdb_part1;\n");
 $node->issues_sql_like(
@@ -363,6 +364,10 @@ $node->issues_sql_like(
 	[ 'vacuumdb', '--analyze-only', 'postgres' ],
 	qr/statement: ANALYZE public.parent_table/s,
 	'--analyze-only updates statistics for partitioned tables');
+$node->issues_sql_like(
+	[ 'vacuumdb', '--analyze-in-stages', 'postgres' ],
+	qr/statement: ANALYZE public.parent_table/s,
+	'--analyze-in-stages updates statistics for partitioned tables');
 $node->issues_sql_unlike(
 	[ 'vacuumdb', '--analyze-only', 'postgres' ],
 	qr/statement:\ VACUUM/sx,

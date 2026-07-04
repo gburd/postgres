@@ -2540,6 +2540,7 @@ CommitTransaction(void)
 	AtEOXact_Files(true);
 	AtEOXact_ComboCid();
 	AtEOXact_HashTables(true);
+	AtEOXact_RI(true);
 	AtEOXact_PgStat(true, is_parallel_worker);
 	AtEOXact_Snapshot(true, false);
 	AtEOXact_ApplyLauncher(true);
@@ -2835,6 +2836,7 @@ PrepareTransaction(void)
 	AtEOXact_Files(true);
 	AtEOXact_ComboCid();
 	AtEOXact_HashTables(true);
+	AtEOXact_RI(true);
 	/* don't call AtEOXact_PgStat here; we fixed pgstat state above */
 	AtEOXact_Snapshot(true, true);
 	/* we treat PREPARE as ROLLBACK so far as waking workers goes */
@@ -3065,6 +3067,7 @@ AbortTransaction(void)
 		AtEOXact_Files(false);
 		AtEOXact_ComboCid();
 		AtEOXact_HashTables(false);
+		AtEOXact_RI(false);
 		AtEOXact_PgStat(false, is_parallel_worker);
 		AtEOXact_ApplyLauncher(false);
 		AtEOXact_LogicalRepWorkers(false);
@@ -6270,10 +6273,10 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 		 * If a transaction completion record arrives that has as-yet
 		 * unobserved subtransactions then this will not have been fully
 		 * handled by the call to RecordKnownAssignedTransactionIds() in the
-		 * main recovery loop in xlog.c. So we need to do bookkeeping again to
-		 * cover that case. This is confusing and it is easy to think this
-		 * call is irrelevant, which has happened three times in development
-		 * already. Leave it in.
+		 * main recovery loop in PerformWalRecovery(). So we need to do
+		 * bookkeeping again to cover that case. This is confusing and it is
+		 * easy to think this call is irrelevant, which has happened three
+		 * times in development already. Leave it in.
 		 */
 		RecordKnownAssignedTransactionIds(max_xid);
 
@@ -6408,10 +6411,10 @@ xact_redo_abort(xl_xact_parsed_abort *parsed, TransactionId xid,
 		 * If a transaction completion record arrives that has as-yet
 		 * unobserved subtransactions then this will not have been fully
 		 * handled by the call to RecordKnownAssignedTransactionIds() in the
-		 * main recovery loop in xlog.c. So we need to do bookkeeping again to
-		 * cover that case. This is confusing and it is easy to think this
-		 * call is irrelevant, which has happened three times in development
-		 * already. Leave it in.
+		 * main recovery loop in PerformWalRecovery(). So we need to do
+		 * bookkeeping again to cover that case. This is confusing and it is
+		 * easy to think this call is irrelevant, which has happened three
+		 * times in development already. Leave it in.
 		 */
 		RecordKnownAssignedTransactionIds(max_xid);
 

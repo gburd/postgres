@@ -798,10 +798,13 @@ extern void InitPostgres(const char *in_dbname, Oid dboid,
 						 uint32 flags,
 						 char *out_dbname);
 extern void BaseInit(void);
+typedef bool (*ConnectionWarningFilter) (void);
 extern void StoreConnectionWarningForConnection(struct PgConnection *connection,
 												const char *msg,
-												const char *detail);
-extern void StoreConnectionWarning(const char *msg, const char *detail);
+												const char *detail,
+												ConnectionWarningFilter filter);
+extern void StoreConnectionWarning(const char *msg, const char *detail,
+								   ConnectionWarningFilter filter);
 
 /* in utils/init/miscinit.c */
 #ifndef PgCurrentIgnoreSystemIndexesRef

@@ -82,3 +82,9 @@ PgCurrentRIFastPathCallbackRegisteredRef(void)
 {
 	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentExecutionTransactionCleanupState)->ri_fastpath_callback_registered;
 }
+
+bool *
+PgCurrentRIFastPathFlushingRef(void)
+{
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentExecutionTransactionCleanupState)->ri_fastpath_flushing;
+}

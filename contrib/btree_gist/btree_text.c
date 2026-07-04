@@ -1,12 +1,13 @@
 /*
  * contrib/btree_gist/btree_text.c
+ *
+ * Support for text and bpchar types.
  */
 #include "postgres.h"
 
 #include "btree_gist.h"
 #include "btree_utils_var.h"
 #include "mb/pg_wchar.h"
-#include "utils/backend_runtime.h"
 #include "utils/fmgrprotos.h"
 #include "utils/sortsupport.h"
 
@@ -79,20 +80,16 @@ gbt_textcmp(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 												 PointerGetDatum(b)));
 }
 
-#define BTREE_GIST_TEXT_SESSION_STATE_KEY "btree_gist.text.session"
-
-typedef struct BtreeGistTextSessionState
-{
-	bool		initialized;
-	gbtree_vinfo tinfo;
-	gbtree_vinfo bptinfo;
-} BtreeGistTextSessionState;
-
-static const gbtree_vinfo tinfo_template =
+/*
+ * Originally this module permitted truncation of internal keys, but that
+ * tends to result in wrong comparison answers if the collation is any
+ * more complicated than C.  The prefix-match hack used for simpler types
+ * can't fix it, either.
+ */
+static const gbtree_vinfo tinfo =
 {
 	gbt_t_text,
-	0,
-	false,
+	false,						/* no truncation permitted */
 	gbt_textgt,
 	gbt_textge,
 	gbt_texteq,
@@ -158,11 +155,10 @@ gbt_bpcharcmp(const void *a, const void *b, Oid collation, FmgrInfo *flinfo)
 												 PointerGetDatum(b)));
 }
 
-static const gbtree_vinfo bptinfo_template =
+static const gbtree_vinfo bptinfo =
 {
 	gbt_t_bpchar,
-	0,
-	false,
+	false,						/* as above, no truncation permitted */
 	gbt_bpchargt,
 	gbt_bpcharge,
 	gbt_bpchareq,
@@ -171,40 +167,6 @@ static const gbtree_vinfo bptinfo_template =
 	gbt_bpcharcmp,
 	NULL
 };
-
-static BtreeGistTextSessionState *
-btree_gist_text_session_state(void)
-{
-	BtreeGistTextSessionState *state;
-
-	state = (BtreeGistTextSessionState *)
-		PgSessionEnsureExtensionPrivateState(
-			BTREE_GIST_TEXT_SESSION_STATE_KEY,
-			sizeof(BtreeGistTextSessionState),
-			NULL);
-	if (!state->initialized)
-	{
-		state->tinfo = tinfo_template;
-		state->bptinfo = bptinfo_template;
-		state->tinfo.eml = pg_database_encoding_max_length();
-		state->bptinfo.eml = state->tinfo.eml;
-		state->initialized = true;
-	}
-
-	return state;
-}
-
-static const gbtree_vinfo *
-gbt_text_tinfo(void)
-{
-	return &btree_gist_text_session_state()->tinfo;
-}
-
-static const gbtree_vinfo *
-gbt_bpchar_tinfo(void)
-{
-	return &btree_gist_text_session_state()->bptinfo;
-}
 
 
 /**************************************************
@@ -216,7 +178,7 @@ gbt_text_compress(PG_FUNCTION_ARGS)
 {
 	GISTENTRY  *entry = (GISTENTRY *) PG_GETARG_POINTER(0);
 
-	PG_RETURN_POINTER(gbt_var_compress(entry, gbt_text_tinfo()));
+	PG_RETURN_POINTER(gbt_var_compress(entry, &tinfo));
 }
 
 Datum
@@ -244,7 +206,7 @@ gbt_text_consistent(PG_FUNCTION_ARGS)
 	*recheck = false;
 
 	retval = gbt_var_consistent(&r, query, strategy, PG_GET_COLLATION(),
-								GIST_LEAF(entry), gbt_text_tinfo(), fcinfo->flinfo);
+								GIST_LEAF(entry), &tinfo, fcinfo->flinfo);
 
 	PG_RETURN_BOOL(retval);
 }
@@ -267,7 +229,7 @@ gbt_bpchar_consistent(PG_FUNCTION_ARGS)
 	*recheck = false;
 
 	retval = gbt_var_consistent(&r, query, strategy, PG_GET_COLLATION(),
-								GIST_LEAF(entry), gbt_bpchar_tinfo(), fcinfo->flinfo);
+								GIST_LEAF(entry), &bptinfo, fcinfo->flinfo);
 	PG_RETURN_BOOL(retval);
 }
 
@@ -278,7 +240,7 @@ gbt_text_union(PG_FUNCTION_ARGS)
 	int32	   *size = (int *) PG_GETARG_POINTER(1);
 
 	PG_RETURN_POINTER(gbt_var_union(entryvec, size, PG_GET_COLLATION(),
-									gbt_text_tinfo(), fcinfo->flinfo));
+									&tinfo, fcinfo->flinfo));
 }
 
 Datum
@@ -288,7 +250,7 @@ gbt_text_picksplit(PG_FUNCTION_ARGS)
 	GIST_SPLITVEC *v = (GIST_SPLITVEC *) PG_GETARG_POINTER(1);
 
 	gbt_var_picksplit(entryvec, v, PG_GET_COLLATION(),
-					  gbt_text_tinfo(), fcinfo->flinfo);
+					  &tinfo, fcinfo->flinfo);
 	PG_RETURN_POINTER(v);
 }
 
@@ -299,8 +261,7 @@ gbt_text_same(PG_FUNCTION_ARGS)
 	Datum		d2 = PG_GETARG_DATUM(1);
 	bool	   *result = (bool *) PG_GETARG_POINTER(2);
 
-	*result = gbt_var_same(d1, d2, PG_GET_COLLATION(), gbt_text_tinfo(),
-						   fcinfo->flinfo);
+	*result = gbt_var_same(d1, d2, PG_GET_COLLATION(), &tinfo, fcinfo->flinfo);
 	PG_RETURN_POINTER(result);
 }
 
@@ -312,7 +273,7 @@ gbt_text_penalty(PG_FUNCTION_ARGS)
 	float	   *result = (float *) PG_GETARG_POINTER(2);
 
 	PG_RETURN_POINTER(gbt_var_penalty(result, o, n, PG_GET_COLLATION(),
-									  gbt_text_tinfo(), fcinfo->flinfo));
+									  &tinfo, fcinfo->flinfo));
 }
 
 static int

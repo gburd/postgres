@@ -826,7 +826,7 @@ _CloseArchive(ArchiveHandle *AH)
 		savVerbose = AH->public.verbose;
 		AH->public.verbose = 0;
 
-		RestoreArchive((Archive *) AH, false);
+		RestoreArchive((Archive *) AH);
 
 		SetArchiveOptions((Archive *) AH, savDopt, savRopt);
 
@@ -975,12 +975,12 @@ tarPrintf(TAR_MEMBER *th, const char *fmt, ...)
 			break;				/* success */
 
 		/* Release buffer and loop around to try again with larger len. */
-		free(p);
+		pg_free(p);
 		len = cnt;
 	}
 
 	cnt = tarWrite(p, cnt, th);
-	free(p);
+	pg_free(p);
 	return (int) cnt;
 }
 
@@ -1076,7 +1076,7 @@ _tarPositionTo(ArchiveHandle *AH, const char *filename)
 			 * We're just scanning the archive for the next file, so return
 			 * null
 			 */
-			free(th);
+			pg_free(th);
 			return NULL;
 		}
 	}

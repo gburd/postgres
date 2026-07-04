@@ -851,6 +851,21 @@ import_mcv(const ArrayType *mcv_arr, const ArrayType *freqs_arr,
 	 * the reference array for determining their length.
 	 */
 	nitems = ARR_DIMS(mcv_arr)[0];
+
+	/*
+	 * Reject a MCV list larger than what statext_mcv_deserialize() is able to
+	 * accept.
+	 */
+	if (nitems > STATS_MCVLIST_MAX_ITEMS)
+	{
+		ereport(WARNING,
+				errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				errmsg("could not parse array \"%s\": number of items (%d) exceeds maximum (%d)",
+					   extarginfo[MOST_COMMON_VALS_ARG].argname,
+					   nitems, STATS_MCVLIST_MAX_ITEMS));
+		goto mcv_error;
+	}
+
 	if (!check_mcvlist_array(freqs_arr, MOST_COMMON_FREQS_ARG, 1, nitems) ||
 		!check_mcvlist_array(base_freqs_arr, MOST_COMMON_BASE_FREQS_ARG, 1, nitems))
 	{
@@ -1018,7 +1033,7 @@ jbv_to_infunc_datum(JsonbValue *jval, PGFunction func, AttrNumber exprnum,
 }
 
 /*
- * Build an array datum with element type elemtypid from a text datum, used as
+ * Build an array datum with element type typid from a text datum, used as
  * value of an attribute in a pg_statistic tuple.
  *
  * If an error is encountered, capture it, and reduce the elevel to WARNING.
@@ -1029,7 +1044,6 @@ static Datum
 array_in_safe(FmgrInfo *array_in, const char *s, Oid typid, int32 typmod,
 			  AttrNumber exprnum, const char *element_name, bool *ok)
 {
-	LOCAL_FCINFO(fcinfo, 3);
 	Datum		result;
 
 	ErrorSaveContext escontext = {
@@ -1038,17 +1052,6 @@ array_in_safe(FmgrInfo *array_in, const char *s, Oid typid, int32 typmod,
 	};
 
 	*ok = false;
-	InitFunctionCallInfoData(*fcinfo, array_in, 3, InvalidOid,
-							 (Node *) &escontext, NULL);
-
-	fcinfo->args[0].value = CStringGetDatum(s);
-	fcinfo->args[0].isnull = false;
-	fcinfo->args[1].value = ObjectIdGetDatum(typid);
-	fcinfo->args[1].isnull = false;
-	fcinfo->args[2].value = Int32GetDatum(typmod);
-	fcinfo->args[2].isnull = false;
-
-	result = FunctionCallInvoke(fcinfo);
 
 	/*
 	 * If the array_in function returned an error, we will want to report that
@@ -1056,7 +1059,8 @@ array_in_safe(FmgrInfo *array_in, const char *s, Oid typid, int32 typmod,
 	 * Overwriting the existing hint (if any) is not ideal, and an error
 	 * context would only work for level >= ERROR.
 	 */
-	if (escontext.error_occurred)
+	if (!InputFunctionCallSafe(array_in, (char *) s, typid, typmod,
+							   (Node *) &escontext, &result))
 	{
 		StringInfoData hint_str;
 

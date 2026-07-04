@@ -897,7 +897,13 @@ static PG_GLOBAL_IMMUTABLE const struct object_type_map ObjectTypeMap[] =
 		"property graph element", -1
 	},
 	{
+		"property graph element label", -1
+	},
+	{
 		"property graph label", -1
+	},
+	{
+		"property graph label property", -1
 	},
 	{
 		"property graph property", -1
@@ -4078,6 +4084,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 			{
 				HeapTuple	tup;
 				Form_pg_propgraph_element pgeform;
+				StringInfoData rel;
 
 				tup = SearchSysCache1(PROPGRAPHELOID, ObjectIdGetDatum(object->objectId));
 				if (!HeapTupleIsValid(tup))
@@ -4090,16 +4097,17 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 
 				pgeform = (Form_pg_propgraph_element) GETSTRUCT(tup);
 
-				if (pgeform->pgekind == PGEKIND_VERTEX)
-					/* translator: followed by, e.g., "property graph %s" */
-					appendStringInfo(&buffer, _("vertex %s of "), NameStr(pgeform->pgealias));
-				else if (pgeform->pgekind == PGEKIND_EDGE)
-					/* translator: followed by, e.g., "property graph %s" */
-					appendStringInfo(&buffer, _("edge %s of "), NameStr(pgeform->pgealias));
-				else
-					appendStringInfo(&buffer, "??? element %s of ", NameStr(pgeform->pgealias));
-				getRelationDescription(&buffer, pgeform->pgepgid, false);
+				initStringInfo(&rel);
+				getRelationDescription(&rel, pgeform->pgepgid, false);
 
+				if (pgeform->pgekind == PGEKIND_VERTEX)
+					appendStringInfo(&buffer, _("vertex %s of %s"), NameStr(pgeform->pgealias), rel.data);
+				else if (pgeform->pgekind == PGEKIND_EDGE)
+					appendStringInfo(&buffer, _("edge %s of %s"), NameStr(pgeform->pgealias), rel.data);
+				else
+					appendStringInfo(&buffer, "??? element %s of %s", NameStr(pgeform->pgealias), rel.data);
+
+				pfree(rel.data);
 				ReleaseSysCache(tup);
 				break;
 			}
@@ -4126,9 +4134,10 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 
 				pgelform = (Form_pg_propgraph_element_label) GETSTRUCT(tuple);
 
-				appendStringInfo(&buffer, _("label %s of "), get_propgraph_label_name(pgelform->pgellabelid));
 				ObjectAddressSet(oa, PropgraphElementRelationId, pgelform->pgelelid);
-				appendStringInfoString(&buffer, getObjectDescription(&oa, false));
+				appendStringInfo(&buffer, _("label %s of %s"),
+								 get_propgraph_label_name(pgelform->pgellabelid),
+								 getObjectDescription(&oa, false));
 
 				table_close(rel, AccessShareLock);
 				break;
@@ -4138,6 +4147,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 			{
 				HeapTuple	tuple;
 				Form_pg_propgraph_label pglform;
+				StringInfoData rel;
 
 				tuple = SearchSysCache1(PROPGRAPHLABELOID, ObjectIdGetDatum(object->objectId));
 				if (!HeapTupleIsValid(tuple))
@@ -4149,9 +4159,12 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 
 				pglform = (Form_pg_propgraph_label) GETSTRUCT(tuple);
 
-				/* translator: followed by, e.g., "property graph %s" */
-				appendStringInfo(&buffer, _("label %s of "), NameStr(pglform->pgllabel));
-				getRelationDescription(&buffer, pglform->pglpgid, false);
+				initStringInfo(&rel);
+				getRelationDescription(&rel, pglform->pglpgid, false);
+
+				appendStringInfo(&buffer, _("label %s of %s"), NameStr(pglform->pgllabel), rel.data);
+
+				pfree(rel.data);
 				ReleaseSysCache(tuple);
 				break;
 			}
@@ -4178,9 +4191,11 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 
 				plpform = (Form_pg_propgraph_label_property) GETSTRUCT(tuple);
 
-				appendStringInfo(&buffer, _("property %s of "), get_propgraph_property_name(plpform->plppropid));
 				ObjectAddressSet(oa, PropgraphElementLabelRelationId, plpform->plpellabelid);
-				appendStringInfoString(&buffer, getObjectDescription(&oa, false));
+
+				appendStringInfo(&buffer, _("property %s of %s"),
+								 get_propgraph_property_name(plpform->plppropid),
+								 getObjectDescription(&oa, false));
 
 				table_close(rel, AccessShareLock);
 				break;
@@ -4190,6 +4205,7 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 			{
 				HeapTuple	tuple;
 				Form_pg_propgraph_property pgpform;
+				StringInfoData rel;
 
 				tuple = SearchSysCache1(PROPGRAPHPROPOID, ObjectIdGetDatum(object->objectId));
 				if (!HeapTupleIsValid(tuple))
@@ -4201,9 +4217,12 @@ getObjectDescription(const ObjectAddress *object, bool missing_ok)
 
 				pgpform = (Form_pg_propgraph_property) GETSTRUCT(tuple);
 
-				/* translator: followed by, e.g., "property graph %s" */
-				appendStringInfo(&buffer, _("property %s of "), NameStr(pgpform->pgpname));
-				getRelationDescription(&buffer, pgpform->pgppgid, false);
+				initStringInfo(&rel);
+				getRelationDescription(&rel, pgpform->pgppgid, false);
+
+				appendStringInfo(&buffer, _("property %s of %s"), NameStr(pgpform->pgpname), rel.data);
+
+				pfree(rel.data);
 				ReleaseSysCache(tuple);
 				break;
 			}
@@ -4896,6 +4915,14 @@ getObjectTypeDescription(const ObjectAddress *object, bool missing_ok)
 
 		case PropgraphPropertyRelationId:
 			appendStringInfoString(&buffer, "property graph property");
+			break;
+
+		case PropgraphElementLabelRelationId:
+			appendStringInfoString(&buffer, "property graph element label");
+			break;
+
+		case PropgraphLabelPropertyRelationId:
+			appendStringInfoString(&buffer, "property graph label property");
 			break;
 
 		case PublicationRelationId:
@@ -5837,7 +5864,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 
 				amForm = (Form_pg_auth_members) GETSTRUCT(tup);
 
-				appendStringInfo(&buffer, _("membership of role %s in role %s"),
+				appendStringInfo(&buffer, "membership of role %s in role %s",
 								 GetUserNameFromId(amForm->member, false),
 								 GetUserNameFromId(amForm->roleid, false));
 
@@ -6159,7 +6186,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 					break;
 				}
 				pge = (Form_pg_propgraph_element) GETSTRUCT(tup);
-				appendStringInfo(&buffer, "%s of ", quote_identifier(NameStr(pge->pgealias)));
+				appendStringInfo(&buffer, "%s of property graph ", quote_identifier(NameStr(pge->pgealias)));
 
 				getRelationIdentity(&buffer, pge->pgepgid, objname, false);
 				if (objname)
@@ -6183,7 +6210,7 @@ getObjectIdentityParts(const ObjectAddress *object,
 				}
 
 				pgl = (Form_pg_propgraph_label) GETSTRUCT(tup);
-				appendStringInfo(&buffer, "%s of ", quote_identifier(NameStr(pgl->pgllabel)));
+				appendStringInfo(&buffer, "%s of property graph ", quote_identifier(NameStr(pgl->pgllabel)));
 				getRelationIdentity(&buffer, pgl->pglpgid, objname, false);
 				if (objname)
 					*objname = lappend(*objname, pstrdup(NameStr(pgl->pgllabel)));
@@ -6205,11 +6232,86 @@ getObjectIdentityParts(const ObjectAddress *object,
 				}
 
 				pgp = (Form_pg_propgraph_property) GETSTRUCT(tup);
-				appendStringInfo(&buffer, "%s of ", quote_identifier(NameStr(pgp->pgpname)));
+				appendStringInfo(&buffer, "%s of property graph ", quote_identifier(NameStr(pgp->pgpname)));
 				getRelationIdentity(&buffer, pgp->pgppgid, objname, false);
 				if (objname)
 					*objname = lappend(*objname, pstrdup(NameStr(pgp->pgpname)));
 				ReleaseSysCache(tup);
+				break;
+			}
+
+		case PropgraphElementLabelRelationId:
+			{
+				Relation	ellabelDesc;
+				HeapTuple	tup;
+				Form_pg_propgraph_element_label pgelform;
+				ObjectAddress oa;
+				char	   *labelname;
+
+				ellabelDesc = table_open(PropgraphElementLabelRelationId, AccessShareLock);
+				tup = get_catalog_object_by_oid(ellabelDesc,
+												Anum_pg_propgraph_element_label_oid,
+												object->objectId);
+				if (!HeapTupleIsValid(tup))
+				{
+					if (!missing_ok)
+						elog(ERROR, "could not find tuple for element label %u",
+							 object->objectId);
+
+					table_close(ellabelDesc, AccessShareLock);
+					break;
+				}
+
+				pgelform = (Form_pg_propgraph_element_label) GETSTRUCT(tup);
+
+				labelname = get_propgraph_label_name(pgelform->pgellabelid);
+				appendStringInfo(&buffer, "%s of element ", quote_identifier(labelname));
+				ObjectAddressSet(oa, PropgraphElementRelationId, pgelform->pgelelid);
+				appendStringInfoString(&buffer, getObjectIdentityParts(&oa, objname,
+																	   objargs, false));
+				/* labelname is already pstrdup'ed. */
+				if (objname)
+					*objname = lappend(*objname, labelname);
+
+				table_close(ellabelDesc, AccessShareLock);
+				break;
+			}
+
+		case PropgraphLabelPropertyRelationId:
+			{
+				Relation	lblpropDesc;
+				HeapTuple	tup;
+				Form_pg_propgraph_label_property plpform;
+				ObjectAddress oa;
+				char	   *propname;
+
+				lblpropDesc = table_open(PropgraphLabelPropertyRelationId,
+										 AccessShareLock);
+				tup = get_catalog_object_by_oid(lblpropDesc,
+												Anum_pg_propgraph_label_property_oid,
+												object->objectId);
+				if (!HeapTupleIsValid(tup))
+				{
+					if (!missing_ok)
+						elog(ERROR, "could not find tuple for label property %u",
+							 object->objectId);
+
+					table_close(lblpropDesc, AccessShareLock);
+					break;
+				}
+
+				plpform = (Form_pg_propgraph_label_property) GETSTRUCT(tup);
+
+				propname = get_propgraph_property_name(plpform->plppropid);
+				appendStringInfo(&buffer, "%s of label ", quote_identifier(propname));
+				ObjectAddressSet(oa, PropgraphElementLabelRelationId, plpform->plpellabelid);
+				appendStringInfoString(&buffer, getObjectIdentityParts(&oa, objname,
+																	   objargs, false));
+				/* propname is already pstrdup'ed. */
+				if (objname)
+					*objname = lappend(*objname, propname);
+
+				table_close(lblpropDesc, AccessShareLock);
 				break;
 			}
 

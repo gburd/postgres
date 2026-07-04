@@ -69,6 +69,9 @@
 #define PgCurrentBackendHasIOStatsRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendHasIOStatsRef, \
 									 backend_io_stats_pending)
+#define PgCurrentBackendHasLockStatsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendHasLockStatsRef, \
+									 backend_lock_stats_pending)
 #define PgCurrentBackslashQuoteRef() \
 	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionParserRuntimeState, PgCurrentBackslashQuoteRef, \
 									 backslash_quote_value)
@@ -1162,6 +1165,9 @@
 #define PgCurrentRIFastPathCallbackRegisteredRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentRIFastPathCallbackRegisteredRef, \
 									 ri_fastpath_callback_registered)
+#define PgCurrentRIFastPathFlushingRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentRIFastPathFlushingRef, \
+									 ri_fastpath_flushing)
 #define PgCurrentRIFastPathXactCallbackRegisteredRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionRIGlobalsRuntimeState, PgCurrentRIFastPathXactCallbackRegisteredRef, \
 									 fastpath_xact_callback_registered)
@@ -1839,6 +1845,9 @@
 #define PgCurrentConnectionWarningDetailsRef() \
 	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionStartupRuntimeState, PgCurrentConnectionWarningDetailsRef, \
 									 connection_warning_details)
+#define PgCurrentConnectionWarningFiltersRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionStartupRuntimeState, PgCurrentConnectionWarningFiltersRef, \
+									 connection_warning_filters)
 #define PgCurrentClientConnectionInfoRef() \
 	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgConnectionClientConnectionInfoRuntimeState, \
 								   PgCurrentClientConnectionInfoRef)

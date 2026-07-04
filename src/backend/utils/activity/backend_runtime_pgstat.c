@@ -218,6 +218,12 @@ PgCurrentBackendHasIOStatsRef(void)
 	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->backend_io_stats_pending;
 }
 
+bool *
+PgCurrentBackendHasLockStatsRef(void)
+{
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->backend_lock_stats_pending;
+}
+
 MemoryContext *
 PgCurrentPgStatPendingContextRef(void)
 {

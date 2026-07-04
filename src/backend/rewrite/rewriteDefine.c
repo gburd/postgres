@@ -262,6 +262,18 @@ DefineQueryRewrite(const char *rulename,
 						RelationGetRelationName(event_relation)),
 				 errdetail_relkind_not_supported(event_relation->rd_rel->relkind)));
 
+	/*
+	 * Conflict log tables are used internally for logical replication
+	 * conflict logging and should not have rules, as it could disrupt
+	 * conflict logging.
+	 */
+	if (IsConflictLogTableClass(event_relation->rd_rel))
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("conflict log table \"%s\" cannot have rules",
+						RelationGetRelationName(event_relation)),
+				 errdetail("Conflict log tables are system-managed tables for logical replication conflicts.")));
+
 	if (!allowSystemTableMods && IsSystemRelation(event_relation))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
@@ -390,26 +402,11 @@ DefineQueryRewrite(const char *rulename,
 		 * ... and finally the rule must be named _RETURN.
 		 */
 		if (strcmp(rulename, ViewSelectRuleName) != 0)
-		{
-			/*
-			 * In versions before 7.3, the expected name was _RETviewname. For
-			 * backwards compatibility with old pg_dump output, accept that
-			 * and silently change it to _RETURN.  Since this is just a quick
-			 * backwards-compatibility hack, limit the number of characters
-			 * checked to a few less than NAMEDATALEN; this saves having to
-			 * worry about where a multibyte character might have gotten
-			 * truncated.
-			 */
-			if (strncmp(rulename, "_RET", 4) != 0 ||
-				strncmp(rulename + 4, RelationGetRelationName(event_relation),
-						NAMEDATALEN - 4 - 4) != 0)
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-						 errmsg("view rule for \"%s\" must be named \"%s\"",
-								RelationGetRelationName(event_relation),
-								ViewSelectRuleName)));
-			rulename = pstrdup(ViewSelectRuleName);
-		}
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+					 errmsg("view rule for \"%s\" must be named \"%s\"",
+							RelationGetRelationName(event_relation),
+							ViewSelectRuleName)));
 	}
 	else
 	{
@@ -772,6 +769,18 @@ RangeVarCallbackForRenameRule(const RangeVar *rv, Oid relid, Oid oldrelid,
 				 errmsg("relation \"%s\" cannot have rules", rv->relname),
 				 errdetail_relkind_not_supported(form->relkind)));
 
+	/*
+	 * Conflict log tables are used internally for logical replication
+	 * conflict logging and should not have rules, as it could disrupt
+	 * conflict logging.
+	 */
+	if (IsConflictLogTableClass(form))
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("conflict log table \"%s\" cannot have rules",
+						rv->relname),
+				 errdetail("Conflict log tables are system-managed tables for logical replication conflicts.")));
+
 	if (!allowSystemTableMods && IsSystemClass(relid, form))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
@@ -842,6 +851,17 @@ RenameRewriteRule(RangeVar *relation, const char *oldName,
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 				 errmsg("renaming an ON SELECT rule is not allowed")));
+
+	/*
+	 * Conversely, if it's not an ON SELECT rule then it must *not* be named
+	 * _RETURN.
+	 */
+	if (strcmp(newName, ViewSelectRuleName) == 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+				 errmsg("non-view rule for \"%s\" must not be named \"%s\"",
+						RelationGetRelationName(targetrel),
+						ViewSelectRuleName)));
 
 	/* OK, do the update */
 	namestrcpy(&(ruleform->rulename), newName);

@@ -697,6 +697,7 @@ typedef struct PgBackendMaintenanceWorkerState
 	volatile sig_atomic_t datachecksum_abort_requested;
 	volatile sig_atomic_t datachecksum_launcher_running;
 	int			datachecksum_operation;
+	uint64		datachecksum_worker_invocation;
 } PgBackendMaintenanceWorkerState;
 
 typedef struct PgBackendAutovacuumState
@@ -763,6 +764,7 @@ typedef struct PgBackendPgStatPendingState
 	bool		lock_stats_pending;
 	PgStat_BackendPending backend_stats;
 	bool		backend_io_stats_pending;
+	bool		backend_lock_stats_pending;
 	PgBackendPgStatPendingColdState *cold;
 	MemoryContext pending_context;
 	dlist_head	pending;
@@ -1230,6 +1232,7 @@ typedef struct PgExecutionTransactionCleanupState
 	PgStat_SubXactStatus *pgstat_xact_stack;
 	HTAB	   *ri_fastpath_cache;
 	bool		ri_fastpath_callback_registered;
+	bool		ri_fastpath_flushing;
 } PgExecutionTransactionCleanupState;
 
 typedef struct PgExecutionReplicationScratchState
@@ -2265,6 +2268,7 @@ typedef struct PgConnectionStartupState
 	MemoryContext connection_warning_context;
 	List	   *connection_warning_messages;
 	List	   *connection_warning_details;
+	List	   *connection_warning_filters;
 } PgConnectionStartupState;
 
 typedef struct PgConnectionClientConnectionInfoState
@@ -2571,6 +2575,7 @@ extern ConnectionTiming *PgCurrentConnectionTimingRef(void);
 extern bool *PgCurrentConnectionWarningsEmittedRef(void);
 extern List **PgCurrentConnectionWarningMessagesRef(void);
 extern List **PgCurrentConnectionWarningDetailsRef(void);
+extern List **PgCurrentConnectionWarningFiltersRef(void);
 extern bool *PgCurrentVacuumInProgressRef(void);
 extern int *PgCurrentVacuumCostBalanceRef(void);
 extern bool *PgCurrentVacuumCostActiveRef(void);
@@ -3320,6 +3325,7 @@ extern bool *PgCurrentHaveXactTemporaryFilesRef(void);
 extern PgStat_SubXactStatus **PgCurrentPgStatXactStackRef(void);
 extern HTAB **PgCurrentRIFastPathCacheRef(void);
 extern bool *PgCurrentRIFastPathCallbackRegisteredRef(void);
+extern bool *PgCurrentRIFastPathFlushingRef(void);
 extern EventTriggerQueryState **PgCurrentEventTriggerQueryStateRef(void);
 extern MemoryContext PgCurrentEventTriggerMemoryContext(void);
 extern MemoryContext *PgCurrentEventTriggerMemoryContextRef(void);

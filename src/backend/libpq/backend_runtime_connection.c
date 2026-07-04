@@ -374,6 +374,12 @@ PgCurrentConnectionWarningDetailsRef(void)
 	return &PgConnectionStartupStateRef(CurrentPgConnection)->connection_warning_details;
 }
 
+List **
+PgCurrentConnectionWarningFiltersRef(void)
+{
+	return &PgConnectionStartupStateRef(CurrentPgConnection)->connection_warning_filters;
+}
+
 void *
 PgConnectionClientConnectionInfoRef(PgConnection *connection)
 {
@@ -545,10 +551,13 @@ PgConnectionResetStartupClosedState(PgConnection *connection)
 	{
 		list_free_deep(connection->startup.connection_warning_messages);
 		list_free_deep(connection->startup.connection_warning_details);
+		/* filters are function pointers, not owned allocations */
+		list_free(connection->startup.connection_warning_filters);
 	}
 	connection->startup.connection_warnings_emitted = false;
 	connection->startup.connection_warning_messages = NIL;
 	connection->startup.connection_warning_details = NIL;
+	connection->startup.connection_warning_filters = NIL;
 }
 
 static void

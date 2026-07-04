@@ -811,7 +811,7 @@ initialize_environment(void)
 		new_pgoptions = psprintf("%s %s",
 								 old_pgoptions, my_pgoptions);
 		setenv("PGOPTIONS", new_pgoptions, 1);
-		free(new_pgoptions);
+		pfree(new_pgoptions);
 	}
 
 	if (temp_instance)
@@ -997,7 +997,7 @@ current_windows_user(const char **acct, const char **dom)
 			 GetLastError());
 	}
 
-	free(tokenuser);
+	pg_free(tokenuser);
 
 	*acct = accountname;
 	*dom = domainname;
@@ -1534,31 +1534,33 @@ results_differ(const char *testname, const char *resultsfile, const char *defaul
 	 */
 
 	difffile = fopen(difffilename, "a");
-	if (difffile)
-	{
-		startpos = ftell(difffile);
+	if (!difffile)
+		bail("could not open file \"%s\" for writing: %m", difffilename);
+	startpos = ftell(difffile);
 
-		/* Write diff header */
-		fprintf(difffile,
-				"diff %s %s %s\n",
-				pretty_diff_opts, best_expect_file, resultsfile);
-		fclose(difffile);
+	/* Write diff header */
+	fprintf(difffile,
+			"diff %s %s %s\n",
+			pretty_diff_opts, best_expect_file, resultsfile);
+	fclose(difffile);
 
-		/* Run diff */
-		snprintf(cmd, sizeof(cmd),
-				 "diff %s \"%s\" \"%s\" >> \"%s\"",
-				 pretty_diff_opts, best_expect_file, resultsfile, difffilename);
-		run_diff(cmd, difffilename);
+	/* Run diff */
+	snprintf(cmd, sizeof(cmd),
+			 "diff %s \"%s\" \"%s\" >> \"%s\"",
+			 pretty_diff_opts, best_expect_file, resultsfile, difffilename);
+	run_diff(cmd, difffilename);
 
-		/*
-		 * Reopen the file for reading to emit the diff as TAP diagnostics. We
-		 * can't keep the file open while diff appends to it, because on
-		 * Windows the file lock prevents diff from writing.
-		 */
-		difffile = fopen(difffilename, "r");
-	}
-
-	if (difffile)
+	/*
+	 * Emit the diff output as TAP diagnostics
+	 *
+	 * Reopen the file for reading. We can't keep the file open while diff
+	 * appends to it, because on Windows the file lock prevents diff from
+	 * writing.
+	 */
+	difffile = fopen(difffilename, "r");
+	if (!difffile)
+		bail("could not open file \"%s\" for reading: %m", difffilename);
+	else
 	{
 		/*
 		 * In case of a crash the diff can be huge and all of the subsequent
@@ -1680,7 +1682,7 @@ wait_for_tests(PID_TYPE * pids, int *statuses, instr_time *stoptimes,
 	}
 
 #ifdef WIN32
-	free(active_pids);
+	pg_free(active_pids);
 #endif
 }
 

@@ -81,6 +81,7 @@ static OnConflictExpr *transformOnConflictClause(ParseState *pstate,
 static ForPortionOfExpr *transformForPortionOfClause(ParseState *pstate,
 													 int rtindex,
 													 const ForPortionOfClause *forPortionOf,
+													 const Node *whereClause,
 													 bool isUpdate);
 static int	count_rowexpr_columns(ParseState *pstate, Node *expr);
 static Query *transformSelectStmt(ParseState *pstate, SelectStmt *stmt,
@@ -626,6 +627,7 @@ transformDeleteStmt(ParseState *pstate, DeleteStmt *stmt)
 		qry->forPortionOf = transformForPortionOfClause(pstate,
 														qry->resultRelation,
 														stmt->forPortionOf,
+														stmt->whereClause,
 														false);
 
 	qual = transformWhereClause(pstate, stmt->whereClause,
@@ -1319,6 +1321,7 @@ static ForPortionOfExpr *
 transformForPortionOfClause(ParseState *pstate,
 							int rtindex,
 							const ForPortionOfClause *forPortionOf,
+							const Node *whereClause,
 							bool isUpdate)
 {
 	Relation	targetrel = pstate->p_target_relation;
@@ -1335,11 +1338,11 @@ transformForPortionOfClause(ParseState *pstate,
 	ForPortionOfExpr *result;
 	Var		   *rangeVar;
 
-	/* We don't support FOR PORTION OF FDW queries. */
-	if (targetrel->rd_rel->relkind == RELKIND_FOREIGN_TABLE)
+	/* disallow FOR PORTION OF ... WHERE CURRENT OF */
+	if (whereClause && IsA(whereClause, CurrentOfExpr))
 		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("foreign tables don't support FOR PORTION OF")));
+				errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("WHERE CURRENT OF with FOR PORTION OF is not implemented"));
 
 	result = makeNode(ForPortionOfExpr);
 
@@ -1489,9 +1492,6 @@ transformForPortionOfClause(ParseState *pstate,
 													args,
 													InvalidOid, InvalidOid, COERCE_EXPLICIT_CALL);
 	}
-	if (contain_volatile_functions_after_planning((Expr *) result->targetRange))
-		ereport(ERROR,
-				(errmsg("FOR PORTION OF bounds cannot contain volatile functions")));
 
 	/*
 	 * Build overlapsExpr to use as an extra qual. This means we only hit rows
@@ -1549,6 +1549,7 @@ transformForPortionOfClause(ParseState *pstate,
 		List	   *funcArgs;
 		Node	   *rangeTLEExpr;
 		TargetEntry *tle;
+		RTEPermissionInfo *target_perminfo = pstate->p_target_nsitem->p_perminfo;
 
 		/*
 		 * Whatever operator is used for intersect by temporal foreign keys,
@@ -1598,14 +1599,9 @@ transformForPortionOfClause(ParseState *pstate,
 							  forPortionOf->range_name, false);
 		result->rangeTargetList = lappend(result->rangeTargetList, tle);
 
-		/*
-		 * The range column will change, but you don't need UPDATE permission
-		 * on it, so we don't add to updatedCols here. XXX: If
-		 * https://www.postgresql.org/message-id/CACJufxEtY1hdLcx%3DFhnqp-ERcV1PhbvELG5COy_CZjoEW76ZPQ%40mail.gmail.com
-		 * is merged (only validate CHECK constraints if they depend on one of
-		 * the columns being UPDATEd), we need to make sure that code knows
-		 * that we are updating the application-time column.
-		 */
+		/* Mark the range column as requiring update permissions */
+		target_perminfo->updatedCols = bms_add_member(target_perminfo->updatedCols,
+													  range_attno - FirstLowInvalidHeapAttributeNumber);
 	}
 	else
 		result->rangeTargetList = NIL;
@@ -2888,6 +2884,7 @@ transformUpdateStmt(ParseState *pstate, UpdateStmt *stmt)
 		qry->forPortionOf = transformForPortionOfClause(pstate,
 														qry->resultRelation,
 														stmt->forPortionOf,
+														stmt->whereClause,
 														true);
 
 	nsitem = pstate->p_target_nsitem;

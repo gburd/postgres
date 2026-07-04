@@ -1206,7 +1206,8 @@ include_dir 'conf.d'
       <listitem>
        <para>
         Controls whether a <literal>WARNING</literal> about MD5 password
-        deprecation is produced upon successful MD5 password authentication or
+        deprecation is produced upon successful authentication using an
+        MD5-encrypted password or
         when a <command>CREATE ROLE</command> or
         <command>ALTER ROLE</command> statement sets an MD5-encrypted password.
         The default value is <literal>on</literal>.
@@ -1573,11 +1574,11 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        Specifies the name of the curve to use in <acronym>ECDH</acronym> key
-        exchange.  It needs to be supported by all clients that connect.
-        Multiple curves can be specified by using a colon-separated list.
-        It does not need to be the same curve used by the server's Elliptic
-        Curve key.  This parameter can only be set in the
+        Specifies the named group to use for <acronym>TLS</acronym> key
+        exchange.  It needs to be supported by all clients that
+        connect.  Multiple groups can be specified by using a colon-separated
+        list.  It does not need to match the key type used by the server
+        certificate.  This parameter can only be set in the
         <filename>postgresql.conf</filename> file or on the server command line.
         The default is <literal>X25519:prime256v1</literal>.
        </para>
@@ -1592,7 +1593,7 @@ include_dir 'conf.d'
        </note>
 
        <para>
-        <productname>OpenSSL</productname> names for the most common curves
+        <productname>OpenSSL</productname> names for the most common groups
         are:
         <literal>prime256v1</literal> (NIST P-256),
         <literal>secp384r1</literal> (NIST P-384),
@@ -3671,6 +3672,7 @@ include_dir 'conf.d'
         was compiled with <option>--with-lz4</option>) and
         <literal>zstd</literal> (if <productname>PostgreSQL</productname>
         was compiled with <option>--with-zstd</option>).
+        The value <literal>on</literal> is a historical spelling of <literal>pglz</literal>.
         The default value is <literal>off</literal>.
         Only superusers and users with the appropriate <literal>SET</literal>
         privilege can change this setting.
@@ -5842,7 +5844,7 @@ ANY <replaceable class="parameter">num_sync</replaceable> ( <replaceable class="
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-enable-groupby-reordering" xreflabel="enable_group_by_reordering">
+     <varlistentry id="guc-enable-group-by-reordering" xreflabel="enable_group_by_reordering">
       <term><varname>enable_group_by_reordering</varname> (<type>boolean</type>)
       <indexterm>
        <primary><varname>enable_group_by_reordering</varname> configuration parameter</primary>
@@ -7781,7 +7783,7 @@ local0.*    /var/log/postgresql
       </listitem>
      </varlistentry>
 
-     <varlistentry id="guc-debug-print-parse" xreflabel="debug_print_raw_parse">
+     <varlistentry id="guc-debug-print-raw-parse" xreflabel="debug_print_raw_parse">
       <term><varname>debug_print_raw_parse</varname> (<type>boolean</type>)
       <indexterm>
        <primary><varname>debug_print_raw_parse</varname> configuration parameter</primary>
@@ -8507,6 +8509,31 @@ log_line_prefix = '%m [%p] %q%u@%d/%a '
          plaintext passwords.
         </para>
        </note>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-log-statement-max-length" xreflabel="log_statement_max_length">
+      <term><varname>log_statement_max_length</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>log_statement_max_length</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        If greater than zero, each statement logged by
+        <xref linkend="guc-log-statement"/>,
+        <xref linkend="guc-log-min-duration-statement"/>,
+        <xref linkend="guc-log-min-duration-sample"/>, or
+        <xref linkend="guc-log-transaction-sample-rate"/>
+        is truncated to at most this many bytes.
+        A value of zero causes statements to be logged with an empty body.
+        <literal>-1</literal> (the default) logs statements in full.
+        If this value is specified without units, it is taken as bytes.
+        This setting does not affect statements logged because of
+        <xref linkend="guc-log-min-error-statement"/>.
+        Only superusers and users with the appropriate <literal>SET</literal>
+        privilege can change this setting.
+       </para>
       </listitem>
      </varlistentry>
 
@@ -11727,6 +11754,12 @@ dynamic_library_path = '/usr/local/lib/postgresql:$libdir'
        </para>
 
        <para>
+        This parameter also determines the number of per-backend slots
+        available for <link linkend="locking-tables-fast-path">fast-path
+        locking</link>.
+       </para>
+
+       <para>
         When running a standby server, you must set this parameter to have the
         same or higher value as on the primary server. Otherwise, queries
         will not be allowed in the standby server.
@@ -11894,7 +11927,7 @@ dynamic_library_path = '/usr/local/lib/postgresql:$libdir'
       </listitem>
      </varlistentry>
 
-    <varlistentry id="guc-quote-all-identifiers" xreflabel="quote-all-identifiers">
+    <varlistentry id="guc-quote-all-identifiers" xreflabel="quote_all_identifiers">
       <term><varname>quote_all_identifiers</varname> (<type>boolean</type>)
       <indexterm>
        <primary><varname>quote_all_identifiers</varname> configuration parameter</primary>

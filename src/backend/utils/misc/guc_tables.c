@@ -553,7 +553,12 @@ extern const struct config_enum_entry dynamic_shared_memory_options[];
  * Connection/session exported GUC backing variables live in
  * PgSessionConnectionGUCState.  Public compatibility names are lvalue macros
  * in the corresponding headers.
+ *
+ * ponytail: log_statement_max_length is a new upstream GUC (post-19beta1)
+ * not yet migrated into PgSessionConnectionGUCState; it stays a plain
+ * process-global for now (Phase 16 / GUC matrix owns the session migration).
  */
+int			log_statement_max_length = -1;
 
 /*
  * SSL renegotiation was been removed in PostgreSQL 9.5, but we tolerate it

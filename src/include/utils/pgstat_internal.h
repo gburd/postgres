@@ -709,7 +709,8 @@ extern void pgstat_archiver_snapshot_cb(void);
 /* flags for pgstat_flush_backend() */
 #define PGSTAT_BACKEND_FLUSH_IO		(1 << 0)	/* Flush I/O statistics */
 #define PGSTAT_BACKEND_FLUSH_WAL   (1 << 1) /* Flush WAL statistics */
-#define PGSTAT_BACKEND_FLUSH_ALL   (PGSTAT_BACKEND_FLUSH_IO | PGSTAT_BACKEND_FLUSH_WAL)
+#define PGSTAT_BACKEND_FLUSH_LOCK  (1 << 2) /* Flush lock statistics */
+#define PGSTAT_BACKEND_FLUSH_ALL   (PGSTAT_BACKEND_FLUSH_IO | PGSTAT_BACKEND_FLUSH_WAL | PGSTAT_BACKEND_FLUSH_LOCK)
 
 extern bool pgstat_flush_backend(bool nowait, uint32 flags);
 extern bool pgstat_backend_flush_cb(bool nowait);
@@ -814,7 +815,8 @@ extern PgStat_EntryRef *pgstat_get_entry_ref(PgStat_Kind kind, Oid dboid, uint64
 extern bool pgstat_lock_entry(PgStat_EntryRef *entry_ref, bool nowait);
 extern bool pgstat_lock_entry_shared(PgStat_EntryRef *entry_ref, bool nowait);
 extern void pgstat_unlock_entry(PgStat_EntryRef *entry_ref);
-extern bool pgstat_drop_entry(PgStat_Kind kind, Oid dboid, uint64 objid);
+extern bool pgstat_drop_entry(PgStat_Kind kind, Oid dboid, uint64 objid,
+							  bool missing_ok);
 extern void pgstat_drop_all_entries(void);
 extern void pgstat_drop_matching_entries(bool (*do_drop) (PgStatShared_HashEntry *, Datum),
 										 Datum match_data);

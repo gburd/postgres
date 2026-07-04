@@ -88,6 +88,7 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME int syslogPipe[2];
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME HANDLE syslogPipe[2];
 #endif
 
+extern bool syslogger_setup_done;
 
 extern bool SysLogger_Start(PMChild *pmchild);
 

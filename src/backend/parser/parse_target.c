@@ -1451,7 +1451,7 @@ ExpandRowReference(ParseState *pstate, Node *expr,
 		Var		   *var = (Var *) expr;
 		ParseNamespaceItem *nsitem;
 
-		nsitem = GetNSItemByRangeTablePosn(pstate, var->varno, var->varlevelsup);
+		nsitem = GetNSItemByVar(pstate, var);
 		return ExpandSingleTable(pstate, nsitem, var->varlevelsup, var->location, make_target_entry);
 	}
 
@@ -1725,22 +1725,6 @@ FigureColname(Node *node)
 		return name;
 	/* default result if we can't guess anything */
 	return "?column?";
-}
-
-/*
- * FigureIndexColname -
- *	  choose the name for an expression column in an index
- *
- * This is actually just like FigureColname, except we return NULL if
- * we can't pick a good name.
- */
-char *
-FigureIndexColname(Node *node)
-{
-	char	   *name = NULL;
-
-	(void) FigureColnameInternal(node, &name);
-	return name;
 }
 
 /*

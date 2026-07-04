@@ -334,20 +334,6 @@ on_exit_close_archive(Archive *AHX)
 }
 
 /*
- * Update the archive handle in the on_exit callback registered by
- * on_exit_close_archive(). When pg_restore processes a pg_dumpall archive
- * containing multiple databases, each database is restored from a separate
- * archive. After closing one archive and opening the next, we update the
- * shutdown_info to reference the new archive handle so the cleanup callback
- * will close the correct archive on exit.
- */
-void
-replace_on_exit_close_archive(Archive *AHX)
-{
-	shutdown_info.AHX = AHX;
-}
-
-/*
  * on_exit_nicely handler for shutting down database connections and
  * worker processes cleanly.
  */
@@ -499,7 +485,7 @@ WaitForTerminatingWorkers(ParallelState *pstate)
 		ret = WaitForMultipleObjects(nrun, lpHandles, false, INFINITE);
 		Assert(ret != WAIT_FAILED);
 		hThread = (uintptr_t) lpHandles[ret - WAIT_OBJECT_0];
-		free(lpHandles);
+		pg_free(lpHandles);
 
 		/* Find dead worker's slot, and clear the hThread field */
 		for (j = 0; j < pstate->numWorkers; j++)

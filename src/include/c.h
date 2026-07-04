@@ -107,6 +107,65 @@ extern "C++"
  */
 
 /*
+ * Not all compilers follow gcc's names of macros for particular target
+ * architectures.  Let's standardize on gcc's names (with trailing __),
+ * and cause those to become defined here if they are not already.
+ *
+ * Note: while this list is alphabetical, it's necessary to check _M_ARM64
+ * before _M_AMD64, because Microsoft's ARM64EC environment defines both.
+ */
+#if defined(__arm__) || defined(__arm)
+#ifndef __arm__
+#define __arm__ 1
+#endif
+#elif defined(__aarch64__) || defined(_M_ARM64)
+#ifndef __aarch64__
+#define __aarch64__ 1
+#endif
+#elif defined(__loongarch64__) || defined(__loongarch64)
+#ifndef __loongarch64__
+#define __loongarch64__ 1
+#endif
+#elif defined(__mips__)
+/* no work */
+#elif defined(__mips64__)
+/* no work */
+#elif defined(__powerpc__) || defined(__ppc__)
+#ifndef __powerpc__
+#define __powerpc__ 1
+#endif
+#elif defined(__powerpc64__) || defined(__ppc64__)
+#ifndef __powerpc64__
+#define __powerpc64__ 1
+#endif
+#elif defined(__riscv)
+/* RISC-V doesn't follow the common naming pattern, so force it */
+#if SIZEOF_VOID_P == 8
+#define __riscv64__ 1
+#else
+#define __riscv__ 1
+#endif
+#elif defined(__s390__)
+/* no work */
+#elif defined(__s390x__)
+/* no work */
+#elif defined(__sparc__) || defined(__sparc)
+#ifndef __sparc__
+#define __sparc__ 1
+#endif
+#elif defined(__i386__) || defined (__i386) || defined(_M_IX86)
+#ifndef __i386__
+#define __i386__ 1
+#endif
+#elif defined(__x86_64__) || defined(__x86_64) || defined (__amd64) || defined(_M_AMD64)
+#ifndef __x86_64__
+#define __x86_64__ 1
+#endif
+#else
+#error "cannot identify target architecture"
+#endif
+
+/*
  * Disable "inline" if PG_FORCE_DISABLE_INLINE is defined.
  * This is used to work around compiler bugs and might also be useful for
  * investigatory purposes.
@@ -1337,8 +1396,19 @@ typedef struct PGAlignedXLogBlock PGAlignedXLogBlock;
  * SSE2 instructions are part of the spec for the 64-bit x86 ISA. We assume
  * that compilers targeting this architecture understand SSE2 intrinsics.
  */
-#if (defined(__x86_64__) || defined(_M_AMD64))
+#if defined(__x86_64__)
 #define USE_SSE2
+
+#else							/* ! x86_64 */
+
+/*
+ * In "universal" macOS builds, it's possible for AVX-related symbols to
+ * get defined if the build host is x86_64, but we mustn't try to build
+ * that code when cross-compiling to aarch64.
+ */
+#undef USE_AVX2_WITH_RUNTIME_CHECK
+#undef USE_AVX512_CRC32C_WITH_RUNTIME_CHECK
+#undef USE_AVX512_POPCNT_WITH_RUNTIME_CHECK
 
 /*
  * We use the Neon instructions if the compiler provides access to them (as
@@ -1348,9 +1418,10 @@ typedef struct PGAlignedXLogBlock PGAlignedXLogBlock;
  * could not realistically use it there without a run-time check, which seems
  * not worth the trouble for now.
  */
-#elif defined(__aarch64__) && defined(__ARM_NEON)
+#if defined(__aarch64__) && defined(__ARM_NEON)
 #define USE_NEON
 #endif
+#endif							/* x86_64 */
 
 /* ----------------------------------------------------------------
  *				Section 9: system-specific hacks

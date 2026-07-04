@@ -83,7 +83,6 @@
   boot_val => '""',
 },
 
-
 { name => 'archive_command', type => 'string', context => 'PGC_SIGHUP', group => 'WAL_ARCHIVING',
   short_desc => 'Sets the shell command that will be called to archive a WAL file.',
   long_desc => 'An empty string means use "archive_library".',
@@ -1351,7 +1350,7 @@
   variable => 'huge_page_size',
   boot_val => '0',
   min => '0',
-  max => 'INT_MAX',
+  max => 'MAX_KILOBYTES',
   check_hook => 'check_huge_page_size',
 },
 
@@ -2016,6 +2015,16 @@
   threaded_accessor => 'PgCurrentLogStatementRef',
   boot_val => 'LOGSTMT_NONE',
   options => 'log_statement_options',
+},
+
+{ name => 'log_statement_max_length', type => 'int', context => 'PGC_SUSET', group => 'LOGGING_WHAT',
+  short_desc => 'Sets the maximum length in bytes of logged statements.',
+  long_desc => '-1 means log statement in full; 0 means log an empty statement body.',
+  flags => 'GUC_UNIT_BYTE',
+  variable => 'log_statement_max_length',
+  boot_val => '-1',
+  min => '-1',
+  max => 'INT_MAX / 2',
 },
 
 { name => 'log_statement_sample_rate', type => 'real', context => 'PGC_SUSET', group => 'LOGGING_WHEN',
@@ -2853,7 +2862,6 @@
   variable => 'send_abort_for_kill',
   boot_val => 'false',
 },
-
 
 { name => 'seq_page_cost', type => 'real', context => 'PGC_USERSET', group => 'QUERY_TUNING_COST',
   short_desc => 'Sets the planner\'s estimate of the cost of a sequentially fetched disk page.',
