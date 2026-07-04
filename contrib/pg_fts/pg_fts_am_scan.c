@@ -2497,6 +2497,46 @@ fts_search_impact_single(WandCursor *c, int k, ScoredTid **out)
 	}
 	ndir = pos;
 
+	/*
+	 * Sort the loaded directory by the EXACT recomputed impact bound (at the
+	 * current avgdl), descending.  The stored order is only a max_tf proxy; a
+	 * block with smaller max_tf but a much smaller min_doclen can have a higher
+	 * true bound, so we must sort by the recomputed bound here for the
+	 * front-of-remaining early-stop to be sound (it is then a valid ceiling on
+	 * every not-yet-visited block).
+	 */
+	{
+		double	   *bounds = (double *) palloc(Max(ndir, 1) * sizeof(double));
+		uint32		a,
+					b;
+
+		for (a = 0; a < ndir; a++)
+		{
+			double		mtf = (double) dir[a].max_tf;
+			double		mindl = (double) dir[a].min_doclen;
+
+			bounds[a] = c->idf * mtf * (k1 + 1.0) /
+				(mtf + c->k1_1mb + c->k1b_inv_avgdl * mindl);
+		}
+		/* insertion sort by bound desc (directories are small: ceil(df/128)) */
+		for (a = 1; a < ndir; a++)
+		{
+			BM25SkipEntry ekey = dir[a];
+			double		bkey = bounds[a];
+
+			b = a;
+			while (b > 0 && bounds[b - 1] < bkey)
+			{
+				dir[b] = dir[b - 1];
+				bounds[b] = bounds[b - 1];
+				b--;
+			}
+			dir[b] = ekey;
+			bounds[b] = bkey;
+		}
+		pfree(bounds);
+	}
+
 	heap = (ScoredTid *) palloc(Max(k, 1) * sizeof(ScoredTid));
 
 	for (pos = 0; pos < ndir; pos++)
