@@ -1,0 +1,68 @@
+-- Smoke test for pg_bp_clir.
+--
+-- Verifies the CLIR (Clock-LIRS) extension loads, registers as a
+-- handler, can back a named buffer pool, services basic reads/writes,
+-- and surfaces stats through pg_stat_clir.
+CREATE EXTENSION pg_bp_clir;
+-- handler is visible
+SELECT proname, prorettype::regtype, proargtypes::regtype[]
+FROM pg_proc WHERE proname = 'clir_pool_handler';
+      proname      | prorettype |   proargtypes    
+-------------------+------------+------------------
+ clir_pool_handler | internal   | [0:0]={internal}
+(1 row)
+
+-- create a CLIR-backed pool and assign a table to it
+CREATE BUFFER POOL clir_test
+    HANDLER clir_pool_handler SIZE '524288';
+CREATE TABLE clir_test_tbl (id int PRIMARY KEY, v text)
+    WITH (buffer_pool = 'clir_test');
+INSERT INTO clir_test_tbl
+SELECT g, repeat('x', 100) FROM generate_series(1, 200) g;
+-- exercise reads to drive on_hit / on_miss / on_new_tag
+SELECT count(*) FROM clir_test_tbl;
+ count 
+-------
+   200
+(1 row)
+
+SELECT count(*) FROM clir_test_tbl WHERE id BETWEEN 50 AND 150;
+ count 
+-------
+   101
+(1 row)
+
+SELECT count(*) FROM clir_test_tbl WHERE id < 50;
+ count 
+-------
+    49
+(1 row)
+
+-- pg_stat_clir should report this pool with sensible non-negative numbers
+SELECT name,
+       lir_size > 0 AS lir_size_positive,
+       hir_size > 0 AS hir_size_positive,
+       lir_size + hir_size <= 64 AS sizes_match_pool,
+       lookups >= 0 AS lookups_ok,
+       lir_hits + hir_hits + ghost_hits + misses >= 0 AS hits_ok,
+       evictions >= 0 AS evictions_ok
+FROM pg_stat_clir WHERE name = 'clir_test';
+   name    | lir_size_positive | hir_size_positive | sizes_match_pool | lookups_ok | hits_ok | evictions_ok 
+-----------+-------------------+-------------------+------------------+------------+---------+--------------
+ clir_test | t                 | t                 | t                | t          | t       | t
+(1 row)
+
+-- update path should drive on_evict
+UPDATE clir_test_tbl SET v = repeat('y', 200) WHERE id <= 50;
+SELECT count(*) FROM clir_test_tbl WHERE v LIKE 'y%';
+ count 
+-------
+    50
+(1 row)
+
+-- VACUUM hint integration
+VACUUM clir_test_tbl;
+-- cleanup
+DROP TABLE clir_test_tbl;
+DROP BUFFER POOL clir_test;
+DROP EXTENSION pg_bp_clir;

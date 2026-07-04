@@ -1264,33 +1264,26 @@ CarGetVictim(void *strategy_data, BufferAccessStrategy strategy,
  */
 
 /*
- * CarSyncStart -- return T1 clock hand position for trickle writer.
+ * CarSyncStart -- return a monotonic sync position for the bgwriter.
  *
- * The bgwriter should prefer writing dirty T1 pages (evicted sooner).
+ * BgBufferSync requires sync_start to report a position that advances
+ * monotonically with a matching complete_passes count (Assert(strategy_delta
+ * >= 0), bufmgr.c).  CAR's T1 clock hand wanders (buf_ids reorder as the ring
+ * rotates), so returning its buf_id violated that contract.  We return a
+ * fixed 0/0 like the other list-based algorithms (lru/arc/osic); real
+ * dirty-page writeback is driven by the trickle_iter callbacks, not this
+ * position.
  */
 static int
-CarSyncStart(void *strategy_data, uint32 *complete_passes,
+CarSyncStart(void *strategy_data pg_attribute_unused(), uint32 *complete_passes,
 			 uint32 *num_buf_alloc)
 {
-	CarControl *ctl = (CarControl *) strategy_data;
-	int			result = 0;
-
 	if (complete_passes)
 		*complete_passes = 0;
 	if (num_buf_alloc)
 		*num_buf_alloc = 0;
 
-	SpinLockAcquire(&ctl->car_lock);
-	if (ctl->t1_hand >= 0)
-	{
-		CarCDB	   *cdb_arr = CAR_CDB(ctl);
-
-		if (cdb_arr[ctl->t1_hand].buf_id >= 0)
-			result = cdb_arr[ctl->t1_hand].buf_id + ctl->first_buf_id;
-	}
-	SpinLockRelease(&ctl->car_lock);
-
-	return result;
+	return 0;
 }
 
 static void
