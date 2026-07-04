@@ -210,6 +210,42 @@ xtc_pg_launch_backend_fiber(xtc_carrier_entry_fn entry, void *entry_arg)
 }
 
 /*
+ * Backend exit seam (see header).  Called from backend_thread_finish() at the
+ * point a pthread carrier would call pg_thread_exit().  The backend's
+ * proc_exit cleanup has already run (socket closed, logical backend
+ * unpublished, scheduler carrier unregistered, retained memory reclaimed,
+ * PMChild thread-exit published, thread_start released).  All that remains is
+ * to leave the fiber -- xtc_exit_self returns control to the carrier loop,
+ * which reclaims the proc/task slot so the next backend gets a fresh one.
+ */
+void
+xtc_pg_backend_fiber_exit(int code)
+{
+	{
+		char		buf[96];
+		int			n;
+		xtc_pid_t	self = xtc_self();
+
+		n = snprintf(buf, sizeof(buf),
+					 "xtc: backend fiber exiting pid=(loop=%u,local=%u,gen=%u) code=%d\n",
+					 self.loop_id, self.local_id, self.gen, code);
+		if (n > 0)
+		{
+			if (n > (int) sizeof(buf))
+				n = (int) sizeof(buf);
+			(void) write(STDERR_FILENO, buf, (size_t) n);
+		}
+	}
+
+	xtc_in_backend_fiber = false;
+	xtc_exit_self(code);
+
+	/* xtc_exit_self does not return; if it somehow does, do not fall back
+	 * into the cleaned-up backend stack. */
+	abort();
+}
+
+/*
  * Runtime seam used by waiteventset.c.  Yield the current backend fiber
  * until `fd` is ready for `interest_pg` (PG WL_* bits) or timeout.  Returns
  * WL_* bits that fired.  timeout_ms < 0 means wait forever.  Only called

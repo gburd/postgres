@@ -1462,7 +1462,13 @@ backend_thread_exit(int code)
 	BackendThreadPublication *publication = backend_thread_current_publication();
 
 	if (publication == NULL)
+	{
+#ifdef USE_XTC_CARRIER
+		if (xtc_in_backend_fiber)
+			xtc_pg_backend_fiber_exit(backend_thread_exitstatus(code));
+#endif
 		pg_thread_exit();
+	}
 
 	switch (publication->kind)
 	{
@@ -1540,6 +1546,10 @@ backend_thread_finish(int code)
 	ShutdownWaitEventSupport();
 	backend_thread_set_current_start(NULL);
 	backend_thread_start_release(thread_start);
+#ifdef USE_XTC_CARRIER
+	if (xtc_in_backend_fiber)
+		xtc_pg_backend_fiber_exit(exitstatus);
+#endif
 	pg_thread_exit();
 }
 

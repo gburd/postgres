@@ -24,5 +24,15 @@ extern int	xtc_pg_launch_backend_fiber(xtc_carrier_entry_fn entry,
 /* waiteventset.c seam: yield the fiber until fd is ready / timeout. */
 extern int	xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms);
 
+/*
+ * Backend exit seam.  When a backend runs as an xtc fiber, its proc_exit
+ * teardown must NOT end in pg_thread_exit() (pthread_exit on the carrier
+ * thread would kill the whole scheduler, not just this fiber).  Instead the
+ * fiber returns control to the xtc loop via xtc_exit_self(), releasing its
+ * proc slot so the Nth backend behaves exactly like the 1st.  Does not
+ * return.  Only valid while xtc_in_backend_fiber is true.
+ */
+pg_noreturn extern void xtc_pg_backend_fiber_exit(int code);
+
 #endif							/* USE_XTC_CARRIER */
 #endif							/* PG_XTC_CARRIER_H */
