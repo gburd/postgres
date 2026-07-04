@@ -686,106 +686,21 @@ pw_finish(BM25PostWriter *pw)
 	}
 }
 
-/* Order skip-dir entries by DESCENDING avgdl-independent impact proxy:
- * max_tf desc (dominant term of BM25 impact), tie-break min_doclen asc. */
-static int
-cmp_skip_impact(const void *a, const void *b)
-{
-	const BM25SkipEntry *sa = (const BM25SkipEntry *) a;
-	const BM25SkipEntry *sb = (const BM25SkipEntry *) b;
-
-	if (sa->max_tf != sb->max_tf)
-		return (sa->max_tf > sb->max_tf) ? -1 : 1;
-	if (sa->min_doclen != sb->min_doclen)
-		return (sa->min_doclen < sb->min_doclen) ? -1 : 1;
-	return 0;
-}
-
-/*
- * Write one term's impact-ordered block skip directory into the shared
- * BM25_SKIPDIR page chain (sw), returning the term's first entry location and
- * count.  Entries are sorted descending by impact proxy first, then appended;
- * a term's entries stay contiguous within the chain (an entry never straddles
- * a page, and the reader reads exactly nblocks entries from (skipblk,skipoff)).
- */
-static void
-bm25_write_skipdir(BM25PostWriter *sw, BM25SkipEntry *skips, int nskip,
-				   BlockNumber *skipblk, uint32 *skipoff, uint32 *nblocks)
-{
-	Relation	index = sw->index;
-	Size		esz = sizeof(BM25SkipEntry);
-	int			i;
-	bool		start_recorded = false;
-
-	qsort(skips, nskip, esz, cmp_skip_impact);
-
-	for (i = 0; i < nskip; i++)
-	{
-		char	   *pageend;
-
-		/* need a fresh page or a page rollover? */
-		if (sw->buffer != InvalidBuffer)
-		{
-			pageend = (char *) sw->page + BLCKSZ - MAXALIGN(sizeof(BM25PageOpaqueData));
-			if ((char *) sw->page + ((PageHeader) sw->page)->pd_lower + esz > pageend)
-			{
-				Buffer		next = bm25_new_buffer(index);
-				BlockNumber nextblk = BufferGetBlockNumber(next);
-
-				BM25PageGetOpaque(sw->page)->nextblk = nextblk;
-				GenericXLogFinish(sw->state);
-				UnlockReleaseBuffer(sw->buffer);
-				sw->buffer = next;
-				sw->state = GenericXLogStart(index);
-				sw->page = GenericXLogRegisterBuffer(sw->state, sw->buffer, GENERIC_XLOG_FULL_IMAGE);
-				bm25_init_page(sw->page, BM25_SKIPDIR);
-			}
-		}
-		if (sw->buffer == InvalidBuffer)
-		{
-			sw->buffer = bm25_new_buffer(index);
-			sw->state = GenericXLogStart(index);
-			sw->page = GenericXLogRegisterBuffer(sw->state, sw->buffer, GENERIC_XLOG_FULL_IMAGE);
-			bm25_init_page(sw->page, BM25_SKIPDIR);
-		}
-
-		if (!start_recorded)
-		{
-			*skipblk = BufferGetBlockNumber(sw->buffer);
-			*skipoff = (uint32) ((PageHeader) sw->page)->pd_lower;
-			start_recorded = true;
-		}
-
-		memcpy((char *) sw->page + ((PageHeader) sw->page)->pd_lower, &skips[i], esz);
-		((PageHeader) sw->page)->pd_lower += esz;
-	}
-	*nblocks = (uint32) nskip;
-}
-
 /*
  * Append one term's postings to the shared writer.  Returns the block and byte
  * offset where the term's first block begins (for its dictionary entry).
  */
 static void
-bm25_write_postings(BM25PostWriter *pw, BM25PostWriter *sw, BuildTerm *bt,
-					BlockNumber *firstblk, uint32 *firstoff,
-					BlockNumber *skipblk, uint32 *skipoff, uint32 *nblocks)
+bm25_write_postings(BM25PostWriter *pw, BuildTerm *bt,
+					BlockNumber *firstblk, uint32 *firstoff)
 {
 	Relation	index = pw->index;
 	BM25PostingSort *sorted;
 	int			i;
 	bool		start_recorded = false;
-	BM25SkipEntry *skips;
-	int			nskip = 0;
 
 	*firstblk = InvalidBlockNumber;
 	*firstoff = 0;
-	*skipblk = InvalidBlockNumber;
-	*skipoff = 0;
-	*nblocks = 0;
-	/* worst case: one skip entry per 128-doc block */
-	skips = (BM25SkipEntry *) palloc(Max((bt->nposts + BM25_BLOCK_SIZE - 1) /
-										 BM25_BLOCK_SIZE, 1) * sizeof(BM25SkipEntry));
 
 	sorted = (BM25PostingSort *) palloc(Max(bt->nposts, 1) * sizeof(BM25PostingSort));
 	for (i = 0; i < bt->nposts; i++)
@@ -880,26 +795,9 @@ bm25_write_postings(BM25PostWriter *pw, BM25PostWriter *sw, BuildTerm *bt,
 		bh->first_docid_lo = (uint32) (blk_first_docid & 0xFFFFFFFF);
 		bh->bytelen = (uint32) sclen;
 		memcpy((char *) (bh + 1), scratch, sclen);
-
-		/* record this block for the impact skip directory */
-		skips[nskip].blk = BufferGetBlockNumber(pw->buffer);
-		skips[nskip].off = (uint32) ((PageHeader) pw->page)->pd_lower;
-		skips[nskip].max_tf = blk_max_tf;
-		skips[nskip].min_doclen = (blk_min_dl == UINT32_MAX ? 0 : blk_min_dl);
-		nskip++;
-
 		((PageHeader) pw->page)->pd_lower += need;
 	}
 
-	/*
-	 * For a common term, write an impact-ordered block skip directory so the
-	 * single-term ranked top-k can visit high-impact blocks first and stop
-	 * early.  Rare terms scan fast in docid order and get no directory.
-	 */
-	if (bt->nposts >= BM25_SKIPDIR_MIN && nskip > 1)
-		bm25_write_skipdir(sw, skips, nskip, skipblk, skipoff, nblocks);
-
-	pfree(skips);
 	pfree(sorted);
 }
 
@@ -911,7 +809,6 @@ bm25_write_postings(BM25PostWriter *pw, BM25PostWriter *sw, BuildTerm *bt,
 static BlockNumber
 bm25_write_dictionary(Relation index, BM25BuildState *bs,
 					  BlockNumber *postings, uint32 *offsets,
-					  BlockNumber *skipblks, uint32 *skipoffs, uint32 *nblocks,
 					  BlockNumber *indexstart)
 {
 	BlockNumber first = InvalidBlockNumber;
@@ -987,9 +884,6 @@ bm25_write_dictionary(Relation index, BM25BuildState *bs,
 			de->max_tf = maxtf;
 			de->firstposting = postings[i];
 			de->firstoffset = offsets[i];
-			de->skipstart = skipblks[i];
-			de->skipoff = skipoffs[i];
-			de->nblocks = nblocks[i];
 			memcpy(de->term, bt->term, bt->len);
 		}
 		((PageHeader) page)->pd_lower += need;
@@ -1076,30 +970,18 @@ bm25_write_segment(Relation index, BM25BuildState *bs, BM25SegMeta *seg)
 {
 	BlockNumber *postings;
 	uint32	   *offsets;
-	BlockNumber *skipblks;
-	uint32	   *skipoffs;
-	uint32	   *nblocks;
 	BM25PostWriter pw;
-	BM25PostWriter sw;
 	int			i;
 
 	postings = (BlockNumber *) palloc(Max(bs->nterms, 1) * sizeof(BlockNumber));
 	offsets = (uint32 *) palloc(Max(bs->nterms, 1) * sizeof(uint32));
-	skipblks = (BlockNumber *) palloc(Max(bs->nterms, 1) * sizeof(BlockNumber));
-	skipoffs = (uint32 *) palloc(Max(bs->nterms, 1) * sizeof(uint32));
-	nblocks = (uint32 *) palloc(Max(bs->nterms, 1) * sizeof(uint32));
 	pw_begin(&pw, index);
-	pw_begin(&sw, index);
 	for (i = 0; i < bs->nterms; i++)
-		bm25_write_postings(&pw, &sw, &bs->terms[i], &postings[i], &offsets[i],
-							&skipblks[i], &skipoffs[i], &nblocks[i]);
+		bm25_write_postings(&pw, &bs->terms[i], &postings[i], &offsets[i]);
 	pw_finish(&pw);
-	pw_finish(&sw);
 
 	MemSet(seg, 0, sizeof(BM25SegMeta));
-	seg->dictstart = bm25_write_dictionary(index, bs, postings, offsets,
-										   skipblks, skipoffs, nblocks,
-										   &seg->dictindexstart);
+	seg->dictstart = bm25_write_dictionary(index, bs, postings, offsets, &seg->dictindexstart);
 	seg->trgmstart = bm25_write_trigrams(index, bs);
 	seg->livedocs = InvalidBlockNumber;
 	seg->ndocs = bs->ndocs;
@@ -1109,9 +991,6 @@ bm25_write_segment(Relation index, BM25BuildState *bs, BM25SegMeta *seg)
 	seg->livedocslen = 0;
 	pfree(postings);
 	pfree(offsets);
-	pfree(skipblks);
-	pfree(skipoffs);
-	pfree(nblocks);
 }
 
 /*

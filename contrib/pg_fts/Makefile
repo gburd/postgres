@@ -33,8 +33,7 @@ DATA = pg_fts--1.0.sql pg_fts--1.0--1.1.sql pg_fts--1.1--1.2.sql \
 	pg_fts--1.15--1.16.sql \
 	pg_fts--1.16--1.17.sql \
 	pg_fts--1.17--1.18.sql \
-	pg_fts--1.18--1.19.sql \
-	pg_fts--1.19--1.20.sql
+	pg_fts--1.18--1.19.sql
 PGFILEDESC = "pg_fts - full-text search with BM25 ranking"
 
 REGRESS = pg_fts

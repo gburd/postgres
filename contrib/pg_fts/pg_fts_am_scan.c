@@ -1513,8 +1513,7 @@ static bool
 bm25_lookup_dict(Relation index, const BM25SegMeta *seg,
 				 const char *term, int termlen,
 				 uint32 *df, uint32 *max_tf, BlockNumber *firstposting,
-				 uint32 *firstoffset, BlockNumber *skipstart,
-				 uint32 *skipoff, uint32 *nblocks)
+				 uint32 *firstoffset)
 {
 	BlockNumber blk = bm25_dict_seek(index, seg, term, termlen);
 	bool		onlyone = (seg->dictindexstart != InvalidBlockNumber);
@@ -1546,12 +1545,6 @@ bm25_lookup_dict(Relation index, const BM25SegMeta *seg,
 				*max_tf = de->max_tf;
 				*firstposting = de->firstposting;
 				*firstoffset = de->firstoffset;
-				if (skipstart)
-					*skipstart = de->skipstart;
-				if (skipoff)
-					*skipoff = de->skipoff;
-				if (nblocks)
-					*nblocks = de->nblocks;
 				found = true;
 				break;
 			}
@@ -1568,12 +1561,6 @@ bm25_lookup_dict(Relation index, const BM25SegMeta *seg,
 	*max_tf = 0;
 	*firstposting = InvalidBlockNumber;
 	*firstoffset = 0;
-	if (skipstart)
-		*skipstart = InvalidBlockNumber;
-	if (skipoff)
-		*skipoff = 0;
-	if (nblocks)
-		*nblocks = 0;
 	return false;
 }
 
@@ -1801,10 +1788,6 @@ typedef struct WandCursor
 	double		max_contrib;	/* term-wide upper bound (shortest-doc norm) */
 	BM25Tombstones *tombs;		/* loaded per-segment tombstones (or NULL) */
 	uint32		segidx;			/* which segment this cursor's postings belong to */
-	/* v3 impact-ordered block skip directory (single-term ranked path) */
-	BlockNumber skipstart;		/* first BM25_SKIPDIR page, or Invalid */
-	uint32		skipoff;		/* byte offset of the term's first skip entry */
-	uint32		nblocks;		/* skip-dir entry count (0 = no directory) */
 }			WandCursor;
 
 static inline void wand_skip_own_tombstoned(WandCursor *c);
@@ -2436,193 +2419,6 @@ fts_search_maxscore(WandCursor *cursors, int nterms, int k, ScoredTid **out)
 }
 
 /*
- * fts_search_impact_single: exact top-k for a SINGLE term that has a v3
- * impact-ordered block skip directory.  Visits the term's posting blocks in
- * descending-impact order and stops as soon as the k-th best score is at least
- * the recomputed upper-bound of the next (and therefore every remaining) block
- * -- the Tantivy-style early termination that keeps ranked latency flat as term
- * frequency grows, instead of the docid-ordered scan that must walk the whole
- * posting list of a common term.
- *
- * Soundness: the per-block bound is recomputed here from the stored raw
- * (max_tf, min_doclen) at the CURRENT avgdl (identical to wand_block_max_contrib),
- * so it is always an exact upper bound regardless of corpus growth.  The
- * directory's stored order (by max_tf desc) is only a visitation heuristic; the
- * stop test bounds every not-yet-visited block by the front unvisited entry's
- * recomputed impact, which is a valid ceiling because impact is monotone in
- * max_tf and the directory is max_tf-descending.  Returns exact top-k.
- */
-static int
-fts_search_impact_single(WandCursor *c, int k, ScoredTid **out)
-{
-	ScoredTid  *heap;
-	int			nheap = 0;
-	double		threshold = 0.0;
-	BM25SkipEntry *dir;
-	uint32		ndir = c->nblocks;
-	uint32		pos;
-	int			i;
-	double		k1 = 1.2;
-	BlockNumber blk;
-	uint32		off;
-	Size		esz = sizeof(BM25SkipEntry);
-
-	/* load the whole directory (contiguous nblocks entries from skipstart/off) */
-	dir = (BM25SkipEntry *) palloc(ndir * esz);
-	blk = c->skipstart;
-	off = c->skipoff;
-	pos = 0;
-	while (blk != InvalidBlockNumber && pos < ndir)
-	{
-		Buffer		sb = ReadBuffer(c->index, blk);
-		Page		sp;
-		char	   *p,
-				   *pend;
-		BlockNumber next;
-
-		LockBuffer(sb, BUFFER_LOCK_SHARE);
-		sp = BufferGetPage(sb);
-		pend = (char *) sp + ((PageHeader) sp)->pd_lower;
-		p = (char *) sp + off;
-		next = BM25PageGetOpaque(sp)->nextblk;
-		while (p + esz <= pend && pos < ndir)
-		{
-			memcpy(&dir[pos], p, esz);
-			p += esz;
-			pos++;
-		}
-		UnlockReleaseBuffer(sb);
-		blk = next;
-		off = MAXALIGN(SizeOfPageHeaderData);
-	}
-	ndir = pos;
-
-	/*
-	 * Sort the loaded directory by the EXACT recomputed impact bound (at the
-	 * current avgdl), descending.  The stored order is only a max_tf proxy; a
-	 * block with smaller max_tf but a much smaller min_doclen can have a higher
-	 * true bound, so we must sort by the recomputed bound here for the
-	 * front-of-remaining early-stop to be sound (it is then a valid ceiling on
-	 * every not-yet-visited block).
-	 */
-	{
-		double	   *bounds = (double *) palloc(Max(ndir, 1) * sizeof(double));
-		uint32		a,
-					b;
-
-		for (a = 0; a < ndir; a++)
-		{
-			double		mtf = (double) dir[a].max_tf;
-			double		mindl = (double) dir[a].min_doclen;
-
-			bounds[a] = c->idf * mtf * (k1 + 1.0) /
-				(mtf + c->k1_1mb + c->k1b_inv_avgdl * mindl);
-		}
-		/* insertion sort by bound desc (directories are small: ceil(df/128)) */
-		for (a = 1; a < ndir; a++)
-		{
-			BM25SkipEntry ekey = dir[a];
-			double		bkey = bounds[a];
-
-			b = a;
-			while (b > 0 && bounds[b - 1] < bkey)
-			{
-				dir[b] = dir[b - 1];
-				bounds[b] = bounds[b - 1];
-				b--;
-			}
-			dir[b] = ekey;
-			bounds[b] = bkey;
-		}
-		pfree(bounds);
-	}
-
-	heap = (ScoredTid *) palloc(Max(k, 1) * sizeof(ScoredTid));
-
-	for (pos = 0; pos < ndir; pos++)
-	{
-		double		mtf = (double) dir[pos].max_tf;
-		double		mindl = (double) dir[pos].min_doclen;
-		double		bound = c->idf * mtf * (k1 + 1.0) /
-			(mtf + c->k1_1mb + c->k1b_inv_avgdl * mindl);
-
-		/* early stop: k results already, and no remaining block can beat them */
-		if (nheap >= k && bound <= threshold)
-			break;
-
-		/* load exactly this block into the cursor and score its postings */
-		c->curblk = dir[pos].blk;
-		c->curoff = dir[pos].off;
-		c->nread = 0;
-		wand_load_block(c);
-		for (i = 0; i < c->blkcount; i++)
-		{
-			ItemPointerData tid;
-			double		score;
-
-			c->cur = i;
-			c->docid = c->docids[i];
-			if (wand_cur_own_tombstoned(c))
-				continue;
-			score = wand_contrib_cur(c);
-			bm25_docid_to_tid(c->docids[i], &tid);
-
-			if (nheap < k)
-			{
-				heap[nheap].tid = tid;
-				heap[nheap].score = score;
-				nheap++;
-				if (nheap == k)
-				{
-					int			j;
-
-					threshold = heap[0].score;
-					for (j = 1; j < nheap; j++)
-						if (heap[j].score < threshold)
-							threshold = heap[j].score;
-				}
-			}
-			else if (score > threshold)
-			{
-				int			minpos = 0,
-							j;
-
-				for (j = 1; j < nheap; j++)
-					if (heap[j].score < heap[minpos].score)
-						minpos = j;
-				heap[minpos].tid = tid;
-				heap[minpos].score = score;
-				threshold = heap[0].score;
-				for (j = 1; j < nheap; j++)
-					if (heap[j].score < threshold)
-						threshold = heap[j].score;
-			}
-		}
-	}
-	pfree(dir);
-
-	/* sort the top-k descending by score (same as the WAND paths' output) */
-	for (i = 0; i < nheap; i++)
-	{
-		int			maxpos = i,
-					j;
-
-		for (j = i + 1; j < nheap; j++)
-			if (heap[j].score > heap[maxpos].score)
-				maxpos = j;
-		if (maxpos != i)
-		{
-			ScoredTid	tmp = heap[i];
-
-			heap[i] = heap[maxpos];
-			heap[maxpos] = tmp;
-		}
-	}
-	*out = heap;
-	return nheap;
-}
-
-/*
  * Dispatch to the top-k algorithm best suited to the query shape.  BMW excels
  * on short queries (tight block-max pruning, cheap pivot); MaxScore does
  * progressively less work as terms become non-essential, winning on long
@@ -2631,10 +2427,6 @@ fts_search_impact_single(WandCursor *c, int k, ScoredTid **out)
 static int
 fts_search_wand(WandCursor *cursors, int nterms, int k, ScoredTid **out)
 {
-	/* single common term with an impact directory: best-first early-stop scan */
-	if (nterms == 1 && cursors[0].nblocks > 0 &&
-		cursors[0].skipstart != InvalidBlockNumber)
-		return fts_search_impact_single(&cursors[0], k, out);
 	if (nterms >= 4)
 		return fts_search_maxscore(cursors, nterms, k, out);
 	return fts_search_bmw(cursors, nterms, k, out);
@@ -2685,7 +2477,7 @@ bm25_query_maxhits(Relation index, FtsQuery q, double N)
 
 					if (bm25_lookup_dict(index, &meta.segs[s],
 										 FTS_QUERY_ITEMTEXT(q, it), it->termlen,
-										 &df, &mtf, &fb, &fo, NULL, NULL, NULL))
+										 &df, &mtf, &fb, &fo))
 						gdf += df;
 				}
 				stack[top++] = (double) gdf;
@@ -2758,21 +2550,13 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 
 	if (k < 1)
 		k = 1;
+	wantk = Max(k * 4, 64);
 
 	bm25_read_meta(index, &meta);
 	N = meta.ndocs < 1.0 ? 1.0 : meta.ndocs;
 	avgdl = meta.ndocs > 0 ? meta.sumdoclen / meta.ndocs : 1.0;
 
 	nterms = fts_query_terms(q, &terms, &lens);
-	/*
-	 * Over-fetch for MVCC visibility: some of the top-k by score may be
-	 * invisible to the snapshot, so we ask the engine for 2x k (min 32) and
-	 * keep the first k visible.  This tolerates up to ~50% invisible top rows
-	 * before the SRF under-fills (the amgettuple ordering scan additionally
-	 * grows k via bm25_gettuple's retry).  Kept modest so the impact-directory
-	 * single-term early-stop is not defeated by a large fetch target.
-	 */
-	wantk = Max(k * 2, 32);
 	/* up to one cursor per (term, segment) */
 	cursors = (WandCursor *) palloc(Max(nterms * Max((int) meta.nsegments, 1), 1) *
 									sizeof(WandCursor));
@@ -2797,8 +2581,7 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 			uint32		firstoff;
 
 			if (bm25_lookup_dict(index, &meta.segs[s], terms[t], lens[t],
-								 &df, &max_tf, &firstblk, &firstoff,
-								 NULL, NULL, NULL))
+								 &df, &max_tf, &firstblk, &firstoff))
 				gdf += df;
 		}
 		if (gdf == 0)
@@ -2812,14 +2595,10 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 						max_tf;
 			BlockNumber firstblk;
 			uint32		firstoff;
-			BlockNumber skipstart;
-			uint32		skipoff;
-			uint32		nblk;
 			double		mtf;
 
 			if (!bm25_lookup_dict(index, &meta.segs[s], terms[t], lens[t],
-								  &df, &max_tf, &firstblk, &firstoff,
-								  &skipstart, &skipoff, &nblk))
+								  &df, &max_tf, &firstblk, &firstoff))
 				continue;
 			mtf = (double) max_tf;
 			cursors[nactive].index = index;
@@ -2839,21 +2618,6 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 				idf * mtf * (k1 + 1.0) / (mtf + k1 * (1.0 - b));
 			cursors[nactive].tombs = &tombs;
 			cursors[nactive].segidx = s;
-			/* impact directory exists only in v3+ indexes; ignore on older
-			 * formats (the skip fields would be garbage) so we fall back to the
-			 * exact docid-ordered scan */
-			if (meta.version >= 3)
-			{
-				cursors[nactive].skipstart = skipstart;
-				cursors[nactive].skipoff = skipoff;
-				cursors[nactive].nblocks = nblk;
-			}
-			else
-			{
-				cursors[nactive].skipstart = InvalidBlockNumber;
-				cursors[nactive].skipoff = 0;
-				cursors[nactive].nblocks = 0;
-			}
 			nactive++;
 		}
 	}
