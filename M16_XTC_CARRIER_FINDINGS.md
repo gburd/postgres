@@ -1,10 +1,19 @@
 # M16 xtc-carrier Findings -- threaded PostgreSQL on the xtc scheduler
 
-Status: **(A) SUCCESS** -- `psql -c "select 1"` round-trips with the threaded
-backend running as an xtc_proc fiber, and its client-socket waits driven by
-`xtc_proc_wait_fd` on the xtc scheduler loop.  OUT-OF-TREE, throwaway, on
+Status: **(B) PARTIAL** -- N SEQUENTIAL backends work perfectly (each spawns a
+fresh xtc_proc fiber, returns the correct row, and EXITS cleanly; the loop slot
+is reclaimed and reused with no leak).  N CONCURRENT backends return the
+correct rows but do NOT tear down cleanly: with two or more backend fibers
+simultaneously parked on the single carrier loop, exactly ONE resumes/exits and
+the rest stay parked, wedging the loop (a lost-wakeup limitation).  The
+original single-backend `select 1` milestone (below) still holds; the
+fiber-teardown + thread-reset commits fixed the 2nd-backend GUC/timezone
+NULL-context crashes for the sequential case.  OUT-OF-TREE, throwaway, on
 branch `xtc-carrier` in `/home/gburd/src/multithreaded-postgres`.  Nothing
 here touches the libxtc repo.
+
+Verified 2026-07-04 with a fresh cluster, `multithreaded=on`, single xtc
+carrier loop.  Always stopped with an explicit shutdown; left ZERO core dumps.
 
 ## The result (proof from the postmaster log)
 
@@ -30,6 +39,112 @@ psql rc=0
 - Every top-level protocol read parks the fiber on the xtc loop instead of
   blocking the carrier thread in `epoll_wait`.  This is threaded PostgreSQL
   cooperatively scheduled by xtc.
+
+## Multiple backends -- fiber teardown + thread reset (verified 2026-07-04)
+
+Five commits after the single-backend milestone make the carrier reusable
+across backends instead of one-shot:
+
+- `373ba1b7` fiber teardown: exit the backend fiber via `xtc_exit_self`
+  (`xtc_pg_backend_fiber_exit`) at the point a pthread carrier would call
+  `pg_thread_exit`, so the loop reclaims the proc/task slot.
+- `79599625` reset the carrier thread's current-work between fibers.
+- `7072801b` `PgRuntimeResetThreadForNewBackend()` on each fiber entry --
+  flush hot current-cells/mirrors, clear current-work, restore the
+  fresh-thread invariant (one carrier OS thread now hosts many fibers in
+  sequence, so the previous fiber's thread-locals are still present).
+- `b96ef1d8` restore `early_session_fallback` to its pristine initializer
+  between fibers (fixes the 2nd-backend timezone/GUC NULL-context crash).
+- `4b41779b` save/restore PG current-work across the `xtc_proc_wait_fd` yield
+  (`PgRuntimeSaveCurrentWork` / `PgRuntimeRestoreCurrentWork` in
+  `xtc_pg_wait_fd`), since the loop may run other fibers on this OS thread
+  while one is parked.
+
+### SEQUENTIAL: WORKS (10 backends, spawned=10 exited=10)
+
+A loop of 10 `psql -c "select N"`, each a fresh connection:
+
+```
+psql select 1 -> 1        ...        psql select 10 -> 10
+```
+```
+xtc: spawned backend fiber pid=(loop=0,local=1,gen=1)
+xtc: backend fiber exiting  pid=(loop=0,local=1,gen=1) code=0
+xtc: spawned backend fiber pid=(loop=0,local=1,gen=2)
+xtc: backend fiber exiting  pid=(loop=0,local=1,gen=2) code=0
+...
+xtc: spawned backend fiber pid=(loop=0,local=1,gen=10)
+xtc: backend fiber exiting  pid=(loop=0,local=1,gen=10) code=0
+seq: spawned=10 exited=10
+```
+
+Every backend gets `local=1` reused with a bumped `gen` -- the loop slot is
+reclaimed and handed to the next fiber (no slot leak, no hang on the Nth).
+This is the fiber-teardown + thread-reset mechanism working exactly as
+intended.
+
+### CONCURRENT: PARTIAL -- correct rows, but teardown wedges the loop
+
+4 psql sessions opened at once, each `select N` then holding the socket ~0.4s
+so the fibers coexist on the loop:
+
+```
+driver wall=1.09s
+  psql select 601 -> 601
+  psql select 602 -> 602
+  psql select 603 -> 603
+  psql select 604 -> 604
+fibers this run: spawned_delta=4 exited_delta=1
+```
+```
+xtc: spawned backend fiber pid=(loop=0,local=1,gen=11)
+xtc: spawned backend fiber pid=(loop=0,local=2,gen=1)
+xtc: spawned backend fiber pid=(loop=0,local=3,gen=1)
+xtc: spawned backend fiber pid=(loop=0,local=4,gen=1)
+xtc: backend fiber exiting  pid=(loop=0,local=1,gen=11) code=0   <-- only ONE exits
+```
+
+All four backends run concurrently (distinct `local=1..4` slots spawned in the
+SAME millisecond) and every one returns the CORRECT row -- so query execution,
+the per-fiber thread-reset, and the socket parking all work under concurrency.
+But on disconnect only ONE fiber (`local=1`) resumes and exits; `local=2,3,4`
+stay parked forever.  The single loop can then make no progress -- a new
+`select` also parks and never returns (loop wedged).  Recovering requires an
+immediate stop / SIGKILL.
+
+The boundary is reproducible: **one** parked fiber resumes and exits fine (all
+sequential cases, and a lone `pg_sleep(0.3)` backend); **two or more** fibers
+parked on the loop at once -> exactly one wakes, the rest are lost.  It is NOT
+timer-specific (socket-hold backends wedge identically) and NOT a data problem
+(rows are always correct) -- it is a lost-wakeup when multiple fibers are
+simultaneously parked via `xtc_proc_wait_fd` on the single carrier loop.
+
+Probable cause (to confirm, NOT yet fixed -- libxtc is read-only here): with N
+fibers each parked on their own `set->epoll_fd` + timer + recv-waker, only the
+first completion dispatched by the loop wakes its fiber; the others' wakeups
+are not delivered (or the resumed fiber does not yield the loop back so the
+next ready completion is never reaped).  Candidates: the shared
+`__thread xtc_in_backend_fiber` / current-proc restore interacting with more
+than one live fiber, or the carrier proc body not re-entering the loop after a
+fiber exits while siblings are parked.
+
+### Next steps for concurrent teardown
+
+1. **Instrument the wake path.**  Log, per fiber, entry to `xtc_pg_wait_fd`,
+   the `xtc_proc_wait_fd` return code + revents, and the resume -- with the
+   fiber pid -- to see whether the lost fibers never get a completion or get
+   one and fail to run.  (Repro: 2 concurrent socket-hold backends is the
+   minimal wedge.)
+2. **Cross-fiber SetLatch wakeups.**  The epoll-fd intercept assumes a
+   SetLatch makes the epoll fd readable; verify a second fiber's SetLatch
+   actually unparks a first fiber under LISTEN/NOTIFY.  A dedicated latch
+   wake into the fiber's mailbox (`XTC_WAIT_MAILBOX`) may be needed instead of
+   relying on the epoll-fd edge.
+3. **A real carrier POOL.**  The single-loop cooperative model is the
+   bringup shape; the Phase-15 target is many loops/threads (`opts.n_loops`
+   > 1) so a blocked/parked fiber never starves siblings.  This likely
+   sidesteps the single-loop lost-wakeup entirely and is the intended
+   architecture.
 
 ## Why this worked where the fork spike did not
 
@@ -145,13 +260,16 @@ inside the postmaster process (8 threads, zero child processes -- verified via
 
 ## Known walls beyond this milestone (concrete next steps)
 
-1. **Fiber lifecycle / multiple backends.**  A second connection spawns a
-   second fiber (`local=2`) on the single loop, but the first fiber does not
-   exit when its psql disconnects, and a second query then hung.  Next: wire
-   fiber teardown -- when the backend's `proc_exit` runs inside the fiber,
-   `xtc_exit_self` and release the loop slot; verify N sequential and N
-   concurrent backends.  Single-loop = cooperative; a real carrier POOL
-   (many loops/threads) is the Phase-15 shape.
+1. **Fiber lifecycle / multiple backends.**  PARTIALLY CLOSED (2026-07-04).
+   The fiber-teardown + thread-reset commits (see "Multiple backends" section
+   below) make N SEQUENTIAL backends work end to end -- each spawns a fresh
+   fiber, returns the correct row, and exits cleanly, freeing the loop slot for
+   reuse (verified 10 in a row, spawned=10 exited=10).  What remains OPEN is
+   CONCURRENT teardown: two or more backend fibers parked on the single loop at
+   once return correct rows but only ONE resumes/exits; the rest stay parked and
+   the loop wedges (lost-wakeup).  Next: cross-fiber wakeup / a real carrier
+   POOL of many loops -- see "Multiple backends" below for the precise failure
+   and next steps.
 
 2. **Startup-process teardown crash (pre-existing, flaky, NOT xtc).**  After a
    non-clean shutdown, recovery runs and the StartupProcess thread SIGSEGVs in
@@ -183,3 +301,9 @@ inside the postmaster process (8 threads, zero child processes -- verified via
 - `xtc-carrier: fix multithreaded-tree baseline build under gcc 14 + cassert`
 - `xtc-carrier: wire xtc fiber carrier for threaded B_BACKEND (USE_XTC_CARRIER)`
 - `xtc-carrier: SUCCESS - select 1 round-trips through xtc scheduler`
+- `xtc-carrier: fiber teardown - exit backend fiber via xtc_exit_self, not pg_thread_exit`
+- `xtc-carrier: reset carrier thread current-work between fibers (fixes 2nd backend GUCMemoryContext NULL crash)`
+- `xtc-carrier: reset carrier thread to fresh-thread state on each fiber entry (PgRuntimeResetThreadForNewBackend)`
+- `xtc-carrier: restore early_session_fallback between fibers (fixes 2nd backend timezone/GUC NULL-context crash)`
+- `xtc-carrier: make PG current-work fiber-local across the wait yield (concurrent backends)`
+- `xtc-carrier: verify multi-backend outcome (B PARTIAL) - N sequential works, concurrent teardown wedges`
