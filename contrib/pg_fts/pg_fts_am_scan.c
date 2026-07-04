@@ -2758,13 +2758,21 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 
 	if (k < 1)
 		k = 1;
-	wantk = Max(k * 4, 64);
 
 	bm25_read_meta(index, &meta);
 	N = meta.ndocs < 1.0 ? 1.0 : meta.ndocs;
 	avgdl = meta.ndocs > 0 ? meta.sumdoclen / meta.ndocs : 1.0;
 
 	nterms = fts_query_terms(q, &terms, &lens);
+	/*
+	 * Over-fetch for MVCC visibility: some of the top-k by score may be
+	 * invisible to the snapshot, so we ask the engine for 2x k (min 32) and
+	 * keep the first k visible.  This tolerates up to ~50% invisible top rows
+	 * before the SRF under-fills (the amgettuple ordering scan additionally
+	 * grows k via bm25_gettuple's retry).  Kept modest so the impact-directory
+	 * single-term early-stop is not defeated by a large fetch target.
+	 */
+	wantk = Max(k * 2, 32);
 	/* up to one cursor per (term, segment) */
 	cursors = (WandCursor *) palloc(Max(nterms * Max((int) meta.nsegments, 1), 1) *
 									sizeof(WandCursor));
