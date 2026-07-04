@@ -487,6 +487,143 @@ NumaClockNotifyTrickle(void *strategy_data, int bgwprocno)
 }
 
 /*
+ * StrategyClockTick -- advance the ONE global clock hand by one, returning the
+ * raw counter (pre-increment).  Extracted verbatim from ClockGetVictim's
+ * default-pool branch so the soft-affinity sweep shares the exact
+ * completePasses/wraparound accounting instead of forking it.  Operates only
+ * on StrategyControl (the global hand); the stock ClockGetVictim path is left
+ * byte-identical and does NOT call this.
+ */
+static inline uint32
+StrategyClockTick(void)
+{
+	uint32		victim_raw = pg_atomic_fetch_add_u32(&StrategyControl->nextVictimBuffer, 1);
+	uint32		victim_id = victim_raw % (uint32) NBuffers;
+
+	if (victim_raw >= (uint32) NBuffers && victim_id == 0)
+	{
+		uint32		expected = victim_raw + 1;
+		uint32		wrapped;
+		bool		success = false;
+
+		while (!success)
+		{
+			SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
+			wrapped = expected % (uint32) NBuffers;
+			success = pg_atomic_compare_exchange_u32(
+													 &StrategyControl->nextVictimBuffer,
+													 &expected, wrapped);
+			if (success)
+				StrategyControl->completePasses++;
+			SpinLockRelease(&StrategyControl->buffer_strategy_lock);
+		}
+	}
+	return victim_raw;
+}
+
+/*
+ * B2: per-node victim soft-affinity on the GLOBAL clock.
+ *
+ * Bounded local-preference scan window.  When a backend needs a victim it
+ * probes at most NUMA_SOFT_AFFINITY_K clock ticks looking for a buffer on its
+ * OWN node; a probed buffer that is REMOTE and not immediately usable is
+ * simply skipped (its usage_count is left untouched, so remote pages age
+ * slightly slower -- the soft bias).  The first LOCAL candidate, or the buffer
+ * we land on once the K budget is spent, is handed to the normal acquire.
+ *
+ * This keeps a SINGLE global clock hand (no hard partitioning, no starvation),
+ * shares StrategyClockTick's completePasses accounting, and costs at most O(K)
+ * extra ticks per allocation.  It is NOT NumaClockGetVictim (hard partitions);
+ * it is a lighter soft-affinity layer on the plain global sweep.
+ */
+#define NUMA_SOFT_AFFINITY_K	16
+
+static BufferDesc *
+NumaSoftClockGetVictim(void *strategy_data,
+					   BufferAccessStrategy strategy,
+					   uint64 *buf_state,
+					   bool *from_ring)
+{
+	int			home = BufPoolNumaNodeForProc();
+	int			trycounter;
+
+	*from_ring = false;
+
+	/* Ring-buffer / RECYCLE handling is identical to the plain sweep. */
+	if (strategy != NULL)
+	{
+		if (strategy->recycle_pool != NULL && strategy->recycle_pool->bp_active)
+		{
+			PoolLocalState *local = EnsurePoolAttached(strategy->recycle_pool);
+			BufferDesc *buf = strategy->recycle_pool->bp_routine->get_victim(
+																			 local->strategy_data, NULL, buf_state, from_ring);
+
+			if (buf != NULL)
+			{
+				*from_ring = true;
+				return buf;
+			}
+		}
+		else
+		{
+			BufferDesc *buf = GetBufferFromRing(strategy, buf_state);
+
+			if (buf != NULL)
+			{
+				*from_ring = true;
+				return buf;
+			}
+		}
+	}
+
+	/* Wake the bgwriter if asked.  See StrategyNotifyBgWriter(). */
+	{
+		int			bgwprocno = INT_ACCESS_ONCE(StrategyControl->bgwprocno);
+
+		if (bgwprocno != -1)
+		{
+			StrategyControl->bgwprocno = -1;
+			SetLatch(&GetPGProcByNumber(bgwprocno)->procLatch);
+		}
+	}
+	pg_atomic_fetch_add_u32(&StrategyControl->numBufferAllocs, 1);
+
+	trycounter = NBuffers;
+	for (;;)
+	{
+		uint32		victim_id = StrategyClockTick() % (uint32) NBuffers;
+		BufferDesc *buf;
+		int			probes = 0;
+
+		/*
+		 * Bounded local-preference probe: skip up to K-1 REMOTE candidates in
+		 * search of a home-node buffer.  Only remote buffers that are cheap to
+		 * skip (refcount 0) are skipped; a remote buffer we can't tell apart
+		 * cheaply just falls through to the normal acquire.  On the K-th probe
+		 * we stop preferring and take whatever we landed on -- the hard cap
+		 * that bounds this to O(K) extra ticks.
+		 */
+		while (probes < NUMA_SOFT_AFFINITY_K - 1 &&
+			   BufPoolBufferNode((int) victim_id, NBuffers) != home)
+		{
+			uint64		st = pg_atomic_read_u64(&GetBufferDescriptor(victim_id)->state);
+
+			/* Only skip a remote buffer that is not pinned (safe to pass by). */
+			if (BUF_STATE_GET_REFCOUNT(st) != 0)
+				break;
+
+			victim_id = StrategyClockTick() % (uint32) NBuffers;
+			probes++;
+		}
+
+		buf = ClockTryAcquireVictim((int) victim_id, strategy, buf_state,
+									&trycounter, NBuffers);
+		if (buf != NULL)
+			return buf;
+	}
+}
+
+/*
  * The NUMA-partitioned clock-sweep routine for the DEFAULT pool.
  *
  * Identical to clock_pool_routine except for get_victim; reuses the plain
@@ -504,6 +641,36 @@ const BufferPoolRoutine numa_clock_pool_routine = {
 	.get_victim = NumaClockGetVictim,
 	.sync_start = NumaClockSyncStart,
 	.notify_trickle = NumaClockNotifyTrickle,
+	.trickle_iter_begin = NULL,
+	.trickle_iter_next = NULL,
+	.trickle_iter_end = NULL,
+	.hint_vacuum = NULL,
+	.reject_buffer = ClockRejectBuffer,
+	.prefetch_hint = NULL,
+	.shmem_size = ClockPoolShmemSize,
+	.shmem_init = ClockPoolShmemInit,
+	.shutdown = NULL,
+};
+
+
+/*
+ * B2 soft-affinity clock routine for the DEFAULT pool.
+ *
+ * ONE global clock hand (StrategyControl) with a bounded per-node
+ * victim-preference probe (NumaSoftClockGetVictim).  Because it uses
+ * StrategyControl as its strategy_data, the plain ClockSyncStart /
+ * ClockNotifyTrickle / ClockRejectBuffer all apply unchanged (they
+ * detect the default pool by strategy_data == StrategyControl).
+ */
+static const BufferPoolRoutine numa_soft_clock_pool_routine = {
+	.type = T_Invalid,
+	.on_hit = NULL,
+	.on_miss = NULL,
+	.on_evict = NULL,
+	.on_new_tag = NULL,
+	.get_victim = NumaSoftClockGetVictim,
+	.sync_start = ClockSyncStart,
+	.notify_trickle = ClockNotifyTrickle,
 	.trickle_iter_begin = NULL,
 	.trickle_iter_next = NULL,
 	.trickle_iter_end = NULL,
@@ -1103,33 +1270,32 @@ StrategyCtlShmemInit(void *arg)
 		{
 			int			nnodes = BufPoolNumaNodes();
 
-			SpinLockInit(&NumaClockCtl->lock);
-			NumaClockCtl->nnodes = Min(nnodes, BUFPOOL_MAX_NUMA_NODES);
-			NumaClockCtl->nbuffers = NBuffers;
-			NumaClockCtl->bgwprocno = -1;
-			pg_atomic_init_u32(&NumaClockCtl->numBufferAllocs, 0);
-			for (int n = 0; n < BUFPOOL_MAX_NUMA_NODES; n++)
-			{
-				pg_atomic_init_u32(&NumaClockCtl->nextVictim[n], 0);
-				NumaClockCtl->completePasses[n] = 0;
-			}
-
-			ActivePoolRoutine = &numa_clock_pool_routine;
-			ActivePoolData = NumaClockCtl;
+			/*
+			 * B2: keep the SINGLE global clock hand (StrategyControl) and add
+			 * a bounded per-node victim soft-affinity probe.  We deliberately
+			 * do NOT switch to numa_clock_pool_routine (hard per-node
+			 * partitions), which starves backends of the full pool and
+			 * regressed stock.  ActivePoolData stays StrategyControl so the
+			 * plain sync_start/notify_trickle keep working.
+			 */
+			ActivePoolRoutine = &numa_soft_clock_pool_routine;
+			ActivePoolData = StrategyControl;
 
 			/*
 			 * Bind the default pool's buffer blocks and descriptors to nodes
 			 * in matching contiguous chunks (buffer + its descriptor on the
-			 * same node).  Best-effort placement; correctness is unaffected if
-			 * the kernel ignores it.
+			 * same node).  This establishes the buffer->node map that
+			 * BufPoolBufferNode() reports and that the soft-affinity probe
+			 * biases toward.  Best-effort placement; correctness is unaffected
+			 * if the kernel ignores it.
 			 */
 			BufPoolNumaDistribute((char *) BufferBlocks,
 								  (char *) BufferDescriptors,
 								  sizeof(BufferDescPadded),
 								  NBuffers);
 
-			elog(LOG, "default buffer pool using NUMA-partitioned clock sweep across %d nodes",
-				 NumaClockCtl->nnodes);
+			elog(LOG, "default buffer pool using NUMA soft-affinity clock sweep (K=%d) across %d nodes",
+				 NUMA_SOFT_AFFINITY_K, Min(nnodes, BUFPOOL_MAX_NUMA_NODES));
 		}
 		else
 		{
