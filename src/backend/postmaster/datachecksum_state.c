@@ -1609,7 +1609,7 @@ DataChecksumsWorkerMain(Datum arg)
 	init_ps_display(NULL);
 
 	LWLockAcquire(DataChecksumsWorkerLock, LW_SHARED);
-	if (DataChecksumState->worker_invocation != worker_invocation)
+	if (DataChecksumState->worker_invocation != DataChecksumsWorkerInvocation)
 	{
 		LWLockRelease(DataChecksumsWorkerLock);
 		return;
@@ -1632,7 +1632,7 @@ DataChecksumsWorkerMain(Datum arg)
 	 */
 	InitialTempTableList = BuildRelationList(true, false);
 	LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
-	if (DataChecksumState->worker_invocation != worker_invocation)
+	if (DataChecksumState->worker_invocation != DataChecksumsWorkerInvocation)
 	{
 		LWLockRelease(DataChecksumsWorkerLock);
 		return;
@@ -1703,7 +1703,7 @@ DataChecksumsWorkerMain(Datum arg)
 		 * to be refreshed.
 		 */
 		LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
-		if (DataChecksumState->worker_invocation != worker_invocation)
+		if (DataChecksumState->worker_invocation != DataChecksumsWorkerInvocation)
 		{
 			LWLockRelease(DataChecksumsWorkerLock);
 			break;

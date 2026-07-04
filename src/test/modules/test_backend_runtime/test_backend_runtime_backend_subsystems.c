@@ -2673,7 +2673,7 @@ test_backend_maintenance_worker_state_is_backend_local(PG_FUNCTION_ARGS)
 			UINT64CONST(111);
 		worker1->datachecksum_abort_requested = true;
 		worker1->datachecksum_launcher_running = true;
-		worker1->datachecksum_operation = DISABLE_DATACHECKSUMS;
+		worker1->datachecksum_operation = 1;	/* DISABLE_DATACHECKSUMS */
 
 		PgSetCurrentBackend(&fake_backend2);
 		worker2 = PgCurrentMaintenanceWorkerState();
@@ -2703,7 +2703,7 @@ test_backend_maintenance_worker_state_is_backend_local(PG_FUNCTION_ARGS)
 			InvalidXLogRecPtr;
 		ok = ok && !worker2->datachecksum_abort_requested;
 		ok = ok && !worker2->datachecksum_launcher_running;
-		ok = ok && worker2->datachecksum_operation == ENABLE_DATACHECKSUMS;
+		ok = ok && worker2->datachecksum_operation == 0;	/* ENABLE_DATACHECKSUMS */
 
 		worker2->arch_module_errdetail_string = (char *) &fake_backend2;
 		worker2->pgarch_last_sigterm_time = 201;
@@ -2731,7 +2731,7 @@ test_backend_maintenance_worker_state_is_backend_local(PG_FUNCTION_ARGS)
 			UINT64CONST(211);
 		worker2->datachecksum_abort_requested = true;
 		worker2->datachecksum_launcher_running = true;
-		worker2->datachecksum_operation = DISABLE_DATACHECKSUMS;
+		worker2->datachecksum_operation = 1;	/* DISABLE_DATACHECKSUMS */
 
 		PgSetCurrentBackend(&fake_backend1);
 		worker1 = PgCurrentMaintenanceWorkerState();
@@ -2769,7 +2769,7 @@ test_backend_maintenance_worker_state_is_backend_local(PG_FUNCTION_ARGS)
 			UINT64CONST(111);
 		ok = ok && worker1->datachecksum_abort_requested;
 		ok = ok && worker1->datachecksum_launcher_running;
-		ok = ok && worker1->datachecksum_operation == DISABLE_DATACHECKSUMS;
+		ok = ok && worker1->datachecksum_operation == 1;	/* DISABLE_DATACHECKSUMS */
 
 		PgSetCurrentBackend(&fake_backend2);
 		worker2 = PgCurrentMaintenanceWorkerState();
@@ -2807,7 +2807,7 @@ test_backend_maintenance_worker_state_is_backend_local(PG_FUNCTION_ARGS)
 			UINT64CONST(211);
 		ok = ok && worker2->datachecksum_abort_requested;
 		ok = ok && worker2->datachecksum_launcher_running;
-		ok = ok && worker2->datachecksum_operation == DISABLE_DATACHECKSUMS;
+		ok = ok && worker2->datachecksum_operation == 1;	/* DISABLE_DATACHECKSUMS */
 
 		PgSetCurrentBackend(saved_backend);
 	}
