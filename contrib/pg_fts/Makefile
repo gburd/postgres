@@ -37,6 +37,8 @@ DATA = pg_fts--1.0.sql pg_fts--1.0--1.1.sql pg_fts--1.1--1.2.sql \
 PGFILEDESC = "pg_fts - full-text search with BM25 ranking"
 
 REGRESS = pg_fts
+ISOLATION = bm25_concurrency bm25_cic
+TAP_TESTS = 1
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

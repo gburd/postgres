@@ -76,4 +76,16 @@ tests += {
       'pg_fts',
     ],
   },
+  'isolation': {
+    'specs': [
+      'bm25_concurrency',
+      'bm25_cic',
+    ],
+  },
+  'tap': {
+    'tests': [
+      't/001_crash_recovery.pl',
+      't/002_replication.pl',
+    ],
+  },
 }
