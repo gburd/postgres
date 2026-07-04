@@ -17,10 +17,22 @@
 #include "nodes/nodes.h"
 
 #ifdef DEBUG_NODE_TESTS_ENABLED
-#ifndef PgCurrentNodeRestoreLocationFieldsRef
+/*
+ * xtc-carrier: alias restore_location_fields to a stable inline that calls the
+ * real extern accessor (backend_runtime_nodes.c).  This must survive a LATER
+ * include of backend_runtime.h re-defining PgCurrentNodeRestoreLocationFieldsRef
+ * as the generated .def macro (which expands to ->restore_location_fields and
+ * would recurse).  Capturing the extern in an inline pins the resolution here.
+ */
+#undef PgCurrentNodeRestoreLocationFieldsRef
 extern bool *PgCurrentNodeRestoreLocationFieldsRef(void);
-#endif
-#define restore_location_fields (*PgCurrentNodeRestoreLocationFieldsRef())
+static inline bool *
+pg_readfuncs_restore_loc_ref(void)
+{
+	return PgCurrentNodeRestoreLocationFieldsRef();
+}
+#undef restore_location_fields
+#define restore_location_fields (*pg_readfuncs_restore_loc_ref())
 #endif
 
 /*

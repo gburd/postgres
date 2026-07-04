@@ -16,6 +16,7 @@
 
 #include "postgres.h"
 
+#include "access/xlog.h"		/* xtc-carrier: track_wal_io_timing accessor */
 #include "executor/instrument.h"
 #include "storage/bufmgr.h"
 #include "utils/backend_runtime.h"

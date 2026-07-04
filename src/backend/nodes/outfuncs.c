@@ -27,7 +27,19 @@
 #include "utils/datum.h"
 
 /* State flag that determines how nodeToStringInternal() should treat location fields */
-#define write_location_fields (*PgCurrentNodeWriteLocationFieldsRef())
+/*
+ * xtc-carrier: pin write_location_fields to a stable inline over the extern
+ * accessor, immune to a later backend_runtime.h re-defining
+ * PgCurrentNodeWriteLocationFieldsRef as the recursive .def macro.
+ */
+#undef PgCurrentNodeWriteLocationFieldsRef
+extern bool *PgCurrentNodeWriteLocationFieldsRef(void);
+static inline bool *
+pg_outfuncs_write_loc_ref(void)
+{
+	return PgCurrentNodeWriteLocationFieldsRef();
+}
+#define write_location_fields (*pg_outfuncs_write_loc_ref())
 
 static void outChar(StringInfo str, char c);
 static void outDouble(StringInfo str, double d);
