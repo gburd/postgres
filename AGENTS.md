@@ -103,3 +103,5 @@ phase/gate owns completion.
   threaded mode unless explicit worker-runtime metadata opts them in.
 - In-tree modules and important bundled languages, especially PL/pgSQL, should
   have a plausible path to work in threaded mode.
+
+See .agent-steering-domains.md for domain-specific steering (local).

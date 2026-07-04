@@ -258,8 +258,18 @@ override CPPFLAGS += $(ICU_CFLAGS) $(LIBNUMA_CFLAGS) $(LIBURING_CFLAGS)
 
 # xtc-carrier (OUT-OF-TREE spike): run threaded B_BACKEND fibers on an xtc
 # scheduler.  Gated so the stock build is untouched when USE_XTC_CARRIER is
-# unset.  Enable with:  make USE_XTC_CARRIER=1 ...
-XTC_ROOT = /home/gburd/ws/xtc
+# unset.  Enable with:  make USE_XTC_CARRIER=1 XTC_ROOT=/path/to/libxtc ...
+#
+# XTC_ROOT points at a libxtc source tree with a built static library at
+# $(XTC_ROOT)/build_unix/libxtc.a (cd libxtc && mkdir -p build_unix &&
+# cd build_unix && ../dist/configure && make -j).  Override it on the make
+# command line or in the environment -- do NOT rely on the default path.
+# Alternatively vendor the single-file amalgamation: build it with
+# libxtc's dist/mkamalgamation.py, drop xtc.c + xtc.h into a directory,
+# and set XTC_ROOT to point -I at it and LIBS to compile xtc.c in -- no
+# separate libxtc build, no liburing/openssl link deps (the amalgamation
+# uses the ucontext substrate).  See docs in libxtc dist/mkamalgamation.py.
+XTC_ROOT ?= /home/gburd/ws/xtc
 ifdef USE_XTC_CARRIER
 override CPPFLAGS += -DUSE_XTC_CARRIER -I$(XTC_ROOT)/src/inc
 endif
