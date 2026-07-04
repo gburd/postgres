@@ -173,7 +173,15 @@ def main():
         return
 
     import boto3
-    brt = boto3.client("bedrock-runtime", region_name=REGION)
+    from botocore.config import Config
+
+    # botocore's default read timeout (60s) is too short for a multi-round
+    # (MAX_ROUNDS) tool-use loop against a large PR diff on a reasoning model;
+    # each converse() call alone can take several minutes.  Bump it well past
+    # what a single round needs; connect_timeout stays short since a stuck
+    # TCP handshake is a different (and much cheaper to detect) failure mode.
+    brt = boto3.client("bedrock-runtime", region_name=REGION,
+                       config=Config(read_timeout=900, connect_timeout=10))
     messages = [{"role": "user", "content": [{"text": user}]}]
     final_text = ""
     try:
