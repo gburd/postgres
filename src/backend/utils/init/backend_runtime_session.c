@@ -797,6 +797,34 @@ PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED_WITH_RESET(PgSessionAdoptEarlyConnecti
 													 PgSessionInitializeConnectionGUCState,
 													 PgSessionResetEarlyConnectionGUCState)
 
+/*
+ * xtc-carrier: restore this thread's early_session_fallback to the pristine
+ * state a freshly-spawned OS thread has (the static initializer at the top of
+ * this file), so a carrier thread that hosts a second backend fiber behaves
+ * exactly like a fresh pthread would for the first one.
+ *
+ * The three "adopt-with-reset" buckets (datetime, text_search,
+ * connection_guc) are left .initialized = false after a backend adopts them
+ * (PgSessionResetEarly*State).  The next backend on the SAME thread then reads
+ * e.g. early_session_datetime before InitializeThreadedSessionGUCOptions()
+ * has built a GUCMemoryContext, so re-initializing them here through
+ * guc_strdup() would fault.  Force static GUC defaults (string literals, no
+ * allocation) while re-initializing -- this is what InitializePgThread
+ * BackendRuntimeState() already does for a session, and what the static
+ * early_session_fallback initializer encodes.
+ */
+void
+PgSessionResetEarlyFallbackForNewBackend(void)
+{
+	bool		static_guc_defaults;
+
+	static_guc_defaults = PgSessionSetStaticGUCDefaultsForInitialization(true);
+	PgSessionInitializeDateTimeState(&early_session_datetime);
+	PgSessionInitializeTextSearchState(&early_session_text_search);
+	PgSessionInitializeConnectionGUCState(&early_session_connection_guc);
+	(void) PgSessionSetStaticGUCDefaultsForInitialization(static_guc_defaults);
+}
+
 void
 PgSessionInitializeParserState(PgSessionParserState *parser)
 {

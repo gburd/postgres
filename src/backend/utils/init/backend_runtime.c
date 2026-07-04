@@ -757,6 +757,7 @@ PgRuntimeResetThreadForNewBackend(void)
 	PgRuntimeClearHotCurrentCells();
 	PgRuntimeClearHotMirrorValues();
 	PgRuntimeClearHotFieldPointers();
+	PgSessionResetEarlyFallbackForNewBackend();
 }
 
 void

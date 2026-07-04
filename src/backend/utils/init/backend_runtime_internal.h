@@ -515,6 +515,7 @@ extern void PgSessionInitializeLockWaitState(PgSessionLockWaitState *lock_wait);
 extern void PgSessionInitializeParserState(PgSessionParserState *parser);
 extern void PgSessionInitializeGUCState(PgSessionGUCState *guc);
 extern bool PgSessionSetStaticGUCDefaultsForInitialization(bool use_static);
+extern void PgSessionResetEarlyFallbackForNewBackend(void);
 extern void PgSessionInitializePgStatState(PgSessionPgStatState *pgstat);
 extern void PgSessionInitializeExtensionModuleState(PgSessionExtensionModuleState *extension_modules);
 extern void PgSessionResetCatalogLookupClosedState(PgSession *session);
