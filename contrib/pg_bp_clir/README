@@ -1,0 +1,106 @@
+contrib/pg_bp_clir/README
+
+pg_bp_clir -- Clock-LIRS: lock-light scan-resistant replacement
+================================================================
+
+pg_bp_clir provides CLIR, a clock-style realisation of the LIRS family
+of buffer replacement algorithms.  It targets the same workloads as
+pg_bp_lirs (and pg_bp_rcrd / LIRS2) -- mixed OLTP + scan, working sets
+that exceed cache, scan resistance for sequential reads -- but uses
+single-word atomic operations on the hot path instead of the spinlock-
+protected linked-list manipulation that contended in plain LIRS.
+
+The transformation from LIRS to CLIR is the same one Bansal & Modha
+applied to ARC to produce CAR (FAST 2004): replace the recency-ordered
+list with a circular array of slots and per-slot reference bits, drive
+victim selection by clock-walk + second-chance, and keep the ghost-
+queue logic only on the cold (miss) path.  The result is much more
+parallelism-friendly under high concurrency on multi-core hardware.
+
+The ghost-queue + adaptation step is taken under a fine-grained
+adapt_lock that is acquired only by on_miss / on_evict / on_new_tag.
+The hot-path on_hit is one pg_atomic_fetch_or_u32 to set the
+reference bit on the slot the buffer owns -- no locks, no list walk,
+no allocation.
+
+scan_resistant
+==============
+
+CLIR sets BufferPoolRoutine.scan_resistant = true.  The scan-resistance
+property carries over from LIRS: a sequential scan of pages with no
+prior reference cycles through the HIR clock, which is sized at ~1%
+of the pool (min 32 slots).  LIR-tier pages are protected; their slots
+get their reference bits cleared as the LIR clock hand sweeps but they
+are never selected as victims while there are HIR slots to evict.
+This is the property the framework's GetAccessStrategyWithSize() uses
+to skip the RECYCLE-pool detour for BUF_INTENT_BULKREAD scans on relations
+backed by a CLIR pool.
+
+Installation
+============
+
+    shared_preload_libraries = 'pg_bp_clir'
+    buffer_pool_algorithm    = 'clir'   # to use CLIR for the DEFAULT pool
+
+Or per-relation, after CREATE EXTENSION pg_bp_clir:
+
+    CREATE BUFFER POOL my_clir_pool
+        HANDLER clir_pool_handler SIZE '256MB';
+    CREATE TABLE big_table (...) WITH (buffer_pool = 'my_clir_pool');
+
+When to use CLIR
+================
+
+  - High-concurrency OLTP workloads (many backends pinning / unpinning
+    pages per second) where pg_bp_lirs's spinlock would bottleneck.
+  - Scan-heavy mixed workloads where you need the LIRS scan-resistance
+    proof without the per-hit list-manipulation overhead.
+
+When not to use CLIR
+====================
+
+  - Single-backend workloads where ARC-on-LRU-lists has near-zero
+    contention.  In that scenario plain pg_bp_lirs or pg_bp_arc may
+    win on hit ratio because their access tracking has finer
+    resolution than CLIR's reference-bit-or-not.
+  - Workloads with very small working sets (< 1MB) where the clock
+    walk's cache-line traffic dominates and per-pool clock-sweep
+    is fine.
+
+How it works (brief)
+====================
+
+CLIR maintains two clocks plus a ghost FIFO:
+
+    lir_clock[lir_size]    LIR (low IRR / hot) pages, ~99% of pool
+    hir_clock[hir_size]    HIR (high IRR / cold) pages, ~1% of pool
+    ghost[ghost_size]      bounded FIFO of recently-evicted page tags
+
+A side table maps buf_id -> (which clock, which slot) for O(1)
+on_hit:
+
+    on_hit(buf_id):
+        ref = per_buffer[buf_id - first];
+        atomic_or(&clock[ref.clock][ref.pos].ref_state, REF_BIT);
+
+Victim selection walks hir_clock from hir_hand: slots with the ref
+bit set get it cleared (second-chance) and the hand advances; the
+first slot with the ref bit clear is the victim.  Falls back to
+lir_clock only when hir_clock is empty.
+
+On miss + ghost-list hit: the page was previously LIR.  Reinstate as
+LIR and demote some LIR slot to HIR (LIRS adaptation step).
+
+On miss + no ghost hit: insert as HIR.  A subsequent re-reference
+within the ghost-FIFO horizon promotes it to LIR via the path above.
+
+References
+==========
+
+  - S. Jiang, F. Chen, X. Zhang, "CLOCK-Pro: An Effective Improvement
+    of the CLOCK Replacement", USENIX ATC 2005.
+  - S. Jiang, X. Zhang, "LIRS: An Efficient Low Inter-reference
+    Recency Set Replacement Policy", SIGMETRICS 2002.
+  - S. Bansal, D. Modha, "CAR: Clock with Adaptive Replacement",
+    USENIX FAST 2004.
+  - https://github.com/ben-manes/caffeine/wiki/Efficiency

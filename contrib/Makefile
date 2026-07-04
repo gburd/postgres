@@ -32,6 +32,7 @@ SUBDIRS = \
 		passwordcheck	\
 		pg_bp_arc	\
 		pg_bp_car	\
+		pg_bp_clir	\
 		pg_bp_lirs	\
 		pg_bp_lru	\
 		pg_bp_osic	\
