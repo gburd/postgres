@@ -1243,6 +1243,19 @@ backend_thread_entry(void *arg)
 	 */
 	sigprocmask(SIG_SETMASK, &BlockSig, NULL);
 
+#ifdef USE_XTC_CARRIER
+	/*
+	 * xtc-carrier: this path was designed for a fresh pthread that dies after
+	 * one backend.  When run as an xtc fiber, one carrier OS thread hosts many
+	 * backend fibers in sequence, so the previous fiber's thread-local runtime
+	 * state (hot current-cells, current-work bindings, early-session fallback
+	 * flags) is still present.  Restore the fresh-thread invariant before
+	 * touching any session/GUC/timezone accessor below.
+	 */
+	if (xtc_in_backend_fiber)
+		PgRuntimeResetThreadForNewBackend();
+#endif
+
 	PgSetCurrentCarrier(&thread_start->runtime_state.carrier);
 	backend_thread_set_current_start(thread_start);
 	backend_thread_wait_until_registered(thread_start);
@@ -1545,24 +1558,11 @@ backend_thread_finish(int code)
 
 	ShutdownWaitEventSupport();
 	backend_thread_set_current_start(NULL);
+	backend_thread_start_release(thread_start);
 #ifdef USE_XTC_CARRIER
 	if (xtc_in_backend_fiber)
-	{
-		/*
-		 * xtc-carrier: many backend fibers share ONE carrier OS thread, so
-		 * its thread-local current-work pointers (CurrentPgSession et al.)
-		 * outlive this fiber unless we clear them.  A fresh pthread starts
-		 * with these NULL; the next fiber must too, or its
-		 * PgSessionAdoptEarlyState() resolves GUCMemoryContext through this
-		 * now-freed session and faults.  Reset to the process/early
-		 * fallback before releasing the runtime_state this points into.
-		 */
-		PgRuntimeSetCurrentWork(NULL, NULL, NULL, NULL, NULL, NULL, false);
-		backend_thread_start_release(thread_start);
 		xtc_pg_backend_fiber_exit(exitstatus);
-	}
 #endif
-	backend_thread_start_release(thread_start);
 	pg_thread_exit();
 }
 

@@ -730,6 +730,35 @@ PgRuntimeResetAfterFork(void)
 	PgBackendResetEarlyFallbackAfterFork((int) getpid());
 }
 
+/*
+ * Reset ONLY this OS thread's runtime thread-locals to the clean state a
+ * freshly-spawned carrier pthread starts in, WITHOUT touching the process
+ * singletons (process_runtime/backend/session/...) or MyProcPid, which are
+ * shared with the postmaster thread and must not be disturbed.
+ *
+ * The dedicated backend_thread_entry() path assumes a brand-new thread: hot
+ * current-cells in FALLBACK mode, no current work bound, and the early/
+ * process fallback objects usable for the pre-MemoryContextInit timezone and
+ * GUC accesses.  A pthread satisfies that by dying after one backend.  The
+ * xtc carrier reuses one thread for many backend fibers, so the previous
+ * fiber's thread-locals leak into the next one and its session-timezone /
+ * GUC accesses fault (GUCMemoryContext resolved through a torn-down session).
+ * Call this between fibers to restore the fresh-thread invariant.
+ */
+void
+PgRuntimeResetThreadForNewBackend(void)
+{
+	PgRuntimeFlushCurrentHotCells();
+	PgRuntimeFlushCurrentHotMirrors();
+	PgRuntimeSetCurrentWork(NULL, NULL, NULL, NULL, NULL, NULL, false);
+	PgRuntimeHotCurrentCellModeState = PG_RUNTIME_HOT_CURRENT_CELLS_FALLBACK;
+	PgRuntimeClearHotCurrentRootRefs();
+	PgRuntimeClearHotBucketPointers();
+	PgRuntimeClearHotCurrentCells();
+	PgRuntimeClearHotMirrorValues();
+	PgRuntimeClearHotFieldPointers();
+}
+
 void
 InitializePgProcessRuntime(void)
 {

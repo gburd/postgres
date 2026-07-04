@@ -2550,6 +2550,7 @@ typedef struct PgThreadBackendRuntimeState
 } PgThreadBackendRuntimeState;
 
 extern void PgRuntimeResetAfterFork(void);
+extern void PgRuntimeResetThreadForNewBackend(void);
 
 extern bool *PgCurrentIsUnderPostmasterRef(void);
 extern bool *PgCurrentDoingCommandReadRef(void);
