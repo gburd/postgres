@@ -21,7 +21,7 @@
 #include "storage/itemptr.h"
 
 #define BM25_MAGIC			0x42324635	/* "B2F5" */
-#define BM25_VERSION		2		/* v2: segmented layout */
+#define BM25_VERSION		3		/* v2: segmented layout; v3: per-term impact skip dir */
 #define BM25_METAPAGE_BLKNO	0
 
 /* page opaque flags */
@@ -33,6 +33,7 @@
 #define BM25_TRGM_DATA		(1 << 5)	/* trigram sparsemap blob page */
 #define BM25_LIVEDOCS		(1 << 6)	/* per-segment tombstone bitmap page */
 #define BM25_DICTINDEX		(1 << 7)	/* sparse block index over dict pages */
+#define BM25_SKIPDIR		(1 << 8)	/* per-term impact-ordered block directory */
 
 typedef struct BM25PageOpaqueData
 {
@@ -97,8 +98,36 @@ typedef struct BM25DictEntry
 	uint32		max_tf;			/* max tf across postings (WAND impact bound) */
 	uint32		firstoffset;	/* byte offset of the term's first block in firstposting */
 	BlockNumber firstposting;	/* first posting page for this term */
+	BlockNumber skipstart;		/* first BM25_SKIPDIR page, or Invalid (rare term) */
+	uint32		skipoff;		/* byte offset of the term's first skip entry */
+	uint32		nblocks;		/* number of skip-dir entries (== ceil(df/128)) */
 	char		term[FLEXIBLE_ARRAY_MEMBER];
 } BM25DictEntry;
+
+/*
+ * One entry of a term's impact-ordered block skip directory (format v3).  For a
+ * common term the directory lists every posting block, sorted DESCENDING by an
+ * avgdl-independent impact proxy (max_tf desc, min_doclen asc), so the
+ * single-term ranked top-k scan visits high-impact blocks first and stops once
+ * the k-th score beats every remaining block's bound.  Only raw integers are
+ * stored -- the impact bound is recomputed at query time from (max_tf,
+ * min_doclen) with the CURRENT avgdl, so it stays an exact upper bound as the
+ * corpus grows (unlike a baked-in float, which would go stale and break exact
+ * top-k).  The stored sort order is a visitation heuristic only; correctness
+ * comes from the recomputed bound + the WAND stop condition.  Emitted only for
+ * terms with df >= BM25_SKIPDIR_MIN; rare terms scan fast in docid order and
+ * carry skipstart = Invalid.
+ */
+typedef struct BM25SkipEntry
+{
+	BlockNumber blk;			/* posting page holding this block */
+	uint32		off;			/* byte offset of the block on that page */
+	uint32		max_tf;			/* raw -> recomputed bound (avgdl-safe) */
+	uint32		min_doclen;		/* raw -> recomputed bound (avgdl-safe) */
+} BM25SkipEntry;
+
+/* only build the directory for terms at least this many docs (>= 16 blocks) */
+#define BM25_SKIPDIR_MIN 2048
 
 /*
  * Sparse block index over a segment's dictionary pages: one entry per dict

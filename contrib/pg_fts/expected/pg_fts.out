@@ -1554,3 +1554,39 @@ SELECT count(*) AS big_term3999 FROM bigdoc WHERE d @@@ 'term3999x'::ftsquery; -
 
 RESET enable_seqscan;
 DROP TABLE bigdoc;
+-- impact-ordered block skip directory (format v3): a term crossing
+-- BM25_SKIPDIR_MIN (2048 docs) gets an impact directory; the ranked top-k via
+-- the index must return the SAME set as a brute-force seqscan+sort.
+CREATE TABLE impact (id int, d ftsdoc);
+INSERT INTO impact SELECT g,
+  to_ftsdoc('common filler'||g||
+    case when g IN (4444,111,5999,2001,3500,88,4700,1234,900,4001)
+         then repeat(' common', g%50+20) else '' end)
+  FROM generate_series(1,6000) g;
+CREATE INDEX impact_bm25 ON impact USING bm25(d);
+-- top-10 via the index (impact directory path)
+SET enable_seqscan=off;
+CREATE TEMP TABLE idx_top AS
+  SELECT id FROM impact WHERE d @@@ 'common'::ftsquery
+  ORDER BY d <=> 'common'::ftsquery LIMIT 10;
+RESET enable_seqscan;
+-- ground truth via seqscan
+SET enable_indexscan=off; SET enable_bitmapscan=off;
+CREATE TEMP TABLE seq_top AS
+  SELECT id FROM impact WHERE d @@@ 'common'::ftsquery
+  ORDER BY d <=> 'common'::ftsquery LIMIT 10;
+RESET enable_indexscan; RESET enable_bitmapscan;
+-- the two top-10 SETS must be identical (tie order may differ; the set must not)
+SELECT count(*) AS in_both FROM idx_top i JOIN seq_top s USING (id);   -- 10
+ in_both 
+---------
+      10
+(1 row)
+
+SELECT count(*) AS idx_only FROM (SELECT id FROM idx_top EXCEPT SELECT id FROM seq_top) x; -- 0
+ idx_only 
+----------
+        0
+(1 row)
+
+DROP TABLE impact;
