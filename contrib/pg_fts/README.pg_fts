@@ -148,3 +148,33 @@ Backward compatibility
 
 tsvector, tsquery, @@, ts_rank and the GIN/GiST opclasses are untouched;
 pg_fts is purely additive and opt-in.
+
+Documentation
+-------------
+
+User-facing reference documentation is in doc/src/sgml/pgfts.sgml (rendered in
+the "Additional Supplied Modules" appendix as "pg_fts").  This README is the
+developer/design overview; CAPABILITIES.md is the production-readiness /
+feature matrix (index-AM capability flags, concurrency, replication, and an
+honest comparison to tsvector/GIN and ParadeDB pg_search).
+
+Testing
+-------
+
+  * sql/pg_fts.sql + expected/pg_fts.out -- the functional regression suite
+    (types, query language, the bm25 index, ranking, maintenance, and the
+    MVCC/tombstone/oversized-doc correctness edges).
+  * specs/bm25_concurrency.spec, specs/bm25_cic.spec -- isolation tests: MVCC
+    snapshot stability, pending-list visibility, VACUUM/merge invisibility to
+    an open scan, delete+reuse tombstone correctness, and CREATE/REINDEX INDEX
+    CONCURRENTLY.
+  * t/001_crash_recovery.pl -- an immediate crash + WAL replay reproduces exact
+    query answers (GenericXLog crash-safety).
+  * t/002_replication.pl -- the index replicates to a streaming standby with
+    identical results, including tombstoned deletes.
+  * bench/ -- reproducible large-scale benchmarks vs tsvector/GIN and pg_search
+    (see bench/RESULTS_*.md).
+
+Run with: make installcheck (REGRESS + ISOLATION + TAP_TESTS), or under meson
+meson test pg_fts/... (TAP tests require -Dtap_tests=enabled and the IPC::Run
+Perl module).
