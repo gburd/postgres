@@ -286,6 +286,9 @@ static void backend_thread_start_release(BackendThreadStart *thread_start);
 static BackendPooledLogicalStart *backend_pooled_logical_start_alloc(void);
 static void backend_pooled_logical_start_release(BackendPooledLogicalStart *logical_start);
 static void backend_thread_entry(void *arg);
+#ifdef USE_XTC_CARRIER
+static bool xtc_carrier_eligible(BackendType child_type);
+#endif
 static void backend_thread_run_backend(BackendThreadStart *thread_start);
 static void backend_thread_run_worker(BackendThreadStart *thread_start);
 static BackendThreadPublication *backend_thread_current_publication(void);
@@ -472,6 +475,40 @@ backend_pooled_logical_start_release(BackendPooledLogicalStart *logical_start)
 	free(logical_start);
 }
 
+#ifdef USE_XTC_CARRIER
+/*
+ * xtc-carrier: which thread-carrier child types may run as xtc fibers on the
+ * shared carrier loop pool instead of dedicated pthreads.
+ *
+ * Start conservative: only families that already reach
+ * postmaster_backend_thread_launch() as post-PM_RUN thread carriers, run the
+ * common backend_thread_entry(), and whose blocking waits route through the
+ * waiteventset xtc intercept.  Regular client backends are always eligible;
+ * background workers that opted into a thread carrier and the AIO io workers
+ * are the next-safest server-owned families.  Everything else (startup,
+ * logger, checkpointer/bgwriter handoff, WAL families, autovacuum, slot sync,
+ * archiver) keeps its base pthread carrier until it is individually validated
+ * on a fiber -- deferred, not rejected.
+ *
+ * ponytail: hand-picked allowlist, not a broad opt-in.  Widen one family at a
+ * time as each is shown to yield at every blocking wait (never blocks the
+ * carrier loop) and to tear down cleanly as a pooled-logical PMChild.
+ */
+static bool
+xtc_carrier_eligible(BackendType child_type)
+{
+	switch (child_type)
+	{
+		case B_BACKEND:
+		case B_BG_WORKER:
+		case B_IO_WORKER:
+			return true;
+		default:
+			return false;
+	}
+}
+#endif
+
 /*
  * Start a regular backend carrier thread.
  *
@@ -604,25 +641,27 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 
 #ifdef USE_XTC_CARRIER
 	/*
-	 * xtc-carrier: run the client backend as an xtc fiber on the xtc
-	 * scheduler thread instead of a raw pthread.  The fiber body is the
-	 * tree's own backend_thread_entry, so all thread-per-session init and
-	 * the dup()'d MyClientSocket->sock are reused unchanged; only the
-	 * carrier differs.  Its client-socket waits route through the xtc loop
-	 * (see waiteventset.c).
+	 * xtc-carrier: run this backend/worker as an xtc fiber on the carrier
+	 * loop pool instead of a raw pthread.  The fiber body is the tree's own
+	 * backend_thread_entry, so all thread-per-session/worker init is reused
+	 * unchanged; only the carrier differs.  Blocking waits route through the
+	 * xtc loop (see waiteventset.c).  For B_BACKEND the dup()'d
+	 * MyClientSocket->sock is the wait fd; worker families have no client
+	 * socket.
 	 */
-	if (child_type == B_BACKEND)
+	if (xtc_carrier_eligible(child_type))
 	{
 		rc = xtc_pg_launch_backend_fiber(backend_thread_entry, thread_start);
 		if (rc != 0)
 		{
-			closesocket(thread_start->client_sock.sock);
+			if (child_type == B_BACKEND)
+				closesocket(thread_start->client_sock.sock);
 			backend_thread_start_release(thread_start);
 			errno = rc;
 			return false;
 		}
-		elog(LOG, "xtc: B_BACKEND launched as xtc fiber (child_slot=%d)",
-			 child_slot);
+		elog(LOG, "xtc: %s launched as xtc fiber (child_slot=%d)",
+			 PostmasterChildName(child_type), child_slot);
 		postmaster_thread_carriers_started = true;
 		/*
 		 * No PgThread handle for the fiber path: the fiber runs on a shared
