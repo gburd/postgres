@@ -57,8 +57,8 @@
 #include "storage/bufmgr.h"
 #include "storage/bufpool.h"
 #include "storage/bufpool_internals.h"
+#include "storage/lwlock.h"
 #include "storage/shmem.h"
-#include "storage/spin.h"
 #include "utils/builtins.h"
 #include "utils/tuplestore.h"
 
@@ -115,7 +115,15 @@ typedef struct RcrdEntry
  */
 typedef struct RcrdControl
 {
-	slock_t		rcrd_lock;		/* spinlock protecting all mutable fields */
+	/*
+	 * LWLock protecting all mutable fields.  An LWLock (not a spinlock) is
+	 * required because several callbacks hold this lock across O(n) list
+	 * walks (RcrdGetVictim's Q scan, rcrd_r_prune, rcrd_demote_bottom_hot,
+	 * rcrd_compute_crd).  A spinlock held that long busy-spins other backends
+	 * into a "stuck spinlock" PANIC under concurrent load; an LWLock sleeps
+	 * instead, so the same critical sections are crash-safe.
+	 */
+	LWLock		rcrd_lock;
 
 	int			nbuffers;		/* number of physical buffers in this pool */
 	int			first_buf_id;	/* global buffer ID of first buffer in pool */
@@ -532,11 +540,11 @@ rcrd_alloc_entry(RcrdControl *ctl, RcrdEntry *entries)
 
 	/*
 	 * Should not reach here: the on_evict fix ensures pruned COLD entries are
-	 * freed rather than orphaned as ghosts.  Release the spinlock before
-	 * ereport to avoid leaving it permanently locked (which would cause a
-	 * stuck-spinlock PANIC in other processes such as the trickle writer).
+	 * freed rather than orphaned as ghosts.  Release the LWLock before ereport
+	 * (LWLockReleaseAll would also release it at abort, but doing it here keeps
+	 * the hold time explicit).
 	 */
-	SpinLockRelease(&ctl->rcrd_lock);
+	LWLockRelease(&ctl->rcrd_lock);
 	ereport(ERROR,
 			(errcode(ERRCODE_OUT_OF_MEMORY),
 			 errmsg("RCRD: no entries available for recycling")));
@@ -634,7 +642,7 @@ RcrdOnHit(void *strategy_data, int buf_id, BufferTag *tag)
 	if (entry_idx < 0)
 		return;
 
-	SpinLockAcquire(&ctl->rcrd_lock);
+	LWLockAcquire(&ctl->rcrd_lock, LW_EXCLUSIVE);
 
 	/* Compute CRD before moving to top */
 	new_crd = rcrd_compute_crd(ctl, entries, entry_idx);
@@ -685,7 +693,7 @@ RcrdOnHit(void *strategy_data, int buf_id, BufferTag *tag)
 		}
 	}
 
-	SpinLockRelease(&ctl->rcrd_lock);
+	LWLockRelease(&ctl->rcrd_lock);
 }
 
 /*
@@ -703,7 +711,7 @@ RcrdOnMiss(void *strategy_data, BufferTag *tag)
 
 	PoolStatIncrement(&rcrd_local_stats[RCRD_STAT_LOOKUPS], &ctl->stat_lookups);
 
-	SpinLockAcquire(&ctl->rcrd_lock);
+	LWLockAcquire(&ctl->rcrd_lock, LW_EXCLUSIVE);
 
 	ghost_idx = rcrd_ghost_lookup(ctl, tag);
 
@@ -718,7 +726,7 @@ RcrdOnMiss(void *strategy_data, BufferTag *tag)
 		state->ghost_entry = -1;
 	}
 
-	SpinLockRelease(&ctl->rcrd_lock);
+	LWLockRelease(&ctl->rcrd_lock);
 }
 
 /*
@@ -734,18 +742,18 @@ RcrdOnEvict(void *strategy_data, int buf_id, BufferTag *old_tag pg_attribute_unu
 	int			entry_idx;
 	int			old_status;
 
-	SpinLockAcquire(&ctl->rcrd_lock);
+	LWLockAcquire(&ctl->rcrd_lock, LW_EXCLUSIVE);
 
 	if (pool_local_id < 0 || pool_local_id >= ctl->nbuffers)
 	{
-		SpinLockRelease(&ctl->rcrd_lock);
+		LWLockRelease(&ctl->rcrd_lock);
 		return;
 	}
 
 	entry_idx = buf_to_entry[pool_local_id];
 	if (entry_idx < 0)
 	{
-		SpinLockRelease(&ctl->rcrd_lock);
+		LWLockRelease(&ctl->rcrd_lock);
 		return;
 	}
 
@@ -789,14 +797,14 @@ RcrdOnEvict(void *strategy_data, int buf_id, BufferTag *old_tag pg_attribute_unu
 	}
 	else
 	{
-		SpinLockRelease(&ctl->rcrd_lock);
+		LWLockRelease(&ctl->rcrd_lock);
 		return;
 	}
 
 	buf_to_entry[pool_local_id] = -1;
 	PoolStatIncrement(&rcrd_local_stats[RCRD_STAT_EVICTIONS], &ctl->stat_evictions);
 
-	SpinLockRelease(&ctl->rcrd_lock);
+	LWLockRelease(&ctl->rcrd_lock);
 }
 
 /*
@@ -818,7 +826,7 @@ RcrdOnNewTag(void *strategy_data, int buf_id, BufferTag *new_tag,
 
 	Assert(pool_local_id >= 0 && pool_local_id < ctl->nbuffers);
 
-	SpinLockAcquire(&ctl->rcrd_lock);
+	LWLockAcquire(&ctl->rcrd_lock, LW_EXCLUSIVE);
 
 	Assert(buf_to_entry[pool_local_id] == -1);
 
@@ -910,7 +918,7 @@ complete_miss:
 
 	buf_to_entry[pool_local_id] = entry_idx;
 
-	SpinLockRelease(&ctl->rcrd_lock);
+	LWLockRelease(&ctl->rcrd_lock);
 }
 
 
@@ -991,7 +999,7 @@ RcrdGetVictim(void *strategy_data, BufferAccessStrategy strategy pg_attribute_un
 		}
 
 		/* Phase 2: Evict from Q head (resident COLD pages) */
-		SpinLockAcquire(&ctl->rcrd_lock);
+		LWLockAcquire(&ctl->rcrd_lock, LW_EXCLUSIVE);
 
 		{
 			int			attempts = 0;
@@ -1025,9 +1033,9 @@ RcrdGetVictim(void *strategy_data, BufferAccessStrategy strategy pg_attribute_un
 
 						if (unlikely(local_buf_state & BM_LOCKED))
 						{
-							SpinLockRelease(&ctl->rcrd_lock);
+							LWLockRelease(&ctl->rcrd_lock);
 							old_buf_state = WaitBufHdrUnlocked(buf);
-							SpinLockAcquire(&ctl->rcrd_lock);
+							LWLockAcquire(&ctl->rcrd_lock, LW_EXCLUSIVE);
 
 							if (e->status != RCRD_STATUS_COLD ||
 								e->buf_id < 0)
@@ -1041,7 +1049,7 @@ RcrdGetVictim(void *strategy_data, BufferAccessStrategy strategy pg_attribute_un
 														   local_buf_state))
 						{
 							*buf_state = local_buf_state;
-							SpinLockRelease(&ctl->rcrd_lock);
+							LWLockRelease(&ctl->rcrd_lock);
 							TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
 							rcrd_advance_sync_hand(ctl);
 							return buf;
@@ -1053,7 +1061,7 @@ RcrdGetVictim(void *strategy_data, BufferAccessStrategy strategy pg_attribute_un
 			}
 		}
 
-		SpinLockRelease(&ctl->rcrd_lock);
+		LWLockRelease(&ctl->rcrd_lock);
 
 		/* Phase 3: Fallback -- scan all buffers */
 		for (int i = 0; i < ctl->nbuffers; i++)
@@ -1136,9 +1144,9 @@ RcrdNotifyTrickle(void *strategy_data, int bgwprocno)
 {
 	RcrdControl *ctl = (RcrdControl *) strategy_data;
 
-	SpinLockAcquire(&ctl->rcrd_lock);
+	LWLockAcquire(&ctl->rcrd_lock, LW_EXCLUSIVE);
 	ctl->bgwprocno = bgwprocno;
-	SpinLockRelease(&ctl->rcrd_lock);
+	LWLockRelease(&ctl->rcrd_lock);
 }
 
 static void
@@ -1168,7 +1176,7 @@ RcrdPrefetchHint(void *strategy_data, BufferTag *tags, int ntags)
 	if (ntags <= 0)
 		return;
 
-	SpinLockAcquire(&ctl->rcrd_lock);
+	LWLockAcquire(&ctl->rcrd_lock, LW_EXCLUSIVE);
 	entries = RCRD_ENTRIES(ctl);
 
 	for (int i = 0; i < ntags; i++)
@@ -1182,7 +1190,7 @@ RcrdPrefetchHint(void *strategy_data, BufferTag *tags, int ntags)
 		}
 	}
 
-	SpinLockRelease(&ctl->rcrd_lock);
+	LWLockRelease(&ctl->rcrd_lock);
 }
 
 
@@ -1229,7 +1237,7 @@ RcrdShmemInit(void *strategy_data, int nbuffers, int first_buf_id, bool init)
 	nentries = nbuffers * 3;
 	ghost_hash_size = pg_nextpower2_32(Max(nentries, 64));
 
-	SpinLockInit(&ctl->rcrd_lock);
+	LWLockInitialize(&ctl->rcrd_lock, LWLockNewTrancheId("pg_bp_rcrd"));
 	ctl->nbuffers = nbuffers;
 	ctl->first_buf_id = first_buf_id;
 	ctl->nentries = nentries;
@@ -1341,9 +1349,9 @@ RcrdTrickleIterBegin(void *strategy_data, int max_candidates)
 	iter->yielded = 0;
 	iter->max_candidates = max_candidates;
 
-	SpinLockAcquire(&ctl->rcrd_lock);
+	LWLockAcquire(&ctl->rcrd_lock, LW_EXCLUSIVE);
 	iter->entry_idx = ctl->q_head;
-	SpinLockRelease(&ctl->rcrd_lock);
+	LWLockRelease(&ctl->rcrd_lock);
 
 	return iter;
 }
@@ -1468,14 +1476,14 @@ pg_stat_get_rcrd_stats(PG_FUNCTION_ARGS)
 		else
 			nulls[1] = true;
 
-		SpinLockAcquire(&ctl->rcrd_lock);
+		LWLockAcquire(&ctl->rcrd_lock, LW_EXCLUSIVE);
 		values[2] = Int32GetDatum(ctl->hot_count);
 		values[3] = Int32GetDatum(ctl->cold_count);
 		values[4] = Int32GetDatum(ctl->ghost_count);
 		values[5] = Int32GetDatum(ctl->hot_capacity);
 		values[6] = Int32GetDatum(ctl->r_size);
 		values[7] = Int32GetDatum(ctl->q_size);
-		SpinLockRelease(&ctl->rcrd_lock);
+		LWLockRelease(&ctl->rcrd_lock);
 
 		/* Flush this backend's pending local stats before reading */
 		PoolStatFlush(&rcrd_local_stats[RCRD_STAT_LOOKUPS], &ctl->stat_lookups);
