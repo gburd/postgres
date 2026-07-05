@@ -1,5 +1,59 @@
 # M16 xtc-carrier Findings -- threaded PostgreSQL on the xtc scheduler
 
+Status: **(C) CONCURRENT WORKS ON A LOOP POOL** -- moving from a single carrier
+loop to an N-loop executor pool (n_loops = CPU count) resolved the concurrent
+lost-wakeup: N concurrent backends each run on a distinct loop, all return the
+correct rows, and all exit cleanly (spawned == exited), and a new query after a
+burst of concurrent ones is not wedged.  A second fix classifies the
+fiber-backed backend as a pooled-logical PMChild (no pthread to join) so
+`pg_ctl -m fast stop` completes instead of hanging in PM_WAIT_BACKENDS.  Built
+via the Nix flake + meson/ninja (`-Dxtc=enabled`), rebased onto origin/master
+(upstream + Sam's thread-per-session tree).
+
+Prior status was **(B) PARTIAL** -- N SEQUENTIAL backends worked but N
+CONCURRENT backends wedged the single loop: with two or more fibers parked at
+once, exactly one resumed/exited and the rest were lost.  The single-loop model
+was bringup scaffolding; the loop pool is the intended Phase-15 shape and
+sidesteps the single-loop dispatch edge entirely, as predicted.
+
+## The two fixes (2026-07-04)
+
+1. **Carrier loop pool** (`pg_xtc_carrier.c`): create the xtc app with
+   `opts.n_loops = CPU count` (override `PG_XTC_CARRIER_LOOPS`), grab the
+   executor with `xtc_app_exec()`, and place each backend fiber round-robin
+   across `xtc_exec_loop(exec, i)` instead of a single `g_xtc_loop`.  Each loop
+   runs on its own OS thread, so two concurrent backends never park on the same
+   loop and cannot starve each other.
+2. **Pooled-logical fiber reaping** (`launch_backend.c`): a fiber runs on a
+   shared carrier loop, not a dedicated joinable pthread, so
+   `PostmasterChildJoinThread()` -> `pg_thread_join()` on an unset handle hung
+   shutdown.  Classify the fiber's PMChild as `PM_CHILD_CARRIER_POOLED_LOGICAL`
+   and publish its exit via `PostmasterChildPublishPooledLogicalExit()`; the
+   postmaster then reaps the slot through `process_pm_pooled_logical_exit()`
+   (no join) and `PM_WAIT_BACKENDS` completes.
+
+## Verified (2026-07-04, when the scratch data dir survived)
+
+- 8-loop pool: 6 concurrent backends each `select pg_sleep(0.4); select 1;`
+  all return rc=0, a following `select 42` runs (not wedged), and the fiber
+  log shows `spawned == exited` with each backend on a distinct loop.
+- single connection then `pg_ctl -m fast stop` completes cleanly
+  (previously hung).
+- with no client ever connected, fast stop was already clean; the hang was
+  specifically the exited-fiber PMChild join.
+
+## Validation note
+
+The base tree's threaded TAP (`001_threaded_runtime.pl`) shells out to
+`gmake -C contrib/hstore install`, which needs an autoconf/make-configured
+tree; it does not run against a meson-only build in this environment (the
+supported path is `gmake check-threaded`).  The pool + shutdown fixes are
+validated by a full green meson build plus the direct runtime evidence above.
+
+---
+
+## Historical: single-loop status (superseded by the loop pool)
+
 Status: **(B) PARTIAL** -- N SEQUENTIAL backends work perfectly (each spawns a
 fresh xtc_proc fiber, returns the correct row, and EXITS cleanly; the loop slot
 is reclaimed and reused with no leak).  N CONCURRENT backends return the
