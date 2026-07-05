@@ -47,7 +47,7 @@
  *                              with a stack yyParser whose yyscanner is
  *                              the host_reduce `user` pointer.
  */
-extern ParserSnapshot *base_yyBuildSnapshot(void);
+extern ParserSnapshot * base_yyBuildSnapshot(void);
 extern int	base_yyHostReduce(void *user, int ruleno,
 							  const void *rhs_values, const int *rhs_locs,
 							  int nrhs, void *lhs_out, int *lhs_loc_out);
@@ -60,8 +60,8 @@ extern int	base_yyHostReduce(void *user, int ruleno,
  * liblime_parser.a.  (Reported to the Lime team: parser.h should use a
  * LIME_-prefixed guard.)
  */
-extern int	lime_snapshot_token_code(const ParserSnapshot *snap,
-								 const char *name);
+extern int	lime_snapshot_token_code(const ParserSnapshot * snap,
+									 const char *name);
 
 extern bool raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 									  base_yy_extra_type *yyextra,
@@ -81,8 +81,8 @@ extern bool pg_grammar_compose_install(unsigned int *base_nrule_out,
  *                        dispatcher routes ruleno < this to the base
  *                        actions and ruleno >= this to extension rules.
  */
-static ParserSnapshot *base_snapshot = NULL;
-static ParserSnapshot *composed_snapshot = NULL;
+static ParserSnapshot * base_snapshot = NULL;
+static ParserSnapshot * composed_snapshot = NULL;
 static unsigned int composed_base_nrule = 0;
 
 /*
@@ -143,6 +143,7 @@ pg_grammar_compose_install(unsigned int *base_nrule_out, char **errmsg_out)
 	ParserSnapshot *snap = NULL;
 	char	   *err = NULL;
 	int			rc;
+	int			nconflict = 0;
 
 	if (base_snapshot == NULL)
 	{
@@ -182,8 +183,9 @@ pg_grammar_compose_install(unsigned int *base_nrule_out, char **errmsg_out)
 		appendStringInfoChar(&merged, '\n');
 	}
 
-	rc = lime_compile_grammar_in_process(merged.data, (size_t) merged.len,
-										 &snap, &err);
+	elog(DEBUG1, "composing grammar in-process for %d extension(s)", nfrags);
+	rc = lime_compile_grammar_in_process_ex(merged.data, (size_t) merged.len,
+											&snap, &err, &nconflict);
 	pfree(merged.data);
 	if (rc != 0 || snap == NULL)
 	{
@@ -194,6 +196,34 @@ pg_grammar_compose_install(unsigned int *base_nrule_out, char **errmsg_out)
 			free(err);
 		return false;
 	}
+
+	/*
+	 * A nonzero conflict count means the compose succeeded only because the
+	 * LALR table builder silently resolved >=1 shift/reduce (or keep-first
+	 * reduce/reduce) conflict by table-build order, NOT by any extension
+	 * author's intent.  In a multi-extension setting this is exactly the case
+	 * where one loaded grammar shadows or mis-parses another (or base SQL):
+	 * the resulting parser is well-formed but does not mean what the author
+	 * wrote.  Refuse to install it rather than silently mis-parse; the
+	 * extension author must remove the overlap.  (Lime v1.8.1
+	 * lime_compile_grammar_in_process_ex surfaces this count; the plain entry
+	 * point hid it.)
+	 */
+	if (nconflict > 0)
+	{
+		snapshot_release(snap);
+		if (errmsg_out)
+			*errmsg_out = psprintf("grammar extension compose introduced %d "
+								   "unresolved conflict(s); a loaded grammar "
+								   "extension shadows base SQL or another "
+								   "extension. Refusing to install the composed "
+								   "parser.", nconflict);
+		if (err)
+			free(err);
+		return false;
+	}
+	if (err)
+		free(err);
 
 	/* Route base/extension reduces through the composed dispatcher. */
 	snap->host_reduce = pushparse_host_reduce;
@@ -223,9 +253,9 @@ typedef struct PushparseKwEntry
 	char	   *lexeme;			/* lowercase, NUL-terminated */
 	int			code;			/* extension token code in composed snapshot */
 	int			base_code;		/* base SQL token code, or -1 if no collision */
-} PushparseKwEntry;
+}			PushparseKwEntry;
 
-static PushparseKwEntry *kw_map = NULL;
+static PushparseKwEntry * kw_map = NULL;
 static int	kw_map_count = 0;
 static int	kw_map_capacity = 0;
 
@@ -250,9 +280,9 @@ pushparse_kw_add(const char *name, const char *lexeme,
 
 	/*
 	 * Does this lexeme also match a base SQL keyword?  If so it is a
-	 * collision: the scanner's base lookup would normally win, shadowing
-	 * the extension.  Record the base token code so the push loop can ask
-	 * the admissibility oracle which meaning fits the current parse state.
+	 * collision: the scanner's base lookup would normally win, shadowing the
+	 * extension.  Record the base token code so the push loop can ask the
+	 * admissibility oracle which meaning fits the current parse state.
 	 */
 	kwnum = ScanKeywordLookup(lexeme, &ScanKeywords);
 	if (kwnum >= 0)
@@ -300,6 +330,8 @@ pushparse_build_keyword_map(void)
 	pg_grammar_ext_foreach_token(pushparse_kw_add, NULL);
 	if (kw_map_count > 0)
 		pg_grammar_ext_keyword_hook = pushparse_keyword_hook;
+	elog(DEBUG1, "grammar extension keyword map: %d entries published",
+		 kw_map_count);
 }
 
 /*
@@ -324,7 +356,7 @@ pushparse_build_keyword_map(void)
  *	  and *need_peek = false.
  */
 static int
-pushparse_resolve_collision(ParseContext *ctx, int tok,
+pushparse_resolve_collision(ParseContext * ctx, int tok,
 							bool *need_peek,
 							int *peek_base_code, int *peek_ext_code)
 {
@@ -360,6 +392,35 @@ pushparse_resolve_collision(ParseContext *ctx, int tok,
 }
 
 /*
+ * pushparse_resolve_ext_keyword
+ *	  An extension keyword (one whose lexeme the scanner mapped to an
+ *	  extension token code via pushparse_keyword_hook) is, like a base
+ *	  unreserved keyword, usable as an ordinary identifier in contexts that
+ *	  expect a name (e.g. `CREATE EXTENSION upsert`, a column named
+ *	  "upsert").  The scanner cannot know the parse state, so it always
+ *	  emits the keyword code; here we consult the admissibility oracle: if
+ *	  the keyword token does not fit the current LR state but IDENT does,
+ *	  rewrite it to IDENT so the lexeme behaves as a name.  Tokens that are
+ *	  not extension keywords, or that ARE admissible as the keyword, pass
+ *	  through unchanged.
+ */
+static int
+pushparse_resolve_ext_keyword(ParseContext * ctx, int tok)
+{
+	for (int i = 0; i < kw_map_count; i++)
+	{
+		if (kw_map[i].code != tok)
+			continue;			/* not an extension keyword code */
+
+		if (parse_context_token_admissible(ctx, tok) == LIME_TOK_NONE &&
+			parse_context_token_admissible(ctx, IDENT) != LIME_TOK_NONE)
+			return IDENT;		/* usable here only as a name */
+		return tok;
+	}
+	return tok;
+}
+
+/*
  * pushparse_peek_resolves_ext
  *	  One-token lookahead disambiguation for a both-admissible collision.
  *	  `next` is the token that follows the colliding keyword.  Returns true
@@ -374,6 +435,19 @@ pushparse_resolve_collision(ParseContext *ctx, int tok,
  *
  *	  Keeping base on next == FROM guarantees base SQL DELETE is never
  *	  stolen; the extension only wins where base DELETE cannot continue.
+ *
+ * ponytail: one-token peek, sufficient because every current both-admissible
+ * collision (only DELETE today) diverges at the very next token.  If a future
+ * grammar extension introduces a both-admissible verb whose dialects diverge
+ * DEEPER inside the statement (e.g. SQL LIMIT vs an Oracle-style ROWNUM tail),
+ * one token is not enough: upgrade this to Lime's Tier-1 full-statement
+ * fork-resolve -- buffer the rest of the statement and run lime_simulate_parse
+ * (lime/parse_context.h) / lime_mg_resolve (lime/multi_grammar.h) over the
+ * candidate token streams, preferring the one that reaches accept.  Not done
+ * now: it would require buffering the whole statement (breaking the
+ * interleaved scan/parse/oracle loop the keyword-vs-keyword and
+ * keyword-vs-identifier paths depend on) to replace code that is already
+ * correct for the only collision that exists.
  */
 static bool
 pushparse_peek_resolves_ext(int next)
@@ -399,25 +473,44 @@ pushparse_ascii_to_named(int t)
 {
 	switch (t)
 	{
-		case '(':	return LPAREN;
-		case ')':	return RPAREN;
-		case '[':	return LBRACKET;
-		case ']':	return RBRACKET;
-		case ',':	return COMMA;
-		case ';':	return SEMI;
-		case ':':	return COLON;
-		case '.':	return DOT;
-		case '+':	return PLUS;
-		case '-':	return MINUS;
-		case '*':	return STAR;
-		case '/':	return SLASH;
-		case '%':	return PERCENT;
-		case '^':	return CARET;
-		case '|':	return PIPE;
-		case '<':	return LT;
-		case '>':	return GT;
-		case '=':	return EQ;
-		default:	return t;
+		case '(':
+			return LPAREN;
+		case ')':
+			return RPAREN;
+		case '[':
+			return LBRACKET;
+		case ']':
+			return RBRACKET;
+		case ',':
+			return COMMA;
+		case ';':
+			return SEMI;
+		case ':':
+			return COLON;
+		case '.':
+			return DOT;
+		case '+':
+			return PLUS;
+		case '-':
+			return MINUS;
+		case '*':
+			return STAR;
+		case '/':
+			return SLASH;
+		case '%':
+			return PERCENT;
+		case '^':
+			return CARET;
+		case '|':
+			return PIPE;
+		case '<':
+			return LT;
+		case '>':
+			return GT;
+		case '=':
+			return EQ;
+		default:
+			return t;
 	}
 }
 
@@ -441,6 +534,7 @@ raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 	int			rc = 0;
 	bool		accepted = false;
 	void	   *tree = NULL;
+	YYLTYPE		error_lloc = 0;
 
 	/* One-token pushback buffer for colliding-keyword (DELETE) lookahead. */
 	bool		have_buffered = false;
@@ -451,11 +545,10 @@ raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 	*result = NIL;
 
 	/*
-	 * Use the composed snapshot (base + extensions) when grammar
-	 * extensions have been installed; otherwise the base grammar.  Both
-	 * carry a host_reduce hook that runs base actions; the composed
-	 * snapshot's hook (pushparse_host_reduce) additionally routes
-	 * extension-rule reduces.
+	 * Use the composed snapshot (base + extensions) when grammar extensions
+	 * have been installed; otherwise the base grammar.  Both carry a
+	 * host_reduce hook that runs base actions; the composed snapshot's hook
+	 * (pushparse_host_reduce) additionally routes extension-rule reduces.
 	 */
 	if (composed_snapshot != NULL)
 		snap = composed_snapshot;
@@ -479,11 +572,11 @@ raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 		elog(ERROR, "could not begin parse");
 
 	/*
-	 * Route reduces, passing the live scanner so %extra_argument
-	 * (yyscanner) is available to every action.  The composed snapshot
-	 * already wires pushparse_host_reduce as its host_reduce; for the base
-	 * snapshot we install base_yyHostReduce explicitly (it dispatches base
-	 * rules only, which is all the base grammar has).
+	 * Route reduces, passing the live scanner so %extra_argument (yyscanner)
+	 * is available to every action.  The composed snapshot already wires
+	 * pushparse_host_reduce as its host_reduce; for the base snapshot we
+	 * install base_yyHostReduce explicitly (it dispatches base rules only,
+	 * which is all the base grammar has).
 	 */
 	if (composed_snapshot != NULL)
 		parse_set_host_reduce(ctx, pushparse_host_reduce, yyscanner);
@@ -509,48 +602,60 @@ raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 		{
 			tok = base_yylex(&lval, &lloc, yyscanner);
 			tok = pushparse_ascii_to_named(tok);
-
-			/*
-			 * Colliding-keyword resolution (composed snapshot only): if
-			 * the scanner produced a base SQL keyword that a loaded
-			 * extension also claims, ask the admissibility oracle which
-			 * meaning fits the current parse state.  No-op for
-			 * non-colliding tokens.
-			 */
-			if (composed_snapshot != NULL)
-			{
-				bool		need_peek = false;
-				int			base_code = 0;
-				int			ext_code = 0;
-
-				tok = pushparse_resolve_collision(ctx, tok, &need_peek,
-												  &base_code, &ext_code);
-				if (need_peek)
-				{
-					/*
-					 * Genuine ambiguity (DELETE): peek the next token,
-					 * buffer it to feed after this one, and choose the
-					 * base or extension meaning from one token of
-					 * lookahead.
-					 */
-					buffered_tok = base_yylex(&buffered_lval,
-											  &buffered_lloc, yyscanner);
-					buffered_tok = pushparse_ascii_to_named(buffered_tok);
-					have_buffered = true;
-
-					if (pushparse_peek_resolves_ext(buffered_tok))
-						tok = ext_code;
-					else
-						tok = base_code;
-				}
-			}
 		}
 
 		/*
-		 * PostgreSQL's YYSTYPE is a union of pointer-width members.  The
-		 * push parser stores one pointer-width payload per token and hands
-		 * it to the base action as the matching $N; box the union's
-		 * pointer payload.
+		 * Colliding-keyword resolution (composed snapshot only): if the
+		 * scanner produced a base SQL keyword that a loaded extension also
+		 * claims, ask the admissibility oracle which meaning fits the current
+		 * parse state.  No-op for non-colliding tokens.  This runs for both
+		 * freshly-lexed and replayed-from-buffer tokens: a token peeked to
+		 * disambiguate an earlier collision may itself be a colliding keyword
+		 * (e.g. `range of ...` -- `range` peeks `of`, and `of` must still
+		 * resolve to K_QUEL_OF, not base OF).
+		 */
+		if (composed_snapshot != NULL)
+		{
+			bool		need_peek = false;
+			int			base_code = 0;
+			int			ext_code = 0;
+
+			tok = pushparse_resolve_collision(ctx, tok, &need_peek,
+											  &base_code, &ext_code);
+			if (need_peek)
+			{
+				/*
+				 * Genuine ambiguity (DELETE): peek the next token, buffer it
+				 * to feed after this one, and choose the base or extension
+				 * meaning from one token of lookahead.
+				 */
+				buffered_tok = base_yylex(&buffered_lval,
+										  &buffered_lloc, yyscanner);
+				buffered_tok = pushparse_ascii_to_named(buffered_tok);
+				have_buffered = true;
+
+				if (pushparse_peek_resolves_ext(buffered_tok))
+					tok = ext_code;
+				else
+					tok = base_code;
+			}
+
+			/*
+			 * An extension keyword that does not collide with a base SQL
+			 * keyword still must yield to IDENT where the grammar expects a
+			 * name (e.g. `CREATE EXTENSION upsert`).  Tier-0 publishing made
+			 * the scanner emit the keyword code unconditionally; fall back to
+			 * IDENT where the keyword token is inadmissible.
+			 */
+			if (!need_peek)
+				tok = pushparse_resolve_ext_keyword(ctx, tok);
+		}
+
+		/*
+		 * PostgreSQL's YYSTYPE is a union of pointer-width members.  The push
+		 * parser stores one pointer-width payload per token and hands it to
+		 * the base action as the matching $N; box the union's pointer
+		 * payload.
 		 */
 		memcpy(&boxed, &lval, sizeof(void *));
 
@@ -560,15 +665,18 @@ raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 		{
 			/*
 			 * EOF.  parse_token returns 1 ("EOF accepts") on a successful
-			 * parse and a different non-zero / zero on failure; treat
-			 * accept (rc == 1) as success, everything else as error.
+			 * parse and a different non-zero / zero on failure; treat accept
+			 * (rc == 1) as success, everything else as error.
 			 */
 			accepted = (rc == 1);
+			if (!accepted)
+				error_lloc = lloc;
 			break;
 		}
 		if (rc != 0)			/* mid-stream syntax error */
 		{
 			accepted = false;
+			error_lloc = lloc;
 			break;
 		}
 	}
@@ -582,5 +690,20 @@ raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 	}
 
 	parse_end(ctx);
+
+	if (!accepted)
+	{
+		/*
+		 * Raise the standard syntax error the pull parser would emit via
+		 * base_yyerror().  scanner_yyerror() reads the scanner's current
+		 * token location and ereport()s "syntax error at or near ..."; it
+		 * does not return.  Without this the push path would silently treat
+		 * an unparsable statement (e.g. a bare identifier) as an empty parse,
+		 * diverging from the base parser.
+		 */
+		(void) error_lloc;
+		scanner_yyerror("syntax error", yyscanner);
+	}
+
 	return accepted;
 }
