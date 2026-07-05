@@ -18,10 +18,14 @@
  * method's submit() is never reached -- process mode is byte-for-byte
  * unchanged.
  *
- * Step 1 scope (smallest diff): single-iovec READV/WRITEV only.  Multi-element
- * iovecs are pushed to the synchronous fallback via
- * needs_synchronous_execution().  Multi-iovec support is Step 2; issuer-async
- * reap is Step 3; WAL/fsync is Step 4 (see the design doc).
+ * Step 2 scope: single- AND multi-iovec READV/WRITEV.  libxtc v1.1.0 exposes
+ * only single-buffer xtc_aio_pread/pwrite (no readv/writev), so a multi-element
+ * iovec is executed as a loop of per-element xtc_aio calls at increasing file
+ * offsets -- equivalent to pg_preadv/pg_pwritev for the contiguous file region
+ * PostgreSQL AIO describes.  Short-transfer and error semantics mirror the
+ * synchronous method: accumulate transferred bytes, stop at the first short or
+ * erroring element, and report a leading error as -errno.  Issuer-async reap
+ * is Step 3; WAL/fsync is Step 4 (see the design doc).
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -52,10 +56,10 @@ const IoMethodOps pgaio_xtc_ops = {
 };
 
 /*
- * The xtc method only handles an IO when the issuer is running as an xtc
- * backend fiber AND the IO is a single-iovec READV/WRITEV.  Everything else
- * falls back to the synchronous method, which preserves the existing behavior
- * exactly (process mode, aux backends, multi-iovec, invalid ops).
+ * The xtc method handles an IO when the issuer is running as an xtc backend
+ * fiber and the op is READV or WRITEV (any iovec length).  Off a fiber, or for
+ * an invalid op, fall back to the synchronous method -- which preserves the
+ * existing behavior exactly (process mode, aux backends).
  */
 static bool
 pgaio_xtc_needs_synchronous_execution(PgAioHandle *ioh)
@@ -66,13 +70,55 @@ pgaio_xtc_needs_synchronous_execution(PgAioHandle *ioh)
 	switch ((PgAioOp) ioh->op)
 	{
 		case PGAIO_OP_READV:
-			return ioh->op_data.read.iov_length != 1;
 		case PGAIO_OP_WRITEV:
-			return ioh->op_data.write.iov_length != 1;
+			return false;
 		case PGAIO_OP_INVALID:
 			return true;
 	}
 	return true;
+}
+
+/*
+ * Run one READV/WRITEV handle as a sequence of single-buffer xtc_aio calls
+ * over its iovec, at increasing file offsets, and return the pg_preadv-style
+ * result (total bytes transferred, or a negative errno if the first element
+ * failed).  Stops at the first short or erroring element, matching the
+ * synchronous method's partial-transfer semantics.
+ */
+static int
+pgaio_xtc_run_vectored(PgAioHandle *ioh)
+{
+	struct iovec *iov = &pgaio_ctl->iovecs[ioh->iovec_off];
+	bool		is_read = ((PgAioOp) ioh->op == PGAIO_OP_READV);
+	int			fd = is_read ? ioh->op_data.read.fd : ioh->op_data.write.fd;
+	int			iovcnt = is_read ? ioh->op_data.read.iov_length
+								 : ioh->op_data.write.iov_length;
+	int64		base_off = is_read ? (int64) ioh->op_data.read.offset
+								 : (int64) ioh->op_data.write.offset;
+	int64		done = 0;
+
+	for (int k = 0; k < iovcnt; k++)
+	{
+		uint32		len = (uint32) iov[k].iov_len;
+		int			r;
+
+		if (len == 0)
+			continue;
+
+		if (is_read)
+			r = xtc_aio_pread(fd, iov[k].iov_base, len, base_off + done);
+		else
+			r = xtc_aio_pwrite(fd, iov[k].iov_base, len, base_off + done);
+
+		if (r < 0)
+			return (done > 0) ? (int) done : r;	/* leading error -> -errno */
+
+		done += r;
+		if ((uint32) r < len)
+			break;				/* short transfer: stop, like pg_preadv */
+	}
+
+	return (int) done;
 }
 
 /*
@@ -89,14 +135,16 @@ pgaio_xtc_submit(uint16 num_staged_ios, PgAioHandle **staged_ios)
 	for (int i = 0; i < num_staged_ios; i++)
 	{
 		PgAioHandle *ioh = staged_ios[i];
-		struct iovec *iov = &pgaio_ctl->iovecs[ioh->iovec_off];
-		int			result = 0;
+		int			result;
+		uint32		wait_event;
 
 		/*
-		 * needs_synchronous_execution() guarantees we only see single-iovec
-		 * READV/WRITEV issued from a backend fiber.
+		 * needs_synchronous_execution() guarantees we only see READV/WRITEV
+		 * issued from a backend fiber.
 		 */
 		Assert(xtc_in_backend_fiber);
+		Assert((PgAioOp) ioh->op == PGAIO_OP_READV ||
+			   (PgAioOp) ioh->op == PGAIO_OP_WRITEV);
 
 		/*
 		 * Advance the handle to SUBMITTED before running the IO, exactly like
@@ -106,35 +154,17 @@ pgaio_xtc_submit(uint16 num_staged_ios, PgAioHandle **staged_ios)
 		 */
 		pgaio_io_prepare_submit(ioh);
 
-		switch ((PgAioOp) ioh->op)
-		{
-			case PGAIO_OP_READV:
-				Assert(ioh->op_data.read.iov_length == 1);
-				pgstat_report_wait_start(WAIT_EVENT_DATA_FILE_READ);
-				result = xtc_aio_pread(ioh->op_data.read.fd,
-									   iov[0].iov_base,
-									   (uint32) iov[0].iov_len,
-									   (int64) ioh->op_data.read.offset);
-				pgstat_report_wait_end();
-				break;
-			case PGAIO_OP_WRITEV:
-				Assert(ioh->op_data.write.iov_length == 1);
-				pgstat_report_wait_start(WAIT_EVENT_DATA_FILE_WRITE);
-				result = xtc_aio_pwrite(ioh->op_data.write.fd,
-										iov[0].iov_base,
-										(uint32) iov[0].iov_len,
-										(int64) ioh->op_data.write.offset);
-				pgstat_report_wait_end();
-				break;
-			case PGAIO_OP_INVALID:
-				elog(ERROR, "trying to execute invalid IO operation");
-		}
+		wait_event = ((PgAioOp) ioh->op == PGAIO_OP_READV)
+			? WAIT_EVENT_DATA_FILE_READ : WAIT_EVENT_DATA_FILE_WRITE;
+		pgstat_report_wait_start(wait_event);
+		result = pgaio_xtc_run_vectored(ioh);
+		pgstat_report_wait_end();
 
 		/*
 		 * xtc_aio_* returns the byte count (>= 0) or a negative errno -- the
-		 * same convention pg_preadv/pg_pwritev report via
-		 * (result < 0 ? -errno : result), so store it directly.  Assert the
-		 * handle is completed before we return (Invariant A from the design).
+		 * same convention pg_preadv/pg_pwritev report, so store it directly
+		 * and complete the handle in-line (Invariant A: COMPLETED before
+		 * submit() returns).
 		 */
 		ioh->result = result;
 		pgaio_io_process_completion(ioh, ioh->result);
