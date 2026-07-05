@@ -333,6 +333,19 @@ inside the postmaster process (8 threads, zero child processes -- verified via
    the pristine `multithreaded` branch and report upstream; use clean
    `pg_ctl -m fast stop` to avoid triggering recovery meanwhile.
 
+2b. **Late io-worker autoscale does not launch (pre-existing, NOT xtc, NOT
+   libxtc).**  Under `multithreaded=on`, raising `io_min_workers` at runtime
+   (`ALTER SYSTEM SET io_min_workers = 3; SELECT pg_reload_conf();`) does not
+   start a new io worker: the count stays at the startup value and no
+   additional "starting io worker thread carrier" appears, even with active
+   AIO-generating load over 40s.  Verified DETERMINISTIC against BOTH libxtc
+   v1.0.0 and v1.1.0 (same fresh trees on meh), so it is not a libxtc version
+   effect.  io workers run as base pthread carriers here (B_IO_WORKER is not
+   yet fiber-eligible), so this is the multithreaded tree's late-io-worker
+   autoscale/launch-request path.  Report upstream.  The
+   `001_threaded_runtime.pl` "late IO worker" check is a TODO until it is
+   fixed; the earlier one-off 129/129 pass was a lucky timing window.
+
 3. **Latch/SetLatch wakeups.**  The epoll-fd intercept already covers latch
    wakeups (the latch signalfd is a registered epoll event, so SetLatch makes
    the epoll fd readable and unparks the fiber).  Not separately exercised for
