@@ -85,8 +85,9 @@
 #include "storage/bufmgr.h"
 #include "storage/bufpool.h"
 #include "storage/bufpool_internals.h"
+#include "storage/lwlock.h"
+#include "storage/s_lock.h"
 #include "storage/shmem.h"
-#include "storage/spin.h"
 #include "utils/builtins.h"
 #include "utils/tuplestore.h"
 
@@ -130,6 +131,17 @@ typedef struct ArcCDB
 	BufferTag	buf_tag;		/* page identity */
 	int			buf_id;			/* pool-local buffer index (-1 for ghost) */
 	int			ghost_next;		/* next in ghost hash chain (-1 = end) */
+
+	/*
+	 * Deferred hot-path touch flag.  ArcOnHit (the hottest callback) sets
+	 * this atomically without taking arc_lock; the actual T1->T2 / T2-MRU
+	 * list move is applied lazily during arc_drain_touches(), which every
+	 * lock holder runs before it reads list order/size.  This bit -- not the
+	 * touch ring -- is the source of truth: drain applies a move iff the bit
+	 * is set, so a stale or duplicate ring entry is a harmless skip and a
+	 * concurrent hit is never lost or double-applied.
+	 */
+	pg_atomic_uint32 touched;
 } ArcCDB;
 
 /*
@@ -141,12 +153,32 @@ typedef struct ArcCDB
  */
 typedef struct ArcControl
 {
-	slock_t		arc_lock;		/* spinlock protecting all mutable fields */
+	/*
+	 * LWLock protecting all mutable list state.  An LWLock (not a spinlock)
+	 * is used because ArcGetVictim can hold it across an O(list) walk looking
+	 * for an unpinned victim; a spinlock held that long busy-spins other
+	 * backends and risks a "stuck spinlock" PANIC, whereas an LWLock sleeps.
+	 * The hot path (ArcOnHit) does NOT take this lock -- see the touch ring.
+	 */
+	LWLock		arc_lock;
 
 	int			nbuffers;		/* number of physical buffers in this pool */
 	int			first_buf_id;	/* global buffer ID of first buffer in pool */
 	int			ncdb;			/* total CDB entries (2 * nbuffers) */
 	int			target_T1_size; /* adaptive T1 target */
+
+	/*
+	 * Deferred-touch ring.  ArcOnHit enqueues the touched pool-local buf_id
+	 * here (lock-free) after setting the CDB's touched bit; arc_drain_touches
+	 * consumes it under arc_lock.  Producers reserve a slot with an atomic
+	 * fetch-add on touch_write; the consumer index touch_read is only ever
+	 * advanced under arc_lock.  If the ring is full a producer falls back to
+	 * taking arc_lock and applying its own move, so correctness never depends
+	 * on the ring having room.  Sized to touch_ring_mask+1 (a power of two).
+	 */
+	uint32		touch_ring_mask;	/* ring capacity - 1 (power of two - 1) */
+	pg_atomic_uint32 touch_write;	/* producer reservation counter */
+	uint32		touch_read;			/* consumer index (arc_lock-protected) */
 
 	/* Doubly-linked list heads and tails */
 	int			list_head[ARC_NUM_LISTS];
@@ -176,7 +208,8 @@ typedef struct ArcControl
 
 	/*
 	 * Variable-length arrays follow in this order: ArcCDB cdb[ncdb] int
-	 * ghost_hash[ghost_hash_size] int buf_to_cdb[nbuffers]
+	 * ghost_hash[ghost_hash_size] int buf_to_cdb[nbuffers] uint32
+	 * touch_ring[touch_ring_mask + 1]
 	 */
 } ArcControl;
 
@@ -225,6 +258,10 @@ arc_get_backend_state(ArcControl *ctl)
 #define ARC_BUF_TO_CDB(ctl) ((int *) ((char *)(ctl) + sizeof(ArcControl) + \
 							 sizeof(ArcCDB) * (ctl)->ncdb + \
 							 sizeof(int) * (ctl)->ghost_hash_size))
+#define ARC_TOUCH_RING(ctl) ((pg_atomic_uint32 *) ((char *)(ctl) + sizeof(ArcControl) + \
+							 sizeof(ArcCDB) * (ctl)->ncdb + \
+							 sizeof(int) * (ctl)->ghost_hash_size + \
+							 sizeof(int) * (ctl)->nbuffers))
 
 /*
  * Ghost hash helper: compute bucket index for a tag.
@@ -416,11 +453,10 @@ arc_alloc_cdb(ArcControl *ctl, ArcCDB *cdb_arr)
 	else
 	{
 		/*
-		 * Release the spinlock before ereport to avoid leaving it permanently
-		 * locked, which would cause a stuck-spinlock PANIC in other
-		 * processes.
+		 * Release the LWLock before ereport to keep the hold time explicit
+		 * (LWLockReleaseAll would also release it at abort).
 		 */
-		SpinLockRelease(&ctl->arc_lock);
+		LWLockRelease(&ctl->arc_lock);
 		ereport(ERROR,
 				(errcode(ERRCODE_OUT_OF_MEMORY),
 				 errmsg("ARC: no CDB entries available for recycling")));
@@ -433,6 +469,135 @@ arc_alloc_cdb(ArcControl *ctl, ArcCDB *cdb_arr)
 	ClearBufferTag(&cdb_arr[idx].buf_tag);
 
 	return idx;
+}
+
+
+/* ----------------------------------------------------------------
+ *			Deferred hot-path touch (scalability)
+ * ----------------------------------------------------------------
+ *
+ * ArcOnHit runs on every buffer cache hit and is by far the hottest
+ * callback.  Doing the T1->T2 / T2-MRU list move under arc_lock there
+ * serializes all hits on one lock -- pure contention, not algorithm.
+ *
+ * Instead ArcOnHit records the hit lock-free: it sets the CDB's atomic
+ * "touched" bit and enqueues the pool-local buf_id into a bounded ring.
+ * The move itself is applied later by arc_drain_touches(), which every
+ * arc_lock holder calls FIRST, before it reads any list order or size.
+ *
+ * Semantic equivalence to the original synchronous move:
+ *
+ *   - The touched bit, not the ring, is the source of truth.  Drain
+ *     applies a move iff the bit is set (cleared atomically as it is
+ *     consumed), so a stale/duplicate ring slot is a harmless skip and
+ *     no hit is ever lost or applied twice.
+ *   - Every code path that inspects list order/size for an eviction
+ *     decision (ArcOnMiss's evict_from + ghost adapt, arc_alloc_cdb's
+ *     B1/B2 choice, ArcGetVictim's LRU walk, ArcOnNewTag, the stats
+ *     reader) drains first while holding arc_lock.  So at the instant a
+ *     decision is computed, every hit that happened-before it (i.e. whose
+ *     ArcOnHit returned before the drainer acquired arc_lock) is already
+ *     reflected in the lists -- identical to synchronous application.
+ *   - Concurrent hits are only ever ordered arbitrarily relative to each
+ *     other in BOTH the original (spinlock acquisition order) and this
+ *     code (ring enqueue order); ARC's decisions do not depend on the
+ *     interleaving of hits that are not ordered by happens-before.
+ *
+ * The move applied at drain is exactly what ArcOnHit did synchronously:
+ * a page on T1 is promoted to T2-MRU, a page already on T2 is moved to
+ * T2-MRU; a page no longer on T1/T2 (evicted meanwhile) is skipped.
+ */
+
+/* Sentinel: ring stores buf_id + 1 so 0 means "empty slot". */
+#define ARC_TOUCH_EMPTY		0
+
+/*
+ * arc_apply_touch -- apply one deferred hit to the ARC lists.
+ *
+ * Caller must hold arc_lock.  local_id is a pool-local buffer index.
+ * Mirrors the synchronous body of the old ArcOnHit exactly.
+ */
+static inline void
+arc_apply_touch(ArcControl *ctl, ArcCDB *cdb_arr, int local_id)
+{
+	int		   *buf_to_cdb = ARC_BUF_TO_CDB(ctl);
+	int			cdb_idx;
+
+	if (local_id < 0 || local_id >= ctl->nbuffers)
+		return;
+
+	cdb_idx = buf_to_cdb[local_id];
+	if (cdb_idx < 0)
+		return;					/* buffer no longer tracked */
+
+	/*
+	 * Consume the touched bit.  If it was not set, this ring entry is stale
+	 * (already drained, or the buffer was recycled): skip.
+	 */
+	if (pg_atomic_exchange_u32(&cdb_arr[cdb_idx].touched, 0) == 0)
+		return;
+
+	if (cdb_arr[cdb_idx].list == ARC_LIST_T1)
+	{
+		PoolStatIncrement(&arc_local_stats[ARC_STAT_T1_HITS], &ctl->stat_t1_hits);
+		arc_list_remove(ctl, cdb_arr, cdb_idx);
+		arc_mru_insert(ctl, cdb_arr, cdb_idx, ARC_LIST_T2);
+	}
+	else if (cdb_arr[cdb_idx].list == ARC_LIST_T2)
+	{
+		PoolStatIncrement(&arc_local_stats[ARC_STAT_T2_HITS], &ctl->stat_t2_hits);
+		arc_list_remove(ctl, cdb_arr, cdb_idx);
+		arc_mru_insert(ctl, cdb_arr, cdb_idx, ARC_LIST_T2);
+	}
+	/* else: on B1/B2/UNUSED now -- nothing to promote */
+}
+
+/*
+ * arc_drain_touches -- apply all pending deferred hits.
+ *
+ * Caller must hold arc_lock.  Consumes ring slots [touch_read, touch_write)
+ * in FIFO order and applies each, preserving the exact order in which the
+ * producers reserved their slots.  touch_read is arc_lock-protected;
+ * producers only append (fetch-add on touch_write, then a single store of
+ * buf_id+1 into the reserved slot).
+ *
+ * A producer can reserve slot i (bumping touch_write) a few instructions
+ * before it stores buf_id+1 there.  To keep FIFO order and never let a
+ * later, already-published hit be applied before an earlier reserved one
+ * (which could otherwise let a just-hit page be chosen as a victim), the
+ * drainer waits for that in-flight store rather than skipping the slot.
+ * The wait is bounded and safe: the producer holds no lock between the
+ * fetch-add and the store (no syscall, no allocation, no CHECK_FOR_
+ * INTERRUPTS), so it publishes in a few instructions.  spin_delay() yields
+ * appropriately if the producer was descheduled.  Because every published
+ * hit is thus applied before any eviction decision ordered after it, the
+ * lists at each decision point are identical to the original synchronous
+ * ArcOnHit -- ARC's eviction choices are unchanged.
+ */
+static void
+arc_drain_touches(ArcControl *ctl)
+{
+	ArcCDB	   *cdb_arr = ARC_CDB(ctl);
+	pg_atomic_uint32 *ring = ARC_TOUCH_RING(ctl);
+	uint32		mask = ctl->touch_ring_mask;
+	uint32		write_idx = pg_atomic_read_u32(&ctl->touch_write);
+
+	while (ctl->touch_read != write_idx)
+	{
+		uint32		slot = ctl->touch_read & mask;
+		uint32		val;
+		SpinDelayStatus delay;
+
+		/* Wait for the reserving producer to publish this slot. */
+		init_local_spin_delay(&delay);
+		while ((val = pg_atomic_read_u32(&ring[slot])) == ARC_TOUCH_EMPTY)
+			perform_spin_delay(&delay);
+		finish_spin_delay(&delay);
+
+		pg_atomic_write_u32(&ring[slot], ARC_TOUCH_EMPTY);
+		ctl->touch_read++;
+		arc_apply_touch(ctl, cdb_arr, (int) (val - 1));
+	}
 }
 
 
@@ -511,8 +676,18 @@ ArcValidateLists(ArcControl *ctl)
 /*
  * ArcOnHit -- called when a page is found in the buffer cache.
  *
- * Promotes the page from T1 to T2 (MRU) if it's currently on T1.
- * If already on T2, moves to T2 MRU.
+ * HOT PATH.  Takes NO lock.  Records the hit for later application: sets
+ * the CDB's atomic touched bit and, if this producer was the one that
+ * flipped it 0->1, enqueues the pool-local buf_id into the touch ring.
+ * The actual T1->T2 / T2-MRU move (and the t1/t2 hit stat) is applied by
+ * arc_drain_touches() under arc_lock before any eviction decision -- see
+ * the deferred-touch commentary above for why this preserves ARC's exact
+ * eviction semantics.
+ *
+ * The touched bit dedupes: a page hammered many times between drains only
+ * occupies one ring slot.  If the ring is momentarily full we fall back to
+ * taking arc_lock and applying the move synchronously, so correctness never
+ * depends on the ring having room.
  */
 static void
 ArcOnHit(void *strategy_data, int buf_id, BufferTag *tag)
@@ -522,6 +697,8 @@ ArcOnHit(void *strategy_data, int buf_id, BufferTag *tag)
 	int		   *buf_to_cdb = ARC_BUF_TO_CDB(ctl);
 	int			pool_local_id;
 	int			cdb_idx;
+	uint32		mask = ctl->touch_ring_mask;
+	uint32		idx;
 
 	PoolStatIncrement(&arc_local_stats[ARC_STAT_LOOKUPS], &ctl->stat_lookups);
 
@@ -531,41 +708,62 @@ ArcOnHit(void *strategy_data, int buf_id, BufferTag *tag)
 	 */
 	pool_local_id = buf_id - ctl->first_buf_id;
 
-	SpinLockAcquire(&ctl->arc_lock);
-
 	if (pool_local_id < 0 || pool_local_id >= ctl->nbuffers)
-	{
-		SpinLockRelease(&ctl->arc_lock);
 		return;
-	}
 
+	/*
+	 * Read buf_to_cdb without the lock.  This is a plain int slot updated
+	 * only under arc_lock; a stale read here is harmless -- we either mark a
+	 * since-recycled CDB (drain skips it: the touched bit sits on a CDB no
+	 * longer on T1/T2, or the mapping is gone) or miss an in-flight remap
+	 * (that buffer's next hit re-marks it).  The eviction path always
+	 * re-reads buf_to_cdb under the lock at drain time.
+	 */
 	cdb_idx = buf_to_cdb[pool_local_id];
-	if (cdb_idx < 0)
-	{
-		/* Buffer not tracked by ARC -- can happen for untracked buffers */
-		SpinLockRelease(&ctl->arc_lock);
-		elog(DEBUG1,
-			 "ARC on_hit: buffer %d (pool-local %d) not tracked by ARC",
-			 buf_id, pool_local_id);
+	if (cdb_idx < 0 || cdb_idx >= ctl->ncdb)
+		return;					/* not tracked by ARC */
+
+	/*
+	 * Dedupe: only enqueue if we are the producer that set the bit.  If it
+	 * was already set, an earlier hit already has a ring slot pending drain.
+	 */
+	if (pg_atomic_fetch_or_u32(&cdb_arr[cdb_idx].touched, 1) != 0)
 		return;
+
+	/*
+	 * Reserve a ring slot and publish buf_id+1 into it (stored as buf_id+1
+	 * so 0 stays the empty sentinel).  Reserve with a CAS loop so the
+	 * capacity check and the touch_write bump are atomic: a producer never
+	 * laps a slot that has not yet been drained.  The winning CAS and the
+	 * following store are adjacent with nothing that can longjmp between
+	 * them, so the slot is published within a few instructions -- the drainer
+	 * relies on that.
+	 *
+	 * If the ring is momentarily full we must NOT bump touch_write without
+	 * publishing (that would leave a permanent gap and deadlock the
+	 * spin-waiting drainer).  Instead take arc_lock and apply the move
+	 * synchronously; the touched bit we just set is consumed by
+	 * arc_apply_touch, so no promotion is lost or doubled.
+	 */
+	for (;;)
+	{
+		idx = pg_atomic_read_u32(&ctl->touch_write);
+
+		if (idx - ctl->touch_read >= mask + 1)
+		{
+			/* Ring full: apply synchronously under the lock. */
+			LWLockAcquire(&ctl->arc_lock, LW_EXCLUSIVE);
+			arc_apply_touch(ctl, cdb_arr, pool_local_id);
+			LWLockRelease(&ctl->arc_lock);
+			return;
+		}
+
+		if (pg_atomic_compare_exchange_u32(&ctl->touch_write, &idx, idx + 1))
+			break;
 	}
 
-	/* Move to T2 MRU position */
-	if (cdb_arr[cdb_idx].list == ARC_LIST_T1)
-	{
-		PoolStatIncrement(&arc_local_stats[ARC_STAT_T1_HITS], &ctl->stat_t1_hits);
-		arc_list_remove(ctl, cdb_arr, cdb_idx);
-		arc_mru_insert(ctl, cdb_arr, cdb_idx, ARC_LIST_T2);
-	}
-	else if (cdb_arr[cdb_idx].list == ARC_LIST_T2)
-	{
-		PoolStatIncrement(&arc_local_stats[ARC_STAT_T2_HITS], &ctl->stat_t2_hits);
-		/* Already on T2, just move to MRU position */
-		arc_list_remove(ctl, cdb_arr, cdb_idx);
-		arc_mru_insert(ctl, cdb_arr, cdb_idx, ARC_LIST_T2);
-	}
-
-	SpinLockRelease(&ctl->arc_lock);
+	pg_atomic_write_u32(&ARC_TOUCH_RING(ctl)[idx & mask],
+						(uint32) (pool_local_id + 1));
 }
 
 /*
@@ -583,7 +781,8 @@ ArcOnMiss(void *strategy_data, BufferTag *tag)
 
 	PoolStatIncrement(&arc_local_stats[ARC_STAT_LOOKUPS], &ctl->stat_lookups);
 
-	SpinLockAcquire(&ctl->arc_lock);
+	LWLockAcquire(&ctl->arc_lock, LW_EXCLUSIVE);
+	arc_drain_touches(ctl);
 
 	ghost_idx = arc_ghost_lookup(ctl, tag);
 
@@ -646,7 +845,7 @@ ArcOnMiss(void *strategy_data, BufferTag *tag)
 	else
 		state->evict_from = ARC_LIST_T2;
 
-	SpinLockRelease(&ctl->arc_lock);
+	LWLockRelease(&ctl->arc_lock);
 }
 
 /*
@@ -665,11 +864,12 @@ ArcOnEvict(void *strategy_data, int buf_id, BufferTag *old_tag)
 	int			cdb_idx;
 	int			old_list;
 
-	SpinLockAcquire(&ctl->arc_lock);
+	LWLockAcquire(&ctl->arc_lock, LW_EXCLUSIVE);
+	arc_drain_touches(ctl);
 
 	if (pool_local_id < 0 || pool_local_id >= ctl->nbuffers)
 	{
-		SpinLockRelease(&ctl->arc_lock);
+		LWLockRelease(&ctl->arc_lock);
 		return;
 	}
 
@@ -677,7 +877,7 @@ ArcOnEvict(void *strategy_data, int buf_id, BufferTag *old_tag)
 	if (cdb_idx < 0)
 	{
 		/* Buffer not tracked (e.g., was a free buffer) */
-		SpinLockRelease(&ctl->arc_lock);
+		LWLockRelease(&ctl->arc_lock);
 		elog(DEBUG1,
 			 "ARC on_evict: buffer %d (pool-local %d) not tracked by ARC",
 			 buf_id, pool_local_id);
@@ -704,7 +904,7 @@ ArcOnEvict(void *strategy_data, int buf_id, BufferTag *old_tag)
 	else
 	{
 		/* Not on T1 or T2 -- shouldn't normally happen */
-		SpinLockRelease(&ctl->arc_lock);
+		LWLockRelease(&ctl->arc_lock);
 		return;
 	}
 
@@ -719,7 +919,7 @@ ArcOnEvict(void *strategy_data, int buf_id, BufferTag *old_tag)
 	ArcValidateLists(ctl);
 #endif
 
-	SpinLockRelease(&ctl->arc_lock);
+	LWLockRelease(&ctl->arc_lock);
 }
 
 /*
@@ -741,7 +941,8 @@ ArcOnNewTag(void *strategy_data, int buf_id, BufferTag *new_tag,
 
 	Assert(pool_local_id >= 0 && pool_local_id < ctl->nbuffers);
 
-	SpinLockAcquire(&ctl->arc_lock);
+	LWLockAcquire(&ctl->arc_lock, LW_EXCLUSIVE);
+	arc_drain_touches(ctl);
 
 	Assert(buf_to_cdb[pool_local_id] == -1);
 
@@ -772,6 +973,7 @@ ArcOnNewTag(void *strategy_data, int buf_id, BufferTag *new_tag,
 		arc_list_remove(ctl, cdb_arr, cdb_idx);
 
 		cdb_arr[cdb_idx].buf_id = pool_local_id;
+		pg_atomic_write_u32(&cdb_arr[cdb_idx].touched, 0);
 		arc_mru_insert(ctl, cdb_arr, cdb_idx, ARC_LIST_T2);
 	}
 	else
@@ -785,6 +987,7 @@ complete_miss:
 		cdb_arr[cdb_idx].buf_tag = *new_tag;
 		cdb_arr[cdb_idx].buf_id = pool_local_id;
 		cdb_arr[cdb_idx].ghost_next = -1;
+		pg_atomic_write_u32(&cdb_arr[cdb_idx].touched, 0);
 
 		/*
 		 * VACUUM optimization: insert at LRU of T1 so vacuum-loaded pages are
@@ -803,7 +1006,7 @@ complete_miss:
 	ArcValidateLists(ctl);
 #endif
 
-	SpinLockRelease(&ctl->arc_lock);
+	LWLockRelease(&ctl->arc_lock);
 }
 
 
@@ -885,7 +1088,8 @@ ArcGetVictim(void *strategy_data, BufferAccessStrategy strategy,
 	 * No free buffers available.  Walk the primary list from LRU (head)
 	 * looking for an unpinned buffer to evict.
 	 */
-	SpinLockAcquire(&ctl->arc_lock);
+	LWLockAcquire(&ctl->arc_lock, LW_EXCLUSIVE);
+	arc_drain_touches(ctl);
 
 	cdb_idx = ctl->list_head[primary_list];
 	while (cdb_idx >= 0)
@@ -916,9 +1120,9 @@ ArcGetVictim(void *strategy_data, BufferAccessStrategy strategy,
 
 			if (unlikely(local_buf_state & BM_LOCKED))
 			{
-				SpinLockRelease(&ctl->arc_lock);
+				LWLockRelease(&ctl->arc_lock);
 				old_buf_state = WaitBufHdrUnlocked(buf);
-				SpinLockAcquire(&ctl->arc_lock);
+				LWLockAcquire(&ctl->arc_lock, LW_EXCLUSIVE);
 				continue;
 			}
 
@@ -929,7 +1133,7 @@ ArcGetVictim(void *strategy_data, BufferAccessStrategy strategy,
 			{
 				/* Success - found our victim */
 				*buf_state = local_buf_state;
-				SpinLockRelease(&ctl->arc_lock);
+				LWLockRelease(&ctl->arc_lock);
 
 				TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
 				return buf;
@@ -968,9 +1172,9 @@ ArcGetVictim(void *strategy_data, BufferAccessStrategy strategy,
 
 			if (unlikely(local_buf_state & BM_LOCKED))
 			{
-				SpinLockRelease(&ctl->arc_lock);
+				LWLockRelease(&ctl->arc_lock);
 				old_buf_state = WaitBufHdrUnlocked(buf);
-				SpinLockAcquire(&ctl->arc_lock);
+				LWLockAcquire(&ctl->arc_lock, LW_EXCLUSIVE);
 				continue;
 			}
 
@@ -979,7 +1183,7 @@ ArcGetVictim(void *strategy_data, BufferAccessStrategy strategy,
 											   local_buf_state))
 			{
 				*buf_state = local_buf_state;
-				SpinLockRelease(&ctl->arc_lock);
+				LWLockRelease(&ctl->arc_lock);
 
 				TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
 				return buf;
@@ -989,7 +1193,7 @@ ArcGetVictim(void *strategy_data, BufferAccessStrategy strategy,
 		cdb_idx = cdb_arr[cdb_idx].next;
 	}
 
-	SpinLockRelease(&ctl->arc_lock);
+	LWLockRelease(&ctl->arc_lock);
 
 	ereport(ERROR,
 			(errcode(ERRCODE_INSUFFICIENT_RESOURCES),
@@ -1071,7 +1275,7 @@ ArcPrefetchHint(void *strategy_data, BufferTag *tags, int ntags)
 	if (ntags <= 0)
 		return;
 
-	SpinLockAcquire(&ctl->arc_lock);
+	LWLockAcquire(&ctl->arc_lock, LW_EXCLUSIVE);
 	cdb_arr = ARC_CDB(ctl);
 
 	for (int i = 0; i < ntags; i++)
@@ -1094,7 +1298,7 @@ ArcPrefetchHint(void *strategy_data, BufferTag *tags, int ntags)
 		}
 	}
 
-	SpinLockRelease(&ctl->arc_lock);
+	LWLockRelease(&ctl->arc_lock);
 }
 
 
@@ -1121,6 +1325,9 @@ ArcShmemSize(int nbuffers)
 	size = MAXALIGN(size);
 	size += sizeof(int) * nbuffers;
 	size = MAXALIGN(size);
+	/* deferred-touch ring: one power-of-two slot per buffer is plenty */
+	size += sizeof(pg_atomic_uint32) * pg_nextpower2_32(Max(nbuffers, 64));
+	size = MAXALIGN(size);
 
 	return size;
 }
@@ -1135,8 +1342,10 @@ ArcShmemInit(void *strategy_data, int nbuffers, int first_buf_id, bool init)
 	ArcCDB	   *cdb_arr;
 	int		   *ghost_hash;
 	int		   *buf_to_cdb;
+	pg_atomic_uint32 *touch_ring;
 	int			ncdb;
 	int			ghost_hash_size;
+	uint32		touch_ring_size;
 
 	if (!init)
 	{
@@ -1147,13 +1356,19 @@ ArcShmemInit(void *strategy_data, int nbuffers, int first_buf_id, bool init)
 
 	ncdb = nbuffers * 2;
 	ghost_hash_size = pg_nextpower2_32(Max(ncdb, 64));
+	touch_ring_size = pg_nextpower2_32(Max(nbuffers, 64));
 
-	SpinLockInit(&ctl->arc_lock);
+	LWLockInitialize(&ctl->arc_lock, LWLockNewTrancheId("pg_bp_arc"));
 	ctl->nbuffers = nbuffers;
 	ctl->first_buf_id = first_buf_id;
 	ctl->ncdb = ncdb;
 	ctl->target_T1_size = nbuffers / 2;
 	ctl->ghost_hash_size = ghost_hash_size;
+
+	/* Deferred-touch ring (power of two; mask = size - 1) */
+	ctl->touch_ring_mask = touch_ring_size - 1;
+	ctl->touch_read = 0;
+	pg_atomic_init_u32(&ctl->touch_write, 0);
 
 	/* Initialize lists to empty */
 	for (int i = 0; i < ARC_NUM_LISTS; i++)
@@ -1183,6 +1398,7 @@ ArcShmemInit(void *strategy_data, int nbuffers, int first_buf_id, bool init)
 		ClearBufferTag(&cdb_arr[i].buf_tag);
 		cdb_arr[i].buf_id = -1;
 		cdb_arr[i].ghost_next = -1;
+		pg_atomic_init_u32(&cdb_arr[i].touched, 0);
 	}
 	ctl->free_cdb_list = 0;
 
@@ -1195,6 +1411,11 @@ ArcShmemInit(void *strategy_data, int nbuffers, int first_buf_id, bool init)
 	buf_to_cdb = ARC_BUF_TO_CDB(ctl);
 	for (int i = 0; i < nbuffers; i++)
 		buf_to_cdb[i] = -1;
+
+	/* Initialize deferred-touch ring to empty */
+	touch_ring = ARC_TOUCH_RING(ctl);
+	for (uint32 i = 0; i < touch_ring_size; i++)
+		pg_atomic_init_u32(&touch_ring[i], ARC_TOUCH_EMPTY);
 }
 
 /*
@@ -1237,9 +1458,9 @@ ArcTrickleIterBegin(void *strategy_data, int max_candidates)
 	iter->max_candidates = max_candidates;
 
 	/* Snapshot the T1 head position under the lock */
-	SpinLockAcquire(&ctl->arc_lock);
+	LWLockAcquire(&ctl->arc_lock, LW_EXCLUSIVE);
 	iter->cdb_idx = ctl->list_head[ARC_LIST_T1];
-	SpinLockRelease(&ctl->arc_lock);
+	LWLockRelease(&ctl->arc_lock);
 
 	return iter;
 }
@@ -1287,9 +1508,9 @@ ArcTrickleIterNext(void *strategy_data, void *iter_state)
 		if (iter->phase == 1)
 		{
 			/* Switch to T2 */
-			SpinLockAcquire(&ctl->arc_lock);
+			LWLockAcquire(&ctl->arc_lock, LW_EXCLUSIVE);
 			iter->cdb_idx = ctl->list_head[ARC_LIST_T2];
-			SpinLockRelease(&ctl->arc_lock);
+			LWLockRelease(&ctl->arc_lock);
 		}
 	}
 
@@ -1398,14 +1619,15 @@ pg_stat_get_arc_stats(PG_FUNCTION_ARGS)
 		else
 			nulls[1] = true;
 
-		/* List sizes (read under spinlock for consistency) */
-		SpinLockAcquire(&ctl->arc_lock);
+		/* List sizes (read under the lock for consistency) */
+		LWLockAcquire(&ctl->arc_lock, LW_EXCLUSIVE);
+		arc_drain_touches(ctl);
 		values[2] = Int32GetDatum(ctl->list_size[ARC_LIST_T1]);
 		values[3] = Int32GetDatum(ctl->list_size[ARC_LIST_T2]);
 		values[4] = Int32GetDatum(ctl->list_size[ARC_LIST_B1]);
 		values[5] = Int32GetDatum(ctl->list_size[ARC_LIST_B2]);
 		values[6] = Int32GetDatum(ctl->target_T1_size);
-		SpinLockRelease(&ctl->arc_lock);
+		LWLockRelease(&ctl->arc_lock);
 
 		/* Flush this backend's pending local stats before reading */
 		PoolStatFlush(&arc_local_stats[ARC_STAT_LOOKUPS], &ctl->stat_lookups);
