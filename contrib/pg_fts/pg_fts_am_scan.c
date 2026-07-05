@@ -186,17 +186,47 @@ bm25_filter_tombstoned_seg(BM25Tombstones *t, uint32 segidx, TidSet *s)
 {
 	int			i,
 				j = 0;
+	uint64		stackids[256];
+	bool		stackres[256];
+	uint64	   *ids;
+	bool	   *res;
 
 	if (!t->hasany || s->n == 0 || segidx >= t->nseg || !t->present[segidx])
 		return;
-	for (i = 0; i < s->n; i++)
-	{
-		sm_cursor_t c = SM_CURSOR_INIT;
 
-		if (!sm_contains(&t->maps[segidx], bm25_tid_to_docid(&s->tids[i]), &c))
-			s->tids[j++] = s->tids[i];
+	/*
+	 * Batched membership: extract this set's docids (already ascending, since
+	 * the TidSet is TID-sorted and docid is monotonic in TID) and test them
+	 * all in one left-to-right sweep with sm_contains_many -- O(chunks + n)
+	 * instead of n independent head-walks.  Use a stack buffer for the common
+	 * small case to avoid palloc; fall back to palloc only for large sets.
+	 */
+	if (s->n <= (int) lengthof(stackids))
+	{
+		ids = stackids;
+		res = stackres;
 	}
+	else
+	{
+		ids = (uint64 *) palloc(s->n * sizeof(uint64));
+		res = (bool *) palloc(s->n * sizeof(bool));
+	}
+
+	for (i = 0; i < s->n; i++)
+		ids[i] = bm25_tid_to_docid(&s->tids[i]);
+
+	sm_contains_many(&t->maps[segidx], ids, res, (size_t) s->n);
+
+	for (i = 0; i < s->n; i++)
+		if (!res[i])
+			s->tids[j++] = s->tids[i];
 	s->n = j;
+
+	if (ids != stackids)
+	{
+		pfree(ids);
+		pfree(res);
+	}
 }
 
 /* Read the metapage for corpus stats + dictstart. */
@@ -1788,6 +1818,7 @@ typedef struct WandCursor
 	double		max_contrib;	/* term-wide upper bound (shortest-doc norm) */
 	BM25Tombstones *tombs;		/* loaded per-segment tombstones (or NULL) */
 	uint32		segidx;			/* which segment this cursor's postings belong to */
+	sm_cursor_cached_t tombcache;	/* stack MRU chunk cache for tombstone lookups */
 }			WandCursor;
 
 static inline void wand_skip_own_tombstoned(WandCursor *c);
@@ -1952,13 +1983,15 @@ wand_block_max_contrib(WandCursor *c)
 static inline bool
 wand_cur_own_tombstoned(WandCursor *c)
 {
-	sm_cursor_t sc = SM_CURSOR_INIT;
-
 	if (c->tombs == NULL || !c->tombs->hasany || c->docid == UINT64_MAX)
 		return false;
 	if (c->segidx >= c->tombs->nseg || !c->tombs->present[c->segidx])
 		return false;
-	return sm_contains(&c->tombs->maps[c->segidx], c->docid, &sc);
+	/* Cached MRU chunk cache (stack-allocated on the cursor): a cursor scans
+	 * docids in ascending order into a small working set of chunks, so the
+	 * cache turns repeated head-walks into O(1) hits. */
+	return sm_contains_cached(&c->tombs->maps[c->segidx], c->docid,
+							  &c->tombcache);
 }
 
 /* After the current docid is (re)positioned, skip forward over any docids
@@ -2618,6 +2651,11 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 				idf * mtf * (k1 + 1.0) / (mtf + k1 * (1.0 - b));
 			cursors[nactive].tombs = &tombs;
 			cursors[nactive].segidx = s;
+			{
+				sm_cursor_cached_t ini = SM_CURSOR_CACHED_INIT;
+
+				cursors[nactive].tombcache = ini;
+			}
 			nactive++;
 		}
 	}

@@ -1039,6 +1039,7 @@ bm25_read_segment_into(Relation index, const BM25SegMeta *seg, BM25BuildState *b
 	uint8	   *tombbuf = NULL;
 	sm_t		tomb;
 	bool		hastomb = false;
+	sm_cursor_cached_t tombcache = SM_CURSOR_CACHED_INIT;
 
 	/* open this segment's tombstone bitmap so merge physically DROPS deleted
 	 * docs (otherwise re-adding their postings would resurrect them) */
@@ -1077,9 +1078,11 @@ bm25_read_segment_into(Relation index, const BM25SegMeta *seg, BM25BuildState *b
 			{
 				if (hastomb)
 				{
-					sm_cursor_t c = SM_CURSOR_INIT;
-
-					if (sm_contains(&tomb, bm25_tid_to_docid(&post[k].tid), &c))
+					/* postings are docid-ascending within a term; a cached MRU
+					 * chunk cache turns the per-posting membership test into
+					 * O(1) hits over the hot chunks */
+					if (sm_contains_cached(&tomb, bm25_tid_to_docid(&post[k].tid),
+										   &tombcache))
 						continue;	/* tombstoned: drop from the merged segment */
 				}
 				add_posting(bs, de->term, de->termlen,

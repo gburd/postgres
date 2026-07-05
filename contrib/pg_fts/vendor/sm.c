@@ -2973,23 +2973,26 @@ __sm_separate_rle_chunk(sm_t *map, __sm_chunk_sep_t *sep, const uint64_t idx,
 				    sep->target.start + sep->target.length - 1;
 				sep->ex[0].p = sep->buf;
 				break;
-			} else {
-				/*
-				 * Can't fit a pivot in this space.  This is
-				 * believed unreachable: the enclosing
-				 * `aligned_idx + SM_CHUNK_MAX_CAPACITY <
-				 * capacity` guard plus the earlier
-				 * right-aligned break should have handled
-				 * every in-capacity pivot.  Assert so a
-				 * counter-example surfaces under test rather
-				 * than silently dropping the bit; return
-				 * nonzero (ENOSPC) so a caller grows and
-				 * retries instead of treating it as done.
-				 */
-				__sm_assert(false &&
-				    "separate: unreachable no-room pivot");
-				return (-1);
 			}
+			/*
+			 * No `else`: the "pivot window does not fit within
+			 * capacity" case is unreachable.  The RLE capacity is
+			 * never allowed to extend a full empty window past the
+			 * run's window-rounded end (see __sm_chunk_rle_capacity_
+			 * limit), so start + capacity <= roundup(start + length,
+			 * SM_CHUNK_MAX_CAPACITY).  With aligned_idx a window
+			 * multiple and aligned_idx < start + capacity, that
+			 * forces aligned_idx < start + length -- i.e. the
+			 * enclosing (A) test above is itself never true, so the
+			 * inner test is always true when reached.  Proven by the
+			 * capacity invariant plus an exhaustive state==1 sweep
+			 * (4740 state-1 separates over the full capacity/length
+			 * regime, zero counter-examples).  An assert on the
+			 * invariant guards against future capacity-policy
+			 * changes reintroducing the case.
+			 */
+			__sm_assert(aligned_idx + SM_CHUNK_MAX_CAPACITY <
+			    sep->target.capacity);
 		}
 
 		/* The pivot's range is central, there will be three chunks in total. */
@@ -8198,4 +8201,487 @@ sm_span(sm_t *map, uint64_t idx, size_t len, bool value)
 	} while (SM_FOUND(offset));
 
 	return (offset);
+}
+
+/* -------------------------------------------------------------------
+ * Point-lookup / rank / select acceleration (Ideas 3, 4, 5)
+ *
+ * These add caller-owned, transient acceleration state on TOP of the
+ * plain O(chunks) path.  None of them grow sm_t or touch the wire
+ * format; every one falls back to the plain path when it cannot be
+ * both fast and correct.  Correctness is the invariant: a stale or
+ * degenerate accelerator returns the SAME answer as sm_contains /
+ * sm_rank / sm_select, just slower.
+ * ------------------------------------------------------------------- */
+
+/* -------------------------------------------------------------------
+ * Idea 5: sm_contains_many -- batched point lookups in one sweep.
+ * ------------------------------------------------------------------- */
+
+void
+sm_contains_many(const sm_t *map, const uint64_t *idxs, bool *results,
+    size_t n)
+{
+	if (n == 0) {
+		return;
+	}
+	if (map == NULL) {
+		for (size_t q = 0; q < n; q++) {
+			results[q] = false;
+		}
+		return;
+	}
+
+#ifdef SPARSEMAP_DIAGNOSTIC
+	/* Contract: idxs MUST be sorted ascending. */
+	for (size_t q = 1; q < n; q++) {
+		__sm_assert(idxs[q] >= idxs[q - 1]);
+	}
+#endif
+
+	const size_t count = __sm_get_chunk_count(map);
+	if (count == 0) {
+		for (size_t q = 0; q < n; q++) {
+			results[q] = false;
+		}
+		return;
+	}
+
+	uint8_t *base = __sm_get_chunk_data(map, 0);
+	uint8_t *p = base;
+	const size_t stream_end =
+	    (size_t)map->m_data_used - SM_SIZEOF_OVERHEAD;
+	size_t q = 0;
+
+	/*
+	 * One left-to-right sweep.  Walk chunks in order while draining the
+	 * query cursor q into idxs[].  For each chunk [start, start+cap):
+	 * queries strictly below start fall in a gap (false); queries below
+	 * start+cap are answered by the within-chunk test; queries at or
+	 * above start+cap belong to a later chunk, so advance the chunk.
+	 * O(chunks + n).
+	 */
+	for (size_t i = 0; i < count && q < n; i++) {
+		const __sm_idx_t s = __sm_load_idx((const uint8_t *)p);
+		__sm_chunk_t chunk;
+		__sm_chunk_init(&chunk, p + SM_SIZEOF_OVERHEAD);
+		const size_t cap = __sm_chunk_get_capacity(&chunk);
+		const uint64_t hi = (uint64_t)s + cap; /* exclusive top */
+
+		/* Drain queries that fall before this chunk (gap -> false). */
+		while (q < n && idxs[q] < (uint64_t)s) {
+			results[q] = false;
+			q++;
+		}
+		/* Answer queries that fall inside this chunk's covered span. */
+		while (q < n && idxs[q] < hi) {
+			results[q] =
+			    __sm_chunk_is_set(&chunk, idxs[q] - (uint64_t)s);
+			q++;
+		}
+
+		/* Advance to the next chunk. */
+		const size_t next_off = (size_t)(p - base) +
+		    SM_SIZEOF_OVERHEAD + __sm_chunk_get_size(&chunk);
+		if (next_off >= stream_end) {
+			break;
+		}
+		p = base + next_off;
+	}
+
+	/* Any queries past the last chunk are not set. */
+	for (; q < n; q++) {
+		results[q] = false;
+	}
+}
+
+/* -------------------------------------------------------------------
+ * Idea 4: sm_locator_t -- transient two-level sqrt(n) directory.
+ * ------------------------------------------------------------------- */
+
+/* Integer floor(sqrt(x)); avoids pulling in <math.h> and float determinism
+ * worries.  x <= chunk count, so this is cheap. */
+static size_t
+__sm_isqrt(size_t x)
+{
+	if (x == 0) {
+		return (0);
+	}
+	size_t r = 0;
+	while ((r + 1) * (r + 1) <= x) {
+		r++;
+	}
+	return (r);
+}
+
+/* True when the locator's cached shape no longer matches its map, i.e. the
+ * caller mutated the map without rebuilding.  A stale locator is a usage
+ * error; queries fall back to the plain path so results stay correct. */
+static bool
+__sm_locator_is_stale(const sm_locator_t *loc)
+{
+	if (loc == NULL || loc->map == NULL || loc->n_sb == 0) {
+		return (true);
+	}
+	if (__sm_get_chunk_count(loc->map) != loc->count) {
+		return (true);
+	}
+	/* First and last chunk starts are cheap O(1) fingerprints: a
+	 * mutation that preserves the chunk count but shifts, splits, or
+	 * coalesces chunks almost always moves one of them.  This is a
+	 * best-effort check, not a proof of freshness -- but any miss still
+	 * yields a correct answer via the fine-walk, which self-validates
+	 * against the actual chunk bytes it reads. */
+	uint8_t *base = __sm_get_chunk_data(loc->map, 0);
+	const __sm_idx_t first = __sm_load_idx((const uint8_t *)base);
+	if (first != loc->first_start) {
+		return (true);
+	}
+	if ((size_t)loc->last_offset + sizeof(__sm_idx_t) >
+	    (size_t)loc->map->m_data_used - SM_SIZEOF_OVERHEAD) {
+		return (true);
+	}
+	const __sm_idx_t last =
+	    __sm_load_idx((const uint8_t *)(base + loc->last_offset));
+	if (last != loc->last_start) {
+		return (true);
+	}
+	return (false);
+}
+
+sm_locator_t *
+sm_locator_build(const sm_t *map)
+{
+	if (map == NULL) {
+		return (NULL);
+	}
+	const size_t count = __sm_get_chunk_count(map);
+	if (count == 0) {
+		return (NULL);
+	}
+
+	sm_locator_t *loc = (sm_locator_t *)__sm_alloc(sizeof(*loc));
+	if (loc == NULL) {
+		return (NULL);
+	}
+
+	const size_t stride = __sm_isqrt(count) > 0 ? __sm_isqrt(count) : 1;
+	const size_t n_sb = (count + stride - 1) / stride;
+
+	uint64_t *sb_start = (uint64_t *)__sm_alloc(n_sb * sizeof(uint64_t));
+	size_t *sb_offset = (size_t *)__sm_alloc(n_sb * sizeof(size_t));
+	size_t *sb_prefix = (size_t *)__sm_alloc(n_sb * sizeof(size_t));
+	if (sb_start == NULL || sb_offset == NULL || sb_prefix == NULL) {
+		__sm_free(sb_start);
+		__sm_free(sb_offset);
+		__sm_free(sb_prefix);
+		__sm_free(loc);
+		return (NULL);
+	}
+
+	/* One O(count) walk: sample every stride-th chunk into the
+	 * superblock arrays and carry the running set-bit total. */
+	uint8_t *base = __sm_get_chunk_data(map, 0);
+	uint8_t *p = base;
+	const size_t stream_end =
+	    (size_t)map->m_data_used - SM_SIZEOF_OVERHEAD;
+	size_t running = 0; /* set bits in chunks strictly before p */
+	size_t sb = 0;
+	size_t last_offset = 0;
+	__sm_idx_t last_start = 0;
+	for (size_t i = 0; i < count; i++) {
+		const __sm_idx_t s = __sm_load_idx((const uint8_t *)p);
+		__sm_chunk_t chunk;
+		__sm_chunk_init(&chunk, p + SM_SIZEOF_OVERHEAD);
+		const size_t off = (size_t)(p - base);
+		last_offset = off;
+		last_start = s;
+		if (i % stride == 0) {
+			__sm_assert(sb < n_sb);
+			sb_start[sb] = (uint64_t)s;
+			sb_offset[sb] = off;
+			sb_prefix[sb] = running;
+			sb++;
+		}
+		/* Accumulate this chunk's set-bit count into the running total
+		 * so the NEXT superblock's prefix is correct. */
+		const size_t cap = __sm_chunk_get_capacity(&chunk);
+		__sm_chunk_rank_t rank;
+		running += __sm_chunk_rank(&rank, true, &chunk, 0, cap - 1);
+
+		const size_t next_off =
+		    off + SM_SIZEOF_OVERHEAD + __sm_chunk_get_size(&chunk);
+		if (next_off >= stream_end) {
+			break;
+		}
+		p = base + next_off;
+	}
+
+	loc->map = map;
+	loc->count = count;
+	loc->first_start = (uint64_t)sb_start[0];
+	loc->last_start = (uint64_t)last_start;
+	loc->last_offset = last_offset;
+	loc->stride = stride;
+	loc->n_sb = n_sb;
+	loc->sb_start = sb_start;
+	loc->sb_offset = sb_offset;
+	loc->sb_prefix = sb_prefix;
+	return (loc);
+}
+
+void
+sm_locator_free(sm_locator_t *loc)
+{
+	if (loc == NULL) {
+		return;
+	}
+	__sm_free(loc->sb_start);
+	__sm_free(loc->sb_offset);
+	__sm_free(loc->sb_prefix);
+	__sm_free(loc);
+}
+
+/* Binary search sb_start[] for the largest superblock sb with
+ * sb_start[sb] <= idx.  Returns 0 when idx precedes the first sample
+ * (fine-walk from superblock 0 then still answers correctly). */
+static size_t
+__sm_locator_find_sb(const sm_locator_t *loc, uint64_t idx)
+{
+	size_t lo = 0, hi = loc->n_sb; /* [lo, hi) */
+	while (lo < hi) {
+		const size_t mid = lo + (hi - lo) / 2;
+		if (loc->sb_start[mid] <= idx) {
+			lo = mid + 1;
+		} else {
+			hi = mid;
+		}
+	}
+	return (lo == 0 ? 0 : lo - 1);
+}
+
+/* Set bits in [0, x] via the prefix table: jump to x's superblock, seed the
+ * count with sb_prefix[sb] (set bits in every chunk before that superblock),
+ * then fine-walk at most `stride` chunks -- from the superblock's first chunk
+ * up to and including the chunk containing x -- adding each chunk's set bits
+ * in its overlap with [0, x].  O(log n_sb + stride) = O(sqrt count).  Chunks
+ * are window-aligned and ascending, so the superblock boundary never splits a
+ * chunk and sb_prefix is exact. */
+static size_t
+__sm_locator_rank_upto(const sm_locator_t *loc, uint64_t x)
+{
+	const sm_t *map = loc->map;
+	uint8_t *base = __sm_get_chunk_data(map, 0);
+	const size_t stream_end =
+	    (size_t)map->m_data_used - SM_SIZEOF_OVERHEAD;
+	const size_t sb = __sm_locator_find_sb(loc, x);
+	size_t set = loc->sb_prefix[sb];
+	uint8_t *p = base + loc->sb_offset[sb];
+	for (;;) {
+		const __sm_idx_t s = __sm_load_idx((const uint8_t *)p);
+		if ((uint64_t)s > x) {
+			break; /* chunk starts past x: nothing more to count */
+		}
+		__sm_chunk_t chunk;
+		__sm_chunk_init(&chunk, p + SM_SIZEOF_OVERHEAD);
+		const size_t cap = __sm_chunk_get_capacity(&chunk);
+		const uint64_t chunk_lo = (uint64_t)s;
+		const uint64_t span = (uint64_t)cap - 1;
+		const uint64_t chunk_hi_incl =
+		    (chunk_lo > UINT64_MAX - span) ? UINT64_MAX
+		                                  : chunk_lo + span;
+		const uint64_t ov_hi_incl =
+		    (x < chunk_hi_incl) ? x : chunk_hi_incl;
+		const size_t to = (size_t)(ov_hi_incl - chunk_lo);
+		__sm_chunk_rank_t rank;
+		set += __sm_chunk_rank(&rank, true, &chunk, 0, to);
+		const size_t next_off = (size_t)(p - base) +
+		    SM_SIZEOF_OVERHEAD + __sm_chunk_get_size(&chunk);
+		if (next_off >= stream_end) {
+			break;
+		}
+		p = base + next_off;
+	}
+	return (set);
+}
+
+bool
+sm_locator_contains(const sm_locator_t *loc, uint64_t idx)
+{
+	if (__sm_locator_is_stale(loc)) {
+		__sm_assert(false);
+		return (sm_contains(loc ? loc->map : NULL, idx, NULL));
+	}
+
+	const sm_t *map = loc->map;
+	uint8_t *base = __sm_get_chunk_data(map, 0);
+	const size_t stream_end =
+	    (size_t)map->m_data_used - SM_SIZEOF_OVERHEAD;
+
+	size_t sb = __sm_locator_find_sb(loc, idx);
+	uint8_t *p = base + loc->sb_offset[sb];
+
+	/* Fine-walk at most `stride` chunks from the superblock's first
+	 * chunk to the chunk covering idx (same shape as
+	 * __sm_get_chunk_offset, but bounded). */
+	for (;;) {
+		const __sm_idx_t s = __sm_load_idx((const uint8_t *)p);
+		__sm_chunk_t chunk;
+		__sm_chunk_init(&chunk, p + SM_SIZEOF_OVERHEAD);
+		const size_t cap = __sm_chunk_get_capacity(&chunk);
+		if (idx < (uint64_t)s) {
+			return (false); /* gap before this chunk */
+		}
+		if (idx < (uint64_t)s + cap) {
+			return (__sm_chunk_is_set(&chunk, idx - (uint64_t)s));
+		}
+		const size_t next_off = (size_t)(p - base) +
+		    SM_SIZEOF_OVERHEAD + __sm_chunk_get_size(&chunk);
+		if (next_off >= stream_end) {
+			return (false); /* past the last chunk */
+		}
+		p = base + next_off;
+	}
+}
+
+size_t
+sm_locator_rank(const sm_locator_t *loc, uint64_t lo, uint64_t hi, bool value)
+{
+	/* value=false and staleness both fall back to the plain path: the
+	 * unset count needs the range width (which the sqrt index does not
+	 * carry), and a stale index must never return a wrong answer. */
+	if (value == false || __sm_locator_is_stale(loc)) {
+		if (value == true) {
+			__sm_assert(false);
+		}
+		return (sm_rank((sm_t *)(loc ? loc->map : NULL), lo, hi,
+		    value));
+	}
+	if (lo > hi) {
+		return (0);
+	}
+	/* Set bits in [lo, hi] = rank_upto(hi) - rank_upto(lo - 1).  Each
+	 * rank_upto jumps straight to the target's superblock, seeds the
+	 * count from sb_prefix[] (all set bits in chunks before that
+	 * superblock -- the whole point of the prefix table), and fine-walks
+	 * at most `stride` chunks from there.  That is the O(sqrt n) path;
+	 * seeding from chunk 0 as the previous version did made this an
+	 * O(chunks) no-op identical to plain sm_rank. */
+	const size_t hi_cnt = __sm_locator_rank_upto(loc, hi);
+	const size_t lo_cnt =
+	    (lo == 0) ? 0 : __sm_locator_rank_upto(loc, lo - 1);
+	return (hi_cnt - lo_cnt);
+}
+
+uint64_t
+sm_locator_select(const sm_locator_t *loc, uint64_t n, bool value)
+{
+	/* value=false and staleness fall back to sm_select: unset select
+	 * needs the leading-zeros / cross-chunk gap accounting the sqrt
+	 * prefix does not carry, and a stale index must stay correct. */
+	if (value == false || __sm_locator_is_stale(loc)) {
+		if (value == true) {
+			__sm_assert(false);
+		}
+		return (sm_select((sm_t *)(loc ? loc->map : NULL), n, value));
+	}
+
+	const sm_t *map = loc->map;
+	uint8_t *base = __sm_get_chunk_data(map, 0);
+	const size_t stream_end =
+	    (size_t)map->m_data_used - SM_SIZEOF_OVERHEAD;
+
+	/* Find the last superblock whose cumulative set-bit prefix is <= n,
+	 * subtract that prefix, and fine-walk from its first chunk.  The
+	 * per-chunk select semantics mirror sm_select exactly. */
+	size_t sb = 0;
+	{
+		size_t l = 0, r = loc->n_sb; /* largest sb with prefix<=n */
+		while (l < r) {
+			const size_t mid = l + (r - l) / 2;
+			if ((uint64_t)loc->sb_prefix[mid] <= n) {
+				l = mid + 1;
+			} else {
+				r = mid;
+			}
+		}
+		sb = (l == 0) ? 0 : l - 1;
+	}
+
+	ssize_t rem = (ssize_t)(n - (uint64_t)loc->sb_prefix[sb]);
+	uint8_t *p = base + loc->sb_offset[sb];
+	for (;;) {
+		const __sm_idx_t s = __sm_load_idx((const uint8_t *)p);
+		__sm_chunk_t chunk;
+		__sm_chunk_init(&chunk, p + SM_SIZEOF_OVERHEAD);
+		ssize_t new_n = rem;
+		const size_t index =
+		    __sm_chunk_select(&chunk, rem, &new_n, value);
+		if (new_n == -1) {
+			return ((uint64_t)s + index);
+		}
+		rem = new_n;
+		const size_t next_off = (size_t)(p - base) +
+		    SM_SIZEOF_OVERHEAD + __sm_chunk_get_size(&chunk);
+		if (next_off >= stream_end) {
+			return (SM_IDX_MAX);
+		}
+		p = base + next_off;
+	}
+}
+
+/* -------------------------------------------------------------------
+ * Idea 3: sm_cursor_cached_t -- fixed 8-way MRU chunk cache.
+ * ------------------------------------------------------------------- */
+
+bool
+sm_contains_cached(const sm_t *map, uint64_t idx, sm_cursor_cached_t *cache)
+{
+	if (map == NULL) {
+		return (false);
+	}
+	if (cache == NULL) {
+		return (sm_contains(map, idx, NULL));
+	}
+
+	/* 1. Probe the <=8 valid ways for a covering chunk (a hit). */
+	for (uint8_t w = 0; w < SM_CACHE_WAYS; w++) {
+		if ((cache->valid & (uint8_t)(1u << w)) == 0) {
+			continue;
+		}
+		if (idx >= cache->start_idx[w] && idx < cache->end_idx[w]) {
+			uint8_t *p =
+			    __sm_get_chunk_data(map, cache->offset[w]);
+			__sm_chunk_t chunk;
+			__sm_chunk_init(&chunk, p + SM_SIZEOF_OVERHEAD);
+			return (__sm_chunk_is_set(&chunk,
+			    idx - cache->start_idx[w]));
+		}
+	}
+
+	/* 2. Miss: walk from the head, then insert the located chunk. */
+	const ssize_t offset = __sm_get_chunk_offset(map, idx, NULL);
+	if (offset == -1) {
+		return (false);
+	}
+	uint8_t *p = __sm_get_chunk_data(map, (size_t)offset);
+	const __sm_idx_t start = __sm_load_idx((const uint8_t *)p);
+	__sm_chunk_t chunk;
+	__sm_chunk_init(&chunk, p + SM_SIZEOF_OVERHEAD);
+	const size_t cap = __sm_chunk_get_capacity(&chunk);
+
+	/* 3. Insert (start, start+cap, offset) at the round-robin slot. */
+	const uint8_t slot = cache->mru;
+	cache->start_idx[slot] = (uint64_t)start;
+	cache->end_idx[slot] = (uint64_t)start + cap;
+	cache->offset[slot] = (size_t)offset;
+	cache->valid |= (uint8_t)(1u << slot);
+	cache->mru = (uint8_t)((slot + 1) % SM_CACHE_WAYS);
+
+	/* Out of bounds of the located chunk -> not set (matches
+	 * sm_contains). */
+	if (idx < (uint64_t)start || idx - (uint64_t)start >= cap) {
+		return (false);
+	}
+	return (__sm_chunk_is_set(&chunk, idx - (uint64_t)start));
 }

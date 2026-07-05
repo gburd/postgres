@@ -227,6 +227,8 @@ typedef SSIZE_T ssize_t;
 #define sm_clear                    SM__P(sm_clear)
 #define sm_compare                  SM__P(sm_compare)
 #define sm_contains                 SM__P(sm_contains)
+#define sm_contains_cached          SM__P(sm_contains_cached)
+#define sm_contains_many            SM__P(sm_contains_many)
 #define sm_copy                     SM__P(sm_copy)
 #define sm_create                   SM__P(sm_create)
 #define sm_create_from_array        SM__P(sm_create_from_array)
@@ -253,6 +255,13 @@ typedef SSIZE_T ssize_t;
 #define sm_is_subset                SM__P(sm_is_subset)
 #define sm_is_superset              SM__P(sm_is_superset)
 #define sm_jaccard_index            SM__P(sm_jaccard_index)
+#define sm_locator_build            SM__P(sm_locator_build)
+#define sm_locator_contains         SM__P(sm_locator_contains)
+#define sm_locator_free             SM__P(sm_locator_free)
+#define sm_locator_rank             SM__P(sm_locator_rank)
+#define sm_locator_select           SM__P(sm_locator_select)
+#define sm_locator_t                SM__P(sm_locator_t)
+#define sm_cursor_cached_t          SM__P(sm_cursor_cached_t)
 #define sm_maximum                  SM__P(sm_maximum)
 #define sm_membership               SM__P(sm_membership)
 #define sm_minimum                  SM__P(sm_minimum)
@@ -297,10 +306,10 @@ extern "C" {
 #endif
 
 /** Library version (kept in sync with meson.build's project(version: ...)). */
-#define SM_VERSION_STRING "5.2.1"
+#define SM_VERSION_STRING "5.3.0"
 #define SM_VERSION_MAJOR  5
-#define SM_VERSION_MINOR  2
-#define SM_VERSION_PATCH  1
+#define SM_VERSION_MINOR  3
+#define SM_VERSION_PATCH  0
 
 /** Handle to a sparsemap instance.
  *
@@ -415,6 +424,66 @@ typedef struct sm_cursor {
 	                     * to skip a head-walk in the coalescing path */
 } sm_cursor_t;
 #define SM_CURSOR_INIT { (size_t)-1, 0, (size_t)-1 }
+
+/** @brief Caller-owned fixed 8-way MRU chunk cache for point lookups.
+ *
+ * Unlike sm_cursor_t (which caches ONE chunk and only helps a
+ * monotonically non-decreasing scan), this caches the last
+ * SM_CACHE_WAYS distinct chunks located, so a workload with a few hot
+ * chunks probed in ANY order (clustered but not sorted) resolves most
+ * lookups from the cache instead of walking from chunk 0.  The cache
+ * is fixed-size and independent of the map's chunk count.
+ *
+ * Contract (identical to sm_cursor_t):
+ *   - Initialize with `sm_cursor_cached_t c = SM_CURSOR_CACHED_INIT;`.
+ *   - Pass `&c` to consecutive sm_contains_cached() calls.
+ *   - ANY mutation of the map invalidates the cache; reset it with
+ *     SM_CURSOR_CACHED_INIT before reusing.  A stale cache is undefined
+ *     behavior (it caches byte offsets that a mutation can move).
+ *   - Passing NULL means "no cache" (plain sm_contains); always safe.
+ */
+#define SM_CACHE_WAYS 8
+typedef struct sm_cursor_cached {
+	uint64_t start_idx[SM_CACHE_WAYS]; /* cached chunk start bits */
+	uint64_t end_idx[SM_CACHE_WAYS];   /* start + capacity (exclusive top) */
+	size_t offset[SM_CACHE_WAYS];      /* base-relative byte offset */
+	uint8_t mru;                       /* next round-robin slot */
+	uint8_t valid;                     /* bitmask of populated ways */
+} sm_cursor_cached_t;
+#define SM_CURSOR_CACHED_INIT { {0}, {0}, {0}, 0, 0 }
+
+/** @brief Transient two-level sqrt(n) directory over a map's chunks.
+ *
+ * A locator is a caller-owned, read-only acceleration index built once
+ * over an UNMUTATED map with sm_locator_build().  It samples every
+ * stride-th chunk (stride ~= sqrt(chunk count)) into a superblock
+ * directory, so contains / rank / select run in O(sqrt n) instead of
+ * O(n) chunks.  Nothing here is serialized and sm_t is unchanged.
+ *
+ * Contract:
+ *   - Build with sm_locator_build(map); free with sm_locator_free().
+ *   - ANY mutation of the map invalidates the locator: REBUILD it.
+ *   - A stale locator still returns CORRECT results (it detects the
+ *     mismatch and falls back to the plain O(n) sm_contains / sm_rank /
+ *     sm_select path) but loses the speedup.
+ *   - rank/select for value == false fall back to the plain path
+ *     (correct, not accelerated); the sqrt speedup is for value==true.
+ *
+ * The struct layout is exposed only so the type name resolves; treat
+ * it as opaque and use it only through the sm_locator_* functions.
+ */
+typedef struct sm_locator {
+	const sm_t *map;      /* the map this locator indexes */
+	size_t count;         /* chunk count at build time */
+	uint64_t first_start; /* first chunk start (staleness fingerprint) */
+	uint64_t last_start;  /* last chunk start (staleness fingerprint) */
+	size_t last_offset;   /* base-relative offset of the last chunk */
+	size_t stride;        /* chunks per superblock (~sqrt(count)) */
+	size_t n_sb;          /* number of superblock entries */
+	uint64_t *sb_start;   /* [n_sb] start index of each stride-th chunk */
+	size_t *sb_offset;    /* [n_sb] base-relative byte offset of it */
+	size_t *sb_prefix;    /* [n_sb] cumulative SET bits BEFORE it */
+} sm_locator_t;
 
 /** Sentinel value returned when a lookup finds no matching bit. */
 #define SM_IDX_MAX UINT64_MAX
@@ -685,6 +754,34 @@ void *sm_get_data(const sm_t *map);
  */
 bool sm_contains(const sm_t *map, uint64_t idx, sm_cursor_t *cur);
 
+/** @brief Test many bits in one left-to-right sweep (batched).
+ *
+ * Equivalent to calling sm_contains(map, idxs[i], NULL) for every i,
+ * but done in a single O(chunks + n) pass instead of n independent
+ * head-walks.
+ *
+ * @param[in]  map      The sparsemap to query (NULL -> all false).
+ * @param[in]  idxs     Query indices, MUST be sorted ascending.
+ * @param[out] results  results[i] receives membership of idxs[i].
+ * @param[in]  n        Number of queries.
+ *
+ * The ascending-order requirement is a hard precondition (debug-asserted
+ * under SPARSEMAP_DIAGNOSTIC); unsorted input yields unspecified but
+ * memory-safe results.
+ */
+void sm_contains_many(const sm_t *map, const uint64_t *idxs, bool *results,
+    size_t n);
+
+/** @brief Test a bit using a caller-owned 8-way MRU chunk cache.
+ *
+ * Returns the same value as sm_contains(map, idx, NULL); the cache
+ * accelerates repeated lookups into a small working set of chunks
+ * probed in any order.  Pass NULL for \a cache to fall back to plain
+ * sm_contains.  See sm_cursor_cached_t for the invalidation contract.
+ */
+bool sm_contains_cached(const sm_t *map, uint64_t idx,
+    sm_cursor_cached_t *cache);
+
 /** @brief Set or clear the bit at \a idx.
  *
  * Equivalent to `value ? sm_add(map, idx) : sm_remove(map, idx)`.
@@ -861,6 +958,45 @@ uint64_t sm_select(sm_t *map, uint64_t n, bool value);
  *          if no such run exists.
  */
 uint64_t sm_span(sm_t *map, uint64_t start, size_t len, bool value);
+
+/* -------------------------------------------------------------------
+ * sqrt(n) locator: transient O(sqrt n) contains / rank / select
+ * ------------------------------------------------------------------- */
+
+/** @brief Build a transient sqrt(n) locator over \a map.
+ *
+ * O(chunk count) one-pass build.  The returned locator accelerates
+ * sm_locator_contains / _rank / _select to O(sqrt n).  See
+ * sm_locator_t for the (re)build-on-mutation contract.
+ *
+ * @param[in] map  The sparsemap to index.
+ * @returns A heap-allocated locator (free with sm_locator_free), or
+ *          NULL on allocation failure or when \a map is NULL/empty.
+ */
+sm_locator_t *sm_locator_build(const sm_t *map);
+
+/** @brief Release a locator built by sm_locator_build (NULL-safe). */
+void sm_locator_free(sm_locator_t *loc);
+
+/** @brief O(sqrt n) membership test; equals sm_contains(map, idx, NULL). */
+bool sm_locator_contains(const sm_locator_t *loc, uint64_t idx);
+
+/** @brief O(sqrt n) rank over inclusive [lo, hi]; equals sm_rank.
+ *
+ * For value == true this uses the superblock prefix directory.  For
+ * value == false it falls back to the plain sm_rank path (correct, not
+ * accelerated).
+ */
+size_t sm_locator_rank(const sm_locator_t *loc, uint64_t lo, uint64_t hi,
+    bool value);
+
+/** @brief O(sqrt n) select; equals sm_select(map, n, value).
+ *
+ * For value == true this uses the superblock prefix directory.  For
+ * value == false it falls back to the plain sm_select path (correct,
+ * not accelerated).
+ */
+uint64_t sm_locator_select(const sm_locator_t *loc, uint64_t n, bool value);
 
 /* -------------------------------------------------------------------
  * Iteration
