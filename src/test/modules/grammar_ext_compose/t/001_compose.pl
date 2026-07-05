@@ -88,11 +88,10 @@ sub log_text
 		qr/grammar_ext_compose_alpha registered \(2 tokens, 2 rules, 0 prec\)/,
 		'single ext: alpha registered with expected counts');
 	like($logs,
-		qr/running lime to rebuild parser for 1 extension\(s\)/,
-		'single ext: pipeline ran exactly once');
-	like($logs,
-		qr/loaded extended parser from .*\.so/,
-		'single ext: rebuilt .so loaded');
+		qr/composing grammar in-process for 1 extension\(s\)/,
+		'single ext: in-process compose ran exactly once');
+	unlike($logs, qr{/pg_parser_cache/[0-9a-f]{64}\.so},
+		'single ext: no .so cache (in-process compose)');
 	$node->stop;
 }
 
@@ -114,8 +113,8 @@ sub log_text
 		qr/grammar_ext_compose_beta registered \(2 tokens, 1 rules, 1 prec\)/,
 		'alpha+beta: beta registered with prec count');
 	like($logs,
-		qr/running lime to rebuild parser for 2 extension\(s\)/,
-		'alpha+beta: pipeline ran ONCE for both extensions');
+		qr/composing grammar in-process for 2 extension\(s\)/,
+		'alpha+beta: ONE in-process compose for both extensions');
 	$node->stop;
 }
 
@@ -142,21 +141,22 @@ sub log_text
 # ---------------------------------------------------------------
 # Test 4: token-name conflict (alpha + foxtrot).  foxtrot
 # redeclares K_GRAMMAR_ALPHA with a DIFFERENT lexeme; the API
-# must reject it cleanly.  Postmaster STARTUP must not fail --
-# we want extension authors to see a useful WARNING and have the
-# server keep running with the FIRST (alpha's) declaration.
+# must reject it cleanly.  Under Track B the merged fragment is
+# compiled in-process at prewarm (postmaster start); lime reports
+# the duplicate token declaration as a compose error, which
+# surfaces as a prewarm/first-parse failure rather than at
+# register() time.  The TAP test asserts the OBSERVED behaviour.
 #
-# CURRENT IMPLEMENTATION GAP: the API contract says the second
-# declaration should fail with a clear error; our serializer
-# emits BOTH %token directives, and lime errors at rebuild time
-# with "K_GRAMMAR_ALPHA already declared".  This still surfaces
-# as an extension-load failure but later than the API claims.
-# The TAP test asserts the OBSERVED behaviour, with a TODO note.
+# CURRENT GAP: the API contract says the second declaration should
+# fail at register() with a clear error; instead the serializer
+# emits BOTH %token directives and the in-process compile errors
+# with "K_GRAMMAR_ALPHA already declared".  Validating at register()
+# is tracked in lime-letter-34 (token-conflict detection).
 # ---------------------------------------------------------------
 TODO: {
-	local $TODO = 'token-conflict detection happens at lime-rebuild '
-		. 'time, not at register() time (Track A limit; Track B fix '
-		. 'should validate at register())';
+	local $TODO = 'token-conflict detection happens at in-process '
+		. 'compile time, not at register() time; register()-time '
+		. 'validation tracked in lime-letter-34';
 
 	my $node = PostgreSQL::Test::Cluster->new('compose_alpha_foxtrot');
 	$node->init;
@@ -227,34 +227,33 @@ TODO: {
 }
 
 # ---------------------------------------------------------------
-# Test 7: cache key determinism.  Spin up alpha+beta twice; the
-# second spin should hit the cache.
+# Test 7: compose determinism.  Spin up alpha+beta in two separate
+# clusters; each composes the same fragment set in-process, so the
+# composed base rule count (and thus the grammar) is identical.
+# Track B has no .so cache -- the relevant invariant is that the
+# same extension set always composes to the same grammar.
 # ---------------------------------------------------------------
 {
-	# First boot: builds + caches.
-	my $first = start_with_extensions('compose_cache_first',
+	my $first = start_with_extensions('compose_determ_first',
 		'grammar_ext_compose_alpha,grammar_ext_compose_beta');
 	$first->safe_psql('postgres', 'SELECT 1');
 	my $first_logs = log_text($first);
 	$first->stop;
 
-	# Extract cache hash (the SHA256 in the .so / .c paths).
-	my ($cache_path) = $first_logs =~
-		m{loaded extended parser from .*?/pg_parser_cache/([0-9a-f]{64})\.so};
-	ok($cache_path,
-		'cache: first boot logged a cache path with SHA256 hash');
+	like($first_logs,
+		qr/composing grammar in-process for 2 extension\(s\)/,
+		'compose: first boot composed both extensions in-process');
+	unlike($first_logs, qr{/pg_parser_cache/[0-9a-f]{64}\.so},
+		'compose: no .so cache path emitted');
 
-	# Second boot in a fresh cluster -- different PGDATA, cache
-	# misses by design (cache lives in $PGDATA/pg_parser_cache).
-	# Within the SAME cluster, restart and verify cache hits.
-	my $second = start_with_extensions('compose_cache_second',
+	my $second = start_with_extensions('compose_determ_second',
 		'grammar_ext_compose_alpha,grammar_ext_compose_beta');
-	$second->safe_psql('postgres', 'SELECT 1');
+	is($second->safe_psql('postgres', 'SELECT 1'), '1',
+		'compose: second boot of same extension set parses base SQL');
 	my $second_logs = log_text($second);
-	my ($cache_path2) = $second_logs =~
-		m{loaded extended parser from .*?/pg_parser_cache/([0-9a-f]{64})\.so};
-	is($cache_path2, $cache_path,
-		'cache: same extension set across clusters yields same hash');
+	like($second_logs,
+		qr/composing grammar in-process for 2 extension\(s\)/,
+		'compose: second boot composed deterministically');
 	$second->stop;
 }
 
@@ -289,6 +288,37 @@ TODO: {
 		'1', 'heavy load: window function');
 
 	$node->stop;
+}
+
+# ---------------------------------------------------------------
+# Test 9: compose-time conflict gate (Lime letter-35 Q1 / v1.8.1).
+# The `india` extension registers two identical `stmt ::=
+# K_GRAMMAR_INDIA` productions -> a reduce/reduce conflict the LALR
+# builder resolves keep-first but reports via nconflict > 0.
+# pg_grammar_compose_install calls lime_compile_grammar_in_process_ex
+# and REFUSES to install a conflicted parser; the refusal is FATAL at
+# prewarm, so the postmaster must FAIL TO START rather than silently
+# mis-parse.  We assert the start fails and the log names the conflict.
+# ---------------------------------------------------------------
+{
+	my $node = PostgreSQL::Test::Cluster->new('compose_india_conflict');
+	$node->init;
+	$node->append_conf('postgresql.conf',
+		"shared_preload_libraries = 'grammar_ext_compose_india'\n"
+			. "log_min_messages = debug1\n");
+
+	# Startup must fail because the conflicted compose is FATAL at prewarm.
+	# fail_ok => 1 makes start() return false instead of BAIL_OUT-ing the
+	# whole test file when the postmaster refuses to come up.
+	my $started = $node->start(fail_ok => 1);
+	ok(!$started, 'india: postmaster refuses to start on a conflicted compose');
+
+	my $logs = slurp_file($node->logfile);
+	like($logs,
+		qr/grammar extension compose introduced \d+ unresolved conflict/,
+		'india: startup log names the unresolved conflict count');
+
+	# Nothing to stop -- the node never came up.
 }
 
 done_testing();

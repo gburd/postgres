@@ -506,6 +506,7 @@ ComposePrec
 ComposeRule
 ComposeSpec
 ComposeToken
+ComposeType
 CompositeIOData
 CompositeTypeStmt
 CompoundAffixFlag

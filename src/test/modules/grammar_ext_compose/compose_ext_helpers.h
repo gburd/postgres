@@ -43,6 +43,12 @@ typedef struct ComposeRule
 	const char *label;			/* logged when reduce fires */
 } ComposeRule;
 
+typedef struct ComposeType
+{
+	const char *name;			/* non-terminal name */
+	const char *datatype;		/* C type string, e.g. "Node *" */
+}			ComposeType;
+
 typedef struct ComposePrec
 {
 	const char *symbol;
@@ -56,6 +62,8 @@ typedef struct ComposeSpec
 	const char *version;
 	const ComposeToken *tokens;
 	int			ntokens;
+	const		ComposeType *types;
+	int			ntypes;
 	const ComposeRule *rules;
 	int			nrules;
 	const ComposePrec *precs;
@@ -113,6 +121,12 @@ register_compose_extension(const ComposeSpec *spec)
 		const ComposeToken *t = &spec->tokens[i];
 
 		pg_grammar_ext_add_token(ext, t->name, t->lexeme, t->category);
+	}
+	for (int i = 0; i < spec->ntypes; i++)
+	{
+		const		ComposeType *t = &spec->types[i];
+
+		pg_grammar_ext_add_type(ext, t->name, t->datatype);
 	}
 	for (int i = 0; i < spec->nprecs; i++)
 	{
