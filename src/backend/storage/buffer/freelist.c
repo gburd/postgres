@@ -116,15 +116,15 @@ bool		ActivePoolHasAccessHooks = false;
 static bool ActivePoolIsClock = false;
 
 /*
- * True when the active DEFAULT pool is the striped cooling sweep
- * (numa_cooling_pool_routine).  Enables LeanStore-style probationary admission:
- * a page loaded as part of a BufferAccessStrategy scan is admitted at
- * usage_count 0 (COOL/probationary) instead of 1, so a one-touch scan page is
- * immediately evictable by the striped sweep and never displaces the hot
- * working set.  A genuine re-access promotes it (PinBuffer bumps usage_count).
- * Scoped to strategy loads only, so single-page OLTP loads (no strategy) keep
- * the usual usage_count 1 and are not evicted before reuse.  Read by
- * BufferAlloc; false for every other pool, so it is a no-op when cooling off.
+ * True when the active DEFAULT pool's algorithm declares itself scan-resistant
+ * (BufferPoolRoutine.scan_resistant).  Enables LeanStore-style probationary
+ * admission: every demand-loaded page is admitted at usage_count 0
+ * (COOL/probationary) instead of 1, and earns "hot" status only on a second
+ * access (PinBuffer bumps usage_count).  A sequential scan touches each page
+ * once, so its pages stay cool and are evicted first -- the algorithm itself
+ * provides scan resistance, independent of the BufferAccessStrategy ring.
+ * Read by BufferAlloc; false for plain clock and other non-scan-resistant
+ * pools, so it is a no-op there.
  */
 bool		ActivePoolProbationaryScan = false;
 
@@ -928,6 +928,7 @@ const BufferPoolRoutine numa_cooling_pool_routine = {
 	.shmem_size = ClockPoolShmemSize,
 	.shmem_init = ClockPoolShmemInit,
 	.shutdown = NULL,
+	.scan_resistant = true,		/* probationary cool admission handles scans */
 };
 
 
@@ -1720,9 +1721,13 @@ StrategyCtlShmemInit(void *arg)
 		ActivePoolIsClock = (ActivePoolRoutine == &clock_pool_routine &&
 							 ActivePoolData == (void *) StrategyControl);
 
-		/* Probationary scan admission is only meaningful under the striped
-		 * cooling sweep (see ActivePoolProbationaryScan). */
-		ActivePoolProbationaryScan = (ActivePoolRoutine == &numa_cooling_pool_routine);
+		/*
+		 * A scan-resistant algorithm owns scan resistance through its own
+		 * admission policy, so enable probationary (cool) admission for it.
+		 * See ActivePoolProbationaryScan / InitialUsageCountBits.
+		 */
+		ActivePoolProbationaryScan =
+			(ActivePoolRoutine != NULL && ActivePoolRoutine->scan_resistant);
 	}
 }
 
