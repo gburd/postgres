@@ -54,12 +54,6 @@
  */
 #define XTC_PG_FIBER_STACK	((size_t) 8 * 1024 * 1024)
 
-typedef struct xtc_carrier_arg
-{
-	xtc_carrier_entry_fn entry;
-	void	   *entry_arg;
-}			xtc_carrier_arg;
-
 static xtc_app_t *g_xtc_app;
 static xtc_loop_t *g_xtc_loop;	/* loop 0 (single-loop mode, or the sup loop) */
 static xtc_exec_t *g_xtc_exec;	/* the N-loop executor when n_loops > 1, else NULL */
@@ -177,6 +171,19 @@ typedef struct xtc_sup_spawn_msg
 	xtc_carrier_entry_fn entry;
 	void	   *entry_arg;
 } xtc_sup_spawn_msg;
+
+/*
+ * The backend fiber entry function.  It is invariant across the process
+ * (always the tree's backend_thread_entry), so we store it once rather than
+ * heap-allocating a per-spawn {entry, arg} wrapper: the fiber is spawned with
+ * entry_arg (a stable, launch_backend.c-owned BackendThreadStart *) as its
+ * xtc arg and reads this pointer for the function.  This keeps the carrier
+ * layer allocation-free -- important because it runs on a bare xtc fiber
+ * before any PostgreSQL memory context exists, where palloc is unusable and
+ * libxtc exposes no public general-purpose malloc (only xtc_free for buffers
+ * it hands back).
+ */
+static xtc_carrier_entry_fn g_xtc_backend_entry;
 
 /*
  * Number of carrier loops (each on its own OS thread).  A pool of loops lets
@@ -338,46 +345,42 @@ xtc_carrier_supervisor_proc(void *arg)
 				 ((const xtc_sup_spawn_msg *) msg)->magic == XTC_SUP_SPAWN_MAGIC)
 		{
 			xtc_sup_spawn_msg sp;
-			xtc_carrier_arg *ca;
 			xtc_proc_opts_t po = {0};
 			xtc_pid_t	bpid = XTC_PID_NONE;
 
 			memcpy(&sp, msg, sizeof(sp));
 
-			ca = malloc(sizeof(*ca));
-			if (ca != NULL)
+			/* entry is invariant; store it once (no per-spawn wrapper). */
+			g_xtc_backend_entry = sp.entry;
+			po.name = "pg-backend";
+
+			/*
+			 * Spawn on THIS supervisor's loop with the stable entry_arg
+			 * (a launch_backend.c-owned BackendThreadStart *) as the fiber
+			 * arg, then monitor with no yield in between: the new fiber
+			 * cannot be scheduled until the supervisor next yields (at
+			 * xtc_recv), by which point the monitor is registered.
+			 * Race-free observation, and no heap allocation on this bare
+			 * pre-PG-init fiber.
+			 */
+			if (xtc_proc_spawn(my_loop, xtc_carrier_proc, sp.entry_arg,
+							   &po, &bpid) == XTC_OK)
 			{
-				ca->entry = sp.entry;
-				ca->entry_arg = sp.entry_arg;
-				po.name = "pg-backend";
+				uint64_t	ref = 0;
+				char		sbuf[96];
+				int			sn;
 
-				/*
-				 * Spawn on THIS supervisor's loop, then monitor with no yield
-				 * in between: the new fiber cannot be scheduled until the
-				 * supervisor next yields (at xtc_recv), by which point the
-				 * monitor is registered.  Race-free observation.
-				 */
-				if (xtc_proc_spawn(my_loop, xtc_carrier_proc, ca,
-								   &po, &bpid) == XTC_OK)
+				(void) xtc_monitor(bpid, &ref);
+				/* raw write: elog is unsafe from this bare fiber */
+				sn = snprintf(sbuf, sizeof(sbuf),
+							  "xtc: spawned backend fiber pid=(loop=%u,local=%u,gen=%u)\n",
+							  bpid.loop_id, bpid.local_id, bpid.gen);
+				if (sn > 0)
 				{
-					uint64_t	ref = 0;
-					char		sbuf[96];
-					int			sn;
-
-					(void) xtc_monitor(bpid, &ref);
-					/* raw write: elog is unsafe from this bare fiber */
-					sn = snprintf(sbuf, sizeof(sbuf),
-								  "xtc: spawned backend fiber pid=(loop=%u,local=%u,gen=%u)\n",
-								  bpid.loop_id, bpid.local_id, bpid.gen);
-					if (sn > 0)
-					{
-						if (sn > (int) sizeof(sbuf))
-							sn = (int) sizeof(sbuf);
-						(void) write(STDERR_FILENO, sbuf, (size_t) sn);
-					}
+					if (sn > (int) sizeof(sbuf))
+						sn = (int) sizeof(sbuf);
+					(void) write(STDERR_FILENO, sbuf, (size_t) sn);
 				}
-				else
-					free(ca);
 			}
 		}
 
@@ -420,11 +423,14 @@ xtc_carrier_start_supervisors(void)
 static void
 xtc_carrier_proc(void *arg)
 {
-	xtc_carrier_arg *ca = arg;
-	xtc_carrier_entry_fn entry = ca->entry;
-	void	   *entry_arg = ca->entry_arg;
-
-	free(ca);
+	/*
+	 * arg is the stable BackendThreadStart * (launch_backend.c owns its
+	 * lifetime); the entry function is invariant and stored in
+	 * g_xtc_backend_entry.  No wrapper struct, no heap free -- this fiber
+	 * runs before any PostgreSQL memory context exists.
+	 */
+	xtc_carrier_entry_fn entry = g_xtc_backend_entry;
+	void	   *entry_arg = arg;
 
 	/*
 	 * Do NOT elog() here: the fiber has no PG error stack / ErrorContext yet
@@ -606,22 +612,15 @@ xtc_pg_launch_backend_fiber(xtc_carrier_entry_fn entry, void *entry_arg)
 	 * launches.  Observability is lost for this one fiber only.
 	 */
 	{
-		xtc_carrier_arg *ca = malloc(sizeof(*ca));
 		xtc_proc_opts_t po = {0};
 		xtc_pid_t	pid = XTC_PID_NONE;
 		xtc_loop_t *loop = (g_xtc_exec != NULL && g_xtc_n_loops > 1)
 			? xtc_exec_loop(g_xtc_exec, loop_idx) : g_xtc_loop;
 
-		if (ca == NULL)
-			return ENOMEM;
-		ca->entry = entry;
-		ca->entry_arg = entry_arg;
+		g_xtc_backend_entry = entry;	/* invariant; see xtc_carrier_proc */
 		po.name = "pg-backend";
-		if (xtc_proc_spawn(loop, xtc_carrier_proc, ca, &po, &pid) != XTC_OK)
-		{
-			free(ca);
+		if (xtc_proc_spawn(loop, xtc_carrier_proc, entry_arg, &po, &pid) != XTC_OK)
 			return EAGAIN;
-		}
 		elog(LOG, "xtc: spawned backend fiber (unmonitored) pid=(loop=%u,local=%u,gen=%u)",
 			 pid.loop_id, pid.local_id, pid.gen);
 		return 0;
