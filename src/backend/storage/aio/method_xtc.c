@@ -98,6 +98,14 @@ pgaio_xtc_submit(uint16 num_staged_ios, PgAioHandle **staged_ios)
 		 */
 		Assert(xtc_in_backend_fiber);
 
+		/*
+		 * Advance the handle to SUBMITTED before running the IO, exactly like
+		 * every other method's submit().  Skipping this leaves the handle IDLE
+		 * and pgaio_io_process_completion() PANICs ("waiting for own IO in
+		 * wrong state: IDLE").
+		 */
+		pgaio_io_prepare_submit(ioh);
+
 		switch ((PgAioOp) ioh->op)
 		{
 			case PGAIO_OP_READV:
