@@ -52,8 +52,8 @@
 #include "storage/bufmgr.h"
 #include "storage/bufpool.h"
 #include "storage/bufpool_internals.h"
+#include "storage/lwlock.h"
 #include "storage/shmem.h"
-#include "storage/spin.h"
 #include "utils/builtins.h"
 #include "utils/tuplestore.h"
 
@@ -108,9 +108,31 @@ typedef struct LirsCDB
 /*
  * LIRS shared-memory control block.
  */
+/*
+ * Cap on removals per lirs_stack_prune() call from the hot path.
+ *
+ * LIRS pruning is amortized O(1): a single hit can trigger an O(k) prune of
+ * consecutive non-LIR entries from the stack bottom.  While holding the pool
+ * lock, one long prune briefly stalls every backend.  Bounding the per-call
+ * work to LIRS_PRUNE_CAP removals defers the rest to subsequent prunes.  This
+ * cannot change eviction decisions: pruning only discards ghost/HIR entries
+ * that carry no LIR classification, and the bottom-is-LIR invariant that the
+ * victim path relies on is re-established fully in LirsGetVictim (which prunes
+ * without a cap, off the hot path) before any victim is selected.
+ */
+#define LIRS_PRUNE_CAP		32
+
 typedef struct LirsControl
 {
-	slock_t		lirs_lock;		/* spinlock protecting all mutable fields */
+	/*
+	 * LWLock protecting all mutable fields.  An LWLock (not a spinlock) is
+	 * required because callbacks hold this lock across variable-length work
+	 * (LirsGetVictim's Q scan, lirs_stack_prune's bottom sweep).  A spinlock
+	 * held that long busy-spins other backends into a "stuck spinlock" PANIC
+	 * under concurrent load; an LWLock sleeps instead, so the same critical
+	 * sections are crash-safe and waiters do not waste CPU spinning.
+	 */
+	LWLock		lirs_lock;		/* protects all mutable fields */
 
 	int			nbuffers;		/* number of physical buffers in this pool */
 	int			first_buf_id;	/* global buffer ID of first buffer in pool */
@@ -369,12 +391,30 @@ lirs_stack_move_to_top(LirsControl *ctl, LirsCDB *cdb_arr, int cdb_idx)
  * Ghost entries removed during pruning are freed entirely (removed from
  * ghost hash and returned to the free list).  Resident HIR entries removed
  * from the stack remain in Q.
+ *
+ * max_removals bounds the total number of entries removed in this call.  The
+ * hot path (LirsOnHit) passes LIRS_PRUNE_CAP so a single hit can never hold
+ * the pool lock across a long O(k) prune; the leftover non-LIR entries are
+ * discarded by the next prune (pruning is amortized).  Paths where the
+ * bottom-is-LIR invariant must hold before acting -- ghost/HIR promotion,
+ * which immediately follows with lirs_demote_bottom_lir -- and the eviction
+ * path pass LIRS_PRUNE_UNBOUNDED to prune fully.
+ *
+ * Capping cannot change eviction decisions: the entries removed carry no LIR
+ * classification, and lirs_demote_bottom_lir walks up from the bottom to the
+ * first LIR entry, so leftover non-LIR entries below/around it do not change
+ * which LIR is demoted.
  */
+#define LIRS_PRUNE_UNBOUNDED	INT_MAX
+
 static void
-lirs_stack_prune(LirsControl *ctl, LirsCDB *cdb_arr)
+lirs_stack_prune(LirsControl *ctl, LirsCDB *cdb_arr, int max_removals)
 {
+	int			removed = 0;
+
 	/* Step 1: standard bottom prune -- ensure bottom is LIR */
-	while (ctl->stack_bottom >= 0 &&
+	while (removed < max_removals &&
+		   ctl->stack_bottom >= 0 &&
 		   cdb_arr[ctl->stack_bottom].status != LIRS_STATUS_LIR)
 	{
 		int			idx = ctl->stack_bottom;
@@ -389,11 +429,13 @@ lirs_stack_prune(LirsControl *ctl, LirsCDB *cdb_arr)
 		}
 		/* Resident HIR: stays in Q, just no longer in stack */
 
+		removed++;
 		PoolStatIncrement(&lirs_local_stats[LIRS_STAT_STACK_PRUNES], &ctl->stat_stack_prunes);
 	}
 
 	/* Step 2: LIRS-2 hard bound enforcement */
-	while (ctl->stack_size > ctl->max_stack_size && ctl->stack_bottom >= 0)
+	while (removed < max_removals &&
+		   ctl->stack_size > ctl->max_stack_size && ctl->stack_bottom >= 0)
 	{
 		int			idx = ctl->stack_bottom;
 
@@ -409,6 +451,7 @@ lirs_stack_prune(LirsControl *ctl, LirsCDB *cdb_arr)
 			lirs_free_cdb(ctl, cdb_arr, idx);
 		}
 
+		removed++;
 		PoolStatIncrement(&lirs_local_stats[LIRS_STAT_STACK_PRUNES], &ctl->stat_stack_prunes);
 	}
 }
@@ -544,10 +587,10 @@ lirs_alloc_cdb(LirsControl *ctl, LirsCDB *cdb_arr)
 	}
 
 	/*
-	 * Release the spinlock before ereport to avoid leaving it permanently
-	 * locked, which would cause a stuck-spinlock PANIC in other processes.
+	 * Release the LWLock before ereport.  LWLockReleaseAll at abort would also
+	 * release it, but doing so here keeps the hold time explicit.
 	 */
-	SpinLockRelease(&ctl->lirs_lock);
+	LWLockRelease(&ctl->lirs_lock);
 	ereport(ERROR,
 			(errcode(ERRCODE_OUT_OF_MEMORY),
 			 errmsg("LIRS: no CDB entries available for recycling")));
@@ -624,15 +667,15 @@ LirsOnHit(void *strategy_data, int buf_id, BufferTag *tag)
 	if (cdb_idx < 0)
 		return;
 
-	SpinLockAcquire(&ctl->lirs_lock);
+	LWLockAcquire(&ctl->lirs_lock, LW_EXCLUSIVE);
 
 	if (cdb_arr[cdb_idx].status == LIRS_STATUS_LIR)
 	{
 		PoolStatIncrement(&lirs_local_stats[LIRS_STAT_LIR_HITS], &ctl->stat_lir_hits);
 
-		/* Move to stack top, prune bottom */
+		/* Move to stack top, prune bottom (capped: hottest path) */
 		lirs_stack_move_to_top(ctl, cdb_arr, cdb_idx);
-		lirs_stack_prune(ctl, cdb_arr);
+		lirs_stack_prune(ctl, cdb_arr, LIRS_PRUNE_CAP);
 	}
 	else if (cdb_arr[cdb_idx].status == LIRS_STATUS_HIR)
 	{
@@ -655,13 +698,13 @@ LirsOnHit(void *strategy_data, int buf_id, BufferTag *tag)
 			PoolStatIncrement(&lirs_local_stats[LIRS_STAT_HIR_PROMOTIONS], &ctl->stat_hir_promotions);
 
 			/* Prune first to establish LIR at bottom */
-			lirs_stack_prune(ctl, cdb_arr);
+			lirs_stack_prune(ctl, cdb_arr, LIRS_PRUNE_UNBOUNDED);
 
 			/* Demote bottom LIR if over capacity */
 			if (ctl->lir_count > ctl->lir_capacity)
 				lirs_demote_bottom_lir(ctl, cdb_arr);
 
-			lirs_stack_prune(ctl, cdb_arr);
+			lirs_stack_prune(ctl, cdb_arr, LIRS_PRUNE_UNBOUNDED);
 		}
 		else
 		{
@@ -672,11 +715,11 @@ LirsOnHit(void *strategy_data, int buf_id, BufferTag *tag)
 			lirs_q_remove(ctl, cdb_arr, cdb_idx);
 			lirs_q_append(ctl, cdb_arr, cdb_idx);
 			lirs_stack_push(ctl, cdb_arr, cdb_idx);
-			lirs_stack_prune(ctl, cdb_arr);
+			lirs_stack_prune(ctl, cdb_arr, LIRS_PRUNE_CAP);
 		}
 	}
 
-	SpinLockRelease(&ctl->lirs_lock);
+	LWLockRelease(&ctl->lirs_lock);
 }
 
 /*
@@ -695,7 +738,7 @@ LirsOnMiss(void *strategy_data, BufferTag *tag)
 
 	PoolStatIncrement(&lirs_local_stats[LIRS_STAT_LOOKUPS], &ctl->stat_lookups);
 
-	SpinLockAcquire(&ctl->lirs_lock);
+	LWLockAcquire(&ctl->lirs_lock, LW_EXCLUSIVE);
 
 	ghost_idx = lirs_ghost_lookup(ctl, tag);
 
@@ -710,7 +753,7 @@ LirsOnMiss(void *strategy_data, BufferTag *tag)
 		state->ghost_cdb = -1;
 	}
 
-	SpinLockRelease(&ctl->lirs_lock);
+	LWLockRelease(&ctl->lirs_lock);
 }
 
 /*
@@ -730,18 +773,18 @@ LirsOnEvict(void *strategy_data, int buf_id, BufferTag *old_tag pg_attribute_unu
 	int			cdb_idx;
 	int			old_status;
 
-	SpinLockAcquire(&ctl->lirs_lock);
+	LWLockAcquire(&ctl->lirs_lock, LW_EXCLUSIVE);
 
 	if (pool_local_id < 0 || pool_local_id >= ctl->nbuffers)
 	{
-		SpinLockRelease(&ctl->lirs_lock);
+		LWLockRelease(&ctl->lirs_lock);
 		return;
 	}
 
 	cdb_idx = buf_to_cdb[pool_local_id];
 	if (cdb_idx < 0)
 	{
-		SpinLockRelease(&ctl->lirs_lock);
+		LWLockRelease(&ctl->lirs_lock);
 		return;
 	}
 
@@ -784,14 +827,14 @@ LirsOnEvict(void *strategy_data, int buf_id, BufferTag *old_tag pg_attribute_unu
 	else
 	{
 		/* Already ghost or unused -- nothing to do */
-		SpinLockRelease(&ctl->lirs_lock);
+		LWLockRelease(&ctl->lirs_lock);
 		return;
 	}
 
 	buf_to_cdb[pool_local_id] = -1;
 	PoolStatIncrement(&lirs_local_stats[LIRS_STAT_EVICTIONS], &ctl->stat_evictions);
 
-	SpinLockRelease(&ctl->lirs_lock);
+	LWLockRelease(&ctl->lirs_lock);
 }
 
 /*
@@ -814,7 +857,7 @@ LirsOnNewTag(void *strategy_data, int buf_id, BufferTag *new_tag,
 
 	Assert(pool_local_id >= 0 && pool_local_id < ctl->nbuffers);
 
-	SpinLockAcquire(&ctl->lirs_lock);
+	LWLockAcquire(&ctl->lirs_lock, LW_EXCLUSIVE);
 
 	Assert(buf_to_cdb[pool_local_id] == -1);
 
@@ -843,12 +886,12 @@ LirsOnNewTag(void *strategy_data, int buf_id, BufferTag *new_tag,
 		PoolStatIncrement(&lirs_local_stats[LIRS_STAT_HIR_PROMOTIONS], &ctl->stat_hir_promotions);
 
 		/* Prune to establish LIR at bottom, then demote if needed */
-		lirs_stack_prune(ctl, cdb_arr);
+		lirs_stack_prune(ctl, cdb_arr, LIRS_PRUNE_UNBOUNDED);
 
 		if (ctl->lir_count > ctl->lir_capacity)
 			lirs_demote_bottom_lir(ctl, cdb_arr);
 
-		lirs_stack_prune(ctl, cdb_arr);
+		lirs_stack_prune(ctl, cdb_arr, LIRS_PRUNE_UNBOUNDED);
 	}
 	else
 	{
@@ -891,12 +934,12 @@ complete_miss:
 			}
 		}
 
-		lirs_stack_prune(ctl, cdb_arr);
+		lirs_stack_prune(ctl, cdb_arr, LIRS_PRUNE_UNBOUNDED);
 	}
 
 	buf_to_cdb[pool_local_id] = cdb_idx;
 
-	SpinLockRelease(&ctl->lirs_lock);
+	LWLockRelease(&ctl->lirs_lock);
 }
 
 
@@ -982,11 +1025,11 @@ LirsGetVictim(void *strategy_data, BufferAccessStrategy strategy pg_attribute_un
 		 * looking for an unpinned buffer.
 		 *
 		 * Note: we must re-read q_next from the CDB at the end of each
-		 * iteration rather than caching it up front, because the spinlock may
+		 * iteration rather than caching it up front, because the pool lock may
 		 * be released and reacquired while waiting for a locked buffer
 		 * header, and Q list pointers can change in that window.
 		 */
-		SpinLockAcquire(&ctl->lirs_lock);
+		LWLockAcquire(&ctl->lirs_lock, LW_EXCLUSIVE);
 
 		{
 			int			attempts = 0;
@@ -1020,9 +1063,9 @@ LirsGetVictim(void *strategy_data, BufferAccessStrategy strategy pg_attribute_un
 
 						if (unlikely(local_buf_state & BM_LOCKED))
 						{
-							SpinLockRelease(&ctl->lirs_lock);
+							LWLockRelease(&ctl->lirs_lock);
 							old_buf_state = WaitBufHdrUnlocked(buf);
-							SpinLockAcquire(&ctl->lirs_lock);
+							LWLockAcquire(&ctl->lirs_lock, LW_EXCLUSIVE);
 
 							/*
 							 * Q list may have changed while the lock was
@@ -1042,7 +1085,7 @@ LirsGetVictim(void *strategy_data, BufferAccessStrategy strategy pg_attribute_un
 														   local_buf_state))
 						{
 							*buf_state = local_buf_state;
-							SpinLockRelease(&ctl->lirs_lock);
+							LWLockRelease(&ctl->lirs_lock);
 							TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
 							return buf;
 						}
@@ -1058,7 +1101,7 @@ LirsGetVictim(void *strategy_data, BufferAccessStrategy strategy pg_attribute_un
 			}
 		}
 
-		SpinLockRelease(&ctl->lirs_lock);
+		LWLockRelease(&ctl->lirs_lock);
 
 		/*
 		 * Phase 3: Fallback -- scan ALL buffer descriptors for any unpinned
@@ -1145,9 +1188,9 @@ LirsNotifyTrickle(void *strategy_data, int bgwprocno)
 {
 	LirsControl *ctl = (LirsControl *) strategy_data;
 
-	SpinLockAcquire(&ctl->lirs_lock);
+	LWLockAcquire(&ctl->lirs_lock, LW_EXCLUSIVE);
 	ctl->bgwprocno = bgwprocno;
-	SpinLockRelease(&ctl->lirs_lock);
+	LWLockRelease(&ctl->lirs_lock);
 }
 
 static void
@@ -1186,7 +1229,7 @@ LirsPrefetchHint(void *strategy_data, BufferTag *tags, int ntags)
 	if (ntags <= 0)
 		return;
 
-	SpinLockAcquire(&ctl->lirs_lock);
+	LWLockAcquire(&ctl->lirs_lock, LW_EXCLUSIVE);
 	cdb_arr = LIRS_CDB(ctl);
 
 	for (int i = 0; i < ntags; i++)
@@ -1204,7 +1247,7 @@ LirsPrefetchHint(void *strategy_data, BufferTag *tags, int ntags)
 		}
 	}
 
-	SpinLockRelease(&ctl->lirs_lock);
+	LWLockRelease(&ctl->lirs_lock);
 }
 
 
@@ -1251,7 +1294,7 @@ LirsShmemInit(void *strategy_data, int nbuffers, int first_buf_id, bool init)
 	ncdb = nbuffers * 3;
 	ghost_hash_size = pg_nextpower2_32(Max(ncdb, 64));
 
-	SpinLockInit(&ctl->lirs_lock);
+	LWLockInitialize(&ctl->lirs_lock, LWLockNewTrancheId("pg_bp_lirs"));
 	ctl->nbuffers = nbuffers;
 	ctl->first_buf_id = first_buf_id;
 	ctl->ncdb = ncdb;
@@ -1370,9 +1413,9 @@ LirsTrickleIterBegin(void *strategy_data, int max_candidates)
 	iter->max_candidates = max_candidates;
 
 	/* Snapshot the Q head position under the lock */
-	SpinLockAcquire(&ctl->lirs_lock);
+	LWLockAcquire(&ctl->lirs_lock, LW_EXCLUSIVE);
 	iter->cdb_idx = ctl->q_head;
-	SpinLockRelease(&ctl->lirs_lock);
+	LWLockRelease(&ctl->lirs_lock);
 
 	return iter;
 }
@@ -1500,14 +1543,14 @@ pg_stat_get_lirs_stats(PG_FUNCTION_ARGS)
 		else
 			nulls[1] = true;
 
-		SpinLockAcquire(&ctl->lirs_lock);
+		LWLockAcquire(&ctl->lirs_lock, LW_EXCLUSIVE);
 		values[2] = Int32GetDatum(ctl->lir_count);
 		values[3] = Int32GetDatum(ctl->hir_count);
 		values[4] = Int32GetDatum(ctl->ghost_count);
 		values[5] = Int32GetDatum(ctl->lir_capacity);
 		values[6] = Int32GetDatum(ctl->stack_size);
 		values[7] = Int32GetDatum(ctl->q_size);
-		SpinLockRelease(&ctl->lirs_lock);
+		LWLockRelease(&ctl->lirs_lock);
 
 		/* Flush this backend's pending local stats before reading */
 		PoolStatFlush(&lirs_local_stats[LIRS_STAT_LOOKUPS], &ctl->stat_lookups);
