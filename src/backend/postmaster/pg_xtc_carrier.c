@@ -235,13 +235,13 @@ xtc_carrier_supervisor_proc(void *arg)
 		}
 
 		/*
-		 * Free the recv envelope.  We never install a custom xtc alloc hook,
-		 * so libxtc uses its default backend which wraps malloc(3)/free; plain
-		 * free() is therefore correct here and keeps us on public/standard
-		 * APIs only (the documented __os_free is not an exported symbol).  If
-		 * PG ever installs an xtc alloc hook, revisit this.
+		 * Free the recv envelope with the library allocator's public
+		 * deallocator (libxtc v1.2.0).  xtc_recv buffers come from libxtc's
+		 * own allocator, which is not necessarily libc malloc/free, so
+		 * xtc_free() -- not plain free() -- is the documented, thread-safe
+		 * way to release them.
 		 */
-		free(msg);
+		xtc_free(msg);
 	}
 }
 
