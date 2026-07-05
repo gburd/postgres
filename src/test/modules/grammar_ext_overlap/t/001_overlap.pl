@@ -6,12 +6,13 @@
 # shared_preload_libraries directive and asserts:
 #
 #   1. All five register cleanly without conflicts.
-#   2. ONE rebuild pipeline runs (not five separate rebuilds).
+#   2. ONE in-process compose runs for all five (not five separate
+#      composes); no subprocess, no C compiler, no .so cache.
 #   3. Each extension's keywords are reachable from real input.
 #   4. Each extension's reduce callback fires when invoked.
 #   5. Base SQL still parses identically (SELECT, DDL, DML, CTE,
 #      window functions all unaffected).
-#   6. Cache key is deterministic regardless of extension order.
+#   6. Compose is deterministic regardless of extension order.
 #   7. Order independence: extensions in different load orders
 #      produce the same accept set for the same input.
 
@@ -82,15 +83,16 @@ note('=== test 1: load all five extensions simultaneously ===');
 			"all-load: $name registered");
 	}
 
-	# ONE rebuild for ALL five.
+	# ONE in-process compose for ALL five (no subprocess / no cc).
 	like($logs,
-		qr/running lime to rebuild parser for 5 extension\(s\)/,
-		'all-load: ONE pipeline run for all 5 extensions');
+		qr/composing grammar in-process for 5 extension\(s\)/,
+		'all-load: ONE in-process compose for all 5 extensions');
 
-	# Cache key is deterministic.
-	my ($cache_key) = $logs =~
-		m{loaded extended parser from .*?/pg_parser_cache/([0-9a-f]{64})\.so};
-	ok($cache_key, "all-load: cache key recorded ($cache_key)");
+	# Track B never shells out to a C compiler or caches a .so.
+	unlike($logs, qr{/pg_parser_cache/[0-9a-f]{64}\.so},
+		'all-load: no .so cache path (in-process compose)');
+	unlike($logs, qr/running lime to rebuild parser/,
+		'all-load: no subprocess rebuild pipeline');
 
 	# Total keyword map should have 13 entries (3+3+2+3+2).
 	like($logs,
@@ -268,17 +270,24 @@ note('=== test 5: subset load -- non-loaded keywords are IDENT ===');
 }
 
 # ------------------------------------------------------------------
-# Test 6: Cache key determinism for the same set of extensions
-# across postmaster boots.
+# Test 6: Compose determinism for the same set of extensions across
+# postmaster boots -- the composed snapshot's base rule count is
+# stable, so the same fragments always compose to the same grammar.
 # ------------------------------------------------------------------
-note('=== test 6: cache key determinism across postmaster boots ===');
+note('=== test 6: compose determinism across postmaster boots ===');
 {
-	my $node = start_with('overlap_cache', $all_exts);
+	my $node = start_with('overlap_determinism', $all_exts);
 	$node->safe_psql('postgres', 'SELECT 1');
 	my $logs = log_text($node);
-	my ($cache_key) = $logs =~
-		m{(?:loaded extended parser from|grammar extension cache hit:) .*?/pg_parser_cache/([0-9a-f]{64})\.so};
-	ok($cache_key, "cache key deterministic: ($cache_key)");
+	like($logs,
+		qr/composing grammar in-process for 5 extension\(s\)/,
+		'compose runs once per boot, in-process');
+	# Every extension keyword still reaches its reduce after a fresh boot.
+	my ($stdout, $stderr);
+	$node->psql('postgres', 'pivot;',
+		stdout => \$stdout, stderr => \$stderr, on_error_die => 0);
+	like($stderr, qr/overlap: duckdb:pivot reduced/,
+		'fresh boot: composed grammar fires extension reduce');
 	$node->stop;
 }
 

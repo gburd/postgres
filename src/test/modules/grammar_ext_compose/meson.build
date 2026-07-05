@@ -19,7 +19,9 @@ ext_compose_kw = pg_test_mod_args + {
 # foxtrot:  K_GRAMMAR_ALPHA again, DIFFERENT lexeme -- should fail register()
 # golf:     uses tokens declared by alpha (cross-extension dep ordering)
 # hotel:    sets precedence on K_GRAMMAR_BRAVO that conflicts with foxtrot
-foreach ext_name : ['alpha', 'beta', 'echo', 'foxtrot', 'golf', 'hotel']
+# india:    two identical stmt productions -> reduce/reduce conflict; the
+#           compose-time conflict gate must REFUSE to install the parser
+foreach ext_name : ['alpha', 'beta', 'echo', 'foxtrot', 'golf', 'hotel', 'india']
   src = 'compose_ext_' + ext_name + '.c'
   if host_system == 'windows'
     rc = rc_lib_gen.process(win32ver_rc, extra_args: [
