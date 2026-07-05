@@ -538,6 +538,53 @@ const BufferPoolRoutine numa_clock_pool_routine = {
  * The buffer is pinned and marked as owned, using TrackNewBufferPin(),
  * before returning.
  */
+
+/*
+ * Batched claim of the unified clock sweep's victim atomic (buffer_pool_sweep_batch).
+ *
+ * Every backend advances the single StrategyControl->nextVictimBuffer atomic
+ * once per candidate buffer -- the hottest atomic in the buffer manager on
+ * multi-socket hardware.  When batch > 1 we claim that many consecutive raw
+ * hand values with ONE pg_atomic_fetch_add_u32(., batch) into per-backend
+ * local state and hand them out one at a time, de-contending the atomic.
+ *
+ * The batch is claimed on the monotonic raw counter, so wraparound needs no
+ * clamp/split: each raw value still maps through (raw % nbuffers) and the
+ * caller maintains completePasses per consumed raw value, exactly as the
+ * unbatched path did.  With batch == 1 this is byte-identical to a bare
+ * pg_atomic_fetch_add_u32(ptr, 1): the branch takes the refill path every
+ * call, adds 1, and returns the same value.  Adapted from the
+ * numa-b1-batched-sweep (ea8c3337217) technique applied to NumaClockGetVictim,
+ * here targeting the single unified nextVictimBuffer.  Only used on the
+ * default-pool path; dynamic pools claim one value at a time.
+ */
+typedef struct ClockSweepBatch
+{
+	uint32		next_raw;		/* next raw hand value to hand out */
+	int			remaining;		/* claimed-but-unused values left in batch */
+}			ClockSweepBatch;
+
+static ClockSweepBatch clock_sweep_batch = {0, 0};
+
+static inline uint32
+ClockNextRaw(pg_atomic_uint32 *nextVictimPtr)
+{
+	ClockSweepBatch *b = &clock_sweep_batch;
+
+	if (b->remaining <= 0)
+	{
+		int			n = buffer_pool_sweep_batch;
+
+		if (n < 1)
+			n = 1;
+		b->next_raw = pg_atomic_fetch_add_u32(nextVictimPtr, (uint32) n);
+		b->remaining = n;
+	}
+
+	b->remaining--;
+	return b->next_raw++;
+}
+
 static BufferDesc *
 ClockGetVictim(void *strategy_data,
 			   BufferAccessStrategy strategy,
@@ -654,16 +701,31 @@ ClockGetVictim(void *strategy_data,
 		/*
 		 * Atomically advance the clock hand.  For the default pool this
 		 * mirrors the old ClockSweepTick() logic including completePasses
-		 * maintenance.  For dynamic pools we use a simpler modulo.
+		 * maintenance, and honors buffer_pool_sweep_batch (batched claim of
+		 * the single unified atomic; a no-op at batch=1).  For dynamic pools
+		 * we claim one value at a time and use a simpler modulo.
 		 */
-		victim_raw = pg_atomic_fetch_add_u32(nextVictimPtr, 1);
-
 		if (!is_dynamic_pool)
 		{
+			victim_raw = ClockNextRaw(nextVictimPtr);
+
 			/* Default pool: maintain completePasses on wraparound */
 			victim_id = victim_raw % pool_nbuffers;
 
-			if (victim_raw >= (uint32) pool_nbuffers && victim_id == 0)
+			/*
+			 * Batched claiming advances the shared atomic by more than 1, so
+			 * the reset-on-wrap CAS below (which assumes it can rewind the
+			 * counter to victim_raw+1) cannot apply -- it would clobber other
+			 * backends' in-flight claims.  With batch>1 we leave the raw
+			 * counter monotonic and let ClockSyncStart derive the pass count
+			 * from its high bits (nextVictimBuffer / NBuffers), exactly as the
+			 * numa-b1-batched-sweep reference does.  completePasses stays 0 in
+			 * that mode, so ClockSyncStart's (completePasses + raw/NBuffers)
+			 * is still correct.  At batch==1 this whole block is byte-identical
+			 * to the stock reset-CAS path.
+			 */
+			if (buffer_pool_sweep_batch <= 1 &&
+				victim_raw >= (uint32) pool_nbuffers && victim_id == 0)
 			{
 				uint32		expected;
 				uint32		wrapped;
@@ -687,6 +749,7 @@ ClockGetVictim(void *strategy_data,
 		else
 		{
 			/* Dynamic pool: simple modulo, no completePasses tracking */
+			victim_raw = pg_atomic_fetch_add_u32(nextVictimPtr, 1);
 			victim_id = pool_first_buf + (victim_raw % pool_nbuffers);
 		}
 
@@ -1090,16 +1153,43 @@ StrategyCtlShmemInit(void *arg)
 		}
 
 		/*
-		 * If NUMA distribution is active (buffer_pool_numa on + multi-node
-		 * hardware) AND the configured algorithm is the built-in clock sweep,
-		 * upgrade the DEFAULT pool to the NUMA-partitioned clock sweep: one
-		 * clock hand per node, each confined to that node's buffer range.
-		 * This directly targets the multi-socket scalability cliff (single
-		 * global clock hand + cross-node victim traffic).  Extension-provided
-		 * algorithms are left as-is -- they opt into NUMA via their own
-		 * routine if they want it.
+		 * NUMA distribution for the default clock-sweep pool.  Two mutually
+		 * exclusive modes, both requiring multi-node hardware (or the
+		 * buffer_pool_numa_nodes dev override):
+		 *
+		 *  - buffer_pool_numa_interleave_only: physically interleave the
+		 *    buffer pages across nodes (BufPoolNumaDistribute) BUT keep the
+		 *    single UNIFIED full-pool clock sweep (clock_pool_routine).  This
+		 *    isolates the (hopefully beneficial) interleave+batch from the
+		 *    (measured harmful) per-node partitioning.  The cache is NOT
+		 *    fragmented: victim selection stays full-pool.  If this and
+		 *    buffer_pool_numa are both on, this unified-clock mode wins.
+		 *
+		 *  - buffer_pool_numa: NUMA-partitioned clock sweep (one hand per
+		 *    node, victims confined to node ranges) plus the same physical
+		 *    distribution.  Targets the single-global-hand cliff but fragments
+		 *    the cache.
+		 *
+		 * Extension-provided algorithms are left as-is either way.
 		 */
-		if (routine == &clock_pool_routine && BufPoolNumaActive())
+		if (routine == &clock_pool_routine &&
+			buffer_pool_numa_interleave_only && BufPoolNumaActive())
+		{
+			/*
+			 * Interleave-only: distribute pages across nodes but LEAVE
+			 * ActivePoolRoutine as the unified clock_pool_routine (do NOT
+			 * switch to numa_clock_pool_routine).  Victim selection stays
+			 * full-pool over StrategyControl->nextVictimBuffer.
+			 */
+			BufPoolNumaDistribute((char *) BufferBlocks,
+								  (char *) BufferDescriptors,
+								  sizeof(BufferDescPadded),
+								  NBuffers);
+
+			elog(LOG, "default buffer pool using UNIFIED clock sweep with pages interleaved across %d NUMA nodes (batch=%d)",
+				 BufPoolNumaNodes(), buffer_pool_sweep_batch);
+		}
+		else if (routine == &clock_pool_routine && BufPoolNumaActive())
 		{
 			int			nnodes = BufPoolNumaNodes();
 

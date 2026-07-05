@@ -292,4 +292,17 @@ extern PGDLLIMPORT bool buffer_pool_numa;
 /* GUC (developer): force a logical NUMA node count for testing; 0 = auto */
 extern PGDLLIMPORT int buffer_pool_numa_nodes;
 
+/*
+ * GUC (developer): physically interleave buffer pages across nodes but keep
+ * the single unified clock sweep (no NUMA partitioning).  Isolates the
+ * interleave+batch techniques from cache-fragmenting partitioning.
+ */
+extern PGDLLIMPORT bool buffer_pool_numa_interleave_only;
+
+/*
+ * GUC (developer): claim this many consecutive clock-sweep victim hand values
+ * per atomic (1 = unbatched, byte-identical to stock).
+ */
+extern PGDLLIMPORT int buffer_pool_sweep_batch;
+
 #endif							/* BUFPOOL_H */

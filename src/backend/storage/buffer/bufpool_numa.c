@@ -56,6 +56,21 @@ bool		buffer_pool_numa = false;
 int			buffer_pool_numa_nodes = 0;
 
 /*
+ * GUC (developer): physically interleave buffer pages across NUMA nodes while
+ * keeping the single unified clock sweep (no per-node partitioning).  When on
+ * (multi-node), StrategyCtlShmemInit calls BufPoolNumaDistribute but leaves
+ * the ActivePoolRoutine as the plain unified clock_pool_routine.
+ */
+bool		buffer_pool_numa_interleave_only = false;
+
+/*
+ * GUC (developer): batch size for the unified clock sweep's victim atomic.
+ * 1 = unbatched (stock).  Defined here alongside the other buffer-pool NUMA
+ * GUCs; consumed by ClockGetVictim in freelist.c.
+ */
+int			buffer_pool_sweep_batch = 1;
+
+/*
  * Cached topology, computed once per process from libnuma.  num_nodes == 1
  * means "treat as non-NUMA" (single node or NUMA unavailable), in which case
  * every entry point below is a cheap no-op.
@@ -91,7 +106,8 @@ BufPoolNumaInit(void)
 	numa_nodes = 1;
 
 #ifdef USE_LIBNUMA
-	if (buffer_pool_numa && numa_available() >= 0)
+	if ((buffer_pool_numa || buffer_pool_numa_interleave_only) &&
+		numa_available() >= 0)
 	{
 		int			maxnode = numa_max_node();
 
@@ -102,10 +118,12 @@ BufPoolNumaInit(void)
 
 	/*
 	 * Developer override: force a logical node count so the partitioned clock
-	 * sweep can be tested on single-node hardware.  Only honored when
-	 * buffer_pool_numa is on (so it never affects normal operation).
+	 * sweep (or the interleave-only unified sweep) can be tested on single-node
+	 * hardware.  Honored when buffer_pool_numa OR buffer_pool_numa_interleave_only
+	 * is on (so it never affects normal operation).
 	 */
-	if (buffer_pool_numa && buffer_pool_numa_nodes > 1)
+	if ((buffer_pool_numa || buffer_pool_numa_interleave_only) &&
+		buffer_pool_numa_nodes > 1)
 		numa_nodes = buffer_pool_numa_nodes;
 
 	numa_topology_done = true;
