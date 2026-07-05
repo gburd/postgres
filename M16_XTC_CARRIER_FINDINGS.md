@@ -346,46 +346,32 @@ inside the postmaster process (8 threads, zero child processes -- verified via
    `001_threaded_runtime.pl` "late IO worker" check is a TODO until it is
    fixed; the earlier one-off 129/129 pass was a lucky timing window.
 
-2c. **Intermittent SIGSEGV inside xtc_exit_self during backend fiber teardown
-   (libxtc item to report).**  Surfaced by the #7 Stage 1 per-loop supervisor:
-   on the 24-loop pool (libxtc v1.1.0), roughly 3 of 11 backend fibers deliver
-   a DOWN with reason=-11 (SIGSEGV) even though each logged a clean
-   `backend fiber exiting ... code=0` immediately before calling
-   `xtc_exit_self(0)`.  The only code between that log and the fault is
-   `xtc_in_backend_fiber = false; xtc_exit_self(code);`, so the fault is inside
-   libxtc's fiber-exit/unwind (or its monitor-DOWN delivery under the loop
-   pool).  libxtc's R1 per-fiber fault containment catches it: no core, no
-   process crash, siblings unaffected, `pg_ctl -m fast stop` still clean -- so
-   it was COMPLETELY SILENT before the supervisor existed (the `code=0` log is
-   written before the fault, and spawned==exited accounting still balanced).
-   This is almost certainly the root cause of the earlier worker-fiber TAP
-   wedge (a faulted teardown leaving state inconsistent under stress).  It is
-   intermittent and contained; report to the libxtc team with the repro
-   (24-loop pool + repeated connect/query/disconnect).  Do NOT work around it
-   in our tree; assume libxtc will fix xtc_exit_self.  Meanwhile the supervisor
-   makes it observable (rate-limited LOUD log), which is exactly item #7
-   Stage 1's purpose.  Observed IMPACT beyond noise: the contained teardown
-   fault also SLOWS `pg_ctl -m fast stop` (a clean stop took ~27s in an
-   io_method=xtc multi-iovec run because faulted-teardown fibers drag out
-   PM_WAIT_BACKENDS), though it still completes.  So this libxtc fix also buys
-   back shutdown latency.
+2c. **RESOLVED / MISDIAGNOSED (libxtc v1.2.1).**  We reported an "intermittent
+   SIGSEGV inside xtc_exit_self during teardown" because monitored backend
+   fibers delivered a DOWN with reason -11 after a clean exit.  The libxtc team
+   showed this was NOT a fault: -11 was XTC_E_NOTFOUND (the monitor raced a
+   short-lived backend's clean xtc_exit_self(0) and landed just after it
+   exited), and XTC_E_NOTFOUND == -11 collides with -SIGSEGV, which is what
+   made us read it as a crash.  xtc_exit_self teardown never faulted; R1 was
+   catching nothing.  v1.2.1 delivers the monitor-of-already-dead DOWN with a
+   DISTINCT reason XTC_DOWN_NOPROC (-100000, outside the signal range), so
+   "already gone" is unambiguously not a crash.  Our supervisor now classifies
+   via xtc_down_is_noproc() and treats NOPROC as benign.  The suspected
+   shutdown slowdown / worker wedge were side effects of escalating on the
+   benign NOPROC; expected to disappear now (to confirm on meh).
 
-2d. **No monitor DOWN delivered for a fiber that faults very early in its body
-   (libxtc item to report).**  Found while validating #7 Stage 1b escalation
-   with the PG_XTC_INJECT_CRASH hook: a backend fiber that SIGSEGVs right after
-   entry (before running backend_thread_entry) never delivers a DOWN to its
-   loop supervisor, even though the supervisor spawned+monitored it atomically
-   (race closed) and a NORMAL exit on the same loop delivers its DOWN fine.
-   So libxtc R1 fault containment either does not deliver DOWN for this
-   early-fault shape, or treats the early-body fault as a critical-section
-   escalation rather than a contained per-fiber unwind.  Report to libxtc with
-   the repro (PG_XTC_INJECT_CRASH=N faulting the Nth backend fiber at entry).
-   Consequence: the Stage 1b GENUINE-crash escalation is WIRED and SAFE
-   (validated: benign teardown faults classify benign, GENUINE-CRASH=0 and
-   escalation=0 in normal 24-loop ops, so no false-crash), and normal DOWN
-   observation works -- but an end-to-end demonstration of genuine-crash
-   escalation is blocked on libxtc delivering the DOWN for a faulted fiber.
-   Do NOT work around it in our tree; assume libxtc will deliver the DOWN.
+2d. **RESOLVED (libxtc v1.2.1).**  We reported that a backend fiber which
+   SIGSEGVs very early in its body (before its first yield / before arming a
+   recovery frame) delivered no monitor DOWN.  libxtc confirmed the gap: R1
+   containment only fired once the proc had called xtc_proc_recovery_arm(); an
+   early fault fell through to escalation and delivered neither a DOWN nor a
+   crash.  v1.2.1 AUTO-ARMS a default recovery frame at proc entry, so ANY
+   contained fault -- including in the first statement -- unwinds that one proc
+   and delivers a DOWN with the POSITIVE signal number (11 for SIGSEGV).  Two
+   invariants preserved: a stack-overflow fault still kills the process (guard
+   page), and a fault inside a critical section still aborts (PANIC semantics).
+   So PG_XTC_INJECT_CRASH now yields a DOWN reason=11, which the supervisor
+   classifies as a genuine crash and escalates (to confirm end-to-end on meh).
 
 3. **Latch/SetLatch wakeups.**  The epoll-fd intercept already covers latch
    wakeups (the latch signalfd is a registered epoll event, so SetLatch makes
