@@ -411,6 +411,9 @@ extern PGDLLIMPORT const IoMethodOps pgaio_worker_ops;
 #ifdef IOMETHOD_IO_URING_ENABLED
 extern PGDLLIMPORT const IoMethodOps pgaio_uring_ops;
 #endif
+#ifdef USE_XTC_CARRIER
+extern PGDLLIMPORT const IoMethodOps pgaio_xtc_ops;
+#endif
 
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME const IoMethodOps *pgaio_method_ops;
 extern PGDLLIMPORT PG_GLOBAL_SHMEM PgAioCtl *pgaio_ctl;

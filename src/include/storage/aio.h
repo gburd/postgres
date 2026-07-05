@@ -37,6 +37,9 @@ typedef enum IoMethod
 #ifdef IOMETHOD_IO_URING_ENABLED
 	IOMETHOD_IO_URING,
 #endif
+#ifdef USE_XTC_CARRIER
+	IOMETHOD_XTC,
+#endif
 }			IoMethod;
 
 /* We'll default to worker based execution. */
