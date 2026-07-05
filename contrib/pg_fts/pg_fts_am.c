@@ -2091,31 +2091,16 @@ bm25_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		reltuples += bm25_end_parallel(bm25leader);
 
 		/*
-		 * Do NOT force a full merge-to-one after a parallel build.  Each
-		 * participant flushed several segments, so a build-time merge would be a
-		 * single-threaded, O(index) pass that eats most of the parallel scan's
-		 * speedup (the merge tail dominated in measurement).  Leave the segments
-		 * as-is -- the index is fully correct as N segments -- and let the
-		 * size-tiered background merge (VACUUM / fts_merge) coalesce them
-		 * lazily, exactly as Lucene/Tantivy parallel builds do.  Only bound the
-		 * count so a scan never faces an unreasonable fan-out: if the
-		 * participants produced more than BM25_MERGE_THRESHOLD segments, run one
-		 * tiered merge pass (which merges similarly-sized runs, not everything).
-		 *
-		 * ponytail: future Level-2 enhancement -- parallelize the merge itself
-		 * (workers merge disjoint segment groups) to also cut the compaction
-		 * cost; deferred, the lazy path already captures the build speedup.
+		 * Compact the participants' segments into an optimal single segment.
+		 * bm25_end_parallel() has exited parallel mode, so bm25_merge_all() can
+		 * itself run the PARALLEL merge (workers merge disjoint segment groups),
+		 * making the compaction fast rather than the single-threaded O(index)
+		 * tail that a naive build-time merge would be.  This keeps a freshly
+		 * built (or REINDEXed) index optimal at first query -- a multi-segment
+		 * index makes ranked scans traverse every segment's postings, which
+		 * regresses common-term ranked latency.
 		 */
-		{
-			BM25MetaPageData m;
-			Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
-
-			LockBuffer(mb, BUFFER_LOCK_SHARE);
-			memcpy(&m, BM25PageGetMeta(BufferGetPage(mb)), sizeof(m));
-			UnlockReleaseBuffer(mb);
-			if (m.nsegments > BM25_MERGE_THRESHOLD)
-				bm25_merge_segments(index);
-		}
+		bm25_merge_all(index);
 	}
 	else
 	{
