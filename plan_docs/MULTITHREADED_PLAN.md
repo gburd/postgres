@@ -1004,6 +1004,56 @@ scheduler (Phases 14-15) is real and the runtime actually owns backends on xtc
 carriers, because only then is the xtc primitive the true underlying mechanism
 rather than a second implementation bolted alongside PostgreSQL's own.
 
+### On the pthread <-> fiber boundary and test predictability
+
+The runtime deliberately mixes explicit pthreads with libxtc concurrency; a
+"full cutover to only libxtc" is NOT a goal. Process mode is a permanently
+supported backend model, and the postmaster/control-plane, single-user,
+bootstrap, and crash-escalation paths are deliberate process-lifetime
+exceptions (see AGENTS.md). Three layers coexist today:
+
+- carrier layer: the xtc scheduler runs on a pthread pool (one loop per
+  thread); regular client backends run as xtc fibers on those loops, but the
+  non-fiber fallback, all aux worker families (bgworker, io worker, autovac,
+  WAL, ...), and the pooled-protocol carriers are still raw pg_thread_create
+  pthreads;
+- synchronization: in-backend work uses PostgreSQL's shmem LWLock/spinlock/
+  latch/CV (correct for both models), but the threaded-runtime plumbing still
+  has raw pthread_mutex/pthread_cond guards (e.g. the pooled-protocol queue,
+  malloc-trim, some PMChild/GUC locks);
+- I/O: io_method=xtc routes fiber-backend data-file reads through xtc_aio;
+  everything else still uses PostgreSQL's own AIO/pread and WAL paths.
+
+Why this ordering matters for testing: nearly every hard bug so far
+(concurrent lost-wakeup, shutdown wedge, worker-fiber terminate hang,
+late-io-worker autoscale) lives at the pthread<->fiber boundary, where a
+pthread-side SetLatch/signal must wake a fiber or a pthread reaper must observe
+a fiber death. libxtc's Deterministic Simulation Testing (DST, docs/M_DST.md)
+can replay scheduling bit-identically and inject faults, but ONLY for entities
+on the xtc scheduler; every retained pthread is invisible to DST and
+reintroduces real-hardware nondeterminism (the "lucky timing window" class of
+flake). So the more of the runtime that moves onto xtc loops (fibers + xtc
+primitives), the more of the system DST can make deterministic.
+
+The correct response is NOT a big-bang cutover (moving raw pthread mutexes to
+xtc CVs while the carriers are still pthreads is worse-of-both-worlds -- xtc
+condition/mailbox semantics expect to run on a loop). Instead, shrink the
+boundary in dependency order:
+
+1. make fiber lifecycle robust first: Phase 13/AGENTS_XTC #7 Stage 1 adds
+   fiber-death observation (xtc_monitor) so an abnormal fiber exit is seen and
+   escalated;
+2. then widen the fiber carrier to aux worker families (AGENTS_XTC #5) one at
+   a time -- each family that moves off pg_thread_create onto an xtc loop
+   removes a pthread and becomes DST-visible;
+3. only then (here, in Phase 18) convert the now-fiber-resident raw
+   pthread_mutex/pthread_cond plumbing to xtc primitives, because the xtc
+   primitive is only correct once its users run on a loop.
+
+Pulling the sync-primitive conversion earlier does not pay off until the
+carriers are fibers, so the #7 -> #5 -> Phase 18 order is intentional and does
+progressively make the test surface more DST-predictable.
+
 Candidate duplication surfaces to audit (confirm against the current libxtc
 public API in `XTC_ROOT/src/inc` before assuming an equivalence exists):
 
