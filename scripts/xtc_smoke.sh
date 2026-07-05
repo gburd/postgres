@@ -36,12 +36,18 @@ pg_ctl -D "$PGDATA" -l "$D/pm.log" -o "-c multithreaded=on" -w start \
 
 PSQL="psql -X -h $D -U postgres -d postgres -tA"
 
-# 0. carrier pool is multi-loop and sized to the core count.  The whole point
-#    of the xtc carrier is a pool matching how it will be used; a regression to
-#    a single loop would hide concurrency/wakeup bugs (and shrink DST coverage).
+# 1. basic round-trip through the xtc carrier (this also triggers the lazy
+#    carrier/pool start, so the pool-size check below has a log line to read)
+note "select 1"
+[ "$($PSQL -c 'select 1')" = "1" ] && ok "select 1" || bad "select 1"
+
+# 1b. carrier pool is multi-loop and sized to the core count.  The whole point
+#     of the xtc carrier is a pool matching how it will be used; a regression
+#     to a single loop would hide concurrency/wakeup bugs (and shrink DST
+#     coverage).  Checked after the first query so the carrier has started.
 note "carrier pool sized to cores"
 ncpu=$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)
-loops=$(grep -aoE "carrier scheduler thread up \(([0-9]+) loops" "$D/pm.log" | grep -oE "[0-9]+" | head -1)
+loops=$(grep -aoE "scheduler thread up \(([0-9]+) loops" "$D/pm.log" | grep -oE "[0-9]+" | head -1)
 if [ -n "$loops" ] && [ "$loops" = "$ncpu" ]; then
   ok "pool = $loops loops (== $ncpu cores)"
 elif [ -n "$loops" ] && [ "$loops" -gt 1 ]; then
@@ -49,10 +55,6 @@ elif [ -n "$loops" ] && [ "$loops" -gt 1 ]; then
 else
   bad "pool not multi-loop (loops='$loops', cores=$ncpu) -- regressed to single loop?"
 fi
-
-# 1. basic round-trip through the xtc carrier
-note "select 1"
-[ "$($PSQL -c 'select 1')" = "1" ] && ok "select 1" || bad "select 1"
 
 # 2. N concurrent backends, each holds the socket, then a wedge check
 note "6 concurrent backends"
