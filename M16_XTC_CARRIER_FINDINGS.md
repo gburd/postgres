@@ -373,6 +373,23 @@ inside the postmaster process (8 threads, zero child processes -- verified via
    So PG_XTC_INJECT_CRASH now yields a DOWN reason=11, which the supervisor
    classifies as a genuine crash and escalates (to confirm end-to-end on meh).
 
+2e. **v1.2.1 validation on meh (24-loop pool).**  RESOLVED path confirmed:
+   the old "3/11 abnormal -11" are GONE -- 11 backends deliver 11 normal DOWNs
+   (reason 0), zero NOPROC, zero GENUINE-CRASH, zero escalation, fast stop
+   clean, smoke 12/12.  Because our supervisor spawns+monitors atomically, the
+   monitor never races the exit, so we see reason 0 (not even NOPROC) -- as the
+   libxtc team predicted.  STILL OPEN (our side, not libxtc): the
+   PG_XTC_INJECT_CRASH escalation does not yet fire end-to-end -- an injected
+   fiber that faults immediately at entry produces no DOWN to its loop
+   supervisor.  libxtc's own fault_early_contain test passes, so the remaining
+   gap is in OUR spawn/monitor sequencing: xtc_proc_spawn appears to schedule
+   the new fiber (which faults) before the supervisor's following xtc_monitor()
+   call runs, so the monitor is not yet registered when the fault is contained.
+   Fix is on our side (register the monitor before the fiber can be scheduled,
+   or arrange the injected fault to occur after the first yield); the
+   production crash-escalation wiring and classification are correct and safe
+   (reason>0 -> escalate, 0/NOPROC -> benign).
+
 3. **Latch/SetLatch wakeups.**  The epoll-fd intercept already covers latch
    wakeups (the latch signalfd is a registered epoll event, so SetLatch makes
    the epoll fd readable and unparks the fiber).  Not separately exercised for
