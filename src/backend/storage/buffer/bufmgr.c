@@ -88,6 +88,25 @@
 #define BUF_WRITTEN				0x01
 #define BUF_REUSABLE			0x02
 
+/*
+ * Initial usage_count bits to stamp on a freshly loaded buffer.
+ *
+ * Normally BUF_USAGECOUNT_ONE (usage_count = 1).  Under the striped cooling
+ * sweep (ActivePoolProbationaryScan, set only for numa_cooling_pool_routine),
+ * a page loaded as part of a BufferAccessStrategy scan is admitted at
+ * usage_count 0 (LeanStore-style COOL/probationary admission): a one-touch
+ * scan page is then immediately evictable and never displaces the hot working
+ * set, while a genuine re-access promotes it via PinBuffer.  Scoped to
+ * strategy loads, so ordinary single-page OLTP loads keep usage_count 1.
+ */
+static inline uint64
+InitialUsageCountBits(BufferAccessStrategy strategy)
+{
+	if (unlikely(ActivePoolProbationaryScan) && strategy != NULL)
+		return 0;
+	return BUF_USAGECOUNT_ONE;
+}
+
 #define RELS_BSEARCH_THRESHOLD		20
 
 /*
@@ -2350,7 +2369,7 @@ BufferAllocInPool(BufferPoolDesc *pool, SMgrRelation smgr,
 
 	victim_buf_hdr->tag = newTag;
 
-	set_bits |= BM_TAG_VALID | BUF_USAGECOUNT_ONE;
+	set_bits |= BM_TAG_VALID | InitialUsageCountBits(strategy);
 	if (relpersistence == RELPERSISTENCE_PERMANENT || forkNum == INIT_FORKNUM)
 		set_bits |= BM_PERMANENT;
 
@@ -2547,7 +2566,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	 * checkpoints, except for their "init" forks, which need to be treated
 	 * just like permanent relations.
 	 */
-	set_bits |= BM_TAG_VALID | BUF_USAGECOUNT_ONE;
+	set_bits |= BM_TAG_VALID | InitialUsageCountBits(strategy);
 	if (relpersistence == RELPERSISTENCE_PERMANENT || forkNum == INIT_FORKNUM)
 		set_bits |= BM_PERMANENT;
 

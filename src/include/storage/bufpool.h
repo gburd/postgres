@@ -221,6 +221,7 @@ extern PGDLLIMPORT void *ActivePoolData;
  * branch.  Maintained alongside ActivePoolRoutine.
  */
 extern PGDLLIMPORT bool ActivePoolHasAccessHooks;
+extern PGDLLIMPORT bool ActivePoolProbationaryScan;
 
 /* The built-in clock-sweep buffer pool routine */
 extern PGDLLIMPORT const BufferPoolRoutine clock_pool_routine;
