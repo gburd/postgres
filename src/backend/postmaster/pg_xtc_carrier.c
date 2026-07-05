@@ -160,12 +160,23 @@ static _Atomic uint32_t g_xtc_genuine_crash;
 static _Atomic unsigned g_xtc_inject_entry_count;
 static int	g_xtc_n_sups = 0;
 
-/* Register message: "please xtc_monitor this backend pid (child_slot N)". */
-typedef struct xtc_sup_register_msg
+/*
+ * Supervisor spawn request (AGENTS_XTC #7 Stage 1, race-free variant).
+ * The postmaster spawn thread sends this to a loop's supervisor; the
+ * supervisor -- running ON that loop -- does xtc_proc_spawn() followed by
+ * xtc_monitor() with no intervening yield, so the monitor is established
+ * BEFORE the new backend fiber can run.  This closes the spawn/register race
+ * where a fast-crashing fiber could die before an out-of-band register
+ * arrived, escaping observation.  A leading magic distinguishes it from a
+ * libxtc DOWN signal in the supervisor mailbox.
+ */
+#define XTC_SUP_SPAWN_MAGIC 0x58545343u		/* 'XTSC' */
+typedef struct xtc_sup_spawn_msg
 {
-	xtc_pid_t	backend_pid;
-	int			child_slot;
-} xtc_sup_register_msg;
+	uint32_t	magic;
+	xtc_carrier_entry_fn entry;
+	void	   *entry_arg;
+} xtc_sup_spawn_msg;
 
 /*
  * Number of carrier loops (each on its own OS thread).  A pool of loops lets
@@ -220,11 +231,15 @@ xtc_carrier_sched_thread(void *arg)
 	return NULL;
 }
 
+/* Forward decl: the backend fiber body, spawned by the loop supervisor. */
+static void xtc_carrier_proc(void *arg);
+
 /*
  * Per-loop supervisor fiber (AGENTS_XTC #7 Stage 1).  Runs forever on its
  * loop, servicing two message kinds:
- *   - a register message (xtc_sup_register_msg): xtc_monitor() the backend
- *     pid so we get a DOWN when it exits;
+ *   - a spawn request (xtc_sup_spawn_msg): xtc_proc_spawn() the backend fiber
+ *     on THIS loop and immediately xtc_monitor() it, with no yield between,
+ *     so the monitor is in place before the new fiber can run (race-free);
  *   - a DOWN signal (decoded via xtc_down_decode): a monitored backend
  *     exited.  reason 0 is a normal exit (the postmaster already reaps it;
  *     log at DEBUG only).  A non-zero reason means the fiber faulted/aborted;
@@ -237,7 +252,10 @@ xtc_carrier_sched_thread(void *arg)
 static void
 xtc_carrier_supervisor_proc(void *arg)
 {
-	(void) arg;
+	/* arg encodes this supervisor's loop index (see start_supervisors). */
+	int			my_loop_idx = (int) (intptr_t) arg;
+	xtc_loop_t *my_loop = (g_xtc_exec != NULL && g_xtc_n_loops > 1)
+		? xtc_exec_loop(g_xtc_exec, my_loop_idx) : g_xtc_loop;
 
 	for (;;)
 	{
@@ -316,13 +334,51 @@ xtc_carrier_supervisor_proc(void *arg)
 				}
 			}
 		}
-		else if (len == sizeof(xtc_sup_register_msg))
+		else if (len == sizeof(xtc_sup_spawn_msg) &&
+				 ((const xtc_sup_spawn_msg *) msg)->magic == XTC_SUP_SPAWN_MAGIC)
 		{
-			xtc_sup_register_msg reg;
-			uint64_t	ref = 0;
+			xtc_sup_spawn_msg sp;
+			xtc_carrier_arg *ca;
+			xtc_proc_opts_t po = {0};
+			xtc_pid_t	bpid = XTC_PID_NONE;
 
-			memcpy(&reg, msg, sizeof(reg));
-			(void) xtc_monitor(reg.backend_pid, &ref);
+			memcpy(&sp, msg, sizeof(sp));
+
+			ca = malloc(sizeof(*ca));
+			if (ca != NULL)
+			{
+				ca->entry = sp.entry;
+				ca->entry_arg = sp.entry_arg;
+				po.name = "pg-backend";
+
+				/*
+				 * Spawn on THIS supervisor's loop, then monitor with no yield
+				 * in between: the new fiber cannot be scheduled until the
+				 * supervisor next yields (at xtc_recv), by which point the
+				 * monitor is registered.  Race-free observation.
+				 */
+				if (xtc_proc_spawn(my_loop, xtc_carrier_proc, ca,
+								   &po, &bpid) == XTC_OK)
+				{
+					uint64_t	ref = 0;
+					char		sbuf[96];
+					int			sn;
+
+					(void) xtc_monitor(bpid, &ref);
+					/* raw write: elog is unsafe from this bare fiber */
+					sn = snprintf(sbuf, sizeof(sbuf),
+								  "xtc: spawned backend fiber pid=(loop=%u,local=%u,gen=%u)\n",
+								  bpid.loop_id, bpid.local_id, bpid.gen);
+					if (sn > 0)
+					{
+						if (sn > (int) sizeof(sbuf))
+							sn = (int) sizeof(sbuf);
+						(void) write(STDERR_FILENO, sbuf, (size_t) sn);
+					}
+				}
+				else
+					free(ca);
+			}
 		}
 
 		/*
@@ -352,8 +408,8 @@ xtc_carrier_start_supervisors(void)
 		xtc_pid_t	pid = XTC_PID_NONE;
 
 		po.name = "pg-xtc-supervisor";
-		if (xtc_proc_spawn(loop, xtc_carrier_supervisor_proc, NULL, &po,
-						   &pid) == XTC_OK)
+		if (xtc_proc_spawn(loop, xtc_carrier_supervisor_proc,
+						   (void *) (intptr_t) i, &po, &pid) == XTC_OK)
 			g_xtc_sup_pid[i] = pid;
 		else
 			g_xtc_sup_pid[i] = XTC_PID_NONE;
@@ -386,15 +442,13 @@ xtc_carrier_proc(void *arg)
 	/*
 	 * Debug-only fault injection (AGENTS_XTC #7 Stage 1b test hook).  If
 	 * PG_XTC_INJECT_CRASH=N is set, the Nth backend fiber to enter (1-based,
-	 * counted across the whole pool) faults after a brief park -- AFTER the
-	 * spawning thread has logged "spawned" and sent the register message so
-	 * the supervisor is already monitoring it, but before the fiber reaches
-	 * its clean exit path.  This models a real backend that crashes mid-work
-	 * (not the microsecond spawn/register window) and exercises the
-	 * GENUINE-crash escalation.  libxtc R1 containment turns the SIGSEGV into
-	 * a DOWN(reason=-11) to the loop supervisor, which (no clean-exit record)
-	 * flags a genuine crash and the postmaster terminates the runtime.  Never
-	 * set in production.
+	 * counted across the whole pool) faults HERE, before running any real work
+	 * and before reaching its clean exit path.  Now that the loop supervisor
+	 * spawns+monitors atomically (no spawn/register race), even an immediate
+	 * fault is observed: libxtc R1 containment turns the SIGSEGV into a
+	 * DOWN(reason=-11) to the supervisor, which (no clean-exit record for this
+	 * pid) flags a GENUINE crash and the postmaster terminates the runtime.
+	 * Never set in production.
 	 */
 	{
 		const char *inj = getenv("PG_XTC_INJECT_CRASH");
@@ -411,8 +465,6 @@ xtc_carrier_proc(void *arg)
 				(void) write(STDERR_FILENO,
 							 "xtc: INJECT_CRASH faulting this fiber before clean exit\n",
 							 56);
-				/* park briefly so the register/monitor is in place first */
-				xtc_proc_sleep((int64_t) 200 * 1000 * 1000);	/* 200ms */
 				*crashp = 42;	/* SIGSEGV -> contained -> DOWN reason=-11 */
 			}
 		}
@@ -517,57 +569,63 @@ out:
 int
 xtc_pg_launch_backend_fiber(xtc_carrier_entry_fn entry, void *entry_arg)
 {
-	xtc_carrier_arg *ca;
-	xtc_proc_opts_t po = {0};
-	xtc_pid_t	pid = XTC_PID_NONE;
-	xtc_loop_t *loop;
 	int			loop_idx = 0;
 
 	if (xtc_pg_carrier_start() != 0)
 		return EAGAIN;
 
-	ca = malloc(sizeof(*ca));
-	if (ca == NULL)
-		return ENOMEM;
-	ca->entry = entry;
-	ca->entry_arg = entry_arg;
-
 	/* Pick a loop round-robin across the pool; loop 0 in single-loop mode. */
 	if (g_xtc_exec != NULL && g_xtc_n_loops > 1)
-	{
 		loop_idx = (int) (atomic_fetch_add(&g_xtc_next_loop, 1) %
 						  (unsigned) g_xtc_n_loops);
-		loop = xtc_exec_loop(g_xtc_exec, loop_idx);
-	}
-	else
-		loop = g_xtc_loop;
-
-	po.name = "pg-backend";
-	if (xtc_proc_spawn(loop, xtc_carrier_proc, ca, &po, &pid) != XTC_OK)
-	{
-		free(ca);
-		return EAGAIN;
-	}
 
 	/*
-	 * Ask this loop's supervisor to xtc_monitor() the new backend so an
-	 * abnormal death is observed (AGENTS_XTC #7 Stage 1).  Best-effort and
-	 * cross-thread (postmaster spawn thread -> supervisor mailbox): if the
-	 * send is dropped, the only cost is a missing DOWN observation for this
-	 * backend -- normal-exit reaping is unaffected (the postmaster owns it).
+	 * Hand the spawn to that loop's supervisor, which does xtc_proc_spawn()
+	 * + xtc_monitor() atomically on-loop (no yield between), so the new
+	 * backend fiber is monitored BEFORE it can run.  This closes the
+	 * spawn/register race: a fiber that crashes immediately can no longer die
+	 * unobserved.  The send is cross-thread (postmaster spawn thread ->
+	 * supervisor mailbox) but only carries the entry/arg; the actual spawn
+	 * and monitor happen together inside the supervisor.
 	 */
 	if (loop_idx < g_xtc_n_sups)
 	{
-		xtc_sup_register_msg reg;
+		xtc_sup_spawn_msg sp;
 
-		reg.backend_pid = pid;
-		reg.child_slot = -1;	/* not plumbed through this seam yet */
-		(void) xtc_send(g_xtc_sup_pid[loop_idx], &reg, sizeof(reg));
+		sp.magic = XTC_SUP_SPAWN_MAGIC;
+		sp.entry = entry;
+		sp.entry_arg = entry_arg;
+		if (xtc_send(g_xtc_sup_pid[loop_idx], &sp, sizeof(sp)) != XTC_OK)
+			return EAGAIN;
+		return 0;
 	}
 
-	elog(LOG, "xtc: spawned backend fiber pid=(loop=%u,local=%u,gen=%u)",
-		 pid.loop_id, pid.local_id, pid.gen);
-	return 0;
+	/*
+	 * No supervisor for this loop (should not happen once supervisors are up)
+	 * -- fall back to a direct spawn without monitoring, so a backend still
+	 * launches.  Observability is lost for this one fiber only.
+	 */
+	{
+		xtc_carrier_arg *ca = malloc(sizeof(*ca));
+		xtc_proc_opts_t po = {0};
+		xtc_pid_t	pid = XTC_PID_NONE;
+		xtc_loop_t *loop = (g_xtc_exec != NULL && g_xtc_n_loops > 1)
+			? xtc_exec_loop(g_xtc_exec, loop_idx) : g_xtc_loop;
+
+		if (ca == NULL)
+			return ENOMEM;
+		ca->entry = entry;
+		ca->entry_arg = entry_arg;
+		po.name = "pg-backend";
+		if (xtc_proc_spawn(loop, xtc_carrier_proc, ca, &po, &pid) != XTC_OK)
+		{
+			free(ca);
+			return EAGAIN;
+		}
+		elog(LOG, "xtc: spawned backend fiber (unmonitored) pid=(loop=%u,local=%u,gen=%u)",
+			 pid.loop_id, pid.local_id, pid.gen);
+		return 0;
+	}
 }
 
 /*
