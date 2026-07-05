@@ -1,50 +1,37 @@
 /*-------------------------------------------------------------------------
  *
  * parser_extension.c
- *	  Runtime grammar extension API -- subprocess pipeline implementation
- *	  (Phase 4 Track A).
+ *	  Runtime grammar extension API -- in-process compose implementation
+ *	  (Phase 4 Track B).
  *
  * The C contract in include/parser/parser_extension.h is the final
- * shape; extensions can compile against it today.  This translation
- * unit:
+ * shape; extensions compile against it.  This translation unit:
  *
  *   1. Accepts and validates all add_token / add_type / add_rule /
  *      set_precedence calls.  Stores them in a per-extension memory
  *      context owned by the handle.
  *   2. On register(), serializes the extension to a .lime-syntax
- *      fragment and queues it on a static "pending" list.  No
- *      subprocess work happens yet -- multiple extensions registered
- *      from different shared_preload_libraries are batched.
- *   3. The first call to pg_grammar_ext_lock_parser() (issued by
- *      raw_parser() at the top of the first parse) drains the pending
- *      list.  If non-empty, the build pipeline runs:
+ *      fragment (empty action bodies -- reduces are dispatched at parse
+ *      time via host-reduce callbacks) and queues it on a static
+ *      "pending" list, recording each rule's composed rule-id.  Multiple
+ *      extensions registered from different shared_preload_libraries are
+ *      batched.
+ *   3. pg_grammar_ext_prewarm(), called once at postmaster start after
+ *      all _PG_init()s (see miscinit.c), composes the base grammar source
+ *      with every queued fragment and compiles the result to a runtime
+ *      ParserSnapshot via lime_compile_grammar_in_process()
+ *      (parser_pushparse.c: pg_grammar_compose_install).  No subprocess,
+ *      no C compiler, no .so cache, no dlopen.  The composed snapshot is
+ *      installed as the active push-parse grammar; the cost is absorbed
+ *      pre-fork so backends see a warm parser with no cold-start.
+ *   4. At parse time the push driver routes base rules to the generated
+ *      base actions (base_yyHostReduce) and extension rules to their
+ *      registered PgGrammarReduceFn via pg_grammar_ext_resolve_reduce,
+ *      keyed by composed-ruleno - base_nrule.
  *
- *        a. SHA-256(base gram.lime || all fragments) gives a hex
- *           digest used as both filename root and cache key.
- *        b. <DataDir>/pg_parser_cache/<hex>.so is the cached parser.
- *           If it exists and dlopens, we skip the rebuild.
- *        c. Otherwise: write the concatenated .lime to <hex>.lime,
- *           fork+exec the pinned `lime` to produce <hex>.c, fork+exec
- *           the host C compiler to produce <hex>.so, then dlopen.
- *        d. dlsym("base_yyparse") produces the new parser entry
- *           point; we install it into the function pointer parser.c
- *           dispatches through.  The static fallback (the in-binary
- *           base_yyparse) remains valid if no extensions ever
- *           register, with zero overhead beyond an indirect call.
- *
- *   Track B (in-process snapshot patching) shares the same C contract
- *   and replaces only this file's implementation.  Blocks on Lime
- *   upstream commits P0-1-wall-{1,2,3}; not addressed here.
- *
- * Cache-key invariants:
- *   - The base gram.lime bytes are hashed in.  A new server build
- *     that ships a different gram.lime invalidates every cached
- *     .so via the hash, no special-case logic.
- *   - Fragments are concatenated in *registration order*.  Two
- *     servers loading the same set of extensions in different orders
- *     produce different hashes.  That's deliberate: rule order can
- *     affect Lime's conflict resolution, so we don't pretend the
- *     order is irrelevant.
+ * The historical Track A path (serialize -> fork lime + cc -> dlopen a
+ * cached .so) has been removed entirely; this file is the in-process
+ * implementation.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -181,11 +168,11 @@ PgGrammarExtKeywordHook pg_grammar_ext_keyword_hook = NULL;
  * Indexed by rule_id (assigned at register() time from a 1-based
  * counter; index 0 is unused so a dispatch with rule_id=0 is a clear
  * bug).  Each slot points to the ExtRule whose reduce/reduce_user the
- * trampoline forwards to.  The .so produced by the subprocess pipeline
- * is rebuilt every time the set of registered extensions changes (the
- * cache key includes the fragments, which include the rule_ids), so a
- * .so loaded against this table is always paired with the rules that
- * were live when it was built.
+ * trampoline forwards to.  The composed snapshot is recomposed every
+ * time the set of registered extensions changes (the composed grammar
+ * text includes the fragments, which include the rule_ids), so the
+ * active snapshot is always paired with the rules that were live when
+ * it was composed.
  *
  * The table is sized once at register() time and never resized, so
  * pointer reads from any backend are stable for the life of the
@@ -612,12 +599,13 @@ serialize_extension(PgGrammarExtension *ext)
 					 ext->version ? ext->version : "");
 
 	/*
-	 * Tokens.  ScanKeywordCategory becomes a comment for now; the %token
-	 * directive itself doesn't carry category info -- that lives in the
-	 * keyword lookup table in scan.c, which Track A does NOT modify (the
-	 * rebuilt parser is invoked via dlopen but the scanner stays
-	 * compiled-in).  Track B will need to update the keyword table at
-	 * register-time.
+	 * Tokens.  The keyword category becomes a comment here; the %token
+	 * directive itself doesn't carry category info.  Category-aware keyword
+	 * behaviour at parse time is handled by the push driver's keyword map and
+	 * admissibility oracle (parser_pushparse.c): each registered token's
+	 * lexeme is published to scan.c via pg_grammar_ext_keyword_hook, and the
+	 * oracle decides keyword-vs-identifier and keyword-vs-keyword per parse
+	 * state.
 	 */
 	for (tok = ext->tokens; tok != NULL; tok = tok->next)
 	{
@@ -706,11 +694,12 @@ serialize_extension(PgGrammarExtension *ext)
 			 * ParserSnapshot (tables only -- no action code), so the rule's
 			 * action body is empty here.  At parse time the push parser's
 			 * host-reduce dispatcher routes this rule's reduce -- identified
-			 * by its composed rule number -- to pg_grammar_ext_dispatch_reduce
-			 * and on to the user's PgGrammarReduceFn.  Record the rule_id in
-			 * append order so the dispatcher can map composed-ruleno ->
-			 * rule_id (extension rules are appended after the base grammar's
-			 * rules, in fragment/text order).
+			 * by its composed rule number -- to
+			 * pg_grammar_ext_dispatch_reduce and on to the user's
+			 * PgGrammarReduceFn.  Record the rule_id in append order so the
+			 * dispatcher can map composed-ruleno -> rule_id (extension rules
+			 * are appended after the base grammar's rules, in fragment/text
+			 * order).
 			 */
 			record_composed_rule(rule->rule_id);
 			appendStringInfoString(&buf, ".\n");

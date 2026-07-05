@@ -7,41 +7,43 @@
  * grammar rules at backend startup, before any backend has called
  * raw_parser().  Once registered, the extra grammar is applied to a
  * Lime-generated parser snapshot, either by spawning a subprocess
- * `lime` invocation (Track A subprocess fallback) or by patching
- * Lime's snapshot in place (Track B in-process dispatch).  Both
- * tracks share this exact same C contract; switching tracks changes
- * only the implementation of pg_grammar_ext_register().
+ * `lime` invocation (historical Track A subprocess path, removed) or
+ * by composing Lime's grammar snapshot in process (Track B in-process
+ * dispatch -- the live implementation).  The C contract below is
+ * independent of the implementation.
  *
  * Calls are valid from `_PG_init()` or other shared_preload_libraries-
  * loaded code only, and must complete before the FIRST backend has
  * begun parsing user queries.  Calling pg_grammar_ext_register() after
  * the parser has been initialised returns false with err set.
  *
- * Phase 4 status:
+ * Implementation status (Track B, in-process compose):
  *
- *   - Track A subprocess pipeline:  LIVE.  pg_grammar_ext_register()
- *     queues the extension; on first parse, the rebuild pipeline
- *     forks lime + cc, dlopens the result, and installs it into the
- *     base_yyparse_fn function-pointer slot in parser.c.  Tested by
- *     dummy_grammar_ext smoke + grammar_ext_compose torture suite
- *     (22 subtests) + grammar_ext_overlap multi-extension test
- *     (42 subtests covering 5 simultaneously-loaded extensions).
+ *   - Registration queues the extension's tokens, types, precedences,
+ *     and rules.  At postmaster start, after all _PG_init()s run,
+ *     pg_grammar_ext_prewarm() composes the base grammar source with
+ *     every queued fragment and compiles the result to a runtime
+ *     ParserSnapshot via lime_compile_grammar_in_process() -- no
+ *     subprocess, no C compiler, no .so cache.  The composed snapshot
+ *     is installed as the active push-parse grammar.
  *
- *   - Track B Phase 1 scanner-table updates:  LIVE.  After the
- *     rebuild pipeline produces the .so, build_extension_keyword_map()
- *     reads the rebuilt .h to resolve each registered token name to
- *     its external token code, and publishes pg_grammar_ext_keyword_-
- *     hook to scan.c.  User input matching an extension's keyword
- *     lexeme is now emitted as the rebuilt-parser's token code
- *     (rather than IDENT), so registered rules are reachable from
- *     real psql input.  Verified by dummy_grammar_ext: input
- *     "dummy;" reduces via the user-supplied callback.
+ *   - Reduce dispatch: base rules run the generated base actions
+ *     through the host-reduce wrapper (base_yyHostReduce); extension
+ *     rules route to their registered PgGrammarReduceFn keyed by
+ *     composed-ruleno - base_nrule.  rhs_values[i] is the i-th RHS
+ *     symbol's value by value (see PgGrammarReduceFn below).
  *
- *   - Track B Phase 2 (in-process compose):  NOT YET STARTED.  The
- *     subprocess pipeline is the only path today; cold rebuild ~9s,
- *     warm cache ~11ms.  Lime's in-process API
- *     (lime_compile_grammar_in_process, v0.5.4+) would cut cold
- *     rebuild to ~5ms.
+ *   - Keyword override: each registered token's lexeme is published to
+ *     scan.c via pg_grammar_ext_keyword_hook.  Non-colliding keywords
+ *     fall back to IDENT where the parse state expects a name; keywords
+ *     that collide with base SQL are resolved at parse time by the LR
+ *     admissibility oracle (parse_context_token_admissible) plus, for
+ *     genuinely ambiguous verbs, one token of lookahead.
+ *
+ *   - Tested by dummy_grammar_ext smoke, grammar_ext_compose (22
+ *     subtests), grammar_ext_overlap (44 subtests, 5 simultaneously-
+ *     loaded dialects), the quel demonstrator, and the upsert
+ *     demonstrator.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -83,20 +85,29 @@ typedef enum PgGrammarExtAssoc
  *   extra_arg   Lime's %extra_argument value.  For PG's backend grammar
  *               this is the core_yyscan_t.
  *   nrhs        Number of RHS symbols at this reduction.
- *   rhs_values  Array of nrhs pointers, one per RHS symbol.  Element
- *               i points at the value of the i-th RHS symbol, with the
- *               C type the extension declared for that symbol via
- *               pg_grammar_ext_add_type() (or, for terminals, the
- *               %token_type of the base grammar -- YYSTYPE for the
- *               backend SQL grammar).  Read with
- *               `*(const Type *) rhs_values[i]`.  Pointer storage is
- *               valid for the duration of the callback only; copy out
- *               anything the extension wants to retain.
+ *   rhs_values  Array of nrhs symbol values in rule order (index 0 =
+ *               leftmost).  Per the Lime host-reduce ABI (confirmed and
+ *               regression-locked in Lime v1.7.1), each element IS the
+ *               symbol's value BY VALUE -- a pointer-width payload --
+ *               NOT a pointer to a slot holding the value.  Read it
+ *               directly: for a %type {Type *} symbol the element is the
+ *               Type * itself, so use `(Type *) rhs_values[i]`, never
+ *               `*(const Type *) rhs_values[i]`.  For a terminal whose
+ *               base %token_type is a union (the backend grammar's
+ *               core_YYSTYPE { int ival; char *str; const char *keyword;
+ *               ... }), the element is the union's pointer-width content
+ *               (the active member's bits): a string terminal arrives as
+ *               the char* directly -- `(const char *) rhs_values[i]` --
+ *               do NOT reconstruct a `core_YYSTYPE *` and dereference.
+ *               The values are valid for the duration of the callback
+ *               only; copy out anything the extension wants to retain.
  *   rhs_locs    Parallel array of source locations (one int per RHS
  *               symbol, byte offset into the original input).
- *   lhs_out     Destination for the reduced value.  The extension
- *               casts to the target's C type (matching the %type
- *               declared in pg_grammar_ext_add_type) and writes the
+ *   lhs_out     Destination for the reduced value.  Write the value by
+ *               value, symmetric with reading rhs_values:
+ *               `*(Type *) lhs_out = v` (e.g. `*(Node **) lhs_out =
+ *               node;`).  The extension casts to the target's C type
+ *               (matching the %type declared in pg_grammar_ext_add_type).
  *               result.  Memory MUST be palloc'd in
  *               CurrentMemoryContext if pointer-typed.
  */
@@ -207,12 +218,12 @@ extern void pg_grammar_ext_dispatch_reduce(unsigned int rule_id,
  *	  to the registered PgGrammarReduceFn and invokes it.  Returns 0 on
  *	  success.  `extra_arg` is the core scanner.
  */
-extern int pg_grammar_ext_resolve_reduce(int ext_rule_index,
-										 void *extra_arg,
-										 int nrhs,
-										 const void *const *rhs_values,
-										 const int *rhs_locs,
-										 void *lhs_out);
+extern int	pg_grammar_ext_resolve_reduce(int ext_rule_index,
+										  void *extra_arg,
+										  int nrhs,
+										  const void *const *rhs_values,
+										  const int *rhs_locs,
+										  void *lhs_out);
 
 /*
  * pg_grammar_ext_pending_fragments
@@ -221,7 +232,7 @@ extern int pg_grammar_ext_resolve_reduce(int ext_rule_index,
  *	  source.  Returns the count; *frags_out points at an array the
  *	  caller must not free.
  */
-extern int pg_grammar_ext_pending_fragments(const char ***frags_out);
+extern int	pg_grammar_ext_pending_fragments(const char ***frags_out);
 
 /*
  * Callback for pg_grammar_ext_foreach_token: receives one registered
