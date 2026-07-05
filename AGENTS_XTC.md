@@ -64,14 +64,17 @@ Near-term (the xtc carrier itself):
    each backend fiber is placed round-robin across `xtc_exec_loop()` so two
    concurrent backends never park on the same loop and cannot starve each
    other.  Also fixed the shutdown hang (pooled-logical fiber reaping).
-2. Cross-fiber SetLatch wakeups.  The epoll-fd intercept covers latch
-   wakeups today (the latch signalfd is a registered epoll event), but
-   cross-fiber SetLatch under LISTEN/NOTIFY is not separately verified;
-   may need an XTC_WAIT_MAILBOX wake rather than the epoll-fd edge.  NEXT.
+2. Cross-fiber SetLatch wakeups.  DONE (verified on meh): a parked LISTEN
+   session wakes and delivers when a DIFFERENT backend (different fiber, likely
+   different loop) does NOTIFY.  The existing signalfd+epoll intercept plus
+   SetLatch(backend->interrupt_latch) already handle it -- no XTC_WAIT_MAILBOX
+   path was needed.  Covered by scripts/xtc_smoke.sh.
 3. ereport(ERROR) / sigsetjmp inside a fiber.  PG's error unwind
    (PG_exception_stack) is per-thread in this tree; on a fiber stack it
    should hold for one backend, but confirm an ERROR unwinds cleanly and
-   the fiber survives.  NOT yet exercised.  NEXT.
+   the fiber survives.  DONE (verified on meh): SELECT 1/0 then a follow-up
+   query in the same session -- the error unwinds and the session recovers
+   on the fiber stack.  Covered by scripts/xtc_smoke.sh.
 4. A real carrier POOL: many xtc loops/threads (the Phase-15 shape).
    DONE for backends -- n_loops = CPU count (override PG_XTC_CARRIER_LOOPS),
    backends placed round-robin across the executor loops.  Still cooperative
@@ -80,14 +83,33 @@ Near-term (the xtc carrier itself):
 Larger (toward fully-on-xtc):
 
 5. Auxiliary/background processes on xtc: route bgworker, checkpointer,
-   walwriter, autovacuum, etc. through the xtc scheduler / xtc_proc
-   supervision instead of fork / base pthreads.  ("Even background
-   tasks" -- currently NO.)
-6. xtc_aio for backend disk I/O (backends' file reads/writes on xtc's
-   async file path -- io_uring/epoll/kqueue under one API).
-7. xtc_proc supervision of backends (postmaster crash-restart via an
-   xtc supervisor tree; xtc has one_for_one / one_for_all /
-   rest_for_one / simple_one_for_one).
+   walwriter, autovacuum, etc. through the xtc scheduler instead of fork /
+   base pthreads.  INFRASTRUCTURE IN PLACE, workers still DEFERRED.
+   xtc_carrier_eligible() (launch_backend.c) gates which child types run as
+   fibers; the launch/exit plumbing is generalized for any type.  Only
+   B_BACKEND is admitted today.  A bare pthread->fiber carrier swap for
+   B_BG_WORKER passed happy-path smoke but WEDGED the threaded-runtime TAP
+   (terminating an idle backend hung; the suite was a clean 129/129 before).
+   Worker fibers need fiber-aware crash/terminate/restart and shutdown-
+   ordering handling, which depends on item #7 Stage 1 (fiber-death
+   observation).  Widen the allowlist one family at a time, each validated
+   under the FULL threaded-runtime TAP (not just smoke) on a disk-backed host.
+6. xtc_aio for backend disk I/O.  DESIGN DONE:
+   plan_docs/XTC_AIO_DESIGN.md.  Recommended first step: a new io_method='xtc'
+   that wraps xtc_aio_* (issuer-synchronous) for backends on fiber carriers,
+   falling back to the existing methods (sync/worker/io_uring) in process
+   mode.  This is a 'wrap' at the IoMethodOps vtable seam, not a call-site
+   change.  B_IO_WORKER fibers (item #5) belong here too -- their
+   PM_WAIT_IO_WORKERS shutdown handshake is part of this work.
+7. xtc_orc / xtc_monitor supervision of backend fibers.  DESIGN DONE:
+   plan_docs/XTC_ORC_SUPERVISION_DESIGN.md.  The postmaster stays the crash
+   authority; xtc is an OBSERVER.  Stage 1 (recommended next): a per-loop
+   supervisor fiber xtc_monitor()s backend fibers so an ABNORMAL fiber death
+   (one that skipped PostmasterChildPublishPooledLogicalExit) is observed and
+   escalated via HandleChildCrash -> ExitPostmaster(1), WITHOUT double-reaping
+   or changing crash policy.  Closes the occupied-slot hang class and unblocks
+   worker fibers (#5).  NOTE: the DOWN watcher must be a loop-resident proc
+   (xtc_recv), not the off-loop postmaster carrier-management thread.
 8. cassert build: fix the bootstrap GUCMemoryContext == NULL assertion
    so the carrier runs under --enable-cassert (better crash diagnostics).
 
