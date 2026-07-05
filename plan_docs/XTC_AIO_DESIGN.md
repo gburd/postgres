@@ -366,6 +366,16 @@ Invariants + test for Step 1:
 
 ### Step 2: multi-iovec + writev, still issuer-synchronous
 
+STATUS: DONE (libxtc v1.1.0).  method_xtc.c now handles any-length READV/WRITEV
+on a fiber: needs_synchronous_execution() returns false for both ops, and
+pgaio_xtc_run_vectored() loops xtc_aio_pread/pwrite per iovec element at
+offset+bytes_done (libxtc v1.1.0 has no readv/writev), mirroring
+pg_preadv/pg_pwritev short-transfer/error semantics.  Verified on meh: a
+500k-row wide-table seqscan through combined multi-buffer readv returns the
+correct count/sums with 0 iovec-misassembly rows (per-row md5 check), and the
+bulk-update writev path is correct.  Covered by scripts/xtc_smoke.sh
+("xtc_aio multi-iovec no misassembly").
+
 Lift the iov_length==1 restriction: loop xtc_aio_pread/pwrite per iovec element,
 or use `xtc_io_aio_submit` with an iovec-aware xtc op if/when available. Add
 PGAIO_OP_WRITEV coverage. Same invariants; extend the equivalence test to

@@ -107,6 +107,12 @@ if pg_ctl -D "$PGDATA" -l "$D/pm2.log" -o "-c multithreaded=on" -w start >/dev/n
   $PSQL -c "INSERT INTO aiot SELECT g, repeat('x',200) FROM generate_series(1,200000) g" >/dev/null 2>&1
   r=$($PSQL -c "SELECT count(*), sum(length(payload)) FROM aiot" 2>/dev/null)
   [ "$r" = "200000|40000000" ] && ok "xtc_aio scan correct ($r)" || bad "xtc_aio scan wrong ($r)"
+  # multi-iovec integrity (item #6 step 2): a wide-row table forces combined
+  # multi-buffer readv; a per-row md5 check catches any iovec misassembly.
+  $PSQL -c "CREATE TABLE aiov(id int primary key, h text)" >/dev/null 2>&1
+  $PSQL -c "INSERT INTO aiov SELECT g, md5(g::text) FROM generate_series(1,200000) g" >/dev/null 2>&1
+  bad_rows=$($PSQL -c "SELECT count(*) FROM aiov WHERE h <> md5(id::text)" 2>/dev/null)
+  [ "$bad_rows" = "0" ] && ok "xtc_aio multi-iovec no misassembly" || bad "xtc_aio iovec misassembly ($bad_rows rows)"
   if grep -aiqE "PANIC|wrong state|corrupt|invalid page" "$D/pm2.log" 2>/dev/null; then
     bad "xtc_aio log has crash/corruption signature"
   else

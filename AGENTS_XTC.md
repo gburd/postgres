@@ -94,26 +94,29 @@ Larger (toward fully-on-xtc):
    ordering handling, which depends on item #7 Stage 1 (fiber-death
    observation).  Widen the allowlist one family at a time, each validated
    under the FULL threaded-runtime TAP (not just smoke) on a disk-backed host.
-6. xtc_aio for backend disk I/O.  STEP 1 DONE (libxtc v1.1.0):
-   plan_docs/XTC_AIO_DESIGN.md.  Implemented io_method='xtc'
-   (src/backend/storage/aio/method_xtc.c, IOMETHOD_XTC/pgaio_xtc_ops) that
-   wraps xtc_aio_pread/pwrite (issuer-synchronous, single-iovec READV/WRITEV)
-   for backends on fiber carriers; process mode and non-fiber backends fall to
-   the synchronous method via needs_synchronous_execution() -> true, unchanged.
-   Verified on meh: a table scan larger than shared_buffers issues real AIO
-   reads through xtc_aio and returns correct data with no PANIC/corruption
-   (scripts/xtc_smoke.sh).  Deferred: multi-iovec (step 2), issuer-async reap
-   (step 3), WAL/fsync (step 4).  B_IO_WORKER fibers (item #5) still belong to
-   this work stream (their PM_WAIT_IO_WORKERS shutdown handshake).
-7. xtc_orc / xtc_monitor supervision of backend fibers.  DESIGN DONE:
+6. xtc_aio for backend disk I/O.  STEPS 1-2 DONE (libxtc v1.1.0):
+   plan_docs/XTC_AIO_DESIGN.md.  io_method='xtc'
+   (src/backend/storage/aio/method_xtc.c, IOMETHOD_XTC/pgaio_xtc_ops) wraps
+   xtc_aio_pread/pwrite (issuer-synchronous) for READV/WRITEV of ANY iovec
+   length on backend fiber carriers (step 2 loops per iovec element, libxtc
+   has no readv/writev); process mode and non-fiber backends fall to the
+   synchronous method unchanged.  Verified on meh: multi-buffer seqscans and
+   bulk-update writes are correct with 0 iovec misassembly (scripts/
+   xtc_smoke.sh).  Deferred: issuer-async reap (step 3), WAL/fsync (step 4).
+   B_IO_WORKER fibers (item #5) still belong to this work stream.
+7. xtc_orc / xtc_monitor supervision of backend fibers.  STAGE 1 DONE:
    plan_docs/XTC_ORC_SUPERVISION_DESIGN.md.  The postmaster stays the crash
-   authority; xtc is an OBSERVER.  Stage 1 (recommended next): a per-loop
-   supervisor fiber xtc_monitor()s backend fibers so an ABNORMAL fiber death
-   (one that skipped PostmasterChildPublishPooledLogicalExit) is observed and
-   escalated via HandleChildCrash -> ExitPostmaster(1), WITHOUT double-reaping
-   or changing crash policy.  Closes the occupied-slot hang class and unblocks
-   worker fibers (#5).  NOTE: the DOWN watcher must be a loop-resident proc
-   (xtc_recv), not the off-loop postmaster carrier-management thread.
+   authority; xtc is an OBSERVER.  Implemented a per-loop supervisor fiber
+   (xtc_carrier_supervisor_proc in pg_xtc_carrier.c) that xtc_monitor()s each
+   backend and logs its DOWN: quiet for a normal exit (reason 0; the
+   postmaster still reaps via process_pm_pooled_logical_exit), LOUD for an
+   abnormal exit.  Stage 1a is observability only: never reaps, never
+   respawns.  ALREADY PAID OFF: it surfaced a previously-SILENT intermittent
+   SIGSEGV inside libxtc's xtc_exit_self during fiber teardown (findings 2c,
+   reason=-11, ~3/11 backends, contained by R1) -- likely the root cause of
+   the earlier worker-fiber TAP wedge, and a libxtc item to report.  NEXT
+   (Stage 1b): wire an abnormal DOWN into the postmaster crash policy
+   (HandleChildCrash/ExitPostmaster), then widen #5 to worker fibers.
 8. cassert build: fix the bootstrap GUCMemoryContext == NULL assertion
    so the carrier runs under --enable-cassert (better crash diagnostics).
 

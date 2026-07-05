@@ -364,7 +364,11 @@ inside the postmaster process (8 threads, zero child processes -- verified via
    (24-loop pool + repeated connect/query/disconnect).  Do NOT work around it
    in our tree; assume libxtc will fix xtc_exit_self.  Meanwhile the supervisor
    makes it observable (rate-limited LOUD log), which is exactly item #7
-   Stage 1's purpose.
+   Stage 1's purpose.  Observed IMPACT beyond noise: the contained teardown
+   fault also SLOWS `pg_ctl -m fast stop` (a clean stop took ~27s in an
+   io_method=xtc multi-iovec run because faulted-teardown fibers drag out
+   PM_WAIT_BACKENDS), though it still completes.  So this libxtc fix also buys
+   back shutdown latency.
 
 3. **Latch/SetLatch wakeups.**  The epoll-fd intercept already covers latch
    wakeups (the latch signalfd is a registered epoll event, so SetLatch makes
