@@ -107,6 +107,15 @@ void	   *ActivePoolData = NULL;
 bool		ActivePoolHasAccessHooks = false;
 
 /*
+ * True when the active DEFAULT pool is the plain built-in clock sweep
+ * (clock_pool_routine).  Lets StrategyGetBuffer() devirtualize the
+ * overwhelmingly common victim path with a single predicted-true branch,
+ * bypassing the vtable indirection.  False for dynamic pools, numa_clock, and
+ * any extension-provided algorithm -- those keep the indirect vtable path.
+ */
+static bool ActivePoolIsClock = false;
+
+/*
  * GUC variable: name of the replacement algorithm for the DEFAULT pool.
  *
  * Looked up in the algorithm registry during shared-memory initialization.
@@ -522,125 +531,236 @@ const BufferPoolRoutine numa_clock_pool_routine = {
  */
 
 /*
- * ClockGetVictim -- clock-sweep implementation of get_victim
+ * ClockSweepDefault -- default-pool clock sweep (setjmp-free, inlinable core)
  *
- * Called by StrategyGetBuffer() via the vtable.  Selects the next candidate
- * buffer to use in GetVictimBuffer().  The only hard requirement is that the
- * selected buffer must not currently be pinned by anyone.
+ * This is the byte-for-byte equivalent of upstream/master's StrategyGetBuffer
+ * clock sweep: it uses the global NBuffers and &StrategyControl->nextVictimBuffer
+ * directly (no struct-loaded locals, no per-tick is_dynamic_pool branch), so the
+ * compiler optimizes the hot tick loop identically to upstream.
  *
- * strategy is a BufferAccessStrategy object, or NULL for default strategy.
+ * The caller has already handled the strategy-ring / RECYCLE-pool / bgwriter /
+ * numBufferAllocs preamble.  This helper only performs the victim sweep.
  *
- * For the default pool, strategy_data points to StrategyControl (a
- * BufferStrategyControl*) and we sweep through BufferDescriptors[0..NBuffers-1].
- * For dynamic pools, strategy_data points to a ClockPoolState stored in the
- * pool's DSM segment, and we sweep through that pool's buffer range.
- *
- * The buffer is pinned and marked as owned, using TrackNewBufferPin(),
- * before returning.
+ * Marked pg_attribute_always_inline so that when StrategyGetBuffer devirtualizes
+ * the default clock (the overwhelmingly common case) it collapses to the same
+ * tight inlined sweep upstream has.  Safe to force-inline: contains no
+ * PG_TRY/setjmp.
  */
-static BufferDesc *
-ClockGetVictim(void *strategy_data,
-			   BufferAccessStrategy strategy,
-			   uint64 *buf_state,
-			   bool *from_ring)
+static pg_attribute_always_inline BufferDesc *
+ClockSweepDefault(BufferAccessStrategy strategy, uint64 *buf_state)
 {
 	BufferDesc *buf;
 	int			trycounter;
-	bool		is_dynamic_pool;
-	int			pool_nbuffers;
-	int			pool_first_buf;
-	pg_atomic_uint32 *nextVictimPtr;
+
+	/* Use the "clock sweep" algorithm to find a free buffer */
+	trycounter = NBuffers;
+	for (;;)
+	{
+		uint64		old_buf_state;
+		uint64		local_buf_state;
+		uint32		victim;
+
+		/*
+		 * Atomically advance the clock hand.  Byte-for-byte upstream
+		 * ClockSweepTick(): global NBuffers, direct nextVictimBuffer, and
+		 * completePasses maintenance on wraparound.
+		 */
+		victim = pg_atomic_fetch_add_u32(&StrategyControl->nextVictimBuffer, 1);
+
+		if (victim >= NBuffers)
+		{
+			uint32		originalVictim = victim;
+
+			victim = victim % NBuffers;
+
+			if (victim == 0)
+			{
+				uint32		expected;
+				uint32		wrapped;
+				bool		success = false;
+
+				expected = originalVictim + 1;
+
+				while (!success)
+				{
+					SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
+					wrapped = expected % NBuffers;
+					success = pg_atomic_compare_exchange_u32(&StrategyControl->nextVictimBuffer,
+															 &expected, wrapped);
+					if (success)
+						StrategyControl->completePasses++;
+					SpinLockRelease(&StrategyControl->buffer_strategy_lock);
+				}
+			}
+		}
+
+		buf = GetBufferDescriptor(victim);
+
+		/*
+		 * Check whether the buffer can be used and pin it if so. Do this
+		 * using a CAS loop, to avoid having to lock the buffer header.
+		 */
+		old_buf_state = pg_atomic_read_u64(&buf->state);
+		for (;;)
+		{
+			local_buf_state = old_buf_state;
+
+			if (BUF_STATE_GET_REFCOUNT(local_buf_state) != 0)
+			{
+				if (--trycounter == 0)
+					elog(ERROR, "no unpinned buffers available");
+				break;
+			}
+
+			/* See equivalent code in PinBuffer() */
+			if (unlikely(local_buf_state & BM_LOCKED))
+			{
+				old_buf_state = WaitBufHdrUnlocked(buf);
+				continue;
+			}
+
+			if (BUF_STATE_GET_USAGECOUNT(local_buf_state) != 0)
+			{
+				local_buf_state -= BUF_USAGECOUNT_ONE;
+
+				if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
+												   local_buf_state))
+				{
+					trycounter = NBuffers;
+					break;
+				}
+			}
+			else
+			{
+				/* pin the buffer if the CAS succeeds */
+				local_buf_state += BUF_REFCOUNT_ONE;
+
+				if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
+												   local_buf_state))
+				{
+					/* Found a usable buffer */
+					if (strategy != NULL && strategy->recycle_pool == NULL)
+						AddBufferToRing(strategy, buf);
+					*buf_state = local_buf_state;
+
+					TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
+
+					return buf;
+				}
+			}
+		}
+	}
+}
+
+/*
+ * ClockGetVictimDefault -- default-pool preamble + sweep (setjmp-free)
+ *
+ * Handles the strategy-ring / RECYCLE-pool dispatch, bgwriter wakeup and
+ * numBufferAllocs accounting for the default pool, then runs the inlined
+ * ClockSweepDefault sweep.  Callable directly by StrategyGetBuffer to bypass
+ * the vtable indirection for the built-in clock (see there), or via the
+ * clock_pool_routine.get_victim vtable slot (ClockGetVictim below).
+ */
+static pg_attribute_always_inline BufferDesc *
+ClockGetVictimDefault(BufferAccessStrategy strategy,
+					  uint64 *buf_state,
+					  bool *from_ring)
+{
+	BufferDesc *buf;
 
 	*from_ring = false;
 
 	/*
-	 * Determine whether we're sweeping the default pool or a dynamic pool.
-	 * For the default pool, strategy_data == StrategyControl.
+	 * If given a strategy object, see whether it can select a buffer. We
+	 * assume strategy objects don't need buffer_strategy_lock.
+	 *
+	 * When the RECYCLE pool is enabled, dispatch through it instead of using
+	 * the per-backend ring buffer.  The RECYCLE pool's get_victim returns a
+	 * buffer from the shared RECYCLE pool, preventing scan and VACUUM
+	 * operations from polluting the main buffer pool.
 	 */
-	is_dynamic_pool = (strategy_data != (void *) StrategyControl);
-
-	if (is_dynamic_pool)
+	if (strategy != NULL)
 	{
-		ClockPoolState *pool_state = (ClockPoolState *) strategy_data;
-
-		pool_nbuffers = pool_state->nbuffers;
-		pool_first_buf = pool_state->first_buf_id;
-		nextVictimPtr = &pool_state->nextVictimBuffer;
-
-		/*
-		 * Wake trickle writer if registered.  For dynamic pools the trickle
-		 * writer is a per-pool background worker, not the global bgwriter.
-		 */
+		if (strategy->recycle_pool != NULL &&
+			strategy->recycle_pool->bp_active)
 		{
-			int			bgwprocno = INT_ACCESS_ONCE(pool_state->bgwprocno);
+			PoolLocalState *local;
 
-			if (bgwprocno != -1)
+			local = EnsurePoolAttached(strategy->recycle_pool);
+			buf = strategy->recycle_pool->bp_routine->get_victim(
+																 local->strategy_data, NULL, buf_state, from_ring);
+			if (buf != NULL)
 			{
-				pool_state->bgwprocno = -1;
-				SetLatch(&GetPGProcByNumber(bgwprocno)->procLatch);
+				*from_ring = true;
+				return buf;
+			}
+			/* Fall through to main pool if RECYCLE pool failed */
+		}
+		else
+		{
+			buf = GetBufferFromRing(strategy, buf_state);
+			if (buf != NULL)
+			{
+				*from_ring = true;
+				return buf;
 			}
 		}
-
-		pg_atomic_fetch_add_u32(&pool_state->numBufferAllocs, 1);
 	}
-	else
+
+	/*
+	 * Wake the bgwriter if asked.  See StrategyNotifyBgWriter().
+	 */
 	{
-		pool_nbuffers = NBuffers;
-		pool_first_buf = 0;
-		nextVictimPtr = &StrategyControl->nextVictimBuffer;
+		int			bgwprocno = INT_ACCESS_ONCE(StrategyControl->bgwprocno);
 
-		/*
-		 * If given a strategy object, see whether it can select a buffer. We
-		 * assume strategy objects don't need buffer_strategy_lock.
-		 *
-		 * When the RECYCLE pool is enabled, dispatch through it instead of
-		 * using the per-backend ring buffer.  The RECYCLE pool's get_victim
-		 * returns a buffer from the shared RECYCLE pool, preventing scan and
-		 * VACUUM operations from polluting the main buffer pool.
-		 */
-		if (strategy != NULL)
+		if (bgwprocno != -1)
 		{
-			if (strategy->recycle_pool != NULL &&
-				strategy->recycle_pool->bp_active)
-			{
-				PoolLocalState *local;
-
-				local = EnsurePoolAttached(strategy->recycle_pool);
-				buf = strategy->recycle_pool->bp_routine->get_victim(
-																	 local->strategy_data, NULL, buf_state, from_ring);
-				if (buf != NULL)
-				{
-					*from_ring = true;
-					return buf;
-				}
-				/* Fall through to main pool if RECYCLE pool failed */
-			}
-			else
-			{
-				buf = GetBufferFromRing(strategy, buf_state);
-				if (buf != NULL)
-				{
-					*from_ring = true;
-					return buf;
-				}
-			}
+			StrategyControl->bgwprocno = -1;
+			SetLatch(&GetPGProcByNumber(bgwprocno)->procLatch);
 		}
-
-		/*
-		 * Wake the bgwriter if asked.  See StrategyNotifyBgWriter().
-		 */
-		{
-			int			bgwprocno = INT_ACCESS_ONCE(StrategyControl->bgwprocno);
-
-			if (bgwprocno != -1)
-			{
-				StrategyControl->bgwprocno = -1;
-				SetLatch(&GetPGProcByNumber(bgwprocno)->procLatch);
-			}
-		}
-
-		pg_atomic_fetch_add_u32(&StrategyControl->numBufferAllocs, 1);
 	}
+
+	pg_atomic_fetch_add_u32(&StrategyControl->numBufferAllocs, 1);
+
+	return ClockSweepDefault(strategy, buf_state);
+}
+
+/*
+ * ClockGetVictimDynamic -- dynamic-pool clock sweep
+ *
+ * Sweeps a dynamic pool's buffer range using its per-pool ClockPoolState.
+ * The per-tick loop here has no is_dynamic_pool branch: it always does the
+ * simple modulo into the pool's [first_buf_id, first_buf_id+nbuffers) range.
+ */
+static BufferDesc *
+ClockGetVictimDynamic(ClockPoolState *pool_state,
+					  BufferAccessStrategy strategy,
+					  uint64 *buf_state,
+					  bool *from_ring)
+{
+	BufferDesc *buf;
+	int			trycounter;
+	int			pool_nbuffers = pool_state->nbuffers;
+	int			pool_first_buf = pool_state->first_buf_id;
+	pg_atomic_uint32 *nextVictimPtr = &pool_state->nextVictimBuffer;
+
+	*from_ring = false;
+
+	/*
+	 * Wake trickle writer if registered.  For dynamic pools the trickle
+	 * writer is a per-pool background worker, not the global bgwriter.
+	 */
+	{
+		int			bgwprocno = INT_ACCESS_ONCE(pool_state->bgwprocno);
+
+		if (bgwprocno != -1)
+		{
+			pool_state->bgwprocno = -1;
+			SetLatch(&GetPGProcByNumber(bgwprocno)->procLatch);
+		}
+	}
+
+	pg_atomic_fetch_add_u32(&pool_state->numBufferAllocs, 1);
 
 	/* Use the "clock sweep" algorithm to find a free buffer */
 	trycounter = pool_nbuffers;
@@ -651,44 +771,9 @@ ClockGetVictim(void *strategy_data,
 		uint32		victim_raw;
 		uint32		victim_id;
 
-		/*
-		 * Atomically advance the clock hand.  For the default pool this
-		 * mirrors the old ClockSweepTick() logic including completePasses
-		 * maintenance.  For dynamic pools we use a simpler modulo.
-		 */
+		/* Dynamic pool: simple modulo, no completePasses tracking */
 		victim_raw = pg_atomic_fetch_add_u32(nextVictimPtr, 1);
-
-		if (!is_dynamic_pool)
-		{
-			/* Default pool: maintain completePasses on wraparound */
-			victim_id = victim_raw % pool_nbuffers;
-
-			if (victim_raw >= (uint32) pool_nbuffers && victim_id == 0)
-			{
-				uint32		expected;
-				uint32		wrapped;
-				bool		success = false;
-
-				expected = victim_raw + 1;
-
-				while (!success)
-				{
-					SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
-					wrapped = expected % pool_nbuffers;
-					success = pg_atomic_compare_exchange_u32(
-															 &StrategyControl->nextVictimBuffer,
-															 &expected, wrapped);
-					if (success)
-						StrategyControl->completePasses++;
-					SpinLockRelease(&StrategyControl->buffer_strategy_lock);
-				}
-			}
-		}
-		else
-		{
-			/* Dynamic pool: simple modulo, no completePasses tracking */
-			victim_id = pool_first_buf + (victim_raw % pool_nbuffers);
-		}
+		victim_id = pool_first_buf + (victim_raw % pool_nbuffers);
 
 		buf = GetBufferDescriptor(victim_id);
 
@@ -746,6 +831,42 @@ ClockGetVictim(void *strategy_data,
 			}
 		}
 	}
+}
+
+/*
+ * ClockGetVictim -- clock-sweep implementation of get_victim
+ *
+ * Called by StrategyGetBuffer() via the vtable.  Selects the next candidate
+ * buffer to use in GetVictimBuffer().  The only hard requirement is that the
+ * selected buffer must not currently be pinned by anyone.
+ *
+ * strategy is a BufferAccessStrategy object, or NULL for default strategy.
+ *
+ * For the default pool, strategy_data points to StrategyControl (a
+ * BufferStrategyControl*) and we sweep through BufferDescriptors[0..NBuffers-1].
+ * For dynamic pools, strategy_data points to a ClockPoolState stored in the
+ * pool's DSM segment, and we sweep through that pool's buffer range.
+ *
+ * The buffer is pinned and marked as owned, using TrackNewBufferPin(),
+ * before returning.
+ */
+static BufferDesc *
+ClockGetVictim(void *strategy_data,
+			   BufferAccessStrategy strategy,
+			   uint64 *buf_state,
+			   bool *from_ring)
+{
+	/*
+	 * Determine whether we're sweeping the default pool or a dynamic pool.
+	 * For the default pool, strategy_data == StrategyControl.  This branch is
+	 * hoisted out of the per-tick loop: each path has a tick body with no
+	 * is_dynamic_pool test.
+	 */
+	if (strategy_data == (void *) StrategyControl)
+		return ClockGetVictimDefault(strategy, buf_state, from_ring);
+	else
+		return ClockGetVictimDynamic((ClockPoolState *) strategy_data,
+									 strategy, buf_state, from_ring);
 }
 
 /*
@@ -920,6 +1041,15 @@ ClockPoolShmemInit(void *strategy_data, int nbuffers,
 BufferDesc *
 StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_ring)
 {
+	/*
+	 * Devirtualize the built-in clock sweep (the overwhelmingly common case):
+	 * call the inlinable default-pool victim path directly, bypassing the
+	 * vtable indirection.  Extensions, dynamic pools and numa_clock keep the
+	 * indirect ActivePoolRoutine->get_victim path below.
+	 */
+	if (likely(ActivePoolIsClock))
+		return ClockGetVictimDefault(strategy, buf_state, from_ring);
+
 	return ActivePoolRoutine->get_victim(ActivePoolData, strategy,
 										 buf_state, from_ring);
 }
@@ -1155,6 +1285,16 @@ StrategyCtlShmemInit(void *arg)
 		ActivePoolHasAccessHooks = (routine->on_hit != NULL ||
 									routine->on_miss != NULL ||
 									routine->on_new_tag != NULL);
+
+		/*
+		 * Cache whether the active algorithm is the plain built-in clock
+		 * sweep, so StrategyGetBuffer() can call the default sweep directly
+		 * instead of through the vtable.  Only the plain clock_pool_routine
+		 * with StrategyControl as its data qualifies: numa_clock and dynamic
+		 * pools keep the indirect path.
+		 */
+		ActivePoolIsClock = (ActivePoolRoutine == &clock_pool_routine &&
+							 ActivePoolData == (void *) StrategyControl);
 	}
 }
 
