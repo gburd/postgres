@@ -2109,11 +2109,14 @@ bm25_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		bm25_build_flush_segment(index, &bs);
 
 		/*
-		 * A serial build produces few segments (only budget-triggered flushes
-		 * plus the residual), so compacting them now is cheap and leaves a fresh
-		 * index tidy.
+		 * Compact to a single optimal segment.  A serial build makes few
+		 * segments (budget-triggered flushes + the residual), and the tiered
+		 * bm25_merge_segments deliberately leaves same-size tiers -- which would
+		 * leave a multi-segment index and regress ranked scans.  bm25_merge_all
+		 * finishes to one segment (and uses the parallel merge if workers are
+		 * available, since we are not in parallel mode here).
 		 */
-		bm25_merge_segments(index);
+		bm25_merge_all(index);
 	}
 
 	MemoryContextDelete(bs.ctx);
