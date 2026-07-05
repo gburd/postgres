@@ -346,6 +346,26 @@ inside the postmaster process (8 threads, zero child processes -- verified via
    `001_threaded_runtime.pl` "late IO worker" check is a TODO until it is
    fixed; the earlier one-off 129/129 pass was a lucky timing window.
 
+2c. **Intermittent SIGSEGV inside xtc_exit_self during backend fiber teardown
+   (libxtc item to report).**  Surfaced by the #7 Stage 1 per-loop supervisor:
+   on the 24-loop pool (libxtc v1.1.0), roughly 3 of 11 backend fibers deliver
+   a DOWN with reason=-11 (SIGSEGV) even though each logged a clean
+   `backend fiber exiting ... code=0` immediately before calling
+   `xtc_exit_self(0)`.  The only code between that log and the fault is
+   `xtc_in_backend_fiber = false; xtc_exit_self(code);`, so the fault is inside
+   libxtc's fiber-exit/unwind (or its monitor-DOWN delivery under the loop
+   pool).  libxtc's R1 per-fiber fault containment catches it: no core, no
+   process crash, siblings unaffected, `pg_ctl -m fast stop` still clean -- so
+   it was COMPLETELY SILENT before the supervisor existed (the `code=0` log is
+   written before the fault, and spawned==exited accounting still balanced).
+   This is almost certainly the root cause of the earlier worker-fiber TAP
+   wedge (a faulted teardown leaving state inconsistent under stress).  It is
+   intermittent and contained; report to the libxtc team with the repro
+   (24-loop pool + repeated connect/query/disconnect).  Do NOT work around it
+   in our tree; assume libxtc will fix xtc_exit_self.  Meanwhile the supervisor
+   makes it observable (rate-limited LOUD log), which is exactly item #7
+   Stage 1's purpose.
+
 3. **Latch/SetLatch wakeups.**  The epoll-fd intercept already covers latch
    wakeups (the latch signalfd is a registered epoll event, so SetLatch makes
    the epoll fd readable and unparks the fiber).  Not separately exercised for

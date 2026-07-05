@@ -181,19 +181,25 @@ xtc_carrier_supervisor_proc(void *arg)
 			/* A monitored backend fiber exited. */
 			if (down_reason != 0)
 			{
-				char		buf[160];
-				int			n;
+				static __thread int nabn = 0;
 
-				n = snprintf(buf, sizeof(buf),
-							 "xtc: SUPERVISOR observed ABNORMAL backend fiber DOWN "
-							 "pid=(loop=%u,local=%u,gen=%u) reason=%d\n",
-							 down_pid.loop_id, down_pid.local_id,
-							 down_pid.gen, down_reason);
-				if (n > 0)
+				if (nabn < 32)
 				{
-					if (n > (int) sizeof(buf))
-						n = (int) sizeof(buf);
-					(void) write(STDERR_FILENO, buf, (size_t) n);
+					char		buf[160];
+					int			n;
+
+					nabn++;
+					n = snprintf(buf, sizeof(buf),
+								 "xtc: SUPERVISOR observed ABNORMAL backend fiber DOWN "
+								 "pid=(loop=%u,local=%u,gen=%u) reason=%d\n",
+								 down_pid.loop_id, down_pid.local_id,
+								 down_pid.gen, down_reason);
+					if (n > 0)
+					{
+						if (n > (int) sizeof(buf))
+							n = (int) sizeof(buf);
+						(void) write(STDERR_FILENO, buf, (size_t) n);
+					}
 				}
 			}
 			else
