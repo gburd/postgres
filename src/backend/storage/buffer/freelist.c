@@ -645,14 +645,39 @@ NumaCoolingGetVictim(void *strategy_data,
 	NumaClockControl *ctl = (NumaClockControl *) strategy_data;
 	int			nnodes = ctl->nnodes;
 	int			nstripes = ctl->nstripes;
-	int			home = BufPoolNumaNodeForProc();
-	int			cpu = BufPoolNumaCpuForProc();
-	int			stripe = (cpu >= 0) ? (cpu % nstripes) : 0;
+	int			home;
+	int			stripe;
 	int			node_start,
 				node_end,
 				stripe_start,
 				stripe_end,
 				stripe_range;
+
+	/*
+	 * Resolving the backend's NUMA node and CPU means a sched_getcpu() (and
+	 * numa_node_of_cpu()) call, which is far too costly to do on every victim
+	 * selection -- this is the hot eviction path.  A backend only rarely
+	 * migrates cores, and a stale (node, stripe) only costs a little locality
+	 * (never correctness: the steal path reaches the whole pool).  So cache
+	 * the assignment per backend and refresh it only every
+	 * COOLING_AFFINITY_REFRESH ticks.
+	 */
+#define COOLING_AFFINITY_REFRESH 256
+	static int	home_cached = -1;
+	static int	stripe_cached = 0;
+	static uint32 affinity_countdown = 0;
+
+	if (affinity_countdown == 0 || home_cached < 0)
+	{
+		int			cpu = BufPoolNumaCpuForProc();
+
+		home_cached = BufPoolNumaNodeForProc();
+		stripe_cached = (cpu >= 0) ? (cpu % nstripes) : 0;
+		affinity_countdown = COOLING_AFFINITY_REFRESH;
+	}
+	affinity_countdown--;
+	home = home_cached;
+	stripe = stripe_cached;
 
 	*from_ring = false;
 
