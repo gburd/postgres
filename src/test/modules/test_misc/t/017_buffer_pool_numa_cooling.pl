@@ -138,4 +138,67 @@ SQL
 	$node->stop;
 }
 
+# --- 4. Scan-resistance: probationary admission under cooling. ---
+#     A page loaded by a bulk-read scan is admitted at usage_count 0 under
+#     cooling (LeanStore COOL/probationary), so scan pages are immediately
+#     evictable and never displace the hot set.  Without cooling the same scan
+#     admits at usage_count 1.  pg_buffercache lets us observe the difference.
+{
+	my $numa = PostgreSQL::Test::Cluster->new('scan_numa');
+	$numa->init;
+	$numa->append_conf('postgresql.conf', <<'CONF');
+buffer_pool_numa = on
+buffer_pool_numa_nodes = 4
+shared_buffers = 256MB
+CONF
+	$numa->start;
+	$numa->safe_psql('postgres', 'CREATE EXTENSION pg_buffercache;');
+	# A table comfortably larger than one bulk-read ring but well within s_b,
+	# so a seqscan uses BAS_BULKREAD and its pages land in the shared pool.
+	$numa->safe_psql('postgres', <<'SQL');
+CREATE TABLE scanme (id int, pad text);
+INSERT INTO scanme SELECT g, repeat('z', 200) FROM generate_series(1, 400000) g;
+SQL
+	# Drive a bulk-read seqscan (large enough to trigger BAS_BULKREAD).
+	$numa->safe_psql('postgres',
+		'SET max_parallel_workers_per_gather=0; SELECT count(*) FROM scanme;');
+	my $numa_uc = $numa->safe_psql('postgres', <<'SQL');
+SELECT coalesce(max(usagecount),0) FROM pg_buffercache b
+JOIN pg_class c ON b.relfilenode = pg_relation_filenode(c.oid)
+WHERE c.relname = 'scanme';
+SQL
+	$numa->stop;
+
+	my $cool = PostgreSQL::Test::Cluster->new('scan_cool');
+	$cool->init;
+	$cool->append_conf('postgresql.conf', <<'CONF');
+buffer_pool_numa = on
+buffer_pool_numa_nodes = 4
+buffer_pool_numa_cooling = on
+shared_buffers = 256MB
+CONF
+	$cool->start;
+	$cool->safe_psql('postgres', 'CREATE EXTENSION pg_buffercache;');
+	$cool->safe_psql('postgres', <<'SQL');
+CREATE TABLE scanme (id int, pad text);
+INSERT INTO scanme SELECT g, repeat('z', 200) FROM generate_series(1, 400000) g;
+SQL
+	$cool->safe_psql('postgres',
+		'SET max_parallel_workers_per_gather=0; SELECT count(*) FROM scanme;');
+	my $cool_uc = $cool->safe_psql('postgres', <<'SQL');
+SELECT coalesce(max(usagecount),0) FROM pg_buffercache b
+JOIN pg_class c ON b.relfilenode = pg_relation_filenode(c.oid)
+WHERE c.relname = 'scanme';
+SQL
+	# Correctness must hold regardless of admission policy.
+	is($cool->safe_psql('postgres', 'SELECT count(*) FROM scanme;'),
+		'400000', 'scan correct under probationary cooling admission');
+	$cool->stop;
+
+	# The scan's resident buffers must be COOLER (lower max usagecount) under
+	# cooling than under plain numa -- the probationary-admission signature.
+	cmp_ok($cool_uc, '<=', $numa_uc,
+		"probationary scan admission cools scan pages (cooling max uc=$cool_uc <= numa max uc=$numa_uc)");
+}
+
 done_testing();
