@@ -420,13 +420,13 @@ xtc_carrier_proc(void *arg)
 	/*
 	 * Debug-only fault injection (AGENTS_XTC #7 Stage 1b test hook).  If
 	 * PG_XTC_INJECT_CRASH=N is set, the Nth backend fiber to enter (1-based,
-	 * counted across the whole pool) faults HERE, before running any real work
-	 * and before reaching its clean exit path.  Now that the loop supervisor
-	 * spawns+monitors atomically (no spawn/register race), even an immediate
-	 * fault is observed: libxtc R1 containment turns the SIGSEGV into a
-	 * DOWN(reason=-11) to the supervisor, which (no clean-exit record for this
-	 * pid) flags a GENUINE crash and the postmaster terminates the runtime.
-	 * Never set in production.
+	 * counted across the whole pool) faults HERE.  libxtc v1.2.1 auto-arms the
+	 * default recovery frame at the fiber's first scheduling point, so we yield
+	 * once (xtc_proc_sleep(0)) before faulting -- matching a real backend, which
+	 * always yields (socket recv, I/O) long before it could crash.  R1
+	 * containment then turns the SIGSEGV into a DOWN(reason=11) to the
+	 * supervisor, which flags a GENUINE crash so the postmaster terminates the
+	 * runtime.  Never set in production.
 	 */
 	{
 		const char *inj = getenv("PG_XTC_INJECT_CRASH");
@@ -438,12 +438,14 @@ xtc_carrier_proc(void *arg)
 
 			if (target > 0 && (unsigned) target == nth)
 			{
-				volatile int *crashp = NULL;
+				volatile uintptr_t addr = 0x10;
 
 				(void) write(STDERR_FILENO,
 							 "xtc: INJECT_CRASH faulting this fiber before clean exit\n",
 							 56);
-				*crashp = 42;	/* SIGSEGV -> contained -> DOWN reason=-11 */
+				/* Yield once so libxtc's auto-armed recovery frame is active. */
+				(void) xtc_proc_sleep(0);
+				*(volatile int *) addr = 1;	/* SIGSEGV -> contained -> DOWN reason=11 */
 			}
 		}
 	}
