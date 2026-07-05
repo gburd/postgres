@@ -1360,6 +1360,52 @@ bm25_merge_selected(Relation index, const uint32 *sel, uint32 nsel)
 	}
 }
 
+/*
+ * Merge ALL live segments into a single segment (explicit full compaction).
+ * Used by fts_merge() so an on-demand call actually produces an optimal,
+ * single-segment index (the tiered bm25_merge_segments only coalesces
+ * same-size tiers and may deliberately leave several segments).  Merges in
+ * bounded batches (BM25_MAX_SEGMENTS worth of selection at a time is fine since
+ * a build/merge never exceeds the cap) and loops until one segment remains.
+ * Returns true if it changed anything.
+ */
+static bool
+bm25_merge_all(Relation index)
+{
+	bool		didwork = false;
+	int			guard;
+
+	for (guard = 0; guard < BM25_MAX_SEGMENTS; guard++)
+	{
+		BM25MetaPageData meta;
+		uint32		sel[BM25_MAX_SEGMENTS];
+		uint32		nsel = 0;
+		uint32		i;
+
+		{
+			Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
+
+			LockBuffer(mb, BUFFER_LOCK_SHARE);
+			memcpy(&meta, BM25PageGetMeta(BufferGetPage(mb)), sizeof(meta));
+			UnlockReleaseBuffer(mb);
+		}
+		if (meta.nsegments <= 1)
+			break;				/* already optimal */
+
+		/* select every populated segment */
+		for (i = 0; i < meta.nsegments; i++)
+			if (meta.segs[i].dictstart != InvalidBlockNumber)
+				sel[nsel++] = i;
+		if (nsel <= 1)
+			break;
+
+		if (!bm25_merge_selected(index, sel, nsel))
+			break;				/* directory changed underneath; stop */
+		didwork = true;
+	}
+	return didwork;
+}
+
 static void
 bm25_merge_segments(Relation index)
 {
@@ -2392,6 +2438,15 @@ fts_merge(PG_FUNCTION_ARGS)
 				 errmsg("\"%s\" is not a bm25 index",
 						RelationGetRelationName(index))));
 	done = bm25_flush_pending(index);
+	/*
+	 * Also compact the segment directory to a single optimal segment.  This is
+	 * what makes fts_merge() an explicit "optimize now": after a parallel build
+	 * (which leaves the workers' segments unmerged for speed) or churn, one call
+	 * yields a one-segment index.  The tiered auto-merge deliberately leaves
+	 * several same-size segments, so it is not enough on its own here.
+	 */
+	if (bm25_merge_all(index))
+		done = true;
 	index_close(index, ShareUpdateExclusiveLock);
 
 	PG_RETURN_BOOL(done);
