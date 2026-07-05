@@ -1082,6 +1082,40 @@ public API in `XTC_ROOT/src/inc` before assuming an equivalence exists):
   win appears. PostgreSQL's memory-context invariants are load-bearing and
   `xtc_mctx`/`xtc_alloc_audit` equivalence must be proven, not assumed.
 
+### Memory subsystem and shared memory (deferred to this phase, with reasons)
+
+This is called out explicitly because it is tempting to reach for the libxtc
+allocators early. Both are Phase 18 items, not earlier, and one is a non-goal:
+
+- Heap memory (`MemoryContext` -> `xtc_mctx`): libxtc v1.2.0 exposes
+  `xtc_mctx_*` -- a hierarchical memory-context allocator (create/reset/
+  destroy/alloc/calloc/strdup/free, parent-child, register_cleanup,
+  total_bytes accounting) that is structurally the same model as PostgreSQL's
+  `MemoryContext`. This makes it a real dedup candidate, but porting the
+  backend's memory subsystem is enormous and load-bearing: every `palloc`,
+  the aset/slab/generation/bump allocators, reset-callback ordering, the
+  `CurrentMemoryContext` current-cell, and error-path context switching all
+  depend on exact semantics. It must stay `keep`/`defer` until (a) the runtime
+  is proven on carriers and (b) a per-allocator equivalence harness shows
+  `xtc_mctx` matches PostgreSQL's alignment, chunk-header, reset, and
+  callback semantics. Do NOT convert it as a prerequisite for anything else.
+  Note: carrier-layer plumbing that runs BEFORE PostgreSQL memory init (e.g.
+  the xtc carrier's fiber spawn path) cannot use `palloc` at all; that code
+  must be allocation-free or use a libxtc/OS primitive, and is out of scope
+  for the MemoryContext port.
+
+- Shared memory: converting PostgreSQL's shared-memory infrastructure to
+  libxtc is a NON-GOAL. libxtc deliberately does not own or replace DSM/
+  `dynamic_shared_memory`; per libxtc's own M16 adapter guidance, PostgreSQL
+  owns the shared-memory segment and lifecycle, and the only sanctioned
+  integration is placing an `xtc_slab` allocator (SHARED_MEMORY mode, via
+  `xtc_slab_opts_t.shm_base`/`shm_size`) INSIDE an already-PG-allocated DSM
+  region -- reusing the same mmap primitives without a second
+  segment-tracking layer. So the audit row is: keep PostgreSQL's shmem
+  segment/DSM ownership as-is; the optional, opt-in `wrap` is `xtc_slab` on
+  top of a PG-owned region where a slab allocator is a net win, nothing more.
+  Rewriting `pg_shmem`/DSA/DSM onto libxtc is explicitly rejected.
+
 Method:
 
 - produce a checked-in inventory mapping each PostgreSQL primitive to its
