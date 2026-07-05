@@ -76,3 +76,29 @@ Every ranked query was checked to return the same match set as the GIN path
 rows, build the two indexes as above, then `bench/bench_fixed.sh` (pinned terms,
 median-of-9).  See `PRODUCTION_SCALE_PLAN.md` for the full methodology and the
 10M-50M scale plan.
+
+## Update: parallel build/merge + regression fix (2M Wikipedia, r7i.4xlarge, PG17)
+
+Parallel index build (amcanbuildparallel) cut the pg_fts build from a serial
+~34 min to a parallel scan + parallel merge.  A regression was found and fixed
+along the way: the parallel build initially SKIPPED the final merge, leaving the
+index as 6-8 segments, which regressed common-term ranked top-k ~2x (a ranked
+scan traverses every segment's postings).  Fix: both build paths now compact to
+a single segment via bm25_merge_all (parallel merge when workers are available).
+
+pg_fts ranked latency, single-segment (compacted) index, median/9 warm:
+| query | regressed (6-seg) | fixed (1-seg) | earlier baseline |
+|-------|------------------:|--------------:|-----------------:|
+| ranked top-10 rare&mid    | 26.3 | 24.5 | 26.1 |
+| ranked top-10 common&mid  | 37.8 | **16.6** | 17.6 |
+| ranked top-100 common     | 73.7 | 67.8 | 70.4 |
+| rare count                | 15.0 | 12.2 | 23.5 |
+| fts_count rare            |  2.5 |  1.9 |  1.9 |
+
+The common&mid ranked regression (37.8 -> 16.6 ms) is fixed, back to baseline.
+
+Note on the parallel MERGE at scale: it launches workers and is verified correct
+locally, but on the multi-preload EC2 cluster it sometimes fell back to the
+serial merge path (worker launch returned 0 despite free slots -- under
+investigation; tracked in DEFERRED.md).  The compaction itself (the regression
+fix) is confirmed on EC2 regardless of whether the merge ran parallel or serial.
