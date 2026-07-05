@@ -34,7 +34,7 @@ initdb -D "$PGDATA" -U postgres --no-locale -E UTF8 >"$D/initdb.log" 2>&1 \
 pg_ctl -D "$PGDATA" -l "$D/pm.log" -o "-c multithreaded=on" -w start \
   || { echo "start failed"; cat "$D/pm.log"; exit 1; }
 
-PSQL="psql -h $D -U postgres -d postgres -tA"
+PSQL="psql -X -h $D -U postgres -d postgres -tA"
 
 # 1. basic round-trip through the xtc carrier
 note "select 1"
