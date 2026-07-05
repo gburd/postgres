@@ -94,13 +94,17 @@ Larger (toward fully-on-xtc):
    ordering handling, which depends on item #7 Stage 1 (fiber-death
    observation).  Widen the allowlist one family at a time, each validated
    under the FULL threaded-runtime TAP (not just smoke) on a disk-backed host.
-6. xtc_aio for backend disk I/O.  DESIGN DONE:
-   plan_docs/XTC_AIO_DESIGN.md.  Recommended first step: a new io_method='xtc'
-   that wraps xtc_aio_* (issuer-synchronous) for backends on fiber carriers,
-   falling back to the existing methods (sync/worker/io_uring) in process
-   mode.  This is a 'wrap' at the IoMethodOps vtable seam, not a call-site
-   change.  B_IO_WORKER fibers (item #5) belong here too -- their
-   PM_WAIT_IO_WORKERS shutdown handshake is part of this work.
+6. xtc_aio for backend disk I/O.  STEP 1 DONE (libxtc v1.1.0):
+   plan_docs/XTC_AIO_DESIGN.md.  Implemented io_method='xtc'
+   (src/backend/storage/aio/method_xtc.c, IOMETHOD_XTC/pgaio_xtc_ops) that
+   wraps xtc_aio_pread/pwrite (issuer-synchronous, single-iovec READV/WRITEV)
+   for backends on fiber carriers; process mode and non-fiber backends fall to
+   the synchronous method via needs_synchronous_execution() -> true, unchanged.
+   Verified on meh: a table scan larger than shared_buffers issues real AIO
+   reads through xtc_aio and returns correct data with no PANIC/corruption
+   (scripts/xtc_smoke.sh).  Deferred: multi-iovec (step 2), issuer-async reap
+   (step 3), WAL/fsync (step 4).  B_IO_WORKER fibers (item #5) still belong to
+   this work stream (their PM_WAIT_IO_WORKERS shutdown handshake).
 7. xtc_orc / xtc_monitor supervision of backend fibers.  DESIGN DONE:
    plan_docs/XTC_ORC_SUPERVISION_DESIGN.md.  The postmaster stays the crash
    authority; xtc is an OBSERVER.  Stage 1 (recommended next): a per-loop

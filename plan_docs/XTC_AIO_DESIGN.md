@@ -293,6 +293,17 @@ contents." This is the test that ships with Step 1.
 
 ### Step 1 (smallest first step): io_method="xtc" that wraps xtc_aio_* on fiber carriers
 
+STATUS: DONE (libxtc v1.1.0).  Implemented in src/backend/storage/aio/method_xtc.c
+(IOMETHOD_XTC / pgaio_xtc_ops, gated on USE_XTC_CARRIER).  Verified on meh:
+io_method=xtc + shared_buffers=1MB, a 200k-row table scan issues real data-file
+reads through xtc_aio_pread on the backend fiber and returns the correct
+count/sum with no PANIC/corruption; process mode and non-fiber backends fall to
+the synchronous method unchanged.  Covered by scripts/xtc_smoke.sh.  One bug
+found and fixed during bringup: submit() must call pgaio_io_prepare_submit()
+(advance to SUBMITTED) before running the IO and completing it, exactly like
+the io_uring/worker methods -- otherwise pgaio_io_process_completion() PANICs
+("waiting for own IO in wrong state: IDLE").
+
 New `IOMETHOD_XTC` enum value + `pgaio_xtc_ops` (a new method_xtc.c), added to
 `io_method_options[]` and `pgaio_method_ops_table[]` (keeping the StaticAssert
 happy). Behavior:
