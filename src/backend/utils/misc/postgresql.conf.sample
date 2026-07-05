@@ -145,6 +145,10 @@
 #buffer_pool_numa = off                 # NUMA-partition the buffer pool across
                                         # nodes (multi-node systems only)
                                         # (change requires restart)
+#buffer_pool_numa_cooling = off         # per-core striped clock sweep with
+                                        # blind-atomic cooling; needs
+                                        # buffer_pool_numa=on, multi-node
+                                        # (change requires restart)
 #huge_pages = try                       # on, off, or try
                                         # (change requires restart)
 #huge_page_size = 0                     # zero for system default

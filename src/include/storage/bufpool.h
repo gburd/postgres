@@ -227,6 +227,7 @@ extern PGDLLIMPORT const BufferPoolRoutine clock_pool_routine;
 
 /* The NUMA-partitioned clock-sweep routine (default pool, multi-node only) */
 extern PGDLLIMPORT const BufferPoolRoutine numa_clock_pool_routine;
+extern PGDLLIMPORT const BufferPoolRoutine numa_cooling_pool_routine;
 
 /*
  * GUC variable naming the replacement algorithm for the DEFAULT pool.
@@ -288,6 +289,7 @@ extern PGDLLIMPORT int max_buffer_pool_memory;
 /* GUC: interleave pool memory across NUMA nodes (multi-node systems only) */
 /* GUC: distribute buffer pool memory across NUMA nodes (multi-node systems) */
 extern PGDLLIMPORT bool buffer_pool_numa;
+extern PGDLLIMPORT bool buffer_pool_numa_cooling;
 
 /* GUC (developer): force a logical NUMA node count for testing; 0 = auto */
 extern PGDLLIMPORT int buffer_pool_numa_nodes;

@@ -46,6 +46,12 @@
 bool		buffer_pool_numa = false;
 
 /*
+ * GUC: use per-core striped clock hands with blind-atomic cooling.  Only
+ * meaningful when buffer_pool_numa is on and there is more than one node.
+ */
+bool		buffer_pool_numa_cooling = false;
+
+/*
  * GUC (developer): force a specific node count for the buffer pool's NUMA
  * partitioning, overriding hardware detection.  0 = auto-detect via libnuma.
  * Lets the NUMA-partitioned clock sweep be exercised (and regression-tested)
@@ -367,4 +373,50 @@ BufPoolNumaNodeForProc(void)
 	}
 #endif
 	return 0;
+}
+
+/*
+ * BufPoolNumaCpuForProc -- the CPU (core) the current backend is running on,
+ *		or -1 if unknown.  Used by the striped clock sweep (buffer_pool_numa_cooling)
+ *		to give each core its own hand within its node partition, so a buffer has a
+ *		single sweeping owner per pass and cooling can use a blind atomic sub.
+ */
+int
+BufPoolNumaCpuForProc(void)
+{
+#ifdef USE_LIBNUMA
+	if (BufPoolNumaActive())
+		return sched_getcpu();
+#endif
+	return -1;
+}
+
+/*
+ * BufPoolNumaCoresPerNode -- online cores divided by NUMA node count, clamped
+ *		to [1, cap].  Used to size the per-core clock-sweep stripes.  Returns 1
+ *		(no striping) when NUMA is inactive or the count can't be determined.
+ */
+int
+BufPoolNumaCoresPerNode(int cap)
+{
+#if defined(USE_LIBNUMA) && defined(_SC_NPROCESSORS_ONLN)
+	if (BufPoolNumaActive())
+	{
+		long		ncpus = sysconf(_SC_NPROCESSORS_ONLN);
+		int			nodes = BufPoolNumaNodes();
+		int			per;
+
+		if (ncpus <= 0 || nodes <= 0)
+			return 1;
+		per = (int) (ncpus / nodes);
+		if (per < 1)
+			per = 1;
+		if (cap > 0 && per > cap)
+			per = cap;
+		return per;
+	}
+#else
+	(void) cap;
+#endif
+	return 1;
 }
