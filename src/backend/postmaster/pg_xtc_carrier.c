@@ -338,14 +338,15 @@ xtc_carrier_supervisor_proc(void *arg)
 							   &po, &bpid) == XTC_OK)
 			{
 				uint64_t	ref = 0;
-				char		sbuf[96];
+				char		sbuf[128];
 				int			sn;
+				int			mrc;
 
-				(void) xtc_monitor(bpid, &ref);
+				mrc = xtc_monitor(bpid, &ref);
 				/* raw write: elog is unsafe from this bare fiber */
 				sn = snprintf(sbuf, sizeof(sbuf),
-							  "xtc: spawned backend fiber pid=(loop=%u,local=%u,gen=%u)\n",
-							  bpid.loop_id, bpid.local_id, bpid.gen);
+							  "xtc: spawned backend fiber pid=(loop=%u,local=%u,gen=%u) monitor_rc=%d\n",
+							  bpid.loop_id, bpid.local_id, bpid.gen, mrc);
 				if (sn > 0)
 				{
 					if (sn > (int) sizeof(sbuf))
