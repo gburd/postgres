@@ -110,12 +110,17 @@ ALTER EXTENSION pg_fts UPDATE TO '1.4';
 SELECT variant,
        fts_bm25_opts(to_ftsdoc('quick fox'), 'fox'::ftsquery,
                      1000, 3.0, 1.2, 0.75, variant, ARRAY[10.0]) > 0 AS positive
-FROM unnest(ARRAY['lucene','robertson','atire','bm25+']) AS variant
+FROM unnest(ARRAY['lucene','robertson','atire','bm25+','bm25l']) AS variant
 ORDER BY variant;
 -- bm25+ >= lucene for the same inputs (delta floor)
 SELECT fts_bm25_opts(to_ftsdoc('fox'), 'fox'::ftsquery, 1000, 5.0, 1.2, 0.75, 'bm25+', ARRAY[3.0])
      > fts_bm25_opts(to_ftsdoc('fox'), 'fox'::ftsquery, 1000, 5.0, 1.2, 0.75, 'lucene', ARRAY[3.0])
        AS bm25plus_ge_lucene;
+-- bm25l (rank_bm25 compatible: delta shift on the length-normalized tf) scores
+-- a present term positively and 'l' is an accepted alias for it
+SELECT fts_bm25_opts(to_ftsdoc('fox fox fox'), 'fox'::ftsquery, 1000, 5.0, 1.5, 0.75, 'bm25l', ARRAY[3.0]) > 0 AS bm25l_positive,
+       fts_bm25_opts(to_ftsdoc('fox fox fox'), 'fox'::ftsquery, 1000, 5.0, 1.5, 0.75, 'bm25l', ARRAY[3.0])
+     = fts_bm25_opts(to_ftsdoc('fox fox fox'), 'fox'::ftsquery, 1000, 5.0, 1.5, 0.75, 'l', ARRAY[3.0]) AS l_alias;
 -- unknown variant errors
 SELECT fts_bm25_opts(to_ftsdoc('x'), 'x'::ftsquery, 10, 1.0, 1.2, 0.75, 'bogus');
 

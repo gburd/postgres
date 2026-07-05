@@ -224,7 +224,8 @@ SELECT id FROM docs
       <replaceable>dfs</replaceable>.  <function>fts_bm25_opts</function>
       exposes the tuning knobs and selectable variants (<literal>lucene</literal>,
       <literal>robertson</literal>, <literal>atire</literal>,
-      <literal>bm25+</literal>).
+      <literal>bm25+</literal>, <literal>bm25l</literal>) matching the
+      <literal>rank_bm25</literal> reference implementations.
      </para>
     </listitem>
    </varlistentry>

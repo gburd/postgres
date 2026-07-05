@@ -43,10 +43,13 @@ typedef enum BM25Variant
 	BM25_LUCENE = 0,			/* ln(1 + (N-df+0.5)/(df+0.5)); always >= 0 */
 	BM25_ROBERTSON,				/* classic ln((N-df+0.5)/(df+0.5)); can be < 0 */
 	BM25_ATIRE,					/* ln(N/df) */
-	BM25_BM25PLUS				/* Lucene IDF + delta floor on tf term */
+	BM25_BM25PLUS,				/* Lucene IDF + delta floor on tf term */
+	BM25_BM25L					/* rank_bm25 BM25L: delta shift on the
+								 * length-normalized tf (helps long docs) */
 }			BM25Variant;
 
 #define BM25PLUS_DELTA		1.0
+#define BM25L_DELTA			0.5
 
 static double
 bm25_idf(BM25Variant v, double N, double df)
@@ -62,6 +65,9 @@ bm25_idf(BM25Variant v, double N, double df)
 			return log((N - df + 0.5) / (df + 0.5));
 		case BM25_ATIRE:
 			return log(N / df);
+		case BM25_BM25L:
+			/* rank_bm25 BM25L IDF: ln((N+1)/(df+0.5)) */
+			return log((N + 1.0) / (df + 0.5));
 		case BM25_LUCENE:
 		case BM25_BM25PLUS:
 		default:
@@ -141,6 +147,26 @@ fts_bm25_score(FtsDoc doc, FtsQuery q, double N, double avgdl,
 		tf = (double) e->tf;
 		df = (dfs != NULL) ? dfs[i] : 1.0;
 		idf = bm25_idf(variant, N, df);
+
+		if (variant == BM25_BM25L)
+		{
+			/*
+			 * BM25L: shift the LENGTH-NORMALIZED tf (ctd) by a delta before
+			 * saturation, so long documents are not over-penalized.
+			 *   ctd = tf / (1 - b + b*dl/avgdl)
+			 *   sat = (k1+1)*(ctd+delta) / (k1 + ctd + delta)
+			 */
+			double		lennorm = 1.0 - b + b * dl / avgdl;
+			double		ctd;
+
+			if (lennorm <= 0.0)
+				continue;
+			ctd = tf / lennorm;
+			sat = (k1 + 1.0) * (ctd + BM25L_DELTA) /
+				(k1 + ctd + BM25L_DELTA);
+			score += idf * sat;
+			continue;
+		}
 
 		norm = tf + k1 * (1.0 - b + b * dl / avgdl);
 		if (norm <= 0.0)
@@ -226,11 +252,13 @@ parse_variant(text *v)
 		r = BM25_ATIRE;
 	else if (strcmp(s, "bm25+") == 0 || strcmp(s, "bm25plus") == 0)
 		r = BM25_BM25PLUS;
+	else if (strcmp(s, "bm25l") == 0 || strcmp(s, "l") == 0)
+		r = BM25_BM25L;
 	else
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 				 errmsg("unknown bm25 variant \"%s\"", s),
-				 errhint("Valid variants: lucene, robertson, atire, bm25+.")));
+				 errhint("Valid variants: lucene, robertson, atire, bm25+, bm25l.")));
 	pfree(s);
 	return r;
 }

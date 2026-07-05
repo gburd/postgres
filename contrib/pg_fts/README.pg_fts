@@ -20,7 +20,7 @@ Versions / stages implemented
   1.1   to_ftsdoc(regconfig, text): analyzer reusing a text search config
   1.2   fts_bm25(): Okapi BM25 scoring
   1.3   the bm25 index access method (bitmap scan, GenericXLog crash-safe)
-  1.4   fts_bm25_opts(): BM25 variants (lucene, robertson, atire, bm25+)
+  1.4   fts_bm25_opts(): BM25 variants (lucene, robertson, atire, bm25+, bm25l)
   1.5   fts_highlight() and fts_snippet()
   1.6   tsquery_to_ftsquery() and a tsquery->ftsquery cast (migration)
   1.7   fts_index_stats()/fts_index_df(): index-maintained corpus statistics
