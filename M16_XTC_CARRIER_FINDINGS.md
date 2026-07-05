@@ -370,6 +370,23 @@ inside the postmaster process (8 threads, zero child processes -- verified via
    PM_WAIT_BACKENDS), though it still completes.  So this libxtc fix also buys
    back shutdown latency.
 
+2d. **No monitor DOWN delivered for a fiber that faults very early in its body
+   (libxtc item to report).**  Found while validating #7 Stage 1b escalation
+   with the PG_XTC_INJECT_CRASH hook: a backend fiber that SIGSEGVs right after
+   entry (before running backend_thread_entry) never delivers a DOWN to its
+   loop supervisor, even though the supervisor spawned+monitored it atomically
+   (race closed) and a NORMAL exit on the same loop delivers its DOWN fine.
+   So libxtc R1 fault containment either does not deliver DOWN for this
+   early-fault shape, or treats the early-body fault as a critical-section
+   escalation rather than a contained per-fiber unwind.  Report to libxtc with
+   the repro (PG_XTC_INJECT_CRASH=N faulting the Nth backend fiber at entry).
+   Consequence: the Stage 1b GENUINE-crash escalation is WIRED and SAFE
+   (validated: benign teardown faults classify benign, GENUINE-CRASH=0 and
+   escalation=0 in normal 24-loop ops, so no false-crash), and normal DOWN
+   observation works -- but an end-to-end demonstration of genuine-crash
+   escalation is blocked on libxtc delivering the DOWN for a faulted fiber.
+   Do NOT work around it in our tree; assume libxtc will deliver the DOWN.
+
 3. **Latch/SetLatch wakeups.**  The epoll-fd intercept already covers latch
    wakeups (the latch signalfd is a registered epoll event, so SetLatch makes
    the epoll fd readable and unparks the fiber).  Not separately exercised for
