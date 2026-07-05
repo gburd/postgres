@@ -483,12 +483,12 @@ backend_pooled_logical_start_release(BackendPooledLogicalStart *logical_start)
  * Start conservative: only families that already reach
  * postmaster_backend_thread_launch() as post-PM_RUN thread carriers, run the
  * common backend_thread_entry(), and whose blocking waits route through the
- * waiteventset xtc intercept.  Regular client backends are always eligible;
- * background workers that opted into a thread carrier and the AIO io workers
- * are the next-safest server-owned families.  Everything else (startup,
- * logger, checkpointer/bgwriter handoff, WAL families, autovacuum, slot sync,
- * archiver) keeps its base pthread carrier until it is individually validated
- * on a fiber -- deferred, not rejected.
+ * waiteventset xtc intercept.  Regular client backends and thread-carrier
+ * background workers are the proven-safe families.  The AIO io workers are
+ * deferred to item #6 (their shutdown protocol needs xtc_aio).  Everything
+ * else (startup, logger, checkpointer/bgwriter handoff, WAL families,
+ * autovacuum, slot sync, archiver) keeps its base pthread carrier until it is
+ * individually validated on a fiber -- deferred, not rejected.
  *
  * ponytail: hand-picked allowlist, not a broad opt-in.  Widen one family at a
  * time as each is shown to yield at every blocking wait (never blocks the
@@ -501,9 +501,15 @@ xtc_carrier_eligible(BackendType child_type)
 	{
 		case B_BACKEND:
 		case B_BG_WORKER:
-		case B_IO_WORKER:
 			return true;
 		default:
+			/*
+			 * B_IO_WORKER is deliberately excluded here: the AIO io-worker
+			 * shutdown protocol (postmaster SIGUSR2 -> PM_WAIT_IO_WORKERS,
+			 * with on-demand relaunch) needs the xtc_aio integration (item
+			 * #6) before io workers run on fibers.  Running them as fibers
+			 * now wedges PM_WAIT_IO_WORKERS at shutdown.  Deferred to #6.
+			 */
 			return false;
 	}
 }
