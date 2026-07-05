@@ -22,6 +22,24 @@ sub install_contrib_extensions
 	  qw(hstore pg_trgm btree_gist pageinspect pg_plan_advice);
 	my $gmake = $ENV{GMAKE} || 'gmake';
 
+	# Under a meson build the contrib extensions and plsample are already
+	# installed into the test install tree (meson installs them), so the
+	# runtime gmake step is both redundant and unavailable (there are no
+	# configured contrib Makefiles).  Detect that case by looking for an
+	# extension control file in the install's sharedir and skip the build.
+	# The make-based path (gmake check-threaded) has no such pre-install,
+	# so fall back to building the extensions with gmake.
+	my $sharedir = `pg_config --sharedir 2>/dev/null`;
+	chomp $sharedir if defined $sharedir;
+	if (   defined $sharedir
+		&& $sharedir ne ''
+		&& -f "$sharedir/extension/hstore.control")
+	{
+		note("contrib extensions already installed in $sharedir; "
+			. "skipping runtime gmake build");
+		return;
+	}
+
 	foreach my $dir (@contrib_dirs)
 	{
 		system_or_bail(
