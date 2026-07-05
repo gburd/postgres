@@ -1481,7 +1481,11 @@ bm25_scan_and_build(Relation heap, Relation index, IndexInfo *indexInfo,
 	TableScanDesc scan = NULL;
 
 	if (pscan != NULL)
+#if PG_VERSION_NUM >= 180000
 		scan = table_beginscan_parallel(heap, pscan, SO_NONE);
+#else
+		scan = table_beginscan_parallel(heap, pscan);
+#endif
 	return table_index_build_scan(heap, index, indexInfo, true, true,
 								  bm25_build_callback, (void *) bs, scan);
 }
