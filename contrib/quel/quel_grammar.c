@@ -193,8 +193,6 @@ quel_apply_range(const void *const *rhs_values, const int *rhs_locs, int nrhs)
 {
 	const char *tvname;
 	const char *relation;
-	const core_YYSTYPE *tv_slot;
-	const core_YYSTYPE *rel_slot;
 
 	if (nrhs < 5)
 		ereport(ERROR,
@@ -203,22 +201,20 @@ quel_apply_range(const void *const *rhs_values, const int *rhs_locs, int nrhs)
 
 	/*
 	 * RHS shape per quel.c: K_QUEL_RANGE K_QUEL_OF IDENT K_QUEL_IS IDENT [0]
-	 * [1]       [2]   [3]       [4]
-	 *
-	 * IDENT slots carry core_YYSTYPE union; the lowercased string sits in the
-	 * .str member.
+	 * [1] [2] [3] [4].  Per the host-reduce ABI rhs_values[i] is the symbol's
+	 * value by value; the IDENT terminals carry a pointer-width core_YYSTYPE
+	 * union whose active member is the .str char*, delivered directly -- read
+	 * as (const char *) rhs_values[i].
 	 */
-	tv_slot = (const core_YYSTYPE *) rhs_values[2];
-	rel_slot = (const core_YYSTYPE *) rhs_values[4];
-	tvname = tv_slot ? tv_slot->str : NULL;
-	relation = rel_slot ? rel_slot->str : NULL;
+	tvname = (const char *) rhs_values[2];
+	relation = (const char *) rhs_values[4];
 
 	if (tvname == NULL || relation == NULL)
 	{
 		ereport(WARNING,
 				(errmsg("QUEL RANGE: missing tuple-var or relation "
 						"name (tv=%p rel=%p)",
-						tv_slot, rel_slot)));
+						(const void *) tvname, (const void *) relation)));
 		return;
 	}
 
@@ -409,12 +405,12 @@ quel_build_attr_simple(const void *const *rhs_values, const int *rhs_locs,
 					   int nrhs)
 {
 	ColumnRef  *cref;
-	const core_YYSTYPE *slot;
+	const char *slot;
 	const char *colname;
 
 	Assert(nrhs == 1);
-	slot = (const core_YYSTYPE *) rhs_values[0];
-	colname = slot ? slot->str : NULL;
+	slot = (const char *) rhs_values[0];
+	colname = slot;
 
 	if (colname == NULL)
 		return NULL;
@@ -434,17 +430,17 @@ quel_build_attr_qualified(const void *const *rhs_values,
 						  const int *rhs_locs, int nrhs)
 {
 	ColumnRef  *cref;
-	const core_YYSTYPE *tv_slot;
-	const core_YYSTYPE *col_slot;
+	const char *tv_slot;
+	const char *col_slot;
 	const char *tvname;
 	const char *colname;
 
 	Assert(nrhs == 3);
-	tv_slot = (const core_YYSTYPE *) rhs_values[0];
+	tv_slot = (const char *) rhs_values[0];
 	/* rhs_values[1] is the DOT token -- ignore. */
-	col_slot = (const core_YYSTYPE *) rhs_values[2];
-	tvname = tv_slot ? tv_slot->str : NULL;
-	colname = col_slot ? col_slot->str : NULL;
+	col_slot = (const char *) rhs_values[2];
+	tvname = tv_slot;
+	colname = col_slot;
 
 	if (tvname == NULL || colname == NULL)
 		return NULL;
@@ -454,6 +450,79 @@ quel_build_attr_qualified(const void *const *rhs_values,
 							  makeString(pstrdup(colname)));
 	cref->location = rhs_locs[0];
 	return (Node *) cref;
+}
+
+/*
+ * quel_build_attr_qualified_kw: quel_attr ::= IDENT DOT bare_label_keyword.
+ *
+ * Same shape as quel_build_attr_qualified, but the third RHS symbol is
+ * the base grammar's bare_label_keyword non-terminal -- whose reduce
+ * action yields the keyword spelling as a plain `char *` (not a
+ * core_YYSTYPE slot).  This lets a column be named with a word that is a
+ * bare-label keyword in SQL (e.g. e.name).
+ */
+Node *
+quel_build_attr_qualified_kw(const void *const *rhs_values,
+							 const int *rhs_locs, int nrhs)
+{
+	ColumnRef  *cref;
+	const char *tv_slot;
+	const char *tvname;
+	const char *colname;
+
+	Assert(nrhs == 3);
+	tv_slot = (const char *) rhs_values[0];
+	/* rhs_values[1] is the DOT token -- ignore. */
+
+	/*
+	 * Per the host-reduce ABI, rhs_values[i] is the symbol's value by value:
+	 * rhs_values[0] (the IDENT terminal, a pointer-width core_YYSTYPE union)
+	 * is the .str char* directly, and rhs_values[2] (the base
+	 * bare_label_keyword non-terminal, %type const char *) is the keyword
+	 * string pointer directly -- no extra indirection.
+	 */
+	tvname = tv_slot;
+	colname = (const char *) rhs_values[2];
+
+	if (tvname == NULL || colname == NULL)
+		return NULL;
+
+	cref = makeNode(ColumnRef);
+	cref->fields = list_make2(makeString(pstrdup(tvname)),
+							  makeString(pstrdup(colname)));
+	cref->location = rhs_locs[0];
+	return (Node *) cref;
+}
+
+/*
+ * quel_attr_list_normalize: coerce a quel_attr_list slot value to a List *.
+ *
+ * The grammar's base case is a unit production `quel_attr_list ::= quel_attr`.
+ * Empirically, when this rule is contributed by a grammar EXTENSION and
+ * merged into the base grammar by Lime's in-process composer, the unit
+ * rule's reduce action does NOT fire: the parser reduces the two attrs to
+ * `quel_attr` but jumps straight to the `cons` rule without running
+ * `attr_list (single)`, so the slot holds the bare quel_attr value (a
+ * ColumnRef Node *) instead of the 1-element List * the action would build.
+ * (Lime's standalone host-reduce test fires the unit action -- see Lime
+ * v1.8.2 tests/hu_grammar.lime -- so this is specific to the
+ * extension-fragment compose path, reported in lime-letter-37.)  Detect the
+ * bare-node case and wrap it; a real List * passes through unchanged.
+ *
+ * ponytail: List-or-bare-node normalize works around a composed-grammar
+ * unit-action gap; drop it once Lime fires the unit reduce for composed
+ * extension rules too (lime-letter-37).
+ */
+static List *
+quel_attr_list_normalize(void *slot)
+{
+	Node	   *n = (Node *) slot;
+
+	if (n == NULL)
+		return NIL;
+	if (IsA(n, List))
+		return (List *) n;
+	return list_make1(n);
 }
 
 /*
@@ -467,7 +536,7 @@ quel_build_attr_list_single(const void *const *rhs_values,
 	Node	   *attr;
 
 	Assert(nrhs == 1);
-	attr = *(Node *const *) rhs_values[0];
+	attr = (Node *) rhs_values[0];
 
 	if (attr == NULL)
 		return NIL;
@@ -486,9 +555,9 @@ quel_build_attr_list_cons(const void *const *rhs_values,
 	Node	   *attr;
 
 	Assert(nrhs == 3);
-	prev = *(List *const *) rhs_values[0];
+	prev = quel_attr_list_normalize((void *) rhs_values[0]);
 	/* rhs_values[1] is COMMA -- ignore. */
-	attr = *(Node *const *) rhs_values[2];
+	attr = (Node *) rhs_values[2];
 
 	if (attr == NULL)
 		return prev;
@@ -572,7 +641,7 @@ quel_build_retrieve_simple(const void *const *rhs_values,
 	List	   *target_list;
 
 	Assert(nrhs == 4);			/* RETRIEVE LPAREN list RPAREN */
-	attr_list = *(List *const *) rhs_values[2];
+	attr_list = quel_attr_list_normalize((void *) rhs_values[2]);
 
 	target_list = quel_make_resTarget_list(attr_list);
 	sel = makeNode(SelectStmt);
@@ -600,8 +669,8 @@ quel_build_retrieve_where(const void *const *rhs_values,
 	List	   *target_list;
 
 	Assert(nrhs == 6);			/* RETRIEVE ( list ) WHERE expr */
-	attr_list = *(List *const *) rhs_values[2];
-	whereClause = *(Node *const *) rhs_values[5];
+	attr_list = quel_attr_list_normalize((void *) rhs_values[2]);
+	whereClause = (Node *) rhs_values[5];
 
 	target_list = quel_make_resTarget_list(attr_list);
 	sel = makeNode(SelectStmt);
@@ -621,13 +690,11 @@ quel_build_retrieve_where(const void *const *rhs_values,
  * direct relation name.
  */
 static RangeVar *
-quel_resolve_target_relation(const core_YYSTYPE *slot, int location)
+quel_resolve_target_relation(const char *name, int location)
 {
-	const char *name;
 	const char *backing;
 	RangeVar   *rv;
 
-	name = slot ? slot->str : NULL;
 	if (name == NULL)
 		return NULL;
 
@@ -660,12 +727,12 @@ quel_build_replace_simple(const void *const *rhs_values,
 						  const int *rhs_locs, int nrhs)
 {
 	UpdateStmt *upd;
-	const core_YYSTYPE *target_slot;
+	const char *target_slot;
 	List	   *set_clauses;
 
 	Assert(nrhs == 5);			/* REPLACE IDENT ( set_clause_list ) */
-	target_slot = (const core_YYSTYPE *) rhs_values[1];
-	set_clauses = *(List *const *) rhs_values[3];
+	target_slot = (const char *) rhs_values[1];
+	set_clauses = (List *) rhs_values[3];
 
 	upd = makeNode(UpdateStmt);
 	upd->relation = quel_resolve_target_relation(target_slot, rhs_locs[1]);
@@ -684,14 +751,14 @@ quel_build_replace_where(const void *const *rhs_values,
 						 const int *rhs_locs, int nrhs)
 {
 	UpdateStmt *upd;
-	const core_YYSTYPE *target_slot;
+	const char *target_slot;
 	List	   *set_clauses;
 	Node	   *whereClause;
 
 	Assert(nrhs == 7);			/* REPLACE IDENT ( list ) WHERE expr */
-	target_slot = (const core_YYSTYPE *) rhs_values[1];
-	set_clauses = *(List *const *) rhs_values[3];
-	whereClause = *(Node *const *) rhs_values[6];
+	target_slot = (const char *) rhs_values[1];
+	set_clauses = (List *) rhs_values[3];
+	whereClause = (Node *) rhs_values[6];
 
 	upd = makeNode(UpdateStmt);
 	upd->relation = quel_resolve_target_relation(target_slot, rhs_locs[1]);
@@ -721,15 +788,15 @@ quel_build_append_full(const void *const *rhs_values,
 {
 	InsertStmt *ins;
 	SelectStmt *valSel;
-	const core_YYSTYPE *target_slot;
+	const char *target_slot;
 	List	   *set_clauses;
 	List	   *cols = NIL;
 	List	   *valExprs = NIL;
 	ListCell   *lc;
 
 	Assert(nrhs == 6);			/* APPEND TO IDENT ( set_clause_list ) */
-	target_slot = (const core_YYSTYPE *) rhs_values[2];
-	set_clauses = *(List *const *) rhs_values[4];
+	target_slot = (const char *) rhs_values[2];
+	set_clauses = (List *) rhs_values[4];
 
 	foreach(lc, set_clauses)
 	{
@@ -768,10 +835,10 @@ quel_build_delete_simple(const void *const *rhs_values,
 						 const int *rhs_locs, int nrhs)
 {
 	DeleteStmt *del;
-	const core_YYSTYPE *target_slot;
+	const char *target_slot;
 
 	Assert(nrhs == 2);			/* DELETE_QUEL IDENT */
-	target_slot = (const core_YYSTYPE *) rhs_values[1];
+	target_slot = (const char *) rhs_values[1];
 
 	del = makeNode(DeleteStmt);
 	del->relation = quel_resolve_target_relation(target_slot, rhs_locs[1]);
@@ -787,12 +854,12 @@ quel_build_delete_where(const void *const *rhs_values,
 						const int *rhs_locs, int nrhs)
 {
 	DeleteStmt *del;
-	const core_YYSTYPE *target_slot;
+	const char *target_slot;
 	Node	   *whereClause;
 
 	Assert(nrhs == 4);			/* DELETE_QUEL IDENT WHERE a_expr */
-	target_slot = (const core_YYSTYPE *) rhs_values[1];
-	whereClause = *(Node *const *) rhs_values[3];
+	target_slot = (const char *) rhs_values[1];
+	whereClause = (Node *) rhs_values[3];
 
 	del = makeNode(DeleteStmt);
 	del->relation = quel_resolve_target_relation(target_slot, rhs_locs[1]);
@@ -816,8 +883,8 @@ quel_build_retrieve_by(const void *const *rhs_values,
 	List	   *target_list;
 
 	Assert(nrhs == 6);			/* RETRIEVE ( list ) BY sortby_list */
-	attr_list = *(List *const *) rhs_values[2];
-	sortClause = *(List *const *) rhs_values[5];
+	attr_list = quel_attr_list_normalize((void *) rhs_values[2]);
+	sortClause = (List *) rhs_values[5];
 
 	target_list = quel_make_resTarget_list(attr_list);
 	sel = makeNode(SelectStmt);
@@ -844,9 +911,9 @@ quel_build_retrieve_where_by(const void *const *rhs_values,
 	List	   *target_list;
 
 	Assert(nrhs == 8);			/* RETRIEVE ( list ) WHERE expr BY sort */
-	attr_list = *(List *const *) rhs_values[2];
-	whereClause = *(Node *const *) rhs_values[5];
-	sortClause = *(List *const *) rhs_values[7];
+	attr_list = quel_attr_list_normalize((void *) rhs_values[2]);
+	whereClause = (Node *) rhs_values[5];
+	sortClause = (List *) rhs_values[7];
 
 	target_list = quel_make_resTarget_list(attr_list);
 	sel = makeNode(SelectStmt);

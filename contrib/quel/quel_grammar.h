@@ -77,6 +77,8 @@ extern Node *quel_build_attr_simple(const void *const *rhs_values,
 									const int *rhs_locs, int nrhs);
 extern Node *quel_build_attr_qualified(const void *const *rhs_values,
 									   const int *rhs_locs, int nrhs);
+extern Node *quel_build_attr_qualified_kw(const void *const *rhs_values,
+										  const int *rhs_locs, int nrhs);
 extern List *quel_build_attr_list_single(const void *const *rhs_values,
 										 const int *rhs_locs, int nrhs);
 extern List *quel_build_attr_list_cons(const void *const *rhs_values,

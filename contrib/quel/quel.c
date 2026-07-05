@@ -249,11 +249,16 @@ quel_reduce(void *user_data, void *extra_arg, int nrhs,
 			quel_build_attr_simple(rhs_values, rhs_locs, nrhs);
 		return;
 	}
-	if (strcmp(label, "attr (tuple_var.column)") == 0
-		|| strcmp(label, "attr (tuple_var.bare_keyword)") == 0)
+	if (strcmp(label, "attr (tuple_var.column)") == 0)
 	{
 		*(Node **) lhs_out =
 			quel_build_attr_qualified(rhs_values, rhs_locs, nrhs);
+		return;
+	}
+	if (strcmp(label, "attr (tuple_var.bare_keyword)") == 0)
+	{
+		*(Node **) lhs_out =
+			quel_build_attr_qualified_kw(rhs_values, rhs_locs, nrhs);
 		return;
 	}
 	if (strcmp(label, "attr_list (single)") == 0)
@@ -614,9 +619,10 @@ _PG_init(void)
 		oldctx = MemoryContextSwitchTo(TopMemoryContext);
 		quel_status_msg = psprintf(
 								   "quel registered: %zu tokens, %zu types, %zu rules, %zu prec; "
-								   "reduce callbacks wired via pg_grammar_ext_dispatch_reduce; "
-								   "scanner-keyword hook (Track B Phase 1) live; Phase B "
-								   "complete: RETRIEVE / REPLACE / APPEND / DELETE build real "
+								   "reduce callbacks dispatched in-process via host-reduce; "
+								   "keyword override live (real lexemes; colliding verbs "
+								   "resolved by the admissibility oracle / one-token peek); "
+								   "RETRIEVE / REPLACE / APPEND / DELETE build real "
 								   "PG parse trees that flow through parse_analyze + planner + "
 								   "executor and return identical results to equivalent SQL; "
 								   "multi-tuple-variable joins via FROM synthesis from rangetab; "
@@ -627,7 +633,7 @@ _PG_init(void)
 		MemoryContextSwitchTo(oldctx);
 
 		ereport(NOTICE,
-				(errmsg("quel: registered (rebuild will run on first parse)")));
+				(errmsg("quel: registered (grammar composed in-process at postmaster start)")));
 	}
 	else
 	{

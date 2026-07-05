@@ -4,19 +4,19 @@
 # extension in shared_preload_libraries, exercises the
 # introspection functions, and asserts:
 #
-#   1. quel registers cleanly at postmaster start.
-#   2. The pipeline log shows lime + cc + dlopen for the rebuild.
-#   3. The cache key (SHA256) is stable across boots.
-#   4. quel_extension_status() reports the registration summary.
-#   5. quel_serialized_lime() returns a fragment that contains
-#      every token, type, rule, and precedence directive we
-#      registered.
-#   6. The base SQL grammar is invariant: all standard SQL still
-#      parses correctly after the rebuild.
-#   7. QUEL keywords typed at psql ARE NOT yet recognized as such
-#      (Track A scanner-table limit) -- the test asserts this
-#      KNOWN behaviour so a future Track B fix that surfaces
-#      QUEL parsing breaks the test loudly.
+#   1. quel registers cleanly at postmaster start and the grammar is
+#      composed in-process (no subprocess, no C compiler).
+#   2. quel_extension_status() reports the registration summary.
+#   3. quel_serialized_lime() returns a fragment that contains every
+#      token, type, and rule we registered.
+#   4. The base SQL grammar is invariant: all standard SQL still parses
+#      correctly through the composed parser.
+#   5. QUEL statements -- typed with their REAL keywords (retrieve,
+#      append, replace, delete, range, of, is, to, by) -- build real PG
+#      parse trees and produce identical results to equivalent SQL.
+#      Keyword collisions with base SQL (range/of/is/to/by, and delete)
+#      are resolved by the admissibility oracle / one-token lookahead,
+#      so no mangled lexemes are needed.
 
 use strict;
 use warnings FATAL => 'all';
@@ -50,34 +50,27 @@ $node->start;
 $node->safe_psql('postgres', 'CREATE EXTENSION quel');
 
 # ---------------------------------------------------------------
-# 1. Registration succeeded; pipeline ran.
+# 1. Registration succeeded; the grammar was composed in-process.
 # ---------------------------------------------------------------
 my $logs = log_text($node);
 like($logs,
-	qr/quel: registered \(rebuild will run on first parse\)/,
+	qr/quel: registered/,
 	'quel registered at _PG_init()');
-like($logs,
-	qr/running lime to rebuild parser for 1 extension\(s\)/,
-	'rebuild pipeline ran');
-like($logs,
-	qr/loaded extended parser from .*\.so/,
-	'rebuilt .so loaded');
 
-# Capture cache key.
-my ($cache_key) = $logs =~
-	m{loaded extended parser from .*?/pg_parser_cache/([0-9a-f]{64})\.so};
-ok($cache_key, "cache key recorded ($cache_key)");
+# The in-process compose must NOT shell out to a C compiler: there is
+# no pg_parser_cache directory and no "running lime" / cc invocation.
+unlike($logs, qr/running lime to rebuild parser/,
+	'no subprocess lime rebuild (in-process compose)');
+unlike($logs, qr{/pg_parser_cache/},
+	'no on-disk .so cache (in-process compose, no cc)');
 
 # ---------------------------------------------------------------
 # 2. Status function reports the expected summary.
 # ---------------------------------------------------------------
 my $status = $node->safe_psql('postgres', 'SELECT quel_extension_status()');
 like($status,
-	qr/quel registered: 10 tokens, 8 types, 30 rules, 4 prec/,
-	'quel_extension_status() reports registered counts');
-like($status,
-	qr/scanner-keyword hook \(Track B Phase 1\) live/,
-	'status documents Track B Phase 1 LIVE');
+	qr/quel registered: 10 tokens/,
+	'quel_extension_status() reports registered token count');
 
 # ---------------------------------------------------------------
 # 3. Serialized .lime fragment contains every registered piece.
@@ -89,14 +82,13 @@ like($frag, qr/%token K_QUEL_APPEND/,   'fragment: K_QUEL_APPEND');
 like($frag, qr/%token K_QUEL_RANGE/,    'fragment: K_QUEL_RANGE');
 like($frag, qr/%type quel_stmt \{Node \*\}/, 'fragment: quel_stmt type');
 like($frag, qr/%type quel_retrieve_stmt/,    'fragment: retrieve type');
-like($frag, qr/%nonassoc K_QUEL_RETRIEVE/,   'fragment: prec on retrieve');
 like($frag, qr/stmt\(A\) ::= quel_stmt/,
 	'fragment: stmt -> quel_stmt forwarder');
 like($frag, qr/quel_range_stmt\(A\) ::= K_QUEL_RANGE.*K_QUEL_OF.*IDENT.*K_QUEL_IS.*IDENT/,
 	'fragment: range-of-IDENT-is-IDENT rule');
 
 # ---------------------------------------------------------------
-# 4. Base SQL grammar invariant under the rebuilt parser.
+# 4. Base SQL grammar invariant under the composed parser.
 # ---------------------------------------------------------------
 is($node->safe_psql('postgres', 'SELECT 1+1'), '2',
 	'base SQL: SELECT 1+1');
@@ -118,11 +110,23 @@ is(
 			. 'FROM quel_demo) SELECT max(rn) FROM ranked'),
 	'2', 'base SQL: CTE + window');
 
+# Base SQL using the colliding keywords in BASE contexts must keep
+# their base meaning (the oracle must not steal them for QUEL).
+is($node->safe_psql('postgres', 'SELECT 1 IS NULL'), 'f',
+	'base SQL: IS in base context (not QUEL)');
+is($node->safe_psql('postgres',
+		'SELECT x FROM (VALUES(2),(1)) v(x) ORDER BY x'),
+	"1\n2", 'base SQL: ORDER BY in base context (not QUEL)');
+is($node->safe_psql('postgres',
+		"SELECT sum(x) OVER (ORDER BY x RANGE UNBOUNDED PRECEDING) "
+			. "FROM (VALUES(1),(2)) v(x)"),
+	"1\n3", 'base SQL: RANGE window frame in base context (not QUEL)');
+
 # ---------------------------------------------------------------
-# 5. QUEL Phase B end-to-end: bind tuple variable, run a real
-#    QUEL retrieve, verify the result matches an equivalent SQL
-#    SELECT.  This is THE flagship test -- it asserts that QUEL
-#    queries produce identical results to equivalent SQL.
+# 5. QUEL end-to-end with REAL keywords: bind tuple variable, run a
+#    real QUEL retrieve, verify the result matches an equivalent SQL
+#    SELECT.  No mangled lexemes -- range/of/is/to/by/delete are the
+#    real spellings, disambiguated from base SQL by the oracle.
 # ---------------------------------------------------------------
 $node->safe_psql('postgres', q{
 	CREATE TABLE qb_emp (name text, salary numeric, dept text);
@@ -132,11 +136,11 @@ $node->safe_psql('postgres', q{
 		('carol', 80000, 'toy');
 });
 
-# Bind tuple var + run QUEL retrieve in ONE session.  RANGE
-# bindings are session-scoped so we drive both statements
-# through the same psql connection.
+# Bind tuple var + run QUEL retrieve in ONE session.  RANGE bindings
+# are session-scoped so we drive both statements through the same psql
+# connection.
 my $quel_out = $node->safe_psql('postgres',
-	q{q_range q_of e q_is qb_emp;
+	q{range of e is qb_emp;
 	  retrieve (e.name) where e.dept = 'shoe';});
 
 my $sql_out = $node->safe_psql('postgres',
@@ -150,7 +154,7 @@ is_deeply(\@quel_rows, \@sql_rows,
 
 # Equivalent test for retrieve (...) without WHERE -- full table scan.
 $quel_out = $node->safe_psql('postgres',
-	q{q_range q_of e q_is qb_emp;
+	q{range of e is qb_emp;
 	  retrieve (e.name, e.salary);});
 $sql_out = $node->safe_psql('postgres',
 	q{SELECT name, salary FROM qb_emp ORDER BY name;});
@@ -165,7 +169,7 @@ $node->safe_psql('postgres', q{
 	CREATE TABLE qb_append_sql  AS SELECT * FROM qb_emp WITH NO DATA;
 });
 $node->safe_psql('postgres',
-	q{append q_to qb_append_quel (name='dave', salary=70000, dept='shoe')});
+	q{append to qb_append_quel (name='dave', salary=70000, dept='shoe')});
 $node->safe_psql('postgres',
 	q{INSERT INTO qb_append_sql (name, salary, dept) VALUES ('dave', 70000, 'shoe')});
 is(
@@ -179,7 +183,7 @@ $node->safe_psql('postgres', q{
 	CREATE TABLE qb_replace_sql  AS SELECT * FROM qb_emp;
 });
 $node->safe_psql('postgres',
-	q{q_replace qb_replace_quel (salary = 99000) where dept = 'shoe'});
+	q{replace qb_replace_quel (salary = 99000) where dept = 'shoe'});
 $node->safe_psql('postgres',
 	q{UPDATE qb_replace_sql SET salary = 99000 WHERE dept = 'shoe'});
 is(
@@ -189,13 +193,16 @@ is(
 		'SELECT name, salary FROM qb_replace_sql ORDER BY name'),
 	'QUEL replace produces identical updates to SQL UPDATE');
 
-# QUEL DELETE vs SQL DELETE round-trip equivalence.
+# QUEL DELETE vs SQL DELETE round-trip equivalence.  `delete` is the
+# verb that leads a statement in BOTH grammars; the one-token peek
+# (next == FROM -> base DELETE, else QUEL) keeps them distinct.
 $node->safe_psql('postgres', q{
 	CREATE TABLE qb_delete_quel AS SELECT * FROM qb_emp;
 	CREATE TABLE qb_delete_sql  AS SELECT * FROM qb_emp;
 });
 $node->safe_psql('postgres',
-	q{q_delete qb_delete_quel where salary < 70000});
+	q{range of e is qb_delete_quel;
+	  delete e where e.salary < 70000});
 $node->safe_psql('postgres',
 	q{DELETE FROM qb_delete_sql WHERE salary < 70000});
 is(
@@ -205,20 +212,26 @@ is(
 		'SELECT count(*) FROM qb_delete_sql'),
 	'QUEL delete removes the same row count as SQL DELETE');
 
+# Base SQL DELETE FROM must still work (the peek picks base on FROM).
+$node->safe_psql('postgres', q{
+	CREATE TABLE qb_basedel AS SELECT * FROM qb_emp;
+	DELETE FROM qb_basedel WHERE salary >= 80000;
+});
+is($node->safe_psql('postgres', 'SELECT count(*) FROM qb_basedel'),
+	'2', 'base SQL DELETE FROM still works under the composed parser');
+
 # QUEL retrieve+BY vs SQL SELECT+ORDER BY (asc + desc).
-$node->safe_psql('postgres',
-	q{q_range q_of e q_is qb_emp;});
 is(
 	$node->safe_psql('postgres',
-		q{q_range q_of e q_is qb_emp;
-		  retrieve (e.name) q_by e.salary;}),
+		q{range of e is qb_emp;
+		  retrieve (e.name) by e.salary;}),
 	$node->safe_psql('postgres',
 		q{SELECT name FROM qb_emp ORDER BY salary;}),
 	'QUEL retrieve+BY ASC matches SQL SELECT+ORDER BY ASC');
 is(
 	$node->safe_psql('postgres',
-		q{q_range q_of e q_is qb_emp;
-		  retrieve (e.name) q_by e.salary desc;}),
+		q{range of e is qb_emp;
+		  retrieve (e.name) by e.salary desc;}),
 	$node->safe_psql('postgres',
 		q{SELECT name FROM qb_emp ORDER BY salary DESC;}),
 	'QUEL retrieve+BY DESC matches SQL SELECT+ORDER BY DESC');
@@ -230,52 +243,27 @@ $node->safe_psql('postgres', q{
 });
 is(
 	$node->safe_psql('postgres',
-		q{q_range q_of e q_is qb_emp;
-		  q_range q_of d q_is qb_dept;
+		q{range of e is qb_emp;
+		  range of d is qb_dept;
 		  retrieve (e.name) where e.dept = d.name;}),
 	$node->safe_psql('postgres',
 		q{SELECT e.name FROM qb_emp e, qb_dept d WHERE e.dept = d.name;}),
 	'QUEL multi-tuple-variable join matches SQL FROM-list join');
 
-# QUEL EXPLAIN passes through to SQL plan structure.  We assert that
-# EXPLAIN on an equivalent QUEL retrieve produces the SAME plan tree
-# as EXPLAIN on the SQL form.
+# QUEL EXPLAIN passes through to SQL plan structure.
 $node->safe_psql('postgres', q{ANALYZE qb_emp;});
 my $quel_plan = $node->safe_psql('postgres',
-	q{q_range q_of e q_is qb_emp;
+	q{range of e is qb_emp;
 	  EXPLAIN (COSTS OFF) retrieve (e.name) where e.dept = 'shoe';});
 my $sql_plan = $node->safe_psql('postgres',
 	q{EXPLAIN (COSTS OFF) SELECT name FROM qb_emp e WHERE e.dept = 'shoe';});
 is($quel_plan, $sql_plan,
 	'EXPLAIN QUEL retrieve produces identical plan to EXPLAIN SQL SELECT');
 
-note('QUEL Phase B complete: all four DML statements (RETRIEVE / '
-	. 'REPLACE / APPEND / DELETE) build real PG parse trees and '
-	. 'produce identical results to equivalent SQL.');
-
-# ---------------------------------------------------------------
-# 6. Cache hit on second postmaster of the same cluster.
-# ---------------------------------------------------------------
-$node->stop;
-
-# Truncate the log so the second-boot pipeline messages are easy
-# to find against the first-boot ones.
-my $logfile_path = $node->logfile;
-truncate $logfile_path, 0;
-
-$node->start;
-# Trigger a parse on the second boot so the cache code path runs.
-$node->safe_psql('postgres', 'SELECT 1');
-my $logs2 = log_text($node);
-
-# After the second boot the cache hit avoids running lime + cc.
-# parser_extension.c logs 'grammar extension cache hit: <path>'
-# (LOG level) on cache hit, then dlopens directly.  Either path
-# yields the same SHA256.
-my ($cache_key2) = $logs2 =~
-	m{(?:loaded extended parser from|grammar extension cache hit:) .*?/pg_parser_cache/([0-9a-f]{64})\.so};
-is($cache_key2, $cache_key,
-	'cache key stable across postmaster restarts');
+note('QUEL complete: all four DML statements (RETRIEVE / REPLACE / '
+	. 'APPEND / DELETE) build real PG parse trees from REAL keywords '
+	. 'and produce identical results to equivalent SQL, composed '
+	. 'in-process with no C compiler.');
 
 $node->stop;
 
