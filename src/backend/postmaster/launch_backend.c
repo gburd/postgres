@@ -480,15 +480,18 @@ backend_pooled_logical_start_release(BackendPooledLogicalStart *logical_start)
  * xtc-carrier: which thread-carrier child types may run as xtc fibers on the
  * shared carrier loop pool instead of dedicated pthreads.
  *
- * Start conservative: only families that already reach
- * postmaster_backend_thread_launch() as post-PM_RUN thread carriers, run the
- * common backend_thread_entry(), and whose blocking waits route through the
- * waiteventset xtc intercept.  Regular client backends and thread-carrier
- * background workers are the proven-safe families.  The AIO io workers are
- * deferred to item #6 (their shutdown protocol needs xtc_aio).  Everything
- * else (startup, logger, checkpointer/bgwriter handoff, WAL families,
- * autovacuum, slot sync, archiver) keeps its base pthread carrier until it is
- * individually validated on a fiber -- deferred, not rejected.
+ * Start conservative: only regular client backends run as xtc fibers today.
+ * They reach postmaster_backend_thread_launch() as thread carriers, run the
+ * common backend_thread_entry(), yield through the waiteventset xtc intercept,
+ * and reap as pooled-logical PMChildren.
+ *
+ * Server-owned worker families (bgworker, io worker, autovacuum, WAL, etc.)
+ * are deferred: a bare pthread->fiber carrier swap is not enough -- their
+ * crash/terminate/restart and shutdown-ordering protocols (and, for io
+ * workers, the AIO PM_WAIT_IO_WORKERS handshake, item #6) need fiber-aware
+ * handling.  Widen this allowlist one family at a time, each validated under
+ * the full threaded-runtime TAP (not just happy-path smoke) on a disk-backed
+ * host.  Deferred, not rejected.
  *
  * ponytail: hand-picked allowlist, not a broad opt-in.  Widen one family at a
  * time as each is shown to yield at every blocking wait (never blocks the
@@ -500,15 +503,24 @@ xtc_carrier_eligible(BackendType child_type)
 	switch (child_type)
 	{
 		case B_BACKEND:
-		case B_BG_WORKER:
 			return true;
 		default:
 			/*
-			 * B_IO_WORKER is deliberately excluded here: the AIO io-worker
-			 * shutdown protocol (postmaster SIGUSR2 -> PM_WAIT_IO_WORKERS,
-			 * with on-demand relaunch) needs the xtc_aio integration (item
-			 * #6) before io workers run on fibers.  Running them as fibers
-			 * now wedges PM_WAIT_IO_WORKERS at shutdown.  Deferred to #6.
+			 * Server-owned worker families are NOT yet fiber-eligible.  A bare
+			 * carrier swap (pthread -> fiber) passes happy-path smoke
+			 * (B_BG_WORKER launches, runs, and exits cleanly), but the
+			 * threaded-runtime TAP wedges: with worker fibers sharing the loop
+			 * pool, terminating an idle backend hangs (regressed from a clean
+			 * 129/129).  Worker fibers need fiber-aware crash/terminate/
+			 * restart and shutdown-ordering handling, not just a carrier swap.
+			 *
+			 * B_IO_WORKER additionally needs the AIO shutdown protocol
+			 * (PM_WAIT_IO_WORKERS) handled on fibers -- that belongs with the
+			 * xtc_aio work (item #6).
+			 *
+			 * Deferred, not rejected: widen one family at a time once its full
+			 * lifecycle (not just the happy path) is validated on a fiber under
+			 * the threaded-runtime TAP, on a disk-backed host.
 			 */
 			return false;
 	}
