@@ -155,6 +155,9 @@ xtc_saw_clean_exit(xtc_pid_t pid)
  * benign teardown faults (findings 2c) never set it.
  */
 static _Atomic uint32_t g_xtc_genuine_crash;
+
+/* Debug-only fault-injection entry counter (PG_XTC_INJECT_CRASH). */
+static _Atomic unsigned g_xtc_inject_entry_count;
 static int	g_xtc_n_sups = 0;
 
 /* Register message: "please xtc_monitor this backend pid (child_slot N)". */
@@ -376,12 +379,15 @@ xtc_carrier_proc(void *arg)
 
 	/*
 	 * Debug-only fault injection (AGENTS_XTC #7 Stage 1b test hook).  If
-	 * PG_XTC_INJECT_CRASH names the local_id of a backend fiber, that fiber
-	 * faults HERE -- before running any real work and before reaching its
-	 * clean exit path -- to exercise the GENUINE-crash escalation.  libxtc R1
-	 * fault containment turns the SIGSEGV into a DOWN(reason=-11) to the loop
-	 * supervisor, which (finding no clean-exit record) flags a genuine crash
-	 * and the postmaster terminates the runtime.  Never set in production.
+	 * PG_XTC_INJECT_CRASH=N is set, the Nth backend fiber to enter (1-based,
+	 * counted across the whole pool) faults HERE -- before running any real
+	 * work and before reaching its clean exit path -- to exercise the
+	 * GENUINE-crash escalation.  Using an entry counter (not a loop/local id,
+	 * which the pool assigns unpredictably) makes the target deterministic.
+	 * libxtc R1 fault containment turns the SIGSEGV into a DOWN(reason=-11) to
+	 * the loop supervisor, which (finding no clean-exit record) flags a
+	 * genuine crash and the postmaster terminates the runtime.  Never set in
+	 * production.
 	 */
 	{
 		const char *inj = getenv("PG_XTC_INJECT_CRASH");
@@ -389,9 +395,9 @@ xtc_carrier_proc(void *arg)
 		if (inj != NULL && inj[0] != '\0')
 		{
 			long		target = strtol(inj, NULL, 10);
-			xtc_pid_t	self = xtc_self();
+			unsigned	nth = atomic_fetch_add(&g_xtc_inject_entry_count, 1) + 1;
 
-			if ((long) self.local_id == target)
+			if (target > 0 && (unsigned) target == nth)
 			{
 				volatile int *crashp = NULL;
 
