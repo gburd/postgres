@@ -204,6 +204,17 @@ xtc_carrier_supervisor_proc(void *arg)
 	xtc_loop_t *my_loop = (g_xtc_exec != NULL && g_xtc_n_loops > 1)
 		? xtc_exec_loop(g_xtc_exec, my_loop_idx) : g_xtc_loop;
 
+	/*
+	 * Install libxtc's R1 per-fiber fault guard on THIS loop thread.  The
+	 * guard registers the SIGSEGV/SIGBUS/SIGFPE/SIGILL handler on an alternate
+	 * signal stack; without it a synchronous fault in a backend fiber cannot
+	 * be contained (no handler to unwind the one fiber and deliver its DOWN),
+	 * which is the whole point of #7 Stage 1b crash containment.  The
+	 * supervisor runs one fiber per loop, on that loop's thread, so this
+	 * installs the guard exactly once per loop thread (the call is idempotent).
+	 */
+	(void) xtc_fault_guard_install();
+
 	for (;;)
 	{
 		void	   *msg = NULL;
@@ -338,15 +349,14 @@ xtc_carrier_supervisor_proc(void *arg)
 							   &po, &bpid) == XTC_OK)
 			{
 				uint64_t	ref = 0;
-				char		sbuf[128];
+				char		sbuf[96];
 				int			sn;
-				int			mrc;
 
-				mrc = xtc_monitor(bpid, &ref);
+				(void) xtc_monitor(bpid, &ref);
 				/* raw write: elog is unsafe from this bare fiber */
 				sn = snprintf(sbuf, sizeof(sbuf),
-							  "xtc: spawned backend fiber pid=(loop=%u,local=%u,gen=%u) monitor_rc=%d\n",
-							  bpid.loop_id, bpid.local_id, bpid.gen, mrc);
+							  "xtc: spawned backend fiber pid=(loop=%u,local=%u,gen=%u)\n",
+							  bpid.loop_id, bpid.local_id, bpid.gen);
 				if (sn > 0)
 				{
 					if (sn > (int) sizeof(sbuf))
