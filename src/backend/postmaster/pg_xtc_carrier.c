@@ -377,17 +377,20 @@ xtc_carrier_proc(void *arg)
 		(void) write(STDERR_FILENO, m, sizeof(m) - 1);
 	}
 
+	xtc_in_backend_fiber = true;
+
 	/*
 	 * Debug-only fault injection (AGENTS_XTC #7 Stage 1b test hook).  If
 	 * PG_XTC_INJECT_CRASH=N is set, the Nth backend fiber to enter (1-based,
-	 * counted across the whole pool) faults HERE -- before running any real
-	 * work and before reaching its clean exit path -- to exercise the
-	 * GENUINE-crash escalation.  Using an entry counter (not a loop/local id,
-	 * which the pool assigns unpredictably) makes the target deterministic.
-	 * libxtc R1 fault containment turns the SIGSEGV into a DOWN(reason=-11) to
-	 * the loop supervisor, which (finding no clean-exit record) flags a
-	 * genuine crash and the postmaster terminates the runtime.  Never set in
-	 * production.
+	 * counted across the whole pool) faults after a brief park -- AFTER the
+	 * spawning thread has logged "spawned" and sent the register message so
+	 * the supervisor is already monitoring it, but before the fiber reaches
+	 * its clean exit path.  This models a real backend that crashes mid-work
+	 * (not the microsecond spawn/register window) and exercises the
+	 * GENUINE-crash escalation.  libxtc R1 containment turns the SIGSEGV into
+	 * a DOWN(reason=-11) to the loop supervisor, which (no clean-exit record)
+	 * flags a genuine crash and the postmaster terminates the runtime.  Never
+	 * set in production.
 	 */
 	{
 		const char *inj = getenv("PG_XTC_INJECT_CRASH");
@@ -404,12 +407,12 @@ xtc_carrier_proc(void *arg)
 				(void) write(STDERR_FILENO,
 							 "xtc: INJECT_CRASH faulting this fiber before clean exit\n",
 							 56);
+				/* park briefly so the register/monitor is in place first */
+				xtc_proc_sleep((int64_t) 200 * 1000 * 1000);	/* 200ms */
 				*crashp = 42;	/* SIGSEGV -> contained -> DOWN reason=-11 */
 			}
 		}
 	}
-
-	xtc_in_backend_fiber = true;
 
 	/*
 	 * backend_thread_entry() runs the tree's full thread-per-session init
