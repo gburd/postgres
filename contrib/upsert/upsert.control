@@ -1,0 +1,10 @@
+# upsert extension
+comment = 'UPSERT statement that lowers to INSERT ... ON CONFLICT DO UPDATE (parser extension)'
+default_version = '1.0'
+module_pathname = '$libdir/upsert'
+relocatable = false
+trusted = false
+superuser = true
+# Must load at postmaster startup so _PG_init can register the grammar
+# extension before any backend has called raw_parser().
+schema = 'public'
