@@ -319,8 +319,8 @@ SELECT fts_count('docs_bm25', to_ftsquery('english', 'brown'));
    </listitem>
    <listitem>
     <para>
-     Index build and scan are single-threaded (no parallel build or parallel
-     scan).
+     Query execution (scan) is single-threaded (no parallel scan).  The index
+     build is parallel (<literal>amcanbuildparallel</literal>).
     </para>
    </listitem>
    <listitem>

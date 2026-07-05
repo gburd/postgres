@@ -1565,3 +1565,35 @@ SELECT count(*) AS big_term3999 FROM bigdoc WHERE d @@@ 'term3999x'::ftsquery; -
 
 RESET enable_seqscan;
 DROP TABLE bigdoc;
+-- parallel index build (amcanbuildparallel): a parallel-built index must return
+-- exactly what a serial build does.  Force workers with a zero scan threshold.
+CREATE TABLE pbuild (id int, d ftsdoc);
+INSERT INTO pbuild SELECT g, to_ftsdoc('common term'||(g%200)||' doc'||g)
+  FROM generate_series(1,20000) g;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_maintenance_workers = 2;
+CREATE INDEX pbuild_bm25 ON pbuild USING bm25 (d);
+RESET max_parallel_maintenance_workers;
+RESET min_parallel_table_scan_size;
+SET enable_seqscan = off;
+SELECT fts_count('pbuild_bm25', 'common'::ftsquery) AS all_docs;      -- 20000
+ all_docs 
+----------
+    20000
+(1 row)
+
+SELECT fts_count('pbuild_bm25', 'term7'::ftsquery) AS term7;          -- 100
+ term7 
+-------
+   100
+(1 row)
+
+SELECT count(*) AS ranked FROM (SELECT id FROM pbuild WHERE d @@@ 'common'::ftsquery
+  ORDER BY d <=> 'common'::ftsquery LIMIT 10) x;                      -- 10
+ ranked 
+--------
+     10
+(1 row)
+
+RESET enable_seqscan;
+DROP TABLE pbuild;

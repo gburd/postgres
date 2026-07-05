@@ -42,16 +42,19 @@
 #include <math.h>
 #include "access/genam.h"
 #include "access/generic_xlog.h"
+#include "access/parallel.h"
 #include "access/reloptions.h"
 #include "access/relscan.h"
 #include "access/table.h"
 #include "access/tableam.h"
 #include "access/visibilitymap.h"
+#include "catalog/index.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_type.h"
 #include "commands/defrem.h"
 #include "commands/vacuum.h"
 #include "executor/tuptable.h"
+#include "executor/instrument.h"
 #include "funcapi.h"
 #include "miscadmin.h"
 #include "nodes/pathnodes.h"
@@ -59,7 +62,11 @@
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "storage/bufmgr.h"
+#include "storage/condition_variable.h"
 #include "storage/indexfsm.h"
+#include "storage/lmgr.h"
+#include "storage/spin.h"
+#include "tcop/tcopprot.h"
 #include "utils/array.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -274,8 +281,25 @@ bm25_build_flush_segment(Relation index, BM25BuildState *bs)
 		return;
 	if (bs->nterms > 1)
 		qsort(bs->terms, bs->nterms, sizeof(BuildTerm), cmp_buildterm);
+
+	/*
+	 * Serialize index-page writes across parallel-build participants.  During a
+	 * parallel build several backends flush segments into the same index
+	 * concurrently; pg_fts appends pages (bm25_new_buffer -> ReadBuffer(P_NEW)),
+	 * and overlapping appenders race on relation extension ("unexpected data
+	 * beyond EOF").  Holding the relation extension lock around the whole
+	 * segment write makes each participant's page additions atomic w.r.t. the
+	 * others.  The expensive part of the build -- heap scan + tsearch analysis
+	 * -- runs fully parallel; only the comparatively cheap segment write phase
+	 * is serialized.  In a serial build IsInParallelMode() is false and no lock
+	 * is taken.
+	 */
+	if (IsInParallelMode())
+		LockRelationForExtension(index, ExclusiveLock);
 	bm25_write_segment(index, bs, &seg);
 	bm25_meta_add_segment(index, &seg);
+	if (IsInParallelMode())
+		UnlockRelationForExtension(index, ExclusiveLock);
 
 	/* reset: free everything in the build context and start a fresh segment */
 	MemoryContextReset(bs->ctx);
@@ -1404,16 +1428,301 @@ bm25_merge_segments(Relation index)
 	}
 }
 
+/* ---- parallel index build (level 1: parallel heap scan + per-worker segment
+ * flush; the leader merges the workers' segments at the end) ---- */
+
+#define PARALLEL_KEY_BM25_SHARED		UINT64CONST(0xB250000000000001)
+#define PARALLEL_KEY_QUERY_TEXT			UINT64CONST(0xB250000000000002)
+#define PARALLEL_KEY_WAL_USAGE			UINT64CONST(0xB250000000000003)
+#define PARALLEL_KEY_BUFFER_USAGE		UINT64CONST(0xB250000000000004)
+
+/*
+ * Shared state for a parallel bm25 build, in the DSM segment.  Workers write
+ * their own segments straight into the index (segments are self-contained and
+ * appended to the metapage under its exclusive lock), so unlike a btree build
+ * there is no central sort or result hand-off -- the only shared state is the
+ * parallel table scan and a done-counter.
+ */
+typedef struct BM25Shared
+{
+	Oid			heaprelid;
+	Oid			indexrelid;
+	bool		isconcurrent;
+	ConditionVariable workersdonecv;
+	slock_t		mutex;
+	int			nparticipantsdone;
+	double		reltuples;
+	/* ParallelTableScanDescData follows (alignment: allocated separately) */
+}			BM25Shared;
+
+#define ParallelTableScanFromBM25Shared(shared) \
+	(ParallelTableScanDesc) ((char *) (shared) + BUFFERALIGN(sizeof(BM25Shared)))
+
+typedef struct BM25Leader
+{
+	ParallelContext *pcxt;
+	int			nparticipanttuplesorts;
+	BM25Shared *bm25shared;
+	Snapshot	snapshot;
+	BufferUsage *bufferusage;
+	WalUsage   *walusage;
+}			BM25Leader;
+
+/*
+ * Run the heap scan (serial or, if pscan != NULL, a parallel slice) building
+ * segments into `index`.  Returns the number of heap tuples this participant
+ * saw.  Flushing the residual terms is left to the caller so the leader can
+ * account the total before the final merge.
+ */
+static double
+bm25_scan_and_build(Relation heap, Relation index, IndexInfo *indexInfo,
+					BM25BuildState *bs, ParallelTableScanDesc pscan)
+{
+	TableScanDesc scan = NULL;
+
+	if (pscan != NULL)
+		scan = table_beginscan_parallel(heap, pscan, SO_NONE);
+	return table_index_build_scan(heap, index, indexInfo, true, true,
+								  bm25_build_callback, (void *) bs, scan);
+}
+
+/*
+ * Worker entry point (registered as "pg_fts"/"bm25_parallel_build_main").
+ */
+PGDLLEXPORT void bm25_parallel_build_main(dsm_segment *seg, shm_toc *toc);
+
+void
+bm25_parallel_build_main(dsm_segment *seg, shm_toc *toc)
+{
+	BM25Shared *bm25shared;
+	Relation	heap;
+	Relation	index;
+	IndexInfo  *indexInfo;
+	ParallelTableScanDesc pscan;
+	BM25BuildState bs;
+	LOCKMODE	heapLockmode;
+	LOCKMODE	indexLockmode;
+	double		reltuples;
+	char	   *sharedquery;
+	BufferUsage *bufferusage;
+	WalUsage   *walusage;
+
+	bm25shared = (BM25Shared *) shm_toc_lookup(toc, PARALLEL_KEY_BM25_SHARED, false);
+
+	sharedquery = shm_toc_lookup(toc, PARALLEL_KEY_QUERY_TEXT, true);
+	debug_query_string = sharedquery;
+
+	if (!bm25shared->isconcurrent)
+	{
+		heapLockmode = ShareLock;
+		indexLockmode = AccessExclusiveLock;
+	}
+	else
+	{
+		heapLockmode = ShareUpdateExclusiveLock;
+		indexLockmode = RowExclusiveLock;
+	}
+
+	heap = table_open(bm25shared->heaprelid, heapLockmode);
+	index = index_open(bm25shared->indexrelid, indexLockmode);
+	indexInfo = BuildIndexInfo(index);
+	indexInfo->ii_Concurrent = bm25shared->isconcurrent;
+
+	/* report buffer/WAL usage so EXPLAIN ANALYZE etc. account worker I/O */
+	bufferusage = shm_toc_lookup(toc, PARALLEL_KEY_BUFFER_USAGE, false);
+	walusage = shm_toc_lookup(toc, PARALLEL_KEY_WAL_USAGE, false);
+	InstrStartParallelQuery();
+
+	pscan = ParallelTableScanFromBM25Shared(bm25shared);
+
+	bs.ctx = AllocSetContextCreate(CurrentMemoryContext, "bm25 parallel worker",
+								   ALLOCSET_DEFAULT_SIZES);
+	bs.terms = NULL;
+	bs.nterms = 0;
+	bs.maxterms = 0;
+	bs.ndocs = 0;
+	bs.sumdoclen = 0;
+	bm25_build_ht_init(&bs);
+	reltuples = bm25_scan_and_build(heap, index, indexInfo, &bs, pscan);
+	bm25_build_flush_segment(index, &bs);	/* worker's residual -> a segment */
+	MemoryContextDelete(bs.ctx);
+
+	InstrEndParallelQuery(&bufferusage[ParallelWorkerNumber],
+						  &walusage[ParallelWorkerNumber]);
+
+	/* report done + this worker's tuple count */
+	SpinLockAcquire(&bm25shared->mutex);
+	bm25shared->nparticipantsdone++;
+	bm25shared->reltuples += reltuples;
+	SpinLockRelease(&bm25shared->mutex);
+	ConditionVariableSignal(&bm25shared->workersdonecv);
+
+	index_close(index, indexLockmode);
+	table_close(heap, heapLockmode);
+}
+
+/*
+ * Set up the parallel context, DSM shared state, and launch workers.  Returns
+ * the leader struct, or NULL if no workers could be launched (fall back to a
+ * serial build).
+ */
+static BM25Leader *
+bm25_begin_parallel(Relation heap, Relation index, bool isconcurrent,
+					int request)
+{
+	ParallelContext *pcxt;
+	Snapshot	snapshot;
+	Size		estbm25shared;
+	Size		estscan;
+	BM25Shared *bm25shared;
+	ParallelTableScanDesc pscan;
+	BM25Leader *bm25leader;
+	BufferUsage *bufferusage;
+	WalUsage   *walusage;
+	char	   *sharedquery;
+	int			querylen;
+	bool		leaderparticipates = true;
+
+	EnterParallelMode();
+	Assert(request > 0);
+	pcxt = CreateParallelContext("pg_fts", "bm25_parallel_build_main", request);
+
+	if (!isconcurrent)
+		snapshot = SnapshotAny;
+	else
+		snapshot = RegisterSnapshot(GetTransactionSnapshot());
+
+	estbm25shared = BUFFERALIGN(sizeof(BM25Shared));
+	estscan = table_parallelscan_estimate(heap, snapshot);
+	shm_toc_estimate_chunk(&pcxt->estimator, estbm25shared + estscan);
+	shm_toc_estimate_keys(&pcxt->estimator, 1);
+
+	/* query text for worker debug/reporting */
+	if (debug_query_string)
+	{
+		querylen = strlen(debug_query_string);
+		shm_toc_estimate_chunk(&pcxt->estimator, querylen + 1);
+		shm_toc_estimate_keys(&pcxt->estimator, 1);
+	}
+	else
+		querylen = 0;
+
+	shm_toc_estimate_chunk(&pcxt->estimator,
+						   mul_size(sizeof(BufferUsage), pcxt->nworkers));
+	shm_toc_estimate_keys(&pcxt->estimator, 1);
+	shm_toc_estimate_chunk(&pcxt->estimator,
+						   mul_size(sizeof(WalUsage), pcxt->nworkers));
+	shm_toc_estimate_keys(&pcxt->estimator, 1);
+
+	InitializeParallelDSM(pcxt);
+
+	if (pcxt->seg == NULL)
+	{
+		if (IsMVCCSnapshot(snapshot))
+			UnregisterSnapshot(snapshot);
+		DestroyParallelContext(pcxt);
+		ExitParallelMode();
+		return NULL;
+	}
+
+	bm25shared = (BM25Shared *) shm_toc_allocate(pcxt->toc,
+												 estbm25shared + estscan);
+	bm25shared->heaprelid = RelationGetRelid(heap);
+	bm25shared->indexrelid = RelationGetRelid(index);
+	bm25shared->isconcurrent = isconcurrent;
+	bm25shared->nparticipantsdone = 0;
+	bm25shared->reltuples = 0.0;
+	ConditionVariableInit(&bm25shared->workersdonecv);
+	SpinLockInit(&bm25shared->mutex);
+
+	pscan = ParallelTableScanFromBM25Shared(bm25shared);
+	table_parallelscan_initialize(heap, pscan, snapshot);
+	shm_toc_insert(pcxt->toc, PARALLEL_KEY_BM25_SHARED, bm25shared);
+
+	if (debug_query_string)
+	{
+		sharedquery = (char *) shm_toc_allocate(pcxt->toc, querylen + 1);
+		memcpy(sharedquery, debug_query_string, querylen + 1);
+		shm_toc_insert(pcxt->toc, PARALLEL_KEY_QUERY_TEXT, sharedquery);
+	}
+
+	bufferusage = shm_toc_allocate(pcxt->toc,
+								   mul_size(sizeof(BufferUsage), pcxt->nworkers));
+	shm_toc_insert(pcxt->toc, PARALLEL_KEY_BUFFER_USAGE, bufferusage);
+	walusage = shm_toc_allocate(pcxt->toc,
+								mul_size(sizeof(WalUsage), pcxt->nworkers));
+	shm_toc_insert(pcxt->toc, PARALLEL_KEY_WAL_USAGE, walusage);
+
+	LaunchParallelWorkers(pcxt);
+
+	if (pcxt->nworkers_launched == 0)
+	{
+		/* no workers actually started; caller will do a serial build */
+		WaitForParallelWorkersToFinish(pcxt);
+		if (IsMVCCSnapshot(snapshot))
+			UnregisterSnapshot(snapshot);
+		DestroyParallelContext(pcxt);
+		ExitParallelMode();
+		return NULL;
+	}
+
+	bm25leader = (BM25Leader *) palloc0(sizeof(BM25Leader));
+	bm25leader->pcxt = pcxt;
+	bm25leader->nparticipanttuplesorts = pcxt->nworkers_launched;
+	if (leaderparticipates)
+		bm25leader->nparticipanttuplesorts++;
+	bm25leader->bm25shared = bm25shared;
+	bm25leader->snapshot = snapshot;
+	bm25leader->bufferusage = bufferusage;
+	bm25leader->walusage = walusage;
+	return bm25leader;
+}
+
+/*
+ * Wait for all workers to finish, accumulate their I/O stats + tuple count,
+ * and tear down.  Returns the total heap tuples the workers scanned (read from
+ * the DSM before it is unmapped).
+ */
+static double
+bm25_end_parallel(BM25Leader *bm25leader)
+{
+	int			i;
+	double		worker_tuples;
+
+	WaitForParallelWorkersToFinish(bm25leader->pcxt);
+
+	for (i = 0; i < bm25leader->pcxt->nworkers_launched; i++)
+		InstrAccumParallelQuery(&bm25leader->bufferusage[i], &bm25leader->walusage[i]);
+
+	/* read the workers' accumulated tuple count while the DSM is still mapped */
+	worker_tuples = bm25leader->bm25shared->reltuples;
+
+	if (IsMVCCSnapshot(bm25leader->snapshot))
+		UnregisterSnapshot(bm25leader->snapshot);
+	DestroyParallelContext(bm25leader->pcxt);
+	ExitParallelMode();
+	return worker_tuples;
+}
+
 static IndexBuildResult *
 bm25_build(Relation heap, Relation index, IndexInfo *indexInfo)
 {
 	IndexBuildResult *result;
 	BM25BuildState bs;
 	double		reltuples;
+	BM25Leader *bm25leader = NULL;
 
 	if (RelationGetNumberOfBlocks(index) != 0)
 		elog(ERROR, "index \"%s\" already contains data",
 			 RelationGetRelationName(index));
+
+	/* metapage must be block 0 -- write it before workers or the scan touch it */
+	bm25_init_metapage(index);
+
+	/* Try a parallel build if the planner requested workers. */
+	if (indexInfo->ii_ParallelWorkers > 0)
+		bm25leader = bm25_begin_parallel(heap, index, indexInfo->ii_Concurrent,
+										 indexInfo->ii_ParallelWorkers);
 
 	bs.ctx = AllocSetContextCreate(CurrentMemoryContext, "bm25 build",
 								   ALLOCSET_DEFAULT_SIZES);
@@ -1424,19 +1733,33 @@ bm25_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	bs.sumdoclen = 0;
 	bm25_build_ht_init(&bs);
 
-	/* metapage must be block 0 -- write it before any other page */
-	bm25_init_metapage(index);
+	if (bm25leader != NULL)
+	{
+		/*
+		 * Parallel build: the leader also scans a slice (leaderparticipates),
+		 * using the same shared parallel scan the workers use, and flushes its
+		 * residual as a segment.  Workers write their own segments directly.
+		 */
+		ParallelTableScanDesc pscan =
+			ParallelTableScanFromBM25Shared(bm25leader->bm25shared);
 
-	reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
-									   bm25_build_callback, (void *) &bs, NULL);
+		reltuples = bm25_scan_and_build(heap, index, indexInfo, &bs, pscan);
+		bm25_build_flush_segment(index, &bs);
+
+		/* add the workers' tuple counts BEFORE tearing down the DSM */
+		reltuples += bm25_end_parallel(bm25leader);
+	}
+	else
+	{
+		/* Serial build. */
+		reltuples = bm25_scan_and_build(heap, index, indexInfo, &bs, NULL);
+		bm25_build_flush_segment(index, &bs);
+	}
 
 	/*
-	 * Flush the residual terms as the final segment.  A large build may have
-	 * already flushed earlier segments (bm25_build_flush_segment) to bound
-	 * memory; compact the resulting segments with the size-tiered merge so a
-	 * fresh index is not left as many small segments.
+	 * Compact the (possibly many, especially with N workers) segments with the
+	 * size-tiered merge so a fresh index is not left as many small segments.
 	 */
-	bm25_build_flush_segment(index, &bs);
 	bm25_merge_segments(index);
 
 	MemoryContextDelete(bs.ctx);
@@ -2129,7 +2452,7 @@ bm25handler(PG_FUNCTION_ARGS)
 	amroutine->ampredlocks = false;
 	amroutine->amcanparallel = false;
 #if PG_VERSION_NUM >= 170000
-	amroutine->amcanbuildparallel = false;
+	amroutine->amcanbuildparallel = true;
 #endif
 	amroutine->amcaninclude = false;
 	amroutine->amusemaintenanceworkmem = false;

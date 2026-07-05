@@ -26,7 +26,7 @@ citations are to the tree this document was generated against. All
 | tsquery -> ftsquery migration | Yes (partial: helper, not transparent) | `tsquery_to_ftsquery` `pg_fts_migrate.c:130` + ASSIGNMENT cast `pg_fts--1.5--1.6.sql:8-15` |
 | CREATE INDEX CONCURRENTLY / REINDEX CONCURRENTLY | Yes (verified empirically) | `aminsert` routes all concurrent writes to the pending list (immediately searchable) `pg_fts_am.c:1515-1520,1521`; see Q1 |
 | Index-only / covering scan (IOS) | No | `amcanreturn = bm25_canreturn` returns `false` `pg_fts_am_scan.c:1101-1114`; `amcaninclude=false` `pg_fts_am.c:2131`; non-covering (stores postings, not the ftsdoc) |
-| Parallel index build (PARALLEL workers) | No | `amcanbuildparallel=false` `pg_fts_am.c:2129` |
+| Parallel index build (PARALLEL workers) | Yes | amcanbuildparallel=true; parallel heap scan, per-worker segment flush, leader merge |
 | Parallel scan | No | `amcanparallel=false` `pg_fts_am.c:2127`; `amestimateparallelscan/aminitparallelscan/amparallelrescan = NULL` `pg_fts_am.c:2161-2163` |
 | Parallel VACUUM | No | `amparallelvacuumoptions = VACUUM_OPTION_NO_PARALLEL` `pg_fts_am.c:2133` |
 | Unique / multicolumn / ordered-btree / clusterable | No | `amcanunique=false` `:2119`, `amcanmulticol=false` `:2120`, `amcanorder=false` `:2111`, `amclusterable=false` `:2125` |
@@ -44,9 +44,9 @@ citations are to the tree this document was generated against. All
 
 ### 1. Concurrent index builds (CIC / REINDEX CONCURRENTLY)
 
-**Yes — verified empirically.** `amcanbuildparallel=false` (`pg_fts_am.c:2129`)
-only disables *parallel-worker* builds; it is orthogonal to the two-phase
-concurrent build. What makes CIC correct here is that `aminsert`
+**Yes — verified empirically.** `amcanbuildparallel=true` enables parallel
+CREATE INDEX (a separate capability from) the two-phase concurrent build. What
+makes CIC correct here is that `aminsert`
 (`bm25_insert`, `pg_fts_am.c:1521`) always routes a new document to the
 **pending write buffer** — "stored verbatim ... and is searched directly at
 scan time, so newly inserted rows are immediately visible to `@@@` without a
@@ -118,7 +118,6 @@ online index REPACK beyond VACUUM+`fts_merge()` and REINDEX**.
   safety, no custom resource manager (`pg_fts_am.c:26-28`; 0 raw-write sites).
 
 **HONEST GAPS:**
-- No parallel index build (`amcanbuildparallel=false`, `pg_fts_am.c:2129`).
 - No parallel scan (`amcanparallel=false`, `pg_fts_am.c:2127`; parallel-scan
   hooks all `NULL`, `:2161-2163`) → **single-threaded query execution**.
 - No index-only / covering scan (`amcanreturn`→false, `amcaninclude=false`).
