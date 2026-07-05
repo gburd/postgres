@@ -91,18 +91,22 @@
 /*
  * Initial usage_count bits to stamp on a freshly loaded buffer.
  *
- * Normally BUF_USAGECOUNT_ONE (usage_count = 1).  Under the striped cooling
- * sweep (ActivePoolProbationaryScan, set only for numa_cooling_pool_routine),
- * a page loaded as part of a BufferAccessStrategy scan is admitted at
- * usage_count 0 (LeanStore-style COOL/probationary admission): a one-touch
- * scan page is then immediately evictable and never displaces the hot working
- * set, while a genuine re-access promotes it via PinBuffer.  Scoped to
- * strategy loads, so ordinary single-page OLTP loads keep usage_count 1.
+ * Normally BUF_USAGECOUNT_ONE (usage_count = 1).  When the active pool's
+ * algorithm declares itself scan-resistant (ActivePoolProbationaryScan), EVERY
+ * demand-loaded page is admitted at usage_count 0 (LeanStore-style
+ * COOL/probationary admission): a page earns "hot" only on a second access
+ * (PinBuffer bumps usage_count).  A sequential scan touches each page once, so
+ * its pages stay cool and are evicted first -- the algorithm provides scan
+ * resistance itself, without depending on the BufferAccessStrategy ring.  A
+ * genuinely hot page is loaded once and re-referenced, so it promotes to hot
+ * immediately; only truly single-touch pages (scans) stay cool.
+ *
+ * No-op for non-scan-resistant pools (plain clock), which keep usage_count 1.
  */
 static inline uint64
-InitialUsageCountBits(BufferAccessStrategy strategy)
+InitialUsageCountBits(void)
 {
-	if (unlikely(ActivePoolProbationaryScan) && strategy != NULL)
+	if (unlikely(ActivePoolProbationaryScan))
 		return 0;
 	return BUF_USAGECOUNT_ONE;
 }
@@ -2369,7 +2373,7 @@ BufferAllocInPool(BufferPoolDesc *pool, SMgrRelation smgr,
 
 	victim_buf_hdr->tag = newTag;
 
-	set_bits |= BM_TAG_VALID | InitialUsageCountBits(strategy);
+	set_bits |= BM_TAG_VALID | InitialUsageCountBits();
 	if (relpersistence == RELPERSISTENCE_PERMANENT || forkNum == INIT_FORKNUM)
 		set_bits |= BM_PERMANENT;
 
@@ -2566,7 +2570,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	 * checkpoints, except for their "init" forks, which need to be treated
 	 * just like permanent relations.
 	 */
-	set_bits |= BM_TAG_VALID | InitialUsageCountBits(strategy);
+	set_bits |= BM_TAG_VALID | InitialUsageCountBits();
 	if (relpersistence == RELPERSISTENCE_PERMANENT || forkNum == INIT_FORKNUM)
 		set_bits |= BM_PERMANENT;
 

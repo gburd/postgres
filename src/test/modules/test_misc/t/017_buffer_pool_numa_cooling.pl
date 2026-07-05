@@ -138,11 +138,13 @@ SQL
 	$node->stop;
 }
 
-# --- 4. Scan-resistance: probationary admission under cooling. ---
-#     A page loaded by a bulk-read scan is admitted at usage_count 0 under
-#     cooling (LeanStore COOL/probationary), so scan pages are immediately
-#     evictable and never displace the hot set.  Without cooling the same scan
-#     admits at usage_count 1.  pg_buffercache lets us observe the difference.
+# --- 4. Scan-resistance: probationary admission is the ALGORITHM's property. ---
+#     A scan-resistant pool admits EVERY demand-loaded page at usage_count 0
+#     (LeanStore COOL/probationary) and promotes to hot only on a second
+#     access -- independent of whether the load used a BufferAccessStrategy
+#     ring.  So scan pages (single touch) stay cool and are evicted first.
+#     We verify both a bulk-read (strategy) scan AND a small non-strategy scan
+#     are cooler under cooling than under plain numa.  pg_buffercache observes it.
 {
 	my $numa = PostgreSQL::Test::Cluster->new('scan_numa');
 	$numa->init;
@@ -167,6 +169,20 @@ SELECT coalesce(max(usagecount),0) FROM pg_buffercache b
 JOIN pg_class c ON b.relfilenode = pg_relation_filenode(c.oid)
 WHERE c.relname = 'scanme';
 SQL
+	# A small table: a seqscan of it does NOT trigger BAS_BULKREAD, so it is a
+	# NON-strategy load.  Under a scan-resistant algorithm it must still be
+	# admitted cool -- proving probation is the algorithm's property, not the
+	# ring's.
+	$numa->safe_psql('postgres', <<'SQL');
+CREATE TABLE tiny (id int, pad text);
+INSERT INTO tiny SELECT g, repeat('q', 200) FROM generate_series(1, 5000) g;
+SELECT count(*) FROM tiny;
+SQL
+	my $numa_tiny = $numa->safe_psql('postgres', <<'SQL');
+SELECT coalesce(max(usagecount),0) FROM pg_buffercache b
+JOIN pg_class c ON b.relfilenode = pg_relation_filenode(c.oid)
+WHERE c.relname = 'tiny';
+SQL
 	$numa->stop;
 
 	my $cool = PostgreSQL::Test::Cluster->new('scan_cool');
@@ -190,15 +206,28 @@ SELECT coalesce(max(usagecount),0) FROM pg_buffercache b
 JOIN pg_class c ON b.relfilenode = pg_relation_filenode(c.oid)
 WHERE c.relname = 'scanme';
 SQL
+	$cool->safe_psql('postgres', <<'SQL');
+CREATE TABLE tiny (id int, pad text);
+INSERT INTO tiny SELECT g, repeat('q', 200) FROM generate_series(1, 5000) g;
+SELECT count(*) FROM tiny;
+SQL
+	my $cool_tiny = $cool->safe_psql('postgres', <<'SQL');
+SELECT coalesce(max(usagecount),0) FROM pg_buffercache b
+JOIN pg_class c ON b.relfilenode = pg_relation_filenode(c.oid)
+WHERE c.relname = 'tiny';
+SQL
 	# Correctness must hold regardless of admission policy.
 	is($cool->safe_psql('postgres', 'SELECT count(*) FROM scanme;'),
 		'400000', 'scan correct under probationary cooling admission');
 	$cool->stop;
 
-	# The scan's resident buffers must be COOLER (lower max usagecount) under
-	# cooling than under plain numa -- the probationary-admission signature.
+	# The bulk-read (strategy) scan's pages must be COOLER under cooling.
 	cmp_ok($cool_uc, '<=', $numa_uc,
-		"probationary scan admission cools scan pages (cooling max uc=$cool_uc <= numa max uc=$numa_uc)");
+		"probationary strategy-scan admission cools pages (cool uc=$cool_uc <= numa uc=$numa_uc)");
+	# The small NON-strategy scan's pages must ALSO be cooler under cooling --
+	# probation is the algorithm's property, not dependent on the ring.
+	cmp_ok($cool_tiny, '<=', $numa_tiny,
+		"probation cools NON-strategy loads too (cool uc=$cool_tiny <= numa uc=$numa_tiny)");
 }
 
 done_testing();

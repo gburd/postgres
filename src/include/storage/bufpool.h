@@ -201,6 +201,21 @@ typedef struct BufferPoolRoutine
 	 */
 	void		(*shutdown) (void *strategy_data);
 
+	/* ---- Capabilities ---- */
+
+	/*
+	 * True if this algorithm provides scan resistance on its own -- a large
+	 * sequential scan of unrelated pages must not evict the frequently-used
+	 * working set.  When set, the algorithm's own admission/replacement policy
+	 * (e.g. probationary "cool" admission promoted to "hot" only on a second
+	 * reference, as in LeanStore / 2Q / LIRS) is the source of scan
+	 * resistance, so the framework does NOT depend on the BufferAccessStrategy
+	 * ring / RECYCLE detour to keep a scan from flooding the pool.  Algorithms
+	 * that rely on the ring for scan resistance (plain clock-sweep) leave this
+	 * false.
+	 */
+	bool		scan_resistant;
+
 } BufferPoolRoutine;
 
 /*
