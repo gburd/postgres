@@ -102,3 +102,21 @@ locally, but on the multi-preload EC2 cluster it sometimes fell back to the
 serial merge path (worker launch returned 0 despite free slots -- under
 investigation; tracked in DEFERRED.md).  The compaction itself (the regression
 fix) is confirmed on EC2 regardless of whether the merge ran parallel or serial.
+
+## Same-hardware A/B of the regression fix (r7i.4xlarge, 1.4M-row corpus, PG20devel)
+
+Direct before/after on identical hardware and data, swapping only the build's
+final-merge behavior (pre-fix skip-merge vs fixed compact-to-one).  Same
+CREATE INDEX, same queries, median/9 warm.
+
+| query                      | pre-fix (nseg=5) | fixed (nseg=1) | speedup |
+|----------------------------|-----------------:|---------------:|--------:|
+| ranked top-10 rare&mid     | 18.2 | **4.5**  | 4.1x |
+| ranked top-10 common&mid   | 61.7 | **38.9** | 1.6x |
+| ranked top-100 common      | 38.3 | **14.4** | 2.7x |
+| fts_count rare             | 12.3 | 11.8     | ~same |
+
+Multi-segment (pre-fix) ranked scans traverse every segment's postings; the
+fix compacts the build to a single segment, restoring ranked latency (1.6-4.1x
+on this workload).  Consistent with the 2M real-Wikipedia result above
+(common&mid 37.8 -> 16.6 ms).
