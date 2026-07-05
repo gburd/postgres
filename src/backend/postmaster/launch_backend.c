@@ -625,9 +625,14 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 			 child_slot);
 		postmaster_thread_carriers_started = true;
 		/*
-		 * No PgThread handle for the fiber path.  Publish the logical
-		 * backend so postmaster signal/wake routing still targets it.
+		 * No PgThread handle for the fiber path: the fiber runs on a shared
+		 * carrier loop, not a dedicated joinable pthread.  Classify it as a
+		 * pooled-logical child so the postmaster reaper releases the slot via
+		 * process_pm_pooled_logical_exit() (no pthread_join) when the fiber
+		 * exits, letting shutdown's PM_WAIT_BACKENDS complete.  Publish the
+		 * logical backend so signal/wake routing still targets it.
 		 */
+		PostmasterChildSetPooledLogical(pmchild);
 		PostmasterChildPublishLogicalBackend(pmchild,
 											 &thread_start->runtime_state.logical.backend);
 		pg_atomic_write_u32(&thread_start->launch_registered, 1);
@@ -1551,6 +1556,15 @@ backend_thread_finish(int code)
 		exit_state->retained_top_memory_context = NULL;
 		top_memory_allocated = 0;
 	}
+#ifdef USE_XTC_CARRIER
+	if (xtc_in_backend_fiber)
+		PostmasterChildPublishPooledLogicalExit(thread_start->publication.pmchild,
+												exitstatus,
+												top_memory_allocated,
+												top_memory_reclaimed,
+												thread_start->publication.postmaster_latch);
+	else
+#endif
 	PostmasterChildPublishThreadExit(thread_start->publication.pmchild, exitstatus,
 									 top_memory_allocated,
 									 top_memory_reclaimed,

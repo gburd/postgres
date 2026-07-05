@@ -33,6 +33,8 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <stdatomic.h>
 
 #include "miscadmin.h"
 #include "postmaster/pg_xtc_carrier.h"
@@ -40,6 +42,7 @@
 /* xtc public API */
 #include "xtc.h"
 #include "xtc_app.h"
+#include "xtc_exec.h"		/* xtc_exec_loop, xtc_exec_n_loops */
 #include "xtc_proc.h"
 #include "xtc_async.h"		/* xtc_set_stack_size */
 
@@ -58,10 +61,42 @@ typedef struct xtc_carrier_arg
 }			xtc_carrier_arg;
 
 static xtc_app_t *g_xtc_app;
-static xtc_loop_t *g_xtc_loop;
+static xtc_loop_t *g_xtc_loop;	/* loop 0 (single-loop mode, or the sup loop) */
+static xtc_exec_t *g_xtc_exec;	/* the N-loop executor when n_loops > 1, else NULL */
+static int	g_xtc_n_loops = 1;
+static _Atomic unsigned g_xtc_next_loop;	/* round-robin cursor */
 static pthread_t g_xtc_thread;
 static volatile bool g_xtc_ready;
 static pthread_mutex_t g_xtc_start_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/*
+ * Number of carrier loops (each on its own OS thread).  A pool of loops lets
+ * backend fibers run in parallel and avoids the single-loop lost-wakeup where
+ * two or more fibers parked on one loop could starve each other.  Defaults to
+ * the CPU count; override with PG_XTC_CARRIER_LOOPS for tuning (calibration
+ * knob -- the ideal count depends on core count and connection mix).
+ */
+static int
+xtc_carrier_loop_count(void)
+{
+	const char *env = getenv("PG_XTC_CARRIER_LOOPS");
+	long		ncpus;
+
+	if (env != NULL && env[0] != '\0')
+	{
+		long		v = strtol(env, NULL, 10);
+
+		if (v >= 1 && v <= 1024)
+			return (int) v;
+	}
+
+	ncpus = sysconf(_SC_NPROCESSORS_ONLN);
+	if (ncpus < 1)
+		ncpus = 1;
+	if (ncpus > 1024)
+		ncpus = 1024;
+	return (int) ncpus;
+}
 
 /*
  * True (in the carrier/scheduler thread) while a backend fiber is running,
@@ -141,8 +176,10 @@ xtc_pg_carrier_start(void)
 		/* Big fiber stacks: PG backends recurse deeply (see above). */
 		xtc_set_stack_size(XTC_PG_FIBER_STACK);
 
+		g_xtc_n_loops = xtc_carrier_loop_count();
+
 		opts.name = "pg-xtc-carrier";
-		opts.n_loops = 1;
+		opts.n_loops = g_xtc_n_loops;
 		if (xtc_app_create(&opts, &g_xtc_app) != XTC_OK)
 		{
 			elog(LOG, "xtc: xtc_app_create failed");
@@ -150,6 +187,12 @@ xtc_pg_carrier_start(void)
 			goto out;
 		}
 		g_xtc_loop = xtc_app_loop(g_xtc_app);
+		/* NULL in single-loop mode; the N-loop executor otherwise. */
+		g_xtc_exec = xtc_app_exec(g_xtc_app);
+		if (g_xtc_exec != NULL)
+			g_xtc_n_loops = xtc_exec_n_loops(g_xtc_exec);
+		else
+			g_xtc_n_loops = 1;
 
 		if (xtc_app_start(g_xtc_app, NULL, 0) != XTC_OK)
 		{
@@ -167,7 +210,8 @@ xtc_pg_carrier_start(void)
 		}
 		while (!g_xtc_ready)
 			pg_usleep(1000);
-		elog(LOG, "xtc: carrier scheduler thread up (single-loop app)");
+		elog(LOG, "xtc: carrier scheduler thread up (%d loop%s)",
+			 g_xtc_n_loops, g_xtc_n_loops == 1 ? "" : "s");
 	}
 
 out:
@@ -178,8 +222,12 @@ out:
 /*
  * Launch a threaded backend as an xtc fiber.  `entry` is the tree's
  * backend_thread_entry; `entry_arg` is its BackendThreadStart *.  Returns 0
- * on success (the fiber is spawned on the carrier loop), non-zero errno-like
+ * on success (the fiber is spawned on a carrier loop), non-zero errno-like
  * value on failure so the caller can fall back / report.
+ *
+ * With a loop pool the fiber is placed round-robin across the executor loops,
+ * so concurrent backends run on distinct loops and a fiber parked on one loop
+ * cannot starve a sibling on another.
  */
 int
 xtc_pg_launch_backend_fiber(xtc_carrier_entry_fn entry, void *entry_arg)
@@ -187,6 +235,7 @@ xtc_pg_launch_backend_fiber(xtc_carrier_entry_fn entry, void *entry_arg)
 	xtc_carrier_arg *ca;
 	xtc_proc_opts_t po = {0};
 	xtc_pid_t	pid = XTC_PID_NONE;
+	xtc_loop_t *loop;
 
 	if (xtc_pg_carrier_start() != 0)
 		return EAGAIN;
@@ -197,8 +246,16 @@ xtc_pg_launch_backend_fiber(xtc_carrier_entry_fn entry, void *entry_arg)
 	ca->entry = entry;
 	ca->entry_arg = entry_arg;
 
+	/* Pick a loop round-robin across the pool; loop 0 in single-loop mode. */
+	if (g_xtc_exec != NULL && g_xtc_n_loops > 1)
+		loop = xtc_exec_loop(g_xtc_exec,
+							 (int) (atomic_fetch_add(&g_xtc_next_loop, 1) %
+									(unsigned) g_xtc_n_loops));
+	else
+		loop = g_xtc_loop;
+
 	po.name = "pg-backend";
-	if (xtc_proc_spawn(g_xtc_loop, xtc_carrier_proc, ca, &po, &pid) != XTC_OK)
+	if (xtc_proc_spawn(loop, xtc_carrier_proc, ca, &po, &pid) != XTC_OK)
 	{
 		free(ca);
 		return EAGAIN;
