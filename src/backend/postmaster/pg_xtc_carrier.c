@@ -83,66 +83,6 @@ static pthread_mutex_t g_xtc_start_lock = PTHREAD_MUTEX_INITIALIZER;
 static xtc_pid_t g_xtc_sup_pid[XTC_PG_MAX_SUP_LOOPS];
 
 /*
- * Clean-exit discriminator (AGENTS_XTC #7 Stage 1b).  A backend fiber records
- * its pid here just before it calls xtc_exit_self() on the NORMAL exit path
- * (xtc_pg_backend_fiber_exit), i.e. after backend_thread_finish() has already
- * published its PMChild exit.  When the supervisor then sees an ABNORMAL DOWN
- * (reason=-11, the known benign SIGSEGV inside libxtc's xtc_exit_self during
- * teardown -- findings 2c) it checks this ring: a pid present here reached its
- * clean exit, so the fault is the benign post-exit teardown fault -> do NOT
- * escalate (the postmaster already reaped it).  A pid absent means the fiber
- * died mid-work before publishing -- a GENUINE crash that must escalate.
- *
- * Fixed-size lock-free ring: the fiber writes its slot with a release store,
- * the supervisor scans with acquire loads.  Both run on the same loop, and a
- * stale hit only risks under-escalating a genuinely-crashed pid that happens
- * to collide with a recently-clean pid in the same ring slot -- vanishingly
- * unlikely and, until libxtc fixes 2c, safer than false-escalating every
- * benign teardown fault into a whole-cluster crash.
- */
-#define XTC_PG_CLEAN_RING 256
-typedef struct xtc_clean_exit_rec
-{
-	_Atomic uint32_t loop_id;
-	_Atomic uint32_t local_id;
-	_Atomic uint32_t gen;
-	_Atomic uint32_t valid;
-} xtc_clean_exit_rec;
-static xtc_clean_exit_rec g_xtc_clean_ring[XTC_PG_CLEAN_RING];
-static _Atomic unsigned g_xtc_clean_next;
-
-/* Record that `pid` reached its clean exit path (called from the fiber). */
-static void
-xtc_mark_clean_exit(xtc_pid_t pid)
-{
-	unsigned	i = atomic_fetch_add(&g_xtc_clean_next, 1) % XTC_PG_CLEAN_RING;
-	xtc_clean_exit_rec *r = &g_xtc_clean_ring[i];
-
-	atomic_store(&r->valid, 0);
-	atomic_store(&r->loop_id, pid.loop_id);
-	atomic_store(&r->local_id, pid.local_id);
-	atomic_store(&r->gen, pid.gen);
-	atomic_store(&r->valid, 1);
-}
-
-/* True if `pid` was recorded as having reached its clean exit path. */
-static bool
-xtc_saw_clean_exit(xtc_pid_t pid)
-{
-	for (int i = 0; i < XTC_PG_CLEAN_RING; i++)
-	{
-		xtc_clean_exit_rec *r = &g_xtc_clean_ring[i];
-
-		if (atomic_load(&r->valid) == 1 &&
-			atomic_load(&r->loop_id) == pid.loop_id &&
-			atomic_load(&r->local_id) == pid.local_id &&
-			atomic_load(&r->gen) == pid.gen)
-			return true;
-	}
-	return false;
-}
-
-/*
  * Set true (and the postmaster latch kicked) when the supervisor observes a
  * GENUINE abnormal fiber crash -- one that died before reaching its clean
  * exit.  The postmaster polls this in its main loop (Stage 1b escalation);
@@ -278,47 +218,23 @@ xtc_carrier_supervisor_proc(void *arg)
 
 		if (xtc_down_decode(msg, len, &down_pid, &down_reason) == XTC_OK)
 		{
-			/* A monitored backend fiber exited. */
-			if (down_reason != 0)
-			{
-				static __thread int nabn = 0;
-				bool		clean = xtc_saw_clean_exit(down_pid);
-
-				if (nabn < 32)
-				{
-					char		buf[192];
-					int			n;
-
-					nabn++;
-					n = snprintf(buf, sizeof(buf),
-								 "xtc: SUPERVISOR observed %s backend fiber DOWN "
-								 "pid=(loop=%u,local=%u,gen=%u) reason=%d\n",
-								 clean ? "benign-teardown-fault(post-clean-exit)"
-								 : "GENUINE-CRASH",
-								 down_pid.loop_id, down_pid.local_id,
-								 down_pid.gen, down_reason);
-					if (n > 0)
-					{
-						if (n > (int) sizeof(buf))
-							n = (int) sizeof(buf);
-						(void) write(STDERR_FILENO, buf, (size_t) n);
-					}
-				}
-
-				/*
-				 * Stage 1b escalation.  Only a GENUINE crash (the fiber died
-				 * before reaching its clean exit path) escalates: flag it and
-				 * kick the postmaster, which polls the flag and drives the
-				 * existing crash policy.  A benign teardown fault (findings 2c:
-				 * SIGSEGV inside xtc_exit_self after a clean, already-reaped
-				 * exit) must NOT escalate -- else every ~3/11 normal teardown
-				 * would crash the whole cluster.  The postmaster already reaped
-				 * it.
-				 */
-				if (!clean)
-					atomic_store(&g_xtc_genuine_crash, 1);
-			}
-			else
+			/*
+			 * A monitored backend fiber exited.  libxtc v1.2.1 gives an
+			 * unambiguous DOWN-reason contract:
+			 *   reason == 0                 -> clean exit (quiet).
+			 *   xtc_down_is_noproc(reason)  -> the monitor raced a clean exit
+			 *                                  (target already reaped); benign,
+			 *                                  the postmaster owns reaping.
+			 *   reason > 0                  -> a GENUINE crash: the positive
+			 *                                  signal number of a contained
+			 *                                  fault (e.g. 11 == SIGSEGV) or an
+			 *                                  xtc_exit_self(code>0).  Escalate.
+			 * (Pre-1.2.1 the benign monitor-race carried -11 == XTC_E_NOTFOUND,
+			 * which collided with -SIGSEGV and made us misread it as a crash.
+			 * The distinct XTC_DOWN_NOPROC removes that ambiguity, so the old
+			 * clean-exit ring workaround is no longer needed.)
+			 */
+			if (down_reason == 0)
 			{
 				static __thread int nlog = 0;
 
@@ -339,6 +255,61 @@ xtc_carrier_supervisor_proc(void *arg)
 						(void) write(STDERR_FILENO, buf, (size_t) n);
 					}
 				}
+			}
+			else if (xtc_down_is_noproc(down_reason))
+			{
+				/* Monitor raced a clean exit; benign, do NOT escalate. */
+				static __thread int nnp = 0;
+
+				if (nnp < 8)
+				{
+					char		buf[160];
+					int			n;
+
+					nnp++;
+					n = snprintf(buf, sizeof(buf),
+								 "xtc: supervisor observed benign monitor-race DOWN "
+								 "(NOPROC) pid=(loop=%u,local=%u,gen=%u)\n",
+								 down_pid.loop_id, down_pid.local_id, down_pid.gen);
+					if (n > 0)
+					{
+						if (n > (int) sizeof(buf))
+							n = (int) sizeof(buf);
+						(void) write(STDERR_FILENO, buf, (size_t) n);
+					}
+				}
+			}
+			else
+			{
+				/* reason > 0: a genuine crash (contained-fault signal number). */
+				static __thread int nabn = 0;
+
+				if (nabn < 32)
+				{
+					char		buf[192];
+					int			n;
+
+					nabn++;
+					n = snprintf(buf, sizeof(buf),
+								 "xtc: SUPERVISOR observed GENUINE-CRASH backend fiber DOWN "
+								 "pid=(loop=%u,local=%u,gen=%u) reason=%d (signal)\n",
+								 down_pid.loop_id, down_pid.local_id,
+								 down_pid.gen, down_reason);
+					if (n > 0)
+					{
+						if (n > (int) sizeof(buf))
+							n = (int) sizeof(buf);
+						(void) write(STDERR_FILENO, buf, (size_t) n);
+					}
+				}
+
+				/*
+				 * Stage 1b escalation: a genuine backend-fiber crash.  Flag it;
+				 * the postmaster polls the flag (ServerLoop) and drives the same
+				 * crash policy a crashed thread carrier does (ExitPostmaster
+				 * under multithreaded mode).
+				 */
+				atomic_store(&g_xtc_genuine_crash, 1);
 			}
 		}
 		else if (len == sizeof(xtc_sup_spawn_msg) &&
@@ -656,17 +627,6 @@ xtc_pg_backend_fiber_exit(int code)
 	}
 
 	xtc_in_backend_fiber = false;
-
-	/*
-	 * Record that this fiber reached its clean exit path (AGENTS_XTC #7
-	 * Stage 1b) BEFORE calling xtc_exit_self().  backend_thread_finish() has
-	 * already published this backend's PMChild exit, so the postmaster will
-	 * reap it normally.  If xtc_exit_self() then benign-faults during teardown
-	 * (findings 2c), the supervisor sees this clean record and does not
-	 * escalate.  A fiber that crashes earlier -- before reaching here -- has
-	 * no record, so its abnormal DOWN is treated as a genuine crash.
-	 */
-	xtc_mark_clean_exit(xtc_self());
 
 	xtc_exit_self(code);
 
