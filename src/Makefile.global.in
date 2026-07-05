@@ -271,7 +271,9 @@ override CPPFLAGS += $(ICU_CFLAGS) $(LIBNUMA_CFLAGS) $(LIBURING_CFLAGS)
 # uses the ucontext substrate).  See docs in libxtc dist/mkamalgamation.py.
 XTC_ROOT ?= /home/gburd/ws/xtc
 ifdef USE_XTC_CARRIER
-override CPPFLAGS += -DUSE_XTC_CARRIER -I$(XTC_ROOT)/src/inc
+# Match the meson build's '#define USE_XTC_CARRIER 1' so this -D does not
+# collide with the '#undef USE_XTC_CARRIER' documented in pg_config.h.in.
+override CPPFLAGS += -DUSE_XTC_CARRIER=1 -I$(XTC_ROOT)/src/inc
 endif
 
 ifdef PGXS
