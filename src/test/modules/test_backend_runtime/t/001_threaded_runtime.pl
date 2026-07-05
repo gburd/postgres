@@ -263,7 +263,7 @@ SKIP:
 	$node->safe_psql('postgres', q{SELECT pg_reload_conf()});
 
 	my $io_workers_after = 0;
-	for (1 .. 50)
+	for (1 .. 150)
 	{
 		$io_workers_after = $node->safe_psql('postgres',
 			q{SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'io worker'});
