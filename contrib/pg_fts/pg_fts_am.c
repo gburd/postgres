@@ -1252,6 +1252,52 @@ cmp_mergecand(const void *a, const void *b)
  * segments' pages.  Returns true on success, false if the directory changed
  * underneath (caller stops).
  */
+/*
+ * Merge a specific set of segment descriptors (by CONTENT, not directory index)
+ * into one new segment, writing its pages but NOT touching the metapage
+ * directory.  Returns the new descriptor in *out.  Safe to run concurrently
+ * with other callers merging DISJOINT descriptor sets: page appends are
+ * serialized by the relation extension lock (in bm25_build_flush_segment's
+ * peer path we lock explicitly; here bm25_write_segment appends under the same
+ * discipline when IsInParallelMode()).  The caller (leader) removes the
+ * consumed descriptors and installs *out in a single metapage update.
+ */
+static void
+bm25_merge_group_to_seg(Relation index, const BM25SegMeta *group, uint32 ngroup,
+						BM25SegMeta *out)
+{
+	BM25BuildState bs;
+	uint32		i;
+
+	bs.ctx = AllocSetContextCreate(CurrentMemoryContext, "bm25 merge group",
+								   ALLOCSET_DEFAULT_SIZES);
+	bs.terms = NULL;
+	bs.nterms = 0;
+	bs.maxterms = 0;
+	bs.ndocs = 0;
+	bs.sumdoclen = 0;
+	bm25_build_ht_init(&bs);
+
+	for (i = 0; i < ngroup; i++)
+	{
+		bs.sumdoclen += group[i].sumdoclen;
+		bm25_read_segment_into(index, &group[i], &bs);
+	}
+	if (bs.nterms > 1)
+		qsort(bs.terms, bs.nterms, sizeof(BuildTerm), cmp_buildterm);
+
+	/* serialize page appends across concurrent group-merges (see build) */
+	if (IsInParallelMode())
+		LockRelationForExtension(index, ExclusiveLock);
+	bm25_write_segment(index, &bs, out);
+	if (IsInParallelMode())
+		UnlockRelationForExtension(index, ExclusiveLock);
+	out->ndocs = bs.ndocs;
+	out->sumdoclen = bs.sumdoclen;
+
+	MemoryContextDelete(bs.ctx);
+}
+
 static bool
 bm25_merge_selected(Relation index, const uint32 *sel, uint32 nsel)
 {
@@ -1369,11 +1415,256 @@ bm25_merge_selected(Relation index, const uint32 *sel, uint32 nsel)
  * a build/merge never exceeds the cap) and loops until one segment remains.
  * Returns true if it changed anything.
  */
+/* ---- parallel merge (compact many segments into few, in parallel) ----
+ *
+ * The leader partitions the live segments into W disjoint groups; each worker
+ * merges ONE group into one new segment (bm25_merge_group_to_seg -- writes
+ * pages only, no directory touch) and reports the new descriptor via DSM.  The
+ * leader then performs a SINGLE metapage update: drop all the consumed source
+ * descriptors and install the W new ones.  This confines the expensive
+ * decode/re-encode to parallel workers and keeps the directory swap serial and
+ * atomic (no concurrent-swap race).  Result: W segments; caller may run a
+ * final (cheap, W-way) pass if it wants exactly one.
+ *
+ * ponytail: Level-2 could recurse the parallel merge (W -> W/2 -> ... -> 1) so
+ * even the final combine parallelizes; deferred -- one parallel pass already
+ * removes the dominant per-segment decode cost from the serial path.
+ */
+#define PARALLEL_KEY_BM25_MERGE		UINT64CONST(0xB250000000000010)
+
+typedef struct BM25MergeShared
+{
+	Oid			heaprelid;
+	Oid			indexrelid;
+	int			ngroups;		/* number of worker groups */
+	int			nsrc;			/* total source segments */
+	slock_t		mutex;
+	/* filled by workers: the merged-segment descriptor per group */
+	BM25SegMeta outseg[BM25_MAX_SEGMENTS];
+	bool		outvalid[BM25_MAX_SEGMENTS];
+	/* group layout: src[groupoff[g] .. groupoff[g+1]) are group g's sources */
+	int			groupoff[BM25_MAX_SEGMENTS + 1];
+	BM25SegMeta src[BM25_MAX_SEGMENTS];
+}			BM25MergeShared;
+
+static void bm25_merge_one_group(Relation index, BM25MergeShared *ms, int g);
+
+PGDLLEXPORT void bm25_parallel_merge_main(dsm_segment *seg, shm_toc *toc);
+
+void
+bm25_parallel_merge_main(dsm_segment *seg, shm_toc *toc)
+{
+	BM25MergeShared *ms;
+	Relation	heap;
+	Relation	index;
+
+	ms = (BM25MergeShared *) shm_toc_lookup(toc, PARALLEL_KEY_BM25_MERGE, false);
+	heap = table_open(ms->heaprelid, AccessShareLock);
+	index = index_open(ms->indexrelid, RowExclusiveLock);
+
+	/* worker N handles group (N+1); group 0 is the leader's */
+	if (ParallelWorkerNumber + 1 < ms->ngroups)
+		bm25_merge_one_group(index, ms, ParallelWorkerNumber + 1);
+
+	index_close(index, RowExclusiveLock);
+	table_close(heap, AccessShareLock);
+}
+
+/* merge group g's sources into one segment, store descriptor in shared state */
+static void
+bm25_merge_one_group(Relation index, BM25MergeShared *ms, int g)
+{
+	int			lo = ms->groupoff[g];
+	int			hi = ms->groupoff[g + 1];
+	BM25SegMeta out;
+
+	if (hi - lo <= 0)
+		return;
+	if (hi - lo == 1)
+	{
+		/* singleton group: nothing to merge, keep the source as-is */
+		ms->outseg[g] = ms->src[lo];
+		ms->outvalid[g] = false;	/* signals "source kept, no new seg" */
+		return;
+	}
+	bm25_merge_group_to_seg(index, &ms->src[lo], (uint32) (hi - lo), &out);
+	SpinLockAcquire(&ms->mutex);
+	ms->outseg[g] = out;
+	ms->outvalid[g] = true;
+	SpinLockRelease(&ms->mutex);
+}
+
+/*
+ * Parallel merge-all: partition live segments into (workers+1) groups, each
+ * participant merges its group into a new segment, then the leader installs the
+ * results with a single metapage update.  Returns true if it ran (and did the
+ * directory swap), false to signal the caller to fall back to serial.
+ */
+static bool
+bm25_merge_all_parallel(Relation index, int request)
+{
+	ParallelContext *pcxt;
+	BM25MergeShared *ms;
+	BM25MetaPageData meta;
+	Size		estms;
+	int			ngroups;
+	int			nsrc;
+	int			g,
+				i;
+	Relation	heap;
+	Oid			heaprelid;
+
+	{
+		Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
+
+		LockBuffer(mb, BUFFER_LOCK_SHARE);
+		memcpy(&meta, BM25PageGetMeta(BufferGetPage(mb)), sizeof(meta));
+		UnlockReleaseBuffer(mb);
+	}
+	if (meta.nsegments <= 2)
+		return false;			/* not worth parallelizing; serial handles it */
+
+	heaprelid = index->rd_index->indrelid;
+
+	EnterParallelMode();
+	pcxt = CreateParallelContext("pg_fts", "bm25_parallel_merge_main", request);
+	estms = BUFFERALIGN(sizeof(BM25MergeShared));
+	shm_toc_estimate_chunk(&pcxt->estimator, estms);
+	shm_toc_estimate_keys(&pcxt->estimator, 1);
+	InitializeParallelDSM(pcxt);
+
+	if (pcxt->seg == NULL)
+	{
+		DestroyParallelContext(pcxt);
+		ExitParallelMode();
+		return false;
+	}
+
+	ms = (BM25MergeShared *) shm_toc_allocate(pcxt->toc, estms);
+	ms->heaprelid = heaprelid;
+	ms->indexrelid = RelationGetRelid(index);
+	SpinLockInit(&ms->mutex);
+
+	/* collect the live source segments */
+	nsrc = 0;
+	for (i = 0; i < (int) meta.nsegments; i++)
+		if (meta.segs[i].dictstart != InvalidBlockNumber)
+			ms->src[nsrc++] = meta.segs[i];
+	ms->nsrc = nsrc;
+
+	/* groups = min(participants, nsrc); participant 0 = leader */
+	ngroups = request + 1;
+	if (ngroups > nsrc)
+		ngroups = nsrc;
+	ms->ngroups = ngroups;
+
+	/* even contiguous partition of the nsrc sources into ngroups */
+	for (g = 0; g <= ngroups; g++)
+		ms->groupoff[g] = (int) ((int64) g * nsrc / ngroups);
+	for (g = 0; g < ngroups; g++)
+		ms->outvalid[g] = false;
+
+	shm_toc_insert(pcxt->toc, PARALLEL_KEY_BM25_MERGE, ms);
+	LaunchParallelWorkers(pcxt);
+
+	if (pcxt->nworkers_launched == 0)
+	{
+		WaitForParallelWorkersToFinish(pcxt);
+		DestroyParallelContext(pcxt);
+		ExitParallelMode();
+		return false;			/* no workers; serial fallback */
+	}
+
+	/* leader merges group 0 itself while workers handle groups 1..n */
+	heap = table_open(heaprelid, AccessShareLock);
+	bm25_merge_one_group(index, ms, 0);
+	table_close(heap, AccessShareLock);
+
+	WaitForParallelWorkersToFinish(pcxt);
+
+	/*
+	 * Single atomic directory update: drop every consumed source descriptor
+	 * (content-match) and install each group's merged descriptor.  Groups that
+	 * did not actually merge (singleton) keep their one source, so we simply
+	 * don't drop it.
+	 */
+	{
+		Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
+		GenericXLogState *state;
+		Page		mp;
+		BM25MetaPageData *m;
+		BM25SegMeta kept[BM25_MAX_SEGMENTS];
+		uint32		nkept = 0;
+		uint32		j;
+		int			k;
+
+		LockBuffer(mb, BUFFER_LOCK_EXCLUSIVE);
+		state = GenericXLogStart(index);
+		mp = GenericXLogRegisterBuffer(state, mb, 0);
+		m = BM25PageGetMeta(mp);
+
+		/* keep any segment that is NOT a consumed source of a merged group */
+		for (j = 0; j < m->nsegments; j++)
+		{
+			bool		consumed = false;
+
+			for (g = 0; g < ngroups && !consumed; g++)
+			{
+				if (!ms->outvalid[g])
+					continue;	/* singleton group merged nothing */
+				for (k = ms->groupoff[g]; k < ms->groupoff[g + 1]; k++)
+					if (memcmp(&m->segs[j], &ms->src[k], sizeof(BM25SegMeta)) == 0)
+					{
+						consumed = true;
+						break;
+					}
+			}
+			if (!consumed)
+				kept[nkept++] = m->segs[j];
+		}
+		/* append each merged group's new segment */
+		for (g = 0; g < ngroups; g++)
+			if (ms->outvalid[g])
+				kept[nkept++] = ms->outseg[g];
+
+		memcpy(m->segs, kept, nkept * sizeof(BM25SegMeta));
+		m->nsegments = nkept;
+		GenericXLogFinish(state);
+		UnlockReleaseBuffer(mb);
+
+		/* recycle the consumed source segments' pages */
+		for (g = 0; g < ngroups; g++)
+			if (ms->outvalid[g])
+				for (k = ms->groupoff[g]; k < ms->groupoff[g + 1]; k++)
+					bm25_free_segment(index, &ms->src[k]);
+	}
+
+	DestroyParallelContext(pcxt);
+	ExitParallelMode();
+	IndexFreeSpaceMapVacuum(index);
+	return true;
+}
+
 static bool
 bm25_merge_all(Relation index)
 {
 	bool		didwork = false;
 	int			guard;
+
+	/*
+	 * Try a parallel merge first (unless already inside a parallel operation,
+	 * e.g. the parallel build leader -- no nested parallelism).  It compacts
+	 * the sources into (workers+1) segments in one parallel pass; the serial
+	 * loop below then finishes to a single segment (a cheap final W-way merge).
+	 */
+	if (!IsInParallelMode() && max_parallel_maintenance_workers > 0)
+	{
+		int			request = Min(max_parallel_maintenance_workers,
+								 max_parallel_workers);
+
+		if (request > 0 && bm25_merge_all_parallel(index, request))
+			didwork = true;
+	}
 
 	for (guard = 0; guard < BM25_MAX_SEGMENTS; guard++)
 	{
