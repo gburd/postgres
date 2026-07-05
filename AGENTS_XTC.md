@@ -35,10 +35,15 @@ the base tree already solved it.
 - N SEQUENTIAL backends: connect/query/disconnect x N -- each spawns a
   fresh fiber, returns correct rows, exits cleanly (slot reused with a
   bumped generation, no leak, no hang).  SOLID.
-- N CONCURRENT backends: all fibers run and return correct rows, but on
-  disconnect a LOST-WAKEUP wedges the single loop -- with 2+ parked
-  fibers, exactly ONE resumes/exits and the rest stay parked.  OPEN
-  (see section 3).
+- N CONCURRENT backends: on a CARRIER LOOP POOL (n_loops = CPU count) each
+  backend runs on its own loop, all return correct rows, and all exit
+  cleanly (spawned == exited); a new query after a concurrent burst is not
+  wedged.  SOLID.  The single-loop lost-wakeup that wedged 2+ parked fibers
+  is resolved by the pool (see section 2 item 1 and 4).
+- SHUTDOWN: `pg_ctl -m fast stop` completes after backends have run.  The
+  fiber-backed backend is classified as a pooled-logical PMChild so the
+  postmaster reaps it without pthread_join (it has no dedicated joinable
+  thread); before this, PM_WAIT_BACKENDS hung on a bogus join.
 
 Only B_BACKEND is on xtc.  The postmaster is a process; B_STARTUP and
 early auxiliaries still fork; other auxiliaries (bgworker, io_worker,
@@ -46,27 +51,31 @@ post-startup logger/checkpointer/bgwriter) run on the BASE tree's own
 pthread carriers, NOT on xtc.  So this is threaded-client-backends-on-
 xtc, not a fully fork-free PostgreSQL.
 
+Build + test: use the Nix flake + meson/ninja (`-Dxtc=enabled`).  Run tests
+on a disk-backed host (meh/nuc/EC2), NOT on /tmp or other tmpfs -- RAM-backed
+scratch dirs get wiped between steps here and make server tests unreliable.
+
 
 ## 2. The M16 plan -- remaining work, roughly in order
 
 Near-term (the xtc carrier itself):
 
-1. CONCURRENT-backend lost-wakeup (the immediate blocker).  Two-or-more
-   parked fibers, only one wakes on a socket/latch event.  Minimal
-   repro: 2 concurrent socket-hold backends, disconnect both.  Likely a
-   single-loop wake-edge issue -- see section 3.  A real carrier POOL
-   (opts.n_loops > 1) may sidestep it entirely.
+1. CONCURRENT-backend lost-wakeup.  DONE.  Fixed by the carrier loop pool:
+   each backend fiber is placed round-robin across `xtc_exec_loop()` so two
+   concurrent backends never park on the same loop and cannot starve each
+   other.  Also fixed the shutdown hang (pooled-logical fiber reaping).
 2. Cross-fiber SetLatch wakeups.  The epoll-fd intercept covers latch
    wakeups today (the latch signalfd is a registered epoll event), but
    cross-fiber SetLatch under LISTEN/NOTIFY is not separately verified;
-   may need an XTC_WAIT_MAILBOX wake rather than the epoll-fd edge.
+   may need an XTC_WAIT_MAILBOX wake rather than the epoll-fd edge.  NEXT.
 3. ereport(ERROR) / sigsetjmp inside a fiber.  PG's error unwind
    (PG_exception_stack) is per-thread in this tree; on a fiber stack it
    should hold for one backend, but confirm an ERROR unwinds cleanly and
-   the fiber survives.  NOT yet exercised.
+   the fiber survives.  NOT yet exercised.  NEXT.
 4. A real carrier POOL: many xtc loops/threads (the Phase-15 shape).
-   Single loop today = cooperative only, no parallelism.  This is where
-   xtc's work-stealing executor earns its keep.
+   DONE for backends -- n_loops = CPU count (override PG_XTC_CARRIER_LOOPS),
+   backends placed round-robin across the executor loops.  Still cooperative
+   within a loop; work-stealing across loops is xtc's default.
 
 Larger (toward fully-on-xtc):
 
