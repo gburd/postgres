@@ -93,6 +93,30 @@ ex=$(grep -ac "backend fiber exiting" "$D/pm.log" 2>/dev/null || echo 0)
 note "fiber accounting: spawned=$sp exited=$ex"
 [ "$sp" = "$ex" ] && [ "$sp" != "0" ] && ok "spawned == exited" || bad "spawn/exit mismatch"
 
+# 6. io_method=xtc: backend data-file IO through xtc_aio on fibers (item #6).
+#    Restart with a tiny shared_buffers + io_method=xtc so a table scan misses
+#    cache and issues real AIO reads through xtc_aio_pread.
+note "io_method=xtc data-file reads"
+{
+  echo "io_method = xtc"
+  echo "shared_buffers = 1MB"
+} >> "$PGDATA/postgresql.conf"
+if pg_ctl -D "$PGDATA" -l "$D/pm2.log" -o "-c multithreaded=on" -w start >/dev/null 2>&1; then
+  [ "$($PSQL -c 'SHOW io_method')" = "xtc" ] && ok "io_method=xtc active" || bad "io_method not xtc"
+  $PSQL -c "CREATE TABLE aiot(id int primary key, payload text)" >/dev/null 2>&1
+  $PSQL -c "INSERT INTO aiot SELECT g, repeat('x',200) FROM generate_series(1,200000) g" >/dev/null 2>&1
+  r=$($PSQL -c "SELECT count(*), sum(length(payload)) FROM aiot" 2>/dev/null)
+  [ "$r" = "200000|40000000" ] && ok "xtc_aio scan correct ($r)" || bad "xtc_aio scan wrong ($r)"
+  if grep -aiqE "PANIC|wrong state|corrupt|invalid page" "$D/pm2.log" 2>/dev/null; then
+    bad "xtc_aio log has crash/corruption signature"
+  else
+    ok "xtc_aio no crash/corruption signature"
+  fi
+  timeout 25 pg_ctl -D "$PGDATA" -m fast -w -t 20 stop >/dev/null 2>&1 || pg_ctl -D "$PGDATA" -m immediate stop >/dev/null 2>&1
+else
+  bad "io_method=xtc server failed to start"
+fi
+
 echo "=== carrier line ==="; grep -a "carrier scheduler thread up" "$D/pm.log" | head -1
 echo "SCRATCH=$D"
 exit $fail
