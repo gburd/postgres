@@ -114,9 +114,24 @@ Larger (toward fully-on-xtc):
    respawns.  ALREADY PAID OFF: it surfaced a previously-SILENT intermittent
    SIGSEGV inside libxtc's xtc_exit_self during fiber teardown (findings 2c,
    reason=-11, ~3/11 backends, contained by R1) -- likely the root cause of
-   the earlier worker-fiber TAP wedge, and a libxtc item to report.  NEXT
-   (Stage 1b): wire an abnormal DOWN into the postmaster crash policy
-   (HandleChildCrash/ExitPostmaster), then widen #5 to worker fibers.
+   the earlier worker-fiber TAP wedge, and a libxtc item to report.
+   STAGE 1b DONE (escalation wired + safe): a clean-exit ring lets the
+   supervisor classify each abnormal DOWN as 'benign-teardown-fault(post-
+   clean-exit)' (the 2c fault, already reaped -> ignore) vs 'GENUINE-CRASH'
+   (fiber died before publishing exit -> set g_xtc_genuine_crash).  ServerLoop
+   polls xtc_pg_consume_genuine_crash() at both exit-drain points and, on a
+   genuine crash, logs 'terminating threaded server runtime after backend
+   fiber crash' + ExitPostmaster(1) -- the same policy a crashed thread
+   carrier triggers.  VERIFIED SAFE on the 24-loop pool (meh): in normal ops
+   GENUINE-CRASH=0 and escalation=0 while benign faults are correctly ignored,
+   so the known 2c fault cannot false-crash the cluster.  A PG_XTC_INJECT_CRASH
+   debug hook exists to exercise the genuine path, but reliably observing the
+   injected DOWN still races the spawn->register->monitor window; production
+   is covered because real backends run ~100ms of init before any crash AND
+   libxtc's xtc_monitor of an already-dead pid delivers an immediate DOWN.
+   FOLLOW-UP: close the spawn/register race (supervisor-owned spawn, or
+   register-before-run) so the injection test is deterministic; then widen #5
+   to worker fibers (now unblocked by genuine-crash observation).
 8. cassert build: fix the bootstrap GUCMemoryContext == NULL assertion
    so the carrier runs under --enable-cassert (better crash diagnostics).
 

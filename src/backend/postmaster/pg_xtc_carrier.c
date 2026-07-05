@@ -170,9 +170,13 @@ typedef struct xtc_sup_register_msg
 /*
  * Number of carrier loops (each on its own OS thread).  A pool of loops lets
  * backend fibers run in parallel and avoids the single-loop lost-wakeup where
- * two or more fibers parked on one loop could starve each other.  Defaults to
- * the CPU count; override with PG_XTC_CARRIER_LOOPS for tuning (calibration
- * knob -- the ideal count depends on core count and connection mix).
+ * two or more fibers parked on one loop could starve each other.
+ *
+ * The DEFAULT is the system core count (sysconf(_SC_NPROCESSORS_ONLN)) -- this
+ * is deliberate, not a placeholder: a pool sized to the cores is how the xtc
+ * carrier is meant to run, keeps the tests representative, and maximizes the
+ * work that libxtc's scheduler (and DST) can see.  Override with
+ * PG_XTC_CARRIER_LOOPS only for tuning or to force a specific size in a test.
  */
 static int
 xtc_carrier_loop_count(void)
