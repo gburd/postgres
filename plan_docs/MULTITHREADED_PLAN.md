@@ -991,6 +991,86 @@ Validation:
 - performance comparison against the Phase 15 protocol scheduler;
 - clear fallback to carrier-pinned behavior when a boundary is not safe.
 
+## Phase 18: libxtc Deduplication Audit
+
+Goal: once the runtime genuinely runs on libxtc, find PostgreSQL functions that
+reimplement primitives libxtc already provides and, where it is safe and a net
+simplification, make the PostgreSQL function a thin wrapper over the xtc API
+instead of a parallel implementation. The point is to shrink the amount of
+concurrency/runtime code PostgreSQL maintains itself, not to chase churn.
+
+This phase is deliberately last. It must not run until the protocol-boundary
+scheduler (Phases 14-15) is real and the runtime actually owns backends on xtc
+carriers, because only then is the xtc primitive the true underlying mechanism
+rather than a second implementation bolted alongside PostgreSQL's own.
+
+Candidate duplication surfaces to audit (confirm against the current libxtc
+public API in `XTC_ROOT/src/inc` before assuming an equivalence exists):
+
+- latches and waits: `Latch`/`WaitEventSet`/`WaitLatch` versus xtc fiber
+  parking (`xtc_proc_wait_fd`, wakers, mailbox sends). The xtc-carrier already
+  routes `WaitEventSetWaitBlock` through `xtc_proc_wait_fd` while on a fiber;
+  the audit asks which other latch/wait-event paths can collapse onto that
+  seam instead of keeping a separate epoll/poll/kqueue implementation.
+- lightweight locks and condition variables: `LWLock`, `ConditionVariable`
+  versus `xtc_lwlock`, `xtc_lrlock`, `xtc_chan`, and mailbox signalling. Only
+  where the xtc primitive preserves PostgreSQL's exact fairness, self-deadlock,
+  interrupt-holdoff, and lock-ranking semantics.
+- async I/O: PostgreSQL's `aio` method layer versus `xtc_aio`/`xtc_io`
+  (io_uring/epoll/kqueue under one API). Audit whether the io-method worker
+  path can dispatch through xtc's async file path instead of a parallel
+  submission/completion engine.
+- timers and timeouts: the `timeout.c` machinery versus xtc loop timers
+  (`xtc_proc_sleep`, timer-driven wakeups). Only after Phase 5/13 timeout
+  routing is logical and target-backend addressable.
+- process/worker supervision: postmaster crash-restart and worker lifecycle
+  versus xtc `xtc_orc` supervisor trees (one_for_one / one_for_all /
+  rest_for_one / simple_one_for_one). This is the largest and riskiest
+  candidate and stays gated behind the process-lifetime exceptions in
+  `AGENTS.md`.
+- memory contexts and allocators: only note, do not act, unless a concrete
+  win appears. PostgreSQL's memory-context invariants are load-bearing and
+  `xtc_mctx`/`xtc_alloc_audit` equivalence must be proven, not assumed.
+
+Method:
+
+- produce a checked-in inventory mapping each PostgreSQL primitive to its
+  nearest xtc API, with a verdict per row: `replace`, `wrap`, `keep`
+  (semantics diverge), or `defer` (needs a later phase). Record the guard that
+  would catch a wrong equivalence assumption for every `replace`/`wrap` row.
+- prefer `wrap` (PostgreSQL API unchanged, xtc under the covers) over changing
+  call sites, so the process-mode fallback and existing callers stay intact.
+- keep process mode green: any wrap must still have a correct non-xtc path,
+  since process-mode PostgreSQL remains a supported backend model.
+- one primitive family per commit, each with a focused equivalence test that
+  fails if the xtc-backed path diverges from the PostgreSQL semantics it
+  replaced.
+
+Explicit non-goals:
+
+- do not replace a PostgreSQL primitive merely because an xtc analogue exists;
+  a `keep` verdict with a one-line semantic-divergence reason is a valid,
+  common outcome;
+- do not touch single-user, bootstrap, frontend-utility, or crash-escalation
+  paths, which remain process-lifetime exceptions;
+- do not overfit to WASM or any single host runtime.
+
+Validation:
+
+- process-mode and threaded-mode full suites stay green across each wrap;
+- per-family equivalence tests (fairness, wakeup, cancellation, timeout,
+  deadlock, error-recovery) for every `replace`/`wrap`;
+- no measurable regression versus the pre-audit baseline, or an explicit
+  documented tradeoff if a wrap trades throughput for less maintained code.
+
+Exit gate:
+
+- the inventory is complete and every row has a verdict and (for
+  replace/wrap) a guard;
+- landed wraps keep both process mode and threaded mode green;
+- remaining duplication is either intentionally `keep`/`defer` with a recorded
+  reason, not an unaudited accident.
+
 ## PL/pgSQL And In-Tree Modules Plan
 
 PL/pgSQL should be the first nontrivial module to support threaded mode.
