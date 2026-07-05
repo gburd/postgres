@@ -374,6 +374,35 @@ xtc_carrier_proc(void *arg)
 		(void) write(STDERR_FILENO, m, sizeof(m) - 1);
 	}
 
+	/*
+	 * Debug-only fault injection (AGENTS_XTC #7 Stage 1b test hook).  If
+	 * PG_XTC_INJECT_CRASH names the local_id of a backend fiber, that fiber
+	 * faults HERE -- before running any real work and before reaching its
+	 * clean exit path -- to exercise the GENUINE-crash escalation.  libxtc R1
+	 * fault containment turns the SIGSEGV into a DOWN(reason=-11) to the loop
+	 * supervisor, which (finding no clean-exit record) flags a genuine crash
+	 * and the postmaster terminates the runtime.  Never set in production.
+	 */
+	{
+		const char *inj = getenv("PG_XTC_INJECT_CRASH");
+
+		if (inj != NULL && inj[0] != '\0')
+		{
+			long		target = strtol(inj, NULL, 10);
+			xtc_pid_t	self = xtc_self();
+
+			if ((long) self.local_id == target)
+			{
+				volatile int *crashp = NULL;
+
+				(void) write(STDERR_FILENO,
+							 "xtc: INJECT_CRASH faulting this fiber before clean exit\n",
+							 56);
+				*crashp = 42;	/* SIGSEGV -> contained -> DOWN reason=-11 */
+			}
+		}
+	}
+
 	xtc_in_backend_fiber = true;
 
 	/*
@@ -663,6 +692,18 @@ xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)
 	if (revents & (XTC_IO_HUP | XTC_IO_ERR))
 		out |= WL_SOCKET_READABLE;	/* let PG read and see EOF/err */
 	return out;
+}
+
+/*
+ * #7 Stage 1b: consume the genuine-crash flag set by a supervisor fiber when
+ * it observed a backend fiber that crashed before reaching its clean exit.
+ * Returns true once per crash; the postmaster then drives its crash policy.
+ * Benign xtc_exit_self teardown faults (post-clean-exit) never set the flag.
+ */
+bool
+xtc_pg_consume_genuine_crash(void)
+{
+	return atomic_exchange(&g_xtc_genuine_crash, 0) != 0;
 }
 
 #endif							/* USE_XTC_CARRIER */

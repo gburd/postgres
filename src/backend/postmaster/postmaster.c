@@ -103,6 +103,7 @@
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgworker_internals.h"
 #include "postmaster/pgarch.h"
+#include "postmaster/pg_xtc_carrier.h"
 #include "postmaster/postmaster.h"
 #include "postmaster/syslogger.h"
 #include "postmaster/walsummarizer.h"
@@ -1732,6 +1733,14 @@ ServerLoop(void)
 		process_pm_thread_startup_complete();
 		process_pm_pooled_logical_exit();
 		process_pm_thread_exit();
+#ifdef USE_XTC_CARRIER
+		if (xtc_pg_consume_genuine_crash())
+		{
+			ereport(LOG,
+					(errmsg("terminating threaded server runtime after backend fiber crash")));
+			ExitPostmaster(1);
+		}
+#endif
 
 		nevents = WaitEventSetWait(pm_wait_set,
 								   DetermineSleepTime(),
@@ -1776,6 +1785,23 @@ ServerLoop(void)
 		process_pm_thread_startup_complete();
 		process_pm_pooled_logical_exit();
 		process_pm_thread_exit();
+#ifdef USE_XTC_CARRIER
+		/*
+		 * #7 Stage 1b: a per-loop supervisor fiber may have observed a genuine
+		 * backend-fiber crash (a fault before the fiber reached its clean,
+		 * already-published exit).  Treat it like a crashed thread carrier:
+		 * under threaded mode the postmaster address space may be compromised,
+		 * so terminate the runtime.  Benign xtc_exit_self teardown faults
+		 * (post-clean-exit) never set this, so a normal teardown cannot trip
+		 * it.
+		 */
+		if (xtc_pg_consume_genuine_crash())
+		{
+			ereport(LOG,
+					(errmsg("terminating threaded server runtime after backend fiber crash")));
+			ExitPostmaster(1);
+		}
+#endif
 
 		for (int i = 0; i < nevents; i++)
 		{

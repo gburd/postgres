@@ -34,5 +34,15 @@ extern int	xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms);
  */
 pg_noreturn extern void xtc_pg_backend_fiber_exit(int code);
 
+/*
+ * #7 Stage 1b escalation poll.  Returns true, once, if a per-loop supervisor
+ * has observed a GENUINE backend-fiber crash (a fiber that faulted before
+ * reaching its clean, already-published exit).  The postmaster polls this in
+ * ServerLoop and drives the same crash policy a crashed thread carrier would
+ * (ExitPostmaster under multithreaded mode).  Benign xtc_exit_self teardown
+ * faults (post-clean-exit) never set the flag, so this cannot false-fire.
+ */
+extern bool xtc_pg_consume_genuine_crash(void);
+
 #endif							/* USE_XTC_CARRIER */
 #endif							/* PG_XTC_CARRIER_H */
