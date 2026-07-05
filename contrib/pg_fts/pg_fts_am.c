@@ -1752,19 +1752,47 @@ bm25_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 		/* add the workers' tuple counts BEFORE tearing down the DSM */
 		reltuples += bm25_end_parallel(bm25leader);
+
+		/*
+		 * Do NOT force a full merge-to-one after a parallel build.  Each
+		 * participant flushed several segments, so a build-time merge would be a
+		 * single-threaded, O(index) pass that eats most of the parallel scan's
+		 * speedup (the merge tail dominated in measurement).  Leave the segments
+		 * as-is -- the index is fully correct as N segments -- and let the
+		 * size-tiered background merge (VACUUM / fts_merge) coalesce them
+		 * lazily, exactly as Lucene/Tantivy parallel builds do.  Only bound the
+		 * count so a scan never faces an unreasonable fan-out: if the
+		 * participants produced more than BM25_MERGE_THRESHOLD segments, run one
+		 * tiered merge pass (which merges similarly-sized runs, not everything).
+		 *
+		 * ponytail: future Level-2 enhancement -- parallelize the merge itself
+		 * (workers merge disjoint segment groups) to also cut the compaction
+		 * cost; deferred, the lazy path already captures the build speedup.
+		 */
+		{
+			BM25MetaPageData m;
+			Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
+
+			LockBuffer(mb, BUFFER_LOCK_SHARE);
+			memcpy(&m, BM25PageGetMeta(BufferGetPage(mb)), sizeof(m));
+			UnlockReleaseBuffer(mb);
+			if (m.nsegments > BM25_MERGE_THRESHOLD)
+				bm25_merge_segments(index);
+		}
 	}
 	else
 	{
 		/* Serial build. */
 		reltuples = bm25_scan_and_build(heap, index, indexInfo, &bs, NULL);
 		bm25_build_flush_segment(index, &bs);
-	}
 
-	/*
-	 * Compact the (possibly many, especially with N workers) segments with the
-	 * size-tiered merge so a fresh index is not left as many small segments.
-	 */
-	bm25_merge_segments(index);
+		/*
+		 * A serial build produces few segments (only budget-triggered flushes
+		 * plus the residual), so compacting them now is cheap and leaves a fresh
+		 * index tidy.
+		 */
+		bm25_merge_segments(index);
+	}
 
 	MemoryContextDelete(bs.ctx);
 
