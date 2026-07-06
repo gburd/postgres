@@ -97,12 +97,12 @@ static int	g_xtc_n_sups = 0;
 /*
  * Supervisor spawn request (AGENTS_XTC #7 Stage 1, race-free variant).
  * The postmaster spawn thread sends this to a loop's supervisor; the
- * supervisor -- running ON that loop -- does xtc_proc_spawn() followed by
- * xtc_monitor() with no intervening yield, so the monitor is established
- * BEFORE the new backend fiber can run.  This closes the spawn/register race
- * where a fast-crashing fiber could die before an out-of-band register
- * arrived, escaping observation.  A leading magic distinguishes it from a
- * libxtc DOWN signal in the supervisor mailbox.
+ * supervisor -- running ON that loop -- does an atomic xtc_proc_spawn_monitor()
+ * (libxtc v1.3.0), so the monitor is established before the child can run and
+ * even an instant-exiting backend delivers a real-reason DOWN (never NOPROC).
+ * This closes the spawn/register race where a fast-crashing fiber could die
+ * before an out-of-band register arrived, escaping observation.  A leading
+ * magic distinguishes it from a libxtc DOWN signal in the supervisor mailbox.
  */
 #define XTC_SUP_SPAWN_MAGIC 0x58545343u		/* 'XTSC' */
 typedef struct xtc_sup_spawn_msg
@@ -184,14 +184,16 @@ static void xtc_carrier_proc(void *arg);
 /*
  * Per-loop supervisor fiber (AGENTS_XTC #7 Stage 1).  Runs forever on its
  * loop, servicing two message kinds:
- *   - a spawn request (xtc_sup_spawn_msg): xtc_proc_spawn() the backend fiber
- *     on THIS loop and immediately xtc_monitor() it, with no yield between,
- *     so the monitor is in place before the new fiber can run (race-free);
- *   - a DOWN signal (decoded via xtc_down_decode): a monitored backend
- *     exited.  reason 0 is a normal exit (the postmaster already reaps it;
- *     log at DEBUG only).  A non-zero reason means the fiber faulted/aborted;
- *     make it LOUD via a raw write (elog is unsafe from this bare fiber with
- *     no PG error stack) so an abnormal fiber death is never silent.
+ *   - a spawn request (xtc_sup_spawn_msg): xtc_proc_spawn_monitor() the backend
+ *     fiber on THIS loop -- one atomic call that establishes the monitor before
+ *     the new fiber can run (race-free, and NOPROC cannot occur);
+ *   - a DOWN signal (decoded via xtc_down_decode_ex into a self-describing
+ *     xtc_down_info_t): a monitored backend exited.  KIND_CLEAN/KIND_NOPROC are
+ *     normal/benign (the postmaster already reaps; log quietly).  KIND_SIGNAL
+ *     is a genuine contained fault -- make it LOUD via a raw write (elog is
+ *     unsafe from this bare fiber with no PG error stack) and escalate.
+ *     KIND_EXIT is a non-zero app exit the postmaster reaps under its own
+ *     restart policy -- log, do not escalate.
  *
  * The supervisor never reaps a PMChild slot and never respawns a backend --
  * exactly-once reaping and crash policy remain the postmaster's.
@@ -219,43 +221,45 @@ xtc_carrier_supervisor_proc(void *arg)
 	{
 		void	   *msg = NULL;
 		size_t		len = 0;
-		xtc_pid_t	down_pid;
-		int			down_reason = 0;
+		xtc_down_info_t di;
 		int			rc;
 
 		rc = xtc_recv(&msg, &len, -1);	/* block until a message arrives */
 		if (rc != XTC_OK || msg == NULL)
 			continue;
 
-		if (xtc_down_decode(msg, len, &down_pid, &down_reason) == XTC_OK)
+		if (xtc_down_decode_ex(msg, len, &di) == XTC_OK)
 		{
+			xtc_pid_t	down_pid = di.pid;
+
 			/*
-			 * A monitored backend/worker fiber exited.  libxtc v1.2.1 gives an
-			 * unambiguous DOWN-reason contract:
-			 *   reason == 0                 -> clean exit (quiet).
-			 *   xtc_down_is_noproc(reason)  -> the monitor raced a clean exit
-			 *                                  (target already reaped); benign,
-			 *                                  the postmaster owns reaping.
-			 *   1 <= reason <= 255          -> a GENUINE crash: the positive
-			 *                                  signal number of an R1 contained
-			 *                                  fault (e.g. 11 == SIGSEGV).
-			 *                                  Escalate.
-			 *   reason >= 256               -> an application exit STATUS: the
-			 *                                  fiber left via xtc_exit_self with
-			 *                                  backend_thread_exitstatus(code) ==
-			 *                                  (code << 8) for a non-zero
-			 *                                  proc_exit(code) (e.g. a bg worker
-			 *                                  that exits 1 -> 256).  This is a
-			 *                                  NORMAL non-zero exit the postmaster
-			 *                                  reaps and applies its own restart
-			 *                                  policy to -- NOT a fault.  Do NOT
-			 *                                  escalate.
-			 * (Pre-1.2.1 the benign monitor-race carried -11 == XTC_E_NOTFOUND,
-			 * which collided with -SIGSEGV and made us misread it as a crash.
-			 * The distinct XTC_DOWN_NOPROC removes that ambiguity, so the old
-			 * clean-exit ring workaround is no longer needed.)
+			 * A monitored backend/worker fiber exited.  libxtc v1.3.0 gives a
+			 * self-describing DOWN: di.kind says HOW it ended, with the signal
+			 * number and the app exit code in SEPARATE fields, so there is no
+			 * range heuristic and no dependence on our proc_exit << 8 encoding:
+			 *   XTC_DOWN_KIND_CLEAN  -> returned, or xtc_exit_self(0); quiet.
+			 *   XTC_DOWN_KIND_NOPROC -> the monitor raced a clean exit (target
+			 *                           already reaped); benign, the postmaster
+			 *                           owns reaping.  (Atomic spawn_monitor now
+			 *                           makes this case essentially unreachable
+			 *                           -- the monitor is in place before the
+			 *                           child runs -- but we still classify it.)
+			 *   XTC_DOWN_KIND_SIGNAL -> a GENUINE crash: di.signal is the R1
+			 *                           contained-fault signal (e.g. 11 ==
+			 *                           SIGSEGV).  Escalate.
+			 *   XTC_DOWN_KIND_EXIT   -> a non-zero application exit: di.exit_code
+			 *                           is the code the fiber passed to
+			 *                           xtc_exit_self (our backends pass
+			 *                           backend_thread_exitstatus(code), i.e. the
+			 *                           << 8 wait-status form, so di.exit_code
+			 *                           carries that verbatim).  A NORMAL exit the
+			 *                           postmaster reaps under its own restart
+			 *                           policy -- NOT a fault.  Do NOT escalate.
+			 * A bare xtc_exit_self(1) is now KIND_EXIT (exit_code 1), distinct
+			 * from a signal-1 fault (KIND_SIGNAL, signal 1) -- the overloading
+			 * we reported against v1.2.1 is gone.
 			 */
-			if (down_reason == 0)
+			if (di.kind == XTC_DOWN_KIND_CLEAN)
 			{
 				static __thread int nlog = 0;
 
@@ -277,7 +281,7 @@ xtc_carrier_supervisor_proc(void *arg)
 					}
 				}
 			}
-			else if (xtc_down_is_noproc(down_reason))
+			else if (di.kind == XTC_DOWN_KIND_NOPROC)
 			{
 				/* Monitor raced a clean exit; benign, do NOT escalate. */
 				static __thread int nnp = 0;
@@ -300,9 +304,9 @@ xtc_carrier_supervisor_proc(void *arg)
 					}
 				}
 			}
-			else if (down_reason >= 1 && down_reason <= 255)
+			else if (di.kind == XTC_DOWN_KIND_SIGNAL)
 			{
-				/* 1..255: an R1 contained-fault signal number -> genuine crash. */
+				/* An R1 contained-fault signal -> genuine crash. */
 				static __thread int nabn = 0;
 
 				if (nabn < 32)
@@ -313,9 +317,9 @@ xtc_carrier_supervisor_proc(void *arg)
 					nabn++;
 					n = snprintf(buf, sizeof(buf),
 								 "xtc: SUPERVISOR observed GENUINE-CRASH backend fiber DOWN "
-								 "pid=(loop=%u,local=%u,gen=%u) reason=%d (signal)\n",
+								 "pid=(loop=%u,local=%u,gen=%u) signal=%d\n",
 								 down_pid.loop_id, down_pid.local_id,
-								 down_pid.gen, down_reason);
+								 down_pid.gen, di.signal);
 					if (n > 0)
 					{
 						if (n > (int) sizeof(buf))
@@ -335,9 +339,11 @@ xtc_carrier_supervisor_proc(void *arg)
 			else
 			{
 				/*
-				 * reason >= 256: a normal application exit STATUS (non-zero
-				 * proc_exit, shifted << 8).  The postmaster reaps it and applies
-				 * its own worker restart policy; do NOT escalate the runtime.
+				 * XTC_DOWN_KIND_EXIT: a non-zero application exit.  The
+				 * postmaster reaps it and applies its own worker restart
+				 * policy; do NOT escalate the runtime.  di.exit_code carries
+				 * the backend_thread_exitstatus(code) value verbatim (<< 8
+				 * wait-status form), so recover the proc_exit code with >> 8.
 				 */
 				static __thread int nappx = 0;
 
@@ -351,7 +357,7 @@ xtc_carrier_supervisor_proc(void *arg)
 								 "xtc: supervisor observed non-zero exit DOWN "
 								 "pid=(loop=%u,local=%u,gen=%u) exit_code=%d (postmaster reaps)\n",
 								 down_pid.loop_id, down_pid.local_id,
-								 down_pid.gen, down_reason >> 8);
+								 down_pid.gen, di.exit_code >> 8);
 					if (n > 0)
 					{
 						if (n > (int) sizeof(buf))
@@ -367,6 +373,7 @@ xtc_carrier_supervisor_proc(void *arg)
 			xtc_sup_spawn_msg sp;
 			xtc_proc_opts_t po = {0};
 			xtc_pid_t	bpid = XTC_PID_NONE;
+			uint64_t	ref = 0;
 
 			memcpy(&sp, msg, sizeof(sp));
 
@@ -375,22 +382,23 @@ xtc_carrier_supervisor_proc(void *arg)
 			po.name = "pg-backend";
 
 			/*
-			 * Spawn on THIS supervisor's loop with the stable entry_arg
-			 * (a launch_backend.c-owned BackendThreadStart *) as the fiber
-			 * arg, then monitor with no yield in between: the new fiber
-			 * cannot be scheduled until the supervisor next yields (at
-			 * xtc_recv), by which point the monitor is registered.
-			 * Race-free observation, and no heap allocation on this bare
-			 * pre-PG-init fiber.
+			 * Atomic spawn+monitor (libxtc v1.3.0): establish the monitor
+			 * BEFORE the child is made runnable, so there is no window in which
+			 * the backend fiber exists but is unmonitored.  Even a backend that
+			 * runs and exits immediately delivers a real-reason DOWN, never
+			 * XTC_DOWN_KIND_NOPROC -- the monitor-race case disappears by
+			 * construction instead of being classified after the fact.  The
+			 * supervisor runs as an xtc_proc (see xtc_carrier_start_supervisors),
+			 * so it satisfies spawn_monitor's requirement that the caller be a
+			 * process.  entry_arg is the stable launch_backend.c-owned
+			 * BackendThreadStart *; no heap allocation on this bare fiber.
 			 */
-			if (xtc_proc_spawn(my_loop, xtc_carrier_proc, sp.entry_arg,
-							   &po, &bpid) == XTC_OK)
+			if (xtc_proc_spawn_monitor(my_loop, xtc_carrier_proc, sp.entry_arg,
+									   &po, &bpid, &ref) == XTC_OK)
 			{
-				uint64_t	ref = 0;
 				char		sbuf[96];
 				int			sn;
 
-				(void) xtc_monitor(bpid, &ref);
 				/* raw write: elog is unsafe from this bare fiber */
 				sn = snprintf(sbuf, sizeof(sbuf),
 							  "xtc: spawned backend fiber pid=(loop=%u,local=%u,gen=%u)\n",
@@ -603,13 +611,13 @@ xtc_pg_launch_backend_fiber(xtc_carrier_entry_fn entry, void *entry_arg)
 						  (unsigned) g_xtc_n_loops);
 
 	/*
-	 * Hand the spawn to that loop's supervisor, which does xtc_proc_spawn()
-	 * + xtc_monitor() atomically on-loop (no yield between), so the new
-	 * backend fiber is monitored BEFORE it can run.  This closes the
-	 * spawn/register race: a fiber that crashes immediately can no longer die
-	 * unobserved.  The send is cross-thread (postmaster spawn thread ->
-	 * supervisor mailbox) but only carries the entry/arg; the actual spawn
-	 * and monitor happen together inside the supervisor.
+	 * Hand the spawn to that loop's supervisor, which does an atomic
+	 * xtc_proc_spawn_monitor() on-loop (libxtc v1.3.0), so the new backend
+	 * fiber is monitored BEFORE it can run.  This closes the spawn/register
+	 * race: a fiber that crashes immediately can no longer die unobserved (and
+	 * cannot land in the NOPROC case).  The send is cross-thread (postmaster
+	 * spawn thread -> supervisor mailbox) but only carries the entry/arg; the
+	 * actual atomic spawn+monitor happens inside the supervisor.
 	 */
 	if (loop_idx < g_xtc_n_sups)
 	{
