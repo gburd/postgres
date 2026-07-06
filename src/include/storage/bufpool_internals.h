@@ -426,6 +426,13 @@ extern BufferPoolDesc *ResizeDynamicBufferPool(BufferPoolDesc *pool,
 											   int new_nbuffers);
 extern BufferPoolDesc *SwapDynamicBufferPoolAlgorithm(BufferPoolDesc *pool,
 													  Oid new_handler_oid);
+
+/*
+ * Online resize of the DEFAULT pool (shared_buffers).  Honest stub today --
+ * see BufferPoolResizeShared() in bufpool.c for what remains.  The
+ * same-address reservation primitives below are the foundation it builds on.
+ */
+extern void BufferPoolResizeShared(int new_nbuffers);
 extern void BufferPoolStartupInit(void);
 
 /*

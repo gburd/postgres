@@ -1365,6 +1365,57 @@ SwapDynamicBufferPoolAlgorithm(BufferPoolDesc *pool, Oid new_handler_oid)
 }
 
 /*
+ * BufferPoolResizeShared
+ *		Online resize of the DEFAULT pool (shared_buffers) -- NOT YET REAL.
+ *
+ * This is the headline D5 feature ("shared_buffers without a restart").  The
+ * same-address reservation primitives it must be built on ALREADY EXIST and
+ * are exercised for dynamic pools:
+ *
+ *	 BufPoolReserveInit()   reserve address space at postmaster start
+ *	 BufPoolReserveAlloc()  carve a contiguous same-address window
+ *	 BufPoolCommit()        back a window with real (optionally huge) pages
+ *	 BufPoolDecommit()      release physical memory, fault on stale access
+ *	 BufPoolAttachLocal()   re-map a committed window in a pre-existing backend
+ *
+ * The reason this is a stub and not a call to those primitives is that the
+ * DEFAULT pool (slot 0) does NOT live in the reservation today: it still owns
+ * the classic main-shmem BufferBlocks/BufferDescriptors arrays sized once at
+ * boot from shared_buffers (PGC_POSTMASTER).  Making it online-resizable is
+ * the multi-month, uncommitted-upstream effort (Vondra/Andres) the hardening
+ * plan calls research-grade; the genuinely hard, still-missing pieces are:
+ *
+ *   1. Relocate pool 0's descriptors/blocks/hash into a reservation window so
+ *		its memory can grow/shrink (today they are fixed main-shmem arrays).
+ *   2. A ProcSignalBarrier phase protocol so every backend quiesces, re-maps
+ *		the grown/shrunk window (BufPoolAttachLocal), and agrees on the new
+ *		NBuffers/MaxBufferNumber before any I/O resumes -- shrink additionally
+ *		must evict + flush the buffers being removed with nothing pinned.
+ *   3. Making shared_buffers something other than PGC_POSTMASTER, with a
+ *		check/assign hook that drives this path instead of demanding a restart.
+ *
+ * Until those land, calling this is an error rather than a silent no-op or a
+ * fabricated success: shared_buffers still requires a restart to change.
+ *
+ * ponytail: honest stub. The reservation/NUMA/huge-page primitives it needs
+ * are done (bufpool_reserve.c, bufpool_numa.c); what remains is moving pool 0
+ * into the reservation + the cross-backend barrier resize protocol above.
+ * Wire this to BufPoolReserveAlloc/Commit/AttachLocal once pool 0 is
+ * reservation-backed.
+ */
+void
+BufferPoolResizeShared(int new_nbuffers)
+{
+	(void) new_nbuffers;
+
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("online resize of shared_buffers is not supported"),
+			 errdetail("The default buffer pool is sized at server start; changing shared_buffers requires a restart."),
+			 errhint("The same-address reservation this feature is built on is active when max_buffer_pool_memory is set; only the default pool is not yet reservation-backed.")));
+}
+
+/*
  * TrickleWriterMain -- background worker entry point for a per-pool
  * trickle writer.
  *
