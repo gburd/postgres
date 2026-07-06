@@ -228,6 +228,14 @@ bool		track_io_timing = false;
 int			buffer_pool_max_usage_count = BM_MAX_USAGE_COUNT;
 
 /*
+ * When on, an access sets usage_count to buffer_pool_max_usage_count (jump to
+ * fully HOT) instead of incrementing by one.  Combined with a small cap (1 or
+ * 2) this makes usage_count a LeanStore-style hot/cooling/cold state machine
+ * rather than a frequency counter.  Off = classic clock behavior.
+ */
+bool		buffer_pool_leanstore = false;
+
+/*
  * How many buffers PrefetchBuffer callers should try to stay ahead of their
  * ReadBuffer calls by.  Zero means "never prefetch".  This value is only used
  * for buffers not belonging to tablespaces that have their
@@ -3748,8 +3756,17 @@ PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy,
 
 			if (strategy == NULL)
 			{
-				/* Default case: increase usagecount unless already max. */
-				if (BUF_STATE_GET_USAGECOUNT(buf_state) < buffer_pool_max_usage_count)
+				/*
+				 * On access, either bump usage_count by one toward the cap
+				 * (classic clock frequency counter) or, in LeanStore mode, jump
+				 * straight to the cap (a re-referenced page is fully HOT again).
+				 * With the cap at 1 or 2 and LeanStore mode on, usage_count is a
+				 * 1- or 2-bit hot/cooling/cold state rather than a 0..5 counter.
+				 */
+				if (buffer_pool_leanstore)
+					buf_state = (buf_state & ~BUF_USAGECOUNT_MASK) |
+						((uint64) buffer_pool_max_usage_count << BUF_USAGECOUNT_SHIFT);
+				else if (BUF_STATE_GET_USAGECOUNT(buf_state) < buffer_pool_max_usage_count)
 					buf_state += BUF_USAGECOUNT_ONE;
 			}
 			else

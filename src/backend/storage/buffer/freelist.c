@@ -452,30 +452,26 @@ NumaCoolingGetVictim(void *strategy_data,
 
 	*from_ring = false;
 
-	/* Ring-buffer / RECYCLE handling is identical to the plain sweep. */
-	if (strategy != NULL)
+	/*
+	 * Ring-buffer / RECYCLE handling.  This routine declares scan_resistant =
+	 * true, so its probationary admission (scan pages enter usage_count 0 and
+	 * are evicted first) provides scan resistance itself; we deliberately do
+	 * NOT route a strategy scan through the small per-backend ring here, so
+	 * scan pages flow into the main pool and the algorithm's own resistance is
+	 * what is exercised.  The shared RECYCLE pool (explicit operator choice) is
+	 * still honored.
+	 */
+	if (strategy != NULL && strategy->recycle_pool != NULL &&
+		strategy->recycle_pool->bp_active)
 	{
-		if (strategy->recycle_pool != NULL && strategy->recycle_pool->bp_active)
-		{
-			PoolLocalState *local = EnsurePoolAttached(strategy->recycle_pool);
-			BufferDesc *buf = strategy->recycle_pool->bp_routine->get_victim(
-																			 local->strategy_data, NULL, buf_state, from_ring);
+		PoolLocalState *local = EnsurePoolAttached(strategy->recycle_pool);
+		BufferDesc *buf = strategy->recycle_pool->bp_routine->get_victim(
+																 local->strategy_data, NULL, buf_state, from_ring);
 
-			if (buf != NULL)
-			{
-				*from_ring = true;
-				return buf;
-			}
-		}
-		else
+		if (buf != NULL)
 		{
-			BufferDesc *buf = GetBufferFromRing(strategy, buf_state);
-
-			if (buf != NULL)
-			{
-				*from_ring = true;
-				return buf;
-			}
+			*from_ring = true;
+			return buf;
 		}
 	}
 
