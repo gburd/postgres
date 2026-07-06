@@ -129,11 +129,20 @@ Larger (toward fully-on-xtc):
    injected DOWN still races the spawn->register->monitor window; production
    is covered because real backends run ~100ms of init before any crash AND
    libxtc's xtc_monitor of an already-dead pid delivers an immediate DOWN.
-   FOLLOW-UP: close the spawn/register race (supervisor-owned spawn, or
-   register-before-run) so the injection test is deterministic; then widen #5
-   to worker fibers (now unblocked by genuine-crash observation).
-8. cassert build: fix the bootstrap GUCMemoryContext == NULL assertion
-   so the carrier runs under --enable-cassert (better crash diagnostics).
+   FOLLOW-UP DONE (libxtc v1.3.0): the spawn/register race is closed by
+   construction -- the supervisor now uses the atomic xtc_proc_spawn_monitor()
+   so the monitor is in place before the child runs, and the injection test is
+   deterministic (PG_XTC_INJECT_CRASH=2 -> DOWN kind=SIGNAL signal=11 ->
+   escalation -> postmaster DOWN, verified on the 8-loop pool).  DOWN
+   classification also moved to the self-describing xtc_down_decode_ex()
+   (kind/signal/exit_code), retiring the old clean-exit ring and the
+   reason-range heuristic.  The NOPROC monitor-race case can no longer occur.
+8. cassert build: PARTIALLY DONE.  Two base-tree bootstrap asserts fixed
+   (GUCMemoryContext read side effect; early aset-freelist emptiness -- both
+   reproduce with xtc disabled).  One teardown assert remains open
+   (numExternalFDs in ReleaseExternalFD via PgBackendResetClosedState), a
+   session-runtime teardown-lifecycle issue for the tree owners.  Full report:
+   /tmp/pg-bootstrap-cassert-bugs.md; ledger detail in M16_XTC_CARRIER_FINDINGS.md.
 
 Known pre-existing NON-xtc bug (do not chase as an xtc problem): after a
 NON-clean shutdown, recovery runs and the StartupProcess thread SIGSEGVs

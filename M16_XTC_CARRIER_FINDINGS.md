@@ -16,6 +16,40 @@ once, exactly one resumed/exited and the rest were lost.  The single-loop model
 was bringup scaffolding; the loop pool is the intended Phase-15 shape and
 sidesteps the single-loop dispatch edge entirely, as predicted.
 
+## libxtc v1.3.0 adopted (2026-07-06)
+
+Bumped `flake.lock` to libxtc v1.3.0 and took the two API improvements the
+libxtc team shipped in reply to our v1.2.1 report (`/tmp/libxtc-reply-2026-07-06.txt`):
+
+1. **Self-describing DOWN** (`xtc_down_decode_ex` -> `xtc_down_info_t`).  The
+   supervisor classifies on `di.kind` (CLEAN / EXIT / SIGNAL / NOPROC) and reads
+   `di.signal` / `di.exit_code` from separate fields -- no more range heuristic
+   over a single `reason` integer, and no dependence on our proc_exit `<< 8`
+   convention.  A bare `xtc_exit_self(1)` is now unambiguously KIND_EXIT, not a
+   signal-1 fault.
+2. **Atomic spawn+monitor** (`xtc_proc_spawn_monitor`).  Replaces the two-step
+   `xtc_proc_spawn` + `xtc_monitor`; the monitor is established before the child
+   is runnable, so the NOPROC monitor-race case cannot occur and the
+   fault-injection test is deterministic.
+
+Also picks up v1.3.0's cross-thread `xtc_send` `wake_revents` atomicity fix,
+which is on our exact N-loop backend wake path (now TSan-clean per the libxtc
+team).
+
+Verified on the 8-loop pool (floki):
+  - smoke 12/12.
+  - genuine-crash escalation: `PG_XTC_INJECT_CRASH=2` -> DOWN kind=SIGNAL
+    signal=11 -> "terminating threaded server runtime after backend fiber
+    crash" -> postmaster DOWN.
+  - clean 5-backend run: 6 normal (CLEAN) DOWNs, 0 genuine, 0 non-zero-exit,
+    **0 NOPROC**, 0 escalation, fast stop clean.  NOPROC eliminated by
+    construction, exactly as the atomic spawn_monitor promised.
+
+Commit: `xtc-carrier: adopt libxtc v1.3.0 -- self-describing DOWN + atomic
+spawn_monitor`.
+
+---
+
 ## Smoke validated 12/12 (2026-07-06, 8-loop pool on floki)
 
 `scripts/xtc_smoke.sh` on a fresh HEAD install (btrfs-backed PGDATA) passes all
@@ -473,14 +507,22 @@ inside the postmaster process (8 threads, zero child processes -- verified via
 
 ## libxtc notes
 
-No libxtc bug found this session -- v1.2.1 behaved correctly (cross-fiber
-wakeup, ERROR unwind, DOWN contract, containment + escalation all validated).
-One feature observation (the DOWN `reason` integer overloads signal-number and
-app-exit-status namespaces; a bare `xtc_exit_self(1)` would be indistinguishable
-from a signal-1 fault -- we only avoid it because PG exit codes arrive
-pre-shifted `<< 8`) and one docs note (fault-guard install is per-loop-thread
-and required for containment) are recorded in `/tmp/libxtc-notes.md` for the
-libxtc team.
+No libxtc bug found in the reporting session -- v1.2.1 behaved correctly
+(cross-fiber wakeup, ERROR unwind, DOWN contract, containment + escalation all
+validated).  We raised one feature observation (the v1.2.1 DOWN `reason` integer
+overloaded signal-number and app-exit-status namespaces; a bare
+`xtc_exit_self(1)` was indistinguishable from a signal-1 fault -- we only avoided
+it because PG exit codes arrive pre-shifted `<< 8`) and one docs note
+(fault-guard install is per-loop-thread and required for containment), recorded
+in `/tmp/libxtc-notes.md`.
+
+RESOLVED in libxtc v1.3.0 (reply in `/tmp/libxtc-reply-2026-07-06.txt`):
+  - the feature request landed as our preferred Option 1 -- the self-describing
+    `xtc_down_decode_ex` / `xtc_down_info_t` (kind + separate signal/exit_code);
+  - the docs note is now in the `xtc_proc.3` man page;
+  - they additionally shipped atomic `xtc_proc_spawn_link`/`_spawn_monitor` and
+    a cross-thread `xtc_send` wake_revents atomicity fix on our hot path.
+We adopted v1.3.0 and both APIs (see the v1.3.0 section above).
 
 ## Commits on branch xtc-carrier
 
