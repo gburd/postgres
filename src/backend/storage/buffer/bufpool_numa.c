@@ -193,14 +193,13 @@ BufPoolBufferNode(int local_id, int nbuffers)
 	/*
 	 * Deferral hook for Vondra's NUMA series: when his 0001 is applied it
 	 * defines BufferGetNode() (buffer -> node using his choose_chunk_buffers
-	 * layout).  At that point this whole body should become:
-	 *     return BufferGetNode(local_id);
-	 * guarded by #ifdef so arc still builds standalone.  We keep our own chunk
-	 * math below as the standalone default; both use the identical
-	 * (i / chunk) % nodes shape, so switching does not change semantics, only
-	 * the source of the chunk size.
+	 * layout).  At that point this whole body should become: return
+	 * BufferGetNode(local_id); guarded by #ifdef so arc still builds
+	 * standalone.  We keep our own chunk math below as the standalone
+	 * default; both use the identical (i / chunk) % nodes shape, so switching
+	 * does not change semantics, only the source of the chunk size.
 	 */
-#ifdef PG_HAVE_BUFFER_GET_NODE		/* defined once Vondra 0001 is in-tree */
+#ifdef PG_HAVE_BUFFER_GET_NODE	/* defined once Vondra 0001 is in-tree */
 	return BufferGetNode(local_id);
 #else
 	/* Lazily fix the chunk size if a caller reached us before setup. */
@@ -263,10 +262,10 @@ BufPoolNumaBindRange(void *addr, Size size, int node)
 
 	/*
 	 * Skip the actual bind when the target node does not physically exist
-	 * (e.g. under the buffer_pool_numa_nodes developer override on single-node
-	 * hardware): binding to a nonexistent node is meaningless.  The logical
-	 * partitioning of the clock sweep still runs; only the physical placement
-	 * is a no-op, which is correct here.
+	 * (e.g. under the buffer_pool_numa_nodes developer override on
+	 * single-node hardware): binding to a nonexistent node is meaningless.
+	 * The logical partitioning of the clock sweep still runs; only the
+	 * physical placement is a no-op, which is correct here.
 	 */
 	if (numa_available() < 0 || node > numa_max_node())
 		return;
@@ -321,9 +320,9 @@ BufPoolNumaDistribute(char *blocks, char *descriptors, Size desc_elem_size,
 
 	/*
 	 * Bind each node's contiguous buffer range (as defined by
-	 * BufPoolNumaBufferRange, i.e. the same numa_chunk_buffers layout the clock
-	 * sweep uses) and the matching descriptor range to that node.  Placement
-	 * and eviction therefore agree by construction.
+	 * BufPoolNumaBufferRange, i.e. the same numa_chunk_buffers layout the
+	 * clock sweep uses) and the matching descriptor range to that node.
+	 * Placement and eviction therefore agree by construction.
 	 */
 	for (int node = 0; node < nodes; node++)
 	{

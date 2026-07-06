@@ -91,7 +91,7 @@
 #include "utils/builtins.h"
 #include "utils/tuplestore.h"
 
-PG_MODULE_MAGIC_EXT(.name = "pg_bp_arc",.version = PG_VERSION);
+PG_MODULE_MAGIC_EXT(.name = "pg_bp_arc", .version = PG_VERSION);
 
 void		_PG_init(void);
 
@@ -178,7 +178,7 @@ typedef struct ArcControl
 	 */
 	uint32		touch_ring_mask;	/* ring capacity - 1 (power of two - 1) */
 	pg_atomic_uint32 touch_write;	/* producer reservation counter */
-	uint32		touch_read;			/* consumer index (arc_lock-protected) */
+	uint32		touch_read;		/* consumer index (arc_lock-protected) */
 
 	/* Doubly-linked list heads and tails */
 	int			list_head[ARC_NUM_LISTS];
@@ -731,13 +731,12 @@ ArcOnHit(void *strategy_data, int buf_id, BufferTag *tag)
 		return;
 
 	/*
-	 * Reserve a ring slot and publish buf_id+1 into it (stored as buf_id+1
-	 * so 0 stays the empty sentinel).  Reserve with a CAS loop so the
-	 * capacity check and the touch_write bump are atomic: a producer never
-	 * laps a slot that has not yet been drained.  The winning CAS and the
-	 * following store are adjacent with nothing that can longjmp between
-	 * them, so the slot is published within a few instructions -- the drainer
-	 * relies on that.
+	 * Reserve a ring slot and publish buf_id+1 into it (stored as buf_id+1 so
+	 * 0 stays the empty sentinel).  Reserve with a CAS loop so the capacity
+	 * check and the touch_write bump are atomic: a producer never laps a slot
+	 * that has not yet been drained.  The winning CAS and the following store
+	 * are adjacent with nothing that can longjmp between them, so the slot is
+	 * published within a few instructions -- the drainer relies on that.
 	 *
 	 * If the ring is momentarily full we must NOT bump touch_write without
 	 * publishing (that would leave a permanent gap and deadlock the

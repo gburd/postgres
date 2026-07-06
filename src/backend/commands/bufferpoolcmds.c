@@ -307,7 +307,7 @@ CreateBufferPool(CreateBufferPoolStmt *stmt)
 				if (strcmp(def->defname, "huge_pages") == 0)
 					use_huge_pages = defGetBoolean(def);
 				else if (strcmp(def->defname, "direct_io") == 0)
-					/* handled post-create via the descriptor; ignore here */ ;
+					 /* handled post-create via the descriptor; ignore here */ ;
 				else
 					ereport(ERROR,
 							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -477,12 +477,12 @@ AlterBufferPool(AlterBufferPoolStmt *stmt)
 				 * Online replacement-algorithm swap.  Resolve the new handler
 				 * function, then quiesce + destroy + recreate the pool under
 				 * the new routine (SwapDynamicBufferPoolAlgorithm).  Safe
-				 * because DestroyDynamicBufferPool emits the detach barrier and
-				 * waits for every backend to drop the pool before the old
-				 * strategy state goes away -- the unsafe in-place memset that an
-				 * earlier draft used (no quiescence) is gone.  The pool's cached
-				 * pages are dropped (it is a cache), so expect a cold pool right
-				 * after the swap.
+				 * because DestroyDynamicBufferPool emits the detach barrier
+				 * and waits for every backend to drop the pool before the old
+				 * strategy state goes away -- the unsafe in-place memset that
+				 * an earlier draft used (no quiescence) is gone.  The pool's
+				 * cached pages are dropped (it is a cache), so expect a cold
+				 * pool right after the swap.
 				 */
 				char	   *newhandler = defGetString(def);
 				List	   *hname = list_make1(makeString(newhandler));
@@ -495,7 +495,10 @@ AlterBufferPool(AlterBufferPoolStmt *stmt)
 							 errmsg("cannot change algorithm of buffer pool \"%s\": not a dynamic pool",
 									stmt->poolname)));
 
-				/* Handlers take one argument of type internal (see CreateBufferPool). */
+				/*
+				 * Handlers take one argument of type internal (see
+				 * CreateBufferPool).
+				 */
 				newhoid = LookupFuncName(hname, 1, funcargtypes, false);
 				if (get_func_rettype(newhoid) != INTERNALOID)
 					ereport(ERROR,
@@ -656,9 +659,9 @@ DropBufferPoolById(Oid bpoid)
 	 * the drop.  This serializes concurrent DROPs of the same pool and gives
 	 * the reloption-dependency scan below a stable view: no other DROP can
 	 * commit a change to this pool's catalog row or destroy its DSM while we
-	 * hold it.  Combined with the PROCSIGNAL_BARRIER_BUFPOOL_DETACH quiescence
-	 * inside DestroyDynamicBufferPool (which guarantees no backend is still
-	 * using the pool's DSM when we tear it down), this closes the
+	 * hold it.  Combined with the PROCSIGNAL_BARRIER_BUFPOOL_DETACH
+	 * quiescence inside DestroyDynamicBufferPool (which guarantees no backend
+	 * is still using the pool's DSM when we tear it down), this closes the
 	 * use-after-detach race.
 	 */
 	LockDatabaseObject(BufferPoolRelationId, bpoid, 0, AccessExclusiveLock);

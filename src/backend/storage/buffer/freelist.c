@@ -90,7 +90,7 @@ typedef struct ClockPoolState
 	int			bgwprocno;		/* trickle writer procno (-1 = none) */
 	int			nbuffers;		/* buffer count in this pool */
 	int			first_buf_id;	/* starting buffer ID */
-}			ClockPoolState;
+} ClockPoolState;
 
 /* Pointers to shared state */
 static BufferStrategyControl *StrategyControl = NULL;
@@ -153,7 +153,7 @@ typedef struct DefaultPoolAlgorithmEntry
 {
 	const char *name;
 	const BufferPoolRoutine *routine;
-}			DefaultPoolAlgorithmEntry;
+} DefaultPoolAlgorithmEntry;
 
 static DefaultPoolAlgorithmEntry algo_registry[MAX_DEFAULT_POOL_ALGORITHMS] =
 {
@@ -344,7 +344,7 @@ typedef union CacheAlignedHand
 {
 	pg_atomic_uint32 hand;
 	char		pad[PG_CACHE_LINE_SIZE];
-}			CacheAlignedHand;
+} CacheAlignedHand;
 
 typedef struct NumaClockControl
 {
@@ -355,11 +355,12 @@ typedef struct NumaClockControl
 	uint32		batchSize;		/* clock-sweep batch claimed per fetch_add */
 	pg_atomic_uint32 nextVictim[BUFPOOL_MAX_NUMA_NODES];	/* per-node hand */
 	uint32		completePasses[BUFPOOL_MAX_NUMA_NODES];
+
 	/*
 	 * Per-(node,stripe) hands for the cooling sweep.  Each is confined to its
-	 * stripe sub-range, giving single-owner-per-buffer-per-pass, and each sits
-	 * on its own cache line so same-node cores do not false-share.  Unused when
-	 * nstripes == 1 (cooling disabled).
+	 * stripe sub-range, giving single-owner-per-buffer-per-pass, and each
+	 * sits on its own cache line so same-node cores do not false-share.
+	 * Unused when nstripes == 1 (cooling disabled).
 	 */
 	CacheAlignedHand stripeHand[BUFPOOL_MAX_NUMA_NODES][BUFPOOL_MAX_STRIPES];
 	pg_atomic_uint32 numBufferAllocs;
@@ -425,7 +426,7 @@ NumaClockGetVictim(void *strategy_data,
 		{
 			PoolLocalState *local = EnsurePoolAttached(strategy->recycle_pool);
 			BufferDesc *buf = strategy->recycle_pool->bp_routine->get_victim(
-																		local->strategy_data, NULL, buf_state, from_ring);
+																			 local->strategy_data, NULL, buf_state, from_ring);
 
 			if (buf != NULL)
 			{
@@ -662,9 +663,10 @@ NumaCoolingGetVictim(void *strategy_data,
 
 	/*
 	 * Per-backend batch of buffer IDs claimed from the single global clock
-	 * hand.  MyBatchPos is the next id to consider; MyBatchEnd is one past the
-	 * end of the claimed batch.  Both are absolute (monotonically increasing)
-	 * hand values; the actual buffer id is the value modulo nbuffers.
+	 * hand.  MyBatchPos is the next id to consider; MyBatchEnd is one past
+	 * the end of the claimed batch.  Both are absolute (monotonically
+	 * increasing) hand values; the actual buffer id is the value modulo
+	 * nbuffers.
 	 */
 	static uint32 MyBatchPos = 0;
 	static uint32 MyBatchEnd = 0;
@@ -678,7 +680,7 @@ NumaCoolingGetVictim(void *strategy_data,
 		{
 			PoolLocalState *local = EnsurePoolAttached(strategy->recycle_pool);
 			BufferDesc *buf = strategy->recycle_pool->bp_routine->get_victim(
-																local->strategy_data, NULL, buf_state, from_ring);
+																			 local->strategy_data, NULL, buf_state, from_ring);
 
 			if (buf != NULL)
 			{
@@ -714,19 +716,19 @@ NumaCoolingGetVictim(void *strategy_data,
 	 * cooling.
 	 *
 	 * There is ONE global clock hand (ctl->nextVictim[0]) that traverses the
-	 * WHOLE pool, exactly like the plain clock -- so every buffer is reachable
-	 * and fillable by every backend, and the effective cache is all of
-	 * shared_buffers (NOT 1/N of it -- the fatal flaw of any per-backend
+	 * WHOLE pool, exactly like the plain clock -- so every buffer is
+	 * reachable and fillable by every backend, and the effective cache is all
+	 * of shared_buffers (NOT 1/N of it -- the fatal flaw of any per-backend
 	 * sub-range partition).  The only change from the plain clock is that a
 	 * backend advances the hand a BATCH at a time (one fetch_add of
 	 * ClockSweepBatchSize) and then iterates that batch privately, so the
 	 * contended atomic fires ~1/batch as often -- the multi-socket win.
 	 *
 	 * Blind cooling is safe here because BATCH ownership is exclusive:
-	 * consecutive fetch_add(batch) calls hand out DISJOINT [start, start+batch)
-	 * ranges, so within one pass each buffer is examined by exactly one
-	 * backend -- the single-owner-per-pass property the blind usage_count
-	 * fetch_sub needs (see ClockTryAcquireVictimCooling).
+	 * consecutive fetch_add(batch) calls hand out DISJOINT [start,
+	 * start+batch) ranges, so within one pass each buffer is examined by
+	 * exactly one backend -- the single-owner-per-pass property the blind
+	 * usage_count fetch_sub needs (see ClockTryAcquireVictimCooling).
 	 */
 	trycounter = nbuffers;
 	for (;;)
@@ -735,7 +737,10 @@ NumaCoolingGetVictim(void *strategy_data,
 		int			victim_id;
 		BufferDesc *buf;
 
-		/* Claim a fresh batch from the global hand when the local one is spent. */
+		/*
+		 * Claim a fresh batch from the global hand when the local one is
+		 * spent.
+		 */
 		if (MyBatchPos >= MyBatchEnd)
 		{
 			uint32		batch = ctl->batchSize;
@@ -750,11 +755,12 @@ NumaCoolingGetVictim(void *strategy_data,
 		victim_id = (int) (handval % (uint32) nbuffers);
 
 		/*
-		 * Pass the OUTER trycounter: ClockTryAcquireVictimCooling resets it to
-		 * nbuffers on a cooling tick (a decrement is progress toward an
-		 * evictable buffer) and only decrements it when a buffer is pinned (no
-		 * progress).  So we only error after nbuffers consecutive PINNED
-		 * buffers, matching the plain clock -- not after nbuffers cooling ticks.
+		 * Pass the OUTER trycounter: ClockTryAcquireVictimCooling resets it
+		 * to nbuffers on a cooling tick (a decrement is progress toward an
+		 * evictable buffer) and only decrements it when a buffer is pinned
+		 * (no progress).  So we only error after nbuffers consecutive PINNED
+		 * buffers, matching the plain clock -- not after nbuffers cooling
+		 * ticks.
 		 */
 		buf = ClockTryAcquireVictimCooling(victim_id, strategy, buf_state,
 										   &trycounter, nbuffers);
@@ -805,6 +811,7 @@ static void
 NumaClockNotifyTrickle(void *strategy_data, int bgwprocno)
 {
 	NumaClockControl *ctl = (NumaClockControl *) strategy_data;
+
 	ctl->bgwprocno = bgwprocno;
 }
 
@@ -908,9 +915,9 @@ BufPoolNumaClockStats(BufPoolNumaStat *out, int maxrows)
 		{
 			/*
 			 * Batched global cooling sweep: ONE global hand over the whole
-			 * pool (see NumaCoolingGetVictim).  Report a single row describing
-			 * it; the per-node/per-stripe hands are unused in this mode.
-			 * stripe carries the batch size for visibility.
+			 * pool (see NumaCoolingGetVictim).  Report a single row
+			 * describing it; the per-node/per-stripe hands are unused in this
+			 * mode. stripe carries the batch size for visibility.
 			 */
 			uint32		hand = pg_atomic_read_u32(&ctl->nextVictim[0]);
 
@@ -1694,11 +1701,12 @@ StrategyCtlShmemInit(void *arg)
 		ActivePoolData = StrategyControl;
 
 		/*
-		 * An extension algorithm chosen as the DEFAULT pool keeps its state in
-		 * the region reserved for it in StrategyCtlShmemRequest() (DefaultAlgoCtl),
-		 * not in StrategyControl.  Point ActivePoolData there and let the
-		 * algorithm initialize its own spinlocks/lists via shmem_init(), exactly
-		 * like a dynamic pool does.  first_buf_id is 0 for the default pool.
+		 * An extension algorithm chosen as the DEFAULT pool keeps its state
+		 * in the region reserved for it in StrategyCtlShmemRequest()
+		 * (DefaultAlgoCtl), not in StrategyControl.  Point ActivePoolData
+		 * there and let the algorithm initialize its own spinlocks/lists via
+		 * shmem_init(), exactly like a dynamic pool does.  first_buf_id is 0
+		 * for the default pool.
 		 */
 		if (routine != &clock_pool_routine && routine->shmem_size != NULL)
 		{
@@ -1725,8 +1733,9 @@ StrategyCtlShmemInit(void *arg)
 
 			/*
 			 * When buffer_pool_numa_cooling is on, sub-divide each node range
-			 * into per-core stripes so a buffer has a single sweeping owner per
-			 * pass (see NumaCoolingGetVictim).  Cap at BUFPOOL_MAX_STRIPES.
+			 * into per-core stripes so a buffer has a single sweeping owner
+			 * per pass (see NumaCoolingGetVictim).  Cap at
+			 * BUFPOOL_MAX_STRIPES.
 			 */
 			if (buffer_pool_numa_cooling)
 				nstripes = BufPoolNumaCoresPerNode(BUFPOOL_MAX_STRIPES);
@@ -1735,12 +1744,14 @@ StrategyCtlShmemInit(void *arg)
 			NumaClockCtl->nnodes = Min(nnodes, BUFPOOL_MAX_NUMA_NODES);
 			NumaClockCtl->nbuffers = NBuffers;
 			NumaClockCtl->nstripes = Max(1, Min(nstripes, BUFPOOL_MAX_STRIPES));
+
 			/*
-			 * Clock-sweep batch size (Jim Mlodgenski's design): a backend claims
-			 * this many consecutive buffer IDs from the global hand per fetch_add,
-			 * cutting the contended atomic traffic by ~this factor.  64 on
-			 * multi-node hardware where the atomic crosses the interconnect;
-			 * capped so a single claim cannot wrap the whole pool.
+			 * Clock-sweep batch size (Jim Mlodgenski's design): a backend
+			 * claims this many consecutive buffer IDs from the global hand
+			 * per fetch_add, cutting the contended atomic traffic by ~this
+			 * factor.  64 on multi-node hardware where the atomic crosses the
+			 * interconnect; capped so a single claim cannot wrap the whole
+			 * pool.
 			 */
 			NumaClockCtl->batchSize =
 				(NumaClockCtl->nnodes > 1)
@@ -1764,8 +1775,8 @@ StrategyCtlShmemInit(void *arg)
 			/*
 			 * Bind the default pool's buffer blocks and descriptors to nodes
 			 * in matching contiguous chunks (buffer + its descriptor on the
-			 * same node).  Best-effort placement; correctness is unaffected if
-			 * the kernel ignores it.
+			 * same node).  Best-effort placement; correctness is unaffected
+			 * if the kernel ignores it.
 			 */
 			BufPoolNumaDistribute((char *) BufferBlocks,
 								  (char *) BufferDescriptors,
@@ -1782,11 +1793,12 @@ StrategyCtlShmemInit(void *arg)
 		else
 		{
 			/*
-			 * Report the resolved default-pool algorithm.  With no config this
-			 * is always the built-in clock-sweep -- matching upstream/master
-			 * behavior (clock for every relation, including TOAST).  Emitting
-			 * it makes the default observable (and regression-testable): a
-			 * zero-config cluster must log "clock-sweep".
+			 * Report the resolved default-pool algorithm.  With no config
+			 * this is always the built-in clock-sweep -- matching
+			 * upstream/master behavior (clock for every relation, including
+			 * TOAST).  Emitting it makes the default observable (and
+			 * regression-testable): a zero-config cluster must log
+			 * "clock-sweep".
 			 */
 			elog(LOG, "default buffer pool using %s replacement algorithm",
 				 (ActivePoolRoutine == &clock_pool_routine)
@@ -2034,7 +2046,7 @@ typedef enum RecycleMode
 	RECYCLE_BULKREAD,			/* large sequential scans */
 	RECYCLE_BULKWRITE,			/* COPY IN, bulk inserts */
 	RECYCLE_VACUUM,				/* VACUUM operations */
-}			RecycleMode;
+} RecycleMode;
 
 /*
  * RecyclePoolState -- shared state for the RECYCLE pool.
@@ -2058,7 +2070,7 @@ typedef struct RecyclePoolState
 	pg_atomic_uint64 bulkread_allocs;
 	pg_atomic_uint64 bulkwrite_allocs;
 	pg_atomic_uint64 vacuum_allocs;
-}			RecyclePoolState;
+} RecyclePoolState;
 
 /* Forward declarations */
 static BufferDesc *RecycleGetVictim(void *strategy_data,
@@ -2077,7 +2089,7 @@ typedef struct RecycleTrickleIter
 {
 	int			pos;			/* current offset in pool */
 	int			remaining;		/* max candidates left */
-}			RecycleTrickleIter;
+} RecycleTrickleIter;
 
 static void *RecycleTrickleIterBegin(void *strategy_data, int max_candidates);
 static int	RecycleTrickleIterNext(void *strategy_data, void *iter);

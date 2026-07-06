@@ -370,8 +370,8 @@ ProcessBarrierBufferPoolDetach(void)
 	ResetCurrentBufferPool();
 
 	/*
-	 * Detach from every dynamic pool slot whose pool is no longer active.
-	 * The creating backend's own slot is cleared directly in
+	 * Detach from every dynamic pool slot whose pool is no longer active. The
+	 * creating backend's own slot is cleared directly in
 	 * DestroyDynamicBufferPool after the barrier completes, so skipping an
 	 * already-detached slot here is harmless.
 	 */
@@ -845,8 +845,8 @@ CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
 	 * of the address-space reservation, which maps at the same virtual
 	 * address in every backend (enables same-address pointers, AIO on pool
 	 * buffers, and online resize).  Fallback path (reservation disabled or
-	 * unsupported, or reservation exhausted): a per-pool DSM segment, attached
-	 * per backend via offsets.
+	 * unsupported, or reservation exhausted): a per-pool DSM segment,
+	 * attached per backend via offsets.
 	 */
 	pool = &BufferPoolDescs[slot];
 	MemSet(pool, 0, sizeof(BufferPoolDesc));
@@ -955,8 +955,9 @@ CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
 		 * exactly as buf_init.c does for the default pool.  These were
 		 * previously omitted; it was latent only because pool buffers forced
 		 * synchronous I/O (io_wref unused) -- once AIO is enabled for
-		 * same-address pools, an uninitialized io_wref / lock_waiters corrupts
-		 * the buffer content-lock waitlist (Assert failure in UnlockBuffer).
+		 * same-address pools, an uninitialized io_wref / lock_waiters
+		 * corrupts the buffer content-lock waitlist (Assert failure in
+		 * UnlockBuffer).
 		 */
 		pgaio_wref_clear(&buf->io_wref);
 		proclist_init(&buf->lock_waiters);
@@ -1031,6 +1032,7 @@ CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
 	}
 
 	namestrcpy(&pool->bp_name, name);
+
 	/*
 	 * Record the DSM handle only for the fallback DSM path.  Reservation-
 	 * backed pools already set bp_resv_* above and keep bp_dsm_handle =
@@ -1530,23 +1532,26 @@ TrickleWriterMain(Datum main_arg)
 		ResetLatch(MyLatch);
 
 		/*
-		 * Handle config reload, shutdown, AND ProcSignalBarriers.  The last is
-		 * essential: DROP/RESIZE of a pool emits PROCSIGNAL_BARRIER_BUFPOOL_DETACH
-		 * and waits for every process -- including this trickle writer -- to
-		 * absorb it before tearing down the pool's memory.  Absorbing it here
-		 * (rather than only the old ConfigReload/Shutdown checks) prevents the
-		 * destroyer's WaitForProcSignalBarrier from stalling on us.
+		 * Handle config reload, shutdown, AND ProcSignalBarriers.  The last
+		 * is essential: DROP/RESIZE of a pool emits
+		 * PROCSIGNAL_BARRIER_BUFPOOL_DETACH and waits for every process --
+		 * including this trickle writer -- to absorb it before tearing down
+		 * the pool's memory.  Absorbing it here (rather than only the old
+		 * ConfigReload/Shutdown checks) prevents the destroyer's
+		 * WaitForProcSignalBarrier from stalling on us.
 		 */
 		ProcessMainLoopInterrupts();
 
 		/*
-		 * Once the pool is marked inactive (by DestroyDynamicBufferPool, before
-		 * it emits the detach barrier), stop touching the pool's memory but do
-		 * NOT exit on our own: exiting here races the destroyer's
+		 * Once the pool is marked inactive (by DestroyDynamicBufferPool,
+		 * before it emits the detach barrier), stop touching the pool's
+		 * memory but do NOT exit on our own: exiting here races the
+		 * destroyer's
 		 * TerminateBackgroundWorker/WaitForBackgroundWorkerShutdown using a
 		 * reconstructed handle.  Idle until we receive SIGTERM from the
-		 * destroyer (ShutdownRequestPending, handled by ProcessMainLoopInterrupts
-		 * above), which is the single, well-defined exit path.
+		 * destroyer (ShutdownRequestPending, handled by
+		 * ProcessMainLoopInterrupts above), which is the single, well-defined
+		 * exit path.
 		 */
 		if (!pool->bp_active)
 		{
@@ -1706,7 +1711,8 @@ RegisterPoolTrickleWriter(BufferPoolDesc *pool, int slot)
 	snprintf(bgw.bgw_name, BGW_MAXLEN, "trickle writer for pool %s",
 			 NameStr(pool->bp_name));
 	snprintf(bgw.bgw_type, BGW_MAXLEN, "buffer pool trickle writer");
-	bgw.bgw_restart_time = BGW_NEVER_RESTART;	/* one-shot per pool; drop/resize re-registers */
+	bgw.bgw_restart_time = BGW_NEVER_RESTART;	/* one-shot per pool;
+												 * drop/resize re-registers */
 	bgw.bgw_notify_pid = MyProcPid;
 	bgw.bgw_main_arg = Int32GetDatum(slot);
 

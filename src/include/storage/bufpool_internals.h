@@ -190,11 +190,11 @@ typedef struct BufferPoolDesc
 	 * Reservation backing (same-address pools).  When bp_resv_backed is true,
 	 * the pool's memory is a committed sub-range of the address-space
 	 * reservation at offset bp_resv_offset (size bp_resv_size), mapped at the
-	 * same virtual address in every backend.  The bp_*_offset fields below are
-	 * then offsets within that sub-range and resolve to absolute addresses via
-	 * BufPoolAddrAt(bp_resv_offset) + bp_*_offset -- identical in all backends,
-	 * so no per-backend DSM attach is needed.  Mutually exclusive with a valid
-	 * bp_dsm_handle.
+	 * same virtual address in every backend.  The bp_*_offset fields below
+	 * are then offsets within that sub-range and resolve to absolute
+	 * addresses via BufPoolAddrAt(bp_resv_offset) + bp_*_offset -- identical
+	 * in all backends, so no per-backend DSM attach is needed.  Mutually
+	 * exclusive with a valid bp_dsm_handle.
 	 */
 	bool		bp_resv_backed;
 	Size		bp_resv_offset;
@@ -204,15 +204,16 @@ typedef struct BufferPoolDesc
 	/*
 	 * bp_resv_offset/bp_resv_size describe the pool's contiguous ADDRESS
 	 * window in the reservation; bp_resv_size is the requested size (the
-	 * window is rounded up to a whole number of chunks).  The window is backed
-	 * physically by N fixed-size chunks that may be DISJOINT in the backing
-	 * memfd -- the reservation allocator MAP_FIXEDs each chunk into the window
-	 * so the window is contiguous in address space even when the physical
-	 * chunks are scattered.  This makes pool creation immune to external
-	 * fragmentation (any N free chunks satisfy an N-chunk pool) while keeping
-	 * every pool pointer at base+offset -- the disjoint backing is invisible
-	 * on the hot path (measured: no TPS difference vs a contiguous pool).  The
-	 * chunk list lives in the allocator's window record, not here.
+	 * window is rounded up to a whole number of chunks).  The window is
+	 * backed physically by N fixed-size chunks that may be DISJOINT in the
+	 * backing memfd -- the reservation allocator MAP_FIXEDs each chunk into
+	 * the window so the window is contiguous in address space even when the
+	 * physical chunks are scattered.  This makes pool creation immune to
+	 * external fragmentation (any N free chunks satisfy an N-chunk pool)
+	 * while keeping every pool pointer at base+offset -- the disjoint backing
+	 * is invisible on the hot path (measured: no TPS difference vs a
+	 * contiguous pool).  The chunk list lives in the allocator's window
+	 * record, not here.
 	 */
 
 	/* Trickle writer background worker (stored inline for cross-backend use) */
@@ -425,7 +426,7 @@ typedef struct BufPoolNumaStat
 	int			stripe;			/* stripe within node (0 when not striped) */
 	int			nbuffers;		/* buffers in this node/stripe range */
 	uint32		clock_hand;		/* hand position within the pool [0,NBuffers) */
-	uint32		complete_passes; /* completed clock cycles (per-node) */
+	uint32		complete_passes;	/* completed clock cycles (per-node) */
 } BufPoolNumaStat;
 
 /* Max rows BufPoolNumaClockStats can emit (nodes * stripes). */
