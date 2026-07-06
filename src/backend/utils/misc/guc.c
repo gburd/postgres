@@ -1333,6 +1333,28 @@ guc_free(void *ptr)
 	}
 }
 
+/*
+ * guc_free_if_current_context --- free a GUC allocation only if it belongs to
+ * the CURRENT GUCMemoryContext; otherwise leave it alone.
+ *
+ * The threaded runtime gives each session its own GUCMemoryContext, but GUC
+ * records are shared metadata (guc_variables[]) whose string/extra allocations
+ * for PGC_POSTMASTER options (e.g. config_file, data_directory) were made once
+ * by the postmaster into the PROCESS GUC context, not any session's.  A
+ * session's backend-exit reset (ResetGUCStateAtBackendExit) walks ALL records,
+ * so it must not guc_free() a pointer owned by a different (process) GUC
+ * context -- guc_free()'s own assert (GetMemoryChunkContext == GUCMemoryContext)
+ * catches exactly that, and in a release build pfree() on the wrong context
+ * would corrupt it.  Reclaim only what this session's context owns; the process
+ * context's allocations are released when the process itself exits.
+ */
+static void
+guc_free_if_current_context(void *ptr)
+{
+	if (ptr != NULL && GetMemoryChunkContext(ptr) == GUCMemoryContext)
+		pfree(ptr);
+}
+
 
 /*
  * Detect whether strval is referenced anywhere in a GUC string item
@@ -1480,23 +1502,45 @@ reset_guc_record_at_backend_exit(struct config_generic *gconf)
 	RemoveGUCFromLists(gconf);
 	clear_guc_stack(gconf);
 	clear_last_reported(gconf);
-	guc_free(GUC_SOURCEFILE(gconf));
+	guc_free_if_current_context(GUC_SOURCEFILE(gconf));
 	GUC_SET_SOURCEFILE(gconf, NULL);
 
 	if (gconf->vartype == PGC_STRING)
 	{
+		/*
+		 * Free string values only if they belong to THIS session's GUC
+		 * context.  A PGC_POSTMASTER option's strings (e.g. config_file) were
+		 * allocated once by the postmaster into the process GUC context; a
+		 * session's exit reset must not free those (see
+		 * guc_free_if_current_context).  Clear the fields regardless so the
+		 * record is left in a clean state.  The !string_field_used guard mirrors
+		 * set_string_field(): a string shared by the variable and reset fields
+		 * must be freed once, not twice.
+		 */
 		if (GUCRecordVariableIsCurrentSessionOwned(gconf))
-			set_string_field(gconf, GUC_VARIABLE_STRING(gconf), NULL);
-		set_string_field(gconf, &GUC_RESET_STRING(gconf), NULL);
+		{
+			char	   *varval = *GUC_VARIABLE_STRING(gconf);
+
+			*GUC_VARIABLE_STRING(gconf) = NULL;
+			if (varval != NULL && !string_field_used(gconf, varval))
+				guc_free_if_current_context(varval);
+		}
+		{
+			char	   *resetval = GUC_RESET_STRING(gconf);
+
+			GUC_RESET_STRING(gconf) = NULL;
+			if (resetval != NULL && !string_field_used(gconf, resetval))
+				guc_free_if_current_context(resetval);
+		}
 	}
 
 	GUC_SET_EXTRA(gconf, NULL);
 	if (extra != NULL && !extra_field_used(gconf, extra))
-		guc_free(extra);
+		guc_free_if_current_context(extra);
 
 	GUC_SET_RESET_EXTRA(gconf, NULL);
 	if (reset_extra != NULL && !extra_field_used(gconf, reset_extra))
-		guc_free(reset_extra);
+		guc_free_if_current_context(reset_extra);
 
 	GUC_STATUS(gconf) = 0;
 	GUC_SOURCE(gconf) = PGC_S_DEFAULT;
