@@ -428,12 +428,59 @@ inside the postmaster process (8 threads, zero child processes -- verified via
    the SAME session then ran `SELECT 'recovered'` successfully -- the fiber
    survived the ERROR unwind and stayed usable.  Smoke step 4 = PASS.
 
-5. **cassert build.**  Fix the bootstrap `GUCMemoryContext == NULL` assertion so
-   the xtc carrier can run under `--enable-cassert` (better crash diagnostics).
+5. **cassert build.**  PARTIALLY CLOSED (2026-07-06).  Under `--enable-cassert`,
+   bootstrap-mode `initdb` aborts before reaching BKI.  All three aborts are
+   BASE-TREE bugs in the session-runtime state accessors, reproduced with the
+   xtc carrier DISABLED (`-Dxtc=disabled`) -- not xtc.  They sit one behind the
+   other in the bootstrap sequence.  Full write-up (backtraces, gdb evidence,
+   fixes) in `/tmp/pg-bootstrap-cassert-bugs.md`.
+     - FIXED #1: `guc.c:1612 Assert(GUCMemoryContext == NULL)` tripped on its
+       own read side effect -- the `GUCMemoryContext` macro is
+       `*PgCurrentGUCMemoryContextRef()`, whose accessor lazily CREATES the
+       early-fallback context when no session is installed, so the assert read
+       a value the read itself produced.  Fix: non-allocating
+       `PgCurrentGUCMemoryContextPeek()` used by the assert.
+     - FIXED #2: `backend_runtime_backend.c:601`
+       `PgBackendAdoptEarlyMemoryManagerState()` asserted the early aset.c
+       `context_freelists` were empty -- a false invariant.  Bootstrap's
+       `ProcessConfigFile` + `load_tzoffsets` create+delete
+       ALLOCSET_DEFAULT/SMALL contexts, and `AllocSetDelete` caches freelist
+       headers rather than freeing them, so the freelist is legitimately
+       non-empty (gdb: freelist[0].num_free==1 from "config file processing").
+       Fix: drop the emptiness asserts; the wholesale copy already transfers
+       the cache correctly.
+     - OPEN #3: `fd.c:1300 Assert(numExternalFDs > 0)` in `ReleaseExternalFD`
+       via `FreeWaitEventSet <- PgBackendResetClosedState <- PgBackendExit`.
+       A teardown over-release / state-straddle: `numExternalFDs` is a
+       per-backend-storage-state cell, and the exit/reset path releases the
+       WaitEventSet's epoll-fd reservation against a cell that reads 0.  Same
+       family as the StartupProcess teardown crash (item #2).  Needs
+       session-runtime teardown-lifecycle ordering work, left for the tree
+       owners; details in the report.
+   Bugs #1/#2 fixed in commit `fix two base-tree bootstrap cassert aborts ...`.
+   Non-cassert `initdb` still Succeeds and the xtc smoke stays 12/12 after both
+   fixes.  The xtc carrier itself still builds/runs only in the non-cassert
+   config until #3 (and any aborts behind it) are resolved.
 
-6. **Remove diagnostic writes.**  The rate-limited raw `write()` proofs in
-   `pg_xtc_carrier.c` (fiber-entered, wait_fd) should be dropped once the
-   lifecycle work lands.
+6. **Remove diagnostic writes.**  CLOSED (2026-07-06).  Dropped the two
+   proof-of-life raw writes named in this item -- "backend fiber entered" (one
+   per fiber) and "fiber wait_fd ..." (one per park, the highest-volume line).
+   Kept the structured, rate-limited lifecycle writes (supervisor DOWN
+   classifications, "spawned backend fiber", "backend fiber exiting", and the
+   guarded PG_XTC_INJECT_CRASH proof); the smoke greps the spawn/exit/worker
+   lines for its fiber accounting, and elog is still unsafe from the bare
+   pre-PG-init carrier fiber.  Smoke still 12/12.
+
+## libxtc notes
+
+No libxtc bug found this session -- v1.2.1 behaved correctly (cross-fiber
+wakeup, ERROR unwind, DOWN contract, containment + escalation all validated).
+One feature observation (the DOWN `reason` integer overloads signal-number and
+app-exit-status namespaces; a bare `xtc_exit_self(1)` would be indistinguishable
+from a signal-1 fault -- we only avoid it because PG exit codes arrive
+pre-shifted `<< 8`) and one docs note (fault-guard install is per-loop-thread
+and required for containment) are recorded in `/tmp/libxtc-notes.md` for the
+libxtc team.
 
 ## Commits on branch xtc-carrier
 
