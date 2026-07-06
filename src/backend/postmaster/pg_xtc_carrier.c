@@ -230,16 +230,26 @@ xtc_carrier_supervisor_proc(void *arg)
 		if (xtc_down_decode(msg, len, &down_pid, &down_reason) == XTC_OK)
 		{
 			/*
-			 * A monitored backend fiber exited.  libxtc v1.2.1 gives an
+			 * A monitored backend/worker fiber exited.  libxtc v1.2.1 gives an
 			 * unambiguous DOWN-reason contract:
 			 *   reason == 0                 -> clean exit (quiet).
 			 *   xtc_down_is_noproc(reason)  -> the monitor raced a clean exit
 			 *                                  (target already reaped); benign,
 			 *                                  the postmaster owns reaping.
-			 *   reason > 0                  -> a GENUINE crash: the positive
-			 *                                  signal number of a contained
-			 *                                  fault (e.g. 11 == SIGSEGV) or an
-			 *                                  xtc_exit_self(code>0).  Escalate.
+			 *   1 <= reason <= 255          -> a GENUINE crash: the positive
+			 *                                  signal number of an R1 contained
+			 *                                  fault (e.g. 11 == SIGSEGV).
+			 *                                  Escalate.
+			 *   reason >= 256               -> an application exit STATUS: the
+			 *                                  fiber left via xtc_exit_self with
+			 *                                  backend_thread_exitstatus(code) ==
+			 *                                  (code << 8) for a non-zero
+			 *                                  proc_exit(code) (e.g. a bg worker
+			 *                                  that exits 1 -> 256).  This is a
+			 *                                  NORMAL non-zero exit the postmaster
+			 *                                  reaps and applies its own restart
+			 *                                  policy to -- NOT a fault.  Do NOT
+			 *                                  escalate.
 			 * (Pre-1.2.1 the benign monitor-race carried -11 == XTC_E_NOTFOUND,
 			 * which collided with -SIGSEGV and made us misread it as a crash.
 			 * The distinct XTC_DOWN_NOPROC removes that ambiguity, so the old
@@ -290,9 +300,9 @@ xtc_carrier_supervisor_proc(void *arg)
 					}
 				}
 			}
-			else
+			else if (down_reason >= 1 && down_reason <= 255)
 			{
-				/* reason > 0: a genuine crash (contained-fault signal number). */
+				/* 1..255: an R1 contained-fault signal number -> genuine crash. */
 				static __thread int nabn = 0;
 
 				if (nabn < 32)
@@ -321,6 +331,34 @@ xtc_carrier_supervisor_proc(void *arg)
 				 * under multithreaded mode).
 				 */
 				atomic_store(&g_xtc_genuine_crash, 1);
+			}
+			else
+			{
+				/*
+				 * reason >= 256: a normal application exit STATUS (non-zero
+				 * proc_exit, shifted << 8).  The postmaster reaps it and applies
+				 * its own worker restart policy; do NOT escalate the runtime.
+				 */
+				static __thread int nappx = 0;
+
+				if (nappx < 8)
+				{
+					char		buf[176];
+					int			n;
+
+					nappx++;
+					n = snprintf(buf, sizeof(buf),
+								 "xtc: supervisor observed non-zero exit DOWN "
+								 "pid=(loop=%u,local=%u,gen=%u) exit_code=%d (postmaster reaps)\n",
+								 down_pid.loop_id, down_pid.local_id,
+								 down_pid.gen, down_reason >> 8);
+					if (n > 0)
+					{
+						if (n > (int) sizeof(buf))
+							n = (int) sizeof(buf);
+						(void) write(STDERR_FILENO, buf, (size_t) n);
+					}
+				}
 			}
 		}
 		else if (len == sizeof(xtc_sup_spawn_msg) &&
