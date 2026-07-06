@@ -441,6 +441,7 @@ void
 gist_xlog_cleanup(void)
 {
 	MemoryContextDelete(opCtx);
+	opCtx = NULL;
 }
 
 /*
