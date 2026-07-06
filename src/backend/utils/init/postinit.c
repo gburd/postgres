@@ -722,11 +722,25 @@ BaseInit(void)
 	InitTemporaryFileAccess();
 
 	/*
-	 * Initialize local buffers for WAL record construction in process mode.
-	 * Threaded logical sessions initialize this scratch lazily on first WAL
-	 * insert so read-only idle sessions do not retain it.
+	 * Initialize local buffers for WAL record construction.
+	 *
+	 * In process mode we always do this eagerly.  In the threaded runtime the
+	 * scratch is deferred for regular client backends (B_BACKEND) so that
+	 * read-only idle pooled sessions do not retain it -- a writing client
+	 * backend primes it lazily via its first XLOG_XACT_ASSIGNMENT record, which
+	 * is emitted outside any critical section.
+	 *
+	 * Other threaded backends (auxiliary and maintenance workers such as the
+	 * checkpointer, bgwriter, walwriter, autovacuum, and background workers)
+	 * cannot rely on that: their first WAL insert can happen inside a critical
+	 * section (for example the checkpointer's shutdown checkpoint, or an
+	 * autovacuum worker's page-prune record).  Lazily creating the
+	 * "WAL record construction" memory context there would allocate inside a
+	 * critical section, which is forbidden (Assert(CritSectionCount == 0) in
+	 * MemoryContextCreate).  So initialize eagerly for them, matching process
+	 * mode.
 	 */
-	if (!PgRuntimeIsThreadBacked(CurrentPgRuntime))
+	if (!PgRuntimeIsThreadBacked(CurrentPgRuntime) || MyBackendType != B_BACKEND)
 		InitXLogInsert();
 
 	/* Initialize lock manager's local structs */

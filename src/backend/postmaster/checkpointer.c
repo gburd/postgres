@@ -254,17 +254,17 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 	last_checkpoint_time = last_xlog_switch_time = (pg_time_t) time(NULL);
 
 	/*
-	 * Write out stats after shutdown. This needs to be called by exactly one
-	 * process during a normal shutdown, and since checkpointer is shut down
-	 * very late...
-	 *
-	 * While e.g. walsenders are active after the shutdown checkpoint has been
-	 * written (and thus could produce more stats), checkpointer stays around
-	 * after the shutdown checkpoint has been written. postmaster will only
-	 * signal checkpointer to exit after all processes that could emit stats
-	 * have been shut down.
+	 * The final stats write (pgstat_before_server_shutdown) is registered
+	 * later, only once we know this is a real server shutdown -- see the
+	 * CheckpointerShutdownXLOGPending block below.  In the threaded runtime a
+	 * process-mode checkpointer started to help with recovery is handed off to
+	 * a thread carrier once normal operation begins: the postmaster tells it
+	 * to exit (SIGUSR2, without a preceding shutdown-checkpoint request) and
+	 * relaunches it as a thread.  That clean proc_exit(0) must NOT flip the
+	 * shared pgstat is_shutdown flag, because the server is still running and
+	 * other stat-emitters (aux workers, backends) would then trip
+	 * Assert(!pgStatLocal.shmem->is_shutdown) when they report stats.
 	 */
-	before_shmem_exit(pgstat_before_server_shutdown, 0);
 
 	/*
 	 * Create a memory context that we will do all our work in.  We do this so
@@ -628,6 +628,17 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 
 	if (CheckpointerShutdownXLOGPending)
 	{
+		/*
+		 * A shutdown checkpoint was requested, so this is a real server
+		 * shutdown (not a process-to-thread handoff).  Register the final
+		 * stats write now: it needs to be done by exactly one process during a
+		 * normal shutdown, and since checkpointer is shut down very late (the
+		 * postmaster only signals it to exit after all other stat-emitters are
+		 * gone), the checkpointer is the right one.  It runs at proc_exit(0)
+		 * below, after ShutdownXLOG().
+		 */
+		before_shmem_exit(pgstat_before_server_shutdown, 0);
+
 		/*
 		 * Close down the database.
 		 *

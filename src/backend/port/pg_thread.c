@@ -18,6 +18,7 @@
 #include <process.h>
 #endif
 
+#include "libpq/pqsignal.h"
 #include "port/pg_thread.h"
 
 #define PG_THREAD_NAME_MAX 64
@@ -77,6 +78,7 @@ pg_thread_create(PgThread *thread, const char *name,
 	{
 		pthread_attr_t attr;
 		int			rc;
+		sigset_t	save_mask;
 
 		rc = pthread_attr_init(&attr);
 		if (rc != 0)
@@ -86,9 +88,27 @@ pg_thread_create(PgThread *thread, const char *name,
 		}
 
 		rc = pthread_attr_setstacksize(&attr, PG_THREAD_STACK_SIZE);
+
+		/*
+		 * A new thread inherits the creating thread's signal mask.  The
+		 * postmaster runs ServerLoop with signals unblocked, so without care a
+		 * process-directed signal (e.g. SIGCHLD) could be delivered to the new
+		 * thread in the window before it has run its own signal setup and set
+		 * MyProcPid -- which trips Assert(MyProcPid) in wrapper_handler under
+		 * cassert (and would otherwise be re-raised to reach the intended
+		 * handler).  Block all signals across pthread_create() so the child
+		 * starts fully blocked, then restore our own mask.  This mirrors
+		 * fork_process(), which blocks signals around fork() for the same
+		 * reason; the child unblocks once its per-backend signal handling is
+		 * installed.
+		 */
 		if (rc == 0)
+		{
+			sigprocmask(SIG_SETMASK, &BlockSig, &save_mask);
 			rc = pthread_create(&thread->thread, &attr, pg_thread_start,
 								start_data);
+			sigprocmask(SIG_SETMASK, &save_mask, NULL);
+		}
 		(void) pthread_attr_destroy(&attr);
 		if (rc != 0)
 		{
