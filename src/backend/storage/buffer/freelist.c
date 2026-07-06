@@ -622,19 +622,25 @@ NumaCoolingStripeRange(int node_start, int node_end, int nstripes, int stripe,
 }
 
 /*
- * NumaCoolingGetVictim -- per-core striped clock sweep with blind-atomic
- * cooling (buffer_pool_numa_cooling).
+ * NumaCoolingGetVictim -- per-core GLOBALLY-striped clock sweep with
+ * blind-atomic cooling (buffer_pool_numa_cooling).
  *
- * Extends the per-node partitioned sweep: each node's range is split into
- * per-core stripes, and a backend sweeps ITS stripe with ITS own hand.  Since
- * a buffer then has exactly one sweeping owner per pass, the cooling
- * decrement is a blind fetch_sub (ClockTryAcquireVictimCooling) rather than a
- * CAS loop -- the payoff that makes the partitioned sweep cheaper than the
- * global CAS-per-tick sweep on multi-socket hardware.
+ * Each core owns a disjoint stripe that tiles the ENTIRE pool [0, NBuffers),
+ * swept with its own hand.  A buffer thus has exactly one sweeping owner per
+ * pass, so the cooling decrement is a blind fetch_sub
+ * (ClockTryAcquireVictimCooling) rather than a CAS loop -- the payoff that
+ * makes this cheaper than the global CAS-per-tick sweep on multi-socket
+ * hardware.
  *
- * When the home stripe cannot yield a victim, we fall back to the plain
- * per-node sweep over the whole pool (ClockTryAcquireVictim, CAS decrement),
- * which keeps whole-pool reachability without relying on stripe ownership.
+ * Stripes tile the whole pool, NOT each node's slice (unlike numa_clock):
+ * confining a backend's loads/evictions to its node's 1/nnodes of
+ * shared_buffers shrinks the effective cache to that slice and craters the hit
+ * ratio for a uniform working set (measured ~8x collapse).  Physical NUMA
+ * locality comes from interleaved placement (BufPoolNumaDistribute); the
+ * logical eviction is NOT node-confined.
+ *
+ * When the core's stripe cannot yield a victim, we fall back to a shared
+ * whole-pool CAS sweep (ClockTryAcquireVictim), which guarantees reachability.
  */
 static BufferDesc *
 NumaCoolingGetVictim(void *strategy_data,
@@ -647,9 +653,7 @@ NumaCoolingGetVictim(void *strategy_data,
 	int			nstripes = ctl->nstripes;
 	int			home;
 	int			stripe;
-	int			node_start,
-				node_end,
-				stripe_start,
+	int			stripe_start,
 				stripe_end,
 				stripe_range;
 
@@ -720,18 +724,37 @@ NumaCoolingGetVictim(void *strategy_data,
 	pg_atomic_fetch_add_u32(&ctl->numBufferAllocs, 1);
 
 	/*
-	 * Fast path: sweep the caller's home stripe with its own hand and the
+	 * Fast path: sweep the caller's GLOBAL stripe with its own hand and the
 	 * blind-atomic cooling acquire.  Single owner per buffer this pass.
+	 *
+	 * Stripes tile the ENTIRE pool [0, NBuffers), NOT each node's slice.  A
+	 * home-node-confined sweep (as the numa_clock routine does) would let a
+	 * backend load/evict only within its node's 1/nnodes of shared_buffers,
+	 * shrinking the effective cache to that slice -- catastrophic for a
+	 * uniform working set (measured: hit ratio collapsed ~8x vs the global
+	 * clock).  Global striping keeps the whole pool usable by every backend
+	 * (no cache fragmentation) while still giving each core a disjoint slice
+	 * for atomic de-contention and single-owner blind cooling.  Physical
+	 * NUMA locality still comes from BufPoolNumaDistribute's interleaved
+	 * placement; we simply do not confine the LOGICAL eviction to a node.
 	 */
-	BufPoolNumaBufferRange(home, ctl->nbuffers, &node_start, &node_end);
-	NumaCoolingStripeRange(node_start, node_end, nstripes, stripe,
-						   &stripe_start, &stripe_end);
-	stripe_range = stripe_end - stripe_start;
-	if (stripe_range > 0)
 	{
-		int			trycounter = stripe_range;
-		pg_atomic_uint32 *hand = &ctl->stripeHand[home][stripe].hand;
+		int			gstripes = nnodes * nstripes;
+		int			gstripe = home * nstripes + stripe;
+		int			trycounter;
+		pg_atomic_uint32 *hand;
 
+		if (gstripes < 1)
+			gstripes = 1;
+		if (gstripe >= gstripes)
+			gstripe = gstripe % gstripes;
+
+		NumaCoolingStripeRange(0, ctl->nbuffers, gstripes, gstripe,
+							   &stripe_start, &stripe_end);
+		stripe_range = stripe_end - stripe_start;
+		hand = &ctl->stripeHand[home][stripe].hand;
+
+		trycounter = stripe_range;
 		while (trycounter > 0)
 		{
 			uint32		raw = pg_atomic_fetch_add_u32(hand, 1);
@@ -748,28 +771,19 @@ NumaCoolingGetVictim(void *strategy_data,
 	}
 
 	/*
-	 * Home stripe exhausted (all buffers hot or pinned): steal.  Sweep every
-	 * node's whole partition with the shared per-node hand and the CAS
-	 * acquire -- ownership is not exclusive here, so we cannot use the blind
-	 * sub.  This is the rare fallback; it keeps the whole pool reachable.
+	 * Home stripe exhausted (all buffers hot or pinned): steal across the
+	 * WHOLE pool with the shared node-0 hand and the CAS acquire -- ownership
+	 * is not exclusive here, so we cannot use the blind sub.  This is the rare
+	 * fallback; it guarantees whole-pool reachability.
 	 */
-	for (int attempt = 0; attempt < nnodes; attempt++)
 	{
-		int			node = (home + attempt) % nnodes;
-		int			start,
-					end,
-					range;
-		int			trycounter;
+		int			start = 0;
+		int			range = ctl->nbuffers;
+		int			trycounter = range;
 
-		BufPoolNumaBufferRange(node, ctl->nbuffers, &start, &end);
-		range = end - start;
-		if (range <= 0)
-			continue;
-
-		trycounter = range;
 		while (trycounter > 0)
 		{
-			uint32		victim_raw = pg_atomic_fetch_add_u32(&ctl->nextVictim[node], 1);
+			uint32		victim_raw = pg_atomic_fetch_add_u32(&ctl->nextVictim[0], 1);
 			int			victim_id = start + (int) (victim_raw % (uint32) range);
 			int			local_try = range;
 			BufferDesc *buf;
@@ -778,7 +792,7 @@ NumaCoolingGetVictim(void *strategy_data,
 				(victim_raw % (uint32) range) == 0)
 			{
 				SpinLockAcquire(&ctl->lock);
-				ctl->completePasses[node]++;
+				ctl->completePasses[0]++;
 				SpinLockRelease(&ctl->lock);
 			}
 
@@ -1680,8 +1694,9 @@ StrategyCtlShmemInit(void *arg)
 								  NBuffers);
 
 			if (NumaClockCtl->nstripes > 1)
-				elog(LOG, "default buffer pool using NUMA striped clock sweep with blind-atomic cooling across %d nodes, %d stripes/node",
-					 NumaClockCtl->nnodes, NumaClockCtl->nstripes);
+				elog(LOG, "default buffer pool using globally-striped clock sweep with blind-atomic cooling: %d nodes, %d stripes/node (%d global stripes)",
+					 NumaClockCtl->nnodes, NumaClockCtl->nstripes,
+					 NumaClockCtl->nnodes * NumaClockCtl->nstripes);
 			else
 				elog(LOG, "default buffer pool using NUMA-partitioned clock sweep across %d nodes",
 					 NumaClockCtl->nnodes);
