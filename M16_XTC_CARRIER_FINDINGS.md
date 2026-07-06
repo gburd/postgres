@@ -620,11 +620,24 @@ inside the postmaster process (8 threads, zero child processes -- verified via
        underflowed.  Fix: preserve `num_external_fds` across
        `PgBackendResetStorageClosedState` so the explicit releases drive it to 0
        (commit `894fee47e99`).
-   Non-cassert `initdb` Succeeds and the xtc smoke stays 11/11 after all three.
-   The xtc carrier can now be built/run under `--enable-cassert`.  (Separate,
-   still open: the StartupProcess proc_exit -> PgBackendResetXLogClosedState ->
-   MemoryContextDelete teardown SIGSEGV, same session-runtime teardown family,
-   item #2.)
+     - FIXED #4: `fd.c:1300 Assert(numExternalFDs > 0)` again, but in a FORKED
+       CHILD at startup via `FreeWaitEventSetAfterFork <- ClosePostmasterPorts
+       <- postmaster_child_launch` (exposed once #3 let initdb finish and a full
+       cluster could start).  A forked child inherits the postmaster's open
+       external FDs (death-watch pipe, pm_wait_set epoll) and releases them in
+       ClosePostmasterPorts, but `fork_process()` ->
+       `PgRuntimeResetAfterFork()` -> `PgBackendResetEarlyFallbackAfterFork()`
+       zeroed the inherited `num_external_fds` (ledger: same cell, val 4->0
+       across the fork), so those first releases underflowed.  Upstream's
+       process-global counter survived fork; the per-state cell does not.  Fix:
+       preserve `num_external_fds` across the fork fallback reset (commit
+       `3bcee4eff42`).
+   Non-cassert `initdb` Succeeds and the xtc smoke stays 11/11 after all four.
+   The xtc carrier can now be built/run under `--enable-cassert`, and a full
+   cassert cluster (process mode) does initdb + start + query + fast stop with
+   ZERO TRAP/PANIC.  (Separate, still open: the StartupProcess proc_exit ->
+   PgBackendResetXLogClosedState -> MemoryContextDelete teardown SIGSEGV, same
+   session-runtime teardown family, item #2.)
 
 6. **Remove diagnostic writes.**  CLOSED (2026-07-06).  Dropped the two
    proof-of-life raw writes named in this item -- "backend fiber entered" (one
