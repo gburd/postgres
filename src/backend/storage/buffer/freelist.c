@@ -890,6 +890,128 @@ NumaCoolingSyncStart(void *strategy_data, uint32 *complete_passes,
 }
 
 /*
+ * BufPoolNumaClockStatsMax -- upper bound on rows BufPoolNumaClockStats emits.
+ *
+ * One row per (node, stripe).  When the NUMA/cooling sweep is inactive the
+ * function still emits exactly one synthetic row, so this is at least 1.
+ */
+int
+BufPoolNumaClockStatsMax(void)
+{
+	bool		numa = (ActivePoolData == NumaClockCtl && NumaClockCtl != NULL &&
+						NumaClockCtl->nnodes > 0);
+
+	if (!numa)
+		return 1;
+	return NumaClockCtl->nnodes * Max(1, NumaClockCtl->nstripes);
+}
+
+/*
+ * BufPoolNumaClockStats -- fill out[] with per-(node,stripe) sweep state.
+ *
+ * Read-only and cheap: a handful of atomic reads per row plus one spinlock
+ * acquire to snapshot completePasses[].  Returns the number of rows written
+ * (<= maxrows).
+ *
+ * Three shapes, all reported through the same row layout:
+ *   - NUMA off (default): one row, node 0 / stripe 0, describing the single
+ *     global clock hand in StrategyControl.
+ *   - NUMA on, cooling off: one row per node, each with that node's hand and
+ *     completePasses; stripe is always 0.
+ *   - NUMA on, cooling on: one row per (node, stripe), each stripe reporting
+ *     its own hand; completePasses is the node's (stripe hands share it).
+ */
+int
+BufPoolNumaClockStats(BufPoolNumaStat *out, int maxrows)
+{
+	int			n = 0;
+	bool		numa = (ActivePoolData == NumaClockCtl && NumaClockCtl != NULL &&
+						NumaClockCtl->nnodes > 0);
+
+	if (maxrows <= 0)
+		return 0;
+
+	if (!numa)
+	{
+		/* Plain global clock sweep: one synthetic node-0 row. */
+		uint32		hand;
+
+		SpinLockAcquire(&StrategyControl->buffer_strategy_lock);
+		hand = pg_atomic_read_u32(&StrategyControl->nextVictimBuffer);
+		out[0].complete_passes = StrategyControl->completePasses +
+			(NBuffers > 0 ? hand / (uint32) NBuffers : 0);
+		SpinLockRelease(&StrategyControl->buffer_strategy_lock);
+
+		out[0].node = 0;
+		out[0].stripe = 0;
+		out[0].nbuffers = NBuffers;
+		out[0].clock_hand = (NBuffers > 0) ? (hand % (uint32) NBuffers) : 0;
+		return 1;
+	}
+	else
+	{
+		NumaClockControl *ctl = NumaClockCtl;
+		int			nstripes = Max(1, ctl->nstripes);
+		bool		cooling = (ctl->nstripes > 1);
+		int			gstripes = ctl->nnodes * nstripes;
+		uint32		passes[BUFPOOL_MAX_NUMA_NODES];
+
+		if (gstripes < 1)
+			gstripes = 1;
+
+		/* Snapshot the spinlock-protected completePasses[] once. */
+		SpinLockAcquire(&ctl->lock);
+		for (int node = 0; node < ctl->nnodes; node++)
+			passes[node] = ctl->completePasses[node];
+		SpinLockRelease(&ctl->lock);
+
+		for (int node = 0; node < ctl->nnodes && n < maxrows; node++)
+		{
+			for (int s = 0; s < nstripes && n < maxrows; s++)
+			{
+				int			start,
+							end,
+							range;
+				uint32		hand;
+
+				if (cooling)
+				{
+					/*
+					 * Cooling mode: stripes tile the WHOLE pool globally
+					 * (see NumaCoolingGetVictim), so a (node,stripe) hand
+					 * owns global stripe (node*nstripes + s) of [0,nbuffers),
+					 * not a slice of the node's partition.
+					 */
+					int			gstripe = node * nstripes + s;
+
+					NumaCoolingStripeRange(0, ctl->nbuffers, gstripes,
+										   gstripe, &start, &end);
+					hand = pg_atomic_read_u32(&ctl->stripeHand[node][s].hand);
+				}
+				else
+				{
+					/* Node mode: one hand confined to the node's range. */
+					BufPoolNumaBufferRange(node, ctl->nbuffers, &start, &end);
+					hand = pg_atomic_read_u32(&ctl->nextVictim[node]);
+				}
+
+				range = (end > start) ? (end - start) : 0;
+				out[n].node = node;
+				out[n].stripe = s;
+				out[n].nbuffers = range;
+				/* Hand is relative to its stripe/node range; report pool-absolute. */
+				out[n].clock_hand = (range > 0)
+					? (uint32) (start + (int) (hand % (uint32) range))
+					: (uint32) start;
+				out[n].complete_passes = passes[node];
+				n++;
+			}
+		}
+		return n;
+	}
+}
+
+/*
  * The NUMA-partitioned clock-sweep routine for the DEFAULT pool.
  *
  * Identical to clock_pool_routine except for get_victim; reuses the plain

@@ -1271,6 +1271,15 @@ CREATE VIEW pg_stat_bufferpool AS
         s.evictions
     FROM pg_stat_get_bufferpool() s;
 
+CREATE VIEW pg_stat_bufferpool_numa AS
+    SELECT
+        s.node,
+        s.stripe,
+        s.nbuffers,
+        s.clock_hand,
+        s.complete_passes
+    FROM pg_stat_get_bufferpool_numa() s;
+
 
 CREATE VIEW pg_stat_io AS
 SELECT
