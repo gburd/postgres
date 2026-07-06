@@ -92,7 +92,8 @@
  * Chunk granularity is a tradeoff: smaller chunks pack tighter (less internal
  * fragmentation) but need more map operations and more free-list slots.
  */
-#define BUFPOOL_CHUNK_SIZE		((Size) 2 * 1024 * 1024)	/* 2MB, == common hugepage */
+#define BUFPOOL_CHUNK_SIZE		((Size) 2 * 1024 * 1024)	/* 2MB, == common
+															 * hugepage */
 #define BUFPOOL_MAX_CHUNKS		4096	/* caps total reservable at CHUNK*this */
 
 /* GUC: maximum total memory reservable across all buffer pools (in blocks) */
@@ -121,16 +122,17 @@ static Size resv_size = 0;
  * (BUFPOOL_MAX_POOL_CHUNKS * 2MB) is already enormous; bounding it keeps the
  * per-window chunk list a fixed, small array.
  */
-#define BUFPOOL_MAX_POOL_CHUNKS	512		/* up to 1GB per pool at 2MB chunks */
+#define BUFPOOL_MAX_POOL_CHUNKS	512 /* up to 1GB per pool at 2MB chunks */
 
 typedef struct BufPoolWindow
 {
 	Size		win_offset;		/* offset of the contiguous window in the resv */
 	Size		win_size;		/* window size (nchunks * BUFPOOL_CHUNK_SIZE) */
 	int			nchunks;		/* number of backing chunks */
-	int			chunks[BUFPOOL_MAX_POOL_CHUNKS];	/* backing chunk indices, in order */
+	int			chunks[BUFPOOL_MAX_POOL_CHUNKS];	/* backing chunk indices,
+													 * in order */
 	bool		in_use;
-} BufPoolWindow;
+}			BufPoolWindow;
 
 typedef struct BufPoolReserveControl
 {
@@ -141,9 +143,9 @@ typedef struct BufPoolReserveControl
 	int			nwindows;
 	BufPoolWindow windows[MAX_BUFFER_POOLS];
 	bool		chunk_used[BUFPOOL_MAX_CHUNKS];
-} BufPoolReserveControl;
+}			BufPoolReserveControl;
 
-static BufPoolReserveControl *ReserveCtl = NULL;
+static BufPoolReserveControl * ReserveCtl = NULL;
 
 /*
  * Pointer filled by the shmem request (BufferPoolShmemRequest) with the
@@ -258,9 +260,9 @@ BufPoolReserveInit(void)
 
 		/*
 		 * Physical backing is handed out in fixed BUFPOOL_CHUNK_SIZE chunks
-		 * from a free list, so a pool can be backed by disjoint chunks (immune
-		 * to external fragmentation).  Address WINDOWS are still contiguous, so
-		 * pool pointers stay base+offset.
+		 * from a free list, so a pool can be backed by disjoint chunks
+		 * (immune to external fragmentation).  Address WINDOWS are still
+		 * contiguous, so pool pointers stay base+offset.
 		 */
 		ReserveCtl->nchunks_total = (int) Min((Size) BUFPOOL_MAX_CHUNKS,
 											  want / BUFPOOL_CHUNK_SIZE);
@@ -343,7 +345,8 @@ BufPoolReserveAlloc(Size size)
 		if (free_chunks < need_chunks)
 		{
 			SpinLockRelease(&ReserveCtl->mutex);
-			return (Size) -1;	/* out of physical memory (but not address space) */
+			return (Size) -1;	/* out of physical memory (but not address
+								 * space) */
 		}
 	}
 
@@ -457,7 +460,7 @@ BufPoolAddrAt(Size offset)
  */
 #ifdef BUFPOOL_RESERVE_SUPPORTED
 static bool
-bufpool_map_window(BufPoolWindow *w, int prot, int extra_flags, bool huge)
+bufpool_map_window(BufPoolWindow * w, int prot, int extra_flags, bool huge)
 {
 	char	   *win_base = resv_base + w->win_offset;
 

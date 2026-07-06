@@ -125,7 +125,7 @@ typedef struct ClirSlot
 {
 	pg_atomic_uint32 ref_state;
 	int			buf_id;			/* -1 if state == FREE */
-} ClirSlot;
+}			ClirSlot;
 
 /*
  * Side table: per-buffer mapping buf_id -> (which clock, which slot).
@@ -136,7 +136,7 @@ typedef struct ClirBufRef
 {
 	uint16		clock;			/* CLIR_CLK_LIR / HIR / NONE */
 	uint16		pos;			/* slot index within that clock */
-} ClirBufRef;
+}			ClirBufRef;
 
 /*
  * Ghost entry: bounded FIFO of recently-evicted page tags, with a
@@ -148,7 +148,7 @@ typedef struct ClirGhost
 	BufferTag	tag;
 	int32		hash_next;		/* next entry in same hash bucket, or -1 */
 	bool		valid;			/* true if this slot is in the FIFO */
-} ClirGhost;
+}			ClirGhost;
 
 typedef struct ClirControl
 {
@@ -201,7 +201,7 @@ typedef struct ClirControl
 	 * per_buffer[nbuffers] ClirGhost  ghost[ghost_size] int32
 	 * ghost_hash[ghost_hash_size]
 	 */
-} ClirControl;
+}			ClirControl;
 
 #define CLIR_LIR_OFFSET(ctl) \
 	(MAXALIGN(sizeof(ClirControl)))
@@ -229,7 +229,7 @@ typedef struct ClirBackendState
 	void	   *strategy_data;
 	uint64		local_stats[CLIR_NUM_STATS];
 	int			vacuum_hint;
-} ClirBackendState;
+}			ClirBackendState;
 
 static ClirBackendState clir_backend_states[MAX_CLIR_POOLS];
 static int	clir_num_states = 0;
@@ -241,7 +241,7 @@ static int	clir_num_states = 0;
  */
 
 static ClirBackendState *
-clir_get_backend_state(ClirControl *ctl)
+clir_get_backend_state(ClirControl * ctl)
 {
 	for (int i = 0; i < clir_num_states; i++)
 		if (clir_backend_states[i].strategy_data == ctl)
@@ -303,7 +303,7 @@ clir_compute_hir_size(int nbuffers)
  */
 
 static int
-clir_ghost_lookup_locked(ClirControl *ctl, BufferTag *tag)
+clir_ghost_lookup_locked(ClirControl * ctl, BufferTag *tag)
 {
 	ClirGhost  *ghost = CLIR_GHOST(ctl);
 	int32	   *hash = CLIR_GHOST_HASH(ctl);
@@ -320,7 +320,7 @@ clir_ghost_lookup_locked(ClirControl *ctl, BufferTag *tag)
 }
 
 static void
-clir_ghost_remove_locked(ClirControl *ctl, int idx)
+clir_ghost_remove_locked(ClirControl * ctl, int idx)
 {
 	ClirGhost  *ghost = CLIR_GHOST(ctl);
 	int32	   *hash = CLIR_GHOST_HASH(ctl);
@@ -346,7 +346,7 @@ clir_ghost_remove_locked(ClirControl *ctl, int idx)
 }
 
 static void
-clir_ghost_insert_locked(ClirControl *ctl, BufferTag *tag)
+clir_ghost_insert_locked(ClirControl * ctl, BufferTag *tag)
 {
 	ClirGhost  *ghost = CLIR_GHOST(ctl);
 	int32	   *hash = CLIR_GHOST_HASH(ctl);
@@ -472,7 +472,7 @@ ClirOnEvict(void *strategy_data, int buf_id, BufferTag *old_tag)
  * victim into HIR to make room.  Caller holds adapt_lock.
  */
 static int
-clir_alloc_lir_slot_locked(ClirControl *ctl)
+clir_alloc_lir_slot_locked(ClirControl * ctl)
 {
 	ClirSlot   *lir = CLIR_LIR(ctl);
 	int			tries;
@@ -519,7 +519,7 @@ clir_alloc_lir_slot_locked(ClirControl *ctl)
  * ref bit clear via clock walk.  Caller holds adapt_lock.
  */
 static int
-clir_alloc_hir_slot_locked(ClirControl *ctl)
+clir_alloc_hir_slot_locked(ClirControl * ctl)
 {
 	ClirSlot   *hir = CLIR_HIR(ctl);
 
@@ -872,7 +872,7 @@ typedef struct ClirTrickleIter
 {
 	int			pos;
 	int			remaining;
-} ClirTrickleIter;
+}			ClirTrickleIter;
 
 static void *
 ClirTrickleIterBegin(void *strategy_data, int max_candidates)

@@ -57,7 +57,7 @@
 #include "utils/builtins.h"
 #include "utils/tuplestore.h"
 
-PG_MODULE_MAGIC_EXT(.name = "pg_bp_lirs",.version = PG_VERSION);
+PG_MODULE_MAGIC_EXT(.name = "pg_bp_lirs", .version = PG_VERSION);
 
 void		_PG_init(void);
 
@@ -587,8 +587,8 @@ lirs_alloc_cdb(LirsControl *ctl, LirsCDB *cdb_arr)
 	}
 
 	/*
-	 * Release the LWLock before ereport.  LWLockReleaseAll at abort would also
-	 * release it, but doing so here keeps the hold time explicit.
+	 * Release the LWLock before ereport.  LWLockReleaseAll at abort would
+	 * also release it, but doing so here keeps the hold time explicit.
 	 */
 	LWLockRelease(&ctl->lirs_lock);
 	ereport(ERROR,
@@ -1025,8 +1025,8 @@ LirsGetVictim(void *strategy_data, BufferAccessStrategy strategy pg_attribute_un
 		 * looking for an unpinned buffer.
 		 *
 		 * Note: we must re-read q_next from the CDB at the end of each
-		 * iteration rather than caching it up front, because the pool lock may
-		 * be released and reacquired while waiting for a locked buffer
+		 * iteration rather than caching it up front, because the pool lock
+		 * may be released and reacquired while waiting for a locked buffer
 		 * header, and Q list pointers can change in that window.
 		 */
 		LWLockAcquire(&ctl->lirs_lock, LW_EXCLUSIVE);

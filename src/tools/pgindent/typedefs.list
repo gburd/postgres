@@ -356,6 +356,7 @@ BtreeLevel
 Bucket
 BufFile
 Buffer
+BufPoolNumaStat
 BufferAccessStrategy
 BufferAccessStrategyType
 BufferCacheOsPagesContext
@@ -367,6 +368,7 @@ BufferLockMode
 BufferLookupEnt
 BufferManagerRelation
 BufferPoolDesc
+BufferPoolKind
 BufferPoolRoutine
 BufferStrategyControl
 BufferTag

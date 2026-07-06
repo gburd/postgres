@@ -53,7 +53,7 @@
 #include "utils/builtins.h"
 #include "utils/tuplestore.h"
 
-PG_MODULE_MAGIC_EXT(.name = "pg_bp_car",.version = PG_VERSION);
+PG_MODULE_MAGIC_EXT(.name = "pg_bp_car", .version = PG_VERSION);
 
 void		_PG_init(void);
 
