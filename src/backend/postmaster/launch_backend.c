@@ -523,10 +523,27 @@ xtc_carrier_eligible(BackendType child_type)
 			 * fiber-eligible.  B_IO_WORKER additionally needs the AIO shutdown
 			 * protocol (PM_WAIT_IO_WORKERS) handled on fibers -- that belongs
 			 * with the xtc_aio work (item #6).  The auxiliary families
-			 * (checkpointer, bgwriter, walwriter, autovacuum, ...) each have
-			 * their own shutdown-ordering and restart protocols; widen one at
-			 * a time once its full lifecycle is validated on a fiber under the
-			 * threaded-runtime TAP.  Deferred, not rejected.
+			 * (logger, checkpointer, bgwriter -- which must start as processes
+			 * before thread carriers exist -- plus walwriter, wal_summarizer,
+			 * archiver, ...) each have their own start/shutdown-ordering and
+			 * restart protocols; widen one at a time once its full lifecycle
+			 * is validated on a fiber under the threaded-runtime TAP.
+			 * Deferred, not rejected.  (B_BACKEND and B_BG_WORKER are handled
+			 * above.)
+			 *
+			 * B_AUTOVAC_LAUNCHER / B_AUTOVAC_WORKER: TRIED as fibers and BACKED
+			 * OUT (2026-07-06).  The idle launcher tears down cleanly (the
+			 * shutdown interrupt's cross-fiber SetLatch unparks it), but under
+			 * churn the autovacuum_worker_start_timeout cancel path races the
+			 * fiber launch: a worker whose fiber is slow to reach its start
+			 * handshake gets "took too long to start; canceled" by the launcher,
+			 * and the already-spawned fiber is left un-reaped (spawned > exited),
+			 * wedging PM_WAIT_BACKENDS at fast stop.  Fiber-aware handling of the
+			 * worker-start-timeout cancel (reconcile the canceled PMChild slot
+			 * with the orphaned fiber's DOWN) is a focused follow-up; autovac
+			 * runs correctly as a THREAD carrier meanwhile
+			 * (PgRuntimeShouldThreadBackend), so this is deferral, not
+			 * regression.  See M16_XTC_CARRIER_FINDINGS.md.
 			 */
 			return false;
 	}

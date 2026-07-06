@@ -73,6 +73,35 @@ timeout), and the behaviors it means to test all pass when driven directly
 standing note, run full 001 under `gmake check-threaded` on a disk-backed host;
 the meson-only path is not the supported way to run it.
 
+### #5 next family: autovacuum TRIED as fibers, BACKED OUT (2026-07-06)
+
+Widened `xtc_carrier_eligible()` to admit `B_AUTOVAC_LAUNCHER` +
+`B_AUTOVAC_WORKER` as fibers, then backed it out after finding a shutdown hang.
+Evidence:
+  - Idle launcher (naptime 3600, no workers): fast stop CLEAN.  The shutdown
+    interrupt's cross-fiber SetLatch unparks the long-nap launcher fiber
+    correctly -- so the launcher itself is fine as a fiber.
+  - Under churn (naptime 1, threshold 1, cost_delay 0): fast stop HUNG,
+    reproducibly, `spawned=20 exited=18` (2 fibers un-reaped), always
+    correlated with one `WARNING: autovacuum worker took too long to start;
+    canceled`.
+  - Root cause: the `autovacuum_worker_start_timeout` cancel path races the
+    fiber launch.  A worker whose fiber is slow to reach the launcher
+    start-handshake gets canceled by the launcher; the already-spawned fiber
+    is orphaned (its PMChild slot is torn down by the cancel) and never
+    reaped through the pooled-logical exit path, so PM_WAIT_BACKENDS wedges at
+    fast stop.
+  - Backed out: autovac stays a THREAD carrier (PgRuntimeShouldThreadBackend),
+    where churn+shutdown is CLEAN and 001 subtests 6-8 already cover it.
+    Verified after revert: 0 autovac worker fibers, churn+fast-stop CLEAN,
+    smoke 12/12.
+
+Follow-up to re-admit autovac as fibers: make the worker-start-timeout cancel
+fiber-aware -- reconcile the canceled PMChild slot with the orphaned worker
+fiber's DOWN (the supervisor already observes it), so a canceled-but-spawned
+worker is reaped rather than left parked.  This is a focused autovac-lifecycle
+fix, tracked under #5; not a libxtc issue.
+
 ---
 
 ## Smoke validated 12/12 (2026-07-06, 8-loop pool on floki)
