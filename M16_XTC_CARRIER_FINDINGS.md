@@ -178,6 +178,38 @@ correctly between on-loop fibers and off-loop pthread carriers.  Until then,
 autovac (and any fiber worker family that does contended GUC work) stays on
 thread carriers.
 
+### RESOLVED (2026-07-06) -- and the loop-blocking-mutex diagnosis above was WRONG
+
+The wedge is fixed, but NOT by touching the lock primitive.  A/B test (v1.4.0,
+everything else identical, only ThreadedGUCUnlock swapped) is decisive:
+  - buggy ThreadedGUCUnlock  -> 16-session SET/RESET storm leaves POST WEDGED +
+    fast stop HUNG.
+  - fixed  ThreadedGUCUnlock  -> POST OK + stop CLEAN across many runs
+    (16 sessions x 400 iters, repeated).
+So the real cause was the ThreadedGUCUnlock ACCOUNTING bug (commit
+639323786c6), not the pthread mutex: ThreadedGUCUnlock re-read `multithreaded`,
+which the `multithreaded` GUC set itself flips between the paired lock/unlock,
+so on the off->on straddle it ran an UNBALANCED RESUME_INTERRUPTS and
+underflowed the per-carrier depth -- corrupting interrupt state process-wide and
+wedging the runtime under concurrent SET/RESET.
+
+The "loop-blocking pthread_mutex" hypothesis was a MISDIAGNOSIS: the threaded
+GUC critical section (set_config_with_handle_internal, build_guc_variables,
+etc.) is pure in-memory GUC-table work and NEVER yields/parks the fiber while
+holding ThreadedGUCMutex.  A fiber therefore always runs from lock to unlock
+without the loop switching to a sibling, so same-loop fiber contention on the
+mutex cannot occur; cross-loop (real OS thread) contention is brief and correct.
+No fiber-aware lock is needed.  The earlier xtc_amutex attempt was both
+unnecessary and (as its regression showed) wrong; it stays reverted.
+
+Gate: smoke step 2b ("concurrent GUC SET/RESET (no wedge)") -- 8 concurrent
+set_config/RESET loops then a fresh query; passes with the fix, wedges without.
+#5's GUC-lock hazard is CLOSED.  (The autovac worker-burst hang was the same
+root cause -- the buggy unlock corrupting interrupt state under the
+InitializeThreadedSessionGUCOptions lock -- so re-admitting autovac as fibers
+is now unblocked by this fix; validate separately before flipping the
+eligibility gate back on.)
+
 ---
 
 ## Smoke validated 12/12 (2026-07-06, 8-loop pool on floki)

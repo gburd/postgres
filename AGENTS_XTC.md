@@ -176,17 +176,26 @@ Larger (toward fully-on-xtc):
    cluster (process mode) now does initdb + start + query + fast stop with ZERO
    TRAP/PANIC; non-cassert xtc smoke 11/11.  Full report:
    /tmp/pg-bootstrap-cassert-bugs.md; ledger detail in M16_XTC_CARRIER_FINDINGS.md.
-   NOTE: the StartupProcess proc_exit -> PgBackendResetXLogClosedState ->
-   MemoryContextDelete teardown SIGSEGV (below) is a SEPARATE session-runtime
-   teardown-lifecycle bug, still open, of the same family.
+   ALSO FIXED (same session): a fifth cassert abort blocking THREADED-mode
+   startup -- Assert(ThreadedGUCMutexDepth > 0) in ThreadedGUCUnlock, because it
+   re-read the `multithreaded` flag that setting `multithreaded=on` flips
+   between the paired lock/unlock; now driven off the self-describing per-carrier
+   depth counter (commit 639323786c6).  This same accounting bug was the actual
+   root cause of the #5 concurrent-GUC-SET/RESET wedge (below).
 
-Known pre-existing NON-xtc bug (do not chase as an xtc problem): after a
-NON-clean shutdown, recovery runs and the StartupProcess thread SIGSEGVs
-in proc_exit -> PgBackendResetXLogClosedState -> MemoryContextDelete.
-It corrupts the cluster.  ALWAYS stop with `pg_ctl -m fast stop`; if the
-loop is wedged and fast-stop cannot complete, move the cluster aside and
-re-initdb.  Reproduce on the pristine `multithreaded` branch and report
-upstream.
+StartupProcess teardown SIGSEGV: FIXED (2026-07-06).  Under multithreaded=on,
+after a non-clean shutdown recovery ran and the StartupProcess crashed in
+proc_exit -> PgBackendResetXLogClosedState -> MemoryContextDelete
+(gist_xlog_op_context).  Root cause: gist_xlog_cleanup() (RM_GIST rmgr cleanup)
+deleted opCtx but left the gist_xlog_op_context cell dangling; the per-backend
+teardown then deleted it again -> double-free.  Fixed by NULLing opCtx after
+delete, matching spg_/_bt cleanup (commit 1b160ccf39a).  Core-dump backtrace
+confirmed the dangling "GiST temporary context" header; recovery now completes
+cleanly (ready to accept connections, 0 cores) with and without GiST WAL.
+
+Remaining pre-existing NON-xtc note (do not chase as an xtc problem): if a
+threaded teardown ever wedges such that fast-stop cannot complete, move the
+cluster aside and re-initdb.
 
 
 ## 3. Debugging the concurrent lost-wakeup (the live blocker)
