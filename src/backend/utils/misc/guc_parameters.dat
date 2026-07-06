@@ -410,7 +410,7 @@
 
 { name => 'buffer_pool_numa_cooling', type => 'bool', context => 'PGC_POSTMASTER', group => 'RESOURCES_MEM',
   short_desc => 'Use per-core striped clock hands with blind-atomic cooling.',
-  long_desc => 'Only honored when buffer_pool_numa is on and the system has more than one NUMA node. Sub-divides each node buffer range into per-core stripes so each buffer has a single sweeping owner per pass, allowing the usage_count cooling decrement to use a plain atomic fetch-sub instead of a compare-and-swap loop. Off by default; when off the NUMA sweep is byte-identical to the per-node clock sweep.',
+  long_desc => 'Only honored when buffer_pool_numa is on and the system has more than one NUMA node. Reduces contention on the clock sweep shared victim counter: each backend claims a batch of consecutive buffer IDs from the global clock hand with one atomic operation and iterates them privately, and cools usage_count with a plain atomic fetch-sub instead of a compare-and-swap loop (batch ownership makes the unsynchronized decrement safe). Global sweep order and whole-pool reachability are preserved. Off by default; when off the NUMA sweep is byte-identical to the per-node clock sweep.',
   variable => 'buffer_pool_numa_cooling',
   boot_val => 'false',
 },

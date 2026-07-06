@@ -2012,14 +2012,19 @@ include_dir 'conf.d'
       </term>
       <listitem>
        <para>
-        Uses per-core striped clock hands with blind-atomic cooling.  This is
-        only honored when <xref linkend="guc-buffer-pool-numa"/> is on and the
-        system has more than one <acronym>NUMA</acronym> node.  It sub-divides
-        each node's buffer range into per-core stripes so that each buffer has
-        a single sweeping owner per pass, allowing the
-        <structfield>usage_count</structfield> cooling decrement to use a plain
-        atomic fetch-and-subtract instead of a compare-and-swap loop.  When
-        off, the NUMA sweep is byte-identical to the per-node clock sweep.
+        Reduces cross-socket contention on the clock sweep's shared victim
+        counter by having each backend claim a batch of consecutive buffer
+        identifiers from the global clock hand with a single atomic operation
+        and then iterate them privately, and by cooling each buffer's
+        <structfield>usage_count</structfield> with a plain
+        atomic fetch-and-subtract instead of a compare-and-swap loop (the batch
+        gives the backend exclusive ownership of those buffers for that pass,
+        which makes the unsynchronized decrement safe).  The global sweep order
+        is preserved, so every buffer is still visited once per pass and the
+        whole buffer pool remains usable by every backend.  This is only
+        honored when <xref linkend="guc-buffer-pool-numa"/> is on and the
+        system has more than one <acronym>NUMA</acronym> node.  When off, the
+        NUMA sweep is byte-identical to the per-node clock sweep.
         The default is <literal>off</literal>.
         This parameter can only be set at server start.
        </para>
