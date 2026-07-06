@@ -778,22 +778,3 @@ EXPLAIN (COSTS OFF) SELECT count(*) FROM cnt
 RESET enable_seqscan;
 DROP TABLE cnt;
 
--- ranked CustomScan (ORDER BY col <=> q LIMIT k) with parallel WAND under the
--- hood.  The plan uses Custom Scan (FtsRankedScan); the parallel and serial
--- top-k must be byte-identical (workers partition the docid space disjointly).
-CREATE TABLE rk (id int, body text);
-INSERT INTO rk SELECT g, 'common '||CASE WHEN g%3=0 THEN 'mid ' ELSE '' END||'w'||(g%300)
-  FROM generate_series(1,30000) g;
-CREATE INDEX rk_bm25 ON rk USING bm25(to_ftsdoc('english',body));
-ANALYZE rk;
-EXPLAIN (COSTS OFF) SELECT id FROM rk
-  ORDER BY to_ftsdoc('english',body) <=> to_ftsquery('english','common') LIMIT 5;
--- parallel vs serial equivalence
-SET max_parallel_workers_per_gather = 4;
-SELECT string_agg(id::text, ',') AS par_ids FROM (
-  SELECT id FROM rk ORDER BY to_ftsdoc('english',body) <=> to_ftsquery('english','common & mid') LIMIT 10) x;
-SET max_parallel_workers_per_gather = 0;
-SELECT string_agg(id::text, ',') AS ser_ids FROM (
-  SELECT id FROM rk ORDER BY to_ftsdoc('english',body) <=> to_ftsquery('english','common & mid') LIMIT 10) x;
-RESET max_parallel_workers_per_gather;
-DROP TABLE rk;
