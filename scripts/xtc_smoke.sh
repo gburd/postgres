@@ -65,6 +65,20 @@ wait
 r=$(timeout 10 $PSQL -c 'select 42' 2>/dev/null)
 [ "$r" = "42" ] && ok "loop not wedged after concurrency" || bad "loop wedged"
 
+# 2b. Concurrent GUC SET/RESET across fibers must not wedge a carrier loop.
+#     Each SET/RESET takes the process-wide threaded-GUC critical section
+#     (ThreadedGUCLock); a bug in its lock/unlock accounting -- e.g. an
+#     unbalanced RESUME_INTERRUPTS on the multithreaded-flag straddle, or a
+#     truly loop-blocking hold across a fiber yield -- wedges the loop under
+#     contention.  Regression gate for the #5 GUC-lock hazard.
+note "concurrent GUC SET/RESET (no wedge)"
+for n in 1 2 3 4 5 6 7 8; do
+  ( timeout 20 $PSQL -c "DO \$\$ BEGIN FOR k IN 1..300 LOOP PERFORM set_config('work_mem',(4096+k)::text||'kB',false); RESET work_mem; END LOOP; END \$\$; SELECT $n" >/dev/null 2>&1 ) &
+done
+wait
+r=$(timeout 10 $PSQL -c 'select 43' 2>/dev/null)
+[ "$r" = "43" ] && ok "loop not wedged after concurrent SET/RESET" || bad "loop wedged by concurrent SET/RESET"
+
 # 3. LISTEN/NOTIFY cross-fiber wakeup: a parked LISTENer must wake when a
 #    different backend (a different fiber/loop) NOTIFYs.
 note "LISTEN/NOTIFY cross-fiber"
