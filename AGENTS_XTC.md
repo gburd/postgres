@@ -114,6 +114,19 @@ Larger (toward fully-on-xtc):
    bulk-update writes are correct with 0 iovec misassembly (scripts/
    xtc_smoke.sh).  Deferred: issuer-async reap (step 3), WAL/fsync (step 4).
    B_IO_WORKER fibers (item #5) still belong to this work stream.
+   STEP 3 REVIEWED against libxtc v1.3.0 (2026-07-06): DEFER, invariant holds.
+   v1.3.0 adds no batch-submit convenience over the high-level AIO surface
+   (xtc_aio_preadv/pwritev are one-op-per-park), so true issuer-async reap
+   still means hand-rolling xtc_io_aio_submit + xtc_io_poll + per-handle tag
+   plumbing on the carrier loop -- which reopens the foreign-drain (risk #1)
+   and async-kill-mid-read (risk #2) hazards.  Benefit is performance-only;
+   correctness is complete under Invariant A and there is no benchmark yet
+   showing the sequential-per-op park is a bottleneck.  When taken up, the
+   scoped first slice is batch-parallel reap within one issuer's submit(batch)
+   (submit N tagged to the issuer's own task, park once, reap N -- no foreign
+   drain), gated by a batch>1 test + an async-kill-mid-read fault test.  Full
+   deferred reap stays behind its own design decision.  See
+   plan_docs/XTC_AIO_DESIGN.md step 3.
 7. xtc_orc / xtc_monitor supervision of backend fibers.  STAGE 1 DONE:
    plan_docs/XTC_ORC_SUPERVISION_DESIGN.md.  The postmaster stays the crash
    authority; xtc is an OBSERVER.  Implemented a per-loop supervisor fiber

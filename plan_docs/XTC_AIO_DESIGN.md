@@ -397,6 +397,38 @@ starvation test (mirroring README.md's dangers). Defer with invariant: until
 this lands, Invariant A (no SUBMITTED after submit) holds and the foreign-wait
 question does not arise.
 
+#### Step 3 review against libxtc v1.3.0 (2026-07-06): DEFER, invariant holds
+
+Re-examined with the v1.3.0 API in hand. Conclusion: keep deferring; do NOT
+build the full deferred-reap machinery yet. Rationale:
+
+- libxtc offers no batch-submit convenience over the high-level AIO surface:
+  `xtc_aio_preadv`/`pwritev` are one-op-per-park (each call parks the issuer to
+  completion). True batch-parallel submission would drop to the low-level
+  `xtc_io_aio_submit` + `xtc_io_poll` + per-handle `xtc_aio_t.tag` plumbing,
+  reaching into the CARRIER LOOP's `xtc_io_t` and managing a reap loop -- exactly
+  the deferred-reap surface this step gates.
+- It reopens the foreign-drain problem (risk #1) AND the async-kill-mid-read
+  problem (risk #2: an `xtc_exit_pid` at the `xtc_io_aio_submit` yield point
+  must not let the buffer/fd be reused before the op completes). Both need
+  dedicated deadlock/starvation and fault-injection tests before any code.
+- The benefit is PERFORMANCE ONLY; correctness is complete today under
+  Invariant A. There is no benchmark yet showing the sequential-per-op park
+  cost is a bottleneck for the current fiber-backed backends, so building the
+  async path now is speculative. (The autovac worker-start-timeout race found
+  in item #5 is a reminder that fiber lifecycle corners are subtle and deserve
+  a real driving need + test before adding more of them.)
+
+SCOPED FIRST SLICE when this is taken up (smallest real win, no foreign drain):
+batch-parallel reap WITHIN a single issuer's `submit(batch)` -- submit all N
+staged ops to the loop ring tagged to the ISSUER's own task, park once, reap
+all N. The issuer still reaps its own ops (no foreign backend ever drains a
+SUBMITTED handle), so Invariant A's spirit is preserved while N ops go on the
+ring at once instead of N sequential parks. Gate: a batch>1 correctness test
+plus the async-kill-mid-read fault-injection test. Full deferred reap (return
+SUBMITTED, `wait_one` on a foreign handle) stays behind the separate design
+decision.
+
 ### Step 4 (deferred): WAL / fsync path
 
 Add fsync/fdatasync PgAioOp support and route WAL flush through
