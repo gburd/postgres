@@ -290,16 +290,14 @@ bm25_build_flush_segment(Relation index, BM25BuildState *bs)
 	 * beyond EOF").  Holding the relation extension lock around the whole
 	 * segment write makes each participant's page additions atomic w.r.t. the
 	 * others.  The expensive part of the build -- heap scan + tsearch analysis
-	 * -- runs fully parallel; only the comparatively cheap segment write phase
-	 * is serialized.  In a serial build IsInParallelMode() is false and no lock
-	 * is taken.
+	 * -- runs fully parallel, and the segment write appends pages via
+	 * bm25_new_buffer(), which now serializes only the P_NEW extension itself
+	 * (per page) rather than the whole write -- so participants write
+	 * concurrently.  In a serial build IsInParallelMode() is false and no
+	 * extension lock is taken at all.
 	 */
-	if (IsInParallelMode())
-		LockRelationForExtension(index, ExclusiveLock);
 	bm25_write_segment(index, bs, &seg);
 	bm25_meta_add_segment(index, &seg);
-	if (IsInParallelMode())
-		UnlockRelationForExtension(index, ExclusiveLock);
 
 	/* reset: free everything in the build context and start a fresh segment */
 	MemoryContextReset(bs->ctx);
@@ -598,8 +596,21 @@ bm25_new_buffer(Relation index)
 		ReleaseBuffer(buffer);
 	}
 
+	/*
+	 * Extend the relation.  Concurrent appenders (parallel build/merge
+	 * participants) would otherwise race on P_NEW and trip "unexpected data
+	 * beyond EOF", so the extension itself is serialized with the relation
+	 * extension lock -- but ONLY around the single P_NEW call, not around the
+	 * whole segment write.  Holding it for the entire (multi-GB) write would
+	 * serialize the participants' writes and defeat the parallel merge; a
+	 * per-page extension lock lets them write concurrently.
+	 */
+	if (IsInParallelMode())
+		LockRelationForExtension(index, ExclusiveLock);
 	buffer = ReadBuffer(index, P_NEW);
 	LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+	if (IsInParallelMode())
+		UnlockRelationForExtension(index, ExclusiveLock);
 	return buffer;
 }
 
@@ -1286,12 +1297,8 @@ bm25_merge_group_to_seg(Relation index, const BM25SegMeta *group, uint32 ngroup,
 	if (bs.nterms > 1)
 		qsort(bs.terms, bs.nterms, sizeof(BuildTerm), cmp_buildterm);
 
-	/* serialize page appends across concurrent group-merges (see build) */
-	if (IsInParallelMode())
-		LockRelationForExtension(index, ExclusiveLock);
+	/* page appends are serialized per-page inside bm25_new_buffer */
 	bm25_write_segment(index, &bs, out);
-	if (IsInParallelMode())
-		UnlockRelationForExtension(index, ExclusiveLock);
 	out->ndocs = bs.ndocs;
 	out->sumdoclen = bs.sumdoclen;
 
