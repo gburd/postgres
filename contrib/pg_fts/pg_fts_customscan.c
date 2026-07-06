@@ -20,6 +20,7 @@
 #include "access/genam.h"
 #include "access/relscan.h"
 #include "access/table.h"
+#include "access/tableam.h"
 #include "catalog/index.h"
 #include "catalog/namespace.h"
 #include "commands/defrem.h"
@@ -60,9 +61,11 @@ pg_fts_customscan_dummy(PG_FUNCTION_ARGS)
 
 /* ---- saved previous hooks (chain, do not clobber) ---- */
 static create_upper_paths_hook_type prev_upper_paths_hook = NULL;
+static set_rel_pathlist_hook_type prev_rel_pathlist_hook = NULL;
 
-/* cached OID of the @@@ (ftsdoc, ftsquery) operator; resolved lazily */
+/* cached OIDs, resolved lazily */
 static Oid	fts_match_op = InvalidOid;
+static Oid	fts_distance_op = InvalidOid;
 
 /* ===== count-pushdown CustomScan: path/plan/exec ===== */
 
@@ -335,6 +338,289 @@ FtsCountReScan(CustomScanState *node)
 	((FtsCountScanState *) node)->done = false;
 }
 
+
+/* ===== ranked-scan CustomScan: ORDER BY col <=> q [LIMIT k] ===== */
+
+extern int bm25_topk_ranked_oid(Oid indexoid, FtsQuery q, int k,
+								ItemPointer out_tids, float8 *out_scores);
+
+typedef struct FtsRankScanState
+{
+	CustomScanState css;
+	Oid			indexoid;
+	Oid			heapoid;
+	FtsQuery	query;
+	int			k;				/* LIMIT (0 = unbounded -> fetch all matches) */
+	/* materialized ranked result */
+	ItemPointer tids;
+	float8	   *scores;
+	int			nresults;
+	int			pos;
+	Relation	heap;
+	TupleTableSlot *heapslot;
+}			FtsRankScanState;
+
+static Plan *FtsRankPlanCustomPath(PlannerInfo *root, RelOptInfo *rel,
+								   struct CustomPath *best_path, List *tlist,
+								   List *clauses, List *custom_plans);
+static Node *FtsRankCreateScanState(CustomScan *cscan);
+static void FtsRankBeginScan(CustomScanState *node, EState *estate, int eflags);
+static TupleTableSlot *FtsRankExecScan(CustomScanState *node);
+static void FtsRankEndScan(CustomScanState *node);
+static void FtsRankReScan(CustomScanState *node);
+
+static const CustomPathMethods fts_rank_path_methods = {
+	.CustomName = "FtsRankedScan",
+	.PlanCustomPath = FtsRankPlanCustomPath,
+};
+static const CustomScanMethods fts_rank_scan_methods = {
+	.CustomName = "FtsRankedScan",
+	.CreateCustomScanState = FtsRankCreateScanState,
+};
+static const CustomExecMethods fts_rank_exec_methods = {
+	.CustomName = "FtsRankedScan",
+	.BeginCustomScan = FtsRankBeginScan,
+	.ExecCustomScan = FtsRankExecScan,
+	.EndCustomScan = FtsRankEndScan,
+	.ReScanCustomScan = FtsRankReScan,
+};
+
+static Oid
+fts_lookup_distance_op(void)
+{
+	if (OidIsValid(fts_distance_op))
+		return fts_distance_op;
+	fts_distance_op = OpernameGetOprid(list_make1(makeString("<=>")),
+									   TypenameGetTypid("ftsdoc"),
+									   TypenameGetTypid("ftsquery"));
+	return fts_distance_op;
+}
+
+/*
+ * set_rel_pathlist_hook: if this base rel has a bm25 index and the query orders
+ * by  col <=> q  (an OpExpr on the distance operator whose right arg is an
+ * FtsQuery Const matching the index expression on the left), add a CustomScan
+ * path that produces the top-k in ranked order (parallel WAND under the hood).
+ * The LIMIT, if any, reaches us as root->limit_tuples.
+ */
+static void
+fts_set_rel_pathlist(PlannerInfo *root, RelOptInfo *rel, Index rti,
+					 RangeTblEntry *rte)
+{
+	Oid			distop = fts_lookup_distance_op();
+	Oid			indexoid;
+	FtsQuery	query = NULL;
+	Node	   *lhs = NULL;
+	SortGroupClause *sgc;
+	TargetEntry *te;
+	Node	   *sortexpr;
+	OpExpr	   *distexpr;
+	Relation	heap;
+	int			limit_k;
+	CustomPath *cpath;
+
+	if (prev_rel_pathlist_hook)
+		prev_rel_pathlist_hook(root, rel, rti, rte);
+
+	if (!OidIsValid(distop))
+		return;
+	if (rte->rtekind != RTE_RELATION || rel->reloptkind != RELOPT_BASEREL)
+		return;
+	/* need exactly one ORDER BY key, and it must be  col <=> q  */
+	if (root->parse->sortClause == NIL ||
+		list_length(root->parse->sortClause) != 1)
+		return;
+	/* no grouping/aggregation/distinct/window/set-op above us */
+	if (root->parse->hasAggs || root->parse->groupClause ||
+		root->parse->distinctClause || root->parse->hasWindowFuncs ||
+		root->parse->setOperations || root->parse->havingQual)
+		return;
+
+	sgc = (SortGroupClause *) linitial(root->parse->sortClause);
+	te = get_sortgroupclause_tle(sgc, root->parse->targetList);
+	if (te == NULL)
+		return;
+	sortexpr = (Node *) te->expr;
+	if (!IsA(sortexpr, OpExpr))
+		return;
+	distexpr = (OpExpr *) sortexpr;
+	if (distexpr->opno != distop || list_length(distexpr->args) != 2)
+		return;
+	{
+		Node	   *rhs = (Node *) lsecond(distexpr->args);
+
+		if (!IsA(rhs, Const) || ((Const *) rhs)->constisnull)
+			return;
+		query = (FtsQuery) DatumGetPointer(((Const *) rhs)->constvalue);
+		lhs = (Node *) linitial(distexpr->args);
+	}
+
+	/* find a bm25 index on this rel whose expression matches the LHS */
+	heap = table_open(rte->relid, AccessShareLock);
+	{
+		List	   *indexoidlist = RelationGetIndexList(heap);
+		ListCell   *ic;
+
+		indexoid = InvalidOid;
+		foreach(ic, indexoidlist)
+		{
+			Oid			io = lfirst_oid(ic);
+			Relation	ind = index_open(io, AccessShareLock);
+
+			if (ind->rd_rel->relam == get_index_am_oid("bm25", true) &&
+				ind->rd_indexprs != NIL &&
+				equal(linitial(ind->rd_indexprs), lhs))
+				indexoid = io;
+			index_close(ind, AccessShareLock);
+			if (OidIsValid(indexoid))
+				break;
+		}
+		list_free(indexoidlist);
+	}
+	table_close(heap, AccessShareLock);
+	if (!OidIsValid(indexoid))
+		return;
+
+	/* LIMIT (if present) came through as limit_tuples; 0/-1 -> unbounded */
+	limit_k = (root->limit_tuples > 0 && root->limit_tuples < INT_MAX)
+		? (int) root->limit_tuples : 0;
+
+	cpath = makeNode(CustomPath);
+	cpath->path.pathtype = T_CustomScan;
+	cpath->path.parent = rel;
+	cpath->path.pathtarget = rel->reltarget;
+	cpath->path.param_info = NULL;
+	cpath->path.rows = (limit_k > 0) ? limit_k : rel->rows;
+	cpath->path.startup_cost = 10.0;
+	cpath->path.total_cost = 10.0 + cpath->path.rows;
+	/* advertise the ORDER BY pathkey so no Sort is added on top */
+	cpath->path.pathkeys = root->query_pathkeys;
+	cpath->flags = 0;
+	cpath->custom_paths = NIL;
+	cpath->custom_private = list_make3(makeInteger((int) indexoid),
+									   makeConst(INTERNALOID, -1, InvalidOid,
+												 sizeof(void *),
+												 PointerGetDatum(query),
+												 false, false),
+									   makeInteger(limit_k));
+	cpath->methods = &fts_rank_path_methods;
+	add_path(rel, (Path *) cpath);
+}
+
+static Plan *
+FtsRankPlanCustomPath(PlannerInfo *root, RelOptInfo *rel,
+					  struct CustomPath *best_path, List *tlist,
+					  List *clauses, List *custom_plans)
+{
+	CustomScan *cscan = makeNode(CustomScan);
+
+	cscan->scan.plan.targetlist = tlist;
+	cscan->scan.plan.qual = NIL;
+	cscan->scan.scanrelid = rel->relid;		/* we scan the base rel by TID */
+	cscan->custom_private = best_path->custom_private;
+	cscan->methods = &fts_rank_scan_methods;
+	return &cscan->scan.plan;
+}
+
+static Node *
+FtsRankCreateScanState(CustomScan *cscan)
+{
+	FtsRankScanState *st = (FtsRankScanState *) newNode(sizeof(FtsRankScanState),
+														T_CustomScanState);
+	Const	   *qc;
+
+	st->css.methods = &fts_rank_exec_methods;
+	st->indexoid = (Oid) intVal(linitial(cscan->custom_private));
+	qc = (Const *) lsecond(cscan->custom_private);
+	st->query = (FtsQuery) DatumGetPointer(qc->constvalue);
+	st->k = intVal(lthird(cscan->custom_private));
+	st->nresults = -1;			/* not yet materialized */
+	st->pos = 0;
+	return (Node *) st;
+}
+
+static void
+FtsRankBeginScan(CustomScanState *node, EState *estate, int eflags)
+{
+	FtsRankScanState *st = (FtsRankScanState *) node;
+
+	st->heapoid = RelationGetRelid(node->ss.ss_currentRelation);
+	st->heap = node->ss.ss_currentRelation;
+	/* a table (buffer-heap) slot for table_tuple_fetch_row_version */
+	st->heapslot = table_slot_create(node->ss.ss_currentRelation,
+									 &estate->es_tupleTable);
+}
+
+/* materialize the ranked TID list on first ExecScan call */
+static void
+fts_rank_materialize(FtsRankScanState *st)
+{
+	int			k = st->k;
+
+	if (k <= 0)
+	{
+		/*
+		 * No LIMIT: we still need a bound.  Use a generous cap; an unbounded
+		 * ORDER BY <=> without LIMIT is unusual (the planner would Sort a full
+		 * scan).  Fall back to the ordinary path by producing nothing so the
+		 * executor uses another path is not possible here, so cap high.
+		 */
+		k = 100000;
+	}
+	st->tids = (ItemPointer) palloc(k * sizeof(ItemPointerData));
+	st->scores = (float8 *) palloc(k * sizeof(float8));
+	st->nresults = bm25_topk_ranked_oid(st->indexoid, st->query, k,
+										st->tids, st->scores);
+	st->pos = 0;
+}
+
+static TupleTableSlot *
+FtsRankExecScan(CustomScanState *node)
+{
+	FtsRankScanState *st = (FtsRankScanState *) node;
+	EState	   *estate = node->ss.ps.state;
+
+	if (st->nresults < 0)
+		fts_rank_materialize(st);
+
+	while (st->pos < st->nresults)
+	{
+		ItemPointerData tid = st->tids[st->pos++];
+		TupleTableSlot *scanslot = node->ss.ss_ScanTupleSlot;
+
+		if (!table_tuple_fetch_row_version(st->heap, &tid, estate->es_snapshot,
+										   st->heapslot))
+			continue;			/* vanished under us; skip */
+		/* move the fetched heap tuple into the executor's scan slot (which the
+		 * scan/projection machinery was set up against), as a virtual tuple */
+		ExecCopySlot(scanslot, st->heapslot);
+		if (node->ss.ps.ps_ProjInfo)
+		{
+			ExprContext *econtext = node->ss.ps.ps_ExprContext;
+
+			ResetExprContext(econtext);
+			econtext->ecxt_scantuple = scanslot;
+			return ExecProject(node->ss.ps.ps_ProjInfo);
+		}
+		return scanslot;
+	}
+	return NULL;
+}
+
+static void
+FtsRankEndScan(CustomScanState *node)
+{
+}
+
+static void
+FtsRankReScan(CustomScanState *node)
+{
+	FtsRankScanState *st = (FtsRankScanState *) node;
+
+	st->nresults = -1;
+	st->pos = 0;
+}
+
 /* ===== module init ===== */
 
 void		_PG_init(void);
@@ -343,7 +629,10 @@ void
 _PG_init(void)
 {
 	RegisterCustomScanMethods(&fts_count_scan_methods);
+	RegisterCustomScanMethods(&fts_rank_scan_methods);
 
 	prev_upper_paths_hook = create_upper_paths_hook;
 	create_upper_paths_hook = fts_create_upper_paths;
+	prev_rel_pathlist_hook = set_rel_pathlist_hook;
+	set_rel_pathlist_hook = fts_set_rel_pathlist;
 }

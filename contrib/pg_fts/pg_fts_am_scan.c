@@ -54,6 +54,9 @@ typedef struct ScoredTid
 
 static int bm25_topk_visible(Relation index, FtsQuery q, int k,
 							 bool as_distance, ScoredTid **out);
+static int bm25_topk_candidates_range(Relation index, FtsQuery q, int wantk,
+									  uint64 docid_lo, uint64 docid_hi,
+									  ScoredTid **out);
 
 typedef struct BM25ScanOpaqueData
 {
@@ -1819,9 +1822,21 @@ typedef struct WandCursor
 	BM25Tombstones *tombs;		/* loaded per-segment tombstones (or NULL) */
 	uint32		segidx;			/* which segment this cursor's postings belong to */
 	sm_cursor_cached_t tombcache;	/* stack MRU chunk cache for tombstone lookups */
+	/*
+	 * Optional docid range [docid_lo, docid_hi) for a parallel worker's slice.
+	 * docid_lo = 0 and docid_hi = UINT64_MAX means "whole term" (the serial
+	 * path).  The cursor seeks to docid_lo at prime time and reports itself
+	 * exhausted (docid = UINT64_MAX) once it reaches docid_hi, so the WAND/
+	 * MaxScore loops need no range awareness -- they already stop when every
+	 * cursor is exhausted.  Ranges partition the corpus disjointly across
+	 * workers, so each worker scores a disjoint candidate set exactly.
+	 */
+	uint64		docid_lo;
+	uint64		docid_hi;
 }			WandCursor;
 
 static inline void wand_skip_own_tombstoned(WandCursor *c);
+static void wand_seek(WandCursor *c, uint64 target);
 
 static inline uint64
 tid_to_docid_s(ItemPointer tid)
@@ -1958,7 +1973,12 @@ wand_prime(WandCursor *c)
 		return;
 	}
 	wand_load_block(c);
-	wand_skip_own_tombstoned(c);
+	/* seek to this cursor's docid range start (parallel worker slice); for the
+	 * serial path docid_lo == 0 so this is a no-op */
+	if (c->docid_lo > 0 && c->docid != UINT64_MAX)
+		wand_seek(c, c->docid_lo);
+	else
+		wand_skip_own_tombstoned(c);
 }
 
 /* The block-max contribution upper bound for the current 128-block.
@@ -2008,6 +2028,10 @@ wand_skip_own_tombstoned(WandCursor *c)
 		else
 			wand_load_block(c);
 	}
+	/* enforce the worker's docid range upper bound: past it, this cursor is
+	 * done (its slice ends before docid_hi; another worker owns the rest) */
+	if (c->docid >= c->docid_hi)
+		c->docid = UINT64_MAX;
 }
 
 /* Advance the cursor to the next posting, loading the next block if needed. */
@@ -2557,8 +2581,8 @@ bm25_query_maxhits(Relation index, FtsQuery q, double N)
  * intentionally, since pending is transient and bounded.
  */
 static int
-bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
-				  ScoredTid **out)
+bm25_topk_candidates_range(Relation index, FtsQuery q, int wantk,
+						   uint64 docid_lo, uint64 docid_hi, ScoredTid **out)
 {
 	BM25MetaPageData meta;
 	double		N,
@@ -2568,22 +2592,14 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 	int			nterms;
 	WandCursor *cursors;
 	ScoredTid  *cand;
-	ScoredTid  *results;
 	BM25Tombstones tombs;
 	int			ncand;
-	int			wantk;
-	Relation	heap;
-	IndexFetchTableData *fetch;
-	Snapshot	snap = GetActiveSnapshot();
-	int			nvis = 0;
-	int			i,
-				t,
+	int			t,
 				nactive = 0;
 	double		k1 = 1.2;
 
-	if (k < 1)
-		k = 1;
-	wantk = Max(k * 4, 64);
+	if (wantk < 1)
+		wantk = 1;
 
 	bm25_read_meta(index, &meta);
 	N = meta.ndocs < 1.0 ? 1.0 : meta.ndocs;
@@ -2651,6 +2667,8 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 				idf * mtf * (k1 + 1.0) / (mtf + k1 * (1.0 - b));
 			cursors[nactive].tombs = &tombs;
 			cursors[nactive].segidx = s;
+			cursors[nactive].docid_lo = docid_lo;
+			cursors[nactive].docid_hi = docid_hi;
 			{
 				sm_cursor_cached_t ini = SM_CURSOR_CACHED_INIT;
 
@@ -2661,6 +2679,37 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 	}
 
 	ncand = fts_search_wand(cursors, nactive, wantk, &cand);
+	bm25_tombstones_free(&tombs);
+
+	*out = cand;
+	return ncand;
+}
+
+/*
+ * bm25_topk_visible: serial top-k for the fts_search SRF and the amgettuple
+ * ordering scan.  Generates candidates over the WHOLE corpus (docid range
+ * [0, MAX)) then applies MVCC visibility, over-fetching (wantk = k*4) so k
+ * visible rows survive.  When as_distance is true each result's .score is the
+ * ordering distance 1/(1+score).  Returns visible results (palloc'd) sorted by
+ * descending score.
+ */
+static int
+bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
+				  ScoredTid **out)
+{
+	ScoredTid  *cand;
+	ScoredTid  *results;
+	int			ncand;
+	int			nvis = 0;
+	int			i;
+	int			wantk = Max(k * 4, 64);
+	Snapshot	snap = GetActiveSnapshot();
+	Relation	heap;
+	IndexFetchTableData *fetch;
+
+	ncand = bm25_topk_candidates_range(index, q, wantk, 0, UINT64_MAX, &cand);
+	if (k < 1)
+		k = 1;
 
 	results = (ScoredTid *) palloc(Max(k, 1) * sizeof(ScoredTid));
 	heap = table_open(index->rd_index->indrelid, AccessShareLock);
@@ -2674,14 +2723,8 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 		ItemPointerData tid = cand[i].tid;
 		bool		call_again = false;
 		bool		all_dead = false;
-		TupleTableSlot *slot;
+		TupleTableSlot *slot = table_slot_create(heap, NULL);
 
-		/*
-		 * Tombstoned docs were already excluded per-segment inside the WAND
-		 * cursors (a cursor never emits a docid deleted in its own segment), so
-		 * the surviving candidates only need the heap visibility check.
-		 */
-		slot = table_slot_create(heap, NULL);
 		if (table_index_fetch_tuple(fetch, &tid, snap, slot,
 									&call_again, &all_dead))
 		{
@@ -2692,11 +2735,262 @@ bm25_topk_visible(Relation index, FtsQuery q, int k, bool as_distance,
 		}
 		ExecDropSingleTupleTableSlot(slot);
 	}
-	bm25_tombstones_free(&tombs);
 	table_index_fetch_end(fetch);
 	table_close(heap, AccessShareLock);
 
 	*out = results;
+	return nvis;
+}
+
+/* ===== parallel ranked top-k (CustomScan) ===== */
+
+#define PARALLEL_KEY_BM25_RANK_SHARED	UINT64CONST(0xB250000000000020)
+#define PARALLEL_KEY_BM25_RANK_QUERY	UINT64CONST(0xB250000000000021)
+#define PARALLEL_KEY_BM25_RANK_RESULT	UINT64CONST(0xB250000000000022)
+
+#define BM25_RANK_MAX_SLOTS		64	/* leader + workers */
+
+typedef struct BM25RankShared
+{
+	Oid			indexrelid;
+	int			wantk;			/* per-slice candidate target */
+	int			nslices;		/* docid partitions = participants */
+	uint64		docid_max;		/* upper bound of the docid space */
+	slock_t		mutex;
+	int			ncand[BM25_RANK_MAX_SLOTS];	/* candidates each slot produced */
+	/* query bytes and the per-slot result arrays follow in separate TOC keys */
+}			BM25RankShared;
+
+/* each slot's result area is just wantk ScoredTid entries at a computed offset */
+/* Run one docid slice's candidate generation into shared slot `slice`. */
+static void
+bm25_rank_run_slice(BM25RankShared *shared, FtsQuery q,
+					ScoredTid *area, int slice)
+{
+	Relation	index;
+	ScoredTid  *cand;
+	int			ncand;
+	uint64		lo,
+				hi;
+	uint64		span = shared->docid_max / (uint64) shared->nslices + 1;
+
+	lo = span * (uint64) slice;
+	hi = (slice == shared->nslices - 1) ? UINT64_MAX : span * (uint64) (slice + 1);
+
+	index = index_open(shared->indexrelid, AccessShareLock);
+	ncand = bm25_topk_candidates_range(index, q, shared->wantk, lo, hi, &cand);
+	index_close(index, AccessShareLock);
+
+	if (ncand > shared->wantk)
+		ncand = shared->wantk;
+	memcpy(area, cand, ncand * sizeof(ScoredTid));
+	SpinLockAcquire(&shared->mutex);
+	shared->ncand[slice] = ncand;
+	SpinLockRelease(&shared->mutex);
+}
+
+PGDLLEXPORT void bm25_parallel_rank_main(dsm_segment *seg, shm_toc *toc);
+
+void
+bm25_parallel_rank_main(dsm_segment *seg, shm_toc *toc)
+{
+	BM25RankShared *shared;
+	FtsQuery	q;
+	char	   *resbase;
+	ScoredTid  *area;
+	int			slice = ParallelWorkerNumber + 1;	/* slot 0 = leader */
+	Size		slotsz;
+
+	shared = (BM25RankShared *) shm_toc_lookup(toc, PARALLEL_KEY_BM25_RANK_SHARED, false);
+	q = (FtsQuery) shm_toc_lookup(toc, PARALLEL_KEY_BM25_RANK_QUERY, false);
+	resbase = (char *) shm_toc_lookup(toc, PARALLEL_KEY_BM25_RANK_RESULT, false);
+
+	if (slice >= shared->nslices)
+		return;					/* more workers than slices: nothing to do */
+
+	slotsz = MAXALIGN((Size) shared->wantk * sizeof(ScoredTid));
+	area = (ScoredTid *) (resbase + slotsz * (Size) slice);
+	bm25_rank_run_slice(shared, q, area, slice);
+}
+
+/* score-descending sort for the leader's k-way merge of slice candidates */
+static int
+cmp_scoredtid_desc(const void *a, const void *b)
+{
+	double		x = ((const ScoredTid *) a)->score;
+	double		y = ((const ScoredTid *) b)->score;
+
+	return (x < y) ? 1 : (x > y) ? -1 : 0;
+}
+
+/*
+ * bm25_topk_ranked_oid: top-k ranked scan for the CustomScan.  Fans the WAND
+ * candidate generation across workers by docid range when the query is worth
+ * parallelizing, merges the per-slice candidate lists, then applies MVCC
+ * visibility once.  Falls back to the serial path otherwise.  Writes up to k
+ * (tid, score) into the caller's arrays; returns the count.
+ */
+int
+bm25_topk_ranked_oid(Oid indexoid, FtsQuery q, int k,
+					 ItemPointer out_tids, float8 *out_scores)
+{
+	Relation	index;
+	int			wantk = Max(k * 4, 64);
+	int			request;
+	ParallelContext *pcxt;
+	BM25RankShared *shared;
+	ScoredTid  *merged;
+	int			nmerged = 0;
+	int			nvis = 0;
+	int			i;
+	Relation	heap;
+	IndexFetchTableData *fetch;
+	Snapshot	snap = GetActiveSnapshot();
+	BlockNumber heap_nblocks;
+	uint64		docid_max;
+	Size		qsz,
+				slotsz,
+				ressz;
+	char	   *resbase;
+	int			nslices;
+
+	if (k < 1)
+		k = 1;
+
+	index = index_open(indexoid, AccessShareLock);
+	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	heap_nblocks = RelationGetNumberOfBlocks(heap);
+	docid_max = (uint64) heap_nblocks * (uint64) MaxHeapTuplesPerPage + 1;
+
+	/* how many workers?  gate on the term being large enough to be worth it */
+	request = Min(max_parallel_workers_per_gather, max_parallel_workers);
+	if (IsInParallelMode() || request < 1 || docid_max < 2 ||
+		bm25_query_maxhits(index, q, (double) docid_max) < 50000.0)
+		request = 0;			/* small query or nested: serial */
+
+	if (request == 0)
+	{
+		/* serial: one slice over the whole corpus */
+		ScoredTid  *cand;
+
+		nmerged = bm25_topk_candidates_range(index, q, wantk, 0, UINT64_MAX, &cand);
+		merged = cand;
+	}
+	else
+	{
+		nslices = request + 1;	/* leader (slot 0) + workers */
+		if (nslices > BM25_RANK_MAX_SLOTS)
+			nslices = BM25_RANK_MAX_SLOTS;
+		qsz = VARSIZE(q);
+		slotsz = MAXALIGN((Size) wantk * sizeof(ScoredTid));
+		ressz = slotsz * (Size) nslices;
+
+		EnterParallelMode();
+		pcxt = CreateParallelContext("pg_fts", "bm25_parallel_rank_main", request);
+		shm_toc_estimate_chunk(&pcxt->estimator, MAXALIGN(sizeof(BM25RankShared)));
+		shm_toc_estimate_chunk(&pcxt->estimator, MAXALIGN(qsz));
+		shm_toc_estimate_chunk(&pcxt->estimator, ressz);
+		shm_toc_estimate_keys(&pcxt->estimator, 3);
+		InitializeParallelDSM(pcxt);
+
+		if (pcxt->seg == NULL)
+		{
+			/* no DSM: fall back to serial */
+			ScoredTid  *cand;
+
+			DestroyParallelContext(pcxt);
+			ExitParallelMode();
+			nmerged = bm25_topk_candidates_range(index, q, wantk, 0, UINT64_MAX, &cand);
+			merged = cand;
+		}
+		else
+		{
+			ScoredTid  *larea;
+
+			shared = (BM25RankShared *) shm_toc_allocate(pcxt->toc, MAXALIGN(sizeof(BM25RankShared)));
+			shared->indexrelid = indexoid;
+			shared->wantk = wantk;
+			shared->nslices = nslices;
+			shared->docid_max = docid_max;
+			SpinLockInit(&shared->mutex);
+			memset(shared->ncand, 0, sizeof(shared->ncand));
+			shm_toc_insert(pcxt->toc, PARALLEL_KEY_BM25_RANK_SHARED, shared);
+
+			{
+				char	   *qdst = shm_toc_allocate(pcxt->toc, MAXALIGN(qsz));
+
+				memcpy(qdst, q, qsz);
+				shm_toc_insert(pcxt->toc, PARALLEL_KEY_BM25_RANK_QUERY, qdst);
+				q = (FtsQuery) qdst;
+			}
+			resbase = shm_toc_allocate(pcxt->toc, ressz);
+			shm_toc_insert(pcxt->toc, PARALLEL_KEY_BM25_RANK_RESULT, resbase);
+
+			LaunchParallelWorkers(pcxt);
+
+			/* leader runs slice 0 while workers run 1..nslices-1 */
+			larea = (ScoredTid *) resbase;
+			bm25_rank_run_slice(shared, q, larea, 0);
+
+			WaitForParallelWorkersToFinish(pcxt);
+
+			/* if fewer workers launched than slices, run the orphaned slices now */
+			for (i = 1 + pcxt->nworkers_launched; i < nslices; i++)
+			{
+				ScoredTid  *a = (ScoredTid *) (resbase + slotsz * (Size) i);
+
+				bm25_rank_run_slice(shared, q, a, i);
+			}
+
+			/* merge every slice's candidates */
+			{
+				int			total = 0;
+				int			s;
+
+				for (s = 0; s < nslices; s++)
+					total += shared->ncand[s];
+				merged = (ScoredTid *) palloc(Max(total, 1) * sizeof(ScoredTid));
+				for (s = 0; s < nslices; s++)
+				{
+					ScoredTid  *a = (ScoredTid *) (resbase + slotsz * (Size) s);
+
+					memcpy(merged + nmerged, a,
+						   shared->ncand[s] * sizeof(ScoredTid));
+					nmerged += shared->ncand[s];
+				}
+			}
+			DestroyParallelContext(pcxt);
+			ExitParallelMode();
+		}
+	}
+
+	/* global order by descending score, then visibility to k */
+	if (nmerged > 1)
+		qsort(merged, nmerged, sizeof(ScoredTid), cmp_scoredtid_desc);
+
+#if PG_VERSION_NUM >= 180000
+	fetch = table_index_fetch_begin(heap, 0);
+#else
+	fetch = table_index_fetch_begin(heap);
+#endif
+	for (i = 0; i < nmerged && nvis < k; i++)
+	{
+		ItemPointerData tid = merged[i].tid;
+		bool		ca = false,
+					ad = false;
+		TupleTableSlot *slot = table_slot_create(heap, NULL);
+
+		if (table_index_fetch_tuple(fetch, &tid, snap, slot, &ca, &ad))
+		{
+			out_tids[nvis] = merged[i].tid;
+			out_scores[nvis] = merged[i].score;
+			nvis++;
+		}
+		ExecDropSingleTupleTableSlot(slot);
+	}
+	table_index_fetch_end(fetch);
+	table_close(heap, AccessShareLock);
+	index_close(index, AccessShareLock);
 	return nvis;
 }
 

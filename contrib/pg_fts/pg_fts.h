@@ -19,6 +19,8 @@
 #ifndef PG_FTS_H
 #define PG_FTS_H
 
+#include "storage/itemptr.h"
+
 #include "postgres.h"
 
 #include "fmgr.h"
@@ -180,5 +182,16 @@ extern bool fts_trigrams_overlap(const uint32 *a, int na,
 
 /* pg_fts_am_scan.c -- count entry point reused by the COUNT-pushdown CustomScan */
 extern int64 bm25_count_visible_oid(Oid indexoid, FtsQuery q);
+
+/*
+ * Ranked top-k for the CustomScan.  bm25_topk_ranked_oid runs the top-k for `q`
+ * and writes up to k visible (tid, score) pairs into out (caller-allocated,
+ * length >= k), returning the count.  If max_parallel_workers_per_gather > 0
+ * and the term is large it fans the WAND scan across workers (docid-range
+ * partition) and merges; otherwise it runs serially.  scores are raw BM25
+ * (descending = most relevant); the CustomScan maps to distance if needed.
+ */
+extern int bm25_topk_ranked_oid(Oid indexoid, FtsQuery q, int k,
+								ItemPointer out_tids, float8 *out_scores);
 
 #endif							/* PG_FTS_H */
