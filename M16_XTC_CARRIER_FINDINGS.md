@@ -373,22 +373,23 @@ inside the postmaster process (8 threads, zero child processes -- verified via
    So PG_XTC_INJECT_CRASH now yields a DOWN reason=11, which the supervisor
    classifies as a genuine crash and escalates (to confirm end-to-end on meh).
 
-2e. **v1.2.1 validation on meh (24-loop pool).**  RESOLVED path confirmed:
-   the old "3/11 abnormal -11" are GONE -- 11 backends deliver 11 normal DOWNs
-   (reason 0), zero NOPROC, zero GENUINE-CRASH, zero escalation, fast stop
-   clean, smoke 12/12.  Because our supervisor spawns+monitors atomically, the
-   monitor never races the exit, so we see reason 0 (not even NOPROC) -- as the
-   libxtc team predicted.  STILL OPEN (our side, not libxtc): the
-   PG_XTC_INJECT_CRASH escalation does not yet fire end-to-end -- an injected
-   fiber that faults immediately at entry produces no DOWN to its loop
-   supervisor.  libxtc's own fault_early_contain test passes, so the remaining
-   gap is in OUR spawn/monitor sequencing: xtc_proc_spawn appears to schedule
-   the new fiber (which faults) before the supervisor's following xtc_monitor()
-   call runs, so the monitor is not yet registered when the fault is contained.
-   Fix is on our side (register the monitor before the fiber can be scheduled,
-   or arrange the injected fault to occur after the first yield); the
-   production crash-escalation wiring and classification are correct and safe
-   (reason>0 -> escalate, 0/NOPROC -> benign).
+2e. **RESOLVED (our side): end-to-end genuine-crash escalation validated on
+   meh (v1.2.1, 24-loop pool).**  The injection escalation did not fire because
+   the carrier never called xtc_fault_guard_install() -- so no
+   SIGSEGV/SIGBUS/SIGFPE/SIGILL handler + alt-stack was registered on the loop
+   threads, and libxtc's auto-armed recovery frame had no handler to unwind the
+   faulted fiber and deliver its DOWN.  (This was NOT a spawn/monitor race: the
+   supervisor's xtc_monitor returned rc=0 before the child ran; and NOT the
+   auto-arm timing: the frame is armed at proc entry before the body.)  libxtc's
+   own tests install the guard per loop thread; we now do too, at supervisor
+   entry (one supervisor fiber per loop thread; idempotent).  This is required
+   for containment of REAL backend-fiber crashes, not just the test.  Result:
+     - Injected fault -> DOWN reason=11 (positive SIGSEGV) -> GENUINE-CRASH ->
+       "terminating threaded server runtime after backend fiber crash" ->
+       postmaster EXITED (escalated).  INJECT=1, GENUINE=1, escalation=1.
+     - Normal 24-loop ops: 11 clean DOWNs (reason 0), GENUINE=0, escalation=0,
+       NOPROC=0, smoke 11/11.  No false escalation from the guard.
+   #7 Stage 1b (crash detection + escalation) is fully validated end-to-end.
 
 3. **Latch/SetLatch wakeups.**  The epoll-fd intercept already covers latch
    wakeups (the latch signalfd is a registered epoll event, so SetLatch makes
