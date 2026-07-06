@@ -134,6 +134,50 @@ carrier-proc entry, debug2 postmaster log):
   then.  It likely also covers other on-demand worker families with a
   start-timeout cancel.
 
+### ROOT CAUSE (2026-07-06, deeper): concurrent GUC SET/RESET wedges the fiber runtime
+
+Further bisection (raw-write markers through backend_thread_entry, since elog
+is unsafe pre-error-stack there) reframes the autovac hang as a symptom of a
+BROADER pre-existing bug, independent of autovac:
+
+  - Direct repro on plain HEAD (no autovac): open 8 concurrent client backends,
+    each running a `set_config()/RESET work_mem` loop.  One session wedges
+    (rc=124 timeout) and fast stop HANGS.  A control of 8 concurrent backends
+    doing plain work (no SET/RESET) is completely clean.  So the trigger is
+    concurrent GUC SET/RESET across fiber backends, not concurrency itself.
+  - Mechanism: guc.c ThreadedGUCLock() takes a process-wide `pthread_mutex_t`
+    (ThreadedGUCMutex).  That is a LOOP-BLOCKING primitive under the fiber
+    carrier: if fiber A on a carrier loop holds it and yields, and fiber B on
+    the SAME loop then calls pthread_mutex_lock, B blocks the OS thread, so A
+    can never be resumed to release it -- the loop deadlocks.  The autovac
+    worker burst hit this because rapid workers land >1 fiber per loop, both in
+    InitializeThreadedSessionGUCOptions() (which takes ThreadedGUCLock); the
+    SET/RESET storm hits the identical lock directly and reproduces it without
+    autovac.
+  - The autovac "canceled-but-spawned worker not reaped" story from the section
+    above is a downstream effect: the loop is already wedged on the GUC mutex,
+    so the canceled worker's fiber can never run to publish its exit.
+
+Attempted fix (BACKED OUT -- regression): route ThreadedGUCLock through an
+`xtc_amutex` (fiber-parking mutex, xtc_sync.h) under USE_XTC_CARRIER via
+xtc_pg_guc_lock/unlock wrappers.  It did NOT fix the wedge and made the storm
+WORSE (sessions failed rc=2 instead of one timing out).  Likely causes to work
+through before retrying: the HOLD_INTERRUPTS bracketing across a parking lock;
+xtc_amutex_static recursion vs. guc.c's own per-fiber ThreadedGUCMutexDepth
+double-counting; and the on-loop-park vs off-loop-condvar hand-off when a
+pthread-carrier io worker and a fiber backend contend the same amutex.  Reverted
+to HEAD (pthread mutex); tree stays clean, smoke 12/12.
+
+This is the REAL #5 blocker and it is broader than autovac: it blocks any
+concurrent GUC SET/RESET (and any two fibers contending ThreadedGUCLock) on the
+xtc carrier.  Fixing it wants a dedicated change with a concurrent-SET/RESET
+regression test as the gate, and a correct fiber-aware lock that (a) never
+blocks the loop OS thread while a sibling fiber holds it, (b) preserves the
+interrupt-hold + recursion contract, and (c) is one lock object shared
+correctly between on-loop fibers and off-loop pthread carriers.  Until then,
+autovac (and any fiber worker family that does contended GUC work) stays on
+thread carriers.
+
 ---
 
 ## Smoke validated 12/12 (2026-07-06, 8-loop pool on floki)
