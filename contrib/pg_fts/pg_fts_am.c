@@ -62,7 +62,9 @@
 #include "optimizer/cost.h"
 #include "optimizer/optimizer.h"
 #include "storage/bufmgr.h"
+#include "catalog/storage.h"
 #include "storage/condition_variable.h"
+#include "storage/freespace.h"
 #include "storage/indexfsm.h"
 #include "storage/lmgr.h"
 #include "storage/spin.h"
@@ -577,10 +579,85 @@ bm25_decode_term(Relation index, BlockNumber firstblk, uint32 firstoff,
 
 /* ----- writing the index pages ----- */
 
+/*
+ * Low-page-biased allocation context.  Normally bm25_new_buffer() hands out
+ * whatever free page the FSM offers (unordered), then extends.  During a
+ * space-reclaiming compaction we instead want to pack live pages toward the
+ * FRONT of the file so the dead tail can be truncated.  bm25_alloc_begin()
+ * gathers all currently-free blocks, sorts them ascending, and
+ * bm25_new_buffer() hands them out low-first; when the low-free list is
+ * exhausted it falls back to the ordinary FSM/extend path.  The context is a
+ * single backend-scoped hint (compaction is single-writer), reset by
+ * bm25_alloc_end().
+ */
+static BlockNumber *bm25_lowfree = NULL;
+static int	bm25_lowfree_n = 0;
+static int	bm25_lowfree_i = 0;
+
+static int
+cmp_blocknumber(const void *a, const void *b)
+{
+	BlockNumber x = *(const BlockNumber *) a;
+	BlockNumber y = *(const BlockNumber *) b;
+
+	return (x < y) ? -1 : (x > y) ? 1 : 0;
+}
+
+/*
+ * Gather all free blocks (via a linear FSM probe) into an ascending array so
+ * subsequent bm25_new_buffer() calls reuse the lowest blocks first.  Single
+ * writer only.  Cheap relative to the segment rewrite it precedes.
+ */
+static void
+bm25_alloc_begin(Relation index)
+{
+	BlockNumber nblocks = RelationGetNumberOfBlocks(index);
+	BlockNumber blk;
+
+	bm25_lowfree_i = 0;
+	bm25_lowfree_n = 0;
+	bm25_lowfree = NULL;
+	if (nblocks <= 1)
+		return;
+	bm25_lowfree = (BlockNumber *) palloc(sizeof(BlockNumber) * nblocks);
+	for (blk = 1; blk < nblocks; blk++)	/* block 0 = metapage, never free */
+		if (GetRecordedFreeSpace(index, blk) >= BLCKSZ / 2)
+			bm25_lowfree[bm25_lowfree_n++] = blk;
+	if (bm25_lowfree_n > 1)
+		qsort(bm25_lowfree, bm25_lowfree_n, sizeof(BlockNumber), cmp_blocknumber);
+}
+
+static void
+bm25_alloc_end(void)
+{
+	if (bm25_lowfree)
+		pfree(bm25_lowfree);
+	bm25_lowfree = NULL;
+	bm25_lowfree_n = 0;
+	bm25_lowfree_i = 0;
+}
+
 static Buffer
 bm25_new_buffer(Relation index)
 {
 	Buffer		buffer;
+
+	/*
+	 * Low-bias reuse: during a compaction, prefer the lowest free block so
+	 * live pages pack at the front of the file.
+	 */
+	while (bm25_lowfree && bm25_lowfree_i < bm25_lowfree_n)
+	{
+		BlockNumber blk = bm25_lowfree[bm25_lowfree_i++];
+
+		buffer = ReadBuffer(index, blk);
+		if (ConditionalLockBuffer(buffer))
+		{
+			RecordUsedIndexPage(index, blk);
+			return buffer;
+		}
+		ReleaseBuffer(buffer);
+	}
 
 	/* Try to reuse a page freed by a previous merge before extending. */
 	for (;;)
@@ -1704,6 +1781,88 @@ bm25_merge_all(Relation index)
 	return didwork;
 }
 
+/*
+ * Full-compaction with tail truncation, for VACUUM FULL / an explicit
+ * fts_vacuum().  Merge every live segment into one, biasing allocation toward
+ * the lowest free blocks so live pages pack at the front; then truncate the
+ * contiguous run of free blocks at the end of the file back to the OS.  This
+ * is what reclaims the physical bloat left by ordinary merges (which recycle
+ * freed pages to the FSM for later reuse but never shrink the relation).
+ *
+ * Single-writer only (holds a lock that excludes concurrent writers, e.g.
+ * VACUUM's ShareUpdateExclusiveLock or CIC's AccessExclusiveLock).
+ */
+static bool
+bm25_vacuum_compact(Relation index)
+{
+	BlockNumber nblocks;
+	BlockNumber blk;
+	BlockNumber truncpoint;
+	bool		didwork = false;
+
+	/*
+	 * Compact to a single segment, reusing the lowest free blocks first so the
+	 * merged output lands at the front of the file.  Do NOT use the parallel
+	 * merge here: the low-page allocator is a single backend-scoped hint, and
+	 * VACUUM wants a deterministic front-packed layout.
+	 */
+	bm25_alloc_begin(index);
+	PG_TRY();
+	{
+		int			guard;
+
+		for (guard = 0; guard < BM25_MAX_SEGMENTS; guard++)
+		{
+			BM25MetaPageData meta;
+			uint32		sel[BM25_MAX_SEGMENTS];
+			uint32		nsel = 0;
+			uint32		i;
+			Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
+
+			LockBuffer(mb, BUFFER_LOCK_SHARE);
+			memcpy(&meta, BM25PageGetMeta(BufferGetPage(mb)), sizeof(meta));
+			UnlockReleaseBuffer(mb);
+			if (meta.nsegments <= 1)
+				break;
+			for (i = 0; i < meta.nsegments; i++)
+				if (meta.segs[i].dictstart != InvalidBlockNumber)
+					sel[nsel++] = i;
+			if (nsel <= 1)
+				break;
+			if (!bm25_merge_selected(index, sel, nsel))
+				break;
+			didwork = true;
+		}
+	}
+	PG_FINALLY();
+	{
+		bm25_alloc_end();
+	}
+	PG_END_TRY();
+
+	/* Make freed pages visible in the FSM, then find the free tail. */
+	IndexFreeSpaceMapVacuum(index);
+	nblocks = RelationGetNumberOfBlocks(index);
+	truncpoint = nblocks;
+	for (blk = nblocks; blk > 1; blk--)
+	{
+		if (GetRecordedFreeSpace(index, blk - 1) >= BLCKSZ / 2)
+			truncpoint = blk - 1;	/* free -> part of the truncatable tail */
+		else
+			break;				/* first live block from the end; stop */
+	}
+
+	if (truncpoint < nblocks)
+	{
+		/* drop the FSM entries for the pages we are about to remove, then
+		 * truncate the relation to release the space to the OS */
+		FreeSpaceMapVacuumRange(index, truncpoint, nblocks);
+		RelationTruncate(index, truncpoint);
+		didwork = true;
+	}
+	return didwork;
+}
+
 static void
 bm25_merge_segments(Relation index)
 {
@@ -2702,6 +2861,26 @@ bm25_vacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	{
 		(void) bm25_flush_pending(info->index);
 		bm25_merge_segments(info->index);
+
+		/*
+		 * If the relation carries substantial dead space (physical size well
+		 * above the live pages), reclaim it: compact to one segment reusing
+		 * low blocks, then truncate the free tail.  Gated so routine
+		 * autovacuum does not pay a full rewrite every pass -- only when the
+		 * free tail is a meaningful fraction of the file.
+		 */
+		{
+			BlockNumber nblocks = RelationGetNumberOfBlocks(info->index);
+			BlockNumber freeblks = 0;
+			BlockNumber b;
+
+			for (b = 1; b < nblocks; b++)
+				if (GetRecordedFreeSpace(info->index, b) >= BLCKSZ / 2)
+					freeblks++;
+			/* reclaim when >= 25% of the file is free (bloated after merges) */
+			if (nblocks > 16 && freeblks > nblocks / 4)
+				(void) bm25_vacuum_compact(info->index);
+		}
 	}
 
 	return stats;
@@ -2732,6 +2911,36 @@ fts_merge(PG_FUNCTION_ARGS)
 	 * several same-size segments, so it is not enough on its own here.
 	 */
 	if (bm25_merge_all(index))
+		done = true;
+	index_close(index, ShareUpdateExclusiveLock);
+
+	PG_RETURN_BOOL(done);
+}
+
+PG_FUNCTION_INFO_V1(fts_vacuum);
+
+/*
+ * fts_vacuum(regclass) -> bool : on-demand full compaction with truncation.
+ * Like fts_merge(), but after compacting to one segment it reclaims the dead
+ * pages left by prior merges -- packing live pages at the front of the file
+ * and truncating the free tail back to the OS.  Use this to shrink an index
+ * that has grown physically larger than its live contents.
+ */
+Datum
+fts_vacuum(PG_FUNCTION_ARGS)
+{
+	Oid			indexoid = PG_GETARG_OID(0);
+	Relation	index;
+	bool		done;
+
+	index = index_open(indexoid, ShareUpdateExclusiveLock);
+	if (index->rd_rel->relam != get_index_am_oid("bm25", true))
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is not a bm25 index",
+						RelationGetRelationName(index))));
+	done = bm25_flush_pending(index);
+	if (bm25_vacuum_compact(index))
 		done = true;
 	index_close(index, ShareUpdateExclusiveLock);
 

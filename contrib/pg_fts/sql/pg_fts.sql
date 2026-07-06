@@ -735,3 +735,24 @@ SELECT count(*) AS ranked FROM (SELECT id FROM pbuild WHERE d @@@ 'common'::ftsq
   ORDER BY d <=> 'common'::ftsquery LIMIT 10) x;                      -- 10
 RESET enable_seqscan;
 DROP TABLE pbuild;
+
+-- fts_vacuum (1.20): full compaction + tail truncation.  A parallel build
+-- leaves dead source-segment pages; fts_vacuum reclaims them and truncates the
+-- file, and the contents are unchanged afterward.
+ALTER EXTENSION pg_fts UPDATE TO '1.20';
+CREATE TABLE vac (id int, d ftsdoc);
+INSERT INTO vac SELECT g, to_ftsdoc('common term'||(g%200)||' doc'||g)
+  FROM generate_series(1,20000) g;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_maintenance_workers = 2;
+CREATE INDEX vac_bm25 ON vac USING bm25 (d);
+RESET max_parallel_maintenance_workers;
+RESET min_parallel_table_scan_size;
+SET enable_seqscan = off;
+SELECT fts_count('vac_bm25', 'common'::ftsquery) AS before_all;       -- 20000
+SELECT fts_vacuum('vac_bm25') IS NOT NULL AS vacuumed;               -- t
+SELECT fts_count('vac_bm25', 'common'::ftsquery) AS after_all;        -- 20000
+SELECT fts_count('vac_bm25', 'term7'::ftsquery) AS after_term7;       -- 100
+SELECT fts_index_nsegments('vac_bm25') AS nseg_after;                 -- 1
+RESET enable_seqscan;
+DROP TABLE vac;
