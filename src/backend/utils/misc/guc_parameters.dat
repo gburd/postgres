@@ -401,6 +401,16 @@
   boot_val => '"clock"',
 },
 
+{ name => 'buffer_pool_max_usage_count', type => 'int', context => 'PGC_POSTMASTER', group => 'RESOURCES_MEM',
+  short_desc => 'Maximum clock-sweep usage count for shared buffers.',
+  long_desc => 'The clock sweep lets a buffer survive this many complete sweeps without a re-pin before it becomes eligible for eviction. The historical value is 5. Setting it to 1 turns usage_count into a single reference bit (a LeanStore-style hot/cold second-chance clock), which is cheaper to maintain and reacts faster to working-set changes at the cost of coarser frequency information. For experimentation and benchmarking.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'buffer_pool_max_usage_count',
+  boot_val => '5',
+  min => '1',
+  max => '5',
+},
+
 { name => 'buffer_pool_numa', type => 'bool', context => 'PGC_POSTMASTER', group => 'RESOURCES_MEM',
   short_desc => 'Distribute buffer pool memory across NUMA nodes.',
   long_desc => 'When on and the system has more than one NUMA node, the default buffer pool uses a NUMA-partitioned clock sweep (one clock hand per node, each confined to the buffers of that node) and its memory is bound to nodes in contiguous chunks (a buffer and its descriptor on the same node). Dynamic pools have their memory distributed across nodes. Has no effect on single-node or non-NUMA systems.',
@@ -414,6 +424,7 @@
   variable => 'buffer_pool_numa_cooling',
   boot_val => 'false',
 },
+
 
 { name => 'buffer_pool_numa_nodes', type => 'int', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
   short_desc => 'Forces a logical NUMA node count for the buffer pool (0 = auto-detect).',
