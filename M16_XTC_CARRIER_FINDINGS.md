@@ -592,39 +592,39 @@ inside the postmaster process (8 threads, zero child processes -- verified via
    the SAME session then ran `SELECT 'recovered'` successfully -- the fiber
    survived the ERROR unwind and stayed usable.  Smoke step 4 = PASS.
 
-5. **cassert build.**  PARTIALLY CLOSED (2026-07-06).  Under `--enable-cassert`,
-   bootstrap-mode `initdb` aborts before reaching BKI.  All three aborts are
+5. **cassert build.**  CLOSED (2026-07-06).  Under `--enable-cassert`,
+   bootstrap-mode `initdb` aborted before reaching BKI.  All three aborts are
    BASE-TREE bugs in the session-runtime state accessors, reproduced with the
-   xtc carrier DISABLED (`-Dxtc=disabled`) -- not xtc.  They sit one behind the
-   other in the bootstrap sequence.  Full write-up (backtraces, gdb evidence,
-   fixes) in `/tmp/pg-bootstrap-cassert-bugs.md`.
+   xtc carrier DISABLED (`-Dxtc=disabled`) -- not xtc.  ALL THREE FIXED; cassert
+   initdb now Succeeds end to end.  Full write-up in
+   `/tmp/pg-bootstrap-cassert-bugs.md`.
      - FIXED #1: `guc.c:1612 Assert(GUCMemoryContext == NULL)` tripped on its
        own read side effect -- the `GUCMemoryContext` macro is
        `*PgCurrentGUCMemoryContextRef()`, whose accessor lazily CREATES the
-       early-fallback context when no session is installed, so the assert read
-       a value the read itself produced.  Fix: non-allocating
+       early-fallback context when no session is installed.  Fix: non-allocating
        `PgCurrentGUCMemoryContextPeek()` used by the assert.
      - FIXED #2: `backend_runtime_backend.c:601`
        `PgBackendAdoptEarlyMemoryManagerState()` asserted the early aset.c
-       `context_freelists` were empty -- a false invariant.  Bootstrap's
-       `ProcessConfigFile` + `load_tzoffsets` create+delete
-       ALLOCSET_DEFAULT/SMALL contexts, and `AllocSetDelete` caches freelist
-       headers rather than freeing them, so the freelist is legitimately
-       non-empty (gdb: freelist[0].num_free==1 from "config file processing").
-       Fix: drop the emptiness asserts; the wholesale copy already transfers
-       the cache correctly.
-     - OPEN #3: `fd.c:1300 Assert(numExternalFDs > 0)` in `ReleaseExternalFD`
-       via `FreeWaitEventSet <- PgBackendResetClosedState <- PgBackendExit`.
-       A teardown over-release / state-straddle: `numExternalFDs` is a
-       per-backend-storage-state cell, and the exit/reset path releases the
-       WaitEventSet's epoll-fd reservation against a cell that reads 0.  Same
-       family as the StartupProcess teardown crash (item #2).  Needs
-       session-runtime teardown-lifecycle ordering work, left for the tree
-       owners; details in the report.
-   Bugs #1/#2 fixed in commit `fix two base-tree bootstrap cassert aborts ...`.
-   Non-cassert `initdb` still Succeeds and the xtc smoke stays 12/12 after both
-   fixes.  The xtc carrier itself still builds/runs only in the non-cassert
-   config until #3 (and any aborts behind it) are resolved.
+       `context_freelists` were empty -- a false invariant (AllocSetDelete
+       caches freelist headers; bootstrap's config/tz processing legitimately
+       leaves them non-empty).  Fix: drop the emptiness asserts.
+     - FIXED #3: `fd.c:1300 Assert(numExternalFDs > 0)` in `ReleaseExternalFD`
+       via `FreeWaitEventSet <- PgBackendResetIPCClosedState <-
+       PgBackendResetClosedState <- PgBackendExit`.  State-straddle confirmed by
+       a reserve/release ledger: `num_external_fds` counts FDs owned by the
+       WaitEventSets (latch set, self-pipe, signalfd, FeBeWaitSet), released
+       LATER in the exit path.  The `storage` bucket reset runs BEFORE the `ipc`
+       bucket reset and zeroed the counter twice
+       (`PgBackendResetFileAccessClosedState` `= 0` + the
+       `PgBackendInitializeStorageState` MemSet), so the still-pending releases
+       underflowed.  Fix: preserve `num_external_fds` across
+       `PgBackendResetStorageClosedState` so the explicit releases drive it to 0
+       (commit `894fee47e99`).
+   Non-cassert `initdb` Succeeds and the xtc smoke stays 11/11 after all three.
+   The xtc carrier can now be built/run under `--enable-cassert`.  (Separate,
+   still open: the StartupProcess proc_exit -> PgBackendResetXLogClosedState ->
+   MemoryContextDelete teardown SIGSEGV, same session-runtime teardown family,
+   item #2.)
 
 6. **Remove diagnostic writes.**  CLOSED (2026-07-06).  Dropped the two
    proof-of-life raw writes named in this item -- "backend fiber entered" (one

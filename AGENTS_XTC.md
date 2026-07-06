@@ -160,12 +160,19 @@ Larger (toward fully-on-xtc):
    classification also moved to the self-describing xtc_down_decode_ex()
    (kind/signal/exit_code), retiring the old clean-exit ring and the
    reason-range heuristic.  The NOPROC monitor-race case can no longer occur.
-8. cassert build: PARTIALLY DONE.  Two base-tree bootstrap asserts fixed
-   (GUCMemoryContext read side effect; early aset-freelist emptiness -- both
-   reproduce with xtc disabled).  One teardown assert remains open
-   (numExternalFDs in ReleaseExternalFD via PgBackendResetClosedState), a
-   session-runtime teardown-lifecycle issue for the tree owners.  Full report:
+8. cassert build: DONE.  All three base-tree bootstrap-cassert aborts fixed
+   (all reproduce with xtc disabled -- session-runtime-refactor bugs, not xtc):
+   (1) GUCMemoryContext read side effect (peek accessor); (2) early
+   aset-freelist emptiness false invariant (drop asserts); (3) numExternalFDs
+   underflow in ReleaseExternalFD via the storage closed-state reset, which
+   zeroed the WaitEventSet-owned FD counter before the ipc bucket released
+   those fds -- fixed by preserving num_external_fds across
+   PgBackendResetStorageClosedState (commit 894fee47e99).  cassert initdb now
+   Succeeds end to end; non-cassert xtc smoke 11/11.  Full report:
    /tmp/pg-bootstrap-cassert-bugs.md; ledger detail in M16_XTC_CARRIER_FINDINGS.md.
+   NOTE: the StartupProcess proc_exit -> PgBackendResetXLogClosedState ->
+   MemoryContextDelete teardown SIGSEGV (below) is a SEPARATE session-runtime
+   teardown-lifecycle bug, still open, of the same family.
 
 Known pre-existing NON-xtc bug (do not chase as an xtc problem): after a
 NON-clean shutdown, recovery runs and the StartupProcess thread SIGSEGVs
