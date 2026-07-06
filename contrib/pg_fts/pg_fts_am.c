@@ -442,6 +442,8 @@ bm25_for_unpack(const unsigned char *buf, int n, uint64 *out)
 	int			width = buf[0];
 	int			i;
 	int			bitpos;
+	const unsigned char *bits;
+	uint64		mask;
 
 	if (width == 0)
 	{
@@ -449,18 +451,43 @@ bm25_for_unpack(const unsigned char *buf, int n, uint64 *out)
 			out[i] = 0;
 		return 1;
 	}
+
+	bits = buf + 1;
+	mask = (width >= 64) ? ~UINT64CONST(0) : (((uint64) 1 << width) - 1);
 	bitpos = 0;
 	for (i = 0; i < n; i++)
 	{
-		uint64		v = 0;
-		int			b;
+		int			byte = bitpos >> 3;
+		int			shift = bitpos & 7;
+		uint64		v;
 
-		for (b = 0; b < width; b++)
+		/*
+		 * A value spans at most width+7 bits, so a single unaligned load of
+		 * the covering bytes at `byte` plus shift/mask extracts it when
+		 * shift+width <= 64.  For the rare wide case (shift+width > 64)
+		 * assemble across a 9-byte window.  Replaces the per-bit inner loop
+		 * that dominated posting decode.
+		 */
+		if (shift + width <= 64)
 		{
-			int			abs = bitpos + b;
+			uint64		w = 0;
+			int			nb = (shift + width + 7) >> 3;
+			int			k;
 
-			if (buf[1 + (abs >> 3)] & (1 << (abs & 7)))
-				v |= (uint64) 1 << b;
+			for (k = 0; k < nb; k++)
+				w |= (uint64) bits[byte + k] << (k * 8);
+			v = (w >> shift) & mask;
+		}
+		else
+		{
+			uint64		lo = 0,
+						hi;
+			int			k;
+
+			for (k = 0; k < 8; k++)
+				lo |= (uint64) bits[byte + k] << (k * 8);
+			hi = bits[byte + 8];
+			v = ((lo >> shift) | (hi << (64 - shift))) & mask;
 		}
 		out[i] = v;
 		bitpos += width;
