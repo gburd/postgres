@@ -43,6 +43,9 @@ tests += {
       't/005_numa_interleave_pool.pl',
       't/006_algorithm_swap.pl',
       't/007_disjoint_fragmentation.pl',
+      't/008_resize_under_load.pl',
+      't/009_swap_reader_race.pl',
+      't/010_create_drop_race.pl',
     ],
   },
 }
