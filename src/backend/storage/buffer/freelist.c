@@ -321,8 +321,14 @@ const BufferPoolRoutine clock_pool_routine = {
  * The pin transition (usage_count==0, refcount==0 -> pinned) STILL uses CAS:
  * that one must be race-correct against concurrent pins from other backends.
  * Only the cooling tick goes blind.
+ *
+ * Marked pg_attribute_always_inline: this is called once per tick from the
+ * NumaCoolingGetVictim sweep loop, so inlining it collapses the per-tick call
+ * into the loop and lets the compiler keep the hot state in registers -- the
+ * same technique the plain-clock ClockSweepDefault uses.  Safe to force-inline:
+ * contains no PG_TRY/setjmp.
  */
-static BufferDesc *
+static pg_attribute_always_inline BufferDesc *
 ClockTryAcquireVictimCooling(int victim_id, BufferAccessStrategy strategy,
 							 uint64 *buf_state, int *trycounter,
 							 int reset_budget)
