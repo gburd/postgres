@@ -414,6 +414,25 @@ extern int	BufPoolNumaCpuForProc(void);
 extern int	BufPoolNumaCoresPerNode(int cap);
 
 /*
+ * One row of per-(node,stripe) clock-sweep monitoring state for the default
+ * pool, filled by BufPoolNumaClockStats() and surfaced as
+ * pg_stat_get_bufferpool_numa().  With NUMA off a single node=0,stripe=0 row
+ * describes the plain global clock sweep.
+ */
+typedef struct BufPoolNumaStat
+{
+	int			node;			/* NUMA node index */
+	int			stripe;			/* stripe within node (0 when not striped) */
+	int			nbuffers;		/* buffers in this node/stripe range */
+	uint32		clock_hand;		/* hand position within the pool [0,NBuffers) */
+	uint32		complete_passes; /* completed clock cycles (per-node) */
+} BufPoolNumaStat;
+
+/* Max rows BufPoolNumaClockStats can emit (nodes * stripes). */
+extern int	BufPoolNumaClockStatsMax(void);
+extern int	BufPoolNumaClockStats(BufPoolNumaStat *out, int maxrows);
+
+/*
  * Dynamic pool lifecycle functions.
  */
 extern BufferPoolDesc *CreateDynamicBufferPool(Oid bp_oid, const char *name,

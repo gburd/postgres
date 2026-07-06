@@ -2025,3 +2025,51 @@ pg_stat_get_bufferpool(PG_FUNCTION_ARGS)
 
 	return (Datum) 0;
 }
+
+/*
+ * pg_stat_get_bufferpool_numa -- per-(node,stripe) clock-sweep state SRF.
+ *
+ * Surfaces the NUMA-partitioned / striped-cooling default-pool sweep state
+ * that pg_stat_get_bufferpool does not: one row per NUMA node (and per stripe
+ * when cooling is on) with the buffers owned by that range, the clock-hand
+ * position, and completed passes.  With NUMA off it returns a single node=0,
+ * stripe=0 row describing the plain global clock sweep, so the companion view
+ * is always non-empty and default behavior is unchanged.
+ *
+ * Read-only and cheap (atomic reads + one spinlock snapshot).  Built-in like
+ * pg_stat_get_bufferpool -- no PG_FUNCTION_INFO_V1.
+ */
+#define PG_STAT_GET_BUFFERPOOL_NUMA_COLS 5
+
+Datum
+pg_stat_get_bufferpool_numa(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	int			maxrows;
+	BufPoolNumaStat *rows;
+	int			nrows;
+
+	InitMaterializedSRF(fcinfo, 0);
+
+	maxrows = BufPoolNumaClockStatsMax();
+	rows = (BufPoolNumaStat *) palloc(sizeof(BufPoolNumaStat) * maxrows);
+	nrows = BufPoolNumaClockStats(rows, maxrows);
+
+	for (int i = 0; i < nrows; i++)
+	{
+		Datum		values[PG_STAT_GET_BUFFERPOOL_NUMA_COLS] = {0};
+		bool		nulls[PG_STAT_GET_BUFFERPOOL_NUMA_COLS] = {0};
+
+		values[0] = Int32GetDatum(rows[i].node);
+		values[1] = Int32GetDatum(rows[i].stripe);
+		values[2] = Int32GetDatum(rows[i].nbuffers);
+		values[3] = Int64GetDatum((int64) rows[i].clock_hand);
+		values[4] = Int64GetDatum((int64) rows[i].complete_passes);
+
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc,
+							 values, nulls);
+	}
+
+	pfree(rows);
+	return (Datum) 0;
+}
