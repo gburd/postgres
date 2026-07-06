@@ -239,11 +239,21 @@ loop pool sometimes exceeds the start timeout, the launcher cancels + reclaims
 the shmem WorkerInfo, and the orphaned worker fiber's PMChild is never
 reconciled with a published exit -- so PM_WAIT_BACKENDS waits forever.
 
+Core-dump proof (SIGABRT of the wedged postmaster): pmState == PM_WAIT_BACKENDS,
+Shutdown == fast, and ActiveChildList still holds exactly ONE B_AUTOVAC_WORKER
+(bkend_type=4, pid=0 -> pooled-logical fiber) plus the process-backed
+checkpointer/bgwriter (reaped in a later state).  The un-reaped worker fiber is
+parked in WaitLatch and the postmaster's fast-stop interrupt (SendInterrupt ->
+SetLatch(interrupt_latch)) never drives it to publish its pooled-logical exit.
+Exactly one such worker per hang, 1:1 with one "took too long to start;
+canceled".
+
 Why this is NOT a quick unblock: the fix must make the worker-start-timeout
 cancel fiber-aware -- guarantee that a canceled-but-spawned worker fiber's
-PMChild is always reaped (either the fiber deterministically reaches a
-proc_exit that publishes its pooled-logical exit even when canceled, or the
-cancel path drives the slot through process_pm_pooled_logical_exit).  That is a
+PMChild is always reaped: either (a) the launcher-cancel path drives the
+orphaned slot through process_pm_pooled_logical_exit, or (b) a canceled worker
+fiber deterministically reaches a proc_exit that publishes its pooled-logical
+exit AND the fast-stop interrupt reliably wakes it out of WaitLatch.  That is a
 dedicated postmaster/autovac lifecycle change with its own churn+fast-stop TAP
 gate; it touches the launcher cancel + PMChild reaping handshake.  Autovac runs
 correctly as a THREAD carrier meanwhile (PgRuntimeShouldThreadBackend), so this
