@@ -1274,9 +1274,28 @@ PgBackendInitializeRuntimeObject(PgBackend *backend,
 void
 PgBackendResetEarlyFallbackAfterFork(int proc_pid)
 {
+	int			saved_num_external_fds;
+
+	/*
+	 * A forked child INHERITS the postmaster's open external file descriptors
+	 * across fork() -- notably the postmaster-death-watch pipe and the
+	 * postmaster's WaitEventSet (pm_wait_set) epoll fd -- and immediately
+	 * closes+releases them in ClosePostmasterPorts(), each calling
+	 * ReleaseExternalFD().  fd.c's numExternalFDs counter lives in this early
+	 * fallback backend's storage bucket; in upstream it is a plain process
+	 * global that survives fork, so the inherited count matches those releases.
+	 * Re-initializing the fallback here would zero it, making those very first
+	 * child releases underflow (Assert(numExternalFDs > 0) in fd.c -- a
+	 * cassert child-startup abort).  Preserve the inherited count across the
+	 * reset so ClosePostmasterPorts() balances, exactly as the process-global
+	 * counter did.
+	 */
+	saved_num_external_fds = early_backend_fallback.storage.num_external_fds;
+
 	PgBackendInitializeRuntimeObject(&early_backend_fallback, NULL, NULL,
 								 NULL, NULL, NULL, B_INVALID, NULL);
 	early_backend_core.proc_pid = proc_pid;
+	early_backend_fallback.storage.num_external_fds = saved_num_external_fds;
 }
 
 PgBackendActivityState *
