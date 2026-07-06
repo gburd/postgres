@@ -204,11 +204,51 @@ unnecessary and (as its regression showed) wrong; it stays reverted.
 
 Gate: smoke step 2b ("concurrent GUC SET/RESET (no wedge)") -- 8 concurrent
 set_config/RESET loops then a fresh query; passes with the fix, wedges without.
-#5's GUC-lock hazard is CLOSED.  (The autovac worker-burst hang was the same
-root cause -- the buggy unlock corrupting interrupt state under the
-InitializeThreadedSessionGUCOptions lock -- so re-admitting autovac as fibers
-is now unblocked by this fix; validate separately before flipping the
-eligibility gate back on.)
+#5's GUC-lock hazard is CLOSED.
+
+CORRECTION (2026-07-06, later): I initially claimed this GUC-unlock fix also
+unblocked autovac-as-fibers.  That was WRONG -- disproven by re-test: with
+autovac eligibility re-enabled on top of the GUC fix, the churn+fast-stop
+scenario STILL HUNG deterministically (3/3 runs), always with one "autovacuum
+ worker took too long to start; canceled".  So the autovac hang is a SEPARATE,
+real race, not the GUC-unlock bug.  Autovac stays deferred; see the dedicated
+section below.
+
+### Autovac fiber-widening: the REAL blocker (worker-start-timeout cancel/reap race)
+
+Instrumented the worker fiber lifecycle end to end (raw-write markers, since
+elog is unsafe pre-error-stack).  Findings on the churn+fast-stop hang:
+  - Every spawned fiber runs its body (xtc_carrier_proc "fiber body running"
+    count == supervisor "spawned" count), so it is NOT a libxtc
+    spawned-but-never-scheduled problem.
+  - 2 fibers run their body but never reach "backend fiber exiting"; the STUCK
+    POINT VARIES run-to-run -- sometimes before pre-GUCopts (early
+    backend_thread_entry init), sometimes past it -- i.e. it is timing
+    dependent, not a fixed deadlock.
+  - The hang always correlates with exactly one
+    `autovacuum_worker_took_too_long_to_start; canceled`.  The postmaster then
+    stalls in PM_WAIT_BACKENDS with all loops idle, waiting on a worker PMChild
+    whose pooled-logical exit is never published.
+
+Root cause: a race between the launcher's autovacuum_worker_start_timeout
+cancel and the worker FIBER's lifecycle.  Process-mode assumes a canceled
+worker is a forked process the OS reaps via SIGCHLD (the worker eventually runs,
+finds av_startingWorker == NULL, proc_exit(0)s, postmaster reaps).  For a
+POOLED-LOGICAL FIBER that assumption breaks: fiber scheduling latency on a busy
+loop pool sometimes exceeds the start timeout, the launcher cancels + reclaims
+the shmem WorkerInfo, and the orphaned worker fiber's PMChild is never
+reconciled with a published exit -- so PM_WAIT_BACKENDS waits forever.
+
+Why this is NOT a quick unblock: the fix must make the worker-start-timeout
+cancel fiber-aware -- guarantee that a canceled-but-spawned worker fiber's
+PMChild is always reaped (either the fiber deterministically reaches a
+proc_exit that publishes its pooled-logical exit even when canceled, or the
+cancel path drives the slot through process_pm_pooled_logical_exit).  That is a
+dedicated postmaster/autovac lifecycle change with its own churn+fast-stop TAP
+gate; it touches the launcher cancel + PMChild reaping handshake.  Autovac runs
+correctly as a THREAD carrier meanwhile (PgRuntimeShouldThreadBackend), so this
+stays deferral, not regression.  Eligibility gate reverted (autovac not
+fiber-eligible) until this lands.
 
 ---
 
