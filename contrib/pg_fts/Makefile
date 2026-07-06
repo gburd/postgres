@@ -9,6 +9,7 @@ OBJS = \
 	pg_fts_query.o \
 	pg_fts_rank.o \
 	pg_fts_am.o \
+	pg_fts_customscan.o \
 	pg_fts_aux.o \
 	pg_fts_migrate.o \
 	pg_fts_trgm.o \

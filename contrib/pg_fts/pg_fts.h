@@ -178,4 +178,7 @@ extern int	fts_regex_trigrams(const char *re, int relen, uint32 *out, int maxout
 extern bool fts_trigrams_overlap(const uint32 *a, int na,
 								 const uint32 *b, int nb);
 
+/* pg_fts_am_scan.c -- count entry point reused by the COUNT-pushdown CustomScan */
+extern int64 bm25_count_visible_oid(Oid indexoid, FtsQuery q);
+
 #endif							/* PG_FTS_H */

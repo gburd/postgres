@@ -756,3 +756,24 @@ SELECT fts_count('vac_bm25', 'term7'::ftsquery) AS after_term7;       -- 100
 SELECT fts_index_nsegments('vac_bm25') AS nseg_after;                 -- 1
 RESET enable_seqscan;
 DROP TABLE vac;
+
+-- COUNT pushdown CustomScan (transparent count(*) WHERE @@@ answered from the
+-- index).  The plan is a Custom Scan (FtsCount); the count matches fts_count;
+-- and it must NOT trigger when the shape is unsupported (extra qual, GROUP BY).
+CREATE TABLE cnt (id int, body text);
+INSERT INTO cnt SELECT g, 'common '||CASE WHEN g%4=0 THEN 'quarter ' ELSE '' END||'w'||(g%100)
+  FROM generate_series(1,10000) g;
+CREATE INDEX cnt_bm25 ON cnt USING bm25(to_ftsdoc('english',body));
+ANALYZE cnt;
+SET enable_seqscan=off;
+SELECT count(*) = fts_count('cnt_bm25', to_ftsquery('english','common')) AS count_matches
+  FROM cnt WHERE to_ftsdoc('english',body) @@@ to_ftsquery('english','common');
+SELECT count(*) AS quarter_cnt FROM cnt WHERE to_ftsdoc('english',body) @@@ to_ftsquery('english','quarter');  -- 2500
+-- the bare count(*) plan is a Custom Scan (FtsCount)
+EXPLAIN (COSTS OFF) SELECT count(*) FROM cnt
+  WHERE to_ftsdoc('english',body) @@@ to_ftsquery('english','common');
+-- an extra qual disables the pushdown (falls back to Aggregate over a scan)
+EXPLAIN (COSTS OFF) SELECT count(*) FROM cnt
+  WHERE to_ftsdoc('english',body) @@@ to_ftsquery('english','common') AND id > 5;
+RESET enable_seqscan;
+DROP TABLE cnt;

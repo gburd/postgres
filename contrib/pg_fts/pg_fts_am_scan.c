@@ -2801,6 +2801,21 @@ bm25_count_visible(Relation index, FtsQuery q)
 	return count;
 }
 
+/*
+ * bm25_count_visible_oid: same as fts_count() but callable from C with an index
+ * OID (used by the COUNT-pushdown CustomScan).  Opens the index under
+ * AccessShareLock, counts, closes.
+ */
+int64
+bm25_count_visible_oid(Oid indexoid, FtsQuery q)
+{
+	Relation	index = index_open(indexoid, AccessShareLock);
+	int64		c = bm25_count_visible(index, q);
+
+	index_close(index, AccessShareLock);
+	return c;
+}
+
 PG_FUNCTION_INFO_V1(fts_count);
 
 /* fts_count(regclass, ftsquery) -> bigint : MVCC-correct count via the index */

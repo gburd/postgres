@@ -7,6 +7,7 @@ pg_fts_sources = files(
   'pg_fts_query.c',
   'pg_fts_rank.c',
   'pg_fts_am.c',
+  'pg_fts_customscan.c',
   'pg_fts_aux.c',
   'pg_fts_migrate.c',
   'pg_fts_trgm.c',
