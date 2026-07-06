@@ -1845,6 +1845,31 @@ bm25_vacuum_compact(Relation index)
 	{
 		int			guard;
 
+		/*
+		 * First, always REWRITE the current live segments through the low-page
+		 * allocator -- even a single segment -- so their live pages relocate to
+		 * the front of the file and the stale post-build/-merge pages become a
+		 * contiguous free tail.  Without this, an index that is already nseg=1
+		 * (e.g. straight after a build that merged to one) keeps its dead pages
+		 * interleaved and nothing is truncatable.
+		 */
+		{
+			BM25MetaPageData meta;
+			uint32		sel[BM25_MAX_SEGMENTS];
+			uint32		nsel = 0;
+			uint32		i;
+			Buffer		mb = ReadBuffer(index, BM25_METAPAGE_BLKNO);
+
+			LockBuffer(mb, BUFFER_LOCK_SHARE);
+			memcpy(&meta, BM25PageGetMeta(BufferGetPage(mb)), sizeof(meta));
+			UnlockReleaseBuffer(mb);
+			for (i = 0; i < meta.nsegments; i++)
+				if (meta.segs[i].dictstart != InvalidBlockNumber)
+					sel[nsel++] = i;
+			if (nsel >= 1 && bm25_merge_selected(index, sel, nsel))
+				didwork = true;
+		}
+
 		for (guard = 0; guard < BM25_MAX_SEGMENTS; guard++)
 		{
 			BM25MetaPageData meta;
