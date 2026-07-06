@@ -163,7 +163,25 @@ PgCurrentMdContextRef(void)
 void
 PgBackendResetStorageClosedState(PgBackendStorageState *storage)
 {
+	int			saved_num_external_fds;
+
 	Assert(storage != NULL);
+
+	/*
+	 * num_external_fds is owned by the ReserveExternalFD/ReleaseExternalFD
+	 * protocol, not by this closed-state reclaim.  Reservations held by this
+	 * backend's WaitEventSets (latch wait set, self-pipe, signalfd, FeBeWaitSet)
+	 * are released LATER in the exit path -- the ipc bucket's
+	 * PgBackendResetIPCClosedState() frees latch_wait_set and
+	 * ShutdownWaitEventSupport() closes the per-carrier fds, each calling
+	 * ReleaseExternalFD().  Neither PgBackendResetFileAccessClosedState() nor
+	 * the PgBackendInitializeStorageState() MemSet below may zero the counter
+	 * out from under those pending releases, or they underflow
+	 * (Assert(numExternalFDs > 0) in fd.c -- the bootstrap-cassert teardown
+	 * abort).  Preserve the live count across the whole reset; the explicit
+	 * releases drive it to 0.
+	 */
+	saved_num_external_fds = storage->num_external_fds;
 
 	/*
 	 * fd.c owns the private Vfd and AllocateDesc layouts.  By the time a
@@ -182,4 +200,5 @@ PgBackendResetStorageClosedState(PgBackendStorageState *storage)
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(storage->md_context);
 
 	PgBackendInitializeStorageState(storage);
+	storage->num_external_fds = saved_num_external_fds;
 }
