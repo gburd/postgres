@@ -1663,10 +1663,19 @@ bm25_merge_all_parallel(Relation index, int request)
 			ms->src[nsrc++] = meta.segs[i];
 	ms->nsrc = nsrc;
 
-	/* groups = min(participants, nsrc); participant 0 = leader */
+	/*
+	 * groups: participant 0 is the leader, so at most (request+1) groups.  But
+	 * cap at nsrc/2 so every group merges at least TWO sources -- otherwise a
+	 * pass with more participants than pairs would leave singleton groups that
+	 * merge nothing, making an iterated caller spin without reducing the count.
+	 * With this cap each pass at least halves the live segment count, so
+	 * iterating drives nsrc down geometrically to 1.
+	 */
 	ngroups = request + 1;
-	if (ngroups > nsrc)
-		ngroups = nsrc;
+	if (ngroups > nsrc / 2)
+		ngroups = nsrc / 2;
+	if (ngroups < 1)
+		ngroups = 1;
 	ms->ngroups = ngroups;
 
 	/* even contiguous partition of the nsrc sources into ngroups */
@@ -1763,18 +1772,26 @@ bm25_merge_all(Relation index)
 	int			guard;
 
 	/*
-	 * Try a parallel merge first (unless already inside a parallel operation,
-	 * e.g. the parallel build leader -- no nested parallelism).  It compacts
-	 * the sources into (workers+1) segments in one parallel pass; the serial
-	 * loop below then finishes to a single segment (a cheap final W-way merge).
+	 * Reduce to a single segment.  Prefer the PARALLEL merge and ITERATE it:
+	 * each pass merges the live segments into (workers+1) groups, so a large
+	 * directory shrinks geometrically (e.g. 30 -> 9 -> 2 -> 1) with every pass
+	 * done by workers.  A single parallel pass followed by a serial W-way
+	 * finish would leave that final reduction of several multi-GB segments to
+	 * one backend -- the merge tail that dominated build time at scale.  Only
+	 * when a pass cannot reduce further (<= 2 segments, below the parallel
+	 * gate) do we fall through to the serial loop for the last step.
 	 */
 	if (!IsInParallelMode() && max_parallel_maintenance_workers > 0)
 	{
 		int			request = Min(max_parallel_maintenance_workers,
 								 max_parallel_workers);
 
-		if (request > 0 && bm25_merge_all_parallel(index, request))
+		for (guard = 0; request > 0 && guard < BM25_MAX_SEGMENTS; guard++)
+		{
+			if (!bm25_merge_all_parallel(index, request))
+				break;			/* <= 2 segments, or could not launch: finish serially */
 			didwork = true;
+		}
 	}
 
 	for (guard = 0; guard < BM25_MAX_SEGMENTS; guard++)
