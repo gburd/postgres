@@ -197,3 +197,18 @@ pages are written as one contiguous run per segment, so recording a
 pages per selective query; AIO adds setup cost with no I/O to hide).  A bounded,
 low-effort win exists for cold TB-scale merges *if* a cold-merge I/O bottleneck
 is actually measured — deferred until then.
+
+
+*AIO for the parallel-merge WRITES?* Considered and rejected on two grounds.
+(1) No API: pg_fts writes every page through shared buffers + GenericXLog (a
+WAL/MVCC/crash-safety requirement), and this tree's buffer manager exposes AIO
+for reads only (aio_shared_buffer_readv_cb; there is no buffer-manager AIO
+write path -- FlushBuffer is synchronous).  Using the low-level
+pgaio_io_start_writev would mean bypassing shared buffers with raw smgr writes,
+breaking the GenericXLog invariant the design rests on.  (2) It would not help:
+the merge tail measured at 2M is CPU-bound (one backend decoding + re-encoding
+postings; workers=0 with the index resident in a 32 GB shared_buffers, so the
+writes are absorbed by shared buffers and flushed lazily by the checkpointer --
+no write I/O wait to hide).  AIO accelerates I/O wait, not CPU-bound re-encode.
+The real lever for the merge tail is the same as the ranked-query gap: a cheaper
+posting codec (format v3), not asynchronous writes.

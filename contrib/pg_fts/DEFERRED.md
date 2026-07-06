@@ -31,15 +31,25 @@ they are tracked rather than rediscovered. Ordered roughly by value.
    larger flush budget (its share of `maintenance_work_mem`) would leave ~1
    segment per worker, shrinking the post-build merge input. Complements #1/#2.
 
-4. **Impact-ordered postings for ranked common-term queries.** THE headline
-   gap vs pg_search: ranked top-k over a common term stays flat ~9 ms for
-   pg_search but degrades for pg_fts (docid-ordered block-max WAND; 2M Wikipedia
-   `year` LIMIT 100 ~70-88 ms). An impact-ordered skip directory was tried and
-   REVERTED (bench/NOTE_IMPACT_ORDERING.md): on real text the per-block impact
-   bounds cluster too tightly to prune. The real fix is a compact columnar
-   segment codec (decode far less per candidate) — a large codec rewrite, out of
-   scope so far. This is the main thing keeping pg_fts behind pg_search on
-   ranked latency.
+4. **Ranked common-term latency (the codec / parallel-scan gap).** THE headline
+   gap vs pg_search/vchord: ranked top-k over a common term stays flat (~7-28 ms)
+   for them but degrades for pg_fts (docid-ordered block-max WAND; 2M Wikipedia
+   `year` LIMIT 100 ~70-88 ms). Two codec-side attempts were made and REVERTED:
+   an impact-ordered skip directory (bench/NOTE_IMPACT_ORDERING.md -- per-block
+   impact bounds cluster too tightly to prune on real text) and a reusable
+   per-cursor block buffer (bench/NOTE_FORMAT_V3_PROFILE.md -- measured slower;
+   the per-block palloc is only 1.2%). Profiling (NOTE_FORMAT_V3_PROFILE.md)
+   shows the common-term query is ~30% decode+block-load and ~70%
+   scoring/heap/executor, and that block-max WAND cannot skip blocks on common
+   English terms -- so a columnar-codec rewrite is capped at ~30% and cannot
+   enable skipping. The evidence-supported levers instead are: (a) SIMD
+   bulk-unpack of the docid column (bounded ~5-8% whole-query, portability-gated
+   -- a decode micro-opt, not a format change); (b) a PARALLEL ranked scan
+   (split a high-df term's block chain across workers, merge top-k) -- the same
+   mechanism behind pg_search/vchord's flat common-term latency and the largest
+   remaining lever (an executor/AM change, see item 6). A speculative
+   columnar-codec "format v3" is deliberately NOT pursued: the profile shows it
+   cannot beat the ceiling nor enable pruning.
 
 5. **COUNT / aggregation Custom Scan pushdown.** pg_search answers common-term
    `count(*)` in ~10 ms via a `ParadeDB Aggregate Scan` (Custom Scan,
