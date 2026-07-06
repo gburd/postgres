@@ -49,8 +49,8 @@ CONF
 
 	# The log must show the partitioned sweep was selected.
 	my $log = slurp_file($node->logfile);
-	like($log, qr/NUMA-partitioned clock sweep across 4 nodes/,
-		'partitioned clock sweep activated with forced 4 nodes');
+	like($log, qr/clock-sweep replacement algorithm with NUMA interleaved placement across 4 nodes/,
+		'NUMA interleaved placement activated with forced 4 nodes');
 
 	# Build a dataset larger than shared_buffers so victim selection (and thus
 	# the per-node hands + cross-node fallback) is exercised heavily.

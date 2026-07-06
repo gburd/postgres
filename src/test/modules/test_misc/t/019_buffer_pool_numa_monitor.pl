@@ -45,7 +45,10 @@ SQL
 	$node->stop;
 }
 
-# --- 2. Forced multi-node, cooling off: one row per node. ---
+# --- 2. Forced multi-node, cooling off: plain clock + NUMA placement. ---
+#     With cooling off, buffer_pool_numa only interleaves placement; victim
+#     selection stays the unmodified global clock, so the view reports the
+#     single global-hand row (the plain-clock shape).
 {
 	my $node = PostgreSQL::Test::Cluster->new('mon_numa');
 	$node->init;
@@ -58,44 +61,27 @@ CONF
 	$node->start;
 
 	my $log = slurp_file($node->logfile);
-	like($log, qr/NUMA-partitioned clock sweep across 4 nodes/,
-		'partitioned sweep activated with forced 4 nodes');
+	like($log, qr/clock-sweep replacement algorithm with NUMA interleaved placement across 4 nodes/,
+		'NUMA placement (cooling off) activated with forced 4 nodes');
 
-	# One row per node, all stripe 0.
+	# Plain clock: a single global-hand row.
 	is($node->safe_psql('postgres',
 		'SELECT count(*) FROM pg_stat_bufferpool_numa;'),
-		'4', 'cooling off: one row per node');
-	is($node->safe_psql('postgres',
-		'SELECT string_agg(distinct stripe::text, \',\') FROM pg_stat_bufferpool_numa;'),
-		'0', 'cooling off: every row is stripe 0');
-	is($node->safe_psql('postgres',
-		'SELECT string_agg(node::text, \',\' ORDER BY node) FROM pg_stat_bufferpool_numa;'),
-		'0,1,2,3', 'cooling off: nodes 0..3 present');
-
-	# The per-node ranges must sum to the whole pool.
+		'1', 'cooling off: single global-hand row');
 	is($node->safe_psql('postgres', <<'SQL'),
-SELECT sum(nbuffers) = (SELECT setting::int FROM pg_settings WHERE name = 'shared_buffers')
+SELECT nbuffers = (SELECT setting::int FROM pg_settings WHERE name = 'shared_buffers')
 FROM pg_stat_bufferpool_numa;
 SQL
-		't', 'cooling off: per-node nbuffers sum to shared_buffers');
+		't', 'cooling off: nbuffers = shared_buffers');
 
-	# Every clock hand must land inside the pool.
-	is($node->safe_psql('postgres', <<'SQL'),
-SELECT bool_and(clock_hand >= 0
-   AND clock_hand < (SELECT setting::int FROM pg_settings WHERE name='shared_buffers'))
-FROM pg_stat_bufferpool_numa;
-SQL
-		't', 'cooling off: all hands within pool');
-
-	# Drive eviction, then confirm at least one node advanced its hand or
-	# completed a pass (the view reflects real sweep activity).
+	# Drive eviction, then confirm the hand advanced or a pass completed.
 	$node->safe_psql('postgres', <<'SQL');
 CREATE TABLE t (id int primary key, pad text);
 INSERT INTO t SELECT g, repeat('x', 400) FROM generate_series(1, 300000) g;
 SELECT count(*) FROM t;
 SQL
 	is($node->safe_psql('postgres',
-		'SELECT bool_or(clock_hand > 0 OR complete_passes > 0) FROM pg_stat_bufferpool_numa;'),
+		'SELECT clock_hand > 0 OR complete_passes > 0 FROM pg_stat_bufferpool_numa;'),
 		't', 'cooling off: sweep advanced under eviction pressure');
 
 	$node->stop;

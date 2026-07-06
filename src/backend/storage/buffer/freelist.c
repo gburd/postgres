@@ -236,67 +236,6 @@ static void ClockPoolShmemInit(void *strategy_data, int nbuffers,
  */
 
 /*
- * ClockTryAcquireVictim -- try to claim buffer victim_id as a victim.
- *
- * Shared by the plain clock sweep and the NUMA-partitioned clock sweep so the
- * delicate lock-free CAS acquire logic exists in exactly one place.  Returns
- * the pinned BufferDesc on success (with *buf_state set and the pin tracked),
- * or NULL if the buffer was pinned/in-use (caller advances the hand and
- * retries).  On a usage_count>0 buffer it decrements the count (a "tick") and
- * returns NULL; trycounter is reset to reset_budget.  When refcount!=0 reduces
- * trycounter to zero the pool is genuinely full and we elog(ERROR).
- */
-static BufferDesc *
-ClockTryAcquireVictim(int victim_id, BufferAccessStrategy strategy,
-					  uint64 *buf_state, int *trycounter, int reset_budget)
-{
-	BufferDesc *buf = GetBufferDescriptor(victim_id);
-	uint64		old_buf_state = pg_atomic_read_u64(&buf->state);
-
-	for (;;)
-	{
-		uint64		local_buf_state = old_buf_state;
-
-		if (BUF_STATE_GET_REFCOUNT(local_buf_state) != 0)
-		{
-			if (--(*trycounter) == 0)
-				elog(ERROR, "no unpinned buffers available");
-			return NULL;
-		}
-
-		if (unlikely(local_buf_state & BM_LOCKED))
-		{
-			old_buf_state = WaitBufHdrUnlocked(buf);
-			continue;
-		}
-
-		if (BUF_STATE_GET_USAGECOUNT(local_buf_state) != 0)
-		{
-			local_buf_state -= BUF_USAGECOUNT_ONE;
-			if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
-											   local_buf_state))
-			{
-				*trycounter = reset_budget;
-				return NULL;
-			}
-		}
-		else
-		{
-			local_buf_state += BUF_REFCOUNT_ONE;
-			if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
-											   local_buf_state))
-			{
-				if (strategy != NULL && strategy->recycle_pool == NULL)
-					AddBufferToRing(strategy, buf);
-				*buf_state = local_buf_state;
-				TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
-				return buf;
-			}
-		}
-	}
-}
-
-/*
  * NumaClockControl -- NUMA-partitioned clock-sweep state for the default pool.
  *
  * One independent clock hand per NUMA node, each confined to that node's
@@ -398,114 +337,6 @@ const BufferPoolRoutine clock_pool_routine = {
 	.shmem_init = ClockPoolShmemInit,
 	.shutdown = NULL,
 };
-
-/*
- * NumaClockGetVictim -- NUMA-partitioned clock-sweep victim selection.
- *
- * Used only for the DEFAULT pool on multi-node hardware (strategy_data ==
- * NumaClockCtl).  Sweeps the caller's local node partition first, then other
- * nodes in turn, so victims are node-local when possible but a backend can
- * still consume the whole pool when its node is saturated.
- */
-static BufferDesc *
-NumaClockGetVictim(void *strategy_data,
-				   BufferAccessStrategy strategy,
-				   uint64 *buf_state,
-				   bool *from_ring)
-{
-	NumaClockControl *ctl = (NumaClockControl *) strategy_data;
-	int			nnodes = ctl->nnodes;
-	int			home = BufPoolNumaNodeForProc();
-
-	*from_ring = false;
-
-	/* Ring-buffer / RECYCLE handling is identical to the plain sweep. */
-	if (strategy != NULL)
-	{
-		if (strategy->recycle_pool != NULL && strategy->recycle_pool->bp_active)
-		{
-			PoolLocalState *local = EnsurePoolAttached(strategy->recycle_pool);
-			BufferDesc *buf = strategy->recycle_pool->bp_routine->get_victim(
-																			 local->strategy_data, NULL, buf_state, from_ring);
-
-			if (buf != NULL)
-			{
-				*from_ring = true;
-				return buf;
-			}
-		}
-		else
-		{
-			BufferDesc *buf = GetBufferFromRing(strategy, buf_state);
-
-			if (buf != NULL)
-			{
-				*from_ring = true;
-				return buf;
-			}
-		}
-	}
-
-	{
-		int			bgwprocno = INT_ACCESS_ONCE(ctl->bgwprocno);
-
-		if (bgwprocno != -1)
-		{
-			ctl->bgwprocno = -1;
-			SetLatch(&GetPGProcByNumber(bgwprocno)->procLatch);
-		}
-	}
-	pg_atomic_fetch_add_u32(&ctl->numBufferAllocs, 1);
-
-	/* Try the home node first, then each other node in order. */
-	for (int attempt = 0; attempt < nnodes; attempt++)
-	{
-		int			node = (home + attempt) % nnodes;
-		int			start,
-					end,
-					range;
-		int			trycounter;
-
-		BufPoolNumaBufferRange(node, ctl->nbuffers, &start, &end);
-		range = end - start;
-		if (range <= 0)
-			continue;
-
-		/*
-		 * Bound the work on this node's partition before falling back to the
-		 * next: one full pass of this partition.  This prevents a saturated
-		 * node from spinning forever while another node has free buffers.
-		 */
-		trycounter = range;
-		while (trycounter > 0)
-		{
-			uint32		victim_raw = pg_atomic_fetch_add_u32(&ctl->nextVictim[node], 1);
-			int			victim_id = start + (int) (victim_raw % (uint32) range);
-			int			local_try = range;
-			BufferDesc *buf;
-
-			/* Maintain per-node completePasses on wraparound. */
-			if (victim_raw >= (uint32) range &&
-				(victim_raw % (uint32) range) == 0)
-			{
-				SpinLockAcquire(&ctl->lock);
-				ctl->completePasses[node]++;
-				SpinLockRelease(&ctl->lock);
-			}
-
-			buf = ClockTryAcquireVictim(victim_id, strategy, buf_state,
-										&local_try, range);
-			if (buf != NULL)
-				return buf;
-
-			trycounter--;
-		}
-		/* This node's partition yielded nothing; try the next node. */
-	}
-
-	elog(ERROR, "no unpinned buffers available");
-	pg_unreachable();
-}
 
 /*
  * ClockTryAcquireVictimCooling -- like ClockTryAcquireVictim, but the
@@ -772,41 +603,10 @@ NumaCoolingGetVictim(void *strategy_data,
 }
 
 /*
- * NumaClockSyncStart / NumaClockNotifyTrickle -- sync/notify for the
- * NUMA-partitioned default-pool routine.  The NUMA control is neither
- * StrategyControl nor a ClockPoolState, so it needs its own (trivial)
- * implementations rather than the dynamic-pool-detecting plain ones.
+ * NumaClockNotifyTrickle -- notify callback for the cooling default-pool
+ * routine.  The NUMA control is neither StrategyControl nor a ClockPoolState,
+ * so it needs its own (trivial) implementation.
  */
-static int
-NumaClockSyncStart(void *strategy_data, uint32 *complete_passes,
-				   uint32 *num_buf_alloc)
-{
-	NumaClockControl *ctl = (NumaClockControl *) strategy_data;
-	uint32		next0 = pg_atomic_read_u32(&ctl->nextVictim[0]);
-	int			start,
-				end,
-				range;
-
-	BufPoolNumaBufferRange(0, ctl->nbuffers, &start, &end);
-	range = (end > start) ? (end - start) : 1;
-
-	if (complete_passes)
-	{
-		/* Sum per-node passes for a whole-pool view. */
-		uint32		sum = 0;
-
-		SpinLockAcquire(&ctl->lock);
-		for (int n = 0; n < ctl->nnodes; n++)
-			sum += ctl->completePasses[n];
-		SpinLockRelease(&ctl->lock);
-		*complete_passes = sum;
-	}
-	if (num_buf_alloc)
-		*num_buf_alloc = pg_atomic_exchange_u32(&ctl->numBufferAllocs, 0);
-
-	return start + (int) (next0 % (uint32) range);
-}
-
 static void
 NumaClockNotifyTrickle(void *strategy_data, int bgwprocno)
 {
@@ -965,38 +765,9 @@ BufPoolNumaClockStats(BufPoolNumaStat *out, int maxrows)
 }
 
 /*
- * The NUMA-partitioned clock-sweep routine for the DEFAULT pool.
- *
- * Identical to clock_pool_routine except for get_victim; reuses the plain
- * sync_start / notify_trickle / reject_buffer (sync_start reads node 0's hand,
- * which is sufficient to seed BgBufferSync's circular scan).  Selected
- * automatically at startup when buffer_pool_numa is on and the hardware has
- * more than one NUMA node.
- */
-const BufferPoolRoutine numa_clock_pool_routine = {
-	.type = T_Invalid,
-	.on_hit = NULL,
-	.on_miss = NULL,
-	.on_evict = NULL,
-	.on_new_tag = NULL,
-	.get_victim = NumaClockGetVictim,
-	.sync_start = NumaClockSyncStart,
-	.notify_trickle = NumaClockNotifyTrickle,
-	.trickle_iter_begin = NULL,
-	.trickle_iter_next = NULL,
-	.trickle_iter_end = NULL,
-	.hint_vacuum = NULL,
-	.reject_buffer = ClockRejectBuffer,
-	.prefetch_hint = NULL,
-	.shmem_size = ClockPoolShmemSize,
-	.shmem_init = ClockPoolShmemInit,
-	.shutdown = NULL,
-};
-
-/*
  * The per-core striped NUMA clock sweep with blind-atomic cooling for the
- * DEFAULT pool.  Same as numa_clock_pool_routine but with the striped
- * get_victim.  Selected at startup when buffer_pool_numa AND
+ * DEFAULT pool.  Same as clock_pool_routine but with the batched-global
+ * cooling get_victim.  Selected at startup when buffer_pool_numa AND
  * buffer_pool_numa_cooling are on and the hardware has more than one NUMA node.
  */
 const BufferPoolRoutine numa_cooling_pool_routine = {
@@ -1729,54 +1500,14 @@ StrategyCtlShmemInit(void *arg)
 		if (routine == &clock_pool_routine && BufPoolNumaActive())
 		{
 			int			nnodes = BufPoolNumaNodes();
-			int			nstripes = 1;
 
 			/*
-			 * When buffer_pool_numa_cooling is on, sub-divide each node range
-			 * into per-core stripes so a buffer has a single sweeping owner
-			 * per pass (see NumaCoolingGetVictim).  Cap at
-			 * BUFPOOL_MAX_STRIPES.
-			 */
-			if (buffer_pool_numa_cooling)
-				nstripes = BufPoolNumaCoresPerNode(BUFPOOL_MAX_STRIPES);
-
-			SpinLockInit(&NumaClockCtl->lock);
-			NumaClockCtl->nnodes = Min(nnodes, BUFPOOL_MAX_NUMA_NODES);
-			NumaClockCtl->nbuffers = NBuffers;
-			NumaClockCtl->nstripes = Max(1, Min(nstripes, BUFPOOL_MAX_STRIPES));
-
-			/*
-			 * Clock-sweep batch size (Jim Mlodgenski's design): a backend
-			 * claims this many consecutive buffer IDs from the global hand
-			 * per fetch_add, cutting the contended atomic traffic by ~this
-			 * factor.  64 on multi-node hardware where the atomic crosses the
-			 * interconnect; capped so a single claim cannot wrap the whole
-			 * pool.
-			 */
-			NumaClockCtl->batchSize =
-				(NumaClockCtl->nnodes > 1)
-				? Min((uint32) CLOCK_SWEEP_BATCH_SIZE, (uint32) Max(1, NBuffers))
-				: 1;
-			NumaClockCtl->bgwprocno = -1;
-			pg_atomic_init_u32(&NumaClockCtl->numBufferAllocs, 0);
-			for (int n = 0; n < BUFPOOL_MAX_NUMA_NODES; n++)
-			{
-				pg_atomic_init_u32(&NumaClockCtl->nextVictim[n], 0);
-				NumaClockCtl->completePasses[n] = 0;
-				for (int s = 0; s < BUFPOOL_MAX_STRIPES; s++)
-					pg_atomic_init_u32(&NumaClockCtl->stripeHand[n][s].hand, 0);
-			}
-
-			ActivePoolRoutine = buffer_pool_numa_cooling
-				? &numa_cooling_pool_routine
-				: &numa_clock_pool_routine;
-			ActivePoolData = NumaClockCtl;
-
-			/*
-			 * Bind the default pool's buffer blocks and descriptors to nodes
-			 * in matching contiguous chunks (buffer + its descriptor on the
-			 * same node).  Best-effort placement; correctness is unaffected
-			 * if the kernel ignores it.
+			 * NUMA distribution is active.  Always bind the default pool's
+			 * buffer blocks and descriptors to nodes in matching contiguous
+			 * chunks (a buffer and its descriptor on the same node) -- this
+			 * physical-placement layer is independent of the replacement
+			 * algorithm and applies whether or not cooling is enabled.
+			 * Best-effort; correctness is unaffected if the kernel ignores it.
 			 */
 			BufPoolNumaDistribute((char *) BufferBlocks,
 								  (char *) BufferDescriptors,
@@ -1784,11 +1515,45 @@ StrategyCtlShmemInit(void *arg)
 								  NBuffers);
 
 			if (buffer_pool_numa_cooling)
+			{
+				/*
+				 * Batched global clock sweep with blind-atomic cooling: one
+				 * global hand over the whole pool, claimed in batches to cut
+				 * cross-socket atomic contention (see NumaCoolingGetVictim).
+				 * Uses its own NumaClockControl shared state.
+				 */
+				SpinLockInit(&NumaClockCtl->lock);
+				NumaClockCtl->nnodes = Min(nnodes, BUFPOOL_MAX_NUMA_NODES);
+				NumaClockCtl->nbuffers = NBuffers;
+				NumaClockCtl->nstripes = 1;
+				NumaClockCtl->batchSize =
+					Min((uint32) CLOCK_SWEEP_BATCH_SIZE, (uint32) Max(1, NBuffers));
+				NumaClockCtl->bgwprocno = -1;
+				pg_atomic_init_u32(&NumaClockCtl->numBufferAllocs, 0);
+				for (int nd = 0; nd < BUFPOOL_MAX_NUMA_NODES; nd++)
+				{
+					pg_atomic_init_u32(&NumaClockCtl->nextVictim[nd], 0);
+					NumaClockCtl->completePasses[nd] = 0;
+				}
+
+				ActivePoolRoutine = &numa_cooling_pool_routine;
+				ActivePoolData = NumaClockCtl;
+
 				elog(LOG, "default buffer pool using batched global clock sweep with blind-atomic cooling: %d nodes, batch=%u",
 					 NumaClockCtl->nnodes, NumaClockCtl->batchSize);
+			}
 			else
-				elog(LOG, "default buffer pool using NUMA-partitioned clock sweep across %d nodes",
-					 NumaClockCtl->nnodes);
+			{
+				/*
+				 * NUMA placement only: keep the plain built-in clock sweep
+				 * (ActivePoolRoutine/Data already point at clock_pool_routine
+				 * / StrategyControl from the outer assignment).  The buffers
+				 * are interleaved across nodes, but victim selection is the
+				 * unmodified global clock.
+				 */
+				elog(LOG, "default buffer pool using clock-sweep replacement algorithm with NUMA interleaved placement across %d nodes",
+					 Min(nnodes, BUFPOOL_MAX_NUMA_NODES));
+			}
 		}
 		else
 		{

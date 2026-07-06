@@ -242,7 +242,6 @@ extern PGDLLIMPORT bool ActivePoolProbationaryScan;
 extern PGDLLIMPORT const BufferPoolRoutine clock_pool_routine;
 
 /* The NUMA-partitioned clock-sweep routine (default pool, multi-node only) */
-extern PGDLLIMPORT const BufferPoolRoutine numa_clock_pool_routine;
 extern PGDLLIMPORT const BufferPoolRoutine numa_cooling_pool_routine;
 
 /*
