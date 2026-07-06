@@ -2653,6 +2653,13 @@ extern char **PgCurrentDynamicLibraryPathRef(void);
 extern char **PgCurrentExtensionControlPathRef(void);
 extern bool *PgCurrentUpdateProcessTitleRef(void);
 extern MemoryContext *PgCurrentGUCMemoryContextRef(void);
+/*
+ * Non-allocating peek at the current GUC memory context cell.  Unlike
+ * PgCurrentGUCMemoryContextRef(), this never lazily creates the early-fallback
+ * context, so it is safe in invariant checks (e.g. build_guc_variables()'s
+ * "not yet built" Assert) that must observe the cell without populating it.
+ */
+extern MemoryContext PgCurrentGUCMemoryContextPeek(void);
 extern struct config_generic **PgCurrentGUCVariablesRef(void);
 extern struct config_generic_state **PgCurrentGUCVariableStatesRef(void);
 extern int *PgCurrentNumGUCVariablesRef(void);

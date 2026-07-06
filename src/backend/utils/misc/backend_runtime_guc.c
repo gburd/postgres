@@ -402,6 +402,23 @@ PgCurrentGUCMemoryContextRef(void)
 	return &guc->memory_context;
 }
 
+/*
+ * Non-allocating peek at the current GUC memory context.
+ *
+ * PgCurrentGUCMemoryContextRef() has an observation side effect: when no
+ * session is installed yet it lazily creates the early-fallback context so
+ * early GUC reads have somewhere to allocate.  That side effect makes it unsafe
+ * for an invariant check that must see the cell as it stands -- notably
+ * build_guc_variables()'s Assert(GUCMemoryContext == NULL), which reads through
+ * the macro and would trip on the value the read itself just created.  This
+ * peek returns the raw cell without allocating.
+ */
+MemoryContext
+PgCurrentGUCMemoryContextPeek(void)
+{
+	return PgCurrentSessionGUCState()->memory_context;
+}
+
 struct config_generic **
 PgCurrentGUCVariablesRef(void)
 {

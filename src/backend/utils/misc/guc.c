@@ -1608,8 +1608,14 @@ build_guc_variables(void)
 
 	/*
 	 * Create the memory context that will hold all GUC-related data.
+	 *
+	 * Peek the cell without the allocating accessor: reading GUCMemoryContext
+	 * (== *PgCurrentGUCMemoryContextRef()) here would, before any session is
+	 * installed, lazily create the early-fallback context and make this Assert
+	 * trip on the value the read itself produced.  See
+	 * PgCurrentGUCMemoryContextPeek().
 	 */
-	Assert(GUCMemoryContext == NULL);
+	Assert(PgCurrentGUCMemoryContextPeek() == NULL);
 	GUCMemoryContext =
 		PgRuntimeGetOwnedMemoryContextWithSizes(PgCurrentGUCMemoryContextRef(),
 												"GUCMemoryContext",

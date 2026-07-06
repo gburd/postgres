@@ -598,11 +598,22 @@ static void
 PgBackendAdoptEarlyMemoryManagerState(PgBackend *backend)
 {
 	Assert(backend != NULL);
-	Assert(early_backend_memory_manager.context_freelists[0].num_free == 0);
-	Assert(early_backend_memory_manager.context_freelists[0].first_free == NULL);
-	Assert(early_backend_memory_manager.context_freelists[1].num_free == 0);
-	Assert(early_backend_memory_manager.context_freelists[1].first_free == NULL);
 
+	/*
+	 * Adopt the early memory-manager state wholesale, INCLUDING any aset.c
+	 * context freelists it has accumulated.  Do NOT assert the freelists are
+	 * empty here: they legitimately are not.  Bootstrap/standalone startup
+	 * runs SelectConfigFiles() -> ProcessConfigFile() and timezone-abbrev
+	 * validation (check_timezone_abbreviations -> load_tzoffsets) BEFORE
+	 * BaseInit() reaches this adoption point, and those routines create and
+	 * delete ALLOCSET_DEFAULT/SMALL contexts ("config file processing",
+	 * "TZParserMemory").  AllocSetDelete() of a freelist-eligible context does
+	 * not free it -- it caches the reusable header on the current freelist for
+	 * the next same-sized context.  That cache is exactly the state we want to
+	 * carry into the backend, so the copy below transfers ownership of those
+	 * cached contexts to backend->memory_manager and clears the early copy.  A
+	 * non-empty freelist at adoption is normal and correct, not a leak.
+	 */
 	backend->memory_manager = early_backend_memory_manager;
 	PgBackendInitializeMemoryManagerState(&early_backend_memory_manager);
 }
