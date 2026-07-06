@@ -205,10 +205,28 @@ SELECT id FROM docs
     <term><function>fts_merge(<replaceable>index</replaceable> regclass)</function> &rarr; <type>boolean</type></term>
     <listitem>
      <para>
-      Flush the pending write buffer into a segment and run a size-tiered
-      merge now, instead of waiting for <command>VACUUM</command>.  Returns
-      whether any work was done.  Reclaiming the physical space of superseded
-      blocks requires a <command>REINDEX</command>.
+      Flush the pending write buffer into a segment and merge every live
+      segment into one now, instead of waiting for <command>VACUUM</command>.
+      Returns whether any work was done.  This compacts the segment directory
+      but does not shrink the physical file; use <function>fts_vacuum</function>
+      to reclaim disk space.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><function>fts_vacuum(<replaceable>index</replaceable> regclass)</function> &rarr; <type>boolean</type></term>
+    <listitem>
+     <para>
+      Flush pending documents, compact to a single segment, and reclaim the
+      physical space of superseded blocks by relocating live pages to the front
+      of the index file and truncating the free tail back to the operating
+      system &mdash; shrinking an index that has grown larger than its live
+      contents (for example after a bulk build or heavy update churn), without
+      a <command>REINDEX</command>.  Returns whether any work was done.  A
+      single call reclaims most of the space; a second call converges to the
+      fully compacted size.  Runs automatically during <command>VACUUM</command>
+      when the index is substantially bloated.
      </para>
     </listitem>
    </varlistentry>

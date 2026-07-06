@@ -36,6 +36,8 @@ Versions / stages implemented
   1.17  to_ftsquery(regconfig, text): config-normalized query terms
   1.18  fts_index_nsegments(): observe the segment count
   1.19  fts_count(): MVCC-correct bulk count via the index (fast COUNT path)
+  1.20  fts_vacuum(): reclaim physical bloat (compact + truncate); transparent
+        count(*) WHERE @@@ pushdown to the index via a CustomScan
 
   Prefix queries (term*) are matched in both the sequential and index paths.
 
@@ -129,7 +131,13 @@ Query execution
     document-at-a-time block-max WAND (short queries) or MaxScore (>= 4 terms),
     with lazy per-column posting decode so pruned blocks never decode tf/doclen.
   * fts_count(regclass, ftsquery) counts matches in bulk from the index using
-    the visibility map (heap probed only for not-all-visible pages).
+    the visibility map (heap probed only for not-all-visible pages).  A plain
+    count(*) ... WHERE col @@@ q is transparently answered by this fast path via
+    a Custom Scan (FtsCount) -- no need to call fts_count() explicitly.
+  * fts_vacuum(regclass) reclaims the physical space left by builds and merges:
+    it compacts to one segment reusing the lowest free blocks, then truncates
+    the free tail back to the OS (runs automatically during VACUUM when the
+    index is substantially bloated).
   * Ranked (<=>/fts_search) results cover merged segments; pending (unflushed)
     docs are found by @@@ and counted by fts_count, and become ranked after the
     next flush (fts_merge() forces one immediately).
