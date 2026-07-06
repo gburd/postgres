@@ -762,6 +762,22 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 					AutoVacuumShmem->av_startingWorker = NULL;
 					ereport(WARNING,
 							errmsg("autovacuum worker took too long to start; canceled"));
+#ifdef USE_XTC_CARRIER
+
+					/*
+					 * Under the xtc carrier the canceled worker may be a fiber
+					 * that was never scheduled to run (a cross-thread wake to an
+					 * idle carrier loop can be missed in the current libxtc), so
+					 * it will never reach proc_exit to reap its own PMChild the
+					 * way a forked worker process would.  Ask the postmaster to
+					 * reap the orphaned worker slot, so a later fast-stop
+					 * PM_WAIT_BACKENDS does not wedge on a fiber that will never
+					 * publish an exit.  Harmless in process mode (the signal is
+					 * only sent here, and its handler finds no orphan).
+					 */
+					if (PgRuntimeIsThreadBacked(CurrentPgRuntime))
+						SendPostmasterSignal(PMSIGNAL_AUTOVAC_WORKER_TIMEOUT);
+#endif
 				}
 			}
 			else

@@ -45,9 +45,12 @@ typedef enum
 	PMSIGNAL_START_WALRECEIVER, /* start a walreceiver */
 	PMSIGNAL_ADVANCE_STATE_MACHINE, /* advance postmaster's state machine */
 	PMSIGNAL_XLOG_IS_SHUTDOWN,	/* ShutdownXLOG() completed */
+	PMSIGNAL_AUTOVAC_WORKER_TIMEOUT,	/* launcher canceled a worker whose
+										 * fiber may never have started (xtc
+										 * carrier); reap its orphaned PMChild */
 } PMSignalReason;
 
-#define NUM_PMSIGNALS (PMSIGNAL_XLOG_IS_SHUTDOWN+1)
+#define NUM_PMSIGNALS (PMSIGNAL_AUTOVAC_WORKER_TIMEOUT+1)
 
 /*
  * Reasons why the postmaster would send SIGQUIT to its children.

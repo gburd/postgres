@@ -67,6 +67,9 @@ typedef struct
 	BackendType bkend_type;		/* child process flavor, see above */
 	struct RegisteredBgWorker *rw;	/* bgworker info, if this is a bgworker */
 	bool		bgworker_notify;	/* gets bgworker start/stop notifications */
+	void	   *carrier_orphan_start;	/* xtc-carrier: BackendThreadStart of a
+									 * fiber-backed worker, for the
+									 * launcher-cancel orphan reap; else NULL */
 	dlist_node	elem;			/* list link in ActiveChildList */
 } PMChild;
 
@@ -146,6 +149,9 @@ extern bool postmaster_child_launch_carrier(PMChild *pmchild,
 											const struct ClientSocket *client_sock);
 extern bool PostmasterThreadCarriersStarted(void);
 extern void ThreadedBackendStartupComplete(void);
+#ifdef USE_XTC_CARRIER
+extern bool ReapOrphanedThreadedWorker(BackendType child_type, int min_age_ms);
+#endif
 extern pid_t postmaster_child_launch(BackendType child_type,
 									 int child_slot,
 									 void *startup_data,

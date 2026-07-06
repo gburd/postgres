@@ -288,6 +288,7 @@ AssignPostmasterChildSlot(BackendType btype)
 	pmchild->bkend_type = btype;
 	pmchild->rw = NULL;
 	pmchild->bgworker_notify = true;
+	pmchild->carrier_orphan_start = NULL;
 
 	/*
 	 * pmchild->child_slot for each entry was initialized when the array of

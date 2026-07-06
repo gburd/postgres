@@ -3249,6 +3249,23 @@ PostmasterStateMachine(void)
 			UpdatePMState(PM_WAIT_BACKENDS);
 		}
 
+#ifdef USE_XTC_CARRIER
+		/*
+		 * Reap any fiber-backed autovac worker that was launched but whose
+		 * fiber was never scheduled to run (see ReapOrphanedThreadedWorker).
+		 * The launcher's worker-start-timeout cancel normally triggers this,
+		 * but the LAST worker launched before shutdown can be orphaned without
+		 * a cancel (shutdown pre-empts the launcher's timeout).  Such an
+		 * orphan will never publish an exit, so drain it here before checking
+		 * whether any target children remain -- otherwise PM_WAIT_BACKENDS
+		 * wedges forever waiting on a fiber that will never run.  A no-op in
+		 * process mode and when there is no orphan; the fiber_entered guard
+		 * means a worker whose fiber has started is never touched.
+		 */
+		while (ReapOrphanedThreadedWorker(B_AUTOVAC_WORKER, 0))
+				/* reap all currently-orphaned worker fibers */ ;
+#endif
+
 		/* Are any of the target processes still running? */
 		if (CountChildren(targetMask) == 0)
 		{
@@ -4243,6 +4260,27 @@ process_pm_pmsignal(void)
 		/* The autovacuum launcher wants us to start a worker process. */
 		StartAutovacuumWorker();
 	}
+
+#ifdef USE_XTC_CARRIER
+	if (CheckPostmasterSignal(PMSIGNAL_AUTOVAC_WORKER_TIMEOUT))
+	{
+		/*
+		 * The autovacuum launcher canceled a worker whose start it timed out
+		 * on.  Under the xtc carrier a worker fiber that was never scheduled
+		 * leaves an orphaned pooled-logical PMChild; reap it so a later
+		 * PM_WAIT_BACKENDS (fast stop) cannot wedge waiting on a fiber that
+		 * will never publish an exit.  Gate on the worker-start-timeout so we
+		 * only reap the aged, stuck worker and never a fresh one the launcher
+		 * just relaunched.  A no-op in process mode / when there is no orphan.
+		 * Re-run the state machine if we reaped one, matching
+		 * process_pm_pooled_logical_exit().
+		 */
+		int			start_timeout_ms = Min(autovacuum_naptime, 60) * 1000;
+
+		if (ReapOrphanedThreadedWorker(B_AUTOVAC_WORKER, start_timeout_ms))
+			request_state_update = true;
+	}
+#endif
 
 	if (CheckPostmasterSignal(PMSIGNAL_START_WALRECEIVER))
 	{

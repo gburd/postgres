@@ -164,5 +164,52 @@ else
 fi
 
 echo "=== carrier line ==="; grep -a "carrier scheduler thread up" "$D/pm.log" | head -1
+
+# 7. autovacuum churn + fast stop.  Regression gate for the autovac
+#    worker-start-timeout cancel/reap race (#5 widening): when a worker fiber
+#    is launched but never scheduled (a cross-thread wake to an idle carrier
+#    loop can be missed in the current libxtc), the launcher's start-timeout
+#    cancels it and the orphaned pooled-logical PMChild must still be reaped,
+#    or PM_WAIT_BACKENDS wedges at fast stop.  Driven with a hot autovacuum
+#    (naptime=1, threshold=1) so a cancel is very likely, then a fast stop that
+#    MUST complete.  Valid in both process-mode and thread-carrier autovac too
+#    (both must fast-stop cleanly under churn), so it is unconditional; it is
+#    the specific gate for the fiber-eligible autovac path.  Uses its own
+#    cluster so its autovac settings do not perturb the checks above.
+note "autovacuum churn + fast stop"
+AVD=$(mktemp -d "$SCRATCH/xtcavXXXXXX")
+if initdb -D "$AVD/pgdata" -U postgres --no-locale -E UTF8 >"$AVD/initdb.log" 2>&1; then
+  {
+    echo "listen_addresses = ''"
+    echo "unix_socket_directories = '$AVD'"
+    echo "logging_collector = off"
+    echo "autovacuum = on"
+    echo "autovacuum_naptime = 1"
+    echo "autovacuum_vacuum_threshold = 1"
+    echo "autovacuum_vacuum_cost_delay = 0"
+  } >> "$AVD/pgdata/postgresql.conf"
+  if pg_ctl -D "$AVD/pgdata" -l "$AVD/pm.log" -o "-c multithreaded=on" -w start >/dev/null 2>&1; then
+    AVPSQL="psql -X -h $AVD -U postgres -d postgres -tA"
+    $AVPSQL -c "CREATE TABLE av(id int); INSERT INTO av SELECT g FROM generate_series(1,5000) g;" >/dev/null 2>&1
+    for r in 1 2 3 4; do
+      $AVPSQL -c "UPDATE av SET id=id+1; DELETE FROM av WHERE id%3=0; INSERT INTO av SELECT g FROM generate_series(1,3000) g;" >/dev/null 2>&1
+      sleep 1.5
+    done
+    sleep 2
+    if timeout 25 pg_ctl -D "$AVD/pgdata" -m fast -w -t 20 stop >/dev/null 2>&1; then
+      cx=$(grep -ac "took too long to start" "$AVD/pm.log" 2>/dev/null || echo 0)
+      ok "autovac churn fast stop clean (worker-start cancels seen: $cx)"
+    else
+      bad "autovac churn fast stop HUNG (worker-start-timeout cancel/reap race?)"
+      pg_ctl -D "$AVD/pgdata" -m immediate stop >/dev/null 2>&1
+      kill -9 "$(head -1 "$AVD/pgdata/postmaster.pid" 2>/dev/null)" 2>/dev/null
+    fi
+  else
+    bad "autovac churn server failed to start"
+  fi
+else
+  bad "autovac churn initdb failed"
+fi
+
 echo "SCRATCH=$D"
 exit $fail

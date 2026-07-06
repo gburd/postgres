@@ -232,6 +232,42 @@ typedef struct BackendThreadStart
 	pg_tz	   *startup_session_timezone;
 	pg_tz	   *startup_log_timezone;
 	pg_atomic_uint32 launch_registered;
+
+	/*
+	 * xtc-carrier only: guards the one-time PMChild exit publication of a
+	 * fiber-backed worker against a double reap.  A pooled-logical worker
+	 * fiber that is spawned onto a carrier loop but never scheduled (a
+	 * cross-thread wake to an idle io_uring loop can be missed in the current
+	 * libxtc) leaves its PMChild un-reaped, which wedges PM_WAIT_BACKENDS at
+	 * fast stop.  The autovacuum launcher's worker-start-timeout cancel is the
+	 * authoritative "this worker never started" signal; on that signal the
+	 * postmaster reaps the orphaned worker's PMChild.  Both the postmaster
+	 * (orphan reap) and the fiber (if it ever does run and reaches proc_exit)
+	 * claim this flag; only the winner publishes the pooled-logical exit and
+	 * releases the PMChild, so the slot is reaped exactly once.  The struct is
+	 * fiber-owned for its whole life and freed only by the fiber, so the
+	 * postmaster only ever reads/exchanges this atomic, never frees it (a
+	 * fiber that genuinely never runs leaks this one struct -- bounded and
+	 * rare, and far cheaper than a wedged shutdown).
+	 *
+	 * fiber_entered is set by the fiber as its very first action (before any
+	 * PMChild access), so the postmaster can tell "the fiber body actually
+	 * started running" from "the launch was published but the fiber was never
+	 * scheduled".  The orphan reap only targets workers whose fiber never
+	 * entered, so it can never release the PMChild slot of a live/starting
+	 * worker.
+	 *
+	 * launch_time is when the postmaster handed this worker to the carrier.
+	 * The launcher-cancel reap only reaps an un-entered worker that is OLDER
+	 * than the worker-start-timeout, so it can never grab a worker the
+	 * launcher just (re)launched in the same signal window -- only the aged,
+	 * genuinely-stuck one.  (The shutdown-time reap ignores age: no new
+	 * workers launch once pmState >= PM_STOP_BACKENDS, so any un-entered
+	 * orphan there is safe to drain.)
+	 */
+	pg_atomic_uint32 exit_claimed;
+	pg_atomic_uint32 fiber_entered;
+	TimestampTz launch_time;
 } BackendThreadStart;
 
 typedef struct BackendPooledLogicalStart
@@ -516,6 +552,9 @@ xtc_carrier_eligible(BackendType child_type)
 			 * disk-backed host, not just happy-path smoke.
 			 */
 			return true;
+		case B_AUTOVAC_LAUNCHER:
+		case B_AUTOVAC_WORKER:
+			return true;
 		default:
 
 			/*
@@ -662,6 +701,9 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	thread_start->startup_session_timezone = session_timezone;
 	thread_start->startup_log_timezone = log_timezone;
 	pg_atomic_init_u32(&thread_start->launch_registered, 0);
+	pg_atomic_init_u32(&thread_start->exit_claimed, 0);
+	pg_atomic_init_u32(&thread_start->fiber_entered, 0);
+	thread_start->launch_time = GetCurrentTimestamp();
 
 	if (child_type == B_BACKEND && thread_start->client_sock.sock < 0)
 	{
@@ -715,6 +757,15 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		PostmasterChildSetPooledLogical(pmchild);
 		PostmasterChildPublishLogicalBackend(pmchild,
 											 &thread_start->runtime_state.logical.backend);
+
+		/*
+		 * A fiber-backed autovac worker can be canceled by the launcher's
+		 * worker-start-timeout before its fiber is ever scheduled (see
+		 * ReapOrphanedThreadedWorker).  Record the BackendThreadStart so the
+		 * postmaster can reap the orphaned slot from the launcher-cancel path.
+		 */
+		if (child_type == B_AUTOVAC_WORKER)
+			pmchild->carrier_orphan_start = thread_start;
 		pg_atomic_write_u32(&thread_start->launch_registered, 1);
 		return true;
 	}
@@ -1344,6 +1395,18 @@ backend_thread_entry(void *arg)
 	PgSetCurrentCarrier(&thread_start->runtime_state.carrier);
 	backend_thread_set_current_start(thread_start);
 	backend_thread_wait_until_registered(thread_start);
+#ifdef USE_XTC_CARRIER
+	/*
+	 * Mark that the fiber body actually began running.  The postmaster's
+	 * launcher-cancel orphan reap (ReapOrphanedThreadedWorker) only targets a
+	 * worker whose fiber never entered, so it can never race a fiber that has
+	 * started real work.  Set after wait_until_registered so it is ordered
+	 * after the postmaster published the PMChild and stored the orphan-start
+	 * pointer.
+	 */
+	if (xtc_in_backend_fiber)
+		pg_atomic_write_u32(&thread_start->fiber_entered, 1);
+#endif
 
 	MyBackendType = thread_start->child_type;
 	MyPMChildSlot = thread_start->child_slot;
@@ -1554,6 +1617,106 @@ ThreadedBackendStartupComplete(void)
 												 publication->postmaster_latch);
 }
 
+#ifdef USE_XTC_CARRIER
+/*
+ * Reap a fiber-backed worker that was launched but whose fiber was never
+ * scheduled to run.  Called from the postmaster when the autovacuum launcher
+ * cancels a worker whose start it timed out on (its worker-start-timeout).
+ *
+ * The postmaster optimistically publishes a pooled-logical PMChild the moment
+ * it hands a worker to the carrier, on the assumption -- true for a forked
+ * process, which the OS always eventually schedules -- that the child will run
+ * and reap itself.  A fiber can break that assumption: a cross-thread wake to
+ * an idle io_uring carrier loop can be missed in the current libxtc, so a
+ * worker fiber can sit un-scheduled indefinitely.  If the launcher's
+ * start-timeout then cancels the worker (reclaiming its shmem WorkerInfo), the
+ * orphaned PMChild is never reconciled with a published exit and
+ * PM_WAIT_BACKENDS wedges at fast stop.
+ *
+ * The launcher-cancel is the authoritative "this worker never started" signal:
+ * it fires only while the worker still holds av_startingWorker under
+ * AutovacuumLock, i.e. the worker fiber has not reached the point where it
+ * claims its WorkerInfo (which is well after it would have set fiber_entered).
+ * So a worker whose fiber_entered is still 0 genuinely never ran; publishing a
+ * synthetic clean exit for it lets process_pm_pooled_logical_exit() reap the
+ * slot exactly as a self-exiting fiber would.  The exit_claimed exchange makes
+ * the publish exactly-once: if the fiber does eventually run and reach
+ * backend_thread_finish, it loses the claim and skips its own publish, so the
+ * slot is never reaped twice.
+ *
+ * min_age_ms guards against reaping a worker the launcher just (re)launched:
+ * after canceling a stuck worker the launcher immediately requests a fresh
+ * one, so by the time this runs there can be TWO un-entered workers -- the
+ * aged, genuinely-stuck one and a brand-new one.  The launcher-cancel caller
+ * passes the worker-start-timeout so only the aged orphan is reaped; the
+ * shutdown caller passes 0 because no new worker can launch once shutting
+ * down.  Reaps at most one orphan per call; the caller loops if it wants to
+ * drain several.
+ *
+ * Returns true if it reaped an orphan (the caller should re-run the postmaster
+ * state machine).  Runs in the postmaster main thread only.
+ */
+bool
+ReapOrphanedThreadedWorker(BackendType child_type, int min_age_ms)
+{
+	dlist_iter	iter;
+	TimestampTz now = GetCurrentTimestamp();
+
+	dlist_foreach(iter, &ActiveChildList)
+	{
+		PMChild    *pmchild = dlist_container(PMChild, elem, iter.cur);
+		BackendThreadStart *thread_start;
+
+		if (pmchild->bkend_type != child_type)
+			continue;
+		if (!PostmasterChildIsPooledLogical(pmchild))
+			continue;
+		thread_start = (BackendThreadStart *) pmchild->carrier_orphan_start;
+		if (thread_start == NULL)
+			continue;
+
+		/*
+		 * Only an un-entered fiber is a genuine orphan.  A fiber that has
+		 * started running owns its own exit publication; never touch its slot.
+		 */
+		if (pg_atomic_read_u32(&thread_start->fiber_entered) != 0)
+			continue;
+
+		/*
+		 * Skip a worker that has not yet aged past min_age_ms -- it may be a
+		 * healthy worker the launcher just launched whose fiber is about to
+		 * run, not the stuck one we were told about.
+		 */
+		if (min_age_ms > 0 &&
+			!TimestampDifferenceExceeds(thread_start->launch_time, now,
+										min_age_ms))
+			continue;
+
+		/* Claim the one-time exit publication for this launch. */
+		if (pg_atomic_exchange_u32(&thread_start->exit_claimed, 1) != 0)
+			continue;			/* fiber already published; nothing to do */
+
+		/*
+		 * Publish a synthetic clean exit and stop tracking the orphan pointer.
+		 * The fiber owns thread_start's memory for its whole life and frees it
+		 * only from backend_thread_finish, so we never free it here (an
+		 * un-scheduled fiber leaks this one struct -- bounded and rare).
+		 */
+		ereport(DEBUG1,
+				(errmsg_internal("reaping orphaned %s fiber (never scheduled) at child slot %d",
+								 PostmasterChildName(child_type),
+								 pmchild->child_slot)));
+		pmchild->carrier_orphan_start = NULL;
+		PostmasterChildUnpublishLogicalBackend(pmchild);
+		PostmasterChildPublishPooledLogicalExit(pmchild, 0, 0, 0,
+												thread_start->publication.postmaster_latch);
+		return true;
+	}
+
+	return false;
+}
+#endif							/* USE_XTC_CARRIER */
+
 static void
 backend_thread_exit(int code)
 {
@@ -1603,6 +1766,33 @@ backend_thread_finish(int code)
 		closesocket(thread_start->client_sock.sock);
 		thread_start->client_sock.sock = PGINVALID_SOCKET;
 	}
+
+#ifdef USE_XTC_CARRIER
+	/*
+	 * Claim the exclusive right to publish this fiber's PMChild exit.  A
+	 * fiber-backed worker that the autovacuum launcher canceled before it was
+	 * ever scheduled is reaped by the postmaster from the launcher-cancel path
+	 * (ReapOrphanedThreadedWorker); if that fiber later does run and reaches
+	 * here, the postmaster already released the PMChild, so we must not touch
+	 * the slot again.  fiber_entered ordering makes this claim always succeed
+	 * on the normal path (the orphan reap only targets a worker whose fiber
+	 * never entered, and a fiber that reaches here set fiber_entered long ago),
+	 * so this branch is effectively unreachable; it exists as a hard
+	 * exactly-once guard.  A lost claim means the postmaster owns the reap:
+	 * skip every PMChild access and do NOT free thread_start (the postmaster
+	 * may still be mid-reap reading it, and this path cannot occur on the
+	 * normal fiber_entered-ordered flow anyway; leaking one struct is safe).
+	 * Just leave the fiber.
+	 */
+	if (xtc_in_backend_fiber &&
+		pg_atomic_exchange_u32(&thread_start->exit_claimed, 1) != 0)
+	{
+		ShutdownWaitEventSupport();
+		backend_thread_set_current_start(NULL);
+		xtc_pg_backend_fiber_exit(exitstatus);
+		pg_unreachable();
+	}
+#endif
 
 	/*
 	 * Stop publishing the logical backend before the final exit handoff.  This
