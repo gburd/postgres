@@ -106,8 +106,18 @@ fi
 
 sp=$(grep -ac "spawned backend fiber" "$D/pm.log" 2>/dev/null || echo 0)
 ex=$(grep -ac "backend fiber exiting" "$D/pm.log" 2>/dev/null || echo 0)
-note "fiber accounting: spawned=$sp exited=$ex"
-[ "$sp" = "$ex" ] && [ "$sp" != "0" ] && ok "spawned == exited" || bad "spawn/exit mismatch"
+# Persistent worker fibers (autovacuum/logrep launcher, fiber-eligible since
+# b2367b59c90) are spawned once and stay alive, so spawned >= exited by the
+# number of live workers.  The leak signal is the reverse -- an exit with no
+# spawn (lost bookkeeping) -- so require exited <= spawned, spawned != 0, and
+# that the surplus is covered by the still-live persistent worker fibers.
+live=$(grep -ac "background worker launched as xtc fiber" "$D/pm.log" 2>/dev/null || echo 0)
+note "fiber accounting: spawned=$sp exited=$ex (persistent workers=$live)"
+if [ "$sp" != "0" ] && [ "$ex" -le "$sp" ] && [ "$((sp - ex))" -le "$live" ]; then
+  ok "exited fibers accounted for (surplus $((sp - ex)) <= $live live workers)"
+else
+  bad "spawn/exit mismatch (spawned=$sp exited=$ex workers=$live)"
+fi
 
 # 6. io_method=xtc: backend data-file IO through xtc_aio on fibers (item #6).
 #    Restart with a tiny shared_buffers + io_method=xtc so a table scan misses

@@ -16,6 +16,23 @@ once, exactly one resumed/exited and the rest were lost.  The single-loop model
 was bringup scaffolding; the loop pool is the intended Phase-15 shape and
 sidesteps the single-loop dispatch edge entirely, as predicted.
 
+## Smoke validated 12/12 (2026-07-06, 8-loop pool on floki)
+
+`scripts/xtc_smoke.sh` on a fresh HEAD install (btrfs-backed PGDATA) passes all
+checks: select 1; pool sized to cores (8 loops); 6 concurrent backends with no
+wedge; LISTEN/NOTIFY cross-fiber wakeup (item #3); ereport(ERROR) fiber unwind +
+session recovery (item #4); clean fast stop; fiber accounting; io_method=xtc
+data-file reads incl. multi-iovec integrity and no crash/corruption signature.
+
+Fiber-accounting note: bg-worker fibers became fiber-eligible in `b2367b59c90`,
+so a persistent worker (e.g. the autovacuum/logrep launcher) is spawned once and
+stays alive.  The old smoke check required `spawned == exited`, which now fails
+spuriously by the number of live workers (observed spawned=12 exited=11, the 1
+surplus being the persistent worker).  The check now requires exited <= spawned,
+spawned != 0, and the spawned-minus-exited surplus <= the count of live
+"background worker launched as xtc fiber" lines -- a spawn-less exit (lost
+bookkeeping) still fails.  This is a TEST fix; the runtime was correct.
+
 ## The two fixes (2026-07-04)
 
 1. **Carrier loop pool** (`pg_xtc_carrier.c`): create the xtc app with
@@ -391,15 +408,25 @@ inside the postmaster process (8 threads, zero child processes -- verified via
        NOPROC=0, smoke 11/11.  No false escalation from the guard.
    #7 Stage 1b (crash detection + escalation) is fully validated end-to-end.
 
-3. **Latch/SetLatch wakeups.**  The epoll-fd intercept already covers latch
-   wakeups (the latch signalfd is a registered epoll event, so SetLatch makes
-   the epoll fd readable and unparks the fiber).  Not separately exercised for
-   cross-fiber SetLatch; verify under LISTEN/NOTIFY.
+3. **Latch/SetLatch cross-fiber wakeups.**  CLOSED (2026-07-06, 8-loop pool on
+   floki).  The wake path is: `NOTIFY` on fiber A -> `SetLatch(B)` sees a
+   sibling-thread owner (`owner_pid == MyProcPid`, different carrier thread) and
+   calls `WakeupOtherProcFd(latch->owner_wakeup_fd)`.  On this tree WL_LATCH_SET
+   with `WAIT_USE_EPOLL` defaults to `WAIT_USE_SELF_PIPE`, so `owner_wakeup_fd`
+   is B's per-fiber self-pipe write fd (`GetWaitEventSetLatchWakeupFd()` ->
+   `selfpipe_writefd`, a per-current-work cell).  The write makes B's self-pipe
+   read fd -- a registered epoll event in B's set -- readable, which makes B's
+   `set->epoll_fd` readable, which returns B's `xtc_pg_wait_fd` and unparks the
+   fiber.  Verified: a parked `LISTEN xtc_chan; pg_sleep(2)` backend on one loop
+   woke and reported the async notification when a *different* backend (a
+   different fiber/loop) issued `NOTIFY xtc_chan`.  Smoke step 3 = PASS.
 
-4. **sigsetjmp / ereport(ERROR) inside the fiber.**  Not yet exercised (no
-   error path hit).  `PG_exception_stack` is per-thread in this tree; on the
-   fiber stack it should hold for one backend, but confirm an ERROR unwinds
-   cleanly and the fiber survives.
+4. **sigsetjmp / ereport(ERROR) inside the fiber.**  CLOSED (2026-07-06,
+   8-loop pool on floki).  `SELECT 1/0` inside a fiber raised "division by
+   zero", the `sigsetjmp`/`PG_TRY` unwind ran on the fiber stack
+   (`PG_exception_stack` is per-thread and holds for the fiber's lifetime), and
+   the SAME session then ran `SELECT 'recovered'` successfully -- the fiber
+   survived the ERROR unwind and stayed usable.  Smoke step 4 = PASS.
 
 5. **cassert build.**  Fix the bootstrap `GUCMemoryContext == NULL` assertion so
    the xtc carrier can run under `--enable-cassert` (better crash diagnostics).
