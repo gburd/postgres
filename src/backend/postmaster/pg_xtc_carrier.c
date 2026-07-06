@@ -455,13 +455,8 @@ xtc_carrier_proc(void *arg)
 	/*
 	 * Do NOT elog() here: the fiber has no PG error stack / ErrorContext yet
 	 * (backend_thread_entry sets those up).  An early ereport would call
-	 * errstart -> exit() and tear down the shared postmaster.  A raw write is
-	 * safe.
+	 * errstart -> exit() and tear down the shared postmaster.
 	 */
-	{
-		static const char m[] = "xtc: backend fiber entered; running backend_thread_entry\n";
-		(void) write(STDERR_FILENO, m, sizeof(m) - 1);
-	}
 
 	xtc_in_backend_fiber = true;
 
@@ -726,28 +721,6 @@ xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)
 	if (interest_pg & WL_SOCKET_WRITEABLE)
 		interest |= XTC_IO_WRITABLE;
 	interest |= XTC_IO_HUP | XTC_IO_ERR;
-
-	{
-		/* Prove the xtc wait path fired (rate-limited, raw write: elog may
-		 * be mid-command). */
-		static __thread int nlog = 0;
-		if (nlog < 8)
-		{
-			char		buf[128];
-			int			n;
-
-			nlog++;
-			n = snprintf(buf, sizeof(buf),
-						 "xtc: fiber wait_fd fd=%d interest=0x%x timeout_ms=%ld (via xtc_proc_wait_fd)\n",
-						 fd, interest, timeout_ms);
-			if (n > 0)
-			{
-				if (n > (int) sizeof(buf))
-					n = (int) sizeof(buf);
-				(void) write(STDERR_FILENO, buf, (size_t) n);
-			}
-		}
-	}
 
 	PgRuntimeSaveCurrentWork(&snap);
 	rc = xtc_proc_wait_fd(fd, interest, timeout_ns, &revents);
