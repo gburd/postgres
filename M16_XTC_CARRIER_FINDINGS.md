@@ -102,6 +102,38 @@ fiber's DOWN (the supervisor already observes it), so a canceled-but-spawned
 worker is reaped rather than left parked.  This is a focused autovac-lifecycle
 fix, tracked under #5; not a libxtc issue.
 
+Sharper diagnosis (2026-07-06, re-instrumented with a FIBER ENTER trace at
+carrier-proc entry, debug2 postmaster log):
+  - Both stuck fibers ENTER their body (so it is not a launch-stall); the two
+    that show `spawned` without a matching `backend fiber exiting` are the
+    long-lived launchers (autovac launcher child_slot=221, logrep launcher
+    child_slot=238), spawned first.
+  - BUT the postmaster debug2 log shows BOTH launchers DO reach exit at
+    shutdown ("autovacuum launcher (PID 0) exited with exit code 0",
+    "background worker ... exited", their pm child slots 221/238 released).
+    So the launchers are not the wedge; my "backend fiber exiting" raw-write
+    just is not on the launcher proc_exit path.
+  - After reaping both launchers the postmaster STALLS in PM_WAIT_BACKENDS with
+    every carrier loop idle (all threads in io_cqring_wait / do_epoll_wait, no
+    runnable fiber, no pending timer).  So it is waiting on a target-mask child
+    (B_BACKEND / B_AUTOVAC_WORKER / B_BG_WORKER) whose PMChild exit is never
+    published -- i.e. an on-demand autovac WORKER fiber that was launched, ran,
+    and should have exited but whose pooled-logical exit did not reach
+    process_pm_pooled_logical_exit().
+  - The trigger is intermittent and correlates with the worker-start-timeout
+    cancel window: when the launcher cancels a slow-to-start worker slot, the
+    already-spawned worker fiber and the canceled PMChild/WorkerInfo bookkeeping
+    can diverge so the fiber's exit is not matched to a waited-on slot.
+  So the fix is specifically: on the fiber path, guarantee that a
+  canceled-but-spawned autovac worker's fiber exit is published as a
+  pooled-logical exit for its PMChild slot (or that the cancel tears the slot
+  down through the same reaper), so PM_WAIT_BACKENDS cannot wait on a ghost.
+  This is worth a dedicated, carefully-tested change (it touches the
+  worker-start-timeout cancel + PMChild reaping race) rather than an in-session
+  patch; autovac-as-thread-carrier remains the correct shipping state until
+  then.  It likely also covers other on-demand worker families with a
+  start-timeout cancel.
+
 ---
 
 ## Smoke validated 12/12 (2026-07-06, 8-loop pool on floki)
