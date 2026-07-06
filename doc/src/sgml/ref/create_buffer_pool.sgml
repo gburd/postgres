@@ -1,0 +1,229 @@
+<!--
+doc/src/sgml/ref/create_buffer_pool.sgml
+PostgreSQL documentation
+-->
+
+<refentry id="sql-createbufferpool">
+ <indexterm zone="sql-createbufferpool">
+  <primary>CREATE BUFFER POOL</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle>CREATE BUFFER POOL</refentrytitle>
+  <manvolnum>7</manvolnum>
+  <refmiscinfo>SQL - Language Statements</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>CREATE BUFFER POOL</refname>
+  <refpurpose>define a new buffer pool</refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+<synopsis>
+CREATE BUFFER POOL <replaceable class="parameter">name</replaceable> HANDLER <replaceable class="parameter">handler_name</replaceable> SIZE '<replaceable class="parameter">size</replaceable>'
+    [ WITH ( <replaceable class="parameter">option</replaceable> [= <replaceable class="parameter">value</replaceable>] [, ... ] ) ]
+CREATE BUFFER POOL <replaceable class="parameter">name</replaceable> REMAINDER HANDLER <replaceable class="parameter">handler_name</replaceable>
+</synopsis>
+ </refsynopsisdiv>
+
+ <refsect1>
+  <title>Description</title>
+
+  <para>
+   <command>CREATE BUFFER POOL</command> registers a new, named buffer pool.
+   A buffer pool is a separately managed region of shared cache memory with
+   its own page-replacement algorithm.  Relations can be directed to a
+   specific pool with the <literal>buffer_pool</literal> storage parameter
+   (see <xref linkend="sql-createtable"/>), which lets workloads with
+   different access patterns be isolated from one another and from the
+   cluster's default clock-sweep cache.
+  </para>
+
+  <para>
+   The named pool is created in addition to the always-present
+   <literal>default</literal> pool, which owns
+   <xref linkend="guc-shared-buffers"/>.  A pool created with an explicit
+   <literal>SIZE</literal> is a <firstterm>dynamic</firstterm> pool: its
+   memory is allocated from dynamic shared memory when the pool is created,
+   over and above <varname>shared_buffers</varname>.  A pool created with the
+   <literal>REMAINDER</literal> clause instead takes over the portion of
+   <varname>shared_buffers</varname> that is not claimed by any other
+   user-created dynamic pool; only one <literal>REMAINDER</literal> pool may
+   exist at a time.
+  </para>
+
+  <para>
+   The page-replacement algorithm is provided by the handler function named
+   in the <literal>HANDLER</literal> clause.  The built-in handlers are
+   <function>clock_pool_handler</function> (clock-sweep, the same algorithm
+   used by the default pool), <function>keep_pool_handler</function> (never
+   evicts), and <function>jam_pool_handler</function> (a write-optimized
+   strategy intended for <acronym>TOAST</acronym>/overflow data).  Additional
+   handlers can be registered by extensions loaded through
+   <xref linkend="guc-shared-preload-libraries"/>.
+  </para>
+
+  <para>
+   Only superusers can create buffer pools.  A buffer pool cannot be created
+   during recovery.
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>Parameters</title>
+
+  <variablelist>
+   <varlistentry>
+    <term><replaceable class="parameter">name</replaceable></term>
+    <listitem>
+     <para>
+      The name of the buffer pool to be created.  The name must be distinct
+      from the name of any existing buffer pool, including the
+      <literal>default</literal> pool.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><replaceable class="parameter">handler_name</replaceable></term>
+    <listitem>
+     <para>
+      The name of a previously registered handler function that implements the
+      pool's page-replacement algorithm.  The handler function must take a
+      single argument of type <type>internal</type> and return
+      <type>internal</type>.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><replaceable class="parameter">size</replaceable></term>
+    <listitem>
+     <para>
+      The size of the pool, in bytes.  The value is given as a quoted string
+      of decimal digits.  The size must be positive and must correspond to at
+      least 16 buffers (that is, 16 &times; <symbol>BLCKSZ</symbol> bytes,
+      typically 128&nbsp;kB).  This memory is allocated in addition to
+      <varname>shared_buffers</varname>.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>REMAINDER</literal></term>
+    <listitem>
+     <para>
+      Instead of an explicit size, size the pool automatically to the portion
+      of <varname>shared_buffers</varname> that is not claimed by any other
+      user-created dynamic pool.  A <literal>NOTICE</literal> reports the
+      resulting number of buffers.  Only one <literal>REMAINDER</literal> pool
+      is allowed at a time, and it cannot be created while any user pool is
+      oversubscribed (that is, temporarily larger than its target size while
+      the trickle writer drains it) or if no unclaimed space remains.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>WITH ( <replaceable class="parameter">option</replaceable> [= <replaceable class="parameter">value</replaceable>] [, ... ] )</literal></term>
+    <listitem>
+     <para>
+      This clause specifies optional parameters for the buffer pool.  The
+      following options are recognized:
+
+      <variablelist>
+       <varlistentry>
+        <term><literal>huge_pages</literal> (<type>boolean</type>)</term>
+        <listitem>
+         <para>
+          Whether to request huge pages for the pool's memory.  The default is
+          <literal>false</literal>.  As with <xref linkend="guc-huge-pages"/>,
+          huge page support is platform-dependent.
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry>
+        <term><literal>direct_io</literal> (<type>boolean</type>)</term>
+        <listitem>
+         <para>
+          Whether the pool should use direct I/O, bypassing the operating
+          system page cache, for its own reads and writes.  The default is
+          <literal>false</literal>.  This option can also be changed later with
+          <xref linkend="sql-alterbufferpool"/>.
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist></para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </refsect1>
+
+ <refsect1>
+  <title>Notes</title>
+
+  <para>
+   A buffer pool caches on-disk data; dropping, resizing, or otherwise
+   recreating a pool discards its cached pages but never affects the data on
+   disk.
+  </para>
+
+  <para>
+   A relation cannot be assigned to a pool that uses direct I/O in a way that
+   conflicts with the cluster's I/O configuration; see
+   <xref linkend="guc-max-buffer-pool-memory"/> for the address-space
+   reservation that same-address pools, asynchronous I/O on pool buffers, and
+   online resize require.
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>Examples</title>
+
+  <para>
+   Create a 256&nbsp;MB clock-sweep pool and direct a table to it:
+<programlisting>
+CREATE BUFFER POOL analytics HANDLER clock_pool_handler SIZE '268435456';
+CREATE TABLE events (...) WITH (buffer_pool = 'analytics');
+</programlisting>
+  </para>
+
+  <para>
+   Create a write-optimized pool for a table's <acronym>TOAST</acronym> data:
+<programlisting>
+CREATE BUFFER POOL toast_pool HANDLER jam_pool_handler SIZE '134217728';
+CREATE TABLE documents (id int, body text)
+    WITH (overflow_buffer_pool = 'toast_pool');
+</programlisting>
+  </para>
+
+  <para>
+   Carve a pool out of the remaining unclaimed portion of
+   <varname>shared_buffers</varname>:
+<programlisting>
+CREATE BUFFER POOL leftover REMAINDER HANDLER clock_pool_handler;
+</programlisting></para>
+ </refsect1>
+
+ <refsect1>
+  <title>Compatibility</title>
+
+  <para>
+   <command>CREATE BUFFER POOL</command> is a
+   <productname>PostgreSQL</productname> extension.
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>See Also</title>
+
+  <simplelist type="inline">
+   <member><xref linkend="sql-alterbufferpool"/></member>
+   <member><xref linkend="sql-dropbufferpool"/></member>
+   <member><xref linkend="sql-createtable"/></member>
+  </simplelist>
+ </refsect1>
+
+</refentry>

@@ -1,0 +1,126 @@
+<!--
+doc/src/sgml/ref/drop_buffer_pool.sgml
+PostgreSQL documentation
+-->
+
+<refentry id="sql-dropbufferpool">
+ <indexterm zone="sql-dropbufferpool">
+  <primary>DROP BUFFER POOL</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle>DROP BUFFER POOL</refentrytitle>
+  <manvolnum>7</manvolnum>
+  <refmiscinfo>SQL - Language Statements</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>DROP BUFFER POOL</refname>
+  <refpurpose>remove a buffer pool</refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+<synopsis>
+DROP BUFFER POOL [ IF EXISTS ] <replaceable class="parameter">name</replaceable> [, ...] [ CASCADE | RESTRICT ]
+</synopsis>
+ </refsynopsisdiv>
+
+ <refsect1>
+  <title>Description</title>
+
+  <para>
+   <command>DROP BUFFER POOL</command> removes a buffer pool from the system.
+   The pool's dynamic shared memory and its background trickle writer are torn
+   down; the pool's cached pages are discarded, but the data those pages cache
+   is unaffected on disk.
+  </para>
+
+  <para>
+   Only superusers can drop a buffer pool.  The always-present
+   <literal>default</literal> pool cannot be dropped, and a pool cannot be
+   dropped during recovery.
+  </para>
+
+  <para>
+   A pool cannot be dropped while any relation still refers to it through its
+   <literal>buffer_pool</literal> storage parameter; remove or change that
+   storage parameter on the dependent relations first.
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>Parameters</title>
+
+  <variablelist>
+   <varlistentry>
+    <term><literal>IF EXISTS</literal></term>
+    <listitem>
+     <para>
+      Do not throw an error if the buffer pool does not exist. A notice is
+      issued in this case.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><replaceable class="parameter">name</replaceable></term>
+    <listitem>
+     <para>
+      The name of a buffer pool.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>CASCADE</literal></term>
+    <listitem>
+     <para>
+      This option currently has no additional effect: a relation's use of a
+      pool through the <literal>buffer_pool</literal> storage parameter is not
+      an automatically droppable dependency, so the <command>DROP</command>
+      still fails while such a relation exists.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>RESTRICT</literal></term>
+    <listitem>
+     <para>
+      Refuse to drop the buffer pool if any object depends on it.  This is the
+      default.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </refsect1>
+
+ <refsect1>
+  <title>Examples</title>
+
+  <para>
+   To remove buffer pool <literal>analytics</literal>:
+<programlisting>
+DROP BUFFER POOL analytics;
+</programlisting></para>
+ </refsect1>
+
+ <refsect1>
+  <title>Compatibility</title>
+
+  <para>
+   <command>DROP BUFFER POOL</command> is a
+   <productname>PostgreSQL</productname> extension.
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>See Also</title>
+
+  <simplelist type="inline">
+   <member><xref linkend="sql-createbufferpool"/></member>
+   <member><xref linkend="sql-alterbufferpool"/></member>
+  </simplelist>
+ </refsect1>
+
+</refentry>
