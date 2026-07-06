@@ -253,55 +253,20 @@ static void ClockPoolShmemInit(void *strategy_data, int nbuffers,
 #define BUFPOOL_MAX_NUMA_NODES	64
 
 /*
- * Per-core stripes within a node's buffer range (buffer_pool_numa_cooling).
- * Each stripe has its own clock hand, so a buffer is swept by exactly one
- * owner per pass -- which makes the blind-atomic usage_count cooling sub
- * (fetch_sub instead of a CAS loop) borrow-safe.  Capped small: more stripes
- * than cores-per-node gives no benefit and bloats shmem.
- */
-#define BUFPOOL_MAX_STRIPES		16
-
-/*
  * Number of consecutive buffer IDs a backend claims from the global clock hand
  * per atomic fetch_add in the batched cooling sweep (Jim Mlodgenski's design).
  * Larger reduces cross-socket atomic contention proportionally.
  */
 #define CLOCK_SWEEP_BATCH_SIZE	64
 
-/*
- * A clock-sweep hand on its own cache line.
- *
- * The stripe hands are the atomic each core bumps on every tick.  Packed
- * naively, BUFPOOL_MAX_STRIPES 4-byte atomics share a single 64-byte line, so
- * cores on the same node would false-share and ping-pong that line -- exactly
- * the cross-core atomic traffic this design exists to remove.  Padding each
- * hand to a full cache line makes each core's hand private.  (The per-buffer
- * usage_count is already isolated: BufferDesc is padded to a full line, so the
- * blind cooling sub touches one line per buffer regardless of stripe size.)
- */
-typedef union CacheAlignedHand
-{
-	pg_atomic_uint32 hand;
-	char		pad[PG_CACHE_LINE_SIZE];
-} CacheAlignedHand;
-
 typedef struct NumaClockControl
 {
 	slock_t		lock;			/* protects completePasses[] */
 	int			nnodes;
 	int			nbuffers;
-	int			nstripes;		/* per-node stripe count (>=1); 1 == off */
 	uint32		batchSize;		/* clock-sweep batch claimed per fetch_add */
 	pg_atomic_uint32 nextVictim[BUFPOOL_MAX_NUMA_NODES];	/* per-node hand */
 	uint32		completePasses[BUFPOOL_MAX_NUMA_NODES];
-
-	/*
-	 * Per-(node,stripe) hands for the cooling sweep.  Each is confined to its
-	 * stripe sub-range, giving single-owner-per-buffer-per-pass, and each
-	 * sits on its own cache line so same-node cores do not false-share.
-	 * Unused when nstripes == 1 (cooling disabled).
-	 */
-	CacheAlignedHand stripeHand[BUFPOOL_MAX_NUMA_NODES][BUFPOOL_MAX_STRIPES];
 	pg_atomic_uint32 numBufferAllocs;
 	int			bgwprocno;
 } NumaClockControl;
@@ -436,29 +401,6 @@ ClockTryAcquireVictimCooling(int victim_id, BufferAccessStrategy strategy,
 			return buf;
 		}
 	}
-}
-
-/*
- * NumaCoolingStripeRange -- the [start, end) sub-range of node's partition
- * owned by stripe (0..nstripes-1).  Even split of the node range; the last
- * stripe absorbs any remainder.
- */
-static inline void
-NumaCoolingStripeRange(int node_start, int node_end, int nstripes, int stripe,
-					   int *start, int *end)
-{
-	int			node_range = node_end - node_start;
-	int			w = node_range / nstripes;
-
-	if (w <= 0)
-	{
-		/* Fewer buffers than stripes: stripe 0 owns all, others empty. */
-		*start = (stripe == 0) ? node_start : node_end;
-		*end = node_end;
-		return;
-	}
-	*start = node_start + stripe * w;
-	*end = (stripe == nstripes - 1) ? node_end : (*start + w);
 }
 
 /*
@@ -661,7 +603,7 @@ BufPoolNumaClockStatsMax(void)
 
 	if (!numa)
 		return 1;
-	return NumaClockCtl->nnodes * Max(1, NumaClockCtl->nstripes);
+	return NumaClockCtl->nnodes;
 }
 
 /*
@@ -1525,7 +1467,6 @@ StrategyCtlShmemInit(void *arg)
 				SpinLockInit(&NumaClockCtl->lock);
 				NumaClockCtl->nnodes = Min(nnodes, BUFPOOL_MAX_NUMA_NODES);
 				NumaClockCtl->nbuffers = NBuffers;
-				NumaClockCtl->nstripes = 1;
 				NumaClockCtl->batchSize =
 					Min((uint32) CLOCK_SWEEP_BATCH_SIZE, (uint32) Max(1, NBuffers));
 				NumaClockCtl->bgwprocno = -1;

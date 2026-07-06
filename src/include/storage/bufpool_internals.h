@@ -411,8 +411,6 @@ extern void BufPoolNumaBindRange(void *addr, Size size, int node);
 extern void BufPoolNumaDistribute(char *blocks, char *descriptors,
 								  Size desc_elem_size, int nbuffers);
 extern int	BufPoolNumaNodeForProc(void);
-extern int	BufPoolNumaCpuForProc(void);
-extern int	BufPoolNumaCoresPerNode(int cap);
 
 /*
  * One row of per-(node,stripe) clock-sweep monitoring state for the default
