@@ -147,15 +147,35 @@ ThreadedGUCUnlock(bool locked)
 #ifndef WIN32
 	int			rc;
 
-	if (!multithreaded)
+	/*
+	 * Drive everything off the per-carrier depth counter, NOT off a fresh read
+	 * of `multithreaded` -- setting the `multithreaded` GUC itself flips that
+	 * flag between the paired lock and unlock (ThreadedGUCLock runs with the
+	 * OLD value, this unlock would see the NEW one), which previously tripped
+	 * Assert(ThreadedGUCMutexDepth > 0) on the off->on transition (and, in a
+	 * non-assert build, underflowed the depth + RESUME_INTERRUPTS unbalanced).
+	 * The depth counter is self-describing: ThreadedGUCLock incremented it iff
+	 * it engaged (multithreaded was true at lock time), and took the pthread
+	 * mutex + HOLD_INTERRUPTS only on the outermost (0 -> 1) increment.  So:
+	 * depth == 0 means the paired lock did not engage -> nothing to undo;
+	 * otherwise decrement, and on the outermost release (1 -> 0) drop the mutex
+	 * and RESUME_INTERRUPTS.  `locked` (true iff this call took the outermost
+	 * lock) is cross-checked against that transition under assert.
+	 */
+	if (ThreadedGUCMutexDepth == 0)
+	{
+		Assert(!locked);
 		return;
+	}
 
-	Assert(ThreadedGUCMutexDepth > 0);
-	ThreadedGUCMutexDepth--;
-
-	if (!locked)
+	if (--ThreadedGUCMutexDepth > 0)
+	{
+		Assert(!locked);
 		return;
+	}
 
+	/* outermost release */
+	Assert(locked);
 	rc = pthread_mutex_unlock(&ThreadedGUCMutex);
 	RESUME_INTERRUPTS();
 	if (rc != 0)
