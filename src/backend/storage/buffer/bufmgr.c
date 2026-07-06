@@ -219,6 +219,15 @@ double		bgwriter_lru_multiplier = 2.0;
 bool		track_io_timing = false;
 
 /*
+ * Effective clock-sweep usage-count ceiling (GUC buffer_pool_max_usage_count).
+ * Historical default is BM_MAX_USAGE_COUNT (5); 1 turns usage_count into a
+ * single reference bit (LeanStore-style second-chance clock).  The static
+ * BM_MAX_USAGE_COUNT still bounds the field width; this only caps the runtime
+ * increment.
+ */
+int			buffer_pool_max_usage_count = BM_MAX_USAGE_COUNT;
+
+/*
  * How many buffers PrefetchBuffer callers should try to stay ahead of their
  * ReadBuffer calls by.  Zero means "never prefetch".  This value is only used
  * for buffers not belonging to tablespaces that have their
@@ -3740,7 +3749,7 @@ PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy,
 			if (strategy == NULL)
 			{
 				/* Default case: increase usagecount unless already max. */
-				if (BUF_STATE_GET_USAGECOUNT(buf_state) < BM_MAX_USAGE_COUNT)
+				if (BUF_STATE_GET_USAGECOUNT(buf_state) < buffer_pool_max_usage_count)
 					buf_state += BUF_USAGECOUNT_ONE;
 			}
 			else
