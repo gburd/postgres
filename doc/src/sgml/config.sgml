@@ -1919,6 +1919,113 @@ include_dir 'conf.d'
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-buffer-pool-algorithm" xreflabel="buffer_pool_algorithm">
+      <term><varname>buffer_pool_algorithm</varname> (<type>string</type>)
+      <indexterm>
+       <primary><varname>buffer_pool_algorithm</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Names the page-replacement algorithm used by the default buffer pool,
+        which owns <xref linkend="guc-shared-buffers"/>.  Only
+        <literal>clock</literal> (clock-sweep) is built in; extensions loaded
+        through <xref linkend="guc-shared-preload-libraries"/> can register
+        additional names.  The default is <literal>clock</literal>.
+        This parameter can only be set at server start.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-max-buffer-pool-memory" xreflabel="max_buffer_pool_memory">
+      <term><varname>max_buffer_pool_memory</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>max_buffer_pool_memory</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Sets the maximum total memory reservable across all dynamic buffer
+        pools created with <xref linkend="sql-createbufferpool"/>.  The
+        address space is reserved at server start so that dynamic pools map at
+        the same address in every backend, which is required for same-address
+        pools, asynchronous I/O on pool buffers, and online pool resize.  Only
+        the address space is reserved at start; physical memory is charged
+        only as pools are created.
+        If this value is specified without units, it is taken as blocks, that
+        is <symbol>BLCKSZ</symbol> bytes, typically 8kB.
+        The default is <literal>0</literal>, which disables same-address
+        pools.  This parameter can only be set at server start.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-recycle-pool-buffers" xreflabel="recycle_pool_buffers">
+      <term><varname>recycle_pool_buffers</varname> (<type>integer</type>)
+      <indexterm>
+       <primary><varname>recycle_pool_buffers</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Sets the number of buffers reserved for the <literal>RECYCLE</literal>
+        pool.  When enabled, the <literal>RECYCLE</literal> pool replaces the
+        per-backend ring buffers used for bulk reads, bulk writes, and
+        <command>VACUUM</command> with a shared buffer pool that uses a
+        one-chance clock sweep.
+        If this value is specified without units, it is taken as blocks, that
+        is <symbol>BLCKSZ</symbol> bytes, typically 8kB.
+        The default is <literal>0</literal>, which disables the
+        <literal>RECYCLE</literal> pool and retains the traditional ring
+        buffers.  This parameter can only be set at server start.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-buffer-pool-numa" xreflabel="buffer_pool_numa">
+      <term><varname>buffer_pool_numa</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>buffer_pool_numa</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Distributes buffer pool memory across <acronym>NUMA</acronym> nodes.
+        When this is on and the system has more than one
+        <acronym>NUMA</acronym> node, the default buffer pool uses a
+        NUMA-partitioned clock sweep (one clock hand per node, each confined
+        to the buffers of that node) and its memory is bound to nodes in
+        contiguous chunks, keeping each buffer and its descriptor on the same
+        node.  Dynamic pools have their memory distributed across nodes.  This
+        setting has no effect on single-node or non-<acronym>NUMA</acronym>
+        systems.  The default is <literal>off</literal>.
+        This parameter can only be set at server start.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-buffer-pool-numa-cooling" xreflabel="buffer_pool_numa_cooling">
+      <term><varname>buffer_pool_numa_cooling</varname> (<type>boolean</type>)
+      <indexterm>
+       <primary><varname>buffer_pool_numa_cooling</varname> configuration parameter</primary>
+      </indexterm>
+      </term>
+      <listitem>
+       <para>
+        Uses per-core striped clock hands with blind-atomic cooling.  This is
+        only honored when <xref linkend="guc-buffer-pool-numa"/> is on and the
+        system has more than one <acronym>NUMA</acronym> node.  It sub-divides
+        each node's buffer range into per-core stripes so that each buffer has
+        a single sweeping owner per pass, allowing the
+        <structfield>usage_count</structfield> cooling decrement to use a plain
+        atomic fetch-and-subtract instead of a compare-and-swap loop.  When
+        off, the NUMA sweep is byte-identical to the per-node clock sweep.
+        The default is <literal>off</literal>.
+        This parameter can only be set at server start.
+       </para>
+      </listitem>
+     </varlistentry>
+
      <varlistentry id="guc-temp-buffers" xreflabel="temp_buffers">
       <term><varname>temp_buffers</varname> (<type>integer</type>)
       <indexterm>
@@ -2766,6 +2873,49 @@ include_dir 'conf.d'
          <literal>2MB</literal>.  The default is <literal>512kB</literal> on Linux,
          <literal>0</literal> elsewhere.  (If <symbol>BLCKSZ</symbol> is not 8kB,
          the default and maximum values scale proportionally to it.)
+         This parameter can only be set in the <filename>postgresql.conf</filename>
+         file or on the server command line.
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="guc-trickle-flush-after" xreflabel="trickle_flush_after">
+       <term><varname>trickle_flush_after</varname> (<type>integer</type>)
+       <indexterm>
+        <primary><varname>trickle_flush_after</varname> configuration parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Whenever more than this amount of data has been written by a trickle
+         writer, attempt to force the OS to issue these writes to the
+         underlying storage.  Trickle writers perform dirty-page write-back for
+         the dynamic buffer pools created with
+         <xref linkend="sql-createbufferpool"/>, analogous to the way
+         <xref linkend="guc-bgwriter-flush-after"/> works for the default
+         pool.
+         If this value is specified without units, it is taken as blocks, that
+         is <symbol>BLCKSZ</symbol> bytes, typically 8kB.
+         The valid range is between <literal>0</literal>, which disables forced
+         writeback, and <literal>1024</literal> blocks.  The default is
+         <literal>1MB</literal> on Linux, <literal>0</literal> elsewhere.
+         This parameter can only be set in the <filename>postgresql.conf</filename>
+         file or on the server command line.
+        </para>
+       </listitem>
+      </varlistentry>
+
+      <varlistentry id="guc-trickle-write-batch-size" xreflabel="trickle_write_batch_size">
+       <term><varname>trickle_write_batch_size</varname> (<type>integer</type>)
+       <indexterm>
+        <primary><varname>trickle_write_batch_size</varname> configuration parameter</primary>
+       </indexterm>
+       </term>
+       <listitem>
+        <para>
+         Maximum number of buffers a trickle writer writes in a single cycle.
+         The valid range is between <literal>1</literal> and
+         <literal>10000</literal>.  The default is <literal>128</literal>.
          This parameter can only be set in the <filename>postgresql.conf</filename>
          file or on the server command line.
         </para>

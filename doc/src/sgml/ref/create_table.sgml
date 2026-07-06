@@ -2049,6 +2049,46 @@ WITH ( MODULUS <replaceable class="parameter">numeric_literal</replaceable>, REM
     </listitem>
    </varlistentry>
 
+   <varlistentry id="reloption-buffer-pool" xreflabel="buffer_pool">
+    <term><literal>buffer_pool</literal> (<type>string</type>)
+    <indexterm>
+     <primary><varname>buffer_pool</varname> storage parameter</primary>
+    </indexterm>
+    </term>
+    <listitem>
+     <para>
+      Names the buffer pool that caches this relation's pages.  The named pool
+      must already exist (see <xref linkend="sql-createbufferpool"/>).  If not
+      set, the relation uses the cluster's <literal>default</literal> buffer
+      pool.  A buffer pool cannot be dropped while a relation still refers to
+      it through this parameter.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry id="reloption-overflow-buffer-pool" xreflabel="overflow_buffer_pool">
+    <term><literal>overflow_buffer_pool</literal> (<type>string</type>)
+    <indexterm>
+     <primary><varname>overflow_buffer_pool</varname> storage parameter</primary>
+    </indexterm>
+    </term>
+    <listitem>
+     <para>
+      Names the buffer pool used for this relation's
+      <acronym>TOAST</acronym>/overflow data.  When set on a table, the value
+      is applied as the <literal>buffer_pool</literal> parameter of the table's
+      <acronym>TOAST</acronym> table, so out-of-line values are cached in the
+      named pool.  Changing or resetting this parameter with
+      <link linkend="sql-altertable"><command>ALTER TABLE</command></link>
+      cascades the corresponding change to the TOAST table's
+      <literal>buffer_pool</literal>.  The named pool must already exist; if it
+      does not, a warning is issued and the relation uses the
+      <literal>default</literal> pool for overflow data.  This parameter cannot
+      be set on TOAST tables themselves.
+     </para>
+    </listitem>
+   </varlistentry>
+
    </variablelist>
 
   </refsect2>

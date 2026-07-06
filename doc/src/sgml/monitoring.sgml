@@ -483,6 +483,15 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
      </row>
 
      <row>
+      <entry><structname>pg_stat_bufferpool</structname><indexterm><primary>pg_stat_bufferpool</primary></indexterm></entry>
+      <entry>One row per active buffer pool, showing per-pool cache
+       statistics. See
+       <link linkend="monitoring-pg-stat-bufferpool-view">
+       <structname>pg_stat_bufferpool</structname></link> for details.
+      </entry>
+     </row>
+
+     <row>
       <entry><structname>pg_stat_checkpointer</structname><indexterm><primary>pg_stat_checkpointer</primary></indexterm></entry>
       <entry>One row only, showing statistics about the
        checkpointer process's activity. See
@@ -3759,6 +3768,134 @@ description | Waiting for a newly initialized WAL file to reach durable storage
     </tbody>
    </tgroup>
   </table>
+
+ </sect2>
+
+ <sect2 id="monitoring-pg-stat-bufferpool-view">
+  <title><structname>pg_stat_bufferpool</structname></title>
+
+  <indexterm>
+   <primary>pg_stat_bufferpool</primary>
+  </indexterm>
+
+  <para>
+   The <structname>pg_stat_bufferpool</structname> view returns one row for
+   each active buffer pool, including the always-present
+   <literal>default</literal> pool and any pools created with
+   <xref linkend="sql-createbufferpool"/>.  It exposes per-pool sizing and
+   cache-activity counters, allowing the effectiveness of separate pools to be
+   compared.  The view is a thin wrapper over the
+   <function>pg_stat_get_bufferpool</function> function.
+  </para>
+
+  <table id="pg-stat-bufferpool-view" xreflabel="pg_stat_bufferpool">
+   <title><structname>pg_stat_bufferpool</structname> View</title>
+   <tgroup cols="1">
+    <thead>
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       Column Type
+      </para>
+      <para>
+       Description
+      </para></entry>
+     </row>
+    </thead>
+
+    <tbody>
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>name</structfield> <type>name</type>
+      </para>
+      <para>
+       Name of the buffer pool
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>oid</structfield> <type>oid</type>
+      </para>
+      <para>
+       OID of the buffer pool in
+       <link linkend="catalog-pg-bufferpool"><structname>pg_bufferpool</structname></link>
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>nbuffers</structfield> <type>integer</type>
+      </para>
+      <para>
+       Number of buffers currently allocated to the pool
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>target_buffers</structfield> <type>integer</type>
+      </para>
+      <para>
+       Number of buffers the pool is configured to hold
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>current_buffers</structfield> <type>integer</type>
+      </para>
+      <para>
+       Number of buffers the pool currently occupies, which can temporarily
+       exceed <structfield>target_buffers</structfield> while the pool is being
+       shrunk
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>oversubscribed</structfield> <type>boolean</type>
+      </para>
+      <para>
+       True when the pool currently holds more buffers than its target and is
+       being drained by the trickle writer
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>reads</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Number of blocks read into the pool from storage
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>hits</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Number of buffer accesses that were satisfied from the pool
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>evictions</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Number of buffers evicted from the pool to make room for other blocks
+      </para></entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+
+  <para>
+   Additional columns describing per-node <acronym>NUMA</acronym> partitioning
+   and memory-reservation state may be present depending on the server
+   version and configuration.
+  </para>
 
  </sect2>
 

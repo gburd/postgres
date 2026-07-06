@@ -1,0 +1,173 @@
+<!--
+doc/src/sgml/ref/alter_buffer_pool.sgml
+PostgreSQL documentation
+-->
+
+<refentry id="sql-alterbufferpool">
+ <indexterm zone="sql-alterbufferpool">
+  <primary>ALTER BUFFER POOL</primary>
+ </indexterm>
+
+ <refmeta>
+  <refentrytitle>ALTER BUFFER POOL</refentrytitle>
+  <manvolnum>7</manvolnum>
+  <refmiscinfo>SQL - Language Statements</refmiscinfo>
+ </refmeta>
+
+ <refnamediv>
+  <refname>ALTER BUFFER POOL</refname>
+  <refpurpose>change the definition of a buffer pool</refpurpose>
+ </refnamediv>
+
+ <refsynopsisdiv>
+<synopsis>
+ALTER BUFFER POOL <replaceable class="parameter">name</replaceable> SET SIZE '<replaceable class="parameter">size</replaceable>'
+ALTER BUFFER POOL <replaceable class="parameter">name</replaceable> SET ( <replaceable class="parameter">option</replaceable> = <replaceable class="parameter">value</replaceable> [, ... ] )
+ALTER BUFFER POOL <replaceable class="parameter">name</replaceable> RENAME TO <replaceable class="parameter">new_name</replaceable>
+</synopsis>
+ </refsynopsisdiv>
+
+ <refsect1>
+  <title>Description</title>
+
+  <para>
+   <command>ALTER BUFFER POOL</command> changes the definition of an existing
+   buffer pool.  Only superusers can alter a buffer pool, and the
+   always-present <literal>default</literal> pool cannot be altered or
+   renamed.
+  </para>
+
+  <para>
+   Resizing a pool or changing its page-replacement algorithm is not an
+   online operation: because the underlying dynamic shared memory segment
+   cannot be resized in place, the pool is torn down and recreated at the
+   requested size or under the requested handler.  Recreation discards the
+   pool's cached pages (a buffer pool is a cache; on-disk data is unaffected),
+   so the pool starts cold immediately afterward.  Recreation waits until no
+   backend is still using the old segment before the old state is released, so
+   the operation is safe against concurrent access.
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>Parameters</title>
+
+  <variablelist>
+   <varlistentry>
+    <term><replaceable class="parameter">name</replaceable></term>
+    <listitem>
+     <para>
+      The name of an existing buffer pool.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>SET SIZE '<replaceable class="parameter">size</replaceable>'</literal></term>
+    <listitem>
+     <para>
+      Change the size of the pool, in bytes.  The value is given as a quoted
+      string of decimal digits.  The size must be positive and must correspond
+      to at least 16 buffers.  Only dynamic pools (those created with an
+      explicit <literal>SIZE</literal>) can be resized.  Setting the pool to
+      its current size is a no-op and reports a <literal>NOTICE</literal>.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><literal>SET ( <replaceable class="parameter">option</replaceable> = <replaceable class="parameter">value</replaceable> [, ... ] )</literal></term>
+    <listitem>
+     <para>
+      Change one or more pool options.  The following options are recognized:
+
+      <variablelist>
+       <varlistentry>
+        <term><literal>direct_io</literal> (<type>boolean</type>)</term>
+        <listitem>
+         <para>
+          Whether the pool should use direct I/O, bypassing the operating
+          system page cache, for its own reads and writes.
+         </para>
+        </listitem>
+       </varlistentry>
+
+       <varlistentry>
+        <term><literal>handler</literal> (<type>text</type>)</term>
+        <listitem>
+         <para>
+          The name of a handler function to switch the pool to a different
+          page-replacement algorithm.  Only dynamic pools can have their
+          algorithm changed.  The new handler function must take a single
+          argument of type <type>internal</type> and return
+          <type>internal</type>.  The algorithm swap recreates the pool under
+          the new handler, so the pool starts cold afterward.
+         </para>
+        </listitem>
+       </varlistentry>
+      </variablelist></para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><replaceable class="parameter">new_name</replaceable></term>
+    <listitem>
+     <para>
+      The new name of the buffer pool.  The new name must not collide with any
+      existing pool.  Renaming does not disturb the pool's cached pages.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </refsect1>
+
+ <refsect1>
+  <title>Examples</title>
+
+  <para>
+   Grow a pool from its current size to 512&nbsp;MB (discarding its cache):
+<programlisting>
+ALTER BUFFER POOL analytics SET SIZE '536870912';
+</programlisting>
+  </para>
+
+  <para>
+   Switch a pool to direct I/O:
+<programlisting>
+ALTER BUFFER POOL analytics SET (direct_io = true);
+</programlisting>
+  </para>
+
+  <para>
+   Swap a pool's page-replacement algorithm:
+<programlisting>
+ALTER BUFFER POOL analytics SET (handler = 'keep_pool_handler');
+</programlisting>
+  </para>
+
+  <para>
+   Rename a pool:
+<programlisting>
+ALTER BUFFER POOL analytics RENAME TO reporting;
+</programlisting></para>
+ </refsect1>
+
+ <refsect1>
+  <title>Compatibility</title>
+
+  <para>
+   <command>ALTER BUFFER POOL</command> is a
+   <productname>PostgreSQL</productname> extension.
+  </para>
+ </refsect1>
+
+ <refsect1>
+  <title>See Also</title>
+
+  <simplelist type="inline">
+   <member><xref linkend="sql-createbufferpool"/></member>
+   <member><xref linkend="sql-dropbufferpool"/></member>
+  </simplelist>
+ </refsect1>
+
+</refentry>

@@ -91,6 +91,11 @@
      </row>
 
      <row>
+      <entry><link linkend="catalog-pg-bufferpool"><structname>pg_bufferpool</structname></link></entry>
+      <entry>buffer pools</entry>
+     </row>
+
+     <row>
       <entry><link linkend="catalog-pg-cast"><structname>pg_cast</structname></link></entry>
       <entry>casts (data type conversions)</entry>
      </row>
@@ -1768,6 +1773,84 @@ SCRAM-SHA-256$<replaceable>&lt;iteration count&gt;</replaceable>:<replaceable>&l
 
  </sect1>
 
+
+ <sect1 id="catalog-pg-bufferpool">
+  <title><structname>pg_bufferpool</structname></title>
+
+  <indexterm zone="catalog-pg-bufferpool">
+   <primary>pg_bufferpool</primary>
+  </indexterm>
+
+  <para>
+   The catalog <structname>pg_bufferpool</structname> stores the buffer pools
+   defined in the database cluster.  Each row represents a named buffer pool
+   with its own page-replacement algorithm.  The always-present
+   <literal>default</literal> pool uses clock-sweep and owns
+   <xref linkend="guc-shared-buffers"/>; additional pools are created with
+   <xref linkend="sql-createbufferpool"/>.  Buffer pools are cluster-wide
+   objects; they are not local to individual databases.
+  </para>
+
+  <table>
+   <title><structname>pg_bufferpool</structname> Columns</title>
+   <tgroup cols="1">
+    <thead>
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       Column Type
+      </para>
+      <para>
+       Description
+      </para></entry>
+     </row>
+    </thead>
+
+    <tbody>
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>oid</structfield> <type>oid</type>
+      </para>
+      <para>
+       Row identifier
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>bpname</structfield> <type>name</type>
+      </para>
+      <para>
+       Name of the buffer pool (unique across the cluster)
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>bphandler</structfield> <type>regproc</type>
+       (references <link linkend="catalog-pg-proc"><structname>pg_proc</structname></link>.<structfield>oid</structfield>)
+      </para>
+      <para>
+       The handler function that implements the pool's page-replacement
+       algorithm
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>bpsize</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Size of the pool in bytes.  A value of <literal>0</literal> means
+       <quote>all of <xref linkend="guc-shared-buffers"/></quote> for the
+       <literal>default</literal> pool, and is also used as a marker for a
+       <literal>REMAINDER</literal> pool, whose effective size is computed
+       dynamically.
+      </para></entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </table>
+ </sect1>
 
  <sect1 id="catalog-pg-cast">
   <title><structname>pg_cast</structname></title>
