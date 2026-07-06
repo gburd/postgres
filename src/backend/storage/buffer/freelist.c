@@ -323,6 +323,13 @@ ClockTryAcquireVictim(int victim_id, BufferAccessStrategy strategy,
 #define BUFPOOL_MAX_STRIPES		16
 
 /*
+ * Number of consecutive buffer IDs a backend claims from the global clock hand
+ * per atomic fetch_add in the batched cooling sweep (Jim Mlodgenski's design).
+ * Larger reduces cross-socket atomic contention proportionally.
+ */
+#define CLOCK_SWEEP_BATCH_SIZE	64
+
+/*
  * A clock-sweep hand on its own cache line.
  *
  * The stripe hands are the atomic each core bumps on every tick.  Packed
@@ -345,6 +352,7 @@ typedef struct NumaClockControl
 	int			nnodes;
 	int			nbuffers;
 	int			nstripes;		/* per-node stripe count (>=1); 1 == off */
+	uint32		batchSize;		/* clock-sweep batch claimed per fetch_add */
 	pg_atomic_uint32 nextVictim[BUFPOOL_MAX_NUMA_NODES];	/* per-node hand */
 	uint32		completePasses[BUFPOOL_MAX_NUMA_NODES];
 	/*
@@ -649,39 +657,17 @@ NumaCoolingGetVictim(void *strategy_data,
 					 bool *from_ring)
 {
 	NumaClockControl *ctl = (NumaClockControl *) strategy_data;
-	int			nnodes = ctl->nnodes;
-	int			nstripes = ctl->nstripes;
-	int			home;
-	int			stripe;
-	int			stripe_start,
-				stripe_end,
-				stripe_range;
+	int			nbuffers = ctl->nbuffers;
+	int			trycounter;
 
 	/*
-	 * Resolving the backend's NUMA node and CPU means a sched_getcpu() (and
-	 * numa_node_of_cpu()) call, which is far too costly to do on every victim
-	 * selection -- this is the hot eviction path.  A backend only rarely
-	 * migrates cores, and a stale (node, stripe) only costs a little locality
-	 * (never correctness: the steal path reaches the whole pool).  So cache
-	 * the assignment per backend and refresh it only every
-	 * COOLING_AFFINITY_REFRESH ticks.
+	 * Per-backend batch of buffer IDs claimed from the single global clock
+	 * hand.  MyBatchPos is the next id to consider; MyBatchEnd is one past the
+	 * end of the claimed batch.  Both are absolute (monotonically increasing)
+	 * hand values; the actual buffer id is the value modulo nbuffers.
 	 */
-#define COOLING_AFFINITY_REFRESH 256
-	static int	home_cached = -1;
-	static int	stripe_cached = 0;
-	static uint32 affinity_countdown = 0;
-
-	if (affinity_countdown == 0 || home_cached < 0)
-	{
-		int			cpu = BufPoolNumaCpuForProc();
-
-		home_cached = BufPoolNumaNodeForProc();
-		stripe_cached = (cpu >= 0) ? (cpu % nstripes) : 0;
-		affinity_countdown = COOLING_AFFINITY_REFRESH;
-	}
-	affinity_countdown--;
-	home = home_cached;
-	stripe = stripe_cached;
+	static uint32 MyBatchPos = 0;
+	static uint32 MyBatchEnd = 0;
 
 	*from_ring = false;
 
@@ -724,88 +710,58 @@ NumaCoolingGetVictim(void *strategy_data,
 	pg_atomic_fetch_add_u32(&ctl->numBufferAllocs, 1);
 
 	/*
-	 * Fast path: sweep the caller's GLOBAL stripe with its own hand and the
-	 * blind-atomic cooling acquire.  Single owner per buffer this pass.
+	 * Batched global clock sweep (Jim Mlodgenski's design) + blind-atomic
+	 * cooling.
 	 *
-	 * Stripes tile the ENTIRE pool [0, NBuffers), NOT each node's slice.  A
-	 * home-node-confined sweep (as the numa_clock routine does) would let a
-	 * backend load/evict only within its node's 1/nnodes of shared_buffers,
-	 * shrinking the effective cache to that slice -- catastrophic for a
-	 * uniform working set (measured: hit ratio collapsed ~8x vs the global
-	 * clock).  Global striping keeps the whole pool usable by every backend
-	 * (no cache fragmentation) while still giving each core a disjoint slice
-	 * for atomic de-contention and single-owner blind cooling.  Physical
-	 * NUMA locality still comes from BufPoolNumaDistribute's interleaved
-	 * placement; we simply do not confine the LOGICAL eviction to a node.
+	 * There is ONE global clock hand (ctl->nextVictim[0]) that traverses the
+	 * WHOLE pool, exactly like the plain clock -- so every buffer is reachable
+	 * and fillable by every backend, and the effective cache is all of
+	 * shared_buffers (NOT 1/N of it -- the fatal flaw of any per-backend
+	 * sub-range partition).  The only change from the plain clock is that a
+	 * backend advances the hand a BATCH at a time (one fetch_add of
+	 * ClockSweepBatchSize) and then iterates that batch privately, so the
+	 * contended atomic fires ~1/batch as often -- the multi-socket win.
+	 *
+	 * Blind cooling is safe here because BATCH ownership is exclusive:
+	 * consecutive fetch_add(batch) calls hand out DISJOINT [start, start+batch)
+	 * ranges, so within one pass each buffer is examined by exactly one
+	 * backend -- the single-owner-per-pass property the blind usage_count
+	 * fetch_sub needs (see ClockTryAcquireVictimCooling).
 	 */
+	trycounter = nbuffers;
+	for (;;)
 	{
-		int			gstripes = nnodes * nstripes;
-		int			gstripe = home * nstripes + stripe;
-		int			trycounter;
-		pg_atomic_uint32 *hand;
+		uint32		handval;
+		int			victim_id;
+		BufferDesc *buf;
 
-		if (gstripes < 1)
-			gstripes = 1;
-		if (gstripe >= gstripes)
-			gstripe = gstripe % gstripes;
-
-		NumaCoolingStripeRange(0, ctl->nbuffers, gstripes, gstripe,
-							   &stripe_start, &stripe_end);
-		stripe_range = stripe_end - stripe_start;
-		hand = &ctl->stripeHand[home][stripe].hand;
-
-		trycounter = stripe_range;
-		while (trycounter > 0)
+		/* Claim a fresh batch from the global hand when the local one is spent. */
+		if (MyBatchPos >= MyBatchEnd)
 		{
-			uint32		raw = pg_atomic_fetch_add_u32(hand, 1);
-			int			victim_id = stripe_start + (int) (raw % (uint32) stripe_range);
-			int			local_try = stripe_range;
-			BufferDesc *buf;
+			uint32		batch = ctl->batchSize;
+			uint32		start;
 
-			buf = ClockTryAcquireVictimCooling(victim_id, strategy, buf_state,
-											   &local_try, stripe_range);
-			if (buf != NULL)
-				return buf;
-			trycounter--;
+			start = pg_atomic_fetch_add_u32(&ctl->nextVictim[0], batch);
+			MyBatchPos = start;
+			MyBatchEnd = start + batch;
 		}
+
+		handval = MyBatchPos++;
+		victim_id = (int) (handval % (uint32) nbuffers);
+
+		/*
+		 * Pass the OUTER trycounter: ClockTryAcquireVictimCooling resets it to
+		 * nbuffers on a cooling tick (a decrement is progress toward an
+		 * evictable buffer) and only decrements it when a buffer is pinned (no
+		 * progress).  So we only error after nbuffers consecutive PINNED
+		 * buffers, matching the plain clock -- not after nbuffers cooling ticks.
+		 */
+		buf = ClockTryAcquireVictimCooling(victim_id, strategy, buf_state,
+										   &trycounter, nbuffers);
+		if (buf != NULL)
+			return buf;
 	}
 
-	/*
-	 * Home stripe exhausted (all buffers hot or pinned): steal across the
-	 * WHOLE pool with the shared node-0 hand and the CAS acquire -- ownership
-	 * is not exclusive here, so we cannot use the blind sub.  This is the rare
-	 * fallback; it guarantees whole-pool reachability.
-	 */
-	{
-		int			start = 0;
-		int			range = ctl->nbuffers;
-		int			trycounter = range;
-
-		while (trycounter > 0)
-		{
-			uint32		victim_raw = pg_atomic_fetch_add_u32(&ctl->nextVictim[0], 1);
-			int			victim_id = start + (int) (victim_raw % (uint32) range);
-			int			local_try = range;
-			BufferDesc *buf;
-
-			if (victim_raw >= (uint32) range &&
-				(victim_raw % (uint32) range) == 0)
-			{
-				SpinLockAcquire(&ctl->lock);
-				ctl->completePasses[0]++;
-				SpinLockRelease(&ctl->lock);
-			}
-
-			buf = ClockTryAcquireVictim(victim_id, strategy, buf_state,
-										&local_try, range);
-			if (buf != NULL)
-				return buf;
-
-			trycounter--;
-		}
-	}
-
-	elog(ERROR, "no unpinned buffers available");
 	pg_unreachable();
 }
 
@@ -853,40 +809,35 @@ NumaClockNotifyTrickle(void *strategy_data, int bgwprocno)
 }
 
 /*
- * NumaCoolingSyncStart -- sync_start for the striped cooling sweep.
+ * NumaCoolingSyncStart -- sync_start for the batched global cooling sweep.
  *
- * The cooling sweep advances per-core stripe hands, not the single node-0
- * hand NumaClockSyncStart reads, so that function would report a frozen sweep
- * point (nextVictim[0] never moves) and BgBufferSync's pacing would stall.
- *
- * Instead, sum the total ticks across every stripe hand (and the node hands
- * used by the steal fallback) to get a whole-pool tick count, then derive a
- * monotonic (position, passes) pair from it: position = total % NBuffers,
- * passes = total / NBuffers.  Hands only ever increase, so total only
- * increases, so strategy_delta in BgBufferSync stays >= 0 (its Assert holds).
- * This gives the bgwriter a real, advancing sweep point to pace against.
+ * The batched sweep advances the single global hand ctl->nextVictim[0] (a
+ * batch at a time) and maintains ctl->completePasses[0] on wraparound, exactly
+ * like the plain clock's StrategyControl.  So report that hand and pass count
+ * directly; it advances under load, so BgBufferSync's strategy_delta stays >= 0
+ * and its pacing works.
  */
 static int
 NumaCoolingSyncStart(void *strategy_data, uint32 *complete_passes,
 					 uint32 *num_buf_alloc)
 {
 	NumaClockControl *ctl = (NumaClockControl *) strategy_data;
-	uint64		total = 0;
 	uint32		nbuf = (ctl->nbuffers > 0) ? (uint32) ctl->nbuffers : 1;
+	uint32		hand = pg_atomic_read_u32(&ctl->nextVictim[0]);
 
-	for (int n = 0; n < ctl->nnodes; n++)
-	{
-		total += pg_atomic_read_u32(&ctl->nextVictim[n]);
-		for (int s = 0; s < ctl->nstripes; s++)
-			total += pg_atomic_read_u32(&ctl->stripeHand[n][s].hand);
-	}
-
+	/*
+	 * Derive BOTH position and passes from the SAME monotonic hand value so
+	 * the (position, passes) pair BgBufferSync sees is always consistent and
+	 * non-decreasing (its strategy_delta Assert requires delta >= 0).  The
+	 * global hand grows unboundedly (never wrapped in place), so passes is
+	 * simply hand / nbuffers and position is hand %% nbuffers.
+	 */
 	if (complete_passes)
-		*complete_passes = (uint32) (total / nbuf);
+		*complete_passes = hand / nbuf;
 	if (num_buf_alloc)
 		*num_buf_alloc = pg_atomic_exchange_u32(&ctl->numBufferAllocs, 0);
 
-	return (int) (total % nbuf);
+	return (int) (hand % nbuf);
 }
 
 /*
@@ -924,7 +875,6 @@ BufPoolNumaClockStatsMax(void)
 int
 BufPoolNumaClockStats(BufPoolNumaStat *out, int maxrows)
 {
-	int			n = 0;
 	bool		numa = (ActivePoolData == NumaClockCtl && NumaClockCtl != NULL &&
 						NumaClockCtl->nnodes > 0);
 
@@ -951,63 +901,59 @@ BufPoolNumaClockStats(BufPoolNumaStat *out, int maxrows)
 	else
 	{
 		NumaClockControl *ctl = NumaClockCtl;
-		int			nstripes = Max(1, ctl->nstripes);
-		bool		cooling = (ctl->nstripes > 1);
-		int			gstripes = ctl->nnodes * nstripes;
-		uint32		passes[BUFPOOL_MAX_NUMA_NODES];
+		bool		cooling = (ActivePoolRoutine == &numa_cooling_pool_routine);
+		uint32		nbuf = (ctl->nbuffers > 0) ? (uint32) ctl->nbuffers : 1;
 
-		if (gstripes < 1)
-			gstripes = 1;
-
-		/* Snapshot the spinlock-protected completePasses[] once. */
-		SpinLockAcquire(&ctl->lock);
-		for (int node = 0; node < ctl->nnodes; node++)
-			passes[node] = ctl->completePasses[node];
-		SpinLockRelease(&ctl->lock);
-
-		for (int node = 0; node < ctl->nnodes && n < maxrows; node++)
+		if (cooling)
 		{
-			for (int s = 0; s < nstripes && n < maxrows; s++)
+			/*
+			 * Batched global cooling sweep: ONE global hand over the whole
+			 * pool (see NumaCoolingGetVictim).  Report a single row describing
+			 * it; the per-node/per-stripe hands are unused in this mode.
+			 * stripe carries the batch size for visibility.
+			 */
+			uint32		hand = pg_atomic_read_u32(&ctl->nextVictim[0]);
+
+			out[0].node = 0;
+			out[0].stripe = (int) ctl->batchSize;
+			out[0].nbuffers = ctl->nbuffers;
+			out[0].clock_hand = hand % nbuf;
+			out[0].complete_passes = hand / nbuf;
+			return 1;
+		}
+		else
+		{
+			/* NUMA-partitioned (non-cooling): one hand per node. */
+			uint32		passes[BUFPOOL_MAX_NUMA_NODES];
+			int			n = 0;
+
+			SpinLockAcquire(&ctl->lock);
+			for (int node = 0; node < ctl->nnodes; node++)
+				passes[node] = ctl->completePasses[node];
+			SpinLockRelease(&ctl->lock);
+
+			for (int node = 0; node < ctl->nnodes && n < maxrows; node++)
 			{
 				int			start,
 							end,
 							range;
 				uint32		hand;
 
-				if (cooling)
-				{
-					/*
-					 * Cooling mode: stripes tile the WHOLE pool globally
-					 * (see NumaCoolingGetVictim), so a (node,stripe) hand
-					 * owns global stripe (node*nstripes + s) of [0,nbuffers),
-					 * not a slice of the node's partition.
-					 */
-					int			gstripe = node * nstripes + s;
-
-					NumaCoolingStripeRange(0, ctl->nbuffers, gstripes,
-										   gstripe, &start, &end);
-					hand = pg_atomic_read_u32(&ctl->stripeHand[node][s].hand);
-				}
-				else
-				{
-					/* Node mode: one hand confined to the node's range. */
-					BufPoolNumaBufferRange(node, ctl->nbuffers, &start, &end);
-					hand = pg_atomic_read_u32(&ctl->nextVictim[node]);
-				}
-
+				BufPoolNumaBufferRange(node, ctl->nbuffers, &start, &end);
+				hand = pg_atomic_read_u32(&ctl->nextVictim[node]);
 				range = (end > start) ? (end - start) : 0;
+
 				out[n].node = node;
-				out[n].stripe = s;
+				out[n].stripe = 0;
 				out[n].nbuffers = range;
-				/* Hand is relative to its stripe/node range; report pool-absolute. */
 				out[n].clock_hand = (range > 0)
 					? (uint32) (start + (int) (hand % (uint32) range))
 					: (uint32) start;
 				out[n].complete_passes = passes[node];
 				n++;
 			}
+			return n;
 		}
-		return n;
 	}
 }
 
@@ -1789,6 +1735,17 @@ StrategyCtlShmemInit(void *arg)
 			NumaClockCtl->nnodes = Min(nnodes, BUFPOOL_MAX_NUMA_NODES);
 			NumaClockCtl->nbuffers = NBuffers;
 			NumaClockCtl->nstripes = Max(1, Min(nstripes, BUFPOOL_MAX_STRIPES));
+			/*
+			 * Clock-sweep batch size (Jim Mlodgenski's design): a backend claims
+			 * this many consecutive buffer IDs from the global hand per fetch_add,
+			 * cutting the contended atomic traffic by ~this factor.  64 on
+			 * multi-node hardware where the atomic crosses the interconnect;
+			 * capped so a single claim cannot wrap the whole pool.
+			 */
+			NumaClockCtl->batchSize =
+				(NumaClockCtl->nnodes > 1)
+				? Min((uint32) CLOCK_SWEEP_BATCH_SIZE, (uint32) Max(1, NBuffers))
+				: 1;
 			NumaClockCtl->bgwprocno = -1;
 			pg_atomic_init_u32(&NumaClockCtl->numBufferAllocs, 0);
 			for (int n = 0; n < BUFPOOL_MAX_NUMA_NODES; n++)
@@ -1799,7 +1756,7 @@ StrategyCtlShmemInit(void *arg)
 					pg_atomic_init_u32(&NumaClockCtl->stripeHand[n][s].hand, 0);
 			}
 
-			ActivePoolRoutine = (NumaClockCtl->nstripes > 1)
+			ActivePoolRoutine = buffer_pool_numa_cooling
 				? &numa_cooling_pool_routine
 				: &numa_clock_pool_routine;
 			ActivePoolData = NumaClockCtl;
@@ -1815,10 +1772,9 @@ StrategyCtlShmemInit(void *arg)
 								  sizeof(BufferDescPadded),
 								  NBuffers);
 
-			if (NumaClockCtl->nstripes > 1)
-				elog(LOG, "default buffer pool using globally-striped clock sweep with blind-atomic cooling: %d nodes, %d stripes/node (%d global stripes)",
-					 NumaClockCtl->nnodes, NumaClockCtl->nstripes,
-					 NumaClockCtl->nnodes * NumaClockCtl->nstripes);
+			if (buffer_pool_numa_cooling)
+				elog(LOG, "default buffer pool using batched global clock sweep with blind-atomic cooling: %d nodes, batch=%u",
+					 NumaClockCtl->nnodes, NumaClockCtl->batchSize);
 			else
 				elog(LOG, "default buffer pool using NUMA-partitioned clock sweep across %d nodes",
 					 NumaClockCtl->nnodes);

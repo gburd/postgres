@@ -101,7 +101,7 @@ SQL
 	$node->stop;
 }
 
-# --- 3. Forced multi-node, cooling on: one row per (node, stripe). ---
+# --- 3. Forced multi-node, cooling on: one row for the batched global hand. ---
 {
 	my $node = PostgreSQL::Test::Cluster->new('mon_cooling');
 	$node->init;
@@ -112,31 +112,28 @@ buffer_pool_numa_nodes = 4
 shared_buffers = 128MB
 CONF
 	$node->start;
-
 	my $log = slurp_file($node->logfile);
-	like($log, qr/globally-striped clock sweep/,
-		'striped cooling sweep activated');
+	like($log, qr/batched global clock sweep with blind-atomic cooling/,
+		'batched cooling sweep activated');
 
-	# More rows than nodes: stripes multiply the row count.
-	my $nrows = $node->safe_psql('postgres',
-		'SELECT count(*) FROM pg_stat_bufferpool_numa;');
-	cmp_ok($nrows, '>=', 4, 'cooling on: at least one row per node');
+	# The batched sweep has ONE global hand over the whole pool, so the view
+	# reports a single row; the stripe column carries the batch size.
 	is($node->safe_psql('postgres',
-		'SELECT count(*) = 4 * count(distinct stripe) FROM pg_stat_bufferpool_numa;'),
-		't', 'cooling on: rows = nodes * stripes');
+		'SELECT count(*) FROM pg_stat_bufferpool_numa;'),
+		'1', 'cooling on: single row for the global batched hand');
 	is($node->safe_psql('postgres',
-		'SELECT bool_and(stripe >= 0) AND max(stripe) >= 0 FROM pg_stat_bufferpool_numa;'),
-		't', 'cooling on: stripe column populated');
+		'SELECT stripe > 0 FROM pg_stat_bufferpool_numa;'),
+		't', 'cooling on: stripe column reports batch size (> 0)');
 
-	# Drive eviction, then some stripe hand must have moved.
+	# Drive eviction, then the global hand must have advanced.
 	$node->safe_psql('postgres', <<'SQL');
 CREATE TABLE t (id int primary key, pad text);
 INSERT INTO t SELECT g, repeat('x', 400) FROM generate_series(1, 300000) g;
 SELECT count(*) FROM t;
 SQL
 	is($node->safe_psql('postgres',
-		'SELECT bool_or(clock_hand > 0 OR complete_passes > 0) FROM pg_stat_bufferpool_numa;'),
-		't', 'cooling on: some stripe hand advanced under pressure');
+		'SELECT clock_hand > 0 OR complete_passes > 0 FROM pg_stat_bufferpool_numa;'),
+		't', 'cooling on: global hand advanced under pressure');
 
 	$node->stop;
 }

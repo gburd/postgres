@@ -68,8 +68,8 @@ CONF
 
 	# The log must show the striped cooling sweep was selected.
 	my $log = slurp_file($node->logfile);
-	like($log, qr/globally-striped clock sweep with blind-atomic cooling: 4 nodes/,
-		'striped cooling sweep activated with forced 4 nodes');
+	like($log, qr/batched global clock sweep with blind-atomic cooling: 4 nodes/,
+		'batched cooling sweep activated with forced 4 nodes');
 
 	# Dataset larger than shared_buffers so the cooling sweep runs constantly.
 	$node->safe_psql('postgres', <<'SQL');
