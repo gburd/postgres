@@ -504,23 +504,29 @@ xtc_carrier_eligible(BackendType child_type)
 	{
 		case B_BACKEND:
 			return true;
-		default:
+		case B_BG_WORKER:
+
 			/*
-			 * Server-owned worker families are NOT yet fiber-eligible.  A bare
-			 * carrier swap (pthread -> fiber) passes happy-path smoke
-			 * (B_BG_WORKER launches, runs, and exits cleanly), but the
-			 * threaded-runtime TAP wedges: with worker fibers sharing the loop
-			 * pool, terminating an idle backend hangs (regressed from a clean
-			 * 129/129).  Worker fibers need fiber-aware crash/terminate/
-			 * restart and shutdown-ordering handling, not just a carrier swap.
-			 *
-			 * B_IO_WORKER additionally needs the AIO shutdown protocol
-			 * (PM_WAIT_IO_WORKERS) handled on fibers -- that belongs with the
-			 * xtc_aio work (item #6).
-			 *
-			 * Deferred, not rejected: widen one family at a time once its full
-			 * lifecycle (not just the happy path) is validated on a fiber under
-			 * the threaded-runtime TAP, on a disk-backed host.
+			 * #5 widening (post-#7): background workers are fiber-eligible.
+			 * #7 Stage 1b now gives fiber-aware crash containment + escalation
+			 * (a faulted worker fiber delivers a DOWN(reason=signal) that the
+			 * supervisor escalates), which was the missing piece.  Validate the
+			 * full lifecycle -- launch, run, SIGTERM/terminate, crash, and clean
+			 * shutdown ordering -- under the threaded-runtime TAP on a
+			 * disk-backed host, not just happy-path smoke.
+			 */
+			return true;
+		default:
+
+			/*
+			 * Remaining server-owned worker families are NOT yet
+			 * fiber-eligible.  B_IO_WORKER additionally needs the AIO shutdown
+			 * protocol (PM_WAIT_IO_WORKERS) handled on fibers -- that belongs
+			 * with the xtc_aio work (item #6).  The auxiliary families
+			 * (checkpointer, bgwriter, walwriter, autovacuum, ...) each have
+			 * their own shutdown-ordering and restart protocols; widen one at
+			 * a time once its full lifecycle is validated on a fiber under the
+			 * threaded-runtime TAP.  Deferred, not rejected.
 			 */
 			return false;
 	}
