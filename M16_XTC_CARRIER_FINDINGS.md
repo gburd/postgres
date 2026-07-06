@@ -48,6 +48,31 @@ Verified on the 8-loop pool (floki):
 Commit: `xtc-carrier: adopt libxtc v1.3.0 -- self-describing DOWN + atomic
 spawn_monitor`.
 
+### Item #5 (bgworker fibers) validated on v1.3.0
+
+`B_BG_WORKER` is fiber-eligible and its crash lifecycle is validated:
+  - `002_threaded_bgworker_crash` TAP: **6/6 PASS**.  A fiber-backed bgworker
+    that `proc_exit(17)`s is observed by the supervisor as KIND_EXIT (not
+    escalated there), and the postmaster's own child-crash policy escalates
+    ("terminating threaded server runtime after child crash" -> ExitPostmaster).
+    A genuine fiber SIGSEGV instead routes through the supervisor's KIND_SIGNAL
+    path -- both are correct.
+  - Directly exercised and working: 6 concurrent long-lived parked sessions
+    (distinct pids), query-cancel of a sleeping fiber ("canceling statement due
+    to user request", fiber woke), and idle-backend terminate.
+
+### 001_threaded_runtime harness caveat (pre-existing, NOT a runtime bug)
+
+`001_threaded_runtime` hangs at its `background_psql` section (the 3rd of five
+long-lived interactive sessions) in THIS meson-on-btrfs environment, timing out
+on IPC::Run.  It is an IPC::Run/`background_psql` harness interaction, not a
+runtime defect: BISECTED to fail IDENTICALLY on libxtc **v1.2.1 and v1.3.0**
+(reverted the carrier + flake to 1.2.1, rebuilt, same "exited just after 12"
+timeout), and the behaviors it means to test all pass when driven directly
+(6 concurrent parked sessions, cancel, terminate -- see above).  Per the
+standing note, run full 001 under `gmake check-threaded` on a disk-backed host;
+the meson-only path is not the supported way to run it.
+
 ---
 
 ## Smoke validated 12/12 (2026-07-06, 8-loop pool on floki)

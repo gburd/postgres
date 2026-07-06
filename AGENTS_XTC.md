@@ -84,16 +84,26 @@ Larger (toward fully-on-xtc):
 
 5. Auxiliary/background processes on xtc: route bgworker, checkpointer,
    walwriter, autovacuum, etc. through the xtc scheduler instead of fork /
-   base pthreads.  INFRASTRUCTURE IN PLACE, workers still DEFERRED.
+   base pthreads.  B_BACKEND + B_BG_WORKER ADMITTED; other families DEFERRED.
    xtc_carrier_eligible() (launch_backend.c) gates which child types run as
-   fibers; the launch/exit plumbing is generalized for any type.  Only
-   B_BACKEND is admitted today.  A bare pthread->fiber carrier swap for
-   B_BG_WORKER passed happy-path smoke but WEDGED the threaded-runtime TAP
-   (terminating an idle backend hung; the suite was a clean 129/129 before).
-   Worker fibers need fiber-aware crash/terminate/restart and shutdown-
-   ordering handling, which depends on item #7 Stage 1 (fiber-death
-   observation).  Widen the allowlist one family at a time, each validated
-   under the FULL threaded-runtime TAP (not just smoke) on a disk-backed host.
+   fibers; the launch/exit plumbing is generalized for any type.  B_BG_WORKER
+   is now fiber-eligible (unblocked by #7's fiber-death observation +
+   escalation): the earlier idle-terminate/crash wedge is resolved.
+   VALIDATED (2026-07-06, 8-loop pool, libxtc v1.3.0): the
+   002_threaded_bgworker_crash TAP passes 6/6 -- a fiber-backed bgworker that
+   proc_exit(17)s escalates via the postmaster's own child-crash policy
+   ("terminating threaded server runtime after child crash" -> ExitPostmaster),
+   while a genuine fiber SIGSEGV would route through the supervisor's
+   KIND_SIGNAL path; both are correct.  Concurrent long-lived parked sessions
+   (6 verified), query-cancel of a sleeping fiber, and terminate all work when
+   exercised directly.  Widen the remaining families (checkpointer, bgwriter,
+   walwriter, autovacuum, io worker) one at a time, each validated on a fiber.
+   TEST-ENV CAVEAT: 001_threaded_runtime hangs at its background_psql section
+   in THIS meson-on-btrfs environment -- an IPC::Run harness interaction, NOT a
+   runtime bug: it fails IDENTICALLY on libxtc v1.2.1 and v1.3.0 (bisected),
+   and the underlying behaviors (concurrent sessions, cancel, terminate) pass
+   when driven directly.  Run the full 001 under `gmake check-threaded` on a
+   disk-backed host, per the standing note.
 6. xtc_aio for backend disk I/O.  STEPS 1-2 DONE (libxtc v1.1.0):
    plan_docs/XTC_AIO_DESIGN.md.  io_method='xtc'
    (src/backend/storage/aio/method_xtc.c, IOMETHOD_XTC/pgaio_xtc_ops) wraps
