@@ -84,7 +84,8 @@ Larger (toward fully-on-xtc):
 
 5. Auxiliary/background processes on xtc: route bgworker, checkpointer,
    walwriter, autovacuum, etc. through the xtc scheduler instead of fork /
-   base pthreads.  B_BACKEND + B_BG_WORKER ADMITTED; other families DEFERRED.
+   base pthreads.  B_BACKEND + B_BG_WORKER + AUTOVACUUM (launcher+worker)
+   ADMITTED; other families DEFERRED (ranked plan below).
    xtc_carrier_eligible() (launch_backend.c) gates which child types run as
    fibers; the launch/exit plumbing is generalized for any type.  B_BG_WORKER
    is now fiber-eligible (unblocked by #7's fiber-death observation +
@@ -96,8 +97,28 @@ Larger (toward fully-on-xtc):
    while a genuine fiber SIGSEGV would route through the supervisor's
    KIND_SIGNAL path; both are correct.  Concurrent long-lived parked sessions
    (6 verified), query-cancel of a sleeping fiber, and terminate all work when
-   exercised directly.  Widen the remaining families (checkpointer, bgwriter,
-   walwriter, autovacuum, io worker) one at a time, each validated on a fiber.
+   exercised directly.  Widen the remaining families one at a time, each
+   validated on a fiber.
+   WIDENING ORDER (from the 2026-07-06 read-only family audit; all 9 are now
+   GUC-startup-safe after the ThreadedGUCUnlock fix, and all route waits through
+   the xtc intercept + pooled-logical exit):
+     - Tier A (READY NOW, no blocker): B_WAL_WRITER, B_WAL_SUMMARIZER --
+       long-lived, launched during normal running, no early-start hazard, no
+       on-demand cancel race.
+     - Tier B: B_SLOTSYNC_WORKER, B_WAL_RECEIVER.
+     - Tier C: B_ARCHIVER.
+     - Tier D (needs the early-start process->thread HAND-OFF path):
+       B_BG_WRITER, B_CHECKPOINTER -- forced to PG_BACKEND_LAUNCH_PROCESS
+       before thread carriers exist (launch_backend.c ~391), handed off +
+       relaunched later.  (The checkpointer handoff pgstat-is_shutdown bug is
+       fixed; validate handoff subtests.)
+     - Tier E: B_STARTUP (recovery; the gist_xlog_cleanup teardown SIGSEGV that
+       blocked it is fixed).
+     - Tier F (DEFER, needs the AIO shutdown protocol / PM_WAIT_IO_WORKERS on
+       fibers -- ties to item #6 step 4): B_IO_WORKER.
+   Any future on-demand-with-start-timeout family reuses the autovac orphan
+   reaper (ReapOrphanedThreadedWorker); the early-start families share the
+   hand-off path.
    TEST-ENV CAVEAT: 001_threaded_runtime hangs at its background_psql section
    in THIS meson-on-btrfs environment -- an IPC::Run harness interaction, NOT a
    runtime bug: it fails IDENTICALLY on libxtc v1.2.1 and v1.3.0 (bisected),

@@ -214,7 +214,41 @@ scenario STILL HUNG deterministically (3/3 runs), always with one "autovacuum
 real race, not the GUC-unlock bug.  Autovac stays deferred; see the dedicated
 section below.
 
-### Autovac fiber-widening: the REAL blocker (worker-start-timeout cancel/reap race)
+### Autovac fiber-widening: the REAL blocker (worker-start-timeout cancel/reap race)  [FIXED 2026-07-06]
+
+RESOLVED and autovac is now fiber-eligible (commit 701ac3db844), with the
+threaded start/shutdown-ordering prerequisites in 67c604136e3.  Sharper root
+cause than first written: the canceled worker fiber NEVER RUNS -- a libxtc
+cross-thread wake miss to an idle io_uring carrier loop (a fiber spawned onto a
+quiescent loop is never scheduled; fd/self-pipe wakes reach idle loops, a
+mailbox/spawn wake does not).  The postmaster had optimistically published the
+worker PMChild; the launcher start-timeout cancel reclaims the shmem WorkerInfo
+but nothing reconciles the orphaned PMChild -> PM_WAIT_BACKENDS wedges.  Fix:
+the postmaster reaps the orphan (ReapOrphanedThreadedWorker), triggered by a
+new PMSIGNAL_AUTOVAC_WORKER_TIMEOUT from the launcher cancel (age-gated) and by
+a PM_WAIT_BACKENDS drain; a fiber_entered/exit_claimed guard makes it
+exactly-once and never grabs a live/relaunched worker.  Validated: churn +
+fast stop CLEAN 5/5 and 10/10 (non-cassert), process mode unchanged, smoke
+13/13.  The underlying libxtc idle-loop cross-thread-wake miss is unfixed and
+is a libxtc item to REPORT; the PG fix makes us robust to it.
+
+Also fixed in the same effort (67c604136e3), surfaced once aux/autovac workers
+run as fibers under cassert (all base-tree ordering bugs, reproduce with xtc
+disabled): checkpointer process->thread handoff wrongly flipping the shared
+pgstat is_shutdown flag; deferred InitXLogInsert creating the WAL-record ctx
+inside a critical section for aux/maintenance workers; and pthread_create not
+blocking signals across thread creation (SIGCHLD -> Assert(MyProcPid)).
+
+KNOWN FOLLOW-UP (separate, cassert-only, does NOT affect the release runtime --
+non-cassert autovac churn+fast-stop is 10/10 clean): an intermittent
+aset-freelist teardown DOUBLE-FREE when a worker proc_exit(1)s (terminated)
+mid-fast-stop -- backend_thread_finish ->
+backend_thread_free_deleted_retained_memory_contexts ->
+AllocSetFreeContextFreelists (aset.c:279), a glibc heap abort (TRAP=0), ~1/3
+to ~1/12 under cassert.  Newly reachable now that workers run to completion.
+Being fixed separately.
+
+#### Historical diagnosis (kept for reference)
 
 Instrumented the worker fiber lifecycle end to end (raw-write markers, since
 elog is unsafe pre-error-stack).  Findings on the churn+fast-stop hang:
