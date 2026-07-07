@@ -241,16 +241,10 @@ pgstat_get_io_context_name(IOContext io_context)
 {
 	switch (io_context)
 	{
-		case IOCONTEXT_BULKREAD:
-			return "bulkread";
-		case IOCONTEXT_BULKWRITE:
-			return "bulkwrite";
 		case IOCONTEXT_INIT:
 			return "init";
 		case IOCONTEXT_NORMAL:
 			return "normal";
-		case IOCONTEXT_VACUUM:
-			return "vacuum";
 	}
 
 	elog(ERROR, "unrecognized IOContext value: %d", io_context);
@@ -451,18 +445,6 @@ pgstat_tracks_io_object(BackendType bktype, IOObject io_object,
 	 * IOContexts, and, while it may not be inherently incorrect for them to
 	 * do so, excluding those rows from the view makes the view easier to use.
 	 */
-	if ((bktype == B_CHECKPOINTER || bktype == B_BG_WRITER) &&
-		(io_context == IOCONTEXT_BULKREAD ||
-		 io_context == IOCONTEXT_BULKWRITE ||
-		 io_context == IOCONTEXT_VACUUM))
-		return false;
-
-	if (bktype == B_AUTOVAC_LAUNCHER && io_context == IOCONTEXT_VACUUM)
-		return false;
-
-	if ((bktype == B_AUTOVAC_WORKER || bktype == B_AUTOVAC_LAUNCHER) &&
-		io_context == IOCONTEXT_BULKWRITE)
-		return false;
 
 	return true;
 }
@@ -479,8 +461,6 @@ bool
 pgstat_tracks_io_op(BackendType bktype, IOObject io_object,
 					IOContext io_context, IOOp io_op)
 {
-	bool		strategy_io_context;
-
 	/* if (io_context, io_object) will never collect stats, we're done */
 	if (!pgstat_tracks_io_object(bktype, io_object, io_context))
 		return false;
@@ -521,17 +501,13 @@ pgstat_tracks_io_op(BackendType bktype, IOObject io_object,
 	/*
 	 * Some IOOps are not valid in certain IOContexts and some IOOps are only
 	 * valid in certain contexts.
+	 *
+	 * IOOP_REUSE was only relevant when a BufferAccessStrategy was in use.
+	 * Buffer access strategies (ring buffers) have been removed -- scan
+	 * resistance is now intrinsic to the cooling-stage clock sweep -- so
+	 * IOOP_REUSE never occurs.
 	 */
-	if (io_context == IOCONTEXT_BULKREAD && io_op == IOOP_EXTEND)
-		return false;
-
-	strategy_io_context = io_context == IOCONTEXT_BULKREAD ||
-		io_context == IOCONTEXT_BULKWRITE || io_context == IOCONTEXT_VACUUM;
-
-	/*
-	 * IOOP_REUSE is only relevant when a BufferAccessStrategy is in use.
-	 */
-	if (!strategy_io_context && io_op == IOOP_REUSE)
+	if (io_op == IOOP_REUSE)
 		return false;
 
 	/*
@@ -544,15 +520,6 @@ pgstat_tracks_io_op(BackendType bktype, IOObject io_object,
 	if (io_object == IOOBJECT_WAL && io_context == IOCONTEXT_NORMAL &&
 		!(io_op == IOOP_WRITE || io_op == IOOP_READ || io_op == IOOP_FSYNC))
 		return false;
-
-	/*
-	 * IOOP_FSYNC IOOps done by a backend using a BufferAccessStrategy are
-	 * counted in the IOCONTEXT_NORMAL IOContext. See comment in
-	 * register_dirty_segment() for more details.
-	 */
-	if (strategy_io_context && io_op == IOOP_FSYNC)
-		return false;
-
 
 	return true;
 }
