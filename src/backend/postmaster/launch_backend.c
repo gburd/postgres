@@ -571,6 +571,30 @@ xtc_carrier_eligible(BackendType child_type)
 			 * PM_WAIT_* completes.
 			 */
 			return true;
+		case B_WAL_SUMMARIZER:
+
+			/*
+			 * #5 widening -- Tier A (2026-07-07): the WAL summarizer is
+			 * fiber-eligible.  Like the WAL writer it is a long-lived singleton
+			 * (StartChildProcess at PM_RUN) with no start-before-carriers
+			 * hazard and no start-timeout cancel race.  It parks on
+			 * WaitLatch(MyLatch, ...) in summarizer_wait_for_wal() with a
+			 * bounded WL_TIMEOUT and re-polls GetLatestLSN() on each wake, so it
+			 * advances as WAL is generated without needing an fd-based wake
+			 * (verified: pending_lsn tracks the flush LSN and summarized_lsn
+			 * advances across a checkpoint, byte-for-byte identical to process
+			 * mode).  Fast stop: SIGTERM -> SHUTDOWN_REQUEST -> cross-fiber
+			 * SetLatch wakes the fiber -> ProcessWalSummarizerInterrupts ->
+			 * proc_exit(0).  Immediate stop: SIGQUIT -> PROC_DIE, which
+			 * ProcessWalSummarizerInterrupts now honors (walsummarizer.c), so
+			 * the fiber exits and PM_WAIT_* completes.  (The earlier deferral
+			 * blamed a libxtc idle-loop timer-wake gap and a shutdown wedge;
+			 * both were stale -- the fast-stop wedge was cured by blocking
+			 * process-directed signals across xtc bringup, the immediate-stop
+			 * wedge by the PROC_DIE check, and the "stuck summarized_lsn" was a
+			 * summary-file boundary artifact that equally affects process mode.)
+			 */
+			return true;
 		default:
 
 			/*
@@ -584,31 +608,7 @@ xtc_carrier_eligible(BackendType child_type)
 			 * restart protocols; widen one at a time once its full lifecycle
 			 * is validated on a fiber under the threaded-runtime TAP.
 			 * Deferred, not rejected.  (B_BACKEND, B_BG_WORKER, autovacuum,
-			 * and B_WAL_WRITER are handled above.)
-			 *
-			 * B_WAL_SUMMARIZER: TRIED as a fiber (Tier A) and BACKED OUT
-			 * (2026-07-07).  Unlike the WAL writer it has NO fd-based wake
-			 * source -- committing backends set the WAL writer's procLatch
-			 * (xlog.c, a self-pipe/signalfd write that wakes even an idle
-			 * io_uring carrier loop), but nothing sets the summarizer's latch
-			 * on new WAL; it relies purely on its own WaitLatch TIMEOUT in
-			 * summarizer_wait_for_wal() (up to MAX_SLEEP_QUANTA*MS = 30s) to
-			 * poll GetFlushRecPtr().  On the xtc carrier that timeout does not
-			 * fire for a fiber left alone on an otherwise-quiescent loop (the
-			 * known libxtc idle-loop wake gap: fd/self-pipe wakes reach an idle
-			 * loop, a bare timer does not), so the summarizer parks once at end
-			 * of startup WAL and never advances summarized_lsn even as WAL is
-			 * generated -- and the same missed wake means SIGTERM ->
-			 * SHUTDOWN_REQUEST cannot rouse it, so PM_WAIT_* wedges at fast
-			 * stop.  Core-dump proof: both the summarizer and WAL writer fibers
-			 * are parked (no OS-thread stack), all carrier loops idle in
-			 * xtc_io_poll, postmaster stuck in ServerLoop after "aborting any
-			 * active transactions".  The WAL writer is unaffected (its
-			 * commit-time fd wake makes it robust; validated clean including a
-			 * 40s-idle fast stop).  Re-admitting the summarizer needs either a
-			 * libxtc timer-wakes-idle-loop fix or an fd-based periodic wake for
-			 * the summarizer; deferral, not regression (it runs correctly as a
-			 * THREAD carrier meanwhile).  See M16_XTC_CARRIER_FINDINGS.md.
+			 * and B_WAL_WRITER and B_WAL_SUMMARIZER are handled above.)
 			 */
 			return false;
 	}
@@ -1779,8 +1779,29 @@ backend_thread_finish(int code)
 	Size		top_memory_allocated = 0;
 	Size		top_memory_accounted = 0;
 	Size		top_memory_reclaimed = 0;
+#ifdef USE_XTC_CARRIER
+	bool		is_fiber;
+#endif
 
 	Assert(thread_start != NULL);
+
+#ifdef USE_XTC_CARRIER
+
+	/*
+	 * Decide fiber vs dedicated-thread exit from the DURABLE PMChild
+	 * classification (carrier_kind, set at launch by PostmasterChildSetPooledLogical
+	 * and owned by the postmaster main thread), NOT the per-OS-thread
+	 * xtc_in_backend_fiber flag.  That flag is __thread state on the carrier
+	 * loop thread, set true at fiber entry and cleared when a fiber leaves; a
+	 * fiber that parks in xtc_pg_wait_fd can be resumed on the same carrier
+	 * thread AFTER a sibling fiber cleared the flag on its own exit, so the
+	 * flag can read false here even though this exit belongs to a fiber.  Under
+	 * immediate stop that misread routed a fiber bgworker (e.g. the logical-
+	 * replication ApplyLauncher) into PostmasterChildPublishThreadExit, which
+	 * asserts PostmasterChildIsThread and traps.  The carrier_kind never lies.
+	 */
+	is_fiber = PostmasterChildIsPooledLogical(thread_start->publication.pmchild);
+#endif
 
 	exit_state = PgCurrentBackendExitStateRef();
 	retained_top_context = exit_state->retained_top_memory_context;
@@ -1810,7 +1831,7 @@ backend_thread_finish(int code)
 	 * normal fiber_entered-ordered flow anyway; leaking one struct is safe).
 	 * Just leave the fiber.
 	 */
-	if (xtc_in_backend_fiber &&
+	if (is_fiber &&
 		pg_atomic_exchange_u32(&thread_start->exit_claimed, 1) != 0)
 	{
 		ShutdownWaitEventSupport();
@@ -1853,7 +1874,7 @@ backend_thread_finish(int code)
 		top_memory_allocated = 0;
 	}
 #ifdef USE_XTC_CARRIER
-	if (xtc_in_backend_fiber)
+	if (is_fiber)
 		PostmasterChildPublishPooledLogicalExit(thread_start->publication.pmchild,
 												exitstatus,
 												top_memory_allocated,
@@ -1870,7 +1891,7 @@ backend_thread_finish(int code)
 	backend_thread_set_current_start(NULL);
 	backend_thread_start_release(thread_start);
 #ifdef USE_XTC_CARRIER
-	if (xtc_in_backend_fiber)
+	if (is_fiber)
 		xtc_pg_backend_fiber_exit(exitstatus);
 #endif
 	pg_thread_exit();
