@@ -2588,6 +2588,73 @@ process_pm_child_exit(void)
 }
 
 /*
+ * Reap one child by backend type: dispatch aux/maintenance families to their
+ * per-type cleanup_*_child() helper (which clears the family's global PMChild
+ * pointer -- WalWriterPMChild, CheckpointerPMChild, etc.), else fall back to
+ * CleanupBackend() for regular backends and background workers.
+ *
+ * Shared by process_pm_thread_exit() (dedicated-thread carriers) and
+ * process_pm_pooled_logical_exit() (fiber / pooled-logical carriers): an aux
+ * worker that runs as a fiber is reaped through the pooled-logical path, and it
+ * MUST still run its per-type cleanup or the postmaster's global aux pointer is
+ * left dangling and PostmasterStateMachine trips e.g.
+ * Assert(WalWriterPMChild == NULL) at PM_WAIT_DEAD_END.
+ */
+static void
+reap_aux_or_backend_child(PMChild *pmchild, int exitstatus)
+{
+	switch (pmchild->bkend_type)
+	{
+		case B_STARTUP:
+			(void) cleanup_startup_child(pmchild, exitstatus, 0);
+			return;
+		case B_ARCHIVER:
+			(void) cleanup_archiver_child(pmchild, exitstatus);
+			return;
+		case B_AUTOVAC_LAUNCHER:
+			(void) cleanup_autovac_launcher_child(pmchild, exitstatus);
+			return;
+		case B_BG_WRITER:
+			(void) cleanup_bgwriter_child(pmchild, exitstatus, 0);
+			return;
+		case B_CHECKPOINTER:
+			(void) cleanup_checkpointer_child(pmchild, exitstatus, 0);
+			return;
+		case B_IO_WORKER:
+			(void) cleanup_io_worker_child(pmchild);
+			return;
+		case B_LOGGER:
+			syslogger_thread_handoff_pending = false;
+			ReleasePostmasterChildSlot(pmchild);
+			SysLoggerPMChild = NULL;
+
+			/* for safety's sake, launch new logger *first* */
+			if (Logging_collector)
+				StartSysLogger();
+
+			if (!EXIT_STATUS_0(exitstatus))
+				LogChildExit(LOG, _("system logger process"),
+							 0, exitstatus);
+			return;
+		case B_SLOTSYNC_WORKER:
+			(void) cleanup_slot_sync_worker_child(pmchild, exitstatus, 0);
+			return;
+		case B_WAL_WRITER:
+			(void) cleanup_wal_writer_child(pmchild, exitstatus);
+			return;
+		case B_WAL_RECEIVER:
+			(void) cleanup_wal_receiver_child(pmchild, exitstatus, 0);
+			return;
+		case B_WAL_SUMMARIZER:
+			(void) cleanup_wal_summarizer_child(pmchild, exitstatus);
+			return;
+		default:
+			CleanupBackend(pmchild, exitstatus);
+			return;
+	}
+}
+
+/*
  * Cleanup after a pooled logical backend reports exit.  The carrier thread
  * that ran the session remains alive; the postmaster owns PMChild list
  * mutation and slot release just like process and thread-backed children.
@@ -2621,7 +2688,7 @@ process_pm_pooled_logical_exit(void)
 					(errmsg_internal("pooled logical backend %d reclaimed %zu bytes from TopMemoryContext at exit",
 									 signal_pid, top_memory_reclaimed)));
 
-		CleanupBackend(pmchild, exitstatus);
+		reap_aux_or_backend_child(pmchild, exitstatus);
 		reaped = true;
 	}
 
@@ -2673,83 +2740,7 @@ process_pm_thread_exit(void)
 			PostmasterChildRetryThreadExit(pmchild);
 			continue;
 		}
-		if (pmchild->bkend_type == B_STARTUP)
-		{
-			(void) cleanup_startup_child(pmchild, exitstatus, 0);
-			reaped = true;
-			continue;
-		}
-		if (pmchild->bkend_type == B_ARCHIVER)
-		{
-			(void) cleanup_archiver_child(pmchild, exitstatus);
-			reaped = true;
-			continue;
-		}
-		if (pmchild->bkend_type == B_AUTOVAC_LAUNCHER)
-		{
-			(void) cleanup_autovac_launcher_child(pmchild, exitstatus);
-			reaped = true;
-			continue;
-		}
-		if (pmchild->bkend_type == B_BG_WRITER)
-		{
-			(void) cleanup_bgwriter_child(pmchild, exitstatus, 0);
-			reaped = true;
-			continue;
-		}
-		if (pmchild->bkend_type == B_CHECKPOINTER)
-		{
-			(void) cleanup_checkpointer_child(pmchild, exitstatus, 0);
-			reaped = true;
-			continue;
-		}
-		if (pmchild->bkend_type == B_IO_WORKER)
-		{
-			(void) cleanup_io_worker_child(pmchild);
-			reaped = true;
-			continue;
-		}
-		if (pmchild->bkend_type == B_LOGGER)
-		{
-			syslogger_thread_handoff_pending = false;
-			ReleasePostmasterChildSlot(pmchild);
-			SysLoggerPMChild = NULL;
-
-			/* for safety's sake, launch new logger *first* */
-			if (Logging_collector)
-				StartSysLogger();
-
-			if (!EXIT_STATUS_0(exitstatus))
-				LogChildExit(LOG, _("system logger process"),
-							 0, exitstatus);
-			reaped = true;
-			continue;
-		}
-		if (pmchild->bkend_type == B_SLOTSYNC_WORKER)
-		{
-			(void) cleanup_slot_sync_worker_child(pmchild, exitstatus, 0);
-			reaped = true;
-			continue;
-		}
-		if (pmchild->bkend_type == B_WAL_WRITER)
-		{
-			(void) cleanup_wal_writer_child(pmchild, exitstatus);
-			reaped = true;
-			continue;
-		}
-		if (pmchild->bkend_type == B_WAL_RECEIVER)
-		{
-			(void) cleanup_wal_receiver_child(pmchild, exitstatus, 0);
-			reaped = true;
-			continue;
-		}
-		if (pmchild->bkend_type == B_WAL_SUMMARIZER)
-		{
-			(void) cleanup_wal_summarizer_child(pmchild, exitstatus);
-			reaped = true;
-			continue;
-		}
-		CleanupBackend(pmchild, exitstatus);
+		reap_aux_or_backend_child(pmchild, exitstatus);
 		reaped = true;
 	}
 
