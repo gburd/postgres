@@ -37,6 +37,7 @@
 #include <stdatomic.h>
 
 #include "miscadmin.h"
+#include "libpq/pqsignal.h"	/* BlockSig */
 #include "postmaster/pg_xtc_carrier.h"
 
 /* xtc public API */
@@ -522,6 +523,8 @@ int
 xtc_pg_carrier_start(void)
 {
 	int			rc = 0;
+	sigset_t	save_mask;
+	bool		masked = false;
 
 	pthread_mutex_lock(&g_xtc_start_lock);
 	if (g_xtc_app != NULL)
@@ -532,6 +535,31 @@ xtc_pg_carrier_start(void)
 
 	{
 		xtc_app_opts_t opts = XTC_APP_OPTS_DEFAULT;
+
+		/*
+		 * Block all signals across the entire xtc bringup.  libxtc creates its
+		 * scheduler thread and every executor loop/worker OS thread with a bare
+		 * pthread_create (src/os/os_thread.c) that does no signal-mask setup, so
+		 * each such thread inherits the CREATING thread's mask.  The postmaster
+		 * runs ServerLoop with signals UNBLOCKED, so without this the carrier
+		 * threads would start fully unblocked and the kernel could deliver a
+		 * process-directed signal (e.g. SIGCHLD when a forked io_worker exits)
+		 * to an idle carrier loop or the scheduler thread -- where MyProcPid==0
+		 * (no backend adopted) -- tripping Assert(MyProcPid) in wrapper_handler.
+		 * Core-proven: SIGCHLD hit the scheduler thread mid-pthread_create of a
+		 * loop worker.  Process-directed control signals belong to the
+		 * postmaster main thread; carrier threads must stay blocked (backend
+		 * fibers already re-block via backend_thread_entry and route their own
+		 * interrupts through latches, not OS signals).  This mirrors
+		 * pg_thread_create() and fork_process(), which block signals around
+		 * thread/process creation for exactly this reason.  Note the executor's
+		 * loop/worker threads are spawned later by xtc_exec_run() running ON the
+		 * scheduler thread, so a blocked scheduler thread cascades the blocked
+		 * mask to them; blocking here also covers any threads xtc_app_start()
+		 * spawns on this calling thread.
+		 */
+		sigprocmask(SIG_SETMASK, &BlockSig, &save_mask);
+		masked = true;
 
 		/* Big fiber stacks: PG backends recurse deeply (see above). */
 		xtc_set_stack_size(XTC_PG_FIBER_STACK);
@@ -583,6 +611,9 @@ xtc_pg_carrier_start(void)
 	}
 
 out:
+	/* Restore the postmaster's own (unblocked) mask on this thread. */
+	if (masked)
+		sigprocmask(SIG_SETMASK, &save_mask, NULL);
 	pthread_mutex_unlock(&g_xtc_start_lock);
 	return rc;
 }
