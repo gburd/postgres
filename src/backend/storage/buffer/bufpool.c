@@ -1432,7 +1432,7 @@ TrickleWriterMain(Datum main_arg)
 	PoolLocalState *local;
 	WritebackContext wb_context;
 
-	Assert(pool_slot > 0 && pool_slot < MAX_BUFFER_POOLS);
+	Assert(pool_slot >= 0 && pool_slot < MAX_BUFFER_POOLS);
 	pool = &BufferPoolDescs[pool_slot];
 
 	if (!pool->bp_active)
@@ -1514,8 +1514,16 @@ TrickleWriterMain(Datum main_arg)
 	}
 
 
-	/* Attach to the pool's DSM segment */
-	local = EnsurePoolAttached(pool);
+	/*
+	 * Attach to the pool's storage.  Dynamic pools live in a DSM segment that
+	 * must be mapped in this process; the default pool (slot 0) uses the
+	 * global buffer arrays, whose PoolLocalStates[0] entry was populated at
+	 * shmem init and inherited across the fork, so it needs no attach.
+	 */
+	if (PoolIsDynamic(pool))
+		local = EnsurePoolAttached(pool);
+	else
+		local = &PoolLocalStates[0];
 
 	elog(LOG, "trickle writer started for buffer pool \"%s\"", NameStr(pool->bp_name));
 
@@ -1694,25 +1702,72 @@ TrickleWriterMain(Datum main_arg)
 }
 
 /*
+ * RegisterDefaultPoolTrickleWriter -- register the trickle writer for the
+ * default buffer pool (slot 0).
+ *
+ * Called once, early, by the startup process before WAL replay so the writer
+ * launches at PM_STARTUP and can flush buffers dirtied during recovery.  The
+ * default pool's shared state (PoolLocalStates[0]) was established at buffer-
+ * pool shmem init at postmaster start, well before this runs.
+ */
+void
+RegisterDefaultPoolTrickleWriter(void)
+{
+	BufferPoolDesc *defpool = &BufferPoolDescs[0];
+
+	/* Only register once; guard against repeated calls. */
+	if (defpool->bp_trickle_slot >= 0)
+		return;
+
+	/*
+	 * Dynamic background workers can only be launched under the postmaster.
+	 * In single-user mode there is no writer; the single backend flushes its
+	 * own dirty victims, which is correct (just unassisted).
+	 */
+	if (!IsUnderPostmaster)
+		return;
+
+	RegisterPoolTrickleWriter(defpool, 0);
+}
+
+/*
  * RegisterPoolTrickleWriter -- register a background worker to serve as
- * the trickle writer for a dynamic buffer pool.
+ * the trickle writer for a buffer pool.
+ *
+ * The DEFAULT pool (slot 0) is the primary dirty-buffer writeback path (there
+ * is no global background writer anymore).  It must run DURING recovery, since
+ * the startup process dirties buffers while replaying WAL, so it starts at
+ * BgWorkerStart_PostmasterStart (launched at PM_STARTUP, before recovery
+ * reaches a consistent state) and auto-restarts, rather than the
+ * BgWorkerStart_RecoveryFinished / one-shot policy used for dynamic pools.
+ *
+ * Recovery correctness never depends on this worker: any process that must
+ * evict a dirty victim writes it out inline in GetVictimBuffer(), and the
+ * end-of-recovery checkpoint flushes the rest.  The trickle writer only
+ * offloads that work from the startup process.
  */
 void
 RegisterPoolTrickleWriter(BufferPoolDesc *pool, int slot)
 {
 	BackgroundWorker bgw;
 	BackgroundWorkerHandle *handle;
+	bool		is_default = (slot == 0);
 
 	memset(&bgw, 0, sizeof(bgw));
 	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS;
-	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
+	bgw.bgw_start_time = is_default ? BgWorkerStart_PostmasterStart
+		: BgWorkerStart_RecoveryFinished;
 	snprintf(bgw.bgw_library_name, MAXPGPATH, "postgres");
 	snprintf(bgw.bgw_function_name, BGW_MAXLEN, "TrickleWriterMain");
 	snprintf(bgw.bgw_name, BGW_MAXLEN, "trickle writer for pool %s",
 			 NameStr(pool->bp_name));
 	snprintf(bgw.bgw_type, BGW_MAXLEN, "buffer pool trickle writer");
-	bgw.bgw_restart_time = BGW_NEVER_RESTART;	/* one-shot per pool;
-												 * drop/resize re-registers */
+	/*
+	 * The default pool's writer is the standing writeback path: restart it
+	 * promptly if it dies.  Dynamic-pool writers are one-shot (drop/resize
+	 * re-registers).
+	 */
+	bgw.bgw_restart_time = is_default ? 5 : BGW_NEVER_RESTART;
 	bgw.bgw_notify_pid = MyProcPid;
 	bgw.bgw_main_arg = Int32GetDatum(slot);
 

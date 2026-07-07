@@ -26,6 +26,7 @@
 #include "miscadmin.h"
 #include "postmaster/auxprocess.h"
 #include "postmaster/startup.h"
+#include "storage/bufmgr.h"
 #include "storage/ipc.h"
 #include "storage/pmsignal.h"
 #include "storage/procsignal.h"
@@ -250,6 +251,17 @@ StartupProcessMain(const void *startup_data, size_t startup_data_len)
 	 * Unblock signals (they were blocked when the postmaster forked us)
 	 */
 	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+
+	/*
+	 * Register the default buffer pool's trickle writer before we start
+	 * replaying WAL.  It is the primary dirty-buffer writeback path (there is
+	 * no global background writer); registering here, from a child process at
+	 * PM_STARTUP, gets it launched during recovery so it can flush buffers the
+	 * replay dirties.  Recovery still makes progress without it (evicting
+	 * processes flush their own victims), so a failure to register is not
+	 * fatal.
+	 */
+	RegisterDefaultPoolTrickleWriter();
 
 	/*
 	 * Do what we came for.
