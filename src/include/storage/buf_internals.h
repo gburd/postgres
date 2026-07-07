@@ -47,11 +47,20 @@
  * The definition of buffer state components is below.
  */
 #define BUF_REFCOUNT_BITS 18
-#define BUF_USAGECOUNT_BITS 2
+#define BUF_HEAT_BITS 2
 #define BUF_FLAG_BITS 12
 #define BUF_LOCK_BITS (18+2)
 
-StaticAssertDecl(BUF_REFCOUNT_BITS + BUF_USAGECOUNT_BITS + BUF_FLAG_BITS + BUF_LOCK_BITS <= 64,
+/*
+ * Back-compat alias.  BufferDesc->state's heat field was historically a 0..5
+ * "usage count"; it is now a 2-bit hot/cooling/cold heat state (see below).
+ * The BUF_USAGECOUNT_* names are retained as aliases for the BUF_HEAT_* names
+ * so external algorithm code (contrib) and the pg_buffercache "usagecount"
+ * column keep working; new internal code should use the BUF_HEAT_* names.
+ */
+#define BUF_USAGECOUNT_BITS BUF_HEAT_BITS
+
+StaticAssertDecl(BUF_REFCOUNT_BITS + BUF_HEAT_BITS + BUF_FLAG_BITS + BUF_LOCK_BITS <= 64,
 				 "parts of buffer state space need to be <= 64");
 
 /* refcount related definitions */
@@ -59,17 +68,22 @@ StaticAssertDecl(BUF_REFCOUNT_BITS + BUF_USAGECOUNT_BITS + BUF_FLAG_BITS + BUF_L
 #define BUF_REFCOUNT_MASK \
 	((UINT64CONST(1) << BUF_REFCOUNT_BITS) - 1)
 
-/* usage count related definitions */
-#define BUF_USAGECOUNT_SHIFT \
+/* heat-state (hot/cooling/cold) field definitions */
+#define BUF_HEAT_SHIFT \
 	BUF_REFCOUNT_BITS
-#define BUF_USAGECOUNT_MASK \
-	(((UINT64CONST(1) << BUF_USAGECOUNT_BITS) - 1) << (BUF_USAGECOUNT_SHIFT))
-#define BUF_USAGECOUNT_ONE \
+#define BUF_HEAT_MASK \
+	(((UINT64CONST(1) << BUF_HEAT_BITS) - 1) << (BUF_HEAT_SHIFT))
+#define BUF_HEAT_ONE \
 	(UINT64CONST(1) << BUF_REFCOUNT_BITS)
+
+/* Back-compat aliases (see BUF_USAGECOUNT_BITS above). */
+#define BUF_USAGECOUNT_SHIFT	BUF_HEAT_SHIFT
+#define BUF_USAGECOUNT_MASK		BUF_HEAT_MASK
+#define BUF_USAGECOUNT_ONE		BUF_HEAT_ONE
 
 /* flags related definitions */
 #define BUF_FLAG_SHIFT \
-	(BUF_REFCOUNT_BITS + BUF_USAGECOUNT_BITS)
+	(BUF_REFCOUNT_BITS + BUF_HEAT_BITS)
 #define BUF_FLAG_MASK \
 	(((UINT64CONST(1) << BUF_FLAG_BITS) - 1) << BUF_FLAG_SHIFT)
 
@@ -86,11 +100,13 @@ StaticAssertDecl(BUF_REFCOUNT_BITS + BUF_USAGECOUNT_BITS + BUF_FLAG_BITS + BUF_L
 	((((uint64) MAX_BACKENDS) << BM_LOCK_SHIFT) | BM_LOCK_VAL_SHARE_EXCLUSIVE | BM_LOCK_VAL_EXCLUSIVE)
 
 
-/* Get refcount and usagecount from buffer state */
+/* Get refcount and heat state from buffer state */
 #define BUF_STATE_GET_REFCOUNT(state) \
 	((uint32)((state) & BUF_REFCOUNT_MASK))
-#define BUF_STATE_GET_USAGECOUNT(state) \
-	((uint32)(((state) & BUF_USAGECOUNT_MASK) >> BUF_USAGECOUNT_SHIFT))
+#define BUF_STATE_GET_HEAT(state) \
+	((uint32)(((state) & BUF_HEAT_MASK) >> BUF_HEAT_SHIFT))
+/* Back-compat alias (see BUF_USAGECOUNT_BITS). */
+#define BUF_STATE_GET_USAGECOUNT(state)	BUF_STATE_GET_HEAT(state)
 
 /*
  * Flags for buffer descriptors
@@ -134,18 +150,23 @@ StaticAssertDecl(MAX_BACKENDS_BITS <= (BUF_LOCK_BITS - 2),
 
 
 /*
- * The buffer usage state is a hot/cooling/cold value packed into
- * BUF_USAGECOUNT_BITS bits (currently 2) of the buffer state word, not a
- * frequency counter.  An access jumps the buffer straight to HOT
- * (BM_USAGE_COUNT_HOT, the maximum the field can hold), each clock-sweep tick
- * demotes it one level (HOT -> COOLING -> COLD), and a buffer is evictable at
- * COLD (0).  Historically this was a 0..5 counter incremented by one per
- * access; benchmarks showed the extra resolution buys little, so it is now two
- * bits, freeing two bits of the state word.  The maximum is IMPLICIT in the
- * field width -- there is no separate cap constant to keep in sync.  It takes
- * at most BM_USAGE_COUNT_HOT+1 sweep passes to cool a hot buffer to evictable.
+ * The buffer heat state is a hot/cooling/cold value packed into
+ * BUF_HEAT_BITS bits (currently 2) of the buffer state word, not a frequency
+ * counter.  An access jumps the buffer straight to HOT (BM_HEAT_HOT, the
+ * maximum the field can hold), each clock-sweep tick demotes it one level
+ * (HOT -> COOLING -> COLD), and a buffer is evictable at COLD (0).
+ * Historically this was a 0..5 "usage count" incremented by one per access;
+ * benchmarks showed the extra resolution buys little, so it is now two bits,
+ * freeing two bits of the state word.  The maximum is IMPLICIT in the field
+ * width -- there is no separate cap constant to keep in sync.  It takes at
+ * most BM_HEAT_HOT+1 sweep passes to cool a hot buffer to evictable.
+ *
+ * The pg_buffercache "usagecount" column and the BUF_USAGECOUNT_* macro
+ * aliases expose this same field under its historical name for compatibility.
  */
-#define BM_USAGE_COUNT_HOT	(((uint32) 1 << BUF_USAGECOUNT_BITS) - 1)
+#define BM_HEAT_HOT	(((uint32) 1 << BUF_HEAT_BITS) - 1)
+/* Back-compat alias (see BUF_USAGECOUNT_BITS). */
+#define BM_USAGE_COUNT_HOT	BM_HEAT_HOT
 
 /*
  * Buffer tag identifies which disk block the buffer contains.

@@ -91,7 +91,7 @@
 /*
  * Initial usage_count bits to stamp on a freshly loaded buffer.
  *
- * Normally BUF_USAGECOUNT_ONE (usage_count = 1).  When the active pool's
+ * Normally BUF_HEAT_ONE (usage_count = 1).  When the active pool's
  * algorithm declares itself scan-resistant (ActivePoolProbationaryScan) AND
  * the load is a plain demand load (no BufferAccessStrategy ring), the page is
  * admitted at usage_count 0 (LeanStore-style COOL/probationary admission): it
@@ -112,7 +112,7 @@ InitialUsageCountBits(BufferAccessStrategy strategy)
 {
 	if (unlikely(ActivePoolProbationaryScan) && strategy == NULL)
 		return 0;
-	return BUF_USAGECOUNT_ONE;
+	return BUF_HEAT_ONE;
 }
 
 #define RELS_BSEARCH_THRESHOLD		20
@@ -2710,7 +2710,7 @@ retry:
 
 	UnlockBufHdrExt(buf, buf_state,
 					0,
-					BUF_FLAG_MASK | BUF_USAGECOUNT_MASK,
+					BUF_FLAG_MASK | BUF_HEAT_MASK,
 					0);
 
 	/*
@@ -2838,7 +2838,7 @@ InvalidateVictimBuffer(BufferDesc *buf_hdr)
 	ClearBufferTag(&buf_hdr->tag);
 	UnlockBufHdrExt(buf_hdr, buf_state,
 					0,
-					BUF_FLAG_MASK | BUF_USAGECOUNT_MASK,
+					BUF_FLAG_MASK | BUF_HEAT_MASK,
 					0);
 
 	Assert(BUF_STATE_GET_REFCOUNT(buf_state) > 0);
@@ -3388,7 +3388,7 @@ ExtendBufferedRelShared(BufferManagerRelation bmr,
 
 			victim_buf_hdr->tag = tag;
 
-			set_bits |= BM_TAG_VALID | BUF_USAGECOUNT_ONE;
+			set_bits |= BM_TAG_VALID | BUF_HEAT_ONE;
 			if (bmr.relpersistence == RELPERSISTENCE_PERMANENT || fork == INIT_FORKNUM)
 				set_bits |= BM_PERMANENT;
 
@@ -3747,12 +3747,12 @@ PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy,
 			{
 				/*
 				 * On access, jump the buffer straight to HOT
-				 * (BM_USAGE_COUNT_HOT): the usage state is a 2-bit hot/cooling/cold
+				 * (BM_HEAT_HOT): the usage state is a 2-bit hot/cooling/cold
 				 * state, and a re-referenced page is fully hot again.  (This
 				 * replaced the historical increment-by-one toward a 0..5 cap.)
 				 */
-				buf_state = (buf_state & ~BUF_USAGECOUNT_MASK) |
-					((uint64) BM_USAGE_COUNT_HOT << BUF_USAGECOUNT_SHIFT);
+				buf_state = (buf_state & ~BUF_HEAT_MASK) |
+					((uint64) BM_HEAT_HOT << BUF_HEAT_SHIFT);
 			}
 			else
 			{
@@ -3760,8 +3760,8 @@ PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy,
 				 * Ring buffers shouldn't evict others from pool.  Thus we
 				 * don't make usagecount more than 1.
 				 */
-				if (BUF_STATE_GET_USAGECOUNT(buf_state) == 0)
-					buf_state += BUF_USAGECOUNT_ONE;
+				if (BUF_STATE_GET_HEAT(buf_state) == 0)
+					buf_state += BUF_HEAT_ONE;
 			}
 
 			if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
@@ -4709,7 +4709,7 @@ SyncOneBuffer(int buf_id, bool skip_recently_used, WritebackContext *wb_context)
 	buf_state = LockBufHdr(bufHdr);
 
 	if (BUF_STATE_GET_REFCOUNT(buf_state) == 0 &&
-		BUF_STATE_GET_USAGECOUNT(buf_state) == 0)
+		BUF_STATE_GET_HEAT(buf_state) == 0)
 	{
 		result |= BUF_REUSABLE;
 	}
