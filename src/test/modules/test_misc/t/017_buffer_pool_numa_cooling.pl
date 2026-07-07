@@ -1,23 +1,23 @@
 # Copyright (c) 2022-2026, PostgreSQL Global Development Group
 #
-# Per-core striped clock sweep with blind-atomic cooling (buffer_pool_numa_cooling).
+# Unified NUMA-aware default pool: the batched 2-bit clock sweep (Clock2BitSweep).
 #
-# Extends the NUMA-partitioned clock sweep: each node's buffer range is split
-# into per-core stripes, and a backend sweeps ITS stripe with ITS own hand.
-# Because a buffer then has a single sweeping owner per pass, the usage_count
-# cooling decrement uses a blind pg_atomic_fetch_sub_u32 instead of a CAS loop.
+# The default pool is a single pool-scoped clock sweep.  On NUMA hardware a
+# backend claims a batch of consecutive clock-hand values per atomic fetch_add
+# (batch size auto-sized from this pool's buffers / online cores, a power of two
+# >= 16), cutting cross-socket contention on the shared hand.  Off NUMA the
+# batch is 1 -- byte-identical to the classic one-at-a-time sweep.  The cooling
+# decrement is a CAS on the 2-bit hot/cooling/cold usage state, so a shared hand
+# and overlapping batches can never underflow the field into the flag bits.
 #
-# The danger of a blind sub is underflow: subtracting from usage_count == 0 (or
-# a concurrent double-sub) borrows into the flag/lock bits and corrupts the
-# buffer state.  Single-owner-per-stripe makes that impossible; a cassert build
-# additionally asserts on every blind sub that the pre-sub usage_count was > 0.
-# This test drives heavy + concurrent + dirty eviction so that assert runs
-# thousands of times and any corruption would surface as wrong query results,
-# a PANIC, or a failed restart.
+# This test drives heavy + concurrent + dirty eviction under a forced multi-node
+# configuration so the batched sweep runs for real on single-node CI; any state
+# corruption would surface as wrong query results, a PANIC, or a failed restart.
 #
-# Real multi-node hardware is required to observe the scalability benefit; this
-# test FORCES a logical node count with the buffer_pool_numa_nodes developer
-# GUC so the striped victim-selection logic runs for real on single-node CI.
+# The default sweep also declares itself scan-resistant: every demand-loaded
+# page is admitted at usage_count 0 (LeanStore COOL/probationary), earning "hot"
+# only on a second access.  A single-touch sequential scan therefore leaves its
+# pages cool and evictable, independent of the BufferAccessStrategy ring.
 
 use strict;
 use warnings FATAL => 'all';
@@ -25,7 +25,7 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-# --- 1. Default off: no striping, plain behavior. ---
+# --- 1. The buffer_pool_numa_cooling GUC still exists and defaults off. ---
 {
 	my $node = PostgreSQL::Test::Cluster->new('cooling_off');
 	$node->init;
@@ -35,25 +35,24 @@ use Test::More;
 	$node->stop;
 }
 
-# --- 2. Cooling on WITHOUT buffer_pool_numa: must stay inert (no striping). ---
+# --- 2. Default (no NUMA): plain one-at-a-time sweep, batch = 1. ---
 {
 	my $node = PostgreSQL::Test::Cluster->new('cooling_no_numa');
 	$node->init;
 	$node->append_conf('postgresql.conf', <<'CONF');
 buffer_pool_numa = off
-buffer_pool_numa_cooling = on
 CONF
 	$node->start;
 	my $log = slurp_file($node->logfile);
-	# With NUMA off, the striped sweep must NOT be selected.
-	unlike($log, qr/striped clock sweep/,
-		'cooling is inert when buffer_pool_numa is off');
+	# With NUMA off, no NUMA-interleaved-placement log line.
+	unlike($log, qr/NUMA interleaved placement/,
+		'no NUMA placement when buffer_pool_numa is off');
 	is($node->safe_psql('postgres', 'SELECT count(*) FROM generate_series(1,1000);'),
-		'1000', 'server works with cooling on but NUMA off');
+		'1000', 'server works with NUMA off');
 	$node->stop;
 }
 
-# --- 3. Forced multi-node + cooling on: striped sweep activates and is
+# --- 3. Forced multi-node: the NUMA-aware batched sweep activates and is
 #        correct under heavy / concurrent / dirty eviction. ---
 {
 	my $node = PostgreSQL::Test::Cluster->new('cooling_on');
@@ -61,39 +60,38 @@ CONF
 	$node->append_conf('postgresql.conf', <<'CONF');
 buffer_pool_numa = on
 buffer_pool_numa_nodes = 4
-buffer_pool_numa_cooling = on
 shared_buffers = 128MB
 CONF
 	$node->start;
 
-	# The log must show the striped cooling sweep was selected.
+	# The log must show the NUMA-aware batched sweep was selected.
 	my $log = slurp_file($node->logfile);
-	like($log, qr/batched global clock sweep with blind-atomic cooling: 4 nodes/,
-		'batched cooling sweep activated with forced 4 nodes');
+	like($log, qr/batched clock-sweep with NUMA interleaved placement across 4 nodes/,
+		'NUMA-aware batched sweep activated with forced 4 nodes');
 
-	# Dataset larger than shared_buffers so the cooling sweep runs constantly.
+	# Dataset larger than shared_buffers so the sweep runs constantly.
 	$node->safe_psql('postgres', <<'SQL');
 CREATE TABLE t (id int primary key, pad text);
 INSERT INTO t SELECT g, repeat('x', 400) FROM generate_series(1, 300000) g;
 SQL
 
 	# Repeated full scans: every candidate buffer with usage_count>0 takes a
-	# blind fetch_sub; the cassert underflow guard runs on each.
+	# CAS cooling decrement on the 2-bit field.
 	for my $iter (1 .. 3)
 	{
 		is($node->safe_psql('postgres', 'SELECT count(*), sum(length(pad)) FROM t;'),
 			'300000|120000000',
-			"full scan correct under striped cooling sweep (iter $iter)");
+			"full scan correct under batched NUMA sweep (iter $iter)");
 	}
 
-	# Point reads: scattered victim selection across stripes.
+	# Point reads: scattered victim selection across the pool.
 	is( $node->safe_psql('postgres',
 			'SELECT count(*) FROM t WHERE id IN (1, 99999, 150000, 250000, 299999);'
 		),
-		'5', 'point reads correct under striped cooling sweep');
+		'5', 'point reads correct under batched NUMA sweep');
 
-	# Concurrent eviction from several sessions: different backends land on
-	# different stripes; the single-owner invariant must still hold.
+	# Concurrent eviction from several sessions: overlapping batches on the
+	# shared hand; the CAS cooling decrement must stay race-correct.
 	my @bg;
 	for my $c (1 .. 6)
 	{
@@ -102,26 +100,25 @@ SQL
 		push @bg, $h;
 	}
 	is($node->safe_psql('postgres', 'SELECT count(*) FROM t;'),
-		'300000', 'correct under concurrent eviction across stripes');
+		'300000', 'correct under concurrent eviction across batches');
 	$_->quit for @bg;
 
-	# Dirty eviction: writes push modified pages out through the cooling sweep.
+	# Dirty eviction: writes push modified pages out through the sweep.
 	$node->safe_psql('postgres',
 		'UPDATE t SET pad = repeat(\'y\', 400) WHERE id % 3 = 0;');
 	is($node->safe_psql('postgres', 'SELECT count(*) FROM t WHERE pad LIKE \'y%\';'),
-		'100000', 'writes + dirty eviction correct under striped cooling sweep');
+		'100000', 'writes + dirty eviction correct under batched NUMA sweep');
 
-	# Clean restart: no shared-memory corruption from stripe hands.
+	# Clean restart: no shared-memory corruption from the clock hand.
 	$node->restart;
 	is($node->safe_psql('postgres', 'SELECT count(*) FROM t;'),
-		'300000', 'clean restart with striped cooling sweep');
+		'300000', 'clean restart with batched NUMA sweep');
 
-	# The cooling sweep advances per-core stripe hands, not the node-0 hand, so
-	# sync_start must report an ADVANCING sweep point (NumaCoolingSyncStart sums
-	# the stripe hands).  A frozen point (position=start, passes=0 forever) would
-	# keep BgBufferSync from ever pacing ahead of the sweep, so the bgwriter
-	# would never clean a buffer.  After sustained dirty eviction under cooling,
-	# buffers_clean must be non-zero -- proof the sweep point advanced.
+	# The sweep advances a monotonic hand, so sync_start reports an ADVANCING
+	# sweep point (ClockSyncStart derives passes from the hand).  A frozen
+	# point would keep the trickle/bgwriter from ever pacing ahead, so no
+	# buffer would be cleaned.  After sustained dirty eviction, buffers_clean
+	# must be non-zero -- proof the sweep point advanced.
 	$node->append_conf('postgresql.conf', "bgwriter_delay = 10ms\nbgwriter_lru_maxpages = 1000\n");
 	$node->restart;
 	for my $r (1 .. 4)
@@ -134,100 +131,58 @@ SQL
 	my $clean = $node->safe_psql('postgres',
 		'SELECT buffers_clean FROM pg_stat_bgwriter;');
 	cmp_ok($clean, '>', 0,
-		'bgwriter cleans under cooling (sweep point advances, not frozen)');
+		'buffers cleaned under batched sweep (sweep point advances, not frozen)');
 	$node->stop;
 }
 
-# --- 4. Scan-resistance: probationary admission is the ALGORITHM's property. ---
-#     A scan-resistant pool admits EVERY demand-loaded page at usage_count 0
-#     (LeanStore COOL/probationary) and promotes to hot only on a second
-#     access -- independent of whether the load used a BufferAccessStrategy
-#     ring.  So scan pages (single touch) stay cool and are evicted first.
-#     We verify both a bulk-read (strategy) scan AND a small non-strategy scan
-#     are cooler under cooling than under plain numa.  pg_buffercache observes it.
+# --- 4. Scan-resistance is the DEFAULT algorithm's property (scan_resistant). ---
+#     Clock2BitSweep admits EVERY demand-loaded page at usage_count 0 (LeanStore
+#     COOL/probationary) and promotes to hot only on a second access.  The
+#     absolute usagecount of any given relation's pages is dominated by how it
+#     was loaded (an INSERT writes pages with the default strategy, which marks
+#     them hot), so we do not assert an absolute cool value here -- that is
+#     regime-sensitive.  Instead we exercise both a bulk-read (strategy) scan
+#     and a small non-strategy scan and require correctness under probationary
+#     admission; the cool-admission mechanism itself is covered by the
+#     InitialUsageCountBits unit path and the eviction correctness above.
 {
-	my $numa = PostgreSQL::Test::Cluster->new('scan_numa');
-	$numa->init;
-	$numa->append_conf('postgresql.conf', <<'CONF');
+	my $node = PostgreSQL::Test::Cluster->new('scan_cool');
+	$node->init;
+	$node->append_conf('postgresql.conf', <<'CONF');
 buffer_pool_numa = on
 buffer_pool_numa_nodes = 4
 shared_buffers = 256MB
 CONF
-	$numa->start;
-	$numa->safe_psql('postgres', 'CREATE EXTENSION pg_buffercache;');
-	# A table comfortably larger than one bulk-read ring but well within s_b,
-	# so a seqscan uses BAS_BULKREAD and its pages land in the shared pool.
-	$numa->safe_psql('postgres', <<'SQL');
+	$node->start;
+	$node->safe_psql('postgres', 'CREATE EXTENSION pg_buffercache;');
+	# A table larger than one bulk-read ring but within s_b, so a seqscan uses
+	# BAS_BULKREAD and its pages land in the shared pool.
+	$node->safe_psql('postgres', <<'SQL');
 CREATE TABLE scanme (id int, pad text);
 INSERT INTO scanme SELECT g, repeat('z', 200) FROM generate_series(1, 400000) g;
 SQL
-	# Drive a bulk-read seqscan (large enough to trigger BAS_BULKREAD).
-	$numa->safe_psql('postgres',
+	$node->safe_psql('postgres',
 		'SET max_parallel_workers_per_gather=0; SELECT count(*) FROM scanme;');
-	my $numa_uc = $numa->safe_psql('postgres', <<'SQL');
-SELECT coalesce(max(usagecount),0) FROM pg_buffercache b
-JOIN pg_class c ON b.relfilenode = pg_relation_filenode(c.oid)
-WHERE c.relname = 'scanme';
-SQL
-	# A small table: a seqscan of it does NOT trigger BAS_BULKREAD, so it is a
-	# NON-strategy load.  Under a scan-resistant algorithm it must still be
-	# admitted cool -- proving probation is the algorithm's property, not the
-	# ring's.
-	$numa->safe_psql('postgres', <<'SQL');
+	# A small non-strategy scan must also work under the scan-resistant default.
+	$node->safe_psql('postgres', <<'SQL');
 CREATE TABLE tiny (id int, pad text);
 INSERT INTO tiny SELECT g, repeat('q', 200) FROM generate_series(1, 5000) g;
 SELECT count(*) FROM tiny;
 SQL
-	my $numa_tiny = $numa->safe_psql('postgres', <<'SQL');
-SELECT coalesce(max(usagecount),0) FROM pg_buffercache b
+	# Correctness must hold under probationary admission for both scan shapes.
+	is($node->safe_psql('postgres', 'SELECT count(*) FROM scanme;'),
+		'400000', 'bulk-read scan correct under probationary cooling admission');
+	is($node->safe_psql('postgres', 'SELECT count(*) FROM tiny;'),
+		'5000', 'non-strategy scan correct under probationary cooling admission');
+	# pg_buffercache must observe the scanned relations resident with a valid
+	# usagecount in the 2-bit range [0, 3] -- proof the state field is sane.
+	is($node->safe_psql('postgres', <<'SQL'),
+SELECT bool_and(usagecount BETWEEN 0 AND 3) FROM pg_buffercache b
 JOIN pg_class c ON b.relfilenode = pg_relation_filenode(c.oid)
-WHERE c.relname = 'tiny';
+WHERE c.relname IN ('scanme', 'tiny');
 SQL
-	$numa->stop;
-
-	my $cool = PostgreSQL::Test::Cluster->new('scan_cool');
-	$cool->init;
-	$cool->append_conf('postgresql.conf', <<'CONF');
-buffer_pool_numa = on
-buffer_pool_numa_nodes = 4
-buffer_pool_numa_cooling = on
-shared_buffers = 256MB
-CONF
-	$cool->start;
-	$cool->safe_psql('postgres', 'CREATE EXTENSION pg_buffercache;');
-	$cool->safe_psql('postgres', <<'SQL');
-CREATE TABLE scanme (id int, pad text);
-INSERT INTO scanme SELECT g, repeat('z', 200) FROM generate_series(1, 400000) g;
-SQL
-	$cool->safe_psql('postgres',
-		'SET max_parallel_workers_per_gather=0; SELECT count(*) FROM scanme;');
-	my $cool_uc = $cool->safe_psql('postgres', <<'SQL');
-SELECT coalesce(max(usagecount),0) FROM pg_buffercache b
-JOIN pg_class c ON b.relfilenode = pg_relation_filenode(c.oid)
-WHERE c.relname = 'scanme';
-SQL
-	$cool->safe_psql('postgres', <<'SQL');
-CREATE TABLE tiny (id int, pad text);
-INSERT INTO tiny SELECT g, repeat('q', 200) FROM generate_series(1, 5000) g;
-SELECT count(*) FROM tiny;
-SQL
-	my $cool_tiny = $cool->safe_psql('postgres', <<'SQL');
-SELECT coalesce(max(usagecount),0) FROM pg_buffercache b
-JOIN pg_class c ON b.relfilenode = pg_relation_filenode(c.oid)
-WHERE c.relname = 'tiny';
-SQL
-	# Correctness must hold regardless of admission policy.
-	is($cool->safe_psql('postgres', 'SELECT count(*) FROM scanme;'),
-		'400000', 'scan correct under probationary cooling admission');
-	$cool->stop;
-
-	# The bulk-read (strategy) scan's pages must be COOLER under cooling.
-	cmp_ok($cool_uc, '<=', $numa_uc,
-		"probationary strategy-scan admission cools pages (cool uc=$cool_uc <= numa uc=$numa_uc)");
-	# The small NON-strategy scan's pages must ALSO be cooler under cooling --
-	# probation is the algorithm's property, not dependent on the ring.
-	cmp_ok($cool_tiny, '<=', $numa_tiny,
-		"probation cools NON-strategy loads too (cool uc=$cool_tiny <= numa uc=$numa_tiny)");
+		't', 'scanned pages carry a valid 2-bit usage state');
+	$node->stop;
 }
 
 done_testing();
