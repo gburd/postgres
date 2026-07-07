@@ -724,24 +724,21 @@ BaseInit(void)
 	/*
 	 * Initialize local buffers for WAL record construction.
 	 *
-	 * In process mode we always do this eagerly.  In the threaded runtime the
-	 * scratch is deferred for regular client backends (B_BACKEND) so that
-	 * read-only idle pooled sessions do not retain it -- a writing client
-	 * backend primes it lazily via its first XLOG_XACT_ASSIGNMENT record, which
-	 * is emitted outside any critical section.
-	 *
-	 * Other threaded backends (auxiliary and maintenance workers such as the
-	 * checkpointer, bgwriter, walwriter, autovacuum, and background workers)
-	 * cannot rely on that: their first WAL insert can happen inside a critical
-	 * section (for example the checkpointer's shutdown checkpoint, or an
-	 * autovacuum worker's page-prune record).  Lazily creating the
-	 * "WAL record construction" memory context there would allocate inside a
-	 * critical section, which is forbidden (Assert(CritSectionCount == 0) in
-	 * MemoryContextCreate).  So initialize eagerly for them, matching process
-	 * mode.
+	 * Process mode always does this eagerly.  The threaded runtime does too:
+	 * lazily creating the "WAL record construction" memory context on the first
+	 * XLogBeginInsert() is unsafe because that first insert can happen inside a
+	 * critical section, and MemoryContextCreate() forbids allocating there
+	 * (Assert(CritSectionCount == 0)).  A regular client backend (B_BACKEND) is
+	 * no exception: its very first WAL record can be heap_update()'s
+	 * lock-old-tuple record or a heap_insert()/heap_delete() record, all emitted
+	 * inside START_CRIT_SECTION().  Auxiliary and maintenance workers (the
+	 * checkpointer's shutdown checkpoint, an autovacuum worker's page-prune
+	 * record, etc.) have the same hazard.  So initialize eagerly for every
+	 * backend, matching process mode.  (A read-only idle pooled session retains
+	 * the small scratch context as a result; that is a cheap, bounded cost and
+	 * the deferral that avoided it was incorrect.)
 	 */
-	if (!PgRuntimeIsThreadBacked(CurrentPgRuntime) || MyBackendType != B_BACKEND)
-		InitXLogInsert();
+	InitXLogInsert();
 
 	/* Initialize lock manager's local structs */
 	InitLockManagerAccess();
