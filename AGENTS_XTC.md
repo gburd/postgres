@@ -102,9 +102,17 @@ Larger (toward fully-on-xtc):
    WIDENING ORDER (from the 2026-07-06 read-only family audit; all 9 are now
    GUC-startup-safe after the ThreadedGUCUnlock fix, and all route waits through
    the xtc intercept + pooled-logical exit):
-     - Tier A (READY NOW, no blocker): B_WAL_WRITER, B_WAL_SUMMARIZER --
-       long-lived, launched during normal running, no early-start hazard, no
-       on-demand cancel race.
+     - Tier A: B_WAL_WRITER **ADMITTED** (2026-07-07; validated as a fiber --
+       runs-as-fiber, WAL write load, SIGHUP, clean fast+immediate stop incl.
+       40s-idle, smoke step 8).  B_WAL_SUMMARIZER **DEFERRED**: it wedges
+       shutdown because it has NO fd-based wake source (nothing sets its latch
+       on new WAL; it polls purely via a WaitLatch timeout), and that bare
+       timer does not fire for a fiber alone on an idle io_uring loop -- the
+       same libxtc idle-loop wake gap seen with autovac.  Proven PRE-EXISTING:
+       the summarizer wedges shutdown as a THREAD carrier too (process mode is
+       clean).  Re-admit needs a libxtc timer-wakes-idle-loop fix or an
+       fd-based summarizer wake AND the pre-existing threaded-summarizer
+       shutdown wedge fixed first.  See M16_XTC_CARRIER_FINDINGS.md.
      - Tier B: B_SLOTSYNC_WORKER, B_WAL_RECEIVER.
      - Tier C: B_ARCHIVER.
      - Tier D (needs the early-start process->thread HAND-OFF path):

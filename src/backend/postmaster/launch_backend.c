@@ -555,6 +555,22 @@ xtc_carrier_eligible(BackendType child_type)
 		case B_AUTOVAC_LAUNCHER:
 		case B_AUTOVAC_WORKER:
 			return true;
+		case B_WAL_WRITER:
+
+			/*
+			 * #5 widening -- Tier A (2026-07-06 family audit): the WAL writer
+			 * is fiber-eligible.  It is a long-lived singleton launched only in
+			 * normal running (StartChildProcess(B_WAL_WRITER) at PM_RUN), so it
+			 * has no start-before-thread-carriers hazard (unlike
+			 * logger/checkpointer/bgwriter, Tier D) and no on-demand
+			 * start-timeout cancel race (unlike autovac workers).  Its main
+			 * loop parks on WaitLatch(MyLatch, ...) which routes through the
+			 * xtc intercept, and SIGTERM/SIGINT map to SHUTDOWN_REQUEST -> a
+			 * cross-fiber SetLatch wakes the fiber -> ProcessMainLoopInterrupts
+			 * -> proc_exit(0), publishing its pooled-logical exit so
+			 * PM_WAIT_* completes.
+			 */
+			return true;
 		default:
 
 			/*
@@ -563,26 +579,36 @@ xtc_carrier_eligible(BackendType child_type)
 			 * protocol (PM_WAIT_IO_WORKERS) handled on fibers -- that belongs
 			 * with the xtc_aio work (item #6).  The auxiliary families
 			 * (logger, checkpointer, bgwriter -- which must start as processes
-			 * before thread carriers exist -- plus walwriter, wal_summarizer,
+			 * before thread carriers exist -- plus wal_receiver, slotsync,
 			 * archiver, ...) each have their own start/shutdown-ordering and
 			 * restart protocols; widen one at a time once its full lifecycle
 			 * is validated on a fiber under the threaded-runtime TAP.
-			 * Deferred, not rejected.  (B_BACKEND and B_BG_WORKER are handled
-			 * above.)
+			 * Deferred, not rejected.  (B_BACKEND, B_BG_WORKER, autovacuum,
+			 * and B_WAL_WRITER are handled above.)
 			 *
-			 * B_AUTOVAC_LAUNCHER / B_AUTOVAC_WORKER: TRIED as fibers and BACKED
-			 * OUT (2026-07-06).  The idle launcher tears down cleanly (the
-			 * shutdown interrupt's cross-fiber SetLatch unparks it), but under
-			 * churn the autovacuum_worker_start_timeout cancel path races the
-			 * fiber launch: a worker whose fiber is slow to reach its start
-			 * handshake gets "took too long to start; canceled" by the launcher,
-			 * and the already-spawned fiber is left un-reaped (spawned > exited),
-			 * wedging PM_WAIT_BACKENDS at fast stop.  Fiber-aware handling of the
-			 * worker-start-timeout cancel (reconcile the canceled PMChild slot
-			 * with the orphaned fiber's DOWN) is a focused follow-up; autovac
-			 * runs correctly as a THREAD carrier meanwhile
-			 * (PgRuntimeShouldThreadBackend), so this is deferral, not
-			 * regression.  See M16_XTC_CARRIER_FINDINGS.md.
+			 * B_WAL_SUMMARIZER: TRIED as a fiber (Tier A) and BACKED OUT
+			 * (2026-07-07).  Unlike the WAL writer it has NO fd-based wake
+			 * source -- committing backends set the WAL writer's procLatch
+			 * (xlog.c, a self-pipe/signalfd write that wakes even an idle
+			 * io_uring carrier loop), but nothing sets the summarizer's latch
+			 * on new WAL; it relies purely on its own WaitLatch TIMEOUT in
+			 * summarizer_wait_for_wal() (up to MAX_SLEEP_QUANTA*MS = 30s) to
+			 * poll GetFlushRecPtr().  On the xtc carrier that timeout does not
+			 * fire for a fiber left alone on an otherwise-quiescent loop (the
+			 * known libxtc idle-loop wake gap: fd/self-pipe wakes reach an idle
+			 * loop, a bare timer does not), so the summarizer parks once at end
+			 * of startup WAL and never advances summarized_lsn even as WAL is
+			 * generated -- and the same missed wake means SIGTERM ->
+			 * SHUTDOWN_REQUEST cannot rouse it, so PM_WAIT_* wedges at fast
+			 * stop.  Core-dump proof: both the summarizer and WAL writer fibers
+			 * are parked (no OS-thread stack), all carrier loops idle in
+			 * xtc_io_poll, postmaster stuck in ServerLoop after "aborting any
+			 * active transactions".  The WAL writer is unaffected (its
+			 * commit-time fd wake makes it robust; validated clean including a
+			 * 40s-idle fast stop).  Re-admitting the summarizer needs either a
+			 * libxtc timer-wakes-idle-loop fix or an fd-based periodic wake for
+			 * the summarizer; deferral, not regression (it runs correctly as a
+			 * THREAD carrier meanwhile).  See M16_XTC_CARRIER_FINDINGS.md.
 			 */
 			return false;
 	}

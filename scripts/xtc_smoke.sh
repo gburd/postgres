@@ -120,15 +120,20 @@ fi
 
 sp=$(grep -ac "spawned backend fiber" "$D/pm.log" 2>/dev/null || echo 0)
 ex=$(grep -ac "backend fiber exiting" "$D/pm.log" 2>/dev/null || echo 0)
-# Persistent worker fibers (autovacuum/logrep launcher, fiber-eligible since
-# b2367b59c90) are spawned once and stay alive, so spawned >= exited by the
-# number of live workers.  The leak signal is the reverse -- an exit with no
+# Persistent worker/singleton fibers (autovacuum/logrep launcher bgworkers,
+# fiber-eligible since b2367b59c90; plus the long-lived aux singleton
+# walwriter, fiber-eligible per the #5 Tier A widening) are spawned once and
+# stay alive, so spawned >= exited by the number of live ones.  Their
+# best-effort "backend fiber exiting" raw-STDERR write can also be lost at the
+# very end of shutdown (the postmaster closes the log right after "database
+# system is shut down").  The leak signal is the reverse -- an exit with no
 # spawn (lost bookkeeping) -- so require exited <= spawned, spawned != 0, and
-# that the surplus is covered by the still-live persistent worker fibers.
-live=$(grep -ac "background worker launched as xtc fiber" "$D/pm.log" 2>/dev/null || echo 0)
-note "fiber accounting: spawned=$sp exited=$ex (persistent workers=$live)"
+# that the surplus is covered by the still-live persistent fibers (bgworkers +
+# the walwriter singleton launched as a fiber).
+live=$(grep -acE "(background worker|walwriter) launched as xtc fiber" "$D/pm.log" 2>/dev/null || echo 0)
+note "fiber accounting: spawned=$sp exited=$ex (persistent fibers=$live)"
 if [ "$sp" != "0" ] && [ "$ex" -le "$sp" ] && [ "$((sp - ex))" -le "$live" ]; then
-  ok "exited fibers accounted for (surplus $((sp - ex)) <= $live live workers)"
+  ok "exited fibers accounted for (surplus $((sp - ex)) <= $live live persistent fibers)"
 else
   bad "spawn/exit mismatch (spawned=$sp exited=$ex workers=$live)"
 fi
@@ -209,6 +214,61 @@ if initdb -D "$AVD/pgdata" -U postgres --no-locale -E UTF8 >"$AVD/initdb.log" 2>
   fi
 else
   bad "autovac churn initdb failed"
+fi
+
+# 8. walwriter runs as an xtc fiber and shuts down clean.  #5 Tier A widening:
+#    the WAL writer is fiber-eligible.  It is a long-lived singleton, so the
+#    gates are (a) it actually runs as a fiber (pg_stat_activity shows one
+#    walwriter, the pm.log has "walwriter launched as xtc fiber", and the
+#    postmaster has ZERO child OS processes -- everything is a thread/fiber in
+#    its address space), (b) it survives real WAL write load, and (c) it wakes
+#    from its parked WaitLatch on the shutdown interrupt so fast stop completes
+#    even after the loops have gone fully idle (its commit-time procLatch fd
+#    wake, xlog.c, is what makes an idle-loop wake reliable here).  Uses its
+#    own cluster so its config does not perturb the checks above.
+note "walwriter runs as a fiber and shuts down clean"
+WWD=$(mktemp -d "$SCRATCH/xtcwwXXXXXX")
+if initdb -D "$WWD/pgdata" -U postgres --no-locale -E UTF8 >"$WWD/initdb.log" 2>&1; then
+  {
+    echo "listen_addresses = ''"
+    echo "unix_socket_directories = '$WWD'"
+    echo "logging_collector = off"
+    echo "autovacuum = off"
+  } >> "$WWD/pgdata/postgresql.conf"
+  if pg_ctl -D "$WWD/pgdata" -l "$WWD/pm.log" -o "-c multithreaded=on" -w start >/dev/null 2>&1; then
+    WWPSQL="psql -X -h $WWD -U postgres -d postgres -tA"
+    wwcnt=$($WWPSQL -c "SELECT count(*) FROM pg_stat_activity WHERE backend_type='walwriter'" 2>/dev/null)
+    wwfiber=$(grep -ac "xtc: walwriter launched as xtc fiber" "$WWD/pm.log" 2>/dev/null || echo 0)
+    wwpm=$(head -1 "$WWD/pgdata/postmaster.pid" 2>/dev/null)
+    wwchild=$(ps --no-headers --ppid "$wwpm" 2>/dev/null | wc -l)
+    if [ "$wwcnt" = "1" ] && [ "$wwfiber" -ge 1 ] && [ "$wwchild" = "0" ]; then
+      ok "walwriter runs as a fiber (activity=$wwcnt, fiber-launch=$wwfiber, pm child procs=$wwchild)"
+    else
+      bad "walwriter not a fiber (activity=$wwcnt fiber-launch=$wwfiber childprocs=$wwchild)"
+    fi
+    # real WAL write load
+    $WWPSQL -c "CREATE TABLE ww(id int, p text)" >/dev/null 2>&1
+    $WWPSQL -c "INSERT INTO ww SELECT g, repeat('w',100) FROM generate_series(1,50000) g" >/dev/null 2>&1
+    wwrows=$($WWPSQL -c "SELECT count(*) FROM ww" 2>/dev/null)
+    [ "$wwrows" = "50000" ] && ok "walwriter fiber survived WAL write load (rows=$wwrows)" || bad "walwriter WAL load ($wwrows)"
+    if timeout 30 pg_ctl -D "$WWD/pgdata" -m fast -w -t 25 stop >/dev/null 2>&1; then
+      wwcore=$(find "$WWD" -maxdepth 3 -name 'core*' 2>/dev/null | wc -l)
+      wwshut=$(grep -ac "database system is shut down" "$WWD/pm.log" 2>/dev/null || echo 0)
+      if [ "$wwcore" = "0" ] && [ "$wwshut" -ge 1 ]; then
+        ok "walwriter fiber fast stop clean (cores=$wwcore)"
+      else
+        bad "walwriter fiber fast stop dirty (cores=$wwcore shutmsg=$wwshut)"
+      fi
+    else
+      bad "walwriter fiber fast stop HUNG"
+      pg_ctl -D "$WWD/pgdata" -m immediate stop >/dev/null 2>&1
+      kill -9 "$(head -1 "$WWD/pgdata/postmaster.pid" 2>/dev/null)" 2>/dev/null
+    fi
+  else
+    bad "walwriter fiber server failed to start"
+  fi
+else
+  bad "walwriter fiber initdb failed"
 fi
 
 echo "SCRATCH=$D"

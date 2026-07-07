@@ -61,6 +61,74 @@ spawn_monitor`.
     (distinct pids), query-cancel of a sleeping fiber ("canceling statement due
     to user request", fiber woke), and idle-backend terminate.
 
+### #5 Tier A widening: B_WAL_WRITER ADMITTED, B_WAL_SUMMARIZER DEFERRED (2026-07-07)
+
+Widened `xtc_carrier_eligible()` (launch_backend.c) to the two Tier A families
+from the read-only family audit.  Result: **B_WAL_WRITER is fiber-eligible and
+fully validated; B_WAL_SUMMARIZER wedges shutdown and is BACKED OUT** (its
+eligibility reverted).  Both already return PG_BACKEND_LAUNCH_THREAD from
+PgRuntimeShouldThreadBackend and are launched at PM_RUN (not in the
+logger/checkpointer/bgwriter early-process block), so the seam is a one-line
+eligibility switch; the difference is purely their wake behavior on the carrier.
+
+**B_WAL_WRITER -- ADMITTED, VALIDATED.**  Launched as an xtc fiber
+(pg_stat_activity shows one `walwriter`, pm.log has `xtc: walwriter launched as
+xtc fiber`, and the postmaster has ZERO child OS processes -- everything is a
+thread/fiber in its address space).  Evidence, on the 8-loop pool (floki),
+disk-backed /scratch:
+  - runs-as-fiber + real WAL write load (100k-row INSERTs) + SIGHUP reload +
+    clean shutdown: fast stop 5/5 CLEAN, immediate stop 3/3 CLEAN, 0 cores, and
+    a fresh clean-binary re-run added fast 3/3 + immediate 2/2 CLEAN.
+  - robust even after 40s of FULL idle (all loops quiescent) -> fast stop still
+    CLEAN.  This is the key property: the WAL writer's parked WaitLatch is woken
+    on SIGTERM because committing backends already set its procLatch
+    (`xlog.c:2672 SetLatch(walwriterProc->procLatch)`), a self-pipe/signalfd fd
+    write that reliably wakes an idle io_uring carrier loop.
+  - smoke: added guarded step 8 ("walwriter runs as a fiber and shuts down
+    clean": runs-as-fiber + WAL load + clean fast stop, own cluster); smoke now
+    16/16 (13 original + 3 new).  The fiber-accounting heuristic (step) also
+    counts `walwriter launched as xtc fiber` as a persistent-fiber source
+    alongside bgworker lines (the walwriter is a long-lived singleton whose
+    best-effort "backend fiber exiting" raw-STDERR write can be lost at the very
+    end of shutdown; clean stop proves its pooled-logical exit was published).
+
+**B_WAL_SUMMARIZER -- DEFERRED (shutdown wedge; NOT caused by the fiber swap).**
+With `wal_level=replica` + `summarize_wal=on`, a fiber-backed summarizer parks
+once at end of startup WAL in `summarizer_wait_for_wal()`
+(`WaitLatch(MyLatch, WL_LATCH_SET|WL_TIMEOUT|WL_EXIT_ON_PM_DEATH, up to
+MAX_SLEEP_QUANTA*MS = 30s)`) and NEVER advances `summarized_lsn` as WAL is
+generated; fast stop then HANGS (`server does not shut down`).
+  - Core-dump proof (SIGABRT of the wedged postmaster): NO thread runs
+    WalSummarizerMain or WalWriterMain -- both are parked fibers with no
+    OS-thread stack; every carrier loop is idle in `xtc_io_poll` /
+    `_io_uring_get_cqe`; the scheduler thread is in `clock_nanosleep`; the
+    postmaster is stuck in ServerLoop after logging "received fast shutdown
+    request" + "aborting any active transactions" (PM_WAIT_*).
+  - Root cause: unlike the WAL writer, the summarizer has NO fd-based wake
+    source -- nothing sets its latch on new WAL; it relies purely on its own
+    WaitLatch TIMEOUT to poll `GetFlushRecPtr()`.  On the xtc carrier that
+    bare timer does not fire for a fiber left alone on an otherwise-quiescent
+    io_uring loop (the SAME libxtc idle-loop wake gap documented for autovac:
+    fd/self-pipe wakes reach an idle loop, a bare timer/mailbox wake does not).
+    So it never re-checks WAL, and the same missed wake means the shutdown
+    SIGTERM->SHUTDOWN_REQUEST SetLatch cannot rouse it either.
+  - **This is a PRE-EXISTING threaded-runtime bug, not a fiber regression.**
+    Disproved the fiber hypothesis by re-test after reverting eligibility (so
+    the summarizer runs as a THREAD carrier, `walsummarizer launched as xtc
+    fiber` = 0): the summarizer STILL fails to advance `summarized_lsn` AND
+    fast stop STILL HANGS (core shows no WalSummarizerMain thread; postmaster
+    wedged the same way at "aborting any active transactions").  A PROCESS-mode
+    control (`multithreaded=off`) is CLEAN: `summarized_lsn` also stays flat in
+    the observation window (a measurement/boundary artifact, not a defect) but
+    fast stop completes.  So the wedge is specific to the THREADED summarizer
+    (thread carrier or fiber), independent of xtc.
+  - Backed out: B_WAL_SUMMARIZER stays a thread carrier
+    (PgRuntimeShouldThreadBackend); eligibility gate documents the diagnosis.
+    Re-admitting it needs either a libxtc timer-wakes-idle-loop fix or an
+    fd-based periodic wake for the summarizer -- AND the pre-existing threaded
+    summarizer shutdown wedge fixed first (it blocks the thread-carrier path
+    too).  Deferral, not regression.
+
 ### 001_threaded_runtime harness caveat (pre-existing, NOT a runtime bug)
 
 `001_threaded_runtime` hangs at its `background_psql` section (the 3rd of five
