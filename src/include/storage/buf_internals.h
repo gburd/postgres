@@ -47,7 +47,7 @@
  * The definition of buffer state components is below.
  */
 #define BUF_REFCOUNT_BITS 18
-#define BUF_USAGECOUNT_BITS 4
+#define BUF_USAGECOUNT_BITS 2
 #define BUF_FLAG_BITS 12
 #define BUF_LOCK_BITS (18+2)
 
@@ -134,14 +134,16 @@ StaticAssertDecl(MAX_BACKENDS_BITS <= (BUF_LOCK_BITS - 2),
 
 
 /*
- * The maximum allowed value of usage_count represents a tradeoff between
- * accuracy and speed of the clock-sweep buffer management algorithm.  A
- * large value (comparable to NBuffers) would approximate LRU semantics.
- * But it can take as many as BM_MAX_USAGE_COUNT+1 complete cycles of the
- * clock-sweep hand to find a free buffer, so in practice we don't want the
- * value to be very large.
+ * usage_count is a 2-bit hot/cooling/cold state (LeanStore-style), not a
+ * frequency counter: an access jumps the buffer straight to HOT
+ * (BM_MAX_USAGE_COUNT = 2), each clock-sweep tick demotes it one level
+ * (HOT->COOLING->COLD), and a buffer is evictable at COLD (0).  Historically
+ * this was a 0..5 counter incremented by one per access; benchmarks showed the
+ * extra resolution buys little, so it is now two bits, freeing two bits of the
+ * buffer state word.  It can take at most BM_MAX_USAGE_COUNT+1 sweep passes to
+ * cool a hot buffer to evictable.
  */
-#define BM_MAX_USAGE_COUNT	5
+#define BM_MAX_USAGE_COUNT	2
 
 StaticAssertDecl(BM_MAX_USAGE_COUNT < (UINT64CONST(1) << BUF_USAGECOUNT_BITS),
 				 "BM_MAX_USAGE_COUNT doesn't fit in BUF_USAGECOUNT_BITS bits");

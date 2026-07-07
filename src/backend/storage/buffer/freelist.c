@@ -304,34 +304,32 @@ const BufferPoolRoutine clock_pool_routine = {
 };
 
 /*
- * ClockTryAcquireVictimCooling -- like ClockTryAcquireVictim, but the
- * usage_count cooling decrement uses a single blind pg_atomic_fetch_sub_u64
- * instead of a CAS retry loop.
+ * Clock2BitGetVictim -- examine one candidate buffer for the 2-bit clock sweep.
  *
- * SAFETY: this is only correct when the caller guarantees a single sweeping
- * owner for victim_id in the current pass (per-core stripe ownership).  With a
- * single owner, at most one sub touches this buffer's usage_count per pass, so
- * a blind sub from a value we just read as > 0 always lands >= 0 and never
- * borrows into the flag/lock bits above usage_count (see NUMA_PARTITIONED_
- * SWEEP_DESIGN.md and /tmp/borrow_test.c).  A racing PinBuffer can only RAISE
- * usage_count/refcount between our read and sub, so the worst case is cooling
- * an already-hot buffer one extra tick -- benign, within usage_count's
- * resolution.
+ * The buffer's cooling state (BufferDesc->state cooling bits) is a 2-bit
+ * hot/cooling/cold value.  On a tick:
+ *   - refcount != 0            -> in use; caller advances the hand and retries
+ *                                 (decrement trycounter; error at 0).
+ *   - BM_LOCKED                -> wait for the header, then re-read.
+ *   - cooling state > 0 (warm) -> COOL it one level via a CAS decrement and
+ *                                 return NULL (caller advances the hand);
+ *                                 trycounter is reset (a decrement is progress).
+ *   - cooling state == 0 (cold)-> claim it: CAS the refcount to pin, add to the
+ *                                 strategy ring if any, and return the victim.
  *
- * The pin transition (usage_count==0, refcount==0 -> pinned) STILL uses CAS:
- * that one must be race-correct against concurrent pins from other backends.
- * Only the cooling tick goes blind.
+ * The cooling decrement is a CAS (not a blind atomic sub): the clock hand is
+ * pool-scoped and may be shared by several backends, so two sweepers can race
+ * on the same buffer; CAS makes that race-correct with no risk of underflowing
+ * the 2-bit field into the flag bits.
  *
- * Marked pg_attribute_always_inline: this is called once per tick from the
- * NumaCoolingGetVictim sweep loop, so inlining it collapses the per-tick call
- * into the loop and lets the compiler keep the hot state in registers -- the
- * same technique the plain-clock ClockSweepDefault uses.  Safe to force-inline:
- * contains no PG_TRY/setjmp.
+ * Marked pg_attribute_always_inline: called once per tick from the sweep loop,
+ * so inlining collapses the per-tick call and keeps the hot state in
+ * registers.  Contains no PG/setjmp, so force-inlining is safe.
  */
 static pg_attribute_always_inline BufferDesc *
-ClockTryAcquireVictimCooling(int victim_id, BufferAccessStrategy strategy,
-							 uint64 *buf_state, int *trycounter,
-							 int reset_budget)
+Clock2BitGetVictim(int victim_id, BufferAccessStrategy strategy,
+				   uint64 *buf_state, int *trycounter,
+				   int reset_budget)
 {
 	BufferDesc *buf = GetBufferDescriptor(victim_id);
 	uint64		old_buf_state = pg_atomic_read_u64(&buf->state);
@@ -348,27 +346,11 @@ ClockTryAcquireVictimCooling(int victim_id, BufferAccessStrategy strategy,
 	if (unlikely(old_buf_state & BM_LOCKED))
 		old_buf_state = WaitBufHdrUnlocked(buf);
 
-	if (BUF_STATE_GET_USAGECOUNT(old_buf_state) != 0)
-	{
-		/*
-		 * Cooling tick: blind atomic sub, no CAS.  Safe because this stripe
-		 * has a single owner this pass (see function header): only one sub
-		 * touches this buffer's usage_count per pass, and we just read it as
-		 * > 0, so subtracting BUF_USAGECOUNT_ONE (bit 18) lands within bits
-		 * 0..21 and never borrows into the flag/lock bits.  Use the full
-		 * 64-bit atomic (endian-safe; a 32-bit sub on the low half would hit
-		 * the wrong bits on big-endian).  Assert we did not underflow -- the
-		 * runnable check that the single-owner invariant holds.
-		 */
-		uint64		prev PG_USED_FOR_ASSERTS_ONLY;
-
-		prev = pg_atomic_fetch_sub_u64(&buf->state, BUF_USAGECOUNT_ONE);
-		Assert(BUF_STATE_GET_USAGECOUNT(prev) != 0);
-		*trycounter = reset_budget;
-		return NULL;
-	}
-
-	/* usage_count == 0, refcount == 0: claim it.  This MUST stay a CAS. */
+	/*
+	 * CAS loop: cool a warm buffer (cooling state > 0) one level, or claim a
+	 * cold one (state == 0).  A pool-scoped hand may be shared, so both the
+	 * decrement and the pin use compare-exchange to stay race-correct.
+	 */
 	for (;;)
 	{
 		uint64		local_buf_state = old_buf_state;
@@ -386,7 +368,7 @@ ClockTryAcquireVictimCooling(int victim_id, BufferAccessStrategy strategy,
 		}
 		if (BUF_STATE_GET_USAGECOUNT(local_buf_state) != 0)
 		{
-			/* Someone re-warmed it; treat as a cooling tick and move on. */
+			/* Warm: cool one level and let the caller advance the hand. */
 			local_buf_state -= BUF_USAGECOUNT_ONE;
 			if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
 											   local_buf_state))
@@ -537,7 +519,7 @@ NumaCoolingGetVictim(void *strategy_data,
 		 * buffers, matching the plain clock -- not after nbuffers cooling
 		 * ticks.
 		 */
-		buf = ClockTryAcquireVictimCooling(victim_id, strategy, buf_state,
+		buf = Clock2BitGetVictim(victim_id, strategy, buf_state,
 										   &trycounter, nbuffers);
 		if (buf != NULL)
 			return buf;

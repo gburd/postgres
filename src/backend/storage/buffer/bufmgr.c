@@ -218,22 +218,7 @@ int			bgwriter_lru_maxpages = 100;
 double		bgwriter_lru_multiplier = 2.0;
 bool		track_io_timing = false;
 
-/*
- * Effective clock-sweep usage-count ceiling (GUC buffer_pool_max_usage_count).
- * Historical default is BM_MAX_USAGE_COUNT (5); 1 turns usage_count into a
- * single reference bit (LeanStore-style second-chance clock).  The static
- * BM_MAX_USAGE_COUNT still bounds the field width; this only caps the runtime
- * increment.
- */
-int			buffer_pool_max_usage_count = BM_MAX_USAGE_COUNT;
 
-/*
- * When on, an access sets usage_count to buffer_pool_max_usage_count (jump to
- * fully HOT) instead of incrementing by one.  Combined with a small cap (1 or
- * 2) this makes usage_count a LeanStore-style hot/cooling/cold state machine
- * rather than a frequency counter.  Off = classic clock behavior.
- */
-bool		buffer_pool_leanstore = false;
 
 /*
  * How many buffers PrefetchBuffer callers should try to stay ahead of their
@@ -3757,17 +3742,13 @@ PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy,
 			if (strategy == NULL)
 			{
 				/*
-				 * On access, either bump usage_count by one toward the cap
-				 * (classic clock frequency counter) or, in LeanStore mode, jump
-				 * straight to the cap (a re-referenced page is fully HOT again).
-				 * With the cap at 1 or 2 and LeanStore mode on, usage_count is a
-				 * 1- or 2-bit hot/cooling/cold state rather than a 0..5 counter.
+				 * On access, jump the buffer straight to HOT
+				 * (BM_MAX_USAGE_COUNT): usage_count is a 2-bit hot/cooling/cold
+				 * state, and a re-referenced page is fully hot again.  (This
+				 * replaced the historical increment-by-one toward a 0..5 cap.)
 				 */
-				if (buffer_pool_leanstore)
-					buf_state = (buf_state & ~BUF_USAGECOUNT_MASK) |
-						((uint64) buffer_pool_max_usage_count << BUF_USAGECOUNT_SHIFT);
-				else if (BUF_STATE_GET_USAGECOUNT(buf_state) < buffer_pool_max_usage_count)
-					buf_state += BUF_USAGECOUNT_ONE;
+				buf_state = (buf_state & ~BUF_USAGECOUNT_MASK) |
+					((uint64) BM_MAX_USAGE_COUNT << BUF_USAGECOUNT_SHIFT);
 			}
 			else
 			{
