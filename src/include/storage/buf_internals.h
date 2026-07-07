@@ -626,8 +626,7 @@ extern BufferDesc *StrategyGetBuffer(BufferAccessStrategy strategy,
 extern bool StrategyRejectBuffer(BufferAccessStrategy strategy,
 								 BufferDesc *buf, bool from_ring);
 
-extern int	StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc);
-extern void StrategyNotifyBgWriter(int bgwprocno);
+extern uint32 StrategyReportAllocs(void);
 extern void StrategyHintVacuum(bool vacuum_active);
 
 /* bufpool.h -- pluggable buffer pool vtable interface */

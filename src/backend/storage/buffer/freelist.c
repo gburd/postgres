@@ -8,7 +8,7 @@
  * implementation is clock-sweep, defined in this file.  Alternative
  * algorithms (ARC, CAR, etc.) can be loaded as extensions.
  *
- * The public entry points (StrategyGetBuffer, StrategySyncStart, etc.)
+ * The public entry points (StrategyGetBuffer, StrategyReportAllocs, etc.)
  * dispatch through ActivePoolRoutine, which is set to clock_pool_routine
  * at startup.
  *
@@ -38,8 +38,6 @@
 
 #include <unistd.h>				/* sysconf(_SC_NPROCESSORS_ONLN) */
 
-#define INT_ACCESS_ONCE(var)	((int)(*((volatile int *)&(var))))
-
 
 /*
  * ClockPoolState -- per-pool clock-sweep state.
@@ -54,15 +52,19 @@
  * per pg_atomic_fetch_add on nextVictimBuffer.  batchSize == 1 is byte-
  * identical to the classic one-at-a-time clock sweep; a larger batch (set on
  * NUMA hardware) cuts cross-socket contention on the shared hand atomic.
+ *
+ * completePasses is intentionally absent: the pass count is derived from the
+ * monotonic hand (hand / nbuffers), and the global background writer that once
+ * consumed a stored pass count and an allocation-driven wakeup (bgwprocno) has
+ * been retired.  numBufferAllocs survives only to feed
+ * pg_stat_bgwriter.buffers_alloc, drained by the checkpointer.
  */
 typedef struct ClockPoolState
 {
 	slock_t		lock;
 	pg_atomic_uint32 nextVictimBuffer;	/* monotonically increasing, mod
 										 * nbuffers */
-	uint32		completePasses;
 	pg_atomic_uint32 numBufferAllocs;
-	int			bgwprocno;		/* trickle writer procno (-1 = none) */
 	int			nbuffers;		/* buffer count in this pool */
 	int			first_buf_id;	/* starting buffer ID */
 	uint32		batchSize;		/* hand values claimed per fetch_add */
@@ -368,8 +370,7 @@ BufPoolNumaClockStats(BufPoolNumaStat *out, int maxrows)
 
 	SpinLockAcquire(&StrategyControl->lock);
 	hand = pg_atomic_read_u32(&StrategyControl->nextVictimBuffer);
-	passes = StrategyControl->completePasses +
-		(NBuffers > 0 ? hand / (uint32) NBuffers : 0);
+	passes = (NBuffers > 0 ? hand / (uint32) NBuffers : 0);
 	batch = (int) StrategyControl->batchSize;
 	SpinLockRelease(&StrategyControl->lock);
 
@@ -436,9 +437,10 @@ BufPoolNumaClockStats(BufPoolNumaStat *out, int maxrows)
  * only bounds -- does not eliminate -- overlap in the wrap window, so CAS is
  * required to keep the 2-bit field from underflowing into the flag bits.
  *
- * completePasses is derived in ClockSyncStart from the monotonic hand
+ * The pass count is derived in ClockSyncStart from the monotonic hand
  * (hand / nbuffers), so the hot loop maintains no pass counter and takes no
- * spinlock.  (Pacing goes away with the global bgwriter in a later step.)
+ * spinlock.  (The global background writer that once used a stored pass count
+ * has been retired.)
  *
  * Marked pg_attribute_always_inline so StrategyGetBuffer's devirtualized
  * default-pool call collapses to a tight inlined sweep.  Contains no
@@ -511,18 +513,10 @@ Clock2BitSweep(ClockPoolState *pool_state,
 	}
 
 	/*
-	 * Wake the trickle writer if asked.  See StrategyNotifyBgWriter().
+	 * Count this allocation for pg_stat_bgwriter.buffers_alloc.  The
+	 * checkpointer periodically drains this counter (see
+	 * StrategyReportAllocs()).
 	 */
-	{
-		int			bgwprocno = INT_ACCESS_ONCE(pool_state->bgwprocno);
-
-		if (bgwprocno != -1)
-		{
-			pool_state->bgwprocno = -1;
-			SetLatch(&GetPGProcByNumber(bgwprocno)->procLatch);
-		}
-	}
-
 	pg_atomic_fetch_add_u32(&pool_state->numBufferAllocs, 1);
 
 	/* Use the "clock sweep" algorithm to find a free buffer */
@@ -596,14 +590,15 @@ ClockGetVictim(void *strategy_data,
 /*
  * ClockSyncStart -- clock-sweep implementation of sync_start
  *
- * Tell BgBufferSync where to start syncing.  Returns the buffer index of the
- * best buffer to sync first.  BgBufferSync() will proceed circularly around
- * the buffer array from there.
+ * Reports the current clock-hand position, a derived pass count, and drains
+ * the pool's allocation counter.  The core no longer consumes the position or
+ * passes (the global background writer that used them is retired); only the
+ * drained allocation count is still used, by the checkpointer, to advance
+ * pg_stat_bgwriter.buffers_alloc.  The full signature is kept because it is
+ * the sync_start plugin API shared with the contrib algorithms.
  *
- * completePasses is derived from the monotonic hand (hand / nbuffers) so the
- * (position, passes) pair is always consistent and non-decreasing, which
- * BgBufferSync's strategy_delta Assert requires.  The alloc count is reset
- * after being read.
+ * passes is derived from the monotonic hand (hand / nbuffers), so the sweep
+ * hot loop maintains no pass counter.
  */
 static int
 ClockSyncStart(void *strategy_data, uint32 *complete_passes, uint32 *num_buf_alloc)
@@ -616,7 +611,7 @@ ClockSyncStart(void *strategy_data, uint32 *complete_passes, uint32 *num_buf_all
 	hand = pg_atomic_read_u32(&pool_state->nextVictimBuffer);
 
 	if (complete_passes)
-		*complete_passes = pool_state->completePasses + hand / nbuf;
+		*complete_passes = hand / nbuf;
 
 	if (num_buf_alloc)
 		*num_buf_alloc = pg_atomic_exchange_u32(&pool_state->numBufferAllocs, 0);
@@ -629,18 +624,13 @@ ClockSyncStart(void *strategy_data, uint32 *complete_passes, uint32 *num_buf_all
 /*
  * ClockNotifyTrickle -- clock-sweep implementation of notify_trickle
  *
- * Set or clear allocation notification latch for the trickle writer.
- * If bgwprocno isn't -1, the next invocation of the sweep will set that
- * latch.  Pass -1 to clear the pending notification before it happens.
+ * The default pool's trickle writer polls on a timeout, so it needs no
+ * allocation-driven wakeup; this is a no-op.  The slot is kept because
+ * notify_trickle is part of the plugin API.
  */
 static void
 ClockNotifyTrickle(void *strategy_data, int bgwprocno)
 {
-	ClockPoolState *pool_state = (ClockPoolState *) strategy_data;
-
-	SpinLockAcquire(&pool_state->lock);
-	pool_state->bgwprocno = bgwprocno;
-	SpinLockRelease(&pool_state->lock);
 }
 
 /*
@@ -761,9 +751,7 @@ ClockPoolShmemInit(void *strategy_data, int nbuffers,
 
 	SpinLockInit(&state->lock);
 	pg_atomic_init_u32(&state->nextVictimBuffer, 0);
-	state->completePasses = 0;
 	pg_atomic_init_u32(&state->numBufferAllocs, 0);
-	state->bgwprocno = -1;
 	state->nbuffers = nbuffers;
 	state->first_buf_id = first_buf_id;
 	state->batchSize = Clock2BitBatchSize(nbuffers);
@@ -801,26 +789,21 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 }
 
 /*
- * StrategySyncStart -- tell BgBufferSync where to start syncing
+ * StrategyReportAllocs -- return and reset the default pool's buffer
+ * allocation count since the last call.
  *
- * Dispatches to the active pool's sync_start callback.
+ * Surfaced as pg_stat_bgwriter.buffers_alloc.  The dedicated background writer
+ * that once drained this counter has been retired; the checkpointer calls this
+ * from its periodic stats reporting instead.  Dispatches to the active pool's
+ * sync_start callback (the clock position it also returns is ignored).
  */
-int
-StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc)
+uint32
+StrategyReportAllocs(void)
 {
-	return ActivePoolRoutine->sync_start(ActivePoolData,
-										 complete_passes, num_buf_alloc);
-}
+	uint32		num_buf_alloc = 0;
 
-/*
- * StrategyNotifyBgWriter -- set or clear allocation notification latch
- *
- * Dispatches to the active pool's notify_trickle callback.
- */
-void
-StrategyNotifyBgWriter(int bgwprocno)
-{
-	ActivePoolRoutine->notify_trickle(ActivePoolData, bgwprocno);
+	(void) ActivePoolRoutine->sync_start(ActivePoolData, NULL, &num_buf_alloc);
+	return num_buf_alloc;
 }
 
 /*
@@ -1141,9 +1124,7 @@ KeepPoolShmemInit(void *strategy_data, int nbuffers,
 
 	SpinLockInit(&state->lock);
 	pg_atomic_init_u32(&state->nextVictimBuffer, 0);
-	state->completePasses = 0;
 	pg_atomic_init_u32(&state->numBufferAllocs, 0);
-	state->bgwprocno = -1;
 	state->nbuffers = nbuffers;
 	state->first_buf_id = first_buf_id;
 }
@@ -1251,9 +1232,7 @@ typedef struct RecyclePoolState
 	/* Core clock-sweep state (same layout as ClockPoolState) */
 	slock_t		lock;
 	pg_atomic_uint32 nextVictimBuffer;
-	uint32		completePasses;
 	pg_atomic_uint32 numBufferAllocs;
-	int			bgwprocno;		/* trickle writer procno (-1 = none) */
 	int			nbuffers;
 	int			first_buf_id;
 
@@ -1305,17 +1284,6 @@ RecycleGetVictim(void *strategy_data,
 	int			trycounter;
 
 	*from_ring = false;
-
-	/* Wake trickle writer if registered */
-	{
-		int			bgwprocno = INT_ACCESS_ONCE(state->bgwprocno);
-
-		if (bgwprocno != -1)
-		{
-			state->bgwprocno = -1;
-			SetLatch(&GetPGProcByNumber(bgwprocno)->procLatch);
-		}
-	}
 
 	pg_atomic_fetch_add_u32(&state->numBufferAllocs, 1);
 
@@ -1409,9 +1377,7 @@ RecycleShmemInit(void *strategy_data, int nbuffers,
 
 	SpinLockInit(&state->lock);
 	pg_atomic_init_u32(&state->nextVictimBuffer, 0);
-	state->completePasses = 0;
 	pg_atomic_init_u32(&state->numBufferAllocs, 0);
-	state->bgwprocno = -1;
 	state->nbuffers = nbuffers;
 	state->first_buf_id = first_buf_id;
 
@@ -1433,7 +1399,7 @@ RecycleSyncStart(void *strategy_data, uint32 *complete_passes,
 	SpinLockAcquire(&state->lock);
 	result = pg_atomic_read_u32(&state->nextVictimBuffer) % state->nbuffers;
 	if (complete_passes)
-		*complete_passes = state->completePasses;
+		*complete_passes = 0;
 	SpinLockRelease(&state->lock);
 
 	if (num_buf_alloc)
@@ -1443,14 +1409,11 @@ RecycleSyncStart(void *strategy_data, uint32 *complete_passes,
 }
 
 /*
- * RecycleNotifyTrickle -- register trickle writer for wakeup.
+ * RecycleNotifyTrickle -- no-op; the trickle writer polls.
  */
 static void
 RecycleNotifyTrickle(void *strategy_data, int bgwprocno)
 {
-	RecyclePoolState *state = (RecyclePoolState *) strategy_data;
-
-	state->bgwprocno = bgwprocno;
 }
 
 /*
