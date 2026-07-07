@@ -704,9 +704,9 @@ Datum
 pg_buffercache_usage_counts(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	int			usage_counts[BM_MAX_USAGE_COUNT + 1] = {0};
-	int			dirty[BM_MAX_USAGE_COUNT + 1] = {0};
-	int			pinned[BM_MAX_USAGE_COUNT + 1] = {0};
+	int			usage_counts[BM_USAGE_COUNT_HOT + 1] = {0};
+	int			dirty[BM_USAGE_COUNT_HOT + 1] = {0};
+	int			pinned[BM_USAGE_COUNT_HOT + 1] = {0};
 	Datum		values[NUM_BUFFERCACHE_USAGE_COUNTS_ELEM];
 	bool		nulls[NUM_BUFFERCACHE_USAGE_COUNTS_ELEM] = {0};
 
@@ -760,7 +760,7 @@ pg_buffercache_usage_counts(PG_FUNCTION_ARGS)
 		}
 	}
 
-	for (int i = 0; i < BM_MAX_USAGE_COUNT + 1; i++)
+	for (int i = 0; i < BM_USAGE_COUNT_HOT + 1; i++)
 	{
 		values[0] = Int32GetDatum(i);
 		values[1] = Int32GetDatum(usage_counts[i]);
