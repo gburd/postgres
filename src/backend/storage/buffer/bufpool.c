@@ -21,6 +21,7 @@
 #include "postgres.h"
 
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "postmaster/bgworker.h"
 #include "postmaster/bgwriter.h"
 #include "postmaster/interrupt.h"
@@ -1699,10 +1700,31 @@ TrickleWriterMain(Datum main_arg)
 		if (FirstCallSinceLastCheckpoint())
 			smgrdestroyall();
 
-		/* Sleep longer if no work was done */
+		/*
+		 * Report the buffers we cleaned this cycle to the cumulative stats
+		 * system.  The trickle writers are the background cleaners now that
+		 * the dedicated background writer is retired, so their writes are what
+		 * pg_stat_bgwriter.buffers_clean counts.
+		 */
+		if (num_written > 0)
+		{
+			PendingBgWriterStats.buf_written_clean += num_written;
+			pgstat_report_bgwriter();
+		}
+
+		/*
+		 * Sleep until the next cycle.  We poll rather than rely on an
+		 * allocation-driven wakeup (the retired background writer's
+		 * StrategyNotifyBgWriter mechanism): a backend that must evict a dirty
+		 * victim writes it out itself, and the checkpointer flushes the rest,
+		 * so writeback is never blocked on this worker.  The poll interval is
+		 * only how promptly we offload that work in the background.  Cap the
+		 * idle hibernate at 1s so a burst of dirtying after an idle period is
+		 * picked up promptly.
+		 */
 		(void) WaitLatch(MyLatch,
 						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-						 hibernate ? 5000L : 200L,
+						 hibernate ? 1000L : 200L,
 						 WAIT_EVENT_BGWRITER_MAIN);
 	}
 
