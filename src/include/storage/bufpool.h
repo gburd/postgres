@@ -241,9 +241,6 @@ extern PGDLLIMPORT bool ActivePoolProbationaryScan;
 /* The built-in clock-sweep buffer pool routine */
 extern PGDLLIMPORT const BufferPoolRoutine clock_pool_routine;
 
-/* The NUMA-partitioned clock-sweep routine (default pool, multi-node only) */
-extern PGDLLIMPORT const BufferPoolRoutine numa_cooling_pool_routine;
-
 /*
  * GUC variable naming the replacement algorithm for the DEFAULT pool.
  *

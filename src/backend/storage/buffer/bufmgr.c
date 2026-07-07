@@ -92,21 +92,25 @@
  * Initial usage_count bits to stamp on a freshly loaded buffer.
  *
  * Normally BUF_USAGECOUNT_ONE (usage_count = 1).  When the active pool's
- * algorithm declares itself scan-resistant (ActivePoolProbationaryScan), EVERY
- * demand-loaded page is admitted at usage_count 0 (LeanStore-style
- * COOL/probationary admission): a page earns "hot" only on a second access
- * (PinBuffer bumps usage_count).  A sequential scan touches each page once, so
- * its pages stay cool and are evicted first -- the algorithm provides scan
- * resistance itself, without depending on the BufferAccessStrategy ring.  A
- * genuinely hot page is loaded once and re-referenced, so it promotes to hot
- * immediately; only truly single-touch pages (scans) stay cool.
+ * algorithm declares itself scan-resistant (ActivePoolProbationaryScan) AND
+ * the load is a plain demand load (no BufferAccessStrategy ring), the page is
+ * admitted at usage_count 0 (LeanStore-style COOL/probationary admission): it
+ * earns "hot" only on a second access (PinBuffer bumps usage_count).  A
+ * sequential scan touches each page once, so its pages stay cool and are
+ * evicted first -- the algorithm provides scan resistance itself.
  *
- * No-op for non-scan-resistant pools (plain clock), which keep usage_count 1.
+ * Loads through a BufferAccessStrategy ring (bulkread, bulkwrite, vacuum) keep
+ * usage_count 1: the ring already provides scan/vacuum protection, and the
+ * ring's buffer-reuse accounting (pg_stat_io reuses/evictions) depends on the
+ * classic admission value.  Probationary admission is therefore orthogonal to
+ * the ring and applies only to non-strategy loads.
+ *
+ * No-op for non-scan-resistant pools (which keep usage_count 1).
  */
 static inline uint64
-InitialUsageCountBits(void)
+InitialUsageCountBits(BufferAccessStrategy strategy)
 {
-	if (unlikely(ActivePoolProbationaryScan))
+	if (unlikely(ActivePoolProbationaryScan) && strategy == NULL)
 		return 0;
 	return BUF_USAGECOUNT_ONE;
 }
@@ -2375,7 +2379,7 @@ BufferAllocInPool(BufferPoolDesc *pool, SMgrRelation smgr,
 
 	victim_buf_hdr->tag = newTag;
 
-	set_bits |= BM_TAG_VALID | InitialUsageCountBits();
+	set_bits |= BM_TAG_VALID | InitialUsageCountBits(strategy);
 	if (relpersistence == RELPERSISTENCE_PERMANENT || forkNum == INIT_FORKNUM)
 		set_bits |= BM_PERMANENT;
 
@@ -2572,7 +2576,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	 * checkpoints, except for their "init" forks, which need to be treated
 	 * just like permanent relations.
 	 */
-	set_bits |= BM_TAG_VALID | InitialUsageCountBits();
+	set_bits |= BM_TAG_VALID | InitialUsageCountBits(strategy);
 	if (relpersistence == RELPERSISTENCE_PERMANENT || forkNum == INIT_FORKNUM)
 		set_bits |= BM_PERMANENT;
 
