@@ -316,9 +316,48 @@ cell dangled when a FATAL unwound out of do_analyze_rel (transaction abort frees
 the context tree, cell left pointing at freed memory, closed-state reset deletes
 it again); fixed with a context reset callback that NULLs the cell (commit
 7a37c8d2279).  Verified: cassert autovac churn + fast stop 10/10 CLEAN, 0 cores,
-0 TRAP; non-cassert smoke 13/13.  A SEPARATE pre-existing threaded
-concurrent-WAL-insert race (Assert(xlp_pageaddr) at xlog.c:1683, only with 6+
-parallel writers) was observed and NOT chased -- unrelated to teardown.
+0 TRAP; non-cassert smoke 13/13.
+
+### Threaded multi-writer / concurrent-fiber shared-state bugs (2026-07-06, agent team)
+
+A team of agents widened B_WAL_WRITER to fibers (Tier A) and fixed the
+concurrent-WAL-insert race, which surfaced a cluster of related
+shared-process-state bugs on the multi-writer / concurrent-fiber path.  All are
+base-tree session-runtime issues (a former per-process static/global now shared
+across fibers), all fixed this session:
+  - FIXED: GetXLogBuffer() one-entry WAL-page cache was two function-local
+    statics -> shared across fibers -> Assert(xlp_pageaddr) at xlog.c:1683 with
+    6+ writers.  Moved to the per-backend PgExecutionXLogInsertState bucket
+    (commit 96d94cc2f91).
+  - FIXED: libxtc carrier threads (scheduler + loop/worker) were born with the
+    postmaster`s UNBLOCKED signal mask (bare pthread_create in libxtc), so a
+    process-directed SIGCHLD hit an idle carrier/scheduler thread where
+    MyProcPid==0 -> Assert(MyProcPid) in wrapper_handler.  Block signals across
+    xtc bringup (commit a0a7d1c4cdb).
+  - FIXED: concurrent fiber process-title updates raced the one-per-process
+    ps_buffer length bookkeeping -> Assert(strlen(ps_buffer)==ps_buffer_cur_len).
+    Serialized set_ps_display*/get_ps_display with a multithreaded-gated mutex
+    (commit f069b490fc5).
+  - FIXED (prior, same session): the InitXLogInsert-in-crit-section and
+    checkpointer-handoff pgstat is_shutdown and terminated-worker analyze_context
+    double-free bugs.
+
+STILL OPEN (pre-existing, observed, NOT yet chased -- next-session candidates):
+  - Assert(PostmasterChildIsThread(pmchild)) at pmchild.c:577 on the
+    fiber-backed bgworker (logical-replication ApplyLauncher) exit path, ONLY
+    during `pg_ctl -m immediate stop` under cassert.  Non-blocking (workload
+    succeeds, 0 cores on the workload); a pooled-logical vs thread PMChild
+    classification mismatch at immediate-stop teardown.
+  - Threaded WAL SUMMARIZER wedge: as either a fiber OR a thread carrier the
+    summarizer never advances summarized_lsn and fast stop hangs, because it
+    polls purely via a bare WaitLatch TIMEOUT (no fd wake source) and that timer
+    does not fire for a lone backend on a quiescent threaded runtime.  Blocks
+    B_WAL_SUMMARIZER fiber-widening (Tier A) until the threaded summarizer wake
+    is fixed.  Process mode is clean.
+  - A concurrent-WAL-insert Assert(xlp_pageaddr) at xlog.c with 6+ parallel
+    writers is FIXED (above); a further xlog.c concurrency assert may exist at
+    much higher writer counts -- re-check after the summarizer/immediate-stop
+    fixes.
 
 #### Historical diagnosis (kept for reference)
 
