@@ -22,6 +22,7 @@
 
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
+#include "postmaster/bgwriter.h"
 #include "postmaster/interrupt.h"
 #include "storage/ipc.h"
 #include "storage/buf_internals.h"
@@ -40,6 +41,7 @@
 #include "storage/dsm.h"
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
+#include "storage/smgr.h"
 #include "storage/spin.h"
 #include "storage/subsystems.h"
 #include "access/heapam.h"
@@ -1687,6 +1689,15 @@ TrickleWriterMain(Datum main_arg)
 			else
 				pool->bp_oversubscribed = false;
 		}
+
+		/*
+		 * After any checkpoint, free all smgr objects.  Like the former
+		 * background writer, a trickle writer does not process shared
+		 * invalidation messages or call AtEOXact_SMgr(), so without this it
+		 * would keep smgr entries for dropped relations forever.
+		 */
+		if (FirstCallSinceLastCheckpoint())
+			smgrdestroyall();
 
 		/* Sleep longer if no work was done */
 		(void) WaitLatch(MyLatch,

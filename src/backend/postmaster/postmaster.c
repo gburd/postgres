@@ -259,7 +259,6 @@ bool		send_abort_for_kill = false;
 
 /* special child processes; NULL when not running */
 static PMChild *StartupPMChild = NULL,
-		   *BgWriterPMChild = NULL,
 		   *CheckpointerPMChild = NULL,
 		   *WalWriterPMChild = NULL,
 		   *WalReceiverPMChild = NULL,
@@ -1395,11 +1394,9 @@ PostmasterMain(int argc, char *argv[])
 	/* Make sure we can perform I/O while starting up. */
 	maybe_start_io_workers();
 
-	/* Start bgwriter and checkpointer so they can help with recovery */
+	/* Start the checkpointer so it can help with recovery */
 	if (CheckpointerPMChild == NULL)
 		CheckpointerPMChild = StartChildProcess(B_CHECKPOINTER);
-	if (BgWriterPMChild == NULL)
-		BgWriterPMChild = StartChildProcess(B_BG_WRITER);
 
 	/*
 	 * We're ready to rock and roll...
@@ -2384,21 +2381,6 @@ process_pm_child_exit(void)
 		}
 
 		/*
-		 * Was it the bgwriter?  Normal exit can be ignored; we'll start a new
-		 * one at the next iteration of the postmaster's main loop, if
-		 * necessary.  Any other exit condition is treated as a crash.
-		 */
-		if (BgWriterPMChild && pid == BgWriterPMChild->pid)
-		{
-			ReleasePostmasterChildSlot(BgWriterPMChild);
-			BgWriterPMChild = NULL;
-			if (!EXIT_STATUS_0(exitstatus))
-				HandleChildCrash(pid, exitstatus,
-								 _("background writer process"));
-			continue;
-		}
-
-		/*
 		 * Was it the checkpointer?
 		 */
 		if (CheckpointerPMChild && pid == CheckpointerPMChild->pid)
@@ -2963,11 +2945,10 @@ PostmasterStateMachine(void)
 								B_BG_WORKER);
 
 		/*
-		 * No walwriter, bgwriter, slot sync worker, or WAL summarizer either.
+		 * No walwriter, slot sync worker, or WAL summarizer either.
 		 */
 		targetMask = btmask_add(targetMask,
 								B_WAL_WRITER,
-								B_BG_WRITER,
 								B_SLOTSYNC_WORKER,
 								B_WAL_SUMMARIZER);
 
@@ -3016,9 +2997,15 @@ PostmasterStateMachine(void)
 									B_IO_WORKER,
 									B_WAL_SENDER);
 
-			/* these are not real postmaster children */
+			/*
+			 * these are not real postmaster children.  B_BG_WRITER is a
+			 * retired process type -- no background writer is launched
+			 * anymore -- but its BackendType value is kept for pgstat
+			 * compatibility, so it must be accounted for here.
+			 */
 			remainMask = btmask_add(remainMask,
 									B_INVALID,
+									B_BG_WRITER,
 									B_STANDALONE_BACKEND);
 
 			/* also add data checksums processes */
@@ -3178,7 +3165,6 @@ PostmasterStateMachine(void)
 			Assert(StartupPMChild == NULL);
 			Assert(WalReceiverPMChild == NULL);
 			Assert(WalSummarizerPMChild == NULL);
-			Assert(BgWriterPMChild == NULL);
 			Assert(CheckpointerPMChild == NULL);
 			Assert(WalWriterPMChild == NULL);
 			Assert(AutoVacLauncherPMChild == NULL);
@@ -3365,8 +3351,6 @@ LaunchMissingBackgroundProcesses(void)
 	{
 		if (CheckpointerPMChild == NULL)
 			CheckpointerPMChild = StartChildProcess(B_CHECKPOINTER);
-		if (BgWriterPMChild == NULL)
-			BgWriterPMChild = StartChildProcess(B_BG_WRITER);
 	}
 
 	/*

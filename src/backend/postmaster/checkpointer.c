@@ -53,6 +53,7 @@
 #include "postmaster/interrupt.h"
 #include "replication/syncrep.h"
 #include "storage/aio_subsys.h"
+#include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
 #include "storage/condition_variable.h"
 #include "storage/fd.h"
@@ -575,6 +576,20 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 		/* Report pending statistics to the cumulative stats system */
 		pgstat_report_checkpointer();
 		pgstat_report_wal(true);
+
+		/*
+		 * Report buffer-allocation stats.  This counter (surfaced as
+		 * pg_stat_bgwriter.buffers_alloc) used to be drained by the background
+		 * writer, which no longer exists; fold it into the checkpointer's
+		 * periodic stats reporting so the view keeps advancing.
+		 */
+		{
+			uint32		recent_alloc;
+
+			(void) StrategySyncStart(NULL, &recent_alloc);
+			PendingBgWriterStats.buf_alloc += recent_alloc;
+			pgstat_report_bgwriter();
+		}
 
 		/*
 		 * If any checkpoint flags have been set, redo the loop to handle the

@@ -121,7 +121,6 @@ InitPostmasterChildSlots(void)
 	pmchild_pools[B_AUTOVAC_LAUNCHER].size = 1;
 	pmchild_pools[B_SLOTSYNC_WORKER].size = 1;
 	pmchild_pools[B_ARCHIVER].size = 1;
-	pmchild_pools[B_BG_WRITER].size = 1;
 	pmchild_pools[B_CHECKPOINTER].size = 1;
 	pmchild_pools[B_STARTUP].size = 1;
 	pmchild_pools[B_WAL_RECEIVER].size = 1;
