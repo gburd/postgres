@@ -342,22 +342,31 @@ across fibers), all fixed this session:
     checkpointer-handoff pgstat is_shutdown and terminated-worker analyze_context
     double-free bugs.
 
-STILL OPEN (pre-existing, observed, NOT yet chased -- next-session candidates):
-  - Assert(PostmasterChildIsThread(pmchild)) at pmchild.c:577 on the
-    fiber-backed bgworker (logical-replication ApplyLauncher) exit path, ONLY
-    during `pg_ctl -m immediate stop` under cassert.  Non-blocking (workload
-    succeeds, 0 cores on the workload); a pooled-logical vs thread PMChild
-    classification mismatch at immediate-stop teardown.
-  - Threaded WAL SUMMARIZER wedge: as either a fiber OR a thread carrier the
-    summarizer never advances summarized_lsn and fast stop hangs, because it
-    polls purely via a bare WaitLatch TIMEOUT (no fd wake source) and that timer
-    does not fire for a lone backend on a quiescent threaded runtime.  Blocks
-    B_WAL_SUMMARIZER fiber-widening (Tier A) until the threaded summarizer wake
-    is fixed.  Process mode is clean.
+STILL OPEN (pre-existing, observed -- next-session candidates):
+  - FIXED (2026-07-07): Assert(PostmasterChildIsThread(pmchild)) at
+    pmchild.c:577 on the fiber-backed ApplyLauncher exit during immediate stop.
+    Root cause: backend_thread_finish chose the exit-publish routine from the
+    per-OS-thread xtc_in_backend_fiber flag, which a SIBLING fiber on the same
+    loop clears while the ApplyLauncher is parked -> stale-false -> wrong
+    (thread) publish.  Fixed by keying off the durable PMChild carrier_kind
+    (PostmasterChildIsPooledLogical), commit 96335a703db.  A companion reap-side
+    bug -- process_pm_pooled_logical_exit reaping fiber aux workers via bare
+    CleanupBackend, leaving WalWriterPMChild dangling (Assert(WalWriterPMChild
+    == NULL) at PM_WAIT_DEAD_END) -- is fixed in a5d38a83964 (shared
+    reap_aux_or_backend_child dispatch).
+  - FIXED (2026-07-07): Threaded WAL SUMMARIZER wedge.  The earlier diagnosis
+    (a bare-timer WaitLatch that never fires for a lone backend / libxtc
+    idle-loop wake gap) was WRONG.  The real cause was that the threaded
+    summarizer had no PROC_DIE handling, so an immediate-stop SIGQUIT (delivered
+    as a PROC_DIE interrupt in threaded mode, not a crash-exit) left it parked;
+    ProcessWalSummarizerInterrupts now honors ProcDiePending (commit
+    b710a12e629).  The "never advances summarized_lsn" was a MISREAD: summarized
+    _lsn is stable in process mode too across the same small workload; the
+    summarizer produces summaries in both modes.  B_WAL_SUMMARIZER is now
+    fiber-eligible; summaries produced, fast + immediate stop clean, smoke 20/20.
   - A concurrent-WAL-insert Assert(xlp_pageaddr) at xlog.c with 6+ parallel
-    writers is FIXED (above); a further xlog.c concurrency assert may exist at
-    much higher writer counts -- re-check after the summarizer/immediate-stop
-    fixes.
+    writers is FIXED; a further xlog.c concurrency assert may exist at much
+    higher writer counts -- re-check under heavy multi-writer load.
 
 #### Historical diagnosis (kept for reference)
 

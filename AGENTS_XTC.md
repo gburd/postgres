@@ -84,8 +84,9 @@ Larger (toward fully-on-xtc):
 
 5. Auxiliary/background processes on xtc: route bgworker, checkpointer,
    walwriter, autovacuum, etc. through the xtc scheduler instead of fork /
-   base pthreads.  B_BACKEND + B_BG_WORKER + AUTOVACUUM (launcher+worker)
-   ADMITTED; other families DEFERRED (ranked plan below).
+   base pthreads.  B_BACKEND + B_BG_WORKER + AUTOVACUUM (launcher+worker) +
+   B_WAL_WRITER + B_WAL_SUMMARIZER ADMITTED; other families DEFERRED (ranked
+   plan below).
    xtc_carrier_eligible() (launch_backend.c) gates which child types run as
    fibers; the launch/exit plumbing is generalized for any type.  B_BG_WORKER
    is now fiber-eligible (unblocked by #7's fiber-death observation +
@@ -102,17 +103,21 @@ Larger (toward fully-on-xtc):
    WIDENING ORDER (from the 2026-07-06 read-only family audit; all 9 are now
    GUC-startup-safe after the ThreadedGUCUnlock fix, and all route waits through
    the xtc intercept + pooled-logical exit):
-     - Tier A: B_WAL_WRITER **ADMITTED** (2026-07-07; validated as a fiber --
-       runs-as-fiber, WAL write load, SIGHUP, clean fast+immediate stop incl.
-       40s-idle, smoke step 8).  B_WAL_SUMMARIZER **DEFERRED**: it wedges
-       shutdown because it has NO fd-based wake source (nothing sets its latch
-       on new WAL; it polls purely via a WaitLatch timeout), and that bare
-       timer does not fire for a fiber alone on an idle io_uring loop -- the
-       same libxtc idle-loop wake gap seen with autovac.  Proven PRE-EXISTING:
-       the summarizer wedges shutdown as a THREAD carrier too (process mode is
-       clean).  Re-admit needs a libxtc timer-wakes-idle-loop fix or an
-       fd-based summarizer wake AND the pre-existing threaded-summarizer
-       shutdown wedge fixed first.  See M16_XTC_CARRIER_FINDINGS.md.
+     - Tier A: B_WAL_WRITER **ADMITTED** (2026-07-07; runs-as-fiber, WAL write
+       load, SIGHUP, clean fast+immediate stop incl. 40s-idle).
+       B_WAL_SUMMARIZER **ADMITTED** (2026-07-07).  Its earlier shutdown wedge
+       was NOT a libxtc timer-wake gap as first hypothesized -- it was two
+       teardown bugs, now fixed: (1) the summarizer had no PROC_DIE handling, so
+       an immediate-stop SIGQUIT (delivered as a PROC_DIE interrupt in threaded
+       mode, not a crash-exit) left it parked -- ProcessWalSummarizerInterrupts
+       now honors ProcDiePending; and (2) fiber aux workers were reaped via bare
+       CleanupBackend, leaving the family`s global PMChild pointer dangling
+       (Assert(WalWriterPMChild == NULL)) -- process_pm_pooled_logical_exit now
+       runs the per-type cleanup via the shared reap_aux_or_backend_child().
+       Also fixed the fiber-vs-thread exit-publish routing to key off the
+       durable PMChild carrier_kind (not the per-OS-thread xtc_in_backend_fiber
+       flag, which a sibling fiber can clear).  Validated: summaries produced
+       (matches process mode), fast + immediate stop clean, smoke 20/20.
      - Tier B: B_SLOTSYNC_WORKER, B_WAL_RECEIVER.
      - Tier C: B_ARCHIVER.
      - Tier D (needs the early-start process->thread HAND-OFF path):
