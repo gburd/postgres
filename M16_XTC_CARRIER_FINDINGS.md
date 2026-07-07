@@ -239,14 +239,18 @@ pgstat is_shutdown flag; deferred InitXLogInsert creating the WAL-record ctx
 inside a critical section for aux/maintenance workers; and pthread_create not
 blocking signals across thread creation (SIGCHLD -> Assert(MyProcPid)).
 
-KNOWN FOLLOW-UP (separate, cassert-only, does NOT affect the release runtime --
-non-cassert autovac churn+fast-stop is 10/10 clean): an intermittent
-aset-freelist teardown DOUBLE-FREE when a worker proc_exit(1)s (terminated)
-mid-fast-stop -- backend_thread_finish ->
-backend_thread_free_deleted_retained_memory_contexts ->
-AllocSetFreeContextFreelists (aset.c:279), a glibc heap abort (TRAP=0), ~1/3
-to ~1/12 under cassert.  Newly reachable now that workers run to completion.
-Being fixed separately.
+KNOWN FOLLOW-UP: FIXED (2026-07-06).  The intermittent aset-freelist / analyze
+double-free when a worker proc_exit(1)s mid-fast-stop turned out to be TWO bugs:
+(1) InitXLogInsert deferral was unsound even for B_BACKEND (first WAL insert can
+be in a crit section -- heap_update lock-old-tuple, etc.); now eager for all
+backends (commit 3d834e9993b).  (2) the persistent PgExecution analyze_context
+cell dangled when a FATAL unwound out of do_analyze_rel (transaction abort frees
+the context tree, cell left pointing at freed memory, closed-state reset deletes
+it again); fixed with a context reset callback that NULLs the cell (commit
+7a37c8d2279).  Verified: cassert autovac churn + fast stop 10/10 CLEAN, 0 cores,
+0 TRAP; non-cassert smoke 13/13.  A SEPARATE pre-existing threaded
+concurrent-WAL-insert race (Assert(xlp_pageaddr) at xlog.c:1683, only with 6+
+parallel writers) was observed and NOT chased -- unrelated to teardown.
 
 #### Historical diagnosis (kept for reference)
 
