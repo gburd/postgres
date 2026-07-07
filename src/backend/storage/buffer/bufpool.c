@@ -1454,6 +1454,27 @@ TrickleWriterMain(Datum main_arg)
 	BackgroundWorkerUnblockSignals();
 
 	/*
+	 * Register a ProcSignal slot so this worker participates in
+	 * ProcSignalBarriers.  This is essential: the trickle writer opens smgr
+	 * file descriptors for relations all over the cluster while flushing dirty
+	 * buffers, but (having no database connection) it does not process shared
+	 * cache invalidations.  DROP DATABASE / DROP TABLESPACE unlink files and
+	 * may reuse the relfilenode; they protect against stale writes by emitting
+	 * PROCSIGNAL_BARRIER_SMGRRELEASE and waiting (WaitForProcSignalBarrier) for
+	 * every process to close its descriptors.  Without a ProcSignal slot this
+	 * worker would not be waited for, and could then write a stale buffer
+	 * through a cached descriptor into a reused relfilenode's file -- silent
+	 * corruption.  We absorb the barrier via ProcessMainLoopInterrupts() in the
+	 * main loop (and smgrreleaseall() runs from the barrier handler).
+	 *
+	 * As in AuxiliaryProcessMainCommon(), hold interrupts across ProcSignalInit
+	 * so a barrier cannot be absorbed before our local state is ready.
+	 */
+	HOLD_INTERRUPTS();
+	ProcSignalInit(NULL, 0);
+	RESUME_INTERRUPTS();
+
+	/*
 	 * Create a resource owner for buffer pin management.  Dynamic background
 	 * workers don't go through AuxiliaryProcessMainCommon, so we need to
 	 * create one ourselves.
