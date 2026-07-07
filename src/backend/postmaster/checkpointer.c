@@ -586,7 +586,7 @@ CheckpointerMain(const void *startup_data, size_t startup_data_len)
 		{
 			uint32		recent_alloc;
 
-			(void) StrategySyncStart(NULL, &recent_alloc);
+			recent_alloc = StrategyReportAllocs();
 			PendingBgWriterStats.buf_alloc += recent_alloc;
 			pgstat_report_bgwriter();
 		}
