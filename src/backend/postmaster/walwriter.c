@@ -59,9 +59,11 @@
 #include "storage/proc.h"
 #include "storage/procsignal.h"
 #include "storage/smgr.h"
+#include "storage/standby.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
+#include "utils/timestamp.h"
 #include "utils/wait_event.h"
 
 
@@ -78,6 +80,20 @@ int			WalWriterFlushAfter = DEFAULT_WAL_WRITER_FLUSH_AFTER;
  */
 #define LOOPS_UNTIL_HIBERNATE		50
 #define HIBERNATE_FACTOR			25
+
+/*
+ * Interval in which standby snapshots are logged into the WAL stream, in
+ * milliseconds.
+ */
+#define LOG_SNAPSHOT_INTERVAL_MS 15000
+
+/*
+ * LSN and timestamp at which we last issued a LogStandbySnapshot(), to avoid
+ * doing so too often or repeatedly if there has been no other write activity
+ * in the system.
+ */
+static TimestampTz last_snapshot_ts;
+static XLogRecPtr last_snapshot_lsn = InvalidXLogRecPtr;
 
 /*
  * Main entry point for walwriter process
@@ -207,6 +223,18 @@ WalWriterMain(const void *startup_data, size_t startup_data_len)
 	SetWalWriterSleeping(false);
 
 	/*
+	 * We just started, assume there has been either a shutdown or
+	 * end-of-recovery snapshot.
+	 */
+	last_snapshot_ts = GetCurrentTimestamp();
+
+	/*
+	 * Advertise our proc number that backends can use to wake us up while
+	 * we're sleeping.
+	 */
+	ProcGlobal->walwriterProc = MyProcNumber;
+
+	/*
 	 * Loop forever
 	 */
 	for (;;)
@@ -245,6 +273,54 @@ WalWriterMain(const void *startup_data, size_t startup_data_len)
 
 		/* report pending statistics to the cumulative stats system */
 		pgstat_report_wal(false);
+
+		/*
+		 * Log a new xl_running_xacts every now and then so replication can
+		 * get into a consistent state faster (think of suboverflowed
+		 * snapshots) and clean up resources (locks, KnownXids*) more
+		 * frequently. The costs of this are relatively low, so doing it 4
+		 * times (LOG_SNAPSHOT_INTERVAL_MS) a minute seems fine.
+		 *
+		 * We assume the interval for writing xl_running_xacts is
+		 * significantly bigger than WalWriterDelay, so we don't complicate
+		 * the overall timeout handling but just assume we're going to get
+		 * called often enough even if hibernation mode is active. It's not
+		 * that important that LOG_SNAPSHOT_INTERVAL_MS is met strictly. To
+		 * make sure we're not waking the disk up unnecessarily on an idle
+		 * system we check whether there has been any WAL inserted since the
+		 * last time we've logged a running xacts.
+		 *
+		 * This logging used to live in the background writer, as it is a
+		 * process that runs regularly and returns to its mainloop all the
+		 * time.  The walwriter has the same property (it wakes at least every
+		 * WalWriterDelay * HIBERNATE_FACTOR, well below
+		 * LOG_SNAPSHOT_INTERVAL_MS), and unlike the checkpointer it is never
+		 * tied up for long stretches outside its mainloop, so it is a natural
+		 * home.  This is done after XLogBackgroundFlush() so the walwriter's
+		 * async-commit flush guarantee is unaffected.
+		 */
+		if (XLogStandbyInfoActive() && !RecoveryInProgress())
+		{
+			TimestampTz timeout = 0;
+			TimestampTz now = GetCurrentTimestamp();
+
+			timeout = TimestampTzPlusMilliseconds(last_snapshot_ts,
+												  LOG_SNAPSHOT_INTERVAL_MS);
+
+			/*
+			 * Only log if enough time has passed and interesting records have
+			 * been inserted since the last snapshot.  Have to compare with <=
+			 * instead of < because GetLastImportantRecPtr() points at the
+			 * start of a record, whereas last_snapshot_lsn points just past
+			 * the end of the record.
+			 */
+			if (now >= timeout &&
+				last_snapshot_lsn <= GetLastImportantRecPtr())
+			{
+				last_snapshot_lsn = LogStandbySnapshot();
+				last_snapshot_ts = now;
+			}
+		}
 
 		/*
 		 * Sleep until we are signaled or WalWriterDelay has elapsed.  If we
