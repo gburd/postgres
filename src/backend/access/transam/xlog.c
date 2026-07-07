@@ -1664,24 +1664,34 @@ WaitXLogInsertionsToFinish(XLogRecPtr upto)
  * that point anymore, and must not call GetXLogBuffer() with an older 'ptr'
  * later, because older buffers might be recycled already)
  */
+/*
+ * GetXLogBuffer() keeps a one-entry cache of the WAL buffer page it last
+ * accessed.  Upstream stores this in two function-local statics, which are
+ * per-process (hence per-backend) in process mode.  Under the threaded
+ * runtime a plain static local would be shared across every backend fiber, so
+ * the cache is kept in per-backend execution state instead.  In process mode
+ * these accessors resolve to a single per-process copy, giving byte-for-byte
+ * the same semantics as the original statics.
+ */
+#define getXLogBufferCachedPage (*PgCurrentGetXLogBufferCachedPageRef())
+#define getXLogBufferCachedPos (*PgCurrentGetXLogBufferCachedPosRef())
+
 static char *
 GetXLogBuffer(XLogRecPtr ptr, TimeLineID tli)
 {
 	int			idx;
 	XLogRecPtr	endptr;
-	static uint64 cachedPage = 0;
-	static char *cachedPos = NULL;
 	XLogRecPtr	expectedEndPtr;
 
 	/*
 	 * Fast path for the common case that we need to access again the same
 	 * page as last time.
 	 */
-	if (ptr / XLOG_BLCKSZ == cachedPage)
+	if (ptr / XLOG_BLCKSZ == getXLogBufferCachedPage)
 	{
-		Assert(((XLogPageHeader) cachedPos)->xlp_magic == XLOG_PAGE_MAGIC);
-		Assert(((XLogPageHeader) cachedPos)->xlp_pageaddr == ptr - (ptr % XLOG_BLCKSZ));
-		return cachedPos + ptr % XLOG_BLCKSZ;
+		Assert(((XLogPageHeader) getXLogBufferCachedPos)->xlp_magic == XLOG_PAGE_MAGIC);
+		Assert(((XLogPageHeader) getXLogBufferCachedPos)->xlp_pageaddr == ptr - (ptr % XLOG_BLCKSZ));
+		return getXLogBufferCachedPos + ptr % XLOG_BLCKSZ;
 	}
 
 	/*
@@ -1757,13 +1767,13 @@ GetXLogBuffer(XLogRecPtr ptr, TimeLineID tli)
 	 * Found the buffer holding this page. Return a pointer to the right
 	 * offset within the page.
 	 */
-	cachedPage = ptr / XLOG_BLCKSZ;
-	cachedPos = XLogCtl->pages + idx * (Size) XLOG_BLCKSZ;
+	getXLogBufferCachedPage = ptr / XLOG_BLCKSZ;
+	getXLogBufferCachedPos = XLogCtl->pages + idx * (Size) XLOG_BLCKSZ;
 
-	Assert(((XLogPageHeader) cachedPos)->xlp_magic == XLOG_PAGE_MAGIC);
-	Assert(((XLogPageHeader) cachedPos)->xlp_pageaddr == ptr - (ptr % XLOG_BLCKSZ));
+	Assert(((XLogPageHeader) getXLogBufferCachedPos)->xlp_magic == XLOG_PAGE_MAGIC);
+	Assert(((XLogPageHeader) getXLogBufferCachedPos)->xlp_pageaddr == ptr - (ptr % XLOG_BLCKSZ));
 
-	return cachedPos + ptr % XLOG_BLCKSZ;
+	return getXLogBufferCachedPos + ptr % XLOG_BLCKSZ;
 }
 
 /*

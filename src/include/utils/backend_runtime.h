@@ -1191,6 +1191,15 @@ typedef struct PgExecutionXLogInsertState
 	int			max_rdatas;
 	bool		begininsert_called;
 	MemoryContext context;
+	/*
+	 * One-entry cache of the WAL buffer page last accessed by GetXLogBuffer().
+	 * Upstream keeps these as function-local statics, which are per-process
+	 * (hence per-backend) in process mode.  Under the threaded runtime a plain
+	 * static local is shared across every backend fiber, so the cache must live
+	 * in per-backend execution state instead.
+	 */
+	uint64		get_xlog_buffer_cached_page;
+	char	   *get_xlog_buffer_cached_pos;
 } PgExecutionXLogInsertState;
 
 #define PG_EXECUTION_UNREPORTED_XIDS_CAPACITY 64
@@ -3320,6 +3329,8 @@ extern int *PgCurrentXLogInsertNumRDatasRef(void);
 extern int *PgCurrentXLogInsertMaxRDatasRef(void);
 extern bool *PgCurrentXLogInsertBeginCalledRef(void);
 extern MemoryContext *PgCurrentXLogInsertContextRef(void);
+extern uint64 *PgCurrentGetXLogBufferCachedPageRef(void);
+extern char **PgCurrentGetXLogBufferCachedPosRef(void);
 extern int *PgCurrentXactIsoLevelRef(void);
 extern bool *PgCurrentXactReadOnlyRef(void);
 extern bool *PgCurrentXactDeferrableRef(void);

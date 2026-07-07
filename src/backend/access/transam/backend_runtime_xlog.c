@@ -98,3 +98,15 @@ PgCurrentXLogInsertContextRef(void)
 {
 	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentExecutionXLogInsertState)->context;
 }
+
+uint64 *
+PgCurrentGetXLogBufferCachedPageRef(void)
+{
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentExecutionXLogInsertState)->get_xlog_buffer_cached_page;
+}
+
+char **
+PgCurrentGetXLogBufferCachedPosRef(void)
+{
+	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentExecutionXLogInsertState)->get_xlog_buffer_cached_pos;
+}
