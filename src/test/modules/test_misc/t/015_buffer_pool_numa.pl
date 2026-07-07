@@ -1,19 +1,18 @@
 # Copyright (c) 2022-2026, PostgreSQL Global Development Group
 #
-# NUMA-partitioned clock sweep for the default buffer pool (P8).
+# NUMA-aware batched clock sweep for the default buffer pool (P8).
 #
 # When buffer_pool_numa is on and the system has more than one NUMA node, the
-# default pool switches from the single global clock sweep to a
-# NUMA-partitioned one: one clock hand per node, each confined to that node's
-# contiguous buffer range, with fallback to other nodes so a single backend can
-# still use the whole pool.  This targets the multi-socket scalability cliff
-# (single global clock hand + cross-node victim traffic).
+# default pool's buffers are interleaved across nodes and the single clock hand
+# claims a NUMA-sized batch (power of two >= 16) per atomic fetch_add, cutting
+# cross-socket contention on the shared hand.  This targets the multi-socket
+# scalability cliff (contention on the single global clock hand).
 #
 # Real multi-node hardware is required to observe the scalability benefit; this
 # test uses the buffer_pool_numa_nodes developer GUC to FORCE a logical node
-# count so the partitioned sweep's victim-selection logic (per-node hands,
-# wraparound passes, cross-node fallback, eviction under memory pressure) runs
-# for real and is proven correct on single-node CI hardware.
+# count so the batched sweep's victim-selection logic (batch claims on the
+# shared hand, wraparound, eviction under memory pressure) runs for real and is
+# proven correct on single-node CI hardware.
 
 use strict;
 use warnings FATAL => 'all';
@@ -35,7 +34,7 @@ use Test::More;
 	$node->stop;
 }
 
-# --- 2. Forced multi-node: partitioned clock sweep activates and is correct
+# --- 2. Forced multi-node: batched NUMA clock sweep activates and is correct
 #        under eviction pressure. ---
 {
 	my $node = PostgreSQL::Test::Cluster->new('numa');
@@ -47,9 +46,9 @@ shared_buffers = 128MB
 CONF
 	$node->start;
 
-	# The log must show the partitioned sweep was selected.
+	# The log must show the NUMA-aware batched sweep was selected.
 	my $log = slurp_file($node->logfile);
-	like($log, qr/clock-sweep replacement algorithm with NUMA interleaved placement across 4 nodes/,
+	like($log, qr/batched clock-sweep with NUMA interleaved placement across 4 nodes/,
 		'NUMA interleaved placement activated with forced 4 nodes');
 
 	# Build a dataset larger than shared_buffers so victim selection (and thus
@@ -59,22 +58,22 @@ CREATE TABLE t (id int primary key, pad text);
 INSERT INTO t SELECT g, repeat('x', 400) FROM generate_series(1, 300000) g;
 SQL
 
-	# Full scans force eviction across the whole (partitioned) pool.
+	# Full scans force eviction across the whole pool.
 	for my $iter (1 .. 3)
 	{
 		is($node->safe_psql('postgres', 'SELECT count(*), sum(length(pad)) FROM t;'),
 			'300000|120000000',
-			"full scan correct under partitioned sweep (iter $iter)");
+			"full scan correct under batched NUMA sweep (iter $iter)");
 	}
 
-	# Random point reads (scattered victim selection across node partitions).
+	# Random point reads (scattered victim selection across the pool).
 	is( $node->safe_psql('postgres',
 			'SELECT count(*) FROM t WHERE id IN (1, 99999, 150000, 250000, 299999);'
 		),
-		'5', 'point reads correct under partitioned sweep');
+		'5', 'point reads correct under batched NUMA sweep');
 
 	# Concurrent eviction pressure from several sessions interleaves victim
-	# selection across the per-node hands.
+	# selection across the shared hand.
 	my @pids;
 	for my $c (1 .. 4)
 	{
@@ -83,19 +82,19 @@ SQL
 		push @pids, $bg;
 	}
 	is($node->safe_psql('postgres', 'SELECT count(*) FROM t;'),
-		'300000', 'correct under concurrent eviction across partitions');
+		'300000', 'correct under concurrent eviction across the pool');
 	$_->quit for @pids;
 
 	# A write workload (dirties buffers, exercises eviction of dirty pages
-	# through the partitioned sweep).
+	# through the batched NUMA sweep).
 	$node->safe_psql('postgres', 'UPDATE t SET pad = repeat(\'y\', 400) WHERE id % 3 = 0;');
 	is($node->safe_psql('postgres', 'SELECT count(*) FROM t WHERE pad LIKE \'y%\';'),
-		'100000', 'writes + dirty eviction correct under partitioned sweep');
+		'100000', 'writes + dirty eviction correct under batched NUMA sweep');
 
-	# Clean restart: no shared-memory corruption from the partitioned control.
+	# Clean restart: no shared-memory corruption from the clock hand.
 	$node->restart;
 	is($node->safe_psql('postgres', 'SELECT count(*) FROM t;'),
-		'300000', 'clean restart with partitioned sweep');
+		'300000', 'clean restart with batched NUMA sweep');
 	$node->stop;
 }
 
