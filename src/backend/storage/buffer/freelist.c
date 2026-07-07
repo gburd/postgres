@@ -305,10 +305,10 @@ Clock2BitGetVictim(int victim_id, BufferAccessStrategy strategy,
 			old_buf_state = WaitBufHdrUnlocked(buf);
 			continue;
 		}
-		if (BUF_STATE_GET_USAGECOUNT(local_buf_state) != 0)
+		if (BUF_STATE_GET_HEAT(local_buf_state) != 0)
 		{
 			/* Warm: cool one level and let the caller advance the hand. */
-			local_buf_state -= BUF_USAGECOUNT_ONE;
+			local_buf_state -= BUF_HEAT_ONE;
 			if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
 											   local_buf_state))
 			{
@@ -1351,14 +1351,14 @@ RecycleGetVictim(void *strategy_data,
 				continue;
 			}
 
-			if (BUF_STATE_GET_USAGECOUNT(local_buf_state) != 0)
+			if (BUF_STATE_GET_HEAT(local_buf_state) != 0)
 			{
 				/*
 				 * One-chance: clear usage_count entirely instead of
 				 * decrementing.  This gives each page exactly one sweep cycle
 				 * to be re-accessed before eviction.
 				 */
-				local_buf_state &= ~BUF_USAGECOUNT_MASK;
+				local_buf_state &= ~BUF_HEAT_MASK;
 
 				if (pg_atomic_compare_exchange_u64(&buf->state,
 												   &old_buf_state,
@@ -1485,7 +1485,7 @@ RecycleTrickleIterNext(void *strategy_data, void *opaque)
 
 		if ((buf_state & BM_VALID) && (buf_state & BM_DIRTY) &&
 			BUF_STATE_GET_REFCOUNT(buf_state) == 0 &&
-			BUF_STATE_GET_USAGECOUNT(buf_state) == 0)
+			BUF_STATE_GET_HEAT(buf_state) == 0)
 			return buf_id;
 	}
 	return -1;
@@ -1815,7 +1815,7 @@ GetBufferFromRing(BufferAccessStrategy strategy, uint64 *buf_state)
 		 * so we shouldn't re-use it.
 		 */
 		if (BUF_STATE_GET_REFCOUNT(local_buf_state) != 0
-			|| BUF_STATE_GET_USAGECOUNT(local_buf_state) > 1)
+			|| BUF_STATE_GET_HEAT(local_buf_state) > 1)
 			break;
 
 		/* See equivalent code in PinBuffer() */
