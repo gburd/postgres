@@ -72,6 +72,26 @@ typedef struct AnlIndexData
 #define analyze_context (*PgCurrentAnalyzeContextRef())
 #define analyze_strategy (*PgCurrentAnalyzeStrategyRef())
 
+/*
+ * Callback that clears the per-execution analyze_context cell whenever the
+ * "Analyze" working context is deleted.  In the threaded runtime analyze_context
+ * is a persistent PgExecution cell, but the context it points at is created
+ * under CurrentMemoryContext (a transaction/portal context).  A normal
+ * do_analyze_rel() deletes the context and clears the cell explicitly, but an
+ * error or FATAL that propagates out of do_analyze_rel() (for example an
+ * autovacuum worker terminated mid-ANALYZE) never reaches that cleanup: the
+ * transaction abort deletes the owning context tree instead, which would leave
+ * the cell dangling into freed memory and let backend-exit closed-state reset
+ * delete it a second time (a double free).  Registering this delete callback
+ * ties the cell's lifetime to the context's real lifetime on every path.
+ */
+static void
+analyze_context_reset_callback(void *arg)
+{
+	MemoryContext *cell = (MemoryContext *) arg;
+
+	*cell = NULL;
+}
 
 static void do_analyze_rel(Relation onerel,
 						   const VacuumParams *params, List *va_cols,
@@ -356,6 +376,24 @@ do_analyze_rel(Relation onerel, const VacuumParams *params,
 	analyze_context = AllocSetContextCreate(CurrentMemoryContext,
 											"Analyze",
 											ALLOCSET_DEFAULT_SIZES);
+
+	/*
+	 * Tie the persistent analyze_context cell to the context's real lifetime.
+	 * If an error unwinds out of do_analyze_rel() the transaction abort deletes
+	 * this context, and this callback clears the cell so a later closed-state
+	 * reset cannot delete the already-freed context a second time.  The
+	 * callback struct is allocated inside the context, so it is reclaimed with
+	 * it (the callback fires just before the free).
+	 */
+	{
+		MemoryContextCallback *cb;
+
+		cb = MemoryContextAlloc(analyze_context, sizeof(MemoryContextCallback));
+		cb->func = analyze_context_reset_callback;
+		cb->arg = PgCurrentAnalyzeContextRef();
+		MemoryContextRegisterResetCallback(analyze_context, cb);
+	}
+
 	caller_context = MemoryContextSwitchTo(analyze_context);
 
 	/*
