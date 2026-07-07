@@ -36,7 +36,7 @@ PG_PROCTYPE(B_AUTOVAC_LAUNCHER, "autovacuum", gettext_noop("autovacuum launcher"
 PG_PROCTYPE(B_AUTOVAC_WORKER, "autovacuum", gettext_noop("autovacuum worker"), AutoVacWorkerMain, true)
 PG_PROCTYPE(B_BACKEND, "backend", gettext_noop("client backend"), BackendMain, true)
 PG_PROCTYPE(B_BG_WORKER, "bgworker", gettext_noop("background worker"), BackgroundWorkerMain, true)
-PG_PROCTYPE(B_BG_WRITER, "bgwriter", gettext_noop("background writer"), BackgroundWriterMain, true)
+PG_PROCTYPE(B_BG_WRITER, "bgwriter", gettext_noop("background writer"), NULL, false)
 PG_PROCTYPE(B_CHECKPOINTER, "checkpointer", gettext_noop("checkpointer"), CheckpointerMain, true)
 PG_PROCTYPE(B_DATACHECKSUMSWORKER_LAUNCHER, "checksums", gettext_noop("datachecksums launcher"), NULL, false)
 PG_PROCTYPE(B_DATACHECKSUMSWORKER_WORKER, "checksums", gettext_noop("datachecksums worker"), NULL, false)
