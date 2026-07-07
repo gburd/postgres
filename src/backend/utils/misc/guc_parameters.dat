@@ -401,23 +401,7 @@
   boot_val => '"clock"',
 },
 
-{ name => 'buffer_pool_leanstore', type => 'bool', context => 'PGC_POSTMASTER', group => 'RESOURCES_MEM',
-  short_desc => 'Use LeanStore-style hot/cooling state instead of a frequency counter.',
-  long_desc => 'When on, a buffer access sets usage_count to buffer_pool_max_usage_count (a re-referenced page becomes fully hot again) instead of incrementing it by one. Combined with a small buffer_pool_max_usage_count (1 or 2) this turns usage_count into a LeanStore-style hot/cooling/cold state machine rather than a 0..5 frequency counter. Off by default (classic clock). For experimentation and benchmarking.',
-  flags => 'GUC_NOT_IN_SAMPLE',
-  variable => 'buffer_pool_leanstore',
-  boot_val => 'false',
-},
 
-{ name => 'buffer_pool_max_usage_count', type => 'int', context => 'PGC_POSTMASTER', group => 'RESOURCES_MEM',
-  short_desc => 'Maximum clock-sweep usage count for shared buffers.',
-  long_desc => 'The clock sweep lets a buffer survive this many complete sweeps without a re-pin before it becomes eligible for eviction. The historical value is 5. Setting it to 1 turns usage_count into a single reference bit (a LeanStore-style hot/cold second-chance clock), which is cheaper to maintain and reacts faster to working-set changes at the cost of coarser frequency information. For experimentation and benchmarking.',
-  flags => 'GUC_NOT_IN_SAMPLE',
-  variable => 'buffer_pool_max_usage_count',
-  boot_val => '5',
-  min => '1',
-  max => '5',
-},
 
 { name => 'buffer_pool_numa', type => 'bool', context => 'PGC_POSTMASTER', group => 'RESOURCES_MEM',
   short_desc => 'Distribute buffer pool memory across NUMA nodes.',
