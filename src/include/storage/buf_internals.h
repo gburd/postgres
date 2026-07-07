@@ -134,19 +134,18 @@ StaticAssertDecl(MAX_BACKENDS_BITS <= (BUF_LOCK_BITS - 2),
 
 
 /*
- * usage_count is a 2-bit hot/cooling/cold state (LeanStore-style), not a
- * frequency counter: an access jumps the buffer straight to HOT
- * (BM_MAX_USAGE_COUNT = 2), each clock-sweep tick demotes it one level
- * (HOT->COOLING->COLD), and a buffer is evictable at COLD (0).  Historically
- * this was a 0..5 counter incremented by one per access; benchmarks showed the
- * extra resolution buys little, so it is now two bits, freeing two bits of the
- * buffer state word.  It can take at most BM_MAX_USAGE_COUNT+1 sweep passes to
- * cool a hot buffer to evictable.
+ * The buffer usage state is a hot/cooling/cold value packed into
+ * BUF_USAGECOUNT_BITS bits (currently 2) of the buffer state word, not a
+ * frequency counter.  An access jumps the buffer straight to HOT
+ * (BM_USAGE_COUNT_HOT, the maximum the field can hold), each clock-sweep tick
+ * demotes it one level (HOT -> COOLING -> COLD), and a buffer is evictable at
+ * COLD (0).  Historically this was a 0..5 counter incremented by one per
+ * access; benchmarks showed the extra resolution buys little, so it is now two
+ * bits, freeing two bits of the state word.  The maximum is IMPLICIT in the
+ * field width -- there is no separate cap constant to keep in sync.  It takes
+ * at most BM_USAGE_COUNT_HOT+1 sweep passes to cool a hot buffer to evictable.
  */
-#define BM_MAX_USAGE_COUNT	2
-
-StaticAssertDecl(BM_MAX_USAGE_COUNT < (UINT64CONST(1) << BUF_USAGECOUNT_BITS),
-				 "BM_MAX_USAGE_COUNT doesn't fit in BUF_USAGECOUNT_BITS bits");
+#define BM_USAGE_COUNT_HOT	(((uint32) 1 << BUF_USAGECOUNT_BITS) - 1)
 
 /*
  * Buffer tag identifies which disk block the buffer contains.
@@ -485,8 +484,8 @@ UnlockBufHdr(BufferDesc *desc)
  * refcount_change. If a flag is both cleared and added, it will end up being
  * set.
  *
- * Note that this approach would not trivially work for usagecount, since we
- * need to cap the usagecount at BM_MAX_USAGE_COUNT.
+ * Note that this approach would not work for usagecount, since we need to cap
+ * the usagecount at BM_USAGE_COUNT_HOT.
  */
 static inline uint64
 UnlockBufHdrExt(BufferDesc *desc, uint64 old_buf_state,

@@ -3743,12 +3743,12 @@ PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy,
 			{
 				/*
 				 * On access, jump the buffer straight to HOT
-				 * (BM_MAX_USAGE_COUNT): usage_count is a 2-bit hot/cooling/cold
+				 * (BM_USAGE_COUNT_HOT): the usage state is a 2-bit hot/cooling/cold
 				 * state, and a re-referenced page is fully hot again.  (This
 				 * replaced the historical increment-by-one toward a 0..5 cap.)
 				 */
 				buf_state = (buf_state & ~BUF_USAGECOUNT_MASK) |
-					((uint64) BM_MAX_USAGE_COUNT << BUF_USAGECOUNT_SHIFT);
+					((uint64) BM_USAGE_COUNT_HOT << BUF_USAGECOUNT_SHIFT);
 			}
 			else
 			{

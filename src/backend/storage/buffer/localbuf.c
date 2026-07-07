@@ -839,7 +839,7 @@ PinLocalBuffer(BufferDesc *buf_hdr, bool adjust_usagecount)
 		NLocalPinnedBuffers++;
 		buf_state += BUF_REFCOUNT_ONE;
 		if (adjust_usagecount &&
-			BUF_STATE_GET_USAGECOUNT(buf_state) < BM_MAX_USAGE_COUNT)
+			BUF_STATE_GET_USAGECOUNT(buf_state) < BM_USAGE_COUNT_HOT)
 		{
 			buf_state += BUF_USAGECOUNT_ONE;
 		}
