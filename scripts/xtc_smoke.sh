@@ -271,5 +271,78 @@ else
   bad "walwriter fiber initdb failed"
 fi
 
+# 9. walsummarizer runs as an xtc fiber, advances, and shuts down clean.  #5
+#    Tier A widening: the WAL summarizer is fiber-eligible.  Gates: (a) it runs
+#    as a fiber ("walsummarizer launched as xtc fiber" in pm.log, postmaster
+#    has ZERO child OS processes), (b) it advances -- pending_lsn tracks the
+#    flush LSN and summarized_lsn advances across a checkpoint, proving it
+#    re-polls WAL on each WaitLatch-timeout wake with no fd-based wake needed --
+#    and (c) it shuts down clean under BOTH fast and immediate stop.  Immediate
+#    stop is the gate for the PROC_DIE fix: a threaded summarizer has no OS
+#    crash-exit handler, so SIGQUIT arrives as a PROC_DIE interrupt that
+#    ProcessWalSummarizerInterrupts must honor or PM_WAIT_* wedges.  Own cluster
+#    with wal_level=replica + summarize_wal=on.
+note "walsummarizer runs as a fiber, advances, and shuts down clean"
+WSD=$(mktemp -d "$SCRATCH/xtcwsXXXXXX")
+if initdb -D "$WSD/pgdata" -U postgres --no-locale -E UTF8 >"$WSD/initdb.log" 2>&1; then
+  {
+    echo "listen_addresses = ''"
+    echo "unix_socket_directories = '$WSD'"
+    echo "logging_collector = off"
+    echo "autovacuum = off"
+    echo "wal_level = replica"
+    echo "summarize_wal = on"
+  } >> "$WSD/pgdata/postgresql.conf"
+  if pg_ctl -D "$WSD/pgdata" -l "$WSD/pm.log" -o "-c multithreaded=on" -w start >/dev/null 2>&1; then
+    WSPSQL="psql -X -h $WSD -U postgres -d postgres -tA"
+    $WSPSQL -c "CREATE TABLE ws(id int, p text)" >/dev/null 2>&1
+    for r in 1 2 3 4 5; do
+      $WSPSQL -c "INSERT INTO ws SELECT g, repeat('s',80) FROM generate_series(1,100000) g; SELECT pg_switch_wal();" >/dev/null 2>&1
+    done
+    $WSPSQL -c "CHECKPOINT" >/dev/null 2>&1
+    sleep 3
+    wsfiber=$(grep -ac "xtc: walsummarizer launched as xtc fiber" "$WSD/pm.log" 2>/dev/null || echo 0)
+    wspm=$(head -1 "$WSD/pgdata/postmaster.pid" 2>/dev/null)
+    wschild=$(ps --no-headers --ppid "$wspm" 2>/dev/null | wc -l)
+    if [ "$wsfiber" -ge 1 ] && [ "$wschild" = "0" ]; then
+      ok "walsummarizer runs as a fiber (fiber-launch=$wsfiber, pm child procs=$wschild)"
+    else
+      bad "walsummarizer not a fiber (fiber-launch=$wsfiber childprocs=$wschild)"
+    fi
+    wssum=$($WSPSQL -c "SELECT summarized_lsn FROM pg_get_wal_summarizer_state()" 2>/dev/null)
+    wsflush=$($WSPSQL -c "SELECT pg_current_wal_flush_lsn()" 2>/dev/null)
+    wspend=$($WSPSQL -c "SELECT pending_lsn FROM pg_get_wal_summarizer_state()" 2>/dev/null)
+    wsfiles=$(ls "$WSD/pgdata/pg_wal/summaries/" 2>/dev/null | wc -l)
+    if [ "$wsfiles" -ge 1 ] && [ "$wspend" = "$wsflush" ] && [ "$wssum" != "0/017DCAF0" ]; then
+      ok "walsummarizer advanced (summarized=$wssum pending=$wspend flush=$wsflush files=$wsfiles)"
+    else
+      bad "walsummarizer did not advance (summarized=$wssum pending=$wspend flush=$wsflush files=$wsfiles)"
+    fi
+    if timeout 30 pg_ctl -D "$WSD/pgdata" -m fast -w -t 25 stop >/dev/null 2>&1; then
+      ok "walsummarizer fiber fast stop clean"
+    else
+      bad "walsummarizer fiber fast stop HUNG"
+      pg_ctl -D "$WSD/pgdata" -m immediate stop >/dev/null 2>&1
+      kill -9 "$(head -1 "$WSD/pgdata/postmaster.pid" 2>/dev/null)" 2>/dev/null
+    fi
+    if pg_ctl -D "$WSD/pgdata" -l "$WSD/pm2.log" -o "-c multithreaded=on" -w start >/dev/null 2>&1; then
+      $WSPSQL -c "INSERT INTO ws SELECT g,'x' FROM generate_series(1,50000) g; SELECT pg_switch_wal(); CHECKPOINT" >/dev/null 2>&1
+      sleep 8
+      if timeout 30 pg_ctl -D "$WSD/pgdata" -m immediate -w -t 25 stop >/dev/null 2>&1; then
+        ok "walsummarizer fiber immediate stop clean (PROC_DIE honored)"
+      else
+        bad "walsummarizer fiber immediate stop HUNG (PROC_DIE not honored?)"
+        kill -9 "$(head -1 "$WSD/pgdata/postmaster.pid" 2>/dev/null)" 2>/dev/null
+      fi
+    else
+      bad "walsummarizer fiber restart for immediate-stop check failed"
+    fi
+  else
+    bad "walsummarizer fiber server failed to start"
+  fi
+else
+  bad "walsummarizer fiber initdb failed"
+fi
+
 echo "SCRATCH=$D"
 exit $fail

@@ -876,6 +876,18 @@ ProcessWalSummarizerInterrupts(void)
 	if (ProcSignalBarrierPending)
 		ProcessProcSignalBarrier();
 
+	/*
+	 * A threaded (fiber or thread carrier) summarizer has no OS signal
+	 * handler: an immediate shutdown SIGQUIT is delivered as a PROC_DIE
+	 * interrupt on this backend rather than crash-exiting the process the way
+	 * SignalHandlerForCrashExit does under process mode.  Honor it here, as
+	 * ProcessMainLoopInterrupts() does for the WAL writer, so immediate stop
+	 * does not wedge on a parked summarizer.  (In process mode ProcDiePending
+	 * is never set for the summarizer, so this is a no-op there.)
+	 */
+	if (ProcDiePending)
+		proc_exit(1);
+
 	if (ConfigReloadPending)
 	{
 		ConfigReloadPending = false;
