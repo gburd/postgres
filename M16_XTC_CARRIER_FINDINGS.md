@@ -118,6 +118,19 @@ immediate stop clean (0 cores); smoke 20/20.  Fiber-eligible set is now: client
 backends, bgworkers, autovacuum launcher+worker, WAL writer, WAL summarizer,
 archiver.
 
+FOLLOW-UP (commit b514b53759f): the initial Tier C admission left the
+archiver's IMMEDIATE-stop path incomplete.  A stricter smoke gate (step 10,
+added same session) that watches for SIGKILL escalation caught it: on immediate
+stop (SIGQUIT -> PROC_DIE interrupt) the archiver fiber stayed parked in its
+WaitLatch and the postmaster had to SIGKILL it (immediate stop returned
+non-zero; 0 cores).  ProcessPgArchInterrupts drained the mailbox but never acted
+on ProcDiePending.  Fixed by honoring ProcDiePending -> proc_exit(1) at the top
+of ProcessPgArchInterrupts, mirroring ProcessWalSummarizerInterrupts.  After the
+fix all four archiver smoke gates pass (fiber, archived, fast stop clean,
+immediate stop clean with 0 SIGKILL escalations).  Lesson: the fast-stop gate
+alone is not enough for a fiber worker with a custom shutdown protocol -- gate
+both fast AND immediate stop, and watch for SIGKILL escalation, not just cores.
+
 ## libxtc v1.4.2 adopted; walsender teardown fixed; Tier B deferred (2026-07-08)
 
 Bumped `flake.lock` to libxtc **v1.4.2** (rev cb186e3; commit 667489f0b13).
