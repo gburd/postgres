@@ -595,6 +595,38 @@ xtc_carrier_eligible(BackendType child_type)
 			 * summary-file boundary artifact that equally affects process mode.)
 			 */
 			return true;
+		case B_SLOTSYNC_WORKER:
+
+			/*
+			 * #5 widening -- Tier B: DEFERRED (2026-07-08).  The slot sync worker
+			 * launches fine as a fiber, but validating its clean shutdown needs a
+			 * CORRECTLY configured slotsync (sync_replication_slots=on with a
+			 * dbname in primary_conninfo).  In a misconfigured/error state the
+			 * worker errors out ("requires dbname in primary_conninfo"), exits,
+			 * and is relaunched every ~60s; a standby fast stop then does not
+			 * converge on that relaunch churn.  Re-admit once clean-config
+			 * start + fast/immediate stop is validated (and confirm the
+			 * error-relaunch-churn shutdown case is handled).  See
+			 * M16_XTC_CARRIER_FINDINGS.md.  Deferred, not rejected.
+			 */
+			return false;
+		case B_WAL_RECEIVER:
+
+			/*
+			 * #5 widening -- Tier B: DEFERRED (2026-07-08).  As a fiber the WAL
+			 * receiver streams correctly ("walreceiver launched as xtc fiber",
+			 * "started streaming WAL from primary") and cooperatively parks on
+			 * its libpq stream fd, but a standby FAST STOP does not converge: the
+			 * walreceiver fiber gets the terminate and exits ("terminating
+			 * walreceiver process due to administrator command", fiber exit
+			 * code=256), yet the postmaster stays in PM_WAIT_* -- a
+			 * standby-shutdown-ordering issue between the fiber walreceiver and
+			 * the (thread-carrier) startup/recovery process.  0 cores (a wedge,
+			 * not a crash).  Re-admit once the standby fiber-walreceiver +
+			 * startup shutdown ordering converges.  See
+			 * M16_XTC_CARRIER_FINDINGS.md.  Deferred, not rejected.
+			 */
+			return false;
 		default:
 
 			/*
@@ -603,12 +635,13 @@ xtc_carrier_eligible(BackendType child_type)
 			 * protocol (PM_WAIT_IO_WORKERS) handled on fibers -- that belongs
 			 * with the xtc_aio work (item #6).  The auxiliary families
 			 * (logger, checkpointer, bgwriter -- which must start as processes
-			 * before thread carriers exist -- plus wal_receiver, slotsync,
-			 * archiver, ...) each have their own start/shutdown-ordering and
-			 * restart protocols; widen one at a time once its full lifecycle
-			 * is validated on a fiber under the threaded-runtime TAP.
-			 * Deferred, not rejected.  (B_BACKEND, B_BG_WORKER, autovacuum,
-			 * and B_WAL_WRITER and B_WAL_SUMMARIZER are handled above.)
+			 * before thread carriers exist -- plus archiver, ...) each have
+			 * their own start/shutdown-ordering and restart protocols; widen
+			 * one at a time once its full lifecycle is validated on a fiber
+			 * under the threaded-runtime TAP.  Deferred, not rejected.
+			 * (B_BACKEND, B_BG_WORKER, autovacuum, B_WAL_WRITER,
+			 * B_WAL_SUMMARIZER, B_SLOTSYNC_WORKER, and B_WAL_RECEIVER are
+			 * handled above.)
 			 */
 			return false;
 	}
