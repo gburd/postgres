@@ -48,13 +48,25 @@ append_quoted_term(StringInfo buf, const char *term, int len)
 {
 	int			i;
 
+	/*
+	 * Terms are printed single-quoted, so a literal quote or backslash inside a
+	 * term would otherwise be ambiguous.  Escape both by doubling them ('' and
+	 * \\), matching tsvector's output convention (tsvectorout) rather than
+	 * inventing a second one.
+	 *
+	 * In practice this branch is never taken for terms produced by the analyzer:
+	 * is_token_byte() classifies the ASCII bytes '\'' (0x27) and '\\' (0x5C) as
+	 * separators, so they cannot appear inside a tokenized term.  The escaping
+	 * only matters for terms carried in by ftsdoc_recv(), which accepts
+	 * arbitrary bytes off the wire; it is kept for correctness on that path.
+	 */
 	appendStringInfoChar(buf, '\'');
 	for (i = 0; i < len; i++)
 	{
 		char		c = term[i];
 
 		if (c == '\'' || c == '\\')
-			appendStringInfoChar(buf, '\\');
+			appendStringInfoChar(buf, c);	/* double it: '' or \\ */
 		appendStringInfoChar(buf, c);
 	}
 	appendStringInfoChar(buf, '\'');
