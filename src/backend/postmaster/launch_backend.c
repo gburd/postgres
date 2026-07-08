@@ -595,6 +595,34 @@ xtc_carrier_eligible(BackendType child_type)
 			 * summary-file boundary artifact that equally affects process mode.)
 			 */
 			return true;
+		case B_ARCHIVER:
+
+			/*
+			 * #5 widening -- Tier C (2026-07-08): the WAL archiver is
+			 * fiber-eligible.  It is a long-lived singleton started at PM_RUN (or
+			 * PM_RECOVERY/PM_HOT_STANDBY with archive_mode=always) -- always after
+			 * thread carriers exist, so no start-before-carriers hazard -- and it
+			 * is NOT on the cross-thread async-I/O completion path that blocks
+			 * Tier B (its work is file-level: run archive_command / the archive
+			 * library on completed WAL segments; no shared-buffer async reads, so
+			 * no io_method=worker completion wait).  It parks on
+			 * WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH)
+			 * with a bounded PGARCH_AUTOWAKE_INTERVAL, routed through the xtc
+			 * intercept, and drains interrupts via ProcessPgArchInterrupts() ->
+			 * PgCurrentBackendApplyInterrupts() on each wake.
+			 *
+			 * Shutdown is the archiver's special two-step, already wired in
+			 * thread_child_signal_interrupt (postmaster.c) symmetrically with
+			 * process mode's pqsignal handlers: SIGTERM -> SHUTDOWN_REQUEST (sets
+			 * ShutdownRequestPending; the archiver keeps draining, it does NOT die
+			 * immediately -- matching SignalHandlerForShutdownRequest), SIGUSR2 ->
+			 * WAKEUP_STOP (sets WakeupStopPending -> ready_to_stop -> one final
+			 * archive cycle then proc_exit(0) -- matching pgarch_waken_stop),
+			 * SIGINT ignored, SIGQUIT -> PROC_DIE.  The cross-fiber SetLatch wakes
+			 * the parked fiber so the interrupt is observed and the archiver exits,
+			 * publishing its pooled-logical exit so PM_WAIT_* completes.
+			 */
+			return true;
 		case B_SLOTSYNC_WORKER:
 
 			/*
