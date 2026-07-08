@@ -16,6 +16,60 @@ once, exactly one resumed/exited and the rest were lost.  The single-loop model
 was bringup scaffolding; the loop pool is the intended Phase-15 shape and
 sidesteps the single-loop dispatch edge entirely, as predicted.
 
+## libxtc v1.7.0 adopted; cross-thread fd-wake-miss is the Tier B blocker (2026-07-08)
+
+Bumped to libxtc **v1.7.0** (rev 17ee625; commit 1e31ff60bb1), via v1.6.0 (rev
+618adcf; commit 927e27c4cf4).  Both flake-only (headers API-unchanged).  v1.6.0
+added a fiber-aware left-right lock (xtc_alrlock, additive/unused here) + docs;
+v1.7.0 fixes the xtc_exec_fini cross-thread-spawn teardown leak (primary path;
+small timing-dependent residue remains) and moves the suite to official
+hegel-c.  Smoke 20/20 on both.
+
+**Tier B ROOT CAUSE FOUND: cross-thread fd-wake-miss on a parked fiber.**
+Deep investigation of the standby fiber-worker shutdown wedge traced the real
+fault below shutdown: a **hot-standby client backend fiber hangs forever during
+InitPostgres** on a fresh connection (even `SELECT 1`).  That is why the standby
+never shuts down cleanly -- a hung backend never exits, so PM_WAIT_BACKENDS
+never converges.  The earlier "standby shutdown ordering" framing was a symptom;
+the cause is a lost wakeup.
+
+Chain (all verified, io_method=worker default):
+  - The backend fiber reaches InitPostgres, must read an uncached catalog page,
+    submits it as async I/O to a (thread-carrier) I/O worker, and parks on the
+    AIO-completion ConditionVariable -> WaitLatch(MyLatch, timeout=-1).
+  - The I/O worker thread DOES perform the read, transition the IO to
+    COMPLETED_SHARED, and SetLatch the backend (WakeupOtherProcFd writes the
+    backend loop's self-pipe write fd).
+  - /proc on the hung standby confirmed the plumbing is correct: the epoll fd
+    watches the self-pipe READ fd for EPOLLIN; read fd and write fd are the same
+    pipe inode; the latch owner_wakeup_fd is that write fd.
+  - Yet the fiber (parked in xtc_proc_wait_fd on the epoll fd; carrier loops in
+    io_uring_get_cqe) never resumes.  The cross-thread readiness / wake is LOST.
+  - DECISIVE isolation: changing ONLY the fiber's infinite AIO-completion wait
+    to a 100ms bounded wait makes the standby connect succeed every time.  So
+    completion + state transition happen; only the wake delivery is lost.
+
+This is a **libxtc bug** (same class as the v1.4.2 idle-loop wake-miss, but for
+a loop parked in xtc_proc_wait_fd on an fd with cross-thread readiness).  It is
+NOT in v1.7.0 KNOWN_ISSUES.  Reported in full with runtime evidence, the
+investigation trail, and a standalone (non-PG) reproducer shape in
+**/tmp/libxtc-crossthread-fd-wake-miss.md**.
+
+Why the PRIMARY works: at connect its catalog pages are already cached, so no
+async read is needed; io_method=sync also works (no I/O worker, no cross-thread
+completion).  So this bites any fiber backend that blocks on an async I/O
+completion driven by another thread -- a general fiber+AIO gap, not a
+standby-only or Tier-B-only issue.  It is the gating blocker for Tier B
+(WAL_RECEIVER/SLOTSYNC_WORKER): a standby cannot serve fiber backends until the
+wake is delivered.
+
+Options once libxtc fixes the wake (or as an interim): a small bounded timeout
+on the fiber AIO-completion wait (gated to fibers; process/thread modes keep the
+infinite wait) restores correctness at the cost of periodic re-checks.  The
+io_method=xtc path (item #6) would also sidestep the io-worker cross-thread
+completion entirely.  Neither is committed yet -- waiting on the libxtc fix or a
+deliberate interim decision.
+
 ## libxtc v1.4.2 adopted; walsender teardown fixed; Tier B deferred (2026-07-08)
 
 Bumped `flake.lock` to libxtc **v1.4.2** (rev cb186e3; commit 667489f0b13).

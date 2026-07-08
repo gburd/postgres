@@ -118,18 +118,25 @@ Larger (toward fully-on-xtc):
        durable PMChild carrier_kind (not the per-OS-thread xtc_in_backend_fiber
        flag, which a sibling fiber can clear).  Validated: summaries produced
        (matches process mode), fast + immediate stop clean, smoke 20/20.
-     - Tier B: B_SLOTSYNC_WORKER, B_WAL_RECEIVER -- ATTEMPTED 2026-07-08 on
-       libxtc v1.4.2, DEFERRED.  Both launch + run as fibers (walreceiver
-       streams WAL; slotsync worker starts) but neither SHUTS DOWN cleanly on a
-       standby: walreceiver fiber exits on fast stop yet the postmaster stays in
-       PM_WAIT_* (fiber-walreceiver vs thread-carrier startup/recovery ordering,
-       0 cores -- a wedge); slotsync in a misconfig error-loop (relaunch every
-       ~60s) also wedges fast stop.  Next: fix standby aux-worker fiber shutdown
-       convergence (the startup/recovery + walreceiver ordering, and worker
-       relaunch-churn-at-shutdown).  See M16_XTC_CARRIER_FINDINGS.md.
-       (v1.4.2 DID fix the standby client-backend reaping that stuck the first
-       attempt, and the primary walsender-teardown double-free is fixed
-       (b63027eed02) -- so the remaining Tier B blocker is standby shutdown.)
+     - Tier B: B_SLOTSYNC_WORKER, B_WAL_RECEIVER -- ATTEMPTED 2026-07-08,
+       DEFERRED; ROOT CAUSE now found (a libxtc bug, reported).  Both launch +
+       run as fibers (walreceiver streams WAL; slotsync starts) but a standby
+       does not shut down cleanly.  The wedge is a SYMPTOM: on a hot standby a
+       fresh fiber client backend HANGS FOREVER during InitPostgres (even
+       `SELECT 1`) because it blocks on an async-I/O completion
+       ConditionVariable (io_method=worker) and the cross-thread wake from the
+       I/O worker is LOST -- a hung backend never exits, so PM_WAIT_BACKENDS
+       never converges.  Verified: pipe/epoll/wakeup-fd plumbing all correct;
+       ONLY the wake delivery to the parked fiber is lost; a 100ms bounded wait
+       makes it work.  Primary is fine (catalogs cached, no async read at
+       connect); io_method=sync is fine (no cross-thread completion).  This is a
+       general fiber+AIO gap, not Tier-B-specific.  Reported to libxtc in
+       /tmp/libxtc-crossthread-fd-wake-miss.md (reproduces on v1.7.0, NOT in
+       their KNOWN_ISSUES).  Re-admit Tier B once libxtc delivers the wake (or
+       after a deliberate interim: bounded fiber AIO-wait timeout, or io_method=
+       xtc / item #6).  See M16_XTC_CARRIER_FINDINGS.md.
+       (v1.4.2 fixed the standby client-backend REAPING; primary
+       walsender-teardown double-free is fixed (b63027eed02).)
      - Tier C: B_ARCHIVER.
      - Tier D (needs the early-start process->thread HAND-OFF path):
        B_BG_WRITER, B_CHECKPOINTER -- forced to PG_BACKEND_LAUNCH_PROCESS
