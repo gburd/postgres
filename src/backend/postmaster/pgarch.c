@@ -898,6 +898,19 @@ ProcessPgArchInterrupts(void)
 {
 	PgCurrentBackendApplyInterrupts();
 
+	/*
+	 * A threaded archiver fiber has no OS quickdie handler: an immediate stop
+	 * (SIGQUIT) arrives as a PROC_DIE interrupt on its mailbox.  Honor it here
+	 * -- the postmaster's cross-fiber SetLatch wakes the parked WaitLatch, this
+	 * runs, and we proc_exit so PM_WAIT_* completes instead of the postmaster
+	 * having to SIGKILL a recalcitrant fiber.  (In process mode ProcDiePending
+	 * is driven by the die() SIGTERM handler / quickdie; here it is set by the
+	 * PROC_DIE interrupt that thread_child_signal_interrupt maps SIGQUIT to.)
+	 * Mirrors ProcessWalSummarizerInterrupts.
+	 */
+	if (ProcDiePending)
+		proc_exit(1);
+
 	if (WakeupStopPending)
 	{
 		WakeupStopPending = false;

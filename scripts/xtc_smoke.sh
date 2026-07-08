@@ -344,5 +344,83 @@ else
   bad "walsummarizer fiber initdb failed"
 fi
 
+# 10. archiver runs as an xtc fiber, archives WAL, and shuts down clean.  #5
+#     Tier C widening: the WAL archiver is fiber-eligible (file-level work, not
+#     on the io_method=worker cross-thread completion path).  Gates: (a) it runs
+#     as a fiber ("archiver launched as xtc fiber" in pm.log, postmaster has
+#     ZERO child OS processes), (b) it actually archives
+#     (pg_stat_archiver.archived_count > 0 and files appear in the archive dir --
+#     proving the latch wake and archive_command run on the fiber), and (c) it
+#     shuts down clean under BOTH fast and immediate stop.  The archiver's
+#     two-step shutdown (SIGTERM=drain-not-die, SIGUSR2=one final cycle then
+#     exit) is wired in thread_child_signal_interrupt.  Own cluster with
+#     archive_mode=on + a cp archive_command.
+note "archiver runs as a fiber, archives WAL, and shuts down clean"
+ARD=$(mktemp -d "$SCRATCH/xtcarXXXXXX")
+if initdb -D "$ARD/pgdata" -U postgres --no-locale -E UTF8 >"$ARD/initdb.log" 2>&1; then
+  mkdir -p "$ARD/wal_archive"
+  {
+    echo "listen_addresses = ''"
+    echo "unix_socket_directories = '$ARD'"
+    echo "logging_collector = off"
+    echo "autovacuum = off"
+    echo "wal_level = replica"
+    echo "archive_mode = on"
+    echo "archive_command = 'cp %p $ARD/wal_archive/%f'"
+  } >> "$ARD/pgdata/postgresql.conf"
+  if pg_ctl -D "$ARD/pgdata" -l "$ARD/pm.log" -o "-c multithreaded=on" -w start >/dev/null 2>&1; then
+    ARPSQL="psql -X -h $ARD -U postgres -d postgres -tA"
+    $ARPSQL -c "CREATE TABLE ar(id int)" >/dev/null 2>&1
+    for r in 1 2 3 4; do
+      $ARPSQL -c "INSERT INTO ar SELECT generate_series(1,20000); SELECT pg_switch_wal();" >/dev/null 2>&1
+    done
+    sleep 3
+    arfiber=$(grep -ac "xtc: archiver launched as xtc fiber" "$ARD/pm.log" 2>/dev/null || echo 0)
+    arpm=$(head -1 "$ARD/pgdata/postmaster.pid" 2>/dev/null)
+    archild=$(ps --no-headers --ppid "$arpm" 2>/dev/null | wc -l)
+    if [ "$arfiber" -ge 1 ] && [ "$archild" = "0" ]; then
+      ok "archiver runs as a fiber (fiber-launch=$arfiber, pm child procs=$archild)"
+    else
+      bad "archiver not a fiber (fiber-launch=$arfiber childprocs=$archild)"
+    fi
+    arcount=$($ARPSQL -c "SELECT archived_count FROM pg_stat_archiver" 2>/dev/null)
+    arfiles=$(ls "$ARD/wal_archive/" 2>/dev/null | grep -cvE '\.done$|backup')
+    if [ "${arcount:-0}" -ge 1 ] && [ "$arfiles" -ge 1 ]; then
+      ok "archiver archived WAL (archived_count=$arcount files=$arfiles)"
+    else
+      bad "archiver did not archive (archived_count=$arcount files=$arfiles)"
+    fi
+    if timeout 30 pg_ctl -D "$ARD/pgdata" -m fast -w -t 25 stop >/dev/null 2>&1; then
+      arcore=$(ls "$ARD/pgdata"/core* 2>/dev/null | wc -l)
+      if [ "$arcore" = "0" ]; then
+        ok "archiver fiber fast stop clean (cores=$arcore)"
+      else
+        bad "archiver fiber fast stop dirty (cores=$arcore)"
+      fi
+    else
+      bad "archiver fiber fast stop HUNG"
+      pg_ctl -D "$ARD/pgdata" -m immediate stop >/dev/null 2>&1
+      kill -9 "$(head -1 "$ARD/pgdata/postmaster.pid" 2>/dev/null)" 2>/dev/null
+    fi
+    if pg_ctl -D "$ARD/pgdata" -l "$ARD/pm2.log" -o "-c multithreaded=on" -w start >/dev/null 2>&1; then
+      $ARPSQL -c "INSERT INTO ar SELECT generate_series(1,5000); SELECT pg_switch_wal();" >/dev/null 2>&1
+      sleep 2
+      if timeout 30 pg_ctl -D "$ARD/pgdata" -m immediate -w -t 25 stop >/dev/null 2>&1; then
+        arcore2=$(ls "$ARD/pgdata"/core* 2>/dev/null | wc -l)
+        [ "$arcore2" = "0" ] && ok "archiver fiber immediate stop clean (cores=$arcore2)" || bad "archiver fiber immediate stop dirty (cores=$arcore2)"
+      else
+        bad "archiver fiber immediate stop HUNG"
+        kill -9 "$(head -1 "$ARD/pgdata/postmaster.pid" 2>/dev/null)" 2>/dev/null
+      fi
+    else
+      bad "archiver fiber restart for immediate-stop check failed"
+    fi
+  else
+    bad "archiver fiber server failed to start"
+  fi
+else
+  bad "archiver fiber initdb failed"
+fi
+
 echo "SCRATCH=$D"
 exit $fail
