@@ -22,9 +22,12 @@
 #include "postgres.h"
 
 #include "pg_fts.h"
+#include "catalog/pg_collation.h"
 #include "lib/stringinfo.h"
 #include "libpq/pqformat.h"
+#include "regex/regex.h"
 #include "utils/builtins.h"
+#include "utils/varlena.h"
 
 PG_FUNCTION_INFO_V1(ftsdoc_in);
 PG_FUNCTION_INFO_V1(ftsdoc_out);
@@ -289,10 +292,6 @@ fts_doc_has_prefix(FtsDoc doc, const char *prefix, int prefixlen)
 	}
 	return false;
 }
-
-#include "catalog/pg_collation.h"
-#include "regex/regex.h"
-#include "utils/varlena.h"
 
 /*
  * fts_doc_has_fuzzy -- does any doc term lie within edit distance k of `term`?
