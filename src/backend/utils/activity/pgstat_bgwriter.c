@@ -43,6 +43,19 @@ pgstat_report_bgwriter(void)
 							   sizeof(struct PgStat_BgWriterStats)))
 		return;
 
+	/*
+	 * Serialize writers.  The changecount protocol below is a single-writer
+	 * seqlock, but pg_stat_bgwriter now has two concurrent writers: the
+	 * checkpointer (folding in buf_alloc after the global bgwriter was retired)
+	 * and the per-pool trickle writer (buf_written_clean).  Without this lock
+	 * their changecount writes interleave and corrupt the counter (odd/even
+	 * invariant violated -> assertion failure / torn reads).  The existing
+	 * stats_shmem->lock already guards the reset/snapshot paths; take it here
+	 * too so all mutators are mutually exclusive.  Readers still spin on
+	 * changecount and do not need this lock.
+	 */
+	LWLockAcquire(&stats_shmem->lock, LW_EXCLUSIVE);
+
 	pgstat_begin_changecount_write(&stats_shmem->changecount);
 
 #define BGWRITER_ACC(fld) stats_shmem->stats.fld += PendingBgWriterStats.fld
@@ -52,6 +65,8 @@ pgstat_report_bgwriter(void)
 #undef BGWRITER_ACC
 
 	pgstat_end_changecount_write(&stats_shmem->changecount);
+
+	LWLockRelease(&stats_shmem->lock);
 
 	/*
 	 * Clear out the statistics buffer, so it can be re-used.
