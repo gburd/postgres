@@ -412,26 +412,43 @@ PgBackendResetWalSenderClosedState(PgBackendWalSenderState *walsender)
 	if (walsender == NULL)
 		return;
 
+	/*
+	 * The logical decoding context ("Logical decoding context") is a child of
+	 * replication_cmd_context and owns the logical xlogreader.  FreeDecodingContext
+	 * runs the output-plugin shutdown callback and MemoryContextDelete()s that
+	 * child, so it must run before we delete the parent replication_cmd_context
+	 * below.  Only the interrupted-mid-stream case reaches here with the cell
+	 * still set; the normal logical exit path already freed it and NULLed the
+	 * cell (StartLogicalReplication).
+	 */
 	if (walsender->logical_decoding_ctx != NULL)
 	{
 		FreeDecodingContext(walsender->logical_decoding_ctx);
 		walsender->logical_decoding_ctx = NULL;
 		walsender->xlogreader = NULL;
 	}
-	else if (walsender->xlogreader != NULL)
-	{
-		XLogReaderFree(walsender->xlogreader);
-		walsender->xlogreader = NULL;
-	}
 
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(walsender->uploaded_manifest_mcxt);
 	walsender->uploaded_manifest = NULL;
 
-	PgBackendResetStringInfo(&walsender->output_message);
-	PgBackendResetStringInfo(&walsender->reply_message);
-	PgBackendResetStringInfo(&walsender->tmpbuf);
-
+	/*
+	 * output_message/reply_message/tmpbuf (their .data buffers) and the physical
+	 * xlogreader are all allocated inside replication_cmd_context: the StringInfos
+	 * are initStringInfo'd after switching into it in exec_replication_command,
+	 * and the physical reader is XLogReaderAllocate'd there in StartReplication.
+	 * exec_replication_command MemoryContextReset()s that context at the end of
+	 * every command, so by backend exit those chunks are already freed and the
+	 * persistent cells dangle.  Deleting the context here is the sole owner-level
+	 * free; individually pfree'ing the chunks (PgBackendResetStringInfo /
+	 * XLogReaderFree) would double-free freed memory (heap corruption at exit).
+	 * So delete the context first, then just clear the cells without freeing.
+	 */
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(walsender->replication_cmd_context);
+
+	walsender->xlogreader = NULL;
+	MemSet(&walsender->output_message, 0, sizeof(walsender->output_message));
+	MemSet(&walsender->reply_message, 0, sizeof(walsender->reply_message));
+	MemSet(&walsender->tmpbuf, 0, sizeof(walsender->tmpbuf));
 
 	if (walsender->lag_tracker != NULL)
 	{
