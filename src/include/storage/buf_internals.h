@@ -47,16 +47,17 @@
  * The definition of buffer state components is below.
  */
 #define BUF_REFCOUNT_BITS 18
-#define BUF_HEAT_BITS 2
+#define BUF_HEAT_BITS 1
 #define BUF_FLAG_BITS 12
 #define BUF_LOCK_BITS (18+2)
 
 /*
  * Back-compat alias.  BufferDesc->state's heat field was historically a 0..5
- * "usage count"; it is now a 2-bit hot/cooling/cold heat state (see below).
- * The BUF_USAGECOUNT_* names are retained as aliases for the BUF_HEAT_* names
- * so external algorithm code (contrib) and the pg_buffercache "usagecount"
- * column keep working; new internal code should use the BUF_HEAT_* names.
+ * "usage count"; it is now a single hot/cool bit (LeanStore / 2Q-A1
+ * cooling-stage clock sweep, see below).  The BUF_USAGECOUNT_* names are
+ * retained as aliases for the BUF_HEAT_* names so external algorithm code
+ * (contrib) and the pg_buffercache "usagecount" column keep working; new
+ * internal code should use the BUF_HEAT_* names.
  */
 #define BUF_USAGECOUNT_BITS BUF_HEAT_BITS
 
@@ -150,20 +151,23 @@ StaticAssertDecl(MAX_BACKENDS_BITS <= (BUF_LOCK_BITS - 2),
 
 
 /*
- * The buffer heat state is a hot/cooling/cold value packed into
- * BUF_HEAT_BITS bits (currently 2) of the buffer state word, not a frequency
- * counter.  An access jumps the buffer straight to HOT (BM_HEAT_HOT, the
- * maximum the field can hold), each clock-sweep tick demotes it one level
- * (HOT -> COOLING -> COLD), and a buffer is evictable at COLD (0).
- * Historically this was a 0..5 "usage count" incremented by one per access;
- * benchmarks showed the extra resolution buys little, so it is now two bits,
- * freeing two bits of the state word.  The maximum is IMPLICIT in the field
- * width -- there is no separate cap constant to keep in sync.  It takes at
- * most BM_HEAT_HOT+1 sweep passes to cool a hot buffer to evictable.
+ * The buffer heat state is a single hot/cool bit in BUF_HEAT_BITS bit(s) of the
+ * buffer state word, not a frequency counter (LeanStore / 2Q-A1 cooling-stage
+ * clock sweep).  A buffer is HOT (recently accessed, not an eviction
+ * candidate) or COOL (an eviction candidate); "pinned" is the existing
+ * refcount.  An access jumps the buffer straight to HOT (BM_HEAT_HOT); the
+ * clock sweep demotes HOT -> COOL and evicts a COOL buffer.  A demand-loaded
+ * page is admitted COOL and promoted to HOT only on a second access, so a
+ * one-touch sequential scan fills and drains the COOL stage without displacing
+ * the hot working set -- scan resistance is intrinsic to the algorithm.
+ * Historically this was a 0..5 "usage count"; benchmarks showed the extra
+ * resolution buys little, so it is now one bit.  The maximum is IMPLICIT in
+ * the field width -- no separate cap constant to keep in sync.
  *
  * The pg_buffercache "usagecount" column and the BUF_USAGECOUNT_* macro
  * aliases expose this same field under its historical name for compatibility.
  */
+#define BM_HEAT_COOL	0
 #define BM_HEAT_HOT	(((uint32) 1 << BUF_HEAT_BITS) - 1)
 /* Back-compat alias (see BUF_USAGECOUNT_BITS). */
 #define BM_USAGE_COUNT_HOT	BM_HEAT_HOT
