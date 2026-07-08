@@ -267,6 +267,15 @@ typedef struct BackendThreadStart
 	 */
 	pg_atomic_uint32 exit_claimed;
 	pg_atomic_uint32 fiber_entered;
+	/*
+	 * start_claimed arbitrates the entry race between a just-scheduled worker
+	 * fiber and ReapOrphanedThreadedWorker: whoever wins the exchange (0->1)
+	 * owns the PMChild slot.  The fiber claims it right after publishing
+	 * fiber_entered (before any slot access); the reaper claims it only after
+	 * seeing fiber_entered == 0.  Distinct from exit_claimed (the exit-publish
+	 * arbiter) so the normal fiber exit path is unaffected.
+	 */
+	pg_atomic_uint32 start_claimed;
 	TimestampTz launch_time;
 } BackendThreadStart;
 
@@ -789,6 +798,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	thread_start->startup_log_timezone = log_timezone;
 	pg_atomic_init_u32(&thread_start->launch_registered, 0);
 	pg_atomic_init_u32(&thread_start->exit_claimed, 0);
+	pg_atomic_init_u32(&thread_start->start_claimed, 0);
 	pg_atomic_init_u32(&thread_start->fiber_entered, 0);
 	thread_start->launch_time = GetCurrentTimestamp();
 
@@ -1492,7 +1502,39 @@ backend_thread_entry(void *arg)
 	 * pointer.
 	 */
 	if (xtc_in_backend_fiber)
+	{
+		/*
+		 * Publish that the fiber body began, then close the race with
+		 * ReapOrphanedThreadedWorker (postmaster thread).  The reaper reaps a
+		 * worker whose fiber_entered is still 0 by claiming it and publishing a
+		 * synthetic exit -- which RELEASES this PMChild slot.  If it did so in
+		 * the window between the reaper reading fiber_entered as 0 and this
+		 * write becoming visible, the slot is already gone and we must NOT run
+		 * InitProcess -> RegisterPostmasterChildActive on it (under cassert that
+		 * trips Assert(PMChildFlags[slot] == PM_CHILD_ASSIGNED) in pmsignal.c;
+		 * in production it corrupts the slot's PMChild accounting and wedges
+		 * PM_WAIT_BACKENDS at fast stop).
+		 *
+		 * Resolve with a dedicated single-winner exchange (start_claimed),
+		 * distinct from the exit-publication arbiter (exit_claimed) so the
+		 * normal exit path in backend_thread_finish is unaffected.  The reaper
+		 * claims start_claimed too (only after seeing fiber_entered == 0);
+		 * whoever wins start_claimed owns the slot.  Ordering: write
+		 * fiber_entered, full barrier, then exchange start_claimed.  If we lose
+		 * (reaper already claimed and published a synthetic exit), bail out of
+		 * the fiber immediately without touching the released slot and without
+		 * freeing thread_start (the reaper's synthetic-exit path leaves it,
+		 * matching backend_thread_finish's lost-claim handling).
+		 */
 		pg_atomic_write_u32(&thread_start->fiber_entered, 1);
+		pg_memory_barrier();
+		if (pg_atomic_exchange_u32(&thread_start->start_claimed, 1) != 0)
+		{
+			backend_thread_set_current_start(NULL);
+			xtc_pg_backend_fiber_exit(backend_thread_exitstatus(0));
+			pg_unreachable();
+		}
+	}
 #endif
 
 	MyBackendType = thread_start->child_type;
@@ -1779,9 +1821,9 @@ ReapOrphanedThreadedWorker(BackendType child_type, int min_age_ms)
 										min_age_ms))
 			continue;
 
-		/* Claim the one-time exit publication for this launch. */
-		if (pg_atomic_exchange_u32(&thread_start->exit_claimed, 1) != 0)
-			continue;			/* fiber already published; nothing to do */
+		/* Claim the one-time slot ownership for this launch. */
+		if (pg_atomic_exchange_u32(&thread_start->start_claimed, 1) != 0)
+			continue;			/* fiber won the start race; it owns the slot */
 
 		/*
 		 * Publish a synthetic clean exit and stop tracking the orphan pointer.
@@ -1877,20 +1919,15 @@ backend_thread_finish(int code)
 
 #ifdef USE_XTC_CARRIER
 	/*
-	 * Claim the exclusive right to publish this fiber's PMChild exit.  A
-	 * fiber-backed worker that the autovacuum launcher canceled before it was
-	 * ever scheduled is reaped by the postmaster from the launcher-cancel path
-	 * (ReapOrphanedThreadedWorker); if that fiber later does run and reaches
-	 * here, the postmaster already released the PMChild, so we must not touch
-	 * the slot again.  fiber_entered ordering makes this claim always succeed
-	 * on the normal path (the orphan reap only targets a worker whose fiber
-	 * never entered, and a fiber that reaches here set fiber_entered long ago),
-	 * so this branch is effectively unreachable; it exists as a hard
-	 * exactly-once guard.  A lost claim means the postmaster owns the reap:
-	 * skip every PMChild access and do NOT free thread_start (the postmaster
-	 * may still be mid-reap reading it, and this path cannot occur on the
-	 * normal fiber_entered-ordered flow anyway; leaking one struct is safe).
-	 * Just leave the fiber.
+	 * Claim the exclusive right to publish this fiber's PMChild exit.  The
+	 * entry race with the launcher-cancel orphan reap
+	 * (ReapOrphanedThreadedWorker) is already resolved earlier via start_claimed
+	 * (backend_thread_run_worker): a fiber that reaches here WON that race and
+	 * owns the slot, so this exit_claimed exchange always succeeds on the normal
+	 * path.  It remains as a hard exactly-once guard.  A lost claim means the
+	 * postmaster owns the reap: skip every PMChild access and do NOT free
+	 * thread_start (the postmaster may still be mid-reap reading it); just leave
+	 * the fiber.
 	 */
 	if (is_fiber &&
 		pg_atomic_exchange_u32(&thread_start->exit_claimed, 1) != 0)
