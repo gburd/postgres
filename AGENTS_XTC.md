@@ -118,7 +118,18 @@ Larger (toward fully-on-xtc):
        durable PMChild carrier_kind (not the per-OS-thread xtc_in_backend_fiber
        flag, which a sibling fiber can clear).  Validated: summaries produced
        (matches process mode), fast + immediate stop clean, smoke 20/20.
-     - Tier B: B_SLOTSYNC_WORKER, B_WAL_RECEIVER.
+     - Tier B: B_SLOTSYNC_WORKER, B_WAL_RECEIVER -- ATTEMPTED 2026-07-08 on
+       libxtc v1.4.2, DEFERRED.  Both launch + run as fibers (walreceiver
+       streams WAL; slotsync worker starts) but neither SHUTS DOWN cleanly on a
+       standby: walreceiver fiber exits on fast stop yet the postmaster stays in
+       PM_WAIT_* (fiber-walreceiver vs thread-carrier startup/recovery ordering,
+       0 cores -- a wedge); slotsync in a misconfig error-loop (relaunch every
+       ~60s) also wedges fast stop.  Next: fix standby aux-worker fiber shutdown
+       convergence (the startup/recovery + walreceiver ordering, and worker
+       relaunch-churn-at-shutdown).  See M16_XTC_CARRIER_FINDINGS.md.
+       (v1.4.2 DID fix the standby client-backend reaping that stuck the first
+       attempt, and the primary walsender-teardown double-free is fixed
+       (b63027eed02) -- so the remaining Tier B blocker is standby shutdown.)
      - Tier C: B_ARCHIVER.
      - Tier D (needs the early-start process->thread HAND-OFF path):
        B_BG_WRITER, B_CHECKPOINTER -- forced to PG_BACKEND_LAUNCH_PROCESS

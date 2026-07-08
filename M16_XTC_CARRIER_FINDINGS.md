@@ -16,6 +16,48 @@ once, exactly one resumed/exited and the rest were lost.  The single-loop model
 was bringup scaffolding; the loop pool is the intended Phase-15 shape and
 sidesteps the single-loop dispatch edge entirely, as predicted.
 
+## libxtc v1.4.2 adopted; walsender teardown fixed; Tier B deferred (2026-07-08)
+
+Bumped `flake.lock` to libxtc **v1.4.2** (rev cb186e3; commit 667489f0b13).
+Release lands the fixes for three things we reported/worked around:
+- Cross-thread wake of an IDLE loop (lost wakeup) -- the root cause behind our
+  autovac orphan-reaper workaround.  Confirmed effect: autovac worker-start
+  "took too long" cancels dropped from ~1/run to ~0 (the reaper is now
+  defense-in-depth), AND the standby client-backend reaping that stuck the first
+  Tier B attempt is FIXED (20 sequential standby conns settle to 1 backend, was
+  11 stuck).
+- Runtime threads created with signals blocked (__os_pthread_create_masked) --
+  overlaps our xtc_pg_carrier_start signal-block fix.
+- Allocator discipline + a new public alloc API (additive).
+Headers we include are API-unchanged since 1.3.0, so the bump is flake-only.
+Smoke 20/20; genuine-crash escalation fires; autovac churn 5/5 clean.
+libxtc KNOWN_ISSUES to watch: xtc_exec_fini cross-thread-spawn teardown leak;
+one remaining signal-mask integration case.
+
+**Walsender teardown double-free FIXED** (commit b63027eed02): fast-stopping a
+primary with a live walsender (a connected standby / any pg_receivewal) crashed
+with a glibc heap abort in PgBackendResetWalSenderClosedState.  The walsender
+per-backend cells (output/reply/tmpbuf StringInfos + the physical xlogreader)
+are allocated in replication_cmd_context, which exec_replication_command resets
+per command -- so by backend exit those chunks are already freed and the cells
+dangle; the reset pfree'd them again.  Fix: delete replication_cmd_context as
+the sole owner-level free, then just clear the dangling cells (lag_tracker,
+verified TopMemoryContext-owned, stays a real pfree).  Live-walsender fast stop
+3/3 clean.  Pre-existing (reproduced without any widening).
+
+**Tier B (WAL_RECEIVER, SLOTSYNC_WORKER) DEFERRED** (commit 1f2372bcbf8).  With
+v1.4.2 + the walsender fix, both families LAUNCH and run as fibers (walreceiver
+streams WAL, slotsync starts), but neither shuts down cleanly on a standby:
+  - WAL_RECEIVER: standby fast stop -- the walreceiver fiber gets the terminate
+    and exits (FATAL "terminating walreceiver process", fiber exit code=256) but
+    the postmaster stays in PM_WAIT_* (0 cores -- a wedge).  Standby
+    shutdown-ordering between the fiber walreceiver and the thread-carrier
+    startup/recovery process.
+  - SLOTSYNC_WORKER: launches, but a misconfigured slotsync error-loops
+    (relaunch every ~60s) and fast stop does not converge on that churn.
+NEXT: fix standby aux-worker fiber shutdown convergence (startup/recovery +
+walreceiver ordering; worker relaunch-churn at shutdown), then re-admit Tier B.
+
 ## libxtc v1.3.0 adopted (2026-07-06)
 
 Bumped `flake.lock` to libxtc v1.3.0 and took the two API improvements the
