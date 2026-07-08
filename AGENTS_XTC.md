@@ -132,9 +132,11 @@ Larger (toward fully-on-xtc):
        connect); io_method=sync is fine (no cross-thread completion).  This is a
        general fiber+AIO gap, not Tier-B-specific.  Reported to libxtc in
        /tmp/libxtc-crossthread-fd-wake-miss.md (reproduces on v1.7.0, NOT in
-       their KNOWN_ISSUES).  Re-admit Tier B once libxtc delivers the wake (or
-       after a deliberate interim: bounded fiber AIO-wait timeout, or io_method=
-       xtc / item #6).  See M16_XTC_CARRIER_FINDINGS.md.
+       their KNOWN_ISSUES).  Gap + the contract libxtc must satisfy:
+       /tmp/tier-b-fiber-aio-gap.md.  Re-admit Tier B ONLY after libxtc delivers
+       the cross-thread fd-readiness wake -- NO interim (no bounded-timeout
+       hack, no io_method=sync dodge, no io_method=xtc to paper over it).
+       See M16_XTC_CARRIER_FINDINGS.md.
        (v1.4.2 fixed the standby client-backend REAPING; primary
        walsender-teardown double-free is fixed (b63027eed02).)
      - Tier C: B_ARCHIVER.

@@ -63,12 +63,13 @@ standby-only or Tier-B-only issue.  It is the gating blocker for Tier B
 (WAL_RECEIVER/SLOTSYNC_WORKER): a standby cannot serve fiber backends until the
 wake is delivered.
 
-Options once libxtc fixes the wake (or as an interim): a small bounded timeout
-on the fiber AIO-completion wait (gated to fibers; process/thread modes keep the
-infinite wait) restores correctness at the cost of periodic re-checks.  The
-io_method=xtc path (item #6) would also sidestep the io-worker cross-thread
-completion entirely.  Neither is committed yet -- waiting on the libxtc fix or a
-deliberate interim decision.
+Options once libxtc fixes the wake: re-admit Tier B and validate.  We are NOT
+shipping any interim -- no bounded-timeout on the fiber AIO wait (it masks the
+libxtc defect and pays latency/wakeups forever), no io_method=sync dodge, and
+NOT using io_method=xtc (item #6) to paper over the wake bug (it is separate,
+independently motivated work; using it to hide this defect would bury it).
+Wait for the libxtc fix.  The gap + the exact contract libxtc must satisfy are
+written up in /tmp/tier-b-fiber-aio-gap.md.
 
 ## libxtc v1.4.2 adopted; walsender teardown fixed; Tier B deferred (2026-07-08)
 
