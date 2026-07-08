@@ -1616,6 +1616,25 @@ TrickleWriterMain(Datum main_arg)
 			while ((buf_id = routine->trickle_iter_next(
 														local->strategy_data, iter)) >= 0)
 			{
+				/*
+				 * Absorb any pending ProcSignalBarrier BEFORE each write, at
+				 * this safe point between SyncOneBuffer calls (never inside
+				 * one).  This mirrors the checkpointer, which processes the
+				 * barrier in CheckpointWriteDelay() after each write.  A DROP
+				 * DATABASE / DROP TABLESPACE first invalidates the target's
+				 * buffers, then emits PROCSIGNAL_BARRIER_SMGRRELEASE and waits
+				 * for every process to close its cached smgr descriptors.  If
+				 * we did not process the barrier between writes we could flush
+				 * a buffer snapshotted dirty before the barrier through a
+				 * now-stale cached descriptor into a reused relfilenode's file
+				 * -- silent corruption.  Processing it here runs
+				 * smgrreleaseall(), so the following SyncOneBuffer reopens smgr
+				 * fresh (and re-checks BM_VALID/BM_DIRTY under the buffer
+				 * header lock, skipping invalidated buffers).
+				 */
+				if (ProcSignalBarrierPending)
+					ProcessProcSignalBarrier();
+
 				SyncOneBuffer(buf_id, true, &wb_context);
 				num_written++;
 				hibernate = false;
@@ -1646,6 +1665,18 @@ TrickleWriterMain(Datum main_arg)
 				/* Skip buffers that are in use (pinned) */
 				if (BUF_STATE_GET_REFCOUNT(buf_state) > 0)
 					continue;
+
+				/*
+				 * Absorb any pending ProcSignalBarrier before each write --
+				 * see the identical guard in the trickle_iter loop above for
+				 * the full rationale.  The buf_state snapshot read above may
+				 * predate a DROP DATABASE's SMGRRELEASE barrier; processing
+				 * the barrier here (running smgrreleaseall()) ensures the
+				 * SyncOneBuffer below cannot write through a stale cached smgr
+				 * descriptor into a reused relfilenode's file.
+				 */
+				if (ProcSignalBarrierPending)
+					ProcessProcSignalBarrier();
 
 				SyncOneBuffer(bufHdr->buf_id, true, &wb_context);
 				num_written++;
@@ -1688,6 +1719,10 @@ TrickleWriterMain(Datum main_arg)
 					/* Write out dirty buffers first */
 					if ((state & BM_VALID) && (state & BM_DIRTY))
 					{
+						/* Same barrier discipline as the main write loops above. */
+						if (ProcSignalBarrierPending)
+							ProcessProcSignalBarrier();
+
 						SyncOneBuffer(bufHdr->buf_id, true, &wb_context);
 						hibernate = false;
 					}
