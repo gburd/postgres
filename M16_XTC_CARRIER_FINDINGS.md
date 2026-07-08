@@ -71,6 +71,35 @@ independently motivated work; using it to hide this defect would bury it).
 Wait for the libxtc fix.  The gap + the exact contract libxtc must satisfy are
 written up in /tmp/tier-b-fiber-aio-gap.md.
 
+### Cassert threaded smoke found a worker-fiber entry race (2026-07-08, commit 1168e5c6dc2)
+
+Unblocked work while Tier B waits on libxtc: rebuilt build-xtc-cassert (cassert +
+xtc, v1.7.0) and ran the smoke under assertions.  It surfaced a real race the
+non-cassert smoke passes clean:
+Assert("PMChildFlags[slot] == PM_CHILD_ASSIGNED") in RegisterPostmasterChildActive
+(pmsignal.c:306) via InitProcess() in an autovac WORKER FIBER, plus the matching
+non-cassert symptoms ("autovac churn fast stop HUNG", spawn/exit mismatch).
+
+Root cause: ReapOrphanedThreadedWorker (postmaster) reaps a worker whose
+fiber_entered==0 by publishing a synthetic exit that RELEASES the PMChild slot,
+but the reaper's fiber_entered read and the fiber's fiber_entered write were not
+synchronized -- the reaper could read 0 while the just-scheduled fiber set
+fiber_entered=1 and ran InitProcess->RegisterPostmasterChildActive on the
+already-released slot.  Fixed with a dedicated single-winner start_claimed
+exchange (distinct from exit_claimed so the exit path is untouched): fiber writes
+fiber_entered, barrier, exchanges start_claimed; reaper exchanges it only after
+seeing fiber_entered==0; loser bails via xtc_pg_backend_fiber_exit without
+touching the slot.  After the fix: cassert smoke PASSes "autovac churn fast stop
+clean", 0 TRAP/assert, 0 cores; non-cassert 20/20; process mode unaffected.
+
+REMAINING cassert-only smoke FAILs (benign, timing): under cassert on this
+meson-on-btrfs host a few strict count/timing steps ("spawn/exit mismatch",
+"fast stop hung", "error unwind / recovery") trip because cassert makes fibers
+slower, not because of a fault -- 0 cores, 0 asserts, all subtests reach
+"database system is shut down", and the SAME steps PASS in the non-cassert smoke
+(same caveat class as the 001_threaded_runtime background_psql harness note).
+Use cassert threaded runs to hunt asserts, not to gate on the timing counts.
+
 ### Tier C: B_ARCHIVER ADMITTED (2026-07-08, commit 9ad3770f7c2)
 
 While Tier B waits on libxtc, admitted the WAL archiver -- it is NOT blocked by
