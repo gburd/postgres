@@ -139,7 +139,15 @@ Larger (toward fully-on-xtc):
        See M16_XTC_CARRIER_FINDINGS.md.
        (v1.4.2 fixed the standby client-backend REAPING; primary
        walsender-teardown double-free is fixed (b63027eed02).)
-     - Tier C: B_ARCHIVER.
+     - Tier C: B_ARCHIVER -- ADMITTED (2026-07-08, commit 9ad3770f7c2).  Not
+       blocked by the Tier B fiber+AIO wake-miss: its work is file-level
+       (archive_command / archive library on WAL segments), never an
+       io_method=worker shared-buffer completion wait.  Started at PM_RUN (after
+       carriers).  Its two-step shutdown (SIGTERM=drain-not-die, SIGUSR2=one
+       final cycle then exit) was already wired in
+       thread_child_signal_interrupt.  Validated: launches as a fiber, archives
+       WAL (pg_stat_archiver=4), fast + immediate stop clean (0 cores), smoke
+       20/20.
      - Tier D (needs the early-start process->thread HAND-OFF path):
        B_BG_WRITER, B_CHECKPOINTER -- forced to PG_BACKEND_LAUNCH_PROCESS
        before thread carriers exist (launch_backend.c ~391), handed off +

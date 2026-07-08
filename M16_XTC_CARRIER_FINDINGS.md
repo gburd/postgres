@@ -71,6 +71,24 @@ independently motivated work; using it to hide this defect would bury it).
 Wait for the libxtc fix.  The gap + the exact contract libxtc must satisfy are
 written up in /tmp/tier-b-fiber-aio-gap.md.
 
+### Tier C: B_ARCHIVER ADMITTED (2026-07-08, commit 9ad3770f7c2)
+
+While Tier B waits on libxtc, admitted the WAL archiver -- it is NOT blocked by
+the fiber+AIO wake-miss.  The archiver's work is file-level (archive_command /
+archive library on completed WAL segments), so it never waits on an
+io_method=worker shared-buffer completion.  It is a PM_RUN singleton (after
+carriers exist) that parks on a bounded-timeout WaitLatch and drains via
+ProcessPgArchInterrupts() -> PgCurrentBackendApplyInterrupts().  Its special
+two-step shutdown was already wired in thread_child_signal_interrupt: SIGTERM ->
+SHUTDOWN_REQUEST (drain, do not die immediately), SIGUSR2 -> WAKEUP_STOP (one
+final cycle then proc_exit(0)), SIGINT ignored, SIGQUIT -> PROC_DIE -- symmetric
+with process mode's pqsignal handlers.  Validated (archive_mode=on, cp
+archive_command): launches as a fiber and archives WAL
+(pg_stat_archiver.archived_count=4, 4 files); fast stop clean (0 cores);
+immediate stop clean (0 cores); smoke 20/20.  Fiber-eligible set is now: client
+backends, bgworkers, autovacuum launcher+worker, WAL writer, WAL summarizer,
+archiver.
+
 ## libxtc v1.4.2 adopted; walsender teardown fixed; Tier B deferred (2026-07-08)
 
 Bumped `flake.lock` to libxtc **v1.4.2** (rev cb186e3; commit 667489f0b13).
