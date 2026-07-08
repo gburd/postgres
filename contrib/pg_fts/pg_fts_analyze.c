@@ -95,19 +95,27 @@ fts_analyze_text(const char *str, int len)
 	int			maxraw;
 	int			i;
 	uint32		doclen = 0;
+	char	   *foldbuf;
 
 	/* Upper bound on tokens: every other byte could start a token. */
 	maxraw = (len / 2) + 1;
 	raw = (RawTerm *) palloc(maxraw * sizeof(RawTerm));
+
+	/*
+	 * Fold the whole input once up front.  ASCII case-folding preserves byte
+	 * length, so each token's text is simply a slice of foldbuf; this avoids a
+	 * per-token palloc.  Token boundaries are unaffected by folding (A-Z and
+	 * a-z are both token bytes), so they are detected on the raw input.
+	 */
+	foldbuf = (char *) palloc(len);
+	for (i = 0; i < len; i++)
+		foldbuf[i] = fold_ascii((unsigned char) str[i]);
 
 	/* First pass: carve out folded tokens. */
 	i = 0;
 	while (i < len)
 	{
 		int			start;
-		char	   *folded;
-		int			flen;
-		int			j;
 
 		/* skip separators */
 		while (i < len && !is_token_byte((unsigned char) str[i]))
@@ -118,15 +126,10 @@ fts_analyze_text(const char *str, int len)
 		start = i;
 		while (i < len && is_token_byte((unsigned char) str[i]))
 			i++;
-		flen = i - start;
-
-		folded = (char *) palloc(flen);
-		for (j = 0; j < flen; j++)
-			folded[j] = fold_ascii((unsigned char) str[start + j]);
 
 		Assert(nraw < maxraw);
-		raw[nraw].term = folded;
-		raw[nraw].len = flen;
+		raw[nraw].term = foldbuf + start;
+		raw[nraw].len = i - start;
 		raw[nraw].pos = doclen + 1;	/* 1-based token position */
 		nraw++;
 		doclen++;
