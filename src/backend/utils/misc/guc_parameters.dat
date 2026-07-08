@@ -405,7 +405,7 @@
 
 { name => 'buffer_pool_numa', type => 'bool', context => 'PGC_POSTMASTER', group => 'RESOURCES_MEM',
   short_desc => 'Distribute buffer pool memory across NUMA nodes.',
-  long_desc => 'When on, the system has more than one NUMA node, AND huge pages are in effect, buffer pool memory is interleaved across nodes (a buffer and its descriptor placed on the same node) and the clock sweep claims victims in NUMA-sized batches to reduce cross-socket contention on the shared victim counter; victim selection stays on the single unified pool (no partitioning). This is only a benefit with huge pages -- without them the bottleneck is TLB misses rather than sweep contention -- so it is not activated unless huge_pages resolved to on. Has no effect on single-node or non-NUMA systems, or when huge pages are off.',
+  long_desc => 'When on and the system has more than one NUMA node, buffer pool memory is interleaved across nodes (a buffer and its descriptor placed on the same node) and the clock sweep claims victims in NUMA-sized batches to reduce cross-socket contention on the shared victim counter; victim selection stays on the single unified pool (no partitioning). Has no effect on single-node or non-NUMA systems.',
   variable => 'buffer_pool_numa',
   boot_val => 'false',
 },

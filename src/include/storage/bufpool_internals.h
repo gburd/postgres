@@ -247,6 +247,8 @@ typedef struct BufferPoolDesc
 	pg_atomic_uint64 bp_reads;
 	pg_atomic_uint64 bp_hits;
 	pg_atomic_uint64 bp_evictions;
+	pg_atomic_uint64 bp_trickle_writes;	/* buffers cleaned by this pool's
+										 * trickle writer */
 } BufferPoolDesc;
 
 /*
@@ -411,25 +413,6 @@ extern void BufPoolNumaBindRange(void *addr, Size size, int node);
 extern void BufPoolNumaDistribute(char *blocks, char *descriptors,
 								  Size desc_elem_size, int nbuffers);
 extern int	BufPoolNumaNodeForProc(void);
-
-/*
- * One row of per-(node,stripe) clock-sweep monitoring state for the default
- * pool, filled by BufPoolNumaClockStats() and surfaced as
- * pg_stat_get_bufferpool_numa().  With NUMA off a single node=0,stripe=0 row
- * describes the plain global clock sweep.
- */
-typedef struct BufPoolNumaStat
-{
-	int			node;			/* NUMA node index */
-	int			stripe;			/* stripe within node (0 when not striped) */
-	int			nbuffers;		/* buffers in this node/stripe range */
-	uint32		clock_hand;		/* hand position within the pool [0,NBuffers) */
-	uint32		complete_passes;	/* completed clock cycles (per-node) */
-} BufPoolNumaStat;
-
-/* Max rows BufPoolNumaClockStats can emit (nodes * stripes). */
-extern int	BufPoolNumaClockStatsMax(void);
-extern int	BufPoolNumaClockStats(BufPoolNumaStat *out, int maxrows);
 
 /*
  * Dynamic pool lifecycle functions.

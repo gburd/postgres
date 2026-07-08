@@ -41,7 +41,6 @@
 #include "port/pg_numa.h"
 #include "storage/bufpool.h"
 #include "storage/bufpool_internals.h"
-#include "storage/pg_shmem.h"
 
 /* GUC: distribute buffer pool memory across NUMA nodes */
 bool		buffer_pool_numa = false;
@@ -98,20 +97,7 @@ BufPoolNumaInit(void)
 	numa_nodes = 1;
 
 #ifdef USE_LIBNUMA
-	/*
-	 * The NUMA-aware eviction path (interleaved placement + batched/de-contended
-	 * sweep) is only a win WITH huge pages: benchmarks on a 6-node r8i.metal
-	 * showed ~+1% with huge pages on but ~-2 to -4% with them off, because
-	 * without huge pages the bottleneck is TLB misses (4KB pages), not
-	 * sweep-atomic contention, so de-contention buys nothing and the
-	 * interleaved placement's cross-node indirection is a net loss.  So gate
-	 * the real-hardware NUMA activation on huge pages actually being in effect
-	 * (huge_pages_status, which resolves huge_pages=try after the shmem mmap).
-	 * Without huge pages we stay single-node (plain unified clock), which is
-	 * the safe, faster default.
-	 */
-	if (buffer_pool_numa && numa_available() >= 0 &&
-		huge_pages_status == HUGE_PAGES_ON)
+	if (buffer_pool_numa && numa_available() >= 0)
 	{
 		int			maxnode = numa_max_node();
 
@@ -123,10 +109,7 @@ BufPoolNumaInit(void)
 	/*
 	 * Developer override: force a logical node count so the batched clock
 	 * sweep can be tested on single-node hardware.  Only honored when
-	 * buffer_pool_numa is on (so it never affects normal operation).  This
-	 * bypasses the hardware + huge-pages checks deliberately -- it exists to
-	 * exercise the NUMA victim-selection logic in CI where neither multiple
-	 * nodes nor huge pages are available.
+	 * buffer_pool_numa is on (so it never affects normal operation).
 	 */
 	if (buffer_pool_numa && buffer_pool_numa_nodes > 1)
 		numa_nodes = buffer_pool_numa_nodes;

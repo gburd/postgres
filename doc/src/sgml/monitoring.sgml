@@ -3782,9 +3782,12 @@ description | Waiting for a newly initialized WAL file to reach durable storage
    The <structname>pg_stat_bufferpool</structname> view returns one row for
    each active buffer pool, including the always-present
    <literal>default</literal> pool and any pools created with
-   <xref linkend="sql-createbufferpool"/>.  It exposes per-pool sizing and
-   cache-activity counters, allowing the effectiveness of separate pools to be
-   compared.  The view is a thin wrapper over the
+   <xref linkend="sql-createbufferpool"/>.  Alongside per-pool sizing and
+   cache-activity counters it reports each pool's replacement algorithm, its
+   <acronym>NUMA</acronym>-aware sweep state, its trickle-writer activity, and
+   its <literal>HOT</literal>/<literal>COOL</literal> heat-state distribution,
+   allowing the effectiveness of separate pools to be compared.  The view is a
+   thin wrapper over the
    <function>pg_stat_get_bufferpool</function> function.
   </para>
 
@@ -3887,14 +3890,97 @@ description | Waiting for a newly initialized WAL file to reach durable storage
        Number of buffers evicted from the pool to make room for other blocks
       </para></entry>
      </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>hit_ratio</structfield> <type>double precision</type>
+      </para>
+      <para>
+       Fraction of accesses satisfied from the pool,
+       <literal>hits / (hits + reads)</literal>; <literal>NULL</literal>
+       before the pool has been accessed
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>algorithm</structfield> <type>text</type>
+      </para>
+      <para>
+       Name of the pool's replacement algorithm (for example
+       <literal>clock</literal>)
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>numa_active</structfield> <type>boolean</type>
+      </para>
+      <para>
+       True when the <acronym>NUMA</acronym>-aware clock sweep (interleaved
+       placement plus batched victim selection) is active for this pool
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>numa_nodes</structfield> <type>integer</type>
+      </para>
+      <para>
+       Number of <acronym>NUMA</acronym> nodes the pool's memory is
+       interleaved across (<literal>1</literal> when not NUMA-aware)
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>batch_size</structfield> <type>integer</type>
+      </para>
+      <para>
+       Number of consecutive clock-sweep victims a backend claims per atomic
+       step; <literal>1</literal> is the classic one-at-a-time sweep, larger
+       powers of two reduce cross-socket contention under
+       <acronym>NUMA</acronym>
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>trickle_writes</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Number of dirty buffers cleaned by the pool's trickle writer
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>hot_buffers</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Number of resident buffers currently marked <literal>HOT</literal>
+       (recently accessed, retained by the sweep)
+      </para></entry>
+     </row>
+
+     <row>
+      <entry role="catalog_table_entry"><para role="column_definition">
+       <structfield>cool_buffers</structfield> <type>bigint</type>
+      </para>
+      <para>
+       Number of resident buffers currently marked <literal>COOL</literal>
+       (eligible for eviction on the next sweep)
+      </para></entry>
+     </row>
     </tbody>
    </tgroup>
   </table>
 
   <para>
-   Additional columns describing per-node <acronym>NUMA</acronym> partitioning
-   and memory-reservation state may be present depending on the server
-   version and configuration.
+   The <structfield>numa_active</structfield>, <structfield>numa_nodes</structfield>,
+   and <structfield>batch_size</structfield> columns describe the state that the
+   removed <structname>pg_stat_bufferpool_numa</structname> view once reported
+   separately; they are now folded into this single per-pool view.
   </para>
 
  </sect2>

@@ -332,90 +332,6 @@ Clock2BitGetVictim(int victim_id, BufferAccessStrategy strategy,
 	}
 }
 
-/*
- * BufPoolNumaClockStatsMax -- upper bound on rows BufPoolNumaClockStats emits.
- *
- * The default pool is a single clock sweep with ONE global hand.  With NUMA
- * placement active we still emit one row per node for observability (each
- * node's buffer range with the shared hand mapped into it); otherwise one row.
- */
-int
-BufPoolNumaClockStatsMax(void)
-{
-	if (BufPoolNumaActive())
-		return BufPoolNumaNodes();
-	return 1;
-}
-
-/*
- * BufPoolNumaClockStats -- fill out[] with per-node sweep state.
- *
- * Read-only and cheap.  The default pool (Clock2BitSweep) has a single global
- * clock hand in StrategyControl and a batch size (stripe) that is 1 off NUMA
- * and a larger power of two on NUMA.  Two shapes:
- *   - NUMA off: one row, node 0, describing the single global clock hand.
- *   - NUMA on: one row per node -- that node's buffer range, with the shared
- *     global hand mapped into the range for visibility.  stripe carries the
- *     batch size in every row.
- */
-int
-BufPoolNumaClockStats(BufPoolNumaStat *out, int maxrows)
-{
-	uint32		hand;
-	uint32		passes;
-	int			batch;
-
-	if (maxrows <= 0)
-		return 0;
-
-	SpinLockAcquire(&StrategyControl->lock);
-	hand = pg_atomic_read_u32(&StrategyControl->nextVictimBuffer);
-	passes = (NBuffers > 0 ? hand / (uint32) NBuffers : 0);
-	batch = (int) StrategyControl->batchSize;
-	SpinLockRelease(&StrategyControl->lock);
-
-	if (!BufPoolNumaActive())
-	{
-		/* Plain global clock sweep: one synthetic node-0 row. */
-		out[0].node = 0;
-		out[0].stripe = batch;
-		out[0].nbuffers = NBuffers;
-		out[0].clock_hand = (NBuffers > 0) ? (hand % (uint32) NBuffers) : 0;
-		out[0].complete_passes = passes;
-		return 1;
-	}
-	else
-	{
-		int			nnodes = BufPoolNumaNodes();
-		uint32		global_pos = (NBuffers > 0) ? (hand % (uint32) NBuffers) : 0;
-		int			n = 0;
-
-		for (int node = 0; node < nnodes && n < maxrows; node++)
-		{
-			int			start,
-						end,
-						range;
-
-			BufPoolNumaBufferRange(node, NBuffers, &start, &end);
-			range = (end > start) ? (end - start) : 0;
-
-			out[n].node = node;
-			out[n].stripe = batch;
-			out[n].nbuffers = range;
-			/* Map the single global hand into this node's range, if inside. */
-			if (range > 0 && global_pos >= (uint32) start &&
-				global_pos < (uint32) end)
-				out[n].clock_hand = global_pos;
-			else
-				out[n].clock_hand = (uint32) start;
-			out[n].complete_passes = passes;
-			n++;
-		}
-		return n;
-	}
-}
-
-
 /* ----------------------------------------------------------------
  *			Clock-sweep implementation
  * ----------------------------------------------------------------
@@ -804,6 +720,22 @@ StrategyReportAllocs(void)
 
 	(void) ActivePoolRoutine->sync_start(ActivePoolData, NULL, &num_buf_alloc);
 	return num_buf_alloc;
+}
+
+/*
+ * BufPoolClockBatchSize -- clock-sweep batch size for a pool, for statistics.
+ *
+ * The batch size is the number of consecutive victim-hand values a backend
+ * claims per atomic fetch_add (1 = classic one-at-a-time; >1 on NUMA to
+ * de-contend the shared counter).  Only the default pool's value is exposed
+ * here (it is the one that varies with NUMA); other pools report 1.
+ */
+int
+BufPoolClockBatchSize(int pool_idx)
+{
+	if (pool_idx == 0 && StrategyControl != NULL)
+		return (int) StrategyControl->batchSize;
+	return 1;
 }
 
 /*

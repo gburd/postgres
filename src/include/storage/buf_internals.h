@@ -631,6 +631,7 @@ extern bool StrategyRejectBuffer(BufferAccessStrategy strategy,
 								 BufferDesc *buf, bool from_ring);
 
 extern uint32 StrategyReportAllocs(void);
+extern int	BufPoolClockBatchSize(int pool_idx);
 extern void StrategyHintVacuum(bool vacuum_active);
 
 /* bufpool.h -- pluggable buffer pool vtable interface */

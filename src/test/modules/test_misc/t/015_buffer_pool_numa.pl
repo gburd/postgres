@@ -98,27 +98,4 @@ SQL
 	$node->stop;
 }
 
-# --- 3. Huge-pages gate: buffer_pool_numa=on WITHOUT the forced-node override
-#        and WITHOUT huge pages must NOT activate the NUMA sweep.  The NUMA path
-#        only helps with huge pages, so it stays off (plain unified clock) when
-#        huge pages are not in effect -- the safe default. ---
-{
-	my $node = PostgreSQL::Test::Cluster->new('numa_no_hugepages');
-	$node->init;
-	$node->append_conf('postgresql.conf', <<'CONF');
-buffer_pool_numa = on
-huge_pages = off
-shared_buffers = 128MB
-CONF
-	$node->start;
-	my $log = slurp_file($node->logfile);
-	# Must fall back to the plain clock sweep, not the NUMA/batched sweep,
-	# because huge pages are off (and no forced node count is set).
-	unlike($log, qr/NUMA|batched|interleav/i,
-		'NUMA sweep NOT activated without huge pages');
-	is($node->safe_psql('postgres', 'SELECT count(*) FROM generate_series(1,1000);'),
-		'1000', 'server works with buffer_pool_numa on but huge pages off');
-	$node->stop;
-}
-
 done_testing();

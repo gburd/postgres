@@ -360,7 +360,6 @@ BtreeLevel
 Bucket
 BufFile
 Buffer
-BufPoolNumaStat
 BufferAccessStrategy
 BufferAccessStrategyType
 BufferCacheOsPagesContext

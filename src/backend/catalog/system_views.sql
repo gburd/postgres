@@ -1268,17 +1268,16 @@ CREATE VIEW pg_stat_bufferpool AS
         s.oversubscribed,
         s.reads,
         s.hits,
-        s.evictions
+        s.evictions,
+        s.hit_ratio,
+        s.algorithm,
+        s.numa_active,
+        s.numa_nodes,
+        s.batch_size,
+        s.trickle_writes,
+        s.hot_buffers,
+        s.cool_buffers
     FROM pg_stat_get_bufferpool() s;
-
-CREATE VIEW pg_stat_bufferpool_numa AS
-    SELECT
-        s.node,
-        s.stripe,
-        s.nbuffers,
-        s.clock_hand,
-        s.complete_passes
-    FROM pg_stat_get_bufferpool_numa() s;
 
 
 CREATE VIEW pg_stat_io AS

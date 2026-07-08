@@ -193,6 +193,7 @@ BufferPoolShmemInit(void *arg)
 	pg_atomic_init_u64(&defpool->bp_reads, 0);
 	pg_atomic_init_u64(&defpool->bp_hits, 0);
 	pg_atomic_init_u64(&defpool->bp_evictions, 0);
+	pg_atomic_init_u64(&defpool->bp_trickle_writes, 0);
 
 	NBufferPools = 1;
 	MaxBufferNumber = NBuffers;
@@ -1054,6 +1055,7 @@ CreateDynamicBufferPool(Oid bp_oid, const char *name, int nbuffers,
 	pg_atomic_init_u64(&pool->bp_reads, 0);
 	pg_atomic_init_u64(&pool->bp_hits, 0);
 	pg_atomic_init_u64(&pool->bp_evictions, 0);
+	pg_atomic_init_u64(&pool->bp_trickle_writes, 0);
 
 	/*
 	 * Set up the creating backend's local state.  This backend already has
@@ -1689,6 +1691,11 @@ TrickleWriterMain(Datum main_arg)
 
 		IssuePendingWritebacks(&wb_context, IOCONTEXT_NORMAL);
 
+		/* Record this pool's trickle-writer cleaning for pg_stat_bufferpool. */
+		if (num_written > 0)
+			pg_atomic_fetch_add_u64(&pool->bp_trickle_writes,
+									(uint64) num_written);
+
 		/*
 		 * Oversubscription nudging: if this pool's current buffer count
 		 * exceeds its target, try to evict excess buffers and return them to
@@ -2125,11 +2132,76 @@ RebuildPoolPartitions(void)
 /*
  * pg_stat_get_bufferpool -- return per-pool statistics as a SRF.
  *
- * Returns one row per active buffer pool with columns:
- *   name, oid, nbuffers, target_buffers, current_buffers,
- *   oversubscribed, reads, hits, evictions
+ * One row per active buffer pool.  Combines the pool's sizing/occupancy, its
+ * access counters (with a derived hit ratio), its replacement algorithm, the
+ * NUMA-aware sweep state (active flag, node count, batch size -- folded in so
+ * there is no separate NUMA-specific function), the per-pool trickle-writer
+ * cleaning count, and the heat-state distribution (HOT vs COOL buffers).
+ *
+ * Columns: name, oid, nbuffers, target_buffers, current_buffers,
+ *   oversubscribed, reads, hits, evictions, hit_ratio, algorithm,
+ *   numa_active, numa_nodes, batch_size, trickle_writes, hot_buffers,
+ *   cool_buffers
  */
-#define PG_STAT_GET_BUFFERPOOL_COLS 9
+#define PG_STAT_GET_BUFFERPOOL_COLS 17
+
+/*
+ * Resolve a pool's replacement-algorithm name for display.  Contrib pools
+ * carry the handler function name; built-in default-pool routines are mapped
+ * from their well-known routine pointers.
+ */
+static const char *
+BufPoolAlgorithmDisplayName(const BufferPoolDesc *pool)
+{
+	const BufferPoolRoutine *r = pool->bp_routine;
+
+	if (r == &clock_pool_routine)
+		return "clock";
+	if (r == &keep_pool_routine)
+		return "keep";
+	if (r == &recycle_pool_routine)
+		return "recycle";
+	if (pool->bp_handler_function[0] != '\0')
+		return pool->bp_handler_function;
+	return "clock";
+}
+
+/*
+ * Count HOT vs COOL resident buffers in a pool by scanning its descriptor
+ * array.  Read-only, no locks (a racing update just shifts a buffer between
+ * the buckets, fine for a stats snapshot).  Only counts resident buffers
+ * (BM_TAG_VALID); unused buffers are neither HOT nor COOL.
+ */
+static void
+BufPoolHeatCounts(int pool_idx, int64 *hot, int64 *cool)
+{
+	BufferPoolDesc *pool = &BufferPoolDescs[pool_idx];
+	PoolLocalState *local = &PoolLocalStates[pool_idx];
+
+	*hot = 0;
+	*cool = 0;
+
+	for (int j = 0; j < pool->bp_nbuffers; j++)
+	{
+		BufferDesc *bufHdr;
+		uint64		buf_state;
+
+		if (pool_idx == 0)
+			bufHdr = GetBufferDescriptor(pool->bp_first_buf + j);
+		else if (local->descriptors != NULL)
+			bufHdr = &local->descriptors[j].bufferdesc;
+		else
+			return;				/* pool not attached in this backend */
+
+		buf_state = pg_atomic_read_u64(&bufHdr->state);
+		if (!(buf_state & BM_TAG_VALID))
+			continue;
+		if (BUF_STATE_GET_HEAT(buf_state) != BM_HEAT_COOL)
+			(*hot)++;
+		else
+			(*cool)++;
+	}
+}
 
 /*
  * pg_stat_get_bufferpool is a built-in function (listed in pg_proc.dat), so
@@ -2142,6 +2214,8 @@ Datum
 pg_stat_get_bufferpool(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	bool		numa_active = BufPoolNumaActive();
+	int			numa_nodes = BufPoolNumaNodes();
 
 	InitMaterializedSRF(fcinfo, 0);
 
@@ -2150,24 +2224,58 @@ pg_stat_get_bufferpool(PG_FUNCTION_ARGS)
 		Datum		values[PG_STAT_GET_BUFFERPOOL_COLS] = {0};
 		bool		nulls[PG_STAT_GET_BUFFERPOOL_COLS] = {0};
 		BufferPoolDesc *pool = &BufferPoolDescs[i];
+		uint64		reads,
+					hits;
+		int64		hot,
+					cool;
 
 		if (!pool->bp_active)
 			continue;
 
-		values[0] = NameGetDatum(&pool->bp_name);
+		reads = pg_atomic_read_u64(&pool->bp_reads);
+		hits = pg_atomic_read_u64(&pool->bp_hits);
 
+		values[0] = NameGetDatum(&pool->bp_name);
 		if (OidIsValid(pool->bp_oid))
 			values[1] = ObjectIdGetDatum(pool->bp_oid);
 		else
 			nulls[1] = true;
-
 		values[2] = Int32GetDatum(pool->bp_nbuffers);
 		values[3] = Int32GetDatum(pool->bp_target_buffers);
 		values[4] = Int32GetDatum(pool->bp_current_buffers);
 		values[5] = BoolGetDatum(pool->bp_oversubscribed);
-		values[6] = Int64GetDatum(pg_atomic_read_u64(&pool->bp_reads));
-		values[7] = Int64GetDatum(pg_atomic_read_u64(&pool->bp_hits));
-		values[8] = Int64GetDatum(pg_atomic_read_u64(&pool->bp_evictions));
+		values[6] = Int64GetDatum((int64) reads);
+		values[7] = Int64GetDatum((int64) hits);
+		values[8] = Int64GetDatum((int64) pg_atomic_read_u64(&pool->bp_evictions));
+
+		/* hit_ratio = hits / (hits + reads); NULL when no accesses yet. */
+		if (hits + reads > 0)
+			values[9] = Float8GetDatum((double) hits / (double) (hits + reads));
+		else
+			nulls[9] = true;
+
+		values[10] = CStringGetTextDatum(BufPoolAlgorithmDisplayName(pool));
+
+		/*
+		 * NUMA sweep state is a property of the active default-pool routine;
+		 * report it for the default pool, false/1 for others.
+		 */
+		if (i == 0)
+		{
+			values[11] = BoolGetDatum(numa_active);
+			values[12] = Int32GetDatum(numa_active ? numa_nodes : 1);
+		}
+		else
+		{
+			values[11] = BoolGetDatum(false);
+			values[12] = Int32GetDatum(1);
+		}
+		values[13] = Int32GetDatum(BufPoolClockBatchSize(i));
+		values[14] = Int64GetDatum((int64) pg_atomic_read_u64(&pool->bp_trickle_writes));
+
+		BufPoolHeatCounts(i, &hot, &cool);
+		values[15] = Int64GetDatum(hot);
+		values[16] = Int64GetDatum(cool);
 
 		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc,
 							 values, nulls);
@@ -2176,50 +2284,3 @@ pg_stat_get_bufferpool(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
-/*
- * pg_stat_get_bufferpool_numa -- per-(node,stripe) clock-sweep state SRF.
- *
- * Surfaces the NUMA-partitioned / striped-cooling default-pool sweep state
- * that pg_stat_get_bufferpool does not: one row per NUMA node (and per stripe
- * when cooling is on) with the buffers owned by that range, the clock-hand
- * position, and completed passes.  With NUMA off it returns a single node=0,
- * stripe=0 row describing the plain global clock sweep, so the companion view
- * is always non-empty and default behavior is unchanged.
- *
- * Read-only and cheap (atomic reads + one spinlock snapshot).  Built-in like
- * pg_stat_get_bufferpool -- no PG_FUNCTION_INFO_V1.
- */
-#define PG_STAT_GET_BUFFERPOOL_NUMA_COLS 5
-
-Datum
-pg_stat_get_bufferpool_numa(PG_FUNCTION_ARGS)
-{
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-	int			maxrows;
-	BufPoolNumaStat *rows;
-	int			nrows;
-
-	InitMaterializedSRF(fcinfo, 0);
-
-	maxrows = BufPoolNumaClockStatsMax();
-	rows = (BufPoolNumaStat *) palloc(sizeof(BufPoolNumaStat) * maxrows);
-	nrows = BufPoolNumaClockStats(rows, maxrows);
-
-	for (int i = 0; i < nrows; i++)
-	{
-		Datum		values[PG_STAT_GET_BUFFERPOOL_NUMA_COLS] = {0};
-		bool		nulls[PG_STAT_GET_BUFFERPOOL_NUMA_COLS] = {0};
-
-		values[0] = Int32GetDatum(rows[i].node);
-		values[1] = Int32GetDatum(rows[i].stripe);
-		values[2] = Int32GetDatum(rows[i].nbuffers);
-		values[3] = Int64GetDatum((int64) rows[i].clock_hand);
-		values[4] = Int64GetDatum((int64) rows[i].complete_passes);
-
-		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc,
-							 values, nulls);
-	}
-
-	pfree(rows);
-	return (Datum) 0;
-}
