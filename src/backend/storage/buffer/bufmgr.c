@@ -2486,6 +2486,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 			*foundPtr = false;
 		}
 
+		pg_atomic_fetch_add_u64(&BufferPoolDescs[0].bp_hits, 1);
 		return buf;
 	}
 
@@ -2494,6 +2495,9 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	 * buffer.  Remember to unlock the mapping lock while doing the work.
 	 */
 	LWLockRelease(newPartitionLock);
+
+	/* A miss on the default pool: count it as a read. */
+	pg_atomic_fetch_add_u64(&BufferPoolDescs[0].bp_reads, 1);
 
 	/* Notify algorithm of cache miss (ghost list tracking, etc.) */
 	if (unlikely(ActivePoolHasAccessHooks) && ActivePoolRoutine->on_miss)
