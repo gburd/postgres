@@ -537,26 +537,27 @@ xtc_pg_carrier_start(void)
 		xtc_app_opts_t opts = XTC_APP_OPTS_DEFAULT;
 
 		/*
-		 * Block all signals across the entire xtc bringup.  libxtc creates its
-		 * scheduler thread and every executor loop/worker OS thread with a bare
-		 * pthread_create (src/os/os_thread.c) that does no signal-mask setup, so
-		 * each such thread inherits the CREATING thread's mask.  The postmaster
-		 * runs ServerLoop with signals UNBLOCKED, so without this the carrier
-		 * threads would start fully unblocked and the kernel could deliver a
-		 * process-directed signal (e.g. SIGCHLD when a forked io_worker exits)
-		 * to an idle carrier loop or the scheduler thread -- where MyProcPid==0
-		 * (no backend adopted) -- tripping Assert(MyProcPid) in wrapper_handler.
-		 * Core-proven: SIGCHLD hit the scheduler thread mid-pthread_create of a
-		 * loop worker.  Process-directed control signals belong to the
-		 * postmaster main thread; carrier threads must stay blocked (backend
-		 * fibers already re-block via backend_thread_entry and route their own
-		 * interrupts through latches, not OS signals).  This mirrors
-		 * pg_thread_create() and fork_process(), which block signals around
-		 * thread/process creation for exactly this reason.  Note the executor's
-		 * loop/worker threads are spawned later by xtc_exec_run() running ON the
-		 * scheduler thread, so a blocked scheduler thread cascades the blocked
-		 * mask to them; blocking here also covers any threads xtc_app_start()
-		 * spawns on this calling thread.
+		 * Block all signals across the entire xtc bringup.  As of libxtc v1.4.2+
+		 * (verified v1.9.0), libxtc creates its scheduler/loop/worker threads via
+		 * __os_pthread_create_masked (sigfillset around pthread_create in
+		 * src/os/os_thread.c), so THOSE threads already start with all signals
+		 * blocked regardless of the creating thread's mask.  But we still create
+		 * the carrier scheduler thread (g_xtc_thread) below with a RAW
+		 * pthread_create, which inherits this thread's mask; and the postmaster
+		 * runs ServerLoop with signals UNBLOCKED.  Without this block, that one
+		 * thread (and anything xtc_app_start() might spawn on this calling
+		 * thread) could start unblocked and the kernel could deliver a
+		 * process-directed signal (e.g. SIGCHLD when a forked child exits) to it
+		 * where MyProcPid==0 (no backend adopted) -- tripping Assert(MyProcPid)
+		 * in wrapper_handler.  Core-proven historically: SIGCHLD hit the
+		 * scheduler thread mid-pthread_create of a loop worker (that specific
+		 * cascade is now covered by libxtc's masked create; this block remains as
+		 * belt-and-suspenders for our own pthread_create and is the reason
+		 * process-directed control signals stay with the postmaster main thread).
+		 * Backend fibers re-block via backend_thread_entry and route their own
+		 * interrupts through latches, not OS signals.  Mirrors pg_thread_create()
+		 * and fork_process(), which block signals around thread/process creation
+		 * for exactly this reason.
 		 */
 		sigprocmask(SIG_SETMASK, &BlockSig, &save_mask);
 		masked = true;
