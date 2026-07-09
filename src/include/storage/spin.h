@@ -18,6 +18,10 @@
  *	void SpinLockRelease(volatile slock_t *lock)
  *		Unlock a previously acquired lock.
  *
+ *	bool SpinLockFree(slock_t *lock)
+ *		Tests if the lock is free. Returns true if free, false if locked.
+ *		This is not a synchronization primitive; use with caution.
+ *
  *	Load and store operations in calling code are guaranteed not to be
  *	reordered with respect to these operations, because they include a
  *	compiler barrier.  (Before PostgreSQL 9.5, callers needed to use a
@@ -44,6 +48,56 @@
 #ifndef SPIN_H
 #define SPIN_H
 
+#ifdef USE_STDATOMIC_H
+
+/*
+ * Atomics-based spinlocks.  The traditional path is deprecated as of PG19.
+ *
+ * When stdatomic.h is available, spinlocks are implemented directly on top
+ * of the pg_atomic_flag API rather than platform-specific TAS assembly.
+ */
+#include "port/atomics.h"
+
+typedef pg_atomic_flag slock_t;
+
+/* SpinDelayStatus and helpers shared with the traditional s_lock.h path. */
+#include "port/spin_delay_status.h"
+
+extern int s_lock(volatile slock_t *lock, const char *file, int line, const char *func);
+
+static inline void
+SpinLockInit(volatile slock_t *lock)
+{
+	pg_atomic_init_flag(lock);
+}
+
+/*
+ * SpinLockAcquire - acquire a spinlock, waiting if necessary.
+ *
+ * This is a macro (not an inline function) so that __FILE__, __LINE__, and
+ * __func__ resolve at the call site for "stuck spinlock" diagnostics.
+ */
+#define SpinLockAcquire(lock) \
+	(pg_atomic_test_set_flag(lock) ? (void) 0 : \
+	 (void) s_lock((lock), __FILE__, __LINE__, __func__))
+
+static inline void
+SpinLockRelease(volatile slock_t *lock)
+{
+	pg_atomic_clear_flag(lock);
+}
+
+static inline bool
+SpinLockFree(volatile slock_t *lock)
+{
+	return pg_atomic_unlocked_test_flag(lock);
+}
+
+#else							/* !USE_STDATOMIC_H */
+
+/*
+ * Traditional spinlock implementation using platform-specific TAS assembly.
+ */
 #include "storage/s_lock.h"
 
 static inline void
@@ -52,16 +106,29 @@ SpinLockInit(volatile slock_t *lock)
 	S_INIT_LOCK(lock);
 }
 
-static inline void
-SpinLockAcquire(volatile slock_t *lock)
-{
-	S_LOCK(lock);
-}
+#define SpinLockAcquire(lock) S_LOCK(lock)
 
 static inline void
 SpinLockRelease(volatile slock_t *lock)
 {
 	S_UNLOCK(lock);
 }
+
+#ifdef S_LOCK_FREE
+static inline bool
+SpinLockFree(volatile slock_t *lock)
+{
+	return S_LOCK_FREE(lock);
+}
+#else
+/* Fallback when platform doesn't provide S_LOCK_FREE: always report busy */
+static inline bool
+SpinLockFree(volatile slock_t *lock)
+{
+	return false;
+}
+#endif
+
+#endif							/* USE_STDATOMIC_H */
 
 #endif							/* SPIN_H */
