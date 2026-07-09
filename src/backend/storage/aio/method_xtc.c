@@ -41,6 +41,7 @@
 #include "postmaster/pg_xtc_carrier.h"	/* xtc_in_backend_fiber */
 #include "storage/aio.h"
 #include "storage/aio_internal.h"
+#include "utils/backend_runtime.h"	/* PgCurrentWorkSnapshot, save/restore */
 #include "utils/wait_event.h"
 
 #include "xtc_aio.h"					/* xtc_aio_preadv / xtc_aio_pwritev */
@@ -112,24 +113,45 @@ pgaio_xtc_submit(uint16 num_staged_ios, PgAioHandle **staged_ios)
 		 */
 		pgaio_io_prepare_submit(ioh);
 
-		switch ((PgAioOp) ioh->op)
+		/*
+		 * xtc_aio_preadv/pwritev PARK the issuing fiber for the duration of the
+		 * IO (they yield to the xtc loop rather than blocking the carrier
+		 * thread), so the loop may run OTHER backend fibers on this OS thread
+		 * meanwhile.  That clobbers PG's per-backend current-work thread-locals
+		 * (the hot-field refs behind CurrentPgBackend/Session/Execution --
+		 * including PrivateRefCountArray).  Save them before parking and restore
+		 * after, exactly as xtc_pg_wait_fd() does for the waiteventset park;
+		 * without this a resumed fiber reads a sibling's PrivateRefCountArray and
+		 * BufferLockAcquire()/GetPrivateRefCountEntry() dereference a bogus entry
+		 * -> SIGSEGV (and short/garbage reads) under concurrent fiber IO.
+		 */
 		{
-			case PGAIO_OP_READV:
-				pgstat_report_wait_start(WAIT_EVENT_DATA_FILE_READ);
-				result = xtc_aio_preadv(ioh->op_data.read.fd, iov,
-										ioh->op_data.read.iov_length,
-										(int64) ioh->op_data.read.offset);
-				pgstat_report_wait_end();
-				break;
-			case PGAIO_OP_WRITEV:
-				pgstat_report_wait_start(WAIT_EVENT_DATA_FILE_WRITE);
-				result = xtc_aio_pwritev(ioh->op_data.write.fd, iov,
-										 ioh->op_data.write.iov_length,
-										 (int64) ioh->op_data.write.offset);
-				pgstat_report_wait_end();
-				break;
-			case PGAIO_OP_INVALID:
-				elog(ERROR, "trying to execute invalid IO operation");
+			PgCurrentWorkSnapshot snap;
+
+			PgRuntimeSaveCurrentWork(&snap);
+
+			switch ((PgAioOp) ioh->op)
+			{
+				case PGAIO_OP_READV:
+					pgstat_report_wait_start(WAIT_EVENT_DATA_FILE_READ);
+					result = xtc_aio_preadv(ioh->op_data.read.fd, iov,
+											ioh->op_data.read.iov_length,
+											(int64) ioh->op_data.read.offset);
+					pgstat_report_wait_end();
+					break;
+				case PGAIO_OP_WRITEV:
+					pgstat_report_wait_start(WAIT_EVENT_DATA_FILE_WRITE);
+					result = xtc_aio_pwritev(ioh->op_data.write.fd, iov,
+											 ioh->op_data.write.iov_length,
+											 (int64) ioh->op_data.write.offset);
+					pgstat_report_wait_end();
+					break;
+				case PGAIO_OP_INVALID:
+					PgRuntimeRestoreCurrentWork(&snap);
+					elog(ERROR, "trying to execute invalid IO operation");
+			}
+
+			PgRuntimeRestoreCurrentWork(&snap);
 		}
 
 		/*
