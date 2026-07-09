@@ -16,6 +16,7 @@ SUBDIRS = \
 		  plsample \
 		  spgist_name_ops \
 		  test_aio \
+		  test_atomics \
 		  test_autovacuum \
 		  test_binaryheap \
 		  test_bitmapset \

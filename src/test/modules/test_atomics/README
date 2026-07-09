@@ -1,0 +1,98 @@
+test_atomics
+=============
+
+This module provides comprehensive testing and benchmarking of PostgreSQL's
+atomic operations to ensure correctness and measure performance of both
+stdatomic.h and traditional implementations.
+
+## Purpose
+
+With the introduction of conditional compilation for atomic operations
+(stdatomic.h vs traditional platform-specific implementations), this module
+allows testing and performance comparison between the two approaches.
+
+## Functions
+
+### test_atomic_flag_operations(iterations int4)
+
+Tests atomic flag operations (used for spinlocks):
+- pg_atomic_init_flag()
+- pg_atomic_test_set_flag()
+- pg_atomic_clear_flag()
+- pg_atomic_unlocked_test_flag()
+
+Returns success/failure status and implementation type.
+
+### test_atomic_uint32_operations(iterations int4)
+
+Tests 32-bit atomic operations:
+- pg_atomic_init_u32()
+- pg_atomic_read_u32()
+- pg_atomic_write_u32()
+- pg_atomic_fetch_add_u32()
+- pg_atomic_compare_exchange_u32()
+- pg_atomic_exchange_u32()
+
+Returns success/failure status and implementation type.
+
+### test_atomic_uint64_operations(iterations int4)
+
+Tests 64-bit atomic operations:
+- pg_atomic_init_u64()
+- pg_atomic_read_u64()
+- pg_atomic_write_u64()
+- pg_atomic_fetch_add_u64()
+- pg_atomic_compare_exchange_u64()
+- pg_atomic_exchange_u64()
+
+Returns success/failure status and implementation type.
+
+### benchmark_atomic_operations(iterations int4)
+
+Benchmarks atomic operations to measure performance:
+- Atomic flag operations (test_set + clear)
+- uint32 fetch_add
+- uint64 fetch_add
+- uint32 compare_exchange
+
+Returns timing results in milliseconds and operations per second.
+
+## Usage
+
+To compare stdatomic.h vs traditional implementations:
+
+1. Build with stdatomic.h:
+   ```
+   meson setup build-std -Duse_stdatomic=yes
+   meson compile -C build-std
+   meson test -C build-std -t test_atomics
+   ```
+
+2. Build with traditional:
+   ```
+   meson setup build-trad -Duse_stdatomic=no
+   meson compile -C build-trad
+   meson test -C build-trad -t test_atomics
+   ```
+
+3. Compare results:
+   ```sql
+   CREATE EXTENSION test_atomics;
+
+   -- Correctness test
+   SELECT test_atomic_flag_operations(10000);
+   SELECT test_atomic_uint32_operations(10000);
+   SELECT test_atomic_uint64_operations(10000);
+
+   -- Performance benchmark
+   SELECT benchmark_atomic_operations(1000000);
+   ```
+
+## Expected Results
+
+Both implementations should:
+- Pass all correctness tests
+- Show similar performance characteristics
+- Display which implementation is being used
+
+Any significant performance difference or test failure should be investigated.
