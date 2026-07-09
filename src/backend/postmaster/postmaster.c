@@ -870,31 +870,40 @@ PostmasterMain(int argc, char *argv[])
 #ifdef USE_XTC_CARRIER
 	/*
 	 * xtc-carrier interim: under multithreaded=on, route the default
-	 * io_method=worker to the in-fiber xtc method.  A threaded client backend
-	 * runs as an xtc fiber inside the postmaster process, but io_method=worker
-	 * io workers are FORKED processes; a forked worker that completes a fiber
-	 * backend's async IO cannot wake the in-process fiber (SetLatch from another
-	 * process takes the cross-process kill() path aimed at the postmaster, not
-	 * the fiber's carrier loop), so the backend hangs on its first uncached read
-	 * (the hot-standby InitPostgres hang).  The xtc method does issuer-
-	 * synchronous READV/WRITEV on the issuing fiber (xtc_aio_preadv/pwritev
-	 * cooperatively park the fiber and complete on it -- no foreign completer),
-	 * falling back to synchronous for non-fiber issuers.  We rewrite the GUC
-	 * value itself (not just pgaio_method_ops) so SHOW io_method,
-	 * pgaio_workers_enabled(), and every backend's assign_io_method stay
-	 * consistent -- doing it here, after SelectConfigFiles() has finalized
-	 * multithreaded, avoids the boot-value ordering hazard where the io_method
-	 * assign hook runs before multithreaded is known.  An explicit
-	 * io_method=sync/io_uring/xtc is respected; multithreaded=off is untouched.
-	 * Remove once io workers run in-process as thread carriers (Tier D/F
-	 * hand-off), after which io_method=worker wakes fibers via the wired
-	 * xtc_proc_wake.
+	 * io_method=worker to "sync".  A threaded client backend runs as an xtc
+	 * fiber inside the postmaster process, but io_method=worker io workers are
+	 * FORKED processes; a forked worker that completes a fiber backend's async
+	 * IO cannot wake the in-process fiber (SetLatch from another process takes
+	 * the cross-process kill() path aimed at the postmaster, not the fiber's
+	 * carrier loop), so the backend hangs on its first uncached read (the
+	 * hot-standby InitPostgres hang).
+	 *
+	 * We use "sync" rather than the in-fiber "xtc" method: sync performs the
+	 * read/write inline on the issuing backend with NO foreign completer (so the
+	 * cross-process wake problem cannot arise), and is deterministically
+	 * correct.  The xtc method (issuer-async xtc_aio_preadv/pwritev that parks
+	 * the fiber) is the better long-term choice for concurrency, but it has an
+	 * intermittent short-read/SIGSEGV under concurrent reads (surfaced by
+	 * autovacuum churn) that must be hardened before it can be a default -- see
+	 * M16_XTC_CARRIER_FINDINGS.md.  sync trades carrier-loop concurrency during
+	 * a blocking read for correctness, which is the right call for an interim.
+	 *
+	 * We rewrite the GUC value itself (not just pgaio_method_ops) so SHOW
+	 * io_method, pgaio_workers_enabled() (no idle io-worker forks), and every
+	 * backend's assign_io_method stay consistent -- doing it here, after
+	 * SelectConfigFiles() has finalized multithreaded, avoids the boot-value
+	 * ordering hazard where the io_method assign hook runs before multithreaded
+	 * is known.  An explicit io_method=sync/io_uring/xtc is respected;
+	 * multithreaded=off (process mode) is untouched.  Remove once io workers run
+	 * in-process as thread carriers (Tier D/F hand-off, including a
+	 * PM_HOT_STANDBY hand-off for standbys), after which io_method=worker wakes
+	 * fibers via the wired xtc_proc_wake.
 	 */
 	if (multithreaded && io_method == IOMETHOD_WORKER)
 	{
-		SetConfigOption("io_method", "xtc", PGC_POSTMASTER, PGC_S_OVERRIDE);
+		SetConfigOption("io_method", "sync", PGC_POSTMASTER, PGC_S_OVERRIDE);
 		ereport(LOG,
-				(errmsg("multithreaded=on: routing io_method=worker to the in-fiber \"xtc\" method"),
+				(errmsg("multithreaded=on: routing io_method=worker to \"sync\""),
 				 errdetail("Forked io workers cannot wake in-process fiber backends; set io_method explicitly to override.")));
 	}
 #endif
