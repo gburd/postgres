@@ -192,9 +192,12 @@ Larger (toward fully-on-xtc):
    WAL receiver, slotsync worker.  In-process thread carriers (via hand-off):
    checkpointer, background writer, startup.  io_method=xtc means no io workers;
    all buffered IO is per-fiber issuer-async.  Everything is in the postmaster's
-   address space.  (WAL fsync/writes still use direct blocking pg_fsync/
-   pg_pwrite on the fiber's carrier -- correct; routing through xtc is a future
-   perf item, not a correctness gap.)
+   address space.  WAL/data fsync also routes through libxtc's async fiber fsync
+   (xtc_aio_fsync/fdatasync) on a fiber -- pg_fsync_no_writethrough/pg_fdatasync
+   in fd.c park the fiber instead of blocking the carrier loop; durability
+   verified via SIGKILL+crash-recovery (commit 90815362fd5).  WAL page WRITES
+   still use direct pg_pwrite (a fiber briefly blocks its loop -- a minor future
+   perf item, not a correctness gap).
    Any future on-demand-with-start-timeout family reuses the autovac orphan
    reaper (ReapOrphanedThreadedWorker); the early-start families share the
    hand-off path.
