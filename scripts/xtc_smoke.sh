@@ -355,7 +355,7 @@ fi
 #     two-step shutdown (SIGTERM=drain-not-die, SIGUSR2=one final cycle then
 #     exit) is wired in thread_child_signal_interrupt.  Own cluster with
 #     archive_mode=on + a cp archive_command.
-note "archiver runs as a fiber, archives WAL, and shuts down clean"
+note "archiver runs in-process (thread carrier), archives WAL, and shuts down clean"
 ARD=$(mktemp -d "$SCRATCH/xtcarXXXXXX")
 if initdb -D "$ARD/pgdata" -U postgres --no-locale -E UTF8 >"$ARD/initdb.log" 2>&1; then
   mkdir -p "$ARD/wal_archive"
@@ -375,13 +375,13 @@ if initdb -D "$ARD/pgdata" -U postgres --no-locale -E UTF8 >"$ARD/initdb.log" 2>
       $ARPSQL -c "INSERT INTO ar SELECT generate_series(1,20000); SELECT pg_switch_wal();" >/dev/null 2>&1
     done
     sleep 3
-    arfiber=$(grep -ac "xtc: archiver launched as xtc fiber" "$ARD/pm.log" 2>/dev/null || echo 0)
+    arfiber=$(grep -acE "xtc: archiver launched as xtc fiber|starting archiver thread carrier" "$ARD/pm.log" 2>/dev/null || echo 0)
     arpm=$(head -1 "$ARD/pgdata/postmaster.pid" 2>/dev/null)
-    archild=$(ps --no-headers --ppid "$arpm" 2>/dev/null | wc -l)
+    archild=$(ps --no-headers --ppid "$arpm" 2>/dev/null | grep -ac archiver)
     if [ "$arfiber" -ge 1 ] && [ "$archild" = "0" ]; then
-      ok "archiver runs as a fiber (fiber-launch=$arfiber, pm child procs=$archild)"
+      ok "archiver runs in-process (thread carrier), 0 archiver forks"
     else
-      bad "archiver not a fiber (fiber-launch=$arfiber childprocs=$archild)"
+      bad "archiver not in-process (launch=$arfiber archiver-forks=$archild)"
     fi
     arcount=$($ARPSQL -c "SELECT archived_count FROM pg_stat_archiver" 2>/dev/null)
     arfiles=$(ls "$ARD/wal_archive/" 2>/dev/null | grep -cvE '\.done$|backup')

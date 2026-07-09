@@ -607,31 +607,28 @@ xtc_carrier_eligible(BackendType child_type)
 		case B_ARCHIVER:
 
 			/*
-			 * #5 widening -- Tier C (2026-07-08): the WAL archiver is
-			 * fiber-eligible.  It is a long-lived singleton started at PM_RUN (or
-			 * PM_RECOVERY/PM_HOT_STANDBY with archive_mode=always) -- always after
-			 * thread carriers exist, so no start-before-carriers hazard -- and it
-			 * is NOT on the cross-thread async-I/O completion path that blocks
-			 * Tier B (its work is file-level: run archive_command / the archive
-			 * library on completed WAL segments; no shared-buffer async reads, so
-			 * no io_method=worker completion wait).  It parks on
-			 * WaitLatch(MyLatch, WL_LATCH_SET | WL_TIMEOUT | WL_POSTMASTER_DEATH)
-			 * with a bounded PGARCH_AUTOWAKE_INTERVAL, routed through the xtc
-			 * intercept, and drains interrupts via ProcessPgArchInterrupts() ->
-			 * PgCurrentBackendApplyInterrupts() on each wake.
-			 *
-			 * Shutdown is the archiver's special two-step, already wired in
-			 * thread_child_signal_interrupt (postmaster.c) symmetrically with
-			 * process mode's pqsignal handlers: SIGTERM -> SHUTDOWN_REQUEST (sets
-			 * ShutdownRequestPending; the archiver keeps draining, it does NOT die
-			 * immediately -- matching SignalHandlerForShutdownRequest), SIGUSR2 ->
-			 * WAKEUP_STOP (sets WakeupStopPending -> ready_to_stop -> one final
-			 * archive cycle then proc_exit(0) -- matching pgarch_waken_stop),
-			 * SIGINT ignored, SIGQUIT -> PROC_DIE.  The cross-fiber SetLatch wakes
-			 * the parked fiber so the interrupt is observed and the archiver exits,
-			 * publishing its pooled-logical exit so PM_WAIT_* completes.
+			 * #5 widening -- Tier C: the WAL archiver runs in-process but as a
+			 * dedicated THREAD CARRIER, not a fiber (return false here ->
+			 * PgRuntimeShouldThreadBackend includes B_ARCHIVER -> PG_BACKEND_LAUNCH_
+			 * THREAD).  Rationale (2026-07-09): the archiver runs archive_command
+			 * via system() (shell_archive.c), which fork()+exec()+waitpid()s and
+			 * BLOCKS the calling thread for the entire command.  As a fiber that
+			 * would stall the shared carrier loop -- freezing every sibling client
+			 * backend fiber on that loop for the whole (possibly multi-second)
+			 * archive command.  A dedicated thread carrier confines the blocking
+			 * system()/waitpid to the archiver's own OS thread, so sibling fibers
+			 * keep running.  (This matches checkpointer/bgwriter/startup, which are
+			 * also thread carriers.)  Everything else about the archiver is
+			 * unchanged and already validated as a thread carrier: it is a
+			 * PM_RUN/PM_HOT_STANDBY singleton, parks on WaitLatch routed through the
+			 * intercept, drains via ProcessPgArchInterrupts(), and its two-step
+			 * shutdown (SIGTERM->SHUTDOWN_REQUEST, SIGUSR2->WAKEUP_STOP, SIGQUIT->
+			 * PROC_DIE) is wired in thread_child_signal_interrupt.  It is still
+			 * in-process (no fork of the archiver itself), so no forked-completer
+			 * wake problem.  An archive_library (C API, no system()) would be
+			 * fiber-safe, but the default archive_command path needs the thread.
 			 */
-			return true;
+			return false;
 		case B_SLOTSYNC_WORKER:
 
 			/*
