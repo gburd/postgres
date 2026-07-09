@@ -1,0 +1,6 @@
+# test_atomics extension
+comment = 'Test module for atomic operations'
+default_version = '1.0'
+module_pathname = '$libdir/test_atomics'
+relocatable = true
+trusted = true
