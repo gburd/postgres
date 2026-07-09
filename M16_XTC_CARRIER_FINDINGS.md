@@ -135,9 +135,10 @@ yet applied -- a deliberate decision pending.  NOTHING further is needed from
 libxtc: v1.8.0's xtc_proc_wake is the right primitive and is already wired for
 the in-process case.
 
-RESOLUTION (2026-07-09, commits 2c9749b2da2 + 42fe3a99469 + 5df28304993):
-applied the interim (io_method=worker -> xtc under multithreaded=on, by
-rewriting the GUC value after SelectConfigFiles) and RE-ADMITTED all of Tier B.
+RESOLUTION (2026-07-09, commits 2c9749b2da2 + 42fe3a99469 + 5df28304993, then
+switched to sync in 29b8ea4d365): applied the interim (io_method=worker -> SYNC
+under multithreaded=on, by rewriting the GUC value after SelectConfigFiles) and
+RE-ADMITTED all of Tier B.
 Validated: standby fiber backends serve queries (replicated_rows=30000);
 WAL_RECEIVER launches as a fiber + streams; SLOTSYNC_WORKER launches once (no
 relaunch churn) + syncs; both fast AND immediate stop of standby+primary clean
@@ -155,10 +156,28 @@ is gated on pmState == PM_RUN, and a hot standby stays in PM_HOT_STANDBY (only
 reaches PM_RUN after promotion), so its io workers are never handed off; and io
 workers start at PM_STARTUP before carriers exist regardless.  A standby with
 io_method=worker therefore still hangs (backend waits on an io worker that is
-either a fork that cannot wake it, or absent).  So the interim io_method=xtc is
-the MORE COMPLETE correctness solution today; making io_method=worker work on
-standbys would require handing off at PM_HOT_STANDBY too (future Tier D/F
+either a fork that cannot wake it, or absent).  So the interim (now io_method=
+SYNC) is the MORE COMPLETE correctness solution today; making io_method=worker
+work on standbys would require handing off at PM_HOT_STANDBY too (future Tier D/F
 completion), after which the interim remap could be dropped.
+
+WHY SYNC, NOT XTC, FOR THE INTERIM (2026-07-09, commit 29b8ea4d365): the first
+interim used io_method=xtc (issuer-async, parks the fiber, no foreign completer
+-- the ideal long-term path).  But the xtc method has an INTERMITTENT
+short-read/SIGSEGV under CONCURRENT reads: the full smoke's autovacuum-churn
+step crashed a vacuum-worker fiber with 'could not read blocks 1..2 ... read
+only 0 of 16384 bytes' then a contained SIGSEGV (runtime correctly escalated,
+0 asserts), and an isolated autovac-churn repro showed fast_stop=HUNG + a core
+on xtc while io_method=sync was clean every time (and did not always reproduce
+-- it is timing/race dependent).  sync does the IO inline on the issuing
+backend with no foreign completer, so it avoids BOTH the cross-process wake
+problem and the xtc concurrency bug; it blocks the carrier loop during a read
+(less concurrency) but is deterministically correct.  TRACKED: harden the xtc
+issuer-async AIO path (method_xtc.c / xtc_aio_preadv under concurrent readers --
+likely a shared iovec/handle or offset race, or a libxtc aio reentrancy issue
+when multiple fibers on one loop have IO in flight) before io_method=xtc can be
+a default or before Tier F runs io workers as fibers.  Repro: multithreaded=on,
+io_method=xtc, autovacuum naptime=1 threshold=1 + UPDATE/DELETE/INSERT churn.
 
 ### Cassert threaded smoke found a worker-fiber entry race (2026-07-08, commit 1168e5c6dc2)
 
