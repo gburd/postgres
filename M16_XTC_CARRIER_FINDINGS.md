@@ -193,6 +193,28 @@ carrier-loop concurrency.  NOTHING here was a libxtc defect -- this closes the
 prior TRACKED xtc-concurrency item AND unblocks Tier F (io workers as fibers can
 now park on xtc IO without corrupting sibling fibers).
 
+XTC IS THE THREADED-MODE IO DESIGN, NOT A STOPGAP (2026-07-09).  On reflection
+the io_method=worker->xtc remap under multithreaded=on is not really an
+"interim": routing every buffered read/write through the issuing fiber's own
+cooperative issuer-async AIO (xtc_aio_preadv/pwritev, parks the fiber, no forked
+worker pool, no cross-process wake) IS the natural threaded-runtime IO model.
+The remap covers ANY io_method=worker (explicit or default), so there is no
+footgun where a user gets the hanging forked-worker path.  Completeness:
+  - PGAIO has only READV/WRITEV ops; the xtc method handles both, so it covers
+    the entire AIO surface (no FSYNC op exists in this subsystem).
+  - WRITE path validated under concurrency: 12 rounds x 6 concurrent write
+    churners + CHECKPOINT + parallel workers on io_method=xtc -> alive, crash=0,
+    fast stop clean, 0 cores (matches the read-path validation).
+  - WAL fsync + WAL writes still use direct pg_fsync/pg_pwrite (blocking
+    syscalls on the fiber's carrier loop), NOT the AIO method -- correct but a
+    perf note: a fiber briefly blocks its loop during fsync.  Routing fsync
+    through xtc is a future perf optimization (item #6 step 4), not a
+    correctness gap.
+  - io_method=worker's separate worker-pool parallelism is largely redundant in
+    threaded mode (each fiber already does async IO); io-workers-as-fibers
+    (Tier F) + the standby PM_HOT_STANDBY hand-off are only needed if that
+    specific model is ever wanted.  Not building it speculatively.
+
 ### Cassert threaded smoke found a worker-fiber entry race (2026-07-08, commit 1168e5c6dc2)
 
 Unblocked work while Tier B waits on libxtc: rebuilt build-xtc-cassert (cassert +

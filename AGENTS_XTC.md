@@ -173,22 +173,28 @@ Larger (toward fully-on-xtc):
      - Tier E: B_STARTUP -- DONE (runs as an in-process "startup thread
        carrier"; verified in the same family dump; the gist_xlog_cleanup
        teardown SIGSEGV that had blocked it is fixed).
-     - Tier F (DEFER, needs the AIO shutdown protocol / PM_WAIT_IO_WORKERS on
-       fibers -- ties to item #6 step 4): B_IO_WORKER.  Note: the io_method=xtc
-       interim means no io workers run under multithreaded=on at all (fiber
-       backends do their own issuer-async IO), so io-worker-as-fiber is only
-       needed if io_method=worker is ever wanted under multithreaded.  The
-       process->thread hand-off for io workers WORKS on a primary (verified: io
-       workers become in-process threads at PM_RUN) but NOT on a standby
-       (maybe_handoff_io_workers is gated on PM_RUN; a hot standby stays
-       PM_HOT_STANDBY) -- see the Tier B note and M16.
+     - Tier F (OPTIONAL / DEFERRED, not a gap): B_IO_WORKER as fibers.  The
+       io_method=worker->xtc routing (see below) is the intended threaded IO
+       model, not a stopgap: every buffered read/write goes through the issuing
+       fiber's own cooperative issuer-async AIO (xtc_aio_preadv/pwritev), so no
+       io worker pool runs under multithreaded=on at all.  The xtc read AND
+       write paths are validated under heavy concurrency + parallel workers +
+       checkpoints (0 cores).  io-workers-as-fibers is only needed if the
+       separate worker-pool parallelism of io_method=worker is ever wanted; if
+       so it needs the AIO shutdown protocol (PM_WAIT_IO_WORKERS on fibers, item
+       #6 step 4) and, for standbys, a PM_HOT_STANDBY hand-off
+       (maybe_handoff_io_workers is gated on PM_RUN today; the primary hand-off
+       works).  Not building speculatively -- see M16.
 
    MILESTONE (2026-07-09): under multithreaded=on a PRIMARY now runs with ZERO
    forked child processes.  Fibers (xtc_carrier_eligible): client backend,
    autovacuum launcher, background worker, WAL writer, WAL summarizer, archiver,
    WAL receiver, slotsync worker.  In-process thread carriers (via hand-off):
-   checkpointer, background writer, startup.  io_method=xtc (interim) means no io
-   workers.  Everything is in the postmaster's address space.
+   checkpointer, background writer, startup.  io_method=xtc means no io workers;
+   all buffered IO is per-fiber issuer-async.  Everything is in the postmaster's
+   address space.  (WAL fsync/writes still use direct blocking pg_fsync/
+   pg_pwrite on the fiber's carrier -- correct; routing through xtc is a future
+   perf item, not a correctness gap.)
    Any future on-demand-with-start-timeout family reuses the autovac orphan
    reaper (ReapOrphanedThreadedWorker); the early-start families share the
    hand-off path.
