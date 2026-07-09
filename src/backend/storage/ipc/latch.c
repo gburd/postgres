@@ -24,6 +24,35 @@
 #include "storage/waiteventset.h"
 #include "utils/backend_runtime.h"
 #include "utils/resowner.h"
+#ifdef USE_XTC_CARRIER
+#include "postmaster/pg_xtc_carrier.h"	/* xtc_in_backend_fiber */
+#include "xtc_proc.h"					/* xtc_self / xtc_proc_wake / xtc_pid_t */
+#endif
+
+#ifdef USE_XTC_CARRIER
+/*
+ * Record the current xtc fiber (if any) as the latch's fiber owner, so a later
+ * cross-thread SetLatch can xtc_proc_wake() it.  Called wherever the owning
+ * process takes/refreshes ownership of a latch it will wait on.  Outside a
+ * fiber (process mode or a dedicated thread carrier) this clears the fiber
+ * owner, leaving the fd/thread wake path in charge.
+ */
+static inline void
+latch_set_fiber_owner(Latch *latch)
+{
+	xtc_pid_t	self = xtc_self();
+
+	if (!xtc_pid_is_none(self))
+	{
+		latch->owner_fiber_valid = true;
+		latch->owner_fiber_loop = self.loop_id;
+		latch->owner_fiber_local = self.local_id;
+		latch->owner_fiber_gen = self.gen;
+	}
+	else
+		latch->owner_fiber_valid = false;
+}
+#endif
 
 /* A backend-local WaitEventSet used to implement WaitLatch() */
 #define LatchWaitSet (*PgCurrentLatchWaitSetRef())
@@ -81,6 +110,9 @@ InitLatch(Latch *latch)
 	latch->owner_thread = pthread_self();
 	latch->owner_thread_valid = true;
 #endif
+#ifdef USE_XTC_CARRIER
+	latch_set_fiber_owner(latch);
+#endif
 	latch->is_shared = false;
 
 #ifdef WIN32
@@ -130,6 +162,9 @@ InitSharedLatch(Latch *latch)
 	latch->owner_wakeup_fd = -1;
 	latch->owner_thread_valid = false;
 #endif
+#ifdef USE_XTC_CARRIER
+	latch->owner_fiber_valid = false;
+#endif
 	latch->is_shared = true;
 }
 
@@ -160,6 +195,9 @@ OwnLatch(Latch *latch)
 	latch->owner_thread = pthread_self();
 	latch->owner_thread_valid = true;
 #endif
+#ifdef USE_XTC_CARRIER
+	latch_set_fiber_owner(latch);
+#endif
 }
 
 /*
@@ -181,6 +219,9 @@ ReownLatchCurrentThread(Latch *latch)
 	latch->owner_thread = pthread_self();
 	latch->owner_thread_valid = true;
 #endif
+#ifdef USE_XTC_CARRIER
+	latch_set_fiber_owner(latch);
+#endif
 }
 
 /*
@@ -196,6 +237,9 @@ DisownLatch(Latch *latch)
 #ifndef WIN32
 	latch->owner_wakeup_fd = -1;
 	latch->owner_thread_valid = false;
+#endif
+#ifdef USE_XTC_CARRIER
+	latch->owner_fiber_valid = false;
 #endif
 }
 
@@ -410,6 +454,34 @@ SetLatch(Latch *latch)
 			pthread_kill(owner_thread, SIGURG);
 		else
 			WakeupMyProc();
+
+#ifdef USE_XTC_CARRIER
+		/*
+		 * If the owner is an xtc fiber on another carrier loop of THIS process,
+		 * the self-pipe write / SIGURG above makes the watched condition true
+		 * but does not reliably wake a loop parked in xtc_proc_wait_fd on that
+		 * fd (the cross-thread fd/latch wake miss).  Explicitly poke the owner
+		 * loop with xtc_proc_wake() (libxtc >= v1.8.0) so the parked fiber
+		 * re-checks.  It delivers no message and a spurious wake is always safe;
+		 * harmless if the fiber is not parked, already runnable, or gone.  Only
+		 * reachable when the setter is IN THIS PROCESS (owner_pid == MyProcPid);
+		 * a forked server-owned worker in another address space takes the
+		 * cross-process WakeupOtherProc() path below and cannot poke this
+		 * process's loops -- that case (e.g. a forked io worker completing a
+		 * fiber backend's AIO) is why such completers must run in-process as
+		 * thread carriers, not forks.
+		 */
+		if (!same_owner_thread && latch->owner_fiber_valid)
+		{
+			xtc_pid_t	owner_fiber;
+
+			owner_fiber.loop_id = latch->owner_fiber_loop;
+			owner_fiber.local_id = latch->owner_fiber_local;
+			owner_fiber.gen = latch->owner_fiber_gen;
+			if (!xtc_pid_is_none(owner_fiber))
+				(void) xtc_proc_wake(owner_fiber);
+		}
+#endif
 	}
 	else
 		WakeupOtherProc(owner_pid);

@@ -126,6 +126,22 @@ typedef struct Latch
 	pthread_t	owner_thread;
 	bool		owner_thread_valid;
 #endif
+#ifdef USE_XTC_CARRIER
+	/*
+	 * When the owning logical backend runs as an xtc fiber, these record the
+	 * owner fiber's xtc pid (stored as its three raw fields to avoid leaking
+	 * the libxtc xtc_pid_t type into this widely-included header).  A
+	 * cross-thread SetLatch, after making the fd/self-pipe readable, calls
+	 * xtc_proc_wake() on this fiber to guarantee its carrier loop re-checks --
+	 * closing the cross-thread fd/latch wake miss (libxtc >= v1.8.0).
+	 * owner_fiber_valid is false when no fiber owns the latch (process/thread
+	 * carrier), in which case the fd/thread wake alone is used.
+	 */
+	bool		owner_fiber_valid;
+	uint32		owner_fiber_loop;
+	uint32		owner_fiber_local;
+	uint32		owner_fiber_gen;
+#endif
 #ifdef WIN32
 	HANDLE		event;
 #endif

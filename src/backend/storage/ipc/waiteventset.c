@@ -77,6 +77,7 @@
 #include "storage/waiteventset.h"
 #ifdef USE_XTC_CARRIER
 #include "postmaster/pg_xtc_carrier.h"
+#include "xtc_proc.h"					/* xtc_self / xtc_pid_is_none */
 #endif
 #include "utils/backend_runtime.h"
 #include "utils/memutils.h"
@@ -1372,9 +1373,33 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 	 * epoll fd readable and unparks the fiber -- no separate latch path
 	 * needed for this single-backend bringup.
 	 */
-	if (xtc_in_backend_fiber)
+	if (xtc_in_backend_fiber || !xtc_pid_is_none(xtc_self()))
 	{
 		int			wl;
+
+		/*
+		 * Record THIS fiber as the wait latch's fiber owner right before
+		 * parking, so a cross-thread SetLatch (e.g. an io worker completing an
+		 * async read on another carrier) can xtc_proc_wake() the parked fiber's
+		 * loop -- the guaranteed cross-thread resume (libxtc >= v1.8.0).
+		 * Capturing here, at the actual park point, is authoritative: xtc_self()
+		 * is the fiber that is about to block on this latch's fd, regardless of
+		 * where/when the latch was OwnLatch'd (OwnLatch at InitProcess can run
+		 * in a context where xtc_self() is not yet the final owner).  Only the
+		 * WL_LATCH_SET latch matters for cross-thread wake.
+		 */
+		if (set->latch != NULL)
+		{
+			xtc_pid_t	self = xtc_self();
+
+			if (!xtc_pid_is_none(self))
+			{
+				set->latch->owner_fiber_valid = true;
+				set->latch->owner_fiber_loop = self.loop_id;
+				set->latch->owner_fiber_local = self.local_id;
+				set->latch->owner_fiber_gen = self.gen;
+			}
+		}
 
 		/* Wait for the epoll fd to become readable (or timeout). */
 		wl = xtc_pg_wait_fd(set->epoll_fd, WL_SOCKET_READABLE,
