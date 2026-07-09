@@ -161,23 +161,37 @@ SYNC) is the MORE COMPLETE correctness solution today; making io_method=worker
 work on standbys would require handing off at PM_HOT_STANDBY too (future Tier D/F
 completion), after which the interim remap could be dropped.
 
-WHY SYNC, NOT XTC, FOR THE INTERIM (2026-07-09, commit 29b8ea4d365): the first
-interim used io_method=xtc (issuer-async, parks the fiber, no foreign completer
--- the ideal long-term path).  But the xtc method has an INTERMITTENT
-short-read/SIGSEGV under CONCURRENT reads: the full smoke's autovacuum-churn
-step crashed a vacuum-worker fiber with 'could not read blocks 1..2 ... read
-only 0 of 16384 bytes' then a contained SIGSEGV (runtime correctly escalated,
-0 asserts), and an isolated autovac-churn repro showed fast_stop=HUNG + a core
-on xtc while io_method=sync was clean every time (and did not always reproduce
--- it is timing/race dependent).  sync does the IO inline on the issuing
-backend with no foreign completer, so it avoids BOTH the cross-process wake
-problem and the xtc concurrency bug; it blocks the carrier loop during a read
-(less concurrency) but is deterministically correct.  TRACKED: harden the xtc
-issuer-async AIO path (method_xtc.c / xtc_aio_preadv under concurrent readers --
-likely a shared iovec/handle or offset race, or a libxtc aio reentrancy issue
-when multiple fibers on one loop have IO in flight) before io_method=xtc can be
-a default or before Tier F runs io workers as fibers.  Repro: multithreaded=on,
-io_method=xtc, autovacuum naptime=1 threshold=1 + UPDATE/DELETE/INSERT churn.
+XTC INTERIM: SYNC (briefly), THEN XTC AGAIN AFTER THE CONCURRENCY FIX.  The
+first interim used io_method=xtc (issuer-async, parks the fiber, no foreign
+completer -- the ideal path).  It hit an INTERMITTENT SIGSEGV under CONCURRENT
+reads: a backend fiber crashed in BufferLockAcquire -> GetPrivateRefCountEntry
+(bufmgr.c:6203, 'entry->data.lockmode = mode', entry bogus), sometimes as
+'could not read blocks ... read only 0 of 16384 bytes'.  So the interim was
+temporarily switched to sync (commit 29b8ea4d365; deterministically correct but
+blocks the carrier loop during a read).
+
+ROOT CAUSE + FIX (commit c8077b2c62b): it was NOT libxtc, NOT the AIO
+transport, NOT parallel query -- it was a MISSING current-work save/restore in
+our method_xtc.c integration.  xtc_aio_preadv/pwritev PARK the issuing fiber for
+the IO (yield to the loop), so the loop runs OTHER backend fibers meanwhile,
+which clobber PG's per-backend current-work thread-locals (the hot-field refs
+behind CurrentPgBackend/Session/Execution -- including PrivateRefCountArray).
+pgaio_xtc_submit did not save/restore that state across the park, so a resumed
+fiber used a sibling's PrivateRefCountArray and dereferenced a bogus
+PrivateRefCountEntry.  (io_method=sync never parks -> no sibling interleaves ->
+why sync was clean.)  Fix: wrap the xtc_aio_preadv/pwritev calls in
+PgRuntimeSaveCurrentWork()/PgRuntimeRestoreCurrentWork(), exactly as
+xtc_pg_wait_fd() already does for the waiteventset park.
+
+Captured the real backtrace by temporarily skipping xtc_fault_guard_install()
+(so the SIGSEGV dumped a core with libxtc/PG frames instead of being
+R1-contained) -- the guard install is restored.  Verified after the fix: 20
+rounds x 8 concurrent uncached seq scans -> 0 cores (was crashing ~round 4);
+autovac churn + parallel seq scans -> 0 cores; full xtc smoke 24/24.  So the
+interim is BACK TO io_method=xtc (commit 1ab8c518939), which preserves
+carrier-loop concurrency.  NOTHING here was a libxtc defect -- this closes the
+prior TRACKED xtc-concurrency item AND unblocks Tier F (io workers as fibers can
+now park on xtc IO without corrupting sibling fibers).
 
 ### Cassert threaded smoke found a worker-fiber entry race (2026-07-08, commit 1168e5c6dc2)
 
