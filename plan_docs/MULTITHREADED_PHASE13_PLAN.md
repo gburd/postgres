@@ -161,3 +161,29 @@ Do not start Phase 14 protocol-boundary scheduling until the Phase 13 wait
 boundary can publish and wake at least one representative wait family through
 the new wait-completion path while process mode and thread-per-session fallback
 remain healthy.
+
+## Phase 13 Gate: MET (2026-07-09, re-validated on libxtc v1.9.0 with real fibers)
+
+The Phase 14 precondition above is satisfied and re-verified after the runtime
+became fiber-backed (client backends run as xtc fibers; io_method=xtc):
+
+- Latch/timeout family: a backend blocked on pg_sleep publishes
+  `Timeout/PgSleep` (observable from another session -- the
+  WaitEventSetWait -> PgSuspend publication path), and pg_cancel_backend WAKES
+  the blocked wait (verified: the wait returns and the backend leaves the active
+  wait).  0 cores.
+- Heavyweight-lock family: a backend blocked on a conflicting relation lock
+  publishes `Lock/relation` (ProcSleep -> WaitLatch -> PgSuspend), and
+  pg_cancel_backend wakes the lock wait.  0 cores.
+- These exercise both the event-set/latch publication path and the
+  ProcSleep/lock publication path with real fibers, cross-session observation,
+  and cancel-driven wake -- exactly the representative-family + cancel-while-
+  blocked gate.  Process mode and thread-per-session fallback remain healthy
+  (non-cassert smoke 24/24; cassert smoke 0 cores/0 asserts).
+
+The full Phase 13 TAP (t/004_phase13_wait_completion.pl) additionally covers
+ClientRead/ClientWrite/ConditionVariable/advisory-lock/LWLock publication; run
+it under `gmake check-threaded` on a disk-backed host (the meson-on-btrfs dev
+env has the documented 001 background_psql harness hang; the direct probes above
+substitute for spot validation here).  Phase 13 is complete; Phase 14 may begin
+when taken up.
