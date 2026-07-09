@@ -44,6 +44,66 @@
 #ifndef SPIN_H
 #define SPIN_H
 
+#ifdef USE_STDATOMIC_H
+
+/*
+ * Atomics-based spinlocks.  The traditional path is deprecated as of PG19.
+ *
+ * When stdatomic.h is available, spinlocks are implemented on top of a plain
+ * 32-bit atomic rather than platform-specific TAS assembly.  We deliberately
+ * do NOT use pg_atomic_flag: that type uses 1==unlocked so it can offer a
+ * relaxed "unlocked test", whereas a spinlock must be usable when its memory
+ * has merely been zeroed (much shared-memory state is set up with
+ * memset(...,0,...) and then relies on embedded spinlocks reading as free).
+ * So slock_t uses the traditional convention: 0 == unlocked, 1 == locked,
+ * making a zero-initialized slock_t a valid, free lock.
+ */
+#include "port/atomics.h"
+
+typedef pg_atomic_uint32 slock_t;
+
+/* SpinDelayStatus and the spin-delay helpers (perform/finish_spin_delay). */
+#include "port/spin_delay_status.h"
+
+extern int s_lock(volatile slock_t *lock, const char *file, int line, const char *func);
+
+static inline void
+SpinLockInit(volatile slock_t *lock)
+{
+	pg_atomic_init_u32(lock, 0);	/* 0 = unlocked */
+}
+
+/*
+ * SpinLockAcquire - acquire a spinlock, waiting if necessary.
+ *
+ * Try once with an atomic exchange (0->1); on failure fall into s_lock().
+ * This is a macro (not an inline function) so that __FILE__, __LINE__, and
+ * __func__ resolve at the call site for "stuck spinlock" diagnostics.
+ */
+#define SpinLockAcquire(lock) \
+	(pg_atomic_exchange_u32((lock), 1) == 0 ? (void) 0 : \
+	 (void) s_lock((lock), __FILE__, __LINE__, __func__))
+
+static inline void
+SpinLockRelease(volatile slock_t *lock)
+{
+	/*
+	 * Release semantics: all prior writes in the critical section must be
+	 * visible before the lock is observed free.  This matches the traditional
+	 * S_UNLOCK(), which is __sync_lock_release() (a release, not a full
+	 * barrier); a release fence plus a plain store is the equivalent and
+	 * avoids the store-side serialization a seq_cst store would add on ARM64.
+	 */
+	pg_write_barrier();
+	pg_atomic_write_u32(lock, 0);
+}
+
+#else							/* !USE_STDATOMIC_H */
+
+/*
+ * Traditional spinlock implementation using platform-specific TAS assembly.
+ * This branch is kept byte-for-byte equivalent to the pre-stdatomic spin.h.
+ */
 #include "storage/s_lock.h"
 
 static inline void
@@ -63,5 +123,7 @@ SpinLockRelease(volatile slock_t *lock)
 {
 	S_UNLOCK(lock);
 }
+
+#endif							/* USE_STDATOMIC_H */
 
 #endif							/* SPIN_H */
