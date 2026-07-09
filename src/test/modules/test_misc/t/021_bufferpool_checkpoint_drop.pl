@@ -94,6 +94,48 @@ my $log = slurp_file($node->logfile);
 unlike($log, qr/was terminated by signal|Segmentation fault|PANIC|reinitializing/,
 	'no checkpointer crash / cluster reinit in the server log');
 
+# ---------------------------------------------------------------------------
+# ABA variant: while the checkpointer is parked mid-loop, DROP the pool AND
+# CREATE a new one in the same descriptor slot before waking it.  The
+# checkpointer counted the OLD pool's dirty buffers; the slot now serves a
+# DIFFERENT pool (new OID).  Writing with the stale buf_ids/counts would index
+# past the new pool's descriptor array -- a use-after-free.  The OID guard must
+# make the checkpointer skip the recycled slot.
+# ---------------------------------------------------------------------------
+$node->safe_psql('postgres', q{
+	CREATE BUFFER POOL cp HANDLER clock_pool_handler SIZE '8388608';
+	CREATE TABLE d (id int primary key, pad text) WITH (buffer_pool='cp');
+	INSERT INTO d SELECT g, repeat('x', 80) FROM generate_series(1, 200000) g;
+});
+$node->safe_psql('postgres',
+	"SELECT injection_points_attach('bufsync-dynamic-pool-loop', 'wait');");
+
+my $ckpt2 = $node->background_psql('postgres');
+$ckpt2->query_until(qr/go/, "\\echo go\nCHECKPOINT;\n");
+$node->wait_for_event('checkpointer', 'bufsync-dynamic-pool-loop');
+
+# Drop the counted pool and immediately recreate one of the same name (new OID)
+# in the freed slot, dirtying it again, then wake the parked checkpointer.
+$node->safe_psql('postgres', 'DROP TABLE d; DROP BUFFER POOL cp;');
+$node->safe_psql('postgres', q{
+	CREATE BUFFER POOL cp HANDLER clock_pool_handler SIZE '8388608';
+	CREATE TABLE d (id int primary key, pad text) WITH (buffer_pool='cp');
+	INSERT INTO d SELECT g, repeat('x', 80) FROM generate_series(1, 200000) g;
+});
+$node->safe_psql('postgres',
+	"SELECT injection_points_wakeup('bufsync-dynamic-pool-loop');");
+$ckpt2->query_safe('SELECT 1;');
+$ckpt2->quit;
+
+ok($node->poll_query_until('postgres', 'SELECT 1;', '1'),
+	'checkpointer survives a pool slot recycled (ABA) mid-checkpoint');
+$node->safe_psql('postgres',
+	"SELECT injection_points_detach('bufsync-dynamic-pool-loop');");
+
+$log = slurp_file($node->logfile);
+unlike($log, qr/was terminated by signal|Segmentation fault|PANIC|reinitializing/,
+	'no crash after pool-slot ABA during checkpoint');
+
 # Clean restart proves no shared-memory corruption / orphaned DSM.
 $node->restart;
 is($node->safe_psql('postgres', 'SELECT 1;'), '1',

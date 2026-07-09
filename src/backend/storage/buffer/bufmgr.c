@@ -4008,6 +4008,7 @@ BufferSync(int flags)
 	uint64		mask = BM_DIRTY;
 	WritebackContext wb_context;
 	int			pool_ckpt_counts[MAX_BUFFER_POOLS];
+	Oid			pool_ckpt_oids[MAX_BUFFER_POOLS];
 	int			have_dynamic_dirty = 0;
 
 	/*
@@ -4122,6 +4123,7 @@ BufferSync(int flags)
 		}
 
 		pool_ckpt_counts[pool_idx] = pool_num_dirty;
+		pool_ckpt_oids[pool_idx] = pool->bp_oid;
 		have_dynamic_dirty += pool_num_dirty;
 	}
 
@@ -4335,6 +4337,19 @@ BufferSync(int flags)
 		if (!pool->bp_active)
 			continue;
 
+		/*
+		 * ABA guard: between the count pass above and here, this slot could
+		 * have been dropped and a new pool created in it (DROP deletes the
+		 * catalog row, CREATE inserts a fresh one with a new OID).  The
+		 * pool_dirty count and this pool's ckpt_ids/descriptors would then
+		 * belong to the OLD pool while the slot now serves a DIFFERENT one --
+		 * writing with stale buf_ids indexes past the new pool's descriptor
+		 * array (a use-after-free that segfaulted the checkpointer).  If the
+		 * OID changed, the pool we counted is gone; skip it.
+		 */
+		if (pool->bp_oid != pool_ckpt_oids[pool_idx])
+			continue;
+
 		{
 			PoolLocalState *local = EnsurePoolAttached(pool);
 
@@ -4369,7 +4384,8 @@ BufferSync(int flags)
 				 * descriptor.
 				 */
 				pg_read_barrier();
-				if (!pool->bp_active || !local->attached)
+				if (!pool->bp_active || !local->attached ||
+					pool->bp_oid != pool_ckpt_oids[pool_idx])
 					break;
 
 				/*
