@@ -161,15 +161,34 @@ Larger (toward fully-on-xtc):
        launches as a fiber, archives WAL (archived_count=4/files=4), fast +
        immediate stop clean (0 cores, 0 SIGKILL escalations).  Permanent smoke
        gate: scripts/xtc_smoke.sh step 10.
-     - Tier D (needs the early-start process->thread HAND-OFF path):
-       B_BG_WRITER, B_CHECKPOINTER -- forced to PG_BACKEND_LAUNCH_PROCESS
-       before thread carriers exist (launch_backend.c ~391), handed off +
-       relaunched later.  (The checkpointer handoff pgstat-is_shutdown bug is
-       fixed; validate handoff subtests.)
-     - Tier E: B_STARTUP (recovery; the gist_xlog_cleanup teardown SIGSEGV that
-       blocked it is fixed).
+     - Tier D: B_BG_WRITER, B_CHECKPOINTER -- DONE (in-process thread carriers
+       via the early-start process->thread hand-off).  Verified 2026-07-09 on a
+       primary: 0 forked child processes; the log shows "starting checkpointer
+       thread carrier" and "starting background writer thread carrier"; CHECKPOINT
+       works; fast AND immediate stop clean (0 cores, 0 SIGKILL).  They run as
+       dedicated in-process THREAD CARRIERS (not fibers), which is the right
+       model for these singletons -- they do not need fiber multiplexing, only
+       to be in-process so their cross-thread wakes reach fibers.  (The
+       checkpointer handoff pgstat-is_shutdown bug was already fixed.)
+     - Tier E: B_STARTUP -- DONE (runs as an in-process "startup thread
+       carrier"; verified in the same family dump; the gist_xlog_cleanup
+       teardown SIGSEGV that had blocked it is fixed).
      - Tier F (DEFER, needs the AIO shutdown protocol / PM_WAIT_IO_WORKERS on
-       fibers -- ties to item #6 step 4): B_IO_WORKER.
+       fibers -- ties to item #6 step 4): B_IO_WORKER.  Note: the io_method=xtc
+       interim means no io workers run under multithreaded=on at all (fiber
+       backends do their own issuer-async IO), so io-worker-as-fiber is only
+       needed if io_method=worker is ever wanted under multithreaded.  The
+       process->thread hand-off for io workers WORKS on a primary (verified: io
+       workers become in-process threads at PM_RUN) but NOT on a standby
+       (maybe_handoff_io_workers is gated on PM_RUN; a hot standby stays
+       PM_HOT_STANDBY) -- see the Tier B note and M16.
+
+   MILESTONE (2026-07-09): under multithreaded=on a PRIMARY now runs with ZERO
+   forked child processes.  Fibers (xtc_carrier_eligible): client backend,
+   autovacuum launcher, background worker, WAL writer, WAL summarizer, archiver,
+   WAL receiver, slotsync worker.  In-process thread carriers (via hand-off):
+   checkpointer, background writer, startup.  io_method=xtc (interim) means no io
+   workers.  Everything is in the postmaster's address space.
    Any future on-demand-with-start-timeout family reuses the autovac orphan
    reaper (ReapOrphanedThreadedWorker); the early-start families share the
    hand-off path.
