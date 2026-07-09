@@ -135,6 +135,31 @@ yet applied -- a deliberate decision pending.  NOTHING further is needed from
 libxtc: v1.8.0's xtc_proc_wake is the right primitive and is already wired for
 the in-process case.
 
+RESOLUTION (2026-07-09, commits 2c9749b2da2 + 42fe3a99469 + 5df28304993):
+applied the interim (io_method=worker -> xtc under multithreaded=on, by
+rewriting the GUC value after SelectConfigFiles) and RE-ADMITTED all of Tier B.
+Validated: standby fiber backends serve queries (replicated_rows=30000);
+WAL_RECEIVER launches as a fiber + streams; SLOTSYNC_WORKER launches once (no
+relaunch churn) + syncs; both fast AND immediate stop of standby+primary clean
+(0 cores, 0 SIGKILL escalations).  Process mode byte-for-byte untouched.
+
+On the "real fix" (io workers as in-process thread carriers): the hand-off
+machinery ALREADY EXISTS and WORKS on a PRIMARY.  Verified with an
+XTC_ALLOW_WORKER_IO escape hatch (since removed) + explicit io_method=worker:
+maybe_handoff_io_workers() SIGUSR2's each forked io worker at PM_RUN, they exit,
+and the relaunch (carriers now up) takes the thread-carrier path -> io worker
+FORKS=0, they run as THREADS inside the postmaster, and SELECT 1 works (the
+in-process completion SetLatch is same-process cross-thread, woken by the wired
+xtc_proc_wake).  BUT it does NOT cover a STANDBY: maybe_handoff_io_workers()
+is gated on pmState == PM_RUN, and a hot standby stays in PM_HOT_STANDBY (only
+reaches PM_RUN after promotion), so its io workers are never handed off; and io
+workers start at PM_STARTUP before carriers exist regardless.  A standby with
+io_method=worker therefore still hangs (backend waits on an io worker that is
+either a fork that cannot wake it, or absent).  So the interim io_method=xtc is
+the MORE COMPLETE correctness solution today; making io_method=worker work on
+standbys would require handing off at PM_HOT_STANDBY too (future Tier D/F
+completion), after which the interim remap could be dropped.
+
 ### Cassert threaded smoke found a worker-fiber entry race (2026-07-08, commit 1168e5c6dc2)
 
 Unblocked work while Tier B waits on libxtc: rebuilt build-xtc-cassert (cassert +
