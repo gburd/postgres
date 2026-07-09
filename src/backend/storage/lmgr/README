@@ -47,6 +47,39 @@ when the wait time might exceed a few seconds.
 The rest of this README file discusses the regular lock manager in detail.
 
 
+Atomic Operations
+=================
+
+PostgreSQL's atomic operations (see src/include/port/atomics.h) can be
+implemented using either C11 stdatomic.h or traditional platform-specific
+code. The implementation is selected at build time via the USE_STDATOMIC_H
+preprocessor definition:
+
+* C11 stdatomic.h implementation (USE_STDATOMIC_H defined):
+  Uses the standard C11 <stdatomic.h> header for all atomic operations.
+  This provides better portability and potentially better compiler
+  optimizations. Available on:
+  - MSVC 2022+ (requires /experimental:c11atomics flag)
+  - GCC 4.9+ and Clang 3.1+ (no special flags needed)
+
+* Traditional implementation (USE_STDATOMIC_H not defined):
+  Uses platform-specific implementations that have been battle-tested
+  in PostgreSQL for many years:
+  - Architecture-specific: arch-x86.h, arch-arm.h, arch-ppc.h
+  - Compiler intrinsics: generic-gcc.h, generic-msvc.h
+  - Fallback implementations: generic.h, fallback.h
+
+Both implementations provide identical public API and semantics. The choice
+is made at build configuration time:
+
+  meson setup build -Duse_stdatomic=auto  # Auto-detect (default)
+  meson setup build -Duse_stdatomic=yes   # Force stdatomic.h
+  meson setup build -Duse_stdatomic=no    # Force traditional
+
+For more information on memory barriers and atomic operations, see
+src/backend/storage/lmgr/README.barrier.
+
+
 Lock Data Structures
 --------------------
 
