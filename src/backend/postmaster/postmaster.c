@@ -870,23 +870,24 @@ PostmasterMain(int argc, char *argv[])
 #ifdef USE_XTC_CARRIER
 	/*
 	 * xtc-carrier interim: under multithreaded=on, route the default
-	 * io_method=worker to "sync".  A threaded client backend runs as an xtc
-	 * fiber inside the postmaster process, but io_method=worker io workers are
-	 * FORKED processes; a forked worker that completes a fiber backend's async
-	 * IO cannot wake the in-process fiber (SetLatch from another process takes
-	 * the cross-process kill() path aimed at the postmaster, not the fiber's
-	 * carrier loop), so the backend hangs on its first uncached read (the
-	 * hot-standby InitPostgres hang).
+	 * io_method=worker to the in-fiber "xtc" method.  A threaded client backend
+	 * runs as an xtc fiber inside the postmaster process, but io_method=worker
+	 * io workers are FORKED processes; a forked worker that completes a fiber
+	 * backend's async IO cannot wake the in-process fiber (SetLatch from another
+	 * process takes the cross-process kill() path aimed at the postmaster, not
+	 * the fiber's carrier loop), so the backend hangs on its first uncached read
+	 * (the hot-standby InitPostgres hang).
 	 *
-	 * We use "sync" rather than the in-fiber "xtc" method: sync performs the
-	 * read/write inline on the issuing backend with NO foreign completer (so the
-	 * cross-process wake problem cannot arise), and is deterministically
-	 * correct.  The xtc method (issuer-async xtc_aio_preadv/pwritev that parks
-	 * the fiber) is the better long-term choice for concurrency, but it has an
-	 * intermittent short-read/SIGSEGV under concurrent reads (surfaced by
-	 * autovacuum churn) that must be hardened before it can be a default -- see
-	 * M16_XTC_CARRIER_FINDINGS.md.  sync trades carrier-loop concurrency during
-	 * a blocking read for correctness, which is the right call for an interim.
+	 * The xtc method does issuer-async READV/WRITEV on the issuing fiber
+	 * (xtc_aio_preadv/pwritev park the fiber and complete on it -- no foreign
+	 * completer -- while sibling fibers on the loop keep running), falling back
+	 * to synchronous for non-fiber issuers.  It is preferred over "sync": sync
+	 * blocks the carrier loop for the whole read (serializing every fiber on
+	 * that loop behind one backend's disk IO), whereas xtc preserves carrier
+	 * concurrency.  (The earlier interim used sync while an xtc concurrent-read
+	 * SIGSEGV was outstanding; that was fixed by saving/restoring current-work
+	 * across the AIO fiber park -- commit c8077b2c62b -- so xtc is now the
+	 * correct default here.)
 	 *
 	 * We rewrite the GUC value itself (not just pgaio_method_ops) so SHOW
 	 * io_method, pgaio_workers_enabled() (no idle io-worker forks), and every
@@ -901,9 +902,9 @@ PostmasterMain(int argc, char *argv[])
 	 */
 	if (multithreaded && io_method == IOMETHOD_WORKER)
 	{
-		SetConfigOption("io_method", "sync", PGC_POSTMASTER, PGC_S_OVERRIDE);
+		SetConfigOption("io_method", "xtc", PGC_POSTMASTER, PGC_S_OVERRIDE);
 		ereport(LOG,
-				(errmsg("multithreaded=on: routing io_method=worker to \"sync\""),
+				(errmsg("multithreaded=on: routing io_method=worker to the in-fiber \"xtc\" method"),
 				 errdetail("Forked io workers cannot wake in-process fiber backends; set io_method explicitly to override.")));
 	}
 #endif
