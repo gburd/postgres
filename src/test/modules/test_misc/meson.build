@@ -29,6 +29,7 @@ tests += {
       't/017_buffer_pool_numa_cooling.pl',
       't/018_shared_buffers_online_resize.pl',
       't/019_buffer_pool_numa_monitor.pl',
+      't/020_buffer_pool_churn.pl',
     ],
     # The injection points are cluster-wide, so disable installcheck
     'runningcheck': false,
