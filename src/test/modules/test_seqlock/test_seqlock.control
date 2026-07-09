@@ -1,0 +1,4 @@
+comment = 'Test code for sequence lock'
+default_version = '1.0'
+module_pathname = '$libdir/test_seqlock'
+relocatable = true
