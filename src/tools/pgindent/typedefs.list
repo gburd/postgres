@@ -2823,6 +2823,7 @@ Selectivity
 SelfJoinCandidate
 SemTPadded
 SemiAntiJoinFactors
+SeqLock
 SeqScan
 SeqScanInstrumentation
 SeqScanState
