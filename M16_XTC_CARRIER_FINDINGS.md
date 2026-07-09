@@ -71,7 +71,7 @@ independently motivated work; using it to hide this defect would bury it).
 Wait for the libxtc fix.  The gap + the exact contract libxtc must satisfy are
 written up in /tmp/tier-b-fiber-aio-gap.md.
 
-### libxtc v1.8.0: xtc_proc_wake shipped; PG-side wiring IN PROGRESS (2026-07-09, commit 0da989cea44)
+### libxtc v1.8.0: xtc_proc_wake wired; Tier B root cause = fork/fiber model (2026-07-09, commits 0da989cea44 + dbaf5c9580b)
 
 libxtc v1.8.0 (rev 0d625f8) shipped the fix for our reported cross-thread
 fd/latch wake miss: a new public primitive **xtc_proc_wake(pid)** the embedder
@@ -83,31 +83,57 @@ modeled on our PG case).  Bumped the flake (commit 0da989cea44); core path
 clean (threaded startup, SELECT 1, fast stop, 0 cores); the primitive is
 additive/unused until wired, so process/non-fiber modes are unchanged.
 
-WIRING STATUS -- NOT yet closing the Tier B hang.  Initial wiring (STASHED,
-"xtc_proc_wake wiring WIP"): added owner_fiber_{valid,loop,local,gen} to struct
-Latch (guarded by USE_XTC_CARRIER, stored as raw uint32s so libxtc's xtc_pid_t
-does not leak into latch.h), captured the parking fiber's xtc_self() onto
-set->latch at the WaitEventSetWaitBlock fiber-park point, and called
-xtc_proc_wake() in SetLatch's cross-thread branch.  On the primary this WORKS
-(observed a fiber_valid=1 SetLatch -> proc_wake fired).  But the standby
-hot-backend AIO hang PERSISTS, and instrumentation shows why the wiring is not
-yet enough:
-  - Every cross-thread SetLatch on the standby shows fiber_valid=0 on the target
-    latch, and the ONLY observed setter pid is the postmaster -- the io-worker
-    completion SetLatch (ConditionVariableBroadcast(&ioh->cv) ->
-    SetLatch(&waiter->procLatch)) that should wake the AIO waiter is NOT being
-    observed on the waiter's procLatch at all.
-  - So before wiring the wake, the COMPLETION PATH itself needs tracing on the
-    standby: does the io worker actually run the shared completion and
-    SetLatch the waiter?  Is the waiter parked on procLatch (LatchWaitSet) or a
-    different WaitEventSet?  Does the AIO CV waiter's latch match the latch the
-    io worker sets?  Earlier deep tracing (pre-v1.8.0) had shown the IO reach
-    the io worker and complete, so re-confirm on v1.8.0 and identify the exact
-    latch object the completion targets vs the one the fiber parks on.
-NEXT: from a CLEAN tree (pop the stash), trace the standby io-worker completion
--> waiter SetLatch, confirm which latch carries the waiter fiber, capture the
-fiber owner on THAT latch, and only then call xtc_proc_wake.  Validate with the
-sy.sh worker standby probe (SELECT 1 returns) + full Tier B.
+WIRING DONE + ROOT CAUSE RESOLVED (2026-07-09, commit dbaf5c9580b).  Wired
+xtc_proc_wake into SetLatch's same-process branch (owner_fiber_* on struct Latch,
+captured at the WaitEventSetWaitBlock park point) plus a durable fiber gate
+(xtc_self() instead of the racy __thread flag).  Validated: threaded SELECT 1,
+LISTEN/NOTIFY cross-fiber wake, loop-not-wedged, error-unwind, fast stop all
+clean; process mode unaffected.
+
+BUT the standby hot-backend AIO hang PERSISTS, and proper GDB + instrumented
+tracing found the REAL root cause -- it is NOT a libxtc gap and NOT a wiring
+detail; it is our FORK/FIBER MIXED MODEL:
+  - /proc on a hung standby: the postmaster process (Tgid 134042) runs client
+    backends as FIBERS on its carrier-loop THREADS, but io worker 0/1,
+    checkpointer, and background writer are FORKED PROCESSES (distinct pids
+    134043-46).  They start at maybe_start_io_workers() during
+    UpdatePMState(PM_STARTUP) -- BEFORE carriers exist -- so they take the fork
+    path and are never relaunched as thread carriers.
+  - Trace: backend fiber (MyProcPid=134042) parks on its AIO-completion CV;
+    io worker (MyProcPid=134044, a fork) completes the IO and
+    ConditionVariableBroadcast -> SetLatch(&backend->procLatch).  In SetLatch,
+    owner_pid(134042) != MyProcPid(134044) -> the CROSS-PROCESS branch ->
+    WakeupOtherProc(134042) = kill(134042, SIGURG) to the postmaster process,
+    NOT the carrier-loop thread hosting the fiber.  Lost wakeup.
+  - xtc_proc_wake CANNOT fix this: it only works from WITHIN the process that
+    hosts the libxtc runtime.  A forked io worker is a separate address space
+    with no handle to the postmaster's loops.  You cannot wake an in-process
+    fiber from a foreign process without explicit IPC.
+  - Primary works only because its connect-time catalog pages are cached (no
+    async read); io_method=sync works because there is no cross-process
+    completion.
+
+CONCLUSION (answers "should we transition threads to fibers/procs? should
+postmaster_backend_thread_launch use the libxtc model?"): YES.  The completers
+must run IN-PROCESS as thread carriers, not forks.  launch_backend.c already
+routes B_IO_WORKER through postmaster_backend_thread_launch() when
+postmaster_thread_carriers_started, but io workers launch before carriers exist,
+so the missing piece is the early-start process->thread HAND-OFF (retire the
+forked io workers once carriers are up and relaunch them as thread carriers) --
+the same mechanism the launch_backend.c:430 comment promises for
+checkpointer/bgwriter (Tier D).  This is blocked by the bringup invariant that
+the startup process is forked at PM_STARTUP and starting carriers earlier makes
+fork-without-exec unsafe, so it is genuine Tier D/F work, not a quick change.
+Full analysis: /tmp/tier-b-fork-vs-fiber-rootcause.md.
+
+INTERIM (correct, not a hack, if the hand-off is deferred): io_method=xtc does
+issuer-synchronous AIO on the backend's OWN fiber (no foreign completer at all;
+method_xtc.c, already implemented for reads/writes), so a fiber backend never
+waits on a cross-process completion.  Routing fiber backends to io_method=xtc
+(or sync) under multithreaded=on sidesteps the cross-process wake entirely.  Not
+yet applied -- a deliberate decision pending.  NOTHING further is needed from
+libxtc: v1.8.0's xtc_proc_wake is the right primitive and is already wired for
+the in-process case.
 
 ### Cassert threaded smoke found a worker-fiber entry race (2026-07-08, commit 1168e5c6dc2)
 

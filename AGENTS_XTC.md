@@ -119,24 +119,31 @@ Larger (toward fully-on-xtc):
        flag, which a sibling fiber can clear).  Validated: summaries produced
        (matches process mode), fast + immediate stop clean, smoke 20/20.
      - Tier B: B_SLOTSYNC_WORKER, B_WAL_RECEIVER -- ATTEMPTED 2026-07-08,
-       DEFERRED; ROOT CAUSE now found (a libxtc bug, reported).  Both launch +
-       run as fibers (walreceiver streams WAL; slotsync starts) but a standby
-       does not shut down cleanly.  The wedge is a SYMPTOM: on a hot standby a
-       fresh fiber client backend HANGS FOREVER during InitPostgres (even
-       `SELECT 1`) because it blocks on an async-I/O completion
-       ConditionVariable (io_method=worker) and the cross-thread wake from the
-       I/O worker is LOST -- a hung backend never exits, so PM_WAIT_BACKENDS
-       never converges.  Verified: pipe/epoll/wakeup-fd plumbing all correct;
-       ONLY the wake delivery to the parked fiber is lost; a 100ms bounded wait
-       makes it work.  Primary is fine (catalogs cached, no async read at
-       connect); io_method=sync is fine (no cross-thread completion).  This is a
-       general fiber+AIO gap, not Tier-B-specific.  Reported to libxtc in
-       /tmp/libxtc-crossthread-fd-wake-miss.md (reproduces on v1.7.0, NOT in
-       their KNOWN_ISSUES).  Gap + the contract libxtc must satisfy:
-       /tmp/tier-b-fiber-aio-gap.md.  Re-admit Tier B ONLY after libxtc delivers
-       the cross-thread fd-readiness wake -- NO interim (no bounded-timeout
-       hack, no io_method=sync dodge, no io_method=xtc to paper over it).
-       See M16_XTC_CARRIER_FINDINGS.md.
+       DEFERRED; ROOT CAUSE found (2026-07-09) = OUR fork/fiber MIXED model,
+       NOT a libxtc bug.  Both launch + run as fibers (walreceiver streams WAL;
+       slotsync starts) but a standby does not shut down cleanly.  The wedge is
+       a SYMPTOM: on a hot standby a fresh fiber client backend HANGS during
+       InitPostgres (even `SELECT 1`) on its first uncached-catalog async read;
+       a hung backend never exits, so PM_WAIT_BACKENDS never converges.  GDB +
+       /proc showed why: client backends run as FIBERS inside the postmaster
+       process, but io workers (+ checkpointer, bgwriter) are still FORKED
+       PROCESSES (they launch at PM_STARTUP before carriers exist).  A forked
+       io worker completes the backend's AIO and SetLatch()es it, but
+       owner_pid(postmaster) != MyProcPid(io-worker-fork) -> SetLatch takes the
+       cross-PROCESS kill(SIGURG) path aimed at the postmaster process, which
+       cannot wake the specific carrier-loop thread hosting the fiber.  Lost
+       wakeup.  xtc_proc_wake CANNOT help across a process boundary (it only
+       works in-process).  Primary is fine (catalogs cached, no async read);
+       io_method=sync/xtc are fine (no foreign completer).
+       FIX = run the completers IN-PROCESS as thread carriers via the
+       early-start process->thread HAND-OFF (Tier D/F; blocked by the
+       fork-without-exec-before-carriers bringup invariant), then the wired
+       xtc_proc_wake (commit dbaf5c9580b) closes it.  INTERIM available (not a
+       hack): route fiber backends to io_method=xtc (issuer-synchronous on the
+       fiber, no foreign completer) under multithreaded=on.  libxtc v1.8.0's
+       xtc_proc_wake is the right primitive and is already wired for in-process
+       wakes -- NOTHING further needed from libxtc.  Full analysis:
+       /tmp/tier-b-fork-vs-fiber-rootcause.md.  See M16_XTC_CARRIER_FINDINGS.md.
        (v1.4.2 fixed the standby client-backend REAPING; primary
        walsender-teardown double-free is fixed (b63027eed02).)
      - Tier C: B_ARCHIVER -- ADMITTED (2026-07-08, commits 9ad3770f7c2 +
