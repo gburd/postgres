@@ -650,20 +650,28 @@ xtc_carrier_eligible(BackendType child_type)
 		case B_WAL_RECEIVER:
 
 			/*
-			 * #5 widening -- Tier B: DEFERRED (2026-07-08).  As a fiber the WAL
-			 * receiver streams correctly ("walreceiver launched as xtc fiber",
-			 * "started streaming WAL from primary") and cooperatively parks on
-			 * its libpq stream fd, but a standby FAST STOP does not converge: the
-			 * walreceiver fiber gets the terminate and exits ("terminating
-			 * walreceiver process due to administrator command", fiber exit
-			 * code=256), yet the postmaster stays in PM_WAIT_* -- a
-			 * standby-shutdown-ordering issue between the fiber walreceiver and
-			 * the (thread-carrier) startup/recovery process.  0 cores (a wedge,
-			 * not a crash).  Re-admit once the standby fiber-walreceiver +
-			 * startup shutdown ordering converges.  See
-			 * M16_XTC_CARRIER_FINDINGS.md.  Deferred, not rejected.
+			 * #5 widening -- Tier B (2026-07-09): the WAL receiver is
+			 * fiber-eligible.  It is started on demand by the startup process
+			 * during recovery / on a standby (StartChildProcess(B_WAL_RECEIVER)
+			 * at PM_STARTUP..PM_HOT_STANDBY), after thread carriers exist.  Its
+			 * main loop parks on WaitLatchOrSocket(MyLatch, WL_SOCKET_READABLE |
+			 * WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH) -- routed through
+			 * the xtc intercept -- and processes interrupts via
+			 * CHECK_FOR_INTERRUPTS() plus its own WalRcvShutdownRequested()/
+			 * proc_exit(1) handshake.  SIGTERM/SIGQUIT map to PROC_DIE and wake
+			 * the fiber via cross-fiber SetLatch, driving proc_exit through the
+			 * standard ProcessInterrupts() ProcDiePending path.
+			 *
+			 * The earlier deferral blamed a "standby shutdown-ordering" wedge, but
+			 * that was a SYMPTOM: the standby's fiber CLIENT backends hung during
+			 * InitPostgres on their first uncached read (forked io workers cannot
+			 * wake in-process fibers under io_method=worker), and a hung backend
+			 * keeps PM_WAIT_BACKENDS from converging.  With io_method routed to the
+			 * in-fiber xtc method under multithreaded=on (postmaster.c), standby
+			 * fiber backends complete queries and shutdown converges, so the
+			 * walreceiver's own clean fiber teardown is no longer masked.
 			 */
-			return false;
+			return true;
 		default:
 
 			/*
