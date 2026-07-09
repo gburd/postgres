@@ -916,6 +916,30 @@ Exit gate:
   stress, parked wake race tests, attach/detach invariant checks, and negative
   tests proving deep waits remain carrier-pinned.
 
+Status: implemented; runtime-validated (2026-07-09, libxtc v1.9.0), Gate F TAP
+run still pending on a disk-backed host.  Direct runtime evidence gathered
+(pooled_protocol_carriers=N, multithreaded=on):
+
+- Sessions outnumber carriers: 20 concurrent sessions each returning correct
+  results on 2, 4, AND 8 carriers (ok=20 fail=0 in every case) -- real
+  multiplexing, incl. 20-on-2.
+- Idle-in-transaction hold: 6 sessions held in BEGIN...pg_sleep...COMMIT while
+  only N carriers exist; a concurrent query still returns correctly and
+  pg_stat_activity shows the pool multiplexing (fewer in-flight than sessions).
+- Sustained throughput: pgbench -c 16 -j 4 -T 5 on 4 carriers -> ~800 tps, 0
+  errors (process-mode baseline ~920 tps, same box/load).
+- Cancel/terminate on a POOLED session: pg_cancel_backend wakes a parked
+  pg_sleep (woke=yes); pg_terminate_backend removes it (gone=yes).
+- No crash / clean shutdown: crash=0, fast stop clean, 0 cores in every run.
+- Off by default (pooled_protocol_carriers=0 keeps thread-per-session); process
+  mode unaffected.
+
+Remaining before flipping the "experimental" label: (1) run the Gate F TAP
+(005-009) + full suites on a disk-backed host; (2) route the two pooled-path
+blocking poll() sites (postgres.c ~649 sticky-idle probe, ~6127 scheduler-carrier
+poll) through the xtc loop so the pooled carrier never blocks on a raw poll;
+(3) enable the attach/detach invariant asserts in a cassert run under stress.
+
 ## Phase 16: Bundled Extension Completion And Hardening
 
 Goal: close Gate E2-Extensions after the core threaded runtime is working.
