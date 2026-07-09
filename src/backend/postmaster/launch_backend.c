@@ -635,18 +635,25 @@ xtc_carrier_eligible(BackendType child_type)
 		case B_SLOTSYNC_WORKER:
 
 			/*
-			 * #5 widening -- Tier B: DEFERRED (2026-07-08).  The slot sync worker
-			 * launches fine as a fiber, but validating its clean shutdown needs a
-			 * CORRECTLY configured slotsync (sync_replication_slots=on with a
-			 * dbname in primary_conninfo).  In a misconfigured/error state the
-			 * worker errors out ("requires dbname in primary_conninfo"), exits,
-			 * and is relaunched every ~60s; a standby fast stop then does not
-			 * converge on that relaunch churn.  Re-admit once clean-config
-			 * start + fast/immediate stop is validated (and confirm the
-			 * error-relaunch-churn shutdown case is handled).  See
-			 * M16_XTC_CARRIER_FINDINGS.md.  Deferred, not rejected.
+			 * #5 widening -- Tier B (2026-07-09): the slot sync worker is
+			 * fiber-eligible.  It runs only on a hot standby with
+			 * sync_replication_slots=on (StartChildProcess(B_SLOTSYNC_WORKER) at
+			 * PM_HOT_STANDBY), so it starts well after thread carriers exist.  Its
+			 * main loop and SlotSyncWorkerCheckForStop park on WaitLatch(MyLatch,
+			 * ...) with a bounded WL_TIMEOUT routed through the xtc intercept and
+			 * re-poll via CHECK_FOR_INTERRUPTS() on each wake.  Fast/immediate stop
+			 * map SIGTERM/SIGQUIT to PROC_DIE; the cross-fiber SetLatch wakes the
+			 * fiber and ProcessInterrupts() honors ProcDiePending -> proc_exit,
+			 * publishing the pooled-logical exit so PM_WAIT_* completes.
+			 *
+			 * The earlier deferral was a MISCONFIG artifact (sync_replication_slots
+			 * without a dbname in primary_conninfo made the worker error out and
+			 * relaunch every ~60s, and shutdown could not converge on that churn --
+			 * compounded by the standby fiber-backend AIO hang, now fixed by the
+			 * io_method=xtc routing).  With a correct slotsync config it starts,
+			 * syncs, and tears down cleanly.
 			 */
-			return false;
+			return true;
 		case B_WAL_RECEIVER:
 
 			/*
