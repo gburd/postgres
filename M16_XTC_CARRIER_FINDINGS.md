@@ -71,6 +71,44 @@ independently motivated work; using it to hide this defect would bury it).
 Wait for the libxtc fix.  The gap + the exact contract libxtc must satisfy are
 written up in /tmp/tier-b-fiber-aio-gap.md.
 
+### libxtc v1.8.0: xtc_proc_wake shipped; PG-side wiring IN PROGRESS (2026-07-09, commit 0da989cea44)
+
+libxtc v1.8.0 (rev 0d625f8) shipped the fix for our reported cross-thread
+fd/latch wake miss: a new public primitive **xtc_proc_wake(pid)** the embedder
+calls from any OS thread after making a watched condition true, to poke the
+target loop so a fiber parked in xtc_proc_wait_fd re-checks (exactly the
+"poke the target loop" call our report asked for; see libxtc
+test/concurrency/test_proc_wake_crossthread.c for the intended pattern, which is
+modeled on our PG case).  Bumped the flake (commit 0da989cea44); core path
+clean (threaded startup, SELECT 1, fast stop, 0 cores); the primitive is
+additive/unused until wired, so process/non-fiber modes are unchanged.
+
+WIRING STATUS -- NOT yet closing the Tier B hang.  Initial wiring (STASHED,
+"xtc_proc_wake wiring WIP"): added owner_fiber_{valid,loop,local,gen} to struct
+Latch (guarded by USE_XTC_CARRIER, stored as raw uint32s so libxtc's xtc_pid_t
+does not leak into latch.h), captured the parking fiber's xtc_self() onto
+set->latch at the WaitEventSetWaitBlock fiber-park point, and called
+xtc_proc_wake() in SetLatch's cross-thread branch.  On the primary this WORKS
+(observed a fiber_valid=1 SetLatch -> proc_wake fired).  But the standby
+hot-backend AIO hang PERSISTS, and instrumentation shows why the wiring is not
+yet enough:
+  - Every cross-thread SetLatch on the standby shows fiber_valid=0 on the target
+    latch, and the ONLY observed setter pid is the postmaster -- the io-worker
+    completion SetLatch (ConditionVariableBroadcast(&ioh->cv) ->
+    SetLatch(&waiter->procLatch)) that should wake the AIO waiter is NOT being
+    observed on the waiter's procLatch at all.
+  - So before wiring the wake, the COMPLETION PATH itself needs tracing on the
+    standby: does the io worker actually run the shared completion and
+    SetLatch the waiter?  Is the waiter parked on procLatch (LatchWaitSet) or a
+    different WaitEventSet?  Does the AIO CV waiter's latch match the latch the
+    io worker sets?  Earlier deep tracing (pre-v1.8.0) had shown the IO reach
+    the io worker and complete, so re-confirm on v1.8.0 and identify the exact
+    latch object the completion targets vs the one the fiber parks on.
+NEXT: from a CLEAN tree (pop the stash), trace the standby io-worker completion
+-> waiter SetLatch, confirm which latch carries the waiter fiber, capture the
+fiber owner on THAT latch, and only then call xtc_proc_wake.  Validate with the
+sy.sh worker standby probe (SELECT 1 returns) + full Tier B.
+
 ### Cassert threaded smoke found a worker-fiber entry race (2026-07-08, commit 1168e5c6dc2)
 
 Unblocked work while Tier B waits on libxtc: rebuilt build-xtc-cassert (cassert +
