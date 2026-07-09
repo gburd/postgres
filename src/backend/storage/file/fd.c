@@ -101,6 +101,10 @@
 #include "utils/guc.h"
 #include "utils/guc_hooks.h"
 #include "utils/resowner.h"
+#ifdef USE_XTC_CARRIER
+#include "postmaster/pg_xtc_carrier.h"	/* xtc_in_backend_fiber */
+#include "xtc_aio.h"					/* xtc_aio_fsync / xtc_aio_fdatasync */
+#endif
 #include "utils/varlena.h"
 #include "utils/wait_event.h"
 #include "../../utils/init/backend_runtime_internal.h"
@@ -519,6 +523,35 @@ pg_fsync_no_writethrough(int fd)
 	if (!enableFsync)
 		return 0;
 
+#ifdef USE_XTC_CARRIER
+	/*
+	 * On an xtc backend fiber, route fsync through libxtc's async fiber fsync:
+	 * it parks the fiber (yielding the carrier loop to sibling fibers) instead
+	 * of blocking the whole carrier thread for the whole disk sync, then
+	 * completes on the issuing fiber.  Save/restore current-work across the
+	 * park (the loop may run other backend fibers meanwhile, clobbering PG's
+	 * per-backend current-work thread-locals -- same hazard as method_xtc.c and
+	 * xtc_pg_wait_fd()).  xtc_aio_fsync returns 0 or a NEGATIVE errno; map to
+	 * fsync's 0 / -1-with-errno convention.  Off a fiber, fall through to the
+	 * ordinary blocking syscall (process mode / aux backends unchanged).
+	 */
+	if (xtc_in_backend_fiber)
+	{
+		PgCurrentWorkSnapshot snap;
+		int			xrc;
+
+		PgRuntimeSaveCurrentWork(&snap);
+		xrc = xtc_aio_fsync(fd);
+		PgRuntimeRestoreCurrentWork(&snap);
+		if (xrc < 0)
+		{
+			errno = -xrc;
+			return -1;
+		}
+		return 0;
+	}
+#endif
+
 retry:
 	rc = fsync(fd);
 
@@ -557,6 +590,26 @@ pg_fdatasync(int fd)
 
 	if (!enableFsync)
 		return 0;
+
+#ifdef USE_XTC_CARRIER
+	/* See pg_fsync_no_writethrough: park the fiber on the async fdatasync
+	 * (the page/WAL flush hot path) rather than blocking the carrier loop. */
+	if (xtc_in_backend_fiber)
+	{
+		PgCurrentWorkSnapshot snap;
+		int			xrc;
+
+		PgRuntimeSaveCurrentWork(&snap);
+		xrc = xtc_aio_fdatasync(fd);
+		PgRuntimeRestoreCurrentWork(&snap);
+		if (xrc < 0)
+		{
+			errno = -xrc;
+			return -1;
+		}
+		return 0;
+	}
+#endif
 
 retry:
 	rc = fdatasync(fd);
