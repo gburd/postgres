@@ -65,6 +65,7 @@
 #include "storage/read_stream.h"
 #include "storage/smgr.h"
 #include "storage/standby.h"
+#include "utils/injection_point.h"
 #include "utils/memdebug.h"
 #include "utils/ps_status.h"
 #include "utils/rel.h"
@@ -4345,6 +4346,39 @@ BufferSync(int flags)
 				int			local_id;
 				BufferDesc *bufHdr;
 
+				/*
+				 * Injection point: park the checkpointer here on the first
+				 * dynamic-pool buffer, holding the cached local->descriptors,
+				 * so a test can fire a concurrent DROP BUFFER POOL whose detach
+				 * barrier frees that array -- then wake us to prove the
+				 * per-iteration bp_active guard below prevents the
+				 * use-after-free that used to segfault the checkpointer.
+				 */
+				if (j == 0)
+					INJECTION_POINT("bufsync-dynamic-pool-loop", NULL);
+
+				/*
+				 * CheckpointWriteDelay() below processes interrupts, including
+				 * a pending PROCSIGNAL_BARRIER_BUFPOOL_DETACH from a concurrent
+				 * DROP/RESIZE BUFFER POOL.  That barrier handler
+				 * (ProcessBarrierBufferPoolDetach) detaches this process from
+				 * the pool's DSM, freeing local->descriptors out from under
+				 * this loop.  If the pool went inactive, its buffers are being
+				 * torn down by the destroyer and must not be written here, so
+				 * stop iterating this pool before dereferencing a freed
+				 * descriptor.
+				 */
+				pg_read_barrier();
+				if (!pool->bp_active || !local->attached)
+					break;
+
+				/*
+				 * ponytail: per-iteration bp_active check is the minimal fix for
+				 * the checkpointer detaching a pool mid-sync.  A cleaner design
+				 * would have ProcessBarrierBufferPoolDetach defer detaching a
+				 * pool the current process is actively checkpointing until the
+				 * sync finishes; do that if this guard ever proves insufficient.
+				 */
 				buf_id = local->ckpt_ids[j].buf_id;
 				local_id = buf_id - pool->bp_first_buf;
 				bufHdr = &local->descriptors[local_id].bufferdesc;
