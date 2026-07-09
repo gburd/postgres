@@ -62,6 +62,9 @@
 #include "port/pg_getopt_ctx.h"
 #include "postmaster/interrupt.h"
 #include "postmaster/postmaster.h"
+#ifdef USE_XTC_CARRIER
+#include "postmaster/pg_xtc_carrier.h"	/* xtc_in_backend_fiber */
+#endif
 #include "replication/logicallauncher.h"
 #include "replication/logicalworker.h"
 #include "replication/slotsync.h"
@@ -637,8 +640,21 @@ SocketBackendStickyIdleWait(PgSession *session, PgProtocolByteProbe *probe)
 	}
 
 	wait_events = probe->transport_wait_events | WL_SOCKET_CLOSED;
-	if (probe->transport_wait_events == WL_SOCKET_READABLE)
+	if (probe->transport_wait_events == WL_SOCKET_READABLE
+#ifdef USE_XTC_CARRIER
+		&& !xtc_in_backend_fiber
+#endif
+		)
 	{
+		/*
+		 * Fast path (process / dedicated-thread carriers only): a single
+		 * blocking poll() on the client socket for the sticky-idle grace.  On
+		 * an xtc fiber this raw poll() would block the shared carrier loop for
+		 * the whole grace window (default pooled_protocol_sticky_idle_ms=10ms),
+		 * stalling every sibling session on that carrier -- so a fiber falls
+		 * through to the WaitEventSetWait() path below, which yields the fiber
+		 * cooperatively via the xtc intercept.
+		 */
 		struct pollfd poll_fd;
 		int			poll_rc;
 
