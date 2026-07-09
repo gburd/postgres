@@ -118,31 +118,33 @@ Larger (toward fully-on-xtc):
        durable PMChild carrier_kind (not the per-OS-thread xtc_in_backend_fiber
        flag, which a sibling fiber can clear).  Validated: summaries produced
        (matches process mode), fast + immediate stop clean, smoke 20/20.
-     - Tier B: B_SLOTSYNC_WORKER, B_WAL_RECEIVER -- ATTEMPTED 2026-07-08,
-       DEFERRED; ROOT CAUSE found (2026-07-09) = OUR fork/fiber MIXED model,
-       NOT a libxtc bug.  Both launch + run as fibers (walreceiver streams WAL;
-       slotsync starts) but a standby does not shut down cleanly.  The wedge is
-       a SYMPTOM: on a hot standby a fresh fiber client backend HANGS during
-       InitPostgres (even `SELECT 1`) on its first uncached-catalog async read;
-       a hung backend never exits, so PM_WAIT_BACKENDS never converges.  GDB +
-       /proc showed why: client backends run as FIBERS inside the postmaster
-       process, but io workers (+ checkpointer, bgwriter) are still FORKED
-       PROCESSES (they launch at PM_STARTUP before carriers exist).  A forked
-       io worker completes the backend's AIO and SetLatch()es it, but
-       owner_pid(postmaster) != MyProcPid(io-worker-fork) -> SetLatch takes the
-       cross-PROCESS kill(SIGURG) path aimed at the postmaster process, which
-       cannot wake the specific carrier-loop thread hosting the fiber.  Lost
-       wakeup.  xtc_proc_wake CANNOT help across a process boundary (it only
-       works in-process).  Primary is fine (catalogs cached, no async read);
-       io_method=sync/xtc are fine (no foreign completer).
-       FIX = run the completers IN-PROCESS as thread carriers via the
-       early-start process->thread HAND-OFF (Tier D/F; blocked by the
-       fork-without-exec-before-carriers bringup invariant), then the wired
-       xtc_proc_wake (commit dbaf5c9580b) closes it.  INTERIM available (not a
-       hack): route fiber backends to io_method=xtc (issuer-synchronous on the
-       fiber, no foreign completer) under multithreaded=on.  libxtc v1.8.0's
-       xtc_proc_wake is the right primitive and is already wired for in-process
-       wakes -- NOTHING further needed from libxtc.  Full analysis:
+     - Tier B: B_SLOTSYNC_WORKER, B_WAL_RECEIVER -- ADMITTED (2026-07-09,
+       commits 42fe3a99469 + 5df28304993).  Root cause of the original defer was
+       OUR fork/fiber MIXED model, NOT a libxtc bug: on a hot standby a fresh
+       fiber CLIENT backend hung during InitPostgres on its first
+       uncached-catalog async read, and a hung backend keeps PM_WAIT_BACKENDS
+       from converging (that was the "shutdown wedge").  GDB + /proc: client
+       backends run as FIBERS inside the postmaster, but io workers (+
+       checkpointer, bgwriter) are still FORKED PROCESSES (launch at PM_STARTUP
+       before carriers exist); a forked io worker completing the backend's AIO
+       SetLatch()es it, but owner_pid(postmaster) != MyProcPid(io-worker-fork)
+       so SetLatch takes the cross-PROCESS kill(SIGURG) path aimed at the
+       postmaster, which cannot wake the fiber's carrier loop.  xtc_proc_wake
+       cannot cross a process boundary.
+       INTERIM FIX (commit 2c9749b2da2): under multithreaded=on, route the
+       default io_method=worker to the in-fiber "xtc" method (issuer-synchronous
+       READV/WRITEV on the fiber, no foreign completer) by rewriting the GUC
+       value after SelectConfigFiles.  With that, standby fiber backends serve
+       queries and both Tier B families are validated: walreceiver launches as a
+       fiber + streams + standby serves replicated rows; slotsync worker
+       launches once (no relaunch churn) + syncs; BOTH fast AND immediate stop
+       of standby+primary clean (0 cores, 0 SIGKILL escalations).  Process mode
+       (multithreaded=off) byte-for-byte untouched (io_method=worker + forks).
+       REAL FIX still owed (Tier D/F): run the completers IN-PROCESS as thread
+       carriers via the early-start process->thread HAND-OFF, then io_method=
+       worker wakes fibers via the wired xtc_proc_wake (commit dbaf5c9580b) and
+       the interim remap can be removed.  NOTHING further needed from libxtc
+       (v1.8.0's xtc_proc_wake is the right primitive).  Full analysis:
        /tmp/tier-b-fork-vs-fiber-rootcause.md.  See M16_XTC_CARRIER_FINDINGS.md.
        (v1.4.2 fixed the standby client-backend REAPING; primary
        walsender-teardown double-free is fixed (b63027eed02).)
