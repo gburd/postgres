@@ -443,6 +443,24 @@ choke me
 PGAC_ARG_BOOL(with, llvm, no, [build with LLVM based JIT support],
               [AC_DEFINE([USE_LLVM], 1, [Define to 1 to build with LLVM based JIT support. (--with-llvm)])])
 AC_SUBST(with_llvm)
+
+#
+# C11 stdatomic.h
+#
+# Accepts --with-stdatomic={yes,no,auto}.  "no" (the default) forces the
+# traditional platform-specific atomics; "auto" uses stdatomic.h if the probe
+# succeeds and falls back otherwise; "yes" requires it.  The actual detection
+# runs later, after the compiler and 64-bit integer handling have been
+# configured.
+AC_ARG_WITH(stdatomic,
+            [AS_HELP_STRING([--with-stdatomic@<:@=yes/no/auto@:>@],
+                            [use C11 stdatomic.h for atomic operations @<:@no@:>@])],
+            [case $withval in
+               yes | no | auto) ;;
+               *) AC_MSG_ERROR([invalid argument to --with-stdatomic; use yes, no, or auto]) ;;
+             esac],
+            [with_stdatomic=no])
+AC_SUBST(with_stdatomic)
 dnl must use AS_IF here, else AC_REQUIRES inside PGAC_LLVM_SUPPORT malfunctions
 AS_IF([test "$with_llvm" = yes], [
   PGAC_LLVM_SUPPORT()
@@ -2110,6 +2128,73 @@ PGAC_HAVE_GCC__SYNC_INT32_CAS
 PGAC_HAVE_GCC__SYNC_INT64_CAS
 PGAC_HAVE_GCC__ATOMIC_INT32_CAS
 PGAC_HAVE_GCC__ATOMIC_INT64_CAS
+
+
+# Decide whether to use C11 stdatomic.h (see --with-stdatomic above).  The
+# probe mirrors the one used by the meson build: it must compile 32-bit
+# fetch_add, a seq_cst thread fence, and a 64-bit compare-exchange.
+if test "$with_stdatomic" != no; then
+  # Use a link test, not a compile test: 64-bit atomic_compare_exchange_strong()
+  # can lower to a libatomic call (__atomic_compare_exchange_8) on some 32-bit
+  # or weakly-aligned targets.  A compile-only check would pass there and then
+  # fail at final link.  Retry with -latomic if the bare link fails.
+  #
+  # The probe also requires the 32- and 64-bit atomics to be *always*
+  # lock-free.  PostgreSQL's atomics live in shared memory and are used from
+  # multiple processes, so a lock-table fallback (as libatomic uses when the
+  # hardware lacks the operation) would take process-local locks and silently
+  # fail to be atomic across backends.  stdatomic_impl.h asserts the same
+  # thing; checking it here means such a target just doesn't select the
+  # stdatomic path instead of failing a static assertion later in the build.
+  AC_CACHE_CHECK([for working C11 stdatomic.h], [pgac_cv_stdatomic],
+  [pgac_cv_stdatomic=no
+   AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <stdatomic.h>
+#if !(defined(_MSC_VER) && !defined(__cplusplus))
+#if ATOMIC_INT_LOCK_FREE != 2 || ATOMIC_LLONG_LOCK_FREE != 2
+#error atomics are not always lock-free
+#endif
+#endif],
+    [[_Atomic int x = 0;
+      atomic_fetch_add(&x, 1);
+      atomic_thread_fence(memory_order_seq_cst);
+      _Atomic(unsigned long long) y = 0;
+      unsigned long long expected = 0;
+      atomic_compare_exchange_strong(&y, &expected, 42);
+    ]])],
+    [pgac_cv_stdatomic=yes],
+    [pgac_save_LIBS=$LIBS
+     LIBS="$LIBS -latomic"
+     AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <stdatomic.h>
+#if !(defined(_MSC_VER) && !defined(__cplusplus))
+#if ATOMIC_INT_LOCK_FREE != 2 || ATOMIC_LLONG_LOCK_FREE != 2
+#error atomics are not always lock-free
+#endif
+#endif],
+      [[_Atomic int x = 0;
+        atomic_fetch_add(&x, 1);
+        atomic_thread_fence(memory_order_seq_cst);
+        _Atomic(unsigned long long) y = 0;
+        unsigned long long expected = 0;
+        atomic_compare_exchange_strong(&y, &expected, 42);
+      ]])],
+      [pgac_cv_stdatomic='yes, with -latomic'],
+      [pgac_cv_stdatomic=no])
+     LIBS=$pgac_save_LIBS])])
+else
+  pgac_cv_stdatomic=no
+fi
+
+if test "$with_stdatomic" = yes && test "$pgac_cv_stdatomic" = no; then
+  AC_MSG_ERROR([--with-stdatomic=yes was given, but a working C11 stdatomic.h could not be found])
+fi
+
+if test "$pgac_cv_stdatomic" != no; then
+  AC_DEFINE([USE_STDATOMIC_H], 1,
+            [Define to 1 to use C11 stdatomic.h for atomic operations. (--with-stdatomic)])
+  if test "$pgac_cv_stdatomic" = 'yes, with -latomic'; then
+    LIBS="$LIBS -latomic"
+  fi
+fi
 
 
 # Check for __get_cpuid() and __cpuid()
