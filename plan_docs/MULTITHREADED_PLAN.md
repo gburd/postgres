@@ -953,7 +953,34 @@ Threaded mode should become credible and complete for bundled in-tree modules,
 procedural languages, and contrib extensions without delaying Phase 13
 wait-observability or Phase 14/15 protocol-scheduler work.
 
-Likely work:
+Status: in progress (Session 4, 2026-07-10, commit 69c5f82c93f).  First bites
+landed on top of the pooled-as-default flip:
+
+- Procedural languages beyond PL/pgSQL, first audited pass:
+  - pltcl -> POOLED_PROTOCOL_AFFINE (audited affine-safe: session-relocated
+    interp/proc hashes + call state, explicit Tcl_Interp * on every call so no
+    thread-global current-interp, set-once-read-only process init).  Loads and
+    executes under both pooled default and thread-per-session.
+  - plperl -> THREAD_PER_SESSION (defer-with-invariant: activate_interpreter
+    keys PERL_SET_CONTEXT on the per-session active-interp but my_perl is
+    thread-global, so it diverges when sessions interleave on a carrier; the
+    model gate keeps it out of pooled backends until per-(re)entry re-activation
+    lands).
+  - plpython -> PROCESS (defer-with-invariant: embedded CPython + PLy_* globals
+    are process-global/GIL-serialized; needs per-session sub-interpreters or
+    full relocation).
+- Contrib backend-model batch: 18 stateless data-type / operator / dictionary /
+  tablesample libraries marked POOLED_PROTOCOL_AFFINE after per-module
+  mutable-state audit (citext, cube, hstore, intarray, isn, ltree, seg,
+  btree_gin, btree_gist, pg_trgm, fuzzystrmatch, dict_int, dict_xsyn,
+  earthdistance, unaccent, tablefunc, tsm_system_rows, tsm_system_time).  11
+  validated loading + executing correct results under the pooled default.
+- Session 3 already marked PL/pgSQL + the 21 encoding conversion procs +
+  dict_snowball + libpqwalreceiver + regress.c affine.
+
+Remaining Phase 16 work (Session 5 hardening + later):
+
+- Likely work:
 
 - migrate every contrib extension to explicit backend model metadata;
 - make every contrib extension support thread-per-session mode by default;
