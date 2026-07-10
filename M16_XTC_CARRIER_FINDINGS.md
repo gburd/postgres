@@ -164,6 +164,51 @@ the default (Session 3).  Deliberately NOT guessing a scheduler-pin fix without
 clean isolation -- a wrong fix to the pin invariant is worse than a documented,
 reproducible open bug.
 
+### Session 3 -- pooled protocol mode is now the DEFAULT (2026-07-10)
+
+Commits: a8a55f36910 (default flip) + ec2ba838555 (bundled-module affine batch).
+
+The flip: pooled_protocol_carriers boot value is now -1 ("auto").  In the
+postmaster, after SelectConfigFiles() (mirroring the io_method=worker->xtc
+remap), -1 resolves under multithreaded=on to a bounded pool (min(online CPUs,
+8), <=MaxConnections, >=1) and logs "pooled protocol scheduler enabled with N
+carriers (default)"; under multithreaded=off it resolves to 0 so no consumer or
+SHOW sees the sentinel in process mode.  Explicit 0 = thread-per-session (still
+supported); explicit N respected.  Guarded by USE_XTC_CARRIER; process mode
+untouched.  Local smoke confirmed all three: default->8 pooled, 0->tps, 3->3.
+
+Test intent preserved: TAP 001-006 and the check-threaded / check-threaded-
+workers regress configs were written for thread-per-session and are now pinned
+pooled_protocol_carriers=0.  Added threaded_pooled.conf + a check-threaded-
+pooled target (pooled_protocol_carriers=4) so the new default gets full core
+regression coverage.
+
+The backend-model gate surfaced by the flip: modules marked THREAD_PER_SESSION
+are refused under pooled-affine (ordinal module_model >= required_model, AFFINE=3
+> TPS=1).  Full core regression under pooled: 114/245 failing initially,
+dominated by "backend model mismatch".  Audited + upgraded the affine-safe
+bundled modules to POOLED_PROTOCOL_AFFINE (plpgsql -- already fully session-
+scoped via plpgsql_current_session_state(); 21 encoding conversion procs;
+dict_snowball; libpqwalreceiver; regress.c).  114 -> 38 (after plpgsql) -> 8
+failures, 0 model-mismatch, 0 crashes.  The residual 8 (join_hash, tidrangescan,
+incremental_sort, select_parallel/write_parallel/vacuum_parallel, bitmapops,
+tsearch) are pre-existing threaded-mode parallel-query / plan-shape diffs, a
+strict subset of the thread-per-session baseline (which fails 120/245 on the
+SAME schedule) -- so pooled introduces zero new regressions and is markedly
+cleaner than TPS.
+
+Deliberately left on THREAD_PER_SESSION (Session 4 contrib+PL batch, or
+intentionally testing the gate): pgrepack, plsample, worker_spi, test_shm_mq,
+test_ext_threaded.
+
+Open for Session 4/5: triage the residual 8 parallel/plan diffs (likely parallel
+worker behaviour + plan costing under threaded, common to TPS); the two pooled
+poll() sites were reviewed and are NOT blockers -- the sticky-idle poll is
+already fiber-guarded (!xtc_in_backend_fiber), and the scheduler reactor poll at
+postgres.c ~6143 is the carrier's own between-sessions reactor (10ms bound, not
+inside a fiber), inherent to the affine model where a mid-command deep wait
+pins its carrier and multiplexing happens at protocol-read boundaries.
+
 ### Session 2 -- 009 FIXED (2026-07-10, commit 223663b9d93)
 
 Root cause (traced instrumentation-free via a SetLatch() backtrace probe on the
