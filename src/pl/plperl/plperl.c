@@ -54,9 +54,29 @@ EXTERN_C void boot_DynaLoader(pTHX_ CV *cv);
 EXTERN_C void boot_PostgreSQL__InServer__Util(pTHX_ CV *cv);
 EXTERN_C void boot_PostgreSQL__InServer__SPI(pTHX_ CV *cv);
 
+/*
+ * Backend model: thread-per-session (NOT pooled-protocol-affine).
+ *
+ * plperl relocates its PG-visible globals per session (plperl_active_interp,
+ * plperl_held_interp, the interp/proc hashes, ...), which is sufficient for
+ * thread-per-session where each session owns its OS thread for life.  It is
+ * NOT affine-safe: activate_interpreter() only calls PERL_SET_CONTEXT when the
+ * *per-session* plperl_active_interp changes, but PERL_SET_CONTEXT sets the
+ * OS-thread-global my_perl.  When two sessions interleave on one carrier
+ * (affine), the thread's my_perl can point at the sibling's interpreter while
+ * a resumed session believes its own is still active -- silent interpreter
+ * corruption.
+ *
+ * Defer with invariant: making plperl affine requires re-activating the
+ * interpreter (PERL_SET_CONTEXT) on every session (re)entry, not only on a
+ * per-session active-interp change -- the backend-model gate is the guard that
+ * keeps plperl out of a pooled-affine backend until then.  Owned by Phase 16
+ * (bundled procedural languages beyond PL/pgSQL).
+ */
 PG_MODULE_MAGIC_EXT(
 					.name = "plperl",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
 /**********************************************************************

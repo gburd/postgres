@@ -42,9 +42,24 @@
 #include "utils/typcache.h"
 
 
+/*
+ * Backend model: pooled-protocol-affine.  Audited safe --
+ * - All mutable session state (the per-userid interpreter hash, proc hash,
+ *   held interpreter, current call state, start_proc) is relocated per session
+ *   via the PgCurrentPLTcl* accessors, so sessions that share a carrier OS
+ *   thread never see each other's Tcl interpreters or call state.
+ * - Unlike plperl (which relies on a thread-global my_perl via
+ *   PERL_SET_CONTEXT that would diverge from per-session state when sessions
+ *   interleave on a carrier), Tcl takes the Tcl_Interp * explicitly on every
+ *   call, so there is no thread-global "current interpreter" to corrupt.
+ * - The only process-global init (Tcl_FindExecutable) is guarded by the
+ *   set-once-read-only pltcl_pm_init_done; remaining file-scope data is const
+ *   lookup tables.
+ */
 PG_MODULE_MAGIC_EXT(
 					.name = "pltcl",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
 #define HAVE_TCL_VERSION(maj,min) \
