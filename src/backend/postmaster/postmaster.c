@@ -932,13 +932,19 @@ PostmasterMain(int argc, char *argv[])
 			if (ncpus < 1)
 				ncpus = 1;
 			/*
-			 * A modest pool: enough to overlap disk/lock waits across sessions
-			 * without one carrier per core.  Bounded to 8 by default so a
-			 * many-core box does not spin up a large idle carrier set; explicit
-			 * tuning overrides this.  Never exceed MaxConnections (a carrier per
-			 * session is pointless past that).
+			 * Size the pool to overlap disk/lock waits across sessions.  A
+			 * carrier-count sweep of a CPU-bound in-RAM pgbench on a 96-core
+			 * box (Session 5) showed pooled throughput climbing with carriers
+			 * up to ~cpus/4 (8->42k, 16->69k, 24->82k tps) and flattening
+			 * beyond, so scale with cores at a quarter of nproc rather than a
+			 * flat cap.  Floor of 8 keeps small boxes responsive; the value is
+			 * still bounded by nproc (never more carriers than cores) and by
+			 * MaxConnections (a carrier per session is pointless past that).
+			 * Explicit tuning overrides all of this.
 			 */
-			resolved = (int) Min(ncpus, 8);
+			resolved = (int) Max(8, ncpus / 4);
+			if (resolved > ncpus)
+				resolved = (int) ncpus;
 			if (MaxConnections > 0 && resolved > MaxConnections)
 				resolved = MaxConnections;
 			if (resolved < 1)
