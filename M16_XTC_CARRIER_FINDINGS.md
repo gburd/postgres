@@ -16,6 +16,35 @@ once, exactly one resumed/exited and the rest were lost.  The single-loop model
 was bringup scaffolding; the loop pool is the intended Phase-15 shape and
 sidesteps the single-loop dispatch edge entirely, as predicted.
 
+## Session 1 -- Phase 15 Gate F suite run on real EC2 hardware (2026-07-10)
+
+Built + ran the protocol-scheduler TAP on c7i.metal-24xl (96 vCPU, us-east-2,
+libxtc v1.10.0) via a new reusable harness (scripts/run-suite-ec2.sh) -- this
+removes the meson-on-btrfs dev-env TAP hang that blocked every prior gate.
+
+Results (test_backend_runtime TAP):
+- 005 Phase14 protocol scheduler: OK (35); 006 Phase14 pm-death: OK (3);
+  007 Phase15 pooled mode: OK (46); 008 Phase15 pooled pm-death: OK (11).
+- 004 Phase13 wait-completion + 009 deep-waits-pinned SKIP in the default build
+  (PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION is diagnostic-only, compiled
+  out in production).  A second build with -DPG_RUNTIME_ENABLE_WAIT_COMPLETION_
+  PUBLICATION: 004 OK (46); 009 FAIL (5 of 33).
+
+So Phase 14 + the pooled happy path pass on real hardware; Phase 13 passes with
+its diagnostic publication compiled in; 009 (deep-waits-pinned) surfaced a REAL
+Phase 15 bug -- the Session-2 (hardening) target, found early per directive-4.
+
+009 failure = a pooled backend in a deep event-set wait while holding an LWLock
+(test_backend_runtime_hold_lwlock(60000)) does NOT publish its wait-completion
+(snapshot inactive|none) and its protocol-park snapshot shows committed|polling
+-- i.e. it looks PROTOCOL-PARKED instead of carrier-pinned, violating the Phase
+15 "deep waits remain carrier-pinned" invariant; and pg_cancel of it times out
+(48s).  The advisory-lock deep-wait cases just above (ProcSleep->WaitLatch) PASS
+and stay pinned, so the gap is specifically the C-level event-set wait path
+(WaitEventSetWait->PgSuspend) under pooled mode.  Full detail:
+/tmp/session1-gatef-results.md.  EC2 instance i-0d4b5c5d575ca4c6a kept for the
+Session-2 investigation; MUST terminate + delete key/SG when done.
+
 ## libxtc v1.7.0 adopted; cross-thread fd-wake-miss is the Tier B blocker (2026-07-08)
 
 Bumped to libxtc **v1.7.0** (rev 17ee625; commit 1e31ff60bb1), via v1.6.0 (rev
