@@ -45,6 +45,43 @@ and stay pinned, so the gap is specifically the C-level event-set wait path
 /tmp/session1-gatef-results.md.  EC2 instance i-0d4b5c5d575ca4c6a kept for the
 Session-2 investigation; MUST terminate + delete key/SG when done.
 
+### Session 2 progress: 009 diagnosis narrowed (2026-07-10)
+
+Instrumented the box's build-wc (waiteventset.c XTCDBG_DW at the publish gate).
+Re-ran 009.  Findings:
+- The LWLock holder's WaitLatch does NOT hit the no-publish diagnostic -- so
+  PgBackendShouldPublishWaitCompletion returned TRUE for it and it entered the
+  PgSuspend publish path.  The only no-publish logs are checkpointer/bgwriter
+  (thread_backed=0, correct).  So the holder DID attempt to publish, yet the
+  test's snapshot read "inactive|none".
+- The protocol-park snapshot for the holder = "committed|polling": PARK_STATE=
+  COMMITTED, QUEUE_STATE=POLLING.  But test_backend_runtime_hold_lwlock runs
+  during ExecutorRun where doing_command_read=false, and protocol-parking only
+  commits when doing_command_read=true (postgres.c ~5089/6903).  A running
+  command must show park_state=NONE.  And QUEUE_STATE=POLLING (not LEASED) is a
+  backend the scheduler is still polling -- PgRuntimeProtocolSchedulerLeaseBackend
+  explicitly refuses to lease a POLLING backend.
+- Registry lookup is by backend->id (a monotonic counter, PgBackendAssignId),
+  NOT MyProcPid; the test passes pg_backend_pid().  The advisory-lock deep-wait
+  case (tests 16-21) uses the SAME pg_backend_pid() path and PASSES, so a plain
+  id-mismatch is not the whole story -- the differentiator is the wait TYPE
+  (advisory = ProcSleep->WaitLatch publishes+pins fine; direct WaitLatch while
+  holding an LWLock does not).
+
+SHARPENED HYPOTHESIS: the snapshot is reading a backend that is still in the
+scheduler's POLLING queue with stale COMMITTED park state -- either (a) the
+holder session started running its command WITHOUT going through
+PgBackendResumeProtocolReadPark (which clears park_state to NONE), leaving stale
+committed|polling, and its wait-completion is published on the RUNNING backend
+object while the snapshot-by-id resolves a stale/other entry; or (b) pg_backend_pid
+in pooled mode does not map to the running holder's backend->id the way it does
+for the advisory case.  NEXT decisive probe (not yet run): log at
+PgWaitCompletionPublish (backend->id + we) and at the snapshot lookup (requested
+id -> resolved backend->id), run 009, and confirm whether publish and snapshot
+agree on the id, and whether a resume path ran without clearing park_state.
+Instrumentation for that is staged on the EC2 box (~/xtcsrc), not in the tree.
+This must be root-caused before pooled becomes the default (Session 3).
+
 ## libxtc v1.7.0 adopted; cross-thread fd-wake-miss is the Tier B blocker (2026-07-08)
 
 Bumped to libxtc **v1.7.0** (rev 17ee625; commit 1e31ff60bb1), via v1.6.0 (rev
