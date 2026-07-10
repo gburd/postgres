@@ -59,6 +59,7 @@ $node->init;
 $node->append_conf(
 	'postgresql.conf', q{
 multithreaded = on
+pooled_protocol_carriers = 0
 autovacuum = off
 io_method = sync
 summarize_wal = off

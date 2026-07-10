@@ -187,6 +187,7 @@ $node->init;
 $node->append_conf(
 	'postgresql.conf', q{
 multithreaded = on
+pooled_protocol_carriers = 0
 autovacuum = on
 autovacuum_naptime = '1h'
 io_method = worker

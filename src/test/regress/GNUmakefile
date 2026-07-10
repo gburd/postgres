@@ -79,7 +79,8 @@ regress_data_files = \
 	$(srcdir)/threaded_150_schedule \
 	$(srcdir)/threaded_200_schedule \
 	$(srcdir)/threaded_smoke.conf \
-	$(srcdir)/threaded_workers.conf $(srcdir)/resultmap
+	$(srcdir)/threaded_workers.conf \
+	$(srcdir)/threaded_pooled.conf $(srcdir)/resultmap
 
 install-tests: all install install-lib installdirs-tests
 	$(MAKE) -C $(top_builddir)/contrib/spi install
@@ -100,6 +101,7 @@ REGRESS_OPTS = --dlpath=. --max-concurrent-tests=20 \
 
 THREAD_REGRESS_CONFIG = $(srcdir)/threaded_smoke.conf
 THREAD_WORKERS_REGRESS_CONFIG = $(srcdir)/threaded_workers.conf
+THREAD_POOLED_REGRESS_CONFIG = $(srcdir)/threaded_pooled.conf
 THREAD_REGRESS_SCHEDULE = $(srcdir)/threaded_schedule
 THREAD_REGRESS_150_SCHEDULE = $(srcdir)/threaded_150_schedule
 THREAD_REGRESS_200_SCHEDULE = $(srcdir)/threaded_200_schedule
@@ -115,6 +117,9 @@ check-threaded: all | temp-install
 
 check-threaded-workers: all | temp-install
 	$(pg_regress_check) --temp-config=$(THREAD_WORKERS_REGRESS_CONFIG) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule $(MAXCONNOPT) $(EXTRA_TESTS)
+
+check-threaded-pooled: all | temp-install
+	$(pg_regress_check) --temp-config=$(THREAD_POOLED_REGRESS_CONFIG) $(REGRESS_OPTS) --schedule=$(srcdir)/parallel_schedule $(MAXCONNOPT) $(EXTRA_TESTS)
 
 check-threaded-smoke: all | temp-install
 	$(pg_regress_check) --temp-config=$(THREAD_REGRESS_CONFIG) $(REGRESS_OPTS) --schedule=$(THREAD_REGRESS_SCHEDULE) $(MAXCONNOPT) $(EXTRA_TESTS)

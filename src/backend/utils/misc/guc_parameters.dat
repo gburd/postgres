@@ -2548,12 +2548,12 @@
 },
 
 { name => 'pooled_protocol_carriers', type => 'int', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
-  short_desc => 'Sets the carrier count for the experimental pooled protocol scheduler.',
-  long_desc => 'A value of 0 keeps threaded client backends in thread-per-session mode. Positive values reserve the configured carrier count for the Phase 15 pooled protocol scheduler.',
+  short_desc => 'Sets the carrier count for the pooled protocol scheduler.',
+  long_desc => 'Under multithreaded=on, -1 (the default) auto-sizes a bounded carrier pool so client backends run in pooled protocol mode; 0 forces thread-per-session; a positive value reserves that many carriers. Ignored (thread-per-session) when multithreaded=off.',
   flags => 'GUC_NOT_IN_SAMPLE',
   variable => 'pooled_protocol_carriers',
-  boot_val => '0',
-  min => '0',
+  boot_val => '-1',
+  min => '-1',
   max => 'INT_MAX / 2',
 },
 

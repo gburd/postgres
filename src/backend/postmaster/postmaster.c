@@ -907,6 +907,59 @@ PostmasterMain(int argc, char *argv[])
 				(errmsg("multithreaded=on: routing io_method=worker to the in-fiber \"xtc\" method"),
 				 errdetail("Forked io workers cannot wake in-process fiber backends; set io_method explicitly to override.")));
 	}
+
+	/*
+	 * Pooled protocol mode is the default under multithreaded=on.  The GUC's
+	 * boot value -1 means "auto": derive a bounded carrier pool so threaded
+	 * client backends multiplex over a few carriers instead of one OS thread
+	 * per session.  An explicit 0 forces thread-per-session (still supported);
+	 * an explicit positive value is respected verbatim.  Under
+	 * multithreaded=off the pooled scheduler does not run, so resolve the -1
+	 * sentinel down to 0 to keep every `pooled_protocol_carriers > 0` consumer
+	 * (and SHOW) honest in process mode.
+	 *
+	 * Done here, after SelectConfigFiles() has finalized multithreaded, for the
+	 * same boot-value ordering reason as the io_method remap above.
+	 */
+	if (pooled_protocol_carriers < 0)
+	{
+		int			resolved;
+
+		if (multithreaded)
+		{
+			long		ncpus = sysconf(_SC_NPROCESSORS_ONLN);
+
+			if (ncpus < 1)
+				ncpus = 1;
+			/*
+			 * A modest pool: enough to overlap disk/lock waits across sessions
+			 * without one carrier per core.  Bounded to 8 by default so a
+			 * many-core box does not spin up a large idle carrier set; explicit
+			 * tuning overrides this.  Never exceed MaxConnections (a carrier per
+			 * session is pointless past that).
+			 */
+			resolved = (int) Min(ncpus, 8);
+			if (MaxConnections > 0 && resolved > MaxConnections)
+				resolved = MaxConnections;
+			if (resolved < 1)
+				resolved = 1;
+		}
+		else
+			resolved = 0;
+
+		{
+			char		buf[16];
+
+			snprintf(buf, sizeof(buf), "%d", resolved);
+			SetConfigOption("pooled_protocol_carriers", buf,
+							PGC_POSTMASTER, PGC_S_OVERRIDE);
+		}
+		if (multithreaded)
+			ereport(LOG,
+					(errmsg("multithreaded=on: pooled protocol scheduler enabled with %d carrier%s (default)",
+							resolved, resolved == 1 ? "" : "s"),
+					 errdetail("Set pooled_protocol_carriers=0 for thread-per-session, or a positive value to fix the pool size.")));
+	}
 #endif
 
 	/*
