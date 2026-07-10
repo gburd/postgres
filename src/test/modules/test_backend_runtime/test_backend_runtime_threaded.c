@@ -41,6 +41,7 @@ PG_FUNCTION_INFO_V1(test_backend_runtime_crash_thread_bgworker);
 PG_FUNCTION_INFO_V1(test_backend_runtime_custom_guc_value);
 PG_FUNCTION_INFO_V1(test_backend_runtime_custom_guc_init_count);
 PG_FUNCTION_INFO_V1(test_backend_runtime_emit_fatal);
+PG_FUNCTION_INFO_V1(test_backend_runtime_crash_current_backend);
 PG_FUNCTION_INFO_V1(test_backend_runtime_wait_completion_enabled);
 PG_FUNCTION_INFO_V1(test_backend_runtime_wait_completion_snapshot);
 PG_FUNCTION_INFO_V1(test_backend_runtime_protocol_park_snapshot);
@@ -429,6 +430,21 @@ test_backend_runtime_emit_fatal(PG_FUNCTION_ARGS)
 	ereport(FATAL,
 			(errmsg("test_backend_runtime requested FATAL")));
 	pg_unreachable();
+}
+
+/*
+ * Crash the CURRENT backend with a SIGSEGV (NULL deref).  In a threaded/pooled
+ * runtime this exercises the fiber-crash containment + genuine-crash escalation
+ * path: the fault must be contained on the carrier, escalate to a postmaster
+ * crash-recovery cycle, and not silently corrupt or hang sibling sessions.
+ */
+Datum
+test_backend_runtime_crash_current_backend(PG_FUNCTION_ARGS)
+{
+	volatile int *p = NULL;
+
+	*p = 42;					/* SIGSEGV */
+	PG_RETURN_BOOL(false);		/* not reached */
 }
 
 Datum

@@ -37,6 +37,7 @@
 #include <stdatomic.h>
 
 #include "miscadmin.h"
+#include "storage/latch.h"
 #include "libpq/pqsignal.h"	/* BlockSig */
 #include "postmaster/pg_xtc_carrier.h"
 
@@ -90,6 +91,15 @@ static xtc_pid_t g_xtc_sup_pid[XTC_PG_MAX_SUP_LOOPS];
  * benign teardown faults (findings 2c) never set it.
  */
 static _Atomic uint32_t g_xtc_genuine_crash;
+
+/*
+ * Postmaster's process latch, captured once at carrier start (on the postmaster
+ * thread, where MyLatch is the postmaster's own latch).  The supervisor kicks
+ * it after flagging a genuine crash so the postmaster escalates on its very
+ * next wake instead of waiting out DetermineSleepTime() (which can be tens of
+ * seconds when the server is otherwise idle).
+ */
+static Latch *_Atomic g_xtc_postmaster_latch;
 
 /* Debug-only fault-injection entry counter (PG_XTC_INJECT_CRASH). */
 static _Atomic unsigned g_xtc_inject_entry_count;
@@ -330,12 +340,19 @@ xtc_carrier_supervisor_proc(void *arg)
 				}
 
 				/*
-				 * Stage 1b escalation: a genuine backend-fiber crash.  Flag it;
-				 * the postmaster polls the flag (ServerLoop) and drives the same
-				 * crash policy a crashed thread carrier does (ExitPostmaster
-				 * under multithreaded mode).
+				 * Stage 1b escalation: a genuine backend-fiber crash.  Flag it,
+				 * then kick the postmaster latch so it consumes the flag and
+				 * drives its crash policy (ExitPostmaster under multithreaded
+				 * mode) immediately, rather than only on its next idle-timeout
+				 * wakeup.
 				 */
 				atomic_store(&g_xtc_genuine_crash, 1);
+				{
+					Latch	   *pml = atomic_load(&g_xtc_postmaster_latch);
+
+					if (pml != NULL)
+						SetLatch(pml);
+				}
 			}
 			else
 			{
@@ -525,6 +542,15 @@ xtc_pg_carrier_start(void)
 	int			rc = 0;
 	sigset_t	save_mask;
 	bool		masked = false;
+
+	/*
+	 * Capture the postmaster's process latch on the first call (this runs on
+	 * the postmaster thread via the launch path, so MyLatch is the
+	 * postmaster's own latch).  The supervisor uses it to wake the postmaster
+	 * on a genuine crash.
+	 */
+	if (atomic_load(&g_xtc_postmaster_latch) == NULL && MyLatch != NULL)
+		atomic_store(&g_xtc_postmaster_latch, MyLatch);
 
 	pthread_mutex_lock(&g_xtc_start_lock);
 	if (g_xtc_app != NULL)

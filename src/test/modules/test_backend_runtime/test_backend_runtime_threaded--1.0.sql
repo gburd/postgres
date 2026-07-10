@@ -57,6 +57,12 @@ CREATE FUNCTION test_backend_runtime_emit_fatal()
 	   'test_backend_runtime_emit_fatal'
 	LANGUAGE C;
 
+CREATE FUNCTION test_backend_runtime_crash_current_backend()
+	RETURNS pg_catalog.bool
+	AS 'MODULE_PATHNAME',
+	   'test_backend_runtime_crash_current_backend'
+	LANGUAGE C;
+
 CREATE FUNCTION test_backend_runtime_wait_completion_enabled()
 	RETURNS pg_catalog.bool
 	AS 'MODULE_PATHNAME',
