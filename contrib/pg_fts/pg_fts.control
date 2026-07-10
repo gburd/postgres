@@ -1,0 +1,6 @@
+# pg_fts extension
+comment = 'full-text search with BM25 ranking and the bm25 index'
+default_version = '1.20'
+module_pathname = '$libdir/pg_fts'
+relocatable = true
+trusted = true

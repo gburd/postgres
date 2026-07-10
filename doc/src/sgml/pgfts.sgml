@@ -1,0 +1,371 @@
+<!-- doc/src/sgml/pgfts.sgml -->
+
+<sect1 id="pgfts" xreflabel="pg_fts">
+ <title>pg_fts &mdash; BM25 full-text search</title>
+
+ <indexterm zone="pgfts">
+  <primary>pg_fts</primary>
+ </indexterm>
+
+ <para>
+  <filename>pg_fts</filename> provides full-text search with
+  <ulink url="https://en.wikipedia.org/wiki/Okapi_BM25">Okapi BM25</ulink>
+  relevance ranking.  It adds two data types &mdash; <type>ftsdoc</type> (an
+  analyzed document) and <type>ftsquery</type> (a parsed query) &mdash; the
+  <literal>@@@</literal> match operator and the <literal>&lt;=&gt;</literal>
+  relevance-distance operator, and a dedicated <literal>bm25</literal> index
+  access method that answers both.
+ </para>
+
+ <para>
+  Unlike the built-in <type>tsvector</type>/<type>tsquery</type> stack with a
+  GIN index, <filename>pg_fts</filename> maintains the corpus statistics that
+  BM25 ranking requires (document count, average document length, and per-term
+  document frequency) inside the index, and its posting lists carry the term
+  frequency and document length needed to score a match &mdash; so relevance
+  ranking is computed from the index without re-reading the heap.  This makes
+  ranked top-<replaceable>k</replaceable> retrieval
+  (<literal>ORDER BY doc &lt;=&gt; query LIMIT k</literal>) an index scan that
+  stops early, rather than a scan-and-sort of every match.
+ </para>
+
+ <caution>
+  <para>
+   This module is under active development.  Its on-disk format and SQL
+   interface may change between versions; an <command>ALTER EXTENSION
+   pg_fts UPDATE</command> that changes the on-disk format requires a
+   <command>REINDEX</command> of existing <literal>bm25</literal> indexes.
+  </para>
+ </caution>
+
+ <sect2 id="pgfts-types">
+  <title>Data types</title>
+
+  <variablelist>
+   <varlistentry>
+    <term><type>ftsdoc</type></term>
+    <listitem>
+     <para>
+      An analyzed document: a sorted list of terms, each with its term
+      frequency and token positions, plus the document length.  Produced from
+      text with <function>to_ftsdoc</function>.  A <literal>bm25</literal>
+      index stores the analyzed postings derived from an <type>ftsdoc</type>,
+      not the original text.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><type>ftsquery</type></term>
+    <listitem>
+     <para>
+      A parsed query.  Supports boolean <literal>&amp;</literal>
+      (AND), <literal>|</literal> (OR), <literal>!</literal> (NOT); quoted
+      phrases <literal>"a b c"</literal>; <literal>NEAR(a b, k)</literal>
+      proximity; prefix <literal>term*</literal>; fuzzy
+      <literal>term~k</literal> (edit distance <replaceable>k</replaceable>,
+      default&nbsp;2); and regular expressions <literal>/re/</literal>.
+      Produced with <function>to_ftsquery</function> or the input syntax
+      (<literal>'a &amp; b'::ftsquery</literal>).
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect2>
+
+ <sect2 id="pgfts-operators">
+  <title>Operators</title>
+
+  <informaltable>
+   <tgroup cols="2">
+    <thead>
+     <row><entry>Operator</entry><entry>Description</entry></row>
+    </thead>
+    <tbody>
+     <row>
+      <entry><literal>ftsdoc @@@ ftsquery</literal> &rarr; <type>boolean</type></entry>
+      <entry>Does the document match the query?</entry>
+     </row>
+     <row>
+      <entry><literal>ftsdoc &lt;=&gt; ftsquery</literal> &rarr; <type>float8</type></entry>
+      <entry>
+       Relevance distance <literal>1/(1+score)</literal> (a smaller distance is
+       a higher BM25 score).  Used in <literal>ORDER BY</literal> to rank; the
+       <literal>bm25</literal> index answers this as an ordering scan.
+      </entry>
+     </row>
+    </tbody>
+   </tgroup>
+  </informaltable>
+ </sect2>
+
+ <sect2 id="pgfts-index">
+  <title>The <literal>bm25</literal> index</title>
+
+  <para>
+   Create an index over an <type>ftsdoc</type> expression:
+<programlisting>
+CREATE INDEX docs_bm25 ON docs USING bm25 (to_ftsdoc('english', body));
+</programlisting>
+   The expression form is the recommended <quote>external content</quote>
+   model: the text lives in the table, and the index derives the analyzed
+   <type>ftsdoc</type> from it, so no document copy is stored in the index.
+  </para>
+
+  <para>
+   The index answers a boolean match as a bitmap scan:
+<programlisting>
+SELECT count(*) FROM docs
+  WHERE to_ftsdoc('english', body) @@@ to_ftsquery('english', 'postgres &amp; index');
+</programlisting>
+   and a ranked top-<replaceable>k</replaceable> as an ordering index scan with
+   no <literal>Sort</literal> node:
+<programlisting>
+SELECT id FROM docs
+  WHERE to_ftsdoc('english', body) @@@ to_ftsquery('english', 'postgres')
+  ORDER BY to_ftsdoc('english', body) &lt;=&gt; to_ftsquery('english', 'postgres')
+  LIMIT 10;
+</programlisting>
+  </para>
+
+  <para>
+   The index is a set of immutable segments plus a small pending write buffer.
+   An <command>INSERT</command> appends to the pending buffer and is immediately
+   searchable without a <command>REINDEX</command>.  A flush &mdash; performed
+   automatically by <command>VACUUM</command>, or on demand by
+   <function>fts_merge</function> &mdash; folds pending documents into a
+   segment; a size-tiered merge coalesces segments and physically drops
+   tombstoned (deleted) documents.  All page writes go through
+   <literal>GenericXLog</literal>, so the index is crash-safe and replicated on
+   a physical standby.  Deletes are handled MVCC-correctly:
+   <command>VACUUM</command> records a per-segment tombstone, and scans and
+   counts exclude tombstoned documents.
+  </para>
+
+  <note>
+   <para>
+    The <literal>bm25</literal> index is not covering (it stores postings, not
+    the source document), so it does not support index-only scans.  A fast,
+    visibility-map-aware count is available as <function>fts_count</function>.
+   </para>
+  </note>
+ </sect2>
+
+ <sect2 id="pgfts-functions">
+  <title>Functions</title>
+
+  <variablelist>
+   <varlistentry>
+    <term><function>to_ftsdoc(<optional><replaceable>config</replaceable> regconfig, </optional> <replaceable>text</replaceable> text)</function> &rarr; <type>ftsdoc</type></term>
+    <listitem>
+     <para>
+      Analyze text into an <type>ftsdoc</type>.  With a
+      <replaceable>config</replaceable>, the text is parsed and normalized
+      through that text search configuration (stemming, stop words); without
+      one, a simple whitespace/fold analysis is used.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><function>to_ftsquery(<optional><replaceable>config</replaceable> regconfig, </optional> <replaceable>text</replaceable> text)</function> &rarr; <type>ftsquery</type></term>
+    <listitem>
+     <para>
+      Parse a query string.  With a <replaceable>config</replaceable>, query
+      terms are normalized through that configuration so they match the way
+      documents were analyzed.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><function>fts_count(<replaceable>index</replaceable> regclass, <replaceable>query</replaceable> ftsquery)</function> &rarr; <type>bigint</type></term>
+    <listitem>
+     <para>
+      Count the documents matching <replaceable>query</replaceable> using the
+      given <literal>bm25</literal> index, in bulk, without per-row executor
+      overhead.  Visible rows are counted via the visibility map; the heap is
+      probed only for pages not marked all-visible.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><function>fts_search(<replaceable>index</replaceable> regclass, <replaceable>query</replaceable> ftsquery, <replaceable>k</replaceable> int DEFAULT 10)</function> &rarr; setof record</term>
+    <listitem>
+     <para>
+      Return the top <replaceable>k</replaceable> visible documents by BM25
+      score as (<literal>ctid</literal>, <literal>score</literal>) rows,
+      computed from the index.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><function>fts_merge(<replaceable>index</replaceable> regclass)</function> &rarr; <type>boolean</type></term>
+    <listitem>
+     <para>
+      Flush the pending write buffer into a segment and merge every live
+      segment into one now, instead of waiting for <command>VACUUM</command>.
+      Returns whether any work was done.  This compacts the segment directory
+      but does not shrink the physical file; use <function>fts_vacuum</function>
+      to reclaim disk space.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><function>fts_vacuum(<replaceable>index</replaceable> regclass)</function> &rarr; <type>boolean</type></term>
+    <listitem>
+     <para>
+      Flush pending documents, compact to a single segment, and reclaim the
+      physical space of superseded blocks by relocating live pages to the front
+      of the index file and truncating the free tail back to the operating
+      system &mdash; shrinking an index that has grown larger than its live
+      contents (for example after a bulk build or heavy update churn), without
+      a <command>REINDEX</command>.  Returns whether any work was done.  A
+      single call reclaims most of the space; a second call converges to the
+      fully compacted size.  Runs automatically during <command>VACUUM</command>
+      when the index is substantially bloated.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><function>fts_bm25(<replaceable>doc</replaceable> ftsdoc, <replaceable>query</replaceable> ftsquery, <replaceable>n_docs</replaceable> float8, <replaceable>avgdl</replaceable> float8, <replaceable>dfs</replaceable> float8[] DEFAULT NULL)</function> &rarr; <type>float8</type></term>
+    <listitem>
+     <para>
+      The BM25 score of <replaceable>doc</replaceable> for
+      <replaceable>query</replaceable> given the corpus size
+      <replaceable>n_docs</replaceable>, average document length
+      <replaceable>avgdl</replaceable>, and per-term document frequencies
+      <replaceable>dfs</replaceable>.  <function>fts_bm25_opts</function>
+      exposes the tuning knobs and selectable variants (<literal>lucene</literal>,
+      <literal>robertson</literal>, <literal>atire</literal>,
+      <literal>bm25+</literal>, <literal>bm25l</literal>) matching the
+      <literal>rank_bm25</literal> reference implementations.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><function>fts_bm25f(<replaceable>docs</replaceable> ftsdoc[], <replaceable>query</replaceable> ftsquery, ...)</function> &rarr; <type>float8</type></term>
+    <listitem>
+     <para>
+      The BM25F score across multiple fields (for example title and body) with
+      per-field weights.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><function>fts_index_stats(<replaceable>index</replaceable> regclass)</function>, <function>fts_index_df(<replaceable>index</replaceable> regclass, <replaceable>query</replaceable> ftsquery)</function>, <function>fts_index_nsegments(<replaceable>index</replaceable> regclass)</function></term>
+    <listitem>
+     <para>
+      Introspect the index: corpus statistics (document count, average length,
+      distinct terms); the per-term document frequencies used for IDF; and the
+      current live segment count.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><function>fts_highlight(<replaceable>doc</replaceable> text, <replaceable>query</replaceable> ftsquery, ...)</function>, <function>fts_snippet(<replaceable>doc</replaceable> text, <replaceable>query</replaceable> ftsquery, ...)</function></term>
+    <listitem>
+     <para>
+      Result presentation: wrap matched query terms in the source text, and
+      return the best-matching window of the text.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term><function>tsquery_to_ftsquery(<replaceable>query</replaceable> tsquery)</function> &rarr; <type>ftsquery</type></term>
+    <listitem>
+     <para>
+      Convert a <type>tsquery</type> to an equivalent <type>ftsquery</type>
+      (boolean operators and the <literal>&lt;-&gt;</literal> phrase operator
+      are carried over).  There is also an assignment cast, so an existing
+      <type>tsquery</type> value can be used with <literal>@@@</literal>.  This
+      is a migration aid; queries, index DDL, and ranking calls must still be
+      rewritten to the <filename>pg_fts</filename> API &mdash; it is not a
+      transparent replacement for the <type>tsvector</type> stack.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect2>
+
+ <sect2 id="pgfts-example">
+  <title>Example</title>
+
+<programlisting>
+CREATE EXTENSION pg_fts;
+
+CREATE TABLE docs (id serial PRIMARY KEY, body text);
+INSERT INTO docs (body) VALUES
+  ('the quick brown fox'),
+  ('a quick red fox jumps'),
+  ('lazy brown dogs sleep');
+
+CREATE INDEX docs_bm25 ON docs USING bm25 (to_ftsdoc('english', body));
+
+-- boolean match
+SELECT id FROM docs
+  WHERE to_ftsdoc('english', body) @@@ to_ftsquery('english', 'quick &amp; fox');
+
+-- ranked top-2 by relevance
+SELECT id FROM docs
+  WHERE to_ftsdoc('english', body) @@@ to_ftsquery('english', 'fox')
+  ORDER BY to_ftsdoc('english', body) &lt;=&gt; to_ftsquery('english', 'fox')
+  LIMIT 2;
+
+-- fast count
+SELECT fts_count('docs_bm25', to_ftsquery('english', 'brown'));
+</programlisting>
+ </sect2>
+
+ <sect2 id="pgfts-limitations">
+  <title>Limitations</title>
+
+  <itemizedlist>
+   <listitem>
+    <para>
+     No index-only scan (the index is not covering); use
+     <function>fts_count</function> for a fast count.
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Query execution (scan) is single-threaded (no parallel scan).  The index
+     build is parallel (<literal>amcanbuildparallel</literal>).
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     Ranked results cover flushed segments; documents still in the pending
+     write buffer are found by <literal>@@@</literal> and counted by
+     <function>fts_count</function>, but are ranked by <literal>&lt;=&gt;</literal>
+     only after the next flush (<command>VACUUM</command> or
+     <function>fts_merge</function>).
+    </para>
+   </listitem>
+   <listitem>
+    <para>
+     <function>fts_merge</function> and the automatic merge compact the index
+     logically (fewer segments, tombstones dropped) but do not shrink the
+     physical file; use <command>REINDEX</command> to reclaim space.
+    </para>
+   </listitem>
+  </itemizedlist>
+ </sect2>
+
+ <sect2 id="pgfts-authors">
+  <title>Authors</title>
+
+  <para>
+   Greg Burd.
+  </para>
+ </sect2>
+
+</sect1>
