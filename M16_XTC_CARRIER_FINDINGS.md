@@ -120,6 +120,50 @@ carrier-pinned per the Phase 14/15 "deep waits remain carrier-pinned" rule).
 Instrumentation staged on the EC2 box; local tree clean.  Instance
 i-0d4b5c5d575ca4c6a kept running for continuation.
 
+### Session 2 -- CONFIRMED real bug (clean build), not a staleness artifact (2026-07-10)
+
+The deep-dive traces were partly confounded by tmp_install .so staleness (the
+diagnostic build mixes an incrementally-rebuilt postgres with a possibly-stale
+test-extension .so), which made the publish/clear/park-commit timeline
+unreliable.  To remove all doubt, built a FRESH clean build-wc2 (meson setup +
+full ninja, -DPG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION, pristine HEAD
+sources) and ran 009: it STILL FAILS the same 5 subtests --
+  - pooled LWLock holder publishes event-set wait completion
+  - pooled LWLock holder remains carrier-pinned and non-protocol-parked
+  - pooled LWLock semaphore wait publishes wait completion
+  - pooled LWLock semaphore wait remains carrier-pinned and non-protocol-parked
+  - canceled pooled LWLock holder releases test LWLock
+So it is a GENUINE Phase 15 bug in our code, reproducible on a clean build; not
+a test/build artifact.
+
+CONFIRMED FACTS:
+- A pooled backend in a deep LWLock-associated wait (test_backend_runtime_hold_
+  lwlock's WaitLatch, and the LWLock semaphore wait) does NOT expose an
+  observable event-set/semaphore wait-completion (snapshot reads inactive|none),
+  and its protocol-park snapshot reads committed|polling instead of the required
+  carrier-pinned none|none.
+- The advisory-lock deep wait (ProcSleep->WaitLatch) in the SAME test PASSES and
+  stays pinned -- so the defect is specific to the WaitEventSetWait/latch +
+  LWLock-context deep wait under pooled mode, not all deep waits.
+- id-mapping is NOT the cause (pg_backend_pid == backend->id == registry key,
+  verified; a correct publish+resolve for the HoldLWLock event was observed).
+- It is OUR code (pooled protocol scheduler + wait-completion/park lifecycle),
+  NOT libxtc: libxtc only provides the fiber park; the park/pin decision and the
+  wait-completion publish/clear are PostgreSQL-side.
+
+RELIABLE REPRODUCER: build-wc2 on the EC2 box (clean, flagged); 
+`meson test -C build-wc2 test_backend_runtime/009_phase15_pooled_deep_waits_pinned`.
+
+NOT YET FIXED: the exact defect (why a mid-command LWLock-context deep wait
+reaches committed|polling / loses its published completion, while advisory does
+not) needs clean isolation on build-wc2 WITHOUT the stale-.so confounder --
+trace the session-loop park decision (PgSessionRunProtocolSchedulerUntilBoundary
+/ PgBackendPrepareProtocolReadPark) and doing_command_read at the moment the
+holder is snapshotted committed|polling.  MUST be fixed before pooled becomes
+the default (Session 3).  Deliberately NOT guessing a scheduler-pin fix without
+clean isolation -- a wrong fix to the pin invariant is worse than a documented,
+reproducible open bug.
+
 ## libxtc v1.7.0 adopted; cross-thread fd-wake-miss is the Tier B blocker (2026-07-08)
 
 Bumped to libxtc **v1.7.0** (rev 17ee625; commit 1e31ff60bb1), via v1.6.0 (rev
