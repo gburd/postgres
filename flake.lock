@@ -28,16 +28,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1783683628,
-        "narHash": "sha256-D/wRSA8/AalnhNE0q2ZvPFHSYm6j4oG9TV1LUhUUG4s=",
+        "lastModified": 1783706110,
+        "narHash": "sha256-G8ljiMKdT9lSR/Bdqcv/BOnq0bcL1WvWCs7piDQlpD8=",
         "owner": "gburd",
         "repo": "libxtc",
-        "rev": "fd911adc157e38c2af5701b85b94faa9f9bb8d79",
+        "rev": "05f8c2cf42dc57d1c1b3aae2eb6a9b239957a1b6",
         "type": "github"
       },
       "original": {
         "owner": "gburd",
         "repo": "libxtc",
+        "rev": "05f8c2cf42dc57d1c1b3aae2eb6a9b239957a1b6",
         "type": "github"
       }
     },
