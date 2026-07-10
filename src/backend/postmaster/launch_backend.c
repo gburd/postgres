@@ -1399,6 +1399,23 @@ backend_pooled_protocol_run_logical_start(BackendPooledCarrierStart *carrier_sta
 	session = BackendStartSessionWithStartupData(&logical_start->startup_data,
 												 &logical_start->client_sock,
 												 BACKEND_STARTUP_THREAD);
+
+	/*
+	 * InitProcess() (run inside BackendStartSessionWithStartupData above) sets
+	 * MyLatch during proc setup so a signal that arrived mid-init is not lost.
+	 * An affine pooled session then runs its first command directly here, with
+	 * no client startup/auth round-trips to cycle the process latch in between.
+	 * Left set, that stale signal makes the command's first, un-looped
+	 * WaitLatch return WL_LATCH_SET in 0ms -- unlike pg_sleep, which loops until
+	 * its deadline.  TAP 009's pooled LWLock deep-wait cases caught this: the
+	 * holder's WaitLatch fell straight through, released its LWLock, and
+	 * idle-parked instead of staying carrier-pinned.  Clear it once before the
+	 * command loop; any genuinely pending interrupt is re-detected from the
+	 * backend interrupt mask by CHECK_FOR_INTERRUPTS, not from the latch.
+	 */
+	if (MyLatch != NULL)
+		ResetLatch(MyLatch);
+
 	(void) backend_pooled_protocol_run_attached_logical(logical_start,
 														session);
 }
