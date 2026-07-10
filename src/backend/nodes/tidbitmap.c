@@ -362,6 +362,25 @@ tbm_free_shared_area(dsa_area *dsa, dsa_pointer dp)
  *
  * If recheck is true, then the recheck flag will be set in the
  * TBMIterateResult when any of these tuples are reported out.
+ *
+ * A TID may carry the reserved recheck-hint bit (ItemPointerRecheckHintFlag,
+ * see storage/itemptr.h): a table AM may set it on a heap TID it stores in an
+ * index entry to signal that the entry may not exactly locate the current row
+ * version.  Because BitmapAnd/BitmapOr intersect/union TID sets here at
+ * block+offset granularity before the heap is ever consulted, such an entry's
+ * offset cannot be trusted to agree with another index's entry for the same
+ * logical row, and an exact-mode intersection could silently drop a matching
+ * row.  Whenever we see the bit we therefore add the whole page as lossy
+ * instead of the exact offset: a lossy page survives any AND/OR against an
+ * exact-mode page (see tbm_intersect_page) and forces a recheck, so
+ * BitmapHeapScan resolves the entry and the table AM's own recheck makes the
+ * final call.
+ *
+ * Handling this here -- at the single choke point every amgetbitmap funnels
+ * exact heap TIDs through -- lets any table AM signal an inexact entry without
+ * the bitmap layer knowing the AM's specifics: core AMs, contrib AMs (bloom),
+ * and out-of-tree AMs are all correct automatically, and a TID that never
+ * carries the bit takes the identical path it always did.
  */
 void
 tbm_add_tuples(TIDBitmap *tbm, const ItemPointerData *tids, int ntids,
@@ -374,9 +393,25 @@ tbm_add_tuples(TIDBitmap *tbm, const ItemPointerData *tids, int ntids,
 	for (int i = 0; i < ntids; i++)
 	{
 		BlockNumber blk = ItemPointerGetBlockNumber(tids + i);
-		OffsetNumber off = ItemPointerGetOffsetNumber(tids + i);
+		OffsetNumber off;
 		int			wordnum,
 					bitnum;
+
+		/*
+		 * A TID carrying the recheck-hint bit must not be trusted at exact
+		 * offset granularity here (see the function header).  Test the raw
+		 * TID -- before ItemPointerGetOffsetNumber strips the bit -- and
+		 * if set, degrade the whole page to lossy and move on.
+		 */
+		if (unlikely(ItemPointerHasRecheckHint(tids + i)))
+		{
+			tbm_add_page(tbm, blk);
+			/* tbm_add_page may have lossified pages; force a fresh lookup */
+			currblk = InvalidBlockNumber;
+			continue;
+		}
+
+		off = ItemPointerGetOffsetNumber(tids + i);
 
 		/* safety check to ensure we don't overrun bit array bounds */
 		if (off < 1 || off > TBM_MAX_TUPLES_PER_PAGE)

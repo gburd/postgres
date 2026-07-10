@@ -225,7 +225,7 @@ contribute different TIDs for the one live row, the exact-mode intersection
 finds nothing in common, and the row is dropped -- a false negative (bitmap
 scans tolerate false positives, not false negatives).
 
-A fresh entry's stored heap TID therefore carries ItemPointerSIUMaybeStaleFlag,
+A fresh entry's stored heap TID therefore carries ItemPointerRecheckHintFlag,
 bit 14 of the offset field (see storage/itemptr.h).  MaxOffsetNumber needs at
 most 14 bits even at the largest configurable BLCKSZ, so the bit is free for
 any real offset; the two reserved offset sentinels (SpecTokenOffsetNumber,
