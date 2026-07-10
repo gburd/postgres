@@ -164,6 +164,42 @@ the default (Session 3).  Deliberately NOT guessing a scheduler-pin fix without
 clean isolation -- a wrong fix to the pin invariant is worse than a documented,
 reproducible open bug.
 
+### Session 2 -- 009 FIXED (2026-07-10, commit 223663b9d93)
+
+Root cause (traced instrumentation-free via a SetLatch() backtrace probe on the
+clean build-wc2): the LWLock holder's WaitLatch(MyLatch, WL_LATCH_SET|WL_TIMEOUT,
+60000) returned WL_LATCH_SET in *0-1ms* instead of blocking -- MyLatch was
+ALREADY set at wait entry (XTCDBG_ENTRY ... MyLatch.is_set=1).  The backtrace
+pinned the set to InitProcess()+0xb4c, called from
+BackendStartSessionWithStartupData().  InitProcess() sets MyLatch during proc
+setup so a mid-init signal is not lost.  An affine pooled session then runs its
+first command directly through backend_pooled_protocol_run_attached_logical() ->
+PgSessionRunProtocolSchedulerUntilBoundary(), with no client startup/auth
+round-trips to cycle the process latch in between, so the stale set survives
+into the command's first WaitLatch.  hold_lwlock issues a SINGLE un-looped
+WaitLatch and thus falls straight through; pg_sleep/ClientWrite/advisory all
+loop internally until their real deadline/condition and so tolerate a spurious
+wake -- which is why only the LWLock cases failed.  The collapsed holder then
+released its LWLock (num_held_lwlocks=0 at park-commit) and idle-parked
+(committed|polling), so the observer saw inactive|none and a non-pinned park.
+
+Fix: ResetLatch(MyLatch) once in the affine entry
+(backend_pooled_protocol_run_attached_logical caller in launch_backend.c) right
+after BackendStartSessionWithStartupData() returns and before the command loop.
+Guarded by #ifdef USE_XTC_CARRIER + the affine-pooled path, so process mode and
+thread-per-session are untouched by construction.  The resume paths already
+Reset on WL_LATCH_SET wakes; this closes the first-command gap they missed.
+
+Evidence on build-wc2 (clean, wait-completion flag): 009 now OK, 33/33 subtests.
+Full test_backend_runtime suite (flagged): 002/004/005/006/007/008/009 all OK
+(no regression).  001_threaded_runtime, 003_milestone_w_core_smoke, and regress
+fail with `timed out waiting for startup IO workers` / exit 29 -- a PRE-EXISTING
+test-vs-design conflict (001 sets io_method=worker and asserts 2 forked `io
+worker` backends, but multithreaded=on remaps io_method=worker->xtc so no io
+workers are forked), NOT a regression from this fix (which touches only
+launch_backend.c, unrelated to io workers; prior commits already flagged 001's
+io-worker autoscale as a base-tree TODO).  No cores/PANIC/asserts.
+
 ## libxtc v1.7.0 adopted; cross-thread fd-wake-miss is the Tier B blocker (2026-07-08)
 
 Bumped to libxtc **v1.7.0** (rev 17ee625; commit 1e31ff60bb1), via v1.6.0 (rev

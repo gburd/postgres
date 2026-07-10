@@ -917,7 +917,8 @@ Exit gate:
   tests proving deep waits remain carrier-pinned.
 
 Status: implemented; runtime-validated (2026-07-09, libxtc v1.9.0), Gate F TAP
-run still pending on a disk-backed host.  Direct runtime evidence gathered
+005-009 now GREEN on a disk-backed host (2026-07-10, c7i.metal-24xl EC2, libxtc
+v1.11.0).  Direct runtime evidence gathered
 (pooled_protocol_carriers=N, multithreaded=on):
 
 - Sessions outnumber carriers: 20 concurrent sessions each returning correct
@@ -934,11 +935,16 @@ run still pending on a disk-backed host.  Direct runtime evidence gathered
 - Off by default (pooled_protocol_carriers=0 keeps thread-per-session); process
   mode unaffected.
 
-Remaining before flipping the "experimental" label: (1) run the Gate F TAP
-(005-009) + full suites on a disk-backed host; (2) route the two pooled-path
-blocking poll() sites (postgres.c ~649 sticky-idle probe, ~6127 scheduler-carrier
-poll) through the xtc loop so the pooled carrier never blocks on a raw poll;
-(3) enable the attach/detach invariant asserts in a cassert run under stress.
+Remaining before flipping the "experimental" label: (1) Gate F TAP 004-009 pass
+on a disk-backed host (DONE 2026-07-10: 004 46, 005 35, 006 3, 007 46, 008 11,
+009 33 subtests -- 009's pooled deep-wait pin bug fixed in 223663b9d93, the
+stale-InitProcess-latch first-command collapse; 001/003/regress still fail on
+the io_method=worker-expects-forked-io-workers vs multithreaded-remaps-to-xtc
+conflict, a pre-existing test-vs-design mismatch tracked separately, not a Phase
+15 blocker); (2) route the two pooled-path blocking poll() sites (postgres.c
+~649 sticky-idle probe, ~6127 scheduler-carrier poll) through the xtc loop so
+the pooled carrier never blocks on a raw poll; (3) enable the attach/detach
+invariant asserts in a cassert run under stress.
 
 ## Phase 16: Bundled Extension Completion And Hardening
 
