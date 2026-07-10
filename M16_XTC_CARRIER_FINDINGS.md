@@ -82,6 +82,44 @@ agree on the id, and whether a resume path ran without clearing park_state.
 Instrumentation for that is staged on the EC2 box (~/xtcsrc), not in the tree.
 This must be root-caused before pooled becomes the default (Session 3).
 
+### Session 2 -- decisive publish/snapshot id probe run (2026-07-10)
+
+Ran always-on publish+snapshot id probes on build-wc, re-ran 009 (657 DW lines).
+Ruled OUT the id-mapping hypothesis: pg_backend_pid() returns
+PgBackendGetSignalPid() which in threaded mode returns (int) backend->id, and
+ThreadedBackendRegistry is keyed by backend->id -- so the snapshot-by-id
+resolves the CORRECT backend (observed: req_id=11 resolved_id=11 we=100663297
+kind=1 state=1 for the HoldLWLock event -- a correct publish+resolve).
+
+So the completion IS published and resolvable, but transitions WAITING->cleared
+while the single WaitLatch(60000) is still pending (the test's polling snapshot
+usually catches it already inactive).  Since WaitLatch calls WaitEventSetWait
+exactly once and the SQL function calls WaitLatch once, the callback
+(WaitEventSetWaitInternal) must be RETURNING early and PgSuspend clearing the
+shared backend->wait_state completion -- consistent with the protocol-park
+snapshot committed|polling: in pooled mode the deep mid-command WaitLatch is
+being treated as a park/yield point (fiber yields to the scheduler), the
+PgSuspend PG_TRY completes and clears the completion, and the backend sits in
+the scheduler POLLING queue with stale COMMITTED park state.
+
+LOCALIZATION (strong): the bug is the pooled-mode wait-completion publish/clear
+lifecycle across a deep event-set wait -- a single backend->wait_state slot whose
+completion is cleared when the deep WaitLatch's fiber parks, so a snapshot during
+the park sees inactive, and the backend is left committed|polling instead of
+carrier-pinned.  The advisory-lock deep wait (ProcSleep->WaitLatch) passes
+because it does not hit this park/clear cycle the same way.
+
+NEXT (fresh focused pass, NOT the 33-subtest TAP): a MINIMAL standalone repro --
+one pooled session running test_backend_runtime_hold_lwlock, one observer doing
+repeated snapshots -- with timestamped publish / clear / park-commit / resume
+logs correlated, to confirm whether (a) the WaitLatch callback returns+clears
+mid-wait (park treating a deep wait as a yield -- the invariant bug), or (b) a
+nested PgSuspend on the same wait_state slot clobbers it.  Fix accordingly
+(likely: a deep mid-command wait must NOT park/clear in pooled mode -- keep it
+carrier-pinned per the Phase 14/15 "deep waits remain carrier-pinned" rule).
+Instrumentation staged on the EC2 box; local tree clean.  Instance
+i-0d4b5c5d575ca4c6a kept running for continuation.
+
 ## libxtc v1.7.0 adopted; cross-thread fd-wake-miss is the Tier B blocker (2026-07-08)
 
 Bumped to libxtc **v1.7.0** (rev 17ee625; commit 1e31ff60bb1), via v1.6.0 (rev
