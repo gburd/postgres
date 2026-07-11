@@ -67,25 +67,27 @@ const struct config_enum_entry io_method_options[] = {
 #ifdef IOMETHOD_IO_URING_ENABLED
 	{"io_uring", IOMETHOD_IO_URING, false},
 #endif
+#ifdef USE_XTC_CARRIER
+	{"xtc", IOMETHOD_XTC, false},
+#endif
 	{NULL, 0, false}
 };
 
 /* GUCs */
-int			io_method = DEFAULT_IO_METHOD;
-int			io_max_concurrency = -1;
+PG_GLOBAL_RUNTIME int io_method = DEFAULT_IO_METHOD;
+PG_GLOBAL_RUNTIME int io_max_concurrency = -1;
 
 /* global control for AIO */
-PgAioCtl   *pgaio_ctl;
+PG_GLOBAL_SHMEM PgAioCtl *pgaio_ctl;
 
-/* current backend's per-backend state */
-PgAioBackend *pgaio_my_backend;
-
-
-static const IoMethodOps *const pgaio_method_ops_table[] = {
+static PG_GLOBAL_IMMUTABLE const IoMethodOps *const pgaio_method_ops_table[] = {
 	[IOMETHOD_SYNC] = &pgaio_sync_ops,
 	[IOMETHOD_WORKER] = &pgaio_worker_ops,
 #ifdef IOMETHOD_IO_URING_ENABLED
 	[IOMETHOD_IO_URING] = &pgaio_uring_ops,
+#endif
+#ifdef USE_XTC_CARRIER
+	[IOMETHOD_XTC] = &pgaio_xtc_ops,
 #endif
 };
 
@@ -93,7 +95,7 @@ StaticAssertDecl(lengthof(io_method_options) == lengthof(pgaio_method_ops_table)
 				 "io_method_options out of sync with pgaio_method_ops_table");
 
 /* callbacks for the configured io_method, set by assign_io_method */
-const IoMethodOps *pgaio_method_ops;
+PG_GLOBAL_RUNTIME const IoMethodOps *pgaio_method_ops;
 
 
 /* --------------------------------------------------------------------------------

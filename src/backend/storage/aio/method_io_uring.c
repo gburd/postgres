@@ -41,6 +41,8 @@
 #include "storage/shmem.h"
 #include "storage/lwlock.h"
 #include "storage/procnumber.h"
+#include "utils/backend_runtime.h"
+#include "utils/global_lifetime.h"
 #include "utils/wait_event.h"
 
 
@@ -117,12 +119,13 @@ typedef struct PgAioUringCaps
 
 
 /* PgAioUringContexts for all backends */
-static PgAioUringContext *pgaio_uring_contexts;
+static PG_GLOBAL_SHMEM PgAioUringContext *pgaio_uring_contexts;
 
 /* the current backend's context */
-static PgAioUringContext *pgaio_my_uring_context;
+#define pgaio_my_uring_context \
+	(PgCurrentAioState()->my_uring_context)
 
-static PgAioUringCaps pgaio_uring_caps =
+static PG_GLOBAL_RUNTIME PgAioUringCaps pgaio_uring_caps =
 {
 	.checked = false,
 	.mem_init_size = -1,
