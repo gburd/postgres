@@ -692,7 +692,6 @@ int main(void) {
 '''
 
 has_stdatomic = false
-use_stdatomic = get_option('use_stdatomic')
 
 if cc.get_id() == 'msvc'
   msvc_ver = cc.version()
@@ -730,30 +729,16 @@ else
   endif
 endif
 
-# Process the use_stdatomic option
-if use_stdatomic == 'yes'
-  if not has_stdatomic
-    error('stdatomic.h was requested with -Duse_stdatomic=yes but is not available or not working')
-  endif
-  cdata.set('USE_STDATOMIC_H', 1)
-  message('Using C11 stdatomic.h for atomic operations (forced by -Duse_stdatomic=yes)')
-  if cc.get_id() == 'msvc'
-    # MSVC needs C11 mode plus the experimental atomics switch for <stdatomic.h>.
-    cflags += ['/std:c11', '/experimental:c11atomics']
-  endif
-elif use_stdatomic == 'no'
-  message('Using traditional platform-specific atomics (forced by -Duse_stdatomic=no)')
-  # Do not set USE_STDATOMIC_H
-elif use_stdatomic == 'auto'
-  if has_stdatomic
-    cdata.set('USE_STDATOMIC_H', 1)
-    message('Using C11 stdatomic.h for atomic operations (auto-detected)')
-    if cc.get_id() == 'msvc'
-      cflags += ['/std:c11', '/experimental:c11atomics']
-    endif
-  else
-    message('Using traditional platform-specific atomics (stdatomic.h not available)')
-  endif
+# stdatomic.h is the sole atomics implementation, so a missing or broken
+# header is a hard error.
+if not has_stdatomic
+  error('a working C11 stdatomic.h is required (it is the only atomics implementation)')
+endif
+cdata.set('USE_STDATOMIC_H', 1)
+message('Using C11 stdatomic.h for atomic operations')
+if cc.get_id() == 'msvc'
+  # MSVC needs C11 mode plus the experimental atomics switch for <stdatomic.h>.
+  cflags += ['/std:c11', '/experimental:c11atomics']
 endif
 
 postgres_inc = [include_directories(postgres_inc_d)]
