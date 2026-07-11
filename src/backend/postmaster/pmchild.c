@@ -35,8 +35,14 @@
 #include "postmaster/autovacuum.h"
 #include "postmaster/postmaster.h"
 #include "replication/walsender.h"
+#include "storage/latch.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
+#include "utils/backend_runtime.h"
+
+#ifndef WIN32
+#include "port/pg_pthread.h"
+#endif
 
 /*
  * Freelists for different kinds of child processes.  We maintain separate
@@ -51,13 +57,46 @@ typedef struct PMChildPool
 	dlist_head	freelist;		/* currently unused PMChild entries */
 } PMChildPool;
 
-static PMChildPool pmchild_pools[BACKEND_NUM_TYPES];
-NON_EXEC_STATIC int num_pmchild_slots = 0;
+static PG_GLOBAL_RUNTIME PMChildPool pmchild_pools[BACKEND_NUM_TYPES];
+PG_GLOBAL_RUNTIME NON_EXEC_STATIC int num_pmchild_slots = 0;
+
+#ifndef WIN32
+static PG_GLOBAL_RUNTIME pthread_mutex_t PMChildLogicalBackendMutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
+static void PMChildLogicalBackendLock(void);
+static void PMChildLogicalBackendUnlock(void);
+static void PMChildResetLogicalPublicationState(PMChild *pmchild,
+												pid_t logical_signal_pid);
+static void PostmasterChildPublishExit(PMChild *pmchild, int exitstatus,
+									   Size top_memory_allocated,
+									   Size top_memory_reclaimed,
+									   Latch *postmaster_latch);
+static bool PostmasterChildHasExited(PMChild *pmchild, int *exitstatus,
+									 Size *top_memory_allocated,
+									 Size *top_memory_reclaimed,
+									 pid_t *signal_pid);
+static void PostmasterChildWakePostmaster(Latch *postmaster_latch);
+
+/*
+ * Thread-backed PMChild ownership contract:
+ *
+ * - ActiveChildList membership, slot assignment/release, carrier_kind, bkend
+ *   type, bgworker metadata, and native-thread join are owned by the
+ *   postmaster main thread.
+ * - logical_backend, logical_signal_pid, and thread-exit payload fields are
+ *   the cross-thread publication surface between a logical backend and the
+ *   postmaster.  They must be read or written only by the helper APIs in this
+ *   file while holding PMChildLogicalBackendMutex.
+ * - thread_startup_complete and thread_exited are publication flags.  The
+ *   publishing side writes payload first, issues a memory barrier, then sets
+ *   the flag and wakes the postmaster.
+ */
 
 /*
  * List of active child processes.  This includes dead-end children.
  */
-dlist_head	ActiveChildList;
+PG_GLOBAL_RUNTIME dlist_head ActiveChildList;
 
 /*
  * Dummy pointer to persuade Valgrind that we've not leaked the array of
@@ -65,9 +104,55 @@ dlist_head	ActiveChildList;
  * optimize it away.
  */
 #ifdef USE_VALGRIND
-extern PMChild *pmchild_array;
-PMChild    *pmchild_array;
+extern PG_GLOBAL_RUNTIME PMChild *pmchild_array;
+PG_GLOBAL_RUNTIME PMChild *pmchild_array;
 #endif
+
+static void
+PMChildLogicalBackendLock(void)
+{
+#ifndef WIN32
+	int			rc;
+
+	rc = pthread_mutex_lock(&PMChildLogicalBackendMutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not lock PMChild logical-backend state: %m");
+	}
+#endif
+}
+
+static void
+PMChildLogicalBackendUnlock(void)
+{
+#ifndef WIN32
+	int			rc;
+
+	rc = pthread_mutex_unlock(&PMChildLogicalBackendMutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not unlock PMChild logical-backend state: %m");
+	}
+#endif
+}
+
+static void
+PMChildResetLogicalPublicationState(PMChild *pmchild, pid_t logical_signal_pid)
+{
+	PMChildLogicalBackendLock();
+	pmchild->logical_signal_pid = logical_signal_pid;
+	pmchild->logical_backend = NULL;
+	pmchild->thread_exitstatus = 0;
+	pmchild->thread_exit_logical_signal_pid = 0;
+	pmchild->thread_exit_top_memory_allocated = 0;
+	pmchild->thread_exit_top_memory_reclaimed = 0;
+	PMChildLogicalBackendUnlock();
+
+	pg_atomic_write_u32(&pmchild->thread_startup_complete, 0);
+	pg_atomic_write_u32(&pmchild->thread_exited, 0);
+}
 
 
 /*
@@ -151,7 +236,16 @@ InitPostmasterChildSlots(void)
 
 		for (int j = 0; j < pmchild_pools[btype].size; j++)
 		{
+			slots[slotno].carrier_kind = PM_CHILD_CARRIER_PROCESS;
 			slots[slotno].pid = 0;
+			slots[slotno].logical_signal_pid = 0;
+			slots[slotno].logical_backend = NULL;
+			slots[slotno].thread_exitstatus = 0;
+			slots[slotno].thread_exit_logical_signal_pid = 0;
+			slots[slotno].thread_exit_top_memory_allocated = 0;
+			slots[slotno].thread_exit_top_memory_reclaimed = 0;
+			pg_atomic_init_u32(&slots[slotno].thread_startup_complete, 0);
+			pg_atomic_init_u32(&slots[slotno].thread_exited, 0);
 			slots[slotno].child_slot = slotno + 1;
 			slots[slotno].bkend_type = B_INVALID;
 			slots[slotno].rw = NULL;
@@ -188,10 +282,13 @@ AssignPostmasterChildSlot(BackendType btype)
 		return NULL;
 
 	pmchild = dlist_container(PMChild, elem, dlist_pop_head_node(freelist));
+	pmchild->carrier_kind = PM_CHILD_CARRIER_PROCESS;
 	pmchild->pid = 0;
+	PMChildResetLogicalPublicationState(pmchild, 0);
 	pmchild->bkend_type = btype;
 	pmchild->rw = NULL;
 	pmchild->bgworker_notify = true;
+	pmchild->carrier_orphan_start = NULL;
 
 	/*
 	 * pmchild->child_slot for each entry was initialized when the array of
@@ -230,7 +327,16 @@ AllocDeadEndChild(void)
 	pmchild = (PMChild *) palloc_extended(sizeof(PMChild), MCXT_ALLOC_NO_OOM);
 	if (pmchild)
 	{
+		pmchild->carrier_kind = PM_CHILD_CARRIER_PROCESS;
 		pmchild->pid = 0;
+		pmchild->logical_signal_pid = 0;
+		pmchild->logical_backend = NULL;
+		pmchild->thread_exitstatus = 0;
+		pmchild->thread_exit_logical_signal_pid = 0;
+		pmchild->thread_exit_top_memory_allocated = 0;
+		pmchild->thread_exit_top_memory_reclaimed = 0;
+		pg_atomic_init_u32(&pmchild->thread_startup_complete, 0);
+		pg_atomic_init_u32(&pmchild->thread_exited, 0);
 		pmchild->child_slot = 0;
 		pmchild->bkend_type = B_DEAD_END_BACKEND;
 		pmchild->rw = NULL;
@@ -240,6 +346,315 @@ AllocDeadEndChild(void)
 	}
 
 	return pmchild;
+}
+
+bool
+PostmasterChildIsProcess(const PMChild *pmchild)
+{
+	return pmchild->carrier_kind == PM_CHILD_CARRIER_PROCESS;
+}
+
+bool
+PostmasterChildIsThread(const PMChild *pmchild)
+{
+	return pmchild->carrier_kind == PM_CHILD_CARRIER_THREAD;
+}
+
+bool
+PostmasterChildIsPooledLogical(const PMChild *pmchild)
+{
+	return pmchild->carrier_kind == PM_CHILD_CARRIER_POOLED_LOGICAL;
+}
+
+bool
+PostmasterChildHasLogicalBackendPublication(const PMChild *pmchild)
+{
+	return PostmasterChildIsThread(pmchild) ||
+		PostmasterChildIsPooledLogical(pmchild);
+}
+
+pid_t
+PostmasterChildSignalPid(const PMChild *pmchild)
+{
+	pid_t		signal_pid;
+
+	Assert(pmchild != NULL);
+
+	if (!PostmasterChildHasLogicalBackendPublication(pmchild))
+		return pmchild->pid;
+
+	PMChildLogicalBackendLock();
+	signal_pid = pmchild->logical_signal_pid;
+	PMChildLogicalBackendUnlock();
+	return signal_pid;
+}
+
+void
+PostmasterChildSetProcess(PMChild *pmchild, pid_t pid)
+{
+	Assert(pid > 0);
+
+	pmchild->carrier_kind = PM_CHILD_CARRIER_PROCESS;
+	pmchild->pid = pid;
+	PMChildResetLogicalPublicationState(pmchild, pid);
+}
+
+void
+PostmasterChildSetThread(PMChild *pmchild, const PgThread *thread)
+{
+	Assert(thread != NULL);
+
+	pmchild->carrier_kind = PM_CHILD_CARRIER_THREAD;
+	pmchild->pid = 0;
+	pmchild->thread = *thread;
+	PMChildResetLogicalPublicationState(pmchild, 0);
+}
+
+void
+PostmasterChildSetPooledLogical(PMChild *pmchild)
+{
+	pmchild->carrier_kind = PM_CHILD_CARRIER_POOLED_LOGICAL;
+	pmchild->pid = 0;
+	PMChildResetLogicalPublicationState(pmchild, 0);
+}
+
+void
+PostmasterChildPublishLogicalBackend(PMChild *pmchild, struct PgBackend *backend)
+{
+	Assert(PostmasterChildHasLogicalBackendPublication(pmchild));
+
+	PMChildLogicalBackendLock();
+	pmchild->logical_backend = backend;
+	if (backend != NULL)
+		pmchild->logical_signal_pid = PgBackendGetSignalPid(backend);
+	else
+		pmchild->logical_signal_pid = 0;
+	PMChildLogicalBackendUnlock();
+}
+
+void
+PostmasterChildUnpublishLogicalBackend(PMChild *pmchild)
+{
+	Assert(PostmasterChildHasLogicalBackendPublication(pmchild));
+
+	PMChildLogicalBackendLock();
+	if (PostmasterChildIsThread(pmchild))
+		pmchild->thread_exit_logical_signal_pid = pmchild->logical_signal_pid;
+	pmchild->logical_backend = NULL;
+	pmchild->logical_signal_pid = 0;
+	PMChildLogicalBackendUnlock();
+}
+
+bool
+PostmasterChildRaiseThreadInterrupt(PMChild *pmchild,
+									int interrupt)
+{
+	bool		raised = false;
+
+	Assert(PostmasterChildHasLogicalBackendPublication(pmchild));
+
+	PMChildLogicalBackendLock();
+	if (pmchild->logical_backend != NULL)
+	{
+		SendInterrupt(pmchild->logical_backend, interrupt);
+		raised = true;
+	}
+	PMChildLogicalBackendUnlock();
+
+	return raised;
+}
+
+bool
+PostmasterChildWakeThreadBackend(PMChild *pmchild)
+{
+	bool		woke = false;
+
+	Assert(PostmasterChildHasLogicalBackendPublication(pmchild));
+
+	PMChildLogicalBackendLock();
+	if (pmchild->logical_backend != NULL)
+	{
+		PgBackendWakeup(pmchild->logical_backend);
+		woke = true;
+	}
+	PMChildLogicalBackendUnlock();
+
+	return woke;
+}
+
+static void
+PostmasterChildWakePostmaster(Latch *postmaster_latch)
+{
+	if (postmaster_latch != NULL)
+		SetLatch(postmaster_latch);
+	else
+		PostmasterSignalPMSignal();
+}
+
+void
+PostmasterChildPublishLogicalStartupComplete(PMChild *pmchild,
+											 Latch *postmaster_latch)
+{
+	Assert(PostmasterChildHasLogicalBackendPublication(pmchild));
+
+	pg_memory_barrier();
+	pg_atomic_write_u32(&pmchild->thread_startup_complete, 1);
+	PostmasterChildWakePostmaster(postmaster_latch);
+}
+
+void
+PostmasterChildPublishThreadStartupComplete(PMChild *pmchild,
+											Latch *postmaster_latch)
+{
+	Assert(PostmasterChildIsThread(pmchild));
+
+	PostmasterChildPublishLogicalStartupComplete(pmchild, postmaster_latch);
+}
+
+bool
+PostmasterChildHasStartupComplete(PMChild *pmchild)
+{
+	if (!PostmasterChildHasLogicalBackendPublication(pmchild))
+		return false;
+
+	return pg_atomic_exchange_u32(&pmchild->thread_startup_complete, 0) != 0;
+}
+
+static void
+PostmasterChildPublishExit(PMChild *pmchild, int exitstatus,
+						   Size top_memory_allocated,
+						   Size top_memory_reclaimed,
+						   Latch *postmaster_latch)
+{
+	Assert(PostmasterChildHasLogicalBackendPublication(pmchild));
+
+	/*
+	 * Logical exit publication owns the handoff from the exiting backend to
+	 * the postmaster.  Clear the volatile logical-backend pointer under the
+	 * same lock used by signal/wakeup delivery before making the exited flag
+	 * visible, so later postmaster signal routing cannot race with teardown.
+	 */
+	PMChildLogicalBackendLock();
+	if (pmchild->logical_backend != NULL || pmchild->logical_signal_pid != 0)
+	{
+		pmchild->thread_exit_logical_signal_pid =
+			pmchild->logical_signal_pid;
+		pmchild->logical_backend = NULL;
+		pmchild->logical_signal_pid = 0;
+	}
+	pmchild->thread_exitstatus = exitstatus;
+	pmchild->thread_exit_top_memory_allocated = top_memory_allocated;
+	pmchild->thread_exit_top_memory_reclaimed = top_memory_reclaimed;
+	PMChildLogicalBackendUnlock();
+
+	/*
+	 * Publish the exit status before waking the postmaster.  The postmaster
+	 * owns PMChild list mutation and slot release.
+	 */
+	pg_memory_barrier();
+	pg_atomic_write_u32(&pmchild->thread_exited, 1);
+	PostmasterChildWakePostmaster(postmaster_latch);
+}
+
+void
+PostmasterChildPublishPooledLogicalExit(PMChild *pmchild, int exitstatus,
+										Size top_memory_allocated,
+										Size top_memory_reclaimed,
+										Latch *postmaster_latch)
+{
+	Assert(PostmasterChildIsPooledLogical(pmchild));
+
+	PostmasterChildPublishExit(pmchild, exitstatus, top_memory_allocated,
+							   top_memory_reclaimed, postmaster_latch);
+}
+
+void
+PostmasterChildPublishThreadExit(PMChild *pmchild, int exitstatus,
+								 Size top_memory_allocated,
+								 Size top_memory_reclaimed,
+								 Latch *postmaster_latch)
+{
+	Assert(PostmasterChildIsThread(pmchild));
+
+	PostmasterChildPublishExit(pmchild, exitstatus, top_memory_allocated,
+							   top_memory_reclaimed, postmaster_latch);
+}
+
+static bool
+PostmasterChildHasExited(PMChild *pmchild, int *exitstatus,
+						 Size *top_memory_allocated,
+						 Size *top_memory_reclaimed,
+						 pid_t *signal_pid)
+{
+	if (pg_atomic_exchange_u32(&pmchild->thread_exited, 0) == 0)
+		return false;
+
+	PMChildLogicalBackendLock();
+	*exitstatus = pmchild->thread_exitstatus;
+	if (top_memory_allocated != NULL)
+		*top_memory_allocated = pmchild->thread_exit_top_memory_allocated;
+	if (top_memory_reclaimed != NULL)
+		*top_memory_reclaimed = pmchild->thread_exit_top_memory_reclaimed;
+	if (signal_pid != NULL)
+		*signal_pid = pmchild->thread_exit_logical_signal_pid;
+	PMChildLogicalBackendUnlock();
+
+	return true;
+}
+
+bool
+PostmasterChildHasExitedPooledLogical(PMChild *pmchild, int *exitstatus,
+									  Size *top_memory_allocated,
+									  Size *top_memory_reclaimed,
+									  pid_t *signal_pid)
+{
+	if (!PostmasterChildIsPooledLogical(pmchild))
+		return false;
+
+	return PostmasterChildHasExited(pmchild, exitstatus, top_memory_allocated,
+									top_memory_reclaimed, signal_pid);
+}
+
+bool
+PostmasterChildHasExitedThread(PMChild *pmchild, int *exitstatus,
+							   Size *top_memory_allocated,
+							   Size *top_memory_reclaimed,
+							   pid_t *signal_pid)
+{
+	if (!PostmasterChildIsThread(pmchild))
+		return false;
+
+	return PostmasterChildHasExited(pmchild, exitstatus, top_memory_allocated,
+									top_memory_reclaimed, signal_pid);
+}
+
+void
+PostmasterChildRetryThreadExit(PMChild *pmchild)
+{
+	Assert(PostmasterChildIsThread(pmchild));
+
+	/*
+	 * The postmaster claims a thread-exit report before joining the native
+	 * carrier.  If that join fails, keep the PMChild active and make the exit
+	 * report visible again so a later postmaster loop can retry instead of
+	 * releasing a slot whose carrier was not joined.
+	 */
+	pg_memory_barrier();
+	pg_atomic_write_u32(&pmchild->thread_exited, 1);
+}
+
+int
+PostmasterChildJoinThread(PMChild *pmchild)
+{
+	Assert(PostmasterChildIsThread(pmchild));
+
+	/*
+	 * The native thread handle is postmaster-owned: SetThread stores it before
+	 * the carrier can publish startup or exit, and slot release happens only
+	 * after a successful join.  Keep the join behind the PMChild API boundary
+	 * so callers do not grow direct access to thread-carrier fields.
+	 */
+	return pg_thread_join(&pmchild->thread);
 }
 
 /*
@@ -252,6 +667,9 @@ bool
 ReleasePostmasterChildSlot(PMChild *pmchild)
 {
 	dlist_delete(&pmchild->elem);
+	pmchild->pid = 0;
+
+	PMChildResetLogicalPublicationState(pmchild, 0);
 	if (pmchild->bkend_type == B_DEAD_END_BACKEND)
 	{
 		elog(DEBUG2, "releasing dead-end backend");
@@ -295,7 +713,7 @@ FindPostmasterChildByPid(int pid)
 	{
 		PMChild    *bp = dlist_container(PMChild, elem, iter.cur);
 
-		if (bp->pid == pid)
+		if (PostmasterChildIsProcess(bp) && bp->pid == pid)
 			return bp;
 	}
 	return NULL;

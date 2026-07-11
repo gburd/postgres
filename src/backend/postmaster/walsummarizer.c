@@ -48,6 +48,7 @@
 #include "storage/procsignal.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/wait_event.h"
@@ -110,7 +111,7 @@ typedef struct
 } SummarizerReadLocalXLogPrivate;
 
 /* Pointer to shared memory state. */
-static WalSummarizerData *WalSummarizerCtl;
+static PG_GLOBAL_SHMEM WalSummarizerData *WalSummarizerCtl;
 
 static void WalSummarizerShmemRequest(void *arg);
 static void WalSummarizerShmemInit(void *arg);
@@ -126,7 +127,8 @@ const ShmemCallbacks WalSummarizerShmemCallbacks = {
  * the multiplier. It should vary between 1 and MAX_SLEEP_QUANTA, depending
  * on system activity. See summarizer_wait_for_wal() for how we adjust this.
  */
-static long sleep_quanta = 1;
+#define sleep_quanta \
+	(PgCurrentMaintenanceWorkerState()->walsummarizer_sleep_quanta)
 
 /*
  * The sleep time will always be a multiple of 200ms and will not exceed
@@ -143,18 +145,23 @@ static long sleep_quanta = 1;
  * This is a count of the number of pages of WAL that we've read since the
  * last time we waited for more WAL to appear.
  */
-static long pages_read_since_last_sleep = 0;
+#define pages_read_since_last_sleep \
+	(PgCurrentMaintenanceWorkerState()->walsummarizer_pages_read_since_last_sleep)
 
 /*
  * Most recent RedoRecPtr value observed by MaybeRemoveOldWalSummaries.
  */
-static XLogRecPtr redo_pointer_at_last_summary_removal = InvalidXLogRecPtr;
+#define redo_pointer_at_last_summary_removal \
+	(PgCurrentMaintenanceWorkerState()->walsummarizer_redo_pointer_at_last_summary_removal)
+
+#define walsummarizer_context \
+	(PgCurrentMaintenanceWorkerState()->walsummarizer_context)
 
 /*
  * GUC parameters
  */
-bool		summarize_wal = false;
-int			wal_summary_keep_time = 10 * HOURS_PER_DAY * MINS_PER_HOUR;
+PG_GLOBAL_RUNTIME bool summarize_wal = false;
+PG_GLOBAL_RUNTIME int wal_summary_keep_time = 10 * HOURS_PER_DAY * MINS_PER_HOUR;
 
 static void WalSummarizerShutdown(int code, Datum arg);
 static XLogRecPtr GetLatestLSN(TimeLineID *tli);
@@ -223,7 +230,6 @@ void
 WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 {
 	sigjmp_buf	local_sigjmp_buf;
-	MemoryContext context;
 
 	/*
 	 * Within this function, 'current_lsn' and 'current_tli' refer to the
@@ -244,10 +250,12 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 	XLogRecPtr	switch_lsn = InvalidXLogRecPtr;
 	int			num_descendant_tlis = 0;
 	TimeLineID *descendant_tlis = NULL;
+	bool		threaded_worker;
 
 	Assert(startup_data_len == 0);
 
 	AuxiliaryProcessMainCommon();
+	threaded_worker = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 
 	ereport(DEBUG1,
 			(errmsg_internal("WAL summarizer started")));
@@ -255,14 +263,17 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 	/*
 	 * Properly accept or ignore signals the postmaster might send us
 	 */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGINT, PG_SIG_IGN);	/* no query to cancel */
-	pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
-	pqsignal(SIGALRM, PG_SIG_IGN);
-	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-	pqsignal(SIGUSR2, PG_SIG_IGN);	/* not used */
+	if (!threaded_worker)
+	{
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
+		pqsignal(SIGINT, PG_SIG_IGN);	/* no query to cancel */
+		pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
+		/* SIGQUIT handler was already set up by InitPostmasterChild */
+		pqsignal(SIGALRM, PG_SIG_IGN);
+		pqsignal(SIGPIPE, PG_SIG_IGN);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR2, PG_SIG_IGN);	/* not used */
+	}
 
 	/* Advertise ourselves. */
 	on_shmem_exit(WalSummarizerShutdown, (Datum) 0);
@@ -271,15 +282,17 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 	LWLockRelease(WALSummarizerLock);
 
 	/* Create and switch to a memory context that we can reset on error. */
-	context = AllocSetContextCreate(TopMemoryContext,
-									"Wal Summarizer",
-									ALLOCSET_DEFAULT_SIZES);
-	MemoryContextSwitchTo(context);
+	walsummarizer_context =
+		PgRuntimeGetOwnedMemoryContextWithSizes(&walsummarizer_context,
+												"Wal Summarizer",
+												ALLOCSET_DEFAULT_SIZES);
+	MemoryContextSwitchTo(walsummarizer_context);
 
 	/*
 	 * Reset some signals that are accepted by postmaster but not here
 	 */
-	pqsignal(SIGCHLD, PG_SIG_DFL);
+	if (!threaded_worker)
+		pqsignal(SIGCHLD, PG_SIG_DFL);
 
 	/*
 	 * If an exception is encountered, processing resumes here.
@@ -308,11 +321,11 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 		 * Now return to normal top-level context and clear ErrorContext for
 		 * next time.
 		 */
-		MemoryContextSwitchTo(context);
+		MemoryContextSwitchTo(walsummarizer_context);
 		FlushErrorState();
 
 		/* Flush any leaked data in the top-level context */
-		MemoryContextReset(context);
+		MemoryContextReset(walsummarizer_context);
 
 		/* Now we can allow interrupts again */
 		RESUME_INTERRUPTS();
@@ -339,7 +352,8 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 	/*
 	 * Unblock signals (they were blocked when the postmaster forked us)
 	 */
-	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+	if (!threaded_worker)
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 	/*
 	 * Fetch information about previous progress from shared memory, and ask
@@ -365,7 +379,7 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 		XLogRecPtr	end_of_summary_lsn;
 
 		/* Flush any leaked data in the top-level context */
-		MemoryContextReset(context);
+		MemoryContextReset(walsummarizer_context);
 
 		/* Process any signals received recently. */
 		ProcessWalSummarizerInterrupts();
@@ -403,7 +417,7 @@ WalSummarizerMain(const void *startup_data, size_t startup_data_len)
 			switch_lsn = WalSummarizerSwitchPoint(current_tli, tles,
 												  &new_num_descendant_tlis,
 												  &new_descendant_tlis);
-			MemoryContextSwitchTo(context);
+			MemoryContextSwitchTo(walsummarizer_context);
 
 			/*
 			 * Free any old array of descendant TLIs and install the new
@@ -953,13 +967,36 @@ WalSummarizerSwitchPoint(TimeLineID current_tli, List *tles,
 static void
 ProcessWalSummarizerInterrupts(void)
 {
+	PgCurrentBackendApplyInterrupts();
+
 	if (ProcSignalBarrierPending)
 		ProcessProcSignalBarrier();
+
+	/*
+	 * A threaded (fiber or thread carrier) summarizer has no OS signal
+	 * handler: an immediate shutdown SIGQUIT is delivered as a PROC_DIE
+	 * interrupt on this backend rather than crash-exiting the process the way
+	 * SignalHandlerForCrashExit does under process mode.  Honor it here, as
+	 * ProcessMainLoopInterrupts() does for the WAL writer, so immediate stop
+	 * does not wedge on a parked summarizer.  (In process mode ProcDiePending
+	 * is never set for the summarizer, so this is a no-op there.)
+	 */
+	if (ProcDiePending)
+		proc_exit(1);
 
 	if (ConfigReloadPending)
 	{
 		ConfigReloadPending = false;
-		ProcessConfigFile(PGC_SIGHUP);
+
+		/*
+		 * A thread-backed WAL summarizer shares GUC storage with the
+		 * postmaster.  The postmaster performs the actual config reload; this
+		 * carrier only needs to observe updated shared values such as
+		 * summarize_wal below.
+		 */
+		if (CurrentPgRuntime == NULL ||
+			CurrentPgRuntime->kind == PG_RUNTIME_PROCESS)
+			ProcessConfigFile(PGC_SIGHUP);
 	}
 
 	if (ShutdownRequestPending || !summarize_wal)

@@ -31,29 +31,53 @@
 
 #include "postgres.h"
 
+#include <errno.h>
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
+#include <poll.h>
+#include <sys/time.h>
 #include <unistd.h>
 
+#include "access/xact.h"
+#include "common/pg_prng.h"
 #include "libpq/libpq-be.h"
+#include "libpq/pqsignal.h"
 #include "miscadmin.h"
+#include "pgtime.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgworker_internals.h"
 #include "postmaster/bgwriter.h"
 #include "postmaster/fork_process.h"
 #include "postmaster/pgarch.h"
+#ifdef USE_XTC_CARRIER
+#include "postmaster/pg_xtc_carrier.h"
+#endif
 #include "postmaster/postmaster.h"
 #include "postmaster/startup.h"
 #include "postmaster/syslogger.h"
 #include "postmaster/walsummarizer.h"
 #include "postmaster/walwriter.h"
+#ifndef WIN32
+#include "port/pg_pthread.h"
+#endif
 #include "replication/slotsync.h"
 #include "replication/walreceiver.h"
 #include "storage/dsm.h"
 #include "storage/io_worker.h"
 #include "storage/ipc.h"
+#include "storage/latch.h"
 #include "storage/pg_shmem.h"
 #include "storage/shmem_internal.h"
+#include "storage/waiteventset.h"
 #include "tcop/backend_startup.h"
+#include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
+#include "utils/guc.h"
+#include "utils/global_lifetime.h"
 #include "utils/memutils.h"
+#include "utils/pgstat_internal.h"
+#include "utils/timestamp.h"
 
 #ifdef EXEC_BACKEND
 #include "nodes/queryjumble.h"
@@ -176,17 +200,1901 @@ typedef struct
 	bool		shmem_attach;
 } child_process_kind;
 
-static child_process_kind child_process_kinds[] = {
+static PG_GLOBAL_IMMUTABLE const child_process_kind child_process_kinds[] = {
 #define PG_PROCTYPE(bktype, bkcategory, description, main_func, shmem_attach) \
 	[bktype] = {description, main_func, shmem_attach},
 #include "postmaster/proctypelist.h"
 #undef PG_PROCTYPE
 };
 
+typedef enum BackendThreadStartKind
+{
+	BACKEND_THREAD_START_DEDICATED,
+	BACKEND_THREAD_START_POOLED_LOGICAL
+} BackendThreadStartKind;
+
+typedef struct BackendThreadPublication
+{
+	BackendThreadStartKind kind;
+	PMChild    *pmchild;
+	Latch	   *postmaster_latch;
+} BackendThreadPublication;
+
+typedef struct BackendThreadStart
+{
+	BackendThreadPublication publication;
+	BackendType child_type;
+	int			child_slot;
+	PgThreadBackendRuntimeState runtime_state;
+	BackendStartupData startup_data;
+	BackgroundWorker bgworker_startup_data;
+	ClientSocket client_sock;
+	pg_tz	   *startup_session_timezone;
+	pg_tz	   *startup_log_timezone;
+	pg_atomic_uint32 launch_registered;
+
+	/*
+	 * xtc-carrier only: guards the one-time PMChild exit publication of a
+	 * fiber-backed worker against a double reap.  A pooled-logical worker
+	 * fiber that is spawned onto a carrier loop but never scheduled (a
+	 * cross-thread wake to an idle io_uring loop can be missed in the current
+	 * libxtc) leaves its PMChild un-reaped, which wedges PM_WAIT_BACKENDS at
+	 * fast stop.  The autovacuum launcher's worker-start-timeout cancel is the
+	 * authoritative "this worker never started" signal; on that signal the
+	 * postmaster reaps the orphaned worker's PMChild.  Both the postmaster
+	 * (orphan reap) and the fiber (if it ever does run and reaches proc_exit)
+	 * claim this flag; only the winner publishes the pooled-logical exit and
+	 * releases the PMChild, so the slot is reaped exactly once.  The struct is
+	 * fiber-owned for its whole life and freed only by the fiber, so the
+	 * postmaster only ever reads/exchanges this atomic, never frees it (a
+	 * fiber that genuinely never runs leaks this one struct -- bounded and
+	 * rare, and far cheaper than a wedged shutdown).
+	 *
+	 * fiber_entered is set by the fiber as its very first action (before any
+	 * PMChild access), so the postmaster can tell "the fiber body actually
+	 * started running" from "the launch was published but the fiber was never
+	 * scheduled".  The orphan reap only targets workers whose fiber never
+	 * entered, so it can never release the PMChild slot of a live/starting
+	 * worker.
+	 *
+	 * launch_time is when the postmaster handed this worker to the carrier.
+	 * The launcher-cancel reap only reaps an un-entered worker that is OLDER
+	 * than the worker-start-timeout, so it can never grab a worker the
+	 * launcher just (re)launched in the same signal window -- only the aged,
+	 * genuinely-stuck one.  (The shutdown-time reap ignores age: no new
+	 * workers launch once pmState >= PM_STOP_BACKENDS, so any un-entered
+	 * orphan there is safe to drain.)
+	 */
+	pg_atomic_uint32 exit_claimed;
+	pg_atomic_uint32 fiber_entered;
+	/*
+	 * start_claimed arbitrates the entry race between a just-scheduled worker
+	 * fiber and ReapOrphanedThreadedWorker: whoever wins the exchange (0->1)
+	 * owns the PMChild slot.  The fiber claims it right after publishing
+	 * fiber_entered (before any slot access); the reaper claims it only after
+	 * seeing fiber_entered == 0.  Distinct from exit_claimed (the exit-publish
+	 * arbiter) so the normal fiber exit path is unaffected.
+	 */
+	pg_atomic_uint32 start_claimed;
+	TimestampTz launch_time;
+} BackendThreadStart;
+
+typedef struct BackendPooledLogicalStart
+{
+	BackendThreadPublication publication;
+	PgThreadBackendLogicalState logical;
+	BackendStartupData startup_data;
+	ClientSocket client_sock;
+	sigjmp_buf	exit_jmp;
+	bool		exit_jmp_valid;
+	struct BackendPooledLogicalStart *next;
+} BackendPooledLogicalStart;
+
+typedef struct BackendPooledCarrierStart
+{
+	PgCarrier	carrier;
+	PgThread	thread;
+	int			carrier_index;
+	pg_tz	   *startup_session_timezone;
+	pg_tz	   *startup_log_timezone;
+} BackendPooledCarrierStart;
+
+static PG_GLOBAL_RUNTIME bool postmaster_thread_carriers_started = false;
+#ifndef WIN32
+static PG_GLOBAL_RUNTIME pthread_mutex_t pooled_protocol_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
+static PG_GLOBAL_RUNTIME pthread_cond_t pooled_protocol_queue_cond = PTHREAD_COND_INITIALIZER;
+static PG_GLOBAL_RUNTIME BackendPooledLogicalStart *pooled_protocol_queue_head = NULL;
+static PG_GLOBAL_RUNTIME BackendPooledLogicalStart *pooled_protocol_queue_tail = NULL;
+static PG_GLOBAL_RUNTIME int pooled_protocol_queue_length = 0;
+static PG_GLOBAL_RUNTIME int pooled_protocol_carrier_count = 0;
+static PG_GLOBAL_RUNTIME bool pooled_protocol_pool_started = false;
+#endif
+#if defined(__GLIBC__)
+#define BACKEND_THREAD_MALLOC_TRIM_THRESHOLD ((Size) 64 * 1024 * 1024)
+static PG_GLOBAL_RUNTIME pthread_mutex_t backend_thread_malloc_trim_mutex = PTHREAD_MUTEX_INITIALIZER;
+static PG_GLOBAL_RUNTIME Size backend_thread_malloc_trim_pending = 0;
+#endif
+
+static bool postmaster_backend_thread_launch(PMChild *pmchild,
+											 BackendType child_type,
+											 int child_slot,
+											 void *startup_data,
+											 size_t startup_data_len,
+											 const ClientSocket *client_sock);
+static bool postmaster_pooled_protocol_launch(PMChild *pmchild,
+											  int child_slot,
+											  void *startup_data,
+											  size_t startup_data_len,
+											  const ClientSocket *client_sock);
+static BackendThreadStart *backend_thread_start_alloc(void);
+static void backend_thread_start_release(BackendThreadStart *thread_start);
+static BackendPooledLogicalStart *backend_pooled_logical_start_alloc(void);
+static void backend_pooled_logical_start_release(BackendPooledLogicalStart *logical_start);
+static void backend_thread_entry(void *arg);
+#ifdef USE_XTC_CARRIER
+static bool xtc_carrier_eligible(BackendType child_type);
+#endif
+static void backend_thread_run_backend(BackendThreadStart *thread_start);
+static void backend_thread_run_worker(BackendThreadStart *thread_start);
+static BackendThreadPublication *backend_thread_current_publication(void);
+static BackendThreadStart *backend_thread_current_start(void);
+static void backend_thread_set_current_start(BackendThreadStart *thread_start);
+static void backend_thread_wait_until_registered(BackendThreadStart *thread_start);
+static void backend_thread_init_random_state(void);
+static void backend_thread_clear_deleted_retained_memory_contexts(void);
+static void backend_thread_free_deleted_retained_memory_contexts(void);
+static void backend_thread_maybe_trim_reclaimed_memory(Size reclaimed);
+pg_noreturn static void backend_thread_exit(int code);
+pg_noreturn static void backend_thread_finish(int code);
+pg_noreturn static void backend_pooled_logical_finish(int code);
+static int	backend_thread_exitstatus(int code);
+#ifndef WIN32
+static bool backend_pooled_protocol_start_pool(void);
+static bool backend_pooled_protocol_start_one_carrier(void);
+static void backend_pooled_protocol_maybe_start_carrier_for_work(void);
+static void backend_pooled_protocol_carrier_entry(void *arg);
+static void backend_pooled_protocol_enqueue(BackendPooledLogicalStart *logical_start);
+static BackendPooledLogicalStart *backend_pooled_protocol_dequeue(void);
+static int	backend_pooled_protocol_queue_count(void);
+static uint32 backend_pooled_protocol_idle_carrier_count(void);
+static void backend_pooled_protocol_signal_work(void);
+static void backend_pooled_protocol_signal_ready_work(int count);
+static void backend_pooled_protocol_wait_for_work(long timeout_us);
+static void backend_pooled_protocol_deadline_after(long timeout_us,
+												   struct timespec *deadline);
+static BackendPooledLogicalStart *backend_pooled_logical_start_from_backend(PgBackend *backend);
+static void backend_pooled_protocol_run_logical_start(BackendPooledCarrierStart *carrier_start,
+													  BackendPooledLogicalStart *logical_start);
+static void backend_pooled_protocol_resume_logical_start(BackendPooledLogicalStart *logical_start);
+static PgStepResult backend_pooled_protocol_run_attached_logical(BackendPooledLogicalStart *logical_start,
+																 PgSession *session);
+pg_noreturn static void backend_pooled_protocol_exit_logical(int code);
+#endif
+
 const char *
 PostmasterChildName(BackendType child_type)
 {
 	return child_process_kinds[child_type].name;
+}
+
+bool
+PostmasterThreadCarriersStarted(void)
+{
+	return postmaster_thread_carriers_started;
+}
+
+/*
+ * Start a new postmaster child using the runtime-selected carrier model.
+ */
+bool
+postmaster_child_launch_carrier(PMChild *pmchild,
+								BackendType child_type, int child_slot,
+								void *startup_data, size_t startup_data_len,
+								const ClientSocket *client_sock)
+{
+	pid_t		pid;
+	PgBackendLaunchModel launch_model;
+
+	if (multithreaded &&
+		child_type == B_BACKEND &&
+		PgRuntimePooledProtocolRequested())
+	{
+		return postmaster_pooled_protocol_launch(pmchild, child_slot,
+												 startup_data,
+												 startup_data_len,
+												 client_sock);
+	}
+
+	if (multithreaded &&
+		child_type == B_BG_WORKER &&
+		startup_data != NULL &&
+		startup_data_len == sizeof(BackgroundWorker) &&
+		BackgroundWorkerCanUseThreadCarrier((BackgroundWorker *) startup_data))
+	{
+		return postmaster_backend_thread_launch(pmchild, child_type, child_slot,
+												startup_data, startup_data_len,
+												client_sock);
+	}
+
+	if (multithreaded &&
+		postmaster_thread_carriers_started &&
+		child_type == B_IO_WORKER)
+	{
+		return postmaster_backend_thread_launch(pmchild, child_type, child_slot,
+												startup_data, startup_data_len,
+												client_sock);
+	}
+
+	/*
+	 * The logger, checkpointer, and background writer are needed before the
+	 * startup process is forked, so their initial startup carriers must
+	 * remain processes.  After normal running begins and another thread
+	 * carrier has made fork-without-exec unsafe, the postmaster hands them off
+	 * and relaunches them through the runtime-selected thread carrier path.
+	 */
+	if (multithreaded &&
+		!postmaster_thread_carriers_started &&
+		(child_type == B_LOGGER ||
+		 child_type == B_CHECKPOINTER || child_type == B_BG_WRITER))
+		launch_model = PG_BACKEND_LAUNCH_PROCESS;
+	else
+		launch_model = PgRuntimeGetBackendLaunchModel(child_type);
+
+	if (launch_model == PG_BACKEND_LAUNCH_THREAD)
+	{
+		return postmaster_backend_thread_launch(pmchild, child_type, child_slot,
+												startup_data, startup_data_len,
+												client_sock);
+	}
+
+	/*
+	 * Once the postmaster has created any thread carrier, later fork-without-
+	 * exec process launches are unsafe.  Phase 10 only supports regular client
+	 * backend threads; Phase 11 must replace server-owned worker process
+	 * launches with worker thread carriers before they can run in normal
+	 * threaded mode.
+	 */
+	if (multithreaded && postmaster_thread_carriers_started)
+	{
+		errno = ENOSYS;
+		return false;
+	}
+
+	pid = postmaster_child_launch(child_type, child_slot,
+								  startup_data, startup_data_len, client_sock);
+	if (pid < 0)
+		return false;
+
+	PostmasterChildSetProcess(pmchild, pid);
+	return true;
+}
+
+static BackendThreadStart *
+backend_thread_start_alloc(void)
+{
+	BackendThreadStart *thread_start;
+
+	thread_start = malloc(sizeof(BackendThreadStart));
+	if (thread_start != NULL)
+		MemSet(thread_start, 0, sizeof(*thread_start));
+
+	return thread_start;
+}
+
+static void
+backend_thread_start_release(BackendThreadStart *thread_start)
+{
+	PgExecution *scheduler_execution;
+
+	if (thread_start == NULL)
+		return;
+
+	scheduler_execution = thread_start->runtime_state.carrier.scheduler_execution;
+	if (scheduler_execution != NULL)
+	{
+		thread_start->runtime_state.carrier.scheduler_execution = NULL;
+		free(scheduler_execution);
+	}
+
+	free(thread_start);
+}
+
+static BackendPooledLogicalStart *
+backend_pooled_logical_start_alloc(void)
+{
+	BackendPooledLogicalStart *logical_start;
+
+	logical_start = malloc(sizeof(BackendPooledLogicalStart));
+	if (logical_start != NULL)
+		MemSet(logical_start, 0, sizeof(*logical_start));
+
+	return logical_start;
+}
+
+static void
+backend_pooled_logical_start_release(BackendPooledLogicalStart *logical_start)
+{
+	if (logical_start == NULL)
+		return;
+
+	free(logical_start);
+}
+
+#ifdef USE_XTC_CARRIER
+/*
+ * xtc-carrier: which thread-carrier child types may run as xtc fibers on the
+ * shared carrier loop pool instead of dedicated pthreads.
+ *
+ * Start conservative: only regular client backends run as xtc fibers today.
+ * They reach postmaster_backend_thread_launch() as thread carriers, run the
+ * common backend_thread_entry(), yield through the waiteventset xtc intercept,
+ * and reap as pooled-logical PMChildren.
+ *
+ * Server-owned worker families (bgworker, io worker, autovacuum, WAL, etc.)
+ * are deferred: a bare pthread->fiber carrier swap is not enough -- their
+ * crash/terminate/restart and shutdown-ordering protocols (and, for io
+ * workers, the AIO PM_WAIT_IO_WORKERS handshake, item #6) need fiber-aware
+ * handling.  Widen this allowlist one family at a time, each validated under
+ * the full threaded-runtime TAP (not just happy-path smoke) on a disk-backed
+ * host.  Deferred, not rejected.
+ *
+ * ponytail: hand-picked allowlist, not a broad opt-in.  Widen one family at a
+ * time as each is shown to yield at every blocking wait (never blocks the
+ * carrier loop) and to tear down cleanly as a pooled-logical PMChild.
+ */
+static bool
+xtc_carrier_eligible(BackendType child_type)
+{
+	switch (child_type)
+	{
+		case B_BACKEND:
+			return true;
+		case B_BG_WORKER:
+
+			/*
+			 * #5 widening (post-#7): background workers are fiber-eligible.
+			 * #7 Stage 1b now gives fiber-aware crash containment + escalation
+			 * (a faulted worker fiber delivers a DOWN(reason=signal) that the
+			 * supervisor escalates), which was the missing piece.  Validate the
+			 * full lifecycle -- launch, run, SIGTERM/terminate, crash, and clean
+			 * shutdown ordering -- under the threaded-runtime TAP on a
+			 * disk-backed host, not just happy-path smoke.
+			 */
+			return true;
+		case B_AUTOVAC_LAUNCHER:
+		case B_AUTOVAC_WORKER:
+			return true;
+		case B_WAL_WRITER:
+
+			/*
+			 * #5 widening -- Tier A (2026-07-06 family audit): the WAL writer
+			 * is fiber-eligible.  It is a long-lived singleton launched only in
+			 * normal running (StartChildProcess(B_WAL_WRITER) at PM_RUN), so it
+			 * has no start-before-thread-carriers hazard (unlike
+			 * logger/checkpointer/bgwriter, Tier D) and no on-demand
+			 * start-timeout cancel race (unlike autovac workers).  Its main
+			 * loop parks on WaitLatch(MyLatch, ...) which routes through the
+			 * xtc intercept, and SIGTERM/SIGINT map to SHUTDOWN_REQUEST -> a
+			 * cross-fiber SetLatch wakes the fiber -> ProcessMainLoopInterrupts
+			 * -> proc_exit(0), publishing its pooled-logical exit so
+			 * PM_WAIT_* completes.
+			 */
+			return true;
+		case B_WAL_SUMMARIZER:
+
+			/*
+			 * #5 widening -- Tier A (2026-07-07): the WAL summarizer is
+			 * fiber-eligible.  Like the WAL writer it is a long-lived singleton
+			 * (StartChildProcess at PM_RUN) with no start-before-carriers
+			 * hazard and no start-timeout cancel race.  It parks on
+			 * WaitLatch(MyLatch, ...) in summarizer_wait_for_wal() with a
+			 * bounded WL_TIMEOUT and re-polls GetLatestLSN() on each wake, so it
+			 * advances as WAL is generated without needing an fd-based wake
+			 * (verified: pending_lsn tracks the flush LSN and summarized_lsn
+			 * advances across a checkpoint, byte-for-byte identical to process
+			 * mode).  Fast stop: SIGTERM -> SHUTDOWN_REQUEST -> cross-fiber
+			 * SetLatch wakes the fiber -> ProcessWalSummarizerInterrupts ->
+			 * proc_exit(0).  Immediate stop: SIGQUIT -> PROC_DIE, which
+			 * ProcessWalSummarizerInterrupts now honors (walsummarizer.c), so
+			 * the fiber exits and PM_WAIT_* completes.  (The earlier deferral
+			 * blamed a libxtc idle-loop timer-wake gap and a shutdown wedge;
+			 * both were stale -- the fast-stop wedge was cured by blocking
+			 * process-directed signals across xtc bringup, the immediate-stop
+			 * wedge by the PROC_DIE check, and the "stuck summarized_lsn" was a
+			 * summary-file boundary artifact that equally affects process mode.)
+			 */
+			return true;
+		case B_ARCHIVER:
+
+			/*
+			 * #5 widening -- Tier C: the WAL archiver runs in-process but as a
+			 * dedicated THREAD CARRIER, not a fiber (return false here ->
+			 * PgRuntimeShouldThreadBackend includes B_ARCHIVER -> PG_BACKEND_LAUNCH_
+			 * THREAD).  Rationale (2026-07-09): the archiver runs archive_command
+			 * via system() (shell_archive.c), which fork()+exec()+waitpid()s and
+			 * BLOCKS the calling thread for the entire command.  As a fiber that
+			 * would stall the shared carrier loop -- freezing every sibling client
+			 * backend fiber on that loop for the whole (possibly multi-second)
+			 * archive command.  A dedicated thread carrier confines the blocking
+			 * system()/waitpid to the archiver's own OS thread, so sibling fibers
+			 * keep running.  (This matches checkpointer/bgwriter/startup, which are
+			 * also thread carriers.)  Everything else about the archiver is
+			 * unchanged and already validated as a thread carrier: it is a
+			 * PM_RUN/PM_HOT_STANDBY singleton, parks on WaitLatch routed through the
+			 * intercept, drains via ProcessPgArchInterrupts(), and its two-step
+			 * shutdown (SIGTERM->SHUTDOWN_REQUEST, SIGUSR2->WAKEUP_STOP, SIGQUIT->
+			 * PROC_DIE) is wired in thread_child_signal_interrupt.  It is still
+			 * in-process (no fork of the archiver itself), so no forked-completer
+			 * wake problem.  An archive_library (C API, no system()) would be
+			 * fiber-safe, but the default archive_command path needs the thread.
+			 */
+			return false;
+		case B_SLOTSYNC_WORKER:
+
+			/*
+			 * #5 widening -- Tier B (2026-07-09): the slot sync worker is
+			 * fiber-eligible.  It runs only on a hot standby with
+			 * sync_replication_slots=on (StartChildProcess(B_SLOTSYNC_WORKER) at
+			 * PM_HOT_STANDBY), so it starts well after thread carriers exist.  Its
+			 * main loop and SlotSyncWorkerCheckForStop park on WaitLatch(MyLatch,
+			 * ...) with a bounded WL_TIMEOUT routed through the xtc intercept and
+			 * re-poll via CHECK_FOR_INTERRUPTS() on each wake.  Fast/immediate stop
+			 * map SIGTERM/SIGQUIT to PROC_DIE; the cross-fiber SetLatch wakes the
+			 * fiber and ProcessInterrupts() honors ProcDiePending -> proc_exit,
+			 * publishing the pooled-logical exit so PM_WAIT_* completes.
+			 *
+			 * The earlier deferral was a MISCONFIG artifact (sync_replication_slots
+			 * without a dbname in primary_conninfo made the worker error out and
+			 * relaunch every ~60s, and shutdown could not converge on that churn --
+			 * compounded by the standby fiber-backend AIO hang, now fixed by the
+			 * io_method=xtc routing).  With a correct slotsync config it starts,
+			 * syncs, and tears down cleanly.
+			 */
+			return true;
+		case B_WAL_RECEIVER:
+
+			/*
+			 * #5 widening -- Tier B (2026-07-09): the WAL receiver is
+			 * fiber-eligible.  It is started on demand by the startup process
+			 * during recovery / on a standby (StartChildProcess(B_WAL_RECEIVER)
+			 * at PM_STARTUP..PM_HOT_STANDBY), after thread carriers exist.  Its
+			 * main loop parks on WaitLatchOrSocket(MyLatch, WL_SOCKET_READABLE |
+			 * WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH) -- routed through
+			 * the xtc intercept -- and processes interrupts via
+			 * CHECK_FOR_INTERRUPTS() plus its own WalRcvShutdownRequested()/
+			 * proc_exit(1) handshake.  SIGTERM/SIGQUIT map to PROC_DIE and wake
+			 * the fiber via cross-fiber SetLatch, driving proc_exit through the
+			 * standard ProcessInterrupts() ProcDiePending path.
+			 *
+			 * The earlier deferral blamed a "standby shutdown-ordering" wedge, but
+			 * that was a SYMPTOM: the standby's fiber CLIENT backends hung during
+			 * InitPostgres on their first uncached read (forked io workers cannot
+			 * wake in-process fibers under io_method=worker), and a hung backend
+			 * keeps PM_WAIT_BACKENDS from converging.  With io_method routed to the
+			 * in-fiber xtc method under multithreaded=on (postmaster.c), standby
+			 * fiber backends complete queries and shutdown converges, so the
+			 * walreceiver's own clean fiber teardown is no longer masked.
+			 */
+			return true;
+		default:
+
+			/*
+			 * Remaining server-owned worker families are NOT yet
+			 * fiber-eligible.  B_IO_WORKER additionally needs the AIO shutdown
+			 * protocol (PM_WAIT_IO_WORKERS) handled on fibers -- that belongs
+			 * with the xtc_aio work (item #6).  The auxiliary families
+			 * (logger, checkpointer, bgwriter -- which must start as processes
+			 * before thread carriers exist -- plus archiver, ...) each have
+			 * their own start/shutdown-ordering and restart protocols; widen
+			 * one at a time once its full lifecycle is validated on a fiber
+			 * under the threaded-runtime TAP.  Deferred, not rejected.
+			 * (B_BACKEND, B_BG_WORKER, autovacuum, B_WAL_WRITER,
+			 * B_WAL_SUMMARIZER, B_SLOTSYNC_WORKER, and B_WAL_RECEIVER are
+			 * handled above.)
+			 */
+			return false;
+	}
+}
+#endif
+
+/*
+ * Start a regular backend carrier thread.
+ *
+ * Phase 10 supports one OS thread per regular client backend.  Server-owned
+ * worker families are still process-backed or disabled until Phase 11 provides
+ * worker thread carriers.
+ */
+static bool
+postmaster_backend_thread_launch(PMChild *pmchild,
+								 BackendType child_type, int child_slot,
+								 void *startup_data, size_t startup_data_len,
+								 const ClientSocket *client_sock)
+{
+	BackendThreadStart *thread_start;
+	PgThread	thread;
+	int			rc;
+
+	if (child_type != B_ARCHIVER &&
+		child_type != B_BACKEND &&
+		child_type != B_AUTOVAC_LAUNCHER &&
+		child_type != B_AUTOVAC_WORKER &&
+		child_type != B_BG_WRITER &&
+		child_type != B_BG_WORKER &&
+		child_type != B_CHECKPOINTER &&
+		child_type != B_IO_WORKER &&
+		child_type != B_LOGGER &&
+		child_type != B_SLOTSYNC_WORKER &&
+		child_type != B_STARTUP &&
+		child_type != B_WAL_RECEIVER &&
+		child_type != B_WAL_WRITER &&
+		child_type != B_WAL_SUMMARIZER)
+	{
+		errno = ENOSYS;
+		return false;
+	}
+	if (child_type == B_BACKEND &&
+		(client_sock == NULL ||
+		 startup_data == NULL ||
+		 startup_data_len != sizeof(BackendStartupData)))
+	{
+		errno = EINVAL;
+		return false;
+	}
+	if ((child_type == B_ARCHIVER ||
+		 child_type == B_AUTOVAC_LAUNCHER ||
+		 child_type == B_AUTOVAC_WORKER ||
+		 child_type == B_BG_WRITER ||
+		 child_type == B_BG_WORKER ||
+		 child_type == B_CHECKPOINTER ||
+		 child_type == B_IO_WORKER ||
+		 child_type == B_LOGGER ||
+		 child_type == B_SLOTSYNC_WORKER ||
+		 child_type == B_STARTUP ||
+		 child_type == B_WAL_RECEIVER ||
+		 child_type == B_WAL_WRITER ||
+		 child_type == B_WAL_SUMMARIZER) &&
+		(client_sock != NULL ||
+		 (child_type != B_BG_WORKER &&
+		  (startup_data != NULL || startup_data_len != 0)) ||
+		 (child_type == B_BG_WORKER &&
+		  (startup_data == NULL ||
+		   startup_data_len != sizeof(BackgroundWorker) ||
+		   !BackgroundWorkerCanUseThreadCarrier((BackgroundWorker *) startup_data)))))
+	{
+		errno = EINVAL;
+		return false;
+	}
+
+	if (IsExternalConnectionBackend(child_type))
+		((BackendStartupData *) startup_data)->fork_started = GetCurrentTimestamp();
+
+#ifdef WIN32
+	errno = ENOSYS;
+	return false;
+#else
+	InitializePgThreadRuntime(backend_thread_exit);
+
+	thread_start = backend_thread_start_alloc();
+	if (thread_start == NULL)
+	{
+		errno = ENOMEM;
+		return false;
+	}
+
+	thread_start->publication.kind = BACKEND_THREAD_START_DEDICATED;
+	thread_start->publication.pmchild = pmchild;
+	thread_start->child_type = child_type;
+	thread_start->child_slot = child_slot;
+	if (child_type == B_BACKEND)
+	{
+		thread_start->startup_data = *((BackendStartupData *) startup_data);
+		thread_start->client_sock = *client_sock;
+		thread_start->client_sock.sock = dup(client_sock->sock);
+	}
+	else if (child_type == B_BG_WORKER)
+	{
+		MemSet(&thread_start->startup_data, 0, sizeof(thread_start->startup_data));
+		thread_start->bgworker_startup_data = *((BackgroundWorker *) startup_data);
+		MemSet(&thread_start->client_sock, 0, sizeof(thread_start->client_sock));
+		thread_start->client_sock.sock = PGINVALID_SOCKET;
+	}
+	else
+	{
+		MemSet(&thread_start->startup_data, 0, sizeof(thread_start->startup_data));
+		MemSet(&thread_start->bgworker_startup_data, 0,
+			   sizeof(thread_start->bgworker_startup_data));
+		MemSet(&thread_start->client_sock, 0, sizeof(thread_start->client_sock));
+		thread_start->client_sock.sock = PGINVALID_SOCKET;
+	}
+	thread_start->startup_session_timezone = session_timezone;
+	thread_start->startup_log_timezone = log_timezone;
+	pg_atomic_init_u32(&thread_start->launch_registered, 0);
+	pg_atomic_init_u32(&thread_start->exit_claimed, 0);
+	pg_atomic_init_u32(&thread_start->start_claimed, 0);
+	pg_atomic_init_u32(&thread_start->fiber_entered, 0);
+	thread_start->launch_time = GetCurrentTimestamp();
+
+	if (child_type == B_BACKEND && thread_start->client_sock.sock < 0)
+	{
+		int			save_errno = errno;
+
+		backend_thread_start_release(thread_start);
+		errno = save_errno;
+		return false;
+	}
+
+	InitializePgThreadBackendRuntimeState(&thread_start->runtime_state,
+										  thread_start->child_type, NULL,
+										  NULL);
+	thread_start->publication.postmaster_latch = MyLatch;
+	if (thread_start->publication.postmaster_latch == NULL)
+		thread_start->publication.postmaster_latch = PgCurrentLocalLatchData();
+	Assert(thread_start->publication.postmaster_latch != NULL);
+
+#ifdef USE_XTC_CARRIER
+	/*
+	 * xtc-carrier: run this backend/worker as an xtc fiber on the carrier
+	 * loop pool instead of a raw pthread.  The fiber body is the tree's own
+	 * backend_thread_entry, so all thread-per-session/worker init is reused
+	 * unchanged; only the carrier differs.  Blocking waits route through the
+	 * xtc loop (see waiteventset.c).  For B_BACKEND the dup()'d
+	 * MyClientSocket->sock is the wait fd; worker families have no client
+	 * socket.
+	 */
+	if (xtc_carrier_eligible(child_type))
+	{
+		rc = xtc_pg_launch_backend_fiber(backend_thread_entry, thread_start);
+		if (rc != 0)
+		{
+			if (child_type == B_BACKEND)
+				closesocket(thread_start->client_sock.sock);
+			backend_thread_start_release(thread_start);
+			errno = rc;
+			return false;
+		}
+		elog(LOG, "xtc: %s launched as xtc fiber (child_slot=%d)",
+			 PostmasterChildName(child_type), child_slot);
+		postmaster_thread_carriers_started = true;
+		/*
+		 * No PgThread handle for the fiber path: the fiber runs on a shared
+		 * carrier loop, not a dedicated joinable pthread.  Classify it as a
+		 * pooled-logical child so the postmaster reaper releases the slot via
+		 * process_pm_pooled_logical_exit() (no pthread_join) when the fiber
+		 * exits, letting shutdown's PM_WAIT_BACKENDS complete.  Publish the
+		 * logical backend so signal/wake routing still targets it.
+		 */
+		PostmasterChildSetPooledLogical(pmchild);
+		PostmasterChildPublishLogicalBackend(pmchild,
+											 &thread_start->runtime_state.logical.backend);
+
+		/*
+		 * A fiber-backed autovac worker can be canceled by the launcher's
+		 * worker-start-timeout before its fiber is ever scheduled (see
+		 * ReapOrphanedThreadedWorker).  Record the BackendThreadStart so the
+		 * postmaster can reap the orphaned slot from the launcher-cancel path.
+		 */
+		if (child_type == B_AUTOVAC_WORKER)
+			pmchild->carrier_orphan_start = thread_start;
+		pg_atomic_write_u32(&thread_start->launch_registered, 1);
+		return true;
+	}
+#endif
+
+	rc = pg_thread_create(&thread, "postgres backend",
+						  backend_thread_entry, thread_start);
+	if (rc != 0)
+	{
+		if (child_type == B_BACKEND)
+			closesocket(thread_start->client_sock.sock);
+		backend_thread_start_release(thread_start);
+		errno = rc;
+		return false;
+	}
+
+	postmaster_thread_carriers_started = true;
+	PostmasterChildSetThread(pmchild, &thread);
+	PostmasterChildPublishLogicalBackend(pmchild,
+										 &thread_start->runtime_state.logical.backend);
+	pg_atomic_write_u32(&thread_start->launch_registered, 1);
+	return true;
+#endif
+}
+
+static bool
+postmaster_pooled_protocol_launch(PMChild *pmchild, int child_slot,
+								  void *startup_data, size_t startup_data_len,
+								  const ClientSocket *client_sock)
+{
+#ifdef WIN32
+	errno = ENOSYS;
+	return false;
+#else
+	BackendPooledLogicalStart *logical_start;
+
+	if (client_sock == NULL ||
+		startup_data == NULL ||
+		startup_data_len != sizeof(BackendStartupData))
+	{
+		errno = EINVAL;
+		return false;
+	}
+
+	InitializePgThreadRuntime(backend_thread_exit);
+	if (!backend_pooled_protocol_start_pool())
+		return false;
+
+	logical_start = backend_pooled_logical_start_alloc();
+	if (logical_start == NULL)
+	{
+		errno = ENOMEM;
+		return false;
+	}
+	MemSet(logical_start, 0, sizeof(*logical_start));
+
+	logical_start->publication.kind = BACKEND_THREAD_START_POOLED_LOGICAL;
+	logical_start->publication.pmchild = pmchild;
+	logical_start->publication.postmaster_latch = MyLatch;
+	if (logical_start->publication.postmaster_latch == NULL)
+		logical_start->publication.postmaster_latch = PgCurrentLocalLatchData();
+	Assert(logical_start->publication.postmaster_latch != NULL);
+	logical_start->startup_data = *((BackendStartupData *) startup_data);
+	logical_start->startup_data.fork_started = GetCurrentTimestamp();
+	logical_start->client_sock = *client_sock;
+	logical_start->client_sock.sock = dup(client_sock->sock);
+	if (logical_start->client_sock.sock < 0)
+	{
+		int			save_errno = errno;
+
+		backend_pooled_logical_start_release(logical_start);
+		errno = save_errno;
+		return false;
+	}
+
+	InitializePgThreadBackendLogicalState(&logical_start->logical, NULL,
+										  B_BACKEND, NULL, NULL);
+	PostmasterChildSetPooledLogical(pmchild);
+	PostmasterChildPublishLogicalBackend(pmchild,
+										 &logical_start->logical.backend);
+	backend_pooled_protocol_enqueue(logical_start);
+	backend_pooled_protocol_signal_work();
+	backend_pooled_protocol_maybe_start_carrier_for_work();
+	postmaster_thread_carriers_started = true;
+	return true;
+#endif
+}
+
+#ifndef WIN32
+static bool
+backend_pooled_protocol_start_pool(void)
+{
+	if (pooled_protocol_carrier_count > 0)
+		return true;
+
+	return backend_pooled_protocol_start_one_carrier();
+}
+
+static bool
+backend_pooled_protocol_start_one_carrier(void)
+{
+	BackendPooledCarrierStart *carrier_start;
+	int			carrier_limit;
+	int			carrier_index;
+	int			rc;
+
+	carrier_limit = PgRuntimePooledProtocolCarrierLimit();
+	if (carrier_limit <= 0)
+	{
+		errno = EINVAL;
+		return false;
+	}
+	if (pooled_protocol_carrier_count >= carrier_limit)
+		return true;
+
+	carrier_start = malloc(sizeof(BackendPooledCarrierStart));
+	if (carrier_start == NULL)
+	{
+		errno = ENOMEM;
+		return false;
+	}
+	MemSet(carrier_start, 0, sizeof(*carrier_start));
+
+	carrier_index = pooled_protocol_carrier_count;
+	InitializePgThreadCarrierRuntimeState(&carrier_start->carrier);
+	carrier_start->carrier_index = carrier_index;
+	carrier_start->startup_session_timezone = session_timezone;
+	carrier_start->startup_log_timezone = log_timezone;
+
+	rc = pg_thread_create(&carrier_start->thread,
+						  "postgres pooled protocol carrier",
+						  backend_pooled_protocol_carrier_entry,
+						  carrier_start);
+	if (rc != 0)
+	{
+		free(carrier_start);
+		errno = rc;
+		return false;
+	}
+
+	pooled_protocol_carrier_count++;
+	pooled_protocol_pool_started = true;
+	postmaster_thread_carriers_started = true;
+	return true;
+}
+
+static void
+backend_pooled_protocol_maybe_start_carrier_for_work(void)
+{
+	int			queue_length;
+	uint32		idle_carriers;
+
+	if (!pooled_protocol_pool_started)
+		return;
+	if (pooled_protocol_carrier_count >= PgRuntimePooledProtocolCarrierLimit())
+		return;
+
+	queue_length = backend_pooled_protocol_queue_count();
+	if (queue_length <= 0)
+		return;
+
+	idle_carriers = backend_pooled_protocol_idle_carrier_count();
+	if ((uint32) queue_length <= idle_carriers)
+		return;
+
+	(void) backend_pooled_protocol_start_one_carrier();
+}
+
+static void
+backend_pooled_protocol_enqueue(BackendPooledLogicalStart *logical_start)
+{
+	int			rc;
+
+	Assert(logical_start != NULL);
+	Assert(logical_start->next == NULL);
+
+	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not lock pooled protocol queue: %m");
+	}
+
+	if (pooled_protocol_queue_tail != NULL)
+		pooled_protocol_queue_tail->next = logical_start;
+	else
+		pooled_protocol_queue_head = logical_start;
+	pooled_protocol_queue_tail = logical_start;
+	pooled_protocol_queue_length++;
+
+	rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not unlock pooled protocol queue: %m");
+	}
+}
+
+static BackendPooledLogicalStart *
+backend_pooled_protocol_dequeue(void)
+{
+	BackendPooledLogicalStart *logical_start;
+	int			rc;
+
+	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not lock pooled protocol queue: %m");
+	}
+
+	logical_start = pooled_protocol_queue_head;
+	if (logical_start != NULL)
+	{
+		pooled_protocol_queue_head = logical_start->next;
+		if (pooled_protocol_queue_head == NULL)
+			pooled_protocol_queue_tail = NULL;
+		logical_start->next = NULL;
+		Assert(pooled_protocol_queue_length > 0);
+		pooled_protocol_queue_length--;
+	}
+
+	rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not unlock pooled protocol queue: %m");
+	}
+
+	return logical_start;
+}
+
+static int
+backend_pooled_protocol_queue_count(void)
+{
+	int			queue_length;
+	int			rc;
+
+	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not lock pooled protocol queue: %m");
+	}
+
+	queue_length = pooled_protocol_queue_length;
+
+	rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not unlock pooled protocol queue: %m");
+	}
+
+	return queue_length;
+}
+
+static uint32
+backend_pooled_protocol_idle_carrier_count(void)
+{
+	return PgRuntimePooledProtocolIdleCarrierCount();
+}
+
+static void
+backend_pooled_protocol_signal_work(void)
+{
+	int			rc;
+
+	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not lock pooled protocol queue: %m");
+	}
+
+	rc = pthread_cond_signal(&pooled_protocol_queue_cond);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not signal pooled protocol queue: %m");
+	}
+
+	rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not unlock pooled protocol queue: %m");
+	}
+}
+
+static void
+backend_pooled_protocol_signal_ready_work(int count)
+{
+	int			rc;
+
+	if (count <= 0)
+		return;
+
+	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not lock pooled protocol queue: %m");
+	}
+
+	for (int i = 0; i < count; i++)
+	{
+		rc = pthread_cond_signal(&pooled_protocol_queue_cond);
+		if (rc != 0)
+		{
+			errno = rc;
+			elog(FATAL, "could not signal pooled protocol queue: %m");
+		}
+	}
+
+	rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not unlock pooled protocol queue: %m");
+	}
+}
+
+static void
+backend_pooled_protocol_wait_for_work(long timeout_us)
+{
+	struct timespec deadline;
+	int			rc;
+
+	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not lock pooled protocol queue: %m");
+	}
+
+	if (pooled_protocol_queue_length == 0)
+	{
+		backend_pooled_protocol_deadline_after(timeout_us, &deadline);
+		rc = pthread_cond_timedwait(&pooled_protocol_queue_cond,
+									&pooled_protocol_queue_mutex,
+									&deadline);
+		if (rc != 0 && rc != ETIMEDOUT)
+		{
+			errno = rc;
+			elog(FATAL, "could not wait on pooled protocol queue: %m");
+		}
+	}
+
+	rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not unlock pooled protocol queue: %m");
+	}
+}
+
+static void
+backend_pooled_protocol_deadline_after(long timeout_us,
+									   struct timespec *deadline)
+{
+	struct timeval now;
+	long		nsec;
+
+	Assert(deadline != NULL);
+	Assert(timeout_us >= 0);
+
+	gettimeofday(&now, NULL);
+	deadline->tv_sec = now.tv_sec + timeout_us / USECS_PER_SEC;
+	nsec = now.tv_usec * 1000L + (timeout_us % USECS_PER_SEC) * 1000L;
+	if (nsec >= 1000000000L)
+	{
+		deadline->tv_sec++;
+		nsec -= 1000000000L;
+	}
+	deadline->tv_nsec = nsec;
+}
+
+static BackendPooledLogicalStart *
+backend_pooled_logical_start_from_backend(PgBackend *backend)
+{
+	char	   *logical_base;
+
+	Assert(backend != NULL);
+
+	logical_base = (char *) backend -
+		offsetof(PgThreadBackendLogicalState, backend);
+	return (BackendPooledLogicalStart *)
+		(logical_base - offsetof(BackendPooledLogicalStart, logical));
+}
+
+static void
+backend_pooled_protocol_carrier_entry(void *arg)
+{
+	BackendPooledCarrierStart *carrier_start =
+		(BackendPooledCarrierStart *) arg;
+	PgBackend **scratch;
+	struct pollfd *poll_scratch;
+	int			max_scratch_backends;
+
+	sigprocmask(SIG_SETMASK, &BlockSig, NULL);
+
+	PgSetCurrentCarrier(&carrier_start->carrier);
+	PgRuntimeSetCurrentWork(carrier_start->carrier.runtime,
+							&carrier_start->carrier,
+							NULL, NULL, NULL, NULL, false);
+	MyBackendType = B_BACKEND;
+	MyProcPid = (int) getpid();
+	IsUnderPostmaster = true;
+	session_timezone = carrier_start->startup_session_timezone;
+	log_timezone = carrier_start->startup_log_timezone;
+	MemoryContextInit();
+	InitializeWaitEventSupport();
+	(void) set_stack_base();
+	backend_thread_init_random_state();
+	max_scratch_backends = MaxBackends > 0 ? MaxBackends : 1024;
+	scratch = MemoryContextAlloc(TopMemoryContext,
+								 sizeof(PgBackend *) * max_scratch_backends);
+	poll_scratch = MemoryContextAlloc(TopMemoryContext,
+									  sizeof(struct pollfd) *
+									  (max_scratch_backends + 1));
+
+	if (!PgRuntimeProtocolSchedulerRegisterCarrier(CurrentPgRuntime,
+												   CurrentPgCarrier))
+		elog(FATAL, "could not register pooled protocol carrier");
+
+	for (;;)
+	{
+		BackendPooledLogicalStart *logical_start;
+		PgBackend  *backend;
+		int			nready;
+
+		Assert(CurrentPgCarrier == &carrier_start->carrier);
+		Assert(CurrentPgBackend == NULL);
+		Assert(CurrentPgSession == NULL);
+		Assert(CurrentPgConnection == NULL);
+		Assert(CurrentPgExecution == NULL);
+
+		backend = PgCarrierLeaseRunnableProtocolBackend(CurrentPgCarrier);
+		if (backend != NULL)
+		{
+			logical_start =
+				backend_pooled_logical_start_from_backend(backend);
+			backend_pooled_protocol_resume_logical_start(logical_start);
+			continue;
+		}
+
+		logical_start = backend_pooled_protocol_dequeue();
+		if (logical_start != NULL)
+		{
+			backend_pooled_protocol_run_logical_start(carrier_start,
+													  logical_start);
+			continue;
+		}
+
+		nready = PgRuntimeProtocolSchedulerWaitParkedReads(CurrentPgRuntime,
+														   scratch,
+														   poll_scratch,
+														   max_scratch_backends,
+														   10L);
+		if (nready > 0)
+		{
+			backend_pooled_protocol_signal_ready_work(nready);
+			continue;
+		}
+
+		backend_pooled_protocol_wait_for_work(10000L);
+	}
+}
+
+static void
+backend_pooled_protocol_run_logical_start(BackendPooledCarrierStart *carrier_start,
+										  BackendPooledLogicalStart *logical_start)
+{
+	PgSession  *session;
+
+	Assert(carrier_start != NULL);
+	Assert(logical_start != NULL);
+	Assert(CurrentPgCarrier == &carrier_start->carrier);
+	Assert(CurrentPgBackend == NULL);
+
+	PgCarrierAttachBackend(CurrentPgCarrier, &logical_start->logical.backend,
+						   &logical_start->logical.session,
+						   &logical_start->logical.connection,
+						   &logical_start->logical.execution);
+	*PgCurrentBackendThreadStartRef() = logical_start;
+
+	MyPMChildSlot = logical_start->publication.pmchild->child_slot;
+	MyBackendType = B_BACKEND;
+	MyProcPid = (int) getpid();
+	IsUnderPostmaster = true;
+	session_timezone = carrier_start->startup_session_timezone;
+	log_timezone = carrier_start->startup_log_timezone;
+
+	InitProcessLocalLatch();
+	MemoryContextInit();
+	InitializeTransactionState();
+	InitializeThreadedSessionGUCOptions();
+	read_nondefault_variables();
+	InitializeLatchWaitSet();
+	InitializeThreadedSessionRequiredGUCOptions();
+	PgBackendSetInterruptLatch(CurrentPgBackend, MyLatch);
+
+	MyClientSocket = &logical_start->client_sock;
+	conn_timing.socket_create = logical_start->startup_data.socket_created;
+	conn_timing.fork_start = logical_start->startup_data.fork_started;
+	conn_timing.fork_end = GetCurrentTimestamp();
+	MyStartTimestamp = GetCurrentTimestamp();
+	MyStartTime = timestamptz_to_time_t(MyStartTimestamp);
+	backend_thread_init_random_state();
+
+	if (sigsetjmp(logical_start->exit_jmp, 1) != 0)
+	{
+		logical_start->exit_jmp_valid = false;
+		*PgCurrentBackendThreadStartRef() = NULL;
+		PgCarrierDetachBackend(CurrentPgCarrier, NULL);
+		backend_pooled_logical_start_release(logical_start);
+		return;
+	}
+
+	logical_start->exit_jmp_valid = true;
+	session = BackendStartSessionWithStartupData(&logical_start->startup_data,
+												 &logical_start->client_sock,
+												 BACKEND_STARTUP_THREAD);
+
+	/*
+	 * InitProcess() (run inside BackendStartSessionWithStartupData above) sets
+	 * MyLatch during proc setup so a signal that arrived mid-init is not lost.
+	 * An affine pooled session then runs its first command directly here, with
+	 * no client startup/auth round-trips to cycle the process latch in between.
+	 * Left set, that stale signal makes the command's first, un-looped
+	 * WaitLatch return WL_LATCH_SET in 0ms -- unlike pg_sleep, which loops until
+	 * its deadline.  TAP 009's pooled LWLock deep-wait cases caught this: the
+	 * holder's WaitLatch fell straight through, released its LWLock, and
+	 * idle-parked instead of staying carrier-pinned.  Clear it once before the
+	 * command loop; any genuinely pending interrupt is re-detected from the
+	 * backend interrupt mask by CHECK_FOR_INTERRUPTS, not from the latch.
+	 */
+	if (MyLatch != NULL)
+		ResetLatch(MyLatch);
+
+	(void) backend_pooled_protocol_run_attached_logical(logical_start,
+														session);
+}
+
+static void
+backend_pooled_protocol_resume_logical_start(BackendPooledLogicalStart *logical_start)
+{
+	PgSession  *session;
+	uint32		wake_events;
+
+	Assert(logical_start != NULL);
+	Assert(CurrentPgBackend == &logical_start->logical.backend);
+	Assert(CurrentPgSession == &logical_start->logical.session);
+
+	*PgCurrentBackendThreadStartRef() = logical_start;
+	pgstat_ensure_shmem_attached();
+	wake_events = CurrentPgBackend->protocol_park.wake_events;
+	PgBackendResumeProtocolReadPark(CurrentPgBackend);
+	if (wake_events & WL_LATCH_SET)
+		ResetLatch(MyLatch);
+	session = CurrentPgSession;
+
+	if (sigsetjmp(logical_start->exit_jmp, 1) != 0)
+	{
+		logical_start->exit_jmp_valid = false;
+		*PgCurrentBackendThreadStartRef() = NULL;
+		PgCarrierDetachBackend(CurrentPgCarrier, NULL);
+		backend_pooled_logical_start_release(logical_start);
+		return;
+	}
+
+	logical_start->exit_jmp_valid = true;
+	(void) backend_pooled_protocol_run_attached_logical(logical_start,
+														session);
+}
+
+static PgStepResult
+backend_pooled_protocol_run_attached_logical(BackendPooledLogicalStart *logical_start,
+											 PgSession *session)
+{
+	for (;;)
+	{
+		PgStepResult result;
+
+		result = PgSessionRunProtocolSchedulerUntilBoundary(session);
+		switch (result)
+		{
+			case PG_STEP_PARK_PROTOCOL_READ:
+				logical_start->exit_jmp_valid = false;
+				*PgCurrentBackendThreadStartRef() = NULL;
+				return result;
+
+			case PG_STEP_DONE:
+				backend_pooled_protocol_exit_logical(0);
+
+			case PG_STEP_FATAL_EXIT:
+				backend_pooled_protocol_exit_logical(1);
+
+			case PG_STEP_CONTINUE:
+			case PG_STEP_ERROR_RECOVERED:
+				pg_unreachable();
+		}
+	}
+}
+
+pg_noreturn static void
+backend_pooled_protocol_exit_logical(int code)
+{
+	if (CurrentPgRuntime != NULL && CurrentPgBackend != NULL)
+		(void) PgRuntimeProtocolSchedulerRemoveBackend(CurrentPgRuntime,
+													   CurrentPgBackend);
+
+	PgBackendExit(code);
+}
+#endif
+
+static void
+backend_thread_entry(void *arg)
+{
+	BackendThreadStart *thread_start = (BackendThreadStart *) arg;
+
+	/*
+	 * A carrier thread inherits the postmaster thread's current signal mask,
+	 * but process-directed control signals must be handled by the postmaster
+	 * thread.  Keep carriers in the same blocked-signal state that a forked
+	 * child sees before its child-specific signal setup.
+	 */
+	sigprocmask(SIG_SETMASK, &BlockSig, NULL);
+
+#ifdef USE_XTC_CARRIER
+	/*
+	 * xtc-carrier: this path was designed for a fresh pthread that dies after
+	 * one backend.  When run as an xtc fiber, one carrier OS thread hosts many
+	 * backend fibers in sequence, so the previous fiber's thread-local runtime
+	 * state (hot current-cells, current-work bindings, early-session fallback
+	 * flags) is still present.  Restore the fresh-thread invariant before
+	 * touching any session/GUC/timezone accessor below.
+	 */
+	if (xtc_in_backend_fiber)
+		PgRuntimeResetThreadForNewBackend();
+#endif
+
+	PgSetCurrentCarrier(&thread_start->runtime_state.carrier);
+	backend_thread_set_current_start(thread_start);
+	backend_thread_wait_until_registered(thread_start);
+#ifdef USE_XTC_CARRIER
+	/*
+	 * Mark that the fiber body actually began running.  The postmaster's
+	 * launcher-cancel orphan reap (ReapOrphanedThreadedWorker) only targets a
+	 * worker whose fiber never entered, so it can never race a fiber that has
+	 * started real work.  Set after wait_until_registered so it is ordered
+	 * after the postmaster published the PMChild and stored the orphan-start
+	 * pointer.
+	 */
+	if (xtc_in_backend_fiber)
+	{
+		/*
+		 * Publish that the fiber body began, then close the race with
+		 * ReapOrphanedThreadedWorker (postmaster thread).  The reaper reaps a
+		 * worker whose fiber_entered is still 0 by claiming it and publishing a
+		 * synthetic exit -- which RELEASES this PMChild slot.  If it did so in
+		 * the window between the reaper reading fiber_entered as 0 and this
+		 * write becoming visible, the slot is already gone and we must NOT run
+		 * InitProcess -> RegisterPostmasterChildActive on it (under cassert that
+		 * trips Assert(PMChildFlags[slot] == PM_CHILD_ASSIGNED) in pmsignal.c;
+		 * in production it corrupts the slot's PMChild accounting and wedges
+		 * PM_WAIT_BACKENDS at fast stop).
+		 *
+		 * Resolve with a dedicated single-winner exchange (start_claimed),
+		 * distinct from the exit-publication arbiter (exit_claimed) so the
+		 * normal exit path in backend_thread_finish is unaffected.  The reaper
+		 * claims start_claimed too (only after seeing fiber_entered == 0);
+		 * whoever wins start_claimed owns the slot.  Ordering: write
+		 * fiber_entered, full barrier, then exchange start_claimed.  If we lose
+		 * (reaper already claimed and published a synthetic exit), bail out of
+		 * the fiber immediately without touching the released slot and without
+		 * freeing thread_start (the reaper's synthetic-exit path leaves it,
+		 * matching backend_thread_finish's lost-claim handling).
+		 */
+		pg_atomic_write_u32(&thread_start->fiber_entered, 1);
+		pg_memory_barrier();
+		if (pg_atomic_exchange_u32(&thread_start->start_claimed, 1) != 0)
+		{
+			backend_thread_set_current_start(NULL);
+			xtc_pg_backend_fiber_exit(backend_thread_exitstatus(0));
+			pg_unreachable();
+		}
+	}
+#endif
+
+	MyBackendType = thread_start->child_type;
+	MyPMChildSlot = thread_start->child_slot;
+	MyProcPid = (int) getpid();
+	IsUnderPostmaster = true;
+	session_timezone = thread_start->startup_session_timezone;
+	log_timezone = thread_start->startup_log_timezone;
+
+	InitializeWaitEventSupport();
+	InitProcessLocalLatch();
+	MemoryContextInit();
+	InitializeTransactionState();
+	InitializeThreadedSessionGUCOptions();
+	read_nondefault_variables();
+	InitializeLatchWaitSet();
+	InstallPgThreadBackendRuntimeState(&thread_start->runtime_state);
+	if (thread_start->child_type == B_BACKEND)
+	{
+		if (!PgRuntimeProtocolSchedulerRegisterCarrier(CurrentPgRuntime,
+													   CurrentPgCarrier))
+		{
+			if (PgRuntimePooledProtocolRequested())
+				ereport(DEBUG1,
+						(errmsg_internal("pooled protocol staging carrier exceeded configured carrier limit")));
+			else
+				elog(FATAL, "could not register threaded protocol scheduler carrier");
+		}
+	}
+	(void) set_stack_base();
+	PgBackendSetInterruptLatch(CurrentPgBackend, MyLatch);
+
+	MyStartTimestamp = GetCurrentTimestamp();
+	MyStartTime = timestamptz_to_time_t(MyStartTimestamp);
+	backend_thread_init_random_state();
+
+	if (thread_start->child_type == B_BACKEND)
+		backend_thread_run_backend(thread_start);
+	else
+		backend_thread_run_worker(thread_start);
+}
+
+static void
+backend_thread_run_backend(BackendThreadStart *thread_start)
+{
+	/* Temporary until real backend startup owns the copied ClientSocket. */
+	MyClientSocket = &thread_start->client_sock;
+
+	conn_timing.socket_create = thread_start->startup_data.socket_created;
+	conn_timing.fork_start = thread_start->startup_data.fork_started;
+	conn_timing.fork_end = GetCurrentTimestamp();
+
+	BackendMainWithStartupData(&thread_start->startup_data,
+							   &thread_start->client_sock,
+							   BACKEND_STARTUP_THREAD);
+	pg_unreachable();
+}
+
+static void
+backend_thread_run_worker(BackendThreadStart *thread_start)
+{
+	ereport(DEBUG1,
+			(errmsg_internal("starting %s thread carrier",
+							 PostmasterChildName(thread_start->child_type))));
+
+	/*
+	 * Thread-compatible background workers publish their postmaster-visible
+	 * startup only after
+	 * ThreadedBackendStartupComplete(), so dynamic waiters cannot terminate
+	 * them while InitProcess(), BaseInit(), or function lookup are still in
+	 * progress.  The autovacuum launcher performs backend initialization
+	 * before entering its no-database launcher loop, while autovacuum workers
+	 * publish their worker slot before connecting to the selected database and
+	 * running table work.  The slot sync worker publishes startup completion
+	 * after connecting to the local database and before connecting to the
+	 * primary.  The startup process,
+	 * archiver, WAL receiver, and WAL summarizer follow the auxiliary-process
+	 * common startup path, publish their wakeup/progress state in shared
+	 * memory, and keep their per-loop work state backend-local, so they can
+	 * start without a serialized startup section.
+	 */
+	if (thread_start->child_type == B_BG_WORKER)
+		child_process_kinds[thread_start->child_type].main_fn(&thread_start->bgworker_startup_data,
+															  sizeof(BackgroundWorker));
+	else
+		child_process_kinds[thread_start->child_type].main_fn(NULL, 0);
+	pg_unreachable();
+}
+
+static BackendThreadStart *
+backend_thread_current_start(void)
+{
+	BackendThreadPublication *publication;
+
+	publication = backend_thread_current_publication();
+	if (publication == NULL)
+		return NULL;
+	if (publication->kind != BACKEND_THREAD_START_DEDICATED)
+		return NULL;
+
+	return (BackendThreadStart *) publication;
+}
+
+static BackendThreadPublication *
+backend_thread_current_publication(void)
+{
+	return (BackendThreadPublication *) *PgCurrentBackendThreadStartRef();
+}
+
+static void
+backend_thread_set_current_start(BackendThreadStart *thread_start)
+{
+	*PgCurrentBackendThreadStartRef() = thread_start;
+}
+
+static void
+backend_thread_wait_until_registered(BackendThreadStart *thread_start)
+{
+	while (pg_atomic_read_u32(&thread_start->launch_registered) == 0)
+		pg_usleep(1000L);
+}
+
+static void
+backend_thread_init_random_state(void)
+{
+	if (unlikely(!pg_prng_strong_seed(&pg_global_prng_state)))
+	{
+		uint64		rseed;
+
+		rseed = ((uint64) MyProcPid) ^
+			((uint64) MyStartTimestamp << 12) ^
+			((uint64) MyStartTimestamp >> 20) ^
+			((uint64) PgCurrentBackendId() << 32);
+
+		pg_prng_seed(&pg_global_prng_state, rseed);
+	}
+}
+
+static void
+backend_thread_clear_deleted_retained_memory_contexts(void)
+{
+	if (CurrentPgExecution == NULL)
+		return;
+
+	CurrentPgExecution->memory_contexts.error_context = NULL;
+	CurrentPgExecution->memory_contexts.current_context = NULL;
+}
+
+static void
+backend_thread_free_deleted_retained_memory_contexts(void)
+{
+	if (CurrentPgBackend != NULL)
+		AllocSetFreeContextFreelists(CurrentPgBackend->memory_manager.context_freelists,
+									 PG_BACKEND_ALLOCSET_NUM_FREELISTS);
+}
+
+static void
+backend_thread_maybe_trim_reclaimed_memory(Size reclaimed)
+{
+#if defined(__GLIBC__)
+	bool		trim_now = false;
+	int			rc;
+
+	if (reclaimed == 0)
+		return;
+
+	rc = pthread_mutex_lock(&backend_thread_malloc_trim_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not lock backend malloc trim state: %m");
+	}
+
+	backend_thread_malloc_trim_pending += reclaimed;
+	if (backend_thread_malloc_trim_pending < reclaimed)
+		backend_thread_malloc_trim_pending =
+			BACKEND_THREAD_MALLOC_TRIM_THRESHOLD;
+
+	if (backend_thread_malloc_trim_pending >=
+		BACKEND_THREAD_MALLOC_TRIM_THRESHOLD)
+	{
+		backend_thread_malloc_trim_pending = 0;
+		trim_now = true;
+	}
+
+	rc = pthread_mutex_unlock(&backend_thread_malloc_trim_mutex);
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not unlock backend malloc trim state: %m");
+	}
+
+	if (trim_now)
+		(void) malloc_trim(0);
+#else
+	(void) reclaimed;
+#endif
+}
+
+void
+ThreadedBackendStartupComplete(void)
+{
+	BackendThreadPublication *publication = backend_thread_current_publication();
+
+	if (publication == NULL)
+		return;
+
+	PostmasterChildPublishLogicalStartupComplete(publication->pmchild,
+												 publication->postmaster_latch);
+}
+
+#ifdef USE_XTC_CARRIER
+/*
+ * Reap a fiber-backed worker that was launched but whose fiber was never
+ * scheduled to run.  Called from the postmaster when the autovacuum launcher
+ * cancels a worker whose start it timed out on (its worker-start-timeout).
+ *
+ * The postmaster optimistically publishes a pooled-logical PMChild the moment
+ * it hands a worker to the carrier, on the assumption -- true for a forked
+ * process, which the OS always eventually schedules -- that the child will run
+ * and reap itself.  A fiber can break that assumption: a cross-thread wake to
+ * an idle io_uring carrier loop can be missed in the current libxtc, so a
+ * worker fiber can sit un-scheduled indefinitely.  If the launcher's
+ * start-timeout then cancels the worker (reclaiming its shmem WorkerInfo), the
+ * orphaned PMChild is never reconciled with a published exit and
+ * PM_WAIT_BACKENDS wedges at fast stop.
+ *
+ * The launcher-cancel is the authoritative "this worker never started" signal:
+ * it fires only while the worker still holds av_startingWorker under
+ * AutovacuumLock, i.e. the worker fiber has not reached the point where it
+ * claims its WorkerInfo (which is well after it would have set fiber_entered).
+ * So a worker whose fiber_entered is still 0 genuinely never ran; publishing a
+ * synthetic clean exit for it lets process_pm_pooled_logical_exit() reap the
+ * slot exactly as a self-exiting fiber would.  The exit_claimed exchange makes
+ * the publish exactly-once: if the fiber does eventually run and reach
+ * backend_thread_finish, it loses the claim and skips its own publish, so the
+ * slot is never reaped twice.
+ *
+ * min_age_ms guards against reaping a worker the launcher just (re)launched:
+ * after canceling a stuck worker the launcher immediately requests a fresh
+ * one, so by the time this runs there can be TWO un-entered workers -- the
+ * aged, genuinely-stuck one and a brand-new one.  The launcher-cancel caller
+ * passes the worker-start-timeout so only the aged orphan is reaped; the
+ * shutdown caller passes 0 because no new worker can launch once shutting
+ * down.  Reaps at most one orphan per call; the caller loops if it wants to
+ * drain several.
+ *
+ * Returns true if it reaped an orphan (the caller should re-run the postmaster
+ * state machine).  Runs in the postmaster main thread only.
+ */
+bool
+ReapOrphanedThreadedWorker(BackendType child_type, int min_age_ms)
+{
+	dlist_iter	iter;
+	TimestampTz now = GetCurrentTimestamp();
+
+	dlist_foreach(iter, &ActiveChildList)
+	{
+		PMChild    *pmchild = dlist_container(PMChild, elem, iter.cur);
+		BackendThreadStart *thread_start;
+
+		if (pmchild->bkend_type != child_type)
+			continue;
+		if (!PostmasterChildIsPooledLogical(pmchild))
+			continue;
+		thread_start = (BackendThreadStart *) pmchild->carrier_orphan_start;
+		if (thread_start == NULL)
+			continue;
+
+		/*
+		 * Only an un-entered fiber is a genuine orphan.  A fiber that has
+		 * started running owns its own exit publication; never touch its slot.
+		 */
+		if (pg_atomic_read_u32(&thread_start->fiber_entered) != 0)
+			continue;
+
+		/*
+		 * Skip a worker that has not yet aged past min_age_ms -- it may be a
+		 * healthy worker the launcher just launched whose fiber is about to
+		 * run, not the stuck one we were told about.
+		 */
+		if (min_age_ms > 0 &&
+			!TimestampDifferenceExceeds(thread_start->launch_time, now,
+										min_age_ms))
+			continue;
+
+		/* Claim the one-time slot ownership for this launch. */
+		if (pg_atomic_exchange_u32(&thread_start->start_claimed, 1) != 0)
+			continue;			/* fiber won the start race; it owns the slot */
+
+		/*
+		 * Publish a synthetic clean exit and stop tracking the orphan pointer.
+		 * The fiber owns thread_start's memory for its whole life and frees it
+		 * only from backend_thread_finish, so we never free it here (an
+		 * un-scheduled fiber leaks this one struct -- bounded and rare).
+		 */
+		ereport(DEBUG1,
+				(errmsg_internal("reaping orphaned %s fiber (never scheduled) at child slot %d",
+								 PostmasterChildName(child_type),
+								 pmchild->child_slot)));
+		pmchild->carrier_orphan_start = NULL;
+		PostmasterChildUnpublishLogicalBackend(pmchild);
+		PostmasterChildPublishPooledLogicalExit(pmchild, 0, 0, 0,
+												thread_start->publication.postmaster_latch);
+		return true;
+	}
+
+	return false;
+}
+#endif							/* USE_XTC_CARRIER */
+
+static void
+backend_thread_exit(int code)
+{
+	BackendThreadPublication *publication = backend_thread_current_publication();
+
+	if (publication == NULL)
+	{
+#ifdef USE_XTC_CARRIER
+		if (xtc_in_backend_fiber)
+			xtc_pg_backend_fiber_exit(backend_thread_exitstatus(code));
+#endif
+		pg_thread_exit();
+	}
+
+	switch (publication->kind)
+	{
+		case BACKEND_THREAD_START_DEDICATED:
+			backend_thread_finish(code);
+
+		case BACKEND_THREAD_START_POOLED_LOGICAL:
+			backend_pooled_logical_finish(code);
+	}
+
+	pg_unreachable();
+}
+
+static void
+backend_thread_finish(int code)
+{
+	BackendThreadStart *thread_start = backend_thread_current_start();
+	PgBackendExitState *exit_state;
+	MemoryContext retained_top_context;
+	int			exitstatus;
+	Size		top_memory_allocated = 0;
+	Size		top_memory_accounted = 0;
+	Size		top_memory_reclaimed = 0;
+#ifdef USE_XTC_CARRIER
+	bool		is_fiber;
+#endif
+
+	Assert(thread_start != NULL);
+
+#ifdef USE_XTC_CARRIER
+
+	/*
+	 * Decide fiber vs dedicated-thread exit from the DURABLE PMChild
+	 * classification (carrier_kind, set at launch by PostmasterChildSetPooledLogical
+	 * and owned by the postmaster main thread), NOT the per-OS-thread
+	 * xtc_in_backend_fiber flag.  That flag is __thread state on the carrier
+	 * loop thread, set true at fiber entry and cleared when a fiber leaves; a
+	 * fiber that parks in xtc_pg_wait_fd can be resumed on the same carrier
+	 * thread AFTER a sibling fiber cleared the flag on its own exit, so the
+	 * flag can read false here even though this exit belongs to a fiber.  Under
+	 * immediate stop that misread routed a fiber bgworker (e.g. the logical-
+	 * replication ApplyLauncher) into PostmasterChildPublishThreadExit, which
+	 * asserts PostmasterChildIsThread and traps.  The carrier_kind never lies.
+	 */
+	is_fiber = PostmasterChildIsPooledLogical(thread_start->publication.pmchild);
+#endif
+
+	exit_state = PgCurrentBackendExitStateRef();
+	retained_top_context = exit_state->retained_top_memory_context;
+	top_memory_accounted = PgBackendConsumeRetainedTopMemoryAllocated();
+	exitstatus = backend_thread_exitstatus(code);
+	MyClientSocket = NULL;
+	if (thread_start->client_sock.sock != PGINVALID_SOCKET)
+	{
+		closesocket(thread_start->client_sock.sock);
+		thread_start->client_sock.sock = PGINVALID_SOCKET;
+	}
+
+#ifdef USE_XTC_CARRIER
+	/*
+	 * Claim the exclusive right to publish this fiber's PMChild exit.  The
+	 * entry race with the launcher-cancel orphan reap
+	 * (ReapOrphanedThreadedWorker) is already resolved earlier via start_claimed
+	 * (backend_thread_run_worker): a fiber that reaches here WON that race and
+	 * owns the slot, so this exit_claimed exchange always succeeds on the normal
+	 * path.  It remains as a hard exactly-once guard.  A lost claim means the
+	 * postmaster owns the reap: skip every PMChild access and do NOT free
+	 * thread_start (the postmaster may still be mid-reap reading it); just leave
+	 * the fiber.
+	 */
+	if (is_fiber &&
+		pg_atomic_exchange_u32(&thread_start->exit_claimed, 1) != 0)
+	{
+		ShutdownWaitEventSupport();
+		backend_thread_set_current_start(NULL);
+		xtc_pg_backend_fiber_exit(exitstatus);
+		pg_unreachable();
+	}
+#endif
+
+	/*
+	 * Stop publishing the logical backend before the final exit handoff.  This
+	 * keeps later signal routing from observing a backend pointer after the
+	 * carrier has committed to teardown.  Retained TopMemoryContext accounting
+	 * is kept as a postmaster-side regression probe; normal thread teardown
+	 * must delete the saved root before publishing PMChild exit.
+	 */
+	PostmasterChildUnpublishLogicalBackend(thread_start->publication.pmchild);
+	if (thread_start->runtime_state.carrier.protocol_scheduler_registered)
+		(void) PgRuntimeProtocolSchedulerUnregisterCarrier(thread_start->runtime_state.carrier.runtime,
+														   &thread_start->runtime_state.carrier);
+	if (retained_top_context != NULL)
+	{
+		/*
+		 * PgBackendExitCleanup() has run the closed connection/session/backend
+		 * and execution reset paths, including clearing the live execution
+		 * memory-context slots.  At this point the exiting carrier owns the
+		 * saved root context exclusively and can release it before publishing
+		 * PMChild exit.  If this is wrong, teardown stress should expose a
+		 * remaining cross-backend owner as a crash or corruption signature.
+		 */
+		top_memory_reclaimed = MemoryContextMemAllocated(retained_top_context,
+														 true);
+		MemoryContextDelete(retained_top_context);
+		backend_thread_free_deleted_retained_memory_contexts();
+		backend_thread_clear_deleted_retained_memory_contexts();
+		if (top_memory_accounted < top_memory_reclaimed)
+			top_memory_accounted = top_memory_reclaimed;
+		backend_thread_maybe_trim_reclaimed_memory(top_memory_accounted);
+		exit_state->retained_top_memory_context = NULL;
+		top_memory_allocated = 0;
+	}
+#ifdef USE_XTC_CARRIER
+	if (is_fiber)
+		PostmasterChildPublishPooledLogicalExit(thread_start->publication.pmchild,
+												exitstatus,
+												top_memory_allocated,
+												top_memory_reclaimed,
+												thread_start->publication.postmaster_latch);
+	else
+#endif
+	PostmasterChildPublishThreadExit(thread_start->publication.pmchild, exitstatus,
+									 top_memory_allocated,
+									 top_memory_reclaimed,
+									 thread_start->publication.postmaster_latch);
+
+	ShutdownWaitEventSupport();
+	backend_thread_set_current_start(NULL);
+	backend_thread_start_release(thread_start);
+#ifdef USE_XTC_CARRIER
+	if (is_fiber)
+		xtc_pg_backend_fiber_exit(exitstatus);
+#endif
+	pg_thread_exit();
+}
+
+static void
+backend_pooled_logical_finish(int code)
+{
+	BackendPooledLogicalStart *logical_start;
+	PgBackendExitState *exit_state;
+	MemoryContext retained_top_context;
+	int			exitstatus;
+	Size		top_memory_allocated = 0;
+	Size		top_memory_accounted = 0;
+	Size		top_memory_reclaimed = 0;
+
+	logical_start =
+		(BackendPooledLogicalStart *) backend_thread_current_publication();
+	Assert(logical_start != NULL);
+	Assert(logical_start->publication.kind ==
+		   BACKEND_THREAD_START_POOLED_LOGICAL);
+
+	exit_state = PgCurrentBackendExitStateRef();
+	retained_top_context = exit_state->retained_top_memory_context;
+	top_memory_accounted = PgBackendConsumeRetainedTopMemoryAllocated();
+	exitstatus = backend_thread_exitstatus(code);
+	MyClientSocket = NULL;
+	if (logical_start->client_sock.sock != PGINVALID_SOCKET)
+	{
+		closesocket(logical_start->client_sock.sock);
+		logical_start->client_sock.sock = PGINVALID_SOCKET;
+	}
+
+	/*
+	 * Pooled logical exit retires the session without retiring the carrier.
+	 * The postmaster still owns PMChild slot release, while this carrier owns
+	 * reclaiming the retained logical TopMemoryContext before jumping back to
+	 * the scheduler loop.
+	 */
+	PostmasterChildUnpublishLogicalBackend(logical_start->publication.pmchild);
+	if (retained_top_context != NULL)
+	{
+		top_memory_reclaimed = MemoryContextMemAllocated(retained_top_context,
+														 true);
+		MemoryContextDelete(retained_top_context);
+		backend_thread_free_deleted_retained_memory_contexts();
+		backend_thread_clear_deleted_retained_memory_contexts();
+		if (top_memory_accounted < top_memory_reclaimed)
+			top_memory_accounted = top_memory_reclaimed;
+		backend_thread_maybe_trim_reclaimed_memory(top_memory_accounted);
+		exit_state->retained_top_memory_context = NULL;
+		top_memory_allocated = 0;
+	}
+	PostmasterChildPublishPooledLogicalExit(logical_start->publication.pmchild,
+											exitstatus,
+											top_memory_allocated,
+											top_memory_reclaimed,
+											logical_start->publication.postmaster_latch);
+
+	if (logical_start->exit_jmp_valid)
+		siglongjmp(logical_start->exit_jmp, 1);
+
+	pg_thread_exit();
+}
+
+static int
+backend_thread_exitstatus(int code)
+{
+	if (code == 0)
+		return 0;
+
+#ifdef WIN32
+	return code;
+#else
+	return code << 8;
+#endif
 }
 
 /*

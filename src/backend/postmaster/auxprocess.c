@@ -19,10 +19,12 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/auxprocess.h"
+#include "postmaster/postmaster.h"
 #include "storage/condition_variable.h"
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "storage/procsignal.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/wait_event.h"
@@ -40,10 +42,14 @@ static void ShutdownAuxiliaryProcess(int code, Datum arg);
 void
 AuxiliaryProcessMainCommon(void)
 {
+	bool		threaded_worker;
+
 	Assert(IsUnderPostmaster);
 
+	threaded_worker = PgRuntimeIsThreadBacked(CurrentPgRuntime);
+
 	/* Release postmaster's working memory context */
-	if (PostmasterContext)
+	if (PostmasterContext && !threaded_worker)
 	{
 		MemoryContextDelete(PostmasterContext);
 		PostmasterContext = NULL;
@@ -123,6 +129,8 @@ AuxiliaryProcessMainCommon(void)
 	before_shmem_exit(ShutdownAuxiliaryProcess, 0);
 
 	SetProcessingMode(NormalProcessing);
+
+	ThreadedBackendStartupComplete();
 }
 
 /*
