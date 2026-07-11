@@ -24,6 +24,7 @@
 #include "nodes/makefuncs.h"
 #include "nodes/value.h"
 #include "parser/scansup.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/varlena.h"
 
@@ -31,23 +32,6 @@ PG_MODULE_MAGIC_EXT(
 					.name = "auto_explain",
 					.version = PG_VERSION
 );
-
-/* GUC variables */
-static int	auto_explain_log_min_duration = -1; /* msec or -1 */
-static int	auto_explain_log_parameter_max_length = -1; /* bytes or -1 */
-static bool auto_explain_log_analyze = false;
-static bool auto_explain_log_verbose = false;
-static bool auto_explain_log_buffers = false;
-static bool auto_explain_log_io = false;
-static bool auto_explain_log_wal = false;
-static bool auto_explain_log_triggers = false;
-static bool auto_explain_log_timing = true;
-static bool auto_explain_log_settings = false;
-static int	auto_explain_log_format = EXPLAIN_FORMAT_TEXT;
-static int	auto_explain_log_level = LOG;
-static bool auto_explain_log_nested_statements = false;
-static double auto_explain_sample_rate = 1;
-static char *auto_explain_log_extension_options = NULL;
 
 /*
  * Parsed form of one option from auto_explain.log_extension_options.
@@ -71,7 +55,135 @@ typedef struct auto_explain_extension_options
 	/* a null-terminated copy of the GUC string follows the array */
 } auto_explain_extension_options;
 
-static auto_explain_extension_options *extension_options = NULL;
+#define AUTO_EXPLAIN_RUNTIME_STATE_KEY "auto_explain.runtime"
+#define AUTO_EXPLAIN_SESSION_STATE_KEY "auto_explain.session"
+#define AUTO_EXPLAIN_EXECUTION_STATE_KEY "auto_explain.execution"
+
+typedef struct AutoExplainRuntimeState
+{
+	ExecutorStart_hook_type prev_ExecutorStart;
+	ExecutorRun_hook_type prev_ExecutorRun;
+	ExecutorFinish_hook_type prev_ExecutorFinish;
+	ExecutorEnd_hook_type prev_ExecutorEnd;
+} AutoExplainRuntimeState;
+
+typedef struct AutoExplainSessionState
+{
+	bool		initialized;
+	int			log_min_duration_value;
+	int			log_parameter_max_length_value;
+	bool		log_analyze_value;
+	bool		log_verbose_value;
+	bool		log_buffers_value;
+	bool		log_io_value;
+	bool		log_wal_value;
+	bool		log_triggers_value;
+	bool		log_timing_value;
+	bool		log_settings_value;
+	int			log_format_value;
+	int			log_level_value;
+	bool		log_nested_statements_value;
+	double		sample_rate_value;
+	char	   *log_extension_options_value;
+	auto_explain_extension_options *extension_options;
+} AutoExplainSessionState;
+
+typedef struct AutoExplainExecutionState
+{
+	int			nesting_level;
+	bool		current_query_sampled;
+} AutoExplainExecutionState;
+
+static AutoExplainRuntimeState *
+auto_explain_runtime_state(void)
+{
+	return (AutoExplainRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(AUTO_EXPLAIN_RUNTIME_STATE_KEY,
+											 sizeof(AutoExplainRuntimeState),
+											 NULL);
+}
+
+static AutoExplainSessionState *
+auto_explain_session_state(void)
+{
+	AutoExplainSessionState *state;
+
+	state = (AutoExplainSessionState *)
+		PgSessionEnsureExtensionPrivateState(AUTO_EXPLAIN_SESSION_STATE_KEY,
+											 sizeof(AutoExplainSessionState),
+											 NULL);
+	if (!state->initialized)
+	{
+		state->log_min_duration_value = -1;
+		state->log_parameter_max_length_value = -1;
+		state->log_timing_value = true;
+		state->log_format_value = EXPLAIN_FORMAT_TEXT;
+		state->log_level_value = LOG;
+		state->sample_rate_value = 1.0;
+		state->initialized = true;
+	}
+
+	return state;
+}
+
+static AutoExplainExecutionState *
+auto_explain_execution_state(void)
+{
+	return (AutoExplainExecutionState *)
+		PgExecutionEnsureExtensionPrivateState(AUTO_EXPLAIN_EXECUTION_STATE_KEY,
+											   sizeof(AutoExplainExecutionState),
+											   NULL);
+}
+
+#define auto_explain_log_min_duration \
+	(auto_explain_session_state()->log_min_duration_value)
+#define auto_explain_log_parameter_max_length \
+	(auto_explain_session_state()->log_parameter_max_length_value)
+#define auto_explain_log_analyze \
+	(auto_explain_session_state()->log_analyze_value)
+#define auto_explain_log_verbose \
+	(auto_explain_session_state()->log_verbose_value)
+#define auto_explain_log_buffers \
+	(auto_explain_session_state()->log_buffers_value)
+#define auto_explain_log_io \
+	(auto_explain_session_state()->log_io_value)
+#define auto_explain_log_wal \
+	(auto_explain_session_state()->log_wal_value)
+#define auto_explain_log_triggers \
+	(auto_explain_session_state()->log_triggers_value)
+#define auto_explain_log_timing \
+	(auto_explain_session_state()->log_timing_value)
+#define auto_explain_log_settings \
+	(auto_explain_session_state()->log_settings_value)
+#define auto_explain_log_format \
+	(auto_explain_session_state()->log_format_value)
+#define auto_explain_log_level \
+	(auto_explain_session_state()->log_level_value)
+#define auto_explain_log_nested_statements \
+	(auto_explain_session_state()->log_nested_statements_value)
+#define auto_explain_sample_rate \
+	(auto_explain_session_state()->sample_rate_value)
+#define auto_explain_log_extension_options \
+	(auto_explain_session_state()->log_extension_options_value)
+#define nesting_level \
+	(auto_explain_execution_state()->nesting_level)
+#define current_query_sampled \
+	(auto_explain_execution_state()->current_query_sampled)
+
+#define prev_ExecutorStart \
+	(auto_explain_runtime_state()->prev_ExecutorStart)
+#define prev_ExecutorRun \
+	(auto_explain_runtime_state()->prev_ExecutorRun)
+#define prev_ExecutorFinish \
+	(auto_explain_runtime_state()->prev_ExecutorFinish)
+#define prev_ExecutorEnd \
+	(auto_explain_runtime_state()->prev_ExecutorEnd)
+
+static auto_explain_extension_options *
+current_auto_explain_extension_options(void)
+{
+	return auto_explain_session_state()->extension_options;
+}
 
 static const struct config_enum_entry format_options[] = {
 	{"text", EXPLAIN_FORMAT_TEXT, false},
@@ -95,22 +207,10 @@ static const struct config_enum_entry loglevel_options[] = {
 	{NULL, 0, false}
 };
 
-/* Current nesting depth of ExecutorRun calls */
-static int	nesting_level = 0;
-
-/* Is the current top-level query to be sampled? */
-static bool current_query_sampled = false;
-
 #define auto_explain_enabled() \
 	(auto_explain_log_min_duration >= 0 && \
 	 (nesting_level == 0 || auto_explain_log_nested_statements) && \
 	 current_query_sampled)
-
-/* Saved hook values */
-static ExecutorStart_hook_type prev_ExecutorStart = NULL;
-static ExecutorRun_hook_type prev_ExecutorRun = NULL;
-static ExecutorFinish_hook_type prev_ExecutorFinish = NULL;
-static ExecutorEnd_hook_type prev_ExecutorEnd = NULL;
 
 static void explain_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void explain_ExecutorRun(QueryDesc *queryDesc,
@@ -449,7 +549,7 @@ explain_ExecutorEnd(QueryDesc *queryDesc)
 			es->format = auto_explain_log_format;
 			es->settings = auto_explain_log_settings;
 
-			apply_extension_options(es, extension_options);
+			apply_extension_options(es, current_auto_explain_extension_options());
 
 			ExplainBeginOutput(es);
 			ExplainQueryText(es, queryDesc);
@@ -580,7 +680,7 @@ retry:
 static void
 assign_log_extension_options(const char *newval, void *extra)
 {
-	extension_options = (auto_explain_extension_options *) extra;
+	auto_explain_session_state()->extension_options = extra;
 }
 
 /*

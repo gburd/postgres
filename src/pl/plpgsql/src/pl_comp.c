@@ -38,19 +38,10 @@
  * Our own local and global variables
  * ----------
  */
-static int	datums_alloc;
-int			plpgsql_nDatums;
-PLpgSQL_datum **plpgsql_Datums;
-static int	datums_last;
-
-char	   *plpgsql_error_funcname;
-bool		plpgsql_DumpExecTree = false;
-bool		plpgsql_check_syntax = false;
-
-PLpgSQL_function *plpgsql_curr_compile;
-
-/* A context appropriate for short-term allocs during compilation */
-MemoryContext plpgsql_compile_tmp_cxt;
+#define datums_alloc \
+	(plpgsql_current_session_state()->datums_alloc)
+#define datums_last \
+	(plpgsql_current_session_state()->datums_last)
 
 /* ----------
  * Lookup table for EXCEPTION condition names
@@ -2274,6 +2265,9 @@ plpgsql_finish_datums(PLpgSQL_function *function)
 				break;
 			case PLPGSQL_DTYPE_REC:
 				copiable_size += MAXALIGN(sizeof(PLpgSQL_rec));
+				break;
+			case PLPGSQL_DTYPE_RECFIELD:
+				copiable_size += MAXALIGN(sizeof(PLpgSQL_recfield));
 				break;
 			default:
 				break;

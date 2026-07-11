@@ -18,7 +18,30 @@
 #include "libpq/libpq-be-fe.h"
 #include "nodes/execnodes.h"
 #include "nodes/pathnodes.h"
+#include "utils/backend_runtime.h"
+#include "utils/hsearch.h"
 #include "utils/relcache.h"
+
+#define POSTGRES_FDW_SESSION_STATE_KEY "postgres_fdw.session"
+
+typedef struct PgFdwOption PgFdwOption;
+
+typedef struct PostgresFdwSessionState
+{
+	MemoryContext options_context;
+	PgFdwOption *options;
+	char	   *application_name_value;
+	HTAB	   *connection_hash;
+	HTAB	   *shippable_cache_hash;
+	unsigned int cursor_number;
+	unsigned int prep_stmt_number;
+	bool		xact_got_connection;
+	int			read_only_level;
+	bool		connection_callbacks_registered;
+	bool		shippable_callbacks_registered;
+} PostgresFdwSessionState;
+
+extern PostgresFdwSessionState *postgres_fdw_session_state(void);
 
 /*
  * FDW-specific planner information kept in RelOptInfo.fdw_private for a
@@ -178,7 +201,7 @@ extern int	ExtractConnectionOptions(List *defelems,
 extern List *ExtractExtensionList(const char *extensionsString,
 								  bool warnOnMissing);
 extern char *process_pgfdw_appname(const char *appname);
-extern char *pgfdw_application_name;
+#define pgfdw_application_name (postgres_fdw_session_state()->application_name_value)
 
 /* in deparse.c */
 extern void classifyConditions(PlannerInfo *root,

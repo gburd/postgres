@@ -17,6 +17,7 @@
 #include "plpy_plpymodule.h"
 #include "plpy_subxactobject.h"
 #include "plpy_util.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
@@ -25,9 +26,27 @@
  * exported functions
  */
 
+/*
+ * Backend model: process (the default).  plpython embeds a single CPython
+ * interpreter whose state is process-global and GIL-serialized: the embedded
+ * interpreter, the PLy_* type objects, PLy_interp_globals, the
+ * PLy_execution_contexts stack, and explicit_subtransactions are all
+ * unrelocated file-scope globals shared across the whole process.  None of
+ * this is per-session or per-thread, so plpython is unsafe under any threaded
+ * backend model and the backend-model gate correctly keeps it in
+ * process-backed backends only.
+ *
+ * Defer with invariant: threaded plpython would need either per-session Python
+ * sub-interpreters (PEP 684 / 3.12+ per-interpreter GIL) or the whole embedded
+ * interpreter and PLy_* globals relocated per session -- a substantial effort
+ * gated behind this PROCESS marker.  Owned by Phase 16 (bundled procedural
+ * languages beyond PL/pgSQL); intentionally last of the three PLs given the
+ * GIL/embedded-interpreter constraints.
+ */
 PG_MODULE_MAGIC_EXT(
 					.name = "plpython",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_PROCESS
 );
 
 PG_FUNCTION_INFO_V1(plpython3_validator);
@@ -273,9 +292,13 @@ plpython3_inline_handler(PG_FUNCTION_ARGS)
 	flinfo.fn_mcxt = CurrentMemoryContext;
 
 	MemSet(&proc, 0, sizeof(PLyProcedure));
-	proc.mcxt = AllocSetContextCreate(TopMemoryContext,
-									  "__plpython_inline_block",
-									  ALLOCSET_DEFAULT_SIZES);
+	proc.mcxt = AllocSetContextCreate(
+		PgRuntimeGetOwnedMemoryContextWithSizes(
+			PgCurrentPLpythonMemoryContextRef(),
+			"PL/Python session",
+			ALLOCSET_DEFAULT_SIZES),
+		"__plpython_inline_block",
+		ALLOCSET_DEFAULT_SIZES);
 	proc.pyname = MemoryContextStrdup(proc.mcxt, "__plpython_inline_block");
 	proc.langid = codeblock->langOid;
 

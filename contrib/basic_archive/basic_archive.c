@@ -35,14 +35,16 @@
 #include "miscadmin.h"
 #include "storage/copydir.h"
 #include "storage/fd.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 
 PG_MODULE_MAGIC_EXT(
 					.name = "basic_archive",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
-static char *archive_directory = NULL;
+#define archive_directory (*PgCurrentBasicArchiveDirectoryRef())
 
 static bool basic_archive_configured(ArchiveModuleState *state);
 static bool basic_archive_file(ArchiveModuleState *state, const char *file, const char *path);

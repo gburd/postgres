@@ -102,7 +102,9 @@ typedef struct px_hmac PX_HMAC;
 typedef struct px_cipher PX_Cipher;
 typedef struct px_combo PX_Combo;
 
-extern int	builtin_crypto_enabled;
+extern int *pgcrypto_builtin_crypto_enabled_ref(void);
+
+#define builtin_crypto_enabled (*pgcrypto_builtin_crypto_enabled_ref())
 
 struct px_digest
 {

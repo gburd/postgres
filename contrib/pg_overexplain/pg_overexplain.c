@@ -18,6 +18,7 @@
 #include "fmgr.h"
 #include "parser/parsetree.h"
 #include "storage/lock.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 
@@ -59,9 +60,29 @@ static void overexplain_bitmapset_list(const char *qlabel, List *bms_list,
 static void overexplain_intlist(const char *qlabel, List *list,
 								ExplainState *es);
 
-static int	es_extension_id;
-static explain_per_node_hook_type prev_explain_per_node_hook;
-static explain_per_plan_hook_type prev_explain_per_plan_hook;
+#define PG_OVEREXPLAIN_RUNTIME_STATE_KEY "pg_overexplain.runtime"
+
+typedef struct PgOverexplainRuntimeState
+{
+	int			es_extension_id;
+	explain_per_node_hook_type prev_explain_per_node_hook;
+	explain_per_plan_hook_type prev_explain_per_plan_hook;
+} PgOverexplainRuntimeState;
+
+static PgOverexplainRuntimeState *
+overexplain_runtime_state(void)
+{
+	return (PgOverexplainRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(PG_OVEREXPLAIN_RUNTIME_STATE_KEY,
+											 sizeof(PgOverexplainRuntimeState),
+											 NULL);
+}
+
+#define es_extension_id (overexplain_runtime_state()->es_extension_id)
+#define prev_explain_per_node_hook \
+	(overexplain_runtime_state()->prev_explain_per_node_hook)
+#define prev_explain_per_plan_hook \
+	(overexplain_runtime_state()->prev_explain_per_plan_hook)
 
 /*
  * Initialization we do when this module is loaded.

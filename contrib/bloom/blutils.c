@@ -20,6 +20,7 @@
 #include "commands/vacuum.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "varatt.h"
 
@@ -31,14 +32,34 @@
 
 PG_FUNCTION_INFO_V1(blhandler);
 
-/* Kind of relation options for bloom index */
-static relopt_kind bl_relopt_kind;
+#define BLOOM_BLUTILS_RUNTIME_STATE_KEY "bloom.blutils.runtime"
 
-/* parse table for fillRelOptions */
-static relopt_parse_elt bl_relopt_tab[INDEX_MAX_KEYS + 1];
+typedef struct BloomBlutilsRuntimeState
+{
+	/* Kind of relation options for bloom index */
+	relopt_kind relopt_kind;
 
-static int32 myRand(void);
-static void mySrand(uint32 seed);
+	/* parse table for fillRelOptions */
+	relopt_parse_elt relopt_tab[INDEX_MAX_KEYS + 1];
+} BloomBlutilsRuntimeState;
+
+static BloomBlutilsRuntimeState *
+bloom_blutils_runtime_state(void)
+{
+	return (BloomBlutilsRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(
+			BLOOM_BLUTILS_RUNTIME_STATE_KEY,
+			sizeof(BloomBlutilsRuntimeState),
+			NULL);
+}
+
+#define bl_relopt_kind \
+	(bloom_blutils_runtime_state()->relopt_kind)
+#define bl_relopt_tab \
+	(bloom_blutils_runtime_state()->relopt_tab)
+
+static int32 myRand(int32 *seed);
+static void mySrand(int32 *seed, uint32 value);
 
 /*
  * Module initialize function: initialize info about Bloom relation options.
@@ -70,8 +91,11 @@ _PG_init(void)
 						  "Number of bits generated for each index column",
 						  DEFAULT_BLOOM_BITS, 1, MAX_BLOOM_BITS,
 						  AccessExclusiveLock);
-		bl_relopt_tab[i + 1].optname = MemoryContextStrdup(TopMemoryContext,
-														   buf);
+		bl_relopt_tab[i + 1].optname =
+			MemoryContextStrdup(PgRuntimeGetOwnedMemoryContext(
+									PgCurrentBloomContextRef(),
+									"bloom relation options"),
+								buf);
 		bl_relopt_tab[i + 1].opttype = RELOPT_TYPE_INT;
 		bl_relopt_tab[i + 1].offset = offsetof(BloomOptions, bitSize[0]) + sizeof(int) * i;
 	}
@@ -222,10 +246,8 @@ initBloomState(BloomState *state, Relation index)
  * 2) Changing seed of PostgreSQL random generator would be undesirable side
  *	  effect.
  */
-static int32 next;
-
 static int32
-myRand(void)
+myRand(int32 *seed)
 {
 	/*----------
 	 * Compute x = (7^5 * x) mod (2^31 - 1)
@@ -241,22 +263,22 @@ myRand(void)
 				x;
 
 	/* Must be in [1, 0x7ffffffe] range at this point. */
-	hi = next / 127773;
-	lo = next % 127773;
+	hi = *seed / 127773;
+	lo = *seed % 127773;
 	x = 16807 * lo - 2836 * hi;
 	if (x < 0)
 		x += 0x7fffffff;
-	next = x;
+	*seed = x;
 	/* Transform to [0, 0x7ffffffd] range. */
 	return (x - 1);
 }
 
 static void
-mySrand(uint32 seed)
+mySrand(int32 *seed, uint32 value)
 {
-	next = seed;
+	*seed = value;
 	/* Transform to [1, 0x7ffffffe] range. */
-	next = (next % 0x7ffffffe) + 1;
+	*seed = (*seed % 0x7ffffffe) + 1;
 }
 
 /*
@@ -268,13 +290,14 @@ signValue(BloomState *state, BloomSignatureWord *sign, Datum value, int attno)
 	uint32		hashVal;
 	int			nBit,
 				j;
+	int32		rand_seed;
 
 	/*
 	 * init generator with "column's" number to get "hashed" seed for new
 	 * value. We don't want to map the same numbers from different columns
 	 * into the same bits!
 	 */
-	mySrand(attno);
+	mySrand(&rand_seed, attno);
 
 	/*
 	 * Init hash sequence to map our value into bits. the same values in
@@ -282,12 +305,12 @@ signValue(BloomState *state, BloomSignatureWord *sign, Datum value, int attno)
 	 * above
 	 */
 	hashVal = DatumGetInt32(FunctionCall1Coll(&state->hashFn[attno], state->collations[attno], value));
-	mySrand(hashVal ^ myRand());
+	mySrand(&rand_seed, hashVal ^ myRand(&rand_seed));
 
 	for (j = 0; j < state->opts.bitSize[attno]; j++)
 	{
 		/* prevent multiple evaluation in SETBIT macro */
-		nBit = myRand() % (state->opts.bloomLength * SIGNWORDBITS);
+		nBit = myRand(&rand_seed) % (state->opts.bloomLength * SIGNWORDBITS);
 		SETBIT(sign, nBit);
 	}
 }

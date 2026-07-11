@@ -24,6 +24,7 @@
 #include "storage/proc.h"
 #include "storage/procsignal.h"
 #include "utils/backend_status.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
@@ -77,10 +78,12 @@ static void pgsa_restore_entries(pgsa_saved_entry *entries, int num_entries);
 static void pgsa_restore_stashes(pgsa_saved_stash_table_hash *saved_stashes);
 static void pgsa_unescape_tsv_field(char *str, const char *filename,
 									unsigned lineno);
+static void pgsa_worker_process_interrupts(void);
 static void pgsa_write_entries(pgsa_writer_context *wctx);
 pg_noreturn static void pgsa_write_error(pgsa_writer_context *wctx);
 static void pgsa_write_stashes(pgsa_writer_context *wctx);
 static void pgsa_write_to_disk(void);
+static bool pgsa_worker_threaded_runtime(void);
 
 /*
  * Background worker entry point for pg_stash_advice persistence.
@@ -97,9 +100,12 @@ pg_stash_advice_worker_main(Datum main_arg)
 	TimestampTz last_write_time = 0;
 
 	/* Establish signal handlers; once that's done, unblock signals. */
-	pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+	if (!pgsa_worker_threaded_runtime())
+	{
+		pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+	}
 	BackgroundWorkerUnblockSignals();
 
 	/* Log a debug message */
@@ -133,7 +139,7 @@ pg_stash_advice_worker_main(Datum main_arg)
 						(int) pgsa_state->bgworker_pid)));
 		return;
 	}
-	pgsa_state->bgworker_pid = MyProcPid;
+	pgsa_state->bgworker_pid = PgCurrentBackendSignalPid();
 	LWLockRelease(&pgsa_state->lock);
 
 	/*
@@ -153,12 +159,7 @@ pg_stash_advice_worker_main(Datum main_arg)
 	/* Periodically write to disk until terminated. */
 	while (!ShutdownRequestPending)
 	{
-		/* In case of a SIGHUP, just reload the configuration. */
-		if (ConfigReloadPending)
-		{
-			ConfigReloadPending = false;
-			ProcessConfigFile(PGC_SIGHUP);
-		}
+		pgsa_worker_process_interrupts();
 
 		if (pg_stash_advice_persist_interval <= 0)
 		{
@@ -208,6 +209,7 @@ pg_stash_advice_worker_main(Datum main_arg)
 		}
 
 		ResetLatch(MyLatch);
+		pgsa_worker_process_interrupts();
 	}
 
 	/* Write one last time before exiting. */
@@ -221,9 +223,34 @@ static void
 pgsa_detach_shmem(int code, Datum arg)
 {
 	LWLockAcquire(&pgsa_state->lock, LW_EXCLUSIVE);
-	if (pgsa_state->bgworker_pid == MyProcPid)
+	if (pgsa_state->bgworker_pid == PgCurrentBackendSignalPid())
 		pgsa_state->bgworker_pid = InvalidPid;
 	LWLockRelease(&pgsa_state->lock);
+}
+
+static bool
+pgsa_worker_threaded_runtime(void)
+{
+	return CurrentPgRuntime != NULL &&
+		CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION;
+}
+
+static void
+pgsa_worker_process_interrupts(void)
+{
+	PgCurrentBackendApplyInterrupts();
+
+	if (ProcSignalBarrierPending)
+		ProcessProcSignalBarrier();
+
+	if (ConfigReloadPending)
+	{
+		ConfigReloadPending = false;
+		if (!pgsa_worker_threaded_runtime())
+			ProcessConfigFile(PGC_SIGHUP);
+	}
+
+	CHECK_FOR_INTERRUPTS();
 }
 
 /*

@@ -4,6 +4,7 @@
 #include "hstore/hstore.h"
 #include "miscadmin.h"
 #include "plperl.h"
+#include "utils/backend_runtime.h"
 
 PG_MODULE_MAGIC_EXT(
 					.name = "hstore_plperl",
@@ -12,15 +13,41 @@ PG_MODULE_MAGIC_EXT(
 
 /* Linkage to functions in hstore module */
 typedef HStore *(*hstoreUpgrade_t) (Datum orig);
-static hstoreUpgrade_t hstoreUpgrade_p;
 typedef int (*hstoreUniquePairs_t) (Pairs *a, int32 l, int32 *buflen);
-static hstoreUniquePairs_t hstoreUniquePairs_p;
 typedef HStore *(*hstorePairs_t) (Pairs *pairs, int32 pcount, int32 buflen);
-static hstorePairs_t hstorePairs_p;
 typedef size_t (*hstoreCheckKeyLen_t) (size_t len);
-static hstoreCheckKeyLen_t hstoreCheckKeyLen_p;
 typedef size_t (*hstoreCheckValLen_t) (size_t len);
-static hstoreCheckValLen_t hstoreCheckValLen_p;
+
+#define HSTORE_PLPERL_RUNTIME_STATE_KEY "hstore_plperl.runtime"
+
+typedef struct HstorePLperlRuntimeState
+{
+	hstoreUpgrade_t hstoreUpgrade_p;
+	hstoreUniquePairs_t hstoreUniquePairs_p;
+	hstorePairs_t hstorePairs_p;
+	hstoreCheckKeyLen_t hstoreCheckKeyLen_p;
+	hstoreCheckValLen_t hstoreCheckValLen_p;
+} HstorePLperlRuntimeState;
+
+static HstorePLperlRuntimeState *
+hstore_plperl_runtime_state(void)
+{
+	return (HstorePLperlRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(HSTORE_PLPERL_RUNTIME_STATE_KEY,
+											 sizeof(HstorePLperlRuntimeState),
+											 NULL);
+}
+
+#define hstoreUpgrade_p \
+	(hstore_plperl_runtime_state()->hstoreUpgrade_p)
+#define hstoreUniquePairs_p \
+	(hstore_plperl_runtime_state()->hstoreUniquePairs_p)
+#define hstorePairs_p \
+	(hstore_plperl_runtime_state()->hstorePairs_p)
+#define hstoreCheckKeyLen_p \
+	(hstore_plperl_runtime_state()->hstoreCheckKeyLen_p)
+#define hstoreCheckValLen_p \
+	(hstore_plperl_runtime_state()->hstoreCheckValLen_p)
 
 /* Static asserts verify that typedefs above match original declarations */
 StaticAssertVariableIsOfType(&hstoreUpgrade, hstoreUpgrade_t);

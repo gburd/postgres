@@ -15,6 +15,7 @@
 #include "port/pg_numa.h"
 #include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
+#include "utils/backend_runtime.h"
 #include "utils/rel.h"
 #include "utils/tuplestore.h"
 
@@ -79,8 +80,35 @@ PG_FUNCTION_INFO_V1(pg_buffercache_mark_dirty_relation);
 PG_FUNCTION_INFO_V1(pg_buffercache_mark_dirty_all);
 
 
+#define PG_BUFFERCACHE_BACKEND_STATE_KEY "pg_buffercache.backend"
+
+typedef struct PgBuffercacheBackendState
+{
+	bool		initialized;
+	bool		first_numa_touch;
+} PgBuffercacheBackendState;
+
+static PgBuffercacheBackendState *
+pg_buffercache_backend_state(void)
+{
+	PgBuffercacheBackendState *state;
+
+	state = (PgBuffercacheBackendState *)
+		PgBackendEnsureExtensionPrivateState(PG_BUFFERCACHE_BACKEND_STATE_KEY,
+											 sizeof(PgBuffercacheBackendState),
+											 NULL);
+	if (!state->initialized)
+	{
+		state->first_numa_touch = true;
+		state->initialized = true;
+	}
+
+	return state;
+}
+
 /* Only need to touch memory once per backend process lifetime */
-static bool firstNumaTouch = true;
+#define firstNumaTouch (pg_buffercache_backend_state()->first_numa_touch)
+
 
 
 Datum
