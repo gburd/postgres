@@ -17,15 +17,51 @@
 #include "nodes/params.h"
 #include "nodes/plannodes.h"
 #include "storage/procsignal.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/queryenvironment.h"
 
 typedef struct ExplainState ExplainState;	/* defined in explain_state.h */
 
-extern PGDLLIMPORT CommandDest whereToSendOutput;
-extern PGDLLIMPORT const char *debug_query_string;
-extern PGDLLIMPORT int PostAuthDelay;
-extern PGDLLIMPORT int client_connection_check_interval;
+/*
+ * Connection output state remains source-compatible, but storage belongs to
+ * PgConnection so a logical connection can move between carriers.
+ */
+static inline CommandDest *
+PgCurrentWhereToSendOutputRefFast(void)
+{
+	PgConnection *connection = CurrentPgConnection;
+
+	if (likely(connection != NULL))
+		return &connection->output.where_to_send_output;
+	return PgCurrentWhereToSendOutputRef();
+}
+
+#define whereToSendOutput (*PgCurrentWhereToSendOutputRefFast())
+#ifndef PgCurrentPostAuthDelayRef
+extern int *PgCurrentPostAuthDelayRef(void);
+#endif
+#define PostAuthDelay (*PgCurrentPostAuthDelayRef())
+static inline int *
+PgCurrentClientConnectionCheckIntervalRefFast(void)
+{
+	PgConnection *connection = CurrentPgConnection;
+
+	if (likely(connection != NULL))
+		return &connection->output.client_connection_check_interval;
+	return PgCurrentClientConnectionCheckIntervalRef();
+}
+
+#define client_connection_check_interval (*PgCurrentClientConnectionCheckIntervalRefFast())
+
+/*
+ * Compatibility lvalue for the historical execution-local debug query string.
+ * Storage belongs to the current PgExecution object.
+ */
+#define debug_query_string \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentDebugQueryStringHotRef, \
+									   CurrentPgExecution, \
+									   PgCurrentDebugQueryStringRef))
 
 /* GUC-configurable parameters */
 
@@ -37,14 +73,23 @@ typedef enum
 	LOGSTMT_ALL,				/* log all statements */
 } LogStmtLevel;
 
-extern PGDLLIMPORT bool Log_disconnections;
-extern PGDLLIMPORT int log_statement;
+#ifndef PgCurrentLogDisconnectionsRef
+extern bool *PgCurrentLogDisconnectionsRef(void);
+#endif
+#ifndef PgCurrentLogStatementRef
+extern int *PgCurrentLogStatementRef(void);
+#endif
+#define Log_disconnections (*PgCurrentLogDisconnectionsRef())
+#define log_statement (*PgCurrentLogStatementRef())
 
 /* Flags for restrict_nonsystem_relation_kind value */
 #define RESTRICT_RELKIND_VIEW			0x01
 #define RESTRICT_RELKIND_FOREIGN_TABLE	0x02
 
-extern PGDLLIMPORT int restrict_nonsystem_relation_kind;
+#ifndef PgCurrentRestrictNonsystemRelationKindRef
+extern int *PgCurrentRestrictNonsystemRelationKindRef(void);
+#endif
+#define restrict_nonsystem_relation_kind (*PgCurrentRestrictNonsystemRelationKindRef())
 
 extern List *pg_parse_query(const char *query_string);
 extern List *pg_rewrite_query(Query *query);
@@ -77,11 +122,21 @@ pg_noreturn extern void FloatExceptionHandler(SIGNAL_ARGS);
 extern void HandleRecoveryConflictInterrupt(void);
 extern void ProcessClientReadInterrupt(bool blocked);
 extern void ProcessClientWriteInterrupt(bool blocked);
+extern void PgSessionServiceProtocolReadWake(PgSession *session);
 
 extern void process_postgres_switches(int argc, char *argv[],
 									  GucContext ctx, const char **dbname);
 pg_noreturn extern void PostgresSingleUserMain(int argc, char *argv[],
 											   const char *username);
+extern PgSession *PostgresBootstrapSession(const char *dbname,
+										   const char *username);
+extern bool PgBackendPollProtocolReadPark(PgBackend *backend,
+										  uint32 *wake_events);
+extern int	PgRuntimeProtocolSchedulerPollParkedReads(PgRuntime *runtime,
+													 PgBackend **scratch,
+													 int max_backends);
+extern PgStepResult PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session);
+pg_noreturn extern void PostgresRunSession(PgSession *session);
 pg_noreturn extern void PostgresMain(const char *dbname,
 									 const char *username);
 extern void ResetUsage(void);
