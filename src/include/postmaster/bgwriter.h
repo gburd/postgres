@@ -20,13 +20,14 @@
 #include "storage/relfilelocator.h"
 #include "storage/smgr.h"
 #include "storage/sync.h"
+#include "utils/global_lifetime.h"
 
 
 /* GUC options */
-extern PGDLLIMPORT int BgWriterDelay;
-extern PGDLLIMPORT int CheckPointTimeout;
-extern PGDLLIMPORT int CheckPointWarning;
-extern PGDLLIMPORT double CheckPointCompletionTarget;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int BgWriterDelay;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int CheckPointTimeout;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int CheckPointWarning;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME double CheckPointCompletionTarget;
 
 pg_noreturn extern void BackgroundWriterMain(const void *startup_data, size_t startup_data_len);
 pg_noreturn extern void CheckpointerMain(const void *startup_data, size_t startup_data_len);

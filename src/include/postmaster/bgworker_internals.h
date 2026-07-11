@@ -39,7 +39,7 @@ typedef struct RegisteredBgWorker
 	dlist_node	rw_lnode;		/* list link */
 } RegisteredBgWorker;
 
-extern PGDLLIMPORT dlist_head BackgroundWorkerList;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME dlist_head BackgroundWorkerList;
 
 extern void BackgroundWorkerStateChange(bool allow_new_workers);
 extern void ForgetBackgroundWorker(RegisteredBgWorker *rw);

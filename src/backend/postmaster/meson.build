@@ -11,6 +11,7 @@ backend_sources += files(
   'interrupt.c',
   'launch_backend.c',
   'pgarch.c',
+  'pg_xtc_carrier.c',
   'pmchild.c',
   'postmaster.c',
   'startup.c',

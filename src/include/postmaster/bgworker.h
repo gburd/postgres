@@ -2,8 +2,11 @@
  * bgworker.h
  *		POSTGRES pluggable background workers interface
  *
- * A background worker is a process able to run arbitrary, user-supplied code,
- * including normal transactions.
+ * A background worker is a logical worker able to run arbitrary,
+ * user-supplied code, including normal transactions.  In normal process-mode
+ * PostgreSQL, workers are process carriers.  In threaded mode, a worker may
+ * use a thread carrier only if its registration explicitly says that its code
+ * is safe for that backend model.
  *
  * Any external module loaded via shared_preload_libraries can register a
  * worker.  Workers can also be registered dynamically at runtime.  In either
@@ -40,6 +43,8 @@
  */
 #ifndef BGWORKER_H
 #define BGWORKER_H
+
+#include "utils/global_lifetime.h"
 
 /*---------------------------------------------------------------------
  * External module API.
@@ -88,6 +93,18 @@ typedef enum
 	BgWorkerStart_RecoveryFinished,
 } BgWorkerStartTime;
 
+/*
+ * Backend models supported by a background worker registration.
+ *
+ * The zero/default value is process-only.  This keeps existing extensions and
+ * zero-initialized BackgroundWorker structs conservative in threaded mode.
+ */
+typedef enum
+{
+	BgWorkerBackendProcess = 0,
+	BgWorkerBackendThreadPerSession,
+} BgWorkerBackendModel;
+
 #define BGW_DEFAULT_RESTART_INTERVAL	60
 #define BGW_NEVER_RESTART				-1
 #define BGW_MAXLEN						96
@@ -98,6 +115,7 @@ typedef struct BackgroundWorker
 	char		bgw_name[BGW_MAXLEN];
 	char		bgw_type[BGW_MAXLEN];
 	int			bgw_flags;
+	BgWorkerBackendModel bgw_backend_model;
 	BgWorkerStartTime bgw_start_time;
 	int			bgw_restart_time;	/* in seconds, or BGW_NEVER_RESTART */
 	char		bgw_library_name[MAXPGPATH];
@@ -140,7 +158,8 @@ extern void TerminateBackgroundWorker(BackgroundWorkerHandle *handle);
 extern void TerminateBackgroundWorkersForDatabase(Oid databaseId);
 
 /* This is valid in a running worker */
-extern PGDLLIMPORT BackgroundWorker *MyBgworkerEntry;
+extern BackgroundWorker **(PgCurrentMyBgworkerEntryRef) (void);
+#define MyBgworkerEntry (*PgCurrentMyBgworkerEntryRef())
 
 /*
  * Connect to the specified database, as the specified user.  Only a worker
@@ -170,5 +189,6 @@ extern void BackgroundWorkerInitializeConnectionByOid(Oid dboid, Oid useroid, ui
 /* Block/unblock signals in a background worker process */
 extern void BackgroundWorkerBlockSignals(void);
 extern void BackgroundWorkerUnblockSignals(void);
+extern bool BackgroundWorkerCanUseThreadCarrier(const BackgroundWorker *worker);
 
 #endif							/* BGWORKER_H */
