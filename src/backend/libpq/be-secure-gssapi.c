@@ -63,26 +63,42 @@
 
 /*
  * Since we manage at most one GSS-encrypted connection per backend,
- * we can just keep all this state in static variables.  The char *
- * variables point to buffers that are allocated once and re-used.
+ * this state belongs to the current connection.  The char * variables
+ * point to buffers that are allocated once and re-used.
  */
-static char *PqGSSSendBuffer;	/* Encrypted data waiting to be sent */
-static int	PqGSSSendLength;	/* End of data available in PqGSSSendBuffer */
-static int	PqGSSSendNext;		/* Next index to send a byte from
-								 * PqGSSSendBuffer */
-static int	PqGSSSendConsumed;	/* Number of source bytes encrypted but not
-								 * yet reported as sent */
+/* Encrypted data waiting to be sent */
+#define PqGSSSendBuffer \
+	(PgCurrentConnectionSecurityStateRef()->gss_send_buffer)
+/* End of data available in PqGSSSendBuffer */
+#define PqGSSSendLength \
+	(PgCurrentConnectionSecurityStateRef()->gss_send_length)
+/* Next index to send a byte from PqGSSSendBuffer */
+#define PqGSSSendNext \
+	(PgCurrentConnectionSecurityStateRef()->gss_send_next)
+/* Number of source bytes encrypted but not yet reported as sent */
+#define PqGSSSendConsumed \
+	(PgCurrentConnectionSecurityStateRef()->gss_send_consumed)
 
-static char *PqGSSRecvBuffer;	/* Received, encrypted data */
-static int	PqGSSRecvLength;	/* End of data available in PqGSSRecvBuffer */
+/* Received, encrypted data */
+#define PqGSSRecvBuffer \
+	(PgCurrentConnectionSecurityStateRef()->gss_recv_buffer)
+/* End of data available in PqGSSRecvBuffer */
+#define PqGSSRecvLength \
+	(PgCurrentConnectionSecurityStateRef()->gss_recv_length)
 
-static char *PqGSSResultBuffer; /* Decryption of data in gss_RecvBuffer */
-static int	PqGSSResultLength;	/* End of data available in PqGSSResultBuffer */
-static int	PqGSSResultNext;	/* Next index to read a byte from
-								 * PqGSSResultBuffer */
+/* Decryption of data in gss_RecvBuffer */
+#define PqGSSResultBuffer \
+	(PgCurrentConnectionSecurityStateRef()->gss_result_buffer)
+/* End of data available in PqGSSResultBuffer */
+#define PqGSSResultLength \
+	(PgCurrentConnectionSecurityStateRef()->gss_result_length)
+/* Next index to read a byte from PqGSSResultBuffer */
+#define PqGSSResultNext \
+	(PgCurrentConnectionSecurityStateRef()->gss_result_next)
 
-static uint32 PqGSSMaxPktSize;	/* Maximum size we can encrypt and fit the
-								 * results into our output buffer */
+/* Maximum size we can encrypt and fit the results into our output buffer */
+#define PqGSSMaxPktSize \
+	(PgCurrentConnectionSecurityStateRef()->gss_max_packet_size)
 
 
 /*
@@ -515,7 +531,7 @@ secure_open_gssapi(Port *port)
 	 * Allocate subsidiary Port data for GSSAPI operations.
 	 */
 	port->gss = (pg_gssinfo *)
-		MemoryContextAllocZero(TopMemoryContext, sizeof(pg_gssinfo));
+		MemoryContextAllocZero(GetMemoryChunkContext(port), sizeof(pg_gssinfo));
 
 	delegated_creds = GSS_C_NO_CREDENTIAL;
 	port->gss->delegated_creds = false;

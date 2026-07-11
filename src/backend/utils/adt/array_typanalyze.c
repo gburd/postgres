@@ -17,6 +17,7 @@
 #include "access/detoast.h"
 #include "commands/vacuum.h"
 #include "utils/array.h"
+#include "utils/backend_runtime.h"
 #include "utils/datum.h"
 #include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
@@ -62,7 +63,7 @@ typedef struct
  * currently need to be re-entrant, so avoiding this is not worth the extra
  * notational cruft that would be needed.
  */
-static ArrayAnalyzeExtraData *array_extra_data;
+#define array_extra_data (*(ArrayAnalyzeExtraData **) PgCurrentArrayAnalyzeExtraDataRef())
 
 /* A hash table entry for the Lossy Counting algorithm */
 typedef struct

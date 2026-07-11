@@ -33,7 +33,7 @@
 #include "utils/timestamp.h"
 #include "utils/wait_event.h"
 
-WalRcvData *WalRcv = NULL;
+PG_GLOBAL_SHMEM WalRcvData *WalRcv = NULL;
 
 static void WalRcvShmemRequest(void *arg);
 static void WalRcvShmemInit(void *arg);
@@ -194,6 +194,8 @@ ShutdownWalRcv(void)
 {
 	WalRcvData *walrcv = WalRcv;
 	pid_t		walrcvpid = 0;
+	ProcNumber	walrcv_proc = INVALID_PROC_NUMBER;
+	bool		walrcv_threaded = false;
 	bool		stopped = false;
 
 	/*
@@ -219,6 +221,8 @@ ShutdownWalRcv(void)
 			pg_fallthrough;
 		case WALRCV_STOPPING:
 			walrcvpid = walrcv->pid;
+			walrcv_proc = walrcv->procno;
+			walrcv_threaded = walrcv->threaded;
 			break;
 	}
 	SpinLockRelease(&walrcv->mutex);
@@ -228,9 +232,16 @@ ShutdownWalRcv(void)
 		ConditionVariableBroadcast(&walrcv->walRcvStoppedCV);
 
 	/*
-	 * Signal walreceiver process if it was still running.
+	 * Signal walreceiver process if it was still running. A thread-backed WAL
+	 * receiver shares the postmaster PID, so wake its latch and let it observe
+	 * WALRCV_STOPPING instead of sending SIGTERM to the whole server runtime.
 	 */
-	if (walrcvpid != 0)
+	if (walrcv_threaded)
+	{
+		if (walrcv_proc != INVALID_PROC_NUMBER)
+			SetLatch(&GetPGProcByNumber(walrcv_proc)->procLatch);
+	}
+	else if (walrcvpid != 0)
 		kill(walrcvpid, SIGTERM);
 
 	/*

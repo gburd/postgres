@@ -67,6 +67,9 @@ extern void ProcNumberGetTransactionIds(int procNumber, TransactionId *xid,
 										bool *overflowed);
 extern PGPROC *BackendPidGetProc(int pid);
 extern PGPROC *BackendPidGetProcWithLock(int pid);
+extern PGPROC *BackendSignalPidGetProc(int pid);
+extern PGPROC *BackendSignalPidGetProcWithLock(int pid);
+extern bool BackendSignalPidIsActive(int pid);
 extern int	BackendXidGetPid(TransactionId xid);
 extern bool IsBackendPid(int pid);
 

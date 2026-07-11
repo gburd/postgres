@@ -18,17 +18,61 @@
 #if defined(__darwin__)
 #include <crt_externs.h>
 #endif
+#ifndef WIN32
+#include <pthread.h>
+#endif
 
 #include "miscadmin.h"
 #include "utils/guc.h"
 #include "utils/ps_status.h"
 
-#if !defined(WIN32)
-extern char **environ;
+/*
+ * The process title lives in a single per-process area (the argv/environ
+ * region on PS_USE_CLOBBER_ARGV platforms, or the setproctitle string), and
+ * the length bookkeeping (ps_buffer_cur_len, ps_buffer_nosuffix_len,
+ * last_status_len) tracks the one shared ps_buffer.  In multithreaded mode
+ * many backend fibers share that one process and would otherwise race the
+ * read-modify-write of that shared state (tripping the strlen == cur_len
+ * asserts, and corrupting the visible title).  Serialize every update and
+ * readback with a process-global mutex, active only in multithreaded mode so
+ * process mode is byte-for-byte unchanged.
+ *
+ * The guarded critical sections are pure memory operations (snprintf/memcpy/
+ * MemSet plus setproctitle); they never yield, palloc, ereport, or check for
+ * interrupts, so holding this short non-recursive mutex across them is safe on
+ * a cooperative fiber carrier (it is never held across a yield point).
+ */
+#ifndef WIN32
+static PG_GLOBAL_RUNTIME pthread_mutex_t ps_status_mutex = PTHREAD_MUTEX_INITIALIZER;
 #endif
 
-/* GUC variable */
-bool		update_process_title = DEFAULT_UPDATE_PROCESS_TITLE;
+static inline bool
+ps_status_lock(void)
+{
+#ifndef WIN32
+	if (!multithreaded)
+		return false;
+	pthread_mutex_lock(&ps_status_mutex);
+	return true;
+#else
+	return false;
+#endif
+}
+
+static inline void
+ps_status_unlock(bool locked)
+{
+#ifndef WIN32
+	if (locked)
+		pthread_mutex_unlock(&ps_status_mutex);
+#else
+	(void) locked;
+#endif
+}
+
+#if !defined(WIN32)
+extern PG_GLOBAL_RUNTIME char **environ;
+#endif
 
 /*
  * Alternative ways of updating ps display:
@@ -74,31 +118,31 @@ bool		update_process_title = DEFAULT_UPDATE_PROCESS_TITLE;
 #ifndef PS_USE_CLOBBER_ARGV
 /* all but one option need a buffer to write their ps line in */
 #define PS_BUFFER_SIZE 256
-static char ps_buffer[PS_BUFFER_SIZE];
-static const size_t ps_buffer_size = PS_BUFFER_SIZE;
+static PG_GLOBAL_RUNTIME char ps_buffer[PS_BUFFER_SIZE];
+static PG_GLOBAL_IMMUTABLE const size_t ps_buffer_size = PS_BUFFER_SIZE;
 #else							/* PS_USE_CLOBBER_ARGV */
-static char *ps_buffer;			/* will point to argv area */
-static size_t ps_buffer_size;	/* space determined at run time */
-static size_t last_status_len;	/* use to minimize length of clobber */
+static PG_GLOBAL_RUNTIME char *ps_buffer;	/* will point to argv area */
+static PG_GLOBAL_RUNTIME size_t ps_buffer_size; /* space determined at run time */
+static PG_GLOBAL_RUNTIME size_t last_status_len;	/* use to minimize length of clobber */
 #endif							/* PS_USE_CLOBBER_ARGV */
 
-static size_t ps_buffer_cur_len;	/* nominal strlen(ps_buffer) */
+static PG_GLOBAL_RUNTIME size_t ps_buffer_cur_len;	/* nominal strlen(ps_buffer) */
 
-static size_t ps_buffer_fixed_size; /* size of the constant prefix */
+static PG_GLOBAL_RUNTIME size_t ps_buffer_fixed_size;	/* size of the constant prefix */
 
 /*
  * Length of ps_buffer before the suffix was appended to the end, or 0 if we
  * didn't set a suffix.
  */
-static size_t ps_buffer_nosuffix_len;
+static PG_GLOBAL_RUNTIME size_t ps_buffer_nosuffix_len;
 
 static void flush_ps_display(void);
 
 #endif							/* not PS_USE_NONE */
 
 /* save the original argv[] location here */
-static int	save_argc;
-static char **save_argv;
+static PG_GLOBAL_RUNTIME int save_argc;
+static PG_GLOBAL_RUNTIME char **save_argv;
 
 /*
  * Valgrind seems not to consider the global "environ" variable as a valid
@@ -107,8 +151,8 @@ static char **save_argv;
  * pointer.  (Oddly, this doesn't seem to be a problem for "argv".)
  */
 #if defined(PS_USE_CLOBBER_ARGV) && defined(USE_VALGRIND)
-extern char **ps_status_new_environ;
-char	  **ps_status_new_environ;
+extern PG_GLOBAL_RUNTIME char **ps_status_new_environ;
+PG_GLOBAL_RUNTIME char **ps_status_new_environ;
 #endif
 
 
@@ -329,18 +373,24 @@ init_ps_display(const char *fixed_part)
 
 	if (*cluster_name == '\0')
 	{
+		bool		locked = ps_status_lock();
+
 		snprintf(ps_buffer, ps_buffer_size,
 				 PROGRAM_NAME_PREFIX "%s ",
 				 fixed_part);
+		ps_buffer_cur_len = ps_buffer_fixed_size = strlen(ps_buffer);
+		ps_status_unlock(locked);
 	}
 	else
 	{
+		bool		locked = ps_status_lock();
+
 		snprintf(ps_buffer, ps_buffer_size,
 				 PROGRAM_NAME_PREFIX "%s: %s ",
 				 cluster_name, fixed_part);
+		ps_buffer_cur_len = ps_buffer_fixed_size = strlen(ps_buffer);
+		ps_status_unlock(locked);
 	}
-
-	ps_buffer_cur_len = ps_buffer_fixed_size = strlen(ps_buffer);
 
 	/*
 	 * On the first run, force the update.
@@ -389,10 +439,13 @@ set_ps_display_suffix(const char *suffix)
 {
 #ifndef PS_USE_NONE
 	size_t		len;
+	bool		locked;
 
 	/* first, check if we need to update the process title */
 	if (!update_ps_display_precheck())
 		return;
+
+	locked = ps_status_lock();
 
 	/* if there's already a suffix, overwrite it */
 	if (ps_buffer_nosuffix_len > 0)
@@ -429,6 +482,8 @@ set_ps_display_suffix(const char *suffix)
 
 	/* and set the new title */
 	flush_ps_display();
+
+	ps_status_unlock(locked);
 #endif							/* not PS_USE_NONE */
 }
 
@@ -440,13 +495,20 @@ void
 set_ps_display_remove_suffix(void)
 {
 #ifndef PS_USE_NONE
+	bool		locked;
+
 	/* first, check if we need to update the process title */
 	if (!update_ps_display_precheck())
 		return;
 
+	locked = ps_status_lock();
+
 	/* check we added a suffix */
 	if (ps_buffer_nosuffix_len == 0)
+	{
+		ps_status_unlock(locked);
 		return;					/* no suffix */
+	}
 
 	/* remove the suffix from ps_buffer */
 	ps_buffer[ps_buffer_nosuffix_len] = '\0';
@@ -457,6 +519,8 @@ set_ps_display_remove_suffix(void)
 
 	/* and set the new title */
 	flush_ps_display();
+
+	ps_status_unlock(locked);
 #endif							/* not PS_USE_NONE */
 }
 
@@ -472,9 +536,14 @@ set_ps_display_with_len(const char *activity, size_t len)
 	Assert(strlen(activity) == len);
 
 #ifndef PS_USE_NONE
+	{
+	bool		locked;
+
 	/* first, check if we need to update the process title */
 	if (!update_ps_display_precheck())
 		return;
+
+	locked = ps_status_lock();
 
 	/* wipe out any suffix when the title is completely changed */
 	ps_buffer_nosuffix_len = 0;
@@ -497,6 +566,9 @@ set_ps_display_with_len(const char *activity, size_t len)
 
 	/* Transmit new setting to kernel, if necessary */
 	flush_ps_display();
+
+	ps_status_unlock(locked);
+	}
 #endif							/* not PS_USE_NONE */
 }
 
@@ -558,9 +630,15 @@ get_ps_display(int *displen)
 #endif
 
 #ifndef PS_USE_NONE
-	*displen = (int) (ps_buffer_cur_len - ps_buffer_fixed_size);
+	{
+		bool		locked = ps_status_lock();
+		const char *ret;
 
-	return ps_buffer + ps_buffer_fixed_size;
+		*displen = (int) (ps_buffer_cur_len - ps_buffer_fixed_size);
+		ret = ps_buffer + ps_buffer_fixed_size;
+		ps_status_unlock(locked);
+		return ret;
+	}
 #else
 	*displen = 0;
 	return "";

@@ -55,9 +55,6 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
-/* GUC parameter */
-int			constraint_exclusion = CONSTRAINT_EXCLUSION_PARTITION;
-
 typedef struct NotnullHashEntry
 {
 	Oid			relid;			/* OID of the relation */

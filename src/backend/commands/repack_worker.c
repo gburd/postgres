@@ -28,6 +28,8 @@
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
 #include "utils/guc.h"
+#include "utils/backend_runtime.h"
+#include "utils/global_lifetime.h"
 #include "utils/memutils.h"
 
 #define PGREPACK_PLUGIN   "pgrepack"
@@ -41,17 +43,21 @@ static bool decode_concurrent_changes(LogicalDecodingContext *ctx,
 									  DecodingWorkerShared *shared);
 
 /* Is this process a REPACK worker? */
-static bool am_repack_worker = false;
+#define am_repack_worker \
+	(PgCurrentRepackState()->am_repack_worker)
 
 /* The WAL segment being decoded. */
-static XLogSegNo repack_current_segment = 0;
+#define repack_current_segment \
+	(PgCurrentRepackState()->current_segment)
 
 /*
  * Keep track of the table we're processing, to skip logical decoding of data
  * from other relations.
  */
-static RelFileLocator repacked_rel_locator = {.relNumber = InvalidOid};
-static RelFileLocator repacked_rel_toast_locator = {.relNumber = InvalidOid};
+#define repacked_rel_locator \
+	(PgCurrentRepackState()->repacked_rel_locator)
+#define repacked_rel_toast_locator \
+	(PgCurrentRepackState()->repacked_rel_toast_locator)
 
 
 /* REPACK decoding worker entry point */

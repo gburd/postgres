@@ -33,6 +33,7 @@
 #include "funcapi.h"
 #include "regex/regex.h"
 #include "utils/array.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/varlena.h"
@@ -91,26 +92,15 @@ typedef struct regexp_matches_ctx
  */
 
 /* this is the maximum number of cached regular expressions */
-#ifndef MAX_CACHED_RES
-#define MAX_CACHED_RES	32
-#endif
-
-/* A parent memory context for regular expressions. */
-static MemoryContext RegexpCacheMemoryContext;
+#define MAX_CACHED_RES PG_SESSION_MAX_CACHED_REGEX
 
 /* this structure describes one cached regular expression */
-typedef struct cached_re_str
-{
-	MemoryContext cre_context;	/* memory context for this regexp */
-	char	   *cre_pat;		/* original RE (not null terminated!) */
-	int			cre_pat_len;	/* length of original RE, in bytes */
-	int			cre_flags;		/* compile flags: extended,icase etc */
-	Oid			cre_collation;	/* collation to use */
-	regex_t		cre_re;			/* the compiled regular expression */
-} cached_re_str;
+typedef PgSessionRegexCachedEntry cached_re_str;
 
-static int	num_res = 0;		/* # of cached re's */
-static cached_re_str re_array[MAX_CACHED_RES];	/* cached re's */
+/* A parent memory context for regular expressions. */
+#define RegexpCacheMemoryContext (*PgCurrentRegexpCacheMemoryContextRef())
+#define num_res (*PgCurrentRegexpNumCachedResRef())
+#define re_array (PgCurrentRegexpCachedResArray())
 
 
 /* Local functions */

@@ -29,7 +29,11 @@ typedef struct EventTriggerData
 	CommandTag	tag;
 } EventTriggerData;
 
-extern PGDLLIMPORT bool event_triggers;
+#ifndef PgCurrentEventTriggersRef
+extern bool *PgCurrentEventTriggersRef(void);
+#endif
+
+#define event_triggers (*PgCurrentEventTriggersRef())
 
 /*
  * Reasons for relation rewrites.
@@ -66,6 +70,7 @@ extern void EventTriggerOnLogin(void);
 
 extern bool EventTriggerBeginCompleteQuery(void);
 extern void EventTriggerEndCompleteQuery(void);
+extern void EventTriggerResetQueryStateStack(struct EventTriggerQueryState **statep);
 extern bool trackDroppedObjectsNeeded(void);
 extern void EventTriggerSQLDropAddObject(const ObjectAddress *object,
 										 bool original, bool normal);

@@ -21,9 +21,6 @@
 #include "utils/pgstat_internal.h"
 
 
-PgStat_BgWriterStats PendingBgWriterStats = {0};
-
-
 /*
  * Report bgwriter and IO statistics
  */
@@ -73,7 +70,7 @@ pgstat_fetch_stat_bgwriter(void)
 {
 	pgstat_snapshot_fixed(PGSTAT_KIND_BGWRITER);
 
-	return &pgStatLocal.snapshot.bgwriter;
+	return &pgStatSnapshot.bgwriter;
 }
 
 void
@@ -106,7 +103,7 @@ pgstat_bgwriter_snapshot_cb(void)
 	PgStat_BgWriterStats *reset_offset = &stats_shmem->reset_offset;
 	PgStat_BgWriterStats reset;
 
-	pgstat_copy_changecounted_stats(&pgStatLocal.snapshot.bgwriter,
+	pgstat_copy_changecounted_stats(&pgStatSnapshot.bgwriter,
 									&stats_shmem->stats,
 									sizeof(stats_shmem->stats),
 									&stats_shmem->changecount);
@@ -116,7 +113,7 @@ pgstat_bgwriter_snapshot_cb(void)
 	LWLockRelease(&stats_shmem->lock);
 
 	/* compensate by reset offsets */
-#define BGWRITER_COMP(fld) pgStatLocal.snapshot.bgwriter.fld -= reset.fld;
+#define BGWRITER_COMP(fld) pgStatSnapshot.bgwriter.fld -= reset.fld;
 	BGWRITER_COMP(buf_written_clean);
 	BGWRITER_COMP(maxwritten_clean);
 	BGWRITER_COMP(buf_alloc);

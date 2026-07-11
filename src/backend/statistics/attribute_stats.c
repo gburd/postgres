@@ -58,7 +58,7 @@ enum attribute_stats_argnum
 	NUM_ATTRIBUTE_STATS_ARGS
 };
 
-static struct StatsArgInfo attarginfo[] =
+static PG_GLOBAL_IMMUTABLE struct StatsArgInfo attarginfo[] =
 {
 	[ATTRELSCHEMA_ARG] = {"schemaname", TEXTOID},
 	[ATTRELNAME_ARG] = {"relname", TEXTOID},
@@ -95,7 +95,7 @@ enum clear_attribute_stats_argnum
 	C_NUM_ATTRIBUTE_STATS_ARGS
 };
 
-static struct StatsArgInfo cleararginfo[] =
+static PG_GLOBAL_IMMUTABLE struct StatsArgInfo cleararginfo[] =
 {
 	[C_ATTRELSCHEMA_ARG] = {"schemaname", TEXTOID},
 	[C_ATTRELNAME_ARG] = {"relname", TEXTOID},

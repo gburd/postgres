@@ -14,6 +14,7 @@ include $(top_builddir)/src/Makefile.global
 
 OBJS = \
 	appendinfo.o \
+	backend_runtime_optimizer.o \
 	clauses.o \
 	extendplan.o \
 	inherit.o \

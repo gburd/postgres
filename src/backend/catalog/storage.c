@@ -32,12 +32,15 @@
 #include "storage/freespace.h"
 #include "storage/proc.h"
 #include "storage/smgr.h"
+#include "utils/backend_runtime.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-/* GUC variables */
-int			wal_skip_threshold = 2048;	/* in kilobytes */
+/*
+ * GUC state now lives in PgSessionAccessWalGUCState.  The public name remains
+ * available through a compatibility macro in catalog/storage.h.
+ */
 
 /*
  * We keep a list of all relations (represented as RelFileLocator values)
@@ -74,8 +77,9 @@ typedef struct PendingRelSync
 	bool		is_truncated;	/* Has the file experienced truncation? */
 } PendingRelSync;
 
-static PendingRelDelete *pendingDeletes = NULL; /* head of linked list */
-static HTAB *pendingSyncHash = NULL;
+/* Head of linked list. */
+#define pendingDeletes (*PgCurrentPendingRelDeletesRef())
+#define pendingSyncHash (*PgCurrentPendingSyncHashRef())
 
 
 /*

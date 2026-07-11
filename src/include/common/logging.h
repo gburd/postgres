@@ -10,6 +10,8 @@
 #ifndef COMMON_LOGGING_H
 #define COMMON_LOGGING_H
 
+#include "utils/global_lifetime.h"
+
 /*
  * Log levels are informational only.  They do not affect program flow.
  */
@@ -51,7 +53,7 @@ enum pg_log_level
 /*
  * __pg_log_level is the minimum log level that will actually be shown.
  */
-extern enum pg_log_level __pg_log_level;
+extern PG_GLOBAL_RUNTIME enum pg_log_level __pg_log_level;
 
 /*
  * A log message can have several parts.  The primary message is required,

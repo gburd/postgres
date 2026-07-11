@@ -269,22 +269,24 @@ pg_log_backend_memory_contexts(PG_FUNCTION_ARGS)
 	int			pid = PG_GETARG_INT32(0);
 	PGPROC	   *proc;
 	ProcNumber	procNumber = INVALID_PROC_NUMBER;
+	pid_t		signal_pid;
 
 	/*
 	 * See if the process with given pid is a backend or an auxiliary process.
 	 */
-	proc = BackendPidGetProc(pid);
+	proc = BackendSignalPidGetProc(pid);
 	if (proc == NULL)
-		proc = AuxiliaryPidGetProc(pid);
+		proc = AuxiliarySignalPidGetProc(pid);
 
 	/*
-	 * BackendPidGetProc() and AuxiliaryPidGetProc() return NULL if the pid
-	 * isn't valid; but by the time we reach kill(), a process for which we
-	 * get a valid proc here might have terminated on its own.  There's no way
-	 * to acquire a lock on an arbitrary process to prevent that. But since
-	 * this mechanism is usually used to debug a backend or an auxiliary
-	 * process running and consuming lots of memory, that it might end on its
-	 * own first and its memory contexts are not logged is not a problem.
+	 * BackendSignalPidGetProc() and AuxiliarySignalPidGetProc() return NULL
+	 * if the pid isn't valid; but by the time we reach kill(), a process for
+	 * which we get a valid proc here might have terminated on its own.
+	 * There's no way to acquire a lock on an arbitrary process to prevent
+	 * that. But since this mechanism is usually used to debug a backend or an
+	 * auxiliary process running and consuming lots of memory, that it might
+	 * end on its own first and its memory contexts are not logged is not a
+	 * problem.
 	 */
 	if (proc == NULL)
 	{
@@ -298,7 +300,8 @@ pg_log_backend_memory_contexts(PG_FUNCTION_ARGS)
 	}
 
 	procNumber = GetNumberFromPGProc(proc);
-	if (SendProcSignal(pid, PROCSIG_LOG_MEMORY_CONTEXT, procNumber) < 0)
+	signal_pid = proc->pid;
+	if (SendProcSignal(signal_pid, PROCSIG_LOG_MEMORY_CONTEXT, procNumber) < 0)
 	{
 		/* Again, just a warning to allow loops */
 		ereport(WARNING,

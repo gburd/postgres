@@ -96,10 +96,10 @@ TimestampDifferenceMicroseconds(TimestampTz start_time,
 }
 
 /* Set at postmaster start */
-extern PGDLLIMPORT TimestampTz PgStartTime;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME TimestampTz PgStartTime;
 
 /* Set at configuration reload */
-extern PGDLLIMPORT TimestampTz PgReloadTime;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME TimestampTz PgReloadTime;
 
 
 /* Internal routines (not fmgr-callable) */

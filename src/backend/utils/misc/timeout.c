@@ -12,45 +12,33 @@
  *
  *-------------------------------------------------------------------------
  */
+#define BACKEND_RUNTIME_NO_INLINE_BUCKET_ACCESSORS
 #include "postgres.h"
 
+#include <limits.h>
 #include <sys/time.h>
 
 #include "miscadmin.h"
 #include "storage/latch.h"
+#include "utils/backend_runtime.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
+#include "../init/backend_runtime_internal.h"
 
-
-/* Data about any one timeout reason */
-typedef struct timeout_params
-{
-	TimeoutId	index;			/* identifier of timeout reason */
-
-	/* volatile because these may be changed from the signal handler */
-	volatile bool active;		/* true if timeout is in active_timeouts[] */
-	volatile bool indicator;	/* true if timeout has occurred */
-
-	/* callback function for timeout, or NULL if timeout not registered */
-	timeout_handler_proc timeout_handler;
-
-	TimestampTz start_time;		/* time that timeout was last activated */
-	TimestampTz fin_time;		/* time it is, or was last, due to fire */
-	int			interval_in_ms; /* time between firings, or 0 if just once */
-} timeout_params;
 
 /*
  * List of possible timeout reasons in the order of enum TimeoutId.
  */
-static timeout_params all_timeouts[MAX_TIMEOUTS];
-static bool all_timeouts_initialized = false;
+#define all_timeouts (PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->all_timeouts)
+#define all_timeouts_initialized \
+	(PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->all_timeouts_initialized)
 
 /*
  * List of active timeouts ordered by their fin_time and priority.
  * This list is subject to change by the interrupt handler, so it's volatile.
  */
-static volatile int num_active_timeouts = 0;
-static timeout_params *volatile active_timeouts[MAX_TIMEOUTS];
+#define num_active_timeouts (PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->num_active_timeouts)
+#define active_timeouts (PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->active_timeouts)
 
 /*
  * Flag controlling whether the signal handler is allowed to do anything.
@@ -64,7 +52,7 @@ static timeout_params *volatile active_timeouts[MAX_TIMEOUTS];
  *
  * We leave this "false" when we're not expecting interrupts, just in case.
  */
-static volatile sig_atomic_t alarm_enabled = false;
+#define alarm_enabled (PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->alarm_enabled)
 
 #define disable_alarm() (alarm_enabled = false)
 #define enable_alarm()	(alarm_enabled = true)
@@ -75,8 +63,20 @@ static volatile sig_atomic_t alarm_enabled = false;
  * Note that the signal handler will unconditionally reset signal_pending to
  * false, so that can change asynchronously even when alarm_enabled is false.
  */
-static volatile sig_atomic_t signal_pending = false;
-static volatile TimestampTz signal_due_at = 0;
+#define signal_pending (PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->signal_pending)
+#define signal_due_at (PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->signal_due_at)
+#define firing_timeout_target \
+	(PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->firing_timeout_target)
+#define firing_timeout_execution \
+	(PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->firing_timeout_execution)
+#define timeout_signal_delivery \
+	(PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->signal_delivery)
+#define timeout_generation \
+	(PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, PgCurrentTimeoutState)->generation)
+
+static void InitializeTimeoutState(void);
+static bool fire_due_timeouts(TimestampTz now);
+static void advance_timeout_generation(void);
 
 
 /*****************************************************************************
@@ -130,6 +130,14 @@ insert_timeout(TimeoutId id, int index)
 	num_active_timeouts++;
 }
 
+static void
+advance_timeout_generation(void)
+{
+	timeout_generation++;
+	if (unlikely(timeout_generation == 0))
+		timeout_generation = 1;
+}
+
 /*
  * Remove the index'th element from the timeout list.
  */
@@ -156,7 +164,8 @@ remove_timeout_index(int index)
  */
 static void
 enable_timeout(TimeoutId id, TimestampTz now, TimestampTz fin_time,
-			   int interval_in_ms)
+			   int interval_in_ms, PgBackend *target_backend,
+			   PgExecution *target_execution)
 {
 	int			i;
 
@@ -177,7 +186,7 @@ enable_timeout(TimeoutId id, TimestampTz now, TimestampTz fin_time,
 	 */
 	for (i = 0; i < num_active_timeouts; i++)
 	{
-		timeout_params *old_timeout = active_timeouts[i];
+		PgTimeoutParams *old_timeout = active_timeouts[i];
 
 		if (fin_time < old_timeout->fin_time)
 			break;
@@ -189,11 +198,14 @@ enable_timeout(TimeoutId id, TimestampTz now, TimestampTz fin_time,
 	 * Mark the timeout active, and insert it into the active list.
 	 */
 	all_timeouts[id].indicator = false;
+	all_timeouts[id].target_backend = target_backend;
+	all_timeouts[id].target_execution = target_execution;
 	all_timeouts[id].start_time = now;
 	all_timeouts[id].fin_time = fin_time;
 	all_timeouts[id].interval_in_ms = interval_in_ms;
 
 	insert_timeout(id, i);
+	advance_timeout_generation();
 }
 
 /*
@@ -237,6 +249,15 @@ schedule_alarm(TimestampTz now)
 		 * kernel drops a timeout request for some reason.
 		 */
 		nearest_timeout = active_timeouts[0]->fin_time;
+
+		if (!timeout_signal_delivery)
+		{
+			enable_alarm();
+			signal_due_at = nearest_timeout;
+			signal_pending = true;
+			return;
+		}
+
 		if (now > nearest_timeout)
 		{
 			signal_pending = false;
@@ -349,6 +370,83 @@ schedule_alarm(TimestampTz now)
 	}
 }
 
+/*
+ * Fire pending timeout handlers whose due time has arrived.
+ *
+ * The caller must have disabled alarm delivery before calling this.  Signal
+ * and logical timeout delivery share this path so both routes keep identical
+ * firing order, indicator, and repeating-timeout behavior.
+ */
+static bool
+fire_due_timeouts(TimestampTz now)
+{
+	bool		fired = false;
+
+	/* While the first pending timeout has been reached ... */
+	while (num_active_timeouts > 0 &&
+		   now >= active_timeouts[0]->fin_time)
+	{
+		PgTimeoutParams *this_timeout = active_timeouts[0];
+		PgBackend  *save_firing_timeout_target;
+		PgExecution *save_firing_timeout_execution;
+
+		/* Remove it from the active list */
+		remove_timeout_index(0);
+
+		/* Mark it as fired */
+		this_timeout->indicator = true;
+		fired = true;
+
+		/* And call its handler function */
+		save_firing_timeout_target = firing_timeout_target;
+		save_firing_timeout_execution = firing_timeout_execution;
+		firing_timeout_target = this_timeout->target_backend;
+		firing_timeout_execution = this_timeout->target_execution;
+		this_timeout->timeout_handler();
+		firing_timeout_target = save_firing_timeout_target;
+		firing_timeout_execution = save_firing_timeout_execution;
+
+		/* If it should fire repeatedly, re-enable it. */
+		if (this_timeout->interval_in_ms > 0)
+		{
+			TimestampTz new_fin_time;
+
+			/*
+			 * To guard against drift, schedule the next instance of the
+			 * timeout based on the intended firing time rather than the
+			 * actual firing time. But if the timeout was so late that we
+			 * missed an entire cycle, fall back to scheduling based on the
+			 * actual firing time.
+			 */
+			new_fin_time =
+				TimestampTzPlusMilliseconds(this_timeout->fin_time,
+											this_timeout->interval_in_ms);
+			if (new_fin_time < now)
+				new_fin_time =
+					TimestampTzPlusMilliseconds(now,
+												this_timeout->interval_in_ms);
+			enable_timeout(this_timeout->index, now, new_fin_time,
+						   this_timeout->interval_in_ms,
+						   this_timeout->target_backend,
+						   this_timeout->target_execution);
+		}
+
+		/*
+		 * The handler might not take negligible time (CheckDeadLock for
+		 * instance isn't too cheap), so let's update our idea of "now" after
+		 * each one.
+		 */
+		now = GetCurrentTimestamp();
+	}
+
+	/* Done firing timeouts, so reschedule next interrupt if any */
+	schedule_alarm(now);
+	if (fired)
+		advance_timeout_generation();
+
+	return fired;
+}
+
 
 /*****************************************************************************
  * Signal handler
@@ -395,58 +493,7 @@ handle_sig_alarm(SIGNAL_ARGS)
 		disable_alarm();
 
 		if (num_active_timeouts > 0)
-		{
-			TimestampTz now = GetCurrentTimestamp();
-
-			/* While the first pending timeout has been reached ... */
-			while (num_active_timeouts > 0 &&
-				   now >= active_timeouts[0]->fin_time)
-			{
-				timeout_params *this_timeout = active_timeouts[0];
-
-				/* Remove it from the active list */
-				remove_timeout_index(0);
-
-				/* Mark it as fired */
-				this_timeout->indicator = true;
-
-				/* And call its handler function */
-				this_timeout->timeout_handler();
-
-				/* If it should fire repeatedly, re-enable it. */
-				if (this_timeout->interval_in_ms > 0)
-				{
-					TimestampTz new_fin_time;
-
-					/*
-					 * To guard against drift, schedule the next instance of
-					 * the timeout based on the intended firing time rather
-					 * than the actual firing time. But if the timeout was so
-					 * late that we missed an entire cycle, fall back to
-					 * scheduling based on the actual firing time.
-					 */
-					new_fin_time =
-						TimestampTzPlusMilliseconds(this_timeout->fin_time,
-													this_timeout->interval_in_ms);
-					if (new_fin_time < now)
-						new_fin_time =
-							TimestampTzPlusMilliseconds(now,
-														this_timeout->interval_in_ms);
-					enable_timeout(this_timeout->index, now, new_fin_time,
-								   this_timeout->interval_in_ms);
-				}
-
-				/*
-				 * The handler might not take negligible time (CheckDeadLock
-				 * for instance isn't too cheap), so let's update our idea of
-				 * "now" after each one.
-				 */
-				now = GetCurrentTimestamp();
-			}
-
-			/* Done firing timeouts, so reschedule next interrupt if any */
-			schedule_alarm(now);
-		}
+			(void) fire_due_timeouts(GetCurrentTimestamp());
 	}
 
 	RESUME_INTERRUPTS();
@@ -458,16 +505,10 @@ handle_sig_alarm(SIGNAL_ARGS)
  *****************************************************************************/
 
 /*
- * Initialize timeout module.
- *
- * This must be called in every process that wants to use timeouts.
- *
- * If the process was forked from another one that was also using this
- * module, be sure to call this before re-enabling signals; else handlers
- * meant to run in the parent process might get invoked in this one.
+ * Initialize backend-local timeout module state.
  */
-void
-InitializeTimeouts(void)
+static void
+InitializeTimeoutState(void)
 {
 	int			i;
 
@@ -475,6 +516,10 @@ InitializeTimeouts(void)
 	disable_alarm();
 
 	num_active_timeouts = 0;
+	signal_pending = false;
+	signal_due_at = 0;
+	firing_timeout_target = NULL;
+	firing_timeout_execution = NULL;
 
 	for (i = 0; i < MAX_TIMEOUTS; i++)
 	{
@@ -482,15 +527,57 @@ InitializeTimeouts(void)
 		all_timeouts[i].active = false;
 		all_timeouts[i].indicator = false;
 		all_timeouts[i].timeout_handler = NULL;
+		all_timeouts[i].target_backend = NULL;
+		all_timeouts[i].target_execution = NULL;
 		all_timeouts[i].start_time = 0;
 		all_timeouts[i].fin_time = 0;
 		all_timeouts[i].interval_in_ms = 0;
 	}
 
 	all_timeouts_initialized = true;
+	advance_timeout_generation();
+}
+
+/*
+ * Initialize timeout state and install process SIGALRM delivery.
+ *
+ * This must be called in every process that wants to use signal-backed
+ * timeouts.  If the process was forked from another one that was also using
+ * this module, be sure to call this before re-enabling signals; else handlers
+ * meant to run in the parent process might get invoked in this one.
+ */
+void
+InitializeTimeouts(void)
+{
+	InitializeTimeoutState();
+	timeout_signal_delivery = true;
 
 	/* Now establish the signal handler */
 	pqsignal(SIGALRM, handle_sig_alarm);
+}
+
+/*
+ * Initialize timeout state for a logical backend that cannot install or share
+ * process SIGALRM delivery.
+ */
+void
+InitializeLogicalTimeouts(void)
+{
+	InitializeTimeoutState();
+	timeout_signal_delivery = false;
+}
+
+void
+PgBackendResetTimeoutClosedState(PgBackendTimeoutState *timeout)
+{
+	Assert(timeout != NULL);
+
+	/*
+	 * This is closed-logical-backend cleanup, not the normal timeout-disable
+	 * path.  A retained backend must not keep active timeout entries pointing
+	 * at stale PgBackend/PgExecution objects or old handler registrations.
+	 */
+	MemSet(timeout, 0, sizeof(*timeout));
 }
 
 /*
@@ -549,6 +636,73 @@ reschedule_timeouts(void)
 	/* Reschedule the interrupt, if any timeouts remain active. */
 	if (num_active_timeouts > 0)
 		schedule_alarm(GetCurrentTimestamp());
+	advance_timeout_generation();
+}
+
+PgBackend *
+get_firing_timeout_target_backend(void)
+{
+	return firing_timeout_target;
+}
+
+PgExecution *
+get_firing_timeout_target_execution(void)
+{
+	return firing_timeout_execution;
+}
+
+long
+get_logical_timeout_delay_ms(void)
+{
+	TimestampTz now;
+	long		delay_ms;
+
+	if (!all_timeouts_initialized || timeout_signal_delivery ||
+		num_active_timeouts <= 0 || !alarm_enabled)
+		return -1;
+
+	now = GetCurrentTimestamp();
+	if (now >= active_timeouts[0]->fin_time)
+		return 0;
+
+	delay_ms = TimestampDifferenceMilliseconds(now,
+											   active_timeouts[0]->fin_time);
+	if (delay_ms < 0)
+		return 0;
+	if (delay_ms > INT_MAX)
+		return INT_MAX;
+
+	return delay_ms;
+}
+
+bool
+process_due_logical_timeouts(void)
+{
+	bool		fired;
+
+	if (!all_timeouts_initialized || timeout_signal_delivery ||
+		num_active_timeouts <= 0 || !alarm_enabled)
+		return false;
+
+	if (GetCurrentTimestamp() < active_timeouts[0]->fin_time)
+		return false;
+
+	/*
+	 * Keep the same interrupt-holdoff rule as handle_sig_alarm().  Timeout
+	 * handlers should only set state for normal interrupt processing.
+	 */
+	HOLD_INTERRUPTS();
+
+	if (MyLatch != NULL)
+		SetLatch(MyLatch);
+
+	signal_pending = false;
+	disable_alarm();
+	fired = fire_due_timeouts(GetCurrentTimestamp());
+
+	RESUME_INTERRUPTS();
+
+	return fired;
 }
 
 /*
@@ -568,7 +722,7 @@ enable_timeout_after(TimeoutId id, int delay_ms)
 	/* Queue the timeout at the appropriate time. */
 	now = GetCurrentTimestamp();
 	fin_time = TimestampTzPlusMilliseconds(now, delay_ms);
-	enable_timeout(id, now, fin_time, 0);
+	enable_timeout(id, now, fin_time, 0, CurrentPgBackend, CurrentPgExecution);
 
 	/* Set the timer interrupt. */
 	schedule_alarm(now);
@@ -590,7 +744,8 @@ enable_timeout_every(TimeoutId id, TimestampTz fin_time, int delay_ms)
 
 	/* Queue the timeout at the appropriate time. */
 	now = GetCurrentTimestamp();
-	enable_timeout(id, now, fin_time, delay_ms);
+	enable_timeout(id, now, fin_time, delay_ms, CurrentPgBackend,
+				   CurrentPgExecution);
 
 	/* Set the timer interrupt. */
 	schedule_alarm(now);
@@ -613,7 +768,7 @@ enable_timeout_at(TimeoutId id, TimestampTz fin_time)
 
 	/* Queue the timeout at the appropriate time. */
 	now = GetCurrentTimestamp();
-	enable_timeout(id, now, fin_time, 0);
+	enable_timeout(id, now, fin_time, 0, CurrentPgBackend, CurrentPgExecution);
 
 	/* Set the timer interrupt. */
 	schedule_alarm(now);
@@ -648,17 +803,20 @@ enable_timeouts(const EnableTimeoutParams *timeouts, int count)
 			case TMPARAM_AFTER:
 				fin_time = TimestampTzPlusMilliseconds(now,
 													   timeouts[i].delay_ms);
-				enable_timeout(id, now, fin_time, 0);
+				enable_timeout(id, now, fin_time, 0, CurrentPgBackend,
+							   CurrentPgExecution);
 				break;
 
 			case TMPARAM_AT:
-				enable_timeout(id, now, timeouts[i].fin_time, 0);
+				enable_timeout(id, now, timeouts[i].fin_time, 0,
+							   CurrentPgBackend, CurrentPgExecution);
 				break;
 
 			case TMPARAM_EVERY:
 				fin_time = TimestampTzPlusMilliseconds(now,
 													   timeouts[i].delay_ms);
-				enable_timeout(id, now, fin_time, timeouts[i].delay_ms);
+				enable_timeout(id, now, fin_time, timeouts[i].delay_ms,
+							   CurrentPgBackend, CurrentPgExecution);
 				break;
 
 			default:
@@ -684,12 +842,17 @@ enable_timeouts(const EnableTimeoutParams *timeouts, int count)
 void
 disable_timeout(TimeoutId id, bool keep_indicator)
 {
+	bool		changed;
+
 	/* Assert request is sane */
 	Assert(all_timeouts_initialized);
 	Assert(all_timeouts[id].timeout_handler != NULL);
 
 	/* Disable timeout interrupts for safety. */
 	disable_alarm();
+
+	changed = all_timeouts[id].active ||
+		(!keep_indicator && all_timeouts[id].indicator);
 
 	/* Find the timeout and remove it from the active list. */
 	if (all_timeouts[id].active)
@@ -702,6 +865,8 @@ disable_timeout(TimeoutId id, bool keep_indicator)
 	/* Reschedule the interrupt, if any timeouts remain active. */
 	if (num_active_timeouts > 0)
 		schedule_alarm(GetCurrentTimestamp());
+	if (changed)
+		advance_timeout_generation();
 }
 
 /*
@@ -718,6 +883,7 @@ void
 disable_timeouts(const DisableTimeoutParams *timeouts, int count)
 {
 	int			i;
+	bool		changed = false;
 
 	Assert(all_timeouts_initialized);
 
@@ -731,6 +897,10 @@ disable_timeouts(const DisableTimeoutParams *timeouts, int count)
 
 		Assert(all_timeouts[id].timeout_handler != NULL);
 
+		if (all_timeouts[id].active ||
+			(!timeouts[i].keep_indicator && all_timeouts[id].indicator))
+			changed = true;
+
 		if (all_timeouts[id].active)
 			remove_timeout_index(find_active_timeout(id));
 
@@ -741,6 +911,8 @@ disable_timeouts(const DisableTimeoutParams *timeouts, int count)
 	/* Reschedule the interrupt, if any timeouts remain active. */
 	if (num_active_timeouts > 0)
 		schedule_alarm(GetCurrentTimestamp());
+	if (changed)
+		advance_timeout_generation();
 }
 
 /*
@@ -751,6 +923,7 @@ void
 disable_all_timeouts(bool keep_indicators)
 {
 	int			i;
+	bool		changed;
 
 	disable_alarm();
 
@@ -760,14 +933,19 @@ disable_all_timeouts(bool keep_indicators)
 	 * to enable it again shortly.  See comments in schedule_alarm().
 	 */
 
+	changed = num_active_timeouts > 0;
 	num_active_timeouts = 0;
 
 	for (i = 0; i < MAX_TIMEOUTS; i++)
 	{
+		if (!keep_indicators && all_timeouts[i].indicator)
+			changed = true;
 		all_timeouts[i].active = false;
 		if (!keep_indicators)
 			all_timeouts[i].indicator = false;
 	}
+	if (changed)
+		advance_timeout_generation();
 }
 
 /*
@@ -795,7 +973,10 @@ get_timeout_indicator(TimeoutId id, bool reset_indicator)
 	if (all_timeouts[id].indicator)
 	{
 		if (reset_indicator)
+		{
 			all_timeouts[id].indicator = false;
+			advance_timeout_generation();
+		}
 		return true;
 	}
 	return false;

@@ -26,86 +26,30 @@
 #include "storage/procnumber.h"
 #include "storage/procsignal.h"
 
-
-ProtocolVersion FrontendProtocol;
-
-volatile sig_atomic_t InterruptPending = false;
-volatile sig_atomic_t QueryCancelPending = false;
-volatile sig_atomic_t ProcDiePending = false;
-volatile sig_atomic_t CheckClientConnectionPending = false;
-volatile sig_atomic_t ClientConnectionLost = false;
-volatile sig_atomic_t IdleInTransactionSessionTimeoutPending = false;
-volatile sig_atomic_t TransactionTimeoutPending = false;
-volatile sig_atomic_t IdleSessionTimeoutPending = false;
-volatile sig_atomic_t ProcSignalBarrierPending = false;
-volatile sig_atomic_t LogMemoryContextPending = false;
-volatile sig_atomic_t IdleStatsUpdateTimeoutPending = false;
-volatile uint32 InterruptHoldoffCount = 0;
-volatile uint32 QueryCancelHoldoffCount = 0;
-volatile uint32 CritSectionCount = 0;
-volatile int ProcDieSenderPid = 0;
-volatile int ProcDieSenderUid = 0;
-
-int			MyProcPid;
-pg_time_t	MyStartTime;
-TimestampTz MyStartTimestamp;
-struct ClientSocket *MyClientSocket;
-struct Port *MyProcPort;
-uint8		MyCancelKey[MAX_CANCEL_KEY_LENGTH];
-int			MyCancelKeyLength = 0;
-int			MyPMChildSlot;
-
-/*
- * MyLatch points to the latch that should be used for signal handling by the
- * current process. It will either point to a process local latch if the
- * current process does not have a PGPROC entry in that moment, or to
- * PGPROC->procLatch if it has. Thus it can always be used in signal handlers,
- * without checking for its existence.
- */
-struct Latch *MyLatch;
-
 /*
  * DataDir is the absolute path to the top level of the PGDATA directory tree.
  * Except during early startup, this is also the server's working directory;
  * most code therefore can simply use relative paths and not reference DataDir
  * explicitly.
  */
-char	   *DataDir = NULL;
+PG_GLOBAL_RUNTIME char *DataDir = NULL;
 
 /*
  * Mode of the data directory.  The default is 0700 but it may be changed in
  * checkDataDir() to 0750 if the data directory actually has that mode.
  */
-int			data_directory_mode = PG_DIR_MODE_OWNER;
+PG_GLOBAL_RUNTIME int data_directory_mode = PG_DIR_MODE_OWNER;
 
-char		OutputFileName[MAXPGPATH];	/* debugging output file */
-
-char		my_exec_path[MAXPGPATH];	/* full path to my executable */
-char		pkglib_path[MAXPGPATH]; /* full path to lib directory */
+PG_GLOBAL_RUNTIME char my_exec_path[MAXPGPATH];	/* full path to my executable */
+PG_GLOBAL_RUNTIME char pkglib_path[MAXPGPATH]; /* full path to lib directory */
 
 #ifdef EXEC_BACKEND
-char		postgres_exec_path[MAXPGPATH];	/* full path to backend */
+PG_GLOBAL_RUNTIME char postgres_exec_path[MAXPGPATH];	/* full path to backend */
 
 /* note: currently this is not valid in backend processes */
 #endif
 
-ProcNumber	MyProcNumber = INVALID_PROC_NUMBER;
-
-ProcNumber	ParallelLeaderProcNumber = INVALID_PROC_NUMBER;
-
-Oid			MyDatabaseId = InvalidOid;
-
-Oid			MyDatabaseTableSpace = InvalidOid;
-
-bool		MyDatabaseHasLoginEventTriggers = false;
-
-/*
- * DatabasePath is the path (relative to DataDir) of my database's
- * primary directory, ie, its directory in the default tablespace.
- */
-char	   *DatabasePath = NULL;
-
-pid_t		PostmasterPid = 0;
+PG_GLOBAL_RUNTIME pid_t PostmasterPid = 0;
 
 /*
  * IsPostmasterEnvironment is true in a postmaster process and any postmaster
@@ -118,22 +62,10 @@ pid_t		PostmasterPid = 0;
  *
  * These are initialized for the bootstrap/standalone case.
  */
-bool		IsPostmasterEnvironment = false;
-bool		IsUnderPostmaster = false;
-bool		IsBinaryUpgrade = false;
+PG_GLOBAL_RUNTIME bool IsPostmasterEnvironment = false;
+PG_GLOBAL_RUNTIME bool IsBinaryUpgrade = false;
 
-bool		ExitOnAnyError = false;
-
-int			DateStyle = USE_ISO_DATES;
-int			DateOrder = DATEORDER_MDY;
-int			IntervalStyle = INTSTYLE_POSTGRES;
-
-bool		enableFsync = true;
-bool		allowSystemTableMods = false;
-int			work_mem = 4096;
-double		hash_mem_multiplier = 2.0;
-int			maintenance_work_mem = 65536;
-int			max_parallel_maintenance_workers = 2;
+PG_GLOBAL_RUNTIME bool enableFsync = true;
 
 /*
  * Primary determinants of sizes of shared-memory structures.
@@ -141,30 +73,26 @@ int			max_parallel_maintenance_workers = 2;
  * MaxBackends is computed by PostmasterMain after modules have had a chance to
  * register background workers.
  */
-int			NBuffers = 16384;
-int			MaxConnections = 100;
-int			max_worker_processes = 8;
-int			max_parallel_workers = 8;
-int			autovacuum_max_parallel_workers = 0;
-int			MaxBackends = 0;
-
-/* GUC parameters for vacuum */
-int			VacuumBufferUsageLimit = 2048;
-
-int			VacuumCostPageHit = 1;
-int			VacuumCostPageMiss = 2;
-int			VacuumCostPageDirty = 20;
-int			VacuumCostLimit = 200;
-double		VacuumCostDelay = 0;
-
-int			VacuumCostBalance = 0;	/* working state for vacuum */
-bool		VacuumCostActive = false;
+PG_GLOBAL_RUNTIME int NBuffers = 16384;
+PG_GLOBAL_RUNTIME int MaxConnections = 100;
+PG_GLOBAL_RUNTIME int max_worker_processes = 8;
+PG_GLOBAL_RUNTIME int max_parallel_workers = 8;
+PG_GLOBAL_RUNTIME int autovacuum_max_parallel_workers = 0;
+PG_GLOBAL_RUNTIME int MaxBackends = 0;
+PG_GLOBAL_RUNTIME bool multithreaded = false;
+PG_GLOBAL_RUNTIME int pooled_protocol_carriers = -1;
+PG_GLOBAL_RUNTIME int pooled_protocol_sticky_idle_ms = 10;
+PG_GLOBAL_RUNTIME int pooled_protocol_hibernate_after_ms = 5000;
+PG_GLOBAL_RUNTIME int pooled_protocol_idle_memory_compaction =
+	POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_TRIM;
+PG_GLOBAL_RUNTIME bool threaded_lazy_relcache_init_file = true;
+PG_GLOBAL_RUNTIME bool log_protocol_park_memory = false;
 
 /* configurable SLRU buffer sizes */
-int			commit_timestamp_buffers = 0;
-int			multixact_member_buffers = 32;
-int			multixact_offset_buffers = 16;
-int			notify_buffers = 16;
-int			serializable_buffers = 32;
-int			subtransaction_buffers = 0;
-int			transaction_buffers = 0;
+PG_GLOBAL_RUNTIME int commit_timestamp_buffers = 0;
+PG_GLOBAL_RUNTIME int multixact_member_buffers = 32;
+PG_GLOBAL_RUNTIME int multixact_offset_buffers = 16;
+PG_GLOBAL_RUNTIME int notify_buffers = 16;
+PG_GLOBAL_RUNTIME int serializable_buffers = 32;
+PG_GLOBAL_RUNTIME int subtransaction_buffers = 0;
+PG_GLOBAL_RUNTIME int transaction_buffers = 0;

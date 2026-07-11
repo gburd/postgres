@@ -16,9 +16,13 @@
 
 #include "catalog/objectaddress.h"
 #include "parser/parse_node.h"
+#include "utils/global_lifetime.h"
 
 /* GUC */
-extern PGDLLIMPORT char *Extension_control_path;
+#ifndef PgCurrentExtensionControlPathRef
+extern char **PgCurrentExtensionControlPathRef(void);
+#endif
+#define Extension_control_path (*PgCurrentExtensionControlPathRef())
 
 /*
  * creating_extension is only true while running a CREATE EXTENSION or ALTER
@@ -29,8 +33,14 @@ extern PGDLLIMPORT char *Extension_control_path;
  * scripts can drop member objects without having to explicitly dissociate
  * them from the extension first.
  */
-extern PGDLLIMPORT bool creating_extension;
-extern PGDLLIMPORT Oid CurrentExtensionObject;
+#ifndef PgCurrentCreatingExtensionRef
+extern bool *PgCurrentCreatingExtensionRef(void);
+#endif
+#ifndef PgCurrentExtensionObjectRef
+extern Oid *PgCurrentExtensionObjectRef(void);
+#endif
+#define creating_extension (*PgCurrentCreatingExtensionRef())
+#define CurrentExtensionObject (*PgCurrentExtensionObjectRef())
 
 
 extern ObjectAddress CreateExtension(ParseState *pstate, CreateExtensionStmt *stmt);
@@ -53,6 +63,7 @@ extern Oid	get_extension_schema(Oid ext_oid);
 extern bool extension_file_exists(const char *extensionName);
 
 extern Oid	get_function_sibling_type(Oid funcoid, const char *typname);
+extern void ResetExtensionSiblingCache(void);
 
 extern ObjectAddress AlterExtensionNamespace(const char *extensionName, const char *newschema,
 											 Oid *oldschema);

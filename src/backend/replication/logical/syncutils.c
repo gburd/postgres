@@ -19,6 +19,8 @@
 #include "replication/logicallauncher.h"
 #include "replication/worker_internal.h"
 #include "storage/ipc.h"
+#include "utils/backend_runtime.h"
+#include "utils/global_lifetime.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 
@@ -41,7 +43,7 @@ typedef enum
 	SYNC_RELATIONS_STATE_VALID,
 } SyncingRelationsState;
 
-static SyncingRelationsState relation_states_validity = SYNC_RELATIONS_STATE_NEEDS_REBUILD;
+#define relation_states_validity (*PgCurrentLogicalRepSyncingRelationsStateRef())
 
 /*
  * Exit routine for synchronization worker.
@@ -91,7 +93,7 @@ FinishSyncWorker(void)
 	}
 
 	/* Stop gracefully */
-	proc_exit(0);
+	PgBackendExit(0);
 }
 
 /*

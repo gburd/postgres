@@ -59,7 +59,7 @@ pgstat_fetch_stat_archiver(void)
 {
 	pgstat_snapshot_fixed(PGSTAT_KIND_ARCHIVER);
 
-	return &pgStatLocal.snapshot.archiver;
+	return &pgStatSnapshot.archiver;
 }
 
 void
@@ -89,7 +89,7 @@ void
 pgstat_archiver_snapshot_cb(void)
 {
 	PgStatShared_Archiver *stats_shmem = &pgStatLocal.shmem->archiver;
-	PgStat_ArchiverStats *stat_snap = &pgStatLocal.snapshot.archiver;
+	PgStat_ArchiverStats *stat_snap = &pgStatSnapshot.archiver;
 	PgStat_ArchiverStats *reset_offset = &stats_shmem->reset_offset;
 	PgStat_ArchiverStats reset;
 

@@ -17,6 +17,7 @@
 #include "catalog/pg_attribute.h"
 #include "nodes/execnodes.h"
 #include "nodes/parsenodes.h"
+#include "utils/global_lifetime.h"
 
 
 /*
@@ -29,9 +30,9 @@
 #define BOOTCOL_NULL_FORCE_NULL		2
 #define BOOTCOL_NULL_FORCE_NOT_NULL 3
 
-extern PGDLLIMPORT Relation boot_reldesc;
-extern PGDLLIMPORT Form_pg_attribute attrtypes[MAXATTR];
-extern PGDLLIMPORT int numattr;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME Relation boot_reldesc;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME Form_pg_attribute attrtypes[MAXATTR];
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int numattr;
 
 
 pg_noreturn extern void BootstrapModeMain(int argc, char *argv[], bool check_only);

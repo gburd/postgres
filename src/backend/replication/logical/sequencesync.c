@@ -63,6 +63,7 @@
 #include "storage/lmgr.h"
 #include "storage/lwlock.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
@@ -85,7 +86,22 @@ typedef enum CopySeqResult
 	COPYSEQ_NOT_SUBSCRIBED
 } CopySeqResult;
 
-static List *seqinfos = NIL;
+#define seqinfos (PgCurrentLogicalReplicationState()->seqinfos)
+
+static bool
+SequenceSyncWorkerThreadedRuntime(void)
+{
+	return PgRuntimeIsThreadBacked(CurrentPgRuntime);
+}
+
+static void
+ProcessSequenceSyncConfigReload(void)
+{
+	ConfigReloadPending = false;
+
+	if (!SequenceSyncWorkerThreadedRuntime())
+		ProcessConfigFile(PGC_SIGHUP);
+}
 
 /*
  * Apply worker determines if sequence synchronization is needed.
@@ -645,10 +661,7 @@ copy_sequences(WalReceiverConn *conn)
 			CHECK_FOR_INTERRUPTS();
 
 			if (ConfigReloadPending)
-			{
-				ConfigReloadPending = false;
-				ProcessConfigFile(PGC_SIGHUP);
-			}
+				ProcessSequenceSyncConfigReload();
 
 			/*
 			 * Set up callback to identify the sequence in error messages.

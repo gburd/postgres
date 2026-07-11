@@ -52,53 +52,19 @@ typedef struct LLVMJitHandle
 } LLVMJitHandle;
 
 
-/* types & functions commonly needed for JITing */
-LLVMTypeRef TypeSizeT;
-LLVMTypeRef TypeDatum;
-LLVMTypeRef TypeParamBool;
-LLVMTypeRef TypeStorageBool;
-LLVMTypeRef TypePGFunction;
-LLVMTypeRef StructNullableDatum;
-LLVMTypeRef StructHeapTupleData;
-LLVMTypeRef StructMinimalTupleData;
-LLVMTypeRef StructTupleDescData;
-LLVMTypeRef StructTupleTableSlot;
-LLVMTypeRef StructHeapTupleHeaderData;
-LLVMTypeRef StructHeapTupleTableSlot;
-LLVMTypeRef StructMinimalTupleTableSlot;
-LLVMTypeRef StructMemoryContextData;
-LLVMTypeRef StructFunctionCallInfoData;
-LLVMTypeRef StructExprContext;
-LLVMTypeRef StructExprEvalStep;
-LLVMTypeRef StructExprState;
-LLVMTypeRef StructAggState;
-LLVMTypeRef StructAggStatePerGroupData;
-LLVMTypeRef StructAggStatePerTransData;
-LLVMTypeRef StructPlanState;
-
-LLVMValueRef AttributeTemplate;
-LLVMValueRef ExecEvalSubroutineTemplate;
-LLVMValueRef ExecEvalBoolSubroutineTemplate;
-
-static LLVMModuleRef llvm_types_module = NULL;
-
-static bool llvm_session_initialized = false;
-static size_t llvm_generation = 0;
-
-/* number of LLVMJitContexts that currently are in use */
-static size_t llvm_jit_context_in_use_count = 0;
-
-/* how many times has the current LLVMContextRef been used */
-static size_t llvm_llvm_context_reuse_count = 0;
-static const char *llvm_triple = NULL;
-static const char *llvm_layout = NULL;
-static LLVMContextRef llvm_context;
-
-
-static LLVMTargetRef llvm_targetref;
-static LLVMOrcThreadSafeContextRef llvm_ts_context;
-static LLVMOrcLLJITRef llvm_opt0_orc;
-static LLVMOrcLLJITRef llvm_opt3_orc;
+/* provider-private session state */
+#define llvm_types_module (PgCurrentLLVMJitState()->types_module)
+#define llvm_session_initialized (PgCurrentLLVMJitState()->session_initialized)
+#define llvm_generation (PgCurrentLLVMJitState()->generation)
+#define llvm_jit_context_in_use_count (PgCurrentLLVMJitState()->jit_context_in_use_count)
+#define llvm_llvm_context_reuse_count (PgCurrentLLVMJitState()->llvm_context_reuse_count)
+#define llvm_triple (PgCurrentLLVMJitState()->triple)
+#define llvm_layout (PgCurrentLLVMJitState()->layout)
+#define llvm_context (PgCurrentLLVMJitState()->context)
+#define llvm_targetref (PgCurrentLLVMJitState()->targetref)
+#define llvm_ts_context (PgCurrentLLVMJitState()->ts_context)
+#define llvm_opt0_orc (PgCurrentLLVMJitState()->opt0_orc)
+#define llvm_opt3_orc (PgCurrentLLVMJitState()->opt3_orc)
 
 
 static void llvm_release_context(JitContext *context);
@@ -264,9 +230,9 @@ llvm_release_context(JitContext *context)
 	/*
 	 * When this backend is exiting, don't clean up LLVM. As an error might
 	 * have occurred from within LLVM, we do not want to risk reentering. All
-	 * resource cleanup is going to happen through process exit.
+	 * resource cleanup is going to happen through backend exit.
 	 */
-	if (proc_exit_inprogress)
+	if (PgBackendExitInProgress())
 		return;
 
 	llvm_enter_fatal_on_oom();
@@ -925,7 +891,7 @@ llvm_shutdown(int code, Datum arg)
 	 */
 	if (llvm_in_fatal_on_oom())
 	{
-		Assert(proc_exit_inprogress);
+		Assert(PgBackendExitInProgress());
 		return;
 	}
 

@@ -59,7 +59,7 @@
 
 #define LASTNUM			23
 
-static const char *const tok_alias[] = {
+static PG_GLOBAL_IMMUTABLE const char *const tok_alias[] = {
 	"",
 	"asciiword",
 	"word",
@@ -86,7 +86,7 @@ static const char *const tok_alias[] = {
 	"entity"
 };
 
-static const char *const lex_descr[] = {
+static PG_GLOBAL_IMMUTABLE const char *const lex_descr[] = {
 	"",
 	"Word, all ASCII",
 	"Word, all letters",

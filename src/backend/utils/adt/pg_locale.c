@@ -33,6 +33,7 @@
 
 #include <time.h>
 #ifdef USE_ICU
+#include <unicode/ucasemap.h>
 #include <unicode/ucol.h>
 #endif
 
@@ -54,11 +55,17 @@
 
 #ifdef WIN32
 #include <shlwapi.h>
+#else
+#include "port/pg_pthread.h"
 #endif
 
 /* Error triggered for locale-sensitive subroutines */
 #define		PGLOCALE_SUPPORT_ERROR(provider) \
 	elog(ERROR, "unsupported collprovider for %s: %c", __func__, provider)
+
+#ifndef WIN32
+static PG_GLOBAL_RUNTIME pthread_mutex_t PgLocaleMutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 /*
  * This should be large enough that most strings will fit, but small enough
@@ -83,36 +90,36 @@ extern pg_locale_t create_pg_locale_icu(Oid collid, MemoryContext context);
 extern pg_locale_t create_pg_locale_libc(Oid collid, MemoryContext context);
 extern char *get_collation_actual_version_libc(const char *collcollate);
 
-/* GUC settings */
-char	   *locale_messages;
-char	   *locale_monetary;
-char	   *locale_numeric;
-char	   *locale_time;
+static inline pg_locale_t *
+CurrentDefaultLocaleRef(void)
+{
+	return (pg_locale_t *) &PgCurrentLocaleState()->default_locale;
+}
 
-int			icu_validation_level = WARNING;
+static inline struct lconv **
+CurrentLocaleConvRef(void)
+{
+	return (struct lconv **) &PgCurrentLocaleState()->current_locale_conv;
+}
 
-/*
- * lc_time localization cache.
- *
- * We use only the first 7 or 12 entries of these arrays.  The last array
- * element is left as NULL for the convenience of outside code that wants
- * to sequentially scan these arrays.
- */
-char	   *localized_abbrev_days[7 + 1];
-char	   *localized_full_days[7 + 1];
-char	   *localized_abbrev_months[12 + 1];
-char	   *localized_full_months[12 + 1];
+#define default_locale (*CurrentDefaultLocaleRef())
+#define CurrentLocaleConvValid \
+	(PgCurrentLocaleState()->locale_conv_valid)
+#define CurrentLCTimeValid \
+	(PgCurrentLocaleState()->locale_time_valid)
+#define CurrentLocaleConv (*CurrentLocaleConvRef())
+#define CurrentLocaleConvContext \
+	(PgCurrentLocaleState()->locale_conv_context)
+#define CurrentLocaleConvAllocated \
+	(PgCurrentLocaleState()->current_locale_conv_allocated)
+#define CurrentLocaleTimeContext \
+	(PgCurrentLocaleState()->locale_time_context)
 
-static pg_locale_t default_locale = NULL;
-
-/* indicates whether locale information cache is valid */
-static bool CurrentLocaleConvValid = false;
-static bool CurrentLCTimeValid = false;
-
-static struct pg_locale_struct c_locale = {
+static PG_GLOBAL_IMMUTABLE struct pg_locale_struct c_locale = {
 	.deterministic = true,
 	.collate_is_c = true,
 	.ctype_is_c = true,
+	.provider = COLLPROVIDER_BUILTIN,
 };
 
 /* Cache for collation-related knowledge */
@@ -140,19 +147,150 @@ typedef struct
 #define SH_DEFINE
 #include "lib/simplehash.h"
 
-static MemoryContext CollationCacheContext = NULL;
-static collation_cache_hash *CollationCache = NULL;
+void
+pg_locale_release_external(pg_locale_t locale)
+{
+	if (locale == NULL)
+		return;
+
+	switch (locale->provider)
+	{
+		case COLLPROVIDER_BUILTIN:
+			break;
+
+		case COLLPROVIDER_LIBC:
+			if (locale->lt != (locale_t) 0)
+			{
+#ifdef WIN32
+				_free_locale(locale->lt);
+#else
+				freelocale(locale->lt);
+#endif
+				locale->lt = (locale_t) 0;
+			}
+			break;
+
+#ifdef USE_ICU
+		case COLLPROVIDER_ICU:
+			if (locale->icu.ucol != NULL)
+			{
+				ucol_close(locale->icu.ucol);
+				locale->icu.ucol = NULL;
+			}
+			if (locale->icu.ucasemap != NULL)
+			{
+				ucasemap_close(locale->icu.ucasemap);
+				locale->icu.ucasemap = NULL;
+			}
+			if (locale->icu.lt != (locale_t) 0)
+			{
+#ifdef WIN32
+				_free_locale(locale->icu.lt);
+#else
+				freelocale(locale->icu.lt);
+#endif
+				locale->icu.lt = (locale_t) 0;
+			}
+			break;
+#endif
+
+		default:
+			Assert(false);
+			break;
+	}
+}
+
+void
+pg_locale_release_collation_cache_external(void *collation_cache)
+{
+	collation_cache_hash *cache = (collation_cache_hash *) collation_cache;
+	collation_cache_iterator iter;
+	collation_cache_entry *entry;
+
+	if (cache == NULL)
+		return;
+
+	collation_cache_start_iterate(cache, &iter);
+	while ((entry = collation_cache_iterate(cache, &iter)) != NULL)
+	{
+		pg_locale_release_external(entry->locale);
+		entry->locale = NULL;
+	}
+}
+
+static inline collation_cache_hash **
+CurrentCollationCacheRef(void)
+{
+	return (collation_cache_hash **) &PgCurrentLocaleState()->collation_cache;
+}
+
+static inline pg_locale_t *
+CurrentLastCollationCacheLocaleRef(void)
+{
+	return (pg_locale_t *) &PgCurrentLocaleState()->last_collation_cache_locale;
+}
+
+#define CollationCacheContext \
+	(PgCurrentLocaleState()->collation_cache_context)
+#define CollationCache (*CurrentCollationCacheRef())
 
 /*
  * The collation cache is often accessed repeatedly for the same collation, so
  * remember the last one used.
  */
-static Oid	last_collation_cache_oid = InvalidOid;
-static pg_locale_t last_collation_cache_locale = NULL;
+#define last_collation_cache_oid \
+	(PgCurrentLocaleState()->last_collation_cache_oid)
+#define last_collation_cache_locale (*CurrentLastCollationCacheLocaleRef())
 
 #if defined(WIN32) && defined(LC_MESSAGES)
 static char *IsoLocaleName(const char *);
 #endif
+
+bool
+pg_locale_lock(void)
+{
+#ifndef WIN32
+	int			rc;
+
+	if (!multithreaded)
+		return false;
+
+	HOLD_INTERRUPTS();
+	rc = pthread_mutex_lock(&PgLocaleMutex);
+	if (rc != 0)
+	{
+		RESUME_INTERRUPTS();
+		errno = rc;
+		ereport(FATAL,
+				(errmsg("could not enter locale critical section: %m")));
+	}
+
+	return true;
+#else
+	return false;
+#endif
+}
+
+void
+pg_locale_unlock(bool locked)
+{
+#ifndef WIN32
+	int			rc;
+
+	if (!locked)
+		return;
+
+	rc = pthread_mutex_unlock(&PgLocaleMutex);
+	RESUME_INTERRUPTS();
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not leave locale critical section: %m");
+	}
+#else
+	(void) locked;
+#endif
+}
 
 /*
  * pg_perm_setlocale
@@ -173,6 +311,9 @@ pg_perm_setlocale(int category, const char *locale)
 {
 	char	   *result;
 	const char *envvar;
+	bool		locked;
+
+	locked = pg_locale_lock();
 
 #ifndef WIN32
 	result = setlocale(category, locale);
@@ -197,7 +338,10 @@ pg_perm_setlocale(int category, const char *locale)
 #endif							/* WIN32 */
 
 	if (result == NULL)
+	{
+		pg_locale_unlock(locked);
 		return result;			/* fall out immediately on failure */
+	}
 
 	/*
 	 * Use the right encoding in translated messages.  Under ENABLE_NLS, let
@@ -255,8 +399,12 @@ pg_perm_setlocale(int category, const char *locale)
 	}
 
 	if (setenv(envvar, result, 1) != 0)
+	{
+		pg_locale_unlock(locked);
 		return NULL;
+	}
 
+	pg_locale_unlock(locked);
 	return result;
 }
 
@@ -276,6 +424,11 @@ check_locale(int category, const char *locale, char **canonname)
 {
 	char	   *save;
 	char	   *res;
+	char	   *savecopy;
+	char	   *rescopy = NULL;
+	bool		locked;
+	bool		restore_ok;
+	bool		oom = false;
 
 	/* Don't let Windows' non-ASCII locale names in. */
 	if (!pg_is_ascii(locale))
@@ -290,24 +443,55 @@ check_locale(int category, const char *locale, char **canonname)
 	if (canonname)
 		*canonname = NULL;		/* in case of failure */
 
+	locked = pg_locale_lock();
+
 	save = setlocale(category, NULL);
 	if (!save)
+	{
+		pg_locale_unlock(locked);
 		return false;			/* won't happen, we hope */
+	}
 
 	/* save may be pointing at a modifiable scratch variable, see above. */
-	save = pstrdup(save);
+	savecopy = strdup(save);
+	if (savecopy == NULL)
+	{
+		pg_locale_unlock(locked);
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory")));
+	}
 
 	/* set the locale with setlocale, to see if it accepts it. */
 	res = setlocale(category, locale);
 
 	/* save canonical name if requested. */
 	if (res && canonname)
-		*canonname = pstrdup(res);
+	{
+		rescopy = strdup(res);
+		if (rescopy == NULL)
+			oom = true;
+	}
 
 	/* restore old value. */
-	if (!setlocale(category, save))
-		elog(WARNING, "failed to restore old locale \"%s\"", save);
-	pfree(save);
+	restore_ok = (setlocale(category, savecopy) != NULL);
+
+	pg_locale_unlock(locked);
+
+	if (!restore_ok)
+		elog(WARNING, "failed to restore old locale \"%s\"", savecopy);
+	free(savecopy);
+
+	if (oom)
+		ereport(ERROR,
+				(errcode(ERRCODE_OUT_OF_MEMORY),
+				 errmsg("out of memory")));
+
+	if (rescopy)
+	{
+		*canonname = pstrdup(rescopy);
+		free(rescopy);
+	}
 
 	/* Don't let Windows' non-ASCII locale names out. */
 	if (canonname && *canonname && !pg_is_ascii(*canonname))
@@ -497,6 +681,20 @@ db_encoding_convert(int encoding, char **str)
 	pfree(pstr);
 }
 
+void
+PgSessionResetLocaleConv(PgSessionLocaleState *locale)
+{
+	Assert(locale != NULL);
+
+	if (locale->current_locale_conv_allocated &&
+		locale->current_locale_conv != NULL)
+		free_struct_lconv((struct lconv *) locale->current_locale_conv);
+
+	locale->current_locale_conv = NULL;
+	locale->current_locale_conv_allocated = false;
+	locale->locale_conv_valid = false;
+}
+
 
 /*
  * Return the POSIX lconv struct (contains number/money formatting
@@ -505,21 +703,41 @@ db_encoding_convert(int encoding, char **str)
 struct lconv *
 PGLC_localeconv(void)
 {
-	static struct lconv CurrentLocaleConv;
-	static bool CurrentLocaleConvAllocated = false;
+	PgSessionLocaleState *locale = PgCurrentLocaleState();
+	struct lconv *current_locale_conv;
 	struct lconv *extlconv;
 	struct lconv tmp;
 	struct lconv worklconv = {0};
 
+	current_locale_conv = (struct lconv *) locale->current_locale_conv;
+	if (current_locale_conv == NULL)
+	{
+		if (locale->locale_conv_context == NULL)
+			locale->locale_conv_context =
+				AllocSetContextCreate(TopMemoryContext,
+									  "localeconv cache",
+									  ALLOCSET_SMALL_SIZES);
+
+		current_locale_conv = MemoryContextAllocZero(locale->locale_conv_context,
+													 sizeof(struct lconv));
+		locale->current_locale_conv = current_locale_conv;
+	}
+
 	/* Did we do it already? */
-	if (CurrentLocaleConvValid)
-		return &CurrentLocaleConv;
+	if (locale->locale_conv_valid)
+	{
+		if (struct_lconv_is_valid(current_locale_conv))
+			return current_locale_conv;
+
+		locale->locale_conv_valid = false;
+	}
 
 	/* Free any already-allocated storage */
-	if (CurrentLocaleConvAllocated)
+	if (locale->current_locale_conv_allocated)
 	{
-		free_struct_lconv(&CurrentLocaleConv);
-		CurrentLocaleConvAllocated = false;
+		free_struct_lconv(current_locale_conv);
+		MemSet(current_locale_conv, 0, sizeof(struct lconv));
+		locale->current_locale_conv_allocated = false;
 	}
 
 	/*
@@ -605,10 +823,10 @@ PGLC_localeconv(void)
 	/*
 	 * Everything is good, so save the results.
 	 */
-	CurrentLocaleConv = worklconv;
-	CurrentLocaleConvAllocated = true;
-	CurrentLocaleConvValid = true;
-	return &CurrentLocaleConv;
+	*current_locale_conv = worklconv;
+	locale->current_locale_conv_allocated = true;
+	locale->locale_conv_valid = true;
+	return current_locale_conv;
 }
 
 #ifdef WIN32
@@ -686,13 +904,35 @@ cache_single_string(char **dst, const char *src, int encoding)
 
 	/* Store the string in long-lived storage, replacing any previous value */
 	olddst = *dst;
-	*dst = MemoryContextStrdup(TopMemoryContext, ptr);
+	if (CurrentLocaleTimeContext == NULL)
+		CurrentLocaleTimeContext =
+			AllocSetContextCreate(TopMemoryContext,
+								  "localized time cache",
+								  ALLOCSET_SMALL_SIZES);
+
+	*dst = MemoryContextStrdup(CurrentLocaleTimeContext, ptr);
 	if (olddst)
 		pfree(olddst);
 
 	/* Might as well clean up any palloc'd conversion result, too */
 	if (ptr != src)
 		pfree(ptr);
+}
+
+void
+PgSessionResetLocaleTime(PgSessionLocaleState *locale)
+{
+	Assert(locale != NULL);
+
+	memset(locale->localized_abbrev_days_values, 0,
+		   sizeof(locale->localized_abbrev_days_values));
+	memset(locale->localized_full_days_values, 0,
+		   sizeof(locale->localized_full_days_values));
+	memset(locale->localized_abbrev_months_values, 0,
+		   sizeof(locale->localized_abbrev_months_values));
+	memset(locale->localized_full_months_values, 0,
+		   sizeof(locale->localized_full_months_values));
+	locale->locale_time_valid = false;
 }
 
 /*

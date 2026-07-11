@@ -13,6 +13,8 @@
 #ifndef PG_CPU_H
 #define PG_CPU_H
 
+#include "utils/global_lifetime.h"
+
 #if defined(__x86_64__) || defined(__i386__)
 
 typedef enum X86FeatureId
@@ -43,7 +45,7 @@ typedef enum X86FeatureId
 } X86FeatureId;
 #define X86FeaturesSize (PG_TSC_ADJUST + 1)
 
-extern PGDLLIMPORT bool X86Features[];
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool X86Features[];
 
 extern void set_x86_features(void);
 

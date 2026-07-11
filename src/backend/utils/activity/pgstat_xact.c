@@ -14,6 +14,7 @@
 
 #include "access/xact.h"
 #include "pgstat.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/pgstat_internal.h"
 
@@ -30,7 +31,7 @@ static void AtEOXact_PgStat_DroppedStats(PgStat_SubXactStatus *xact_state, bool 
 static void AtEOSubXact_PgStat_DroppedStats(PgStat_SubXactStatus *xact_state,
 											bool isCommit, int nestDepth);
 
-static PgStat_SubXactStatus *pgStatXactStack = NULL;
+#define pgStatXactStack (*PgCurrentPgStatXactStackRef())
 
 
 /*

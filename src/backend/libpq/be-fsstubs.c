@@ -49,6 +49,7 @@
 #include "miscadmin.h"
 #include "storage/fd.h"
 #include "storage/large_object.h"
+#include "utils/backend_runtime.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
@@ -68,11 +69,11 @@
  * dynamically allocated in that context.  Its current allocated size is
  * cookies_size entries, of which any unused entries will be NULL.
  */
-static LargeObjectDesc **cookies = NULL;
-static int	cookies_size = 0;
+#define cookies (*PgCurrentLargeObjectCookiesRef())
+#define cookies_size (*PgCurrentLargeObjectCookiesSizeRef())
 
-static bool lo_cleanup_needed = false;
-static MemoryContext fscxt = NULL;
+#define lo_cleanup_needed (*PgCurrentLargeObjectCleanupNeededRef())
+#define fscxt (*PgCurrentLargeObjectContextRef())
 
 static int	newLOfd(void);
 static void closeLOfd(int fd);
@@ -685,9 +686,8 @@ newLOfd(void)
 
 	lo_cleanup_needed = true;
 	if (fscxt == NULL)
-		fscxt = AllocSetContextCreate(TopMemoryContext,
-									  "Filesystem",
-									  ALLOCSET_DEFAULT_SIZES);
+		fscxt = PgRuntimeGetOwnedMemoryContext(PgCurrentLargeObjectContextRef(),
+											   "Filesystem");
 
 	/* Try to find a free slot */
 	for (i = 0; i < cookies_size; i++)

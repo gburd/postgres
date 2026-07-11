@@ -181,6 +181,7 @@
 #include "storage/procsignal.h"
 #include "storage/subsystems.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/dsa.h"
 #include "utils/guc_hooks.h"
@@ -218,7 +219,7 @@ typedef struct AsyncQueueEntry
 	int			length;			/* total allocated length of entry */
 	Oid			dboid;			/* sender's database OID */
 	TransactionId xid;			/* sender's XID */
-	int32		srcPid;			/* sender's PID */
+	int32		srcPid;			/* sender's SQL-visible signal target id */
 	char		data[NAMEDATALEN + NOTIFY_PAYLOAD_MAX_LENGTH];
 } AsyncQueueEntry;
 
@@ -230,11 +231,7 @@ typedef struct AsyncQueueEntry
 /*
  * Struct describing a queue position, and assorted macros for working with it
  */
-typedef struct QueuePosition
-{
-	int64		page;			/* SLRU page number */
-	int			offset;			/* byte offset within page */
-} QueuePosition;
+typedef PgExecutionAsyncQueuePosition QueuePosition;
 
 #define QUEUE_POS_PAGE(x)		((x).page)
 #define QUEUE_POS_OFFSET(x)		((x).offset)
@@ -345,7 +342,7 @@ typedef struct AsyncQueueControl
 	QueueBackendStatus backend[FLEXIBLE_ARRAY_MEMBER];
 } AsyncQueueControl;
 
-static AsyncQueueControl *asyncQueueControl;
+static PG_GLOBAL_SHMEM AsyncQueueControl *asyncQueueControl;
 
 static void AsyncShmemRequest(void *arg);
 static void AsyncShmemInit(void *arg);
@@ -373,7 +370,7 @@ const ShmemCallbacks AsyncShmemCallbacks = {
 static inline bool asyncQueuePagePrecedes(int64 p, int64 q);
 static int	asyncQueueErrdetailForIoError(const void *opaque_data);
 
-static SlruDesc NotifySlruDesc;
+static PG_GLOBAL_RUNTIME SlruDesc NotifySlruDesc;
 
 
 #define NotifyCtl					(&NotifySlruDesc)
@@ -412,15 +409,15 @@ typedef struct GlobalChannelEntry
 	int			allocatedListeners; /* Allocated size of array */
 } GlobalChannelEntry;
 
-static dshash_table *globalChannelTable = NULL;
-static dsa_area *globalChannelDSA = NULL;
+#define globalChannelTable (*PgCurrentAsyncGlobalChannelTableRef())
+#define globalChannelDSA (*PgCurrentAsyncGlobalChannelDSARef())
 
 /*
  * localChannelTable caches the channel names this backend is listening on
  * (including those we have staged to be listened on, but not yet committed).
  * Used by IsListeningOn() for fast lookups when reading notifications.
  */
-static HTAB *localChannelTable = NULL;
+#define localChannelTable (*PgCurrentAsyncLocalChannelTableRef())
 
 /* We test this condition to detect that we're not listening at all */
 #define LocalChannelTableIsEmpty() \
@@ -456,7 +453,7 @@ typedef struct ActionList
 	struct ActionList *upper;	/* details for upper transaction levels */
 } ActionList;
 
-static ActionList *pendingActions = NULL;
+#define pendingActions (*PgCurrentPendingActionsRef())
 
 /*
  * Hash table recording the final listen/unlisten intent per channel for
@@ -478,7 +475,7 @@ typedef struct PendingListenEntry
 	PendingListenAction action; /* which action should we perform? */
 } PendingListenEntry;
 
-static HTAB *pendingListenActions = NULL;
+#define pendingListenActions (*PgCurrentPendingListenActionsRef())
 
 /*
  * State for outbound notifies consists of a list of all channels+payloads
@@ -532,7 +529,7 @@ struct NotificationHash
 	Notification *event;		/* => the actual Notification struct */
 };
 
-static NotificationList *pendingNotifies = NULL;
+#define pendingNotifies (*PgCurrentPendingNotifiesRef())
 
 /*
  * Hash entry in NotificationList.uniqueChannelHash or localChannelTable
@@ -550,13 +547,11 @@ typedef struct ChannelName
  * latch. ProcessNotifyInterrupt() will then be called whenever it's safe to
  * actually deal with the interrupt.
  */
-volatile sig_atomic_t notifyInterruptPending = false;
-
 /* True if we've registered an on_shmem_exit cleanup */
-static bool unlistenExitRegistered = false;
+#define unlistenExitRegistered (*PgCurrentAsyncUnlistenExitRegisteredRef())
 
 /* True if we're currently registered as a listener in asyncQueueControl */
-static bool amRegisteredListener = false;
+#define amRegisteredListener (*PgCurrentAsyncRegisteredListenerRef())
 
 /*
  * Queue head positions for direct advancement.
@@ -564,25 +559,22 @@ static bool amRegisteredListener = false;
  * lock on database 0, ensuring no other backend can insert notifications
  * between them.  SignalBackends uses these to advance idle backends.
  */
-static QueuePosition queueHeadBeforeWrite;
-static QueuePosition queueHeadAfterWrite;
+#define queueHeadBeforeWrite (*PgCurrentQueueHeadBeforeWriteRef())
+#define queueHeadAfterWrite (*PgCurrentQueueHeadAfterWriteRef())
 
 /*
  * Workspace arrays for SignalBackends.  These are preallocated in
  * PreCommit_Notify to avoid needing memory allocation after committing to
  * clog.
  */
-static int32 *signalPids = NULL;
-static ProcNumber *signalProcnos = NULL;
+#define signalPids (*PgCurrentSignalPidsRef())
+#define signalProcnos (*PgCurrentSignalProcnosRef())
 
 /* have we advanced to a page that's a multiple of QUEUE_CLEANUP_DELAY? */
-static bool tryAdvanceTail = false;
-
-/* GUC parameters */
-bool		Trace_notify = false;
+#define tryAdvanceTail (*PgCurrentTryAdvanceTailRef())
 
 /* For 8 KB pages this gives 8 GB of disk space */
-int			max_notify_queue_pages = 1048576;
+PG_GLOBAL_RUNTIME int max_notify_queue_pages = 1048576;
 
 /* local function prototypes */
 static inline int64 asyncQueuePageDiff(int64 p, int64 q);
@@ -1261,11 +1253,11 @@ PreCommit_Notify(void)
 
 		/* Preallocate workspace that will be needed by SignalBackends() */
 		if (signalPids == NULL)
-			signalPids = MemoryContextAlloc(TopMemoryContext,
+			signalPids = MemoryContextAlloc(PgCurrentAsyncSignalWorkspaceContext(),
 											MaxBackends * sizeof(int32));
 
 		if (signalProcnos == NULL)
-			signalProcnos = MemoryContextAlloc(TopMemoryContext,
+			signalProcnos = MemoryContextAlloc(PgCurrentAsyncSignalWorkspaceContext(),
 											   MaxBackends * sizeof(ProcNumber));
 
 		/*
@@ -1472,7 +1464,7 @@ BecomeRegisteredListener(void)
 			prevListener = i;
 	}
 	QUEUE_BACKEND_POS(MyProcNumber) = max;
-	QUEUE_BACKEND_PID(MyProcNumber) = MyProcPid;
+	QUEUE_BACKEND_PID(MyProcNumber) = PgCurrentBackendSignalPid();
 	QUEUE_BACKEND_DBOID(MyProcNumber) = MyDatabaseId;
 	QUEUE_BACKEND_WAKEUP_PENDING(MyProcNumber) = false;
 	QUEUE_BACKEND_IS_ADVANCING(MyProcNumber) = false;
@@ -2002,7 +1994,7 @@ asyncQueueNotificationToEntry(Notification *n, AsyncQueueEntry *qe)
 	qe->length = entryLength;
 	qe->dboid = MyDatabaseId;
 	qe->xid = GetCurrentTransactionId();
-	qe->srcPid = MyProcPid;
+	qe->srcPid = PgCurrentBackendSignalPid();
 	memcpy(qe->data, n->data, channellen + payloadlen + 2);
 }
 
@@ -2249,6 +2241,7 @@ static void
 SignalBackends(void)
 {
 	int			count;
+	int32		my_signal_pid;
 
 	/* Can't get here without PreCommit_Notify having made the global table */
 	Assert(globalChannelTable != NULL);
@@ -2368,16 +2361,19 @@ SignalBackends(void)
 	LWLockRelease(NotifyQueueLock);
 
 	/* Now send signals */
+	my_signal_pid = PgCurrentBackendSignalPid();
+
 	for (int i = 0; i < count; i++)
 	{
 		int32		pid = signalPids[i];
 
 		/*
-		 * If we are signaling our own process, no need to involve the kernel;
-		 * just set the flag directly.
+		 * If we are signaling our own backend, no need to go through
+		 * procsignal; just set the flag directly.
 		 */
-		if (pid == MyProcPid)
+		if (pid == my_signal_pid)
 		{
+			RaiseInterrupt(PG_BACKEND_INTERRUPT_NOTIFY);
 			notifyInterruptPending = true;
 			continue;
 		}
@@ -2388,7 +2384,9 @@ SignalBackends(void)
 		 * NotifyQueueLock; which is unlikely but certainly possible. So we
 		 * just log a low-level debug message if it happens.
 		 */
-		if (SendProcSignal(pid, PROCSIG_NOTIFY_INTERRUPT, signalProcnos[i]) < 0)
+		if (SendBackendInterrupt(pid, PG_BACKEND_INTERRUPT_NOTIFY,
+								 my_signal_pid, getuid()) < 0 &&
+			SendProcSignal(pid, PROCSIG_NOTIFY_INTERRUPT, signalProcnos[i]) < 0)
 			elog(DEBUG3, "could not signal backend with PID %d: %m", pid);
 	}
 }
@@ -2554,6 +2552,7 @@ HandleNotifyInterrupt(void)
 	 */
 
 	/* signal that work needs to be done */
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_NOTIFY);
 	notifyInterruptPending = true;
 
 	/* latch will be set by procsignal_sigusr1_handler */
@@ -2604,7 +2603,7 @@ asyncQueueReadAllNotifications(void)
 	 */
 	LWLockAcquire(NotifyQueueLock, LW_SHARED);
 	/* Assert checks that we have a valid state entry */
-	Assert(MyProcPid == QUEUE_BACKEND_PID(MyProcNumber));
+	Assert(PgCurrentBackendSignalPid() == QUEUE_BACKEND_PID(MyProcNumber));
 	QUEUE_BACKEND_WAKEUP_PENDING(MyProcNumber) = false;
 	pos = QUEUE_BACKEND_POS(MyProcNumber);
 	head = QUEUE_HEAD;

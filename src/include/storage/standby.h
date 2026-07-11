@@ -18,14 +18,15 @@
 #include "storage/locktag.h"
 #include "storage/relfilelocator.h"
 #include "storage/standbydefs.h"
+#include "utils/global_lifetime.h"
 
 typedef struct PGPROC PGPROC;
 typedef struct VirtualTransactionId VirtualTransactionId;
 
 /* User-settable GUC parameters */
-extern PGDLLIMPORT int max_standby_archive_delay;
-extern PGDLLIMPORT int max_standby_streaming_delay;
-extern PGDLLIMPORT bool log_recovery_conflict_waits;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_standby_archive_delay;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_standby_streaming_delay;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool log_recovery_conflict_waits;
 
 /* Recovery conflict reasons */
 typedef enum

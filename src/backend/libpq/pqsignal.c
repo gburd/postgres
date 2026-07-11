@@ -19,7 +19,7 @@
 
 
 /* Global variables */
-sigset_t	UnBlockSig,
+PG_GLOBAL_RUNTIME sigset_t UnBlockSig,
 			BlockSig,
 			StartupBlockSig;
 

@@ -112,6 +112,9 @@ option('libnuma', type: 'feature', value: 'auto',
 option('liburing', type : 'feature', value: 'auto',
   description: 'io_uring support, for asynchronous I/O')
 
+option('xtc', type : 'feature', value: 'auto',
+  description: 'libxtc carrier: run threaded backends as xtc fibers')
+
 option('libxml', type: 'feature', value: 'auto',
   description: 'XML support')
 

@@ -21,6 +21,8 @@ backend_sources += files(
   'arraysubs.c',
   'arrayutils.c',
   'ascii.c',
+  'backend_runtime_pseudorandom.c',
+  'backend_runtime_ri.c',
   'bool.c',
   'bytea.c',
   'cash.c',

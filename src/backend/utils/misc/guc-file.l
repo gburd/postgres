@@ -17,6 +17,7 @@
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "storage/fd.h"
+#include "utils/backend_runtime.h"
 #include "utils/conffiles.h"
 #include "utils/memutils.h"
 }
@@ -45,9 +46,9 @@ enum
 	GUC_ERROR = 100
 };
 
-static unsigned int ConfigFileLineno;
-static const char *GUC_flex_fatal_errmsg;
-static sigjmp_buf *GUC_flex_fatal_jmp;
+#define ConfigFileLineno (*PgCurrentConfigFileLinenoRef())
+#define GUC_flex_fatal_errmsg (*PgCurrentGUCFlexFatalErrmsgRef())
+#define GUC_flex_fatal_jmp (*PgCurrentGUCFlexFatalJmpRef())
 
 static void FreeConfigVariable(ConfigVariable *item);
 

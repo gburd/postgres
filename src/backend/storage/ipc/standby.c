@@ -30,6 +30,7 @@
 #include "storage/procarray.h"
 #include "storage/sinvaladt.h"
 #include "storage/standby.h"
+#include "utils/backend_runtime.h"
 #include "utils/hsearch.h"
 #include "utils/injection_point.h"
 #include "utils/ps_status.h"
@@ -38,9 +39,9 @@
 #include "utils/wait_event.h"
 
 /* User-settable GUC parameters */
-int			max_standby_archive_delay = 30 * 1000;
-int			max_standby_streaming_delay = 30 * 1000;
-bool		log_recovery_conflict_waits = false;
+PG_GLOBAL_RUNTIME int max_standby_archive_delay = 30 * 1000;
+PG_GLOBAL_RUNTIME int max_standby_streaming_delay = 30 * 1000;
+PG_GLOBAL_RUNTIME bool log_recovery_conflict_waits = false;
 
 /*
  * Keep track of all the exclusive locks owned by original transactions.
@@ -63,13 +64,18 @@ typedef struct RecoveryLockXidEntry
 	struct RecoveryLockEntry *head; /* chain head */
 } RecoveryLockXidEntry;
 
-static HTAB *RecoveryLockHash = NULL;
-static HTAB *RecoveryLockXidHash = NULL;
+#define RecoveryLockHash \
+	(PgCurrentRecoveryState()->recovery_lock_hash)
+#define RecoveryLockXidHash \
+	(PgCurrentRecoveryState()->recovery_lock_xid_hash)
 
 /* Flags set by timeout handlers */
-static volatile sig_atomic_t got_standby_deadlock_timeout = false;
-static volatile sig_atomic_t got_standby_delay_timeout = false;
-static volatile sig_atomic_t got_standby_lock_timeout = false;
+#define got_standby_deadlock_timeout \
+	(PgCurrentRecoveryState()->got_standby_deadlock_timeout)
+#define got_standby_delay_timeout \
+	(PgCurrentRecoveryState()->got_standby_delay_timeout)
+#define got_standby_lock_timeout \
+	(PgCurrentRecoveryState()->got_standby_lock_timeout)
 
 static void ResolveRecoveryConflictWithVirtualXIDs(VirtualTransactionId *waitlist,
 												   RecoveryConflictReason reason,
@@ -223,8 +229,9 @@ GetStandbyLimitTime(void)
 	}
 }
 
-#define STANDBY_INITIAL_WAIT_US  1000
-static int	standbyWait_us = STANDBY_INITIAL_WAIT_US;
+#define STANDBY_INITIAL_WAIT_US PG_BACKEND_STANDBY_INITIAL_WAIT_US
+#define standbyWait_us \
+	(PgCurrentRecoveryState()->standby_wait_us)
 
 /*
  * Standby wait logic for ResolveRecoveryConflictWithVirtualXIDs.

@@ -71,6 +71,7 @@
 #include "storage/fd.h"
 #include "storage/shmem.h"
 #include "storage/shmem_internal.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/wait_event.h"
@@ -174,8 +175,8 @@ typedef enum
 	SLRU_CLOSE_FAILED,
 } SlruErrorCause;
 
-static SlruErrorCause slru_errcause;
-static int	slru_errno;
+#define slru_errcause (*PgCurrentSlruErrorCauseRef())
+#define slru_errno (*PgCurrentSlruErrnoRef())
 
 
 static void SimpleLruZeroLSNs(SlruDesc *ctl, int slotno);

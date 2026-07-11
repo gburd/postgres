@@ -28,7 +28,7 @@
 /*
  * Map SlotSyncSkipReason enum values to human-readable names.
  */
-static const char *SlotSyncSkipReasonNames[] = {
+static PG_GLOBAL_IMMUTABLE const char *SlotSyncSkipReasonNames[] = {
 	[SS_SKIP_NONE] = "none",
 	[SS_SKIP_WAL_NOT_FLUSHED] = "wal_not_flushed",
 	[SS_SKIP_WAL_OR_ROWS_REMOVED] = "wal_or_rows_removed",

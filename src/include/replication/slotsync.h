@@ -15,18 +15,21 @@
 #include <signal.h>
 
 #include "replication/walreceiver.h"
+#include "utils/backend_runtime.h"
+#include "utils/global_lifetime.h"
 
-extern PGDLLIMPORT bool sync_replication_slots;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool sync_replication_slots;
 
 /* Interrupt flag set by HandleSlotSyncMessageInterrupt() */
-extern PGDLLIMPORT volatile sig_atomic_t SlotSyncShutdownPending;
+#define SlotSyncShutdownPending \
+	(PgCurrentLogicalReplicationState()->slotsync_shutdown_pending)
 
 /*
  * GUCs needed by slot sync worker to connect to the primary
  * server and carry on with slots synchronization.
  */
-extern PGDLLIMPORT char *PrimaryConnInfo;
-extern PGDLLIMPORT char *PrimarySlotName;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *PrimaryConnInfo;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *PrimarySlotName;
 
 extern char *CheckAndGetDbnameFromConninfo(void);
 extern bool ValidateSlotSyncParams(int elevel);

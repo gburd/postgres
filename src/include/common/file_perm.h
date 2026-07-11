@@ -15,6 +15,8 @@
 
 #include <sys/stat.h>
 
+#include "utils/global_lifetime.h"
+
 /*
  * Mode mask for data directory permissions that only allows the owner to
  * read/write directories and files.
@@ -41,11 +43,11 @@
 #define PG_FILE_MODE_GROUP			(S_IRUSR | S_IWUSR | S_IRGRP)
 
 /* Modes for creating directories and files in the data directory */
-extern PGDLLIMPORT int pg_dir_create_mode;
-extern PGDLLIMPORT int pg_file_create_mode;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pg_dir_create_mode;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pg_file_create_mode;
 
 /* Mode mask to pass to umask() */
-extern PGDLLIMPORT int pg_mode_mask;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pg_mode_mask;
 
 /* Set permissions and mask based on the provided mode */
 extern void SetDataDirectoryCreatePerm(int dataDirMode);

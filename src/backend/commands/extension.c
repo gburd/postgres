@@ -60,6 +60,7 @@
 #include "storage/fd.h"
 #include "tcop/utility.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/conffiles.h"
 #include "utils/fmgroids.h"
@@ -73,12 +74,16 @@
 #include "utils/varlena.h"
 
 
-/* GUC */
-char	   *Extension_control_path;
+/*
+ * Extension control path GUC state lives in PgSessionMiscGUCState.  The
+ * public name remains available through a compatibility macro in
+ * commands/extension.h.
+ */
 
-/* Globally visible state variables */
-bool		creating_extension = false;
-Oid			CurrentExtensionObject = InvalidOid;
+/*
+ * Extension creation state lives in PgExecution.  The public names remain
+ * available through compatibility macros in commands/extension.h.
+ */
 
 /*
  * Internal data structure to hold the results of parsing a control file
@@ -160,7 +165,7 @@ typedef struct ExtensionSiblingCache
 } ExtensionSiblingCache;
 
 /* Head of linked list of ExtensionSiblingCache structs */
-static ExtensionSiblingCache *ext_sibling_list = NULL;
+#define ext_sibling_list (*PgCurrentExtensionSiblingListRef())
 
 /* Local functions */
 static void ext_sibling_callback(Datum arg, SysCacheIdentifier cacheid,
@@ -392,6 +397,23 @@ ext_sibling_callback(Datum arg, SysCacheIdentifier cacheid, uint32 hashvalue)
 			cache_entry->exthash == hashvalue)
 			cache_entry->valid = false;
 	}
+}
+
+void
+ResetExtensionSiblingCache(void)
+{
+	ExtensionSiblingCache *cache_entry;
+
+	cache_entry = ext_sibling_list;
+	while (cache_entry != NULL)
+	{
+		ExtensionSiblingCache *next = cache_entry->next;
+
+		pfree(cache_entry);
+		cache_entry = next;
+	}
+
+	ext_sibling_list = NULL;
 }
 
 /*

@@ -62,6 +62,7 @@
 #include "access/tupdesc_details.h"
 #include "common/hashfn.h"
 #include "utils/datum.h"
+#include "utils/backend_runtime.h"
 #include "utils/expandeddatum.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
@@ -98,7 +99,7 @@ typedef struct
 	Datum		value;
 } missing_cache_key;
 
-static HTAB *missing_cache = NULL;
+#define missing_cache (*PgCurrentMissingAttrCacheRef())
 
 static uint32
 missing_hash(const void *key, Size keysize)
@@ -129,7 +130,7 @@ init_missing_cache(void)
 
 	hash_ctl.keysize = sizeof(missing_cache_key);
 	hash_ctl.entrysize = sizeof(missing_cache_key);
-	hash_ctl.hcxt = TopMemoryContext;
+	hash_ctl.hcxt = PgCurrentUtilityCacheMemoryContext();
 	hash_ctl.hash = missing_hash;
 	hash_ctl.match = missing_match;
 	missing_cache =

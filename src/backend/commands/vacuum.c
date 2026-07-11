@@ -55,6 +55,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
 #include "utils/guc_hooks.h"
@@ -72,33 +73,9 @@
 #define PARALLEL_VACUUM_DELAY_REPORT_INTERVAL_NS	(NS_PER_S)
 
 /*
- * GUC parameters
- */
-int			vacuum_freeze_min_age;
-int			vacuum_freeze_table_age;
-int			vacuum_multixact_freeze_min_age;
-int			vacuum_multixact_freeze_table_age;
-int			vacuum_failsafe_age;
-int			vacuum_multixact_failsafe_age;
-double		vacuum_max_eager_freeze_failure_rate;
-bool		track_cost_delay_timing;
-bool		vacuum_truncate;
-
-/*
- * Variables for cost-based vacuum delay. The defaults differ between
- * autovacuum and vacuum. They should be set with the appropriate GUC value in
- * vacuum code. They are initialized here to the defaults for client backends
- * executing VACUUM or ANALYZE.
- */
-double		vacuum_cost_delay = 0;
-int			vacuum_cost_limit = 200;
-
-/* Variable for reporting cost-based vacuum delay from parallel workers. */
-int64		parallel_vacuum_worker_delay_ns = 0;
-
-/*
- * VacuumFailsafeActive is a defined as a global so that we can determine
- * whether or not to re-enable cost-based vacuum delay when vacuuming a table.
+ * VacuumFailsafeActive is exposed as a global-looking compatibility lvalue so
+ * that we can determine whether or not to re-enable cost-based vacuum delay
+ * when vacuuming a table.
  * If failsafe mode has been engaged, we will not re-enable cost-based delay
  * for the table until after vacuuming has completed, regardless of other
  * settings.
@@ -108,16 +85,10 @@ int64		parallel_vacuum_worker_delay_ns = 0;
  * inspected to determine whether or not to allow cost-based delays. Table AMs
  * are free to set it if they desire this behavior, but it is false by default
  * and reset to false in between vacuuming each relation.
+ *
+ * Variables for cost-based parallel vacuum live in PgExecutionVacuumState.
+ * See comments atop compute_parallel_delay to understand how it works.
  */
-bool		VacuumFailsafeActive = false;
-
-/*
- * Variables for cost-based parallel vacuum.  See comments atop
- * compute_parallel_delay to understand how it works.
- */
-pg_atomic_uint32 *VacuumSharedCostBalance = NULL;
-pg_atomic_uint32 *VacuumActiveNWorkers = NULL;
-int			VacuumCostBalanceLocal = 0;
 
 /* non-export function prototypes */
 static List *expand_vacuum_rel(VacuumRelation *vrel,
@@ -496,9 +467,8 @@ void
 vacuum(List *relations, const VacuumParams *params, BufferAccessStrategy bstrategy,
 	   MemoryContext vac_context, bool isTopLevel)
 {
-	static bool in_vacuum = false;
-
 	const char *stmttype;
+	bool	   *in_vacuum = PgCurrentVacuumInProgressRef();
 	volatile bool in_outer_xact,
 				use_own_xacts;
 
@@ -525,7 +495,7 @@ vacuum(List *relations, const VacuumParams *params, BufferAccessStrategy bstrate
 	 * FULL or ANALYZE calls a hostile index expression that itself calls
 	 * ANALYZE.
 	 */
-	if (in_vacuum)
+	if (*in_vacuum)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("%s cannot be executed from VACUUM or ANALYZE",
@@ -615,7 +585,7 @@ vacuum(List *relations, const VacuumParams *params, BufferAccessStrategy bstrate
 	{
 		ListCell   *cur;
 
-		in_vacuum = true;
+		*in_vacuum = true;
 		VacuumFailsafeActive = false;
 		VacuumUpdateCosts();
 		VacuumCostBalance = 0;
@@ -680,7 +650,7 @@ vacuum(List *relations, const VacuumParams *params, BufferAccessStrategy bstrate
 	}
 	PG_FINALLY();
 	{
-		in_vacuum = false;
+		*in_vacuum = false;
 		VacuumCostActive = false;
 		VacuumFailsafeActive = false;
 		VacuumCostBalance = 0;
@@ -2260,8 +2230,8 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 	 * Check if the vacuum_max_eager_freeze_failure_rate table storage
 	 * parameter was specified. This overrides the GUC value.
 	 */
-	if (relopts != NULL && relopts->vacuum_max_eager_freeze_failure_rate >= 0)
-		params.max_eager_freeze_failure_rate = relopts->vacuum_max_eager_freeze_failure_rate;
+	if (relopts != NULL && relopts->relopt_vacuum_max_eager_freeze_failure_rate >= 0)
+		params.max_eager_freeze_failure_rate = relopts->relopt_vacuum_max_eager_freeze_failure_rate;
 
 	/*
 	 * Set truncate option based on truncate reloption or GUC if it wasn't
@@ -2269,9 +2239,9 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 	 */
 	if (params.truncate == VACOPTVALUE_UNSPECIFIED)
 	{
-		if (relopts && relopts->vacuum_truncate != PG_TERNARY_UNSET)
+		if (relopts && relopts->relopt_vacuum_truncate != PG_TERNARY_UNSET)
 		{
-			if (relopts->vacuum_truncate == PG_TERNARY_TRUE)
+			if (relopts->relopt_vacuum_truncate == PG_TERNARY_TRUE)
 				params.truncate = VACOPTVALUE_ENABLED;
 			else
 				params.truncate = VACOPTVALUE_DISABLED;

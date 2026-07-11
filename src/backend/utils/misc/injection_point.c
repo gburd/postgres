@@ -29,6 +29,7 @@
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 
@@ -87,11 +88,11 @@ typedef struct InjectionPointsCtl
 	InjectionPointEntry entries[MAX_INJECTION_POINTS];
 } InjectionPointsCtl;
 
-NON_EXEC_STATIC InjectionPointsCtl *ActiveInjectionPoints;
+PG_GLOBAL_SHMEM NON_EXEC_STATIC InjectionPointsCtl *ActiveInjectionPoints;
 
 /*
- * Backend local cache of injection callbacks already loaded, stored in
- * TopMemoryContext.
+ * Backend local cache of injection callbacks already loaded, stored in the
+ * current backend's utility cache context.
  */
 typedef struct InjectionPointCacheEntry
 {
@@ -108,7 +109,7 @@ typedef struct InjectionPointCacheEntry
 	uint64		generation;
 } InjectionPointCacheEntry;
 
-static HTAB *InjectionPointCache = NULL;
+#define InjectionPointCache (*PgCurrentInjectionPointCacheRef())
 
 static void InjectionPointShmemRequest(void *arg);
 static void InjectionPointShmemInit(void *arg);
@@ -135,7 +136,7 @@ injection_point_cache_add(const char *name,
 
 		hash_ctl.keysize = sizeof(char[INJ_NAME_MAXLEN]);
 		hash_ctl.entrysize = sizeof(InjectionPointCacheEntry);
-		hash_ctl.hcxt = TopMemoryContext;
+		hash_ctl.hcxt = PgCurrentUtilityCacheMemoryContext();
 
 		InjectionPointCache = hash_create("InjectionPoint cache hash",
 										  MAX_INJECTION_POINTS,

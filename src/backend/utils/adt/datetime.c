@@ -27,6 +27,7 @@
 #include "nodes/nodeFuncs.h"
 #include "parser/scansup.h"
 #include "utils/builtins.h"
+#include "utils/backend_runtime.h"
 #include "utils/date.h"
 #include "utils/datetime.h"
 #include "utils/guc.h"
@@ -79,11 +80,17 @@ const int	day_tab[2][13] =
 	{31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31, 0}
 };
 
-const char *const months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-"Jul", "Aug", "Sep", "Oct", "Nov", "Dec", NULL};
+PG_GLOBAL_IMMUTABLE const char *const months[] =
+{
+	"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+	"Jul", "Aug", "Sep", "Oct", "Nov", "Dec", NULL
+};
 
-const char *const days[] = {"Sunday", "Monday", "Tuesday", "Wednesday",
-"Thursday", "Friday", "Saturday", NULL};
+PG_GLOBAL_IMMUTABLE const char *const days[] =
+{
+	"Sunday", "Monday", "Tuesday", "Wednesday",
+	"Thursday", "Friday", "Saturday", NULL
+};
 
 
 /*****************************************************************************
@@ -252,25 +259,15 @@ static const datetkn deltatktbl[] = {
 
 static const int szdeltatktbl = sizeof deltatktbl / sizeof deltatktbl[0];
 
-static TimeZoneAbbrevTable *zoneabbrevtbl = NULL;
-
 /* Caches of recent lookup results in the above tables */
 
-static const datetkn *datecache[MAXDATEFIELDS] = {NULL};
+StaticAssertDecl(MAXDATEFIELDS == PG_BACKEND_MAX_DATE_FIELDS,
+				 "backend runtime date token cache size mismatch");
 
-static const datetkn *deltacache[MAXDATEFIELDS] = {NULL};
-
-/* Cache for results of timezone abbreviation lookups */
-
-typedef struct TzAbbrevCache
-{
-	char		abbrev[TOKMAXLEN + 1];	/* always NUL-terminated */
-	char		ftype;			/* TZ, DTZ, or DYNTZ */
-	int			offset;			/* GMT offset, if fixed-offset */
-	pg_tz	   *tz;				/* relevant zone, if variable-offset */
-} TzAbbrevCache;
-
-static TzAbbrevCache tzabbrevcache[MAXDATEFIELDS];
+#define datecache ((const datetkn **) PgCurrentDateTokenCache())
+#define deltacache ((const datetkn **) PgCurrentDeltaTokenCache())
+#define zoneabbrevtbl (*PgCurrentTimeZoneAbbrevTableRef())
+#define tzabbrevcache PgCurrentTimeZoneAbbrevCache()
 
 
 /*
@@ -398,6 +395,7 @@ void
 GetCurrentTimeUsec(struct pg_tm *tm, fsec_t *fsec, int *tzp)
 {
 	TimestampTz cur_ts = GetCurrentTransactionStartTimestamp();
+	PgSessionDateTimeState *datetime = PgCurrentSessionDateTimeState();
 
 	/*
 	 * The cache key must include both current time and current timezone.  By
@@ -407,40 +405,37 @@ GetCurrentTimeUsec(struct pg_tm *tm, fsec_t *fsec, int *tzp)
 	 * however, it might need another look if we ever allow entries in that
 	 * hash to be recycled.
 	 */
-	static TimestampTz cache_ts = 0;
-	static pg_tz *cache_timezone = NULL;
-	static struct pg_tm cache_tm;
-	static fsec_t cache_fsec;
-	static int	cache_tz;
-
-	if (cur_ts != cache_ts || session_timezone != cache_timezone)
+	if (cur_ts != datetime->current_time_cache_ts ||
+		session_timezone != datetime->current_time_cache_timezone)
 	{
 		/*
 		 * Make sure cache is marked invalid in case of error after partial
 		 * update within timestamp2tm.
 		 */
-		cache_timezone = NULL;
+		datetime->current_time_cache_timezone = NULL;
 
 		/*
 		 * Perform the computation, storing results into cache.  We do not
 		 * really expect any error here, since current time surely ought to be
 		 * within range, but check just for sanity's sake.
 		 */
-		if (timestamp2tm(cur_ts, &cache_tz, &cache_tm, &cache_fsec,
-						 NULL, session_timezone) != 0)
+		if (timestamp2tm(cur_ts, &datetime->current_time_cache_tz,
+						 &datetime->current_time_cache_tm,
+						 &datetime->current_time_cache_fsec, NULL,
+						 session_timezone) != 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATETIME_VALUE_OUT_OF_RANGE),
 					 errmsg("timestamp out of range")));
 
 		/* OK, so mark the cache valid. */
-		cache_ts = cur_ts;
-		cache_timezone = session_timezone;
+		datetime->current_time_cache_ts = cur_ts;
+		datetime->current_time_cache_timezone = session_timezone;
 	}
 
-	*tm = cache_tm;
-	*fsec = cache_fsec;
+	*tm = datetime->current_time_cache_tm;
+	*fsec = datetime->current_time_cache_fsec;
 	if (tzp != NULL)
-		*tzp = cache_tz;
+		*tzp = datetime->current_time_cache_tz;
 }
 
 
@@ -3161,7 +3156,7 @@ DecodeTimezoneAbbrev(int field, const char *lowtoken,
 					 int *ftype, int *offset, pg_tz **tz,
 					 DateTimeErrorExtra *extra)
 {
-	TzAbbrevCache *tzc = &tzabbrevcache[field];
+	PgSessionTzAbbrevCache *tzc = &tzabbrevcache[field];
 	bool		isfixed;
 	int			isdst;
 	const datetkn *tp;
@@ -3245,7 +3240,8 @@ DecodeTimezoneAbbrev(int field, const char *lowtoken,
 void
 ClearTimeZoneAbbrevCache(void)
 {
-	memset(tzabbrevcache, 0, sizeof(tzabbrevcache));
+	memset(tzabbrevcache, 0,
+		   sizeof(PgSessionTzAbbrevCache) * PG_BACKEND_MAX_DATE_FIELDS);
 }
 
 
@@ -5113,7 +5109,8 @@ InstallTimeZoneAbbrevs(TimeZoneAbbrevTable *tbl)
 {
 	zoneabbrevtbl = tbl;
 	/* reset tzabbrevcache, which may contain results from old table */
-	memset(tzabbrevcache, 0, sizeof(tzabbrevcache));
+	memset(tzabbrevcache, 0,
+		   sizeof(PgSessionTzAbbrevCache) * PG_BACKEND_MAX_DATE_FIELDS);
 }
 
 /*

@@ -1,6 +1,9 @@
 # Copyright (c) 2022-2026, PostgreSQL Global Development Group
 
 backend_sources += files(
+  'backend_runtime_parallel.c',
+  'backend_runtime_xact.c',
+  'backend_runtime_xlog.c',
   'clog.c',
   'commit_ts.c',
   'generic_xlog.c',

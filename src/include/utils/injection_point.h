@@ -12,6 +12,7 @@
 #define INJECTION_POINT_H
 
 #include "nodes/pg_list.h"
+#include "utils/global_lifetime.h"
 
 /*
  * Injection point data, used when retrieving a list of all the attached
@@ -61,7 +62,7 @@ extern bool InjectionPointDetach(const char *name);
 extern List *InjectionPointList(void);
 
 #ifdef EXEC_BACKEND
-extern PGDLLIMPORT struct InjectionPointsCtl *ActiveInjectionPoints;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM struct InjectionPointsCtl *ActiveInjectionPoints;
 #endif
 
 #endif							/* INJECTION_POINT_H */

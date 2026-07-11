@@ -71,6 +71,7 @@
 #include "tcop/pquery.h"
 #include "tcop/utility.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
@@ -85,12 +86,12 @@
  * We use a dlist instead of separate List cells so that we can guarantee
  * to save a CachedPlanSource without error.
  */
-static dlist_head saved_plan_list = DLIST_STATIC_INIT(saved_plan_list);
+#define saved_plan_list (*PgCurrentSavedPlanListRef())
 
 /*
  * This is the head of the backend's list of CachedExpressions.
  */
-static dlist_head cached_expression_list = DLIST_STATIC_INIT(cached_expression_list);
+#define cached_expression_list (*PgCurrentCachedExpressionListRef())
 
 static void ReleaseGenericPlan(CachedPlanSource *plansource);
 static bool StmtPlanRequiresRevalidation(CachedPlanSource *plansource);
@@ -142,9 +143,6 @@ ResourceOwnerForgetPlanCacheRef(ResourceOwner owner, CachedPlan *plan)
 }
 
 
-/* GUC parameter */
-int			plan_cache_mode = PLAN_CACHE_MODE_AUTO;
-
 /*
  * InitPlanCache: initialize module during InitPostgres.
  *
@@ -153,6 +151,9 @@ int			plan_cache_mode = PLAN_CACHE_MODE_AUTO;
 void
 InitPlanCache(void)
 {
+	dlist_init(&saved_plan_list);
+	dlist_init(&cached_expression_list);
+
 	CacheRegisterRelcacheCallback(PlanCacheRelCallback, (Datum) 0);
 	CacheRegisterSyscacheCallback(PROCOID, PlanCacheObjectCallback, (Datum) 0);
 	CacheRegisterSyscacheCallback(TYPEOID, PlanCacheObjectCallback, (Datum) 0);

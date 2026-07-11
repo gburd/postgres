@@ -23,6 +23,8 @@
 #define OPTIMIZER_H
 
 #include "nodes/parsenodes.h"
+#include "utils/backend_runtime_current.h"
+#include "utils/global_lifetime.h"
 
 typedef struct ExplainState ExplainState;	/* defined in explain_state.h */
 
@@ -70,15 +72,70 @@ extern Selectivity clauselist_selectivity_ext(PlannerInfo *root,
 /* in path/costsize.c: */
 
 /* widely used cost parameters */
-extern PGDLLIMPORT double seq_page_cost;
-extern PGDLLIMPORT double random_page_cost;
-extern PGDLLIMPORT double cpu_tuple_cost;
-extern PGDLLIMPORT double cpu_index_tuple_cost;
-extern PGDLLIMPORT double cpu_operator_cost;
-extern PGDLLIMPORT double parallel_tuple_cost;
-extern PGDLLIMPORT double parallel_setup_cost;
-extern PGDLLIMPORT double recursive_worktable_factor;
-extern PGDLLIMPORT int effective_cache_size;
+#ifndef PgCurrentSeqPageCostRef
+extern double *PgCurrentSeqPageCostRef(void);
+#endif
+#ifndef PgCurrentRandomPageCostRef
+extern double *PgCurrentRandomPageCostRef(void);
+#endif
+#ifndef PgCurrentCpuTupleCostRef
+extern double *PgCurrentCpuTupleCostRef(void);
+#endif
+#ifndef PgCurrentCpuIndexTupleCostRef
+extern double *PgCurrentCpuIndexTupleCostRef(void);
+#endif
+#ifndef PgCurrentCpuOperatorCostRef
+extern double *PgCurrentCpuOperatorCostRef(void);
+#endif
+#ifndef PgCurrentParallelTupleCostRef
+extern double *PgCurrentParallelTupleCostRef(void);
+#endif
+#ifndef PgCurrentParallelSetupCostRef
+extern double *PgCurrentParallelSetupCostRef(void);
+#endif
+#ifndef PgCurrentRecursiveWorktableFactorRef
+extern double *PgCurrentRecursiveWorktableFactorRef(void);
+#endif
+#ifndef PgCurrentEffectiveCacheSizeRef
+extern int *PgCurrentEffectiveCacheSizeRef(void);
+#endif
+
+#define seq_page_cost \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentSeqPageCostHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentSeqPageCostRef))
+#define random_page_cost \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentRandomPageCostHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentRandomPageCostRef))
+#define cpu_tuple_cost \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentCpuTupleCostHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentCpuTupleCostRef))
+#define cpu_index_tuple_cost \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentCpuIndexTupleCostHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentCpuIndexTupleCostRef))
+#define cpu_operator_cost \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentCpuOperatorCostHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentCpuOperatorCostRef))
+#define parallel_tuple_cost \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentParallelTupleCostHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentParallelTupleCostRef))
+#define parallel_setup_cost \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentParallelSetupCostHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentParallelSetupCostRef))
+#define recursive_worktable_factor \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentRecursiveWorktableFactorHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentRecursiveWorktableFactorRef))
+#define effective_cache_size \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEffectiveCacheSizeHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEffectiveCacheSizeRef))
 
 extern double clamp_row_est(double nrows);
 extern int32 clamp_width_est(int64 tuple_width);
@@ -99,9 +156,28 @@ typedef enum
 }			DebugParallelMode;
 
 /* GUC parameters */
-extern PGDLLIMPORT int debug_parallel_query;
-extern PGDLLIMPORT bool parallel_leader_participation;
-extern PGDLLIMPORT bool enable_distinct_reordering;
+#ifndef PgCurrentDebugParallelQueryRef
+extern int *PgCurrentDebugParallelQueryRef(void);
+#endif
+#ifndef PgCurrentParallelLeaderParticipationRef
+extern bool *PgCurrentParallelLeaderParticipationRef(void);
+#endif
+#ifndef PgCurrentEnableDistinctReorderingRef
+extern bool *PgCurrentEnableDistinctReorderingRef(void);
+#endif
+
+#define debug_parallel_query \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentDebugParallelQueryHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentDebugParallelQueryRef))
+#define parallel_leader_participation \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentParallelLeaderParticipationHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentParallelLeaderParticipationRef))
+#define enable_distinct_reordering \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableDistinctReorderingHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableDistinctReorderingRef))
 
 extern PlannedStmt *planner(Query *parse, const char *query_string,
 							int cursorOptions,

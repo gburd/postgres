@@ -76,6 +76,8 @@
 #include "postmaster/postmaster.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
+#include "storage/waiteventset.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc_hooks.h"
 #include "utils/memutils.h"
 
@@ -101,11 +103,11 @@
 /*
  * Configuration options
  */
-int			Unix_socket_permissions;
-char	   *Unix_socket_group;
+PG_GLOBAL_RUNTIME int Unix_socket_permissions;
+PG_GLOBAL_RUNTIME char *Unix_socket_group;
 
 /* Where the Unix socket files are (list of palloc'd strings) */
-static List *sock_paths = NIL;
+static PG_GLOBAL_RUNTIME List *sock_paths = NIL;
 
 /*
  * Buffers for low-level I/O.
@@ -114,23 +116,22 @@ static List *sock_paths = NIL;
  * enlarged by pq_putmessage_noblock() if the message doesn't fit otherwise.
  */
 
-#define PQ_SEND_BUFFER_SIZE 8192
-#define PQ_RECV_BUFFER_SIZE 8192
+#define PQ_SEND_BUFFER_SIZE PG_CONNECTION_SEND_BUFFER_SIZE
+#define PQ_RECV_BUFFER_SIZE PG_CONNECTION_RECV_BUFFER_SIZE
 
-static char *PqSendBuffer;
-static int	PqSendBufferSize;	/* Size send buffer */
-static size_t PqSendPointer;	/* Next index to store a byte in PqSendBuffer */
-static size_t PqSendStart;		/* Next index to send a byte in PqSendBuffer */
-
-static char PqRecvBuffer[PQ_RECV_BUFFER_SIZE];
-static int	PqRecvPointer;		/* Next index to read a byte from PqRecvBuffer */
-static int	PqRecvLength;		/* End of data available in PqRecvBuffer */
+#define PqSendBuffer (PqSocketIO()->send_buffer)
+#define PqSendBufferSize (PqSocketIO()->send_buffer_size)
+#define PqSendPointer (PqSocketIO()->send_pointer)
+#define PqSendStart (PqSocketIO()->send_start)
+#define PqRecvBuffer (PqSocketIO()->recv_buffer)
+#define PqRecvPointer (PqSocketIO()->recv_pointer)
+#define PqRecvLength (PqSocketIO()->recv_length)
 
 /*
  * Message status
  */
-static bool PqCommBusy;			/* busy sending data to the client */
-static bool PqCommReadingMsg;	/* in the middle of reading a message */
+#define PqCommBusy (PqSocketIO()->comm_busy)
+#define PqCommReadingMsg (PqSocketIO()->comm_reading_msg)
 
 
 /* Internal functions */
@@ -142,8 +143,23 @@ static int	socket_flush_if_writable(void);
 static bool socket_is_send_pending(void);
 static int	socket_putmessage(char msgtype, const char *s, size_t len);
 static void socket_putmessage_noblock(char msgtype, const char *s, size_t len);
-static inline int internal_putbytes(const void *b, size_t len);
-static inline int internal_flush(void);
+static inline PgConnectionSocketIOState *PqSocketIO(void);
+static pg_always_inline void pq_advance_recv_pointer(PgConnectionSocketIOState *io,
+															   size_t amount);
+static bool pq_connection_transport_buffered_input(PgConnection *connection);
+static uint32 pq_connection_transport_wait_events(PgConnection *connection);
+static int	pq_probe_recvbuf(PgConnection *connection);
+static PgProtocolByteResult pq_probe_message_type(PgConnection *connection,
+												  PgProtocolByteProbe *probe,
+												  bool probe_kernel);
+static inline int pq_getbyte_from(PgConnectionSocketIOState *io);
+static inline int pq_getbytes_from(PgConnectionSocketIOState *io,
+								   void *b, size_t len);
+static inline void pq_ensure_recv_buffer(PgConnectionSocketIOState *io);
+static int	pq_discardbytes_from(PgConnectionSocketIOState *io, size_t len);
+static inline int internal_putbytes(PgConnectionSocketIOState *io,
+								   const void *b, size_t len);
+static inline int internal_flush(PgConnectionSocketIOState *io);
 static pg_noinline int internal_flush_buffer(const char *buf, size_t *start,
 											 size_t *end);
 
@@ -159,9 +175,92 @@ static const PQcommMethods PqCommSocketMethods = {
 	.putmessage_noblock = socket_putmessage_noblock
 };
 
-const PQcommMethods *PqCommMethods = &PqCommSocketMethods;
+static inline PgConnectionSocketIOState *
+PqSocketIO(void)
+{
+	PgConnectionSocketIOState *io = CurrentPgConnectionSocketIORuntimeState;
 
-WaitEventSet *FeBeWaitSet;
+	if (likely(io != NULL))
+	{
+		Assert(CurrentPgConnection == NULL ||
+			   io == &CurrentPgConnection->socket_io);
+		return io;
+	}
+
+	return PgCurrentConnectionSocketIORef();
+}
+
+static inline void
+pq_ensure_recv_buffer(PgConnectionSocketIOState *io)
+{
+	Assert(io != NULL);
+
+	if (io->recv_buffer == NULL)
+		io->recv_buffer = MemoryContextAlloc(PgRuntimeGetOwnedMemoryContext(
+												 PgCurrentConnectionSocketIOContextRef(),
+												 "socket I/O connection state"),
+											 PQ_RECV_BUFFER_SIZE);
+}
+
+static pg_always_inline void
+pq_advance_recv_pointer(PgConnectionSocketIOState *io, size_t amount)
+{
+	Assert(io != NULL);
+
+	io->recv_pointer += amount;
+}
+
+static bool
+pq_connection_transport_buffered_input(PgConnection *connection)
+{
+	Port	   *port;
+	PgConnectionSocketIOState *io;
+	PgConnectionSecurityState *security;
+
+	Assert(connection != NULL);
+
+	io = &connection->socket_io;
+	if (io->recv_pointer < io->recv_length)
+		return true;
+
+	port = connection->identity.port;
+	if (port != NULL && port->raw_buf_remaining > 0)
+		return true;
+
+	security = &connection->security;
+	if (security->gss_result_next < security->gss_result_length)
+		return true;
+
+	return false;
+}
+
+static uint32
+pq_connection_transport_wait_events(PgConnection *connection)
+{
+	PgConnectionSecurityState *security;
+	Port	   *port;
+
+	Assert(connection != NULL);
+
+	security = &connection->security;
+	if (security->gss_send_next < security->gss_send_length)
+		return WL_SOCKET_WRITEABLE;
+
+	port = connection->identity.port;
+	if (port == NULL)
+		return 0;
+
+#ifdef USE_SSL
+	if (port->ssl_in_use)
+		return 0;
+#endif
+#ifdef ENABLE_GSS
+	if (port->gss && port->gss->enc)
+		return 0;
+#endif
+
+	return WL_SOCKET_READABLE;
+}
 
 
 /* --------------------------------
@@ -171,12 +270,18 @@ WaitEventSet *FeBeWaitSet;
 Port *
 pq_init(ClientSocket *client_sock)
 {
+	MemoryContext oldcontext;
+	MemoryContext port_context;
 	Port	   *port;
 	int			socket_pos PG_USED_FOR_ASSERTS_ONLY;
 	int			latch_pos PG_USED_FOR_ASSERTS_ONLY;
 
 	/* allocate the Port struct and copy the ClientSocket contents to it */
+	port_context = PgRuntimeGetOwnedMemoryContextWithSizes(
+		PgCurrentPortContextRef(), "PortContext", ALLOCSET_START_SMALL_SIZES);
+	oldcontext = MemoryContextSwitchTo(port_context);
 	port = palloc0_object(Port);
+	MemoryContextSwitchTo(oldcontext);
 	port->sock = client_sock->sock;
 	memcpy(&port->raddr.addr, &client_sock->raddr.addr, client_sock->raddr.salen);
 	port->raddr.salen = client_sock->raddr.salen;
@@ -274,14 +379,31 @@ pq_init(ClientSocket *client_sock)
 	}
 
 	/* initialize state variables */
+	PqCommMethods = &PqCommSocketMethods;
 	PqSendBufferSize = PQ_SEND_BUFFER_SIZE;
-	PqSendBuffer = MemoryContextAlloc(TopMemoryContext, PqSendBufferSize);
+	{
+		MemoryContext socket_io_context;
+
+		socket_io_context =
+			PgRuntimeGetOwnedMemoryContext(PgCurrentConnectionSocketIOContextRef(),
+										   "socket I/O connection state");
+		PqSendBuffer = MemoryContextAlloc(socket_io_context, PqSendBufferSize);
+		PqRecvBuffer = MemoryContextAlloc(socket_io_context, PQ_RECV_BUFFER_SIZE);
+	}
 	PqSendPointer = PqSendStart = PqRecvPointer = PqRecvLength = 0;
 	PqCommBusy = false;
 	PqCommReadingMsg = false;
 
 	/* set up process-exit hook to close the socket */
 	on_proc_exit(socket_close, 0);
+
+	/*
+	 * The Port now owns the accepted socket and socket_close() is registered
+	 * as its exit backstop.  Mark the launch-time ClientSocket as consumed so
+	 * threaded backend teardown can distinguish an early-startup failure from
+	 * a descriptor already owned by MyProcPort.
+	 */
+	client_sock->sock = PGINVALID_SOCKET;
 
 	/*
 	 * In backends (as soon as forked) we operate the underlying socket in
@@ -346,9 +468,46 @@ socket_comm_reset(void)
 static void
 socket_close(int code, Datum arg)
 {
+	PgConnection *connection = CurrentPgConnection;
+	MemoryContext port_context = NULL;
+	MemoryContext *port_context_ref = PgCurrentPortContextRef();
+	MemoryContext *socket_io_context = PgCurrentConnectionSocketIOContextRef();
+
+	if (FeBeWaitSet != NULL)
+	{
+		FreeWaitEventSet(FeBeWaitSet);
+		FeBeWaitSet = NULL;
+	}
+
+	if (*socket_io_context != NULL)
+	{
+		PgRuntimeDeleteOwnedMemoryContext(socket_io_context);
+		PqSendBuffer = NULL;
+		PqRecvBuffer = NULL;
+		PqSendBufferSize = 0;
+		PqSendPointer = PqSendStart = 0;
+		PqRecvPointer = PqRecvLength = 0;
+	}
+	else if (PqSendBuffer != NULL || PqRecvBuffer != NULL)
+	{
+		if (PqSendBuffer != NULL)
+			pfree(PqSendBuffer);
+		if (PqRecvBuffer != NULL)
+			pfree(PqRecvBuffer);
+		PqSendBuffer = NULL;
+		PqRecvBuffer = NULL;
+		PqSendBufferSize = 0;
+		PqSendPointer = PqSendStart = 0;
+		PqRecvPointer = PqRecvLength = 0;
+	}
+
 	/* Nothing to do in a standalone backend, where MyProcPort is NULL. */
 	if (MyProcPort != NULL)
 	{
+		port_context = *port_context_ref;
+		if (port_context == NULL)
+			port_context = GetMemoryChunkContext(MyProcPort);
+
 #ifdef ENABLE_GSS
 		/*
 		 * Shutdown GSSAPI layer.  This section does nothing when interrupting
@@ -377,17 +536,29 @@ socket_close(int code, Datum arg)
 		secure_close(MyProcPort);
 
 		/*
-		 * Formerly we did an explicit close() here, but it seems better to
-		 * leave the socket open until the process dies.  This allows clients
-		 * to perform a "synchronous close" if they care --- wait till the
-		 * transport layer reports connection closure, and you can be sure the
-		 * backend has exited.
-		 *
-		 * We do set sock to PGINVALID_SOCKET to prevent any further I/O,
-		 * though.
+		 * Process backends leave the socket open until process death, which
+		 * allows clients to perform a synchronous close.  Threaded backends
+		 * cannot rely on process exit to release the accepted descriptor.
 		 */
+		if (PgRuntimeIsThreadBacked(CurrentPgRuntime) &&
+			MyProcPort->sock != PGINVALID_SOCKET)
+			closesocket(MyProcPort->sock);
+
+		/* Prevent any further I/O through this Port. */
 		MyProcPort->sock = PGINVALID_SOCKET;
+
+		if (port_context != NULL && port_context != TopMemoryContext)
+		{
+			MyProcPort = NULL;
+			if (*port_context_ref == port_context)
+				PgRuntimeDeleteOwnedMemoryContext(port_context_ref);
+			else
+				MemoryContextDelete(port_context);
+		}
 	}
+
+	if (connection != NULL)
+		PgConnectionResetClosedState(connection);
 }
 
 
@@ -892,34 +1063,36 @@ socket_set_nonblocking(bool nonblocking)
  * --------------------------------
  */
 static int
-pq_recvbuf(void)
+pq_recvbuf(PgConnectionSocketIOState *io)
 {
-	if (PqRecvPointer > 0)
+	pq_ensure_recv_buffer(io);
+
+	if (io->recv_pointer > 0)
 	{
-		if (PqRecvLength > PqRecvPointer)
+		if (io->recv_length > io->recv_pointer)
 		{
 			/* still some unread data, left-justify it in the buffer */
-			memmove(PqRecvBuffer, PqRecvBuffer + PqRecvPointer,
-					PqRecvLength - PqRecvPointer);
-			PqRecvLength -= PqRecvPointer;
-			PqRecvPointer = 0;
+			memmove(io->recv_buffer, io->recv_buffer + io->recv_pointer,
+					io->recv_length - io->recv_pointer);
+			io->recv_length -= io->recv_pointer;
+			io->recv_pointer = 0;
 		}
 		else
-			PqRecvLength = PqRecvPointer = 0;
+			io->recv_length = io->recv_pointer = 0;
 	}
 
 	/* Ensure that we're in blocking mode */
 	socket_set_nonblocking(false);
 
-	/* Can fill buffer from PqRecvLength and upwards */
+	/* Can fill buffer from io->recv_length and upwards */
 	for (;;)
 	{
 		ssize_t		r;
 
 		errno = 0;
 
-		r = secure_read(MyProcPort, PqRecvBuffer + PqRecvLength,
-						PQ_RECV_BUFFER_SIZE - PqRecvLength);
+		r = secure_read(MyProcPort, io->recv_buffer + io->recv_length,
+						PQ_RECV_BUFFER_SIZE - io->recv_length);
 
 		if (r < 0)
 		{
@@ -948,7 +1121,8 @@ pq_recvbuf(void)
 			return EOF;
 		}
 		/* r contains number of bytes read, so just incr length */
-		PqRecvLength += r;
+		io->recv_length += r;
+		io->transport_generation++;
 		return 0;
 	}
 }
@@ -960,14 +1134,28 @@ pq_recvbuf(void)
 int
 pq_getbyte(void)
 {
-	Assert(PqCommReadingMsg);
+	PgConnectionSocketIOState *io = PqSocketIO();
 
-	while (PqRecvPointer >= PqRecvLength)
+	return pq_getbyte_from(io);
+}
+
+static inline int
+pq_getbyte_from(PgConnectionSocketIOState *io)
+{
+
+	Assert(io->comm_reading_msg);
+
+	while (io->recv_pointer >= io->recv_length)
 	{
-		if (pq_recvbuf())		/* If nothing in buffer, then recv some */
+		if (pq_recvbuf(io))		/* If nothing in buffer, then recv some */
 			return EOF;			/* Failed to recv data */
 	}
-	return (unsigned char) PqRecvBuffer[PqRecvPointer++];
+	{
+		unsigned char c = (unsigned char) io->recv_buffer[io->recv_pointer];
+
+		pq_advance_recv_pointer(io, 1);
+		return c;
+	}
 }
 
 /* --------------------------------
@@ -979,14 +1167,16 @@ pq_getbyte(void)
 int
 pq_peekbyte(void)
 {
-	Assert(PqCommReadingMsg);
+	PgConnectionSocketIOState *io = PqSocketIO();
 
-	while (PqRecvPointer >= PqRecvLength)
+	Assert(io->comm_reading_msg);
+
+	while (io->recv_pointer >= io->recv_length)
 	{
-		if (pq_recvbuf())		/* If nothing in buffer, then recv some */
+		if (pq_recvbuf(io))		/* If nothing in buffer, then recv some */
 			return EOF;			/* Failed to recv data */
 	}
-	return (unsigned char) PqRecvBuffer[PqRecvPointer];
+	return (unsigned char) io->recv_buffer[io->recv_pointer];
 }
 
 /* --------------------------------
@@ -1000,13 +1190,15 @@ pq_peekbyte(void)
 int
 pq_getbyte_if_available(unsigned char *c)
 {
+	PgConnectionSocketIOState *io = PqSocketIO();
 	ssize_t		r;
 
-	Assert(PqCommReadingMsg);
+	Assert(io->comm_reading_msg);
 
-	if (PqRecvPointer < PqRecvLength)
+	if (io->recv_pointer < io->recv_length)
 	{
-		*c = PqRecvBuffer[PqRecvPointer++];
+		*c = io->recv_buffer[io->recv_pointer];
+		pq_advance_recv_pointer(io, 1);
 		return 1;
 	}
 
@@ -1046,6 +1238,8 @@ pq_getbyte_if_available(unsigned char *c)
 		/* EOF detected */
 		r = EOF;
 	}
+	else
+		io->transport_generation++;
 
 	return r;
 }
@@ -1059,56 +1253,55 @@ pq_getbyte_if_available(unsigned char *c)
 int
 pq_getbytes(void *b, size_t len)
 {
+	PgConnectionSocketIOState *io = PqSocketIO();
+
+	return pq_getbytes_from(io, b, len);
+}
+
+static inline int
+pq_getbytes_from(PgConnectionSocketIOState *io, void *b, size_t len)
+{
 	char	   *s = b;
 	size_t		amount;
 
-	Assert(PqCommReadingMsg);
+	Assert(io->comm_reading_msg);
 
 	while (len > 0)
 	{
-		while (PqRecvPointer >= PqRecvLength)
+		while (io->recv_pointer >= io->recv_length)
 		{
-			if (pq_recvbuf())	/* If nothing in buffer, then recv some */
+			if (pq_recvbuf(io)) /* If nothing in buffer, then recv some */
 				return EOF;		/* Failed to recv data */
 		}
-		amount = PqRecvLength - PqRecvPointer;
+		amount = io->recv_length - io->recv_pointer;
 		if (amount > len)
 			amount = len;
-		memcpy(s, PqRecvBuffer + PqRecvPointer, amount);
-		PqRecvPointer += amount;
+		memcpy(s, io->recv_buffer + io->recv_pointer, amount);
+		pq_advance_recv_pointer(io, amount);
 		s += amount;
 		len -= amount;
 	}
 	return 0;
 }
 
-/* --------------------------------
- *		pq_discardbytes		- throw away a known number of bytes
- *
- *		same as pq_getbytes except we do not copy the data to anyplace.
- *		this is used for resynchronizing after read errors.
- *
- *		returns 0 if OK, EOF if trouble
- * --------------------------------
- */
 static int
-pq_discardbytes(size_t len)
+pq_discardbytes_from(PgConnectionSocketIOState *io, size_t len)
 {
 	size_t		amount;
 
-	Assert(PqCommReadingMsg);
+	Assert(io->comm_reading_msg);
 
 	while (len > 0)
 	{
-		while (PqRecvPointer >= PqRecvLength)
+		while (io->recv_pointer >= io->recv_length)
 		{
-			if (pq_recvbuf())	/* If nothing in buffer, then recv some */
+			if (pq_recvbuf(io)) /* If nothing in buffer, then recv some */
 				return EOF;		/* Failed to recv data */
 		}
-		amount = PqRecvLength - PqRecvPointer;
+		amount = io->recv_length - io->recv_pointer;
 		if (amount > len)
 			amount = len;
-		PqRecvPointer += amount;
+		pq_advance_recv_pointer(io, amount);
 		len -= amount;
 	}
 	return 0;
@@ -1124,8 +1317,68 @@ pq_discardbytes(size_t len)
 ssize_t
 pq_buffer_remaining_data(void)
 {
-	Assert(PqRecvLength >= PqRecvPointer);
-	return (PqRecvLength - PqRecvPointer);
+	PgConnectionSocketIOState *io = PqSocketIO();
+
+	Assert(io->recv_length >= io->recv_pointer);
+	return (io->recv_length - io->recv_pointer);
+}
+
+static int
+pq_probe_recvbuf(PgConnection *connection)
+{
+	PgConnectionSocketIOState *io;
+	Port	   *port;
+	size_t		old_recv_pointer;
+	size_t		old_recv_length;
+	bool		saved_noblock;
+	int			r;
+
+	Assert(connection != NULL);
+	io = &connection->socket_io;
+	port = connection->identity.port;
+	Assert(port != NULL);
+	Assert(io->recv_pointer >= io->recv_length);
+
+	old_recv_pointer = io->recv_pointer;
+	old_recv_length = io->recv_length;
+
+	pq_ensure_recv_buffer(io);
+	io->recv_pointer = 0;
+	io->recv_length = 0;
+
+	saved_noblock = port->noblock;
+	port->noblock = true;
+
+	errno = 0;
+	r = secure_read(port, io->recv_buffer, PQ_RECV_BUFFER_SIZE);
+	port->noblock = saved_noblock;
+	if (r < 0)
+	{
+		if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+		{
+			io->recv_pointer = old_recv_pointer;
+			io->recv_length = old_recv_length;
+			return 0;
+		}
+
+		if (errno != 0)
+			ereport(COMMERROR,
+					(errcode_for_socket_access(),
+					 errmsg("could not receive data from client: %m")));
+		io->recv_pointer = old_recv_pointer;
+		io->recv_length = old_recv_length;
+		return EOF;
+	}
+	if (r == 0)
+	{
+		io->recv_pointer = old_recv_pointer;
+		io->recv_length = old_recv_length;
+		return EOF;
+	}
+
+	io->recv_length = r;
+	io->transport_generation++;
+	return 1;
 }
 
 
@@ -1138,16 +1391,159 @@ pq_buffer_remaining_data(void)
 void
 pq_startmsgread(void)
 {
+	PgConnectionSocketIOState *io = PqSocketIO();
+
 	/*
 	 * There shouldn't be a read active already, but let's check just to be
 	 * sure.
 	 */
-	if (PqCommReadingMsg)
+	if (io->comm_reading_msg)
 		ereport(FATAL,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg("terminating connection because protocol synchronization was lost")));
 
-	PqCommReadingMsg = true;
+	io->comm_reading_msg = true;
+}
+
+/*
+ * Begin reading a frontend message and return its message type byte.
+ */
+int
+pq_startmsgread_getbyte(void)
+{
+	PgConnectionSocketIOState *io = PqSocketIO();
+
+	/*
+	 * There shouldn't be a read active already, but let's check just to be
+	 * sure.
+	 */
+	if (io->comm_reading_msg)
+		ereport(FATAL,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("terminating connection because protocol synchronization was lost")));
+
+	io->comm_reading_msg = true;
+	return pq_getbyte_from(io);
+}
+
+bool
+PgConnectionCanParkBeforeMessage(PgConnection *connection)
+{
+	if (connection == NULL)
+		return false;
+
+	return !connection->socket_io.comm_reading_msg;
+}
+
+void
+PgConnectionReleaseIdleRecvBuffer(PgConnection *connection)
+{
+	PgConnectionSocketIOState *io;
+
+	if (connection == NULL)
+		return;
+
+	io = &connection->socket_io;
+	if (io->recv_buffer == NULL)
+		return;
+	if (io->comm_reading_msg)
+		return;
+	if (io->recv_pointer < io->recv_length)
+		return;
+
+	pfree(io->recv_buffer);
+	io->recv_buffer = NULL;
+	io->recv_pointer = 0;
+	io->recv_length = 0;
+}
+
+static PgProtocolByteResult
+pq_probe_message_type(PgConnection *connection, PgProtocolByteProbe *probe,
+					  bool probe_kernel)
+{
+	PgConnectionSocketIOState *io;
+	Port	   *port;
+	unsigned char c;
+	bool		buffered_input;
+	uint32		wait_events;
+	int			r;
+
+	Assert(connection != NULL);
+
+	io = &connection->socket_io;
+	if (probe != NULL)
+		MemSet(probe, 0, sizeof(*probe));
+
+	if (io->comm_reading_msg)
+		ereport(FATAL,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("terminating connection because protocol synchronization was lost")));
+
+	buffered_input = pq_connection_transport_buffered_input(connection);
+	wait_events = pq_connection_transport_wait_events(connection);
+	if (probe != NULL)
+	{
+		probe->transport_wait_events = wait_events;
+		probe->transport_buffered_input = buffered_input;
+		probe->transport_generation = io->transport_generation;
+	}
+
+	if (io->recv_pointer < io->recv_length)
+	{
+		c = (unsigned char) io->recv_buffer[io->recv_pointer];
+		pq_advance_recv_pointer(io, 1);
+		io->comm_reading_msg = true;
+		if (probe != NULL)
+		{
+			probe->type = c;
+			probe->transport_wait_events = 0;
+			probe->transport_buffered_input = true;
+			probe->transport_generation = io->transport_generation;
+		}
+		return PG_PROTOCOL_BYTE_AVAILABLE;
+	}
+
+	port = connection->identity.port;
+	if (port == NULL)
+		return PG_PROTOCOL_BYTE_EOF;
+
+	if (!probe_kernel && !buffered_input)
+		return PG_PROTOCOL_BYTE_NONE;
+
+	if (wait_events == 0 && !buffered_input)
+		return PG_PROTOCOL_BYTE_NONE;
+
+	r = pq_probe_recvbuf(connection);
+	if (r == 0)
+		return PG_PROTOCOL_BYTE_NONE;
+	if (r == EOF)
+		return PG_PROTOCOL_BYTE_EOF;
+
+	c = (unsigned char) io->recv_buffer[io->recv_pointer];
+	pq_advance_recv_pointer(io, 1);
+	io->comm_reading_msg = true;
+	if (probe != NULL)
+	{
+		probe->type = c;
+		probe->transport_wait_events = 0;
+		probe->transport_buffered_input = buffered_input;
+		probe->transport_generation = io->transport_generation;
+	}
+	return PG_PROTOCOL_BYTE_AVAILABLE;
+}
+
+PgProtocolByteResult
+PgConnectionProbeBufferedMessageType(PgConnection *connection,
+									 PgProtocolByteProbe *probe)
+{
+	return pq_probe_message_type(connection, probe, false);
+}
+
+PgProtocolByteResult
+PgConnectionProbeMessageType(PgConnection *connection,
+							 PgProtocolByteProbe *probe)
+{
+	return pq_probe_message_type(connection, probe, true);
 }
 
 
@@ -1162,9 +1558,11 @@ pq_startmsgread(void)
 void
 pq_endmsgread(void)
 {
-	Assert(PqCommReadingMsg);
+	PgConnectionSocketIOState *io = PqSocketIO();
 
-	PqCommReadingMsg = false;
+	Assert(io->comm_reading_msg);
+
+	io->comm_reading_msg = false;
 }
 
 /* --------------------------------
@@ -1178,7 +1576,9 @@ pq_endmsgread(void)
 bool
 pq_is_reading_msg(void)
 {
-	return PqCommReadingMsg;
+	PgConnectionSocketIOState *io = PqSocketIO();
+
+	return io->comm_reading_msg;
 }
 
 /* --------------------------------
@@ -1200,14 +1600,15 @@ pq_is_reading_msg(void)
 int
 pq_getmessage(StringInfo s, int maxlen)
 {
+	PgConnectionSocketIOState *io = PqSocketIO();
 	int32		len;
 
-	Assert(PqCommReadingMsg);
+	Assert(io->comm_reading_msg);
 
 	resetStringInfo(s);
 
 	/* Read message length word */
-	if (pq_getbytes(&len, 4) == EOF)
+	if (pq_getbytes_from(io, &len, 4) == EOF)
 	{
 		ereport(COMMERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
@@ -1240,19 +1641,19 @@ pq_getmessage(StringInfo s, int maxlen)
 		}
 		PG_CATCH();
 		{
-			if (pq_discardbytes(len) == EOF)
+			if (pq_discardbytes_from(io, len) == EOF)
 				ereport(COMMERROR,
 						(errcode(ERRCODE_PROTOCOL_VIOLATION),
 						 errmsg("incomplete message from client")));
 
 			/* we discarded the rest of the message so we're back in sync. */
-			PqCommReadingMsg = false;
+			io->comm_reading_msg = false;
 			PG_RE_THROW();
 		}
 		PG_END_TRY();
 
 		/* And grab the message */
-		if (pq_getbytes(s->data, len) == EOF)
+		if (pq_getbytes_from(io, s->data, len) == EOF)
 		{
 			ereport(COMMERROR,
 					(errcode(ERRCODE_PROTOCOL_VIOLATION),
@@ -1265,24 +1666,24 @@ pq_getmessage(StringInfo s, int maxlen)
 	}
 
 	/* finished reading the message. */
-	PqCommReadingMsg = false;
+	io->comm_reading_msg = false;
 
 	return 0;
 }
 
 
 static inline int
-internal_putbytes(const void *b, size_t len)
+internal_putbytes(PgConnectionSocketIOState *io, const void *b, size_t len)
 {
 	const char *s = b;
 
 	while (len > 0)
 	{
 		/* If buffer is full, then flush it out */
-		if (PqSendPointer >= PqSendBufferSize)
+		if (io->send_pointer >= io->send_buffer_size)
 		{
 			socket_set_nonblocking(false);
-			if (internal_flush())
+			if (internal_flush(io))
 				return EOF;
 		}
 
@@ -1291,7 +1692,8 @@ internal_putbytes(const void *b, size_t len)
 		 * size, send it without buffering.  Otherwise, copy as much data as
 		 * possible into the buffer.
 		 */
-		if (len >= PqSendBufferSize && PqSendStart == PqSendPointer)
+		if (len >= io->send_buffer_size &&
+			io->send_start == io->send_pointer)
 		{
 			size_t		start = 0;
 
@@ -1301,12 +1703,12 @@ internal_putbytes(const void *b, size_t len)
 		}
 		else
 		{
-			size_t		amount = PqSendBufferSize - PqSendPointer;
+			size_t		amount = io->send_buffer_size - io->send_pointer;
 
 			if (amount > len)
 				amount = len;
-			memcpy(PqSendBuffer + PqSendPointer, s, amount);
-			PqSendPointer += amount;
+			memcpy(io->send_buffer + io->send_pointer, s, amount);
+			io->send_pointer += amount;
 			s += amount;
 			len -= amount;
 		}
@@ -1324,15 +1726,16 @@ internal_putbytes(const void *b, size_t len)
 static int
 socket_flush(void)
 {
+	PgConnectionSocketIOState *io = PqSocketIO();
 	int			res;
 
 	/* No-op if reentrant call */
-	if (PqCommBusy)
+	if (io->comm_busy)
 		return 0;
-	PqCommBusy = true;
+	io->comm_busy = true;
 	socket_set_nonblocking(false);
-	res = internal_flush();
-	PqCommBusy = false;
+	res = internal_flush(io);
+	io->comm_busy = false;
 	return res;
 }
 
@@ -1344,9 +1747,10 @@ socket_flush(void)
  * --------------------------------
  */
 static inline int
-internal_flush(void)
+internal_flush(PgConnectionSocketIOState *io)
 {
-	return internal_flush_buffer(PqSendBuffer, &PqSendStart, &PqSendPointer);
+	return internal_flush_buffer(io->send_buffer, &io->send_start,
+								 &io->send_pointer);
 }
 
 /* --------------------------------
@@ -1432,22 +1836,23 @@ internal_flush_buffer(const char *buf, size_t *start, size_t *end)
 static int
 socket_flush_if_writable(void)
 {
+	PgConnectionSocketIOState *io = PqSocketIO();
 	int			res;
 
 	/* Quick exit if nothing to do */
-	if (PqSendPointer == PqSendStart)
+	if (io->send_pointer == io->send_start)
 		return 0;
 
 	/* No-op if reentrant call */
-	if (PqCommBusy)
+	if (io->comm_busy)
 		return 0;
 
 	/* Temporarily put the socket into non-blocking mode */
 	socket_set_nonblocking(true);
 
-	PqCommBusy = true;
-	res = internal_flush();
-	PqCommBusy = false;
+	io->comm_busy = true;
+	res = internal_flush(io);
+	io->comm_busy = false;
 	return res;
 }
 
@@ -1458,7 +1863,9 @@ socket_flush_if_writable(void)
 static bool
 socket_is_send_pending(void)
 {
-	return (PqSendStart < PqSendPointer);
+	PgConnectionSocketIOState *io = PqSocketIO();
+
+	return (io->send_start < io->send_pointer);
 }
 
 /* --------------------------------
@@ -1488,27 +1895,28 @@ socket_is_send_pending(void)
 static int
 socket_putmessage(char msgtype, const char *s, size_t len)
 {
+	PgConnectionSocketIOState *io = PqSocketIO();
 	uint32		n32;
 
 	Assert(msgtype != 0);
 
-	if (PqCommBusy)
+	if (io->comm_busy)
 		return 0;
-	PqCommBusy = true;
-	if (internal_putbytes(&msgtype, 1))
+	io->comm_busy = true;
+	if (internal_putbytes(io, &msgtype, 1))
 		goto fail;
 
 	n32 = pg_hton32((uint32) (len + 4));
-	if (internal_putbytes(&n32, 4))
+	if (internal_putbytes(io, &n32, 4))
 		goto fail;
 
-	if (internal_putbytes(s, len))
+	if (internal_putbytes(io, s, len))
 		goto fail;
-	PqCommBusy = false;
+	io->comm_busy = false;
 	return 0;
 
 fail:
-	PqCommBusy = false;
+	io->comm_busy = false;
 	return EOF;
 }
 
@@ -1521,6 +1929,7 @@ fail:
 static void
 socket_putmessage_noblock(char msgtype, const char *s, size_t len)
 {
+	PgConnectionSocketIOState *io = PqSocketIO();
 	int			res PG_USED_FOR_ASSERTS_ONLY;
 	int			required;
 
@@ -1528,11 +1937,11 @@ socket_putmessage_noblock(char msgtype, const char *s, size_t len)
 	 * Ensure we have enough space in the output buffer for the message header
 	 * as well as the message itself.
 	 */
-	required = PqSendPointer + 1 + 4 + len;
-	if (required > PqSendBufferSize)
+	required = io->send_pointer + 1 + 4 + len;
+	if (required > io->send_buffer_size)
 	{
-		PqSendBuffer = repalloc(PqSendBuffer, required);
-		PqSendBufferSize = required;
+		io->send_buffer = repalloc(io->send_buffer, required);
+		io->send_buffer_size = required;
 	}
 	res = socket_putmessage(msgtype, s, len);
 	Assert(res == 0);			/* should not fail when the message fits in
@@ -1558,21 +1967,23 @@ socket_putmessage_noblock(char msgtype, const char *s, size_t len)
 int
 pq_putmessage_v2(char msgtype, const char *s, size_t len)
 {
+	PgConnectionSocketIOState *io = PqSocketIO();
+
 	Assert(msgtype != 0);
 
-	if (PqCommBusy)
+	if (io->comm_busy)
 		return 0;
-	PqCommBusy = true;
-	if (internal_putbytes(&msgtype, 1))
+	io->comm_busy = true;
+	if (internal_putbytes(io, &msgtype, 1))
 		goto fail;
 
-	if (internal_putbytes(s, len))
+	if (internal_putbytes(io, s, len))
 		goto fail;
-	PqCommBusy = false;
+	io->comm_busy = false;
 	return 0;
 
 fail:
-	PqCommBusy = false;
+	io->comm_busy = false;
 	return EOF;
 }
 
@@ -1877,8 +2288,8 @@ pq_gettcpusertimeout(Port *port)
 	if (port == NULL || port->laddr.addr.ss_family == AF_UNIX)
 		return 0;
 
-	if (port->tcp_user_timeout != 0)
-		return port->tcp_user_timeout;
+	if (port->socket_tcp_user_timeout != 0)
+		return port->socket_tcp_user_timeout;
 
 	if (port->default_tcp_user_timeout == 0)
 	{
@@ -1907,7 +2318,7 @@ pq_settcpusertimeout(int timeout, Port *port)
 		return STATUS_OK;
 
 #ifdef TCP_USER_TIMEOUT
-	if (timeout == port->tcp_user_timeout)
+	if (timeout == port->socket_tcp_user_timeout)
 		return STATUS_OK;
 
 	if (port->default_tcp_user_timeout <= 0)
@@ -1932,7 +2343,7 @@ pq_settcpusertimeout(int timeout, Port *port)
 		return STATUS_ERROR;
 	}
 
-	port->tcp_user_timeout = timeout;
+	port->socket_tcp_user_timeout = timeout;
 #else
 	if (timeout != 0)
 	{

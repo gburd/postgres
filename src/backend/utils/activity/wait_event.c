@@ -26,6 +26,7 @@
 #include "storage/lwlock.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/wait_event.h"
 
 
@@ -36,9 +37,6 @@ static const char *pgstat_get_wait_ipc(WaitEventIPC w);
 static const char *pgstat_get_wait_timeout(WaitEventTimeout w);
 static const char *pgstat_get_wait_io(WaitEventIO w);
 
-
-static uint32 local_my_wait_event_info;
-uint32	   *my_wait_event_info = &local_my_wait_event_info;
 
 #define WAIT_EVENT_CLASS_MASK	0xFF000000
 #define WAIT_EVENT_ID_MASK		0x0000FFFF
@@ -60,8 +58,8 @@ uint32	   *my_wait_event_info = &local_my_wait_event_info;
  * handful of entries are needed, but since it's small in absolute terms
  * anyway, we leave a generous amount of headroom.
  */
-static HTAB *WaitEventCustomHashByInfo; /* find names from infos */
-static HTAB *WaitEventCustomHashByName; /* find infos from names */
+static PG_GLOBAL_SHMEM HTAB *WaitEventCustomHashByInfo;	/* find names from infos */
+static PG_GLOBAL_SHMEM HTAB *WaitEventCustomHashByName;	/* find infos from names */
 
 #define WAIT_EVENT_CUSTOM_HASH_SIZE	128
 
@@ -80,7 +78,12 @@ typedef struct WaitEventCustomEntryByName
 
 
 /* dynamic allocation counter for custom wait events */
-static int *WaitEventCustomCounter;
+/*
+ * Upstream (8f7af125e03) dropped the spinlock-protected struct: the counter is
+ * only touched under WaitEventCustomLock held exclusively, so a plain int* in
+ * shared memory suffices.  Keep xtc's PG_GLOBAL_SHMEM placement annotation.
+ */
+static PG_GLOBAL_SHMEM int *WaitEventCustomCounter;
 
 /* first event ID of custom wait events */
 #define WAIT_EVENT_CUSTOM_INITIAL_ID	1
@@ -330,7 +333,7 @@ pgstat_set_wait_event_storage(uint32 *wait_event_info)
 void
 pgstat_reset_wait_event_storage(void)
 {
-	my_wait_event_info = &local_my_wait_event_info;
+	my_wait_event_info = PgCurrentLocalWaitEventInfoRef();
 }
 
 /* ----------

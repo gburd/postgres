@@ -61,10 +61,14 @@ static void cleanup(void);
  * ----------------
  */
 
-Relation	boot_reldesc;		/* current relation descriptor */
+/* current relation descriptor */
+PG_GLOBAL_RUNTIME Relation boot_reldesc;
 
-Form_pg_attribute attrtypes[MAXATTR];	/* points to attribute info */
-int			numattr;			/* number of attributes for cur. rel */
+/* points to attribute info */
+PG_GLOBAL_RUNTIME Form_pg_attribute attrtypes[MAXATTR];
+
+/* number of attributes for cur. rel */
+PG_GLOBAL_RUNTIME int numattr;
 
 
 /*
@@ -147,8 +151,9 @@ struct typmap
 	FormData_pg_type am_typ;
 };
 
-static List *Typ = NIL;			/* List of struct typmap* */
-static struct typmap *Ap = NULL;
+/* List of struct typmap* */
+static PG_GLOBAL_RUNTIME List *Typ = NIL;
+static PG_GLOBAL_RUNTIME struct typmap *Ap = NULL;
 
 /*
  * Basic information about built-in roles.
@@ -187,10 +192,12 @@ static const struct rolinfo RolInfo[] = {
 };
 
 
-static Datum values[MAXATTR];	/* current row's attribute values */
-static bool Nulls[MAXATTR];
+/* current row's attribute values */
+static PG_GLOBAL_RUNTIME Datum values[MAXATTR];
+static PG_GLOBAL_RUNTIME bool Nulls[MAXATTR];
 
-static MemoryContext nogc = NULL;	/* special no-gc mem context */
+/* special no-gc mem context */
+static PG_GLOBAL_RUNTIME MemoryContext nogc = NULL;
 
 /*
  *	At bootstrap time, we first declare all the indices to be built, and
@@ -206,7 +213,7 @@ typedef struct _IndexList
 	struct _IndexList *il_next;
 } IndexList;
 
-static IndexList *ILHead = NULL;
+static PG_GLOBAL_RUNTIME IndexList *ILHead = NULL;
 
 
 /*

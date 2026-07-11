@@ -43,10 +43,10 @@
  */
 #ifndef HAVE_INT_OPTERR
 
-int			opterr = 1,			/* if error message should be printed */
-			optind = 1,			/* index into parent argv vector */
-			optopt;				/* character checked for validity */
-char	   *optarg;				/* argument associated with option */
+PG_GLOBAL_RUNTIME int opterr = 1;	/* if error message should be printed */
+PG_GLOBAL_RUNTIME int optind = 1;	/* index into parent argv vector */
+PG_GLOBAL_RUNTIME int optopt;	/* character checked for validity */
+PG_GLOBAL_RUNTIME char *optarg;	/* argument associated with option */
 
 #endif
 

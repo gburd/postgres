@@ -42,10 +42,10 @@
 
 
 /* Set at postmaster start */
-TimestampTz PgStartTime;
+PG_GLOBAL_RUNTIME TimestampTz PgStartTime;
 
 /* Set at configuration reload */
-TimestampTz PgReloadTime;
+PG_GLOBAL_RUNTIME TimestampTz PgReloadTime;
 
 typedef struct
 {

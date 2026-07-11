@@ -18,6 +18,7 @@
 #include "storage/procnumber.h"
 #include "storage/spin.h"
 #include "tcop/dest.h"
+#include "utils/global_lifetime.h"
 
 /*
  * Result statuses for WaitForLSN().
@@ -98,7 +99,7 @@ typedef struct WaitLSNState
 } WaitLSNState;
 
 
-extern PGDLLIMPORT WaitLSNState *waitLSNState;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM WaitLSNState *waitLSNState;
 
 extern XLogRecPtr GetCurrentLSNForWaitType(WaitLSNType lsnType);
 extern void WaitLSNWakeup(WaitLSNType lsnType, XLogRecPtr currentLSN);
