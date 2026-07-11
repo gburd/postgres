@@ -1,0 +1,4 @@
+comment = 'Test code for backend runtime scaffolding'
+default_version = '1.0'
+module_pathname = '$libdir/test_backend_runtime'
+relocatable = true

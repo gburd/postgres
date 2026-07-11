@@ -21,6 +21,7 @@
 #include "storage/proc.h"
 #include "storage/shm_toc.h"
 #include "test_shm_mq.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/wait_event.h"
 
@@ -218,6 +219,7 @@ setup_background_workers(int nworkers, dsm_segment *seg)
 	/* Configure a worker. */
 	memset(&worker, 0, sizeof(worker));
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
+	worker.bgw_backend_model = BgWorkerBackendThreadPerSession;
 	worker.bgw_start_time = BgWorkerStart_ConsistentState;
 	worker.bgw_restart_time = BGW_NEVER_RESTART;
 	sprintf(worker.bgw_library_name, "test_shm_mq");
@@ -225,7 +227,7 @@ setup_background_workers(int nworkers, dsm_segment *seg)
 	snprintf(worker.bgw_type, BGW_MAXLEN, "test_shm_mq");
 	worker.bgw_main_arg = UInt32GetDatum(dsm_segment_handle(seg));
 	/* set bgw_notify_pid, so we can detect if the worker stops */
-	worker.bgw_notify_pid = MyProcPid;
+	worker.bgw_notify_pid = PgCurrentBackendSignalPid();
 
 	/* Register the workers. */
 	for (i = 0; i < nworkers; ++i)
