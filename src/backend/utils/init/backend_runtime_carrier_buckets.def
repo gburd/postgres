@@ -1,0 +1,28 @@
+/*
+ * PgCarrier lifecycle buckets.
+ *
+ * Each row is:
+ * PG_CARRIER_BUCKET(field, constructor_init, early_adoption, closed_reset)
+ *
+ * Carrier state represents the physical execution vehicle. It has no early
+ * fallback adoption or closed-backend reset path yet; process/thread runtime
+ * setup installs the appropriate carrier object directly.
+ */
+PG_CARRIER_BUCKET(kind, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CARRIER_BUCKET(runtime, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CARRIER_BUCKET(current_backend, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CARRIER_BUCKET(current_session, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CARRIER_BUCKET(current_execution, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CARRIER_BUCKET(backend_thread_start, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CARRIER_BUCKET(is_under_postmaster, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CARRIER_BUCKET(wait_event_waiting, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CARRIER_BUCKET(wait_event_signal_fd, carrier->wait_event_signal_fd = -1, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CARRIER_BUCKET(wait_event_selfpipe_readfd, carrier->wait_event_selfpipe_readfd = -1, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CARRIER_BUCKET(wait_event_selfpipe_writefd, carrier->wait_event_selfpipe_writefd = -1, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CARRIER_BUCKET(wait_event_selfpipe_owner_pid, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CARRIER_BUCKET(stack_base_ptr, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CARRIER_BUCKET(threaded_guc_mutex_depth, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CARRIER_BUCKET(threaded_reloptions_mutex_depth, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CARRIER_BUCKET(scheduler_execution, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CARRIER_BUCKET(protocol_scheduler_registered, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CARRIER_BUCKET(protocol_scheduler_idle, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)

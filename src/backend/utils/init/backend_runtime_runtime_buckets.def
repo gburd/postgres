@@ -1,0 +1,18 @@
+/*
+ * PgRuntime lifecycle buckets.
+ *
+ * Each row is:
+ * PG_RUNTIME_BUCKET(field, constructor_init, early_adoption, runtime_reset)
+ *
+ * Runtime state is address-space/server-runtime state. Most fields are
+ * installed directly by process/thread runtime setup; the extension-module
+ * bucket has explicit initialization and early fallback adoption so module
+ * initialization that runs before CurrentPgRuntime exists is not lost.
+ */
+PG_RUNTIME_BUCKET(kind, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_RUNTIME_BUCKET(current_carrier, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_RUNTIME_BUCKET(extension_backend_model, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_RUNTIME_BUCKET(protocol_scheduler, PgRuntimeInitializeProtocolScheduler(&runtime->protocol_scheduler), PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_RUNTIME_BUCKET(server_guc, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_RUNTIME_BUCKET(extension_modules, PgRuntimeInitializeExtensionModuleState(&runtime->extension_modules), PgRuntimeAdoptEarlyExtensionModuleState(runtime), PG_RUNTIME_NOOP)
+PG_RUNTIME_BUCKET(exit_backend, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
