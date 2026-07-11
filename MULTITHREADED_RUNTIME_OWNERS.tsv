@@ -1,0 +1,432 @@
+legacy_symbol	root_object	bucket	member	accessor	owner_source	notes
+formatted_start_time	PgBackend	log_state	formatted_start_time	PgCurrentFormattedStartTimeBuffer	src/backend/utils/error/backend_runtime_error.c	backend log prefix cached formatted process start time
+log_line_number	PgBackend	log_state	line_number	PgCurrentLogLineNumberRef	src/backend/utils/error/backend_runtime_error.c	backend log line counter used by elog prefix formatting
+log_line_pid	PgBackend	log_state	line_pid	PgCurrentLogLinePidRef	src/backend/utils/error/backend_runtime_error.c	backend log prefix cached process PID
+ExitOnAnyError	PgBackend	core	exit_on_any_error	PgCurrentExitOnAnyErrorRef	src/backend/utils/misc/backend_runtime_utility.c	backend-local switch forcing ERROR to FATAL during bootstrap and transaction cleanup critical paths
+MyProcPid	PgBackend	core	proc_pid	PgCurrentMyProcPidRef	src/backend/utils/misc/backend_runtime_utility.c	backend-local process or thread-visible PID identifier used by logging, latch, and status paths
+MyStartTime	PgBackend	core	start_time	PgCurrentMyStartTimeRef	src/backend/utils/misc/backend_runtime_utility.c	backend-local process start time used by log prefix and session identity formatting
+MyStartTimestamp	PgBackend	core	start_timestamp	PgCurrentMyStartTimestampRef	src/backend/utils/misc/backend_runtime_utility.c	backend-local process start timestamp used by SQL-visible backend metadata
+MyLatch	PgBackend	core	latch	PgCurrentMyLatchRef	src/backend/utils/misc/backend_runtime_utility.c	backend-local latch pointer installed during backend startup and reset during backend teardown
+MyPMChildSlot	PgBackend	core	pm_child_slot	PgCurrentMyPMChildSlotRef	src/backend/utils/misc/backend_runtime_utility.c	backend-local PMChild slot identifier used for postmaster child bookkeeping
+OutputFileName	PgBackend	core	output_file_name	PgCurrentOutputFileNameRef	src/backend/utils/misc/backend_runtime_utility.c	backend-local output filename buffer used by standalone/bootstrap output paths
+Mode	PgBackend	core	mode	PgCurrentProcessingModeRef	src/backend/utils/misc/backend_runtime_utility.c	backend-local processing mode for bootstrap/init/normal phase checks
+IgnoreSystemIndexes	PgBackend	core	ignore_system_indexes	PgCurrentIgnoreSystemIndexesRef	src/backend/utils/misc/backend_runtime_utility.c	backend-local flag allowing emergency catalog access without system indexes
+userDoption	PgBackend	command	user_d_option	PgCurrentUserDOptionRef	src/backend/tcop/backend_runtime_tcop.c	backend command-line -D data directory option pointer
+Save_r	PgBackend	command	save_rusage	PgCurrentUsageSaveRusageRef	src/backend/tcop/backend_runtime_tcop.c	backend command-loop saved rusage snapshot
+Save_t	PgBackend	command	save_timeval	PgCurrentUsageSaveTimevalRef	src/backend/tcop/backend_runtime_tcop.c	backend command-loop saved timeval snapshot
+pgstat_track_counts	PgSession	pgstat	track_counts	PgCurrentPgStatTrackCountsRef	src/backend/utils/activity/backend_runtime_pgstat.c	pgstat track-counts GUC backing value
+pgstat_track_functions	PgSession	pgstat	track_functions	PgCurrentPgStatTrackFunctionsRef	src/backend/utils/activity/backend_runtime_pgstat.c	pgstat track-functions GUC backing value
+pgstat_fetch_consistency	PgSession	pgstat	fetch_consistency	PgCurrentPgStatFetchConsistencyRef	src/backend/utils/activity/backend_runtime_pgstat.c	pgstat fetch-consistency GUC backing value
+pgstat_track_activities	PgSession	pgstat	track_activities	PgCurrentPgStatTrackActivitiesRef	src/backend/utils/activity/backend_runtime_pgstat.c	backend-status activity tracking GUC backing value
+pgStatSessionEndCause	PgSession	pgstat	session_end_cause	PgCurrentPgStatSessionEndCauseRef	src/backend/utils/activity/backend_runtime_pgstat.c	session-end cause reported through pgstat
+pgLastSessionReportTime	PgSession	pgstat	last_session_report_time	PgCurrentPgStatLastSessionReportTimeRef	src/backend/utils/activity/backend_runtime_pgstat.c	per-session last pgstat report timestamp
+pgStatLocal	PgBackend	pgstat_pending	local	PgCurrentPgStatLocalState	src/backend/utils/activity/backend_runtime_pgstat.c	backend-local cumulative statistics anchor
+pgStatSnapshotContext	PgBackend	pgstat_pending	local	PgCurrentPgStatLocalState	src/backend/utils/activity/backend_runtime_pgstat.c	backend-local cumulative statistics snapshot hash context stored in pgStatLocal.snapshot.context and deleted on pgstat clear/closed-backend reset
+pgStatFixedSnapshotContext	PgBackend	pgstat_pending	fixed_snapshot_context	PgCurrentPgStatFixedSnapshotContextRef	src/backend/utils/activity/backend_runtime_pgstat.c	backend-owned context for fixed custom pgstat snapshot payloads allocated during pgstat_initialize()
+pgStatFixedSnapshotData	PgBackend	pgstat_pending	fixed_snapshot_context	PgCurrentPgStatFixedSnapshotContextRef	src/backend/utils/activity/backend_runtime_pgstat.c	fixed custom pgstat snapshot payload pointers stored in pgStatLocal.snapshot.custom_data and owned by pgStatFixedSnapshotContext
+globalChannelTable	PgBackend	utility	async_global_channel_table	PgCurrentAsyncGlobalChannelTableRef	src/backend/commands/async.c	backend-local dshash attachment for the shared LISTEN/NOTIFY global channel table; shared handles live in AsyncQueueControl
+globalChannelDSA	PgBackend	utility	async_global_channel_dsa	PgCurrentAsyncGlobalChannelDSARef	src/backend/commands/async.c	backend-local DSA mapping for the shared LISTEN/NOTIFY global channel table; detached on closed-backend reset
+localBackendStatusTable	PgBackend	activity	backend_status_table	PgCurrentLocalBackendStatusTableRef	src/backend/utils/activity/backend_runtime_pgstat.c	backend-status local snapshot table owned by PgBackend.activity and cleared on closed-backend reset
+localNumBackends	PgBackend	activity	num_backends	PgCurrentLocalNumBackendsRef	src/backend/utils/activity/backend_runtime_pgstat.c	backend-status local snapshot count owned by PgBackend.activity and cleared on closed-backend reset
+backendStatusSnapContext	PgBackend	activity	backend_status_context	PgCurrentBackendStatusSnapContextRef	src/backend/utils/activity/backend_runtime_pgstat.c	backend-status local snapshot memory context owned by PgBackend.activity and deleted on closed-backend reset
+LocalBufferContext	PgBackend	buffers	local_buffer_context	PgCurrentLocalBufferContextRef	src/backend/storage/buffer/backend_runtime_buffer.c	backend-owned local-buffer storage context allocated through PgRuntimeGetOwnedMemoryContext and deleted on closed-backend reset
+localBufferCurBlock	PgBackend	buffers	local_buffer_cur_block	PgCurrentLocalBufferCurBlockRef	src/backend/storage/buffer/backend_runtime_buffer.c	current local-buffer allocation block owned by LocalBufferContext
+localBufferNextBufInBlock	PgBackend	buffers	local_buffer_next_buf_in_block	PgCurrentLocalBufferNextBufInBlockRef	src/backend/storage/buffer/backend_runtime_buffer.c	local-buffer allocation cursor inside current block
+localBufferNumBufsInBlock	PgBackend	buffers	local_buffer_num_bufs_in_block	PgCurrentLocalBufferNumBufsInBlockRef	src/backend/storage/buffer/backend_runtime_buffer.c	local-buffer allocation block capacity
+localBufferTotalBufsAllocated	PgBackend	buffers	local_buffer_total_bufs_allocated	PgCurrentLocalBufferTotalBufsAllocatedRef	src/backend/storage/buffer/backend_runtime_buffer.c	total local buffers allocated in LocalBufferContext for this backend
+BackendBufferContext	PgBackend	buffers	buffer_context	PgBackendBufferAllocationContext	src/backend/utils/init/backend_runtime_backend.c	backend-owned buffer helper allocation context allocated through PgRuntimeGetOwnedMemoryContextWithSizes and deleted on closed-backend reset
+BackendWritebackContext	PgBackend	buffers	backend_writeback_context	PgCurrentBackendWritebackContextRef	src/backend/storage/buffer/backend_runtime_buffer.c	backend-owned shared-buffer writeback context allocated in BackendBufferContext
+PrivateRefCountArrayKeys	PgBackend	buffers	private_ref_count_array_keys	PgCurrentPrivateRefCountArrayKeysRef	src/backend/storage/buffer/backend_runtime_buffer.c	backend-owned private buffer refcount array keys allocated in BackendBufferContext
+PrivateRefCountArray	PgBackend	buffers	private_ref_count_array	PgCurrentPrivateRefCountArrayRef	src/backend/storage/buffer/backend_runtime_buffer.c	backend-owned private buffer refcount array entries allocated in BackendBufferContext
+PrivateRefCountHash	PgBackend	buffers	private_ref_count_hash	PgCurrentPrivateRefCountHashRef	src/backend/storage/buffer/backend_runtime_buffer.c	backend-owned private buffer refcount overflow hash destroyed on closed-backend reset
+PrivateRefCountOverflowed	PgBackend	buffers	private_ref_count_overflowed	PgCurrentPrivateRefCountOverflowedRef	src/backend/storage/buffer/backend_runtime_buffer.c	backend-owned private buffer refcount overflow counter
+PrivateRefCountClock	PgBackend	buffers	private_ref_count_clock	PgCurrentPrivateRefCountClockRef	src/backend/storage/buffer/backend_runtime_buffer.c	backend-owned private buffer refcount clock hand
+ReservedRefCountSlot	PgBackend	buffers	reserved_ref_count_slot	PgCurrentReservedRefCountSlotRef	src/backend/storage/buffer/backend_runtime_buffer.c	backend-owned private buffer reserved refcount slot initialized to -1
+PrivateRefCountEntryLast	PgBackend	buffers	private_ref_count_entry_last	PgCurrentPrivateRefCountEntryLastRef	src/backend/storage/buffer/backend_runtime_buffer.c	backend-owned private buffer fast-path last refcount entry initialized to -1
+MaxProportionalPins	PgBackend	buffers	max_proportional_pins	PgCurrentMaxProportionalPinsRef	src/backend/storage/buffer/backend_runtime_buffer.c	backend-owned private buffer pin budget
+MdCxt	PgBackend	storage	md_context	PgCurrentMdContextRef	src/backend/storage/file/backend_runtime_file.c	backend-owned smgr MdfdVec memory context allocated through PgRuntimeGetOwnedMemoryContext and deleted on closed-backend reset
+pendingOps	PgBackend	storage	sync_pending_ops	PgCurrentSyncPendingOpsRef	src/backend/storage/file/backend_runtime_file.c	pending fsync hash table stored in SyncPendingOpsContext
+pendingUnlinks	PgBackend	storage	sync_pending_unlinks	PgCurrentSyncPendingUnlinksRef	src/backend/storage/file/backend_runtime_file.c	pending unlink list cells allocated in SyncPendingOpsContext
+pendingOpsCxt	PgBackend	storage	sync_pending_ops_context	PgCurrentSyncPendingOpsContextRef	src/backend/storage/file/backend_runtime_file.c	backend-owned pending sync operations context allocated through PgRuntimeGetOwnedMemoryContext and deleted on closed-backend reset
+PendingBgWriterStats	PgBackend	pgstat_pending	pending_bgwriter	PgCurrentPendingBgWriterStatsRef	src/backend/utils/activity/backend_runtime_pgstat.c	pending bgwriter statistics
+PendingCheckpointerStats	PgBackend	pgstat_pending	pending_checkpointer	PgCurrentPendingCheckpointerStatsRef	src/backend/utils/activity/backend_runtime_pgstat.c	pending checkpointer statistics
+PendingIOStats	PgBackend	pgstat_pending	io_stats	PgCurrentPendingIOStatsRef	src/backend/utils/activity/backend_runtime_pgstat.c	pending IO statistics
+have_iostats	PgBackend	pgstat_pending	io_stats_pending	PgCurrentHaveIOStatsRef	src/backend/utils/activity/backend_runtime_pgstat.c	pending IO statistics flag
+InterruptPending	PgBackend	pending_interrupts	interrupt_pending	PgCurrentPendingInterruptStateRef	src/backend/postmaster/interrupt.c	backend-local legacy interrupt dispatcher flag fed by signals and logical interrupt mailbox
+QueryCancelPending	PgBackend	pending_interrupts	query_cancel_pending	PgCurrentPendingInterruptStateRef	src/backend/postmaster/interrupt.c	backend-local query-cancel pending flag set by signal and logical mailbox paths
+ProcDiePending	PgBackend	pending_interrupts	proc_die_pending	PgCurrentPendingInterruptStateRef	src/backend/postmaster/interrupt.c	backend-local terminate pending flag set by signal and logical mailbox paths
+ProcDieSenderPid	PgBackend	pending_interrupts	proc_die_sender_pid	PgCurrentPendingInterruptStateRef	src/backend/postmaster/interrupt.c	backend-local sender pid captured for proc-die reporting
+ProcDieSenderUid	PgBackend	pending_interrupts	proc_die_sender_uid	PgCurrentPendingInterruptStateRef	src/backend/postmaster/interrupt.c	backend-local sender uid captured for proc-die reporting
+IdleInTransactionSessionTimeoutPending	PgBackend	pending_interrupts	idle_in_transaction_session_timeout_pending	PgCurrentPendingInterruptStateRef	src/backend/postmaster/interrupt.c	backend-local idle-in-transaction timeout pending flag
+TransactionTimeoutPending	PgBackend	pending_interrupts	transaction_timeout_pending	PgCurrentPendingInterruptStateRef	src/backend/postmaster/interrupt.c	backend-local transaction timeout pending flag
+IdleSessionTimeoutPending	PgBackend	pending_interrupts	idle_session_timeout_pending	PgCurrentPendingInterruptStateRef	src/backend/postmaster/interrupt.c	backend-local idle-session timeout pending flag
+ProcSignalBarrierPending	PgBackend	pending_interrupts	proc_signal_barrier_pending	PgCurrentPendingInterruptStateRef	src/backend/postmaster/interrupt.c	backend-local proc-signal barrier pending flag
+LogMemoryContextPending	PgBackend	pending_interrupts	log_memory_context_pending	PgCurrentPendingInterruptStateRef	src/backend/postmaster/interrupt.c	backend-local log-memory-context pending flag
+IdleStatsUpdateTimeoutPending	PgBackend	pending_interrupts	idle_stats_update_timeout_pending	PgCurrentPendingInterruptStateRef	src/backend/postmaster/interrupt.c	backend-local idle stats update timeout pending flag
+ConfigReloadPending	PgBackend	pending_interrupts	config_reload_pending	PgCurrentPendingInterruptStateRef	src/backend/postmaster/interrupt.c	backend-local config reload pending flag
+ShutdownRequestPending	PgBackend	pending_interrupts	shutdown_request_pending	PgCurrentPendingInterruptStateRef	src/backend/postmaster/interrupt.c	backend-local shutdown request pending flag
+WakeupStopPending	PgBackend	pending_interrupts	wakeup_stop_pending	PgCurrentPendingInterruptStateRef	src/backend/postmaster/interrupt.c	backend-local wakeup stop pending flag
+AutoVacLauncherPending	PgBackend	pending_interrupts	autovac_launcher_pending	PgCurrentPendingInterruptStateRef	src/backend/postmaster/interrupt.c	backend-local autovacuum launcher wakeup pending flag
+CheckpointerShutdownXLOGPending	PgBackend	pending_interrupts	checkpointer_shutdown_xlog_pending	PgCurrentPendingInterruptStateRef	src/backend/postmaster/interrupt.c	backend-local checkpointer shutdown-xlog pending flag
+InterruptHoldoffCount	PgBackend	interrupt_holdoffs	interrupt_holdoff_count	PgCurrentInterruptHoldoffCountRef	src/backend/postmaster/interrupt.c	backend-local general interrupt holdoff depth
+QueryCancelHoldoffCount	PgBackend	interrupt_holdoffs	query_cancel_holdoff_count	PgCurrentQueryCancelHoldoffCountRef	src/backend/postmaster/interrupt.c	backend-local query-cancel holdoff depth
+CritSectionCount	PgBackend	interrupt_holdoffs	crit_section_count	PgCurrentCritSectionCountRef	src/backend/postmaster/interrupt.c	backend-local critical section depth that escalates ERROR/FATAL handling
+PendingSLRUStats	PgBackend	pgstat_pending	slru_stats	PgCurrentPendingSLRUStatsArray	src/backend/utils/activity/backend_runtime_pgstat.c	pending SLRU statistics array
+have_slrustats	PgBackend	pgstat_pending	slru_stats_pending	PgCurrentHaveSLRUStatsRef	src/backend/utils/activity/backend_runtime_pgstat.c	pending SLRU statistics flag
+PendingLockStats	PgBackend	pgstat_pending	lock_stats	PgCurrentPendingLockStatsRef	src/backend/utils/activity/backend_runtime_pgstat.c	pending lock statistics
+have_lockstats	PgBackend	pgstat_pending	lock_stats_pending	PgCurrentHaveLockStatsRef	src/backend/utils/activity/backend_runtime_pgstat.c	pending lock statistics flag
+PendingBackendStats	PgBackend	pgstat_pending	backend_stats	PgCurrentPendingBackendStatsRef	src/backend/utils/activity/backend_runtime_pgstat.c	pending backend statistics
+have_backend_iostats	PgBackend	pgstat_pending	backend_io_stats_pending	PgCurrentBackendHasIOStatsRef	src/backend/utils/activity/backend_runtime_pgstat.c	pending backend IO statistics flag
+pgStatPendingContext	PgBackend	pgstat_pending	pending_context	PgCurrentPgStatPendingContextRef	src/backend/utils/activity/backend_runtime_pgstat.c	memory context for pending pgstat entries
+pgStatPending	PgBackend	pgstat_pending	pending	PgCurrentPgStatPendingListRef	src/backend/utils/activity/backend_runtime_pgstat.c	pending pgstat entry list head
+pgStatEntryRefHash	PgBackend	pgstat_pending	entry_ref_hash	PgCurrentPgStatEntryRefHashRef	src/backend/utils/activity/backend_runtime_pgstat.c	local references to shared pgstat entries
+pgStatSharedRefAge	PgBackend	pgstat_pending	shared_ref_age	PgCurrentPgStatSharedRefAgeRef	src/backend/utils/activity/backend_runtime_pgstat.c	age counter for shared pgstat references
+pgStatSharedRefContext	PgBackend	pgstat_pending	shared_ref_context	PgCurrentPgStatSharedRefContextRef	src/backend/utils/activity/backend_runtime_pgstat.c	memory context for shared pgstat reference state
+pgStatEntryRefHashContext	PgBackend	pgstat_pending	entry_ref_hash_context	PgCurrentPgStatEntryRefHashContextRef	src/backend/utils/activity/backend_runtime_pgstat.c	memory context for pgstat entry-reference hash
+prevBackendWalUsage	PgBackend	pgstat_pending	backend_wal_prev_usage	PgCurrentPgStatPrevBackendWalUsageRef	src/backend/utils/activity/backend_runtime_pgstat.c	previous backend WAL usage snapshot
+pgstat_report_fixed	PgBackend	pgstat_pending	report_fixed	PgCurrentPgStatReportFixedRef	src/backend/utils/activity/backend_runtime_pgstat.c	fixed pgstat report flag
+pgStatForceNextFlush	PgBackend	pgstat_pending	force_next_flush	PgCurrentPgStatForceNextFlushRef	src/backend/utils/activity/backend_runtime_pgstat.c	force next pgstat flush flag
+pgstat_force_snapshot_clear	PgBackend	pgstat_pending	force_snapshot_clear	PgCurrentForceStatsSnapshotClearRef	src/backend/utils/activity/backend_runtime_pgstat.c	force stats snapshot clear flag
+pgstat_is_initialized	PgBackend	pgstat_pending	is_initialized	PgCurrentPgStatIsInitializedRef	src/backend/utils/activity/backend_runtime_pgstat.c	backend-local pgstat initialization flag
+pgstat_is_shutdown	PgBackend	pgstat_pending	is_shutdown	PgCurrentPgStatIsShutdownRef	src/backend/utils/activity/backend_runtime_pgstat.c	backend-local pgstat shutdown flag
+pgStatXactCommit	PgBackend	pgstat_pending	xact_commit	PgCurrentPgStatXactCommitRef	src/backend/utils/activity/backend_runtime_pgstat.c	pending transaction commit counter
+pgStatXactRollback	PgBackend	pgstat_pending	xact_rollback	PgCurrentPgStatXactRollbackRef	src/backend/utils/activity/backend_runtime_pgstat.c	pending transaction rollback counter
+pgStatBlockReadTime	PgBackend	pgstat_pending	block_read_time	PgCurrentPgStatBlockReadTimeRef	src/backend/utils/activity/backend_runtime_pgstat.c	pending block-read time counter
+pgStatBlockWriteTime	PgBackend	pgstat_pending	block_write_time	PgCurrentPgStatBlockWriteTimeRef	src/backend/utils/activity/backend_runtime_pgstat.c	pending block-write time counter
+pgStatActiveTime	PgBackend	pgstat_pending	active_time	PgCurrentPgStatActiveTimeRef	src/backend/utils/activity/backend_runtime_pgstat.c	pending active-time counter
+pgStatTransactionIdleTime	PgBackend	pgstat_pending	transaction_idle_time	PgCurrentPgStatTransactionIdleTimeRef	src/backend/utils/activity/backend_runtime_pgstat.c	pending transaction-idle-time counter
+total_func_time	PgBackend	pgstat_pending	func_total_time	PgCurrentPgStatTotalFuncTimeRef	src/backend/utils/activity/backend_runtime_pgstat.c	pending function execution time accumulator
+prevWalUsage	PgBackend	pgstat_pending	wal_prev_usage	PgCurrentPgStatPrevWalUsageRef	src/backend/utils/activity/backend_runtime_pgstat.c	previous WAL usage snapshot
+provider	PgSession	jit_provider_state	provider	PgCurrentJitProviderCallbacksRef	src/backend/jit/backend_runtime_jit.c	JIT provider callback table; provider dynamic library handle is dfmgr-owned
+provider_successfully_loaded	PgSession	jit_provider_state	provider_successfully_loaded	PgCurrentJitProviderSuccessfullyLoadedRef	src/backend/jit/backend_runtime_jit.c	JIT provider successful-load cache flag
+provider_failed_loading	PgSession	jit_provider_state	provider_failed_loading	PgCurrentJitProviderFailedLoadingRef	src/backend/jit/backend_runtime_jit.c	JIT provider failed-load cache flag
+TypeParamBool	PgSession	llvm_jit	type_param_bool	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider bool-return type reference
+TypePGFunction	PgSession	llvm_jit	type_pg_function	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider PGFunction type reference
+TypeSizeT	PgSession	llvm_jit	type_size_t	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider size_t type reference
+TypeDatum	PgSession	llvm_jit	type_datum	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider Datum type reference
+TypeStorageBool	PgSession	llvm_jit	type_storage_bool	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider storage bool type reference
+StructNullableDatum	PgSession	llvm_jit	struct_nullable_datum	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider NullableDatum struct reference
+StructTupleDescData	PgSession	llvm_jit	struct_tuple_desc_data	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider TupleDescData struct reference
+StructHeapTupleData	PgSession	llvm_jit	struct_heap_tuple_data	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider HeapTupleData struct reference
+StructHeapTupleHeaderData	PgSession	llvm_jit	struct_heap_tuple_header_data	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider HeapTupleHeaderData struct reference
+StructMinimalTupleData	PgSession	llvm_jit	struct_minimal_tuple_data	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider MinimalTupleData struct reference
+StructTupleTableSlot	PgSession	llvm_jit	struct_tuple_table_slot	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider TupleTableSlot struct reference
+StructHeapTupleTableSlot	PgSession	llvm_jit	struct_heap_tuple_table_slot	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider HeapTupleTableSlot struct reference
+StructMinimalTupleTableSlot	PgSession	llvm_jit	struct_minimal_tuple_table_slot	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider MinimalTupleTableSlot struct reference
+StructMemoryContextData	PgSession	llvm_jit	struct_memory_context_data	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider MemoryContextData struct reference
+StructFunctionCallInfoData	PgSession	llvm_jit	struct_function_call_info_data	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider FunctionCallInfoData struct reference
+StructExprContext	PgSession	llvm_jit	struct_expr_context	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider ExprContext struct reference
+StructExprEvalStep	PgSession	llvm_jit	struct_expr_eval_step	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider ExprEvalStep struct reference
+StructExprState	PgSession	llvm_jit	struct_expr_state	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider ExprState struct reference
+StructAggState	PgSession	llvm_jit	struct_agg_state	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider AggState struct reference
+StructAggStatePerTransData	PgSession	llvm_jit	struct_agg_state_per_trans_data	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider AggStatePerTransData struct reference
+StructAggStatePerGroupData	PgSession	llvm_jit	struct_agg_state_per_group_data	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider AggStatePerGroupData struct reference
+StructPlanState	PgSession	llvm_jit	struct_plan_state	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider PlanState struct reference
+AttributeTemplate	PgSession	llvm_jit	attribute_template	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider attribute template function reference
+ExecEvalBoolSubroutineTemplate	PgSession	llvm_jit	exec_eval_bool_subroutine_template	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider bool subroutine template function reference
+ExecEvalSubroutineTemplate	PgSession	llvm_jit	exec_eval_subroutine_template	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider subroutine template function reference
+llvm_types_module	PgSession	llvm_jit	types_module	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider bitcode type module
+llvm_session_initialized	PgSession	llvm_jit	session_initialized	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider per-session initialization flag
+llvm_generation	PgSession	llvm_jit	generation	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider generated-module counter
+llvm_jit_context_in_use_count	PgSession	llvm_jit	jit_context_in_use_count	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider active JitContext counter
+llvm_llvm_context_reuse_count	PgSession	llvm_jit	llvm_context_reuse_count	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM context reuse counter
+llvm_triple	PgSession	llvm_jit	triple	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM target triple string
+llvm_layout	PgSession	llvm_jit	layout	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM data layout string
+llvm_context	PgSession	llvm_jit	context	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM provider context
+llvm_targetref	PgSession	llvm_jit	targetref	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM target reference
+llvm_ts_context	PgSession	llvm_jit	ts_context	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM ORC thread-safe context
+llvm_opt0_orc	PgSession	llvm_jit	opt0_orc	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM ORC JIT instance for opt0
+llvm_opt3_orc	PgSession	llvm_jit	opt3_orc	PgCurrentLLVMJitState	src/backend/jit/llvm/llvmjit.c	LLVM ORC JIT instance for opt3
+default_with_oids	PgSession	general_guc	default_with_oids_value	PgCurrentDefaultWithOidsRef	src/backend/utils/misc/backend_runtime_guc.c	backward-compatibility GUC backing value
+standard_conforming_strings	PgSession	general_guc	standard_conforming_strings_value	PgCurrentStandardConformingStringsRef	src/backend/utils/misc/backend_runtime_guc.c	backward-compatibility GUC backing value
+phony_random_seed	PgSession	general_guc	phony_random_seed_value	PgCurrentPhonyRandomSeedRef	src/backend/utils/misc/backend_runtime_guc.c	seed GUC compatibility backing value; real PRNG state lives elsewhere
+session_authorization_string	PgSession	general_guc	session_authorization_string_value	PgCurrentSessionAuthorizationStringRef	src/backend/utils/misc/backend_runtime_guc.c	session_authorization display string owned through GUC machinery
+ssl_renegotiation_limit	PgSession	connection_guc	ssl_renegotiation_limit_value	PgCurrentSslRenegotiationLimitRef	src/backend/utils/misc/backend_runtime_guc.c	ignored compatibility GUC backing value
+datestyle_string	PgSession	datetime	datestyle_string_value	PgCurrentDateStyleStringRef	src/backend/utils/misc/backend_runtime_guc.c	DateStyle GUC display string owned through GUC machinery
+timezone_abbreviations_string	PgSession	datetime	timezone_abbreviations_string_value	PgCurrentTimeZoneAbbreviationsStringRef	src/backend/utils/misc/backend_runtime_guc.c	timezone_abbreviations GUC string owned through GUC machinery
+client_encoding_string	PgSession	encoding	client_encoding_string_value	PgCurrentClientEncodingStringRef	src/backend/utils/misc/backend_runtime_guc.c	client_encoding display string owned through GUC machinery
+server_encoding_string	PgSession	encoding	server_encoding_string_value	PgCurrentServerEncodingStringRef	src/backend/utils/misc/backend_runtime_guc.c	server_encoding display string owned through GUC machinery
+GUCMemoryContext	PgSession	guc	memory_context	PgCurrentGUCMemoryContextRef	src/backend/utils/misc/backend_runtime_guc.c	session-owned central GUC registry context; owns copied GUC records, hash storage, custom variables, stack entries, and reporting list entries
+guc_variables	PgSession	guc	variables	PgCurrentGUCVariablesRef	src/backend/utils/misc/backend_runtime_guc.c	session-owned copied GUC variable array allocated in GUCMemoryContext
+num_guc_variables	PgSession	guc	num_variables	PgCurrentNumGUCVariablesRef	src/backend/utils/misc/backend_runtime_guc.c	session GUC variable count
+guc_hashtab	PgSession	guc	hash_table	PgCurrentGUCHashTableRef	src/backend/utils/misc/backend_runtime_guc.c	session GUC name hash table allocated in GUCMemoryContext
+guc_nondef_list	PgSession	guc	nondef_list	PgCurrentGUCNondefListRef	src/backend/utils/misc/backend_runtime_guc.c	session list of GUC records with non-default state
+guc_stack_list	PgSession	guc	stack_list	PgCurrentGUCStackListRef	src/backend/utils/misc/backend_runtime_guc.c	session list of transactional GUC stack entries
+guc_report_list	PgSession	guc	report_list	PgCurrentGUCReportListRef	src/backend/utils/misc/backend_runtime_guc.c	session list of GUC records pending protocol reporting
+reporting_enabled	PgSession	guc	reporting_enabled	PgCurrentGUCReportingEnabledRef	src/backend/utils/misc/backend_runtime_guc.c	session flag enabling GUC reporting to the client
+GUCNestLevel	PgSession	guc	nest_level	PgCurrentGUCNestLevelRef	src/backend/utils/misc/backend_runtime_guc.c	session GUC nesting level
+AutovacMemCxt	PgBackend	autovacuum	autovac_mem_cxt	PgCurrentAutovacuumState	src/backend/postmaster/autovacuum.c	backend-owned autovacuum launcher/worker memory context allocated through PgRuntimeGetOwnedMemoryContextWithSizes and deleted on closed-backend reset
+DatabasePath	PgSession	database	database_path	PgCurrentDatabasePathRef	src/backend/utils/init/backend_runtime_session.c	current database path string allocated in DatabasePathContext
+DatabasePathContext	PgSession	database	database_path_context	PgCurrentDatabasePathContextRef	src/backend/utils/init/backend_runtime_session.c	session-owned context for the current database path string
+SystemUser	PgSession	user_identity	system_user	PgCurrentUserIdentityState	src/backend/utils/init/backend_runtime_session.c	system_user string allocated in SystemUserContext
+SystemUserContext	PgSession	user_identity	system_user_context	PgCurrentSystemUserContextRef	src/backend/utils/init/backend_runtime_session.c	session-owned context for the system_user string
+EncodingCacheContext	PgSession	encoding	encoding_cache_context	PgCurrentEncodingCacheMemoryContext	src/backend/utils/mb/backend_runtime_mb.c	session-owned parent context for encoding conversion cache entries
+ConvProcList	PgSession	encoding	conv_proc_list	PgCurrentEncodingConvProcListRef	src/backend/utils/mb/backend_runtime_mb.c	encoding conversion cache list cells owned by EncodingCacheContext
+ToServerConvProc	PgSession	encoding	to_server_conv_proc	PgCurrentToServerConvProcRef	src/backend/utils/mb/backend_runtime_mb.c	active client-to-server conversion function pointer into ConvProcList cache entries
+ToClientConvProc	PgSession	encoding	to_client_conv_proc	PgCurrentToClientConvProcRef	src/backend/utils/mb/backend_runtime_mb.c	active server-to-client conversion function pointer into ConvProcList cache entries
+Utf8ToServerConvProc	PgSession	encoding	utf8_to_server_conv_proc	PgCurrentUtf8ToServerConvProcRef	src/backend/utils/mb/backend_runtime_mb.c	UTF8-to-server conversion function pointer owned by EncodingCacheContext
+FunctionManagerMemoryContext	PgSession	function_manager	function_manager_context	PgCurrentFunctionManagerMemoryContextRef	src/backend/utils/cache/backend_runtime_cache.c	session function-manager memory context; owns fmgr and funccache hash storage, copied funccache tuple descriptors, and cached-function wrapper structs
+PgCurrentCFuncHash	PgSession	function_manager	c_func_hash	PgCurrentCFuncHashRef	src/backend/utils/cache/backend_runtime_cache.c	fmgr C-function hash root; hash storage lives in FunctionManagerMemoryContext and entries point to fmgr/dynamic-loader metadata without owning dynamic-library handles
+cfunc_hashtable	PgSession	function_manager	cached_function_hash	PgCurrentCachedFunctionHashRef	src/backend/utils/cache/backend_runtime_cache.c	funccache cached-function hash root; hash storage and copied tuple descriptors live in FunctionManagerMemoryContext, while destruction is handwritten in funccache.c because entries can own language callback state
+CacheMemoryContext	PgSession	catalog_lookup	cache_memory_context	PgCacheMemoryContextRef	src/backend/utils/cache/backend_runtime_cache.c	session cache memory context pointer; closed-session reset deletes the context after dependent cache roots and text-search cache entries have been handled, switching to TopMemoryContext first if the deleted context is current; full carrier TopMemoryContext reclamation is a separate Gate E2 blocker
+SearchPathContext	PgSession	namespace_state	search_path_context	PgCurrentNamespaceState	src/backend/catalog/namespace.c	session-owned namespace search-path context created through PgRuntimeGetOwnedMemoryContextWithSizes() and deleted by PgSessionResetNamespaceClosedState()
+baseSearchPath	PgSession	namespace_state	search_path_context	PgCurrentNamespaceState	src/backend/catalog/namespace.c	derived namespace search-path list cells allocated in the session-owned namespace path context; activeSearchPath points at the same list
+SearchPathCacheContext	PgSession	namespace_state	search_path_cache_context	PgCurrentNamespaceState	src/backend/catalog/namespace.c	session-owned namespace search-path cache context created through PgRuntimeGetOwnedMemoryContextWithSizes(), reset while active, and deleted by PgSessionResetNamespaceClosedState()
+localized_abbrev_days	PgSession	locale	localized_abbrev_days_values	PgCurrentLocaleState	src/backend/utils/adt/pg_locale.c	localized day-name cache strings allocated in locale_time_context
+localized_full_days	PgSession	locale	localized_full_days_values	PgCurrentLocaleState	src/backend/utils/adt/pg_locale.c	localized day-name cache strings allocated in locale_time_context
+localized_abbrev_months	PgSession	locale	localized_abbrev_months_values	PgCurrentLocaleState	src/backend/utils/adt/pg_locale.c	localized month-name cache strings allocated in locale_time_context
+localized_full_months	PgSession	locale	localized_full_months_values	PgCurrentLocaleState	src/backend/utils/adt/pg_locale.c	localized month-name cache strings allocated in locale_time_context
+CurrentLocaleTimeContext	PgSession	locale	locale_time_context	PgCurrentLocaleState	src/backend/utils/adt/pg_locale.c	session-owned localized-time string cache memory context deleted on closed-session reset
+CurrentLocaleConv	PgSession	locale	current_locale_conv	PgCurrentLocaleState	src/backend/utils/adt/pg_locale.c	per-session localeconv cache object allocated in locale_conv_context
+CurrentLocaleConvContext	PgSession	locale	locale_conv_context	PgCurrentLocaleState	src/backend/utils/adt/pg_locale.c	session-owned localeconv cache memory context deleted on closed-session reset after malloc strings are freed
+MyClientConnectionInfo.authn_id	PgConnection	client_connection_info	authn_id	PgCurrentClientConnectionInfoRef	src/backend/libpq/backend_runtime_connection.c	authenticated-client authn_id pointer; restored strings are allocated in ClientConnectionInfoContext while normal authentication strings remain PortContext-owned
+ClientConnectionInfoContext	PgConnection	client_connection_info_context	client_connection_info_context	PgCurrentClientConnectionInfoContextRef	src/backend/libpq/backend_runtime_connection.c	connection-owned context for restored authenticated-client info strings
+PqSendBuffer	PgConnection	socket_io	send_buffer	PgCurrentConnectionSocketIORef	src/backend/libpq/backend_runtime_connection.c	frontend/backend socket send buffer allocated in SocketIOContext
+SocketIOContext	PgConnection	socket_io	socket_io_context	PgCurrentConnectionSocketIOContextRef	src/backend/libpq/backend_runtime_connection.c	connection-owned context for socket send buffer storage
+cookies	PgExecution	transaction_cleanup	lo_cookies	PgCurrentLargeObjectCookiesRef	src/backend/storage/large_object/backend_runtime_large_object.c	large-object descriptor array allocated in LargeObjectContext and released by large-object transaction cleanup or closed-execution reset
+cookies_size	PgExecution	transaction_cleanup	lo_cookies_size	PgCurrentLargeObjectCookiesSizeRef	src/backend/storage/large_object/backend_runtime_large_object.c	large-object descriptor array capacity paired with cookies
+lo_cleanup_needed	PgExecution	transaction_cleanup	lo_cleanup_needed	PgCurrentLargeObjectCleanupNeededRef	src/backend/storage/large_object/backend_runtime_large_object.c	transaction cleanup flag for open large-object descriptors
+fscxt	PgExecution	transaction_cleanup	lo_context	PgCurrentLargeObjectContextRef	src/backend/storage/large_object/backend_runtime_large_object.c	execution-owned large-object descriptor memory context allocated through PgRuntimeGetOwnedMemoryContext
+have_xact_temporary_files	PgExecution	transaction_cleanup	have_xact_temporary_files	PgCurrentHaveXactTemporaryFilesRef	src/backend/storage/file/backend_runtime_file.c	transaction cleanup flag for backend-local temporary files
+pgStatXactStack	PgExecution	transaction_cleanup	pgstat_xact_stack	PgCurrentPgStatXactStackRef	src/backend/utils/activity/backend_runtime_pgstat.c	pgstat subtransaction stack root borrowed from transaction memory context cleanup
+ri_fastpath_cache	PgExecution	transaction_cleanup	ri_fastpath_cache	PgCurrentRIFastPathCacheRef	src/backend/utils/adt/backend_runtime_ri.c	RI fast-path cache hash owned by active transaction cleanup callbacks
+ri_fastpath_callback_registered	PgExecution	transaction_cleanup	ri_fastpath_callback_registered	PgCurrentRIFastPathCallbackRegisteredRef	src/backend/utils/adt/backend_runtime_ri.c	RI fast-path transaction callback registration flag paired with the cache
+old_valgrind_error_count	PgExecution	valgrind	old_error_count	PgCurrentValgrindOldErrorCountRef	src/backend/tcop/backend_runtime_tcop.c	Valgrind error-count baseline used by the top-level command loop when reporting query execution errors
+SysCache	PgSession	catalog_lookup	sys_cache	PgCurrentSysCacheArray	src/backend/utils/cache/backend_runtime_cache.c	syscache root array; pointed cache entries remain CacheMemoryContext-owned
+SysCacheInitialized	PgSession	catalog_lookup	sys_cache_initialized	PgCurrentSysCacheInitializedRef	src/backend/utils/cache/backend_runtime_cache.c	syscache initialization flag
+SysCacheRelationOid	PgSession	catalog_lookup	sys_cache_relation_oid	PgCurrentSysCacheRelationOidArray	src/backend/utils/cache/backend_runtime_cache.c	inline syscache relation OID array
+SysCacheRelationOidSize	PgSession	catalog_lookup	sys_cache_relation_oid_size	PgCurrentSysCacheRelationOidSizeRef	src/backend/utils/cache/backend_runtime_cache.c	inline syscache relation OID count
+SysCacheSupportingRelOid	PgSession	catalog_lookup	sys_cache_supporting_rel_oid	PgCurrentSysCacheSupportingRelOidArray	src/backend/utils/cache/backend_runtime_cache.c	inline syscache supporting relation OID array
+SysCacheSupportingRelOidSize	PgSession	catalog_lookup	sys_cache_supporting_rel_oid_size	PgCurrentSysCacheSupportingRelOidSizeRef	src/backend/utils/cache/backend_runtime_cache.c	inline syscache supporting relation OID count
+CacheHdr	PgSession	catalog_lookup	cat_cache_header	PgCurrentCatCacheHeaderRef	src/backend/utils/cache/backend_runtime_cache.c	catcache root header; entries remain CacheMemoryContext-owned
+RelationIdCache	PgSession	catalog_lookup	relcache_relation_id_cache	PgCurrentRelationIdCacheRef	src/backend/utils/cache/backend_runtime_cache.c	relcache relation-id hash root; private dynahash storage is CacheMemoryContext-owned
+criticalRelcachesBuilt	PgSession	catalog_lookup	relcache_critical_built	PgCurrentCriticalRelcachesBuiltRef	src/backend/utils/cache/backend_runtime_cache.c	relcache.h preserves historical macro name
+criticalSharedRelcachesBuilt	PgSession	catalog_lookup	relcache_critical_shared_built	PgCurrentCriticalSharedRelcachesBuiltRef	src/backend/utils/cache/backend_runtime_cache.c	relcache.h preserves historical macro name
+relcacheInvalsReceived	PgSession	catalog_lookup	relcache_invals_received	PgCurrentRelcacheInvalsReceivedRef	src/backend/utils/cache/backend_runtime_cache.c	relcache invalidation counter
+pgclassdesc	PgSession	catalog_lookup	relcache_pg_class_descriptor	PgCurrentPgClassDescriptorRef	src/backend/utils/cache/backend_runtime_cache.c	hardcoded pg_class tuple descriptor used during early relcache rebuild; allocated in CacheMemoryContext
+pgindexdesc	PgSession	catalog_lookup	relcache_pg_index_descriptor	PgCurrentPgIndexDescriptorRef	src/backend/utils/cache/backend_runtime_cache.c	hardcoded pg_index tuple descriptor used during early relcache rebuild; allocated in CacheMemoryContext
+OpClassCache	PgSession	catalog_lookup	relcache_opclass_cache	PgCurrentOpClassCacheRef	src/backend/utils/cache/backend_runtime_cache.c	opclass cache hash root; private dynahash storage is CacheMemoryContext-owned
+TypeCacheHash	PgSession	catalog_lookup	typcache_type_cache_hash	PgCurrentTypeCacheHashRef	src/backend/utils/cache/backend_runtime_cache.c	typcache hash root; private dynahash storage and entries are CacheMemoryContext-owned
+RelIdToTypeIdCacheHash	PgSession	catalog_lookup	typcache_relid_to_typeid_hash	PgCurrentRelIdToTypeIdCacheHashRef	src/backend/utils/cache/backend_runtime_cache.c	typcache relid-to-typeid map root; private dynahash storage is CacheMemoryContext-owned
+firstDomainTypeEntry	PgSession	catalog_lookup	typcache_first_domain_type_entry	PgCurrentFirstDomainTypeEntryRef	src/backend/utils/cache/backend_runtime_cache.c	domain typcache linked-list head
+in_progress_list	PgSession	catalog_lookup	typcache_in_progress_list	PgCurrentTypCacheInProgressListRef	src/backend/utils/cache/backend_runtime_cache.c	typcache in-progress OID stack pointer
+in_progress_list_len	PgSession	catalog_lookup	typcache_in_progress_list_len	PgCurrentTypCacheInProgressListLenRef	src/backend/utils/cache/backend_runtime_cache.c	typcache in-progress OID stack length
+in_progress_list_maxlen	PgSession	catalog_lookup	typcache_in_progress_list_maxlen	PgCurrentTypCacheInProgressListMaxLenRef	src/backend/utils/cache/backend_runtime_cache.c	typcache in-progress OID stack capacity
+RecordCacheHash	PgSession	catalog_lookup	typcache_record_cache_hash	PgCurrentRecordCacheHashRef	src/backend/utils/cache/backend_runtime_cache.c	record cache hash root; private dynahash storage is CacheMemoryContext-owned
+RecordCacheArray	PgSession	catalog_lookup	typcache_record_cache_array	PgCurrentRecordCacheArrayRef	src/backend/utils/cache/backend_runtime_cache.c	record typmod array pointer
+RecordCacheArrayLen	PgSession	catalog_lookup	typcache_record_cache_array_len	PgCurrentRecordCacheArrayLenRef	src/backend/utils/cache/backend_runtime_cache.c	record typmod array capacity
+NextRecordTypmod	PgSession	catalog_lookup	typcache_next_record_typmod	PgCurrentNextRecordTypmodRef	src/backend/utils/cache/backend_runtime_cache.c	record typmod allocation counter
+tupledesc_id_counter	PgSession	catalog_lookup	typcache_tupledesc_id_counter	PgCurrentTupleDescIdCounterRef	src/backend/utils/cache/backend_runtime_cache.c	tupledesc identifier counter
+AttoptCacheHash	PgSession	catalog_lookup	attopt_cache_hash	PgCurrentAttoptCacheHashRef	src/backend/utils/cache/backend_runtime_cache.c	attribute-options cache root
+RelfilenumberMapHash	PgSession	catalog_lookup	relfilenumber_map_hash	PgCurrentRelfilenumberMapHashRef	src/backend/utils/cache/backend_runtime_cache.c	relfilenumber map root
+relfilenumber_skey	PgSession	catalog_lookup	relfilenumber_skey	PgCurrentRelfilenumberScanKeyArray	src/backend/utils/cache/backend_runtime_cache.c	inline relfilenumber scan keys
+TableSpaceCacheHash	PgSession	catalog_lookup	tablespace_cache_hash	PgCurrentTableSpaceCacheHashRef	src/backend/utils/cache/backend_runtime_cache.c	tablespace options cache root
+EventTriggerCache	PgSession	catalog_lookup	event_trigger_cache	PgCurrentEventTriggerCacheRef	src/backend/utils/cache/backend_runtime_cache.c	event trigger cache root
+EventTriggerCacheContext	PgSession	catalog_lookup	event_trigger_cache_context	PgCurrentEventTriggerCacheContextRef	src/backend/utils/cache/backend_runtime_cache.c	event trigger cache memory context
+EventTriggerCacheState	PgSession	catalog_lookup	event_trigger_cache_state	PgCurrentEventTriggerCacheStateRef	src/backend/utils/cache/backend_runtime_cache.c	event trigger cache state flag
+ruleutils_rule_by_oid_plan	PgSession	catalog_lookup	ruleutils_rule_by_oid_plan	PgCurrentRuleutilsRuleByOidPlanRef	src/backend/utils/cache/backend_runtime_cache.c	retained ruleutils SPI plan
+ruleutils_view_rule_plan	PgSession	catalog_lookup	ruleutils_view_rule_plan	PgCurrentRuleutilsViewRulePlanRef	src/backend/utils/cache/backend_runtime_cache.c	retained ruleutils SPI plan
+TopMemoryContext	PgExecution	memory_contexts	top_context	PgTopMemoryContextRef	src/backend/utils/mmgr/backend_runtime_memory.c	standard top memory context pointer; physical tree reclamation remains Gate E2 work
+ResourceOwnerContext	PgExecution	resource_owners	resource_owner_context	PgCurrentResourceOwnerMemoryContext	src/include/utils/backend_runtime.h	execution-owned allocation context for ResourceOwner objects and expandable hash arrays
+currentEventTriggerState	PgExecution	replication_scratch	event_trigger_query_state	PgCurrentEventTriggerQueryStateRef	src/backend/commands/backend_runtime_event_trigger.c	active event-trigger complete-query state stack root
+EventTriggerQueryContext	PgExecution	replication_scratch	event_trigger_context	PgCurrentEventTriggerMemoryContext	src/backend/commands/backend_runtime_event_trigger.c	execution-owned parent context for event-trigger complete-query state contexts
+replorigin_xact_state	PgExecution	replication_scratch	replorigin_xact	PgCurrentReplOriginXactStateRef	src/backend/replication/logical/backend_runtime_logical.c	replication-origin transaction state copied as scalar origin/LSN/timestamp state
+apply_error_context_stack	PgExecution	replication_scratch	apply_error_context_stack	PgCurrentApplyErrorContextStackRef	src/backend/replication/logical/backend_runtime_logical.c	logical apply error callback stack root borrowed from active apply/error callback lifetime
+ApplyMessageContext	PgExecution	replication_scratch	apply_message_context	PgCurrentApplyMessageContextRef	src/backend/replication/logical/backend_runtime_logical.c	execution-owned logical apply message context deleted on closed-execution reset
+LogicalStreamingContext	PgExecution	replication_scratch	logical_streaming_context	PgCurrentLogicalStreamingContextRef	src/backend/replication/logical/backend_runtime_logical.c	execution-owned logical streaming context deleted on closed-execution reset
+SavedResourceOwnerDuringExport	PgExecution	snapbuild	saved_resource_owner_during_export	PgCurrentSnapBuildSavedResourceOwnerDuringExportRef	src/backend/replication/logical/backend_runtime_logical.c	snapbuild export resource-owner slot cleared after snapbuild cleanup or closed-execution reset
+ExportInProgress	PgExecution	snapbuild	export_in_progress	PgCurrentSnapBuildExportInProgressRef	src/backend/replication/logical/backend_runtime_logical.c	snapbuild export-in-progress flag cleared by snapbuild cleanup or closed-execution reset
+localChannelTable	PgSession	async	local_channel_table	PgCurrentAsyncLocalChannelTableRef	src/backend/commands/backend_runtime_async.c	session-owned LISTEN/NOTIFY local channel hash destroyed on closed-session reset after async proc-exit cleanup
+amRegisteredListener	PgSession	async	registered_listener	PgCurrentAsyncRegisteredListenerRef	src/backend/commands/backend_runtime_async.c	session LISTEN/NOTIFY registration flag cleared on closed-session reset after async proc-exit cleanup
+debug_query_string	PgExecution	debug	debug_query_string	PgCurrentDebugQueryStringRef	src/backend/tcop/backend_runtime_tcop.c	borrowed current command text pointer cleared by command/error paths and closed-execution reset
+prng_state	PgSession	random	prng_state	PgCurrentPseudoRandomStateRef	src/backend/utils/adt/backend_runtime_pseudorandom.c	session-owned SQL random-function PRNG state initialized on first use or session adoption
+prng_seed_set	PgSession	random	prng_seed_set	PgCurrentPseudoRandomSeedSetRef	src/backend/utils/adt/backend_runtime_pseudorandom.c	session-owned SQL random-function setseed flag initialized on first use or session adoption
+PlannerExtensionNameArray	PgSession	optimizer	planner_extension_names	PgCurrentPlannerExtensionNameArrayRef	src/backend/optimizer/util/backend_runtime_optimizer.c	session-owned planner extension name array freed on closed-session reset
+PlannerExtensionNamesAssigned	PgSession	optimizer	planner_extension_names_assigned	PgCurrentPlannerExtensionNamesAssignedRef	src/backend/optimizer/util/backend_runtime_optimizer.c	session-owned planner extension name count reset on closed-session reset
+PlannerExtensionNamesAllocated	PgSession	optimizer	planner_extension_names_allocated	PgCurrentPlannerExtensionNamesAllocatedRef	src/backend/optimizer/util/backend_runtime_optimizer.c	session-owned planner extension name allocation count reset on closed-session reset
+OprProofCacheHash	PgSession	optimizer	opr_proof_cache_hash	PgCurrentOprProofCacheHashRef	src/backend/optimizer/util/backend_runtime_optimizer.c	session-owned operator proof hash destroyed on closed-session reset
+PendingActions	PgExecution	async	pending_actions	PgCurrentPendingActionsRef	src/backend/commands/backend_runtime_async.c	borrowed async action list cleaned up by transaction abort/commit paths
+PendingListenActions	PgExecution	async	pending_listen_actions	PgCurrentPendingListenActionsRef	src/backend/commands/backend_runtime_async.c	borrowed async listen action hash cleaned up by transaction abort/commit paths
+PendingNotifies	PgExecution	async	pending_notifies	PgCurrentPendingNotifiesRef	src/backend/commands/backend_runtime_async.c	borrowed notification list cleaned up by transaction abort/commit paths
+QueueHeadBeforeWrite	PgExecution	async	queue_head_before_write	PgCurrentQueueHeadBeforeWriteRef	src/backend/commands/backend_runtime_async.c	copied async queue position state for transaction notification commit
+QueueHeadAfterWrite	PgExecution	async	queue_head_after_write	PgCurrentQueueHeadAfterWriteRef	src/backend/commands/backend_runtime_async.c	copied async queue position state for transaction notification commit
+SignalBackendsContext	PgExecution	async	signal_context	PgCurrentAsyncSignalWorkspaceContext	src/backend/commands/backend_runtime_async.c	execution-owned workspace context for LISTEN/NOTIFY SignalBackends arrays
+SignalPids	PgExecution	async	signal_pids	PgCurrentSignalPidsRef	src/backend/commands/backend_runtime_async.c	array allocated in SignalBackendsContext and reset with PgExecution.async.signal_context
+SignalProcnos	PgExecution	async	signal_procnos	PgCurrentSignalProcnosRef	src/backend/commands/backend_runtime_async.c	array allocated in SignalBackendsContext and reset with PgExecution.async.signal_context
+TryAdvanceTail	PgExecution	async	try_advance_tail	PgCurrentTryAdvanceTailRef	src/backend/commands/backend_runtime_async.c	async queue tail advancement flag reset with execution async state
+records	PgExecution	two_phase_records	head	PgCurrentTwoPhaseRecordStateRef	src/backend/access/transam/backend_runtime_xact.c	two-phase state-file record chain root, with tail and chunk count in the same execution bucket
+MyTriggerDepth	PgExecution	trigger	depth	PgCurrentTriggerDepthRef	src/backend/commands/backend_runtime_trigger.c	trigger nesting depth for the current execution
+afterTriggers	PgExecution	trigger	after_triggers_data	PgCurrentAfterTriggersDataRef	src/backend/commands/backend_runtime_trigger.c	opaque after-trigger transaction/query state object
+AfterTriggersContext	PgExecution	trigger	after_triggers_context	PgCurrentAfterTriggersMemoryContext	src/backend/commands/backend_runtime_trigger.c	execution-owned parent context for the opaque after-trigger state object
+MessageContext	PgExecution	memory_contexts	message_context	PgMessageContextRef	src/backend/utils/mmgr/backend_runtime_memory.c	execution-owned protocol-loop scratch context allocated in PostgresMain() and reset each command-message iteration
+ActivePortal	PgExecution	portal	active	PgCurrentActivePortalRef	src/backend/utils/mmgr/backend_runtime_portal.c	borrowed active portal pointer cleared by execution closed-state reset after portal cleanup owns active portal state
+TopPortalContext	PgSession	portal_manager	top_portal_context	PgCurrentTopPortalContextRef	src/backend/utils/mmgr/backend_runtime_portal.c	session-owned parent context for portal structs, portal contexts, hold contexts, and portal hash storage
+PortalHashTable	PgSession	portal_manager	portal_hash_table	PgCurrentPortalHashTableRef	src/backend/utils/mmgr/backend_runtime_portal.c	session-owned named-portal hash table allocated under TopPortalContext and destroyed with the portal manager
+row_description_context	PgSession	tcop	row_description_context	PgCurrentRowDescriptionContextRef	src/backend/tcop/backend_runtime_tcop.c	session-owned reusable RowDescription context allocated in PostgresMain() and deleted on closed-session reset
+row_description_buf	PgSession	tcop	row_description_buf	PgCurrentRowDescriptionBufRef	src/backend/tcop/backend_runtime_tcop.c	StringInfoData storage initialized under row_description_context and reused for RowDescription/ParameterDescription messages
+MyProcPort	PgConnection	identity	port	PgCurrentProcPortRef	src/backend/libpq/backend_runtime_connection.c	frontend/backend Port pointer allocated in PortContext by pq_init() or borrowed in preserved-port runtime initialization
+PortContext	PgConnection	identity	port_context	PgCurrentPortContextRef	src/backend/libpq/backend_runtime_connection.c	connection-owned context for the frontend/backend Port payload and startup strings allocated from it
+CurrentSession	PgSession	legacy_session	legacy_session	PgCurrentLegacySessionRef	src/backend/access/common/session.c	legacy access/session.h compatibility pointer; InitializeSession() obtains the payload through PgCurrentLegacySession(), including the process-session fallback
+LegacySessionContext	PgSession	legacy_session_context	legacy_session_context	PgSessionGetLegacySession	src/backend/utils/init/backend_runtime_session.c	session-owned compatibility context for the legacy access/session.h payload
+DynamicLibraryContext	PgSession	dynamic_library_context	dynamic_library_context	PgSessionGetDynamicLibraryMemoryContext	src/backend/utils/init/backend_runtime_session.c	session-owned context for per-session dynamic-library replay metadata
+DynamicLibraryInits	PgSession	dynamic_library_inits	dynamic_library_inits	PgCurrentSessionDynamicLibraryInitsRef	src/backend/utils/init/backend_runtime_session.c	session-owned list of runtime-loaded modules whose _PG_init has run in this logical session
+ConnectionWarningsEmitted	PgConnection	startup	connection_warnings_emitted	PgCurrentConnectionWarningsEmittedRef	src/backend/utils/init/postinit.c	connection warning emit guard
+ConnectionWarningMessages	PgConnection	startup	connection_warning_messages	PgCurrentConnectionWarningMessagesRef	src/backend/utils/init/postinit.c	saved connection warning messages
+ConnectionWarningDetails	PgConnection	startup	connection_warning_details	PgCurrentConnectionWarningDetailsRef	src/backend/utils/init/postinit.c	saved connection warning details
+pgwin32_noblock	PgConnection	socket_io	win32_noblock	PgCurrentPgwin32NoBlockRef	src/backend/port/win32/socket.c	Win32 socket emulated nonblocking flag; Windows build validation still required
+ri_fastpath_xact_callback_registered	PgSession	ri_globals	fastpath_xact_callback_registered	PgCurrentRIFastPathXactCallbackRegisteredRef	src/backend/utils/adt/backend_runtime_ri.c	RI fast-path xact callback registration guard
+XactCallbackContext	PgSession	xact_callbacks	xact_callback_context	PgCurrentXactCallbackMemoryContext	src/include/utils/backend_runtime.h	session-owned allocation context for transaction and subtransaction callback list nodes
+InjectionPointCache	PgBackend	utility	injection_point_cache	PgCurrentInjectionPointCacheRef	src/backend/utils/misc/backend_runtime_utility.c	backend-owned local injection-point callback cache
+UtilityCacheContext	PgBackend	utility	utility_cache_context	PgCurrentUtilityCacheMemoryContext	src/backend/utils/misc/backend_runtime_utility.c	backend-owned parent allocation context for utility hash-table caches
+MissingAttrCache	PgBackend	utility	missing_attr_cache	PgCurrentMissingAttrCacheRef	src/backend/utils/misc/backend_runtime_utility.c	backend-owned missing-attribute value cache
+DCHCache	PgBackend	utility	dch_cache	PgCurrentDCHCache	src/backend/utils/misc/backend_runtime_utility.c	backend-owned date/time formatting cache entry array
+n_DCHCache	PgBackend	utility	n_dch_cache	PgCurrentNumDCHCacheRef	src/backend/utils/misc/backend_runtime_utility.c	backend-owned date/time formatting cache entry count
+DCHCounter	PgBackend	utility	dch_counter	PgCurrentDCHCounterRef	src/backend/utils/misc/backend_runtime_utility.c	backend-owned date/time formatting cache aging counter
+NUMCache	PgBackend	utility	num_cache	PgCurrentNUMCache	src/backend/utils/misc/backend_runtime_utility.c	backend-owned numeric formatting cache entry array
+n_NUMCache	PgBackend	utility	n_num_cache	PgCurrentNumNUMCacheRef	src/backend/utils/misc/backend_runtime_utility.c	backend-owned numeric formatting cache entry count
+NUMCounter	PgBackend	utility	num_counter	PgCurrentNUMCounterRef	src/backend/utils/misc/backend_runtime_utility.c	backend-owned numeric formatting cache aging counter
+FormatCacheContext	PgBackend	utility	format_cache_context	PgCurrentFormatCacheMemoryContext	src/backend/utils/misc/backend_runtime_utility.c	backend-owned allocation context for DCH and NUM formatting cache entries
+archive_context	PgBackend	maintenance_worker	archive_context	PgCurrentMaintenanceWorkerState	src/backend/postmaster/pgarch.c	backend-owned archiver work context allocated through PgRuntimeGetOwnedMemoryContextWithSizes and deleted on closed-backend reset
+bgwriter_context	PgBackend	maintenance_worker	bgwriter_context	PgCurrentMaintenanceWorkerState	src/backend/postmaster/bgwriter.c	backend-owned background writer work context allocated through PgRuntimeGetOwnedMemoryContextWithSizes and deleted on closed-backend reset
+walwriter_context	PgBackend	maintenance_worker	walwriter_context	PgCurrentMaintenanceWorkerState	src/backend/postmaster/walwriter.c	backend-owned WAL writer work context allocated through PgRuntimeGetOwnedMemoryContextWithSizes and deleted on closed-backend reset
+checkpointer_context	PgBackend	maintenance_worker	checkpointer_context	PgCurrentMaintenanceWorkerState	src/backend/postmaster/checkpointer.c	backend-owned checkpointer work context allocated through PgRuntimeGetOwnedMemoryContextWithSizes and deleted on closed-backend reset
+walsummarizer_context	PgBackend	maintenance_worker	walsummarizer_context	PgCurrentMaintenanceWorkerState	src/backend/postmaster/walsummarizer.c	backend-owned WAL summarizer work context allocated through PgRuntimeGetOwnedMemoryContextWithSizes and deleted on closed-backend reset
+CurrentBackendThreadStart	PgCarrier	backend_thread_start	backend_thread_start	PgCurrentBackendThreadStartRef	src/backend/utils/init/backend_runtime.c	opaque backend-thread launch record pointer used before full runtime install and during thread exit handoff
+my_wait_event_info	PgBackend	wait_state	my_wait_event_info	PgCurrentMyWaitEventInfoRef	src/backend/storage/ipc/backend_runtime_ipc.c	backend-local wait-event pointer used by wait event reporting and reset to local_wait_event_info on backend adoption/reset
+local_wait_event_info	PgBackend	wait_state	local_wait_event_info	PgCurrentLocalWaitEventInfoRef	src/backend/storage/ipc/backend_runtime_ipc.c	backend-local wait-event storage used when no external wait-event pointer is installed
+waiting	PgCarrier	wait_event_waiting	wait_event_waiting	PgCurrentWaitEventWaitingRef	src/backend/storage/ipc/backend_runtime_ipc.c	carrier-local WaitLatch sleep flag observed by latch signal/wakeup code
+signal_fd	PgCarrier	wait_event_signal_fd	wait_event_signal_fd	PgCurrentWaitEventSignalFdRef	src/backend/storage/ipc/backend_runtime_ipc.c	carrier-local signalfd descriptor with -1 sentinel
+selfpipe_readfd	PgCarrier	wait_event_selfpipe_readfd	wait_event_selfpipe_readfd	PgCurrentWaitEventSelfPipeReadFdRef	src/backend/storage/ipc/backend_runtime_ipc.c	carrier-local self-pipe read descriptor with -1 sentinel
+selfpipe_writefd	PgCarrier	wait_event_selfpipe_writefd	wait_event_selfpipe_writefd	PgCurrentWaitEventSelfPipeWriteFdRef	src/backend/storage/ipc/backend_runtime_ipc.c	carrier-local self-pipe write descriptor with -1 sentinel
+selfpipe_owner_pid	PgCarrier	wait_event_selfpipe_owner_pid	wait_event_selfpipe_owner_pid	PgCurrentWaitEventSelfPipeOwnerPidRef	src/backend/storage/ipc/backend_runtime_ipc.c	carrier-local self-pipe owning pid guard
+stack_base_ptr	PgCarrier	stack_base_ptr	stack_base_ptr	PgCurrentStackBasePtrRef	src/backend/utils/misc/backend_runtime_utility.c	carrier-local stack-depth reference pointer; backend pthread stack sizing in pg_thread_create must leave enough room for max_stack_depth to error before platform stack exhaustion
+auto_explain_log_min_duration	PgSession	extension_modules	auto_explain_log_min_duration	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	auto_explain custom GUC backing integer
+auto_explain_log_parameter_max_length	PgSession	extension_modules	auto_explain_log_parameter_max_length	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	auto_explain custom GUC backing integer
+auto_explain_log_analyze	PgSession	extension_modules	auto_explain_log_analyze	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	auto_explain custom GUC backing bool
+auto_explain_log_verbose	PgSession	extension_modules	auto_explain_log_verbose	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	auto_explain custom GUC backing bool
+auto_explain_log_buffers	PgSession	extension_modules	auto_explain_log_buffers	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	auto_explain custom GUC backing bool
+auto_explain_log_io	PgSession	extension_modules	auto_explain_log_io	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	auto_explain custom GUC backing bool
+auto_explain_log_wal	PgSession	extension_modules	auto_explain_log_wal	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	auto_explain custom GUC backing bool
+auto_explain_log_triggers	PgSession	extension_modules	auto_explain_log_triggers	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	auto_explain custom GUC backing bool
+auto_explain_log_timing	PgSession	extension_modules	auto_explain_log_timing	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	auto_explain custom GUC backing bool
+auto_explain_log_settings	PgSession	extension_modules	auto_explain_log_settings	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	auto_explain custom GUC backing bool
+auto_explain_log_format	PgSession	extension_modules	auto_explain_log_format	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	auto_explain custom GUC backing enum
+auto_explain_log_level	PgSession	extension_modules	auto_explain_log_level	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	auto_explain custom GUC backing enum
+auto_explain_log_nested_statements	PgSession	extension_modules	auto_explain_log_nested_statements	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	auto_explain custom GUC backing bool
+auto_explain_sample_rate	PgSession	extension_modules	auto_explain_sample_rate	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	auto_explain custom GUC backing double
+auto_explain_log_extension_options	PgSession	extension_modules	auto_explain_log_extension_options	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	auto_explain custom GUC backing string
+extension_options	PgSession	extension_modules	auto_explain_extension_options	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	auto_explain parsed custom GUC extra pointer
+nesting_level	PgExecution	extension	auto_explain_nesting_level	PgCurrentExecutionExtensionState	src/include/utils/backend_runtime.h	auto_explain executor nesting depth
+current_query_sampled	PgExecution	extension	auto_explain_current_query_sampled	PgCurrentExecutionExtensionState	src/include/utils/backend_runtime.h	auto_explain top-level query sampling flag
+debug_handler	PgExecution	extension	pgcrypto_debug_handler	PgCurrentPgcryptoDebugHandlerRef	src/backend/utils/fmgr/backend_runtime_extension.c	pgcrypto PGP temporary debug callback
+creating_extension	PgExecution	extension	creating	PgCurrentCreatingExtensionRef	src/backend/utils/fmgr/backend_runtime_extension.c	current extension-creation state for extension dependency tracking
+current_extension_object	PgExecution	extension	current_object	PgCurrentExtensionObjectRef	src/backend/utils/fmgr/backend_runtime_extension.c	current extension object OID for extension dependency tracking
+similarity_threshold	PgSession	extension_modules	pg_trgm_similarity_threshold	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	pg_trgm custom GUC backing scalar
+word_similarity_threshold	PgSession	extension_modules	pg_trgm_word_similarity_threshold	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	pg_trgm custom GUC backing scalar
+strict_word_similarity_threshold	PgSession	extension_modules	pg_trgm_strict_word_similarity_threshold	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	pg_trgm custom GUC backing scalar
+pg_plan_advice_advice	PgSession	extension_modules	pg_plan_advice_advice	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	pg_plan_advice custom GUC backing string
+pg_plan_advice_always_store_advice_details	PgSession	extension_modules	pg_plan_advice_always_store_advice_details	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	pg_plan_advice custom GUC backing bool
+pg_plan_advice_always_explain_supplied_advice	PgSession	extension_modules	pg_plan_advice_always_explain_supplied_advice	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	pg_plan_advice custom GUC backing bool
+pg_plan_advice_feedback_warnings	PgSession	extension_modules	pg_plan_advice_feedback_warnings	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	pg_plan_advice custom GUC backing bool
+pg_plan_advice_trace_mask	PgSession	extension_modules	pg_plan_advice_trace_mask	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	pg_plan_advice custom GUC backing bool
+pgpa_planner_generate_advice	PgSession	extension_modules	pg_plan_advice_generate_advice	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	pg_plan_advice request counter
+pgpa_memory_context	PgRuntime	extension_modules	pg_plan_advice_context	PgCurrentPgPlanAdviceContextRef	src/backend/utils/fmgr/backend_runtime_extension.c	pg_plan_advice runtime-wide advisor memory context
+advisor_hook_list	PgRuntime	extension_modules	pg_plan_advice_advisor_hook_list	PgCurrentPgPlanAdviceAdvisorHookListRef	src/backend/utils/fmgr/backend_runtime_extension.c	pg_plan_advice runtime-wide advisor hook list
+bloom relation option context	PgRuntime	extension_modules	bloom_context	PgCurrentBloomContextRef	src/backend/utils/fmgr/backend_runtime_extension.c	bloom runtime-wide relation-option name allocation context
+rendezvousHash	PgRuntime	extension_modules	rendezvous_hash	PgCurrentRendezvousHashRef	src/backend/utils/fmgr/backend_runtime_extension.c	runtime-owned dynamic-library rendezvous-variable hash allocated in PgRuntime.extension_modules.memory_context so thread backend TopMemoryContext reclamation does not invalidate the registry
+archive_directory	PgBackend	extension_modules	basic_archive_archive_directory	PgCurrentBasicArchiveDirectoryRef	src/include/utils/backend_runtime.h	basic_archive custom GUC backing string
+apw_state	PgBackend	extension_modules	pg_prewarm_autoprewarm_state	PgCurrentBackendExtensionModuleState	src/include/utils/backend_runtime.h	pg_prewarm autoprewarm borrowed shared-state attachment pointer
+pg_stash_advice_stash_name	PgSession	extension_modules	pg_stash_advice_stash_name	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	pg_stash_advice custom GUC backing string
+pgsa_state	PgBackend	extension_modules	pg_stash_advice_state	PgCurrentBackendExtensionModuleState	src/include/utils/backend_runtime.h	pg_stash_advice fixed shared-state attachment pointer
+pgsa_dsa_area	PgBackend	extension_modules	pg_stash_advice_dsa_area	PgCurrentBackendExtensionModuleState	src/include/utils/backend_runtime.h	pg_stash_advice DSA mapping attachment
+pgsa_stash_dshash	PgBackend	extension_modules	pg_stash_advice_stash_dshash	PgCurrentBackendExtensionModuleState	src/include/utils/backend_runtime.h	pg_stash_advice stash-name dshash attachment
+pgsa_entry_dshash	PgBackend	extension_modules	pg_stash_advice_entry_dshash	PgCurrentBackendExtensionModuleState	src/include/utils/backend_runtime.h	pg_stash_advice stash-entry dshash attachment
+pg_stash_advice_mcxt	PgBackend	extension_modules	pg_stash_advice_context	PgCurrentBackendExtensionModuleState	src/include/utils/backend_runtime.h	pg_stash_advice backend-local attachment memory context
+sepgsql session context	PgSession	extension_modules	sepgsql_context	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	sepgsql session-owned client label allocation context
+sepgsql AVC context	PgSession	extension_modules	sepgsql_avc_context	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	sepgsql session-owned userspace access-vector-cache allocation context
+client_label_peer	PgSession	extension_modules	sepgsql_client_label_peer	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	sepgsql peer client label
+client_label_pending	PgSession	extension_modules	sepgsql_client_label_pending	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	sepgsql transaction-pending client label list
+client_label_committed	PgSession	extension_modules	sepgsql_client_label_committed	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	sepgsql committed client label
+client_label_func	PgSession	extension_modules	sepgsql_client_label_func	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	sepgsql trusted-procedure client label override
+avc_slots	PgSession	extension_modules	sepgsql_avc_slots	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	sepgsql userspace AVC hash buckets
+avc_num_caches	PgSession	extension_modules	sepgsql_avc_num_caches	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	sepgsql userspace AVC entry count
+avc_lru_hint	PgSession	extension_modules	sepgsql_avc_lru_hint	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	sepgsql userspace AVC reclaim pointer
+avc_threshold	PgSession	extension_modules	sepgsql_avc_threshold	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	sepgsql userspace AVC reclaim threshold
+avc_unlabeled	PgSession	extension_modules	sepgsql_avc_unlabeled	PgCurrentSessionExtensionModuleState	src/include/utils/backend_runtime.h	sepgsql cached unlabeled SELinux label
+pgcrypto DES state	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES crypt generated lookup tables and per-session key/salt/output cache
+inv_key_perm	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES inverted key permutation table
+u_key_perm	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES key permutation table
+inv_comp_perm	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES inverted compression permutation table
+u_sbox	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES generated S-box table
+un_pbox	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES inverted P-box table
+saltbits	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES current salt cache bits
+old_salt	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES previous salt cache key
+bits28	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES 28-bit mask pointer
+bits24	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES 24-bit mask pointer
+init_perm	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES initial permutation table
+final_perm	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES final permutation table
+en_keysl	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES encryption key schedule left halves
+en_keysr	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES encryption key schedule right halves
+de_keysl	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES decryption key schedule left halves
+de_keysr	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES decryption key schedule right halves
+des_initialised	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES generated table initialization flag
+m_sbox	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES merged S-box table
+psbox	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES P-box output masks
+ip_maskl	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES initial permutation left masks
+ip_maskr	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES initial permutation right masks
+fp_maskl	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES final permutation left masks
+fp_maskr	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES final permutation right masks
+key_perm_maskl	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES key permutation left masks
+key_perm_maskr	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES key permutation right masks
+comp_maskl	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES compression left masks
+comp_maskr	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES compression right masks
+old_rawkey0	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES previous raw key high word
+old_rawkey1	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES previous raw key low word
+crypt DES output	PgSession	extension_modules	pgcrypto_des	pgcrypto_des_state_current	contrib/pgcrypto/crypt-des.c	pgcrypto DES fixed output buffer returned by px_crypt_des
+PLy_procedure_cache	PgSession	extension_modules	plpython_procedure_cache	PgCurrentPLpythonProcedureCacheRef	src/include/utils/backend_runtime.h	PL/Python procedure cache hash
+PL/Python session context	PgSession	extension_modules	plpython_memory_context	PgCurrentPLpythonMemoryContextRef	src/include/utils/backend_runtime.h	PL/Python session-owned parent context for procedure, SPI plan, cursor, and inline block contexts
+plperl_inited	PgSession	extension_modules	plperl_inited	PgCurrentPLperlInitedRef	src/include/utils/backend_runtime.h	PL/Perl per-session module initialization flag
+PL/Perl session context	PgSession	extension_modules	plperl_memory_context	PgCurrentPLperlMemoryContextRef	src/include/utils/backend_runtime.h	PL/Perl session-owned parent context for procedure descriptor and SPI plan contexts
+plperl_interp_hash	PgSession	extension_modules	plperl_interp_hash	PgCurrentPLperlInterpHashRef	src/include/utils/backend_runtime.h	PL/Perl session interpreter hash
+plperl_proc_hash	PgSession	extension_modules	plperl_proc_hash	PgCurrentPLperlProcHashRef	src/include/utils/backend_runtime.h	PL/Perl procedure descriptor hash
+plperl_active_interp	PgSession	extension_modules	plperl_active_interp	PgCurrentPLperlActiveInterpRef	src/include/utils/backend_runtime.h	PL/Perl active interpreter pointer
+plperl_held_interp	PgSession	extension_modules	plperl_held_interp	PgCurrentPLperlHeldInterpRef	src/include/utils/backend_runtime.h	PL/Perl held interpreter pointer
+plperl_use_strict	PgSession	extension_modules	plperl_use_strict	PgCurrentPLperlUseStrictRef	src/include/utils/backend_runtime.h	PL/Perl custom GUC backing bool
+plperl_on_init	PgSession	extension_modules	plperl_on_init	PgCurrentPLperlOnInitRef	src/include/utils/backend_runtime.h	PL/Perl custom GUC backing string
+plperl_on_plperl_init	PgSession	extension_modules	plperl_on_plperl_init	PgCurrentPLperlOnPLperlInitRef	src/include/utils/backend_runtime.h	PL/Perl trusted interpreter init custom GUC backing string
+plperl_on_plperlu_init	PgSession	extension_modules	plperl_on_plperlu_init	PgCurrentPLperlOnPLperluInitRef	src/include/utils/backend_runtime.h	PL/Perl untrusted interpreter init custom GUC backing string
+plperl_ending	PgSession	extension_modules	plperl_ending	PgCurrentPLperlEndingRef	src/include/utils/backend_runtime.h	PL/Perl per-session shutdown flag
+current_call_data	PgSession	extension_modules	plperl_current_call_data	PgCurrentPLperlCurrentCallDataRef	src/include/utils/backend_runtime.h	PL/Perl current call data pointer
+plperl_reset_registered	PgSession	extension_modules	plperl_reset_registered	PgCurrentPLperlResetRegisteredRef	src/include/utils/backend_runtime.h	PL/Perl per-session reset callback registration flag
+PL/Tcl session context	PgSession	extension_modules	pltcl_memory_context	PgCurrentPLTclMemoryContextRef	src/include/utils/backend_runtime.h	PL/Tcl session-owned parent context for procedure descriptor and SPI plan contexts
+pltcl_start_proc	PgSession	extension_modules	pltcl_start_proc	PgCurrentPLTclStartProcRef	src/include/utils/backend_runtime.h	PL/Tcl trusted start-procedure custom GUC backing string
+pltclu_start_proc	PgSession	extension_modules	pltclu_start_proc	PgCurrentPLTclUStartProcRef	src/include/utils/backend_runtime.h	PL/Tcl untrusted start-procedure custom GUC backing string
+pltcl_hold_interp	PgSession	extension_modules	pltcl_hold_interp	PgCurrentPLTclHoldInterpRef	src/include/utils/backend_runtime.h	PL/Tcl session dummy hold interpreter pointer
+pltcl_interp_htab	PgSession	extension_modules	pltcl_interp_hash	PgCurrentPLTclInterpHashRef	src/include/utils/backend_runtime.h	PL/Tcl session interpreter hash
+pltcl_proc_htab	PgSession	extension_modules	pltcl_proc_hash	PgCurrentPLTclProcHashRef	src/include/utils/backend_runtime.h	PL/Tcl procedure descriptor hash
+pltcl_current_call_state	PgSession	extension_modules	pltcl_current_call_state	PgCurrentPLTclCurrentCallStateRef	src/include/utils/backend_runtime.h	PL/Tcl current call-state pointer
+PL/Sample session context	PgSession	extension_modules	plsample_memory_context	PgCurrentPLsampleMemoryContextRef	src/include/utils/backend_runtime.h	PL/Sample session-owned parent context for function and procedure call contexts
+FPlans	PgSession	extension_modules	refint_foreign_plans	refint_session_state	contrib/spi/refint.c	refint cached foreign-key SPI plan array
+nFPlans	PgSession	extension_modules	refint_num_foreign_plans	refint_session_state	contrib/spi/refint.c	refint cached foreign-key SPI plan count
+PPlans	PgSession	extension_modules	refint_primary_plans	refint_session_state	contrib/spi/refint.c	refint cached primary-key SPI plan array
+nPPlans	PgSession	extension_modules	refint_num_primary_plans	refint_session_state	contrib/spi/refint.c	refint cached primary-key SPI plan count
+auth_delay_milliseconds	PgSession	extension_modules	auth_delay_milliseconds	auth_delay_session_state	contrib/auth_delay/auth_delay.c	auth_delay custom GUC backing integer
+shell_command	PgSession	extension_modules	basebackup_to_shell_command	basebackup_to_shell_session_state	contrib/basebackup_to_shell/basebackup_to_shell.c	basebackup_to_shell command custom GUC backing string
+shell_required_role	PgSession	extension_modules	basebackup_to_shell_required_role	basebackup_to_shell_session_state	contrib/basebackup_to_shell/basebackup_to_shell.c	basebackup_to_shell required-role custom GUC backing string
+g_weak	PgSession	extension_modules	isn_weak	isn_session_state	contrib/isn/isn.c	isn weak-mode custom GUC backing bool
+min_password_length	PgSession	extension_modules	passwordcheck_min_password_length	passwordcheck_session_state	contrib/passwordcheck/passwordcheck.c	passwordcheck minimum-length custom GUC backing integer
+dblink session context	PgSession	extension_modules	dblink_context	dblink_session_state	contrib/dblink/dblink.c	dblink session-owned parent context for persistent connection state
+pconn	PgSession	extension_modules	dblink_persistent_connection	dblink_session_state	contrib/dblink/dblink.c	dblink unnamed persistent connection
+remoteConnHash	PgSession	extension_modules	dblink_remote_conn_hash	dblink_session_state	contrib/dblink/dblink.c	dblink named persistent connection hash
+postgres_fdw options context	PgSession	extension_modules	postgres_fdw_options_context	postgres_fdw_session_state	contrib/postgres_fdw/option.c	postgres_fdw session-owned parent context for option table
+postgres_fdw_options	PgSession	extension_modules	postgres_fdw_options	postgres_fdw_session_state	contrib/postgres_fdw/option.c	postgres_fdw valid option table
+pgfdw_application_name	PgSession	extension_modules	postgres_fdw_application_name	postgres_fdw_session_state	contrib/postgres_fdw/postgres_fdw.h	postgres_fdw custom GUC backing string
+ConnectionHash	PgSession	extension_modules	postgres_fdw_connection_hash	postgres_fdw_session_state	contrib/postgres_fdw/connection.c	postgres_fdw connection cache hash
+ShippableCacheHash	PgSession	extension_modules	postgres_fdw_shippable_cache_hash	postgres_fdw_session_state	contrib/postgres_fdw/shippable.c	postgres_fdw shippability cache hash
+cursor_number	PgSession	extension_modules	postgres_fdw_cursor_number	postgres_fdw_session_state	contrib/postgres_fdw/connection.c	postgres_fdw cursor counter
+prep_stmt_number	PgSession	extension_modules	postgres_fdw_prep_stmt_number	postgres_fdw_session_state	contrib/postgres_fdw/connection.c	postgres_fdw prepared-statement counter
+xact_got_connection	PgSession	extension_modules	postgres_fdw_xact_got_connection	postgres_fdw_session_state	contrib/postgres_fdw/connection.c	postgres_fdw transaction callback work flag
+read_only_level	PgSession	extension_modules	postgres_fdw_read_only_level	postgres_fdw_session_state	contrib/postgres_fdw/connection.c	postgres_fdw read-only transaction nesting level
+hpam_context	PgBackend	logical_replication	parallel_apply_message_context	PgCurrentLogicalReplicationState	src/backend/replication/logical/applyparallelworker.c	backend-owned scratch context for ProcessParallelApplyMessages interrupt handling
+hpm_context	PgBackend	repack	message_context	PgCurrentRepackState	src/backend/commands/repack.c	backend-owned scratch context for ProcessRepackMessages interrupt handling
+parallel_hpm_context	PgBackend	parallel	message_context	PgCurrentParallelMessageContextRef	src/backend/access/transam/parallel.c	backend-owned scratch context for ProcessParallelMessages interrupt handling; former local hpm_context
