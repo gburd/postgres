@@ -57,3 +57,34 @@ TSan not run: libxtc's cooperative fiber context-switching has no
 __sanitizer_*_switch_fiber annotations, so TSan's happens-before tracking would
 produce false positives across every carrier fiber switch.  Deferred until
 either libxtc gains the annotations or a TSan-suppression map is built.
+
+## 4. Residual pooled-regression diffs cleared as base-tree (not threading)
+
+The Session 3 pooled core-regression left 8 failing tests (join_hash,
+tidrangescan, incremental_sort, select_parallel, write_parallel,
+vacuum_parallel, bitmapops, tsearch), already shown to be a strict subset of the
+thread-per-session baseline (120/245 on the same schedule).  Re-ran the suspect
+tests in PROCESS mode (multithreaded=off, no threading at all): incremental_sort
+and select_parallel FAIL there too, with plan-shape diffs -- e.g.
+incremental_sort expects `Parallel Index Scan using tenk1_unique1` but this
+branch's planner picks `Parallel Seq Scan ... Disabled: true`; select_parallel
+has a large plan-output divergence.  These are pre-existing base-tree
+planner/costing divergences from upstream's expected outputs on this
+experimental branch -- they fail identically in process, thread-per-session, and
+pooled.  Conclusion: the pooled default introduces ZERO regressions; the
+residual diffs are branch-baseline plan drift, owned by whoever reconciles this
+branch's expected/*.out against its planner, not by the threading work.
+
+## 5. Deferred (needs live EC2 measurement, not guessed)
+
+The ~71 s client-close latency on a crashed fiber (TAP 010 ok 4) was
+investigated from the code: the supervisor observes the DOWN via a blocking
+xtc_recv (prompt), the crash flag now kicks the postmaster latch (prompt), and
+ExitPostmaster -> proc_exit has no obvious multi-second wait.  No code-level
+cause found for the 71 s, and the dev host cannot run the threaded server
+bringup to reproduce it (known meson-on-btrfs limitation).  Deliberately NOT
+guess-fixed (e.g. closing the crashed backend's client socket from the
+supervisor) -- the fault may have corrupted exactly that connection state, so a
+blind surgical close risks touching corrupted memory; fail-stop + full-process
+teardown is the safe path.  Needs a focused EC2 measurement session to localize
+the 71 s segment before any change.
