@@ -1,0 +1,19 @@
+# Local development ignores (not tracked in .gitignore)
+# To enable: git config core.excludesFile .local-gitignore
+.local-gitignore
+build/
+build-valgrind/
+build-asan/
+install/
+install-valgrind/
+install-asan/
+.direnv/
+.cache/
+.history
+test-db/
+log/
+results/
+regression.diffs
+regression.out
+*.core
+core.*
