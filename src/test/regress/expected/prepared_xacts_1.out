@@ -1,3 +1,0 @@
-SELECT current_setting('max_prepared_transactions')::integer < 2 AS skip_test \gset
-\if :skip_test
-\quit

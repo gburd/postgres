@@ -1,0 +1,166 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900" role="img" aria-labelledby="title desc">
+  <title id="title">Experimental multithreaded PostgreSQL architecture</title>
+  <desc id="desc">Diagram showing PgRuntime, logical backend state, carriers, and the three execution modes: process mode, thread per session mode, and pooled protocol carriers. It highlights that only the top-level frontend protocol boundary can detach an idle session from a carrier.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f8fa; }
+      .runtime { fill: #eef6ff; stroke: #3f75aa; stroke-width: 2.5; }
+      .panel { fill: #ffffff; stroke: #cbd4df; stroke-width: 2; }
+      .process { fill: #fff7e8; stroke: #b97923; stroke-width: 2; }
+      .thread { fill: #ecf8f1; stroke: #338257; stroke-width: 2; }
+      .pool { fill: #f5f0ff; stroke: #7654ad; stroke-width: 2; }
+      .object { fill: #ffffff; stroke: #455568; stroke-width: 1.7; }
+      .carrier { fill: #e9eef5; stroke: #405166; stroke-width: 1.7; }
+      .session { fill: #fffdf7; stroke: #8d6b25; stroke-width: 1.7; }
+      .connection { fill: #eefaf7; stroke: #2d7766; stroke-width: 1.7; }
+      .execution { fill: #f8efff; stroke: #745295; stroke-width: 1.7; }
+      .parked { fill: #fff8ed; stroke: #b97923; stroke-width: 1.7; }
+      .note { fill: #fbfcff; stroke: #bac4d1; stroke-width: 1.5; }
+      .legend { fill: #ffffff; stroke: #d3dae3; stroke-width: 1.2; }
+      .title { font: 700 30px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #17202a; }
+      .subtitle { font: 400 17px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #3a4654; }
+      .h2 { font: 700 19px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #17202a; }
+      .h3 { font: 700 16px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #17202a; }
+      .label { font: 650 15px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #17202a; }
+      .small { font: 400 13px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #3a4654; }
+      .tiny { font: 400 12px system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #536170; }
+      .center { text-anchor: middle; dominant-baseline: central; }
+      .arrow { stroke: #536170; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+      .attach { stroke: #7654ad; stroke-width: 2.3; fill: none; marker-end: url(#purplearrow); }
+      .park { stroke: #b97923; stroke-width: 2.3; stroke-dasharray: 8 6; fill: none; marker-end: url(#orangearrow); }
+      .pin { stroke: #338257; stroke-width: 2.1; fill: none; marker-end: url(#greenarrow); }
+    </style>
+    <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L7,4 L0,8 Z" fill="#536170" />
+    </marker>
+    <marker id="purplearrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L7,4 L0,8 Z" fill="#7654ad" />
+    </marker>
+    <marker id="orangearrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L7,4 L0,8 Z" fill="#b97923" />
+    </marker>
+    <marker id="greenarrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L7,4 L0,8 Z" fill="#338257" />
+    </marker>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1280" height="900" />
+
+  <text class="title" x="50" y="56">Experimental multithreaded PostgreSQL architecture</text>
+  <text class="subtitle" x="50" y="86">Backend state is explicit, so the same session can be carried by a process, a pinned thread, or a pooled protocol carrier.</text>
+
+  <rect class="runtime" x="50" y="118" width="1180" height="154" rx="10" />
+  <text class="h2" x="78" y="152">PgRuntime</text>
+  <text class="small" x="78" y="180">One PostgreSQL runtime inside an address space. It owns mode-neutral registries, scheduler state, logical backend ids, and runtime-wide state.</text>
+
+  <rect class="object" x="78" y="208" width="196" height="42" rx="7" />
+  <text class="label center" x="176" y="229">Backend registry</text>
+
+  <rect class="object" x="302" y="208" width="196" height="42" rx="7" />
+  <text class="label center" x="400" y="229">Current-work bridge</text>
+
+  <rect class="object" x="526" y="208" width="196" height="42" rx="7" />
+  <text class="label center" x="624" y="229">Interrupt routing</text>
+
+  <rect class="object" x="750" y="208" width="196" height="42" rx="7" />
+  <text class="label center" x="848" y="229">Protocol scheduler</text>
+
+  <rect class="object" x="974" y="208" width="196" height="42" rx="7" />
+  <text class="label center" x="1072" y="229">GUC/runtime state</text>
+
+  <path class="arrow" d="M190 272 L190 308" />
+  <path class="arrow" d="M640 272 L640 308" />
+  <path class="arrow" d="M1050 272 L1050 308" />
+
+  <rect class="panel process" x="50" y="310" width="360" height="330" rx="10" />
+  <text class="h2" x="76" y="346">Process mode</text>
+  <text class="small" x="76" y="374">Compatibility baseline. One backend per OS process.</text>
+
+  <rect class="carrier" x="92" y="410" width="276" height="48" rx="7" />
+  <text class="label center" x="230" y="434">PgCarrier</text>
+  <text class="tiny" x="248" y="481">OS process</text>
+
+  <rect class="object" x="92" y="502" width="276" height="44" rx="7" />
+  <text class="label center" x="230" y="524">PgBackend</text>
+  <path class="arrow" d="M230 458 L230 498" />
+
+  <rect class="session" x="92" y="562" width="276" height="44" rx="7" />
+  <text class="label center" x="230" y="584">PgSession</text>
+  <path class="arrow" d="M230 546 L230 562" />
+
+  <text class="tiny" x="104" y="624">The carrier and backend lifetime remain coupled.</text>
+
+  <rect class="panel thread" x="460" y="310" width="360" height="330" rx="10" />
+  <text class="h2" x="486" y="346">Thread-per-session mode</text>
+  <text class="small" x="486" y="374">One carrier thread stays attached to one session.</text>
+
+  <rect class="carrier" x="502" y="410" width="276" height="48" rx="7" />
+  <text class="label center" x="640" y="434">PgCarrier</text>
+  <text class="tiny" x="658" y="481">Pinned thread</text>
+
+  <rect class="object" x="502" y="502" width="276" height="44" rx="7" />
+  <text class="label center" x="640" y="524">PgBackend</text>
+  <path class="pin" d="M640 458 L640 498" />
+
+  <rect class="session" x="502" y="562" width="276" height="44" rx="7" />
+  <text class="label center" x="640" y="584">PgSession</text>
+  <path class="pin" d="M640 546 L640 562" />
+
+  <text class="tiny" x="509" y="624">Fast path keeps current-work state hot on one thread.</text>
+
+  <rect class="panel pool" x="870" y="310" width="360" height="330" rx="10" />
+  <text class="h2" x="896" y="346">Pooled protocol carriers</text>
+  <text class="small" x="896" y="374">Carrier threads are reused when sessions are idle</text>
+  <text class="small" x="896" y="394">at the frontend protocol boundary.</text>
+
+  <rect class="carrier" x="902" y="410" width="300" height="64" rx="8" />
+  <text class="h3 center" x="1052" y="430">Carrier pool</text>
+  <rect class="object" x="924" y="446" width="110" height="18" rx="4" />
+  <text class="tiny center" x="979" y="455">thread 1</text>
+  <rect class="object" x="1070" y="446" width="110" height="18" rx="4" />
+  <text class="tiny center" x="1125" y="455">thread N</text>
+
+  <rect class="session" x="902" y="520" width="300" height="54" rx="7" />
+  <text class="label center" x="1052" y="540">Attached current work</text>
+  <text class="tiny center" x="1052" y="559">message body keeps carrier pinned</text>
+
+  <path class="attach" d="M1052 474 L1052 516" />
+  <text class="tiny" x="1080" y="503">attach while active</text>
+
+  <rect class="parked" x="902" y="598" width="300" height="30" rx="7" />
+  <text class="label center" x="1052" y="613">Parked idle sessions</text>
+  <path class="park" d="M1052 574 L1052 598" />
+  <text class="tiny" x="912" y="591">no next message byte</text>
+
+  <rect class="panel" x="50" y="670" width="570" height="190" rx="10" />
+  <text class="h2" x="78" y="704">Logical backend state</text>
+  <text class="small" x="78" y="731">These objects move together as the current work of a carrier.</text>
+
+  <rect class="object" x="82" y="760" width="116" height="38" rx="6" />
+  <text class="small center" x="140" y="779">PgBackend</text>
+  <rect class="session" x="218" y="760" width="116" height="38" rx="6" />
+  <text class="small center" x="276" y="779">PgSession</text>
+  <rect class="connection" x="354" y="760" width="116" height="38" rx="6" />
+  <text class="small center" x="412" y="779">PgConnection</text>
+  <rect class="execution" x="490" y="760" width="92" height="38" rx="6" />
+  <text class="small center" x="536" y="779">PgExec</text>
+  <path class="arrow" d="M198 779 L218 779" />
+  <path class="arrow" d="M334 779 L354 779" />
+  <path class="arrow" d="M470 779 L490 779" />
+
+  <text class="tiny" x="78" y="821">Attach restores hot cells, TLS mirrors, CurrentMemoryContext, resource owner,</text>
+  <text class="tiny" x="78" y="838">MyProc, MyLatch, WaitSet, and timeout state.</text>
+
+  <rect class="note" x="660" y="670" width="570" height="190" rx="10" />
+  <text class="h2" x="688" y="704">Protocol boundary scheduler</text>
+  <text class="small" x="688" y="731">Only top-level frontend protocol input may detach from a carrier.</text>
+  <text class="small" x="688" y="756">No byte available: prepare a park, unwind the step stack, then commit detach.</text>
+  <text class="small" x="688" y="781">Byte available: pin the carrier until the full message body completes.</text>
+  <text class="small" x="688" y="806">Deep waits remain carrier-pinned and observable.</text>
+
+  <rect class="legend" x="921" y="816" width="280" height="20" rx="5" />
+  <path class="attach" d="M936 826 L978 826" />
+  <text class="tiny" x="988" y="830">attach</text>
+  <path class="park" d="M1040 826 L1082 826" />
+  <text class="tiny" x="1092" y="830">park/wake</text>
+</svg>
