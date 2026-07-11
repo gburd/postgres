@@ -1,0 +1,19 @@
+/*-------------------------------------------------------------------------
+ *
+ * backend_runtime_hot_mirrors.def
+ *	  Carrier-local mirror slots for very hot compatibility lvalues.
+ *
+ * This file is included with
+ * PG_RUNTIME_HOT_MIRROR(variable, owner, owner_type, type, field)
+ * defined by the includer.
+ *
+ * Mirror slots cache scalar lvalue state from the current runtime object.
+ * They are loaded when current work is installed and flushed back before
+ * current work changes.  They are not ownership roots.
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ *
+ * src/include/utils/backend_runtime_hot_mirrors.def
+ *
+ *-------------------------------------------------------------------------
+ */

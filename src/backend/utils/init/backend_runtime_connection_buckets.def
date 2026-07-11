@@ -1,0 +1,18 @@
+/*
+ * PgConnection lifecycle buckets.
+ *
+ * Each row is:
+ * PG_CONNECTION_BUCKET(field, constructor_init, early_adoption, closed_reset)
+ */
+PG_CONNECTION_BUCKET(backend, connection->backend = backend, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CONNECTION_BUCKET(session, connection->session = session, PG_RUNTIME_NOOP, PG_RUNTIME_NOOP)
+PG_CONNECTION_BUCKET(identity, MemSet(&connection->identity, 0, sizeof(connection->identity)); connection->identity.port = port, PgConnectionAdoptEarlyIdentity(connection); if (preserved_port != NULL) connection->identity.port = preserved_port, PgConnectionResetIdentityClosedState(connection))
+PG_CONNECTION_BUCKET(socket_io, MemSet(&connection->socket_io, 0, sizeof(connection->socket_io)), PgConnectionAdoptEarlySocketIO(connection), PgConnectionResetSocketIOClosedState(connection))
+PG_CONNECTION_BUCKET(protocol, MemSet(&connection->protocol, 0, sizeof(connection->protocol)), PgConnectionAdoptEarlyProtocolState(connection), PgConnectionResetProtocolClosedState(connection))
+PG_CONNECTION_BUCKET(output, PgConnectionInitializeOutputState(&connection->output), PgConnectionAdoptEarlyOutputState(connection), PG_RUNTIME_RESET_THROUGH_INITIALIZER(PgConnectionInitializeOutputState(&connection->output)))
+PG_CONNECTION_BUCKET(interrupts, MemSet(&connection->interrupts, 0, sizeof(connection->interrupts)), PgConnectionAdoptEarlyInterruptState(connection), MemSet(&connection->interrupts, 0, sizeof(connection->interrupts)))
+PG_CONNECTION_BUCKET(startup, PgConnectionInitializeStartupState(&connection->startup), PgConnectionAdoptEarlyStartupState(connection), PgConnectionResetStartupClosedState(connection))
+PG_CONNECTION_BUCKET(client_connection_info, MemSet(&connection->client_connection_info, 0, sizeof(connection->client_connection_info)), PgConnectionAdoptEarlyClientConnectionInfo(connection), PgConnectionResetClientConnectionInfoClosedState(connection))
+PG_CONNECTION_BUCKET(client_connection_info_context, connection->client_connection_info_context = NULL, PgConnectionAdoptEarlyClientConnectionInfoContext(connection), PG_RUNTIME_DELETE_MEMORY_CONTEXT(connection->client_connection_info_context))
+PG_CONNECTION_BUCKET(client_connection_info_authn_id_owned, connection->client_connection_info_authn_id_owned = false, PgConnectionAdoptEarlyClientConnectionInfoAuthnIdOwned(connection), connection->client_connection_info_authn_id_owned = false)
+PG_CONNECTION_BUCKET(security, MemSet(&connection->security, 0, sizeof(connection->security)), PgConnectionAdoptEarlySecurityState(connection), PgConnectionResetSecurityClosedState(connection))

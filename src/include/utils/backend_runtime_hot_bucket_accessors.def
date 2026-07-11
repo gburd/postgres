@@ -1,0 +1,345 @@
+/*
+ * Inline public current-bucket accessor aliases.
+ *
+ * Generated from hot current-work runtime bucket definitions.
+ */
+
+#define PgCurrentCoreState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendCoreRuntimeState, \
+								   PgCurrentCoreState)
+#define PgCurrentBackendCommandState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendCommandRuntimeState, \
+								   PgCurrentBackendCommandState)
+#define PgCurrentBackendLogState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendLogRuntimeState, \
+								   PgCurrentBackendLogState)
+#define PgCurrentExprInterpState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendExprInterpRuntimeState, \
+								   PgCurrentExprInterpState)
+#define PgCurrentTimeoutState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTimeoutRuntimeState, \
+								   PgCurrentTimeoutState)
+#define PgCurrentWalSenderState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendWalSenderRuntimeState, \
+								   PgCurrentWalSenderState)
+#define PgCurrentReplicationState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendReplicationRuntimeState, \
+								   PgCurrentReplicationState)
+#define PgCurrentLogicalReplicationState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendLogicalReplicationRuntimeState, \
+								   PgCurrentLogicalReplicationState)
+#define PgCurrentXLogState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendXLogRuntimeState, \
+								   PgCurrentXLogState)
+#define PgCurrentRecoveryState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendRecoveryRuntimeState, \
+								   PgCurrentRecoveryState)
+#define PgCurrentMaintenanceWorkerState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendMaintenanceWorkerRuntimeState, \
+								   PgCurrentMaintenanceWorkerState)
+#define PgCurrentAutovacuumState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendAutovacuumRuntimeState, \
+								   PgCurrentAutovacuumState)
+#define PgCurrentRepackState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendRepackRuntimeState, \
+								   PgCurrentRepackState)
+#define PgCurrentAioState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendAioRuntimeState, \
+								   PgCurrentAioState)
+#define PgCurrentBackendExtensionModuleState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendExtensionModuleRuntimeState, \
+								   PgCurrentBackendExtensionModuleState)
+#define PgCurrentBackendPgStatPendingState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, \
+								   PgCurrentBackendPgStatPendingState)
+#define PgCurrentBackendActivityState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendActivityRuntimeState, \
+								   PgCurrentBackendActivityState)
+#define PgCurrentBackendMemoryManagerState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendMemoryManagerRuntimeState, \
+								   PgCurrentBackendMemoryManagerState)
+#define PgCurrentBackendUtilityState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendUtilityRuntimeState, \
+								   PgCurrentBackendUtilityState)
+#define PgCurrentBackendParallelState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendParallelRuntimeState, \
+								   PgCurrentBackendParallelState)
+#define PgCurrentBackendInstrumentationState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendInstrumentationRuntimeState, \
+								   PgCurrentBackendInstrumentationState)
+#define PgCurrentBackendBufferState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendBufferRuntimeState, \
+								   PgCurrentBackendBufferState)
+#define PgCurrentBackendStorageState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendStorageRuntimeState, \
+								   PgCurrentBackendStorageState)
+#define PgCurrentBackendLockState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendLockRuntimeState, \
+								   PgCurrentBackendLockState)
+#define PgCurrentBackendIPCState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendIPCRuntimeState, \
+								   PgCurrentBackendIPCState)
+#define PgCurrentBackendTransactionState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendTransactionRuntimeState, \
+								   PgCurrentBackendTransactionState)
+#define PgCurrentPendingInterrupts() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPendingInterruptRuntimeState, \
+								   PgCurrentPendingInterrupts)
+#define PgCurrentInterruptHoldoffs() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendInterruptHoldoffRuntimeState, \
+								   PgCurrentInterruptHoldoffs)
+#define PgCurrentBackendWaitState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendWaitRuntimeState, \
+								   PgCurrentBackendWaitState)
+#define PgCurrentSessionLoopState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionLoopRuntimeState, \
+								   PgCurrentSessionLoopState)
+#define PgCurrentSessionTcopState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionTcopRuntimeState, \
+								   PgCurrentSessionTcopState)
+#define PgCurrentSessionDatabaseState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionDatabaseRuntimeState, \
+								   PgCurrentSessionDatabaseState)
+#define PgCurrentSessionTablespaceState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionTablespaceRuntimeState, \
+								   PgCurrentSessionTablespaceState)
+#define PgCurrentSessionBinaryUpgradeState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionBinaryUpgradeRuntimeState, \
+								   PgCurrentSessionBinaryUpgradeState)
+#define PgCurrentSessionDateTimeState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionDateTimeRuntimeState, \
+								   PgCurrentSessionDateTimeState)
+#define PgCurrentSessionParserState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionParserRuntimeState, \
+								   PgCurrentSessionParserState)
+#define PgCurrentSessionVacuumState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionVacuumRuntimeState, \
+								   PgCurrentSessionVacuumState)
+#define PgCurrentSessionBufferIOState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionBufferIORuntimeState, \
+								   PgCurrentSessionBufferIOState)
+#define PgCurrentSessionXactDefaultState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionXactDefaultRuntimeState, \
+								   PgCurrentSessionXactDefaultState)
+#define PgCurrentSessionLockWaitState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionLockWaitRuntimeState, \
+								   PgCurrentSessionLockWaitState)
+#define PgCurrentSessionLoggingState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionLoggingRuntimeState, \
+								   PgCurrentSessionLoggingState)
+#define PgCurrentSessionMiscGUCState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionMiscGUCRuntimeState, \
+								   PgCurrentSessionMiscGUCState)
+#define PgCurrentSessionGUCState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionGUCRuntimeState, \
+								   PgCurrentSessionGUCState)
+#define PgCurrentSessionPgStatState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPgStatRuntimeState, \
+								   PgCurrentSessionPgStatState)
+#define PgCurrentSessionQueryIdState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionQueryIdRuntimeState, \
+								   PgCurrentSessionQueryIdState)
+#define PgCurrentSessionStorageGUCState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionStorageGUCRuntimeState, \
+								   PgCurrentSessionStorageGUCState)
+#define PgCurrentSessionUserGUCState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionUserGUCRuntimeState, \
+								   PgCurrentSessionUserGUCState)
+#define PgCurrentUserIdentityState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionUserIdentityRuntimeState, \
+								   PgCurrentUserIdentityState)
+#define PgCurrentSessionCommandGUCState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionCommandGUCRuntimeState, \
+								   PgCurrentSessionCommandGUCState)
+#define PgCurrentSessionReplicationGUCState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionReplicationGUCRuntimeState, \
+								   PgCurrentSessionReplicationGUCState)
+#define PgCurrentSessionLogicalReplicationState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionLogicalReplicationRuntimeState, \
+								   PgCurrentSessionLogicalReplicationState)
+#define PgCurrentSessionGeneralGUCState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionGeneralGUCRuntimeState, \
+								   PgCurrentSessionGeneralGUCState)
+#define PgCurrentSessionAccessWalGUCState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionAccessWalGUCRuntimeState, \
+								   PgCurrentSessionAccessWalGUCState)
+#define PgCurrentSessionJitGUCState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionJitGUCRuntimeState, \
+								   PgCurrentSessionJitGUCState)
+#define PgCurrentSessionJitProviderState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionJitProviderRuntimeState, \
+								   PgCurrentSessionJitProviderState)
+#define PgCurrentSessionLLVMJitState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionLLVMJitRuntimeState, \
+								   PgCurrentSessionLLVMJitState)
+#define PgCurrentSessionSortGUCState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionSortGUCRuntimeState, \
+								   PgCurrentSessionSortGUCState)
+#define PgCurrentSessionTextSearchState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionTextSearchRuntimeState, \
+								   PgCurrentSessionTextSearchState)
+#define PgCurrentSessionConnectionGUCState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionConnectionGUCRuntimeState, \
+								   PgCurrentSessionConnectionGUCState)
+#define PgCurrentSessionQueryMemoryState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionQueryMemoryRuntimeState, \
+								   PgCurrentSessionQueryMemoryState)
+#define PgCurrentSessionPlannerCostState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerCostRuntimeState, \
+								   PgCurrentSessionPlannerCostState)
+#define PgCurrentSessionPlannerMethodState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, \
+								   PgCurrentSessionPlannerMethodState)
+#define PgCurrentSessionFunctionManagerState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionFunctionManagerRuntimeState, \
+								   PgCurrentSessionFunctionManagerState)
+#define PgCurrentSessionExtensionModuleState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionExtensionModuleRuntimeState, \
+								   PgCurrentSessionExtensionModuleState)
+#define PgCurrentSessionCatalogLookupState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionCatalogLookupRuntimeState, \
+								   PgCurrentSessionCatalogLookupState)
+#define PgCurrentInvalidationCallbackState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionInvalidationCallbackRuntimeState, \
+								   PgCurrentInvalidationCallbackState)
+#define PgCurrentSessionRIGlobalsState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionRIGlobalsRuntimeState, \
+								   PgCurrentSessionRIGlobalsState)
+#define PgCurrentSessionRelMapState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionRelMapRuntimeState, \
+								   PgCurrentSessionRelMapState)
+#define PgCurrentSessionPreparedStatementState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionPreparedStatementRuntimeState, \
+								   PgCurrentSessionPreparedStatementState)
+#define PgCurrentSessionOnCommitState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionOnCommitRuntimeState, \
+								   PgCurrentSessionOnCommitState)
+#define PgCurrentSessionSequenceState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionSequenceRuntimeState, \
+								   PgCurrentSessionSequenceState)
+#define PgCurrentSessionXactCallbackState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionXactCallbackRuntimeState, \
+								   PgCurrentSessionXactCallbackState)
+#define PgCurrentSessionBackupState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionBackupRuntimeState, \
+								   PgCurrentSessionBackupState)
+#define PgCurrentSessionRegexState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionRegexRuntimeState, \
+								   PgCurrentSessionRegexState)
+#define PgCurrentSessionPortalManagerState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionPortalManagerRuntimeState, \
+								   PgCurrentSessionPortalManagerState)
+#define PgCurrentSessionLargeObjectState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionLargeObjectRuntimeState, \
+								   PgCurrentSessionLargeObjectState)
+#define PgCurrentSessionAsyncState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionAsyncRuntimeState, \
+								   PgCurrentSessionAsyncState)
+#define PgCurrentSessionEncodingState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionEncodingRuntimeState, \
+								   PgCurrentSessionEncodingState)
+#define PgCurrentSessionTempFileState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionTempFileRuntimeState, \
+								   PgCurrentSessionTempFileState)
+#define PgCurrentSessionRandomState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionRandomRuntimeState, \
+								   PgCurrentSessionRandomState)
+#define PgCurrentSessionOptimizerState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgSessionOptimizerRuntimeState, \
+								   PgCurrentSessionOptimizerState)
+#define PgCurrentSessionPlanCacheState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlanCacheRuntimeState, \
+								   PgCurrentSessionPlanCacheState)
+#define PgCurrentNamespaceState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionNamespaceRuntimeState, \
+								   PgCurrentNamespaceState)
+#define PgCurrentLocaleState() \
+	PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionLocaleRuntimeState, \
+								   PgCurrentLocaleState)
+#define PgCurrentExecutionDebugState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionDebugRuntimeState, \
+								   PgCurrentExecutionDebugState)
+#define PgCurrentExecutionErrorState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionErrorRuntimeState, \
+								   PgCurrentExecutionErrorState)
+#define PgCurrentExecutionMemoryContexts() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionMemoryContextRuntimeState, \
+								   PgCurrentExecutionMemoryContexts)
+#define PgCurrentExecutionResourceOwners() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionResourceOwnerRuntimeState, \
+								   PgCurrentExecutionResourceOwners)
+#define PgCurrentExecutionSPIState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSPIRuntimeState, \
+								   PgCurrentExecutionSPIState)
+#define PgCurrentExecutionPortalState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionPortalRuntimeState, \
+								   PgCurrentExecutionPortalState)
+#define PgCurrentExecutionVacuumState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionVacuumRuntimeState, \
+								   PgCurrentExecutionVacuumState)
+#define PgCurrentExecutionNodeIOState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionNodeIORuntimeState, \
+								   PgCurrentExecutionNodeIOState)
+#define PgCurrentExecutionBaseBackupState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionBaseBackupRuntimeState, \
+								   PgCurrentExecutionBaseBackupState)
+#define PgCurrentExecutionAnalyzeState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionAnalyzeRuntimeState, \
+								   PgCurrentExecutionAnalyzeState)
+#define PgCurrentExecutionExtensionState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionExtensionRuntimeState, \
+								   PgCurrentExecutionExtensionState)
+#define PgCurrentExecutionMatViewState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionMatViewRuntimeState, \
+								   PgCurrentExecutionMatViewState)
+#define PgCurrentExecutionSnapshotState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSnapshotRuntimeState, \
+								   PgCurrentExecutionSnapshotState)
+#define PgCurrentExecutionComboCidState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionComboCidRuntimeState, \
+								   PgCurrentExecutionComboCidState)
+#define PgCurrentExecutionXLogInsertState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXLogInsertRuntimeState, \
+								   PgCurrentExecutionXLogInsertState)
+#define PgCurrentExecutionXactState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionXactRuntimeState, \
+								   PgCurrentExecutionXactState)
+#define PgCurrentExecutionTransactionCleanupState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTransactionCleanupRuntimeState, \
+								   PgCurrentExecutionTransactionCleanupState)
+#define PgCurrentExecutionReplicationScratchState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionReplicationScratchRuntimeState, \
+								   PgCurrentExecutionReplicationScratchState)
+#define PgCurrentExecutionGUCErrorState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionGUCErrorRuntimeState, \
+								   PgCurrentExecutionGUCErrorState)
+#define PgCurrentExecutionAsyncState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionAsyncRuntimeState, \
+								   PgCurrentExecutionAsyncState)
+#define PgCurrentExecutionCatalogState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogRuntimeState, \
+								   PgCurrentExecutionCatalogState)
+#define PgCurrentExecutionCatalogCacheState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionCatalogCacheRuntimeState, \
+								   PgCurrentExecutionCatalogCacheState)
+#define PgCurrentExecutionRelMapState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionRelMapRuntimeState, \
+								   PgCurrentExecutionRelMapState)
+#define PgCurrentExecutionInvalidationState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionInvalidationRuntimeState, \
+								   PgCurrentExecutionInvalidationState)
+#define PgCurrentExecutionTwoPhaseRecordState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTwoPhaseRecordRuntimeState, \
+								   PgCurrentExecutionTwoPhaseRecordState)
+#define PgCurrentExecutionTriggerState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionTriggerRuntimeState, \
+								   PgCurrentExecutionTriggerState)
+#define PgCurrentExecutionRegexState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionRegexRuntimeState, \
+								   PgCurrentExecutionRegexState)
+#define PgCurrentExecutionValgrindState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionValgrindRuntimeState, \
+								   PgCurrentExecutionValgrindState)
+#define PgCurrentExecutionSnapBuildState() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionSnapBuildRuntimeState, \
+								   PgCurrentExecutionSnapBuildState)

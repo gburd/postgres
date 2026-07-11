@@ -1,0 +1,1976 @@
+/*-------------------------------------------------------------------------
+ *
+ * backend_runtime_current_field_accessors.def
+ *	  Inline current field accessor aliases generated from simple runtime accessors.
+ *
+ * Each alias preserves the exported C function as the cold fallback while
+ * making normal current-bucket member lookups expand at the call site.
+ *
+ *-------------------------------------------------------------------------
+ */
+
+#define PgCurrentActivePortalRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionPortalRuntimeState, PgCurrentActivePortalRef, \
+									 active)
+#define PgCurrentActiveSnapshotRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSnapshotRuntimeState, PgCurrentActiveSnapshotRef, \
+									 active_snapshot)
+#define PgCurrentAfterTriggersDataRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTriggerRuntimeState, PgCurrentAfterTriggersDataRef, \
+									 after_triggers_data)
+#define PgCurrentAfterTriggersMemoryContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTriggerRuntimeState, PgCurrentAfterTriggersMemoryContextRef, \
+									 after_triggers_context)
+#define PgCurrentAllocSetContextFreeLists() \
+	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgBackendMemoryManagerRuntimeState, PgCurrentAllocSetContextFreeLists, \
+									 context_freelists)
+#define PgCurrentAllocatedDescsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendStorageRuntimeState, PgCurrentAllocatedDescsRef, \
+									 allocated_descs)
+#define PgCurrentAllowSystemTableModsRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionMiscGUCRuntimeState, PgCurrentAllowSystemTableModsRef, \
+									 allow_system_table_mods_value)
+#define PgCurrentAnalyzeContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionAnalyzeRuntimeState, PgCurrentAnalyzeContextRef, \
+									 context)
+#define PgCurrentAnalyzeStrategyRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionAnalyzeRuntimeState, PgCurrentAnalyzeStrategyRef, \
+									 strategy)
+#define PgCurrentApplyErrorContextStackRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionReplicationScratchRuntimeState, PgCurrentApplyErrorContextStackRef, \
+									 apply_error_context_stack)
+#define PgCurrentApplyMessageContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionReplicationScratchRuntimeState, PgCurrentApplyMessageContextRef, \
+									 apply_message_context)
+#define PgCurrentArrayAnalyzeExtraDataRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionAnalyzeRuntimeState, PgCurrentArrayAnalyzeExtraDataRef, \
+									 array_extra_data)
+#define PgCurrentAsyncGlobalChannelDSARef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentAsyncGlobalChannelDSARef, \
+									 async_global_channel_dsa)
+#define PgCurrentAsyncGlobalChannelTableRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentAsyncGlobalChannelTableRef, \
+									 async_global_channel_table)
+#define PgCurrentAsyncUnlistenExitRegisteredRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentAsyncUnlistenExitRegisteredRef, \
+									 async_unlisten_exit_registered)
+#define PgCurrentAttoptCacheHashRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentAttoptCacheHashRef, \
+									 attopt_cache_hash)
+#define PgCurrentAwaitedLockRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentAwaitedLockRef, \
+									 awaited_lock)
+#define PgCurrentAwaitedOwnerRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentAwaitedOwnerRef, \
+									 awaited_owner)
+#define PgCurrentBSysScanRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentBSysScanRef, \
+									 bsysscan_value)
+#define PgCurrentBackendHasIOStatsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendHasIOStatsRef, \
+									 backend_io_stats_pending)
+#define PgCurrentBackendHasLockStatsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendHasLockStatsRef, \
+									 backend_lock_stats_pending)
+#define PgCurrentBackslashQuoteRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionParserRuntimeState, PgCurrentBackslashQuoteRef, \
+									 backslash_quote_value)
+#define PgCurrentBacktraceFunctionListRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentBacktraceFunctionListRef, \
+									 backtrace_function_list_value)
+#define PgCurrentBacktraceFunctionsRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentBacktraceFunctionsRef, \
+									 backtrace_functions_value)
+#define PgCurrentBaseBackupNoVerifyChecksumsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionBaseBackupRuntimeState, PgCurrentBaseBackupNoVerifyChecksumsRef, \
+									 noverify_checksums)
+#define PgCurrentBaseBackupStartedInRecoveryRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionBaseBackupRuntimeState, PgCurrentBaseBackupStartedInRecoveryRef, \
+									 backup_started_in_recovery)
+#define PgCurrentBaseBackupTotalChecksumFailuresRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionBaseBackupRuntimeState, PgCurrentBaseBackupTotalChecksumFailuresRef, \
+									 total_checksum_failures)
+#define PgCurrentBlockingAutovacuumProcRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentBlockingAutovacuumProcRef, \
+									 blocking_autovacuum_proc)
+#define PgCurrentBufferUsageRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendInstrumentationRuntimeState, PgCurrentBufferUsageRef, \
+									 buffer_usage)
+#define PgCurrentCachedCommitLSNRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentCachedCommitLSNRef, \
+									 cached_commit_lsn)
+#define PgCurrentCachedFetchXidRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentCachedFetchXidRef, \
+									 cached_fetch_xid)
+#define PgCurrentCachedFetchXidStatusRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentCachedFetchXidStatusRef, \
+									 cached_fetch_xid_status)
+#define PgCurrentCatCacheHeaderRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentCatCacheHeaderRef, \
+									 cat_cache_header)
+#define PgCurrentCatCacheInProgressStackRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentCatCacheInProgressStackRef, \
+									 catcache_in_progress_stack)
+#define PgCurrentCatalogSnapshotDataRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSnapshotRuntimeState, PgCurrentCatalogSnapshotDataRef, \
+									 catalog_snapshot_data)
+#define PgCurrentCatalogSnapshotRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSnapshotRuntimeState, PgCurrentCatalogSnapshotRef, \
+									 catalog_snapshot)
+#define PgCurrentCatchupInterruptPendingRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendIPCRuntimeState, PgCurrentCatchupInterruptPendingRef, \
+									 catchup_interrupt_pending)
+#define PgCurrentCheckXidAliveRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentCheckXidAliveRef, \
+									 check_xid_alive)
+#define PgCurrentClientEncodingRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentClientEncodingRef, \
+									 client_encoding, client_encoding)
+#define PgCurrentClientEncodingStringRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentClientEncodingStringRef, \
+									 client_encoding, client_encoding_string_value)
+#define PgCurrentClientMinMessagesRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentClientMinMessagesRef, \
+									 client_min_messages_value)
+#define PgCurrentComboCidHashRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionComboCidRuntimeState, PgCurrentComboCidHashRef, \
+									 hash)
+#define PgCurrentComboCidsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionComboCidRuntimeState, PgCurrentComboCidsRef, \
+									 cids)
+#define PgCurrentCommandIdCounterRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentCommandIdCounterRef, \
+									 current_command_id)
+#define PgCurrentCommandIdUsedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentCommandIdUsedRef, \
+									 current_command_id_used)
+#define PgCurrentComputeXidHorizonsResultLastXminRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentComputeXidHorizonsResultLastXminRef, \
+									 compute_xid_horizons_result_last_xmin)
+#define PgCurrentConditionVariableSleepTargetRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentConditionVariableSleepTargetRef, \
+									 condition_variable_sleep_target)
+#define PgCurrentConfigFileLinenoRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionGUCErrorRuntimeState, PgCurrentConfigFileLinenoRef, \
+									 config_file_lineno)
+#define PgCurrentConstraintExclusionRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentConstraintExclusionRef, \
+									 constraint_exclusion_value)
+#define PgCurrentCpuIndexTupleCostRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerCostRuntimeState, PgCurrentCpuIndexTupleCostRef, \
+									 cpu_index_tuple_cost_value)
+#define PgCurrentCpuOperatorCostRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerCostRuntimeState, PgCurrentCpuOperatorCostRef, \
+									 cpu_operator_cost_value)
+#define PgCurrentCpuTupleCostRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerCostRuntimeState, PgCurrentCpuTupleCostRef, \
+									 cpu_tuple_cost_value)
+#define PgCurrentCreatingExtensionRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionExtensionRuntimeState, PgCurrentCreatingExtensionRef, \
+									 creating)
+#define PgCurrentCriticalRelcachesBuiltRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentCriticalRelcachesBuiltRef, \
+									 relcache_critical_built)
+#define PgCurrentCriticalSharedRelcachesBuiltRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentCriticalSharedRelcachesBuiltRef, \
+									 relcache_critical_shared_built)
+#define PgCurrentCursorTupleFractionRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentCursorTupleFractionRef, \
+									 cursor_tuple_fraction_value)
+#define PgCurrentDCHCache() \
+	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgBackendUtilityRuntimeState, PgCurrentDCHCache, \
+									 dch_cache)
+#define PgCurrentDCHCounterRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentDCHCounterRef, \
+									 dch_counter)
+#define PgCurrentDatabaseEncodingRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentDatabaseEncodingRef, \
+									 client_encoding, database_encoding)
+#define PgCurrentDateOrderRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionDateTimeRuntimeState, PgCurrentDateOrderRef, \
+									 date_order)
+#define PgCurrentDateStyleRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionDateTimeRuntimeState, PgCurrentDateStyleRef, \
+									 date_style)
+#define PgCurrentDateStyleStringRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionDateTimeRuntimeState, PgCurrentDateStyleStringRef, \
+									 datestyle_string_value)
+#define PgCurrentDateTokenCache() \
+	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgBackendUtilityRuntimeState, PgCurrentDateTokenCache, \
+									 date_cache)
+#define PgCurrentDeadlockAfterConstraintsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentDeadlockAfterConstraintsRef, \
+									 deadlock_after_constraints)
+#define PgCurrentDeadlockBeforeConstraintsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentDeadlockBeforeConstraintsRef, \
+									 deadlock_before_constraints)
+#define PgCurrentDeadlockCurConstraintsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentDeadlockCurConstraintsRef, \
+									 deadlock_cur_constraints)
+#define PgCurrentDeadlockDetailsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentDeadlockDetailsRef, \
+									 deadlock_details)
+#define PgCurrentDeadlockMaxCurConstraintsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentDeadlockMaxCurConstraintsRef, \
+									 deadlock_max_cur_constraints)
+#define PgCurrentDeadlockMaxPossibleConstraintsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentDeadlockMaxPossibleConstraintsRef, \
+									 deadlock_max_possible_constraints)
+#define PgCurrentDeadlockNCurConstraintsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentDeadlockNCurConstraintsRef, \
+									 deadlock_n_cur_constraints)
+#define PgCurrentDeadlockNDetailsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentDeadlockNDetailsRef, \
+									 deadlock_n_details)
+#define PgCurrentDeadlockNPossibleConstraintsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentDeadlockNPossibleConstraintsRef, \
+									 deadlock_n_possible_constraints)
+#define PgCurrentDeadlockNVisitedProcsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentDeadlockNVisitedProcsRef, \
+									 deadlock_n_visited_procs)
+#define PgCurrentDeadlockNWaitOrdersRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentDeadlockNWaitOrdersRef, \
+									 deadlock_n_wait_orders)
+#define PgCurrentDeadlockPossibleConstraintsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentDeadlockPossibleConstraintsRef, \
+									 deadlock_possible_constraints)
+#define PgCurrentDeadlockTimeoutPendingRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentDeadlockTimeoutPendingRef, \
+									 deadlock_timeout_pending)
+#define PgCurrentDeadlockTimeoutRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLockWaitRuntimeState, PgCurrentDeadlockTimeoutRef, \
+									 deadlock_timeout_ms)
+#define PgCurrentDeadlockTopoProcsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentDeadlockTopoProcsRef, \
+									 deadlock_topo_procs)
+#define PgCurrentDeadlockVisitedProcsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentDeadlockVisitedProcsRef, \
+									 deadlock_visited_procs)
+#define PgCurrentDeadlockWaitOrderProcsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentDeadlockWaitOrderProcsRef, \
+									 deadlock_wait_order_procs)
+#define PgCurrentDeadlockWaitOrdersRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentDeadlockWaitOrdersRef, \
+									 deadlock_wait_orders)
+#define PgCurrentDeadlockWorkspaceOwnedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentDeadlockWorkspaceOwnedRef, \
+									 deadlock_workspace_owned)
+#define PgCurrentDebugCopyParsePlanTreesRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentDebugCopyParsePlanTreesRef, \
+									 debug_copy_parse_plan_trees_value)
+#define PgCurrentDebugDeadlocksRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLockWaitRuntimeState, PgCurrentDebugDeadlocksRef, \
+									 debug_deadlocks_value)
+#define PgCurrentDebugDiscardCachesRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionRIGlobalsRuntimeState, PgCurrentDebugDiscardCachesRef, \
+									 debug_discard_caches_value)
+#define PgCurrentDebugParallelQueryRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerCostRuntimeState, PgCurrentDebugParallelQueryRef, \
+									 debug_parallel_query_value)
+#define PgCurrentDebugPrettyPrintRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentDebugPrettyPrintRef, \
+									 debug_pretty_print_value)
+#define PgCurrentDebugPrintParseRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentDebugPrintParseRef, \
+									 debug_print_parse_value)
+#define PgCurrentDebugPrintPlanRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentDebugPrintPlanRef, \
+									 debug_print_plan_value)
+#define PgCurrentDebugPrintRawParseRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentDebugPrintRawParseRef, \
+									 debug_print_raw_parse_value)
+#define PgCurrentDebugPrintRewrittenRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentDebugPrintRewrittenRef, \
+									 debug_print_rewritten_value)
+#define PgCurrentDebugQueryStringRef() \
+	PgCurrentDebugQueryStringRef()
+#define PgCurrentDebugRawExpressionCoverageTestRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentDebugRawExpressionCoverageTestRef, \
+									 debug_raw_expression_coverage_test_value)
+#define PgCurrentDebugWriteReadParsePlanTreesRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentDebugWriteReadParsePlanTreesRef, \
+									 debug_write_read_parse_plan_trees_value)
+#define PgCurrentDefaultStatisticsTargetRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentDefaultStatisticsTargetRef, \
+									 default_statistics_target_value)
+#define PgCurrentDefaultXactDeferrableRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionXactDefaultRuntimeState, PgCurrentDefaultXactDeferrableRef, \
+									 default_xact_deferrable)
+#define PgCurrentDefaultXactIsoLevelRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionXactDefaultRuntimeState, PgCurrentDefaultXactIsoLevelRef, \
+									 default_xact_iso_level)
+#define PgCurrentDefaultXactReadOnlyRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionXactDefaultRuntimeState, PgCurrentDefaultXactReadOnlyRef, \
+									 default_xact_read_only)
+#define PgCurrentDegreeAcos05Ref() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentDegreeAcos05Ref, \
+									 degree_acos_0_5)
+#define PgCurrentDegreeAsin05Ref() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentDegreeAsin05Ref, \
+									 degree_asin_0_5)
+#define PgCurrentDegreeAtan10Ref() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentDegreeAtan10Ref, \
+									 degree_atan_1_0)
+#define PgCurrentDegreeConstsSetRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentDegreeConstsSetRef, \
+									 degree_consts_set)
+#define PgCurrentDegreeCot45Ref() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentDegreeCot45Ref, \
+									 degree_cot_45)
+#define PgCurrentDegreeOneMinusCos60Ref() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentDegreeOneMinusCos60Ref, \
+									 degree_one_minus_cos_60)
+#define PgCurrentDegreeSin30Ref() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentDegreeSin30Ref, \
+									 degree_sin_30)
+#define PgCurrentDegreeTan45Ref() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentDegreeTan45Ref, \
+									 degree_tan_45)
+#define PgCurrentDeltaTokenCache() \
+	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgBackendUtilityRuntimeState, PgCurrentDeltaTokenCache, \
+									 delta_cache)
+#define PgCurrentDoingCommandReadRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionLoopRuntimeState, PgCurrentDoingCommandReadRef, \
+									 doing_command_read)
+#define PgCurrentDsmInitDoneRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendIPCRuntimeState, PgCurrentDsmInitDoneRef, \
+									 dsm_init_done)
+#define PgCurrentDsmRegistryDsaRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendIPCRuntimeState, PgCurrentDsmRegistryDsaRef, \
+									 dsm_registry_dsa)
+#define PgCurrentDsmRegistryTableRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendIPCRuntimeState, PgCurrentDsmRegistryTableRef, \
+									 dsm_registry_table)
+#define PgCurrentDynamicLibraryPathRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionMiscGUCRuntimeState, PgCurrentDynamicLibraryPathRef, \
+									 dynamic_library_path_value)
+#define PgCurrentEffectiveCacheSizeRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerCostRuntimeState, PgCurrentEffectiveCacheSizeRef, \
+									 effective_cache_size_pages)
+#define PgCurrentEnableAsyncAppendRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableAsyncAppendRef, \
+									 enable_async_append_value)
+#define PgCurrentEnableBitmapscanRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableBitmapscanRef, \
+									 enable_bitmapscan_value)
+#define PgCurrentEnableDistinctReorderingRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableDistinctReorderingRef, \
+									 enable_distinct_reordering_value)
+#define PgCurrentEnableEagerAggregateRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableEagerAggregateRef, \
+									 enable_eager_aggregate_value)
+#define PgCurrentEnableGathermergeRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableGathermergeRef, \
+									 enable_gathermerge_value)
+#define PgCurrentEnableGeqoRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableGeqoRef, \
+									 enable_geqo_value)
+#define PgCurrentEnableGroupByReorderingRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableGroupByReorderingRef, \
+									 enable_group_by_reordering_value)
+#define PgCurrentEnableHashaggRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableHashaggRef, \
+									 enable_hashagg_value)
+#define PgCurrentEnableHashjoinRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableHashjoinRef, \
+									 enable_hashjoin_value)
+#define PgCurrentEnableIncrementalSortRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableIncrementalSortRef, \
+									 enable_incremental_sort_value)
+#define PgCurrentEnableIndexonlyscanRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableIndexonlyscanRef, \
+									 enable_indexonlyscan_value)
+#define PgCurrentEnableIndexscanRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableIndexscanRef, \
+									 enable_indexscan_value)
+#define PgCurrentEnableMaterialRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableMaterialRef, \
+									 enable_material_value)
+#define PgCurrentEnableMemoizeRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableMemoizeRef, \
+									 enable_memoize_value)
+#define PgCurrentEnableMergejoinRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableMergejoinRef, \
+									 enable_mergejoin_value)
+#define PgCurrentEnableNestloopRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableNestloopRef, \
+									 enable_nestloop_value)
+#define PgCurrentEnableParallelAppendRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableParallelAppendRef, \
+									 enable_parallel_append_value)
+#define PgCurrentEnableParallelHashRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableParallelHashRef, \
+									 enable_parallel_hash_value)
+#define PgCurrentEnablePartitionPruningRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnablePartitionPruningRef, \
+									 enable_partition_pruning_value)
+#define PgCurrentEnablePartitionwiseAggregateRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnablePartitionwiseAggregateRef, \
+									 enable_partitionwise_aggregate_value)
+#define PgCurrentEnablePartitionwiseJoinRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnablePartitionwiseJoinRef, \
+									 enable_partitionwise_join_value)
+#define PgCurrentEnablePresortedAggregateRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnablePresortedAggregateRef, \
+									 enable_presorted_aggregate_value)
+#define PgCurrentEnableSelfJoinEliminationRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableSelfJoinEliminationRef, \
+									 enable_self_join_elimination_value)
+#define PgCurrentEnableSeqscanRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableSeqscanRef, \
+									 enable_seqscan_value)
+#define PgCurrentEnableSortRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableSortRef, \
+									 enable_sort_value)
+#define PgCurrentEnableTidscanRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableTidscanRef, \
+									 enable_tidscan_value)
+#define PgCurrentEncodingConvProcListRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentEncodingConvProcListRef, \
+									 client_encoding, conv_proc_list)
+#define PgCurrentEncodingStartupCompleteRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentEncodingStartupCompleteRef, \
+									 client_encoding, backend_startup_complete)
+#define PgCurrentErrorContextStackRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionErrorRuntimeState, PgCurrentErrorContextStackRef, \
+									 context_stack)
+#define PgCurrentErrorDataArray() \
+	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgExecutionErrorRuntimeState, PgCurrentErrorDataArray, \
+									 errordata)
+#define PgCurrentErrorDataStackDepthRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionErrorRuntimeState, PgCurrentErrorDataStackDepthRef, \
+									 errordata_stack_depth)
+#define PgCurrentErrorRecursionDepthRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionErrorRuntimeState, PgCurrentErrorRecursionDepthRef, \
+									 recursion_depth)
+#define PgCurrentEventSourceRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentEventSourceRef, \
+									 event_source_value)
+#define PgCurrentEventTriggerCacheContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentEventTriggerCacheContextRef, \
+									 event_trigger_cache_context)
+#define PgCurrentEventTriggerCacheRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentEventTriggerCacheRef, \
+									 event_trigger_cache)
+#define PgCurrentEventTriggerCacheStateRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentEventTriggerCacheStateRef, \
+									 event_trigger_cache_state)
+#define PgCurrentEventTriggerMemoryContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionReplicationScratchRuntimeState, PgCurrentEventTriggerMemoryContextRef, \
+									 event_trigger_context)
+#define PgCurrentEventTriggerQueryStateRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionReplicationScratchRuntimeState, PgCurrentEventTriggerQueryStateRef, \
+									 event_trigger_query_state)
+#define PgCurrentExceptionStackRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionErrorRuntimeState, PgCurrentExceptionStackRef, \
+									 exception_stack)
+#define PgCurrentExitOnAnyErrorRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendCoreRuntimeState, PgCurrentExitOnAnyErrorRef, \
+									 exit_on_any_error)
+#define PgCurrentExportedSnapshotsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSnapshotRuntimeState, PgCurrentExportedSnapshotsRef, \
+									 exported_snapshots)
+#define PgCurrentExtensionControlPathRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionMiscGUCRuntimeState, PgCurrentExtensionControlPathRef, \
+									 extension_control_path_value)
+#define PgCurrentExtensionObjectRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionExtensionRuntimeState, PgCurrentExtensionObjectRef, \
+									 current_object)
+#define PgCurrentExtensionSiblingListRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentExtensionSiblingListRef, \
+									 extension_sibling_list)
+#define PgCurrentFirstDomainTypeEntryRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentFirstDomainTypeEntryRef, \
+									 typcache_first_domain_type_entry)
+#define PgCurrentFirstSnapshotSetRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSnapshotRuntimeState, PgCurrentFirstSnapshotSetRef, \
+									 first_snapshot_set)
+#define PgCurrentFirstXactSnapshotRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSnapshotRuntimeState, PgCurrentFirstXactSnapshotRef, \
+									 first_xact_snapshot)
+#define PgCurrentFixedParallelStateRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendParallelRuntimeState, PgCurrentFixedParallelStateRef, \
+									 fixed_parallel_state)
+#define PgCurrentForceStatsSnapshotClearRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentForceStatsSnapshotClearRef, \
+									 force_snapshot_clear)
+#define PgCurrentForceSyncCommitRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentForceSyncCommitRef, \
+									 force_sync_commit)
+#define PgCurrentFormatDomainRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionGUCErrorRuntimeState, PgCurrentFormatDomainRef, \
+									 format_domain)
+#define PgCurrentFormatErrnumberRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionGUCErrorRuntimeState, PgCurrentFormatErrnumberRef, \
+									 format_errnumber)
+#define PgCurrentFormattedLogTime() \
+	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgExecutionErrorRuntimeState, PgCurrentFormattedLogTime, \
+									 formatted_log_time)
+#define PgCurrentFromCollapseLimitRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentFromCollapseLimitRef, \
+									 from_collapse_limit_value)
+#define PgCurrentGUCCheckErrcodeValueRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionGUCErrorRuntimeState, PgCurrentGUCCheckErrcodeValueRef, \
+									 check_errcode_value)
+#define PgCurrentGUCCheckErrdetailStringRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionGUCErrorRuntimeState, PgCurrentGUCCheckErrdetailStringRef, \
+									 check_errdetail_string)
+#define PgCurrentGUCCheckErrhintStringRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionGUCErrorRuntimeState, PgCurrentGUCCheckErrhintStringRef, \
+									 check_errhint_string)
+#define PgCurrentGUCCheckErrmsgStringRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionGUCErrorRuntimeState, PgCurrentGUCCheckErrmsgStringRef, \
+									 check_errmsg_string)
+#define PgCurrentGUCFlexFatalErrmsgRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionGUCErrorRuntimeState, PgCurrentGUCFlexFatalErrmsgRef, \
+									 flex_fatal_errmsg)
+#define PgCurrentGUCFlexFatalJmpRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionGUCErrorRuntimeState, PgCurrentGUCFlexFatalJmpRef, \
+									 flex_fatal_jmp)
+#define PgCurrentGUCHashTableRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionGUCRuntimeState, PgCurrentGUCHashTableRef, \
+									 hash_table)
+#define PgCurrentGUCNestLevelRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionGUCRuntimeState, PgCurrentGUCNestLevelRef, \
+									 nest_level)
+#define PgCurrentGUCNondefListRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionGUCRuntimeState, PgCurrentGUCNondefListRef, \
+									 nondef_list)
+#define PgCurrentGUCReportListRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionGUCRuntimeState, PgCurrentGUCReportListRef, \
+									 report_list)
+#define PgCurrentGUCReportingEnabledRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionGUCRuntimeState, PgCurrentGUCReportingEnabledRef, \
+									 reporting_enabled)
+#define PgCurrentGUCStackListRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionGUCRuntimeState, PgCurrentGUCStackListRef, \
+									 stack_list)
+#define PgCurrentGUCVariablesRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionGUCRuntimeState, PgCurrentGUCVariablesRef, \
+									 variables)
+#define PgCurrentGeqoEffortRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentGeqoEffortRef, \
+									 Geqo_effort_value)
+#define PgCurrentGeqoGenerationsRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentGeqoGenerationsRef, \
+									 Geqo_generations_value)
+#define PgCurrentGeqoPlannerExtensionIdRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentGeqoPlannerExtensionIdRef, \
+									 Geqo_planner_extension_id_value)
+#define PgCurrentGeqoPoolSizeRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentGeqoPoolSizeRef, \
+									 Geqo_pool_size_value)
+#define PgCurrentGeqoSeedRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentGeqoSeedRef, \
+									 Geqo_seed_value)
+#define PgCurrentGeqoSelectionBiasRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentGeqoSelectionBiasRef, \
+									 Geqo_selection_bias_value)
+#define PgCurrentGeqoThresholdRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentGeqoThresholdRef, \
+									 geqo_threshold_value)
+#define PgCurrentGlobalPrngStateRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendCoreRuntimeState, PgCurrentGlobalPrngStateRef, \
+									 global_prng_state)
+#define PgCurrentGlobalVisCatalogRelsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentGlobalVisCatalogRelsRef, \
+									 global_vis_catalog_rels)
+#define PgCurrentGlobalVisDataRelsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentGlobalVisDataRelsRef, \
+									 global_vis_data_rels)
+#define PgCurrentGlobalVisSharedRelsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentGlobalVisSharedRelsRef, \
+									 global_vis_shared_rels)
+#define PgCurrentGlobalVisTempRelsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentGlobalVisTempRelsRef, \
+									 global_vis_temp_rels)
+#define PgCurrentHashMemMultiplierRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionQueryMemoryRuntimeState, PgCurrentHashMemMultiplierRef, \
+									 hash_mem_multiplier_value)
+#define PgCurrentHaveIOStatsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentHaveIOStatsRef, \
+									 io_stats_pending)
+#define PgCurrentHaveLockStatsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentHaveLockStatsRef, \
+									 lock_stats_pending)
+#define PgCurrentHaveSLRUStatsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentHaveSLRUStatsRef, \
+									 slru_stats_pending)
+#define PgCurrentHaveXactTemporaryFilesRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentHaveXactTemporaryFilesRef, \
+									 have_xact_temporary_files)
+#define PgCurrentHistoricSnapshotRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSnapshotRuntimeState, PgCurrentHistoricSnapshotRef, \
+									 historic_snapshot)
+#define PgCurrentIcuConverterRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLocaleRuntimeState, PgCurrentIcuConverterRef, \
+									 icu_converter)
+#define PgCurrentIcuValidationLevelRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLocaleRuntimeState, PgCurrentIcuValidationLevelRef, \
+									 icu_validation_level_value)
+#define PgCurrentIdleInTransactionSessionTimeoutRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLockWaitRuntimeState, PgCurrentIdleInTransactionSessionTimeoutRef, \
+									 idle_in_transaction_session_timeout_ms)
+#define PgCurrentIdleSessionTimeoutRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLockWaitRuntimeState, PgCurrentIdleSessionTimeoutRef, \
+									 idle_session_timeout_ms)
+#define PgCurrentIgnoreSystemIndexesRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendCoreRuntimeState, PgCurrentIgnoreSystemIndexesRef, \
+									 ignore_system_indexes)
+#define PgCurrentInitializingParallelWorkerRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendParallelRuntimeState, PgCurrentInitializingParallelWorkerRef, \
+									 initializing_worker)
+#define PgCurrentInjectionPointCacheRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentInjectionPointCacheRef, \
+									 injection_point_cache)
+#define PgCurrentInplaceInvalInfoRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionInvalidationRuntimeState, PgCurrentInplaceInvalInfoRef, \
+									 inplace_info)
+#define PgCurrentIntervalStyleRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionDateTimeRuntimeState, PgCurrentIntervalStyleRef, \
+									 interval_style)
+#define PgCurrentInvalMessageArrays() \
+	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgExecutionInvalidationRuntimeState, PgCurrentInvalMessageArrays, \
+									 message_arrays)
+#define PgCurrentJoinCollapseLimitRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentJoinCollapseLimitRef, \
+									 join_collapse_limit_value)
+#define PgCurrentLWLockStatsContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentLWLockStatsContextRef, \
+									 lwlock_stats_context)
+#define PgCurrentLWLockStatsDummy() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentLWLockStatsDummy, \
+									 lwlock_stats_dummy)
+#define PgCurrentLWLockStatsExitRegisteredRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentLWLockStatsExitRegisteredRef, \
+									 lwlock_stats_exit_registered)
+#define PgCurrentLWLockStatsHashRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentLWLockStatsHashRef, \
+									 lwlock_stats_htab)
+#define PgCurrentLargeObjectCleanupNeededRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentLargeObjectCleanupNeededRef, \
+									 lo_cleanup_needed)
+#define PgCurrentLargeObjectContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentLargeObjectContextRef, \
+									 lo_context)
+#define PgCurrentLargeObjectCookiesRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentLargeObjectCookiesRef, \
+									 lo_cookies)
+#define PgCurrentLargeObjectCookiesSizeRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentLargeObjectCookiesSizeRef, \
+									 lo_cookies_size)
+#define PgCurrentLatchWaitSetRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendIPCRuntimeState, PgCurrentLatchWaitSetRef, \
+									 latch_wait_set)
+#define PgCurrentLibxmlContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentLibxmlContextRef, \
+									 libxml_context)
+#define PgCurrentLocalBufHashRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentLocalBufHashRef, \
+									 local_buf_hash)
+#define PgCurrentLocalBufferBlockPointersRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentLocalBufferBlockPointersRef, \
+									 local_buffer_block_pointers)
+#define PgCurrentLocalBufferContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentLocalBufferContextRef, \
+									 local_buffer_context)
+#define PgCurrentLocalBufferCurBlockRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentLocalBufferCurBlockRef, \
+									 local_buffer_cur_block)
+#define PgCurrentLocalBufferDescriptorsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentLocalBufferDescriptorsRef, \
+									 local_buffer_descriptors)
+#define PgCurrentLocalBufferNextBufInBlockRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentLocalBufferNextBufInBlockRef, \
+									 local_buffer_next_buf_in_block)
+#define PgCurrentLocalBufferNumBufsInBlockRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentLocalBufferNumBufsInBlockRef, \
+									 local_buffer_num_bufs_in_block)
+#define PgCurrentLocalBufferTotalBufsAllocatedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentLocalBufferTotalBufsAllocatedRef, \
+									 local_buffer_total_bufs_allocated)
+#define PgCurrentLocalLatchData() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendIPCRuntimeState, PgCurrentLocalLatchData, \
+									 local_latch_data)
+#define PgCurrentLocalNumUserDefinedLWLockTranchesRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentLocalNumUserDefinedLWLockTranchesRef, \
+									 local_num_user_defined_lwlock_tranches)
+#define PgCurrentLocalPredicateLockHashRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentLocalPredicateLockHashRef, \
+									 local_predicate_lock_hash)
+#define PgCurrentLocalPreloadLibrariesRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionMiscGUCRuntimeState, PgCurrentLocalPreloadLibrariesRef, \
+									 local_preload_libraries_value)
+#define PgCurrentLocalRefCountRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentLocalRefCountRef, \
+									 local_ref_count)
+#define PgCurrentLocalVacuumCostDelayRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentLocalVacuumCostDelayRef, \
+									 local_vacuum_cost_delay_ms)
+#define PgCurrentLocalVacuumCostLimitRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentLocalVacuumCostLimitRef, \
+									 local_vacuum_cost_limit_value)
+#define PgCurrentLocalWaitEventInfoRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgBackendWaitRuntimeState, PgCurrentLocalWaitEventInfoRef, \
+									 wait_event_info_ptr, local_wait_event_info)
+#define PgCurrentLocaleMessagesRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLocaleRuntimeState, PgCurrentLocaleMessagesRef, \
+									 locale_messages_value)
+#define PgCurrentLocaleMonetaryRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLocaleRuntimeState, PgCurrentLocaleMonetaryRef, \
+									 locale_monetary_value)
+#define PgCurrentLocaleNumericRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLocaleRuntimeState, PgCurrentLocaleNumericRef, \
+									 locale_numeric_value)
+#define PgCurrentLocaleTimeRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLocaleRuntimeState, PgCurrentLocaleTimeRef, \
+									 locale_time_value)
+#define PgCurrentLockMethodLocalHashRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentLockMethodLocalHashRef, \
+									 lock_method_local_hash)
+#define PgCurrentLockTimeoutRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLockWaitRuntimeState, PgCurrentLockTimeoutRef, \
+									 lock_timeout_ms)
+#define PgCurrentLogBtreeBuildStatsRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogBtreeBuildStatsRef, \
+									 log_btree_build_stats_value)
+#define PgCurrentLogDurationRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogDurationRef, \
+									 log_duration_value)
+#define PgCurrentLogErrorVerbosityRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogErrorVerbosityRef, \
+									 log_error_verbosity_value)
+#define PgCurrentLogExecutorStatsRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogExecutorStatsRef, \
+									 log_executor_stats_value)
+#define PgCurrentLogLockFailuresRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLockWaitRuntimeState, PgCurrentLogLockFailuresRef, \
+									 log_lock_failures_value)
+#define PgCurrentLogLockWaitsRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLockWaitRuntimeState, PgCurrentLogLockWaitsRef, \
+									 log_lock_waits_value)
+#define PgCurrentLogMemoryContextInProgressRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendMemoryManagerRuntimeState, PgCurrentLogMemoryContextInProgressRef, \
+									 log_memory_context_in_progress)
+#define PgCurrentLogMinDurationSampleRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogMinDurationSampleRef, \
+									 log_min_duration_sample_value)
+#define PgCurrentLogMinDurationStatementRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogMinDurationStatementRef, \
+									 log_min_duration_statement_value)
+#define PgCurrentLogMinErrorStatementRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogMinErrorStatementRef, \
+									 log_min_error_statement_value)
+#define PgCurrentLogMinMessagesArrayRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_PTR(CurrentPgSessionLoggingRuntimeState, PgCurrentLogMinMessagesArrayRef, \
+									 log_min_messages_values)
+#define PgCurrentLogMinMessagesStringRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogMinMessagesStringRef, \
+									 log_min_messages_string_value)
+#define PgCurrentLogParameterMaxLengthOnErrorRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogParameterMaxLengthOnErrorRef, \
+									 log_parameter_max_length_on_error_value)
+#define PgCurrentLogParameterMaxLengthRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogParameterMaxLengthRef, \
+									 log_parameter_max_length_value)
+#define PgCurrentLogParserStatsRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogParserStatsRef, \
+									 log_parser_stats_value)
+#define PgCurrentLogPlannerStatsRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogPlannerStatsRef, \
+									 log_planner_stats_value)
+#define PgCurrentLogStatementSampleRateRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogStatementSampleRateRef, \
+									 log_statement_sample_rate_value)
+#define PgCurrentLogStatementStatsRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogStatementStatsRef, \
+									 log_statement_stats_value)
+#define PgCurrentLogTempFilesRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogTempFilesRef, \
+									 log_temp_files_value)
+#define PgCurrentLogTimeZoneRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionDateTimeRuntimeState, PgCurrentLogTimeZoneRef, \
+									 log_timezone_value)
+#define PgCurrentLogTimeZoneStringRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionDateTimeRuntimeState, PgCurrentLogTimeZoneStringRef, \
+									 log_timezone_string_value)
+#define PgCurrentLogXactSampleRateRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLoggingRuntimeState, PgCurrentLogXactSampleRateRef, \
+									 log_xact_sample_rate_value)
+#define PgCurrentLogicalStreamingContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionReplicationScratchRuntimeState, PgCurrentLogicalStreamingContextRef, \
+									 logical_streaming_context)
+#define PgCurrentMaintenanceWorkMemRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionQueryMemoryRuntimeState, PgCurrentMaintenanceWorkMemRef, \
+									 maintenance_work_mem_kb)
+#define PgCurrentMatViewMaintenanceDepthRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionMatViewRuntimeState, PgCurrentMatViewMaintenanceDepthRef, \
+									 maintenance_depth)
+#define PgCurrentMaxAllocatedDescsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendStorageRuntimeState, PgCurrentMaxAllocatedDescsRef, \
+									 max_allocated_descs)
+#define PgCurrentMaxParallelMaintenanceWorkersRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionQueryMemoryRuntimeState, PgCurrentMaxParallelMaintenanceWorkersRef, \
+									 max_parallel_maintenance_workers_value)
+#define PgCurrentMaxParallelWorkersPerGatherRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerCostRuntimeState, PgCurrentMaxParallelWorkersPerGatherRef, \
+									 max_parallel_workers_per_gather_value)
+#define PgCurrentMaxStackDepthBytesRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionMiscGUCRuntimeState, PgCurrentMaxStackDepthBytesRef, \
+									 max_stack_depth_bytes)
+#define PgCurrentMaxStackDepthRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionMiscGUCRuntimeState, PgCurrentMaxStackDepthRef, \
+									 max_stack_depth_kb)
+#define PgCurrentMdContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendStorageRuntimeState, PgCurrentMdContextRef, \
+									 md_context)
+#define PgCurrentMessageEncodingRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentMessageEncodingRef, \
+									 client_encoding, message_encoding)
+#define PgCurrentMinEagerAggGroupSizeRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentMinEagerAggGroupSizeRef, \
+									 min_eager_agg_group_size_value)
+#define PgCurrentMinParallelIndexScanSizeRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentMinParallelIndexScanSizeRef, \
+									 min_parallel_index_scan_size_blocks)
+#define PgCurrentMinParallelTableScanSizeRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentMinParallelTableScanSizeRef, \
+									 min_parallel_table_scan_size_blocks)
+#define PgCurrentMissingAttrCacheRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentMissingAttrCacheRef, \
+									 missing_attr_cache)
+#define PgCurrentMultiXactCacheInitializedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentMultiXactCacheInitializedRef, \
+									 multixact_cache_initialized)
+#define PgCurrentMultiXactCacheRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentMultiXactCacheRef, \
+									 multixact_cache)
+#define PgCurrentMultiXactContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentMultiXactContextRef, \
+									 multixact_context)
+#define PgCurrentMultiXactDebugStringRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentMultiXactDebugStringRef, \
+									 multixact_debug_string)
+#define PgCurrentMyLatchRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendCoreRuntimeState, PgCurrentMyLatchRef, \
+									 latch)
+#define PgCurrentMyPMChildSlotRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendCoreRuntimeState, PgCurrentMyPMChildSlotRef, \
+									 pm_child_slot)
+#define PgCurrentMyProcPidRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendCoreRuntimeState, PgCurrentMyProcPidRef, \
+									 proc_pid)
+#define PgCurrentMySerializableXactRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentMySerializableXactRef, \
+									 my_serializable_xact)
+#define PgCurrentMyStartTimeRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendCoreRuntimeState, PgCurrentMyStartTimeRef, \
+									 start_time)
+#define PgCurrentMyStartTimestampRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendCoreRuntimeState, PgCurrentMyStartTimestampRef, \
+									 start_timestamp)
+#define PgCurrentMyWaitEventInfoRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgBackendWaitRuntimeState, PgCurrentMyWaitEventInfoRef, \
+									 wait_event_info_ptr, wait_event_info_ptr)
+#define PgCurrentMyXactDidWriteRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentMyXactDidWriteRef, \
+									 my_xact_did_write)
+#define PgCurrentMyXactFlagsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentMyXactFlagsRef, \
+									 flags)
+#define PgCurrentNFileRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendStorageRuntimeState, PgCurrentNFileRef, \
+									 nfile)
+#define PgCurrentNLocBufferRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentNLocBufferRef, \
+									 nlocbuffer)
+#define PgCurrentNLocalPinnedBuffersRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentNLocalPinnedBuffersRef, \
+									 n_local_pinned_buffers)
+#define PgCurrentNParallelCurrentXidsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentNParallelCurrentXidsRef, \
+									 n_parallel_current_xids)
+#define PgCurrentNUMCache() \
+	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgBackendUtilityRuntimeState, PgCurrentNUMCache, \
+									 num_cache)
+#define PgCurrentNUMCounterRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentNUMCounterRef, \
+									 num_counter)
+#define PgCurrentNUnreportedXidsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentNUnreportedXidsRef, \
+									 n_unreported_xids)
+#define PgCurrentNamespaceSearchPathRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionNamespaceRuntimeState, PgCurrentNamespaceSearchPathRef, \
+									 namespace_search_path_value)
+#define PgCurrentNextFreeLocalBufIdRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentNextFreeLocalBufIdRef, \
+									 next_free_local_buf_id)
+#define PgCurrentNextLocalTransactionIdRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendIPCRuntimeState, PgCurrentNextLocalTransactionIdRef, \
+									 next_local_transaction_id)
+#define PgCurrentNextRecordTypmodRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentNextRecordTypmodRef, \
+									 typcache_next_record_typmod)
+#define PgCurrentNodeReadStrtokPtrRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionNodeIORuntimeState, PgCurrentNodeReadStrtokPtrRef, \
+									 strtok_ptr)
+#define PgCurrentNodeRestoreLocationFieldsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionNodeIORuntimeState, PgCurrentNodeRestoreLocationFieldsRef, \
+									 restore_location_fields)
+#define PgCurrentNodeWriteLocationFieldsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionNodeIORuntimeState, PgCurrentNodeWriteLocationFieldsRef, \
+									 write_location_fields)
+#define PgCurrentNotifyInterruptPendingRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentNotifyInterruptPendingRef, \
+									 notify_interrupt_pending)
+#define PgCurrentNumAllocatedDescsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendStorageRuntimeState, PgCurrentNumAllocatedDescsRef, \
+									 num_allocated_descs)
+#define PgCurrentNumDCHCacheRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentNumDCHCacheRef, \
+									 n_dch_cache)
+#define PgCurrentNumExternalFDsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendStorageRuntimeState, PgCurrentNumExternalFDsRef, \
+									 num_external_fds)
+#define PgCurrentNumGUCVariablesRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionGUCRuntimeState, PgCurrentNumGUCVariablesRef, \
+									 num_variables)
+#define PgCurrentNumNUMCacheRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentNumNUMCacheRef, \
+									 n_num_cache)
+#define PgCurrentNumSeqScansRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentNumSeqScansRef, \
+									 num_seq_scans)
+#define PgCurrentOpClassCacheRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentOpClassCacheRef, \
+									 relcache_opclass_cache)
+#define PgCurrentOperatorLookupCacheRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionParserRuntimeState, PgCurrentOperatorLookupCacheRef, \
+									 operator_lookup_cache)
+#define PgCurrentOutputFileNameRef() \
+	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgBackendCoreRuntimeState, PgCurrentOutputFileNameRef, \
+									 output_file_name)
+#define PgCurrentParallelContextListInitializedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendParallelRuntimeState, PgCurrentParallelContextListInitializedRef, \
+									 context_list_initialized)
+#define PgCurrentParallelContextListRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendParallelRuntimeState, PgCurrentParallelContextListRef, \
+									 context_list)
+#define PgCurrentParallelCurrentXidsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentParallelCurrentXidsRef, \
+									 parallel_current_xids)
+#define PgCurrentParallelLeaderParticipationRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerCostRuntimeState, PgCurrentParallelLeaderParticipationRef, \
+									 parallel_leader_participation_value)
+#define PgCurrentParallelLeaderPidRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendParallelRuntimeState, PgCurrentParallelLeaderPidRef, \
+									 leader_pid)
+#define PgCurrentParallelMessageContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendParallelRuntimeState, PgCurrentParallelMessageContextRef, \
+									 message_context)
+#define PgCurrentParallelMessagePendingRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendParallelRuntimeState, PgCurrentParallelMessagePendingRef, \
+									 message_pending)
+#define PgCurrentParallelSetupCostRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerCostRuntimeState, PgCurrentParallelSetupCostRef, \
+									 parallel_setup_cost_value)
+#define PgCurrentParallelTupleCostRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerCostRuntimeState, PgCurrentParallelTupleCostRef, \
+									 parallel_tuple_cost_value)
+#define PgCurrentParallelVacuumSharedCostParamsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionVacuumRuntimeState, PgCurrentParallelVacuumSharedCostParamsRef, \
+									 parallel_shared_cost_params)
+#define PgCurrentParallelVacuumSharedParamsGenerationLocalRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionVacuumRuntimeState, PgCurrentParallelVacuumSharedParamsGenerationLocalRef, \
+									 parallel_shared_params_generation_local)
+#define PgCurrentParallelVacuumWorkerDelayNsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionVacuumRuntimeState, PgCurrentParallelVacuumWorkerDelayNsRef, \
+									 parallel_worker_delay_ns)
+#define PgCurrentParallelWorkerNumberRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendParallelRuntimeState, PgCurrentParallelWorkerNumberRef, \
+									 worker_number)
+#define PgCurrentPendingActionsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionAsyncRuntimeState, PgCurrentPendingActionsRef, \
+									 pending_actions)
+#define PgCurrentPendingBackendStatsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPendingBackendStatsRef, \
+									 backend_stats)
+#define PgCurrentPendingClientEncodingRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentPendingClientEncodingRef, \
+									 client_encoding, pending_client_encoding)
+#define PgCurrentPendingIOStatsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPendingIOStatsRef, \
+									 io_stats)
+#define PgCurrentPendingListenActionsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionAsyncRuntimeState, PgCurrentPendingListenActionsRef, \
+									 pending_listen_actions)
+#define PgCurrentPendingNotifiesRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionAsyncRuntimeState, PgCurrentPendingNotifiesRef, \
+									 pending_notifies)
+#define PgCurrentPendingReindexedIndexesRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogRuntimeState, PgCurrentPendingReindexedIndexesRef, \
+									 pending_reindexed_indexes)
+#define PgCurrentPendingRelDeletesRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogRuntimeState, PgCurrentPendingRelDeletesRef, \
+									 pending_rel_deletes)
+#define PgCurrentPendingSyncHashRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogRuntimeState, PgCurrentPendingSyncHashRef, \
+									 pending_sync_hash)
+#define PgCurrentPgClassDescriptorRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentPgClassDescriptorRef, \
+									 relcache_pg_class_descriptor)
+#define PgCurrentPgIndexDescriptorRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentPgIndexDescriptorRef, \
+									 relcache_pg_index_descriptor)
+#define PgCurrentPgStatActiveTimeRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatActiveTimeRef, \
+									 active_time)
+#define PgCurrentPgStatBlockReadTimeRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatBlockReadTimeRef, \
+									 block_read_time)
+#define PgCurrentPgStatBlockWriteTimeRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatBlockWriteTimeRef, \
+									 block_write_time)
+#define PgCurrentPgStatEntryRefHashContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatEntryRefHashContextRef, \
+									 entry_ref_hash_context)
+#define PgCurrentPgStatEntryRefHashRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatEntryRefHashRef, \
+									 entry_ref_hash)
+#define PgCurrentPgStatFetchConsistencyRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPgStatRuntimeState, PgCurrentPgStatFetchConsistencyRef, \
+									 fetch_consistency)
+#define PgCurrentPgStatFixedSnapshotContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatFixedSnapshotContextRef, \
+									 fixed_snapshot_context)
+#define PgCurrentPgStatForceNextFlushRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatForceNextFlushRef, \
+									 force_next_flush)
+#define PgCurrentPgStatIsInitializedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatIsInitializedRef, \
+									 is_initialized)
+#define PgCurrentPgStatIsShutdownRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatIsShutdownRef, \
+									 is_shutdown)
+#define PgCurrentPgStatLastSessionReportTimeRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPgStatRuntimeState, PgCurrentPgStatLastSessionReportTimeRef, \
+									 last_session_report_time)
+#define PgCurrentPgStatLocalState() \
+	__extension__ \
+	({ \
+		PgBackendPgStatPendingState *pg_runtime_bucket = \
+			CurrentPgBackendPgStatPendingRuntimeState; \
+ \
+		unlikely(pg_runtime_bucket == NULL || pg_runtime_bucket->local == NULL) ? \
+		(PG_RUNTIME_BRIDGE_COUNT_FALLBACK_EXPR(fast_bucket), \
+		 PgCurrentPgStatLocalStateSlow()) : \
+		pg_runtime_bucket->local; \
+	})
+#define PgCurrentPgStatPendingContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatPendingContextRef, \
+									 pending_context)
+#define PgCurrentPgStatPendingListRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatPendingListRef, \
+									 pending)
+#define PgCurrentPgStatPrevBackendWalUsageRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatPrevBackendWalUsageRef, \
+									 backend_wal_prev_usage)
+#define PgCurrentPgStatPrevWalUsageRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatPrevWalUsageRef, \
+									 wal_prev_usage)
+#define PgCurrentPgStatReportFixedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatReportFixedRef, \
+									 report_fixed)
+#define PgCurrentPgStatSessionEndCauseRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPgStatRuntimeState, PgCurrentPgStatSessionEndCauseRef, \
+									 session_end_cause)
+#define PgCurrentPgStatSharedRefAgeRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatSharedRefAgeRef, \
+									 shared_ref_age)
+#define PgCurrentPgStatSharedRefContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatSharedRefContextRef, \
+									 shared_ref_context)
+#define PgCurrentPgStatTotalFuncTimeRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatTotalFuncTimeRef, \
+									 func_total_time)
+#define PgCurrentPgStatTrackActivitiesRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPgStatRuntimeState, PgCurrentPgStatTrackActivitiesRef, \
+									 track_activities)
+#define PgCurrentPgStatTrackCountsRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPgStatRuntimeState, PgCurrentPgStatTrackCountsRef, \
+									 track_counts)
+#define PgCurrentPgStatTrackFunctionsRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPgStatRuntimeState, PgCurrentPgStatTrackFunctionsRef, \
+									 track_functions)
+#define PgCurrentPgStatTransactionIdleTimeRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatTransactionIdleTimeRef, \
+									 transaction_idle_time)
+#define PgCurrentPgStatXactCommitRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatXactCommitRef, \
+									 xact_commit)
+#define PgCurrentPgStatXactRollbackRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentPgStatXactRollbackRef, \
+									 xact_rollback)
+#define PgCurrentPgStatXactStackRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentPgStatXactStackRef, \
+									 pgstat_xact_stack)
+#define PgCurrentPinCountWaitBufRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentPinCountWaitBufRef, \
+									 pin_count_wait_buf)
+#define PgCurrentPortalHashTableRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionPortalManagerRuntimeState, PgCurrentPortalHashTableRef, \
+									 portal_hash_table)
+#define PgCurrentPqMqBusyRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendParallelRuntimeState, PgCurrentPqMqBusyRef, \
+									 pq_mq_busy)
+#define PgCurrentPqMqHandleRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendParallelRuntimeState, PgCurrentPqMqHandleRef, \
+									 pq_mq_handle)
+#define PgCurrentPqMqParallelLeaderPidRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendParallelRuntimeState, PgCurrentPqMqParallelLeaderPidRef, \
+									 pq_mq_parallel_leader_pid)
+#define PgCurrentPqMqParallelLeaderProcNumberRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendParallelRuntimeState, PgCurrentPqMqParallelLeaderProcNumberRef, \
+									 pq_mq_parallel_leader_proc_number)
+#define PgCurrentPrepareGIDRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentPrepareGIDRef, \
+									 prepare_gid)
+#define PgCurrentProcArrayCachedXidNotInProgressRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentProcArrayCachedXidNotInProgressRef, \
+									 procarray_cached_xid_not_in_progress)
+#define PgCurrentProcSignalSlotRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendIPCRuntimeState, PgCurrentProcSignalSlotRef, \
+									 proc_signal_slot)
+#define PgCurrentProcessingModeRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendCoreRuntimeState, PgCurrentProcessingModeRef, \
+									 mode)
+#define PgCurrentQueueHeadAfterWriteRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionAsyncRuntimeState, PgCurrentQueueHeadAfterWriteRef, \
+									 queue_head_after_write)
+#define PgCurrentQueueHeadBeforeWriteRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionAsyncRuntimeState, PgCurrentQueueHeadBeforeWriteRef, \
+									 queue_head_before_write)
+#define PgCurrentRICompareCacheRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionRIGlobalsRuntimeState, PgCurrentRICompareCacheRef, \
+									 compare_cache)
+#define PgCurrentRIConstraintCacheRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionRIGlobalsRuntimeState, PgCurrentRIConstraintCacheRef, \
+									 constraint_cache)
+#define PgCurrentRIConstraintCacheValidListRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionRIGlobalsRuntimeState, PgCurrentRIConstraintCacheValidListRef, \
+									 constraint_cache_valid_list)
+#define PgCurrentRIFastPathCacheRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentRIFastPathCacheRef, \
+									 ri_fastpath_cache)
+#define PgCurrentRIFastPathCallbackRegisteredRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentRIFastPathCallbackRegisteredRef, \
+									 ri_fastpath_callback_registered)
+#define PgCurrentRIFastPathFlushingRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTransactionCleanupRuntimeState, PgCurrentRIFastPathFlushingRef, \
+									 ri_fastpath_flushing)
+#define PgCurrentRIFastPathXactCallbackRegisteredRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionRIGlobalsRuntimeState, PgCurrentRIFastPathXactCallbackRegisteredRef, \
+									 fastpath_xact_callback_registered)
+#define PgCurrentRIQueryCacheRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionRIGlobalsRuntimeState, PgCurrentRIQueryCacheRef, \
+									 query_cache)
+#define PgCurrentRandomPageCostRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerCostRuntimeState, PgCurrentRandomPageCostRef, \
+									 random_page_cost_value)
+#define PgCurrentRecentXminRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSnapshotRuntimeState, PgCurrentRecentXminRef, \
+									 recent_xmin)
+#define PgCurrentRecordCacheArrayLenRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentRecordCacheArrayLenRef, \
+									 typcache_record_cache_array_len)
+#define PgCurrentRecordCacheArrayRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentRecordCacheArrayRef, \
+									 typcache_record_cache_array)
+#define PgCurrentRecordCacheHashRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentRecordCacheHashRef, \
+									 typcache_record_cache_hash)
+#define PgCurrentRecursiveWorktableFactorRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerCostRuntimeState, PgCurrentRecursiveWorktableFactorRef, \
+									 recursive_worktable_factor_value)
+#define PgCurrentRegexCtypeCacheListRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionRegexRuntimeState, PgCurrentRegexCtypeCacheListRef, \
+									 ctype_cache_list)
+#define PgCurrentRegexLocaleRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionRegexRuntimeState, PgCurrentRegexLocaleRef, \
+									 regex_locale)
+#define PgCurrentRegexpCacheMemoryContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionRegexRuntimeState, PgCurrentRegexpCacheMemoryContextRef, \
+									 regexp_cache_context)
+#define PgCurrentRegexpNumCachedResRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionRegexRuntimeState, PgCurrentRegexpNumCachedResRef, \
+									 num_cached_res)
+#define PgCurrentRegisteredSnapshotsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSnapshotRuntimeState, PgCurrentRegisteredSnapshotsRef, \
+									 registered_snapshots)
+#define PgCurrentReindexedHeapRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogRuntimeState, PgCurrentReindexedHeapRef, \
+									 currently_reindexed_heap)
+#define PgCurrentReindexedIndexRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogRuntimeState, PgCurrentReindexedIndexRef, \
+									 currently_reindexed_index)
+#define PgCurrentReindexingNestLevelRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogRuntimeState, PgCurrentReindexingNestLevelRef, \
+									 reindexing_nest_level)
+#define PgCurrentRelIdToTypeIdCacheHashRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentRelIdToTypeIdCacheHashRef, \
+									 typcache_relid_to_typeid_hash)
+#define PgCurrentRelMapActiveLocalUpdatesRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionRelMapRuntimeState, PgCurrentRelMapActiveLocalUpdatesRef, \
+									 active_local_updates)
+#define PgCurrentRelMapActiveSharedUpdatesRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionRelMapRuntimeState, PgCurrentRelMapActiveSharedUpdatesRef, \
+									 active_shared_updates)
+#define PgCurrentRelMapPendingLocalUpdatesRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionRelMapRuntimeState, PgCurrentRelMapPendingLocalUpdatesRef, \
+									 pending_local_updates)
+#define PgCurrentRelMapPendingSharedUpdatesRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionRelMapRuntimeState, PgCurrentRelMapPendingSharedUpdatesRef, \
+									 pending_shared_updates)
+#define PgCurrentRelationExtensionLockHeldRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentRelationExtensionLockHeldRef, \
+									 relation_extension_lock_held)
+#define PgCurrentRelationIdCacheRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentRelationIdCacheRef, \
+									 relcache_relation_id_cache)
+#define PgCurrentRelcacheEOXactList() \
+	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentRelcacheEOXactList, \
+									 relcache_eoxact_list)
+#define PgCurrentRelcacheEOXactListLenRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentRelcacheEOXactListLenRef, \
+									 relcache_eoxact_list_len)
+#define PgCurrentRelcacheEOXactListOverflowedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentRelcacheEOXactListOverflowedRef, \
+									 relcache_eoxact_list_overflowed)
+#define PgCurrentRelcacheEOXactTupleDescArrayLenRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentRelcacheEOXactTupleDescArrayLenRef, \
+									 relcache_eoxact_tupledesc_array_len)
+#define PgCurrentRelcacheEOXactTupleDescArrayRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentRelcacheEOXactTupleDescArrayRef, \
+									 relcache_eoxact_tupledesc_array)
+#define PgCurrentRelcacheInProgressListLenRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentRelcacheInProgressListLenRef, \
+									 relcache_in_progress_list_len)
+#define PgCurrentRelcacheInProgressListMaxLenRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentRelcacheInProgressListMaxLenRef, \
+									 relcache_in_progress_list_maxlen)
+#define PgCurrentRelcacheInProgressListRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentRelcacheInProgressListRef, \
+									 relcache_in_progress_list)
+#define PgCurrentRelcacheInvalsReceivedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentRelcacheInvalsReceivedRef, \
+									 relcache_invals_received)
+#define PgCurrentRelcacheNextEOXactTupleDescNumRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogCacheRuntimeState, PgCurrentRelcacheNextEOXactTupleDescNumRef, \
+									 relcache_next_eoxact_tupledesc_num)
+#define PgCurrentRelfilenumberMapHashRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentRelfilenumberMapHashRef, \
+									 relfilenumber_map_hash)
+#define PgCurrentRelfilenumberScanKeyArray() \
+	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentRelfilenumberScanKeyArray, \
+									 relfilenumber_skey)
+#define PgCurrentReplOriginXactStateRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionReplicationScratchRuntimeState, PgCurrentReplOriginXactStateRef, \
+									 replorigin_xact)
+#define PgCurrentResourceOwnerArrayLookupsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentResourceOwnerArrayLookupsRef, \
+									 resource_owner_array_lookups)
+#define PgCurrentResourceOwnerHashLookupsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentResourceOwnerHashLookupsRef, \
+									 resource_owner_hash_lookups)
+#define PgCurrentResourceReleaseCallbacksRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentResourceReleaseCallbacksRef, \
+									 resource_release_callbacks)
+#define PgCurrentRuleutilsRuleByOidPlanRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentRuleutilsRuleByOidPlanRef, \
+									 ruleutils_rule_by_oid_plan)
+#define PgCurrentRuleutilsViewRulePlanRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentRuleutilsViewRulePlanRef, \
+									 ruleutils_view_rule_plan)
+#define PgCurrentSMgrRelationHashRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendStorageRuntimeState, PgCurrentSMgrRelationHashRef, \
+									 smgr_relation_hash)
+#define PgCurrentSMgrUnpinnedRelationsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendStorageRuntimeState, PgCurrentSMgrUnpinnedRelationsRef, \
+									 smgr_unpinned_relations)
+#define PgCurrentSPIConnectedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSPIRuntimeState, PgCurrentSPIConnectedRef, \
+									 connected)
+#define PgCurrentSPICurrentRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSPIRuntimeState, PgCurrentSPICurrentRef, \
+									 current)
+#define PgCurrentSPIProcessedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSPIRuntimeState, PgCurrentSPIProcessedRef, \
+									 processed)
+#define PgCurrentSPIResultRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSPIRuntimeState, PgCurrentSPIResultRef, \
+									 result)
+#define PgCurrentSPIStackDepthRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSPIRuntimeState, PgCurrentSPIStackDepthRef, \
+									 stack_depth)
+#define PgCurrentSPIStackRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSPIRuntimeState, PgCurrentSPIStackRef, \
+									 stack)
+#define PgCurrentSPITuptableRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSPIRuntimeState, PgCurrentSPITuptableRef, \
+									 tuptable)
+#define PgCurrentSamplingOldReservoirInitializedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentSamplingOldReservoirInitializedRef, \
+									 sampling_old_reservoir_initialized)
+#define PgCurrentSamplingOldReservoirRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentSamplingOldReservoirRef, \
+									 sampling_old_reservoir)
+#define PgCurrentSavedBufferUsageRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendInstrumentationRuntimeState, PgCurrentSavedBufferUsageRef, \
+									 saved_buffer_usage)
+#define PgCurrentSavedSerializableXactRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentSavedSerializableXactRef, \
+									 saved_serializable_xact)
+#define PgCurrentSavedTimevalRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionErrorRuntimeState, PgCurrentSavedTimevalRef, \
+									 saved_timeval)
+#define PgCurrentSavedTimevalSetRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionErrorRuntimeState, PgCurrentSavedTimevalSetRef, \
+									 saved_timeval_set)
+#define PgCurrentSavedWalUsageRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendInstrumentationRuntimeState, PgCurrentSavedWalUsageRef, \
+									 saved_wal_usage)
+#define PgCurrentSecondarySnapshotDataRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSnapshotRuntimeState, PgCurrentSecondarySnapshotDataRef, \
+									 secondary_snapshot_data)
+#define PgCurrentSecondarySnapshotRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSnapshotRuntimeState, PgCurrentSecondarySnapshotRef, \
+									 secondary_snapshot)
+#define PgCurrentSeqPageCostRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerCostRuntimeState, PgCurrentSeqPageCostRef, \
+									 seq_page_cost_value)
+#define PgCurrentSeqScanLevels() \
+	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgBackendUtilityRuntimeState, PgCurrentSeqScanLevels, \
+									 seq_scan_levels)
+#define PgCurrentSeqScanTables() \
+	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgBackendUtilityRuntimeState, PgCurrentSeqScanTables, \
+									 seq_scan_tables)
+#define PgCurrentServerEncodingStringRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentServerEncodingStringRef, \
+									 client_encoding, server_encoding_string_value)
+#define PgCurrentSessionPreloadLibrariesRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionMiscGUCRuntimeState, PgCurrentSessionPreloadLibrariesRef, \
+									 session_preload_libraries_value)
+#define PgCurrentSessionTimeZoneRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionDateTimeRuntimeState, PgCurrentSessionTimeZoneRef, \
+									 session_timezone_value)
+#define PgCurrentSharedInvalidMessageCounterRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendIPCRuntimeState, PgCurrentSharedInvalidMessageCounterRef, \
+									 shared_invalid_message_counter)
+#define PgCurrentSharedInvalidationMessagesRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendIPCRuntimeState, PgCurrentSharedInvalidationMessagesRef, \
+									 shared_invalidation_messages)
+#define PgCurrentSharedInvalidationNextMsgRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendIPCRuntimeState, PgCurrentSharedInvalidationNextMsgRef, \
+									 shared_invalidation_next_msg)
+#define PgCurrentSharedInvalidationNumMsgsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendIPCRuntimeState, PgCurrentSharedInvalidationNumMsgsRef, \
+									 shared_invalidation_num_msgs)
+#define PgCurrentSignalPidsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionAsyncRuntimeState, PgCurrentSignalPidsRef, \
+									 signal_pids)
+#define PgCurrentSignalProcnosRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionAsyncRuntimeState, PgCurrentSignalProcnosRef, \
+									 signal_procnos)
+#define PgCurrentSizeComboCidsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionComboCidRuntimeState, PgCurrentSizeComboCidsRef, \
+									 size)
+#define PgCurrentSizeVfdCacheRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendStorageRuntimeState, PgCurrentSizeVfdCacheRef, \
+									 size_vfd_cache)
+#define PgCurrentSlruErrnoRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentSlruErrnoRef, \
+									 slru_errno_value)
+#define PgCurrentSlruErrorCauseRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentSlruErrorCauseRef, \
+									 slru_error_cause)
+#define PgCurrentSnapBuildExportInProgressRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSnapBuildRuntimeState, PgCurrentSnapBuildExportInProgressRef, \
+									 export_in_progress)
+#define PgCurrentSnapBuildSavedResourceOwnerDuringExportRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSnapBuildRuntimeState, PgCurrentSnapBuildSavedResourceOwnerDuringExportRef, \
+									 saved_resource_owner_during_export)
+#define PgCurrentSnapshotDataRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSnapshotRuntimeState, PgCurrentSnapshotDataRef, \
+									 current_snapshot_data)
+#define PgCurrentSnapshotRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSnapshotRuntimeState, PgCurrentSnapshotRef, \
+									 current_snapshot)
+#define PgCurrentSpeculativeInsertionTokenRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentSpeculativeInsertionTokenRef, \
+									 speculative_insertion_token)
+#define PgCurrentStatementTimeoutRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLockWaitRuntimeState, PgCurrentStatementTimeoutRef, \
+									 statement_timeout_ms)
+#define PgCurrentStmtStartTimestampRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentStmtStartTimestampRef, \
+									 stmt_start_timestamp)
+#define PgCurrentStrongLockInProgressRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentStrongLockInProgressRef, \
+									 strong_lock_in_progress)
+#define PgCurrentSubTransactionIdCounterRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentSubTransactionIdCounterRef, \
+									 current_sub_transaction_id)
+#define PgCurrentSuperuserLastRoleIdIsSuperRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentSuperuserLastRoleIdIsSuperRef, \
+									 superuser_last_roleid_is_super)
+#define PgCurrentSuperuserLastRoleIdRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentSuperuserLastRoleIdRef, \
+									 superuser_last_roleid)
+#define PgCurrentSuperuserRoleIdCallbackRegisteredRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendUtilityRuntimeState, PgCurrentSuperuserRoleIdCallbackRegisteredRef, \
+									 superuser_roleid_callback_registered)
+#define PgCurrentSyncCheckpointCycleCounterRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendStorageRuntimeState, PgCurrentSyncCheckpointCycleCounterRef, \
+									 sync_checkpoint_cycle_counter)
+#define PgCurrentSyncCycleCounterRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendStorageRuntimeState, PgCurrentSyncCycleCounterRef, \
+									 sync_cycle_counter)
+#define PgCurrentSyncInProgressRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendStorageRuntimeState, PgCurrentSyncInProgressRef, \
+									 sync_in_progress)
+#define PgCurrentSyncPendingOpsContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendStorageRuntimeState, PgCurrentSyncPendingOpsContextRef, \
+									 sync_pending_ops_context)
+#define PgCurrentSyncPendingOpsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendStorageRuntimeState, PgCurrentSyncPendingOpsRef, \
+									 sync_pending_ops)
+#define PgCurrentSyncPendingUnlinksRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendStorageRuntimeState, PgCurrentSyncPendingUnlinksRef, \
+									 sync_pending_unlinks)
+#define PgCurrentSynchronousCommitRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionXactDefaultRuntimeState, PgCurrentSynchronousCommitRef, \
+									 synchronous_commit_value)
+#define PgCurrentSysCacheArray() \
+	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSysCacheArray, \
+									 sys_cache)
+#define PgCurrentSysCacheInitializedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSysCacheInitializedRef, \
+									 sys_cache_initialized)
+#define PgCurrentSysCacheRelationOidArray() \
+	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSysCacheRelationOidArray, \
+									 sys_cache_relation_oid)
+#define PgCurrentSysCacheRelationOidSizeRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSysCacheRelationOidSizeRef, \
+									 sys_cache_relation_oid_size)
+#define PgCurrentSysCacheSupportingRelOidArray() \
+	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSysCacheSupportingRelOidArray, \
+									 sys_cache_supporting_rel_oid)
+#define PgCurrentSysCacheSupportingRelOidSizeRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentSysCacheSupportingRelOidSizeRef, \
+									 sys_cache_supporting_rel_oid_size)
+#define PgCurrentTableSpaceCacheHashRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentTableSpaceCacheHashRef, \
+									 tablespace_cache_hash)
+#define PgCurrentTemporaryFilesAllowedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendStorageRuntimeState, PgCurrentTemporaryFilesAllowedRef, \
+									 temporary_files_allowed)
+#define PgCurrentTimeZoneAbbrevCache() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_PTR(CurrentPgSessionDateTimeRuntimeState, PgCurrentTimeZoneAbbrevCache, \
+									 timezone_abbrev_cache)
+#define PgCurrentTimeZoneAbbrevTableRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionDateTimeRuntimeState, PgCurrentTimeZoneAbbrevTableRef, \
+									 timezone_abbrev_table)
+#define PgCurrentTimeZoneAbbreviationsStringRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionDateTimeRuntimeState, PgCurrentTimeZoneAbbreviationsStringRef, \
+									 timezone_abbreviations_string_value)
+#define PgCurrentTimeZoneStringRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionDateTimeRuntimeState, PgCurrentTimeZoneStringRef, \
+									 timezone_string_value)
+#define PgCurrentToClientConvProcRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentToClientConvProcRef, \
+									 client_encoding, to_client_conv_proc)
+#define PgCurrentToServerConvProcRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentToServerConvProcRef, \
+									 client_encoding, to_server_conv_proc)
+#define PgCurrentTopPortalContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionPortalManagerRuntimeState, PgCurrentTopPortalContextRef, \
+									 top_portal_context)
+#define PgCurrentTopTransactionStateDataRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentTopTransactionStateDataRef, \
+									 top_transaction_state_data)
+#define PgCurrentTraceLockOidMinRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLockWaitRuntimeState, PgCurrentTraceLockOidMinRef, \
+									 trace_lock_oidmin_value)
+#define PgCurrentTraceLockTableRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLockWaitRuntimeState, PgCurrentTraceLockTableRef, \
+									 trace_lock_table_value)
+#define PgCurrentTraceLocksRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLockWaitRuntimeState, PgCurrentTraceLocksRef, \
+									 trace_locks_value)
+#define PgCurrentTraceLwlocksRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLockWaitRuntimeState, PgCurrentTraceLwlocksRef, \
+									 trace_lwlocks_value)
+#define PgCurrentTraceUserlocksRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLockWaitRuntimeState, PgCurrentTraceUserlocksRef, \
+									 trace_userlocks_value)
+#define PgCurrentTrackCostDelayTimingRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentTrackCostDelayTimingRef, \
+									 track_cost_delay_timing_value)
+#define PgCurrentTransInvalInfoRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionInvalidationRuntimeState, PgCurrentTransInvalInfoRef, \
+									 trans_info)
+#define PgCurrentTransactionAbortContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentTransactionAbortContextRef, \
+									 transaction_abort_context)
+#define PgCurrentTransactionStateRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentTransactionStateRef, \
+									 current_transaction_state)
+#define PgCurrentTransactionTimeoutRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionLockWaitRuntimeState, PgCurrentTransactionTimeoutRef, \
+									 transaction_timeout_ms)
+#define PgCurrentTransactionXminRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSnapshotRuntimeState, PgCurrentTransactionXminRef, \
+									 transaction_xmin)
+#define PgCurrentTransformNullEqualsRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionParserRuntimeState, PgCurrentTransformNullEqualsRef, \
+									 transform_null_equals_value)
+#define PgCurrentTriggerDepthRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionTriggerRuntimeState, PgCurrentTriggerDepthRef, \
+									 depth)
+#define PgCurrentTryAdvanceTailRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionAsyncRuntimeState, PgCurrentTryAdvanceTailRef, \
+									 try_advance_tail)
+#define PgCurrentTupleCidDataRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionSnapshotRuntimeState, PgCurrentTupleCidDataRef, \
+									 tuplecid_data)
+#define PgCurrentTupleDescIdCounterRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentTupleDescIdCounterRef, \
+									 typcache_tupledesc_id_counter)
+#define PgCurrentTwoPhaseCachedFxidRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentTwoPhaseCachedFxidRef, \
+									 two_phase_cached_fxid)
+#define PgCurrentTwoPhaseCachedGxactRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentTwoPhaseCachedGxactRef, \
+									 two_phase_cached_gxact)
+#define PgCurrentTwoPhaseExitRegisteredRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentTwoPhaseExitRegisteredRef, \
+									 two_phase_exit_registered)
+#define PgCurrentTwoPhaseLockedGxactRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentTwoPhaseLockedGxactRef, \
+									 two_phase_locked_gxact)
+#define PgCurrentTypCacheInProgressListLenRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentTypCacheInProgressListLenRef, \
+									 typcache_in_progress_list_len)
+#define PgCurrentTypCacheInProgressListMaxLenRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentTypCacheInProgressListMaxLenRef, \
+									 typcache_in_progress_list_maxlen)
+#define PgCurrentTypCacheInProgressListRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentTypCacheInProgressListRef, \
+									 typcache_in_progress_list)
+#define PgCurrentTypeCacheHashRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionCatalogLookupRuntimeState, PgCurrentTypeCacheHashRef, \
+									 typcache_type_cache_hash)
+#define PgCurrentUncommittedEnumTypesRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogRuntimeState, PgCurrentUncommittedEnumTypesRef, \
+									 uncommitted_enum_types)
+#define PgCurrentUncommittedEnumValuesRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionCatalogRuntimeState, PgCurrentUncommittedEnumValuesRef, \
+									 uncommitted_enum_values)
+#define PgCurrentUnnamedPortalCountRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionPortalManagerRuntimeState, PgCurrentUnnamedPortalCountRef, \
+									 unnamed_portal_count)
+#define PgCurrentUnreportedXids() \
+	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgExecutionXactRuntimeState, PgCurrentUnreportedXids, \
+									 unreported_xids)
+#define PgCurrentUpdateProcessTitleRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionMiscGUCRuntimeState, PgCurrentUpdateProcessTitleRef, \
+									 update_process_title_value)
+#define PgCurrentUsedComboCidsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionComboCidRuntimeState, PgCurrentUsedComboCidsRef, \
+									 used)
+#define PgCurrentUtf8ToServerConvProcRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_BY_FIELD_REF(CurrentPgSessionEncodingRuntimeState, PgCurrentUtf8ToServerConvProcRef, \
+									 client_encoding, utf8_to_server_conv_proc)
+#define PgCurrentVacuumActiveNWorkersRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionVacuumRuntimeState, PgCurrentVacuumActiveNWorkersRef, \
+									 active_nworkers)
+#define PgCurrentVacuumBufferUsageLimitRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentVacuumBufferUsageLimitRef, \
+									 vacuum_buffer_usage_limit_kb)
+#define PgCurrentVacuumCostActiveRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionVacuumRuntimeState, PgCurrentVacuumCostActiveRef, \
+									 cost_active)
+#define PgCurrentVacuumCostBalanceLocalRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionVacuumRuntimeState, PgCurrentVacuumCostBalanceLocalRef, \
+									 cost_balance_local)
+#define PgCurrentVacuumCostBalanceRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionVacuumRuntimeState, PgCurrentVacuumCostBalanceRef, \
+									 cost_balance)
+#define PgCurrentVacuumCostDelayRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentVacuumCostDelayRef, \
+									 vacuum_cost_delay_ms)
+#define PgCurrentVacuumCostLimitRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentVacuumCostLimitRef, \
+									 vacuum_cost_limit_value)
+#define PgCurrentVacuumCostPageDirtyRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentVacuumCostPageDirtyRef, \
+									 vacuum_cost_page_dirty_value)
+#define PgCurrentVacuumCostPageHitRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentVacuumCostPageHitRef, \
+									 vacuum_cost_page_hit_value)
+#define PgCurrentVacuumCostPageMissRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentVacuumCostPageMissRef, \
+									 vacuum_cost_page_miss_value)
+#define PgCurrentVacuumFailsafeActiveRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionVacuumRuntimeState, PgCurrentVacuumFailsafeActiveRef, \
+									 failsafe_active)
+#define PgCurrentVacuumFailsafeAgeRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentVacuumFailsafeAgeRef, \
+									 vacuum_failsafe_age_value)
+#define PgCurrentVacuumFreezeMinAgeRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentVacuumFreezeMinAgeRef, \
+									 vacuum_freeze_min_age_value)
+#define PgCurrentVacuumFreezeTableAgeRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentVacuumFreezeTableAgeRef, \
+									 vacuum_freeze_table_age_value)
+#define PgCurrentVacuumInProgressRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionVacuumRuntimeState, PgCurrentVacuumInProgressRef, \
+									 in_vacuum)
+#define PgCurrentVacuumMaxEagerFreezeFailureRateRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentVacuumMaxEagerFreezeFailureRateRef, \
+									 vacuum_max_eager_freeze_failure_rate_value)
+#define PgCurrentVacuumMultixactFailsafeAgeRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentVacuumMultixactFailsafeAgeRef, \
+									 vacuum_multixact_failsafe_age_value)
+#define PgCurrentVacuumMultixactFreezeMinAgeRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentVacuumMultixactFreezeMinAgeRef, \
+									 vacuum_multixact_freeze_min_age_value)
+#define PgCurrentVacuumMultixactFreezeTableAgeRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentVacuumMultixactFreezeTableAgeRef, \
+									 vacuum_multixact_freeze_table_age_value)
+#define PgCurrentVacuumSharedCostBalanceRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionVacuumRuntimeState, PgCurrentVacuumSharedCostBalanceRef, \
+									 shared_cost_balance)
+#define PgCurrentVacuumTruncateRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionVacuumRuntimeState, PgCurrentVacuumTruncateRef, \
+									 vacuum_truncate_value)
+#define PgCurrentValgrindOldErrorCountRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionValgrindRuntimeState, PgCurrentValgrindOldErrorCountRef, \
+									 old_error_count)
+#define PgCurrentVfdCacheRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendStorageRuntimeState, PgCurrentVfdCacheRef, \
+									 vfd_cache)
+#define PgCurrentWalUsageRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendInstrumentationRuntimeState, PgCurrentWalUsageRef, \
+									 wal_usage)
+#define PgCurrentWorkMemRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionQueryMemoryRuntimeState, PgCurrentWorkMemRef, \
+									 work_mem_kb)
+#define PgCurrentXLogInsertBeginCalledRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentXLogInsertBeginCalledRef, \
+									 begininsert_called)
+#define PgCurrentXLogInsertContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentXLogInsertContextRef, \
+									 context)
+#define PgCurrentXLogInsertFlagsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentXLogInsertFlagsRef, \
+									 curinsert_flags)
+#define PgCurrentXLogInsertHeaderRecordDataRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentXLogInsertHeaderRecordDataRef, \
+									 hdr_rdt)
+#define PgCurrentXLogInsertHeaderScratchRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentXLogInsertHeaderScratchRef, \
+									 hdr_scratch)
+#define PgCurrentXLogInsertMainRDataHeadRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentXLogInsertMainRDataHeadRef, \
+									 mainrdata_head)
+#define PgCurrentXLogInsertMainRDataLastRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentXLogInsertMainRDataLastRef, \
+									 mainrdata_last)
+#define PgCurrentXLogInsertMainRDataLenRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentXLogInsertMainRDataLenRef, \
+									 mainrdata_len)
+#define PgCurrentXLogInsertMaxRDatasRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentXLogInsertMaxRDatasRef, \
+									 max_rdatas)
+#define PgCurrentXLogInsertMaxRegisteredBlockIdRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentXLogInsertMaxRegisteredBlockIdRef, \
+									 max_registered_block_id)
+#define PgCurrentXLogInsertMaxRegisteredBuffersRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentXLogInsertMaxRegisteredBuffersRef, \
+									 max_registered_buffers)
+#define PgCurrentXLogInsertNumRDatasRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentXLogInsertNumRDatasRef, \
+									 num_rdatas)
+#define PgCurrentXLogInsertRDatasRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentXLogInsertRDatasRef, \
+									 rdatas)
+#define PgCurrentXLogInsertRegisteredBuffersRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXLogInsertRuntimeState, PgCurrentXLogInsertRegisteredBuffersRef, \
+									 registered_buffers)
+#define PgCurrentXactDeferrableRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentXactDeferrableRef, \
+									 deferrable)
+#define PgCurrentXactIsSampledRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentXactIsSampledRef, \
+									 is_sampled)
+#define PgCurrentXactIsoLevelRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentXactIsoLevelRef, \
+									 iso_level)
+#define PgCurrentXactReadOnlyRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentXactReadOnlyRef, \
+									 read_only)
+#define PgCurrentXactStartTimestampRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentXactStartTimestampRef, \
+									 xact_start_timestamp)
+#define PgCurrentXactStopTimestampRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentXactStopTimestampRef, \
+									 xact_stop_timestamp)
+#define PgCurrentXactTopFullTransactionIdRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionXactRuntimeState, PgCurrentXactTopFullTransactionIdRef, \
+									 top_full_transaction_id)
+#define PgCurrentXidCacheByChildXidRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentXidCacheByChildXidRef, \
+									 xidcache_by_child_xid)
+#define PgCurrentXidCacheByKnownAssignedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentXidCacheByKnownAssignedRef, \
+									 xidcache_by_known_assigned)
+#define PgCurrentXidCacheByKnownXactRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentXidCacheByKnownXactRef, \
+									 xidcache_by_known_xact)
+#define PgCurrentXidCacheByLatestXidRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentXidCacheByLatestXidRef, \
+									 xidcache_by_latest_xid)
+#define PgCurrentXidCacheByMainXidRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentXidCacheByMainXidRef, \
+									 xidcache_by_main_xid)
+#define PgCurrentXidCacheByMyXactRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentXidCacheByMyXactRef, \
+									 xidcache_by_my_xact)
+#define PgCurrentXidCacheByRecentXminRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentXidCacheByRecentXminRef, \
+									 xidcache_by_recent_xmin)
+#define PgCurrentXidCacheNoOverflowRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentXidCacheNoOverflowRef, \
+									 xidcache_no_overflow)
+#define PgCurrentXidCacheSlowAnswerRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendTransactionRuntimeState, PgCurrentXidCacheSlowAnswerRef, \
+									 xidcache_slow_answer)
+
+/*
+ * Additional aliases for simple current accessors whose C bodies are
+ * wrappers around a current root pointer or a generated current bucket.
+ * Keep the exported functions as cold fallbacks for bootstrap and unusual
+ * early paths.
+ */
+#define PgCurrentMyProcRef() \
+	PG_RUNTIME_CURRENT_ROOT_FIELD_REF(backend, PgCurrentMyProcRef, my_proc)
+#define PgCurrentMyProcNumberRef() \
+	PG_RUNTIME_CURRENT_ROOT_FIELD_REF(backend, PgCurrentMyProcNumberRef, my_proc_number)
+#define PgCurrentParallelLeaderProcNumberRef() \
+	PG_RUNTIME_CURRENT_ROOT_FIELD_REF(backend, PgCurrentParallelLeaderProcNumberRef, \
+									 parallel_leader_proc_number)
+#define PgCurrentMyBEEntryRef() \
+	PG_RUNTIME_CURRENT_ROOT_FIELD_REF(backend, PgCurrentMyBEEntryRef, my_beentry)
+#define PgCurrentMyBgworkerEntryRef() \
+	PG_RUNTIME_CURRENT_ROOT_FIELD_REF(backend, PgCurrentMyBgworkerEntryRef, \
+									 my_bgworker_entry)
+#define PgCurrentAuxProcessResourceOwnerRef() \
+	PG_RUNTIME_CURRENT_ROOT_FIELD_REF(backend, PgCurrentAuxProcessResourceOwnerRef, \
+									 aux_process_resource_owner)
+#define PgCurrentMyBackendTypeRef() \
+	PG_RUNTIME_CURRENT_ROOT_FIELD_REF(backend, PgCurrentMyBackendTypeRef, backend_type)
+#define PgCurrentLegacySessionRef() \
+	PG_RUNTIME_CURRENT_ROOT_FIELD_REF(session, PgCurrentLegacySessionRef, legacy_session)
+#define PgCurrentSessionDynamicLibraryInitsRef() \
+	PG_RUNTIME_CURRENT_ROOT_FIELD_REF(session, PgCurrentSessionDynamicLibraryInitsRef, \
+									 dynamic_library_inits)
+#define PgCurrentProcPortRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionIdentityRuntimeState, PgCurrentProcPortRef, \
+									 port)
+#define PgCurrentPortContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionIdentityRuntimeState, PgCurrentPortContextRef, \
+									 port_context)
+#define PgCurrentCancelKey() \
+	PG_RUNTIME_CURRENT_FIELD_PTR(CurrentPgConnectionIdentityRuntimeState, PgCurrentCancelKey, \
+									 cancel_key)
+#define PgCurrentCancelKeyLengthRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionIdentityRuntimeState, PgCurrentCancelKeyLengthRef, \
+									 cancel_key_length)
+#define PgCurrentConnectionSocketIORef() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgConnectionSocketIORuntimeState, \
+								   PgCurrentConnectionSocketIORef)
+#define PgCurrentConnectionSocketIOContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionSocketIORuntimeState, PgCurrentConnectionSocketIOContextRef, \
+									 socket_io_context)
+#define PgCurrentPgwin32NoBlockRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionSocketIORuntimeState, PgCurrentPgwin32NoBlockRef, \
+									 win32_noblock)
+#define PgCurrentPqCommMethodsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionProtocolRuntimeState, PgCurrentPqCommMethodsRef, \
+									 comm_methods)
+#define PgCurrentFeBeWaitSetRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionProtocolRuntimeState, PgCurrentFeBeWaitSetRef, \
+									 fe_be_wait_set)
+#define PgCurrentFrontendProtocolRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionProtocolRuntimeState, PgCurrentFrontendProtocolRef, \
+									 frontend_protocol)
+#define PgCurrentWhereToSendOutputRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionOutputRuntimeState, PgCurrentWhereToSendOutputRef, \
+									 where_to_send_output)
+#define PgCurrentClientConnectionCheckIntervalRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionOutputRuntimeState, PgCurrentClientConnectionCheckIntervalRef, \
+									 client_connection_check_interval)
+#define PgCurrentCheckClientConnectionPendingRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionInterruptRuntimeState, PgCurrentCheckClientConnectionPendingRef, \
+									 check_client_connection_pending)
+#define PgCurrentClientConnectionLostRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionInterruptRuntimeState, PgCurrentClientConnectionLostRef, \
+									 client_connection_lost)
+#define PgCurrentClientAuthInProgressRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionStartupRuntimeState, PgCurrentClientAuthInProgressRef, \
+									 client_auth_in_progress)
+#define PgCurrentClientSocketRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionStartupRuntimeState, PgCurrentClientSocketRef, \
+									 client_socket)
+#define PgCurrentConnectionTimingRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionStartupRuntimeState, PgCurrentConnectionTimingRef, \
+									 timing)
+#define PgCurrentConnectionWarningsEmittedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionStartupRuntimeState, PgCurrentConnectionWarningsEmittedRef, \
+									 connection_warnings_emitted)
+#define PgCurrentConnectionWarningMessagesRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionStartupRuntimeState, PgCurrentConnectionWarningMessagesRef, \
+									 connection_warning_messages)
+#define PgCurrentConnectionWarningDetailsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionStartupRuntimeState, PgCurrentConnectionWarningDetailsRef, \
+									 connection_warning_details)
+#define PgCurrentConnectionWarningFiltersRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgConnectionStartupRuntimeState, PgCurrentConnectionWarningFiltersRef, \
+									 connection_warning_filters)
+#define PgCurrentClientConnectionInfoRef() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgConnectionClientConnectionInfoRuntimeState, \
+								   PgCurrentClientConnectionInfoRef)
+#define PgCurrentClientConnectionInfoContextRef() \
+	PG_RUNTIME_CURRENT_ROOT_FIELD_REF(connection, PgCurrentClientConnectionInfoContextRef, \
+									 client_connection_info_context)
+#define PgCurrentClientConnectionInfoAuthnIdOwnedRef() \
+	PG_RUNTIME_CURRENT_ROOT_FIELD_REF(connection, PgCurrentClientConnectionInfoAuthnIdOwnedRef, \
+									 client_connection_info_authn_id_owned)
+#define PgCurrentConnectionSecurityStateRef() \
+	PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgConnectionSecurityRuntimeState, \
+								   PgCurrentConnectionSecurityStateRef)
+#define PgCurrentBackupStateRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionBackupRuntimeState, PgCurrentBackupStateRef, \
+									 backup_state)
+#define PgCurrentTablespaceMapRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionBackupRuntimeState, PgCurrentTablespaceMapRef, \
+									 tablespace_map)
+#define PgCurrentJitProviderCallbacksRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF_PASTE(CurrentPgSessionJitProviderRuntimeState, \
+									  PgCurrentJitProviderCallbacksRef, \
+									  provid, er)
+#define PgCurrentJitProviderSuccessfullyLoadedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionJitProviderRuntimeState, \
+									 PgCurrentJitProviderSuccessfullyLoadedRef, \
+									 provider_successfully_loaded)
+#define PgCurrentJitProviderFailedLoadingRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionJitProviderRuntimeState, \
+									 PgCurrentJitProviderFailedLoadingRef, \
+									 provider_failed_loading)
+#define PgCurrentPrivateRefCountArrayKeysRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentPrivateRefCountArrayKeysRef, \
+									 private_ref_count_array_keys)
+#define PgCurrentPrivateRefCountArrayRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentPrivateRefCountArrayRef, \
+									 private_ref_count_array)
+#define PgCurrentPrivateRefCountHashRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentPrivateRefCountHashRef, \
+									 private_ref_count_hash)
+#define PgCurrentPrivateRefCountOverflowedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentPrivateRefCountOverflowedRef, \
+									 private_ref_count_overflowed)
+#define PgCurrentPrivateRefCountClockRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentPrivateRefCountClockRef, \
+									 private_ref_count_clock)
+#define PgCurrentReservedRefCountSlotRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentReservedRefCountSlotRef, \
+									 reserved_ref_count_slot)
+#define PgCurrentPrivateRefCountEntryLastRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentPrivateRefCountEntryLastRef, \
+									 private_ref_count_entry_last)
+#define PgCurrentMaxProportionalPinsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendBufferRuntimeState, PgCurrentMaxProportionalPinsRef, \
+									 max_proportional_pins)
+#define PgCurrentFastPathLocalUseCountsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentFastPathLocalUseCountsRef, \
+									 fast_path_local_use_counts)
+#define PgCurrentFastPathLocalUseCountsOwnedRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentFastPathLocalUseCountsOwnedRef, \
+									 fast_path_local_use_counts_owned)
+#define PgCurrentNumHeldLWLocksRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgBackendLockRuntimeState, PgCurrentNumHeldLWLocksRef, \
+									 num_held_lwlocks)
+#define PgCurrentUnnamedStmtPsrcRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionTcopRuntimeState, PgCurrentUnnamedStmtPsrcRef, \
+									 unnamed_stmt_psrc)
+#define PgCurrentRowDescriptionContextRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF_PASTE(CurrentPgSessionTcopRuntimeState, \
+									  PgCurrentRowDescriptionContextRef, \
+									  row_description_, context)
+#define PgCurrentRowDescriptionBufRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF_PASTE(CurrentPgSessionTcopRuntimeState, \
+									  PgCurrentRowDescriptionBufRef, \
+									  row_description_, buf)
+#define PgCurrentPseudoRandomStateRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF_PASTE(CurrentPgSessionRandomRuntimeState, \
+												  PgCurrentPseudoRandomStateRef, \
+												  prng_, state)
+#define PgCurrentPseudoRandomSeedSetRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionRandomRuntimeState, \
+											PgCurrentPseudoRandomSeedSetRef, \
+											prng_seed_set)
+#define PgCurrentSavedPlanListRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlanCacheRuntimeState, \
+											PgCurrentSavedPlanListRef, \
+											saved_plan_list)
+#define PgCurrentCachedExpressionListRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlanCacheRuntimeState, \
+											PgCurrentCachedExpressionListRef, \
+											cached_expression_list)
+#define PgCurrentSystemUserContextRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionUserIdentityRuntimeState, \
+											PgCurrentSystemUserContextRef, \
+											system_user_context)
+#define PgCurrentRelMapSharedMapRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF_PASTE(CurrentPgSessionRelMapRuntimeState, \
+									  PgCurrentRelMapSharedMapRef, \
+									  shared_, map)
+#define PgCurrentRelMapLocalMapRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF_PASTE(CurrentPgSessionRelMapRuntimeState, \
+									  PgCurrentRelMapLocalMapRef, \
+									  local_, map)
+#define PgCurrentPreparedQueriesRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF_PASTE(CurrentPgSessionPreparedStatementRuntimeState, \
+									  PgCurrentPreparedQueriesRef, \
+									  prepared_, queries)
+#define PgCurrentOnCommitActionsRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF_PASTE(CurrentPgSessionOnCommitRuntimeState, \
+									  PgCurrentOnCommitActionsRef, \
+									  on_, commits)
+#define PgCurrentSequenceHashTableRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF_PASTE(CurrentPgSessionSequenceRuntimeState, \
+									  PgCurrentSequenceHashTableRef, \
+									  seqhash, tab)
+#define PgCurrentLastUsedSequenceRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF_PASTE(CurrentPgSessionSequenceRuntimeState, \
+									  PgCurrentLastUsedSequenceRef, \
+									  last_used_, seq)
+#define PgCurrentReplicationOriginSessionStateRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgSessionLogicalReplicationRuntimeState, \
+									 PgCurrentReplicationOriginSessionStateRef, \
+									 session_replication_state)
+#define PgCurrentResourceOwnerObjectRef() \
+	PG_RUNTIME_CURRENT_FIELD_REF(CurrentPgExecutionResourceOwnerRuntimeState, \
+									 PgCurrentResourceOwnerObjectRef, \
+									 current_owner)
