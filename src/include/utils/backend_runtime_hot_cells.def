@@ -1,0 +1,25 @@
+/*-------------------------------------------------------------------------
+ *
+ * backend_runtime_hot_cells.def
+ *	  Direct current field references for very hot compatibility lvalues.
+ *
+ * This file is included with
+ * PG_RUNTIME_HOT_CELL(variable, owner, owner_type, type, field)
+ * defined by the includer.
+ *
+ * Current cells cache addresses of fields in the current runtime object.
+ * Process mode uses direct globals; threaded mode uses direct carrier TLS.
+ * Writes through the legacy compatibility lvalue update the owner object.
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ *
+ * src/include/utils/backend_runtime_hot_cells.def
+ *
+ *-------------------------------------------------------------------------
+ */
+
+PG_RUNTIME_HOT_CELL(PgCurrentMemoryContextHotRef,
+					execution,
+					PgExecution,
+					MemoryContext,
+					memory_contexts.current_context)
