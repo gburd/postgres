@@ -66,6 +66,7 @@
 #include "storage/spin.h"
 #include "tcop/utility.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
@@ -257,10 +258,6 @@ typedef struct pgssSharedState
 	pgssGlobalStats stats;		/* global statistics for pgss */
 } pgssSharedState;
 
-/* Links to shared memory state */
-static pgssSharedState *pgss;
-static HTAB *pgss_hash;
-
 static void pgss_shmem_request(void *arg);
 static void pgss_shmem_init(void *arg);
 
@@ -268,20 +265,6 @@ static const ShmemCallbacks pgss_shmem_callbacks = {
 	.request_fn = pgss_shmem_request,
 	.init_fn = pgss_shmem_init,
 };
-
-/*---- Local variables ----*/
-
-/* Current nesting depth of planner/ExecutorRun/ProcessUtility calls */
-static int	nesting_level = 0;
-
-/* Saved hook values */
-static post_parse_analyze_hook_type prev_post_parse_analyze_hook = NULL;
-static planner_hook_type prev_planner_hook = NULL;
-static ExecutorStart_hook_type prev_ExecutorStart = NULL;
-static ExecutorRun_hook_type prev_ExecutorRun = NULL;
-static ExecutorFinish_hook_type prev_ExecutorFinish = NULL;
-static ExecutorEnd_hook_type prev_ExecutorEnd = NULL;
-static ProcessUtility_hook_type prev_ProcessUtility = NULL;
 
 /*---- GUC variables ----*/
 
@@ -292,6 +275,106 @@ typedef enum
 	PGSS_TRACK_ALL,				/* all statements, including nested ones */
 }			PGSSTrackLevel;
 
+#define PGSS_RUNTIME_STATE_KEY "pg_stat_statements.runtime"
+#define PGSS_SESSION_STATE_KEY "pg_stat_statements.session"
+#define PGSS_EXECUTION_STATE_KEY "pg_stat_statements.execution"
+
+typedef struct PgStatStatementsRuntimeState
+{
+	bool		initialized;
+	int			max;
+	bool		save;
+	post_parse_analyze_hook_type prev_post_parse_analyze_hook;
+	planner_hook_type prev_planner_hook;
+	ExecutorStart_hook_type prev_ExecutorStart;
+	ExecutorRun_hook_type prev_ExecutorRun;
+	ExecutorFinish_hook_type prev_ExecutorFinish;
+	ExecutorEnd_hook_type prev_ExecutorEnd;
+	ProcessUtility_hook_type prev_ProcessUtility;
+	pgssSharedState *shared_state;
+	HTAB	   *hash;
+} PgStatStatementsRuntimeState;
+
+typedef struct PgStatStatementsSessionState
+{
+	bool		initialized;
+	int			track;
+	bool		track_utility;
+	bool		track_planning;
+} PgStatStatementsSessionState;
+
+typedef struct PgStatStatementsExecutionState
+{
+	int			nesting_level;
+} PgStatStatementsExecutionState;
+
+static PgStatStatementsRuntimeState *
+pgss_runtime_state(void)
+{
+	PgStatStatementsRuntimeState *state;
+
+	state = (PgStatStatementsRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(PGSS_RUNTIME_STATE_KEY,
+											 sizeof(PgStatStatementsRuntimeState),
+											 NULL);
+	if (!state->initialized)
+	{
+		state->max = 5000;
+		state->save = true;
+		state->initialized = true;
+	}
+
+	return state;
+}
+
+static PgStatStatementsSessionState *
+pgss_session_state(void)
+{
+	PgStatStatementsSessionState *state;
+
+	state = (PgStatStatementsSessionState *)
+		PgSessionEnsureExtensionPrivateState(PGSS_SESSION_STATE_KEY,
+											 sizeof(PgStatStatementsSessionState),
+											 NULL);
+	if (!state->initialized)
+	{
+		state->track = PGSS_TRACK_TOP;
+		state->track_utility = true;
+		state->track_planning = false;
+		state->initialized = true;
+	}
+
+	return state;
+}
+
+static PgStatStatementsExecutionState *
+pgss_execution_state(void)
+{
+	return (PgStatStatementsExecutionState *)
+		PgExecutionEnsureExtensionPrivateState(PGSS_EXECUTION_STATE_KEY,
+											   sizeof(PgStatStatementsExecutionState),
+											   NULL);
+}
+
+/* Current nesting depth of planner/ExecutorRun/ProcessUtility calls */
+#define nesting_level (pgss_execution_state()->nesting_level)
+
+/* Saved hook values */
+#define prev_post_parse_analyze_hook \
+	(pgss_runtime_state()->prev_post_parse_analyze_hook)
+#define prev_planner_hook \
+	(pgss_runtime_state()->prev_planner_hook)
+#define prev_ExecutorStart \
+	(pgss_runtime_state()->prev_ExecutorStart)
+#define prev_ExecutorRun \
+	(pgss_runtime_state()->prev_ExecutorRun)
+#define prev_ExecutorFinish \
+	(pgss_runtime_state()->prev_ExecutorFinish)
+#define prev_ExecutorEnd \
+	(pgss_runtime_state()->prev_ExecutorEnd)
+#define prev_ProcessUtility \
+	(pgss_runtime_state()->prev_ProcessUtility)
+
 static const struct config_enum_entry track_options[] =
 {
 	{"none", PGSS_TRACK_NONE, false},
@@ -300,12 +383,13 @@ static const struct config_enum_entry track_options[] =
 	{NULL, 0, false}
 };
 
-static int	pgss_max = 5000;	/* max # statements to track */
-static int	pgss_track = PGSS_TRACK_TOP;	/* tracking level */
-static bool pgss_track_utility = true;	/* whether to track utility commands */
-static bool pgss_track_planning = false;	/* whether to track planning
-											 * duration */
-static bool pgss_save = true;	/* whether to save stats across shutdown */
+#define pgss_max (pgss_runtime_state()->max)
+#define pgss_save (pgss_runtime_state()->save)
+#define pgss (pgss_runtime_state()->shared_state)
+#define pgss_hash (pgss_runtime_state()->hash)
+#define pgss_track (pgss_session_state()->track)
+#define pgss_track_utility (pgss_session_state()->track_utility)
+#define pgss_track_planning (pgss_session_state()->track_planning)
 
 #define pgss_enabled(level) \
 	(!IsParallelWorker() && \

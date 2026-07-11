@@ -323,4 +323,4 @@ int			pgp_elgamal_decrypt(PGP_PubKey *pk, PGP_MPI *_c1, PGP_MPI *_c2,
 int			pgp_rsa_encrypt(PGP_PubKey *pk, PGP_MPI *_m, PGP_MPI **c_p);
 int			pgp_rsa_decrypt(PGP_PubKey *pk, PGP_MPI *_c, PGP_MPI **m_p);
 
-extern struct PullFilterOps pgp_decrypt_filter;
+extern const struct PullFilterOps pgp_decrypt_filter;

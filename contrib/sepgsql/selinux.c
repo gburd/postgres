@@ -12,6 +12,7 @@
 #include "postgres.h"
 
 #include "lib/stringinfo.h"
+#include "miscadmin.h"
 
 #include "sepgsql.h"
 
@@ -607,7 +608,7 @@ static struct
  * SEPGSQL_MODE_PERMISSIVE: Always permissive mode
  * SEPGSQL_MODE_INTERNAL: Same as permissive, except for no audit logs
  */
-static int	sepgsql_mode = SEPGSQL_MODE_INTERNAL;
+#define sepgsql_mode (sepgsql_session_state()->mode)
 
 /*
  * sepgsql_is_enabled
@@ -636,6 +637,8 @@ sepgsql_set_mode(int new_mode)
 	int			old_mode = sepgsql_mode;
 
 	sepgsql_mode = new_mode;
+	if (CurrentPgSession == NULL)
+		sepgsql_runtime_state()->startup_mode = new_mode;
 
 	return old_mode;
 }

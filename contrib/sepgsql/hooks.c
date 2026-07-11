@@ -22,6 +22,7 @@
 #include "miscadmin.h"
 #include "sepgsql.h"
 #include "tcop/utility.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/queryenvironment.h"
 
@@ -37,13 +38,36 @@ PG_MODULE_MAGIC_EXT(
 /*
  * Saved hook entries (if stacked)
  */
-static object_access_hook_type next_object_access_hook = NULL;
-static ExecutorCheckPerms_hook_type next_exec_check_perms_hook = NULL;
-static ProcessUtility_hook_type next_ProcessUtility_hook = NULL;
+#define SEPGSQL_HOOK_RUNTIME_STATE_KEY "sepgsql.hooks.runtime"
+
+typedef struct SePgsqlHookRuntimeState
+{
+	object_access_hook_type next_object_access_hook;
+	ExecutorCheckPerms_hook_type next_exec_check_perms_hook;
+	ProcessUtility_hook_type next_ProcessUtility_hook;
+} SePgsqlHookRuntimeState;
+
+static SePgsqlHookRuntimeState *
+sepgsql_hook_runtime_state(void)
+{
+	return (SePgsqlHookRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(SEPGSQL_HOOK_RUNTIME_STATE_KEY,
+											 sizeof(SePgsqlHookRuntimeState),
+											 NULL);
+}
+
+#define next_object_access_hook \
+	(sepgsql_hook_runtime_state()->next_object_access_hook)
+#define next_exec_check_perms_hook \
+	(sepgsql_hook_runtime_state()->next_exec_check_perms_hook)
+#define next_ProcessUtility_hook \
+	(sepgsql_hook_runtime_state()->next_ProcessUtility_hook)
 
 /*
  * Contextual information on DDL commands
  */
+#define SEPGSQL_CONTEXT_SESSION_STATE_KEY "sepgsql.context.session"
+
 typedef struct
 {
 	NodeTag		cmdtype;
@@ -55,12 +79,22 @@ typedef struct
 	const char *createdb_dtemplate;
 } sepgsql_context_info_t;
 
-static sepgsql_context_info_t sepgsql_context_info;
+static sepgsql_context_info_t *
+sepgsql_context_info_state(void)
+{
+	return (sepgsql_context_info_t *)
+		PgSessionEnsureExtensionPrivateState(
+			SEPGSQL_CONTEXT_SESSION_STATE_KEY,
+			sizeof(sepgsql_context_info_t),
+			NULL);
+}
+
+#define sepgsql_context_info (*sepgsql_context_info_state())
 
 /*
  * GUC: sepgsql.permissive = (on|off)
  */
-static bool sepgsql_permissive = false;
+#define sepgsql_permissive (sepgsql_runtime_state()->permissive)
 
 bool
 sepgsql_get_permissive(void)
@@ -71,7 +105,7 @@ sepgsql_get_permissive(void)
 /*
  * GUC: sepgsql.debug_audit = (on|off)
  */
-static bool sepgsql_debug_audit = false;
+#define sepgsql_debug_audit (sepgsql_session_state()->debug_audit)
 
 bool
 sepgsql_get_debug_audit(void)
@@ -481,6 +515,5 @@ _PG_init(void)
 	next_ProcessUtility_hook = ProcessUtility_hook;
 	ProcessUtility_hook = sepgsql_utility_command;
 
-	/* init contextual info */
-	memset(&sepgsql_context_info, 0, sizeof(sepgsql_context_info));
+	/* Contextual command state is lazily initialized per session. */
 }

@@ -16,7 +16,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "insert_username",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
 PG_FUNCTION_INFO_V1(insert_username);

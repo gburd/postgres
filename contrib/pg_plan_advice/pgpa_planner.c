@@ -86,16 +86,52 @@ typedef struct pgpa_join_state
 	Bitmapset  *rel_indexes;
 } pgpa_join_state;
 
-/* Saved hook values */
-static build_simple_rel_hook_type prev_build_simple_rel = NULL;
-static join_path_setup_hook_type prev_join_path_setup = NULL;
-static joinrel_setup_hook_type prev_joinrel_setup = NULL;
-static planner_setup_hook_type prev_planner_setup = NULL;
-static planner_shutdown_hook_type prev_planner_shutdown = NULL;
+#define PG_PLAN_ADVICE_PLANNER_RUNTIME_STATE_KEY \
+	"pg_plan_advice.planner.runtime"
 
-/* Other global variables */
-int			pgpa_planner_generate_advice = 0;
-static int	planner_extension_id = -1;
+typedef struct PgPlanAdvicePlannerRuntimeState
+{
+	bool		initialized;
+	build_simple_rel_hook_type prev_build_simple_rel;
+	join_path_setup_hook_type prev_join_path_setup;
+	joinrel_setup_hook_type prev_joinrel_setup;
+	planner_setup_hook_type prev_planner_setup;
+	planner_shutdown_hook_type prev_planner_shutdown;
+	int			planner_extension_id;
+} PgPlanAdvicePlannerRuntimeState;
+
+static PgPlanAdvicePlannerRuntimeState *
+pgpa_planner_runtime_state(void)
+{
+	PgPlanAdvicePlannerRuntimeState *state;
+
+	state = (PgPlanAdvicePlannerRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(
+			PG_PLAN_ADVICE_PLANNER_RUNTIME_STATE_KEY,
+			sizeof(PgPlanAdvicePlannerRuntimeState),
+			NULL);
+	if (!state->initialized)
+	{
+		state->planner_extension_id = -1;
+		state->initialized = true;
+	}
+
+	return state;
+}
+
+/* Saved hook values */
+#define prev_build_simple_rel \
+	(pgpa_planner_runtime_state()->prev_build_simple_rel)
+#define prev_join_path_setup \
+	(pgpa_planner_runtime_state()->prev_join_path_setup)
+#define prev_joinrel_setup \
+	(pgpa_planner_runtime_state()->prev_joinrel_setup)
+#define prev_planner_setup \
+	(pgpa_planner_runtime_state()->prev_planner_setup)
+#define prev_planner_shutdown \
+	(pgpa_planner_runtime_state()->prev_planner_shutdown)
+#define planner_extension_id \
+	(pgpa_planner_runtime_state()->planner_extension_id)
 
 /* Function prototypes. */
 static void pgpa_planner_setup(PlannerGlobal *glob, Query *parse,

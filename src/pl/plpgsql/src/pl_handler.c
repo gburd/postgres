@@ -30,10 +30,20 @@
 static bool plpgsql_extra_checks_check_hook(char **newvalue, void **extra, GucSource source);
 static void plpgsql_extra_warnings_assign_hook(const char *newvalue, void *extra);
 static void plpgsql_extra_errors_assign_hook(const char *newvalue, void *extra);
+static void plpgsql_initialize_session_state(PLpgSQL_session_state *state);
+static void plpgsql_session_init(void);
+
+#define plpgsql_extra_warnings_string \
+	(plpgsql_current_session_state()->extra_warnings_string)
+#define plpgsql_extra_errors_string \
+	(plpgsql_current_session_state()->extra_errors_string)
+#define plpgsql_session_inited \
+	(plpgsql_current_session_state()->session_inited)
 
 PG_MODULE_MAGIC_EXT(
 					.name = "plpgsql",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
 /* Custom GUC variable */
@@ -44,20 +54,39 @@ static const struct config_enum_entry variable_conflict_options[] = {
 	{NULL, 0, false}
 };
 
-int			plpgsql_variable_conflict = PLPGSQL_RESOLVE_ERROR;
+static void
+plpgsql_initialize_session_state(PLpgSQL_session_state *state)
+{
+	MemSet(state, 0, sizeof(*state));
+	state->identifier_lookup = IDENTIFIER_LOOKUP_NORMAL;
+	state->variable_conflict = PLPGSQL_RESOLVE_ERROR;
+	state->check_asserts = true;
+}
 
-bool		plpgsql_print_strict_params = false;
+PLpgSQL_session_state *
+plpgsql_current_session_state(void)
+{
+	void	  **slot;
+	PLpgSQL_session_state *state;
+	MemoryContext oldcontext;
 
-bool		plpgsql_check_asserts = true;
+	slot = PgCurrentPLpgSQLSessionStateRef();
+	if (*slot != NULL)
+		return (PLpgSQL_session_state *) *slot;
 
-static char *plpgsql_extra_warnings_string = NULL;
-static char *plpgsql_extra_errors_string = NULL;
-int			plpgsql_extra_warnings;
-int			plpgsql_extra_errors;
+	if (CurrentPgSession != NULL)
+		oldcontext = MemoryContextSwitchTo(PgSessionGetDynamicLibraryMemoryContext(CurrentPgSession));
+	else
+		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 
-/* Hook for plugins */
-PLpgSQL_plugin **plpgsql_plugin_ptr = NULL;
+	state = palloc_object(PLpgSQL_session_state);
+	plpgsql_initialize_session_state(state);
+	*slot = state;
+	PgSessionRegisterResetCallback(plpgsql_reset_session_state, state);
 
+	MemoryContextSwitchTo(oldcontext);
+	return state;
+}
 
 static bool
 plpgsql_extra_checks_check_hook(char **newvalue, void **extra, GucSource source)
@@ -147,10 +176,14 @@ plpgsql_extra_errors_assign_hook(const char *newvalue, void *extra)
 void
 _PG_init(void)
 {
-	/* Be sure we do initialization only once (should be redundant now) */
-	static bool inited = false;
+	plpgsql_session_init();
+}
 
-	if (inited)
+static void
+plpgsql_session_init(void)
+{
+	/* Be sure we do initialization only once (should be redundant now) */
+	if (plpgsql_session_inited)
 		return;
 
 	pg_bindtextdomain(TEXTDOMAIN);
@@ -208,7 +241,7 @@ _PG_init(void)
 	/* Set up a rendezvous point with optional instrumentation plugin */
 	plpgsql_plugin_ptr = (PLpgSQL_plugin **) find_rendezvous_variable("PLpgSQL_plugin");
 
-	inited = true;
+	plpgsql_session_inited = true;
 }
 
 /* ----------
@@ -229,6 +262,8 @@ plpgsql_call_handler(PG_FUNCTION_ARGS)
 	ResourceOwner procedure_resowner;
 	volatile Datum retval = (Datum) 0;
 	int			rc;
+
+	plpgsql_session_init();
 
 	nonatomic = fcinfo->context &&
 		IsA(fcinfo->context, CallContext) &&
@@ -323,6 +358,8 @@ plpgsql_inline_handler(PG_FUNCTION_ARGS)
 	ResourceOwner simple_eval_resowner;
 	Datum		retval;
 	int			rc;
+
+	plpgsql_session_init();
 
 	/*
 	 * Connect to SPI manager
@@ -452,6 +489,8 @@ plpgsql_validator(PG_FUNCTION_ARGS)
 	bool		is_dml_trigger = false;
 	bool		is_event_trigger = false;
 	int			i;
+
+	plpgsql_session_init();
 
 	if (!CheckFunctionValidatorAccess(fcinfo->flinfo->fn_oid, funcoid))
 		PG_RETURN_VOID();
