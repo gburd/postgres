@@ -1,11 +1,11 @@
 /*--------------------------------------------------------------------------
  *
  * test_atomics.c
- *		Test module for comparing stdatomic.h vs traditional atomics
+ *		Test module for PostgreSQL's C11 stdatomic.h atomic operations
  *
- * This module provides comprehensive testing and benchmarking of PostgreSQL's
- * atomic operations to ensure correctness and measure performance of both
- * stdatomic.h and traditional implementations.
+ * This module provides correctness testing and ad-hoc benchmarking of
+ * PostgreSQL's atomic operations, which are built on the C11 <stdatomic.h>
+ * header.
  *
  * Copyright (c) 2026, PostgreSQL Global Development Group
  *
@@ -314,11 +314,7 @@ benchmark_atomic_operations(PG_FUNCTION_ARGS)
 					 iterations, elapsed_ms,
 					 (float8) iterations / elapsed_ms / 1000.0);
 
-#ifdef USE_STDATOMIC_H
 	appendStringInfo(&buf, "\nImplementation: stdatomic.h (C11)\n");
-#else
-	appendStringInfo(&buf, "\nImplementation: traditional (platform-specific)\n");
-#endif
 
 	PG_RETURN_TEXT_P(cstring_to_text(buf.data));
 }
