@@ -17,9 +17,11 @@
 #include "access/gin_private.h"
 #include "access/ginxlog.h"
 #include "access/xlogutils.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 
-static MemoryContext opCtx;		/* working memory for operations */
+#define opCtx \
+	(PgCurrentXLogState()->gin_xlog_op_context)
 
 static void
 ginRedoClearIncompleteSplit(XLogReaderState *record, uint8 block_id)

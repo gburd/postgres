@@ -31,6 +31,7 @@
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "storage/procnumber.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 
 
@@ -100,52 +101,68 @@ static void PrintLockQueue(LOCK *lock, const char *info);
  */
 
 /* Workspace for FindLockCycle */
-static PGPROC **visitedProcs;	/* Array of visited procs */
-static int	nVisitedProcs;
+/* Array of visited procs */
+#define visitedProcs (*(PGPROC ***) PgCurrentDeadlockVisitedProcsRef())
+#define nVisitedProcs (*PgCurrentDeadlockNVisitedProcsRef())
 
 /* Workspace for TopoSort */
-static PGPROC **topoProcs;		/* Array of not-yet-output procs */
-static int *beforeConstraints;	/* Counts of remaining before-constraints */
-static int *afterConstraints;	/* List head for after-constraints */
+/* Array of not-yet-output procs */
+#define topoProcs (*(PGPROC ***) PgCurrentDeadlockTopoProcsRef())
+/* Counts of remaining before-constraints */
+#define beforeConstraints (*(int **) PgCurrentDeadlockBeforeConstraintsRef())
+/* List head for after-constraints */
+#define afterConstraints (*(int **) PgCurrentDeadlockAfterConstraintsRef())
 
 /* Output area for ExpandConstraints */
-static WAIT_ORDER *waitOrders;	/* Array of proposed queue rearrangements */
-static int	nWaitOrders;
-static PGPROC **waitOrderProcs; /* Space for waitOrders queue contents */
+/* Array of proposed queue rearrangements */
+#define waitOrders (*(WAIT_ORDER **) PgCurrentDeadlockWaitOrdersRef())
+#define nWaitOrders (*PgCurrentDeadlockNWaitOrdersRef())
+/* Space for waitOrders queue contents */
+#define waitOrderProcs (*(PGPROC ***) PgCurrentDeadlockWaitOrderProcsRef())
 
 /* Current list of constraints being considered */
-static EDGE *curConstraints;
-static int	nCurConstraints;
-static int	maxCurConstraints;
+#define curConstraints (*(EDGE **) PgCurrentDeadlockCurConstraintsRef())
+#define nCurConstraints (*PgCurrentDeadlockNCurConstraintsRef())
+#define maxCurConstraints (*PgCurrentDeadlockMaxCurConstraintsRef())
 
 /* Storage space for results from FindLockCycle */
-static EDGE *possibleConstraints;
-static int	nPossibleConstraints;
-static int	maxPossibleConstraints;
-static DEADLOCK_INFO *deadlockDetails;
-static int	nDeadlockDetails;
+#define possibleConstraints (*(EDGE **) PgCurrentDeadlockPossibleConstraintsRef())
+#define nPossibleConstraints (*PgCurrentDeadlockNPossibleConstraintsRef())
+#define maxPossibleConstraints (*PgCurrentDeadlockMaxPossibleConstraintsRef())
+#define deadlockDetails (*(DEADLOCK_INFO **) PgCurrentDeadlockDetailsRef())
+#define nDeadlockDetails (*PgCurrentDeadlockNDetailsRef())
 
 /* PGPROC pointer of any blocking autovacuum worker found */
-static PGPROC *blocking_autovacuum_proc = NULL;
+#define blocking_autovacuum_proc (*(PGPROC **) PgCurrentBlockingAutovacuumProcRef())
 
 
 /*
- * InitDeadLockChecking -- initialize deadlock checker during backend startup
+ * EnsureDeadLockCheckingWorkspace -- initialize deadlock checker workspace
  *
- * This does per-backend initialization of the deadlock checker; primarily,
- * allocation of working memory for DeadLockCheck.  We do this per-backend
- * since there's no percentage in making the kernel do copy-on-write
- * inheritance of workspace from the postmaster.  We allocate the space at
- * startup because the deadlock checker is run with all the partitions of the
- * lock table locked, and we want to keep that section as short as possible.
+ * This does per-backend initialization of the deadlock checker working
+ * memory.  We do this per-backend since there's no percentage in making the
+ * kernel do copy-on-write inheritance of workspace from the postmaster.
+ *
+ * The detector itself runs with all partitions of the lock table locked, so
+ * callers must allocate this workspace before entering that critical section.
  */
 void
-InitDeadLockChecking(void)
+EnsureDeadLockCheckingWorkspace(void)
 {
 	MemoryContext oldcxt;
 
+	if (visitedProcs != NULL)
+		return;
+
 	/* Make sure allocations are permanent */
 	oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+
+	if (deadlockDetails != NULL)
+	{
+		Assert(*PgCurrentDeadlockWorkspaceOwnedRef());
+		pfree(deadlockDetails);
+		deadlockDetails = NULL;
+	}
 
 	/*
 	 * FindLockCycle needs at most MaxBackends entries in visitedProcs[] and
@@ -198,8 +215,29 @@ InitDeadLockChecking(void)
 		possibleConstraints =
 			(EDGE *) palloc(maxPossibleConstraints * sizeof(EDGE));
 	}
+	*PgCurrentDeadlockWorkspaceOwnedRef() = true;
 
 	MemoryContextSwitchTo(oldcxt);
+}
+
+/*
+ * InitDeadLockChecking -- initialize deadlock checker during backend startup
+ *
+ * Deadlock-checking workspace is MaxBackends-sized and only needed by
+ * backends that wait long enough to run the detector.  Leave it lazy so quiet
+ * sessions do not carry that memory while parked.  The immediate two-process
+ * deadlock path can run while holding a lock partition LWLock, so keep only
+ * the tiny report buffer it needs ready at startup.
+ */
+void
+InitDeadLockChecking(void)
+{
+	Assert(visitedProcs == NULL);
+	Assert(deadlockDetails == NULL);
+
+	deadlockDetails = (DEADLOCK_INFO *)
+		MemoryContextAlloc(TopMemoryContext, 2 * sizeof(DEADLOCK_INFO));
+	*PgCurrentDeadlockWorkspaceOwnedRef() = true;
 }
 
 /*
@@ -219,6 +257,8 @@ InitDeadLockChecking(void)
 DeadLockState
 DeadLockCheck(PGPROC *proc)
 {
+	Assert(visitedProcs != NULL);
+
 	/* Initialize to "no constraints" */
 	nCurConstraints = 0;
 	nPossibleConstraints = 0;

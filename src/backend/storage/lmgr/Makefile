@@ -13,6 +13,7 @@ top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
 OBJS = \
+	backend_runtime_lmgr.o \
 	condition_variable.o \
 	deadlock.o \
 	lmgr.o \

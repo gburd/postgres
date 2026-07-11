@@ -186,6 +186,7 @@
 #include <limits.h>
 
 #include "common/pg_lzcompress.h"
+#include "utils/global_lifetime.h"
 
 
 /* ----------
@@ -249,11 +250,17 @@ const PGLZ_Strategy *const PGLZ_strategy_always = &strategy_always_data;
 
 
 /* ----------
- * Statically allocated work arrays for history
+ * Thread-local work arrays for history.
+ *
+ * These arrays are mutated throughout pglz_compress().  They were historically
+ * process-private by construction; thread-per-session backends need the same
+ * isolation while sharing one address space.
  * ----------
  */
-static int16 hist_start[PGLZ_MAX_HISTORY_LISTS];
-static PGLZ_HistEntry hist_entries[PGLZ_HISTORY_SIZE + 1];
+static PG_THREAD_LOCAL PG_GLOBAL_CARRIER int16
+			hist_start[PGLZ_MAX_HISTORY_LISTS];
+static PG_THREAD_LOCAL PG_GLOBAL_CARRIER PGLZ_HistEntry
+			hist_entries[PGLZ_HISTORY_SIZE + 1];
 
 /*
  * Element 0 in hist_entries is unused, and means 'invalid'. Likewise,

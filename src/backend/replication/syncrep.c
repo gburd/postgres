@@ -83,20 +83,21 @@
 #include "replication/walsender_private.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc_hooks.h"
 #include "utils/ps_status.h"
 #include "utils/wait_event.h"
 
 /* User-settable parameters for sync rep */
-char	   *SyncRepStandbyNames;
+PG_GLOBAL_RUNTIME char *SyncRepStandbyNames;
 
 #define SyncStandbysDefined() \
 	(SyncRepStandbyNames != NULL && SyncRepStandbyNames[0] != '\0')
 
-static bool announce_next_takeover = true;
+static PG_GLOBAL_RUNTIME bool announce_next_takeover = true;
 
-SyncRepConfigData *SyncRepConfig = NULL;
-static int	SyncRepWaitMode = SYNC_REP_NO_WAIT;
+PG_GLOBAL_RUNTIME SyncRepConfigData *SyncRepConfig = NULL;
+#define SyncRepWaitMode (PgCurrentReplicationState()->sync_rep_wait_mode)
 
 static void SyncRepQueueInsert(int mode);
 static void SyncRepCancelWait(void);
@@ -347,6 +348,7 @@ SyncRepWaitForLSN(XLogRecPtr lsn, bool commit)
 		 */
 		if (rc & WL_POSTMASTER_DEATH)
 		{
+			PgCurrentBackendRaiseProcDieInterrupt(0, 0);
 			ProcDiePending = true;
 			whereToSendOutput = DestNone;
 			SyncRepCancelWait();

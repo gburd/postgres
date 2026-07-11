@@ -18,10 +18,11 @@
 #include "catalog/pg_collation.h"
 #include "common/unicode_case.h"
 #include "common/unicode_category.h"
+#include "utils/backend_runtime.h"
 #include "utils/pg_locale.h"
 #include "utils/pg_locale_c.h"
 
-static pg_locale_t pg_regex_locale;
+#define pg_regex_locale (*(pg_locale_t *) PgCurrentRegexLocaleRef())
 
 
 /*
@@ -212,7 +213,26 @@ typedef struct pg_ctype_cache
 	struct pg_ctype_cache *next;	/* chain link */
 } pg_ctype_cache;
 
-static pg_ctype_cache *pg_ctype_cache_list = NULL;
+/*
+ * This cache is session-local.  Keep the historical name local to the regex
+ * code while storing it in PgSession so later schedulers can move sessions
+ * between carriers without carrying this state in carrier TLS.
+ */
+#define pg_ctype_cache_list (*PgCurrentRegexCtypeCacheListRef())
+
+void
+pg_free_regex_ctype_cache_list(pg_ctype_cache *list)
+{
+	while (list != NULL)
+	{
+		pg_ctype_cache *next = list->next;
+
+		free(list->cv.chrs);
+		free(list->cv.ranges);
+		free(list);
+		list = next;
+	}
+}
 
 /*
  * Add a chr or range to pcc->cv; return false if run out of memory

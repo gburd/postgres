@@ -62,21 +62,19 @@
 #define MAXDICTSPERTT	100
 
 
-static HTAB *TSParserCacheHash = NULL;
-static TSParserCacheEntry *lastUsedParser = NULL;
-
-static HTAB *TSDictionaryCacheHash = NULL;
-static TSDictionaryCacheEntry *lastUsedDictionary = NULL;
-
-static HTAB *TSConfigCacheHash = NULL;
-static TSConfigCacheEntry *lastUsedConfig = NULL;
-
 /*
  * GUC default_text_search_config, and a cache of the current config's OID
+ * live in PgSessionTextSearchState along with the parser, dictionary, and
+ * configuration caches.  Keep the legacy names source-compatible through
+ * lvalue macros backed by the active logical session.
  */
-char	   *TSCurrentConfig = NULL;
-
-static Oid	TSCurrentConfigCache = InvalidOid;
+#define TSCurrentConfigCache (*PgCurrentTSCurrentConfigCacheRef())
+#define TSParserCacheHash (*PgCurrentTSParserCacheHashRef())
+#define lastUsedParser (*PgCurrentTSLastUsedParserRef())
+#define TSDictionaryCacheHash (*PgCurrentTSDictionaryCacheHashRef())
+#define lastUsedDictionary (*PgCurrentTSLastUsedDictionaryRef())
+#define TSConfigCacheHash (*PgCurrentTSConfigCacheHashRef())
+#define lastUsedConfig (*PgCurrentTSLastUsedConfigRef())
 
 
 /*

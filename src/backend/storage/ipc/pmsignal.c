@@ -82,7 +82,7 @@ struct PMSignalData
 };
 
 /* PMSignalState pointer is valid in both postmaster and child processes */
-NON_EXEC_STATIC volatile PMSignalData *PMSignalState = NULL;
+PG_GLOBAL_SHMEM NON_EXEC_STATIC volatile PMSignalData *PMSignalState = NULL;
 
 static void PMSignalShmemRequest(void *);
 static void PMSignalShmemInit(void *);
@@ -97,13 +97,13 @@ const ShmemCallbacks PMSignalShmemCallbacks = {
  * postmaster.  Postmaster keeps a local copy so that it doesn't need to
  * trust the value in shared memory.
  */
-static int	num_child_flags;
+static PG_GLOBAL_RUNTIME int num_child_flags;
 
 /*
  * Signal handler to be notified if postmaster dies.
  */
 #ifdef USE_POSTMASTER_DEATH_SIGNAL
-volatile sig_atomic_t postmaster_possibly_dead = false;
+PG_GLOBAL_RUNTIME volatile sig_atomic_t postmaster_possibly_dead = false;
 
 static void
 postmaster_death_handler(SIGNAL_ARGS)
@@ -163,11 +163,22 @@ PMSignalShmemInit(void *arg)
 void
 SendPostmasterSignal(PMSignalReason reason)
 {
-	/* If called in a standalone backend, do nothing */
-	if (!IsUnderPostmaster)
+	/* If called without a postmaster signaling target, do nothing. */
+	if (PMSignalState == NULL || PostmasterPid == 0)
 		return;
 	/* Atomically set the proper flag */
 	PMSignalState->PMSignalFlags[reason] = true;
+	/*
+	 * Thread carriers run in the postmaster's process.  Waking the
+	 * postmaster with SIGUSR1 would signal the whole containing process, so
+	 * route notification through the postmaster latch instead.
+	 */
+	if (PostmasterPid == getpid())
+	{
+		PostmasterSignalPMSignal();
+		return;
+	}
+
 	/* Send signal to postmaster */
 	kill(PostmasterPid, SIGUSR1);
 }

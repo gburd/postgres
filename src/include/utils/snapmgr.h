@@ -14,20 +14,30 @@
 #define SNAPMGR_H
 
 #include "access/transam.h"
+#include "utils/global_lifetime.h"
 #include "utils/relcache.h"
 #include "utils/resowner.h"
 #include "utils/snapshot.h"
 
 
-extern PGDLLIMPORT bool FirstSnapshotSet;
+#ifndef PgCurrentFirstSnapshotSetRef
+extern bool *PgCurrentFirstSnapshotSetRef(void);
+#endif
+#ifndef PgCurrentTransactionXminRef
+extern TransactionId *PgCurrentTransactionXminRef(void);
+#endif
+#ifndef PgCurrentRecentXminRef
+extern TransactionId *PgCurrentRecentXminRef(void);
+#endif
 
-extern PGDLLIMPORT TransactionId TransactionXmin;
-extern PGDLLIMPORT TransactionId RecentXmin;
+#define FirstSnapshotSet (*PgCurrentFirstSnapshotSetRef())
+#define TransactionXmin (*PgCurrentTransactionXminRef())
+#define RecentXmin (*PgCurrentRecentXminRef())
 
 /* Variables representing various special snapshot semantics */
-extern PGDLLIMPORT SnapshotData SnapshotSelfData;
-extern PGDLLIMPORT SnapshotData SnapshotAnyData;
-extern PGDLLIMPORT SnapshotData SnapshotToastData;
+extern PGDLLIMPORT PG_GLOBAL_IMMUTABLE SnapshotData SnapshotSelfData;
+extern PGDLLIMPORT PG_GLOBAL_IMMUTABLE SnapshotData SnapshotAnyData;
+extern PGDLLIMPORT PG_GLOBAL_IMMUTABLE SnapshotData SnapshotToastData;
 
 #define SnapshotSelf		(&SnapshotSelfData)
 #define SnapshotAny			(&SnapshotAnyData)

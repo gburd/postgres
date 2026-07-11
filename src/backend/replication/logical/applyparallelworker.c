@@ -170,6 +170,7 @@
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
 #include "utils/syscache.h"
@@ -225,7 +226,8 @@ typedef struct ParallelApplyWorkerEntry
  * A hash table used to cache the state of streaming transactions being applied
  * by the parallel apply workers.
  */
-static HTAB *ParallelApplyTxnHash = NULL;
+#define ParallelApplyTxnHash \
+	(PgCurrentLogicalReplicationState()->parallel_apply_txn_hash)
 
 /*
  * A list (pool) of active parallel apply workers. The information for
@@ -234,29 +236,27 @@ static HTAB *ParallelApplyTxnHash = NULL;
  * pool at the end of the transaction. For more information about the worker
  * pool, see comments atop this file.
  */
-static List *ParallelApplyWorkerPool = NIL;
+#define ParallelApplyWorkerPool \
+	(PgCurrentLogicalReplicationState()->parallel_apply_worker_pool)
 
 /*
  * Information shared between leader apply worker and parallel apply worker.
  */
-ParallelApplyWorkerShared *MyParallelShared = NULL;
-
-/*
- * Is there a message sent by a parallel apply worker that the leader apply
- * worker needs to receive?
- */
-volatile sig_atomic_t ParallelApplyMessagePending = false;
-
 /*
  * Cache the parallel apply worker information required for applying the
  * current streaming transaction. It is used to save the cost of searching the
  * hash table when applying the changes between STREAM_START and STREAM_STOP.
  */
-static ParallelApplyWorkerInfo *stream_apply_worker = NULL;
+#define stream_apply_worker \
+	(PgCurrentLogicalReplicationState()->stream_apply_worker)
 
 /* A list to maintain subtransactions, if any. */
-static List *subxactlist = NIL;
+#define subxactlist \
+	(PgCurrentLogicalReplicationState()->parallel_apply_subxactlist)
+#define hpam_context \
+	(PgCurrentLogicalReplicationState()->parallel_apply_message_context)
 
+static bool ParallelApplyWorkerThreadedRuntime(void);
 static void pa_free_worker_info(ParallelApplyWorkerInfo *winfo);
 static ParallelTransState pa_get_xact_state(ParallelApplyWorkerShared *wshared);
 static PartialFileSetState pa_get_fileset_state(void);
@@ -715,6 +715,7 @@ pa_process_spooled_messages_if_required(void)
 static void
 ProcessParallelApplyInterrupts(void)
 {
+	PgCurrentBackendApplyInterrupts();
 	CHECK_FOR_INTERRUPTS();
 
 	if (ShutdownRequestPending)
@@ -723,14 +724,21 @@ ProcessParallelApplyInterrupts(void)
 				(errmsg("logical replication parallel apply worker for subscription \"%s\" has finished",
 						MySubscription->name)));
 
-		proc_exit(0);
+		PgBackendExit(0);
 	}
 
 	if (ConfigReloadPending)
 	{
 		ConfigReloadPending = false;
-		ProcessConfigFile(PGC_SIGHUP);
+		if (!ParallelApplyWorkerThreadedRuntime())
+			ProcessConfigFile(PGC_SIGHUP);
 	}
+}
+
+static bool
+ParallelApplyWorkerThreadedRuntime(void)
+{
+	return PgRuntimeIsThreadBacked(CurrentPgRuntime);
 }
 
 /* Parallel apply worker main loop. */
@@ -858,7 +866,7 @@ pa_shutdown(int code, Datum arg)
 {
 	SendProcSignal(MyLogicalRepWorker->leader_pid,
 				   PROCSIG_PARALLEL_APPLY_MESSAGE,
-				   INVALID_PROC_NUMBER);
+				   MyLogicalRepWorker->leader_procno);
 
 	dsm_detach((dsm_segment *) DatumGetPointer(arg));
 }
@@ -890,9 +898,12 @@ ParallelApplyWorkerMain(Datum main_arg)
 	 * from the case where we abort the current transaction and exit on
 	 * receiving SIGTERM.
 	 */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGUSR2, SignalHandlerForShutdownRequest);
-	BackgroundWorkerUnblockSignals();
+	if (!ParallelApplyWorkerThreadedRuntime())
+	{
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
+		pqsignal(SIGUSR2, SignalHandlerForShutdownRequest);
+		BackgroundWorkerUnblockSignals();
+	}
 
 	/*
 	 * Attach to the dynamic shared memory segment for the parallel apply, and
@@ -953,7 +964,7 @@ ParallelApplyWorkerMain(Datum main_arg)
 
 	pq_redirect_to_shm_mq(seg, error_mqh);
 	pq_set_parallel_leader(MyLogicalRepWorker->leader_pid,
-						   INVALID_PROC_NUMBER);
+						   MyLogicalRepWorker->leader_procno);
 
 	MyLogicalRepWorker->last_send_time = MyLogicalRepWorker->last_recv_time =
 		MyLogicalRepWorker->reply_time = 0;
@@ -1007,7 +1018,7 @@ ParallelApplyWorkerMain(Datum main_arg)
 void
 HandleParallelApplyMessageInterrupt(void)
 {
-	InterruptPending = true;
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_PARALLEL_APPLY_MESSAGE);
 	ParallelApplyMessagePending = true;
 	/* latch will be set by procsignal_sigusr1_handler */
 }
@@ -1083,8 +1094,6 @@ ProcessParallelApplyMessages(void)
 {
 	ListCell   *lc;
 	MemoryContext oldcontext;
-
-	static MemoryContext hpam_context = NULL;
 
 	/*
 	 * This is invoked from ProcessInterrupts(), and since some of the

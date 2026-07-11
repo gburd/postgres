@@ -17,6 +17,7 @@
 
 #include <ctype.h>
 #include <fcntl.h>
+#include <locale.h>
 #include <unistd.h>
 
 #include "access/genam.h"
@@ -59,8 +60,10 @@
 #include "tcop/backend_startup.h"
 #include "tcop/tcopprot.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/guc.h"
 #include "utils/guc_hooks.h"
 #include "utils/injection_point.h"
 #include "utils/memutils.h"
@@ -72,25 +75,23 @@
 #include "utils/timeout.h"
 
 /* has this backend called EmitConnectionWarnings()? */
-static bool ConnectionWarningsEmitted;
+#define ConnectionWarningsEmitted (*PgCurrentConnectionWarningsEmittedRef())
 
-typedef struct ConnectionWarning
-{
-	char	   *message;
-	char	   *detail;
-	ConnectionWarningFilter filter;
-} ConnectionWarning;
-
-/* warnings to send via EmitConnectionWarnings() */
-static List *ConnectionWarnings;
+/* content of warnings to send via EmitConnectionWarnings() */
+#define ConnectionWarningMessages (*PgCurrentConnectionWarningMessagesRef())
+#define ConnectionWarningDetails (*PgCurrentConnectionWarningDetailsRef())
+#define ConnectionWarningFilters (*PgCurrentConnectionWarningFiltersRef())
 
 static HeapTuple GetDatabaseTuple(const char *dbname);
 static HeapTuple GetDatabaseTupleByOid(Oid dboid);
 static void PerformAuthentication(Port *port);
-static void CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connections);
+static void CheckMyDatabase(const char *name, bool am_superuser,
+							bool override_allow_connections,
+							bool threaded_backend);
 static void ShutdownPostgres(int code, Datum arg);
 static void StatementTimeoutHandler(void);
 static void LockTimeoutHandler(void);
+static PgBackend *TimeoutTargetBackend(void);
 static void IdleInTransactionSessionTimeoutHandler(void);
 static void TransactionTimeoutHandler(void);
 static void IdleSessionTimeoutHandler(void);
@@ -99,6 +100,7 @@ static void ClientCheckTimeoutHandler(void);
 static bool ThereIsAtLeastOneRole(void);
 static void process_startup_options(Port *port, bool am_superuser);
 static void process_settings(Oid databaseid, Oid roleid);
+static MemoryContext ConnectionWarningMemoryContext(PgConnection *connection);
 static void EmitConnectionWarnings(void);
 
 
@@ -208,8 +210,11 @@ GetDatabaseTupleByOid(Oid dboid)
 static void
 PerformAuthentication(Port *port)
 {
+	bool		threaded_backend;
+
 	/* This should be set already, but let's make sure */
 	ClientAuthInProgress = true;	/* limit visibility of log messages */
+	threaded_backend = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 
 	/*
 	 * In EXEC_BACKEND case, we didn't inherit the contents of pg_hba.conf
@@ -257,9 +262,19 @@ PerformAuthentication(Port *port)
 	/*
 	 * Set up a timeout in case a buggy or malicious client fails to respond
 	 * during authentication.  Since we're inside a transaction and might do
-	 * database access, we have to use the statement_timeout infrastructure.
+	 * database access, process backends have to use the statement_timeout
+	 * infrastructure.  Threaded backends cannot arm process-global SIGALRM, so
+	 * they use the connection-local read deadline checked by secure_read().
 	 */
-	enable_timeout_after(STATEMENT_TIMEOUT, AuthenticationTimeout * 1000);
+	if (threaded_backend)
+	{
+		port->client_read_deadline_active = true;
+		port->client_read_deadline =
+			TimestampTzPlusMilliseconds(conn_timing.auth_start,
+										AuthenticationTimeout * 1000);
+	}
+	else
+		enable_timeout_after(STATEMENT_TIMEOUT, AuthenticationTimeout * 1000);
 
 	/*
 	 * Now perform authentication exchange.
@@ -270,7 +285,10 @@ PerformAuthentication(Port *port)
 	/*
 	 * Done with authentication.  Disable the timeout, and log if needed.
 	 */
-	disable_timeout(STATEMENT_TIMEOUT, false);
+	if (threaded_backend)
+		port->client_read_deadline_active = false;
+	else
+		disable_timeout(STATEMENT_TIMEOUT, false);
 
 	/* Capture authentication end time for logging */
 	conn_timing.auth_end = GetCurrentTimestamp();
@@ -289,9 +307,9 @@ PerformAuthentication(Port *port)
 		if (!am_walsender)
 			appendStringInfo(&logmsg, _(" database=%s"), port->database_name);
 
-		if (port->application_name != NULL)
+		if (port->startup_application_name != NULL)
 			appendStringInfo(&logmsg, _(" application_name=%s"),
-							 port->application_name);
+							 port->startup_application_name);
 
 #ifdef USE_SSL
 		if (port->ssl_in_use)
@@ -335,7 +353,9 @@ PerformAuthentication(Port *port)
  * CheckMyDatabase -- fetch information from the pg_database entry for our DB
  */
 static void
-CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connections)
+CheckMyDatabase(const char *name, bool am_superuser,
+				bool override_allow_connections,
+				bool threaded_backend)
 {
 	HeapTuple	tup;
 	Form_pg_database dbform;
@@ -438,7 +458,36 @@ CheckMyDatabase(const char *name, bool am_superuser, bool override_allow_connect
 	 * pg_locale_t.
 	 */
 
-	if (pg_perm_setlocale(LC_CTYPE, ctype) == NULL)
+	if (threaded_backend)
+	{
+		const char *current_ctype;
+		char		current_ctype_buf[LOCALE_NAME_BUFLEN];
+		bool		locale_locked;
+		bool		locale_matches;
+
+		locale_locked = pg_locale_lock();
+		current_ctype = setlocale(LC_CTYPE, NULL);
+		if (current_ctype != NULL)
+			strlcpy(current_ctype_buf, current_ctype,
+					sizeof(current_ctype_buf));
+		else
+			strlcpy(current_ctype_buf, "(null)", sizeof(current_ctype_buf));
+		locale_matches = (current_ctype != NULL &&
+						  strcmp(current_ctype, ctype) == 0);
+		pg_locale_unlock(locale_locked);
+
+		if (!locale_matches)
+			ereport(FATAL,
+					(errmsg("database locale is incompatible with threaded backend mode"),
+					 errdetail("The process LC_CTYPE is \"%s\", but database \"%s\" requires LC_CTYPE \"%s\".",
+							   current_ctype_buf,
+							   name,
+							   ctype),
+					 errhint("Threaded backend mode currently requires databases to use the postmaster's process LC_CTYPE.")));
+
+		SetMessageEncoding(GetDatabaseEncoding());
+	}
+	else if (pg_perm_setlocale(LC_CTYPE, ctype) == NULL)
 		ereport(FATAL,
 				(errmsg("database locale is incompatible with operating system"),
 				 errdetail("The database was initialized with LC_CTYPE \"%s\", "
@@ -623,6 +672,19 @@ BaseInit(void)
 {
 	Assert(MyProc != NULL);
 
+	if (CurrentPgRuntime == NULL ||
+		CurrentPgRuntime->kind == PG_RUNTIME_PROCESS)
+		InitializePgProcessRuntime();
+
+	/*
+	 * main() installs an early stack-depth base before the process runtime
+	 * exists.  Process runtime initialization owns PgCarrier state and clears
+	 * that early value, so reinstall it once the real carrier is current.
+	 */
+	(void) set_stack_base();
+
+	InitializeTransactionState();
+
 	/*
 	 * Initialize our input/output/debugging file descriptors.
 	 */
@@ -660,8 +722,21 @@ BaseInit(void)
 	InitTemporaryFileAccess();
 
 	/*
-	 * Initialize local buffers for WAL record construction, in case we ever
-	 * try to insert XLOG.
+	 * Initialize local buffers for WAL record construction.
+	 *
+	 * Process mode always does this eagerly.  The threaded runtime does too:
+	 * lazily creating the "WAL record construction" memory context on the first
+	 * XLogBeginInsert() is unsafe because that first insert can happen inside a
+	 * critical section, and MemoryContextCreate() forbids allocating there
+	 * (Assert(CritSectionCount == 0)).  A regular client backend (B_BACKEND) is
+	 * no exception: its very first WAL record can be heap_update()'s
+	 * lock-old-tuple record or a heap_insert()/heap_delete() record, all emitted
+	 * inside START_CRIT_SECTION().  Auxiliary and maintenance workers (the
+	 * checkpointer's shutdown checkpoint, an autovacuum worker's page-prune
+	 * record, etc.) have the same hazard.  So initialize eagerly for every
+	 * backend, matching process mode.  (A read-only idle pooled session retains
+	 * the small scratch context as a result; that is a cheap, bounded cost and
+	 * the deferral that avoided it was incorrect.)
 	 */
 	InitXLogInsert();
 
@@ -725,12 +800,14 @@ InitPostgres(const char *in_dbname, Oid dboid,
 			 char *out_dbname)
 {
 	bool		bootstrap = IsBootstrapProcessingMode();
+	bool		threaded_backend;
 	bool		am_superuser;
 	char	   *fullpath;
 	char		dbname[NAMEDATALEN];
 	int			nfree = 0;
 
 	elog(DEBUG3, "InitPostgres");
+	threaded_backend = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 
 	/*
 	 * Add my PGPROC struct to the ProcArray.
@@ -946,6 +1023,8 @@ InitPostgres(const char *in_dbname, Oid dboid,
 		/* normal multiuser case */
 		Assert(MyProcPort != NULL);
 		PerformAuthentication(MyProcPort);
+		if (threaded_backend)
+			InitializeThreadedSessionGUCOptions();
 		InitializeSessionUserId(username, useroid, false);
 		/* ensure that auth_method is actually valid, aka authn_id is not NULL */
 		if (MyClientConnectionInfo.authn_id)
@@ -1237,7 +1316,8 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	 */
 	if (!bootstrap)
 		CheckMyDatabase(dbname, am_superuser,
-						(flags & INIT_PG_OVERRIDE_ALLOW_CONNS) != 0);
+						(flags & INIT_PG_OVERRIDE_ALLOW_CONNS) != 0,
+						threaded_backend);
 
 	/*
 	 * Now process any command-line switches and any additional GUC variable
@@ -1280,7 +1360,18 @@ InitPostgres(const char *in_dbname, Oid dboid,
 
 	/* fill in the remainder of this entry in the PgBackendStatus array */
 	if (!bootstrap)
-		pgstat_bestart_final();
+	{
+		if (threaded_backend)
+		{
+			pgstat_bestart_final_status();
+			if (application_name)
+				pgstat_report_appname(application_name);
+			if (pgstat_tracks_backend_bktype(MyBackendType))
+				pgstat_create_backend(MyProcNumber);
+		}
+		else
+			pgstat_bestart_final();
+	}
 
 	/* close the transaction we started above */
 	if (!bootstrap)
@@ -1413,6 +1504,7 @@ ShutdownPostgres(int code, Datum arg)
 static void
 StatementTimeoutHandler(void)
 {
+	PgBackend  *target;
 	int			sig = SIGINT;
 
 	/*
@@ -1421,6 +1513,15 @@ StatementTimeoutHandler(void)
 	 */
 	if (ClientAuthInProgress)
 		sig = SIGTERM;
+
+	target = TimeoutTargetBackend();
+	if (sig == SIGTERM)
+		PgBackendRaiseProcDieInterrupt(target, 0, 0);
+	else
+		SendInterrupt(target, PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+
+	if (!PgBackendUsesProcessSignals(target))
+		return;
 
 #ifdef HAVE_SETSID
 	/* try to signal whole process group */
@@ -1435,6 +1536,13 @@ StatementTimeoutHandler(void)
 static void
 LockTimeoutHandler(void)
 {
+	PgBackend  *target = TimeoutTargetBackend();
+
+	SendInterrupt(target, PG_BACKEND_INTERRUPT_QUERY_CANCEL);
+
+	if (!PgBackendUsesProcessSignals(target))
+		return;
+
 #ifdef HAVE_SETSID
 	/* try to signal whole process group */
 	kill(-MyProcPid, SIGINT);
@@ -1442,44 +1550,51 @@ LockTimeoutHandler(void)
 	kill(MyProcPid, SIGINT);
 }
 
+static PgBackend *
+TimeoutTargetBackend(void)
+{
+	PgBackend  *target;
+
+	target = get_firing_timeout_target_backend();
+	if (target != NULL)
+		return target;
+
+	return CurrentPgBackend;
+}
+
 static void
 TransactionTimeoutHandler(void)
 {
-	TransactionTimeoutPending = true;
-	InterruptPending = true;
-	SetLatch(MyLatch);
+	SendInterrupt(TimeoutTargetBackend(),
+				  PG_BACKEND_INTERRUPT_TRANSACTION_TIMEOUT);
 }
 
 static void
 IdleInTransactionSessionTimeoutHandler(void)
 {
-	IdleInTransactionSessionTimeoutPending = true;
-	InterruptPending = true;
-	SetLatch(MyLatch);
+	SendInterrupt(TimeoutTargetBackend(),
+				  PG_BACKEND_INTERRUPT_IDLE_IN_TRANSACTION_SESSION_TIMEOUT);
 }
 
 static void
 IdleSessionTimeoutHandler(void)
 {
-	IdleSessionTimeoutPending = true;
-	InterruptPending = true;
-	SetLatch(MyLatch);
+	SendInterrupt(TimeoutTargetBackend(),
+				  PG_BACKEND_INTERRUPT_IDLE_SESSION_TIMEOUT);
 }
 
 static void
 IdleStatsUpdateTimeoutHandler(void)
 {
-	IdleStatsUpdateTimeoutPending = true;
-	InterruptPending = true;
-	SetLatch(MyLatch);
+	SendInterrupt(TimeoutTargetBackend(),
+				  PG_BACKEND_INTERRUPT_IDLE_STATS_UPDATE_TIMEOUT);
 }
 
 static void
 ClientCheckTimeoutHandler(void)
 {
-	CheckClientConnectionPending = true;
-	InterruptPending = true;
-	SetLatch(MyLatch);
+	SendInterrupt(TimeoutTargetBackend(),
+				  PG_BACKEND_INTERRUPT_CLIENT_CONNECTION_CHECK);
 }
 
 /*
@@ -1505,35 +1620,69 @@ ThereIsAtLeastOneRole(void)
 
 /*
  * Stores a warning message to be sent later via EmitConnectionWarnings().
- * Both msg and detail must be non-NULL.  If filter is non-NULL, it is called
- * just before the warning is emitted, after startup and role/database settings
- * have been applied.
- *
- * NB: Caller should ensure the strings are palloc'd in a long-lived context
- * like TopMemoryContext.  This function takes ownership of the strings, which
- * will be pfree'd in EmitConnectionWarnings().
+ * Both msg and detail must be non-NULL.  The strings are copied into
+ * connection-owned storage so queued warnings can be reclaimed if startup exits
+ * before EmitConnectionWarnings().  If filter is non-NULL, it is called just
+ * before the warning is emitted, after startup and role/database settings have
+ * been applied.
  */
 void
-StoreConnectionWarning(char *msg, char *detail, ConnectionWarningFilter filter)
+StoreConnectionWarningForConnection(PgConnection *connection,
+									const char *msg,
+									const char *detail,
+									ConnectionWarningFilter filter)
 {
 	MemoryContext oldcontext;
-	ConnectionWarning *warning;
+	PgConnectionStartupState *startup;
+	char	   *saved_msg;
+	char	   *saved_detail;
 
+	Assert(connection != NULL);
 	Assert(msg);
 	Assert(detail);
 
-	if (ConnectionWarningsEmitted)
+	startup = &connection->startup;
+	if (startup->connection_warnings_emitted)
 		elog(ERROR, "StoreConnectionWarning() called after EmitConnectionWarnings()");
 
-	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+	oldcontext = MemoryContextSwitchTo(ConnectionWarningMemoryContext(connection));
 
-	warning = palloc_object(ConnectionWarning);
-	warning->message = msg;
-	warning->detail = detail;
-	warning->filter = filter;
-	ConnectionWarnings = lappend(ConnectionWarnings, warning);
+	saved_msg = pstrdup(msg);
+	saved_detail = pstrdup(detail);
+
+	startup->connection_warning_messages =
+		lappend(startup->connection_warning_messages, saved_msg);
+	startup->connection_warning_details =
+		lappend(startup->connection_warning_details, saved_detail);
+	startup->connection_warning_filters =
+		lappend(startup->connection_warning_filters, (void *) filter);
 
 	MemoryContextSwitchTo(oldcontext);
+}
+
+void
+StoreConnectionWarning(const char *msg, const char *detail,
+					   ConnectionWarningFilter filter)
+{
+	StoreConnectionWarningForConnection(CurrentPgConnection, msg, detail,
+										filter);
+}
+
+static MemoryContext
+ConnectionWarningMemoryContext(PgConnection *connection)
+{
+	PgConnectionStartupState *startup;
+
+	Assert(connection != NULL);
+
+	startup = &connection->startup;
+	if (startup->connection_warning_context == NULL)
+		startup->connection_warning_context =
+			AllocSetContextCreate(TopMemoryContext,
+								  "connection warning state",
+								  ALLOCSET_SMALL_SIZES);
+
+	return startup->connection_warning_context;
 }
 
 /*
@@ -1545,23 +1694,38 @@ StoreConnectionWarning(char *msg, char *detail, ConnectionWarningFilter filter)
 static void
 EmitConnectionWarnings(void)
 {
+	ListCell   *lc_msg;
+	ListCell   *lc_detail;
+	ListCell   *lc_filter;
+
 	if (ConnectionWarningsEmitted)
 		elog(ERROR, "EmitConnectionWarnings() called more than once");
 	else
 		ConnectionWarningsEmitted = true;
 
-	foreach_ptr(ConnectionWarning, warning, ConnectionWarnings)
+	forthree(lc_msg, ConnectionWarningMessages,
+			 lc_detail, ConnectionWarningDetails,
+			 lc_filter, ConnectionWarningFilters)
 	{
-		if (warning->filter == NULL || warning->filter())
-			ereport(WARNING,
-					(errmsg("%s", warning->message),
-					 errdetail("%s", warning->detail)));
+		ConnectionWarningFilter filter =
+			(ConnectionWarningFilter) lfirst(lc_filter);
 
-		pfree(warning->message);
-		pfree(warning->detail);
-		pfree(warning);
+		if (filter == NULL || filter())
+			ereport(WARNING,
+					(errmsg("%s", (char *) lfirst(lc_msg)),
+					 errdetail("%s", (char *) lfirst(lc_detail))));
 	}
 
-	list_free(ConnectionWarnings);
-	ConnectionWarnings = NIL;
+	list_free_deep(ConnectionWarningMessages);
+	list_free_deep(ConnectionWarningDetails);
+	list_free(ConnectionWarningFilters);
+	ConnectionWarningMessages = NIL;
+	ConnectionWarningDetails = NIL;
+	ConnectionWarningFilters = NIL;
+
+	if (CurrentPgConnection->startup.connection_warning_context != NULL)
+	{
+		MemoryContextDelete(CurrentPgConnection->startup.connection_warning_context);
+		CurrentPgConnection->startup.connection_warning_context = NULL;
+	}
 }

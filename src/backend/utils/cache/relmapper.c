@@ -52,6 +52,7 @@
 #include "pgstat.h"
 #include "storage/fd.h"
 #include "storage/lwlock.h"
+#include "utils/backend_runtime.h"
 #include "utils/inval.h"
 #include "utils/relmapper.h"
 #include "utils/wait_event.h"
@@ -79,21 +80,10 @@
  * now, we just pick a round number that is modestly larger than the expected
  * number of mappings.
  */
-#define MAX_MAPPINGS			64
+#define MAX_MAPPINGS			PG_EXECUTION_RELMAPPER_MAX_MAPPINGS
 
-typedef struct RelMapping
-{
-	Oid			mapoid;			/* OID of a catalog */
-	RelFileNumber mapfilenumber;	/* its rel file number */
-} RelMapping;
-
-typedef struct RelMapFile
-{
-	int32		magic;			/* always RELMAPPER_FILEMAGIC */
-	int32		num_mappings;	/* number of valid RelMapping entries */
-	RelMapping	mappings[MAX_MAPPINGS];
-	pg_crc32c	crc;			/* CRC of all above */
-} RelMapFile;
+typedef PgExecutionRelMapping RelMapping;
+typedef PgExecutionRelMapFile RelMapFile;
 
 /*
  * State for serializing local and shared relmappings for parallel workers
@@ -101,8 +91,8 @@ typedef struct RelMapFile
  */
 typedef struct SerializedActiveRelMaps
 {
-	RelMapFile	active_shared_updates;
-	RelMapFile	active_local_updates;
+	RelMapFile	serialized_active_shared_updates;
+	RelMapFile	serialized_active_local_updates;
 } SerializedActiveRelMaps;
 
 /*
@@ -110,8 +100,8 @@ typedef struct SerializedActiveRelMaps
  * local map file are stored here.  These can be reloaded from disk
  * immediately whenever we receive an update sinval message.
  */
-static RelMapFile shared_map;
-static RelMapFile local_map;
+#define relmap_shared_map				(*PgCurrentRelMapSharedMapRef())
+#define relmap_local_map				(*PgCurrentRelMapLocalMapRef())
 
 /*
  * We use the same RelMapFile data structure to track uncommitted local
@@ -129,10 +119,10 @@ static RelMapFile local_map;
  * Active shared and active local updates are serialized by the parallel
  * infrastructure, and deserialized within parallel workers.
  */
-static RelMapFile active_shared_updates;
-static RelMapFile active_local_updates;
-static RelMapFile pending_shared_updates;
-static RelMapFile pending_local_updates;
+#define active_shared_updates	(*PgCurrentRelMapActiveSharedUpdatesRef())
+#define active_local_updates	(*PgCurrentRelMapActiveLocalUpdatesRef())
+#define pending_shared_updates	(*PgCurrentRelMapPendingSharedUpdatesRef())
+#define pending_local_updates	(*PgCurrentRelMapPendingLocalUpdatesRef())
 
 
 /* non-export function prototypes */
@@ -177,7 +167,7 @@ RelationMapOidToFilenumber(Oid relationId, bool shared)
 			if (relationId == map->mappings[i].mapoid)
 				return map->mappings[i].mapfilenumber;
 		}
-		map = &shared_map;
+		map = &relmap_shared_map;
 		for (i = 0; i < map->num_mappings; i++)
 		{
 			if (relationId == map->mappings[i].mapoid)
@@ -192,7 +182,7 @@ RelationMapOidToFilenumber(Oid relationId, bool shared)
 			if (relationId == map->mappings[i].mapoid)
 				return map->mappings[i].mapfilenumber;
 		}
-		map = &local_map;
+		map = &relmap_local_map;
 		for (i = 0; i < map->num_mappings; i++)
 		{
 			if (relationId == map->mappings[i].mapoid)
@@ -230,7 +220,7 @@ RelationMapFilenumberToOid(RelFileNumber filenumber, bool shared)
 			if (filenumber == map->mappings[i].mapfilenumber)
 				return map->mappings[i].mapoid;
 		}
-		map = &shared_map;
+		map = &relmap_shared_map;
 		for (i = 0; i < map->num_mappings; i++)
 		{
 			if (filenumber == map->mappings[i].mapfilenumber)
@@ -245,7 +235,7 @@ RelationMapFilenumberToOid(RelFileNumber filenumber, bool shared)
 			if (filenumber == map->mappings[i].mapfilenumber)
 				return map->mappings[i].mapoid;
 		}
-		map = &local_map;
+		map = &relmap_local_map;
 		for (i = 0; i < map->num_mappings; i++)
 		{
 			if (filenumber == map->mappings[i].mapfilenumber)
@@ -334,9 +324,9 @@ RelationMapUpdateMap(Oid relationId, RelFileNumber fileNumber, bool shared,
 		 * In bootstrap mode, the mapping gets installed in permanent map.
 		 */
 		if (shared)
-			map = &shared_map;
+			map = &relmap_shared_map;
 		else
-			map = &local_map;
+			map = &relmap_local_map;
 	}
 	else
 	{
@@ -470,12 +460,12 @@ RelationMapInvalidate(bool shared)
 {
 	if (shared)
 	{
-		if (shared_map.magic == RELMAPPER_FILEMAGIC)
+		if (relmap_shared_map.magic == RELMAPPER_FILEMAGIC)
 			load_relmap_file(true, false);
 	}
 	else
 	{
-		if (local_map.magic == RELMAPPER_FILEMAGIC)
+		if (relmap_local_map.magic == RELMAPPER_FILEMAGIC)
 			load_relmap_file(false, false);
 	}
 }
@@ -490,9 +480,9 @@ RelationMapInvalidate(bool shared)
 void
 RelationMapInvalidateAll(void)
 {
-	if (shared_map.magic == RELMAPPER_FILEMAGIC)
+	if (relmap_shared_map.magic == RELMAPPER_FILEMAGIC)
 		load_relmap_file(true, false);
-	if (local_map.magic == RELMAPPER_FILEMAGIC)
+	if (relmap_local_map.magic == RELMAPPER_FILEMAGIC)
 		load_relmap_file(false, false);
 }
 
@@ -635,9 +625,9 @@ RelationMapFinishBootstrap(void)
 
 	/* Write the files; no WAL or sinval needed */
 	LWLockAcquire(RelationMappingLock, LW_EXCLUSIVE);
-	write_relmap_file(&shared_map, false, false, false,
+	write_relmap_file(&relmap_shared_map, false, false, false,
 					  InvalidOid, GLOBALTABLESPACE_OID, "global");
-	write_relmap_file(&local_map, false, false, false,
+	write_relmap_file(&relmap_local_map, false, false, false,
 					  MyDatabaseId, MyDatabaseTableSpace, DatabasePath);
 	LWLockRelease(RelationMappingLock);
 }
@@ -652,10 +642,10 @@ void
 RelationMapInitialize(void)
 {
 	/* The static variables should initialize to zeroes, but let's be sure */
-	shared_map.magic = 0;		/* mark it not loaded */
-	local_map.magic = 0;
-	shared_map.num_mappings = 0;
-	local_map.num_mappings = 0;
+	relmap_shared_map.magic = 0;		/* mark it not loaded */
+	relmap_local_map.magic = 0;
+	relmap_shared_map.num_mappings = 0;
+	relmap_local_map.num_mappings = 0;
 	active_shared_updates.num_mappings = 0;
 	active_local_updates.num_mappings = 0;
 	pending_shared_updates.num_mappings = 0;
@@ -729,8 +719,8 @@ SerializeRelationMap(Size maxSize, char *startAddress)
 	Assert(maxSize >= EstimateRelationMapSpace());
 
 	relmaps = (SerializedActiveRelMaps *) startAddress;
-	relmaps->active_shared_updates = active_shared_updates;
-	relmaps->active_local_updates = active_local_updates;
+	relmaps->serialized_active_shared_updates = active_shared_updates;
+	relmaps->serialized_active_local_updates = active_local_updates;
 }
 
 /*
@@ -750,8 +740,8 @@ RestoreRelationMap(char *startAddress)
 		elog(ERROR, "parallel worker has existing mappings");
 
 	relmaps = (SerializedActiveRelMaps *) startAddress;
-	active_shared_updates = relmaps->active_shared_updates;
-	active_local_updates = relmaps->active_local_updates;
+	active_shared_updates = relmaps->serialized_active_shared_updates;
+	active_local_updates = relmaps->serialized_active_local_updates;
 }
 
 /*
@@ -766,9 +756,9 @@ static void
 load_relmap_file(bool shared, bool lock_held)
 {
 	if (shared)
-		read_relmap_file(&shared_map, "global", lock_held, FATAL);
+		read_relmap_file(&relmap_shared_map, "global", lock_held, FATAL);
 	else
-		read_relmap_file(&local_map, DatabasePath, lock_held, FATAL);
+		read_relmap_file(&relmap_local_map, DatabasePath, lock_held, FATAL);
 }
 
 /*
@@ -1061,9 +1051,9 @@ perform_relmap_update(bool shared, const RelMapFile *updates)
 
 	/* Prepare updated data in a local variable */
 	if (shared)
-		memcpy(&newmap, &shared_map, sizeof(RelMapFile));
+		memcpy(&newmap, &relmap_shared_map, sizeof(RelMapFile));
 	else
-		memcpy(&newmap, &local_map, sizeof(RelMapFile));
+		memcpy(&newmap, &relmap_local_map, sizeof(RelMapFile));
 
 	/*
 	 * Apply the updates to newmap.  No new mappings should appear, unless
@@ -1082,9 +1072,9 @@ perform_relmap_update(bool shared, const RelMapFile *updates)
 	 * new values in this process, too.
 	 */
 	if (shared)
-		memcpy(&shared_map, &newmap, sizeof(RelMapFile));
+		memcpy(&relmap_shared_map, &newmap, sizeof(RelMapFile));
 	else
-		memcpy(&local_map, &newmap, sizeof(RelMapFile));
+		memcpy(&relmap_local_map, &newmap, sizeof(RelMapFile));
 
 	/* Now we can release the lock */
 	LWLockRelease(RelationMappingLock);

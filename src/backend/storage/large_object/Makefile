@@ -13,6 +13,7 @@ top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
 OBJS = \
+	backend_runtime_large_object.o \
 	inv_api.o
 
 include $(top_srcdir)/src/backend/common.mk

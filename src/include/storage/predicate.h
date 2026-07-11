@@ -16,6 +16,7 @@
 
 #include "access/transam.h"
 #include "storage/itemptr.h"
+#include "utils/global_lifetime.h"
 #include "utils/relcache.h"
 #include "utils/snapshot.h"
 
@@ -28,9 +29,9 @@ typedef struct VirtualTransactionId VirtualTransactionId;
 /*
  * GUC variables
  */
-extern PGDLLIMPORT int max_predicate_locks_per_xact;
-extern PGDLLIMPORT int max_predicate_locks_per_relation;
-extern PGDLLIMPORT int max_predicate_locks_per_page;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_predicate_locks_per_xact;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_predicate_locks_per_relation;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_predicate_locks_per_page;
 
 /*
  * A handle used for sharing SERIALIZABLEXACT objects between the participants

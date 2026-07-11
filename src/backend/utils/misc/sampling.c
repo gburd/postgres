@@ -17,6 +17,7 @@
 
 #include <math.h>
 
+#include "utils/backend_runtime.h"
 #include "utils/sampling.h"
 
 
@@ -259,8 +260,8 @@ sampler_random_fract(pg_prng_state *randstate)
  * sampler_random_fract/reservoir_init_selection_state/reservoir_get_next_S,
  * except that a common random state is used across all callers.
  */
-static ReservoirStateData oldrs;
-static bool oldrs_initialized = false;
+#define oldrs (*PgCurrentSamplingOldReservoirRef())
+#define oldrs_initialized (*PgCurrentSamplingOldReservoirInitializedRef())
 
 double
 anl_random_fract(void)

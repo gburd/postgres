@@ -13,6 +13,8 @@
 #ifndef TOAST_COMPRESSION_H
 #define TOAST_COMPRESSION_H
 
+#include "utils/global_lifetime.h"
+
 /*
  * GUC support.
  *
@@ -20,7 +22,10 @@
  * but the value is one of the char values defined below, as they appear in
  * pg_attribute.attcompression, e.g. TOAST_PGLZ_COMPRESSION.
  */
-extern PGDLLIMPORT int default_toast_compression;
+#ifndef PgCurrentDefaultToastCompressionRef
+extern int *PgCurrentDefaultToastCompressionRef(void);
+#endif
+#define default_toast_compression (*PgCurrentDefaultToastCompressionRef())
 
 /*
  * Built-in compression method ID.  The toast compression header will store

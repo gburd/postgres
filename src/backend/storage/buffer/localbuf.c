@@ -23,6 +23,7 @@
 #include "storage/bufmgr.h"
 #include "storage/fd.h"
 #include "utils/guc_hooks.h"
+#include "utils/backend_runtime.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -42,18 +43,14 @@ typedef struct
 #define LocalBufHdrGetBlock(bufHdr) \
 	LocalBufferBlockPointers[-((bufHdr)->buf_id + 2)]
 
-int			NLocBuffer = 0;		/* until buffers are initialized */
-
-BufferDesc *LocalBufferDescriptors = NULL;
-Block	   *LocalBufferBlockPointers = NULL;
-int32	   *LocalRefCount = NULL;
-
-static int	nextFreeLocalBufId = 0;
-
-static HTAB *LocalBufHash = NULL;
-
-/* number of local buffers pinned at least once */
-static int	NLocalPinnedBuffers = 0;
+#define nextFreeLocalBufId (*PgCurrentNextFreeLocalBufIdRef())
+#define LocalBufHash (*PgCurrentLocalBufHashRef())
+#define NLocalPinnedBuffers (*PgCurrentNLocalPinnedBuffersRef())
+#define localBufferCurBlock (*PgCurrentLocalBufferCurBlockRef())
+#define localBufferNextBufInBlock (*PgCurrentLocalBufferNextBufInBlockRef())
+#define localBufferNumBufsInBlock (*PgCurrentLocalBufferNumBufsInBlockRef())
+#define localBufferTotalBufsAllocated (*PgCurrentLocalBufferTotalBufsAllocatedRef())
+#define LocalBufferContext (*PgCurrentLocalBufferContextRef())
 
 
 static void InitLocalBuffers(void);
@@ -924,17 +921,11 @@ check_temp_buffers(int *newval, void **extra, GucSource source)
 static Block
 GetLocalBufferStorage(void)
 {
-	static char *cur_block = NULL;
-	static int	next_buf_in_block = 0;
-	static int	num_bufs_in_block = 0;
-	static int	total_bufs_allocated = 0;
-	static MemoryContext LocalBufferContext = NULL;
-
 	char	   *this_buf;
 
-	Assert(total_bufs_allocated < NLocBuffer);
+	Assert(localBufferTotalBufsAllocated < NLocBuffer);
 
-	if (next_buf_in_block >= num_bufs_in_block)
+	if (localBufferNextBufInBlock >= localBufferNumBufsInBlock)
 	{
 		/* Need to make a new request to memmgr */
 		int			num_bufs;
@@ -946,31 +937,30 @@ GetLocalBufferStorage(void)
 		 */
 		if (LocalBufferContext == NULL)
 			LocalBufferContext =
-				AllocSetContextCreate(TopMemoryContext,
-									  "LocalBufferContext",
-									  ALLOCSET_DEFAULT_SIZES);
+				PgRuntimeGetOwnedMemoryContext(PgCurrentLocalBufferContextRef(),
+											   "LocalBufferContext");
 
 		/* Start with a 16-buffer request; subsequent ones double each time */
-		num_bufs = Max(num_bufs_in_block * 2, 16);
+		num_bufs = Max(localBufferNumBufsInBlock * 2, 16);
 		/* But not more than what we need for all remaining local bufs */
-		num_bufs = Min(num_bufs, NLocBuffer - total_bufs_allocated);
+		num_bufs = Min(num_bufs, NLocBuffer - localBufferTotalBufsAllocated);
 		/* And don't overflow MaxAllocSize, either */
 		num_bufs = Min(num_bufs, MaxAllocSize / BLCKSZ);
 
 		/* Buffers should be I/O aligned. */
-		cur_block = MemoryContextAllocAligned(LocalBufferContext,
-											  num_bufs * BLCKSZ,
-											  PG_IO_ALIGN_SIZE,
-											  0);
+		localBufferCurBlock = MemoryContextAllocAligned(LocalBufferContext,
+														num_bufs * BLCKSZ,
+														PG_IO_ALIGN_SIZE,
+														0);
 
-		next_buf_in_block = 0;
-		num_bufs_in_block = num_bufs;
+		localBufferNextBufInBlock = 0;
+		localBufferNumBufsInBlock = num_bufs;
 	}
 
 	/* Allocate next buffer in current memory block */
-	this_buf = cur_block + next_buf_in_block * BLCKSZ;
-	next_buf_in_block++;
-	total_bufs_allocated++;
+	this_buf = localBufferCurBlock + localBufferNextBufInBlock * BLCKSZ;
+	localBufferNextBufInBlock++;
+	localBufferTotalBufsAllocated++;
 
 	/*
 	 * Caller's PinLocalBuffer() was too early for Valgrind updates, so do it

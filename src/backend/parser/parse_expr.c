@@ -42,10 +42,6 @@
 #include "utils/typcache.h"
 #include "utils/xml.h"
 
-/* GUC parameters */
-bool		Transform_null_equals = false;
-
-
 static Node *transformExprRecurse(ParseState *pstate, Node *expr);
 static Node *transformParamRef(ParseState *pstate, ParamRef *pref);
 static Node *transformAExprOp(ParseState *pstate, A_Expr *a);

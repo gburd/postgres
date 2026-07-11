@@ -25,21 +25,40 @@
 #include "storage/lwlock.h"
 #include "storage/procnumber.h"
 #include "storage/shmem.h"
+#include "utils/global_lifetime.h"
 #include "utils/timestamp.h"
 
 /* struct PGPROC is declared in proc.h, but must forward-reference it */
 typedef struct PGPROC PGPROC;
 
 /* GUC variables */
-extern PGDLLIMPORT int max_locks_per_xact;
-extern PGDLLIMPORT bool log_lock_failures;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_locks_per_xact;
+#ifndef PgCurrentLogLockFailuresRef
+extern bool *PgCurrentLogLockFailuresRef(void);
+#endif
+#define log_lock_failures (*PgCurrentLogLockFailuresRef())
 
 #ifdef LOCK_DEBUG
-extern PGDLLIMPORT int Trace_lock_oidmin;
-extern PGDLLIMPORT bool Trace_locks;
-extern PGDLLIMPORT bool Trace_userlocks;
-extern PGDLLIMPORT int Trace_lock_table;
-extern PGDLLIMPORT bool Debug_deadlocks;
+#ifndef PgCurrentTraceLockOidMinRef
+extern int *PgCurrentTraceLockOidMinRef(void);
+#endif
+#ifndef PgCurrentTraceLocksRef
+extern bool *PgCurrentTraceLocksRef(void);
+#endif
+#ifndef PgCurrentTraceUserlocksRef
+extern bool *PgCurrentTraceUserlocksRef(void);
+#endif
+#ifndef PgCurrentTraceLockTableRef
+extern int *PgCurrentTraceLockTableRef(void);
+#endif
+#ifndef PgCurrentDebugDeadlocksRef
+extern bool *PgCurrentDebugDeadlocksRef(void);
+#endif
+#define Trace_lock_oidmin (*PgCurrentTraceLockOidMinRef())
+#define Trace_locks (*PgCurrentTraceLocksRef())
+#define Trace_userlocks (*PgCurrentTraceUserlocksRef())
+#define Trace_lock_table (*PgCurrentTraceLockTableRef())
+#define Debug_deadlocks (*PgCurrentDebugDeadlocksRef())
 #endif							/* LOCK_DEBUG */
 
 
@@ -441,6 +460,7 @@ extern void RememberSimpleDeadLock(PGPROC *proc1,
 								   LOCKMODE lockmode,
 								   LOCK *lock,
 								   PGPROC *proc2);
+extern void EnsureDeadLockCheckingWorkspace(void);
 extern void InitDeadLockChecking(void);
 
 extern int	LockWaiterCount(const LOCKTAG *locktag);

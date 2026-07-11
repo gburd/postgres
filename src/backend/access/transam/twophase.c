@@ -104,6 +104,7 @@
 #include "storage/procarray.h"
 #include "storage/subsystems.h"
 #include "utils/builtins.h"
+#include "utils/backend_runtime.h"
 #include "utils/injection_point.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
@@ -115,7 +116,7 @@
 #define TWOPHASE_DIR "pg_twophase"
 
 /* GUC variable, can't be changed after startup */
-int			max_prepared_xacts = 0;
+PG_GLOBAL_RUNTIME int max_prepared_xacts = 0;
 
 /*
  * This struct describes one global transaction that is in prepared state
@@ -188,7 +189,7 @@ typedef struct TwoPhaseStateData
 	GlobalTransaction prepXacts[FLEXIBLE_ARRAY_MEMBER];
 } TwoPhaseStateData;
 
-static TwoPhaseStateData *TwoPhaseState;
+static PG_GLOBAL_SHMEM TwoPhaseStateData *TwoPhaseState;
 
 static void TwoPhaseShmemRequest(void *arg);
 static void TwoPhaseShmemInit(void *arg);
@@ -204,9 +205,8 @@ const ShmemCallbacks TwoPhaseShmemCallbacks = {
  * TwoPhaseStateLock, though obviously the pointer itself doesn't need to be
  * (since it's just local memory).
  */
-static GlobalTransaction MyLockedGxact = NULL;
-
-static bool twophaseExitRegistered = false;
+#define MyLockedGxact (*(GlobalTransaction *) PgCurrentTwoPhaseLockedGxactRef())
+#define twophaseExitRegistered (*PgCurrentTwoPhaseExitRegisteredRef())
 
 static void PrepareRedoRemoveFull(FullTransactionId fxid, bool giveWarning);
 static void RecordTransactionCommitPrepared(TransactionId xid,
@@ -811,8 +811,9 @@ TwoPhaseGetGXact(FullTransactionId fxid, bool lock_held)
 	GlobalTransaction result = NULL;
 	int			i;
 
-	static FullTransactionId cached_fxid = {InvalidTransactionId};
-	static GlobalTransaction cached_gxact = NULL;
+	FullTransactionId *cached_fxid = PgCurrentTwoPhaseCachedFxidRef();
+	GlobalTransaction *cached_gxact =
+		(GlobalTransaction *) PgCurrentTwoPhaseCachedGxactRef();
 
 	Assert(!lock_held || LWLockHeldByMe(TwoPhaseStateLock));
 
@@ -820,8 +821,8 @@ TwoPhaseGetGXact(FullTransactionId fxid, bool lock_held)
 	 * During a recovery, COMMIT PREPARED, or ABORT PREPARED, we'll be called
 	 * repeatedly for the same XID.  We can save work with a simple cache.
 	 */
-	if (FullTransactionIdEquals(fxid, cached_fxid))
-		return cached_gxact;
+	if (FullTransactionIdEquals(fxid, *cached_fxid))
+		return *cached_gxact;
 
 	if (!lock_held)
 		LWLockAcquire(TwoPhaseStateLock, LW_SHARED);
@@ -844,8 +845,8 @@ TwoPhaseGetGXact(FullTransactionId fxid, bool lock_held)
 		elog(ERROR, "failed to find GlobalTransaction for xid %u",
 			 XidFromFullTransactionId(fxid));
 
-	cached_fxid = fxid;
-	cached_gxact = result;
+	*cached_fxid = fxid;
+	*cached_gxact = result;
 
 	return result;
 }
@@ -1008,14 +1009,7 @@ typedef struct StateFileChunk
 	struct StateFileChunk *next;
 } StateFileChunk;
 
-static struct xllist
-{
-	StateFileChunk *head;		/* first data block in the chain */
-	StateFileChunk *tail;		/* last block in chain */
-	uint32		num_chunks;
-	uint32		bytes_free;		/* free bytes left in tail block */
-	uint32		total_len;		/* total data bytes in chain */
-}			records;
+#define records					(*PgCurrentTwoPhaseRecordStateRef())
 
 
 /*

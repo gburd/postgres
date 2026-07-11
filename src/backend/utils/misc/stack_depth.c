@@ -19,20 +19,24 @@
 #include <sys/resource.h>
 
 #include "miscadmin.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc_hooks.h"
 
 
-/* GUC variable for maximum stack depth (measured in kilobytes) */
-int			max_stack_depth = 100;
-
 /* max_stack_depth converted to bytes for speed of checking */
-static ssize_t max_stack_depth_bytes = 100 * (ssize_t) 1024;
+#define max_stack_depth_bytes \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMaxStackDepthBytesHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentMaxStackDepthBytesRef))
 
 /*
  * Stack base pointer -- initialized by set_stack_base(), which
  * should be called from main().
  */
-static char *stack_base_ptr = NULL;
+#define stack_base_ptr \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentStackBasePtrHotRef, \
+									   CurrentPgCarrier, \
+									   PgCurrentStackBasePtrRef))
 
 
 /*

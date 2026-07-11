@@ -15,6 +15,7 @@
 #define PROCSIGNAL_H
 
 #include "storage/procnumber.h"
+#include "utils/backend_runtime.h"
 
 
 /*
@@ -64,7 +65,7 @@ typedef enum
  * incoming cancellation packets from clients, mustn't use this hardcoded
  * length.
  */
-#define MAX_CANCEL_KEY_LENGTH  32
+#define MAX_CANCEL_KEY_LENGTH  PG_CONNECTION_CANCEL_KEY_LENGTH
 
 /*
  * prototypes for functions in procsignal.c
@@ -72,6 +73,12 @@ typedef enum
 extern void ProcSignalInit(const uint8 *cancel_key, int cancel_key_len);
 extern int	SendProcSignal(pid_t pid, ProcSignalReason reason,
 						   ProcNumber procNumber);
+extern int	SendBackendInterrupt(int backend_pid,
+								 PgBackendInterruptType interrupt_type,
+								 int sender_pid, int sender_uid);
+extern bool ProcSignalBackendInterruptsPending(void);
+extern PgBackendInterruptMask ConsumeBackendInterruptsFromProcSignal(int *sender_pid,
+																	 int *sender_uid);
 extern void SendCancelRequest(int backendPID, const uint8 *cancel_key, int cancel_key_len);
 
 extern uint64 EmitProcSignalBarrier(ProcSignalBarrierType type);
@@ -84,7 +91,7 @@ extern void procsignal_sigusr1_handler(SIGNAL_ARGS);
 typedef struct ProcSignalHeader ProcSignalHeader;
 
 #ifdef EXEC_BACKEND
-extern PGDLLIMPORT ProcSignalHeader *ProcSignal;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM ProcSignalHeader *ProcSignal;
 #endif
 
 #endif							/* PROCSIGNAL_H */

@@ -54,10 +54,10 @@
 #include "utils/rel.h"
 
 
-/* GUC variables */
-#ifdef TRACE_SYNCSCAN
-bool		trace_syncscan = false;
-#endif
+/*
+ * GUC state now lives in PgSessionAccessWalGUCState.  The public name remains
+ * available through a compatibility macro in access/syncscan.h.
+ */
 
 
 /*
@@ -121,7 +121,7 @@ const ShmemCallbacks SyncScanShmemCallbacks = {
 };
 
 /* Pointer to struct in shared memory */
-static ss_scan_locations_t *scan_locations;
+static PG_GLOBAL_SHMEM ss_scan_locations_t *scan_locations;
 
 /* prototypes for internal functions */
 static BlockNumber ss_search(RelFileLocator relfilelocator,

@@ -44,6 +44,7 @@
 #define FD_H
 
 #include "port/pg_iovec.h"
+#include "utils/global_lifetime.h"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -67,16 +68,16 @@ enum FileExtendMethod
 #define DEFAULT_FILE_EXTEND_METHOD 0
 
 /* GUC parameter */
-extern PGDLLIMPORT int max_files_per_process;
-extern PGDLLIMPORT bool data_sync_retry;
-extern PGDLLIMPORT int recovery_init_sync_method;
-extern PGDLLIMPORT int io_direct_flags;
-extern PGDLLIMPORT int file_extend_method;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_files_per_process;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool data_sync_retry;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int recovery_init_sync_method;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int io_direct_flags;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int file_extend_method;
 
 /*
  * This is private to fd.c, but exported for save/restore_backend_variables()
  */
-extern PGDLLIMPORT int max_safe_fds;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_safe_fds;
 
 /*
  * On Windows, we have to interpret EACCES as possibly meaning the same as

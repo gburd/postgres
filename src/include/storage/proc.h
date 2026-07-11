@@ -23,6 +23,9 @@
 #include "storage/proclist_types.h"
 #include "storage/procnumber.h"
 #include "storage/spin.h"
+#include "utils/backend_id.h"
+#include "utils/backend_runtime_current.h"
+#include "utils/global_lifetime.h"
 
 /* Avoid including clog.h here */
 typedef int XidStatus;
@@ -88,7 +91,7 @@ struct XidCache
  * lock table.  This eases contention on the lock manager LWLocks.  See
  * storage/lmgr/README for additional details.
  */
-extern PGDLLIMPORT int FastPathLockGroupsPerBackend;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int FastPathLockGroupsPerBackend;
 
 /*
  * Define the maximum number of fast-path locking groups per backend.
@@ -201,6 +204,7 @@ typedef struct PGPROC
 	 * rarely
 	 */
 	int			pid;			/* Backend's process ID; 0 if prepared xact */
+	PgBackendId backendId;		/* logical backend ID; 0 if none assigned */
 	BackendType backendType;	/* what kind of process is this? */
 
 	/* These fields are zero while a backend is still starting up: */
@@ -385,7 +389,17 @@ typedef struct PGPROC
 }
 PGPROC;
 
-extern PGDLLIMPORT PGPROC *MyProc;
+extern PGPROC **(PgCurrentMyProcRef) (void);
+
+static inline PGPROC **
+PgCurrentMyProcRefFast(void)
+{
+	return PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMyProcHotRef,
+											CurrentPgBackend,
+											PgCurrentMyProcRef);
+}
+
+#define MyProc (*PgCurrentMyProcRefFast())
 
 /*
  * There is one ProcGlobal struct for the whole database cluster.
@@ -502,9 +516,9 @@ typedef struct PROC_HDR
 	int			startupBufferPinWaitBufId;
 } PROC_HDR;
 
-extern PGDLLIMPORT PROC_HDR *ProcGlobal;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM PROC_HDR *ProcGlobal;
 
-extern PGDLLIMPORT PGPROC *PreparedXactProcs;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM PGPROC *PreparedXactProcs;
 
 /*
  * Accessors for getting PGPROC given a ProcNumber and vice versa.
@@ -537,16 +551,37 @@ extern PGDLLIMPORT PGPROC *PreparedXactProcs;
 #define FIRST_PREPARED_XACT_PROC_NUMBER	(MaxBackends + NUM_AUXILIARY_PROCS)
 
 /* configurable options */
-extern PGDLLIMPORT int DeadlockTimeout;
-extern PGDLLIMPORT int StatementTimeout;
-extern PGDLLIMPORT int LockTimeout;
-extern PGDLLIMPORT int IdleInTransactionSessionTimeout;
-extern PGDLLIMPORT int TransactionTimeout;
-extern PGDLLIMPORT int IdleSessionTimeout;
-extern PGDLLIMPORT bool log_lock_waits;
+#ifndef PgCurrentDeadlockTimeoutRef
+extern int *PgCurrentDeadlockTimeoutRef(void);
+#endif
+#ifndef PgCurrentStatementTimeoutRef
+extern int *PgCurrentStatementTimeoutRef(void);
+#endif
+#ifndef PgCurrentLockTimeoutRef
+extern int *PgCurrentLockTimeoutRef(void);
+#endif
+#ifndef PgCurrentIdleInTransactionSessionTimeoutRef
+extern int *PgCurrentIdleInTransactionSessionTimeoutRef(void);
+#endif
+#ifndef PgCurrentTransactionTimeoutRef
+extern int *PgCurrentTransactionTimeoutRef(void);
+#endif
+#ifndef PgCurrentIdleSessionTimeoutRef
+extern int *PgCurrentIdleSessionTimeoutRef(void);
+#endif
+#ifndef PgCurrentLogLockWaitsRef
+extern bool *PgCurrentLogLockWaitsRef(void);
+#endif
+#define DeadlockTimeout (*PgCurrentDeadlockTimeoutRef())
+#define StatementTimeout (*PgCurrentStatementTimeoutRef())
+#define LockTimeout (*PgCurrentLockTimeoutRef())
+#define IdleInTransactionSessionTimeout (*PgCurrentIdleInTransactionSessionTimeoutRef())
+#define TransactionTimeout (*PgCurrentTransactionTimeoutRef())
+#define IdleSessionTimeout (*PgCurrentIdleSessionTimeoutRef())
+#define log_lock_waits (*PgCurrentLogLockWaitsRef())
 
 #ifdef EXEC_BACKEND
-extern PGDLLIMPORT PGPROC *AuxiliaryProcs;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM PGPROC *AuxiliaryProcs;
 #endif
 
 
@@ -577,9 +612,12 @@ extern void GetLockHoldersAndWaiters(LOCALLOCK *locallock,
 									 int *lockHoldersNum);
 
 extern void ProcWaitForSignal(uint32 wait_event_info);
+extern void ProcWaitOnSemaphore(PGPROC *proc, uint32 wait_event_info);
+extern void ProcWakeSemaphore(PGPROC *proc);
 extern void ProcSendSignal(ProcNumber procNumber);
 
 extern PGPROC *AuxiliaryPidGetProc(int pid);
+extern PGPROC *AuxiliarySignalPidGetProc(int pid);
 
 extern void BecomeLockGroupLeader(void);
 extern bool BecomeLockGroupMember(PGPROC *leader, int pid);

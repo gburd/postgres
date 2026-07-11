@@ -13,6 +13,7 @@
 #ifndef DSM_H
 #define DSM_H
 
+#include "lib/ilist.h"
 #include "storage/dsm_impl.h"
 
 typedef struct dsm_segment dsm_segment;
@@ -25,6 +26,10 @@ extern void dsm_cleanup_using_control_segment(dsm_handle old_control_handle);
 extern void dsm_postmaster_startup(PGShmemHeader *);
 extern void dsm_backend_shutdown(void);
 extern void dsm_detach_all(void);
+extern void PgBackendInitializeDsmSegmentList(dlist_head *dsm_segment_list);
+extern void PgBackendAdoptEarlyDsmSegmentList(dlist_head *dsm_segment_list);
+extern void PgBackendResetDsmSegmentList(dlist_head *dsm_segment_list);
+extern void PgBackendResetDsmStateAfterFork(void);
 
 #ifdef EXEC_BACKEND
 extern void dsm_set_control_handle(dsm_handle h);

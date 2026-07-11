@@ -20,10 +20,12 @@
 #include "access/xloginsert.h"
 #include "access/xlogutils.h"
 #include "storage/standby.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 
-static MemoryContext opCtx;		/* working memory for operations */
+#define opCtx \
+	(PgCurrentXLogState()->gist_xlog_op_context)
 
 /*
  * Replay the clearing of F_FOLLOW_RIGHT flag on a child page.
@@ -439,6 +441,7 @@ void
 gist_xlog_cleanup(void)
 {
 	MemoryContextDelete(opCtx);
+	opCtx = NULL;
 }
 
 /*

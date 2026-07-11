@@ -21,6 +21,7 @@
 #include "nodes/pg_list.h"
 #include "storage/relfilelocator.h"
 #include "storage/sinval.h"
+#include "utils/global_lifetime.h"
 
 /*
  * Maximum size of Global Transaction ID (including '\0').
@@ -38,8 +39,14 @@
 #define XACT_REPEATABLE_READ	2
 #define XACT_SERIALIZABLE		3
 
-extern PGDLLIMPORT int DefaultXactIsoLevel;
-extern PGDLLIMPORT int XactIsoLevel;
+#ifndef PgCurrentDefaultXactIsoLevelRef
+extern int *PgCurrentDefaultXactIsoLevelRef(void);
+#endif
+#define DefaultXactIsoLevel (*PgCurrentDefaultXactIsoLevelRef())
+#ifndef PgCurrentXactIsoLevelRef
+extern int *PgCurrentXactIsoLevelRef(void);
+#endif
+#define XactIsoLevel (*PgCurrentXactIsoLevelRef())
 
 /*
  * We implement three isolation levels internally.
@@ -53,18 +60,33 @@ extern PGDLLIMPORT int XactIsoLevel;
 #define IsolationIsSerializable() (XactIsoLevel == XACT_SERIALIZABLE)
 
 /* Xact read-only state */
-extern PGDLLIMPORT bool DefaultXactReadOnly;
-extern PGDLLIMPORT bool XactReadOnly;
+#ifndef PgCurrentDefaultXactReadOnlyRef
+extern bool *PgCurrentDefaultXactReadOnlyRef(void);
+#endif
+#define DefaultXactReadOnly (*PgCurrentDefaultXactReadOnlyRef())
+#ifndef PgCurrentXactReadOnlyRef
+extern bool *PgCurrentXactReadOnlyRef(void);
+#endif
+#define XactReadOnly (*PgCurrentXactReadOnlyRef())
 
 /* flag for logging statements in this transaction */
-extern PGDLLIMPORT bool xact_is_sampled;
+#ifndef PgCurrentXactIsSampledRef
+extern bool *PgCurrentXactIsSampledRef(void);
+#endif
+#define xact_is_sampled (*PgCurrentXactIsSampledRef())
 
 /*
  * Xact is deferrable -- only meaningful (currently) for read only
  * SERIALIZABLE transactions
  */
-extern PGDLLIMPORT bool DefaultXactDeferrable;
-extern PGDLLIMPORT bool XactDeferrable;
+#ifndef PgCurrentDefaultXactDeferrableRef
+extern bool *PgCurrentDefaultXactDeferrableRef(void);
+#endif
+#define DefaultXactDeferrable (*PgCurrentDefaultXactDeferrableRef())
+#ifndef PgCurrentXactDeferrableRef
+extern bool *PgCurrentXactDeferrableRef(void);
+#endif
+#define XactDeferrable (*PgCurrentXactDeferrableRef())
 
 typedef enum
 {
@@ -81,11 +103,20 @@ typedef enum
 #define SYNCHRONOUS_COMMIT_ON	SYNCHRONOUS_COMMIT_REMOTE_FLUSH
 
 /* Synchronous commit level */
-extern PGDLLIMPORT int synchronous_commit;
+#ifndef PgCurrentSynchronousCommitRef
+extern int *PgCurrentSynchronousCommitRef(void);
+#endif
+#define synchronous_commit (*PgCurrentSynchronousCommitRef())
 
 /* used during logical streaming of a transaction */
-extern PGDLLIMPORT TransactionId CheckXidAlive;
-extern PGDLLIMPORT bool bsysscan;
+#ifndef PgCurrentCheckXidAliveRef
+extern TransactionId *PgCurrentCheckXidAliveRef(void);
+#endif
+#ifndef PgCurrentBSysScanRef
+extern bool *PgCurrentBSysScanRef(void);
+#endif
+#define CheckXidAlive (*PgCurrentCheckXidAliveRef())
+#define bsysscan (*PgCurrentBSysScanRef())
 
 /*
  * Miscellaneous flag bits to record events which occur on the top level
@@ -94,7 +125,10 @@ extern PGDLLIMPORT bool bsysscan;
  * globally accessible, so can be set from anywhere in the code which requires
  * recording flags.
  */
-extern PGDLLIMPORT int MyXactFlags;
+#ifndef PgCurrentMyXactFlagsRef
+extern int *PgCurrentMyXactFlagsRef(void);
+#endif
+#define MyXactFlags (*PgCurrentMyXactFlagsRef())
 
 /*
  * XACT_FLAGS_ACCESSEDTEMPNAMESPACE - set when a temporary object is accessed.
@@ -496,6 +530,9 @@ extern void RegisterXactCallback(XactCallback callback, void *arg);
 extern void UnregisterXactCallback(XactCallback callback, void *arg);
 extern void RegisterSubXactCallback(SubXactCallback callback, void *arg);
 extern void UnregisterSubXactCallback(SubXactCallback callback, void *arg);
+extern void ResetXactCallbackState(void);
+
+extern void InitializeTransactionState(void);
 
 extern bool IsSubxactTopXidLogPending(void);
 extern void MarkSubxactTopXidLogged(void);

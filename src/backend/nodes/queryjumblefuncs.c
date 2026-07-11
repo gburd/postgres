@@ -50,9 +50,6 @@
 
 #define JUMBLE_SIZE				1024	/* query serialization buffer size */
 
-/* GUC parameters */
-int			compute_query_id = COMPUTE_QUERY_ID_AUTO;
-
 /*
  * True when compute_query_id is ON or AUTO, and a module requests them.
  *
@@ -60,7 +57,6 @@ int			compute_query_id = COMPUTE_QUERY_ID_AUTO;
  * query_id_enabled or compute_query_id directly when we want to know
  * whether query identifiers are computed in the core or not.
  */
-bool		query_id_enabled = false;
 
 static JumbleState *InitJumble(void);
 static int64 DoJumble(JumbleState *jstate, Node *node);

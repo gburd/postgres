@@ -31,7 +31,7 @@
 /*
  * String representations for the supported conflict logging destinations.
  */
-const char *const ConflictLogDestNames[] = {
+PG_GLOBAL_IMMUTABLE const char *const ConflictLogDestNames[] = {
 	[CONFLICT_LOG_DEST_LOG] = "log",
 	[CONFLICT_LOG_DEST_TABLE] = "table",
 	[CONFLICT_LOG_DEST_ALL] = "all"
@@ -64,7 +64,7 @@ typedef struct ConflictLogColumnDef
  * scalar columns (relid, conflict_type, commit timestamp) while these json
  * columns are per-conflict payload to inspect, not search keys.
  */
-static const ConflictLogColumnDef ConflictLogSchema[] = {
+static PG_GLOBAL_IMMUTABLE const ConflictLogColumnDef ConflictLogSchema[] = {
 	{.attname = "relid", .atttypid = OIDOID},
 	{.attname = "schemaname", .atttypid = TEXTOID},
 	{.attname = "relname", .atttypid = TEXTOID},
@@ -81,7 +81,7 @@ static const ConflictLogColumnDef ConflictLogSchema[] = {
 
 #define NUM_CONFLICT_ATTRS ((AttrNumber) lengthof(ConflictLogSchema))
 
-static const char *const ConflictTypeNames[] = {
+static PG_GLOBAL_IMMUTABLE const char *const ConflictTypeNames[] = {
 	[CT_INSERT_EXISTS] = "insert_exists",
 	[CT_UPDATE_ORIGIN_DIFFERS] = "update_origin_differs",
 	[CT_UPDATE_EXISTS] = "update_exists",

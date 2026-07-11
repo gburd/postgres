@@ -27,10 +27,10 @@
 #include "utils/timestamp.h"
 
 /* Threshold for password expiration warnings. */
-int			password_expiration_warning_threshold = 604800;
+PG_GLOBAL_RUNTIME int password_expiration_warning_threshold = 604800;
 
 /* Enables deprecation warnings for MD5 passwords. */
-bool		md5_password_warnings = true;
+PG_GLOBAL_RUNTIME bool md5_password_warnings = true;
 
 /*
  * Fetch stored password for a user, for authentication.
@@ -103,20 +103,17 @@ get_role_password(const char *role, const char **logdetail)
 		 */
 		if (expire_time / USECS_PER_SEC < password_expiration_warning_threshold)
 		{
-			MemoryContext oldcontext;
 			int			days;
 			int			hours;
 			int			minutes;
-			char	   *warning;
+			const char *warning;
 			char	   *detail;
-
-			oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 
 			days = expire_time / USECS_PER_DAY;
 			hours = (expire_time % USECS_PER_DAY) / USECS_PER_HOUR;
 			minutes = (expire_time % USECS_PER_HOUR) / USECS_PER_MINUTE;
 
-			warning = pstrdup(_("role password will expire soon"));
+			warning = _("role password will expire soon");
 
 			if (days > 0)
 				detail = psprintf(ngettext("The password for role \"%s\" will expire in %d day.",
@@ -138,8 +135,7 @@ get_role_password(const char *role, const char **logdetail)
 								  role);
 
 			StoreConnectionWarning(warning, detail, NULL);
-
-			MemoryContextSwitchTo(oldcontext);
+			pfree(detail);
 		}
 	}
 
@@ -295,7 +291,9 @@ md5_crypt_verify(const char *role, const char *shadow_pass,
 
 	if (strlen(client_pass) == strlen(crypt_pwd) &&
 		timingsafe_bcmp(client_pass, crypt_pwd, strlen(crypt_pwd)) == 0)
+	{
 		retval = STATUS_OK;
+	}
 	else
 	{
 		*logdetail = psprintf(_("Password does not match for user \"%s\"."),

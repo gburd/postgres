@@ -25,6 +25,7 @@
 #define PG_SHMEM_H
 
 #include "storage/dsm_impl.h"
+#include "utils/global_lifetime.h"
 
 typedef struct PGShmemHeader	/* standard header for all Postgres shmem */
 {
@@ -42,10 +43,10 @@ typedef struct PGShmemHeader	/* standard header for all Postgres shmem */
 } PGShmemHeader;
 
 /* GUC variables */
-extern PGDLLIMPORT int shared_memory_type;
-extern PGDLLIMPORT int huge_pages;
-extern PGDLLIMPORT int huge_page_size;
-extern PGDLLIMPORT int huge_pages_status;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int shared_memory_type;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int huge_pages;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int huge_page_size;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int huge_pages_status;
 
 /* Possible values for huge_pages and huge_pages_status */
 typedef enum
@@ -65,12 +66,12 @@ typedef enum
 }			PGShmemType;
 
 #ifndef WIN32
-extern PGDLLIMPORT unsigned long UsedShmemSegID;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM unsigned long UsedShmemSegID;
 #else
-extern PGDLLIMPORT HANDLE UsedShmemSegID;
-extern PGDLLIMPORT void *ShmemProtectiveRegion;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM HANDLE UsedShmemSegID;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM void *ShmemProtectiveRegion;
 #endif
-extern PGDLLIMPORT void *UsedShmemSegAddr;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM void *UsedShmemSegAddr;
 
 #if !defined(WIN32) && !defined(EXEC_BACKEND)
 #define DEFAULT_SHARED_MEMORY_TYPE SHMEM_TYPE_MMAP

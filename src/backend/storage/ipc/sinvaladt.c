@@ -26,6 +26,7 @@
 #include "storage/sinvaladt.h"
 #include "storage/spin.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 
 /*
  * Conceptually, the shared cache invalidation messages are stored in an
@@ -204,7 +205,8 @@ typedef struct SISeg
  */
 #define NumProcStateSlots	(MaxBackends + NUM_AUXILIARY_PROCS)
 
-static SISeg *shmInvalBuffer;	/* pointer to the shared inval buffer */
+/* Pointer to the shared inval buffer. */
+static PG_GLOBAL_SHMEM SISeg *shmInvalBuffer;
 
 static void SharedInvalShmemRequest(void *arg);
 static void SharedInvalShmemInit(void *arg);
@@ -215,7 +217,7 @@ const ShmemCallbacks SharedInvalShmemCallbacks = {
 };
 
 
-static LocalTransactionId nextLocalTransactionId;
+#define nextLocalTransactionId (*PgCurrentNextLocalTransactionIdRef())
 
 static void CleanupInvalidationState(int status, Datum arg);
 

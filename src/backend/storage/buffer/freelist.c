@@ -56,7 +56,7 @@ typedef struct
 } BufferStrategyControl;
 
 /* Pointers to shared state */
-static BufferStrategyControl *StrategyControl = NULL;
+static PG_GLOBAL_SHMEM BufferStrategyControl *StrategyControl = NULL;
 
 static void StrategyCtlShmemRequest(void *arg);
 static void StrategyCtlShmemInit(void *arg);

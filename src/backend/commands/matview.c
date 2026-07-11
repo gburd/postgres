@@ -35,6 +35,7 @@
 #include "rewrite/rewriteHandler.h"
 #include "storage/lmgr.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -53,7 +54,7 @@ typedef struct
 	BulkInsertState bistate;	/* bulk insert state */
 } DR_transientrel;
 
-static int	matview_maintenance_depth = 0;
+#define matview_maintenance_depth (*PgCurrentMatViewMaintenanceDepthRef())
 
 static void transientrel_startup(DestReceiver *self, int operation, TupleDesc typeinfo);
 static bool transientrel_receive(TupleTableSlot *slot, DestReceiver *self);

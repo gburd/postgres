@@ -32,7 +32,7 @@
 #include "utils/varlena.h"
 
 /* GUC */
-char	   *oauth_validator_libraries_string = NULL;
+PG_GLOBAL_RUNTIME char *oauth_validator_libraries_string = NULL;
 
 static void oauth_get_mechanisms(Port *port, StringInfo buf);
 static void *oauth_init(Port *port, const char *selected_mech, const char *shadow_pass);
@@ -43,12 +43,12 @@ static void load_validator_library(const char *libname);
 static void shutdown_validator_library(void *arg);
 static bool check_validator_hba_options(Port *port, const char **logdetail);
 
-static ValidatorModuleState *validator_module_state;
-static const OAuthValidatorCallbacks *ValidatorCallbacks;
+static PG_GLOBAL_RUNTIME ValidatorModuleState *validator_module_state;
+static PG_GLOBAL_RUNTIME const OAuthValidatorCallbacks *ValidatorCallbacks;
 
-static MemoryContext ValidatorMemoryContext;
-static List *ValidatorOptions;
-static bool ValidatorOptionsChecked;
+static PG_GLOBAL_RUNTIME MemoryContext ValidatorMemoryContext;
+static PG_GLOBAL_RUNTIME List *ValidatorOptions;
+static PG_GLOBAL_RUNTIME bool ValidatorOptionsChecked;
 
 /* Mechanism declaration */
 const pg_be_sasl_mech pg_be_oauth_mech = {
@@ -375,7 +375,7 @@ validate_kvpair(const char *key, const char *val)
 	 * From Sec 3.1:
 	 *     key            = 1*(ALPHA)
 	 */
-	static const char *key_allowed_set =
+	static PG_GLOBAL_IMMUTABLE const char *const key_allowed_set =
 		"abcdefghijklmnopqrstuvwxyz"
 		"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
@@ -602,7 +602,7 @@ validate_token_format(const char *header)
 {
 	size_t		span;
 	const char *token;
-	static const char *const b64token_allowed_set =
+	static PG_GLOBAL_IMMUTABLE const char *const b64token_allowed_set =
 		"abcdefghijklmnopqrstuvwxyz"
 		"ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 		"0123456789-._~+/";
@@ -1010,7 +1010,7 @@ valid_oauth_hba_option_name(const char *name)
 	 * obviously fine, and it's difficult to argue against the punctuation
 	 * that's already included in some HBA option names and identifiers.
 	 */
-	static const char *name_allowed_set =
+	static PG_GLOBAL_IMMUTABLE const char *const name_allowed_set =
 		"abcdefghijklmnopqrstuvwxyz"
 		"ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 		"0123456789_-";

@@ -18,10 +18,9 @@
 #include "miscadmin.h"
 #include "storage/latch.h"
 #include "storage/sinvaladt.h"
+#include "utils/backend_runtime.h"
 #include "utils/inval.h"
-
-
-uint64		SharedInvalidMessageCounter;
+#include "utils/memutils.h"
 
 
 /*
@@ -36,7 +35,20 @@ uint64		SharedInvalidMessageCounter;
  * interrupted while doing so, ProcessClientReadInterrupt() will call
  * ProcessCatchupEvent().
  */
-volatile sig_atomic_t catchupInterruptPending = false;
+
+#define MAXINVALMSGS 32
+#define sinvalMessages \
+	(*(SharedInvalidationMessage **) PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentSharedInvalidationMessagesHotRef, \
+																	  CurrentPgBackend, \
+																	  PgCurrentSharedInvalidationMessagesRef))
+#define nextmsg \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentSharedInvalidationNextMsgHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentSharedInvalidationNextMsgRef))
+#define nummsgs \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentSharedInvalidationNumMsgsHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentSharedInvalidationNumMsgsRef))
 
 
 /*
@@ -69,20 +81,23 @@ void
 ReceiveSharedInvalidMessages(void (*invalFunction) (SharedInvalidationMessage *msg),
 							 void (*resetFunction) (void))
 {
-#define MAXINVALMSGS 32
-	static SharedInvalidationMessage messages[MAXINVALMSGS];
+	if (sinvalMessages == NULL)
+	{
+		MemoryContext context;
 
-	/*
-	 * We use volatile here to prevent bugs if a compiler doesn't realize that
-	 * recursion is a possibility ...
-	 */
-	static volatile int nextmsg = 0;
-	static volatile int nummsgs = 0;
+		context = TopMemoryContext != NULL ? TopMemoryContext : CurrentMemoryContext;
+		if (context == NULL)
+			elog(ERROR, "cannot allocate sinval message buffer before memory contexts exist");
+
+		sinvalMessages = MemoryContextAllocZero(context,
+											   sizeof(SharedInvalidationMessage) *
+											   MAXINVALMSGS);
+	}
 
 	/* Deal with any messages still pending from an outer recursion */
 	while (nextmsg < nummsgs)
 	{
-		SharedInvalidationMessage msg = messages[nextmsg++];
+		SharedInvalidationMessage msg = sinvalMessages[nextmsg++];
 
 		SharedInvalidMessageCounter++;
 		invalFunction(&msg);
@@ -95,7 +110,7 @@ ReceiveSharedInvalidMessages(void (*invalFunction) (SharedInvalidationMessage *m
 		nextmsg = nummsgs = 0;
 
 		/* Try to get some more messages */
-		getResult = SIGetDataEntries(messages, MAXINVALMSGS);
+		getResult = SIGetDataEntries(sinvalMessages, MAXINVALMSGS);
 
 		if (getResult < 0)
 		{
@@ -112,7 +127,7 @@ ReceiveSharedInvalidMessages(void (*invalFunction) (SharedInvalidationMessage *m
 
 		while (nextmsg < nummsgs)
 		{
-			SharedInvalidationMessage msg = messages[nextmsg++];
+			SharedInvalidationMessage msg = sinvalMessages[nextmsg++];
 
 			SharedInvalidMessageCounter++;
 			invalFunction(&msg);
@@ -158,6 +173,7 @@ HandleCatchupInterrupt(void)
 	 * you do here.
 	 */
 
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_CATCHUP);
 	catchupInterruptPending = true;
 
 	/* latch will be set by procsignal_sigusr1_handler */

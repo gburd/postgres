@@ -2,6 +2,7 @@
 
 backend_sources += files(
   'appendinfo.c',
+  'backend_runtime_optimizer.c',
   'clauses.c',
   'extendplan.c',
   'inherit.c',

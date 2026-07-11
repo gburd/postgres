@@ -34,7 +34,7 @@
 #include "regex/regguts.h"
 
 /* unknown-error explanation */
-static const char unk[] = "*** unknown regex error code 0x%x ***";
+static PG_GLOBAL_IMMUTABLE const char unk[] = "*** unknown regex error code 0x%x ***";
 
 /* struct to map among codes, code names, and explanations */
 static const struct rerr

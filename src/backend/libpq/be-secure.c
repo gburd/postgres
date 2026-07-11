@@ -32,37 +32,34 @@
 #include "storage/latch.h"
 #include "tcop/tcopprot.h"
 #include "utils/injection_point.h"
+#include "utils/timestamp.h"
 #include "utils/wait_event.h"
 
-char	   *ssl_library;
-char	   *ssl_cert_file;
-char	   *ssl_key_file;
-char	   *ssl_ca_file;
-char	   *ssl_crl_file;
-char	   *ssl_crl_dir;
-char	   *ssl_dh_params_file;
-char	   *ssl_passphrase_command;
-bool		ssl_passphrase_command_supports_reload;
-
-#ifdef USE_SSL
-bool		ssl_loaded_verify_locations = false;
-#endif
+PG_GLOBAL_RUNTIME char *ssl_library;
+PG_GLOBAL_RUNTIME char *ssl_cert_file;
+PG_GLOBAL_RUNTIME char *ssl_key_file;
+PG_GLOBAL_RUNTIME char *ssl_ca_file;
+PG_GLOBAL_RUNTIME char *ssl_crl_file;
+PG_GLOBAL_RUNTIME char *ssl_crl_dir;
+PG_GLOBAL_RUNTIME char *ssl_dh_params_file;
+PG_GLOBAL_RUNTIME char *ssl_passphrase_command;
+PG_GLOBAL_RUNTIME bool ssl_passphrase_command_supports_reload;
 
 /* GUC variable controlling SSL cipher list */
-char	   *SSLCipherSuites = NULL;
-char	   *SSLCipherList = NULL;
+PG_GLOBAL_RUNTIME char *SSLCipherSuites = NULL;
+PG_GLOBAL_RUNTIME char *SSLCipherList = NULL;
 
 /* GUC variable for default ECDH curve. */
-char	   *SSLECDHCurve;
+PG_GLOBAL_RUNTIME char *SSLECDHCurve;
 
 /* GUC variable: if false, prefer client ciphers */
-bool		SSLPreferServerCiphers;
+PG_GLOBAL_RUNTIME bool SSLPreferServerCiphers;
 
-int			ssl_min_protocol_version = PG_TLS1_2_VERSION;
-int			ssl_max_protocol_version = PG_TLS_ANY;
+PG_GLOBAL_RUNTIME int ssl_min_protocol_version = PG_TLS1_2_VERSION;
+PG_GLOBAL_RUNTIME int ssl_max_protocol_version = PG_TLS_ANY;
 
 /* GUC variable: if false, discards hostname extensions in handshake */
-bool		ssl_sni = false;
+PG_GLOBAL_RUNTIME bool ssl_sni = false;
 
 /* ------------------------------------------------------------ */
 /*			 Procedures common to all secure sessions			*/
@@ -184,6 +181,7 @@ secure_read(Port *port, void *ptr, size_t len)
 {
 	ssize_t		n;
 	int			waitfor;
+	long		timeout = -1;
 
 	/* Deal with any already-pending interrupt condition. */
 	ProcessClientReadInterrupt(false);
@@ -219,8 +217,28 @@ retry:
 
 		ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetSocketPos, waitfor, NULL);
 
-		WaitEventSetWait(FeBeWaitSet, -1 /* no timeout */ , &event, 1,
-						 WAIT_EVENT_CLIENT_READ);
+		if (port->client_read_deadline_active)
+		{
+			TimestampTz now = GetCurrentTimestamp();
+
+			if (now >= port->client_read_deadline)
+			{
+				errno = ETIMEDOUT;
+				return -1;
+			}
+
+			timeout = TimestampDifferenceMilliseconds(now,
+													  port->client_read_deadline);
+			if (timeout < 0)
+				timeout = 0;
+		}
+
+		if (WaitEventSetWait(FeBeWaitSet, timeout, &event, 1,
+							 WAIT_EVENT_CLIENT_READ) == 0)
+		{
+			errno = ETIMEDOUT;
+			return -1;
+		}
 
 		/*
 		 * If the postmaster has died, it's not safe to continue running,

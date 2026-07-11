@@ -84,6 +84,7 @@
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc_hooks.h"
 #include "utils/memutils.h"
 #include "utils/pg_locale.h"
@@ -96,11 +97,6 @@
 #define _(x) err_gettext(x)
 
 
-/* Global variables */
-ErrorContextCallback *error_context_stack = NULL;
-
-sigjmp_buf *PG_exception_stack = NULL;
-
 /*
  * Hook for intercepting messages before they are sent to the server log.
  * Note that the hook will not get called for messages that are suppressed
@@ -108,18 +104,20 @@ sigjmp_buf *PG_exception_stack = NULL;
  * libraries will miss any log messages that are generated before the
  * library is loaded.
  */
-emit_log_hook_type emit_log_hook = NULL;
+PG_GLOBAL_RUNTIME emit_log_hook_type emit_log_hook = NULL;
 
 /* GUC parameters */
-int			Log_error_verbosity = PGERROR_DEFAULT;
-char	   *Log_line_prefix = NULL; /* format for extra log line info */
-int			Log_destination = LOG_DESTINATION_STDERR;
-char	   *Log_destination_string = NULL;
-bool		syslog_sequence_numbers = true;
-bool		syslog_split_messages = true;
+PG_GLOBAL_RUNTIME char *Log_line_prefix = NULL;	/* format for extra log line info */
+PG_GLOBAL_RUNTIME int Log_destination = LOG_DESTINATION_STDERR;
+PG_GLOBAL_RUNTIME char *Log_destination_string = NULL;
+PG_GLOBAL_RUNTIME bool syslog_sequence_numbers = true;
+PG_GLOBAL_RUNTIME bool syslog_split_messages = true;
 
 /* Processed form of backtrace_functions GUC */
-static char *backtrace_function_list;
+#ifndef PgCurrentBacktraceFunctionListRef
+extern char **PgCurrentBacktraceFunctionListRef(void);
+#endif
+#define backtrace_function_list (*PgCurrentBacktraceFunctionListRef())
 
 #ifdef HAVE_SYSLOG
 
@@ -134,9 +132,9 @@ static char *backtrace_function_list;
 #define PG_SYSLOG_LIMIT 900
 #endif
 
-static bool openlog_done = false;
-static char *syslog_ident = NULL;
-static int	syslog_facility = LOG_LOCAL0;
+static PG_GLOBAL_RUNTIME bool openlog_done = false;
+static PG_GLOBAL_RUNTIME char *syslog_ident = NULL;
+static PG_GLOBAL_RUNTIME int syslog_facility = LOG_LOCAL0;
 
 static void write_syslog(int level, const char *line);
 #endif
@@ -146,29 +144,26 @@ static void write_eventlog(int level, const char *line, int len);
 #endif
 
 #ifdef _MSC_VER
-static bool backtrace_symbols_initialized = false;
-static HANDLE backtrace_process = NULL;
+static PG_GLOBAL_RUNTIME bool backtrace_symbols_initialized = false;
+static PG_GLOBAL_RUNTIME HANDLE backtrace_process = NULL;
 #endif
 
 /* We provide a small stack of ErrorData records for re-entrant cases */
-#define ERRORDATA_STACK_SIZE  5
-
-static ErrorData errordata[ERRORDATA_STACK_SIZE];
-
-static int	errordata_stack_depth = -1; /* index of topmost active frame */
-
-static int	recursion_depth = 0;	/* to detect actual recursion */
+#define ERRORDATA_STACK_SIZE PG_EXECUTION_ERRORDATA_STACK_SIZE
+#define errordata (PgCurrentErrorDataArray())
+#define errordata_stack_depth (*PgCurrentErrorDataStackDepthRef())
+#define recursion_depth (*PgCurrentErrorRecursionDepthRef())
 
 /*
  * Saved timeval and buffers for formatted timestamps that might be used by
  * log_line_prefix, csv logs and JSON logs.
  */
-static struct timeval saved_timeval;
-static bool saved_timeval_set = false;
+/* These values are cached for the duration of one error report. */
+#define saved_timeval (*PgCurrentSavedTimevalRef())
+#define saved_timeval_set (*PgCurrentSavedTimevalSetRef())
 
-#define FORMATTED_TS_LEN 128
-static char formatted_start_time[FORMATTED_TS_LEN];
-static char formatted_log_time[FORMATTED_TS_LEN];
+#define FORMATTED_TS_LEN PG_BACKEND_FORMATTED_TS_LEN
+#define formatted_log_time (PgCurrentFormattedLogTime())
 
 
 /* Macro for checking errordata_stack_depth is reasonable */
@@ -388,7 +383,7 @@ errstart(int elevel, const char *domain)
 		{
 			if (PG_exception_stack == NULL ||
 				ExitOnAnyError ||
-				proc_exit_inprogress)
+				PgBackendExitInProgress())
 				elevel = FATAL;
 		}
 
@@ -577,7 +572,8 @@ errfinish(const char *filename, int lineno, const char *funcname)
 	if (elevel == FATAL || elevel == FATAL_CLIENT_ONLY)
 	{
 		/*
-		 * For a FATAL error, we let proc_exit clean up and exit.
+		 * For a FATAL error, we let PgBackendExit clean up and exit the
+		 * current logical backend.
 		 *
 		 * If we just reported a startup failure, the client will disconnect
 		 * on receiving it, so don't send any more to the client.
@@ -587,7 +583,8 @@ errfinish(const char *filename, int lineno, const char *funcname)
 
 		/*
 		 * fflush here is just to improve the odds that we get to see the
-		 * error message, in case things are so hosed that proc_exit crashes.
+		 * error message, in case things are so hosed that backend exit
+		 * cleanup crashes.
 		 * Any other code you might be tempted to add here should probably be
 		 * in an on_proc_exit or on_shmem_exit callback instead.
 		 */
@@ -601,11 +598,12 @@ errfinish(const char *filename, int lineno, const char *funcname)
 			pgStatSessionEndCause = DISCONNECT_FATAL;
 
 		/*
-		 * Do normal process-exit cleanup, then return exit code 1 to indicate
-		 * FATAL termination.  The postmaster may or may not consider this
-		 * worthy of panic, depending on which subprocess returns it.
+		 * Do normal backend-exit cleanup, then return exit code 1 in process
+		 * mode to indicate FATAL termination.  The postmaster may or may not
+		 * consider this worthy of panic, depending on which subprocess
+		 * returns it.
 		 */
-		proc_exit(1);
+		PgBackendExit(1);
 	}
 
 	if (elevel >= PANIC)
@@ -1834,8 +1832,8 @@ getinternalerrposition(void)
  * The result of format_elog_string() is stored in ErrorContext, and will
  * therefore survive until FlushErrorState() is called.
  */
-static int	save_format_errnumber;
-static const char *save_format_domain;
+#define save_format_errnumber (*PgCurrentFormatErrnumberRef())
+#define save_format_domain (*PgCurrentFormatDomainRef())
 
 void
 pre_format_elog_string(int errnumber, const char *domain)
@@ -2807,7 +2805,7 @@ assign_syslog_facility(int newval, void *extra)
 static void
 write_syslog(int level, const char *line)
 {
-	static unsigned long seq = 0;
+	static PG_GLOBAL_RUNTIME unsigned long seq = 0;
 
 	int			len;
 	const char *nlpos;
@@ -3143,6 +3141,8 @@ get_formatted_log_time(void)
 void
 reset_formatted_start_time(void)
 {
+	char	   *formatted_start_time = PgCurrentFormattedStartTimeBuffer();
+
 	formatted_start_time[0] = '\0';
 }
 
@@ -3156,6 +3156,7 @@ char *
 get_formatted_start_time(void)
 {
 	pg_time_t	stamp_time = (pg_time_t) MyStartTime;
+	char	   *formatted_start_time = PgCurrentFormattedStartTimeBuffer();
 
 	/* leave if already computed */
 	if (formatted_start_time[0] != '\0')
@@ -3269,11 +3270,8 @@ log_line_prefix(StringInfo buf, ErrorData *edata)
 void
 log_status_format(StringInfo buf, const char *format, ErrorData *edata)
 {
-	/* static counter for line numbers */
-	static long log_line_number = 0;
-
-	/* has counter been reset in current process? */
-	static int	log_my_pid = 0;
+	long	   *log_line_number = PgCurrentLogLineNumberRef();
+	int		   *log_my_pid = PgCurrentLogLinePidRef();
 	int			padding;
 	const char *p;
 
@@ -3283,13 +3281,13 @@ log_status_format(StringInfo buf, const char *format, ErrorData *edata)
 	 * MyProcPid changes. MyStartTime also changes when MyProcPid does, so
 	 * reset the formatted start timestamp too.
 	 */
-	if (log_my_pid != MyProcPid)
+	if (*log_my_pid != MyProcPid)
 	{
-		log_line_number = 0;
-		log_my_pid = MyProcPid;
+		*log_line_number = 0;
+		*log_my_pid = MyProcPid;
 		reset_formatted_start_time();
 	}
-	log_line_number++;
+	(*log_line_number)++;
 
 	if (format == NULL)
 		return;					/* in case guc hasn't run yet */
@@ -3439,9 +3437,9 @@ log_status_format(StringInfo buf, const char *format, ErrorData *edata)
 
 			case 'l':
 				if (padding != 0)
-					appendStringInfo(buf, "%*ld", padding, log_line_number);
+					appendStringInfo(buf, "%*ld", padding, *log_line_number);
 				else
-					appendStringInfo(buf, "%ld", log_line_number);
+					appendStringInfo(buf, "%ld", *log_line_number);
 				break;
 			case 'm':
 				/* force a log timestamp reset */
@@ -3649,12 +3647,12 @@ log_status_format(StringInfo buf, const char *format, ErrorData *edata)
 
 /*
  * Unpack MAKE_SQLSTATE code. Note that this returns a pointer to a
- * static buffer.
+ * thread-local static buffer.
  */
 char *
 unpack_sql_state(int sql_state)
 {
-	static char buf[12];
+	static PG_THREAD_LOCAL char buf[12];
 	int			i;
 
 	for (i = 0; i < 5; i++)

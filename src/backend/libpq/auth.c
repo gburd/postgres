@@ -109,16 +109,17 @@ static int	pam_passwd_conv_proc(int num_msg,
 								 PG_PAM_CONST struct pam_message **msg,
 								 struct pam_response **resp, void *appdata_ptr);
 
-static struct pam_conv pam_passw_conv = {
-	&pam_passwd_conv_proc,
-	NULL
-};
+/* Workaround for Solaris 2.6 brokenness. */
+#define pam_passwd \
+	(PgCurrentConnectionSecurityStateRef()->pam_password)
 
-static const char *pam_passwd = NULL;	/* Workaround for Solaris 2.6
-										 * brokenness */
-static Port *pam_port_cludge;	/* Workaround for passing "Port *port" into
-								 * pam_passwd_conv_proc */
-static bool pam_no_password;	/* For detecting no-password-given */
+/* Workaround for passing "Port *port" into pam_passwd_conv_proc. */
+#define pam_port_cludge \
+	(PgCurrentConnectionSecurityStateRef()->pam_port)
+
+/* For detecting no-password-given. */
+#define pam_no_password \
+	(PgCurrentConnectionSecurityStateRef()->pam_no_password)
 #endif							/* USE_PAM */
 
 
@@ -156,7 +157,7 @@ static int	CheckLDAPAuth(Port *port);
 
 /* Default LDAP password mutator hook, can be overridden by a shared library */
 static char *dummy_ldap_password_mutator(char *input);
-auth_password_hook_typ ldap_password_hook = dummy_ldap_password_mutator;
+PG_GLOBAL_RUNTIME auth_password_hook_typ ldap_password_hook = dummy_ldap_password_mutator;
 
 #endif							/* USE_LDAP */
 
@@ -173,9 +174,9 @@ static int	CheckCertAuth(Port *port);
  * Kerberos and GSSAPI GUCs
  *----------------------------------------------------------------
  */
-char	   *pg_krb_server_keyfile;
-bool		pg_krb_caseins_users;
-bool		pg_gss_accept_delegation;
+PG_GLOBAL_RUNTIME char *pg_krb_server_keyfile;
+PG_GLOBAL_RUNTIME bool pg_krb_caseins_users;
+PG_GLOBAL_RUNTIME bool pg_gss_accept_delegation;
 
 
 /*----------------------------------------------------------------
@@ -216,7 +217,7 @@ static int	pg_SSPI_make_upn(char *accountname,
  * but before the user has been informed about the results.  It could be used
  * to record login events, insert a delay after failed authentication, etc.
  */
-ClientAuthentication_hook_type ClientAuthentication_hook = NULL;
+PG_GLOBAL_RUNTIME ClientAuthentication_hook_type ClientAuthentication_hook = NULL;
 
 /*
  * Tell the user the authentication failed, but not (much about) why.
@@ -252,7 +253,7 @@ auth_failed(Port *port, int elevel, int status, const char *logdetail)
 	 * events.)
 	 */
 	if (status == STATUS_EOF)
-		proc_exit(0);
+		PgBackendExit(0);
 
 	switch (port->hba->auth_method)
 	{
@@ -330,9 +331,9 @@ auth_failed(Port *port, int elevel, int status, const char *logdetail)
  * successfully authenticated, even if they have reasons to know that
  * authorization will fail later.
  *
- * The provided string will be copied into TopMemoryContext, to match the
- * lifetime of MyClientConnectionInfo, so it is safe to pass a string that is
- * managed by an external library.
+ * The provided string will be copied into the Port context, to match the
+ * connection lifetime of MyClientConnectionInfo, so it is safe to pass a
+ * string that is managed by an external library.
  */
 void
 set_authn_id(Port *port, const char *id)
@@ -353,8 +354,10 @@ set_authn_id(Port *port, const char *id)
 							   MyClientConnectionInfo.authn_id, id)));
 	}
 
-	MyClientConnectionInfo.authn_id = MemoryContextStrdup(TopMemoryContext, id);
+	MyClientConnectionInfo.authn_id =
+		MemoryContextStrdup(GetMemoryChunkContext(port), id);
 	MyClientConnectionInfo.auth_method = port->hba->auth_method;
+	*PgCurrentClientConnectionInfoAuthnIdOwnedRef() = false;
 
 	if (log_connections & LOG_CONNECTION_AUTHENTICATION)
 	{
@@ -549,7 +552,7 @@ ClientAuthentication(Port *port)
 			/* We might or might not have the gss workspace already */
 			if (port->gss == NULL)
 				port->gss = (pg_gssinfo *)
-					MemoryContextAllocZero(TopMemoryContext,
+					MemoryContextAllocZero(GetMemoryChunkContext(port),
 										   sizeof(pg_gssinfo));
 			port->gss->auth = true;
 
@@ -573,7 +576,7 @@ ClientAuthentication(Port *port)
 #ifdef ENABLE_SSPI
 			if (port->gss == NULL)
 				port->gss = (pg_gssinfo *)
-					MemoryContextAllocZero(TopMemoryContext,
+					MemoryContextAllocZero(GetMemoryChunkContext(port),
 										   sizeof(pg_gssinfo));
 			sendAuthRequest(port, AUTH_REQ_SSPI, NULL, 0);
 			status = pg_SSPI_recvauth(port);
@@ -936,17 +939,14 @@ md5_password_warning_enabled(void)
 static void
 queue_md5_password_warning(void)
 {
-	MemoryContext oldcontext;
-	char	   *warning;
-	char	   *detail;
-
-	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
-
-	warning = pstrdup(_("authenticated with an MD5-encrypted password"));
-	detail = pstrdup(_("MD5 password support is deprecated and will be removed in a future release of PostgreSQL."));
-	StoreConnectionWarning(warning, detail, md5_password_warning_enabled);
-
-	MemoryContextSwitchTo(oldcontext);
+	/*
+	 * StoreConnectionWarning() copies the strings into connection-owned
+	 * storage, so pass the gettext strings directly; no ownership transfer
+	 * or TopMemoryContext switch is needed.
+	 */
+	StoreConnectionWarning(_("authenticated with an MD5-encrypted password"),
+						   _("MD5 password support is deprecated and will be removed in a future release of PostgreSQL."),
+						   md5_password_warning_enabled);
 }
 
 
@@ -1147,7 +1147,7 @@ pg_GSS_checkauth(Port *port)
 	 * waiting for the usermap check below, because authentication has already
 	 * succeeded and we want the log file to reflect that.
 	 */
-	port->gss->princ = MemoryContextStrdup(TopMemoryContext, princ);
+	port->gss->princ = MemoryContextStrdup(GetMemoryChunkContext(port), princ);
 	set_authn_id(port, princ);
 
 	/*
@@ -2077,23 +2077,19 @@ CheckPAMAuth(Port *port, const char *user, const char *password)
 {
 	int			retval;
 	pam_handle_t *pamh = NULL;
+	struct pam_conv pam_passw_conv = {
+		&pam_passwd_conv_proc,
+		unconstify(char *, password)
+	};
 
 	/*
 	 * We can't entirely rely on PAM to pass through appdata --- it appears
-	 * not to work on at least Solaris 2.6.  So use these ugly static
-	 * variables instead.
+	 * not to work on at least Solaris 2.6.  So use these compatibility
+	 * fields instead.
 	 */
 	pam_passwd = password;
 	pam_port_cludge = port;
 	pam_no_password = false;
-
-	/*
-	 * Set the application data portion of the conversation struct.  This is
-	 * later used inside the PAM conversation to pass the password to the
-	 * authentication module.
-	 */
-	pam_passw_conv.appdata_ptr = unconstify(char *, password);	/* from password above,
-																 * not allocated */
 
 	/* Optionally, one can set the service name in pg_hba.conf */
 	if (port->hba->pamservice && port->hba->pamservice[0] != '\0')

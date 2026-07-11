@@ -21,6 +21,7 @@
 #include "commands/trigger.h"
 #include "tcop/cmdtag.h"
 #include "utils/array.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
 #include "utils/evtcache.h"
@@ -43,9 +44,9 @@ typedef struct
 	List	   *triggerlist;
 } EventTriggerCacheEntry;
 
-static HTAB *EventTriggerCache;
-static MemoryContext EventTriggerCacheContext;
-static EventTriggerCacheStateType EventTriggerCacheState = ETCS_NEEDS_REBUILD;
+#define EventTriggerCache (*PgCurrentEventTriggerCacheRef())
+#define EventTriggerCacheContext (*PgCurrentEventTriggerCacheContextRef())
+#define EventTriggerCacheState (*PgCurrentEventTriggerCacheStateRef())
 
 static void BuildEventTriggerCache(void);
 static void InvalidateEventCacheCallback(Datum arg,

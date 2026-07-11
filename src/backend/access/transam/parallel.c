@@ -39,6 +39,7 @@
 #include "storage/proc.h"
 #include "storage/spin.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/combocid.h"
 #include "utils/guc.h"
 #include "utils/inval.h"
@@ -109,27 +110,22 @@ typedef struct FixedParallelState
 } FixedParallelState;
 
 /*
- * Our parallel worker number.  We initialize this to -1, meaning that we are
- * not a parallel worker.  In parallel workers, it will be set to a value >= 0
- * and < the number of workers before any user code is invoked; each parallel
- * worker will get a different parallel worker number.
+ * ParallelWorkerNumber, ParallelMessagePending, and
+ * InitializingParallelWorker are runtime-backed lvalue macros declared in
+ * parallel.h.
  */
-int			ParallelWorkerNumber = -1;
-
-/* Is there a parallel message pending which we need to receive? */
-volatile sig_atomic_t ParallelMessagePending = false;
-
-/* Are we initializing a parallel worker? */
-bool		InitializingParallelWorker = false;
 
 /* Pointer to our fixed parallel state. */
-static FixedParallelState *MyFixedParallelState;
+#define MyFixedParallelState \
+	(*(FixedParallelState **) PgCurrentFixedParallelStateRef())
 
 /* List of active parallel contexts. */
-static dlist_head pcxt_list = DLIST_STATIC_INIT(pcxt_list);
+#define pcxt_list (*PgCurrentParallelContextListRef())
+#define pcxt_list_initialized (*PgCurrentParallelContextListInitializedRef())
 
 /* Backend-local copy of data from FixedParallelState. */
-static pid_t ParallelLeaderPid;
+#define ParallelLeaderPid (*PgCurrentParallelLeaderPidRef())
+#define hpm_context (*PgCurrentParallelMessageContextRef())
 
 /*
  * List of internal parallel worker entry points.  We need this for
@@ -164,6 +160,19 @@ static void ProcessParallelMessage(ParallelContext *pcxt, int i, StringInfo msg)
 static void WaitForParallelWorkersToExit(ParallelContext *pcxt);
 static parallel_worker_main_type LookupParallelWorkerFunction(const char *libraryname, const char *funcname);
 static void ParallelWorkerShutdown(int code, Datum arg);
+static dlist_head *ParallelContextList(void);
+
+static dlist_head *
+ParallelContextList(void)
+{
+	if (!pcxt_list_initialized)
+	{
+		dlist_init(&pcxt_list);
+		pcxt_list_initialized = true;
+	}
+
+	return &pcxt_list;
+}
 
 
 /*
@@ -194,9 +203,9 @@ CreateParallelContext(const char *library_name, const char *function_name,
 	pcxt->nworkers_to_launch = nworkers;
 	pcxt->library_name = pstrdup(library_name);
 	pcxt->function_name = pstrdup(function_name);
-	pcxt->error_context_stack = error_context_stack;
+	pcxt->saved_error_context_stack = error_context_stack;
 	shm_toc_initialize_estimator(&pcxt->estimator);
-	dlist_push_head(&pcxt_list, &pcxt->node);
+	dlist_push_head(ParallelContextList(), &pcxt->node);
 
 	/* Restore previous memory context. */
 	MemoryContextSwitchTo(oldcontext);
@@ -603,17 +612,18 @@ LaunchParallelWorkers(ParallelContext *pcxt)
 	/* Configure a worker. */
 	memset(&worker, 0, sizeof(worker));
 	snprintf(worker.bgw_name, BGW_MAXLEN, "parallel worker for PID %d",
-			 MyProcPid);
+			 PgCurrentBackendSignalPid());
 	snprintf(worker.bgw_type, BGW_MAXLEN, "parallel worker");
 	worker.bgw_flags =
 		BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION
 		| BGWORKER_CLASS_PARALLEL;
+	worker.bgw_backend_model = BgWorkerBackendThreadPerSession;
 	worker.bgw_start_time = BgWorkerStart_ConsistentState;
 	worker.bgw_restart_time = BGW_NEVER_RESTART;
 	sprintf(worker.bgw_library_name, "postgres");
 	sprintf(worker.bgw_function_name, "ParallelWorkerMain");
 	worker.bgw_main_arg = UInt32GetDatum(dsm_segment_handle(pcxt->seg));
-	worker.bgw_notify_pid = MyProcPid;
+	worker.bgw_notify_pid = PgCurrentBackendSignalPid();
 
 	/*
 	 * Start workers.
@@ -1032,7 +1042,7 @@ DestroyParallelContext(ParallelContext *pcxt)
 bool
 ParallelContextActive(void)
 {
-	return !dlist_is_empty(&pcxt_list);
+	return !dlist_is_empty(ParallelContextList());
 }
 
 /*
@@ -1045,7 +1055,7 @@ ParallelContextActive(void)
 void
 HandleParallelMessageInterrupt(void)
 {
-	InterruptPending = true;
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_PARALLEL_MESSAGE);
 	ParallelMessagePending = true;
 	/* latch will be set by procsignal_sigusr1_handler */
 }
@@ -1058,8 +1068,6 @@ ProcessParallelMessages(void)
 {
 	dlist_iter	iter;
 	MemoryContext oldcontext;
-
-	static MemoryContext hpm_context = NULL;
 
 	/*
 	 * This is invoked from ProcessInterrupts(), and since some of the
@@ -1087,7 +1095,7 @@ ProcessParallelMessages(void)
 	/* OK to process messages.  Reset the flag saying there are more to do. */
 	ParallelMessagePending = false;
 
-	dlist_foreach(iter, &pcxt_list)
+	dlist_foreach(iter, ParallelContextList())
 	{
 		ParallelContext *pcxt;
 		int			i;
@@ -1193,7 +1201,7 @@ ProcessParallelMessage(ParallelContext *pcxt, int i, StringInfo msg)
 				 * not the current ones.
 				 */
 				save_error_context_stack = error_context_stack;
-				error_context_stack = pcxt->error_context_stack;
+				error_context_stack = pcxt->saved_error_context_stack;
 
 				/* Rethrow error or print notice. */
 				ThrowErrorData(&edata);
@@ -1262,11 +1270,12 @@ ProcessParallelMessage(ParallelContext *pcxt, int i, StringInfo msg)
 void
 AtEOSubXact_Parallel(bool isCommit, SubTransactionId mySubId)
 {
-	while (!dlist_is_empty(&pcxt_list))
+	while (!dlist_is_empty(ParallelContextList()))
 	{
 		ParallelContext *pcxt;
 
-		pcxt = dlist_head_element(ParallelContext, node, &pcxt_list);
+		pcxt = dlist_head_element(ParallelContext, node,
+								  ParallelContextList());
 		if (pcxt->subid != mySubId)
 			break;
 		if (isCommit)
@@ -1283,11 +1292,12 @@ AtEOSubXact_Parallel(bool isCommit, SubTransactionId mySubId)
 void
 AtEOXact_Parallel(bool isCommit)
 {
-	while (!dlist_is_empty(&pcxt_list))
+	while (!dlist_is_empty(ParallelContextList()))
 	{
 		ParallelContext *pcxt;
 
-		pcxt = dlist_head_element(ParallelContext, node, &pcxt_list);
+		pcxt = dlist_head_element(ParallelContext, node,
+								  ParallelContextList());
 		if (isCommit)
 			elog(WARNING, "leaked parallel context");
 		DestroyParallelContext(pcxt);
@@ -1336,9 +1346,9 @@ ParallelWorkerMain(Datum main_arg)
 	memcpy(&ParallelWorkerNumber, MyBgworkerEntry->bgw_extra, sizeof(int));
 
 	/* Set up a memory context to work in, just for cleanliness. */
-	CurrentMemoryContext = AllocSetContextCreate(TopMemoryContext,
-												 "Parallel worker",
-												 ALLOCSET_DEFAULT_SIZES);
+	MemoryContextSwitchTo(AllocSetContextCreate(TopMemoryContext,
+												"Parallel worker",
+												ALLOCSET_DEFAULT_SIZES));
 
 	/*
 	 * Attach to the dynamic shared memory segment for the parallel query, and

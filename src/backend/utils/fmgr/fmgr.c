@@ -28,6 +28,7 @@
 #include "nodes/nodeFuncs.h"
 #include "pgstat.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/fmgrtab.h"
 #include "utils/guc.h"
@@ -38,8 +39,8 @@
 /*
  * Hooks for function calls
  */
-PGDLLIMPORT needs_fmgr_hook_type needs_fmgr_hook = NULL;
-PGDLLIMPORT fmgr_hook_type fmgr_hook = NULL;
+PGDLLIMPORT PG_GLOBAL_RUNTIME needs_fmgr_hook_type needs_fmgr_hook = NULL;
+PGDLLIMPORT PG_GLOBAL_RUNTIME fmgr_hook_type fmgr_hook = NULL;
 
 /*
  * Hashtable for fast lookup of external C functions
@@ -54,7 +55,7 @@ typedef struct
 	const Pg_finfo_record *inforec; /* address of its info record */
 } CFuncHashTabEntry;
 
-static HTAB *CFuncHash = NULL;
+#define CFuncHash (*PgCurrentCFuncHashRef())
 
 
 static void fmgr_info_cxt_security(Oid functionId, FmgrInfo *finfo, MemoryContext mcxt,
@@ -552,10 +553,11 @@ record_C_func(HeapTuple procedureTuple,
 
 		hash_ctl.keysize = sizeof(Oid);
 		hash_ctl.entrysize = sizeof(CFuncHashTabEntry);
+		hash_ctl.hcxt = PgCurrentFunctionManagerMemoryContext();
 		CFuncHash = hash_create("CFuncHash",
 								100,
 								&hash_ctl,
-								HASH_ELEM | HASH_BLOBS);
+								HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
 
 	entry = (CFuncHashTabEntry *)

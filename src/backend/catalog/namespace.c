@@ -51,6 +51,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
 #include "utils/guc_hooks.h"
@@ -123,7 +124,8 @@
  * we have to be willing to recompute the path when current userid changes.
  * namespaceUser is the userid the path has been computed for.
  *
- * Note: all data pointed to by these List variables is in TopMemoryContext.
+ * Note: all data pointed to by these List variables is in the current
+ * session's namespace search-path context.
  *
  * activePathGeneration is incremented whenever the effective values of
  * activeSearchPath/activeCreationNamespace/activeTempCreationPending change.
@@ -131,38 +133,49 @@
  * a previous examination of the search path state.
  */
 
-/* These variables define the actually active state: */
-
-static List *activeSearchPath = NIL;
+/* These variables define the actually active state. */
+#define activeSearchPath \
+	(PgCurrentNamespaceState()->active_search_path)
 
 /* default place to create stuff; if InvalidOid, no default */
-static Oid	activeCreationNamespace = InvalidOid;
+#define activeCreationNamespace \
+	(PgCurrentNamespaceState()->active_creation_namespace)
 
 /* if true, activeCreationNamespace is wrong, it should be temp namespace */
-static bool activeTempCreationPending = false;
+#define activeTempCreationPending \
+	(PgCurrentNamespaceState()->active_temp_creation_pending)
 
 /* current generation counter; make sure this is never zero */
-static uint64 activePathGeneration = 1;
+#define activePathGeneration \
+	(PgCurrentNamespaceState()->active_path_generation)
 
-/* These variables are the values last derived from namespace_search_path: */
+/* These variables are the values last derived from namespace_search_path. */
+#define baseSearchPath \
+	(PgCurrentNamespaceState()->base_search_path)
 
-static List *baseSearchPath = NIL;
+#define baseCreationNamespace \
+	(PgCurrentNamespaceState()->base_creation_namespace)
 
-static Oid	baseCreationNamespace = InvalidOid;
+#define baseTempCreationPending \
+	(PgCurrentNamespaceState()->base_temp_creation_pending)
 
-static bool baseTempCreationPending = false;
-
-static Oid	namespaceUser = InvalidOid;
+#define namespaceUser \
+	(PgCurrentNamespaceState()->namespace_user)
 
 /* The above four values are valid only if baseSearchPathValid */
-static bool baseSearchPathValid = true;
+#define baseSearchPathValid \
+	(PgCurrentNamespaceState()->base_search_path_valid)
 
 /*
  * Storage for search path cache.  Clear searchPathCacheValid as a simple
  * way to invalidate *all* the cache entries, not just the active one.
  */
-static bool searchPathCacheValid = false;
-static MemoryContext SearchPathCacheContext = NULL;
+#define searchPathCacheValid \
+	(PgCurrentNamespaceState()->search_path_cache_valid)
+#define SearchPathContext \
+	(PgCurrentNamespaceState()->search_path_context)
+#define SearchPathCacheContext \
+	(PgCurrentNamespaceState()->search_path_cache_context)
 
 typedef struct SearchPathCacheKey
 {
@@ -198,17 +211,14 @@ typedef struct SearchPathCacheEntry
  * we either haven't made the TEMP namespace yet, or have successfully
  * committed its creation, depending on whether myTempNamespace is valid.
  */
-static Oid	myTempNamespace = InvalidOid;
+#define myTempNamespace \
+	(PgCurrentNamespaceState()->my_temp_namespace)
 
-static Oid	myTempToastNamespace = InvalidOid;
+#define myTempToastNamespace \
+	(PgCurrentNamespaceState()->my_temp_toast_namespace)
 
-static SubTransactionId myTempNamespaceSubID = InvalidSubTransactionId;
-
-/*
- * This is the user's textual search path specification --- it's the value
- * of the GUC variable 'search_path'.
- */
-char	   *namespace_search_path = NULL;
+#define myTempNamespaceSubID \
+	(PgCurrentNamespaceState()->my_temp_namespace_subid)
 
 
 /* Local functions */
@@ -297,8 +307,37 @@ spcachekey_equal(SearchPathCacheKey a, SearchPathCacheKey b)
  */
 #define SPCACHE_RESET_THRESHOLD		256
 
-static nsphash_hash *SearchPathCache = NULL;
-static SearchPathCacheEntry *LastSearchPathCacheEntry = NULL;
+static inline nsphash_hash **
+CurrentSearchPathCacheRef(void)
+{
+	return (nsphash_hash **) &PgCurrentNamespaceState()->search_path_cache;
+}
+
+static inline SearchPathCacheEntry **
+CurrentLastSearchPathCacheEntryRef(void)
+{
+	return (SearchPathCacheEntry **)
+		&PgCurrentNamespaceState()->last_search_path_cache_entry;
+}
+
+static MemoryContext
+NamespaceSearchPathContext(void)
+{
+	return PgRuntimeGetOwnedMemoryContextWithSizes(&SearchPathContext,
+												   "namespace search path",
+												   ALLOCSET_START_SMALL_SIZES);
+}
+
+static MemoryContext
+NamespaceSearchPathCacheContext(void)
+{
+	return PgRuntimeGetOwnedMemoryContextWithSizes(&SearchPathCacheContext,
+												   "search_path processing cache",
+												   ALLOCSET_START_SMALL_SIZES);
+}
+
+#define SearchPathCache (*CurrentSearchPathCacheRef())
+#define LastSearchPathCacheEntry (*CurrentLastSearchPathCacheEntryRef())
 
 /*
  * Create or reset search_path cache as necessary.
@@ -306,7 +345,7 @@ static SearchPathCacheEntry *LastSearchPathCacheEntry = NULL;
 static void
 spcache_init(void)
 {
-	if (SearchPathCache && searchPathCacheValid &&
+	if (SearchPathCache && SearchPathCache->data && searchPathCacheValid &&
 		SearchPathCache->members < SPCACHE_RESET_THRESHOLD)
 		return;
 
@@ -323,9 +362,7 @@ spcache_init(void)
 	if (SearchPathCacheContext == NULL)
 	{
 		/* Make the context we'll keep search path cache hashtable in */
-		SearchPathCacheContext = AllocSetContextCreate(TopMemoryContext,
-													   "search_path processing cache",
-													   ALLOCSET_DEFAULT_SIZES);
+		(void) NamespaceSearchPathCacheContext();
 	}
 	else
 	{
@@ -4393,8 +4430,8 @@ recomputeNamespacePath(void)
 
 		pathChanged = true;
 
-		/* Must save OID list in permanent storage. */
-		oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+		/* Must save OID list in session-owned storage. */
+		oldcxt = MemoryContextSwitchTo(NamespaceSearchPathContext());
 		newpath = list_copy(entry->finalPath);
 		MemoryContextSwitchTo(oldcxt);
 
@@ -4815,7 +4852,7 @@ InitializeSearchPath(void)
 		 */
 		MemoryContext oldcxt;
 
-		oldcxt = MemoryContextSwitchTo(TopMemoryContext);
+		oldcxt = MemoryContextSwitchTo(NamespaceSearchPathContext());
 		baseSearchPath = list_make1_oid(PG_CATALOG_NAMESPACE);
 		MemoryContextSwitchTo(oldcxt);
 		baseCreationNamespace = PG_CATALOG_NAMESPACE;

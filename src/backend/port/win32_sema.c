@@ -17,9 +17,9 @@
 #include "storage/ipc.h"
 #include "storage/pg_sema.h"
 
-static HANDLE *mySemSet;		/* IDs of sema sets acquired so far */
-static int	numSems;			/* number of sema sets acquired so far */
-static int	maxSems;			/* allocated size of mySemaSet array */
+static PG_GLOBAL_RUNTIME HANDLE *mySemSet;	/* IDs of sema sets acquired so far */
+static PG_GLOBAL_RUNTIME int numSems;	/* number of sema sets acquired so far */
+static PG_GLOBAL_RUNTIME int maxSems;	/* allocated size of mySemaSet array */
 
 static void ReleaseSemaphores(int code, Datum arg);
 

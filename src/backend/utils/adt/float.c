@@ -24,6 +24,7 @@
 #include "common/shortest_dec.h"
 #include "libpq/pqformat.h"
 #include "utils/array.h"
+#include "utils/backend_runtime.h"
 #include "utils/float.h"
 #include "utils/fmgrprotos.h"
 #include "utils/sortsupport.h"
@@ -54,17 +55,15 @@
  * get round-trip-accurate results. If 0 or less, then use the old, slow,
  * decimal rounding method.
  */
-int			extra_float_digits = 1;
-
 /* Cached constants for degree-based trig functions */
-static bool degree_consts_set = false;
-static float8 sin_30 = 0;
-static float8 one_minus_cos_60 = 0;
-static float8 asin_0_5 = 0;
-static float8 acos_0_5 = 0;
-static float8 atan_1_0 = 0;
-static float8 tan_45 = 0;
-static float8 cot_45 = 0;
+#define degree_consts_set (*PgCurrentDegreeConstsSetRef())
+#define sin_30 (*PgCurrentDegreeSin30Ref())
+#define one_minus_cos_60 (*PgCurrentDegreeOneMinusCos60Ref())
+#define asin_0_5 (*PgCurrentDegreeAsin05Ref())
+#define acos_0_5 (*PgCurrentDegreeAcos05Ref())
+#define atan_1_0 (*PgCurrentDegreeAtan10Ref())
+#define tan_45 (*PgCurrentDegreeTan45Ref())
+#define cot_45 (*PgCurrentDegreeCot45Ref())
 
 /*
  * These are intentionally not static; don't "fix" them.  They will never
@@ -75,16 +74,16 @@ static float8 cot_45 = 0;
  * The additional extern declarations are to silence
  * -Wmissing-variable-declarations.
  */
-extern float8 degree_c_thirty;
-extern float8 degree_c_forty_five;
-extern float8 degree_c_sixty;
-extern float8 degree_c_one_half;
-extern float8 degree_c_one;
-float8		degree_c_thirty = 30.0;
-float8		degree_c_forty_five = 45.0;
-float8		degree_c_sixty = 60.0;
-float8		degree_c_one_half = 0.5;
-float8		degree_c_one = 1.0;
+extern PG_GLOBAL_IMMUTABLE float8 degree_c_thirty;
+extern PG_GLOBAL_IMMUTABLE float8 degree_c_forty_five;
+extern PG_GLOBAL_IMMUTABLE float8 degree_c_sixty;
+extern PG_GLOBAL_IMMUTABLE float8 degree_c_one_half;
+extern PG_GLOBAL_IMMUTABLE float8 degree_c_one;
+PG_GLOBAL_IMMUTABLE float8 degree_c_thirty = 30.0;
+PG_GLOBAL_IMMUTABLE float8 degree_c_forty_five = 45.0;
+PG_GLOBAL_IMMUTABLE float8 degree_c_sixty = 60.0;
+PG_GLOBAL_IMMUTABLE float8 degree_c_one_half = 0.5;
+PG_GLOBAL_IMMUTABLE float8 degree_c_one = 1.0;
 
 /* Local function prototypes */
 static double sind_q1(double x);

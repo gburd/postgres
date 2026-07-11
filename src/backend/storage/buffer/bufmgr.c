@@ -65,11 +65,17 @@
 #include "storage/smgr.h"
 #include "storage/standby.h"
 #include "utils/memdebug.h"
+#include "utils/backend_runtime.h"
 #include "utils/ps_status.h"
 #include "utils/rel.h"
 #include "utils/resowner.h"
 #include "utils/timestamp.h"
 #include "utils/wait_event.h"
+
+#undef PgCurrentBackendBufferState
+#ifndef PgCurrentBackendBufferState
+extern PgBackendBufferState *PgCurrentBackendBufferState(void);
+#endif
 
 
 /* Note: these two macros only work on shared buffers, not local ones! */
@@ -94,42 +100,6 @@
  */
 #define BUF_DROP_FULL_SCAN_THRESHOLD		(uint64) (NBuffers / 32)
 
-/*
- * This is separated out from PrivateRefCountEntry to allow for copying all
- * the data members via struct assignment.
- */
-typedef struct PrivateRefCountData
-{
-	/*
-	 * How many times has the buffer been pinned by this backend.
-	 */
-	int32		refcount;
-
-	/*
-	 * Is the buffer locked by this backend? BUFFER_LOCK_UNLOCK indicates that
-	 * the buffer is not locked.
-	 */
-	BufferLockMode lockmode;
-} PrivateRefCountData;
-
-typedef struct PrivateRefCountEntry
-{
-	/*
-	 * Note that this needs to be same as the entry's corresponding
-	 * PrivateRefCountArrayKeys[i], if the entry is stored in the array. We
-	 * store it in both places as this is used for the hashtable key and
-	 * because it is more convenient (passing around a PrivateRefCountEntry
-	 * suffices to identify the buffer) and faster (checking the keys array is
-	 * faster when checking many entries, checking the entry is faster if just
-	 * checking a single entry).
-	 */
-	Buffer		buffer;
-
-	char		status;
-
-	PrivateRefCountData data;
-} PrivateRefCountEntry;
-
 #define SH_PREFIX refcount
 #define SH_ELEMENT_TYPE PrivateRefCountEntry
 #define SH_KEY_TYPE Buffer
@@ -140,9 +110,6 @@ typedef struct PrivateRefCountEntry
 #define SH_DECLARE
 #define SH_DEFINE
 #include "lib/simplehash.h"
-
-/* 64 bytes, about the size of a cache line on common systems */
-#define REFCOUNT_ARRAY_ENTRIES 8
 
 /*
  * Status of buffers to checkpoint for a particular tablespace, used
@@ -185,11 +152,8 @@ typedef struct SMgrSortArray
 	SMgrRelation srel;
 } SMgrSortArray;
 
-/* GUC variables */
-bool		zero_damaged_pages = false;
-int			bgwriter_lru_maxpages = 100;
-double		bgwriter_lru_multiplier = 2.0;
-bool		track_io_timing = false;
+PG_GLOBAL_RUNTIME int bgwriter_lru_maxpages = 100;
+PG_GLOBAL_RUNTIME double bgwriter_lru_multiplier = 2.0;
 
 /*
  * How many buffers PrefetchBuffer callers should try to stay ahead of their
@@ -197,14 +161,12 @@ bool		track_io_timing = false;
  * for buffers not belonging to tablespaces that have their
  * effective_io_concurrency parameter set.
  */
-int			effective_io_concurrency = DEFAULT_EFFECTIVE_IO_CONCURRENCY;
 
 /*
  * Like effective_io_concurrency, but used by maintenance code paths that might
  * benefit from a higher setting because they work on behalf of many sessions.
  * Overridden by the tablespace setting of the same name.
  */
-int			maintenance_io_concurrency = DEFAULT_MAINTENANCE_IO_CONCURRENCY;
 
 /*
  * Limit on how many blocks should be handled in single I/O operations.
@@ -212,20 +174,17 @@ int			maintenance_io_concurrency = DEFAULT_MAINTENANCE_IO_CONCURRENCY;
  * that call smgr APIs directly.  It is computed as the minimum of underlying
  * GUCs io_combine_limit_guc and io_max_combine_limit.
  */
-int			io_combine_limit = DEFAULT_IO_COMBINE_LIMIT;
-int			io_combine_limit_guc = DEFAULT_IO_COMBINE_LIMIT;
-int			io_max_combine_limit = DEFAULT_IO_COMBINE_LIMIT;
+PG_GLOBAL_RUNTIME int io_max_combine_limit = DEFAULT_IO_COMBINE_LIMIT;
 
 /*
  * GUC variables about triggering kernel writeback for buffers written; OS
  * dependent defaults are set via the GUC mechanism.
  */
-int			checkpoint_flush_after = DEFAULT_CHECKPOINT_FLUSH_AFTER;
-int			bgwriter_flush_after = DEFAULT_BGWRITER_FLUSH_AFTER;
-int			backend_flush_after = DEFAULT_BACKEND_FLUSH_AFTER;
+PG_GLOBAL_RUNTIME int checkpoint_flush_after = DEFAULT_CHECKPOINT_FLUSH_AFTER;
+PG_GLOBAL_RUNTIME int bgwriter_flush_after = DEFAULT_BGWRITER_FLUSH_AFTER;
 
 /* local state for LockBufferForCleanup */
-static BufferDesc *PinCountWaitBuf = NULL;
+#define PinCountWaitBuf (*PgCurrentPinCountWaitBufRef())
 
 /*
  * Backend-Private refcount management:
@@ -260,21 +219,77 @@ static BufferDesc *PinCountWaitBuf = NULL;
  * memory allocations in NewPrivateRefCountEntry() which can be important
  * because in some scenarios it's called with a spinlock held...
  */
-static Buffer PrivateRefCountArrayKeys[REFCOUNT_ARRAY_ENTRIES];
-static struct PrivateRefCountEntry PrivateRefCountArray[REFCOUNT_ARRAY_ENTRIES];
-static refcount_hash *PrivateRefCountHash = NULL;
-static int32 PrivateRefCountOverflowed = 0;
-static uint32 PrivateRefCountClock = 0;
-static int	ReservedRefCountSlot = -1;
-static int	PrivateRefCountEntryLast = -1;
+#define PG_BACKEND_HOT_FIELD_REF(slot, fallback) \
+	PG_RUNTIME_CURRENT_HOT_FIELD_REF(slot, CurrentPgBackend, fallback)
 
-static uint32 MaxProportionalPins;
+#define PrivateRefCountArrayKeys \
+	(*(Buffer **) PG_BACKEND_HOT_FIELD_REF(PgCurrentPrivateRefCountArrayKeysHotRef, \
+										   PgCurrentPrivateRefCountArrayKeysRef))
+#define PrivateRefCountArray \
+	(*(PrivateRefCountEntry **) PG_BACKEND_HOT_FIELD_REF(PgCurrentPrivateRefCountArrayHotRef, \
+														 PgCurrentPrivateRefCountArrayRef))
+#define PrivateRefCountHash \
+	(*(refcount_hash **) PG_BACKEND_HOT_FIELD_REF(PgCurrentPrivateRefCountHashHotRef, \
+												  PgCurrentPrivateRefCountHashRef))
+#define PrivateRefCountOverflowed \
+	(*(int32 *) PG_BACKEND_HOT_FIELD_REF(PgCurrentPrivateRefCountOverflowedHotRef, \
+										 PgCurrentPrivateRefCountOverflowedRef))
+#define PrivateRefCountClock \
+	(*(uint32 *) PG_BACKEND_HOT_FIELD_REF(PgCurrentPrivateRefCountClockHotRef, \
+										  PgCurrentPrivateRefCountClockRef))
+#define ReservedRefCountSlot \
+	(*(int *) PG_BACKEND_HOT_FIELD_REF(PgCurrentReservedRefCountSlotHotRef, \
+									   PgCurrentReservedRefCountSlotRef))
+#define PrivateRefCountEntryLast \
+	(*(int *) PG_BACKEND_HOT_FIELD_REF(PgCurrentPrivateRefCountEntryLastHotRef, \
+									   PgCurrentPrivateRefCountEntryLastRef))
 
-static void ReservePrivateRefCountEntry(void);
-static PrivateRefCountEntry *NewPrivateRefCountEntry(Buffer buffer);
-static PrivateRefCountEntry *GetPrivateRefCountEntry(Buffer buffer, bool do_move);
-static inline int32 GetPrivateRefCount(Buffer buffer);
-static void ForgetPrivateRefCountEntry(PrivateRefCountEntry *ref);
+#define MaxProportionalPins (*PgCurrentMaxProportionalPinsRef())
+
+static void ReservePrivateRefCountEntryFor(PgBackendBufferState *state);
+static PrivateRefCountEntry *NewPrivateRefCountEntryFor(PgBackendBufferState *state,
+														Buffer buffer);
+static PrivateRefCountEntry *GetPrivateRefCountEntryFor(PgBackendBufferState *state,
+														Buffer buffer,
+														bool do_move);
+static inline int32 GetPrivateRefCountFor(PgBackendBufferState *state,
+										  Buffer buffer);
+static void ForgetPrivateRefCountEntryFor(PgBackendBufferState *state,
+										  PrivateRefCountEntry *ref);
+static void InitPrivateRefCountAccess(PgBackendBufferState *state);
+static bool PrivateRefCountStateIsIdle(PgBackendBufferState *state);
+static pg_always_inline ResourceOwner *PgBufferResourceOwnerFastRef(void);
+static pg_always_inline BufferUsage *PgBufferUsageFastRef(void);
+
+static pg_always_inline ResourceOwner *
+PgBufferResourceOwnerFastRef(void)
+{
+	PgExecutionResourceOwnerState *resource_owners;
+
+	resource_owners = CurrentPgExecutionResourceOwnerRuntimeState;
+	if (likely(resource_owners != NULL))
+		return &resource_owners->current_owner;
+
+	return PgCurrentResourceOwnerRef();
+}
+
+static pg_always_inline BufferUsage *
+PgBufferUsageFastRef(void)
+{
+	PgBackendInstrumentationState *instrumentation;
+
+	instrumentation = CurrentPgBackendInstrumentationRuntimeState;
+	if (likely(instrumentation != NULL))
+		return &instrumentation->buffer_usage;
+
+	return PgCurrentBufferUsageRef();
+}
+
+#undef CurrentResourceOwner
+#define CurrentResourceOwner (*PgBufferResourceOwnerFastRef())
+
+#undef pgBufferUsage
+#define pgBufferUsage (*PgBufferUsageFastRef())
 
 /* ResourceOwner callbacks to hold in-progress I/Os and buffer pins */
 static void ResOwnerReleaseBufferIO(Datum res);
@@ -306,10 +321,15 @@ const ResourceOwnerDesc buffer_resowner_desc =
  * a new entry - but it's perfectly fine to not use a reserved entry.
  */
 static void
-ReservePrivateRefCountEntry(void)
+ReservePrivateRefCountEntryFor(PgBackendBufferState *state)
 {
+	Buffer	   *array_keys = (Buffer *) state->private_ref_count_array_keys;
+	PrivateRefCountEntry *array =
+		(PrivateRefCountEntry *) state->private_ref_count_array;
+	refcount_hash *hash = (refcount_hash *) state->private_ref_count_hash;
+
 	/* Already reserved (or freed), nothing to do */
-	if (ReservedRefCountSlot != -1)
+	if (state->reserved_ref_count_slot != -1)
 		return;
 
 	/*
@@ -321,9 +341,9 @@ ReservePrivateRefCountEntry(void)
 
 		for (i = 0; i < REFCOUNT_ARRAY_ENTRIES; i++)
 		{
-			if (PrivateRefCountArrayKeys[i] == InvalidBuffer)
+			if (array_keys[i] == InvalidBuffer)
 			{
-				ReservedRefCountSlot = i;
+				state->reserved_ref_count_slot = i;
 
 				/*
 				 * We could return immediately, but iterating till the end of
@@ -332,7 +352,7 @@ ReservePrivateRefCountEntry(void)
 			}
 		}
 
-		if (ReservedRefCountSlot != -1)
+		if (state->reserved_ref_count_slot != -1)
 			return;
 	}
 
@@ -351,25 +371,32 @@ ReservePrivateRefCountEntry(void)
 		bool		found;
 
 		/* select victim slot */
-		victim_slot = PrivateRefCountClock++ % REFCOUNT_ARRAY_ENTRIES;
-		victim_entry = &PrivateRefCountArray[victim_slot];
-		ReservedRefCountSlot = victim_slot;
+		victim_slot = state->private_ref_count_clock++ % REFCOUNT_ARRAY_ENTRIES;
+		victim_entry = &array[victim_slot];
+		state->reserved_ref_count_slot = victim_slot;
 
 		/* Better be used, otherwise we shouldn't get here. */
-		Assert(PrivateRefCountArrayKeys[victim_slot] != InvalidBuffer);
-		Assert(PrivateRefCountArray[victim_slot].buffer != InvalidBuffer);
-		Assert(PrivateRefCountArrayKeys[victim_slot] == PrivateRefCountArray[victim_slot].buffer);
+		Assert(array_keys[victim_slot] != InvalidBuffer);
+		Assert(array[victim_slot].buffer != InvalidBuffer);
+		Assert(array_keys[victim_slot] == array[victim_slot].buffer);
+
+		if (hash == NULL)
+		{
+			hash = refcount_create(PgBackendBufferAllocationContext(),
+								   100, NULL);
+			state->private_ref_count_hash = hash;
+		}
 
 		/* enter victim array entry into hashtable */
-		hashent = refcount_insert(PrivateRefCountHash,
-								  PrivateRefCountArrayKeys[victim_slot],
+		hashent = refcount_insert(hash,
+								  array_keys[victim_slot],
 								  &found);
 		Assert(!found);
 		/* move data from the entry in the array to the hash entry */
 		hashent->data = victim_entry->data;
 
 		/* clear the now free array slot */
-		PrivateRefCountArrayKeys[victim_slot] = InvalidBuffer;
+		array_keys[victim_slot] = InvalidBuffer;
 		victim_entry->buffer = InvalidBuffer;
 
 		/* clear the whole data member, just for future proofing */
@@ -377,7 +404,7 @@ ReservePrivateRefCountEntry(void)
 		victim_entry->data.refcount = 0;
 		victim_entry->data.lockmode = BUFFER_LOCK_UNLOCK;
 
-		PrivateRefCountOverflowed++;
+		state->private_ref_count_overflowed++;
 	}
 }
 
@@ -385,26 +412,29 @@ ReservePrivateRefCountEntry(void)
  * Fill a previously reserved refcount entry.
  */
 static PrivateRefCountEntry *
-NewPrivateRefCountEntry(Buffer buffer)
+NewPrivateRefCountEntryFor(PgBackendBufferState *state, Buffer buffer)
 {
+	Buffer	   *array_keys = (Buffer *) state->private_ref_count_array_keys;
+	PrivateRefCountEntry *array =
+		(PrivateRefCountEntry *) state->private_ref_count_array;
 	PrivateRefCountEntry *res;
 
 	/* only allowed to be called when a reservation has been made */
-	Assert(ReservedRefCountSlot != -1);
+	Assert(state->reserved_ref_count_slot != -1);
 
 	/* use up the reserved entry */
-	res = &PrivateRefCountArray[ReservedRefCountSlot];
+	res = &array[state->reserved_ref_count_slot];
 
 	/* and fill it */
-	PrivateRefCountArrayKeys[ReservedRefCountSlot] = buffer;
+	array_keys[state->reserved_ref_count_slot] = buffer;
 	res->buffer = buffer;
 	res->data.refcount = 0;
 	res->data.lockmode = BUFFER_LOCK_UNLOCK;
 
 	/* update cache for the next lookup */
-	PrivateRefCountEntryLast = ReservedRefCountSlot;
+	state->private_ref_count_entry_last = state->reserved_ref_count_slot;
 
-	ReservedRefCountSlot = -1;
+	state->reserved_ref_count_slot = -1;
 
 	return res;
 }
@@ -416,8 +446,13 @@ NewPrivateRefCountEntry(Buffer buffer)
  * requirements etc.
  */
 static pg_noinline PrivateRefCountEntry *
-GetPrivateRefCountEntrySlow(Buffer buffer, bool do_move)
+GetPrivateRefCountEntrySlow(PgBackendBufferState *state, Buffer buffer,
+							bool do_move)
 {
+	Buffer	   *array_keys = (Buffer *) state->private_ref_count_array_keys;
+	PrivateRefCountEntry *array =
+		(PrivateRefCountEntry *) state->private_ref_count_array;
+	refcount_hash *hash = (refcount_hash *) state->private_ref_count_hash;
 	PrivateRefCountEntry *res;
 	int			match = -1;
 	int			i;
@@ -428,7 +463,7 @@ GetPrivateRefCountEntrySlow(Buffer buffer, bool do_move)
 	 */
 	for (i = 0; i < REFCOUNT_ARRAY_ENTRIES; i++)
 	{
-		if (PrivateRefCountArrayKeys[i] == buffer)
+		if (array_keys[i] == buffer)
 		{
 			match = i;
 			/* see ReservePrivateRefCountEntry() for why we don't return */
@@ -438,9 +473,9 @@ GetPrivateRefCountEntrySlow(Buffer buffer, bool do_move)
 	if (likely(match != -1))
 	{
 		/* update cache for the next lookup */
-		PrivateRefCountEntryLast = match;
+		state->private_ref_count_entry_last = match;
 
-		return &PrivateRefCountArray[match];
+		return &array[match];
 	}
 
 	/*
@@ -450,10 +485,10 @@ GetPrivateRefCountEntrySlow(Buffer buffer, bool do_move)
 	 * Only look up the buffer in the hashtable if we've previously overflowed
 	 * into it.
 	 */
-	if (PrivateRefCountOverflowed == 0)
+	if (state->private_ref_count_overflowed == 0)
 		return NULL;
 
-	res = refcount_lookup(PrivateRefCountHash, buffer);
+	res = refcount_lookup(hash, buffer);
 
 	if (res == NULL)
 		return NULL;
@@ -470,27 +505,27 @@ GetPrivateRefCountEntrySlow(Buffer buffer, bool do_move)
 
 		/* Save data and delete from hashtable while res is still valid */
 		data = res->data;
-		refcount_delete_item(PrivateRefCountHash, res);
-		Assert(PrivateRefCountOverflowed > 0);
-		PrivateRefCountOverflowed--;
+		refcount_delete_item(hash, res);
+		Assert(state->private_ref_count_overflowed > 0);
+		state->private_ref_count_overflowed--;
 
 		/* Ensure there's a free array slot */
-		ReservePrivateRefCountEntry();
+		ReservePrivateRefCountEntryFor(state);
 
 		/* Use up the reserved slot */
-		Assert(ReservedRefCountSlot != -1);
-		free = &PrivateRefCountArray[ReservedRefCountSlot];
-		Assert(PrivateRefCountArrayKeys[ReservedRefCountSlot] == free->buffer);
+		Assert(state->reserved_ref_count_slot != -1);
+		free = &array[state->reserved_ref_count_slot];
+		Assert(array_keys[state->reserved_ref_count_slot] == free->buffer);
 		Assert(free->buffer == InvalidBuffer);
 
 		/* and fill it */
 		free->buffer = buffer;
 		free->data = data;
-		PrivateRefCountArrayKeys[ReservedRefCountSlot] = buffer;
+		array_keys[state->reserved_ref_count_slot] = buffer;
 		/* update cache for the next lookup */
-		PrivateRefCountEntryLast = ReservedRefCountSlot;
+		state->private_ref_count_entry_last = state->reserved_ref_count_slot;
 
-		ReservedRefCountSlot = -1;
+		state->reserved_ref_count_slot = -1;
 
 		return free;
 	}
@@ -504,8 +539,13 @@ GetPrivateRefCountEntrySlow(Buffer buffer, bool do_move)
  * optimized for frequent access by moving it to the array.
  */
 static inline PrivateRefCountEntry *
-GetPrivateRefCountEntry(Buffer buffer, bool do_move)
+GetPrivateRefCountEntryFor(PgBackendBufferState *state, Buffer buffer,
+						   bool do_move)
 {
+	PrivateRefCountEntry *array =
+		(PrivateRefCountEntry *) state->private_ref_count_array;
+	int			last = state->private_ref_count_entry_last;
+
 	Assert(BufferIsValid(buffer));
 	Assert(!BufferIsLocal(buffer));
 
@@ -519,10 +559,10 @@ GetPrivateRefCountEntry(Buffer buffer, bool do_move)
 	 * in GetPrivateRefCountEntrySlow()'s case, checking
 	 * PrivateRefCountArrayKeys saves a lot of memory accesses.
 	 */
-	if (likely(PrivateRefCountEntryLast != -1) &&
-		likely(PrivateRefCountArray[PrivateRefCountEntryLast].buffer == buffer))
+	if (likely(last != -1) &&
+		likely(array[last].buffer == buffer))
 	{
-		return &PrivateRefCountArray[PrivateRefCountEntryLast];
+		return &array[last];
 	}
 
 	/*
@@ -530,7 +570,7 @@ GetPrivateRefCountEntry(Buffer buffer, bool do_move)
 	 * into the caller. In the miss case however, that empirically doesn't
 	 * seem worth it.
 	 */
-	return GetPrivateRefCountEntrySlow(buffer, do_move);
+	return GetPrivateRefCountEntrySlow(state, buffer, do_move);
 }
 
 /*
@@ -539,7 +579,7 @@ GetPrivateRefCountEntry(Buffer buffer, bool do_move)
  * Only works for shared memory buffers!
  */
 static inline int32
-GetPrivateRefCount(Buffer buffer)
+GetPrivateRefCountFor(PgBackendBufferState *state, Buffer buffer)
 {
 	PrivateRefCountEntry *ref;
 
@@ -550,7 +590,7 @@ GetPrivateRefCount(Buffer buffer)
 	 * Not moving the entry - that's ok for the current users, but we might
 	 * want to change this one day.
 	 */
-	ref = GetPrivateRefCountEntry(buffer, false);
+	ref = GetPrivateRefCountEntryFor(state, buffer, false);
 
 	if (ref == NULL)
 		return 0;
@@ -562,16 +602,22 @@ GetPrivateRefCount(Buffer buffer)
  * longer have pinned and don't want to pin again immediately.
  */
 static void
-ForgetPrivateRefCountEntry(PrivateRefCountEntry *ref)
+ForgetPrivateRefCountEntryFor(PgBackendBufferState *state,
+							  PrivateRefCountEntry *ref)
 {
+	Buffer	   *array_keys = (Buffer *) state->private_ref_count_array_keys;
+	PrivateRefCountEntry *array =
+		(PrivateRefCountEntry *) state->private_ref_count_array;
+	refcount_hash *hash = (refcount_hash *) state->private_ref_count_hash;
+
 	Assert(ref->data.refcount == 0);
 	Assert(ref->data.lockmode == BUFFER_LOCK_UNLOCK);
 
-	if (ref >= &PrivateRefCountArray[0] &&
-		ref < &PrivateRefCountArray[REFCOUNT_ARRAY_ENTRIES])
+	if (ref >= &array[0] &&
+		ref < &array[REFCOUNT_ARRAY_ENTRIES])
 	{
 		ref->buffer = InvalidBuffer;
-		PrivateRefCountArrayKeys[ref - PrivateRefCountArray] = InvalidBuffer;
+		array_keys[ref - array] = InvalidBuffer;
 
 
 		/*
@@ -579,15 +625,33 @@ ForgetPrivateRefCountEntry(PrivateRefCountEntry *ref)
 		 * allows us to avoid ever having to search the array/hash for free
 		 * entries.
 		 */
-		ReservedRefCountSlot = ref - PrivateRefCountArray;
+		state->reserved_ref_count_slot = ref - array;
 	}
 	else
 	{
-		refcount_delete_item(PrivateRefCountHash, ref);
-		Assert(PrivateRefCountOverflowed > 0);
-		PrivateRefCountOverflowed--;
+		refcount_delete_item(hash, ref);
+		Assert(state->private_ref_count_overflowed > 0);
+		state->private_ref_count_overflowed--;
 	}
 }
+
+static inline PgBackendBufferState *
+PrivateRefCountState(void)
+{
+	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendBufferRuntimeState,
+										  PgCurrentBackendBufferState);
+}
+
+#define ReservePrivateRefCountEntry() \
+	ReservePrivateRefCountEntryFor(PrivateRefCountState())
+#define NewPrivateRefCountEntry(buffer) \
+	NewPrivateRefCountEntryFor(PrivateRefCountState(), (buffer))
+#define GetPrivateRefCountEntry(buffer, do_move) \
+	GetPrivateRefCountEntryFor(PrivateRefCountState(), (buffer), (do_move))
+#define GetPrivateRefCount(buffer) \
+	GetPrivateRefCountFor(PrivateRefCountState(), (buffer))
+#define ForgetPrivateRefCountEntry(ref) \
+	ForgetPrivateRefCountEntryFor(PrivateRefCountState(), (ref))
 
 /*
  * BufferIsPinned
@@ -4238,6 +4302,67 @@ AtEOXact_Buffers(bool isCommit)
 void
 InitBufferManagerAccess(void)
 {
+	InitPrivateRefCountAccess(PrivateRefCountState());
+
+	/*
+	 * AtProcExit_Buffers needs LWLock access, and thereby has to be called at
+	 * the corresponding phase of backend shutdown.
+	 */
+	Assert(MyProc != NULL);
+	on_shmem_exit(AtProcExit_Buffers, 0);
+}
+
+/*
+ * Restore private shared-buffer pin tracking after it has been released at a
+ * clean pooled-protocol idle park.
+ */
+void
+RestoreBufferManagerIdleMemory(void)
+{
+	PgBackendBufferState *state = PrivateRefCountState();
+
+	if (!state->private_ref_count_released_while_idle)
+		return;
+
+	InitPrivateRefCountAccess(state);
+}
+
+/*
+ * Release private shared-buffer pin tracking while a pooled protocol session
+ * is cleanly parked.  A parked session cannot hold buffer pins; if anything
+ * suggests otherwise, leave the state resident instead of risking corruption.
+ */
+void
+ReleaseBufferManagerIdleMemory(void)
+{
+	PgBackendBufferState *state = PrivateRefCountState();
+
+	if (state->buffer_context == NULL)
+		return;
+	if (!PrivateRefCountStateIsIdle(state))
+		return;
+
+	MemoryContextDelete(state->buffer_context);
+	state->buffer_context = NULL;
+	state->backend_writeback_context = NULL;
+	state->private_ref_count_array_keys = NULL;
+	state->private_ref_count_array = NULL;
+	state->private_ref_count_hash = NULL;
+	state->private_ref_count_overflowed = 0;
+	state->private_ref_count_clock = 0;
+	state->reserved_ref_count_slot = -1;
+	state->private_ref_count_entry_last = -1;
+	state->private_ref_count_released_while_idle = true;
+}
+
+static void
+InitPrivateRefCountAccess(PgBackendBufferState *state)
+{
+	MemoryContext buffer_context;
+
+	Assert(state != NULL);
+	buffer_context = PgBackendBufferAllocationContext();
+
 	/*
 	 * An advisory limit on the number of pins each backend should hold, based
 	 * on shared_buffers and the maximum number of connections possible.
@@ -4247,17 +4372,71 @@ InitBufferManagerAccess(void)
 	 */
 	MaxProportionalPins = NBuffers / (MaxBackends + NUM_AUXILIARY_PROCS);
 
-	memset(&PrivateRefCountArray, 0, sizeof(PrivateRefCountArray));
-	memset(&PrivateRefCountArrayKeys, 0, sizeof(PrivateRefCountArrayKeys));
+	if (state->private_ref_count_array == NULL)
+		state->private_ref_count_array =
+			MemoryContextAllocZero(buffer_context,
+								   sizeof(PrivateRefCountEntry) *
+								   REFCOUNT_ARRAY_ENTRIES);
+	else
+		memset(state->private_ref_count_array, 0,
+			   sizeof(PrivateRefCountEntry) * REFCOUNT_ARRAY_ENTRIES);
 
-	PrivateRefCountHash = refcount_create(CurrentMemoryContext, 100, NULL);
+	if (state->private_ref_count_array_keys == NULL)
+		state->private_ref_count_array_keys =
+			MemoryContextAllocZero(buffer_context,
+								   sizeof(Buffer) * REFCOUNT_ARRAY_ENTRIES);
+	else
+		memset(state->private_ref_count_array_keys, 0,
+			   sizeof(Buffer) * REFCOUNT_ARRAY_ENTRIES);
+
+	state->private_ref_count_overflowed = 0;
+	state->private_ref_count_clock = 0;
+	state->reserved_ref_count_slot = -1;
+	state->private_ref_count_entry_last = -1;
+	state->private_ref_count_released_while_idle = false;
+
+	if (state->private_ref_count_hash != NULL)
+		refcount_reset((refcount_hash *) state->private_ref_count_hash);
 
 	/*
-	 * AtProcExit_Buffers needs LWLock access, and thereby has to be called at
-	 * the corresponding phase of backend shutdown.
+	 * BackendWritebackContext is backend-local storage.  Process-mode
+	 * backends get an initial context while attaching to shared memory, but
+	 * thread-backed backends need their own TLS instance initialized when
+	 * they begin using shared buffers.
 	 */
-	Assert(MyProc != NULL);
-	on_shmem_exit(AtProcExit_Buffers, 0);
+	if (state->backend_writeback_context == NULL)
+		state->backend_writeback_context =
+			MemoryContextAllocZero(buffer_context, sizeof(WritebackContext));
+	WritebackContextInit(state->backend_writeback_context,
+						 &backend_flush_after);
+}
+
+static bool
+PrivateRefCountStateIsIdle(PgBackendBufferState *state)
+{
+	Buffer	   *array_keys;
+	PrivateRefCountEntry *array;
+
+	Assert(state != NULL);
+
+	if (state->private_ref_count_overflowed != 0)
+		return false;
+	if (state->private_ref_count_array_keys == NULL ||
+		state->private_ref_count_array == NULL)
+		return false;
+
+	array_keys = (Buffer *) state->private_ref_count_array_keys;
+	array = (PrivateRefCountEntry *) state->private_ref_count_array;
+
+	for (int i = 0; i < REFCOUNT_ARRAY_ENTRIES; i++)
+	{
+		if (array_keys[i] != InvalidBuffer ||
+			array[i].buffer != InvalidBuffer ||
+			array[i].data.refcount != 0)
+			return false;
+	}
+
+	return true;
 }
 
 /*
@@ -6008,7 +6187,7 @@ BufferLockAcquire(Buffer buffer, BufferDesc *buf_hdr, BufferLockMode mode)
 		 */
 		for (;;)
 		{
-			PGSemaphoreLock(MyProc->sem);
+			ProcWaitOnSemaphore(MyProc, wait_event);
 			if (MyProc->lwWaiting == LW_WS_NOT_WAITING)
 				break;
 			extraWaits++;
@@ -6447,7 +6626,7 @@ BufferLockWakeup(BufferDesc *buf_hdr, bool wake_exclusive)
 		 */
 		pg_write_barrier();
 		waiter->lwWaiting = LW_WS_NOT_WAITING;
-		PGSemaphoreUnlock(waiter->sem);
+		ProcWakeSemaphore(waiter);
 	}
 }
 

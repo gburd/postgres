@@ -66,8 +66,6 @@ fprintf_to_ereport(const char *fmt, const char *msg)
  * In practice, backslash_quote is not too awful since it only controls
  * whether to throw an error: it cannot change non-error results.
  */
-int			backslash_quote = BACKSLASH_QUOTE_SAFE_ENCODING;
-
 /*
  * Constant data exported from this file.  This array maps from the
  * zero-based keyword numbers returned by ScanKeywordLookup to the
@@ -686,8 +684,8 @@ other			.
 <xe>{xeescape}  {
 					if (yytext[1] == '\'')
 					{
-						if (yyextra->backslash_quote == BACKSLASH_QUOTE_OFF ||
-							(yyextra->backslash_quote == BACKSLASH_QUOTE_SAFE_ENCODING &&
+						if (yyextra->scanner_backslash_quote == BACKSLASH_QUOTE_OFF ||
+							(yyextra->scanner_backslash_quote == BACKSLASH_QUOTE_SAFE_ENCODING &&
 							 PG_ENCODING_IS_CLIENT_ONLY(pg_get_client_encoding())))
 							ereport(ERROR,
 									(errcode(ERRCODE_NONSTANDARD_USE_OF_ESCAPE_CHARACTER),
@@ -1246,7 +1244,7 @@ scanner_init(const char *str,
 	yyext->keywordlist = keywordlist;
 	yyext->keyword_tokens = keyword_tokens;
 
-	yyext->backslash_quote = backslash_quote;
+	yyext->scanner_backslash_quote = backslash_quote;
 
 	/*
 	 * Make a scan buffer with special termination needed by flex.

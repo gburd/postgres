@@ -28,9 +28,6 @@
 #include "rewrite/rewriteManip.h"
 #include "utils/lsyscache.h"
 
-/* Consider reordering of GROUP BY keys? */
-bool		enable_group_by_reordering = true;
-
 static bool pathkey_is_redundant(PathKey *new_pathkey, List *pathkeys);
 static bool matches_boolean_partition_clause(RestrictInfo *rinfo,
 											 RelOptInfo *partrel,

@@ -21,6 +21,7 @@
 #include "port/atomics.h"
 #include "storage/lwlocknames.h"
 #include "storage/proclist_types.h"
+#include "utils/global_lifetime.h"
 
 struct PGPROC;
 
@@ -71,7 +72,7 @@ typedef union LWLockPadded
 	char		pad[LWLOCK_PADDED_SIZE];
 } LWLockPadded;
 
-extern PGDLLIMPORT LWLockPadded *MainLWLockArray;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM LWLockPadded *MainLWLockArray;
 
 /*
  * It's a bit odd to declare NUM_BUFFER_PARTITIONS and NUM_LOCK_PARTITIONS
@@ -110,7 +111,10 @@ typedef enum LWLockMode
 
 
 #ifdef LOCK_DEBUG
-extern PGDLLIMPORT bool Trace_lwlocks;
+#ifndef PgCurrentTraceLwlocksRef
+extern bool *PgCurrentTraceLwlocksRef(void);
+#endif
+#define Trace_lwlocks (*PgCurrentTraceLwlocksRef())
 #endif
 
 extern bool LWLockAcquire(LWLock *lock, LWLockMode mode);

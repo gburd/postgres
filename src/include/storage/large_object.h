@@ -15,6 +15,7 @@
 #ifndef LARGE_OBJECT_H
 #define LARGE_OBJECT_H
 
+#include "utils/global_lifetime.h"
 #include "utils/snapshot.h"
 
 
@@ -79,7 +80,10 @@ typedef struct LargeObjectDesc
 /*
  * GUC: backwards-compatibility flag to suppress LO permission checks
  */
-extern PGDLLIMPORT bool lo_compat_privileges;
+#ifndef PgCurrentLoCompatPrivilegesRef
+extern bool *PgCurrentLoCompatPrivilegesRef(void);
+#endif
+#define lo_compat_privileges (*PgCurrentLoCompatPrivilegesRef())
 
 /*
  * Function definitions...

@@ -47,6 +47,7 @@
 #include "postgres.h"
 
 #include "port/pg_bitutils.h"
+#include "utils/backend_runtime.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
 #include "utils/memutils_internal.h"
@@ -247,23 +248,39 @@ typedef struct AllocBlockData
 /* Check if the block is the keeper block of the given allocation set */
 #define IsKeeperBlock(set, block) ((block) == (KeeperBlock(set)))
 
-typedef struct AllocSetFreeList
-{
-	int			num_free;		/* current list length */
-	AllocSetContext *first_free;	/* list header */
-} AllocSetFreeList;
+typedef PgBackendAllocSetFreeList AllocSetFreeList;
 
 /* context_freelists[0] is for default params, [1] for small params */
-static AllocSetFreeList context_freelists[2] =
-{
-	{
-		0, NULL
-	},
-	{
-		0, NULL
-	}
-};
+#define context_freelists \
+	(PgCurrentAllocSetContextFreeLists())
 
+void
+AllocSetFreeContextFreelists(PgBackendAllocSetFreeList *freelists,
+							 int nfreelists)
+{
+	Assert(freelists != NULL);
+	Assert(nfreelists >= 0);
+
+	for (int i = 0; i < nfreelists; i++)
+	{
+		AllocSetFreeList *freelist = &freelists[i];
+
+		while (freelist->first_free != NULL)
+		{
+			AllocSetContext *oldset = freelist->first_free;
+
+			freelist->first_free = (AllocSetContext *) oldset->header.nextchild;
+			freelist->num_free--;
+
+			/* Destroy the context's vpool --- see notes in AllocSetDelete(). */
+			VALGRIND_DESTROY_MEMPOOL(oldset);
+
+			/* All that remains is to free the header/initial block. */
+			free(oldset);
+		}
+		Assert(freelist->num_free == 0);
+	}
+}
 
 /* ----------
  * AllocSetFreeIndex -
@@ -1662,6 +1679,203 @@ AllocSetStats(MemoryContext context,
 		totals->freechunks += freechunks;
 		totals->totalspace += totalspace;
 		totals->freespace += freespace;
+	}
+}
+
+typedef struct AllocSetChunkStat
+{
+	Size		chunk_size;
+	Size		all_chunks;
+	Size		free_chunks;
+	Size		all_bytes;
+	Size		free_bytes;
+} AllocSetChunkStat;
+
+/*
+ * AllocSetLogChunkStats
+ *		Log an AllocSet's direct chunk-size histogram.
+ *
+ * This is intentionally not part of regular MemoryContextStats output.  It is
+ * for targeted backend-memory attribution, where knowing whether live bytes
+ * are many small chunks or a few large allocations matters.
+ */
+void
+AllocSetLogChunkStats(MemoryContext context, const char *label, int max_rows)
+{
+	AllocSet	set = (AllocSet) context;
+	AllocSetChunkStat chunk_stats[ALLOCSET_NUM_FREELISTS];
+	AllocSetChunkStat external_stats[64];
+	Size		context_header_bytes = MAXALIGN(sizeof(AllocSetContext));
+	Size		block_header_bytes = 0;
+	Size		block_tail_free_bytes = 0;
+	Size		block_bytes = 0;
+	Size		nblocks = 0;
+	int			nexternal_stats = 0;
+	int			fidx;
+
+	Assert(AllocSetIsValid(set));
+
+	if (max_rows <= 0)
+		return;
+
+	MemSet(chunk_stats, 0, sizeof(chunk_stats));
+	MemSet(external_stats, 0, sizeof(external_stats));
+
+	for (fidx = 0; fidx < ALLOCSET_NUM_FREELISTS; fidx++)
+	{
+		Size		chksz = GetChunkSizeFromFreeListIdx(fidx);
+		MemoryChunk *chunk = set->freelist[fidx];
+
+		chunk_stats[fidx].chunk_size = chksz;
+		while (chunk != NULL)
+		{
+			AllocFreeListLink *link = GetFreeListLink(chunk);
+
+			VALGRIND_MAKE_MEM_DEFINED(chunk, ALLOC_CHUNKHDRSZ);
+			Assert(MemoryChunkGetValue(chunk) == fidx);
+			VALGRIND_MAKE_MEM_NOACCESS(chunk, ALLOC_CHUNKHDRSZ);
+
+			chunk_stats[fidx].free_chunks++;
+			chunk_stats[fidx].free_bytes += chksz + ALLOC_CHUNKHDRSZ;
+
+			VALGRIND_MAKE_MEM_DEFINED(link, sizeof(AllocFreeListLink));
+			chunk = link->next;
+			VALGRIND_MAKE_MEM_NOACCESS(link, sizeof(AllocFreeListLink));
+		}
+	}
+
+	for (AllocBlock block = set->blocks; block != NULL; block = block->next)
+	{
+		char	   *bpoz = ((char *) block) + ALLOC_BLOCKHDRSZ;
+
+		nblocks++;
+		block_header_bytes += ALLOC_BLOCKHDRSZ;
+		block_tail_free_bytes += block->endptr - block->freeptr;
+		block_bytes += block->endptr - ((char *) block);
+
+		while (bpoz < block->freeptr)
+		{
+			MemoryChunk *chunk = (MemoryChunk *) bpoz;
+			Size		chsize;
+
+			VALGRIND_MAKE_MEM_DEFINED(chunk, ALLOC_CHUNKHDRSZ);
+			if (MemoryChunkIsExternal(chunk))
+			{
+				bool		found = false;
+
+				chsize = block->endptr - (char *) MemoryChunkGetPointer(chunk);
+				for (int i = 0; i < nexternal_stats; i++)
+				{
+					if (external_stats[i].chunk_size == chsize)
+					{
+						external_stats[i].all_chunks++;
+						external_stats[i].all_bytes += chsize + ALLOC_CHUNKHDRSZ;
+						found = true;
+						break;
+					}
+				}
+				if (!found)
+				{
+					int			idx;
+					bool		exact_bucket = false;
+
+					if (nexternal_stats < lengthof(external_stats))
+					{
+						idx = nexternal_stats++;
+						exact_bucket = true;
+					}
+					else
+					{
+						idx = lengthof(external_stats) - 1;
+						external_stats[idx].chunk_size = 0;
+					}
+
+					if (exact_bucket)
+						external_stats[idx].chunk_size = chsize;
+					external_stats[idx].all_chunks++;
+					external_stats[idx].all_bytes += chsize + ALLOC_CHUNKHDRSZ;
+				}
+				VALGRIND_MAKE_MEM_NOACCESS(chunk, ALLOC_CHUNKHDRSZ);
+				break;
+			}
+			else
+			{
+				fidx = MemoryChunkGetValue(chunk);
+				Assert(FreeListIdxIsValid(fidx));
+				chsize = GetChunkSizeFromFreeListIdx(fidx);
+				chunk_stats[fidx].all_chunks++;
+				chunk_stats[fidx].all_bytes += chsize + ALLOC_CHUNKHDRSZ;
+				VALGRIND_MAKE_MEM_NOACCESS(chunk, ALLOC_CHUNKHDRSZ);
+			}
+
+			bpoz += chsize + ALLOC_CHUNKHDRSZ;
+		}
+	}
+
+	ereport(LOG_SERVER_ONLY,
+			(errhidestmt(true),
+			 errhidecontext(true),
+			 errmsg_internal("allocset_chunk_stats label=%s context=%s ident=%s "
+							 "summary=1 context_header_bytes=%zu block_header_bytes=%zu "
+							 "block_tail_free_bytes=%zu block_bytes=%zu nblocks=%zu",
+							 label ? label : "none",
+							 set->header.name ? set->header.name : "none",
+							 set->header.ident ? set->header.ident : "none",
+							 context_header_bytes,
+							 block_header_bytes,
+							 block_tail_free_bytes,
+							 block_bytes,
+							 nblocks)));
+
+	for (fidx = ALLOCSET_NUM_FREELISTS - 1; fidx >= 0 && max_rows > 0; fidx--)
+	{
+		AllocSetChunkStat *stat = &chunk_stats[fidx];
+		Size		allocated_chunks;
+		Size		allocated_bytes;
+
+		if (stat->all_chunks == 0 && stat->free_chunks == 0)
+			continue;
+
+		allocated_chunks = stat->all_chunks - stat->free_chunks;
+		allocated_bytes = stat->all_bytes - stat->free_bytes;
+		ereport(LOG_SERVER_ONLY,
+				(errhidestmt(true),
+				 errhidecontext(true),
+				 errmsg_internal("allocset_chunk_stats label=%s context=%s ident=%s "
+								 "summary=0 external=0 chunk_size=%zu all_chunks=%zu free_chunks=%zu "
+								 "allocated_chunks=%zu all_bytes=%zu free_bytes=%zu allocated_bytes=%zu",
+								 label ? label : "none",
+								 set->header.name ? set->header.name : "none",
+								 set->header.ident ? set->header.ident : "none",
+								 stat->chunk_size,
+								 stat->all_chunks,
+								 stat->free_chunks,
+								 allocated_chunks,
+								 stat->all_bytes,
+								 stat->free_bytes,
+								 allocated_bytes)));
+		max_rows--;
+	}
+
+	for (int i = 0; i < nexternal_stats && max_rows > 0; i++)
+	{
+		AllocSetChunkStat *stat = &external_stats[i];
+
+		ereport(LOG_SERVER_ONLY,
+				(errhidestmt(true),
+				 errhidecontext(true),
+				 errmsg_internal("allocset_chunk_stats label=%s context=%s ident=%s "
+								 "summary=0 external=1 chunk_size=%zu all_chunks=%zu free_chunks=0 "
+								 "allocated_chunks=%zu all_bytes=%zu free_bytes=0 allocated_bytes=%zu",
+								 label ? label : "none",
+								 set->header.name ? set->header.name : "none",
+								 set->header.ident ? set->header.ident : "none",
+								 stat->chunk_size,
+								 stat->all_chunks,
+								 stat->all_chunks,
+								 stat->all_bytes,
+								 stat->all_bytes)));
+		max_rows--;
 	}
 }
 

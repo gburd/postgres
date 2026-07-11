@@ -128,44 +128,15 @@
  */
 #define MAXIMUM_ROWCOUNT 1e100
 
-double		seq_page_cost = DEFAULT_SEQ_PAGE_COST;
-double		random_page_cost = DEFAULT_RANDOM_PAGE_COST;
-double		cpu_tuple_cost = DEFAULT_CPU_TUPLE_COST;
-double		cpu_index_tuple_cost = DEFAULT_CPU_INDEX_TUPLE_COST;
-double		cpu_operator_cost = DEFAULT_CPU_OPERATOR_COST;
-double		parallel_tuple_cost = DEFAULT_PARALLEL_TUPLE_COST;
-double		parallel_setup_cost = DEFAULT_PARALLEL_SETUP_COST;
-double		recursive_worktable_factor = DEFAULT_RECURSIVE_WORKTABLE_FACTOR;
-
-int			effective_cache_size = DEFAULT_EFFECTIVE_CACHE_SIZE;
-
-Cost		disable_cost = 1.0e10;
-
-int			max_parallel_workers_per_gather = 2;
-
-bool		enable_seqscan = true;
-bool		enable_indexscan = true;
-bool		enable_indexonlyscan = true;
-bool		enable_bitmapscan = true;
-bool		enable_tidscan = true;
-bool		enable_sort = true;
-bool		enable_incremental_sort = true;
-bool		enable_hashagg = true;
+/*
+ * enable_groupagg is a new upstream GUC (merged from heikki/master, commit
+ * e01b23b84e4).  The other planner cost/enable_* GUCs are relocated to
+ * per-session storage (backend_runtime_session.c); enable_groupagg is not yet
+ * relocated, so it stays a plain global for now.
+ * ponytail: relocate it with the rest in a Phase 16 GUC pass if concurrent
+ * sessions need independent values.
+ */
 bool		enable_groupagg = true;
-bool		enable_nestloop = true;
-bool		enable_material = true;
-bool		enable_memoize = true;
-bool		enable_mergejoin = true;
-bool		enable_hashjoin = true;
-bool		enable_gathermerge = true;
-bool		enable_partitionwise_join = false;
-bool		enable_partitionwise_aggregate = false;
-bool		enable_parallel_append = true;
-bool		enable_parallel_hash = true;
-bool		enable_partition_pruning = true;
-bool		enable_presorted_aggregate = true;
-bool		enable_async_append = true;
-
 typedef struct
 {
 	PlannerInfo *root;

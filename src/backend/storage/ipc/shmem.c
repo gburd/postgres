@@ -154,7 +154,7 @@
  * all the registrations to happen at postmaster startup time and be inherited
  * by all the child processes via fork().
  */
-static List *registered_shmem_callbacks;
+static PG_GLOBAL_RUNTIME List *registered_shmem_callbacks;
 
 /*
  * In the shmem request phase, all the shmem areas requested with the
@@ -166,7 +166,7 @@ typedef struct
 	ShmemRequestKind kind;
 } ShmemRequest;
 
-static List *pending_shmem_requests;
+static PG_GLOBAL_RUNTIME List *pending_shmem_requests;
 
 /*
  * Per-process state machine, for sanity checking that we do things in the
@@ -211,7 +211,7 @@ enum shmem_request_state
 	/* Normal state after shmem initialization / attachment */
 	SRS_DONE,
 };
-static enum shmem_request_state shmem_request_state = SRS_INITIAL;
+static PG_GLOBAL_RUNTIME enum shmem_request_state shmem_request_state = SRS_INITIAL;
 
 /*
  * This is the first data structure stored in the shared memory segment, at
@@ -239,17 +239,17 @@ static void *ShmemAllocRaw(Size size, Size alignment, Size *allocated_size);
 
 /* shared memory global variables */
 
-static PGShmemHeader *ShmemSegHdr;	/* shared mem segment header */
-static void *ShmemBase;			/* start address of shared memory */
-static void *ShmemEnd;			/* end+1 address of shared memory */
+static PG_GLOBAL_SHMEM PGShmemHeader *ShmemSegHdr;	/* shared mem segment header */
+static PG_GLOBAL_SHMEM void *ShmemBase;	/* start address of shared memory */
+static PG_GLOBAL_SHMEM void *ShmemEnd;	/* end+1 address of shared memory */
 
-static ShmemAllocatorData *ShmemAllocator;
+static PG_GLOBAL_SHMEM ShmemAllocatorData *ShmemAllocator;
 
 /*
  * ShmemIndex is a global directory of shmem areas, itself also stored in the
  * shared memory.
  */
-static HTAB *ShmemIndex;
+static PG_GLOBAL_SHMEM HTAB *ShmemIndex;
 
  /* max size of data structure string name */
 #define SHMEM_INDEX_KEYSIZE		 (48)
@@ -271,7 +271,7 @@ typedef struct
 } ShmemIndexEnt;
 
 /* To get reliable results for NUMA inquiry we need to "touch pages" once */
-static bool firstNumaTouch = true;
+static PG_GLOBAL_RUNTIME bool firstNumaTouch = true;
 
 static void CallShmemCallbacksAfterStartup(const ShmemCallbacks *callbacks);
 static void InitShmemIndexEntry(ShmemRequest *request);

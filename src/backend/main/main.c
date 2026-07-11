@@ -30,6 +30,7 @@
 #include <sys/param.h>
 #endif
 
+#include "access/xact.h"
 #include "bootstrap/bootstrap.h"
 #include "common/username.h"
 #include "miscadmin.h"
@@ -41,11 +42,11 @@
 #include "utils/ps_status.h"
 
 
-const char *progname;
-static bool reached_main = false;
+PG_GLOBAL_RUNTIME const char *progname;
+static PG_GLOBAL_RUNTIME bool reached_main = false;
 
 /* names of special must-be-first options for dispatching to subprograms */
-static const char *const DispatchOptionNames[] =
+static PG_GLOBAL_IMMUTABLE const char *const DispatchOptionNames[] =
 {
 	[DISPATCH_CHECK] = "check",
 	[DISPATCH_BOOT] = "boot",
@@ -112,6 +113,7 @@ main(int argc, char *argv[])
 	 */
 	MyProcPid = getpid();
 	MemoryContextInit();
+	InitializeTransactionState();
 
 	/*
 	 * Set reference point for stack-depth checking.  (There's no point in

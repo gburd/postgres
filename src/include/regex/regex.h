@@ -262,6 +262,8 @@ extern int	pg_regprefix(regex_t *re, pg_wchar **string, size_t *slength);
 extern void pg_regfree(regex_t *re);
 extern size_t pg_regerror(int errcode, const regex_t *preg, char *errbuf,
 						  size_t errbuf_size);
+struct pg_ctype_cache;
+extern void pg_free_regex_ctype_cache_list(struct pg_ctype_cache *list);
 
 /* regexp.c */
 extern regex_t *RE_compile_and_cache(text *text_re, int cflags, Oid collation);

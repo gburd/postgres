@@ -21,6 +21,8 @@
 #include "postmaster/bgworker.h"
 #include "storage/shm_mq.h"
 #include "storage/shm_toc.h"
+#include "utils/backend_runtime.h"
+#include "utils/global_lifetime.h"
 
 typedef void (*parallel_worker_main_type) (dsm_segment *seg, shm_toc *toc);
 
@@ -39,7 +41,7 @@ typedef struct ParallelContext
 	int			nworkers_launched;
 	char	   *library_name;
 	char	   *function_name;
-	ErrorContextCallback *error_context_stack;
+	ErrorContextCallback *saved_error_context_stack;
 	shm_toc_estimator estimator;
 	dsm_segment *seg;
 	void	   *private_memory;
@@ -55,9 +57,9 @@ typedef struct ParallelWorkerContext
 	shm_toc    *toc;
 } ParallelWorkerContext;
 
-extern PGDLLIMPORT volatile sig_atomic_t ParallelMessagePending;
-extern PGDLLIMPORT int ParallelWorkerNumber;
-extern PGDLLIMPORT bool InitializingParallelWorker;
+#define ParallelMessagePending (*PgCurrentParallelMessagePendingRef())
+#define ParallelWorkerNumber (*PgCurrentParallelWorkerNumberRef())
+#define InitializingParallelWorker (*PgCurrentInitializingParallelWorkerRef())
 
 #define		IsParallelWorker()		(ParallelWorkerNumber >= 0)
 

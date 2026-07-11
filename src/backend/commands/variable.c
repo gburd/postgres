@@ -31,6 +31,7 @@
 #include "postmaster/syslogger.h"
 #include "storage/bufmgr.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/backend_status.h"
 #include "utils/datetime.h"
 #include "utils/fmgrprotos.h"
@@ -480,6 +481,19 @@ show_log_timezone(void)
  * TIMEZONE_ABBREVIATIONS
  */
 
+static PG_GLOBAL_RUNTIME TimeZoneAbbrevTable *shared_default_timezone_abbrev_table = NULL;
+
+static bool
+timezone_abbreviations_threaded_default_replay(const char *newval)
+{
+	return newval != NULL &&
+		strcmp(newval, "Default") == 0 &&
+		multithreaded &&
+		IsUnderPostmaster &&
+		CurrentPgCarrier != NULL &&
+		shared_default_timezone_abbrev_table != NULL;
+}
+
 /*
  * GUC check_hook for timezone_abbreviations
  */
@@ -502,6 +516,12 @@ check_timezone_abbreviations(char **newval, void **extra, GucSource source)
 		return true;
 	}
 
+	if (timezone_abbreviations_threaded_default_replay(*newval))
+	{
+		*extra = NULL;
+		return true;
+	}
+
 	/* OK, load the file and produce a guc_malloc'd TimeZoneAbbrevTable */
 	*extra = load_tzoffsets(*newval);
 
@@ -520,9 +540,20 @@ assign_timezone_abbreviations(const char *newval, void *extra)
 {
 	/* Do nothing for the boot_val default of NULL */
 	if (!extra)
+	{
+		if (timezone_abbreviations_threaded_default_replay(newval))
+			InstallTimeZoneAbbrevs(shared_default_timezone_abbrev_table);
 		return;
+	}
 
 	InstallTimeZoneAbbrevs((TimeZoneAbbrevTable *) extra);
+	if (!IsUnderPostmaster)
+	{
+		if (newval != NULL && strcmp(newval, "Default") == 0)
+			shared_default_timezone_abbrev_table = (TimeZoneAbbrevTable *) extra;
+		else
+			shared_default_timezone_abbrev_table = NULL;
+	}
 }
 
 
@@ -545,6 +576,9 @@ assign_timezone_abbreviations(const char *newval, void *extra)
 bool
 check_transaction_read_only(bool *newval, void **extra, GucSource source)
 {
+	if (source == PGC_S_DEFAULT)
+		return true;
+
 	if (*newval == false && XactReadOnly && IsTransactionState() && !InitializingParallelWorker)
 	{
 		/* Can't go to r/w mode inside a r/o transaction */
@@ -587,6 +621,9 @@ check_transaction_isolation(int *newval, void **extra, GucSource source)
 {
 	int			newXactIsoLevel = *newval;
 
+	if (source == PGC_S_DEFAULT)
+		return true;
+
 	if (newXactIsoLevel != XactIsoLevel &&
 		IsTransactionState() && !InitializingParallelWorker)
 	{
@@ -623,6 +660,9 @@ check_transaction_isolation(int *newval, void **extra, GucSource source)
 bool
 check_transaction_deferrable(bool *newval, void **extra, GucSource source)
 {
+	if (source == PGC_S_DEFAULT)
+		return true;
+
 	/* Just accept the value when restoring state in a parallel worker */
 	if (InitializingParallelWorker)
 		return true;

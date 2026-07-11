@@ -28,15 +28,17 @@
 #include "commands/trigger.h"
 #include "common/hashfn.h"
 #include "funcapi.h"
+#include "utils/backend_runtime.h"
 #include "utils/funccache.h"
 #include "utils/hsearch.h"
+#include "utils/memutils.h"
 #include "utils/syscache.h"
 
 
 /*
  * Hash table for cached functions
  */
-static HTAB *cfunc_hashtable = NULL;
+#define cfunc_hashtable (*PgCurrentCachedFunctionHashRef())
 
 typedef struct CachedFunctionHashEntry
 {
@@ -48,12 +50,14 @@ typedef struct CachedFunctionHashEntry
 
 static uint32 cfunc_hash(const void *key, Size keysize);
 static int	cfunc_match(const void *key1, const void *key2, Size keysize);
+static void delete_function_storage(CachedFunction *func);
 
 
 /*
  * Initialize the hash table on first use.
  *
- * The hash table will be in TopMemoryContext regardless of caller's context.
+ * The hash table is session-owned and allocated in the function-manager
+ * memory context regardless of caller's context.
  */
 static void
 cfunc_hashtable_init(void)
@@ -67,10 +71,12 @@ cfunc_hashtable_init(void)
 	ctl.entrysize = sizeof(CachedFunctionHashEntry);
 	ctl.hash = cfunc_hash;
 	ctl.match = cfunc_match;
+	ctl.hcxt = PgCurrentFunctionManagerMemoryContext();
 	cfunc_hashtable = hash_create("Cached function hash",
 								  FUNCS_PER_USER,
 								  &ctl,
-								  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
+								  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE |
+								  HASH_CONTEXT);
 }
 
 /*
@@ -181,13 +187,16 @@ cfunc_hashtable_insert(CachedFunction *function,
 		elog(WARNING, "trying to insert a function that already exists");
 
 	/*
-	 * If there's a callResultType, copy it into TopMemoryContext.  If we're
-	 * unlucky enough for that to fail, leave the entry with null
-	 * callResultType, which will probably never match anything.
+	 * If there's a callResultType, copy it into the session function-manager
+	 * context.  If we're unlucky enough for that to fail, leave the entry with
+	 * null callResultType, which will probably never match anything.
 	 */
 	if (func_key->callResultType)
 	{
-		MemoryContext oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+		MemoryContext oldcontext;
+
+		oldcontext =
+			MemoryContextSwitchTo(PgCurrentFunctionManagerMemoryContext());
 
 		hentry->key.callResultType = NULL;
 		hentry->key.callResultType = CreateTupleDescCopy(func_key->callResultType);
@@ -234,6 +243,41 @@ cfunc_hashtable_delete(CachedFunction *function)
 	/* Release the callResultType if present */
 	if (tupdesc)
 		FreeTupleDesc(tupdesc);
+}
+
+/*
+ * Destroy a session's cached-function hash table during session teardown.
+ *
+ * This mirrors delete_function()'s safety rule: language-specific subsidiary
+ * storage is released only when no invocation is active.  Active recursive
+ * calls can retain fn_extra pointers, so those entries follow the historical
+ * leak-on-active-use behavior.
+ */
+void
+DestroyCachedFunctionHash(HTAB *hashtable)
+{
+	HASH_SEQ_STATUS status;
+	CachedFunctionHashEntry *hentry;
+
+	if (hashtable == NULL)
+		return;
+
+	hash_seq_init(&status, hashtable);
+	while ((hentry = (CachedFunctionHashEntry *) hash_seq_search(&status)) != NULL)
+	{
+		CachedFunction *func = hentry->function;
+
+		if (hentry->key.callResultType)
+			FreeTupleDesc(hentry->key.callResultType);
+
+		if (func != NULL)
+		{
+			func->fn_hashkey = NULL;
+			delete_function_storage(func);
+		}
+	}
+
+	hash_destroy(hashtable);
 }
 
 /*
@@ -435,6 +479,12 @@ delete_function(CachedFunction *func)
 	/* remove function from hash table (might be done already) */
 	cfunc_hashtable_delete(func);
 
+	delete_function_storage(func);
+}
+
+static void
+delete_function_storage(CachedFunction *func)
+{
 	/* release the function's storage if safe and not done already */
 	if (func->use_count == 0 &&
 		func->dcallback != NULL)
@@ -571,14 +621,15 @@ recheck:
 
 		/*
 		 * Create the new function struct, if not done already.  The function
-		 * cache entry will be kept for the life of the backend, so put it in
-		 * TopMemoryContext.
+		 * cache entry is session-owned, so allocate the wrapper in the
+		 * function-manager memory context.
 		 */
 		Assert(cacheEntrySize >= sizeof(CachedFunction));
 		if (function == NULL)
 		{
 			function = (CachedFunction *)
-				MemoryContextAllocZero(TopMemoryContext, cacheEntrySize);
+				MemoryContextAllocZero(PgCurrentFunctionManagerMemoryContext(),
+									   cacheEntrySize);
 			new_function = true;
 		}
 		else

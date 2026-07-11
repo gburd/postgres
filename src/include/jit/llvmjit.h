@@ -19,6 +19,24 @@
 
 #include "jit/llvmjit_backport.h"
 
+/*
+ * PostgreSQL has a few historical short-name macros that collide with LLVM C
+ * headers in newer LLVM releases.  llvmjit sources should not rely on these
+ * names after including this header.
+ */
+#ifdef AM
+#undef AM
+#endif
+#ifdef PM
+#undef PM
+#endif
+#ifdef TZ
+#undef TZ
+#endif
+#ifdef Mode
+#undef Mode
+#endif
+
 #include <llvm-c/Types.h>
 #ifdef USE_LLVM_BACKPORT_SECTION_MEMORY_MANAGER
 #include <llvm-c/OrcEE.h>
@@ -38,6 +56,7 @@ extern "C"
 #include "access/tupdesc.h"
 #include "fmgr.h"
 #include "jit/jit.h"
+#include "jit/llvmjit_runtime.h"
 #include "nodes/pg_list.h"
 
 typedef struct LLVMJitContext
@@ -71,34 +90,33 @@ typedef struct LLVMJitContext
 } LLVMJitContext;
 
 /* type and struct definitions */
-extern PGDLLIMPORT LLVMTypeRef TypeParamBool;
-extern PGDLLIMPORT LLVMTypeRef TypePGFunction;
-extern PGDLLIMPORT LLVMTypeRef TypeSizeT;
-extern PGDLLIMPORT LLVMTypeRef TypeDatum;
-extern PGDLLIMPORT LLVMTypeRef TypeStorageBool;
+#define TypeParamBool (PgCurrentLLVMJitState()->type_param_bool)
+#define TypePGFunction (PgCurrentLLVMJitState()->type_pg_function)
+#define TypeSizeT (PgCurrentLLVMJitState()->type_size_t)
+#define TypeDatum (PgCurrentLLVMJitState()->type_datum)
+#define TypeStorageBool (PgCurrentLLVMJitState()->type_storage_bool)
 
-extern PGDLLIMPORT LLVMTypeRef StructNullableDatum;
-extern PGDLLIMPORT LLVMTypeRef StructTupleDescData;
-extern PGDLLIMPORT LLVMTypeRef StructHeapTupleData;
-extern PGDLLIMPORT LLVMTypeRef StructHeapTupleHeaderData;
-extern PGDLLIMPORT LLVMTypeRef StructMinimalTupleData;
-extern PGDLLIMPORT LLVMTypeRef StructTupleTableSlot;
-extern PGDLLIMPORT LLVMTypeRef StructHeapTupleTableSlot;
-extern PGDLLIMPORT LLVMTypeRef StructMinimalTupleTableSlot;
-extern PGDLLIMPORT LLVMTypeRef StructMemoryContextData;
-extern PGDLLIMPORT LLVMTypeRef StructFunctionCallInfoData;
-extern PGDLLIMPORT LLVMTypeRef StructExprContext;
-extern PGDLLIMPORT LLVMTypeRef StructExprEvalStep;
-extern PGDLLIMPORT LLVMTypeRef StructExprState;
-extern PGDLLIMPORT LLVMTypeRef StructAggState;
-extern PGDLLIMPORT LLVMTypeRef StructAggStatePerTransData;
-extern PGDLLIMPORT LLVMTypeRef StructAggStatePerGroupData;
-extern PGDLLIMPORT LLVMTypeRef StructPlanState;
+#define StructNullableDatum (PgCurrentLLVMJitState()->struct_nullable_datum)
+#define StructTupleDescData (PgCurrentLLVMJitState()->struct_tuple_desc_data)
+#define StructHeapTupleData (PgCurrentLLVMJitState()->struct_heap_tuple_data)
+#define StructHeapTupleHeaderData (PgCurrentLLVMJitState()->struct_heap_tuple_header_data)
+#define StructMinimalTupleData (PgCurrentLLVMJitState()->struct_minimal_tuple_data)
+#define StructTupleTableSlot (PgCurrentLLVMJitState()->struct_tuple_table_slot)
+#define StructHeapTupleTableSlot (PgCurrentLLVMJitState()->struct_heap_tuple_table_slot)
+#define StructMinimalTupleTableSlot (PgCurrentLLVMJitState()->struct_minimal_tuple_table_slot)
+#define StructMemoryContextData (PgCurrentLLVMJitState()->struct_memory_context_data)
+#define StructFunctionCallInfoData (PgCurrentLLVMJitState()->struct_function_call_info_data)
+#define StructExprContext (PgCurrentLLVMJitState()->struct_expr_context)
+#define StructExprEvalStep (PgCurrentLLVMJitState()->struct_expr_eval_step)
+#define StructExprState (PgCurrentLLVMJitState()->struct_expr_state)
+#define StructAggState (PgCurrentLLVMJitState()->struct_agg_state)
+#define StructAggStatePerTransData (PgCurrentLLVMJitState()->struct_agg_state_per_trans_data)
+#define StructAggStatePerGroupData (PgCurrentLLVMJitState()->struct_agg_state_per_group_data)
+#define StructPlanState (PgCurrentLLVMJitState()->struct_plan_state)
 
-extern PGDLLIMPORT LLVMValueRef AttributeTemplate;
-extern PGDLLIMPORT LLVMValueRef ExecEvalBoolSubroutineTemplate;
-extern PGDLLIMPORT LLVMValueRef ExecEvalSubroutineTemplate;
-
+#define AttributeTemplate (PgCurrentLLVMJitState()->attribute_template)
+#define ExecEvalBoolSubroutineTemplate (PgCurrentLLVMJitState()->exec_eval_bool_subroutine_template)
+#define ExecEvalSubroutineTemplate (PgCurrentLLVMJitState()->exec_eval_subroutine_template)
 
 extern void llvm_enter_fatal_on_oom(void);
 extern void llvm_leave_fatal_on_oom(void);

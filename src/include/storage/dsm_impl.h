@@ -13,6 +13,8 @@
 #ifndef DSM_IMPL_H
 #define DSM_IMPL_H
 
+#include "utils/global_lifetime.h"
+
 /* Dynamic shared memory implementations. */
 #define DSM_IMPL_POSIX			1
 #define DSM_IMPL_SYSV			2
@@ -39,8 +41,8 @@
 #endif
 
 /* GUC. */
-extern PGDLLIMPORT int dynamic_shared_memory_type;
-extern PGDLLIMPORT int min_dynamic_shared_memory;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int dynamic_shared_memory_type;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int min_dynamic_shared_memory;
 
 /*
  * Directory for on-disk state.

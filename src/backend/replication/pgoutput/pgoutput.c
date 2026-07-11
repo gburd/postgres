@@ -29,6 +29,8 @@
 #include "replication/pgoutput.h"
 #include "rewrite/rewriteHandler.h"
 #include "utils/builtins.h"
+#include "utils/backend_runtime.h"
+#include "utils/global_lifetime.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -83,7 +85,7 @@ static void pgoutput_stream_commit(struct LogicalDecodingContext *ctx,
 static void pgoutput_stream_prepare_txn(LogicalDecodingContext *ctx,
 										ReorderBufferTXN *txn, XLogRecPtr prepare_lsn);
 
-static bool publications_valid;
+#define publications_valid (*PgCurrentPgOutputPublicationsValidRef())
 
 static List *LoadPublications(List *pubnames);
 static void publication_invalidation_cb(Datum arg, SysCacheIdentifier cacheid,
@@ -217,7 +219,7 @@ typedef struct PGOutputTxnData
 } PGOutputTxnData;
 
 /* Map used to remember which relation schemas we sent. */
-static HTAB *RelationSyncCache = NULL;
+#define RelationSyncCache (*PgCurrentPgOutputRelationSyncCacheRef())
 
 static void init_rel_sync_cache(MemoryContext cachectx);
 static void cleanup_rel_sync_cache(TransactionId xid, bool is_commit);

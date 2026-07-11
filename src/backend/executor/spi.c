@@ -25,6 +25,7 @@
 #include "executor/spi_priv.h"
 #include "tcop/pquery.h"
 #include "tcop/utility.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
@@ -37,19 +38,13 @@
 
 
 /*
- * These global variables are part of the API for various SPI functions
- * (a horrible API choice, but it's too late now).  To reduce the risk of
- * interference between different SPI callers, we save and restore them
- * when entering/exiting a SPI nesting level.
+ * SPI API variables and private stack state are part of PgExecution.  The
+ * historical names remain lvalues through compatibility macros.
  */
-uint64		SPI_processed = 0;
-SPITupleTable *SPI_tuptable = NULL;
-int			SPI_result = 0;
-
-static _SPI_connection *_SPI_stack = NULL;
-static _SPI_connection *_SPI_current = NULL;
-static int	_SPI_stack_depth = 0;	/* allocated size of _SPI_stack */
-static int	_SPI_connected = -1;	/* current stack index */
+#define _SPI_stack (*PgCurrentSPIStackRef())
+#define _SPI_current (*PgCurrentSPICurrentRef())
+#define _SPI_stack_depth (*PgCurrentSPIStackDepthRef())
+#define _SPI_connected (*PgCurrentSPIConnectedRef())
 
 typedef struct SPICallbackArg
 {

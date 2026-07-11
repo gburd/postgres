@@ -27,7 +27,11 @@
 #endif
 #include <netinet/tcp.h>
 
+#include "datatype/timestamp.h"
 #include "libpq/pg-gssapi.h"
+#include "utils/backend_runtime_current.h"
+#include "utils/global_lifetime.h"
+#include "utils/global_lifetime.h"
 
 #ifdef ENABLE_SSPI
 #define SECURITY_WIN32
@@ -77,8 +81,9 @@ typedef struct
 /*
  * ClientConnectionInfo includes the fields describing the client connection
  * that are copied over to parallel workers as nothing from Port does that.
- * The same rules apply for allocations here as for Port (everything must be
- * malloc'd or palloc'd in TopMemoryContext).
+ * Backend connection-owned data follows the Port lifetime; serialized
+ * parallel-worker copies are restored into TopMemoryContext because there is
+ * no Port object in that path.
  *
  * If you add a struct member here, remember to also handle serialization in
  * SerializeClientConnectionInfo() and co.
@@ -108,7 +113,9 @@ typedef struct ClientConnectionInfo
 /*
  * The Port structure holds state information about a client connection in a
  * backend process.  It is available in the global variable MyProcPort.  The
- * struct and all the data it points are kept in TopMemoryContext.
+ * struct and most connection-owned data it points to are kept in a
+ * TopMemoryContext child so thread-backed backends can release the connection
+ * object explicitly at backend exit.
  *
  * remote_hostname is set if we did a successful reverse lookup of the
  * client's IP address during connection setup.
@@ -157,7 +164,7 @@ typedef struct Port
 	 * authorized" log message. We shouldn't use this post-startup, instead
 	 * the GUC should be used as application can change it afterward.
 	 */
-	char	   *application_name;
+	char	   *startup_application_name;
 
 	/*
 	 * Information that needs to be held during the authentication cycle.
@@ -178,7 +185,7 @@ typedef struct Port
 	int			keepalives_idle;
 	int			keepalives_interval;
 	int			keepalives_count;
-	int			tcp_user_timeout;
+	int			socket_tcp_user_timeout;
 
 	/*
 	 * SCRAM structures.
@@ -211,6 +218,8 @@ typedef struct Port
 	bool		peer_cert_valid;
 	bool		alpn_used;
 	bool		last_read_was_eof;
+	bool		client_read_deadline_active;
+	TimestampTz client_read_deadline;
 
 	/*
 	 * OpenSSL structures.  As with GSSAPI above, to keep struct offsets
@@ -333,7 +342,7 @@ extern char *be_tls_get_certificate_hash(Port *port, size_t *len);
 /* init hook for SSL, the default sets the password callback if appropriate */
 #ifdef USE_OPENSSL
 typedef void (*openssl_tls_init_hook_typ) (SSL_CTX *context, bool isServerStart);
-extern PGDLLIMPORT openssl_tls_init_hook_typ openssl_tls_init_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME openssl_tls_init_hook_typ openssl_tls_init_hook;
 #endif
 
 #endif							/* USE_SSL */
@@ -352,8 +361,18 @@ extern ssize_t be_gssapi_read(Port *port, void *ptr, size_t len);
 extern ssize_t be_gssapi_write(Port *port, const void *ptr, size_t len);
 #endif							/* ENABLE_GSS */
 
-extern PGDLLIMPORT ProtocolVersion FrontendProtocol;
-extern PGDLLIMPORT ClientConnectionInfo MyClientConnectionInfo;
+extern uint32 *(PgCurrentFrontendProtocolRef) (void);
+#define FrontendProtocol \
+	(*((ProtocolVersion *) PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentFrontendProtocolHotRef, \
+															CurrentPgConnection, \
+															PgCurrentFrontendProtocolRef)))
+#ifndef PgCurrentClientConnectionInfoRef
+extern void *PgCurrentClientConnectionInfoRef(void);
+#endif
+#ifndef PgCurrentClientConnectionInfoAuthnIdOwnedRef
+extern bool *PgCurrentClientConnectionInfoAuthnIdOwnedRef(void);
+#endif
+#define MyClientConnectionInfo (*((ClientConnectionInfo *) PgCurrentClientConnectionInfoRef()))
 
 /* TCP keepalives configuration. These are no-ops on an AF_UNIX socket. */
 

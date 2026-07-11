@@ -386,6 +386,45 @@ typedef union BufferDescPadded
 	char		pad[BUFFERDESC_PAD_TO_SIZE];
 } BufferDescPadded;
 
+/* 64 bytes, about the size of a cache line on common systems */
+#define REFCOUNT_ARRAY_ENTRIES 8
+
+/*
+ * This is separated out from PrivateRefCountEntry to allow for copying all
+ * the data members via struct assignment.
+ */
+typedef struct PrivateRefCountData
+{
+	/*
+	 * How many times has the buffer been pinned by this backend.
+	 */
+	int32		refcount;
+
+	/*
+	 * Is the buffer locked by this backend? BUFFER_LOCK_UNLOCK indicates that
+	 * the buffer is not locked.
+	 */
+	BufferLockMode lockmode;
+} PrivateRefCountData;
+
+typedef struct PrivateRefCountEntry
+{
+	/*
+	 * Note that this needs to be same as the entry's corresponding
+	 * PrivateRefCountArrayKeys[i], if the entry is stored in the array. We
+	 * store it in both places as this is used for the hashtable key and
+	 * because it is more convenient (passing around a PrivateRefCountEntry
+	 * suffices to identify the buffer) and faster (checking the keys array is
+	 * faster when checking many entries, checking the entry is faster if just
+	 * checking a single entry).
+	 */
+	Buffer		buffer;
+
+	char		status;
+
+	PrivateRefCountData data;
+} PrivateRefCountEntry;
+
 /*
  * The PendingWriteback & WritebackContext structure are used to keep
  * information about pending flush requests to be issued to the OS.
@@ -410,12 +449,12 @@ typedef struct WritebackContext
 } WritebackContext;
 
 /* in buf_init.c */
-extern PGDLLIMPORT BufferDescPadded *BufferDescriptors;
-extern PGDLLIMPORT ConditionVariableMinimallyPadded *BufferIOCVArray;
-extern PGDLLIMPORT WritebackContext BackendWritebackContext;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM BufferDescPadded *BufferDescriptors;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM ConditionVariableMinimallyPadded *BufferIOCVArray;
+#define BackendWritebackContext (*PgCurrentBackendWritebackContextRef())
 
 /* in localbuf.c */
-extern PGDLLIMPORT BufferDesc *LocalBufferDescriptors;
+#define LocalBufferDescriptors (*(BufferDesc **) PgCurrentLocalBufferDescriptorsRef())
 
 
 static inline BufferDesc *
@@ -522,7 +561,7 @@ typedef struct CkptSortItem
 	int			buf_id;
 } CkptSortItem;
 
-extern PGDLLIMPORT CkptSortItem *CkptBufferIds;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM CkptSortItem *CkptBufferIds;
 
 /* ResourceOwner callbacks to hold buffer I/Os and pins */
 extern PGDLLIMPORT const ResourceOwnerDesc buffer_io_resowner_desc;

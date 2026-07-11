@@ -29,6 +29,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/timestamp.h"
 #include "utils/tuplestore.h"
@@ -37,6 +38,15 @@
 #define UINT32_ACCESS_ONCE(var)		 ((uint32)(*((volatile uint32 *)&(var))))
 
 #define HAS_PGSTAT_PERMISSIONS(role)	 (has_privs_of_role(GetUserId(), ROLE_PG_READ_ALL_STATS) || has_privs_of_role(GetUserId(), role))
+
+static int
+PgStatProcSignalPid(PGPROC *proc)
+{
+	if (proc->pid == PostmasterPid && proc->backendId != 0)
+		return (int) proc->backendId;
+
+	return proc->pid;
+}
 
 #define PG_STAT_GET_RELENTRY_INT64(stat)						\
 Datum															\
@@ -451,7 +461,7 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 			/* leader_pid */
 			nulls[29] = true;
 
-			proc = BackendPidGetProc(beentry->st_procpid);
+			proc = BackendSignalPidGetProc(beentry->st_procpid);
 
 			if (proc == NULL && (beentry->st_backendType != B_BACKEND))
 			{
@@ -484,9 +494,9 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 				 * leaves the field as NULL for the leader of a parallel group
 				 * or the leader of parallel apply workers.
 				 */
-				if (leader && leader->pid != beentry->st_procpid)
+				if (leader && PgStatProcSignalPid(leader) != beentry->st_procpid)
 				{
-					values[29] = Int32GetDatum(leader->pid);
+					values[29] = Int32GetDatum(PgStatProcSignalPid(leader));
 					nulls[29] = false;
 				}
 				else if (beentry->st_backendType == B_BG_WORKER)
@@ -714,7 +724,7 @@ pg_stat_get_activity(PG_FUNCTION_ARGS)
 Datum
 pg_backend_pid(PG_FUNCTION_ARGS)
 {
-	PG_RETURN_INT32(MyProcPid);
+	PG_RETURN_INT32(PgCurrentBackendSignalPid());
 }
 
 
@@ -831,7 +841,7 @@ pg_stat_get_backend_wait_event_type(PG_FUNCTION_ARGS)
 		wait_event_type = "<insufficient privilege>";
 	else
 	{
-		proc = BackendPidGetProc(beentry->st_procpid);
+		proc = BackendSignalPidGetProc(beentry->st_procpid);
 		if (!proc)
 			proc = AuxiliaryPidGetProc(beentry->st_procpid);
 		if (proc)
@@ -858,7 +868,7 @@ pg_stat_get_backend_wait_event(PG_FUNCTION_ARGS)
 		wait_event = "<insufficient privilege>";
 	else
 	{
-		proc = BackendPidGetProc(beentry->st_procpid);
+		proc = BackendSignalPidGetProc(beentry->st_procpid);
 		if (!proc)
 			proc = AuxiliaryPidGetProc(beentry->st_procpid);
 		if (proc)
@@ -2068,7 +2078,7 @@ pg_stat_reset_backend_stats(PG_FUNCTION_ARGS)
 	ProcNumber	procNumber;
 	int			backend_pid = PG_GETARG_INT32(0);
 
-	proc = BackendPidGetProc(backend_pid);
+	proc = BackendSignalPidGetProc(backend_pid);
 
 	/* This could be an auxiliary process */
 	if (!proc)

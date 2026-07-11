@@ -14,6 +14,7 @@
 #include "lib/pairingheap.h"
 #include "storage/sinval.h"
 #include "utils/hsearch.h"
+#include "utils/global_lifetime.h"
 #include "utils/relcache.h"
 #include "utils/snapshot.h"
 #include "utils/timestamp.h"
@@ -24,8 +25,16 @@
 #define PG_LOGICAL_SNAPSHOTS_DIR	PG_LOGICAL_DIR "/snapshots"
 
 /* GUC variables */
-extern PGDLLIMPORT int logical_decoding_work_mem;
-extern PGDLLIMPORT int debug_logical_replication_streaming;
+#ifndef PgCurrentLogicalDecodingWorkMemRef
+extern int *PgCurrentLogicalDecodingWorkMemRef(void);
+#endif
+#ifndef PgCurrentDebugLogicalReplicationStreamingRef
+extern int *(PgCurrentDebugLogicalReplicationStreamingRef)(void);
+#endif
+
+#define logical_decoding_work_mem (*PgCurrentLogicalDecodingWorkMemRef())
+#define debug_logical_replication_streaming \
+	(*PgCurrentDebugLogicalReplicationStreamingRef())
 
 /* possible values for debug_logical_replication_streaming */
 typedef enum
