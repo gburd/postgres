@@ -18,6 +18,7 @@ OBJS = \
 	method_io_uring.o \
 	method_sync.o \
 	method_worker.o \
+	method_xtc.o \
 	read_stream.o
 
 include $(top_srcdir)/src/backend/common.mk

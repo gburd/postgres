@@ -10,5 +10,6 @@ backend_sources += files(
   'method_io_uring.c',
   'method_sync.c',
   'method_worker.c',
+  'method_xtc.c',
   'read_stream.c',
 )
