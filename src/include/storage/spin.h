@@ -48,19 +48,17 @@
 #ifndef SPIN_H
 #define SPIN_H
 
-#ifdef USE_STDATOMIC_H
-
 /*
- * Atomics-based spinlocks.  The traditional path is deprecated as of PG19.
+ * Atomics-based spinlocks.
  *
- * When stdatomic.h is available, spinlocks are implemented directly on top
- * of the pg_atomic_flag API rather than platform-specific TAS assembly.
+ * Spinlocks are implemented directly on top of the pg_atomic_flag API
+ * (backed by C11 stdatomic.h) rather than platform-specific TAS assembly.
  */
 #include "port/atomics.h"
 
 typedef pg_atomic_flag slock_t;
 
-/* SpinDelayStatus and helpers shared with the traditional s_lock.h path. */
+/* SpinDelayStatus and helpers. */
 #include "port/spin_delay_status.h"
 
 extern int s_lock(volatile slock_t *lock, const char *file, int line, const char *func);
@@ -92,43 +90,5 @@ SpinLockFree(volatile slock_t *lock)
 {
 	return pg_atomic_unlocked_test_flag(lock);
 }
-
-#else							/* !USE_STDATOMIC_H */
-
-/*
- * Traditional spinlock implementation using platform-specific TAS assembly.
- */
-#include "storage/s_lock.h"
-
-static inline void
-SpinLockInit(volatile slock_t *lock)
-{
-	S_INIT_LOCK(lock);
-}
-
-#define SpinLockAcquire(lock) S_LOCK(lock)
-
-static inline void
-SpinLockRelease(volatile slock_t *lock)
-{
-	S_UNLOCK(lock);
-}
-
-#ifdef S_LOCK_FREE
-static inline bool
-SpinLockFree(volatile slock_t *lock)
-{
-	return S_LOCK_FREE(lock);
-}
-#else
-/* Fallback when platform doesn't provide S_LOCK_FREE: always report busy */
-static inline bool
-SpinLockFree(volatile slock_t *lock)
-{
-	return false;
-}
-#endif
-
-#endif							/* USE_STDATOMIC_H */
 
 #endif							/* SPIN_H */
