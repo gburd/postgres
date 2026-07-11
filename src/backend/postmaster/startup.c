@@ -30,6 +30,7 @@
 #include "storage/pmsignal.h"
 #include "storage/procsignal.h"
 #include "storage/standby.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/timeout.h"
@@ -49,35 +50,44 @@
 /*
  * Flags set by interrupt handlers for later service in the redo loop.
  */
-static volatile sig_atomic_t got_SIGHUP = false;
-static volatile sig_atomic_t shutdown_requested = false;
-static volatile sig_atomic_t promote_signaled = false;
+#define got_SIGHUP \
+	(PgCurrentRecoveryState()->startup_got_sighup)
+#define shutdown_requested \
+	(PgCurrentRecoveryState()->startup_shutdown_requested)
+#define promote_signaled \
+	(PgCurrentRecoveryState()->startup_promote_signaled)
 
 /*
  * Flag set when executing a restore command, to tell SIGTERM signal handler
  * that it's safe to just proc_exit.
  */
-static volatile sig_atomic_t in_restore_command = false;
+#define in_restore_command \
+	(PgCurrentRecoveryState()->startup_in_restore_command)
 
 /*
  * Time at which the most recent startup operation started.
  */
-static TimestampTz startup_progress_phase_start_time;
+#define startup_progress_phase_start_time \
+	(PgCurrentRecoveryState()->startup_progress_phase_start_time)
 
 /*
  * Indicates whether the startup progress interval mentioned by the user is
  * elapsed or not. TRUE if timeout occurred, FALSE otherwise.
  */
-static volatile sig_atomic_t startup_progress_timer_expired = false;
+#define startup_progress_timer_expired \
+	(PgCurrentRecoveryState()->startup_progress_timer_expired)
 
 /*
  * Time between progress updates for long-running startup operations.
  */
-int			log_startup_progress_interval = 10000;	/* 10 sec */
+PG_GLOBAL_RUNTIME int log_startup_progress_interval = 10000;	/* 10 sec */
 
 /* Signal handlers */
 static void StartupProcTriggerHandler(SIGNAL_ARGS);
 static void StartupProcSigHupHandler(SIGNAL_ARGS);
+
+/* Logical interrupts */
+static void StartupProcApplyLogicalInterrupts(void);
 
 /* Callbacks */
 static void StartupProcExit(int code, Datum arg);
@@ -115,6 +125,42 @@ StartupProcShutdownHandler(SIGNAL_ARGS)
 	WakeupRecovery();
 }
 
+static void
+StartupProcApplyLogicalInterrupts(void)
+{
+	PgBackendInterruptMask pending;
+
+	if (CurrentPgBackend == NULL)
+		return;
+
+	pending = PgBackendConsumeInterrupts(CurrentPgBackend);
+	if (pending == 0)
+		return;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_CONFIG_RELOAD))
+		got_SIGHUP = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_STARTUP_PROMOTE))
+		promote_signaled = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST))
+	{
+		if (in_restore_command)
+			proc_exit(1);
+		else
+			shutdown_requested = true;
+	}
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_PROC_DIE))
+		proc_exit(1);
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_PROC_SIGNAL_BARRIER))
+		ProcSignalBarrierPending = true;
+
+	if (pending & PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_LOG_MEMORY_CONTEXT))
+		LogMemoryContextPending = true;
+}
+
 /*
  * Re-read the config file.
  *
@@ -127,11 +173,14 @@ StartupRereadConfig(void)
 	char	   *conninfo = pstrdup(PrimaryConnInfo);
 	char	   *slotname = pstrdup(PrimarySlotName);
 	bool		tempSlot = wal_receiver_create_temp_slot;
+	bool		threaded_worker;
 	bool		conninfoChanged;
 	bool		slotnameChanged;
 	bool		tempSlotChanged = false;
 
-	ProcessConfigFile(PGC_SIGHUP);
+	threaded_worker = PgRuntimeIsThreadBacked(CurrentPgRuntime);
+	if (!threaded_worker)
+		ProcessConfigFile(PGC_SIGHUP);
 
 	conninfoChanged = strcmp(conninfo, PrimaryConnInfo) != 0;
 	slotnameChanged = strcmp(slotname, PrimarySlotName) != 0;
@@ -160,6 +209,8 @@ ProcessStartupProcInterrupts(void)
 	/*
 	 * Process any requests or signals received recently.
 	 */
+	StartupProcApplyLogicalInterrupts();
+
 	if (got_SIGHUP)
 	{
 		got_SIGHUP = false;
@@ -215,9 +266,12 @@ StartupProcExit(int code, Datum arg)
 void
 StartupProcessMain(const void *startup_data, size_t startup_data_len)
 {
+	bool		threaded_worker;
+
 	Assert(startup_data_len == 0);
 
 	AuxiliaryProcessMainCommon();
+	threaded_worker = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 
 	/* Arrange to clean up at startup process exit */
 	on_shmem_exit(StartupProcExit, 0);
@@ -225,19 +279,25 @@ StartupProcessMain(const void *startup_data, size_t startup_data_len)
 	/*
 	 * Properly accept or ignore signals the postmaster might send us.
 	 */
-	pqsignal(SIGHUP, StartupProcSigHupHandler); /* reload config file */
-	pqsignal(SIGINT, PG_SIG_IGN);	/* ignore query cancel */
-	pqsignal(SIGTERM, StartupProcShutdownHandler);	/* request shutdown */
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
-	InitializeTimeouts();		/* establishes SIGALRM handler */
-	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-	pqsignal(SIGUSR2, StartupProcTriggerHandler);
+	if (threaded_worker)
+		InitializeLogicalTimeouts();
+	else
+	{
+		pqsignal(SIGHUP, StartupProcSigHupHandler); /* reload config file */
+		pqsignal(SIGINT, PG_SIG_IGN);	/* ignore query cancel */
+		pqsignal(SIGTERM, StartupProcShutdownHandler);	/* request shutdown */
+		/* SIGQUIT handler was already set up by InitPostmasterChild */
+		InitializeTimeouts();	/* establishes SIGALRM handler */
+		pqsignal(SIGPIPE, PG_SIG_IGN);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR2, StartupProcTriggerHandler);
+	}
 
 	/*
 	 * Reset some signals that are accepted by postmaster but not here
 	 */
-	pqsignal(SIGCHLD, PG_SIG_DFL);
+	if (!threaded_worker)
+		pqsignal(SIGCHLD, PG_SIG_DFL);
 
 	/*
 	 * Register timeouts needed for standby mode
@@ -249,7 +309,8 @@ StartupProcessMain(const void *startup_data, size_t startup_data_len)
 	/*
 	 * Unblock signals (they were blocked when the postmaster forked us)
 	 */
-	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+	if (!threaded_worker)
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 	/*
 	 * Do what we came for.

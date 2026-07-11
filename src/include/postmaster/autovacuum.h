@@ -15,6 +15,7 @@
 #define AUTOVACUUM_H
 
 #include "storage/block.h"
+#include "utils/global_lifetime.h"
 
 /*
  * Other processes can request specific work from autovacuum, identified by
@@ -27,29 +28,29 @@ typedef enum
 
 
 /* GUC variables */
-extern PGDLLIMPORT bool autovacuum_start_daemon;
-extern PGDLLIMPORT int autovacuum_worker_slots;
-extern PGDLLIMPORT int autovacuum_max_workers;
-extern PGDLLIMPORT int autovacuum_work_mem;
-extern PGDLLIMPORT int autovacuum_naptime;
-extern PGDLLIMPORT int autovacuum_vac_thresh;
-extern PGDLLIMPORT int autovacuum_vac_max_thresh;
-extern PGDLLIMPORT double autovacuum_vac_scale;
-extern PGDLLIMPORT int autovacuum_vac_ins_thresh;
-extern PGDLLIMPORT double autovacuum_vac_ins_scale;
-extern PGDLLIMPORT int autovacuum_anl_thresh;
-extern PGDLLIMPORT double autovacuum_anl_scale;
-extern PGDLLIMPORT int autovacuum_freeze_max_age;
-extern PGDLLIMPORT int autovacuum_multixact_freeze_max_age;
-extern PGDLLIMPORT double autovacuum_vac_cost_delay;
-extern PGDLLIMPORT int autovacuum_vac_cost_limit;
-extern PGDLLIMPORT double autovacuum_freeze_score_weight;
-extern PGDLLIMPORT double autovacuum_multixact_freeze_score_weight;
-extern PGDLLIMPORT double autovacuum_vacuum_score_weight;
-extern PGDLLIMPORT double autovacuum_vacuum_insert_score_weight;
-extern PGDLLIMPORT double autovacuum_analyze_score_weight;
-extern PGDLLIMPORT int Log_autovacuum_min_duration;
-extern PGDLLIMPORT int Log_autoanalyze_min_duration;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool autovacuum_start_daemon;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int autovacuum_worker_slots;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int autovacuum_max_workers;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int autovacuum_work_mem;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int autovacuum_naptime;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int autovacuum_vac_thresh;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int autovacuum_vac_max_thresh;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME double autovacuum_vac_scale;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int autovacuum_vac_ins_thresh;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME double autovacuum_vac_ins_scale;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int autovacuum_anl_thresh;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME double autovacuum_anl_scale;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int autovacuum_freeze_max_age;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int autovacuum_multixact_freeze_max_age;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME double autovacuum_vac_cost_delay;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int autovacuum_vac_cost_limit;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME double autovacuum_freeze_score_weight;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME double autovacuum_multixact_freeze_score_weight;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME double autovacuum_vacuum_score_weight;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME double autovacuum_vacuum_insert_score_weight;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME double autovacuum_analyze_score_weight;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int Log_autovacuum_min_duration;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int Log_autoanalyze_min_duration;
 
 /* Status inquiry functions */
 extern bool AutoVacuumingActive(void);

@@ -15,9 +15,10 @@
 #define WALSUMMARIZER_H
 
 #include "access/xlogdefs.h"
+#include "utils/global_lifetime.h"
 
-extern PGDLLIMPORT bool summarize_wal;
-extern PGDLLIMPORT int wal_summary_keep_time;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool summarize_wal;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_summary_keep_time;
 
 pg_noreturn extern void WalSummarizerMain(const void *startup_data, size_t startup_data_len);
 

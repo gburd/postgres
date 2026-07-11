@@ -21,8 +21,8 @@
 
 #include <signal.h>
 
-extern PGDLLIMPORT volatile sig_atomic_t ConfigReloadPending;
-extern PGDLLIMPORT volatile sig_atomic_t ShutdownRequestPending;
+#include "miscadmin.h"
+#include "utils/global_lifetime.h"
 
 extern void ProcessMainLoopInterrupts(void);
 extern void SignalHandlerForConfigReload(SIGNAL_ARGS);

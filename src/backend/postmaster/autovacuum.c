@@ -103,6 +103,8 @@
 #include "tcop/tcopprot.h"
 #include "utils/fmgroids.h"
 #include "utils/fmgrprotos.h"
+#include "utils/backend_runtime.h"
+#include "utils/global_lifetime.h"
 #include "utils/guc_hooks.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
@@ -120,30 +122,30 @@
 /*
  * GUC parameters
  */
-bool		autovacuum_start_daemon = false;
-int			autovacuum_worker_slots;
-int			autovacuum_max_workers;
-int			autovacuum_work_mem = -1;
-int			autovacuum_naptime;
-int			autovacuum_vac_thresh;
-int			autovacuum_vac_max_thresh;
-double		autovacuum_vac_scale;
-int			autovacuum_vac_ins_thresh;
-double		autovacuum_vac_ins_scale;
-int			autovacuum_anl_thresh;
-double		autovacuum_anl_scale;
-int			autovacuum_freeze_max_age;
-int			autovacuum_multixact_freeze_max_age;
-double		autovacuum_freeze_score_weight = 1.0;
-double		autovacuum_multixact_freeze_score_weight = 1.0;
-double		autovacuum_vacuum_score_weight = 1.0;
-double		autovacuum_vacuum_insert_score_weight = 1.0;
-double		autovacuum_analyze_score_weight = 1.0;
-double		autovacuum_vac_cost_delay;
-int			autovacuum_vac_cost_limit;
+PG_GLOBAL_RUNTIME bool autovacuum_start_daemon = false;
+PG_GLOBAL_RUNTIME int autovacuum_worker_slots;
+PG_GLOBAL_RUNTIME int autovacuum_max_workers;
+PG_GLOBAL_RUNTIME int autovacuum_work_mem = -1;
+PG_GLOBAL_RUNTIME int autovacuum_naptime;
+PG_GLOBAL_RUNTIME int autovacuum_vac_thresh;
+PG_GLOBAL_RUNTIME int autovacuum_vac_max_thresh;
+PG_GLOBAL_RUNTIME double autovacuum_vac_scale;
+PG_GLOBAL_RUNTIME int autovacuum_vac_ins_thresh;
+PG_GLOBAL_RUNTIME double autovacuum_vac_ins_scale;
+PG_GLOBAL_RUNTIME int autovacuum_anl_thresh;
+PG_GLOBAL_RUNTIME double autovacuum_anl_scale;
+PG_GLOBAL_RUNTIME int autovacuum_freeze_max_age;
+PG_GLOBAL_RUNTIME int autovacuum_multixact_freeze_max_age;
+PG_GLOBAL_RUNTIME double autovacuum_freeze_score_weight = 1.0;
+PG_GLOBAL_RUNTIME double autovacuum_multixact_freeze_score_weight = 1.0;
+PG_GLOBAL_RUNTIME double autovacuum_vacuum_score_weight = 1.0;
+PG_GLOBAL_RUNTIME double autovacuum_vacuum_insert_score_weight = 1.0;
+PG_GLOBAL_RUNTIME double autovacuum_analyze_score_weight = 1.0;
+PG_GLOBAL_RUNTIME double autovacuum_vac_cost_delay;
+PG_GLOBAL_RUNTIME int autovacuum_vac_cost_limit;
 
-int			Log_autovacuum_min_duration = 600000;
-int			Log_autoanalyze_min_duration = 600000;
+PG_GLOBAL_RUNTIME int Log_autovacuum_min_duration = 600000;
+PG_GLOBAL_RUNTIME int Log_autoanalyze_min_duration = 600000;
 
 /* the minimum allowed time between two awakenings of the launcher */
 #define MIN_AUTOVAC_SLEEPTIME 100.0 /* milliseconds */
@@ -158,24 +160,34 @@ int			Log_autoanalyze_min_duration = 600000;
  * parameters were specified and will be set in do_autovacuum() after checking
  * the storage parameters in table_recheck_autovac().
  */
-static double av_storage_param_cost_delay = -1;
-static int	av_storage_param_cost_limit = -1;
+#define av_storage_param_cost_delay \
+	(PgCurrentAutovacuumState()->av_storage_param_cost_delay)
+#define av_storage_param_cost_limit \
+	(PgCurrentAutovacuumState()->av_storage_param_cost_limit)
 
 /* Flags set by signal handlers */
-static volatile sig_atomic_t got_SIGUSR2 = false;
+#define got_SIGUSR2 \
+	(PgCurrentAutovacuumState()->got_sigusr2)
 
 /* Comparison points for determining whether freeze_max_age is exceeded */
-static TransactionId recentXid;
-static MultiXactId recentMulti;
+#define recentXid \
+	(PgCurrentAutovacuumState()->recent_xid)
+#define recentMulti \
+	(PgCurrentAutovacuumState()->recent_multi)
 
 /* Default freeze ages to use for autovacuum (varies by database) */
-static int	default_freeze_min_age;
-static int	default_freeze_table_age;
-static int	default_multixact_freeze_min_age;
-static int	default_multixact_freeze_table_age;
+#define default_freeze_min_age \
+	(PgCurrentAutovacuumState()->default_freeze_min_age)
+#define default_freeze_table_age \
+	(PgCurrentAutovacuumState()->default_freeze_table_age)
+#define default_multixact_freeze_min_age \
+	(PgCurrentAutovacuumState()->default_multixact_freeze_min_age)
+#define default_multixact_freeze_table_age \
+	(PgCurrentAutovacuumState()->default_multixact_freeze_table_age)
 
 /* Memory context for long-lived data */
-static MemoryContext AutovacMemCxt;
+#define AutovacMemCxt \
+	(PgCurrentAutovacuumState()->autovac_mem_cxt)
 
 /* struct to keep track of databases in launcher */
 typedef struct avl_dbase
@@ -308,7 +320,7 @@ typedef struct
 	pg_atomic_uint32 av_nworkersForBalance;
 } AutoVacuumShmemStruct;
 
-static AutoVacuumShmemStruct *AutoVacuumShmem;
+static PG_GLOBAL_SHMEM AutoVacuumShmemStruct *AutoVacuumShmem;
 
 static void AutoVacuumShmemRequest(void *arg);
 static void AutoVacuumShmemInit(void *arg);
@@ -322,8 +334,10 @@ const ShmemCallbacks AutoVacuumShmemCallbacks = {
  * the database list (of avl_dbase elements) in the launcher, and the context
  * that contains it
  */
-static dlist_head DatabaseList = DLIST_STATIC_INIT(DatabaseList);
-static MemoryContext DatabaseListCxt = NULL;
+#define DatabaseList \
+	(PgCurrentAutovacuumState()->database_list)
+#define DatabaseListCxt \
+	(PgCurrentAutovacuumState()->database_list_cxt)
 
 /*
  * This struct is used by relation_needs_vacanalyze() to return the table's
@@ -355,12 +369,13 @@ typedef struct
  * optimize it away.
  */
 #ifdef USE_VALGRIND
-extern avl_dbase *avl_dbase_array;
-avl_dbase  *avl_dbase_array;
+#define avl_dbase_array \
+	(PgCurrentAutovacuumState()->avl_dbase_array)
 #endif
 
 /* Pointer to my own WorkerInfo, valid on each worker */
-static WorkerInfo MyWorkerInfo = NULL;
+#define MyWorkerInfo \
+	(PgCurrentAutovacuumState()->my_worker_info)
 
 static Oid	do_start_worker(void);
 static void ProcessAutoVacLauncherInterrupts(void);
@@ -374,6 +389,7 @@ static int	db_comparator(const void *a, const void *b);
 static void autovac_recalculate_workers_for_balance(void);
 
 static void do_autovacuum(void);
+static void autovacuum_force_worker_gucs(void);
 static void FreeWorkerInfo(int code, Datum arg);
 
 static autovac_table *table_recheck_autovac(Oid relid, HTAB *table_toast_map,
@@ -411,11 +427,13 @@ void
 AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 {
 	sigjmp_buf	local_sigjmp_buf;
+	bool		threaded_launcher;
 
 	Assert(startup_data_len == 0);
 
 	/* Release postmaster's working memory context */
-	if (PostmasterContext)
+	threaded_launcher = PgRuntimeIsThreadBacked(CurrentPgRuntime);
+	if (PostmasterContext && !threaded_launcher)
 	{
 		MemoryContextDelete(PostmasterContext);
 		PostmasterContext = NULL;
@@ -436,18 +454,23 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 	 * backend, so we use the same signal handling.  See equivalent code in
 	 * tcop/postgres.c.
 	 */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGINT, StatementCancelHandler);
-	pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
+	if (!threaded_launcher)
+	{
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
+		pqsignal(SIGINT, StatementCancelHandler);
+		pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
+		/* SIGQUIT handler was already set up by InitPostmasterChild */
 
-	InitializeTimeouts();		/* establishes SIGALRM handler */
+		InitializeTimeouts();	/* establishes SIGALRM handler */
 
-	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-	pqsignal(SIGUSR2, avl_sigusr2_handler);
-	pqsignal(SIGFPE, FloatExceptionHandler);
-	pqsignal(SIGCHLD, PG_SIG_DFL);
+		pqsignal(SIGPIPE, PG_SIG_IGN);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR2, avl_sigusr2_handler);
+		pqsignal(SIGFPE, FloatExceptionHandler);
+		pqsignal(SIGCHLD, PG_SIG_DFL);
+	}
+	else
+		InitializeLogicalTimeouts();
 
 	/*
 	 * Create a per-backend PGPROC struct in shared memory.  We must do this
@@ -467,10 +490,12 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 	 * that we can reset the context during error recovery and thereby avoid
 	 * possible memory leaks.
 	 */
-	AutovacMemCxt = AllocSetContextCreate(TopMemoryContext,
-										  "Autovacuum Launcher",
-										  ALLOCSET_DEFAULT_SIZES);
+	AutovacMemCxt =
+		PgRuntimeGetOwnedMemoryContextWithSizes(&AutovacMemCxt,
+												"Autovacuum Launcher",
+												ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(AutovacMemCxt);
+	dlist_init(&DatabaseList);
 
 	/*
 	 * If an exception is encountered, processing resumes here.
@@ -550,44 +575,50 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 	PG_exception_stack = &local_sigjmp_buf;
 
 	/* must unblock signals before calling rebuild_database_list */
-	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+	if (!threaded_launcher)
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
-	/*
-	 * Set always-secure search path.  Launcher doesn't connect to a database,
-	 * so this has no effect.
-	 */
-	SetConfigOption("search_path", "", PGC_SUSET, PGC_S_OVERRIDE);
+	if (!threaded_launcher)
+	{
+		/*
+		 * Set always-secure search path.  Launcher doesn't connect to a
+		 * database, so this has no effect.
+		 */
+		SetConfigOption("search_path", "", PGC_SUSET, PGC_S_OVERRIDE);
 
-	/*
-	 * Force zero_damaged_pages OFF in the autovac process, even if it is set
-	 * in postgresql.conf.  We don't really want such a dangerous option being
-	 * applied non-interactively.
-	 */
-	SetConfigOption("zero_damaged_pages", "false", PGC_SUSET, PGC_S_OVERRIDE);
+		/*
+		 * Force zero_damaged_pages OFF in the autovac process, even if it is
+		 * set in postgresql.conf.  We don't really want such a dangerous
+		 * option being applied non-interactively.
+		 */
+		SetConfigOption("zero_damaged_pages", "false", PGC_SUSET, PGC_S_OVERRIDE);
 
-	/*
-	 * Force settable timeouts off to avoid letting these settings prevent
-	 * regular maintenance from being executed.
-	 */
-	SetConfigOption("statement_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
-	SetConfigOption("transaction_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
-	SetConfigOption("lock_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
-	SetConfigOption("idle_in_transaction_session_timeout", "0",
-					PGC_SUSET, PGC_S_OVERRIDE);
+		/*
+		 * Force settable timeouts off to avoid letting these settings prevent
+		 * regular maintenance from being executed.
+		 */
+		SetConfigOption("statement_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
+		SetConfigOption("transaction_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
+		SetConfigOption("lock_timeout", "0", PGC_SUSET, PGC_S_OVERRIDE);
+		SetConfigOption("idle_in_transaction_session_timeout", "0",
+						PGC_SUSET, PGC_S_OVERRIDE);
 
-	/*
-	 * Force default_transaction_isolation to READ COMMITTED.  We don't want
-	 * to pay the overhead of serializable mode, nor add any risk of causing
-	 * deadlocks or delaying other transactions.
-	 */
-	SetConfigOption("default_transaction_isolation", "read committed",
-					PGC_SUSET, PGC_S_OVERRIDE);
+		/*
+		 * Force default_transaction_isolation to READ COMMITTED.  We don't
+		 * want to pay the overhead of serializable mode, nor add any risk of
+		 * causing deadlocks or delaying other transactions.
+		 */
+		SetConfigOption("default_transaction_isolation", "read committed",
+						PGC_SUSET, PGC_S_OVERRIDE);
 
-	/*
-	 * Even when system is configured to use a different fetch consistency,
-	 * for autovac we always want fresh stats.
-	 */
-	SetConfigOption("stats_fetch_consistency", "none", PGC_SUSET, PGC_S_OVERRIDE);
+		/*
+		 * Even when system is configured to use a different fetch consistency,
+		 * for autovac we always want fresh stats.
+		 */
+		SetConfigOption("stats_fetch_consistency", "none", PGC_SUSET, PGC_S_OVERRIDE);
+	}
+
+	ThreadedBackendStartupComplete();
 
 	/*
 	 * In emergency mode, just start a worker (unless shutdown was requested)
@@ -731,6 +762,22 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 					AutoVacuumShmem->av_startingWorker = NULL;
 					ereport(WARNING,
 							errmsg("autovacuum worker took too long to start; canceled"));
+#ifdef USE_XTC_CARRIER
+
+					/*
+					 * Under the xtc carrier the canceled worker may be a fiber
+					 * that was never scheduled to run (a cross-thread wake to an
+					 * idle carrier loop can be missed in the current libxtc), so
+					 * it will never reach proc_exit to reap its own PMChild the
+					 * way a forked worker process would.  Ask the postmaster to
+					 * reap the orphaned worker slot, so a later fast-stop
+					 * PM_WAIT_BACKENDS does not wedge on a fiber that will never
+					 * publish an exit.  Harmless in process mode (the signal is
+					 * only sent here, and its handler finds no orphan).
+					 */
+					if (PgRuntimeIsThreadBacked(CurrentPgRuntime))
+						SendPostmasterSignal(PMSIGNAL_AUTOVAC_WORKER_TIMEOUT);
+#endif
 				}
 			}
 			else
@@ -786,6 +833,17 @@ AutoVacLauncherMain(const void *startup_data, size_t startup_data_len)
 static void
 ProcessAutoVacLauncherInterrupts(void)
 {
+	PgCurrentBackendApplyInterrupts();
+
+	if (AutoVacLauncherPending)
+	{
+		AutoVacLauncherPending = false;
+		got_SIGUSR2 = true;
+	}
+
+	if (ProcDiePending)
+		proc_exit(1);
+
 	/* the normal shutdown case */
 	if (ShutdownRequestPending)
 		AutoVacLauncherShutdown();
@@ -795,7 +853,9 @@ ProcessAutoVacLauncherInterrupts(void)
 		int			autovacuum_max_workers_prev = autovacuum_max_workers;
 
 		ConfigReloadPending = false;
-		ProcessConfigFile(PGC_SIGHUP);
+		if (CurrentPgRuntime == NULL ||
+			CurrentPgRuntime->kind == PG_RUNTIME_PROCESS)
+			ProcessConfigFile(PGC_SIGHUP);
 
 		/* shutdown requested in config file? */
 		if (!AutoVacuumingActive())
@@ -833,6 +893,7 @@ AutoVacLauncherShutdown(void)
 {
 	ereport(DEBUG1,
 			(errmsg_internal("autovacuum launcher shutting down")));
+
 	proc_exit(0);				/* done */
 }
 
@@ -1419,11 +1480,13 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 {
 	sigjmp_buf	local_sigjmp_buf;
 	Oid			dbid;
+	bool		threaded_worker;
 
 	Assert(startup_data_len == 0);
+	threaded_worker = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 
 	/* Release postmaster's working memory context */
-	if (PostmasterContext)
+	if (PostmasterContext && !threaded_worker)
 	{
 		MemoryContextDelete(PostmasterContext);
 		PostmasterContext = NULL;
@@ -1438,23 +1501,29 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 	 * backend, so we use the same signal handling.  See equivalent code in
 	 * tcop/postgres.c.
 	 */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
+	if (threaded_worker)
+		InitializeLogicalTimeouts();
+	else
+	{
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
 
-	/*
-	 * SIGINT is used to signal canceling the current table's vacuum; SIGTERM
-	 * means abort and exit cleanly, and SIGQUIT means abandon ship.
-	 */
-	pqsignal(SIGINT, StatementCancelHandler);
-	pqsignal(SIGTERM, die);
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
+		/*
+		 * SIGINT is used to signal canceling the current table's vacuum;
+		 * SIGTERM means abort and exit cleanly, and SIGQUIT means abandon
+		 * ship.
+		 */
+		pqsignal(SIGINT, StatementCancelHandler);
+		pqsignal(SIGTERM, die);
+		/* SIGQUIT handler was already set up by InitPostmasterChild */
 
-	InitializeTimeouts();		/* establishes SIGALRM handler */
+		InitializeTimeouts();	/* establishes SIGALRM handler */
 
-	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-	pqsignal(SIGUSR2, PG_SIG_IGN);
-	pqsignal(SIGFPE, FloatExceptionHandler);
-	pqsignal(SIGCHLD, PG_SIG_DFL);
+		pqsignal(SIGPIPE, PG_SIG_IGN);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR2, PG_SIG_IGN);
+		pqsignal(SIGFPE, FloatExceptionHandler);
+		pqsignal(SIGCHLD, PG_SIG_DFL);
+	}
 
 	/*
 	 * Create a per-backend PGPROC struct in shared memory.  We must do this
@@ -1500,13 +1569,128 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 	/* We can now handle ereport(ERROR) */
 	PG_exception_stack = &local_sigjmp_buf;
 
-	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+	if (!threaded_worker)
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
+	/*
+	 * Get the info about the database we're going to work on.  Do this before
+	 * worker-local GUC overrides so synthetic or stale worker launches can
+	 * leave cleanly without touching backend-local GUC state.
+	 */
+	LWLockAcquire(AutovacuumLock, LW_EXCLUSIVE);
+
+	/*
+	 * beware of startingWorker being INVALID; this should normally not
+	 * happen, but if a worker fails after forking and before this, the
+	 * launcher might have decided to remove it from the queue and start
+	 * again.
+	 */
+	if (AutoVacuumShmem->av_startingWorker != NULL)
+	{
+		MyWorkerInfo = AutoVacuumShmem->av_startingWorker;
+		dbid = MyWorkerInfo->wi_dboid;
+		MyWorkerInfo->wi_proc = MyProc;
+
+		/* insert into the running list */
+		dlist_push_head(&AutoVacuumShmem->av_runningWorkers,
+						&MyWorkerInfo->wi_links);
+
+		/*
+		 * remove from the "starting" pointer, so that the launcher can start
+		 * a new worker if required
+		 */
+		AutoVacuumShmem->av_startingWorker = NULL;
+		LWLockRelease(AutovacuumLock);
+
+		on_shmem_exit(FreeWorkerInfo, 0);
+
+		/* wake up the launcher */
+		if (pg_atomic_read_u32(&ProcGlobal->avLauncherProc) !=
+			INVALID_PROC_NUMBER)
+		{
+			if (PgRuntimeIsThreadBacked(CurrentPgRuntime))
+				(void) PostmasterSignalAutoVacLauncher();
+			else
+			{
+				PGPROC	   *launcher;
+				ProcNumber	launcher_proc;
+
+				launcher_proc =
+					pg_atomic_read_u32(&ProcGlobal->avLauncherProc);
+				if (launcher_proc != INVALID_PROC_NUMBER)
+				{
+					launcher = GetPGProcByNumber(launcher_proc);
+					if (launcher->pid != 0)
+						kill(launcher->pid, SIGUSR2);
+				}
+			}
+		}
+	}
+	else
+	{
+		/* no worker entry for me, go away */
+		elog(WARNING, "autovacuum worker started without a worker entry");
+		dbid = InvalidOid;
+		LWLockRelease(AutovacuumLock);
+	}
+
+	if (OidIsValid(dbid) && !threaded_worker)
+		autovacuum_force_worker_gucs();
+
+	if (OidIsValid(dbid))
+	{
+		char		dbname[NAMEDATALEN];
+
+		/*
+		 * Report autovac startup to the cumulative stats system.  We
+		 * deliberately do this before InitPostgres, so that the
+		 * last_autovac_time will get updated even if the connection attempt
+		 * fails.  This is to prevent autovac from getting "stuck" repeatedly
+		 * selecting an unopenable database, rather than making any progress
+		 * on stuff it can connect to.
+		 */
+		pgstat_report_autovac(dbid);
+
+		/*
+		 * Connect to the selected database, specifying no particular user,
+		 * and ignoring datallowconn.  Collect the database's name for
+		 * display.
+		 *
+		 * Note: if we have selected a just-deleted database (due to using
+		 * stale stats info), we'll fail and exit here.
+		 */
+		InitPostgres(NULL, dbid, NULL, InvalidOid,
+					 INIT_PG_OVERRIDE_ALLOW_CONNS,
+					 dbname);
+		if (threaded_worker)
+			autovacuum_force_worker_gucs();
+		SetProcessingMode(NormalProcessing);
+		ThreadedBackendStartupComplete();
+		set_ps_display(dbname);
+		ereport(DEBUG1,
+				(errmsg_internal("autovacuum: processing database \"%s\"", dbname)));
+
+		if (PostAuthDelay)
+			pg_usleep(PostAuthDelay * 1000000L);
+
+		/* And do an appropriate amount of work */
+		recentXid = ReadNextTransactionId();
+		recentMulti = ReadNextMultiXactId();
+		do_autovacuum();
+	}
+
+	/* All done, go away */
+	proc_exit(0);
+}
+
+static void
+autovacuum_force_worker_gucs(void)
+{
 	/*
 	 * Set always-secure search path, so malicious users can't redirect user
 	 * code (e.g. pg_index.indexprs).  (That code runs in a
-	 * SECURITY_RESTRICTED_OPERATION sandbox, so malicious users could not
-	 * take control of the entire autovacuum worker in any case.)
+	 * SECURITY_RESTRICTED_OPERATION sandbox, so malicious users could not take
+	 * control of the entire autovacuum worker in any case.)
 	 */
 	SetConfigOption("search_path", "", PGC_SUSET, PGC_S_OVERRIDE);
 
@@ -1545,102 +1729,11 @@ AutoVacWorkerMain(const void *startup_data, size_t startup_data_len)
 						PGC_SUSET, PGC_S_OVERRIDE);
 
 	/*
-	 * Even when system is configured to use a different fetch consistency,
-	 * for autovac we always want fresh stats.
+	 * Even when system is configured to use a different fetch consistency, for
+	 * autovac we always want fresh stats.
 	 */
-	SetConfigOption("stats_fetch_consistency", "none", PGC_SUSET, PGC_S_OVERRIDE);
-
-	/*
-	 * Get the info about the database we're going to work on.
-	 */
-	LWLockAcquire(AutovacuumLock, LW_EXCLUSIVE);
-
-	/*
-	 * beware of startingWorker being INVALID; this should normally not
-	 * happen, but if a worker fails after forking and before this, the
-	 * launcher might have decided to remove it from the queue and start
-	 * again.
-	 */
-	if (AutoVacuumShmem->av_startingWorker != NULL)
-	{
-		ProcNumber	launcherProc;
-
-		MyWorkerInfo = AutoVacuumShmem->av_startingWorker;
-		dbid = MyWorkerInfo->wi_dboid;
-		MyWorkerInfo->wi_proc = MyProc;
-
-		/* insert into the running list */
-		dlist_push_head(&AutoVacuumShmem->av_runningWorkers,
-						&MyWorkerInfo->wi_links);
-
-		/*
-		 * remove from the "starting" pointer, so that the launcher can start
-		 * a new worker if required
-		 */
-		AutoVacuumShmem->av_startingWorker = NULL;
-		LWLockRelease(AutovacuumLock);
-
-		on_shmem_exit(FreeWorkerInfo, 0);
-
-		/* wake up the launcher */
-		launcherProc = pg_atomic_read_u32(&ProcGlobal->avLauncherProc);
-		if (launcherProc != INVALID_PROC_NUMBER)
-		{
-			int			pid = GetPGProcByNumber(launcherProc)->pid;
-
-			if (pid != 0)
-				kill(pid, SIGUSR2);
-		}
-	}
-	else
-	{
-		/* no worker entry for me, go away */
-		elog(WARNING, "autovacuum worker started without a worker entry");
-		dbid = InvalidOid;
-		LWLockRelease(AutovacuumLock);
-	}
-
-	if (OidIsValid(dbid))
-	{
-		char		dbname[NAMEDATALEN];
-
-		/*
-		 * Report autovac startup to the cumulative stats system.  We
-		 * deliberately do this before InitPostgres, so that the
-		 * last_autovac_time will get updated even if the connection attempt
-		 * fails.  This is to prevent autovac from getting "stuck" repeatedly
-		 * selecting an unopenable database, rather than making any progress
-		 * on stuff it can connect to.
-		 */
-		pgstat_report_autovac(dbid);
-
-		/*
-		 * Connect to the selected database, specifying no particular user,
-		 * and ignoring datallowconn.  Collect the database's name for
-		 * display.
-		 *
-		 * Note: if we have selected a just-deleted database (due to using
-		 * stale stats info), we'll fail and exit here.
-		 */
-		InitPostgres(NULL, dbid, NULL, InvalidOid,
-					 INIT_PG_OVERRIDE_ALLOW_CONNS,
-					 dbname);
-		SetProcessingMode(NormalProcessing);
-		set_ps_display(dbname);
-		ereport(DEBUG1,
-				(errmsg_internal("autovacuum: processing database \"%s\"", dbname)));
-
-		if (PostAuthDelay)
-			pg_usleep(PostAuthDelay * 1000000L);
-
-		/* And do an appropriate amount of work */
-		recentXid = ReadNextTransactionId();
-		recentMulti = ReadNextMultiXactId();
-		do_autovacuum();
-	}
-
-	/* All done, go away */
-	proc_exit(0);
+	SetConfigOption("stats_fetch_consistency", "none",
+					PGC_SUSET, PGC_S_OVERRIDE);
 }
 
 /*
@@ -1949,9 +2042,10 @@ do_autovacuum(void)
 	 * switch to other contexts.  We need this one to keep the list of
 	 * relations to vacuum/analyze across transactions.
 	 */
-	AutovacMemCxt = AllocSetContextCreate(TopMemoryContext,
-										  "Autovacuum worker",
-										  ALLOCSET_DEFAULT_SIZES);
+	AutovacMemCxt =
+		PgRuntimeGetOwnedMemoryContextWithSizes(&AutovacMemCxt,
+												"Autovacuum worker",
+												ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(AutovacMemCxt);
 
 	/* Start a transaction so our commands have one to play into. */
@@ -2966,9 +3060,9 @@ table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 		 */
 		tab->at_params.max_eager_freeze_failure_rate = vacuum_max_eager_freeze_failure_rate;
 		tab->at_storage_param_vac_cost_limit = avopts ?
-			avopts->vacuum_cost_limit : 0;
+			avopts->relopt_vacuum_cost_limit : 0;
 		tab->at_storage_param_vac_cost_delay = avopts ?
-			avopts->vacuum_cost_delay : -1;
+			avopts->relopt_vacuum_cost_delay : -1;
 		tab->at_relname = NULL;
 		tab->at_nspname = NULL;
 		tab->at_datname = NULL;
@@ -2978,8 +3072,8 @@ table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 		 * this table, disable the balancing algorithm.
 		 */
 		tab->at_dobalance =
-			!(avopts && (avopts->vacuum_cost_limit > 0 ||
-						 avopts->vacuum_cost_delay >= 0));
+			!(avopts && (avopts->relopt_vacuum_cost_limit > 0 ||
+						 avopts->relopt_vacuum_cost_delay >= 0));
 	}
 
 	if (free_avopts)

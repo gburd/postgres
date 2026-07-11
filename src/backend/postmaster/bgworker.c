@@ -34,6 +34,7 @@
 #include "storage/subsystems.h"
 #include "tcop/tcopprot.h"
 #include "utils/ascii.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/timeout.h"
@@ -42,7 +43,7 @@
 /*
  * The postmaster's list of registered background workers, in private memory.
  */
-dlist_head	BackgroundWorkerList = DLIST_STATIC_INIT(BackgroundWorkerList);
+PG_GLOBAL_RUNTIME dlist_head BackgroundWorkerList = DLIST_STATIC_INIT(BackgroundWorkerList);
 
 /*
  * BackgroundWorkerSlots exist in shared memory and can be accessed (via
@@ -110,7 +111,7 @@ struct BackgroundWorkerHandle
 	uint64		generation;
 };
 
-static BackgroundWorkerArray *BackgroundWorkerData;
+static PG_GLOBAL_SHMEM BackgroundWorkerArray *BackgroundWorkerData;
 
 static void BackgroundWorkerShmemRequest(void *arg);
 static void BackgroundWorkerShmemInit(void *arg);
@@ -171,6 +172,7 @@ static const struct
 
 /* Private functions. */
 static bgworker_main_type LookupBackgroundWorkerFunction(const char *libraryname, const char *funcname);
+static bool BackgroundWorkerThreadedRuntime(void);
 
 
 /*
@@ -319,7 +321,7 @@ BackgroundWorkerStateChange(bool allow_new_workers)
 			{
 				rw->rw_terminate = true;
 				if (rw->rw_pid != 0)
-					kill(rw->rw_pid, SIGTERM);
+					PostmasterSignalPIDForWorker(rw->rw_pid, SIGTERM);
 				else
 				{
 					/* Report never-started, now-terminated worker as dead. */
@@ -363,7 +365,7 @@ BackgroundWorkerStateChange(bool allow_new_workers)
 			slot->in_use = false;
 
 			if (notify_pid != 0)
-				kill(notify_pid, SIGUSR1);
+				PostmasterNotifyPIDForWorker(notify_pid);
 
 			continue;
 		}
@@ -398,12 +400,13 @@ BackgroundWorkerStateChange(bool allow_new_workers)
 		/*
 		 * Copy various fixed-size fields.
 		 *
-		 * flags, start_time, and restart_time are examined by the postmaster,
-		 * but nothing too bad will happen if they are corrupted.  The
-		 * remaining fields will only be examined by the child process.  It
-		 * might crash, but we won't.
+		 * flags, backend_model, start_time, and restart_time are examined by
+		 * the postmaster, but nothing too bad will happen if they are
+		 * corrupted.  The remaining fields will only be examined by the child
+		 * process.  It might crash, but we won't.
 		 */
 		rw->rw_worker.bgw_flags = slot->worker.bgw_flags;
+		rw->rw_worker.bgw_backend_model = slot->worker.bgw_backend_model;
 		rw->rw_worker.bgw_start_time = slot->worker.bgw_start_time;
 		rw->rw_worker.bgw_restart_time = slot->worker.bgw_restart_time;
 		rw->rw_worker.bgw_main_arg = slot->worker.bgw_main_arg;
@@ -493,7 +496,7 @@ ReportBackgroundWorkerPID(RegisteredBgWorker *rw)
 	slot->pid = rw->rw_pid;
 
 	if (rw->rw_worker.bgw_notify_pid != 0)
-		kill(rw->rw_worker.bgw_notify_pid, SIGUSR1);
+		PostmasterNotifyPIDForWorker(rw->rw_worker.bgw_notify_pid);
 }
 
 /*
@@ -528,7 +531,7 @@ ReportBackgroundWorkerExit(RegisteredBgWorker *rw)
 		ForgetBackgroundWorker(rw);
 
 	if (notify_pid != 0)
-		kill(notify_pid, SIGUSR1);
+		PostmasterNotifyPIDForWorker(notify_pid);
 }
 
 /*
@@ -586,7 +589,7 @@ ForgetUnstartedBackgroundWorkers(void)
 
 			ForgetBackgroundWorker(rw);
 			if (notify_pid != 0)
-				kill(notify_pid, SIGUSR1);
+				PostmasterNotifyPIDForWorker(notify_pid);
 		}
 	}
 }
@@ -699,6 +702,16 @@ SanityCheckBackgroundWorker(BackgroundWorker *worker, int elevel)
 		return false;
 	}
 
+	if (worker->bgw_backend_model < BgWorkerBackendProcess ||
+		worker->bgw_backend_model > BgWorkerBackendThreadPerSession)
+	{
+		ereport(elevel,
+				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+				 errmsg("background worker \"%s\": invalid backend model %d",
+						worker->bgw_name, worker->bgw_backend_model)));
+		return false;
+	}
+
 	if ((worker->bgw_restart_time < 0 &&
 		 worker->bgw_restart_time != BGW_NEVER_RESTART) ||
 		(worker->bgw_restart_time > USECS_PER_DAY / 1000))
@@ -734,6 +747,21 @@ SanityCheckBackgroundWorker(BackgroundWorker *worker, int elevel)
 	return true;
 }
 
+bool
+BackgroundWorkerCanUseThreadCarrier(const BackgroundWorker *worker)
+{
+	if (worker == NULL)
+		return false;
+
+	return worker->bgw_backend_model == BgWorkerBackendThreadPerSession;
+}
+
+static bool
+BackgroundWorkerThreadedRuntime(void)
+{
+	return PgRuntimeIsThreadBacked(CurrentPgRuntime);
+}
+
 /*
  * Main entry point for background worker processes.
  */
@@ -743,25 +771,28 @@ BackgroundWorkerMain(const void *startup_data, size_t startup_data_len)
 	sigjmp_buf	local_sigjmp_buf;
 	BackgroundWorker *worker;
 	bgworker_main_type entrypt;
+	bool		threaded_worker;
 
 	if (startup_data == NULL)
 		elog(FATAL, "unable to find bgworker entry");
 	Assert(startup_data_len == sizeof(BackgroundWorker));
 	worker = MemoryContextAlloc(TopMemoryContext, sizeof(BackgroundWorker));
 	memcpy(worker, startup_data, sizeof(BackgroundWorker));
+	threaded_worker = BackgroundWorkerThreadedRuntime();
 
 	/*
 	 * Now that we're done reading the startup data, release postmaster's
 	 * working memory context.
 	 */
-	if (PostmasterContext)
+	if (!threaded_worker && PostmasterContext)
 	{
 		MemoryContextDelete(PostmasterContext);
 		PostmasterContext = NULL;
 	}
 
 	MyBgworkerEntry = worker;
-	init_ps_display(worker->bgw_name);
+	if (!threaded_worker)
+		init_ps_display(worker->bgw_name);
 
 	Assert(GetProcessingMode() == InitProcessing);
 
@@ -772,7 +803,8 @@ BackgroundWorkerMain(const void *startup_data, size_t startup_data_len)
 	/*
 	 * Set up signal handlers.
 	 */
-	if (worker->bgw_flags & BGWORKER_BACKEND_DATABASE_CONNECTION)
+	if (!threaded_worker &&
+		worker->bgw_flags & BGWORKER_BACKEND_DATABASE_CONNECTION)
 	{
 		/*
 		 * SIGINT is used to signal canceling the current action
@@ -783,21 +815,30 @@ BackgroundWorkerMain(const void *startup_data, size_t startup_data_len)
 
 		/* XXX Any other handlers needed here? */
 	}
-	else
+	else if (!threaded_worker)
 	{
 		pqsignal(SIGINT, PG_SIG_IGN);
 		pqsignal(SIGUSR1, PG_SIG_IGN);
 		pqsignal(SIGFPE, PG_SIG_IGN);
 	}
-	pqsignal(SIGTERM, die);
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
-	pqsignal(SIGHUP, PG_SIG_IGN);
+	if (!threaded_worker)
+	{
+		pqsignal(SIGTERM, die);
+		/* SIGQUIT handler was already set up by InitPostmasterChild */
+		pqsignal(SIGHUP, PG_SIG_IGN);
+	}
 
-	InitializeTimeouts();		/* establishes SIGALRM handler */
+	if (threaded_worker)
+		InitializeLogicalTimeouts();
+	else
+		InitializeTimeouts();	/* establishes SIGALRM handler */
 
-	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGUSR2, PG_SIG_IGN);
-	pqsignal(SIGCHLD, PG_SIG_DFL);
+	if (!threaded_worker)
+	{
+		pqsignal(SIGPIPE, PG_SIG_IGN);
+		pqsignal(SIGUSR2, PG_SIG_IGN);
+		pqsignal(SIGCHLD, PG_SIG_DFL);
+	}
 
 	/*
 	 * If an exception is encountered, processing resumes here.
@@ -851,6 +892,9 @@ BackgroundWorkerMain(const void *startup_data, size_t startup_data_len)
 	 */
 	entrypt = LookupBackgroundWorkerFunction(worker->bgw_library_name,
 											 worker->bgw_function_name);
+
+	if (threaded_worker)
+		ThreadedBackendStartupComplete();
 
 	/*
 	 * Note that in normal processes, we would call InitPostgres here.  For a
@@ -942,12 +986,18 @@ BackgroundWorkerInitializeConnectionByOid(Oid dboid, Oid useroid, uint32 flags)
 void
 BackgroundWorkerBlockSignals(void)
 {
+	if (BackgroundWorkerThreadedRuntime())
+		return;
+
 	sigprocmask(SIG_SETMASK, &BlockSig, NULL);
 }
 
 void
 BackgroundWorkerUnblockSignals(void)
 {
+	if (BackgroundWorkerThreadedRuntime())
+		return;
+
 	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 }
 
@@ -1241,6 +1291,7 @@ WaitForBackgroundWorkerStartup(BackgroundWorkerHandle *handle, pid_t *pidp)
 	{
 		pid_t		pid;
 
+		PgCurrentBackendApplyInterrupts();
 		CHECK_FOR_INTERRUPTS();
 
 		status = GetBackgroundWorkerPid(handle, &pid);
@@ -1286,6 +1337,7 @@ WaitForBackgroundWorkerShutdown(BackgroundWorkerHandle *handle)
 	{
 		pid_t		pid;
 
+		PgCurrentBackendApplyInterrupts();
 		CHECK_FOR_INTERRUPTS();
 
 		status = GetBackgroundWorkerPid(handle, &pid);

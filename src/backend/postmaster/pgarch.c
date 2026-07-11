@@ -49,6 +49,7 @@
 #include "storage/procsignal.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
@@ -94,19 +95,24 @@ typedef struct PgArchData
 	pg_atomic_uint32 force_dir_scan;
 } PgArchData;
 
-char	   *XLogArchiveLibrary = "";
-char	   *arch_module_check_errdetail_string;
+PG_GLOBAL_RUNTIME char *XLogArchiveLibrary = "";
 
 
 /* ----------
  * Local data
  * ----------
  */
-static time_t last_sigterm_time = 0;
-static PgArchData *PgArch = NULL;
-static const ArchiveModuleCallbacks *ArchiveCallbacks;
-static ArchiveModuleState *archive_module_state;
-static MemoryContext archive_context;
+#define last_sigterm_time \
+	(PgCurrentMaintenanceWorkerState()->pgarch_last_sigterm_time)
+static PG_GLOBAL_SHMEM PgArchData *PgArch = NULL;
+#define ArchiveCallbacks \
+	(PgCurrentMaintenanceWorkerState()->archive_callbacks)
+#define archive_module_state \
+	(PgCurrentMaintenanceWorkerState()->archive_module_state)
+#define archive_context \
+	(PgCurrentMaintenanceWorkerState()->archive_context)
+#define loaded_archive_library \
+	(PgCurrentMaintenanceWorkerState()->loaded_archive_library)
 
 
 /*
@@ -132,12 +138,29 @@ struct arch_files_state
 	char		arch_filenames[NUM_FILES_PER_DIRECTORY_SCAN][MAX_XFN_CHARS + 1];
 };
 
-static struct arch_files_state *arch_files = NULL;
+#define PgArchFiles \
+	(PgCurrentMaintenanceWorkerState()->pgarch_files)
+
+void
+PgArchResetFilesState(struct arch_files_state **files)
+{
+	struct arch_files_state *state;
+
+	if (files == NULL || *files == NULL)
+		return;
+
+	state = *files;
+	if (state->arch_heap != NULL)
+		binaryheap_free(state->arch_heap);
+	pfree(state);
+	*files = NULL;
+}
 
 /*
  * Flags set by interrupt handlers for later service in the main loop.
  */
-static volatile sig_atomic_t ready_to_stop = false;
+#define ready_to_stop \
+	(PgCurrentMaintenanceWorkerState()->pgarch_ready_to_stop)
 
 /* ----------
  * Local function forward declarations
@@ -197,7 +220,7 @@ PgArchShmemInit(void *arg)
 bool
 PgArchCanRestart(void)
 {
-	static time_t last_pgarch_start_time = 0;
+	static PG_GLOBAL_RUNTIME time_t last_pgarch_start_time = 0;
 	time_t		curtime = time(NULL);
 
 	/*
@@ -220,28 +243,36 @@ PgArchCanRestart(void)
 void
 PgArchiverMain(const void *startup_data, size_t startup_data_len)
 {
+	bool		threaded_worker;
+
 	Assert(startup_data_len == 0);
 
 	AuxiliaryProcessMainCommon();
+	threaded_worker = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 
 	/*
 	 * Ignore all signals usually bound to some action in the postmaster,
 	 * except for SIGHUP, SIGTERM, SIGUSR1, SIGUSR2, and SIGQUIT.
 	 */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGINT, PG_SIG_IGN);
-	pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
-	pqsignal(SIGALRM, PG_SIG_IGN);
-	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-	pqsignal(SIGUSR2, pgarch_waken_stop);
+	if (!threaded_worker)
+	{
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
+		pqsignal(SIGINT, PG_SIG_IGN);
+		pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
+		/* SIGQUIT handler was already set up by InitPostmasterChild */
+		pqsignal(SIGALRM, PG_SIG_IGN);
+		pqsignal(SIGPIPE, PG_SIG_IGN);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR2, pgarch_waken_stop);
+	}
 
 	/* Reset some signals that are accepted by postmaster but not here */
-	pqsignal(SIGCHLD, PG_SIG_DFL);
+	if (!threaded_worker)
+		pqsignal(SIGCHLD, PG_SIG_DFL);
 
 	/* Unblock signals (they were blocked when the postmaster forked us) */
-	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+	if (!threaded_worker)
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 	/* We shouldn't be launched unnecessarily. */
 	Assert(XLogArchivingActive());
@@ -256,17 +287,18 @@ PgArchiverMain(const void *startup_data, size_t startup_data_len)
 	PgArch->pgprocno = MyProcNumber;
 
 	/* Create workspace for pgarch_readyXlog() */
-	arch_files = palloc_object(struct arch_files_state);
-	arch_files->arch_files_size = 0;
+	PgArchFiles = palloc_object(struct arch_files_state);
+	PgArchFiles->arch_files_size = 0;
 
 	/* Initialize our max-heap for prioritizing files to archive. */
-	arch_files->arch_heap = binaryheap_allocate(NUM_FILES_PER_DIRECTORY_SCAN,
-												ready_file_comparator, NULL);
+	PgArchFiles->arch_heap = binaryheap_allocate(NUM_FILES_PER_DIRECTORY_SCAN,
+												 ready_file_comparator, NULL);
 
 	/* Initialize our memory context. */
-	archive_context = AllocSetContextCreate(TopMemoryContext,
-											"archiver",
-											ALLOCSET_DEFAULT_SIZES);
+	archive_context =
+		PgRuntimeGetOwnedMemoryContextWithSizes(&archive_context,
+												"archiver",
+												ALLOCSET_DEFAULT_SIZES);
 
 	/* Load the archive_library. */
 	LoadArchiveLibrary();
@@ -300,7 +332,7 @@ static void
 pgarch_waken_stop(SIGNAL_ARGS)
 {
 	/* set flag to do a final cycle and shut down afterwards */
-	ready_to_stop = true;
+	WakeupStopPending = true;
 	SetLatch(MyLatch);
 }
 
@@ -328,6 +360,7 @@ pgarch_MainLoop(void)
 
 		/* Check for barrier events and config update */
 		ProcessPgArchInterrupts();
+		time_to_stop = time_to_stop || ready_to_stop;
 
 		/*
 		 * If we've gotten SIGTERM, we normally just sit and do nothing until
@@ -386,7 +419,7 @@ pgarch_ArchiverCopyLoop(void)
 	char		xlog[MAX_XFN_CHARS + 1];
 
 	/* force directory scan in the first call to pgarch_readyXlog() */
-	arch_files->arch_files_size = 0;
+	PgArchFiles->arch_files_size = 0;
 
 	/*
 	 * loop through all xlogs with archive_status of .ready and archive
@@ -656,7 +689,7 @@ pgarch_readyXlog(char *xlog)
 	 * proceed.
 	 */
 	if (pg_atomic_exchange_u32(&PgArch->force_dir_scan, 0) == 1)
-		arch_files->arch_files_size = 0;
+		PgArchFiles->arch_files_size = 0;
 
 	/*
 	 * If we still have stored file names from the previous directory scan,
@@ -664,14 +697,14 @@ pgarch_readyXlog(char *xlog)
 	 * still present, as the archive_command for a previous file may have
 	 * already marked it done.
 	 */
-	while (arch_files->arch_files_size > 0)
+	while (PgArchFiles->arch_files_size > 0)
 	{
 		struct stat st;
 		char		status_file[MAXPGPATH];
 		char	   *arch_file;
 
-		arch_files->arch_files_size--;
-		arch_file = arch_files->arch_files[arch_files->arch_files_size];
+		PgArchFiles->arch_files_size--;
+		arch_file = PgArchFiles->arch_files[PgArchFiles->arch_files_size];
 		StatusFilePath(status_file, arch_file, ".ready");
 
 		if (stat(status_file, &st) == 0)
@@ -686,7 +719,7 @@ pgarch_readyXlog(char *xlog)
 	}
 
 	/* arch_heap is probably empty, but let's make sure */
-	binaryheap_reset(arch_files->arch_heap);
+	binaryheap_reset(PgArchFiles->arch_heap);
 
 	/*
 	 * Open the archive status directory and read through the list of files
@@ -721,53 +754,53 @@ pgarch_readyXlog(char *xlog)
 		/*
 		 * Store the file in our max-heap if it has a high enough priority.
 		 */
-		if (binaryheap_size(arch_files->arch_heap) < NUM_FILES_PER_DIRECTORY_SCAN)
+		if (binaryheap_size(PgArchFiles->arch_heap) < NUM_FILES_PER_DIRECTORY_SCAN)
 		{
 			/* If the heap isn't full yet, quickly add it. */
-			arch_file = arch_files->arch_filenames[binaryheap_size(arch_files->arch_heap)];
+			arch_file = PgArchFiles->arch_filenames[binaryheap_size(PgArchFiles->arch_heap)];
 			strcpy(arch_file, basename);
-			binaryheap_add_unordered(arch_files->arch_heap, CStringGetDatum(arch_file));
+			binaryheap_add_unordered(PgArchFiles->arch_heap, CStringGetDatum(arch_file));
 
 			/* If we just filled the heap, make it a valid one. */
-			if (binaryheap_size(arch_files->arch_heap) == NUM_FILES_PER_DIRECTORY_SCAN)
-				binaryheap_build(arch_files->arch_heap);
+			if (binaryheap_size(PgArchFiles->arch_heap) == NUM_FILES_PER_DIRECTORY_SCAN)
+				binaryheap_build(PgArchFiles->arch_heap);
 		}
-		else if (ready_file_comparator(binaryheap_first(arch_files->arch_heap),
+		else if (ready_file_comparator(binaryheap_first(PgArchFiles->arch_heap),
 									   CStringGetDatum(basename), NULL) > 0)
 		{
 			/*
 			 * Remove the lowest priority file and add the current one to the
 			 * heap.
 			 */
-			arch_file = DatumGetCString(binaryheap_remove_first(arch_files->arch_heap));
+			arch_file = DatumGetCString(binaryheap_remove_first(PgArchFiles->arch_heap));
 			strcpy(arch_file, basename);
-			binaryheap_add(arch_files->arch_heap, CStringGetDatum(arch_file));
+			binaryheap_add(PgArchFiles->arch_heap, CStringGetDatum(arch_file));
 		}
 	}
 	FreeDir(rldir);
 
 	/* If no files were found, simply return. */
-	if (binaryheap_empty(arch_files->arch_heap))
+	if (binaryheap_empty(PgArchFiles->arch_heap))
 		return false;
 
 	/*
 	 * If we didn't fill the heap, we didn't make it a valid one.  Do that
 	 * now.
 	 */
-	if (binaryheap_size(arch_files->arch_heap) < NUM_FILES_PER_DIRECTORY_SCAN)
-		binaryheap_build(arch_files->arch_heap);
+	if (binaryheap_size(PgArchFiles->arch_heap) < NUM_FILES_PER_DIRECTORY_SCAN)
+		binaryheap_build(PgArchFiles->arch_heap);
 
 	/*
 	 * Fill arch_files array with the files to archive in ascending order of
 	 * priority.
 	 */
-	arch_files->arch_files_size = binaryheap_size(arch_files->arch_heap);
-	for (int i = 0; i < arch_files->arch_files_size; i++)
-		arch_files->arch_files[i] = DatumGetCString(binaryheap_remove_first(arch_files->arch_heap));
+	PgArchFiles->arch_files_size = binaryheap_size(PgArchFiles->arch_heap);
+	for (int i = 0; i < PgArchFiles->arch_files_size; i++)
+		PgArchFiles->arch_files[i] = DatumGetCString(binaryheap_remove_first(PgArchFiles->arch_heap));
 
 	/* Return the highest priority file. */
-	arch_files->arch_files_size--;
-	strcpy(xlog, arch_files->arch_files[arch_files->arch_files_size]);
+	PgArchFiles->arch_files_size--;
+	strcpy(xlog, PgArchFiles->arch_files[PgArchFiles->arch_files_size]);
 
 	return true;
 }
@@ -863,6 +896,27 @@ pgarch_die(int code, Datum arg)
 static void
 ProcessPgArchInterrupts(void)
 {
+	PgCurrentBackendApplyInterrupts();
+
+	/*
+	 * A threaded archiver fiber has no OS quickdie handler: an immediate stop
+	 * (SIGQUIT) arrives as a PROC_DIE interrupt on its mailbox.  Honor it here
+	 * -- the postmaster's cross-fiber SetLatch wakes the parked WaitLatch, this
+	 * runs, and we proc_exit so PM_WAIT_* completes instead of the postmaster
+	 * having to SIGKILL a recalcitrant fiber.  (In process mode ProcDiePending
+	 * is driven by the die() SIGTERM handler / quickdie; here it is set by the
+	 * PROC_DIE interrupt that thread_child_signal_interrupt maps SIGQUIT to.)
+	 * Mirrors ProcessWalSummarizerInterrupts.
+	 */
+	if (ProcDiePending)
+		proc_exit(1);
+
+	if (WakeupStopPending)
+	{
+		WakeupStopPending = false;
+		ready_to_stop = true;
+	}
+
 	if (ProcSignalBarrierPending)
 		ProcessProcSignalBarrier();
 
@@ -872,11 +926,22 @@ ProcessPgArchInterrupts(void)
 
 	if (ConfigReloadPending)
 	{
-		char	   *archiveLib = pstrdup(XLogArchiveLibrary);
+		char	   *archiveLib;
 		bool		archiveLibChanged;
 
+		archiveLib = pstrdup(loaded_archive_library != NULL ?
+							 loaded_archive_library : XLogArchiveLibrary);
 		ConfigReloadPending = false;
-		ProcessConfigFile(PGC_SIGHUP);
+
+		/*
+		 * Thread-backed workers share GUC storage with the postmaster.  The
+		 * postmaster performs the actual config reload, so the archiver only
+		 * needs to observe the updated shared values and restart if the loaded
+		 * archive module no longer matches.
+		 */
+		if (CurrentPgRuntime == NULL ||
+			CurrentPgRuntime->kind == PG_RUNTIME_PROCESS)
+			ProcessConfigFile(PGC_SIGHUP);
 
 		if (XLogArchiveLibrary[0] != '\0' && XLogArchiveCommand[0] != '\0')
 			ereport(ERROR,
@@ -947,6 +1012,9 @@ LoadArchiveLibrary(void)
 	archive_module_state = palloc0_object(ArchiveModuleState);
 	if (ArchiveCallbacks->startup_cb != NULL)
 		ArchiveCallbacks->startup_cb(archive_module_state);
+
+	loaded_archive_library = MemoryContextStrdup(TopMemoryContext,
+												 XLogArchiveLibrary);
 
 	before_shmem_exit(pgarch_call_module_shutdown_cb, 0);
 }

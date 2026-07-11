@@ -48,6 +48,7 @@
 #include "storage/procsignal.h"
 #include "storage/smgr.h"
 #include "storage/standby.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 #include "utils/timestamp.h"
@@ -56,7 +57,7 @@
 /*
  * GUC parameters
  */
-int			BgWriterDelay = 200;
+PG_GLOBAL_RUNTIME int BgWriterDelay = 200;
 
 /*
  * Multiplier to apply to BgWriterDelay when we decide to hibernate.
@@ -75,8 +76,12 @@ int			BgWriterDelay = 200;
  * doing so too often or repeatedly if there has been no other write activity
  * in the system.
  */
-static TimestampTz last_snapshot_ts;
-static XLogRecPtr last_snapshot_lsn = InvalidXLogRecPtr;
+#define last_snapshot_ts \
+	(PgCurrentMaintenanceWorkerState()->bgwriter_last_snapshot_ts)
+#define last_snapshot_lsn \
+	(PgCurrentMaintenanceWorkerState()->bgwriter_last_snapshot_lsn)
+#define bgwriter_context \
+	(PgCurrentMaintenanceWorkerState()->bgwriter_context)
 
 
 /*
@@ -89,30 +94,34 @@ void
 BackgroundWriterMain(const void *startup_data, size_t startup_data_len)
 {
 	sigjmp_buf	local_sigjmp_buf;
-	MemoryContext bgwriter_context;
 	bool		prev_hibernate;
+	bool		threaded_worker;
 	WritebackContext wb_context;
 
 	Assert(startup_data_len == 0);
 
 	AuxiliaryProcessMainCommon();
+	threaded_worker = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 
 	/*
 	 * Properly accept or ignore signals that might be sent to us.
 	 */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGINT, PG_SIG_IGN);
-	pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
-	pqsignal(SIGALRM, PG_SIG_IGN);
-	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-	pqsignal(SIGUSR2, PG_SIG_IGN);
+	if (!threaded_worker)
+	{
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
+		pqsignal(SIGINT, PG_SIG_IGN);
+		pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
+		/* SIGQUIT handler was already set up by InitPostmasterChild */
+		pqsignal(SIGALRM, PG_SIG_IGN);
+		pqsignal(SIGPIPE, PG_SIG_IGN);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR2, PG_SIG_IGN);
 
-	/*
-	 * Reset some signals that are accepted by postmaster but not here
-	 */
-	pqsignal(SIGCHLD, PG_SIG_DFL);
+		/*
+		 * Reset some signals that are accepted by postmaster but not here
+		 */
+		pqsignal(SIGCHLD, PG_SIG_DFL);
+	}
 
 	/*
 	 * We just started, assume there has been either a shutdown or
@@ -126,9 +135,10 @@ BackgroundWriterMain(const void *startup_data, size_t startup_data_len)
 	 * possible memory leaks.  Formerly this code just ran in
 	 * TopMemoryContext, but resetting that would be a really bad idea.
 	 */
-	bgwriter_context = AllocSetContextCreate(TopMemoryContext,
-											 "Background Writer",
-											 ALLOCSET_DEFAULT_SIZES);
+	bgwriter_context =
+		PgRuntimeGetOwnedMemoryContextWithSizes(&bgwriter_context,
+												"Background Writer",
+												ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(bgwriter_context);
 
 	WritebackContextInit(&wb_context, &bgwriter_flush_after);
@@ -210,7 +220,8 @@ BackgroundWriterMain(const void *startup_data, size_t startup_data_len)
 	/*
 	 * Unblock signals (they were blocked when the postmaster forked us)
 	 */
-	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+	if (!threaded_worker)
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 	/*
 	 * Reset hibernation state after any error.
