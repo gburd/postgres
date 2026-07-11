@@ -44,19 +44,17 @@
 #ifndef SPIN_H
 #define SPIN_H
 
-#ifdef USE_STDATOMIC_H
-
 /*
- * Atomics-based spinlocks.  The traditional path is deprecated as of PG19.
+ * Atomics-based spinlocks.
  *
- * When stdatomic.h is available, spinlocks are implemented on top of a plain
- * 32-bit atomic rather than platform-specific TAS assembly.  We deliberately
- * do NOT use pg_atomic_flag: that type uses 1==unlocked so it can offer a
- * relaxed "unlocked test", whereas a spinlock must be usable when its memory
- * has merely been zeroed (much shared-memory state is set up with
+ * Spinlocks are implemented directly on top of a plain 32-bit atomic rather
+ * than platform-specific TAS assembly.  We deliberately do NOT use
+ * pg_atomic_flag: that type uses 1==unlocked so it can offer a relaxed
+ * "unlocked test", whereas a spinlock must be usable when its memory has
+ * merely been zeroed (a great deal of shared-memory state is set up with
  * memset(...,0,...) and then relies on embedded spinlocks reading as free).
  * So slock_t uses the traditional convention: 0 == unlocked, 1 == locked,
- * making a zero-initialized slock_t a valid, free lock.
+ * which makes a zero-initialized slock_t a valid, free lock.
  */
 #include "port/atomics.h"
 
@@ -90,40 +88,12 @@ SpinLockRelease(volatile slock_t *lock)
 	/*
 	 * Release semantics: all prior writes in the critical section must be
 	 * visible before the lock is observed free.  This matches the traditional
-	 * S_UNLOCK(), which is __sync_lock_release() (a release, not a full
+	 * S_UNLOCK(), which was __sync_lock_release() (a release, not a full
 	 * barrier); a release fence plus a plain store is the equivalent and
 	 * avoids the store-side serialization a seq_cst store would add on ARM64.
 	 */
 	pg_write_barrier();
 	pg_atomic_write_u32(lock, 0);
 }
-
-#else							/* !USE_STDATOMIC_H */
-
-/*
- * Traditional spinlock implementation using platform-specific TAS assembly.
- * This branch is kept byte-for-byte equivalent to the pre-stdatomic spin.h.
- */
-#include "storage/s_lock.h"
-
-static inline void
-SpinLockInit(volatile slock_t *lock)
-{
-	S_INIT_LOCK(lock);
-}
-
-static inline void
-SpinLockAcquire(volatile slock_t *lock)
-{
-	S_LOCK(lock);
-}
-
-static inline void
-SpinLockRelease(volatile slock_t *lock)
-{
-	S_UNLOCK(lock);
-}
-
-#endif							/* USE_STDATOMIC_H */
 
 #endif							/* SPIN_H */
