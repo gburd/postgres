@@ -20,6 +20,7 @@
 
 #include "storage/aio_types.h"
 #include "storage/procnumber.h"
+#include "utils/global_lifetime.h"
 
 
 /* io_uring is incompatible with EXEC_BACKEND */
@@ -35,6 +36,9 @@ typedef enum IoMethod
 	IOMETHOD_WORKER,
 #ifdef IOMETHOD_IO_URING_ENABLED
 	IOMETHOD_IO_URING,
+#endif
+#ifdef USE_XTC_CARRIER
+	IOMETHOD_XTC,
 #endif
 }			IoMethod;
 
@@ -362,8 +366,8 @@ extern void pgaio_closing_fd(int fd);
 
 
 /* GUCs */
-extern PGDLLIMPORT int io_method;
-extern PGDLLIMPORT int io_max_concurrency;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int io_method;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int io_max_concurrency;
 
 
 #endif							/* AIO_H */

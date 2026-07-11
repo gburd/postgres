@@ -80,20 +80,20 @@ printMixedStruct(const struct config_generic *structToPrint)
 
 		case PGC_BOOL:
 			printf("BOOLEAN\t%s\t\t\t",
-				   (structToPrint->_bool.reset_val == 0) ?
+				   (ConfigOptionResetValue(structToPrint)->boolval == 0) ?
 				   "FALSE" : "TRUE");
 			break;
 
 		case PGC_INT:
 			printf("INTEGER\t%d\t%d\t%d\t",
-				   structToPrint->_int.reset_val,
+				   ConfigOptionResetValue(structToPrint)->intval,
 				   structToPrint->_int.min,
 				   structToPrint->_int.max);
 			break;
 
 		case PGC_REAL:
 			printf("REAL\t%g\t%g\t%g\t",
-				   structToPrint->_real.reset_val,
+				   ConfigOptionResetValue(structToPrint)->realval,
 				   structToPrint->_real.min,
 				   structToPrint->_real.max);
 			break;

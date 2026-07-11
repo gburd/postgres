@@ -87,6 +87,7 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/global_lifetime.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/regproc.h"
@@ -722,13 +723,13 @@ static const ObjectPropertyType ObjectProperty[] =
  *
  * To ease maintenance, this follows the order of getObjectTypeDescription.
  */
-static const struct object_type_map
+struct object_type_map
 {
 	const char *tm_name;
 	ObjectType	tm_type;
-}
+};
 
-			ObjectTypeMap[] =
+static PG_GLOBAL_IMMUTABLE const struct object_type_map ObjectTypeMap[] =
 {
 	{
 		"table", OBJECT_TABLE

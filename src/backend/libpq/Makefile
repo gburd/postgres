@@ -18,6 +18,7 @@ OBJS = \
 	auth-oauth.o \
 	auth-sasl.o \
 	auth-scram.o \
+	backend_runtime_connection.o \
 	auth.o \
 	be-fsstubs.o \
 	be-secure-common.o \

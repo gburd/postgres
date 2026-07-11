@@ -24,6 +24,15 @@
 #include "common/string.h"
 #include "nodes/bitmapset.h"
 #include "nodes/pg_list.h"
+/*
+ * xtc-carrier: backend_runtime.h must precede readfuncs.h so the generated
+ * PgCurrentNode*LocationFieldsRef() field-accessor macros are defined before
+ * readfuncs.h turns restore_location_fields/write_location_fields into
+ * object-like macros.  The reverse order (the tree default) makes the .def
+ * accessor expand ->restore_location_fields into a recursive macro call,
+ * which GCC 14 rejects with "declared as a function" / "no member".
+ */
+#include "utils/backend_runtime.h"
 #include "nodes/readfuncs.h"
 #include "nodes/value.h"
 

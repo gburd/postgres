@@ -66,6 +66,7 @@
 #include "libpq/pqsignal.h"
 #include "pgstat.h"
 #include "postmaster/interrupt.h"
+#include "postmaster/postmaster.h"
 #include "replication/logical.h"
 #include "replication/logicalctl.h"
 #include "replication/slotsync.h"
@@ -74,8 +75,10 @@
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
+#include "storage/procnumber.h"
 #include "storage/subsystems.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
@@ -91,6 +94,11 @@
  * process sets 'stopSignaled' and uses this 'pid' to signal the synchronizing
  * process with PROCSIG_SLOTSYNC_MESSAGE and also to wake it up so that the
  * process can immediately stop its synchronizing work.
+ *
+ * In threaded mode, 'pid' is the containing postmaster PID and must not be
+ * signaled directly.  'procno' and 'threaded' identify the synchronizing
+ * logical backend's PGPROC so promotion can wake its latch and let it observe
+ * stopSignaled at its next interrupt point.
  * Setting 'stopSignaled' on the other hand is used to handle the race
  * condition when the postmaster has not noticed the promotion yet and thus may
  * end up restarting the slot sync worker. If 'stopSignaled' is set, the worker
@@ -113,16 +121,21 @@
 typedef struct SlotSyncCtxStruct
 {
 	pid_t		pid;
+	ProcNumber	procno;
+	bool		threaded;
 	bool		stopSignaled;
 	bool		syncing;
 	time_t		last_start_time;
 	slock_t		mutex;
 } SlotSyncCtxStruct;
 
-static SlotSyncCtxStruct *SlotSyncCtx = NULL;
+static PG_GLOBAL_SHMEM SlotSyncCtxStruct *SlotSyncCtx = NULL;
 
 static void SlotSyncShmemRequest(void *arg);
 static void SlotSyncShmemInit(void *arg);
+static void SlotSyncCheckForStop(void);
+static bool SlotSyncIsThreadedRuntime(void);
+static void SlotSyncRememberConfig(void);
 
 const ShmemCallbacks SlotSyncShmemCallbacks = {
 	.request_fn = SlotSyncShmemRequest,
@@ -130,17 +143,18 @@ const ShmemCallbacks SlotSyncShmemCallbacks = {
 };
 
 /* GUC variable */
-bool		sync_replication_slots = false;
+PG_GLOBAL_RUNTIME bool sync_replication_slots = false;
 
 /*
  * The sleep time (ms) between slot-sync cycles varies dynamically
  * (within a MIN/MAX range) according to slot activity. See
  * wait_for_slot_activity() for details.
  */
-#define MIN_SLOTSYNC_WORKER_NAPTIME_MS  200
+#define MIN_SLOTSYNC_WORKER_NAPTIME_MS  PG_BACKEND_SLOTSYNC_INITIAL_SLEEP_MS
 #define MAX_SLOTSYNC_WORKER_NAPTIME_MS  30000	/* 30s */
 
-static long sleep_ms = MIN_SLOTSYNC_WORKER_NAPTIME_MS;
+#define sleep_ms \
+	(PgCurrentLogicalReplicationState()->slotsync_sleep_ms)
 
 /* The restart interval for slot sync work used by postmaster */
 #define SLOTSYNC_RESTART_INTERVAL_SEC 10
@@ -150,14 +164,16 @@ static long sleep_ms = MIN_SLOTSYNC_WORKER_NAPTIME_MS;
  * in SlotSyncCtxStruct, this flag is true only if the current process is
  * performing slot synchronization.
  */
-static bool syncing_slots = false;
-
-/*
- * Interrupt flag set when PROCSIG_SLOTSYNC_MESSAGE is received, asking the
- * slotsync worker or pg_sync_replication_slots() to stop because
- * standby promotion has been triggered.
- */
-volatile sig_atomic_t SlotSyncShutdownPending = false;
+#define syncing_slots \
+	(PgCurrentLogicalReplicationState()->slotsync_syncing_slots)
+#define slotsync_observed_primary_conninfo \
+	(PgCurrentLogicalReplicationState()->slotsync_observed_primary_conninfo)
+#define slotsync_observed_primary_slotname \
+	(PgCurrentLogicalReplicationState()->slotsync_observed_primary_slotname)
+#define slotsync_observed_sync_replication_slots \
+	(PgCurrentLogicalReplicationState()->slotsync_observed_sync_replication_slots)
+#define slotsync_observed_hot_standby_feedback \
+	(PgCurrentLogicalReplicationState()->slotsync_observed_hot_standby_feedback)
 
 /*
  * Structure to hold information fetched from the primary server about a logical
@@ -1301,20 +1317,44 @@ ValidateSlotSyncParams(int elevel)
 static void
 slotsync_reread_config(void)
 {
-	char	   *old_primary_conninfo = pstrdup(PrimaryConnInfo);
-	char	   *old_primary_slotname = pstrdup(PrimarySlotName);
-	bool		old_sync_replication_slots = sync_replication_slots;
-	bool		old_hot_standby_feedback = hot_standby_feedback;
+	bool		threaded_runtime = SlotSyncIsThreadedRuntime();
+	char	   *old_primary_conninfo;
+	char	   *old_primary_slotname;
+	bool		old_sync_replication_slots;
+	bool		old_hot_standby_feedback;
 	bool		conninfo_changed;
 	bool		primary_slotname_changed;
 	bool		is_slotsync_worker = AmLogicalSlotSyncWorkerProcess();
 	bool		parameter_changed = false;
 
-	if (is_slotsync_worker)
+	if (is_slotsync_worker && !threaded_runtime)
 		Assert(sync_replication_slots);
 
+	if (threaded_runtime && slotsync_observed_primary_conninfo != NULL)
+	{
+		old_primary_conninfo = pstrdup(slotsync_observed_primary_conninfo);
+		old_primary_slotname = pstrdup(slotsync_observed_primary_slotname);
+		old_sync_replication_slots = slotsync_observed_sync_replication_slots;
+		old_hot_standby_feedback = slotsync_observed_hot_standby_feedback;
+	}
+	else
+	{
+		old_primary_conninfo = pstrdup(PrimaryConnInfo);
+		old_primary_slotname = pstrdup(PrimarySlotName);
+		old_sync_replication_slots = sync_replication_slots;
+		old_hot_standby_feedback = hot_standby_feedback;
+	}
+
 	ConfigReloadPending = false;
-	ProcessConfigFile(PGC_SIGHUP);
+
+	/*
+	 * Thread-backed slot sync workers and threaded SQL callers share GUC
+	 * storage with the postmaster, which owns parsing and applying config
+	 * files for the shared address space.  They only need to observe the
+	 * updated shared values here.
+	 */
+	if (!threaded_runtime)
+		ProcessConfigFile(PGC_SIGHUP);
 
 	conninfo_changed = strcmp(old_primary_conninfo, PrimaryConnInfo) != 0;
 	primary_slotname_changed = strcmp(old_primary_slotname, PrimarySlotName) != 0;
@@ -1330,7 +1370,7 @@ slotsync_reread_config(void)
 					errmsg("replication slot synchronization worker will stop because \"%s\" is disabled",
 						   "sync_replication_slots"));
 
-			proc_exit(0);
+			PgBackendExit(0);
 		}
 
 		parameter_changed = true;
@@ -1354,7 +1394,7 @@ slotsync_reread_config(void)
 				 */
 				SlotSyncCtx->last_start_time = 0;
 
-				proc_exit(0);
+				PgBackendExit(0);
 			}
 
 			parameter_changed = true;
@@ -1373,6 +1413,8 @@ slotsync_reread_config(void)
 				errmsg("replication slot synchronization will stop because of a parameter change"));
 	}
 
+	if (threaded_runtime)
+		SlotSyncRememberConfig();
 }
 
 /*
@@ -1385,7 +1427,7 @@ slotsync_reread_config(void)
 void
 HandleSlotSyncMessageInterrupt(void)
 {
-	InterruptPending = true;
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_SLOT_SYNC_MESSAGE);
 	SlotSyncShutdownPending = true;
 	/* latch will be set by procsignal_sigusr1_handler */
 }
@@ -1407,7 +1449,7 @@ ProcessSlotSyncMessage(void)
 	{
 		ereport(LOG,
 				errmsg("replication slot synchronization worker will stop because promotion is triggered"));
-		proc_exit(0);
+		PgBackendExit(0);
 	}
 	else
 	{
@@ -1422,6 +1464,55 @@ ProcessSlotSyncMessage(void)
 				errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				errmsg("replication slot synchronization will stop because promotion is triggered"));
 	}
+}
+
+/*
+ * Thread-backed slot sync participants don't receive PROCSIG_SLOTSYNC_MESSAGE
+ * through Unix signals.  Promotion sets stopSignaled and wakes their PGPROC
+ * latch, so explicit interrupt points must observe the shared flag.
+ */
+static void
+SlotSyncCheckForStop(void)
+{
+	bool		stop_signaled;
+
+	if (!syncing_slots)
+		return;
+
+	SpinLockAcquire(&SlotSyncCtx->mutex);
+	stop_signaled = SlotSyncCtx->stopSignaled;
+	SpinLockRelease(&SlotSyncCtx->mutex);
+
+	if (stop_signaled)
+		ProcessSlotSyncMessage();
+}
+
+static bool
+SlotSyncIsThreadedRuntime(void)
+{
+	return PgRuntimeIsThreadBacked(CurrentPgRuntime);
+}
+
+static void
+SlotSyncRememberConfig(void)
+{
+	MemoryContext oldcontext;
+
+	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+
+	if (slotsync_observed_primary_conninfo != NULL)
+		pfree(slotsync_observed_primary_conninfo);
+	if (slotsync_observed_primary_slotname != NULL)
+		pfree(slotsync_observed_primary_slotname);
+
+	slotsync_observed_primary_conninfo =
+		pstrdup(PrimaryConnInfo != NULL ? PrimaryConnInfo : "");
+	slotsync_observed_primary_slotname =
+		pstrdup(PrimarySlotName != NULL ? PrimarySlotName : "");
+	slotsync_observed_sync_replication_slots = sync_replication_slots;
+	slotsync_observed_hot_standby_feedback = hot_standby_feedback;
+
+	MemoryContextSwitchTo(oldcontext);
 }
 
 /*
@@ -1465,6 +1556,8 @@ slotsync_worker_onexit(int code, Datum arg)
 	SpinLockAcquire(&SlotSyncCtx->mutex);
 
 	SlotSyncCtx->pid = InvalidPid;
+	SlotSyncCtx->procno = INVALID_PROC_NUMBER;
+	SlotSyncCtx->threaded = false;
 
 	/*
 	 * If syncing_slots is true, it indicates that the process errored out
@@ -1516,7 +1609,12 @@ wait_for_slot_activity(bool some_slot_updated)
 				   WAIT_EVENT_REPLICATION_SLOTSYNC_MAIN);
 
 	if (rc & WL_LATCH_SET)
+	{
 		ResetLatch(MyLatch);
+		PgCurrentBackendApplyInterrupts();
+		CHECK_FOR_INTERRUPTS();
+		SlotSyncCheckForStop();
+	}
 }
 
 /*
@@ -1526,6 +1624,10 @@ wait_for_slot_activity(bool some_slot_updated)
 static void
 check_and_set_sync_info(pid_t sync_process_pid)
 {
+	bool		threaded_sync;
+
+	threaded_sync = SlotSyncIsThreadedRuntime();
+
 	SpinLockAcquire(&SlotSyncCtx->mutex);
 
 	/*
@@ -1542,7 +1644,7 @@ check_and_set_sync_info(pid_t sync_process_pid)
 			ereport(DEBUG1,
 					errmsg("replication slot synchronization worker will not start because promotion was triggered"));
 
-			proc_exit(0);
+			PgBackendExit(0);
 		}
 		else
 		{
@@ -1570,10 +1672,12 @@ check_and_set_sync_info(pid_t sync_process_pid)
 	SlotSyncCtx->syncing = true;
 
 	/*
-	 * Advertise the required PID so that the startup process can kill the
-	 * slot sync process on promotion.
+	 * Advertise the required identity so that the startup process can stop
+	 * slot synchronization on promotion.
 	 */
 	SlotSyncCtx->pid = sync_process_pid;
+	SlotSyncCtx->procno = threaded_sync ? MyProcNumber : INVALID_PROC_NUMBER;
+	SlotSyncCtx->threaded = threaded_sync;
 
 	SpinLockRelease(&SlotSyncCtx->mutex);
 
@@ -1589,6 +1693,8 @@ reset_syncing_flag(void)
 	SpinLockAcquire(&SlotSyncCtx->mutex);
 	SlotSyncCtx->syncing = false;
 	SlotSyncCtx->pid = InvalidPid;
+	SlotSyncCtx->procno = INVALID_PROC_NUMBER;
+	SlotSyncCtx->threaded = false;
 	SpinLockRelease(&SlotSyncCtx->mutex);
 
 	syncing_slots = false;
@@ -1611,11 +1717,14 @@ ReplSlotSyncWorkerMain(const void *startup_data, size_t startup_data_len)
 	char	   *err;
 	sigjmp_buf	local_sigjmp_buf;
 	StringInfoData app_name;
+	bool		threaded_worker;
 
 	Assert(startup_data_len == 0);
 
+	threaded_worker = SlotSyncIsThreadedRuntime();
+
 	/* Release postmaster's working memory context */
-	if (PostmasterContext)
+	if (!threaded_worker && PostmasterContext)
 	{
 		MemoryContextDelete(PostmasterContext);
 		PostmasterContext = NULL;
@@ -1663,21 +1772,24 @@ ReplSlotSyncWorkerMain(const void *startup_data, size_t startup_data_len)
 		 * callback was registered to do ProcKill, which will clean up
 		 * necessary state.
 		 */
-		proc_exit(0);
+		PgBackendExit(0);
 	}
 
 	/* We can now handle ereport(ERROR) */
 	PG_exception_stack = &local_sigjmp_buf;
 
-	/* Setup signal handling */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGINT, StatementCancelHandler);
-	pqsignal(SIGTERM, die);
-	pqsignal(SIGFPE, FloatExceptionHandler);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-	pqsignal(SIGUSR2, PG_SIG_IGN);
-	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGCHLD, PG_SIG_DFL);
+	if (!threaded_worker)
+	{
+		/* Setup signal handling */
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
+		pqsignal(SIGINT, StatementCancelHandler);
+		pqsignal(SIGTERM, die);
+		pqsignal(SIGFPE, FloatExceptionHandler);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR2, PG_SIG_IGN);
+		pqsignal(SIGPIPE, PG_SIG_IGN);
+		pqsignal(SIGCHLD, PG_SIG_DFL);
+	}
 
 	check_and_set_sync_info(MyProcPid);
 
@@ -1698,7 +1810,8 @@ ReplSlotSyncWorkerMain(const void *startup_data, size_t startup_data_len)
 	/*
 	 * Unblock signals (they were blocked when the postmaster forked us)
 	 */
-	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+	if (!threaded_worker)
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 	/*
 	 * Set always-secure search path, so malicious users can't redirect user
@@ -1724,6 +1837,11 @@ ReplSlotSyncWorkerMain(const void *startup_data, size_t startup_data_len)
 	 * arbitrary code within triggers.
 	 */
 	InitPostgres(dbname, InvalidOid, NULL, InvalidOid, 0, NULL);
+	if (threaded_worker)
+	{
+		ThreadedBackendStartupComplete();
+		SlotSyncRememberConfig();
+	}
 
 	SetProcessingMode(NormalProcessing);
 
@@ -1771,7 +1889,9 @@ ReplSlotSyncWorkerMain(const void *startup_data, size_t startup_data_len)
 		bool		started_tx = false;
 		List	   *remote_slots;
 
+		PgCurrentBackendApplyInterrupts();
 		CHECK_FOR_INTERRUPTS();
+		SlotSyncCheckForStop();
 
 		if (ConfigReloadPending)
 			slotsync_reread_config();
@@ -1826,7 +1946,10 @@ update_synced_slots_inactive_since(void)
 		return;
 
 	/* The slot sync worker or the SQL function mustn't be running by now */
-	Assert((SlotSyncCtx->pid == InvalidPid) && !SlotSyncCtx->syncing);
+	Assert(SlotSyncCtx->pid == InvalidPid);
+	Assert(SlotSyncCtx->procno == INVALID_PROC_NUMBER);
+	Assert(!SlotSyncCtx->threaded);
+	Assert(!SlotSyncCtx->syncing);
 
 	LWLockAcquire(ReplicationSlotControlLock, LW_SHARED);
 
@@ -1866,6 +1989,8 @@ void
 ShutDownSlotSync(void)
 {
 	pid_t		sync_process_pid;
+	ProcNumber	sync_procno;
+	bool		sync_threaded;
 
 	SpinLockAcquire(&SlotSyncCtx->mutex);
 
@@ -1883,13 +2008,20 @@ ShutDownSlotSync(void)
 	}
 
 	sync_process_pid = SlotSyncCtx->pid;
+	sync_procno = SlotSyncCtx->procno;
+	sync_threaded = SlotSyncCtx->threaded;
 
 	SpinLockRelease(&SlotSyncCtx->mutex);
 
 	/*
 	 * Signal process doing slotsync, if any, asking it to stop.
 	 */
-	if (sync_process_pid != InvalidPid)
+	if (sync_threaded)
+	{
+		if (sync_procno != INVALID_PROC_NUMBER)
+			SetLatch(&GetPGProcByNumber(sync_procno)->procLatch);
+	}
+	else if (sync_process_pid != InvalidPid)
 		SendProcSignal(sync_process_pid, PROCSIG_SLOTSYNC_MESSAGE,
 					   INVALID_PROC_NUMBER);
 
@@ -1986,6 +2118,7 @@ SlotSyncShmemInit(void *arg)
 {
 	memset(SlotSyncCtx, 0, sizeof(SlotSyncCtxStruct));
 	SlotSyncCtx->pid = InvalidPid;
+	SlotSyncCtx->procno = INVALID_PROC_NUMBER;
 	SpinLockInit(&SlotSyncCtx->mutex);
 }
 
@@ -2064,6 +2197,8 @@ SyncReplicationSlots(WalReceiverConn *wrconn)
 		MemoryContext sync_retry_ctx;
 
 		check_and_set_sync_info(MyProcPid);
+		if (SlotSyncIsThreadedRuntime())
+			SlotSyncRememberConfig();
 
 		validate_remote_info(wrconn);
 
@@ -2084,7 +2219,9 @@ SyncReplicationSlots(WalReceiverConn *wrconn)
 			MemoryContext oldctx;
 
 			/* Check for interrupts and config changes */
+			PgCurrentBackendApplyInterrupts();
 			CHECK_FOR_INTERRUPTS();
+			SlotSyncCheckForStop();
 
 			if (ConfigReloadPending)
 				slotsync_reread_config();

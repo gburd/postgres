@@ -15,6 +15,7 @@ include $(top_builddir)/src/Makefile.global
 override CPPFLAGS := -I. -I$(srcdir) $(CPPFLAGS)
 
 OBJS = \
+	backend_runtime_nodes.o \
 	bitmapset.o \
 	copyfuncs.o \
 	equalfuncs.o \

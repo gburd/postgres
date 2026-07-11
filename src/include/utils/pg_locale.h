@@ -13,6 +13,8 @@
 #define _PG_LOCALE_
 
 #include "mb/pg_wchar.h"
+#include "utils/backend_runtime.h"
+#include "utils/global_lifetime.h"
 
 /* use for libc locale names */
 #define LOCALE_NAME_BUFLEN 128
@@ -32,19 +34,30 @@
 #define UNICODE_CASEMAP_BUFSZ	(UNICODE_CASEMAP_LEN * MAX_MULTIBYTE_CHAR_LEN)
 
 /* GUC settings */
-extern PGDLLIMPORT char *locale_messages;
-extern PGDLLIMPORT char *locale_monetary;
-extern PGDLLIMPORT char *locale_numeric;
-extern PGDLLIMPORT char *locale_time;
-extern PGDLLIMPORT int icu_validation_level;
+#define locale_messages \
+	(PgCurrentLocaleState()->locale_messages_value)
+#define locale_monetary \
+	(PgCurrentLocaleState()->locale_monetary_value)
+#define locale_numeric \
+	(PgCurrentLocaleState()->locale_numeric_value)
+#define locale_time \
+	(PgCurrentLocaleState()->locale_time_value)
+#define icu_validation_level \
+	(PgCurrentLocaleState()->icu_validation_level_value)
 
 /* lc_time localization cache */
-extern PGDLLIMPORT char *localized_abbrev_days[];
-extern PGDLLIMPORT char *localized_full_days[];
-extern PGDLLIMPORT char *localized_abbrev_months[];
-extern PGDLLIMPORT char *localized_full_months[];
+#define localized_abbrev_days \
+	(PgCurrentLocaleState()->localized_abbrev_days_values)
+#define localized_full_days \
+	(PgCurrentLocaleState()->localized_full_days_values)
+#define localized_abbrev_months \
+	(PgCurrentLocaleState()->localized_abbrev_months_values)
+#define localized_full_months \
+	(PgCurrentLocaleState()->localized_full_months_values)
 
 extern bool check_locale(int category, const char *locale, char **canonname);
+extern bool pg_locale_lock(void);
+extern void pg_locale_unlock(bool locked);
 extern char *pg_perm_setlocale(int category, const char *locale);
 
 /*
@@ -52,6 +65,8 @@ extern char *pg_perm_setlocale(int category, const char *locale);
  * information) with locale information for all categories.
  */
 extern struct lconv *PGLC_localeconv(void);
+extern void PgSessionResetLocaleConv(PgSessionLocaleState *locale);
+extern void PgSessionResetLocaleTime(PgSessionLocaleState *locale);
 
 extern void cache_locale_time(void);
 
@@ -157,6 +172,7 @@ struct pg_locale_struct
 	bool		collate_is_c;
 	bool		ctype_is_c;
 	bool		is_default;
+	char		provider;
 
 	const struct collate_methods *collate;	/* NULL if collate_is_c */
 	const struct ctype_methods *ctype;	/* NULL if ctype_is_c */
@@ -184,6 +200,8 @@ struct pg_locale_struct
 extern void init_database_collation(void);
 extern pg_locale_t pg_database_locale(void);
 extern pg_locale_t pg_newlocale_from_collation(Oid collid);
+extern void pg_locale_release_external(pg_locale_t locale);
+extern void pg_locale_release_collation_cache_external(void *collation_cache);
 
 extern char *get_collation_actual_version(char collprovider, const char *collcollate);
 

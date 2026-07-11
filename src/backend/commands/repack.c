@@ -72,6 +72,7 @@
 #include "storage/predicate.h"
 #include "storage/proc.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
 #include "utils/injection_point.h"
@@ -145,14 +146,15 @@ typedef struct DecodingWorker
 } DecodingWorker;
 
 /* Pointer to currently running decoding worker. */
-static DecodingWorker *decoding_worker = NULL;
+#define decoding_worker \
+	(PgCurrentRepackState()->decoding_worker)
+#define hpm_context \
+	(PgCurrentRepackState()->message_context)
 
 /*
  * Is there a message sent by a repack worker that the backend needs to
  * receive?
  */
-volatile sig_atomic_t RepackMessagePending = false;
-
 static LOCKMODE RepackLockLevel(bool concurrent);
 static bool cluster_rel_recheck(RepackCommand cmd, Relation OldHeap,
 								Oid indexOid, Oid userid, LOCKMODE lmode,
@@ -3665,12 +3667,13 @@ start_repack_decoding_worker(Oid relid)
 	snprintf(bgw.bgw_type, BGW_MAXLEN, "REPACK decoding worker");
 	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS |
 		BGWORKER_BACKEND_DATABASE_CONNECTION;
+	bgw.bgw_backend_model = BgWorkerBackendThreadPerSession;
 	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	bgw.bgw_restart_time = BGW_NEVER_RESTART;
 	snprintf(bgw.bgw_library_name, MAXPGPATH, "postgres");
 	snprintf(bgw.bgw_function_name, BGW_MAXLEN, "RepackWorkerMain");
 	bgw.bgw_main_arg = UInt32GetDatum(dsm_segment_handle(decoding_worker->seg));
-	bgw.bgw_notify_pid = MyProcPid;
+	bgw.bgw_notify_pid = PgCurrentBackendSignalPid();
 
 	if (!RegisterDynamicBackgroundWorker(&bgw, &decoding_worker->handle))
 		ereport(ERROR,
@@ -3835,9 +3838,8 @@ DecodingWorkerFileName(char *fname, Oid relid, uint32 seq)
 void
 HandleRepackMessageInterrupt(void)
 {
-	InterruptPending = true;
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_REPACK_MESSAGE);
 	RepackMessagePending = true;
-	SetLatch(MyLatch);
 }
 
 /*
@@ -3847,7 +3849,6 @@ void
 ProcessRepackMessages(void)
 {
 	MemoryContext oldcontext;
-	static MemoryContext hpm_context = NULL;
 
 	/*
 	 * Nothing to do if we haven't launched the worker yet or have already

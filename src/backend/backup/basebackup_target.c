@@ -16,6 +16,7 @@
 #include "postgres.h"
 
 #include "backup/basebackup_target.h"
+#include "utils/global_lifetime.h"
 #include "utils/memutils.h"
 
 typedef struct BaseBackupTargetType
@@ -37,7 +38,7 @@ static bbsink *server_get_sink(bbsink *next_sink, void *detail_arg);
 static void *reject_target_detail(char *target, char *target_detail);
 static void *server_check_detail(char *target, char *target_detail);
 
-static BaseBackupTargetType builtin_backup_targets[] =
+static PG_GLOBAL_RUNTIME BaseBackupTargetType builtin_backup_targets[] =
 {
 	{
 		"blackhole", reject_target_detail, blackhole_get_sink
@@ -50,7 +51,7 @@ static BaseBackupTargetType builtin_backup_targets[] =
 	}
 };
 
-static List *BaseBackupTargetTypeList = NIL;
+static PG_GLOBAL_RUNTIME List *BaseBackupTargetTypeList = NIL;
 
 /*
  * Add a new base backup target type.

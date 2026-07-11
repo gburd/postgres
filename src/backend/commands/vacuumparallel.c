@@ -46,6 +46,7 @@
 #include "storage/bufmgr.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
@@ -86,6 +87,16 @@ typedef struct PVSharedCostParams
 	int			cost_page_hit;
 	int			cost_page_miss;
 } PVSharedCostParams;
+
+/*
+ * Execution-local compatibility aliases for parallel vacuum cost parameter
+ * scratch state.  The generation counter starts at 0 so the first worker poll
+ * always reads the leader's initial shared-memory values.
+ */
+#define pv_shared_cost_params \
+	(*(PVSharedCostParams **) PgCurrentParallelVacuumSharedCostParamsRef())
+#define shared_params_generation_local \
+	(*PgCurrentParallelVacuumSharedParamsGenerationLocalRef())
 
 /*
  * Shared information among parallel workers.  So this is allocated in the DSM
@@ -269,17 +280,6 @@ struct ParallelVacuumState
 	char	   *indname;
 	PVIndVacStatus status;
 };
-
-static PVSharedCostParams *pv_shared_cost_params = NULL;
-
-/*
- * Worker-local copy of the last cost-parameter generation this worker has
- * applied.  Initialized to 0; since the leader initializes the shared
- * generation counter to 1, the first call to
- * parallel_vacuum_update_shared_delay_params() will always detect a
- * mismatch and read the initial parameters from shared memory.
- */
-static uint32 shared_params_generation_local = 0;
 
 static int	parallel_vacuum_compute_workers(Relation *indrels, int nindexes, int nrequested,
 											bool *will_parallel_vacuum);

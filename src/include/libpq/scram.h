@@ -17,9 +17,10 @@
 #include "lib/stringinfo.h"
 #include "libpq/libpq-be.h"
 #include "libpq/sasl.h"
+#include "utils/global_lifetime.h"
 
 /* Number of iterations when generating new secrets */
-extern PGDLLIMPORT int scram_sha_256_iterations;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int scram_sha_256_iterations;
 
 /* SASL implementation callbacks */
 extern PGDLLIMPORT const pg_be_sasl_mech pg_be_scram_mech;

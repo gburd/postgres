@@ -23,8 +23,8 @@
 #include "nodes/extensible.h"
 #include "utils/hsearch.h"
 
-static HTAB *extensible_node_methods = NULL;
-static HTAB *custom_scan_methods = NULL;
+static PG_GLOBAL_RUNTIME HTAB *extensible_node_methods = NULL;
+static PG_GLOBAL_RUNTIME HTAB *custom_scan_methods = NULL;
 
 typedef struct
 {

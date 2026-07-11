@@ -151,7 +151,7 @@ typedef struct
 	MemoryContext funcCtx;
 	BuildAccumulator accum;
 	ItemPointerData tid;
-	int			work_mem;
+	int			accum_work_mem;
 
 	/*
 	 * bs_leader is only present when a parallel index build is performed, and
@@ -608,7 +608,7 @@ ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
 	 * tuplesort. We use half the per-worker fraction of maintenance_work_mem,
 	 * the other half is used for the tuplesort.
 	 */
-	if (buildstate->accum.allocatedMemory >= buildstate->work_mem * (Size) 1024)
+	if (buildstate->accum.allocatedMemory >= buildstate->accum_work_mem * (Size) 1024)
 		ginFlushBuildState(buildstate, index);
 
 	MemoryContextSwitchTo(oldCtx);
@@ -2043,20 +2043,20 @@ _gin_parallel_scan_and_build(GinBuildState *state,
 	coordinate->sharedsort = sharedsort;
 
 	/* remember how much space is allowed for the accumulated entries */
-	state->work_mem = (sortmem / 2);
+	state->accum_work_mem = (sortmem / 2);
 
 	/* remember how many workers participate in the build */
 	state->bs_num_workers = ginshared->scantuplesortstates;
 
 	/* Begin "partial" tuplesort */
 	state->bs_sortstate = tuplesort_begin_index_gin(heap, index,
-													state->work_mem,
+													state->accum_work_mem,
 													coordinate,
 													TUPLESORT_NONE);
 
 	/* Local per-worker sort of raw-data */
 	state->bs_worker_sort = tuplesort_begin_index_gin(heap, index,
-													  state->work_mem,
+													  state->accum_work_mem,
 													  NULL,
 													  TUPLESORT_NONE);
 

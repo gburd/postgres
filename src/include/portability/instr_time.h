@@ -63,6 +63,7 @@
 #ifndef INSTR_TIME_H
 #define INSTR_TIME_H
 
+#include "utils/global_lifetime.h"
 
 /*
  * We store interval times as an int64 integer on all platforms, as int64 is
@@ -116,9 +117,9 @@ typedef struct instr_time
  * possible because the GUC can be changed at runtime, but unlikely, and we
  * allow changing this at runtime to simplify testing of different sources.
  */
-extern PGDLLIMPORT uint64 ticks_per_ns_scaled;
-extern PGDLLIMPORT uint64 max_ticks_no_overflow;
-extern PGDLLIMPORT bool timing_initialized;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME uint64 ticks_per_ns_scaled;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME uint64 max_ticks_no_overflow;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool timing_initialized;
 
 typedef enum
 {
@@ -129,7 +130,7 @@ typedef enum
 #endif
 } TimingClockSourceType;
 
-extern PGDLLIMPORT int timing_clock_source;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int timing_clock_source;
 
 /*
  * Initialize timing infrastructure
@@ -152,14 +153,14 @@ extern void pg_initialize_timing(void);
 extern bool pg_set_timing_clock_source(TimingClockSourceType source);
 
 /* Whether to actually use TSC based on availability and GUC settings. */
-extern PGDLLIMPORT bool timing_tsc_enabled;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool timing_tsc_enabled;
 
 /*
  * TSC frequency in kHz, set during initialization.
  *
  * -1 = not yet initialized, 0 = TSC not usable, >0 = frequency in kHz.
  */
-extern PGDLLIMPORT int32 timing_tsc_frequency_khz;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int32 timing_tsc_frequency_khz;
 
 #if PG_INSTR_TSC_CLOCK
 

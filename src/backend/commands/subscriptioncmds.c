@@ -95,7 +95,7 @@ typedef struct SubOpts
 {
 	uint32		specified_opts;
 	char	   *slot_name;
-	char	   *synchronous_commit;
+	char	   *synccommit;
 	bool		connect;
 	bool		enabled;
 	bool		create_slot;
@@ -113,7 +113,7 @@ typedef struct SubOpts
 	char	   *origin;
 	ConflictLogDest conflictlogdest;
 	XLogRecPtr	lsn;
-	char	   *wal_receiver_timeout;
+	char	   *wal_receiver_timeout_value;
 } SubOpts;
 
 /*
@@ -271,10 +271,10 @@ parse_subscription_options(ParseState *pstate, List *stmt_options,
 				errorConflictingDefElem(defel, pstate);
 
 			opts->specified_opts |= SUBOPT_SYNCHRONOUS_COMMIT;
-			opts->synchronous_commit = defGetString(defel);
+			opts->synccommit = defGetString(defel);
 
 			/* Test if the given value is valid for synchronous_commit GUC. */
-			(void) set_config_option("synchronous_commit", opts->synchronous_commit,
+			(void) set_config_option("synchronous_commit", opts->synccommit,
 									 PGC_BACKEND, PGC_S_TEST, GUC_ACTION_SET,
 									 false, 0, false);
 		}
@@ -433,7 +433,7 @@ parse_subscription_options(ParseState *pstate, List *stmt_options,
 				errorConflictingDefElem(defel, pstate);
 
 			opts->specified_opts |= SUBOPT_WAL_RECEIVER_TIMEOUT;
-			opts->wal_receiver_timeout = defGetString(defel);
+			opts->wal_receiver_timeout_value = defGetString(defel);
 
 			/*
 			 * Test if the given value is valid for wal_receiver_timeout GUC.
@@ -441,9 +441,11 @@ parse_subscription_options(ParseState *pstate, List *stmt_options,
 			 * wal_receiver_timeout subscription option, but not for the GUC
 			 * itself.
 			 */
-			parsed = parse_int(opts->wal_receiver_timeout, &val, 0, NULL);
+			parsed = parse_int(opts->wal_receiver_timeout_value, &val, 0,
+							   NULL);
 			if (!parsed || val != -1)
-				(void) set_config_option("wal_receiver_timeout", opts->wal_receiver_timeout,
+				(void) set_config_option("wal_receiver_timeout",
+										 opts->wal_receiver_timeout_value,
 										 PGC_BACKEND, PGC_S_TEST, GUC_ACTION_SET,
 										 false, 0, false);
 		}
@@ -779,16 +781,16 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 		opts.slot_name = stmt->subname;
 
 	/* The default for synchronous_commit of subscriptions is off. */
-	if (opts.synchronous_commit == NULL)
-		opts.synchronous_commit = "off";
+	if (opts.synccommit == NULL)
+		opts.synccommit = "off";
 
 	/*
 	 * The default for wal_receiver_timeout of subscriptions is -1, which
 	 * means the value is inherited from the server configuration, command
 	 * line, or role/database settings.
 	 */
-	if (opts.wal_receiver_timeout == NULL)
-		opts.wal_receiver_timeout = "-1";
+	if (opts.wal_receiver_timeout_value == NULL)
+		opts.wal_receiver_timeout_value = "-1";
 
 	/* Load the library providing us libpq calls. */
 	load_file("libpqwalreceiver", false);
@@ -888,9 +890,9 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 	else
 		nulls[Anum_pg_subscription_subslotname - 1] = true;
 	values[Anum_pg_subscription_subsynccommit - 1] =
-		CStringGetTextDatum(opts.synchronous_commit);
+		CStringGetTextDatum(opts.synccommit);
 	values[Anum_pg_subscription_subwalrcvtimeout - 1] =
-		CStringGetTextDatum(opts.wal_receiver_timeout);
+		CStringGetTextDatum(opts.wal_receiver_timeout_value);
 	values[Anum_pg_subscription_subpublications - 1] =
 		publicationListToArray(publications);
 	values[Anum_pg_subscription_suborigin - 1] =
@@ -1846,10 +1848,10 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 					replaces[Anum_pg_subscription_subslotname - 1] = true;
 				}
 
-				if (opts.synchronous_commit)
+				if (opts.synccommit)
 				{
 					values[Anum_pg_subscription_subsynccommit - 1] =
-						CStringGetTextDatum(opts.synchronous_commit);
+						CStringGetTextDatum(opts.synccommit);
 					replaces[Anum_pg_subscription_subsynccommit - 1] = true;
 				}
 
@@ -2079,7 +2081,7 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 				if (IsSet(opts.specified_opts, SUBOPT_WAL_RECEIVER_TIMEOUT))
 				{
 					values[Anum_pg_subscription_subwalrcvtimeout - 1] =
-						CStringGetTextDatum(opts.wal_receiver_timeout);
+						CStringGetTextDatum(opts.wal_receiver_timeout_value);
 					replaces[Anum_pg_subscription_subwalrcvtimeout - 1] = true;
 				}
 

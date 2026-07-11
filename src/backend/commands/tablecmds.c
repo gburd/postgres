@@ -99,6 +99,7 @@
 #include "storage/smgr.h"
 #include "tcop/utility.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/inval.h"
@@ -132,7 +133,7 @@ typedef struct OnCommitItem
 	SubTransactionId deleting_subid;
 } OnCommitItem;
 
-static List *on_commits = NIL;
+#define session_on_commits (*PgCurrentOnCommitActionsRef())
 
 
 /*
@@ -20045,7 +20046,7 @@ register_on_commit_action(Oid relid, OnCommitAction action)
 	 * order of registration.  That might not be essential but it seems
 	 * reasonable.
 	 */
-	on_commits = lcons(oc, on_commits);
+	session_on_commits = lcons(oc, session_on_commits);
 
 	MemoryContextSwitchTo(oldcxt);
 }
@@ -20060,7 +20061,7 @@ remove_on_commit_action(Oid relid)
 {
 	ListCell   *l;
 
-	foreach(l, on_commits)
+	foreach(l, session_on_commits)
 	{
 		OnCommitItem *oc = (OnCommitItem *) lfirst(l);
 
@@ -20085,7 +20086,7 @@ PreCommit_on_commit_actions(void)
 	List	   *oids_to_truncate = NIL;
 	List	   *oids_to_drop = NIL;
 
-	foreach(l, on_commits)
+	foreach(l, session_on_commits)
 	{
 		OnCommitItem *oc = (OnCommitItem *) lfirst(l);
 
@@ -20164,7 +20165,7 @@ PreCommit_on_commit_actions(void)
 		 * Note that table deletion will call remove_on_commit_action, so the
 		 * entry should get marked as deleted.
 		 */
-		foreach(l, on_commits)
+		foreach(l, session_on_commits)
 		{
 			OnCommitItem *oc = (OnCommitItem *) lfirst(l);
 
@@ -20190,7 +20191,7 @@ AtEOXact_on_commit_actions(bool isCommit)
 {
 	ListCell   *cur_item;
 
-	foreach(cur_item, on_commits)
+	foreach(cur_item, session_on_commits)
 	{
 		OnCommitItem *oc = (OnCommitItem *) lfirst(cur_item);
 
@@ -20198,7 +20199,7 @@ AtEOXact_on_commit_actions(bool isCommit)
 			oc->creating_subid != InvalidSubTransactionId)
 		{
 			/* cur_item must be removed */
-			on_commits = foreach_delete_current(on_commits, cur_item);
+			session_on_commits = foreach_delete_current(session_on_commits, cur_item);
 			pfree(oc);
 		}
 		else
@@ -20223,14 +20224,14 @@ AtEOSubXact_on_commit_actions(bool isCommit, SubTransactionId mySubid,
 {
 	ListCell   *cur_item;
 
-	foreach(cur_item, on_commits)
+	foreach(cur_item, session_on_commits)
 	{
 		OnCommitItem *oc = (OnCommitItem *) lfirst(cur_item);
 
 		if (!isCommit && oc->creating_subid == mySubid)
 		{
 			/* cur_item must be removed */
-			on_commits = foreach_delete_current(on_commits, cur_item);
+			session_on_commits = foreach_delete_current(session_on_commits, cur_item);
 			pfree(oc);
 		}
 		else

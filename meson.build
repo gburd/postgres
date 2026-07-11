@@ -1128,6 +1128,23 @@ endif
 
 
 ###############################################################
+# Library: libxtc (xtc carrier)
+###############################################################
+
+# libxtc lets a threaded client backend run as an xtc fiber on an xtc
+# scheduler loop instead of a raw pthread (see pg_xtc_carrier.c).  When
+# found, USE_XTC_CARRIER compiles the carrier seam into the backend.
+# The Nix dev shell puts xtc.pc on PKG_CONFIG_PATH; a manual build can
+# point PKG_CONFIG_PATH at libxtc's build dir or install prefix.
+xtcopt = get_option('xtc')
+xtc = dependency('xtc', required: xtcopt)
+if xtc.found()
+  cdata.set('USE_XTC_CARRIER', 1)
+endif
+
+
+
+###############################################################
 # Library: libxml
 ###############################################################
 
@@ -3659,6 +3676,7 @@ backend_both_deps += [
   pam,
   ssl,
   systemd,
+  xtc,
   zlib,
   zstd,
 ]

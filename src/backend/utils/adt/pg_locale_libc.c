@@ -817,6 +817,7 @@ create_pg_locale_libc(Oid collid, MemoryContext context)
 	loc = make_libc_collator(collate, ctype);
 
 	result = MemoryContextAllocZero(context, sizeof(struct pg_locale_struct));
+	result->provider = COLLPROVIDER_LIBC;
 	result->deterministic = true;
 	result->collate_is_c = (strcmp(collate, "C") == 0) ||
 		(strcmp(collate, "POSIX") == 0);

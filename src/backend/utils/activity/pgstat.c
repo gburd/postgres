@@ -65,7 +65,7 @@
  * stats_fetch_consistency GUC (see config.sgml and monitoring.sgml for the
  * settings). When using PGSTAT_FETCH_CONSISTENCY_CACHE or
  * PGSTAT_FETCH_CONSISTENCY_SNAPSHOT statistics are stored in
- * pgStatLocal.snapshot.
+ * pgStatSnapshot.
  *
  * To keep things manageable, stats handling is split across several
  * files. Infrastructure pieces are in:
@@ -110,6 +110,7 @@
 #include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc_hooks.h"
 #include "utils/memutils.h"
 #include "utils/pgstat_internal.h"
@@ -185,6 +186,7 @@ static void pgstat_write_statsfile(void);
 static void pgstat_read_statsfile(void);
 
 static void pgstat_init_snapshot_fixed(void);
+static void pgstat_release_snapshot_memory(void);
 
 static void pgstat_reset_after_failure(void);
 
@@ -196,28 +198,6 @@ static void pgstat_build_snapshot_fixed(PgStat_Kind kind);
 
 static inline bool pgstat_is_kind_valid(PgStat_Kind kind);
 
-
-/* ----------
- * GUC parameters
- * ----------
- */
-
-bool		pgstat_track_counts = false;
-int			pgstat_fetch_consistency = PGSTAT_FETCH_CONSISTENCY_CACHE;
-
-
-/* ----------
- * state shared with pgstat_*.c
- * ----------
- */
-
-PgStat_LocalState pgStatLocal;
-
-/*
- * Track pending reports for fixed-numbered stats, used by
- * pgstat_report_stat().
- */
-bool		pgstat_report_fixed = false;
 
 /* ----------
  * Local data
@@ -233,7 +213,7 @@ bool		pgstat_report_fixed = false;
  * easier to track / attribute memory usage.
  */
 
-static MemoryContext pgStatPendingContext = NULL;
+#define pgStatPendingContext (*PgCurrentPgStatPendingContextRef())
 
 /*
  * Backend local list of PgStat_EntryRef with unflushed pending stats.
@@ -241,30 +221,7 @@ static MemoryContext pgStatPendingContext = NULL;
  * Newly pending entries should only ever be added to the end of the list,
  * otherwise pgstat_flush_pending_entries() might not see them immediately.
  */
-static dlist_head pgStatPending = DLIST_STATIC_INIT(pgStatPending);
-
-
-/*
- * Force the next stats flush to happen regardless of
- * PGSTAT_MIN_INTERVAL. Useful in test scripts.
- */
-static bool pgStatForceNextFlush = false;
-
-/*
- * Force-clear existing snapshot before next use when stats_fetch_consistency
- * is changed.
- */
-static bool force_stats_snapshot_clear = false;
-
-
-/*
- * For assertions that check pgstat is not used before initialization / after
- * shutdown.
- */
-#ifdef USE_ASSERT_CHECKING
-static bool pgstat_is_initialized = false;
-static bool pgstat_is_shutdown = false;
-#endif
+#define pgStatPending (*PgCurrentPgStatPendingListRef())
 
 
 /*
@@ -280,7 +237,7 @@ static bool pgstat_is_shutdown = false;
  * seem to be a great way of doing that, given the split across multiple
  * files.
  */
-static const PgStat_KindInfo pgstat_kind_builtin_infos[PGSTAT_KIND_BUILTIN_SIZE] = {
+static PG_GLOBAL_IMMUTABLE const PgStat_KindInfo pgstat_kind_builtin_infos[PGSTAT_KIND_BUILTIN_SIZE] = {
 
 	/* stats kinds for variable-numbered objects */
 
@@ -526,7 +483,7 @@ static const PgStat_KindInfo pgstat_kind_builtin_infos[PGSTAT_KIND_BUILTIN_SIZE]
  *
  * Indexed by PGSTAT_KIND_CUSTOM_MIN, of size PGSTAT_KIND_CUSTOM_SIZE.
  */
-static const PgStat_KindInfo **pgstat_kind_custom_infos = NULL;
+static PG_GLOBAL_RUNTIME const PgStat_KindInfo **pgstat_kind_custom_infos = NULL;
 
 /* ------------------------------------------------------------
  * Functions managing the state of the stats system for all backends.
@@ -650,6 +607,8 @@ pgstat_shutdown_hook(int code, Datum arg)
 	Assert(!pgstat_is_shutdown);
 	Assert(IsUnderPostmaster || !IsPostmasterEnvironment);
 
+	pgstat_ensure_shmem_attached();
+
 	/*
 	 * If we got as far as discovering our own database ID, we can flush out
 	 * what we did so far.  Otherwise, we'd be reporting an invalid database
@@ -670,10 +629,7 @@ pgstat_shutdown_hook(int code, Datum arg)
 		pgstat_request_entry_refs_gc();
 
 	pgstat_detach_shmem();
-
-#ifdef USE_ASSERT_CHECKING
 	pgstat_is_shutdown = true;
-#endif
 }
 
 /*
@@ -689,6 +645,7 @@ pgstat_initialize(void)
 
 	pgstat_attach_shmem();
 
+	dlist_init(&pgStatPending);
 	pgstat_init_snapshot_fixed();
 
 	/* Backend initialization callbacks */
@@ -705,9 +662,7 @@ pgstat_initialize(void)
 	/* Set up a process-exit hook to clean up */
 	before_shmem_exit(pgstat_shutdown_hook, 0);
 
-#ifdef USE_ASSERT_CHECKING
 	pgstat_is_initialized = true;
-#endif
 }
 
 
@@ -861,6 +816,30 @@ pgstat_force_next_flush(void)
 	pgStatForceNextFlush = true;
 }
 
+void
+pgstat_release_idle_memory(void)
+{
+	if (!pgstat_is_initialized || pgstat_is_shutdown)
+		return;
+
+	pgstat_assert_is_up();
+	Assert(!IsTransactionOrTransactionBlock());
+
+	(void) pgstat_report_stat(true);
+	Assert(dlist_is_empty(&pgStatPending));
+
+	if (pgStatPendingContext != NULL)
+	{
+		MemoryContextDelete(pgStatPendingContext);
+		pgStatPendingContext = NULL;
+		dlist_init(&pgStatPending);
+	}
+
+	pgstat_release_shared_ref_memory();
+	pgstat_release_snapshot_memory();
+	pgstat_detach_idle_memory();
+}
+
 /*
  * Only for use by pgstat_reset_counters()
  */
@@ -946,22 +925,26 @@ pgstat_reset_of_kind(PgStat_Kind kind)
 void
 pgstat_clear_snapshot(void)
 {
+	PgStat_Snapshot *snapshot;
+
 	pgstat_assert_is_up();
 
-	memset(&pgStatLocal.snapshot.fixed_valid, 0,
-		   sizeof(pgStatLocal.snapshot.fixed_valid));
-	memset(&pgStatLocal.snapshot.custom_valid, 0,
-		   sizeof(pgStatLocal.snapshot.custom_valid));
-	pgStatLocal.snapshot.stats = NULL;
-	pgStatLocal.snapshot.mode = PGSTAT_FETCH_CONSISTENCY_NONE;
-
-	/* Release memory, if any was allocated */
-	if (pgStatLocal.snapshot.context)
+	snapshot = PgCurrentPgStatSnapshotIfAllocated();
+	if (snapshot != NULL)
 	{
-		MemoryContextDelete(pgStatLocal.snapshot.context);
+		memset(&snapshot->fixed_valid, 0, sizeof(snapshot->fixed_valid));
+		memset(&snapshot->custom_valid, 0, sizeof(snapshot->custom_valid));
+		snapshot->stats = NULL;
+		snapshot->mode = PGSTAT_FETCH_CONSISTENCY_NONE;
 
-		/* Reset variables */
-		pgStatLocal.snapshot.context = NULL;
+		/* Release memory, if any was allocated */
+		if (snapshot->context)
+		{
+			MemoryContextDelete(snapshot->context);
+
+			/* Reset variables */
+			snapshot->context = NULL;
+		}
 	}
 
 	/*
@@ -1009,20 +992,21 @@ pgstat_fetch_entry(PgStat_Kind kind, Oid dboid, uint64 objid, bool *may_free)
 	{
 		PgStat_SnapshotEntry *entry = NULL;
 
-		entry = pgstat_snapshot_lookup(pgStatLocal.snapshot.stats, key);
+		entry = pgstat_snapshot_lookup(pgStatSnapshot.stats, key);
 
 		if (entry)
 			return entry->data;
 
 		/*
 		 * If we built a full snapshot and the key is not in
-		 * pgStatLocal.snapshot.stats, there are no matching stats.
+		 * pgStatSnapshot.stats, there are no matching stats.
 		 */
 		if (pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT)
 			return NULL;
 	}
 
-	pgStatLocal.snapshot.mode = pgstat_fetch_consistency;
+	if (pgstat_fetch_consistency > PGSTAT_FETCH_CONSISTENCY_NONE)
+		pgStatSnapshot.mode = pgstat_fetch_consistency;
 
 	entry_ref = pgstat_get_entry_ref(kind, dboid, objid, false, NULL);
 
@@ -1034,7 +1018,7 @@ pgstat_fetch_entry(PgStat_Kind kind, Oid dboid, uint64 objid, bool *may_free)
 			PgStat_SnapshotEntry *entry = NULL;
 			bool		found;
 
-			entry = pgstat_snapshot_insert(pgStatLocal.snapshot.stats, key, &found);
+			entry = pgstat_snapshot_insert(pgStatSnapshot.stats, key, &found);
 			Assert(!found);
 			entry->data = NULL;
 		}
@@ -1058,7 +1042,7 @@ pgstat_fetch_entry(PgStat_Kind kind, Oid dboid, uint64 objid, bool *may_free)
 			*may_free = true;
 	}
 	else
-		stats_data = MemoryContextAlloc(pgStatLocal.snapshot.context,
+		stats_data = MemoryContextAlloc(pgStatSnapshot.context,
 										kind_info->shared_data_len);
 
 	(void) pgstat_lock_entry_shared(entry_ref, false);
@@ -1072,7 +1056,7 @@ pgstat_fetch_entry(PgStat_Kind kind, Oid dboid, uint64 objid, bool *may_free)
 		PgStat_SnapshotEntry *entry = NULL;
 		bool		found;
 
-		entry = pgstat_snapshot_insert(pgStatLocal.snapshot.stats, key, &found);
+		entry = pgstat_snapshot_insert(pgStatSnapshot.stats, key, &found);
 		entry->data = stats_data;
 	}
 
@@ -1087,13 +1071,17 @@ pgstat_fetch_entry(PgStat_Kind kind, Oid dboid, uint64 objid, bool *may_free)
 TimestampTz
 pgstat_get_stat_snapshot_timestamp(bool *have_snapshot)
 {
+	PgStat_Snapshot *snapshot;
+
 	if (force_stats_snapshot_clear)
 		pgstat_clear_snapshot();
 
-	if (pgStatLocal.snapshot.mode == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT)
+	snapshot = PgCurrentPgStatSnapshotIfAllocated();
+	if (snapshot != NULL &&
+		snapshot->mode == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT)
 	{
 		*have_snapshot = true;
-		return pgStatLocal.snapshot.snapshot_timestamp;
+		return snapshot->snapshot_timestamp;
 	}
 
 	*have_snapshot = false;
@@ -1126,20 +1114,25 @@ pgstat_snapshot_fixed(PgStat_Kind kind)
 	if (force_stats_snapshot_clear)
 		pgstat_clear_snapshot();
 
+	pgstat_init_snapshot_fixed();
+
 	if (pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT)
 		pgstat_build_snapshot();
 	else
 		pgstat_build_snapshot_fixed(kind);
 
 	if (pgstat_is_kind_builtin(kind))
-		Assert(pgStatLocal.snapshot.fixed_valid[kind]);
+		Assert(pgStatSnapshot.fixed_valid[kind]);
 	else if (pgstat_is_kind_custom(kind))
-		Assert(pgStatLocal.snapshot.custom_valid[kind - PGSTAT_KIND_CUSTOM_MIN]);
+		Assert(pgStatSnapshot.custom_valid[kind - PGSTAT_KIND_CUSTOM_MIN]);
 }
 
 static void
 pgstat_init_snapshot_fixed(void)
 {
+	MemoryContext fixed_snapshot_context = NULL;
+	PgStat_Snapshot *snapshot = NULL;
+
 	/*
 	 * Initialize fixed-numbered statistics data in snapshots, only for custom
 	 * stats kinds.
@@ -1151,9 +1144,39 @@ pgstat_init_snapshot_fixed(void)
 		if (!kind_info || !kind_info->fixed_amount)
 			continue;
 
-		pgStatLocal.snapshot.custom_data[kind - PGSTAT_KIND_CUSTOM_MIN] =
-			MemoryContextAlloc(TopMemoryContext, kind_info->shared_data_len);
+		if (snapshot == NULL)
+			snapshot = PgCurrentPgStatSnapshot();
+		if (snapshot->custom_data[kind - PGSTAT_KIND_CUSTOM_MIN] != NULL)
+			continue;
+
+		if (fixed_snapshot_context == NULL)
+			fixed_snapshot_context = PgRuntimeGetOwnedMemoryContext(
+				PgCurrentPgStatFixedSnapshotContextRef(),
+				"PgStat Fixed Snapshot");
+
+		snapshot->custom_data[kind - PGSTAT_KIND_CUSTOM_MIN] =
+			MemoryContextAlloc(fixed_snapshot_context,
+							   kind_info->shared_data_len);
 	}
+}
+
+static void
+pgstat_release_snapshot_memory(void)
+{
+	PgStat_LocalState *local;
+
+	local = PgCurrentPgStatLocalState();
+	if (local->snapshot == NULL)
+		return;
+
+	pgstat_clear_snapshot();
+	if (*PgCurrentPgStatFixedSnapshotContextRef() != NULL)
+	{
+		MemoryContextDelete(*PgCurrentPgStatFixedSnapshotContextRef());
+		*PgCurrentPgStatFixedSnapshotContextRef() = NULL;
+	}
+	pfree(local->snapshot);
+	local->snapshot = NULL;
 }
 
 static void
@@ -1163,16 +1186,15 @@ pgstat_prep_snapshot(void)
 		pgstat_clear_snapshot();
 
 	if (pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_NONE ||
-		pgStatLocal.snapshot.stats != NULL)
+		pgStatSnapshot.stats != NULL)
 		return;
 
-	if (!pgStatLocal.snapshot.context)
-		pgStatLocal.snapshot.context = AllocSetContextCreate(TopMemoryContext,
-															 "PgStat Snapshot",
-															 ALLOCSET_SMALL_SIZES);
+	PgRuntimeGetOwnedMemoryContextWithSizes(&pgStatSnapshot.context,
+											"PgStat Snapshot",
+											ALLOCSET_SMALL_SIZES);
 
-	pgStatLocal.snapshot.stats =
-		pgstat_snapshot_create(pgStatLocal.snapshot.context,
+	pgStatSnapshot.stats =
+		pgstat_snapshot_create(pgStatSnapshot.context,
 							   PGSTAT_SNAPSHOT_HASH_SIZE,
 							   NULL);
 }
@@ -1187,14 +1209,14 @@ pgstat_build_snapshot(void)
 	Assert(pgstat_fetch_consistency == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT);
 
 	/* snapshot already built */
-	if (pgStatLocal.snapshot.mode == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT)
+	if (pgStatSnapshot.mode == PGSTAT_FETCH_CONSISTENCY_SNAPSHOT)
 		return;
 
 	pgstat_prep_snapshot();
 
-	Assert(pgStatLocal.snapshot.stats->members == 0);
+	Assert(pgStatSnapshot.stats->members == 0);
 
-	pgStatLocal.snapshot.snapshot_timestamp = GetCurrentTimestamp();
+	pgStatSnapshot.snapshot_timestamp = GetCurrentTimestamp();
 
 	/*
 	 * Snapshot all variable stats.
@@ -1228,10 +1250,10 @@ pgstat_build_snapshot(void)
 		stats_data = dsa_get_address(pgStatLocal.dsa, p->body);
 		Assert(stats_data);
 
-		entry = pgstat_snapshot_insert(pgStatLocal.snapshot.stats, p->key, &found);
+		entry = pgstat_snapshot_insert(pgStatSnapshot.stats, p->key, &found);
 		Assert(!found);
 
-		entry->data = MemoryContextAlloc(pgStatLocal.snapshot.context,
+		entry->data = MemoryContextAlloc(pgStatSnapshot.context,
 										 pgstat_get_entry_len(kind));
 
 		/*
@@ -1264,7 +1286,7 @@ pgstat_build_snapshot(void)
 		pgstat_build_snapshot_fixed(kind);
 	}
 
-	pgStatLocal.snapshot.mode = PGSTAT_FETCH_CONSISTENCY_SNAPSHOT;
+	pgStatSnapshot.mode = PGSTAT_FETCH_CONSISTENCY_SNAPSHOT;
 }
 
 static void
@@ -1278,12 +1300,12 @@ pgstat_build_snapshot_fixed(PgStat_Kind kind)
 	if (pgstat_is_kind_builtin(kind))
 	{
 		idx = kind;
-		valid = pgStatLocal.snapshot.fixed_valid;
+		valid = pgStatSnapshot.fixed_valid;
 	}
 	else
 	{
 		idx = kind - PGSTAT_KIND_CUSTOM_MIN;
-		valid = pgStatLocal.snapshot.custom_valid;
+		valid = pgStatSnapshot.custom_valid;
 	}
 
 	Assert(kind_info->fixed_amount);
@@ -1727,9 +1749,9 @@ pgstat_write_statsfile(void)
 
 		pgstat_build_snapshot_fixed(kind);
 		if (pgstat_is_kind_builtin(kind))
-			ptr = ((char *) &pgStatLocal.snapshot) + info->snapshot_ctl_off;
+			ptr = ((char *) &pgStatSnapshot) + info->snapshot_ctl_off;
 		else
-			ptr = pgStatLocal.snapshot.custom_data[kind - PGSTAT_KIND_CUSTOM_MIN];
+			ptr = pgStatSnapshot.custom_data[kind - PGSTAT_KIND_CUSTOM_MIN];
 
 		fputc(PGSTAT_FILE_ENTRY_FIXED, fpout);
 		write_chunk_s(fpout, &kind);

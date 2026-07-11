@@ -20,6 +20,7 @@
 
 #include "nodes/pathnodes.h"
 #include "nodes/plannodes.h"
+#include "utils/global_lifetime.h"
 
 
 typedef struct ExplainState ExplainState;	/* defined in explain_state.h */
@@ -30,7 +31,7 @@ typedef PlannedStmt *(*planner_hook_type) (Query *parse,
 										   int cursorOptions,
 										   ParamListInfo boundParams,
 										   ExplainState *es);
-extern PGDLLIMPORT planner_hook_type planner_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME planner_hook_type planner_hook;
 
 /* Hook for plugins to get control after PlannerGlobal is initialized */
 typedef void (*planner_setup_hook_type) (PlannerGlobal *glob, Query *parse,
@@ -38,13 +39,13 @@ typedef void (*planner_setup_hook_type) (PlannerGlobal *glob, Query *parse,
 										 int cursorOptions,
 										 double *tuple_fraction,
 										 ExplainState *es);
-extern PGDLLIMPORT planner_setup_hook_type planner_setup_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME planner_setup_hook_type planner_setup_hook;
 
 /* Hook for plugins to get control before PlannerGlobal is discarded */
 typedef void (*planner_shutdown_hook_type) (PlannerGlobal *glob, Query *parse,
 											const char *query_string,
 											PlannedStmt *pstmt);
-extern PGDLLIMPORT planner_shutdown_hook_type planner_shutdown_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME planner_shutdown_hook_type planner_shutdown_hook;
 
 /* Hook for plugins to get control when grouping_planner() plans upper rels */
 typedef void (*create_upper_paths_hook_type) (PlannerInfo *root,
@@ -52,7 +53,7 @@ typedef void (*create_upper_paths_hook_type) (PlannerInfo *root,
 											  RelOptInfo *input_rel,
 											  RelOptInfo *output_rel,
 											  void *extra);
-extern PGDLLIMPORT create_upper_paths_hook_type create_upper_paths_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME create_upper_paths_hook_type create_upper_paths_hook;
 
 
 extern PlannedStmt *standard_planner(Query *parse, const char *query_string,

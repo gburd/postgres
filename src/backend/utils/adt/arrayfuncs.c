@@ -39,11 +39,6 @@
 
 
 /*
- * GUC parameter
- */
-bool		Array_nulls = true;
-
-/*
  * Local definitions
  */
 #define ASSGN	 "="

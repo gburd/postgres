@@ -15,6 +15,8 @@
 #define QUERYJUMBLE_H
 
 #include "nodes/parsenodes.h"
+#include "utils/backend_runtime_current.h"
+#include "utils/global_lifetime.h"
 
 /*
  * Struct for tracking locations/lengths of constants during normalization
@@ -86,9 +88,21 @@ enum ComputeQueryIdType
 	COMPUTE_QUERY_ID_REGRESS,
 };
 
-/* GUC parameters */
-extern PGDLLIMPORT int compute_query_id;
+#ifndef PgCurrentComputeQueryIdRef
+extern int *(PgCurrentComputeQueryIdRef)(void);
+#endif
+#ifndef PgCurrentQueryIdEnabledRef
+extern bool *(PgCurrentQueryIdEnabledRef)(void);
+#endif
 
+#define compute_query_id \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentComputeQueryIdHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentComputeQueryIdRef))
+#define query_id_enabled \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentQueryIdEnabledHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentQueryIdEnabledRef))
 
 extern const char *CleanQuerytext(const char *query, int *location, int *len);
 extern LocationLen *ComputeConstantLengths(const JumbleState *jstate,
@@ -96,8 +110,6 @@ extern LocationLen *ComputeConstantLengths(const JumbleState *jstate,
 										   int query_loc);
 extern JumbleState *JumbleQuery(Query *query);
 extern void EnableQueryId(void);
-
-extern PGDLLIMPORT bool query_id_enabled;
 
 /*
  * Returns whether query identifier computation has been enabled, either

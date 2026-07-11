@@ -84,7 +84,7 @@ typedef struct core_yy_extra_type
 	 * scanner_init() if they don't want the scanner's behavior to follow the
 	 * prevailing GUC settings.
 	 */
-	int			backslash_quote;
+	int			scanner_backslash_quote;
 
 	/*
 	 * literalbuf is used to accumulate literal values when multiple rules are

@@ -23,6 +23,7 @@
 #include "access/session.h"
 #include "storage/lwlock.h"
 #include "storage/shm_toc.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/typcache.h"
 
@@ -44,16 +45,15 @@
 #define SESSION_KEY_DSA						UINT64CONST(0xFFFFFFFFFFFF0001)
 #define SESSION_KEY_RECORD_TYPMOD_REGISTRY	UINT64CONST(0xFFFFFFFFFFFF0002)
 
-/* This backend's current session. */
-Session    *CurrentSession = NULL;
-
 /*
  * Set up CurrentSession to point to an empty Session object.
  */
 void
 InitializeSession(void)
 {
-	CurrentSession = MemoryContextAllocZero(TopMemoryContext, sizeof(Session));
+	CurrentSession = PgCurrentLegacySession();
+	Assert(CurrentSession != NULL);
+	MemSet(CurrentSession, 0, sizeof(Session));
 }
 
 /*
@@ -200,9 +200,18 @@ AttachSession(dsm_handle handle)
 void
 DetachSession(void)
 {
+	if (CurrentSession == NULL)
+		return;
+
 	/* Runs detach hooks. */
-	dsm_detach(CurrentSession->segment);
-	CurrentSession->segment = NULL;
-	dsa_detach(CurrentSession->area);
-	CurrentSession->area = NULL;
+	if (CurrentSession->segment != NULL)
+	{
+		dsm_detach(CurrentSession->segment);
+		CurrentSession->segment = NULL;
+	}
+	if (CurrentSession->area != NULL)
+	{
+		dsa_detach(CurrentSession->area);
+		CurrentSession->area = NULL;
+	}
 }

@@ -27,6 +27,8 @@
 #include "nodes/pathnodes.h"
 #include "optimizer/extendplan.h"
 #include "optimizer/geqo_gene.h"
+#include "utils/backend_runtime_current.h"
+#include "utils/global_lifetime.h"
 
 
 /* GEQO debug flag */
@@ -51,26 +53,66 @@
  *
  * If you change these, update backend/utils/misc/postgresql.conf.sample
  */
-extern PGDLLIMPORT int Geqo_effort; /* 1 .. 10, knob for adjustment of
-									 * defaults */
+/* 1 .. 10, knob for adjustment of defaults */
+#ifndef PgCurrentGeqoEffortRef
+extern int *PgCurrentGeqoEffortRef(void);
+#endif
 
 #define DEFAULT_GEQO_EFFORT 5
 #define MIN_GEQO_EFFORT 1
 #define MAX_GEQO_EFFORT 10
 
-extern PGDLLIMPORT int Geqo_pool_size;	/* 2 .. inf, or 0 to use default */
+/* 2 .. inf, or 0 to use default */
+#ifndef PgCurrentGeqoPoolSizeRef
+extern int *PgCurrentGeqoPoolSizeRef(void);
+#endif
 
-extern PGDLLIMPORT int Geqo_generations;	/* 1 .. inf, or 0 to use default */
+/* 1 .. inf, or 0 to use default */
+#ifndef PgCurrentGeqoGenerationsRef
+extern int *PgCurrentGeqoGenerationsRef(void);
+#endif
 
-extern PGDLLIMPORT double Geqo_selection_bias;
+#ifndef PgCurrentGeqoSelectionBiasRef
+extern double *PgCurrentGeqoSelectionBiasRef(void);
+#endif
 
-extern PGDLLIMPORT int Geqo_planner_extension_id;
+#ifndef PgCurrentGeqoPlannerExtensionIdRef
+extern int *PgCurrentGeqoPlannerExtensionIdRef(void);
+#endif
 
 #define DEFAULT_GEQO_SELECTION_BIAS 2.0
 #define MIN_GEQO_SELECTION_BIAS 1.5
 #define MAX_GEQO_SELECTION_BIAS 2.0
 
-extern PGDLLIMPORT double Geqo_seed;	/* 0 .. 1 */
+/* 0 .. 1 */
+#ifndef PgCurrentGeqoSeedRef
+extern double *PgCurrentGeqoSeedRef(void);
+#endif
+
+#define Geqo_effort \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentGeqoEffortHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentGeqoEffortRef))
+#define Geqo_pool_size \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentGeqoPoolSizeHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentGeqoPoolSizeRef))
+#define Geqo_generations \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentGeqoGenerationsHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentGeqoGenerationsRef))
+#define Geqo_selection_bias \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentGeqoSelectionBiasHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentGeqoSelectionBiasRef))
+#define Geqo_planner_extension_id \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentGeqoPlannerExtensionIdHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentGeqoPlannerExtensionIdRef))
+#define Geqo_seed \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentGeqoSeedHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentGeqoSeedRef))
 
 
 /*

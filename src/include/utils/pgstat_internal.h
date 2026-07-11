@@ -406,6 +406,9 @@ static const char *const slru_names[] = {
 
 #define SLRU_NUM_ELEMENTS	lengthof(slru_names)
 
+StaticAssertDecl(SLRU_NUM_ELEMENTS == PGSTAT_SLRU_NUM_ELEMENTS,
+				 "PGSTAT_SLRU_NUM_ELEMENTS must match slru_names");
+
 
 /* ----------
  * Types and definitions for different kinds of fixed-amount stats.
@@ -625,8 +628,9 @@ typedef struct PgStat_Snapshot
 
 	/*
 	 * Data in snapshot for custom fixed-numbered statistics, indexed by
-	 * (PgStat_Kind - PGSTAT_KIND_CUSTOM_MIN).  Each entry is allocated in
-	 * TopMemoryContext, for a size of PgStat_KindInfo->shared_data_len.
+	 * (PgStat_Kind - PGSTAT_KIND_CUSTOM_MIN).  Each entry is allocated in the
+	 * current backend's fixed snapshot context, for a size of
+	 * PgStat_KindInfo->shared_data_len.
 	 */
 	bool		custom_valid[PGSTAT_KIND_CUSTOM_SIZE];
 	void	   *custom_data[PGSTAT_KIND_CUSTOM_SIZE];
@@ -646,8 +650,8 @@ typedef struct PgStat_LocalState
 	dsa_area   *dsa;
 	dshash_table *shared_hash;
 
-	/* the current statistics snapshot */
-	PgStat_Snapshot snapshot;
+	/* the current statistics snapshot, allocated lazily when stats are read */
+	PgStat_Snapshot *snapshot;
 } PgStat_LocalState;
 
 
@@ -818,7 +822,10 @@ extern bool pgstat_replslot_from_serialized_name_cb(const NameData *name, PgStat
  */
 
 extern void pgstat_attach_shmem(void);
+extern void pgstat_ensure_shmem_attached(void);
 extern void pgstat_detach_shmem(void);
+extern void pgstat_detach_idle_memory(void);
+extern void pgstat_release_shared_ref_memory(void);
 
 extern PgStat_EntryRef *pgstat_get_entry_ref(PgStat_Kind kind, Oid dboid, uint64 objid,
 											 bool create, bool *created_entry);
@@ -885,23 +892,35 @@ extern void pgstat_create_transactional(PgStat_Kind kind, Oid dboid, uint64 obji
  * Variables in pgstat.c
  */
 
-/*
- * Track if *any* pending fixed-numbered statistics should be flushed to
- * shared memory.
- *
- * This flag can be switched to true by fixed-numbered statistics to let
- * pgstat_report_stat() know if it needs to go through one round of
- * reports, calling flush_static_cb for each fixed-numbered statistics
- * kind.  When this flag is not set, pgstat_report_stat() is able to do
- * a fast exit, knowing that there are no pending fixed-numbered statistics.
- *
- * Statistics callbacks should never reset this flag; pgstat_report_stat()
- * is in charge of doing that.
- */
-extern PGDLLIMPORT bool pgstat_report_fixed;
-
 /* Backend-local stats state */
-extern PGDLLIMPORT PgStat_LocalState pgStatLocal;
+#ifndef PgCurrentPgStatLocalState
+extern PgStat_LocalState *PgCurrentPgStatLocalState(void);
+#endif
+#define pgStatLocal (*PgCurrentPgStatLocalState())
+extern PgStat_Snapshot *PgCurrentPgStatSnapshot(void);
+extern PgStat_Snapshot *PgCurrentPgStatSnapshotIfAllocated(void);
+#define pgStatSnapshot (*PgCurrentPgStatSnapshot())
+#ifndef PgCurrentPgStatFixedSnapshotContextRef
+extern MemoryContext *PgCurrentPgStatFixedSnapshotContextRef(void);
+#endif
+#ifndef PgCurrentPgStatPendingContextRef
+extern MemoryContext *PgCurrentPgStatPendingContextRef(void);
+#endif
+#ifndef PgCurrentPgStatPendingListRef
+extern dlist_head *PgCurrentPgStatPendingListRef(void);
+#endif
+#ifndef PgCurrentPgStatEntryRefHashRef
+extern void **PgCurrentPgStatEntryRefHashRef(void);
+#endif
+#ifndef PgCurrentPgStatSharedRefAgeRef
+extern int *PgCurrentPgStatSharedRefAgeRef(void);
+#endif
+#ifndef PgCurrentPgStatSharedRefContextRef
+extern MemoryContext *PgCurrentPgStatSharedRefContextRef(void);
+#endif
+#ifndef PgCurrentPgStatEntryRefHashContextRef
+extern MemoryContext *PgCurrentPgStatEntryRefHashContextRef(void);
+#endif
 
 
 /*
@@ -1067,7 +1086,7 @@ pgstat_get_custom_snapshot_data(PgStat_Kind kind)
 	Assert(pgstat_is_kind_custom(kind));
 	Assert(pgstat_get_kind_info(kind)->fixed_amount);
 
-	return pgStatLocal.snapshot.custom_data[idx];
+	return pgStatSnapshot.custom_data[idx];
 }
 
 #endif							/* PGSTAT_INTERNAL_H */

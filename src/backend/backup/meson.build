@@ -1,6 +1,7 @@
 # Copyright (c) 2022-2026, PostgreSQL Global Development Group
 
 backend_sources += files(
+  'backend_runtime_backup.c',
   'backup_manifest.c',
   'basebackup.c',
   'basebackup_copy.c',

@@ -45,9 +45,10 @@
 /* Cap the size of parallel I/O chunks to this number of blocks */
 #define PARALLEL_SEQSCAN_MAX_CHUNK_SIZE		8192
 
-/* GUC variables */
-char	   *default_table_access_method = DEFAULT_TABLE_ACCESS_METHOD;
-bool		synchronize_seqscans = true;
+/*
+ * GUC variables now live in PgSessionAccessWalGUCState.  The public names
+ * remain available through compatibility macros in access/tableam.h.
+ */
 
 
 /* ----------------------------------------------------------------------------

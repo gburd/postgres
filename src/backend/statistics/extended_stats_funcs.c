@@ -63,7 +63,7 @@ enum extended_stats_argnum
  * The argument names and type OIDs of the arguments for the SQL
  * functions.
  */
-static struct StatsArgInfo extarginfo[] =
+static PG_GLOBAL_IMMUTABLE struct StatsArgInfo extarginfo[] =
 {
 	[RELSCHEMA_ARG] = {"schemaname", TEXTOID},
 	[RELNAME_ARG] = {"relname", TEXTOID},
@@ -104,7 +104,7 @@ enum extended_stats_exprs_element
 /*
  * The argument names of the repeating arguments for stxdexpr.
  */
-static const char *extexprargname[NUM_ATTRIBUTE_STATS_ELEMS] =
+static PG_GLOBAL_IMMUTABLE const char *extexprargname[NUM_ATTRIBUTE_STATS_ELEMS] =
 {
 	"null_frac",
 	"avg_width",

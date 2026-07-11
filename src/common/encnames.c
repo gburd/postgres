@@ -354,7 +354,7 @@ const pg_enc2name pg_enc2name_tbl[] =
  * These are encoding names for gettext.
  * ----------
  */
-const char *pg_enc2gettext_tbl[] =
+const char *const pg_enc2gettext_tbl[] =
 {
 	[PG_SQL_ASCII] = "US-ASCII",
 	[PG_UTF8] = "UTF-8",

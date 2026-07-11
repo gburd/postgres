@@ -39,7 +39,7 @@ typedef enum
 } RecursionContext;
 
 /* Associated error messages --- each must have one %s for CTE name */
-static const char *const recursion_errormsgs[] = {
+static PG_GLOBAL_IMMUTABLE const char *const recursion_errormsgs[] = {
 	/* RECURSION_OK */
 	NULL,
 	/* RECURSION_NONRECURSIVETERM */

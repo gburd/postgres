@@ -22,6 +22,8 @@ OBJS = \
 	arraysubs.o \
 	arrayutils.o \
 	ascii.o \
+	backend_runtime_pseudorandom.o \
+	backend_runtime_ri.o \
 	bool.o \
 	bytea.o \
 	cash.o \

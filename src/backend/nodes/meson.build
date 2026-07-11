@@ -1,6 +1,7 @@
 # Copyright (c) 2022-2026, PostgreSQL Global Development Group
 
 backend_sources += files(
+  'backend_runtime_nodes.c',
   'bitmapset.c',
   'extensible.c',
   'list.c',

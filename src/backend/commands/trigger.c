@@ -48,6 +48,7 @@
 #include "rewrite/rewriteManip.h"
 #include "storage/lmgr.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc_hooks.h"
@@ -61,11 +62,8 @@
 #include "utils/tuplestore.h"
 
 
-/* GUC variables */
-int			SessionReplicationRole = SESSION_REPLICATION_ROLE_ORIGIN;
-
 /* How many levels deep into trigger execution are we? */
-static int	MyTriggerDepth = 0;
+#define MyTriggerDepth (*PgCurrentTriggerDepthRef())
 
 /* Local function prototypes */
 static void renametrig_internal(Relation tgrel, Relation targetrel,
@@ -3988,7 +3986,37 @@ typedef struct AfterTriggerCallbackItem
 	void	   *arg;
 } AfterTriggerCallbackItem;
 
-static AfterTriggersData afterTriggers;
+static pg_always_inline AfterTriggersData *GetCurrentAfterTriggersData(void);
+
+#define afterTriggers (*GetCurrentAfterTriggersData())
+
+static inline void **
+GetCurrentAfterTriggersDataRefFast(void)
+{
+	void	  **after_triggers_data;
+
+	after_triggers_data =
+		PgRuntimeCurrentBridgeState.PgCurrentAfterTriggersDataHotRef;
+	if (likely(after_triggers_data != NULL))
+		return after_triggers_data;
+
+	PG_RUNTIME_BRIDGE_COUNT_FALLBACK(after_triggers);
+	return PgCurrentAfterTriggersDataRef();
+}
+
+static pg_always_inline AfterTriggersData *
+GetCurrentAfterTriggersData(void)
+{
+	void	  **after_triggers_data;
+
+	after_triggers_data = GetCurrentAfterTriggersDataRefFast();
+	if (*after_triggers_data == NULL)
+		*after_triggers_data =
+			MemoryContextAllocZero(PgCurrentAfterTriggersMemoryContext(),
+								   sizeof(AfterTriggersData));
+
+	return (AfterTriggersData *) *after_triggers_data;
+}
 
 static void AfterTriggerExecute(EState *estate,
 								AfterTriggerEvent event,

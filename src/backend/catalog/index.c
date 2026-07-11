@@ -70,6 +70,7 @@
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "storage/smgr.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
@@ -82,21 +83,16 @@
 #include "utils/syscache.h"
 #include "utils/tuplesort.h"
 
-/* Potentially set by pg_upgrade_support functions */
-Oid			binary_upgrade_next_index_pg_class_oid = InvalidOid;
-RelFileNumber binary_upgrade_next_index_pg_class_relfilenumber =
-InvalidRelFileNumber;
-
 /*
  * Pointer-free representation of variables used when reindexing system
  * catalogs; we use this to propagate those values to parallel workers.
  */
 typedef struct
 {
-	Oid			currentlyReindexedHeap;
-	Oid			currentlyReindexedIndex;
+	Oid			serializedReindexedHeap;
+	Oid			serializedReindexedIndex;
 	int			numPendingReindexedIndexes;
-	Oid			pendingReindexedIndexes[FLEXIBLE_ARRAY_MEMBER];
+	Oid			serializedPendingReindexedIndexes[FLEXIBLE_ARRAY_MEMBER];
 } SerializedReindexState;
 
 /* non-export function prototypes */
@@ -4155,10 +4151,10 @@ reindex_relation(const ReindexStmt *stmt, Oid relid, int flags,
  * ----------------------------------------------------------------
  */
 
-static Oid	currentlyReindexedHeap = InvalidOid;
-static Oid	currentlyReindexedIndex = InvalidOid;
-static List *pendingReindexedIndexes = NIL;
-static int	reindexingNestLevel = 0;
+#define currentlyReindexedHeap (*PgCurrentReindexedHeapRef())
+#define currentlyReindexedIndex (*PgCurrentReindexedIndexRef())
+#define pendingReindexedIndexes (*PgCurrentPendingReindexedIndexesRef())
+#define reindexingNestLevel (*PgCurrentReindexingNestLevelRef())
 
 /*
  * ReindexIsProcessingHeap
@@ -4290,7 +4286,7 @@ ResetReindexState(int nestLevel)
 Size
 EstimateReindexStateSpace(void)
 {
-	return offsetof(SerializedReindexState, pendingReindexedIndexes)
+	return offsetof(SerializedReindexState, serializedPendingReindexedIndexes)
 		+ mul_size(sizeof(Oid), list_length(pendingReindexedIndexes));
 }
 
@@ -4305,11 +4301,11 @@ SerializeReindexState(Size maxsize, char *start_address)
 	int			c = 0;
 	ListCell   *lc;
 
-	sistate->currentlyReindexedHeap = currentlyReindexedHeap;
-	sistate->currentlyReindexedIndex = currentlyReindexedIndex;
+	sistate->serializedReindexedHeap = currentlyReindexedHeap;
+	sistate->serializedReindexedIndex = currentlyReindexedIndex;
 	sistate->numPendingReindexedIndexes = list_length(pendingReindexedIndexes);
 	foreach(lc, pendingReindexedIndexes)
-		sistate->pendingReindexedIndexes[c++] = lfirst_oid(lc);
+		sistate->serializedPendingReindexedIndexes[c++] = lfirst_oid(lc);
 }
 
 /*
@@ -4323,15 +4319,15 @@ RestoreReindexState(const void *reindexstate)
 	int			c = 0;
 	MemoryContext oldcontext;
 
-	currentlyReindexedHeap = sistate->currentlyReindexedHeap;
-	currentlyReindexedIndex = sistate->currentlyReindexedIndex;
+	currentlyReindexedHeap = sistate->serializedReindexedHeap;
+	currentlyReindexedIndex = sistate->serializedReindexedIndex;
 
 	Assert(pendingReindexedIndexes == NIL);
 	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 	for (c = 0; c < sistate->numPendingReindexedIndexes; ++c)
 		pendingReindexedIndexes =
 			lappend_oid(pendingReindexedIndexes,
-						sistate->pendingReindexedIndexes[c]);
+						sistate->serializedPendingReindexedIndexes[c]);
 	MemoryContextSwitchTo(oldcontext);
 
 	/* Note the worker has its own transaction nesting level */

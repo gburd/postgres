@@ -58,13 +58,13 @@
  * as ticks. Hence, we set the multiplier to zero, which causes pg_ticks_to_ns
  * to return the original value.
  */
-uint64		ticks_per_ns_scaled = 0;
-uint64		max_ticks_no_overflow = 0;
-bool		timing_initialized = false;
-int			timing_clock_source = TIMING_CLOCK_SOURCE_AUTO;
+PG_GLOBAL_RUNTIME uint64 ticks_per_ns_scaled = 0;
+PG_GLOBAL_RUNTIME uint64 max_ticks_no_overflow = 0;
+PG_GLOBAL_RUNTIME bool timing_initialized = false;
+PG_GLOBAL_RUNTIME int timing_clock_source = TIMING_CLOCK_SOURCE_AUTO;
 
-bool		timing_tsc_enabled = false;
-int32		timing_tsc_frequency_khz = -1;
+PG_GLOBAL_RUNTIME bool timing_tsc_enabled = false;
+PG_GLOBAL_RUNTIME int32 timing_tsc_frequency_khz = -1;
 
 static void set_ticks_per_ns(void);
 static void set_ticks_per_ns_system(void);

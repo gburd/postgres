@@ -114,7 +114,7 @@ typedef struct SERIALIZABLEXACT
 									 * xids are before this. */
 	TransactionId xmin;			/* the transaction's snapshot xmin */
 	uint32		flags;			/* OR'd combination of values defined below */
-	int			pid;			/* pid of associated process */
+	int			pid;			/* SQL-visible pid of associated backend */
 	int			pgprocno;		/* pgprocno of associated process */
 } SERIALIZABLEXACT;
 

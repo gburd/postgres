@@ -39,6 +39,7 @@
 #include "replication/origin.h"
 #include "storage/bufmgr.h"
 #include "storage/proc.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/pgstat_internal.h"
 #include "utils/rel.h"
@@ -89,21 +90,24 @@ typedef struct
 	char		compressed_page[COMPRESS_BUFSIZE];
 } registered_buffer;
 
-static registered_buffer *registered_buffers;
-static int	max_registered_buffers; /* allocated size */
-static int	max_registered_block_id = 0;	/* highest block_id + 1 currently
-											 * registered */
+#define registered_buffers (*(registered_buffer **) PgCurrentXLogInsertRegisteredBuffersRef())
+/* Allocated size. */
+#define max_registered_buffers (*PgCurrentXLogInsertMaxRegisteredBuffersRef())
+
+/* Highest block_id + 1 currently registered. */
+#define max_registered_block_id (*PgCurrentXLogInsertMaxRegisteredBlockIdRef())
 
 /*
  * A chain of XLogRecDatas to hold the "main data" of a WAL record, registered
  * with XLogRegisterData(...).
  */
-static XLogRecData *mainrdata_head;
-static XLogRecData *mainrdata_last = (XLogRecData *) &mainrdata_head;
-static uint64 mainrdata_len;	/* total # of bytes in chain */
+#define mainrdata_head (*PgCurrentXLogInsertMainRDataHeadRef())
+#define mainrdata_last (*PgCurrentXLogInsertMainRDataLastRef())
+/* Total number of bytes in the main-data chain. */
+#define mainrdata_len (*PgCurrentXLogInsertMainRDataLenRef())
 
 /* flags for the in-progress insertion */
-static uint8 curinsert_flags = 0;
+#define curinsert_flags (*PgCurrentXLogInsertFlagsRef())
 
 /*
  * These are used to hold the record header while constructing a record.
@@ -113,8 +117,8 @@ static uint8 curinsert_flags = 0;
  * For simplicity, it's allocated large enough to hold the headers for any
  * WAL record.
  */
-static XLogRecData hdr_rdt;
-static char *hdr_scratch = NULL;
+#define hdr_rdt (*PgCurrentXLogInsertHeaderRecordDataRef())
+#define hdr_scratch (*PgCurrentXLogInsertHeaderScratchRef())
 
 #define SizeOfXlogOrigin	(sizeof(ReplOriginId) + sizeof(char))
 #define SizeOfXLogTransactionId	(sizeof(TransactionId) + sizeof(char))
@@ -128,14 +132,16 @@ static char *hdr_scratch = NULL;
 /*
  * An array of XLogRecData structs, to hold registered data.
  */
-static XLogRecData *rdatas;
-static int	num_rdatas;			/* entries currently used */
-static int	max_rdatas;			/* allocated size */
+#define rdatas (*PgCurrentXLogInsertRDatasRef())
+/* Entries currently used. */
+#define num_rdatas (*PgCurrentXLogInsertNumRDatasRef())
+/* Allocated size. */
+#define max_rdatas (*PgCurrentXLogInsertMaxRDatasRef())
 
-static bool begininsert_called = false;
+#define begininsert_called (*PgCurrentXLogInsertBeginCalledRef())
 
 /* Memory context to hold the registered buffer and data references. */
-static MemoryContext xloginsert_cxt;
+#define xloginsert_cxt (*PgCurrentXLogInsertContextRef())
 
 static XLogRecData *XLogRecordAssemble(RmgrId rmid, uint8 info,
 									   XLogRecPtr RedoRecPtr, bool doPageWrites,
@@ -152,6 +158,9 @@ static bool XLogCompressBackupBlock(const PageData *page, uint16 hole_offset,
 void
 XLogBeginInsert(void)
 {
+	if (unlikely(mainrdata_last == NULL))
+		InitXLogInsert();
+
 	Assert(max_registered_block_id == 0);
 	Assert(mainrdata_last == (XLogRecData *) &mainrdata_head);
 	Assert(mainrdata_len == 0);
@@ -187,6 +196,9 @@ XLogEnsureRecordSpace(int max_block_id, int ndatas)
 	 * consistently even if the arrays happen to be large enough already.
 	 */
 	Assert(CritSectionCount == 0);
+
+	if (unlikely(mainrdata_last == NULL))
+		InitXLogInsert();
 
 	/* the minimum values can't be decreased */
 	if (max_block_id < XLR_NORMAL_MAX_BLOCK_ID)
@@ -225,6 +237,24 @@ void
 XLogResetInsertion(void)
 {
 	int			i;
+
+	if (unlikely(registered_buffers == NULL || rdatas == NULL ||
+				 max_registered_buffers == 0 || max_rdatas == 0))
+	{
+		Assert(registered_buffers == NULL);
+		Assert(rdatas == NULL);
+		Assert(max_registered_buffers == 0);
+		Assert(max_rdatas == 0);
+
+		num_rdatas = 0;
+		max_registered_block_id = 0;
+		mainrdata_head = NULL;
+		mainrdata_len = 0;
+		mainrdata_last = NULL;
+		curinsert_flags = 0;
+		begininsert_called = false;
+		return;
+	}
 
 	for (i = 0; i < max_registered_block_id; i++)
 		registered_buffers[i].in_use = false;
@@ -1437,4 +1467,7 @@ InitXLogInsert(void)
 	if (hdr_scratch == NULL)
 		hdr_scratch = MemoryContextAllocZero(xloginsert_cxt,
 											 HEADER_SCRATCH_SIZE);
+
+	if (mainrdata_last == NULL)
+		mainrdata_last = (XLogRecData *) &mainrdata_head;
 }

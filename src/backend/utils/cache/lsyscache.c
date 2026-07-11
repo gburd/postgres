@@ -54,7 +54,7 @@
 #include "utils/typcache.h"
 
 /* Hook for plugins to get control in get_attavgwidth() */
-get_attavgwidth_hook_type get_attavgwidth_hook = NULL;
+PG_GLOBAL_RUNTIME get_attavgwidth_hook_type get_attavgwidth_hook = NULL;
 
 
 /*				---------- AMOP CACHES ----------						 */

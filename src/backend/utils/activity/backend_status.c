@@ -22,6 +22,7 @@
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
 #include "utils/ascii.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"			/* for application_name */
 #include "utils/memutils.h"
 
@@ -37,38 +38,29 @@
 #define NumBackendStatSlots (MaxBackends + NUM_AUXILIARY_PROCS)
 
 
-/* ----------
- * GUC parameters
- * ----------
- */
-bool		pgstat_track_activities = false;
-int			pgstat_track_activity_query_size = 1024;
+PG_GLOBAL_RUNTIME int pgstat_track_activity_query_size = 1024;
 
 
-/* exposed so that backend_progress.c can access it */
-PgBackendStatus *MyBEEntry = NULL;
-
-
-static PgBackendStatus *BackendStatusArray = NULL;
-static char *BackendAppnameBuffer = NULL;
-static char *BackendClientHostnameBuffer = NULL;
-static char *BackendActivityBuffer = NULL;
-static Size BackendActivityBufferSize = 0;
+static PG_GLOBAL_SHMEM PgBackendStatus *BackendStatusArray = NULL;
+static PG_GLOBAL_SHMEM char *BackendAppnameBuffer = NULL;
+static PG_GLOBAL_SHMEM char *BackendClientHostnameBuffer = NULL;
+static PG_GLOBAL_SHMEM char *BackendActivityBuffer = NULL;
+static PG_GLOBAL_SHMEM Size BackendActivityBufferSize = 0;
 #ifdef USE_SSL
-static PgBackendSSLStatus *BackendSslStatusBuffer = NULL;
+static PG_GLOBAL_SHMEM PgBackendSSLStatus *BackendSslStatusBuffer = NULL;
 #endif
 #ifdef ENABLE_GSS
-static PgBackendGSSStatus *BackendGssStatusBuffer = NULL;
+static PG_GLOBAL_SHMEM PgBackendGSSStatus *BackendGssStatusBuffer = NULL;
 #endif
 
 
 /* Status for backends including auxiliary */
-static LocalPgBackendStatus *localBackendStatusTable = NULL;
+#define localBackendStatusTable (*PgCurrentLocalBackendStatusTableRef())
 
 /* Total number of backends including auxiliary */
-static int	localNumBackends = 0;
+#define localNumBackends (*PgCurrentLocalNumBackendsRef())
 
-static MemoryContext backendStatusSnapContext;
+#define backendStatusSnapContext (*PgCurrentBackendStatusSnapContextRef())
 
 
 static void pgstat_beshutdown_hook(int code, Datum arg);
@@ -259,7 +251,7 @@ pgstat_bestart_initial(void)
 	 * Now fill in all the fields of lbeentry, except for strings that are
 	 * out-of-line data.  Those have to be handled separately, below.
 	 */
-	lbeentry.st_procpid = MyProcPid;
+	lbeentry.st_procpid = PgCurrentBackendSignalPid();
 	lbeentry.st_backendType = MyBackendType;
 	lbeentry.st_proc_start_timestamp = MyStartTimestamp;
 	lbeentry.st_activity_start_timestamp = 0;
@@ -429,7 +421,7 @@ pgstat_bestart_security(void)
  * ----------
  */
 void
-pgstat_bestart_final(void)
+pgstat_bestart_final_status(void)
 {
 	volatile PgBackendStatus *beentry = MyBEEntry;
 	Oid			userid;
@@ -457,6 +449,12 @@ pgstat_bestart_final(void)
 	beentry->st_state = STATE_UNDEFINED;
 
 	PGSTAT_END_WRITE_ACTIVITY(beentry);
+}
+
+void
+pgstat_bestart_final(void)
+{
+	pgstat_bestart_final_status();
 
 	/* Create the backend statistics entry */
 	if (pgstat_tracks_backend_bktype(MyBackendType))
@@ -512,13 +510,27 @@ pgstat_clear_backend_activity_snapshot(void)
 	localNumBackends = 0;
 }
 
+void
+PgBackendResetActivityClosedState(PgBackendActivityState *activity)
+{
+	Assert(activity != NULL);
+
+	if (activity->backend_status_context)
+	{
+		MemoryContextDelete(activity->backend_status_context);
+		activity->backend_status_context = NULL;
+	}
+
+	activity->backend_status_table = NULL;
+	activity->num_backends = 0;
+}
+
 static void
 pgstat_setup_backend_status_context(void)
 {
-	if (!backendStatusSnapContext)
-		backendStatusSnapContext = AllocSetContextCreate(TopMemoryContext,
-														 "Backend Status Snapshot",
-														 ALLOCSET_SMALL_SIZES);
+	PgRuntimeGetOwnedMemoryContextWithSizes(&backendStatusSnapContext,
+											"Backend Status Snapshot",
+											ALLOCSET_SMALL_SIZES);
 }
 
 

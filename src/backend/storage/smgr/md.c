@@ -39,6 +39,7 @@
 #include "storage/relfilelocator.h"
 #include "storage/smgr.h"
 #include "storage/sync.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/wait_event.h"
 
@@ -95,7 +96,7 @@ typedef struct _MdfdVec
 	BlockNumber mdfd_segno;		/* segment number, from 0 */
 } MdfdVec;
 
-static MemoryContext MdCxt;		/* context for all MdfdVec objects */
+#define MdCxt (*PgCurrentMdContextRef()) /* context for all MdfdVec objects */
 
 
 /* Populate a file tag describing an md.c segment file. */
@@ -189,9 +190,8 @@ _mdfd_open_flags(void)
 void
 mdinit(void)
 {
-	MdCxt = AllocSetContextCreate(TopMemoryContext,
-								  "MdSmgr",
-								  ALLOCSET_DEFAULT_SIZES);
+	MdCxt = PgRuntimeGetOwnedMemoryContext(PgCurrentMdContextRef(),
+										   "MdSmgr");
 }
 
 /*
@@ -1889,7 +1889,7 @@ _mdnblocks(SMgrRelation reln, ForkNumber forknum, MdfdVec *seg)
 	if (len < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
-				 errmsg("could not seek to end of file \"%s\": %m",
+				 errmsg("could not determine size of file \"%s\": %m",
 						FilePathName(seg->mdfd_vfd))));
 	/* note that this calculation will ignore any partial block at EOF */
 	return (BlockNumber) (len / BLCKSZ);

@@ -21,11 +21,10 @@
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
 
-BufferDescPadded *BufferDescriptors;
-char	   *BufferBlocks;
-ConditionVariableMinimallyPadded *BufferIOCVArray;
-WritebackContext BackendWritebackContext;
-CkptSortItem *CkptBufferIds;
+PG_GLOBAL_SHMEM BufferDescPadded *BufferDescriptors;
+PG_GLOBAL_SHMEM char *BufferBlocks;
+PG_GLOBAL_SHMEM ConditionVariableMinimallyPadded *BufferIOCVArray;
+PG_GLOBAL_SHMEM CkptSortItem *CkptBufferIds;
 
 static void BufferManagerShmemRequest(void *arg);
 static void BufferManagerShmemInit(void *arg);

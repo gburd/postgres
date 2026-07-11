@@ -14,6 +14,7 @@
 #include "postgres.h"
 
 #include "libpq/pqsignal.h"
+#include "utils/global_lifetime.h"
 
 /*
  * These are exported for use by the UNBLOCKED_SIGNAL_QUEUE() macro.
@@ -21,21 +22,21 @@
  * handling thread and inspected without any lock by the main thread.
  * pg_signal_mask is only changed by main thread so shouldn't need it.
  */
-volatile int pg_signal_queue;
-int			pg_signal_mask;
+PG_GLOBAL_CARRIER volatile int pg_signal_queue;
+PG_GLOBAL_CARRIER int pg_signal_mask;
 
-HANDLE		pgwin32_signal_event;
-HANDLE		pgwin32_initial_signal_pipe = INVALID_HANDLE_VALUE;
+PG_GLOBAL_CARRIER HANDLE pgwin32_signal_event;
+PG_GLOBAL_RUNTIME HANDLE pgwin32_initial_signal_pipe = INVALID_HANDLE_VALUE;
 
 /*
  * pg_signal_crit_sec is used to protect only pg_signal_queue. That is the only
  * variable that can be accessed from the signal sending threads!
  */
-static CRITICAL_SECTION pg_signal_crit_sec;
+static PG_GLOBAL_CARRIER CRITICAL_SECTION pg_signal_crit_sec;
 
 /* Note that array elements 0 are unused since they correspond to signal 0 */
-static struct sigaction pg_signal_array[PG_SIGNAL_COUNT];
-static pqsigfunc pg_signal_defaults[PG_SIGNAL_COUNT];
+static PG_GLOBAL_RUNTIME struct sigaction pg_signal_array[PG_SIGNAL_COUNT];
+static PG_GLOBAL_RUNTIME pqsigfunc pg_signal_defaults[PG_SIGNAL_COUNT];
 
 
 /* Signal handling thread functions */

@@ -43,9 +43,11 @@
 #include "storage/dsm_impl.h"
 #include "storage/ipc.h"
 #include "storage/reinit.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/injection_point.h"
+#include "utils/global_lifetime.h"
 #include "utils/ps_status.h"
 #include "utils/relcache.h"
 #include "utils/resowner.h"
@@ -128,13 +130,13 @@ static ssize_t basebackup_read_file(int fd, char *buf, size_t nbytes, off_t offs
 									const char *filename, bool partial_read_ok);
 
 /* Was the backup currently in-progress initiated in recovery mode? */
-static bool backup_started_in_recovery = false;
+#define backup_started_in_recovery (*PgCurrentBaseBackupStartedInRecoveryRef())
 
 /* Total number of checksum failures during base backup. */
-static long long int total_checksum_failures;
+#define total_checksum_failures (*PgCurrentBaseBackupTotalChecksumFailuresRef())
 
 /* Do not verify checksums. */
-static bool noverify_checksums = false;
+#define noverify_checksums (*PgCurrentBaseBackupNoVerifyChecksumsRef())
 
 /*
  * Definition of one element part of an exclusion list, used for paths part
@@ -156,7 +158,7 @@ struct exclude_list_item
  * Note: this list should be kept in sync with the filter lists in pg_rewind's
  * filemap.c.
  */
-static const char *const excludeDirContents[] =
+static PG_GLOBAL_IMMUTABLE const char *const excludeDirContents[] =
 {
 	/*
 	 * Skip temporary statistics files. PG_STAT_TMP_DIR must be skipped

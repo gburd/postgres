@@ -66,6 +66,7 @@
 #include "utils/combocid.h"
 #include "utils/guc.h"
 #include "utils/inval.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/relmapper.h"
 #include "utils/snapmgr.h"
@@ -73,20 +74,6 @@
 #include "utils/timestamp.h"
 #include "utils/typcache.h"
 #include "utils/wait_event.h"
-
-/*
- *	User-tweakable parameters
- */
-int			DefaultXactIsoLevel = XACT_READ_COMMITTED;
-int			XactIsoLevel = XACT_READ_COMMITTED;
-
-bool		DefaultXactReadOnly = false;
-bool		XactReadOnly;
-
-bool		DefaultXactDeferrable = false;
-bool		XactDeferrable;
-
-int			synchronous_commit = SYNCHRONOUS_COMMIT_ON;
 
 /*
  * CheckXidAlive is a xid value pointing to a possibly ongoing (sub)
@@ -98,8 +85,6 @@ int			synchronous_commit = SYNCHRONOUS_COMMIT_ON;
  * directly access the tableam or heap APIs because we are checking for the
  * concurrent aborts only in systable_* APIs.
  */
-TransactionId CheckXidAlive = InvalidTransactionId;
-bool		bsysscan = false;
 
 /*
  * When running as a parallel worker, we place only a single
@@ -124,9 +109,9 @@ bool		bsysscan = false;
  * The XIDs are stored sorted in numerical order (not logical order) to make
  * lookups as fast as possible.
  */
-static FullTransactionId XactTopFullTransactionId = {InvalidTransactionId};
-static int	nParallelCurrentXids = 0;
-static TransactionId *ParallelCurrentXids;
+#define XactTopFullTransactionId (*PgCurrentXactTopFullTransactionIdRef())
+#define nParallelCurrentXids (*PgCurrentNParallelCurrentXidsRef())
+#define ParallelCurrentXids (*PgCurrentParallelCurrentXidsRef())
 
 /*
  * Miscellaneous flag bits to record events which occur on the top level
@@ -135,8 +120,6 @@ static TransactionId *ParallelCurrentXids;
  * globally accessible, so can be set from anywhere in the code that requires
  * recording flags.
  */
-int			MyXactFlags;
-
 /*
  *	transaction states - transaction state from server perspective
  */
@@ -222,6 +205,9 @@ typedef struct TransactionStateData
 
 typedef TransactionStateData *TransactionState;
 
+static TransactionStateData *GetTopTransactionStateData(void);
+static TransactionState *GetCurrentTransactionStateRef(void);
+
 /*
  * Serialized representation used to transmit transaction state to parallel
  * workers through shared memory.
@@ -232,8 +218,8 @@ typedef struct SerializedTransactionState
 	bool		xactDeferrable;
 	FullTransactionId topFullTransactionId;
 	FullTransactionId currentFullTransactionId;
-	CommandId	currentCommandId;
-	int			nParallelCurrentXids;
+	CommandId	serializedCurrentCommandId;
+	int			serializedNParallelCurrentXids;
 	TransactionId parallelCurrentXids[FLEXIBLE_ARRAY_MEMBER];
 } SerializedTransactionState;
 
@@ -246,28 +232,24 @@ typedef struct SerializedTransactionState
  * block.  It will point to TopTransactionStateData when not in a
  * transaction at all, or when in a top-level transaction.
  */
-static TransactionStateData TopTransactionStateData = {
-	.state = TRANS_DEFAULT,
-	.blockState = TBLOCK_DEFAULT,
-	.topXidLogged = false,
-};
+#define TopTransactionStateData (*GetTopTransactionStateData())
 
 /*
  * unreportedXids holds XIDs of all subtransactions that have not yet been
  * reported in an XLOG_XACT_ASSIGNMENT record.
  */
-static int	nUnreportedXids;
-static TransactionId unreportedXids[PGPROC_MAX_CACHED_SUBXIDS];
+#define nUnreportedXids (*PgCurrentNUnreportedXidsRef())
+#define unreportedXids (PgCurrentUnreportedXids())
 
-static TransactionState CurrentTransactionState = &TopTransactionStateData;
+#define CurrentTransactionState (*GetCurrentTransactionStateRef())
 
 /*
  * The subtransaction ID and command ID assignment counters are global
  * to a whole transaction, so we do not keep them in the state stack.
  */
-static SubTransactionId currentSubTransactionId;
-static CommandId currentCommandId;
-static bool currentCommandIdUsed;
+#define currentSubTransactionId (*PgCurrentSubTransactionIdCounterRef())
+#define currentCommandId (*PgCurrentCommandIdCounterRef())
+#define currentCommandIdUsed (*PgCurrentCommandIdUsedRef())
 
 /*
  * xactStartTimestamp is the value of transaction_timestamp().
@@ -279,54 +261,51 @@ static bool currentCommandIdUsed;
  * These do not change as we enter and exit subtransactions, so we don't
  * keep them inside the TransactionState stack.
  */
-static TimestampTz xactStartTimestamp;
-static TimestampTz stmtStartTimestamp;
-static TimestampTz xactStopTimestamp;
+#define xactStartTimestamp (*PgCurrentXactStartTimestampRef())
+#define stmtStartTimestamp (*PgCurrentStmtStartTimestampRef())
+#define xactStopTimestamp (*PgCurrentXactStopTimestampRef())
 
 /*
  * GID to be used for preparing the current transaction.  This is also
  * global to a whole transaction, so we don't keep it in the state stack.
  */
-static char *prepareGID;
+#define prepareGID (*PgCurrentPrepareGIDRef())
 
 /*
  * Some commands want to force synchronous commit.
  */
-static bool forceSyncCommit = false;
-
-/* Flag for logging statements in a transaction. */
-bool		xact_is_sampled = false;
+#define forceSyncCommit (*PgCurrentForceSyncCommitRef())
 
 /*
  * Private context for transaction-abort work --- we reserve space for this
  * at startup to ensure that AbortTransaction and AbortSubTransaction can work
  * when we've run out of memory.
  */
-static MemoryContext TransactionAbortContext = NULL;
+#define TransactionAbortContext (*PgCurrentTransactionAbortContextRef())
 
 /*
  * List of add-on start- and end-of-xact callbacks
  */
-typedef struct XactCallbackItem
+struct XactCallbackItem
 {
 	struct XactCallbackItem *next;
 	XactCallback callback;
 	void	   *arg;
-} XactCallbackItem;
+};
 
-static XactCallbackItem *Xact_callbacks = NULL;
+#define Xact_callbacks (*PgCurrentXactCallbacksRef())
 
 /*
  * List of add-on start- and end-of-subxact callbacks
  */
-typedef struct SubXactCallbackItem
+struct SubXactCallbackItem
 {
 	struct SubXactCallbackItem *next;
 	SubXactCallback callback;
 	void	   *arg;
-} SubXactCallbackItem;
+};
 
-static SubXactCallbackItem *SubXact_callbacks = NULL;
+#define SubXact_callbacks (*PgCurrentSubXactCallbacksRef())
 
 
 /* local function prototypes */
@@ -378,6 +357,53 @@ static const char *TransStateAsString(TransState state);
  *	transaction state accessors
  * ----------------------------------------------------------------
  */
+
+/*
+ * Initialize per-execution transaction state.  The historical static
+ * initializer made CurrentTransactionState point at TopTransactionStateData;
+ * the runtime-backed bridge installs that relationship after the memory
+ * context system and current execution object exist.
+ */
+void
+InitializeTransactionState(void)
+{
+	if (CurrentTransactionState == NULL)
+		CurrentTransactionState = &TopTransactionStateData;
+}
+
+static TransactionStateData *
+GetTopTransactionStateData(void)
+{
+	TransactionStateData **top_transaction_state;
+
+	top_transaction_state = PgCurrentTopTransactionStateDataRef();
+	if (*top_transaction_state == NULL)
+	{
+		*top_transaction_state =
+			MemoryContextAllocZero(TopMemoryContext,
+								   sizeof(TransactionStateData));
+		(*top_transaction_state)->state = TRANS_DEFAULT;
+		(*top_transaction_state)->blockState = TBLOCK_DEFAULT;
+		(*top_transaction_state)->topXidLogged = false;
+	}
+
+	return *top_transaction_state;
+}
+
+static TransactionState *
+GetCurrentTransactionStateRef(void)
+{
+	TransactionState *current_transaction_state;
+
+	current_transaction_state =
+		PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentTransactionStateHotRef,
+										 CurrentPgExecution,
+										 PgCurrentTransactionStateRef);
+	if (*current_transaction_state == NULL)
+		*current_transaction_state = GetTopTransactionStateData();
+
+	return current_transaction_state;
+}
 
 /*
  *	IsTransactionState
@@ -1236,7 +1262,7 @@ AtStart_Memory(void)
 		TopTransactionContext =
 			AllocSetContextCreate(TopMemoryContext,
 								  "TopTransactionContext",
-								  ALLOCSET_DEFAULT_SIZES);
+								  ALLOCSET_START_SMALL_SIZES);
 
 	/*
 	 * In a top-level transaction, CurTransactionContext is the same as
@@ -3859,7 +3885,8 @@ RegisterXactCallback(XactCallback callback, void *arg)
 	XactCallbackItem *item;
 
 	item = (XactCallbackItem *)
-		MemoryContextAlloc(TopMemoryContext, sizeof(XactCallbackItem));
+		MemoryContextAlloc(PgCurrentXactCallbackMemoryContext(),
+						   sizeof(XactCallbackItem));
 	item->callback = callback;
 	item->arg = arg;
 	item->next = Xact_callbacks;
@@ -3919,7 +3946,8 @@ RegisterSubXactCallback(SubXactCallback callback, void *arg)
 	SubXactCallbackItem *item;
 
 	item = (SubXactCallbackItem *)
-		MemoryContextAlloc(TopMemoryContext, sizeof(SubXactCallbackItem));
+		MemoryContextAlloc(PgCurrentXactCallbackMemoryContext(),
+						   sizeof(SubXactCallbackItem));
 	item->callback = callback;
 	item->arg = arg;
 	item->next = SubXact_callbacks;
@@ -3944,6 +3972,25 @@ UnregisterSubXactCallback(SubXactCallback callback, void *arg)
 			pfree(item);
 			break;
 		}
+	}
+}
+
+void
+ResetXactCallbackState(void)
+{
+	XactCallbackItem *xact_item;
+	SubXactCallbackItem *subxact_item;
+
+	while ((xact_item = Xact_callbacks) != NULL)
+	{
+		Xact_callbacks = xact_item->next;
+		pfree(xact_item);
+	}
+
+	while ((subxact_item = SubXact_callbacks) != NULL)
+	{
+		SubXact_callbacks = subxact_item->next;
+		pfree(subxact_item);
 	}
 }
 
@@ -5612,7 +5659,7 @@ SerializeTransactionState(Size maxsize, char *start_address)
 	result->topFullTransactionId = XactTopFullTransactionId;
 	result->currentFullTransactionId =
 		CurrentTransactionState->fullTransactionId;
-	result->currentCommandId = currentCommandId;
+	result->serializedCurrentCommandId = currentCommandId;
 
 	/*
 	 * If we're running in a parallel worker and launching a parallel worker
@@ -5621,7 +5668,7 @@ SerializeTransactionState(Size maxsize, char *start_address)
 	 */
 	if (nParallelCurrentXids > 0)
 	{
-		result->nParallelCurrentXids = nParallelCurrentXids;
+		result->serializedNParallelCurrentXids = nParallelCurrentXids;
 		memcpy(&result->parallelCurrentXids[0], ParallelCurrentXids,
 			   nParallelCurrentXids * sizeof(TransactionId));
 		return;
@@ -5657,7 +5704,7 @@ SerializeTransactionState(Size maxsize, char *start_address)
 	qsort(workspace, nxids, sizeof(TransactionId), xidComparator);
 
 	/* Copy data into output area. */
-	result->nParallelCurrentXids = nxids;
+	result->serializedNParallelCurrentXids = nxids;
 	memcpy(&result->parallelCurrentXids[0], workspace,
 		   nxids * sizeof(TransactionId));
 }
@@ -5681,8 +5728,8 @@ StartParallelWorkerTransaction(char *tstatespace)
 	XactTopFullTransactionId = tstate->topFullTransactionId;
 	CurrentTransactionState->fullTransactionId =
 		tstate->currentFullTransactionId;
-	currentCommandId = tstate->currentCommandId;
-	nParallelCurrentXids = tstate->nParallelCurrentXids;
+	currentCommandId = tstate->serializedCurrentCommandId;
+	nParallelCurrentXids = tstate->serializedNParallelCurrentXids;
 	ParallelCurrentXids = &tstate->parallelCurrentXids[0];
 
 	CurrentTransactionState->blockState = TBLOCK_PARALLEL_INPROGRESS;

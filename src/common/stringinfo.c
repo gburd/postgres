@@ -194,7 +194,7 @@ appendStringInfoVA(StringInfo str, const char *fmt, va_list args)
 	 * caller enlarge the buffer first.  We have to guess at how much to
 	 * enlarge, since we're skipping the formatting work.
 	 */
-	avail = str->maxlen - str->len;
+	avail = (str->maxlen < 0 ? -str->maxlen : str->maxlen) - str->len;
 	if (avail < 16)
 		return 32;
 
@@ -254,8 +254,11 @@ appendStringInfoString(StringInfo str, const char *s)
 void
 appendStringInfoChar(StringInfo str, char ch)
 {
+	int			maxlen;
+
 	/* Make more room if needed */
-	if (str->len + 1 >= str->maxlen)
+	maxlen = str->maxlen < 0 ? -str->maxlen : str->maxlen;
+	if (str->len + 1 >= maxlen)
 		enlargeStringInfo(str, 1);
 
 	/* OK, append the character */
@@ -349,10 +352,12 @@ appendBinaryStringInfoNT(StringInfo str, const void *data, int datalen)
 void
 enlargeStringInfo(StringInfo str, int needed)
 {
+	int			maxlen;
 	int			newlen;
 
 	/* validate this is not a read-only StringInfo */
 	Assert(str->maxlen != 0);
+	maxlen = str->maxlen < 0 ? -str->maxlen : str->maxlen;
 
 	/*
 	 * Guard against out-of-range "needed" values.  Without this, we can get
@@ -387,7 +392,7 @@ enlargeStringInfo(StringInfo str, int needed)
 
 	/* Because of the above test, we now have needed <= MaxAllocSize */
 
-	if (needed <= str->maxlen)
+	if (needed <= maxlen)
 		return;					/* got enough space already */
 
 	/*
@@ -395,7 +400,7 @@ enlargeStringInfo(StringInfo str, int needed)
 	 * for efficiency, double the buffer size each time it overflows.
 	 * Actually, we might need to more than double it if 'needed' is big...
 	 */
-	newlen = 2 * str->maxlen;
+	newlen = 2 * maxlen;
 	while (needed > newlen)
 		newlen = 2 * newlen;
 
@@ -407,7 +412,15 @@ enlargeStringInfo(StringInfo str, int needed)
 	if (newlen > (int) MaxAllocSize)
 		newlen = (int) MaxAllocSize;
 
-	str->data = (char *) repalloc(str->data, newlen);
+	if (str->maxlen < 0)
+	{
+		char	   *olddata = str->data;
+
+		str->data = (char *) palloc(newlen);
+		memcpy(str->data, olddata, str->len + 1);
+	}
+	else
+		str->data = (char *) repalloc(str->data, newlen);
 
 	str->maxlen = newlen;
 }
@@ -421,8 +434,8 @@ enlargeStringInfo(StringInfo str, int needed)
 void
 destroyStringInfo(StringInfo str)
 {
-	/* don't allow destroys of read-only StringInfos */
-	Assert(str->maxlen != 0);
+	/* don't allow destroys of read-only or caller-buffer StringInfos */
+	Assert(str->maxlen > 0);
 
 	pfree(str->data);
 	pfree(str);

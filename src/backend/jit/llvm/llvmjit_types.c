@@ -45,31 +45,31 @@
  * clang/LLVM will omit them.  As this file will never be linked into
  * anything, that's harmless.
  */
-PGFunction	TypePGFunction;
-size_t		TypeSizeT;
-Datum		TypeDatum;
-bool		TypeStorageBool;
+PG_GLOBAL_IMMUTABLE PGFunction TypePGFunction;
+PG_GLOBAL_IMMUTABLE size_t TypeSizeT;
+PG_GLOBAL_IMMUTABLE Datum TypeDatum;
+PG_GLOBAL_IMMUTABLE bool TypeStorageBool;
 
-ExecEvalSubroutine TypeExecEvalSubroutine;
-ExecEvalBoolSubroutine TypeExecEvalBoolSubroutine;
+PG_GLOBAL_IMMUTABLE ExecEvalSubroutine TypeExecEvalSubroutine;
+PG_GLOBAL_IMMUTABLE ExecEvalBoolSubroutine TypeExecEvalBoolSubroutine;
 
-NullableDatum StructNullableDatum;
-AggState	StructAggState;
-AggStatePerGroupData StructAggStatePerGroupData;
-AggStatePerTransData StructAggStatePerTransData;
-ExprContext StructExprContext;
-ExprEvalStep StructExprEvalStep;
-ExprState	StructExprState;
-FunctionCallInfoBaseData StructFunctionCallInfoData;
-HeapTupleData StructHeapTupleData;
-HeapTupleHeaderData StructHeapTupleHeaderData;
-MemoryContextData StructMemoryContextData;
-TupleTableSlot StructTupleTableSlot;
-HeapTupleTableSlot StructHeapTupleTableSlot;
-MinimalTupleTableSlot StructMinimalTupleTableSlot;
-TupleDescData StructTupleDescData;
-PlanState	StructPlanState;
-MinimalTupleData StructMinimalTupleData;
+PG_GLOBAL_IMMUTABLE NullableDatum StructNullableDatum;
+PG_GLOBAL_IMMUTABLE AggState StructAggState;
+PG_GLOBAL_IMMUTABLE AggStatePerGroupData StructAggStatePerGroupData;
+PG_GLOBAL_IMMUTABLE AggStatePerTransData StructAggStatePerTransData;
+PG_GLOBAL_IMMUTABLE ExprContext StructExprContext;
+PG_GLOBAL_IMMUTABLE ExprEvalStep StructExprEvalStep;
+PG_GLOBAL_IMMUTABLE ExprState StructExprState;
+PG_GLOBAL_IMMUTABLE FunctionCallInfoBaseData StructFunctionCallInfoData;
+PG_GLOBAL_IMMUTABLE HeapTupleData StructHeapTupleData;
+PG_GLOBAL_IMMUTABLE HeapTupleHeaderData StructHeapTupleHeaderData;
+PG_GLOBAL_IMMUTABLE MemoryContextData StructMemoryContextData;
+PG_GLOBAL_IMMUTABLE TupleTableSlot StructTupleTableSlot;
+PG_GLOBAL_IMMUTABLE HeapTupleTableSlot StructHeapTupleTableSlot;
+PG_GLOBAL_IMMUTABLE MinimalTupleTableSlot StructMinimalTupleTableSlot;
+PG_GLOBAL_IMMUTABLE TupleDescData StructTupleDescData;
+PG_GLOBAL_IMMUTABLE PlanState StructPlanState;
+PG_GLOBAL_IMMUTABLE MinimalTupleData StructMinimalTupleData;
 
 
 /*
@@ -134,7 +134,7 @@ FunctionReturningBool(void)
  * reference the functions required. This again has to be non-static, to avoid
  * being removed as unnecessary.
  */
-void	   *referenced_functions[] =
+PG_GLOBAL_IMMUTABLE void *referenced_functions[] =
 {
 	ExecAggInitGroup,
 	ExecAggCopyTransValue,

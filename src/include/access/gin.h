@@ -15,6 +15,7 @@
 #include "storage/block.h"
 #include "storage/dsm.h"
 #include "storage/shm_toc.h"
+#include "utils/global_lifetime.h"
 #include "utils/relcache.h"
 
 
@@ -93,8 +94,14 @@ GinTernaryValueGetDatum(GinTernaryValue X)
 #define PG_RETURN_GIN_TERNARY_VALUE(x) return GinTernaryValueGetDatum(x)
 
 /* GUC parameters */
-extern PGDLLIMPORT int GinFuzzySearchLimit;
-extern PGDLLIMPORT int gin_pending_list_limit;
+#ifndef PgCurrentGinFuzzySearchLimitRef
+extern int *PgCurrentGinFuzzySearchLimitRef(void);
+#endif
+#ifndef PgCurrentGinPendingListLimitRef
+extern int *PgCurrentGinPendingListLimitRef(void);
+#endif
+#define GinFuzzySearchLimit (*PgCurrentGinFuzzySearchLimitRef())
+#define gin_pending_list_limit (*PgCurrentGinPendingListLimitRef())
 
 /* ginutil.c */
 extern void ginGetStats(Relation index, GinStatsData *stats);

@@ -52,6 +52,7 @@
 #include "storage/ipc.h"
 #include "storage/predicate.h"
 #include "storage/proc.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 
@@ -115,6 +116,7 @@ struct ResourceOwnerData
 	ResourceOwner firstchild;	/* head of linked list of children */
 	ResourceOwner nextchild;	/* next child of same parent */
 	const char *name;			/* name (just for debugging) */
+	MemoryContext context;		/* context owning this ResourceOwner */
 
 	/*
 	 * When ResourceOwnerRelease is called, we sort the 'hash' and 'arr' by
@@ -166,20 +168,11 @@ struct ResourceOwnerData
 };
 
 
-/*****************************************************************************
- *	  GLOBAL MEMORY															 *
- *****************************************************************************/
-
-ResourceOwner CurrentResourceOwner = NULL;
-ResourceOwner CurTransactionResourceOwner = NULL;
-ResourceOwner TopTransactionResourceOwner = NULL;
-ResourceOwner AuxProcessResourceOwner = NULL;
-
 /* #define RESOWNER_STATS */
 
 #ifdef RESOWNER_STATS
-static int	narray_lookups = 0;
-static int	nhash_lookups = 0;
+#define narray_lookups (*PgCurrentResourceOwnerArrayLookupsRef())
+#define nhash_lookups (*PgCurrentResourceOwnerHashLookupsRef())
 #endif
 
 /*
@@ -192,7 +185,9 @@ typedef struct ResourceReleaseCallbackItem
 	void	   *arg;
 } ResourceReleaseCallbackItem;
 
-static ResourceReleaseCallbackItem *ResourceRelease_callbacks = NULL;
+static ResourceReleaseCallbackItem **PgCurrentResourceReleaseCallbacksTypedRef(void);
+
+#define ResourceRelease_callbacks (*PgCurrentResourceReleaseCallbacksTypedRef())
 
 
 /* Internal routines */
@@ -209,6 +204,12 @@ static void ResourceOwnerReleaseInternal(ResourceOwner owner,
 										 bool isCommit,
 										 bool isTopLevel);
 static void ReleaseAuxProcessResourcesCallback(int code, Datum arg);
+
+static ResourceReleaseCallbackItem **
+PgCurrentResourceReleaseCallbacksTypedRef(void)
+{
+	return (ResourceReleaseCallbackItem **) PgCurrentResourceReleaseCallbacksRef();
+}
 
 
 /*****************************************************************************
@@ -421,17 +422,36 @@ ResourceOwnerReleaseAll(ResourceOwner owner, ResourceReleasePhase phase,
  * ResourceOwnerCreate
  *		Create an empty ResourceOwner.
  *
- * All ResourceOwner objects are kept in TopMemoryContext, since they should
- * only be freed explicitly.
+ * ResourceOwner objects are kept in the current execution's resource-owner
+ * context.  They are still freed explicitly, but grouping their allocation
+ * under the execution lets closed-backend cleanup delete an otherwise empty
+ * allocation family without resetting the whole TopMemoryContext tree.
  */
 ResourceOwner
 ResourceOwnerCreate(ResourceOwner parent, const char *name)
 {
+	MemoryContext context;
 	ResourceOwner owner;
 
-	owner = (ResourceOwner) MemoryContextAllocZero(TopMemoryContext,
+	if (parent != NULL)
+		context = parent->context;
+	else
+	{
+		PgExecutionResourceOwnerState *resource_owners;
+
+		resource_owners = PgCurrentExecutionResourceOwners();
+		context = PgRuntimeGetOwnedMemoryContextWithSizes(
+			&resource_owners->resource_owner_context,
+			"ResourceOwnerContext",
+			ALLOCSET_START_SMALL_SIZES);
+	}
+	if (context == NULL)
+		context = TopMemoryContext;
+
+	owner = (ResourceOwner) MemoryContextAllocZero(context,
 												   sizeof(struct ResourceOwnerData));
 	owner->name = name;
+	owner->context = context;
 
 	if (parent)
 	{
@@ -484,7 +504,7 @@ ResourceOwnerEnlarge(ResourceOwner owner)
 
 		/* Double the capacity (it must stay a power of 2!) */
 		newcap = (oldcap > 0) ? oldcap * 2 : RESOWNER_HASH_INIT_SIZE;
-		newhash = (ResourceElem *) MemoryContextAllocZero(TopMemoryContext,
+		newhash = (ResourceElem *) MemoryContextAllocZero(owner->context,
 														  newcap * sizeof(ResourceElem));
 
 		/*
@@ -997,6 +1017,23 @@ UnregisterResourceReleaseCallback(ResourceReleaseCallback callback, void *arg)
 			break;
 		}
 	}
+}
+
+void
+ResetResourceReleaseCallbacks(void)
+{
+	ResourceReleaseCallbackItem *item;
+
+	item = ResourceRelease_callbacks;
+	while (item != NULL)
+	{
+		ResourceReleaseCallbackItem *next = item->next;
+
+		pfree(item);
+		item = next;
+	}
+
+	ResourceRelease_callbacks = NULL;
 }
 
 /*

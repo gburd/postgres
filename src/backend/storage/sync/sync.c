@@ -29,6 +29,7 @@
 #include "storage/fd.h"
 #include "storage/latch.h"
 #include "storage/md.h"
+#include "utils/backend_runtime.h"
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
 #include "utils/wait_event.h"
@@ -68,12 +69,12 @@ typedef struct
 	bool		canceled;		/* true if request has been canceled */
 } PendingUnlinkEntry;
 
-static HTAB *pendingOps = NULL;
-static List *pendingUnlinks = NIL;
-static MemoryContext pendingOpsCxt; /* context for the above  */
-
-static CycleCtr sync_cycle_ctr = 0;
-static CycleCtr checkpoint_cycle_ctr = 0;
+#define pendingOps (*PgCurrentSyncPendingOpsRef())
+#define pendingUnlinks (*PgCurrentSyncPendingUnlinksRef())
+#define pendingOpsCxt (*PgCurrentSyncPendingOpsContextRef())
+#define sync_cycle_ctr (*PgCurrentSyncCycleCounterRef())
+#define checkpoint_cycle_ctr (*PgCurrentSyncCheckpointCycleCounterRef())
+#define sync_in_progress (*PgCurrentSyncInProgressRef())
 
 /* Intervals for calling AbsorbSyncRequests */
 #define FSYNCS_PER_ABSORB		10
@@ -93,7 +94,7 @@ typedef struct SyncOps
 /*
  * These indexes must correspond to the values of the SyncRequestHandler enum.
  */
-static const SyncOps syncsw[] = {
+static PG_GLOBAL_IMMUTABLE const SyncOps syncsw[] = {
 	/* magnetic disk */
 	[SYNC_HANDLER_MD] = {
 		.sync_syncfiletag = mdsyncfiletag,
@@ -142,9 +143,9 @@ InitSync(void)
 		 * Fortunately the hash table is small so that's unlikely to happen in
 		 * practice.
 		 */
-		pendingOpsCxt = AllocSetContextCreate(TopMemoryContext,
-											  "Pending ops context",
-											  ALLOCSET_DEFAULT_SIZES);
+		pendingOpsCxt =
+			PgRuntimeGetOwnedMemoryContext(PgCurrentSyncPendingOpsContextRef(),
+										   "Pending ops context");
 		MemoryContextAllowInCriticalSection(pendingOpsCxt, true);
 
 		hash_ctl.keysize = sizeof(FileTag);
@@ -286,8 +287,6 @@ SyncPostCheckpoint(void)
 void
 ProcessSyncRequests(void)
 {
-	static bool sync_in_progress = false;
-
 	HASH_SEQ_STATUS hstat;
 	PendingFsyncEntry *entry;
 	int			absorb_counter;

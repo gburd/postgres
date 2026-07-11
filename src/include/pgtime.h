@@ -13,6 +13,7 @@
 #ifndef _PGTIME_H
 #define _PGTIME_H
 
+#include "utils/global_lifetime.h"
 
 /*
  * The API of this library is generally similar to the corresponding
@@ -87,8 +88,14 @@ extern size_t pg_strftime(char *s, size_t maxsize, const char *format,
 
 /* these functions and variables are in pgtz.c */
 
-extern PGDLLIMPORT pg_tz *session_timezone;
-extern PGDLLIMPORT pg_tz *log_timezone;
+#ifndef PgCurrentSessionTimeZoneRef
+extern pg_tz **PgCurrentSessionTimeZoneRef(void);
+#endif
+#ifndef PgCurrentLogTimeZoneRef
+extern pg_tz **PgCurrentLogTimeZoneRef(void);
+#endif
+#define session_timezone (*PgCurrentSessionTimeZoneRef())
+#define log_timezone (*PgCurrentLogTimeZoneRef())
 
 extern void pg_timezone_initialize(void);
 extern pg_tz *pg_tzset(const char *tzname);

@@ -13,6 +13,7 @@
 #define SESSION_H
 
 #include "lib/dshash.h"
+#include "utils/global_lifetime.h"
 
 /* Avoid including typcache.h */
 struct SharedRecordTypmodRegistry;
@@ -39,6 +40,9 @@ extern void AttachSession(dsm_handle handle);
 extern void DetachSession(void);
 
 /* The current session, or NULL for none. */
-extern PGDLLIMPORT Session *CurrentSession;
+#ifndef PgCurrentLegacySessionRef
+extern Session **PgCurrentLegacySessionRef(void);
+#endif
+#define CurrentSession (*PgCurrentLegacySessionRef())
 
 #endif							/* SESSION_H */

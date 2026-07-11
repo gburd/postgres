@@ -33,6 +33,7 @@
 #include "catalog/pg_collation.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/formatting.h"
 #include "utils/memutils.h"
@@ -48,6 +49,17 @@
 #define		TEXTBUFLEN			1024
 
 extern pg_locale_t create_pg_locale_icu(Oid collid, MemoryContext context);
+
+void
+PgCloseIcuConverter(void *converter)
+{
+#ifdef USE_ICU
+	if (converter != NULL)
+		ucnv_close((UConverter *) converter);
+#else
+	Assert(converter == NULL);
+#endif
+}
 
 #ifdef USE_ICU
 
@@ -94,7 +106,7 @@ typedef int32_t (*ICU_Convert_Func) (UChar *dest, int32_t destCapacity,
  * in database encoding.  Since the database encoding doesn't change, we only
  * need one of these per session.
  */
-static UConverter *icu_converter = NULL;
+#define icu_converter (*(UConverter **) PgCurrentIcuConverterRef())
 
 static UCollator *make_icu_collator(const char *iculocstr,
 									const char *icurules);
@@ -380,6 +392,7 @@ create_pg_locale_icu(Oid collid, MemoryContext context)
 	collator = make_icu_collator(iculocstr, icurules);
 
 	result = MemoryContextAllocZero(context, sizeof(struct pg_locale_struct));
+	result->provider = COLLPROVIDER_ICU;
 	result->icu.locale = MemoryContextStrdup(context, iculocstr);
 	result->icu.ucol = collator;
 	result->icu.lt = loc;

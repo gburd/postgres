@@ -18,6 +18,7 @@
 #include "postgres.h"
 
 #include "storage/standby.h"
+#include "utils/backend_runtime.h"
 #include "utils/pgstat_internal.h"
 #include "utils/timestamp.h"
 
@@ -25,16 +26,7 @@
 static bool pgstat_should_report_connstat(void);
 
 
-PgStat_Counter pgStatBlockReadTime = 0;
-PgStat_Counter pgStatBlockWriteTime = 0;
-PgStat_Counter pgStatActiveTime = 0;
-PgStat_Counter pgStatTransactionIdleTime = 0;
-SessionEndType pgStatSessionEndCause = DISCONNECT_NORMAL;
-
-
-static int	pgStatXactCommit = 0;
-static int	pgStatXactRollback = 0;
-static PgStat_Counter pgLastSessionReportTime = 0;
+#define pgLastSessionReportTime (*PgCurrentPgStatLastSessionReportTimeRef())
 
 
 /*

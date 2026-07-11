@@ -60,7 +60,7 @@ struct RBTree
  */
 #define RBTNIL (&sentinel)
 
-static RBTNode sentinel =
+static PG_GLOBAL_IMMUTABLE RBTNode sentinel =
 {
 	.color = RBTBLACK, .left = RBTNIL, .right = RBTNIL, .parent = NULL
 };

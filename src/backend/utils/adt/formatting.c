@@ -74,6 +74,7 @@
 #include "mb/pg_wchar.h"
 #include "nodes/miscnodes.h"
 #include "parser/scansup.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/datetime.h"
@@ -161,12 +162,12 @@ typedef struct
 /*
  * Full months
  */
-static const char *const months_full[] = {
+static PG_GLOBAL_IMMUTABLE const char *const months_full[] = {
 	"January", "February", "March", "April", "May", "June", "July",
 	"August", "September", "October", "November", "December", NULL
 };
 
-static const char *const days_short[] = {
+static PG_GLOBAL_IMMUTABLE const char *const days_short[] = {
 	"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", NULL
 };
 
@@ -199,8 +200,10 @@ static const char *const days_short[] = {
  * matches for BC have an odd index.  So the boolean value for BC is given by
  * taking the array index of the match, modulo 2.
  */
-static const char *const adbc_strings[] = {ad_STR, bc_STR, AD_STR, BC_STR, NULL};
-static const char *const adbc_strings_long[] = {a_d_STR, b_c_STR, A_D_STR, B_C_STR, NULL};
+static PG_GLOBAL_IMMUTABLE const char *const adbc_strings[] =
+{ad_STR, bc_STR, AD_STR, BC_STR, NULL};
+static PG_GLOBAL_IMMUTABLE const char *const adbc_strings_long[] =
+{a_d_STR, b_c_STR, A_D_STR, B_C_STR, NULL};
 
 /*
  * AM / PM
@@ -225,26 +228,31 @@ static const char *const adbc_strings_long[] = {a_d_STR, b_c_STR, A_D_STR, B_C_S
  * matches for PM have an odd index.  So the boolean value for PM is given by
  * taking the array index of the match, modulo 2.
  */
-static const char *const ampm_strings[] = {am_STR, pm_STR, AM_STR, PM_STR, NULL};
-static const char *const ampm_strings_long[] = {a_m_STR, p_m_STR, A_M_STR, P_M_STR, NULL};
+static PG_GLOBAL_IMMUTABLE const char *const ampm_strings[] =
+{am_STR, pm_STR, AM_STR, PM_STR, NULL};
+static PG_GLOBAL_IMMUTABLE const char *const ampm_strings_long[] =
+{a_m_STR, p_m_STR, A_M_STR, P_M_STR, NULL};
 
 /*
  * Months in roman-numeral
  * (Must be in reverse order for seq_search (in FROM_CHAR), because
  *	'VIII' must have higher precedence than 'V')
  */
-static const char *const rm_months_upper[] =
+static PG_GLOBAL_IMMUTABLE const char *const rm_months_upper[] =
 {"XII", "XI", "X", "IX", "VIII", "VII", "VI", "V", "IV", "III", "II", "I", NULL};
 
-static const char *const rm_months_lower[] =
+static PG_GLOBAL_IMMUTABLE const char *const rm_months_lower[] =
 {"xii", "xi", "x", "ix", "viii", "vii", "vi", "v", "iv", "iii", "ii", "i", NULL};
 
 /*
  * Roman numerals
  */
-static const char *const rm1[] = {"I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", NULL};
-static const char *const rm10[] = {"X", "XX", "XXX", "XL", "L", "LX", "LXX", "LXXX", "XC", NULL};
-static const char *const rm100[] = {"C", "CC", "CCC", "CD", "D", "DC", "DCC", "DCCC", "CM", NULL};
+static PG_GLOBAL_IMMUTABLE const char *const rm1[] =
+{"I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", NULL};
+static PG_GLOBAL_IMMUTABLE const char *const rm10[] =
+{"X", "XX", "XXX", "XL", "L", "LX", "LXX", "LXXX", "XC", NULL};
+static PG_GLOBAL_IMMUTABLE const char *const rm100[] =
+{"C", "CC", "CCC", "CD", "D", "DC", "DCC", "DCCC", "CM", NULL};
 
 /*
  * MACRO: Check if the current and next characters form a valid subtraction
@@ -275,8 +283,8 @@ static const char *const rm100[] = {"C", "CC", "CCC", "CD", "D", "DC", "DCC", "D
 /*
  * Ordinal postfixes
  */
-static const char *const numTH[] = {"ST", "ND", "RD", "TH", NULL};
-static const char *const numth[] = {"st", "nd", "rd", "th", NULL};
+static PG_GLOBAL_IMMUTABLE const char *const numTH[] = {"ST", "ND", "RD", "TH", NULL};
+static PG_GLOBAL_IMMUTABLE const char *const numth[] = {"st", "nd", "rd", "th", NULL};
 
 /*
  * Flags & Options:
@@ -371,8 +379,8 @@ typedef struct
 #define NUM_CACHE_SIZE \
 	((1024 - NUM_CACHE_OVERHEAD) / (sizeof(FormatNode) + sizeof(char)) - 1)
 
-#define DCH_CACHE_ENTRIES	20
-#define NUM_CACHE_ENTRIES	20
+#define DCH_CACHE_ENTRIES	PG_BACKEND_FORMAT_CACHE_ENTRIES
+#define NUM_CACHE_ENTRIES	PG_BACKEND_FORMAT_CACHE_ENTRIES
 
 typedef struct
 {
@@ -393,14 +401,19 @@ typedef struct
 } NUMCacheEntry;
 
 /* global cache for date/time format pictures */
-static DCHCacheEntry *DCHCache[DCH_CACHE_ENTRIES];
-static int	n_DCHCache = 0;		/* current number of entries */
-static int	DCHCounter = 0;		/* aging-event counter */
+StaticAssertDecl(DCH_CACHE_ENTRIES == PG_BACKEND_FORMAT_CACHE_ENTRIES,
+				 "backend runtime DCH format cache size mismatch");
+StaticAssertDecl(NUM_CACHE_ENTRIES == PG_BACKEND_FORMAT_CACHE_ENTRIES,
+				 "backend runtime NUM format cache size mismatch");
+
+#define DCHCache ((DCHCacheEntry **) PgCurrentDCHCache())
+#define n_DCHCache (*PgCurrentNumDCHCacheRef()) /* current number of entries */
+#define DCHCounter (*PgCurrentDCHCounterRef())	/* aging-event counter */
 
 /* global cache for number format pictures */
-static NUMCacheEntry *NUMCache[NUM_CACHE_ENTRIES];
-static int	n_NUMCache = 0;		/* current number of entries */
-static int	NUMCounter = 0;		/* aging-event counter */
+#define NUMCache ((NUMCacheEntry **) PgCurrentNUMCache())
+#define n_NUMCache (*PgCurrentNumNUMCacheRef()) /* current number of entries */
+#define NUMCounter (*PgCurrentNUMCounterRef())	/* aging-event counter */
 
 /*
  * For char->date/time conversion
@@ -3800,7 +3813,8 @@ DCH_cache_getnew(const char *str, bool std)
 #endif
 		Assert(DCHCache[n_DCHCache] == NULL);
 		DCHCache[n_DCHCache] = ent = (DCHCacheEntry *)
-			MemoryContextAllocZero(TopMemoryContext, sizeof(DCHCacheEntry));
+			MemoryContextAllocZero(PgCurrentFormatCacheMemoryContext(),
+								   sizeof(DCHCacheEntry));
 		ent->valid = false;
 		strlcpy(ent->str, str, DCH_CACHE_SIZE + 1);
 		ent->std = std;
@@ -4860,7 +4874,8 @@ NUM_cache_getnew(const char *str)
 #endif
 		Assert(NUMCache[n_NUMCache] == NULL);
 		NUMCache[n_NUMCache] = ent = (NUMCacheEntry *)
-			MemoryContextAllocZero(TopMemoryContext, sizeof(NUMCacheEntry));
+			MemoryContextAllocZero(PgCurrentFormatCacheMemoryContext(),
+								   sizeof(NUMCacheEntry));
 		ent->valid = false;
 		strlcpy(ent->str, str, NUM_CACHE_SIZE + 1);
 		ent->age = (++NUMCounter);

@@ -316,6 +316,7 @@ create_pg_locale_builtin(Oid collid, MemoryContext context)
 
 	result = MemoryContextAllocZero(context, sizeof(struct pg_locale_struct));
 
+	result->provider = COLLPROVIDER_BUILTIN;
 	result->builtin.locale = MemoryContextStrdup(context, locstr);
 	result->builtin.casemap_full = (strcmp(locstr, "PG_UNICODE_FAST") == 0);
 	result->deterministic = true;

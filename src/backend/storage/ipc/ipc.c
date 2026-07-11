@@ -31,28 +31,20 @@
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
+#include "utils/memutils.h"
 
-
-/*
- * This flag is set during proc_exit() to change ereport()'s behavior,
- * so that an ereport() from an on_proc_exit routine cannot get us out
- * of the exit procedure.  We do NOT want to go back to the idle loop...
- */
-bool		proc_exit_inprogress = false;
-
-/*
- * Set when shmem_exit() is in progress.
- */
-bool		shmem_exit_inprogress = false;
 
 /*
  * This flag tracks whether we've called atexit() in the current process
  * (or in the parent postmaster).
  */
-static bool atexit_callback_setup = false;
+static PG_GLOBAL_RUNTIME bool atexit_callback_setup = false;
 
 /* local functions */
-static void proc_exit_prepare(int code);
+pg_noreturn static void PgBackendExitProcess(int code);
+static PgBackendExitState *CurrentBackendExitState(void);
+static void PgBackendRememberRetainedTopMemoryContext(void);
 
 
 /* ----------------------------------------------------------------
@@ -69,31 +61,94 @@ static void proc_exit_prepare(int code);
  * ----------------------------------------------------------------
  */
 
-#define MAX_ON_EXITS 20
+static PG_GLOBAL_RUNTIME PgBackendExitState early_exit_state;
+static PG_THREAD_LOCAL PG_GLOBAL_CARRIER Size
+			retained_top_memory_allocated = 0;
 
-struct ONEXIT
+static PgBackendExitState *
+CurrentBackendExitState(void)
 {
-	pg_on_exit_callback function;
-	Datum		arg;
-};
+	if (CurrentPgBackend != NULL)
+		return &CurrentPgBackend->exit_state;
 
-static struct ONEXIT on_proc_exit_list[MAX_ON_EXITS];
-static struct ONEXIT on_shmem_exit_list[MAX_ON_EXITS];
-static struct ONEXIT before_shmem_exit_list[MAX_ON_EXITS];
+	return &early_exit_state;
+}
 
-static int	on_proc_exit_index,
-			on_shmem_exit_index,
-			before_shmem_exit_index;
+PgBackendExitState *
+PgCurrentBackendExitStateRef(void)
+{
+	return CurrentBackendExitState();
+}
+
+void
+PgBackendInitializeExitState(PgBackendExitState *exit_state)
+{
+	if (exit_state == NULL)
+		return;
+
+	MemSet(exit_state, 0, sizeof(*exit_state));
+	retained_top_memory_allocated = 0;
+}
+
+void
+PgBackendAdoptEarlyExitState(PgBackendExitState *exit_state)
+{
+	if (exit_state == NULL || exit_state == &early_exit_state)
+		return;
+
+	*exit_state = early_exit_state;
+	PgBackendInitializeExitState(&early_exit_state);
+}
+
+bool
+PgBackendExitInProgress(void)
+{
+	return proc_exit_inprogress;
+}
+
+bool
+PgBackendShmemExitInProgress(void)
+{
+	return shmem_exit_inprogress;
+}
+
+static void
+PgBackendRememberRetainedTopMemoryContext(void)
+{
+	PgBackendExitState *exit_state = CurrentBackendExitState();
+
+	if (exit_state->retained_top_memory_context == NULL &&
+		TopMemoryContext != NULL)
+	{
+		exit_state->retained_top_memory_context = TopMemoryContext;
+		if (CurrentPgRuntime != NULL &&
+			PgRuntimeIsThreadBacked(CurrentPgRuntime))
+			retained_top_memory_allocated =
+				MemoryContextMemAllocated(TopMemoryContext, true);
+	}
+}
+
+Size
+PgBackendConsumeRetainedTopMemoryAllocated(void)
+{
+	Size		result = retained_top_memory_allocated;
+
+	retained_top_memory_allocated = 0;
+	return result;
+}
 
 
 /* ----------------------------------------------------------------
- *		proc_exit
+ *		PgBackendExit
  *
- *		this function calls all the callbacks registered
- *		for it (to free resources) and then calls exit.
+ *		this function exits the current logical backend.  After cleanup, the
+ *		current runtime decides how control leaves the backend.  In process
+ *		mode, the final step is still exit().
  *
- *		This should be the only function to call exit().
- *		-cim 2/6/90
+ *		PgBackendExitCleanup() is the part threaded runtimes need to reuse
+ *		when one logical backend exits but the containing runtime continues.
+ *		PgBackendExitComplete() is the non-returning control transfer after
+ *		that cleanup has run.
  *
  *		Unfortunately, we can't really guarantee that add-on code
  *		obeys the rule of not calling exit() directly.  So, while
@@ -102,15 +157,63 @@ static int	on_proc_exit_index,
  * ----------------------------------------------------------------
  */
 void
-proc_exit(int code)
+PgBackendExit(int code)
 {
+	int			current_pid = (int) getpid();
+
 	/* not safe if forked by system(), etc. */
-	if (MyProcPid != (int) getpid())
-		elog(PANIC, "proc_exit() called in child process");
+	if (MyProcPid != 0 && MyProcPid != current_pid)
+		elog(PANIC, "PgBackendExit() called in child process");
+	if (MyProcPid == 0)
+		MyProcPid = current_pid;
+
+	PgBackendRememberRetainedTopMemoryContext();
 
 	/* Clean up everything that must be cleaned up */
-	proc_exit_prepare(code);
+	PgBackendExitCleanup(code);
 
+	PgBackendExitComplete(code);
+}
+
+/*
+ * Complete backend exit after PgBackendExitCleanup() has already run.
+ *
+ * Process mode leaves exit_backend NULL and falls through to exit().  A
+ * threaded or scheduler-owned runtime must install a non-returning
+ * continuation that retires the logical backend without returning to the
+ * cleaned-up backend stack.
+ */
+void
+PgBackendExitComplete(int code)
+{
+	PgRuntime  *runtime = CurrentPgRuntime;
+
+	if ((runtime == NULL || runtime->exit_backend == NULL) &&
+		CurrentPgCarrier != NULL &&
+		CurrentPgCarrier->runtime != NULL &&
+		CurrentPgCarrier->runtime->exit_backend != NULL)
+		runtime = CurrentPgCarrier->runtime;
+
+	if (runtime != NULL && runtime->exit_backend != NULL)
+	{
+		runtime->exit_backend(code);
+
+		/*
+		 * A runtime may unwind to a scheduler or exit the process, but it
+		 * must not return control to the backend that just cleaned itself up.
+		 */
+		elog(PANIC, "backend exit continuation returned");
+	}
+
+	if (CurrentPgCarrier != NULL && CurrentPgCarrier->kind == PG_CARRIER_THREAD)
+		elog(PANIC, "thread carrier reached process backend exit");
+
+	PgBackendExitProcess(code);
+}
+
+pg_noreturn static void
+PgBackendExitProcess(int code)
+{
 #ifdef PROFILE_PID_DIR
 	{
 		/*
@@ -157,19 +260,50 @@ proc_exit(int code)
 	exit(code);
 }
 
+/* ----------------------------------------------------------------
+ *		proc_exit
+ *
+ *		Compatibility wrapper for code that still exits the current process.
+ *		New backend/session lifecycle code should use PgBackendExit().
+ *
+ *		This should be the only function family to call exit().
+ *		-cim 2/6/90
+ * ----------------------------------------------------------------
+ */
+void
+proc_exit(int code)
+{
+	PgBackendExit(code);
+}
+
 /*
- * Code shared between proc_exit and the atexit handler.  Note that in
- * normal exit through proc_exit, this will actually be called twice ...
+ * Code shared between PgBackendExit and the atexit handler.  Note that in
+ * normal exit through PgBackendExit, this will actually be called twice ...
  * but the second call will have nothing to do.
  */
-static void
-proc_exit_prepare(int code)
+void
+PgBackendExitCleanup(int code)
 {
+	PgBackendExitState *exit_state = CurrentBackendExitState();
+	PgBackendExitCallback *callback;
+
+	if (exit_state->proc_exit_done)
+		return;
+
 	/*
 	 * Once we set this flag, we are committed to exit.  Any ereport() will
 	 * NOT send control back to the main loop, but right back here.
 	 */
 	proc_exit_inprogress = true;
+
+	/*
+	 * Threaded backend finish publishes retained carrier memory after closed
+	 * execution reset has cleared the TopMemoryContext slot.  Capture the
+	 * first live pointer before any cleanup callback can reset execution
+	 * memory-context state.  Reentrant cleanup must preserve that first
+	 * pointer because later calls may already have cleared the slot.
+	 */
+	PgBackendRememberRetainedTopMemoryContext();
 
 	/*
 	 * Forget any pending cancel or die requests; we're doing our best to
@@ -199,7 +333,7 @@ proc_exit_prepare(int code)
 	shmem_exit(code);
 
 	elog(DEBUG3, "proc_exit(%d): %d callbacks to make",
-		 code, on_proc_exit_index);
+		 code, exit_state->on_proc_exit_index);
 
 	/*
 	 * call all the registered callbacks.
@@ -210,11 +344,29 @@ proc_exit_prepare(int code)
 	 * previously-completed callbacks).  So, an infinite loop should not be
 	 * possible.
 	 */
-	while (--on_proc_exit_index >= 0)
-		on_proc_exit_list[on_proc_exit_index].function(code,
-													   on_proc_exit_list[on_proc_exit_index].arg);
+	while (--exit_state->on_proc_exit_index >= 0)
+	{
+		callback = &exit_state->on_proc_exit_list[exit_state->on_proc_exit_index];
+		callback->function(code, callback->arg);
+	}
 
-	on_proc_exit_index = 0;
+	exit_state->on_proc_exit_index = 0;
+
+	/*
+	 * on_proc_exit callbacks, notably socket_close(), own live connection
+	 * shutdown.  Reset the retained connection object here as a final
+	 * closed-state backstop for early-exit and non-socket paths, and rely on
+	 * PgConnectionResetClosedState() being idempotent when socket_close()
+	 * already ran.
+	 */
+	if (CurrentPgConnection != NULL)
+		PgConnectionResetClosedState(CurrentPgConnection);
+	PgSessionResetClosedState(CurrentPgSession);
+	PgRuntimeReportBridgeFallbackStats();
+	PgBackendResetClosedState(CurrentPgBackend);
+	PgExecutionResetClosedState(CurrentPgExecution);
+
+	exit_state->proc_exit_done = true;
 }
 
 /* ------------------
@@ -228,6 +380,9 @@ proc_exit_prepare(int code)
 void
 shmem_exit(int code)
 {
+	PgBackendExitState *exit_state = CurrentBackendExitState();
+	PgBackendExitCallback *callback;
+
 	shmem_exit_inprogress = true;
 
 	/*
@@ -245,11 +400,13 @@ shmem_exit(int code)
 	 * access.
 	 */
 	elog(DEBUG3, "shmem_exit(%d): %d before_shmem_exit callbacks to make",
-		 code, before_shmem_exit_index);
-	while (--before_shmem_exit_index >= 0)
-		before_shmem_exit_list[before_shmem_exit_index].function(code,
-																 before_shmem_exit_list[before_shmem_exit_index].arg);
-	before_shmem_exit_index = 0;
+		 code, exit_state->before_shmem_exit_index);
+	while (--exit_state->before_shmem_exit_index >= 0)
+	{
+		callback = &exit_state->before_shmem_exit_list[exit_state->before_shmem_exit_index];
+		callback->function(code, callback->arg);
+	}
+	exit_state->before_shmem_exit_index = 0;
 
 	/*
 	 * Call dynamic shared memory callbacks.
@@ -278,11 +435,13 @@ shmem_exit(int code)
 	 * in other cases, it's cleanup that only happens at process exit.
 	 */
 	elog(DEBUG3, "shmem_exit(%d): %d on_shmem_exit callbacks to make",
-		 code, on_shmem_exit_index);
-	while (--on_shmem_exit_index >= 0)
-		on_shmem_exit_list[on_shmem_exit_index].function(code,
-														 on_shmem_exit_list[on_shmem_exit_index].arg);
-	on_shmem_exit_index = 0;
+		 code, exit_state->on_shmem_exit_index);
+	while (--exit_state->on_shmem_exit_index >= 0)
+	{
+		callback = &exit_state->on_shmem_exit_list[exit_state->on_shmem_exit_index];
+		callback->function(code, callback->arg);
+	}
+	exit_state->on_shmem_exit_index = 0;
 
 	shmem_exit_inprogress = false;
 }
@@ -302,7 +461,7 @@ atexit_callback(void)
 {
 	/* Clean up everything that must be cleaned up */
 	/* ... too bad we don't know the real exit code ... */
-	proc_exit_prepare(-1);
+	PgBackendExitCleanup(-1);
 }
 
 /* ----------------------------------------------------------------
@@ -315,15 +474,18 @@ atexit_callback(void)
 void
 on_proc_exit(pg_on_exit_callback function, Datum arg)
 {
-	if (on_proc_exit_index >= MAX_ON_EXITS)
+	PgBackendExitState *exit_state = CurrentBackendExitState();
+	PgBackendExitCallback *callback;
+
+	if (exit_state->on_proc_exit_index >= PG_BACKEND_MAX_ON_EXITS)
 		ereport(FATAL,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg_internal("out of on_proc_exit slots")));
 
-	on_proc_exit_list[on_proc_exit_index].function = function;
-	on_proc_exit_list[on_proc_exit_index].arg = arg;
-
-	++on_proc_exit_index;
+	callback = &exit_state->on_proc_exit_list[exit_state->on_proc_exit_index];
+	callback->function = function;
+	callback->arg = arg;
+	++exit_state->on_proc_exit_index;
 
 	if (!atexit_callback_setup)
 	{
@@ -343,15 +505,18 @@ on_proc_exit(pg_on_exit_callback function, Datum arg)
 void
 before_shmem_exit(pg_on_exit_callback function, Datum arg)
 {
-	if (before_shmem_exit_index >= MAX_ON_EXITS)
+	PgBackendExitState *exit_state = CurrentBackendExitState();
+	PgBackendExitCallback *callback;
+
+	if (exit_state->before_shmem_exit_index >= PG_BACKEND_MAX_ON_EXITS)
 		ereport(FATAL,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg_internal("out of before_shmem_exit slots")));
 
-	before_shmem_exit_list[before_shmem_exit_index].function = function;
-	before_shmem_exit_list[before_shmem_exit_index].arg = arg;
-
-	++before_shmem_exit_index;
+	callback = &exit_state->before_shmem_exit_list[exit_state->before_shmem_exit_index];
+	callback->function = function;
+	callback->arg = arg;
+	++exit_state->before_shmem_exit_index;
 
 	if (!atexit_callback_setup)
 	{
@@ -371,15 +536,18 @@ before_shmem_exit(pg_on_exit_callback function, Datum arg)
 void
 on_shmem_exit(pg_on_exit_callback function, Datum arg)
 {
-	if (on_shmem_exit_index >= MAX_ON_EXITS)
+	PgBackendExitState *exit_state = CurrentBackendExitState();
+	PgBackendExitCallback *callback;
+
+	if (exit_state->on_shmem_exit_index >= PG_BACKEND_MAX_ON_EXITS)
 		ereport(FATAL,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg_internal("out of on_shmem_exit slots")));
 
-	on_shmem_exit_list[on_shmem_exit_index].function = function;
-	on_shmem_exit_list[on_shmem_exit_index].arg = arg;
-
-	++on_shmem_exit_index;
+	callback = &exit_state->on_shmem_exit_list[exit_state->on_shmem_exit_index];
+	callback->function = function;
+	callback->arg = arg;
+	++exit_state->on_shmem_exit_index;
 
 	if (!atexit_callback_setup)
 	{
@@ -400,11 +568,13 @@ on_shmem_exit(pg_on_exit_callback function, Datum arg)
 void
 cancel_before_shmem_exit(pg_on_exit_callback function, Datum arg)
 {
-	if (before_shmem_exit_index > 0 &&
-		before_shmem_exit_list[before_shmem_exit_index - 1].function
+	PgBackendExitState *exit_state = CurrentBackendExitState();
+
+	if (exit_state->before_shmem_exit_index > 0 &&
+		exit_state->before_shmem_exit_list[exit_state->before_shmem_exit_index - 1].function
 		== function &&
-		before_shmem_exit_list[before_shmem_exit_index - 1].arg == arg)
-		--before_shmem_exit_index;
+		exit_state->before_shmem_exit_list[exit_state->before_shmem_exit_index - 1].arg == arg)
+		--exit_state->before_shmem_exit_index;
 	else
 		elog(ERROR, "before_shmem_exit callback (%p,0x%" PRIx64 ") is not the latest entry",
 			 function, arg);
@@ -422,9 +592,11 @@ cancel_before_shmem_exit(pg_on_exit_callback function, Datum arg)
 void
 on_exit_reset(void)
 {
-	before_shmem_exit_index = 0;
-	on_shmem_exit_index = 0;
-	on_proc_exit_index = 0;
+	PgBackendExitState *exit_state = CurrentBackendExitState();
+
+	PgBackendInitializeExitState(exit_state);
+	proc_exit_inprogress = false;
+	shmem_exit_inprogress = false;
 	reset_on_dsm_detach();
 }
 
@@ -438,9 +610,11 @@ on_exit_reset(void)
 void
 check_on_shmem_exit_lists_are_empty(void)
 {
-	if (before_shmem_exit_index)
+	PgBackendExitState *exit_state = CurrentBackendExitState();
+
+	if (exit_state->before_shmem_exit_index)
 		elog(FATAL, "before_shmem_exit has been called prematurely");
-	if (on_shmem_exit_index)
+	if (exit_state->on_shmem_exit_index)
 		elog(FATAL, "on_shmem_exit has been called prematurely");
 	/* Checking DSM detach state seems unnecessary given the above */
 }

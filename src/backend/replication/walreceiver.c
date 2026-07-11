@@ -74,8 +74,10 @@
 #include "storage/procarray.h"
 #include "storage/procsignal.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
+#include "utils/global_lifetime.h"
 #include "utils/guc.h"
 #include "utils/pg_lsn.h"
 #include "utils/ps_status.h"
@@ -88,32 +90,28 @@
  * because they're passed down from the startup process, for better
  * synchronization.)
  */
-int			wal_receiver_status_interval;
-int			wal_receiver_timeout;
-bool		hot_standby_feedback;
+PG_GLOBAL_RUNTIME int wal_receiver_status_interval;
+PG_GLOBAL_RUNTIME bool hot_standby_feedback;
 
 /* libpqwalreceiver connection */
-static WalReceiverConn *wrconn = NULL;
-WalReceiverFunctionsType *WalReceiverFunctions = NULL;
+#define wrconn (PgCurrentReplicationState()->walreceiver_conn)
+PG_GLOBAL_RUNTIME WalReceiverFunctionsType *WalReceiverFunctions = NULL;
 
 /*
  * These variables are used similarly to openLogFile/SegNo,
  * but for walreceiver to write the XLOG. recvFileTLI is the TimeLineID
  * corresponding the filename of recvFile.
  */
-static int	recvFile = -1;
-static TimeLineID recvFileTLI = 0;
-static XLogSegNo recvSegNo = 0;
+#define recvFile (PgCurrentReplicationState()->walreceiver_recv_file)
+#define recvFileTLI (PgCurrentReplicationState()->walreceiver_recv_file_tli)
+#define recvSegNo (PgCurrentReplicationState()->walreceiver_recv_seg_no)
 
 /*
  * LogstreamResult indicates the byte positions that we have already
  * written/fsynced.
  */
-static struct
-{
-	XLogRecPtr	Write;			/* last byte + 1 written out in the standby */
-	XLogRecPtr	Flush;			/* last byte + 1 flushed in the standby */
-}			LogstreamResult;
+#define LogstreamResult \
+	(PgCurrentReplicationState()->walreceiver_logstream_result)
 
 /*
  * Reasons to wake up and perform periodic tasks.
@@ -127,12 +125,17 @@ typedef enum WalRcvWakeupReason
 #define NUM_WALRCV_WAKEUPS (WALRCV_WAKEUP_HSFEEDBACK + 1)
 } WalRcvWakeupReason;
 
+StaticAssertDecl(PG_BACKEND_WALRCV_NUM_WAKEUPS == NUM_WALRCV_WAKEUPS,
+				 "PgBackendReplicationState wakeup array size must match walreceiver wakeups");
+
 /*
  * Wake up times for periodic tasks.
  */
-static TimestampTz wakeup[NUM_WALRCV_WAKEUPS];
+#define wakeup (PgCurrentReplicationState()->walreceiver_wakeup)
 
-static StringInfoData reply_message;
+#define reply_message (PgCurrentReplicationState()->walreceiver_reply_message)
+#define primary_has_standby_xmin \
+	(PgCurrentReplicationState()->walreceiver_primary_has_standby_xmin)
 
 /* Prototypes for private functions */
 static void WalRcvFetchTimeLineHistoryFiles(TimeLineID first, TimeLineID last);
@@ -148,6 +151,7 @@ static void XLogWalRcvSendReply(bool force, bool requestReply, bool checkApply);
 static void XLogWalRcvSendHSFeedback(bool immed);
 static void ProcessWalSndrMessage(XLogRecPtr walEnd, TimestampTz sendTime);
 static void WalRcvComputeNextWakeup(WalRcvWakeupReason reason, TimestampTz now);
+static bool WalRcvShutdownRequested(void);
 
 
 /* Main entry point for walreceiver process */
@@ -170,8 +174,11 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 	char	   *sender_host = NULL;
 	int			sender_port = 0;
 	char	   *appname;
+	bool		threaded_receiver;
 
 	Assert(startup_data_len == 0);
+
+	threaded_receiver = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 
 	AuxiliaryProcessMainCommon();
 
@@ -219,6 +226,7 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 	}
 	/* Advertise our PID so that the startup process can kill us */
 	walrcv->pid = MyProcPid;
+	walrcv->threaded = threaded_receiver;
 	walrcv->walRcvState = WALRCV_CONNECTING;
 
 	/* Fetch information required to start streaming */
@@ -248,19 +256,22 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 	/* Arrange to clean up at walreceiver exit */
 	on_shmem_exit(WalRcvDie, PointerGetDatum(&startpointTLI));
 
-	/* Properly accept or ignore signals the postmaster might send us */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload); /* set flag to read config
-													 * file */
-	pqsignal(SIGINT, PG_SIG_IGN);
-	pqsignal(SIGTERM, die);		/* request shutdown */
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
-	pqsignal(SIGALRM, PG_SIG_IGN);
-	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-	pqsignal(SIGUSR2, PG_SIG_IGN);
+	if (!threaded_receiver)
+	{
+		/* Properly accept or ignore signals the postmaster might send us */
+		pqsignal(SIGHUP, SignalHandlerForConfigReload); /* set flag to read config
+														 * file */
+		pqsignal(SIGINT, PG_SIG_IGN);
+		pqsignal(SIGTERM, die); /* request shutdown */
+		/* SIGQUIT handler was already set up by InitPostmasterChild */
+		pqsignal(SIGALRM, PG_SIG_IGN);
+		pqsignal(SIGPIPE, PG_SIG_IGN);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR2, PG_SIG_IGN);
 
-	/* Reset some signals that are accepted by postmaster but not here */
-	pqsignal(SIGCHLD, PG_SIG_DFL);
+		/* Reset some signals that are accepted by postmaster but not here */
+		pqsignal(SIGCHLD, PG_SIG_DFL);
+	}
 
 	/* Load the libpq-specific functions */
 	load_file("libpqwalreceiver", false);
@@ -268,7 +279,8 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 		elog(ERROR, "libpqwalreceiver didn't initialize correctly");
 
 	/* Unblock signals (they were blocked when the postmaster forked us) */
-	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+	if (!threaded_receiver)
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 	/*
 	 * Switch the WAL receiver state as ready for display before doing a
@@ -520,12 +532,16 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 							 errmsg("cannot continue WAL streaming, recovery has already ended")));
 
 				/* Process any requests or signals received recently */
+				PgCurrentBackendApplyInterrupts();
 				CHECK_FOR_INTERRUPTS();
+				if (WalRcvShutdownRequested())
+					proc_exit(1);
 
 				if (ConfigReloadPending)
 				{
 					ConfigReloadPending = false;
-					ProcessConfigFile(PGC_SIGHUP);
+					if (!threaded_receiver)
+						ProcessConfigFile(PGC_SIGHUP);
 					/* recompute wakeup times */
 					now = GetCurrentTimestamp();
 					for (int i = 0; i < NUM_WALRCV_WAKEUPS; ++i)
@@ -616,7 +632,10 @@ WalReceiverMain(const void *startup_data, size_t startup_data_len)
 				if (rc & WL_LATCH_SET)
 				{
 					ResetLatch(MyLatch);
+					PgCurrentBackendApplyInterrupts();
 					CHECK_FOR_INTERRUPTS();
+					if (WalRcvShutdownRequested())
+						proc_exit(1);
 
 					if (walrcv->apply_reply_requested)
 					{
@@ -765,7 +784,10 @@ WalRcvWaitForStartPosition(XLogRecPtr *startpoint, TimeLineID *startpointTLI)
 	{
 		ResetLatch(MyLatch);
 
+		PgCurrentBackendApplyInterrupts();
 		CHECK_FOR_INTERRUPTS();
+		if (WalRcvShutdownRequested())
+			proc_exit(1);
 
 		SpinLockAcquire(&walrcv->mutex);
 		Assert(walrcv->walRcvState == WALRCV_RESTARTING ||
@@ -891,6 +913,7 @@ WalRcvDie(int code, Datum arg)
 	Assert(walrcv->pid == MyProcPid);
 	walrcv->walRcvState = WALRCV_STOPPED;
 	walrcv->pid = 0;
+	walrcv->threaded = false;
 	walrcv->procno = INVALID_PROC_NUMBER;
 	walrcv->ready_to_display = false;
 	SpinLockRelease(&walrcv->mutex);
@@ -899,10 +922,26 @@ WalRcvDie(int code, Datum arg)
 
 	/* Terminate the connection gracefully. */
 	if (wrconn != NULL)
+	{
 		walrcv_disconnect(wrconn);
+		wrconn = NULL;
+	}
 
 	/* Wake up the startup process to notice promptly that we're gone */
 	WakeupRecovery();
+}
+
+static bool
+WalRcvShutdownRequested(void)
+{
+	WalRcvData *walrcv = WalRcv;
+	bool		shutdown_requested;
+
+	SpinLockAcquire(&walrcv->mutex);
+	shutdown_requested = (walrcv->walRcvState == WALRCV_STOPPING);
+	SpinLockRelease(&walrcv->mutex);
+
+	return shutdown_requested;
 }
 
 /*
@@ -1286,9 +1325,6 @@ XLogWalRcvSendHSFeedback(bool immed)
 				catalog_xmin_epoch;
 	TransactionId xmin,
 				catalog_xmin;
-
-	/* initially true so we always send at least one feedback message */
-	static bool primary_has_standby_xmin = true;
 
 	/*
 	 * If the user doesn't want status to be reported to the primary, be sure

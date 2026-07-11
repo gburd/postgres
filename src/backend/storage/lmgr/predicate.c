@@ -209,6 +209,7 @@
 #include "storage/procarray.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc_hooks.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -323,7 +324,7 @@
 static bool SerialPagePrecedesLogically(int64 page1, int64 page2);
 static int	serial_errdetail_for_io_error(const void *opaque_data);
 
-static SlruDesc SerialSlruDesc;
+static PG_GLOBAL_RUNTIME SlruDesc SerialSlruDesc;
 
 #define SerialSlruCtl			(&SerialSlruDesc)
 
@@ -353,7 +354,7 @@ typedef struct SerialControlData
 
 typedef struct SerialControlData *SerialControl;
 
-static SerialControl serialControl;
+static PG_GLOBAL_SHMEM SerialControl serialControl;
 
 /*
  * When the oldest committed transaction on the "finished" list is moved to
@@ -361,7 +362,7 @@ static SerialControl serialControl;
  * collapsing duplicate targets.  When a duplicate is found, the later
  * commitSeqNo is used.
  */
-static SERIALIZABLEXACT *OldCommittedSxact;
+static PG_GLOBAL_SHMEM SERIALIZABLEXACT *OldCommittedSxact;
 
 
 /*
@@ -370,9 +371,9 @@ static SERIALIZABLEXACT *OldCommittedSxact;
  * attempt to degrade performance (mostly as false positive serialization
  * failure) gracefully in the face of memory pressure.
  */
-int			max_predicate_locks_per_xact;	/* in guc_tables.c */
-int			max_predicate_locks_per_relation;	/* in guc_tables.c */
-int			max_predicate_locks_per_page;	/* in guc_tables.c */
+PG_GLOBAL_RUNTIME int max_predicate_locks_per_xact;	/* in guc_tables.c */
+PG_GLOBAL_RUNTIME int max_predicate_locks_per_relation;	/* in guc_tables.c */
+PG_GLOBAL_RUNTIME int max_predicate_locks_per_page; /* in guc_tables.c */
 
 /*
  * This provides a list of objects in order to track transactions
@@ -383,7 +384,7 @@ int			max_predicate_locks_per_page;	/* in guc_tables.c */
  * number of entries in the list, and the size allowed for each entry is
  * fixed upon creation.
  */
-static PredXactList PredXact;
+static PG_GLOBAL_SHMEM PredXactList PredXact;
 
 static void PredicateLockShmemRequest(void *arg);
 static void PredicateLockShmemInit(void *arg);
@@ -400,16 +401,16 @@ const ShmemCallbacks PredicateLockShmemCallbacks = {
  * This provides a pool of RWConflict data elements to use in conflict lists
  * between transactions.
  */
-static RWConflictPoolHeader RWConflictPool;
+static PG_GLOBAL_SHMEM RWConflictPoolHeader RWConflictPool;
 
 /*
  * The predicate locking hash tables are in shared memory.
  * Each backend keeps pointers to them.
  */
-static HTAB *SerializableXidHash;
-static HTAB *PredicateLockTargetHash;
-static HTAB *PredicateLockHash;
-static dlist_head *FinishedSerializableTransactions;
+static PG_GLOBAL_SHMEM HTAB *SerializableXidHash;
+static PG_GLOBAL_SHMEM HTAB *PredicateLockTargetHash;
+static PG_GLOBAL_SHMEM HTAB *PredicateLockHash;
+static PG_GLOBAL_SHMEM dlist_head *FinishedSerializableTransactions;
 
 /*
  * Tag for a dummy entry in PredicateLockTargetHash. By temporarily removing
@@ -417,22 +418,32 @@ static dlist_head *FinishedSerializableTransactions;
  * inserting one entry in the hash table. This is an otherwise-invalid tag.
  */
 static const PREDICATELOCKTARGETTAG ScratchTargetTag = {0, 0, 0, 0};
-static uint32 ScratchTargetTagHash;
-static LWLock *ScratchPartitionLock;
+static PG_GLOBAL_RUNTIME uint32 ScratchTargetTagHash;
+static PG_GLOBAL_SHMEM LWLock *ScratchPartitionLock;
+
+#define PredicateBackendHotFieldRef(variable, fallback) \
+	PG_RUNTIME_CURRENT_HOT_FIELD_REF(variable, CurrentPgBackend, fallback)
 
 /*
  * The local hash table used to determine when to combine multiple fine-
  * grained locks into a single courser-grained lock.
  */
-static HTAB *LocalPredicateLockHash = NULL;
+#define LocalPredicateLockHash \
+	(*PredicateBackendHotFieldRef(PgCurrentLocalPredicateLockHashHotRef, \
+								  PgCurrentLocalPredicateLockHashRef))
 
 /*
  * Keep a pointer to the currently-running serializable transaction (if any)
  * for quick reference. Also, remember if we have written anything that could
  * cause a rw-conflict.
  */
-static SERIALIZABLEXACT *MySerializableXact = InvalidSerializableXact;
-static bool MyXactDidWrite = false;
+#define MySerializableXact \
+	(*(SERIALIZABLEXACT **) \
+	 PredicateBackendHotFieldRef(PgCurrentMySerializableXactHotRef, \
+								 PgCurrentMySerializableXactRef))
+#define MyXactDidWrite \
+	(*PredicateBackendHotFieldRef(PgCurrentMyXactDidWriteHotRef, \
+								  PgCurrentMyXactDidWriteRef))
 
 /*
  * The SXACT_FLAG_RO_UNSAFE optimization might lead us to release
@@ -441,9 +452,12 @@ static bool MyXactDidWrite = false;
  * transaction, because the workers still have a reference to it.  In that
  * case, the leader stores it here.
  */
-static SERIALIZABLEXACT *SavedSerializableXact = InvalidSerializableXact;
+#define SavedSerializableXact \
+	(*(SERIALIZABLEXACT **) \
+	 PredicateBackendHotFieldRef(PgCurrentSavedSerializableXactHotRef, \
+								 PgCurrentSavedSerializableXactRef))
 
-static int64 max_serializable_xacts;
+static PG_GLOBAL_RUNTIME int64 max_serializable_xacts;
 
 /* local functions */
 
@@ -1557,18 +1571,25 @@ int
 GetSafeSnapshotBlockingPids(int blocked_pid, int *output, int output_size)
 {
 	int			num_written = 0;
+	PGPROC	   *blocked_proc;
+	ProcNumber	blocked_pgprocno;
 	dlist_iter	iter;
 	SERIALIZABLEXACT *blocking_sxact = NULL;
 
+	blocked_proc = BackendSignalPidGetProc(blocked_pid);
+	if (blocked_proc == NULL)
+		return 0;				/* session gone: definitely unblocked */
+	blocked_pgprocno = GetNumberFromPGProc(blocked_proc);
+
 	LWLockAcquire(SerializableXactHashLock, LW_SHARED);
 
-	/* Find blocked_pid's SERIALIZABLEXACT by linear search. */
+	/* Find the blocked backend's SERIALIZABLEXACT by linear search. */
 	dlist_foreach(iter, &PredXact->activeList)
 	{
 		SERIALIZABLEXACT *sxact =
 			dlist_container(SERIALIZABLEXACT, xactLink, iter.cur);
 
-		if (sxact->pid == blocked_pid)
+		if (sxact->pgprocno == blocked_pgprocno)
 		{
 			blocking_sxact = sxact;
 			break;
@@ -1788,7 +1809,7 @@ GetSerializableTransactionSnapshotInt(Snapshot snapshot,
 	sxact->topXid = GetTopTransactionIdIfAny();
 	sxact->finishedBefore = InvalidTransactionId;
 	sxact->xmin = snapshot->xmin;
-	sxact->pid = MyProcPid;
+	sxact->pid = PgCurrentBackendSignalPid();
 	sxact->pgprocno = MyProcNumber;
 	dlist_init(&sxact->predicateLocks);
 	dlist_node_init(&sxact->finishedLink);

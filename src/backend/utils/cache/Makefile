@@ -14,6 +14,7 @@ include $(top_builddir)/src/Makefile.global
 
 OBJS = \
 	attoptcache.o \
+	backend_runtime_cache.o \
 	catcache.o \
 	evtcache.o \
 	funccache.o \

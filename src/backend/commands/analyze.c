@@ -46,6 +46,7 @@
 #include "storage/bufmgr.h"
 #include "storage/procarray.h"
 #include "utils/attoptcache.h"
+#include "utils/backend_runtime.h"
 #include "utils/datum.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
@@ -67,13 +68,30 @@ typedef struct AnlIndexData
 } AnlIndexData;
 
 
-/* Default statistics target (GUC parameter) */
-int			default_statistics_target = 100;
-
 /* A few variables that don't seem worth passing around as parameters */
-static MemoryContext anl_context = NULL;
-static BufferAccessStrategy vac_strategy;
+#define analyze_context (*PgCurrentAnalyzeContextRef())
+#define analyze_strategy (*PgCurrentAnalyzeStrategyRef())
 
+/*
+ * Callback that clears the per-execution analyze_context cell whenever the
+ * "Analyze" working context is deleted.  In the threaded runtime analyze_context
+ * is a persistent PgExecution cell, but the context it points at is created
+ * under CurrentMemoryContext (a transaction/portal context).  A normal
+ * do_analyze_rel() deletes the context and clears the cell explicitly, but an
+ * error or FATAL that propagates out of do_analyze_rel() (for example an
+ * autovacuum worker terminated mid-ANALYZE) never reaches that cleanup: the
+ * transaction abort deletes the owning context tree instead, which would leave
+ * the cell dangling into freed memory and let backend-exit closed-state reset
+ * delete it a second time (a double free).  Registering this delete callback
+ * ties the cell's lifetime to the context's real lifetime on every path.
+ */
+static void
+analyze_context_reset_callback(void *arg)
+{
+	MemoryContext *cell = (MemoryContext *) arg;
+
+	*cell = NULL;
+}
 
 static void do_analyze_rel(Relation onerel,
 						   const VacuumParams *params, List *va_cols,
@@ -124,7 +142,7 @@ analyze_rel(Oid relid, RangeVar *relation,
 		elevel = DEBUG2;
 
 	/* Set up static variables */
-	vac_strategy = bstrategy;
+	analyze_strategy = bstrategy;
 
 	/*
 	 * Check for user-requested abort.
@@ -356,10 +374,28 @@ do_analyze_rel(Relation onerel, const VacuumParams *params,
 	 * Set up a working context so that we can easily free whatever junk gets
 	 * created.
 	 */
-	anl_context = AllocSetContextCreate(CurrentMemoryContext,
-										"Analyze",
-										ALLOCSET_DEFAULT_SIZES);
-	caller_context = MemoryContextSwitchTo(anl_context);
+	analyze_context = AllocSetContextCreate(CurrentMemoryContext,
+											"Analyze",
+											ALLOCSET_DEFAULT_SIZES);
+
+	/*
+	 * Tie the persistent analyze_context cell to the context's real lifetime.
+	 * If an error unwinds out of do_analyze_rel() the transaction abort deletes
+	 * this context, and this callback clears the cell so a later closed-state
+	 * reset cannot delete the already-freed context a second time.  The
+	 * callback struct is allocated inside the context, so it is reclaimed with
+	 * it (the callback fires just before the free).
+	 */
+	{
+		MemoryContextCallback *cb;
+
+		cb = MemoryContextAlloc(analyze_context, sizeof(MemoryContextCallback));
+		cb->func = analyze_context_reset_callback;
+		cb->arg = PgCurrentAnalyzeContextRef();
+		MemoryContextRegisterResetCallback(analyze_context, cb);
+	}
+
+	caller_context = MemoryContextSwitchTo(analyze_context);
 
 	/*
 	 * Switch to the table owner's userid, so that any index functions are run
@@ -560,7 +596,7 @@ do_analyze_rel(Relation onerel, const VacuumParams *params,
 		pgstat_progress_update_param(PROGRESS_ANALYZE_PHASE,
 									 PROGRESS_ANALYZE_PHASE_COMPUTE_STATS);
 
-		col_context = AllocSetContextCreate(anl_context,
+		col_context = AllocSetContextCreate(analyze_context,
 											"Analyze Column",
 											ALLOCSET_DEFAULT_SIZES);
 		old_context = MemoryContextSwitchTo(col_context);
@@ -729,7 +765,7 @@ do_analyze_rel(Relation onerel, const VacuumParams *params,
 			ivinfo.estimated_count = true;
 			ivinfo.message_level = elevel;
 			ivinfo.num_heap_tuples = onerel->rd_rel->reltuples;
-			ivinfo.strategy = vac_strategy;
+			ivinfo.strategy = analyze_strategy;
 
 			stats = index_vacuum_cleanup(&ivinfo, NULL);
 
@@ -865,8 +901,8 @@ do_analyze_rel(Relation onerel, const VacuumParams *params,
 
 	/* Restore current context and release memory */
 	MemoryContextSwitchTo(caller_context);
-	MemoryContextDelete(anl_context);
-	anl_context = NULL;
+	MemoryContextDelete(analyze_context);
+	analyze_context = NULL;
 }
 
 /*
@@ -885,7 +921,7 @@ compute_index_stats(Relation onerel, double totalrows,
 	int			ind,
 				i;
 
-	ind_context = AllocSetContextCreate(anl_context,
+	ind_context = AllocSetContextCreate(analyze_context,
 										"Analyze Index",
 										ALLOCSET_DEFAULT_SIZES);
 	old_context = MemoryContextSwitchTo(ind_context);
@@ -1135,7 +1171,7 @@ examine_attribute(Relation onerel, int attnum, Node *index_expr)
 	if (!HeapTupleIsValid(typtuple))
 		elog(ERROR, "cache lookup failed for type %u", stats->attrtypid);
 	stats->attrtype = (Form_pg_type) GETSTRUCT(typtuple);
-	stats->anl_context = anl_context;
+	stats->anl_context = analyze_context;
 	stats->tupattnum = attnum;
 
 	/*
@@ -1301,7 +1337,7 @@ acquire_sample_rows(Relation onerel, int elevel,
 	 */
 	stream = read_stream_begin_relation(READ_STREAM_MAINTENANCE |
 										READ_STREAM_USE_BATCHING,
-										vac_strategy,
+										analyze_strategy,
 										scan->rs_rd,
 										MAIN_FORKNUM,
 										block_sampling_read_stream_next,

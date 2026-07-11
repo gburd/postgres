@@ -39,11 +39,11 @@
  * address space and is negligible relative to the 64-bit address space.
  */
 #define PROTECTIVE_REGION_SIZE (10 * WIN32_STACK_RLIMIT)
-void	   *ShmemProtectiveRegion = NULL;
+PG_GLOBAL_SHMEM void *ShmemProtectiveRegion = NULL;
 
-HANDLE		UsedShmemSegID = INVALID_HANDLE_VALUE;
-void	   *UsedShmemSegAddr = NULL;
-static Size UsedShmemSegSize = 0;
+PG_GLOBAL_SHMEM HANDLE UsedShmemSegID = INVALID_HANDLE_VALUE;
+PG_GLOBAL_SHMEM void *UsedShmemSegAddr = NULL;
+static PG_GLOBAL_SHMEM Size UsedShmemSegSize = 0;
 
 static bool EnableLockPagesPrivilege(int elevel);
 static void pgwin32_SharedMemoryDelete(int status, Datum shmId);

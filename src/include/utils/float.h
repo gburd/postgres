@@ -17,6 +17,8 @@
 
 #include <math.h>
 
+#include "utils/global_lifetime.h"
+
 /* X/Open (XSI) requires <math.h> to provide M_PI, but core POSIX does not */
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -25,7 +27,10 @@
 /* Radians per degree, a.k.a. PI / 180 */
 #define RADIANS_PER_DEGREE 0.0174532925199432957692
 
-extern PGDLLIMPORT int extra_float_digits;
+#ifndef PgCurrentExtraFloatDigitsRef
+extern int *PgCurrentExtraFloatDigitsRef(void);
+#endif
+#define extra_float_digits (*PgCurrentExtraFloatDigitsRef())
 
 /*
  * Utility functions in float.c

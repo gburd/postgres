@@ -23,6 +23,7 @@
 #include "access/htup.h"
 #include "access/skey.h"
 #include "lib/ilist.h"
+#include "utils/global_lifetime.h"
 #include "utils/relcache.h"
 
 /*
@@ -189,9 +190,37 @@ typedef struct catcacheheader
 	int			ch_ntup;		/* # of tuples in all caches */
 } CatCacheHeader;
 
+typedef struct PgCatCacheMemoryStats
+{
+	int			id;
+	Oid			reloid;
+	Oid			indexoid;
+	const char *relname;
+	int			ntup;
+	int			npositive;
+	int			nnegative;
+	int			nlist;
+	int			nbuckets;
+	int			nlbuckets;
+	Size		cache_header_bytes;
+	Size		bucket_bytes;
+	Size		tuple_header_bytes;
+	Size		tuple_data_bytes;
+	Size		negative_key_bytes;
+	Size		list_header_bytes;
+	Size		list_key_bytes;
+	Size		total_requested_bytes;
+} PgCatCacheMemoryStats;
 
-/* this extern duplicates utils/memutils.h... */
-extern PGDLLIMPORT MemoryContext CacheMemoryContext;
+typedef void (*PgCatCacheMemoryStatsCallback) (const PgCatCacheMemoryStats *stats,
+											  void *arg);
+
+
+/* this compatibility macro duplicates utils/memutils.h... */
+#ifndef CacheMemoryContext
+extern MemoryContext *PgCacheMemoryContextRef(void);
+#define CacheMemoryContext (*PgCacheMemoryContextRef())
+#endif
 
 extern void CreateCacheMemoryContext(void);
 
@@ -215,6 +244,10 @@ extern void ReleaseCatCache(HeapTuple tuple);
 extern uint32 GetCatCacheHashValue(CatCache *cache,
 								   Datum v1, Datum v2,
 								   Datum v3, Datum v4);
+extern uint32 CatalogCacheComputeTupleHashValueForKeys(TupleDesc tupdesc,
+													   int nkeys,
+													   const int *keyno,
+													   HeapTuple tuple);
 
 extern CatCList *SearchCatCacheList(CatCache *cache, int nkeys,
 									Datum v1, Datum v2,
@@ -223,6 +256,8 @@ extern void ReleaseCatCacheList(CatCList *list);
 
 extern void ResetCatalogCaches(void);
 extern void ResetCatalogCachesExt(bool debug_discard);
+extern void PgCatCacheCollectMemoryStats(PgCatCacheMemoryStatsCallback callback,
+										 void *arg);
 extern void CatalogCacheFlushCatalog(Oid catId);
 extern void CatCacheInvalidate(CatCache *cache, uint32 hashValue);
 extern void PrepareToInvalidateCacheTuple(Relation relation,

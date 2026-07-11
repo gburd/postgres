@@ -289,6 +289,7 @@
 #include "storage/procarray.h"
 #include "tcop/tcopprot.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
@@ -310,7 +311,8 @@ typedef struct FlushPosition
 	XLogRecPtr	remote_end;
 } FlushPosition;
 
-static dlist_head lsn_mapping = DLIST_STATIC_INIT(lsn_mapping);
+#define lsn_mapping \
+	(PgCurrentLogicalReplicationState()->lsn_mapping)
 
 typedef struct ApplyExecutionData
 {
@@ -323,19 +325,6 @@ typedef struct ApplyExecutionData
 	ModifyTableState *mtstate;	/* dummy ModifyTable state */
 	PartitionTupleRouting *proute;	/* partition routing info */
 } ApplyExecutionData;
-
-/* Struct for saving and restoring apply errcontext information */
-typedef struct ApplyErrorCallbackArg
-{
-	LogicalRepMsgType command;	/* 0 if invalid */
-	LogicalRepRelMapEntry *rel;
-
-	/* Remote node information */
-	int			remote_attnum;	/* -1 if invalid */
-	TransactionId remote_xid;
-	XLogRecPtr	finish_lsn;
-	char	   *origin_name;
-} ApplyErrorCallbackArg;
 
 /*
  * The action to be taken for the changes in the transaction.
@@ -461,48 +450,35 @@ typedef struct RetainDeadTuplesData
 #define MAX_XID_ADVANCE_INTERVAL 180000
 
 /* errcontext tracker */
-static ApplyErrorCallbackArg apply_error_callback_arg =
-{
-	.command = 0,
-	.rel = NULL,
-	.remote_attnum = -1,
-	.remote_xid = InvalidTransactionId,
-	.finish_lsn = InvalidXLogRecPtr,
-	.origin_name = NULL,
-};
-
-ErrorContextCallback *apply_error_context_stack = NULL;
-
-MemoryContext ApplyMessageContext = NULL;
-MemoryContext ApplyContext = NULL;
+#define apply_error_callback_arg \
+	(PgCurrentLogicalReplicationState()->apply_error_callback_arg)
 
 /* per stream context for streaming transactions */
-static MemoryContext LogicalStreamingContext = NULL;
+#define LogicalStreamingContext (*PgCurrentLogicalStreamingContextRef())
 
-WalReceiverConn *LogRepWorkerWalRcvConn = NULL;
-
-Subscription *MySubscription = NULL;
 char	   *MySubscriptionConninfo = NULL;
-static bool MySubscriptionValid = false;
+#define MySubscriptionValid \
+	(PgCurrentLogicalReplicationState()->my_subscription_valid)
 
-static List *on_commit_wakeup_workers_subids = NIL;
+#define on_commit_wakeup_workers_subids \
+	(PgCurrentLogicalReplicationState()->on_commit_wakeup_workers_subids)
 
 bool		in_remote_transaction = false;
-static XLogRecPtr remote_final_lsn = InvalidXLogRecPtr;
+#define remote_final_lsn \
+	(PgCurrentLogicalReplicationState()->remote_final_lsn)
 
 /* fields valid only when processing streamed transaction */
-static bool in_streamed_transaction = false;
-
-static TransactionId stream_xid = InvalidTransactionId;
+#define in_streamed_transaction \
+	(PgCurrentLogicalReplicationState()->in_streamed_transaction)
+#define stream_xid \
+	(PgCurrentLogicalReplicationState()->stream_xid)
 
 /*
  * The number of changes applied by parallel apply worker during one streaming
  * block.
  */
-static uint32 parallel_stream_nchanges = 0;
-
-/* Are we initializing an apply worker? */
-bool		InitializingApplyWorker = false;
+#define parallel_stream_nchanges \
+	(PgCurrentLogicalReplicationState()->parallel_stream_nchanges)
 
 /*
  * We enable skipping all data modification changes (INSERT, UPDATE, etc.) for
@@ -519,36 +495,23 @@ bool		InitializingApplyWorker = false;
  * the changes. So, we don't start parallel apply worker when finish LSN is set
  * by the user.
  */
-static XLogRecPtr skip_xact_finish_lsn = InvalidXLogRecPtr;
+#define skip_xact_finish_lsn \
+	(PgCurrentLogicalReplicationState()->skip_xact_finish_lsn)
 #define is_skipping_changes() (unlikely(XLogRecPtrIsValid(skip_xact_finish_lsn)))
 
 /* BufFile handle of the current streaming file */
-static BufFile *stream_fd = NULL;
+#define stream_fd (PgCurrentLogicalReplicationState()->stream_fd)
 
 /*
  * The remote WAL position that has been applied and flushed locally. We record
  * and use this information both while sending feedback to the server and
  * advancing oldest_nonremovable_xid.
  */
-static XLogRecPtr last_flushpos = InvalidXLogRecPtr;
-
-typedef struct SubXactInfo
-{
-	TransactionId xid;			/* XID of the subxact */
-	int			fileno;			/* file number in the buffile */
-	pgoff_t		offset;			/* offset in the file */
-} SubXactInfo;
+#define last_flushpos (PgCurrentLogicalReplicationState()->last_flushpos)
 
 /* Sub-transaction data for the current streaming transaction */
-typedef struct ApplySubXactData
-{
-	uint32		nsubxacts;		/* number of sub-transactions */
-	uint32		nsubxacts_max;	/* current capacity of subxacts */
-	TransactionId subxact_last; /* xid of the last sub-transaction */
-	SubXactInfo *subxacts;		/* sub-xact offset in changes file */
-} ApplySubXactData;
-
-static ApplySubXactData subxact_data = {0, 0, InvalidTransactionId, NULL};
+#define subxact_data \
+	(PgCurrentLogicalReplicationState()->subxact_data)
 
 static inline void subxact_filename(char *path, Oid subid, TransactionId xid);
 static inline void changes_filename(char *path, Oid subid, TransactionId xid);
@@ -591,6 +554,8 @@ static void adjust_xid_advance_interval(RetainDeadTuplesData *rdt_data,
 										bool new_xid_found);
 
 static void apply_worker_exit(void);
+static bool LogicalRepWorkerThreadedRuntime(void);
+static void ProcessLogicalRepConfigReload(void);
 
 static void apply_handle_commit_internal(LogicalRepCommitData *commit_data);
 static void apply_handle_insert_internal(ApplyExecutionData *edata,
@@ -4077,10 +4042,7 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 					StringInfoData s;
 
 					if (ConfigReloadPending)
-					{
-						ConfigReloadPending = false;
-						ProcessConfigFile(PGC_SIGHUP);
-					}
+						ProcessLogicalRepConfigReload();
 
 					/* Reset timeout. */
 					last_recv_timestamp = GetCurrentTimestamp();
@@ -4237,10 +4199,7 @@ LogicalRepApplyLoop(XLogRecPtr last_received)
 		}
 
 		if (ConfigReloadPending)
-		{
-			ConfigReloadPending = false;
-			ProcessConfigFile(PGC_SIGHUP);
-		}
+			ProcessLogicalRepConfigReload();
 
 		if (rc & WL_TIMEOUT)
 		{
@@ -5021,6 +4980,21 @@ adjust_xid_advance_interval(RetainDeadTuplesData *rdt_data, bool new_xid_found)
 											 MySubscription->maxretention);
 }
 
+static bool
+LogicalRepWorkerThreadedRuntime(void)
+{
+	return PgRuntimeIsThreadBacked(CurrentPgRuntime);
+}
+
+static void
+ProcessLogicalRepConfigReload(void)
+{
+	ConfigReloadPending = false;
+
+	if (!LogicalRepWorkerThreadedRuntime())
+		ProcessConfigFile(PGC_SIGHUP);
+}
+
 /*
  * Exit routine for apply workers due to subscription parameter changes.
  */
@@ -5049,7 +5023,7 @@ apply_worker_exit(void)
 	if (am_leader_apply_worker())
 		ApplyLauncherForgetWorkerStartTime(MyLogicalRepWorker->subid);
 
-	proc_exit(0);
+	PgBackendExit(0);
 }
 
 /*
@@ -5097,7 +5071,7 @@ maybe_reread_subscription(void)
 		if (am_leader_apply_worker())
 			ApplyLauncherForgetWorkerStartTime(MyLogicalRepWorker->subid);
 
-		proc_exit(0);
+		PgBackendExit(0);
 	}
 
 	/* Exit if the subscription was disabled. */
@@ -5824,6 +5798,8 @@ run_apply_worker(void)
 void
 InitializeLogRepWorker(void)
 {
+	dlist_init(&lsn_mapping);
+
 	/* Run as replica session replication role. */
 	SetConfigOption("session_replication_role", "replica",
 					PGC_SUSET, PGC_S_OVERRIDE);
@@ -5877,7 +5853,7 @@ InitializeLogRepWorker(void)
 		if (am_leader_apply_worker())
 			ApplyLauncherForgetWorkerStartTime(MyLogicalRepWorker->subid);
 
-		proc_exit(0);
+		PgBackendExit(0);
 	}
 
 	if (!MySubscription->enabled)
@@ -6015,8 +5991,11 @@ SetupApplyOrSyncWorker(int worker_slot)
 	Assert(am_tablesync_worker() || am_sequencesync_worker() || am_leader_apply_worker());
 
 	/* Setup signal handling */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	BackgroundWorkerUnblockSignals();
+	if (!LogicalRepWorkerThreadedRuntime())
+	{
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
+		BackgroundWorkerUnblockSignals();
+	}
 
 	/*
 	 * We don't currently need any ResourceOwner in a walreceiver process, but
@@ -6065,7 +6044,7 @@ ApplyWorkerMain(Datum main_arg)
 
 	run_apply_worker();
 
-	proc_exit(0);
+	PgBackendExit(0);
 }
 
 /*
@@ -6124,7 +6103,7 @@ DisableSubscriptionAndExit(void)
 							   MySubscription->retaindeadtuples,
 							   MySubscription->retentionactive, false);
 
-	proc_exit(0);
+	PgBackendExit(0);
 }
 
 /*

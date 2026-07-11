@@ -14,6 +14,7 @@
 #ifndef BYTEA_H
 #define BYTEA_H
 
+#include "utils/global_lifetime.h"
 
 
 typedef enum
@@ -22,7 +23,10 @@ typedef enum
 	BYTEA_OUTPUT_HEX,
 }			ByteaOutputType;
 
-extern PGDLLIMPORT int bytea_output;	/* ByteaOutputType, but int for GUC
-										 * enum */
+#ifndef PgCurrentByteaOutputRef
+extern int *PgCurrentByteaOutputRef(void);
+#endif
+#define bytea_output (*PgCurrentByteaOutputRef())	/* ByteaOutputType,
+													 * but int for GUC enum */
 
 #endif							/* BYTEA_H */

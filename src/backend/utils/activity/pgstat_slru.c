@@ -31,10 +31,6 @@ static void pgstat_reset_slru_counter_internal(int index, TimestampTz ts);
  * SLRU counters are reported within critical sections so we use static memory
  * in order to avoid memory allocation.
  */
-static PgStat_SLRUStats pending_SLRUStats[SLRU_NUM_ELEMENTS];
-static bool have_slrustats = false;
-
-
 /*
  * Reset counters for a single SLRU.
  *
@@ -92,7 +88,7 @@ pgstat_fetch_slru(void)
 {
 	pgstat_snapshot_fixed(PGSTAT_KIND_SLRU);
 
-	return pgStatLocal.snapshot.slru;
+	return pgStatSnapshot.slru;
 }
 
 /*
@@ -198,7 +194,7 @@ pgstat_slru_snapshot_cb(void)
 
 	LWLockAcquire(&stats_shmem->lock, LW_SHARED);
 
-	memcpy(pgStatLocal.snapshot.slru, &stats_shmem->stats,
+	memcpy(pgStatSnapshot.slru, &stats_shmem->stats,
 		   sizeof(stats_shmem->stats));
 
 	LWLockRelease(&stats_shmem->lock);

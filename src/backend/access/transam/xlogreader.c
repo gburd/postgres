@@ -34,6 +34,7 @@
 #include "replication/origin.h"
 
 #ifndef FRONTEND
+#include "access/xlog.h"
 #include "pgstat.h"
 #include "storage/bufmgr.h"
 #include "utils/wait_event.h"

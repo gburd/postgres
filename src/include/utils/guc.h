@@ -15,6 +15,7 @@
 #include "nodes/parsenodes.h"
 #include "tcop/dest.h"
 #include "utils/array.h"
+#include "utils/global_lifetime.h"
 
 
 /*
@@ -245,16 +246,40 @@ typedef enum
 
 
 /* GUC vars that are actually defined in guc_tables.c, rather than elsewhere */
-extern PGDLLIMPORT bool Debug_print_plan;
-extern PGDLLIMPORT bool Debug_print_parse;
-extern PGDLLIMPORT bool Debug_print_raw_parse;
-extern PGDLLIMPORT bool Debug_print_rewritten;
-extern PGDLLIMPORT bool Debug_pretty_print;
+#ifndef PgCurrentDebugPrintPlanRef
+extern bool *PgCurrentDebugPrintPlanRef(void);
+#endif
+#ifndef PgCurrentDebugPrintParseRef
+extern bool *PgCurrentDebugPrintParseRef(void);
+#endif
+#ifndef PgCurrentDebugPrintRawParseRef
+extern bool *PgCurrentDebugPrintRawParseRef(void);
+#endif
+#ifndef PgCurrentDebugPrintRewrittenRef
+extern bool *PgCurrentDebugPrintRewrittenRef(void);
+#endif
+#ifndef PgCurrentDebugPrettyPrintRef
+extern bool *PgCurrentDebugPrettyPrintRef(void);
+#endif
+#define Debug_print_plan (*PgCurrentDebugPrintPlanRef())
+#define Debug_print_parse (*PgCurrentDebugPrintParseRef())
+#define Debug_print_raw_parse (*PgCurrentDebugPrintRawParseRef())
+#define Debug_print_rewritten (*PgCurrentDebugPrintRewrittenRef())
+#define Debug_pretty_print (*PgCurrentDebugPrettyPrintRef())
 
 #ifdef DEBUG_NODE_TESTS_ENABLED
-extern PGDLLIMPORT bool Debug_copy_parse_plan_trees;
-extern PGDLLIMPORT bool Debug_write_read_parse_plan_trees;
-extern PGDLLIMPORT bool Debug_raw_expression_coverage_test;
+#ifndef PgCurrentDebugCopyParsePlanTreesRef
+extern bool *PgCurrentDebugCopyParsePlanTreesRef(void);
+#endif
+#ifndef PgCurrentDebugWriteReadParsePlanTreesRef
+extern bool *PgCurrentDebugWriteReadParsePlanTreesRef(void);
+#endif
+#ifndef PgCurrentDebugRawExpressionCoverageTestRef
+extern bool *PgCurrentDebugRawExpressionCoverageTestRef(void);
+#endif
+#define Debug_copy_parse_plan_trees (*PgCurrentDebugCopyParsePlanTreesRef())
+#define Debug_write_read_parse_plan_trees (*PgCurrentDebugWriteReadParsePlanTreesRef())
+#define Debug_raw_expression_coverage_test (*PgCurrentDebugRawExpressionCoverageTestRef())
 
 /*
  * support for legacy compile-time settings
@@ -280,55 +305,173 @@ extern PGDLLIMPORT bool Debug_raw_expression_coverage_test;
 
 #endif							/* DEBUG_NODE_TESTS_ENABLED */
 
-extern PGDLLIMPORT bool log_parser_stats;
-extern PGDLLIMPORT bool log_planner_stats;
-extern PGDLLIMPORT bool log_executor_stats;
-extern PGDLLIMPORT bool log_statement_stats;
-extern PGDLLIMPORT bool log_btree_build_stats;
-extern PGDLLIMPORT char *event_source;
+#ifndef PgCurrentLogParserStatsRef
+extern bool *PgCurrentLogParserStatsRef(void);
+#endif
+#ifndef PgCurrentLogPlannerStatsRef
+extern bool *PgCurrentLogPlannerStatsRef(void);
+#endif
+#ifndef PgCurrentLogExecutorStatsRef
+extern bool *PgCurrentLogExecutorStatsRef(void);
+#endif
+#ifndef PgCurrentLogStatementStatsRef
+extern bool *PgCurrentLogStatementStatsRef(void);
+#endif
+#ifndef PgCurrentLogBtreeBuildStatsRef
+extern bool *PgCurrentLogBtreeBuildStatsRef(void);
+#endif
+#ifndef PgCurrentEventSourceRef
+extern char **PgCurrentEventSourceRef(void);
+#endif
+#define log_parser_stats (*PgCurrentLogParserStatsRef())
+#define log_planner_stats (*PgCurrentLogPlannerStatsRef())
+#define log_executor_stats (*PgCurrentLogExecutorStatsRef())
+#define log_statement_stats (*PgCurrentLogStatementStatsRef())
+#define log_btree_build_stats (*PgCurrentLogBtreeBuildStatsRef())
+#define event_source (*PgCurrentEventSourceRef())
 
-extern PGDLLIMPORT bool check_function_bodies;
-extern PGDLLIMPORT bool current_role_is_superuser;
+#ifndef PgCurrentCheckFunctionBodiesRef
+extern bool *PgCurrentCheckFunctionBodiesRef(void);
+#endif
+#ifndef PgCurrentCurrentRoleIsSuperuserRef
+extern bool *PgCurrentCurrentRoleIsSuperuserRef(void);
+#endif
+#define check_function_bodies (*PgCurrentCheckFunctionBodiesRef())
+#define current_role_is_superuser (*PgCurrentCurrentRoleIsSuperuserRef())
 
-extern PGDLLIMPORT bool AllowAlterSystem;
-extern PGDLLIMPORT bool log_duration;
-extern PGDLLIMPORT int log_parameter_max_length;
-extern PGDLLIMPORT int log_parameter_max_length_on_error;
-extern PGDLLIMPORT int log_min_error_statement;
-extern PGDLLIMPORT int log_min_messages[];
-extern PGDLLIMPORT int client_min_messages;
-extern PGDLLIMPORT int log_min_duration_sample;
-extern PGDLLIMPORT int log_min_duration_statement;
-extern PGDLLIMPORT int log_temp_files;
+#ifndef PgCurrentAllowAlterSystemRef
+extern bool *PgCurrentAllowAlterSystemRef(void);
+#endif
+#define AllowAlterSystem (*PgCurrentAllowAlterSystemRef())
+#ifndef PgCurrentLogDurationRef
+extern bool *PgCurrentLogDurationRef(void);
+#endif
+#ifndef PgCurrentLogParameterMaxLengthRef
+extern int *PgCurrentLogParameterMaxLengthRef(void);
+#endif
+#ifndef PgCurrentLogParameterMaxLengthOnErrorRef
+extern int *PgCurrentLogParameterMaxLengthOnErrorRef(void);
+#endif
+#ifndef PgCurrentLogMinErrorStatementRef
+extern int *PgCurrentLogMinErrorStatementRef(void);
+#endif
+#ifndef PgCurrentLogMinMessagesArrayRef
+extern int *PgCurrentLogMinMessagesArrayRef(void);
+#endif
+#ifndef PgCurrentClientMinMessagesRef
+extern int *PgCurrentClientMinMessagesRef(void);
+#endif
+#ifndef PgCurrentLogMinDurationSampleRef
+extern int *PgCurrentLogMinDurationSampleRef(void);
+#endif
+#ifndef PgCurrentLogMinDurationStatementRef
+extern int *PgCurrentLogMinDurationStatementRef(void);
+#endif
+#ifndef PgCurrentLogTempFilesRef
+extern int *PgCurrentLogTempFilesRef(void);
+#endif
+#ifndef PgCurrentLogStatementSampleRateRef
+extern double *PgCurrentLogStatementSampleRateRef(void);
+#endif
+#ifndef PgCurrentLogXactSampleRateRef
+extern double *PgCurrentLogXactSampleRateRef(void);
+#endif
+#ifndef PgCurrentBacktraceFunctionsRef
+extern char **PgCurrentBacktraceFunctionsRef(void);
+#endif
+#define log_duration (*PgCurrentLogDurationRef())
+#define log_parameter_max_length (*PgCurrentLogParameterMaxLengthRef())
+#define log_parameter_max_length_on_error (*PgCurrentLogParameterMaxLengthOnErrorRef())
+#define log_min_error_statement (*PgCurrentLogMinErrorStatementRef())
+#define log_min_messages (PgCurrentLogMinMessagesArrayRef())
+#define client_min_messages (*PgCurrentClientMinMessagesRef())
+#define log_min_duration_sample (*PgCurrentLogMinDurationSampleRef())
+#define log_min_duration_statement (*PgCurrentLogMinDurationStatementRef())
+#define log_temp_files (*PgCurrentLogTempFilesRef())
+#define log_statement_sample_rate (*PgCurrentLogStatementSampleRateRef())
+#define log_xact_sample_rate (*PgCurrentLogXactSampleRateRef())
+#define backtrace_functions (*PgCurrentBacktraceFunctionsRef())
+
+/*
+ * ponytail: log_statement_max_length is a new upstream GUC (post-19beta1)
+ * the threading fork has not yet migrated to a per-session accessor.  It
+ * stays a plain process-global for now; Phase 16 / the GUC matrix owns
+ * folding it into PgCurrentLog*Ref() session state.
+ */
 extern PGDLLIMPORT int log_statement_max_length;
-extern PGDLLIMPORT double log_statement_sample_rate;
-extern PGDLLIMPORT double log_xact_sample_rate;
-extern PGDLLIMPORT char *backtrace_functions;
 
-extern PGDLLIMPORT int temp_file_limit;
+#ifndef PgCurrentTempFileLimitRef
+extern int *PgCurrentTempFileLimitRef(void);
+#endif
+#define temp_file_limit (*PgCurrentTempFileLimitRef())
 
-extern PGDLLIMPORT int num_temp_buffers;
+#ifndef PgCurrentNumTempBuffersRef
+extern int *PgCurrentNumTempBuffersRef(void);
+#endif
+#define num_temp_buffers (*PgCurrentNumTempBuffersRef())
 
-extern PGDLLIMPORT char *cluster_name;
-extern PGDLLIMPORT char *ConfigFileName;
-extern PGDLLIMPORT char *HbaFileName;
-extern PGDLLIMPORT char *IdentFileName;
-extern PGDLLIMPORT char *HostsFileName;
-extern PGDLLIMPORT char *external_pid_file;
+#ifndef PgCurrentClusterNameRef
+extern char **PgCurrentClusterNameRef(void);
+#endif
+#ifndef PgCurrentConfigFileNameRef
+extern char **PgCurrentConfigFileNameRef(void);
+#endif
+#ifndef PgCurrentHbaFileNameRef
+extern char **PgCurrentHbaFileNameRef(void);
+#endif
+#ifndef PgCurrentIdentFileNameRef
+extern char **PgCurrentIdentFileNameRef(void);
+#endif
+#ifndef PgCurrentHostsFileNameRef
+extern char **PgCurrentHostsFileNameRef(void);
+#endif
+#ifndef PgCurrentExternalPidFileRef
+extern char **PgCurrentExternalPidFileRef(void);
+#endif
+#define cluster_name (*PgCurrentClusterNameRef())
+#define ConfigFileName (*PgCurrentConfigFileNameRef())
+#define HbaFileName (*PgCurrentHbaFileNameRef())
+#define IdentFileName (*PgCurrentIdentFileNameRef())
+#define HostsFileName (*PgCurrentHostsFileNameRef())
+#define external_pid_file (*PgCurrentExternalPidFileRef())
 
-extern PGDLLIMPORT char *application_name;
+#ifndef PgCurrentApplicationNameRef
+extern char **PgCurrentApplicationNameRef(void);
+#endif
+#define application_name (*PgCurrentApplicationNameRef())
 
-extern PGDLLIMPORT int tcp_keepalives_idle;
-extern PGDLLIMPORT int tcp_keepalives_interval;
-extern PGDLLIMPORT int tcp_keepalives_count;
-extern PGDLLIMPORT int tcp_user_timeout;
+#ifndef PgCurrentTcpKeepalivesIdleRef
+extern int *PgCurrentTcpKeepalivesIdleRef(void);
+#endif
+#ifndef PgCurrentTcpKeepalivesIntervalRef
+extern int *PgCurrentTcpKeepalivesIntervalRef(void);
+#endif
+#ifndef PgCurrentTcpKeepalivesCountRef
+extern int *PgCurrentTcpKeepalivesCountRef(void);
+#endif
+#ifndef PgCurrentTcpUserTimeoutRef
+extern int *PgCurrentTcpUserTimeoutRef(void);
+#endif
+#define tcp_keepalives_idle (*PgCurrentTcpKeepalivesIdleRef())
+#define tcp_keepalives_interval (*PgCurrentTcpKeepalivesIntervalRef())
+#define tcp_keepalives_count (*PgCurrentTcpKeepalivesCountRef())
+#define tcp_user_timeout (*PgCurrentTcpUserTimeoutRef())
 
-extern PGDLLIMPORT char *role_string;
-extern PGDLLIMPORT bool in_hot_standby_guc;
-extern PGDLLIMPORT bool trace_sort;
+#ifndef PgCurrentRoleStringRef
+extern char **PgCurrentRoleStringRef(void);
+#endif
+#define role_string (*PgCurrentRoleStringRef())
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool in_hot_standby_guc;
+#ifndef PgCurrentTraceSortRef
+extern bool *PgCurrentTraceSortRef(void);
+#endif
+#define trace_sort (*PgCurrentTraceSortRef())
 
 #ifdef DEBUG_BOUNDED_SORT
-extern PGDLLIMPORT bool optimize_bounded_sort;
+#ifndef PgCurrentOptimizeBoundedSortRef
+extern bool *PgCurrentOptimizeBoundedSortRef(void);
+#endif
+#define optimize_bounded_sort (*PgCurrentOptimizeBoundedSortRef())
 #endif
 
 /*
@@ -429,6 +572,10 @@ extern void ProcessConfigFile(GucContext context);
 extern char *convert_GUC_name_for_parameter_acl(const char *name);
 extern void check_GUC_name_for_parameter_acl(const char *name);
 extern void InitializeGUCOptions(void);
+extern void InitializeThreadedSessionGUCOptions(void);
+extern void InitializeThreadedSessionRequiredGUCOptions(void);
+extern void RebindSessionGUCVariablePointers(void);
+extern int	ValidateSessionGUCVariableRebinds(void);
 extern bool SelectConfigFiles(const char *userDoption, const char *progname);
 extern void ResetAllOptions(void);
 extern void AtStart_GUC(void);
@@ -476,10 +623,9 @@ pg_nodiscard extern void *guc_realloc(int elevel, void *old, size_t size);
 extern char *guc_strdup(int elevel, const char *src);
 extern void guc_free(void *ptr);
 
-#ifdef EXEC_BACKEND
 extern void write_nondefault_variables(GucContext context);
 extern void read_nondefault_variables(void);
-#endif
+extern void ResetGUCStateAtBackendExit(void);
 
 /* GUC serialization */
 extern Size EstimateGUCStateSpace(void);
@@ -495,9 +641,18 @@ extern TupleDesc GetPGVariableResultDesc(const char *name);
 
 /* Support for messages reported from GUC check hooks */
 
-extern PGDLLIMPORT char *GUC_check_errmsg_string;
-extern PGDLLIMPORT char *GUC_check_errdetail_string;
-extern PGDLLIMPORT char *GUC_check_errhint_string;
+#ifndef PgCurrentGUCCheckErrmsgStringRef
+extern char **PgCurrentGUCCheckErrmsgStringRef(void);
+#endif
+#ifndef PgCurrentGUCCheckErrdetailStringRef
+extern char **PgCurrentGUCCheckErrdetailStringRef(void);
+#endif
+#ifndef PgCurrentGUCCheckErrhintStringRef
+extern char **PgCurrentGUCCheckErrhintStringRef(void);
+#endif
+#define GUC_check_errmsg_string (*PgCurrentGUCCheckErrmsgStringRef())
+#define GUC_check_errdetail_string (*PgCurrentGUCCheckErrdetailStringRef())
+#define GUC_check_errhint_string (*PgCurrentGUCCheckErrhintStringRef())
 
 extern void GUC_check_errcode(int sqlerrcode);
 

@@ -20,9 +20,11 @@
 #include "access/transam.h"
 #include "access/xlogutils.h"
 #include "storage/standby.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 
-static MemoryContext opCtx;		/* working memory for operations */
+#define opCtx \
+	(PgCurrentXLogState()->btree_xlog_op_context)
 
 /*
  * _bt_restore_page -- re-enter all the index tuples on a page
