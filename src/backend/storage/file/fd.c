@@ -97,11 +97,17 @@
 #include "storage/aio.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/guc_hooks.h"
 #include "utils/resowner.h"
+#ifdef USE_XTC_CARRIER
+#include "postmaster/pg_xtc_carrier.h"	/* xtc_in_backend_fiber */
+#include "xtc_aio.h"					/* xtc_aio_fsync / xtc_aio_fdatasync */
+#endif
 #include "utils/varlena.h"
 #include "utils/wait_event.h"
+#include "../../utils/init/backend_runtime_internal.h"
 
 /* Define PG_FLUSH_DATA_WORKS if we have an implementation for pg_flush_data */
 #if defined(HAVE_SYNC_FILE_RANGE)
@@ -144,7 +150,7 @@
  * This GUC parameter lets the DBA limit max_safe_fds to something less than
  * what the postmaster's initial probe suggests will work.
  */
-int			max_files_per_process = 1000;
+PG_GLOBAL_RUNTIME int max_files_per_process = 1000;
 
 /*
  * Maximum number of file descriptors to open for operations that fd.c knows
@@ -157,19 +163,19 @@ int			max_files_per_process = 1000;
  * Note: the value of max_files_per_process is taken into account while
  * setting this variable, and so need not be tested separately.
  */
-int			max_safe_fds = FD_MINFREE;	/* default if not changed */
+PG_GLOBAL_RUNTIME int max_safe_fds = FD_MINFREE;	/* default if not changed */
 
 /* Whether it is safe to continue running after fsync() fails. */
-bool		data_sync_retry = false;
+PG_GLOBAL_RUNTIME bool data_sync_retry = false;
 
 /* How SyncDataDirectory() should do its job. */
-int			recovery_init_sync_method = DATA_DIR_SYNC_METHOD_FSYNC;
+PG_GLOBAL_RUNTIME int recovery_init_sync_method = DATA_DIR_SYNC_METHOD_FSYNC;
 
 /* How data files should be bulk-extended with zeros. */
-int			file_extend_method = DEFAULT_FILE_EXTEND_METHOD;
+PG_GLOBAL_RUNTIME int file_extend_method = DEFAULT_FILE_EXTEND_METHOD;
 
 /* Which kinds of files should be opened with PG_O_DIRECT. */
-int			io_direct_flags;
+PG_GLOBAL_RUNTIME int io_direct_flags;
 
 /* Debugging.... */
 
@@ -217,19 +223,19 @@ typedef struct vfd
  * needed.  'File' values are indexes into this array.
  * Note that VfdCache[0] is not a usable VFD, just a list header.
  */
-static Vfd *VfdCache;
-static Size SizeVfdCache = 0;
+#define VfdCache (*(Vfd **) PgCurrentVfdCacheRef())
+#define SizeVfdCache (*PgCurrentSizeVfdCacheRef())
 
 /*
  * Number of file descriptors known to be in use by VFD entries.
  */
-static int	nfile = 0;
+#define nfile (*PgCurrentNFileRef())
 
 /*
  * Flag to tell whether it's worth scanning VfdCache looking for temp files
  * to close
  */
-static bool have_xact_temporary_files = false;
+#define have_xact_temporary_files (*PgCurrentHaveXactTemporaryFilesRef())
 
 /*
  * Tracks the total size of all temporary files.  Note: when temp_file_limit
@@ -237,11 +243,11 @@ static bool have_xact_temporary_files = false;
  * than INT_MAX kilobytes.  When not enforcing, it could theoretically
  * overflow, but we don't care.
  */
-static uint64 temporary_files_size = 0;
+#define current_temporary_files_size (*PgCurrentTemporaryFilesSizeRef())
 
 /* Temporary file access initialized and not yet shut down? */
 #ifdef USE_ASSERT_CHECKING
-static bool temporary_files_allowed = false;
+#define temporary_files_allowed (*PgCurrentTemporaryFilesAllowedRef())
 #endif
 
 /*
@@ -268,20 +274,20 @@ typedef struct
 	}			desc;
 } AllocateDesc;
 
-static int	numAllocatedDescs = 0;
-static int	maxAllocatedDescs = 0;
-static AllocateDesc *allocatedDescs = NULL;
+#define numAllocatedDescs (*PgCurrentNumAllocatedDescsRef())
+#define maxAllocatedDescs (*PgCurrentMaxAllocatedDescsRef())
+#define allocatedDescs (*(AllocateDesc **) PgCurrentAllocatedDescsRef())
 
 /*
  * Number of open "external" FDs reported to Reserve/ReleaseExternalFD.
  */
-static int	numExternalFDs = 0;
+#define numExternalFDs (*PgCurrentNumExternalFDsRef())
 
 /*
  * Number of temporary files opened during the current session;
  * this is used in generation of tempfile names.
  */
-static long tempFileCounter = 0;
+#define tempFileCounter (*PgCurrentTempFileCounterRef())
 
 /*
  * Array of OIDs of temp tablespaces.  (Some entries may be InvalidOid,
@@ -289,9 +295,9 @@ static long tempFileCounter = 0;
  * When numTempTableSpaces is -1, this has not been set in the current
  * transaction.
  */
-static Oid *tempTableSpaces = NULL;
-static int	numTempTableSpaces = -1;
-static int	nextTempTableSpace = 0;
+#define tempTableSpaces (*PgCurrentTempTableSpaceOidsRef())
+#define numTempTableSpaces (*PgCurrentNumTempTableSpacesRef())
+#define nextTempTableSpace (*PgCurrentNextTempTableSpaceRef())
 
 
 /*--------------------
@@ -383,6 +389,77 @@ ResourceOwnerForgetFile(ResourceOwner owner, File file)
 	ResourceOwnerForget(owner, Int32GetDatum(file), &file_resowner_desc);
 }
 
+void
+PgBackendResetFileAccessClosedState(PgBackendStorageState *storage)
+{
+	Vfd		   *vfd_cache;
+	AllocateDesc *allocated_descs;
+	Index		i;
+
+	Assert(storage != NULL);
+
+	vfd_cache = (Vfd *) storage->vfd_cache;
+	if (vfd_cache != NULL)
+	{
+		for (i = 1; i < storage->size_vfd_cache; i++)
+		{
+			Vfd		   *vfdP = &vfd_cache[i];
+
+			if (vfdP->fd != VFD_CLOSED)
+			{
+				pgaio_closing_fd(vfdP->fd);
+				(void) close(vfdP->fd);
+				vfdP->fd = VFD_CLOSED;
+			}
+
+			if ((vfdP->fdstate & FD_DELETE_AT_CLOSE) &&
+				vfdP->fileName != NULL)
+				(void) unlink(vfdP->fileName);
+
+			if (vfdP->fileName != NULL)
+			{
+				free(vfdP->fileName);
+				vfdP->fileName = NULL;
+			}
+		}
+
+		free(vfd_cache);
+	}
+
+	allocated_descs = (AllocateDesc *) storage->allocated_descs;
+	if (allocated_descs != NULL)
+	{
+		for (i = 0; i < storage->num_allocated_descs; i++)
+		{
+			switch (allocated_descs[i].kind)
+			{
+				case AllocateDescFile:
+					(void) fclose(allocated_descs[i].desc.file);
+					break;
+				case AllocateDescPipe:
+					(void) pclose(allocated_descs[i].desc.file);
+					break;
+				case AllocateDescDir:
+					(void) closedir(allocated_descs[i].desc.dir);
+					break;
+				case AllocateDescRawFD:
+					pgaio_closing_fd(allocated_descs[i].desc.fd);
+					(void) close(allocated_descs[i].desc.fd);
+					break;
+			}
+		}
+
+		free(allocated_descs);
+	}
+
+	storage->vfd_cache = NULL;
+	storage->size_vfd_cache = 0;
+	storage->num_allocated_descs = 0;
+	storage->max_allocated_descs = 0;
+	storage->allocated_descs = NULL;
+	storage->num_external_fds = 0;
+}
+
 /*
  * pg_fsync --- do fsync with or without writethrough
  */
@@ -446,6 +523,35 @@ pg_fsync_no_writethrough(int fd)
 	if (!enableFsync)
 		return 0;
 
+#ifdef USE_XTC_CARRIER
+	/*
+	 * On an xtc backend fiber, route fsync through libxtc's async fiber fsync:
+	 * it parks the fiber (yielding the carrier loop to sibling fibers) instead
+	 * of blocking the whole carrier thread for the whole disk sync, then
+	 * completes on the issuing fiber.  Save/restore current-work across the
+	 * park (the loop may run other backend fibers meanwhile, clobbering PG's
+	 * per-backend current-work thread-locals -- same hazard as method_xtc.c and
+	 * xtc_pg_wait_fd()).  xtc_aio_fsync returns 0 or a NEGATIVE errno; map to
+	 * fsync's 0 / -1-with-errno convention.  Off a fiber, fall through to the
+	 * ordinary blocking syscall (process mode / aux backends unchanged).
+	 */
+	if (xtc_in_backend_fiber)
+	{
+		PgCurrentWorkSnapshot snap;
+		int			xrc;
+
+		PgRuntimeSaveCurrentWork(&snap);
+		xrc = xtc_aio_fsync(fd);
+		PgRuntimeRestoreCurrentWork(&snap);
+		if (xrc < 0)
+		{
+			errno = -xrc;
+			return -1;
+		}
+		return 0;
+	}
+#endif
+
 retry:
 	rc = fsync(fd);
 
@@ -484,6 +590,26 @@ pg_fdatasync(int fd)
 
 	if (!enableFsync)
 		return 0;
+
+#ifdef USE_XTC_CARRIER
+	/* See pg_fsync_no_writethrough: park the fiber on the async fdatasync
+	 * (the page/WAL flush hot path) rather than blocking the carrier loop. */
+	if (xtc_in_backend_fiber)
+	{
+		PgCurrentWorkSnapshot snap;
+		int			xrc;
+
+		PgRuntimeSaveCurrentWork(&snap);
+		xrc = xtc_aio_fdatasync(fd);
+		PgRuntimeRestoreCurrentWork(&snap);
+		if (xrc < 0)
+		{
+			errno = -xrc;
+			return -1;
+		}
+		return 0;
+	}
+#endif
 
 retry:
 	rc = fdatasync(fd);
@@ -1801,8 +1927,15 @@ OpenTemporaryFileInTablespace(Oid tblspcOid, bool rejectError)
 	 * Generate a tempfile name that should be unique within the current
 	 * database instance.
 	 */
-	snprintf(tempfilepath, sizeof(tempfilepath), "%s/%s%d.%ld",
-			 tempdirpath, PG_TEMP_FILE_PREFIX, MyProcPid, tempFileCounter++);
+	if (multithreaded && CurrentPgBackend != NULL)
+		snprintf(tempfilepath, sizeof(tempfilepath),
+				 "%s/%s%d." UINT64_FORMAT ".%ld",
+				 tempdirpath, PG_TEMP_FILE_PREFIX, MyProcPid,
+				 PgCurrentBackendId(), tempFileCounter++);
+	else
+		snprintf(tempfilepath, sizeof(tempfilepath), "%s/%s%d.%ld",
+				 tempdirpath, PG_TEMP_FILE_PREFIX, MyProcPid,
+				 tempFileCounter++);
 
 	/*
 	 * Open the file.  Note: we don't use O_EXCL, in case there is an orphaned
@@ -1999,7 +2132,7 @@ FileClose(File file)
 	if (vfdP->fdstate & FD_TEMP_FILE_LIMIT)
 	{
 		/* Subtract its size from current usage (do first in case of error) */
-		temporary_files_size -= vfdP->fileSize;
+		current_temporary_files_size -= vfdP->fileSize;
 		vfdP->fileSize = 0;
 	}
 
@@ -2264,7 +2397,7 @@ FileWriteV(File file, const struct iovec *iov, int iovcnt, pgoff_t offset,
 
 		if (past_write > vfdP->fileSize)
 		{
-			uint64		newTotal = temporary_files_size;
+			uint64		newTotal = current_temporary_files_size;
 
 			newTotal += past_write - vfdP->fileSize;
 			if (newTotal > (uint64) temp_file_limit * (uint64) 1024)
@@ -2292,7 +2425,7 @@ retry:
 		errno = ENOSPC;
 
 		/*
-		 * Maintain fileSize and temporary_files_size if it's a temp file.
+		 * Maintain fileSize and current_temporary_files_size if it's a temp file.
 		 */
 		if (vfdP->fdstate & FD_TEMP_FILE_LIMIT)
 		{
@@ -2300,7 +2433,7 @@ retry:
 
 			if (past_write > vfdP->fileSize)
 			{
-				temporary_files_size += past_write - vfdP->fileSize;
+				current_temporary_files_size += past_write - vfdP->fileSize;
 				vfdP->fileSize = past_write;
 			}
 		}
@@ -2447,6 +2580,8 @@ retry:
 pgoff_t
 FileSize(File file)
 {
+	pgoff_t		returnCode;
+
 	Assert(FileIsValid(file));
 
 	DO_DB(elog(LOG, "FileSize %d (%s)",
@@ -2458,7 +2593,18 @@ FileSize(File file)
 			return (pgoff_t) -1;
 	}
 
-	return lseek(VfdCache[file].fd, 0, SEEK_END);
+	/*
+	 * File values index the current backend's VFD cache.  In threaded mode the
+	 * cache, smgr relation table, and md segment descriptors live in
+	 * PgBackendStorageState, so this lseek() only changes this logical backend's
+	 * open file description.  Normal relation reads and writes are positioned
+	 * I/O, matching the historical process-mode behavior here.
+	 */
+	returnCode = lseek(VfdCache[file].fd, 0, SEEK_END);
+	if (returnCode < 0)
+		return (pgoff_t) -1;
+
+	return returnCode;
 }
 
 int
@@ -2483,7 +2629,7 @@ FileTruncate(File file, pgoff_t offset, uint32 wait_event_info)
 	{
 		/* adjust our state for truncation of a temp file */
 		Assert(VfdCache[file].fdstate & FD_TEMP_FILE_LIMIT);
-		temporary_files_size -= VfdCache[file].fileSize - offset;
+		current_temporary_files_size -= VfdCache[file].fileSize - offset;
 		VfdCache[file].fileSize = offset;
 	}
 
