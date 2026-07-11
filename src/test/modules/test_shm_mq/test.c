@@ -22,7 +22,11 @@
 
 #include "test_shm_mq.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "test_shm_mq",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
+);
 
 PG_FUNCTION_INFO_V1(test_shm_mq);
 PG_FUNCTION_INFO_V1(test_shm_mq_pipelined);
