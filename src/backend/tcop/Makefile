@@ -13,6 +13,7 @@ top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
 OBJS = \
+	backend_runtime_tcop.o \
 	backend_startup.o \
 	cmdtag.o \
 	dest.o \

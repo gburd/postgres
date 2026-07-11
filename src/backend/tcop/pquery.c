@@ -29,12 +29,6 @@
 #include "utils/memutils.h"
 #include "utils/snapmgr.h"
 
-/*
- * ActivePortal is the currently executing Portal (the most closely nested,
- * if there are several).
- */
-Portal		ActivePortal = NULL;
-
 /* Private data for QueryDesc.extension_state. */
 static const char **QueryDescExtensionNameArray = NULL;
 static int	QueryDescExtensionNamesAssigned = 0;
