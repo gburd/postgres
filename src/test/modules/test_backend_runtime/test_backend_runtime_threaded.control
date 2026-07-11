@@ -1,0 +1,4 @@
+comment = 'Thread-compatible test code for backend runtime scaffolding'
+default_version = '1.0'
+module_pathname = '$libdir/test_backend_runtime_threaded'
+relocatable = true

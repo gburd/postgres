@@ -118,7 +118,7 @@ test_shm_mq_main(Datum main_arg)
 	SpinLockAcquire(&hdr->mutex);
 	++hdr->workers_ready;
 	SpinLockRelease(&hdr->mutex);
-	registrant = BackendPidGetProc(MyBgworkerEntry->bgw_notify_pid);
+	registrant = BackendSignalPidGetProc(MyBgworkerEntry->bgw_notify_pid);
 	if (registrant == NULL)
 	{
 		elog(DEBUG1, "registrant backend has exited prematurely");
