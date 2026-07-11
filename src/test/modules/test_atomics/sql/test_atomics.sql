@@ -1,10 +1,9 @@
 -- Test atomic operations module
 --
--- Correctness tests only; output is identical regardless of which atomic
--- implementation (C11 stdatomic.h or traditional) is selected at build time.
--- The benchmark_atomic_operations() function is intentionally NOT exercised
--- here because its timing output is non-deterministic; run it by hand for
--- ad-hoc A/B comparison.
+-- Correctness tests only for PostgreSQL's C11 stdatomic.h atomic
+-- operations.  The benchmark_atomic_operations() function is intentionally
+-- NOT exercised here because its timing output is non-deterministic; run it
+-- by hand for ad-hoc measurement.
 
 CREATE EXTENSION test_atomics;
 

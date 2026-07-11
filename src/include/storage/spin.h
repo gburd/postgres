@@ -48,25 +48,23 @@
 #ifndef SPIN_H
 #define SPIN_H
 
-#ifdef USE_STDATOMIC_H
-
 /*
- * Atomics-based spinlocks.  The traditional path is deprecated as of PG19.
+ * Atomics-based spinlocks.
  *
- * When stdatomic.h is available, spinlocks are implemented on top of a plain
- * 32-bit atomic rather than platform-specific TAS assembly.  We deliberately
- * do NOT use pg_atomic_flag: that type uses 1==unlocked so it can offer a
- * relaxed "unlocked test", whereas a spinlock must be usable when its memory
- * has merely been zeroed (much shared-memory state is set up with
+ * Spinlocks are implemented directly on top of a plain 32-bit atomic rather
+ * than platform-specific TAS assembly.  We deliberately do NOT use
+ * pg_atomic_flag: that type uses 1==unlocked so it can offer a relaxed
+ * "unlocked test", whereas a spinlock must be usable when its memory has
+ * merely been zeroed (a great deal of shared-memory state is set up with
  * memset(...,0,...) and then relies on embedded spinlocks reading as free).
  * So slock_t uses the traditional convention: 0 == unlocked, 1 == locked,
- * making a zero-initialized slock_t a valid, free lock.
+ * which makes a zero-initialized slock_t a valid, free lock.
  */
 #include "port/atomics.h"
 
 typedef pg_atomic_uint32 slock_t;
 
-/* SpinDelayStatus and helpers shared with the traditional s_lock.h path. */
+/* SpinDelayStatus and helpers. */
 #include "port/spin_delay_status.h"
 
 extern int s_lock(volatile slock_t *lock, const char *file, int line, const char *func);
@@ -91,6 +89,7 @@ SpinLockInit(volatile slock_t *lock)
 static inline void
 SpinLockRelease(volatile slock_t *lock)
 {
+	/* release semantics: prior writes are visible before the lock frees */
 	pg_atomic_write_membarrier_u32(lock, 0);
 }
 
@@ -99,43 +98,5 @@ SpinLockFree(volatile slock_t *lock)
 {
 	return pg_atomic_read_u32(lock) == 0;
 }
-
-#else							/* !USE_STDATOMIC_H */
-
-/*
- * Traditional spinlock implementation using platform-specific TAS assembly.
- */
-#include "storage/s_lock.h"
-
-static inline void
-SpinLockInit(volatile slock_t *lock)
-{
-	S_INIT_LOCK(lock);
-}
-
-#define SpinLockAcquire(lock) S_LOCK(lock)
-
-static inline void
-SpinLockRelease(volatile slock_t *lock)
-{
-	S_UNLOCK(lock);
-}
-
-#ifdef S_LOCK_FREE
-static inline bool
-SpinLockFree(volatile slock_t *lock)
-{
-	return S_LOCK_FREE(lock);
-}
-#else
-/* Fallback when platform doesn't provide S_LOCK_FREE: always report busy */
-static inline bool
-SpinLockFree(volatile slock_t *lock)
-{
-	return false;
-}
-#endif
-
-#endif							/* USE_STDATOMIC_H */
 
 #endif							/* SPIN_H */
