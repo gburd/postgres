@@ -103,6 +103,7 @@
 #include "postmaster/autovacuum.h"
 #include "postmaster/bgworker_internals.h"
 #include "postmaster/pgarch.h"
+#include "postmaster/pg_xtc_carrier.h"
 #include "postmaster/postmaster.h"
 #include "postmaster/syslogger.h"
 #include "postmaster/walsummarizer.h"
@@ -110,6 +111,9 @@
 #include "replication/slotsync.h"
 #include "replication/walsender.h"
 #include "storage/aio_subsys.h"
+#ifdef USE_XTC_CARRIER
+#include "storage/aio.h"				/* io_method / IOMETHOD_WORKER (xtc interim) */
+#endif
 #include "storage/fd.h"
 #include "storage/io_worker.h"
 #include "storage/ipc.h"
@@ -119,6 +123,7 @@
 #include "tcop/backend_startup.h"
 #include "tcop/tcopprot.h"
 #include "utils/datetime.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/pidfile.h"
 #include "utils/timestamp.h"
@@ -198,16 +203,14 @@ btmask_contains(BackendTypeMask mask, BackendType t)
 }
 
 
-BackgroundWorker *MyBgworkerEntry = NULL;
-
 /* The socket number we are listening for connections on */
-int			PostPortNumber = DEF_PGPORT;
+PG_GLOBAL_RUNTIME int PostPortNumber = DEF_PGPORT;
 
 /* The directory names for Unix socket(s) */
-char	   *Unix_socket_directories;
+PG_GLOBAL_RUNTIME char *Unix_socket_directories;
 
 /* The TCP listen address(es) */
-char	   *ListenAddresses;
+PG_GLOBAL_RUNTIME char *ListenAddresses;
 
 /*
  * SuperuserReservedConnections is the number of backends reserved for
@@ -227,26 +230,26 @@ char	   *ListenAddresses;
  * connections.  Note that pre-existing superuser and
  * pg_use_reserved_connections connections don't count against the limits.
  */
-int			SuperuserReservedConnections;
-int			ReservedConnections;
+PG_GLOBAL_RUNTIME int SuperuserReservedConnections;
+PG_GLOBAL_RUNTIME int ReservedConnections;
 
 /* The socket(s) we're listening to. */
 #define MAXLISTEN	64
-static int	NumListenSockets = 0;
-static pgsocket *ListenSockets = NULL;
+static PG_GLOBAL_RUNTIME int NumListenSockets = 0;
+static PG_GLOBAL_RUNTIME pgsocket *ListenSockets = NULL;
 
 /* still more option variables */
-bool		EnableSSL = false;
+PG_GLOBAL_RUNTIME bool EnableSSL = false;
 
-int			PreAuthDelay = 0;
-int			AuthenticationTimeout = 60;
+PG_GLOBAL_RUNTIME int PreAuthDelay = 0;
+PG_GLOBAL_RUNTIME int AuthenticationTimeout = 60;
 
-bool		log_hostname;		/* for ps display and logging */
+PG_GLOBAL_RUNTIME bool log_hostname;	/* for ps display and logging */
 
-bool		enable_bonjour = false;
-char	   *bonjour_name;
-bool		restart_after_crash = true;
-bool		remove_temp_files_after_crash = true;
+PG_GLOBAL_RUNTIME bool enable_bonjour = false;
+PG_GLOBAL_RUNTIME char *bonjour_name;
+PG_GLOBAL_RUNTIME bool restart_after_crash = true;
+PG_GLOBAL_RUNTIME bool remove_temp_files_after_crash = true;
 
 /*
  * When terminating child processes after fatal errors, like a crash of a
@@ -254,11 +257,11 @@ bool		remove_temp_files_after_crash = true;
  * file are written on the assumption that we do -- but developers might
  * prefer to use SIGABRT to collect per-child core dumps.
  */
-bool		send_abort_for_crash = false;
-bool		send_abort_for_kill = false;
+PG_GLOBAL_RUNTIME bool send_abort_for_crash = false;
+PG_GLOBAL_RUNTIME bool send_abort_for_kill = false;
 
 /* special child processes; NULL when not running */
-static PMChild *StartupPMChild = NULL,
+static PG_GLOBAL_RUNTIME PMChild *StartupPMChild = NULL,
 		   *BgWriterPMChild = NULL,
 		   *CheckpointerPMChild = NULL,
 		   *WalWriterPMChild = NULL,
@@ -278,7 +281,7 @@ typedef enum
 	STARTUP_CRASHED,
 } StartupStatusEnum;
 
-static StartupStatusEnum StartupStatus = STARTUP_NOT_RUNNING;
+static PG_GLOBAL_RUNTIME StartupStatusEnum StartupStatus = STARTUP_NOT_RUNNING;
 
 /* Startup/shutdown state */
 #define			NoShutdown		0
@@ -286,9 +289,9 @@ static StartupStatusEnum StartupStatus = STARTUP_NOT_RUNNING;
 #define			FastShutdown	2
 #define			ImmediateShutdown	3
 
-static int	Shutdown = NoShutdown;
+static PG_GLOBAL_RUNTIME int Shutdown = NoShutdown;
 
-static bool FatalError = false; /* T if recovering from backend crash */
+static PG_GLOBAL_RUNTIME bool FatalError = false; /* T if recovering from backend crash */
 
 /*
  * We use a simple state machine to control startup, shutdown, and
@@ -352,7 +355,7 @@ typedef enum
 	PM_NO_CHILDREN,				/* all important children have exited */
 } PMState;
 
-static PMState pmState = PM_INIT;
+static PG_GLOBAL_RUNTIME PMState pmState = PM_INIT;
 
 /*
  * While performing a "smart shutdown", we restrict new connections but stay
@@ -360,59 +363,61 @@ static PMState pmState = PM_INIT;
  * connsAllowed is a sub-state indicator showing the active restriction.
  * It is of no interest unless pmState is PM_RUN or PM_HOT_STANDBY.
  */
-static bool connsAllowed = true;
+static PG_GLOBAL_RUNTIME bool connsAllowed = true;
 
 /* Start time of SIGKILL timeout during immediate shutdown or child crash */
 /* Zero means timeout is not running */
-static time_t AbortStartTime = 0;
+static PG_GLOBAL_RUNTIME time_t AbortStartTime = 0;
 
 /* Length of said timeout */
 #define SIGKILL_CHILDREN_AFTER_SECS		5
 
-static bool ReachedNormalRunning = false;	/* T if we've reached PM_RUN */
+static PG_GLOBAL_RUNTIME bool ReachedNormalRunning = false;	/* T if we've reached PM_RUN */
 
-bool		ClientAuthInProgress = false;	/* T during new-client
-											 * authentication */
-
-bool		redirection_done = false;	/* stderr redirected for syslogger? */
+PG_GLOBAL_RUNTIME bool redirection_done = false;	/* stderr redirected for syslogger? */
 
 /* received START_AUTOVAC_LAUNCHER signal */
-static bool start_autovac_launcher = false;
+static PG_GLOBAL_RUNTIME bool start_autovac_launcher = false;
 
 /* the launcher needs to be signaled to communicate some condition */
-static bool avlauncher_needs_signal = false;
+static PG_GLOBAL_RUNTIME bool avlauncher_needs_signal = false;
 
 /* received START_WALRECEIVER signal */
-static bool WalReceiverRequested = false;
+static PG_GLOBAL_RUNTIME bool WalReceiverRequested = false;
 
 /* set when there's a worker that needs to be started up */
-static bool StartWorkerNeeded = true;
-static bool HaveCrashedWorker = false;
+static PG_GLOBAL_RUNTIME bool StartWorkerNeeded = true;
+static PG_GLOBAL_RUNTIME bool HaveCrashedWorker = false;
 
 /* set when signals arrive */
-static volatile sig_atomic_t pending_pm_pmsignal;
-static volatile sig_atomic_t pending_pm_child_exit;
-static volatile sig_atomic_t pending_pm_reload_request;
-static volatile sig_atomic_t pending_pm_shutdown_request;
-static volatile sig_atomic_t pending_pm_fast_shutdown_request;
-static volatile sig_atomic_t pending_pm_immediate_shutdown_request;
+static PG_GLOBAL_RUNTIME volatile sig_atomic_t pending_pm_pmsignal;
+static PG_GLOBAL_RUNTIME volatile sig_atomic_t pending_pm_child_exit;
+static PG_GLOBAL_RUNTIME volatile sig_atomic_t pending_pm_reload_request;
+static PG_GLOBAL_RUNTIME volatile sig_atomic_t pending_pm_shutdown_request;
+static PG_GLOBAL_RUNTIME volatile sig_atomic_t pending_pm_fast_shutdown_request;
+static PG_GLOBAL_RUNTIME volatile sig_atomic_t pending_pm_immediate_shutdown_request;
+static PG_GLOBAL_RUNTIME Latch *postmaster_pmsignal_latch;
 
 /* event multiplexing object */
-static WaitEventSet *pm_wait_set;
+static PG_GLOBAL_RUNTIME WaitEventSet *pm_wait_set;
 
 #ifdef USE_SSL
 /* Set when and if SSL has been initialized properly */
-bool		LoadedSSL = false;
+PG_GLOBAL_RUNTIME bool LoadedSSL = false;
 #endif
 
 #ifdef USE_BONJOUR
-static DNSServiceRef bonjour_sdref = NULL;
+static PG_GLOBAL_RUNTIME DNSServiceRef bonjour_sdref = NULL;
 #endif
 
 /* State for IO worker management. */
-static TimestampTz io_worker_launch_next_time = 0;
-static int	io_worker_count = 0;
-static PMChild *io_worker_children[MAX_IO_WORKERS];
+static PG_GLOBAL_RUNTIME TimestampTz io_worker_launch_next_time = 0;
+static PG_GLOBAL_RUNTIME int io_worker_count = 0;
+static PG_GLOBAL_RUNTIME PMChild *io_worker_children[MAX_IO_WORKERS];
+static PG_GLOBAL_RUNTIME bool io_worker_thread_handoff_pending[MAX_IO_WORKERS];
+static PG_GLOBAL_RUNTIME bool syslogger_thread_handoff_pending = false;
+static PG_GLOBAL_RUNTIME bool bgwriter_thread_handoff_pending = false;
+static PG_GLOBAL_RUNTIME bool checkpointer_thread_handoff_pending = false;
 
 /*
  * postmaster.c - function prototypes
@@ -425,12 +430,31 @@ static void handle_pm_pmsignal_signal(SIGNAL_ARGS);
 static void handle_pm_child_exit_signal(SIGNAL_ARGS);
 static void handle_pm_reload_request_signal(SIGNAL_ARGS);
 static void handle_pm_shutdown_request_signal(SIGNAL_ARGS);
+static void set_postmaster_signal_latch(void);
 static void process_pm_pmsignal(void);
 static void process_pm_child_exit(void);
 static void process_pm_reload_request(void);
 static void process_pm_shutdown_request(void);
 static void dummy_handler(SIGNAL_ARGS);
+static void process_pm_thread_startup_complete(void);
+static void process_pm_pooled_logical_exit(void);
+static void process_pm_thread_exit(void);
 static void CleanupBackend(PMChild *bp, int exitstatus);
+static bool cleanup_archiver_child(PMChild *child, int exitstatus);
+static bool cleanup_autovac_launcher_child(PMChild *child, int exitstatus);
+static bool cleanup_bgwriter_child(PMChild *child, int exitstatus,
+								   int crash_pid);
+static bool cleanup_checkpointer_child(PMChild *child, int exitstatus,
+									   int crash_pid);
+static bool cleanup_io_worker_child(PMChild *child);
+static bool cleanup_slot_sync_worker_child(PMChild *child, int exitstatus,
+										   int crash_pid);
+static bool cleanup_startup_child(PMChild *child, int exitstatus,
+								  int crash_pid);
+static bool cleanup_wal_receiver_child(PMChild *child, int exitstatus,
+									   int crash_pid);
+static bool cleanup_wal_writer_child(PMChild *child, int exitstatus);
+static bool cleanup_wal_summarizer_child(PMChild *child, int exitstatus);
 static void HandleChildCrash(int pid, int exitstatus, const char *procname);
 static void HandleFatalError(QuitSignalReason reason, bool consider_sigabrt);
 static void LogChildExit(int lev, const char *procname,
@@ -444,12 +468,16 @@ static int	BackendStartup(ClientSocket *client_sock);
 static void report_fork_failure_to_client(ClientSocket *client_sock, int errnum);
 static CAC_state canAcceptConnections(BackendType backend_type);
 static void signal_child(PMChild *pmchild, int signal);
+static bool thread_child_signal_interrupt(PMChild *pmchild, int signal,
+										  PgBackendInterruptType *interrupt);
 static bool SignalChildren(int signal, BackendTypeMask targetMask);
 static void TerminateChildren(int signal);
 static int	CountChildren(BackendTypeMask targetMask);
 static void LaunchMissingBackgroundProcesses(void);
 static void maybe_start_bgworkers(void);
 static bool maybe_reap_io_worker(int pid);
+static void maybe_handoff_syslogger(void);
+static void maybe_handoff_io_workers(void);
 static void maybe_start_io_workers(void);
 static TimestampTz maybe_start_io_workers_scheduled_at(void);
 static bool CreateOptsFile(int argc, char *argv[], char *fullprogname);
@@ -465,7 +493,7 @@ static void InitPostmasterDeathWatchHandle(void);
 static pid_t waitpid(pid_t pid, int *exitstatus, int options);
 static void WINAPI pgwin32_deadchild_callback(PVOID lpParameter, BOOLEAN TimerOrWaitFired);
 
-static HANDLE win32ChildQueue;
+static PG_GLOBAL_RUNTIME HANDLE win32ChildQueue;
 
 typedef struct
 {
@@ -485,10 +513,10 @@ typedef struct
  * File descriptors for pipe used to monitor if postmaster is alive.
  * First is POSTMASTER_FD_WATCH, second is POSTMASTER_FD_OWN.
  */
-int			postmaster_alive_fds[2] = {-1, -1};
+PG_GLOBAL_RUNTIME int postmaster_alive_fds[2] = {-1, -1};
 #else
 /* Process handle of postmaster used for the same purpose on Windows */
-HANDLE		PostmasterHandle;
+PG_GLOBAL_RUNTIME HANDLE PostmasterHandle;
 #endif
 
 /*
@@ -840,6 +868,107 @@ PostmasterMain(int argc, char *argv[])
 	/* And switch working directory into it */
 	ChangeToDataDir();
 
+#ifdef USE_XTC_CARRIER
+	/*
+	 * xtc-carrier interim: under multithreaded=on, route the default
+	 * io_method=worker to the in-fiber "xtc" method.  A threaded client backend
+	 * runs as an xtc fiber inside the postmaster process, but io_method=worker
+	 * io workers are FORKED processes; a forked worker that completes a fiber
+	 * backend's async IO cannot wake the in-process fiber (SetLatch from another
+	 * process takes the cross-process kill() path aimed at the postmaster, not
+	 * the fiber's carrier loop), so the backend hangs on its first uncached read
+	 * (the hot-standby InitPostgres hang).
+	 *
+	 * The xtc method does issuer-async READV/WRITEV on the issuing fiber
+	 * (xtc_aio_preadv/pwritev park the fiber and complete on it -- no foreign
+	 * completer -- while sibling fibers on the loop keep running), falling back
+	 * to synchronous for non-fiber issuers.  It is preferred over "sync": sync
+	 * blocks the carrier loop for the whole read (serializing every fiber on
+	 * that loop behind one backend's disk IO), whereas xtc preserves carrier
+	 * concurrency.  (The earlier interim used sync while an xtc concurrent-read
+	 * SIGSEGV was outstanding; that was fixed by saving/restoring current-work
+	 * across the AIO fiber park -- commit c8077b2c62b -- so xtc is now the
+	 * correct default here.)
+	 *
+	 * We rewrite the GUC value itself (not just pgaio_method_ops) so SHOW
+	 * io_method, pgaio_workers_enabled() (no idle io-worker forks), and every
+	 * backend's assign_io_method stay consistent -- doing it here, after
+	 * SelectConfigFiles() has finalized multithreaded, avoids the boot-value
+	 * ordering hazard where the io_method assign hook runs before multithreaded
+	 * is known.  An explicit io_method=sync/io_uring/xtc is respected;
+	 * multithreaded=off (process mode) is untouched.  Remove once io workers run
+	 * in-process as thread carriers (Tier D/F hand-off, including a
+	 * PM_HOT_STANDBY hand-off for standbys), after which io_method=worker wakes
+	 * fibers via the wired xtc_proc_wake.
+	 */
+	if (multithreaded && io_method == IOMETHOD_WORKER)
+	{
+		SetConfigOption("io_method", "xtc", PGC_POSTMASTER, PGC_S_OVERRIDE);
+		ereport(LOG,
+				(errmsg("multithreaded=on: routing io_method=worker to the in-fiber \"xtc\" method"),
+				 errdetail("Forked io workers cannot wake in-process fiber backends; set io_method explicitly to override.")));
+	}
+
+	/*
+	 * Pooled protocol mode is the default under multithreaded=on.  The GUC's
+	 * boot value -1 means "auto": derive a bounded carrier pool so threaded
+	 * client backends multiplex over a few carriers instead of one OS thread
+	 * per session.  An explicit 0 forces thread-per-session (still supported);
+	 * an explicit positive value is respected verbatim.  Under
+	 * multithreaded=off the pooled scheduler does not run, so resolve the -1
+	 * sentinel down to 0 to keep every `pooled_protocol_carriers > 0` consumer
+	 * (and SHOW) honest in process mode.
+	 *
+	 * Done here, after SelectConfigFiles() has finalized multithreaded, for the
+	 * same boot-value ordering reason as the io_method remap above.
+	 */
+	if (pooled_protocol_carriers < 0)
+	{
+		int			resolved;
+
+		if (multithreaded)
+		{
+			long		ncpus = sysconf(_SC_NPROCESSORS_ONLN);
+
+			if (ncpus < 1)
+				ncpus = 1;
+			/*
+			 * Size the pool to overlap disk/lock waits across sessions.  A
+			 * carrier-count sweep of a CPU-bound in-RAM pgbench on a 96-core
+			 * box (Session 5) showed pooled throughput climbing with carriers
+			 * up to ~cpus/4 (8->42k, 16->69k, 24->82k tps) and flattening
+			 * beyond, so scale with cores at a quarter of nproc rather than a
+			 * flat cap.  Floor of 8 keeps small boxes responsive; the value is
+			 * still bounded by nproc (never more carriers than cores) and by
+			 * MaxConnections (a carrier per session is pointless past that).
+			 * Explicit tuning overrides all of this.
+			 */
+			resolved = (int) Max(8, ncpus / 4);
+			if (resolved > ncpus)
+				resolved = (int) ncpus;
+			if (MaxConnections > 0 && resolved > MaxConnections)
+				resolved = MaxConnections;
+			if (resolved < 1)
+				resolved = 1;
+		}
+		else
+			resolved = 0;
+
+		{
+			char		buf[16];
+
+			snprintf(buf, sizeof(buf), "%d", resolved);
+			SetConfigOption("pooled_protocol_carriers", buf,
+							PGC_POSTMASTER, PGC_S_OVERRIDE);
+		}
+		if (multithreaded)
+			ereport(LOG,
+					(errmsg("multithreaded=on: pooled protocol scheduler enabled with %d carrier%s (default)",
+							resolved, resolved == 1 ? "" : "s"),
+					 errdetail("Set pooled_protocol_carriers=0 for thread-per-session, or a positive value to fix the pool size.")));
+	}
+#endif
+
 	/*
 	 * Check for invalid combinations of GUC settings.
 	 */
@@ -1041,10 +1170,18 @@ PostmasterMain(int argc, char *argv[])
 				(errmsg("could not create I/O completion port for child queue")));
 #endif
 
+	/*
+	 * Write out nondefault GUC settings for child processes and threaded
+	 * backend carriers to use.
+	 */
 #ifdef EXEC_BACKEND
-	/* Write out nondefault GUC settings for child processes to use */
 	write_nondefault_variables(PGC_POSTMASTER);
+#else
+	if (multithreaded)
+		write_nondefault_variables(PGC_POSTMASTER);
+#endif
 
+#ifdef EXEC_BACKEND
 	/*
 	 * Clean out the temp directory used to transmit parameters to child
 	 * processes (see internal_forkexec).  We must do this before launching
@@ -1659,6 +1796,7 @@ ConfigurePostmasterWaitSet(bool accept_connections)
 		FreeWaitEventSet(pm_wait_set);
 	pm_wait_set = NULL;
 
+	postmaster_pmsignal_latch = MyLatch;
 	pm_wait_set = CreateWaitEventSet(NULL,
 									 accept_connections ? (1 + NumListenSockets) : 1);
 	AddWaitEventToSet(pm_wait_set, WL_LATCH_SET, PGINVALID_SOCKET, MyLatch,
@@ -1690,6 +1828,25 @@ ServerLoop(void)
 	{
 		time_t		now;
 
+		/*
+		 * A startup-era thread carrier can publish completion before the
+		 * postmaster has finished creating the wait set and recorded a latch
+		 * pointer for direct wakeups.  Drain thread handoff state before
+		 * blocking so such early publications cannot sleep until the next
+		 * timeout.
+		 */
+		process_pm_thread_startup_complete();
+		process_pm_pooled_logical_exit();
+		process_pm_thread_exit();
+#ifdef USE_XTC_CARRIER
+		if (xtc_pg_consume_genuine_crash())
+		{
+			ereport(LOG,
+					(errmsg("terminating threaded server runtime after backend fiber crash")));
+			ExitPostmaster(1);
+		}
+#endif
+
 		nevents = WaitEventSetWait(pm_wait_set,
 								   DetermineSleepTime(),
 								   events,
@@ -1698,29 +1855,61 @@ ServerLoop(void)
 
 		/*
 		 * Latch set by signal handler, or new connection pending on any of
-		 * our sockets? If the latter, fork a child process to deal with it.
+		 * our sockets?  Reset the latch before handling control-plane work,
+		 * then accept any pending connections after the postmaster-visible
+		 * child state has been drained.
 		 */
 		for (int i = 0; i < nevents; i++)
 		{
 			if (events[i].events & WL_LATCH_SET)
 				ResetLatch(MyLatch);
+		}
 
-			/*
-			 * The following requests are handled unconditionally, even if we
-			 * didn't see WL_LATCH_SET.  This gives high priority to shutdown
-			 * and reload requests where the latch happens to appear later in
-			 * events[] or will be reported by a later call to
-			 * WaitEventSetWait().
-			 */
-			if (pending_pm_shutdown_request)
-				process_pm_shutdown_request();
-			if (pending_pm_reload_request)
-				process_pm_reload_request();
-			if (pending_pm_child_exit)
-				process_pm_child_exit();
-			if (pending_pm_pmsignal)
-				process_pm_pmsignal();
+		/*
+		 * The following requests are handled once per loop, even if we didn't
+		 * see WL_LATCH_SET.  This gives high priority to shutdown and reload
+		 * requests where the latch happens to appear later in events[] or will
+		 * be reported by a later call to WaitEventSetWait().
+		 *
+		 * In threaded mode, process-era auxiliary workers can exit as part of
+		 * the startup-to-thread handoff while later server activity is driven
+		 * by thread-carrier latch notifications and socket readiness.  Drain
+		 * process child exits opportunistically once thread carriers exist so
+		 * a missed or coalesced SIGCHLD cannot leave a zombie PMChild that
+		 * blocks shutdown-state accounting.
+		 */
+		if (pending_pm_shutdown_request)
+			process_pm_shutdown_request();
+		if (pending_pm_reload_request)
+			process_pm_reload_request();
+		if (pending_pm_child_exit ||
+			(multithreaded && PostmasterThreadCarriersStarted()))
+			process_pm_child_exit();
+		if (pending_pm_pmsignal)
+			process_pm_pmsignal();
+		process_pm_thread_startup_complete();
+		process_pm_pooled_logical_exit();
+		process_pm_thread_exit();
+#ifdef USE_XTC_CARRIER
+		/*
+		 * #7 Stage 1b: a per-loop supervisor fiber may have observed a genuine
+		 * backend-fiber crash (a fault before the fiber reached its clean,
+		 * already-published exit).  Treat it like a crashed thread carrier:
+		 * under threaded mode the postmaster address space may be compromised,
+		 * so terminate the runtime.  Benign xtc_exit_self teardown faults
+		 * (post-clean-exit) never set this, so a normal teardown cannot trip
+		 * it.
+		 */
+		if (xtc_pg_consume_genuine_crash())
+		{
+			ereport(LOG,
+					(errmsg("terminating threaded server runtime after backend fiber crash")));
+			ExitPostmaster(1);
+		}
+#endif
 
+		for (int i = 0; i < nevents; i++)
+		{
 			if (events[i].events & WL_SOCKET_ACCEPT)
 			{
 				ClientSocket s;
@@ -1757,7 +1946,7 @@ ServerLoop(void)
 		 * With assertions enabled, check regularly for appearance of
 		 * additional threads.  All builds check at start and exit.
 		 */
-		Assert(pthread_is_threaded_np() == 0);
+		Assert(multithreaded || pthread_is_threaded_np() == 0);
 #endif
 
 		/*
@@ -2004,7 +2193,31 @@ static void
 handle_pm_pmsignal_signal(SIGNAL_ARGS)
 {
 	pending_pm_pmsignal = true;
-	SetLatch(MyLatch);
+	set_postmaster_signal_latch();
+}
+
+/*
+ * Same-process thread carriers cannot notify the postmaster by sending
+ * SIGUSR1 to PostmasterPid: in a threaded runtime that is the current process,
+ * and the signal can be delivered to any carrier.  Set the same pending flag
+ * as the signal handler and wake the postmaster's recorded latch directly.
+ */
+void
+PostmasterSignalPMSignal(void)
+{
+	pending_pm_pmsignal = true;
+
+	set_postmaster_signal_latch();
+}
+
+bool
+PostmasterSignalAutoVacLauncher(void)
+{
+	if (AutoVacLauncherPMChild == NULL)
+		return false;
+
+	signal_child(AutoVacLauncherPMChild, SIGUSR2);
+	return true;
 }
 
 /*
@@ -2014,7 +2227,7 @@ static void
 handle_pm_reload_request_signal(SIGNAL_ARGS)
 {
 	pending_pm_reload_request = true;
-	SetLatch(MyLatch);
+	set_postmaster_signal_latch();
 }
 
 /*
@@ -2062,9 +2275,12 @@ process_pm_reload_request(void)
 		}
 #endif
 
-#ifdef EXEC_BACKEND
 		/* Update the starting-point file for future children */
+#ifdef EXEC_BACKEND
 		write_nondefault_variables(PGC_SIGHUP);
+#else
+		if (multithreaded)
+			write_nondefault_variables(PGC_SIGHUP);
 #endif
 	}
 }
@@ -2091,7 +2307,25 @@ handle_pm_shutdown_request_signal(SIGNAL_ARGS)
 			pending_pm_shutdown_request = true;
 			break;
 	}
-	SetLatch(MyLatch);
+	set_postmaster_signal_latch();
+}
+
+/*
+ * Process-directed signals can be delivered to any unmasked carrier thread in
+ * a threaded runtime.  The pending postmaster flags are process-global, but
+ * waking a carrier-local MyLatch would leave the postmaster asleep, so route
+ * wakeups through the latch recorded by ServerLoop() once available.
+ */
+static void
+set_postmaster_signal_latch(void)
+{
+	Latch	   *latch = postmaster_pmsignal_latch;
+
+	if (latch == NULL)
+		latch = MyLatch;
+
+	if (latch != NULL)
+		SetLatch(latch);
 }
 
 /*
@@ -2252,7 +2486,7 @@ static void
 handle_pm_child_exit_signal(SIGNAL_ARGS)
 {
 	pending_pm_child_exit = true;
-	SetLatch(MyLatch);
+	set_postmaster_signal_latch();
 }
 
 /*
@@ -2278,111 +2512,7 @@ process_pm_child_exit(void)
 		 */
 		if (StartupPMChild && pid == StartupPMChild->pid)
 		{
-			ReleasePostmasterChildSlot(StartupPMChild);
-			StartupPMChild = NULL;
-
-			/*
-			 * Startup process exited in response to a shutdown request (or it
-			 * completed normally regardless of the shutdown request).
-			 */
-			if (Shutdown > NoShutdown &&
-				(EXIT_STATUS_0(exitstatus) || EXIT_STATUS_1(exitstatus)))
-			{
-				StartupStatus = STARTUP_NOT_RUNNING;
-				UpdatePMState(PM_WAIT_BACKENDS);
-				/* PostmasterStateMachine logic does the rest */
-				continue;
-			}
-
-			if (EXIT_STATUS_3(exitstatus))
-			{
-				ereport(LOG,
-						(errmsg("shutdown at recovery target")));
-				StartupStatus = STARTUP_NOT_RUNNING;
-				Shutdown = Max(Shutdown, SmartShutdown);
-				TerminateChildren(SIGTERM);
-				UpdatePMState(PM_WAIT_BACKENDS);
-				/* PostmasterStateMachine logic does the rest */
-				continue;
-			}
-
-			/*
-			 * Any unexpected exit (including FATAL exit) of the startup
-			 * process is catastrophic, so kill other children, and set
-			 * StartupStatus so we don't try to reinitialize after they're
-			 * gone.  Exception: if StartupStatus is STARTUP_SIGNALED, then we
-			 * previously sent the startup process a SIGQUIT; so that's
-			 * probably the reason it died, and we do want to try to restart
-			 * in that case.
-			 *
-			 * This stanza also handles the case where we sent a SIGQUIT
-			 * during PM_STARTUP due to some dead-end child crashing: in that
-			 * situation, if the startup process dies on the SIGQUIT, we need
-			 * to transition to PM_WAIT_BACKENDS state which will allow
-			 * PostmasterStateMachine to restart the startup process.  (On the
-			 * other hand, the startup process might complete normally, if we
-			 * were too late with the SIGQUIT.  In that case we'll fall
-			 * through and commence normal operations.)
-			 */
-			if (!EXIT_STATUS_0(exitstatus))
-			{
-				if (StartupStatus == STARTUP_SIGNALED)
-				{
-					StartupStatus = STARTUP_NOT_RUNNING;
-					if (pmState == PM_STARTUP)
-						UpdatePMState(PM_WAIT_BACKENDS);
-				}
-				else
-					StartupStatus = STARTUP_CRASHED;
-
-				/*
-				 * If FatalError is already set, we are reinitializing after a
-				 * previous crash, and HandleChildCrash() would do nothing,
-				 * leaving the state machine stuck at PM_STARTUP.  Give up,
-				 * signal the remaining children and head for PM_NO_CHILDREN,
-				 * where STARTUP_CRASHED makes us exit.
-				 */
-				if (StartupStatus == STARTUP_CRASHED &&
-					FatalError && Shutdown != ImmediateShutdown)
-				{
-					LogChildExit(LOG, _("startup process"), pid, exitstatus);
-					ereport(LOG,
-							(errmsg("aborting startup due to startup process failure")));
-					HandleFatalError(PMQUIT_FOR_CRASH, true);
-				}
-				else
-					HandleChildCrash(pid, exitstatus,
-									 _("startup process"));
-				continue;
-			}
-
-			/*
-			 * Startup succeeded, commence normal operations
-			 */
-			StartupStatus = STARTUP_NOT_RUNNING;
-			FatalError = false;
-			AbortStartTime = 0;
-			ReachedNormalRunning = true;
-			UpdatePMState(PM_RUN);
-			connsAllowed = true;
-
-			/*
-			 * At the next iteration of the postmaster's main loop, we will
-			 * crank up the background tasks like the autovacuum launcher and
-			 * background workers that were not started earlier already.
-			 */
-			StartWorkerNeeded = true;
-
-			/* at this point we are really open for business */
-			ereport(LOG,
-					(errmsg("database system is ready to accept connections")));
-
-			/* Report status */
-			AddToDataDirLockFile(LOCK_FILE_LINE_PM_STATUS, PM_STATUS_READY);
-#ifdef USE_SYSTEMD
-			sd_notify(0, "READY=1");
-#endif
-
+			(void) cleanup_startup_child(StartupPMChild, exitstatus, pid);
 			continue;
 		}
 
@@ -2393,11 +2523,7 @@ process_pm_child_exit(void)
 		 */
 		if (BgWriterPMChild && pid == BgWriterPMChild->pid)
 		{
-			ReleasePostmasterChildSlot(BgWriterPMChild);
-			BgWriterPMChild = NULL;
-			if (!EXIT_STATUS_0(exitstatus))
-				HandleChildCrash(pid, exitstatus,
-								 _("background writer process"));
+			(void) cleanup_bgwriter_child(BgWriterPMChild, exitstatus, pid);
 			continue;
 		}
 
@@ -2406,33 +2532,8 @@ process_pm_child_exit(void)
 		 */
 		if (CheckpointerPMChild && pid == CheckpointerPMChild->pid)
 		{
-			ReleasePostmasterChildSlot(CheckpointerPMChild);
-			CheckpointerPMChild = NULL;
-			if (EXIT_STATUS_0(exitstatus) && pmState == PM_WAIT_CHECKPOINTER)
-			{
-				/*
-				 * OK, we saw normal exit of the checkpointer after it's been
-				 * told to shut down.  We know checkpointer wrote a shutdown
-				 * checkpoint, otherwise we'd still be in
-				 * PM_WAIT_XLOG_SHUTDOWN state.
-				 *
-				 * At this point only dead-end children and logger should be
-				 * left.
-				 */
-				UpdatePMState(PM_WAIT_DEAD_END);
-				ConfigurePostmasterWaitSet(false);
-				SignalChildren(SIGTERM, btmask_all_except(B_LOGGER));
-			}
-			else
-			{
-				/*
-				 * Any unexpected exit of the checkpointer (including FATAL
-				 * exit) is treated as a crash.
-				 */
-				HandleChildCrash(pid, exitstatus,
-								 _("checkpointer process"));
-			}
-
+			(void) cleanup_checkpointer_child(CheckpointerPMChild, exitstatus,
+											  pid);
 			continue;
 		}
 
@@ -2459,11 +2560,8 @@ process_pm_child_exit(void)
 		 */
 		if (WalReceiverPMChild && pid == WalReceiverPMChild->pid)
 		{
-			ReleasePostmasterChildSlot(WalReceiverPMChild);
-			WalReceiverPMChild = NULL;
-			if (!EXIT_STATUS_0(exitstatus) && !EXIT_STATUS_1(exitstatus))
-				HandleChildCrash(pid, exitstatus,
-								 _("WAL receiver process"));
+			(void) cleanup_wal_receiver_child(WalReceiverPMChild, exitstatus,
+											  pid);
 			continue;
 		}
 
@@ -2517,6 +2615,7 @@ process_pm_child_exit(void)
 		/* Was it the system logger?  If so, try to start a new one */
 		if (SysLoggerPMChild && pid == SysLoggerPMChild->pid)
 		{
+			syslogger_thread_handoff_pending = false;
 			ReleasePostmasterChildSlot(SysLoggerPMChild);
 			SysLoggerPMChild = NULL;
 
@@ -2539,11 +2638,8 @@ process_pm_child_exit(void)
 		 */
 		if (SlotSyncWorkerPMChild && pid == SlotSyncWorkerPMChild->pid)
 		{
-			ReleasePostmasterChildSlot(SlotSyncWorkerPMChild);
-			SlotSyncWorkerPMChild = NULL;
-			if (!EXIT_STATUS_0(exitstatus) && !EXIT_STATUS_1(exitstatus))
-				HandleChildCrash(pid, exitstatus,
-								 _("slot sync worker process"));
+			(void) cleanup_slot_sync_worker_child(SlotSyncWorkerPMChild,
+												  exitstatus, pid);
 			continue;
 		}
 
@@ -2594,6 +2690,188 @@ process_pm_child_exit(void)
 	 * or actions to make.
 	 */
 	PostmasterStateMachine();
+}
+
+/*
+ * Reap one child by backend type: dispatch aux/maintenance families to their
+ * per-type cleanup_*_child() helper (which clears the family's global PMChild
+ * pointer -- WalWriterPMChild, CheckpointerPMChild, etc.), else fall back to
+ * CleanupBackend() for regular backends and background workers.
+ *
+ * Shared by process_pm_thread_exit() (dedicated-thread carriers) and
+ * process_pm_pooled_logical_exit() (fiber / pooled-logical carriers): an aux
+ * worker that runs as a fiber is reaped through the pooled-logical path, and it
+ * MUST still run its per-type cleanup or the postmaster's global aux pointer is
+ * left dangling and PostmasterStateMachine trips e.g.
+ * Assert(WalWriterPMChild == NULL) at PM_WAIT_DEAD_END.
+ */
+static void
+reap_aux_or_backend_child(PMChild *pmchild, int exitstatus)
+{
+	switch (pmchild->bkend_type)
+	{
+		case B_STARTUP:
+			(void) cleanup_startup_child(pmchild, exitstatus, 0);
+			return;
+		case B_ARCHIVER:
+			(void) cleanup_archiver_child(pmchild, exitstatus);
+			return;
+		case B_AUTOVAC_LAUNCHER:
+			(void) cleanup_autovac_launcher_child(pmchild, exitstatus);
+			return;
+		case B_BG_WRITER:
+			(void) cleanup_bgwriter_child(pmchild, exitstatus, 0);
+			return;
+		case B_CHECKPOINTER:
+			(void) cleanup_checkpointer_child(pmchild, exitstatus, 0);
+			return;
+		case B_IO_WORKER:
+			(void) cleanup_io_worker_child(pmchild);
+			return;
+		case B_LOGGER:
+			syslogger_thread_handoff_pending = false;
+			ReleasePostmasterChildSlot(pmchild);
+			SysLoggerPMChild = NULL;
+
+			/* for safety's sake, launch new logger *first* */
+			if (Logging_collector)
+				StartSysLogger();
+
+			if (!EXIT_STATUS_0(exitstatus))
+				LogChildExit(LOG, _("system logger process"),
+							 0, exitstatus);
+			return;
+		case B_SLOTSYNC_WORKER:
+			(void) cleanup_slot_sync_worker_child(pmchild, exitstatus, 0);
+			return;
+		case B_WAL_WRITER:
+			(void) cleanup_wal_writer_child(pmchild, exitstatus);
+			return;
+		case B_WAL_RECEIVER:
+			(void) cleanup_wal_receiver_child(pmchild, exitstatus, 0);
+			return;
+		case B_WAL_SUMMARIZER:
+			(void) cleanup_wal_summarizer_child(pmchild, exitstatus);
+			return;
+		default:
+			CleanupBackend(pmchild, exitstatus);
+			return;
+	}
+}
+
+/*
+ * Cleanup after a pooled logical backend reports exit.  The carrier thread
+ * that ran the session remains alive; the postmaster owns PMChild list
+ * mutation and slot release just like process and thread-backed children.
+ */
+static void
+process_pm_pooled_logical_exit(void)
+{
+	dlist_mutable_iter iter;
+	bool		reaped = false;
+
+	dlist_foreach_modify(iter, &ActiveChildList)
+	{
+		PMChild    *pmchild = dlist_container(PMChild, elem, iter.cur);
+		int			exitstatus;
+		pid_t		signal_pid;
+		Size		top_memory_allocated;
+		Size		top_memory_reclaimed;
+
+		if (!PostmasterChildHasExitedPooledLogical(pmchild, &exitstatus,
+												  &top_memory_allocated,
+												  &top_memory_reclaimed,
+												  &signal_pid))
+			continue;
+
+		if (top_memory_allocated > 0)
+			ereport(WARNING,
+					(errmsg_internal("pooled logical backend %d retained %zu bytes in TopMemoryContext at exit",
+									 signal_pid, top_memory_allocated)));
+		if (top_memory_reclaimed > 0)
+			ereport(DEBUG1,
+					(errmsg_internal("pooled logical backend %d reclaimed %zu bytes from TopMemoryContext at exit",
+									 signal_pid, top_memory_reclaimed)));
+
+		reap_aux_or_backend_child(pmchild, exitstatus);
+		reaped = true;
+	}
+
+	if (reaped)
+		PostmasterStateMachine();
+}
+
+/*
+ * Cleanup after any thread-backed child reports exit.  The exiting thread only
+ * marks its PMChild entry and wakes the postmaster latch; list mutation and
+ * PMChild slot release stay in the postmaster main thread.
+ */
+static void
+process_pm_thread_exit(void)
+{
+	dlist_mutable_iter iter;
+	bool		reaped = false;
+
+	dlist_foreach_modify(iter, &ActiveChildList)
+	{
+		PMChild    *pmchild = dlist_container(PMChild, elem, iter.cur);
+		int			exitstatus;
+		int			join_rc;
+		pid_t		signal_pid;
+		Size		top_memory_allocated;
+		Size		top_memory_reclaimed;
+
+		if (!PostmasterChildHasExitedThread(pmchild, &exitstatus,
+											&top_memory_allocated,
+											&top_memory_reclaimed,
+											&signal_pid))
+			continue;
+
+		if (top_memory_allocated > 0)
+			ereport(WARNING,
+					(errmsg_internal("thread-backed child %d retained %zu bytes in TopMemoryContext at exit",
+									 signal_pid, top_memory_allocated)));
+		if (top_memory_reclaimed > 0)
+			ereport(DEBUG1,
+					(errmsg_internal("thread-backed child %d reclaimed %zu bytes from TopMemoryContext at exit",
+									 signal_pid, top_memory_reclaimed)));
+
+		join_rc = PostmasterChildJoinThread(pmchild);
+		if (join_rc != 0)
+		{
+			errno = join_rc;
+			elog(LOG, "could not join thread-backed child %d: %m",
+				 signal_pid);
+			PostmasterChildRetryThreadExit(pmchild);
+			continue;
+		}
+		reap_aux_or_backend_child(pmchild, exitstatus);
+		reaped = true;
+	}
+
+	if (reaped)
+		PostmasterStateMachine();
+}
+
+/*
+ * Complete postmaster-visible startup for thread-backed children that publish
+ * an explicit startup boundary after carrier creation.
+ */
+static void
+process_pm_thread_startup_complete(void)
+{
+	dlist_iter	iter;
+
+	dlist_foreach(iter, &ActiveChildList)
+	{
+		PMChild    *pmchild = dlist_container(PMChild, elem, iter.cur);
+
+		if (!PostmasterChildHasStartupComplete(pmchild))
+			continue;
+
+		if (pmchild->bkend_type == B_BG_WORKER && pmchild->rw != NULL)
+			ReportBackgroundWorkerPID(pmchild->rw);
+	}
 }
 
 /*
@@ -2657,7 +2935,7 @@ CleanupBackend(PMChild *bp,
 	 * If the process attached to shared memory, this also checks that it
 	 * detached cleanly.
 	 */
-	bp_pid = bp->pid;
+	bp_pid = PostmasterChildSignalPid(bp);
 	bp_bgworker_notify = bp->bgworker_notify;
 	bp_bkend_type = bp->bkend_type;
 	rw = bp->rw;
@@ -2844,6 +3122,22 @@ HandleChildCrash(int pid, int exitstatus, const char *procname)
 		return;
 
 	LogChildExit(LOG, procname, pid, exitstatus);
+
+	/*
+	 * Once threaded carriers exist, a child crash means the postmaster's own
+	 * address space may be compromised.  The process-mode crash-recovery path
+	 * waits for sibling processes to exit and then reinitializes shared state,
+	 * but it cannot safely recover from a failed thread inside this process.
+	 * Terminate the runtime and let the outside supervisor/user restart a
+	 * clean postmaster.
+	 */
+	if (multithreaded && PostmasterThreadCarriersStarted())
+	{
+		ereport(LOG,
+				(errmsg("terminating threaded server runtime after child crash")));
+		ExitPostmaster(1);
+	}
+
 	ereport(LOG,
 			(errmsg("terminating any other active server processes")));
 
@@ -3048,6 +3342,23 @@ PostmasterStateMachine(void)
 
 			UpdatePMState(PM_WAIT_BACKENDS);
 		}
+
+#ifdef USE_XTC_CARRIER
+		/*
+		 * Reap any fiber-backed autovac worker that was launched but whose
+		 * fiber was never scheduled to run (see ReapOrphanedThreadedWorker).
+		 * The launcher's worker-start-timeout cancel normally triggers this,
+		 * but the LAST worker launched before shutdown can be orphaned without
+		 * a cancel (shutdown pre-empts the launcher's timeout).  Such an
+		 * orphan will never publish an exit, so drain it here before checking
+		 * whether any target children remain -- otherwise PM_WAIT_BACKENDS
+		 * wedges forever waiting on a fiber that will never run.  A no-op in
+		 * process mode and when there is no orphan; the fiber_entered guard
+		 * means a worker whose fiber has started is never touched.
+		 */
+		while (ReapOrphanedThreadedWorker(B_AUTOVAC_WORKER, 0))
+				/* reap all currently-orphaned worker fibers */ ;
+#endif
 
 		/* Are any of the target processes still running? */
 		if (CountChildren(targetMask) == 0)
@@ -3343,6 +3654,7 @@ LaunchMissingBackgroundProcesses(void)
 	/* Syslogger is active in all states */
 	if (SysLoggerPMChild == NULL && Logging_collector)
 		StartSysLogger();
+	maybe_handoff_syslogger();
 
 	/*
 	 * The number of configured workers might have changed, or a prior start
@@ -3352,6 +3664,7 @@ LaunchMissingBackgroundProcesses(void)
 	 * A config file change will always lead to this function being called, so
 	 * we always will process the config change in a timely manner.
 	 */
+	maybe_handoff_io_workers();
 	maybe_start_io_workers();
 
 	/*
@@ -3366,6 +3679,26 @@ LaunchMissingBackgroundProcesses(void)
 	if (pmState == PM_RUN || pmState == PM_RECOVERY ||
 		pmState == PM_HOT_STANDBY || pmState == PM_STARTUP)
 	{
+		if (multithreaded && pmState == PM_RUN &&
+			PostmasterThreadCarriersStarted())
+		{
+			if (CheckpointerPMChild != NULL &&
+				PostmasterChildIsProcess(CheckpointerPMChild) &&
+				!checkpointer_thread_handoff_pending)
+			{
+				checkpointer_thread_handoff_pending = true;
+				signal_child(CheckpointerPMChild, SIGUSR2);
+			}
+
+			if (BgWriterPMChild != NULL &&
+				PostmasterChildIsProcess(BgWriterPMChild) &&
+				!bgwriter_thread_handoff_pending)
+			{
+				bgwriter_thread_handoff_pending = true;
+				signal_child(BgWriterPMChild, SIGTERM);
+			}
+		}
+
 		if (CheckpointerPMChild == NULL)
 			CheckpointerPMChild = StartChildProcess(B_CHECKPOINTER);
 		if (BgWriterPMChild == NULL)
@@ -3504,7 +3837,24 @@ pm_signame(int signal)
 static void
 signal_child(PMChild *pmchild, int signal)
 {
-	pid_t		pid = pmchild->pid;
+	pid_t		pid;
+
+	if (PostmasterChildHasLogicalBackendPublication(pmchild))
+	{
+		PgBackendInterruptType interrupt;
+
+		ereport(DEBUG3,
+				(errmsg_internal("sending signal %d/%s to %s logical backend",
+								 signal, pm_signame(signal),
+								 GetBackendTypeDesc(pmchild->bkend_type))));
+
+		if (thread_child_signal_interrupt(pmchild, signal, &interrupt))
+			(void) PostmasterChildRaiseThreadInterrupt(pmchild, interrupt);
+		return;
+	}
+
+	Assert(PostmasterChildIsProcess(pmchild));
+	pid = pmchild->pid;
 
 	ereport(DEBUG3,
 			(errmsg_internal("sending signal %d/%s to %s process with pid %d",
@@ -3529,6 +3879,147 @@ signal_child(PMChild *pmchild, int signal)
 			break;
 	}
 #endif
+}
+
+static bool
+thread_child_signal_interrupt(PMChild *pmchild, int signal,
+							  PgBackendInterruptType *interrupt)
+{
+	Assert(PostmasterChildHasLogicalBackendPublication(pmchild));
+	Assert(interrupt != NULL);
+
+	switch (signal)
+	{
+		case SIGUSR1:
+			if (pmchild->bkend_type == B_LOGGER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_LOG_ROTATE;
+				return true;
+			}
+			return false;
+		case SIGINT:
+			if (pmchild->bkend_type == B_ARCHIVER)
+				return false;
+			if (pmchild->bkend_type == B_LOGGER)
+				return false;
+			if (pmchild->bkend_type == B_STARTUP)
+				return false;
+			if (pmchild->bkend_type == B_AUTOVAC_LAUNCHER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_QUERY_CANCEL;
+				return true;
+			}
+			if (pmchild->bkend_type == B_BG_WRITER)
+				return false;
+			if (pmchild->bkend_type == B_CHECKPOINTER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_CHECKPOINTER_SHUTDOWN_XLOG;
+				return true;
+			}
+			if (pmchild->bkend_type == B_IO_WORKER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_PROC_DIE;
+				return true;
+			}
+			if (pmchild->bkend_type == B_WAL_WRITER)
+				return false;
+			if (pmchild->bkend_type == B_WAL_RECEIVER)
+				return false;
+			if (pmchild->bkend_type == B_WAL_SUMMARIZER)
+				return false;
+			*interrupt = PG_BACKEND_INTERRUPT_QUERY_CANCEL;
+			return true;
+		case SIGTERM:
+			if (pmchild->bkend_type == B_ARCHIVER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+				return true;
+			}
+			if (pmchild->bkend_type == B_LOGGER)
+				return false;
+			if (pmchild->bkend_type == B_AUTOVAC_LAUNCHER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+				return true;
+			}
+			if (pmchild->bkend_type == B_BG_WRITER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+				return true;
+			}
+			if (pmchild->bkend_type == B_CHECKPOINTER)
+				return false;
+			if (pmchild->bkend_type == B_IO_WORKER)
+				return false;
+			if (pmchild->bkend_type == B_WAL_WRITER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+				return true;
+			}
+			if (pmchild->bkend_type == B_WAL_RECEIVER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_PROC_DIE;
+				return true;
+			}
+			if (pmchild->bkend_type == B_WAL_SUMMARIZER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+				return true;
+			}
+			if (pmchild->bkend_type == B_BG_WORKER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+				return true;
+			}
+			if (pmchild->bkend_type == B_STARTUP)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+				return true;
+			}
+			*interrupt = PG_BACKEND_INTERRUPT_PROC_DIE;
+			return true;
+		case SIGUSR2:
+			if (pmchild->bkend_type == B_STARTUP)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_STARTUP_PROMOTE;
+				return true;
+			}
+			if (pmchild->bkend_type == B_ARCHIVER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_WAKEUP_STOP;
+				return true;
+			}
+			if (pmchild->bkend_type == B_AUTOVAC_LAUNCHER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_AUTOVAC_LAUNCHER;
+				return true;
+			}
+			if (pmchild->bkend_type == B_BG_WRITER)
+				return false;
+			if (pmchild->bkend_type == B_CHECKPOINTER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+				return true;
+			}
+			if (pmchild->bkend_type == B_IO_WORKER)
+			{
+				*interrupt = PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+				return true;
+			}
+			if (pmchild->bkend_type == B_LOGGER)
+				return false;
+			return false;
+		case SIGQUIT:
+		case SIGKILL:
+		case SIGABRT:
+			*interrupt = PG_BACKEND_INTERRUPT_PROC_DIE;
+			return true;
+		case SIGHUP:
+			*interrupt = PG_BACKEND_INTERRUPT_CONFIG_RELOAD;
+			return true;
+		default:
+			return false;
+	}
 }
 
 /*
@@ -3592,7 +4083,6 @@ static int
 BackendStartup(ClientSocket *client_sock)
 {
 	PMChild    *bn = NULL;
-	pid_t		pid;
 	BackendStartupData startup_data;
 	CAC_state	cac;
 
@@ -3640,10 +4130,9 @@ BackendStartup(ClientSocket *client_sock)
 	/* Hasn't asked to be notified about any bgworkers yet */
 	bn->bgworker_notify = false;
 
-	pid = postmaster_child_launch(bn->bkend_type, bn->child_slot,
-								  &startup_data, sizeof(startup_data),
-								  client_sock);
-	if (pid < 0)
+	if (!postmaster_child_launch_carrier(bn, bn->bkend_type, bn->child_slot,
+										 &startup_data, sizeof(startup_data),
+										 client_sock))
 	{
 		/* in parent, fork failed */
 		int			save_errno = errno;
@@ -3660,13 +4149,12 @@ BackendStartup(ClientSocket *client_sock)
 	ereport(DEBUG2,
 			(errmsg_internal("forked new %s, pid=%d socket=%d",
 							 GetBackendTypeDesc(bn->bkend_type),
-							 (int) pid, (int) client_sock->sock)));
+							 (int) bn->pid, (int) client_sock->sock)));
 
 	/*
 	 * Everything's been successful, it's safe to add this backend to our list
 	 * of backends.
 	 */
-	bn->pid = pid;
 	return STATUS_OK;
 }
 
@@ -3717,7 +4205,7 @@ ExitPostmaster(int status)
 	 * This message uses LOG level, because an unclean shutdown at this point
 	 * would usually not look much different from a clean shutdown.
 	 */
-	if (pthread_is_threaded_np() != 0)
+	if (!multithreaded && pthread_is_threaded_np() != 0)
 		ereport(LOG,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("postmaster became multithreaded"),
@@ -3866,6 +4354,27 @@ process_pm_pmsignal(void)
 		/* The autovacuum launcher wants us to start a worker process. */
 		StartAutovacuumWorker();
 	}
+
+#ifdef USE_XTC_CARRIER
+	if (CheckPostmasterSignal(PMSIGNAL_AUTOVAC_WORKER_TIMEOUT))
+	{
+		/*
+		 * The autovacuum launcher canceled a worker whose start it timed out
+		 * on.  Under the xtc carrier a worker fiber that was never scheduled
+		 * leaves an orphaned pooled-logical PMChild; reap it so a later
+		 * PM_WAIT_BACKENDS (fast stop) cannot wedge waiting on a fiber that
+		 * will never publish an exit.  Gate on the worker-start-timeout so we
+		 * only reap the aged, stuck worker and never a fresh one the launcher
+		 * just relaunched.  A no-op in process mode / when there is no orphan.
+		 * Re-run the state machine if we reaped one, matching
+		 * process_pm_pooled_logical_exit().
+		 */
+		int			start_timeout_ms = Min(autovacuum_naptime, 60) * 1000;
+
+		if (ReapOrphanedThreadedWorker(B_AUTOVAC_WORKER, start_timeout_ms))
+			request_state_update = true;
+	}
+#endif
 
 	if (CheckPostmasterSignal(PMSIGNAL_START_WALRECEIVER))
 	{
@@ -4026,7 +4535,6 @@ static PMChild *
 StartChildProcess(BackendType type)
 {
 	PMChild    *pmchild;
-	pid_t		pid;
 
 	pmchild = AssignPostmasterChildSlot(type);
 	if (!pmchild)
@@ -4043,8 +4551,8 @@ StartChildProcess(BackendType type)
 		return NULL;
 	}
 
-	pid = postmaster_child_launch(type, pmchild->child_slot, NULL, 0, NULL);
-	if (pid < 0)
+	if (!postmaster_child_launch_carrier(pmchild, type, pmchild->child_slot,
+										 NULL, 0, NULL))
 	{
 		/* in parent, fork failed */
 		ReleasePostmasterChildSlot(pmchild);
@@ -4061,7 +4569,6 @@ StartChildProcess(BackendType type)
 	}
 
 	/* in parent, successful fork */
-	pmchild->pid = pid;
 	return pmchild;
 }
 
@@ -4076,8 +4583,8 @@ StartSysLogger(void)
 	SysLoggerPMChild = AssignPostmasterChildSlot(B_LOGGER);
 	if (!SysLoggerPMChild)
 		elog(PANIC, "no postmaster child slot available for syslogger");
-	SysLoggerPMChild->pid = SysLogger_Start(SysLoggerPMChild->child_slot);
-	if (SysLoggerPMChild->pid == 0)
+
+	if (!SysLogger_Start(SysLoggerPMChild))
 	{
 		ReleasePostmasterChildSlot(SysLoggerPMChild);
 		SysLoggerPMChild = NULL;
@@ -4189,9 +4696,31 @@ static bool
 StartBackgroundWorker(RegisteredBgWorker *rw)
 {
 	PMChild    *bn;
-	pid_t		worker_pid;
+	bool		thread_compatible;
 
 	Assert(rw->rw_pid == 0);
+	thread_compatible = BackgroundWorkerCanUseThreadCarrier(&rw->rw_worker);
+
+	/*
+	 * Generic background workers still use the process-only bgworker ABI.
+	 * Once this postmaster has created thread carriers, another fork is not
+	 * safe.  Reject the worker explicitly and notify dynamic waiters rather
+	 * than reporting a transient fork failure and retrying indefinitely.
+	 */
+	if (multithreaded && PostmasterThreadCarriersStarted() && !thread_compatible)
+	{
+		ereport(LOG,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("background worker \"%s\" is not supported in threaded mode",
+						rw->rw_worker.bgw_name),
+				 errdetail("Background workers must set a thread-compatible backend model before they can run on thread carriers.")));
+
+		rw->rw_crashed_at = 0;
+		rw->rw_terminate = true;
+		rw->rw_pid = 0;
+		ReportBackgroundWorkerExit(rw);
+		return true;
+	}
 
 	/*
 	 * Allocate and assign the child slot.  Note we must do this before
@@ -4216,13 +4745,18 @@ StartBackgroundWorker(RegisteredBgWorker *rw)
 	bn->bkend_type = B_BG_WORKER;
 	bn->bgworker_notify = false;
 
-	ereport(DEBUG1,
-			(errmsg_internal("starting background worker process \"%s\"",
-							 rw->rw_worker.bgw_name)));
+	if (multithreaded && thread_compatible)
+		ereport(DEBUG1,
+				(errmsg_internal("starting background worker thread carrier \"%s\"",
+								 rw->rw_worker.bgw_name)));
+	else
+		ereport(DEBUG1,
+				(errmsg_internal("starting background worker process \"%s\"",
+								 rw->rw_worker.bgw_name)));
 
-	worker_pid = postmaster_child_launch(B_BG_WORKER, bn->child_slot,
-										 &rw->rw_worker, sizeof(BackgroundWorker), NULL);
-	if (worker_pid == -1)
+	if (!postmaster_child_launch_carrier(bn, B_BG_WORKER, bn->child_slot,
+										 &rw->rw_worker,
+										 sizeof(BackgroundWorker), NULL))
 	{
 		/* in postmaster, fork failed ... */
 		ereport(LOG,
@@ -4235,10 +4769,17 @@ StartBackgroundWorker(RegisteredBgWorker *rw)
 		return false;
 	}
 
-	/* in postmaster, fork successful ... */
-	rw->rw_pid = worker_pid;
-	bn->pid = rw->rw_pid;
-	ReportBackgroundWorkerPID(rw);
+	/* in postmaster, carrier launch succeeded ... */
+	rw->rw_pid = PostmasterChildSignalPid(bn);
+
+	/*
+	 * Process-backed workers are visible to dynamic waiters as soon as fork
+	 * succeeds.  Thread-backed workers publish that visibility from the
+	 * worker's explicit startup-complete boundary, after the startup path can
+	 * safely accept termination.
+	 */
+	if (!PostmasterChildIsThread(bn))
+		ReportBackgroundWorkerPID(rw);
 	return true;
 }
 
@@ -4351,7 +4892,7 @@ maybe_start_bgworkers(void)
 
 				/* Report worker is gone now. */
 				if (notify_pid != 0)
-					kill(notify_pid, SIGUSR1);
+					PostmasterNotifyPIDForWorker(notify_pid);
 
 				continue;
 			}
@@ -4412,16 +4953,337 @@ maybe_reap_io_worker(int pid)
 	for (int i = 0; i < MAX_IO_WORKERS; ++i)
 	{
 		if (io_worker_children[i] &&
+			PostmasterChildIsProcess(io_worker_children[i]) &&
 			io_worker_children[i]->pid == pid)
+			return cleanup_io_worker_child(io_worker_children[i]);
+	}
+	return false;
+}
+
+static bool
+cleanup_archiver_child(PMChild *child, int exitstatus)
+{
+	Assert(child != NULL);
+	Assert(child == PgArchPMChild);
+	Assert(child->bkend_type == B_ARCHIVER);
+
+	ReleasePostmasterChildSlot(PgArchPMChild);
+	PgArchPMChild = NULL;
+	if (!EXIT_STATUS_0(exitstatus) && !EXIT_STATUS_1(exitstatus))
+		HandleChildCrash(0, exitstatus, _("archiver process"));
+
+	return true;
+}
+
+static bool
+cleanup_autovac_launcher_child(PMChild *child, int exitstatus)
+{
+	Assert(child != NULL);
+	Assert(child == AutoVacLauncherPMChild);
+	Assert(child->bkend_type == B_AUTOVAC_LAUNCHER);
+
+	ReleasePostmasterChildSlot(AutoVacLauncherPMChild);
+	AutoVacLauncherPMChild = NULL;
+	if (!EXIT_STATUS_0(exitstatus))
+		HandleChildCrash(0, exitstatus, _("autovacuum launcher process"));
+
+	return true;
+}
+
+static bool
+cleanup_bgwriter_child(PMChild *child, int exitstatus, int crash_pid)
+{
+	Assert(child != NULL);
+	Assert(child == BgWriterPMChild);
+	Assert(child->bkend_type == B_BG_WRITER);
+
+	bgwriter_thread_handoff_pending = false;
+
+	ReleasePostmasterChildSlot(BgWriterPMChild);
+	BgWriterPMChild = NULL;
+	if (!EXIT_STATUS_0(exitstatus))
+		HandleChildCrash(crash_pid, exitstatus,
+						 _("background writer process"));
+
+	return true;
+}
+
+static bool
+cleanup_checkpointer_child(PMChild *child, int exitstatus, int crash_pid)
+{
+	bool		thread_handoff;
+
+	Assert(child != NULL);
+	Assert(child == CheckpointerPMChild);
+	Assert(child->bkend_type == B_CHECKPOINTER);
+
+	thread_handoff = checkpointer_thread_handoff_pending;
+	checkpointer_thread_handoff_pending = false;
+
+	ReleasePostmasterChildSlot(CheckpointerPMChild);
+	CheckpointerPMChild = NULL;
+	if (EXIT_STATUS_0(exitstatus) && pmState == PM_WAIT_CHECKPOINTER)
+	{
+		/*
+		 * OK, we saw normal exit of the checkpointer after it's been told to
+		 * shut down.  We know checkpointer wrote a shutdown checkpoint,
+		 * otherwise we'd still be in PM_WAIT_XLOG_SHUTDOWN state.
+		 *
+		 * At this point only dead-end children and logger should be left.
+		 */
+		UpdatePMState(PM_WAIT_DEAD_END);
+		ConfigurePostmasterWaitSet(false);
+		SignalChildren(SIGTERM, btmask_all_except(B_LOGGER));
+	}
+	else if (EXIT_STATUS_0(exitstatus) && thread_handoff && pmState == PM_RUN)
+	{
+		/*
+		 * The startup-era process checkpointer exited on request so it can be
+		 * relaunched as a thread carrier now that normal threaded operation
+		 * has begun.
+		 */
+	}
+	else
+	{
+		/*
+		 * Any unexpected exit of the checkpointer (including FATAL exit) is
+		 * treated as a crash.
+		 */
+		HandleChildCrash(crash_pid, exitstatus,
+						 _("checkpointer process"));
+	}
+
+	return true;
+}
+
+static bool
+cleanup_io_worker_child(PMChild *child)
+{
+	for (int i = 0; i < MAX_IO_WORKERS; ++i)
+	{
+		if (io_worker_children[i] == child)
 		{
-			ReleasePostmasterChildSlot(io_worker_children[i]);
+			ReleasePostmasterChildSlot(child);
 
 			--io_worker_count;
 			io_worker_children[i] = NULL;
+			io_worker_thread_handoff_pending[i] = false;
 			return true;
 		}
 	}
 	return false;
+}
+
+static bool
+cleanup_slot_sync_worker_child(PMChild *child, int exitstatus, int crash_pid)
+{
+	Assert(child != NULL);
+	Assert(child == SlotSyncWorkerPMChild);
+	Assert(child->bkend_type == B_SLOTSYNC_WORKER);
+
+	ReleasePostmasterChildSlot(SlotSyncWorkerPMChild);
+	SlotSyncWorkerPMChild = NULL;
+	if (!EXIT_STATUS_0(exitstatus) && !EXIT_STATUS_1(exitstatus))
+		HandleChildCrash(crash_pid, exitstatus,
+						 _("slot sync worker process"));
+
+	return true;
+}
+
+static bool
+cleanup_startup_child(PMChild *child, int exitstatus, int crash_pid)
+{
+	Assert(child != NULL);
+	Assert(child == StartupPMChild);
+	Assert(child->bkend_type == B_STARTUP);
+
+	ReleasePostmasterChildSlot(StartupPMChild);
+	StartupPMChild = NULL;
+
+	/*
+	 * Startup exited in response to a shutdown request, or completed normally
+	 * regardless of the shutdown request.
+	 */
+	if (Shutdown > NoShutdown &&
+		(EXIT_STATUS_0(exitstatus) || EXIT_STATUS_1(exitstatus)))
+	{
+		StartupStatus = STARTUP_NOT_RUNNING;
+		UpdatePMState(PM_WAIT_BACKENDS);
+		return true;
+	}
+
+	if (EXIT_STATUS_3(exitstatus))
+	{
+		ereport(LOG,
+				(errmsg("shutdown at recovery target")));
+		StartupStatus = STARTUP_NOT_RUNNING;
+		Shutdown = Max(Shutdown, SmartShutdown);
+		TerminateChildren(SIGTERM);
+		UpdatePMState(PM_WAIT_BACKENDS);
+		return true;
+	}
+
+	/*
+	 * Any unexpected exit, including FATAL, of startup is catastrophic.  One
+	 * exception is a prior SIGQUIT: that means we may need to restart crash
+	 * recovery rather than treating startup itself as permanently failed.
+	 */
+	if (!EXIT_STATUS_0(exitstatus))
+	{
+		if (StartupStatus == STARTUP_SIGNALED)
+		{
+			StartupStatus = STARTUP_NOT_RUNNING;
+			if (pmState == PM_STARTUP)
+				UpdatePMState(PM_WAIT_BACKENDS);
+		}
+		else
+			StartupStatus = STARTUP_CRASHED;
+
+		/*
+		 * If FatalError is already set, we are reinitializing after a previous
+		 * crash, and HandleChildCrash() would do nothing, leaving the state
+		 * machine stuck at PM_STARTUP.  Give up, signal the remaining children
+		 * and head for PM_NO_CHILDREN, where STARTUP_CRASHED makes us exit.
+		 * (upstream ead8f696b7: fix postmaster failing to exit when startup
+		 * crashes during crash restart.)
+		 */
+		if (StartupStatus == STARTUP_CRASHED &&
+			FatalError && Shutdown != ImmediateShutdown)
+		{
+			LogChildExit(LOG, _("startup process"), crash_pid, exitstatus);
+			ereport(LOG,
+					(errmsg("aborting startup due to startup process failure")));
+			HandleFatalError(PMQUIT_FOR_CRASH, true);
+		}
+		else
+			HandleChildCrash(crash_pid, exitstatus,
+							 _("startup process"));
+		return true;
+	}
+
+	/*
+	 * Startup succeeded, commence normal operations.
+	 */
+	StartupStatus = STARTUP_NOT_RUNNING;
+	FatalError = false;
+	AbortStartTime = 0;
+	ReachedNormalRunning = true;
+	UpdatePMState(PM_RUN);
+	connsAllowed = true;
+
+	/*
+	 * At the next iteration of the postmaster's main loop, we will crank up
+	 * the background tasks like the autovacuum launcher and background workers
+	 * that were not started earlier already.
+	 */
+	StartWorkerNeeded = true;
+
+	/* at this point we are really open for business */
+	ereport(LOG,
+			(errmsg("database system is ready to accept connections")));
+
+	/* Report status */
+	AddToDataDirLockFile(LOCK_FILE_LINE_PM_STATUS, PM_STATUS_READY);
+#ifdef USE_SYSTEMD
+	sd_notify(0, "READY=1");
+#endif
+
+	return true;
+}
+
+static bool
+cleanup_wal_writer_child(PMChild *child, int exitstatus)
+{
+	Assert(child != NULL);
+	Assert(child == WalWriterPMChild);
+	Assert(child->bkend_type == B_WAL_WRITER);
+
+	ReleasePostmasterChildSlot(WalWriterPMChild);
+	WalWriterPMChild = NULL;
+	if (!EXIT_STATUS_0(exitstatus))
+		HandleChildCrash(0, exitstatus, _("WAL writer process"));
+
+	return true;
+}
+
+static bool
+cleanup_wal_receiver_child(PMChild *child, int exitstatus, int crash_pid)
+{
+	Assert(child != NULL);
+	Assert(child == WalReceiverPMChild);
+	Assert(child->bkend_type == B_WAL_RECEIVER);
+
+	ReleasePostmasterChildSlot(WalReceiverPMChild);
+	WalReceiverPMChild = NULL;
+	if (!EXIT_STATUS_0(exitstatus) && !EXIT_STATUS_1(exitstatus))
+		HandleChildCrash(crash_pid, exitstatus, _("WAL receiver process"));
+
+	return true;
+}
+
+static bool
+cleanup_wal_summarizer_child(PMChild *child, int exitstatus)
+{
+	Assert(child != NULL);
+	Assert(child == WalSummarizerPMChild);
+	Assert(child->bkend_type == B_WAL_SUMMARIZER);
+
+	ReleasePostmasterChildSlot(WalSummarizerPMChild);
+	WalSummarizerPMChild = NULL;
+	if (!EXIT_STATUS_0(exitstatus))
+		HandleChildCrash(0, exitstatus, _("WAL summarizer process"));
+
+	return true;
+}
+
+/*
+ * The startup syslogger must be process-backed because it is started before
+ * the startup process and other startup-era children are forked.  In threaded
+ * mode, once a normal thread carrier exists, ask that process logger to exit.
+ * The child-exit path will launch the replacement through the carrier-aware
+ * path, which selects a thread carrier after runtime startup.
+ */
+static void
+maybe_handoff_syslogger(void)
+{
+	if (!multithreaded || pmState != PM_RUN || Shutdown != NoShutdown ||
+		!PostmasterThreadCarriersStarted())
+		return;
+
+	if (SysLoggerPMChild != NULL &&
+		PostmasterChildIsProcess(SysLoggerPMChild) &&
+		!syslogger_thread_handoff_pending)
+	{
+		syslogger_thread_handoff_pending = true;
+		signal_child(SysLoggerPMChild, SIGUSR2);
+	}
+}
+
+/*
+ * Initial I/O workers are started before regular backend threads can exist.
+ * In threaded mode, ask those startup-era process workers to exit after the
+ * postmaster reaches PM_RUN. maybe_start_io_workers() will then fill the
+ * minimum worker count through the normal thread-carrier launch path.
+ */
+static void
+maybe_handoff_io_workers(void)
+{
+	if (!multithreaded || pmState != PM_RUN || Shutdown != NoShutdown ||
+		!PostmasterThreadCarriersStarted())
+		return;
+
+	for (int i = 0; i < MAX_IO_WORKERS; ++i)
+	{
+		PMChild    *child = io_worker_children[i];
+
+		if (child != NULL &&
+			PostmasterChildIsProcess(child) &&
+			!io_worker_thread_handoff_pending[i])
+		{
+			io_worker_thread_handoff_pending[i] = true;
+			signal_child(child, SIGUSR2);
+		}
+	}
 }
 
 /*
@@ -4581,11 +5443,51 @@ PostmasterMarkPIDForWorkerNotify(int pid)
 	dlist_foreach(iter, &ActiveChildList)
 	{
 		bp = dlist_container(PMChild, elem, iter.cur);
-		if (bp->pid == pid)
+		if (PostmasterChildSignalPid(bp) == pid)
 		{
 			bp->bgworker_notify = true;
 			return true;
 		}
+	}
+	return false;
+}
+
+bool
+PostmasterNotifyPIDForWorker(int pid)
+{
+	dlist_iter	iter;
+	PMChild    *bp;
+
+	dlist_foreach(iter, &ActiveChildList)
+	{
+		bp = dlist_container(PMChild, elem, iter.cur);
+		if (PostmasterChildSignalPid(bp) != pid)
+			continue;
+
+		if (PostmasterChildHasLogicalBackendPublication(bp))
+			return PostmasterChildWakeThreadBackend(bp);
+		else if (kill(pid, SIGUSR1) < 0)
+			return false;
+
+		return true;
+	}
+	return false;
+}
+
+bool
+PostmasterSignalPIDForWorker(int pid, int signal)
+{
+	dlist_iter	iter;
+	PMChild    *bp;
+
+	dlist_foreach(iter, &ActiveChildList)
+	{
+		bp = dlist_container(PMChild, elem, iter.cur);
+		if (PostmasterChildSignalPid(bp) != pid)
+			continue;
+
+		signal_child(bp, signal);
+		return true;
 	}
 	return false;
 }

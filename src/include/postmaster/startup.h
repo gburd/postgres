@@ -12,6 +12,8 @@
 #ifndef _STARTUP_H
 #define _STARTUP_H
 
+#include "utils/global_lifetime.h"
+
 /*
  * Log the startup progress message if a timer has expired.
  */
@@ -23,7 +25,7 @@
 			ereport(LOG, errmsg(msg, secs, (usecs / 10000),  __VA_ARGS__ )); \
 	} while(0)
 
-extern PGDLLIMPORT int log_startup_progress_interval;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int log_startup_progress_interval;
 
 extern void ProcessStartupProcInterrupts(void);
 pg_noreturn extern void StartupProcessMain(const void *startup_data, size_t startup_data_len);

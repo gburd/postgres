@@ -215,6 +215,7 @@
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/global_lifetime.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/ps_status.h"
@@ -321,6 +322,13 @@ typedef struct DataChecksumsStateStruct
 	uint64		worker_invocation_counter;
 
 	/*
+	 * Is the current worker running on a thread carrier rather than a forked
+	 * process?  When true, worker_pid holds a logical backend signal ID and
+	 * abort delivery uses SendBackendInterrupt() instead of kill().
+	 */
+	bool		worker_threaded;
+
+	/*
 	 * Information about the current worker, if it's currently running.  These
 	 * are set by the worker launcher.
 	 */
@@ -357,7 +365,7 @@ typedef struct DataChecksumsStateStruct
 } DataChecksumsStateStruct;
 
 /* Shared memory segment for datachecksumsworker */
-static DataChecksumsStateStruct *DataChecksumState;
+static PG_GLOBAL_SHMEM DataChecksumsStateStruct *DataChecksumState;
 
 typedef struct DataChecksumsWorkerDatabase
 {
@@ -366,18 +374,23 @@ typedef struct DataChecksumsWorkerDatabase
 } DataChecksumsWorkerDatabase;
 
 /* Flag set by the interrupt handler */
-static volatile sig_atomic_t abort_requested = false;
+#define DataChecksumsAbortRequested \
+	(PgCurrentMaintenanceWorkerState()->datachecksum_abort_requested)
 
-static uint64 worker_invocation;
+/* Unique invocation number of the current worker (see worker_invocation_counter) */
+#define DataChecksumsWorkerInvocation \
+	(PgCurrentMaintenanceWorkerState()->datachecksum_worker_invocation)
 
 /*
  * Have we set the DataChecksumsStateStruct->launcher_running flag?
  * If we have, we need to clear it before exiting!
  */
-static volatile sig_atomic_t launcher_running = false;
+#define DataChecksumsLauncherRunning \
+	(PgCurrentMaintenanceWorkerState()->datachecksum_launcher_running)
 
 /* Are we enabling data checksums, or disabling them? */
-static DataChecksumsWorkerOperation operation;
+#define DataChecksumsCurrentOperation \
+	(PgCurrentMaintenanceWorkerState()->datachecksum_operation)
 
 /* Prototypes */
 static void StartDataChecksumsWorkerLauncher(DataChecksumsWorkerOperation op,
@@ -401,6 +414,7 @@ static bool DatabaseExists(Oid dboid);
 static List *BuildDatabaseList(void);
 static void FreeDatabaseList(List *dblist);
 static List *BuildRelationList(bool temp_relations, bool include_shared);
+static bool DataChecksumsWorkerThreadedRuntime(void);
 
 const ShmemCallbacks DataChecksumsShmemCallbacks = {
 	.request_fn = DataChecksumsShmemRequest,
@@ -410,8 +424,8 @@ const ShmemCallbacks DataChecksumsShmemCallbacks = {
 	do {															\
 		Assert(MyBackendType == B_DATACHECKSUMSWORKER_LAUNCHER);	\
 		LWLockAcquire(DataChecksumsWorkerLock, LW_SHARED);			\
-		if (DataChecksumState->launch_operation != operation) 		\
-			abort_requested = true;									\
+		if (DataChecksumState->launch_operation != DataChecksumsCurrentOperation) 		\
+			DataChecksumsAbortRequested = true;						\
 		LWLockRelease(DataChecksumsWorkerLock);						\
 	} while (0)
 
@@ -419,9 +433,9 @@ const ShmemCallbacks DataChecksumsShmemCallbacks = {
 	do {															\
 		Assert(MyBackendType == B_DATACHECKSUMSWORKER_WORKER);		\
 		LWLockAcquire(DataChecksumsWorkerLock, LW_SHARED);			\
-		if (DataChecksumState->worker_invocation != worker_invocation || \
-			DataChecksumState->launch_operation != operation) 		\
-			abort_requested = true;									\
+		if (DataChecksumState->worker_invocation != DataChecksumsWorkerInvocation || \
+			DataChecksumState->launch_operation != DataChecksumsCurrentOperation) \
+			DataChecksumsAbortRequested = true;						\
 		LWLockRelease(DataChecksumsWorkerLock);						\
 	} while (0)
 
@@ -676,13 +690,14 @@ StartDataChecksumsWorkerLauncher(DataChecksumsWorkerOperation op,
 		 */
 		memset(&bgw, 0, sizeof(bgw));
 		bgw.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
+		bgw.bgw_backend_model = BgWorkerBackendThreadPerSession;
 		bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 		snprintf(bgw.bgw_library_name, BGW_MAXLEN, "postgres");
 		snprintf(bgw.bgw_function_name, BGW_MAXLEN, "DataChecksumsWorkerLauncherMain");
 		snprintf(bgw.bgw_name, BGW_MAXLEN, "datachecksums launcher");
 		snprintf(bgw.bgw_type, BGW_MAXLEN, "datachecksums launcher");
 		bgw.bgw_restart_time = BGW_NEVER_RESTART;
-		bgw.bgw_notify_pid = MyProcPid;
+		bgw.bgw_notify_pid = PgCurrentBackendSignalPid();
 		bgw.bgw_main_arg = (Datum) 0;
 
 		if (!RegisterDynamicBackgroundWorker(&bgw, &bgw_handle))
@@ -776,9 +791,9 @@ ProcessSingleRelationFork(Relation reln, ForkNumber forkNum, BufferAccessStrateg
 		UnlockReleaseBuffer(buf);
 
 		/* Check if we are asked to abort, the abortion will bubble up. */
-		Assert(operation == ENABLE_DATACHECKSUMS);
+		Assert(DataChecksumsCurrentOperation == ENABLE_DATACHECKSUMS);
 		CHECK_FOR_WORKER_ABORT_REQUEST();
-		if (abort_requested)
+		if (DataChecksumsAbortRequested)
 			return false;
 
 		/* update the block counter */
@@ -970,6 +985,7 @@ ProcessDatabase(DataChecksumsWorkerDatabase *db)
 
 	memset(&bgw, 0, sizeof(bgw));
 	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
+	bgw.bgw_backend_model = BgWorkerBackendThreadPerSession;
 	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	snprintf(bgw.bgw_library_name, BGW_MAXLEN, "postgres");
 	snprintf(bgw.bgw_function_name, BGW_MAXLEN, "%s", "DataChecksumsWorkerMain");
@@ -1059,6 +1075,7 @@ ProcessDatabase(DataChecksumsWorkerDatabase *db)
 	LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
 	Assert(DataChecksumState->worker_invocation == invocation);
 	DataChecksumState->worker_pid = pid;
+	DataChecksumState->worker_threaded = DataChecksumsWorkerThreadedRuntime();
 	LWLockRelease(DataChecksumsWorkerLock);
 
 	snprintf(activity, sizeof(activity) - 1,
@@ -1078,6 +1095,7 @@ ProcessDatabase(DataChecksumsWorkerDatabase *db)
 	Assert(DataChecksumState->worker_invocation == invocation);
 	result = DataChecksumState->worker_result;
 	DataChecksumState->worker_pid = InvalidPid;
+	DataChecksumState->worker_threaded = false;
 	LWLockRelease(DataChecksumsWorkerLock);
 
 	/*
@@ -1115,16 +1133,26 @@ done:
 static void
 launcher_exit(int code, Datum arg)
 {
-	abort_requested = false;
+	DataChecksumsAbortRequested = false;
 
-	if (launcher_running)
+	if (DataChecksumsLauncherRunning)
 	{
 		LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
 		if (DataChecksumState->worker_pid != InvalidPid)
 		{
+			pid_t		worker_signal_pid = DataChecksumState->worker_pid;
+			bool		worker_threaded = DataChecksumState->worker_threaded;
+
 			ereport(LOG,
 					errmsg("data checksums launcher exiting while worker is still running, signalling worker"));
-			kill(DataChecksumState->worker_pid, SIGTERM);
+
+			if (worker_threaded)
+				(void) SendBackendInterrupt(worker_signal_pid,
+											PG_BACKEND_INTERRUPT_PROC_DIE,
+											MyProcPid,
+											getuid());
+			else
+				kill(worker_signal_pid, SIGTERM);
 			DataChecksumState->worker_pid = InvalidPid;
 		}
 		LWLockRelease(DataChecksumsWorkerLock);
@@ -1138,7 +1166,7 @@ launcher_exit(int code, Datum arg)
 		SetDataChecksumsOff();
 
 	LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
-	launcher_running = false;
+	DataChecksumsLauncherRunning = false;
 	DataChecksumState->launcher_running = false;
 	LWLockRelease(DataChecksumsWorkerLock);
 }
@@ -1155,7 +1183,7 @@ launcher_cancel_handler(SIGNAL_ARGS)
 {
 	int			save_errno = errno;
 
-	abort_requested = true;
+	DataChecksumsAbortRequested = true;
 
 	/*
 	 * Wake the launcher if it is waiting for transactions to finish or for a
@@ -1217,12 +1245,18 @@ WaitForAllTransactionsToFinish(void)
 		CHECK_FOR_INTERRUPTS();
 		CHECK_FOR_LAUNCHER_ABORT_REQUEST();
 
-		if (abort_requested)
+		if (DataChecksumsAbortRequested)
 			break;
 	}
 
 	pgstat_report_activity(STATE_IDLE, NULL);
 	return;
+}
+
+static bool
+DataChecksumsWorkerThreadedRuntime(void)
+{
+	return PgRuntimeIsThreadBacked(CurrentPgRuntime);
 }
 
 /*
@@ -1236,14 +1270,18 @@ WaitForAllTransactionsToFinish(void)
 void
 DataChecksumsWorkerLauncherMain(Datum arg)
 {
+	bool		threaded_launcher = DataChecksumsWorkerThreadedRuntime();
 
 	ereport(DEBUG1,
 			errmsg("background worker \"datachecksums launcher\" started"));
 
-	pqsignal(SIGTERM, die);
-	pqsignal(SIGINT, launcher_cancel_handler);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-	pqsignal(SIGUSR2, PG_SIG_IGN);
+	if (!threaded_launcher)
+	{
+		pqsignal(SIGTERM, die);
+		pqsignal(SIGINT, launcher_cancel_handler);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR2, PG_SIG_IGN);
+	}
 
 	BackgroundWorkerUnblockSignals();
 
@@ -1264,14 +1302,14 @@ DataChecksumsWorkerLauncherMain(Datum arg)
 	}
 
 	on_shmem_exit(launcher_exit, 0);
-	launcher_running = true;
+	DataChecksumsLauncherRunning = true;
 
 	/* Initialize a connection to shared catalogs only */
 	BackgroundWorkerInitializeConnectionByOid(InvalidOid, InvalidOid, 0);
 
-	operation = DataChecksumState->launch_operation;
+	DataChecksumsCurrentOperation = DataChecksumState->launch_operation;
 	DataChecksumState->launcher_running = true;
-	DataChecksumState->operation = operation;
+	DataChecksumState->operation = DataChecksumsCurrentOperation;
 	DataChecksumState->cost_delay = DataChecksumState->launch_cost_delay;
 	DataChecksumState->cost_limit = DataChecksumState->launch_cost_limit;
 	LWLockRelease(DataChecksumsWorkerLock);
@@ -1288,7 +1326,7 @@ again:
 								  InvalidOid);
 	ResetDataChecksumsProgressCounters();
 
-	if (operation == ENABLE_DATACHECKSUMS)
+	if (DataChecksumsCurrentOperation == ENABLE_DATACHECKSUMS)
 	{
 		/*
 		 * If we are asked to enable checksums in a cluster which already has
@@ -1319,7 +1357,7 @@ again:
 			 * launcher will restart processing with the new target state.
 			 */
 			CHECK_FOR_LAUNCHER_ABORT_REQUEST();
-			if (abort_requested)
+			if (DataChecksumsAbortRequested)
 				goto done;
 			ereport(ERROR,
 					errcode(ERRCODE_INSUFFICIENT_RESOURCES),
@@ -1335,7 +1373,7 @@ again:
 		ereport(LOG,
 				errmsg("data checksums are now enabled"));
 	}
-	else if (operation == DISABLE_DATACHECKSUMS)
+	else if (DataChecksumsCurrentOperation == DISABLE_DATACHECKSUMS)
 	{
 		ereport(LOG,
 				errmsg("disabling data checksums requested"));
@@ -1364,10 +1402,10 @@ done:
 	 * again.
 	 */
 	LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
-	if (DataChecksumState->launch_operation != operation)
+	if (DataChecksumState->launch_operation != DataChecksumsCurrentOperation)
 	{
 		DataChecksumState->operation = DataChecksumState->launch_operation;
-		operation = DataChecksumState->launch_operation;
+		DataChecksumsCurrentOperation = DataChecksumState->launch_operation;
 		DataChecksumState->cost_delay = DataChecksumState->launch_cost_delay;
 		DataChecksumState->cost_limit = DataChecksumState->launch_cost_limit;
 		LWLockRelease(DataChecksumsWorkerLock);
@@ -1377,7 +1415,7 @@ done:
 	/* Shut down progress reporting as we are done */
 	pgstat_progress_end_command();
 
-	launcher_running = false;
+	DataChecksumsLauncherRunning = false;
 	DataChecksumState->launcher_running = false;
 	LWLockRelease(DataChecksumsWorkerLock);
 }
@@ -1458,7 +1496,7 @@ ProcessAllDatabases(void)
 					errmsg("data checksums failed to get enabled in all databases, aborting"),
 					errhint("The server log might have more information on the cause of the error."));
 		}
-		else if (result == DATACHECKSUMSWORKER_ABORTED || abort_requested)
+		else if (result == DATACHECKSUMSWORKER_ABORTED || DataChecksumsAbortRequested)
 		{
 			/* Abort flag set, so exit the whole process */
 			FreeDatabaseList(DatabaseList);
@@ -1738,17 +1776,21 @@ DataChecksumsWorkerMain(Datum arg)
 	BufferAccessStrategy strategy;
 	bool		aborted = false;
 	int64		rels_done;
+	bool		threaded_worker = DataChecksumsWorkerThreadedRuntime();
 	bool		process_shared;
 #ifdef USE_INJECTION_POINTS
 	bool		retried = false;
 #endif
 
-	worker_invocation = DatumGetUInt64(arg);
+	DataChecksumsWorkerInvocation = DatumGetUInt64(arg);
 
-	operation = ENABLE_DATACHECKSUMS;
+	DataChecksumsCurrentOperation = ENABLE_DATACHECKSUMS;
 
-	pqsignal(SIGTERM, die);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+	if (!threaded_worker)
+	{
+		pqsignal(SIGTERM, die);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+	}
 
 	BackgroundWorkerUnblockSignals();
 
@@ -1756,7 +1798,7 @@ DataChecksumsWorkerMain(Datum arg)
 	init_ps_display(NULL);
 
 	LWLockAcquire(DataChecksumsWorkerLock, LW_SHARED);
-	if (DataChecksumState->worker_invocation != worker_invocation)
+	if (DataChecksumState->worker_invocation != DataChecksumsWorkerInvocation)
 	{
 		LWLockRelease(DataChecksumsWorkerLock);
 		return;
@@ -1780,7 +1822,7 @@ DataChecksumsWorkerMain(Datum arg)
 	 */
 	InitialTempTableList = BuildRelationList(true, false);
 	LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
-	if (DataChecksumState->worker_invocation != worker_invocation)
+	if (DataChecksumState->worker_invocation != DataChecksumsWorkerInvocation)
 	{
 		LWLockRelease(DataChecksumsWorkerLock);
 		return;
@@ -1842,7 +1884,7 @@ DataChecksumsWorkerMain(Datum arg)
 		CHECK_FOR_INTERRUPTS();
 		CHECK_FOR_WORKER_ABORT_REQUEST();
 
-		if (abort_requested)
+		if (DataChecksumsAbortRequested)
 			break;
 
 		/*
@@ -1851,7 +1893,7 @@ DataChecksumsWorkerMain(Datum arg)
 		 * to be refreshed.
 		 */
 		LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
-		if (DataChecksumState->worker_invocation != worker_invocation)
+		if (DataChecksumState->worker_invocation != DataChecksumsWorkerInvocation)
 		{
 			LWLockRelease(DataChecksumsWorkerLock);
 			break;
@@ -1881,10 +1923,10 @@ DataChecksumsWorkerMain(Datum arg)
 	list_free(RelationList);
 	FreeAccessStrategy(strategy);
 
-	if (aborted || abort_requested)
+	if (aborted || DataChecksumsAbortRequested)
 	{
 		LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
-		if (DataChecksumState->worker_invocation == worker_invocation)
+		if (DataChecksumState->worker_invocation == DataChecksumsWorkerInvocation)
 			DataChecksumState->worker_result = DATACHECKSUMSWORKER_ABORTED;
 		LWLockRelease(DataChecksumsWorkerLock);
 		ereport(DEBUG1,
@@ -1954,10 +1996,10 @@ DataChecksumsWorkerMain(Datum arg)
 		CHECK_FOR_INTERRUPTS();
 		CHECK_FOR_WORKER_ABORT_REQUEST();
 
-		if (aborted || abort_requested)
+		if (aborted || DataChecksumsAbortRequested)
 		{
 			LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
-			if (DataChecksumState->worker_invocation == worker_invocation)
+			if (DataChecksumState->worker_invocation == DataChecksumsWorkerInvocation)
 				DataChecksumState->worker_result = DATACHECKSUMSWORKER_ABORTED;
 			LWLockRelease(DataChecksumsWorkerLock);
 			ereport(LOG,
@@ -1973,7 +2015,7 @@ DataChecksumsWorkerMain(Datum arg)
 	pgstat_progress_end_command();
 
 	LWLockAcquire(DataChecksumsWorkerLock, LW_EXCLUSIVE);
-	if (DataChecksumState->worker_invocation == worker_invocation)
+	if (DataChecksumState->worker_invocation == DataChecksumsWorkerInvocation)
 		DataChecksumState->worker_result = DATACHECKSUMSWORKER_SUCCESSFUL;
 	LWLockRelease(DataChecksumsWorkerLock);
 }
