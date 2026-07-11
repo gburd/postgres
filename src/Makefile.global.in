@@ -256,6 +256,26 @@ PG_SYSROOT = @PG_SYSROOT@
 
 override CPPFLAGS += $(ICU_CFLAGS) $(LIBNUMA_CFLAGS) $(LIBURING_CFLAGS)
 
+# xtc-carrier (OUT-OF-TREE spike): run threaded B_BACKEND fibers on an xtc
+# scheduler.  Gated so the stock build is untouched when USE_XTC_CARRIER is
+# unset.  Enable with:  make USE_XTC_CARRIER=1 XTC_ROOT=/path/to/libxtc ...
+#
+# XTC_ROOT points at a libxtc source tree with a built static library at
+# $(XTC_ROOT)/build_unix/libxtc.a (cd libxtc && mkdir -p build_unix &&
+# cd build_unix && ../dist/configure && make -j).  Override it on the make
+# command line or in the environment -- do NOT rely on the default path.
+# Alternatively vendor the single-file amalgamation: build it with
+# libxtc's dist/mkamalgamation.py, drop xtc.c + xtc.h into a directory,
+# and set XTC_ROOT to point -I at it and LIBS to compile xtc.c in -- no
+# separate libxtc build, no liburing/openssl link deps (the amalgamation
+# uses the ucontext substrate).  See docs in libxtc dist/mkamalgamation.py.
+XTC_ROOT ?= /home/gburd/ws/xtc
+ifdef USE_XTC_CARRIER
+# Match the meson build's '#define USE_XTC_CARRIER 1' so this -D does not
+# collide with the '#undef USE_XTC_CARRIER' documented in pg_config.h.in.
+override CPPFLAGS += -DUSE_XTC_CARRIER=1 -I$(XTC_ROOT)/src/inc
+endif
+
 ifdef PGXS
 override CPPFLAGS := -I$(includedir_server) -I$(includedir_internal) $(CPPFLAGS)
 else # not PGXS
@@ -302,6 +322,11 @@ ZIC = @ZIC@
 AR = @AR@
 AROPT = crs
 LIBS = @LIBS@
+ifdef USE_XTC_CARRIER
+# libxtc pulls in liburing + openssl; -lssl/-lcrypto resolve via NIX_LDFLAGS in
+# the openssl-providing nix-shell used for the link.
+LIBS += $(XTC_ROOT)/build_unix/libxtc.a -luring -lssl -lcrypto
+endif
 LDAP_LIBS_FE = @LDAP_LIBS_FE@
 LDAP_LIBS_BE = @LDAP_LIBS_BE@
 UUID_LIBS = @UUID_LIBS@
@@ -433,6 +458,16 @@ with_temp_install = \
 	INITDB_TEMPLATE='$(abs_top_builddir)'/tmp_install/initdb-template \
 	$(with_temp_install_extra)
 
+define fix_temp_install_darwin_libpq
+	if test x'$(PORTNAME)' = xdarwin; then \
+	  find '$(abs_top_builddir)'/tmp_install$(bindir) '$(abs_top_builddir)'/tmp_install$(libdir) -type f | while read f; do \
+	    if otool -L "$$f" 2>/dev/null | grep -q '$(libdir)/libpq.5$(DLSUFFIX)'; then \
+	      install_name_tool -change '$(libdir)/libpq.5$(DLSUFFIX)' '$(abs_top_builddir)'/tmp_install$(libdir)/libpq.5$(DLSUFFIX) "$$f"; \
+	    fi; \
+	  done; \
+	fi
+endef
+
 temp-install: | submake-generated-headers
 ifndef NO_TEMP_INSTALL
 ifneq ($(abs_top_builddir),)
@@ -441,6 +476,7 @@ ifeq ($(MAKELEVEL),0)
 	$(MKDIR_P) '$(abs_top_builddir)'/tmp_install/log
 	$(MAKE) -C '$(top_builddir)' DESTDIR='$(abs_top_builddir)'/tmp_install install >'$(abs_top_builddir)'/tmp_install/log/install.log 2>&1
 	$(MAKE) -j1 $(if $(CHECKPREP_TOP),-C $(CHECKPREP_TOP),) checkprep >>'$(abs_top_builddir)'/tmp_install/log/install.log 2>&1
+	$(fix_temp_install_darwin_libpq)
 
 	$(with_temp_install) initdb --auth trust --no-sync --no-instructions --lc-messages=C --no-clean '$(abs_top_builddir)'/tmp_install/initdb-template >>'$(abs_top_builddir)'/tmp_install/log/initdb-template.log 2>&1
 endif
