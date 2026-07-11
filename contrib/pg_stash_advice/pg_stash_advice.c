@@ -19,46 +19,19 @@
 #include "pg_stash_advice.h"
 #include "postmaster/bgworker.h"
 #include "storage/dsm_registry.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 
 PG_MODULE_MAGIC_EXT(
 					.name = "pg_stash_advice",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
-/* Shared memory hash table parameters */
-static dshash_parameters pgsa_stash_dshash_parameters = {
-	NAMEDATALEN,
-	sizeof(pgsa_stash),
-	dshash_strcmp,
-	dshash_strhash,
-	dshash_strcpy,
-	LWTRANCHE_INVALID			/* gets set at runtime */
-};
-
-static dshash_parameters pgsa_entry_dshash_parameters = {
-	sizeof(pgsa_entry_key),
-	sizeof(pgsa_entry),
-	dshash_memcmp,
-	dshash_memhash,
-	dshash_memcpy,
-	LWTRANCHE_INVALID			/* gets set at runtime */
-};
-
-/* GUC variables */
-static char *pg_stash_advice_stash_name = "";
-bool		pg_stash_advice_persist = true;
-int			pg_stash_advice_persist_interval = 30;
-
-/* Shared memory pointers */
-pgsa_shared_state *pgsa_state;
-dsa_area   *pgsa_dsa_area;
-dshash_table *pgsa_stash_dshash;
-dshash_table *pgsa_entry_dshash;
-
-/* Other global variables */
-static MemoryContext pg_stash_advice_mcxt;
+/* Backend-local memory context. */
+#define pg_stash_advice_mcxt \
+	(pg_stash_advice_backend_state()->context)
 
 /* Function prototypes */
 static char *pgsa_advisor(PlannerGlobal *glob,
@@ -66,6 +39,7 @@ static char *pgsa_advisor(PlannerGlobal *glob,
 						  const char *query_string,
 						  int cursorOptions,
 						  ExplainState *es);
+static void pg_stash_advice_backend_state_cleanup(void *arg);
 static bool pgsa_check_stash_name_guc(char **newval, void **extra,
 									  GucSource source);
 static void pgsa_init_shared_state(void *ptr, void *arg);
@@ -81,6 +55,30 @@ static bool pgsa_is_identifier(char *str);
 #define SH_SCOPE extern
 #define SH_DEFINE
 #include "lib/simplehash.h"
+
+PgStashAdviceBackendState *
+pg_stash_advice_backend_state(void)
+{
+	return (PgStashAdviceBackendState *)
+		PgBackendEnsureExtensionPrivateState(PG_STASH_ADVICE_BACKEND_STATE_KEY,
+											 sizeof(PgStashAdviceBackendState),
+											 pg_stash_advice_backend_state_cleanup);
+}
+
+static void
+pg_stash_advice_backend_state_cleanup(void *arg)
+{
+	PgStashAdviceBackendState *state = (PgStashAdviceBackendState *) arg;
+
+	if (state->entry_dshash != NULL)
+		dshash_detach(state->entry_dshash);
+	if (state->stash_dshash != NULL)
+		dshash_detach(state->stash_dshash);
+	if (state->dsa_area != NULL)
+		dsa_detach(state->dsa_area);
+	if (state->context != NULL)
+		MemoryContextDelete(state->context);
+}
 
 /*
  * Initialize this module.
@@ -225,15 +223,31 @@ pgsa_attach(void)
 {
 	bool		found;
 	MemoryContext oldcontext;
+	dshash_parameters pgsa_stash_dshash_parameters = {
+		NAMEDATALEN,
+		sizeof(pgsa_stash),
+		dshash_strcmp,
+		dshash_strhash,
+		dshash_strcpy,
+		LWTRANCHE_INVALID		/* gets set at runtime */
+	};
+	dshash_parameters pgsa_entry_dshash_parameters = {
+		sizeof(pgsa_entry_key),
+		sizeof(pgsa_entry),
+		dshash_memcmp,
+		dshash_memhash,
+		dshash_memcpy,
+		LWTRANCHE_INVALID		/* gets set at runtime */
+	};
 
 	/*
 	 * Create a memory context to make sure that any control structures
 	 * allocated in local memory are sufficiently persistent.
 	 */
-	if (pg_stash_advice_mcxt == NULL)
-		pg_stash_advice_mcxt = AllocSetContextCreate(TopMemoryContext,
-													 "pg_stash_advice",
-													 ALLOCSET_DEFAULT_SIZES);
+	pg_stash_advice_mcxt =
+		PgRuntimeGetOwnedMemoryContextWithSizes(&pg_stash_advice_mcxt,
+												"pg_stash_advice",
+												ALLOCSET_DEFAULT_SIZES);
 	oldcontext = MemoryContextSwitchTo(pg_stash_advice_mcxt);
 
 	/* Attach to the fixed-size state object if not already done. */
@@ -734,6 +748,7 @@ pgsa_start_worker(void)
 	pid_t		pid;
 
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
+	worker.bgw_backend_model = BgWorkerBackendThreadPerSession;
 	worker.bgw_start_time = BgWorkerStart_ConsistentState;
 	worker.bgw_restart_time = BGW_DEFAULT_RESTART_INTERVAL;
 	strcpy(worker.bgw_library_name, "pg_stash_advice");
@@ -761,7 +776,7 @@ pgsa_start_worker(void)
 	 * complete. (If we do happen to be in single-user mode, this will error
 	 * out, which is fine.)
 	 */
-	worker.bgw_notify_pid = MyProcPid;
+	worker.bgw_notify_pid = PgCurrentBackendSignalPid();
 	if (!RegisterDynamicBackgroundWorker(&worker, &handle))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_RESOURCES),

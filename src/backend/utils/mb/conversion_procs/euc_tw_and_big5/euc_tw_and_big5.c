@@ -17,7 +17,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "euc_tw_and_big5",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
 PG_FUNCTION_INFO_V1(euc_tw_to_big5);

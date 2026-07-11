@@ -26,12 +26,15 @@
 #include "access/transam.h"
 #include "catalog/dependency.h"
 #include "postgres_fdw.h"
+#include "utils/backend_runtime.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
 #include "utils/syscache.h"
 
-/* Hash table for caching the results of shippability lookups */
-static HTAB *ShippableCacheHash = NULL;
+/* Session-local cache for shippability lookups. */
+#define ShippableCacheHash (postgres_fdw_session_state()->shippable_cache_hash)
+#define pgfdw_shippable_callbacks_registered \
+	(postgres_fdw_session_state()->shippable_callbacks_registered)
 
 /*
  * Hash key for shippability lookups.  We include the FDW server OID because
@@ -68,6 +71,9 @@ InvalidateShippableCacheCallback(Datum arg, SysCacheIdentifier cacheid,
 	HASH_SEQ_STATUS status;
 	ShippableCacheEntry *entry;
 
+	if (ShippableCacheHash == NULL)
+		return;
+
 	/*
 	 * In principle we could flush only cache entries relating to the
 	 * pg_foreign_server entry being outdated; but that would be more
@@ -85,6 +91,20 @@ InvalidateShippableCacheCallback(Datum arg, SysCacheIdentifier cacheid,
 	}
 }
 
+static void
+ResetShippableCacheCallback(void *arg)
+{
+	(void) arg;
+
+	if (ShippableCacheHash != NULL)
+	{
+		hash_destroy(ShippableCacheHash);
+		ShippableCacheHash = NULL;
+	}
+
+	pgfdw_shippable_callbacks_registered = false;
+}
+
 /*
  * Initialize the backend-lifespan cache of shippability decisions.
  */
@@ -99,10 +119,15 @@ InitializeShippableCache(void)
 	ShippableCacheHash =
 		hash_create("Shippability cache", 256, &ctl, HASH_ELEM | HASH_BLOBS);
 
-	/* Set up invalidation callback on pg_foreign_server. */
-	CacheRegisterSyscacheCallback(FOREIGNSERVEROID,
-								  InvalidateShippableCacheCallback,
-								  (Datum) 0);
+	if (!pgfdw_shippable_callbacks_registered)
+	{
+		/* Set up invalidation callback on pg_foreign_server. */
+		CacheRegisterSyscacheCallback(FOREIGNSERVEROID,
+									  InvalidateShippableCacheCallback,
+									  (Datum) 0);
+		PgSessionRegisterResetCallback(ResetShippableCacheCallback, NULL);
+		pgfdw_shippable_callbacks_registered = true;
+	}
 }
 
 /*

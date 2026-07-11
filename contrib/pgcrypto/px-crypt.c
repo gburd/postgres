@@ -134,7 +134,7 @@ struct generator
 	int			max_rounds;
 };
 
-static struct generator gen_list[] = {
+static const struct generator gen_list[] = {
 	{"des", _crypt_gensalt_traditional_rn, 2, 0, 0, 0},
 	{"md5", _crypt_gensalt_md5_rn, 6, 0, 0, 0},
 	{"xdes", _crypt_gensalt_extended_rn, 3, PX_XDES_ROUNDS, 1, 0xFFFFFF},
@@ -155,7 +155,7 @@ static struct generator gen_list[] = {
 int
 px_gen_salt(const char *salt_type, char *buf, int rounds)
 {
-	struct generator *g;
+	const struct generator *g;
 	char	   *p;
 	char		rbuf[16];
 

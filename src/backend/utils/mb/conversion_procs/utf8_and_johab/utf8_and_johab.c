@@ -19,7 +19,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "utf8_and_johab",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
 PG_FUNCTION_INFO_V1(johab_to_utf8);

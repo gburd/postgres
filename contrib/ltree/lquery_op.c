@@ -11,7 +11,9 @@
 #include "ltree.h"
 #include "miscadmin.h"
 #include "utils/array.h"
+#include "utils/backend_runtime.h"
 #include "utils/formatting.h"
+#include "utils/pg_locale.h"
 
 PG_FUNCTION_INFO_V1(ltq_regex);
 PG_FUNCTION_INFO_V1(ltq_rregex);
@@ -20,6 +22,28 @@ PG_FUNCTION_INFO_V1(lt_q_regex);
 PG_FUNCTION_INFO_V1(lt_q_rregex);
 
 #define NEXTVAL(x) ( (lquery*)( (char*)(x) + INTALIGN( VARSIZE(x) ) ) )
+
+#define LTREE_LQUERY_SESSION_STATE_KEY "ltree.lquery.session"
+
+typedef struct LtreeLquerySessionState
+{
+	pg_locale_t locale;
+} LtreeLquerySessionState;
+
+static pg_locale_t
+ltree_lquery_locale(void)
+{
+	LtreeLquerySessionState *state;
+
+	state = (LtreeLquerySessionState *)
+		PgSessionEnsureExtensionPrivateState(LTREE_LQUERY_SESSION_STATE_KEY,
+											 sizeof(LtreeLquerySessionState),
+											 NULL);
+	if (state->locale == NULL)
+		state->locale = pg_database_locale();
+
+	return state->locale;
+}
 
 static char *
 getlexeme(char *start, char *end, int *len)
@@ -81,13 +105,13 @@ bool
 ltree_label_match(const char *pred, size_t pred_len, const char *label,
 				  size_t label_len, bool prefix, bool ci)
 {
-	static pg_locale_t locale = NULL;
 	char	   *fpred;			/* casefolded predicate */
 	size_t		fpred_len = pred_len;
 	char	   *flabel;			/* casefolded label */
 	size_t		flabel_len = label_len;
 	size_t		len;
 	bool		res;
+	pg_locale_t locale;
 
 	/* fast path for binary match or binary prefix match */
 	if ((pred_len == label_len || (prefix && pred_len < label_len)) &&
@@ -101,8 +125,7 @@ ltree_label_match(const char *pred, size_t pred_len, const char *label,
 	 * This path is necessary even if pred_len > label_len, because the byte
 	 * lengths may change after casefolding.
 	 */
-	if (!locale)
-		locale = pg_database_locale();
+	locale = ltree_lquery_locale();
 
 	fpred = palloc(fpred_len + 1);
 	len = pg_strfold(fpred, fpred_len + 1, pred, pred_len, locale);

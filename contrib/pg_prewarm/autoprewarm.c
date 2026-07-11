@@ -44,6 +44,7 @@
 #include "storage/read_stream.h"
 #include "storage/smgr.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/rel.h"
 #include "utils/relfilenumbermap.h"
@@ -66,11 +67,12 @@ typedef struct BlockInfoRecord
 typedef struct AutoPrewarmSharedState
 {
 	LWLock		lock;			/* mutual exclusion */
-	pid_t		bgworker_pid;	/* for main bgworker */
-	pid_t		pid_using_dumpfile; /* for autoprewarm or block dump */
+	pid_t		bgworker_pid;	/* main bgworker logical signal ID */
+	pid_t		pid_using_dumpfile; /* logical signal ID using dump file */
 
 	/* Following items are for communication with per-database worker */
 	dsm_handle	block_info_handle;
+	BlockInfoRecord *block_info;
 	Oid			database;
 	int			prewarm_start_idx;
 	int			prewarm_stop_idx;
@@ -98,6 +100,10 @@ typedef struct AutoPrewarmReadStreamData
 	BlockNumber nblocks;
 } AutoPrewarmReadStreamData;
 
+typedef struct AutoPrewarmBackendState
+{
+	AutoPrewarmSharedState *state;
+} AutoPrewarmBackendState;
 
 PGDLLEXPORT void autoprewarm_main(Datum main_arg);
 PGDLLEXPORT void autoprewarm_database_main(Datum main_arg);
@@ -111,14 +117,60 @@ static void apw_start_leader_worker(void);
 static void apw_start_database_worker(void);
 static bool apw_init_shmem(void);
 static void apw_detach_shmem(int code, Datum arg);
+#define PG_PREWARM_RUNTIME_STATE_KEY "pg_prewarm.autoprewarm.runtime"
+#define PG_PREWARM_BACKEND_STATE_KEY "pg_prewarm.autoprewarm.backend"
+
+typedef struct AutoPrewarmRuntimeState
+{
+	bool		initialized;
+	bool		autoprewarm;
+	int			autoprewarm_interval;
+} AutoPrewarmRuntimeState;
+
 static int	apw_compare_blockinfo(const void *p, const void *q);
 
-/* Pointer to shared-memory state. */
-static AutoPrewarmSharedState *apw_state = NULL;
+static AutoPrewarmRuntimeState *
+apw_runtime_state(void)
+{
+	AutoPrewarmRuntimeState *state;
+
+	state = (AutoPrewarmRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(PG_PREWARM_RUNTIME_STATE_KEY,
+											 sizeof(AutoPrewarmRuntimeState),
+											 NULL);
+	if (!state->initialized)
+	{
+		state->autoprewarm = true;
+		state->autoprewarm_interval = 300;
+		state->initialized = true;
+	}
+
+	return state;
+}
+
+static AutoPrewarmBackendState *
+apw_backend_state(void)
+{
+	return (AutoPrewarmBackendState *)
+		PgBackendEnsureExtensionPrivateState(PG_PREWARM_BACKEND_STATE_KEY,
+											 sizeof(AutoPrewarmBackendState),
+											 NULL);
+}
+
+/* Backend-local pointer to shared autoprewarm state. */
+#define apw_state \
+	(apw_backend_state()->state)
 
 /* GUC variables. */
-static bool autoprewarm = true; /* start worker? */
-static int	autoprewarm_interval = 300; /* dump interval */
+#define autoprewarm (apw_runtime_state()->autoprewarm)
+#define autoprewarm_interval (apw_runtime_state()->autoprewarm_interval)
+
+static bool
+autoprewarm_threaded_runtime(void)
+{
+	return CurrentPgRuntime != NULL &&
+		CurrentPgRuntime->kind == PG_RUNTIME_THREAD_PER_SESSION;
+}
 
 /*
  * Module load callback.
@@ -172,9 +224,12 @@ autoprewarm_main(Datum main_arg)
 	TimestampTz last_dump_time = 0;
 
 	/* Establish signal handlers; once that's done, unblock signals. */
-	pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+	if (!autoprewarm_threaded_runtime())
+	{
+		pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+	}
 	BackgroundWorkerUnblockSignals();
 
 	/* Create (if necessary) and attach to our shared memory area. */
@@ -203,7 +258,7 @@ autoprewarm_main(Datum main_arg)
 						(int) apw_state->bgworker_pid)));
 		return;
 	}
-	apw_state->bgworker_pid = MyProcPid;
+	apw_state->bgworker_pid = PgCurrentBackendSignalPid();
 	LWLockRelease(&apw_state->lock);
 
 	/*
@@ -275,6 +330,7 @@ autoprewarm_main(Datum main_arg)
 
 		/* Reset the latch, loop. */
 		ResetLatch(MyLatch);
+		PgCurrentBackendApplyInterrupts();
 	}
 
 	/*
@@ -304,7 +360,7 @@ apw_load_buffers(void)
 	 */
 	LWLockAcquire(&apw_state->lock, LW_EXCLUSIVE);
 	if (apw_state->pid_using_dumpfile == InvalidPid)
-		apw_state->pid_using_dumpfile = MyProcPid;
+		apw_state->pid_using_dumpfile = PgCurrentBackendSignalPid();
 	else
 	{
 		LWLockRelease(&apw_state->lock);
@@ -368,6 +424,7 @@ apw_load_buffers(void)
 
 	/* Populate shared memory state. */
 	apw_state->block_info_handle = dsm_segment_handle(seg);
+	apw_state->block_info = blkinfo;
 	apw_state->prewarm_start_idx = apw_state->prewarm_stop_idx = 0;
 	apw_state->prewarmed_blocks = 0;
 
@@ -441,6 +498,7 @@ apw_load_buffers(void)
 	dsm_detach(seg);
 	LWLockAcquire(&apw_state->lock, LW_EXCLUSIVE);
 	apw_state->block_info_handle = DSM_HANDLE_INVALID;
+	apw_state->block_info = NULL;
 	apw_state->pid_using_dumpfile = InvalidPid;
 	LWLockRelease(&apw_state->lock);
 
@@ -506,18 +564,31 @@ autoprewarm_database_main(Datum main_arg)
 	dsm_segment *seg;
 
 	/* Establish signal handlers; once that's done, unblock signals. */
-	pqsignal(SIGTERM, die);
+	if (!autoprewarm_threaded_runtime())
+		pqsignal(SIGTERM, die);
 	BackgroundWorkerUnblockSignals();
 
 	/* Connect to correct database and get block information. */
 	apw_init_shmem();
-	seg = dsm_attach(apw_state->block_info_handle);
-	if (seg == NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("could not map dynamic shared memory segment")));
+	if (autoprewarm_threaded_runtime())
+	{
+		seg = NULL;
+		block_info = apw_state->block_info;
+		if (block_info == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("could not find dynamic shared memory segment address")));
+	}
+	else
+	{
+		seg = dsm_attach(apw_state->block_info_handle);
+		if (seg == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("could not map dynamic shared memory segment")));
+		block_info = (BlockInfoRecord *) dsm_segment_address(seg);
+	}
 	BackgroundWorkerInitializeConnectionByOid(apw_state->database, InvalidOid, 0);
-	block_info = (BlockInfoRecord *) dsm_segment_address(seg);
 
 	i = apw_state->prewarm_start_idx;
 	blk = block_info[i];
@@ -662,7 +733,8 @@ autoprewarm_database_main(Datum main_arg)
 		CommitTransactionCommand();
 	}
 
-	dsm_detach(seg);
+	if (seg != NULL)
+		dsm_detach(seg);
 }
 
 /*
@@ -686,7 +758,7 @@ apw_dump_now(bool is_bgworker, bool dump_unlogged)
 	LWLockAcquire(&apw_state->lock, LW_EXCLUSIVE);
 	pid = apw_state->pid_using_dumpfile;
 	if (apw_state->pid_using_dumpfile == InvalidPid)
-		apw_state->pid_using_dumpfile = MyProcPid;
+		apw_state->pid_using_dumpfile = PgCurrentBackendSignalPid();
 	LWLockRelease(&apw_state->lock);
 
 	if (pid != InvalidPid)
@@ -876,6 +948,8 @@ apw_init_state(void *ptr, void *arg)
 	LWLockInitialize(&state->lock, LWLockNewTrancheId("autoprewarm"));
 	state->bgworker_pid = InvalidPid;
 	state->pid_using_dumpfile = InvalidPid;
+	state->block_info_handle = DSM_HANDLE_INVALID;
+	state->block_info = NULL;
 }
 
 /*
@@ -903,9 +977,9 @@ static void
 apw_detach_shmem(int code, Datum arg)
 {
 	LWLockAcquire(&apw_state->lock, LW_EXCLUSIVE);
-	if (apw_state->pid_using_dumpfile == MyProcPid)
+	if (apw_state->pid_using_dumpfile == PgCurrentBackendSignalPid())
 		apw_state->pid_using_dumpfile = InvalidPid;
-	if (apw_state->bgworker_pid == MyProcPid)
+	if (apw_state->bgworker_pid == PgCurrentBackendSignalPid())
 		apw_state->bgworker_pid = InvalidPid;
 	LWLockRelease(&apw_state->lock);
 }
@@ -922,6 +996,7 @@ apw_start_leader_worker(void)
 	pid_t		pid;
 
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS;
+	worker.bgw_backend_model = BgWorkerBackendThreadPerSession;
 	worker.bgw_start_time = BgWorkerStart_ConsistentState;
 	strcpy(worker.bgw_library_name, "pg_prewarm");
 	strcpy(worker.bgw_function_name, "autoprewarm_main");
@@ -935,7 +1010,7 @@ apw_start_leader_worker(void)
 	}
 
 	/* must set notify PID to wait for startup */
-	worker.bgw_notify_pid = MyProcPid;
+	worker.bgw_notify_pid = PgCurrentBackendSignalPid();
 
 	if (!RegisterDynamicBackgroundWorker(&worker, &handle))
 		ereport(ERROR,
@@ -962,6 +1037,7 @@ apw_start_database_worker(void)
 
 	worker.bgw_flags =
 		BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
+	worker.bgw_backend_model = BgWorkerBackendThreadPerSession;
 	worker.bgw_start_time = BgWorkerStart_ConsistentState;
 	worker.bgw_restart_time = BGW_NEVER_RESTART;
 	strcpy(worker.bgw_library_name, "pg_prewarm");
@@ -970,7 +1046,7 @@ apw_start_database_worker(void)
 	strcpy(worker.bgw_type, "autoprewarm worker");
 
 	/* must set notify PID to wait for shutdown */
-	worker.bgw_notify_pid = MyProcPid;
+	worker.bgw_notify_pid = PgCurrentBackendSignalPid();
 
 	if (!RegisterDynamicBackgroundWorker(&worker, &handle))
 		ereport(ERROR,

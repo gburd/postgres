@@ -4,6 +4,7 @@
 #include "plpy_elog.h"
 #include "plpy_typeio.h"
 #include "plpy_util.h"
+#include "utils/backend_runtime.h"
 #include "utils/fmgrprotos.h"
 #include "utils/jsonb.h"
 #include "utils/numeric.h"
@@ -15,24 +16,61 @@ PG_MODULE_MAGIC_EXT(
 
 /* for PLyObject_AsString in plpy_typeio.c */
 typedef char *(*PLyObject_AsString_t) (PyObject *plrv);
-static PLyObject_AsString_t PLyObject_AsString_p;
 
 typedef void (*PLy_elog_impl_t) (int elevel, const char *fmt, ...);
-static PLy_elog_impl_t PLy_elog_impl_p;
 
 /*
  * decimal_constructor is a function from python library and used
  * for transforming strings into python decimal type
  */
-static PyObject *decimal_constructor;
+typedef PyObject *(*PLyUnicode_FromStringAndSize_t)
+			(const char *s, Py_ssize_t size);
+
+#define JSONB_PLPYTHON_RUNTIME_STATE_KEY "jsonb_plpython.runtime"
+#define JSONB_PLPYTHON_SESSION_STATE_KEY "jsonb_plpython.session"
+
+typedef struct JsonbPLpythonRuntimeState
+{
+	PLyObject_AsString_t PLyObject_AsString_p;
+	PLy_elog_impl_t PLy_elog_impl_p;
+	PLyUnicode_FromStringAndSize_t PLyUnicode_FromStringAndSize_p;
+} JsonbPLpythonRuntimeState;
+
+typedef struct JsonbPLpythonSessionState
+{
+	PyObject   *decimal_constructor;
+} JsonbPLpythonSessionState;
+
+static JsonbPLpythonRuntimeState *
+jsonb_plpython_runtime_state(void)
+{
+	return (JsonbPLpythonRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(JSONB_PLPYTHON_RUNTIME_STATE_KEY,
+											 sizeof(JsonbPLpythonRuntimeState),
+											 NULL);
+}
+
+static JsonbPLpythonSessionState *
+jsonb_plpython_session_state(void)
+{
+	return (JsonbPLpythonSessionState *)
+		PgSessionEnsureExtensionPrivateState(JSONB_PLPYTHON_SESSION_STATE_KEY,
+											 sizeof(JsonbPLpythonSessionState),
+											 NULL);
+}
+
+#define PLyObject_AsString_p \
+	(jsonb_plpython_runtime_state()->PLyObject_AsString_p)
+#define PLy_elog_impl_p \
+	(jsonb_plpython_runtime_state()->PLy_elog_impl_p)
+#define PLyUnicode_FromStringAndSize_p \
+	(jsonb_plpython_runtime_state()->PLyUnicode_FromStringAndSize_p)
+#define decimal_constructor \
+	(jsonb_plpython_session_state()->decimal_constructor)
 
 static PyObject *PLyObject_FromJsonbContainer(JsonbContainer *jsonb);
 static void PLyObject_ToJsonbValue(PyObject *obj,
 								   JsonbInState *jsonb_state, bool is_elem);
-
-typedef PyObject *(*PLyUnicode_FromStringAndSize_t)
-			(const char *s, Py_ssize_t size);
-static PLyUnicode_FromStringAndSize_t PLyUnicode_FromStringAndSize_p;
 
 /* Static asserts verify that typedefs above match original declarations */
 StaticAssertVariableIsOfType(&PLyObject_AsString, PLyObject_AsString_t);

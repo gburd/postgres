@@ -20,6 +20,7 @@
 #include "plpy_resultobject.h"
 #include "plpy_spi.h"
 #include "plpy_util.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 
 static PyObject *PLy_spi_execute_query(char *query, long limit);
@@ -58,9 +59,13 @@ PLy_spi_prepare(PyObject *self, PyObject *args)
 	if ((plan = (PLyPlanObject *) PLy_plan_new()) == NULL)
 		return NULL;
 
-	plan->mcxt = AllocSetContextCreate(TopMemoryContext,
-									   "PL/Python plan context",
-									   ALLOCSET_DEFAULT_SIZES);
+	plan->mcxt = AllocSetContextCreate(
+		PgRuntimeGetOwnedMemoryContextWithSizes(
+			PgCurrentPLpythonMemoryContextRef(),
+			"PL/Python session",
+			ALLOCSET_DEFAULT_SIZES),
+		"PL/Python plan context",
+		ALLOCSET_DEFAULT_SIZES);
 	oldcontext = MemoryContextSwitchTo(plan->mcxt);
 
 	nargs = list ? PySequence_Length(list) : 0;

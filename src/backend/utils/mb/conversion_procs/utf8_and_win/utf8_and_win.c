@@ -39,7 +39,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "utf8_and_win",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
 PG_FUNCTION_INFO_V1(win_to_utf8);
