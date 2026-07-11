@@ -4,14 +4,9 @@
  *	  Atomic operations implementation using C11 stdatomic.h
  *
  * This file provides PostgreSQL atomic operations using the C11 standard
- * <stdatomic.h>. It is only included when USE_STDATOMIC_H is defined.
- *
- * The traditional platform-specific implementation (arch-*.h, generic-*.h,
- * fallback.h) remains available and is used when stdatomic.h is not
- * available or when explicitly requested via -Duse_stdatomic=no.
- *
- * IMPORTANT: This is an alternative implementation. The traditional path is
- * deprecated and will be removed in a future major release.
+ * <stdatomic.h>.  As of this commit it is the sole atomics implementation;
+ * the former platform-specific paths (arch-*.h, generic-*.h, fallback.h)
+ * have been removed and USE_STDATOMIC_H is always defined.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
