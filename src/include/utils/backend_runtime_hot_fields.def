@@ -1,0 +1,685 @@
+/*-------------------------------------------------------------------------
+ *
+ * backend_runtime_hot_fields.def
+ *	  Derived current-work field slots for hot compatibility lvalues.
+ *
+ * This file is included with PG_RUNTIME_HOT_FIELD(variable, owner, type, expr)
+ * defined by the includer.  The slots do not own state; they cache addresses
+ * into the current runtime objects and carry an owner token so inline users can
+ * reject stale slots after direct current-pointer switches.
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ *
+ * src/include/utils/backend_runtime_hot_fields.def
+ *
+ *-------------------------------------------------------------------------
+ */
+
+PG_RUNTIME_HOT_FIELD(PgCurrentMyProcHotRef,
+					 backend,
+					 struct PGPROC *,
+					 CurrentPgBackend != NULL ? &CurrentPgBackend->my_proc : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentMyProcNumberHotRef,
+					 backend,
+					 int,
+					 CurrentPgBackend != NULL ? &CurrentPgBackend->my_proc_number : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentIsUnderPostmasterHotRef,
+					 carrier,
+					 bool,
+					 CurrentPgCarrier != NULL ?
+					 &CurrentPgCarrier->is_under_postmaster : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentUpdateProcessTitleHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->misc_guc.update_process_title_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentAioBackendHotRef,
+					 backend,
+					 struct PgAioBackend *,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->aio.my_backend : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentBackslashQuoteHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->parser.backslash_quote_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentComputeQueryIdHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->query_id.compute_query_id_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentQueryIdEnabledHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->query_id.query_id_enabled_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentPrivateRefCountArrayKeysHotRef,
+					 backend,
+					 void *,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->buffers.private_ref_count_array_keys : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentPrivateRefCountArrayHotRef,
+					 backend,
+					 void *,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->buffers.private_ref_count_array : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentPrivateRefCountHashHotRef,
+					 backend,
+					 void *,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->buffers.private_ref_count_hash : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentPrivateRefCountOverflowedHotRef,
+					 backend,
+					 int32,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->buffers.private_ref_count_overflowed : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentPrivateRefCountClockHotRef,
+					 backend,
+					 uint32,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->buffers.private_ref_count_clock : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentReservedRefCountSlotHotRef,
+					 backend,
+					 int,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->buffers.reserved_ref_count_slot : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentPrivateRefCountEntryLastHotRef,
+					 backend,
+					 int,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->buffers.private_ref_count_entry_last : NULL)
+PG_RUNTIME_HOT_FIELD(PgMessageContextHotRef,
+					 execution,
+					 MemoryContext,
+					 CurrentPgExecution != NULL ?
+					 &CurrentPgExecution->memory_contexts.message_context : NULL)
+PG_RUNTIME_HOT_FIELD(PgTopMemoryContextHotRef,
+					 execution,
+					 MemoryContext,
+					 CurrentPgExecution != NULL ?
+					 &CurrentPgExecution->memory_contexts.top_context : NULL)
+PG_RUNTIME_HOT_FIELD(PgErrorContextHotRef,
+					 execution,
+					 MemoryContext,
+					 CurrentPgExecution != NULL ?
+					 &CurrentPgExecution->memory_contexts.error_context : NULL)
+PG_RUNTIME_HOT_FIELD(PgTopTransactionContextHotRef,
+					 execution,
+					 MemoryContext,
+					 CurrentPgExecution != NULL ?
+					 &CurrentPgExecution->memory_contexts.top_transaction_context : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurTransactionContextHotRef,
+					 execution,
+					 MemoryContext,
+					 CurrentPgExecution != NULL ?
+					 &CurrentPgExecution->memory_contexts.cur_transaction_context : NULL)
+PG_RUNTIME_HOT_FIELD(PgPortalContextHotRef,
+					 execution,
+					 MemoryContext,
+					 CurrentPgExecution != NULL ?
+					 &CurrentPgExecution->memory_contexts.portal_context : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentResourceOwnerHotRef,
+					 execution,
+					 struct ResourceOwnerData *,
+					 CurrentPgExecution != NULL ?
+					 &CurrentPgExecution->resource_owners.current_owner : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurTransactionResourceOwnerHotRef,
+					 execution,
+					 struct ResourceOwnerData *,
+					 CurrentPgExecution != NULL ?
+					 &CurrentPgExecution->resource_owners.cur_transaction_owner : NULL)
+PG_RUNTIME_HOT_FIELD(PgTopTransactionResourceOwnerHotRef,
+					 execution,
+					 struct ResourceOwnerData *,
+					 CurrentPgExecution != NULL ?
+					 &CurrentPgExecution->resource_owners.top_transaction_owner : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentHeldLWLocksHotRef,
+					 backend,
+					 PgBackendLWLockHandle,
+					 CurrentPgBackend != NULL ?
+					 CurrentPgBackend->locks.held_lwlocks_array : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentNumHeldLWLocksHotRef,
+					 backend,
+					 int,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->locks.num_held_lwlocks : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentLocalPredicateLockHashHotRef,
+					 backend,
+					 struct HTAB *,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->locks.local_predicate_lock_hash : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentPgStatTrackActivitiesHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->pgstat.track_activities : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentMySerializableXactHotRef,
+					 backend,
+					 void *,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->locks.my_serializable_xact : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentMyXactDidWriteHotRef,
+					 backend,
+					 bool,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->locks.my_xact_did_write : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentSavedSerializableXactHotRef,
+					 backend,
+					 void *,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->locks.saved_serializable_xact : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentPendingInterruptStateHotRef,
+					 backend,
+					 PgBackendPendingInterruptState,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->pending_interrupts : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentInterruptHoldoffCountHotRef,
+					 backend,
+					 volatile uint32,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->interrupt_holdoffs.interrupt_holdoff_count : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentQueryCancelHoldoffCountHotRef,
+					 backend,
+					 volatile uint32,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->interrupt_holdoffs.query_cancel_holdoff_count : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentCritSectionCountHotRef,
+					 backend,
+					 volatile uint32,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->interrupt_holdoffs.crit_section_count : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentBackendInterruptMaskHotRef,
+					 backend,
+					 void,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->interrupts.pending_mask : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentProcSignalSlotHotRef,
+					 backend,
+					 void *,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->ipc.proc_signal_slot : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentMyDatabaseIdHotRef,
+					 session,
+					 Oid,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->database.database_id : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentMyDatabaseTableSpaceHotRef,
+					 session,
+					 Oid,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->database.database_tablespace : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentWorkMemHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->query_memory.work_mem_kb : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentHashMemMultiplierHotRef,
+					 session,
+					 double,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->query_memory.hash_mem_multiplier_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentMaintenanceWorkMemHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->query_memory.maintenance_work_mem_kb : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentMaxParallelMaintenanceWorkersHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->query_memory.max_parallel_maintenance_workers_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentMaxStackDepthHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->misc_guc.max_stack_depth_kb : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentMaxStackDepthBytesHotRef,
+					 session,
+					 ssize_t,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->misc_guc.max_stack_depth_bytes : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentStackBasePtrHotRef,
+					 carrier,
+					 char *,
+					 CurrentPgCarrier != NULL ?
+					 &CurrentPgCarrier->stack_base_ptr : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentSeqPageCostHotRef,
+					 session,
+					 double,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_cost.seq_page_cost_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentRandomPageCostHotRef,
+					 session,
+					 double,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_cost.random_page_cost_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentCpuTupleCostHotRef,
+					 session,
+					 double,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_cost.cpu_tuple_cost_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentCpuIndexTupleCostHotRef,
+					 session,
+					 double,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_cost.cpu_index_tuple_cost_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentCpuOperatorCostHotRef,
+					 session,
+					 double,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_cost.cpu_operator_cost_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentParallelTupleCostHotRef,
+					 session,
+					 double,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_cost.parallel_tuple_cost_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentParallelSetupCostHotRef,
+					 session,
+					 double,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_cost.parallel_setup_cost_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentRecursiveWorktableFactorHotRef,
+					 session,
+					 double,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_cost.recursive_worktable_factor_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEffectiveCacheSizeHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_cost.effective_cache_size_pages : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentDebugParallelQueryHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_cost.debug_parallel_query_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentParallelLeaderParticipationHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_cost.parallel_leader_participation_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentDisableCostHotRef,
+					 session,
+					 double,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_cost.disable_cost_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentMaxParallelWorkersPerGatherHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_cost.max_parallel_workers_per_gather_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableSeqscanHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_seqscan_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableIndexscanHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_indexscan_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableIndexonlyscanHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_indexonlyscan_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableBitmapscanHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_bitmapscan_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableTidscanHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_tidscan_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableSortHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_sort_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableIncrementalSortHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_incremental_sort_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableHashaggHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_hashagg_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableNestloopHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_nestloop_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableMaterialHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_material_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableMemoizeHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_memoize_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableMergejoinHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_mergejoin_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableHashjoinHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_hashjoin_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableGathermergeHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_gathermerge_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnablePartitionwiseJoinHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_partitionwise_join_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnablePartitionwiseAggregateHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_partitionwise_aggregate_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableParallelAppendHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_parallel_append_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableParallelHashHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_parallel_hash_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnablePartitionPruningHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_partition_pruning_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnablePresortedAggregateHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_presorted_aggregate_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableAsyncAppendHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_async_append_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableDistinctReorderingHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_distinct_reordering_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableGeqoHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_geqo_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableEagerAggregateHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_eager_aggregate_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableGroupByReorderingHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_group_by_reordering_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentEnableSelfJoinEliminationHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.enable_self_join_elimination_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentCursorTupleFractionHotRef,
+					 session,
+					 double,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.cursor_tuple_fraction_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentConstraintExclusionHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.constraint_exclusion_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentGeqoThresholdHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.geqo_threshold_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentGeqoEffortHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.Geqo_effort_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentGeqoPoolSizeHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.Geqo_pool_size_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentGeqoGenerationsHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.Geqo_generations_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentGeqoSelectionBiasHotRef,
+					 session,
+					 double,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.Geqo_selection_bias_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentGeqoSeedHotRef,
+					 session,
+					 double,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.Geqo_seed_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentGeqoPlannerExtensionIdHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.Geqo_planner_extension_id_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentMinEagerAggGroupSizeHotRef,
+					 session,
+					 double,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.min_eager_agg_group_size_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentMinParallelTableScanSizeHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.min_parallel_table_scan_size_blocks : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentMinParallelIndexScanSizeHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.min_parallel_index_scan_size_blocks : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentFromCollapseLimitHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.from_collapse_limit_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentJoinCollapseLimitHotRef,
+					 session,
+					 int,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->planner_method.join_collapse_limit_value : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentSysCacheArrayHotRef,
+					 session,
+					 struct catcache *,
+					 CurrentPgSession != NULL ?
+					 CurrentPgSession->catalog_lookup.sys_cache : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentTableSpaceCacheHashHotRef,
+					 session,
+					 struct HTAB *,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->catalog_lookup.tablespace_cache_hash : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentPendingIOStatsHotRef,
+					 backend,
+					 struct PgStat_PendingIO,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->pgstat_pending.io_stats : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentHaveIOStatsHotRef,
+					 backend,
+					 bool,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->pgstat_pending.io_stats_pending : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentPendingBackendStatsHotRef,
+					 backend,
+					 PgStat_BackendPending,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->pgstat_pending.backend_stats : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentBackendHasIOStatsHotRef,
+					 backend,
+					 bool,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->pgstat_pending.backend_io_stats_pending : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentBackendHasLockStatsHotRef,
+					 backend,
+					 bool,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->pgstat_pending.backend_lock_stats_pending : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentPgStatPrevBackendWalUsageHotRef,
+					 backend,
+					 WalUsage,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->pgstat_pending.backend_wal_prev_usage : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentPgStatReportFixedHotRef,
+					 backend,
+					 bool,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->pgstat_pending.report_fixed : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentPgStatForceNextFlushHotRef,
+					 backend,
+					 bool,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->pgstat_pending.force_next_flush : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentForceStatsSnapshotClearHotRef,
+					 backend,
+					 bool,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->pgstat_pending.force_snapshot_clear : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentPgStatIsInitializedHotRef,
+					 backend,
+					 bool,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->pgstat_pending.is_initialized : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentPgStatIsShutdownHotRef,
+					 backend,
+					 bool,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->pgstat_pending.is_shutdown : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentMyBEEntryHotRef,
+					 backend,
+					 PgBackendStatus *,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->my_beentry : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentBufferUsageHotRef,
+					 backend,
+					 BufferUsage,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->instrumentation.buffer_usage : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentSavedBufferUsageHotRef,
+					 backend,
+					 BufferUsage,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->instrumentation.saved_buffer_usage : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentWalUsageHotRef,
+					 backend,
+					 WalUsage,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->instrumentation.wal_usage : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentSavedWalUsageHotRef,
+					 backend,
+					 WalUsage,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->instrumentation.saved_wal_usage : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentSeqScanTablesHotRef,
+					 backend,
+					 struct HTAB *,
+					 CurrentPgBackend != NULL ?
+					 CurrentPgBackend->utility.seq_scan_tables : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentSeqScanLevelsHotRef,
+					 backend,
+					 int,
+					 CurrentPgBackend != NULL ?
+					 CurrentPgBackend->utility.seq_scan_levels : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentNumSeqScansHotRef,
+					 backend,
+					 int,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->utility.num_seq_scans : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentTransactionStateHotRef,
+					 execution,
+					 TransactionStateData *,
+					 CurrentPgExecution != NULL ?
+					 &CurrentPgExecution->xact.current_transaction_state : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentActiveSnapshotHotRef,
+					 execution,
+					 void *,
+					 CurrentPgExecution != NULL ?
+					 &CurrentPgExecution->snapshot.active_snapshot : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentAfterTriggersDataHotRef,
+					 execution,
+					 void *,
+					 CurrentPgExecution != NULL ?
+					 &CurrentPgExecution->trigger.after_triggers_data : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentDebugQueryStringHotRef,
+					 execution,
+					 const char *,
+					 CurrentPgExecution != NULL ?
+					 &CurrentPgExecution->debug.debug_query_string : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentDoingCommandReadHotRef,
+					 session,
+					 bool,
+					 CurrentPgSession != NULL ?
+					 &CurrentPgSession->loop_state.doing_command_read : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentErrorContextStackHotRef,
+					 execution,
+					 struct ErrorContextCallback *,
+					 CurrentPgExecution != NULL ?
+					 &CurrentPgExecution->error.context_stack : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentExceptionStackHotRef,
+					 execution,
+					 sigjmp_buf *,
+					 CurrentPgExecution != NULL ?
+					 &CurrentPgExecution->error.exception_stack : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentProcPortHotRef,
+					 connection,
+					 struct Port *,
+					 CurrentPgConnection != NULL ?
+					 &CurrentPgConnection->identity.port : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentPqCommMethodsHotRef,
+					 connection,
+					 const struct PQcommMethods *,
+					 CurrentPgConnection != NULL ?
+					 &CurrentPgConnection->protocol.comm_methods : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentFrontendProtocolHotRef,
+					 connection,
+					 uint32,
+					 CurrentPgConnection != NULL ?
+					 &CurrentPgConnection->protocol.frontend_protocol : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentCatchupInterruptPendingHotRef,
+					 backend,
+					 volatile sig_atomic_t,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->ipc.catchup_interrupt_pending : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentSharedInvalidationMessagesHotRef,
+					 backend,
+					 void *,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->ipc.shared_invalidation_messages : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentSharedInvalidationNextMsgHotRef,
+					 backend,
+					 volatile int,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->ipc.shared_invalidation_next_msg : NULL)
+PG_RUNTIME_HOT_FIELD(PgCurrentSharedInvalidationNumMsgsHotRef,
+					 backend,
+					 volatile int,
+					 CurrentPgBackend != NULL ?
+					 &CurrentPgBackend->ipc.shared_invalidation_num_msgs : NULL)
