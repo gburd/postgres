@@ -21,11 +21,16 @@
 
 #include <fcntl.h>
 #include <limits.h>
+#include <poll.h>
 #include <signal.h>
 #include <unistd.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 
 #ifdef USE_VALGRIND
 #include <valgrind/valgrind.h>
@@ -57,6 +62,9 @@
 #include "port/pg_getopt_ctx.h"
 #include "postmaster/interrupt.h"
 #include "postmaster/postmaster.h"
+#ifdef USE_XTC_CARRIER
+#include "postmaster/pg_xtc_carrier.h"	/* xtc_in_backend_fiber */
+#endif
 #include "replication/logicallauncher.h"
 #include "replication/logicalworker.h"
 #include "replication/slotsync.h"
@@ -66,6 +74,7 @@
 #include "storage/bufmgr.h"
 #include "storage/ipc.h"
 #include "storage/fd.h"
+#include "storage/latch.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
 #include "storage/procsignal.h"
@@ -77,38 +86,33 @@
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
 #include "tcop/utility.h"
+#include "utils/backend_runtime.h"
+#include "utils/catcache.h"
 #include "utils/guc_hooks.h"
+#include "utils/guc_tables.h"
+#include "utils/inval.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
+#include "utils/pgstat_internal.h"
+#include "utils/relcache.h"
 #include "utils/ps_status.h"
 #include "utils/snapmgr.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 #include "utils/varlena.h"
+#include "utils/wait_event.h"
 
-/* ----------------
- *		global variables
- * ----------------
+/*
+ * Log_disconnections, log_statement, and PostAuthDelay live in
+ * PgSessionConnectionGUCState.  Public names remain source-compatible lvalue
+ * macros from tcopprot.h.
  */
-const char *debug_query_string; /* client-supplied query string */
 
-/* Note: whereToSendOutput is initialized for the bootstrap/standalone case */
-CommandDest whereToSendOutput = DestDebug;
-
-/* flag for logging end of session */
-bool		Log_disconnections = false;
-
-int			log_statement = LOGSTMT_NONE;
-
-/* wait N seconds to allow attach from a debugger */
-int			PostAuthDelay = 0;
-
-/* Time between checks that the client is still connected. */
-int			client_connection_check_interval = 0;
-
-/* flags for non-system relation kinds to restrict use */
-int			restrict_nonsystem_relation_kind;
+/*
+ * restrict_nonsystem_relation_kind also lives in
+ * PgSessionConnectionGUCState.
+ */
 
 /*
  * Include signal sender PID/UID in the server log when available
@@ -118,6 +122,8 @@ int			restrict_nonsystem_relation_kind;
 #define ERRDETAIL_SIGNAL_SENDER(pid, uid) \
 	((pid) == 0 ? 0 : \
 	 errdetail_log("Signal sent by PID %d, UID %d.", (int) (pid), (int) (uid)))
+
+#define POOLED_PROTOCOL_IDLE_PGSTAT_RELEASE_MIN_MS 100
 
 /* ----------------
  *		private typedefs etc
@@ -141,37 +147,38 @@ typedef struct BindParamCbData
  * Flag to keep track of whether we have started a transaction.
  * For extended query protocol this has to be remembered across messages.
  */
-static bool xact_started = false;
+#define xact_started (CurrentPgSession->loop_state.transaction_started)
 
 /*
  * Flag to indicate that we are doing the outer loop's read-from-client,
  * as opposed to any random read from client that might happen within
  * commands like COPY FROM STDIN.
  */
-static bool DoingCommandRead = false;
+#define DoingCommandRead \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentDoingCommandReadHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentDoingCommandReadRef))
 
-/*
- * Flags to implement skip-till-Sync-after-error behavior for messages of
- * the extended query protocol.
- */
-static bool doing_extended_query_message = false;
-static bool ignore_till_sync = false;
+#define PG_READ_COMMAND_PROTOCOL_PARK	(-2)
 
 /*
  * If an unnamed prepared statement exists, it's stored here.
  * We keep it separate from the hashtable kept by commands/prepare.c
  * in order to reduce overhead for short-lived queries.
  */
-static CachedPlanSource *unnamed_stmt_psrc = NULL;
+#define unnamed_stmt_psrc (*PgCurrentUnnamedStmtPsrcRef())
 
 /* assorted command-line switches */
-static const char *userDoption = NULL;	/* -D switch */
-static bool EchoQuery = false;	/* -E switch */
-static bool UseSemiNewlineNewline = false;	/* -j switch */
+#define userDoption (*PgCurrentUserDOptionRef())	/* -D switch */
+#define EchoQuery (*PgCurrentEchoQueryRef())	/* -E switch */
+#define UseSemiNewlineNewline (*PgCurrentUseSemiNewlineNewlineRef())	/* -j switch */
 
 /* reused buffer to pass to SendRowDescriptionMessage() */
-static MemoryContext row_description_context = NULL;
-static StringInfoData row_description_buf;
+#define current_row_description_context (*PgCurrentRowDescriptionContextRef())
+#define current_row_description_buf (*PgCurrentRowDescriptionBufRef())
+
+/* common frontend protocol messages fit without palloc/repalloc */
+#define PG_INPUT_MESSAGE_STACK_BUFFER_SIZE	1024
 
 /* ----------------------------------------------------------------
  *		decls for routines only used in this file
@@ -179,8 +186,21 @@ static StringInfoData row_description_buf;
  */
 static int	InteractiveBackend(StringInfo inBuf);
 static int	interactive_getc(void);
-static int	SocketBackend(StringInfo inBuf);
-static int	ReadCommand(StringInfo inBuf);
+static pg_always_inline int SocketBackend(PgSession *session,
+													StringInfo inBuf);
+static pg_always_inline int SocketBackendProtocolPark(PgSession *session,
+																StringInfo inBuf);
+static pg_noinline int SocketBackendHandleEOF(void);
+static PgProtocolByteResult SocketBackendStickyIdleWait(PgSession *session,
+														PgProtocolByteProbe *probe);
+static pg_always_inline int SocketBackendReadMessageBody(PgSession *session,
+																   StringInfo inBuf,
+																   int qtype,
+																   volatile uint32 *query_cancel_holdoff_count);
+static pg_always_inline int ReadCommand(PgSession *session,
+												  StringInfo inBuf);
+static pg_always_inline int ReadCommandProtocolPark(PgSession *session,
+															  StringInfo inBuf);
 static void forbidden_in_wal_sender(char firstchar);
 static bool check_log_statement(List *stmt_list);
 static char *truncate_query_log(const char *query);
@@ -196,9 +216,122 @@ static void drop_unnamed_stmt(void);
 static void ProcessRecoveryConflictInterrupts(void);
 static void ProcessRecoveryConflictInterrupt(RecoveryConflictReason reason);
 static void report_recovery_conflict(RecoveryConflictReason reason);
+pg_noreturn static void PgSessionRunProtocolSchedulerStaging(PgSession *session);
+static uint32 PgSessionStagingWaitProtocolRead(PgBackend *backend,
+											   PgProtocolParkSpec *park_spec);
+static void PgBackendMarkProtocolReadParkWakeEvents(PgBackend *backend,
+													 PgProtocolParkSpec *park_spec,
+													 uint32 wake_events);
+static void PgSessionReleasePooledProtocolIdleMemory(PgSession *session,
+													 PgProtocolParkSpec *park_spec);
+static bool PgSessionShouldHibernatePooledProtocolIdle(PgSession *session);
+static void PgLogProtocolParkMemory(PgSession *session,
+									 PgProtocolParkSpec *park_spec);
+static long PgProtocolParkTimeoutDelayMs(PgBackend *backend,
+										 PgProtocolParkSpec *park_spec,
+										 bool *stale_timeout);
+static long PgProtocolParkHibernateDelayMs(PgBackend *backend,
+										   bool *hibernate_due);
+static bool PgBackendProtocolReadParkMarkImmediateWake(PgBackend *backend);
+static short PgProtocolParkPollEvents(uint32 wait_events);
+static uint32 PgProtocolParkPollWakeEvents(uint32 wait_events, short revents);
+static void PgSessionLoopStateInit(PgSessionLoopState *state);
+static void PgSessionRecoverError(PgSession *session);
+static pg_always_inline PgStepResult PgSessionStepUnprotected(PgSession *session,
+																		int max_messages,
+																		bool protocol_park_enabled,
+																		bool return_logical_exits);
 static void log_disconnections(int code, Datum arg);
 static void enable_statement_timeout(void);
 static void disable_statement_timeout(void);
+
+static inline volatile uint32 *
+SocketBackendQueryCancelHoldoffRef(PgSession *session)
+{
+	PgBackend  *backend = session->backend;
+
+	if (likely(backend != NULL))
+		return &backend->interrupt_holdoffs.query_cancel_holdoff_count;
+
+	return PgCurrentQueryCancelHoldoffCountRef();
+}
+
+static inline PgBackendPendingInterruptState *
+ClientPendingInterruptState(PgBackend *backend)
+{
+	if (likely(backend != NULL))
+		return &backend->pending_interrupts;
+
+	return PgCurrentPendingInterruptStateRefFast();
+}
+
+static inline bool
+ClientBackendInterruptsPending(PgBackend *backend)
+{
+	if (likely(backend != NULL))
+		return pg_atomic_read_u32(&backend->interrupts.pending_mask) != 0;
+
+	return PgThreadedInterruptsPendingFast();
+}
+
+static inline bool
+ClientInterruptsPending(PgBackend *backend,
+						PgBackendPendingInterruptState *pending_state)
+{
+#ifdef WIN32
+	if (unlikely(UNBLOCKED_SIGNAL_QUEUE()))
+		pgwin32_dispatch_queued_signals();
+#endif
+	return unlikely(pending_state->interrupt_pending ||
+					ClientBackendInterruptsPending(backend));
+}
+
+static inline bool
+ClientInterruptsCanProcessProcDie(PgBackend *backend)
+{
+	if (likely(backend != NULL))
+		return backend->interrupt_holdoffs.interrupt_holdoff_count == 0 &&
+			backend->interrupt_holdoffs.crit_section_count == 0;
+
+	return InterruptHoldoffCount == 0 && CritSectionCount == 0;
+}
+
+static inline bool
+ClientReadDoingCommandRead(PgBackend *backend)
+{
+	PgSession  *session;
+
+	if (likely(backend != NULL))
+	{
+		session = backend->session;
+		if (likely(session != NULL))
+			return session->loop_state.doing_command_read;
+	}
+
+	session = CurrentPgSession;
+	if (likely(session != NULL))
+		return session->loop_state.doing_command_read;
+
+	return DoingCommandRead;
+}
+
+static inline bool
+ClientReadCatchupInterruptPending(PgBackend *backend)
+{
+	if (likely(backend != NULL))
+		return backend->ipc.catchup_interrupt_pending;
+
+	return catchupInterruptPending;
+}
+
+static inline bool
+ClientReadNotifyInterruptPending(PgBackend *backend)
+{
+	if (likely(backend != NULL))
+		return backend->utility.notify_interrupt_pending;
+
+	return notifyInterruptPending;
+}
 
 
 /* ----------------------------------------------------------------
@@ -207,7 +340,7 @@ static void disable_statement_timeout(void);
  */
 #ifdef USE_VALGRIND
 /* This variable should be set at the top of the main loop. */
-static unsigned int old_valgrind_error_count;
+#define old_valgrind_error_count (*PgCurrentValgrindOldErrorCountRef())
 
 /*
  * If Valgrind detected any errors since old_valgrind_error_count was updated,
@@ -362,39 +495,246 @@ interactive_getc(void)
  *	EOF is returned if the connection is lost.
  * ----------------
  */
-static int
-SocketBackend(StringInfo inBuf)
+static pg_always_inline int
+SocketBackend(PgSession *session, StringInfo inBuf)
 {
+	volatile uint32 *query_cancel_holdoff_count;
 	int			qtype;
-	int			maxmsglen;
+
+	Assert(session != NULL);
+	query_cancel_holdoff_count = SocketBackendQueryCancelHoldoffRef(session);
 
 	/*
 	 * Get message type code from the frontend.
 	 */
-	HOLD_CANCEL_INTERRUPTS();
-	pq_startmsgread();
-	qtype = pq_getbyte();
+	(*query_cancel_holdoff_count)++;
+	qtype = pq_startmsgread_getbyte();
 
 	if (qtype == EOF)			/* frontend disconnected */
+		return SocketBackendHandleEOF();
+
+	return SocketBackendReadMessageBody(session, inBuf, qtype,
+										query_cancel_holdoff_count);
+}
+
+static pg_always_inline int
+SocketBackendProtocolPark(PgSession *session, StringInfo inBuf)
+{
+	volatile uint32 *query_cancel_holdoff_count;
+	int			qtype;
+	PgProtocolByteProbe probe;
+	PgProtocolByteResult probe_result;
+
+	Assert(session != NULL);
+	query_cancel_holdoff_count = SocketBackendQueryCancelHoldoffRef(session);
+
+	PgSessionServiceProtocolReadWake(session);
+
+	probe_result = PgConnectionProbeBufferedMessageType(session->connection,
+														&probe);
+	if (probe_result == PG_PROTOCOL_BYTE_NONE)
 	{
-		if (IsTransactionState())
-			ereport(COMMERROR,
-					(errcode(ERRCODE_CONNECTION_FAILURE),
-					 errmsg("unexpected EOF on client connection with an open transaction")));
-		else
+		PgProtocolParkSpec park_spec;
+
+		probe_result = SocketBackendStickyIdleWait(session, &probe);
+		if (probe_result == PG_PROTOCOL_BYTE_AVAILABLE)
 		{
-			/*
-			 * Can't send DEBUG log messages to client at this point. Since
-			 * we're disconnecting right away, we don't need to restore
-			 * whereToSendOutput.
-			 */
-			whereToSendOutput = DestNone;
-			ereport(DEBUG1,
-					(errcode(ERRCODE_CONNECTION_DOES_NOT_EXIST),
-					 errmsg_internal("unexpected EOF on client connection")));
+			qtype = probe.type;
+			(*query_cancel_holdoff_count)++;
+			return SocketBackendReadMessageBody(session, inBuf, qtype,
+												query_cancel_holdoff_count);
 		}
-		return qtype;
+		if (probe_result == PG_PROTOCOL_BYTE_EOF)
+			return SocketBackendHandleEOF();
+
+		MemSet(&park_spec, 0, sizeof(park_spec));
+		park_spec.transport_wait_events = probe.transport_wait_events;
+		park_spec.transport_buffered_input =
+			probe.transport_buffered_input;
+		park_spec.transport_generation = probe.transport_generation;
+		park_spec.wait_event_info = WAIT_EVENT_CLIENT_READ;
+
+		if (PgBackendPrepareProtocolReadPark(session->backend,
+											 &park_spec))
+			return PG_READ_COMMAND_PROTOCOL_PARK;
+
+		(*query_cancel_holdoff_count)++;
+		qtype = pq_startmsgread_getbyte();
 	}
+	else if (probe_result == PG_PROTOCOL_BYTE_AVAILABLE)
+	{
+		qtype = probe.type;
+		(*query_cancel_holdoff_count)++;
+	}
+	else
+		qtype = EOF;
+
+	if (qtype == EOF)			/* frontend disconnected */
+		return SocketBackendHandleEOF();
+
+	return SocketBackendReadMessageBody(session, inBuf, qtype,
+										query_cancel_holdoff_count);
+}
+
+static PgProtocolByteResult
+SocketBackendStickyIdleWait(PgSession *session, PgProtocolByteProbe *probe)
+{
+	PgConnection *connection;
+	PgProtocolByteResult result;
+	PgConnectionSocketIOState *io;
+	WaitEventSet *wait_set;
+	WaitEvent	events[FeBeWaitSetNEvents];
+	long		timeout_ms;
+	uint32		wait_events;
+	int			rc;
+	TimestampTz timeout_wake_at;
+	uint64		timeout_generation;
+
+	Assert(session != NULL);
+	Assert(probe != NULL);
+	Assert(session == CurrentPgSession);
+	Assert(session->backend == CurrentPgBackend);
+	Assert(session->connection == CurrentPgConnection);
+	Assert(session->loop_state.doing_command_read);
+
+	if (pooled_protocol_sticky_idle_ms <= 0)
+		return PG_PROTOCOL_BYTE_NONE;
+
+	connection = session->connection;
+	io = &connection->socket_io;
+	if (io->comm_reading_msg)
+		ereport(FATAL,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("terminating connection because protocol synchronization was lost")));
+
+	if (probe->transport_buffered_input ||
+		probe->transport_wait_events == 0 ||
+		probe->transport_generation != io->transport_generation ||
+		connection->identity.port == NULL ||
+		connection->identity.port->sock == PGINVALID_SOCKET)
+		return PG_PROTOCOL_BYTE_NONE;
+
+	timeout_ms = pooled_protocol_sticky_idle_ms;
+	if (PgBackendLogicalTimeoutNextWake(session->backend, &timeout_wake_at,
+										&timeout_generation))
+	{
+		TimestampTz now = GetCurrentTimestamp();
+		long		logical_delay_ms;
+
+		(void) timeout_generation;
+		if (now >= timeout_wake_at)
+			logical_delay_ms = 0;
+		else
+			logical_delay_ms =
+				TimestampDifferenceMilliseconds(now, timeout_wake_at);
+		if (logical_delay_ms < 0)
+			logical_delay_ms = 0;
+		if (logical_delay_ms < timeout_ms)
+			timeout_ms = logical_delay_ms;
+	}
+
+	if (timeout_ms <= 0)
+	{
+		PgSessionServiceProtocolReadWake(session);
+		return PgConnectionProbeMessageType(connection, probe);
+	}
+
+	wait_events = probe->transport_wait_events | WL_SOCKET_CLOSED;
+	if (probe->transport_wait_events == WL_SOCKET_READABLE
+#ifdef USE_XTC_CARRIER
+		&& !xtc_in_backend_fiber
+#endif
+		)
+	{
+		/*
+		 * Fast path (process / dedicated-thread carriers only): a single
+		 * blocking poll() on the client socket for the sticky-idle grace.  On
+		 * an xtc fiber this raw poll() would block the shared carrier loop for
+		 * the whole grace window (default pooled_protocol_sticky_idle_ms=10ms),
+		 * stalling every sibling session on that carrier -- so a fiber falls
+		 * through to the WaitEventSetWait() path below, which yields the fiber
+		 * cooperatively via the xtc intercept.
+		 */
+		struct pollfd poll_fd;
+		int			poll_rc;
+
+		poll_fd.fd = connection->identity.port->sock;
+		poll_fd.events = POLLIN;
+		poll_fd.revents = 0;
+
+		poll_rc = poll(&poll_fd, 1, (int) timeout_ms);
+		if (poll_rc < 0 && errno != EINTR)
+			ereport(COMMERROR,
+					(errcode_for_socket_access(),
+					 errmsg("could not poll client socket: %m")));
+
+		PgSessionServiceProtocolReadWake(session);
+		if (poll_rc > 0 && poll_fd.revents != 0)
+		{
+			int			qtype;
+
+			qtype = pq_startmsgread_getbyte();
+			if (qtype == EOF)
+				return PG_PROTOCOL_BYTE_EOF;
+
+			probe->type = qtype;
+			probe->transport_wait_events = 0;
+			probe->transport_buffered_input = false;
+			probe->transport_generation = io->transport_generation;
+			return PG_PROTOCOL_BYTE_AVAILABLE;
+		}
+		return PgConnectionProbeMessageType(connection, probe);
+	}
+
+	wait_set = connection->protocol.fe_be_wait_set;
+	Assert(wait_set != NULL);
+	ModifyWaitEvent(wait_set, FeBeWaitSetSocketPos, wait_events, NULL);
+	rc = WaitEventSetWait(wait_set, timeout_ms, events, lengthof(events),
+						  WAIT_EVENT_CLIENT_READ);
+
+	for (int i = 0; i < rc; i++)
+	{
+		if (events[i].events & WL_POSTMASTER_DEATH)
+			ereport(FATAL,
+					(errcode(ERRCODE_ADMIN_SHUTDOWN),
+					 errmsg("terminating connection due to unexpected postmaster exit")));
+	}
+
+	PgSessionServiceProtocolReadWake(session);
+	result = PgConnectionProbeMessageType(connection, probe);
+	return result;
+}
+
+static pg_noinline int
+SocketBackendHandleEOF(void)
+{
+	if (IsTransactionState())
+		ereport(COMMERROR,
+				(errcode(ERRCODE_CONNECTION_FAILURE),
+				 errmsg("unexpected EOF on client connection with an open transaction")));
+	else
+	{
+		/*
+		 * Can't send DEBUG log messages to client at this point. Since we're
+		 * disconnecting right away, we don't need to restore whereToSendOutput.
+		 */
+		whereToSendOutput = DestNone;
+		ereport(DEBUG1,
+				(errcode(ERRCODE_CONNECTION_DOES_NOT_EXIST),
+				 errmsg_internal("unexpected EOF on client connection")));
+	}
+	return EOF;
+}
+
+static pg_always_inline int
+SocketBackendReadMessageBody(PgSession *session, StringInfo inBuf, int qtype,
+							 volatile uint32 *query_cancel_holdoff_count)
+{
+	PgSessionLoopState *state;
+	int			maxmsglen;
+
+	Assert(session != NULL);
+	state = &session->loop_state;
 
 	/*
 	 * Validate message type code before trying to read body; if we have lost
@@ -410,24 +750,24 @@ SocketBackend(StringInfo inBuf)
 	{
 		case PqMsg_Query:
 			maxmsglen = PQ_LARGE_MESSAGE_LIMIT;
-			doing_extended_query_message = false;
+			state->doing_extended_query_message = false;
 			break;
 
 		case PqMsg_FunctionCall:
 			maxmsglen = PQ_LARGE_MESSAGE_LIMIT;
-			doing_extended_query_message = false;
+			state->doing_extended_query_message = false;
 			break;
 
 		case PqMsg_Terminate:
 			maxmsglen = PQ_SMALL_MESSAGE_LIMIT;
-			doing_extended_query_message = false;
-			ignore_till_sync = false;
+			state->doing_extended_query_message = false;
+			state->ignore_till_sync = false;
 			break;
 
 		case PqMsg_Bind:
 		case PqMsg_Parse:
 			maxmsglen = PQ_LARGE_MESSAGE_LIMIT;
-			doing_extended_query_message = true;
+			state->doing_extended_query_message = true;
 			break;
 
 		case PqMsg_Close:
@@ -435,26 +775,26 @@ SocketBackend(StringInfo inBuf)
 		case PqMsg_Execute:
 		case PqMsg_Flush:
 			maxmsglen = PQ_SMALL_MESSAGE_LIMIT;
-			doing_extended_query_message = true;
+			state->doing_extended_query_message = true;
 			break;
 
 		case PqMsg_Sync:
 			maxmsglen = PQ_SMALL_MESSAGE_LIMIT;
 			/* stop any active skip-till-Sync */
-			ignore_till_sync = false;
+			state->ignore_till_sync = false;
 			/* mark not-extended, so that a new error doesn't begin skip */
-			doing_extended_query_message = false;
+			state->doing_extended_query_message = false;
 			break;
 
 		case PqMsg_CopyData:
 			maxmsglen = PQ_LARGE_MESSAGE_LIMIT;
-			doing_extended_query_message = false;
+			state->doing_extended_query_message = false;
 			break;
 
 		case PqMsg_CopyDone:
 		case PqMsg_CopyFail:
 			maxmsglen = PQ_SMALL_MESSAGE_LIMIT;
-			doing_extended_query_message = false;
+			state->doing_extended_query_message = false;
 			break;
 
 		default:
@@ -478,7 +818,8 @@ SocketBackend(StringInfo inBuf)
 	 */
 	if (pq_getmessage(inBuf, maxmsglen))
 		return EOF;				/* suitable message already logged */
-	RESUME_CANCEL_INTERRUPTS();
+	Assert(*query_cancel_holdoff_count > 0);
+	(*query_cancel_holdoff_count)--;
 
 	return qtype;
 }
@@ -490,13 +831,29 @@ SocketBackend(StringInfo inBuf)
  *		EOF is returned if end of file.
  * ----------------
  */
-static int
-ReadCommand(StringInfo inBuf)
+static pg_always_inline int
+ReadCommand(PgSession *session, StringInfo inBuf)
 {
 	int			result;
 
+	Assert(session != NULL);
+
 	if (whereToSendOutput == DestRemote)
-		result = SocketBackend(inBuf);
+		result = SocketBackend(session, inBuf);
+	else
+		result = InteractiveBackend(inBuf);
+	return result;
+}
+
+static pg_always_inline int
+ReadCommandProtocolPark(PgSession *session, StringInfo inBuf)
+{
+	int			result;
+
+	Assert(session != NULL);
+
+	if (whereToSendOutput == DestRemote)
+		result = SocketBackendProtocolPark(session, inBuf);
 	else
 		result = InteractiveBackend(inBuf);
 	return result;
@@ -514,22 +871,28 @@ ReadCommand(StringInfo inBuf)
 void
 ProcessClientReadInterrupt(bool blocked)
 {
+	PgBackend  *backend;
+	PgBackendPendingInterruptState *pending_state;
 	int			save_errno = errno;
 
-	if (DoingCommandRead)
+	backend = CurrentPgBackend;
+	pending_state = ClientPendingInterruptState(backend);
+
+	if (ClientReadDoingCommandRead(backend))
 	{
 		/* Check for general interrupts that arrived before/while reading */
-		CHECK_FOR_INTERRUPTS();
+		if (ClientInterruptsPending(backend, pending_state))
+			ProcessInterrupts();
 
 		/* Process sinval catchup interrupts, if any */
-		if (catchupInterruptPending)
+		if (ClientReadCatchupInterruptPending(backend))
 			ProcessCatchupInterrupt();
 
 		/* Process notify interrupts, if any */
-		if (notifyInterruptPending)
+		if (ClientReadNotifyInterruptPending(backend))
 			ProcessNotifyInterrupt(true);
 	}
-	else if (ProcDiePending)
+	else if (pending_state->proc_die_pending)
 	{
 		/*
 		 * We're dying.  If there is no data available to read, then it's safe
@@ -540,12 +903,47 @@ ProcessClientReadInterrupt(bool blocked)
 		 * cleared it while reading.
 		 */
 		if (blocked)
-			CHECK_FOR_INTERRUPTS();
+		{
+			if (ClientInterruptsPending(backend, pending_state))
+				ProcessInterrupts();
+		}
 		else
 			SetLatch(MyLatch);
 	}
 
 	errno = save_errno;
+}
+
+void
+PgSessionServiceProtocolReadWake(PgSession *session)
+{
+	PgBackend  *backend;
+
+	Assert(session != NULL);
+	Assert(session == CurrentPgSession);
+	Assert(session->loop_state.doing_command_read);
+
+	backend = session->backend;
+	Assert(backend == CurrentPgBackend);
+
+	(void) process_due_logical_timeouts();
+	ProcessClientReadInterrupt(false);
+
+	if (ClientReadNotifyInterruptPending(backend))
+	{
+		if (IsTransactionOrTransactionBlock())
+			(void) PgBackendMarkProtocolReadParkDeferredNotify(backend,
+															   PgBackendNotifyInterruptGeneration(backend),
+															   PG_PROTOCOL_PARK_WAKE_NOTIFY);
+	}
+	else
+		PgBackendClearProtocolReadParkDeferredNotify(backend);
+
+	if (ConfigReloadPending)
+	{
+		ConfigReloadPending = false;
+		ProcessConfigFile(PGC_SIGHUP);
+	}
 }
 
 /*
@@ -560,9 +958,14 @@ ProcessClientReadInterrupt(bool blocked)
 void
 ProcessClientWriteInterrupt(bool blocked)
 {
+	PgBackend  *backend;
+	PgBackendPendingInterruptState *pending_state;
 	int			save_errno = errno;
 
-	if (ProcDiePending)
+	backend = CurrentPgBackend;
+	pending_state = ClientPendingInterruptState(backend);
+
+	if (pending_state->proc_die_pending)
 	{
 		/*
 		 * We're dying.  If it's not possible to write, then we should handle
@@ -579,7 +982,7 @@ ProcessClientWriteInterrupt(bool blocked)
 			 * Don't mess with whereToSendOutput if ProcessInterrupts wouldn't
 			 * service ProcDiePending.
 			 */
-			if (InterruptHoldoffCount == 0 && CritSectionCount == 0)
+			if (ClientInterruptsCanProcessProcDie(backend))
 			{
 				/*
 				 * We don't want to send the client the error message, as a)
@@ -590,7 +993,8 @@ ProcessClientWriteInterrupt(bool blocked)
 				if (whereToSendOutput == DestRemote)
 					whereToSendOutput = DestNone;
 
-				CHECK_FOR_INTERRUPTS();
+				if (ClientInterruptsPending(backend, pending_state))
+					ProcessInterrupts();
 			}
 		}
 		else
@@ -2784,16 +3188,16 @@ exec_describe_statement_message(const char *stmt_name)
 	/*
 	 * First describe the parameters...
 	 */
-	pq_beginmessage_reuse(&row_description_buf, PqMsg_ParameterDescription);
-	pq_sendint16(&row_description_buf, psrc->num_params);
+	pq_beginmessage_reuse(&current_row_description_buf, PqMsg_ParameterDescription);
+	pq_sendint16(&current_row_description_buf, psrc->num_params);
 
 	for (int i = 0; i < psrc->num_params; i++)
 	{
 		Oid			ptype = psrc->param_types[i];
 
-		pq_sendint32(&row_description_buf, (int) ptype);
+		pq_sendint32(&current_row_description_buf, (int) ptype);
 	}
-	pq_endmessage_reuse(&row_description_buf);
+	pq_endmessage_reuse(&current_row_description_buf);
 
 	/*
 	 * Next send RowDescription or NoData to describe the result...
@@ -2805,7 +3209,7 @@ exec_describe_statement_message(const char *stmt_name)
 		/* Get the plan's primary targetlist */
 		tlist = CachedPlanGetTargetList(psrc, NULL);
 
-		SendRowDescriptionMessage(&row_description_buf,
+		SendRowDescriptionMessage(&current_row_description_buf,
 								  psrc->resultDesc,
 								  tlist,
 								  NULL);
@@ -2858,7 +3262,7 @@ exec_describe_portal_message(const char *portal_name)
 		return;					/* can't actually do anything... */
 
 	if (portal->tupDesc)
-		SendRowDescriptionMessage(&row_description_buf,
+		SendRowDescriptionMessage(&current_row_description_buf,
 								  portal->tupDesc,
 								  FetchPortalTargetList(portal),
 								  portal->formats);
@@ -2873,11 +3277,13 @@ exec_describe_portal_message(const char *portal_name)
 static void
 start_xact_command(void)
 {
-	if (!xact_started)
+	PgSessionLoopState *state = PgCurrentSessionLoopState();
+
+	if (!state->transaction_started)
 	{
 		StartTransactionCommand();
 
-		xact_started = true;
+		state->transaction_started = true;
 	}
 	else if (MyXactFlags & XACT_FLAGS_PIPELINING)
 	{
@@ -2912,10 +3318,12 @@ start_xact_command(void)
 static void
 finish_xact_command(void)
 {
+	PgSessionLoopState *state = PgCurrentSessionLoopState();
+
 	/* cancel active statement timeout after each command */
 	disable_statement_timeout();
 
-	if (xact_started)
+	if (state->transaction_started)
 	{
 		CommitTransactionCommand();
 
@@ -2930,7 +3338,7 @@ finish_xact_command(void)
 		MemoryContextStats(TopMemoryContext);
 #endif
 
-		xact_started = false;
+		state->transaction_started = false;
 	}
 }
 
@@ -3113,10 +3521,11 @@ quickdie(SIGNAL_ARGS)
 void
 die(SIGNAL_ARGS)
 {
-	/* Don't joggle the elbow of proc_exit */
-	if (!proc_exit_inprogress)
+	/* Don't joggle the elbow of backend exit. */
+	if (!PgBackendExitInProgress())
 	{
-		InterruptPending = true;
+		PgCurrentBackendRaiseProcDieInterrupt(pg_siginfo->pid,
+											 pg_siginfo->uid);
 		ProcDiePending = true;
 
 		/*
@@ -3155,11 +3564,11 @@ void
 StatementCancelHandler(SIGNAL_ARGS)
 {
 	/*
-	 * Don't joggle the elbow of proc_exit
+	 * Don't joggle the elbow of backend exit.
 	 */
-	if (!proc_exit_inprogress)
+	if (!PgBackendExitInProgress())
 	{
-		InterruptPending = true;
+		RaiseInterrupt(PG_BACKEND_INTERRUPT_QUERY_CANCEL);
 		QueryCancelPending = true;
 	}
 
@@ -3188,7 +3597,8 @@ void
 HandleRecoveryConflictInterrupt(void)
 {
 	if (pg_atomic_read_u32(&MyProc->pendingRecoveryConflicts) != 0)
-		InterruptPending = true;
+		RaiseInterrupt(PG_BACKEND_INTERRUPT_RECOVERY_CONFLICT);
+
 	/* latch will be set by procsignal_sigusr1_handler */
 }
 
@@ -3358,14 +3768,14 @@ report_recovery_conflict(RecoveryConflictReason reason)
 			/* Avoid losing sync in the FE/BE protocol. */
 			if (QueryCancelHoldoffCount != 0)
 			{
-				/*
-				 * Re-arm and defer this interrupt until later.  See similar
-				 * code in ProcessInterrupts().
-				 */
-				(void) pg_atomic_fetch_or_u32(&MyProc->pendingRecoveryConflicts, (1 << reason));
-				InterruptPending = true;
-				return;
-			}
+					/*
+					 * Re-arm and defer this interrupt until later.  See similar
+					 * code in ProcessInterrupts().
+					 */
+					(void) pg_atomic_fetch_or_u32(&MyProc->pendingRecoveryConflicts, (1 << reason));
+					RaiseInterrupt(PG_BACKEND_INTERRUPT_RECOVERY_CONFLICT);
+					return;
+				}
 
 			/*
 			 * We are cleared to throw an ERROR.  Either it's the logical slot
@@ -3403,11 +3813,11 @@ ProcessRecoveryConflictInterrupts(void)
 	uint32		pending;
 
 	/*
-	 * We don't need to worry about joggling the elbow of proc_exit, because
-	 * proc_exit_prepare() holds interrupts, so ProcessInterrupts() won't call
-	 * us.
+	 * We don't need to worry about joggling the elbow of backend exit,
+	 * because PgBackendExitCleanup() holds interrupts, so ProcessInterrupts()
+	 * won't call us.
 	 */
-	Assert(!proc_exit_inprogress);
+	Assert(!PgBackendExitInProgress());
 	Assert(InterruptHoldoffCount == 0);
 
 	/* Are any recovery conflict pending? */
@@ -3440,7 +3850,8 @@ ProcessRecoveryConflictInterrupts(void)
  *
  * If an interrupt condition is pending, and it's safe to service it,
  * then clear the flag and accept the interrupt.  Called only when
- * InterruptPending is true.
+ * InterruptPending is true, or when the current logical backend has pending
+ * mailbox interrupts.
  *
  * Note: if INTERRUPTS_CAN_BE_PROCESSED() is true, then ProcessInterrupts
  * is guaranteed to clear the InterruptPending flag before returning.
@@ -3454,6 +3865,7 @@ ProcessInterrupts(void)
 	/* OK to accept any interrupts now? */
 	if (InterruptHoldoffCount != 0 || CritSectionCount != 0)
 		return;
+	PgCurrentBackendApplyInterrupts();
 	InterruptPending = false;
 
 	if (ProcDiePending)
@@ -3493,7 +3905,7 @@ ProcessInterrupts(void)
 			 * The logical replication launcher can be stopped at any time.
 			 * Use exit status 1 so the background worker is restarted.
 			 */
-			proc_exit(1);
+			PgBackendExit(1);
 		}
 		else if (AmWalReceiverProcess())
 			ereport(FATAL,
@@ -3512,7 +3924,7 @@ ProcessInterrupts(void)
 					(errmsg_internal("io worker shutting down due to administrator command"),
 					 ERRDETAIL_SIGNAL_SENDER(sender_pid, sender_uid)));
 
-			proc_exit(0);
+			PgBackendExit(0);
 		}
 		else
 			ereport(FATAL,
@@ -4349,31 +4761,2331 @@ PostgresSingleUserMain(int argc, char *argv[],
 }
 
 
-/* ----------------------------------------------------------------
- * PostgresMain
- *	   postgres main loop -- all backends, interactive or otherwise loop here
- *
- * dbname is the name of the database to connect to, username is the
- * PostgreSQL user name to be used for the session.
+static void
+PgSessionLoopStateInit(PgSessionLoopState *state)
+{
+	state->send_ready_for_query = true;
+	state->idle_in_transaction_timeout_enabled = false;
+	state->idle_session_timeout_enabled = false;
+	state->doing_extended_query_message = false;
+	state->ignore_till_sync = false;
+	state->step_error_boundary_active = false;
+	state->doing_command_read = false;
+	state->transaction_started = false;
+}
+
+static void
+PgSessionRecoverError(PgSession *session)
+{
+	PgSessionLoopState *state;
+	MemoryContext message_context;
+
+	Assert(session != NULL);
+	state = &session->loop_state;
+	message_context = MessageContext;
+
+	/*
+	 * NOTE: if you are tempted to add more code here, consider the high
+	 * probability that it should be in AbortTransaction() instead.  The only
+	 * stuff done directly here should be stuff that is guaranteed to apply
+	 * *only* for outer-level error recovery, such as adjusting the FE/BE
+	 * protocol status.
+	 */
+
+	/* Since not using PG_TRY, must reset error stack by hand */
+	error_context_stack = NULL;
+
+	/* Prevent interrupts while cleaning up */
+	HOLD_INTERRUPTS();
+
+	/*
+	 * Forget any pending QueryCancel request, since we're returning to the
+	 * idle loop anyway, and cancel any active timeout requests.  (In future we
+	 * might want to allow some timeout requests to survive, but at minimum
+	 * it'd be necessary to do reschedule_timeouts(), in case we got here
+	 * because of a query cancel interrupting the SIGALRM interrupt handler.)
+	 * Note in particular that we must clear the statement and lock timeout
+	 * indicators, to prevent any future plain query cancels from being
+	 * misreported as timeouts in case we're forgetting a timeout cancel.
+	 */
+	disable_all_timeouts(false);	/* do first to avoid race condition */
+	QueryCancelPending = false;
+	state->idle_in_transaction_timeout_enabled = false;
+	state->idle_session_timeout_enabled = false;
+
+	/* Not reading from the client anymore. */
+	state->doing_command_read = false;
+
+	/* Make sure libpq is in a good state */
+	pq_comm_reset();
+
+	/* Report the error to the client and/or server log */
+	EmitErrorReport();
+
+	/*
+	 * If Valgrind noticed something during the erroneous query, print the
+	 * query string, assuming we have one.
+	 */
+	valgrind_report_error_query(debug_query_string);
+
+	/*
+	 * Make sure debug_query_string gets reset before we possibly clobber the
+	 * storage it points at.
+	 */
+	debug_query_string = NULL;
+
+	/*
+	 * Abort the current transaction in order to recover.
+	 */
+	AbortCurrentTransaction();
+
+	if (am_walsender)
+		WalSndErrorCleanup();
+
+	PortalErrorCleanup();
+
+	/*
+	 * We can't release replication slots inside AbortTransaction() as we need
+	 * to be able to start and abort transactions while having a slot acquired.
+	 * But we never need to hold them across top level errors, so releasing
+	 * here is fine. There also is a before_shmem_exit() callback ensuring
+	 * correct cleanup on FATAL errors.
+	 */
+	if (MyReplicationSlot != NULL)
+		ReplicationSlotRelease();
+
+	/* We also want to cleanup temporary slots on error. */
+	ReplicationSlotCleanup(false);
+
+	jit_reset_after_error();
+
+	/*
+	 * Now return to normal top-level context and clear ErrorContext for next
+	 * time.
+	 */
+	MemoryContextSwitchTo(message_context);
+	FlushErrorState();
+
+	/*
+	 * If we were handling an extended-query-protocol message, initiate skip
+	 * till next Sync.  This also causes us not to issue ReadyForQuery (until
+	 * we get Sync).
+	 */
+	if (state->doing_extended_query_message)
+		state->ignore_till_sync = true;
+
+	/* We don't have a transaction command open anymore */
+	state->transaction_started = false;
+
+	/*
+	 * If an error occurred while we were reading a message from the client, we
+	 * have potentially lost track of where the previous message ends and the
+	 * next one begins.  Even though we have otherwise recovered from the error,
+	 * we cannot safely read any more messages from the client, so there isn't
+	 * much we can do with the connection anymore.
+	 */
+	if (pq_is_reading_msg())
+		ereport(FATAL,
+				(errcode(ERRCODE_PROTOCOL_VIOLATION),
+				 errmsg("terminating connection because protocol synchronization was lost")));
+
+	/* Now we can allow interrupts again */
+	RESUME_INTERRUPTS();
+}
+
+static pg_always_inline PgStepResult
+PgSessionStepUnprotected(PgSession *session, int max_messages,
+						 bool protocol_park_enabled,
+						 bool return_logical_exits)
+{
+	PgSessionLoopState *state;
+	MemoryContext message_context;
+	int			firstchar;
+	StringInfoData input_message;
+	char		input_message_data[PG_INPUT_MESSAGE_STACK_BUFFER_SIZE];
+
+	Assert(session != NULL);
+	Assert(max_messages >= 0);
+	state = &session->loop_state;
+	Assert(state->step_error_boundary_active);
+	message_context = session->execution->memory_contexts.message_context;
+
+	/*
+	 * At top of loop, reset extended-query-message flag, so that any errors
+	 * encountered in "idle" state don't provoke skip.
+	 */
+	state->doing_extended_query_message = false;
+
+	/*
+	 * For valgrind reporting purposes, the "current query" begins here.
+	 */
+#ifdef USE_VALGRIND
+	old_valgrind_error_count = VALGRIND_COUNT_ERRORS;
+#endif
+
+	/*
+	 * Release storage left over from prior query cycle, and create a new query
+	 * input buffer in the cleared MessageContext.
+	 */
+	MemoryContextSwitchTo(message_context);
+	MemoryContextReset(message_context);
+
+	initStringInfoFromCallerBuffer(&input_message, input_message_data,
+								   sizeof(input_message_data));
+
+	/*
+	 * Also consider releasing our catalog snapshot if any, so that it's not
+	 * preventing advance of global xmin while we wait for the client.
+	 */
+	InvalidateCatalogSnapshotConditionally();
+
+	/*
+	 * (1) If we've reached idle state, tell the frontend we're ready for a new
+	 * query.
+	 *
+	 * Note: this includes fflush()'ing the last of the prior output.
+	 *
+	 * This is also a good time to flush out collected statistics to the
+	 * cumulative stats system, and to update the PS stats display.  We avoid
+	 * doing those every time through the message loop because it'd slow down
+	 * processing of batched messages, and because we don't want to report
+	 * uncommitted updates (that confuses autovacuum).  The notification
+	 * processor wants a call too, if we are not in a transaction block.
+	 *
+	 * Also, if an idle timeout is enabled, start the timer for that.
+	 */
+	if (state->send_ready_for_query)
+	{
+		if (IsAbortedTransactionBlockState())
+		{
+			set_ps_display("idle in transaction (aborted)");
+			pgstat_report_activity(STATE_IDLEINTRANSACTION_ABORTED, NULL);
+
+			/* Start the idle-in-transaction timer */
+			if (IdleInTransactionSessionTimeout > 0
+				&& (IdleInTransactionSessionTimeout < TransactionTimeout || TransactionTimeout == 0))
+			{
+				state->idle_in_transaction_timeout_enabled = true;
+				enable_timeout_after(IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
+									 IdleInTransactionSessionTimeout);
+			}
+		}
+		else if (IsTransactionOrTransactionBlock())
+		{
+			set_ps_display("idle in transaction");
+			pgstat_report_activity(STATE_IDLEINTRANSACTION, NULL);
+
+			/* Start the idle-in-transaction timer */
+			if (IdleInTransactionSessionTimeout > 0
+				&& (IdleInTransactionSessionTimeout < TransactionTimeout || TransactionTimeout == 0))
+			{
+				state->idle_in_transaction_timeout_enabled = true;
+				enable_timeout_after(IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
+									 IdleInTransactionSessionTimeout);
+			}
+		}
+		else
+		{
+			long		stats_timeout;
+
+			/*
+			 * Process incoming notifies (including self-notifies), if any, and
+			 * send relevant messages to the client.  Doing it here helps ensure
+			 * stable behavior in tests: if any notifies were received during
+			 * the just-finished transaction, they'll be seen by the client
+			 * before ReadyForQuery is.
+			 */
+			if (notifyInterruptPending)
+				ProcessNotifyInterrupt(false);
+
+			/*
+			 * Check if we need to report stats. If pgstat_report_stat()
+			 * decides it's too soon to flush out pending stats / lock
+			 * contention prevented reporting, it'll tell us when we should try
+			 * to report stats again (so that stats updates aren't unduly
+			 * delayed if the connection goes idle for a long time). We only
+			 * enable the timeout if we don't already have a timeout in
+			 * progress, because we don't disable the timeout below.
+			 * enable_timeout_after() needs to determine the current timestamp,
+			 * which can have a negative performance impact. That's OK because
+			 * pgstat_report_stat() won't have us wake up sooner than a prior
+			 * call.
+			 */
+			stats_timeout = pgstat_report_stat(false);
+			if (stats_timeout > 0)
+			{
+				if (!get_timeout_active(IDLE_STATS_UPDATE_TIMEOUT))
+					enable_timeout_after(IDLE_STATS_UPDATE_TIMEOUT,
+										 stats_timeout);
+			}
+			else
+			{
+				/* all stats flushed, no need for the timeout */
+				if (get_timeout_active(IDLE_STATS_UPDATE_TIMEOUT))
+					disable_timeout(IDLE_STATS_UPDATE_TIMEOUT, false);
+			}
+
+			set_ps_display("idle");
+			pgstat_report_activity(STATE_IDLE, NULL);
+
+			/* Start the idle-session timer */
+			if (IdleSessionTimeout > 0)
+			{
+				state->idle_session_timeout_enabled = true;
+				enable_timeout_after(IDLE_SESSION_TIMEOUT,
+									 IdleSessionTimeout);
+			}
+		}
+
+		/* Report any recently-changed GUC options */
+		ReportChangedGUCOptions();
+
+		/*
+		 * The first time this backend is ready for query, log the durations of
+		 * the different components of connection establishment and setup.
+		 */
+		if (conn_timing.ready_for_use == TIMESTAMP_MINUS_INFINITY &&
+			(log_connections & LOG_CONNECTION_SETUP_DURATIONS) &&
+			IsExternalConnectionBackend(MyBackendType))
+		{
+			uint64		total_duration,
+						fork_duration,
+						auth_duration;
+
+			conn_timing.ready_for_use = GetCurrentTimestamp();
+
+			total_duration =
+				TimestampDifferenceMicroseconds(conn_timing.socket_create,
+												conn_timing.ready_for_use);
+			fork_duration =
+				TimestampDifferenceMicroseconds(conn_timing.fork_start,
+												conn_timing.fork_end);
+			auth_duration =
+				TimestampDifferenceMicroseconds(conn_timing.auth_start,
+												conn_timing.auth_end);
+
+			ereport(LOG,
+					errmsg("connection ready: setup total=%.3f ms, fork=%.3f ms, authentication=%.3f ms",
+						   (double) total_duration / NS_PER_US,
+						   (double) fork_duration / NS_PER_US,
+						   (double) auth_duration / NS_PER_US));
+		}
+
+		ReadyForQuery(whereToSendOutput);
+		state->send_ready_for_query = false;
+	}
+
+	/*
+	 * (2) Allow asynchronous signals to be executed immediately if they come
+	 * in while we are waiting for client input. (This must be conditional
+	 * since we don't want, say, reads on behalf of COPY FROM STDIN doing the
+	 * same thing.)
+	 */
+	state->doing_command_read = true;
+
+	/*
+	 * (3) read a command (loop blocks here)
+	 */
+	MemoryContextSwitchTo(message_context);
+	if (unlikely(protocol_park_enabled))
+		firstchar = ReadCommandProtocolPark(session, &input_message);
+	else
+		firstchar = ReadCommand(session, &input_message);
+
+	if (unlikely(protocol_park_enabled &&
+				 firstchar == PG_READ_COMMAND_PROTOCOL_PARK))
+		return PG_STEP_PARK_PROTOCOL_READ;
+
+	/*
+	 * (4) turn off the idle-in-transaction and idle-session timeouts if
+	 * active.  We do this before step (5) so that any last-moment timeout is
+	 * certain to be detected in step (5).
+	 *
+	 * At most one of these timeouts will be active, so there's no need to
+	 * worry about combining the timeout.c calls into one.
+	 */
+	if (state->idle_in_transaction_timeout_enabled)
+	{
+		disable_timeout(IDLE_IN_TRANSACTION_SESSION_TIMEOUT, false);
+		state->idle_in_transaction_timeout_enabled = false;
+	}
+	if (state->idle_session_timeout_enabled)
+	{
+		disable_timeout(IDLE_SESSION_TIMEOUT, false);
+		state->idle_session_timeout_enabled = false;
+	}
+
+	/*
+	 * (5) disable async signal conditions again.
+	 *
+	 * Query cancel is supposed to be a no-op when there is no query in
+	 * progress, so if a query cancel arrived while we were idle, just reset
+	 * QueryCancelPending. ProcessInterrupts() has that effect when it's called
+	 * when DoingCommandRead is set, so check for interrupts before resetting
+	 * DoingCommandRead.
+	 */
+	CHECK_FOR_INTERRUPTS();
+	state->doing_command_read = false;
+
+	/*
+	 * (6) check for any other interesting events that happened while we slept.
+	 */
+	if (ConfigReloadPending)
+	{
+		ConfigReloadPending = false;
+		ProcessConfigFile(PGC_SIGHUP);
+	}
+
+	/*
+	 * (7) process the command.  But ignore it if we're skipping till Sync.
+	 */
+	if (state->ignore_till_sync && firstchar != EOF)
+		return PG_STEP_CONTINUE;
+
+	switch (firstchar)
+	{
+		case PqMsg_Query:
+			{
+				const char *query_string;
+
+				/* Set statement_timestamp() */
+				SetCurrentStatementStartTimestamp();
+
+				query_string = pq_getmsgstring(&input_message);
+				pq_getmsgend(&input_message);
+
+				if (am_walsender)
+				{
+					if (!exec_replication_command(query_string))
+						exec_simple_query(query_string);
+				}
+				else
+					exec_simple_query(query_string);
+
+				valgrind_report_error_query(query_string);
+
+				state->send_ready_for_query = true;
+			}
+			break;
+
+		case PqMsg_Parse:
+			{
+				const char *stmt_name;
+				const char *query_string;
+				int			numParams;
+				Oid		   *paramTypes = NULL;
+
+				forbidden_in_wal_sender(firstchar);
+
+				/* Set statement_timestamp() */
+				SetCurrentStatementStartTimestamp();
+
+				stmt_name = pq_getmsgstring(&input_message);
+				query_string = pq_getmsgstring(&input_message);
+				numParams = pq_getmsgint(&input_message, 2);
+				if (numParams > 0)
+				{
+					paramTypes = palloc_array(Oid, numParams);
+					for (int i = 0; i < numParams; i++)
+						paramTypes[i] = pq_getmsgint(&input_message, 4);
+				}
+				pq_getmsgend(&input_message);
+
+				exec_parse_message(query_string, stmt_name,
+								   paramTypes, numParams);
+
+				valgrind_report_error_query(query_string);
+			}
+			break;
+
+		case PqMsg_Bind:
+			forbidden_in_wal_sender(firstchar);
+
+			/* Set statement_timestamp() */
+			SetCurrentStatementStartTimestamp();
+
+			/*
+			 * this message is complex enough that it seems best to put the
+			 * field extraction out-of-line
+			 */
+			exec_bind_message(&input_message);
+
+			/* exec_bind_message does valgrind_report_error_query */
+			break;
+
+		case PqMsg_Execute:
+			{
+				const char *portal_name;
+				int			max_rows;
+
+				forbidden_in_wal_sender(firstchar);
+
+				/* Set statement_timestamp() */
+				SetCurrentStatementStartTimestamp();
+
+				portal_name = pq_getmsgstring(&input_message);
+				max_rows = pq_getmsgint(&input_message, 4);
+				pq_getmsgend(&input_message);
+
+				exec_execute_message(portal_name, max_rows);
+
+				/* exec_execute_message does valgrind_report_error_query */
+			}
+			break;
+
+		case PqMsg_FunctionCall:
+			forbidden_in_wal_sender(firstchar);
+
+			/* Set statement_timestamp() */
+			SetCurrentStatementStartTimestamp();
+
+			/* Report query to various monitoring facilities. */
+			pgstat_report_activity(STATE_FASTPATH, NULL);
+			set_ps_display("<FASTPATH>");
+
+			/* start an xact for this function invocation */
+			start_xact_command();
+
+			/*
+			 * Note: we may at this point be inside an aborted transaction.  We
+			 * can't throw error for that until we've finished reading the
+			 * function-call message, so HandleFunctionRequest() must check for
+			 * it after doing so. Be careful not to do anything that assumes
+			 * we're inside a valid transaction here.
+			 */
+
+			/* switch back to message context */
+			MemoryContextSwitchTo(message_context);
+
+			HandleFunctionRequest(&input_message);
+
+			/* commit the function-invocation transaction */
+			finish_xact_command();
+
+			valgrind_report_error_query("fastpath function call");
+
+			state->send_ready_for_query = true;
+			break;
+
+		case PqMsg_Close:
+			{
+				int			close_type;
+				const char *close_target;
+
+				forbidden_in_wal_sender(firstchar);
+
+				close_type = pq_getmsgbyte(&input_message);
+				close_target = pq_getmsgstring(&input_message);
+				pq_getmsgend(&input_message);
+
+				switch (close_type)
+				{
+					case 'S':
+						if (close_target[0] != '\0')
+							DropPreparedStatement(close_target, false);
+						else
+						{
+							/* special-case the unnamed statement */
+							drop_unnamed_stmt();
+						}
+						break;
+					case 'P':
+						{
+							Portal		portal;
+
+							portal = GetPortalByName(close_target);
+							if (PortalIsValid(portal))
+								PortalDrop(portal, false);
+						}
+						break;
+					default:
+						ereport(ERROR,
+								(errcode(ERRCODE_PROTOCOL_VIOLATION),
+								 errmsg("invalid CLOSE message subtype %d",
+										close_type)));
+						break;
+				}
+
+				if (whereToSendOutput == DestRemote)
+					pq_putemptymessage(PqMsg_CloseComplete);
+
+				valgrind_report_error_query("CLOSE message");
+			}
+			break;
+
+		case PqMsg_Describe:
+			{
+				int			describe_type;
+				const char *describe_target;
+
+				forbidden_in_wal_sender(firstchar);
+
+				/* Set statement_timestamp() (needed for xact) */
+				SetCurrentStatementStartTimestamp();
+
+				describe_type = pq_getmsgbyte(&input_message);
+				describe_target = pq_getmsgstring(&input_message);
+				pq_getmsgend(&input_message);
+
+				switch (describe_type)
+				{
+					case 'S':
+						exec_describe_statement_message(describe_target);
+						break;
+					case 'P':
+						exec_describe_portal_message(describe_target);
+						break;
+					default:
+						ereport(ERROR,
+								(errcode(ERRCODE_PROTOCOL_VIOLATION),
+								 errmsg("invalid DESCRIBE message subtype %d",
+										describe_type)));
+						break;
+				}
+
+				valgrind_report_error_query("DESCRIBE message");
+			}
+			break;
+
+		case PqMsg_Flush:
+			pq_getmsgend(&input_message);
+			if (whereToSendOutput == DestRemote)
+				pq_flush();
+			break;
+
+		case PqMsg_Sync:
+			pq_getmsgend(&input_message);
+
+			/*
+			 * If pipelining was used, we may be in an implicit transaction
+			 * block. Close it before calling finish_xact_command.
+			 */
+			EndImplicitTransactionBlock();
+			finish_xact_command();
+			valgrind_report_error_query("SYNC message");
+			state->send_ready_for_query = true;
+			break;
+
+			/*
+			 * PqMsg_Terminate means that the frontend is closing down the
+			 * socket. EOF means unexpected loss of frontend connection. Either
+			 * way, perform normal shutdown.
+			 */
+		case EOF:
+
+			/* for the cumulative statistics system */
+			pgStatSessionEndCause = DISCONNECT_CLIENT_EOF;
+
+			pg_fallthrough;
+
+		case PqMsg_Terminate:
+
+			/*
+			 * Reset whereToSendOutput to prevent ereport from attempting to
+			 * send any more messages to client.
+			 */
+			if (whereToSendOutput == DestRemote)
+				whereToSendOutput = DestNone;
+
+			if (return_logical_exits)
+				return PG_STEP_DONE;
+
+			/*
+			 * NOTE: if you are tempted to add more code here, DON'T! Whatever
+			 * you had in mind to do should be set up as an on_proc_exit or
+			 * on_shmem_exit callback, instead. Otherwise it will fail to be
+			 * called during other backend-shutdown scenarios.
+			 */
+			PgBackendExit(0);
+
+		case PqMsg_CopyData:
+		case PqMsg_CopyDone:
+		case PqMsg_CopyFail:
+
+			/*
+			 * Accept but ignore these messages, per protocol spec; we probably
+			 * got here because a COPY failed, and the frontend is still sending
+			 * data.
+			 */
+			break;
+
+		default:
+			ereport(FATAL,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("invalid frontend message type %d",
+							firstchar)));
+	}
+
+	return PG_STEP_CONTINUE;
+}
+
+PgStepResult
+PgSessionStep(PgSession *session, PgStepBudget budget)
+{
+	PgSessionLoopState *state;
+	sigjmp_buf **exception_stack_ref;
+	ErrorContextCallback **context_stack_ref;
+	sigjmp_buf *save_exception_stack;
+	ErrorContextCallback *save_context_stack;
+	sigjmp_buf	local_sigjmp_buf;
+	PgStepResult result;
+	int			processed_messages = 0;
+
+	Assert(session != NULL);
+	Assert(budget.max_messages >= 0);
+	state = &session->loop_state;
+	Assert(!state->step_error_boundary_active);
+
+	/*
+	 * Protected POSTGRES main-loop step begins here.
+	 *
+	 * If an exception is encountered, processing resumes here so we abort the
+	 * current transaction and start a new one.
+	 *
+	 * You might wonder why this isn't coded as an infinite loop around a
+	 * PG_TRY construct.  The reason is that this is the bottom of the
+	 * exception stack, and so with PG_TRY there would be no exception handler
+	 * in force at all during the CATCH part.  By leaving the outermost setjmp
+	 * always active, we have at least some chance of recovering from an error
+	 * during error recovery.  (If we get into an infinite loop thereby, it
+	 * will soon be stopped by overflow of elog.c's internal state stack.)
+	 *
+	 * If we longjmp'd out of a signal handler on a platform where that leaves
+	 * the signal blocked, restore UnBlockSig before error recovery.  Keep the
+	 * restoration explicit here instead of using sigsetjmp(..., 1), because
+	 * PgSessionStep() is now a one-message boundary and saving the signal mask
+	 * on every successful message is visible in tiny-query hot paths.
+	 */
+	exception_stack_ref = PgCurrentExceptionStackRefFast();
+	context_stack_ref = PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentErrorContextStackHotRef,
+														 CurrentPgExecution,
+														 PgCurrentErrorContextStackRef);
+	save_exception_stack = *exception_stack_ref;
+	save_context_stack = *context_stack_ref;
+	state->step_error_boundary_active = true;
+
+	if (sigsetjmp(local_sigjmp_buf, 0) != 0)
+	{
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+		PgSessionRecoverError(session);
+
+		if (!state->ignore_till_sync)
+			state->send_ready_for_query = true;	/* after error */
+
+		*exception_stack_ref = save_exception_stack;
+		*context_stack_ref = save_context_stack;
+		state->step_error_boundary_active = false;
+
+		return PG_STEP_ERROR_RECOVERED;
+	}
+	else
+	{
+		/* We can now handle ereport(ERROR) */
+		*exception_stack_ref = &local_sigjmp_buf;
+
+		for (;;)
+		{
+			result = PgSessionStepUnprotected(session, budget.max_messages,
+											  budget.protocol_park_enabled,
+											  budget.return_logical_exits);
+			if (result != PG_STEP_CONTINUE)
+				break;
+
+			processed_messages++;
+			if (budget.max_messages > 0 &&
+				processed_messages >= budget.max_messages)
+				break;
+		}
+	}
+
+	*exception_stack_ref = save_exception_stack;
+	*context_stack_ref = save_context_stack;
+	state->step_error_boundary_active = false;
+
+	return result;
+}
+
+pg_noreturn void
+PgSessionRun(PgSession *session)
+{
+	PgSessionLoopState *state;
+	sigjmp_buf **exception_stack_ref;
+	sigjmp_buf	local_sigjmp_buf;
+
+	Assert(session != NULL);
+	state = &session->loop_state;
+	Assert(!state->step_error_boundary_active);
+
+	exception_stack_ref = PgCurrentExceptionStackRefFast();
+	state->step_error_boundary_active = true;
+
+	if (sigsetjmp(local_sigjmp_buf, 1) != 0)
+	{
+		PgSessionRecoverError(session);
+
+		if (!state->ignore_till_sync)
+			state->send_ready_for_query = true;	/* initially, or after error */
+	}
+
+	/* We can now handle ereport(ERROR) */
+	*exception_stack_ref = &local_sigjmp_buf;
+
+	for (;;)
+		(void) PgSessionStepUnprotected(session, 0, false, false);
+}
+
+static long
+PgProtocolParkTimeoutDelayMs(PgBackend *backend,
+							 PgProtocolParkSpec *park_spec,
+							 bool *stale_timeout)
+{
+	TimestampTz now;
+	long		delay_ms;
+
+	Assert(backend != NULL);
+	Assert(park_spec != NULL);
+	Assert(stale_timeout != NULL);
+
+	*stale_timeout = false;
+
+	if (!park_spec->timeout_wake_at_valid)
+		return -1;
+
+	if (!PgBackendProtocolReadParkTimeoutGenerationValid(backend,
+														 park_spec->generation))
+	{
+		*stale_timeout = true;
+		return 0;
+	}
+
+	now = GetCurrentTimestamp();
+	if (now >= park_spec->timeout_wake_at)
+		return 0;
+
+	delay_ms = TimestampDifferenceMilliseconds(now,
+											   park_spec->timeout_wake_at);
+	if (delay_ms < 0)
+		return 0;
+	if (delay_ms > INT_MAX)
+		return INT_MAX;
+
+	return delay_ms;
+}
+
+static long
+PgProtocolParkHibernateDelayMs(PgBackend *backend, bool *hibernate_due)
+{
+	PgBackendProtocolParkState *park_state;
+	TimestampTz now;
+	long		elapsed_ms;
+	long		delay_ms;
+
+	Assert(backend != NULL);
+	Assert(hibernate_due != NULL);
+
+	*hibernate_due = false;
+
+	if (pooled_protocol_hibernate_after_ms < 0)
+		return -1;
+
+	park_state = &backend->protocol_park;
+	if (park_state->state != PG_PROTOCOL_PARK_COMMITTED ||
+		park_state->hibernated ||
+		park_state->committed_at == 0)
+		return -1;
+
+	if (pooled_protocol_hibernate_after_ms == 0)
+	{
+		*hibernate_due = true;
+		return 0;
+	}
+
+	now = GetCurrentTimestamp();
+	elapsed_ms = TimestampDifferenceMilliseconds(park_state->committed_at,
+												 now);
+	if (elapsed_ms < 0)
+		elapsed_ms = 0;
+	if (elapsed_ms >= pooled_protocol_hibernate_after_ms)
+	{
+		*hibernate_due = true;
+		return 0;
+	}
+
+	delay_ms = pooled_protocol_hibernate_after_ms - elapsed_ms;
+	if (delay_ms > INT_MAX)
+		return INT_MAX;
+	return delay_ms;
+}
+
+static bool
+PgBackendProtocolReadParkMarkImmediateWake(PgBackend *backend)
+{
+	PgBackendProtocolParkState *park_state;
+	PgProtocolParkSpec *park_spec;
+	PgConnection *connection;
+	bool		stale_timeout;
+	bool		hibernate_due;
+	long		timeout_ms;
+	PgBackendInterruptMask pending_interrupts;
+
+	Assert(backend != NULL);
+
+	park_state = &backend->protocol_park;
+	if (park_state->state != PG_PROTOCOL_PARK_COMMITTED ||
+		(park_state->scheduler_queue_state !=
+		 PG_PROTOCOL_SCHEDULER_QUEUE_PARKED_PROTOCOL_READ &&
+		 park_state->scheduler_queue_state !=
+		 PG_PROTOCOL_SCHEDULER_QUEUE_POLLING))
+		return false;
+
+	park_spec = &park_state->spec;
+	Assert(park_spec->backend == backend);
+
+	if (park_spec->transport_buffered_input)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_BUFFERED_INPUT,
+												 0);
+		return true;
+	}
+
+	if (park_spec->transport_wait_events == 0 ||
+		park_spec->socket == PGINVALID_SOCKET)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT,
+												 0);
+		return true;
+	}
+
+	connection = park_spec->connection;
+	if (connection == NULL ||
+		connection->socket_io.transport_generation !=
+		park_spec->transport_generation)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT,
+												 0);
+		return true;
+	}
+
+	timeout_ms = PgProtocolParkTimeoutDelayMs(backend, park_spec,
+											 &stale_timeout);
+	if (stale_timeout)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_STALE_TIMEOUT,
+												 0);
+		return true;
+	}
+	if (timeout_ms == 0)
+	{
+		PgBackendMarkProtocolReadParkWakeEvents(backend, park_spec,
+												WL_TIMEOUT);
+		return true;
+	}
+
+	pending_interrupts =
+		pg_atomic_read_u32(&backend->interrupts.pending_mask);
+	if (pending_interrupts != 0)
+	{
+		PgBackendMarkProtocolReadParkWakeEvents(backend, park_spec,
+												WL_LATCH_SET);
+		return true;
+	}
+
+	(void) PgProtocolParkHibernateDelayMs(backend, &hibernate_due);
+	if (hibernate_due)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_HIBERNATE,
+												 0);
+		return true;
+	}
+
+	return false;
+}
+
+static void
+PgBackendMarkProtocolReadParkWakeEvents(PgBackend *backend,
+										PgProtocolParkSpec *park_spec,
+										uint32 wake_events)
+{
+	uint32		wake_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
+	PgBackendInterruptMask pending_interrupts;
+
+	Assert(backend != NULL);
+	Assert(park_spec != NULL);
+
+	if (wake_events & park_spec->transport_wait_events)
+		wake_reasons |= PG_PROTOCOL_PARK_WAKE_TRANSPORT;
+	if (wake_events & WL_SOCKET_CLOSED)
+		wake_reasons |= PG_PROTOCOL_PARK_WAKE_CLOSED;
+	if (wake_events & WL_LATCH_SET)
+		wake_reasons |= PG_PROTOCOL_PARK_WAKE_LOGICAL;
+	if (wake_events & WL_POSTMASTER_DEATH)
+		wake_reasons |= PG_PROTOCOL_PARK_WAKE_POSTMASTER;
+	if (wake_events & WL_TIMEOUT)
+		wake_reasons |= PG_PROTOCOL_PARK_WAKE_TIMEOUT;
+	pending_interrupts =
+		pg_atomic_read_u32(&backend->interrupts.pending_mask);
+	if ((wake_events & WL_LATCH_SET) &&
+		(pending_interrupts &
+		 PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_NOTIFY)))
+		wake_reasons |= PG_PROTOCOL_PARK_WAKE_NOTIFY;
+
+	(void) PgBackendMarkProtocolReadParkWake(backend,
+											 park_spec->generation,
+											 wake_reasons,
+											 wake_events);
+}
+
+bool
+PgBackendPollProtocolReadPark(PgBackend *backend, uint32 *wake_events)
+{
+	PgBackendProtocolParkState *park_state;
+	PgProtocolParkSpec *park_spec;
+	PgConnection *connection;
+	uint32		observed_events = 0;
+	uint32	   *wait_event_info_ptr;
+	bool		stale_timeout;
+	long		timeout_ms;
+
+	Assert(backend != NULL);
+	Assert(CurrentPgBackend == NULL);
+	Assert(CurrentPgSession == NULL);
+	Assert(CurrentPgConnection == NULL);
+	Assert(CurrentPgExecution == NULL);
+
+	if (wake_events != NULL)
+		*wake_events = 0;
+
+	park_state = &backend->protocol_park;
+	if (park_state->state != PG_PROTOCOL_PARK_COMMITTED ||
+		park_state->scheduler_queue_state !=
+		PG_PROTOCOL_SCHEDULER_QUEUE_POLLING)
+		return false;
+
+	park_spec = &park_state->spec;
+	Assert(park_spec->backend == backend);
+	Assert(park_spec->connection != NULL);
+
+	if (park_spec->transport_buffered_input)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_BUFFERED_INPUT,
+												 0);
+		return true;
+	}
+
+	if (park_spec->transport_wait_events == 0 ||
+		park_spec->socket == PGINVALID_SOCKET)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT,
+												 0);
+		return true;
+	}
+
+	connection = park_spec->connection;
+	if (connection->socket_io.transport_generation !=
+		park_spec->transport_generation)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT,
+												 0);
+		return true;
+	}
+
+	timeout_ms = PgProtocolParkTimeoutDelayMs(backend, park_spec,
+											 &stale_timeout);
+	if (stale_timeout)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_STALE_TIMEOUT,
+												 0);
+		return true;
+	}
+	if (timeout_ms == 0)
+		observed_events |= WL_TIMEOUT;
+
+	if (observed_events == 0)
+	{
+		WaitEventSet *wait_set = connection->protocol.fe_be_wait_set;
+		WaitEvent	events[FeBeWaitSetNEvents];
+		int			rc;
+
+		Assert(wait_set != NULL);
+		ModifyWaitEvent(wait_set, FeBeWaitSetSocketPos,
+						park_spec->transport_wait_events | WL_SOCKET_CLOSED,
+						NULL);
+
+		wait_event_info_ptr = backend->wait_state.wait_event_info_ptr;
+		Assert(wait_event_info_ptr != NULL);
+
+		*(volatile uint32 *) wait_event_info_ptr = park_spec->wait_event_info;
+		PG_TRY();
+		{
+			rc = WaitEventSetWait(wait_set, 0, events, lengthof(events), 0);
+			for (int i = 0; i < rc; i++)
+			{
+				observed_events |= events[i].events;
+				if (events[i].events & (park_spec->transport_wait_events |
+										WL_SOCKET_CLOSED |
+										WL_LATCH_SET |
+										WL_POSTMASTER_DEATH))
+					break;
+			}
+			*(volatile uint32 *) wait_event_info_ptr = 0;
+		}
+		PG_CATCH();
+		{
+			*(volatile uint32 *) wait_event_info_ptr = 0;
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+	}
+
+	if (observed_events == 0)
+		return false;
+
+	PgBackendMarkProtocolReadParkWakeEvents(backend, park_spec,
+											observed_events);
+	if (wake_events != NULL)
+		*wake_events = observed_events;
+	return true;
+}
+
+int
+PgRuntimeProtocolSchedulerPollParkedReads(PgRuntime *runtime,
+										  PgBackend **scratch,
+										  int max_backends)
+{
+	int			nready = 0;
+
+	(void) scratch;
+
+	for (int i = 0; i < max_backends; i++)
+	{
+		PgBackend  *backend;
+		bool		ready = false;
+
+		backend = PgRuntimeProtocolSchedulerLeaseParkedBackend(runtime);
+		if (backend == NULL)
+			break;
+
+		PG_TRY();
+		{
+			ready = PgBackendPollProtocolReadPark(backend, NULL);
+		}
+		PG_CATCH();
+		{
+			(void) PgRuntimeProtocolSchedulerReparkBackendIfPolling(runtime,
+																	backend);
+			PG_RE_THROW();
+		}
+		PG_END_TRY();
+
+		if (ready)
+		{
+			if (!PgRuntimeProtocolSchedulerMarkRunnable(runtime, backend))
+				elog(PANIC, "could not make polled protocol backend runnable");
+			nready++;
+		}
+		else if (!PgRuntimeProtocolSchedulerReparkBackendIfPolling(runtime,
+																   backend))
+			elog(PANIC, "could not return unready protocol backend to parked queue");
+	}
+
+	return nready;
+}
+
+static short
+PgProtocolParkPollEvents(uint32 wait_events)
+{
+	short		events = 0;
+
+	if (wait_events & WL_SOCKET_READABLE)
+		events |= POLLIN;
+	if (wait_events & WL_SOCKET_WRITEABLE)
+		events |= POLLOUT;
+#ifdef POLLRDHUP
+	if (wait_events & WL_SOCKET_CLOSED)
+		events |= POLLRDHUP;
+#endif
+
+	return events;
+}
+
+static uint32
+PgProtocolParkPollWakeEvents(uint32 wait_events, short revents)
+{
+	uint32		wake_events = 0;
+	const short closed_revents =
+		POLLERR | POLLHUP | POLLNVAL
+#ifdef POLLRDHUP
+		| POLLRDHUP
+#endif
+		;
+
+	if (revents == 0)
+		return 0;
+
+	if ((wait_events & WL_SOCKET_READABLE) &&
+		(revents & (POLLIN | POLLERR | POLLHUP)))
+		wake_events |= WL_SOCKET_READABLE;
+	if ((wait_events & WL_SOCKET_WRITEABLE) &&
+		(revents & (POLLOUT | POLLERR | POLLHUP)))
+		wake_events |= WL_SOCKET_WRITEABLE;
+	if ((wait_events & WL_SOCKET_CLOSED) &&
+		(revents & closed_revents))
+		wake_events |= WL_SOCKET_CLOSED;
+
+	return wake_events;
+}
+
+int
+PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
+										  PgBackend **scratch,
+										  struct pollfd *poll_scratch,
+										  int max_backends,
+										  long timeout_ms)
+{
+	int			nbackends = 0;
+	int			registered_sockets = 0;
+	int			nready = 0;
+	long		wait_timeout_ms = timeout_ms;
+	int			rc;
+
+	if (runtime == NULL || scratch == NULL || poll_scratch == NULL ||
+		max_backends <= 0)
+		return 0;
+
+	Assert(CurrentPgBackend == NULL);
+	Assert(CurrentPgSession == NULL);
+	Assert(CurrentPgConnection == NULL);
+	Assert(CurrentPgExecution == NULL);
+
+	for (int i = 0; i < max_backends; i++)
+	{
+		PgBackend  *backend;
+
+		backend = PgRuntimeProtocolSchedulerLeaseParkedBackend(runtime);
+		if (backend == NULL)
+			break;
+
+		scratch[nbackends++] = backend;
+	}
+	if (nbackends <= 0)
+		return 0;
+
+	for (int i = 0; i <= nbackends; i++)
+	{
+		poll_scratch[i].fd = -1;
+		poll_scratch[i].events = 0;
+		poll_scratch[i].revents = 0;
+	}
+
+#ifndef WIN32
+	if (IsUnderPostmaster &&
+		postmaster_alive_fds[POSTMASTER_FD_WATCH] >= 0)
+	{
+		poll_scratch[0].fd = postmaster_alive_fds[POSTMASTER_FD_WATCH];
+		poll_scratch[0].events = POLLIN;
+	}
+#endif
+
+	for (int i = 0; i < nbackends; i++)
+	{
+		PgBackend  *backend = scratch[i];
+
+		if (PgBackendProtocolReadParkMarkImmediateWake(backend))
+		{
+			if (PgRuntimeProtocolSchedulerMarkRunnable(runtime, backend))
+				nready++;
+		}
+	}
+	if (nready > 0)
+	{
+		for (int i = 0; i < nbackends; i++)
+		{
+			PgBackend  *backend = scratch[i];
+
+			if (backend->protocol_park.scheduler_queue_state ==
+				PG_PROTOCOL_SCHEDULER_QUEUE_POLLING &&
+				!PgRuntimeProtocolSchedulerReparkBackendIfPolling(runtime,
+																  backend))
+				elog(PANIC, "could not return unready protocol backend to parked queue");
+		}
+		return nready;
+	}
+
+	for (int i = 0; i < nbackends; i++)
+	{
+		PgBackend  *backend = scratch[i];
+		PgBackendProtocolParkState *park_state;
+		PgProtocolParkSpec *park_spec;
+		bool		stale_timeout;
+		bool		hibernate_due;
+		long		backend_timeout_ms;
+		long		hibernate_delay_ms;
+		bool		duplicate_socket = false;
+
+		park_state = &backend->protocol_park;
+		if (park_state->state != PG_PROTOCOL_PARK_COMMITTED ||
+			park_state->scheduler_queue_state !=
+			PG_PROTOCOL_SCHEDULER_QUEUE_POLLING)
+			continue;
+
+		park_spec = &park_state->spec;
+		if (park_spec->connection == NULL ||
+			park_spec->transport_buffered_input ||
+			park_spec->transport_wait_events == 0 ||
+			park_spec->socket == PGINVALID_SOCKET)
+			continue;
+
+		for (int j = 0; j < i; j++)
+		{
+			PgBackend  *prior_backend = scratch[j];
+			PgBackendProtocolParkState *prior_park_state;
+
+			prior_park_state = &prior_backend->protocol_park;
+			if (prior_park_state->state == PG_PROTOCOL_PARK_COMMITTED &&
+				prior_park_state->scheduler_queue_state ==
+				PG_PROTOCOL_SCHEDULER_QUEUE_POLLING &&
+				prior_park_state->spec.socket == park_spec->socket)
+			{
+				duplicate_socket = true;
+				break;
+			}
+		}
+		if (duplicate_socket)
+		{
+			(void) PgBackendMarkProtocolReadParkWake(backend,
+													 park_spec->generation,
+													 PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT,
+													 0);
+			if (PgRuntimeProtocolSchedulerMarkRunnable(runtime, backend))
+				nready++;
+			continue;
+		}
+
+		backend_timeout_ms = PgProtocolParkTimeoutDelayMs(backend,
+														  park_spec,
+														  &stale_timeout);
+		if (stale_timeout || backend_timeout_ms == 0)
+			continue;
+		if (backend_timeout_ms > 0 &&
+			(wait_timeout_ms < 0 || backend_timeout_ms < wait_timeout_ms))
+			wait_timeout_ms = backend_timeout_ms;
+
+		hibernate_delay_ms = PgProtocolParkHibernateDelayMs(backend,
+															&hibernate_due);
+		if (hibernate_due)
+			continue;
+		if (hibernate_delay_ms > 0 &&
+			(wait_timeout_ms < 0 || hibernate_delay_ms < wait_timeout_ms))
+			wait_timeout_ms = hibernate_delay_ms;
+
+		poll_scratch[i + 1].fd = park_spec->socket;
+		poll_scratch[i + 1].events =
+			PgProtocolParkPollEvents(park_spec->transport_wait_events |
+									 WL_SOCKET_CLOSED);
+		registered_sockets++;
+	}
+
+	if (nready > 0)
+	{
+		for (int i = 0; i < nbackends; i++)
+		{
+			PgBackend  *backend = scratch[i];
+
+			if (backend->protocol_park.scheduler_queue_state ==
+				PG_PROTOCOL_SCHEDULER_QUEUE_POLLING &&
+				!PgRuntimeProtocolSchedulerReparkBackendIfPolling(runtime,
+																  backend))
+				elog(PANIC, "could not return duplicate-wait protocol backend to parked queue");
+		}
+		return nready;
+	}
+
+	if (registered_sockets <= 0)
+	{
+		for (int i = 0; i < nbackends; i++)
+		{
+			PgBackend  *backend = scratch[i];
+
+			if (backend->protocol_park.scheduler_queue_state ==
+				PG_PROTOCOL_SCHEDULER_QUEUE_POLLING &&
+				!PgRuntimeProtocolSchedulerReparkBackendIfPolling(runtime,
+																  backend))
+				elog(PANIC, "could not return unwaited protocol backend to parked queue");
+		}
+		return 0;
+	}
+
+	PG_TRY();
+	{
+		rc = poll(poll_scratch, nbackends + 1, (int) wait_timeout_ms);
+		if (rc < 0 && errno != EINTR)
+			ereport(ERROR,
+					(errcode_for_socket_access(),
+					 errmsg("could not poll pooled protocol sockets: %m")));
+	}
+	PG_CATCH();
+	{
+		for (int i = 0; i < nbackends; i++)
+		{
+			PgBackend  *backend = scratch[i];
+
+			if (backend->protocol_park.scheduler_queue_state ==
+				PG_PROTOCOL_SCHEDULER_QUEUE_POLLING)
+				(void) PgRuntimeProtocolSchedulerReparkBackendIfPolling(runtime,
+																		backend);
+		}
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+#ifndef WIN32
+	if (rc > 0 && poll_scratch[0].revents != 0 && !PostmasterIsAlive())
+		ereport(FATAL,
+				(errcode(ERRCODE_ADMIN_SHUTDOWN),
+				 errmsg("terminating pooled protocol carrier due to unexpected postmaster exit")));
+#endif
+
+	if (rc > 0)
+	{
+		for (int i = 0; i < nbackends; i++)
+		{
+			PgBackend  *backend = scratch[i];
+			PgProtocolParkSpec *park_spec;
+			uint32		wake_events;
+
+			if (poll_scratch[i + 1].revents == 0)
+				continue;
+
+			if (backend->protocol_park.state != PG_PROTOCOL_PARK_COMMITTED)
+				continue;
+			if (backend->protocol_park.scheduler_queue_state !=
+				PG_PROTOCOL_SCHEDULER_QUEUE_POLLING)
+				continue;
+
+			park_spec = &backend->protocol_park.spec;
+			wake_events =
+				PgProtocolParkPollWakeEvents(park_spec->transport_wait_events |
+											 WL_SOCKET_CLOSED,
+											 poll_scratch[i + 1].revents);
+			if (wake_events == 0)
+				continue;
+
+			PgBackendMarkProtocolReadParkWakeEvents(backend, park_spec,
+													wake_events);
+			if (PgRuntimeProtocolSchedulerMarkRunnable(runtime, backend))
+				nready++;
+		}
+	}
+
+	for (int i = 0; i < nbackends; i++)
+	{
+		PgBackend  *backend = scratch[i];
+
+		if (PgBackendProtocolReadParkMarkImmediateWake(backend))
+		{
+			if (PgRuntimeProtocolSchedulerMarkRunnable(runtime, backend))
+				nready++;
+		}
+	}
+
+	for (int i = 0; i < nbackends; i++)
+	{
+		PgBackend  *backend = scratch[i];
+
+		if (backend->protocol_park.scheduler_queue_state ==
+			PG_PROTOCOL_SCHEDULER_QUEUE_POLLING &&
+			!PgRuntimeProtocolSchedulerReparkBackendIfPolling(runtime,
+															  backend))
+			elog(PANIC, "could not return unready protocol backend to parked queue");
+	}
+
+	return nready;
+}
+
+static uint32
+PgSessionStagingWaitProtocolRead(PgBackend *backend,
+								 PgProtocolParkSpec *park_spec)
+{
+	PgConnection *connection;
+	WaitEventSet *wait_set;
+	WaitEvent	events[FeBeWaitSetNEvents];
+	uint32		wake_events = 0;
+	uint32	   *wait_event_info_ptr;
+
+	Assert(backend != NULL);
+	Assert(park_spec != NULL);
+	Assert(park_spec->backend == backend);
+	Assert(park_spec->connection != NULL);
+	Assert(CurrentPgBackend == NULL);
+	Assert(CurrentPgSession == NULL);
+	Assert(CurrentPgConnection == NULL);
+	Assert(CurrentPgExecution == NULL);
+
+	/*
+	 * Buffered transport input is an immediate re-probe condition, not a
+	 * kernel socket wait.  The probe should expose a protocol byte if one is
+	 * available; otherwise the carrier re-enters the top-level loop without
+	 * sleeping so the transport layer can make its own state visible.
+	 */
+	if (park_spec->transport_buffered_input)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_BUFFERED_INPUT,
+												 0);
+		return 0;
+	}
+
+	if (park_spec->transport_wait_events == 0 ||
+		park_spec->socket == PGINVALID_SOCKET)
+	{
+		(void) PgBackendMarkProtocolReadParkWake(backend,
+												 park_spec->generation,
+												 PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT,
+												 0);
+		return 0;
+	}
+
+	connection = park_spec->connection;
+	wait_set = connection->protocol.fe_be_wait_set;
+	Assert(wait_set != NULL);
+
+	wait_event_info_ptr = backend->wait_state.wait_event_info_ptr;
+	Assert(wait_event_info_ptr != NULL);
+
+	ModifyWaitEvent(wait_set, FeBeWaitSetSocketPos,
+					park_spec->transport_wait_events | WL_SOCKET_CLOSED,
+					NULL);
+
+	*(volatile uint32 *) wait_event_info_ptr = park_spec->wait_event_info;
+	PG_TRY();
+	{
+		for (;;)
+		{
+			int			rc;
+			long		timeout_ms;
+			bool		stale_timeout;
+
+			if (connection->socket_io.transport_generation !=
+				park_spec->transport_generation)
+			{
+				(void) PgBackendMarkProtocolReadParkWake(backend,
+														 park_spec->generation,
+														 PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT,
+														 0);
+				break;
+			}
+
+			timeout_ms =
+				PgProtocolParkTimeoutDelayMs(backend, park_spec,
+											 &stale_timeout);
+			if (stale_timeout)
+			{
+				(void) PgBackendMarkProtocolReadParkWake(backend,
+														 park_spec->generation,
+														 PG_PROTOCOL_PARK_WAKE_STALE_TIMEOUT,
+														 0);
+				break;
+			}
+			if (timeout_ms == 0)
+			{
+				wake_events |= WL_TIMEOUT;
+				break;
+			}
+
+			rc = WaitEventSetWait(wait_set, timeout_ms, events,
+								  lengthof(events), 0);
+			if (rc == 0)
+			{
+				wake_events |= WL_TIMEOUT;
+				break;
+			}
+			for (int i = 0; i < rc; i++)
+			{
+				wake_events |= events[i].events;
+				if (events[i].events & (park_spec->transport_wait_events |
+										WL_SOCKET_CLOSED |
+										WL_LATCH_SET |
+										WL_POSTMASTER_DEATH))
+					break;
+			}
+
+			if (wake_events != 0)
+				break;
+		}
+		*(volatile uint32 *) wait_event_info_ptr = 0;
+	}
+	PG_CATCH();
+	{
+		*(volatile uint32 *) wait_event_info_ptr = 0;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (wake_events != 0)
+		PgBackendMarkProtocolReadParkWakeEvents(backend, park_spec,
+												wake_events);
+
+	return wake_events;
+}
+
+static void
+PgProtocolParkMemoryCounters(MemoryContext context,
+							 MemoryContextCounters *counters)
+{
+	MemSet(counters, 0, sizeof(*counters));
+
+	if (context != NULL)
+		MemoryContextMemConsumed(context, counters);
+}
+
+#define PG_PROTOCOL_PARK_CONTEXT_LOG_MAX 512
+#define PG_PROTOCOL_PARK_CONTEXT_LOG_MAX_DEPTH 4
+#define PG_PROTOCOL_PARK_CONTEXT_LOG_INTERVAL 16
+#define PG_PROTOCOL_PARK_CONTEXT_TOKEN_MAX 80
+#define PG_PROTOCOL_PARK_CONTEXT_PATH_MAX 256
+
+typedef struct PgProtocolParkContextMemoryRow
+{
+	int			context_index;
+	int			depth;
+	char		type[16];
+	char		name[PG_PROTOCOL_PARK_CONTEXT_TOKEN_MAX];
+	char		ident[PG_PROTOCOL_PARK_CONTEXT_TOKEN_MAX];
+	char		path[PG_PROTOCOL_PARK_CONTEXT_PATH_MAX];
+	MemoryContextCounters local;
+	MemoryContextCounters recursive;
+} PgProtocolParkContextMemoryRow;
+
+typedef struct PgProtocolParkContextMemoryLogState
+{
+	PgProtocolParkContextMemoryRow rows[PG_PROTOCOL_PARK_CONTEXT_LOG_MAX];
+	int			count;
+} PgProtocolParkContextMemoryLogState;
+
+typedef struct PgProtocolParkCacheMemoryLogState
+{
+	PgBackend  *backend;
+	PgProtocolParkSpec *park_spec;
+} PgProtocolParkCacheMemoryLogState;
+
+static inline Size
+PgProtocolParkMemoryUsed(const MemoryContextCounters *counters)
+{
+	return counters->totalspace - counters->freespace;
+}
+
+static bool
+PgProtocolParkTokenCharAllowed(unsigned char c)
+{
+	return (c >= 'a' && c <= 'z') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= '0' && c <= '9') ||
+		c == '_' || c == '-' || c == '.' || c == ':' ||
+		c == '/' || c == '[' || c == ']';
+}
+
+static void
+PgProtocolParkSanitizeToken(const char *src, char *dst, Size dstlen)
+{
+	Size		i = 0;
+
+	Assert(dstlen > 0);
+
+	if (src == NULL || src[0] == '\0')
+		src = "none";
+
+	while (src[i] != '\0' && i + 1 < dstlen)
+	{
+		unsigned char c = (unsigned char) src[i];
+
+		dst[i] = PgProtocolParkTokenCharAllowed(c) ? (char) c : '_';
+		i++;
+	}
+	dst[i] = '\0';
+}
+
+static void
+PgProtocolParkAppendPath(char *dst, Size dstlen, const char *parent_path,
+						 const char *name)
+{
+	int			written;
+
+	if (parent_path == NULL || parent_path[0] == '\0')
+		written = snprintf(dst, dstlen, "%s", name);
+	else
+		written = snprintf(dst, dstlen, "%s/%s", parent_path, name);
+
+	if (written < 0 || (Size) written >= dstlen)
+		dst[dstlen - 1] = '\0';
+}
+
+static const char *
+PgProtocolParkContextTypeName(MemoryContext context)
+{
+	if (IsA(context, AllocSetContext))
+		return "AllocSet";
+	if (IsA(context, SlabContext))
+		return "Slab";
+	if (IsA(context, GenerationContext))
+		return "Generation";
+	if (IsA(context, BumpContext))
+		return "Bump";
+	return "Unknown";
+}
+
+static void
+PgProtocolParkMemoryCountersAdd(MemoryContextCounters *dst,
+								const MemoryContextCounters *src)
+{
+	dst->nblocks += src->nblocks;
+	dst->freechunks += src->freechunks;
+	dst->totalspace += src->totalspace;
+	dst->freespace += src->freespace;
+}
+
+static MemoryContextCounters
+PgCollectProtocolParkContextMemory(PgProtocolParkContextMemoryLogState *state,
+								   MemoryContext context,
+								   const char *parent_path,
+								   int depth)
+{
+	MemoryContextCounters subtree;
+	PgProtocolParkContextMemoryRow *row = NULL;
+	char		path[PG_PROTOCOL_PARK_CONTEXT_PATH_MAX];
+	char		name[PG_PROTOCOL_PARK_CONTEXT_TOKEN_MAX];
+
+	MemSet(&subtree, 0, sizeof(subtree));
+
+	if (context == NULL)
+		return subtree;
+
+	Assert(MemoryContextIsValid(context));
+
+	PgProtocolParkSanitizeToken(context->name, name, sizeof(name));
+	PgProtocolParkAppendPath(path, sizeof(path), parent_path, name);
+
+	if (state->count < PG_PROTOCOL_PARK_CONTEXT_LOG_MAX)
+	{
+		row = &state->rows[state->count++];
+		MemSet(row, 0, sizeof(*row));
+		row->context_index = state->count;
+		row->depth = depth;
+		strlcpy(row->type, PgProtocolParkContextTypeName(context),
+				sizeof(row->type));
+		strlcpy(row->name, name, sizeof(row->name));
+		PgProtocolParkSanitizeToken(context->ident, row->ident,
+									sizeof(row->ident));
+		strlcpy(row->path, path, sizeof(row->path));
+		context->methods->stats(context, NULL, NULL, &row->local, false);
+		subtree = row->local;
+	}
+	else
+		context->methods->stats(context, NULL, NULL, &subtree, false);
+
+	if (depth >= PG_PROTOCOL_PARK_CONTEXT_LOG_MAX_DEPTH)
+	{
+		if (row != NULL)
+			row->recursive = subtree;
+		return subtree;
+	}
+
+	for (MemoryContext child = context->firstchild;
+		 child != NULL;
+		 child = child->nextchild)
+	{
+		MemoryContextCounters child_counters;
+
+		child_counters =
+			PgCollectProtocolParkContextMemory(state, child, path, depth + 1);
+		PgProtocolParkMemoryCountersAdd(&subtree, &child_counters);
+	}
+
+	if (row != NULL)
+		row->recursive = subtree;
+
+	return subtree;
+}
+
+static void
+PgLogProtocolParkContextMemory(PgBackend *backend,
+							   PgProtocolParkSpec *park_spec)
+{
+	PgProtocolParkContextMemoryLogState state;
+
+	Assert(backend != NULL);
+	Assert(park_spec != NULL);
+
+	if (park_spec->generation != 1 &&
+		park_spec->generation % PG_PROTOCOL_PARK_CONTEXT_LOG_INTERVAL != 0)
+		return;
+
+	MemSet(&state, 0, sizeof(state));
+	(void) PgCollectProtocolParkContextMemory(&state, TopMemoryContext,
+											  NULL, 0);
+
+	for (int i = 0; i < state.count; i++)
+	{
+		PgProtocolParkContextMemoryRow *row = &state.rows[i];
+
+		ereport(LOG_SERVER_ONLY,
+				(errhidestmt(true),
+				 errhidecontext(true),
+				 errmsg_internal("protocol_park_context_memory pid=%d backend_id=%u generation=%llu "
+								 "context_index=%d depth=%d type=%s name=%s ident=%s path=%s "
+								 "local_total_bytes=%zu local_free_bytes=%zu local_used_bytes=%zu local_blocks=%zu local_free_chunks=%zu "
+								 "recursive_total_bytes=%zu recursive_free_bytes=%zu recursive_used_bytes=%zu recursive_blocks=%zu recursive_free_chunks=%zu",
+								 PgCurrentBackendSignalPid(),
+								 (unsigned int) backend->id,
+								 (unsigned long long) park_spec->generation,
+								 row->context_index,
+								 row->depth,
+								 row->type,
+								 row->name,
+								 row->ident,
+								 row->path,
+								 row->local.totalspace,
+								 row->local.freespace,
+								 PgProtocolParkMemoryUsed(&row->local),
+								 row->local.nblocks,
+								 row->local.freechunks,
+								 row->recursive.totalspace,
+								 row->recursive.freespace,
+								 PgProtocolParkMemoryUsed(&row->recursive),
+								 row->recursive.nblocks,
+								 row->recursive.freechunks)));
+	}
+
+	if (IsA(TopMemoryContext, AllocSetContext))
+		AllocSetLogChunkStats(TopMemoryContext,
+							  "protocol_park_top_memory_context",
+							  32);
+}
+
+static void
+PgLogProtocolParkCatCacheMemoryRow(const PgCatCacheMemoryStats *stats,
+								   void *arg)
+{
+	PgProtocolParkCacheMemoryLogState *state = arg;
+	char		relname[PG_PROTOCOL_PARK_CONTEXT_TOKEN_MAX];
+
+	Assert(stats != NULL);
+	Assert(state != NULL);
+	Assert(state->backend != NULL);
+	Assert(state->park_spec != NULL);
+
+	PgProtocolParkSanitizeToken(stats->relname, relname, sizeof(relname));
+	ereport(LOG_SERVER_ONLY,
+			(errhidestmt(true),
+			 errhidecontext(true),
+			 errmsg_internal("protocol_park_catcache_memory pid=%d backend_id=%u generation=%llu "
+							 "cache_id=%d reloid=%u indexoid=%u relname=%s "
+							 "ntup=%d npositive=%d nnegative=%d nlist=%d nbuckets=%d nlbuckets=%d "
+							 "cache_header_bytes=%zu bucket_bytes=%zu tuple_header_bytes=%zu tuple_data_bytes=%zu "
+							 "negative_key_bytes=%zu list_header_bytes=%zu list_key_bytes=%zu total_requested_bytes=%zu",
+							 PgCurrentBackendSignalPid(),
+							 (unsigned int) state->backend->id,
+							 (unsigned long long) state->park_spec->generation,
+							 stats->id,
+							 stats->reloid,
+							 stats->indexoid,
+							 relname,
+							 stats->ntup,
+							 stats->npositive,
+							 stats->nnegative,
+							 stats->nlist,
+							 stats->nbuckets,
+							 stats->nlbuckets,
+							 stats->cache_header_bytes,
+							 stats->bucket_bytes,
+							 stats->tuple_header_bytes,
+							 stats->tuple_data_bytes,
+							 stats->negative_key_bytes,
+							 stats->list_header_bytes,
+							 stats->list_key_bytes,
+							 stats->total_requested_bytes)));
+}
+
+static void
+PgLogProtocolParkRelCacheMemoryRow(const PgRelCacheMemoryStats *stats,
+								   void *arg)
+{
+	PgProtocolParkCacheMemoryLogState *state = arg;
+	char		relname[PG_PROTOCOL_PARK_CONTEXT_TOKEN_MAX];
+
+	Assert(stats != NULL);
+	Assert(state != NULL);
+	Assert(state->backend != NULL);
+	Assert(state->park_spec != NULL);
+
+	PgProtocolParkSanitizeToken(stats->relname, relname, sizeof(relname));
+	ereport(LOG_SERVER_ONLY,
+			(errhidestmt(true),
+			 errhidecontext(true),
+			 errmsg_internal("protocol_park_relcache_memory pid=%d backend_id=%u generation=%llu "
+							 "reloid=%u relname=%s isvalid=%d isnailed=%d islocaltemp=%d refcnt=%d "
+							 "has_index_context=%d has_rules_context=%d has_partition_context=%d "
+							 "relation_data_bytes=%zu class_tuple_bytes=%zu tuple_desc_bytes=%zu tuple_constr_bytes=%zu "
+							 "index_tuple_bytes=%zu options_bytes=%zu pubdesc_bytes=%zu direct_payload_bytes=%zu "
+							 "private_context_total_bytes=%zu private_context_free_bytes=%zu private_context_used_bytes=%zu",
+							 PgCurrentBackendSignalPid(),
+							 (unsigned int) state->backend->id,
+							 (unsigned long long) state->park_spec->generation,
+							 stats->reloid,
+							 relname,
+							 stats->isvalid ? 1 : 0,
+							 stats->isnailed ? 1 : 0,
+							 stats->islocaltemp ? 1 : 0,
+							 stats->refcnt,
+							 stats->has_index_context ? 1 : 0,
+							 stats->has_rules_context ? 1 : 0,
+							 stats->has_partition_context ? 1 : 0,
+							 stats->relation_data_bytes,
+							 stats->class_tuple_bytes,
+							 stats->tuple_desc_bytes,
+							 stats->tuple_constr_bytes,
+							 stats->index_tuple_bytes,
+							 stats->options_bytes,
+							 stats->pubdesc_bytes,
+							 stats->direct_payload_bytes,
+							 stats->private_context_total_bytes,
+							 stats->private_context_free_bytes,
+							 stats->private_context_used_bytes)));
+}
+
+static void
+PgLogProtocolParkCacheMemory(PgBackend *backend,
+							 PgProtocolParkSpec *park_spec)
+{
+	PgProtocolParkCacheMemoryLogState state;
+
+	Assert(backend != NULL);
+	Assert(park_spec != NULL);
+
+	if (park_spec->generation != 1 &&
+		park_spec->generation % PG_PROTOCOL_PARK_CONTEXT_LOG_INTERVAL != 0)
+		return;
+
+	state.backend = backend;
+	state.park_spec = park_spec;
+	PgCatCacheCollectMemoryStats(PgLogProtocolParkCatCacheMemoryRow, &state);
+	PgRelCacheCollectMemoryStats(PgLogProtocolParkRelCacheMemoryRow, &state);
+}
+
+static void
+PgLogProtocolParkMemory(PgSession *session, PgProtocolParkSpec *park_spec)
+{
+	PgBackend  *backend;
+	PgConnection *connection;
+	MemoryContextCounters top;
+	MemoryContextCounters message;
+	MemoryContextCounters cache;
+	MemoryContextCounters top_xact;
+	MemoryContextCounters cur_xact;
+	MemoryContextCounters portal;
+	MemoryContextCounters error;
+	MemoryContextCounters current;
+	MemoryContextCounters row_description;
+	MemoryContextCounters client_info;
+	MemoryContextCounters legacy_session;
+	MemoryContextCounters dynamic_library;
+
+	if (!log_protocol_park_memory)
+		return;
+
+	Assert(session != NULL);
+	Assert(park_spec != NULL);
+	backend = session->backend;
+	connection = session->connection;
+	Assert(backend != NULL);
+	Assert(connection != NULL);
+	Assert(session->execution != NULL);
+
+	PgProtocolParkMemoryCounters(TopMemoryContext, &top);
+	PgProtocolParkMemoryCounters(MessageContext, &message);
+	PgProtocolParkMemoryCounters(CacheMemoryContext, &cache);
+	PgProtocolParkMemoryCounters(TopTransactionContext, &top_xact);
+	PgProtocolParkMemoryCounters(CurTransactionContext, &cur_xact);
+	PgProtocolParkMemoryCounters(PortalContext, &portal);
+	PgProtocolParkMemoryCounters(ErrorContext, &error);
+	PgProtocolParkMemoryCounters(CurrentMemoryContext, &current);
+	PgProtocolParkMemoryCounters(session->tcop.row_description_context,
+								 &row_description);
+	PgProtocolParkMemoryCounters(connection->client_connection_info_context,
+								 &client_info);
+	PgProtocolParkMemoryCounters(session->legacy_session_context,
+								 &legacy_session);
+	PgProtocolParkMemoryCounters(session->dynamic_library_context,
+								 &dynamic_library);
+
+	ereport(LOG_SERVER_ONLY,
+			(errhidestmt(true),
+			 errhidecontext(true),
+			 errmsg_internal("protocol_park_memory pid=%d backend_id=%u generation=%llu "
+							 "top_total_bytes=%zu top_free_bytes=%zu top_used_bytes=%zu top_blocks=%zu "
+							 "message_total_bytes=%zu message_free_bytes=%zu message_used_bytes=%zu message_blocks=%zu "
+							 "cache_total_bytes=%zu cache_free_bytes=%zu cache_used_bytes=%zu cache_blocks=%zu "
+							 "top_xact_total_bytes=%zu top_xact_free_bytes=%zu top_xact_used_bytes=%zu top_xact_blocks=%zu "
+							 "cur_xact_total_bytes=%zu cur_xact_free_bytes=%zu cur_xact_used_bytes=%zu cur_xact_blocks=%zu "
+							 "portal_total_bytes=%zu portal_free_bytes=%zu portal_used_bytes=%zu portal_blocks=%zu "
+							 "error_total_bytes=%zu error_free_bytes=%zu error_used_bytes=%zu error_blocks=%zu "
+							 "current_total_bytes=%zu current_free_bytes=%zu current_used_bytes=%zu current_blocks=%zu "
+							 "row_description_total_bytes=%zu row_description_free_bytes=%zu row_description_used_bytes=%zu row_description_blocks=%zu "
+							 "client_info_total_bytes=%zu client_info_free_bytes=%zu client_info_used_bytes=%zu client_info_blocks=%zu "
+							 "legacy_session_total_bytes=%zu legacy_session_free_bytes=%zu legacy_session_used_bytes=%zu legacy_session_blocks=%zu "
+							 "dynamic_library_total_bytes=%zu dynamic_library_free_bytes=%zu dynamic_library_used_bytes=%zu dynamic_library_blocks=%zu "
+							 "sizeof_backend=%zu sizeof_session=%zu sizeof_connection=%zu sizeof_execution=%zu "
+							 "sizeof_logical_state=%zu sizeof_runtime_state=%zu",
+							 PgCurrentBackendSignalPid(),
+							 (unsigned int) backend->id,
+							 (unsigned long long) park_spec->generation,
+							 top.totalspace, top.freespace,
+							 PgProtocolParkMemoryUsed(&top), top.nblocks,
+							 message.totalspace, message.freespace,
+							 PgProtocolParkMemoryUsed(&message), message.nblocks,
+							 cache.totalspace, cache.freespace,
+							 PgProtocolParkMemoryUsed(&cache), cache.nblocks,
+							 top_xact.totalspace, top_xact.freespace,
+							 PgProtocolParkMemoryUsed(&top_xact), top_xact.nblocks,
+							 cur_xact.totalspace, cur_xact.freespace,
+							 PgProtocolParkMemoryUsed(&cur_xact), cur_xact.nblocks,
+							 portal.totalspace, portal.freespace,
+							 PgProtocolParkMemoryUsed(&portal), portal.nblocks,
+							 error.totalspace, error.freespace,
+							 PgProtocolParkMemoryUsed(&error), error.nblocks,
+							 current.totalspace, current.freespace,
+							 PgProtocolParkMemoryUsed(&current), current.nblocks,
+							 row_description.totalspace,
+							 row_description.freespace,
+							 PgProtocolParkMemoryUsed(&row_description),
+							 row_description.nblocks,
+							 client_info.totalspace, client_info.freespace,
+							 PgProtocolParkMemoryUsed(&client_info),
+							 client_info.nblocks,
+							 legacy_session.totalspace,
+							 legacy_session.freespace,
+							 PgProtocolParkMemoryUsed(&legacy_session),
+							 legacy_session.nblocks,
+							 dynamic_library.totalspace,
+							 dynamic_library.freespace,
+							 PgProtocolParkMemoryUsed(&dynamic_library),
+							 dynamic_library.nblocks,
+							 sizeof(PgBackend), sizeof(PgSession),
+							 sizeof(PgConnection), sizeof(PgExecution),
+							 sizeof(PgThreadBackendLogicalState),
+							 sizeof(PgThreadBackendRuntimeState))));
+
+	PgLogProtocolParkContextMemory(backend, park_spec);
+	PgLogProtocolParkGUCMemory((uint32) backend->id, park_spec->generation);
+	PgLogProtocolParkCacheMemory(backend, park_spec);
+}
+
+static void
+PgSessionReleasePooledProtocolIdleMemory(PgSession *session,
+										 PgProtocolParkSpec *park_spec)
+{
+	MemoryContext *abort_context;
+	PgBackendProtocolParkState *park_state;
+	int			mode = pooled_protocol_idle_memory_compaction;
+
+	if (!PgRuntimeIsPooledProtocol(CurrentPgRuntime))
+		return;
+	if (IsTransactionOrTransactionBlock() || IsAbortedTransactionBlockState())
+		return;
+
+	Assert(session != NULL);
+	Assert(park_spec != NULL);
+	Assert(session->backend != NULL);
+	Assert(session->backend->protocol_park.state ==
+		   PG_PROTOCOL_PARK_PREPARED);
+	park_state = &session->backend->protocol_park;
+
+	if (mode <= POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_OFF)
+		return;
+	if (!PgSessionShouldHibernatePooledProtocolIdle(session))
+		return;
+
+	/*
+	 * TransactionAbortContext is a deliberately preallocated OOM reserve while
+	 * a transaction is active.  Once a pooled session has remained cleanly
+	 * parked long enough to hibernate, optional compaction keeps the pointer
+	 * lazy so AtStart_Memory() can reserve it again for the next transaction.
+	 */
+	abort_context = PgCurrentTransactionAbortContextRef();
+	if (*abort_context != NULL)
+	{
+		Assert(CurrentMemoryContext != *abort_context);
+		MemoryContextDelete(*abort_context);
+		*abort_context = NULL;
+	}
+
+	PgConnectionReleaseIdleRecvBuffer(session->connection);
+
+	ReleaseBufferManagerIdleMemory();
+	pgstat_release_idle_memory();
+
+	if (mode >= POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_CACHE)
+		InvalidateSystemCachesExtended(false);
+
+#if defined(__GLIBC__)
+	if (mode >= POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_TRIM)
+		(void) malloc_trim(0);
+#endif
+
+	park_state->hibernated = true;
+}
+
+static bool
+PgSessionShouldHibernatePooledProtocolIdle(PgSession *session)
+{
+	PgBackendProtocolParkState *park_state;
+
+	Assert(session != NULL);
+	Assert(session->backend != NULL);
+
+	if (pooled_protocol_hibernate_after_ms < 0)
+		return false;
+
+	park_state = &session->backend->protocol_park;
+	if (park_state->hibernated)
+		return false;
+
+	if (pooled_protocol_hibernate_after_ms == 0)
+		return true;
+
+	if (!park_state->last_park_duration_valid)
+		return false;
+
+	return park_state->last_park_duration_ms >=
+		pooled_protocol_hibernate_after_ms;
+}
+
+static void
+PgSessionCommitCurrentProtocolReadPark(PgSession *session)
+{
+	PgCarrier  *carrier = CurrentPgCarrier;
+
+	Assert(session != NULL);
+	Assert(carrier != NULL);
+	Assert(session->backend != NULL);
+	Assert(session->connection != NULL);
+	Assert(session->execution != NULL);
+	Assert(session->backend == CurrentPgBackend);
+	Assert(session->backend->protocol_park.state ==
+		   PG_PROTOCOL_PARK_PREPARED);
+
+	PgSessionReleasePooledProtocolIdleMemory(session,
+											 &session->backend->protocol_park.spec);
+	PgLogProtocolParkMemory(session, &session->backend->protocol_park.spec);
+	PgCarrierCommitProtocolReadPark(carrier, session->backend);
+}
+
+static uint32
+PgSessionStagingWaitAndResumeProtocolRead(PgSession *session,
+										  PgBackend *backend,
+										  PgConnection *connection,
+										  PgExecution *execution,
+										  PgProtocolParkSpec *park_spec)
+{
+	PgCarrier  *carrier = CurrentPgCarrier;
+	uint32		wake_events;
+
+	Assert(session != NULL);
+	Assert(backend != NULL);
+	Assert(connection != NULL);
+	Assert(execution != NULL);
+	Assert(park_spec != NULL);
+	Assert(carrier != NULL);
+	Assert(CurrentPgBackend == NULL);
+	Assert(CurrentPgSession == NULL);
+	Assert(CurrentPgConnection == NULL);
+	Assert(CurrentPgExecution == NULL);
+
+	wake_events = PgSessionStagingWaitProtocolRead(backend, park_spec);
+
+	if (!PgRuntimeProtocolSchedulerLeaseBackend(CurrentPgRuntime, backend))
+		elog(PANIC, "could not lease protocol read park for same carrier resume");
+
+	PgCarrierAttachBackend(carrier, backend, session, connection, execution);
+	pgstat_ensure_shmem_attached();
+	PgBackendResumeProtocolReadPark(backend);
+
+	return wake_events;
+}
+
+PgStepResult
+PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session)
+{
+	PgSessionLoopState *state;
+	sigjmp_buf **exception_stack_ref;
+	ErrorContextCallback **context_stack_ref;
+	sigjmp_buf *save_exception_stack;
+	ErrorContextCallback *save_context_stack;
+	sigjmp_buf	local_sigjmp_buf;
+
+	Assert(session != NULL);
+	Assert(CurrentPgRuntime != NULL);
+	Assert(PgRuntimeIsThreadBacked(CurrentPgRuntime));
+	state = &session->loop_state;
+	Assert(!state->step_error_boundary_active);
+
+	/*
+	 * Keep one error boundary for the whole active attachment, matching the
+	 * process/thread-per-session loop shape.  Returning to the carrier loop is
+	 * still controlled only by protocol parks or logical exit.
+	 */
+	exception_stack_ref = PgCurrentExceptionStackRefFast();
+	context_stack_ref = PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentErrorContextStackHotRef,
+														 CurrentPgExecution,
+														 PgCurrentErrorContextStackRef);
+	save_exception_stack = *exception_stack_ref;
+	save_context_stack = *context_stack_ref;
+	state->step_error_boundary_active = true;
+
+	if (sigsetjmp(local_sigjmp_buf, 0) != 0)
+	{
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+		PgSessionRecoverError(session);
+
+		if (!state->ignore_till_sync)
+			state->send_ready_for_query = true;	/* after error */
+
+		*exception_stack_ref = save_exception_stack;
+		*context_stack_ref = save_context_stack;
+	}
+
+	/* We can now handle ereport(ERROR). */
+	*exception_stack_ref = &local_sigjmp_buf;
+
+	for (;;)
+	{
+		PgStepResult result;
+
+		result = PgSessionStepUnprotected(session, 0, true, true);
+		switch (result)
+		{
+			case PG_STEP_CONTINUE:
+				break;
+
+			case PG_STEP_PARK_PROTOCOL_READ:
+				*exception_stack_ref = save_exception_stack;
+				*context_stack_ref = save_context_stack;
+				state->step_error_boundary_active = false;
+				PgSessionCommitCurrentProtocolReadPark(session);
+				return PG_STEP_PARK_PROTOCOL_READ;
+
+			case PG_STEP_DONE:
+			case PG_STEP_FATAL_EXIT:
+				*exception_stack_ref = save_exception_stack;
+				*context_stack_ref = save_context_stack;
+				state->step_error_boundary_active = false;
+				return result;
+
+			case PG_STEP_ERROR_RECOVERED:
+				pg_unreachable();
+		}
+	}
+}
+
+pg_noreturn static void
+PgSessionRunProtocolSchedulerStaging(PgSession *session)
+{
+	for (;;)
+	{
+		PgStepResult result;
+
+		result = PgSessionRunProtocolSchedulerUntilBoundary(session);
+		switch (result)
+		{
+			case PG_STEP_PARK_PROTOCOL_READ:
+				{
+					PgBackend  *backend = session->backend;
+					PgConnection *connection = session->connection;
+					PgExecution *execution = session->execution;
+					PgProtocolParkSpec park_spec;
+					uint32		wake_events;
+
+					Assert(backend != NULL);
+					Assert(connection != NULL);
+					Assert(execution != NULL);
+					Assert(backend->protocol_park.state ==
+						   PG_PROTOCOL_PARK_COMMITTED);
+
+					park_spec = backend->protocol_park.spec;
+					wake_events =
+						PgSessionStagingWaitAndResumeProtocolRead(session,
+																  backend,
+																  connection,
+																  execution,
+																  &park_spec);
+
+					if (wake_events & WL_POSTMASTER_DEATH)
+						ereport(FATAL,
+								(errcode(ERRCODE_ADMIN_SHUTDOWN),
+								 errmsg("terminating connection due to unexpected postmaster exit")));
+
+					if (wake_events & WL_LATCH_SET)
+					{
+						/*
+						 * Process the pending interrupt under the next
+						 * PgSessionStep() error boundary.  Leaving the latch
+						 * set here would make the next detached wait return
+						 * immediately even if the interrupt was already
+						 * consumed.
+						 */
+						ResetLatch(MyLatch);
+					}
+				}
+				break;
+
+			case PG_STEP_DONE:
+				PgBackendExit(0);
+
+			case PG_STEP_FATAL_EXIT:
+				PgBackendExit(1);
+
+			case PG_STEP_CONTINUE:
+			case PG_STEP_ERROR_RECOVERED:
+				pg_unreachable();
+		}
+	}
+}
+
+
+/*
+ * Bootstrap a backend PgSession before the command loop starts.
  *
  * NB: Single user mode specific setup should go to PostgresSingleUserMain()
  * if reasonably possible.
- * ----------------------------------------------------------------
  */
-void
-PostgresMain(const char *dbname, const char *username)
+PgSession *
+PostgresBootstrapSession(const char *dbname, const char *username)
 {
-	sigjmp_buf	local_sigjmp_buf;
-
-	/* these must be volatile to ensure state is preserved across longjmp: */
-	volatile bool send_ready_for_query = true;
-	volatile bool idle_in_transaction_timeout_enabled = false;
-	volatile bool idle_session_timeout_enabled = false;
+	bool		threaded_backend;
 
 	Assert(dbname != NULL);
 	Assert(username != NULL);
 
 	Assert(GetProcessingMode() == InitProcessing);
+	threaded_backend = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 
 	/*
 	 * Set up signal handlers.  (InitPostmasterChild or InitStandaloneProcess
@@ -4390,7 +7102,17 @@ PostgresMain(const char *dbname, const char *username)
 	 * an issue for signals that are locally generated, such as SIGALRM and
 	 * SIGPIPE.)
 	 */
-	if (am_walsender)
+	if (threaded_backend)
+	{
+		/*
+		 * Signal handlers are process-global and cannot be installed by a
+		 * carrier thread without changing the postmaster and sibling
+		 * backends.  Threaded interrupt delivery will be routed through
+		 * logical backend state before this path can proceed further.
+		 */
+		InitializeLogicalTimeouts();
+	}
+	else if (am_walsender)
 		WalSndSignals();
 	else
 	{
@@ -4435,7 +7157,8 @@ PostgresMain(const char *dbname, const char *username)
 	BaseInit();
 
 	/* We need to allow SIGINT, etc during the initial transaction */
-	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+	if (!threaded_backend)
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 	/*
 	 * Generate a random cancel key, if this is a backend serving a
@@ -4448,7 +7171,7 @@ PostgresMain(const char *dbname, const char *username)
 
 		len = (MyProcPort == NULL || MyProcPort->proto >= PG_PROTOCOL(3, 2))
 			? MAX_CANCEL_KEY_LENGTH : 4;
-		if (!pg_strong_random(&MyCancelKey, len))
+		if (!pg_strong_random(MyCancelKey, len))
 		{
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
@@ -4475,7 +7198,7 @@ PostgresMain(const char *dbname, const char *username)
 	 * If the PostmasterContext is still around, recycle the space; we don't
 	 * need it anymore after InitPostgres completes.
 	 */
-	if (PostmasterContext)
+	if (PostmasterContext && !threaded_backend)
 	{
 		MemoryContextDelete(PostmasterContext);
 		PostmasterContext = NULL;
@@ -4511,7 +7234,7 @@ PostgresMain(const char *dbname, const char *username)
 
 		Assert(MyCancelKeyLength > 0);
 		pq_beginmessage(&buf, PqMsg_BackendKeyData);
-		pq_sendint32(&buf, (int32) MyProcPid);
+		pq_sendint32(&buf, (int32) PgCurrentBackendSignalPid());
 
 		pq_sendbytes(&buf, MyCancelKey, MyCancelKeyLength);
 		pq_endmessage(&buf);
@@ -4528,9 +7251,9 @@ PostgresMain(const char *dbname, const char *username)
 	 * MessageContext is reset once per iteration of the main loop, ie, upon
 	 * completion of processing of each command message from the client.
 	 */
-	MessageContext = AllocSetContextCreate(TopMemoryContext,
-										   "MessageContext",
-										   ALLOCSET_DEFAULT_SIZES);
+	PgRuntimeGetOwnedMemoryContextWithSizes(PgMessageContextRef(),
+											"MessageContext",
+											ALLOCSET_START_SMALL_SIZES);
 
 	/*
 	 * Create memory context and buffer used for RowDescription messages. As
@@ -4538,667 +7261,47 @@ PostgresMain(const char *dbname, const char *username)
 	 * frequently executed for every single statement, we don't want to
 	 * allocate a separate buffer every time.
 	 */
-	row_description_context = AllocSetContextCreate(TopMemoryContext,
-													"RowDescriptionContext",
-													ALLOCSET_DEFAULT_SIZES);
-	MemoryContextSwitchTo(row_description_context);
-	initStringInfo(&row_description_buf);
+	PgRuntimeGetOwnedMemoryContextWithSizes(
+		PgCurrentRowDescriptionContextRef(),
+		"RowDescriptionContext",
+		ALLOCSET_START_SMALL_SIZES);
+	MemoryContextSwitchTo(current_row_description_context);
+	initStringInfo(&current_row_description_buf);
 	MemoryContextSwitchTo(TopMemoryContext);
 
 	/* Fire any defined login event triggers, if appropriate */
 	EventTriggerOnLogin();
 
-	/*
-	 * POSTGRES main processing loop begins here
-	 *
-	 * If an exception is encountered, processing resumes here so we abort the
-	 * current transaction and start a new one.
-	 *
-	 * You might wonder why this isn't coded as an infinite loop around a
-	 * PG_TRY construct.  The reason is that this is the bottom of the
-	 * exception stack, and so with PG_TRY there would be no exception handler
-	 * in force at all during the CATCH part.  By leaving the outermost setjmp
-	 * always active, we have at least some chance of recovering from an error
-	 * during error recovery.  (If we get into an infinite loop thereby, it
-	 * will soon be stopped by overflow of elog.c's internal state stack.)
-	 *
-	 * Note that we use sigsetjmp(..., 1), so that this function's signal mask
-	 * (to wit, UnBlockSig) will be restored when longjmp'ing to here.  This
-	 * is essential in case we longjmp'd out of a signal handler on a platform
-	 * where that leaves the signal blocked.  It's not redundant with the
-	 * unblock in AbortTransaction() because the latter is only called if we
-	 * were inside a transaction.
-	 */
-
-	if (sigsetjmp(local_sigjmp_buf, 1) != 0)
-	{
-		/*
-		 * NOTE: if you are tempted to add more code in this if-block,
-		 * consider the high probability that it should be in
-		 * AbortTransaction() instead.  The only stuff done directly here
-		 * should be stuff that is guaranteed to apply *only* for outer-level
-		 * error recovery, such as adjusting the FE/BE protocol status.
-		 */
-
-		/* Since not using PG_TRY, must reset error stack by hand */
-		error_context_stack = NULL;
-
-		/* Prevent interrupts while cleaning up */
-		HOLD_INTERRUPTS();
-
-		/*
-		 * Forget any pending QueryCancel request, since we're returning to
-		 * the idle loop anyway, and cancel any active timeout requests.  (In
-		 * future we might want to allow some timeout requests to survive, but
-		 * at minimum it'd be necessary to do reschedule_timeouts(), in case
-		 * we got here because of a query cancel interrupting the SIGALRM
-		 * interrupt handler.)	Note in particular that we must clear the
-		 * statement and lock timeout indicators, to prevent any future plain
-		 * query cancels from being misreported as timeouts in case we're
-		 * forgetting a timeout cancel.
-		 */
-		disable_all_timeouts(false);	/* do first to avoid race condition */
-		QueryCancelPending = false;
-		idle_in_transaction_timeout_enabled = false;
-		idle_session_timeout_enabled = false;
-
-		/* Not reading from the client anymore. */
-		DoingCommandRead = false;
-
-		/* Make sure libpq is in a good state */
-		pq_comm_reset();
-
-		/* Report the error to the client and/or server log */
-		EmitErrorReport();
-
-		/*
-		 * If Valgrind noticed something during the erroneous query, print the
-		 * query string, assuming we have one.
-		 */
-		valgrind_report_error_query(debug_query_string);
-
-		/*
-		 * Make sure debug_query_string gets reset before we possibly clobber
-		 * the storage it points at.
-		 */
-		debug_query_string = NULL;
-
-		/*
-		 * Abort the current transaction in order to recover.
-		 */
-		AbortCurrentTransaction();
-
-		if (am_walsender)
-			WalSndErrorCleanup();
-
-		PortalErrorCleanup();
-
-		/*
-		 * We can't release replication slots inside AbortTransaction() as we
-		 * need to be able to start and abort transactions while having a slot
-		 * acquired. But we never need to hold them across top level errors,
-		 * so releasing here is fine. There also is a before_shmem_exit()
-		 * callback ensuring correct cleanup on FATAL errors.
-		 */
-		if (MyReplicationSlot != NULL)
-			ReplicationSlotRelease();
-
-		/* We also want to cleanup temporary slots on error. */
-		ReplicationSlotCleanup(false);
-
-		jit_reset_after_error();
-
-		/*
-		 * Now return to normal top-level context and clear ErrorContext for
-		 * next time.
-		 */
-		MemoryContextSwitchTo(MessageContext);
-		FlushErrorState();
-
-		/*
-		 * If we were handling an extended-query-protocol message, initiate
-		 * skip till next Sync.  This also causes us not to issue
-		 * ReadyForQuery (until we get Sync).
-		 */
-		if (doing_extended_query_message)
-			ignore_till_sync = true;
-
-		/* We don't have a transaction command open anymore */
-		xact_started = false;
-
-		/*
-		 * If an error occurred while we were reading a message from the
-		 * client, we have potentially lost track of where the previous
-		 * message ends and the next one begins.  Even though we have
-		 * otherwise recovered from the error, we cannot safely read any more
-		 * messages from the client, so there isn't much we can do with the
-		 * connection anymore.
-		 */
-		if (pq_is_reading_msg())
-			ereport(FATAL,
-					(errcode(ERRCODE_PROTOCOL_VIOLATION),
-					 errmsg("terminating connection because protocol synchronization was lost")));
-
-		/* Now we can allow interrupts again */
-		RESUME_INTERRUPTS();
-	}
-
-	/* We can now handle ereport(ERROR) */
-	PG_exception_stack = &local_sigjmp_buf;
-
-	if (!ignore_till_sync)
-		send_ready_for_query = true;	/* initially, or after error */
-
-	/*
-	 * Non-error queries loop here.
-	 */
-
-	for (;;)
-	{
-		int			firstchar;
-		StringInfoData input_message;
-
-		/*
-		 * At top of loop, reset extended-query-message flag, so that any
-		 * errors encountered in "idle" state don't provoke skip.
-		 */
-		doing_extended_query_message = false;
-
-		/*
-		 * For valgrind reporting purposes, the "current query" begins here.
-		 */
-#ifdef USE_VALGRIND
-		old_valgrind_error_count = VALGRIND_COUNT_ERRORS;
-#endif
-
-		/*
-		 * Release storage left over from prior query cycle, and create a new
-		 * query input buffer in the cleared MessageContext.
-		 */
-		MemoryContextSwitchTo(MessageContext);
-		MemoryContextReset(MessageContext);
-
-		initStringInfo(&input_message);
-
-		/*
-		 * Also consider releasing our catalog snapshot if any, so that it's
-		 * not preventing advance of global xmin while we wait for the client.
-		 */
-		InvalidateCatalogSnapshotConditionally();
-
-		/*
-		 * (1) If we've reached idle state, tell the frontend we're ready for
-		 * a new query.
-		 *
-		 * Note: this includes fflush()'ing the last of the prior output.
-		 *
-		 * This is also a good time to flush out collected statistics to the
-		 * cumulative stats system, and to update the PS stats display.  We
-		 * avoid doing those every time through the message loop because it'd
-		 * slow down processing of batched messages, and because we don't want
-		 * to report uncommitted updates (that confuses autovacuum).  The
-		 * notification processor wants a call too, if we are not in a
-		 * transaction block.
-		 *
-		 * Also, if an idle timeout is enabled, start the timer for that.
-		 */
-		if (send_ready_for_query)
-		{
-			if (IsAbortedTransactionBlockState())
-			{
-				set_ps_display("idle in transaction (aborted)");
-				pgstat_report_activity(STATE_IDLEINTRANSACTION_ABORTED, NULL);
-
-				/* Start the idle-in-transaction timer */
-				if (IdleInTransactionSessionTimeout > 0
-					&& (IdleInTransactionSessionTimeout < TransactionTimeout || TransactionTimeout == 0))
-				{
-					idle_in_transaction_timeout_enabled = true;
-					enable_timeout_after(IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
-										 IdleInTransactionSessionTimeout);
-				}
-			}
-			else if (IsTransactionOrTransactionBlock())
-			{
-				set_ps_display("idle in transaction");
-				pgstat_report_activity(STATE_IDLEINTRANSACTION, NULL);
-
-				/* Start the idle-in-transaction timer */
-				if (IdleInTransactionSessionTimeout > 0
-					&& (IdleInTransactionSessionTimeout < TransactionTimeout || TransactionTimeout == 0))
-				{
-					idle_in_transaction_timeout_enabled = true;
-					enable_timeout_after(IDLE_IN_TRANSACTION_SESSION_TIMEOUT,
-										 IdleInTransactionSessionTimeout);
-				}
-			}
-			else
-			{
-				long		stats_timeout;
-
-				/*
-				 * Process incoming notifies (including self-notifies), if
-				 * any, and send relevant messages to the client.  Doing it
-				 * here helps ensure stable behavior in tests: if any notifies
-				 * were received during the just-finished transaction, they'll
-				 * be seen by the client before ReadyForQuery is.
-				 */
-				if (notifyInterruptPending)
-					ProcessNotifyInterrupt(false);
-
-				/*
-				 * Check if we need to report stats. If pgstat_report_stat()
-				 * decides it's too soon to flush out pending stats / lock
-				 * contention prevented reporting, it'll tell us when we
-				 * should try to report stats again (so that stats updates
-				 * aren't unduly delayed if the connection goes idle for a
-				 * long time). We only enable the timeout if we don't already
-				 * have a timeout in progress, because we don't disable the
-				 * timeout below. enable_timeout_after() needs to determine
-				 * the current timestamp, which can have a negative
-				 * performance impact. That's OK because pgstat_report_stat()
-				 * won't have us wake up sooner than a prior call.
-				 */
-				stats_timeout = pgstat_report_stat(false);
-				if (stats_timeout > 0)
-				{
-					if (!get_timeout_active(IDLE_STATS_UPDATE_TIMEOUT))
-						enable_timeout_after(IDLE_STATS_UPDATE_TIMEOUT,
-											 stats_timeout);
-				}
-				else
-				{
-					/* all stats flushed, no need for the timeout */
-					if (get_timeout_active(IDLE_STATS_UPDATE_TIMEOUT))
-						disable_timeout(IDLE_STATS_UPDATE_TIMEOUT, false);
-				}
-
-				set_ps_display("idle");
-				pgstat_report_activity(STATE_IDLE, NULL);
-
-				/* Start the idle-session timer */
-				if (IdleSessionTimeout > 0)
-				{
-					idle_session_timeout_enabled = true;
-					enable_timeout_after(IDLE_SESSION_TIMEOUT,
-										 IdleSessionTimeout);
-				}
-			}
-
-			/* Report any recently-changed GUC options */
-			ReportChangedGUCOptions();
-
-			/*
-			 * The first time this backend is ready for query, log the
-			 * durations of the different components of connection
-			 * establishment and setup.
-			 */
-			if (conn_timing.ready_for_use == TIMESTAMP_MINUS_INFINITY &&
-				(log_connections & LOG_CONNECTION_SETUP_DURATIONS) &&
-				IsExternalConnectionBackend(MyBackendType))
-			{
-				uint64		total_duration,
-							fork_duration,
-							auth_duration;
-
-				conn_timing.ready_for_use = GetCurrentTimestamp();
-
-				total_duration =
-					TimestampDifferenceMicroseconds(conn_timing.socket_create,
-													conn_timing.ready_for_use);
-				fork_duration =
-					TimestampDifferenceMicroseconds(conn_timing.fork_start,
-													conn_timing.fork_end);
-				auth_duration =
-					TimestampDifferenceMicroseconds(conn_timing.auth_start,
-													conn_timing.auth_end);
-
-				ereport(LOG,
-						errmsg("connection ready: setup total=%.3f ms, fork=%.3f ms, authentication=%.3f ms",
-							   (double) total_duration / NS_PER_US,
-							   (double) fork_duration / NS_PER_US,
-							   (double) auth_duration / NS_PER_US));
-			}
-
-			ReadyForQuery(whereToSendOutput);
-			send_ready_for_query = false;
-		}
-
-		/*
-		 * (2) Allow asynchronous signals to be executed immediately if they
-		 * come in while we are waiting for client input. (This must be
-		 * conditional since we don't want, say, reads on behalf of COPY FROM
-		 * STDIN doing the same thing.)
-		 */
-		DoingCommandRead = true;
-
-		/*
-		 * (3) read a command (loop blocks here)
-		 */
-		firstchar = ReadCommand(&input_message);
-
-		/*
-		 * (4) turn off the idle-in-transaction and idle-session timeouts if
-		 * active.  We do this before step (5) so that any last-moment timeout
-		 * is certain to be detected in step (5).
-		 *
-		 * At most one of these timeouts will be active, so there's no need to
-		 * worry about combining the timeout.c calls into one.
-		 */
-		if (idle_in_transaction_timeout_enabled)
-		{
-			disable_timeout(IDLE_IN_TRANSACTION_SESSION_TIMEOUT, false);
-			idle_in_transaction_timeout_enabled = false;
-		}
-		if (idle_session_timeout_enabled)
-		{
-			disable_timeout(IDLE_SESSION_TIMEOUT, false);
-			idle_session_timeout_enabled = false;
-		}
-
-		/*
-		 * (5) disable async signal conditions again.
-		 *
-		 * Query cancel is supposed to be a no-op when there is no query in
-		 * progress, so if a query cancel arrived while we were idle, just
-		 * reset QueryCancelPending. ProcessInterrupts() has that effect when
-		 * it's called when DoingCommandRead is set, so check for interrupts
-		 * before resetting DoingCommandRead.
-		 */
-		CHECK_FOR_INTERRUPTS();
-		DoingCommandRead = false;
-
-		/*
-		 * (6) check for any other interesting events that happened while we
-		 * slept.
-		 */
-		if (ConfigReloadPending)
-		{
-			ConfigReloadPending = false;
-			ProcessConfigFile(PGC_SIGHUP);
-		}
-
-		/*
-		 * (7) process the command.  But ignore it if we're skipping till
-		 * Sync.
-		 */
-		if (ignore_till_sync && firstchar != EOF)
-			continue;
-
-		switch (firstchar)
-		{
-			case PqMsg_Query:
-				{
-					const char *query_string;
-
-					/* Set statement_timestamp() */
-					SetCurrentStatementStartTimestamp();
-
-					query_string = pq_getmsgstring(&input_message);
-					pq_getmsgend(&input_message);
-
-					if (am_walsender)
-					{
-						if (!exec_replication_command(query_string))
-							exec_simple_query(query_string);
-					}
-					else
-						exec_simple_query(query_string);
-
-					valgrind_report_error_query(query_string);
-
-					send_ready_for_query = true;
-				}
-				break;
-
-			case PqMsg_Parse:
-				{
-					const char *stmt_name;
-					const char *query_string;
-					int			numParams;
-					Oid		   *paramTypes = NULL;
-
-					forbidden_in_wal_sender(firstchar);
-
-					/* Set statement_timestamp() */
-					SetCurrentStatementStartTimestamp();
-
-					stmt_name = pq_getmsgstring(&input_message);
-					query_string = pq_getmsgstring(&input_message);
-					numParams = pq_getmsgint(&input_message, 2);
-					if (numParams > 0)
-					{
-						paramTypes = palloc_array(Oid, numParams);
-						for (int i = 0; i < numParams; i++)
-							paramTypes[i] = pq_getmsgint(&input_message, 4);
-					}
-					pq_getmsgend(&input_message);
-
-					exec_parse_message(query_string, stmt_name,
-									   paramTypes, numParams);
-
-					valgrind_report_error_query(query_string);
-				}
-				break;
-
-			case PqMsg_Bind:
-				forbidden_in_wal_sender(firstchar);
-
-				/* Set statement_timestamp() */
-				SetCurrentStatementStartTimestamp();
-
-				/*
-				 * this message is complex enough that it seems best to put
-				 * the field extraction out-of-line
-				 */
-				exec_bind_message(&input_message);
-
-				/* exec_bind_message does valgrind_report_error_query */
-				break;
-
-			case PqMsg_Execute:
-				{
-					const char *portal_name;
-					int			max_rows;
-
-					forbidden_in_wal_sender(firstchar);
-
-					/* Set statement_timestamp() */
-					SetCurrentStatementStartTimestamp();
-
-					portal_name = pq_getmsgstring(&input_message);
-					max_rows = pq_getmsgint(&input_message, 4);
-					pq_getmsgend(&input_message);
-
-					exec_execute_message(portal_name, max_rows);
-
-					/* exec_execute_message does valgrind_report_error_query */
-				}
-				break;
-
-			case PqMsg_FunctionCall:
-				forbidden_in_wal_sender(firstchar);
-
-				/* Set statement_timestamp() */
-				SetCurrentStatementStartTimestamp();
-
-				/* Report query to various monitoring facilities. */
-				pgstat_report_activity(STATE_FASTPATH, NULL);
-				set_ps_display("<FASTPATH>");
-
-				/* start an xact for this function invocation */
-				start_xact_command();
-
-				/*
-				 * Note: we may at this point be inside an aborted
-				 * transaction.  We can't throw error for that until we've
-				 * finished reading the function-call message, so
-				 * HandleFunctionRequest() must check for it after doing so.
-				 * Be careful not to do anything that assumes we're inside a
-				 * valid transaction here.
-				 */
-
-				/* switch back to message context */
-				MemoryContextSwitchTo(MessageContext);
-
-				HandleFunctionRequest(&input_message);
-
-				/* commit the function-invocation transaction */
-				finish_xact_command();
-
-				valgrind_report_error_query("fastpath function call");
-
-				send_ready_for_query = true;
-				break;
-
-			case PqMsg_Close:
-				{
-					int			close_type;
-					const char *close_target;
-
-					forbidden_in_wal_sender(firstchar);
-
-					close_type = pq_getmsgbyte(&input_message);
-					close_target = pq_getmsgstring(&input_message);
-					pq_getmsgend(&input_message);
-
-					switch (close_type)
-					{
-						case 'S':
-							if (close_target[0] != '\0')
-								DropPreparedStatement(close_target, false);
-							else
-							{
-								/* special-case the unnamed statement */
-								drop_unnamed_stmt();
-							}
-							break;
-						case 'P':
-							{
-								Portal		portal;
-
-								portal = GetPortalByName(close_target);
-								if (PortalIsValid(portal))
-									PortalDrop(portal, false);
-							}
-							break;
-						default:
-							ereport(ERROR,
-									(errcode(ERRCODE_PROTOCOL_VIOLATION),
-									 errmsg("invalid CLOSE message subtype %d",
-											close_type)));
-							break;
-					}
-
-					if (whereToSendOutput == DestRemote)
-						pq_putemptymessage(PqMsg_CloseComplete);
-
-					valgrind_report_error_query("CLOSE message");
-				}
-				break;
-
-			case PqMsg_Describe:
-				{
-					int			describe_type;
-					const char *describe_target;
-
-					forbidden_in_wal_sender(firstchar);
-
-					/* Set statement_timestamp() (needed for xact) */
-					SetCurrentStatementStartTimestamp();
-
-					describe_type = pq_getmsgbyte(&input_message);
-					describe_target = pq_getmsgstring(&input_message);
-					pq_getmsgend(&input_message);
-
-					switch (describe_type)
-					{
-						case 'S':
-							exec_describe_statement_message(describe_target);
-							break;
-						case 'P':
-							exec_describe_portal_message(describe_target);
-							break;
-						default:
-							ereport(ERROR,
-									(errcode(ERRCODE_PROTOCOL_VIOLATION),
-									 errmsg("invalid DESCRIBE message subtype %d",
-											describe_type)));
-							break;
-					}
-
-					valgrind_report_error_query("DESCRIBE message");
-				}
-				break;
-
-			case PqMsg_Flush:
-				pq_getmsgend(&input_message);
-				if (whereToSendOutput == DestRemote)
-					pq_flush();
-				break;
-
-			case PqMsg_Sync:
-				pq_getmsgend(&input_message);
-
-				/*
-				 * If pipelining was used, we may be in an implicit
-				 * transaction block. Close it before calling
-				 * finish_xact_command.
-				 */
-				EndImplicitTransactionBlock();
-				finish_xact_command();
-				valgrind_report_error_query("SYNC message");
-				send_ready_for_query = true;
-				break;
-
-				/*
-				 * PqMsg_Terminate means that the frontend is closing down the
-				 * socket. EOF means unexpected loss of frontend connection.
-				 * Either way, perform normal shutdown.
-				 */
-			case EOF:
-
-				/* for the cumulative statistics system */
-				pgStatSessionEndCause = DISCONNECT_CLIENT_EOF;
-
-				pg_fallthrough;
-
-			case PqMsg_Terminate:
-
-				/*
-				 * Reset whereToSendOutput to prevent ereport from attempting
-				 * to send any more messages to client.
-				 */
-				if (whereToSendOutput == DestRemote)
-					whereToSendOutput = DestNone;
-
-				/*
-				 * NOTE: if you are tempted to add more code here, DON'T!
-				 * Whatever you had in mind to do should be set up as an
-				 * on_proc_exit or on_shmem_exit callback, instead. Otherwise
-				 * it will fail to be called during other backend-shutdown
-				 * scenarios.
-				 */
-				proc_exit(0);
-
-			case PqMsg_CopyData:
-			case PqMsg_CopyDone:
-			case PqMsg_CopyFail:
-
-				/*
-				 * Accept but ignore these messages, per protocol spec; we
-				 * probably got here because a COPY failed, and the frontend
-				 * is still sending data.
-				 */
-				break;
-
-			default:
-				ereport(FATAL,
-						(errcode(ERRCODE_PROTOCOL_VIOLATION),
-						 errmsg("invalid frontend message type %d",
-								firstchar)));
-		}
-	}							/* end of input-reading loop */
+	Assert(CurrentPgSession != NULL);
+	PgSessionLoopStateInit(&CurrentPgSession->loop_state);
+	ThreadedBackendStartupComplete();
+
+	return CurrentPgSession;
+}
+
+/* ----------------------------------------------------------------
+ * PostgresMain
+ *	   postgres main loop -- all backends, interactive or otherwise loop here
+ *
+ * dbname is the name of the database to connect to, username is the
+ * PostgreSQL user name to be used for the session.
+ * ----------------------------------------------------------------
+ */
+void
+PostgresRunSession(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (PgRuntimeIsThreadBacked(CurrentPgRuntime) &&
+		IsExternalConnectionBackend(MyBackendType))
+		PgSessionRunProtocolSchedulerStaging(session);
+	PgSessionRun(session);
+}
+
+void
+PostgresMain(const char *dbname, const char *username)
+{
+	PostgresRunSession(PostgresBootstrapSession(dbname, username));
 }
 
 /*
@@ -5225,8 +7328,8 @@ forbidden_in_wal_sender(char firstchar)
 }
 
 
-static struct rusage Save_r;
-static struct timeval Save_t;
+#define Save_r (*PgCurrentUsageSaveRusageRef())
+#define Save_t (*PgCurrentUsageSaveTimevalRef())
 
 void
 ResetUsage(void)

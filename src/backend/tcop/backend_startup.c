@@ -40,24 +40,16 @@
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/timeout.h"
+#include "utils/timestamp.h"
 #include "utils/varlena.h"
 
 /* GUCs */
-bool		Trace_connection_negotiation = false;
-uint32		log_connections = 0;
-char	   *log_connections_string = NULL;
+PG_GLOBAL_RUNTIME bool Trace_connection_negotiation = false;
+PG_GLOBAL_RUNTIME uint32 log_connections = 0;
+PG_GLOBAL_RUNTIME char *log_connections_string = NULL;
 
-/* Other globals */
-
-/*
- * ConnectionTiming stores timestamps of various points in connection
- * establishment and setup.
- * ready_for_use is initialized to a special value here so we can check if
- * we've already set it before doing so in PostgresMain().
- */
-ConnectionTiming conn_timing = {.ready_for_use = TIMESTAMP_MINUS_INFINITY};
-
-static void BackendInitialize(ClientSocket *client_sock, CAC_state cac);
+static void BackendInitialize(ClientSocket *client_sock, CAC_state cac,
+							  BackendStartupMode startup_mode);
 static int	ProcessSSLStartup(Port *port);
 static int	ProcessStartupPacket(Port *port);
 static void ProcessCancelRequestPacket(Port *port, void *pkt, int pktlen);
@@ -79,6 +71,18 @@ BackendMain(const void *startup_data, size_t startup_data_len)
 
 	Assert(startup_data_len == sizeof(BackendStartupData));
 	Assert(MyClientSocket != NULL);
+
+	BackendMainWithStartupData(bsdata, MyClientSocket,
+							   BACKEND_STARTUP_PROCESS);
+}
+
+PgSession *
+BackendStartSessionWithStartupData(const BackendStartupData *bsdata,
+								   ClientSocket *client_sock,
+								   BackendStartupMode startup_mode)
+{
+	Assert(bsdata != NULL);
+	Assert(client_sock != NULL);
 
 #ifdef EXEC_BACKEND
 
@@ -107,7 +111,8 @@ BackendMain(const void *startup_data, size_t startup_data_len)
 #endif
 
 	/* Perform additional initialization and collect startup packet */
-	BackendInitialize(MyClientSocket, bsdata->canAcceptConnections);
+	BackendInitialize(client_sock, bsdata->canAcceptConnections,
+					  startup_mode);
 
 	/*
 	 * Create a per-backend PGPROC struct in shared memory.  We must do this
@@ -121,7 +126,25 @@ BackendMain(const void *startup_data, size_t startup_data_len)
 	 */
 	MemoryContextSwitchTo(TopMemoryContext);
 
-	PostgresMain(MyProcPort->database_name, MyProcPort->user_name);
+	return PostgresBootstrapSession(MyProcPort->database_name,
+									MyProcPort->user_name);
+}
+
+/*
+ * Entry point for a backend with explicit startup data and client socket.
+ *
+ * BackendMain() remains the process-mode adapter that uses MyClientSocket,
+ * which is inherited or reconstructed by the launch path.  Threaded launch
+ * can call this entrypoint with a per-thread socket copy before installing
+ * the broader backend carrier state.
+ */
+void
+BackendMainWithStartupData(const BackendStartupData *bsdata,
+						   ClientSocket *client_sock,
+						   BackendStartupMode startup_mode)
+{
+	PostgresRunSession(BackendStartSessionWithStartupData(bsdata, client_sock,
+														  startup_mode));
 }
 
 
@@ -138,7 +161,8 @@ BackendMain(const void *startup_data, size_t startup_data_len)
  * but have not yet set up most of our local pointers to shmem structures.
  */
 static void
-BackendInitialize(ClientSocket *client_sock, CAC_state cac)
+BackendInitialize(ClientSocket *client_sock, CAC_state cac,
+				  BackendStartupMode startup_mode)
 {
 	int			status;
 	int			ret;
@@ -147,6 +171,7 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac)
 	char		remote_port[NI_MAXSERV];
 	StringInfoData ps_data;
 	MemoryContext oldcontext;
+	MemoryContext port_context;
 
 	/* Tell fd.c about the long-lived FD associated with the client_sock */
 	ReserveExternalFD();
@@ -169,13 +194,14 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac)
 	 * Must do this now because authentication uses libpq to send messages.
 	 *
 	 * The Port structure and all data structures attached to it are allocated
-	 * in TopMemoryContext, so that they survive into PostgresMain execution.
-	 * We need not worry about leaking this storage on failure, since we
-	 * aren't in the postmaster process anymore.
+	 * in a child of TopMemoryContext, so that they survive into PostgresMain
+	 * execution and can be released as one connection-owned object during
+	 * threaded backend teardown.
 	 */
 	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 	port = MyProcPort = pq_init(client_sock);
 	MemoryContextSwitchTo(oldcontext);
+	port_context = GetMemoryChunkContext(port);
 
 	whereToSendOutput = DestRemote; /* now safe to ereport to client */
 
@@ -193,10 +219,15 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac)
 	 * shared memory; therefore no outside-the-process state needs to get
 	 * cleaned up.
 	 */
-	pqsignal(SIGTERM, process_startup_packet_die);
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
-	InitializeTimeouts();		/* establishes SIGALRM handler */
-	sigprocmask(SIG_SETMASK, &StartupBlockSig, NULL);
+	if (startup_mode == BACKEND_STARTUP_PROCESS)
+	{
+		pqsignal(SIGTERM, process_startup_packet_die);
+		/* SIGQUIT handler was already set up by InitPostmasterChild */
+		InitializeTimeouts();	/* establishes SIGALRM handler */
+		sigprocmask(SIG_SETMASK, &StartupBlockSig, NULL);
+	}
+	else
+		Assert(startup_mode == BACKEND_STARTUP_THREAD);
 
 	/*
 	 * Get the remote host name and port for logging and status display.
@@ -215,8 +246,8 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac)
 	 * Save remote_host and remote_port in port structure (after this, they
 	 * will appear in log_line_prefix data for log messages).
 	 */
-	port->remote_host = MemoryContextStrdup(TopMemoryContext, remote_host);
-	port->remote_port = MemoryContextStrdup(TopMemoryContext, remote_port);
+	port->remote_host = MemoryContextStrdup(port_context, remote_host);
+	port->remote_port = MemoryContextStrdup(port_context, remote_port);
 
 	/* And now we can log that the connection was received, if enabled */
 	if (log_connections & LOG_CONNECTION_RECEIPT)
@@ -263,7 +294,7 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac)
 		strspn(remote_host, "0123456789.") < strlen(remote_host) &&
 		strspn(remote_host, "0123456789ABCDEFabcdef:") < strlen(remote_host))
 	{
-		port->remote_hostname = MemoryContextStrdup(TopMemoryContext, remote_host);
+		port->remote_hostname = MemoryContextStrdup(port_context, remote_host);
 	}
 
 	/*
@@ -281,8 +312,18 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac)
 	 * registration of STARTUP_PACKET_TIMEOUT will be lost.  This is okay
 	 * since we never use it again after this function.
 	 */
-	RegisterTimeout(STARTUP_PACKET_TIMEOUT, StartupPacketTimeoutHandler);
-	enable_timeout_after(STARTUP_PACKET_TIMEOUT, AuthenticationTimeout * 1000);
+	if (startup_mode == BACKEND_STARTUP_PROCESS)
+	{
+		RegisterTimeout(STARTUP_PACKET_TIMEOUT, StartupPacketTimeoutHandler);
+		enable_timeout_after(STARTUP_PACKET_TIMEOUT, AuthenticationTimeout * 1000);
+	}
+	else
+	{
+		port->client_read_deadline_active = true;
+		port->client_read_deadline =
+			TimestampTzPlusMilliseconds(GetCurrentTimestamp(),
+										AuthenticationTimeout * 1000);
+	}
 
 	/* Handle direct SSL handshake */
 	status = ProcessSSLStartup(port);
@@ -350,8 +391,13 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac)
 	/*
 	 * Disable the timeout, and prevent SIGTERM again.
 	 */
-	disable_timeout(STARTUP_PACKET_TIMEOUT, false);
-	sigprocmask(SIG_SETMASK, &BlockSig, NULL);
+	if (startup_mode == BACKEND_STARTUP_PROCESS)
+	{
+		disable_timeout(STARTUP_PACKET_TIMEOUT, false);
+		sigprocmask(SIG_SETMASK, &BlockSig, NULL);
+	}
+	else
+		port->client_read_deadline_active = false;
 
 	/*
 	 * As a safety check that nothing in startup has yet performed
@@ -369,7 +415,7 @@ BackendInitialize(ClientSocket *client_sock, CAC_state cac)
 	 * already did any appropriate error reporting.
 	 */
 	if (status != STATUS_OK)
-		proc_exit(0);
+		PgBackendExit(0);
 
 	/*
 	 * Now that we have the user and database name, we can set the process
@@ -753,7 +799,7 @@ retry:
 	 * Now fetch parameters out of startup packet and save them into the Port
 	 * structure.
 	 */
-	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+	oldcontext = MemoryContextSwitchTo(GetMemoryChunkContext(port));
 
 	/* Handle protocol version 3 startup packet */
 	{
@@ -834,7 +880,7 @@ retry:
 				 */
 				if (strcmp(nameptr, "application_name") == 0)
 				{
-					port->application_name = pg_clean_ascii(valptr, 0);
+					port->startup_application_name = pg_clean_ascii(valptr, 0);
 				}
 			}
 			offset = valoffset + strlen(valptr) + 1;
