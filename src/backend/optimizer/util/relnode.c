@@ -48,10 +48,10 @@ typedef struct JoinHashEntry
 } JoinHashEntry;
 
 /* Hook for plugins to get control in build_simple_rel() */
-build_simple_rel_hook_type build_simple_rel_hook = NULL;
+PG_GLOBAL_RUNTIME build_simple_rel_hook_type build_simple_rel_hook = NULL;
 
 /* Hook for plugins to get control during joinrel setup */
-joinrel_setup_hook_type joinrel_setup_hook = NULL;
+PG_GLOBAL_RUNTIME joinrel_setup_hook_type joinrel_setup_hook = NULL;
 
 static void build_joinrel_tlist(PlannerInfo *root, RelOptInfo *joinrel,
 								RelOptInfo *input_rel,

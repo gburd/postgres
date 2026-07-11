@@ -108,6 +108,8 @@
 	(&PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_pg_authid_oid_value)
 #define PgCurrentBinaryUpgradeRecordInitPrivsRef() \
 	(&PgCurrentSessionBinaryUpgradeState()->binary_upgrade_record_init_privs_value)
+#define PgCurrentBinaryUpgradeNextAttributeVersionsRef() \
+	(&PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_attribute_versions_value)
 #define PgCurrentTSCurrentConfigRef() \
 	(&PgCurrentSessionTextSearchState()->current_config_value)
 #define PgCurrentTSCurrentConfigCacheRef() \

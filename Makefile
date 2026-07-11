@@ -15,7 +15,7 @@
 # a single-target, empty rule to make the other targets non-default.
 all:
 
-all check install installdirs installcheck installcheck-parallel uninstall clean distclean maintainer-clean dist distcheck world check-world install-world installcheck-world:
+all check install installdirs installcheck installcheck-parallel uninstall clean distclean maintainer-clean dist distcheck world check-world install-world installcheck-world check-global-lifetimes check-runtime-lifecycles:
 	@if [ ! -f GNUmakefile ] ; then \
 	   echo "You need to run the 'configure' program first. Please see"; \
 	   echo "<https://www.postgresql.org/docs/devel/installation.html>" ; \

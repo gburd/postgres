@@ -17,6 +17,7 @@
 #include "access/xact.h"
 #include "access/xlogdefs.h"
 #include "datatype/timestamp.h"
+#include "utils/global_lifetime.h"
 
 /*
  * forward references in this file
@@ -31,7 +32,7 @@ typedef struct VirtualTransactionId VirtualTransactionId;
 typedef struct GlobalTransactionData *GlobalTransaction;
 
 /* GUC variable */
-extern PGDLLIMPORT int max_prepared_xacts;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_prepared_xacts;
 
 extern void AtAbort_Twophase(void);
 extern void PostPrepare_Twophase(void);

@@ -1065,6 +1065,12 @@ PgCurrentEnableAsyncAppendRef(void)
 }
 
 bool *
+PgCurrentEnableAsyncMergeAppendRef(void)
+{
+	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_async_merge_append_value;
+}
+
+bool *
 PgCurrentEnableDistinctReorderingRef(void)
 {
 	return &PG_RUNTIME_FAST_INITIALIZED_BUCKET_ACCESSOR(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentSessionPlannerMethodState)->enable_distinct_reordering_value;

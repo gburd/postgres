@@ -63,6 +63,7 @@
 
 #include "fmgr.h"
 #include "utils/expandeddatum.h"
+#include "utils/global_lifetime.h"
 
 /* avoid including execnodes.h here */
 typedef struct ExprState ExprState;

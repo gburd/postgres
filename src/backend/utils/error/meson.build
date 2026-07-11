@@ -2,6 +2,7 @@
 
 backend_sources += files(
   'assert.c',
+  'backend_runtime_error.c',
   'csvlog.c',
   'elog.c',
   'jsonlog.c',

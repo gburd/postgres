@@ -38,8 +38,11 @@
 #include "storage/ipc.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
+#include "storage/procnumber.h"
+#include "storage/procsignal.h"
 #include "storage/subsystems.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/pg_lsn.h"
@@ -51,16 +54,16 @@
 #define DEFAULT_NAPTIME_PER_CYCLE 180000L
 
 /* GUC variables */
-int			max_logical_replication_workers = 4;
-int			max_sync_workers_per_subscription = 2;
-int			max_parallel_apply_workers_per_subscription = 2;
-
-LogicalRepWorker *MyLogicalRepWorker = NULL;
+PG_GLOBAL_RUNTIME int max_logical_replication_workers = 4;
+PG_GLOBAL_RUNTIME int max_sync_workers_per_subscription = 2;
+PG_GLOBAL_RUNTIME int max_parallel_apply_workers_per_subscription = 2;
 
 typedef struct LogicalRepCtxStruct
 {
 	/* Supervisor process. */
 	pid_t		launcher_pid;
+	ProcNumber	launcher_procno;
+	bool		launcher_threaded;
 
 	/* Hash table holding last start times of subscriptions' apply workers. */
 	dsa_handle	last_start_dsa;
@@ -70,7 +73,7 @@ typedef struct LogicalRepCtxStruct
 	LogicalRepWorker workers[FLEXIBLE_ARRAY_MEMBER];
 } LogicalRepCtxStruct;
 
-static LogicalRepCtxStruct *LogicalRepCtx;
+static PG_GLOBAL_SHMEM LogicalRepCtxStruct *LogicalRepCtx;
 
 static void ApplyLauncherShmemRequest(void *arg);
 static void ApplyLauncherShmemInit(void *arg);
@@ -97,16 +100,19 @@ static const dshash_parameters dsh_params = {
 	LWTRANCHE_LAUNCHER_HASH
 };
 
-static dsa_area *last_start_times_dsa = NULL;
-static dshash_table *last_start_times = NULL;
-
-static bool on_commit_launcher_wakeup = false;
+#define last_start_times_dsa \
+	(PgCurrentLogicalReplicationState()->launcher_last_start_times_dsa)
+#define last_start_times \
+	(PgCurrentLogicalReplicationState()->launcher_last_start_times)
+#define on_commit_launcher_wakeup \
+	(PgCurrentLogicalReplicationState()->launcher_on_commit_wakeup)
 
 
 static void logicalrep_launcher_onexit(int code, Datum arg);
 static void logicalrep_worker_onexit(int code, Datum arg);
 static void logicalrep_worker_detach(void);
 static void logicalrep_worker_cleanup(LogicalRepWorker *worker);
+static PgBackendInterruptType logicalrep_worker_signal_to_interrupt(int signo);
 static int	logicalrep_pa_worker_count(Oid subid);
 static void logicalrep_launcher_attach_dshmem(void);
 static void ApplyLauncherSetWorkerStartTime(Oid subid, TimestampTz start_time);
@@ -117,6 +123,7 @@ static bool collect_min_nonremovable_xid(Subscription *sub,
 static bool acquire_conflict_slot_if_exists(void);
 static void update_conflict_slot_xmin(TransactionId new_xmin);
 static void reset_conflict_slot_xmin_to_safe_horizon(void);
+static bool ApplyLauncherIsThreadedRuntime(void);
 
 
 /*
@@ -477,6 +484,9 @@ retry:
 	worker->in_use = true;
 	worker->generation++;
 	worker->proc = NULL;
+	worker->signal_pid = InvalidPid;
+	worker->procno = INVALID_PROC_NUMBER;
+	worker->threaded = false;
 	worker->dbid = dbid;
 	worker->userid = userid;
 	worker->subid = subid;
@@ -485,6 +495,10 @@ retry:
 	worker->relstate_lsn = InvalidXLogRecPtr;
 	worker->stream_fileset = NULL;
 	worker->leader_pid = is_parallel_apply_worker ? MyProcPid : InvalidPid;
+	worker->leader_signal_pid = is_parallel_apply_worker ?
+		PgCurrentBackendSignalPid() : InvalidPid;
+	worker->leader_procno = is_parallel_apply_worker ?
+		MyProcNumber : INVALID_PROC_NUMBER;
 	worker->parallel_apply = is_parallel_apply_worker;
 	worker->oldest_nonremovable_xid = retain_dead_tuples
 		? MyReplicationSlot->data.xmin
@@ -505,6 +519,7 @@ retry:
 	memset(&bgw, 0, sizeof(bgw));
 	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS |
 		BGWORKER_BACKEND_DATABASE_CONNECTION;
+	bgw.bgw_backend_model = BgWorkerBackendThreadPerSession;
 	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	snprintf(bgw.bgw_library_name, MAXPGPATH, "postgres");
 
@@ -628,7 +643,12 @@ logicalrep_worker_stop_internal(LogicalRepWorker *worker, int signo)
 	}
 
 	/* Now terminate the worker ... */
-	kill(worker->proc->pid, signo);
+	if (worker->threaded)
+		(void) SendBackendInterrupt(worker->signal_pid,
+									logicalrep_worker_signal_to_interrupt(signo),
+									MyProcPid, getuid());
+	else
+		kill(worker->proc->pid, signo);
 
 	/* ... and wait for it to die. */
 	for (;;)
@@ -653,6 +673,21 @@ logicalrep_worker_stop_internal(LogicalRepWorker *worker, int signo)
 		}
 
 		LWLockAcquire(LogicalRepWorkerLock, LW_SHARED);
+	}
+}
+
+static PgBackendInterruptType
+logicalrep_worker_signal_to_interrupt(int signo)
+{
+	switch (signo)
+	{
+		case SIGUSR2:
+			return PG_BACKEND_INTERRUPT_SHUTDOWN_REQUEST;
+		case SIGINT:
+			return PG_BACKEND_INTERRUPT_QUERY_CANCEL;
+		case SIGTERM:
+		default:
+			return PG_BACKEND_INTERRUPT_PROC_DIE;
 	}
 }
 
@@ -793,6 +828,9 @@ logicalrep_worker_attach(int slot)
 	}
 
 	MyLogicalRepWorker->proc = MyProc;
+	MyLogicalRepWorker->signal_pid = PgCurrentBackendSignalPid();
+	MyLogicalRepWorker->procno = MyProcNumber;
+	MyLogicalRepWorker->threaded = ApplyLauncherIsThreadedRuntime();
 	before_shmem_exit(logicalrep_worker_onexit, (Datum) 0);
 
 	LWLockRelease(LogicalRepWorkerLock);
@@ -854,11 +892,16 @@ logicalrep_worker_cleanup(LogicalRepWorker *worker)
 	worker->type = WORKERTYPE_UNKNOWN;
 	worker->in_use = false;
 	worker->proc = NULL;
+	worker->signal_pid = InvalidPid;
+	worker->procno = INVALID_PROC_NUMBER;
+	worker->threaded = false;
 	worker->dbid = InvalidOid;
 	worker->userid = InvalidOid;
 	worker->subid = InvalidOid;
 	worker->relid = InvalidOid;
 	worker->leader_pid = InvalidPid;
+	worker->leader_signal_pid = InvalidPid;
+	worker->leader_procno = INVALID_PROC_NUMBER;
 	worker->parallel_apply = false;
 }
 
@@ -871,6 +914,8 @@ static void
 logicalrep_launcher_onexit(int code, Datum arg)
 {
 	LogicalRepCtx->launcher_pid = 0;
+	LogicalRepCtx->launcher_procno = INVALID_PROC_NUMBER;
+	LogicalRepCtx->launcher_threaded = false;
 }
 
 /*
@@ -910,7 +955,10 @@ logicalrep_worker_onexit(int code, Datum arg)
 {
 	/* Disconnect gracefully from the remote side. */
 	if (LogRepWorkerWalRcvConn)
+	{
 		walrcv_disconnect(LogRepWorkerWalRcvConn);
+		LogRepWorkerWalRcvConn = NULL;
+	}
 
 	logicalrep_worker_detach();
 
@@ -1026,6 +1074,7 @@ ApplyLauncherRegister(void)
 	memset(&bgw, 0, sizeof(bgw));
 	bgw.bgw_flags = BGWORKER_SHMEM_ACCESS |
 		BGWORKER_BACKEND_DATABASE_CONNECTION;
+	bgw.bgw_backend_model = BgWorkerBackendThreadPerSession;
 	bgw.bgw_start_time = BgWorkerStart_RecoveryFinished;
 	snprintf(bgw.bgw_library_name, MAXPGPATH, "postgres");
 	snprintf(bgw.bgw_function_name, BGW_MAXLEN, "ApplyLauncherMain");
@@ -1051,6 +1100,9 @@ ApplyLauncherShmemInit(void *arg)
 
 	LogicalRepCtx->last_start_dsa = DSA_HANDLE_INVALID;
 	LogicalRepCtx->last_start_dsh = DSHASH_HANDLE_INVALID;
+	LogicalRepCtx->launcher_pid = 0;
+	LogicalRepCtx->launcher_procno = INVALID_PROC_NUMBER;
+	LogicalRepCtx->launcher_threaded = false;
 
 	/* Initialize memory and spin locks for each worker slot. */
 	for (slot = 0; slot < max_logical_replication_workers; slot++)
@@ -1196,8 +1248,20 @@ ApplyLauncherWakeupAtCommit(void)
 void
 ApplyLauncherWakeup(void)
 {
-	if (LogicalRepCtx->launcher_pid != 0)
+	if (LogicalRepCtx->launcher_threaded)
+	{
+		if (LogicalRepCtx->launcher_procno != INVALID_PROC_NUMBER)
+			SetLatch(&GetPGProcByNumber(LogicalRepCtx->launcher_procno)->
+					 procLatch);
+	}
+	else if (LogicalRepCtx->launcher_pid != 0)
 		kill(LogicalRepCtx->launcher_pid, SIGUSR1);
+}
+
+static bool
+ApplyLauncherIsThreadedRuntime(void)
+{
+	return PgRuntimeIsThreadBacked(CurrentPgRuntime);
 }
 
 /*
@@ -1207,6 +1271,9 @@ void
 ApplyLauncherMain(Datum main_arg)
 {
 	List	   *retained_dbids;
+	bool		threaded_launcher;
+
+	threaded_launcher = ApplyLauncherIsThreadedRuntime();
 
 	ereport(DEBUG1,
 			(errmsg_internal("logical replication launcher started")));
@@ -1215,9 +1282,13 @@ ApplyLauncherMain(Datum main_arg)
 
 	Assert(LogicalRepCtx->launcher_pid == 0);
 	LogicalRepCtx->launcher_pid = MyProcPid;
+	LogicalRepCtx->launcher_procno =
+		threaded_launcher ? MyProcNumber : INVALID_PROC_NUMBER;
+	LogicalRepCtx->launcher_threaded = threaded_launcher;
 
 	/* Establish signal handlers. */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
+	if (!threaded_launcher)
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
 	BackgroundWorkerUnblockSignals();
 
 	/*
@@ -1254,6 +1325,7 @@ ApplyLauncherMain(Datum main_arg)
 		TransactionId xmin = InvalidTransactionId;
 		List	   *current_dbids = NIL;
 
+		ProcessMainLoopInterrupts();
 		CHECK_FOR_INTERRUPTS();
 
 		/* Use temporary context to avoid leaking memory across cycles. */
@@ -1445,13 +1517,15 @@ ApplyLauncherMain(Datum main_arg)
 		if (rc & WL_LATCH_SET)
 		{
 			ResetLatch(MyLatch);
+			ProcessMainLoopInterrupts();
 			CHECK_FOR_INTERRUPTS();
 		}
 
 		if (ConfigReloadPending)
 		{
 			ConfigReloadPending = false;
-			ProcessConfigFile(PGC_SIGHUP);
+			if (!threaded_launcher)
+				ProcessConfigFile(PGC_SIGHUP);
 		}
 	}
 
@@ -1654,6 +1728,9 @@ CreateConflictDetectionSlot(void)
 bool
 IsLogicalLauncher(void)
 {
+	if (LogicalRepCtx->launcher_threaded)
+		return LogicalRepCtx->launcher_procno == MyProcNumber;
+
 	return LogicalRepCtx->launcher_pid == MyProcPid;
 }
 
@@ -1673,9 +1750,9 @@ GetLeaderApplyWorkerPid(pid_t pid)
 	{
 		LogicalRepWorker *w = &LogicalRepCtx->workers[i];
 
-		if (isParallelApplyWorker(w) && w->proc && pid == w->proc->pid)
+		if (isParallelApplyWorker(w) && w->proc && pid == w->signal_pid)
 		{
-			leader_pid = w->leader_pid;
+			leader_pid = w->leader_signal_pid;
 			break;
 		}
 	}
@@ -1711,13 +1788,13 @@ pg_stat_get_subscription(PG_FUNCTION_ARGS)
 
 		memcpy(&worker, &LogicalRepCtx->workers[i],
 			   sizeof(LogicalRepWorker));
-		if (!worker.proc || !IsBackendPid(worker.proc->pid))
+		if (!worker.proc || !BackendSignalPidIsActive(worker.signal_pid))
 			continue;
 
 		if (OidIsValid(subid) && worker.subid != subid)
 			continue;
 
-		worker_pid = worker.proc->pid;
+		worker_pid = worker.signal_pid;
 
 		values[0] = ObjectIdGetDatum(worker.subid);
 		if (isTableSyncWorker(&worker))
@@ -1727,7 +1804,7 @@ pg_stat_get_subscription(PG_FUNCTION_ARGS)
 		values[2] = Int32GetDatum(worker_pid);
 
 		if (isParallelApplyWorker(&worker))
-			values[3] = Int32GetDatum(worker.leader_pid);
+			values[3] = Int32GetDatum(worker.leader_signal_pid);
 		else
 			nulls[3] = true;
 

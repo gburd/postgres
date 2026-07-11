@@ -17,6 +17,7 @@
 #include "nodes/plannodes.h"
 #include "parser/parse_node.h"
 #include "port/pg_bitutils.h"
+#include "utils/global_lifetime.h"
 
 typedef enum ExplainSerializeOption
 {
@@ -86,7 +87,7 @@ typedef bool (*ExplainOptionGUCCheckHandler) (const char *option_name,
 /* Hook to perform additional EXPLAIN options validation */
 typedef void (*explain_validate_options_hook_type) (ExplainState *es, List *options,
 													ParseState *pstate);
-extern PGDLLIMPORT explain_validate_options_hook_type explain_validate_options_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME explain_validate_options_hook_type explain_validate_options_hook;
 
 extern ExplainState *NewExplainState(void);
 extern void ParseExplainOptionList(ExplainState *es, List *options,

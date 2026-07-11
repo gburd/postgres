@@ -68,6 +68,7 @@
 #include "nodes/nodeFuncs.h"
 #include "pgstat.h"
 #include "utils/array.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/date.h"
 #include "utils/datum.h"
@@ -103,18 +104,13 @@
  */
 #if defined(EEO_USE_COMPUTED_GOTO)
 
-/* struct for jump target -> opcode lookup table */
-typedef struct ExprEvalOpLookup
-{
-	const void *opcode;
-	ExprEvalOp	op;
-} ExprEvalOpLookup;
+/* Compatibility names for backend-owned interpreter lookup state. */
+typedef PgBackendExprEvalOpLookup ExprEvalOpLookup;
 
-/* to make dispatch_table accessible outside ExecInterpExpr() */
-static const void **dispatch_table = NULL;
-
-/* jump target -> opcode lookup table */
-static ExprEvalOpLookup reverse_dispatch_table[EEOP_LAST];
+#define dispatch_table \
+	(PgCurrentExprInterpState()->dispatch_table)
+#define reverse_dispatch_table \
+	(PgCurrentExprInterpState()->reverse_dispatch_table)
 
 #define EEO_SWITCH()
 #define EEO_CASE(name)		CASE_##name:
@@ -463,7 +459,8 @@ ExecReadyInterpretedExpr(ExprState *state)
  * and the Datum value is the function result.
  *
  * As a special case, return the dispatch table's address if state is NULL.
- * This is used by ExecInitInterpreter to set up the dispatch_table global.
+ * This is used by ExecInitInterpreter to set up the backend-local dispatch
+ * table pointer.
  * (Only applies when EEO_USE_COMPUTED_GOTO is defined.)
  */
 static Datum
@@ -481,7 +478,7 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 	 * This array has to be in the same order as enum ExprEvalOp.
 	 */
 #if defined(EEO_USE_COMPUTED_GOTO)
-	static const void *const dispatch_table[] = {
+	static const void *const local_dispatch_table[] = {
 		&&CASE_EEOP_DONE_RETURN,
 		&&CASE_EEOP_DONE_NO_RETURN,
 		&&CASE_EEOP_INNER_FETCHSOME,
@@ -605,11 +602,11 @@ ExecInterpExpr(ExprState *state, ExprContext *econtext, bool *isnull)
 		&&CASE_EEOP_LAST
 	};
 
-	StaticAssertDecl(lengthof(dispatch_table) == EEOP_LAST + 1,
+	StaticAssertDecl(lengthof(local_dispatch_table) == EEOP_LAST + 1,
 					 "dispatch_table out of whack with ExprEvalOp");
 
 	if (unlikely(state == NULL))
-		return PointerGetDatum(dispatch_table);
+		return PointerGetDatum(local_dispatch_table);
 #else
 	Assert(state != NULL);
 #endif							/* EEO_USE_COMPUTED_GOTO */
@@ -2943,6 +2940,9 @@ ExecInitInterpreter(void)
 	{
 		dispatch_table = (const void **)
 			DatumGetPointer(ExecInterpExpr(NULL, NULL, NULL));
+		reverse_dispatch_table = (ExprEvalOpLookup *)
+			MemoryContextAlloc(TopMemoryContext,
+							   sizeof(ExprEvalOpLookup) * EEOP_LAST);
 
 		/* build reverse lookup table */
 		for (int i = 0; i < EEOP_LAST; i++)
@@ -2982,7 +2982,7 @@ ExecEvalStepOp(ExprState *state, ExprEvalStep *op)
 					  sizeof(ExprEvalOpLookup),
 					  dispatch_compare_ptr);
 		Assert(res);			/* unknown ops shouldn't get looked up */
-		return res->op;
+		return (ExprEvalOp) res->op;
 	}
 #endif
 	return (ExprEvalOp) op->opcode;

@@ -353,7 +353,7 @@ static const struct cname
  * The following array defines the valid character class names.
  * The entries must match enum char_classes in regguts.h.
  */
-static const char *const classNames[NUM_CCLASSES + 1] = {
+static PG_GLOBAL_IMMUTABLE const char *const classNames[NUM_CCLASSES + 1] = {
 	"alnum", "alpha", "ascii", "blank", "cntrl", "digit", "graph",
 	"lower", "print", "punct", "space", "upper", "xdigit", "word",
 	NULL

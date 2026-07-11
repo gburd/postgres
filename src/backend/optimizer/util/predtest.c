@@ -25,6 +25,7 @@
 #include "nodes/pathnodes.h"
 #include "optimizer/optimizer.h"
 #include "utils/array.h"
+#include "utils/backend_runtime.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
 #include "utils/lsyscache.h"
@@ -2092,7 +2093,7 @@ typedef struct OprProofCacheEntry
 	Oid			refute_test_op; /* OID of the test operator, or 0 if none */
 } OprProofCacheEntry;
 
-static HTAB *OprProofCacheHash = NULL;
+#define OprProofCacheHash (*PgCurrentOprProofCacheHashRef())
 
 
 /*

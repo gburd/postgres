@@ -123,6 +123,7 @@ extern void * * PgCurrentDsmRegistryTableRef(void);
 extern char * * PgCurrentDynamicLibraryPathRef(void);
 extern int * PgCurrentEffectiveCacheSizeRef(void);
 extern bool * PgCurrentEnableAsyncAppendRef(void);
+extern bool * PgCurrentEnableAsyncMergeAppendRef(void);
 extern bool * PgCurrentEnableBitmapscanRef(void);
 extern bool * PgCurrentEnableDistinctReorderingRef(void);
 extern bool * PgCurrentEnableEagerAggregateRef(void);

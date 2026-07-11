@@ -38,7 +38,7 @@
 /*
  * String representations for the supported conflict logging destinations.
  */
-const char *const ConflictLogDestNames[] = {
+PG_GLOBAL_IMMUTABLE const char *const ConflictLogDestNames[] = {
 	[CONFLICT_LOG_DEST_LOG] = "log",
 	[CONFLICT_LOG_DEST_TABLE] = "table",
 	[CONFLICT_LOG_DEST_ALL] = "all"
@@ -76,7 +76,7 @@ typedef struct ConflictLogColumnDef
  * multiple local rows for one remote operation doesn't require a
  * backward-incompatible schema change.
  */
-static const ConflictLogColumnDef ConflictLogSchema[] = {
+static PG_GLOBAL_IMMUTABLE const ConflictLogColumnDef ConflictLogSchema[] = {
 	{.attname = "relid", .atttypid = OIDOID},
 	{.attname = "schemaname", .atttypid = TEXTOID},
 	{.attname = "relname", .atttypid = TEXTOID},
@@ -110,7 +110,7 @@ static const ConflictLogColumnDef ConflictLogSchema[] = {
 /*
  * Schema for the elements within the 'local_conflicts' JSON array.
  */
-static const ConflictLogColumnDef LocalConflictSchema[] =
+static PG_GLOBAL_IMMUTABLE const ConflictLogColumnDef LocalConflictSchema[] =
 {
 	{.attname = "xid", .atttypid = XID8OID},
 	{.attname = "commit_ts", .atttypid = TIMESTAMPTZOID},
@@ -119,7 +119,7 @@ static const ConflictLogColumnDef LocalConflictSchema[] =
 
 #define NUM_LOCAL_CONFLICT_ATTRS lengthof(LocalConflictSchema)
 
-static const char *const ConflictTypeNames[] = {
+static PG_GLOBAL_IMMUTABLE const char *const ConflictTypeNames[] = {
 	[CT_INSERT_EXISTS] = "insert_exists",
 	[CT_UPDATE_ORIGIN_DIFFERS] = "update_origin_differs",
 	[CT_UPDATE_EXISTS] = "update_exists",

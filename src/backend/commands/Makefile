@@ -18,6 +18,11 @@ OBJS = \
 	amcmds.o \
 	analyze.o \
 	async.o \
+	backend_runtime_async.o \
+	backend_runtime_event_trigger.o \
+	backend_runtime_matview.o \
+	backend_runtime_trigger.o \
+	backend_runtime_vacuum.o \
 	collationcmds.o \
 	comment.o \
 	constraint.o \

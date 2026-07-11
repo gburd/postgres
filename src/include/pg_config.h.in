@@ -707,6 +707,12 @@
 /* Define to build with io_uring support. (--with-liburing) */
 #undef USE_LIBURING
 
+/* Define to 1 to run threaded client backends as xtc fibers on an xtc
+ * scheduler (libxtc carrier).  The autoconf build defines this via
+ * -DUSE_XTC_CARRIER (make USE_XTC_CARRIER=1); the meson build sets it here.
+ * Keep both build systems in sync when this symbol changes. */
+#undef USE_XTC_CARRIER
+
 /* Define to 1 to build with XML support. (--with-libxml) */
 #undef USE_LIBXML
 

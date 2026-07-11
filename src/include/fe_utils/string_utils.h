@@ -18,9 +18,10 @@
 
 #include "libpq-fe.h"
 #include "pqexpbuffer.h"
+#include "utils/global_lifetime.h"
 
 /* Global variables controlling behavior of fmtId() and fmtQualifiedId() */
-extern PGDLLIMPORT int quote_all_identifiers;
+extern PGDLLIMPORT PG_GLOBAL_DYNAMIC int quote_all_identifiers;
 extern PQExpBuffer (*getLocalPQExpBuffer) (void);
 
 /* Functions */

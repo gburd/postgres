@@ -194,7 +194,8 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSession early_session_fallback = {
 			InvalidRelFileNumber,
 		.binary_upgrade_next_pg_enum_oid_value = InvalidOid,
 		.binary_upgrade_next_pg_authid_oid_value = InvalidOid,
-		.binary_upgrade_record_init_privs_value = false
+		.binary_upgrade_record_init_privs_value = false,
+		.binary_upgrade_next_attribute_versions_value = NULL
 	},
 	.datetime = {
 		.initialized = true,
@@ -503,6 +504,7 @@ static PG_THREAD_LOCAL PG_GLOBAL_SESSION PgSession early_session_fallback = {
 		.enable_partition_pruning_value = true,
 		.enable_presorted_aggregate_value = true,
 		.enable_async_append_value = true,
+		.enable_async_merge_append_value = true,
 		.enable_distinct_reordering_value = true,
 		.enable_geqo_value = true,
 		.enable_eager_aggregate_value = true,
@@ -646,6 +648,7 @@ PgSessionInitializeBinaryUpgradeState(PgSessionBinaryUpgradeState *binary_upgrad
 	binary_upgrade->binary_upgrade_next_pg_enum_oid_value = InvalidOid;
 	binary_upgrade->binary_upgrade_next_pg_authid_oid_value = InvalidOid;
 	binary_upgrade->binary_upgrade_record_init_privs_value = false;
+	binary_upgrade->binary_upgrade_next_attribute_versions_value = NULL;
 }
 
 PG_RUNTIME_DEFINE_ADOPT_EARLY_INITIALIZED(PgSessionAdoptEarlyBinaryUpgradeState,
@@ -1435,6 +1438,7 @@ PgSessionInitializePlannerMethodState(PgSessionPlannerMethodState *planner_metho
 	planner_method->enable_partition_pruning_value = true;
 	planner_method->enable_presorted_aggregate_value = true;
 	planner_method->enable_async_append_value = true;
+	planner_method->enable_async_merge_append_value = true;
 	planner_method->enable_distinct_reordering_value = true;
 	planner_method->enable_geqo_value = true;
 	planner_method->enable_eager_aggregate_value = true;
@@ -2976,6 +2980,12 @@ bool *
 PgCurrentBinaryUpgradeRecordInitPrivsRef(void)
 {
 	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_record_init_privs_value;
+}
+
+BinaryUpgradeAttributeVersions **
+PgCurrentBinaryUpgradeNextAttributeVersionsRef(void)
+{
+	return &PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_attribute_versions_value;
 }
 
 int *

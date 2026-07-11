@@ -13,8 +13,13 @@
 #ifndef RLS_H
 #define RLS_H
 
+#include "utils/global_lifetime.h"
+
 /* GUC variable */
-extern PGDLLIMPORT bool row_security;
+#ifndef PgCurrentRowSecurityRef
+extern bool *PgCurrentRowSecurityRef(void);
+#endif
+#define row_security (*PgCurrentRowSecurityRef())
 
 /*
  * Used by callers of check_enable_rls.

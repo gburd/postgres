@@ -64,6 +64,7 @@
 #include "port/pg_bitutils.h"
 #include "storage/lwlock.h"
 #include "utils/builtins.h"
+#include "utils/backend_runtime.h"
 #include "utils/catcache.h"
 #include "utils/fmgroids.h"
 #include "utils/injection_point.h"
@@ -76,7 +77,7 @@
 
 
 /* The main type cache hashtable searched by lookup_type_cache */
-static HTAB *TypeCacheHash = NULL;
+#define TypeCacheHash (*PgCurrentTypeCacheHashRef())
 
 /*
  * Mapping from pg_type.typrelid to pg_type.oid, for composite types only. We
@@ -85,7 +86,7 @@ static HTAB *TypeCacheHash = NULL;
  * We do overwrite entries in this hash table when needed, for example when a
  * relation OID is reused. See comments in InvalidateCompositeTypeCacheEntry.
  */
-static HTAB *RelIdToTypeIdCacheHash = NULL;
+#define RelIdToTypeIdCacheHash (*PgCurrentRelIdToTypeIdCacheHashRef())
 
 typedef struct RelIdToTypeIdCacheEntry
 {
@@ -94,7 +95,7 @@ typedef struct RelIdToTypeIdCacheEntry
 } RelIdToTypeIdCacheEntry;
 
 /* List of type cache entries for domain types */
-static TypeCacheEntry *firstDomainTypeEntry = NULL;
+#define firstDomainTypeEntry (*PgCurrentFirstDomainTypeEntryRef())
 
 /* Private flag bits in the TypeCacheEntry.flags field */
 #define TCFLAGS_HAVE_PG_TYPE_DATA			0x000001
@@ -289,25 +290,25 @@ static const dshash_parameters srtr_typmod_table_params = {
 };
 
 /* hashtable for recognizing registered record types */
-static HTAB *RecordCacheHash = NULL;
+#define RecordCacheHash (*PgCurrentRecordCacheHashRef())
 
-typedef struct RecordCacheArrayEntry
+struct RecordCacheArrayEntry
 {
 	uint64		id;
 	TupleDesc	tupdesc;
-} RecordCacheArrayEntry;
+};
 
 /* array of info about registered record types, indexed by assigned typmod */
-static RecordCacheArrayEntry *RecordCacheArray = NULL;
-static int32 RecordCacheArrayLen = 0;	/* allocated length of above array */
-static int32 NextRecordTypmod = 0;	/* number of entries used */
+#define RecordCacheArray (*PgCurrentRecordCacheArrayRef())
+#define RecordCacheArrayLen (*PgCurrentRecordCacheArrayLenRef())
+#define NextRecordTypmod (*PgCurrentNextRecordTypmodRef())
 
 /*
  * Process-wide counter for generating unique tupledesc identifiers.
  * Zero and one (INVALID_TUPLEDESC_IDENTIFIER) aren't allowed to be chosen
  * as identifiers, so we start the counter at INVALID_TUPLEDESC_IDENTIFIER.
  */
-static uint64 tupledesc_id_counter = INVALID_TUPLEDESC_IDENTIFIER;
+#define tupledesc_id_counter (*PgCurrentTupleDescIdCounterRef())
 
 static void load_typcache_tupdesc(TypeCacheEntry *typentry);
 static void load_rangetype_info(TypeCacheEntry *typentry);
@@ -392,10 +393,15 @@ lookup_type_cache(Oid type_id, int flags)
 		/* First time through: initialize the hash table */
 		HASHCTL		ctl;
 
+		/* Also make sure CacheMemoryContext exists */
+		if (!CacheMemoryContext)
+			CreateCacheMemoryContext();
+
 		if (TypeCacheHash == NULL)
 		{
 			ctl.keysize = sizeof(Oid);
 			ctl.entrysize = sizeof(TypeCacheEntry);
+			ctl.hcxt = CacheMemoryContext;
 
 			/*
 			 * TypeCacheEntry takes hash value from the system cache. For
@@ -405,7 +411,8 @@ lookup_type_cache(Oid type_id, int flags)
 			ctl.hash = type_cache_syshash;
 
 			TypeCacheHash = hash_create("Type information cache", 64,
-										&ctl, HASH_ELEM | HASH_FUNCTION);
+										&ctl,
+										HASH_ELEM | HASH_FUNCTION | HASH_CONTEXT);
 		}
 
 		/* Also make sure CacheMemoryContext exists */
@@ -2054,17 +2061,18 @@ assign_record_type_typmod(TupleDesc tupDesc)
 		/* First time through: initialize the hash table */
 		HASHCTL		ctl;
 
+		/* Also make sure CacheMemoryContext exists */
+		if (!CacheMemoryContext)
+			CreateCacheMemoryContext();
+
 		ctl.keysize = sizeof(TupleDesc);	/* just the pointer */
 		ctl.entrysize = sizeof(RecordCacheEntry);
 		ctl.hash = record_type_typmod_hash;
 		ctl.match = record_type_typmod_compare;
+		ctl.hcxt = CacheMemoryContext;
 		RecordCacheHash = hash_create("Record information cache", 64,
 									  &ctl,
-									  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
-
-		/* Also make sure CacheMemoryContext exists */
-		if (!CacheMemoryContext)
-			CreateCacheMemoryContext();
+									  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE | HASH_CONTEXT);
 	}
 
 	/*

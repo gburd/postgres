@@ -18,6 +18,7 @@
 #include "access/htup_details.h"
 #include "fmgr.h"
 #include "storage/itemptr.h"
+#include "utils/hsearch.h"
 
 struct CachedFunctionHashKey;	/* forward references */
 struct CachedFunction;
@@ -124,6 +125,7 @@ extern CachedFunction *cached_function_compile(FunctionCallInfo fcinfo,
 											   Size cacheEntrySize,
 											   bool includeResultType,
 											   bool forValidator);
+extern void DestroyCachedFunctionHash(HTAB *hashtable);
 extern void cfunc_resolve_polymorphic_argtypes(int numargs,
 											   Oid *argtypes,
 											   char *argmodes,

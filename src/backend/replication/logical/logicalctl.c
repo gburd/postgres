@@ -74,6 +74,7 @@
 #include "storage/procarray.h"
 #include "storage/procsignal.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/injection_point.h"
 
 /*
@@ -114,7 +115,7 @@ typedef struct LogicalDecodingCtlData
 	XLogRecPtr	last_replayed_enable_lsn;
 } LogicalDecodingCtlData;
 
-static LogicalDecodingCtlData *LogicalDecodingCtl = NULL;
+static PG_GLOBAL_SHMEM LogicalDecodingCtlData *LogicalDecodingCtl = NULL;
 
 static void LogicalDecodingCtlShmemRequest(void *arg);
 static void LogicalDecodingCtlShmemInit(void *arg);
@@ -131,7 +132,8 @@ const ShmemCallbacks LogicalDecodingCtlShmemCallbacks = {
  * is in an XID-assigned transaction, the cache update is delayed until the
  * transaction ends. See the comments for XLogLogicalInfoUpdatePending for details.
  */
-bool		XLogLogicalInfo = false;
+#define XLogLogicalInfo \
+	(PgCurrentLogicalReplicationState()->xlog_logical_info)
 
 /*
  * When receiving the PROCSIGNAL_BARRIER_UPDATE_XLOG_LOGICAL_INFO signal, if
@@ -140,7 +142,8 @@ bool		XLogLogicalInfo = false;
  * that the XLogLogicalInfo value (typically accessed via XLogLogicalInfoActive)
  * remains consistent throughout the transaction.
  */
-static bool XLogLogicalInfoUpdatePending = false;
+#define XLogLogicalInfoUpdatePending \
+	(PgCurrentLogicalReplicationState()->xlog_logical_info_update_pending)
 
 static void update_xlog_logical_info(void);
 static void abort_logical_decoding_activation(int code, Datum arg);

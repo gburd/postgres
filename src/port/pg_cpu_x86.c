@@ -47,7 +47,7 @@
 
 
 /* array indexed by enum X86FeatureId */
-bool		X86Features[X86FeaturesSize] = {0};
+PG_GLOBAL_RUNTIME bool X86Features[X86FeaturesSize] = {0};
 
 static bool
 mask_available(uint32 value, uint32 mask)

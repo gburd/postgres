@@ -86,7 +86,7 @@ static const char *cancel_not_sent_msg = NULL;
  * Note that there is no guarantee that we successfully sent a Cancel request,
  * or that the request will have any effect if we did send it.
  */
-volatile sig_atomic_t CancelRequested = false;
+PG_GLOBAL_RUNTIME volatile sig_atomic_t CancelRequested = false;
 
 #ifdef WIN32
 static CRITICAL_SECTION cancelConnLock;

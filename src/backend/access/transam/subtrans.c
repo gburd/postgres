@@ -80,7 +80,7 @@ const ShmemCallbacks SUBTRANSShmemCallbacks = {
 /*
  * Link to shared-memory data structures for SUBTRANS control
  */
-static SlruDesc SubTransSlruDesc;
+static PG_GLOBAL_RUNTIME SlruDesc SubTransSlruDesc;
 
 #define SubTransCtl  (&SubTransSlruDesc)
 

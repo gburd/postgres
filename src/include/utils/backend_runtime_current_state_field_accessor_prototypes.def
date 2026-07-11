@@ -28,6 +28,7 @@ extern Oid * PgCurrentBinaryUpgradeNextPgTypeOidRef(void);
 extern Oid * PgCurrentBinaryUpgradeNextToastPgClassOidRef(void);
 extern RelFileNumber * PgCurrentBinaryUpgradeNextToastPgClassRelfilenumberRef(void);
 extern bool * PgCurrentBinaryUpgradeRecordInitPrivsRef(void);
+extern struct BinaryUpgradeAttributeVersions ** PgCurrentBinaryUpgradeNextAttributeVersionsRef(void);
 extern MemoryContext * PgCurrentBloomContextRef(void);
 extern int * PgCurrentByteaOutputRef(void);
 extern HTAB ** PgCurrentCFuncHashRef(void);

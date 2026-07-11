@@ -14,6 +14,8 @@
 #define TS_CACHE_H
 
 #include "fmgr.h"
+#include "utils/global_lifetime.h"
+#include "utils/hsearch.h"
 
 
 /*
@@ -68,7 +70,7 @@ typedef struct
 	Oid		   *dictIds;
 } ListDictionary;
 
-typedef struct
+typedef struct TSConfigCacheEntry
 {
 	/* cfgId is the hash lookup key and MUST BE FIRST */
 	Oid			cfgId;
@@ -84,7 +86,31 @@ typedef struct
 /*
  * GUC variable for current configuration
  */
-extern PGDLLIMPORT char *TSCurrentConfig;
+#ifndef PgCurrentTSCurrentConfigRef
+extern char **PgCurrentTSCurrentConfigRef(void);
+#endif
+#ifndef PgCurrentTSCurrentConfigCacheRef
+extern Oid *PgCurrentTSCurrentConfigCacheRef(void);
+#endif
+#ifndef PgCurrentTSParserCacheHashRef
+extern HTAB **PgCurrentTSParserCacheHashRef(void);
+#endif
+#ifndef PgCurrentTSLastUsedParserRef
+extern TSParserCacheEntry **PgCurrentTSLastUsedParserRef(void);
+#endif
+#ifndef PgCurrentTSDictionaryCacheHashRef
+extern HTAB **PgCurrentTSDictionaryCacheHashRef(void);
+#endif
+#ifndef PgCurrentTSLastUsedDictionaryRef
+extern TSDictionaryCacheEntry **PgCurrentTSLastUsedDictionaryRef(void);
+#endif
+#ifndef PgCurrentTSConfigCacheHashRef
+extern HTAB **PgCurrentTSConfigCacheHashRef(void);
+#endif
+#ifndef PgCurrentTSLastUsedConfigRef
+extern TSConfigCacheEntry **PgCurrentTSLastUsedConfigRef(void);
+#endif
+#define TSCurrentConfig (*PgCurrentTSCurrentConfigRef())
 
 
 extern TSParserCacheEntry *lookup_ts_parser_cache(Oid prsId);

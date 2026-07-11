@@ -48,7 +48,7 @@ enum relation_stats_argnum
 	NUM_RELATION_STATS_ARGS
 };
 
-static struct StatsArgInfo relarginfo[] =
+static PG_GLOBAL_IMMUTABLE struct StatsArgInfo relarginfo[] =
 {
 	[RELSCHEMA_ARG] = {"schemaname", TEXTOID},
 	[RELNAME_ARG] = {"relname", TEXTOID},

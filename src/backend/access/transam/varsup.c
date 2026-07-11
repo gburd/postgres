@@ -34,7 +34,7 @@
 static void VarsupShmemRequest(void *arg);
 
 /* pointer to variables struct in shared memory */
-TransamVariablesData *TransamVariables = NULL;
+PG_GLOBAL_SHMEM TransamVariablesData *TransamVariables = NULL;
 
 const ShmemCallbacks VarsupShmemCallbacks = {
 	.request_fn = VarsupShmemRequest,

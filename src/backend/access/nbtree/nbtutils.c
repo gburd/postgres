@@ -416,7 +416,7 @@ typedef struct BTVacInfo
 	pg_attribute_counted_by(max_vacuums) BTOneVacInfo vacuums[FLEXIBLE_ARRAY_MEMBER];
 } BTVacInfo;
 
-static BTVacInfo *btvacinfo;
+static PG_GLOBAL_SHMEM BTVacInfo *btvacinfo;
 
 static void BTreeShmemRequest(void *arg);
 static void BTreeShmemInit(void *arg);

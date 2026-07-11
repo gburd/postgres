@@ -243,14 +243,22 @@ l_callsite_alwaysinline(LLVMValueRef f)
 static inline LLVMValueRef
 l_mcxt_switch(LLVMModuleRef mod, LLVMBuilderRef b, LLVMValueRef nc)
 {
-	const char *cmc = "CurrentMemoryContext";
-	LLVMValueRef cur;
+	const char *cmc_ref = "PgCurrentMemoryContextRef";
+	LLVMTypeRef cmc_ref_sig;
+	LLVMValueRef cur_ref_fn;
+	LLVMValueRef cur_ref;
 	LLVMValueRef ret;
 
-	if (!(cur = LLVMGetNamedGlobal(mod, cmc)))
-		cur = LLVMAddGlobal(mod, l_ptr(StructMemoryContextData), cmc);
-	ret = l_load(b, l_ptr(StructMemoryContextData), cur, cmc);
-	LLVMBuildStore(b, nc, cur);
+	cmc_ref_sig = LLVMFunctionType(l_ptr(l_ptr(StructMemoryContextData)),
+								   NULL, 0, false);
+	if (!(cur_ref_fn = LLVMGetNamedFunction(mod, cmc_ref)))
+		cur_ref_fn = LLVMAddFunction(mod, cmc_ref, cmc_ref_sig);
+
+	cur_ref = l_call(b, cmc_ref_sig, cur_ref_fn, NULL, 0,
+					 "current_memory_context_ref");
+	ret = l_load(b, l_ptr(StructMemoryContextData), cur_ref,
+				 "CurrentMemoryContext");
+	LLVMBuildStore(b, nc, cur_ref);
 
 	return ret;
 }

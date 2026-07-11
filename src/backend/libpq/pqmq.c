@@ -23,13 +23,15 @@
 #include "replication/logicalworker.h"
 #include "storage/latch.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/wait_event.h"
 
-static shm_mq_handle *pq_mq_handle = NULL;
-static bool pq_mq_busy = false;
-static pid_t pq_mq_parallel_leader_pid = 0;
-static ProcNumber pq_mq_parallel_leader_proc_number = INVALID_PROC_NUMBER;
+#define pq_mq_handle (*(shm_mq_handle **) PgCurrentPqMqHandleRef())
+#define pq_mq_busy (*PgCurrentPqMqBusyRef())
+#define pq_mq_parallel_leader_pid (*PgCurrentPqMqParallelLeaderPidRef())
+#define pq_mq_parallel_leader_proc_number \
+	(*PgCurrentPqMqParallelLeaderProcNumberRef())
 
 static void pq_cleanup_redirect_to_shm_mq(dsm_segment *seg, Datum arg);
 static void mq_comm_reset(void);

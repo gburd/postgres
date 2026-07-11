@@ -350,6 +350,9 @@
 #define PgCurrentEnableAsyncAppendRef() \
 	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableAsyncAppendRef, \
 									 enable_async_append_value)
+#define PgCurrentEnableAsyncMergeAppendRef() \
+	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableAsyncMergeAppendRef, \
+									 enable_async_merge_append_value)
 #define PgCurrentEnableBitmapscanRef() \
 	PG_RUNTIME_CURRENT_INITIALIZED_FIELD_REF(CurrentPgSessionPlannerMethodRuntimeState, PgCurrentEnableBitmapscanRef, \
 									 enable_bitmapscan_value)

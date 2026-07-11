@@ -45,9 +45,9 @@ typedef struct PGSemaphoreData
 #define PG_SEM_REF(x)	(&(x)->sem_padded.pgsem)
 
 
-static PGSemaphore sharedSemas; /* array of PGSemaphoreData in shared memory */
-static int	numSems;			/* number of semas acquired so far */
-static int	maxSems;			/* allocated size of above array */
+static PG_GLOBAL_SHMEM PGSemaphore sharedSemas; /* array of PGSemaphoreData in shared memory */
+static PG_GLOBAL_RUNTIME int	numSems;			/* number of semas acquired so far */
+static PG_GLOBAL_RUNTIME int	maxSems;			/* allocated size of above array */
 
 
 static void ReleaseSemaphores(int status, Datum arg);

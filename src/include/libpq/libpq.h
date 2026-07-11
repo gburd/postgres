@@ -18,6 +18,8 @@
 
 #include "lib/stringinfo.h"
 #include "libpq/libpq-be.h"
+#include "utils/backend_runtime.h"
+#include "utils/global_lifetime.h"
 
 
 /* avoid including waiteventset.h */
@@ -33,7 +35,7 @@ typedef struct WaitEventSet WaitEventSet;
 #define PQ_SMALL_MESSAGE_LIMIT	10000
 #define PQ_LARGE_MESSAGE_LIMIT	(MaxAllocSize - 1)
 
-typedef struct
+struct PQcommMethods
 {
 	void		(*comm_reset) (void);
 	int			(*flush) (void);
@@ -41,9 +43,12 @@ typedef struct
 	bool		(*is_send_pending) (void);
 	int			(*putmessage) (char msgtype, const char *s, size_t len);
 	void		(*putmessage_noblock) (char msgtype, const char *s, size_t len);
-} PQcommMethods;
+};
 
-extern const PGDLLIMPORT PQcommMethods *PqCommMethods;
+#define PqCommMethods \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPqCommMethodsHotRef, \
+									   CurrentPgConnection, \
+									   PgCurrentPqCommMethodsRef))
 
 #define pq_comm_reset() (PqCommMethods->comm_reset())
 #define pq_flush() (PqCommMethods->flush())
@@ -61,7 +66,7 @@ extern const PGDLLIMPORT PQcommMethods *PqCommMethods;
 /*
  * prototypes for functions in pqcomm.c
  */
-extern PGDLLIMPORT WaitEventSet *FeBeWaitSet;
+#define FeBeWaitSet (*PgCurrentFeBeWaitSetRef())
 
 #define FeBeWaitSetSocketPos 0
 #define FeBeWaitSetLatchPos 1
@@ -76,8 +81,15 @@ extern void RemoveSocketFiles(void);
 extern Port *pq_init(ClientSocket *client_sock);
 extern int	pq_getbytes(void *b, size_t len);
 extern void pq_startmsgread(void);
+extern int	pq_startmsgread_getbyte(void);
 extern void pq_endmsgread(void);
 extern bool pq_is_reading_msg(void);
+extern bool PgConnectionCanParkBeforeMessage(PgConnection *connection);
+extern void PgConnectionReleaseIdleRecvBuffer(PgConnection *connection);
+extern PgProtocolByteResult PgConnectionProbeBufferedMessageType(PgConnection *connection,
+																 PgProtocolByteProbe *probe);
+extern PgProtocolByteResult PgConnectionProbeMessageType(PgConnection *connection,
+														 PgProtocolByteProbe *probe);
 extern int	pq_getmessage(StringInfo s, int maxlen);
 extern int	pq_getbyte(void);
 extern int	pq_peekbyte(void);
@@ -102,24 +114,25 @@ extern ssize_t secure_raw_write(Port *port, const void *ptr, size_t len);
 /*
  * declarations for variables defined in be-secure.c
  */
-extern PGDLLIMPORT char *ssl_library;
-extern PGDLLIMPORT char *ssl_ca_file;
-extern PGDLLIMPORT char *ssl_cert_file;
-extern PGDLLIMPORT char *ssl_crl_file;
-extern PGDLLIMPORT char *ssl_crl_dir;
-extern PGDLLIMPORT char *ssl_key_file;
-extern PGDLLIMPORT int ssl_min_protocol_version;
-extern PGDLLIMPORT int ssl_max_protocol_version;
-extern PGDLLIMPORT char *ssl_passphrase_command;
-extern PGDLLIMPORT bool ssl_passphrase_command_supports_reload;
-extern PGDLLIMPORT char *ssl_dh_params_file;
-extern PGDLLIMPORT bool ssl_sni;
-extern PGDLLIMPORT char *SSLCipherSuites;
-extern PGDLLIMPORT char *SSLCipherList;
-extern PGDLLIMPORT char *SSLECDHCurve;
-extern PGDLLIMPORT bool SSLPreferServerCiphers;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ssl_library;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ssl_ca_file;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ssl_cert_file;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ssl_crl_file;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ssl_crl_dir;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ssl_key_file;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int ssl_min_protocol_version;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int ssl_max_protocol_version;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ssl_passphrase_command;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool ssl_passphrase_command_supports_reload;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *ssl_dh_params_file;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool ssl_sni;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *SSLCipherSuites;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *SSLCipherList;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *SSLECDHCurve;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool SSLPreferServerCiphers;
 #ifdef USE_SSL
-extern PGDLLIMPORT bool ssl_loaded_verify_locations;
+#define ssl_loaded_verify_locations \
+	(PgCurrentConnectionSecurityStateRef()->ssl_loaded_verify_locations)
 #endif
 
 #ifdef USE_SSL

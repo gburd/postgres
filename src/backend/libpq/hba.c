@@ -77,21 +77,21 @@ typedef struct
  * HBA or ident configuration files.  This is created when opening the first
  * file (depth of CONF_FILE_START_DEPTH).
  */
-static MemoryContext tokenize_context = NULL;
+static PG_GLOBAL_RUNTIME MemoryContext tokenize_context = NULL;
 
 /*
  * pre-parsed content of HBA config file: list of HbaLine structs.
  * parsed_hba_context is the memory context where it lives.
  */
-static List *parsed_hba_lines = NIL;
-static MemoryContext parsed_hba_context = NULL;
+static PG_GLOBAL_RUNTIME List *parsed_hba_lines = NIL;
+static PG_GLOBAL_RUNTIME MemoryContext parsed_hba_context = NULL;
 
 /*
  * pre-parsed content of ident mapping file: list of IdentLine structs.
  * parsed_ident_context is the memory context where it lives.
  */
-static List *parsed_ident_lines = NIL;
-static MemoryContext parsed_ident_context = NULL;
+static PG_GLOBAL_RUNTIME List *parsed_ident_lines = NIL;
+static PG_GLOBAL_RUNTIME MemoryContext parsed_ident_context = NULL;
 
 /*
  * The following character array represents the names of the authentication
@@ -99,7 +99,7 @@ static MemoryContext parsed_ident_context = NULL;
  *
  * Note: keep this in sync with the UserAuth enum in hba.h.
  */
-static const char *const UserAuthName[] =
+static PG_GLOBAL_IMMUTABLE const char *const UserAuthName[] =
 {
 	"reject",
 	"implicit reject",			/* Not a user-visible option */
@@ -1099,7 +1099,8 @@ check_hostname(Port *port, const char *hostname)
 			return false;
 		}
 
-		port->remote_hostname = pstrdup(remote_hostname);
+		port->remote_hostname =
+			MemoryContextStrdup(GetMemoryChunkContext(port), remote_hostname);
 	}
 
 	/* Now see if remote host name matches this pg_hba line */
@@ -2432,7 +2433,7 @@ check_hba(Port *port)
 	}
 
 	/* If no matching entry was found, then implicitly reject. */
-	hba = palloc0_object(HbaLine);
+	hba = MemoryContextAllocZero(GetMemoryChunkContext(port), sizeof(HbaLine));
 	hba->auth_method = uaImplicitReject;
 	port->hba = hba;
 }

@@ -15,8 +15,9 @@
 
 #include "libpq/libpq-be.h"
 #include "libpq/sasl.h"
+#include "utils/global_lifetime.h"
 
-extern PGDLLIMPORT char *oauth_validator_libraries_string;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *oauth_validator_libraries_string;
 
 typedef struct ValidatorModuleState
 {

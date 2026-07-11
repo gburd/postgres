@@ -18,10 +18,21 @@
 #include "catalog/objectaddress.h"
 #include "lib/stringinfo.h"
 #include "nodes/parsenodes.h"
+#include "utils/global_lifetime.h"
 
-extern PGDLLIMPORT char *default_tablespace;
-extern PGDLLIMPORT char *temp_tablespaces;
-extern PGDLLIMPORT bool allow_in_place_tablespaces;
+#ifndef PgCurrentDefaultTablespaceRef
+extern char **PgCurrentDefaultTablespaceRef(void);
+#endif
+#ifndef PgCurrentTempTablespacesRef
+extern char **PgCurrentTempTablespacesRef(void);
+#endif
+#ifndef PgCurrentAllowInPlaceTablespacesRef
+extern bool *PgCurrentAllowInPlaceTablespacesRef(void);
+#endif
+
+#define default_tablespace (*PgCurrentDefaultTablespaceRef())
+#define temp_tablespaces (*PgCurrentTempTablespacesRef())
+#define allow_in_place_tablespaces (*PgCurrentAllowInPlaceTablespacesRef())
 
 /* XLOG stuff */
 #define XLOG_TBLSPC_CREATE		0x00
@@ -41,10 +52,10 @@ typedef struct xl_tblspc_drop_rec
 typedef struct TableSpaceOpts
 {
 	int32		vl_len_;		/* varlena header (do not touch directly!) */
-	float8		random_page_cost;
-	float8		seq_page_cost;
-	int			effective_io_concurrency;
-	int			maintenance_io_concurrency;
+	float8		spc_random_page_cost;
+	float8		spc_seq_page_cost;
+	int			spc_effective_io_concurrency;
+	int			spc_maintenance_io_concurrency;
 } TableSpaceOpts;
 
 extern Oid	CreateTableSpace(CreateTableSpaceStmt *stmt);

@@ -23,8 +23,10 @@
 #include "utils/memutils.h"
 #include "varatt.h"
 
-/* GUC */
-int			default_toast_compression = DEFAULT_TOAST_COMPRESSION;
+/*
+ * GUC state now lives in PgSessionAccessWalGUCState.  The public name remains
+ * available through a compatibility macro in access/toast_compression.h.
+ */
 
 #define NO_COMPRESSION_SUPPORT(method) \
 	ereport(ERROR, \

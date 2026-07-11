@@ -15,9 +15,10 @@
 #include "datatype/timestamp.h"
 #include "replication/origin.h"
 #include "storage/sync.h"
+#include "utils/global_lifetime.h"
 
 
-extern PGDLLIMPORT bool track_commit_timestamp;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool track_commit_timestamp;
 
 extern void TransactionTreeSetCommitTsData(TransactionId xid, int nsubxids,
 										   TransactionId *subxids, TimestampTz timestamp,

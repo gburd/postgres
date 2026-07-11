@@ -24,6 +24,7 @@
 #include "miscadmin.h"
 #include "optimizer/optimizer.h"
 #include "storage/bufmgr.h"
+#include "utils/backend_runtime.h"
 #include "utils/catcache.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
@@ -33,7 +34,10 @@
 
 
 /* Hash table for information about each tablespace */
-static HTAB *TableSpaceCacheHash = NULL;
+#define TableSpaceCacheHash \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentTableSpaceCacheHashHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentTableSpaceCacheHashRef))
 
 typedef struct
 {
@@ -190,18 +194,18 @@ get_tablespace_page_costs(Oid spcid,
 
 	if (spc_random_page_cost)
 	{
-		if (!spc->opts || spc->opts->random_page_cost < 0)
+		if (!spc->opts || spc->opts->spc_random_page_cost < 0)
 			*spc_random_page_cost = random_page_cost;
 		else
-			*spc_random_page_cost = spc->opts->random_page_cost;
+			*spc_random_page_cost = spc->opts->spc_random_page_cost;
 	}
 
 	if (spc_seq_page_cost)
 	{
-		if (!spc->opts || spc->opts->seq_page_cost < 0)
+		if (!spc->opts || spc->opts->spc_seq_page_cost < 0)
 			*spc_seq_page_cost = seq_page_cost;
 		else
-			*spc_seq_page_cost = spc->opts->seq_page_cost;
+			*spc_seq_page_cost = spc->opts->spc_seq_page_cost;
 	}
 }
 
@@ -217,10 +221,10 @@ get_tablespace_io_concurrency(Oid spcid)
 {
 	TableSpaceCacheEntry *spc = get_tablespace(spcid);
 
-	if (!spc->opts || spc->opts->effective_io_concurrency < 0)
+	if (!spc->opts || spc->opts->spc_effective_io_concurrency < 0)
 		return effective_io_concurrency;
 	else
-		return spc->opts->effective_io_concurrency;
+		return spc->opts->spc_effective_io_concurrency;
 }
 
 /*
@@ -231,8 +235,8 @@ get_tablespace_maintenance_io_concurrency(Oid spcid)
 {
 	TableSpaceCacheEntry *spc = get_tablespace(spcid);
 
-	if (!spc->opts || spc->opts->maintenance_io_concurrency < 0)
+	if (!spc->opts || spc->opts->spc_maintenance_io_concurrency < 0)
 		return maintenance_io_concurrency;
 	else
-		return spc->opts->maintenance_io_concurrency;
+		return spc->opts->spc_maintenance_io_concurrency;
 }

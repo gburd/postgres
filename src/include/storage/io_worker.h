@@ -14,14 +14,15 @@
 #ifndef IO_WORKER_H
 #define IO_WORKER_H
 
+#include "utils/global_lifetime.h"
 
 pg_noreturn extern void IoWorkerMain(const void *startup_data, size_t startup_data_len);
 
 /* Public GUCs. */
-extern PGDLLIMPORT int io_min_workers;
-extern PGDLLIMPORT int io_max_workers;
-extern PGDLLIMPORT int io_worker_idle_timeout;
-extern PGDLLIMPORT int io_worker_launch_interval;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int io_min_workers;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int io_max_workers;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int io_worker_idle_timeout;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int io_worker_launch_interval;
 
 /* Interfaces visible to the postmaster. */
 extern bool pgaio_worker_pm_test_grow_signal_sent(void);

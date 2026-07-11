@@ -17,14 +17,15 @@
 
 #include "common/pg_prng.h"
 #include "miscadmin.h"
+#include "utils/backend_runtime.h"
 #include "utils/date.h"
 #include "utils/fmgrprotos.h"
 #include "utils/numeric.h"
 #include "utils/timestamp.h"
 
-/* Shared PRNG state used by all the random functions */
-static pg_prng_state prng_state;
-static bool prng_seed_set = false;
+/* Session-local PRNG state used by all the random functions */
+#define session_prng_state (*PgCurrentPseudoRandomStateRef())
+#define session_prng_seed_set (*PgCurrentPseudoRandomSeedSetRef())
 
 /*
  * Macro for checking the range bounds of random(min, max) functions. Throws
@@ -46,23 +47,23 @@ static bool prng_seed_set = false;
 static void
 initialize_prng(void)
 {
-	if (unlikely(!prng_seed_set))
+	if (unlikely(!session_prng_seed_set))
 	{
 		/*
 		 * If possible, seed the PRNG using high-quality random bits. Should
 		 * that fail for some reason, we fall back on a lower-quality seed
 		 * based on current time and PID.
 		 */
-		if (unlikely(!pg_prng_strong_seed(&prng_state)))
+		if (unlikely(!pg_prng_strong_seed(&session_prng_state)))
 		{
 			TimestampTz now = GetCurrentTimestamp();
 			uint64		iseed;
 
 			/* Mix the PID with the most predictable bits of the timestamp */
 			iseed = (uint64) now ^ ((uint64) MyProcPid << 32);
-			pg_prng_seed(&prng_state, iseed);
+			pg_prng_seed(&session_prng_state, iseed);
 		}
-		prng_seed_set = true;
+		session_prng_seed_set = true;
 	}
 }
 
@@ -82,8 +83,8 @@ setseed(PG_FUNCTION_ARGS)
 				errmsg("setseed parameter %g is out of allowed range [-1,1]",
 					   seed));
 
-	pg_prng_fseed(&prng_state, seed);
-	prng_seed_set = true;
+	pg_prng_fseed(&session_prng_state, seed);
+	session_prng_seed_set = true;
 
 	PG_RETURN_VOID();
 }
@@ -101,7 +102,7 @@ drandom(PG_FUNCTION_ARGS)
 	initialize_prng();
 
 	/* pg_prng_double produces desired result range [0.0, 1.0) */
-	result = pg_prng_double(&prng_state);
+	result = pg_prng_double(&session_prng_state);
 
 	PG_RETURN_FLOAT8(result);
 }
@@ -122,7 +123,7 @@ drandom_normal(PG_FUNCTION_ARGS)
 	initialize_prng();
 
 	/* Get random value from standard normal(mean = 0.0, stddev = 1.0) */
-	z = pg_prng_double_normal(&prng_state);
+	z = pg_prng_double_normal(&session_prng_state);
 	/* Transform the normal standard variable (z) */
 	/* using the target normal distribution parameters */
 	result = (stddev * z) + mean;
@@ -146,7 +147,7 @@ int4random(PG_FUNCTION_ARGS)
 
 	initialize_prng();
 
-	result = (int32) pg_prng_int64_range(&prng_state, rmin, rmax);
+	result = (int32) pg_prng_int64_range(&session_prng_state, rmin, rmax);
 
 	PG_RETURN_INT32(result);
 }
@@ -167,7 +168,7 @@ int8random(PG_FUNCTION_ARGS)
 
 	initialize_prng();
 
-	result = pg_prng_int64_range(&prng_state, rmin, rmax);
+	result = pg_prng_int64_range(&session_prng_state, rmin, rmax);
 
 	PG_RETURN_INT64(result);
 }
@@ -188,7 +189,7 @@ numeric_random(PG_FUNCTION_ARGS)
 
 	initialize_prng();
 
-	result = random_numeric(&prng_state, rmin, rmax);
+	result = random_numeric(&session_prng_state, rmin, rmax);
 
 	PG_RETURN_NUMERIC(result);
 }
@@ -215,7 +216,7 @@ date_random(PG_FUNCTION_ARGS)
 
 	initialize_prng();
 
-	result = (DateADT) pg_prng_int64_range(&prng_state, rmin, rmax);
+	result = (DateADT) pg_prng_int64_range(&session_prng_state, rmin, rmax);
 
 	PG_RETURN_DATEADT(result);
 }
@@ -241,7 +242,7 @@ timestamp_random(PG_FUNCTION_ARGS)
 
 	initialize_prng();
 
-	result = (Timestamp) pg_prng_int64_range(&prng_state, rmin, rmax);
+	result = (Timestamp) pg_prng_int64_range(&session_prng_state, rmin, rmax);
 
 	PG_RETURN_TIMESTAMP(result);
 }
@@ -267,7 +268,7 @@ timestamptz_random(PG_FUNCTION_ARGS)
 
 	initialize_prng();
 
-	result = (TimestampTz) pg_prng_int64_range(&prng_state, rmin, rmax);
+	result = (TimestampTz) pg_prng_int64_range(&session_prng_state, rmin, rmax);
 
 	PG_RETURN_TIMESTAMPTZ(result);
 }

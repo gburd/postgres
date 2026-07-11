@@ -26,9 +26,10 @@
 #include "storage/proc.h"
 #include "storage/proclist.h"
 #include "storage/spin.h"
+#include "utils/backend_runtime.h"
 
 /* Initially, we are not prepared to sleep on any condition variable. */
-static ConditionVariable *cv_sleep_target = NULL;
+#define cv_sleep_target (*(ConditionVariable **) PgCurrentConditionVariableSleepTargetRef())
 
 /*
  * Initialize a condition variable.

@@ -18,7 +18,7 @@
 
 #include "common/logging.h"
 
-enum pg_log_level __pg_log_level;
+PG_GLOBAL_RUNTIME enum pg_log_level __pg_log_level;
 
 static const char *progname;
 static int	log_flags;

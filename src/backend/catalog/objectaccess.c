@@ -19,8 +19,8 @@
  * Hook on object accesses.  This is intended as infrastructure for security
  * and logging plugins.
  */
-object_access_hook_type object_access_hook = NULL;
-object_access_hook_type_str object_access_hook_str = NULL;
+PG_GLOBAL_RUNTIME object_access_hook_type object_access_hook = NULL;
+PG_GLOBAL_RUNTIME object_access_hook_type_str object_access_hook_str = NULL;
 
 
 /*

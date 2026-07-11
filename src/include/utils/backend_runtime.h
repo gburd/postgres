@@ -1057,6 +1057,7 @@ typedef struct PgExecutionErrorState
 	struct ErrorContextCallback *context_stack;
 	sigjmp_buf *exception_stack;
 	ErrorData	errordata[PG_EXECUTION_ERRORDATA_STACK_SIZE];
+	bool		errordata_complete[PG_EXECUTION_ERRORDATA_STACK_SIZE];
 	int			errordata_stack_depth;
 	int			recursion_depth;
 	struct timeval saved_timeval;
@@ -1422,6 +1423,7 @@ typedef struct PgSessionBinaryUpgradeState
 	Oid			binary_upgrade_next_pg_enum_oid_value;
 	Oid			binary_upgrade_next_pg_authid_oid_value;
 	bool		binary_upgrade_record_init_privs_value;
+	struct BinaryUpgradeAttributeVersions *binary_upgrade_next_attribute_versions_value;
 } PgSessionBinaryUpgradeState;
 
 typedef struct PgSessionTzAbbrevCache
@@ -1834,6 +1836,7 @@ typedef struct PgSessionPlannerMethodState
 	bool		enable_partition_pruning_value;
 	bool		enable_presorted_aggregate_value;
 	bool		enable_async_append_value;
+	bool		enable_async_merge_append_value;
 	bool		enable_distinct_reordering_value;
 	bool		enable_geqo_value;
 	bool		enable_eager_aggregate_value;
@@ -2861,6 +2864,7 @@ extern RelFileNumber *PgCurrentBinaryUpgradeNextToastPgClassRelfilenumberRef(voi
 extern Oid *PgCurrentBinaryUpgradeNextPgEnumOidRef(void);
 extern Oid *PgCurrentBinaryUpgradeNextPgAuthidOidRef(void);
 extern bool *PgCurrentBinaryUpgradeRecordInitPrivsRef(void);
+extern struct BinaryUpgradeAttributeVersions **PgCurrentBinaryUpgradeNextAttributeVersionsRef(void);
 extern char **PgCurrentTimeZoneStringRef(void);
 extern char **PgCurrentLogTimeZoneStringRef(void);
 extern char **PgCurrentDateStyleStringRef(void);

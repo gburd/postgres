@@ -20,7 +20,11 @@ typedef enum FileCopyMethod
 }			FileCopyMethod;
 
 /* GUC parameters */
-extern PGDLLIMPORT int file_copy_method;
+#ifndef PgCurrentFileCopyMethodRef
+extern int *PgCurrentFileCopyMethodRef(void);
+#endif
+
+#define file_copy_method (*PgCurrentFileCopyMethodRef())
 
 extern void copydir(const char *fromdir, const char *todir, bool recurse);
 extern void copy_file(const char *fromfile, const char *tofile);

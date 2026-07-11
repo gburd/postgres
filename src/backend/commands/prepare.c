@@ -33,6 +33,7 @@
 #include "parser/parse_type.h"
 #include "tcop/pquery.h"
 #include "tcop/utility.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/hsearch.h"
 #include "utils/snapmgr.h"
@@ -41,12 +42,12 @@
 
 
 /*
- * The hash table in which prepared queries are stored. This is
- * per-backend: query plans are not shared between backends.
+ * The hash table in which prepared queries are stored. This is per-session:
+ * query plans are not shared between sessions.
  * The keys for this hash table are the arguments to PREPARE and EXECUTE
  * (statement names); the entries are PreparedStatement structs.
  */
-static HTAB *prepared_queries = NULL;
+#define session_prepared_queries (*PgCurrentPreparedQueriesRef())
 
 static void InitQueryHashTable(void);
 static ParamListInfo EvaluateParams(ParseState *pstate,
@@ -378,7 +379,7 @@ InitQueryHashTable(void)
 	hash_ctl.keysize = NAMEDATALEN;
 	hash_ctl.entrysize = sizeof(PreparedStatement);
 
-	prepared_queries = hash_create("Prepared Queries",
+	session_prepared_queries = hash_create("Prepared Queries",
 								   32,
 								   &hash_ctl,
 								   HASH_ELEM | HASH_STRINGS);
@@ -400,11 +401,11 @@ StorePreparedStatement(const char *stmt_name,
 	bool		found;
 
 	/* Initialize the hash table, if necessary */
-	if (!prepared_queries)
+	if (!session_prepared_queries)
 		InitQueryHashTable();
 
 	/* Add entry to hash table */
-	entry = (PreparedStatement *) hash_search(prepared_queries,
+	entry = (PreparedStatement *) hash_search(session_prepared_queries,
 											  stmt_name,
 											  HASH_ENTER,
 											  &found);
@@ -441,8 +442,8 @@ FetchPreparedStatement(const char *stmt_name, bool throwError)
 	 * If the hash table hasn't been initialized, it can't be storing
 	 * anything, therefore it couldn't possibly store our plan.
 	 */
-	if (prepared_queries)
-		entry = (PreparedStatement *) hash_search(prepared_queries,
+	if (session_prepared_queries)
+		entry = (PreparedStatement *) hash_search(session_prepared_queries,
 												  stmt_name,
 												  HASH_FIND,
 												  NULL);
@@ -531,7 +532,7 @@ DropPreparedStatement(const char *stmt_name, bool showError)
 		DropCachedPlan(entry->plansource);
 
 		/* Now we can remove the hash table entry */
-		hash_search(prepared_queries, entry->stmt_name, HASH_REMOVE, NULL);
+		hash_search(session_prepared_queries, entry->stmt_name, HASH_REMOVE, NULL);
 	}
 }
 
@@ -545,18 +546,18 @@ DropAllPreparedStatements(void)
 	PreparedStatement *entry;
 
 	/* nothing cached */
-	if (!prepared_queries)
+	if (!session_prepared_queries)
 		return;
 
 	/* walk over cache */
-	hash_seq_init(&seq, prepared_queries);
+	hash_seq_init(&seq, session_prepared_queries);
 	while ((entry = hash_seq_search(&seq)) != NULL)
 	{
 		/* Release the plancache entry */
 		DropCachedPlan(entry->plansource);
 
 		/* Now we can remove the hash table entry */
-		hash_search(prepared_queries, entry->stmt_name, HASH_REMOVE, NULL);
+		hash_search(session_prepared_queries, entry->stmt_name, HASH_REMOVE, NULL);
 	}
 }
 
@@ -695,12 +696,12 @@ pg_prepared_statement(PG_FUNCTION_ARGS)
 	InitMaterializedSRF(fcinfo, 0);
 
 	/* hash table might be uninitialized */
-	if (prepared_queries)
+	if (session_prepared_queries)
 	{
 		HASH_SEQ_STATUS hash_seq;
 		PreparedStatement *prep_stmt;
 
-		hash_seq_init(&hash_seq, prepared_queries);
+		hash_seq_init(&hash_seq, session_prepared_queries);
 		while ((prep_stmt = hash_seq_search(&hash_seq)) != NULL)
 		{
 			TupleDesc	result_desc;

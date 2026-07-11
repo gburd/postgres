@@ -19,6 +19,7 @@
 #include "catalog/pg_class.h"
 #include "catalog/pg_tablespace.h"
 #include "miscadmin.h"
+#include "utils/backend_runtime.h"
 #include "utils/catcache.h"
 #include "utils/fmgroids.h"
 #include "utils/hsearch.h"
@@ -27,10 +28,10 @@
 #include "utils/relmapper.h"
 
 /* Hash table for information about each relfilenumber <-> oid pair */
-static HTAB *RelfilenumberMapHash = NULL;
+#define RelfilenumberMapHash (*PgCurrentRelfilenumberMapHashRef())
 
 /* built first time through in InitializeRelfilenumberMap */
-static ScanKeyData relfilenumber_skey[2];
+#define relfilenumber_skey (PgCurrentRelfilenumberScanKeyArray())
 
 typedef struct
 {
@@ -93,7 +94,7 @@ InitializeRelfilenumberMap(void)
 		CreateCacheMemoryContext();
 
 	/* build skey */
-	MemSet(&relfilenumber_skey, 0, sizeof(relfilenumber_skey));
+	MemSet(relfilenumber_skey, 0, sizeof(ScanKeyData) * 2);
 
 	for (i = 0; i < 2; i++)
 	{

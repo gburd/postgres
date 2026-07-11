@@ -18,6 +18,7 @@
 
 #include "access/reloptions.h"
 #include "utils/attoptcache.h"
+#include "utils/backend_runtime.h"
 #include "utils/catcache.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
@@ -26,7 +27,7 @@
 
 
 /* Hash table for information about each attribute's options */
-static HTAB *AttoptCacheHash = NULL;
+#define AttoptCacheHash (*PgCurrentAttoptCacheHashRef())
 
 /* attrelid and attnum form the lookup key, and must appear first */
 typedef struct

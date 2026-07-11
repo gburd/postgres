@@ -27,8 +27,10 @@
  *		maxlen	is the allocated size in bytes of 'data', i.e. the maximum
  *				string size (including the terminating '\0' char) that we can
  *				currently store in 'data' without having to reallocate
- *				more space.  We must always have maxlen > len, except
- *				in the read-only case described below.
+ *				more space.  We must always have abs(maxlen) > len, except
+ *				in the read-only case described below.  A negative maxlen
+ *				means data initially points to caller-owned writable storage;
+ *				enlargeStringInfo() spills such buffers to palloc'd storage.
  *		cursor	is initialized to zero by makeStringInfo, initStringInfo,
  *				initReadOnlyStringInfo and initStringInfoFromString but is not
  *				otherwise touched by the stringinfo.c routines.  Some routines
@@ -55,7 +57,7 @@ typedef StringInfoData *StringInfo;
 
 
 /*------------------------
- * There are six ways to create a StringInfo object initially:
+ * There are seven ways to create a StringInfo object initially:
  *
  * StringInfo stringptr = makeStringInfo();
  *		Both the StringInfoData and the data buffer are palloc'd.
@@ -94,6 +96,14 @@ typedef StringInfoData *StringInfo;
  *		appendStringInfo functions and reset with resetStringInfo().  The
  *		given buffer must be NUL-terminated.  The palloc'd buffer is assumed
  *		to be len + 1 in size.
+ *
+ * StringInfoData string;
+ * initStringInfoFromCallerBuffer(&string, stack_buf, sizeof(stack_buf));
+ *		The StringInfoData starts empty using caller-owned writable storage.
+ *		If it outgrows that storage, enlargeStringInfo() allocates palloc'd
+ *		storage in the then-current memory context and copies the content
+ *		there.  The caller-owned storage must remain valid until the
+ *		StringInfoData is no longer used.
  *
  * To destroy a StringInfo, pfree() the data buffer, and then pfree() the
  * StringInfoData if it was palloc'd.  For StringInfos created with
@@ -183,6 +193,31 @@ initStringInfoFromString(StringInfo str, char *data, int len)
 }
 
 /*------------------------
+ * initStringInfoFromCallerBuffer
+ * Initialize a StringInfoData from caller-owned writable storage.
+ *
+ * The buffer starts empty.  It is used directly while it is large enough; if
+ * more space is needed, enlargeStringInfo() spills into palloc'd storage.
+ */
+static inline void
+initStringInfoFromCallerBuffer(StringInfo str, char *data, int maxlen)
+{
+	Assert(maxlen > 0);
+
+	str->data = data;
+	str->len = 0;
+	str->maxlen = -maxlen;
+	str->cursor = 0;
+	str->data[0] = '\0';
+}
+
+static inline int
+StringInfoCapacity(StringInfo str)
+{
+	return str->maxlen < 0 ? -str->maxlen : str->maxlen;
+}
+
+/*------------------------
  * resetStringInfo
  * Clears the current content of the StringInfo, if any. The
  * StringInfo remains valid.
@@ -229,7 +264,7 @@ extern void appendStringInfoChar(StringInfo str, char ch);
  * Caution: str argument will be evaluated multiple times.
  */
 #define appendStringInfoCharMacro(str,ch) \
-	(((str)->len + 1 >= (str)->maxlen) ? \
+	(((str)->len + 1 >= StringInfoCapacity(str)) ? \
 	 appendStringInfoChar(str, ch) : \
 	 (void)((str)->data[(str)->len] = (ch), (str)->data[++(str)->len] = '\0'))
 

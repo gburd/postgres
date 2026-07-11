@@ -58,14 +58,14 @@ typedef int IpcSemaphoreId;		/* semaphore ID returned by semget(2) */
 #define PGSemaMagic		537		/* must be less than SEMVMX */
 
 
-static PGSemaphore sharedSemas; /* array of PGSemaphoreData in shared memory */
-static int	numSharedSemas;		/* number of PGSemaphoreDatas used so far */
-static int	maxSharedSemas;		/* allocated size of PGSemaphoreData array */
-static IpcSemaphoreId *mySemaSets;	/* IDs of sema sets acquired so far */
-static int	numSemaSets;		/* number of sema sets acquired so far */
-static int	maxSemaSets;		/* allocated size of mySemaSets array */
-static IpcSemaphoreKey nextSemaKey; /* next key to try using */
-static int	nextSemaNumber;		/* next free sem num in last sema set */
+static PG_GLOBAL_SHMEM PGSemaphore sharedSemas; /* array of PGSemaphoreData in shared memory */
+static PG_GLOBAL_RUNTIME int numSharedSemas;	/* number of PGSemaphoreDatas used so far */
+static PG_GLOBAL_RUNTIME int maxSharedSemas;	/* allocated size of PGSemaphoreData array */
+static PG_GLOBAL_RUNTIME IpcSemaphoreId *mySemaSets; /* IDs of sema sets acquired so far */
+static PG_GLOBAL_RUNTIME int numSemaSets;	/* number of sema sets acquired so far */
+static PG_GLOBAL_RUNTIME int maxSemaSets;	/* allocated size of mySemaSets array */
+static PG_GLOBAL_RUNTIME IpcSemaphoreKey nextSemaKey; /* next key to try using */
+static PG_GLOBAL_RUNTIME int nextSemaNumber;	/* next free sem num in last sema set */
 
 
 static IpcSemaphoreId InternalIpcSemaphoreCreate(IpcSemaphoreKey semKey,

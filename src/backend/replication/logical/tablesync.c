@@ -124,9 +124,7 @@
 #include "utils/usercontext.h"
 #include "utils/wait_event.h"
 
-List	   *table_states_not_ready = NIL;
-
-static StringInfo copybuf = NULL;
+#define copybuf (PgCurrentLogicalReplicationState()->copybuf)
 
 /*
  * Wait until the relation sync state is set in the catalog to the expected
@@ -615,7 +613,7 @@ ProcessSyncingTablesForApply(XLogRecPtr current_lsn)
 		 */
 		ApplyLauncherForgetWorkerStartTime(MySubscription->oid);
 
-		proc_exit(0);
+		PgBackendExit(0);
 	}
 }
 

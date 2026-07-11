@@ -60,8 +60,6 @@ typedef struct
 	Oid			useroid;
 } SelfJoinCandidate;
 
-bool		enable_self_join_elimination;
-
 /* local functions */
 static bool join_is_removable(PlannerInfo *root, SpecialJoinInfo *sjinfo);
 static Node *remove_join_from_jointree(Node *jtnode, int ojrelid,

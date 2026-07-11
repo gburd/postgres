@@ -22,6 +22,7 @@
 #include "access/xact.h"
 #include "executor/tuptable.h"
 #include "storage/read_stream.h"
+#include "utils/global_lifetime.h"
 #include "utils/rel.h"
 #include "utils/snapshot.h"
 
@@ -29,8 +30,14 @@
 #define DEFAULT_TABLE_ACCESS_METHOD	"heap"
 
 /* GUCs */
-extern PGDLLIMPORT char *default_table_access_method;
-extern PGDLLIMPORT bool synchronize_seqscans;
+#ifndef PgCurrentDefaultTableAccessMethodRef
+extern char **PgCurrentDefaultTableAccessMethodRef(void);
+#endif
+#ifndef PgCurrentSynchronizeSeqscansRef
+extern bool *PgCurrentSynchronizeSeqscansRef(void);
+#endif
+#define default_table_access_method (*PgCurrentDefaultTableAccessMethodRef())
+#define synchronize_seqscans (*PgCurrentSynchronizeSeqscansRef())
 
 
 /* forward references in this file */

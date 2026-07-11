@@ -18,6 +18,8 @@
 #define MEMUTILS_H
 
 #include "nodes/memnodes.h"
+#include "utils/backend_runtime_current.h"
+#include "utils/global_lifetime.h"
 
 
 /*
@@ -55,16 +57,95 @@
  * Only TopMemoryContext and ErrorContext are initialized by
  * MemoryContextInit() itself.
  */
-extern PGDLLIMPORT MemoryContext TopMemoryContext;
-extern PGDLLIMPORT MemoryContext ErrorContext;
-extern PGDLLIMPORT MemoryContext PostmasterContext;
-extern PGDLLIMPORT MemoryContext CacheMemoryContext;
-extern PGDLLIMPORT MemoryContext MessageContext;
-extern PGDLLIMPORT MemoryContext TopTransactionContext;
-extern PGDLLIMPORT MemoryContext CurTransactionContext;
+extern MemoryContext *PgTopMemoryContextRef(void);
+#ifndef FRONTEND
+static inline MemoryContext *
+PgTopMemoryContextRefFast(void)
+{
+	return PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgTopMemoryContextHotRef,
+											CurrentPgExecution,
+											PgTopMemoryContextRef);
+}
+
+#define TopMemoryContext (*PgTopMemoryContextRefFast())
+#else
+#define TopMemoryContext (*PgTopMemoryContextRef())
+#endif
+extern MemoryContext *PgErrorContextRef(void);
+#ifndef FRONTEND
+static inline MemoryContext *
+PgErrorContextRefFast(void)
+{
+	return PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgErrorContextHotRef,
+											CurrentPgExecution,
+											PgErrorContextRef);
+}
+
+#define ErrorContext (*PgErrorContextRefFast())
+#else
+#define ErrorContext (*PgErrorContextRef())
+#endif
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME MemoryContext PostmasterContext;
+extern MemoryContext *PgCacheMemoryContextRef(void);
+#define CacheMemoryContext (*PgCacheMemoryContextRef())
+extern MemoryContext *PgMessageContextRef(void);
+#ifndef FRONTEND
+static inline MemoryContext *
+PgMessageContextRefFast(void)
+{
+	return PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgMessageContextHotRef,
+											CurrentPgExecution,
+											PgMessageContextRef);
+}
+
+#define MessageContext (*PgMessageContextRefFast())
+#else
+#define MessageContext (*PgMessageContextRef())
+#endif
+extern MemoryContext *PgTopTransactionContextRef(void);
+#ifndef FRONTEND
+static inline MemoryContext *
+PgTopTransactionContextRefFast(void)
+{
+	return PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgTopTransactionContextHotRef,
+											CurrentPgExecution,
+											PgTopTransactionContextRef);
+}
+
+#define TopTransactionContext (*PgTopTransactionContextRefFast())
+#else
+#define TopTransactionContext (*PgTopTransactionContextRef())
+#endif
+extern MemoryContext *PgCurTransactionContextRef(void);
+#ifndef FRONTEND
+static inline MemoryContext *
+PgCurTransactionContextRefFast(void)
+{
+	return PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurTransactionContextHotRef,
+											CurrentPgExecution,
+											PgCurTransactionContextRef);
+}
+
+#define CurTransactionContext (*PgCurTransactionContextRefFast())
+#else
+#define CurTransactionContext (*PgCurTransactionContextRef())
+#endif
 
 /* This is a transient link to the active portal's memory context: */
-extern PGDLLIMPORT MemoryContext PortalContext;
+extern MemoryContext *PgPortalContextRef(void);
+#ifndef FRONTEND
+static inline MemoryContext *
+PgPortalContextRefFast(void)
+{
+	return PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgPortalContextHotRef,
+											CurrentPgExecution,
+											PgPortalContextRef);
+}
+
+#define PortalContext (*PgPortalContextRefFast())
+#else
+#define PortalContext (*PgPortalContextRef())
+#endif
 
 
 /*
@@ -90,6 +171,9 @@ extern void MemoryContextStats(MemoryContext context);
 extern void MemoryContextStatsDetail(MemoryContext context,
 									 int max_level, int max_children,
 									 bool print_to_stderr);
+extern void AllocSetLogChunkStats(MemoryContext context,
+								  const char *label,
+								  int max_rows);
 extern void MemoryContextAllowInCriticalSection(MemoryContext context,
 												bool allow);
 

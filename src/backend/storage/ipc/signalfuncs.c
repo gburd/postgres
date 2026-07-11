@@ -15,6 +15,7 @@
 #include "postgres.h"
 
 #include <signal.h>
+#include <unistd.h>
 
 #include "catalog/pg_authid.h"
 #include "miscadmin.h"
@@ -23,6 +24,7 @@
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
+#include "storage/procsignal.h"
 #include "utils/acl.h"
 #include "utils/fmgrprotos.h"
 #include "utils/wait_event.h"
@@ -51,15 +53,17 @@
 static int
 pg_signal_backend(int pid, int sig)
 {
-	PGPROC	   *proc = BackendPidGetProc(pid);
+	PGPROC	   *proc = BackendSignalPidGetProc(pid);
+	bool		threaded_backend;
 
 	/*
-	 * BackendPidGetProc returns NULL if the pid isn't valid; but by the time
-	 * we reach kill(), a process for which we get a valid proc here might
-	 * have terminated on its own.  There's no way to acquire a lock on an
-	 * arbitrary process to prevent that. But since so far all the callers of
-	 * this mechanism involve some request for ending the process anyway, that
-	 * it might end on its own first is not a problem.
+	 * BackendSignalPidGetProc returns NULL if the pid isn't valid; but by the
+	 * time we reach kill() or the logical interrupt mailbox, a backend for
+	 * which we get a valid proc here might have terminated on its own.  There's
+	 * no way to acquire a lock on an arbitrary process or backend to prevent
+	 * that. But since so far all the callers of this mechanism involve some
+	 * request for ending the process/backend anyway, that it might end on its
+	 * own first is not a problem.
 	 *
 	 * Note that proc will also be NULL if the pid refers to an auxiliary
 	 * process or the postmaster (neither of which can be signaled via
@@ -99,6 +103,30 @@ pg_signal_backend(int pid, int sig)
 	else if (!has_privs_of_role(GetUserId(), proc->roleId) &&
 			 !has_privs_of_role(GetUserId(), ROLE_PG_SIGNAL_BACKEND))
 		return SIGNAL_BACKEND_NOPERMISSION;
+
+	threaded_backend = (proc->pid == PostmasterPid &&
+						proc->backendId == (PgBackendId) pid);
+
+	if (threaded_backend)
+	{
+		PgBackendInterruptType interrupt_type;
+
+		if (sig == SIGINT)
+			interrupt_type = PG_BACKEND_INTERRUPT_QUERY_CANCEL;
+		else if (sig == SIGTERM)
+			interrupt_type = PG_BACKEND_INTERRUPT_PROC_DIE;
+		else
+			return SIGNAL_BACKEND_ERROR;
+
+		if (SendBackendInterrupt(pid, interrupt_type, MyProcPid, getuid()) < 0)
+		{
+			ereport(WARNING,
+					(errmsg("could not send interrupt to backend %d: %m", pid)));
+			return SIGNAL_BACKEND_ERROR;
+		}
+
+		return SIGNAL_BACKEND_SUCCESS;
+	}
 
 	/*
 	 * Can the process we just validated above end, followed by the pid being
@@ -188,16 +216,8 @@ pg_wait_until_termination(int pid, int64 timeout)
 		if (remainingtime < waittime)
 			waittime = remainingtime;
 
-		if (kill(pid, 0) == -1)
-		{
-			if (errno == ESRCH)
-				return true;
-			else
-				ereport(ERROR,
-						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("could not check the existence of the backend with PID %d: %m",
-								pid)));
-		}
+		if (!BackendSignalPidIsActive(pid))
+			return true;
 
 		/* Process interrupts, if any, before waiting */
 		CHECK_FOR_INTERRUPTS();

@@ -20,6 +20,8 @@
 #include "storage/buf.h"
 #include "storage/bufpage.h"
 #include "storage/relfilelocator.h"
+#include "utils/backend_runtime.h"
+#include "utils/global_lifetime.h"
 #include "utils/relcache.h"
 #include "utils/snapmgr.h"
 
@@ -159,39 +161,63 @@ typedef struct ReadBuffersOperation ReadBuffersOperation;
 typedef struct WritebackContext WritebackContext;
 
 /* in globals.c ... this duplicates miscadmin.h */
-extern PGDLLIMPORT int NBuffers;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int NBuffers;
+
+/* in backend_runtime.c */
+#ifndef PgCurrentZeroDamagedPagesRef
+extern bool *PgCurrentZeroDamagedPagesRef(void);
+#endif
+#ifndef PgCurrentTrackIOTimingRef
+extern bool *PgCurrentTrackIOTimingRef(void);
+#endif
+#ifndef PgCurrentEffectiveIOConcurrencyRef
+extern int *PgCurrentEffectiveIOConcurrencyRef(void);
+#endif
+#ifndef PgCurrentMaintenanceIOConcurrencyRef
+extern int *PgCurrentMaintenanceIOConcurrencyRef(void);
+#endif
+#ifndef PgCurrentIOCombineLimitRef
+extern int *PgCurrentIOCombineLimitRef(void);
+#endif
+#ifndef PgCurrentIOCombineLimitGUCRef
+extern int *PgCurrentIOCombineLimitGUCRef(void);
+#endif
+#ifndef PgCurrentBackendFlushAfterRef
+extern int *PgCurrentBackendFlushAfterRef(void);
+#endif
+
+#define zero_damaged_pages (*PgCurrentZeroDamagedPagesRef())
+#define track_io_timing (*PgCurrentTrackIOTimingRef())
+#define effective_io_concurrency (*PgCurrentEffectiveIOConcurrencyRef())
+#define maintenance_io_concurrency (*PgCurrentMaintenanceIOConcurrencyRef())
+#define io_combine_limit (*PgCurrentIOCombineLimitRef())
+#define io_combine_limit_guc (*PgCurrentIOCombineLimitGUCRef())
+#define backend_flush_after (*PgCurrentBackendFlushAfterRef())
 
 /* in bufmgr.c */
-extern PGDLLIMPORT bool zero_damaged_pages;
-extern PGDLLIMPORT int bgwriter_lru_maxpages;
-extern PGDLLIMPORT double bgwriter_lru_multiplier;
-extern PGDLLIMPORT bool track_io_timing;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int bgwriter_lru_maxpages;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME double bgwriter_lru_multiplier;
 
 #define DEFAULT_EFFECTIVE_IO_CONCURRENCY 16
 #define DEFAULT_MAINTENANCE_IO_CONCURRENCY 16
-extern PGDLLIMPORT int effective_io_concurrency;
-extern PGDLLIMPORT int maintenance_io_concurrency;
 
 #define MAX_IO_COMBINE_LIMIT PG_IOV_MAX
 #define DEFAULT_IO_COMBINE_LIMIT Min(MAX_IO_COMBINE_LIMIT, (128 * 1024) / BLCKSZ)
-extern PGDLLIMPORT int io_combine_limit;	/* min of the two GUCs below */
-extern PGDLLIMPORT int io_combine_limit_guc;
-extern PGDLLIMPORT int io_max_combine_limit;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int io_max_combine_limit;
 
-extern PGDLLIMPORT int checkpoint_flush_after;
-extern PGDLLIMPORT int backend_flush_after;
-extern PGDLLIMPORT int bgwriter_flush_after;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int checkpoint_flush_after;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int bgwriter_flush_after;
 
 extern PGDLLIMPORT const PgAioHandleCallbacks aio_shared_buffer_readv_cb;
 extern PGDLLIMPORT const PgAioHandleCallbacks aio_local_buffer_readv_cb;
 
 /* in buf_init.c */
-extern PGDLLIMPORT char *BufferBlocks;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM char *BufferBlocks;
 
 /* in localbuf.c */
-extern PGDLLIMPORT int NLocBuffer;
-extern PGDLLIMPORT Block *LocalBufferBlockPointers;
-extern PGDLLIMPORT int32 *LocalRefCount;
+#define NLocBuffer (*PgCurrentNLocBufferRef())
+#define LocalBufferBlockPointers (*(Block **) PgCurrentLocalBufferBlockPointersRef())
+#define LocalRefCount (*PgCurrentLocalRefCountRef())
 
 /* upper limit for effective_io_concurrency */
 #define MAX_IO_CONCURRENCY 1000
@@ -283,6 +309,8 @@ extern Buffer ExtendBufferedRelTo(BufferManagerRelation bmr,
 								  ReadBufferMode mode);
 
 extern void InitBufferManagerAccess(void);
+extern void RestoreBufferManagerIdleMemory(void);
+extern void ReleaseBufferManagerIdleMemory(void);
 extern void AtEOXact_Buffers(bool isCommit);
 #ifdef USE_ASSERT_CHECKING
 extern void AssertBufferLocksPermitCatalogRead(void);

@@ -44,6 +44,7 @@
 #include "storage/pg_shmem.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/freepage.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
@@ -102,15 +103,16 @@ static dsm_segment *dsm_create_descriptor(void);
 static bool dsm_control_segment_sane(dsm_control_header *control,
 									 Size mapped_size);
 static uint64 dsm_control_bytes_needed(uint32 nitems);
+static dlist_head *CurrentDsmSegmentList(void);
 static inline dsm_handle make_main_region_dsm_handle(int slot);
 static inline bool is_main_region_dsm_handle(dsm_handle handle);
 
 /* Has this backend initialized the dynamic shared memory system yet? */
-static bool dsm_init_done = false;
+#define dsm_init_done (*PgCurrentDsmInitDoneRef())
 
 /* Preallocated DSM space in the main shared memory region. */
-static void *dsm_main_space_begin = NULL;
-static size_t dsm_main_space_size;
+static PG_GLOBAL_SHMEM void *dsm_main_space_begin = NULL;
+static PG_GLOBAL_RUNTIME size_t dsm_main_space_size;
 
 static void dsm_main_space_request(void *arg);
 static void dsm_main_space_init(void *arg);
@@ -137,7 +139,73 @@ const ShmemCallbacks dsm_shmem_callbacks = {
  * each new mapping would require an update to the control segment,
  * which requires locking, in which the postmaster must not be involved.
  */
-static dlist_head dsm_segment_list = DLIST_STATIC_INIT(dsm_segment_list);
+/*
+ * Fallback for calls made before InitializePgProcessRuntime() has installed a
+ * PgBackend, for example postmaster-child reset/detach paths. Normal backend
+ * DSM mappings live on CurrentPgBackend.
+ */
+static PG_GLOBAL_RUNTIME dlist_head early_dsm_segment_list =
+	DLIST_STATIC_INIT(early_dsm_segment_list);
+
+static dlist_head *
+CurrentDsmSegmentList(void)
+{
+	if (CurrentPgBackend != NULL)
+		return &CurrentPgBackend->dsm_segment_list;
+
+	return &early_dsm_segment_list;
+}
+
+void
+PgBackendInitializeDsmSegmentList(dlist_head *dsm_segment_list)
+{
+	Assert(dsm_segment_list != NULL);
+
+	dlist_init(dsm_segment_list);
+}
+
+void
+PgBackendAdoptEarlyDsmSegmentList(dlist_head *dsm_segment_list)
+{
+	Assert(dsm_segment_list != NULL);
+
+	dlist_init(dsm_segment_list);
+	while (!dlist_is_empty(&early_dsm_segment_list))
+	{
+		dlist_node *node;
+
+		node = dlist_pop_head_node(&early_dsm_segment_list);
+		dlist_push_tail(dsm_segment_list, node);
+	}
+}
+
+void
+PgBackendResetDsmSegmentList(dlist_head *dsm_segment_list)
+{
+	Assert(dsm_segment_list != NULL);
+
+	while (!dlist_is_empty(dsm_segment_list))
+	{
+		dsm_segment *seg;
+
+		seg = dlist_head_element(dsm_segment, node, dsm_segment_list);
+		dsm_detach(seg);
+	}
+
+	dlist_init(dsm_segment_list);
+}
+
+void
+PgBackendResetDsmStateAfterFork(void)
+{
+	/*
+	 * fork() copies backend-local DSM descriptors from the postmaster into the
+	 * child.  The child did not attach those mappings as its own logical
+	 * backend, so it must not detach them or adjust refcounts; it only needs a
+	 * clean local list for mappings established after backend startup.
+	 */
+	dlist_init(&early_dsm_segment_list);
+}
 
 /*
  * Control segment information.
@@ -146,10 +214,10 @@ static dlist_head dsm_segment_list = DLIST_STATIC_INIT(dsm_segment_list);
  * reference counted; instead, it lasts for the postmaster's entire
  * life cycle.  For simplicity, it doesn't have a dsm_segment object either.
  */
-static dsm_handle dsm_control_handle;
-static dsm_control_header *dsm_control;
-static Size dsm_control_mapped_size = 0;
-static void *dsm_control_impl_private = NULL;
+static PG_GLOBAL_RUNTIME dsm_handle dsm_control_handle;
+static PG_GLOBAL_SHMEM dsm_control_header *dsm_control;
+static PG_GLOBAL_RUNTIME Size dsm_control_mapped_size = 0;
+static PG_GLOBAL_RUNTIME void *dsm_control_impl_private = NULL;
 
 
 /* ResourceOwner callbacks to hold DSM segments */
@@ -693,7 +761,7 @@ dsm_attach(dsm_handle h)
 	 * existing mapping via dsm_find_mapping() before calling dsm_attach() to
 	 * create a new one.
 	 */
-	dlist_foreach(iter, &dsm_segment_list)
+	dlist_foreach(iter, CurrentDsmSegmentList())
 	{
 		seg = dlist_container(dsm_segment, node, iter.cur);
 		if (seg->handle == h)
@@ -764,11 +832,13 @@ dsm_attach(dsm_handle h)
 void
 dsm_backend_shutdown(void)
 {
-	while (!dlist_is_empty(&dsm_segment_list))
+	dlist_head *dsm_segment_list = CurrentDsmSegmentList();
+
+	while (!dlist_is_empty(dsm_segment_list))
 	{
 		dsm_segment *seg;
 
-		seg = dlist_head_element(dsm_segment, node, &dsm_segment_list);
+		seg = dlist_head_element(dsm_segment, node, dsm_segment_list);
 		dsm_detach(seg);
 	}
 }
@@ -782,13 +852,14 @@ dsm_backend_shutdown(void)
 void
 dsm_detach_all(void)
 {
+	dlist_head *dsm_segment_list = CurrentDsmSegmentList();
 	void	   *control_address = dsm_control;
 
-	while (!dlist_is_empty(&dsm_segment_list))
+	while (!dlist_is_empty(dsm_segment_list))
 	{
 		dsm_segment *seg;
 
-		seg = dlist_head_element(dsm_segment, node, &dsm_segment_list);
+		seg = dlist_head_element(dsm_segment, node, dsm_segment_list);
 		dsm_detach(seg);
 	}
 
@@ -1086,7 +1157,7 @@ dsm_find_mapping(dsm_handle handle)
 	dlist_iter	iter;
 	dsm_segment *seg;
 
-	dlist_foreach(iter, &dsm_segment_list)
+	dlist_foreach(iter, CurrentDsmSegmentList())
 	{
 		seg = dlist_container(dsm_segment, node, iter.cur);
 		if (seg->handle == handle)
@@ -1179,7 +1250,7 @@ reset_on_dsm_detach(void)
 {
 	dlist_iter	iter;
 
-	dlist_foreach(iter, &dsm_segment_list)
+	dlist_foreach(iter, CurrentDsmSegmentList())
 	{
 		dsm_segment *seg = dlist_container(dsm_segment, node, iter.cur);
 
@@ -1214,7 +1285,7 @@ dsm_create_descriptor(void)
 		ResourceOwnerEnlarge(CurrentResourceOwner);
 
 	seg = MemoryContextAlloc(TopMemoryContext, sizeof(dsm_segment));
-	dlist_push_head(&dsm_segment_list, &seg->node);
+	dlist_push_head(CurrentDsmSegmentList(), &seg->node);
 
 	/* seg->handle must be initialized by the caller */
 	seg->control_slot = INVALID_CONTROL_SLOT;

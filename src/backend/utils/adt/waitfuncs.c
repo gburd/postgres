@@ -52,7 +52,7 @@ pg_isolation_test_session_is_blocked(PG_FUNCTION_ARGS)
 				j;
 
 	/* Check if blocked_pid is in an injection point. */
-	proc = BackendPidGetProc(blocked_pid);
+	proc = BackendSignalPidGetProc(blocked_pid);
 	if (proc == NULL)
 		PG_RETURN_BOOL(false);	/* session gone: definitely unblocked */
 	wait_event_type =

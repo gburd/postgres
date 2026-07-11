@@ -24,6 +24,7 @@
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
+#include "utils/backend_runtime.h"
 #include "utils/inval.h"
 
 
@@ -42,7 +43,7 @@
  * particularly bad happens: in the worst case they deadlock, causing one of
  * the transactions to abort.
  */
-static uint32 speculativeInsertionToken = 0;
+#define speculativeInsertionToken (*PgCurrentSpeculativeInsertionTokenRef())
 
 
 /*

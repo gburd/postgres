@@ -14,7 +14,11 @@
 
 #include <signal.h>
 
-extern PGDLLIMPORT volatile sig_atomic_t ParallelApplyMessagePending;
+#include "utils/backend_runtime.h"
+#include "utils/global_lifetime.h"
+
+#define ParallelApplyMessagePending \
+	(PgCurrentLogicalReplicationState()->parallel_apply_message_pending)
 
 extern void ApplyWorkerMain(Datum main_arg);
 extern void ParallelApplyWorkerMain(Datum main_arg);

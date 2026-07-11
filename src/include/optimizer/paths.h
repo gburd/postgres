@@ -15,18 +15,63 @@
 #define PATHS_H
 
 #include "nodes/pathnodes.h"
+#include "utils/backend_runtime_current.h"
+#include "utils/global_lifetime.h"
 
 
 /*
  * allpaths.c
  */
-extern PGDLLIMPORT bool enable_geqo;
-extern PGDLLIMPORT bool enable_eager_aggregate;
-extern PGDLLIMPORT int geqo_threshold;
-extern PGDLLIMPORT double min_eager_agg_group_size;
-extern PGDLLIMPORT int min_parallel_table_scan_size;
-extern PGDLLIMPORT int min_parallel_index_scan_size;
-extern PGDLLIMPORT bool enable_group_by_reordering;
+#ifndef PgCurrentEnableGeqoRef
+extern bool *PgCurrentEnableGeqoRef(void);
+#endif
+#ifndef PgCurrentEnableEagerAggregateRef
+extern bool *PgCurrentEnableEagerAggregateRef(void);
+#endif
+#ifndef PgCurrentGeqoThresholdRef
+extern int *PgCurrentGeqoThresholdRef(void);
+#endif
+#ifndef PgCurrentMinEagerAggGroupSizeRef
+extern double *PgCurrentMinEagerAggGroupSizeRef(void);
+#endif
+#ifndef PgCurrentMinParallelTableScanSizeRef
+extern int *PgCurrentMinParallelTableScanSizeRef(void);
+#endif
+#ifndef PgCurrentMinParallelIndexScanSizeRef
+extern int *PgCurrentMinParallelIndexScanSizeRef(void);
+#endif
+#ifndef PgCurrentEnableGroupByReorderingRef
+extern bool *PgCurrentEnableGroupByReorderingRef(void);
+#endif
+
+#define enable_geqo \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableGeqoHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableGeqoRef))
+#define enable_eager_aggregate \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableEagerAggregateHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableEagerAggregateRef))
+#define geqo_threshold \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentGeqoThresholdHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentGeqoThresholdRef))
+#define min_eager_agg_group_size \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMinEagerAggGroupSizeHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentMinEagerAggGroupSizeRef))
+#define min_parallel_table_scan_size \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMinParallelTableScanSizeHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentMinParallelTableScanSizeRef))
+#define min_parallel_index_scan_size \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMinParallelIndexScanSizeHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentMinParallelIndexScanSizeRef))
+#define enable_group_by_reordering \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentEnableGroupByReorderingHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentEnableGroupByReorderingRef))
 
 /* Hooks for plugins to get control in set_rel_pathlist() */
 typedef void (*join_path_setup_hook_type) (PlannerInfo *root,
@@ -35,12 +80,12 @@ typedef void (*join_path_setup_hook_type) (PlannerInfo *root,
 										   RelOptInfo *innerrel,
 										   JoinType jointype,
 										   JoinPathExtraData *extra);
-extern PGDLLIMPORT join_path_setup_hook_type join_path_setup_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME join_path_setup_hook_type join_path_setup_hook;
 typedef void (*set_rel_pathlist_hook_type) (PlannerInfo *root,
 											RelOptInfo *rel,
 											Index rti,
 											RangeTblEntry *rte);
-extern PGDLLIMPORT set_rel_pathlist_hook_type set_rel_pathlist_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME set_rel_pathlist_hook_type set_rel_pathlist_hook;
 
 /* Hook for plugins to get control in add_paths_to_joinrel() */
 typedef void (*set_join_pathlist_hook_type) (PlannerInfo *root,
@@ -49,13 +94,13 @@ typedef void (*set_join_pathlist_hook_type) (PlannerInfo *root,
 											 RelOptInfo *innerrel,
 											 JoinType jointype,
 											 JoinPathExtraData *extra);
-extern PGDLLIMPORT set_join_pathlist_hook_type set_join_pathlist_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME set_join_pathlist_hook_type set_join_pathlist_hook;
 
 /* Hook for plugins to replace standard_join_search() */
 typedef RelOptInfo *(*join_search_hook_type) (PlannerInfo *root,
 											  int levels_needed,
 											  List *initial_rels);
-extern PGDLLIMPORT join_search_hook_type join_search_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME join_search_hook_type join_search_hook;
 
 
 extern RelOptInfo *make_one_rel(PlannerInfo *root, List *joinlist);

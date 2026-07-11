@@ -41,6 +41,12 @@ PgCurrentErrorDataArray(void)
 	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionErrorRuntimeState, PgCurrentExecutionErrorState)->errordata;
 }
 
+bool *
+PgCurrentErrorDataCompleteArray(void)
+{
+	return PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgExecutionErrorRuntimeState, PgCurrentExecutionErrorState)->errordata_complete;
+}
+
 int *
 PgCurrentErrorDataStackDepthRef(void)
 {

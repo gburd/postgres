@@ -16,6 +16,8 @@
 #ifndef PG_WIN32_PORT_H
 #define PG_WIN32_PORT_H
 
+#include "utils/global_lifetime.h"
+
 /*
  * Always build with SSPI support. Keep it as a #define in case
  * we want a switch to disable it sometime in the future.
@@ -490,10 +492,10 @@ extern char *pgwin32_setlocale(int category, const char *locale);
 
 
 /* In backend/port/win32/signal.c */
-extern PGDLLIMPORT volatile int pg_signal_queue;
-extern PGDLLIMPORT int pg_signal_mask;
-extern PGDLLIMPORT HANDLE pgwin32_signal_event;
-extern PGDLLIMPORT HANDLE pgwin32_initial_signal_pipe;
+extern PGDLLIMPORT PG_GLOBAL_CARRIER volatile int pg_signal_queue;
+extern PGDLLIMPORT PG_GLOBAL_CARRIER int pg_signal_mask;
+extern PGDLLIMPORT PG_GLOBAL_CARRIER HANDLE pgwin32_signal_event;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME HANDLE pgwin32_initial_signal_pipe;
 
 #define UNBLOCKED_SIGNAL_QUEUE()	(pg_signal_queue & ~pg_signal_mask)
 #define PG_SIGNAL_COUNT 32
@@ -528,7 +530,10 @@ extern int	pgwin32_recv(SOCKET s, char *buf, int len, int flags);
 extern int	pgwin32_send(SOCKET s, const void *buf, int len, int flags);
 extern int	pgwin32_waitforsinglesocket(SOCKET s, int what, int timeout);
 
-extern PGDLLIMPORT int pgwin32_noblock;
+#ifndef PgCurrentPgwin32NoBlockRef
+extern int *PgCurrentPgwin32NoBlockRef(void);
+#endif
+#define pgwin32_noblock (*PgCurrentPgwin32NoBlockRef())
 
 #endif							/* FRONTEND */
 

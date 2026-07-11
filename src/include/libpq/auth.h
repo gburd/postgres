@@ -15,6 +15,7 @@
 #define AUTH_H
 
 #include "libpq/libpq-be.h"
+#include "utils/global_lifetime.h"
 
 /*
  * Maximum accepted size of GSS and SSPI authentication tokens.
@@ -32,9 +33,9 @@
  */
 #define PG_MAX_AUTH_TOKEN_LENGTH	65535
 
-extern PGDLLIMPORT char *pg_krb_server_keyfile;
-extern PGDLLIMPORT bool pg_krb_caseins_users;
-extern PGDLLIMPORT bool pg_gss_accept_delegation;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *pg_krb_server_keyfile;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool pg_krb_caseins_users;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool pg_gss_accept_delegation;
 
 extern void ClientAuthentication(Port *port);
 extern void sendAuthRequest(Port *port, AuthRequest areq, const void *extradata,
@@ -43,12 +44,12 @@ extern void set_authn_id(Port *port, const char *id);
 
 /* Hook for plugins to get control in ClientAuthentication() */
 typedef void (*ClientAuthentication_hook_type) (Port *, int);
-extern PGDLLIMPORT ClientAuthentication_hook_type ClientAuthentication_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME ClientAuthentication_hook_type ClientAuthentication_hook;
 
 /* hook type for password manglers */
 typedef char *(*auth_password_hook_typ) (char *input);
 
 /* Default LDAP password mutator hook, can be overridden by a shared library */
-extern PGDLLIMPORT auth_password_hook_typ ldap_password_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME auth_password_hook_typ ldap_password_hook;
 
 #endif							/* AUTH_H */
