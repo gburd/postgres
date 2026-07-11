@@ -4,10 +4,8 @@
  *
  * Static tables for the Grand Unified Configuration scheme.
  *
- * Many of these tables are const.  However, ConfigureNames[] is not, because
- * the structs in it are actually the live per-variable state data that guc.c
- * manipulates.  While many of their fields are intended to be constant, some
- * fields change at runtime.
+ * Many of these tables are const.  ConfigureNames[] is an immutable template
+ * for the live per-session GUC records that guc.c builds at runtime.
  *
  *
  * Copyright (c) 2000-2026, PostgreSQL Global Development Group
@@ -92,6 +90,8 @@
 #include "tcop/tcopprot.h"
 #include "portability/instr_time.h"
 #include "tsearch/ts_cache.h"
+#include "utils/array.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/bytea.h"
 #include "utils/float.h"
@@ -531,68 +531,34 @@ extern const struct config_enum_entry dynamic_shared_memory_options[];
 /*
  * GUC option variables that are exported from this module
  */
-bool		AllowAlterSystem = true;
-bool		log_duration = false;
-bool		Debug_print_plan = false;
-bool		Debug_print_parse = false;
-bool		Debug_print_raw_parse = false;
-bool		Debug_print_rewritten = false;
-bool		Debug_pretty_print = true;
-
-#ifdef DEBUG_NODE_TESTS_ENABLED
-bool		Debug_copy_parse_plan_trees;
-bool		Debug_write_read_parse_plan_trees;
-bool		Debug_raw_expression_coverage_test;
-#endif
-
-bool		log_parser_stats = false;
-bool		log_planner_stats = false;
-bool		log_executor_stats = false;
-bool		log_statement_stats = false;	/* this is sort of all three above
-											 * together */
-bool		log_btree_build_stats = false;
-char	   *event_source;
-
-bool		row_security;
-bool		check_function_bodies = true;
+/*
+ * These GUC backing variables live in PgSessionGeneralGUCState.  Public
+ * compatibility names are lvalue macros in the corresponding headers.
+ */
+#define xmloption (*PgCurrentXmlOptionRef())
 
 /*
  * These GUCs exist solely for backward compatibility.
  */
-static bool default_with_oids = false;
-static bool standard_conforming_strings = true;
+#define default_with_oids (*PgCurrentDefaultWithOidsRef())
+#define standard_conforming_strings (*PgCurrentStandardConformingStringsRef())
 
-bool		current_role_is_superuser;
+/*
+ * Server/config-file identity GUC backing variables live in
+ * PgRuntimeServerGUCState.  Public compatibility names are lvalue macros in
+ * utils/guc.h.
+ */
 
-int			log_min_error_statement = ERROR;
-int			client_min_messages = NOTICE;
-int			log_min_duration_sample = -1;
-int			log_min_duration_statement = -1;
-int			log_parameter_max_length = -1;
-int			log_parameter_max_length_on_error = 0;
-int			log_temp_files = -1;
+/*
+ * Connection/session exported GUC backing variables live in
+ * PgSessionConnectionGUCState.  Public compatibility names are lvalue macros
+ * in the corresponding headers.
+ *
+ * ponytail: log_statement_max_length is a new upstream GUC (post-19beta1)
+ * not yet migrated into PgSessionConnectionGUCState; it stays a plain
+ * process-global for now (Phase 16 / GUC matrix owns the session migration).
+ */
 int			log_statement_max_length = -1;
-double		log_statement_sample_rate = 1.0;
-double		log_xact_sample_rate = 0;
-char	   *backtrace_functions;
-
-int			temp_file_limit = -1;
-
-int			num_temp_buffers = 1024;
-
-char	   *cluster_name = "";
-char	   *ConfigFileName;
-char	   *HbaFileName;
-char	   *IdentFileName;
-char	   *HostsFileName;
-char	   *external_pid_file;
-
-char	   *application_name;
-
-int			tcp_keepalives_idle;
-int			tcp_keepalives_interval;
-int			tcp_keepalives_count;
-int			tcp_user_timeout;
 
 /*
  * SSL renegotiation was been removed in PostgreSQL 9.5, but we tolerate it
@@ -600,97 +566,99 @@ int			tcp_user_timeout;
  * This avoids breaking compatibility with clients that have never supported
  * renegotiation and therefore always try to zero it.
  */
-static int	ssl_renegotiation_limit;
+#define ssl_renegotiation_limit (*PgCurrentSslRenegotiationLimitRef())
 
 /*
  * This really belongs in pg_shmem.c, but is defined here so that it doesn't
  * need to be duplicated in all the different implementations of pg_shmem.c.
  */
-int			huge_pages = HUGE_PAGES_TRY;
-int			huge_page_size;
-int			huge_pages_status = HUGE_PAGES_UNKNOWN;
+PG_GLOBAL_RUNTIME int huge_pages = HUGE_PAGES_TRY;
+PG_GLOBAL_RUNTIME int huge_page_size;
+PG_GLOBAL_RUNTIME int huge_pages_status = HUGE_PAGES_UNKNOWN;
 
 /*
  * These variables are all dummies that don't do anything, except in some
  * cases provide the value for SHOW to display.  The real state is elsewhere
  * and is kept in sync by assign_hooks.
  */
-static char *syslog_ident_str;
-static double phony_random_seed;
-static char *client_encoding_string;
-static char *datestyle_string;
-static char *server_encoding_string;
-static char *server_version_string;
-static int	server_version_num;
-static char *debug_io_direct_string;
-static char *restrict_nonsystem_relation_kind_string;
-static char *log_min_messages_string;
+static PG_GLOBAL_RUNTIME char *syslog_ident_str;
+#define phony_random_seed (*PgCurrentPhonyRandomSeedRef())
+#define client_encoding_string (*PgCurrentClientEncodingStringRef())
+#define datestyle_string (*PgCurrentDateStyleStringRef())
+#define server_encoding_string (*PgCurrentServerEncodingStringRef())
+static PG_GLOBAL_RUNTIME char *server_version_string;
+static PG_GLOBAL_RUNTIME int server_version_num;
+static PG_GLOBAL_RUNTIME char *debug_io_direct_string;
+#ifndef PgCurrentRestrictNonsystemRelationKindStringRef
+extern char **PgCurrentRestrictNonsystemRelationKindStringRef(void);
+#endif
+#define restrict_nonsystem_relation_kind_string \
+	(*PgCurrentRestrictNonsystemRelationKindStringRef())
+#ifndef PgCurrentLogMinMessagesStringRef
+extern char **PgCurrentLogMinMessagesStringRef(void);
+#endif
+#define log_min_messages_string (*PgCurrentLogMinMessagesStringRef())
 
 #ifdef HAVE_SYSLOG
 #define	DEFAULT_SYSLOG_FACILITY LOG_LOCAL0
 #else
 #define	DEFAULT_SYSLOG_FACILITY 0
 #endif
-static int	syslog_facility = DEFAULT_SYSLOG_FACILITY;
+static PG_GLOBAL_RUNTIME int syslog_facility = DEFAULT_SYSLOG_FACILITY;
 
-static char *timezone_string;
-static char *log_timezone_string;
-static char *timezone_abbreviations_string;
-static char *data_directory;
-static char *session_authorization_string;
-static int	max_function_args;
-static int	max_index_keys;
-static int	max_identifier_length;
-static int	block_size;
-static int	segment_size;
-static int	shared_memory_size_mb;
-static int	shared_memory_size_in_huge_pages;
-static int	wal_block_size;
-static int	num_os_semaphores;
-static int	effective_wal_level = WAL_LEVEL_REPLICA;
-static bool integer_datetimes;
+#ifndef PgCurrentTimeZoneStringRef
+extern char **PgCurrentTimeZoneStringRef(void);
+#endif
+#ifndef PgCurrentLogTimeZoneStringRef
+extern char **PgCurrentLogTimeZoneStringRef(void);
+#endif
+#define timezone_string (*PgCurrentTimeZoneStringRef())
+#define log_timezone_string (*PgCurrentLogTimeZoneStringRef())
+#define timezone_abbreviations_string (*PgCurrentTimeZoneAbbreviationsStringRef())
+static PG_GLOBAL_RUNTIME char *data_directory;
+#define session_authorization_string (*PgCurrentSessionAuthorizationStringRef())
+static PG_GLOBAL_RUNTIME int max_function_args;
+static PG_GLOBAL_RUNTIME int max_index_keys;
+static PG_GLOBAL_RUNTIME int max_identifier_length;
+static PG_GLOBAL_RUNTIME int block_size;
+static PG_GLOBAL_RUNTIME int segment_size;
+static PG_GLOBAL_RUNTIME int shared_memory_size_mb;
+static PG_GLOBAL_RUNTIME int shared_memory_size_in_huge_pages;
+static PG_GLOBAL_RUNTIME int wal_block_size;
+static PG_GLOBAL_RUNTIME int num_os_semaphores;
+static PG_GLOBAL_RUNTIME int effective_wal_level = WAL_LEVEL_REPLICA;
+static PG_GLOBAL_RUNTIME bool integer_datetimes;
 
 #ifdef USE_ASSERT_CHECKING
 #define DEFAULT_ASSERT_ENABLED true
 #else
 #define DEFAULT_ASSERT_ENABLED false
 #endif
-static bool assert_enabled = DEFAULT_ASSERT_ENABLED;
+static PG_GLOBAL_RUNTIME bool assert_enabled = DEFAULT_ASSERT_ENABLED;
 
 #ifdef EXEC_BACKEND
 #define EXEC_BACKEND_ENABLED true
 #else
 #define EXEC_BACKEND_ENABLED false
 #endif
-static bool exec_backend_enabled = EXEC_BACKEND_ENABLED;
+static PG_GLOBAL_RUNTIME bool exec_backend_enabled = EXEC_BACKEND_ENABLED;
 
-static char *recovery_target_timeline_string;
-static char *recovery_target_string;
-static char *recovery_target_xid_string;
-static char *recovery_target_lsn_string;
+static PG_GLOBAL_RUNTIME char *recovery_target_timeline_string;
+static PG_GLOBAL_RUNTIME char *recovery_target_string;
+static PG_GLOBAL_RUNTIME char *recovery_target_xid_string;
+static PG_GLOBAL_RUNTIME char *recovery_target_lsn_string;
 
-/* should be static, but commands/variable.c needs to get at this */
-char	   *role_string;
+/* role_string lives in PgSessionGeneralGUCState. */
 
 /* should be static, but guc.c needs to get at this */
-bool		in_hot_standby_guc;
-
-/*
- * set default log_min_messages to WARNING for all process types
- */
-int			log_min_messages[] = {
-#define PG_PROCTYPE(bktype, bkcategory, description, main_func, shmem_attach) \
-	[bktype] = WARNING,
-#include "postmaster/proctypelist.h"
-#undef PG_PROCTYPE
-};
+PG_GLOBAL_RUNTIME bool in_hot_standby_guc;
 
 /*
  * Displayable names for context types (enum GucContext)
  *
  * Note: these strings are deliberately not localized.
  */
-const char *const GucContext_Names[] =
+PG_GLOBAL_IMMUTABLE const char *const GucContext_Names[] =
 {
 	[PGC_INTERNAL] = "internal",
 	[PGC_POSTMASTER] = "postmaster",
@@ -709,7 +677,7 @@ StaticAssertDecl(lengthof(GucContext_Names) == (PGC_USERSET + 1),
  *
  * Note: these strings are deliberately not localized.
  */
-const char *const GucSource_Names[] =
+PG_GLOBAL_IMMUTABLE const char *const GucSource_Names[] =
 {
 	[PGC_S_DEFAULT] = "default",
 	[PGC_S_DYNAMIC_DEFAULT] = "default",
@@ -733,7 +701,7 @@ StaticAssertDecl(lengthof(GucSource_Names) == (PGC_S_SESSION + 1),
 /*
  * Displayable names for the groupings defined in enum config_group
  */
-const char *const config_group_names[] =
+PG_GLOBAL_IMMUTABLE const char *const config_group_names[] =
 {
 	[UNGROUPED] = gettext_noop("Ungrouped"),
 	[FILE_LOCATIONS] = gettext_noop("File Locations"),
@@ -794,7 +762,7 @@ StaticAssertDecl(lengthof(config_group_names) == (DEVELOPER_OPTIONS + 1),
  *
  * Note: these strings are deliberately not localized.
  */
-const char *const config_type_names[] =
+PG_GLOBAL_IMMUTABLE const char *const config_type_names[] =
 {
 	[PGC_BOOL] = "bool",
 	[PGC_INT] = "integer",

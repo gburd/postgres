@@ -63,10 +63,60 @@ distclean:
 	@rm -rf autom4te.cache/
 	rm -f config.cache config.log config.status GNUmakefile
 
-check-tests: | temp-install
-check check-tests installcheck installcheck-parallel installcheck-tests: CHECKPREP_TOP=src/test/regress
-check check-tests installcheck installcheck-parallel installcheck-tests: submake-generated-headers
+THREADED_WORLD_CORE_CONFIG = $(abs_top_srcdir)/src/test/regress/threaded_workers.conf
+THREADED_WORLD_CORE_TAP_DIR = $(abs_top_srcdir)/src/test/modules/test_backend_runtime
+THREADED_WORLD_CORE_TAP_TESTS = \
+	t/001_threaded_runtime.pl \
+	t/002_threaded_bgworker_crash.pl \
+	t/003_milestone_w_core_smoke.pl \
+	t/004_phase13_wait_completion.pl \
+	t/005_phase14_protocol_scheduler.pl \
+	t/006_phase14_protocol_postmaster_death.pl \
+	t/007_phase15_pooled_protocol_mode.pl \
+	t/008_phase15_pooled_protocol_postmaster_death.pl \
+	t/009_phase15_pooled_deep_waits_pinned.pl
+THREADED_WORLD_CORE_TAP_PERL5LIB = \
+	$(abs_top_builddir)/.perl5/lib/perl5:$(abs_top_builddir)/.perl5/lib/perl5/darwin-thread-multi-2level:$(abs_top_srcdir)/src/test/perl:$(THREADED_WORLD_CORE_TAP_DIR)
+THREADED_WORLD_CORE_PROVE = $(if $(PROVE),$(PROVE),prove)
+
+check-tests check-threaded check-threaded-workers check-threaded-smoke check-threaded-150 check-threaded-200: | temp-install
+check check-tests check-threaded check-threaded-workers check-threaded-smoke check-threaded-150 check-threaded-200 installcheck installcheck-parallel installcheck-tests: CHECKPREP_TOP=src/test/regress
+check check-tests check-threaded check-threaded-workers check-threaded-smoke check-threaded-150 check-threaded-200 installcheck installcheck-parallel installcheck-tests: submake-generated-headers
 	$(MAKE) -C src/test/regress $@
+
+check-threaded-world-core: CHECKPREP_TOP=src/test/regress
+check-threaded-world-core: | temp-install
+check-threaded-world-core: submake-generated-headers
+check-threaded-world-core:
+	$(MAKE) -C src/test/regress check-threaded-workers
+	$(MAKE) -C src/pl/plpgsql/src check TEMP_CONFIG=$(THREADED_WORLD_CORE_CONFIG)
+	$(MAKE) -C src/test/isolation check TEMP_CONFIG=$(THREADED_WORLD_CORE_CONFIG)
+	$(MAKE) -C src/test/modules/test_backend_runtime DESTDIR=$(abs_top_builddir)/tmp_install install
+	$(MAKE) -C src/test/modules/test_backend_runtime check
+	$(MAKE) check-threaded-world-core-tap
+	$(MAKE) check-runtime-lifecycles
+	$(MAKE) check-global-lifetimes
+
+check-threaded-world-core-tap: CHECKPREP_TOP=src/test/regress
+check-threaded-world-core-tap: | temp-install
+check-threaded-world-core-tap: submake-generated-headers
+check-threaded-world-core-tap:
+	$(MAKE) -C src/test/modules/test_backend_runtime DESTDIR=$(abs_top_builddir)/tmp_install install
+	rm -rf '$(THREADED_WORLD_CORE_TAP_DIR)'/tmp_check
+	$(MKDIR_P) '$(THREADED_WORLD_CORE_TAP_DIR)'/tmp_check/log
+	cd '$(THREADED_WORLD_CORE_TAP_DIR)' && \
+	  TESTLOGDIR='$(THREADED_WORLD_CORE_TAP_DIR)'/tmp_check/log \
+	  TESTDATADIR='$(THREADED_WORLD_CORE_TAP_DIR)'/tmp_check \
+	  PATH='$(abs_top_builddir)'/tmp_install$(bindir):'$(THREADED_WORLD_CORE_TAP_DIR)':$$PATH \
+	  $(call add_to_path,$(strip $(ld_library_path_var)),$(abs_top_builddir)/tmp_install$(libdir)) \
+	  INITDB_TEMPLATE='$(abs_top_builddir)'/tmp_install/initdb-template \
+	  PGPORT=65432 \
+	  top_builddir='$(abs_top_builddir)' \
+	  PG_REGRESS='$(abs_top_builddir)'/src/test/regress/pg_regress \
+	  share_contrib_dir='$(abs_top_builddir)'/tmp_install$(datadir)/$(datamoduledir) \
+	  GMAKE='$(MAKE)' \
+	  PERL5LIB='$(THREADED_WORLD_CORE_TAP_PERL5LIB)':$${PERL5LIB} \
+	  $(THREADED_WORLD_CORE_PROVE) -I '$(abs_top_srcdir)'/src/test/perl -I '$(THREADED_WORLD_CORE_TAP_DIR)' $(PROVE_FLAGS) $(THREADED_WORLD_CORE_TAP_TESTS)
 
 $(call recurse,check-world,src/test src/pl src/interfaces contrib src/bin src/tools/pg_bsd_indent,check)
 $(call recurse,checkprep,  src/test src/pl src/interfaces contrib src/bin)
@@ -134,4 +184,53 @@ headerscheck: submake-generated-headers
 cpluspluscheck: submake-generated-headers
 	$(top_srcdir)/src/tools/pginclude/headerscheck --cplusplus $(top_srcdir) $(abs_top_builddir)
 
-.PHONY: dist distcheck docs install-docs world check-world install-world installcheck-world headerscheck cpluspluscheck
+check-global-lifetimes:
+	$(PERL) $(top_srcdir)/src/tools/global_lifetime/scan_global_lifetimes.pl \
+		--baseline $(top_srcdir)/src/tools/global_lifetime/global_lifetime_baseline.tsv \
+		--enforce-local-runtime-boundary
+
+check-runtime-lifecycles:
+	$(PERL) $(top_srcdir)/src/tools/runtime_lifecycle/check_runtime_lifecycles.pl \
+		--header $(top_srcdir)/src/include/utils/backend_runtime.h \
+		--manifest $(top_srcdir)/MULTITHREADED_RUNTIME_LIFECYCLE.tsv \
+		--owner-map $(top_srcdir)/MULTITHREADED_RUNTIME_OWNERS.tsv \
+		--source $(top_srcdir)/src/backend/utils/init/backend_runtime.c \
+		--source $(top_srcdir)/src/backend/utils/init/backend_runtime_backend.c \
+		--source $(top_srcdir)/src/backend/utils/init/backend_runtime_execution.c \
+		--source $(top_srcdir)/src/backend/utils/init/backend_runtime_session.c \
+		--source $(top_srcdir)/src/backend/utils/init/backend_runtime_teardown.c \
+		--source $(top_srcdir)/src/backend/tcop/backend_runtime_tcop.c \
+		--source $(top_srcdir)/src/backend/utils/cache/backend_runtime_cache.c \
+		--source $(top_srcdir)/src/backend/utils/activity/backend_runtime_pgstat.c \
+		--source $(top_srcdir)/src/backend/utils/activity/backend_status.c \
+		--source $(top_srcdir)/src/backend/utils/adt/backend_runtime_pseudorandom.c \
+		--source $(top_srcdir)/src/backend/utils/adt/backend_runtime_ri.c \
+		--source $(top_srcdir)/src/backend/utils/error/backend_runtime_error.c \
+		--source $(top_srcdir)/src/backend/utils/fmgr/backend_runtime_extension.c \
+		--source $(top_srcdir)/src/backend/utils/misc/backend_runtime_guc.c \
+		--source $(top_srcdir)/src/backend/utils/misc/backend_runtime_utility.c \
+		--source $(top_srcdir)/src/backend/utils/misc/timeout.c \
+		--source $(top_srcdir)/src/backend/utils/mb/backend_runtime_mb.c \
+		--source $(top_srcdir)/src/backend/utils/mmgr/backend_runtime_memory.c \
+		--source $(top_srcdir)/src/backend/utils/mmgr/backend_runtime_portal.c \
+		--source $(top_srcdir)/src/backend/regex/backend_runtime_regex.c \
+		--source $(top_srcdir)/src/backend/optimizer/util/backend_runtime_optimizer.c \
+		--source $(top_srcdir)/src/backend/commands/backend_runtime_async.c \
+		--source $(top_srcdir)/src/backend/commands/event_trigger.c \
+		--source $(top_srcdir)/src/backend/commands/backend_runtime_event_trigger.c \
+		--source $(top_srcdir)/src/backend/commands/backend_runtime_trigger.c \
+		--source $(top_srcdir)/src/backend/replication/logical/backend_runtime_logical.c \
+		--source $(top_srcdir)/src/backend/postmaster/interrupt.c \
+		--source $(top_srcdir)/src/backend/jit/backend_runtime_jit.c \
+		--source $(top_srcdir)/src/backend/access/transam/backend_runtime_parallel.c \
+		--source $(top_srcdir)/src/backend/access/transam/backend_runtime_xact.c \
+		--source $(top_srcdir)/src/backend/libpq/backend_runtime_connection.c \
+		--source $(top_srcdir)/src/backend/storage/large_object/backend_runtime_large_object.c \
+		--source $(top_srcdir)/src/backend/storage/buffer/backend_runtime_buffer.c \
+		--source $(top_srcdir)/src/backend/storage/file/backend_runtime_file.c \
+		--source $(top_srcdir)/src/backend/storage/lmgr/backend_runtime_lmgr.c \
+		--source $(top_srcdir)/src/backend/storage/ipc/backend_runtime_ipc.c \
+		--source $(top_srcdir)/src/backend/storage/ipc/dsm.c \
+		--source $(top_srcdir)/src/backend/storage/ipc/ipc.c
+
+.PHONY: dist distcheck docs install-docs world check-world install-world installcheck-world headerscheck cpluspluscheck check-global-lifetimes check-runtime-lifecycles check-threaded-world-core check-threaded-world-core-tap

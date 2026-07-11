@@ -49,6 +49,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "utils/builtins.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 #include "utils/inval.h"
 #include "utils/memutils.h"
@@ -60,14 +61,10 @@
 
 #define DIRECTORY_LOCK_FILE		"postmaster.pid"
 
-ProcessingMode Mode = InitProcessing;
-
-BackendType MyBackendType;
-
 /* List of lock files to be removed at proc exit */
-static List *lock_files = NIL;
+static PG_GLOBAL_RUNTIME List *lock_files = NIL;
 
-static Latch LocalLatchData;
+#define LocalLatchData (*PgCurrentLocalLatchData())
 
 /* ----------------------------------------------------------------
  *		ignoring system indexes support stuff
@@ -78,9 +75,6 @@ static Latch LocalLatchData;
  * modification is made.
  * ----------------------------------------------------------------
  */
-
-bool		IgnoreSystemIndexes = false;
-
 
 /* ----------------------------------------------------------------
  *	common process startup code
@@ -96,6 +90,8 @@ bool		IgnoreSystemIndexes = false;
 void
 InitPostmasterChild(void)
 {
+	BackendType backend_type = MyBackendType;
+
 	IsUnderPostmaster = true;	/* we are a postmaster subprocess now */
 
 	/*
@@ -108,6 +104,7 @@ InitPostmasterChild(void)
 #endif
 
 	InitProcessGlobals();
+	MyBackendType = backend_type;
 
 	/*
 	 * make sure stderr is in binary mode before anything can possibly be
@@ -175,9 +172,11 @@ InitPostmasterChild(void)
 void
 InitStandaloneProcess(const char *argv0)
 {
+	BackendType backend_type = B_STANDALONE_BACKEND;
+
 	Assert(!IsPostmasterEnvironment);
 
-	MyBackendType = B_STANDALONE_BACKEND;
+	MyBackendType = backend_type;
 
 	/*
 	 * Start our win32 signal implementation
@@ -187,6 +186,7 @@ InitStandaloneProcess(const char *argv0)
 #endif
 
 	InitProcessGlobals();
+	MyBackendType = backend_type;
 
 	/* Initialize process-local latch support */
 	InitializeWaitEventSupport();
@@ -219,6 +219,7 @@ SwitchToSharedLatch(void)
 	Assert(MyProc != NULL);
 
 	MyLatch = &MyProc->procLatch;
+	PgBackendSetInterruptLatch(CurrentPgBackend, MyLatch);
 
 	if (FeBeWaitSet)
 		ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetLatchPos, WL_LATCH_SET,
@@ -246,6 +247,7 @@ SwitchBackToLocalLatch(void)
 	Assert(MyProc != NULL && MyLatch == &MyProc->procLatch);
 
 	MyLatch = &LocalLatchData;
+	PgBackendSetInterruptLatch(CurrentPgBackend, MyLatch);
 
 	if (FeBeWaitSet)
 		ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetLatchPos, WL_LATCH_SET,
@@ -283,9 +285,16 @@ GetBackendTypeDesc(BackendType backendType)
 void
 SetDatabasePath(const char *path)
 {
+	MemoryContext *database_path_context;
+
 	/* This should happen only once per process */
 	Assert(!DatabasePath);
-	DatabasePath = MemoryContextStrdup(TopMemoryContext, path);
+	database_path_context = PgCurrentDatabasePathContextRef();
+	DatabasePath = MemoryContextStrdup(
+		PgRuntimeGetOwnedMemoryContext(database_path_context,
+									   "database path session state"),
+		path);
+	*PgCurrentDatabasePathOwnedRef() = true;
 }
 
 /*
@@ -447,19 +456,27 @@ ChangeToDataDir(void)
  * convenient way to do it.
  * ----------------------------------------------------------------
  */
-static Oid	AuthenticatedUserId = InvalidOid;
-static Oid	SessionUserId = InvalidOid;
-static Oid	OuterUserId = InvalidOid;
-static Oid	CurrentUserId = InvalidOid;
-static const char *SystemUser = NULL;
+#define AuthenticatedUserId \
+	(PgCurrentUserIdentityState()->authenticated_user_id)
+#define SessionUserId \
+	(PgCurrentUserIdentityState()->session_user_id)
+#define OuterUserId \
+	(PgCurrentUserIdentityState()->outer_user_id)
+#define CurrentUserId \
+	(PgCurrentUserIdentityState()->current_user_id)
+#define SystemUser \
+	(PgCurrentUserIdentityState()->system_user)
 
 /* We also have to remember the superuser state of the session user */
-static bool SessionUserIsSuperuser = false;
+#define SessionUserIsSuperuser \
+	(PgCurrentUserIdentityState()->session_user_is_superuser)
 
-static int	SecurityRestrictionContext = 0;
+#define SecurityRestrictionContext \
+	(PgCurrentUserIdentityState()->security_restriction_context)
 
 /* We also remember if a SET ROLE is currently active */
-static bool SetRoleIsActive = false;
+#define SetRoleIsActive \
+	(PgCurrentUserIdentityState()->set_role_is_active)
 
 /*
  * GetUserId - get the current effective user ID.
@@ -875,6 +892,7 @@ InitializeSessionUserIdStandalone(void)
 void
 InitializeSystemUser(const char *authn_id, const char *auth_method)
 {
+	MemoryContext *system_user_context;
 	char	   *system_user;
 
 	/* call only once */
@@ -889,7 +907,12 @@ InitializeSystemUser(const char *authn_id, const char *auth_method)
 	system_user = psprintf("%s:%s", auth_method, authn_id);
 
 	/* Store SystemUser in long-lived storage */
-	SystemUser = MemoryContextStrdup(TopMemoryContext, system_user);
+	system_user_context = PgCurrentSystemUserContextRef();
+	SystemUser = MemoryContextStrdup(
+		PgRuntimeGetOwnedMemoryContext(system_user_context,
+									   "system user session state"),
+		system_user);
+	PgCurrentUserIdentityState()->system_user_owned = true;
 	pfree(system_user);
 }
 
@@ -1017,7 +1040,15 @@ GetUserNameFromId(Oid roleid, bool noerr)
  *-------------------------------------------------------------------------
  */
 
-ClientConnectionInfo MyClientConnectionInfo;
+StaticAssertDecl(sizeof(PgConnectionClientConnectionInfoState) ==
+				 sizeof(ClientConnectionInfo),
+				 "connection client info bridge must match ClientConnectionInfo");
+StaticAssertDecl(offsetof(PgConnectionClientConnectionInfoState, authn_id) ==
+				 offsetof(ClientConnectionInfo, authn_id),
+				 "authn_id offset must match ClientConnectionInfo");
+StaticAssertDecl(offsetof(PgConnectionClientConnectionInfoState, auth_method) ==
+				 offsetof(ClientConnectionInfo, auth_method),
+				 "auth_method offset must match ClientConnectionInfo");
 
 /*
  * Intermediate representation of ClientConnectionInfo for easier
@@ -1085,21 +1116,32 @@ SerializeClientConnectionInfo(Size maxsize PG_USED_FOR_ASSERTS_ONLY,
 void
 RestoreClientConnectionInfo(char *conninfo)
 {
+	MemoryContext *authn_id_context;
 	SerializedClientConnectionInfo serialized;
 
 	memcpy(&serialized, conninfo, sizeof(serialized));
+	authn_id_context = PgCurrentClientConnectionInfoContextRef();
 
 	/* Copy the fields back into place */
+	if (*authn_id_context != NULL)
+		PgRuntimeDeleteOwnedMemoryContext(authn_id_context);
+	else if (*PgCurrentClientConnectionInfoAuthnIdOwnedRef() &&
+		MyClientConnectionInfo.authn_id != NULL)
+		pfree((void *) MyClientConnectionInfo.authn_id);
 	MyClientConnectionInfo.authn_id = NULL;
 	MyClientConnectionInfo.auth_method = serialized.auth_method;
+	*PgCurrentClientConnectionInfoAuthnIdOwnedRef() = false;
 
 	if (serialized.authn_id_len >= 0)
 	{
 		char	   *authn_id;
 
 		authn_id = conninfo + sizeof(serialized);
-		MyClientConnectionInfo.authn_id = MemoryContextStrdup(TopMemoryContext,
-															  authn_id);
+		MyClientConnectionInfo.authn_id = MemoryContextStrdup(
+			PgRuntimeGetOwnedMemoryContext(authn_id_context,
+										   "client connection info state"),
+			authn_id);
+		*PgCurrentClientConnectionInfoAuthnIdOwnedRef() = true;
 	}
 }
 
@@ -1782,16 +1824,14 @@ ValidatePgVersion(const char *path)
  * GUC variables: lists of library names to be preloaded at postmaster
  * start and at backend start
  */
-char	   *session_preload_libraries_string = NULL;
-char	   *shared_preload_libraries_string = NULL;
-char	   *local_preload_libraries_string = NULL;
+PG_GLOBAL_RUNTIME char *shared_preload_libraries_string = NULL;
 
 /* Flag telling that we are loading shared_preload_libraries */
-bool		process_shared_preload_libraries_in_progress = false;
-bool		process_shared_preload_libraries_done = false;
+PG_GLOBAL_RUNTIME bool process_shared_preload_libraries_in_progress = false;
+PG_GLOBAL_RUNTIME bool process_shared_preload_libraries_done = false;
 
-shmem_request_hook_type shmem_request_hook = NULL;
-bool		process_shmem_requests_in_progress = false;
+PG_GLOBAL_RUNTIME shmem_request_hook_type shmem_request_hook = NULL;
+PG_GLOBAL_RUNTIME bool process_shmem_requests_in_progress = false;
 
 /*
  * load the shared libraries listed in 'libraries'

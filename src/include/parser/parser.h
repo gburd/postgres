@@ -16,6 +16,8 @@
 #define PARSER_H
 
 #include "nodes/parsenodes.h"
+#include "utils/backend_runtime_current.h"
+#include "utils/global_lifetime.h"
 
 
 /*
@@ -52,8 +54,14 @@ typedef enum
 	BACKSLASH_QUOTE_SAFE_ENCODING,
 }			BackslashQuoteType;
 
-/* GUC variable in scan.l */
-extern PGDLLIMPORT int backslash_quote;
+#ifndef PgCurrentBackslashQuoteRef
+extern int *(PgCurrentBackslashQuoteRef)(void);
+#endif
+
+#define backslash_quote \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentBackslashQuoteHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentBackslashQuoteRef))
 
 
 /* Primary entry point for the raw parsing functions */

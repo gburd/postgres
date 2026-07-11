@@ -3,6 +3,8 @@
 backend_sources += files(
   'alignedalloc.c',
   'aset.c',
+  'backend_runtime_memory.c',
+  'backend_runtime_portal.c',
   'bump.c',
   'dsa.c',
   'freepage.c',

@@ -12,6 +12,7 @@
 #define JIT_H
 
 #include "executor/instrument.h"
+#include "utils/global_lifetime.h"
 #include "utils/resowner.h"
 
 
@@ -80,16 +81,55 @@ struct JitProviderCallbacks
 
 
 /* GUCs */
-extern PGDLLIMPORT bool jit_enabled;
-extern PGDLLIMPORT char *jit_provider;
-extern PGDLLIMPORT bool jit_debugging_support;
-extern PGDLLIMPORT bool jit_dump_bitcode;
-extern PGDLLIMPORT bool jit_expressions;
-extern PGDLLIMPORT bool jit_profiling_support;
-extern PGDLLIMPORT bool jit_tuple_deforming;
-extern PGDLLIMPORT double jit_above_cost;
-extern PGDLLIMPORT double jit_inline_above_cost;
-extern PGDLLIMPORT double jit_optimize_above_cost;
+#ifndef PgCurrentJitEnabledRef
+extern bool *PgCurrentJitEnabledRef(void);
+#endif
+#ifndef PgCurrentJitProviderRef
+extern char **PgCurrentJitProviderRef(void);
+#endif
+#ifndef PgCurrentJitDebuggingSupportRef
+extern bool *PgCurrentJitDebuggingSupportRef(void);
+#endif
+#ifndef PgCurrentJitDumpBitcodeRef
+extern bool *PgCurrentJitDumpBitcodeRef(void);
+#endif
+#ifndef PgCurrentJitExpressionsRef
+extern bool *PgCurrentJitExpressionsRef(void);
+#endif
+#ifndef PgCurrentJitProfilingSupportRef
+extern bool *PgCurrentJitProfilingSupportRef(void);
+#endif
+#ifndef PgCurrentJitTupleDeformingRef
+extern bool *PgCurrentJitTupleDeformingRef(void);
+#endif
+#ifndef PgCurrentJitAboveCostRef
+extern double *PgCurrentJitAboveCostRef(void);
+#endif
+#ifndef PgCurrentJitInlineAboveCostRef
+extern double *PgCurrentJitInlineAboveCostRef(void);
+#endif
+#ifndef PgCurrentJitOptimizeAboveCostRef
+extern double *PgCurrentJitOptimizeAboveCostRef(void);
+#endif
+#ifndef PgCurrentJitProviderCallbacksRef
+extern JitProviderCallbacks *PgCurrentJitProviderCallbacksRef(void);
+#endif
+#ifndef PgCurrentJitProviderSuccessfullyLoadedRef
+extern bool *PgCurrentJitProviderSuccessfullyLoadedRef(void);
+#endif
+#ifndef PgCurrentJitProviderFailedLoadingRef
+extern bool *PgCurrentJitProviderFailedLoadingRef(void);
+#endif
+#define jit_enabled (*PgCurrentJitEnabledRef())
+#define jit_provider (*PgCurrentJitProviderRef())
+#define jit_debugging_support (*PgCurrentJitDebuggingSupportRef())
+#define jit_dump_bitcode (*PgCurrentJitDumpBitcodeRef())
+#define jit_expressions (*PgCurrentJitExpressionsRef())
+#define jit_profiling_support (*PgCurrentJitProfilingSupportRef())
+#define jit_tuple_deforming (*PgCurrentJitTupleDeformingRef())
+#define jit_above_cost (*PgCurrentJitAboveCostRef())
+#define jit_inline_above_cost (*PgCurrentJitInlineAboveCostRef())
+#define jit_optimize_above_cost (*PgCurrentJitOptimizeAboveCostRef())
 
 
 extern void jit_reset_after_error(void);

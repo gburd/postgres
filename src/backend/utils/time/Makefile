@@ -13,6 +13,7 @@ top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
 OBJS = \
+	backend_runtime_time.o \
 	combocid.o \
 	snapmgr.o
 

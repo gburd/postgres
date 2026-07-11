@@ -15,6 +15,7 @@
 #define TRANSAM_H
 
 #include "access/xlogdefs.h"
+#include "utils/global_lifetime.h"
 
 
 /* ----------------
@@ -330,7 +331,7 @@ TransactionIdFollowsOrEquals(TransactionId id1, TransactionId id2)
 extern bool TransactionStartedDuringRecovery(void);
 
 /* in transam/varsup.c */
-extern PGDLLIMPORT TransamVariablesData *TransamVariables;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM TransamVariablesData *TransamVariables;
 
 /*
  * prototypes for functions in transam/transam.c

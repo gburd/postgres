@@ -64,6 +64,7 @@
 #include "port/pg_bitutils.h"
 #include "storage/lwlock.h"
 #include "utils/builtins.h"
+#include "utils/backend_runtime.h"
 #include "utils/catcache.h"
 #include "utils/fmgroids.h"
 #include "utils/injection_point.h"
@@ -76,7 +77,7 @@
 
 
 /* The main type cache hashtable searched by lookup_type_cache */
-static HTAB *TypeCacheHash = NULL;
+#define TypeCacheHash (*PgCurrentTypeCacheHashRef())
 
 /*
  * The mapping of relation's OID to the corresponding composite type OID.
@@ -84,7 +85,7 @@ static HTAB *TypeCacheHash = NULL;
  * to clear i.e it has either TCFLAGS_HAVE_PG_TYPE_DATA, or
  * TCFLAGS_OPERATOR_FLAGS, or tupdesc.
  */
-static HTAB *RelIdToTypeIdCacheHash = NULL;
+#define RelIdToTypeIdCacheHash (*PgCurrentRelIdToTypeIdCacheHashRef())
 
 typedef struct RelIdToTypeIdCacheEntry
 {
@@ -93,7 +94,7 @@ typedef struct RelIdToTypeIdCacheEntry
 } RelIdToTypeIdCacheEntry;
 
 /* List of type cache entries for domain types */
-static TypeCacheEntry *firstDomainTypeEntry = NULL;
+#define firstDomainTypeEntry (*PgCurrentFirstDomainTypeEntryRef())
 
 /* Private flag bits in the TypeCacheEntry.flags field */
 #define TCFLAGS_HAVE_PG_TYPE_DATA			0x000001
@@ -223,9 +224,9 @@ typedef struct SharedTypmodTableEntry
 	dsa_pointer shared_tupdesc;
 } SharedTypmodTableEntry;
 
-static Oid *in_progress_list;
-static int	in_progress_list_len;
-static int	in_progress_list_maxlen;
+#define in_progress_list (*PgCurrentTypCacheInProgressListRef())
+#define in_progress_list_len (*PgCurrentTypCacheInProgressListLenRef())
+#define in_progress_list_maxlen (*PgCurrentTypCacheInProgressListMaxLenRef())
 
 /*
  * A comparator function for SharedRecordTableKey.
@@ -292,25 +293,25 @@ static const dshash_parameters srtr_typmod_table_params = {
 };
 
 /* hashtable for recognizing registered record types */
-static HTAB *RecordCacheHash = NULL;
+#define RecordCacheHash (*PgCurrentRecordCacheHashRef())
 
-typedef struct RecordCacheArrayEntry
+struct RecordCacheArrayEntry
 {
 	uint64		id;
 	TupleDesc	tupdesc;
-} RecordCacheArrayEntry;
+};
 
 /* array of info about registered record types, indexed by assigned typmod */
-static RecordCacheArrayEntry *RecordCacheArray = NULL;
-static int32 RecordCacheArrayLen = 0;	/* allocated length of above array */
-static int32 NextRecordTypmod = 0;	/* number of entries used */
+#define RecordCacheArray (*PgCurrentRecordCacheArrayRef())
+#define RecordCacheArrayLen (*PgCurrentRecordCacheArrayLenRef())
+#define NextRecordTypmod (*PgCurrentNextRecordTypmodRef())
 
 /*
  * Process-wide counter for generating unique tupledesc identifiers.
  * Zero and one (INVALID_TUPLEDESC_IDENTIFIER) aren't allowed to be chosen
  * as identifiers, so we start the counter at INVALID_TUPLEDESC_IDENTIFIER.
  */
-static uint64 tupledesc_id_counter = INVALID_TUPLEDESC_IDENTIFIER;
+#define tupledesc_id_counter (*PgCurrentTupleDescIdCounterRef())
 
 static void load_typcache_tupdesc(TypeCacheEntry *typentry);
 static void load_rangetype_info(TypeCacheEntry *typentry);
@@ -398,10 +399,15 @@ lookup_type_cache(Oid type_id, int flags)
 		HASHCTL		ctl;
 		int			allocsize;
 
+		/* Also make sure CacheMemoryContext exists */
+		if (!CacheMemoryContext)
+			CreateCacheMemoryContext();
+
 		if (TypeCacheHash == NULL)
 		{
 			ctl.keysize = sizeof(Oid);
 			ctl.entrysize = sizeof(TypeCacheEntry);
+			ctl.hcxt = CacheMemoryContext;
 
 			/*
 			 * TypeCacheEntry takes hash value from the system cache. For
@@ -411,20 +417,19 @@ lookup_type_cache(Oid type_id, int flags)
 			ctl.hash = type_cache_syshash;
 
 			TypeCacheHash = hash_create("Type information cache", 64,
-										&ctl, HASH_ELEM | HASH_FUNCTION);
+										&ctl,
+										HASH_ELEM | HASH_FUNCTION | HASH_CONTEXT);
 		}
 
 		if (RelIdToTypeIdCacheHash == NULL)
 		{
 			ctl.keysize = sizeof(Oid);
 			ctl.entrysize = sizeof(RelIdToTypeIdCacheEntry);
+			ctl.hcxt = CacheMemoryContext;
 			RelIdToTypeIdCacheHash = hash_create("Map from relid to OID of cached composite type", 64,
-												 &ctl, HASH_ELEM | HASH_BLOBS);
+												 &ctl,
+												 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 		}
-
-		/* Also make sure CacheMemoryContext exists */
-		if (!CacheMemoryContext)
-			CreateCacheMemoryContext();
 
 		/*
 		 * Reserve enough in_progress_list slots for many cases.  This is the
@@ -2094,17 +2099,18 @@ assign_record_type_typmod(TupleDesc tupDesc)
 		/* First time through: initialize the hash table */
 		HASHCTL		ctl;
 
+		/* Also make sure CacheMemoryContext exists */
+		if (!CacheMemoryContext)
+			CreateCacheMemoryContext();
+
 		ctl.keysize = sizeof(TupleDesc);	/* just the pointer */
 		ctl.entrysize = sizeof(RecordCacheEntry);
 		ctl.hash = record_type_typmod_hash;
 		ctl.match = record_type_typmod_compare;
+		ctl.hcxt = CacheMemoryContext;
 		RecordCacheHash = hash_create("Record information cache", 64,
 									  &ctl,
-									  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
-
-		/* Also make sure CacheMemoryContext exists */
-		if (!CacheMemoryContext)
-			CreateCacheMemoryContext();
+									  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE | HASH_CONTEXT);
 	}
 
 	/*

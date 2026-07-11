@@ -53,29 +53,18 @@
 #include "storage/spin.h"
 #include "storage/standby.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/injection_point.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
 #include "utils/wait_event.h"
 
-/* GUC variables */
-int			DeadlockTimeout = 1000;
-int			StatementTimeout = 0;
-int			LockTimeout = 0;
-int			IdleInTransactionSessionTimeout = 0;
-int			TransactionTimeout = 0;
-int			IdleSessionTimeout = 0;
-bool		log_lock_waits = true;
-
-/* Pointer to this process's PGPROC struct, if any */
-PGPROC	   *MyProc = NULL;
-
 /* Pointers to shared-memory structures */
-PROC_HDR   *ProcGlobal = NULL;
-static void *AllProcsShmemPtr;
-static void *FastPathLockArrayShmemPtr;
-NON_EXEC_STATIC PGPROC *AuxiliaryProcs = NULL;
-PGPROC	   *PreparedXactProcs = NULL;
+PG_GLOBAL_SHMEM PROC_HDR *ProcGlobal = NULL;
+static PG_GLOBAL_SHMEM void *AllProcsShmemPtr;
+static PG_GLOBAL_SHMEM void *FastPathLockArrayShmemPtr;
+PG_GLOBAL_SHMEM NON_EXEC_STATIC PGPROC *AuxiliaryProcs = NULL;
+PG_GLOBAL_SHMEM PGPROC *PreparedXactProcs = NULL;
 
 static void ProcGlobalShmemRequest(void *arg);
 static void ProcGlobalShmemInit(void *arg);
@@ -85,12 +74,12 @@ const ShmemCallbacks ProcGlobalShmemCallbacks = {
 	.init_fn = ProcGlobalShmemInit,
 };
 
-static uint32 TotalProcs;
-static size_t ProcGlobalAllProcsShmemSize;
-static size_t FastPathLockArrayShmemSize;
+static PG_GLOBAL_RUNTIME uint32 TotalProcs;
+static PG_GLOBAL_RUNTIME size_t ProcGlobalAllProcsShmemSize;
+static PG_GLOBAL_RUNTIME size_t FastPathLockArrayShmemSize;
 
 /* Is a deadlock check pending? */
-static volatile sig_atomic_t got_deadlock_timeout;
+#define got_deadlock_timeout (*PgCurrentDeadlockTimeoutPendingRef())
 
 static void RemoveProcFromArray(int code, Datum arg);
 static void ProcKill(int code, Datum arg);
@@ -478,6 +467,7 @@ InitProcess(void)
 	MyProc->xid = InvalidTransactionId;
 	MyProc->xmin = InvalidTransactionId;
 	MyProc->pid = MyProcPid;
+	MyProc->backendId = PgCurrentBackendId();
 	MyProc->vxid.procNumber = MyProcNumber;
 	MyProc->vxid.lxid = InvalidLocalTransactionId;
 	/* databaseId and roleId will be filled in later */
@@ -665,7 +655,9 @@ InitAuxiliaryProcess(void)
 	}
 
 	/* Mark auxiliary proc as in use by me */
-	auxproc->pid = MyProcPid;
+	/* use volatile pointer to prevent code rearrangement */
+	((volatile PGPROC *) auxproc)->pid = MyProcPid;
+	((volatile PGPROC *) auxproc)->backendId = PgCurrentBackendId();
 
 	SpinLockRelease(&ProcGlobal->freeProcsLock);
 
@@ -1061,6 +1053,7 @@ ProcKill(int code, Datum arg)
 
 	/* Mark the proc no longer in use */
 	proc->pid = 0;
+	proc->backendId = 0;
 	proc->vxid.procNumber = INVALID_PROC_NUMBER;
 	proc->vxid.lxid = InvalidTransactionId;
 
@@ -1141,6 +1134,7 @@ AuxiliaryProcKill(int code, Datum arg)
 
 	/* Mark auxiliary proc no longer in use */
 	proc->pid = 0;
+	proc->backendId = 0;
 	proc->vxid.procNumber = INVALID_PROC_NUMBER;
 	proc->vxid.lxid = InvalidTransactionId;
 
@@ -1170,6 +1164,38 @@ AuxiliaryPidGetProc(int pid)
 		PGPROC	   *proc = &AuxiliaryProcs[index];
 
 		if (proc->pid == pid)
+		{
+			result = proc;
+			break;
+		}
+	}
+	return result;
+}
+
+/*
+ * AuxiliarySignalPidGetProc -- get PGPROC for an auxiliary process given its
+ * SQL-visible signal target ID.
+ *
+ * In process mode this is the same as AuxiliaryPidGetProc().  In
+ * thread-per-session mode auxiliary workers can share the postmaster's real
+ * PID, so SQL-facing views expose their logical backend ID instead.
+ */
+PGPROC *
+AuxiliarySignalPidGetProc(int pid)
+{
+	PGPROC	   *result = NULL;
+	int			index;
+
+	if (pid == 0)				/* never match dummy PGPROCs */
+		return NULL;
+
+	for (index = 0; index < NUM_AUXILIARY_PROCS; index++)
+	{
+		PGPROC	   *proc = &AuxiliaryProcs[index];
+
+		if (proc->pid == pid ||
+			(proc->pid == PostmasterPid &&
+			 proc->backendId == (PgBackendId) pid))
 		{
 			result = proc;
 			break;
@@ -1890,6 +1916,13 @@ CheckDeadLock(void)
 	DeadLockState result;
 
 	/*
+	 * DeadLockCheck() relies on MaxBackends-sized private workspace.  Allocate
+	 * it before taking every lock-manager partition lock; palloc while those
+	 * locks are held would lengthen the most sensitive part of this path.
+	 */
+	EnsureDeadLockCheckingWorkspace();
+
+	/*
 	 * Acquire exclusive lock on the entire shared lock data structures. Must
 	 * grab LWLocks in partition-number order to avoid LWLock deadlock.
 	 *
@@ -2082,6 +2115,80 @@ ProcWaitForSignal(uint32 wait_event_info)
 					 wait_event_info);
 	ResetLatch(MyLatch);
 	CHECK_FOR_INTERRUPTS();
+}
+
+typedef struct ProcSemaphoreWaitArgs
+{
+	PGPROC	   *proc;
+} ProcSemaphoreWaitArgs;
+
+static int
+ProcSemaphoreWaitCallback(void *callback_arg)
+{
+	ProcSemaphoreWaitArgs *args = (ProcSemaphoreWaitArgs *) callback_arg;
+
+	PGSemaphoreLock(args->proc->sem);
+	return 0;
+}
+
+/*
+ * ProcWaitOnSemaphore - wait on a PGPROC-owned semaphore.
+ *
+ * This is the scheduler-visible wrapper for semaphore-backed waits such as
+ * LWLocks, buffer content locks, and group-update waits.  When diagnostic
+ * wait-completion publication is compiled in, the logical backend's current
+ * wait-completion record exposes the wait event and owner.  The actual wait
+ * remains carrier-pinned in PGSemaphoreLock().
+ */
+void
+ProcWaitOnSemaphore(PGPROC *proc, uint32 wait_event_info)
+{
+	ProcSemaphoreWaitArgs args;
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
+	PgWaitSpec	wait_spec;
+#endif
+
+	Assert(proc != NULL);
+
+	args.proc = proc;
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
+	wait_spec.kind = PG_WAIT_KIND_SEMAPHORE;
+	wait_spec.wait_event_info = wait_event_info;
+	wait_spec.wake_events = 0;
+	wait_spec.socket = PGINVALID_SOCKET;
+	wait_spec.timeout = -1;
+
+	(void) PgSuspend(&wait_spec, ProcSemaphoreWaitCallback, &args);
+#else
+	(void) wait_event_info;
+	(void) ProcSemaphoreWaitCallback(&args);
+#endif
+}
+
+/*
+ * ProcWakeSemaphore - wake a backend blocked on its PGPROC semaphore.
+ *
+ * Mark the diagnostic wait-completion record before the legacy semaphore wake
+ * when that publication path is compiled in.  Phase 14/15 use this as wait
+ * observability only; semaphore waits remain carrier-pinned until a later
+ * explicit deep-wait continuation design exists.
+ */
+void
+ProcWakeSemaphore(PGPROC *proc)
+{
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
+	PgBackend  *backend = CurrentPgBackend;
+#endif
+
+	Assert(proc != NULL);
+
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
+	if (backend != NULL &&
+		PgRuntimeIsThreadBacked(backend->runtime) &&
+		proc->backendId != 0)
+		(void) PgBackendWakeWaitCompletionById(proc->backendId, 0);
+#endif
+	PGSemaphoreUnlock(proc->sem);
 }
 
 /*

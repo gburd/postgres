@@ -43,6 +43,7 @@
 #include "parser/parse_coerce.h"
 #include "parser/parse_relation.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
@@ -260,14 +261,14 @@ typedef struct RI_FastPathEntry
 /*
  * Local data
  */
-static HTAB *ri_constraint_cache = NULL;
-static HTAB *ri_query_cache = NULL;
-static HTAB *ri_compare_cache = NULL;
-static dclist_head ri_constraint_cache_valid_list;
+#define ri_constraint_cache (*PgCurrentRIConstraintCacheRef())
+#define ri_query_cache (*PgCurrentRIQueryCacheRef())
+#define ri_compare_cache (*PgCurrentRICompareCacheRef())
+#define ri_constraint_cache_valid_list (*PgCurrentRIConstraintCacheValidListRef())
 
-static HTAB *ri_fastpath_cache = NULL;
-static bool ri_fastpath_callback_registered = false;
-static bool ri_fastpath_flushing = false;
+#define ri_fastpath_cache (*PgCurrentRIFastPathCacheRef())
+#define ri_fastpath_callback_registered (*PgCurrentRIFastPathCallbackRegisteredRef())
+#define ri_fastpath_flushing (*PgCurrentRIFastPathFlushingRef())
 
 /*
  * Local function prototypes
@@ -4290,12 +4291,12 @@ ri_FastPathTeardown(void)
  * On abort, ri_FastPathEndBatch()/ri_FastPathTeardown() may not have run (a
  * flush can error out partway): the ResourceOwner releases the cached
  * relations and the TopTransactionContext reset frees the cache memory, but
- * the process-local static pointers below would dangle into the next
- * transaction.  This resets them so they don't.
+ * the session-owned pointers below would dangle into the next transaction.
+ * This resets them so they don't.
  *
- * The reset touches only backend-local static state (no relations, locks,
- * buffers or catalog access), so it has no ordering dependency on the
- * surrounding ResourceOwnerRelease() / AtEOXact_* steps.
+ * The reset touches only backend-local state (no relations, locks, buffers or
+ * catalog access), so it has no ordering dependency on the surrounding
+ * ResourceOwnerRelease() / AtEOXact_* steps.
  */
 void
 AtEOXact_RI(bool isCommit)

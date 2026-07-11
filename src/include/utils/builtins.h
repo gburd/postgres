@@ -17,6 +17,7 @@
 #include "fmgr.h"
 #include "nodes/nodes.h"
 #include "utils/fmgrprotos.h"
+#include "utils/global_lifetime.h"
 
 /* Sign + the most decimal digits an 8-byte number could have */
 #define MAXINT8LEN 20
@@ -77,7 +78,10 @@ extern char *regexp_fixed_prefix(text *text_re, bool case_insensitive,
 								 Oid collation, bool *exact);
 
 /* ruleutils.c */
-extern PGDLLIMPORT bool quote_all_identifiers;
+#ifndef PgCurrentQuoteAllIdentifiersRef
+extern bool *PgCurrentQuoteAllIdentifiersRef(void);
+#endif
+#define quote_all_identifiers (*PgCurrentQuoteAllIdentifiersRef())
 extern const char *quote_identifier(const char *ident);
 extern char *quote_qualified_identifier(const char *qualifier,
 										const char *ident);

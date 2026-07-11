@@ -45,7 +45,7 @@
  * Note: print.c's general strategy for when to check cancel_pressed is to do
  * so at completion of each row of output.
  */
-volatile sig_atomic_t cancel_pressed = false;
+PG_GLOBAL_RUNTIME volatile sig_atomic_t cancel_pressed = false;
 
 static bool always_ignore_sigpipe = false;
 

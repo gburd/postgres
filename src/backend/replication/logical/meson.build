@@ -2,6 +2,7 @@
 
 backend_sources += files(
   'applyparallelworker.c',
+  'backend_runtime_logical.c',
   'conflict.c',
   'decode.c',
   'launcher.c',

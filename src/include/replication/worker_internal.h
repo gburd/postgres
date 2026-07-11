@@ -20,9 +20,12 @@
 #include "replication/walreceiver.h"
 #include "storage/buffile.h"
 #include "storage/fileset.h"
+#include "storage/procnumber.h"
 #include "storage/shm_mq.h"
 #include "storage/shm_toc.h"
 #include "storage/spin.h"
+#include "utils/backend_runtime.h"
+#include "utils/global_lifetime.h"
 
 /* Different types of worker */
 typedef enum LogicalRepWorkerType
@@ -50,6 +53,15 @@ typedef struct LogicalRepWorker
 
 	/* Pointer to proc array. NULL if not running. */
 	PGPROC	   *proc;
+
+	/*
+	 * SQL-visible signal target and proc number of the running worker.  In
+	 * process mode signal_pid is the OS PID.  In threaded mode it is the
+	 * logical backend ID used by pg_stat_activity and backend interrupts.
+	 */
+	pid_t		signal_pid;
+	ProcNumber	procno;
+	bool		threaded;
 
 	/* Database id to connect to. */
 	Oid			dbid;
@@ -82,6 +94,8 @@ typedef struct LogicalRepWorker
 	 * worker, InvalidPid otherwise.
 	 */
 	pid_t		leader_pid;
+	pid_t		leader_signal_pid;
+	ProcNumber	leader_procno;
 
 	/* Indicates whether apply can be performed in parallel. */
 	bool		parallel_apply;
@@ -234,26 +248,38 @@ typedef struct ParallelApplyWorkerInfo
 } ParallelApplyWorkerInfo;
 
 /* Main memory context for apply worker. Permanent during worker lifetime. */
-extern PGDLLIMPORT MemoryContext ApplyContext;
+#define ApplyContext (PgCurrentLogicalReplicationState()->apply_context)
 
-extern PGDLLIMPORT MemoryContext ApplyMessageContext;
+#ifndef PgCurrentApplyMessageContextRef
+extern MemoryContext *PgCurrentApplyMessageContextRef(void);
+#endif
+#define ApplyMessageContext (*PgCurrentApplyMessageContextRef())
 
-extern PGDLLIMPORT ErrorContextCallback *apply_error_context_stack;
+#ifndef PgCurrentApplyErrorContextStackRef
+extern ErrorContextCallback **PgCurrentApplyErrorContextStackRef(void);
+#endif
+#define apply_error_context_stack (*PgCurrentApplyErrorContextStackRef())
 
-extern PGDLLIMPORT ParallelApplyWorkerShared *MyParallelShared;
+#define MyParallelShared \
+	(PgCurrentLogicalReplicationState()->my_parallel_shared)
 
 /* libpqreceiver connection */
-extern PGDLLIMPORT struct WalReceiverConn *LogRepWorkerWalRcvConn;
+#define LogRepWorkerWalRcvConn \
+	(PgCurrentLogicalReplicationState()->logrep_worker_walrcv_conn)
 
 /* Worker and subscription objects. */
-extern PGDLLIMPORT Subscription *MySubscription;
-extern PGDLLIMPORT LogicalRepWorker *MyLogicalRepWorker;
+#define MySubscription (PgCurrentLogicalReplicationState()->my_subscription)
+#define MyLogicalRepWorker \
+	(PgCurrentLogicalReplicationState()->my_logical_rep_worker)
 
-extern PGDLLIMPORT bool in_remote_transaction;
+#define in_remote_transaction \
+	(PgCurrentLogicalReplicationState()->in_remote_transaction)
 
-extern PGDLLIMPORT bool InitializingApplyWorker;
+#define InitializingApplyWorker \
+	(PgCurrentLogicalReplicationState()->initializing_apply_worker)
 
-extern PGDLLIMPORT List *table_states_not_ready;
+#define table_states_not_ready \
+	(PgCurrentLogicalReplicationState()->table_states_not_ready)
 
 extern void logicalrep_worker_attach(int slot);
 extern LogicalRepWorker *logicalrep_worker_find(LogicalRepWorkerType wtype,

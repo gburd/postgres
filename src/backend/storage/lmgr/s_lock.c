@@ -65,11 +65,11 @@
  * These are needed by pgstat_report_wait_start in the standalone compile of
  * s_lock_test.
  */
-static uint32 local_my_wait_event_info;
-uint32	   *my_wait_event_info = &local_my_wait_event_info;
+static PG_GLOBAL_BACKEND uint32 local_my_wait_event_info;
+PG_GLOBAL_BACKEND uint32 *my_wait_event_info = &local_my_wait_event_info;
 #endif
 
-static int	spins_per_delay = DEFAULT_SPINS_PER_DELAY;
+static PG_GLOBAL_RUNTIME int spins_per_delay = DEFAULT_SPINS_PER_DELAY;
 
 
 /*
@@ -245,7 +245,7 @@ struct test_lock_struct
 	char		pad2;
 };
 
-volatile struct test_lock_struct test_lock;
+PG_GLOBAL_RUNTIME volatile struct test_lock_struct test_lock;
 
 int
 main()

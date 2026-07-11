@@ -76,6 +76,7 @@ struct Latch;
  * prototypes for functions in waiteventset.c
  */
 extern void InitializeWaitEventSupport(void);
+extern void ShutdownWaitEventSupport(void);
 
 extern WaitEventSet *CreateWaitEventSet(ResourceOwner resowner, int nevents);
 extern void FreeWaitEventSet(WaitEventSet *set);
@@ -91,7 +92,9 @@ extern int	GetNumRegisteredWaitEvents(WaitEventSet *set);
 extern bool WaitEventSetCanReportClosed(void);
 
 #ifndef WIN32
+extern int	GetWaitEventSetLatchWakeupFd(void);
 extern void WakeupMyProc(void);
+extern void WakeupOtherProcFd(int fd);
 extern void WakeupOtherProc(int pid);
 #endif
 

@@ -17,8 +17,9 @@
 #include <signal.h>
 
 #include "libpq-fe.h"
+#include "utils/global_lifetime.h"
 
-extern PGDLLIMPORT volatile sig_atomic_t CancelRequested;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME volatile sig_atomic_t CancelRequested;
 
 extern void SetCancelConn(PGconn *conn);
 extern void ResetCancelConn(void);

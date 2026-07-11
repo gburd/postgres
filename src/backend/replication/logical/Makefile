@@ -16,6 +16,7 @@ override CPPFLAGS := -I$(srcdir) $(CPPFLAGS)
 
 OBJS = \
 	applyparallelworker.o \
+	backend_runtime_logical.o \
 	conflict.o \
 	decode.o \
 	launcher.o \

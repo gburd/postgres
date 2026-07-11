@@ -37,7 +37,9 @@
 #include "access/xact.h"
 #include "catalog/namespace.h"
 #include "mb/pg_wchar.h"
+#include "utils/backend_runtime.h"
 #include "utils/fmgrprotos.h"
+#include "utils/global_lifetime.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
 #include "utils/relcache.h"
@@ -50,7 +52,9 @@
  * settings because we must be able to restore a previous setting during
  * transaction rollback, without doing any fresh catalog accesses.)
  *
- * Since we'll never release this data, we just keep it in TopMemoryContext.
+ * The cache entries live in a session-owned context, so transaction rollback
+ * can still restore old settings without catalog access while closed-session
+ * reset can release the cache with the logical session.
  */
 typedef struct ConvProcInfo
 {
@@ -60,28 +64,28 @@ typedef struct ConvProcInfo
 	FmgrInfo	to_client_info;
 } ConvProcInfo;
 
-static List *ConvProcList = NIL;	/* List of ConvProcInfo */
+#define ConvProcList (*PgCurrentEncodingConvProcListRef())
 
 /*
  * These variables point to the currently active conversion functions,
  * or are NULL when no conversion is needed.
  */
-static FmgrInfo *ToServerConvProc = NULL;
-static FmgrInfo *ToClientConvProc = NULL;
+#define ToServerConvProc (*PgCurrentToServerConvProcRef())
+#define ToClientConvProc (*PgCurrentToClientConvProcRef())
 
 /*
  * This variable stores the conversion function to convert from UTF-8
  * to the server encoding.  It's NULL if the server encoding *is* UTF-8,
  * or if we lack a conversion function for this.
  */
-static FmgrInfo *Utf8ToServerConvProc = NULL;
+#define Utf8ToServerConvProc (*PgCurrentUtf8ToServerConvProcRef())
 
 /*
  * These variables track the currently-selected encodings.
  */
-static const pg_enc2name *ClientEncoding = &pg_enc2name_tbl[PG_SQL_ASCII];
-static const pg_enc2name *DatabaseEncoding = &pg_enc2name_tbl[PG_SQL_ASCII];
-static const pg_enc2name *MessageEncoding = &pg_enc2name_tbl[PG_SQL_ASCII];
+#define ClientEncoding (*PgCurrentClientEncodingRef())
+#define DatabaseEncoding (*PgCurrentDatabaseEncodingRef())
+#define MessageEncoding (*PgCurrentMessageEncodingRef())
 
 /*
  * During backend startup we can't set client encoding because we (a)
@@ -89,8 +93,8 @@ static const pg_enc2name *MessageEncoding = &pg_enc2name_tbl[PG_SQL_ASCII];
  * encoding yet either.  So SetClientEncoding() just accepts anything and
  * remembers it for InitializeClientEncoding() to apply later.
  */
-static bool backend_startup_complete = false;
-static int	pending_client_encoding = PG_SQL_ASCII;
+#define backend_startup_complete (*PgCurrentEncodingStartupCompleteRef())
+#define pending_client_encoding (*PgCurrentPendingClientEncodingRef())
 
 
 /* Internal functions */
@@ -149,6 +153,7 @@ PrepareClientEncoding(int encoding)
 		Oid			to_server_proc,
 					to_client_proc;
 		ConvProcInfo *convinfo;
+		MemoryContext encoding_context;
 		MemoryContext oldcontext;
 
 		to_server_proc = FindDefaultConversionProc(encoding,
@@ -161,19 +166,21 @@ PrepareClientEncoding(int encoding)
 			return -1;
 
 		/*
-		 * Load the fmgr info into TopMemoryContext (could still fail here)
+		 * Load the fmgr info into the session encoding cache context
+		 * (could still fail here).
 		 */
-		convinfo = (ConvProcInfo *) MemoryContextAlloc(TopMemoryContext,
+		encoding_context = PgCurrentEncodingCacheMemoryContext();
+		convinfo = (ConvProcInfo *) MemoryContextAlloc(encoding_context,
 													   sizeof(ConvProcInfo));
 		convinfo->s_encoding = current_server_encoding;
 		convinfo->c_encoding = encoding;
 		fmgr_info_cxt(to_server_proc, &convinfo->to_server_info,
-					  TopMemoryContext);
+					  encoding_context);
 		fmgr_info_cxt(to_client_proc, &convinfo->to_client_info,
-					  TopMemoryContext);
+					  encoding_context);
 
 		/* Attach new info to head of list */
-		oldcontext = MemoryContextSwitchTo(TopMemoryContext);
+		oldcontext = MemoryContextSwitchTo(encoding_context);
 		ConvProcList = lcons(convinfo, ConvProcList);
 		MemoryContextSwitchTo(oldcontext);
 
@@ -327,11 +334,13 @@ InitializeClientEncoding(void)
 		if (OidIsValid(utf8_to_server_proc))
 		{
 			FmgrInfo   *finfo;
+			MemoryContext encoding_context;
 
-			finfo = (FmgrInfo *) MemoryContextAlloc(TopMemoryContext,
+			encoding_context = PgCurrentEncodingCacheMemoryContext();
+			finfo = (FmgrInfo *) MemoryContextAlloc(encoding_context,
 													sizeof(FmgrInfo));
 			fmgr_info_cxt(utf8_to_server_proc, finfo,
-						  TopMemoryContext);
+						  encoding_context);
 			/* Set Utf8ToServerConvProc only after data is fully valid */
 			Utf8ToServerConvProc = finfo;
 		}

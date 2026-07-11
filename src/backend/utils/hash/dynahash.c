@@ -102,6 +102,7 @@
 #include "port/pg_bitutils.h"
 #include "storage/shmem.h"
 #include "storage/spin.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 
 
@@ -1805,11 +1806,22 @@ next_pow2_int(int64 num)
  * lack of notification should be easy to catch.
  */
 
-#define MAX_SEQ_SCANS 100
+#define MAX_SEQ_SCANS PG_BACKEND_MAX_SEQ_SCANS
 
-static HTAB *seq_scan_tables[MAX_SEQ_SCANS];	/* tables being scanned */
-static int	seq_scan_level[MAX_SEQ_SCANS];	/* subtransaction nest level */
-static int	num_seq_scans = 0;
+/* Tables being scanned. */
+#define seq_scan_tables \
+	((HTAB **) PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentSeqScanTablesHotRef, \
+												CurrentPgBackend, \
+												PgCurrentSeqScanTables))
+/* Subtransaction nest level. */
+#define seq_scan_level \
+	((int *) PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentSeqScanLevelsHotRef, \
+											  CurrentPgBackend, \
+											  PgCurrentSeqScanLevels))
+#define num_seq_scans \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentNumSeqScansHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentNumSeqScansRef))
 
 
 /* Register a table as having an active hash_seq_search scan */

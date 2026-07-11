@@ -18,6 +18,8 @@
 #include "storage/locktag.h"
 #include "utils/backend_progress.h" /* for backward compatibility */	/* IWYU pragma: export */
 #include "utils/backend_status.h"	/* for backward compatibility */	/* IWYU pragma: export */
+#include "utils/backend_runtime_current.h"
+#include "utils/global_lifetime.h"
 #include "utils/pgstat_kind.h"
 
 
@@ -26,6 +28,9 @@ typedef struct FullTransactionId FullTransactionId;
 
 /* avoid including utils/relcache.h */
 typedef struct RelationData *Relation;
+
+/* avoid including executor/instrument.h */
+typedef struct WalUsage WalUsage;
 
 
 /* ----------
@@ -439,6 +444,12 @@ typedef struct PgStat_SLRUStats
 	TimestampTz stat_reset_timestamp;
 } PgStat_SLRUStats;
 
+/*
+ * Fixed number of SLRU statistics entries, including the final "other" entry.
+ * Keep this in sync with slru_names[] in pgstat_internal.h.
+ */
+#define PGSTAT_SLRU_NUM_ELEMENTS 8
+
 typedef struct PgStat_StatSubEntry
 {
 	PgStat_Counter apply_error_count;
@@ -559,6 +570,7 @@ extern void pgstat_initialize(void);
 /* Functions called from backends */
 extern long pgstat_report_stat(bool force);
 extern void pgstat_force_next_flush(void);
+extern void pgstat_release_idle_memory(void);
 
 extern void pgstat_reset_counters(void);
 extern void pgstat_reset(PgStat_Kind kind, Oid dboid, uint64 objid);
@@ -849,9 +861,19 @@ extern PgStat_WalStats *pgstat_fetch_stat_wal(void);
  */
 
 /* GUC parameters */
-extern PGDLLIMPORT bool pgstat_track_counts;
-extern PGDLLIMPORT int pgstat_track_functions;
-extern PGDLLIMPORT int pgstat_fetch_consistency;
+#ifndef PgCurrentPgStatTrackCountsRef
+extern bool *PgCurrentPgStatTrackCountsRef(void);
+#endif
+#ifndef PgCurrentPgStatTrackFunctionsRef
+extern int *PgCurrentPgStatTrackFunctionsRef(void);
+#endif
+#ifndef PgCurrentPgStatFetchConsistencyRef
+extern int *PgCurrentPgStatFetchConsistencyRef(void);
+#endif
+
+#define pgstat_track_counts (*PgCurrentPgStatTrackCountsRef())
+#define pgstat_track_functions (*PgCurrentPgStatTrackFunctionsRef())
+#define pgstat_fetch_consistency (*PgCurrentPgStatFetchConsistencyRef())
 
 
 /*
@@ -859,7 +881,11 @@ extern PGDLLIMPORT int pgstat_fetch_consistency;
  */
 
 /* updated directly by bgwriter and bufmgr */
-extern PGDLLIMPORT PgStat_BgWriterStats PendingBgWriterStats;
+#ifndef PgCurrentPendingBgWriterStatsRef
+extern PgStat_BgWriterStats *PgCurrentPendingBgWriterStatsRef(void);
+#endif
+
+#define PendingBgWriterStats (*PgCurrentPendingBgWriterStatsRef())
 
 
 /*
@@ -870,25 +896,172 @@ extern PGDLLIMPORT PgStat_BgWriterStats PendingBgWriterStats;
  * Checkpointer statistics counters are updated directly by checkpointer and
  * bufmgr.
  */
-extern PGDLLIMPORT PgStat_CheckpointerStats PendingCheckpointerStats;
+#ifndef PgCurrentPendingCheckpointerStatsRef
+extern PgStat_CheckpointerStats *PgCurrentPendingCheckpointerStatsRef(void);
+#endif
 
+#define PendingCheckpointerStats (*PgCurrentPendingCheckpointerStatsRef())
+
+#ifndef PgCurrentPendingIOStatsRef
+extern PgStat_PendingIO *PgCurrentPendingIOStatsRef(void);
+#endif
+#ifndef PgCurrentHaveIOStatsRef
+extern bool *PgCurrentHaveIOStatsRef(void);
+#endif
+
+#define PendingIOStats \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPendingIOStatsHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentPendingIOStatsRef))
+#define have_iostats \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentHaveIOStatsHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentHaveIOStatsRef))
+
+#ifndef PgCurrentPendingSLRUStatsArray
+extern PgStat_SLRUStats *PgCurrentPendingSLRUStatsArray(void);
+#endif
+#ifndef PgCurrentHaveSLRUStatsRef
+extern bool *PgCurrentHaveSLRUStatsRef(void);
+#endif
+
+#define pending_SLRUStats (PgCurrentPendingSLRUStatsArray())
+#define have_slrustats (*PgCurrentHaveSLRUStatsRef())
+
+#ifndef PgCurrentPendingLockStatsRef
+extern PgStat_PendingLock *PgCurrentPendingLockStatsRef(void);
+#endif
+#ifndef PgCurrentHaveLockStatsRef
+extern bool *PgCurrentHaveLockStatsRef(void);
+#endif
+
+#define PendingLockStats (*PgCurrentPendingLockStatsRef())
+#define have_lockstats (*PgCurrentHaveLockStatsRef())
+
+/*
+ * Backend statistics counts and fixed-stat flush controls.  Some of these
+ * counters may be reported within critical sections, so their storage must be
+ * statically available as part of the backend state object.
+ *
+ * pgstat_report_fixed tracks if any pending fixed-numbered statistics should
+ * be flushed to shared memory.  Statistics callbacks should never reset this
+ * flag; pgstat_report_stat() is in charge of doing that.
+ */
+#ifndef PgCurrentPendingBackendStatsRef
+extern PgStat_BackendPending *PgCurrentPendingBackendStatsRef(void);
+#endif
+#ifndef PgCurrentBackendHasIOStatsRef
+extern bool *PgCurrentBackendHasIOStatsRef(void);
+#endif
+#ifndef PgCurrentPgStatPrevBackendWalUsageRef
+extern WalUsage *PgCurrentPgStatPrevBackendWalUsageRef(void);
+#endif
+#ifndef PgCurrentPgStatReportFixedRef
+extern bool *PgCurrentPgStatReportFixedRef(void);
+#endif
+#ifndef PgCurrentPgStatForceNextFlushRef
+extern bool *PgCurrentPgStatForceNextFlushRef(void);
+#endif
+#ifndef PgCurrentForceStatsSnapshotClearRef
+extern bool *PgCurrentForceStatsSnapshotClearRef(void);
+#endif
+#ifndef PgCurrentPgStatIsInitializedRef
+extern bool *PgCurrentPgStatIsInitializedRef(void);
+#endif
+#ifndef PgCurrentPgStatIsShutdownRef
+extern bool *PgCurrentPgStatIsShutdownRef(void);
+#endif
+
+#define PendingBackendStats \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPendingBackendStatsHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentPendingBackendStatsRef))
+#define backend_has_iostats \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentBackendHasIOStatsHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentBackendHasIOStatsRef))
+#define backend_has_lockstats \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentBackendHasLockStatsHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentBackendHasLockStatsRef))
+#define prevBackendWalUsage \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPgStatPrevBackendWalUsageHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentPgStatPrevBackendWalUsageRef))
+#define pgstat_report_fixed \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPgStatReportFixedHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentPgStatReportFixedRef))
+#define pgStatForceNextFlush \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPgStatForceNextFlushHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentPgStatForceNextFlushRef))
+#define force_stats_snapshot_clear \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentForceStatsSnapshotClearHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentForceStatsSnapshotClearRef))
+#define pgstat_is_initialized \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPgStatIsInitializedHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentPgStatIsInitializedRef))
+#define pgstat_is_shutdown \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPgStatIsShutdownHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentPgStatIsShutdownRef))
+
+#ifndef PgCurrentPgStatXactCommitRef
+extern int *PgCurrentPgStatXactCommitRef(void);
+#endif
+#ifndef PgCurrentPgStatXactRollbackRef
+extern int *PgCurrentPgStatXactRollbackRef(void);
+#endif
+
+#define pgStatXactCommit (*PgCurrentPgStatXactCommitRef())
+#define pgStatXactRollback (*PgCurrentPgStatXactRollbackRef())
 
 /*
  * Variables in pgstat_database.c
  */
 
 /* Updated by pgstat_count_buffer_*_time macros */
-extern PGDLLIMPORT PgStat_Counter pgStatBlockReadTime;
-extern PGDLLIMPORT PgStat_Counter pgStatBlockWriteTime;
+#ifndef PgCurrentPgStatBlockReadTimeRef
+extern PgStat_Counter *PgCurrentPgStatBlockReadTimeRef(void);
+#endif
+#ifndef PgCurrentPgStatBlockWriteTimeRef
+extern PgStat_Counter *PgCurrentPgStatBlockWriteTimeRef(void);
+#endif
+
+#define pgStatBlockReadTime (*PgCurrentPgStatBlockReadTimeRef())
+#define pgStatBlockWriteTime (*PgCurrentPgStatBlockWriteTimeRef())
 
 /*
  * Updated by pgstat_count_conn_*_time macros, called by
  * pgstat_report_activity().
  */
-extern PGDLLIMPORT PgStat_Counter pgStatActiveTime;
-extern PGDLLIMPORT PgStat_Counter pgStatTransactionIdleTime;
+#ifndef PgCurrentPgStatActiveTimeRef
+extern PgStat_Counter *PgCurrentPgStatActiveTimeRef(void);
+#endif
+#ifndef PgCurrentPgStatTransactionIdleTimeRef
+extern PgStat_Counter *PgCurrentPgStatTransactionIdleTimeRef(void);
+#endif
+
+#define pgStatActiveTime (*PgCurrentPgStatActiveTimeRef())
+#define pgStatTransactionIdleTime (*PgCurrentPgStatTransactionIdleTimeRef())
+
+#ifndef PgCurrentPgStatTotalFuncTimeRef
+extern instr_time *PgCurrentPgStatTotalFuncTimeRef(void);
+#endif
+#ifndef PgCurrentPgStatPrevWalUsageRef
+extern WalUsage *PgCurrentPgStatPrevWalUsageRef(void);
+#endif
+
+#define total_func_time (*PgCurrentPgStatTotalFuncTimeRef())
+#define prevWalUsage (*PgCurrentPgStatPrevWalUsageRef())
 
 /* updated by the traffic cop and in errfinish() */
-extern PGDLLIMPORT SessionEndType pgStatSessionEndCause;
+#ifndef PgCurrentPgStatSessionEndCauseRef
+extern SessionEndType *PgCurrentPgStatSessionEndCauseRef(void);
+#endif
+#define pgStatSessionEndCause (*PgCurrentPgStatSessionEndCauseRef())
 
 #endif							/* PGSTAT_H */

@@ -653,7 +653,7 @@ GetConfigOptionValues(const struct config_generic *conf, const char **values)
 	values[7] = config_type_names[conf->vartype];
 
 	/* source */
-	values[8] = GucSource_Names[conf->source];
+	values[8] = GucSource_Names[ConfigOptionSource(conf)];
 
 	/* now get the type specific attributes */
 	switch (conf->vartype)
@@ -675,7 +675,7 @@ GetConfigOptionValues(const struct config_generic *conf, const char **values)
 				values[12] = pstrdup(lconf->boot_val ? "on" : "off");
 
 				/* reset_val */
-				values[13] = pstrdup(lconf->reset_val ? "on" : "off");
+				values[13] = pstrdup(ConfigOptionResetValue(conf)->boolval ? "on" : "off");
 			}
 			break;
 
@@ -699,7 +699,8 @@ GetConfigOptionValues(const struct config_generic *conf, const char **values)
 				values[12] = pstrdup(buffer);
 
 				/* reset_val */
-				snprintf(buffer, sizeof(buffer), "%d", lconf->reset_val);
+				snprintf(buffer, sizeof(buffer), "%d",
+						 ConfigOptionResetValue(conf)->intval);
 				values[13] = pstrdup(buffer);
 			}
 			break;
@@ -724,7 +725,8 @@ GetConfigOptionValues(const struct config_generic *conf, const char **values)
 				values[12] = pstrdup(buffer);
 
 				/* reset_val */
-				snprintf(buffer, sizeof(buffer), "%g", lconf->reset_val);
+				snprintf(buffer, sizeof(buffer), "%g",
+						 ConfigOptionResetValue(conf)->realval);
 				values[13] = pstrdup(buffer);
 			}
 			break;
@@ -749,10 +751,10 @@ GetConfigOptionValues(const struct config_generic *conf, const char **values)
 					values[12] = pstrdup(lconf->boot_val);
 
 				/* reset_val */
-				if (lconf->reset_val == NULL)
+				if (ConfigOptionResetValue(conf)->stringval == NULL)
 					values[13] = NULL;
 				else
-					values[13] = pstrdup(lconf->reset_val);
+					values[13] = pstrdup(ConfigOptionResetValue(conf)->stringval);
 			}
 			break;
 
@@ -781,7 +783,7 @@ GetConfigOptionValues(const struct config_generic *conf, const char **values)
 
 				/* reset_val */
 				values[13] = pstrdup(config_enum_lookup_by_value(conf,
-																 lconf->reset_val));
+																 ConfigOptionResetValue(conf)->enumval));
 			}
 			break;
 
@@ -814,11 +816,11 @@ GetConfigOptionValues(const struct config_generic *conf, const char **values)
 	 * security reasons, we don't show source file/line number for
 	 * insufficiently-privileged users.
 	 */
-	if (conf->source == PGC_S_FILE &&
+	if (ConfigOptionSource(conf) == PGC_S_FILE &&
 		has_privs_of_role(GetUserId(), ROLE_PG_READ_ALL_SETTINGS))
 	{
-		values[14] = conf->sourcefile;
-		snprintf(buffer, sizeof(buffer), "%d", conf->sourceline);
+		values[14] = ConfigOptionSourceFile(conf);
+		snprintf(buffer, sizeof(buffer), "%d", ConfigOptionSourceLine(conf));
 		values[15] = pstrdup(buffer);
 	}
 	else
@@ -827,7 +829,7 @@ GetConfigOptionValues(const struct config_generic *conf, const char **values)
 		values[15] = NULL;
 	}
 
-	values[16] = (conf->status & GUC_PENDING_RESTART) ? "t" : "f";
+	values[16] = ConfigOptionPendingRestart(conf) ? "t" : "f";
 }
 
 /*

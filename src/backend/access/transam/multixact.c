@@ -84,6 +84,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc_hooks.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
@@ -119,8 +120,8 @@ static int	MultiXactOffsetIoErrorDetail(const void *opaque_data);
 static bool MultiXactMemberPagePrecedes(int64 page1, int64 page2);
 static int	MultiXactMemberIoErrorDetail(const void *opaque_data);
 
-static SlruDesc MultiXactOffsetSlruDesc;
-static SlruDesc MultiXactMemberSlruDesc;
+static PG_GLOBAL_RUNTIME SlruDesc MultiXactOffsetSlruDesc;
+static PG_GLOBAL_RUNTIME SlruDesc MultiXactMemberSlruDesc;
 
 #define MultiXactOffsetCtl	(&MultiXactOffsetSlruDesc)
 #define MultiXactMemberCtl	(&MultiXactMemberSlruDesc)
@@ -222,9 +223,9 @@ typedef struct MultiXactStateData
 #define NumVisibleSlots		MaxBackends
 
 /* Pointers to the state data in shared memory */
-static MultiXactStateData *MultiXactState;
-static MultiXactId *OldestMemberMXactId;
-static MultiXactId *OldestVisibleMXactId;
+static PG_GLOBAL_SHMEM MultiXactStateData *MultiXactState;
+static PG_GLOBAL_SHMEM MultiXactId *OldestMemberMXactId;
+static PG_GLOBAL_SHMEM MultiXactId *OldestVisibleMXactId;
 
 static void MultiXactShmemRequest(void *arg);
 static void MultiXactShmemInit(void *arg);
@@ -297,8 +298,9 @@ typedef struct mXactCacheEnt
 } mXactCacheEnt;
 
 #define MAX_CACHE_ENTRIES	256
-static dclist_head MXactCache = DCLIST_STATIC_INIT(MXactCache);
-static MemoryContext MXactContext = NULL;
+#define MXactCache (*PgCurrentMultiXactCacheRef())
+#define MXactCacheInitialized (*PgCurrentMultiXactCacheInitializedRef())
+#define MXactContext (*PgCurrentMultiXactContextRef())
 
 #ifdef MULTIXACT_DEBUG
 #define debug_elog2(a,b) elog(a,b)
@@ -321,6 +323,7 @@ static void RecordNewMultiXact(MultiXactId multi, MultiXactOffset offset,
 static MultiXactId GetNewMultiXactId(int nmembers, MultiXactOffset *offset);
 
 /* MultiXact cache management */
+static void MXactCacheEnsureInitialized(void);
 static int	mxactMemberComparator(const void *arg1, const void *arg2);
 static MultiXactId mXactCacheGetBySet(int nmembers, MultiXactMember *members);
 static int	mXactCacheGetById(MultiXactId multi, MultiXactMember **members);
@@ -1399,6 +1402,20 @@ GetMultiXactIdMembers(MultiXactId multi, MultiXactMember **members,
 }
 
 /*
+ * MXactCacheEnsureInitialized
+ *		Initialize the backend-local cache list on first use.
+ */
+static void
+MXactCacheEnsureInitialized(void)
+{
+	if (!MXactCacheInitialized)
+	{
+		dclist_init(&MXactCache);
+		MXactCacheInitialized = true;
+	}
+}
+
+/*
  * mxactMemberComparator
  *		qsort comparison function for MultiXactMember
  *
@@ -1443,6 +1460,8 @@ mXactCacheGetBySet(int nmembers, MultiXactMember *members)
 	debug_elog3(DEBUG2, "CacheGet: looking for %s",
 				mxid_to_string(InvalidMultiXactId, nmembers, members));
 
+	MXactCacheEnsureInitialized();
+
 	/* sort the array so comparison is easy */
 	qsort(members, nmembers, sizeof(MultiXactMember), mxactMemberComparator);
 
@@ -1484,6 +1503,8 @@ mXactCacheGetById(MultiXactId multi, MultiXactMember **members)
 	dlist_iter	iter;
 
 	debug_elog3(DEBUG2, "CacheGet: looking for %u", multi);
+
+	MXactCacheEnsureInitialized();
 
 	dclist_foreach(iter, &MXactCache)
 	{
@@ -1532,6 +1553,8 @@ mXactCachePut(MultiXactId multi, int nmembers, MultiXactMember *members)
 
 	debug_elog3(DEBUG2, "CachePut: storing %s",
 				mxid_to_string(multi, nmembers, members));
+
+	MXactCacheEnsureInitialized();
 
 	if (MXactContext == NULL)
 	{
@@ -1596,12 +1619,12 @@ mxstatus_to_string(MultiXactStatus status)
 char *
 mxid_to_string(MultiXactId multi, int nmembers, MultiXactMember *members)
 {
-	static char *str = NULL;
+	char	  **strp = PgCurrentMultiXactDebugStringRef();
 	StringInfoData buf;
 	int			i;
 
-	if (str != NULL)
-		pfree(str);
+	if (*strp != NULL)
+		pfree(*strp);
 
 	initStringInfo(&buf);
 
@@ -1613,9 +1636,9 @@ mxid_to_string(MultiXactId multi, int nmembers, MultiXactMember *members)
 						 mxstatus_to_string(members[i].status));
 
 	appendStringInfoChar(&buf, ']');
-	str = MemoryContextStrdup(TopMemoryContext, buf.data);
+	*strp = MemoryContextStrdup(TopMemoryContext, buf.data);
 	pfree(buf.data);
-	return str;
+	return *strp;
 }
 
 /*
@@ -1643,6 +1666,7 @@ AtEOXact_MultiXact(void)
 	 */
 	MXactContext = NULL;
 	dclist_init(&MXactCache);
+	MXactCacheInitialized = true;
 }
 
 /*
@@ -1709,6 +1733,7 @@ PostPrepare_MultiXact(FullTransactionId fxid)
 	 */
 	MXactContext = NULL;
 	dclist_init(&MXactCache);
+	MXactCacheInitialized = true;
 }
 
 /*

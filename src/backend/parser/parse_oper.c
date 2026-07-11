@@ -24,6 +24,7 @@
 #include "parser/parse_func.h"
 #include "parser/parse_oper.h"
 #include "parser/parse_type.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
@@ -971,7 +972,7 @@ make_scalar_array_op(ParseState *pstate, List *opname,
  */
 
 /* The operator cache hashtable */
-static HTAB *OprCacheHash = NULL;
+#define OprCacheHash (*PgCurrentOperatorLookupCacheRef())
 
 
 /*

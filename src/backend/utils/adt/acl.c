@@ -44,6 +44,7 @@
 #include "storage/large_object.h"
 #include "utils/acl.h"
 #include "utils/array.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
 #include "utils/inval.h"
@@ -79,9 +80,9 @@ enum RoleRecurseType
 	ROLERECURSE_PRIVS = 1,		/* recurse through inheritable grants */
 	ROLERECURSE_SETROLE = 2		/* recurse through grants with set_option */
 };
-static Oid	cached_role[] = {InvalidOid, InvalidOid, InvalidOid};
-static List *cached_roles[] = {NIL, NIL, NIL};
-static uint32 cached_db_hash;
+#define cached_role (PgCurrentUserIdentityState()->cached_role)
+#define cached_roles (PgCurrentUserIdentityState()->cached_roles)
+#define cached_db_hash (PgCurrentUserIdentityState()->cached_db_hash)
 
 /*
  * If the list of roles gathered by roles_is_member_of() grows larger than the

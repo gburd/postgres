@@ -67,7 +67,7 @@
 static int	waitlsn_cmp(const pairingheap_node *a, const pairingheap_node *b,
 						void *arg);
 
-struct WaitLSNState *waitLSNState = NULL;
+PG_GLOBAL_SHMEM struct WaitLSNState *waitLSNState = NULL;
 
 static void WaitLSNShmemRequest(void *arg);
 static void WaitLSNShmemInit(void *arg);

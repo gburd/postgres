@@ -49,6 +49,7 @@
 #include "tcop/deparse_utility.h"
 #include "tcop/utility.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/evtcache.h"
 #include "utils/fmgroids.h"
@@ -82,10 +83,7 @@ typedef struct EventTriggerQueryState
 	struct EventTriggerQueryState *previous;
 } EventTriggerQueryState;
 
-static EventTriggerQueryState *currentEventTriggerState = NULL;
-
-/* GUC parameter */
-bool		event_triggers = true;
+#define currentEventTriggerState (*PgCurrentEventTriggerQueryStateRef())
 
 /* Support for dropped objects */
 typedef struct SQLDropObject
@@ -1203,7 +1201,7 @@ EventTriggerBeginCompleteQuery(void)
 	if (!trackDroppedObjectsNeeded())
 		return false;
 
-	cxt = AllocSetContextCreate(TopMemoryContext,
+	cxt = AllocSetContextCreate(PgCurrentEventTriggerMemoryContext(),
 								"event trigger state",
 								ALLOCSET_DEFAULT_SIZES);
 	state = MemoryContextAlloc(cxt, sizeof(EventTriggerQueryState));
@@ -1244,6 +1242,20 @@ EventTriggerEndCompleteQuery(void)
 	MemoryContextDelete(currentEventTriggerState->cxt);
 
 	currentEventTriggerState = prevstate;
+}
+
+void
+EventTriggerResetQueryStateStack(struct EventTriggerQueryState **statep)
+{
+	EventTriggerQueryState *state;
+
+	Assert(statep != NULL);
+
+	while ((state = *statep) != NULL)
+	{
+		*statep = state->previous;
+		MemoryContextDelete(state->cxt);
+	}
 }
 
 /*

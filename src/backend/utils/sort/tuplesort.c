@@ -119,12 +119,10 @@
 #define INITIAL_MEMTUPSIZE Max(1024, \
 	ALLOCSET_SEPARATE_THRESHOLD / sizeof(SortTuple) + 1)
 
-/* GUC variables */
-bool		trace_sort = false;
-
-#ifdef DEBUG_BOUNDED_SORT
-bool		optimize_bounded_sort = true;
-#endif
+/*
+ * Sort GUC state lives in PgSessionSortGUCState.  Public names remain
+ * available through compatibility macros in utils/guc.h.
+ */
 
 
 /*

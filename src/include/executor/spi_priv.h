@@ -19,7 +19,7 @@
 
 #define _SPI_PLAN_MAGIC		569278163
 
-typedef struct
+typedef struct _SPI_connection
 {
 	/* current results */
 	uint64		processed;		/* by Executor */

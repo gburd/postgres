@@ -81,6 +81,7 @@
 #include "storage/lock.h"
 #include "storage/smgr.h"
 #include "utils/array.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/catcache.h"
 #include "utils/datum.h"
@@ -135,19 +136,21 @@ typedef struct relidcacheent
 	Relation	reldesc;
 } RelIdCacheEnt;
 
-static HTAB *RelationIdCache;
+#define RelationIdCache (*PgCurrentRelationIdCacheRef())
 
 /*
- * This flag is false until we have prepared the critical relcache entries
- * that are needed to do indexscans on the tables read by relcache building.
+ * criticalRelcachesBuilt is false until we have prepared the critical
+ * relcache entries that are needed to do indexscans on the tables read by
+ * relcache building.  Storage lives in the current PgSession through the
+ * relcache.h accessor macro.
  */
-bool		criticalRelcachesBuilt = false;
 
 /*
- * This flag is false until we have prepared the critical relcache entries
- * for shared catalogs (which are the tables needed for login).
+ * criticalSharedRelcachesBuilt is false until we have prepared the critical
+ * relcache entries for shared catalogs (which are the tables needed for
+ * login).  Storage lives in the current PgSession through the relcache.h
+ * accessor macro.
  */
-bool		criticalSharedRelcachesBuilt = false;
 
 /*
  * This counter counts relcache inval events received since backend startup
@@ -155,7 +158,9 @@ bool		criticalSharedRelcachesBuilt = false;
  * to detect whether data about to be written by write_relcache_init_file()
  * might already be obsolete.
  */
-static long relcacheInvalsReceived = 0L;
+#define relcacheInvalsReceived (*PgCurrentRelcacheInvalsReceivedRef())
+#define pgclassdesc (*PgCurrentPgClassDescriptorRef())
+#define pgindexdesc (*PgCurrentPgIndexDescriptorRef())
 
 /*
  * in_progress_list is a stack of ongoing RelationBuildDesc() calls.  CREATE
@@ -171,10 +176,6 @@ typedef struct inprogressent
 	bool		invalidated;	/* whether an invalidation arrived for it */
 } InProgressEnt;
 
-static InProgressEnt *in_progress_list;
-static int	in_progress_list_len;
-static int	in_progress_list_maxlen;
-
 /*
  * eoxact_list[] stores the OIDs of relations that (might) need AtEOXact
  * cleanup work.  This list intentionally has limited size; if it overflows,
@@ -185,10 +186,16 @@ static int	in_progress_list_maxlen;
  * EOXactListAdd() does not bother to prevent duplicate list entries, so the
  * cleanup processing must be idempotent.
  */
-#define MAX_EOXACT_LIST 32
-static Oid	eoxact_list[MAX_EOXACT_LIST];
-static int	eoxact_list_len = 0;
-static bool eoxact_list_overflowed = false;
+#define MAX_EOXACT_LIST PG_EXECUTION_RELCACHE_MAX_EOXACT_LIST
+#define in_progress_list (*PgCurrentRelcacheInProgressListRef())
+#define in_progress_list_len (*PgCurrentRelcacheInProgressListLenRef())
+#define in_progress_list_maxlen (*PgCurrentRelcacheInProgressListMaxLenRef())
+#define eoxact_list (PgCurrentRelcacheEOXactList())
+#define eoxact_list_len (*PgCurrentRelcacheEOXactListLenRef())
+#define eoxact_list_overflowed (*PgCurrentRelcacheEOXactListOverflowedRef())
+#define EOXactTupleDescArray (*PgCurrentRelcacheEOXactTupleDescArrayRef())
+#define NextEOXactTupleDescNum (*PgCurrentRelcacheNextEOXactTupleDescNumRef())
+#define EOXactTupleDescArrayLen (*PgCurrentRelcacheEOXactTupleDescArrayLenRef())
 
 #define EOXactListAdd(rel) \
 	do { \
@@ -203,9 +210,6 @@ static bool eoxact_list_overflowed = false;
  * cleanup work.  The array expands as needed; there is no hashtable because
  * we don't need to access individual items except at EOXact.
  */
-static TupleDesc *EOXactTupleDescArray;
-static int	NextEOXactTupleDescNum = 0;
-static int	EOXactTupleDescArrayLen = 0;
 
 /*
  *		macros to manipulate the lookup hashtable
@@ -272,7 +276,7 @@ typedef struct opclasscacheent
 	RegProcedure *supportProcs; /* OIDs of support procedures */
 } OpClassCacheEnt;
 
-static HTAB *OpClassCache = NULL;
+#define OpClassCache (*PgCurrentOpClassCacheRef())
 
 
 /* non-export function prototypes */
@@ -294,6 +298,8 @@ static void AtEOXact_cleanup(Relation relation, bool isCommit);
 static void AtEOSubXact_cleanup(Relation relation, bool isCommit,
 								SubTransactionId mySubid, SubTransactionId parentSubid);
 static bool load_relcache_init_file(bool shared);
+static bool load_relcache_init_file_lazy_skip_entry(FILE *fp,
+													const FormData_pg_class *relform);
 static void write_relcache_init_file(bool shared);
 static void write_item(const void *data, Size len, FILE *fp);
 
@@ -1681,8 +1687,10 @@ LookupOpclassInfo(Oid operatorClassOid,
 
 		ctl.keysize = sizeof(Oid);
 		ctl.entrysize = sizeof(OpClassCacheEnt);
+		ctl.hcxt = CacheMemoryContext;
 		OpClassCache = hash_create("Operator class cache", 64,
-								   &ctl, HASH_ELEM | HASH_BLOBS);
+								   &ctl,
+								   HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 	}
 
 	opcentry = (OpClassCacheEnt *) hash_search(OpClassCache,
@@ -2048,6 +2056,158 @@ formrdesc(const char *relationName, Oid relationReltype,
 
 	/* It's fully valid */
 	relation->rd_isvalid = true;
+}
+
+static void
+PgRelCacheAddContextMemory(MemoryContext context,
+						   MemoryContextCounters *counters)
+{
+	MemoryContextCounters local;
+
+	if (context == NULL)
+		return;
+
+	MemSet(&local, 0, sizeof(local));
+	MemoryContextMemConsumed(context, &local);
+	counters->nblocks += local.nblocks;
+	counters->freechunks += local.freechunks;
+	counters->totalspace += local.totalspace;
+	counters->freespace += local.freespace;
+}
+
+static Size
+PgRelCacheTupleConstrBytes(TupleDesc tupdesc)
+{
+	TupleConstr *constr;
+	Size		total = 0;
+
+	if (tupdesc == NULL || tupdesc->constr == NULL)
+		return 0;
+
+	constr = tupdesc->constr;
+	total += MAXALIGN(sizeof(TupleConstr));
+
+	if (constr->defval != NULL && constr->num_defval > 0)
+	{
+		total += MAXALIGN(constr->num_defval * sizeof(AttrDefault));
+		for (int i = 0; i < constr->num_defval; i++)
+		{
+			if (constr->defval[i].adbin != NULL)
+				total += MAXALIGN(strlen(constr->defval[i].adbin) + 1);
+		}
+	}
+
+	if (constr->check != NULL && constr->num_check > 0)
+	{
+		total += MAXALIGN(constr->num_check * sizeof(ConstrCheck));
+		for (int i = 0; i < constr->num_check; i++)
+		{
+			if (constr->check[i].ccname != NULL)
+				total += MAXALIGN(strlen(constr->check[i].ccname) + 1);
+			if (constr->check[i].ccbin != NULL)
+				total += MAXALIGN(strlen(constr->check[i].ccbin) + 1);
+		}
+	}
+
+	if (constr->missing != NULL)
+	{
+		total += MAXALIGN(tupdesc->natts * sizeof(AttrMissing));
+		for (int i = 0; i < tupdesc->natts; i++)
+		{
+			CompactAttribute *attr;
+
+			if (!constr->missing[i].am_present)
+				continue;
+
+			attr = TupleDescCompactAttr(tupdesc, i);
+			if (!attr->attbyval)
+				total += MAXALIGN(datumGetSize(constr->missing[i].am_value,
+											   false,
+											   attr->attlen));
+		}
+	}
+
+	return total;
+}
+
+void
+PgRelCacheCollectMemoryStats(PgRelCacheMemoryStatsCallback callback, void *arg)
+{
+	HASH_SEQ_STATUS status;
+	RelIdCacheEnt *idhentry;
+
+	if (callback == NULL || RelationIdCache == NULL)
+		return;
+
+	hash_seq_init(&status, RelationIdCache);
+	while ((idhentry = (RelIdCacheEnt *) hash_seq_search(&status)) != NULL)
+	{
+		Relation	relation = idhentry->reldesc;
+		PgRelCacheMemoryStats stats;
+		MemoryContextCounters private_contexts;
+
+		if (relation == NULL)
+			continue;
+
+		MemSet(&stats, 0, sizeof(stats));
+		MemSet(&private_contexts, 0, sizeof(private_contexts));
+		stats.reloid = RelationGetRelid(relation);
+		stats.relname = RelationGetRelationName(relation);
+		stats.isvalid = relation->rd_isvalid;
+		stats.isnailed = relation->rd_isnailed;
+		stats.islocaltemp = relation->rd_islocaltemp;
+		stats.refcnt = relation->rd_refcnt;
+		stats.relation_data_bytes = MAXALIGN(sizeof(RelationData));
+		if (relation->rd_rel != NULL)
+			stats.class_tuple_bytes = MAXALIGN(CLASS_TUPLE_SIZE);
+		if (relation->rd_att != NULL)
+		{
+			stats.tuple_desc_bytes = MAXALIGN(TupleDescSize(relation->rd_att));
+			stats.tuple_constr_bytes =
+				PgRelCacheTupleConstrBytes(relation->rd_att);
+		}
+		if (relation->rd_indextuple != NULL)
+			stats.index_tuple_bytes =
+				MAXALIGN(HEAPTUPLESIZE + relation->rd_indextuple->t_len);
+		if (relation->rd_options != NULL)
+			stats.options_bytes = MAXALIGN(VARSIZE(relation->rd_options));
+		if (relation->rd_pubdesc != NULL)
+			stats.pubdesc_bytes = MAXALIGN(sizeof(PublicationDesc));
+		stats.direct_payload_bytes =
+			stats.relation_data_bytes +
+			stats.class_tuple_bytes +
+			stats.tuple_desc_bytes +
+			stats.tuple_constr_bytes +
+			stats.index_tuple_bytes +
+			stats.options_bytes +
+			stats.pubdesc_bytes;
+
+		stats.has_index_context = relation->rd_indexcxt != NULL;
+		stats.has_rules_context = relation->rd_rulescxt != NULL;
+		stats.has_partition_context =
+			relation->rd_partkeycxt != NULL ||
+			relation->rd_pdcxt != NULL ||
+			relation->rd_pddcxt != NULL ||
+			relation->rd_partcheckcxt != NULL;
+
+		PgRelCacheAddContextMemory(relation->rd_indexcxt, &private_contexts);
+		PgRelCacheAddContextMemory(relation->rd_rulescxt, &private_contexts);
+		if (relation->rd_rsdesc != NULL)
+			PgRelCacheAddContextMemory(relation->rd_rsdesc->rscxt,
+									   &private_contexts);
+		PgRelCacheAddContextMemory(relation->rd_partkeycxt, &private_contexts);
+		PgRelCacheAddContextMemory(relation->rd_pdcxt, &private_contexts);
+		PgRelCacheAddContextMemory(relation->rd_pddcxt, &private_contexts);
+		PgRelCacheAddContextMemory(relation->rd_partcheckcxt,
+								   &private_contexts);
+
+		stats.private_context_total_bytes = private_contexts.totalspace;
+		stats.private_context_free_bytes = private_contexts.freespace;
+		stats.private_context_used_bytes =
+			private_contexts.totalspace - private_contexts.freespace;
+
+		callback(&stats, arg);
+	}
 }
 
 #ifdef USE_ASSERT_CHECKING
@@ -4021,8 +4181,9 @@ RelationCacheInitialize(void)
 	 */
 	ctl.keysize = sizeof(Oid);
 	ctl.entrysize = sizeof(RelIdCacheEnt);
+	ctl.hcxt = CacheMemoryContext;
 	RelationIdCache = hash_create("Relcache by OID", INITRELCACHESIZE,
-								  &ctl, HASH_ELEM | HASH_BLOBS);
+								  &ctl, HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
 	/*
 	 * reserve enough in_progress_list slots for many cases
@@ -4471,8 +4632,6 @@ BuildHardcodedDescriptor(int natts, const FormData_pg_attribute *attrs)
 static TupleDesc
 GetPgClassDescriptor(void)
 {
-	static TupleDesc pgclassdesc = NULL;
-
 	/* Already done? */
 	if (pgclassdesc == NULL)
 		pgclassdesc = BuildHardcodedDescriptor(Natts_pg_class,
@@ -4484,8 +4643,6 @@ GetPgClassDescriptor(void)
 static TupleDesc
 GetPgIndexDescriptor(void)
 {
-	static TupleDesc pgindexdesc = NULL;
-
 	/* Already done? */
 	if (pgindexdesc == NULL)
 		pgindexdesc = BuildHardcodedDescriptor(Natts_pg_index,
@@ -6199,6 +6356,55 @@ errtableconstraint(Relation rel, const char *conname)
  * NOTE: we assume we are already switched into CacheMemoryContext.
  */
 static bool
+load_relcache_init_file_lazy_skip_entry(FILE *fp,
+										const FormData_pg_class *relform)
+{
+	Size		len;
+	int			i;
+
+	for (i = 0; i < relform->relnatts; i++)
+	{
+		if (fread(&len, 1, sizeof(len), fp) != sizeof(len))
+			return false;
+		if (len != ATTRIBUTE_FIXED_PART_SIZE)
+			return false;
+		if (fseek(fp, (long) len, SEEK_CUR) != 0)
+			return false;
+	}
+
+	if (fread(&len, 1, sizeof(len), fp) != sizeof(len))
+		return false;
+	if (fseek(fp, (long) len, SEEK_CUR) != 0)
+		return false;
+
+	if (relform->relkind == RELKIND_INDEX)
+	{
+		if (fread(&len, 1, sizeof(len), fp) != sizeof(len))
+			return false;
+		if (fseek(fp, (long) len, SEEK_CUR) != 0)
+			return false;
+
+		for (i = 0; i < 5; i++)
+		{
+			if (fread(&len, 1, sizeof(len), fp) != sizeof(len))
+				return false;
+			if (fseek(fp, (long) len, SEEK_CUR) != 0)
+				return false;
+		}
+
+		for (i = 0; i < relform->relnatts; i++)
+		{
+			if (fread(&len, 1, sizeof(len), fp) != sizeof(len))
+				return false;
+			if (fseek(fp, (long) len, SEEK_CUR) != 0)
+				return false;
+		}
+	}
+
+	return true;
+}
+
+static bool
 load_relcache_init_file(bool shared)
 {
 	FILE	   *fp;
@@ -6244,7 +6450,9 @@ load_relcache_init_file(bool shared)
 		Size		len;
 		size_t		nread;
 		Relation	rel;
+		RelationData relbuf;
 		Form_pg_class relform;
+		FormData_pg_class relformbuf;
 		bool		has_not_null;
 
 		/* first read the relation descriptor length */
@@ -6260,6 +6468,27 @@ load_relcache_init_file(bool shared)
 		if (len != sizeof(RelationData))
 			goto read_failed;
 
+		/* then, read the Relation structure */
+		if (fread(&relbuf, 1, len, fp) != len)
+			goto read_failed;
+
+		/* next read the relation tuple form */
+		if (fread(&len, 1, sizeof(len), fp) != sizeof(len))
+			goto read_failed;
+		if (len != CLASS_TUPLE_SIZE)
+			goto read_failed;
+		if (fread(&relformbuf, 1, len, fp) != len)
+			goto read_failed;
+
+		if (threaded_lazy_relcache_init_file &&
+			PgRuntimeIsThreadBacked(CurrentPgRuntime) &&
+			!relbuf.rd_isnailed)
+		{
+			if (!load_relcache_init_file_lazy_skip_entry(fp, &relformbuf))
+				goto read_failed;
+			continue;
+		}
+
 		/* allocate another relcache header */
 		if (num_rels >= max_rels)
 		{
@@ -6267,19 +6496,11 @@ load_relcache_init_file(bool shared)
 			rels = (Relation *) repalloc(rels, max_rels * sizeof(Relation));
 		}
 
-		rel = rels[num_rels++] = (Relation) palloc(len);
+		rel = rels[num_rels++] = (Relation) palloc(sizeof(RelationData));
+		memcpy(rel, &relbuf, sizeof(RelationData));
 
-		/* then, read the Relation structure */
-		if (fread(rel, 1, len, fp) != len)
-			goto read_failed;
-
-		/* next read the relation tuple form */
-		if (fread(&len, 1, sizeof(len), fp) != sizeof(len))
-			goto read_failed;
-
-		relform = (Form_pg_class) palloc(len);
-		if (fread(relform, 1, len, fp) != len)
-			goto read_failed;
+		relform = (Form_pg_class) palloc(CLASS_TUPLE_SIZE);
+		memcpy(relform, &relformbuf, CLASS_TUPLE_SIZE);
 
 		rel->rd_rel = relform;
 

@@ -41,6 +41,7 @@
 #include "common/int.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
+#include "utils/backend_runtime.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
 #include "utils/memutils_internal.h"
@@ -155,28 +156,14 @@ static const MemoryContextMethods mcxt_methods[] = {
 #undef BOGUS_MCTX
 
 /*
- * CurrentMemoryContext
- *		Default memory context for allocations.
- */
-MemoryContext CurrentMemoryContext = NULL;
-
-/*
  * Standard top-level contexts. For a description of the purpose of each
  * of these contexts, refer to src/backend/utils/mmgr/README
  */
-MemoryContext TopMemoryContext = NULL;
-MemoryContext ErrorContext = NULL;
-MemoryContext PostmasterContext = NULL;
-MemoryContext CacheMemoryContext = NULL;
-MemoryContext MessageContext = NULL;
-MemoryContext TopTransactionContext = NULL;
-MemoryContext CurTransactionContext = NULL;
-
-/* This is a transient link to the active portal's memory context: */
-MemoryContext PortalContext = NULL;
+PG_GLOBAL_RUNTIME MemoryContext PostmasterContext = NULL;
 
 /* Is memory context logging currently in progress? */
-static bool LogMemoryContextInProgress = false;
+#define LogMemoryContextInProgress \
+	(*PgCurrentLogMemoryContextInProgressRef())
 
 static void MemoryContextDeleteOnly(MemoryContext context);
 static void MemoryContextCallResetCallbacks(MemoryContext context);
@@ -374,7 +361,7 @@ MemoryContextInit(void)
 	 * Not having any other place to point CurrentMemoryContext, make it point
 	 * to TopMemoryContext.  Caller should change this soon!
 	 */
-	CurrentMemoryContext = TopMemoryContext;
+	MemoryContextSwitchTo(TopMemoryContext);
 
 	/*
 	 * Initialize ErrorContext as an AllocSetContext with slow growth rate ---
@@ -1325,7 +1312,7 @@ MemoryContextAllocExtended(MemoryContext context, Size size, int flags)
 void
 HandleLogMemoryContextInterrupt(void)
 {
-	InterruptPending = true;
+	RaiseInterrupt(PG_BACKEND_INTERRUPT_LOG_MEMORY_CONTEXT);
 	LogMemoryContextPending = true;
 	/* latch will be set by procsignal_sigusr1_handler */
 }

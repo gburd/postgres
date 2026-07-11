@@ -47,14 +47,14 @@
 #include "storage/spin.h"
 #include "storage/standby.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/resowner.h"
 
 
 /* GUC variables */
-int			max_locks_per_xact; /* used to set the lock table size */
-bool		log_lock_failures = false;
+PG_GLOBAL_RUNTIME int max_locks_per_xact;	/* used to set the lock table size */
 
 #define NLOCKENTS() \
 	mul_size(max_locks_per_xact, add_size(MaxBackends, max_prepared_xacts))
@@ -108,7 +108,7 @@ static const LOCKMASK LockConflicts[] = {
 };
 
 /* Names of lock modes, for debug printouts */
-static const char *const lock_mode_names[] =
+static PG_GLOBAL_IMMUTABLE const char *const lock_mode_names[] =
 {
 	"INVALID",
 	"AccessShareLock",
@@ -122,7 +122,7 @@ static const char *const lock_mode_names[] =
 };
 
 #ifndef LOCK_DEBUG
-static bool Dummy_trace = false;
+static PG_GLOBAL_RUNTIME bool Dummy_trace = false;
 #endif
 
 static const LockMethodData default_lockmethod = {
@@ -171,12 +171,11 @@ typedef struct TwoPhaseLockRecord
  * our locks to the primary lock table, but it can never be lower than the
  * real value, since only we can acquire locks on our own behalf.
  *
- * XXX Allocate a static array of the maximum size. We could use a pointer
- * and then allocate just the right size to save a couple kB, but then we
- * would have to initialize that, while for the static array that happens
- * automatically. Doesn't seem worth the extra complexity.
+ * Allocate the maximum size once per backend.  Keeping the storage behind
+ * PgBackendLockState lets thread-backed logical backends own distinct fast
+ * path counters while preserving the existing array-style call sites.
  */
-static int	FastPathLocalUseCounts[FP_LOCK_GROUPS_PER_BACKEND_MAX];
+#define FastPathLocalUseCounts (*(int **) PgCurrentFastPathLocalUseCountsRef())
 
 /*
  * Flag to indicate if the relation extension lock is held by this backend.
@@ -191,7 +190,7 @@ static int	FastPathLocalUseCounts[FP_LOCK_GROUPS_PER_BACKEND_MAX];
  * taken for a short duration to extend a particular relation and then
  * released.
  */
-static bool IsRelationExtensionLockHeld PG_USED_FOR_ASSERTS_ONLY = false;
+#define IsRelationExtensionLockHeld (*PgCurrentRelationExtensionLockHeldRef())
 
 /*
  * Number of fast-path locks per backend - size of the arrays in PGPROC.
@@ -202,7 +201,7 @@ static bool IsRelationExtensionLockHeld PG_USED_FOR_ASSERTS_ONLY = false;
  * the best information about expected number of locks per backend we have.
  * See InitializeFastPathLocks() for details.
  */
-int			FastPathLockGroupsPerBackend = 0;
+PG_GLOBAL_RUNTIME int FastPathLockGroupsPerBackend = 0;
 
 /*
  * Macros to calculate the fast-path group and index for a relation.
@@ -312,7 +311,7 @@ typedef struct
 	uint32		count[FAST_PATH_STRONG_LOCK_HASH_PARTITIONS];
 } FastPathStrongRelationLockData;
 
-static FastPathStrongRelationLockData *FastPathStrongRelationLocks;
+static PG_GLOBAL_SHMEM volatile FastPathStrongRelationLockData *FastPathStrongRelationLocks;
 
 static void LockManagerShmemRequest(void *arg);
 static void LockManagerShmemInit(void *arg);
@@ -329,15 +328,15 @@ const ShmemCallbacks LockManagerShmemCallbacks = {
  * The LockMethodLockHash and LockMethodProcLockHash hash tables are in
  * shared memory; LockMethodLocalHash is local to each backend.
  */
-static HTAB *LockMethodLockHash;
-static HTAB *LockMethodProcLockHash;
-static HTAB *LockMethodLocalHash;
+static PG_GLOBAL_SHMEM HTAB *LockMethodLockHash;
+static PG_GLOBAL_SHMEM HTAB *LockMethodProcLockHash;
+#define LockMethodLocalHash (*PgCurrentLockMethodLocalHashRef())
 
 
 /* private state for error cleanup */
-static LOCALLOCK *StrongLockInProgress;
-static LOCALLOCK *awaitedLock;
-static ResourceOwner awaitedOwner;
+#define StrongLockInProgress (*(LOCALLOCK **) PgCurrentStrongLockInProgressRef())
+#define awaitedLock (*(LOCALLOCK **) PgCurrentAwaitedLockRef())
+#define awaitedOwner (*(ResourceOwner *) PgCurrentAwaitedOwnerRef())
 
 
 #ifdef LOCK_DEBUG
@@ -358,13 +357,6 @@ static ResourceOwner awaitedOwner;
  * Define LOCK_DEBUG at compile time to get all these enabled.
  * --------
  */
-
-int			Trace_lock_oidmin = FirstNormalObjectId;
-bool		Trace_locks = false;
-bool		Trace_userlocks = false;
-int			Trace_lock_table = 0;
-bool		Debug_deadlocks = false;
-
 
 inline static bool
 LOCK_DEBUG_ENABLED(const LOCKTAG *tag)
@@ -439,6 +431,7 @@ static void LockRefindAndRelease(LockMethod lockMethodTable, PGPROC *proc,
 								 bool decrement_strong_lock_count);
 static void GetSingleProcBlockerStatusData(PGPROC *blocked_proc,
 										   BlockedProcsData *data);
+static int	LockStatusProcSignalPid(PGPROC *proc);
 
 
 /*
@@ -509,6 +502,17 @@ InitLockManagerAccess(void)
 
 	info.keysize = sizeof(LOCALLOCKTAG);
 	info.entrysize = sizeof(LOCALLOCK);
+
+	if (FastPathLocalUseCounts == NULL)
+	{
+		FastPathLocalUseCounts = MemoryContextAllocZero(TopMemoryContext,
+														sizeof(int) *
+														FP_LOCK_GROUPS_PER_BACKEND_MAX);
+		*PgCurrentFastPathLocalUseCountsOwnedRef() = true;
+	}
+	else
+		MemSet(FastPathLocalUseCounts, 0,
+			   sizeof(int) * FP_LOCK_GROUPS_PER_BACKEND_MAX);
 
 	LockMethodLocalHash = hash_create("LOCALLOCK hash",
 									  16,
@@ -3839,8 +3843,8 @@ GetLockStatusData(void)
 				instance->waitLockMode = NoLock;
 				instance->vxid.procNumber = proc->vxid.procNumber;
 				instance->vxid.localTransactionId = proc->vxid.lxid;
-				instance->pid = proc->pid;
-				instance->leaderPid = proc->pid;
+				instance->pid = LockStatusProcSignalPid(proc);
+				instance->leaderPid = instance->pid;
 				instance->fastpath = true;
 
 				/*
@@ -3874,8 +3878,8 @@ GetLockStatusData(void)
 			instance->waitLockMode = NoLock;
 			instance->vxid.procNumber = proc->vxid.procNumber;
 			instance->vxid.localTransactionId = proc->vxid.lxid;
-			instance->pid = proc->pid;
-			instance->leaderPid = proc->pid;
+			instance->pid = LockStatusProcSignalPid(proc);
+			instance->leaderPid = instance->pid;
 			instance->fastpath = true;
 			instance->waitStart = 0;
 
@@ -3927,8 +3931,8 @@ GetLockStatusData(void)
 			instance->waitLockMode = NoLock;
 		instance->vxid.procNumber = proc->vxid.procNumber;
 		instance->vxid.localTransactionId = proc->vxid.lxid;
-		instance->pid = proc->pid;
-		instance->leaderPid = proclock->groupLeader->pid;
+		instance->pid = LockStatusProcSignalPid(proc);
+		instance->leaderPid = LockStatusProcSignalPid(proclock->groupLeader);
 		instance->fastpath = false;
 		instance->waitStart = (TimestampTz) pg_atomic_read_u64(&proc->waitStart);
 
@@ -3948,6 +3952,25 @@ GetLockStatusData(void)
 	Assert(el == data->nelements);
 
 	return data;
+}
+
+/*
+ * Return the SQL-visible backend identifier for a PGPROC.
+ *
+ * Process-mode backends expose their OS pid. Threaded backends share the
+ * postmaster process pid, so SQL-facing views and functions expose their
+ * logical backend id instead.
+ */
+static int
+LockStatusProcSignalPid(PGPROC *proc)
+{
+	if (proc->pid == 0)
+		return 0;
+
+	if (proc->pid == PostmasterPid && proc->backendId != 0)
+		return (int) proc->backendId;
+
+	return proc->pid;
 }
 
 /*
@@ -4007,7 +4030,7 @@ GetBlockerStatusData(int blocked_pid)
 	 */
 	LWLockAcquire(ProcArrayLock, LW_SHARED);
 
-	proc = BackendPidGetProcWithLock(blocked_pid);
+	proc = BackendSignalPidGetProcWithLock(blocked_pid);
 
 	/* Nothing to do if it's gone */
 	if (proc != NULL)
@@ -4069,7 +4092,7 @@ GetSingleProcBlockerStatusData(PGPROC *blocked_proc, BlockedProcsData *data)
 
 	/* Set up a procs[] element */
 	bproc = &data->procs[data->nprocs++];
-	bproc->pid = blocked_proc->pid;
+	bproc->pid = LockStatusProcSignalPid(blocked_proc);
 	bproc->first_lock = data->nlocks;
 	bproc->first_waiter = data->npids;
 
@@ -4103,8 +4126,8 @@ GetSingleProcBlockerStatusData(PGPROC *blocked_proc, BlockedProcsData *data)
 			instance->waitLockMode = NoLock;
 		instance->vxid.procNumber = proc->vxid.procNumber;
 		instance->vxid.localTransactionId = proc->vxid.lxid;
-		instance->pid = proc->pid;
-		instance->leaderPid = proclock->groupLeader->pid;
+		instance->pid = LockStatusProcSignalPid(proc);
+		instance->leaderPid = LockStatusProcSignalPid(proclock->groupLeader);
 		instance->fastpath = false;
 		data->nlocks++;
 	}
@@ -4128,7 +4151,7 @@ GetSingleProcBlockerStatusData(PGPROC *blocked_proc, BlockedProcsData *data)
 
 		if (queued_proc == blocked_proc)
 			break;
-		data->waiter_pids[data->npids++] = queued_proc->pid;
+		data->waiter_pids[data->npids++] = LockStatusProcSignalPid(queued_proc);
 	}
 
 	bproc->num_locks = data->nlocks - bproc->first_lock;

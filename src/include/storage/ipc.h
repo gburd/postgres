@@ -18,8 +18,32 @@
 #ifndef IPC_H
 #define IPC_H
 
+#include "utils/global_lifetime.h"
+
 typedef void (*pg_on_exit_callback) (int code, Datum arg);
 typedef void (*shmem_startup_hook_type) (void);
+
+#define PG_BACKEND_MAX_ON_EXITS 20
+
+typedef struct PgBackendExitCallback
+{
+	pg_on_exit_callback function;
+	Datum		arg;
+} PgBackendExitCallback;
+
+typedef struct PgBackendExitState
+{
+	PgBackendExitCallback on_proc_exit_list[PG_BACKEND_MAX_ON_EXITS];
+	PgBackendExitCallback on_shmem_exit_list[PG_BACKEND_MAX_ON_EXITS];
+	PgBackendExitCallback before_shmem_exit_list[PG_BACKEND_MAX_ON_EXITS];
+	MemoryContext retained_top_memory_context;
+	int			on_proc_exit_index;
+	int			on_shmem_exit_index;
+	int			before_shmem_exit_index;
+	bool		proc_exit_active;
+	bool		shmem_exit_active;
+	bool		proc_exit_done;
+} PgBackendExitState;
 
 /*----------
  * API for handling cleanup that must occur during either ereport(ERROR)
@@ -62,9 +86,15 @@ typedef void (*shmem_startup_hook_type) (void);
 
 
 /* ipc.c */
-extern PGDLLIMPORT bool proc_exit_inprogress;
-extern PGDLLIMPORT bool shmem_exit_inprogress;
-
+extern PgBackendExitState *PgCurrentBackendExitStateRef(void);
+extern Size PgBackendConsumeRetainedTopMemoryAllocated(void);
+extern void PgBackendInitializeExitState(PgBackendExitState *exit_state);
+extern void PgBackendAdoptEarlyExitState(PgBackendExitState *exit_state);
+extern bool PgBackendExitInProgress(void);
+extern bool PgBackendShmemExitInProgress(void);
+extern void PgBackendExitCleanup(int code);
+pg_noreturn extern void PgBackendExitComplete(int code);
+pg_noreturn extern void PgBackendExit(int code);
 pg_noreturn extern void proc_exit(int code);
 extern void shmem_exit(int code);
 extern void on_proc_exit(pg_on_exit_callback function, Datum arg);
@@ -74,8 +104,13 @@ extern void cancel_before_shmem_exit(pg_on_exit_callback function, Datum arg);
 extern void on_exit_reset(void);
 extern void check_on_shmem_exit_lists_are_empty(void);
 
+#define proc_exit_inprogress \
+	(PgCurrentBackendExitStateRef()->proc_exit_active)
+#define shmem_exit_inprogress \
+	(PgCurrentBackendExitStateRef()->shmem_exit_active)
+
 /* ipci.c */
-extern PGDLLIMPORT shmem_startup_hook_type shmem_startup_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME shmem_startup_hook_type shmem_startup_hook;
 
 extern void RegisterBuiltinShmemCallbacks(void);
 extern Size CalculateShmemSize(void);

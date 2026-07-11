@@ -22,12 +22,17 @@
 #include "replication/walsender.h"
 #include "storage/condition_variable.h"
 #include "storage/spin.h"
+#include "utils/global_lifetime.h"
 #include "utils/tuplestore.h"
 
 /* user-settable parameters */
-extern PGDLLIMPORT int wal_receiver_status_interval;
-extern PGDLLIMPORT int wal_receiver_timeout;
-extern PGDLLIMPORT bool hot_standby_feedback;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int wal_receiver_status_interval;
+#ifndef PgCurrentWalReceiverTimeoutRef
+extern int *PgCurrentWalReceiverTimeoutRef(void);
+#endif
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool hot_standby_feedback;
+
+#define wal_receiver_timeout (*PgCurrentWalReceiverTimeoutRef())
 
 /*
  * MAXCONNINFO: maximum size of a connection string.
@@ -67,6 +72,7 @@ typedef struct
 	 */
 	ProcNumber	procno;
 	pid_t		pid;
+	bool		threaded;
 
 	/* Its current state */
 	WalRcvState walRcvState;
@@ -163,7 +169,7 @@ typedef struct
 	sig_atomic_t apply_reply_requested; /* used as a bool */
 } WalRcvData;
 
-extern PGDLLIMPORT WalRcvData *WalRcv;
+extern PGDLLIMPORT PG_GLOBAL_SHMEM WalRcvData *WalRcv;
 
 typedef struct
 {
@@ -434,7 +440,7 @@ typedef struct WalReceiverFunctionsType
 	walrcv_disconnect_fn walrcv_disconnect;
 } WalReceiverFunctionsType;
 
-extern PGDLLIMPORT WalReceiverFunctionsType *WalReceiverFunctions;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME WalReceiverFunctionsType *WalReceiverFunctions;
 
 #define walrcv_connect(conninfo, replication, logical, must_use_password, appname, err) \
 	WalReceiverFunctions->walrcv_connect(conninfo, replication, logical, must_use_password, appname, err)

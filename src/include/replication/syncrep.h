@@ -14,6 +14,7 @@
 #define _SYNCREP_H
 
 #include "access/xlogdefs.h"
+#include "utils/global_lifetime.h"
 
 #define SyncRepRequested() \
 	(max_wal_senders > 0 && synchronous_commit > SYNCHRONOUS_COMMIT_LOCAL_FLUSH)
@@ -71,10 +72,10 @@ typedef struct SyncRepConfigData
 	char		member_names[FLEXIBLE_ARRAY_MEMBER];
 } SyncRepConfigData;
 
-extern PGDLLIMPORT SyncRepConfigData *SyncRepConfig;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME SyncRepConfigData *SyncRepConfig;
 
 /* user-settable parameters for synchronous replication */
-extern PGDLLIMPORT char *SyncRepStandbyNames;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *SyncRepStandbyNames;
 
 /* called by user backend */
 extern void SyncRepWaitForLSN(XLogRecPtr lsn, bool commit);

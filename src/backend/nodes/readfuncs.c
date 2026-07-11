@@ -28,6 +28,13 @@
 
 #include "miscadmin.h"
 #include "nodes/bitmapset.h"
+/*
+ * xtc-carrier: pull in backend_runtime.h (which defines struct
+ * PgExecutionNodeIOState) before readfuncs.h aliases restore_location_fields
+ * to an accessor.  Otherwise the later transitive include of backend_runtime.h
+ * expands the object-macro inside the struct field declaration.
+ */
+#include "utils/backend_runtime.h"
 #include "nodes/readfuncs.h"
 
 

@@ -16,9 +16,10 @@
 #include "access/xlogdefs.h"
 #include "access/xlogreader.h"
 #include "access/xlogrecord.h"
+#include "utils/global_lifetime.h"
 
 /* GUCs */
-extern PGDLLIMPORT int recovery_prefetch;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int recovery_prefetch;
 
 /* Possible values for recovery_prefetch */
 typedef enum

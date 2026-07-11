@@ -12,10 +12,12 @@
 #ifndef _ARCHIVE_MODULE_H
 #define _ARCHIVE_MODULE_H
 
+#include "utils/global_lifetime.h"
+
 /*
  * The value of the archive_library GUC.
  */
-extern PGDLLIMPORT char *XLogArchiveLibrary;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *XLogArchiveLibrary;
 
 typedef struct ArchiveModuleState
 {
@@ -58,7 +60,11 @@ extern PGDLLEXPORT const ArchiveModuleCallbacks *_PG_archive_module_init(void);
 
 /* Support for messages reported from archive module callbacks. */
 
-extern PGDLLIMPORT char *arch_module_check_errdetail_string;
+#ifndef PgCurrentArchModuleCheckErrdetailStringRef
+extern PGDLLIMPORT char **PgCurrentArchModuleCheckErrdetailStringRef(void);
+#endif
+#define arch_module_check_errdetail_string \
+	(*PgCurrentArchModuleCheckErrdetailStringRef())
 
 #define arch_module_check_errdetail \
 	pre_format_elog_string(errno, TEXTDOMAIN), \

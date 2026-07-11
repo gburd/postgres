@@ -16,12 +16,13 @@
 
 #include "nodes/bitmapset.h"
 #include "nodes/pathnodes.h"
+#include "utils/global_lifetime.h"
 
 /* Hook for plugins to get control in build_simple_rel() */
 typedef void (*build_simple_rel_hook_type) (PlannerInfo *root,
 											RelOptInfo *rel,
 											RangeTblEntry *rte);
-extern PGDLLIMPORT build_simple_rel_hook_type build_simple_rel_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME build_simple_rel_hook_type build_simple_rel_hook;
 
 /*
  * Everything in subpaths or partial_subpaths will become part of the
@@ -45,7 +46,7 @@ typedef void (*joinrel_setup_hook_type) (PlannerInfo *root,
 										 RelOptInfo *inner_rel,
 										 SpecialJoinInfo *sjinfo,
 										 List *restrictlist);
-extern PGDLLIMPORT joinrel_setup_hook_type joinrel_setup_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME joinrel_setup_hook_type joinrel_setup_hook;
 
 /*
  * prototypes for pathnode.c

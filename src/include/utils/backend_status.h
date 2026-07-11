@@ -11,6 +11,7 @@
 #define BACKEND_STATUS_H
 
 #include "datatype/timestamp.h"
+#include "utils/global_lifetime.h"
 #include "libpq/pqcomm.h"
 #include "miscadmin.h"			/* for BackendType */
 #include "storage/procnumber.h"
@@ -287,15 +288,25 @@ typedef struct LocalPgBackendStatus
  * GUC parameters
  * ----------
  */
-extern PGDLLIMPORT bool pgstat_track_activities;
-extern PGDLLIMPORT int pgstat_track_activity_query_size;
+#ifndef PgCurrentPgStatTrackActivitiesRef
+extern bool *PgCurrentPgStatTrackActivitiesRef(void);
+#endif
+#define pgstat_track_activities \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentPgStatTrackActivitiesHotRef, \
+									   CurrentPgSession, \
+									   PgCurrentPgStatTrackActivitiesRef))
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pgstat_track_activity_query_size;
 
 
 /* ----------
  * Other global variables
  * ----------
  */
-extern PGDLLIMPORT PgBackendStatus *MyBEEntry;
+extern PgBackendStatus **(PgCurrentMyBEEntryRef) (void);
+#define MyBEEntry \
+	(*PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentMyBEEntryHotRef, \
+									   CurrentPgBackend, \
+									   PgCurrentMyBEEntryRef))
 
 
 /* ----------
@@ -307,6 +318,7 @@ extern PGDLLIMPORT PgBackendStatus *MyBEEntry;
 extern void pgstat_beinit(void);
 extern void pgstat_bestart_initial(void);
 extern void pgstat_bestart_security(void);
+extern void pgstat_bestart_final_status(void);
 extern void pgstat_bestart_final(void);
 
 extern void pgstat_clear_backend_activity_snapshot(void);

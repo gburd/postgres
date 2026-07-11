@@ -27,6 +27,7 @@
 #include "storage/block.h"
 #include "storage/checksum.h"
 #include "storage/relfilelocator.h"
+#include "utils/global_lifetime.h"
 
 
 /*
@@ -361,7 +362,7 @@ typedef struct RmgrData
 							  struct XLogRecordBuffer *buf);
 } RmgrData;
 
-extern PGDLLIMPORT RmgrData RmgrTable[];
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME RmgrData RmgrTable[];
 extern void RmgrStartup(void);
 extern void RmgrCleanup(void);
 extern void RmgrNotFound(RmgrId rmid);
@@ -399,9 +400,9 @@ extern void XLogRecGetBlockRefInfo(XLogReaderState *record, bool pretty,
  * Exported for the functions in timeline.c and xlogarchive.c.  Only valid
  * in the startup process.
  */
-extern PGDLLIMPORT bool ArchiveRecoveryRequested;
-extern PGDLLIMPORT bool InArchiveRecovery;
-extern PGDLLIMPORT bool StandbyMode;
-extern PGDLLIMPORT char *recoveryRestoreCommand;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool ArchiveRecoveryRequested;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool InArchiveRecovery;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool StandbyMode;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *recoveryRestoreCommand;
 
 #endif							/* XLOG_INTERNAL_H */

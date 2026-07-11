@@ -30,8 +30,10 @@
 #endif
 
 
-/* process-wide state vector */
-pg_prng_state pg_global_prng_state;
+/* frontend default state vector; backend builds route this through PgBackend */
+#ifdef FRONTEND
+PG_GLOBAL_RUNTIME pg_prng_state pg_global_prng_state;
+#endif
 
 
 /*

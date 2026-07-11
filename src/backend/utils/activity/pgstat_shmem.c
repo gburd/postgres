@@ -15,6 +15,7 @@
 #include "pgstat.h"
 #include "storage/shmem.h"
 #include "storage/subsystems.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/pgstat_internal.h"
 
@@ -43,6 +44,13 @@ typedef struct PgStat_EntryRefHashEntry
 #define SH_DEFINE
 #define SH_DECLARE
 #include "lib/simplehash.h"
+
+static pgstat_entry_ref_hash_hash **PgCurrentPgStatEntryRefHashTypedRef(void);
+
+#define pgStatEntryRefHash (*PgCurrentPgStatEntryRefHashTypedRef())
+#define pgStatSharedRefAge (*PgCurrentPgStatSharedRefAgeRef())
+#define pgStatSharedRefContext (*PgCurrentPgStatSharedRefContextRef())
+#define pgStatEntryRefHashContext (*PgCurrentPgStatEntryRefHashContextRef())
 
 
 static void pgstat_drop_database_and_contents(Oid dboid);
@@ -78,25 +86,18 @@ static const dshash_parameters dsh_params = {
 
 
 /*
- * Backend local references to shared stats entries. If there are pending
- * updates to a stats entry, the PgStat_EntryRef is added to the pgStatPending
- * list.
- *
- * When a stats entry is dropped each backend needs to release its reference
- * to it before the memory can be released. To trigger that
- * pgStatLocal.shmem->gc_request_count is incremented - which each backend
- * compares to their copy of pgStatSharedRefAge on a regular basis.
+ * Process-wide anchor for the shared stats control block.  pgStatLocal is
+ * backend-local, so thread-backed backends cannot rely on the postmaster's
+ * pgStatLocal.shmem value being visible in their TLS state.
  */
-static pgstat_entry_ref_hash_hash *pgStatEntryRefHash = NULL;
-static int	pgStatSharedRefAge = 0; /* cache age of pgStatLocal.shmem */
+static PG_GLOBAL_SHMEM PgStat_ShmemControl *pgStatSharedShmem = NULL;
 
-/*
- * Memory contexts containing the pgStatEntryRefHash table and the
- * pgStatSharedRef entries respectively. Kept separate to make it easier to
- * track / attribute memory usage.
- */
-static MemoryContext pgStatSharedRefContext = NULL;
-static MemoryContext pgStatEntryRefHashContext = NULL;
+
+static pgstat_entry_ref_hash_hash **
+PgCurrentPgStatEntryRefHashTypedRef(void)
+{
+	return (pgstat_entry_ref_hash_hash **) PgCurrentPgStatEntryRefHashRef();
+}
 
 
 /* ------------------------------------------------------------
@@ -164,7 +165,7 @@ StatsShmemRequest(void *arg)
 {
 	ShmemRequestStruct(.name = "Shared Memory Stats",
 					   .size = StatsShmemSize(),
-					   .ptr = (void **) &pgStatLocal.shmem,
+					   .ptr = (void **) &pgStatSharedShmem,
 		);
 }
 
@@ -176,8 +177,10 @@ StatsShmemInit(void *arg)
 {
 	dsa_area   *dsa;
 	dshash_table *dsh;
-	PgStat_ShmemControl *ctl = pgStatLocal.shmem;
+	PgStat_ShmemControl *ctl = pgStatSharedShmem;
 	char	   *p = (char *) ctl;
+
+	pgStatLocal.shmem = pgStatSharedShmem;
 
 	/* the allocation of pgStatLocal.shmem itself */
 	p += MAXALIGN(sizeof(PgStat_ShmemControl));
@@ -259,6 +262,10 @@ pgstat_attach_shmem(void)
 
 	Assert(pgStatLocal.dsa == NULL);
 
+	if (pgStatLocal.shmem == NULL)
+		pgStatLocal.shmem = pgStatSharedShmem;
+	Assert(pgStatLocal.shmem != NULL);
+
 	/* stats shared memory persists for the backend lifetime */
 	oldcontext = MemoryContextSwitchTo(TopMemoryContext);
 
@@ -271,6 +278,17 @@ pgstat_attach_shmem(void)
 											NULL);
 
 	MemoryContextSwitchTo(oldcontext);
+}
+
+void
+pgstat_ensure_shmem_attached(void)
+{
+	if (pgStatLocal.dsa != NULL)
+		return;
+	if (!pgstat_is_initialized || pgstat_is_shutdown)
+		return;
+
+	pgstat_attach_shmem();
 }
 
 void
@@ -294,6 +312,33 @@ pgstat_detach_shmem(void)
 	dsa_release_in_place(pgStatLocal.shmem->raw_dsa_area);
 
 	pgStatLocal.dsa = NULL;
+}
+
+void
+pgstat_detach_idle_memory(void)
+{
+	if (pgStatLocal.dsa == NULL)
+		return;
+
+	pgstat_detach_shmem();
+}
+
+void
+pgstat_release_shared_ref_memory(void)
+{
+	if (pgStatEntryRefHash != NULL)
+		pgstat_release_all_entry_refs(false);
+
+	if (pgStatEntryRefHashContext != NULL)
+	{
+		MemoryContextDelete(pgStatEntryRefHashContext);
+		pgStatEntryRefHashContext = NULL;
+	}
+	if (pgStatSharedRefContext != NULL)
+	{
+		MemoryContextDelete(pgStatSharedRefContext);
+		pgStatSharedRefContext = NULL;
+	}
 }
 
 
@@ -1202,14 +1247,10 @@ pgstat_reset_entries_of_kind(PgStat_Kind kind, TimestampTz ts)
 static void
 pgstat_setup_memcxt(void)
 {
-	if (unlikely(!pgStatSharedRefContext))
-		pgStatSharedRefContext =
-			AllocSetContextCreate(TopMemoryContext,
-								  "PgStat Shared Ref",
-								  ALLOCSET_SMALL_SIZES);
-	if (unlikely(!pgStatEntryRefHashContext))
-		pgStatEntryRefHashContext =
-			AllocSetContextCreate(TopMemoryContext,
-								  "PgStat Shared Ref Hash",
-								  ALLOCSET_SMALL_SIZES);
+	PgRuntimeGetOwnedMemoryContextWithSizes(&pgStatSharedRefContext,
+											"PgStat Shared Ref",
+											ALLOCSET_SMALL_SIZES);
+	PgRuntimeGetOwnedMemoryContextWithSizes(&pgStatEntryRefHashContext,
+											"PgStat Shared Ref Hash",
+											ALLOCSET_SMALL_SIZES);
 }
