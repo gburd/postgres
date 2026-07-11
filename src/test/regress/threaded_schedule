@@ -1,0 +1,8 @@
+# src/test/regress/threaded_schedule
+#
+# Helper-free threaded regression smoke schedule. Grow this list as threaded
+# core runtime coverage improves. Do not add tests that depend on test_setup or
+# regress.dylib until that regression helper library has been audited and
+# marked for thread-per-session backends.
+
+test: boolean name oid float4 bit txid enum money pg_lsn regproc

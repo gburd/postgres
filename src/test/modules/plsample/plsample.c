@@ -21,12 +21,17 @@
 #include "commands/trigger.h"
 #include "executor/spi.h"
 #include "funcapi.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/fmgrprotos.h"
 #include "utils/lsyscache.h"
 #include "utils/syscache.h"
 
-PG_MODULE_MAGIC;
+PG_MODULE_MAGIC_EXT(
+					.name = "plsample",
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
+);
 
 PG_FUNCTION_INFO_V1(plsample_call_handler);
 
@@ -138,9 +143,13 @@ plsample_func_handler(PG_FUNCTION_ARGS)
 	 * Allocate a context that will hold all the Postgres data for the
 	 * procedure.
 	 */
-	proc_cxt = AllocSetContextCreate(TopMemoryContext,
-									 "PL/Sample function",
-									 ALLOCSET_SMALL_SIZES);
+	proc_cxt = AllocSetContextCreate(
+		PgRuntimeGetOwnedMemoryContextWithSizes(
+			PgCurrentPLsampleMemoryContextRef(),
+			"PL/Sample session",
+			ALLOCSET_DEFAULT_SIZES),
+		"PL/Sample function",
+		ALLOCSET_SMALL_SIZES);
 
 	arg_out_func = (FmgrInfo *) palloc0(fcinfo->nargs * sizeof(FmgrInfo));
 	numargs = get_func_arg_info(pl_tuple, &argtypes, &argnames, &argmodes);
