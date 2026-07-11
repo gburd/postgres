@@ -55,8 +55,6 @@
  * So slock_t uses the traditional convention: 0 == unlocked, 1 == locked,
  * which makes a zero-initialized slock_t a valid, free lock.
  */
-#ifdef USE_STDATOMIC_H
-
 #include "port/atomics.h"
 
 typedef pg_atomic_uint32 slock_t;
@@ -107,29 +105,5 @@ SpinLockRelease(volatile slock_t *lock)
 	atomic_store_explicit(lock, 0, memory_order_release);
 }
 
-#else							/* !USE_STDATOMIC_H */
-
-/* Traditional implementation: unchanged from master. */
-#include "storage/s_lock.h"
-
-static inline void
-SpinLockInit(volatile slock_t *lock)
-{
-	S_INIT_LOCK(lock);
-}
-
-static inline void
-SpinLockAcquire(volatile slock_t *lock)
-{
-	S_LOCK(lock);
-}
-
-static inline void
-SpinLockRelease(volatile slock_t *lock)
-{
-	S_UNLOCK(lock);
-}
-
-#endif							/* USE_STDATOMIC_H */
 
 #endif							/* SPIN_H */
