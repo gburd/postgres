@@ -54,7 +54,7 @@ option('PG_GIT_REVISION', type: 'string', value: 'HEAD',
 
 option('use_stdatomic', type: 'combo',
   choices: ['auto', 'yes', 'no'],
-  value: 'no',
+  value: 'yes',
   description: 'Use C11 stdatomic.h for atomic operations (auto, yes, no)')
 
 
