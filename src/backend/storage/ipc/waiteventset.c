@@ -75,8 +75,14 @@
 #include "storage/pmsignal.h"
 #include "storage/latch.h"
 #include "storage/waiteventset.h"
+#ifdef USE_XTC_CARRIER
+#include "postmaster/pg_xtc_carrier.h"
+#include "xtc_proc.h"					/* xtc_self / xtc_pid_is_none */
+#endif
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
+#include "utils/timeout.h"
 #include "utils/wait_event.h"
 
 /*
@@ -107,8 +113,8 @@
 #if defined(WAIT_USE_POLL) || defined(WAIT_USE_EPOLL)
 #if defined(WAIT_USE_SELF_PIPE) || defined(WAIT_USE_SIGNALFD)
 /* don't overwrite manual choice */
-#elif defined(WAIT_USE_EPOLL) && defined(HAVE_SYS_SIGNALFD_H)
-#define WAIT_USE_SIGNALFD
+#elif defined(WAIT_USE_EPOLL)
+#define WAIT_USE_SELF_PIPE
 #else
 #define WAIT_USE_SELF_PIPE
 #endif
@@ -167,27 +173,37 @@ struct WaitEventSet
 #endif
 };
 
+typedef struct WaitEventSetWaitArgs
+{
+	WaitEventSet *set;
+	long		timeout;
+	WaitEvent  *occurred_events;
+	int			nevents;
+	uint32		wait_event_info;
+} WaitEventSetWaitArgs;
+
 #ifndef WIN32
 /* Are we currently in WaitLatch? The signal handler would like to know. */
-static volatile sig_atomic_t waiting = false;
+#define waiting (*PgCurrentWaitEventWaitingRef())
 #endif
 
 #ifdef WAIT_USE_SIGNALFD
 /* On Linux, we'll receive SIGURG via a signalfd file descriptor. */
-static int	signal_fd = -1;
+#define signal_fd (*PgCurrentWaitEventSignalFdRef())
 #endif
 
 #ifdef WAIT_USE_SELF_PIPE
 /* Read and write ends of the self-pipe */
-static int	selfpipe_readfd = -1;
-static int	selfpipe_writefd = -1;
+#define selfpipe_readfd (*PgCurrentWaitEventSelfPipeReadFdRef())
+#define selfpipe_writefd (*PgCurrentWaitEventSelfPipeWriteFdRef())
 
 /* Process owning the self-pipe --- needed for checking purposes */
-static int	selfpipe_owner_pid = 0;
+#define selfpipe_owner_pid (*PgCurrentWaitEventSelfPipeOwnerPidRef())
 
 /* Private function prototypes */
 static void latch_sigurg_handler(SIGNAL_ARGS);
 static void sendSelfPipeByte(void);
+static void sendSelfPipeByteToFd(int fd);
 #endif
 
 #if defined(WAIT_USE_SELF_PIPE) || defined(WAIT_USE_SIGNALFD)
@@ -206,6 +222,9 @@ static void WaitEventAdjustWin32(WaitEventSet *set, WaitEvent *event);
 
 static inline int WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 										WaitEvent *occurred_events, int nevents);
+static int WaitEventSetWaitInternal(void *callback_arg);
+static bool WaitEventLatchFdNeedsRefresh(WaitEvent *event);
+static void WaitEventRefreshLatchFd(WaitEventSet *set, WaitEvent *event);
 
 /* ResourceOwner support to hold WaitEventSets */
 static void ResOwnerReleaseWaitEventSet(Datum res);
@@ -349,6 +368,46 @@ InitializeWaitEventSupport(void)
 #ifdef WAIT_USE_KQUEUE
 	/* Ignore SIGURG, because we'll receive it via kqueue. */
 	pqsignal(SIGURG, PG_SIG_IGN);
+#endif
+}
+
+/*
+ * Release process-level wait event support owned by the current carrier.
+ *
+ * Backends historically relied on process exit to close these descriptors.
+ * Threaded carriers exit without process exit, so descriptor and fd.c
+ * accounting must be released explicitly at carrier teardown.
+ */
+void
+ShutdownWaitEventSupport(void)
+{
+#ifndef WIN32
+	waiting = false;
+#endif
+
+#ifdef WAIT_USE_SIGNALFD
+	if (signal_fd != -1)
+	{
+		(void) close(signal_fd);
+		signal_fd = -1;
+		ReleaseExternalFD();
+	}
+#endif
+
+#ifdef WAIT_USE_SELF_PIPE
+	if (selfpipe_readfd != -1)
+	{
+		(void) close(selfpipe_readfd);
+		selfpipe_readfd = -1;
+		ReleaseExternalFD();
+	}
+	if (selfpipe_writefd != -1)
+	{
+		(void) close(selfpipe_writefd);
+		selfpipe_writefd = -1;
+		ReleaseExternalFD();
+	}
+	selfpipe_owner_pid = 0;
 #endif
 }
 
@@ -617,6 +676,9 @@ AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd, Latch *latch,
 		event->fd = selfpipe_readfd;
 #elif defined(WAIT_USE_SIGNALFD)
 		event->fd = signal_fd;
+#elif defined(WAIT_USE_KQUEUE)
+		latch->owner_wakeup_fd = set->kqueue_fd;
+		event->fd = PGINVALID_SOCKET;
 #else
 		event->fd = PGINVALID_SOCKET;
 #ifdef WAIT_USE_EPOLL
@@ -656,6 +718,7 @@ void
 ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 {
 	WaitEvent  *event;
+	bool		latch_fd_needs_refresh;
 #if defined(WAIT_USE_KQUEUE)
 	int			old_events;
 #endif
@@ -682,6 +745,8 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 		return;
 	}
 
+	latch_fd_needs_refresh = WaitEventLatchFdNeedsRefresh(event);
+
 	/*
 	 * If neither the event mask nor the associated latch changes, return
 	 * early. That's an important optimization for some sockets, where
@@ -689,7 +754,8 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 	 * waiting on writes.
 	 */
 	if (events == event->events &&
-		(!(event->events & WL_LATCH_SET) || set->latch == latch))
+		(!(event->events & WL_LATCH_SET) || set->latch == latch) &&
+		!latch_fd_needs_refresh)
 		return;
 
 	if (event->events & WL_LATCH_SET && events != event->events)
@@ -703,18 +769,26 @@ ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch)
 		if (latch && latch->owner_pid != MyProcPid)
 			elog(ERROR, "cannot wait on a latch owned by another process");
 		set->latch = latch;
+#if defined(WAIT_USE_KQUEUE)
+		if (latch)
+			latch->owner_wakeup_fd = set->kqueue_fd;
+#endif
 
 		/*
 		 * On Unix, we don't need to modify the kernel object because the
-		 * underlying pipe (if there is one) is the same for all latches so we
-		 * can return immediately.  On Windows, we need to update our array of
-		 * handles, but we leave the old one in place and tolerate spurious
-		 * wakeups if the latch is disabled.
+		 * underlying pipe (if there is one) is the same for all latches in a
+		 * carrier.  A pooled logical backend can move to another carrier,
+		 * though, so refresh the registered latch fd before returning.  On
+		 * Windows, we need to update our array of handles, but we leave the
+		 * old one in place and tolerate spurious wakeups if the latch is
+		 * disabled.
 		 */
 #if defined(WAIT_USE_WIN32)
 		if (!latch)
 			return;
 #else
+		if (latch_fd_needs_refresh)
+			WaitEventRefreshLatchFd(set, event);
 		return;
 #endif
 	}
@@ -870,6 +944,23 @@ WaitEventAdjustKqueueAddLatch(struct kevent *k_ev, WaitEvent *event)
 	AccessWaitEvent(k_ev) = event;
 }
 
+static inline void
+WaitEventAdjustKqueueAddLatchWakeup(struct kevent *k_ev, WaitEvent *event)
+{
+	/*
+	 * Threaded backends in one process cannot reliably target another
+	 * thread's kqueue through the historical process-level SIGURG wakeup.
+	 * Register a user event as a direct wake channel for the wait set that
+	 * owns this latch.
+	 */
+	k_ev->ident = WL_LATCH_SET;
+	k_ev->filter = EVFILT_USER;
+	k_ev->flags = EV_ADD | EV_CLEAR;
+	k_ev->fflags = 0;
+	k_ev->data = 0;
+	AccessWaitEvent(k_ev) = event;
+}
+
 /*
  * old_events is the previous event mask, used to compute what has changed.
  */
@@ -907,6 +998,7 @@ WaitEventAdjustKqueue(WaitEventSet *set, WaitEvent *event, int old_events)
 	{
 		/* We detect latch wakeup using a signal event. */
 		WaitEventAdjustKqueueAddLatch(&k_ev[count++], event);
+		WaitEventAdjustKqueueAddLatchWakeup(&k_ev[count++], event);
 	}
 	else
 	{
@@ -1041,6 +1133,67 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 				 WaitEvent *occurred_events, int nevents,
 				 uint32 wait_event_info)
 {
+	WaitEventSetWaitArgs args;
+
+	args.set = set;
+	args.timeout = timeout;
+	args.occurred_events = occurred_events;
+	args.nevents = nevents;
+	args.wait_event_info = wait_event_info;
+
+#ifndef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
+	return WaitEventSetWaitInternal(&args);
+#else
+	if (likely(!PgBackendShouldPublishWaitCompletion(CurrentPgBackend)))
+		return WaitEventSetWaitInternal(&args);
+	else
+	{
+		PgWaitSpec	wait_spec;
+		uint32		wake_events = 0;
+		pgsocket	wait_socket = PGINVALID_SOCKET;
+		bool		found_wait_socket = false;
+		bool		multiple_wait_sockets = false;
+
+		for (int i = 0; i < set->nevents; i++)
+		{
+			wake_events |= set->events[i].events;
+			if ((set->events[i].events & WL_SOCKET_MASK) != 0 &&
+				set->events[i].fd != PGINVALID_SOCKET)
+			{
+				if (!found_wait_socket)
+				{
+					wait_socket = set->events[i].fd;
+					found_wait_socket = true;
+				}
+				else if (wait_socket != set->events[i].fd)
+					multiple_wait_sockets = true;
+			}
+		}
+		if (multiple_wait_sockets)
+			wait_socket = PGINVALID_SOCKET;
+		if (timeout >= 0)
+			wake_events |= WL_TIMEOUT;
+
+		wait_spec.kind = PG_WAIT_KIND_EVENT_SET;
+		wait_spec.wait_event_info = wait_event_info;
+		wait_spec.wake_events = wake_events;
+		wait_spec.socket = wait_socket;
+		wait_spec.timeout = timeout;
+
+		return PgSuspend(&wait_spec, WaitEventSetWaitInternal, &args);
+	}
+#endif
+}
+
+static int
+WaitEventSetWaitInternal(void *callback_arg)
+{
+	WaitEventSetWaitArgs *args = (WaitEventSetWaitArgs *) callback_arg;
+	WaitEventSet *set = args->set;
+	long		timeout = args->timeout;
+	WaitEvent  *occurred_events = args->occurred_events;
+	int			nevents = args->nevents;
+	uint32		wait_event_info = args->wait_event_info;
 	int			returned_events = 0;
 	instr_time	start_time;
 	instr_time	cur_time;
@@ -1072,6 +1225,8 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 	while (returned_events == 0)
 	{
 		int			rc;
+		long		block_timeout;
+		long		logical_timeout;
 
 		/*
 		 * Check if the latch is set already first.  If so, we either exit
@@ -1133,12 +1288,24 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 			timeout = 0;
 		}
 
+		block_timeout = cur_timeout;
+
+		/*
+		 * Logical backends do not use process SIGALRM for timeout delivery.
+		 * Clamp the kernel sleep to the next backend-local timeout so the
+		 * normal timeout handlers can run while this backend is blocked.
+		 */
+		logical_timeout = get_logical_timeout_delay_ms();
+		if (logical_timeout >= 0 &&
+			(block_timeout < 0 || logical_timeout < block_timeout))
+			block_timeout = logical_timeout;
+
 		/*
 		 * Wait for events using the readiness primitive chosen at the top of
 		 * this file. If -1 is returned, a timeout has occurred, if 0 we have
 		 * to retry, everything >= 1 is the number of returned events.
 		 */
-		rc = WaitEventSetWaitBlock(set, cur_timeout,
+		rc = WaitEventSetWaitBlock(set, block_timeout,
 								   occurred_events, nevents - returned_events);
 
 		if (set->latch &&
@@ -1146,7 +1313,11 @@ WaitEventSetWait(WaitEventSet *set, long timeout,
 			set->latch->maybe_sleeping = false;
 
 		if (rc == -1)
+		{
+			if (logical_timeout >= 0 && process_due_logical_timeouts())
+				continue;
 			break;				/* timeout occurred */
+		}
 		else
 			returned_events += rc;
 
@@ -1189,9 +1360,66 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 	WaitEvent  *cur_event;
 	struct epoll_event *cur_epoll_event;
 
+#ifdef USE_XTC_CARRIER
+	/*
+	 * xtc-carrier: while this backend runs as an xtc fiber, do not block the
+	 * carrier thread in epoll_wait().  The epoll fd is itself pollable: it
+	 * becomes readable when any registered event is ready.  Yield the fiber
+	 * on set->epoll_fd via the xtc loop, then harvest with a non-blocking
+	 * epoll_wait(..., 0).  All event decoding below is reused unchanged.
+	 *
+	 * The latch signalfd and postmaster-death fd are among the registered
+	 * events, so a SetLatch wake (which writes the signalfd) also makes the
+	 * epoll fd readable and unparks the fiber -- no separate latch path
+	 * needed for this single-backend bringup.
+	 */
+	if (xtc_in_backend_fiber || !xtc_pid_is_none(xtc_self()))
+	{
+		int			wl;
+
+		/*
+		 * Record THIS fiber as the wait latch's fiber owner right before
+		 * parking, so a cross-thread SetLatch (e.g. an io worker completing an
+		 * async read on another carrier) can xtc_proc_wake() the parked fiber's
+		 * loop -- the guaranteed cross-thread resume (libxtc >= v1.8.0).
+		 * Capturing here, at the actual park point, is authoritative: xtc_self()
+		 * is the fiber that is about to block on this latch's fd, regardless of
+		 * where/when the latch was OwnLatch'd (OwnLatch at InitProcess can run
+		 * in a context where xtc_self() is not yet the final owner).  Only the
+		 * WL_LATCH_SET latch matters for cross-thread wake.
+		 */
+		if (set->latch != NULL)
+		{
+			xtc_pid_t	self = xtc_self();
+
+			if (!xtc_pid_is_none(self))
+			{
+				set->latch->owner_fiber_valid = true;
+				set->latch->owner_fiber_loop = self.loop_id;
+				set->latch->owner_fiber_local = self.local_id;
+				set->latch->owner_fiber_gen = self.gen;
+			}
+		}
+
+		/* Wait for the epoll fd to become readable (or timeout). */
+		wl = xtc_pg_wait_fd(set->epoll_fd, WL_SOCKET_READABLE,
+							(long) cur_timeout);
+		if (wl & WL_TIMEOUT)
+			return -1;			/* timeout occurred */
+		/* Harvest ready events without blocking. */
+		rc = epoll_wait(set->epoll_fd, set->epoll_ret_events,
+						Min(nevents, set->nevents_space), 0);
+		goto xtc_have_rc;
+	}
+#endif
+
 	/* Sleep */
 	rc = epoll_wait(set->epoll_fd, set->epoll_ret_events,
 					Min(nevents, set->nevents_space), cur_timeout);
+
+#ifdef USE_XTC_CARRIER
+xtc_have_rc:
+#endif
 
 	/* Check return code */
 	if (rc < 0)
@@ -1387,13 +1615,21 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 	{
 		/* kevent's udata points to the associated WaitEvent */
 		cur_event = AccessWaitEvent(cur_kqueue_event);
+		if (cur_event == NULL &&
+			cur_kqueue_event->filter == EVFILT_USER &&
+			cur_kqueue_event->ident == WL_LATCH_SET &&
+			set->latch != NULL)
+			cur_event = &set->events[set->latch_pos];
+		if (cur_event == NULL)
+			continue;
 
 		occurred_events->pos = cur_event->pos;
 		occurred_events->user_data = cur_event->user_data;
 		occurred_events->events = 0;
 
 		if (cur_event->events == WL_LATCH_SET &&
-			cur_kqueue_event->filter == EVFILT_SIGNAL)
+			(cur_kqueue_event->filter == EVFILT_SIGNAL ||
+			 cur_kqueue_event->filter == EVFILT_USER))
 		{
 			if (set->latch && set->latch->maybe_sleeping && set->latch->is_set)
 			{
@@ -1887,6 +2123,56 @@ GetNumRegisteredWaitEvents(WaitEventSet *set)
 	return set->nevents;
 }
 
+static bool
+WaitEventLatchFdNeedsRefresh(WaitEvent *event)
+{
+	if (event->events != WL_LATCH_SET)
+		return false;
+
+#if defined(WAIT_USE_SELF_PIPE)
+	return event->fd != selfpipe_readfd;
+#elif defined(WAIT_USE_SIGNALFD)
+	return event->fd != signal_fd;
+#else
+	return false;
+#endif
+}
+
+static void
+WaitEventRefreshLatchFd(WaitEventSet *set, WaitEvent *event)
+{
+#if defined(WAIT_USE_SELF_PIPE) || defined(WAIT_USE_SIGNALFD)
+	pgsocket	oldfd = event->fd;
+#if defined(WAIT_USE_SELF_PIPE)
+	pgsocket	newfd = selfpipe_readfd;
+#elif defined(WAIT_USE_SIGNALFD)
+	pgsocket	newfd = signal_fd;
+#endif
+
+	if (oldfd == newfd)
+		return;
+
+#if defined(WAIT_USE_EPOLL)
+	{
+		WaitEvent	old_event = *event;
+
+		event->fd = newfd;
+		if (oldfd != PGINVALID_SOCKET)
+			WaitEventAdjustEpoll(set, &old_event, EPOLL_CTL_DEL);
+		WaitEventAdjustEpoll(set, event, EPOLL_CTL_ADD);
+	}
+#elif defined(WAIT_USE_POLL)
+	event->fd = newfd;
+	WaitEventAdjustPoll(set, event);
+#else
+	event->fd = newfd;
+#endif
+#else
+	(void) set;
+	(void) event;
+#endif
+}
+
 #if defined(WAIT_USE_SELF_PIPE)
 
 /*
@@ -1905,11 +2191,17 @@ latch_sigurg_handler(SIGNAL_ARGS)
 static void
 sendSelfPipeByte(void)
 {
+	sendSelfPipeByteToFd(selfpipe_writefd);
+}
+
+static void
+sendSelfPipeByteToFd(int fd)
+{
 	ssize_t		rc;
 	char		dummy = 0;
 
 retry:
-	rc = write(selfpipe_writefd, &dummy, 1);
+	rc = write(fd, &dummy, 1);
 	if (rc < 0)
 	{
 		/* If interrupted by signal, just retry */
@@ -2006,6 +2298,16 @@ ResOwnerReleaseWaitEventSet(Datum res)
 }
 
 #ifndef WIN32
+int
+GetWaitEventSetLatchWakeupFd(void)
+{
+#if defined(WAIT_USE_SELF_PIPE)
+	return selfpipe_writefd;
+#else
+	return -1;
+#endif
+}
+
 /*
  * Wake up my process if it's currently sleeping in WaitEventSetWaitBlock()
  *
@@ -2027,6 +2329,25 @@ WakeupMyProc(void)
 #else
 	if (waiting)
 		kill(MyProcPid, SIGURG);
+#endif
+}
+
+void
+WakeupOtherProcFd(int fd)
+{
+#if defined(WAIT_USE_SELF_PIPE)
+	if (fd >= 0)
+		sendSelfPipeByteToFd(fd);
+#elif defined(WAIT_USE_KQUEUE)
+	if (fd >= 0)
+	{
+		struct kevent k_ev;
+
+		EV_SET(&k_ev, WL_LATCH_SET, EVFILT_USER, 0, NOTE_TRIGGER, 0, NULL);
+		(void) kevent(fd, &k_ev, 1, NULL, 0, NULL);
+	}
+#else
+	(void) fd;
 #endif
 }
 
