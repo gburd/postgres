@@ -133,7 +133,7 @@ __asm__ __volatile__("":::"memory");
 /*
  * Public spin-delay macro for the stdatomic path.
  *
- * The traditional path spells this SPIN_DELAY() (from s_lock.h).  Upstream's
+ * The removed traditional path spelled this SPIN_DELAY().  Upstream's
  * atomics.h used to map pg_spin_delay() to an _impl, but that mapping was
  * removed as unused (commit ae27a41e0c7); define it here so the stdatomic
  * spinlock path, which does use it, has a public entry point.
