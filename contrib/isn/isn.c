@@ -21,11 +21,13 @@
 #include "UPC.h"
 #include "fmgr.h"
 #include "isn.h"
+#include "utils/backend_runtime.h"
 #include "utils/guc.h"
 
 PG_MODULE_MAGIC_EXT(
 					.name = "isn",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
 #ifdef USE_ASSERT_CHECKING
@@ -36,15 +38,31 @@ PG_MODULE_MAGIC_EXT(
 
 #define MAXEAN13LEN 18
 
+#define ISN_SESSION_STATE_KEY "isn.session"
+
 enum isn_type
 {
-	INVALID, ANY, EAN13, ISBN, ISMN, ISSN, UPC
+	ISN_INVALID, ANY, EAN13, ISBN, ISMN, ISSN, UPC
 };
 
 static const char *const isn_names[] = {"EAN13/UPC/ISxN", "EAN13/UPC/ISxN", "EAN13", "ISBN", "ISMN", "ISSN", "UPC"};
 
+typedef struct IsnSessionState
+{
+	bool		weak;
+} IsnSessionState;
+
+static IsnSessionState *
+isn_session_state(void)
+{
+	return (IsnSessionState *)
+		PgSessionEnsureExtensionPrivateState(ISN_SESSION_STATE_KEY,
+											 sizeof(IsnSessionState),
+											 NULL);
+}
+
 /* GUC value */
-static bool g_weak = false;
+#define g_weak (isn_session_state()->weak)
 
 
 /***********************************************************************
@@ -344,7 +362,7 @@ checkdig(char *num, unsigned size)
 static bool
 ean2isn(ean13 ean, bool errorOK, ean13 *result, enum isn_type accept)
 {
-	enum isn_type type = INVALID;
+	enum isn_type type = ISN_INVALID;
 
 	char		buf[MAXEAN13LEN + 1];
 	char	   *aux;
@@ -529,7 +547,7 @@ ean2string(ean13 ean, bool errorOK, char *result, bool shortType)
 {
 	const char *(*TABLE)[2];
 	const unsigned (*TABLE_index)[2];
-	enum isn_type type = INVALID;
+	enum isn_type type = ISN_INVALID;
 
 	char	   *aux;
 	unsigned	digval;
@@ -677,7 +695,7 @@ string2ean(const char *str, struct Node *escontext, ean13 *result,
 	char	   *aux1 = buf + 3; /* leave space for the first part, in case
 								 * it's needed */
 	const char *aux2 = str;
-	enum isn_type type = INVALID;
+	enum isn_type type = ISN_INVALID;
 	unsigned	check = 0,
 				rcheck = (unsigned) -1;
 	unsigned	length = 0;
@@ -696,7 +714,7 @@ string2ean(const char *str, struct Node *escontext, ean13 *result,
 		if (length == 0 && (*aux2 == 'M' || *aux2 == 'm'))
 		{
 			/* only ISMN can be here */
-			if (type != INVALID)
+			if (type != ISN_INVALID)
 				goto eaninvalid;
 			type = ISMN;
 			*aux1++ = 'M';
@@ -705,7 +723,7 @@ string2ean(const char *str, struct Node *escontext, ean13 *result,
 		else if (length == 7 && (digit || *aux2 == 'X' || *aux2 == 'x') && last)
 		{
 			/* only ISSN can be here */
-			if (type != INVALID)
+			if (type != ISN_INVALID)
 				goto eaninvalid;
 			type = ISSN;
 			*aux1++ = pg_ascii_toupper((unsigned char) *aux2);
@@ -714,9 +732,9 @@ string2ean(const char *str, struct Node *escontext, ean13 *result,
 		else if (length == 9 && (digit || *aux2 == 'X' || *aux2 == 'x') && last)
 		{
 			/* only ISBN and ISMN can be here */
-			if (type != INVALID && type != ISMN)
+			if (type != ISN_INVALID && type != ISMN)
 				goto eaninvalid;
-			if (type == INVALID)
+			if (type == ISN_INVALID)
 				type = ISBN;	/* ISMN must start with 'M' */
 			*aux1++ = pg_ascii_toupper((unsigned char) *aux2);
 			length++;
@@ -724,7 +742,7 @@ string2ean(const char *str, struct Node *escontext, ean13 *result,
 		else if (length == 11 && digit && last)
 		{
 			/* only UPC can be here */
-			if (type != INVALID)
+			if (type != ISN_INVALID)
 				goto eaninvalid;
 			type = UPC;
 			*aux1++ = *aux2;
@@ -759,7 +777,7 @@ string2ean(const char *str, struct Node *escontext, ean13 *result,
 	if (length == 13)
 	{
 		/* only EAN13 can be here */
-		if (type != INVALID)
+		if (type != ISN_INVALID)
 			goto eaninvalid;
 		type = EAN13;
 		check = buf[15] - '0';
@@ -782,7 +800,7 @@ string2ean(const char *str, struct Node *escontext, ean13 *result,
 	}
 	else if (length == 8)
 	{
-		if (type != INVALID && type != ISSN)
+		if (type != ISN_INVALID && type != ISSN)
 			goto eaninvalid;
 		type = ISSN;
 		if (buf[10] == 'X')
@@ -793,7 +811,7 @@ string2ean(const char *str, struct Node *escontext, ean13 *result,
 	else
 		goto eaninvalid;
 
-	if (type == INVALID)
+	if (type == ISN_INVALID)
 		goto eaninvalid;
 
 	/* obtain the real check digit value, validate, and convert to ean13: */

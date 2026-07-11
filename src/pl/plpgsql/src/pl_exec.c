@@ -81,15 +81,17 @@
  * is a bit ugly, but it isn't worth doing better, since scenarios like this
  * can't result in indefinite accumulation of state trees.)
  */
-typedef struct SimpleEcontextStackEntry
+struct SimpleEcontextStackEntry
 {
 	ExprContext *stack_econtext;	/* a stacked econtext */
 	SubTransactionId xact_subxid;	/* ID for current subxact */
 	struct SimpleEcontextStackEntry *next;	/* next stack entry up */
-} SimpleEcontextStackEntry;
+};
 
-static EState *shared_simple_eval_estate = NULL;
-static SimpleEcontextStackEntry *simple_econtext_stack = NULL;
+#define shared_simple_eval_estate \
+	(plpgsql_current_session_state()->shared_simple_eval_estate_value)
+#define simple_econtext_stack \
+	(plpgsql_current_session_state()->simple_econtext_stack_value)
 
 /*
  * In addition to the shared simple-eval EState, we have a shared resource
@@ -99,7 +101,8 @@ static SimpleEcontextStackEntry *simple_econtext_stack = NULL;
  * is used over and over.  (DO blocks use their own resowner, in exactly the
  * same way described above for shared_simple_eval_estate.)
  */
-static ResourceOwner shared_simple_eval_resowner = NULL;
+#define shared_simple_eval_resowner \
+	(plpgsql_current_session_state()->shared_simple_eval_resowner_value)
 
 /*
  * Memory management within a plpgsql function generally works with three
@@ -175,8 +178,10 @@ typedef struct					/* cast_hash table entry */
 	LocalTransactionId cast_lxid;
 } plpgsql_CastHashEntry;
 
-static HTAB *cast_expr_hash = NULL;
-static HTAB *shared_cast_hash = NULL;
+#define cast_expr_hash \
+	(plpgsql_current_session_state()->cast_expr_hash_value)
+#define shared_cast_hash \
+	(plpgsql_current_session_state()->shared_cast_hash_value)
 
 /*
  * LOOP_RC_PROCESSING encapsulates common logic for looping statements to
@@ -1383,13 +1388,18 @@ copy_plpgsql_datums(PLpgSQL_execstate *estate,
 				ws_next += MAXALIGN(sizeof(PLpgSQL_rec));
 				break;
 
-			case PLPGSQL_DTYPE_ROW:
 			case PLPGSQL_DTYPE_RECFIELD:
+				outdatum = (PLpgSQL_datum *) ws_next;
+				memcpy(outdatum, indatum, sizeof(PLpgSQL_recfield));
+				((PLpgSQL_recfield *) outdatum)->rectupledescid =
+					INVALID_TUPLEDESC_IDENTIFIER;
+				ws_next += MAXALIGN(sizeof(PLpgSQL_recfield));
+				break;
 
+			case PLPGSQL_DTYPE_ROW:
 				/*
 				 * These datum records are read-only at runtime, so no need to
-				 * copy them (well, RECFIELD contains cached data, but we'd
-				 * just as soon centralize the caching anyway).
+				 * copy them.
 				 */
 				outdatum = indatum;
 				break;
@@ -8807,6 +8817,67 @@ plpgsql_destroy_econtext(PLpgSQL_execstate *estate)
 
 	FreeExprContext(estate->eval_econtext, true);
 	estate->eval_econtext = NULL;
+}
+
+void
+plpgsql_reset_session_state(void *arg)
+{
+	PLpgSQL_session_state *state = (PLpgSQL_session_state *) arg;
+
+	if (state == NULL)
+		state = plpgsql_current_session_state();
+
+	state->simple_econtext_stack_value = NULL;
+	if (state->shared_simple_eval_estate_value != NULL)
+		FreeExecutorState(state->shared_simple_eval_estate_value);
+	state->shared_simple_eval_estate_value = NULL;
+	if (state->shared_simple_eval_resowner_value != NULL)
+		ReleaseAllPlanCacheRefsInOwner(state->shared_simple_eval_resowner_value);
+	state->shared_simple_eval_resowner_value = NULL;
+
+	if (state->cast_expr_hash_value != NULL)
+	{
+		HASH_SEQ_STATUS status;
+		plpgsql_CastExprHashEntry *entry;
+
+		hash_seq_init(&status, state->cast_expr_hash_value);
+		while ((entry = (plpgsql_CastExprHashEntry *) hash_seq_search(&status)) != NULL)
+		{
+			if (entry->cast_cexpr != NULL)
+			{
+				FreeCachedExpression(entry->cast_cexpr);
+				entry->cast_cexpr = NULL;
+			}
+		}
+		hash_destroy(state->cast_expr_hash_value);
+		state->cast_expr_hash_value = NULL;
+	}
+	if (state->shared_cast_hash_value != NULL)
+	{
+		hash_destroy(state->shared_cast_hash_value);
+		state->shared_cast_hash_value = NULL;
+	}
+
+	state->identifier_lookup = IDENTIFIER_LOOKUP_NORMAL;
+	state->variable_conflict = PLPGSQL_RESOLVE_ERROR;
+	state->print_strict_params = false;
+	state->check_asserts = true;
+	state->extra_warnings_string = NULL;
+	state->extra_errors_string = NULL;
+	state->extra_warnings = 0;
+	state->extra_errors = 0;
+	state->check_syntax = false;
+	state->dump_exec_tree = false;
+	state->datums_alloc = 0;
+	state->n_datums = 0;
+	state->datums = NULL;
+	state->datums_last = 0;
+	state->error_funcname = NULL;
+	state->curr_compile = NULL;
+	state->compile_tmp_cxt = NULL;
+	state->plugin_ptr = NULL;
+	state->session_inited = false;
+	state->ns_top = NULL;
 }
 
 /*

@@ -56,6 +56,7 @@
 #include "miscadmin.h"
 #include "parser/scansup.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
@@ -78,6 +79,23 @@ typedef struct remoteConn
 	int			openCursorCount;	/* The number of open cursors */
 	bool		newXactForCursor;	/* Opened a transaction for a cursor */
 } remoteConn;
+
+#define DBLINK_SESSION_STATE_KEY "dblink.session"
+
+typedef struct DblinkSessionState
+{
+	MemoryContext context;
+	remoteConn *persistent_connection;
+	HTAB	   *remote_conn_hash;
+	bool		reset_registered;
+} DblinkSessionState;
+
+typedef struct DblinkRuntimeState
+{
+	uint32		we_connect;
+	uint32		we_get_conn;
+	uint32		we_get_result;
+} DblinkRuntimeState;
 
 typedef struct storeInfo
 {
@@ -139,15 +157,23 @@ static void appendSCRAMKeysInfo(StringInfo buf);
 static bool is_valid_dblink_fdw_option(const PQconninfoOption *options, const char *option,
 									   Oid context);
 static bool dblink_connstr_has_required_scram_options(const char *connstr);
+static MemoryContext dblink_get_context(void);
+static void dblink_reset_session_state(void *arg);
+static DblinkRuntimeState *dblink_runtime_state(void);
+static DblinkSessionState *dblink_session_state(void);
 
-/* Global */
-static remoteConn *pconn = NULL;
-static HTAB *remoteConnHash = NULL;
+/* Session-local state, exposed through compatibility macros. */
+#define dblink_context (dblink_session_state()->context)
+#define pconn (dblink_session_state()->persistent_connection)
+#define remoteConnHash (dblink_session_state()->remote_conn_hash)
+#define dblink_reset_registered (dblink_session_state()->reset_registered)
 
 /* custom wait event values, retrieved from shared memory */
-static uint32 dblink_we_connect = 0;
-static uint32 dblink_we_get_conn = 0;
-static uint32 dblink_we_get_result = 0;
+#define dblink_we_connect (dblink_runtime_state()->we_connect)
+#define dblink_we_get_conn (dblink_runtime_state()->we_get_conn)
+#define dblink_we_get_result (dblink_runtime_state()->we_get_result)
+
+#define DBLINK_RUNTIME_STATE_KEY "dblink.runtime"
 
 /*
  *	Following is hash that holds multiple remote connections.
@@ -270,10 +296,17 @@ dblink_init(void)
 		if (dblink_we_get_result == 0)
 			dblink_we_get_result = WaitEventExtensionNew("DblinkGetResult");
 
-		pconn = (remoteConn *) MemoryContextAlloc(TopMemoryContext, sizeof(remoteConn));
+		pconn = (remoteConn *) MemoryContextAlloc(dblink_get_context(),
+												  sizeof(remoteConn));
 		pconn->conn = NULL;
 		pconn->openCursorCount = 0;
 		pconn->newXactForCursor = false;
+	}
+
+	if (!dblink_reset_registered)
+	{
+		PgSessionRegisterResetCallback(dblink_reset_session_state, NULL);
+		dblink_reset_registered = true;
 	}
 }
 
@@ -2556,9 +2589,39 @@ createConnHash(void)
 
 	ctl.keysize = NAMEDATALEN;
 	ctl.entrysize = sizeof(remoteConnHashEnt);
+	ctl.hcxt = dblink_get_context();
 
 	return hash_create("Remote Con hash", NUMCONN, &ctl,
-					   HASH_ELEM | HASH_STRINGS);
+					   HASH_ELEM | HASH_STRINGS | HASH_CONTEXT);
+}
+
+static MemoryContext
+dblink_get_context(void)
+{
+	if (dblink_context == NULL)
+		dblink_context =
+			PgRuntimeGetOwnedMemoryContext(&dblink_context,
+										   "dblink session");
+
+	return dblink_context;
+}
+
+static DblinkSessionState *
+dblink_session_state(void)
+{
+	return (DblinkSessionState *)
+		PgSessionEnsureExtensionPrivateState(DBLINK_SESSION_STATE_KEY,
+											 sizeof(DblinkSessionState),
+											 NULL);
+}
+
+static DblinkRuntimeState *
+dblink_runtime_state(void)
+{
+	return (DblinkRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(DBLINK_RUNTIME_STATE_KEY,
+											 sizeof(DblinkRuntimeState),
+											 NULL);
 }
 
 static remoteConn *
@@ -2606,6 +2669,37 @@ deleteConnection(const char *name)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("undefined connection name")));
+}
+
+static void
+dblink_reset_session_state(void *arg)
+{
+	HASH_SEQ_STATUS status;
+	remoteConnHashEnt *hentry;
+
+	(void) arg;
+
+	if (pconn != NULL)
+	{
+		if (pconn->conn != NULL)
+			libpqsrv_disconnect(pconn->conn);
+		pfree(pconn);
+		pconn = NULL;
+	}
+
+	if (remoteConnHash != NULL)
+	{
+		hash_seq_init(&status, remoteConnHash);
+		while ((hentry = (remoteConnHashEnt *) hash_seq_search(&status)) != NULL)
+		{
+			if (hentry->rconn.conn != NULL)
+				libpqsrv_disconnect(hentry->rconn.conn);
+		}
+		hash_destroy(remoteConnHash);
+		remoteConnHash = NULL;
+	}
+
+	dblink_reset_registered = false;
 }
 
  /*

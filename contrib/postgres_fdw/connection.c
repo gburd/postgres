@@ -29,6 +29,7 @@
 #include "pgstat.h"
 #include "postgres_fdw.h"
 #include "storage/latch.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/hsearch.h"
 #include "utils/inval.h"
@@ -75,28 +76,45 @@ typedef struct ConnCacheEntry
 	PgFdwConnState state;		/* extra per-connection state */
 } ConnCacheEntry;
 
-/*
- * Connection cache (initialized on first use)
- */
-static HTAB *ConnectionHash = NULL;
-
-/* for assigning cursor numbers and prepared statement numbers */
-static unsigned int cursor_number = 0;
-static unsigned int prep_stmt_number = 0;
-
-/* tracks whether any work is needed in callback functions */
-static bool xact_got_connection = false;
+/* Session-local state, exposed through compatibility macros. */
+#define ConnectionHash (postgres_fdw_session_state()->connection_hash)
+#define cursor_number (postgres_fdw_session_state()->cursor_number)
+#define prep_stmt_number (postgres_fdw_session_state()->prep_stmt_number)
+#define xact_got_connection (postgres_fdw_session_state()->xact_got_connection)
 
 /*
  * tracks the topmost read-only local transaction's nesting level determined
  * by GetTopReadOnlyTransactionNestLevel()
  */
-static int	read_only_level = 0;
+#define read_only_level (postgres_fdw_session_state()->read_only_level)
+#define pgfdw_connection_callbacks_registered \
+	(postgres_fdw_session_state()->connection_callbacks_registered)
+
+typedef struct PostgresFdwRuntimeState
+{
+	uint32		we_cleanup_result;
+	uint32		we_connect;
+	uint32		we_get_result;
+} PostgresFdwRuntimeState;
+
+#define POSTGRES_FDW_RUNTIME_STATE_KEY "postgres_fdw.runtime"
+
+static PostgresFdwRuntimeState *
+postgres_fdw_runtime_state(void)
+{
+	return (PostgresFdwRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(POSTGRES_FDW_RUNTIME_STATE_KEY,
+											 sizeof(PostgresFdwRuntimeState),
+											 NULL);
+}
 
 /* custom wait event values, retrieved from shared memory */
-static uint32 pgfdw_we_cleanup_result = 0;
-static uint32 pgfdw_we_connect = 0;
-static uint32 pgfdw_we_get_result = 0;
+#define pgfdw_we_cleanup_result \
+	(postgres_fdw_runtime_state()->we_cleanup_result)
+#define pgfdw_we_connect \
+	(postgres_fdw_runtime_state()->we_connect)
+#define pgfdw_we_get_result \
+	(postgres_fdw_runtime_state()->we_get_result)
 
 /*
  * Milliseconds to wait to cancel an in-progress query or execute a cleanup
@@ -198,6 +216,7 @@ static void postgres_fdw_get_connections_internal(FunctionCallInfo fcinfo,
 static int	pgfdw_conn_check(PGconn *conn);
 static bool pgfdw_conn_checkable(void);
 static bool pgfdw_has_required_scram_options(const char **keywords, const char **values);
+static void pgfdw_reset_session_connection_state(void *arg);
 
 /*
  * Get a PGconn which can be used to execute queries on the remote PostgreSQL
@@ -235,10 +254,13 @@ GetConnection(UserMapping *user, bool will_prep_stmt, PgFdwConnState **state)
 		ConnectionHash = hash_create("postgres_fdw connections", 8,
 									 &ctl,
 									 HASH_ELEM | HASH_BLOBS);
+	}
 
+	if (!pgfdw_connection_callbacks_registered)
+	{
 		/*
 		 * Register some callback functions that manage connection cleanup.
-		 * This should be done just once in each backend.
+		 * This should be done just once in each session.
 		 */
 		RegisterXactCallback(pgfdw_xact_callback, NULL);
 		RegisterSubXactCallback(pgfdw_subxact_callback, NULL);
@@ -246,6 +268,9 @@ GetConnection(UserMapping *user, bool will_prep_stmt, PgFdwConnState **state)
 									  pgfdw_inval_callback, (Datum) 0);
 		CacheRegisterSyscacheCallback(USERMAPPINGOID,
 									  pgfdw_inval_callback, (Datum) 0);
+		PgSessionRegisterResetCallback(pgfdw_reset_session_connection_state,
+									   NULL);
+		pgfdw_connection_callbacks_registered = true;
 	}
 
 	/* Set flag that we did GetConnection during the current transaction */
@@ -1181,6 +1206,9 @@ pgfdw_xact_callback(XactEvent event, void *arg)
 	if (!xact_got_connection)
 		return;
 
+	if (ConnectionHash == NULL)
+		return;
+
 	/*
 	 * Scan all connection cache entries to find open remote transactions, and
 	 * close them.
@@ -1341,6 +1369,9 @@ pgfdw_subxact_callback(SubXactEvent event, SubTransactionId mySubid,
 	if (!xact_got_connection)
 		return;
 
+	if (ConnectionHash == NULL)
+		return;
+
 	/*
 	 * Scan all connection cache entries to find open remote subtransactions
 	 * of the current level, and close them.
@@ -1447,7 +1478,9 @@ pgfdw_inval_callback(Datum arg, SysCacheIdentifier cacheid, uint32 hashvalue)
 
 	Assert(cacheid == FOREIGNSERVEROID || cacheid == USERMAPPINGOID);
 
-	/* ConnectionHash must exist already, if we're registered */
+	if (ConnectionHash == NULL)
+		return;
+
 	hash_seq_init(&scan, ConnectionHash);
 	while ((entry = (ConnCacheEntry *) hash_seq_search(&scan)))
 	{
@@ -2658,6 +2691,30 @@ disconnect_cached_connections(Oid serverid)
 	}
 
 	return result;
+}
+
+static void
+pgfdw_reset_session_connection_state(void *arg)
+{
+	HASH_SEQ_STATUS scan;
+	ConnCacheEntry *entry;
+
+	(void) arg;
+
+	if (ConnectionHash != NULL)
+	{
+		hash_seq_init(&scan, ConnectionHash);
+		while ((entry = (ConnCacheEntry *) hash_seq_search(&scan)) != NULL)
+			disconnect_pg_server(entry);
+		hash_destroy(ConnectionHash);
+		ConnectionHash = NULL;
+	}
+
+	cursor_number = 0;
+	prep_stmt_number = 0;
+	xact_got_connection = false;
+	read_only_level = 0;
+	pgfdw_connection_callbacks_registered = false;
 }
 
 /*

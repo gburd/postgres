@@ -32,6 +32,7 @@
 #include "postgres.h"
 
 #include "px.h"
+#include "utils/backend_runtime.h"
 
 struct error_desc
 {
@@ -138,7 +139,7 @@ px_resolve_alias(const PX_Alias *list, const char *name)
 	return name;
 }
 
-static void (*debug_handler) (const char *) = NULL;
+#define debug_handler (*PgCurrentPgcryptoDebugHandlerRef())
 
 void
 px_set_debug_handler(void (*handler) (const char *))

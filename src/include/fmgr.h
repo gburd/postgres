@@ -18,6 +18,8 @@
 #ifndef FMGR_H
 #define FMGR_H
 
+#include "utils/global_lifetime.h"
+
 /* We don't want to include primnodes.h here, so make some stub references */
 typedef struct Node Node;
 typedef struct Aggref Aggref;
@@ -27,7 +29,6 @@ typedef void (*ExprContextCallbackFunction) (Datum arg);
 
 /* Likewise, avoid including stringinfo.h here */
 typedef struct StringInfoData *StringInfo;
-
 
 /*
  * All functions that can be called directly by fmgr must have this signature.
@@ -475,6 +476,40 @@ typedef struct
 	char		abi_extra[32];	/* see pg_config_manual.h */
 } Pg_abi_values;
 
+/*
+ * Backend execution models that an extension library declares it supports.
+ *
+ * The values are ordered from least to most reentrant.  A module marked for a
+ * stronger model can be loaded by a weaker runtime model, but not vice versa.
+ */
+typedef enum PgBackendModel
+{
+	PG_BACKEND_MODEL_PROCESS = 0,
+	PG_BACKEND_MODEL_THREAD_PER_SESSION,
+	/*
+	 * Transitional generic marker.  This is intentionally weaker than the
+	 * protocol-boundary promises below; it must not be used as the runtime
+	 * requirement for Phase 15 pooled protocol scheduling.
+	 */
+	PG_BACKEND_MODEL_POOLED_SCHEDULER,
+	PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE,
+	PG_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE,
+	PG_BACKEND_MODEL_TASK_REENTRANT
+} PgBackendModel;
+
+#define PG_MODULE_MAGIC_BACKEND_MODEL_PROCESS \
+	.backend_model = PG_BACKEND_MODEL_PROCESS
+#define PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION \
+	.backend_model = PG_BACKEND_MODEL_THREAD_PER_SESSION
+#define PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_SCHEDULER \
+	.backend_model = PG_BACKEND_MODEL_POOLED_SCHEDULER
+#define PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE \
+	.backend_model = PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
+#define PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE \
+	.backend_model = PG_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE
+#define PG_MODULE_MAGIC_BACKEND_MODEL_TASK_REENTRANT \
+	.backend_model = PG_BACKEND_MODEL_TASK_REENTRANT
+
 /* Definition of the magic block structure */
 typedef struct
 {
@@ -483,6 +518,7 @@ typedef struct
 	/* Remaining fields are zero unless filled via PG_MODULE_MAGIC_EXT */
 	const char *name;			/* optional module name */
 	const char *version;		/* optional module version */
+	PgBackendModel backend_model;	/* supported backend execution model */
 } Pg_magic_struct;
 
 /* Macro to fill the ABI fields */
@@ -498,7 +534,9 @@ typedef struct
 
 /*
  * Macro to fill a magic block.  If any arguments are given, they should
- * be field initializers.
+ * be field initializers.  The default backend model is deliberately
+ * process-only so that existing third-party modules do not opt into threaded
+ * runtimes without an audit.
  */
 #define PG_MODULE_MAGIC_DATA(...) \
 { \
@@ -534,7 +572,8 @@ extern int no_such_variable
  * The additional values should be written as field initializers, for example
  *	PG_MODULE_MAGIC_EXT(
  *		.name = "some string",
- *		.version = "some string"
+ *		.version = "some string",
+ *		PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
  *	);
  */
 #define PG_MODULE_MAGIC_EXT(...) \
@@ -787,7 +826,10 @@ extern bool CheckFunctionValidatorAccess(Oid validatorOid, Oid functionOid);
  */
 typedef struct DynamicFileList DynamicFileList; /* opaque outside dfmgr.c */
 
-extern PGDLLIMPORT char *Dynamic_library_path;
+#ifndef PgCurrentDynamicLibraryPathRef
+extern char **PgCurrentDynamicLibraryPathRef(void);
+#endif
+#define Dynamic_library_path (*PgCurrentDynamicLibraryPathRef())
 
 extern char *substitute_path_macro(const char *str, const char *macro, const char *value);
 extern char *find_in_path(const char *basename, const char *path, const char *path_param,
@@ -796,6 +838,8 @@ extern void *load_external_function(const char *filename, const char *funcname,
 									bool signalNotFound, void **filehandle);
 extern void *lookup_external_function(void *filehandle, const char *funcname);
 extern void load_file(const char *filename, bool restricted);
+extern void check_loaded_modules_backend_model(PgBackendModel
+											   required_backend_model);
 extern DynamicFileList *get_first_loaded_module(void);
 extern DynamicFileList *get_next_loaded_module(DynamicFileList *dfptr);
 extern void get_loaded_module_details(DynamicFileList *dfptr,
@@ -848,8 +892,8 @@ typedef bool (*needs_fmgr_hook_type) (Oid fn_oid);
 typedef void (*fmgr_hook_type) (FmgrHookEventType event,
 								FmgrInfo *flinfo, Datum *arg);
 
-extern PGDLLIMPORT needs_fmgr_hook_type needs_fmgr_hook;
-extern PGDLLIMPORT fmgr_hook_type fmgr_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME needs_fmgr_hook_type needs_fmgr_hook;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME fmgr_hook_type fmgr_hook;
 
 #define FmgrHookIsNeeded(fn_oid)							\
 	(!needs_fmgr_hook ? false : (*needs_fmgr_hook)(fn_oid))

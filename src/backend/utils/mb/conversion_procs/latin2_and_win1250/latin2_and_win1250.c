@@ -17,7 +17,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "latin2_and_win1250",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
 PG_FUNCTION_INFO_V1(latin2_to_win1250);

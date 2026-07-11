@@ -37,19 +37,19 @@
 /*
  * Defaults.
  */
-static int	def_cipher_algo = PGP_SYM_AES_128;
-static int	def_s2k_cipher_algo = -1;
-static int	def_s2k_mode = PGP_S2K_ISALTED;
-static int	def_s2k_count = -1;
-static int	def_s2k_digest_algo = PGP_DIGEST_SHA1;
-static int	def_compress_algo = PGP_COMPR_NONE;
-static int	def_compress_level = 6;
-static int	def_disable_mdc = 0;
-static int	def_use_sess_key = 0;
-static int	def_text_mode = 0;
-static int	def_unicode_mode = 0;
-static int	def_convert_crlf = 0;
-static int	def_ignore_cipher_failure = 0;
+#define PGP_DEF_CIPHER_ALGO		PGP_SYM_AES_128
+#define PGP_DEF_S2K_CIPHER_ALGO	(-1)
+#define PGP_DEF_S2K_MODE		PGP_S2K_ISALTED
+#define PGP_DEF_S2K_COUNT		(-1)
+#define PGP_DEF_S2K_DIGEST_ALGO	PGP_DIGEST_SHA1
+#define PGP_DEF_COMPRESS_ALGO	PGP_COMPR_NONE
+#define PGP_DEF_COMPRESS_LEVEL	6
+#define PGP_DEF_DISABLE_MDC		0
+#define PGP_DEF_USE_SESS_KEY	0
+#define PGP_DEF_TEXT_MODE		0
+#define PGP_DEF_UNICODE_MODE	0
+#define PGP_DEF_CONVERT_CRLF	0
+#define PGP_DEF_IGNORE_CIPHER_FAILURE	0
 
 struct digest_info
 {
@@ -193,19 +193,19 @@ pgp_init(PGP_Context **ctx_p)
 
 	ctx = palloc0(sizeof *ctx);
 
-	ctx->cipher_algo = def_cipher_algo;
-	ctx->s2k_cipher_algo = def_s2k_cipher_algo;
-	ctx->s2k_mode = def_s2k_mode;
-	ctx->s2k_count = def_s2k_count;
-	ctx->s2k_digest_algo = def_s2k_digest_algo;
-	ctx->compress_algo = def_compress_algo;
-	ctx->compress_level = def_compress_level;
-	ctx->disable_mdc = def_disable_mdc;
-	ctx->use_sess_key = def_use_sess_key;
-	ctx->unicode_mode = def_unicode_mode;
-	ctx->convert_crlf = def_convert_crlf;
-	ctx->text_mode = def_text_mode;
-	ctx->ignore_cipher_failure = def_ignore_cipher_failure;
+	ctx->cipher_algo = PGP_DEF_CIPHER_ALGO;
+	ctx->s2k_cipher_algo = PGP_DEF_S2K_CIPHER_ALGO;
+	ctx->s2k_mode = PGP_DEF_S2K_MODE;
+	ctx->s2k_count = PGP_DEF_S2K_COUNT;
+	ctx->s2k_digest_algo = PGP_DEF_S2K_DIGEST_ALGO;
+	ctx->compress_algo = PGP_DEF_COMPRESS_ALGO;
+	ctx->compress_level = PGP_DEF_COMPRESS_LEVEL;
+	ctx->disable_mdc = PGP_DEF_DISABLE_MDC;
+	ctx->use_sess_key = PGP_DEF_USE_SESS_KEY;
+	ctx->unicode_mode = PGP_DEF_UNICODE_MODE;
+	ctx->convert_crlf = PGP_DEF_CONVERT_CRLF;
+	ctx->text_mode = PGP_DEF_TEXT_MODE;
+	ctx->ignore_cipher_failure = PGP_DEF_IGNORE_CIPHER_FAILURE;
 
 	*ctx_p = ctx;
 	return 0;

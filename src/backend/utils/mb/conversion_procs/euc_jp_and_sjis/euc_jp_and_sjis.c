@@ -29,7 +29,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "euc_jp_and_sjis",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
 PG_FUNCTION_INFO_V1(euc_jp_to_sjis);
