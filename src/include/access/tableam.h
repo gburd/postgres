@@ -323,6 +323,31 @@ typedef struct TableAmRoutine
 	/* this must be set to T_TableAmRoutine */
 	NodeTag		type;
 
+	/*
+	 * am_inplace_update_no_dead_tuple: true if an UPDATE on this AM creates
+	 * zero dead tuples (the in-place image is overwritten; there is no old
+	 * version left behind for VACUUM to reclaim).
+	 *
+	 * pgstat's per-table dead-tuple accounting
+	 * (pgstat_relation.c: delta_dead_tuples += tuples_updated + tuples_deleted)
+	 * hardcodes heap's UPDATE-creates-a-dead-tuple semantics for every AM.
+	 * That assumption is wrong for an in-place AM: pgstat_count_heap_update()
+	 * is still called (for the tuples_updated/tuples_hot_updated counters,
+	 * which other stats consume), but the resulting dead-tuple delta must be
+	 * suppressed, or autovacuum's dead-tuple threshold is driven by phantom
+	 * dead tuples that were never created, and n_dead_tup reports a number
+	 * unrelated to any real reclaimable state.
+	 *
+	 * When true, pgstat_count_heap_update() skips the delta_dead_tuples
+	 * increment for non-transactional (committed) updates.  Deletes are
+	 * unaffected by this flag: even an in-place-update AM's DELETE removes a
+	 * tuple that VACUUM must eventually reclaim space for, so tuples_deleted
+	 * still contributes.
+	 *
+	 * The heap AM leaves this false.
+	 */
+	bool		am_inplace_update_no_dead_tuple;
+
 
 	/* ------------------------------------------------------------------------
 	 * Slot related callbacks.

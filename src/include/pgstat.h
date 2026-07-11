@@ -194,12 +194,18 @@ typedef struct PgStat_TableXactStatus
 {
 	PgStat_Counter tuples_inserted; /* tuples inserted in (sub)xact */
 	PgStat_Counter tuples_updated;	/* tuples updated in (sub)xact */
+	PgStat_Counter tuples_updated_no_dead;	/* subset of tuples_updated that
+											 * created no dead tuple (in-place
+											 * update AM; see
+											 * am_inplace_update_no_dead_tuple in
+											 * tableam.h) */
 	PgStat_Counter tuples_deleted;	/* tuples deleted in (sub)xact */
 	bool		truncdropped;	/* relation truncated/dropped in this
 								 * (sub)xact */
 	/* tuples i/u/d prior to truncate/drop */
 	PgStat_Counter inserted_pre_truncdrop;
 	PgStat_Counter updated_pre_truncdrop;
+	PgStat_Counter updated_no_dead_pre_truncdrop;
 	PgStat_Counter deleted_pre_truncdrop;
 	int			nest_level;		/* subtransaction nest level */
 	/* links to other structs for same relation: */
