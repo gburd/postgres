@@ -32,6 +32,71 @@ SELECT get_val_in_hash('test');
 (1 row)
 
 \c
+SELECT reset_dsm_detach_count();
+ reset_dsm_detach_count 
+------------------------
+ 
+(1 row)
+
+SELECT register_dsm_detach_for_backend_exit();
+ register_dsm_detach_for_backend_exit 
+--------------------------------------
+ 
+(1 row)
+
+\c
+SELECT get_dsm_detach_count();
+ get_dsm_detach_count 
+----------------------
+                    1
+(1 row)
+
+\c
+SELECT reset_exit_callback_order();
+ reset_exit_callback_order 
+---------------------------
+ 
+(1 row)
+
+SELECT register_exit_callback_order();
+ register_exit_callback_order 
+------------------------------
+ 
+(1 row)
+
+\c
+SELECT get_exit_callback_order();
+ get_exit_callback_order 
+-------------------------
+ before_shmem_2         +
+ before_shmem_1         +
+ dsm_detach             +
+ on_shmem_2             +
+ on_shmem_1             +
+ on_proc_2              +
+ on_proc_1
+(1 row)
+
+\c
+SELECT reset_backend_exit_temp_file_path();
+ reset_backend_exit_temp_file_path 
+-----------------------------------
+ 
+(1 row)
+
+SELECT create_temp_file_for_backend_exit();
+ create_temp_file_for_backend_exit 
+-----------------------------------
+ 
+(1 row)
+
+\c
+SELECT backend_exit_temp_file_removed();
+ backend_exit_temp_file_removed 
+--------------------------------
+ t
+(1 row)
+
 SELECT name, type, size > 0 AS size_ok
 FROM pg_dsm_registry_allocations
 WHERE name like 'test_dsm_registry%' ORDER BY name;
