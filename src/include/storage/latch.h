@@ -102,6 +102,9 @@
 #define LATCH_H
 
 #include <signal.h>
+#ifndef WIN32
+#include <pthread.h>
+#endif
 
 #include "storage/waiteventset.h"	/* for WL_* arguments to WaitLatch */
 #include "utils/wait_classes.h"  /* for backward compatibility */	/* IWYU pragma: keep */
@@ -118,6 +121,27 @@ typedef struct Latch
 	sig_atomic_t maybe_sleeping;
 	bool		is_shared;
 	int			owner_pid;
+#ifndef WIN32
+	int			owner_wakeup_fd;
+	pthread_t	owner_thread;
+	bool		owner_thread_valid;
+#endif
+#ifdef USE_XTC_CARRIER
+	/*
+	 * When the owning logical backend runs as an xtc fiber, these record the
+	 * owner fiber's xtc pid (stored as its three raw fields to avoid leaking
+	 * the libxtc xtc_pid_t type into this widely-included header).  A
+	 * cross-thread SetLatch, after making the fd/self-pipe readable, calls
+	 * xtc_proc_wake() on this fiber to guarantee its carrier loop re-checks --
+	 * closing the cross-thread fd/latch wake miss (libxtc >= v1.8.0).
+	 * owner_fiber_valid is false when no fiber owns the latch (process/thread
+	 * carrier), in which case the fd/thread wake alone is used.
+	 */
+	bool		owner_fiber_valid;
+	uint32		owner_fiber_loop;
+	uint32		owner_fiber_local;
+	uint32		owner_fiber_gen;
+#endif
 #ifdef WIN32
 	HANDLE		event;
 #endif
@@ -129,6 +153,7 @@ typedef struct Latch
 extern void InitLatch(Latch *latch);
 extern void InitSharedLatch(Latch *latch);
 extern void OwnLatch(Latch *latch);
+extern void ReownLatchCurrentThread(Latch *latch);
 extern void DisownLatch(Latch *latch);
 extern void SetLatch(Latch *latch);
 extern void ResetLatch(Latch *latch);
@@ -138,5 +163,6 @@ extern int	WaitLatch(Latch *latch, int wakeEvents, long timeout,
 extern int	WaitLatchOrSocket(Latch *latch, int wakeEvents,
 							  pgsocket sock, long timeout, uint32 wait_event_info);
 extern void InitializeLatchWaitSet(void);
+extern void RefreshLatchWaitSetCurrentCarrier(void);
 
 #endif							/* LATCH_H */

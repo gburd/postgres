@@ -67,22 +67,22 @@ donothingCleanup(DestReceiver *self)
  *		static DestReceiver structs for dest types needing no local state
  * ----------------
  */
-static const DestReceiver donothingDR = {
+static PG_GLOBAL_IMMUTABLE const DestReceiver donothingDR = {
 	donothingReceive, donothingStartup, donothingCleanup, donothingCleanup,
 	DestNone
 };
 
-static const DestReceiver debugtupDR = {
+static PG_GLOBAL_IMMUTABLE const DestReceiver debugtupDR = {
 	debugtup, debugStartup, donothingCleanup, donothingCleanup,
 	DestDebug
 };
 
-static const DestReceiver printsimpleDR = {
+static PG_GLOBAL_IMMUTABLE const DestReceiver printsimpleDR = {
 	printsimple, printsimple_startup, donothingCleanup, donothingCleanup,
 	DestRemoteSimple
 };
 
-static const DestReceiver spi_printtupDR = {
+static PG_GLOBAL_IMMUTABLE const DestReceiver spi_printtupDR = {
 	spi_printtup, spi_dest_startup, donothingCleanup, donothingCleanup,
 	DestSPI
 };
@@ -93,7 +93,7 @@ static const DestReceiver spi_printtupDR = {
  * It's ok to cast the constness away as any modification of the none receiver
  * would be a bug (which gets easier to catch this way).
  */
-DestReceiver *None_Receiver = (DestReceiver *) &donothingDR;
+PG_GLOBAL_IMMUTABLE DestReceiver *None_Receiver = (DestReceiver *) &donothingDR;
 
 /* ----------------
  *		BeginCommand - initialize the destination at start of command
@@ -273,11 +273,10 @@ ReadyForQuery(CommandDest dest)
 		case DestRemoteExecute:
 		case DestRemoteSimple:
 			{
-				StringInfoData buf;
+				char		tstatus;
 
-				pq_beginmessage(&buf, PqMsg_ReadyForQuery);
-				pq_sendbyte(&buf, TransactionBlockStatusCode());
-				pq_endmessage(&buf);
+				tstatus = TransactionBlockStatusCode();
+				pq_putmessage(PqMsg_ReadyForQuery, &tstatus, 1);
 			}
 			/* Flush output at end of cycle in any case. */
 			pq_flush();
