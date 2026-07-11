@@ -17,6 +17,7 @@
 
 #include "postgres.h"
 
+#include "access/tableam.h"
 #include "access/twophase_rmgr.h"
 #include "access/xact.h"
 #include "catalog/catalog.h"
@@ -200,6 +201,7 @@ pgstat_drop_relation(Relation rel)
 		save_truncdrop_counters(pgstat_info->trans, true);
 		pgstat_info->trans->tuples_inserted = 0;
 		pgstat_info->trans->tuples_updated = 0;
+		pgstat_info->trans->tuples_updated_no_dead = 0;
 		pgstat_info->trans->tuples_deleted = 0;
 	}
 }
@@ -398,6 +400,16 @@ pgstat_count_heap_update(Relation rel, bool hot, bool newpage)
 		pgstat_info->trans->tuples_updated++;
 
 		/*
+		 * An in-place-update AM (e.g. RECNO) overwrites the committed tuple
+		 * bytes and leaves no old version behind, so this update created no
+		 * dead tuple.  AtEOXact_PgStat_Relations() subtracts this count back
+		 * out of delta_dead_tuples, which otherwise assumes every UPDATE
+		 * creates one dead tuple (true for heap, not for an in-place AM).
+		 */
+		if (rel->rd_tableam && rel->rd_tableam->am_inplace_update_no_dead_tuple)
+			pgstat_info->trans->tuples_updated_no_dead++;
+
+		/*
 		 * tuples_hot_updated and tuples_newpage_updated counters are
 		 * nontransactional, so just advance them
 		 */
@@ -437,6 +449,7 @@ pgstat_count_truncate(Relation rel)
 		save_truncdrop_counters(pgstat_info->trans, false);
 		pgstat_info->trans->tuples_inserted = 0;
 		pgstat_info->trans->tuples_updated = 0;
+		pgstat_info->trans->tuples_updated_no_dead = 0;
 		pgstat_info->trans->tuples_deleted = 0;
 	}
 }
@@ -580,9 +593,18 @@ AtEOXact_PgStat_Relations(PgStat_SubXactStatus *xact_state, bool isCommit)
 			/* insert adds a live tuple, delete removes one */
 			tabstat->counts.delta_live_tuples +=
 				trans->tuples_inserted - trans->tuples_deleted;
-			/* update and delete each create a dead tuple */
+			/*
+			 * update and delete each create a dead tuple, EXCEPT an update on
+			 * an in-place-update AM (am_inplace_update_no_dead_tuple), which
+			 * overwrites the committed bytes and leaves nothing to reclaim.
+			 * trans->tuples_updated_no_dead counts exactly those updates (set
+			 * in pgstat_count_heap_update()); subtract them back out so a
+			 * table that never leaves a dead tuple behind correctly reports
+			 * ~0 dead tuples instead of one per update.
+			 */
 			tabstat->counts.delta_dead_tuples +=
-				trans->tuples_updated + trans->tuples_deleted;
+				(trans->tuples_updated - trans->tuples_updated_no_dead) +
+				trans->tuples_deleted;
 			/* insert, update, delete each count as one change event */
 			tabstat->counts.changed_tuples +=
 				trans->tuples_inserted + trans->tuples_updated +
@@ -592,7 +614,8 @@ AtEOXact_PgStat_Relations(PgStat_SubXactStatus *xact_state, bool isCommit)
 		{
 			/* inserted tuples are dead, deleted tuples are unaffected */
 			tabstat->counts.delta_dead_tuples +=
-				trans->tuples_inserted + trans->tuples_updated;
+				trans->tuples_inserted +
+				(trans->tuples_updated - trans->tuples_updated_no_dead);
 			/* an aborted xact generates no changed_tuple events */
 		}
 		tabstat->trans = NULL;
@@ -993,6 +1016,7 @@ save_truncdrop_counters(PgStat_TableXactStatus *trans, bool is_drop)
 	{
 		trans->inserted_pre_truncdrop = trans->tuples_inserted;
 		trans->updated_pre_truncdrop = trans->tuples_updated;
+		trans->updated_no_dead_pre_truncdrop = trans->tuples_updated_no_dead;
 		trans->deleted_pre_truncdrop = trans->tuples_deleted;
 		trans->truncdropped = true;
 	}
@@ -1008,6 +1032,7 @@ restore_truncdrop_counters(PgStat_TableXactStatus *trans)
 	{
 		trans->tuples_inserted = trans->inserted_pre_truncdrop;
 		trans->tuples_updated = trans->updated_pre_truncdrop;
+		trans->tuples_updated_no_dead = trans->updated_no_dead_pre_truncdrop;
 		trans->tuples_deleted = trans->deleted_pre_truncdrop;
 	}
 }
