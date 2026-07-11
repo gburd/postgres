@@ -95,7 +95,7 @@ typedef struct InProgressIO
 struct ReadStream
 {
 	int16		max_ios;
-	int16		io_combine_limit;
+	int16		stream_io_combine_limit;
 	int16		ios_in_progress;
 	int16		queue_size;
 	int16		max_pinned_buffers;
@@ -329,7 +329,7 @@ read_stream_start_pending_read(ReadStream *stream)
 
 	/* This should only be called with a pending read. */
 	Assert(stream->pending_read_nblocks > 0);
-	Assert(stream->pending_read_nblocks <= stream->io_combine_limit);
+	Assert(stream->pending_read_nblocks <= stream->stream_io_combine_limit);
 
 	/* We had better not exceed the per-stream buffer limit with this read. */
 	Assert(stream->pinned_buffers + stream->pending_read_nblocks <=
@@ -920,7 +920,7 @@ read_stream_begin_impl(int flags,
 	 * changing underneath us beyond this point.
 	 */
 	stream->max_ios = max_ios;
-	stream->io_combine_limit = io_combine_limit;
+	stream->stream_io_combine_limit = io_combine_limit;
 
 	stream->per_buffer_data_size = per_buffer_data_size;
 	stream->max_pinned_buffers = max_pinned_buffers;
@@ -940,8 +940,8 @@ read_stream_begin_impl(int flags,
 	 */
 	if (flags & READ_STREAM_FULL)
 	{
-		stream->readahead_distance = Min(max_pinned_buffers, stream->io_combine_limit);
-		stream->combine_distance = Min(max_pinned_buffers, stream->io_combine_limit);
+		stream->readahead_distance = Min(max_pinned_buffers, stream->stream_io_combine_limit);
+		stream->combine_distance = Min(max_pinned_buffers, stream->stream_io_combine_limit);
 	}
 	else
 	{
@@ -1263,13 +1263,13 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 		 * work when the IO gets large enough.
 		 */
 		if (stream->combine_distance > 0 &&
-			stream->combine_distance < stream->io_combine_limit)
+			stream->combine_distance < stream->stream_io_combine_limit)
 		{
 			/* wider temporary value, due to overflow risk */
 			int32		combine_distance;
 
 			combine_distance = stream->combine_distance * 2;
-			combine_distance = Min(combine_distance, stream->io_combine_limit);
+			combine_distance = Min(combine_distance, stream->stream_io_combine_limit);
 			combine_distance = Min(combine_distance, stream->max_pinned_buffers);
 			stream->combine_distance = combine_distance;
 		}
@@ -1290,7 +1290,7 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 	 * multi-block I/O that wrapped around the queue), also zap the copy.
 	 */
 	stream->buffers[oldest_buffer_index] = InvalidBuffer;
-	if (oldest_buffer_index < stream->io_combine_limit - 1)
+	if (oldest_buffer_index < stream->stream_io_combine_limit - 1)
 		stream->buffers[stream->queue_size + oldest_buffer_index] =
 			InvalidBuffer;
 
@@ -1355,7 +1355,7 @@ read_stream_next_buffer(ReadStream *stream, void **per_buffer_data)
 		 * it won't clear it out as the regular path would.  Do that now, so
 		 * it doesn't need code for that.
 		 */
-		if (stream->oldest_buffer_index < stream->io_combine_limit - 1)
+		if (stream->oldest_buffer_index < stream->stream_io_combine_limit - 1)
 			stream->buffers[stream->queue_size + stream->oldest_buffer_index] =
 				InvalidBuffer;
 
@@ -1462,7 +1462,7 @@ read_stream_reset(ReadStream *stream)
 		ReleaseBuffer(buffer);
 
 		stream->buffers[index] = InvalidBuffer;
-		if (index < stream->io_combine_limit - 1)
+		if (index < stream->stream_io_combine_limit - 1)
 			stream->buffers[stream->queue_size + index] = InvalidBuffer;
 
 		if (++index == stream->queue_size)
