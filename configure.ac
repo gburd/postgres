@@ -447,19 +447,9 @@ AC_SUBST(with_llvm)
 #
 # C11 stdatomic.h
 #
-# Accepts --with-stdatomic={yes,no,auto}.  "auto" (the default) uses
-# stdatomic.h if a compile test succeeds; "yes" requires it; "no" forces the
-# traditional platform-specific atomics.  The actual detection runs later,
-# after the compiler and 64-bit integer handling have been configured.
-AC_ARG_WITH(stdatomic,
-            [AS_HELP_STRING([--with-stdatomic@<:@=yes/no/auto@:>@],
-                            [use C11 stdatomic.h for atomic operations @<:@auto@:>@])],
-            [case $withval in
-               yes | no | auto) ;;
-               *) AC_MSG_ERROR([invalid argument to --with-stdatomic; use yes, no, or auto]) ;;
-             esac],
-            [with_stdatomic=no])
-AC_SUBST(with_stdatomic)
+# stdatomic.h is the sole atomics implementation.  The actual detection runs
+# later, after the compiler and 64-bit integer handling have been configured;
+# a missing or broken header is a hard error there.
 dnl must use AS_IF here, else AC_REQUIRES inside PGAC_LLVM_SUPPORT malfunctions
 AS_IF([test "$with_llvm" = yes], [
   PGAC_LLVM_SUPPORT()
@@ -2118,33 +2108,28 @@ PGAC_HAVE_GCC__ATOMIC_INT32_CAS
 PGAC_HAVE_GCC__ATOMIC_INT64_CAS
 
 
-# Decide whether to use C11 stdatomic.h (see --with-stdatomic above).  The
-# probe mirrors the one used by the meson build: it must compile 32-bit
-# fetch_add, a seq_cst thread fence, and a 64-bit compare-exchange.
-if test "$with_stdatomic" != no; then
-  AC_CACHE_CHECK([for working C11 stdatomic.h], [pgac_cv_stdatomic],
-  [AC_COMPILE_IFELSE([AC_LANG_PROGRAM([#include <stdatomic.h>],
-    [[_Atomic int x = 0;
-      atomic_fetch_add(&x, 1);
-      atomic_thread_fence(memory_order_seq_cst);
-      _Atomic(unsigned long long) y = 0;
-      unsigned long long expected = 0;
-      atomic_compare_exchange_strong(&y, &expected, 42);
-    ]])],
-    [pgac_cv_stdatomic=yes],
-    [pgac_cv_stdatomic=no])])
-else
-  pgac_cv_stdatomic=no
+# Require a working C11 stdatomic.h: it is the sole atomics implementation,
+# so a missing or broken header is a hard error.  The probe mirrors the one
+# used by the meson build: it must compile 32-bit fetch_add, a seq_cst thread
+# fence, and a 64-bit compare-exchange.
+AC_CACHE_CHECK([for working C11 stdatomic.h], [pgac_cv_stdatomic],
+[AC_COMPILE_IFELSE([AC_LANG_PROGRAM([#include <stdatomic.h>],
+  [[_Atomic int x = 0;
+    atomic_fetch_add(&x, 1);
+    atomic_thread_fence(memory_order_seq_cst);
+    _Atomic(unsigned long long) y = 0;
+    unsigned long long expected = 0;
+    atomic_compare_exchange_strong(&y, &expected, 42);
+  ]])],
+  [pgac_cv_stdatomic=yes],
+  [pgac_cv_stdatomic=no])])
+
+if test "$pgac_cv_stdatomic" != yes; then
+  AC_MSG_ERROR([a working C11 stdatomic.h is required (it is the only atomics implementation)])
 fi
 
-if test "$with_stdatomic" = yes && test "$pgac_cv_stdatomic" != yes; then
-  AC_MSG_ERROR([--with-stdatomic=yes was given, but a working C11 stdatomic.h could not be found])
-fi
-
-if test "$pgac_cv_stdatomic" = yes; then
-  AC_DEFINE([USE_STDATOMIC_H], 1,
-            [Define to 1 to use C11 stdatomic.h for atomic operations. (--with-stdatomic)])
-fi
+AC_DEFINE([USE_STDATOMIC_H], 1,
+          [Define to 1 to use C11 stdatomic.h for atomic operations. (--with-stdatomic)])
 
 
 # Check for __get_cpuid() and __cpuid()
