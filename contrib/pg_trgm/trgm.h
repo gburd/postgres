@@ -8,6 +8,7 @@
 #include "access/itup.h"
 #include "access/stratnum.h"
 #include "storage/bufpage.h"
+#include "utils/backend_runtime.h"
 
 /*
  * Options ... but note that trgm_regexp.c effectively assumes these values
@@ -112,9 +113,22 @@ typedef char *BITVECP;
 
 typedef struct TrgmPackedGraph TrgmPackedGraph;
 
-extern double similarity_threshold;
-extern double word_similarity_threshold;
-extern double strict_word_similarity_threshold;
+typedef struct PgTrgmSessionState
+{
+	bool		initialized;
+	double		similarity_threshold_value;
+	double		word_similarity_threshold_value;
+	double		strict_word_similarity_threshold_value;
+} PgTrgmSessionState;
+
+extern PgTrgmSessionState *pg_trgm_session_state(void);
+
+#define similarity_threshold \
+	(pg_trgm_session_state()->similarity_threshold_value)
+#define word_similarity_threshold \
+	(pg_trgm_session_state()->word_similarity_threshold_value)
+#define strict_word_similarity_threshold \
+	(pg_trgm_session_state()->strict_word_similarity_threshold_value)
 
 extern double index_strategy_get_limit(StrategyNumber strategy);
 extern uint32 trgm2int(trgm *ptr);

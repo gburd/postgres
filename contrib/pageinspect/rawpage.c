@@ -31,7 +31,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "pageinspect",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
 static bytea *get_raw_page_internal(text *relname, ForkNumber forknum,

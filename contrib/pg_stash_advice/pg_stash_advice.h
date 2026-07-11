@@ -21,6 +21,8 @@
 
 #include "lib/dshash.h"
 #include "storage/lwlock.h"
+#include "utils/backend_runtime.h"
+#include "utils/dsa.h"
 
 #define PGSA_DUMP_FILE		"pg_stash_advice.tsv"
 
@@ -69,6 +71,49 @@ typedef struct pgsa_shared_state
 	pg_atomic_uint64 change_count;
 } pgsa_shared_state;
 
+/* Backend-local attachment state. */
+#define PG_STASH_ADVICE_BACKEND_STATE_KEY "pg_stash_advice.backend"
+#define PG_STASH_ADVICE_RUNTIME_STATE_KEY "pg_stash_advice.runtime"
+
+typedef struct PgStashAdviceBackendState
+{
+	pgsa_shared_state *state;
+	dsa_area   *dsa_area;
+	dshash_table *stash_dshash;
+	dshash_table *entry_dshash;
+	MemoryContext context;
+} PgStashAdviceBackendState;
+
+extern PgStashAdviceBackendState *pg_stash_advice_backend_state(void);
+
+/* Runtime-local GUC backing state. */
+typedef struct PgStashAdviceRuntimeState
+{
+	bool		initialized;
+	bool		persist;
+	int			persist_interval;
+} PgStashAdviceRuntimeState;
+
+static inline PgStashAdviceRuntimeState *
+pg_stash_advice_runtime_state(void)
+{
+	PgStashAdviceRuntimeState *state;
+
+	state = (PgStashAdviceRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(
+			PG_STASH_ADVICE_RUNTIME_STATE_KEY,
+			sizeof(PgStashAdviceRuntimeState),
+			NULL);
+	if (!state->initialized)
+	{
+		state->persist = true;
+		state->persist_interval = 30;
+		state->initialized = true;
+	}
+
+	return state;
+}
+
 /* For stash ID -> stash name hash table */
 typedef struct pgsa_stash_name
 {
@@ -85,15 +130,41 @@ typedef struct pgsa_stash_name
 #define SH_DECLARE
 #include "lib/simplehash.h"
 
-/* Shared memory pointers */
-extern pgsa_shared_state *pgsa_state;
-extern dsa_area *pgsa_dsa_area;
-extern dshash_table *pgsa_stash_dshash;
-extern dshash_table *pgsa_entry_dshash;
+#define pgsa_state \
+	(pg_stash_advice_backend_state()->state)
+#define pgsa_dsa_area \
+	(pg_stash_advice_backend_state()->dsa_area)
+#define pgsa_stash_dshash \
+	(pg_stash_advice_backend_state()->stash_dshash)
+#define pgsa_entry_dshash \
+	(pg_stash_advice_backend_state()->entry_dshash)
+
+/* Session-local custom GUC backing state. */
+#define PG_STASH_ADVICE_SESSION_STATE_KEY "pg_stash_advice.session"
+
+typedef struct PgStashAdviceSessionState
+{
+	char	   *stash_name;
+} PgStashAdviceSessionState;
+
+static inline PgStashAdviceSessionState *
+pg_stash_advice_session_state(void)
+{
+	return (PgStashAdviceSessionState *)
+		PgSessionEnsureExtensionPrivateState(
+			PG_STASH_ADVICE_SESSION_STATE_KEY,
+			sizeof(PgStashAdviceSessionState),
+			NULL);
+}
+
+#define pg_stash_advice_stash_name \
+	(pg_stash_advice_session_state()->stash_name)
 
 /* GUC variables */
-extern bool pg_stash_advice_persist;
-extern int	pg_stash_advice_persist_interval;
+#define pg_stash_advice_persist \
+	(pg_stash_advice_runtime_state()->persist)
+#define pg_stash_advice_persist_interval \
+	(pg_stash_advice_runtime_state()->persist_interval)
 
 /* Function prototypes */
 extern void pgsa_attach(void);

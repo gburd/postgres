@@ -29,6 +29,7 @@
 #include "parser/parse_type.h"
 #include "pgstat.h"
 #include "utils/acl.h"
+#include "utils/backend_runtime.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/hsearch.h"
@@ -41,9 +42,24 @@
 #include "utils/typcache.h"
 
 
+/*
+ * Backend model: pooled-protocol-affine.  Audited safe --
+ * - All mutable session state (the per-userid interpreter hash, proc hash,
+ *   held interpreter, current call state, start_proc) is relocated per session
+ *   via the PgCurrentPLTcl* accessors, so sessions that share a carrier OS
+ *   thread never see each other's Tcl interpreters or call state.
+ * - Unlike plperl (which relies on a thread-global my_perl via
+ *   PERL_SET_CONTEXT that would diverge from per-session state when sessions
+ *   interleave on a carrier), Tcl takes the Tcl_Interp * explicitly on every
+ *   call, so there is no thread-global "current interpreter" to corrupt.
+ * - The only process-global init (Tcl_FindExecutable) is guarded by the
+ *   set-once-read-only pltcl_pm_init_done; remaining file-scope data is const
+ *   lookup tables.
+ */
 PG_MODULE_MAGIC_EXT(
 					.name = "pltcl",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
 #define HAVE_TCL_VERSION(maj,min) \
@@ -122,6 +138,7 @@ typedef struct pltcl_interp_desc
 {
 	Oid			user_id;		/* Hash key (must be first!) */
 	Tcl_Interp *interp;			/* The interpreter */
+	bool		query_hash_initialized;
 	Tcl_HashTable query_hash;	/* pltcl_query_desc structs */
 } pltcl_interp_desc;
 
@@ -174,6 +191,7 @@ typedef struct pltcl_proc_desc
 typedef struct pltcl_query_desc
 {
 	char		qname[20];
+	MemoryContext plan_cxt;
 	SPIPlanPtr	plan;
 	int			nargs;
 	Oid		   *argtypes;
@@ -244,15 +262,16 @@ typedef struct pltcl_call_state
 /**********************************************************************
  * Global data
  **********************************************************************/
-static char *pltcl_start_proc = NULL;
-static char *pltclu_start_proc = NULL;
 static bool pltcl_pm_init_done = false;
-static Tcl_Interp *pltcl_hold_interp = NULL;
-static HTAB *pltcl_interp_htab = NULL;
-static HTAB *pltcl_proc_htab = NULL;
 
-/* this is saved and restored by pltcl_handler */
-static pltcl_call_state *pltcl_current_call_state = NULL;
+#define pltcl_start_proc (*PgCurrentPLTclStartProcRef())
+#define pltclu_start_proc (*PgCurrentPLTclUStartProcRef())
+#define pltcl_hold_interp (*(Tcl_Interp **) PgCurrentPLTclHoldInterpRef())
+#define pltcl_interp_htab (*(HTAB **) PgCurrentPLTclInterpHashRef())
+#define pltcl_proc_htab (*(HTAB **) PgCurrentPLTclProcHashRef())
+#define pltcl_current_call_state \
+	(*(pltcl_call_state **) PgCurrentPLTclCurrentCallStateRef())
+#define pltcl_reset_registered (*PgCurrentPLTclResetRegisteredRef())
 
 /**********************************************************************
  * Lookup table for SQLSTATE condition names
@@ -274,6 +293,11 @@ static const TclExceptionNameMap exception_name_map[] = {
 
 static void pltcl_init_interp(pltcl_interp_desc *interp_desc,
 							  Oid prolang, bool pltrusted);
+static void pltcl_define_custom_gucs(void);
+static void pltcl_ensure_session_state(void);
+static void pltcl_session_reset_callback(void *arg);
+static void pltcl_destroy_session_state(void);
+static void pltcl_free_query_desc(pltcl_query_desc *qdesc);
 static pltcl_interp_desc *pltcl_fetch_interp(Oid prolang, bool pltrusted);
 static void call_pltcl_start_proc(Oid prolang, bool pltrusted);
 static void start_proc_error_callback(void *arg);
@@ -410,61 +434,45 @@ void
 _PG_init(void)
 {
 	Tcl_NotifierProcs notifier;
-	HASHCTL		hash_ctl;
-
-	/* Be sure we do initialization only once (should be redundant now) */
-	if (pltcl_pm_init_done)
-		return;
-
-	pg_bindtextdomain(TEXTDOMAIN);
-
-#ifdef WIN32
-	/* Required on win32 to prevent error loading init.tcl */
-	Tcl_FindExecutable("");
-#endif
 
 	/*
-	 * Override the functions in the Notifier subsystem.  See comments above.
+	 * The Tcl notifier is process-wide, but custom GUC backing variables and
+	 * interpreter/procedure caches are session-owned.  In threaded mode,
+	 * dfmgr.c replays _PG_init() once per logical session for already-loaded
+	 * libraries, so keep only the process-wide Tcl setup behind this guard.
 	 */
-	notifier.setTimerProc = pltcl_SetTimer;
-	notifier.waitForEventProc = pltcl_WaitForEvent;
-	notifier.createFileHandlerProc = pltcl_CreateFileHandler;
-	notifier.deleteFileHandlerProc = pltcl_DeleteFileHandler;
-	notifier.initNotifierProc = pltcl_InitNotifier;
-	notifier.finalizeNotifierProc = pltcl_FinalizeNotifier;
-	notifier.alertNotifierProc = pltcl_AlertNotifier;
-	notifier.serviceModeHookProc = pltcl_ServiceModeHook;
-	Tcl_SetNotifier(&notifier);
+	if (!pltcl_pm_init_done)
+	{
+		pg_bindtextdomain(TEXTDOMAIN);
 
-	/************************************************************
-	 * Create the dummy hold interpreter to prevent close of
-	 * stdout and stderr on DeleteInterp
-	 ************************************************************/
-	if ((pltcl_hold_interp = Tcl_CreateInterp()) == NULL)
-		elog(ERROR, "could not create dummy Tcl interpreter");
-	if (Tcl_Init(pltcl_hold_interp) == TCL_ERROR)
-		elog(ERROR, "could not initialize dummy Tcl interpreter");
+#ifdef WIN32
+		/* Required on win32 to prevent error loading init.tcl */
+		Tcl_FindExecutable("");
+#endif
 
-	/************************************************************
-	 * Create the hash table for working interpreters
-	 ************************************************************/
-	hash_ctl.keysize = sizeof(Oid);
-	hash_ctl.entrysize = sizeof(pltcl_interp_desc);
-	pltcl_interp_htab = hash_create("PL/Tcl interpreters",
-									8,
-									&hash_ctl,
-									HASH_ELEM | HASH_BLOBS);
+		/*
+		 * Override the functions in the Notifier subsystem.  See comments above.
+		 */
+		notifier.setTimerProc = pltcl_SetTimer;
+		notifier.waitForEventProc = pltcl_WaitForEvent;
+		notifier.createFileHandlerProc = pltcl_CreateFileHandler;
+		notifier.deleteFileHandlerProc = pltcl_DeleteFileHandler;
+		notifier.initNotifierProc = pltcl_InitNotifier;
+		notifier.finalizeNotifierProc = pltcl_FinalizeNotifier;
+		notifier.alertNotifierProc = pltcl_AlertNotifier;
+		notifier.serviceModeHookProc = pltcl_ServiceModeHook;
+		Tcl_SetNotifier(&notifier);
 
-	/************************************************************
-	 * Create the hash table for function lookup
-	 ************************************************************/
-	hash_ctl.keysize = sizeof(pltcl_proc_key);
-	hash_ctl.entrysize = sizeof(pltcl_proc_ptr);
-	pltcl_proc_htab = hash_create("PL/Tcl functions",
-								  100,
-								  &hash_ctl,
-								  HASH_ELEM | HASH_BLOBS);
+		pltcl_pm_init_done = true;
+	}
 
+	pltcl_define_custom_gucs();
+	pltcl_ensure_session_state();
+}
+
+static void
+pltcl_define_custom_gucs(void)
+{
 	/************************************************************
 	 * Define PL/Tcl's custom GUCs
 	 ************************************************************/
@@ -485,8 +493,166 @@ _PG_init(void)
 
 	MarkGUCPrefixReserved("pltcl");
 	MarkGUCPrefixReserved("pltclu");
+}
 
-	pltcl_pm_init_done = true;
+static void
+pltcl_ensure_session_state(void)
+{
+	HASHCTL		hash_ctl;
+
+	if (pltcl_hold_interp != NULL &&
+		pltcl_interp_htab != NULL &&
+		pltcl_proc_htab != NULL)
+	{
+		if (!pltcl_reset_registered)
+		{
+			PgSessionRegisterResetCallback(pltcl_session_reset_callback, NULL);
+			pltcl_reset_registered = true;
+		}
+		return;
+	}
+
+	if (pltcl_hold_interp != NULL ||
+		pltcl_interp_htab != NULL ||
+		pltcl_proc_htab != NULL)
+		pltcl_destroy_session_state();
+
+	PG_TRY();
+	{
+		/************************************************************
+		 * Create the dummy hold interpreter to prevent close of
+		 * stdout and stderr on DeleteInterp.
+		 ************************************************************/
+		if ((pltcl_hold_interp = Tcl_CreateInterp()) == NULL)
+			elog(ERROR, "could not create dummy Tcl interpreter");
+		if (Tcl_Init(pltcl_hold_interp) == TCL_ERROR)
+			elog(ERROR, "could not initialize dummy Tcl interpreter");
+
+		/************************************************************
+		 * Create the hash table for working interpreters.
+		 ************************************************************/
+		hash_ctl.keysize = sizeof(Oid);
+		hash_ctl.entrysize = sizeof(pltcl_interp_desc);
+		pltcl_interp_htab = hash_create("PL/Tcl interpreters",
+										8,
+										&hash_ctl,
+										HASH_ELEM | HASH_BLOBS);
+
+		/************************************************************
+		 * Create the hash table for function lookup.
+		 ************************************************************/
+		hash_ctl.keysize = sizeof(pltcl_proc_key);
+		hash_ctl.entrysize = sizeof(pltcl_proc_ptr);
+		pltcl_proc_htab = hash_create("PL/Tcl functions",
+									  100,
+									  &hash_ctl,
+									  HASH_ELEM | HASH_BLOBS);
+
+		if (!pltcl_reset_registered)
+		{
+			PgSessionRegisterResetCallback(pltcl_session_reset_callback, NULL);
+			pltcl_reset_registered = true;
+		}
+	}
+	PG_CATCH();
+	{
+		pltcl_destroy_session_state();
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+}
+
+static void
+pltcl_free_query_desc(pltcl_query_desc *qdesc)
+{
+	MemoryContext plan_cxt;
+
+	if (qdesc == NULL)
+		return;
+
+	plan_cxt = qdesc->plan_cxt;
+	if (qdesc->plan != NULL)
+	{
+		SPI_freeplan(qdesc->plan);
+		qdesc->plan = NULL;
+	}
+
+	if (plan_cxt != NULL)
+		MemoryContextDelete(plan_cxt);
+}
+
+static void
+pltcl_destroy_session_state(void)
+{
+	if (pltcl_proc_htab != NULL)
+	{
+		HASH_SEQ_STATUS scan;
+		pltcl_proc_ptr *proc_ptr;
+
+		hash_seq_init(&scan, pltcl_proc_htab);
+		while ((proc_ptr = (pltcl_proc_ptr *) hash_seq_search(&scan)) != NULL)
+		{
+			pltcl_proc_desc *prodesc = proc_ptr->proc_ptr;
+
+			if (prodesc != NULL)
+			{
+				Assert(prodesc->fn_refcount > 0);
+				if (prodesc->fn_refcount > 0)
+					prodesc->fn_refcount--;
+				if (prodesc->fn_refcount == 0)
+					MemoryContextDelete(prodesc->fn_cxt);
+				proc_ptr->proc_ptr = NULL;
+			}
+		}
+		hash_destroy(pltcl_proc_htab);
+		pltcl_proc_htab = NULL;
+	}
+
+	if (pltcl_interp_htab != NULL)
+	{
+		HASH_SEQ_STATUS scan;
+		pltcl_interp_desc *interp_desc;
+
+		hash_seq_init(&scan, pltcl_interp_htab);
+		while ((interp_desc = (pltcl_interp_desc *) hash_seq_search(&scan)) != NULL)
+		{
+			Tcl_HashSearch search;
+			Tcl_HashEntry *hashent;
+
+			if (interp_desc->query_hash_initialized)
+			{
+				for (hashent = Tcl_FirstHashEntry(&interp_desc->query_hash, &search);
+					 hashent != NULL;
+					 hashent = Tcl_NextHashEntry(&search))
+					pltcl_free_query_desc((pltcl_query_desc *)
+										  Tcl_GetHashValue(hashent));
+				Tcl_DeleteHashTable(&interp_desc->query_hash);
+				interp_desc->query_hash_initialized = false;
+			}
+
+			if (interp_desc->interp != NULL)
+				Tcl_DeleteInterp(interp_desc->interp);
+		}
+		hash_destroy(pltcl_interp_htab);
+		pltcl_interp_htab = NULL;
+	}
+
+	if (pltcl_hold_interp != NULL)
+	{
+		Tcl_DeleteInterp(pltcl_hold_interp);
+		pltcl_hold_interp = NULL;
+	}
+
+	pltcl_current_call_state = NULL;
+	pltcl_reset_registered = false;
+}
+
+static void
+pltcl_session_reset_callback(void *arg)
+{
+	(void) arg;
+
+	pltcl_destroy_session_state();
 }
 
 /**********************************************************************
@@ -499,6 +665,17 @@ pltcl_init_interp(pltcl_interp_desc *interp_desc, Oid prolang, bool pltrusted)
 	char		interpname[32];
 
 	/************************************************************
+	 * Initialize the query hash table associated with the interpreter.
+	 * Do this before creating the Tcl interpreter so partial initialization is
+	 * still cleanly resettable if Tcl_CreateSlave fails.
+	 ************************************************************/
+	if (!interp_desc->query_hash_initialized)
+	{
+		Tcl_InitHashTable(&interp_desc->query_hash, TCL_STRING_KEYS);
+		interp_desc->query_hash_initialized = true;
+	}
+
+	/************************************************************
 	 * Create the Tcl interpreter subsidiary to pltcl_hold_interp.
 	 * Note: Tcl automatically does Tcl_Init in the untrusted case,
 	 * and it's not wanted in the trusted case.
@@ -507,11 +684,6 @@ pltcl_init_interp(pltcl_interp_desc *interp_desc, Oid prolang, bool pltrusted)
 	if ((interp = Tcl_CreateSlave(pltcl_hold_interp, interpname,
 								  pltrusted ? 1 : 0)) == NULL)
 		elog(ERROR, "could not create subsidiary Tcl interpreter");
-
-	/************************************************************
-	 * Initialize the query hash table associated with interpreter
-	 ************************************************************/
-	Tcl_InitHashTable(&interp_desc->query_hash, TCL_STRING_KEYS);
 
 	/************************************************************
 	 * Install the commands for SPI support in the interpreter
@@ -582,7 +754,10 @@ pltcl_fetch_interp(Oid prolang, bool pltrusted)
 							  HASH_ENTER,
 							  &found);
 	if (!found)
+	{
 		interp_desc->interp = NULL;
+		interp_desc->query_hash_initialized = false;
+	}
 
 	/* If we haven't yet successfully made an interpreter, try to do that */
 	if (!interp_desc->interp)
@@ -731,6 +906,8 @@ pltcl_handler(PG_FUNCTION_ARGS, bool pltrusted)
 	Datum		retval = (Datum) 0;
 	pltcl_call_state current_call_state;
 	pltcl_call_state *save_call_state;
+
+	pltcl_ensure_session_state();
 
 	/*
 	 * Initialize current_call_state to nulls/zeroes; in particular, set its
@@ -1580,9 +1757,13 @@ compile_pltcl_function(Oid fn_oid, Oid tgreloid,
 		/************************************************************
 		 * Allocate a context that will hold all PG data for the procedure.
 		 ************************************************************/
-		proc_cxt = AllocSetContextCreate(TopMemoryContext,
-										 "PL/Tcl function",
-										 ALLOCSET_SMALL_SIZES);
+		proc_cxt = AllocSetContextCreate(
+			PgRuntimeGetOwnedMemoryContextWithSizes(
+				PgCurrentPLTclMemoryContextRef(),
+				"PL/Tcl session",
+				ALLOCSET_DEFAULT_SIZES),
+			"PL/Tcl function",
+			ALLOCSET_SMALL_SIZES);
 
 		/************************************************************
 		 * Allocate and fill a new procedure description block.
@@ -2670,12 +2851,17 @@ pltcl_SPI_prepare(ClientData cdata, Tcl_Interp *interp,
 	 * function is recompiled for whatever reason, permanent memory leaks
 	 * occur.  FIXME someday.
 	 ************************************************************/
-	plan_cxt = AllocSetContextCreate(TopMemoryContext,
-									 "PL/Tcl spi_prepare query",
-									 ALLOCSET_SMALL_SIZES);
+	plan_cxt = AllocSetContextCreate(
+		PgRuntimeGetOwnedMemoryContextWithSizes(
+			PgCurrentPLTclMemoryContextRef(),
+			"PL/Tcl session",
+			ALLOCSET_DEFAULT_SIZES),
+		"PL/Tcl spi_prepare query",
+		ALLOCSET_SMALL_SIZES);
 	MemoryContextSwitchTo(plan_cxt);
 	qdesc = palloc0_object(pltcl_query_desc);
 	snprintf(qdesc->qname, sizeof(qdesc->qname), "%p", qdesc);
+	qdesc->plan_cxt = plan_cxt;
 	qdesc->nargs = nargs;
 	qdesc->argtypes = palloc_array(Oid, nargs);
 	qdesc->arginfuncs = palloc_array(FmgrInfo, nargs);

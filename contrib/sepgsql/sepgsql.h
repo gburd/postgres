@@ -13,6 +13,8 @@
 
 #include "catalog/objectaddress.h"
 #include "fmgr.h"
+#include "nodes/pg_list.h"
+#include "utils/palloc.h"
 
 #include <selinux/selinux.h>
 #include <selinux/avc.h>
@@ -29,6 +31,36 @@
 #define SEPGSQL_MODE_PERMISSIVE		2
 #define SEPGSQL_MODE_INTERNAL		3
 #define SEPGSQL_MODE_DISABLED		4
+
+#define SEPGSQL_AVC_NUM_SLOTS		512
+
+typedef struct SePgsqlSessionState
+{
+	bool		initialized;
+	int			mode;
+	bool		debug_audit;
+	MemoryContext context;
+	MemoryContext avc_context;
+	char	   *client_label_peer;
+	List	   *client_label_pending;
+	char	   *client_label_committed;
+	char	   *client_label_func;
+	List	   *avc_slots[SEPGSQL_AVC_NUM_SLOTS];
+	int			avc_num_caches;
+	int			avc_lru_hint;
+	int			avc_threshold;
+	char	   *avc_unlabeled;
+} SePgsqlSessionState;
+
+typedef struct SePgsqlRuntimeState
+{
+	bool		initialized;
+	int			startup_mode;
+	bool		permissive;
+} SePgsqlRuntimeState;
+
+extern SePgsqlSessionState *sepgsql_session_state(void);
+extern SePgsqlRuntimeState *sepgsql_runtime_state(void);
 
 /*
  * Internally used code of object classes

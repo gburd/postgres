@@ -25,7 +25,9 @@
 #include "miscadmin.h"
 #include "storage/fd.h"
 #include "storage/shmem.h"
+#include "utils/backend_runtime.h"
 #include "utils/hsearch.h"
+#include "utils/memutils.h"
 
 
 /* signature for PostgreSQL-specific library init function */
@@ -56,8 +58,8 @@ struct DynamicFileList
 	char		filename[FLEXIBLE_ARRAY_MEMBER];	/* Full pathname of file */
 };
 
-static DynamicFileList *file_list = NULL;
-static DynamicFileList *file_tail = NULL;
+static PG_GLOBAL_RUNTIME DynamicFileList *file_list = NULL;
+static PG_GLOBAL_RUNTIME DynamicFileList *file_tail = NULL;
 
 /* stat() call under Win32 returns an st_ino field, but it has no meaning */
 #ifndef WIN32
@@ -66,13 +68,26 @@ static DynamicFileList *file_tail = NULL;
 #define SAME_INODE(A,B) false
 #endif
 
-char	   *Dynamic_library_path;
-
 static void *internal_load_library(const char *libname);
+static void call_module_init_function(DynamicFileList *file_scanner);
+static bool module_needs_session_init(DynamicFileList *file_scanner);
+static void remember_module_session_init(DynamicFileList *file_scanner);
 pg_noreturn static void incompatible_module_error(const char *libname,
 												  const Pg_abi_values *module_magic_data);
+static bool module_backend_model_is_valid(PgBackendModel backend_model);
+static bool module_backend_model_is_compatible(PgBackendModel module_backend_model,
+											   PgBackendModel required_backend_model);
+static const char *module_backend_model_name(PgBackendModel backend_model);
+static void check_module_backend_model(const char *libname,
+									   const Pg_magic_struct *magic,
+									   PgBackendModel required_backend_model);
+pg_noreturn static void incompatible_module_backend_model_error(const char *libname,
+																PgBackendModel module_backend_model,
+																PgBackendModel required_backend_model);
+static DynamicFileList *find_loaded_module_by_handle(void *handle);
 static char *expand_dynamic_library_name(const char *name);
 static void check_restricted_library_name(const char *name);
+static HTAB *create_rendezvous_hash(void);
 
 /* ABI values that module needs to match to be accepted */
 static const Pg_abi_values magic_data = PG_MODULE_ABI_DATA;
@@ -170,6 +185,14 @@ load_file(const char *filename, bool restricted)
 void *
 lookup_external_function(void *filehandle, const char *funcname)
 {
+	DynamicFileList *file_scanner;
+
+	file_scanner = find_loaded_module_by_handle(filehandle);
+	if (file_scanner != NULL)
+		check_module_backend_model(file_scanner->filename,
+								   file_scanner->magic,
+								   PgRuntimeGetExtensionBackendModel());
+
 	return dlsym(filehandle, funcname);
 }
 
@@ -192,7 +215,6 @@ internal_load_library(const char *libname)
 	PGModuleMagicFunction magic_func;
 	char	   *load_error;
 	struct stat stat_buf;
-	PG_init_t	PG_init;
 
 	/*
 	 * Scan the list of loaded FILES to see if the file has been loaded.
@@ -259,21 +281,56 @@ internal_load_library(const char *libname)
 		if (magic_func)
 		{
 			const Pg_magic_struct *magic_data_ptr = (*magic_func) ();
+			PgBackendModel required_backend_model;
 
 			/* Check ABI compatibility fields */
 			if (magic_data_ptr->len != sizeof(Pg_magic_struct) ||
 				memcmp(&magic_data_ptr->abi_fields, &magic_data,
 					   sizeof(Pg_abi_values)) != 0)
 			{
-				/* copy data block before unlinking library */
-				Pg_magic_struct module_magic_data = *magic_data_ptr;
+				Pg_abi_values module_abi_data;
+				Size		abi_offset = offsetof(Pg_magic_struct, abi_fields);
+
+				/*
+				 * Copy only the ABI fields before unlinking the library.  A
+				 * stale module may have a shorter magic block than this build's
+				 * Pg_magic_struct, so copying the whole current struct can read
+				 * past the module's static object.
+				 */
+				MemSet(&module_abi_data, 0, sizeof(module_abi_data));
+				if (magic_data_ptr->len > 0 &&
+					(Size) magic_data_ptr->len > abi_offset)
+				{
+					Size		copylen;
+
+					copylen = Min(sizeof(Pg_abi_values),
+								  (Size) magic_data_ptr->len - abi_offset);
+					memcpy(&module_abi_data, &magic_data_ptr->abi_fields,
+						   copylen);
+				}
 
 				/* try to close library */
 				dlclose(file_scanner->handle);
 				free(file_scanner);
 
 				/* issue suitable complaint */
-				incompatible_module_error(libname, &module_magic_data.abi_fields);
+				incompatible_module_error(libname, &module_abi_data);
+			}
+
+			required_backend_model = PgRuntimeGetExtensionBackendModel();
+			if (!module_backend_model_is_valid(magic_data_ptr->backend_model) ||
+				!module_backend_model_is_compatible(magic_data_ptr->backend_model,
+													required_backend_model))
+			{
+				PgBackendModel module_backend_model = magic_data_ptr->backend_model;
+
+				/* try to close library */
+				dlclose(file_scanner->handle);
+				free(file_scanner);
+
+				incompatible_module_backend_model_error(libname,
+														module_backend_model,
+														required_backend_model);
 			}
 
 			/* Remember the magic block's location for future use */
@@ -291,12 +348,7 @@ internal_load_library(const char *libname)
 					 errhint("Extension libraries are required to use the PG_MODULE_MAGIC macro.")));
 		}
 
-		/*
-		 * If the library has a _PG_init() function, call it.
-		 */
-		PG_init = (PG_init_t) dlsym(file_scanner->handle, "_PG_init");
-		if (PG_init)
-			(*PG_init) ();
+		call_module_init_function(file_scanner);
 
 		/* OK to link it into list */
 		if (file_list == NULL)
@@ -305,8 +357,85 @@ internal_load_library(const char *libname)
 			file_tail->next = file_scanner;
 		file_tail = file_scanner;
 	}
+	else
+	{
+		check_module_backend_model(libname,
+								   file_scanner->magic,
+								   PgRuntimeGetExtensionBackendModel());
+		if (module_needs_session_init(file_scanner))
+			call_module_init_function(file_scanner);
+	}
 
 	return file_scanner->handle;
+}
+
+static void
+call_module_init_function(DynamicFileList *file_scanner)
+{
+	PG_init_t	PG_init;
+
+	/*
+	 * If the library has a _PG_init() function, call it.
+	 */
+	PG_init = (PG_init_t) dlsym(file_scanner->handle, "_PG_init");
+	if (PG_init)
+		(*PG_init) ();
+
+	remember_module_session_init(file_scanner);
+}
+
+static bool
+module_needs_session_init(DynamicFileList *file_scanner)
+{
+	List	  **dynamic_library_inits;
+
+	if (!PgRuntimeIsThreadBacked(CurrentPgRuntime) ||
+		CurrentPgSession == NULL)
+		return false;
+
+	dynamic_library_inits = PgCurrentSessionDynamicLibraryInitsRef();
+	return !list_member_ptr(*dynamic_library_inits, file_scanner);
+}
+
+static void
+remember_module_session_init(DynamicFileList *file_scanner)
+{
+	List	  **dynamic_library_inits;
+	MemoryContext oldcontext;
+
+	if (!PgRuntimeIsThreadBacked(CurrentPgRuntime) ||
+		CurrentPgSession == NULL)
+		return;
+
+	dynamic_library_inits = PgCurrentSessionDynamicLibraryInitsRef();
+	if (list_member_ptr(*dynamic_library_inits, file_scanner))
+		return;
+
+	oldcontext = MemoryContextSwitchTo(
+		PgSessionGetDynamicLibraryMemoryContext(CurrentPgSession));
+	*dynamic_library_inits = lappend(*dynamic_library_inits, file_scanner);
+	MemoryContextSwitchTo(oldcontext);
+}
+
+/*
+ * Verify all libraries already loaded in this backend can run under the
+ * required backend model.
+ */
+void
+check_loaded_modules_backend_model(PgBackendModel required_backend_model)
+{
+	DynamicFileList *file_scanner;
+
+	if (!module_backend_model_is_valid(required_backend_model))
+		elog(ERROR, "invalid required backend model: %d",
+			 required_backend_model);
+
+	for (file_scanner = file_list;
+		 file_scanner != NULL;
+		 file_scanner = file_scanner->next)
+		check_module_backend_model(file_scanner->filename,
+								   file_scanner->magic,
+								   required_backend_model);
 }
 
 /*
@@ -412,6 +541,109 @@ incompatible_module_error(const char *libname,
 			(errmsg("incompatible library \"%s\": magic block mismatch",
 					libname),
 			 errdetail_internal("%s", details.data)));
+}
+
+static bool
+module_backend_model_is_valid(PgBackendModel backend_model)
+{
+	return backend_model >= PG_BACKEND_MODEL_PROCESS &&
+		backend_model <= PG_BACKEND_MODEL_TASK_REENTRANT;
+}
+
+static bool
+module_backend_model_is_compatible(PgBackendModel module_backend_model,
+								   PgBackendModel required_backend_model)
+{
+	if (!module_backend_model_is_valid(module_backend_model) ||
+		!module_backend_model_is_valid(required_backend_model))
+		return false;
+
+	/*
+	 * This ordinal rule predates the protocol-boundary scheduler split.  Do not
+	 * use PG_BACKEND_MODEL_POOLED_SCHEDULER as the Phase 14/15 runtime
+	 * requirement; it cannot distinguish protocol-affine from migratable
+	 * sessions.
+	 */
+	return module_backend_model >= required_backend_model;
+}
+
+static const char *
+module_backend_model_name(PgBackendModel backend_model)
+{
+	switch (backend_model)
+	{
+		case PG_BACKEND_MODEL_PROCESS:
+			return "process";
+		case PG_BACKEND_MODEL_THREAD_PER_SESSION:
+			return "thread-per-session";
+		case PG_BACKEND_MODEL_POOLED_SCHEDULER:
+			return "pooled-scheduler";
+		case PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE:
+			return "pooled-protocol-affine";
+		case PG_BACKEND_MODEL_POOLED_PROTOCOL_MIGRATABLE:
+			return "pooled-protocol-migratable";
+		case PG_BACKEND_MODEL_TASK_REENTRANT:
+			return "task-reentrant";
+	}
+
+	return "unknown";
+}
+
+static void
+check_module_backend_model(const char *libname, const Pg_magic_struct *magic,
+						   PgBackendModel required_backend_model)
+{
+	PgBackendModel module_backend_model;
+
+	Assert(magic != NULL);
+
+	module_backend_model = magic->backend_model;
+	if (!module_backend_model_is_valid(module_backend_model) ||
+		!module_backend_model_is_compatible(module_backend_model,
+											required_backend_model))
+		incompatible_module_backend_model_error(libname,
+												module_backend_model,
+												required_backend_model);
+}
+
+/*
+ * Report an error for a module that cannot run under the active backend model.
+ */
+static void
+incompatible_module_backend_model_error(const char *libname,
+										PgBackendModel module_backend_model,
+										PgBackendModel required_backend_model)
+{
+	if (!module_backend_model_is_valid(module_backend_model))
+		ereport(ERROR,
+				(errmsg("incompatible library \"%s\": invalid backend model",
+						libname),
+				 errdetail("Library declares backend model %d.",
+						   module_backend_model)));
+
+	ereport(ERROR,
+			(errmsg("incompatible library \"%s\": backend model mismatch",
+					libname),
+			 errdetail("Active backend model is \"%s\", but library supports \"%s\".",
+					   module_backend_model_name(required_backend_model),
+					   module_backend_model_name(module_backend_model)),
+			 errhint("Audit the module before marking it with threaded backend model metadata.")));
+}
+
+static DynamicFileList *
+find_loaded_module_by_handle(void *handle)
+{
+	DynamicFileList *file_scanner;
+
+	for (file_scanner = file_list;
+		 file_scanner != NULL;
+		 file_scanner = file_scanner->next)
+	{
+		if (file_scanner->handle == handle)
+			return file_scanner;
+	}
+
+	return NULL;
 }
 
 
@@ -663,26 +895,17 @@ find_in_path(const char *basename, const char *path, const char *path_param,
 void	  **
 find_rendezvous_variable(const char *varName)
 {
-	static HTAB *rendezvousHash = NULL;
-
+	HTAB	  **rendezvous_hash;
 	rendezvousHashEntry *hentry;
 	bool		found;
 
 	/* Create a hashtable if we haven't already done so in this process */
-	if (rendezvousHash == NULL)
-	{
-		HASHCTL		ctl;
-
-		ctl.keysize = NAMEDATALEN;
-		ctl.entrysize = sizeof(rendezvousHashEntry);
-		rendezvousHash = hash_create("Rendezvous variable hash",
-									 16,
-									 &ctl,
-									 HASH_ELEM | HASH_STRINGS);
-	}
+	rendezvous_hash = PgCurrentRendezvousHashRef();
+	if (*rendezvous_hash == NULL)
+		*rendezvous_hash = create_rendezvous_hash();
 
 	/* Find or create the hashtable entry for this varName */
-	hentry = (rendezvousHashEntry *) hash_search(rendezvousHash,
+	hentry = (rendezvousHashEntry *) hash_search(*rendezvous_hash,
 												 varName,
 												 HASH_ENTER,
 												 &found);
@@ -692,6 +915,27 @@ find_rendezvous_variable(const char *varName)
 		hentry->varValue = NULL;
 
 	return &hentry->varValue;
+}
+
+static HTAB *
+create_rendezvous_hash(void)
+{
+	HASHCTL		ctl;
+
+	ctl.keysize = NAMEDATALEN;
+	ctl.entrysize = sizeof(rendezvousHashEntry);
+	ctl.hcxt = PgCurrentRuntimeExtensionModuleMemoryContext();
+
+	/*
+	 * Rendezvous variables last for the life of the address-space runtime.
+	 * In threaded mode, this table must not be allocated under the first
+	 * backend carrier's TopMemoryContext, because that root is deleted when
+	 * the logical backend exits.
+	 */
+	return hash_create("Rendezvous variable hash",
+					   16,
+					   &ctl,
+					   HASH_ELEM | HASH_STRINGS | HASH_CONTEXT);
 }
 
 /*

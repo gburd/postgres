@@ -11,6 +11,7 @@
 #include "ltree.h"
 
 #include "crc32.h"
+#include "utils/backend_runtime.h"
 #include "utils/pg_crc.h"
 #ifdef LOWER_NODE
 #include "utils/pg_locale.h"
@@ -18,16 +19,35 @@
 
 #ifdef LOWER_NODE
 
+#define LTREE_CRC32_SESSION_STATE_KEY "ltree.crc32.session"
+
+typedef struct LtreeCrc32SessionState
+{
+	pg_locale_t locale;
+} LtreeCrc32SessionState;
+
+static pg_locale_t
+ltree_crc32_locale(void)
+{
+	LtreeCrc32SessionState *state;
+
+	state = (LtreeCrc32SessionState *)
+		PgSessionEnsureExtensionPrivateState(LTREE_CRC32_SESSION_STATE_KEY,
+											 sizeof(LtreeCrc32SessionState),
+											 NULL);
+	if (state->locale == NULL)
+		state->locale = pg_database_locale();
+
+	return state->locale;
+}
+
 unsigned int
 ltree_crc32_sz(const char *buf, int size)
 {
 	pg_crc32	crc;
 	const char *p = buf;
 	const char *end = buf + size;
-	static pg_locale_t locale = NULL;
-
-	if (!locale)
-		locale = pg_database_locale();
+	pg_locale_t locale = ltree_crc32_locale();
 
 	INIT_TRADITIONAL_CRC32(crc);
 	while (size > 0)

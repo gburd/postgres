@@ -18,7 +18,7 @@
 
 typedef unsigned int BF_word;
 
-static unsigned char _crypt_itoa64[64 + 1] =
+static const unsigned char _crypt_itoa64[64 + 1] =
 "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 char *
@@ -119,7 +119,7 @@ _crypt_gensalt_md5_rn(unsigned long count,
 
 
 
-static unsigned char BF_itoa64[64 + 1] =
+static const unsigned char BF_itoa64[64 + 1] =
 "./ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
 static void

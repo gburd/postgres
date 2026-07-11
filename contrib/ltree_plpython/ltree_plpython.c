@@ -3,6 +3,7 @@
 #include "fmgr.h"
 #include "ltree/ltree.h"
 #include "plpy_util.h"
+#include "utils/backend_runtime.h"
 
 PG_MODULE_MAGIC_EXT(
 					.name = "ltree_plpython",
@@ -11,7 +12,25 @@ PG_MODULE_MAGIC_EXT(
 
 /* Linkage to functions in plpython module */
 typedef PyObject *(*PLyUnicode_FromStringAndSize_t) (const char *s, Py_ssize_t size);
-static PLyUnicode_FromStringAndSize_t PLyUnicode_FromStringAndSize_p;
+
+#define LTREE_PLPYTHON_RUNTIME_STATE_KEY "ltree_plpython.runtime"
+
+typedef struct LtreePLpythonRuntimeState
+{
+	PLyUnicode_FromStringAndSize_t PLyUnicode_FromStringAndSize_p;
+} LtreePLpythonRuntimeState;
+
+static LtreePLpythonRuntimeState *
+ltree_plpython_runtime_state(void)
+{
+	return (LtreePLpythonRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(LTREE_PLPYTHON_RUNTIME_STATE_KEY,
+											 sizeof(LtreePLpythonRuntimeState),
+											 NULL);
+}
+
+#define PLyUnicode_FromStringAndSize_p \
+	(ltree_plpython_runtime_state()->PLyUnicode_FromStringAndSize_p)
 
 /* Static asserts verify that typedefs above match original declarations */
 StaticAssertVariableIsOfType(&PLyUnicode_FromStringAndSize, PLyUnicode_FromStringAndSize_t);

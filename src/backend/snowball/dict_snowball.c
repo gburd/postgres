@@ -82,9 +82,16 @@
 #include "snowball/libstemmer/stem_UTF_8_turkish.h"
 #include "snowball/libstemmer/stem_UTF_8_yiddish.h"
 
+/*
+ * Affine-safe: the stemmer automaton tables are read-only .data (const among_t
+ * a_0[] etc.), and all per-dictionary state (StemModule, the stemmer struct)
+ * is allocated in the dictionary's own memory context, never in a file-scope
+ * mutable global.  No state is shared across sessions that share a carrier.
+ */
 PG_MODULE_MAGIC_EXT(
 					.name = "dict_snowball",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
 PG_FUNCTION_INFO_V1(dsnowball_init);

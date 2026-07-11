@@ -30,7 +30,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "pg_prewarm",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
 );
 
 PG_FUNCTION_INFO_V1(pg_prewarm);
@@ -41,8 +42,6 @@ typedef enum
 	PREWARM_READ,
 	PREWARM_BUFFER,
 } PrewarmType;
-
-static PGIOAlignedBlock blockbuffer;
 
 /*
  * pg_prewarm(regclass, mode text, fork text,
@@ -75,6 +74,7 @@ pg_prewarm(PG_FUNCTION_ARGS)
 	AclResult	aclresult;
 	char		relkind;
 	Oid			privOid;
+	PGIOAlignedBlock blockbuffer;
 
 	/* Basic sanity checking. */
 	if (PG_ARGISNULL(0))

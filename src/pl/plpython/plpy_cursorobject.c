@@ -17,6 +17,7 @@
 #include "plpy_resultobject.h"
 #include "plpy_spi.h"
 #include "plpy_util.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 
 static PyObject *PLy_cursor_query(const char *query);
@@ -109,9 +110,13 @@ PLy_cursor_query(const char *query)
 #endif
 	cursor->portalname = NULL;
 	cursor->closed = false;
-	cursor->mcxt = AllocSetContextCreate(TopMemoryContext,
-										 "PL/Python cursor context",
-										 ALLOCSET_DEFAULT_SIZES);
+	cursor->mcxt = AllocSetContextCreate(
+		PgRuntimeGetOwnedMemoryContextWithSizes(
+			PgCurrentPLpythonMemoryContextRef(),
+			"PL/Python session",
+			ALLOCSET_DEFAULT_SIZES),
+		"PL/Python cursor context",
+		ALLOCSET_DEFAULT_SIZES);
 
 	/* Initialize for converting result tuples to Python */
 	PLy_input_setup_func(&cursor->result, cursor->mcxt,
@@ -210,9 +215,13 @@ PLy_cursor_plan(PyObject *ob, PyObject *args)
 #endif
 	cursor->portalname = NULL;
 	cursor->closed = false;
-	cursor->mcxt = AllocSetContextCreate(TopMemoryContext,
-										 "PL/Python cursor context",
-										 ALLOCSET_DEFAULT_SIZES);
+	cursor->mcxt = AllocSetContextCreate(
+		PgRuntimeGetOwnedMemoryContextWithSizes(
+			PgCurrentPLpythonMemoryContextRef(),
+			"PL/Python session",
+			ALLOCSET_DEFAULT_SIZES),
+		"PL/Python cursor context",
+		ALLOCSET_DEFAULT_SIZES);
 
 	/* Initialize for converting result tuples to Python */
 	PLy_input_setup_func(&cursor->result, cursor->mcxt,

@@ -48,7 +48,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "tablefunc",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
 static HTAB *load_categories_hash(char *cats_sql, MemoryContext per_query_ctx);

@@ -37,6 +37,7 @@
 #include <openssl/rand.h>
 
 #include "px.h"
+#include "utils/backend_runtime.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 
@@ -45,6 +46,34 @@
  */
 #define MAX_KEY		(512/8)
 #define MAX_IV		(128/8)
+
+#define PGCRYPTO_OPENSSL_RUNTIME_STATE_KEY "pgcrypto.openssl.runtime"
+
+typedef struct PgcryptoOpenSSLRuntimeState
+{
+	bool		initialized;
+	int			bf_is_strong;
+} PgcryptoOpenSSLRuntimeState;
+
+static PgcryptoOpenSSLRuntimeState *
+pgcrypto_openssl_runtime_state(void)
+{
+	PgcryptoOpenSSLRuntimeState *state;
+
+	state = (PgcryptoOpenSSLRuntimeState *)
+		PgRuntimeEnsureExtensionPrivateState(PGCRYPTO_OPENSSL_RUNTIME_STATE_KEY,
+											 sizeof(PgcryptoOpenSSLRuntimeState),
+											 NULL);
+	if (!state->initialized)
+	{
+		state->bf_is_strong = -1;
+		state->initialized = true;
+	}
+
+	return state;
+}
+
+#define bf_is_strong (pgcrypto_openssl_runtime_state()->bf_is_strong)
 
 /*
  * Hashes
@@ -449,7 +478,6 @@ bf_init(PX_Cipher *c, const uint8 *key, unsigned klen, const uint8 *iv)
 {
 	OSSLCipher *od = c->ptr;
 	unsigned	bs = gen_ossl_block_size(c);
-	static int	bf_is_strong = -1;
 
 	/*
 	 * Test if key len is supported. BF_set_key silently cut large keys and it
@@ -651,7 +679,7 @@ ossl_aes_cfb_init(PX_Cipher *c, const uint8 *key, unsigned klen, const uint8 *iv
  * aliases
  */
 
-static PX_Alias ossl_aliases[] = {
+static const PX_Alias ossl_aliases[] = {
 	{"bf", "bf-cbc"},
 	{"blowfish", "bf-cbc"},
 	{"blowfish-cbc", "bf-cbc"},

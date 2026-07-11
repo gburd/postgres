@@ -32,7 +32,8 @@
  * items.
  * ----------
  */
-static PLpgSQL_nsitem *ns_top = NULL;
+#define ns_top \
+	(plpgsql_current_session_state()->ns_top)
 
 
 /* ----------
