@@ -46,6 +46,8 @@
 #include "storage/proc.h"
 #include "storage/shmem.h"
 #include "tcop/tcopprot.h"
+#include "utils/backend_runtime.h"
+#include "utils/global_lifetime.h"
 #include "utils/injection_point.h"
 #include "utils/memdebug.h"
 #include "utils/ps_status.h"
@@ -128,16 +130,17 @@ const IoMethodOps pgaio_worker_ops = {
 
 
 /* GUCs */
-int			io_min_workers = 2;
-int			io_max_workers = 8;
-int			io_worker_idle_timeout = 60000;
-int			io_worker_launch_interval = 100;
+PG_GLOBAL_RUNTIME int io_min_workers = 2;
+PG_GLOBAL_RUNTIME int io_max_workers = 8;
+PG_GLOBAL_RUNTIME int io_worker_idle_timeout = 60000;
+PG_GLOBAL_RUNTIME int io_worker_launch_interval = 100;
 
 
-static int	io_worker_queue_size = 64;
-static int	MyIoWorkerId = -1;
-static PgAioWorkerSubmissionQueue *io_worker_submission_queue;
-static PgAioWorkerControl *io_worker_control;
+static PG_GLOBAL_RUNTIME int io_worker_queue_size = 64;
+#define MyIoWorkerId \
+	(PgCurrentAioState()->my_io_worker_id)
+static PG_GLOBAL_SHMEM PgAioWorkerSubmissionQueue *io_worker_submission_queue;
+static PG_GLOBAL_SHMEM PgAioWorkerControl *io_worker_control;
 
 
 static void
@@ -695,22 +698,28 @@ IoWorkerMain(const void *startup_data, size_t startup_data_len)
 	char		cmd[128];
 	int			hist_ios = 0;
 	int			hist_wakeups = 0;
+	bool		threaded_worker;
 
 	AuxiliaryProcessMainCommon();
 
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGINT, die);		/* to allow manually triggering worker restart */
+	threaded_worker = PgRuntimeIsThreadBacked(CurrentPgRuntime);
 
-	/*
-	 * Ignore SIGTERM, will get explicit shutdown via SIGUSR2 later in the
-	 * shutdown sequence, similar to checkpointer.
-	 */
-	pqsignal(SIGTERM, PG_SIG_IGN);
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
-	pqsignal(SIGALRM, PG_SIG_IGN);
-	pqsignal(SIGPIPE, PG_SIG_IGN);
-	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
-	pqsignal(SIGUSR2, SignalHandlerForShutdownRequest);
+	if (!threaded_worker)
+	{
+		pqsignal(SIGHUP, SignalHandlerForConfigReload);
+		pqsignal(SIGINT, die);	/* to allow manually triggering worker restart */
+
+		/*
+		 * Ignore SIGTERM, will get explicit shutdown via SIGUSR2 later in the
+		 * shutdown sequence, similar to checkpointer.
+		 */
+		pqsignal(SIGTERM, PG_SIG_IGN);
+		/* SIGQUIT handler was already set up by InitPostmasterChild */
+		pqsignal(SIGALRM, PG_SIG_IGN);
+		pqsignal(SIGPIPE, PG_SIG_IGN);
+		pqsignal(SIGUSR1, procsignal_sigusr1_handler);
+		pqsignal(SIGUSR2, SignalHandlerForShutdownRequest);
+	}
 
 	/* also registers a shutdown callback to unregister */
 	pgaio_worker_register();
@@ -759,7 +768,8 @@ IoWorkerMain(const void *startup_data, size_t startup_data_len)
 	/* We can now handle ereport(ERROR) */
 	PG_exception_stack = &local_sigjmp_buf;
 
-	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
+	if (!threaded_worker)
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 	while (!ShutdownRequestPending)
 	{
@@ -1030,6 +1040,7 @@ IoWorkerMain(const void *startup_data, size_t startup_data_len)
 			ResetLatch(MyLatch);
 		}
 
+		PgCurrentBackendApplyInterrupts();
 		CHECK_FOR_INTERRUPTS();
 
 		if (ConfigReloadPending)
@@ -1038,7 +1049,14 @@ IoWorkerMain(const void *startup_data, size_t startup_data_len)
 			int			io_min_workers_prev = io_min_workers;
 
 			ConfigReloadPending = false;
-			ProcessConfigFile(PGC_SIGHUP);
+
+			/*
+			 * Thread-backed workers receive postmaster decisions through
+			 * logical interrupts.  Keep the shared process configuration
+			 * reload in the postmaster process.
+			 */
+			if (!threaded_worker)
+				ProcessConfigFile(PGC_SIGHUP);
 
 			/*
 			 * Emit a WARNING if io_min_workers > io_max_workers.  If no bound
