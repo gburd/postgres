@@ -1244,8 +1244,37 @@ PgSessionResetPlanCacheClosedState(PgSession *session)
 		return;
 	}
 
-	Assert(dlist_is_empty(&session->plan_cache.saved_plan_list));
-	Assert(dlist_is_empty(&session->plan_cache.cached_expression_list));
+	/*
+	 * Drain any cached plans / expressions still saved at session close.
+	 *
+	 * In a process backend these die with the process; in a pooled/reused
+	 * session the memory is recycled, so they must be dropped explicitly or
+	 * they leak across sessions.  Prepared statements are already dropped by
+	 * PgSessionResetPreparedStatementClosedState (which runs before this bucket
+	 * -- see backend_runtime_session_reset_buckets.def), but SPI_keepplan()
+	 * plans (PL/pgSQL, RI triggers, ...) and GetCachedExpression() results are
+	 * NOT owned by that hash and can remain here.  Pop-until-empty: each
+	 * DropCachedPlan()/FreeCachedExpression() dlist_delete()s its own node.
+	 *
+	 * (Previously this only Assert()ed the lists empty, which held for the
+	 * prepared-statement case but tripped on retained SPI/expression plans.)
+	 */
+	while (!dlist_is_empty(&session->plan_cache.saved_plan_list))
+	{
+		CachedPlanSource *plansource =
+			dlist_container(CachedPlanSource, node,
+							dlist_head_node(&session->plan_cache.saved_plan_list));
+
+		DropCachedPlan(plansource);
+	}
+	while (!dlist_is_empty(&session->plan_cache.cached_expression_list))
+	{
+		CachedExpression *cexpr =
+			dlist_container(CachedExpression, node,
+							dlist_head_node(&session->plan_cache.cached_expression_list));
+
+		FreeCachedExpression(cexpr);
+	}
 
 	PgSessionInitializePlanCacheState(&session->plan_cache);
 }
