@@ -68,6 +68,7 @@ tests += {
       't/009_phase15_pooled_deep_waits_pinned.pl',
       't/010_phase16_pooled_crash_recovery.pl',
       't/011_phase16_pooled_plan_cache_teardown.pl',
+      't/012_phase16_pooled_plperl_affine.pl',
     ],
   },
 }
