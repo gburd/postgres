@@ -177,9 +177,6 @@ typedef struct BindParamCbData
 #define current_row_description_context (*PgCurrentRowDescriptionContextRef())
 #define current_row_description_buf (*PgCurrentRowDescriptionBufRef())
 
-/* common frontend protocol messages fit without palloc/repalloc */
-#define PG_INPUT_MESSAGE_STACK_BUFFER_SIZE	1024
-
 /* ----------------------------------------------------------------
  *		decls for routines only used in this file
  * ----------------------------------------------------------------
@@ -4902,7 +4899,6 @@ PgSessionStepUnprotected(PgSession *session, int max_messages,
 	MemoryContext message_context;
 	int			firstchar;
 	StringInfoData input_message;
-	char		input_message_data[PG_INPUT_MESSAGE_STACK_BUFFER_SIZE];
 
 	Assert(session != NULL);
 	Assert(max_messages >= 0);
@@ -4926,12 +4922,22 @@ PgSessionStepUnprotected(PgSession *session, int max_messages,
 	/*
 	 * Release storage left over from prior query cycle, and create a new query
 	 * input buffer in the cleared MessageContext.
+	 *
+	 * The input buffer MUST live in MessageContext, not on this frame's stack:
+	 * a simple/parse-query string returned by pq_getmsgstring() points into
+	 * this buffer and escapes via debug_query_string / pgstat activity.  On an
+	 * error mid-query the boundary longjmp in the CALLER (PgSessionRun...
+	 * UntilBoundary) unwinds this frame before PgSessionRecoverError() ->
+	 * EmitErrorReport() reads debug_query_string.  A stack buffer would be dead
+	 * by then (ASan detect_stack_use_after_return=1 catches exactly this);
+	 * MessageContext storage survives until the reset at the top of the next
+	 * loop iteration, which is the lifetime EmitErrorReport() relies on (same
+	 * as upstream PostgresMain).
 	 */
 	MemoryContextSwitchTo(message_context);
 	MemoryContextReset(message_context);
 
-	initStringInfoFromCallerBuffer(&input_message, input_message_data,
-								   sizeof(input_message_data));
+	initStringInfo(&input_message);
 
 	/*
 	 * Also consider releasing our catalog snapshot if any, so that it's not
