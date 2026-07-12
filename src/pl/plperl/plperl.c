@@ -55,28 +55,27 @@ EXTERN_C void boot_PostgreSQL__InServer__Util(pTHX_ CV *cv);
 EXTERN_C void boot_PostgreSQL__InServer__SPI(pTHX_ CV *cv);
 
 /*
- * Backend model: thread-per-session (NOT pooled-protocol-affine).
+ * Backend model: pooled-protocol-affine.
  *
  * plperl relocates its PG-visible globals per session (plperl_active_interp,
- * plperl_held_interp, the interp/proc hashes, ...), which is sufficient for
- * thread-per-session where each session owns its OS thread for life.  It is
- * NOT affine-safe: activate_interpreter() only calls PERL_SET_CONTEXT when the
- * *per-session* plperl_active_interp changes, but PERL_SET_CONTEXT sets the
- * OS-thread-global my_perl.  When two sessions interleave on one carrier
- * (affine), the thread's my_perl can point at the sibling's interpreter while
- * a resumed session believes its own is still active -- silent interpreter
- * corruption.
+ * plperl_held_interp, the interp/proc hashes, ...).  The one cross-session
+ * hazard on a shared carrier is the OS-thread-global "current interpreter"
+ * (my_perl): several affine sessions can run on the same carrier OS thread, and
+ * a sibling's PERL_SET_CONTEXT moves my_perl.  activate_interpreter() closes
+ * that hazard by re-asserting PERL_SET_CONTEXT whenever the thread's actual
+ * current interpreter (PERL_GET_CONTEXT) does not match this session's active
+ * interpreter -- not only when the per-session plperl_active_interp changes.
+ * That makes plperl safe under pooled-affine multiplexing while preserving the
+ * fast-path skip in thread-per-session (where my_perl never drifts).
  *
- * Defer with invariant: making plperl affine requires re-activating the
- * interpreter (PERL_SET_CONTEXT) on every session (re)entry, not only on a
- * per-session active-interp change -- the backend-model gate is the guard that
- * keeps plperl out of a pooled-affine backend until then.  Owned by Phase 16
- * (bundled procedural languages beyond PL/pgSQL).
+ * (Migratable pooling -- moving a live session between carriers mid-execution
+ * -- is a stronger promise plperl does not make; affine is exactly the model
+ * where a session stays on one carrier for a command's duration.)
  */
 PG_MODULE_MAGIC_EXT(
 					.name = "plperl",
 					.version = PG_VERSION,
-					PG_MODULE_MAGIC_BACKEND_MODEL_THREAD_PER_SESSION
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
 /**********************************************************************
@@ -743,7 +742,22 @@ select_perl_context(bool trusted)
 static void
 activate_interpreter(plperl_interp_desc *interp_desc)
 {
-	if (interp_desc && plperl_active_interp != interp_desc)
+	/*
+	 * Re-assert the thread's current Perl interpreter when either our
+	 * per-session view of the active interpreter changed, OR the OS thread's
+	 * actual current interpreter (my_perl, what PERL_GET_CONTEXT returns) does
+	 * not match the one we want.  The second case is what makes plperl
+	 * pooled-protocol-affine-safe: several sessions can run on the same carrier
+	 * OS thread, and a sibling's activate_interpreter() moves the thread-global
+	 * my_perl.  On a shared carrier plperl_active_interp (per session) alone
+	 * cannot tell us my_perl still points at OUR interpreter, so we must also
+	 * check PERL_GET_CONTEXT.  In thread-per-session mode the extra check is a
+	 * cheap read that is almost always already-equal, so the PERL_SET_CONTEXT
+	 * fast-path skip is preserved.
+	 */
+	if (interp_desc &&
+		(plperl_active_interp != interp_desc ||
+		 PERL_GET_CONTEXT != interp_desc->interp))
 	{
 		Assert(interp_desc->interp);
 		PERL_SET_CONTEXT(interp_desc->interp);
