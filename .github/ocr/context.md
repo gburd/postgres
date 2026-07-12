@@ -92,6 +92,31 @@ audience, also flag what reliably wastes reviewer time or draws rejection:
 - **Do not bikeshed:** keep style nits proportionate and clearly separated from
   substantive correctness findings.
 
+## Minimalism — the "ponytail" discipline
+The best code is the code you never wrote (YAGNI). Before accepting new code,
+apply the ladder: (1) Does this need to exist at all? (2) Can existing
+code/infrastructure already do it? (3) Is this the simplest thing that works?
+Flag: speculative scaffolding and config for a path that isn't wired yet; dead
+code and unused "flexibility" (fields, params, abstractions, options with no
+caller); premature abstraction (a helper used exactly once); knobs/GUCs/flags
+nobody asked for. Minimal, targeted changes that fit the existing patterns beat
+clever or general-purpose ones.
+
+## Comment & identity accuracy
+- Comments must describe what the code does **now**. Flag aspirational/
+  future-tense comments for behavior that already shipped ("will be", "for now",
+  "not yet", "future", and stale "TODO/FIXME/XXX/HACK"); comments that drifted
+  from the code they sit above; and incomplete/trailing comments. Comments
+  explain **why**, not what. No commented-out code.
+- **ASCII only** in source and diffs — no smart quotes, em-dashes, or ellipsis
+  characters.
+
+## Commit & versioning discipline
+- Conventional-commit style, imperative subject, one logical change per commit,
+  each commit building on its own.
+- Do **not** bump version numbers or generated version stamps (including
+  `catversion.h`) — that is the maintainer's job at commit/release time.
+
 Understand common list shorthand so your comments are precise and not
 miscommunicated: WIP (work in progress), GUC (config variable), WAL, LSN, OID,
 TOAST, FSM, TAM (table access method), RLS, DSM, 2PC, PITR, CIC (concurrent index
