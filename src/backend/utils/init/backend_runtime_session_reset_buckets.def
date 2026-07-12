@@ -9,19 +9,33 @@ PG_SESSION_RESET_BUCKET(tcop, PgSessionResetTcopClosedState(session))
 PG_SESSION_RESET_BUCKET(prepared_statement, PgSessionResetPreparedStatementClosedState(session))
 PG_SESSION_RESET_BUCKET(large_object, PgSessionResetLargeObjectClosedState(session))
 PG_SESSION_RESET_BUCKET(temp_file, PgSessionResetTempFileClosedState(session))
+/*
+ * extension_modules and function_manager must both run BEFORE plan_cache:
+ * they own the plans still on saved_plan_list at session close.
+ *   - extension_modules invokes registered session-reset callbacks (notably
+ *     PL/pgSQL's, which SPI_freeplan() -> DropCachedPlan() its SPI_keepplan()'d
+ *     statement plans);
+ *   - function_manager destroys the cached-function hash
+ *     (DestroyCachedFunctionHash -> delete_function_storage ->
+ *     sql_delete_callback -> DropCachedPlan), draining SQL-language function
+ *     plans that were SaveCachedPlan()'d.
+ * Both must precede PgSessionResetPlanCacheClosedState, which asserts the list
+ * empty.  (Ordering either after plan_cache tripped that assert on a pooled
+ * session that had run a PL/pgSQL or SQL-language function.)
+ */
+PG_SESSION_RESET_BUCKET(extension_modules, PgSessionResetExtensionModuleClosedState(session))
+PG_SESSION_RESET_BUCKET(function_manager, PgSessionResetFunctionManagerClosedState(session))
 PG_SESSION_RESET_BUCKET(plan_cache, PgSessionResetPlanCacheClosedState(session))
 PG_SESSION_RESET_BUCKET(on_commit, PG_RUNTIME_LIST_FREE_DEEP(session->on_commit.on_commits))
 PG_SESSION_RESET_BUCKET(xact_callbacks, PgSessionResetXactCallbackClosedState(session))
 PG_SESSION_RESET_BUCKET(backup, PgSessionResetBackupClosedState(session))
 PG_SESSION_RESET_BUCKET(async, PgSessionResetAsyncClosedState(session))
-PG_SESSION_RESET_BUCKET(function_manager, PgSessionResetFunctionManagerClosedState(session))
 PG_SESSION_RESET_BUCKET(datetime, PgSessionResetDateTimeClosedState(session))
 PG_SESSION_RESET_BUCKET(guc, PgSessionResetGUCClosedState(session))
 PG_SESSION_RESET_BUCKET(pgstat, PgSessionResetPgStatClosedState(session))
 PG_SESSION_RESET_BUCKET(vacuum, PgSessionResetVacuumClosedState(session))
 PG_SESSION_RESET_BUCKET(lock_wait, PgSessionResetLockWaitClosedState(session))
 PG_SESSION_RESET_BUCKET(namespace_state, PgSessionResetNamespaceClosedState(session))
-PG_SESSION_RESET_BUCKET(extension_modules, PgSessionResetExtensionModuleClosedState(session))
 PG_SESSION_RESET_BUCKET(encoding, PgSessionResetEncodingClosedState(session))
 PG_SESSION_RESET_BUCKET(text_search, PgSessionResetTextSearchClosedState(session))
 PG_SESSION_RESET_BUCKET(catalog_lookup, PgSessionResetCatalogLookupClosedState(session))
