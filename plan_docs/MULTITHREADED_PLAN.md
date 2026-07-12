@@ -1299,6 +1299,174 @@ Exit gate:
 - remaining duplication is either intentionally `keep`/`defer` with a recorded
   reason, not an unaudited accident.
 
+## Phase 19: Process-Fallback Backend For Incompatible Extensions
+
+Goal: turn the extension-model gate from a *fail-closed wall* into a
+*fail-safe route*. Today an extension that cannot run in a threaded/pooled
+carrier (default `PG_BACKEND_MODEL_PROCESS`, i.e. every unmarked third-party
+module) is rejected with an `ERROR` at load time. That satisfies
+defense-in-depth but not compatibility: a user who installs a legacy
+process-only extension in a `multithreaded=on` server currently loses that
+extension entirely. Phase 19 keeps the hard defensive gate but adds a
+compatibility escape hatch: a session that needs a process-only extension runs
+in a dedicated **forked, exec'd, supervised process backend** instead of on a
+carrier fiber, transparently to the client.
+
+This is the "both defense in depth and compatibility" requirement: the carrier
+runtime never loads unsafe code into the shared address space (defense), and
+the extension still works (compatibility) by running where it is safe -- an
+isolated process.
+
+### What exists today (audited 2026-07-12)
+
+- Default module model is `PG_BACKEND_MODEL_PROCESS` (fmgr.h): unmarked/legacy
+  modules are process-only by construction, so they are exactly the population
+  Phase 19 must route.
+- The gate is fail-closed: `dfmgr.c:check_module_backend_model` +
+  `module_backend_model_is_compatible` raise `ERROR`, `dlclose`, and refuse the
+  library when `module_model < required_model`, both at first load
+  (`load_external_function` / `internal_load_library`) and at every runtime
+  model transition (`check_loaded_modules_backend_model`, called from
+  `PgRuntimeSetExtensionBackendModel`).
+- Each runtime advertises what it *requires* of extensions:
+  `process_runtime -> PROCESS`, thread-per-session -> `THREAD_PER_SESSION`,
+  pooled -> `POOLED_PROTOCOL_AFFINE` (backend_runtime.c). The demanded model is
+  read at load time via `PgRuntimeGetExtensionBackendModel()`.
+- The postmaster already routes fork-vs-carrier per child in
+  `postmaster_child_launch_carrier` (launch_backend.c). Client backends under
+  pooled mode go to `postmaster_pooled_protocol_launch`; the classic
+  fork path is `postmaster_child_launch` -> `internal_forkexec` (EXEC_BACKEND)
+  or `fork_process` (non-EXEC_BACKEND).
+- Crucial constraint, already encoded in the tree: *once any thread carrier
+  exists, later fork-WITHOUT-exec is unsafe* -- `postmaster_child_launch_carrier`
+  returns `ENOSYS` for that case. A process-fallback backend therefore MUST use
+  **fork + exec** (`internal_forkexec` / `save_backend_variables` /
+  `SubPostmasterMain`), never bare `fork_process()`, so the child starts from a
+  clean single-threaded address space with no inherited locked mutexes.
+- There is no existing "escalate this session to a process" path. Phase 19 is
+  net-new routing + detection; the enforcement primitives it builds on already
+  exist.
+
+### The hard problem: detection timing
+
+Extensions become known to a backend at several points, and most are too late
+to fork cleanly (the session is already a running carrier fiber mid-command):
+
+1. `shared_preload_libraries` -- known at postmaster start, global, before any
+   client. (Easy: if any preloaded lib is process-only, the whole server is
+   process-only anyway; handled by existing gate at startup.)
+2. `local_preload_libraries` / `session_preload_libraries` -- known at session
+   startup, from GUCs, *before* the first command runs. (Good hook point.)
+3. `LOAD 'lib'` -- explicit, runs as a command inside an already-placed session.
+4. `CREATE EXTENSION` / first call into an extension function -- lazy load via
+   `fmgr` deep inside command execution, the worst case: the session is already
+   on a carrier fiber and fork-clean is impossible from there.
+
+The design principle: **decide the backend model at the session-placement
+boundary, from metadata, before the session is bound to a carrier** -- not at
+the dlopen deep in fmgr. Cases (1)-(2) are decidable at placement. Cases
+(3)-(4) need one of:
+
+- (preferred) a **catalog-driven pre-declaration**: `pg_extension` /
+  a new `pg_extension_backend_model` mapping (or a column) records each
+  installed extension's model, populated at `CREATE EXTENSION` time by reading
+  the control file / probing the module magic in a throwaway process. At session
+  placement the scheduler consults the catalog for the extensions the session is
+  entitled to use (search_path, installed extensions) and routes
+  conservatively; or
+- (fallback) a **lazy re-placement**: when `fmgr`/`dfmgr` hits an incompatible
+  module mid-command on a carrier, instead of `ERROR` it raises a distinct
+  internal condition that unwinds the command cleanly and re-dispatches the
+  session as a process backend (a "needs-process" retry). This is the
+  compatibility-of-last-resort path; it costs one aborted command + a
+  reconnect-like re-placement, but it is transparent to correctness (the
+  command had not committed -- the incompatible load is detected before the
+  extension's code runs).
+
+### Proposed model
+
+- Add a session backend-model *demand* that starts at the runtime default
+  (pooled/thread) and can only ever be **downgraded** toward `PROCESS` as
+  process-only extension needs are discovered. Downgrade is monotonic and
+  sticky for the session's life.
+- At session placement (`postmaster_pooled_protocol_launch` /
+  thread-per-session launch), if the session's known demand is already
+  `PROCESS` (from preload GUCs or catalog pre-declaration), route it straight to
+  `postmaster_child_launch` (fork+exec) as a **process-fallback backend**
+  instead of enqueuing it on the carrier pool.
+- If the demand is discovered late (case 3/4), unwind the current command
+  without committing and re-place the session as a process-fallback backend.
+  This requires the protocol/wait boundary to support a "detach and hand back to
+  postmaster for process launch" transition; scope this behind Phase 17
+  (advanced scheduler boundaries) if the clean-unwind machinery is not yet
+  available, and until then keep case 3/4 as the existing `ERROR` (documented,
+  fail-closed, no silent corruption).
+- Process-fallback backends are **supervised** exactly like classic process
+  backends: they are `PMChild`ren, counted against `MaxConnections`, reaped by
+  the postmaster, and subject to the same crash-restart policy as process mode
+  (they do NOT share the corruptible carrier address space, so a crash in one
+  is a normal single-backend crash, not a fail-stop of the whole server -- a
+  strictly better isolation story than an in-carrier extension crash). This is
+  the user's "spawn/monitor a backend" requirement, satisfied by the existing
+  postmaster child supervision.
+
+### Defense in depth (unchanged, layered)
+
+- Layer 1 (still primary): the fail-closed model gate. Unsafe code is NEVER
+  dlopen'd into a carrier address space. Phase 19 only adds a *route*, it does
+  not weaken the gate; an extension marked process-only still cannot load on a
+  carrier fiber.
+- Layer 2: monotonic session-demand downgrade -- once a session is known to need
+  a process, it can never be re-promoted onto a carrier.
+- Layer 3: catalog pre-declaration means the common case is decided before any
+  untrusted code runs.
+- Layer 4: the last-resort lazy re-placement detects the incompatibility at
+  dlopen, i.e. before the extension's functions execute, so a mis-declared
+  extension still cannot run in a carrier.
+
+### Likely changes
+
+- `dfmgr.c`: split "incompatible" into "reject" (marked incompatible, genuine
+  error) vs "needs-process" (default/process-only module in a threaded session),
+  and surface the latter as a routable condition instead of only `ERROR`.
+- Session placement (`launch_backend.c`): a `PG_BACKEND_LAUNCH_PROCESS_FALLBACK`
+  route that forks+execs a supervised process backend for a session whose demand
+  is `PROCESS`, coexisting with the carrier pool.
+- A session backend-model demand field on the logical backend/runtime, monotone
+  toward `PROCESS`, seeded from preload GUCs and (later) catalog metadata.
+- Optional catalog pre-declaration of per-extension backend model, populated at
+  `CREATE EXTENSION` by probing the module magic in an isolated process.
+- Metrics: count process-fallback sessions, late re-placements, and reject vs
+  fallback outcomes, so operators can see how much of their workload cannot run
+  threaded.
+
+### Validation
+
+- a process-only test extension used by a `multithreaded=on` session runs
+  correctly in a process-fallback backend (not rejected), while the same
+  extension marked threaded runs on a carrier;
+- preload-GUC and catalog-pre-declared process-only extensions are routed to a
+  process backend at placement, never touching a carrier;
+- a mis-declared extension is still refused from a carrier (defense holds);
+- process mode is byte-for-byte unaffected (no fallback path taken);
+- a crash inside a process-fallback backend is a normal single-backend crash,
+  not a whole-server fail-stop;
+- fork+exec is used (never fork-without-exec) once carriers exist -- assert the
+  `ENOSYS`-guarded invariant still holds;
+- the late re-placement path (if built) aborts the in-flight uncommitted command
+  and transparently continues the session as a process backend.
+
+### Sequencing and dependencies
+
+- The fork+exec process backend and preload-GUC/catalog detection are
+  independent of the deep-unwind re-placement; ship the pre-placement route
+  first (covers preload + catalog cases, the majority), keep case 3/4 as the
+  existing fail-closed `ERROR` until the clean-unwind machinery from Phase 17
+  exists, then add lazy re-placement.
+- Phase 16 owns the model metadata for bundled modules; Phase 19 owns the
+  *routing* for everything the gate still rejects. Phase 19 can proceed once
+  pooled placement (Phase 15) is real, which it now is.
+
 ## PL/pgSQL And In-Tree Modules Plan
 
 PL/pgSQL should be the first nontrivial module to support threaded mode.
@@ -1518,7 +1686,12 @@ Mitigation:
 - keep non-migratable sessions hard-affine, process-only, or rejected from
   pooled protocol mode;
 - provide session-state APIs;
-- migrate PL/pgSQL and selected in-tree modules first.
+- migrate PL/pgSQL and selected in-tree modules first;
+- for extensions that cannot run threaded at all (the fail-closed gate's reject
+  population), route the *session* to a forked+exec'd supervised
+  process-fallback backend rather than losing the extension -- defense (never
+  dlopen unsafe code into a carrier) plus compatibility (the extension still
+  runs, in isolation). See Phase 19.
 
 ### `PGPROC` Ownership
 

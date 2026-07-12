@@ -121,9 +121,14 @@ phase/gate owns completion.
   in-tree restart.
 - Do not overfit the design to WASM. Keep the main-loop and wait-boundary
   abstractions clean enough for a future host-driven runtime.
-- Existing third-party C extensions may be process-backend-only. Existing
-  third-party background workers may remain process-only or be rejected in
-  threaded mode unless explicit worker-runtime metadata opts them in.
+- Existing third-party C extensions may be process-backend-only. Rather than
+  losing them under `multithreaded=on`, a session that needs a process-only
+  extension is routed to a forked+exec'd supervised process-fallback backend
+  (defense: unsafe code never loads into a carrier address space; compatibility:
+  the extension still runs, isolated). See Phase 19 in
+  `plan_docs/MULTITHREADED_PLAN.md`. Existing third-party background workers may
+  remain process-only or be rejected in threaded mode unless explicit
+  worker-runtime metadata opts them in.
 - In-tree modules and important bundled languages, especially PL/pgSQL, should
   have a plausible path to work in threaded mode.
 
