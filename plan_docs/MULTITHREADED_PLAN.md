@@ -1493,6 +1493,43 @@ the monotone session-demand field can be prototyped locally ahead of it.
   *routing* for everything the gate still rejects. Phase 19 can proceed once
   pooled placement (Phase 15) is real, which it now is.
 
+### Progress
+
+- **[done] Increment 1 -- classification.** `incompatible_module_backend_model_error`
+  now distinguishes process-only modules (the default/legacy population the
+  fallback will serve) from mis-declared threaded-but-weaker modules, with an
+  actionable operator message + hint for the former ("not supported in the
+  threaded backend runtime"; run `multithreaded=off`, or adapt+mark). Gate stays
+  fail-closed. Validated: test_extensions regression 4/4. Commit `66dc4d18674`.
+  This is the classification the fork+exec route will branch on.
+- **[scoped, not started] Increment 2 -- fork+exec route (the meaty part).**
+  Audited: the entire fork+exec machinery is one `#ifdef EXEC_BACKEND` region --
+  `internal_forkexec` (~171 lines), `save_backend_variables` /
+  `restore_backend_variables` (~70 state transfers), `SubPostmasterMain`, AND
+  the child-side dispatch in `main.c:219` -- and `EXEC_BACKEND` is Windows-only
+  in this build. Making a Linux process-fallback child requires un-gating all of
+  it under a new condition (e.g. `EXEC_BACKEND || USE_XTC_PROCESS_FALLBACK`),
+  which is a multi-commit, high-blast-radius change to *the* backend-startup
+  path and MUST be validated end-to-end on a real pooled threaded server. Plan
+  it as its own series: (a) compile the machinery in under the new condition
+  with process mode still byte-identical; (b) add a
+  `PG_BACKEND_LAUNCH_PROCESS_FALLBACK` route from
+  `postmaster_pooled_protocol_launch` that fork+execs a supervised process
+  backend; (c) a forced test knob (session GUC) to route a session to the
+  fallback deterministically; (d) prove a process-only extension runs in the
+  fallback while the same extension marked threaded runs on a carrier; (e) prove
+  a crash in a fallback backend is a normal single-backend crash, not a
+  whole-server fail-stop.
+- **[after Increment 2] Increment 3 -- detection.** Monotone session-demand
+  field seeded from preload GUCs (+ later catalog per-extension model), consumed
+  by the Increment-2 route at placement. Deliberately deferred until the
+  consuming route exists (YAGNI: the demand field is inert without it).
+- **[after Phase 17] Increment 4 -- lazy re-placement** for late-discovered
+  incompatibility (LOAD / CREATE EXTENSION / first fmgr call): abort the
+  uncommitted command and re-place the session as a process backend. Needs the
+  Phase-17 clean-unwind machinery; until then case 3/4 stays fail-closed ERROR
+  (now with the Increment-1 actionable message).
+
 ## PL/pgSQL And In-Tree Modules Plan
 
 PL/pgSQL should be the first nontrivial module to support threaded mode.
