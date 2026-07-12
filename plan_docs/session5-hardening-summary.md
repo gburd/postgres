@@ -112,3 +112,32 @@ behavior.  Restart is external-supervision territory (systemd Restart=on-failure
 acts on the death-by-signal exit); a future in-tree separate watchdog/control
 process (candidate: libxtc xtc_xproc) could re-exec the server.  Documented in
 MULTITHREADED_PLAN.md "Threaded crash policy and restart_after_crash".
+
+## 7. Full-strictness ASan + TSan investigation (2026-07-12, libxtc v1.13.0)
+
+libxtc v1.13.0 added the sanitizer fiber-switch annotations we requested, so
+this closed the Session-5 sanitizer gap -- but only for ASan; TSan needs a
+different API.
+
+### ASan with detect_stack_use_after_return=1 -- DONE, found + fixed one real bug
+Built an ASan-instrumented libxtc (configure CFLAGS=-fsanitize=address) + an
+ASan PG, substituted the ASan libxtc at runtime (soname match), and ran the
+carrier TAP with the FULL-strictness option the Session-5 pass had to disable.
+It caught a genuine stack-use-after-return: the pooled input buffer was
+stack-allocated and a query-string pointer into it escaped via
+debug_query_string, read by EmitErrorReport() after the step frame unwound on an
+error longjmp.  Fixed in 2a8dabf1ad0 (initStringInfo -> MessageContext, like
+upstream).  After the fix: 007 (40/40) + 010 (6/6) run under
+detect_stack_use_after_return=1 with 0 AddressSanitizer errors.
+
+### TSan -- STILL BLOCKED, needs libxtc __tsan_*_fiber (clang-only)
+The v1.13.0 annotations use the ASan "stack switch" API
+(__sanitizer_start/finish_switch_fiber).  TSan does NOT implement that; it needs
+the distinct fiber-IDENTITY API __tsan_create_fiber / __tsan_switch_to_fiber /
+__tsan_destroy_fiber, and only clang's compiler-rt provides it (gcc's libtsan.so
+exports neither).  A gcc -fsanitize=thread build fails at runtime with
+"undefined symbol: __sanitizer_start_switch_fiber".  Requested the follow-up
+libxtc change (clang-guarded __tsan_*_fiber calls around the coro switch) in
+/tmp/libxtc-tsan-fiber-api-request.md.  TSan-on-the-carrier is deferred until
+libxtc adds it AND we build the whole stack with clang; recorded as a concrete
+unblock, not a vague "where feasible".
