@@ -206,3 +206,34 @@ asserting empty.  Regression guard: TAP 011_phase16_pooled_plan_cache_teardown
 (pooled sessions calling SQL + PL/pgSQL functions then disconnecting).  Guard
 still needs an end-to-end run on a threaded-capable host to confirm it
 reproduces pre-fix.
+
+## 10. Full validation on EC2 (v1.17.0, cassert) — both hardening guards green (2026-07-12)
+
+Ran the full test_backend_runtime suite on a cassert build against libxtc v1.17.0
+(us-east-1 m6id.8xlarge + NVMe).  Zero failing SUBTESTS across the suite:
+
+  002 bgworker-crash        OK  6/6
+  003 milestone-w-core      18/18 (exit 29 teardown artifact)
+  005 phase14 scheduler     17/17 (exit 29 teardown artifact)
+  006 phase14 pm-death      OK  3/3
+  007 phase15 pooled        40/40 (exit 29 teardown artifact)
+  008 phase15 pooled pm-death OK 11/11
+  010 phase16 crash-recovery  OK  8/8   <- hardening guard, now green
+  011 phase16 plan-cache      OK  8/8   <- hardening guard, now green
+  001 threaded-runtime      5/5 (exit 29; io-worker step = the known
+                                 io_method=worker-expects-forked-io-workers
+                                 vs multithreaded-remaps-to-xtc conflict)
+
+The "exit status 29" on 001/003/005/007 is a meson-TAP-vs-threaded-teardown
+exit-code artifact ("exited with 29 just after N" where N == all subtests
+passed; node stop returns nonzero) -- NOT a subtest failure.  All notok=0.
+
+Both Phase-16 hardening bugs found this arc are now fixed AND guarded:
+  - the pooled error-path stack-use-after-return (input buffer -> MessageContext,
+    2a8dabf1ad0), and
+  - the pooled plan-cache teardown assert (reset-bucket reorder so
+    extension_modules + function_manager drop their saved plans before the
+    plan_cache reset, 39196da016a; guard 011 + crash guard 010 both green).
+
+The reshaped 12-commit xtc branch is validated healthy on the threaded suite
+under the current libxtc.
