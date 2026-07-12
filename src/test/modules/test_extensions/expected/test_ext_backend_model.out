@@ -47,7 +47,7 @@ SELECT test_ext_backend_model_set('thread-per-session');
 LOAD 'test_ext_threaded';
 LOAD 'test_ext_backend_model';
 SELECT test_ext_backend_model_expect_load_error('test_ext',
-											   'backend model mismatch');
+											   'not supported in the threaded backend runtime');
  test_ext_backend_model_expect_load_error 
 ------------------------------------------
  ok
@@ -95,7 +95,7 @@ LOAD 'test_ext_threaded';
 LOAD 'plpgsql';
 SELECT test_ext_backend_model_expect_lookup_error('test_ext', 'test_ext',
 												 'thread-per-session',
-												 'backend model mismatch');
+												 'not supported in the threaded backend runtime');
  test_ext_backend_model_expect_lookup_error 
 --------------------------------------------
  ok
@@ -108,7 +108,7 @@ SELECT test_ext_backend_model_get();
 (1 row)
 
 SELECT test_ext_backend_model_expect_set_error('thread-per-session',
-											  'backend model mismatch');
+											  'not supported in the threaded backend runtime');
  test_ext_backend_model_expect_set_error 
 -----------------------------------------
  ok
