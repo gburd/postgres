@@ -1245,36 +1245,19 @@ PgSessionResetPlanCacheClosedState(PgSession *session)
 	}
 
 	/*
-	 * Drain any cached plans / expressions still saved at session close.
-	 *
-	 * In a process backend these die with the process; in a pooled/reused
-	 * session the memory is recycled, so they must be dropped explicitly or
-	 * they leak across sessions.  Prepared statements are already dropped by
-	 * PgSessionResetPreparedStatementClosedState (which runs before this bucket
-	 * -- see backend_runtime_session_reset_buckets.def), but SPI_keepplan()
-	 * plans (PL/pgSQL, RI triggers, ...) and GetCachedExpression() results are
-	 * NOT owned by that hash and can remain here.  Pop-until-empty: each
-	 * DropCachedPlan()/FreeCachedExpression() dlist_delete()s its own node.
-	 *
-	 * (Previously this only Assert()ed the lists empty, which held for the
-	 * prepared-statement case but tripped on retained SPI/expression plans.)
+	 * By the time this runs, every owner of a saved plan / cached expression
+	 * must have dropped it: prepared statements via
+	 * PgSessionResetPreparedStatementClosedState, and extension callers (most
+	 * importantly PL/pgSQL, which SPI_keepplan()s its statement plans) via
+	 * their registered session-reset callbacks in
+	 * PgSessionResetExtensionModuleClosedState.  Both of those reset buckets
+	 * are ordered BEFORE this one in backend_runtime_session_reset_buckets.def,
+	 * so the lists are empty here on a clean close.  (We must NOT drain them
+	 * ourselves: PL/pgSQL still holds and frees its own plans via SPI_freeplan
+	 * in its reset callback, so a blanket DropCachedPlan here would double-free.)
 	 */
-	while (!dlist_is_empty(&session->plan_cache.saved_plan_list))
-	{
-		CachedPlanSource *plansource =
-			dlist_container(CachedPlanSource, node,
-							dlist_head_node(&session->plan_cache.saved_plan_list));
-
-		DropCachedPlan(plansource);
-	}
-	while (!dlist_is_empty(&session->plan_cache.cached_expression_list))
-	{
-		CachedExpression *cexpr =
-			dlist_container(CachedExpression, node,
-							dlist_head_node(&session->plan_cache.cached_expression_list));
-
-		FreeCachedExpression(cexpr);
-	}
+	Assert(dlist_is_empty(&session->plan_cache.saved_plan_list));
+	Assert(dlist_is_empty(&session->plan_cache.cached_expression_list));
 
 	PgSessionInitializePlanCacheState(&session->plan_cache);
 }
