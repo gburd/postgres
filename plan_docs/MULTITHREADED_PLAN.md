@@ -994,11 +994,13 @@ landed on top of the pooled-as-default flip:
     interp/proc hashes + call state, explicit Tcl_Interp * on every call so no
     thread-global current-interp, set-once-read-only process init).  Loads and
     executes under both pooled default and thread-per-session.
-  - plperl -> THREAD_PER_SESSION (defer-with-invariant: activate_interpreter
-    keys PERL_SET_CONTEXT on the per-session active-interp but my_perl is
-    thread-global, so it diverges when sessions interleave on a carrier; the
-    model gate keeps it out of pooled backends until per-(re)entry re-activation
-    lands).
+  - plperl -> POOLED_PROTOCOL_AFFINE (per-(re)entry re-activation now landed:
+    activate_interpreter() re-asserts PERL_SET_CONTEXT whenever the thread's
+    actual current interpreter, PERL_GET_CONTEXT, no longer matches this
+    session's interpreter -- closing the my_perl-drift hazard when sessions
+    interleave on a carrier.  Validated on EC2 by TAP 012: 8 sessions on 2
+    carriers, 25 interleaved rounds + mid-flight re-stamp + nested-SPI plperl,
+    per-session isolation holds; plperl regression 14/14 unaffected.)
   - plpython -> PROCESS (defer-with-invariant: embedded CPython + PLy_* globals
     are process-global/GIL-serialized; needs per-session sub-interpreters or
     full relocation).
