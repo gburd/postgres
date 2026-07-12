@@ -141,3 +141,28 @@ libxtc change (clang-guarded __tsan_*_fiber calls around the coro switch) in
 /tmp/libxtc-tsan-fiber-api-request.md.  TSan-on-the-carrier is deferred until
 libxtc adds it AND we build the whole stack with clang; recorded as a concrete
 unblock, not a vague "where feasible".
+
+## 8. TSan (v1.16.0 has the fiber API) — code-unblocked, run blocked by nix glibc skew (2026-07-12)
+
+libxtc v1.16.0 landed the __tsan_*_fiber annotations we requested (XTC_TSAN_FIBERS
+guard in coro_fctx.c/coro_uctx.c, clang-only via __has_feature(thread_sanitizer)):
+verified __tsan_create_fiber/__tsan_switch_to_fiber/__tsan_destroy_fiber wired
+around every coro switch, with a captured scheduler fiber for switch-back.  So
+the CODE gap is closed.
+
+Built a clang-TSan libxtc via `nix develop .#clang` (CC=clang 21.1.8,
+-fsanitize=thread).  It configures/compiles, but the TSan RUNTIME cannot execute
+on this AL2023 box under nix: a trivial `clang -fsanitize=thread hi.c` binary
+dies at load with
+  symbol lookup error: .../glibc-2.40/libc.so.6: undefined symbol:
+  __nptl_change_stack_perm, version GLIBC_PRIVATE
+The symbol exists in nix glibc-2.40 but under a different GLIBC_PRIVATE version
+tag than clang's compiler-rt (libclang_rt.tsan, built for a different glibc
+private ABI) requests.  This is a nix-clang-rt <-> glibc version-tag skew
+(toolchain-env), NOT a libxtc/PG code problem, and NOT gcc's missing-fiber-API
+problem (that's fixed).
+
+Deferred: the TSan RUN needs a glibc-consistent clang stdenv (match compiler-rt
+to nix glibc, or run TSan outside the nix devshell against a system clang+glibc).
+Recorded as an environment blocker with a concrete cause; the annotations are
+proven present so the run will work once the toolchain is consistent.
