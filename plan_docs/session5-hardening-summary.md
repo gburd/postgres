@@ -191,10 +191,18 @@ CacheMemoryContext (backend-lifetime) and must be dropped before a POOLED
 session resets its plan-cache state for reuse; a process backend never hits this
 because the plans die with the process.
 
-Status: a LEAD, not a confirmed pooled bug -- it fired under a half-threaded
-misconfiguration, so it must be reproduced under a correctly-pooled run (via the
-meson TAP harness or a fixed temp-config) before fixing.  Recorded for the next
-hardening pass.  ACTION: add a TAP case that opens a pooled session, prepares +
-executes a statement (populating saved_plan_list), then closes the session, and
-assert clean teardown; if it reproduces, drain saved plans in the pooled
-session-close path before PgSessionResetPlanCacheClosedState.
+RESOLVED (2026-07-12, fix 7315006675d + guard 46f20b6bfe1).  Root cause found by
+code analysis: the reset-bucket order already drops prepared statements
+(PgSessionResetPreparedStatementClosedState) before the plan-cache reset, so the
+assert held for those -- but plans saved by SPI_keepplan() (PL/pgSQL, RI
+triggers) and SQL-language-function plans (SaveCachedPlan, dropped only on
+function-cache eviction) and GetCachedExpression() results are NOT owned by the
+prepared-statement hash and survive to session close.  A process backend never
+notices (they die with the process); a pooled/reused session recycles the
+memory, tripping the assert.  Fix: PgSessionResetPlanCacheClosedState() now
+DRAINS saved_plan_list + cached_expression_list (pop-until-empty via
+DropCachedPlan / FreeCachedExpression, both node-local full releases) instead of
+asserting empty.  Regression guard: TAP 011_phase16_pooled_plan_cache_teardown
+(pooled sessions calling SQL + PL/pgSQL functions then disconnecting).  Guard
+still needs an end-to-end run on a threaded-capable host to confirm it
+reproduces pre-fix.
