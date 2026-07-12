@@ -118,6 +118,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ocr"
           git show "origin/${DEFAULT_BRANCH}:.github/ocr/litellm.yaml" > "$RUNNER_TEMP/ocr/litellm.yaml"
           git show "origin/${DEFAULT_BRANCH}:.github/ocr/rule.json"   > "$RUNNER_TEMP/ocr/rule.json"
+          git show "origin/${DEFAULT_BRANCH}:.github/ocr/context.md"  > "$RUNNER_TEMP/ocr/context.md"
           echo "Config materialized:"; ls -l "$RUNNER_TEMP/ocr"
 
       - name: Setup Python
@@ -178,6 +179,7 @@ jobs:
             --from "origin/${{ steps.pr.outputs.base_ref }}" \
             --to "${{ steps.pr.outputs.head_sha }}" \
             --rule "$RUNNER_TEMP/ocr/rule.json" \
+            --background-file "$RUNNER_TEMP/ocr/context.md" \
             --concurrency 3 \
             --timeout 20 \
             --format json \
