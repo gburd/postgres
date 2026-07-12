@@ -75,7 +75,16 @@ ok($down, 'server fail-stops (stops accepting connections) after the pooled back
 
 # Bring the postmaster's bookkeeping in line, then restart and confirm the
 # on-disk state recovered cleanly and committed data survived.
+#
+# The fail-stop is a fast _exit(2) with no cleanup (correct: we don't touch
+# possibly-corrupt state), so the crashed postmaster leaves its stale lock files
+# behind -- postmaster.pid in the data dir and the .s.PGSQL.<port>.lock socket
+# lock in the socket dir.  An external supervisor/operator would clear them
+# before restart; do the same here, or $node->start refuses with "lock file ...
+# already exists".
 $node->{_pid} = undef;    # postmaster already exited; avoid a stop() on a dead pid
+unlink $node->data_dir . '/postmaster.pid';
+unlink glob($node->host . '/.s.PGSQL.*.lock');
 $node->start;
 is($node->safe_psql('postgres', 'SELECT count(*) FROM crash_survive;'),
 	'500', 'committed rows survive crash + restart with clean recovery');
