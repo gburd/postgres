@@ -195,15 +195,43 @@ jobs:
             const prNumber = parseInt('${{ steps.pr.outputs.number }}', 10);
             const commitSha = '${{ steps.pr.outputs.head_sha }}';
 
+            // Opus at high effort can emit dozens of findings. Posting them all
+            // one-by-one trips GitHub's SECONDARY rate limit (403 "content
+            // creation"), which is what made every run fail after the review
+            // was already generated. We (a) cap inline comments and overflow
+            // the rest into the summary, (b) prefer a single bulk createReview,
+            // and (c) throttle + back off with Retry-After on any fallback.
+            const MAX_INLINE = 25;
+            const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+            async function withRetry(fn, label) {
+              for (let attempt = 1; attempt <= 5; attempt++) {
+                try { return await fn(); }
+                catch (e) {
+                  const status = e.status || (e.response && e.response.status);
+                  const h = (e.response && e.response.headers) || {};
+                  const isRate = status === 403 || status === 429;
+                  if (!isRate || attempt === 5) throw e;
+                  let waitMs = 0;
+                  if (h['retry-after']) waitMs = parseInt(h['retry-after'], 10) * 1000;
+                  else if (h['x-ratelimit-reset']) waitMs = parseInt(h['x-ratelimit-reset'], 10) * 1000 - Date.now();
+                  if (!waitMs || Number.isNaN(waitMs) || waitMs < 0) waitMs = 1000 * Math.pow(2, attempt);
+                  waitMs = Math.min(waitMs, 60000) + 500;
+                  core.warning(`${label}: rate-limited (status ${status}); waiting ${Math.round(waitMs / 1000)}s (attempt ${attempt}/5)`);
+                  await sleep(waitMs);
+                }
+              }
+            }
+
             let result;
             try {
               result = JSON.parse(fs.readFileSync('/tmp/ocr-result.json', 'utf8'));
             } catch (e) {
-              const stderr = (() => { try { return fs.readFileSync('/tmp/ocr-stderr.log','utf8').trim(); } catch { return ''; } })();
-              await github.rest.issues.createComment({
+              const stderr = (() => { try { return fs.readFileSync('/tmp/ocr-stderr.log', 'utf8').trim(); } catch { return ''; } })();
+              await withRetry(() => github.rest.issues.createComment({
                 owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber,
                 body: `⚠️ **OCR** could not produce a review.\n\n\`\`\`\n${(stderr || e.message).slice(0, 8000)}\n\`\`\``,
-              });
+              }), 'error-comment');
               return;
             }
 
@@ -229,14 +257,14 @@ jobs:
             };
 
             if (comments.length === 0) {
-              await github.rest.issues.createComment({
+              await withRetry(() => github.rest.issues.createComment({
                 owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber,
                 body: `✅ **OCR**: ${result.message || 'No issues found.'}`,
-              });
+              }), 'no-issues-comment');
               return;
             }
 
-            const inline = [];
+            const inlineAll = [];
             const noLine = [];
             for (const c of comments) {
               const body = formatComment(c);
@@ -248,36 +276,60 @@ jobs:
               } else {
                 rc.line = c.end_line >= 1 ? c.end_line : c.start_line;
               }
-              inline.push(rc);
+              inlineAll.push({ rc, c });
             }
 
-            let summary = `🔍 **OCR** found **${comments.length}** issue(s).`;
-            summary += `\n- ${inline.length} inline, ${noLine.length} in summary`;
-            if (warnings.length) summary += `\n- ⚠️ ${warnings.length} warning(s) during review`;
-            for (const c of noLine) summary += '\n\n---\n\n' + formatMarkdown(c);
+            const inline = inlineAll.slice(0, MAX_INLINE).map(x => x.rc);
+            const overflow = inlineAll.slice(MAX_INLINE).map(x => x.c);
 
+            let summary = `🔍 **OCR** found **${comments.length}** issue(s).`;
+            summary += `\n- ${inline.length} inline, ${noLine.length + overflow.length} in summary`;
+            if (overflow.length) summary += ` (inline capped at ${MAX_INLINE})`;
+            if (warnings.length) summary += `\n- ⚠️ ${warnings.length} warning(s) during review`;
+            for (const c of noLine.concat(overflow)) summary += '\n\n---\n\n' + formatMarkdown(c);
+
+            // Preferred path: ONE createReview carrying every inline comment.
             try {
-              await github.rest.pulls.createReview({
+              await withRetry(() => github.rest.pulls.createReview({
                 owner: context.repo.owner, repo: context.repo.repo, pull_number: prNumber,
                 commit_id: commitSha, body: summary, event: 'COMMENT', comments: inline,
-              });
+              }), 'bulk-review');
+              return;
             } catch (e) {
-              // Fallback: a couple of comments may have bad positions; post them individually.
-              let ok = 0; const failed = [];
-              for (const rc of inline) {
-                try {
-                  await github.rest.pulls.createReview({
-                    owner: context.repo.owner, repo: context.repo.repo, pull_number: prNumber,
-                    commit_id: commitSha, body: '', event: 'COMMENT', comments: [rc],
-                  });
-                  ok++;
-                } catch (inner) { failed.push(`\`${rc.path}\`: ${inner.message}`); }
+              core.warning(`bulk createReview failed (${e.status || '?'}: ${e.message}); falling back to throttled per-comment posting`);
+            }
+
+            // Fallback: an invalid inline position (line not in the diff -> 422)
+            // rejects the whole bulk review. Post the summary, then each comment
+            // individually with a delay + backoff, skipping ones GitHub rejects.
+            let ok = 0; const failed = [];
+            try {
+              await withRetry(() => github.rest.pulls.createReview({
+                owner: context.repo.owner, repo: context.repo.repo, pull_number: prNumber,
+                commit_id: commitSha, body: summary, event: 'COMMENT',
+              }), 'summary-review');
+            } catch (err) { failed.push(`summary: ${err.message}`); }
+
+            for (const rc of inline) {
+              try {
+                await withRetry(() => github.rest.pulls.createReviewComment({
+                  owner: context.repo.owner, repo: context.repo.repo, pull_number: prNumber,
+                  commit_id: commitSha, path: rc.path, body: rc.body,
+                  ...(rc.start_line ? { start_line: rc.start_line, start_side: rc.start_side } : {}),
+                  line: rc.line, side: rc.side,
+                }), `comment ${rc.path}:${rc.line}`);
+                ok++;
+              } catch (inner) {
+                failed.push(`\`${rc.path}\` L${rc.line}: ${inner.message}`);
               }
-              let body = summary + `\n\n---\n📊 Posted ${ok}/${inline.length} inline comment(s).`;
-              if (failed.length) body += '\n\n<details><summary>Failed</summary>\n\n' + failed.join('\n') + '\n</details>';
-              await github.rest.issues.createComment({
-                owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber, body,
-              });
+              await sleep(1200); // stay under the secondary content-creation limit
+            }
+
+            if (failed.length) {
+              await withRetry(() => github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo, issue_number: prNumber,
+                body: `📊 OCR posted ${ok}/${inline.length} inline comment(s).\n\n<details><summary>${failed.length} could not be posted</summary>\n\n${failed.join('\n')}\n</details>`,
+              }), 'summary-failures');
             }
 
   # Companion job: OCR can't call MCP, so this separate agent ties the PR's
