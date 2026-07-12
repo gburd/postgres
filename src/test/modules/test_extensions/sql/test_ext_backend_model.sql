@@ -32,7 +32,7 @@ SELECT test_ext_backend_model_set('thread-per-session');
 LOAD 'test_ext_threaded';
 LOAD 'test_ext_backend_model';
 SELECT test_ext_backend_model_expect_load_error('test_ext',
-											   'backend model mismatch');
+											   'not supported in the threaded backend runtime');
 SELECT test_ext_backend_model_expect_load_error('test_ext_bad_backend_model',
 											   'invalid backend model');
 SELECT test_ext_backend_model_expect_load_error('test_ext_short_magic',
@@ -51,10 +51,10 @@ LOAD 'test_ext_threaded';
 LOAD 'plpgsql';
 SELECT test_ext_backend_model_expect_lookup_error('test_ext', 'test_ext',
 												 'thread-per-session',
-												 'backend model mismatch');
+												 'not supported in the threaded backend runtime');
 SELECT test_ext_backend_model_get();
 SELECT test_ext_backend_model_expect_set_error('thread-per-session',
-											  'backend model mismatch');
+											  'not supported in the threaded backend runtime');
 SELECT test_ext_backend_model_get();
 
 SELECT test_ext_backend_model_set('not-a-model');

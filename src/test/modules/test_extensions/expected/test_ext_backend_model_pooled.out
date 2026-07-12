@@ -32,7 +32,7 @@ SELECT test_ext_backend_model_expect_load_error('test_ext_threaded',
 (1 row)
 
 SELECT test_ext_backend_model_expect_load_error('test_ext',
-											   'backend model mismatch');
+											   'not supported in the threaded backend runtime');
  test_ext_backend_model_expect_load_error 
 ------------------------------------------
  ok
@@ -52,12 +52,8 @@ SELECT test_ext_backend_model_expect_load_error('test_ext_short_magic',
  ok
 (1 row)
 
-SELECT test_ext_backend_model_expect_load_error('plpgsql',
-											   'backend model mismatch');
- test_ext_backend_model_expect_load_error 
-------------------------------------------
- ok
-(1 row)
-
+-- plpgsql is pooled-protocol-affine, which satisfies the pooled-scheduler
+-- requirement set above, so it loads cleanly (it is not an incompatible module).
+LOAD 'plpgsql';
 SELECT test_ext_backend_model_set('not-a-model');
 ERROR:  unrecognized backend model "not-a-model"
