@@ -166,3 +166,35 @@ Deferred: the TSan RUN needs a glibc-consistent clang stdenv (match compiler-rt
 to nix glibc, or run TSan outside the nix devshell against a system clang+glibc).
 Recorded as an environment blocker with a concrete cause; the annotations are
 proven present so the run will work once the toolchain is consistent.
+
+## 9. Broad ASan regression attempt — one lead, needs clean re-run (2026-07-12)
+
+Tried running the full core regression (parallel_schedule) under gcc-ASan
+(detect_stack_use_after_return=1) + gcc-ASan libxtc in pooled mode, to hunt more
+SUAR/UAF-class bugs like the one fixed in 2a8dabf1ad0.
+
+The run was MISCONFIGURED: threaded_pooled.conf did not engage the pooled
+scheduler under pg_regress ("pooled protocol scheduler enabled" never logged),
+and the postmaster emitted 100x "could not fork new process for connection:
+Function not implemented" -- i.e. threading was half-on (multithreaded=on but
+connections hit the fork path, refused by the once-a-carrier-started guard).
+Same pg_regress-vs-threaded-config friction seen earlier; the meson TAP harness
+handles this correctly but a bare pg_regress --temp-config does not fully.
+
+In that degraded state, ONE cassert assertion fired once:
+  TRAP: failed Assert("dlist_is_empty(&session->plan_cache.saved_plan_list)")
+  backend_runtime_teardown.c:1247, in PgSessionResetPlanCacheClosedState
+  <- PgBackendExitCleanup <- PgBackendExit
+i.e. a session was reset/closed with SAVED cached plans still on
+saved_plan_list.  Saved plans (SaveCachedPlan, plancache.c) live in
+CacheMemoryContext (backend-lifetime) and must be dropped before a POOLED
+session resets its plan-cache state for reuse; a process backend never hits this
+because the plans die with the process.
+
+Status: a LEAD, not a confirmed pooled bug -- it fired under a half-threaded
+misconfiguration, so it must be reproduced under a correctly-pooled run (via the
+meson TAP harness or a fixed temp-config) before fixing.  Recorded for the next
+hardening pass.  ACTION: add a TAP case that opens a pooled session, prepares +
+executes a statement (populating saved_plan_list), then closes the session, and
+assert clean teardown; if it reproduces, drain saved plans in the pooled
+session-close path before PgSessionResetPlanCacheClosedState.
