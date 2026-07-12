@@ -1424,6 +1424,30 @@ the dlopen deep in fmgr. Cases (1)-(2) are decidable at placement. Cases
   dlopen, i.e. before the extension's functions execute, so a mis-declared
   extension still cannot run in a carrier.
 
+### Feasibility finding (audited 2026-07-12): fork+exec machinery is Windows-gated
+
+The clean fork+exec child-launch path (`internal_forkexec`,
+`save_backend_variables` / `restore_backend_variables`, `SubPostmasterMain`)
+exists in `launch_backend.c` but its call sites are wrapped in
+`#ifdef EXEC_BACKEND`, and `EXEC_BACKEND` is defined only on Windows
+(`pg_config_manual.h`: `#if defined(WIN32) && !defined(__CYGWIN__)`). On Linux
+the live child launch is bare `fork_process()` (no exec) -- exactly the path the
+carrier code already refuses (`ENOSYS`) once carriers exist, because
+fork-without-exec in a multithreaded process is unsafe.
+
+Consequence for Phase 19: the process-fallback route on Linux CANNOT reuse the
+default Linux launch path; it must bring the fork+exec machinery in even in a
+non-`EXEC_BACKEND` build, scoped to the fallback children only. Concretely,
+either (a) compile `internal_forkexec` + `save/restore_backend_variables` +
+`SubPostmasterMain` unconditionally (they are mostly already unguarded as
+functions; only the *call site* and a few helpers are `#ifdef`'d) and add a
+fallback-only launch entry that always fork+execs, or (b) gate a new
+`USE_XTC_PROCESS_FALLBACK` that pulls in the same machinery. This is postmaster
+child-launch hot-path work: it must be validated end-to-end on a real pooled
+threaded server (a mistake breaks all backend startup), so the implementation
+slice is EC2-gated, not a local-only change. The pre-placement detection and
+the monotone session-demand field can be prototyped locally ahead of it.
+
 ### Likely changes
 
 - `dfmgr.c`: split "incompatible" into "reject" (marked incompatible, genuine
