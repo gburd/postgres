@@ -380,7 +380,7 @@ check_timing_clock_source(int *newval, void **extra, GucSource source)
 	 * run pg_initialize_timing(). Instead, TSC will be initialized via
 	 * restore_backend_variables.
 	 */
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 	if (!timing_initialized)
 		return true;
 #else
@@ -403,7 +403,7 @@ check_timing_clock_source(int *newval, void **extra, GucSource source)
 void
 assign_timing_clock_source(int newval, void *extra)
 {
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 	if (!timing_initialized)
 		return;
 #else
