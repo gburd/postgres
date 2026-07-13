@@ -500,8 +500,16 @@ dsm_postmaster_shutdown(int code, Datum arg)
 static void
 dsm_backend_startup(void)
 {
-#ifdef EXEC_BACKEND
-	if (IsUnderPostmaster)
+#ifdef FORKEXEC_BACKEND
+	/*
+	 * A fork+exec'd child did not inherit the DSM control segment mapping and
+	 * must attach it, using the handle recorded from the main shmem header by
+	 * dsm_set_control_handle() during PGSharedMemoryReAttach().  A normally-
+	 * forked child inherited dsm_control through the fork and must NOT re-attach
+	 * (its dsm_control_handle is 0).  PG_BACKEND_WAS_FORKEXECED is a constant
+	 * true under EXEC_BACKEND, so upstream behaviour is unchanged there.
+	 */
+	if (IsUnderPostmaster && PG_BACKEND_WAS_FORKEXECED)
 	{
 		void	   *control_address = NULL;
 
