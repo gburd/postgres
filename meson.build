@@ -1140,6 +1140,18 @@ xtcopt = get_option('xtc')
 xtc = dependency('xtc', required: xtcopt)
 if xtc.found()
   cdata.set('USE_XTC_CARRIER', 1)
+
+  # Phase 19 Increment 2: a session that needs a process-only extension under
+  # multithreaded=on is served by a forked+exec'd process-fallback backend
+  # (the carrier process is multithreaded, so plain fork() is unsafe; only
+  # fork+exec gives a clean child).  USE_XTC_PROCESS_FALLBACK compiles the
+  # fork+exec machinery (internal_forkexec / save+restore backend variables /
+  # SubPostmasterMain / shmem reattach) into non-Windows builds so that path is
+  # AVAILABLE; it does not change any runtime default.  Windows already gets it
+  # via EXEC_BACKEND.  See plan_docs/MULTITHREADED_PHASE19_INCREMENT2_DESIGN.md.
+  if host_system != 'windows'
+    cdata.set('USE_XTC_PROCESS_FALLBACK', 1)
+  endif
 endif
 
 

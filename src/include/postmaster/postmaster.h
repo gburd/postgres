@@ -73,7 +73,7 @@ typedef struct
 	dlist_node	elem;			/* list link in ActiveChildList */
 } PMChild;
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int num_pmchild_slots;
 #endif
 
@@ -158,7 +158,7 @@ extern pid_t postmaster_child_launch(BackendType child_type,
 									 size_t startup_data_len,
 									 const struct ClientSocket *client_sock);
 const char *PostmasterChildName(BackendType child_type);
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 pg_noreturn extern void SubPostmasterMain(int argc, char *argv[]);
 #endif
 

@@ -527,7 +527,7 @@ dsm_backend_startup(void)
 	dsm_init_done = true;
 }
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 /*
  * When running under EXEC_BACKEND, we get a callback here when the main
  * shared memory segment is re-attached, so that we can record the control

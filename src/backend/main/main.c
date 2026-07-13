@@ -212,7 +212,7 @@ main(int argc, char *argv[])
 			BootstrapModeMain(argc, argv, false);
 			break;
 		case DISPATCH_FORKCHILD:
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 			SubPostmasterMain(argc, argv);
 #else
 			Assert(false);		/* should never happen */
@@ -251,7 +251,7 @@ parse_dispatch_option(const char *name)
 		 */
 		if (i == DISPATCH_FORKCHILD)
 		{
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 			if (strncmp(DispatchOptionNames[DISPATCH_FORKCHILD], name,
 						strlen(DispatchOptionNames[DISPATCH_FORKCHILD])) == 0)
 				return DISPATCH_FORKCHILD;

@@ -713,6 +713,15 @@
  * Keep both build systems in sync when this symbol changes. */
 #undef USE_XTC_CARRIER
 
+/* Define to 1 to compile the fork+exec process-fallback backend machinery on
+ * non-Windows carrier builds (Phase 19 Increment 2): a session needing a
+ * process-only extension under multithreaded=on is served by a forked+exec'd
+ * process backend.  This only makes the path available; it changes no runtime
+ * default.  The meson build sets it here when USE_XTC_CARRIER is set and the
+ * host is not Windows; the autoconf build defines it via
+ * -DUSE_XTC_PROCESS_FALLBACK.  Keep both build systems in sync. */
+#undef USE_XTC_PROCESS_FALLBACK
+
 /* Define to 1 to build with XML support. (--with-libxml) */
 #undef USE_LIBXML
 
