@@ -1,0 +1,40 @@
+-- Tests that the buffer manager's cooling-stage evictor admits a freshly
+-- loaded page COOL (usagecount = 0), and only promotes it to HOT
+-- (usagecount = 1) on a second, distinct touch -- the property that makes
+-- a one-touch scan unable to pollute the HOT working set.  See
+-- src/backend/storage/buffer/bufmgr.c (BufferAlloc, PinBuffer) and
+-- src/include/storage/buf_internals.h (BUF_COOLSTATE_*).
+CREATE EXTENSION pg_buffercache;
+
+CREATE TABLE cooltest (a int, b text) WITH (autovacuum_enabled = off);
+INSERT INTO cooltest SELECT i, repeat('x', 200) FROM generate_series(1, 200) i;
+
+-- Start from a known state: no buffers for this relation resident.
+-- Without this, the first touch below could land on an already-resident
+-- (possibly already-HOT) buffer left over from the INSERT above, which
+-- would defeat the "fresh admission is COOL" check that follows. Only
+-- the side effect matters here, not the return value -- evict_relation's
+-- own correctness (permissions, NULL handling, etc.) is pg_buffercache's
+-- own regress suite's job, not this one's.
+DO $$ BEGIN PERFORM pg_buffercache_evict_relation('cooltest'::regclass); END $$;
+
+-- usagecount is the raw coolstate+refbit field (BUF_STATE_GET_COOLSTATE()
+-- in buf_internals.h): bit 0 is coolstate (0 = COOL, 1 = HOT), bit 1 is
+-- the second-chance ref bit that PinBuffer sets on every pin (not just
+-- promotions).  We alias bit 0 as "hotstate" below -- 1 means HOT, 0
+-- means COOL -- since that reads more naturally than "coolstate = 1"
+-- meaning hot.  "(usagecount & 1)" isolates that bit, independent of the
+-- ref bit's incidental value.
+
+-- First touch: admits block 0 fresh.  Must land COOL (0), not HOT.
+SELECT count(*) FROM cooltest WHERE ctid = '(0,1)';
+SELECT usagecount & 1 AS hotstate FROM pg_buffercache
+ WHERE relfilenode = pg_relation_filenode('cooltest'::regclass)
+   AND relforknumber = 0 AND relblocknumber = 0;
+
+-- Second touch: same block, still resident (nothing evicted it in
+-- between).  This is the "rescue" -- must promote to HOT (1).
+SELECT count(*) FROM cooltest WHERE ctid = '(0,1)';
+SELECT usagecount & 1 AS hotstate FROM pg_buffercache
+ WHERE relfilenode = pg_relation_filenode('cooltest'::regclass)
+   AND relforknumber = 0 AND relblocknumber = 0;

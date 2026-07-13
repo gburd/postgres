@@ -1,0 +1,31 @@
+Regression tests for the buffer manager's HOT/COOL cooling-stage eviction
+policy (src/backend/storage/buffer/freelist.c and bufmgr.c).
+
+Covers the properties that motivated removing BufferAccessStrategy for
+VACUUM/big sequential scans/COPY: a fresh admission starts COOL (not
+HOT), promotion to HOT requires a genuine second touch, and eviction
+always prefers an already-COOL buffer over demoting a HOT one. Observed
+and controlled entirely through contrib/pg_buffercache's usagecount
+column and eviction helper functions -- no changes to the buffer manager
+itself.
+
+test_bufmgr_eviction.conf's settings exist specifically to make the
+eviction test deterministic, not just for speed:
+
+- shared_buffers = 8MB: small enough that a modestly-sized flood
+  relation can force real reclaim cycles through the whole pool, but
+  large enough that ordinary catalog overhead from the test's own
+  setup queries doesn't evict the tracked blocks before the flood
+  even runs. Too small and the test's own bookkeeping perturbs the
+  very state it's trying to observe.
+- bgwriter_lru_maxpages = 0: BgBufferSync's own demand-driven
+  pre-cooling runs on its own schedule (bgwriter_delay, default
+  200ms) regardless of whether the foreground sweep needs a HOT
+  victim, and this test's whole run is well under that. Left enabled
+  it was the confirmed cause of ~25% intermittent failures -- a
+  second, unrelated source of HOT->COOL demotion that has nothing to
+  do with the foreground "always prefer COOL" property under test.
+  Disabling it made the test 10/10 stable.
+- autovacuum = off, checkpoint_timeout = 1h: remove other background
+  sources of buffer touches during the test's brief (sub-second)
+  window, so nothing but the test itself moves the tracked blocks.
