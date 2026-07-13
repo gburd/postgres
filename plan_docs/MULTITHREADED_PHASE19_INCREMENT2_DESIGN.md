@@ -276,3 +276,28 @@ fail-stop.  Only THEN does the isolation contract 013 pins actually hold.
 Both are narrow, well-characterized, and independent of the (working) route +
 state-restore logic.  Nothing shipped is broken: the route is default-off and
 process / normal-threaded modes are unaffected.
+
+## Bug B REFRAMED: process-fallback crash SHOULD fail-stop (2026-07-13)
+
+On closer analysis Bug B was mis-stated.  A process-fallback backend is isolated
+at the ADDRESS-SPACE level (its crash cannot scribble on carrier fibers' stacks)
+-- but NOT at the SHARED-MEMORY level.  Like ANY backend (process mode included),
+a crashing backend may leave shared buffers/locks inconsistent.  Process mode
+handles that by SIGQUIT'ing all backends and reinitializing shared memory
+(HandleChildCrash -> HandleFatalError(PMQUIT_FOR_CRASH)).  Under multithreaded=on
+the postmaster cannot safely SIGQUIT+reinit while carrier threads run inside its
+own process, so the correct policy is the SAME fail-stop as a carrier crash.
+
+So the current behavior (process-fallback crash -> "terminating threaded server
+runtime after child crash" -> fail-stop) is CORRECT, not a bug.  013 was rewritten
+to pin that contract (fail-stop + committed data survives + external restart
+recovers), mirroring 010 for carrier crashes.  The address-space isolation of the
+fallback process remains valuable (unsafe extension containment) but does not
+change the shared-memory crash-recovery policy.
+
+Net: Increment 2(e) is "fail-stop, like all backend crashes under multithreaded",
+guarded by 013.  Only Bug A (config-order: GUC lines after `multithreaded` in the
+file are dropped) remains an open correctness nuisance -- workaround is to place
+fallback/sysv BEFORE multithreaded in postgresql.conf (013 does this).  Bug A root
+cause not yet found (not in the ThreadedGUCLock mutex nor the IsUnderPostmaster
+backend-replay paths; those don't run in the postmaster during SelectConfigFiles).

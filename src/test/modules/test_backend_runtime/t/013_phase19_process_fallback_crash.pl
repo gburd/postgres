@@ -1,16 +1,26 @@
 # Copyright (c) 2026, PostgreSQL Global Development Group
 #
-# Phase 19 Increment 2(e): crash isolation of a process-fallback backend.
+# Phase 19 Increment 2(e): crash behavior of a process-fallback backend.
 #
-# A backend that runs on a carrier fiber shares the multithreaded postmaster's
-# address space, so its crash is FAIL-STOP -- it brings the whole server down
-# (pinned by 010_phase16_pooled_crash_recovery).  A process-fallback backend is
-# the opposite: it is a real, isolated, forked+exec'd process, so a crash in it
-# must be contained exactly like a process-mode backend crash -- the server
-# stays up, sibling sessions survive, and new connections keep working.
+# A process-fallback backend (used for a session that cannot run on a
+# shared-address-space carrier) is a real, isolated, forked+exec'd process, so
+# its crash does NOT corrupt the postmaster's/carriers' address space.  BUT --
+# like ANY backend, process-mode included -- a crashing backend may have left
+# *shared memory* (buffers, locks, ...) inconsistent.  Process mode responds to
+# that by SIGQUIT'ing all backends and reinitializing shared memory; under
+# multithreaded=on the postmaster cannot safely do that while carrier threads
+# run inside its own process, so the correct, deliberate policy is the same
+# FAIL-STOP as a carrier-fiber crash (010): the crash is contained, committed
+# data survives, and an external supervisor restarts a clean postmaster.
 #
-# This test pins that contract.  It requires the fork+exec process-fallback
-# route (xtc_force_process_fallback=on), which needs shared_memory_type=sysv.
+# This test pins that contract for the process-fallback route.  The address-space
+# isolation of the fallback process is still valuable (an unsafe extension cannot
+# scribble on sibling fibers' stacks), but it does not change the shared-memory
+# crash-recovery policy, which remains fail-stop.
+#
+# Requires the fork+exec route (xtc_force_process_fallback=on + sysv).  Note the
+# config ORDER: the fallback/sysv GUCs must precede multithreaded=on (a known
+# config-application order sensitivity, see the Phase 19 design doc, Bug A).
 
 use strict;
 use warnings FATAL => 'all';
@@ -21,31 +31,26 @@ use Test::More;
 
 my $node = PostgreSQL::Test::Cluster->new('phase19_process_fallback_crash');
 $node->init;
+# Order matters: fallback + sysv BEFORE multithreaded (Bug A workaround).
 $node->append_conf(
 	'postgresql.conf', qq(
-multithreaded = on
-shared_memory_type = sysv
 xtc_force_process_fallback = on
-restart_after_crash = on
+shared_memory_type = sysv
+multithreaded = on
 ));
 $node->start;
 
 is($node->safe_psql('postgres', 'SHOW multithreaded'), 'on',
 	'threaded runtime active');
 
-# Known gap (Phase 19 follow-up): under multithreaded=on, xtc_force_process_fallback
-# does not co-apply with shared_memory_type=sysv from the same config file -- the
-# postmaster reads them as default, so the fork+exec route is not engaged and
-# backends run on carriers.  Until that config-application bug is fixed this test
-# cannot exercise the isolation contract, so skip cleanly rather than fail.  (The
-# fork+exec route itself is validated in the Increment 2(c) work; this guard pins
-# crash ISOLATION once the route can be forced under multithreaded=on.)
+# If the fork+exec route did not engage (config-application order bug, or a
+# build without the fallback), skip rather than mis-report.
 if ($node->safe_psql('postgres', 'SHOW xtc_force_process_fallback') ne 'on'
 	or $node->safe_psql('postgres', 'SHOW shared_memory_type') ne 'sysv')
 {
 	$node->stop;
 	plan skip_all =>
-	  'process-fallback route not engaged (xtc_force_process_fallback + sysv did not co-apply under multithreaded=on; Phase 19 follow-up)';
+	  'process-fallback route not engaged (xtc_force_process_fallback + sysv did not co-apply)';
 }
 is($node->safe_psql('postgres', 'SHOW xtc_force_process_fallback'),
 	'on', 'process-fallback route forced');
@@ -53,43 +58,42 @@ is($node->safe_psql('postgres', 'SHOW xtc_force_process_fallback'),
 $node->safe_psql('postgres',
 	'CREATE EXTENSION test_backend_runtime_threaded;');
 
-# Durable data written before the crash must survive.
+# Durable, committed data that must survive across the crash + restart.
 $node->safe_psql('postgres',
-	'CREATE TABLE survive(id int); INSERT INTO survive SELECT generate_series(1, 100);');
+	'CREATE TABLE crash_survive(id int); INSERT INTO crash_survive SELECT generate_series(1, 500);');
 
-# A long-lived sibling session (its own fork+exec process backend) that must
-# NOT be affected by another backend's crash.
-my $sibling = $node->background_psql('postgres', timeout => 30);
-is($sibling->query_safe('SELECT 111;'), '111', 'sibling process-fallback backend is live');
-
-# Crash one backend.  In a dedicated fork+exec process this is a plain
-# single-process SIGSEGV; the postmaster should reap it and, with
-# restart_after_crash=on, recover -- NOT fail-stop the whole server.
-my ($rc, $out, $err) = ('', '', '');
-$rc = $node->psql('postgres',
+# Crash a process-fallback backend.
+my ($ret, $out, $err) = ('', '', '');
+$ret = $node->psql('postgres',
 	'SELECT test_backend_runtime_crash_current_backend();',
 	stderr => \$err);
-isnt($rc, 0, 'crashing backend reports failure to its own client');
+isnt($ret, 0, 'crashing backend returns a client-visible failure');
+like($err,
+	qr/server closed the connection|terminating connection|connection to server/,
+	'client observes the process-fallback backend crash');
 
-# The server must still be up.  Poll briefly (the postmaster may run a fast
-# crash-recovery cycle; a process-backend crash does NOT bring the server down).
-my $up = 0;
-for my $i (1 .. 30)
+# Fail-stop: the postmaster terminates after the crash (shared-memory safety;
+# in-process reinit is unsafe with live carriers).  Poll until the server stops
+# accepting connections.
+my $down = 0;
+for (1 .. 120)
 {
 	my ($r) = $node->psql('postgres', 'SELECT 1;');
-	if ($r == 0) { $up = 1; last; }
+	if ($r != 0) { $down = 1; last; }
 	sleep 1;
 }
-ok($up, 'server stays up after a process-fallback backend crash (not fail-stop)');
+ok($down, 'server fail-stops after a process-fallback backend crash');
 
-# Committed data survived.
-is($node->safe_psql('postgres', 'SELECT count(*) FROM survive;'),
-	'100', 'committed data survived the isolated backend crash');
-
-# A brand-new connection works, and it is still a process-fallback backend.
+# External restart (clear the fail-stop's stale lock files, as an operator would)
+# and confirm clean recovery + committed data survived.
+$node->{_pid} = undef;
+unlink $node->data_dir . '/postmaster.pid';
+unlink glob($node->host . '/.s.PGSQL.*.lock');
+$node->start;
+is($node->safe_psql('postgres', 'SELECT count(*) FROM crash_survive;'),
+	'500', 'committed data survives the process-fallback crash + restart');
 is($node->safe_psql('postgres', 'SELECT 42;'), '42',
-	'new connections work after the isolated crash');
+	'server usable after restart');
 
-$sibling->quit;
 $node->stop;
 done_testing();
