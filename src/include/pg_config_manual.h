@@ -132,6 +132,25 @@
 #endif
 
 /*
+ * FORKEXEC_BACKEND is true when the fork()+exec() backend-launch machinery
+ * (internal_forkexec, save/restore_backend_variables, SubPostmasterMain,
+ * shared-memory/semaphore re-attach, non-default GUC serialization) must be
+ * compiled in.  That is always the case under EXEC_BACKEND, and additionally
+ * under USE_XTC_PROCESS_FALLBACK (Phase 19 Increment 2), where a session that
+ * needs a process-only extension under multithreaded=on is served by a
+ * forked+exec'd process backend -- the carrier process is multithreaded, so a
+ * plain fork() child would be unsafe, only fork+exec gives a clean image.
+ *
+ * FORKEXEC_BACKEND only controls COMPILATION of that machinery.  It does not by
+ * itself change any launch default: under plain EXEC_BACKEND all backends
+ * fork+exec, but under USE_XTC_PROCESS_FALLBACK the default remains fork /
+ * carrier and fork+exec is used only for the explicit fallback route.
+ */
+#if defined(EXEC_BACKEND) || defined(USE_XTC_PROCESS_FALLBACK)
+#define FORKEXEC_BACKEND 1
+#endif
+
+/*
  * USE_POSIX_FADVISE controls whether Postgres will attempt to use the
  * posix_fadvise() kernel call.  Usually the automatic configure tests are
  * sufficient, but some older Linux distributions had broken versions of

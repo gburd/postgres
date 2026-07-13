@@ -580,7 +580,7 @@ extern bool *PgCurrentLogLockWaitsRef(void);
 #define IdleSessionTimeout (*PgCurrentIdleSessionTimeoutRef())
 #define log_lock_waits (*PgCurrentLogLockWaitsRef())
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 extern PGDLLIMPORT PG_GLOBAL_SHMEM PGPROC *AuxiliaryProcs;
 #endif
 

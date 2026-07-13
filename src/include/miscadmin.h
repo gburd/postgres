@@ -380,7 +380,7 @@ extern char *PgCurrentOutputFileNameRef(void);
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char my_exec_path[];
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char pkglib_path[];
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME char postgres_exec_path[];
 #endif
 
