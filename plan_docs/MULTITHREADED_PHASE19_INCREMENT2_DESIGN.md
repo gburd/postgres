@@ -53,11 +53,20 @@ non-EXEC_BACKEND build uses **mmap anonymous** shmem, inherited only via fork.
 So a fork+exec fallback child requires the server's main shared memory to be
 sysv (or another named/re-attachable type), NOT anonymous mmap.
 
-Design decision: **when `multithreaded=on` AND process-fallback is enabled,
-require/force `shared_memory_type=sysv`** (the same requirement EXEC_BACKEND
-already imposes), so the fallback child can re-attach.  This is a documented
-constraint, checked at startup, not a silent behaviour change.  Servers that
-never need a fallback and never set it pay nothing.
+Design decision (refined during Increment 2(a), 2026-07-12): do NOT force a
+shmem type at startup, and do NOT change any default.  The default threaded
+build keeps `shared_memory_type=mmap`.  Instead, the fallback ROUTE (sub-step c)
+checks `shared_memory_type` at the moment a session would be routed to a
+fork+exec fallback: if the segment is re-attachable (sysv), route to the
+fallback; if it is anonymous mmap, keep the current fail-closed `ERROR`
+(Increment 1's message) with an added hint to set `shared_memory_type=sysv` to
+enable the process-fallback.  This is smaller, changes no defaults, needs no
+global sysv-vs-mmap perf re-validation, and puts the constraint exactly where it
+bites.  Forcing sysv globally under multithreaded=on was rejected as
+too broad (it would change shmem behaviour for every threaded server, including
+those that never use a fallback).  Confirmed the default is
+`DEFAULT_SHARED_MEMORY_TYPE = SHMEM_TYPE_MMAP` on non-EXEC_BACKEND Linux
+(pg_shmem.h).
 
 ## Proposed build + code shape
 
@@ -99,13 +108,20 @@ never need a fallback and never set it pay nothing.
   COMPILES on Linux, with NO runtime path change.  Validate: process mode and
   threaded mode byte-for-byte identical (`gmake check`, `check-threaded`);
   fork+exec functions exist but are never called.
-- (b) Startup check: if process-fallback is enabled and shmem is not
-  re-attachable (mmap), either force sysv or refuse with a clear message.
-  Validate: threaded server starts with sysv; mmap+fallback is rejected clearly.
+- (a) [DONE, commit 9e567171c64] Add `USE_XTC_PROCESS_FALLBACK` +
+  `FORKEXEC_BACKEND` and widen the compile guards so the machinery COMPILES on
+  Linux, with NO runtime path change.  Validated: full build links clean; both
+  multithreaded=off and =on start and run identically; fork+exec functions exist
+  but are never called.
+- (b) [folded into (c)] shmem re-attachability is checked at the fallback ROUTE,
+  not forced at startup (see the design decision above): default stays mmap; the
+  route requires sysv and otherwise keeps the fail-closed ERROR with a hint.
 - (c) Add `PG_BACKEND_LAUNCH_PROCESS_FALLBACK` + the fork+exec launch route,
   gated behind a **forced test knob** (a session/developer GUC, e.g.
   `xtc_force_process_fallback`) so a session can be deterministically routed to
-  a process backend regardless of extension needs.  Validate on EC2: a normal
+  a process backend regardless of extension needs.  The route checks
+  `shared_memory_type`: sysv -> fork+exec fallback; mmap -> fail-closed ERROR +
+  "set shared_memory_type=sysv" hint.  Validate on EC2: a normal
   session forced to fallback runs correctly as a process backend under
   `multithreaded=on`; carriers still serve un-forced sessions.
 - (d) Wire real detection (Increment 3): a process-only extension in the
