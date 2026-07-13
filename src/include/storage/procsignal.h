@@ -90,7 +90,7 @@ extern void procsignal_sigusr1_handler(SIGNAL_ARGS);
 /* ProcSignalHeader is an opaque struct, details known only within procsignal.c */
 typedef struct ProcSignalHeader ProcSignalHeader;
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 extern PGDLLIMPORT PG_GLOBAL_SHMEM ProcSignalHeader *ProcSignal;
 #endif
 

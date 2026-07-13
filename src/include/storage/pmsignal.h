@@ -65,7 +65,7 @@ typedef enum
 /* PMSignalData is an opaque struct, details known only within pmsignal.c */
 typedef struct PMSignalData PMSignalData;
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 extern PGDLLIMPORT PG_GLOBAL_SHMEM volatile PMSignalData *PMSignalState;
 #endif
 
