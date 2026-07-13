@@ -172,3 +172,37 @@ children inherit.
 Definition of done for 2(c): with xtc_force_process_fallback=on + sysv, a client
 connection runs a query in a fork+exec'd process backend; carriers still serve
 un-forced sessions; process mode and threaded-fallback-off remain byte-identical.
+
+## Increment 2(c) COMPLETE (2026-07-13, commit 1a12a49ab81)
+
+The fork+exec process-fallback route runs queries end-to-end.  Final two
+exec'd-child gaps resolved after the io_method remap:
+
+6. hba_file / ident_file were NULL in the child (set as PGC_S_OVERRIDE inside
+   SelectConfigFiles, which the child skips; they do not survive GUC
+   serialization -- unlike config_file/data_directory, which are carried via
+   read_backend_variables).  Re-derived from configdir in SubPostmasterMain.
+7. DSM control segment: dsm_backend_startup's attach was #ifdef EXEC_BACKEND
+   only -> dsm_control NULL -> SIGSEGV in dsm_attach/pgstat(DSA) at auth.
+   Widened to FORKEXEC_BACKEND + gated on PG_BACKEND_WAS_FORKEXECED.
+
+Validated (EC2, cassert, sysv, force_fallback=on): SELECT + table round-trip in
+a fork+exec'd process backend.  Safety matrix green: process / threaded-fallback
+-off / threaded-fallback-on all OK.
+
+All the state-restore gating follows one discipline: only the exec'd child
+(PG_BACKEND_WAS_FORKEXECED) re-derives; normally-forked children inherit.  Under
+EXEC_BACKEND the macro is a constant true, so upstream behaviour is byte-for-byte
+unchanged.
+
+REMAINING for Phase 19:
+- Increment 3: real per-session detection -- set the session demand to PROCESS
+  when a session needs a process-only extension (preload GUCs first, catalog
+  later), so ONLY those sessions take the fallback; drop the force knob to a
+  test-only aid.
+- Increment 2(e): crash isolation -- prove a crash in a process-fallback backend
+  is a normal single-backend crash, not a whole-server fail-stop (it should be,
+  since it does not share the carrier address space -- needs a TAP guard).
+- The route still requires shared_memory_type=sysv; document it and, for
+  Increment 3, verify the demand-driven routing refuses cleanly (not crash) when
+  a process-only extension is needed but shmem is mmap.
