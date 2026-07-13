@@ -115,7 +115,7 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME shmem_startup_hook_type shmem_startup_hook;
 extern void RegisterBuiltinShmemCallbacks(void);
 extern Size CalculateShmemSize(void);
 extern void CreateSharedMemoryAndSemaphores(void);
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 extern void AttachSharedMemoryStructs(void);
 #endif
 extern void InitializeShmemGUCs(void);

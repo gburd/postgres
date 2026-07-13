@@ -38,7 +38,7 @@ extern void ShmemRequestInternal(ShmemStructOpts *options, ShmemRequestKind kind
 
 extern size_t ShmemGetRequestedSize(void);
 extern void ShmemInitRequested(void);
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 extern void ShmemAttachRequested(void);
 #endif
 

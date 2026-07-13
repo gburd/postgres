@@ -90,6 +90,7 @@
 #ifdef FORKEXEC_BACKEND
 
 #include "common/file_utils.h"
+#include "storage/aio.h"			/* io_method / IOMETHOD_WORKER for the child remap */
 #include "storage/fd.h"
 #include "storage/lwlock.h"
 #include "storage/pmsignal.h"
@@ -326,6 +327,11 @@ static bool postmaster_pooled_protocol_launch(PMChild *pmchild,
 											  void *startup_data,
 											  size_t startup_data_len,
 											  const ClientSocket *client_sock);
+static bool postmaster_pooled_protocol_process_fallback(PMChild *pmchild,
+															int child_slot,
+															void *startup_data,
+															size_t startup_data_len,
+															const ClientSocket *client_sock);
 static BackendThreadStart *backend_thread_start_alloc(void);
 static void backend_thread_start_release(BackendThreadStart *thread_start);
 static BackendPooledLogicalStart *backend_pooled_logical_start_alloc(void);
@@ -900,6 +906,66 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 #endif
 }
 
+/*
+ * Phase 19 Increment 2: launch a client backend as an isolated, forked+exec'd
+ * process backend (the process-fallback route) instead of a carrier fiber.
+ *
+ * This is used for a session that cannot run on a shared-address-space carrier
+ * (currently: forced by xtc_force_process_fallback; later: a session needing a
+ * process-only extension).  It MUST fork+exec, not bare fork: carriers run in
+ * the postmaster process itself, so once carriers exist the postmaster is
+ * multithreaded and a fork-without-exec child would inherit locked
+ * sibling-thread mutexes.  internal_forkexec() produces a clean exec'd child
+ * (arriving in SubPostmasterMain) that re-attaches shared memory and restores
+ * backend variables, then runs as an ordinary supervised process backend --
+ * counted against MaxConnections, reaped by the postmaster, and (unlike an
+ * in-carrier crash) a crash in it is a normal single-backend crash, not a
+ * whole-server fail-stop.
+ *
+ * Re-attach needs a nameable shared segment: an exec'd child cannot re-attach
+ * anonymous mmap.  If shared_memory_type is mmap we cannot use the fallback, so
+ * we refuse with a clear, actionable error rather than crash the child.
+ */
+static bool
+postmaster_pooled_protocol_process_fallback(PMChild *pmchild, int child_slot,
+											void *startup_data,
+											size_t startup_data_len,
+											const ClientSocket *client_sock)
+{
+#if defined(WIN32) || !defined(USE_XTC_PROCESS_FALLBACK)
+	errno = ENOSYS;
+	return false;
+#else
+	pid_t		pid;
+
+	if (client_sock == NULL ||
+		startup_data == NULL ||
+		startup_data_len != sizeof(BackendStartupData))
+	{
+		errno = EINVAL;
+		return false;
+	}
+
+	if (shared_memory_type == SHMEM_TYPE_MMAP)
+	{
+		ereport(LOG,
+				(errmsg("cannot start a process-fallback backend with shared_memory_type=mmap"),
+				 errdetail("A forked+exec'd process-fallback backend must re-attach shared memory, which anonymous mmap segments do not support."),
+				 errhint("Set shared_memory_type=sysv to enable process-fallback backends under multithreaded=on.")));
+		errno = ENOTSUP;
+		return false;
+	}
+
+	pid = internal_forkexec(B_BACKEND, child_slot,
+							startup_data, startup_data_len, client_sock);
+	if (pid < 0)
+		return false;
+
+	PostmasterChildSetProcess(pmchild, pid);
+	return true;
+#endif
+}
+
 static bool
 postmaster_pooled_protocol_launch(PMChild *pmchild, int child_slot,
 								  void *startup_data, size_t startup_data_len,
@@ -920,6 +986,32 @@ postmaster_pooled_protocol_launch(PMChild *pmchild, int child_slot,
 	}
 
 	InitializePgThreadRuntime(backend_thread_exit);
+
+	/*
+	 * Phase 19 Increment 2: process-fallback route.  A session that cannot run
+	 * on a shared-address-space carrier (a process-only extension) must run in
+	 * an isolated process backend instead.  For now this is driven by the
+	 * xtc_force_process_fallback developer knob, which forces every pooled
+	 * client backend down the fallback route so the fork+exec path can be
+	 * exercised deterministically; real per-session detection is a later
+	 * increment.
+	 *
+	 * The launch MUST be fork+exec, never a bare fork: carriers run in the
+	 * postmaster process itself, so once carriers exist the postmaster is
+	 * multithreaded and a forked-without-exec child would inherit locked
+	 * sibling-thread mutexes.  internal_forkexec() gives a clean exec'd child
+	 * that re-attaches shared memory and restores backend variables, arriving
+	 * in SubPostmasterMain and then running as an ordinary supervised process
+	 * backend.  Re-attach requires a nameable segment, so this needs
+	 * shared_memory_type != mmap (an exec'd child cannot re-attach anonymous
+	 * mmap); otherwise we keep the fail-closed behaviour.
+	 */
+	if (xtc_force_process_fallback)
+		return postmaster_pooled_protocol_process_fallback(pmchild, child_slot,
+														   startup_data,
+														   startup_data_len,
+														   client_sock);
+
 	if (!backend_pooled_protocol_start_pool())
 		return false;
 
@@ -2494,6 +2586,17 @@ SubPostmasterMain(int argc, char *argv[])
 	whereToSendOutput = DestNone;
 
 	/*
+	 * This backend was started via fork()+exec(): it did not inherit the
+	 * postmaster's address space and must re-attach shared memory / re-derive
+	 * backend-local state.  Under a plain EXEC_BACKEND build every child is
+	 * exec'd so this is redundant with PG_BACKEND_WAS_FORKEXECED being a
+	 * constant true, but under USE_XTC_PROCESS_FALLBACK this flag is what
+	 * distinguishes the exec'd process-fallback backend from normally-forked
+	 * children.
+	 */
+	pg_backend_was_forkexeced = true;
+
+	/*
 	 * Capture the end of process creation for logging. We don't include the
 	 * time spent copying data from shared memory and setting up the backend.
 	 */
@@ -2589,6 +2692,23 @@ SubPostmasterMain(int argc, char *argv[])
 	if (UsedShmemSegAddr != NULL)
 	{
 		InitShmemAllocator(UsedShmemSegAddr);
+
+		/*
+		 * Re-apply the multithreaded io_method remap in the exec'd child.
+		 *
+		 * The postmaster routes io_method=worker to the in-fiber "xtc" method
+		 * under multithreaded=on (see PostmasterMain), and sizes/attaches shared
+		 * memory as xtc (which has no worker submission queue).  That remap is a
+		 * PGC_S_OVERRIDE runtime setting that does not survive serialization into
+		 * a fork+exec'd child: the child's read_nondefault_variables() restores
+		 * io_method=worker, so pgaio_method_ops would be the worker method and
+		 * ShmemCallRequestCallbacks() would try to attach the AioWorkerSubmission
+		 * Queue the parent never created.  Re-assert the remap here so the child's
+		 * AIO method matches the parent's before any shmem attach.
+		 */
+		if (multithreaded && io_method == IOMETHOD_WORKER)
+			SetConfigOption("io_method", "xtc", PGC_POSTMASTER, PGC_S_OVERRIDE);
+
 		ShmemCallRequestCallbacks();
 	}
 

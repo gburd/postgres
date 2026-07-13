@@ -317,6 +317,22 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_worker_processes;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_parallel_workers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int autovacuum_max_parallel_workers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool multithreaded;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool xtc_force_process_fallback;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool pg_backend_was_forkexeced;
+
+/*
+ * Did this backend arrive via fork()+exec() (so it must re-attach shared memory
+ * and re-derive backend-local state)?  Under EXEC_BACKEND every child is exec'd,
+ * so this is unconditionally true -- keeping upstream EXEC_BACKEND behaviour
+ * byte-for-byte.  Under USE_XTC_PROCESS_FALLBACK only the fork+exec'd
+ * process-fallback backend sets the flag; normally-forked children inherit the
+ * address space and must NOT re-attach.
+ */
+#ifdef EXEC_BACKEND
+#define PG_BACKEND_WAS_FORKEXECED	true
+#else
+#define PG_BACKEND_WAS_FORKEXECED	(pg_backend_was_forkexeced)
+#endif
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pooled_protocol_carriers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pooled_protocol_sticky_idle_ms;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pooled_protocol_hibernate_after_ms;
