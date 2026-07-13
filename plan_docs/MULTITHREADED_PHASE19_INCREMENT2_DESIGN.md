@@ -206,3 +206,42 @@ REMAINING for Phase 19:
 - The route still requires shared_memory_type=sysv; document it and, for
   Increment 3, verify the demand-driven routing refuses cleanly (not crash) when
   a process-only extension is needed but shmem is mmap.
+
+## Increment 3 done; 2(e) blocked by a config-application bug (2026-07-13)
+
+Increment 3 (23e99a9b159): process-only shared_preload_libraries are now
+rejected at startup under multithreaded=on (validated: multithreaded=off loads
+it; multithreaded=on refuses with the Increment-1 message).  Also landed:
+io workers are never started under multithreaded=on (f49e0dcf5bd).
+
+Increment 2(e) (013 crash-isolation guard) is written and committed but SKIPS,
+because of a newly-found config-application bug that blocks forcing the route:
+
+  BUG: under multithreaded=on, `xtc_force_process_fallback = on` set in
+  postgresql.conf does NOT take effect (SHOW returns off, pg_settings source =
+  default), and it also reverts `shared_memory_type = sysv` in the same file
+  back to mmap.  Isolated on EC2 (m6id.8xlarge, cassert, v1.20.1):
+    [sysv_only]  shared_memory_type=sysv                      -> shm=sysv        (ok)
+    [mt_only]    multithreaded=on                             -> mt=on           (ok)
+    [mt_sysv]    multithreaded=on + sysv                      -> shm=sysv mt=on  (ok)
+    [all3]       multithreaded=on + sysv + fallback=on        -> shm=mmap fb=off  (BUG)
+    [solo]       xtc_force_process_fallback=on (only)         -> fb=on            (ok)
+  So the GUC works alone (fb=on, source=configuration file) and sysv works with
+  multithreaded; only the THREE together revert.  The postmaster then launches
+  backends as carrier fibers (log: "spawned backend fiber"), not fork+exec, so
+  013 cannot exercise crash isolation.
+
+  Lead: the fallback GUC + sysv are set in the config block AFTER `multithreaded`;
+  something in the multithreaded startup path (io_method remap / pooled-carrier
+  resolution / a config re-read) appears to snapshot or re-apply GUCs such that
+  config-file values after `multithreaded` are dropped or reverted to default in
+  the [all3] combination.  The Increment 2(c) fork+exec route itself was
+  validated working earlier this session via a direct `postgres -D &` run; this
+  is specifically a config-APPLICATION regression in the multithreaded+sysv+
+  fallback combination, not the route logic.  NEXT: trace where these
+  PGC_POSTMASTER values are lost after `multithreaded` is finalized (likely
+  around the io_method SetConfigOption(PGC_S_OVERRIDE) block or a
+  ProcessConfigFile re-read), fix it, then 013 runs the isolation assertions.
+
+The route + all state-restore fixes remain committed, default-off, and
+process-mode / normal-threaded-mode safe.
