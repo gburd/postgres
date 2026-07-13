@@ -1,0 +1,18 @@
+# Node modules
+scripts/ai-review/node_modules/
+# Note: package-lock.json should be committed for reproducible CI/CD builds
+
+# Logs
+scripts/ai-review/cost-log-*.json
+scripts/ai-review/*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
