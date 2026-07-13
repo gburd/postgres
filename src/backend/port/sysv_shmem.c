@@ -135,7 +135,7 @@ InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size)
 	 * interest for anything except debugging, we'd probably create a cleaner
 	 * and better-documented way to set it, such as a GUC.)
 	 */
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 	{
 		char	   *pg_shmem_addr = getenv("PG_SHMEM_ADDR");
 
@@ -874,7 +874,7 @@ PGSharedMemoryCreate(Size size,
 	return (PGShmemHeader *) AnonymousShmem;
 }
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 
 /*
  * PGSharedMemoryReAttach

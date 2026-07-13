@@ -79,7 +79,7 @@
 #include "utils/pgstat_internal.h"
 #include "utils/timestamp.h"
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 #include "nodes/queryjumble.h"
 #include "portability/instr_time.h"
 #include "storage/pg_shmem.h"
@@ -87,7 +87,7 @@
 #endif
 
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 
 #include "common/file_utils.h"
 #include "storage/fd.h"
@@ -137,7 +137,7 @@ typedef struct
 	pg_time_t	first_syslogger_file_time;
 	bool		redirection_done;
 	bool		IsBinaryUpgrade;
-	bool		query_id_enabled;
+	bool		saved_query_id_enabled;
 	int			max_safe_fds;
 	int			MaxBackends;
 	int			num_pmchild_slots;
@@ -152,7 +152,7 @@ typedef struct
 	char		my_exec_path[MAXPGPATH];
 	char		pkglib_path[MAXPGPATH];
 
-	int			MyPMChildSlot;
+	int			saved_my_pmchild_slot;
 
 	int32		timing_tsc_frequency_khz;
 
@@ -188,7 +188,7 @@ static pid_t internal_forkexec(BackendType child_kind, int child_slot,
 							   const void *startup_data, size_t startup_data_len,
 							   const ClientSocket *client_sock);
 
-#endif							/* EXEC_BACKEND */
+#endif							/* FORKEXEC_BACKEND */
 
 /*
  * Information needed to launch different kinds of child processes.
@@ -2180,7 +2180,7 @@ postmaster_child_launch(BackendType child_type, int child_slot,
 	return pid;
 }
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 #ifndef WIN32
 
 /*
@@ -2630,7 +2630,7 @@ save_backend_variables(BackendParameters *param,
 
 	strlcpy(param->DataDir, DataDir, MAXPGPATH);
 
-	param->MyPMChildSlot = child_slot;
+	param->saved_my_pmchild_slot = child_slot;
 
 #ifdef WIN32
 	param->ShmemProtectiveRegion = ShmemProtectiveRegion;
@@ -2655,7 +2655,7 @@ save_backend_variables(BackendParameters *param,
 
 	param->redirection_done = redirection_done;
 	param->IsBinaryUpgrade = IsBinaryUpgrade;
-	param->query_id_enabled = query_id_enabled;
+	param->saved_query_id_enabled = query_id_enabled;
 	param->max_safe_fds = max_safe_fds;
 
 	param->MaxBackends = MaxBackends;
@@ -2886,7 +2886,7 @@ restore_backend_variables(BackendParameters *param)
 
 	SetDataDir(param->DataDir);
 
-	MyPMChildSlot = param->MyPMChildSlot;
+	MyPMChildSlot = param->saved_my_pmchild_slot;
 
 #ifdef WIN32
 	ShmemProtectiveRegion = param->ShmemProtectiveRegion;
@@ -2911,7 +2911,7 @@ restore_backend_variables(BackendParameters *param)
 
 	redirection_done = param->redirection_done;
 	IsBinaryUpgrade = param->IsBinaryUpgrade;
-	query_id_enabled = param->query_id_enabled;
+	query_id_enabled = param->saved_query_id_enabled;
 	max_safe_fds = param->max_safe_fds;
 
 	MaxBackends = param->MaxBackends;
@@ -2950,4 +2950,4 @@ restore_backend_variables(BackendParameters *param)
 #endif
 }
 
-#endif							/* EXEC_BACKEND */
+#endif							/* FORKEXEC_BACKEND */

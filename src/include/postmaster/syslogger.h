@@ -78,7 +78,7 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME char *Log_filename;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool Log_truncate_on_rotation;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int Log_file_mode;
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME pg_time_t first_syslogger_file_time;
 #endif
 
