@@ -1502,28 +1502,38 @@ the monotone session-demand field can be prototyped locally ahead of it.
   threaded backend runtime"; run `multithreaded=off`, or adapt+mark). Gate stays
   fail-closed. Validated: test_extensions regression 4/4. Commit `66dc4d18674`.
   This is the classification the fork+exec route will branch on.
-- **[scoped, not started] Increment 2 -- fork+exec route (the meaty part).**
-  Audited: the entire fork+exec machinery is one `#ifdef EXEC_BACKEND` region --
-  `internal_forkexec` (~171 lines), `save_backend_variables` /
-  `restore_backend_variables` (~70 state transfers), `SubPostmasterMain`, AND
-  the child-side dispatch in `main.c:219` -- and `EXEC_BACKEND` is Windows-only
-  in this build. Making a Linux process-fallback child requires un-gating all of
-  it under a new condition (e.g. `EXEC_BACKEND || USE_XTC_PROCESS_FALLBACK`),
-  which is a multi-commit, high-blast-radius change to *the* backend-startup
-  path and MUST be validated end-to-end on a real pooled threaded server. Plan
-  it as its own series: (a) compile the machinery in under the new condition
-  with process mode still byte-identical; (b) add a
+- **[DONE] Increment 2 -- fork+exec route (the meaty part).** Landed as a
+  series: 2(a) compile the fork+exec machinery on Linux under a new
+  `USE_XTC_PROCESS_FALLBACK` / `FORKEXEC_BACKEND` condition, process mode
+  byte-identical (a074a3ae042, f996910054a); 2(c) the
   `PG_BACKEND_LAUNCH_PROCESS_FALLBACK` route from
-  `postmaster_pooled_protocol_launch` that fork+execs a supervised process
-  backend; (c) a forced test knob (session GUC) to route a session to the
-  fallback deterministically; (d) prove a process-only extension runs in the
-  fallback while the same extension marked threaded runs on a carrier; (e) prove
-  a crash in a fallback backend is a normal single-backend crash, not a
-  whole-server fail-stop.
-- **[after Increment 2] Increment 3 -- detection.** Monotone session-demand
-  field seeded from preload GUCs (+ later catalog per-extension model), consumed
-  by the Increment-2 route at placement. Deliberately deferred until the
-  consuming route exists (YAGNI: the demand field is inert without it).
+  `postmaster_pooled_protocol_launch` behind the `xtc_force_process_fallback`
+  test knob, plus all exec'd-child state restore gated on
+  `PG_BACKEND_WAS_FORKEXECED` so only the exec'd child re-derives -- io_method
+  remap, shmem re-attach, hba/ident re-derivation, DSM control attach
+  (dbae3d31965, 1a12a49ab81); 2(e) crash contract pinned by TAP 013. Validated
+  end-to-end on EC2: a client connection runs as a fork+exec'd process backend
+  (SELECT + table round-trip); safety matrix (process / threaded-fallback-off /
+  threaded-fallback-on) green.
+  - 2(e) reframed: a process-fallback backend crash SHOULD fail-stop (same as a
+    carrier crash) -- it is isolated at the address-space level but NOT the
+    shared-memory level, and under multithreaded=on the postmaster cannot safely
+    SIGQUIT+reinit shared memory with live carriers. TAP 013 pins fail-stop +
+    committed-data-survives + external-restart (7/7 on EC2).
+  - Known nuisance (Bug A, open): config-file GUC lines placed AFTER
+    `multithreaded` are dropped during startup; workaround = order
+    fallback/sysv before multithreaded (013 does this). Root cause not yet
+    pinpointed (in the threaded-GUC apply path); low severity.
+- **[DONE] Increment 3 -- detection (server-wide slice).** Under
+  `multithreaded=on`, process-only `shared_preload_libraries` are re-checked
+  against the carriers' demanded model after `process_shared_preload_libraries`
+  and REJECTED at startup with the Increment-1 message, instead of silently
+  dlopen'ing into the shared carrier address space (23e99a9b159). Validated:
+  multithreaded=off loads; multithreaded=on refuses. Also: io workers never
+  start under multithreaded=on (f49e0dcf5bd). Per-SESSION detection +
+  mid-session re-placement remains gated on Phase 17 (the postmaster cannot see
+  per-session preload GUCs at placement; re-placing a live carrier session is
+  unsafe until the clean-unwind machinery exists).
 - **[after Phase 17] Increment 4 -- lazy re-placement** for late-discovered
   incompatibility (LOAD / CREATE EXTENSION / first fmgr call): abort the
   uncommitted command and re-place the session as a process backend. Needs the
