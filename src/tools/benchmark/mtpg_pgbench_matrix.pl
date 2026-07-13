@@ -14,8 +14,12 @@ use Time::HiRes qw(time);
 
 my $repo_root = abs_path(File::Spec->catdir($FindBin::Bin, '..', '..', '..'));
 
-my $vanilla_install = '/home/sam/codex-work/vanilla-pg19/tmp_install';
+# Install trees.  Defaults derive from this repo (branch = ./tmp_install); the
+# vanilla/baseline tree has no portable default, so it defaults to the branch
+# tree and MUST be overridden with --vanilla-install when a distinct baseline is
+# wanted (e.g. a Phase 18 A/B of baseline-build vs candidate-build).
 my $branch_install = File::Spec->catdir($repo_root, 'tmp_install');
+my $vanilla_install = $ENV{MTPG_VANILLA_INSTALL} || $branch_install;
 my $client_install = $vanilla_install;
 my $out_dir = File::Spec->catdir('/tmp',
 	sprintf('mtpg_pgbench_matrix_%s', strftime('%Y%m%d_%H%M%S', localtime)));
