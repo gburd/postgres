@@ -422,14 +422,13 @@ postmaster_child_launch_carrier(PMChild *pmchild,
 												client_sock);
 	}
 
-	if (multithreaded &&
-		postmaster_thread_carriers_started &&
-		child_type == B_IO_WORKER)
-	{
-		return postmaster_backend_thread_launch(pmchild, child_type, child_slot,
-												startup_data, startup_data_len,
-												client_sock);
-	}
+	/*
+	 * B_IO_WORKER is intentionally never routed to a carrier: under
+	 * multithreaded=on we remap io_method=worker to the in-fiber "xtc" method
+	 * (see PostmasterMain), so pgaio_workers_enabled() is false and no io
+	 * workers are ever started.  There is nothing for an io-worker carrier to
+	 * do, so we do not launch one.
+	 */
 
 	/*
 	 * The logger, checkpointer, and background writer are needed before the
