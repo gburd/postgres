@@ -43,7 +43,7 @@ PG_GLOBAL_RUNTIME int data_directory_mode = PG_DIR_MODE_OWNER;
 PG_GLOBAL_RUNTIME char my_exec_path[MAXPGPATH];	/* full path to my executable */
 PG_GLOBAL_RUNTIME char pkglib_path[MAXPGPATH]; /* full path to lib directory */
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 PG_GLOBAL_RUNTIME char postgres_exec_path[MAXPGPATH];	/* full path to backend */
 
 /* note: currently this is not valid in backend processes */
@@ -80,6 +80,7 @@ PG_GLOBAL_RUNTIME int max_parallel_workers = 8;
 PG_GLOBAL_RUNTIME int autovacuum_max_parallel_workers = 0;
 PG_GLOBAL_RUNTIME int MaxBackends = 0;
 PG_GLOBAL_RUNTIME bool multithreaded = false;
+PG_GLOBAL_RUNTIME bool xtc_force_process_fallback = false;
 PG_GLOBAL_RUNTIME int pooled_protocol_carriers = -1;
 PG_GLOBAL_RUNTIME int pooled_protocol_sticky_idle_ms = 10;
 PG_GLOBAL_RUNTIME int pooled_protocol_hibernate_after_ms = 5000;
