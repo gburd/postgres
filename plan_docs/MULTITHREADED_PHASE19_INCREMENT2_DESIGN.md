@@ -139,3 +139,36 @@ ALL backend startup, process mode included).  Each sub-step must keep process
 mode green and be validated on a real pooled threaded server.  Increment 2 is
 therefore sequenced as (a)->(e) above, each landing only when its validation is
 green.
+
+## Increment 2(c) progress + remaining exec'd-child restore gaps (2026-07-13)
+
+Committed dbae3d31965.  The fork+exec route works and the exec'd child boots
+deep into startup.  Resolved, in order, by EC2-validated iteration:
+
+1. postgres_exec_path def + assignment (2(a) closure, f996910054a).
+2. instrument.c timing-init assert (child inits TSC via restore_backend_variables).
+3. shmem re-attach (AttachSharedMemoryStructs) + fastpath-lock assert -- gated on
+   the new PG_BACKEND_WAS_FORKEXECED flag so ONLY the exec'd child re-attaches
+   (forked aux procs inherit and must not).
+4. shmem.c InitShmemAllocator !IsUnderPostmaster assert relaxed for the child.
+5. io_method worker->xtc remap re-applied in SubPostmasterMain (the PGC_S_OVERRIDE
+   remap does not survive serialization; child restored worker and looked up the
+   AioWorkerSubmissionQueue the xtc parent never allocated).
+
+REMAINING (next session), the child now dies at:
+  FATAL: could not open file "(null)" / could not load (null)
+in process_shared_preload_libraries() (SubPostmasterMain).  With an EMPTY
+shared_preload_libraries, load_libraries() should early-return; a non-empty
+"(null)" means a PGC_POSTMASTER preload GUC string (shared_preload_libraries_
+string and/or the local/session preload lists) is dangling/garbage in the exec'd
+child -- a GUC-string restore gap in read_nondefault_variables /
+restore_backend_variables for string GUCs.  Root-cause which string is not
+restored (likely a *_preload_libraries char* whose value pointer isn't
+serialized), fix the restore, and continue iterating (expect a few more
+exec'd-child state-restore gaps after this one).  Each fix must keep the
+PG_BACKEND_WAS_FORKEXECED discipline: only the exec'd child re-derives; forked
+children inherit.
+
+Definition of done for 2(c): with xtc_force_process_fallback=on + sysv, a client
+connection runs a query in a fork+exec'd process backend; carriers still serve
+un-forced sessions; process mode and threaded-fallback-off remain byte-identical.
