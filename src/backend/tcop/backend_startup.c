@@ -84,7 +84,7 @@ BackendStartSessionWithStartupData(const BackendStartupData *bsdata,
 	Assert(bsdata != NULL);
 	Assert(client_sock != NULL);
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 
 	/*
 	 * Need to reinitialize the SSL library in the backend, since the context
@@ -99,7 +99,7 @@ BackendStartSessionWithStartupData(const BackendStartupData *bsdata,
 	 * enough to do it in backend children.
 	 */
 #ifdef USE_SSL
-	if (EnableSSL)
+	if (PG_BACKEND_WAS_FORKEXECED && EnableSSL)
 	{
 		if (secure_initialize(false) == 0)
 			LoadedSSL = true;
