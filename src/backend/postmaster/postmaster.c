@@ -1065,6 +1065,23 @@ PostmasterMain(int argc, char *argv[])
 	process_shared_preload_libraries();
 
 	/*
+	 * Under multithreaded=on, shared_preload_libraries were just dlopen'd into
+	 * the postmaster's address space -- which the carrier threads will share.
+	 * They were loaded while the runtime still advertised the PROCESS model, so
+	 * a process-only (unmarked/legacy) preload library would have passed the
+	 * loader gate and then silently run inside the multithreaded process.  Re-
+	 * check every loaded module against the backend model the carriers will
+	 * actually demand, and fail startup with a clear message if any preloaded
+	 * library cannot run threaded.  (A process-only extension can still be used
+	 * by running with multithreaded=off, or -- for a per-session need rather
+	 * than a server-wide preload -- via the Phase 19 process-fallback route.)
+	 */
+	if (multithreaded)
+		check_loaded_modules_backend_model(PgRuntimePooledProtocolRequested() ?
+										   PG_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE :
+										   PG_BACKEND_MODEL_THREAD_PER_SESSION);
+
+	/*
 	 * Initialize SSL library, if specified.
 	 */
 #ifdef USE_SSL
