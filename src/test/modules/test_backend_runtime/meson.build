@@ -69,6 +69,7 @@ tests += {
       't/010_phase16_pooled_crash_recovery.pl',
       't/011_phase16_pooled_plan_cache_teardown.pl',
       't/012_phase16_pooled_plperl_affine.pl',
+      't/013_phase19_process_fallback_crash.pl',
     ],
   },
 }
