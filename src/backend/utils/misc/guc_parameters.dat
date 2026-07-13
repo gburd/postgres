@@ -3966,6 +3966,14 @@
   options => 'xmloption_options',
 },
 
+{ name => 'xtc_force_process_fallback', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Routes every pooled client backend to a forked+exec\'d process-fallback backend instead of a carrier fiber.',
+  long_desc => 'Experimental Phase 19 test knob for the multithreaded PostgreSQL development branch. When multithreaded=on, forces the process-fallback route (the same route a session needing a process-only extension will take) for all client backends, so the fork+exec path can be exercised deterministically. Requires shared_memory_type=sysv (an exec\'d child cannot re-attach anonymous mmap shared memory). Has no effect under multithreaded=off.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'xtc_force_process_fallback',
+  boot_val => 'false',
+},
+
 { name => 'zero_damaged_pages', type => 'bool', context => 'PGC_SUSET', group => 'DEVELOPER_OPTIONS',
   short_desc => 'Continues processing past damaged page headers.',
   long_desc => 'Detection of a damaged page header normally causes PostgreSQL to report an error, aborting the current transaction. Setting "zero_damaged_pages" to true causes the system to instead report a warning, zero out the damaged page, and continue processing. This behavior will destroy data, namely all the rows on the damaged page.',

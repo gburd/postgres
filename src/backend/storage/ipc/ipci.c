@@ -79,7 +79,7 @@ CalculateShmemSize(void)
 	return size;
 }
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 /*
  * AttachSharedMemoryStructs
  *		Initialize a postmaster child process's access to shared memory

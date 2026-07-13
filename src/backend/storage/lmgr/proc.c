@@ -555,13 +555,16 @@ InitProcess(void)
 	InitLWLockAccess();
 	InitDeadLockChecking();
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 
 	/*
 	 * Initialize backend-local pointers to all the shared data structures.
-	 * (We couldn't do this until now because it needs LWLocks.)
+	 * (We couldn't do this until now because it needs LWLocks.)  Only a
+	 * fork+exec'd backend needs this; a normally-forked child inherited the
+	 * pointers through the fork (PG_BACKEND_WAS_FORKEXECED is a constant true
+	 * under EXEC_BACKEND, so upstream behaviour is unchanged there).
 	 */
-	if (IsUnderPostmaster)
+	if (IsUnderPostmaster && PG_BACKEND_WAS_FORKEXECED)
 		AttachSharedMemoryStructs();
 #endif
 }
@@ -738,13 +741,16 @@ InitAuxiliaryProcess(void)
 	 */
 	InitLWLockAccess();
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 
 	/*
 	 * Initialize backend-local pointers to all the shared data structures.
-	 * (We couldn't do this until now because it needs LWLocks.)
+	 * (We couldn't do this until now because it needs LWLocks.)  Only a
+	 * fork+exec'd backend needs this; a normally-forked child inherited the
+	 * pointers through the fork (PG_BACKEND_WAS_FORKEXECED is a constant true
+	 * under EXEC_BACKEND, so upstream behaviour is unchanged there).
 	 */
-	if (IsUnderPostmaster)
+	if (IsUnderPostmaster && PG_BACKEND_WAS_FORKEXECED)
 		AttachSharedMemoryStructs();
 #endif
 }

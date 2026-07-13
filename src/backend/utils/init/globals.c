@@ -81,6 +81,18 @@ PG_GLOBAL_RUNTIME int autovacuum_max_parallel_workers = 0;
 PG_GLOBAL_RUNTIME int MaxBackends = 0;
 PG_GLOBAL_RUNTIME bool multithreaded = false;
 PG_GLOBAL_RUNTIME bool xtc_force_process_fallback = false;
+
+/*
+ * True in a backend that was started via fork()+exec() (arriving through
+ * SubPostmasterMain) and therefore did NOT inherit the postmaster's address
+ * space -- it must re-attach shared memory / re-derive backend-local state.
+ * Under a plain EXEC_BACKEND build every child is exec'd, so this is always
+ * true there (see the PG_BACKEND_WAS_FORKEXECED macro in miscadmin.h).  Under
+ * USE_XTC_PROCESS_FALLBACK only the process-fallback backend is exec'd, so the
+ * flag distinguishes it from normally-forked children (aux procs, carriers'
+ * host), which DO inherit and must NOT re-attach.
+ */
+PG_GLOBAL_RUNTIME bool pg_backend_was_forkexeced = false;
 PG_GLOBAL_RUNTIME int pooled_protocol_carriers = -1;
 PG_GLOBAL_RUNTIME int pooled_protocol_sticky_idle_ms = 10;
 PG_GLOBAL_RUNTIME int pooled_protocol_hibernate_after_ms = 5000;

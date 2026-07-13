@@ -458,7 +458,7 @@ ShmemInitRequested(void)
  *
  * This is called at backend startup in EXEC_BACKEND mode, in every backend.
  */
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 void
 ShmemAttachRequested(void)
 {
@@ -641,9 +641,15 @@ InitShmemAllocator(PGShmemHeader *seghdr)
 	HASHCTL		info;
 	int			hash_flags;
 
-#ifndef EXEC_BACKEND
-	Assert(!IsUnderPostmaster);
-#endif
+	/*
+	 * InitShmemAllocator runs in the postmaster (before any fork) and, for a
+	 * fork+exec'd child, again in that child after it re-attaches shared
+	 * memory.  A normally-forked child inherits the initialized allocator and
+	 * never gets here.  So IsUnderPostmaster must be false UNLESS this is a
+	 * fork+exec'd backend (always the case under EXEC_BACKEND, where
+	 * PG_BACKEND_WAS_FORKEXECED is a constant true).
+	 */
+	Assert(!IsUnderPostmaster || PG_BACKEND_WAS_FORKEXECED);
 	Assert(seghdr != NULL);
 
 	if (IsUnderPostmaster)
