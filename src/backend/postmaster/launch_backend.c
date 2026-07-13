@@ -2654,6 +2654,52 @@ SubPostmasterMain(int argc, char *argv[])
 	/* Read in remaining GUC variables */
 	read_nondefault_variables();
 
+	/*
+	 * A fork+exec'd child does not run SelectConfigFiles(), which is where the
+	 * postmaster derives the absolute hba_file / ident_file paths (defaulting
+	 * them to <configdir>/pg_hba.conf and pg_ident.conf) and installs them as
+	 * PGC_S_OVERRIDE.  Those derived overrides are not reliably carried across
+	 * the GUC-serialization boundary, so an exec'd child can arrive with
+	 * hba_file/ident_file NULL and then fail in load_hba()/load_ident() trying
+	 * to open "(null)".  Re-derive them here from the config directory the same
+	 * way SelectConfigFiles() does.  (Under EXEC_BACKEND proper this is
+	 * redundant but harmless: the values are already set, so the NULL checks
+	 * below skip.)
+	 */
+	if (HbaFileName == NULL || IdentFileName == NULL)
+	{
+		char	   *configdir;
+
+		configdir = make_absolute_path(ConfigFileName);
+		if (configdir != NULL)
+		{
+			char	   *sep = last_dir_separator(configdir);
+
+			if (sep != NULL)
+				*sep = '\0';	/* strip the file name, keep the directory */
+		}
+		if (configdir == NULL || configdir[0] == '\0')
+			configdir = DataDir;
+
+		if (configdir != NULL)
+		{
+			if (HbaFileName == NULL)
+			{
+				char	   *fname = psprintf("%s/%s", configdir, "pg_hba.conf");
+
+				SetConfigOption("hba_file", fname, PGC_POSTMASTER, PGC_S_OVERRIDE);
+				pfree(fname);
+			}
+			if (IdentFileName == NULL)
+			{
+				char	   *fname = psprintf("%s/%s", configdir, "pg_ident.conf");
+
+				SetConfigOption("ident_file", fname, PGC_POSTMASTER, PGC_S_OVERRIDE);
+				pfree(fname);
+			}
+		}
+	}
+
 	/* Capture and transfer timings that may be needed for log_connections */
 	if (IsExternalConnectionBackend(child_type))
 	{
