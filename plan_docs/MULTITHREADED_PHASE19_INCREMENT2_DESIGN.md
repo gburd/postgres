@@ -245,3 +245,34 @@ because of a newly-found config-application bug that blocks forcing the route:
 
 The route + all state-restore fixes remain committed, default-off, and
 process-mode / normal-threaded-mode safe.
+
+## Two precise follow-ups isolated (2026-07-13, EC2 m6id.8xlarge)
+
+### Bug A: config line ORDER -- GUCs after `multithreaded` in the file are dropped
+  [mt_fb]    multithreaded=on THEN xtc_force_process_fallback=on  -> server did not
+             even come up (fb empty)
+  [fb_first] xtc_force_process_fallback=on + sysv THEN multithreaded=on -> fb=on
+             shm=sysv, route ENGAGES (no "spawned backend fiber")
+So putting the fallback/sysv GUCs BEFORE `multithreaded` in postgresql.conf is a
+working order; the bug is that `multithreaded`'s processing (or the io_method
+PGC_S_OVERRIDE remap / pooled resolution it triggers during config read) drops or
+reverts config-file GUC lines that come AFTER it.  Fix: find why subsequent
+config-file lines are lost once `multithreaded` is assigned/finalized.  013 can be
+made to pass sooner by ordering its append_conf with fallback+sysv before
+multithreaded, but the underlying order-sensitivity should be fixed.
+
+### Bug B (the real Increment 2(e) gap): process-fallback crash still FAIL-STOPS
+With the route engaged (fb=on, fork+exec backend), crashing that backend still
+logs "terminating threaded server runtime after child crash" and brings the whole
+server down (server_alive_after_crash=0).  So a process-fallback backend -- though
+a real isolated process that does NOT share the carrier address space -- is
+currently treated by the crash handler exactly like a carrier-fiber crash.
+Fix for 2(e): in the postmaster crash path (postmaster.c ~1861/1922 and
+HandleChildCrash), distinguish a process-fallback B_BACKEND (a real reaped
+process) from a carrier-fiber backend, and give the former normal single-backend
+crash handling (reap + optional restart_after_crash) instead of the whole-server
+fail-stop.  Only THEN does the isolation contract 013 pins actually hold.
+
+Both are narrow, well-characterized, and independent of the (working) route +
+state-restore logic.  Nothing shipped is broken: the route is default-off and
+process / normal-threaded modes are unaffected.
