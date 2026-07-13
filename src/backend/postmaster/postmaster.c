@@ -1620,7 +1620,7 @@ getInstallationPaths(const char *argv0)
 		ereport(FATAL,
 				(errmsg("%s: could not locate my own executable path", argv0)));
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 	/* Locate executable backend before we change working directory */
 	if (find_other_exec(argv0, "postgres", PG_BACKEND_VERSIONSTR,
 						postgres_exec_path) < 0)
