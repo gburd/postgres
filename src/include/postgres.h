@@ -567,7 +567,7 @@ typedef enum pg_ternary
  * postmaster.c that uses those extern symbols to transfer state between
  * processes or do whatever other things it needs to do in EXEC_BACKEND mode.
  */
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 #define NON_EXEC_STATIC
 #else
 #define NON_EXEC_STATIC static

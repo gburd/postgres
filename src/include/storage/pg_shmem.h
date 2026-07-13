@@ -81,7 +81,7 @@ extern PGDLLIMPORT PG_GLOBAL_SHMEM void *UsedShmemSegAddr;
 #define DEFAULT_SHARED_MEMORY_TYPE SHMEM_TYPE_WINDOWS
 #endif
 
-#ifdef EXEC_BACKEND
+#ifdef FORKEXEC_BACKEND
 extern void PGSharedMemoryReAttach(void);
 extern void PGSharedMemoryNoReAttach(void);
 #endif
