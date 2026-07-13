@@ -1,0 +1,123 @@
+#!/usr/bin/env perl
+#
+# mtpg_ab_gate -- Phase 18 A/B pass/fail gate.
+#
+# Reads a mtpg_pgbench_matrix run's tps.tsv (median tps per lane/workload),
+# pairs the baseline lane ("vanilla") against the candidate lane ("branch_pool")
+# per workload, prints the per-workload median-tps delta, and exits non-zero if
+# ANY workload regresses beyond --threshold percent.  This is the neutral-or-
+# better check Phase 18 adoptions must pass before landing.
+#
+#   mtpg_ab_gate --results=DIR [--threshold=PCT] [--baseline-lane=L] [--candidate-lane=L]
+#
+# With --selftest, runs assert-based self-tests of the delta math and exits.
+
+use strict;
+use warnings FATAL => 'all';
+use File::Spec;
+use Getopt::Long qw(GetOptions);
+
+# --- pure delta logic (self-tested) ------------------------------------------
+
+# regression_pct(baseline, candidate) -> percent the candidate is BELOW baseline
+# (positive means slower/worse; negative means faster/better).
+sub regression_pct
+{
+	my ($base, $cand) = @_;
+	die "baseline tps must be > 0\n" unless defined $base && $base > 0;
+	return 100.0 * ($base - $cand) / $base;
+}
+
+# gate_verdict(\%base_by_wl, \%cand_by_wl, $threshold_pct)
+#   -> (\@rows, $failed)  where each row is [workload, base, cand, reg_pct, ok]
+sub gate_verdict
+{
+	my ($base, $cand, $threshold) = @_;
+	my @rows;
+	my $failed = 0;
+	for my $wl (sort keys %$base)
+	{
+		next unless exists $cand->{$wl};
+		my $reg = regression_pct($base->{$wl}, $cand->{$wl});
+		my $ok = ($reg <= $threshold) ? 1 : 0;
+		$failed = 1 unless $ok;
+		push @rows, [ $wl, $base->{$wl}, $cand->{$wl}, $reg, $ok ];
+	}
+	return (\@rows, $failed);
+}
+
+# --- self-test ---------------------------------------------------------------
+
+sub selftest
+{
+	# 100 -> 100 : neutral, passes any non-negative threshold
+	abs(regression_pct(100, 100) - 0) < 1e-9 or die "neutral delta wrong\n";
+	# 100 -> 90 : 10% regression
+	abs(regression_pct(100, 90) - 10) < 1e-9 or die "10% regression wrong\n";
+	# 100 -> 110 : 10% improvement (negative regression)
+	abs(regression_pct(100, 110) + 10) < 1e-9 or die "improvement sign wrong\n";
+
+	# gate: one workload neutral, one regressed 5% -> fail at threshold 2%
+	my %b = (a => 100, b => 100);
+	my %c = (a => 100, b => 95);
+	my ($rows, $failed) = gate_verdict(\%b, \%c, 2.0);
+	$failed == 1 or die "gate should FAIL on a 5% regression at 2% threshold\n";
+	# same data, threshold 6% -> pass
+	(undef, $failed) = gate_verdict(\%b, \%c, 6.0);
+	$failed == 0 or die "gate should PASS on a 5% regression at 6% threshold\n";
+	# an improvement never fails
+	(undef, $failed) = gate_verdict({ a => 100 }, { a => 130 }, 0.0);
+	$failed == 0 or die "gate should PASS on an improvement at 0% threshold\n";
+	# missing candidate workload is skipped, not failed
+	(my $r2, $failed) = gate_verdict({ a => 100, z => 100 }, { a => 100 }, 0.0);
+	$failed == 0 && @$r2 == 1 or die "missing workload not handled\n";
+
+	print "mtpg_ab_gate self-test: OK\n";
+	return 0;
+}
+
+# --- main --------------------------------------------------------------------
+
+my ($results, $threshold, $base_lane, $cand_lane, $do_selftest) =
+  ('', 2.0, 'vanilla', 'branch_pool', 0);
+GetOptions(
+	'results=s'        => \$results,
+	'threshold=f'      => \$threshold,
+	'baseline-lane=s'  => \$base_lane,
+	'candidate-lane=s' => \$cand_lane,
+	'selftest'         => \$do_selftest,
+) or die "bad options\n";
+
+exit selftest() if $do_selftest;
+
+die "--results=DIR required\n" unless $results;
+my $tps = File::Spec->catfile($results, 'tps.tsv');
+open my $fh, '<', $tps or die "could not read $tps: $!\n";
+my $hdr = <$fh>;
+my (%base, %cand);
+while (my $line = <$fh>)
+{
+	chomp $line;
+	my ($lane, $wl, $tpsv) = split /\t/, $line;
+	next unless defined $tpsv;
+	$base{$wl} = $tpsv + 0 if $lane eq $base_lane;
+	$cand{$wl} = $tpsv + 0 if $lane eq $cand_lane;
+}
+close $fh;
+
+die "no baseline ($base_lane) rows in $tps\n"  unless %base;
+die "no candidate ($cand_lane) rows in $tps\n" unless %cand;
+
+my ($rows, $failed) = gate_verdict(\%base, \%cand, $threshold);
+
+printf "%-32s %12s %12s %9s  %s\n", 'workload', 'baseline', 'candidate', 'delta%',
+  'verdict';
+for my $r (@$rows)
+{
+	my ($wl, $b, $c, $reg, $ok) = @$r;
+	printf "%-32s %12.1f %12.1f %+8.2f%%  %s\n", $wl, $b, $c, -$reg,
+	  $ok ? 'ok' : 'REGRESSED';
+}
+printf "gate: %s (threshold %.2f%% regression)\n",
+  $failed ? 'FAIL' : 'PASS', $threshold;
+exit($failed ? 1 : 0);
