@@ -53,7 +53,9 @@ run_lane() {
 	local pgdata="$d/pgdata"
 	rm -f "$out/.stamp" 2>/dev/null || true
 	mkdir -p "$d"
-	initdb -D "$pgdata" -U postgres --locale=C >/dev/null 2>&1
+	# Threaded mode requires the database LC_CTYPE to match the postmaster's
+	# process LC_CTYPE, so initdb with the environment's locale (not a forced C).
+	initdb -D "$pgdata" -U postgres >/dev/null 2>&1
 	{
 		echo "unix_socket_directories = '$d'"
 		echo "listen_addresses = ''"
@@ -77,13 +79,18 @@ run_lane() {
 		return 1
 	fi
 	pgbench -i -s 20 -h "$d" -U postgres postgres >/dev/null 2>&1
-	# CPU-bound prepared SELECT; profile the whole server tree during it.
-	perf record -F 999 -g -o "$d/perf.data" -p "$pmpid" -- \
+	# CPU-bound prepared SELECT.  Capture SYSTEM-WIDE for the pgbench window:
+	# -p PMPID would follow the postmaster's threads (so it catches carrier-fiber
+	# backends in threaded mode) but MISS process-mode forked backends, which are
+	# separate processes.  -a captures both models fairly; we filter to postgres
+	# symbols in the report.
+	perf record -F 999 -g -a -o "$d/perf.data" -- \
 		pgbench -n -M prepared -S -c "$clients" -j "$clients" -T "$duration" \
 			-h "$d" -U postgres postgres > "$d/pgbench.out" 2>&1 || true
 	grep -E 'tps|latency' "$d/pgbench.out" | sed "s/^/[$lane] /"
-	perf report -i "$d/perf.data" --stdio --sort=overhead,symbol 2>/dev/null \
-		| grep -vE '^#|^\s*$' | head -40 > "$d/perf.symbols.txt" || true
+	perf report -i "$d/perf.data" --stdio --sort=overhead,symbol \
+		--comm=postgres 2>/dev/null \
+		| grep -vE '^#|^\s*$' | head -50 > "$d/perf.symbols.txt" || true
 	echo "[$lane] top symbols -> $d/perf.symbols.txt"
 	kill -TERM "$pmpid" 2>/dev/null || true; sleep 2; kill -9 "$pmpid" 2>/dev/null || true
 	ipcrm --all=shm 2>/dev/null || true
