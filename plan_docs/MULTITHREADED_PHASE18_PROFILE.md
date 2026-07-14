@@ -68,3 +68,41 @@ only measurement will say; do not guess.
 `perf lock record`/`bpftrace` off-CPU trace to NAME the contended lock exactly,
 then de-contend it and A/B with mtpg_ab.  Everything before this was setup; this
 is the finding that directs Phase 18.
+
+## Follow-up: named + fixed the top lock; next layer is the kernel wait path
+
+An off-CPU mutex trace (bpftrace uprobe on pthread_mutex_lock, counting by mutex
+address, resolved against the postgres symbol table) named the exact contended
+lock: **ps_status_mutex** (postgres+0x1105f40), taken **~4.15M times in 10s** --
+orders of magnitude above any other mutex (next was ~450).  Every carrier
+serialized on it to update the one shared process title on every command, which
+is meaningless in a threaded server.
+
+Fix (7af1ca5a5e1): update_ps_display_precheck() skips per-command updates under
+multithreaded.  Result: 161k -> 192k tps (+19%); the mutex trace now tops out at
+~450 (contention eliminated).
+
+But the machine is STILL ~78% idle at 190k vs 400k process, and there is NO
+remaining userspace-mutex contention.  The residual kernel cost is
+`_raw_spin_unlock_irqrestore` (~2.9%) with `do_syscall_64` (~6.8%) -- the
+futex/poll wait+wakeup path.  The carriers are parking at protocol boundaries
+(waiting for the next command's socket data / a wakeup) and the machine is
+starved because that wait/wakeup dispatch does not keep the CPUs fed, NOT because
+of a hot userspace lock.
+
+## Revised Phase 18/17 direction
+
+The remaining gap is the **wait/wakeup boundary**, not a userspace lock and not
+per-command CPU indirection:
+
+- carriers block in the kernel (futex/poll) at each protocol boundary;
+- more carriers do not help (sweep after the fix: 8=192k, 16=133k, 32=162k --
+  still erratic, still far from process), consistent with a dispatch/wakeup
+  bottleneck rather than compute or a single lock.
+
+This is Phase 17 (wait-boundary) + the libxtc wait-fusion part of Phase 18:
+make the carrier wait/wakeup at protocol boundaries cheap and scalable (xtc-native
+readiness / batched wakeups / avoiding a kernel round-trip per command).  The
+next investigation is an off-CPU / `perf sched` trace of WHERE the carriers block
+and how wakeups propagate, then target that path.  ps_status was the first,
+clearest win; the wait path is the bigger structural one.
