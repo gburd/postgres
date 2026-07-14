@@ -18,6 +18,19 @@ standardized measurement so each adoption is gated identically.
   computes per-workload deltas, and exits non-zero if any workload regresses
   beyond the threshold.  `--selftest` runs assert-based unit tests of the delta
   math (also reachable via `mtpg_ab_selftest`).
+- `pgbench_pctl` -- latency percentiles (p50/p95/p99) from a pgbench `--log`
+  file.  pgbench itself reports only AVERAGE latency, but the project goal
+  requires p95/p99 parity with the fork model, so run pgbench with `--log` and
+  post-process the per-transaction log:
+
+      pgbench -n -M prepared -S -c16 -j16 -T30 --log --log-prefix=/tmp/pgb ...
+      src/tools/benchmark/pgbench_pctl --glob '/tmp/pgb.*'
+      # -> count=... avg=..ms p50=..ms p95=..ms p99=..ms max=..ms
+
+  `--selftest` runs assert-based unit tests of the percentile math.  Report the
+  candidate's p50/p95/p99 next to the baseline's when landing a perf change --
+  TPS parity is necessary but not sufficient; tail latency (p95/p99) must not
+  regress either.
 
 ## Usage
 

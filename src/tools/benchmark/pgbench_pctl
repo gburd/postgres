@@ -1,0 +1,119 @@
+#!/usr/bin/env perl
+#
+# pgbench_pctl -- compute latency percentiles from pgbench --log files.
+#
+# pgbench reports only AVERAGE latency; the project's goal requires p50/p95/p99
+# parity with the fork model, so we post-process pgbench's per-transaction log.
+# Run pgbench with `--log [--log-prefix=PFX]`; it writes one file per thread
+# (PFX.PID or PFX.PID.N) with columns:
+#   client_id transaction_no time script_no time_epoch time_us [schedule_lag] ...
+# where field 3 (0-based index 2), "time", is the per-transaction latency in
+# microseconds.  This reads those files and prints p50/p95/p99/avg/count in ms.
+#
+#   pgbench_pctl LOGFILE [LOGFILE...]
+#   pgbench_pctl --glob 'PFX.*'
+#   pgbench_pctl --selftest
+#
+# ponytail: percentiles from the raw sample list -- no histogram/streaming
+# estimator; a pgbench run is at most a few million rows and fits in memory.
+# Upgrade to a t-digest only if a run's log ever gets too big to sort.
+
+use strict;
+use warnings FATAL => 'all';
+
+# percentile(\@sorted_ascending, p in 0..100) -- nearest-rank method.
+sub percentile
+{
+	my ($sorted, $p) = @_;
+	my $n = scalar @$sorted;
+	return undef if $n == 0;
+	return $sorted->[0] if $p <= 0;
+	return $sorted->[$n - 1] if $p >= 100;
+	# nearest-rank: rank = ceil(p/100 * n), 1-based
+	my $rank = int(($p / 100.0) * $n + 0.9999999999);
+	$rank = 1 if $rank < 1;
+	$rank = $n if $rank > $n;
+	return $sorted->[$rank - 1];
+}
+
+sub summarize
+{
+	my ($lat_us) = @_;    # arrayref of per-txn latencies in microseconds
+	my @s = sort { $a <=> $b } @$lat_us;
+	my $n = scalar @s;
+	return { count => 0 } if $n == 0;
+	my $sum = 0;
+	$sum += $_ for @s;
+	return {
+		count => $n,
+		avg_ms => ($sum / $n) / 1000.0,
+		p50_ms => percentile(\@s, 50) / 1000.0,
+		p95_ms => percentile(\@s, 95) / 1000.0,
+		p99_ms => percentile(\@s, 99) / 1000.0,
+		max_ms => $s[$n - 1] / 1000.0,
+	};
+}
+
+sub selftest
+{
+	# nearest-rank on 1..100 -> p50=50, p95=95, p99=99, p100=100
+	my @v = (1 .. 100);
+	percentile(\@v, 50) == 50 or die "p50 wrong\n";
+	percentile(\@v, 95) == 95 or die "p95 wrong\n";
+	percentile(\@v, 99) == 99 or die "p99 wrong\n";
+	percentile(\@v, 100) == 100 or die "p100 wrong\n";
+	percentile(\@v, 0) == 1 or die "p0 wrong\n";
+	# summarize converts us->ms and computes avg
+	my $s = summarize([ 1000, 2000, 3000 ]);    # 1,2,3 ms
+	abs($s->{avg_ms} - 2.0) < 1e-9 or die "avg wrong\n";
+	$s->{count} == 3 or die "count wrong\n";
+	abs($s->{p50_ms} - 2.0) < 1e-9 or die "p50 ms wrong\n";
+	# empty
+	summarize([])->{count} == 0 or die "empty wrong\n";
+	print "pgbench_pctl self-test: OK\n";
+	return 0;
+}
+
+# --- main --------------------------------------------------------------------
+
+my @files;
+my $do_selftest = 0;
+while (my $a = shift @ARGV)
+{
+	if    ($a eq '--selftest') { $do_selftest = 1; }
+	elsif ($a eq '--glob')     { push @files, glob(shift @ARGV); }
+	else                       { push @files, $a; }
+}
+
+exit selftest() if $do_selftest;
+
+die "usage: pgbench_pctl LOGFILE... | --glob 'PFX.*' | --selftest\n" unless @files;
+
+my @lat_us;
+for my $f (@files)
+{
+	open my $fh, '<', $f or die "could not read $f: $!\n";
+	while (my $line = <$fh>)
+	{
+		# columns: client_id txn_no time script_no time_epoch time_us ...
+		# field index 2 (0-based) is the per-transaction latency in us.
+		my @c = split /\s+/, $line;
+		next unless @c >= 3 && $c[2] =~ /^\d+$/;
+		push @lat_us, $c[2] + 0;
+	}
+	close $fh;
+}
+
+my $s = summarize(\@lat_us);
+if ($s->{count} == 0)
+{
+	print "no transactions in log\n";
+	exit 1;
+}
+printf "count=%d  avg=%.3fms  p50=%.3fms  p95=%.3fms  p99=%.3fms  max=%.3fms\n",
+  $s->{count}, $s->{avg_ms}, $s->{p50_ms}, $s->{p95_ms}, $s->{p99_ms},
+  $s->{max_ms};
+# machine-readable line for the A/B harness
+printf "TSV\tcount\t%d\tavg_ms\t%.4f\tp50_ms\t%.4f\tp95_ms\t%.4f\tp99_ms\t%.4f\tmax_ms\t%.4f\n",
+  $s->{count}, $s->{avg_ms}, $s->{p50_ms}, $s->{p95_ms}, $s->{p99_ms},
+  $s->{max_ms};
