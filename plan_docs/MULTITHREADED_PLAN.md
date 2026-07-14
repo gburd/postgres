@@ -2037,3 +2037,32 @@ confirm the carrier-starvation is real before landing an eventfd-per-PGPROC or
 fiber-wake change to this hot path.  If real: implement Option B, A/B on
 check-threaded-pooled + the contended workload, wake-race/cancel/timeout stress
 test, keep raw sem_wait fallback.
+
+### Phase 17: NO libxtc gap after all -- xtc_sem / xtc_notify already exist (2026-07-14)
+
+Validated the "fd-less park" gap before writing a libxtc request (per
+verify-before-requesting).  The gap does NOT exist: libxtc v1.21.0 already ships
+in xtc_sync.h exactly the primitives needed --
+
+  - xtc_notify (xtc_notify_signal / xtc_notify_wait): "Block (yield) the calling
+    task until a signal arrives" -- the fd-less park-until-wake I had thought was
+    missing.  Stored-signal semantics (a signal before wait returns immediately)
+    => no lost-wake race by construction.
+  - xtc_sem (xtc_sem_create/post/acquire/try_acquire): a FIBER-AWARE counting
+    semaphore whose impl explicitly "park(s) (yield to the loop)... never
+    blocking the OS thread" for fiber waiters, with a raw-thread fallback.  This
+    is a direct semantic match for PGSemaphore.
+
+So NO libxtc report is warranted (and I did not file one).  The earlier
+xtc_pg_wait_fd(fd<0) dead-end was a limitation of ONE primitive, not of libxtc.
+Corrected conclusion: the Phase 17 fix is entirely PG-side -- back the
+ProcWaitOnSemaphore path (LWLock/buffer-lock/group-update deep waits) with
+xtc_sem or an xtc_notify-per-PGPROC when in a backend fiber, instead of the raw
+carrier-blocking sem_wait.  Prefer this over the eventfd-per-PGPROC Option B: no
+per-PGPROC fd cost, xtc_notify's stored-signal semantics remove the arm/park
+wake-race, and it uses libxtc's own fiber-aware wait (the fusion direction the
+north star wants).  Keep raw sem_wait for the process / non-fiber path.
+
+(Lesson reinforced: checked xtc_sync.h before requesting -- the primitive was
+already there.  This is the third time measurement/verification changed the
+answer; keep doing it before any libxtc ask.)
