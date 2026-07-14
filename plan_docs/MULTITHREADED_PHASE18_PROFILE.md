@@ -432,3 +432,37 @@ Three hypotheses, three measurements: per-command-CPU (falsified), wake-path loc
 NAILED it.  Count the call / A/B the change before attributing or requesting a
 fix.  The libxtc team's t->lock root-cause was also an unverified inference; our
 xtc_send=0 measurement saved them from building an RCU fix for the wrong lock.
+
+## PARITY CLOSE-OUT: threaded ~= process on tps, p95/p99, AND footprint (2026-07-14)
+
+With the arena-per-carrier fix (e0880ddb823), full measurement on EC2
+(m6id.8xlarge, 32 vCPU; prepared SELECT; 16 carriers / 16 clients; --log ->
+pgbench_pctl for percentiles; PSS for fair memory):
+
+    metric      process      threaded     delta
+    tps         394.5k       389.8k       -1.2%
+    p50         0.039ms      0.040ms      +2.6%
+    p95         0.043ms      0.044ms      +2.3%
+    p99         0.048ms      0.050ms      +4.2%
+    max         1.17ms       3.49ms       (rare tail spike, <1% of txns)
+    footprint   PSS 415MB    PSS 423MB    +2%   (24 procs vs 1)
+
+Throughput, p50/p95/p99, and fair (PSS) memory are all within a few percent of
+the fork model.  This closes the stated goal to PARITY on the axes named
+(TPS, p95/p99 latency, RAM footprint) for the cached read-only workload.
+
+Caveats / follow-ups (not gating):
+- max latency is worse (3.49 vs 1.17ms) -- a rare tail spike (<1% of txns, p99
+  unaffected); likely a carrier scheduling/arena-growth hiccup.  Worth a p99.9
+  look later.
+- PSS parity at 16 sessions; threaded's per-process-overhead advantage widens at
+  higher connection counts (1 process vs N) -- the classic thread-vs-fork memory
+  win, not yet quantified at high N.
+- Workload is cached prepared -S; write/mixed (TPC-B) and higher-concurrency
+  sweeps are the remaining perf-characterization surface, but the dominant
+  serial-section that caused the 2.3x plateau is fixed.
+
+Session-18 arc complete: three serializers fixed (ps_status mutex, 10ms
+busy-poll/wake-storm eventfd, glibc arena_max cap -- the big one), gap closed
+from ~41% to ~99% of process.  Not a libxtc fix -- our own allocator tuning,
+proven by A/B.
