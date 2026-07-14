@@ -316,3 +316,39 @@ Fixed (measured): ps_status mutex (+19%); 10ms busy-poll + shared-cond wake stor
 the deep-fusion boundary the north star anticipated: closing it needs libxtc
 cooperation (symbols -> name -> shard/lock-free the park path), not more PG-side
 changes.
+
+## NAMED (code-level): xtc_proc_wake -> __resolve -> __lt_lock + cross-proc mbox_lock
+
+Read libxtc v1.20.1 src/ptc/proc.c directly (local checkout).  The per-command
+serial section is the cross-thread WAKE path:
+
+  xtc_proc_wake(target)  proc.c:1386
+    -> __resolve(target)  proc.c:1392
+         -> pthread_mutex_lock(&__lt_lock)  (~1243) -- ONE global loop-table lock,
+            scans LOOP_TABLE_MAX entries (Strategy-2 fallback for a wake issued
+            from a thread that is not the target's own loop)
+    -> p->mbox_lock  proc.c:1396 (per-proc, HEAP, pthread_mutex_init proc.c:965)
+       -- matches the heap mutex the off-CPU/address trace found hot.
+
+PostgreSQL wires SetLatch/async-read completion -> xtc_proc_wake (latch.c:482,
+waiteventset.c:1383), so every command boundary that wakes a fiber parked on
+ANOTHER carrier's loop hits the global __lt_lock.  N carriers -> serialize.  This
+is bss (__lt_lock) + heap (mbox_lock) contention on the wake path -- consistent
+with all measurements.
+
+### Two tracks (next session)
+A. Report to libxtc (done: /tmp/libxtc-wake-path-contention-report.md): shard/RCU
+   the loop table so __resolve has no global lock on the wake fast path; lock-free
+   "fire armed waker" so cross-thread wake skips the target mbox_lock.
+B. Our side, testable NOW without libxtc changes: LOOP AFFINITY.  If we keep a
+   session's fiber and its usual waker on the SAME xtc loop, __resolve takes the
+   fast (Strategy-1) path and skips __lt_lock.  We currently spread backends
+   across loops (pg_xtc_carrier.c "concurrent backends run on distinct loops");
+   the wake almost always crosses loops.  Experiment: pin a session's fiber and
+   the carrier that wakes it to one loop (or reduce loop count so the table scan
+   is cheap / same-loop), measure with mtpg_ab + latency.  A/B target: eliminate
+   the futex_wait, fill the 83% idle, approach process tps + p95/p99.
+
+This fully closes the diagnosis arc.  The last ~2.3x is the libxtc cross-thread
+wake lock; closing it is track A (upstream) and/or track B (loop affinity on our
+side) -- both concrete and measurable, both preserving process mode.
