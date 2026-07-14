@@ -2066,3 +2066,36 @@ north star wants).  Keep raw sem_wait for the process / non-fiber path.
 (Lesson reinforced: checked xtc_sync.h before requesting -- the primitive was
 already there.  This is the third time measurement/verification changed the
 answer; keep doing it before any libxtc ask.)
+
+### Phase 17 measurement: BLOCKED on local SSH-MTU issue (2026-07-14)
+
+The libxtc question is CLOSED (no report -- xtc_sem/xtc_notify already exist; see
+above).  The measurement to ungate the fix (confirm carrier-starvation on a
+contended-write workload) is set up but blocked on an environment issue:
+
+- Fresh EC2 m6id.8xlarge boxes are unreachable via SSH: TCP connects to :22 but
+  the SSH key exchange HANGS (stalls right after selecting curve25519-sha256).
+  Root cause: the local machine has a 1280-MTU interface (VPN/WireGuard tunnel);
+  the large KEX packet is blackholed (PMTU discovery failing across the tunnel).
+  Reproduced on two boxes in different subnets; not instance-specific.
+- us-east-1a currently has NO m6id.8xlarge capacity (use 1b/1c/1d/1f/1h or omit
+  AZ).
+
+Reusable AWS state left in place (cheap): key-pair `xtc-p17` (~/.ssh/xtc-p17.pem),
+SG `sg-0b26d93900cc44e16` (VPC vpc-073b7edea5b4f3931, port 22 from the launcher
+IP), env in /tmp/xtc_p17_aws.env.  NO instances left running (both attempts
+terminated / never launched).
+
+NEXT SESSION -- fix SSH first, then measure:
+  * SSH-MTU workaround options: (a) on the launcher, clamp outbound MSS to the
+    1280 tunnel: `sudo iptables -t mangle -A OUTPUT -p tcp --tcp-flags SYN,RST
+    SYN -j TCPMSS --clamp-mss-to-pmtu` (or --set-mss 1240); (b) or add
+    user-data at launch to set the instance eth0 MTU to 1400 and enable MSS
+    clamping so its KEX replies fit; (c) or SSH via a jump box on a 1500-MTU
+    path.  (a) is the least invasive.
+  * Then: pgbench TPC-B or a hot-row UPDATE at carriers < clients (e.g. 8
+    carriers, 32-64 clients), threaded vs process, watch for a throughput
+    collapse caused by carriers blocking in sem_wait (ProcWaitOnSemaphore).
+    Cross-check with a perf/off-CPU trace showing time in sem_wait /
+    PGSemaphoreLock on the LWLock acquire slow path.  If the collapse is real,
+    implement the xtc_sem/xtc_notify fix (PG-side, per the design note above).
