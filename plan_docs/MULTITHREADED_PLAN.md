@@ -1902,3 +1902,41 @@ Mitigation:
 
 Each commit should leave process mode buildable. Prefer temporary compatibility
 wrappers to broad all-at-once rewrites.
+
+### Phase 17 re-scoping note (2026-07-14, after the Phase-18 parity close-out)
+
+Before implementing Phase 17, a code re-read clarified that its original framing
+was written from a partly STACKLESS mental model that does not match the shipped
+STACKFUL fiber reality, and this materially narrows the phase:
+
+- A fiber blocked deep in the C stack (LWLockAcquire wait, lock-manager
+  ProcSleep->WaitLatch, ConditionVariableSleep, pg_sleep) ALREADY yields its
+  carrier today: WaitEventSetWait/WaitLatch route through xtc_pg_wait_fd when in
+  a backend fiber, so the fiber parks and the carrier runs its OTHER fibers.  The
+  fiber's C stack is preserved automatically (it IS the fiber) -- so the Phase 17
+  requirements "continuation state is explicit and heap/session/execution owned"
+  and "no detached backend has a live deep stack" are stackless-model artifacts;
+  with stackful fibers the live stack is fine and needs no explicit continuation.
+- What "carrier-pinned" actually means in the shipped design (per 009 + the
+  Phase-15 notes): during active command execution a session does NOT
+  PROTOCOL-PARK (release its pool slot for a DIFFERENT session to take the
+  carrier). It still yields the fiber; it just does not hand its carrier slot
+  back to the pool mid-command.
+- So the real, narrower Phase 17 question is: should a session that is
+  deep-waiting mid-command (e.g. a long lock wait) RELEASE its carrier pool slot
+  so another queued session can use that carrier, then resume later (possibly on
+  a different carrier)?  This is a SCHEDULER-ACCOUNTING change (slot leasing
+  across a mid-command wait), NOT a "capture the C stack" continuation problem.
+  And its value is bounded: a carrier already multiplexes many fibers, so it only
+  matters when most/all fibers on a carrier are simultaneously deep-waiting
+  (few carriers, many long lock waits) -- a real but narrow starvation case.
+
+Practical implication: Phase 17 should be re-specified around (a) mid-command
+carrier-slot leasing for long waits (measure the starvation case first -- is it
+real at the auto-tuned carrier count?), and (b) the genuinely-still-blocking
+syscalls that do NOT go through xtc_pg_wait_fd (audit those; they are the true
+carrier-monopolizers).  It is NOT the stackless-continuation rewrite the original
+text implies.  Requirement rewrite + a starvation micro-benchmark (does a carrier
+with all-deep-waiting fibers actually stall throughput?) should precede any code.
+Also: Phase 19 Increment 4 (lazy re-placement) needs a clean mid-command unwind
+regardless, which IS real work here.
