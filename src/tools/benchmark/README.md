@@ -38,3 +38,16 @@ workload regressed beyond `--threshold` percent.
 On a bare-metal-ish box (EC2 m6id.8xlarge or similar); the dev host's numbers are
 too noisy to gate on.  Keep the two builds identical except for the adoption
 under test, and prefer several runs (`--runs`) so the reported median is stable.
+
+## Finding the target first: `mtpg_profile.sh`
+
+Before picking a Phase 18 adoption, PROVE where the threaded/pooled per-command
+overhead is (the plan's ~35% gap is a hypothesis, not a measurement).
+
+    src/tools/benchmark/mtpg_profile.sh --install=/path/tmp_install --clients=16 --duration=30
+
+It profiles the same build in a `process` lane and a `threaded_pooled` lane under
+`perf record` (CPU-bound prepared SELECT) and writes a top-symbol list per lane.
+Symbols that dominate the pooled lane but not the process lane are the
+per-command threaded overhead -- target those, then A/B the fix with the gate
+above.  Needs `perf` and `kernel.perf_event_paranoid <= 1`.
