@@ -1940,3 +1940,55 @@ text implies.  Requirement rewrite + a starvation micro-benchmark (does a carrie
 with all-deep-waiting fibers actually stall throughput?) should precede any code.
 Also: Phase 19 Increment 4 (lazy re-placement) needs a clean mid-command unwind
 regardless, which IS real work here.
+
+### Phase 17 audit result: the carrier-monopolizer is ProcWaitOnSemaphore (2026-07-14)
+
+Per the re-scoping note, audited for backend-path waits that do NOT go through
+the fiber-aware seam (WaitEventSetWaitBlock -> xtc_pg_wait_fd).  Found the single
+concrete target:
+
+  ProcWaitOnSemaphore(proc, wait_event)  [src/backend/storage/lmgr/proc.c:2148]
+    -> ProcSemaphoreWaitCallback -> PGSemaphoreLock(proc->sem)
+    -> raw sem_wait() [posix_sema.c:313]  -- BLOCKS THE CARRIER OS THREAD.
+
+Its own comment already flags this: "The actual wait remains carrier-pinned in
+PGSemaphoreLock()" and "semaphore waits remain carrier-pinned until a later
+explicit deep-wait continuation design exists" -- that later design IS Phase 17.
+
+Callers (all hot-path, mid-command deep waits):
+  - lwlock.c x4 (LWLock acquire slow path -- the big one: buffer mapping, WAL
+    insert, buffer content locks, etc.)
+  - bufmgr.c:6190 (buffer pin wait)
+  - clog.c:547 (XACT_GROUP_UPDATE), procarray.c:815 (PROCARRAY_GROUP_UPDATE)
+
+Unlike WaitLatch/WaitEventSet waits (already fiber-yielding via xtc_pg_wait_fd),
+a fiber that blocks here stalls its ENTIRE carrier loop (all sibling fibers on
+that OS thread) until ProcWakeSemaphore -> PGSemaphoreUnlock (sem_post).  This
+is invisible on the cached read-only workload (LWLock waits rare -> parity
+achieved in Phase 18), but on a WRITE/contended workload (WAL insert, buffer
+content locks, XactLockTable) it is expected to be the dominant threaded
+throughput-vs-fork gap.
+
+Phase 17 target (concrete): make ProcWaitOnSemaphore fiber-aware.  Instead of a
+raw carrier-blocking sem_wait, the waiting fiber yields to its loop and is woken
+by ProcWakeSemaphore.  Note ProcWakeSemaphore already has the wait-completion /
+PgBackendWakeWaitCompletionById hook and could drive an xtc_proc_wake of the
+target fiber -- so the wake side is half-built.  The risk is the wake RACE
+(waiter must arm its fiber-wake and re-check the semaphore/condition atomically,
+or a wake between arm and park is lost -> hang) and the fact that the waiter
+holds no LWLock at this point (good) but IS mid-command with a live fiber stack
+(fine -- stackful).
+
+NEXT SESSION plan:
+1. Measure first (re-scoping discipline): a WRITE/contended pgbench (TPC-B or a
+   hot-row UPDATE) at N carriers < clients -- does throughput collapse vs process
+   because carriers block in sem_wait?  This confirms the fix is worth the risk.
+   (Cached -S showed nothing; the contended case is where it bites.)
+2. If confirmed, design the fiber-aware wait: a per-PGPROC fiber-wake handle
+   (loop_id/local_id, like the latch owner_fiber capture in waiteventset.c) armed
+   before the "still need to wait?" re-check, parked via xtc_proc_wait (fd-less /
+   waker), woken by ProcWakeSemaphore -> xtc_proc_wake.  Keep the raw
+   PGSemaphoreLock fallback for the process/non-fiber path and as the safe
+   default when the fiber-wake is not armable.  A/B on check-threaded-pooled +
+   the contended workload; must be neutral-or-better and pass a
+   cancellation/timeout/wake-race stress test before landing.
