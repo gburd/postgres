@@ -279,3 +279,40 @@ This is the single remaining major structural target for process parity.  All
 three earlier serializers (ps_status mutex, 10ms busy-poll, shared-cond wake
 storm) are fixed; this heap mutex is the last one standing between ~180k and
 ~416k.
+
+## Definitive: the heap mutex is INSIDE libxtc (2026-07-14)
+
+Code audit: PostgreSQL has NO pthread_mutex_init call sites and NO pthread_mutex_t
+embedded in any malloc'd runtime/session/backend/pmchild struct -- every PG mutex
+is a static PG_GLOBAL_RUNTIME ...= PTHREAD_MUTEX_INITIALIZER (which lives in bss
+<= 0x10f9000, and those were all cold in the trace).  So the hot HEAP mutex
+(~0x11c_-0x121_, in the program break) is allocated + pthread_mutex_init'd by
+**libxtc** internally -- one of its per-operation locks (candidates: the per-loop
+lock, the proc/park registry lock, or the slab/allocator lock that a fiber
+touches on every park/unpark via xtc_proc_wait_fd).
+
+So the last serializer is a libxtc-internal lock taken per fiber park/unpark, i.e.
+per command boundary.  Every carrier hits it each command -> serialization ->
+~180k plateau + 83% idle.
+
+### Actions (next session)
+1. Build libxtc WITH symbols (`./dist/configure CFLAGS='-g -fno-omit-frame-pointer'`)
+   and re-run the mutex-address trace: the hot addr now resolves to a libxtc
+   symbol / init site, naming the exact lock.
+2. If it is a global libxtc lock on the park/unpark hot path, this is a libxtc
+   design issue to raise with the libxtc team (detailed repro: 16 clients / 8
+   fiber carriers, prepared SELECT, ~1.2M __lll_lock_wait_private/8s on a
+   heap-allocated libxtc mutex; process-mode PG at 416k vs fiber-carrier PG at
+   180k, machine 83% idle) -- OR a usage change on our side (e.g. per-loop
+   affinity so backends on one loop do not cross-contend a shared registry lock,
+   sharding fibers across the 32 loops instead of funneling park state through a
+   shared structure).
+3. Re-tune / re-measure with mtpg_ab once the libxtc lock is addressed.
+
+### Session tally toward process parity
+Fixed (measured): ps_status mutex (+19%); 10ms busy-poll + shared-cond wake storm
+(eventfd, collapse gone + contention halved).  Localized + attributed: the final
+~2.3x plateau = a libxtc-internal heap mutex on the per-park hot path.  This is
+the deep-fusion boundary the north star anticipated: closing it needs libxtc
+cooperation (symbols -> name -> shard/lock-free the park path), not more PG-side
+changes.
