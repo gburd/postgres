@@ -5964,11 +5964,13 @@ PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
 										  PgBackend **scratch,
 										  struct pollfd *poll_scratch,
 										  int max_backends,
+										  int wake_fd,
 										  long timeout_ms)
 {
 	int			nbackends = 0;
 	int			registered_sockets = 0;
 	int			nready = 0;
+	int			wake_slot = -1;
 	long		wait_timeout_ms = timeout_ms;
 	int			rc;
 
@@ -6007,6 +6009,21 @@ PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
 	{
 		poll_scratch[0].fd = postmaster_alive_fds[POSTMASTER_FD_WATCH];
 		poll_scratch[0].events = POLLIN;
+	}
+
+	/*
+	 * Slot [nbackends + 1] carries the pooled carrier's wake eventfd (Phase 18
+	 * wait-boundary fix): a byte written to it by signal_work interrupts this
+	 * poll() so a carrier blocked on its parked-session fds notices newly queued
+	 * work without a short busy-poll timeout.  The caller drains it after we
+	 * return.  poll() below covers nbackends + 2 slots when it is present.
+	 */
+	if (wake_fd >= 0)
+	{
+		wake_slot = nbackends + 1;
+		poll_scratch[wake_slot].fd = wake_fd;
+		poll_scratch[wake_slot].events = POLLIN;
+		poll_scratch[wake_slot].revents = 0;
 	}
 #endif
 
@@ -6141,7 +6158,8 @@ PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
 
 	PG_TRY();
 	{
-		rc = poll(poll_scratch, nbackends + 1, (int) wait_timeout_ms);
+		rc = poll(poll_scratch, (wake_slot >= 0) ? nbackends + 2 : nbackends + 1,
+				  (int) wait_timeout_ms);
 		if (rc < 0 && errno != EINTR)
 			ereport(ERROR,
 					(errcode_for_socket_access(),
