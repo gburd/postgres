@@ -984,17 +984,36 @@ static void
 PgRuntimeConfigureThreadedAllocator(bool pooled_protocol)
 {
 #if defined(__GLIBC__)
-	int			arena_max = pooled_protocol ? 1 : 4;
-
 	/*
-	 * Pooled protocol mode targets many mostly-idle logical sessions in one
-	 * postmaster child.  Glibc's default arena growth preserves allocator
-	 * throughput for pinned hot paths, but retains substantial private memory
-	 * in pooled idle-connection profiles and in thread-per-session connection
-	 * churn.  Keep pooled mode modest by default, use a less aggressive cap
-	 * for pinned-thread mode, and let an operator-provided MALLOC_ARENA_MAX
-	 * win.
+	 * Arena count is a throughput-vs-footprint tradeoff.  Glibc serializes all
+	 * allocations that land in the same arena behind that arena's lock, so with
+	 * too few arenas the carrier OS threads contend on the arena lock under a
+	 * malloc-heavy workload.  Profiling a pooled prepared-SELECT load showed
+	 * ~2.6M malloc/free per second (per-command StringInfo churn in the session
+	 * step) and that capping to a single arena was the dominant throughput
+	 * bottleneck: arena_max=1 -> 197k tps, =64 -> 265k tps (+33%) at 8 carriers
+	 * on 32 vCPU (plan_docs/MULTITHREADED_PHASE18_PROFILE.md).  Unlike process
+	 * mode -- where each backend is a separate process with PRIVATE arenas and
+	 * therefore never cross-contends -- the carriers share one address space, so
+	 * the arena count must at least cover the concurrent carriers.
+	 *
+	 * Scale the cap with the carrier pool (one arena per carrier is enough to
+	 * remove the cross-carrier serialization without glibc's default
+	 * 8*ncpu explosion), with a small floor for the not-yet-sized/thread-per-
+	 * session case.  M_TRIM_THRESHOLD / M_TOP_PAD below still bound the retained
+	 * footprint per arena, so raising the count trades a bounded amount of
+	 * memory for the throughput.  An operator-provided MALLOC_ARENA_MAX wins.
 	 */
+	int			carriers = pooled_protocol ? PgRuntimePooledProtocolCarrierLimit() : 0;
+	int			arena_max;
+
+	if (carriers > 0)
+		arena_max = carriers;	/* one arena per carrier */
+	else
+		arena_max = 4;			/* thread-per-session / unsized: modest */
+	if (arena_max < 4)
+		arena_max = 4;
+
 	if (getenv("MALLOC_ARENA_MAX") == NULL)
 		(void) mallopt(M_ARENA_MAX, arena_max);
 
