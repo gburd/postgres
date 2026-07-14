@@ -337,7 +337,7 @@ is bss (__lt_lock) + heap (mbox_lock) contention on the wake path -- consistent
 with all measurements.
 
 ### Two tracks (next session)
-A. Report to libxtc (done: /tmp/libxtc-wake-path-contention-report.md): shard/RCU
+A. Report to libxtc (done: /tmp/libxtc-proc-mutex-contention-report.md): shard/RCU
    the loop table so __resolve has no global lock on the wake fast path; lock-free
    "fire armed waker" so cross-thread wake skips the target mbox_lock.
 B. Our side, testable NOW without libxtc changes: LOOP AFFINITY.  If we keep a
