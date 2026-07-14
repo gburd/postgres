@@ -393,3 +393,42 @@ already reworking the proc-layer locking for the next release; the cleanest path
 may be to re-measure on that release rather than reverse-engineer the current
 heap mutex.  Either way: measure/name before fixing -- this session's value was
 FALSIFYING the wake-path hypothesis so no wrong fix gets built.
+
+## RESOLVED: it was glibc malloc-arena contention from arena_max=1 (2026-07-14, v1.21.0)
+
+Both prior lock hypotheses (wake-path __lt_lock; t->lock via xtc_send) were
+FALSIFIED by call-count measurement: under load xtc_proc_wake=0-1/10s,
+xtc_send=0/10s, xtc_proc_wait_fd=39/10s, pthread_mutex_lock uprobe=0.  The real
+cause:
+
+- malloc/free = ~2.6M/sec under a pooled prepared-SELECT load (per-command
+  StringInfo churn: postgres.c:4940 initStringInfo(&input_message) after
+  MemoryContextReset(message_context), each command).
+- The ~367k __lll_lock_wait_private/10s is glibc ARENA-LOCK contention (arena
+  lll_lock, not pthread_mutex -- hence the pthread_mutex_lock uprobe read 0).
+- PgRuntimeConfigureThreadedAllocator pinned pooled mode to M_ARENA_MAX=1 (a
+  deliberate idle-footprint choice), so all 8 carrier threads serialized on ONE
+  arena lock.  Process mode never hits this (private per-process arenas).
+
+Fix (e0880ddb823): scale M_ARENA_MAX with carrier count (one arena per carrier).
+Measured (EC2 m6id.8xlarge, 32 vCPU, prepared SELECT):
+    arena_max=1        8c/16cl  199k tps
+    per-carrier        8c/16cl  262k tps   (+32%)
+    per-carrier       16c/16cl  406k tps   (process 416k -- ~98%)
+Footprint preserved: 100 idle conns add only ~8MB RSS (M_TRIM_THRESHOLD/M_TOP_PAD
+kept).  Correctness: pooled TAP 007 46/46.
+
+### Where the gap stands now
+Threaded is at ~98% of process throughput at matched carriers/clients, footprint
+comparable, correctness intact.  Remaining small residual + p95/p99 parity
+(measure with pgbench_pctl) and the libxtc proc-table RCU work (their PLAN 19.5c)
+are further levers but NO LONGER the gating bottleneck.  Session tally of fixed
+serializers: ps_status mutex (+19%), 10ms busy-poll/wake-storm (eventfd),
+malloc-arena cap (+32-100%, the big one).
+
+### Methodology note
+Three hypotheses, three measurements: per-command-CPU (falsified), wake-path lock
+(falsified), t->lock/xtc_send (falsified) -- then malloc call-count + arena A/B
+NAILED it.  Count the call / A/B the change before attributing or requesting a
+fix.  The libxtc team's t->lock root-cause was also an unverified inference; our
+xtc_send=0 measurement saved them from building an RCU fix for the wrong lock.
