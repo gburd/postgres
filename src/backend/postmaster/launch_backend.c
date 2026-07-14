@@ -36,6 +36,9 @@
 #include <malloc.h>
 #endif
 #include <poll.h>
+#ifndef WIN32
+#include <sys/eventfd.h>
+#endif
 #include <sys/time.h>
 #include <unistd.h>
 
@@ -309,6 +312,18 @@ static PG_GLOBAL_RUNTIME BackendPooledLogicalStart *pooled_protocol_queue_tail =
 static PG_GLOBAL_RUNTIME int pooled_protocol_queue_length = 0;
 static PG_GLOBAL_RUNTIME int pooled_protocol_carrier_count = 0;
 static PG_GLOBAL_RUNTIME bool pooled_protocol_pool_started = false;
+/*
+ * Wake eventfd for the pooled carrier loop.  A carrier blocks in one poll() on
+ * its parked-session fds; new work (a queued session, or a resumable backend)
+ * is not visible to that poll() because it arrives on the shared queue under
+ * pooled_protocol_queue_mutex.  Rather than give the poll() a short timeout and
+ * busy-recheck the queue ~100x/s per carrier (a wake storm that scales with
+ * carrier count -- see plan_docs/MULTITHREADED_PHASE18_PROFILE.md), we add this
+ * eventfd to every carrier's poll set and signal it when work is posted.  The
+ * carrier then blocks with a long timeout and wakes on EITHER a parked fd
+ * becoming readable OR new work, with no periodic self-wakeups.
+ */
+static PG_GLOBAL_RUNTIME int pooled_protocol_wake_fd = -1;
 #endif
 #if defined(__GLIBC__)
 #define BACKEND_THREAD_MALLOC_TRIM_THRESHOLD ((Size) 64 * 1024 * 1024)
@@ -364,6 +379,8 @@ static BackendPooledLogicalStart *backend_pooled_protocol_dequeue(void);
 static int	backend_pooled_protocol_queue_count(void);
 static uint32 backend_pooled_protocol_idle_carrier_count(void);
 static void backend_pooled_protocol_signal_work(void);
+static void backend_pooled_protocol_wake_signal(void);
+static void backend_pooled_protocol_wake_drain(void);
 static void backend_pooled_protocol_signal_ready_work(int count);
 static void backend_pooled_protocol_wait_for_work(long timeout_us);
 static void backend_pooled_protocol_deadline_after(long timeout_us,
@@ -1081,6 +1098,19 @@ backend_pooled_protocol_start_one_carrier(void)
 	if (pooled_protocol_carrier_count >= carrier_limit)
 		return true;
 
+#ifndef WIN32
+	/* Create the shared wake eventfd once, before the first carrier starts. */
+	if (pooled_protocol_wake_fd < 0)
+	{
+		pooled_protocol_wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+		if (pooled_protocol_wake_fd < 0)
+		{
+			elog(LOG, "could not create pooled protocol wake eventfd: %m");
+			/* Non-fatal: carriers fall back to the timed cond wait below. */
+		}
+	}
+#endif
+
 	carrier_start = malloc(sizeof(BackendPooledCarrierStart));
 	if (carrier_start == NULL)
 	{
@@ -1230,6 +1260,47 @@ backend_pooled_protocol_idle_carrier_count(void)
 }
 
 static void
+backend_pooled_protocol_wake_signal(void)
+{
+	/*
+	 * Wake any carrier blocked in WaitParkedReads' poll().  Writing a u64 to the
+	 * eventfd makes it readable; the carrier drains it after poll() returns.  A
+	 * write while it is already signalled just adds to the counter (harmless --
+	 * we drain the whole counter).  EFD_NONBLOCK so a full counter cannot block
+	 * the signaller.
+	 */
+#ifndef WIN32
+	if (pooled_protocol_wake_fd >= 0)
+	{
+		uint64		one = 1;
+		ssize_t		w;
+
+		do
+			w = write(pooled_protocol_wake_fd, &one, sizeof(one));
+		while (w < 0 && errno == EINTR);
+		/* EAGAIN (counter saturated) is fine: it is already readable. */
+	}
+#endif
+}
+
+static void
+backend_pooled_protocol_wake_drain(void)
+{
+#ifndef WIN32
+	if (pooled_protocol_wake_fd >= 0)
+	{
+		uint64		buf;
+		ssize_t		r;
+
+		do
+			r = read(pooled_protocol_wake_fd, &buf, sizeof(buf));
+		while (r < 0 && errno == EINTR);
+		/* EAGAIN means another carrier already drained it -- fine. */
+	}
+#endif
+}
+
+static void
 backend_pooled_protocol_signal_work(void)
 {
 	int			rc;
@@ -1254,6 +1325,9 @@ backend_pooled_protocol_signal_work(void)
 		errno = rc;
 		elog(FATAL, "could not unlock pooled protocol queue: %m");
 	}
+
+	/* Also wake carriers blocked in poll() on the wake eventfd. */
+	backend_pooled_protocol_wake_signal();
 }
 
 static void
@@ -1386,7 +1460,7 @@ backend_pooled_protocol_carrier_entry(void *arg)
 								 sizeof(PgBackend *) * max_scratch_backends);
 	poll_scratch = MemoryContextAlloc(TopMemoryContext,
 									  sizeof(struct pollfd) *
-									  (max_scratch_backends + 1));
+									  (max_scratch_backends + 2));
 
 	if (!PgRuntimeProtocolSchedulerRegisterCarrier(CurrentPgRuntime,
 												   CurrentPgCarrier))
@@ -1425,13 +1499,25 @@ backend_pooled_protocol_carrier_entry(void *arg)
 														   scratch,
 														   poll_scratch,
 														   max_scratch_backends,
-														   10L);
+														   pooled_protocol_wake_fd,
+														   1000L);
 		if (nready > 0)
 		{
+			backend_pooled_protocol_wake_drain();
 			backend_pooled_protocol_signal_ready_work(nready);
 			continue;
 		}
 
+		/*
+		 * No parked read ready.  If the wake eventfd fired (new queued work),
+		 * drain it and loop to pick it up.  With the wake fd in the poll set new
+		 * sessions no longer need a short poll timeout to be noticed, so the
+		 * 1000ms above is a safety-net timeout, not a ~100x/s self-wake.
+		 * wait_for_work covers a carrier that had NO parked fds to poll
+		 * (WaitParkedReads returns 0 immediately): it blocks on the queue cond,
+		 * woken by signal_work.
+		 */
+		backend_pooled_protocol_wake_drain();
 		backend_pooled_protocol_wait_for_work(10000L);
 	}
 }
