@@ -415,6 +415,23 @@ update_ps_display_precheck(void)
 	if (!update_process_title)
 		return false;
 
+	/*
+	 * In multithreaded mode a single OS process hosts many backend fibers but
+	 * has only one process title, so per-command activity updates ("SELECT",
+	 * "BIND", "idle", ...) cannot meaningfully represent N concurrent sessions
+	 * -- and every carrier serializes on the process-global ps_status_mutex to
+	 * do that pointless read-modify-write of the one shared title.  Profiling
+	 * showed this single mutex taken ~4.15M times in 10s under a 16-client
+	 * prepared-SELECT load, serializing the carriers and leaving the machine
+	 * ~79% idle (plan_docs/MULTITHREADED_PHASE18_PROFILE.md).  Skip the update
+	 * entirely in multithreaded mode; process mode is unchanged.  An operator
+	 * who genuinely wants the (last-writer-wins) title can still not get it here
+	 * -- the title is simply not a useful per-session signal in a threaded
+	 * server; pg_stat_activity is.
+	 */
+	if (multithreaded)
+		return false;
+
 	/* no ps display for stand-alone backend */
 	if (!IsUnderPostmaster)
 		return false;
