@@ -169,3 +169,44 @@ p95/p99 latency AND resource footprint).  It is a scheduler-loop change, so it
 must land incrementally with the A/B gate and the latency percentiles, not as a
 big-bang rewrite.  The ps_status fix (+19%) was the first, isolated win; this
 loop is the main event.
+
+## eventfd wake fix landed (d1320cbdae0): real but partial (2026-07-14)
+
+Added a shared wake eventfd to the carrier poll set so signal_work interrupts the
+poll() directly; the per-carrier poll timeout dropped 10ms -> 1000ms (safety net).
+Measured on EC2 (m6id.8xlarge, prepared SELECT, ps_status fix + this fix):
+
+    lane          c1 latency/tps        c16 latency/tps
+    process       0.030ms / 33.3k       0.038ms / 416k
+    threaded  8c  0.030ms / 33.2k       0.090ms / 177k
+    threaded 16c  0.030ms / 33.2k       0.089ms / 180k
+
+Wins:
+- The "more carriers = WORSE" collapse is GONE: 16 carriers was 105k before the
+  fix, 180k now.  The 10ms self-wake storm is eliminated.
+- Futex contention dropped from ~5.8% to ~2.7%.
+
+But the ~2.3x gap remains (threaded ~180k vs process 416k) and the machine is now
+~83% IDLE with LOW contention.  So the residual bottleneck is NOT lock contention
+anymore -- it is **per-command carrier-cycle latency / insufficient parallelism**:
+8 carriers round-robining 16 clients cannot saturate 32 cores because each
+carrier's cycle (recv command -> execute -> send reply -> fiber park -> resume on
+next) has more per-command latency than a dedicated process backend, and there
+are only 8 of them.  c1 latency is identical to process (0.030ms), so the cost is
+purely in the concurrency/dispatch cycle, not the command itself.
+
+### Remaining direction (to reach process parity)
+
+Two orthogonal levers, both to be A/B'd with mtpg_ab + p95/p99:
+1. **More carriers by default** now that they no longer collapse: the auto-tuner
+   caps at Max(8, cpus/4)=8 here; with the collapse fixed, carriers ~= clients
+   (or ~= cpus) should recover parallelism.  Cheapest test first.  (Earlier
+   "more carriers worse" was the busy-poll storm, now fixed -- re-tune the
+   default.)
+2. **Cut per-command cycle latency**: the fiber park/resume + epoll re-arm +
+   reply-send wakeup per command.  This is the libxtc wait-fusion depth (batched
+   readiness, avoid a kernel round-trip per command) -- the structural item.
+
+Next: re-run the carrier sweep (now that collapse is fixed) to see if simply
+raising the carrier default recovers most of the gap, before investing in
+cycle-latency surgery.
