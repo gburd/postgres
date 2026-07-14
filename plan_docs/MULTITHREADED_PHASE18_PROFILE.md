@@ -210,3 +210,30 @@ Two orthogonal levers, both to be A/B'd with mtpg_ab + p95/p99:
 Next: re-run the carrier sweep (now that collapse is fixed) to see if simply
 raising the carrier default recovers most of the gap, before investing in
 cycle-latency surgery.
+
+## Carrier sweep after the eventfd fix: NOT a carrier-count problem (2026-07-14)
+
+    carriers=16 clients=16  172k, 0.093ms
+    carriers=32 clients=16  156k  (worse)
+    carriers=32 clients=32  137k
+    carriers=64 clients=32  124k
+
+Raising carriers does NOT recover the gap -- throughput plateaus ~170-180k and
+degrades with more carriers/clients, even though contention is now low (2.7%
+futex) and the machine is ~83% idle.  So the residual is a **single shared
+serialization point** every command touches that caps aggregate throughput at
+roughly a fixed level regardless of parallelism -- classic Amdahl serial section.
+
+Ruled out this session: per-command CPU (c1 == process), the ps_status mutex
+(fixed), the 10ms busy-poll + shared-cond wake storm (fixed via eventfd).
+Remaining suspect: a shared LWLock/spinlock or a libxtc loop-level lock on the
+per-command execution or socket-I/O path (the residual _raw_spin_unlock_irqrestore
+sits under sock_def_readable <- unix_stream_sendmsg, i.e. the reply-send wakeup,
+and under futex_wake).  NEXT investigation: `perf lock` / LWLock-wait tracing (or
+a bpftrace off-CPU trace keyed on the PG LWLock tranche) under load to name the
+serial section, then de-contend/sharded it and A/B.
+
+State of the gap after this session's fixes:
+  process 416k / 0.038ms  vs  threaded ~180k / 0.089ms  (c16)
+  -- collapse fixed, contention halved; the ~2.3x aggregate-throughput plateau is
+     the next (and likely final major) structural target for process parity.
