@@ -237,3 +237,45 @@ State of the gap after this session's fixes:
   process 416k / 0.038ms  vs  threaded ~180k / 0.089ms  (c16)
   -- collapse fixed, contention halved; the ~2.3x aggregate-throughput plateau is
      the next (and likely final major) structural target for process parity.
+
+## Serial section localized to a HEAP-allocated mutex (2026-07-14)
+
+Off-CPU trace (bpftrace sched_switch, prev_comm=postgres) under 16c/8carriers:
+  do_poll        1,916,533   (carriers parked on parked-session fds -- normal)
+  futex_wait     1,194,459   (blocked on a futex -- THE contention)
+  do_nanosleep   4,856       (PG spinlock perform_spin_delay fallback -- small,
+                              so the scheduler->lock SpinLock is NOT the issue)
+
+So it is a futex/mutex WAIT, not the scheduler spinlock (which would spin/burn
+CPU, but the machine is idle).  The futex-wait ustack is always
+__lll_lock_wait_private (a pthread MUTEX slow path); the FP chain breaks in libc
+so the PG caller is not visible from the stack.
+
+Mutex-address counting (uprobe pthread_mutex_lock, arg0) shows the hot addresses
+are 0x11c40a0 / 0x11e7bb0 / 0x1214680 -- and critically these are NOT any named
+PG mutex:
+  ThreadedBackendRegistryMutex 0x1104f00   ThreadedGUCMutex        0x1105dc0
+  pooled_protocol_queue_mutex  0x10f9360   backend_thread_malloc_trim 0x10f92c0
+  (none hot; cond_timedwait did not register -> wait_for_work is not the path)
+
+The postgres binary's data/bss ends at 0x10f9000 and libxtc is mapped at
+0x7ffff73xxxxx, so the hot addresses (~0x11c_-0x121_) are in the PROGRAM
+BREAK / HEAP -- i.e. malloc'd pthread_mutex_t objects.  low pthread_mutex_lock
+ENTRY counts + huge __lll_lock_wait_private = a mutex held for relatively long
+and universally contended (few acquires, each waiter blocks a while).
+
+### Conclusion + next step
+The remaining ~2.3x plateau is a HEAP-allocated mutex on the per-command path
+that every carrier serializes on -- not a PG named global, not the scheduler
+SpinLock, not libxtc BSS.  Candidates: a mutex embedded in a SHARED heap runtime
+object (a per-runtime/per-loop/registry object, or a libxtc heap object such as a
+loop/slab/proc lock).  NEXT: name the object -- `perf probe` or a bpftrace
+uretprobe on the malloc that returns these addresses, or attach the mutex address
+back to its allocation via a uprobe on pthread_mutex_init recording arg0+ustack.
+Then either shard it (per-carrier/per-loop) or make the hot path lock-free, and
+A/B with mtpg_ab (target: kill the futex_wait, fill the 83% idle).
+
+This is the single remaining major structural target for process parity.  All
+three earlier serializers (ps_status mutex, 10ms busy-poll, shared-cond wake
+storm) are fixed; this heap mutex is the last one standing between ~180k and
+~416k.
