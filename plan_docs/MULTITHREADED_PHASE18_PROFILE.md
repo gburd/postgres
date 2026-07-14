@@ -352,3 +352,44 @@ B. Our side, testable NOW without libxtc changes: LOOP AFFINITY.  If we keep a
 This fully closes the diagnosis arc.  The last ~2.3x is the libxtc cross-thread
 wake lock; closing it is track A (upstream) and/or track B (loop affinity on our
 side) -- both concrete and measurable, both preserving process mode.
+
+## Track B premise FALSIFIED: it is NOT the cross-thread wake path (2026-07-14)
+
+Before building loop affinity, verified the premise by counting the actual
+libxtc calls under load (uprobe on the public symbols, 16c/8carriers, 10s):
+
+    xtc_proc_wake   = 0-1 calls      (NOT per-command!)
+    xtc_proc_wait_fd = 39 calls      (NOT per-command!)
+
+So the per-command path does NOT call xtc_proc_wake and the backends do NOT
+re-park via xtc_proc_wait_fd each command -- the carrier cycles resumable
+backends in USERSPACE (PgCarrierLeaseRunnableProtocolBackend) without a
+syscall-park per command.  Therefore __resolve/__lt_lock and the cross-thread
+wake path are NOT the per-command serial section.  Loop affinity (Track B) would
+not help -- do NOT build it.  (The earlier code-level attribution to
+xtc_proc_wake was a plausible-but-unverified inference; this measurement corrects
+it.  Lesson: always count the call before attributing.)
+
+What IS true and still unexplained:
+- ~367k __lll_lock_wait_private (pthread mutex slow-path) in 10s -- heavy mutex
+  contention remains;
+- the hot mutex is HEAP-allocated (addresses ~0x11c_-0x121_, in the program
+  break), NOT any PG named global (all cold) and NOT libxtc BSS;
+- but wake/park SYSCALLS are near-zero, so the hot mutex is taken on a path that
+  is mostly fast (contended but rarely blocking to a syscall) EXCEPT under load
+  it slow-paths ~367k/10s.
+- the __lll_lock_wait_private caller is unrecoverable from the stack (libc lock
+  internals, no FP chain), so naming it needs either libxtc built WITH full
+  debuginfo, or a pthread_mutex_lock-entry uprobe capturing arg0 AND resolving
+  arg0 -> symbol/allocation (partially done: arg0 in heap, not PG).
+
+### Corrected next step
+Do NOT build loop affinity.  To NAME the heap mutex definitively: build libxtc
+with `-g3 -fno-omit-frame-pointer` + a debug PG, then either (a) perf/bpftrace
+with the libxtc debuginfo so the lock-wait caller resolves, or (b) a
+pthread_mutex_lock uprobe recording arg0 + a pthread_mutex_init uprobe recording
+(addr->ustack) so the hot arg0 maps to its init site.  The libxtc team is
+already reworking the proc-layer locking for the next release; the cleanest path
+may be to re-measure on that release rather than reverse-engineer the current
+heap mutex.  Either way: measure/name before fixing -- this session's value was
+FALSIFYING the wake-path hypothesis so no wrong fix gets built.
