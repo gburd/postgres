@@ -1992,3 +1992,48 @@ NEXT SESSION plan:
    default when the fiber-wake is not armable.  A/B on check-threaded-pooled +
    the contended workload; must be neutral-or-better and pass a
    cancellation/timeout/wake-race stress test before landing.
+
+### Phase 17 design finding: the fd-less park gap + two implementation options (2026-07-14)
+
+Traced the full wait path for the fix design (no code yet, per measure-first):
+
+- PgSuspend (backend_runtime_backend.c) is ONLY wait-observability: it publishes
+  the wait-completion diagnostic, then calls the callback.  For the semaphore
+  path the callback is ProcSemaphoreWaitCallback -> PGSemaphoreLock -> raw
+  sem_wait (posix_sema.c:313).  PgSuspend does NOT yield the fiber.  Confirmed:
+  ProcWaitOnSemaphore blocks the carrier.
+- Wake side is half-built: ProcWakeSemaphore already calls
+  PgBackendWakeWaitCompletionById (diagnostic) and PGSemaphoreUnlock; it is the
+  natural place to also fire an xtc_proc_wake of the waiter's fiber.
+- Pattern to mirror: the latch path (waiteventset.c:1393) captures the waiter's
+  xtc_self() as owner_fiber_{loop,local,gen} on the Latch at the park point, and
+  the cross-thread waker reconstructs the xtc_pid_t and calls xtc_proc_wake.
+  The semaphore fix needs the same handle on PGPROC.
+
+GAP found: there is no clean "park indefinitely until xtc_proc_wake" today.
+xtc_pg_wait_fd with fd<0 and an infinite timeout just returns WL_LATCH_SET
+immediately (does NOT park) -- see pg_xtc_carrier.c:797-808.  So a fiber-aware
+semaphore wait needs one of:
+
+  Option A (xtc_proc_wake-park): waiter arms its fiber pid on PGPROC, parks in an
+    fd-less wait (xtc_recv on a private channel, or a new fd-less parkable
+    primitive), ProcWakeSemaphore -> xtc_proc_wake.  Needs a genuine fd-less
+    park; xtc_recv works but couples to the mailbox.
+  Option B (eventfd-per-PGPROC) -- LOWER RISK, PREFERRED to try first: give each
+    PGPROC an eventfd; the fiber waiter parks via the PROVEN xtc_pg_wait_fd(fd)
+    path (same machinery as the pooled-queue eventfd fix, e0880ddb823-era);
+    ProcWakeSemaphore writes the eventfd (and still sem_post for the process/
+    non-fiber path).  Reuses working fd-park code, no new libxtc primitive, and
+    the wake-race is handled the same way the eventfd already is (write-then-
+    reader-drains; a wake before park leaves the fd readable so park returns
+    immediately -- no lost wake).
+
+Either way the arm/re-check/park order must be: arm fiber-wake handle -> re-check
+the wait condition (semaphore trylock / the actual predicate) -> park only if
+still-must-wait, so a ProcWakeSemaphore between arm and park is not lost.
+
+Still MEASURE FIRST next session (contended-write pgbench, carriers<clients) to
+confirm the carrier-starvation is real before landing an eventfd-per-PGPROC or
+fiber-wake change to this hot path.  If real: implement Option B, A/B on
+check-threaded-pooled + the contended workload, wake-race/cancel/timeout stress
+test, keep raw sem_wait fallback.
