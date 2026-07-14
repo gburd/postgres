@@ -106,3 +106,66 @@ readiness / batched wakeups / avoiding a kernel round-trip per command).  The
 next investigation is an off-CPU / `perf sched` trace of WHERE the carriers block
 and how wakeups propagate, then target that path.  ps_status was the first,
 clearest win; the wait path is the bigger structural one.
+
+## Root cause fully isolated: the pooled carrier idle loop (2026-07-13/14)
+
+Latency isolation (EC2 m6id.8xlarge, prepared SELECT, ps_status fix in place):
+
+    1 client:   process 0.030ms/33.5k tps  ==  threaded 0.030ms/33.3k tps  (IDENTICAL)
+    16 clients: process 0.039ms/414k       vs  threaded 0.095ms/168k        (2.4x worse)
+
+So there is NO per-command overhead -- at c=1 threaded latency equals process to
+the microsecond.  The gap appears ONLY under concurrency, and crucially MORE
+carriers make it WORSE:
+
+    8 carriers / 16 clients   168k, 0.095ms
+    16 carriers / 16 clients  105k, 0.152ms   (worse!)
+    24 carriers / 16 clients  122k, 0.131ms
+
+"More carrier threads -> worse" rules out carrier starvation and points at
+contention that scales with the number of active carrier OS threads.
+
+perf (16 carriers) named the kernel contention: `futex_wake ->
+__lll_lock_wake_private` (a pthread cond/mutex WAKE) at ~5.8%, and
+`try_to_wake_up -> wake_up_q -> futex_wake` on `_raw_spin_unlock_irqrestore`
+(~5.3%), plus `sock_def_readable <- unix_stream_sendmsg <- __send`.  It is a
+WAKE storm, not lock-hold contention (the mutex-lock trace was cold).
+
+Source: the pooled carrier idle loop
+(backend_pooled_protocol_carrier_entry, launch_backend.c ~1395):
+
+    for (;;) {
+        lease runnable backend; if found -> resume; continue;
+        dequeue new session;     if found -> run; continue;
+        nready = WaitParkedReads(..., 10L);   // poll() this carrier's parked fds, 10ms timeout
+        if (nready) { signal_ready_work(nready); continue; }
+        wait_for_work(10000L);                // pthread_cond_timedwait on the SHARED queue, 10ms
+    }
+
+Two scaling problems:
+1. **Per-carrier busy-ish poll**: every carrier independently `poll()`s its parked
+   fds with a 10ms timeout, so idle carriers wake ~100x/s and re-touch shared
+   state; with N carriers that is N wake+recheck cycles hammering the one shared
+   queue mutex/cond.
+2. **Shared-queue cond wake storm**: `signal_work` (`pthread_cond_signal`) on each
+   session launch + all carriers parked on the SAME `pooled_protocol_queue_cond`
+   => futex_wake / try_to_wake_up storms that grow with carrier count.
+
+### Fix direction (Phase 17/18 core -- the real gap-closer)
+
+Restructure the carrier wait so it does NOT busy-poll and does NOT thundering-herd
+on one shared cond:
+- one BLOCKING wait per loop that batches all of that loop's parked-session fds
+  (the loop's epoll already holds them via xtc_proc_wait_fd) with NO short
+  timeout -- wake on actual socket readiness, not a 10ms timer;
+- targeted / demand wakeup for new sessions (an xtc_chan mpsc or a per-carrier
+  waker) instead of broadcasting on one shared cond that all carriers re-contend;
+- this is exactly where libxtc wait-fusion (xtc-native readiness + per-loop waker)
+  earns its keep -- and it must be A/B'd with mtpg_ab (target: threaded p50/p95/p99
+  and tps approach process; machine no longer 78% idle at load).
+
+This is the structural work to reach the goal (threaded >= fork on tps AND
+p95/p99 latency AND resource footprint).  It is a scheduler-loop change, so it
+must land incrementally with the A/B gate and the latency percentiles, not as a
+big-bang rewrite.  The ps_status fix (+19%) was the first, isolated win; this
+loop is the main event.
