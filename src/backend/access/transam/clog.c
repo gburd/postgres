@@ -554,8 +554,7 @@ TransactionGroupUpdateXidStatus(TransactionId xid, XidStatus status,
 		Assert(pg_atomic_read_u32(&proc->clogGroupNext) == INVALID_PROC_NUMBER);
 
 		/* Fix semaphore count for any absorbed wakeups */
-		while (extraWaits-- > 0)
-			PGSemaphoreUnlock(proc->sem);
+		ProcSemaphoreAbsorbExtraWaits(proc, extraWaits);
 		return true;
 	}
 
