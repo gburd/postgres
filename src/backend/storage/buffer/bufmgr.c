@@ -6456,8 +6456,7 @@ BufferLockDequeueSelf(BufferDesc *buf_hdr)
 		/*
 		 * Fix the process wait semaphore's count for any absorbed wakeups.
 		 */
-		while (extraWaits-- > 0)
-			PGSemaphoreUnlock(MyProc->sem);
+		ProcSemaphoreAbsorbExtraWaits(MyProc, extraWaits);
 	}
 }
 

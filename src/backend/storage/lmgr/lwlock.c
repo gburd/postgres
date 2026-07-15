@@ -1159,8 +1159,7 @@ LWLockDequeueSelf(LWLock *lock)
 		/*
 		 * Fix the process wait semaphore's count for any absorbed wakeups.
 		 */
-		while (extraWaits-- > 0)
-			PGSemaphoreUnlock(MyProc->sem);
+		ProcSemaphoreAbsorbExtraWaits(MyProc, extraWaits);
 	}
 
 #ifdef LOCK_DEBUG
@@ -1345,8 +1344,7 @@ LWLockAcquire(LWLock *lock, LWLockMode mode)
 	/*
 	 * Fix the process wait semaphore's count for any absorbed wakeups.
 	 */
-	while (extraWaits-- > 0)
-		PGSemaphoreUnlock(proc->sem);
+	ProcSemaphoreAbsorbExtraWaits(proc, extraWaits);
 
 	return result;
 }
@@ -1520,8 +1518,7 @@ LWLockAcquireOrWait(LWLock *lock, LWLockMode mode)
 	/*
 	 * Fix the process wait semaphore's count for any absorbed wakeups.
 	 */
-	while (extraWaits-- > 0)
-		PGSemaphoreUnlock(proc->sem);
+	ProcSemaphoreAbsorbExtraWaits(proc, extraWaits);
 
 	if (mustwait)
 	{
@@ -1729,8 +1726,7 @@ LWLockWaitForVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 oldval,
 	/*
 	 * Fix the process wait semaphore's count for any absorbed wakeups.
 	 */
-	while (extraWaits-- > 0)
-		PGSemaphoreUnlock(proc->sem);
+	ProcSemaphoreAbsorbExtraWaits(proc, extraWaits);
 
 	/*
 	 * Now okay to allow cancel/die interrupts.
