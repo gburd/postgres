@@ -599,7 +599,7 @@ InitProcess(void)
 	 * (process-fallback backends alongside fiber carriers).  Drain any stale
 	 * eventfd readiness left by the previous tenant.
 	 */
-	if (MyProc->sem_wake_fd >= 0)
+	if (MyProc->sem_wake_fd >= 0 && !PG_BACKEND_WAS_FORKEXECED)
 	{
 		uint64		buf;
 
@@ -610,6 +610,23 @@ InitProcess(void)
 		SpinLockRelease(&MyProc->sem_fiber_lock);
 		while (read(MyProc->sem_wake_fd, &buf, sizeof(buf)) == sizeof(buf))
 			;
+	}
+	else if (MyProc->sem_wake_fd >= 0)
+	{
+		/*
+		 * fork+exec process-fallback child (Phase 19): the shmem PGPROC still
+		 * carries a sem_wake_fd integer, but the actual eventfd is EFD_CLOEXEC
+		 * and was closed across exec -- that fd number may now be an unrelated
+		 * open fd in this child, so we must NOT read()/write() it.  A
+		 * process-fallback backend is never fiber-backed; mark it on the sem
+		 * path and leave the (dead) fd untouched.  A fiber waker will see
+		 * sem_fiber_backed=false and PGSemaphoreUnlock, never touch the fd.
+		 */
+		SpinLockAcquire(&MyProc->sem_fiber_lock);
+		MyProc->sem_fiber_backed = false;
+		MyProc->sem_fiber_armed = false;
+		MyProc->sem_fiber_wake_pending = false;
+		SpinLockRelease(&MyProc->sem_fiber_lock);
 	}
 #endif
 
@@ -799,7 +816,9 @@ InitAuxiliaryProcess(void)
 
 #ifdef USE_XTC_CARRIER
 	/* Auxiliary procs never run as backend fibers: keep them on the sem path
-	 * and clear any stale fiber deep-wait state from a prior tenant. */
+	 * and clear any stale fiber deep-wait state from a prior tenant.  Skip the
+	 * eventfd drain in a fork+exec'd child, whose sem_wake_fd integer refers to
+	 * a since-closed (EFD_CLOEXEC) fd that may have been reused. */
 	if (MyProc->sem_wake_fd >= 0)
 	{
 		uint64		buf;
@@ -809,8 +828,9 @@ InitAuxiliaryProcess(void)
 		MyProc->sem_fiber_armed = false;
 		MyProc->sem_fiber_wake_pending = false;
 		SpinLockRelease(&MyProc->sem_fiber_lock);
-		while (read(MyProc->sem_wake_fd, &buf, sizeof(buf)) == sizeof(buf))
-			;
+		if (!PG_BACKEND_WAS_FORKEXECED)
+			while (read(MyProc->sem_wake_fd, &buf, sizeof(buf)) == sizeof(buf))
+				;
 	}
 #endif
 
@@ -2485,7 +2505,7 @@ ProcWakeSemaphore(PGPROC *proc)
  * proc->sem (it parked on the eventfd), so re-posting would over-post the
  * counting semaphore and corrupt a later raw sem_wait on the recycled PGPROC --
  * for a fiber-backed proc this is a no-op.  Centralizing the guard here keeps
- * the seven call sites (lwlock x4, bufmgr, clog, procarray) uniform.
+ * the eight call sites (lwlock x4, bufmgr x2, clog, procarray) uniform.
  */
 void
 ProcSemaphoreAbsorbExtraWaits(PGPROC *proc, int extraWaits)
