@@ -2099,3 +2099,21 @@ NEXT SESSION -- fix SSH first, then measure:
     Cross-check with a perf/off-CPU trace showing time in sem_wait /
     PGSemaphoreLock on the LWLock acquire slow path.  If the collapse is real,
     implement the xtc_sem/xtc_notify fix (PG-side, per the design note above).
+
+### Phase 17: SSH blocker was MISDIAGNOSED -- it was agent key-flooding, not MTU (2026-07-15)
+
+Last session I attributed the fresh-EC2 SSH failure to a 1280-MTU tunnel
+blackholing the KEX packet.  That was WRONG (attributed without capturing a
+verbose auth trace).  Re-measured this session:
+  - The route to the EC2 public IP egresses on wifi (MTU 1500), not tailscale.
+  - A 5MB HTTPS download works fine -> large-packet TCP is healthy locally.
+  - SSH KEX COMPLETES (NEWKEYS both ways, SERVICE_ACCEPT); the hang is at AUTH.
+  - `ssh -vvv` shows the local ssh-agent offering ~6 keys; each gets type 51
+    (rejected); after MaxAuthTries the server sends type 1 (disconnect).  The
+    `-i xtc-p17.pem` key never gets prioritized because the agent floods first.
+FIX: `ssh -o IdentitiesOnly=yes -o IdentityAgent=none -i <key>` (use ONLY the
+named key, ignore the flooded agent).  MTU/user-data/MSS experiments were all
+red herrings.  Recorded in /tmp/xtc_p17_aws.env as SSHOPTS.
+(Lesson: measure the actual failure -- the -vvv auth trace -- before naming a
+cause.  The MTU story was plausible and completely wrong.)
+
