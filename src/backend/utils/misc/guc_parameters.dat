@@ -2556,7 +2556,7 @@
 
 { name => 'pooled_protocol_carriers', type => 'int', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
   short_desc => 'Sets the carrier count for the pooled protocol scheduler.',
-  long_desc => 'Under multithreaded=on, -1 (the default) auto-sizes a bounded carrier pool so client backends run in pooled protocol mode; 0 forces thread-per-session; a positive value reserves that many carriers. Ignored (thread-per-session) when multithreaded=off.',
+  long_desc => 'Under multithreaded=on, -1 (the default) auto-sizes the carrier pool to one carrier per CPU core (floored at 8, capped by max_connections) so CPU-bound concurrent sessions each get a carrier; 0 forces thread-per-session; a positive value reserves that many carriers. Ignored (thread-per-session) when multithreaded=off.',
   flags => 'GUC_NOT_IN_SAMPLE',
   variable => 'pooled_protocol_carriers',
   boot_val => '-1',
