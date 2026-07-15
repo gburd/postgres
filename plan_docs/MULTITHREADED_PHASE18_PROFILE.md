@@ -517,3 +517,43 @@ Phase 17 implementation is now measurement-justified: make ProcWaitOnSemaphore
 fiber-aware (park the fiber via xtc_sem/xtc_notify, wake in ProcWakeSemaphore),
 keeping raw sem_wait for the process/non-fiber path.  Re-run THIS matrix as the
 A/B gate: threaded TPC-B should scale toward process; hot-row should stay >= now.
+
+## Phase 17 fix A/B + root-cause FALSIFICATION (2026-07-15)
+
+Landed the fiber-aware ProcWaitOnSemaphore (two-reviewer clean, 3 rounds) and
+re-ran the exact matrix on EC2 (32 vCPU, 8 carriers, v1.22.1).  RESULT: the fix
+is correct and neutral, but DID NOT fix the TPC-B flatline:
+
+  threaded TPC-B: 8c=24.4k 16c=24.4k 32c=24.1k 64c=24.7k  (still flat; was ~24.7k)
+  threaded hotrow: 8c=41.9k 16c=45.5k 32c=44.9k 64c=44.6k (still beats process ~2.7x)
+  process TPC-B:   8c=24.9k 16c=37.7k 32c=72.9k 64c=69.5k  (unchanged)
+
+MEASURED WHY (bpftrace uprobes during threaded TPC-B 32c) -- the Phase 17 audit
+hypothesis is FALSIFIED for this workload:
+  ProcSemaphoreWaitFiber (fiber park):   0 calls
+  ProcSemaphoreWaitCallback (raw park):  0 calls
+  ProcWakeSemaphore:                     100,435 calls
+=> NOBODY WAITS on the semaphore.  The LWLock/buffer-lock slow path enqueues then
+wins the lock on retry before ever reaching ProcWaitOnSemaphore, so the carrier
+is never blocked in sem_wait.  The fix I built (park the fiber instead of blocking
+the carrier in sem_wait) targets a path this workload does not take.  The audit's
+"ProcWaitOnSemaphore blocks the carrier -> collapses contended writes" was a
+plausible theory, NOT the measured cause.
+
+Futex is also NOT the bottleneck:
+  process:  1,411,667 futex/15s @ 76,787 tps  (~18/txn)
+  threaded:  ~181,000 futex/15s @ 24,341 tps  (~50/txn)
+Process does 8x MORE futexes in absolute terms yet runs 3x faster.  So the
+threaded flatline is not futex volume -- threaded is simply doing far less work:
+~8-wide (== carrier count) regardless of clients, but the carriers are NOT
+serialized in sem_wait or futex.  The serialization is elsewhere (WAL
+insert/commit path, or an on-CPU serial section).  NEXT: on-CPU + off-CPU flame
+profile of the 8 carriers to find the real serial section.  Do NOT attribute
+until measured.
+
+DECISION on the Phase 17 fix: it is correct, reviewed-clean, byte-neutral for
+process mode, throughput-neutral for the measured threaded workloads, and it DOES
+eliminate carrier-blocking sem_wait on the paths that DO park (rare here, real
+under other patterns).  It is not harmful and removes a real (if not hot-here)
+carrier-monopolizer.  Keep it, but STOP claiming it fixes the contended-write
+flatline -- that root cause is still open and is the real Phase 17 target.
