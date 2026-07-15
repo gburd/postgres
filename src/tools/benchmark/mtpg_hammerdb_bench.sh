@@ -74,15 +74,16 @@ CONF
   echo "PG_START_FAIL $mode"; tail -15 "$OUT/pg_$mode.log"; return 1
 }
 stop_pg() {
+  # Clean fast shutdown so the NEXT lane does not hit crash recovery (which
+  # leaves a multi-minute window where the postmaster fork-fails incoming
+  # connections under multithreaded=on).  pg_ctl waits for the checkpoint.
+  "$PGBIN/pg_ctl" -D "$DATA" -m fast -w -t 120 stop >/dev/null 2>&1
   local pid; pid=$(cat "$OUT/pg.pid" 2>/dev/null)
-  [ -n "$pid" ] && kill "$pid" 2>/dev/null
-  # wait for graceful exit (up to ~20s), then force
-  local i; for i in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+  local i; for i in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
   kill -0 "$pid" 2>/dev/null && { kill -9 "$pid" 2>/dev/null; sleep 2; }
-  # belt-and-suspenders: nothing must hold the data dir before the next start
   pkill -9 -f "postgres -D $DATA" 2>/dev/null
   sleep 1
-  rm -f "$DATA/postmaster.pid" 2>/dev/null   # clear any stale lock file
+  rm -f "$DATA/postmaster.pid" 2>/dev/null
 }
 
 sut_pss_mb() { local t=0 p v; for p in $(pgrep -x postgres 2>/dev/null); do v=$(awk '/^Pss:/{s+=$2} END{print s+0}' /proc/$p/smaps_rollup 2>/dev/null); t=$((t+${v:-0})); done; echo $((t/1024)); }
