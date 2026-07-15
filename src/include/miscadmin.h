@@ -344,6 +344,14 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool log_protocol_park_memory;
 #define POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_TRIM	1
 #define POOLED_PROTOCOL_IDLE_MEMORY_COMPACTION_CACHE	2
 
+/*
+ * Hard ceiling for the -1 (auto) pooled_protocol_carriers default, so a
+ * very-large-core box does not default to a multi-GB pthread-stack address-
+ * space reservation (one 8MB carrier stack per carrier).  Explicit tuning may
+ * still set a higher value.
+ */
+#define POOLED_PROTOCOL_CARRIER_AUTO_CEILING	256
+
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int commit_timestamp_buffers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int multixact_member_buffers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int multixact_offset_buffers;

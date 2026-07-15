@@ -933,29 +933,41 @@ PostmasterMain(int argc, char *argv[])
 			if (ncpus < 1)
 				ncpus = 1;
 			/*
-			 * Size the pool so that CPU-bound concurrent sessions each get a
-			 * carrier: a pooled session that runs a command to completion
-			 * without hitting a protocol-park (the common case for an in-RAM,
-			 * CPU-bound OLTP mix) MONOPOLIZES its carrier for that whole
-			 * command, so the carrier count is the hard concurrency ceiling.
-			 * A 2026-07-15 carrier sweep on a 32-vCPU box (write-heavy TPC-B,
-			 * shared_buffers-resident) proved this: carriers=8 -> 24k tps,
-			 * 16 -> 37k, 32 -> 74k (DEAD EVEN with process fork), 64 -> 74k
-			 * (no regression).  The old cpus/4 heuristic (from a Session-5
-			 * disk/lock-wait-bound workload) under-provisioned by 4x and
-			 * capped throughput at cpus/4-wide.  Default to one carrier per
-			 * core so the common OLTP case matches the fork model out of the
-			 * box.  Carrier fibers are spawned LAZILY as sessions arrive (up
-			 * to this limit); each holds an 8MB-max stack (only touched pages
-			 * resident), so an unused-so-far carrier costs nothing and an idle
-			 * one costs only its touched stack -- far less than a full backend
-			 * process.  Bounded by MaxConnections (a carrier per session is
-			 * pointless past that); floor of 8 keeps small boxes responsive.  Explicit
-			 * tuning overrides all of this.
+			 * A pooled-protocol carrier is a full OS thread (pg_thread_create,
+			 * 8MB pthread stack) that runs a session's commands inline to a
+			 * protocol boundary.  It releases the session ONLY at the
+			 * between-commands client read-park (PG_READ_COMMAND_PROTOCOL_PARK);
+			 * an IN-COMMAND wait (disk I/O, LWLock, buffer pin) stays
+			 * CARRIER-PINNED.  So the carrier count is the concurrency ceiling
+			 * for BOTH CPU-bound commands (which never yield mid-command) AND
+			 * in-command waits.
+			 *
+			 * A 2026-07-15 carrier sweep on a 32-vCPU box (CPU-bound, in-RAM
+			 * write TPC-B) proved the CPU-bound case: carriers=8 -> 24k tps,
+			 * 16 -> 37k, 32 -> 74k (DEAD EVEN with process fork), 64 -> 74k (no
+			 * regression).  The old Max(8,cpus/4) resolved to 8 there and
+			 * capped throughput at cpus/4-wide -- a 4x under-provision.
+			 *
+			 * Default to one carrier per core (floor 8 for small-box
+			 * responsiveness; a hard ceiling bounds the pthread-stack address-
+			 * space blast radius on very-large-core boxes; capped by
+			 * MaxConnections).  The pool is spawned LAZILY and grown on demand
+			 * up to this limit, and each carrier's 8MB stack is touched-pages-
+			 * only resident, so the threaded model stays well under the fork
+			 * model's per-connection footprint.
+			 *
+			 * CAVEAT (tuning basis is CPU-bound): a WAIT-BOUND workload (data >
+			 * shared_buffers, heavy row-lock contention) pins carriers on
+			 * in-command waits, so ncpus carriers may under-provide vs. fork
+			 * there -- such deployments should raise pooled_protocol_carriers
+			 * explicitly until the pool becomes elastic-above-ncpus.  No single
+			 * fixed number is optimal for both regimes.
 			 */
-			resolved = (int) Max(8, ncpus);
-			if (resolved > ncpus && ncpus >= 8)
-				resolved = (int) ncpus;
+			resolved = (int) ncpus;
+			if (resolved < 8)
+				resolved = 8;	/* floor: small-box responsiveness */
+			if (resolved > POOLED_PROTOCOL_CARRIER_AUTO_CEILING)
+				resolved = POOLED_PROTOCOL_CARRIER_AUTO_CEILING;
 			if (MaxConnections > 0 && resolved > MaxConnections)
 				resolved = MaxConnections;
 			if (resolved < 1)
