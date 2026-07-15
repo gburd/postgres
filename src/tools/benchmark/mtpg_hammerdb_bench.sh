@@ -85,12 +85,14 @@ CONF
   echo "PG_START_FAIL $mode"; tail -15 "$OUT/pg_$mode.log"; return 1
 }
 stop_pg() {
-  # Clean fast shutdown so the NEXT lane does not hit crash recovery (which
-  # leaves a multi-minute window where the postmaster fork-fails incoming
-  # connections under multithreaded=on).  pg_ctl waits for the checkpoint.
-  "$PGBIN/pg_ctl" -D "$DATA" -m fast -w -t 120 stop >/dev/null 2>&1
+  # Drain dirty buffers with an explicit CHECKPOINT first (a heavy write run
+  # leaves ~80% of shared_buffers dirty; the implicit shutdown checkpoint can
+  # exceed pg_ctl's timeout, causing kill -9 -> crash recovery on the next lane
+  # -> a fork-fail doom loop).  Then a clean fast stop with a generous timeout.
+  "$PGBIN/psql" -h 127.0.0.1 -p $PORT -U postgres -c "CHECKPOINT" postgres >/dev/null 2>&1
+  "$PGBIN/pg_ctl" -D "$DATA" -m fast -w -t 600 stop >/dev/null 2>&1
   local pid; pid=$(cat "$OUT/pg.pid" 2>/dev/null)
-  local i; for i in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+  local i; for i in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
   kill -0 "$pid" 2>/dev/null && { kill -9 "$pid" 2>/dev/null; sleep 2; }
   pkill -9 -f "postgres -D $DATA" 2>/dev/null
   sleep 1
