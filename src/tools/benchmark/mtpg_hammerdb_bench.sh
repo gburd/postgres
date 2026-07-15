@@ -73,7 +73,17 @@ CONF
   local i; for i in $(seq 1 60); do "$PGBIN/psql" -h 127.0.0.1 -p $PORT -U postgres -tAc "select 1" postgres >/dev/null 2>&1 && return 0; sleep 1; done
   echo "PG_START_FAIL $mode"; tail -15 "$OUT/pg_$mode.log"; return 1
 }
-stop_pg() { kill "$(cat "$OUT/pg.pid" 2>/dev/null)" 2>/dev/null; sleep 4; kill -9 "$(cat "$OUT/pg.pid" 2>/dev/null)" 2>/dev/null; }
+stop_pg() {
+  local pid; pid=$(cat "$OUT/pg.pid" 2>/dev/null)
+  [ -n "$pid" ] && kill "$pid" 2>/dev/null
+  # wait for graceful exit (up to ~20s), then force
+  local i; for i in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+  kill -0 "$pid" 2>/dev/null && { kill -9 "$pid" 2>/dev/null; sleep 2; }
+  # belt-and-suspenders: nothing must hold the data dir before the next start
+  pkill -9 -f "postgres -D $DATA" 2>/dev/null
+  sleep 1
+  rm -f "$DATA/postmaster.pid" 2>/dev/null   # clear any stale lock file
+}
 
 sut_pss_mb() { local t=0 p v; for p in $(pgrep -x postgres 2>/dev/null); do v=$(awk '/^Pss:/{s+=$2} END{print s+0}' /proc/$p/smaps_rollup 2>/dev/null); t=$((t+${v:-0})); done; echo $((t/1024)); }
 
@@ -185,7 +195,7 @@ TCL
 }
 
 emit() { # mode carriers vu ; parses the last hdb log
-  local mode="$1" carriers="$2" vu="$3" log="$OUT/hdbout_${mode}_${carriers}_${vu}.log"
+  local mode="${1:-?}" carriers="${2:-?}" vu="${3:-?}" log="$OUT/hdbout_${1:-x}_${2:-x}_${3:-x}.log"
   local nopm tpm
   nopm=$(grep -oiE '([0-9]+) NOPM' "$log" 2>/dev/null | grep -oE '[0-9]+' | tail -1)
   tpm=$(grep -oiE '([0-9]+) (PostgreSQL )?TPM' "$log" 2>/dev/null | grep -oE '[0-9]+' | tail -1)
