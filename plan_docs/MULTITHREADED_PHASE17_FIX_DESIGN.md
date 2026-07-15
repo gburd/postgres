@@ -97,3 +97,33 @@ Re-run the exact MULTITHREADED_PHASE18_PROFILE.md matrix (process vs threaded,
 TPC-B + hot-row, 8/16/32/64 clients, 8 carriers): threaded TPC-B must scale
 toward process (not flatline); hot-row must stay >= current threaded. Plus: TAP
 007 pooled (46/46), a cancellation/timeout stress test, and check-threaded green.
+
+---
+
+## REVIEW OUTCOME (two independent adversarial reviews, 2026-07-15): GO-WITH-CHANGES
+
+Both reviewers traced the ACTUAL libxtc source (not headers) and converged:
+
+### Q4 mechanism DECIDED: per-PGPROC eventfd (primary) + xtc_proc_wake (secondary nudge), mirroring the proven latch/SetLatch path. NOT xtc_notify, NOT bare xtc_proc_wake.
+- xtc_notify_t is heap + live pthread_mutex/cond + stack-pointer waiter queue -> CANNOT live in shmem PGPROC. REJECTED.
+- bare xtc_proc_wake HANGS: it only fires recv_waker (armed by xtc_proc_wait_fd/xtc_recv), never the private per-call fiber_waiter that notify/sem park on, and it has NO stored-signal -> a wake between publish and the yield inside the park is DROPPED. The caller's for(;;) predicate loop does NOT save this: for LWLock/buffer the releaser wakes exactly once and is gone; the re-check loop only absorbs SPURIOUS wakes, never a LOST one. REJECTED as sole channel.
+- eventfd readiness is LEVEL-TRIGGERED/persistent = the real stored-signal: a write before the waiter parks leaves the fd readable so the park returns at once. This closes the publish/park race by construction. The waker MUST write() the fd (load-bearing, also the memory barrier that publishes the predicate); xtc_proc_wake(pid) is only the loop-poke. This is byte-for-byte what SetLatch already does (latch.c:456-483). Cost ~1 fd/proc (few hundred) -- negligible.
+- Laziest correct variant (reviewer 2): for a fiber waiter, ProcWakeSemaphore just SetLatch(&waiter->procLatch) and the waiter parks on its latch -> inherits PM-death multiplexing, cancellation, fd-budget-of-one, and already-green code. Prototype this first; fall back to a dedicated per-PGPROC eventfd only if latch re-entrancy in the LWLock call stack is a problem.
+
+### MUST-FIX before landing (union of both reviews):
+1. eventfd/latch primary + xtc_proc_wake secondary; waker MUST write the fd. Reject b-alone (hang).
+2. Publish only gen-checked {loop,local,gen} in PGPROC, NEVER a raw xtc_waker_t (xtc_waker_wake derefs w->task->state with zero validation -> UAF on a recycled task). The __table_lookup gen check kills ABA.
+3. ELIMINATE the +1 sem leak: a fiber waiter parks on the fd, NOT proc->sem. If ProcWakeSemaphore also PGSemaphoreUnlocks, the post is never drained -> sem.count corrupts a later process-mode sem_wait on the recycled PGPROC. Gate so EXACTLY ONE channel delivers to a fiber waiter (per-proc POD "fiber-armed" flag, published release before fd registration, read acquire by waker). Do NOT "keep both live."
+4. The fiber park MUST be UNINTERRUPTIBLE under the LWLock/buffer protocol: LWLock waits under HOLD_INTERRUPTS (lwlock.c:1229), and xtc_proc_wait_fd checks kill_pending -> xtc_exit_self longjmp (proc.c:1900/1990). A kill longjmp while lwWaiting!=NOT_WAITING and the proc is still on the wait queue TEARS the LWLock protocol. Defer any pending kill until the lock protocol completes; add NO new CHECK_FOR_INTERRUPTS inside the loop.
+5. eventfd (if dedicated) created EAGERLY at PGPROC init (InitProcGlobal), EMFILE handled at startup, fd budget reserved in set_max_safe_fds. No per-wait fd churn.
+6. Audit ALL ProcWakeSemaphore cross-backend callers for publish-before-signal: lwlock.c:1043/1806, bufmgr.c:6627, clog.c:657, procarray.c:878. (clog.c:558 / procarray.c:826 raw PGSemaphoreUnlock are same-proc extraWaits fixups -- harmless, but audit vs the #3 rebalance.)
+
+### MUST-VERIFY (hard A/B gate):
+7. Re-run the exact TPC-B + hot-row x {8,16,32,64} x {process,threaded,8 carriers} matrix: TPC-B must scale toward process; hot-row must NOT regress. Add sem-post/eventfd-write balance counters (prove #3 under load) + a kill/cancel stress test (prove #4). TAP 007 46/46; check-threaded green.
+8. Carrier-teardown-with-parked-fiber must not UAF the loop proc table (supervisor must drain/kill parked backend fibers before xtc_loop_fini).
+
+### DOC FIX: this file cited xtc-1.3.0; the branch links xtc-1.22.0. All libxtc claims re-verified against 1.22 source in the reviews (sync.c/proc.c/task.c). The 1.3.0 path was only a header-doc read; semantics confirmed unchanged for notify/sem/proc_wake/wait_fd.
+
+### Nice-to-have: hook the fiber park INSIDE the existing PgSuspend/ProcSemaphoreWaitCallback seam (proc.c:2130) rather than branching in ProcWaitOnSemaphore -- reuses the wait-completion publication already wired to ProcWakeSemaphore.
+
+### DECISION: implement the SetLatch-reuse variant first (laziest correct, max code reuse), with the must-fixes; if LWLock-call-stack latch re-entrancy fails, fall back to a dedicated per-PGPROC eventfd. Re-review the implementation diff (not just the design) with the same two-reviewer gate before merge.
