@@ -70,7 +70,18 @@ CONF
   echo "include 'postgresql.conf.mode'" >> "$DATA/postgresql.conf"
   "$PGBIN/postgres" -D "$DATA" >"$OUT/pg_$mode.log" 2>&1 &
   echo $! > "$OUT/pg.pid"
-  local i; for i in $(seq 1 60); do "$PGBIN/psql" -h 127.0.0.1 -p $PORT -U postgres -tAc "select 1" postgres >/dev/null 2>&1 && return 0; sleep 1; done
+  local i; for i in $(seq 1 120); do "$PGBIN/psql" -h 127.0.0.1 -p $PORT -U postgres -tAc "select 1" postgres >/dev/null 2>&1 && break; sleep 1; done
+  if [ "$mode" = threaded ]; then
+    # A local select-1 can succeed before the pooled carrier scheduler is up
+    # (and while the server is still finishing startup/recovery), during which
+    # window TCP connections fork-fail under multithreaded=on.  Wait for the
+    # carriers to actually be up before letting the driver connect.
+    for i in $(seq 1 120); do grep -q "carrier scheduler thread up" "$OUT/pg_$mode.log" 2>/dev/null && break; sleep 1; done
+    grep -q "carrier scheduler thread up" "$OUT/pg_$mode.log" 2>/dev/null || { echo "CARRIERS_NOT_UP $mode"; tail -15 "$OUT/pg_$mode.log"; return 1; }
+    # settle: no more fork-fails should occur once carriers are up
+    sleep 3
+  fi
+  "$PGBIN/psql" -h 127.0.0.1 -p $PORT -U postgres -tAc "select 1" postgres >/dev/null 2>&1 && return 0
   echo "PG_START_FAIL $mode"; tail -15 "$OUT/pg_$mode.log"; return 1
 }
 stop_pg() {
