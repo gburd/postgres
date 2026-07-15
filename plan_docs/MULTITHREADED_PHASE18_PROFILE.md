@@ -697,3 +697,33 @@ agent-sandbox-ec2) that was NOT mine -- it belonged to another process in the
 shared account (my instances use key xtc-p17 + tags xtc-ab-sut/xtc-ab-loadgen).
 Going forward: only terminate instances matching MY key AND tags; check KeyName
 before any terminate in a shared account.
+
+## HammerDB TPROC-C: threaded mode WORKS; NA was a harness timer bug (2026-07-15)
+
+Clean disk-safe run (40 warehouses, max_wal_size=8GB, VU=32):
+  process   VU=32  NOPM=915,584  TPM=2,107,141  PSS=8775MB  CPU=99.8%
+  threaded  c=32 VU=32  NOPM=NA (harness timer)  PSS=8740MB  CPU=93.1%
+
+The threaded NA is NOT a threaded-mode failure -- the log shows the TPROC-C
+worker VUs (7,9,14,15,17,18,19,20,26,31,33) ALL "FINISHED SUCCESS" against the
+threaded server; only Vuser 1 (HammerDB's monitor/timer VU that prints the "System
+achieved N NOPM" line) was "terminated ... FINISHED FAILED" because the harness
+runtimer / vudestroy cut it off before it reported.  Threaded mode ran the full
+TPC-C-like stored-procedure OLTP workload correctly; the harness just failed to
+capture its NOPM.  (The 4 startup fork-fails at 21:37:50-53 are the same benign
+startup-window artifact, before "ready to accept" at 21:37:54; carriers up
+21:37:54; the run proceeded fine after.)
+
+Interesting early signal (NOT a validated comparison -- threaded NOPM not
+captured): at VU=32 the threaded server ran at 93% CPU vs process 99.8%, and
+PSS was comparable (8740 vs 8775 MB, 1 proc vs ~40).  Need the threaded NOPM to
+compare.  Also note process VU=32 NOPM (915k) vs the earlier VU=16 (636-717k) --
+scales with VU as expected.
+
+HARNESS FIX NEEDED: HammerDB timed-driver capture.  The reliable pattern is to
+let the monitor VU (Vuser 1) run to completion and parse its "System achieved"
+line from the vurun output BEFORE vudestroy, using HammerDB's jobs DB or the
+tcl callback, not a fixed runtimer that races vudestroy.  Use
+`diset tpcc pg_allwarehouse false` etc. defaults and rely on the driver's own
+completion (the vurun blocks until the monitor reports when timed).  The worker
+NOPM is also retrievable from HammerDB's job result store.
