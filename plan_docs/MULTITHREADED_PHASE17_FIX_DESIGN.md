@@ -127,3 +127,64 @@ Both reviewers traced the ACTUAL libxtc source (not headers) and converged:
 ### Nice-to-have: hook the fiber park INSIDE the existing PgSuspend/ProcSemaphoreWaitCallback seam (proc.c:2130) rather than branching in ProcWaitOnSemaphore -- reuses the wait-completion publication already wired to ProcWakeSemaphore.
 
 ### DECISION: implement the SetLatch-reuse variant first (laziest correct, max code reuse), with the must-fixes; if LWLock-call-stack latch re-entrancy fails, fall back to a dedicated per-PGPROC eventfd. Re-review the implementation diff (not just the design) with the same two-reviewer gate before merge.
+
+---
+
+## DIFF-LEVEL RE-REVIEW (two independent, 2026-07-15): NO-GO -- 3 blockers, redesign required
+
+Both reviewers independently reached NO-GO on the first implementation (commit
+5eb4c1194d0).  Convergent critical defects:
+
+### BLOCKER 1 (both) -- kill-longjmp tears the LWLock protocol [my design claim was FALSE]
+xtc_pg_wait_fd -> xtc_proc_wait_fd LONGJMPS via xtc_exit_self on kill_pending, at
+TWO points (libxtc proc.c:1897 up-front, :1990 after yield).  A supervisor/cancel
+kill while parked unwinds ProcSemaphoreWaitFiber with lwWaiting!=NOT_WAITING, the
+proc still on lock->waiters, HOLD_INTERRUPTS leaked -> wait-list corruption + a
+later LWLockWakeup proclist_delete of a gone proc.  HOLD_INTERRUPTS gates PG's
+CHECK_FOR_INTERRUPTS, NOT libxtc's xtc_exit_self (orthogonal).  My header comment
+asserting "does not longjmp" was wrong -- verified against libxtc source.
+FIX: park must be UNINTERRUPTIBLE -- either an xtc_proc_wait_fd variant that does
+not consult kill_pending, or defer the xtc kill across the wait (honor crit_depth).
+Likely needs a libxtc primitive (verify-before-requesting: check if xtc already
+has a no-cancel park or a crit-section that suppresses xtc_exit_self).
+
+### BLOCKER 2 (both) -- stale sem_fiber_armed => process-mode HANG + fd leak
+"Waker owns disarm" is UNSOUND: the waker sets the predicate under pg_write_barrier
+BEFORE its ProcWakeSemaphore body runs, so the waiter can observe the predicate
+(via a spurious wake) and BREAK the caller loop while armed is STILL true and no
+waker has disarmed.  Then: (2a) a late waker's write(fd) leaks the eventfd counter
+across PGPROC recycle; (2b) worse -- if the recycled PGPROC is later used by a
+NON-FIBER (process-mode) backend, ProcWakeSemaphore sees the stale armed==true,
+takes the fd branch, and does NOT PGSemaphoreUnlock(proc->sem) -> the process-mode
+sem_wait() is never posted -> HANGS FOREVER.  InitProcess resets sem but NOT
+sem_fiber_armed/handle/fd.
+FIX: waiter disarms + drains on predicate-loop exit (carefully, not reopening the
+race); InitProcess AND InitAuxiliaryProcess reset sem_fiber_armed=false + drain
+sem_wake_fd next to PGSemaphoreReset.
+
+### BLOCKER 3 (reviewer 1) -- extraWaits over-posts the sem for fiber waiters
+The fiber never posts proc->sem, but SPURIOUS wakes make extraWaits>0, and the
+callers' tail loop `while(extraWaits-- >0) PGSemaphoreUnlock(proc->sem)`
+(lwlock.c:1347, bufmgr.c:6648, clog.c:557, procarray.c:825) posts it anyway ->
+phantom count -> lost wait when the recycled PGPROC later takes the non-fiber path.
+My ProcWakeSemaphore gate did not cover this caller-side re-post.
+FIX: guard the four post-loops with `if (!xtc_in_backend_fiber)`.
+
+### HIGH/MEDIUM (reviewer 2) -- arm/disarm race + ordering
+Non-atomic arm-check(unbarriered proc.c:2218)/park vs disarm/write reopens a lost
+wake on re-park (single-wake group-update paths have no retry to rescue it).  Make
+sem_fiber_armed a pg_atomic flag with acq/rel; publish the {loop,local,gen} handle
+as a versioned unit; consider a per-PGPROC spinlock serializing arm/disarm/drain.
+
+### CONFIRMED OK: prepared-xact sem_wake_fd=-1 guard (self-caught fix); gen-check
+makes a stale xtc_proc_wake a safe no-op; eventfd drain vs concurrent write is safe
+in isolation (level-triggered).
+
+### VERDICT / PLAN
+Do NOT ship 5eb4c1194d0.  The lock-free "waker owns disarm" hand-off is the root
+of B2/B3/HIGH.  REDESIGN toward a serialized arm/disarm (per-PGPROC spinlock around
+the arm-check+park-decision and the disarm+wake), + waiter-side disarm-on-exit, +
+InitProcess/InitAuxiliaryProcess reset, + the extraWaits guard, + an uninterruptible
+park (B1 -- the hard one; may need a libxtc no-cancel park, verify first).  Re-run
+the two-reviewer diff gate after the redesign, plus a cancel-while-parked TAP and
+the A/B matrix.  The commit stays local (unpushed) until it passes.
