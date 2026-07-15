@@ -2332,12 +2332,17 @@ ProcWaitOnSemaphore(PGPROC *proc, uint32 wait_event_info)
 	/*
 	 * Fiber-aware fast path: a pooled backend running as an xtc fiber parks
 	 * the fiber (freeing the carrier for other sessions) rather than blocking
-	 * the carrier OS thread in sem_wait().  Only when we are actually in a
-	 * backend fiber AND this is our own PGPROC (the wait contract: a backend
-	 * always waits on its OWN semaphore).  The wait-completion diagnostic is
-	 * still published below via PgSuspend for the non-fiber path.
+	 * the carrier OS thread in sem_wait().  We key off proc->sem_fiber_backed
+	 * (latched once at InitProcess, resident in shmem) -- NOT the __thread
+	 * xtc_in_backend_fiber, which is per carrier OS thread and does NOT migrate
+	 * when libxtc work-steals a parked fiber to another loop/thread.  A stale
+	 * TLS read after migration would split-brain the wake channel (waiter takes
+	 * the raw sem_wait path while the waker wakes via the fd) -> permanent
+	 * hang.  sem_fiber_backed is migration-stable, so the wait side and the
+	 * wake side (ProcWakeSemaphore) always agree on the channel.  Only for our
+	 * OWN PGPROC (a backend always waits on its own semaphore).
 	 */
-	if (xtc_in_backend_fiber && proc == MyProc && proc->sem_wake_fd >= 0)
+	if (proc == MyProc && proc->sem_fiber_backed && proc->sem_wake_fd >= 0)
 	{
 #ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 		PgWaitSpec	fiber_spec;
@@ -2415,25 +2420,26 @@ ProcWakeSemaphore(PGPROC *proc)
 	if (proc->sem_wake_fd >= 0)
 	{
 		bool		waked_fiber = false;
+		bool		do_fd_wake = false;
+		xtc_pid_t	owner = {0};
 
 		SpinLockAcquire(&proc->sem_fiber_lock);
 		if (proc->sem_fiber_backed)
 		{
 			if (proc->sem_fiber_armed)
 			{
-				uint64		one = 1;
-				ssize_t		wrc;
-				xtc_pid_t	owner;
-
+				/* Snapshot the handle + disarm UNDER the lock, but do the
+				 * actual wake (write + xtc_proc_wake) AFTER releasing it:
+				 * xtc_proc_wake takes libxtc pthread mutexes (mbox_lock, proc-
+				 * table stripe) and write() is a syscall -- neither is legal
+				 * to run while holding a PG spinlock (stuck-spinlock PANIC /
+				 * lock-order inversion).  Mirrors LWLockWakeup, which posts
+				 * semaphores only after releasing the wait-list lock. */
 				owner.loop_id = proc->sem_fiber_loop;
 				owner.local_id = proc->sem_fiber_local;
 				owner.gen = proc->sem_fiber_gen;
 				proc->sem_fiber_armed = false;
-
-				wrc = write(proc->sem_wake_fd, &one, sizeof(one));
-				(void) wrc;		/* eventfd add; only fails at UINT64_MAX-1 */
-				if (!xtc_pid_is_none(owner))
-					(void) xtc_proc_wake(owner);
+				do_fd_wake = true;
 			}
 			else
 			{
@@ -2443,6 +2449,24 @@ ProcWakeSemaphore(PGPROC *proc)
 			waked_fiber = true;
 		}
 		SpinLockRelease(&proc->sem_fiber_lock);
+
+		if (do_fd_wake)
+		{
+			uint64		one = 1;
+			ssize_t		wrc;
+
+			/*
+			 * The fd write is the load-bearing wake (level-triggered readiness
+			 * = stored-signal; its syscall is the barrier that publishes the
+			 * caller's predicate store).  xtc_proc_wake is a secondary nudge to
+			 * pop the owner loop out of its poll; a stale gen-mismatched handle
+			 * makes it a harmless no-op.  Both are safe to run unlocked.
+			 */
+			wrc = write(proc->sem_wake_fd, &one, sizeof(one));
+			(void) wrc;			/* eventfd add; only fails at UINT64_MAX-1 */
+			if (!xtc_pid_is_none(owner))
+				(void) xtc_proc_wake(owner);
+		}
 
 		if (waked_fiber)
 			return;
@@ -2466,8 +2490,26 @@ ProcWakeSemaphore(PGPROC *proc)
 void
 ProcSemaphoreAbsorbExtraWaits(PGPROC *proc, int extraWaits)
 {
+	/*
+	 * Nothing to reconcile -- and callers may pass a NULL/!MyProc proc here in
+	 * very early startup (e.g. an LWLock taken during ShmemInit before MyProc
+	 * exists), where extraWaits is always 0.  Return before touching proc so we
+	 * match the old `while (extraWaits-- > 0)` loop, which never dereferenced
+	 * proc when the count was 0.
+	 */
+	if (extraWaits <= 0)
+		return;
+
 #ifdef USE_XTC_CARRIER
-	if (xtc_in_backend_fiber)
+	/*
+	 * Key off proc->sem_fiber_backed (latched, migration-stable), NOT the
+	 * __thread xtc_in_backend_fiber: a work-stolen fiber can reach here on a
+	 * carrier thread whose TLS is false, and re-posting proc->sem for waits it
+	 * actually serviced on the fd would over-post the counting semaphore.  The
+	 * guard must match the fact that chose the wake channel in
+	 * ProcWaitOnSemaphore / ProcWakeSemaphore.
+	 */
+	if (proc->sem_fiber_backed)
 		return;					/* fiber waiter never posted proc->sem */
 #endif
 	while (extraWaits-- > 0)
