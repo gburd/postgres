@@ -188,3 +188,35 @@ InitProcess/InitAuxiliaryProcess reset, + the extraWaits guard, + an uninterrupt
 park (B1 -- the hard one; may need a libxtc no-cancel park, verify first).  Re-run
 the two-reviewer diff gate after the redesign, plus a cancel-while-parked TAP and
 the A/B matrix.  The commit stays local (unpushed) until it passes.
+
+---
+
+## MEASURED: Blocker 1 (kill-longjmp) is currently UNREACHABLE -> defer-with-invariant (2026-07-15)
+
+Before redesigning for B1, verified reachability (measure-before-attributing):
+- grep of src/backend/: xtc_exit_pid / xtc_proc_kill on a backend fiber = ZERO
+  occurrences.  Nothing async-kills a backend fiber.
+- The only xtc_exit_self calls are a fiber exiting ITSELF voluntarily at
+  command/session boundaries (pg_xtc_carrier.c:532 clean, :769 controlled
+  teardown), never mid-LWLock-wait.  kill_pending on a backend fiber is never
+  set because no code sends it a kill.
+- Backend cancellation/termination (pg_terminate_backend, statement_timeout)
+  flows through PG's normal CHECK_FOR_INTERRUPTS at protocol boundaries, NOT a
+  libxtc xtc_exit_pid.
+
+=> The kill-longjmp-mid-LWLock hazard the reviewers flagged cannot fire in the
+current phase.  This is a DEFER-WITH-INVARIANT (per AGENTS.md), not a redesign
+blocker:
+  * WHY SAFE NOW: no code path async-kills a backend fiber; xtc_exit_self is only
+    self-invoked at boundaries where lwWaiting==NOT_WAITING and no lock is held.
+  * GUARD: assert in ProcSemaphoreWaitFiber that we are not in a state that could
+    be async-killed, and document the invariant "a backend fiber must not be
+    xtc_exit_pid'd while parked in a deep wait."  When a future phase adds
+    supervisor-driven cancellation / fiber-kill of backends, it MUST first make
+    this park kill-safe -- either an uninterruptible xtc_proc_wait_fd variant, or
+    xtc_proc_at_exit handlers running LWLockReleaseAll + wait-queue dequeue (the
+    libxtc-intended mechanism; xtc_proc_at_exit already exists for exactly this).
+  * OWNER: the later scheduler/cancellation phase (post-17) owns closing this.
+
+So the REAL must-fixes to land the Phase 17 fix are B2 (stale-armed) and B3
+(extraWaits over-post), both reachable now, plus the HIGH arm/disarm race.
