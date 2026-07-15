@@ -6205,8 +6205,7 @@ BufferLockAcquire(Buffer buffer, BufferDesc *buf_hdr, BufferLockMode mode)
 	/*
 	 * Fix the process wait semaphore's count for any absorbed wakeups.
 	 */
-	while (unlikely(extraWaits-- > 0))
-		PGSemaphoreUnlock(MyProc->sem);
+	ProcSemaphoreAbsorbExtraWaits(MyProc, extraWaits);
 }
 
 /*
@@ -6447,7 +6446,7 @@ BufferLockDequeueSelf(BufferDesc *buf_hdr)
 		 */
 		for (;;)
 		{
-			PGSemaphoreLock(MyProc->sem);
+			ProcWaitOnSemaphore(MyProc, WAIT_EVENT_BUFFER_EXCLUSIVE);
 			if (MyProc->lwWaiting == LW_WS_NOT_WAITING)
 				break;
 			extraWaits++;
