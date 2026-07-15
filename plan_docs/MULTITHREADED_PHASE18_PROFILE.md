@@ -557,3 +557,42 @@ eliminate carrier-blocking sem_wait on the paths that DO park (rare here, real
 under other patterns).  It is not harmful and removes a real (if not hot-here)
 carrier-monopolizer.  Keep it, but STOP claiming it fixes the contended-write
 flatline -- that root cause is still open and is the real Phase 17 target.
+
+## Phase 17 ROOT CAUSE PROVEN: carrier count == concurrency ceiling (2026-07-15)
+
+Flame profile of threaded TPC-B 32c/8carriers: the 32-vCPU box is 75.8% IDLE
+(swapper/cpuidle); postgres uses only 16.7% CPU.  Not CPU-bound, not lock-bound,
+not futex-bound -- the carriers are mostly parked.  Top user frames:
+PgSessionRunProtocolSchedulerUntilBoundary -> exec_simple_query.
+
+DECISIVE TEST -- raise pooled_protocol_carriers, hold clients=32:
+  carriers=8   clients=32  tps=24,153
+  carriers=16  clients=32  tps=37,240
+  carriers=32  clients=32  tps=73,968   <- DEAD EVEN with process (72,937)
+  carriers=64  clients=32  tps=73,683
+=> Threaded pooled mode MATCHES process TPS on write-heavy TPC-B when carriers
+are sized to the offered concurrency.  The "flatline" was NEVER a lock/sem/futex
+bug -- it was simply that a POOLED SESSION MONOPOLIZES ITS CARRIER for the entire
+command (there is no deep wait to yield at on a cache-resident CPU-bound
+command), so N carriers == N concurrent commands == an N-wide throughput ceiling.
+8 carriers < 32 clients -> 8-wide -> ~24k.  32 carriers -> full parity.
+
+This falsifies the sem_wait hypothesis conclusively (the flame shows the machine
+idle, not spinning/blocking) and REFRAMES Phase 17:
+  - The fiber-aware ProcWaitOnSemaphore fix is correct and keeps (removes a real
+    carrier-blocker on the rare paths that DO park) but is NOT what unblocks
+    contended writes.
+  - The real lever is CARRIER SIZING / SCHEDULING: the pooled default
+    Max(8, cpus/4) under-provisions carriers for CPU-bound write concurrency.
+    A session that runs a command to completion without a protocol-park needs a
+    carrier for that whole command; to serve C concurrent busy clients you need
+    ~C carriers (bounded by cpus for CPU-bound work).
+  - North-star check: threaded == process on write TPC-B at carriers==clients==
+    vCPU-scale.  Parity holds for writes, not just cached reads.
+
+NEXT (measure-first, adversarially reviewed before landing): decide the carrier
+sizing/scheduling policy.  Options to A/B: (a) raise the pooled auto default
+toward ~cpus for CPU-bound mixes; (b) an elastic carrier pool that grows to
+offered concurrency up to a cpu-based cap; (c) keep the bounded pool but document
+that pooled mode trades a carrier cap for memory footprint (the process model
+uses 1 proc/session).  This is a policy/scheduler decision, NOT a lock fix.
