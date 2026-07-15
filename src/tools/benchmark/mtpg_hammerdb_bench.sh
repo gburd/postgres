@@ -178,7 +178,7 @@ loadscript
 vuset vu $vu
 vucreate
 vurun
-runtimer [expr {($RAMPUP + $DURATION) * 60 + 40}]
+runtimer [expr {($RAMPUP + $DURATION) * 60 + 120}]
 vudestroy
 quit
 TCL
