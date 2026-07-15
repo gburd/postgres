@@ -64,3 +64,44 @@ It profiles the same build in a `process` lane and a `threaded_pooled` lane unde
 Symbols that dominate the pooled lane but not the process lane are the
 per-command threaded overhead -- target those, then A/B the fix with the gate
 above.  Needs `perf` and `kernel.perf_event_paranoid <= 1`.
+
+## Steady-state, external-driver A/B: `mtpg_remote_bench.sh` + `mtpg_ec2_ab_provision.sh`
+
+The gate above (necessary-minimum viability) proves neutral-or-better.  The
+PROJECT GOAL is stronger: BEAT the fork model on multiple dimensions (TPS, tail
+latency, memory) in **apples-to-apples, steady-state, constant-heavy-load** runs
+of meaningful duration.  Two host-noise problems make the in-box matrix
+inadequate for that claim: (1) pgbench on the SUT steals client CPU from the
+server, and (2) short runs measure warmup/transients, not steady state.
+
+`mtpg_remote_bench.sh` fixes both.  It runs ON the SUT but drives pgbench from a
+SEPARATE load-driver host over the private network, discards a warmup window,
+and measures for a long steady-state duration -- capturing, per
+`(workload x clients x carriers)` cell for BOTH process and threaded lanes:
+median TPS, p50/p95/p99/p99.9 latency (from the driver's pgbench `--log`), SUT
+PSS memory (fair cross-model: sums PSS over all postgres procs/threads), and SUT
+CPU utilization.
+
+`mtpg_ec2_ab_provision.sh` stands up the two-instance cluster (SUT + LOADGEN) in
+one subnet and a cluster **placement group** for low-latency, low-jitter private
+networking, and prints the exact build + run + teardown commands.
+
+    # 1) provision (SUT + LOADGEN in a cluster placement group)
+    SG=sg-... SUBNET=subnet-... KEY=xtc-p17 \
+      bash src/tools/benchmark/mtpg_ec2_ab_provision.sh
+    # 2) build PG on the SUT (release + frame pointers), install to inst/
+    # 3) run the external-driver matrix on the SUT:
+    LOADGEN=ec2-user@<loadgen-private-ip> SUT_IP=<sut-private-ip> \
+      PGBENCH=/mnt/nvme/work/pg/inst/usr/local/pgsql/bin/pgbench \
+      CARRIERS='auto 16 32 64' CLIENTS='16 32 64 128' \
+      WORKLOADS='tpcb select update' DURATION=120 WARMUP=30 SCALE=100 \
+      bash src/tools/benchmark/mtpg_remote_bench.sh
+    # 4) TERMINATE both instances when done (they cost money).
+
+Interpreting: `CARRIERS='auto ...'` includes the shipped auto-default (one
+carrier per core) plus an explicit sweep so we see whether the default is
+neutral-or-better vs. hand-tuned, and where threaded BEATS process (idle-heavy /
+high-connection / bursty patterns are where the fork model pays a per-process
+tax the pooled model does not).  The LOADGEN host needs the same `pgbench` binary
+and `libpq` reachable on its PATH/`LD_LIBRARY_PATH`.
+
