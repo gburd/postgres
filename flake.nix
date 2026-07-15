@@ -11,7 +11,7 @@
     libxtc = {
       # Pinned to the v1.21.0 release rev (not branch HEAD: `nix flake update`
       # would otherwise pull post-tag commits).
-      url = "github:gburd/libxtc?rev=97233c1f060554b688d630168d1516d67d861a75";
+      url = "github:gburd/libxtc?rev=58cf6d7e19202fa1df2a49655aed3c15f65c850a";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
     };
