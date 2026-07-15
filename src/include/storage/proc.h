@@ -284,7 +284,10 @@ typedef struct PGPROC
 	 * over-posted for a fiber waiter.
 	 */
 	int			sem_wake_fd;		/* per-PGPROC eventfd; -1 if none */
-	volatile bool sem_fiber_armed; /* a fiber is parked on sem_wake_fd */
+	slock_t		sem_fiber_lock;	/* serializes arm/disarm vs the waker */
+	bool		sem_fiber_backed; /* this proc's backend runs as an xtc fiber */
+	bool		sem_fiber_armed; /* a fiber is parked on sem_wake_fd */
+	bool		sem_fiber_wake_pending; /* waker fired while not armed */
 	uint32		sem_fiber_loop;
 	uint32		sem_fiber_local;
 	uint32		sem_fiber_gen;
@@ -637,6 +640,7 @@ extern void GetLockHoldersAndWaiters(LOCALLOCK *locallock,
 extern void ProcWaitForSignal(uint32 wait_event_info);
 extern void ProcWaitOnSemaphore(PGPROC *proc, uint32 wait_event_info);
 extern void ProcWakeSemaphore(PGPROC *proc);
+extern void ProcSemaphoreAbsorbExtraWaits(PGPROC *proc, int extraWaits);
 extern void ProcSendSignal(ProcNumber procNumber);
 
 extern PGPROC *AuxiliaryPidGetProc(int pid);
