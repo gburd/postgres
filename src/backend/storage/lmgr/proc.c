@@ -32,6 +32,12 @@
 #include <signal.h>
 #include <unistd.h>
 #include <sys/time.h>
+#ifdef USE_XTC_CARRIER
+#include <sys/eventfd.h>
+#include "xtc_proc.h"			/* xtc_self / xtc_proc_wake / xtc_pid_t */
+#include "postmaster/pg_xtc_carrier.h"	/* xtc_in_backend_fiber / xtc_pg_wait_fd */
+#endif
+
 
 #include "access/clog.h"
 #include "access/transam.h"
@@ -312,6 +318,28 @@ ProcGlobalShmemInit(void *arg)
 			proc->sem = PGSemaphoreCreate();
 			InitSharedLatch(&(proc->procLatch));
 			LWLockInitialize(&(proc->fpInfoLock), LWTRANCHE_LOCK_FASTPATH);
+#ifdef USE_XTC_CARRIER
+			/*
+			 * Fiber-aware deep-wait eventfd (Phase 17), created eagerly and
+			 * once per PGPROC.  A pooled backend fiber parks on this fd in
+			 * ProcWaitOnSemaphore instead of blocking the carrier in
+			 * sem_wait().  EFD_NONBLOCK so a drain never blocks; level-
+			 * triggered readiness is the stored-signal that closes the
+			 * publish/park race.  Failure is fatal at startup (EMFILE handled
+			 * here, not lazily mid-LWLock where there is nowhere to fail to);
+			 * a -1 fd would silently drop fibers back to the carrier-blocking
+			 * path, so we require it.
+			 */
+			proc->sem_wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+			if (proc->sem_wake_fd < 0)
+				ereport(FATAL,
+						(errcode_for_socket_access(),
+						 errmsg("could not create semaphore-wake eventfd for PGPROC: %m")));
+			proc->sem_fiber_armed = false;
+			proc->sem_fiber_loop = 0;
+			proc->sem_fiber_local = 0;
+			proc->sem_fiber_gen = 0;
+#endif
 		}
 
 		/*
@@ -2137,6 +2165,72 @@ ProcSemaphoreWaitCallback(void *callback_arg)
 	return 0;
 }
 
+#ifdef USE_XTC_CARRIER
+/*
+ * ProcSemaphoreWaitFiber - park the calling backend FIBER on its per-PGPROC
+ * eventfd instead of blocking the carrier OS thread in sem_wait().
+ *
+ * MUST-FIX invariants (Phase 17 design review):
+ *  - Publishes only the gen-checked {loop,local,gen} handle (never a raw
+ *    xtc_waker_t): a recycled/freed fiber slot is rejected by the proc-table
+ *    generation check, so a stale wake is a harmless no-op, not a UAF.
+ *  - sem_fiber_armed is the SINGLE gate: while true, ProcWakeSemaphore wakes
+ *    via the fd and does NOT post proc->sem, so the counting semaphore is
+ *    never over-posted for a fiber waiter (no +1 leak across PGPROC recycling).
+ *  - The park is UNINTERRUPTIBLE with respect to the LWLock/buffer protocol:
+ *    the caller holds HOLD_INTERRUPTS and re-checks its predicate in a loop, so
+ *    a spurious wake just re-parks.  We pass an infinite timeout; PM death is
+ *    observed by the carrier's own wait machinery (xtc_pg_wait_fd multiplexes
+ *    it), and we must NOT longjmp out of here mid-protocol -- xtc_pg_wait_fd
+ *    with a real fd returns a revent, it does not run PG interrupt handlers.
+ *  - Level-triggered eventfd readiness is the stored-signal: a write() by the
+ *    waker before we park leaves the fd readable, so publish-then-park is
+ *    race-free by construction.  The eventfd is drained on wake to rearm.
+ */
+static void
+ProcSemaphoreWaitFiber(PGPROC *proc)
+{
+	uint64		buf;
+
+	/*
+	 * Arm once (idempotent across the caller's predicate re-check loop).  The
+	 * WAKER disarms (sets sem_fiber_armed=false) when it delivers the fd wake,
+	 * NOT the waiter -- this closes the disarm/re-park window: there is no
+	 * instant where a genuine ProcWakeSemaphore can observe armed==false and
+	 * fall through to posting proc->sem while the fiber is (or is about to be)
+	 * parked on the fd.  A spurious return leaves armed==true, so we simply
+	 * re-park; the caller's predicate loop drives termination.
+	 */
+	if (!proc->sem_fiber_armed)
+	{
+		xtc_pid_t	self = xtc_self();
+
+		/* Publish identity (release) BEFORE arming so a waker that sees
+		 * armed==true reads a valid gen-checked handle. */
+		proc->sem_fiber_loop = self.loop_id;
+		proc->sem_fiber_local = self.local_id;
+		proc->sem_fiber_gen = self.gen;
+		pg_write_barrier();
+		proc->sem_fiber_armed = true;
+	}
+
+	/*
+	 * Park on the eventfd.  Level-triggered readiness is the stored-signal: a
+	 * waker's write() before we park leaves the fd readable, so this returns
+	 * at once (no lost wake).  Infinite timeout; a spurious return is safe.
+	 */
+	(void) xtc_pg_wait_fd(proc->sem_wake_fd, WL_SOCKET_READABLE, -1);
+
+	/*
+	 * Drain the eventfd so a subsequent park sees a fresh (unready) fd.  We do
+	 * NOT clear sem_fiber_armed here (the waker owns disarm); if the wake was
+	 * spurious, armed stays true and the caller re-enters us to re-park.
+	 */
+	while (read(proc->sem_wake_fd, &buf, sizeof(buf)) == sizeof(buf))
+		;						/* EAGAIN when drained (EFD_NONBLOCK) */
+}
+#endif
+
 /*
  * ProcWaitOnSemaphore - wait on a PGPROC-owned semaphore.
  *
@@ -2157,6 +2251,33 @@ ProcWaitOnSemaphore(PGPROC *proc, uint32 wait_event_info)
 	Assert(proc != NULL);
 
 	args.proc = proc;
+
+#ifdef USE_XTC_CARRIER
+	/*
+	 * Fiber-aware fast path: a pooled backend running as an xtc fiber parks
+	 * the fiber (freeing the carrier for other sessions) rather than blocking
+	 * the carrier OS thread in sem_wait().  Only when we are actually in a
+	 * backend fiber AND this is our own PGPROC (the wait contract: a backend
+	 * always waits on its OWN semaphore).  The wait-completion diagnostic is
+	 * still published below via PgSuspend for the non-fiber path.
+	 */
+	if (xtc_in_backend_fiber && proc == MyProc && proc->sem_wake_fd >= 0)
+	{
+#ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
+		PgWaitSpec	fiber_spec;
+
+		fiber_spec.kind = PG_WAIT_KIND_SEMAPHORE;
+		fiber_spec.wait_event_info = wait_event_info;
+		fiber_spec.wake_events = 0;
+		fiber_spec.socket = PGINVALID_SOCKET;
+		fiber_spec.timeout = -1;
+		(void) fiber_spec;		/* published by the carrier wait machinery */
+#endif
+		ProcSemaphoreWaitFiber(proc);
+		return;
+	}
+#endif
+
 #ifdef PG_RUNTIME_ENABLE_WAIT_COMPLETION_PUBLICATION
 	wait_spec.kind = PG_WAIT_KIND_SEMAPHORE;
 	wait_spec.wait_event_info = wait_event_info;
@@ -2194,6 +2315,53 @@ ProcWakeSemaphore(PGPROC *proc)
 		proc->backendId != 0)
 		(void) PgBackendWakeWaitCompletionById(proc->backendId, 0);
 #endif
+
+#ifdef USE_XTC_CARRIER
+	/*
+	 * If the target is a fiber parked in ProcSemaphoreWaitFiber, wake it via
+	 * its eventfd -- and DO NOT post proc->sem (must-fix #3: exactly one wake
+	 * channel per waiter, or the counting semaphore over-posts and corrupts a
+	 * later process-mode sem_wait on the recycled PGPROC).  sem_fiber_armed is
+	 * the single authoritative gate, read with an acquire barrier to pair with
+	 * the waiter's release when it published its handle.
+	 */
+	pg_read_barrier();
+	if (proc->sem_fiber_armed && proc->sem_wake_fd >= 0)
+	{
+		uint64		one = 1;
+		ssize_t		wrc;
+		xtc_pid_t	owner;
+
+		owner.loop_id = proc->sem_fiber_loop;
+		owner.local_id = proc->sem_fiber_local;
+		owner.gen = proc->sem_fiber_gen;
+
+		/*
+		 * Disarm BEFORE the wake (waker owns disarm -- see
+		 * ProcSemaphoreWaitFiber).  Ordering: clearing armed then writing the
+		 * fd means the woken fiber, on its predicate re-check, will not re-arm
+		 * unless it still needs to wait, and a second concurrent waker in this
+		 * window takes the sem path (harmless: the fiber is being woken now and
+		 * its caller loop tolerates the extra wake).  A stale gen-mismatched
+		 * handle makes xtc_proc_wake a no-op.
+		 */
+		proc->sem_fiber_armed = false;
+		pg_write_barrier();
+
+		/*
+		 * The fd write is the load-bearing wake (level-triggered readiness =
+		 * stored-signal; its syscall is the barrier that publishes the caller's
+		 * predicate store).  xtc_proc_wake is a secondary nudge to pop the owner
+		 * loop out of its poll.
+		 */
+		wrc = write(proc->sem_wake_fd, &one, sizeof(one));
+		(void) wrc;				/* eventfd counter add; only fails at UINT64_MAX-1 */
+		if (!xtc_pid_is_none(owner))
+			(void) xtc_proc_wake(owner);
+		return;
+	}
+#endif
+
 	PGSemaphoreUnlock(proc->sem);
 }
 

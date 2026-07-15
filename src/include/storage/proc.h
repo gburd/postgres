@@ -267,6 +267,29 @@ typedef struct PGPROC
 
 	PGSemaphore sem;			/* ONE semaphore to sleep on */
 
+#ifdef USE_XTC_CARRIER
+	/*
+	 * Fiber-aware deep-wait (Phase 17).  When a pooled backend running as an
+	 * xtc fiber blocks in ProcWaitOnSemaphore (LWLock/buffer-lock/group-update
+	 * slow path), it parks the FIBER on sem_wake_fd instead of blocking the
+	 * carrier OS thread in sem_wait().  These fields are POD and shmem-safe.
+	 *
+	 * sem_wake_fd is a per-PGPROC eventfd created eagerly at InitProcGlobal
+	 * (never per-wait: no fd churn, no ABA on the fd number).  sem_fiber_*
+	 * capture the parked fiber's identity (gen-checked, like the latch owner)
+	 * so a cross-carrier ProcWakeSemaphore can xtc_proc_wake() it.
+	 * sem_fiber_armed gates the wake: it is the SINGLE flag that decides
+	 * whether ProcWakeSemaphore wakes via the fd (fiber) or posts proc->sem
+	 * (process/non-fiber) -- never both, so the counting semaphore cannot be
+	 * over-posted for a fiber waiter.
+	 */
+	int			sem_wake_fd;		/* per-PGPROC eventfd; -1 if none */
+	volatile bool sem_fiber_armed; /* a fiber is parked on sem_wake_fd */
+	uint32		sem_fiber_loop;
+	uint32		sem_fiber_local;
+	uint32		sem_fiber_gen;
+#endif
+
 	int			delayChkptFlags;	/* for DELAY_CHKPT_* flags */
 
 	/*
