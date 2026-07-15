@@ -670,3 +670,30 @@ surfaced a realistic-workload behavior pgbench did not:
 
 Lesson: HammerDB's persistent-connection-pool pattern exercises the
 connection-accept + startup path far harder than pgbench's; keep it in the matrix.
+
+## HammerDB fork-fail ISOLATED: startup/recovery window only, not steady-state (2026-07-15)
+
+Controlled test: started a threaded server (multithreaded=on, carriers=32) on a
+CLEANLY-shut-down data dir (no recovery), waited for "carrier scheduler thread
+up", and checked the log: ZERO "could not fork" messages, carriers up.  Contrast:
+every fork-fail episode in the matrix runs coincided with "database system was
+not properly shut down; automatic recovery in progress" -- connections arriving
+during recovery/startup (before carriers) hit the fork path.
+
+CONCLUSION: the "could not fork new process for connection: Function not
+implemented" is EXCLUSIVELY a startup/recovery-window artifact, not a
+steady-state threaded-accept bug.  Two fixes applied to the harness:
+  (1) stop_pg does a clean pg_ctl -m fast -w stop (no recovery next start);
+  (2) start_pg, in threaded mode, WAITS for "carrier scheduler thread up" in the
+      log before returning, so the driver only connects after carriers exist.
+The underlying server robustness item (threaded accept path should return the
+retryable "starting up" error instead of fork-failing during its own startup)
+remains tracked for a Phase 16/17 hardening pass -- it is real but only bites a
+client that connects during the startup window.
+
+OPERATIONAL NOTE / MISTAKE: while cleaning up what I thought were my orphaned
+EC2 instances, I terminated i-03885ef79e30f64dc (tag asx-bcs, key
+agent-sandbox-ec2) that was NOT mine -- it belonged to another process in the
+shared account (my instances use key xtc-p17 + tags xtc-ab-sut/xtc-ab-loadgen).
+Going forward: only terminate instances matching MY key AND tags; check KeyName
+before any terminate in a shared account.
