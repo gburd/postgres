@@ -596,3 +596,44 @@ toward ~cpus for CPU-bound mixes; (b) an elastic carrier pool that grows to
 offered concurrency up to a cpu-based cap; (c) keep the bounded pool but document
 that pooled mode trades a carrier cap for memory footprint (the process model
 uses 1 proc/session).  This is a policy/scheduler decision, NOT a lock fix.
+
+## Carrier auto-default fixed + external-driver harness READY (2026-07-15, pre-new-libxtc)
+
+Done, pending only the new-libxtc integration + the benchmark run:
+- Carrier auto-default changed cpus/4 -> Max(8, Min(ncpus, 256)) capped by
+  MaxConnections (commits 8c5a5b15486, 20e775475e0).  Two adversarial reviews
+  (GO-WITH-CHANGES) corrected: carriers are OS threads not fibers; in-command
+  waits stay carrier-pinned (only the between-commands read-park releases a
+  carrier); dropped a dead guard; added the 256 ceiling.  Pool is lazy +
+  elastic-up-to-cap.  8-core dev-host -> 8 carriers; regress 245/245; smoke OK.
+- External-driver steady-state harness: src/tools/benchmark/mtpg_remote_bench.sh
+  (pgbench from a separate LOADGEN host over the private net; long duration +
+  warmup discard; per cell: median TPS, p50/p95/p99/p99.9, SUT PSS, SUT CPU%) +
+  mtpg_ec2_ab_provision.sh (SUT+LOADGEN in one subnet + cluster placement group).
+
+MANDATORY benchmark lanes before the ncpus default is 'settled' (from the
+reviews) -- run ALL on the new-libxtc build:
+  1. CPU-bound in-RAM (tpcb, select) -- confirm carriers==clients==ncpus matches
+     fork and the auto-default now hits it out of the box.
+  2. WAIT-BOUND (data > shared_buffers real disk I/O, and/or row-lock
+     contention / SELECT..FOR UPDATE) -- the MAKE-OR-BREAK test: does ncpus
+     under-provide vs fork because carriers pin on in-command waits?  Sweep
+     carriers {ncpus/2, ncpus, 2x, 4x}.  Decides whether the default needs a
+     caveat (already documented) or a higher value / elastic-above-ncpus.
+  3. BIG-CORE RSS (64/96c): actual RSS (not VSZ) of the carrier pool at few vs
+     ncpus concurrent sessions; confirm << ncpus x 8MB and < fork footprint.
+  4. Connection-churn (short-lived conns) -- carrier recycle via the read-park.
+  5. Re-take the cached read-only p50/p95/p99 + PSS on the new libxtc (close the
+     one-bump staleness from the 2026-07-14 v1.21.0 parity close-out).
+
+GOAL FRAMING (per the maintainer): matching stock is the MINIMUM viability gate;
+the target is to BEAT stock on TPS + tail latency + memory in apples-to-apples,
+steady-state, constant-heavy-load runs of meaningful duration.  The external
+driver + long duration + the idle-heavy/high-connection lanes are where the
+pooled model should pull AHEAD of the fork model's per-process tax.
+
+NEXT SESSION (when libxtc releases): bump + fresh build dir + clean/build/test
+(gmake check + check-threaded + smoke), provision SUT+LOADGEN, run all 5 lanes,
+record, decide default/elastic follow-up.  Elastic-above-ncpus (grow carriers
+when queue non-empty AND cores underutilized) is the real long-term fix for the
+wait-bound regime and is the leading Phase 17 follow-up if lane 2 shows a gap.
