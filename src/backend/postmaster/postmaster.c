@@ -933,18 +933,28 @@ PostmasterMain(int argc, char *argv[])
 			if (ncpus < 1)
 				ncpus = 1;
 			/*
-			 * Size the pool to overlap disk/lock waits across sessions.  A
-			 * carrier-count sweep of a CPU-bound in-RAM pgbench on a 96-core
-			 * box (Session 5) showed pooled throughput climbing with carriers
-			 * up to ~cpus/4 (8->42k, 16->69k, 24->82k tps) and flattening
-			 * beyond, so scale with cores at a quarter of nproc rather than a
-			 * flat cap.  Floor of 8 keeps small boxes responsive; the value is
-			 * still bounded by nproc (never more carriers than cores) and by
-			 * MaxConnections (a carrier per session is pointless past that).
-			 * Explicit tuning overrides all of this.
+			 * Size the pool so that CPU-bound concurrent sessions each get a
+			 * carrier: a pooled session that runs a command to completion
+			 * without hitting a protocol-park (the common case for an in-RAM,
+			 * CPU-bound OLTP mix) MONOPOLIZES its carrier for that whole
+			 * command, so the carrier count is the hard concurrency ceiling.
+			 * A 2026-07-15 carrier sweep on a 32-vCPU box (write-heavy TPC-B,
+			 * shared_buffers-resident) proved this: carriers=8 -> 24k tps,
+			 * 16 -> 37k, 32 -> 74k (DEAD EVEN with process fork), 64 -> 74k
+			 * (no regression).  The old cpus/4 heuristic (from a Session-5
+			 * disk/lock-wait-bound workload) under-provisioned by 4x and
+			 * capped throughput at cpus/4-wide.  Default to one carrier per
+			 * core so the common OLTP case matches the fork model out of the
+			 * box.  Carrier fibers are spawned LAZILY as sessions arrive (up
+			 * to this limit); each holds an 8MB-max stack (only touched pages
+			 * resident), so an unused-so-far carrier costs nothing and an idle
+			 * one costs only its touched stack -- far less than a full backend
+			 * process.  Bounded by MaxConnections (a carrier per session is
+			 * pointless past that); floor of 8 keeps small boxes responsive.  Explicit
+			 * tuning overrides all of this.
 			 */
-			resolved = (int) Max(8, ncpus / 4);
-			if (resolved > ncpus)
+			resolved = (int) Max(8, ncpus);
+			if (resolved > ncpus && ncpus >= 8)
 				resolved = (int) ncpus;
 			if (MaxConnections > 0 && resolved > MaxConnections)
 				resolved = MaxConnections;
