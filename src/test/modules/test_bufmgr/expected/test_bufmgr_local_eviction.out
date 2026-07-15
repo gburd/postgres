@@ -1,0 +1,43 @@
+-- Test - local (temporary-table) buffer eviction correctness.
+--
+-- Temporary relations use the per-backend LOCAL buffer pool, a distinct code
+-- path from shared buffers.  A temp relation larger than temp_buffers forces
+-- local-buffer reuse; all rows must remain correct after eviction and reload
+-- from the temp relation's storage.
+--
+-- The working-set size is derived from temp_buffers in bytes, so it exceeds the
+-- local pool at any BLCKSZ (a fixed row count could fall under temp_buffers on
+-- a large BLCKSZ and silently stop exercising local eviction). Local buffers
+-- have no BufferAccessStrategy ring, so a plain scan drives the reuse and
+-- pg_buffercache exposes only shared buffers, not local ones, so this test
+-- observes correctness through contents alone: if local eviction/reload were
+-- wrong, some row would read back corrupt.
+CREATE TEMP TABLE le_local (id int, payload text) WITH (autovacuum_enabled = off);
+-- Fill to several times temp_buffers (in bytes) so the local pool must reuse
+-- buffers both while inserting and while scanning.
+DO $$
+DECLARE
+  target bigint;
+  rnum     int := 0;
+BEGIN
+  SELECT setting::bigint * current_setting('block_size')::bigint * 3 INTO target
+    FROM pg_settings WHERE name = 'temp_buffers';
+  WHILE pg_relation_size('le_local'::regclass) < target LOOP
+    INSERT INTO le_local SELECT g, md5(g::text) FROM generate_series(rnum + 1, rnum + 10000) g;
+    rnum := rnum + 10000;
+  END LOOP;
+END $$;
+-- Repeated full scans re-read every block through the small local pool.
+SELECT count(*) > 0 AS has_rows FROM le_local;
+ has_rows 
+----------
+ t
+(1 row)
+
+SELECT count(*) AS corrupt_rows FROM le_local WHERE payload <> md5(id::text);
+ corrupt_rows 
+--------------
+            0
+(1 row)
+
+DROP TABLE le_local;
