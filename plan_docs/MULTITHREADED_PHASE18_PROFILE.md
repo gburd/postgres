@@ -637,3 +637,36 @@ NEXT SESSION (when libxtc releases): bump + fresh build dir + clean/build/test
 record, decide default/elastic follow-up.  Elastic-above-ncpus (grow carriers
 when queue non-empty AND cores underutilized) is the real long-term fix for the
 wait-bound regime and is the leading Phase 17 follow-up if lane 2 shows a gap.
+
+## HammerDB TPROC-C bring-up finding: fork-fail window during threaded startup/recovery (2026-07-15)
+
+Wiring up the HammerDB TPROC-C external-driver harness (mtpg_hammerdb_bench.sh)
+surfaced a realistic-workload behavior pgbench did not:
+
+- With multithreaded=on, if the postmaster is still starting up -- especially
+  running CRASH RECOVERY (redo) because the previous run was killed uncleanly --
+  incoming client connections are met with:
+    LOG: could not fork new process for connection: Function not implemented
+  i.e. the accept path tries fork() (ENOSYS once carriers/threaded runtime make
+  fork unsafe) instead of waiting for the pooled carrier scheduler to come up.
+  Observed a ~5-min gap: recovery started 20:16:38, carrier scheduler up
+  20:21:40; every connection in between fork-failed, and HammerDB's connect
+  retries during that window wrecked the run (NOPM=NA).
+
+- IMMEDIATE CAUSE was the harness killing PG with kill -9 between lanes ->
+  crash recovery on the next start.  FIXED: stop_pg now does a clean
+  `pg_ctl -m fast -w stop` so the next lane starts with no recovery and no
+  fork-fail window.
+
+- SEPARATE ROBUSTNESS ITEM (noted, not yet fixed): even without recovery, a
+  connection that arrives before the carrier scheduler is ready should be made
+  to WAIT (or get a clean "the database system is starting up" retryable error),
+  NOT attempt a fork() that fails with ENOSYS under the threaded runtime.  The
+  process-mode "starting up" path returns the standard retryable error; the
+  threaded path should match that rather than log a fork failure.  Low severity
+  (only the startup window), but it's a real threaded-mode accept-path gap that a
+  realistic client (persistent connection pool that connects immediately at
+  server start) will hit.  Track for a Phase 16/17 hardening pass.
+
+Lesson: HammerDB's persistent-connection-pool pattern exercises the
+connection-accept + startup path far harder than pgbench's; keep it in the matrix.
