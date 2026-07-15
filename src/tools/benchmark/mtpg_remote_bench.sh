@@ -78,7 +78,7 @@ sut_pss_mb() { # sum PSS across all postgres procs/threads (one proc in threaded
 }
 
 start_server() { # $1=mode(process|threaded) $2=carriers-or-empty
-  local mode="$1" carriers="$2" D="$OUT/data_$mode"
+  local mode="${1:-process}" carriers="${2:-}" D="$OUT/data_${1:-process}"
   find "$D" -mindepth 1 -delete 2>/dev/null; rmdir "$D" 2>/dev/null
   "$PGBIN/initdb" -D "$D" -U postgres -E UTF8 >"$OUT/initdb_$mode.log" 2>&1 || { echo "INITDB_FAIL $mode"; return 1; }
   cat >> "$D/postgresql.conf" <<CONF
@@ -106,15 +106,22 @@ CONF
 }
 stop_server() { local m="$1"; kill "$(cat "$OUT/pg_$m.pid" 2>/dev/null)" 2>/dev/null; sleep 3; kill -9 "$(cat "$OUT/pg_$m.pid" 2>/dev/null)" 2>/dev/null; }
 
-drive() { # $1=clients $2=script-args...  -> runs pgbench ON THE DRIVER; returns "tps" ; writes driver log back
+drive() { # $1=clients $2=script-args...  -> prints one line: "tps p50 p95 p99 p999" (latencies ms)
   local c="$1"; shift
-  local rlog="/tmp/rbench_$$.log"
-  # warmup (discarded), then measured run with --log for percentiles
-  "${SSHL[@]}" "$LOADGEN" "$PGBENCH_REMOTE -h $SUT_IP -p $PORT -U postgres -n -T $WARMUP -c $c -j $c $* postgres >/dev/null 2>&1; \
-    rm -f ${rlog}.* 2>/dev/null; \
-    out=\$($PGBENCH_REMOTE -h $SUT_IP -p $PORT -U postgres -n -T $DURATION -c $c -j $c --log --log-prefix=$rlog $* postgres 2>&1); \
-    echo \"\$out\" | grep -iE 'tps' | grep -oE '[0-9]+\.[0-9]+' | head -1; \
-    cat ${rlog}.* 2>/dev/null" 
+  local rlog="/tmp/rbench_drv"
+  # Run pgbench ON THE DRIVER; compute percentiles ON THE DRIVER (never cat the
+  # multi-million-row per-txn log back over ssh -- that OOMs/stalls at high tps).
+  # Warmup (discarded), then measured run with --log; awk the log locally into
+  # p50/p95/p99/p999 and echo only tps + the four percentiles.
+  "${SSHL[@]}" "$LOADGEN" "
+    $PGBENCH_REMOTE -h $SUT_IP -p $PORT -U postgres -n -T $WARMUP -c $c -j $c $* postgres >/dev/null 2>&1
+    rm -f ${rlog}.* 2>/dev/null
+    out=\$($PGBENCH_REMOTE -h $SUT_IP -p $PORT -U postgres -n -T $DURATION -c $c -j $c --log --log-prefix=${rlog} $* postgres 2>&1)
+    tps=\$(echo \"\$out\" | grep -iE 'tps' | grep -oE '[0-9]+\.[0-9]+' | head -1)
+    read p50 p95 p99 p999 < <(sort -n -k3,3 ${rlog}.* 2>/dev/null | awk 'function q(p,  i){i=int(p*NR);if(i<1)i=1;if(i>NR)i=NR;return v[i]/1000.0} {v[NR]=\$3} END{if(NR==0){print \"NA NA NA NA\";exit} printf \"%.4f %.4f %.4f %.4f\n\",q(0.50),q(0.95),q(0.99),q(0.999)}')
+    rm -f ${rlog}.* 2>/dev/null
+    echo \"\${tps:-NA} \$p50 \$p95 \$p99 \$p999\"
+  "
 }
 
 pgbench_args() { case "$1" in
@@ -126,7 +133,7 @@ esac }
 # ship a hot-row update script to the driver (for the 'update' workload)
 "${SSHL[@]}" "$LOADGEN" "printf 'UPDATE pgbench_accounts SET abalance=abalance+1 WHERE aid=(random()*100000*%d)::int+1;\n' $SCALE > /tmp/hotrow.sql" 2>/dev/null || true
 
-carrier_list() { local w="$1"; if [ "$1" = process ]; then echo "-"; else echo $CARRIERS; fi; }
+carrier_list() { local w="${1:-}"; if [ "$w" = process ]; then echo "-"; else echo $CARRIERS; fi; }
 
 for workload in $WORKLOADS; do
   args="$(pgbench_args "$workload")"
@@ -136,13 +143,10 @@ for workload in $WORKLOADS; do
   for c in $CLIENTS; do
     ( while :; do sut_pss_mb >>"$OUT/pss_p.$c" ; sleep 5; done ) & PSSMON=$!
     mpstat 1 $((DURATION)) 2>/dev/null | awk '/all/{print 100-$NF}' >"$OUT/cpu_p.$c" &
-    res="$(drive "$c" $args)"
+    read tps p50 p95 p99 p999 <<<"$(drive "$c" $args)"
     kill $PSSMON 2>/dev/null
-    tps="$(echo "$res" | head -1)"
-    echo "$res" | tail -n +2 > "$OUT/dlog_p_${workload}_$c.log"
-    read p50 p95 p99 p999 < <(pctl "$OUT/dlog_p_${workload}_$c.log")
     pss=$(sort -n "$OUT/pss_p.$c" 2>/dev/null | tail -1); cpu=$(sort -n "$OUT/cpu_p.$c" 2>/dev/null | tail -1)
-    echo -e "process\t$workload\t$c\t-\t${tps:-NA}\t$p50\t$p95\t$p99\t$p999\t${pss:-NA}\t${cpu:-NA}" | tee -a "$RES"
+    echo -e "process\t$workload\t$c\t-\t${tps:-NA}\t${p50:-NA}\t${p95:-NA}\t${p99:-NA}\t${p999:-NA}\t${pss:-NA}\t${cpu:-NA}" | tee -a "$RES"
   done
   stop_server process
   # --- threaded lanes (carrier sweep) ---
@@ -153,13 +157,10 @@ for workload in $WORKLOADS; do
     for c in $CLIENTS; do
       ( while :; do sut_pss_mb >>"$OUT/pss_t.$carriers.$c" ; sleep 5; done ) & PSSMON=$!
       mpstat 1 $((DURATION)) 2>/dev/null | awk '/all/{print 100-$NF}' >"$OUT/cpu_t.$carriers.$c" &
-      res="$(drive "$c" $args)"
+      read tps p50 p95 p99 p999 <<<"$(drive "$c" $args)"
       kill $PSSMON 2>/dev/null
-      tps="$(echo "$res" | head -1)"
-      echo "$res" | tail -n +2 > "$OUT/dlog_t_${workload}_${carriers}_$c.log"
-      read p50 p95 p99 p999 < <(pctl "$OUT/dlog_t_${workload}_${carriers}_$c.log")
       pss=$(sort -n "$OUT/pss_t.$carriers.$c" 2>/dev/null | tail -1); cpu=$(sort -n "$OUT/cpu_t.$carriers.$c" 2>/dev/null | tail -1)
-      echo -e "threaded(c=$eff)\t$workload\t$c\t$eff\t${tps:-NA}\t$p50\t$p95\t$p99\t$p999\t${pss:-NA}\t${cpu:-NA}" | tee -a "$RES"
+      echo -e "threaded(c=$eff)\t$workload\t$c\t$eff\t${tps:-NA}\t${p50:-NA}\t${p95:-NA}\t${p99:-NA}\t${p999:-NA}\t${pss:-NA}\t${cpu:-NA}" | tee -a "$RES"
     done
     stop_server threaded
   done
