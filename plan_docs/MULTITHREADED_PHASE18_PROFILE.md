@@ -466,3 +466,54 @@ Session-18 arc complete: three serializers fixed (ps_status mutex, 10ms
 busy-poll/wake-storm eventfd, glibc arena_max cap -- the big one), gap closed
 from ~41% to ~99% of process.  Not a libxtc fix -- our own allocator tuning,
 proven by A/B.
+
+## Phase 17 measurement: contended-write carrier starvation CONFIRMED (2026-07-15)
+
+EC2 m6id.8xlarge (32 vCPU), release+FP build, libxtc v1.22.0, HEAD ed5c6e7eb07.
+shared_buffers=4GB (dataset in cache -> isolates LOCK contention, not I/O),
+fsync/synchronous_commit/full_page_writes off.  Pooled carriers pinned to 8
+(pooled_protocol_carriers=8) DELIBERATELY < the higher client counts, so the
+carrier-blocking sem_wait shows.  30s/run, -j = -c.
+
+Process vs threaded-pooled, TPS by client count:
+
+  TPC-B (tpcb-like: write-heavy, branch/teller-row + WAL + buffer LWLock contention)
+    clients   process    threaded   threaded/process
+       8       24763       24755      100%  (parity: clients == carriers)
+      16       38457       24787       64%
+      32       73985       24631       33%
+      64       70459       24591       35%
+
+  hot-row UPDATE (every client UPDATEs the SAME one row: extreme tuple-lock/WAL contention)
+    clients   process    threaded
+       8       43980       42247
+      16       35147       46826   (threaded 1.33x process)
+      32       25745       46156   (threaded 1.79x)
+      64       16366       45790   (threaded 2.80x)
+
+### Verdict
+CONFIRMED, decisively.  Threaded TPC-B FLATLINES at ~24.7k tps across 8/16/32/64
+clients while process scales to ~74k.  With 8 carriers, threaded cannot do more
+than ~8 clients' worth of scalable work: a carrier that enters
+ProcWaitOnSemaphore -> PGSemaphoreLock -> raw sem_wait BLOCKS THE WHOLE CARRIER OS
+THREAD, so it cannot serve any other session while parked on an LWLock/WAL wait.
+Eight blocked carriers == eight-wide throughput ceiling, exactly the Phase 17
+audit prediction (invisible on the cached read-only workload of Phase 18, which
+never takes those waits).  Confirmed the cap is the pooled-carrier count (8), not
+the executor loop count (32): pooled_protocol_carriers gates concurrent session
+fibers in launch_backend.c:1153.
+
+### Surprise (north-star relevant, keep it)
+On the PATHOLOGICALLY contended hot-row UPDATE, threaded BEATS process by up to
+2.8x at 64 clients (45.8k vs 16.4k).  When 64 processes all fight one tuple lock,
+fork mode thrashes on scheduling/context-switch; 8 carriers serialize the same
+inherent contention with far less OS overhead.  This is a genuine "beat the fork
+model" datapoint -- the Phase 17 fix must RECOVER TPC-B scaling WITHOUT losing
+this hot-row win (i.e. don't just raise carrier count; make the wait fiber-aware
+so a parked session frees its carrier).
+
+### Unblocks
+Phase 17 implementation is now measurement-justified: make ProcWaitOnSemaphore
+fiber-aware (park the fiber via xtc_sem/xtc_notify, wake in ProcWakeSemaphore),
+keeping raw sem_wait for the process/non-fiber path.  Re-run THIS matrix as the
+A/B gate: threaded TPC-B should scale toward process; hot-row should stay >= now.
