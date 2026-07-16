@@ -3153,6 +3153,18 @@ PgCurrentPLperlOnInitRef(void)
 }
 
 char **
+PgCurrentTestBackendRuntimeCustomGucRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->test_backend_runtime_custom_guc;
+}
+
+int *
+PgCurrentTestBackendRuntimeCustomGucInitCounterRef(void)
+{
+	return &PgCurrentSessionExtensionModuleState()->test_backend_runtime_custom_guc_init_counter;
+}
+
+char **
 PgCurrentPLperlOnPLperlInitRef(void)
 {
 	return &PgCurrentSessionExtensionModuleState()->plperl_on_plperl_init;
