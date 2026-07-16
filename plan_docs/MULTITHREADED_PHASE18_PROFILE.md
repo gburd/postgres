@@ -772,3 +772,39 @@ self-inflicted crash-recovery doom loop; and I mistakenly terminated a non-mine
 instance (asx-bcs, key agent-sandbox-ec2) while clearing orphans.  Rule
 reaffirmed: verify KeyName==xtc-p17 AND tag xtc-ab-* before ANY terminate in the
 shared account.  Instances torn down at session close.
+
+## Diagnosing the HammerDB threaded monitor-VU failure (2026-07-16, local, no EC2)
+
+Investigated WHY HammerDB's TPROC-C monitor VU (Vuser 1) intermittently
+"FINISHED FAILED" at "Taking start Transaction Count" under multithreaded=on.
+Reproduced the candidate causes LOCALLY (dev-host, threaded server, v1.23.3):
+
+FALSIFIED hypothesis 1 -- pg_stat regression: the monitor reads
+`sum(xact_commit) from pg_stat_database`.  Under multithreaded=on this query
+SUCCEEDS and increments monotonically under a concurrent write load
+(862->1280 over the run).  pgstat_database.c's pgStatXactCommit/Rollback are
+correctly #define'd to per-backend accessors (pgstat.h:1019) and flush to the
+shared dbentry.  pg_stat output did NOT change in a way that breaks the query.
+
+FALSIFIED hypothesis 2 -- idle-connection hibernation: pooled sessions hibernate
+after pooled_protocol_hibernate_after_ms=5000ms, and HammerDB's monitor holds an
+idle connection through the ~60s rampup.  Tested a persistent connection idle 12s
+(past hibernate) then reused: it returns correctly (after_idle=863, still_alive=1).
+Not a hibernation bug.
+
+RULED-IN as NOISE (not the failure): the "Payment/New Order Procedure Error set
+RAISEERROR" lines are TPC-C's spec-mandated ~1% New-Order rollbacks + Payment
+not-found paths; they appear in BOTH process and threaded runs and are expected.
+
+STILL UNKNOWN: the actual Vuser 1 exception text -- HammerDB suppresses SQL error
+detail by default.  Two obvious threaded causes are falsified; the local threaded
+server handles the exact monitor query fine.  NO threaded-mode bug found yet; the
+failure may be in HammerDB's harness interaction (intermittent), not our code.
+
+DEFINITIVE NEXT STEP (cheap): re-run HammerDB with server-side
+log_statement='all' + log_error_verbosity=verbose AND HammerDB error detail on,
+capture the EXACT SQL + error at the instant Vuser 1 fails.  Can be done locally
+if HammerDB (RHEL9 tarball) is made to run on the NixOS dev-host (needs a
+discoverable libpq.so.5 + glibc shim) -- avoids EC2 for the diagnosis.  Only then
+name/fix a bug (if any) and capture the threaded NOPM/TPM for the apples-to-apples
+comparison.
