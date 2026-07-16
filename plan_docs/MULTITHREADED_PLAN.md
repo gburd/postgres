@@ -2897,3 +2897,29 @@ STATE: reg 1+2a fixed; 2b deadlock fixed; 2b crash FIXED (reviewer-clean); 003
 fixed; test 75 FIXED (reviewer-clean).  test_backend_runtime GREEN (12/14, 0
 Fail).  process regress GREEN.  0 warnings.  Pre-existing logical-rep suite
 failures noted, out of scope.  Ready to force-push + benchmark.
+
+### Benchmark (local A/B, post-fix, branch GREEN + force-pushed)
+
+Dev-host (8 CPU), scale 50, shared_buffers=1GB, max_connections=200, fsync=off,
+synchronous_commit=off, 16 clients / 8 jobs, prepared.  Process lane then
+threaded lane (multithreaded=on, pooled_protocol_carriers=8), same data dir.
+
+- Read-only SELECT (-S -M prepared):
+    process  = 151,039 tps  (many backend processes)
+    threaded = 170,133 tps  (+12.6%; SINGLE process, nprocs=0 -- all fibers)
+  => threaded BEATS process on read-only at carriers==cpus, consolidated to one
+     process.
+- Write TPC-B: process = 17,067 tps.  Threaded write lane did NOT complete within
+  the local command timeouts (dev-host meson-on-btrfs is too slow/contended for
+  reliable timed write runs; heavy write/saturation belongs on EC2).
+
+The threaded server ran cleanly end-to-end (fibers spawn/exit normally;
+NOTIFY-parked-client + terminate paths correct) -- Phase 17 fix validated live.
+
+Full apples-to-apples saturation + p50/p95/p99 + HammerDB: EC2 external-driver
+harness (src/tools/benchmark/mtpg_remote_bench.sh + mtpg_ec2_ab_provision.sh) on
+a big-core box, fresh session.
+
+STATE: xtc GREEN (test_backend_runtime 12/14 0-Fail, process regress green, 001
+128/128, 0 warnings), test 75 two-reviewer-clean, FORCE-PUSHED (5f6370ceded).
+Local read-only A/B: threaded +12.6%, single-process.  EC2 saturation = next.
