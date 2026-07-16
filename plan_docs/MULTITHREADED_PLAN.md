@@ -2477,3 +2477,78 @@ STATE: regressions 1 + 2a fixed; 2b deadlock fixed (amutex a8d4a4440c0); pure
 concurrent custom-GUC fixed; residual crash PINPOINTED to launch-after-GUC-stress.
 0 warnings; regress 245/245.  Force-push HELD; benchmark NOT run.  Backup:
 xtc-pre-rebase-202607160519.
+
+### Regression 2b -- session 9: crash localized to fiber WaitLatch/WaitEventSet path (bgworker launch region), NOT custom-GUC
+
+Major diagnostic progress via elog milestone markers in 001 (the ground-truth
+repro; /tmp harnesses could NOT reproduce -- see below).
+
+CHAIN (all via markers, then reverted -- tree clean):
+- The gen=7 signal=11 crash after test 56 is a bgworker fiber that reaches
+  BackgroundWorkerMain milestone m5 (pre-entrypt) then faults IN entrypt().
+- entrypt for the crashing fiber was fn=ApplyLauncherMain (the logical-rep
+  launcher, a BgWorkerBackendThreadPerSession bgworker) -- reaches its main
+  loop, survives get_subscription_list, and faults INSIDE WaitLatch ->
+  WaitEventSetWait -> WaitEventSetWaitBlock (the xtc fiber intercept:
+  xtc_pg_wait_fd on set->epoll_fd).  Matches an earlier bgwriter core that
+  faulted at waiteventset.c:1311 (set->latch->maybe_sleeping) with a corrupted
+  set, and a spi_printtup PANIC (_SPI_current==NULL) core.
+- FALSIFIED "apply launcher is the culprit": max_logical_replication_workers=0
+  -> 001 STILL crashes (now a GUC-stress worker fiber, gen=7).  So it is a
+  GENERAL fiber/concurrency corruption at the GUC-stress + thread-bgworker-launch
+  sequence, crashing whichever fiber -- not one specific worker.
+- Common denominator of every signature: per-backend state resolved through
+  __thread current-work pointers (CurrentPgBackend/CurrentPgExecution) --
+  LatchWaitSet (PgCurrentBackendIPCState), SPI _SPI_current (PgExecution).  One
+  marker run caught a fiber logging as "unrecognized[0]" (MyProcPid==0) sharing
+  another backend's LatchWaitSet (same epoll_fd + same latch ptr as a valid
+  backend) -- i.e. a fiber with lost/stale backend identity resolving a foreign
+  per-backend WaitEventSet.  Strongly implicates __thread current-work-state
+  coherence across fiber scheduling.
+
+CORRECTIONS to earlier sessions:
+- The earlier "single-carrier clean / multi-carrier ~30% crash" result was
+  CONTAMINATED by leftover stray postgres servers from prior harness runs
+  (3+ clusters running at once -> port/socket/resource collisions).  After
+  killing strays, the /tmp harness (even matching 001's config: autovac,
+  io_method=worker, wal_consistency_checking, BEGIN/COMMIT, 4 workers) runs
+  8/8 CLEAN and never migrates (XTCMIG tid-change detector = 0).  So the crash
+  is NOT reproduced by fire-and-forget concurrent GUC-stress.
+- libxtc pins xtc_proc_* fibers (xtc_async passes pinned=1 to
+  __xtc_task_spawn_ex; loop_int.h: pinned tasks never work-stolen).  So PG
+  backend/worker fibers do NOT migrate loops.  Migration is NOT the cause.
+- pooled_protocol_carriers=1 on 001 fails EARLIER (after test 10, no
+  GENUINE-CRASH) -- under-provisioned (001 needs several carriers for its
+  concurrent sessions); a red herring, not the same crash.
+
+WHY /tmp can't reproduce but 001 does: 001 uses background_psql + pump_until to
+run the 4 GUC-stress workers INTERLEAVED with the perl driver, finishing them
+one-at-a-time IN ORDER (per-worker $psql->{run}->finish), THEN does the
+thread-bgworker launch.  That precise open-session + ordered-teardown + launch
+timing is the trigger; fire-and-forget psql does not match it.
+
+BLOCKER on the exact faulting line: the crash is signal=11 (SIGSEGV) caught by
+libxtc's fault guard, which re-raises on the fiber/alt stack and does NOT dump a
+core even with PG_XTC_ALLOW_CORE=1 + ulimit -c unlimited (confirmed again this
+session, incl. from 001's own postmaster).  Only the rarer spi_printtup PANIC
+(SIGABRT) dumps.  elog markers work but shift timing (Heisenbug -- the crashing
+fiber identity/line moves when markers are added).
+
+NEXT (turnkey): (a) reproduce in a harness that mirrors 001's background_psql
+ordered-teardown-then-launch timing (persistent psql sessions via coproc/expect,
+finished in order, then launch) so a core lands; OR (b) instrument the fiber
+adopt/reset/current-work path (PgCarrierAttachBackend / PgRuntimeSetCurrentWork /
+the read-command park/resume) to catch a fiber running with MyProcPid==0 or a
+mismatched CurrentPgBackend during a WaitEventSetWaitBlock, which the
+"unrecognized[0] shares foreign LatchWaitSet" marker already hinted at; OR (c)
+add a cheap assertion (MyProcPid!=0 && set owner == current backend) at the
+WaitEventSetWaitBlock xtc-branch entry and run 001 to fail-fast at the corruption
+point rather than the downstream deref.  The fix is almost certainly restoring/
+validating __thread current-work (CurrentPgBackend/Execution) coherence at the
+fiber resume boundary for aux-worker/bgworker fibers.
+
+STATE: regressions 1 + 2a fixed; 2b GUC deadlock fixed (amutex a8d4a4440c0);
+residual 001 crash is a fiber WaitLatch/WaitEventSet per-backend-state corruption
+at the GUC-stress+bgworker-launch sequence (custom-GUC RULED OUT; apply-launcher
+RULED OUT as sole cause; migration RULED OUT).  0 warnings; process regress
+245/245.  Force-push HELD; benchmark NOT run.  Backup: xtc-pre-rebase-202607160519.
