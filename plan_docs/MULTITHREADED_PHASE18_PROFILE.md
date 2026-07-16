@@ -872,3 +872,52 @@ carrier direction for realistic mixed busy/idle connection clients.
 
 => The apples-to-apples threaded TPROC-C NOPM is capturable in one EC2 run with
 carriers>=VU+margin; no bug blocks it.
+
+## 192-core bare-metal HammerDB TPROC-C run (2026-07-16)
+
+SUT: m8idn.metal-96xl -- 192 PHYSICAL cores (96/socket x2), 384 vCPU (SMT),
+1511GB RAM, 6x3.5TB local NVMe RAID-0 (21TB, no IOPS limit), data on NVMe.
+shared_buffers=1024GB (both modes, ~2/3 of RAM), fsync/synchronous_commit off.
+Load: external HammerDB 6.0 on a separate c7i.24xlarge (96 vCPU) over the
+private network.  Threaded carriers=192 (== physical cores, per spec).  800
+warehouses.  3 runs, VU in {64,128}.
+
+PROCESS (fork) NOPM/TPM -- clean, consistent across 3 runs:
+  VU=64:  1,357k-1,466k NOPM (3.11M-3.37M TPM)  CPU ~12%
+  VU=128: 1,311k-1,320k NOPM (3.02M-3.04M TPM)  CPU ~18%
+THREADED (pool+fibers, carriers=192): NOPM NOT CAPTURED (all 3 runs).
+
+TWO honest limitations of this run (neither is a threaded-mode DB defect):
+
+1. BOX NOT SATURATED.  On 192 cores the CPU peaked at ~21% (threaded) / ~18%
+   (process); throughput DROPPED VU=64->128.  800 warehouses + VU<=128 is
+   lock-contention-bound on the small warehouse hot-set, not CPU-bound -- it
+   does NOT saturate 192 cores.  To saturate needs many more warehouses
+   (thousands, to spread the hot-row contention) AND VU >> cores; that is a
+   schema rebuild + long sweep (deferred on cost).
+
+2. THREADED NOPM=NA is a HARNESS TIMER RACE, definitively NOT a DB/query bug.
+   Captured the monitor VU's full progress from HammerDB's log: with carriers
+   (192) > connections, the monitor gets PAST "Taking start Transaction Count"
+   (the earlier starvation, now fixed by carriers>=VU+margin) and runs the
+   timed window -- reaching "Timing test period ... 1..,2..,3..,4.." (minute 4
+   of 5) before the harness's runtimer/vudestroy kills it just before the
+   "TEST RESULT: System achieved" line prints.  In an earlier run the SAME
+   monitor reached "Test complete, Taking end Transaction Count -> Gathering
+   timing data -> Calculating -> Writing" (a FULL completed measurement).  So
+   the threaded server runs TPROC-C end-to-end correctly; only the harness's
+   runtimer margin (even at +300s) intermittently truncates the monitor before
+   it emits the result line.  Threaded worker VUs FINISH SUCCESS throughout.
+
+Threaded memory: PSS ~63-67GB in ONE process vs process-mode ~63-69GB across
+~130 procs at VU=128 -- comparable footprint, 1 proc vs ~130.
+
+NET: On 192-core metal we captured a solid PROCESS TPROC-C baseline (~1.3-1.47M
+NOPM) and CONFIRMED the threaded runtime executes the identical workload
+correctly (workers succeed, monitor completes the timed window), but the
+apples-to-apples threaded NOPM is still not captured due to the harness monitor
+runtimer/vudestroy race -- the LAST remaining harness defect.  The definitive
+harness fix is to poll HammerDB's jobs result store (jobs command / SQLite jobs
+DB) for the completed run's NOPM instead of relying on runtimer+vudestroy
+timing; then a single re-run captures both lanes.  Neither the DB nor pg_stat
+nor carriers block it.  All EC2 resources torn down.
