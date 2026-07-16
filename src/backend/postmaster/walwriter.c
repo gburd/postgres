@@ -229,12 +229,6 @@ WalWriterMain(const void *startup_data, size_t startup_data_len)
 	last_snapshot_ts = GetCurrentTimestamp();
 
 	/*
-	 * Advertise our proc number that backends can use to wake us up while
-	 * we're sleeping.
-	 */
-	ProcGlobal->walwriterProc = MyProcNumber;
-
-	/*
 	 * Loop forever
 	 */
 	for (;;)
