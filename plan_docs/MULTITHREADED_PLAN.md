@@ -2753,3 +2753,56 @@ Two independent adversarial committer-grade reviews (both read the actual source
 
 DECISION: keep the shipped guard (crash fixed, reviewer-clean); track the
 holdoff refactor + explicit test as a follow-up commit under its own review gate.
+
+### Session 9 summary: crash FIXED + 003 FIXED; test 75 (cross-fiber terminate-wake) is the last 001 failure
+
+RESULT: test_backend_runtime suite 11/14 -> only 001 fails (on ONE subtest,
+test 75), no crashes anywhere.  Was 2 crashing/erroring tests (001 dying at
+test 56, 003 dying) at session start.
+
+Committed this session:
+- 2d96b2ccb60  fix(threaded): ProcessInterrupts NULL-MyProc guard (residual 2b
+  crash). Two-reviewer SHIP-WITH-CHANGES (both agree it closes the crash; the
+  HOLD-interrupts-window durability refactor + explicit test are tracked
+  follow-ups).  001: 56 -> 127/128.  Process regress green.
+- b4fa9c8ad4d  fix(test): 003 stale expectations (process-only rejection message
+  regex + pooled-reclaim log wording).  003 now 43/43.
+
+test 75 "mixed teardown stress accepted terminate requests" -- OPEN, precisely
+root-caused this session (diagnostics reverted, NOT shipped):
+- Symptom: pg_terminate_backend(pid, 5000) on 4 idle pooled `background_psql`
+  sessions; one target (deterministically PID 89) "did not terminate within 5000
+  ms".  No crash.  A SINGLE idle-at-command-read session terminates FINE
+  (verified /tmp/term2.sh -> TERMINATE=t), so it is the mixed-stress interaction.
+- Confirmed via instrumentation: the failing target's parked fiber NEVER observes
+  a WL_LATCH_SET wake (XTCWAKEOBS pid=<target> count = 0) while the terminate's
+  SendInterrupt sets PROC_DIE fresh (old_mask=0) and SetLatch(interrupt_latch)
+  IS called.  The cross-fiber xtc_proc_wake of the parked fiber's loop is MISSED.
+- Earlier SetLatch instrumentation: the failing target had owner_fiber_valid=0 on
+  its interrupt_latch at SetLatch time -> the xtc_proc_wake block was skipped.
+- Tried (did NOT fix, reverted): (a) refresh the FeBe wait_set's latch to
+  backend->core.latch at park time -- confirmed core.latch==interrupt_latch, so
+  the latch identity is CORRECT; (b) explicitly LatchSetCurrentFiberOwner() on
+  the interrupt_latch at park start (before the pre-block poll).  Neither made
+  the target observe a wake.  => the miss is NOT latch identity and NOT (only)
+  a missing owner_fiber registration at the block point; the parked fiber's loop
+  is not being poked, or owner_fiber is stale/cleared between registration and
+  the terminate, or the fiber is momentarily not parked (poll/setup window) when
+  the stress fires the terminate.
+
+NEXT (test 75): this is a Phase-17-class cross-fiber wake race on the pooled
+read-command park under concurrent mixed teardown.  Instrument with the fault
+guard disabled + a stable pid tag (backend id, not proc_pid which is 0/shared
+for pooled) to confirm whether (1) xtc_proc_wake is even called for the target
+(owner_fiber_valid at SetLatch), (2) xtc_proc_wake's rc, and (3) whether the
+target fiber is PARKED vs mid-poll when the terminate fires.  Compare with the
+Phase 17 sem_wake_fd eventfd park (proc.c ProcWaitOnSemaphore) which solved the
+same class for semaphores -- the read-command park may need the same eventfd
+secondary wake rather than relying on owner_fiber+xtc_proc_wake.  Two-reviewer
+gate.  NOTE: a single idle session terminates fine, so the fix must target the
+concurrent-teardown timing specifically.
+
+STATE: reg 1+2a fixed; 2b GUC deadlock fixed (amutex); 2b residual crash FIXED
+(reviewer-clean); 003 fixed; test 75 OPEN (root-caused).  0 warnings; process
+regress green; test_backend_runtime 11/14 (only 001, only test 75).  Force-push
+HELD until 001 green.  Backup: xtc-pre-rebase-202607160519.
