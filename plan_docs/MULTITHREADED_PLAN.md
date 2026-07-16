@@ -2806,3 +2806,65 @@ STATE: reg 1+2a fixed; 2b GUC deadlock fixed (amutex); 2b residual crash FIXED
 (reviewer-clean); 003 fixed; test 75 OPEN (root-caused).  0 warnings; process
 regress green; test_backend_runtime 11/14 (only 001, only test 75).  Force-push
 HELD until 001 green.  Backup: xtc-pre-rebase-202607160519.
+
+### test 75 -- session 10: deep timeline established, NOT isolable, fix attempts falsified
+
+Definitive timeline (timestamped instrumentation, fault guard off, reverted):
+- The failing terminate target's parked fiber wakes ~5s LATE -- on its park
+  timeout, NOT on the terminate's SetLatch.  Sequence for the target:
+  PARK (mailbox=0x0, owner_fiber_valid=1) -> SENDPROCDIE sets PROC_DIE + calls
+  the wake (wake=1, ilatch matches park latch, ilatch_is_set=0) -> fiber does
+  NOT wake -> ~5s later WOKE on timeout.  pg_terminate_backend(pid,5000) times
+  out just before.
+- SetLatch's owner_fiber wake block (SETLATCHWAKE, xtc_proc_wake rc=0) fires
+  ~57x per run for OTHER latches and WORKS; the failing target's SetLatch does
+  NOT reach it.  So it is a MISS on one specific target, deterministically one
+  per run (but a different backend id each run).
+
+Fix attempts this session -- ALL BUILT CLEAN, ALL FALSIFIED (reverted):
+1. Re-issue xtc_proc_wake on the SetLatch `is_set` early-return path.  No effect
+   (ilatch_is_set was 0 at the miss, so not the is_set path).
+2. Broaden that to also WakeupOtherProcFd/pthread_kill on is_set.  No effect.
+3. Treat a registered cross-fiber owner (owner_fiber_valid, same proc, other
+   thread) as sibling_thread_owner so SetLatch does not bail at
+   `!maybe_sleeping && !sibling_thread_owner`.  8/8 still fail -> SetLatch is
+   NOT bailing at that gate for the target.
+4. Refresh FeBe wait_set latch to core.latch at park + explicit
+   LatchSetCurrentFiberOwner at park start (earlier session).  No effect;
+   confirmed core.latch==interrupt_latch.
+
+NOT ISOLABLE: reproduced ONLY in a full 001 run.  Standalone repros that PASS:
+- single idle-at-command-read session terminate (/tmp/term2.sh) = t
+- 4 idle sessions + bool_and(pg_terminate_backend(pid,5000)) (/tmp/term4.sh) = t
+- FULL mixed stress (4x fatal + abandoned advisory-lock + terminate targets)
+  from a FRESH server (/tmp/term_mixed.sh) = t
+=> the miss requires the ~50 prior 001 subtests (GUC stress, crash-recovery,
+protocol-scheduler, prior terminate waves) to warm/churn the pool+carriers into
+the triggering state.  Same "only in the full sequence" wall as the crash had.
+
+ASSESSMENT: test 75 is a genuine, deep, full-context-dependent cross-fiber
+latch-wake race on the pooled read-command park.  The wake path is correct in
+the common case; one target per full-001 run misses and waits its park timeout.
+The observed facts (SetLatch called on the right latch with is_set=0 and
+owner_fiber_valid=1, yet no wake reaches the block) are internally inconsistent
+with a simple gate/identity bug -- suggesting either (a) the owner_fiber values
+read by SetLatch are stale vs the fiber's CURRENT park generation (the fiber
+re-parked with a new gen between the mailbox-empty wake and the terminate, and
+SetLatch xtc_proc_wakes the OLD gen -> libxtc drops it), or (b) a
+read-after-write visibility gap on owner_fiber_* / maybe_sleeping across
+carriers.  (a) is the leading theory and matches "wakes on timeout not signal".
+
+RECOMMENDED FIX (next session, review-gated): the robust, race-free path is the
+Phase 17 pattern -- a per-backend eventfd that SendInterrupt WRITES and the
+pooled read-command park ALWAYS includes in its FeBe wait set (level-triggered),
+instead of relying on owner_fiber+xtc_proc_wake (edge-triggered, gen-sensitive).
+This is exactly how ProcWaitOnSemaphore/sem_wake_fd solved the semaphore version
+(proc.c).  Alternatively, confirm/fix theory (a): make SetLatch's owner_fiber
+read + the park's owner_fiber write use a generation/seqlock so a stale-gen
+xtc_proc_wake cannot be silently dropped.
+
+STATE: reg 1+2a fixed; 2b deadlock fixed; 2b crash FIXED (reviewer-clean); 003
+fixed (43/43); test 75 OPEN -- deep cross-fiber-wake race, root-caused to the
+timeline above, 4 fix attempts falsified, eventfd-secondary-wake is the
+recommended fix.  0 warnings; process regress green; test_backend_runtime 11/14
+(only 001, only test 75).  Force-push HELD.  Backup: xtc-pre-rebase-202607160519.
