@@ -808,3 +808,41 @@ if HammerDB (RHEL9 tarball) is made to run on the NixOS dev-host (needs a
 discoverable libpq.so.5 + glibc shim) -- avoids EC2 for the diagnosis.  Only then
 name/fix a bug (if any) and capture the threaded NOPM/TPM for the apples-to-apples
 comparison.
+
+## Local diagnosis of the threaded monitor-VU failure -- concurrency-dependent (2026-07-16)
+
+Tried to reproduce HammerDB's monitor-VU failure locally (dev-host, 8 cores, no
+EC2).  Findings:
+- Isolated monitor query (pg_stat_database xact_commit) under multithreaded=on:
+  WORKS, monotonic under a light write load (established prior).
+- Under HEAVY concurrent load (24 write workers > 8 carriers + a monitor conn on
+  an 8-core shared host also running 2 unrelated system pg servers): the repro
+  HUNG / the monitor connection made no progress.  This is consistent with
+  CARRIER STARVATION of the monitor VU's connection when workers >> carriers and
+  the box is oversubscribed -- the proven "a pooled session monopolizes its
+  carrier for the whole command" model: with all carriers busy running worker
+  commands, the monitor's count query waits for a free carrier, and if it waits
+  long enough HammerDB's monitor times out -> "FINISHED FAILED" at "Taking start
+  Transaction Count."  This is the leading (unproven) hypothesis.
+- CANNOT faithfully reproduce HammerDB's 32-VU concurrency on the 8-core shared
+  dev-host (oversubscription hangs; also 2 pre-existing UID-70 system pg servers
+  share the host).  The dev-host is the wrong instrument for a
+  concurrency-dependent, load-scaled failure.
+
+STILL no confirmed code bug.  The isolated query is fine; the failure is
+load/concurrency-dependent and most plausibly monitor-connection starvation --
+which, if true, is the SAME carrier-sizing/scheduling issue as the TPC-B
+flatline (the auto-default now = ncpus, so carriers==vCPUs; but HammerDB's
+monitor VU is an EXTRA connection beyond the worker VUs, so worker-VUs==carriers
+leaves the monitor with no free carrier -> starvation).  If confirmed, the fix
+is either (a) size carriers to VUs+overhead, or (b) the elastic-above-cap
+carrier growth already noted as the Phase 17 follow-up.
+
+DEFINITIVE NEXT STEP (needs the 32-vCPU EC2 box, ~1 focused run): run HammerDB
+TPROC-C with pooled_protocol_carriers set ABOVE the VU count (e.g. VU=32,
+carriers=48) AND server log_statement='all' + log_error_verbosity=verbose +
+log_min_duration_statement=0, capture (1) whether the monitor now succeeds when
+it can't be starved, and (2) if it still fails, the EXACT SQL+error text.  That
+distinguishes "monitor starvation" (carrier-sizing, expected, fixable) from a
+genuine query/stats bug.  Also captures the threaded NOPM for the apples-to-
+apples comparison in the same run.
