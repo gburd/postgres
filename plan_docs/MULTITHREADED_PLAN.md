@@ -2682,3 +2682,41 @@ STATE: reg 1+2a fixed; 2b GUC deadlock fixed (amutex a8d4a4440c0); 2b residual
 crash FIXED (2d96b2ccb60); test 75 cross-fiber-wake OPEN.  0 warnings; process
 regress green.  Force-push HELD until 001 fully green.  Backup:
 xtc-pre-rebase-202607160519.
+
+### test 75 ROOT CAUSE: FeBe wait-set latch owner_fiber not registered for the parking session
+
+Instrumented SetLatch: for the terminate targets, SOME have owner_fiber_valid=1
+(woken fine) and the FAILING one has owner_fiber_valid=0 (ofib=0/0/0) with
+maybe_sleeping=1, sibling=1 -> SetLatch proceeds past the early return but SKIPS
+the xtc_proc_wake(owner_fiber) block (guarded by `latch->owner_fiber_valid`), so
+the socket-parked fiber's loop is never poked -> 5s timeout.
+
+MECHANISM: a pooled idle session parks in PgSessionStagingWaitProtocolRead ->
+WaitEventSetWait(connection->protocol.fe_be_wait_set, ...) while DETACHED
+(CurrentPgBackend==NULL).  WaitEventSetWaitBlock's xtc branch registers
+set->latch->owner_fiber_* -- but only if the FeBe wait_set's cached set->latch
+points at the CURRENT session's MyLatch (== backend->interrupt_latch).
+PgCarrierAttachBackend refreshes FeBeWaitSet's latch to MyLatch on attach, BUT
+only under `backend->my_proc != NULL && backend->core.latch ==
+&backend->my_proc->procLatch` (backend_runtime.c:667-674).  When that condition
+is not met for a given session (or the FeBe set's latch is otherwise stale from
+a prior occupant of the reused connection), the park registers owner_fiber on
+the WRONG/stale latch, so SetLatch(current interrupt_latch) sees
+owner_fiber_valid=0 and cannot xtc_proc_wake the parked fiber.  Session-specific
+(matches the observed "some wake, one doesn't").
+
+FIX DIRECTION (test 75): guarantee the FeBe wait_set's latch position tracks the
+CURRENT session's MyLatch AND that the parking fiber is registered as that
+latch's owner_fiber before the park's WaitEventSetWait yields -- either by
+unconditionally refreshing FeBeWaitSet's FeBeWaitSetLatchPos to MyLatch at
+protocol-park time (not only under the narrow attach condition), or by an
+explicit latch_set_fiber_owner(MyLatch) at the park point (mirroring the
+WaitEventSetWaitBlock xtc-branch owner_fiber capture).  Audit the
+backend_runtime.c:667 condition -- why is it gated on
+core.latch==&my_proc->procLatch, and is there a session where that is false at
+park time?  Two-reviewer gate before landing.
+
+STATE: reg 1+2a fixed; 2b GUC deadlock fixed (amutex); 2b residual crash FIXED
+(2d96b2ccb60, ProcessInterrupts NULL-MyProc guard); test 75 (cross-fiber wake of
+idle pooled session) ROOT-CAUSED, fix pending.  0 warnings; process regress
+green; 001 = 127/128.  Force-push HELD until 001 green.
