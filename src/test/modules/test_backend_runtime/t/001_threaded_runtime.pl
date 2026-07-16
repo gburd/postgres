@@ -609,8 +609,8 @@ my ($load_ret, $load_stdout, $load_stderr) =
 	on_error_stop => 1);
 isnt($load_ret, 0,
 	'process-only test module is rejected in threaded runtime');
-like($load_stderr, qr/backend model mismatch/,
-	'process-only module rejection reports backend model mismatch');
+like($load_stderr, qr/is not supported in the threaded backend runtime/,
+	'process-only module rejection reports it is not supported in threaded mode');
 is($node->safe_psql('postgres', 'SELECT 42;'), '42',
 	'threaded server remains usable after process-only module rejection');
 

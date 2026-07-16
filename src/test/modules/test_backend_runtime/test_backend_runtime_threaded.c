@@ -192,9 +192,29 @@ _PG_init(void)
 
 	if (!test_backend_runtime_lwlock_initialized)
 	{
-		int			tranche_id;
+		/*
+		 * Do NOT allocate the tranche here: _PG_init runs during
+		 * process_shared_preload_libraries(), before shared memory exists, and
+		 * LWLockNewTrancheId() now takes the shmem-resident LWLockTranches
+		 * spinlock (upstream refactor) -> it crashes if called pre-shmem.
+		 * Defer tranche allocation + LWLockInitialize to first use (see
+		 * test_backend_runtime_ensure_lwlock), when shmem is attached.
+		 */
+	}
+}
 
-		tranche_id = LWLockNewTrancheId("TestBackendRuntimeLWLock");
+/*
+ * Lazily allocate the tranche and initialize the (backend-local) test LWLock on
+ * first use, so it happens after shared memory is available rather than in
+ * _PG_init at preload time.
+ */
+static void
+test_backend_runtime_ensure_lwlock(void)
+{
+	if (!test_backend_runtime_lwlock_initialized)
+	{
+		int			tranche_id = LWLockNewTrancheId("TestBackendRuntimeLWLock");
+
 		LWLockInitialize(&test_backend_runtime_lwlock, tranche_id);
 		test_backend_runtime_lwlock_initialized = true;
 	}
@@ -600,6 +620,7 @@ test_backend_runtime_hold_lwlock(PG_FUNCTION_ARGS)
 		test_backend_runtime_hold_lwlock_wait_event =
 			WaitEventExtensionNew("TestBackendRuntimeHoldLWLock");
 
+	test_backend_runtime_ensure_lwlock();
 	LWLockAcquire(&test_backend_runtime_lwlock, LW_EXCLUSIVE);
 	held = true;
 
@@ -625,6 +646,7 @@ test_backend_runtime_hold_lwlock(PG_FUNCTION_ARGS)
 Datum
 test_backend_runtime_wait_on_lwlock(PG_FUNCTION_ARGS)
 {
+	test_backend_runtime_ensure_lwlock();
 	LWLockAcquire(&test_backend_runtime_lwlock, LW_EXCLUSIVE);
 	LWLockRelease(&test_backend_runtime_lwlock);
 
