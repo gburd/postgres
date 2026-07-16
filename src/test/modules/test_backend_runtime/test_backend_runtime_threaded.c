@@ -62,8 +62,19 @@ static bool test_backend_runtime_lwlock_initialized = false;
 static LWLock test_backend_runtime_lwlock;
 static pg_atomic_uint32 test_backend_runtime_restart_count;
 static pg_atomic_uint32 test_backend_runtime_crash_count;
-static PG_THREAD_LOCAL char *test_backend_runtime_custom_guc = NULL;
-static PG_THREAD_LOCAL int test_backend_runtime_custom_guc_init_counter = 0;
+/*
+ * Custom GUC backing storage.  A custom GUC's value address is stored in the
+ * (per-backend) GUC table and written through by set_config on whatever carrier
+ * thread the session runs on.  A PG_THREAD_LOCAL var is WRONG here: its address
+ * is per-OS-thread, but a session's fiber can run on any carrier and _PG_init
+ * captures the address once -- so a concurrent set_config on another thread
+ * writes/frees through a foreign thread's TLS slot and crashes.  Back it with
+ * per-session extension-module state instead (the pattern plperl uses).
+ */
+#define test_backend_runtime_custom_guc \
+	(*PgCurrentTestBackendRuntimeCustomGucRef())
+#define test_backend_runtime_custom_guc_init_counter \
+	(*PgCurrentTestBackendRuntimeCustomGucInitCounterRef())
 
 static const char *
 test_backend_runtime_kind_name(PgRuntimeKind kind)
