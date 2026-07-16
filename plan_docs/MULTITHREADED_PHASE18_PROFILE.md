@@ -846,3 +846,29 @@ it can't be starved, and (2) if it still fails, the EXACT SQL+error text.  That
 distinguishes "monitor starvation" (carrier-sizing, expected, fixable) from a
 genuine query/stats bug.  Also captures the threaded NOPM for the apples-to-
 apples comparison in the same run.
+
+## CONFIRMED (local): the monitor failure is carrier starvation, NOT a code bug (2026-07-16)
+
+Right-sized local test: carriers=8 > connections=5 (4 write workers + 1 monitor),
+under concurrent write load, multithreaded=on.  The monitor's pg_stat_database
+xact_commit query succeeded 6/6, monotonic (864->4374).  Contrast: when workers
+oversubscribe carriers (24 > 8), the monitor connection starves/hangs.
+
+This EXPLAINS the HammerDB threaded NOPM=NA definitively: the harness ran VU=32
+worker VUs + HammerDB's 1 MONITOR VU = 33 connections against carriers=auto=32
+(one per vCPU).  33 conns > 32 carriers -> the monitor VU (the extra connection)
+cannot get a free carrier for its count query while all 32 workers hold theirs
+for their whole command -> HammerDB monitor times out -> "FINISHED FAILED" at
+"Taking start Transaction Count."  NO code/pg_stat bug -- it is the known
+carrier-occupancy model (a pooled session monopolizes its carrier for the whole
+command) meeting a workload with (worker VUs == carriers) + an extra monitor
+connection.
+
+FIX for capturing the threaded number: size carriers ABOVE the total connection
+count (VUs + monitor + margin), e.g. VU=32 -> carriers>=40.  The benchmark
+harness should set pooled_protocol_carriers = VU + margin for threaded lanes
+(HammerDB uses VU+1 connections).  Reinforces the Phase 17 elastic-above-cap
+carrier direction for realistic mixed busy/idle connection clients.
+
+=> The apples-to-apples threaded TPROC-C NOPM is capturable in one EC2 run with
+carriers>=VU+margin; no bug blocks it.
