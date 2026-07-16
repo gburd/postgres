@@ -2720,3 +2720,36 @@ STATE: reg 1+2a fixed; 2b GUC deadlock fixed (amutex); 2b residual crash FIXED
 (2d96b2ccb60, ProcessInterrupts NULL-MyProc guard); test 75 (cross-fiber wake of
 idle pooled session) ROOT-CAUSED, fix pending.  0 warnings; process regress
 green; 001 = 127/128.  Force-push HELD until 001 green.
+
+### 2b residual crash fix (2d96b2ccb60): TWO-REVIEWER GATE = SHIP-WITH-CHANGES (both agree)
+
+Two independent adversarial committer-grade reviews (both read the actual source):
+- BOTH: the MyProc!=NULL guard on ProcessInterrupts:4044 closes the ONLY
+  reachable MyProc NULL-deref for the realistic pre-InitProcess interrupt set
+  (recovery-conflict is the sole UNCONDITIONAL deref; ProcDie/QueryCancel paths
+  reach LockErrorCleanup which early-returns pre-InitProcess via
+  GetAwaitedLock()==NULL; ProcessRecoveryConflictInterrupts and the sibling
+  HandleRecoveryConflictInterrupt are unreachable pre-InitProcess since a
+  not-yet-registered fiber is not in the procarray).  SHIP to stop the crash.
+- BOTH: process mode byte-for-byte equivalent (MyProc is set by InitProcess
+  before interrupts are serviced; ProcKill nulls MyProc only inside shmem_exit
+  where InterruptHoldoffCount!=0 already early-returns ProcessInterrupts).
+- BOTH: race-free (MyProc resolves via the current fiber's CurrentPgBackend;
+  test+read are sequenced on one fiber; no concurrent InitProcess).
+- BOTH follow-ups (tracked, NOT blocking the crash fix):
+  1. Deeper root-cause fix: HOLD interrupts across the pre-InitProcess worker/
+     backend fiber startup window (so ProcessInterrupts bails at the
+     InterruptHoldoffCount check for the whole window, making the sibling
+     HandleRecoveryConflictInterrupt safety explicit-not-lucky and covering any
+     future early-registered on_shmem_exit callback).  NOTE: a localized
+     HOLD/RESUME around just the DEBUG1 ereport does NOT work (RESUME re-arms the
+     next CHECK_FOR_INTERRUPTS with MyProc still NULL) -- the HOLD must span
+     entry..InitProcess, which cleanly requires resuming inside/after InitProcess
+     (spans functions); do it deliberately as its own reviewed commit.
+  2. A threaded regression test firing a cross-fiber interrupt into the startup
+     window.  COVERAGE NOW: 001 exercises this path end-to-end (was SIGSEGV at
+     test 56; with the fix it runs 127/128).  check-threaded-workers evidence to
+     follow with the holdoff commit.
+
+DECISION: keep the shipped guard (crash fixed, reviewer-clean); track the
+holdoff refactor + explicit test as a follow-up commit under its own review gate.
