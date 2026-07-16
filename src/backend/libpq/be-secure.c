@@ -29,6 +29,7 @@
 
 #include "libpq/libpq.h"
 #include "miscadmin.h"
+#include "storage/proc.h"
 #include "storage/latch.h"
 #include "tcop/tcopprot.h"
 #include "utils/injection_point.h"
@@ -263,8 +264,31 @@ retry:
 					 errmsg("terminating connection due to unexpected postmaster exit")));
 
 		/* Handle interrupt. */
-		if (event.events & WL_LATCH_SET)
+		if (event.events & WL_LATCH_SET
+#ifdef USE_XTC_CARRIER
+			|| event.pos == FeBeWaitSetInterruptWakeFdPos
+#endif
+			)
 		{
+#ifdef USE_XTC_CARRIER
+			/*
+			 * The interrupt-wake eventfd (shared FeBe set position 3, present
+			 * only for fiber-backed backends) firing is a cross-fiber interrupt
+			 * arriving during a blocking client read.  Drain it (level-
+			 * triggered) so it does not re-fire, and process interrupts exactly
+			 * as for a latch set -- the pending_mask mailbox is the source of
+			 * truth.  Distinguished by position (it shares WL_SOCKET_READABLE
+			 * with the client socket at position 0).
+			 */
+			if (MyProc != NULL && MyProc->interrupt_wake_fd >= 0)
+			{
+				uint64		drain;
+
+				while (read(MyProc->interrupt_wake_fd, &drain,
+							sizeof(drain)) == sizeof(drain))
+					;
+			}
+#endif
 			ResetLatch(MyLatch);
 			ProcessClientReadInterrupt(true);
 
@@ -372,8 +396,23 @@ retry:
 					 errmsg("terminating connection due to unexpected postmaster exit")));
 
 		/* Handle interrupt. */
-		if (event.events & WL_LATCH_SET)
+		if (event.events & WL_LATCH_SET
+#ifdef USE_XTC_CARRIER
+			|| event.pos == FeBeWaitSetInterruptWakeFdPos
+#endif
+			)
 		{
+#ifdef USE_XTC_CARRIER
+			/* See secure_read: drain the interrupt-wake eventfd (pos 3). */
+			if (MyProc != NULL && MyProc->interrupt_wake_fd >= 0)
+			{
+				uint64		drain;
+
+				while (read(MyProc->interrupt_wake_fd, &drain,
+							sizeof(drain)) == sizeof(drain))
+					;
+			}
+#endif
 			ResetLatch(MyLatch);
 			ProcessClientWriteInterrupt(true);
 

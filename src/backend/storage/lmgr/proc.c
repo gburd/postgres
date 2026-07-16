@@ -335,6 +335,11 @@ ProcGlobalShmemInit(void *arg)
 				ereport(FATAL,
 						(errcode_for_socket_access(),
 						 errmsg("could not create semaphore-wake eventfd for PGPROC: %m")));
+			proc->interrupt_wake_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+			if (proc->interrupt_wake_fd < 0)
+				ereport(FATAL,
+						(errcode_for_socket_access(),
+						 errmsg("could not create interrupt-wake eventfd for PGPROC: %m")));
 			SpinLockInit(&proc->sem_fiber_lock);
 			proc->sem_fiber_backed = false;
 			proc->sem_fiber_armed = false;
@@ -356,6 +361,7 @@ ProcGlobalShmemInit(void *arg)
 			 * but keep the invariant honest.
 			 */
 			proc->sem_wake_fd = -1;
+			proc->interrupt_wake_fd = -1;
 			SpinLockInit(&proc->sem_fiber_lock);
 			proc->sem_fiber_backed = false;
 			proc->sem_fiber_armed = false;
@@ -611,6 +617,15 @@ InitProcess(void)
 		SpinLockRelease(&MyProc->sem_fiber_lock);
 		while (read(MyProc->sem_wake_fd, &buf, sizeof(buf)) == sizeof(buf))
 			;
+		/*
+		 * Drain any stale interrupt-wake readiness left by the previous tenant
+		 * of this recycled PGPROC, so the next read-command park does not wake
+		 * spuriously on a dead interrupt.  Level-triggered eventfd; a fresh
+		 * SetLatch after this re-arms it.
+		 */
+		if (MyProc->interrupt_wake_fd >= 0)
+			while (read(MyProc->interrupt_wake_fd, &buf, sizeof(buf)) == sizeof(buf))
+				;
 	}
 	else if (MyProc->sem_wake_fd >= 0)
 	{
