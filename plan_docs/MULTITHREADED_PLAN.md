@@ -2221,3 +2221,49 @@ this session, and find the minimal preamble prefix that still crashes the launch
 Then reproduce that prefix + launch in /tmp/bgw4.sh (which captures state on a
 core-friendly direct-start server) to get the backtrace.  Build is warning-clean;
 regress 245/245; 12/14 test_backend_runtime; force-push HELD until 001+003 green.
+
+### Regression 2b -- further narrowed (2026-07-16 session 3): NOT stack, NOT simple reuse
+
+Answering the standing questions + two distinguishing tests run:
+
+Q: Is plperl running in a thread in the main process?  A: YES under
+multithreaded=on -- plperl is PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE,
+so the embedded Perl interpreter runs in the backend FIBER on a carrier OS thread,
+in the single postmaster address space.  BUT 001 test 628 runs under
+pooled_protocol_carriers=0 (THREAD-PER-SESSION), where plperl's my_perl-drift
+fast-path is skipped and each session is its own fiber -- so the shared-my_perl
+hazard is not in play on this test.
+
+Q: Is that level of recursion normal / is it a stack problem?  A: NO -- FALSIFIED.
+Bumped XTC_PG_FIBER_STACK 8MB -> 32MB, rebuilt, re-ran 001: STILL crashes at test
+56/line 628 (exit 29).  So the launch SIGSEGV is NOT fiber-stack exhaustion.
+Also: each safe_psql in the preamble is a FRESH connection/fiber, so no single
+deep plperl/parallel recursion is in-flight at the crash; the crashing fiber
+(gen=7) started clean.
+
+Also FALSIFIED this session: simple fiber-reuse count is not the trigger (20
+plperl-function fiber reuses then launch = clean, returns a pid); and
+plperl-then-launch is not the trigger.
+
+So 2b is a SPECIFIC preamble-content ordering dependency, in the launch fiber's
+prologue, that survives across the reused slot.  How to address / next:
+  - BISECT 001.pl (the remaining turnkey step): copy 001, insert
+    `done_testing(); exit(0);` progressively earlier in the preamble, find the
+    minimal set of preceding blocks that still crashes the launch.  Prime
+    remaining suspects (not yet excluded): the parallel-query block
+    (debug_parallel_query=on, ~line 650 -- leaves parallel/DSM/worker state), the
+    custom-GUC LOAD-stress + 4-worker GUC loop (~500-560, repeated
+    LOAD 'test_backend_runtime_threaded' + SET across sessions), or plsample.
+  - Then reproduce the minimal prefix + launch in /tmp/reuse.sh-style harness on a
+    direct-start server (core-friendly) to get a backtrace, OR add an elog marker
+    at each RegisterDynamicBackgroundWorker/BackgroundWorkerData access to see the
+    exact crashing access.
+  - Likely area given "launch prologue on a reused fiber after specific prior
+    ops": BackgroundWorkerData / bgworker slot shmem state, or a per-backend
+    runtime bucket left dangling by the parallel-query or GUC-worker path when its
+    fiber slot is later reused by the launch caller.
+
+STATE: 2 of 3 rebase regressions FIXED (regress reset-check; _PG_init preload
+SIGSEGV) + 0 build warnings + stale-test fixes, all committed.  2b open, sharply
+narrowed (not stack, not simple reuse).  Force-push HELD; benchmark NOT run
+(won't benchmark with a live threaded crash).  Backup: xtc-pre-rebase-202607160519.
