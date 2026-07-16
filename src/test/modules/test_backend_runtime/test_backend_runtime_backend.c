@@ -1387,7 +1387,15 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && storage->allocated_descs == NULL;
 	ok = ok && storage->num_allocated_descs == 0;
 	ok = ok && storage->max_allocated_descs == 0;
-	ok = ok && storage->num_external_fds == 0;
+	/*
+	 * num_external_fds is deliberately PRESERVED across the closed-state reset
+	 * (owned by the ReserveExternalFD/ReleaseExternalFD protocol; the pending
+	 * WaitEventSet fd releases later in the exit path drive it to 0 -- see
+	 * PgBackendResetStorageClosedState).  The reset must not zero it out from
+	 * under those releases, so verify it was PRESERVED at the fake backend's
+	 * setup value (2), not zeroed.
+	 */
+	ok = ok && storage->num_external_fds == 2;
 	ok = ok && storage->sync_pending_ops == NULL;
 	ok = ok && storage->sync_pending_unlinks == NIL;
 	ok = ok && storage->sync_pending_ops_context == NULL;
