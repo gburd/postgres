@@ -2312,3 +2312,51 @@ STATE: regression 1 (reset-check) + 2a (_PG_init preload SIGSEGV) FIXED; the
 custom-GUC-per-backend pattern fix committed (69a67457711, correct but not the
 whole story); 2b now ROOT-CAUSED to ThreadedGUCMutex carrier-blocking.  0 build
 warnings.  Force-push HELD; benchmark NOT run.  Backup: xtc-pre-rebase-202607160519.
+
+### Regression 2b UPDATE (session 5): amutex fix landed -- deadlock GONE, residual SIGSEGV remains
+
+FIXED (committed a8d4a4440c0): the ThreadedGUCMutex deadlock, via a fiber-aware
+xtc_amutex (xtc_amutex_static slot 0) replacing the raw pthread_mutex_lock in
+guc.c ThreadedGUCLock/Unlock under USE_XTC_CARRIER.  Verified: 1 and 2 concurrent
+sessions doing LOAD + set_config('test_backend_runtime_threaded.custom_guc') loops
+now COMPLETE cleanly (were hanging).  Deadlock resolved.
+
+STILL OPEN: 001 STILL SIGSEGVs (signal=11, loop=2/local=2/gen=7, exit 29 after
+test 56) under its FULLER concurrency (the 4-worker GUC-stress loop, each worker a
+persistent psql doing 25x set_config on the custom GUC + built-in GUCs
+concurrently).  This is a SEPARATE crash from the deadlock the amutex fixed --
+the amutex serialization is correct, but something in the concurrent custom-GUC
+path still faults.  My ad-hoc /tmp harnesses gave unreliable logs (empty/cleaned);
+2-worker completes but the server appeared to die on the follow-up liveness check
+(inconclusive -- harness noise).
+
+NEXT SESSION (turnkey):
+  - Get a real backtrace of the residual SIGSEGV.  Best route: run 001 but make
+    the temp node keep cores -- the reliable way is to add
+    `$node->append_conf('postgresql.conf', ...)` is not enough (RLIMIT_CORE);
+    instead run postgres under a wrapper that does `ulimit -c unlimited` +
+    PG_XTC_ALLOW_CORE=1 and points core_pattern to an ABSOLUTE writable path, OR
+    reproduce with the /tmp/gv3.sh-style harness scaled to 4 workers WITH
+    per-worker `timeout` + copy the server log BEFORE teardown.  (Note libxtc's
+    fault guard suppresses cores unless PG_XTC_ALLOW_CORE=1; even then the
+    re-raise on a fiber stack may not dump -- if so, use elog markers around the
+    custom-GUC assign_hook / string-free and the per-backend
+    PgCurrentTestBackendRuntimeCustomGucRef path to bisect the faulting access.)
+  - SUSPECTS for the residual crash (concurrent custom-GUC, amutex now serializes
+    the critical section so it is NOT a lost-update race on the table): the
+    per-backend custom-GUC STRING free/realloc across fiber generations (the
+    value points into a per-session/GUC memory context that may be reset while
+    another fiber references it), or guc report/nondef/stack list state, or the
+    module's own custom-GUC storage lifetime vs the per-session extension-module
+    state reset.  Also re-check: does the amutex actually cover the custom-GUC
+    ASSIGN (string dup/free), or only registration/startup?  If assign runs
+    OUTSIDE the critical section, concurrent assigns to the same per-backend...
+    (no -- per-backend, so not shared) -- re-verify the crash is truly
+    concurrency-triggered vs. a custom-GUC-string-context-lifetime bug that a
+    single session's repeated set_config + session reset also hits.
+  - Then confirm 001 + 003 green, run gmake check + check-threaded, THEN
+    force-push origin/xtc and run the benchmark.
+
+STATE: regressions 1 + 2a FIXED; 2b deadlock FIXED (amutex); residual 2b SIGSEGV
+open.  0 build warnings; process regress 245/245.  Force-push HELD; benchmark NOT
+run.  Backup: xtc-pre-rebase-202607160519.
