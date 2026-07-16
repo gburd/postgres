@@ -4041,7 +4041,8 @@ ProcessInterrupts(void)
 		}
 	}
 
-	if (pg_atomic_read_u32(&MyProc->pendingRecoveryConflicts) != 0)
+	if (MyProc != NULL &&
+		pg_atomic_read_u32(&MyProc->pendingRecoveryConflicts) != 0)
 		ProcessRecoveryConflictInterrupts();
 
 	if (IdleInTransactionSessionTimeoutPending)
