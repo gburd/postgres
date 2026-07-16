@@ -921,3 +921,36 @@ harness fix is to poll HammerDB's jobs result store (jobs command / SQLite jobs
 DB) for the completed run's NOPM instead of relying on runtimer+vudestroy
 timing; then a single re-run captures both lanes.  Neither the DB nor pg_stat
 nor carriers block it.  All EC2 resources torn down.
+
+## Threaded NOPM CAPTURED locally; EC2 failure is NOT OS/libpq (2026-07-16)
+
+Ran full HammerDB TPROC-C timed runs LOCALLY (dev-host, HammerDB inside nix
+develop) against process and threaded servers -- the threaded number captures
+cleanly:
+  process   VU=8, 10wh:  89,947 NOPM / 207k TPM
+  threaded  VU=8, 10wh: 144,292 NOPM / 331k TPM   (threaded ~1.6x)
+  threaded  VU=8, 4wh (PG16 libpq): 168,788 NOPM / 386k TPM, all VUs SUCCESS
+All completed with "TEST RESULT: System achieved ... NOPM", FINISHED SUCCESS, no
+errors.  So the threaded runtime runs HammerDB TPROC-C end-to-end and the harness
+captures NOPM/TPM fine at this scale.
+
+RULED OUT as the EC2 failure cause (tested locally):
+  - libpq version mismatch: HammerDB with STOCK PG16 libpq (exactly the EC2
+    LOADGEN's dnf libpq 5.18) -> our PG20 THREADED server COMPLETED fine
+    (168,788 NOPM).  NOT the cause.
+  - OS / glibc / HammerDB binary environment: works.  => Switching EC2 to
+    Debian/NixOS would NOT fix it.
+
+ALSO LEARNED: HammerDB 6.0 prints "runtimer command has been deprecated and is
+not required for v6.0" -- the timed driver auto-completes; vurun blocks until the
+monitor finishes.  My harness's explicit runtimer+vudestroy is the deprecated
+pattern and vudestroy can truncate the monitor.  The harness should DROP
+runtimer/vudestroy and let vurun/the timed driver complete, then read the result.
+
+REMAINING untested difference (the likely real EC2 cause): the monitor VU's
+LONG-LIVED, MOSTLY-IDLE connection over a REAL cross-host network for a 5-min run
+(it queries once at start, once at end).  On a pooled/threaded server a monitor
+connection idle for ~5 min may hit the pooled hibernate/idle path in a way
+loopback + short local runs do not expose, and a mid-run drop kills the monitor
+exactly at the observed "minute 4 of 5" point (mid-run, not at connect).  This is
+the one threaded-specific, network+duration-dependent hypothesis left to test.
