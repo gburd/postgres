@@ -2267,3 +2267,48 @@ STATE: 2 of 3 rebase regressions FIXED (regress reset-check; _PG_init preload
 SIGSEGV) + 0 build warnings + stale-test fixes, all committed.  2b open, sharply
 narrowed (not stack, not simple reuse).  Force-push HELD; benchmark NOT run
 (won't benchmark with a live threaded crash).  Backup: xtc-pre-rebase-202607160519.
+
+### Regression 2b ROOT-CAUSED (2026-07-16 session 4): ThreadedGUCMutex deadlocks the carrier
+
+BREAKTHROUGH.  Reduced 2b to a MINIMAL repro (no bgworker): under multithreaded=on
+(thread-per-session, carriers=0, but the runtime still uses the N-loop executor),
+several CONCURRENT sessions each doing `LOAD 'test_backend_runtime_threaded'` +
+a tight `set_config('...custom_guc', ...)` loop -> the server HANGS (earlier runs
+reported "crash"; the careful liveness check shows the postmaster hangs, wait
+never returns, exit=124).  The kernel segfaults seen earlier were the OLD
+_PG_init/LWLockNewTrancheId crash + a stale-.so artifact; the TRUE 2b symptom is a
+HANG/DEADLOCK, not a segfault.
+
+ROOT CAUSE: guc.c ThreadedGUCLock() does pthread_mutex_lock(&ThreadedGUCMutex) --
+a PROCESS-GLOBAL raw pthread mutex (guc.c:107) -- around GUC startup/SET/RESET.
+This is the SAME bug class as Phase 17's sem_wait: a raw pthread_mutex_lock BLOCKS
+THE CARRIER OS THREAD, not the fiber.  If a fiber takes ThreadedGUCMutex and then
+YIELDS the carrier at any point while holding it (a memory alloc that parks, an
+internal wait, or simply the scheduler switching fibers on that loop), another
+fiber scheduled on the SAME carrier thread that also calls ThreadedGUCLock ->
+pthread_mutex_lock blocks the whole OS thread -> the holder can never be
+rescheduled on it -> deadlock.  HOLD_INTERRUPTS() only defers PG interrupt yields,
+not fiber scheduler yields.  Concurrent custom-GUC set across fibers hits this
+reliably (custom-GUC assign does guc_malloc/guc_strdup + hash work under the lock).
+
+FIX DIRECTION (next session -- the real 2b fix):
+  - The GUC critical section must be a FIBER-AWARE lock, not a raw
+    pthread_mutex_lock that blocks the carrier.  Options: (a) make ThreadedGUCLock
+    use a libxtc fiber-aware mutex (xtc_amutex / xtc_sem) so a waiter YIELDS the
+    carrier instead of blocking it (mirrors the Phase 17 direction); (b) guarantee
+    NO yield happens while the mutex is held (audit the SET/RESET/startup path
+    under the lock for any alloc/wait that can park; if none, the only remaining
+    risk is the scheduler preempting the fiber mid-hold -- so the lock must be
+    non-preemptible or fiber-aware anyway); (c) make GUC state fully per-backend
+    so no cross-fiber mutex is needed for SET/RESET (the table already is
+    per-backend via PgCurrentGUCVariablesRef -- audit WHY a process-global mutex
+    is still taken; if it only guards the shared custom-GUC-registration/prefix
+    reservation, narrow it to just that and drop it from the hot SET/RESET path).
+  - Prefer (a) or (c).  A/B + check-threaded after.  This is a CORE threaded-
+    runtime bug (any concurrent custom-GUC or GUC-heavy threaded workload hits
+    it), higher priority than a test artifact.
+
+STATE: regression 1 (reset-check) + 2a (_PG_init preload SIGSEGV) FIXED; the
+custom-GUC-per-backend pattern fix committed (69a67457711, correct but not the
+whole story); 2b now ROOT-CAUSED to ThreadedGUCMutex carrier-blocking.  0 build
+warnings.  Force-push HELD; benchmark NOT run.  Backup: xtc-pre-rebase-202607160519.
