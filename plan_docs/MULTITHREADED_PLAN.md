@@ -2147,3 +2147,35 @@ FIXED this rebase (correct, committed): 18->0 build warnings; 001's stale
 io-worker expectation (now asserts ZERO io workers, matching c093c214cf4).
 Backup: xtc-pre-rebase-202607160519.  DO NOT force-push origin/xtc until both
 regressions are fixed and check + check-threaded are green.
+
+### Rebase 2026-07-16 UPDATE: 2 of 3 regressions fixed; #2b (bgworker-launch SIGSEGV) open
+
+Fixed + committed (a03379cda28, d9c7b27447c): all 18 build warnings (0/0 now);
+regress reset-check (num_external_fds is preserved-by-design, test corrected);
+the _PG_init LWLockNewTrancheId preload SIGSEGV (upstream made it shmem/spinlock-
+based -> can't call pre-shmem; deferred to lazy first-use); stale 001 io-worker
+and process-only-rejection-regex expectations.  Process regress 245/245;
+test_backend_runtime 12/14; build warning-clean.
+
+STILL OPEN -- regression 2b: 001_threaded_runtime SIGSEGVs at line 628
+(test_backend_runtime_launch_thread_bgworker) but ONLY after the full ~627-line
+preamble; NOT reproducible in isolation (a fresh threaded server launches the
+thread bgworker and returns a pid cleanly, even after running CV/lwlock/parallel
+tests manually).  So it is STATE/ORDERING-dependent.  Could not get a core (the
+meson-test env + carrier crash handler suppress core dumps).  003_milestone also
+ERRORs (likely same root cause -- it's a smoke over the same paths).
+
+NEXT SESSION (turnkey): capture the crash core.  Options: (a) run 001 via
+`meson test` but wrap postgres so PG_XTC_ALLOW_CORE=1 + ulimit -c unlimited +
+kernel.core_pattern survive into the temp-instance backend (the meson testwrap
+resets them -- set them in the node's postgresql.conf / a PG_TEST_INITDB or via
+a postmaster wrapper script referenced by the node), or (b) bisect 001: binary-
+search which preamble test, when run before the launch, triggers the crash (add
+an early `done_testing` / splice the .pl), then reproduce just that pair in the
+core-capturing harness (/tmp/bgw2.sh pattern).  Prime suspects for the state:
+WaitEventExtensionNew/WaitEventCustomNew (shmem+LWLock, called at threaded.c:589/
+621/668 across fibers -- custom-wait-event shmem array exhaustion/corruption
+across carriers?), or the parallel-query (debug_parallel_query=on) test at
+001:~650 leaving parallel/DSM state that the subsequent bgworker fiber launch
+dereferences.  Backtrace will name it.  DO NOT force-push origin/xtc until 001+
+003 are green and check+check-threaded pass.  Backup: xtc-pre-rebase-202607160519.
