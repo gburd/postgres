@@ -2633,3 +2633,52 @@ TOP NEXT STEPS for next session (in priority order):
 Do NOT re-chase: custom-GUC (clean), apply-launcher-as-sole-cause (falsified),
 migration (libxtc pins procs), single-vs-multi-carrier (was stray-server
 contamination), the MyProcPid==0 pooled-park fibers (benign).
+
+### Regression 2b -- session 9 RESOLVED (residual crash fixed) + test 75 is a separate cross-fiber-wake bug
+
+ROOT CAUSE FOUND + FIXED (commit 2d96b2ccb60).  Got a real CORE by temporarily
+gating xtc_fault_guard_install() behind PG_XTC_NO_FAULT_GUARD (env) so the
+SIGSEGV dumped instead of being re-raised on the alt stack.  Backtrace:
+  ProcessInterrupts() postgres.c:4044  pg_atomic_read_u32(&MyProc->pendingRecoveryConflicts), ptr=0x1a8
+  <- errfinish (elog.c:627 CHECK_FOR_INTERRUPTS)
+  <- backend_thread_run_worker launch_backend.c:1805 (the DEBUG1 ereport)
+MyProc==NULL (0x1a8 = pendingRecoveryConflicts offset from NULL).  A threaded
+worker/backend fiber reaches an interrupt check via an early ereport's
+errfinish->CHECK_FOR_INTERRUPTS BEFORE InitProcess() installs MyProc, when a
+cross-fiber interrupt is delivered in that window.  A forked process never
+processes interrupts that early (signals blocked until setup), so upstream
+ProcessInterrupts freely derefs MyProc.  FIX: guard the sole MyProc deref in
+ProcessInterrupts (the recovery-conflict check) with MyProc != NULL.  Process
+mode byte-for-byte unaffected (MyProc always set there).  Verified: the ONLY
+MyProc-> deref in all of ProcessInterrupts is that one line.
+
+IMPACT: 001 goes from dying (SIGSEGV) after test 56 -> runs 127/128 subtests.
+Process regress suite green with the fix.
+
+REMAINING: test 75 "mixed teardown stress accepted terminate requests" fails
+(1/128), NO crash -- a SEPARATE, newly-reachable bug (001 never reached test 75
+before because it crashed at 56).  pg_terminate_backend(pid, 5000) on 4 idle
+pooled `background_psql` sessions: one specific target (deterministically the
+2nd, e.g. PID 89) "did not terminate within 5000 milliseconds".  Instrumented
+SendInterrupt/PgBackendWakeForInterrupt: for ALL 4 targets the PROC_DIE bit is
+set fresh (old_mask=0x0, already_set=0), interrupt_latch is a valid non-NULL
+shmem addr, and SetLatch(interrupt_latch) IS called -- yet one idle-parked fiber
+does not wake within 5s.  => a CROSS-FIBER SetLatch wake MISS for an idle pooled
+session parked in the read-command wait (Phase 17 latch/wake domain): SetLatch
+on the target's interrupt_latch does not reliably xtc_proc_wake the specific
+parked fiber (likely the latch's owner_fiber_{loop,local,gen} registration is
+stale/unset for a between-commands parked session, or the wake targets the wrong
+loop after the session's last carrier).
+
+NEXT (test 75): audit the read-command park (PG_READ_COMMAND_PROTOCOL_PARK) +
+SetLatch cross-fiber wake path -- ensure a parked idle session registers itself
+as its interrupt_latch's owner_fiber before yielding (mirroring the
+WaitEventSetWaitBlock xtc-branch owner_fiber capture at waiteventset.c:1381) so a
+cross-fiber SetLatch xtc_proc_wakes the right parked fiber.  Compare against the
+Phase 17 sem_wake_fd/ProcWaitOnSemaphore fiber-park pattern.  Two-reviewer gate
+before landing both the crash fix and the test-75 fix.
+
+STATE: reg 1+2a fixed; 2b GUC deadlock fixed (amutex a8d4a4440c0); 2b residual
+crash FIXED (2d96b2ccb60); test 75 cross-fiber-wake OPEN.  0 warnings; process
+regress green.  Force-push HELD until 001 fully green.  Backup:
+xtc-pre-rebase-202607160519.
