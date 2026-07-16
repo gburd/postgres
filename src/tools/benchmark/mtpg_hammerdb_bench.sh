@@ -174,13 +174,13 @@ diset tpcc pg_storedprocs true
 diset tpcc pg_driver timed
 diset tpcc pg_rampup $RAMPUP
 diset tpcc pg_duration $DURATION
-diset tpcc pg_timeprofile true
+diset tpcc pg_timeprofile false
 vuset logtotemp 1
 loadscript
 vuset vu $vu
 vucreate
 vurun
-runtimer [expr {($RAMPUP + $DURATION) * 60 + 120}]
+runtimer [expr {($RAMPUP + $DURATION) * 60 + 300}]
 vudestroy
 quit
 TCL
