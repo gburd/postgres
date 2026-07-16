@@ -291,6 +291,21 @@ typedef struct PGPROC
 	uint32		sem_fiber_loop;
 	uint32		sem_fiber_local;
 	uint32		sem_fiber_gen;
+
+	/*
+	 * Fiber-aware interrupt/latch wake eventfd (Phase 17, test-75 fix).  The
+	 * pooled read-command park blocks a backend fiber on its FeBe wait set's
+	 * epoll fd.  A cross-fiber SetLatch (e.g. pg_terminate_backend of an idle
+	 * pooled session) wakes it via owner_fiber + xtc_proc_wake, which is
+	 * edge-triggered and generation-sensitive: if the fiber re-parked with a
+	 * new generation between wake cycles, the wake can be dropped and the
+	 * backend only notices on its park timeout (seconds later).  This per-PGPROC
+	 * eventfd is added to the FeBe wait set at park time and WRITTEN by
+	 * SetLatch on a fiber-backed backend, giving a LEVEL-TRIGGERED,
+	 * generation-immune secondary wake that mirrors sem_wake_fd for semaphores.
+	 * Created eagerly at InitProcGlobal; -1 if none.
+	 */
+	int			interrupt_wake_fd;
 #endif
 
 	int			delayChkptFlags;	/* for DELAY_CHKPT_* flags */

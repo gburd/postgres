@@ -695,6 +695,23 @@ SocketBackendStickyIdleWait(PgSession *session, PgProtocolByteProbe *probe)
 			ereport(FATAL,
 					(errcode(ERRCODE_ADMIN_SHUTDOWN),
 					 errmsg("terminating connection due to unexpected postmaster exit")));
+#ifdef USE_XTC_CARRIER
+		/*
+		 * Drain the interrupt-wake eventfd (shared FeBe set position 3) if it
+		 * fired: a cross-fiber interrupt arriving during this sticky idle wait.
+		 * PgSessionServiceProtocolReadWake below processes the interrupt from
+		 * the pending_mask mailbox; draining prevents a re-fire spin.
+		 */
+		if (events[i].pos == FeBeWaitSetInterruptWakeFdPos &&
+			MyProc != NULL && MyProc->interrupt_wake_fd >= 0)
+		{
+			uint64		drain;
+
+			while (read(MyProc->interrupt_wake_fd, &drain,
+						sizeof(drain)) == sizeof(drain))
+				;
+		}
+#endif
 	}
 
 	PgSessionServiceProtocolReadWake(session);
@@ -5845,6 +5862,19 @@ PgBackendPollProtocolReadPark(PgBackend *backend, uint32 *wake_events)
 			rc = WaitEventSetWait(wait_set, 0, events, lengthof(events), 0);
 			for (int i = 0; i < rc; i++)
 			{
+#ifdef USE_XTC_CARRIER
+				if (events[i].pos == FeBeWaitSetInterruptWakeFdPos)
+				{
+					uint64		drain;
+
+					while (backend->my_proc != NULL && backend->my_proc->interrupt_wake_fd >= 0 &&
+						   read(backend->my_proc->interrupt_wake_fd, &drain,
+								sizeof(drain)) == sizeof(drain))
+						;
+					observed_events |= WL_LATCH_SET;
+					break;
+				}
+#endif
 				observed_events |= events[i].events;
 				if (events[i].events & (park_spec->transport_wait_events |
 										WL_SOCKET_CLOSED |
@@ -6300,6 +6330,30 @@ PgSessionStagingWaitProtocolRead(PgBackend *backend,
 					park_spec->transport_wait_events | WL_SOCKET_CLOSED,
 					NULL);
 
+#ifdef USE_XTC_CARRIER
+	/*
+	 * Add this backend's interrupt-wake eventfd to the FeBe wait set (test-75
+	 * fix), once.  It cannot be added at pq_init: that runs before InitProcess,
+	 * so MyProc (and the eventfd) does not exist yet.  Here MyProc is valid and
+	 * the connection's FeBe set persists across the pooled session's parks, so
+	 * add it lazily on the first park.  A cross-fiber SetLatch writes this fd
+	 * (PgBackendWakeForInterrupt), giving a level-triggered, generation-immune
+	 * wake for the park -- immune to the owner_fiber staleness that can drop
+	 * SetLatch's xtc_proc_wake.  The set was created with room for it
+	 * (FeBeWaitSetNEvents == 4 under USE_XTC_CARRIER).
+	 */
+	if (backend->my_proc != NULL && backend->my_proc->interrupt_wake_fd >= 0 &&
+		backend->my_proc->sem_fiber_backed &&
+		GetNumRegisteredWaitEvents(wait_set) <= FeBeWaitSetInterruptWakeFdPos)
+	{
+		int			iw_pos PG_USED_FOR_ASSERTS_ONLY;
+
+		iw_pos = AddWaitEventToSet(wait_set, WL_SOCKET_READABLE,
+								   backend->my_proc->interrupt_wake_fd, NULL, NULL);
+		Assert(iw_pos == FeBeWaitSetInterruptWakeFdPos);
+	}
+#endif
+
 	*(volatile uint32 *) wait_event_info_ptr = park_spec->wait_event_info;
 	PG_TRY();
 	{
@@ -6345,6 +6399,27 @@ PgSessionStagingWaitProtocolRead(PgBackend *backend,
 			}
 			for (int i = 0; i < rc; i++)
 			{
+#ifdef USE_XTC_CARRIER
+				/*
+				 * The interrupt-wake eventfd (test-75 fix) firing is a
+				 * cross-fiber interrupt (e.g. pg_terminate_backend): drain it
+				 * (level-triggered) and surface it as a latch-set wake so the
+				 * resume path processes the pending interrupt.  Distinguished
+				 * by position, since it shares WL_SOCKET_READABLE with the
+				 * client socket at position 0.
+				 */
+				if (events[i].pos == FeBeWaitSetInterruptWakeFdPos)
+				{
+					uint64		drain;
+
+					while (backend->my_proc != NULL && backend->my_proc->interrupt_wake_fd >= 0 &&
+						   read(backend->my_proc->interrupt_wake_fd, &drain,
+								sizeof(drain)) == sizeof(drain))
+						;		/* EAGAIN when drained (EFD_NONBLOCK) */
+					wake_events |= WL_LATCH_SET;
+					break;
+				}
+#endif
 				wake_events |= events[i].events;
 				if (events[i].events & (park_spec->transport_wait_events |
 										WL_SOCKET_CLOSED |
