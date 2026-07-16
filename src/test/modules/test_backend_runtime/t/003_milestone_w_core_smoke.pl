@@ -11,7 +11,7 @@ use Time::HiRes qw(usleep);
 
 my $node = PostgreSQL::Test::Cluster->new('threaded_milestone_w');
 my $top_reclaim_re =
-  qr/thread-backed child \d+ reclaimed [1-9]\d* bytes from TopMemoryContext at exit/;
+  qr/(?:thread-backed child|pooled logical backend) \d+ reclaimed [1-9]\d* bytes from TopMemoryContext at exit/;
 
 sub start_psql_script
 {
@@ -230,7 +230,7 @@ my ($load_ret, $load_stdout, $load_stderr) =
 	on_error_stop => 1);
 isnt($load_ret, 0,
 	'Milestone W smoke rejects process-only module in threaded runtime');
-like($load_stderr, qr/backend model mismatch/,
+like($load_stderr, qr/is not supported in the threaded backend runtime/,
 	'Milestone W smoke reports process-only module mismatch');
 is($node->safe_psql('postgres', 'SELECT 42;'), '42',
 	'Milestone W smoke remains usable after module rejection');
