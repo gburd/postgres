@@ -2179,3 +2179,45 @@ across carriers?), or the parallel-query (debug_parallel_query=on) test at
 001:~650 leaving parallel/DSM state that the subsequent bgworker fiber launch
 dereferences.  Backtrace will name it.  DO NOT force-push origin/xtc until 001+
 003 are green and check+check-threaded pass.  Backup: xtc-pre-rebase-202607160519.
+
+### Regression 2b -- SHARPENED diagnosis (2026-07-16, session 2)
+
+Could NOT capture a core: the carrier fault path (libxtc fault guard) restores
+SIG_DFL and re-raises, but no core lands even with PG_XTC_ALLOW_CORE=1 + ulimit
+-c unlimited + kernel.core_pattern=/tmp/... (the re-raise on a fiber/alt stack
+does not dump; the meson/TAP node also tears its data dir down on END).  So I
+diagnosed by elog(LOG) markers instead.
+
+KEY NEW FINDINGS (narrows it a lot):
+- The SIGSEGV is in the CLIENT BACKEND FIBER that runs
+  test_backend_runtime_launch_thread_bgworker (pid loop=2,local=2,GEN=7), NOT in
+  the bgworker main.  Confirmed: a marker at the very FIRST line of the launch
+  function ("XTCDIAG launch: function entered") did NOT print before the crash
+  (in the full-001 run), while the bgworker-main markers never print either ->
+  crash is at/just-before the launch function prologue.
+- In ISOLATION the launch + bgworker-main run cleanly every time (marker sequence
+  complete, returns a pid), even after manually running CV/lwlock tests and the
+  reject-process-bgworker -> launch pair.  So it is STATE/ORDERING-dependent on
+  001's FULL ~627-line preamble (plpgsql/plsample/plperl + custom-GUC LOAD stress
+  + a 4-worker GUC-stress loop + parallel-query w/ debug_parallel_query=on).
+- gen=7 = a heavily-REUSED fiber slot on loop 2.  Combined with "crashes at the
+  launch prologue only after heavy prior load", the leading hypotheses are now:
+  (a) per-fiber/per-backend runtime state not fully reset across fiber-slot
+      REUSE (gen bump) -- the launch prologue touches PgCurrentBackendSignalPid()
+      and other per-backend accessors; a stale/unmapped bucket for a reused slot
+      would SIGSEGV before the function body; or
+  (b) FIBER STACK exhaustion/overflow -- plperl + parallel-query recurse deeply;
+      if a prior deep operation on this reused fiber left the 8MB stack near its
+      guard, the next call faults.  (Note: gen=7 reuse + deep prior frames.)
+  DISTINGUISH: (a) instrument PgRuntime per-backend bucket validity at launch
+  entry for a reused (gen>1) fiber; (b) bump XTC_PG_FIBER_STACK and see if the
+  crash moves/vanishes, or add a stack-depth log at launch entry.
+
+TURNKEY REPRO (fast, no meson): the crash needs the full preamble, so BISECT --
+copy 001.pl, insert `done_testing(); exit;` after progressively-earlier preamble
+blocks (parallel-query block ~650; the 4-worker GUC loop; the LOAD-stress ~500s;
+plperl), rebuild nothing (it's the .pl), run via the direct-perl harness used
+this session, and find the minimal preamble prefix that still crashes the launch.
+Then reproduce that prefix + launch in /tmp/bgw4.sh (which captures state on a
+core-friendly direct-start server) to get the backtrace.  Build is warning-clean;
+regress 245/245; 12/14 test_backend_runtime; force-push HELD until 001+003 green.
