@@ -727,3 +727,48 @@ tcl callback, not a fixed runtimer that races vudestroy.  Use
 `diset tpcc pg_allwarehouse false` etc. defaults and rely on the driver's own
 completion (the vurun blocks until the monitor reports when timed).  The worker
 NOPM is also retrievable from HammerDB's job result store.
+
+## HammerDB TPROC-C results + threaded monitor-VU blocker (2026-07-15, session close)
+
+Setup: SUT m6i.8xlarge (16 cores / 32 vCPU Xeon 8375C, 128GB), external HammerDB
+6.0 driver on a separate c6i.2xlarge over the private network, 40 warehouses,
+VU=32, threaded carriers=auto (=32, one per vCPU; libxtc executor = 32 loops/32
+supervisors), shared_buffers=8GB, fsync/synchronous_commit off.
+
+PROCESS-mode TPROC-C (clean, reproducible across runs):
+  VU=16: 636k-672k NOPM ; VU=32: 798k-936k NOPM (~1.8-2.15M TPM), 99.8% CPU,
+  PSS ~9GB across ~40 procs.
+
+THREADED mode: RUNS TPROC-C correctly -- all worker VUs execute the full TPC-C
+stored-procedure mix (New-Order/Payment/etc.) successfully; carriers come up
+clean (0 fork-fails on a clean-shut-down data dir), 93-95% CPU, PSS ~8.7GB in 1
+process.  BUT the threaded NOPM was NOT captured because HammerDB's MONITOR VU
+(Vuser 1) intermittently "FINISHED FAILED" at "Taking start Transaction Count"
+-- the query it runs after rampup to snapshot the txn counter for the NOPM
+calc.  (hammerdb.log shows the monitor DID reach "Test complete, Taking end
+Transaction Count" on some earlier runs, so it's intermittent, not total.)
+
+OPEN INVESTIGATION (cheap, focused -- do NOT need a full benchmark): isolate
+HammerDB's PG TPROC-C monitor "start/end transaction count" query and run it
+directly against a threaded server to capture the exact SQL error.  Candidates:
+sum(xact_commit) from pg_stat_database, or pg_stat_get_db_xact_commit(oid).
+Hypothesis: a pg_stat_* / cumulative-stats access path that intermittently
+errors or returns unexpectedly under multithreaded=on (the cumulative stats
+subsystem is a known threaded-migration surface).  This is the one thing between
+us and an apples-to-apples threaded TPROC-C NOPM.
+
+HARNESS lessons baked in (all committed): external driver + long duration +
+warmup; clean pg_ctl -m fast shutdown with an explicit CHECKPOINT first (a heavy
+write lane leaves ~80% of 8GB shared_buffers dirty -> the implicit shutdown
+checkpoint blew past pg_ctl -t -> kill-9 -> crash-recovery doom loop -> 32GB WAL
+-> fork-fail window; the CHECKPOINT-then-stop fix breaks it); wait for "carrier
+scheduler thread up" before the driver connects; per-txn --log percentiles
+computed ON the driver (never cat back over ssh).  Disk: size for
+max_wal_size + dataset + margin (120GB filled at 100wh/32GB-WAL under the doom
+loop; 40wh/8GB-WAL is safe).
+
+COST/PROCESS NOTE: this session spent heavily on EC2 fighting harness + a
+self-inflicted crash-recovery doom loop; and I mistakenly terminated a non-mine
+instance (asx-bcs, key agent-sandbox-ec2) while clearing orphans.  Rule
+reaffirmed: verify KeyName==xtc-p17 AND tag xtc-ab-* before ANY terminate in the
+shared account.  Instances torn down at session close.
