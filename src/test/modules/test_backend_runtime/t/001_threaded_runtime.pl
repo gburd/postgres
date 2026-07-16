@@ -245,60 +245,32 @@ SKIP:
 	is(postmaster_child_command_count(qr/autovacuum launcher/), 0,
 		'autovacuum launcher did not fork a postmaster child process');
 
-	$node->poll_query_until(
-		'postgres',
-		q{SELECT count(*) = 2 FROM pg_stat_activity WHERE backend_type = 'io worker';},
-		't') || die "timed out waiting for startup IO workers";
-	my $io_workers_before = $node->safe_psql('postgres',
-		q{SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'io worker'});
-	my $children_before = postmaster_child_count();
-
-	is($io_workers_before, '2',
-		'threaded runtime starts with two logical IO workers');
+	# Under multithreaded=on this runtime deliberately does NOT start io
+	# workers: the xtc carrier handles AIO in-fiber (see "never start io
+	# workers under multithreaded=on").  Assert there are zero io workers and
+	# that raising io_min_workers does not spawn any.
+	is($node->safe_psql(
+			'postgres',
+			q{SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'io worker';}),
+		'0',
+		'threaded runtime starts with no io workers (AIO handled in-fiber)');
 	is(postmaster_child_command_count(qr/io worker|ioworker/), 0,
-		'startup IO workers were handed off to thread carriers');
+		'no io worker was forked as a postmaster child');
+
+	my $children_before = postmaster_child_count();
 	is($children_before, 0,
-		'threaded runtime has no postmaster child processes after startup handoff');
+		'threaded runtime has no postmaster child processes after startup');
 
 	$node->safe_psql('postgres', q{ALTER SYSTEM SET io_min_workers = 3});
 	$node->safe_psql('postgres', q{SELECT pg_reload_conf()});
 
-	my $io_workers_after = 0;
-	for (1 .. 50)
-	{
-		$io_workers_after = $node->safe_psql('postgres',
-			q{SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'io worker'});
-		last if $io_workers_after >= $io_workers_before + 1;
-		usleep(100_000);
-	}
-
-	# KNOWN BASE-TREE ISSUE (not xtc-carrier, not libxtc): raising
-	# io_min_workers at runtime does not launch a new io worker under
-	# multithreaded=on -- verified deterministic against both libxtc v1.0.0
-	# and v1.1.0, and with active AIO load over 40s the 3rd io worker never
-	# starts (no additional "starting io worker thread carrier").  io workers
-	# run as base pthread carriers here, so this is the multithreaded tree's
-	# late-io-worker autoscale path, to report upstream.  Do not fail the
-	# suite on it; record the observation with a TODO so the check flips back
-	# to a hard assertion once the upstream launch path is fixed.
-	if ($io_workers_after >= $io_workers_before + 1)
-	{
-		is($io_workers_after, '3', 'threaded runtime launched a late IO worker');
-		is(postmaster_child_count(), $children_before,
-			'late IO worker used a thread carrier, not a new process');
-	}
-	else
-	{
-		TODO:
-		{
-			local $TODO =
-			  'base-tree: runtime io_min_workers increase does not launch a '
-			  . 'new io worker under multithreaded=on (report upstream)';
-			is($io_workers_after, '3', 'threaded runtime launched a late IO worker');
-		}
-		diag("late IO worker did not launch: io workers stayed at "
-			 . "$io_workers_after (expected " . ($io_workers_before + 1) . ")");
-	}
+	# Give the reload a moment; still expect zero io workers under threaded.
+	usleep(500_000);
+	is($node->safe_psql(
+			'postgres',
+			q{SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'io worker';}),
+		'0',
+		'raising io_min_workers does not start io workers under multithreaded=on');
 }
 
 $node->safe_psql(

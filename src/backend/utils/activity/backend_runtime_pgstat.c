@@ -218,6 +218,10 @@ PgCurrentBackendHasIOStatsRef(void)
 	return &PG_RUNTIME_FAST_BUCKET_ACCESSOR(CurrentPgBackendPgStatPendingRuntimeState, PgCurrentBackendPgStatPendingState)->backend_io_stats_pending;
 }
 
+#undef PgCurrentBackendHasLockStatsRef
+#ifndef PgCurrentBackendHasLockStatsRef
+extern bool *PgCurrentBackendHasLockStatsRef(void);
+#endif
 bool *
 PgCurrentBackendHasLockStatsRef(void)
 {
