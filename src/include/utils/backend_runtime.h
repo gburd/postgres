@@ -1912,6 +1912,8 @@ typedef struct PgSessionExtensionModuleState
 	void	   *pltcl_current_call_state;
 	bool		pltcl_reset_registered;
 	MemoryContext plsample_memory_context;
+	char	   *test_backend_runtime_custom_guc;
+	int			test_backend_runtime_custom_guc_init_counter;
 	List	   *private_states;
 	List	   *reset_callbacks;
 } PgSessionExtensionModuleState;
@@ -3258,6 +3260,8 @@ extern void **PgCurrentPLperlActiveInterpRef(void);
 extern void **PgCurrentPLperlHeldInterpRef(void);
 extern bool *PgCurrentPLperlUseStrictRef(void);
 extern char **PgCurrentPLperlOnInitRef(void);
+extern char **PgCurrentTestBackendRuntimeCustomGucRef(void);
+extern int *PgCurrentTestBackendRuntimeCustomGucInitCounterRef(void);
 extern char **PgCurrentPLperlOnPLperlInitRef(void);
 extern char **PgCurrentPLperlOnPLperluInitRef(void);
 extern bool *PgCurrentPLperlEndingRef(void);

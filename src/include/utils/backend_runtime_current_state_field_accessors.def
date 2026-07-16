@@ -148,6 +148,10 @@
 	(&PgCurrentSessionExtensionModuleState()->plperl_use_strict)
 #define PgCurrentPLperlOnInitRef() \
 	(&PgCurrentSessionExtensionModuleState()->plperl_on_init)
+#define PgCurrentTestBackendRuntimeCustomGucRef() \
+	(&PgCurrentSessionExtensionModuleState()->test_backend_runtime_custom_guc)
+#define PgCurrentTestBackendRuntimeCustomGucInitCounterRef() \
+	(&PgCurrentSessionExtensionModuleState()->test_backend_runtime_custom_guc_init_counter)
 #define PgCurrentPLperlOnPLperlInitRef() \
 	(&PgCurrentSessionExtensionModuleState()->plperl_on_plperl_init)
 #define PgCurrentPLperlOnPLperluInitRef() \

@@ -122,6 +122,8 @@ extern bool * PgCurrentPLperlInitedRef(void);
 extern void ** PgCurrentPLperlInterpHashRef(void);
 extern MemoryContext * PgCurrentPLperlMemoryContextRef(void);
 extern char ** PgCurrentPLperlOnInitRef(void);
+extern char ** PgCurrentTestBackendRuntimeCustomGucRef(void);
+extern int * PgCurrentTestBackendRuntimeCustomGucInitCounterRef(void);
 extern char ** PgCurrentPLperlOnPLperlInitRef(void);
 extern char ** PgCurrentPLperlOnPLperluInitRef(void);
 extern void ** PgCurrentPLperlProcHashRef(void);
