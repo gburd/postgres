@@ -1027,6 +1027,7 @@ typedef struct TestWaitCompletionPolicyContext
 } TestWaitCompletionPolicyContext;
 
 static int
+pg_attribute_unused()
 test_wait_completion_callback(void *callback_arg)
 {
 	TestWaitCompletionContext *context;
@@ -1071,6 +1072,7 @@ test_wait_completion_callback(void *callback_arg)
 }
 
 static int
+pg_attribute_unused()
 test_wait_completion_policy_callback(void *callback_arg)
 {
 	TestWaitCompletionPolicyContext *context;

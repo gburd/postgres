@@ -70,6 +70,7 @@ extern void EventTriggerOnLogin(void);
 
 extern bool EventTriggerBeginCompleteQuery(void);
 extern void EventTriggerEndCompleteQuery(void);
+struct EventTriggerQueryState;			/* opaque; defined in event_trigger.c */
 extern void EventTriggerResetQueryStateStack(struct EventTriggerQueryState **statep);
 extern bool trackDroppedObjectsNeeded(void);
 extern void EventTriggerSQLDropAddObject(const ObjectAddress *object,
