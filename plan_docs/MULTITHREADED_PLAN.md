@@ -2360,3 +2360,45 @@ NEXT SESSION (turnkey):
 STATE: regressions 1 + 2a FIXED; 2b deadlock FIXED (amutex); residual 2b SIGSEGV
 open.  0 build warnings; process regress 245/245.  Force-push HELD; benchmark NOT
 run.  Backup: xtc-pre-rebase-202607160519.
+
+### Regression 2b residual SIGSEGV -- further narrowed (session 6)
+
+Did NOT force-push (001/003 still SIGSEGV; will not ship/benchmark a crashing
+branch even with permission -- the gate is test-world green).
+
+Narrowed the residual concurrent-custom-GUC crash:
+- FALSIFIED single-session/context-lifetime: 30 SEQUENTIAL sessions each doing
+  LOAD + set_config('...custom_guc') = NO crash, server alive.  So it is
+  genuinely CONCURRENCY-triggered, not a per-session reset/context-lifetime bug.
+- CONFIRMED the custom-GUC assign IS serialized by the (now fiber-aware) amutex:
+  set_config_with_handle takes ThreadedGUCLock unless
+  GUCSetOptionNeedsThreadedLock()==false, and that returns TRUE for
+  custom/extension records (GUCRecordIsCurrentSessionBuiltin is false for a
+  custom GUC -> the "skip lock" && chain is false -> needs lock).  So concurrent
+  custom-GUC set_config DOES hold the amutex.
+
+So the residual crash is NOT an unserialized-assign race and NOT single-session.
+It is concurrency-triggered but the assign critical section is serialized ->
+the fault is likely in state touched OUTSIDE the critical section but still
+shared/aliased across fibers, e.g.:
+  - the custom-GUC STRING value: allocated in a per-session GUC memory context,
+    pointer stored in PgCurrentSessionExtensionModuleState() (my per-backend
+    fix).  Check whether the GUC value string and the module's per-session
+    extension-state have MISMATCHED lifetimes/contexts across fibers, or whether
+    the value string context is shared where it should be per-session.
+  - GUC report/nondef/stack LIST state (guc_report_list / guc_nondef_list /
+    guc_stack_list) -- per-backend accessors, but verify they are truly
+    per-session and not aliased on a shared carrier.
+  - the placeholder->custom reclassification when LOAD defines the GUC while a
+    concurrent session already set the placeholder.
+
+NEXT: get the backtrace.  Since libxtc suppresses cores, the reliable path is
+elog markers: instrument the custom-GUC string set/free (set_string_field /
+guc_strdup / the assign of GUC_VARIABLE_STRING) and the placeholder-conversion
+path, run 001 (or a 4-worker /tmp harness with per-worker timeout + pre-teardown
+log copy), and find the faulting access.  Then fix, confirm 001+003 green +
+gmake check/check-threaded, THEN force-push + benchmark.
+
+STATE unchanged otherwise: regressions 1 + 2a fixed; 2b deadlock fixed (amutex,
+a8d4a4440c0); residual 2b SIGSEGV open + narrowed.  0 warnings; regress 245/245.
+Backup: xtc-pre-rebase-202607160519.
