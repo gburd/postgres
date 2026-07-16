@@ -2596,3 +2596,40 @@ STATE unchanged: reg 1+2a fixed; 2b GUC deadlock fixed (amutex); latent
 thread-bgworker-launch crash OPEN + well-characterized.  0 warnings; process
 regress 245/245.  Force-push HELD; benchmark NOT run.  Backup:
 xtc-pre-rebase-202607160519 (=c69f69ab93a).
+
+### Regression 2b -- session 9 final: gen=7 slot-reuse hypothesis (top lead for next session)
+
+The crash fiber is consistently at a HIGH generation (gen=7 on loop=2, or
+gen=2 on loop=4 in a shifted run) -- a fiber SLOT that has been reused several
+times.  001's 4-worker GUC-stress churns sessions (connect/disconnect) ~50
+tests' worth before the launch, so fiber slots are recycled multiple times.  The
+thread-bgworker (or apply-launcher, or a GUC-stress worker) fiber that crashes
+occupies a REUSED slot.  Leading hypothesis: per-fiber / per-backend state is
+not FULLY reset when a fiber slot is recycled, so the Nth occupant inherits
+stale state (a dangling WaitEventSet/latch pointer, stale CurrentPgBackend/
+Execution binding) and faults at its first deep wait (WaitLatch ->
+WaitEventSetWaitBlock).
+
+TOP NEXT STEPS for next session (in priority order):
+1. Test the slot-reuse hypothesis cheaply: reduce 001's GUC-stress session churn
+   (e.g. run the stress in 1 worker, or fewer iterations) and see if the crash
+   moves to a lower gen or disappears.  If churn drives it, the bug is fiber-slot
+   reset.
+2. Audit the fiber-slot / logical-session RESET path (backend_runtime session
+   reset buckets, PgCarrierDetach/adopt, the read-command park/resume) for any
+   per-backend field that is NOT cleared on slot reuse -- especially
+   WaitEventSet/latch owner fields (owner_fiber_valid/loop/local/gen on the
+   latch), latch_wait_set in PgBackendIPCState, and _SPI_current in PgExecution.
+3. Add a fail-fast Assert at fiber slot ADOPT (PgCarrierAttachBackend or the
+   backend-fiber entry) that the incoming per-backend state is zeroed/coherent,
+   so 001 fails AT reuse with a clean backtrace rather than a downstream SIGSEGV.
+4. Timing-faithful repro for a core: 001's background_psql ordered-finish-then-
+   launch.  The bash-FIFO attempt (/tmp/t001.sh) deadlocked -- use a proper
+   coproc or a small Perl script reusing PostgreSQL::Test::Cluster's
+   background_psql directly, run under /tmp with PG_XTC_ALLOW_CORE=1.  (Note:
+   the SIGSEGV is fault-guard-suppressed; only a PANIC path cores -- so pair
+   with step 3's fail-fast Assert to force a core.)
+
+Do NOT re-chase: custom-GUC (clean), apply-launcher-as-sole-cause (falsified),
+migration (libxtc pins procs), single-vs-multi-carrier (was stray-server
+contamination), the MyProcPid==0 pooled-park fibers (benign).
