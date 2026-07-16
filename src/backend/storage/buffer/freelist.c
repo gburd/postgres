@@ -263,11 +263,11 @@ const BufferPoolRoutine clock_pool_routine = {
  * on the same buffer; CAS makes that race-correct with no risk of underflowing
  * the 2-bit field into the flag bits.
  *
- * Marked pg_attribute_always_inline: called once per tick from the sweep loop,
+ * Marked pg_always_inline: called once per tick from the sweep loop,
  * so inlining collapses the per-tick call and keeps the hot state in
  * registers.  Contains no PG/setjmp, so force-inlining is safe.
  */
-static pg_attribute_always_inline BufferDesc *
+static pg_always_inline BufferDesc *
 Clock2BitGetVictim(int victim_id, BufferAccessStrategy strategy,
 				   uint64 *buf_state, int *trycounter,
 				   int reset_budget)
@@ -358,11 +358,11 @@ Clock2BitGetVictim(int victim_id, BufferAccessStrategy strategy,
  * spinlock.  (The global background writer that once used a stored pass count
  * has been retired.)
  *
- * Marked pg_attribute_always_inline so StrategyGetBuffer's devirtualized
+ * Marked pg_always_inline so StrategyGetBuffer's devirtualized
  * default-pool call collapses to a tight inlined sweep.  Contains no
  * PG_TRY/setjmp, so force-inlining is safe.
  */
-static pg_attribute_always_inline BufferDesc *
+static pg_always_inline BufferDesc *
 Clock2BitSweep(ClockPoolState *pool_state,
 			   BufferAccessStrategy strategy,
 			   uint64 *buf_state,
