@@ -28,6 +28,9 @@
 #include <math.h>
 #ifndef WIN32
 #include <pthread.h>
+#ifdef USE_XTC_CARRIER
+#include "xtc_sync.h"			/* xtc_amutex_* -- fiber-aware GUC critical section */
+#endif
 #endif
 #include <sys/stat.h>
 #include <unistd.h>
@@ -104,9 +107,30 @@ static PG_GLOBAL_RUNTIME List *reserved_class_prefix = NIL;
 static PG_GLOBAL_RUNTIME MemoryContext GUCReservedPrefixMemoryContext = NULL;
 
 #ifndef WIN32
+/*
+ * The threaded GUC critical section serializes GUC startup / SET / RESET across
+ * carrier threads.  It MUST be fiber-aware: a raw pthread_mutex_lock blocks the
+ * carrier OS THREAD, so a backend fiber that holds it and then yields the loop
+ * (an allocation that parks, an internal wait, or the scheduler switching
+ * fibers on that carrier) would deadlock another fiber on the same carrier that
+ * waits on it.  Under USE_XTC_CARRIER use libxtc's xtc_amutex (a contended
+ * fiber PARKS/yields the loop instead of blocking the OS thread; a caller not on
+ * a loop -- process mode / a raw thread -- falls back to a condvar).  We use a
+ * process-global, lazily-created, never-freed xtc_amutex_static() slot so there
+ * is no init-order/shmem dependency.  Recursion is still driven by the
+ * per-backend ThreadedGUCMutexDepth counter below (we take/drop the amutex only
+ * on the outermost 0<->1 transition), matching the prior semantics.
+ *
+ * Without USE_XTC_CARRIER (no threaded runtime) keep the plain pthread mutex.
+ */
+#ifdef USE_XTC_CARRIER
+#define THREADED_GUC_AMUTEX_SLOT 0u
+#else
 static PG_GLOBAL_RUNTIME pthread_mutex_t ThreadedGUCMutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
 #define ThreadedGUCMutexDepth (*PgCurrentThreadedGUCMutexDepthRef())
 #endif
+
 
 static bool
 ThreadedGUCLock(void)
@@ -125,7 +149,11 @@ ThreadedGUCLock(void)
 	 * primitives by deferring interrupts until the outermost unlock.
 	 */
 	HOLD_INTERRUPTS();
+#ifdef USE_XTC_CARRIER
+	rc = xtc_amutex_lock(xtc_amutex_static(THREADED_GUC_AMUTEX_SLOT), -1);
+#else
 	rc = pthread_mutex_lock(&ThreadedGUCMutex);
+#endif
 	if (rc != 0)
 	{
 		ThreadedGUCMutexDepth--;
@@ -176,7 +204,11 @@ ThreadedGUCUnlock(bool locked)
 
 	/* outermost release */
 	Assert(locked);
+#ifdef USE_XTC_CARRIER
+	rc = xtc_amutex_unlock(xtc_amutex_static(THREADED_GUC_AMUTEX_SLOT));
+#else
 	rc = pthread_mutex_unlock(&ThreadedGUCMutex);
+#endif
 	RESUME_INTERRUPTS();
 	if (rc != 0)
 	{
