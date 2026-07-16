@@ -2117,3 +2117,33 @@ red herrings.  Recorded in /tmp/xtc_p17_aws.env as SSHOPTS.
 (Lesson: measure the actual failure -- the -vvv auth trace -- before naming a
 cause.  The MTU story was plausible and completely wrong.)
 
+
+### Rebase 2026-07-16: two regressions to root-cause before force-push (test-world NOT green)
+
+Rebased xtc onto origin/master (0 behind, 106 ahead, no conflicts).  Build is
+warning-clean (0/0) and process regress = 245/245.  Held the force-push: two
+threaded-suite regressions surfaced (both need root-cause; NOT stale tests):
+
+1. test_backend_runtime/regress -- "closed backend runtime state was not reset:
+   retained_top=X expected_top=X proc_exit_done=1".  retained_top==expected_top
+   and proc_exit_done=1 are CORRECT, so the failing clause is one of the
+   utility->* cache checks (dch_counter / num_cache / format_cache_context /
+   libxml_context / missing_attr_cache) in test_backend_runtime_backend.c:1558+.
+   Our reset (backend_runtime_teardown.c:708-720) does clear them, so this is a
+   subtle reset-completeness or MALLOC_PERTURB-exposed ordering issue after the
+   rebase.  Root-cause: instrument which && clause is false.
+
+2. 001_threaded_runtime test 52 "process-only module rejection reports backend
+   model mismatch": the rejection MESSAGE is correct ("active backend model is
+   thread-per-session, but the library is process-only") but the backend fiber
+   then SIGSEGVs -- "xtc: SUPERVISOR observed GENUINE-CRASH backend fiber DOWN
+   signal=11" -> "terminating threaded server runtime after backend fiber
+   crash".  So the Phase 19 process-only-extension rejection path crashes on the
+   error unwind under threaded mode (was clean before the rebase).  Likely the
+   rebase changed dfmgr/extension-load or an error-path teardown the threaded
+   fiber unwind touches.  Root-cause via post-mortem core (gdb attach blocked).
+
+FIXED this rebase (correct, committed): 18->0 build warnings; 001's stale
+io-worker expectation (now asserts ZERO io workers, matching c093c214cf4).
+Backup: xtc-pre-rebase-202607160519.  DO NOT force-push origin/xtc until both
+regressions are fixed and check + check-threaded are green.
