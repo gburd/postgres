@@ -2402,3 +2402,42 @@ gmake check/check-threaded, THEN force-push + benchmark.
 STATE unchanged otherwise: regressions 1 + 2a fixed; 2b deadlock fixed (amutex,
 a8d4a4440c0); residual 2b SIGSEGV open + narrowed.  0 warnings; regress 245/245.
 Backup: xtc-pre-rebase-202607160519.
+
+### Regression 2b residual SIGSEGV -- session 7: custom-GUC assign is CLEAN; crash is a later op
+
+Instrumented the custom-GUC string assign (set_config_with_handle_internal, the
+set_string_field for test_backend_runtime_threaded.custom_guc) with an elog marker
+logging field_ptr / session_owned / newval, ran the 4-worker GUC stress AND 001.
+
+FINDINGS:
+- FALSIFIED the custom-GUC-aliasing hypothesis: every custom_guc assign shows a
+  DISTINCT per-session field_ptr (one per session's extension-module-state) and
+  session_owned=1.  My per-backend fix (69a67457711) is correct -- no shared/
+  stale address.  (Aside: newval is sometimes a stack addr 0x7fff... at the log
+  point, but that is BEFORE set_string_field guc_strdup's it into a stable
+  context, so benign.)
+- A standalone 4-worker/25-iter custom_guc stress harness now PASSES (4/4 fibers
+  exit code=0, no crash) with the amutex fix -- so pure concurrent custom_guc set
+  is FIXED.
+- BUT 001 STILL crashes (signal=11, loop=2/local=2/gen=7, exit 29 after test 56).
+  Timeline: last custom_guc assign at T; crash ~57ms LATER on a DIFFERENT fiber
+  (gen=7).  So the crash is NOT the custom-GUC assign -- it is a LATER operation
+  after the full GUC-stress preamble (the process-only-rejection / thread-bgworker
+  launch region, tests 51-56+).  libxtc's fault guard catches the SIGSEGV before
+  the kernel logs it (no dmesg entry), so no core/kernel addr.
+
+REMAINING HYPOTHESIS (next): the crash is triggered by CUMULATIVE GUC-stress state
+(001 stresses 8 GUCs incl. custom_guc x50 across 4 concurrent workers) then a
+later op faults.  DISTINGUISHING TEST (turnkey): edit 001's GUC-stress loop to use
+ONLY built-in GUCs (drop the custom_guc set_config) -> if 001 still crashes, the
+trigger is general GUC-stress/session-reset, not custom-GUC; if it passes, custom-
+GUC-stress leaves bad state a later op hits.  ALSO: instrument the thread-bgworker
+launch prologue + the process-only-rejection path (tests 51-56) with elog markers
+to find the faulting op, OR bisect 001 by inserting done_testing();exit; after the
+GUC-stress block (before the reject/launch) to confirm the GUC-stress alone is
+survivable and the crash is in the reject/launch region.
+
+STATE: regressions 1 + 2a fixed; 2b deadlock fixed (amutex a8d4a4440c0); pure
+concurrent custom-GUC set fixed; residual 001 crash is a LATER op after GUC
+stress (custom-GUC assign ruled out).  0 warnings; regress 245/245.  Force-push
+HELD; benchmark NOT run.  Backup: xtc-pre-rebase-202607160519.
