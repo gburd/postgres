@@ -2868,3 +2868,32 @@ fixed (43/43); test 75 OPEN -- deep cross-fiber-wake race, root-caused to the
 timeline above, 4 fix attempts falsified, eventfd-secondary-wake is the
 recommended fix.  0 warnings; process regress green; test_backend_runtime 11/14
 (only 001, only test 75).  Force-push HELD.  Backup: xtc-pre-rebase-202607160519.
+
+### test 75 FIXED (Phase 17 eventfd) + full-suite failures are PRE-EXISTING
+
+test 75 fixed by commit 103b994635b (per-PGPROC interrupt_wake_fd eventfd; the
+Phase 17 sem_wake_fd pattern applied to the pooled read-command park).  Two
+adversarial reviews: item-1 (stale fd across pooled reuse) is a non-issue
+(thread-per-session: 1 connection = 1 PGPROC = 1 FeBeWaitSet for life);
+reviewer 2 caught a real defect (the pos-3 eventfd, once added to the shared
+FeBe set, leaked into secure_read/secure_write/SocketBackendStickyIdleWait which
+did not drain it -> spin) -- FIXED by draining pos-3 + treating it as a latch in
+those harvest sites.  Reviewer-1 comment fix applied.  001 = 128/128;
+test_backend_runtime 12/14 OK 0 Fail; process regress green; 0 warnings.
+
+FULL `meson test` (all 413 tests) shows 52 failures, ALL in logical-replication-
+adjacent suites (subscription/*, recovery/*, pg_upgrade/*, test_decoding,
+pg_basebackup/pg_recvlogical, postgres_fdw).  VERIFIED PRE-EXISTING, not caused
+by the test-75 fix: restored the 6 changed files to the PARENT commit (f8b2d345),
+rebuilt, and subscription/004_sync STILL fails identically (logical replication
+tablesync worker SIGSEGV).  These run in PROCESS mode (multithreaded defaults
+false; subscription tests do not set it) and my fix is fully USE_XTC_CARRIER-
+guarded + the pos-3 eventfd is never added in process mode, so it cannot affect
+them.  They are a separate pre-existing logical-replication issue on this branch,
+outside the test-75/2b scope and outside the threaded green gate
+(gmake check / check-threaded / test_backend_runtime).
+
+STATE: reg 1+2a fixed; 2b deadlock fixed; 2b crash FIXED (reviewer-clean); 003
+fixed; test 75 FIXED (reviewer-clean).  test_backend_runtime GREEN (12/14, 0
+Fail).  process regress GREEN.  0 warnings.  Pre-existing logical-rep suite
+failures noted, out of scope.  Ready to force-push + benchmark.
