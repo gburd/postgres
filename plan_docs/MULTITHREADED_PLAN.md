@@ -2552,3 +2552,47 @@ residual 001 crash is a fiber WaitLatch/WaitEventSet per-backend-state corruptio
 at the GUC-stress+bgworker-launch sequence (custom-GUC RULED OUT; apply-launcher
 RULED OUT as sole cause; migration RULED OUT).  0 warnings; process regress
 245/245.  Force-push HELD; benchmark NOT run.  Backup: xtc-pre-rebase-202607160519.
+
+### Regression 2b -- session 9 (cont): LATENT pre-existing launch crash, not a fiber-launch-file regression
+
+- git diff backup(c69f69ab93a, pre-rebase) -> HEAD on the fiber launch/wait path
+  (bgworker.c, launch_backend.c, pg_xtc_carrier.c, waiteventset.c, latch.c,
+  launcher.c): the ONLY change is the mechanical xtc_diag_write() warning
+  cleanup in pg_xtc_carrier.c -- benign, not a crash cause.  The crash-relevant
+  fiber-launch code is UNCHANGED from pre-rebase.
+- INFERENCE: the launch crash is a LATENT pre-existing bug, newly EXPOSED by the
+  amutex deadlock fix.  Pre-amutex, 001 hung/died at the concurrent GUC-stress
+  (ThreadedGUCMutex deadlock) BEFORE reaching test 56 / the thread-bgworker
+  launch, so the launch crash was masked.  With the deadlock fixed, 001 now
+  progresses to the launch and hits it.  So "2b" is really two bugs: the GUC
+  deadlock (fixed) + a latent thread-bgworker-launch-after-heavy-fiber-activity
+  crash (open).
+- The MyProcPid==0 "unrecognized[0]" WaitEventSetWaitBlock fibers seen earlier
+  have latches marching by 0x400 (consecutive PGPROC latches) at sequential
+  timestamps -- these are pooled-park idle carriers rotating PGPROCs, likely
+  BENIGN, not the crash fiber.  Do not over-index on them.
+
+IMPASSE on the exact faulting line: (1) the crash is SIGSEGV caught by libxtc's
+fault guard, which re-raises on a fiber/alt stack and does NOT dump a core even
+with PG_XTC_ALLOW_CORE=1 (confirmed from 001's own postmaster) -- a known libxtc
+limitation; (2) the /tmp harness (even config-matched to 001) does NOT reproduce
+because it lacks 001's background_psql ordered-teardown-then-launch timing; only
+that TAP path triggers it; (3) elog markers reproduce but shift the crashing
+fiber (Heisenbug).
+
+CONCRETE NEXT STEP (highest value, low risk): add a cheap fail-fast Assert/elog
+at the thread-bgworker startup + WaitEventSetWaitBlock xtc-branch that verifies
+the fiber's per-backend identity is coherent (MyProcPid!=0 for a real backend
+wait; the WaitEventSet's owning backend == CurrentPgBackend), so 001 fails AT the
+corruption point (with a PANIC that DOES core, or an elog with a stable
+backtrace) instead of the downstream SIGSEGV.  Alternatively, build a
+timing-faithful repro using coproc/expect persistent psql sessions finished in
+order then launch, run under /tmp so a core lands.  The fix is almost certainly
+in the thread-bgworker startup establishing/holding correct CurrentPgBackend/
+CurrentPgExecution across the launch + first WaitLatch, OR a shared WaitEventSet/
+latch lifetime bug in the bgworker fiber path.
+
+STATE unchanged: reg 1+2a fixed; 2b GUC deadlock fixed (amutex); latent
+thread-bgworker-launch crash OPEN + well-characterized.  0 warnings; process
+regress 245/245.  Force-push HELD; benchmark NOT run.  Backup:
+xtc-pre-rebase-202607160519 (=c69f69ab93a).
