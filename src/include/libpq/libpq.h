@@ -70,7 +70,19 @@ struct PQcommMethods
 
 #define FeBeWaitSetSocketPos 0
 #define FeBeWaitSetLatchPos 1
+#ifdef USE_XTC_CARRIER
+/*
+ * Threaded builds add a 4th slot: a per-PGPROC interrupt-wake eventfd that the
+ * pooled read-command park watches, giving a level-triggered, generation-immune
+ * secondary wake for cross-fiber interrupts (e.g. pg_terminate_backend of an
+ * idle pooled session).  Position 2 remains WL_POSTMASTER_DEATH; the eventfd is
+ * position 3.  Process-mode builds are unchanged (3 events, no eventfd slot).
+ */
+#define FeBeWaitSetInterruptWakeFdPos 3
+#define FeBeWaitSetNEvents 4
+#else
 #define FeBeWaitSetNEvents 3
+#endif
 
 extern int	ListenServerPort(int family, const char *hostName,
 							 unsigned short portNumber, const char *unixSocketDir,

@@ -26,6 +26,7 @@
 #include "replication/slotsync.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
+#include "storage/proc.h"
 #include "storage/procsignal.h"
 #include "storage/sinval.h"
 #include "utils/backend_runtime.h"
@@ -154,6 +155,35 @@ PgBackendWakeForInterrupt(PgBackend *backend)
 	 */
 	if (backend == CurrentPgBackend)
 		InterruptPending = true;
+
+#ifdef USE_XTC_CARRIER
+	/*
+	 * Level-triggered secondary wake (test-75 fix): if the target backend runs
+	 * as an xtc fiber and has a live interrupt-wake eventfd, write it.  Its
+	 * read end is added to the target's FeBe wait set on the first read-command
+	 * park (PgSessionStagingWaitProtocolRead; it cannot be added at pq_init,
+	 * which runs before InitProcess creates the fd), so a fiber parked in the
+	 * read-command park wakes deterministically, immune to the
+	 * owner_fiber generation staleness that can drop the SetLatch xtc_proc_wake
+	 * below.  Level-triggered: readiness persists until the parked fiber drains
+	 * it, so there is no lost-wake window between this write and the park.
+	 * Safe cross-fiber (an eventfd add is atomic).  A NULL/dead fd (process
+	 * fallback, or before InitProcGlobal) is skipped.
+	 */
+	{
+		PGPROC	   *tproc = backend->my_proc;
+
+		if (tproc != NULL && tproc->sem_fiber_backed &&
+			tproc->interrupt_wake_fd >= 0)
+		{
+			uint64		one = 1;
+			ssize_t		wrc;
+
+			wrc = write(tproc->interrupt_wake_fd, &one, sizeof(one));
+			(void) wrc;			/* eventfd add; only fails at UINT64_MAX-1 */
+		}
+	}
+#endif
 
 	if (backend->interrupt_latch != NULL)
 		SetLatch(backend->interrupt_latch);
