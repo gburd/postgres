@@ -2441,3 +2441,39 @@ STATE: regressions 1 + 2a fixed; 2b deadlock fixed (amutex a8d4a4440c0); pure
 concurrent custom-GUC set fixed; residual 001 crash is a LATER op after GUC
 stress (custom-GUC assign ruled out).  0 warnings; regress 245/245.  Force-push
 HELD; benchmark NOT run.  Backup: xtc-pre-rebase-202607160519.
+
+### Regression 2b -- session 8: PINPOINTED to launch_thread_bgworker after GUC-stress
+
+Bisected 001 with done_testing();exit; markers (no source changes to 001 itself;
+used /tmp/001_bisect*.pl copies):
+- GUC-stress block ALONE (tests 1-50): PASSES cleanly, exit 0.  Survivable.
+- + process-only LOAD reject + process-bgworker reject (tests 51-56): PASS
+  cleanly.  Survivable.
+- The crash is the VERY NEXT call: test_backend_runtime_launch_thread_bgworker()
+  (thread-model bgworker launch).
+- reject_process_bgworker() -> launch_thread_bgworker() IN ISOLATION (no
+  GUC-stress): WORKS (reject=t, launch=pid, ALIVE).  So the reject does not
+  corrupt the launch by itself.
+=> CONFIRMED TRIGGER: the 4-concurrent-worker GUC-STRESS preamble leaves state
+that makes a LATER thread-bgworker LAUNCH crash (SIGSEGV, gen=7 fiber).  Not the
+custom-GUC assign (session 7), not the reject path, not the launch in isolation.
+
+MINIMAL REPRO to build next (turnkey): on a threaded server, run the 4-concurrent
+GUC-stress (LOAD test_backend_runtime_threaded + 25-50x set_config over the 8
+GUCs incl custom_guc, from 4 concurrent sessions), let them finish, THEN
+SELECT test_backend_runtime_launch_thread_bgworker() -> expect SIGSEGV.  (The
+/tmp/gucstress.sh + a trailing launch approximates this; scale to match 001:
+work_mem/default_statistics_target/lock_timeout/search_path/bytea_output/
+IntervalStyle/wal_consistency_checking + custom_guc.)  Then instrument the LAUNCH
+path (RegisterDynamicBackgroundWorker / BackgroundWorkerData slot access /
+WaitForBackgroundWorkerStartup) with elog markers to find the faulting access on
+the gen=7 fiber, OR bisect WHICH of the 8 stressed GUCs leaves the bad state
+(drop custom_guc first, then the reloadable ones like wal_consistency_checking).
+Suspect: a GUC-stress side effect on shared bgworker/parallel/DSM registration
+state, or a per-backend runtime bucket left dangling that the launch prologue
+reads.
+
+STATE: regressions 1 + 2a fixed; 2b deadlock fixed (amutex a8d4a4440c0); pure
+concurrent custom-GUC fixed; residual crash PINPOINTED to launch-after-GUC-stress.
+0 warnings; regress 245/245.  Force-push HELD; benchmark NOT run.  Backup:
+xtc-pre-rebase-202607160519.
