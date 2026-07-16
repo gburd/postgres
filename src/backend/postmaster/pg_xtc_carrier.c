@@ -50,6 +50,20 @@
 #include "xtc_async.h"		/* xtc_set_stack_size */
 
 /*
+ * Best-effort diagnostic write to a raw fd (STDERR) on crash/down/teardown
+ * paths where the result is genuinely ignorable but glibc marks write() with
+ * warn_unused_result (a plain (void) cast does not suppress it).  Consume the
+ * result so those diagnostic writes compile warning-clean.
+ */
+static inline void
+xtc_diag_write(int fd, const void *buf, size_t n)
+{
+	ssize_t		w = write(fd, buf, n);
+
+	(void) w;
+}
+
+/*
  * PostgreSQL backends need a large stack (pg_thread.c uses 8 MiB for its
  * pthreads; max_stack_depth defaults to ~2 MB).  The xtc default fiber stack
  * is only 64 KiB, which overflows immediately in parser/planner recursion.
@@ -289,7 +303,7 @@ xtc_carrier_supervisor_proc(void *arg)
 					{
 						if (n > (int) sizeof(buf))
 							n = (int) sizeof(buf);
-						(void) write(STDERR_FILENO, buf, (size_t) n);
+						xtc_diag_write(STDERR_FILENO, buf, (size_t) n);
 					}
 				}
 			}
@@ -312,7 +326,7 @@ xtc_carrier_supervisor_proc(void *arg)
 					{
 						if (n > (int) sizeof(buf))
 							n = (int) sizeof(buf);
-						(void) write(STDERR_FILENO, buf, (size_t) n);
+						xtc_diag_write(STDERR_FILENO, buf, (size_t) n);
 					}
 				}
 			}
@@ -336,7 +350,7 @@ xtc_carrier_supervisor_proc(void *arg)
 					{
 						if (n > (int) sizeof(buf))
 							n = (int) sizeof(buf);
-						(void) write(STDERR_FILENO, buf, (size_t) n);
+						xtc_diag_write(STDERR_FILENO, buf, (size_t) n);
 					}
 				}
 
@@ -381,7 +395,7 @@ xtc_carrier_supervisor_proc(void *arg)
 					{
 						if (n > (int) sizeof(buf))
 							n = (int) sizeof(buf);
-						(void) write(STDERR_FILENO, buf, (size_t) n);
+						xtc_diag_write(STDERR_FILENO, buf, (size_t) n);
 					}
 				}
 			}
@@ -426,7 +440,7 @@ xtc_carrier_supervisor_proc(void *arg)
 				{
 					if (sn > (int) sizeof(sbuf))
 						sn = (int) sizeof(sbuf);
-					(void) write(STDERR_FILENO, sbuf, (size_t) sn);
+					xtc_diag_write(STDERR_FILENO, sbuf, (size_t) sn);
 				}
 			}
 		}
@@ -510,7 +524,7 @@ xtc_carrier_proc(void *arg)
 			{
 				volatile uintptr_t addr = 0x10;
 
-				(void) write(STDERR_FILENO,
+				xtc_diag_write(STDERR_FILENO,
 							 "xtc: INJECT_CRASH faulting this fiber before clean exit\n",
 							 56);
 				/* Yield once so libxtc's auto-armed recovery frame is active. */
@@ -760,7 +774,7 @@ xtc_pg_backend_fiber_exit(int code)
 		{
 			if (n > (int) sizeof(buf))
 				n = (int) sizeof(buf);
-			(void) write(STDERR_FILENO, buf, (size_t) n);
+			xtc_diag_write(STDERR_FILENO, buf, (size_t) n);
 		}
 	}
 
@@ -798,11 +812,11 @@ xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)
 		/* No fd: honor a finite timeout by sleeping the fiber. */
 		if (timeout_ms >= 0)
 		{
-			PgCurrentWorkSnapshot snap;
+			PgCurrentWorkSnapshot sleep_snap;
 
-			PgRuntimeSaveCurrentWork(&snap);
+			PgRuntimeSaveCurrentWork(&sleep_snap);
 			xtc_proc_sleep(timeout_ns);
-			PgRuntimeRestoreCurrentWork(&snap);
+			PgRuntimeRestoreCurrentWork(&sleep_snap);
 			return WL_TIMEOUT;
 		}
 		return WL_LATCH_SET;	/* caller re-checks */

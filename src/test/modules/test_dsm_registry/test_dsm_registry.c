@@ -255,7 +255,7 @@ tdr_append_exit_order(const char *event)
 		ptr += written;
 		remaining -= written;
 	}
-	(void) write(fd, "\n", 1);
+	{ ssize_t w = write(fd, "\n", 1); (void) w; }
 
 done:
 	(void) close(fd);
