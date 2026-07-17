@@ -100,9 +100,9 @@ shared_buffers = $SHBUF
 max_connections = 400
 max_wal_size = 16GB
 checkpoint_timeout = 30min
-fsync = off
-synchronous_commit = off
-full_page_writes = off
+fsync = $DUR_FSYNC
+synchronous_commit = $DUR_SYNC
+full_page_writes = $DUR_FPW
 CONF
   # trust the driver's private subnet
   echo "host all all 0.0.0.0/0 trust" >> "$D/pg_hba.conf"

@@ -23,6 +23,10 @@
 #   CARRIERS  threaded carrier settings to sweep (default "auto 32")
 #   RAMPUP    minutes rampup (default 2)     DURATION  minutes measured (default 5)
 #   SHBUF     shared_buffers (default 8GB)
+#   DURABILITY  off (default) = fsync/synchronous_commit/full_page_writes OFF
+#               (scheduler-isolation profile); on = all three ON (storage-
+#               realistic profile).  The ONLY other diff between lanes stays
+#               multithreaded + carriers; DURABILITY is identical across lanes.
 #   OUT       output dir (default /mnt/work/hbench)
 set -uo pipefail
 PGBIN="${PGBIN:-/mnt/work/work/pg/inst/usr/local/pgsql/bin}"
@@ -37,7 +41,9 @@ CARRIERS="${CARRIERS:-auto 32}"
 RAMPUP="${RAMPUP:-2}"
 DURATION="${DURATION:-5}"
 SHBUF="${SHBUF:-8GB}"
+DURABILITY="${DURABILITY:-off}"
 OUT="${OUT:-/mnt/work/hbench}"
+case "$DURABILITY" in on|ON|1|true) DUR_FSYNC=on; DUR_SYNC=on; DUR_FPW=on;; *) DUR_FSYNC=off; DUR_SYNC=off; DUR_FPW=off;; esac
 PORT="${PORT:-5439}"
 export LD_LIBRARY_PATH="$(dirname "$(find "$(dirname "$PGBIN")" -name 'libpq.so.5' 2>/dev/null | head -1)"):${LD_LIBRARY_PATH:-}"
 DATA="$OUT/data"
@@ -59,9 +65,9 @@ max_wal_size = 32GB
 checkpoint_timeout = 30min
 checkpoint_completion_target = 0.9
 wal_buffers = 64MB
-fsync = off
-synchronous_commit = off
-full_page_writes = off
+fsync = $DUR_FSYNC
+synchronous_commit = $DUR_SYNC
+full_page_writes = $DUR_FPW
 CONF
   [ "$mode" = threaded ] && { echo "multithreaded = on" >> "$DATA/postgresql.conf.mode"; [ "$carriers" != auto ] && [ -n "$carriers" ] && echo "pooled_protocol_carriers = $carriers" >> "$DATA/postgresql.conf.mode"; }
   # rewrite the include line
