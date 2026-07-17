@@ -24,9 +24,21 @@
 #   PGBENCH      pgbench path on the DRIVER (default: from PATH)
 #   DURATION     measured seconds per cell (default 120 -- steady state)
 #   WARMUP       warmup seconds discarded (default 30)
-#   SCALE        pgbench scale (default 100)
+#   SCALE        pgbench scale (default 1000).  At scale 1000 pgbench_branches
+#                has 1000 rows, so the tpcb 'UPDATE pgbench_branches' hotspot is
+#                not the bottleneck up to a few hundred clients.  Do NOT lower it
+#                for high client counts: at small scale (e.g. 100) tpcb becomes
+#                pgbench_branches-row-contention-bound and reports a misleading,
+#                contention-limited number (identical for both lanes, so the A/B
+#                is still fair, but it is not a throughput ceiling).
 #   SHBUF        shared_buffers (default 8GB -- keep dataset resident)
-#   WORKLOADS    space list: tpcb select update  (default "tpcb select")
+#   WORKLOADS    space list: tpcb select update  (default "select update").
+#                'select' = read-only prepared (no contention).  'update' =
+#                hot-row UPDATE on pgbench_accounts (wide key space -> a CLEAN
+#                write throughput test, not branch-contention-bound).  'tpcb' is
+#                the standard mix INCLUDING the pgbench_branches hotspot; include
+#                it explicitly if you want the mixed number, but prefer 'update'
+#                for the write A/B ceiling.
 #   CLIENTS      space list (default "16 32 64 128")
 #   CARRIERS     space list for threaded (default: auto = "" -> use server default; plus a sweep)
 #   OUT          output dir (default /mnt/nvme/work/rbench)
@@ -39,9 +51,9 @@ SUT_IP="${SUT_IP:?set SUT_IP=private IP the driver dials}"
 PGBENCH_REMOTE="${PGBENCH:-pgbench}"
 DURATION="${DURATION:-120}"
 WARMUP="${WARMUP:-30}"
-SCALE="${SCALE:-100}"
+SCALE="${SCALE:-1000}"
 SHBUF="${SHBUF:-8GB}"
-WORKLOADS="${WORKLOADS:-tpcb select}"
+WORKLOADS="${WORKLOADS:-select update}"
 CLIENTS="${CLIENTS:-16 32 64 128}"
 CARRIERS="${CARRIERS:-auto}"      # "auto" = server default; or a space list to sweep
 OUT="${OUT:-/mnt/nvme/work/rbench}"
