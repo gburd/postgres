@@ -56,6 +56,8 @@ SHBUF="${SHBUF:-8GB}"
 WORKLOADS="${WORKLOADS:-select update}"
 CLIENTS="${CLIENTS:-16 32 64 128}"
 CARRIERS="${CARRIERS:-auto}"      # "auto" = server default; or a space list to sweep
+DURABILITY="${DURABILITY:-off}"  # off = fsync/sync_commit/fpw OFF (scheduler-isolation); on = all ON (storage-realistic)
+case "$DURABILITY" in on|ON|1|true) DUR_FSYNC=on; DUR_SYNC=on; DUR_FPW=on;; *) DUR_FSYNC=off; DUR_SYNC=off; DUR_FPW=off;; esac
 OUT="${OUT:-/mnt/nvme/work/rbench}"
 PORT="${PORT:-5439}"
 
