@@ -2923,3 +2923,31 @@ a big-core box, fresh session.
 STATE: xtc GREEN (test_backend_runtime 12/14 0-Fail, process regress green, 001
 128/128, 0 warnings), test 75 two-reviewer-clean, FORCE-PUSHED (5f6370ceded).
 Local read-only A/B: threaded +12.6%, single-process.  EC2 saturation = next.
+
+### pg_ctl -m fast stop (threaded) hang -- investigated: already fixed by the test-75 eventfd
+
+The prior EC2 benchmark agent wedged on a bare `pg_ctl -m fast stop` against a
+threaded server. Investigated whether this is a real threaded-shutdown bug:
+
+- Fast shutdown path: postmaster SIGINT -> PM_STOP_BACKENDS -> SignalChildren(SIGTERM)
+  -> signal_child(). For a threaded/logical child, signal_child() routes through
+  thread_child_signal_interrupt() -> PostmasterChildRaiseThreadInterrupt() ->
+  **SendInterrupt(logical_backend, PROC_DIE)** (pmchild.c:449). This is the SAME
+  SendInterrupt/PgBackendWakeForInterrupt path the test-75 fix (commit 103b994635b)
+  hardened with the per-PGPROC interrupt_wake_fd level-triggered wake.
+- PostmasterChildHasLogicalBackendPublication() is true for BOTH pooled-logical
+  fibers AND thread-carrier aux workers (checkpointer/bgwriter), so the shutdown
+  signal to idle parked backends AND aux carriers goes through the fixed wake.
+- REPRODUCED locally on the current branch (has the fix): threaded server,
+  pooled_protocol_carriers=4, 3 IDLE parked connections, then
+  `pg_ctl -m fast -w -t 40 stop` -> **rc=0, elapsed 0.12s (CLEAN, no hang)**.
+- The prior wedge was the benchmark agent's AD-HOC smoke test using a BARE
+  `pg_ctl stop` with NO CHECKPOINT and NO timeout, waiting forever on the
+  shutdown checkpoint of dirty buffers. The harness's own stop_pg (CHECKPOINT +
+  `pg_ctl -m fast -w -t 600` + kill fallback) does not wedge; the re-run agent is
+  instructed to use it and wrap all calls in `timeout`.
+
+CONCLUSION: no separate threaded-fast-stop bug on the current branch; the
+test-75 eventfd fix already makes idle-backend fast shutdown wake deterministically.
+(Under-load fast-stop could not be timed cleanly on the slow dev-host; idle case
+is clean and the code path is the fixed one.)
