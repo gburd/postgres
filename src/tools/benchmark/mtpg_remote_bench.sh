@@ -102,6 +102,7 @@ shared_buffers = $SHBUF
 max_connections = 400
 max_wal_size = 16GB
 checkpoint_timeout = 30min
+io_method = sync
 fsync = $DUR_FSYNC
 synchronous_commit = $DUR_SYNC
 full_page_writes = $DUR_FPW

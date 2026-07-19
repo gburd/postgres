@@ -65,6 +65,7 @@ max_wal_size = 32GB
 checkpoint_timeout = 30min
 checkpoint_completion_target = 0.9
 wal_buffers = 64MB
+io_method = sync
 fsync = $DUR_FSYNC
 synchronous_commit = $DUR_SYNC
 full_page_writes = $DUR_FPW
