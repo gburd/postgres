@@ -2951,3 +2951,41 @@ CONCLUSION: no separate threaded-fast-stop bug on the current branch; the
 test-75 eventfd fix already makes idle-backend fast shutdown wake deterministically.
 (Under-load fast-stop could not be timed cleanly on the slow dev-host; idle case
 is clean and the code path is the fixed one.)
+
+### Metal m8idn.metal-96xl fair st-vs-mt (2026-07-20): auto-256 cap NOT the cause; WAL-lock is
+
+Corrected-methodology run (carriers set EXPLICITLY 192/256/384/512, NOT auto;
+256GB shared_buffers huge_pages=on BOTH lanes; DB on 6xNVMe RAID-0; DURABILITY=on;
+external saturating driver; %steal=0; ratio-validated 0.435 every cell):
+- VU=192: fork 1,348,238 NOPM vs mt best 783,085 (c=256) = 58%
+- VU=384: fork 1,039,281 vs mt best 667,534 (c=512) = 64%
+- 256->384 carriers did NOT help (783k->745k) => scheduling width is NOT the
+  limiter; the auto-256 cap does NOT explain the gap.  mt RAM <= fork (PSS 972
+  vs 1031 MB).
+- NEITHER lane saturated CPU (fork ~30%, mt ~15%): DURABILITY=on TPC-C is
+  WAL-insert-lock bound on this box, so ~100% CPU is unreachable with fsync on.
+  The gap is a WAL/lock-serialization gap in the fiber runtime, wider under
+  durability-on than the earlier durability-off ~86-90%.
+- HammerDB monitor VU hit FINISHED_FAILED on every threaded cell (workers OK) ->
+  NOPM captured server-side; a HammerDB CLI measurement artifact, not a PG fail.
+
+TWO REAL THREADED-MODE BUGS surfaced (harness worked around; runtime owner TODO):
+1. **pipe() -> SEGFAULT at VU=384**: threaded runtime shares ONE process fd table
+   across all fiber backends; per-backend fd use that is fine in fork mode
+   exhausts nofile, and the self-pipe pipe() failure
+   (waiteventset.c:315 InitializeWaitEventSupport, elog(FATAL)) does NOT cleanly
+   terminate the fiber -> segfault (same early-startup-fiber FATAL-doesn't-unwind
+   class as the 2b ProcessInterrupts NULL-deref). Workaround was nofile=1M.
+   ROOT FIX options: (a) make FATAL from an early backend-fiber (pre-full-init)
+   unwind/exit cleanly instead of crashing; and/or (b) don't allocate a per-fiber
+   self-pipe pair -- N backends x2 fds exhausts the shared table; the latch
+   self-pipe/signalfd could be per-carrier or use the existing per-PGPROC
+   interrupt_wake_fd/sem_wake_fd eventfds. Investigate which.
+2. start-gate grepped a log banner this build doesn't emit -> TCP-probe gate
+   (harness fix, committed cdbebc3ae43).
+
+NEXT (agreed plan): (a) fix the pipe()->segfault (fail-closed, not crash);
+(b) ONE diagnostic mt run at VU=384 DURABILITY=OFF on the metal with perf, to
+isolate the scalability limit at true ~100% CPU (durability-off removes the WAL
+fsync bound so we see the scheduler/lock ceiling). Profile the WAL-insert /
+lock-wait path (perf flamegraph) to name the top serializer.
