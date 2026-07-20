@@ -3871,3 +3871,20 @@ NO nix-config change needed. The permanent fix already happened (flake update +
 fresh shell). Operational lesson stands: after a libxtc pin bump, start a FRESH
 nix develop shell and verify `ldd build/src/backend/postgres | grep xtc` before
 trusting runtime validation; a long-lived shell can hold the old -L.
+
+### TLS-harness commit 04d79b80adc independent review CLOSED: SHIP (2026-07-20)
+
+Independent adversarial review (the required non-self pass): SHIP, no defects.
+Verified against source: (1) ZERO backend C changes (4 files: GNUmakefile.in,
+ssl/Makefile, threaded_ssl.conf, plan doc) -> process+threaded byte-for-byte;
+(2) fail-loud PG_TEST_EXTRA guard exits 1 before prove, no skip->rc0 false-green,
+all edge cases verified; (3) NO false-green path -- multithreaded=on reaches
+postgresql.conf via TEMP_CONFIG, SSL handshakes genuinely run on carrier fibers,
+io_method=sync is a RESPECTED explicit choice (not a degenerate process fallback);
+(4) additive (default ssl check untouched); (5) 003_sslinfo exclusion is honest
+Phase-16 scope (process-only PG_MODULE_MAGIC_EXT, genuinely refused threaded), no
+hidden gap; (6) build-system hygiene sound, `make check-threaded-ssl
+PG_TEST_EXTRA=ssl` works from clean tree. Nuance (not a defect): guard is stricter
+than the test regex on comma-separated PG_TEST_EXTRA but errs fail-loud (safe).
+check-threaded-ssl is the live TLS gate for when the be_tls_*->xtc_tls_* swap
+lands (after Phase D unpin + confirmed 1.24 binding, both now in hand).
