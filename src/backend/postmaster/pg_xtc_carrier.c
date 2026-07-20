@@ -194,6 +194,51 @@ xtc_carrier_loop_count(void)
  */
 __thread bool xtc_in_backend_fiber = false;
 
+/*
+ * Phase B no-steal tripwire: per-fiber affine-section nesting depth.
+ *
+ * XtcPgNoStealEnter/Leave bracket a span that holds OS-thread-affine state and
+ * that the audit proved contains no cooperative yield (OpenSSL error-queue
+ * span, sigprocmask window; the raw-spinlock and static-scratch spans are
+ * safe-by-construction -- a running fiber is never stolen, and those spans
+ * never reach a park -- so they rely on the park-boundary assert transitively
+ * rather than an explicit bracket at every hot call site).  The fiber park
+ * choke points assert this depth is zero (unless a future unpin has made the
+ * fiber migratable), so a yield newly introduced inside a bracketed span fires
+ * the assertion instead of silently reading foreign per-thread state after a
+ * steal.
+ *
+ * It is a plain thread-local counter (not per-proc): a backend fiber runs to
+ * its next park entirely on one carrier thread, and Enter/Leave are strictly
+ * nested within that run, so the thread-local depth is the fiber's depth at
+ * every park.  A bare fiber (the supervisor) never brackets, so its depth
+ * stays zero.  The whole counter + check compile only in assert builds
+ * (USE_ASSERT_CHECKING), so release and process builds are byte-for-byte
+ * unchanged.
+ */
+#ifdef USE_ASSERT_CHECKING
+static __thread int xtc_pg_affine_depth = 0;
+
+void
+xtc_pg_affine_section_enter(void)
+{
+	xtc_pg_affine_depth++;
+}
+
+void
+xtc_pg_affine_section_leave(void)
+{
+	Assert(xtc_pg_affine_depth > 0);
+	xtc_pg_affine_depth--;
+}
+
+int
+xtc_pg_affine_section_depth(void)
+{
+	return xtc_pg_affine_depth;
+}
+#endif							/* USE_ASSERT_CHECKING */
+
 /* Scheduler thread: run the xtc app loop forever. */
 static void *
 xtc_carrier_sched_thread(void *arg)
@@ -644,6 +689,18 @@ xtc_pg_fiber_ctx_save(void)
 
 	if (xtc_pg_fiber_ctx_is_current(fc))
 	{
+		/*
+		 * Phase B park-boundary tripwire: a backend fiber is about to yield
+		 * (this save is the universal park point).  It must NOT be holding a
+		 * bracketed thread-affine section open across the park -- if it is, a
+		 * steal could resume it on another carrier where that per-thread state
+		 * (OpenSSL error queue, signal mask, ...) is foreign.  Gated on
+		 * migratability so the check is a hard "must be zero" while pinned
+		 * (dead: the audited spans never yield) and advisory once unpinned.
+		 */
+		Assert(xtc_pg_backend_fiber_is_migratable() ||
+			   xtc_pg_affine_section_depth() == 0);
+
 		/* Record the proc this snapshot belongs to, then snapshot roots. */
 		fc->proc_ctx = proc_ctx;
 		PgRuntimeSaveCurrentWork(&fc->snap);
@@ -1136,6 +1193,19 @@ xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)
 	int			out = 0;
 	int			rc;
 	PgCurrentWorkSnapshot snap;
+
+	/*
+	 * Phase B park-boundary tripwire (manual-seam twin of the fiber-ctx save
+	 * hook's assert): this seam is only reached while xtc_in_backend_fiber, and
+	 * both branches below park the fiber.  A bracketed thread-affine section
+	 * must not be open across the park (see xtc_pg_affine_section_enter).  This
+	 * seam runs unconditionally (unlike the global save hook, which a
+	 * concurrent spawn can transiently revert to proc.c's), so it is the
+	 * belt-and-suspenders check.  Gated on migratability: hard while pinned
+	 * (dead), advisory once unpinned.
+	 */
+	Assert(xtc_pg_backend_fiber_is_migratable() ||
+		   xtc_pg_affine_section_depth() == 0);
 
 	if (fd < 0)
 	{

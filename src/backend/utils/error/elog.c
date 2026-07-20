@@ -3648,6 +3648,17 @@ log_status_format(StringInfo buf, const char *format, ErrorData *edata)
 /*
  * Unpack MAKE_SQLSTATE code. Note that this returns a pointer to a
  * thread-local static buffer.
+ *
+ * xtc Phase B affine-site note: the buffer is per-OS-thread (PG_THREAD_LOCAL),
+ * so on the fiber carrier it is shared by every fiber time-sharing that thread.
+ * The contract is that each caller fills and consumes the result synchronously
+ * with no cooperative yield in between (the audit found no caller that parks
+ * while holding this pointer -- errmsg/appendStringInfo consume it inline), so
+ * it is safe-by-construction under both pinned and migratable fibers.  This is
+ * a documented invariant rather than an XtcPgNoSteal bracket because there is
+ * no single span to wrap (each caller owns its fill+use); the fiber
+ * park-boundary tripwire (pg_xtc_carrier.c) would still catch a future caller
+ * that parked while an XtcPgNoStealEnter'd affine span were open.
  */
 char *
 unpack_sql_state(int sql_state)
