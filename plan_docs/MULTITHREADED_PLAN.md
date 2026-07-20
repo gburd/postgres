@@ -3888,3 +3888,56 @@ PG_TEST_EXTRA=ssl` works from clean tree. Nuance (not a defect): guard is strict
 than the test regex on comma-separated PG_TEST_EXTRA but errs fail-loud (safe).
 check-threaded-ssl is the live TLS gate for when the be_tls_*->xtc_tls_* swap
 lands (after Phase D unpin + confirmed 1.24 binding, both now in hand).
+
+### libxtc v1.25.0 review: migratable flag LANDED but ABI narrowing HIDES our ctx-hook symbols (2026-07-20)
+
+v1.25.0 (tag 913f3c49 / commit 8fe0155) has 4 changes vs v1.24.0 (e944d00):
+- e7c3af0 feat(proc): xtc_proc_opts_t.migratable -- EXACTLY our request. pinned =
+  !migratable threaded to __xtc_async_ex; default 0 = byte-identical (pinned).
+  xtc_proc_spawn/_link/_monitor honor it. This unblocks Phase C/D in principle.
+- 23242a7 build(abi): narrow the .so export to `global: xtc_*` + a 4-symbol
+  allowlist (__xtc_proc_recovery_slot/_recovery_prep/_recovery_ctx/_recovery_result
+  -- the only internals a public macro expands to); `local: *` hides EVERYTHING
+  else, INCLUDING __xtc_fiber_ctx_save / __xtc_fiber_ctx_restore.
+- f25d061 moved internal __ decls out of installed headers into *_int.h.
+- 9564ca8 os_errno doc.
+
+BLOCKER for a straight bump: OUR fiber-ctx hook (pg_xtc_carrier.c:597-598,831-847,
+commit 50434faae9f) declares + reads + ASSIGNS the extern globals
+__xtc_fiber_ctx_save / __xtc_fiber_ctx_restore to chain PG's 6-root save/restore
+across a coro switch. We link libxtc SHARED (libxtc.so.1, -lxtc). Under v1.25.0's
+version-script those __xtc_* symbols are now `local` (unexported) -> our postgres
+will NOT resolve them against the .so. The migration ENABLER we built breaks
+against the release that ships the migratable FLAG we need.
+
+DESIGN SIGNAL (not just a link error): xtc_proc.h:602 explicitly documents the
+ctx save/restore (__xtc_proc_ctx_save/restore) as "library-internal (the __
+prefix)". The migratable feature preserves the PROC's __current_proc across
+migration INTERNALLY; libxtc's stance is that consumers should NOT reach into the
+fiber-ctx hook globals. Our hook was always reaching into internals; v1.25.0 makes
+that explicit by hiding them.
+
+OPTIONS (need a decision + likely a libxtc conversation; do NOT force-export the
+symbols -- that fights an explicit ABI decision and rebreaks):
+ 1. Link libxtc STATIC (.a) instead of shared -- the version-script `local:` only
+    hides from the .so; a static link still sees __xtc_fiber_ctx_save/restore.
+    Quick unblock, but keeps us depending on symbols libxtc declared internal (a
+    fragile long-term coupling; a future refactor could remove them).
+ 2. Ask libxtc for a PUBLIC per-fiber-switch consumer hook (or public per-proc
+    storage that survives migration) so PG's 6 roots ride migration via a
+    supported API instead of the internal ctx globals. The RIGHT long-term fix;
+    aligns with "embrace the libxtc model." Verify-before-requesting: confirm no
+    existing public mechanism (no xtc_proc_set/get userdata found; no public
+    switch hook found).
+ 3. Re-examine whether PG's 6 roots even NEED a switch hook once the proc carries
+    them: the fiber-owned-carrier finding (Phase A review) showed the 6 roots are
+    fiber-owned and travel with the proc's stack; the hook's job is to repoint the
+    THREAD-LOCAL bridge cells on resume. If those cells can instead be derived
+    on-demand from proc-carried state (no thread-local cache needing a switch-time
+    refresh), the ctx hook may be UNNECESSARY -- eliminating the dependency
+    entirely. This is the most "embrace-the-model" answer and worth investigating
+    before requesting a libxtc API.
+
+STAY on v1.24.0 for now (green, hook works). Do NOT bump to v1.25.0 until the
+ctx-hook dependency is resolved (option 1/2/3). The migratable flag is in hand the
+moment we do.
