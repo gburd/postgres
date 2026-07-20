@@ -3634,3 +3634,77 @@ migration-safety implications (once workers are stealable fibers, the no-steal
 guards for spinlock/OpenSSL-ERR spans become LIVE -- so the guard work couples
 in). NO conversion code this step -- design first, then we execute in gated
 increments.
+
+### Threaded ssl harness LANDED; be_tls_* -> xtc_tls_* swap STAYS gated on a runtime-lib blocker (2026-07-20)
+
+Built the threaded ssl test harness the a75bcc60b3b deferral said was the
+missing prerequisite for validating the be_tls_* -> xtc_tls_* swap.  With the
+harness in place the swap was re-evaluated against runtime evidence and stays
+DEFERRED (gate CLOSED) -- now for a CONCRETE, newly-found blocker, not just the
+absence of a forcing function.
+
+WHAT LANDED (test infrastructure only; ZERO backend C changes -> process +
+threaded byte-for-byte, no security surface touched):
+- src/test/ssl/threaded_ssl.conf: a TEMP_CONFIG that boots the ssl TAP suite
+  under the multithreaded carrier (multithreaded=on, thread-per-session,
+  io_method=sync).  PostgreSQL::Test::Cluster appends TEMP_CONFIG to
+  postgresql.conf, so the UNMODIFIED ssl tests run against a threaded server.
+- check-threaded-ssl target (src/test/ssl/Makefile + GNUmakefile.in): runs
+  001_ssltests + 002_scram + 004_sni under threaded_ssl.conf.  It exercises,
+  ON THE CARRIER BACKEND-FIBER PATH: server-cert handshake, client-cert auth
+  (peer DN/CN), CRL reject, SCRAM channel binding (tls-server-end-point,
+  channel_binding=require), and confirms ssl_sni handling.  003_sslinfo is
+  excluded: the bundled sslinfo contrib module is process-backend-only (no
+  PG_MODULE_MAGIC_EXT threaded backend-model metadata), so the threaded runtime
+  correctly REFUSES to load sslinfo.so ("library ... is not supported in the
+  threaded backend runtime").  Marking sslinfo threaded-safe is Phase 16 /
+  Gate E2-Extensions work, not TLS work; 001/002/004 already cover the full
+  server-side TLS security surface on the carrier.
+
+HARNESS VALIDATION (carrier confirmed up -- "xtc: carrier scheduler thread up
+(8 loops, 8 supervisors)" in the node log, 26 SSL connections authorized):
+  threaded 001_ssltests 272/272, 002_scram 28/28, 004_sni 102/102 (402
+  subtests).  LIVE channel binding: 002_scram's channel_binding=require SCRAM
+  handshakes succeed over a TLS connection served by a backend fiber -- the
+  client's tls-server-end-point hash matches the server's, proving the harness
+  exercises channel binding under the carrier.  (Today that hash still comes
+  from PG's OpenSSL be_tls_get_certificate_hash; when the xtc_tls swap lands,
+  THIS SAME TEST re-validates xtc_tls_get_server_cert_hash byte-equivalence
+  live.)  Process-mode ssl unchanged (272/28/21/102), test_backend_runtime 12
+  OK / 0 Fail (001=128, 003=43, 007=46), process regress 245/245.
+
+WHY THE SWAP STAYS GATED (runtime evidence, not assumption):
+1. RUNTIME LIBXTC LACKS THE SECURITY ACCESSORS.  The build COMPILES against
+   xtc-1.24.0 (20 xtc_tls_* symbols incl. get_server_cert_hash /
+   get_peer_subject_dn / has_peer_cert / the CRL+verify_mode+passphrase opts),
+   but the postgres binary's RUNPATH lists xtc-1.8.0 BEFORE xtc-1.24.0, so the
+   loader binds libxtc.so.1 -> 1.8.0 at runtime (confirmed: ldd + patchelf
+   --print-rpath).  1.8.0 exports only 10 xtc_tls_* symbols and is MISSING
+   every v1.24 security accessor.  A swap built on 1.24 headers but running
+   against 1.8 would either fail to resolve the new symbols OR -- worse --
+   pass the larger v1.24 xtc_tls_opts_t to 1.8's smaller ctx_create, whose
+   struct has no crl_file/crl_dir/verify_peer_mode/passphrase_cb fields, so
+   CRL checking, client-cert verification, and channel binding would be
+   SILENTLY DROPPED.  That is a CVE-class weaker TLS path -- exactly what the
+   task forbids.  Unblocking requires fixing the RUNPATH order (prefer 1.24.0)
+   in the nix-config packaging, OUTSIDE this source tree.  PG's own TLS is
+   unaffected: be_tls_* uses PG's directly-linked OpenSSL (libssl.so.3), not
+   libxtc, so the harness results are valid regardless of the libxtc leak.
+2. NO FORCING FUNCTION.  TLS-bearing backend fibers are PINNED (unpin BLOCKED
+   on the libxtc migratable-proc API request -- see "UNPIN BLOCKED").  The swap
+   ENABLES a future TLS-fiber unpin (state lives in xtc_tls_t, not the
+   per-OS-thread OpenSSL error queue); it fixes nothing today, because a pinned
+   fiber never reads a foreign thread's error queue.
+3. NO PARTIAL SAFE INCREMENT.  A connection either uses OpenSSL be_tls_* (today)
+   or xtc_tls_* (fully) -- the handshake + I/O boundary + all accessors move as
+   one unit.  There is no half that serves a connection identically AND is
+   independently testable; a half-wired path is the forbidden weaker path.
+
+SO: the swap co-lands with the TLS-fiber unpin, AFTER (a) the libxtc
+migratable-proc API lands (unblocks unpin) and (b) the RUNPATH prefers 1.24.0
+(so the security accessors are actually present at runtime).  At that point the
+check-threaded-ssl harness is the live regression gate: it must stay green with
+the xtc_tls path serving the carrier connections, and 002_scram re-proves
+channel-binding byte-equivalence end-to-end.  The a75bcc60b3b ssl_sni
+no-migrate invariant and the be_tls_* -> xtc_tls_* mapping spec remain the
+land-time checklist.
