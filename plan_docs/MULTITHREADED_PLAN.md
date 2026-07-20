@@ -3740,3 +3740,38 @@ NOT sufficient -- force a relink (or fully fresh build tree) and VERIFY
 trusting any runtime validation. The threaded-ssl harness (check-threaded-ssl,
 src/test/ssl/threaded_ssl.conf) is the live TLS gate for when the swap lands
 (after the fiber-worker unpin + confirmed 1.24 runtime binding).
+
+### DESIGN LOCKED: xtc_proc workers with pinned=0 (stealable coros) (2026-07-20)
+
+The fiber-worker investigation (plan_docs/MULTITHREADED_FIBER_WORKER_DESIGN.md)
+proved libxtc containment+supervision are PROC-KEYED (a bare xtc_async fiber:
+SIGSEGV -> process killed, no DOWN, xtc_self=NOPROC; an xtc_proc: contained ->
+DOWN(signal), survives). A proc IS already a coroutine (xtc_proc_spawn ->
+xtc_async(__proc_entry)); pinning is an L2 coro property (pinned on the task),
+orthogonal to L3 proc-hood, coupled only by xtc_async hardcoding pinned=1.
+
+LOCKED MODEL: keep xtc_proc workers (identity/pid, recovery/containment, DOWN
+supervision, mailbox) and make their underlying coro pinned=0 (STEALABLE). This
+is the IDIOMATIC libxtc/BEAM model: supervised process with identity that the
+scheduler is free to migrate across carriers for load balancing. Bare fibers are
+the UN-idiomatic choice here (anonymous, unsupervised, uncontained -- libxtc's own
+xtc_launch wraps "per-fiber recovery" in a proc). Migration-safety price is SMALL:
+a running proc is never moved mid-instruction (stealing pops SCHEDULED-not-running
+deque tasks only); every thread-affine site (spinlock, OpenSSL ERR span,
+sigprocmask, static scratch) is yield-free -> assert-tripwires suffice, no park-pin.
+
+ONE verified-absent libxtc piece: xtc_proc_opts_t.migratable (thread a pinned arg
+to the xtc_async the proc spawn already calls; default off = today, ABI-neutral).
+Request: /tmp/libxtc-migratable-proc-opts-request.md. (Supersedes the earlier
+migratable-proc request framing -- now precise: it's a proc OPTS field, not a new
+proc-vs-fiber API.)
+
+PHASED PLAN (each two-reviewer + 0-warnings + 0-Fail + 245/245 green):
+ A) carrier re-resolution in fiber-ctx hook (re-resolve carrier root from
+    __xtc_current_loop on resume, not the saved value) -- PINNED, neutral.
+ B) no-steal assert-tripwire scaffolding at the affine sites -- PINNED, dead.
+ C) libxtc migratable opt-in wired (default off, ABI-neutral) -- gated on the
+    libxtc request landing.
+ D) FLIP: spawn backend-worker coros pinned=0 -> migration goes LIVE (needs A+B+C).
+ E) wake-nudge accuracy (measured). F) benchmark (user gates).
+A+B have NO dependency on the libxtc flag -> landing NOW so D is a small gated flip.
