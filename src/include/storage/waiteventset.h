@@ -77,6 +77,8 @@ struct Latch;
  */
 extern void InitializeWaitEventSupport(void);
 extern void ShutdownWaitEventSupport(void);
+extern void WaitEventSetPresupplySelfPipe(int readfd, int writefd);
+extern bool WaitEventSetUsesSelfPipe(void);
 
 extern WaitEventSet *CreateWaitEventSet(ResourceOwner resowner, int nevents);
 extern void FreeWaitEventSet(WaitEventSet *set);
