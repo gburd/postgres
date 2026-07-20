@@ -3708,3 +3708,35 @@ the xtc_tls path serving the carrier connections, and 002_scram re-proves
 channel-binding byte-equivalence end-to-end.  The a75bcc60b3b ssl_sni
 no-migrate invariant and the be_tls_* -> xtc_tls_* mapping spec remain the
 land-time checklist.
+
+### RUNTIME-LIB BUG CAUGHT + FIXED: postgres was binding stale libxtc 1.8.0 (2026-07-20)
+
+The threaded-ssl agent (04d79b80adc) caught a serious latent bug: the built
+postgres binary's RUNPATH listed .../xtc-1.8.0/lib BEFORE .../xtc-1.24.0/lib, so
+the loader bound libxtc.so.1 -> 1.8.0 at RUNTIME even though we COMPILE against
+1.24.0 headers. So all prior "v1.24.0" validation this session actually exercised
+1.8.0 (tests passed only because the 1.8/1.24 ABI overlaps for what we use). This
+would have SILENTLY undermined the fiber-worker transition (which depends on 1.24
+migratable-spawn / fiber-containment semantics) and was exactly why the TLS swap
+had to stay gated (a v1.24 xtc_tls_opts_t passed to 1.8's ctx_create = short-
+struct read -> dropped CRL/client-cert-verify/channel-binding = CVE-class).
+
+ROOT CAUSE: a stale RUNPATH baked into the postgres binary + tmp_install copy from
+an incremental link that PREDATED this session's 1.24.0 bump; the fresh `meson
+setup` did not force a relink of the already-linked postgres target. The flake
+(flake.nix) correctly pins ONLY 1.24.0 (e944d00) -- no 1.8.0 reference -- so this
+is a stale-artifact issue, NOT a nix-config bug.
+
+FIX: forced a clean relink (touch + ninja postgres) + full `ninja -j2` +
+`meson install`. Verified: RUNPATH now has ONLY xtc-1.24.0; ldd resolves
+libxtc.so.1 -> 1.24.0 for postgres, the installed copy, and test .so's; no 1.8.0
+RUNPATH remains in any built artifact (only stale meson-logs text). Re-ran the
+threaded gate against GENUINE 1.24.0: test_backend_runtime 15 OK / 0 Fail / 2
+SKIP (001=128/128, 003=43/43, 007=46/46). Process regress previously 245/245.
+
+LESSON (add to build hygiene): after a libxtc pin bump, a fresh `meson setup` is
+NOT sufficient -- force a relink (or fully fresh build tree) and VERIFY
+`ldd build/src/backend/postgres | grep xtc` resolves the intended version before
+trusting any runtime validation. The threaded-ssl harness (check-threaded-ssl,
+src/test/ssl/threaded_ssl.conf) is the live TLS gate for when the swap lands
+(after the fiber-worker unpin + confirmed 1.24 runtime binding).
