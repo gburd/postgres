@@ -118,6 +118,16 @@ check-threaded-world-core-tap:
 	  PERL5LIB='$(THREADED_WORLD_CORE_TAP_PERL5LIB)':$${PERL5LIB} \
 	  $(THREADED_WORLD_CORE_PROVE) -I '$(abs_top_srcdir)'/src/test/perl -I '$(THREADED_WORLD_CORE_TAP_DIR)' $(PROVE_FLAGS) $(THREADED_WORLD_CORE_TAP_TESTS)
 
+# Threaded ssl harness: the src/test/ssl TAP suite booted under the carrier so
+# server-side TLS (handshake, client-cert peer DN, CRL reject, SCRAM channel
+# binding, ssl_sni gate) is exercised on backend fibers, not just process mode.
+# Requires PG_TEST_EXTRA=ssl (the ssl tests skip otherwise) and OpenSSL.
+check-threaded-ssl: CHECKPREP_TOP=src/test/regress
+check-threaded-ssl: | temp-install
+check-threaded-ssl: submake-generated-headers
+check-threaded-ssl:
+	$(MAKE) -C src/test/ssl check-threaded-ssl
+
 $(call recurse,check-world,src/test src/pl src/interfaces contrib src/bin src/tools/pg_bsd_indent,check)
 $(call recurse,checkprep,  src/test src/pl src/interfaces contrib src/bin)
 
@@ -233,4 +243,4 @@ check-runtime-lifecycles:
 		--source $(top_srcdir)/src/backend/storage/ipc/dsm.c \
 		--source $(top_srcdir)/src/backend/storage/ipc/ipc.c
 
-.PHONY: dist distcheck docs install-docs world check-world install-world installcheck-world headerscheck cpluspluscheck check-global-lifetimes check-runtime-lifecycles check-threaded-world-core check-threaded-world-core-tap
+.PHONY: dist distcheck docs install-docs world check-world install-world installcheck-world headerscheck cpluspluscheck check-global-lifetimes check-runtime-lifecycles check-threaded-world-core check-threaded-world-core-tap check-threaded-ssl
