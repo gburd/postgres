@@ -3826,3 +3826,34 @@ cassert+threaded GUC memory-context issue).
 NEXT: independent review of A+B; then Phase C (wire migratable, gated on the
 libxtc opts request /tmp/libxtc-migratable-proc-opts-request.md); then D (flip
 pinned=0, migration live); E wake-nudge; F benchmark.
+
+### Phase A+B independent review CLOSED (2026-07-20)
+
+Two truly-independent adversarial reviewers (not the sub-agent self-passes):
+- Phase A (1b102560377): SHIP, no changes. Verified the load-bearing
+  fiber-owned-carrier claim field-by-field against PG + libxtc source
+  (current_backend/session/execution, self-pipe fds=process-global,
+  signalfd=process-scoped, stack_base_ptr=fiber's own migrating coro stack,
+  scheduler_execution, guc mutex depths -- ALL fiber-carried or process-global,
+  none per-OS-thread). xtc_exec_loop_id() reads only __xtc_current_loop (safe in
+  restore); loop_id==exec_id+1 bit-identical to libxtc proc.c:1130; provably dead
+  while pinned; release/process byte-for-byte. Confirms nothing latent for Phase D
+  from the carrier root.
+- Phase B (75f6d32c469): HOLD -> 2 real defects (sigprocmask brackets wrapped
+  PgSessionRecoverError which PARKS via pq_flush to a backpressured client and
+  can ereport(FATAL) on lost protocol sync; per-OS-thread depth never reset ->
+  spurious assert or leaked depth tripping the next reused-carrier fiber).
+  FIXED in 5d8a4bb1b99: narrowed brackets to the sigprocmask() call only (Leave
+  before RecoverError, both sites) -> structurally eliminates any parking/longjmp
+  inside a bracket; crash-safe xtc_pg_affine_section_reset() at fiber entry + at-
+  exit; test-coverage item moot by construction. Re-validated: 0 warnings, ldd
+  1.24.0, cassert -Werror clean, test_backend_runtime 15 OK/0 Fail/2 SKIP, process
+  regress 245/245.
+
+STATUS: Phases A+B settled (reviewed, fixed, green). Migration-safety groundwork
+solid; the fiber-owned-carrier premise (Phase D-critical) is independently
+confirmed. Phase C/D BLOCKED on libxtc shipping xtc_proc_opts_t.migratable
+(request: /tmp/libxtc-migratable-proc-opts-request.md). Pending non-blocking
+items: independent review of the TLS-harness commit 04d79b80adc (test-infra+docs,
+low risk); pre-existing cassert guc.c:1363 assertion in the threaded snapshot
+test (not A/B-caused, does not affect release gate).
