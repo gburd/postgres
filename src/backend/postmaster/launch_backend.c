@@ -36,6 +36,7 @@
 #include <malloc.h>
 #endif
 #include <poll.h>
+#include <fcntl.h>
 #ifndef WIN32
 #include <sys/eventfd.h>
 #endif
@@ -299,6 +300,8 @@ typedef struct BackendPooledCarrierStart
 	PgCarrier	carrier;
 	PgThread	thread;
 	int			carrier_index;
+	int			selfpipe_readfd;
+	int			selfpipe_writefd;
 	pg_tz	   *startup_session_timezone;
 	pg_tz	   *startup_log_timezone;
 } BackendPooledCarrierStart;
@@ -1124,6 +1127,53 @@ backend_pooled_protocol_start_one_carrier(void)
 	carrier_start->carrier_index = carrier_index;
 	carrier_start->startup_session_timezone = session_timezone;
 	carrier_start->startup_log_timezone = log_timezone;
+	carrier_start->selfpipe_readfd = -1;
+	carrier_start->selfpipe_writefd = -1;
+
+	/*
+	 * Create the carrier's latch self-pipe HERE, on the postmaster thread,
+	 * before the carrier thread starts.  A pooled-protocol carrier is a
+	 * long-lived, runtime-critical thread; if it created its self-pipe itself
+	 * (inside InitializeWaitEventSupport) and pipe() failed under fd
+	 * exhaustion, the resulting elog(FATAL) would run the per-backend exit
+	 * path on a thread that is not a backend and then pthread_exit() the
+	 * carrier -- taking the whole threaded server down.  Doing it here lets an
+	 * fd-exhaustion failure fail closed (refuse this carrier, and thus the
+	 * triggering connection) with the runtime intact, matching how fork mode
+	 * refuses a backend when out of resources.
+	 */
+#ifndef WIN32
+	if (WaitEventSetUsesSelfPipe())
+	{
+		int			pipefd[2];
+
+		if (pipe(pipefd) < 0)
+		{
+			int			save_errno = errno;
+
+			elog(LOG, "could not create pooled protocol carrier self-pipe: %m");
+			free(carrier_start);
+			errno = save_errno;
+			return false;
+		}
+		if (fcntl(pipefd[0], F_SETFL, O_NONBLOCK) == -1 ||
+			fcntl(pipefd[1], F_SETFL, O_NONBLOCK) == -1 ||
+			fcntl(pipefd[0], F_SETFD, FD_CLOEXEC) == -1 ||
+			fcntl(pipefd[1], F_SETFD, FD_CLOEXEC) == -1)
+		{
+			int			save_errno = errno;
+
+			elog(LOG, "could not configure pooled protocol carrier self-pipe: %m");
+			(void) close(pipefd[0]);
+			(void) close(pipefd[1]);
+			free(carrier_start);
+			errno = save_errno;
+			return false;
+		}
+		carrier_start->selfpipe_readfd = pipefd[0];
+		carrier_start->selfpipe_writefd = pipefd[1];
+	}
+#endif
 
 	rc = pg_thread_create(&carrier_start->thread,
 						  "postgres pooled protocol carrier",
@@ -1131,6 +1181,12 @@ backend_pooled_protocol_start_one_carrier(void)
 						  carrier_start);
 	if (rc != 0)
 	{
+#ifndef WIN32
+		if (carrier_start->selfpipe_readfd >= 0)
+			(void) close(carrier_start->selfpipe_readfd);
+		if (carrier_start->selfpipe_writefd >= 0)
+			(void) close(carrier_start->selfpipe_writefd);
+#endif
 		free(carrier_start);
 		errno = rc;
 		return false;
@@ -1452,9 +1508,28 @@ backend_pooled_protocol_carrier_entry(void *arg)
 	session_timezone = carrier_start->startup_session_timezone;
 	log_timezone = carrier_start->startup_log_timezone;
 	MemoryContextInit();
+	WaitEventSetPresupplySelfPipe(carrier_start->selfpipe_readfd,
+								 carrier_start->selfpipe_writefd);
 	InitializeWaitEventSupport();
 	(void) set_stack_base();
 	backend_thread_init_random_state();
+
+	/*
+	 * The carrier's self-pipe fds were pre-created on the postmaster thread
+	 * (see backend_pooled_protocol_start_one_carrier), so InitializeWaitEventSupport()
+	 * above cannot elog(FATAL) here on fd exhaustion -- the dominant, reported
+	 * carrier-startup crash path.  Two same-class elog(FATAL) hazards still
+	 * remain on this runtime-critical carrier thread and are deliberately left
+	 * as low-probability follow-ups (Phase 16 / Gate E2-Extensions owns fully
+	 * FATAL-safe carrier startup): the scratch allocations below can promote an
+	 * OOM ERROR to FATAL, and PgRuntimeProtocolSchedulerRegisterCarrier() below
+	 * can FATAL.  The register FATAL is effectively unreachable because the
+	 * postmaster gates carrier creation on the same carrier_limit before
+	 * starting this thread (see backend_pooled_protocol_start_one_carrier), so
+	 * a carrier that got here always fits under the limit.  Neither hazard is
+	 * the fd-exhaustion path this fix targets; do not treat carrier startup as
+	 * fully FATAL-safe just because the self-pipe pipe() moved out.
+	 */
 	max_scratch_backends = MaxBackends > 0 ? MaxBackends : 1024;
 	scratch = MemoryContextAlloc(TopMemoryContext,
 								 sizeof(PgBackend *) * max_scratch_backends);
