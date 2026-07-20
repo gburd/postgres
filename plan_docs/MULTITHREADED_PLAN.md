@@ -3183,3 +3183,56 @@ park/balance win, (ii) the fiber-ctx-hook enabler -> unpin, (iii) other
 libxtc-adoption gaps (primitives we reimplement vs adopt; io_uring/AIO idiom;
 work-stealing-executor-vs-pinning design mismatch). No speculative unpin; the
 migration-safety hook is a DESIGNED, review-gated next step.
+
+### Fiber-ctx-hook: make per-backend current-work track the fiber, not the carrier OS thread (2026-07-20)
+
+USER DECISION: implement the targeted ctx-hook (make the thread-local CACHE of
+the 6 root pointers track the CURRENT FIBER on every switch, instead of being
+bound to the carrier OS thread). Measure the per-switch cost. Then the
+work-stealing-migration concern (spinlock-hold + stolen fiber) becomes
+measurable. Also: transition errno/signal handling to libxtc's fiber APIs;
+audit + migrate any raw __thread not behind the bridge; use libxtc's OpenSSL/TLS
+abstraction; watch for other 3rd-party thread-bound issues.
+
+MECHANISM (confirmed in source):
+- libxtc calls __xtc_fiber_ctx_save()/__xtc_fiber_ctx_restore(void*) on EVERY
+  coro switch (loop_int.h:279-280; coro_fctx.c:435/441/465/470). PG registers
+  NONE for its own state (only libxtc's proc layer registers __xtc_proc_ctx_*).
+- Our per-backend current-work = PgRuntimeCurrentBridgeState + 6
+  PG_THREAD_LOCAL HotRefThreadRef cells (backend_runtime.c:100-118), all derived
+  from 6 roots (runtime/carrier/backend/session/connection/execution). ~130 hot
+  fields derive from these via the checked .def bridge.
+- ENABLER: a chained PG fiber-ctx hook that, on switch, saves the 6 roots for
+  the outgoing fiber and restores+rebinds them (incl. rebinding `carrier` to the
+  executing loop -- the one non-derivable field) for the incoming fiber, then
+  refreshes the bridge cells. This makes a migrated/stolen fiber read ITS OWN
+  state -> the correctness prerequisite for UNPINNING.
+
+STAGED PLAN (each stage gated):
+(1) AUDIT (read-only): every PG_THREAD_LOCAL/__thread in PG + our code; classify
+    behind-the-bridge vs raw. For raw ones NOT covered by the 6-root bridge,
+    plan migration into per-backend session state. Distinguish libxtc TLS:
+    __os_tls_* (os_thread.h) = thread-local-STORAGE abstraction (for OpenSSL &
+    other 3rd-party per-thread state); xtc_tls_* (io_ext.h) = TRANSPORT-layer-
+    security (crypto), NOT storage -- do not conflate. errno/signal: find
+    libxtc's per-fiber errno/sigmask handling and the sites to transition.
+(2) MICROBENCH: cost of the per-switch save/restore+bridge-refresh at realistic
+    switch rates. Is a lazy/generation-checked refresh needed (only re-derive a
+    field cache on first access after a switch, keyed on a per-fiber gen) to
+    avoid eating the win? Decide before wiring the hook broadly.
+(3) IMPLEMENT the fiber-ctx hook (chained via __xtc_fiber_ctx_save/restore),
+    keep process mode byte-for-byte (hook only installed under the threaded
+    carrier), 0 warnings, test_backend_runtime 12/14 + regress green, TWO-
+    REVIEWER gate. This alone should be correctness-neutral WHILE STILL PINNED
+    (validates the hook without changing scheduling).
+(4) THEN measure: with the hook in place, is unpinning safe? The spinlock-hold-
+    while-stolen hazard -- a fiber holding a raw slock_t must NOT be migrated
+    (no yield point). Confirm libxtc only switches at yield points (a fiber
+    holding a spinlock isn't at a yield point, so won't be stolen mid-section) OR
+    add a guard. Measure, don't assume. Unpin is a SEPARATE later stage after
+    the hook proves neutral + the spinlock hazard is cleared.
+(5) errno/signal + OpenSSL(__os_tls_*) + other 3rd-party TLS migration: separate
+    sub-tasks, each measured/reviewed.
+
+Do NOT unpin in the same change as the hook. Do NOT re-benchmark the big run
+until a landed, gated change warrants it (user gates).
