@@ -612,6 +612,36 @@ PgRuntimeRestoreCurrentWork(const PgCurrentWorkSnapshot *snap)
 							true);
 }
 
+/*
+ * Lazy variant of PgRuntimeRestoreCurrentWork.
+ *
+ * Restore the six root pointers WITHOUT re-running the ~230-entry session
+ * GUC pointer rebind (RebindSessionGUCVariablePointers).  That rebind is
+ * unnecessary here because every session-local GUC read already resolves
+ * through the current PgSession root: the hot read path uses owner-token
+ * hot-field caches keyed on CurrentPgSession (miscadmin.h work_mem etc.), and
+ * the GUC metadata arrays (guc_variables / guc_variable_states) are
+ * themselves session-rooted accessors (PgCurrentGUCVariablesRef /
+ * PgCurrentGUCVariableStatesRef).  Swapping the session root therefore lets
+ * all ~130 derived field caches and the GUC state re-derive lazily on first
+ * touch via the existing owner-token mechanism, instead of eagerly rebinding
+ * every GUC on every switch (measured at ~3722ns / 97% of an eager refresh).
+ *
+ * This is the restore used by the fiber-context switch hook, where the cost
+ * of an eager rebind on every coroutine switch would erase the scheduling
+ * win.  The one-time-per-session physical rebind still happens where the
+ * backing storage location actually changes (InitializeThreadedSessionGUCOptions
+ * and PgCarrierAttachBackend), not on every yield.
+ */
+void
+PgRuntimeRestoreCurrentWorkLazy(const PgCurrentWorkSnapshot *snap)
+{
+	Assert(snap != NULL);
+	PgRuntimeSetCurrentWork(snap->runtime, snap->carrier, snap->backend,
+							snap->session, snap->connection, snap->execution,
+							false);
+}
+
 void
 PgCarrierAttachBackend(PgCarrier *carrier, PgBackend *backend,
 					   PgSession *session, PgConnection *connection,
