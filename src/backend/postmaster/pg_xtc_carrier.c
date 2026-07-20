@@ -41,6 +41,7 @@
 #include "storage/latch.h"
 #include "libpq/pqsignal.h"	/* BlockSig */
 #include "postmaster/pg_xtc_carrier.h"
+#include "utils/backend_runtime.h"	/* PgCurrentWorkSnapshot, save/restore-lazy */
 
 /* xtc public API */
 #include "xtc.h"
@@ -480,6 +481,240 @@ xtc_carrier_start_supervisors(void)
 	}
 }
 
+/*
+ * ---------------------------------------------------------------------------
+ * Lazy per-fiber current-work context hook (chained onto libxtc's proc layer).
+ *
+ * libxtc invokes the function pointers __xtc_fiber_ctx_save() /
+ * __xtc_fiber_ctx_restore(void *) on EVERY coroutine switch (see the L2 coro
+ * layer: coro_fctx.c xtc_yield/coro_await, coro_uctx.c preemption).  The L3
+ * proc layer already claims these hooks: xtc_proc_spawn() sets them to
+ * __xtc_proc_ctx_save/restore so that __current_proc survives a yield.
+ * proc.c re-installs them on EVERY spawn, idempotently, to those stable
+ * addresses.
+ *
+ * We CHAIN, not overwrite: our save runs libxtc's proc-layer save and RETURNS
+ * ITS RESULT (the real proc), while ALSO snapshotting PG's six current-work
+ * root pointers into a per-fiber blob; our restore chains libxtc's proc-layer
+ * restore first (so __current_proc is reinstalled from the real proc) and then
+ * reinstalls those six roots when it can positively identify the resuming
+ * fiber's blob.  This makes PG's per-backend current-work track the FIBER
+ * rather than the carrier OS thread across a switch -- the correctness
+ * prerequisite for a later, separately-gated, unpinning of backend fibers.
+ *
+ * Returning the real proc from save (never our blob) is a hard safety
+ * requirement: libxtc's hook pointers are process-global and proc.c resets
+ * them to its own on EVERY spawn from ANY thread, so a save-with-ours /
+ * restore-with-proc.c torn pair can occur.  proc.c's restore does
+ * `__current_proc = ctx`; returning the real proc keeps that correct under the
+ * race (see xtc_pg_fiber_ctx_save/restore for the full argument).
+ *
+ * LAZY by design: the restore swaps the six roots and lets the ~130 derived
+ * field caches and the session-rooted GUC state re-derive on first touch via
+ * the existing owner-token mechanism (PgRuntimeRestoreCurrentWorkLazy -- no
+ * per-switch GUC rebind).  An eager rebind on every switch was measured at
+ * ~3722ns (97% of an eager refresh) and would erase the scheduling win.
+ *
+ * WHILE STILL PINNED this hook is a no-op-equivalent: a backend fiber always
+ * resumes on the same loop with the same session, so the roots restored equal
+ * the roots that were current, and the carrier field is unchanged.  The
+ * existing manual save/restore seams (xtc_pg_wait_fd, method_xtc, fd.c) remain
+ * the belt-and-suspenders correctness guarantee for the cooperative yield
+ * points (and cover the switches where the global hook was transiently reset
+ * to proc.c's by a concurrent spawn); this hook additionally covers ANY switch
+ * (including involuntary SIGVTALRM preemption) and is written correctly for the
+ * future migrating case.
+ * ---------------------------------------------------------------------------
+ */
+
+/*
+ * libxtc's fiber-context hook function pointers.  These are exported globals
+ * (evt/loop.c), declared only in libxtc's internal loop_int.h, so we declare
+ * them locally.  proc.c points them at __xtc_proc_ctx_save/restore on every
+ * spawn.
+ */
+extern void *(*__xtc_fiber_ctx_save) (void);
+extern void (*__xtc_fiber_ctx_restore) (void *);
+
+/*
+ * Per-fiber context blob.  Lives on the backend fiber's own stack for the
+ * fiber's whole lifetime (xtc_carrier_proc's frame never returns until the
+ * fiber exits), so it survives every park.  Exactly one save is outstanding
+ * per fiber at a time (save -> park -> resume -> restore is strictly serial
+ * within a fiber), so a single embedded slot is sufficient.
+ *
+ * `magic` and `owner` let the hook safely recognize one of OUR blobs.
+ * `magic` (first field) classifies a blob at restore; `owner` (the fiber pid
+ * captured at install) additionally guards the SAVE path against a stale
+ * thread-local blob left by a bare fiber (see xtc_pg_fiber_ctx_is_current).
+ * A bare fiber's save returns libxtc's proc_ctx (a struct xtc_proc *), not a
+ * blob; restore reads the first word through the ctx pointer to classify it,
+ * so `magic` must be the first field.  proc_ctx is a live, in-bounds heap
+ * object (a spawned fiber always has one), so reading its leading word is
+ * safe; the magic will simply not match.
+ */
+#define XTC_PG_FIBER_CTX_MAGIC	UINT64CONST(0x7867466962437478)	/* "xtCbFig"-ish */
+
+typedef struct XtcPgFiberCtx
+{
+	uint64		magic;			/* XTC_PG_FIBER_CTX_MAGIC; MUST be first */
+	xtc_pid_t	owner;			/* fiber that owns this blob (xtc_self) */
+	void	   *proc_ctx;		/* libxtc proc layer's saved ctx (chained) */
+	PgCurrentWorkSnapshot snap; /* PG's six current-work roots */
+} XtcPgFiberCtx;
+
+/*
+ * The currently-running backend fiber's context blob on THIS carrier OS
+ * thread, as last established by an install or restore.  It is only trusted
+ * after confirming xtc_self() matches its owner, because bare fibers (e.g.
+ * the per-loop supervisor) interleave WITHOUT updating this slot, so it can
+ * be stale while a bare fiber runs.  NULL before the first backend fiber runs
+ * on this thread.
+ */
+static __thread XtcPgFiberCtx *g_xtc_current_fiber_ctx;
+
+/*
+ * The libxtc proc-layer hooks we chain to.  proc.c always installs the same
+ * stable addresses, so capturing them once (the first time we see non-us
+ * hooks) is safe.
+ */
+static void *(*g_xtc_prev_ctx_save) (void);
+static void (*g_xtc_prev_ctx_restore) (void *);
+
+static void *xtc_pg_fiber_ctx_save(void);
+static void xtc_pg_fiber_ctx_restore(void *ctx);
+
+/*
+ * Is `fc` the blob of the fiber running RIGHT NOW?  Used only from the SAVE
+ * path, where the running fiber IS current (__current_proc is valid, so
+ * xtc_self() is reliable).  A bare fiber leaves the thread-local slot pointing
+ * at some previous backend fiber's blob, so the pid guard is what
+ * distinguishes "a backend fiber is current" from "a bare fiber is current
+ * with a stale slot".  Do NOT call this from restore: there xtc_self() is not
+ * yet reliable (see xtc_pg_fiber_ctx_restore).
+ */
+static inline bool
+xtc_pg_fiber_ctx_is_current(const XtcPgFiberCtx *fc)
+{
+	return fc != NULL &&
+		fc->magic == XTC_PG_FIBER_CTX_MAGIC &&
+		xtc_pid_eq(fc->owner, xtc_self());
+}
+
+/*
+ * save: snapshot the outgoing fiber's PG current-work roots into the fiber's
+ * blob, then chain to libxtc's proc-layer save and RETURN ITS RESULT (the
+ * real proc), NOT our blob.
+ *
+ * Returning the real proc is a hard safety requirement.  libxtc's fiber-ctx
+ * hook pointers are process-global and proc.c UNCONDITIONALLY resets them to
+ * its own __xtc_proc_ctx_save/restore on EVERY xtc_proc_spawn, from ANY
+ * carrier thread.  So between our save and the matching restore of the same
+ * fiber, a concurrent spawn can revert the global restore hook to proc.c's.
+ * proc.c's restore does `__current_proc = ctx` -- if our save had returned the
+ * blob, that torn save(ours)/restore(proc.c) pair would set __current_proc to
+ * our blob and the next kill-check would dereference garbage (observed crash).
+ * By returning the real proc, BOTH our restore and proc.c's restore set
+ * __current_proc correctly no matter which one wins the race; the only thing a
+ * lost restore hook costs is the fiber-local PG root reinstall, which the
+ * manual save/restore seams (xtc_pg_wait_fd, method_xtc, fd.c) still perform.
+ */
+static void *
+xtc_pg_fiber_ctx_save(void)
+{
+	XtcPgFiberCtx *fc = g_xtc_current_fiber_ctx;
+	void	   *proc_ctx;
+
+	/* Run libxtc's proc-layer save; its result (the proc) is what we return. */
+	proc_ctx = g_xtc_prev_ctx_save ? g_xtc_prev_ctx_save() : NULL;
+
+	if (xtc_pg_fiber_ctx_is_current(fc))
+	{
+		/* Record the proc this snapshot belongs to, then snapshot roots. */
+		fc->proc_ctx = proc_ctx;
+		PgRuntimeSaveCurrentWork(&fc->snap);
+	}
+
+	return proc_ctx;
+}
+
+/*
+ * restore: chain to libxtc's proc-layer restore FIRST (reinstall
+ * __current_proc from the real proc `ctx`), then reinstall the resuming
+ * fiber's PG current-work roots (lazily) IF we can positively identify its
+ * blob.
+ *
+ * `ctx` is the real proc (our save returns the proc, never the blob), so the
+ * proc-layer restore below is always correct and __current_proc can never be
+ * corrupted by us -- even under the global-hook-reset race described in
+ * xtc_pg_fiber_ctx_save.
+ *
+ * We locate the resuming fiber's blob via the thread-local current-blob slot
+ * and CONFIRM it belongs to the proc we just restored (fc->proc_ctx == ctx).
+ * If it does not match (a bare fiber resumed, or the slot is stale from an
+ * interleaved sibling), we skip the PG root reinstall: the manual wait-boundary
+ * seams reinstall the roots on this cooperative-yield path, so correctness is
+ * preserved.  We do NOT call xtc_self() here: __current_proc is only valid
+ * AFTER the proc-layer restore, and even then the proc-pointer match is a
+ * stronger, allocation-free identity check.
+ */
+static void
+xtc_pg_fiber_ctx_restore(void *ctx)
+{
+	XtcPgFiberCtx *fc;
+
+	/* Reinstall __current_proc from the real proc first (always safe). */
+	if (g_xtc_prev_ctx_restore)
+		g_xtc_prev_ctx_restore(ctx);
+
+	/*
+	 * Reinstall the resuming fiber's six roots only if the thread-local blob
+	 * is positively THIS fiber's (its recorded proc matches the proc we just
+	 * restored).  PgRuntimeRestoreCurrentWorkLazy does NOT rebind the ~230
+	 * session GUC pointers: they, and the ~130 derived field caches, re-derive
+	 * on first touch via the owner-token / session-rooted accessors.
+	 *
+	 * ponytail: pinned means the saved carrier == executing loop's carrier, so
+	 * no loop->carrier re-resolution is needed yet.  When fibers can migrate (a
+	 * later gated unpin stage), the carrier must be re-resolved from the loop
+	 * this fiber actually resumed on (libxtc __xtc_current_loop) rather than
+	 * trusting the saved value.
+	 */
+	fc = g_xtc_current_fiber_ctx;
+	if (ctx != NULL && fc != NULL &&
+		fc->magic == XTC_PG_FIBER_CTX_MAGIC && fc->proc_ctx == ctx)
+		PgRuntimeRestoreCurrentWorkLazy(&fc->snap);
+}
+
+/*
+ * Install (or re-affirm) the chained hook and register this fiber's ctx blob.
+ * Called once per backend fiber at xtc_carrier_proc entry, before any yield.
+ *
+ * proc.c re-points the libxtc hooks to its own on EVERY spawn, so a
+ * previously-installed chain is overwritten by the time a new backend fiber
+ * runs.  We therefore capture the proc-layer hooks as our chain target here
+ * and (re)install ours.  Idempotent: if the hooks are already ours we leave
+ * the captured chain target untouched (never chain to ourselves).
+ */
+static void
+xtc_pg_install_fiber_ctx_hook(XtcPgFiberCtx *fc)
+{
+	if (__xtc_fiber_ctx_save != xtc_pg_fiber_ctx_save)
+	{
+		/* Not ours (proc.c's, or NULL): capture as the chain target. */
+		g_xtc_prev_ctx_save = __xtc_fiber_ctx_save;
+		g_xtc_prev_ctx_restore = __xtc_fiber_ctx_restore;
+		__xtc_fiber_ctx_save = xtc_pg_fiber_ctx_save;
+		__xtc_fiber_ctx_restore = xtc_pg_fiber_ctx_restore;
+	}
+
+	/* Register this fiber's blob as the running fiber on this thread. */
+	fc->magic = XTC_PG_FIBER_CTX_MAGIC;
+	fc->owner = xtc_self();
+	fc->proc_ctx = NULL;
+	g_xtc_current_fiber_ctx = fc;
+}
+
 /* Fiber entry: run the tree's backend_thread_entry (all real init). */
 static void
 xtc_carrier_proc(void *arg)
@@ -494,12 +729,30 @@ xtc_carrier_proc(void *arg)
 	void	   *entry_arg = arg;
 
 	/*
+	 * Per-fiber current-work context blob.  Lives on THIS fiber's stack for
+	 * its whole lifetime (this frame never returns until the fiber exits) and
+	 * survives every park, so the chained fiber-ctx hook can save/restore PG's
+	 * six current-work roots as the fiber yields and resumes.  See
+	 * xtc_pg_install_fiber_ctx_hook.
+	 */
+	XtcPgFiberCtx fiber_ctx = {0};
+
+	/*
 	 * Do NOT elog() here: the fiber has no PG error stack / ErrorContext yet
 	 * (backend_thread_entry sets those up).  An early ereport would call
 	 * errstart -> exit() and tear down the shared postmaster.
 	 */
 
 	xtc_in_backend_fiber = true;
+
+	/*
+	 * Install (or re-affirm) the chained fiber-context hook and register this
+	 * fiber's blob as the running fiber, BEFORE any yield.  proc.c re-points
+	 * the libxtc hooks to its own on every spawn, so this reinstates our
+	 * chain for the fibers that run after this spawn.  Must precede the
+	 * inject-crash path below, which yields (xtc_proc_sleep).
+	 */
+	xtc_pg_install_fiber_ctx_hook(&fiber_ctx);
 
 	/*
 	 * Debug-only fault injection (AGENTS_XTC #7 Stage 1b test hook).  If
@@ -542,6 +795,7 @@ xtc_carrier_proc(void *arg)
 	entry(entry_arg);
 
 	/* If it ever returns, leave the fiber cleanly. */
+	g_xtc_current_fiber_ctx = NULL;
 	xtc_in_backend_fiber = false;
 	xtc_exit_self(0);
 }
@@ -778,6 +1032,12 @@ xtc_pg_backend_fiber_exit(int code)
 		}
 	}
 
+	/*
+	 * The per-fiber ctx blob (xtc_carrier_proc's stack) is about to vanish;
+	 * clear the running-fiber pointer so no later save on this carrier thread
+	 * dereferences it before the next fiber's install.
+	 */
+	g_xtc_current_fiber_ctx = NULL;
 	xtc_in_backend_fiber = false;
 
 	xtc_exit_self(code);
@@ -795,7 +1055,6 @@ xtc_pg_backend_fiber_exit(int code)
  */
 #include "storage/waiteventset.h"	/* WL_* */
 #include "xtc_io.h"					/* XTC_IO_* */
-#include "utils/backend_runtime.h"	/* PgCurrentWorkSnapshot, save/restore */
 
 int
 xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)

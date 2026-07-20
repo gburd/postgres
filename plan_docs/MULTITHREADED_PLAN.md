@@ -3325,3 +3325,64 @@ REQUEST FROM LIBXTC (write-up to /tmp, user passes it on): expanded xtc_tls_opts
  OpenSSL error-queue hazard entirely; migration stages behind the expanded opts.
  Current xtc_tls_opts only: cert/key/ca/verify_peer/alpn/min_version/max_version.
 No unpin in the hook change. No big re-benchmark until a gated change warrants it.
+
+### IMPLEMENTED: lazy fiber-ctx hook + GUC session-rooting (2026-07-20)
+
+Landed (still pinned, process mode byte-for-byte, two adversarial reviews):
+
+- LAZY fiber-ctx hook in src/backend/postmaster/pg_xtc_carrier.c (USE_XTC_CARRIER
+  only). A per-fiber XtcPgFiberCtx blob lives on xtc_carrier_proc's fiber stack;
+  installed via a chain onto libxtc's __xtc_fiber_ctx_save/restore in
+  xtc_carrier_proc before any yield, and cleared at both fiber-exit sites.
+  save() snapshots the 6 roots into the blob and RETURNS THE REAL PROC (chained
+  proc-layer save result); restore() chains the proc-layer restore FIRST, then
+  reinstalls the 6 roots via PgRuntimeRestoreCurrentWorkLazy IF the thread-local
+  blob's recorded proc matches the resumed proc.
+- CRITICAL FINDING (caused an intermittent crash before the fix): libxtc's
+  __xtc_fiber_ctx_save/restore are PROCESS-GLOBAL and proc.c
+  UNCONDITIONALLY resets them to __xtc_proc_ctx_save/restore on EVERY
+  xtc_proc_spawn from ANY carrier thread. So a save-with-ours /
+  restore-with-proc.c torn pair happens across a concurrent spawn. If save
+  returned our blob, proc.c's restore (`__current_proc = ctx`) would set
+  __current_proc to the blob -> __xtc_proc_kill_check derefs garbage ->
+  fault-handler recursion (observed core: WalWriter/WaitIO fiber resume).
+  FIX: our save returns the real proc, so BOTH restores set __current_proc
+  correctly under the race; a lost restore-hook only costs the fiber-local
+  root reinstall, which the manual wait-boundary seams already perform. This
+  is why the hook is safe/neutral while pinned and why the manual seams stay.
+- GUC session-rooting: no new plumbing needed. guc_variables / guc_variable_states
+  / num_guc_variables / guc_hashtab are already #define'd to session-rooted
+  accessors (PgCurrentGUCVariablesRef / PgCurrentGUCVariableStatesRef etc.,
+  rooted in CurrentPgSession), and hot GUC reads (miscadmin.h work_mem, ...)
+  use owner-token hot-field caches keyed on CurrentPgSession. So swapping the
+  session root re-resolves all GUC reads lazily; the 230-entry
+  RebindSessionGUCVariablePointers is NOT needed on a switch (only once per
+  session-array at InitializeThreadedSessionGUCOptions / PgCarrierAttachBackend).
+  PgRuntimeRestoreCurrentWorkLazy = PgRuntimeSetCurrentWork(...,false) skips it,
+  matching the already-established PgSetCurrentSession(rebind=false) behavior.
+- errno-across-yield AUDIT: clean, nothing to fix. Every backend-fiber yield
+  site reads errno from a FRESH syscall after the yield (waiteventset.c
+  epoll_wait(0) after the park; proc.c self-pipe drain read()) or sets errno
+  from libxtc's converted return code (fd.c xtc_aio_f[data]sync errno=-xrc;
+  method_xtc.c stores the negative-errno result). No raw libc errno is read
+  across a yield.
+- SIGNAL compose CONFIRMED (read-only, no change): postmaster keeps
+  SIGINT/SIGTERM on its main thread (postmaster.c pqsignal + UnBlockSig
+  ServerLoop); carrier bring-up blocks all signals around app-create + the raw
+  scheduler pthread_create (pg_xtc_carrier.c BlockSig), and libxtc loop/pool
+  threads start all-blocked via __os_pthread_create_masked; the R1 fault guard
+  (xtc_fault_guard_install, PG_XTC_NO_FAULT_GUARD) is per-loop-thread. The hook
+  touches no signal state and fires at the SIGVTALRM-preemption switch too via
+  the same __xtc_fiber_ctx_* pointers. No conflict.
+- ENV NOTE: this checkout's runtime RUNPATH/pkg-config leaks an old
+  libxtc-1.8.0 ahead of the 1.23.3 the build links against
+  (PKG_CONFIG_PATH_FOR_TARGET ends in xtc-1.8.0). The hook is stable under BOTH
+  (verified 001 x6 green, pooled 007 x3, and a direct 1.23.3-forced repro).
+  The intermittent pre-fix crash reproduced under both versions -- it was the
+  global-reset race, not a version skew.
+- Test: test_current_work_snapshot_lazy_restore (test_backend_runtime_carrier.c)
+  exercises the save -> sibling-switch -> lazy-restore round trip and confirms
+  the 6 roots + MyProc/MyLatch round-trip; GUC session-rooting is covered by the
+  existing test_session_connection_guc_state_is_session_local (rebind=false swap).
+- NO unpin. Correctness-neutral while pinned. Re-benchmark deferred to the later
+  gated unpin stage.

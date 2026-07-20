@@ -13,6 +13,7 @@ SELECT test_carrier_protocol_park_prepare_commit();
 SELECT test_protocol_scheduler_poll_buffered_read();
 SELECT test_protocol_read_wake_applies_backend_interrupt();
 SELECT test_carrier_misc_state_is_carrier_local();
+SELECT test_current_work_snapshot_lazy_restore();
 SELECT test_thread_install_adopts_backend_fallback_state();
 SELECT test_thread_install_adopts_session_execution_fallback_state();
 SELECT test_thread_install_adopts_connection_fallback_state();
