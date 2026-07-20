@@ -3146,3 +3146,40 @@ Inputs for the diagnosis:
 - io_uring 12-14%: io_method=sync was forced; check whether the AIO/io_uring
   completion path (xtc_io) wakes the owning carrier promptly or leaves it in
   io_cqring_wait while runnable fibers wait elsewhere.
+
+### Why pinned-per-session; the full-work-stealing blocker; libxtc-adoption roadmap (2026-07-20)
+
+USER DIRECTION: move toward full work-stealing (don't pin backend fibers; let
+libxtc rebalance), and find/fix other ways we're not fully embracing libxtc.
+
+WHY WE'RE PINNED (the blocker, not a chosen end-state): PG's pervasive
+per-backend __thread/TLS "current-work" state -- MyProc, CurrentPgBackend,
+CurrentPgExecution, error/memory-context stacks, MyLatch,
+PgRuntimeCurrentBridgeState (all PG_THREAD_LOCAL bound to the CARRIER OS thread).
+A fiber work-stolen A->B mid-execution reads carrier B's TLS, not its own ->
+crash/corruption (the exact class that broke the test-75 diagnosis). We
+save/restore this state only at SPECIFIC wait boundaries (xtc_pg_wait_fd,
+pg_fdatasync), NOT on every fiber switch. libxtc pins procs (xtc_proc_spawn ->
+pinned=1) precisely to give shard-affinity so PG's TLS stays coherent. So
+pinning is a CORRECTNESS crutch for missing migration-safety.
+
+ENABLER for unpinning (the real work): register a PG per-backend
+fiber-ctx save/restore hook via libxtc's __xtc_fiber_ctx_save/restore (proc.c
+already uses these to keep __current_proc correct across yield; PG registers
+NONE for its OWN current-work). A hook that saves/restores ALL per-backend
+current-work on EVERY context switch would make a stolen fiber read its own
+state on resume -> unpin becomes safe. Cost: ~6-pointer save/restore per switch.
+Must inventory EVERY piece of per-backend TLS needing migration-safety.
+
+CHEAP INTERIM WIN (maybe, no unpin): the 54% idle + __xtc_exec_try_steal 18.76%
+may be idle carriers HOT-SPINNING in the steal loop instead of PARKING when all
+peer work is pinned (libxtc idle policy / a knob) + load IMBALANCE from pinning
+concentrating sessions on some carriers. Parking idle carriers + balancing
+session->carrier assignment could reclaim the wasted steal CPU without the risky
+unpin. Under investigation (agent 1fdbcfc9).
+
+Deliverable: /tmp/libxtc-model-adoption-roadmap.md ranking (i) interim
+park/balance win, (ii) the fiber-ctx-hook enabler -> unpin, (iii) other
+libxtc-adoption gaps (primitives we reimplement vs adopt; io_uring/AIO idiom;
+work-stealing-executor-vs-pinning design mismatch). No speculative unpin; the
+migration-safety hook is a DESIGNED, review-gated next step.
