@@ -77,6 +77,12 @@ SELECT test_carrier_misc_state_is_carrier_local();
  t
 (1 row)
 
+SELECT test_current_work_snapshot_lazy_restore();
+ test_current_work_snapshot_lazy_restore 
+-----------------------------------------
+ t
+(1 row)
+
 SELECT test_thread_install_adopts_backend_fallback_state();
  test_thread_install_adopts_backend_fallback_state 
 ---------------------------------------------------

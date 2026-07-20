@@ -891,3 +891,151 @@ test_protocol_read_wake_applies_backend_interrupt(PG_FUNCTION_ARGS)
 
 	PG_RETURN_BOOL(true);
 }
+
+
+/*
+ * Simulate the fiber-context switch handoff that the chained fiber-ctx hook
+ * performs on every coroutine switch, using the public current-work snapshot
+ * API + the LAZY restore (PgRuntimeRestoreCurrentWorkLazy).  A backend fiber
+ * saves its six current-work roots, the scheduler runs a sibling backend on
+ * the same OS thread (clobbering the thread-local current-work bridge), and
+ * the fiber then lazily restores its own roots on resume.
+ *
+ * This proves, without a live carrier, the root-handoff claim behind the hook
+ * while pinned: the six roots and the compatibility globals derived from them
+ * (MyProc/MyProcNumber/MyLatch) round-trip exactly across a sibling switch
+ * even though the lazy restore skips RebindSessionGUCVariablePointers.  The
+ * companion claim -- that a session-local GUC read still resolves through the
+ * restored session root without that rebind -- is covered by
+ * test_session_connection_guc_state_is_session_local, which swaps the session
+ * root with the same rebind=false refresh (PgSetCurrentSession) and reads GUCs
+ * back per session.
+ */
+PG_FUNCTION_INFO_V1(test_current_work_snapshot_lazy_restore);
+Datum
+test_current_work_snapshot_lazy_restore(PG_FUNCTION_ARGS)
+{
+	PgRuntime  *saved_runtime;
+	PgCarrier  *saved_carrier;
+	PgBackend  *saved_backend;
+	PgSession  *saved_session;
+	PgConnection *saved_connection;
+	PgExecution *saved_execution;
+	MemoryContext saved_current_memory_context;
+	ResourceOwner saved_current_resource_owner;
+	PgThreadBackendRuntimeState state_a;
+	PgThreadBackendRuntimeState state_b;
+	PGPROC		fake_proc_a;
+	PGPROC		fake_proc_b;
+	Latch		fake_latch_a;
+	Latch		fake_latch_b;
+	PgCurrentWorkSnapshot snap;
+	bool		ok = true;
+
+	saved_runtime = CurrentPgRuntime;
+	saved_carrier = CurrentPgCarrier;
+	saved_backend = CurrentPgBackend;
+	saved_session = CurrentPgSession;
+	saved_connection = CurrentPgConnection;
+	saved_execution = CurrentPgExecution;
+	saved_current_memory_context = CurrentMemoryContext;
+	saved_current_resource_owner = CurrentResourceOwner;
+
+	InitializePgThreadRuntime(NULL);
+	InitializePgThreadBackendRuntimeState(&state_a, B_BACKEND, NULL,
+										  &fake_latch_a);
+	InitializePgThreadBackendRuntimeState(&state_b, B_BACKEND, NULL,
+										  &fake_latch_b);
+	PgCarrierDetachBackend(&state_a.carrier, &state_a.logical.backend);
+	PgCarrierDetachBackend(&state_b.carrier, &state_b.logical.backend);
+	MemSet(&fake_proc_a, 0, sizeof(fake_proc_a));
+	MemSet(&fake_proc_b, 0, sizeof(fake_proc_b));
+	InitLatch(&fake_latch_a);
+	InitLatch(&fake_latch_b);
+	state_a.logical.backend.my_proc = &fake_proc_a;
+	state_a.logical.backend.my_proc_number = 101;
+	state_a.logical.backend.core.latch = &fake_latch_a;
+	state_b.logical.backend.my_proc = &fake_proc_b;
+	state_b.logical.backend.my_proc_number = 102;
+	state_b.logical.backend.core.latch = &fake_latch_b;
+
+	PG_TRY();
+	{
+		/* Fiber A becomes current. */
+		PgCarrierAttachBackend(&state_a.carrier, &state_a.logical.backend,
+							   &state_a.logical.session,
+							   &state_a.logical.connection,
+							   &state_a.logical.execution);
+		ok = ok && CurrentPgBackend == &state_a.logical.backend;
+		ok = ok && MyProc == &fake_proc_a;
+		ok = ok && MyProcNumber == 101;
+		ok = ok && MyLatch == &fake_latch_a;
+
+		/*
+		 * Fiber A is about to park: the chained hook's save captures A's six
+		 * roots.  (We call the same public entry the hook uses.)
+		 */
+		PgRuntimeSaveCurrentWork(&snap);
+		ok = ok && snap.backend == &state_a.logical.backend;
+		ok = ok && snap.session == &state_a.logical.session;
+		ok = ok && snap.carrier == &state_a.carrier;
+
+		/*
+		 * The scheduler runs sibling fiber B on this OS thread, clobbering the
+		 * thread-local current-work bridge with B's roots.
+		 */
+		PgCarrierAttachBackend(&state_b.carrier, &state_b.logical.backend,
+							   &state_b.logical.session,
+							   &state_b.logical.connection,
+							   &state_b.logical.execution);
+		ok = ok && CurrentPgBackend == &state_b.logical.backend;
+		ok = ok && CurrentPgSession == &state_b.logical.session;
+		ok = ok && MyProc == &fake_proc_b;
+		ok = ok && MyProcNumber == 102;
+		ok = ok && MyLatch == &fake_latch_b;
+
+		/*
+		 * Fiber A resumes: the chained hook's restore reinstalls A's roots
+		 * WITHOUT a GUC rebind.  Verify every root is A's again and that the
+		 * compatibility globals derived from them track A.
+		 */
+		PgRuntimeRestoreCurrentWorkLazy(&snap);
+		ok = ok && CurrentPgRuntime == snap.runtime;
+		ok = ok && CurrentPgCarrier == &state_a.carrier;
+		ok = ok && CurrentPgBackend == &state_a.logical.backend;
+		ok = ok && CurrentPgSession == &state_a.logical.session;
+		ok = ok && CurrentPgConnection == &state_a.logical.connection;
+		ok = ok && CurrentPgExecution == &state_a.logical.execution;
+		ok = ok && MyProc == &fake_proc_a;
+		ok = ok && MyProcNumber == 101;
+		ok = ok && MyLatch == &fake_latch_a;
+
+		/* Detach whichever backend is current and restore the real work. */
+		if (CurrentPgCarrier == &state_a.carrier &&
+			state_a.carrier.current_backend != NULL)
+			PgCarrierDetachBackend(&state_a.carrier, &state_a.logical.backend);
+		if (state_b.carrier.current_backend != NULL)
+			PgCarrierDetachBackend(&state_b.carrier, &state_b.logical.backend);
+
+		PgRuntimeSetCurrentWork(saved_runtime, saved_carrier, saved_backend,
+								saved_session, saved_connection,
+								saved_execution, false);
+		CurrentMemoryContext = saved_current_memory_context;
+		CurrentResourceOwner = saved_current_resource_owner;
+	}
+	PG_CATCH();
+	{
+		PgRuntimeSetCurrentWork(saved_runtime, saved_carrier, saved_backend,
+								saved_session, saved_connection,
+								saved_execution, false);
+		CurrentMemoryContext = saved_current_memory_context;
+		CurrentResourceOwner = saved_current_resource_owner;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	if (!ok)
+		elog(ERROR, "current-work lazy restore did not preserve fiber-local roots");
+
+	PG_RETURN_BOOL(true);
+}
