@@ -3386,3 +3386,39 @@ Landed (still pinned, process mode byte-for-byte, two adversarial reviews):
   existing test_session_connection_guc_state_is_session_local (rebind=false swap).
 - NO unpin. Correctness-neutral while pinned. Re-benchmark deferred to the later
   gated unpin stage.
+
+### Post-hook sequence (2026-07-20): (a) independent review -> (b) unpin prereqs -> new libxtc (TLS+errno) -> benchmark
+
+USER-APPROVED ORDER:
+(a) INDEPENDENT adversarial review of d3a64636fad (the lazy fiber-ctx hook) --
+    the in-session reviews were not truly independent (nested subagent tool was
+    unavailable). Two parallel independent reviewers dispatched: chaining/race/
+    lifetime, and GUC/lazy-restore/memory-coherence. Address any defect before (b).
+(b) STAGE THE UNPIN PREREQUISITES (the no-steal guards + carrier re-resolution),
+    but do NOT unpin yet in the same change -- unpin is the flip AFTER prereqs +
+    review. Prereq targets (from the audit + the hook's own ponytail note):
+    - CARRIER RE-RESOLUTION: the hook's restore currently trusts the SAVED carrier
+      (valid only while pinned). For migration, re-resolve carrier from the loop
+      the fiber actually resumed on (libxtc __xtc_current_loop / current-loop API).
+      Marked ponytail in xtc_pg_fiber_ctx_restore (pg_xtc_carrier.c).
+    - NO-STEAL GUARDS (a fiber holding these must NOT be migrated mid-section):
+      (1) OpenSSL per-OS-thread error queue: guard the ERR_clear_error()...
+          ERR_get_error() span in be-secure-openssl.c as no-yield/no-steal.
+      (2) error-recovery sigprocmask(UnBlockSig) at postgres.c ~5493/~7065 --
+          mark no-steal.
+      (3) unpack_sql_state static buffer -- audit callers / make no-steal or
+          per-fiber.
+      (4) SPINLOCK HOLD: a fiber holding a raw slock_t (s_lock) must not be stolen
+          (no yield point inside a spinlock section, so libxtc won't switch there
+          -- CONFIRM libxtc only switches at yield points, i.e. a spinlock section
+          contains no await/park; if confirmed this is free, else add a guard).
+      Determine libxtc's "no-steal / pin-for-section" primitive (a critical-section
+      / unsafe-bracket like __xtc_unsafe_enter/leave, or xtc_proc_recovery, or a
+      per-fiber no-migrate flag) and use it. VERIFY-BEFORE-REQUESTING: if libxtc
+      lacks a scoped no-steal primitive, write a /tmp request.
+THEN: integrate a new libxtc with the TLS-opts expansion (per /tmp/
+    libxtc-tls-opts-expansion-request.md) + any errno additions -> migrate
+    be-secure-openssl to xtc_tls_* behind the expanded opts.
+THEN (and only then): UNPIN backend fibers + re-run the A/B benchmarks (user gates
+    the big run). Expect the 54%-idle/__xtc_exec_try_steal ceiling to move once
+    work-stealing actually rebalances runnable fibers across idle carriers.
