@@ -57,5 +57,58 @@ extern bool xtc_pg_consume_genuine_crash(void);
  */
 extern bool xtc_pg_backend_fiber_is_migratable(void);
 
+/*
+ * No-steal affine-section tripwire (Phase B).
+ *
+ * Some short spans of backend code hold OS-thread-affine state that would be
+ * wrong if the fiber resumed on a different carrier: a raw spinlock hold, the
+ * OpenSSL per-thread error queue span (ERR_clear_error .. ERR_get_error), the
+ * sigprocmask signal-mask windows, and per-call static scratch buffers.  The
+ * audit (plan_docs/MULTITHREADED_FIBER_WORKER_DESIGN.md section 4) established
+ * that NONE of these spans contains a cooperative yield point, so a fiber can
+ * never PARK inside one and thus can never be stolen inside one (a running
+ * fiber is never moved mid-instruction; only a parked-then-woken task migrates
+ * off the deque).  They are therefore safe-by-construction while pinned AND
+ * after the future unpin.
+ *
+ * XtcPgNoStealEnter/Leave bracket such a span and bump a per-fiber affine
+ * depth; the fiber park choke points (xtc_pg_wait_fd and the fiber-ctx save
+ * hook) assert the depth is zero, so if a future change ever introduces a
+ * yield inside a bracketed affine span the assertion fires the instant it
+ * becomes reachable -- the ssl_sni-invariant tripwire pattern, extended to the
+ * park boundary.  While fibers are pinned (and in a non-assert or process
+ * build) the assertion is dead; the whole mechanism compiles to nothing
+ * outside USE_XTC_CARRIER + assertions, so process mode and non-fiber threaded
+ * mode are byte-for-byte unchanged.
+ *
+ * The depth counter and the park-boundary CHECK are BOTH compiled only in
+ * assert builds (USE_ASSERT_CHECKING): the whole mechanism is a tripwire, not
+ * runtime enforcement, so a release build -- carrier or not -- pays nothing and
+ * is byte-for-byte unchanged.
+ */
+#ifdef USE_ASSERT_CHECKING
+extern void xtc_pg_affine_section_enter(void);
+extern void xtc_pg_affine_section_leave(void);
+extern int	xtc_pg_affine_section_depth(void);
+
+#define XtcPgNoStealEnter() xtc_pg_affine_section_enter()
+#define XtcPgNoStealLeave() xtc_pg_affine_section_leave()
+#else
+#define XtcPgNoStealEnter() ((void) 0)
+#define XtcPgNoStealLeave() ((void) 0)
+#endif
+
+#else							/* !USE_XTC_CARRIER */
+
+/*
+ * Process build and non-carrier threaded build: the no-steal tripwire is
+ * inert.  Defining the brackets as no-ops here lets affine sites in shared
+ * code (be-secure-openssl.c, postgres.c) carry the annotation unconditionally
+ * without an #ifdef at every call site, and keeps those TUs byte-for-byte
+ * unchanged when the carrier is not compiled in.
+ */
+#define XtcPgNoStealEnter() ((void) 0)
+#define XtcPgNoStealLeave() ((void) 0)
+
 #endif							/* USE_XTC_CARRIER */
 #endif							/* PG_XTC_CARRIER_H */

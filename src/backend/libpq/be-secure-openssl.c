@@ -1244,10 +1244,17 @@ be_tls_read(Port *port, void *ptr, size_t len, int *waitfor)
 	unsigned long ecode;
 
 	errno = 0;
+#ifdef USE_XTC_CARRIER
+	/* Phase B: OpenSSL's error queue is per-OS-thread; this span must not yield. */
+	XtcPgNoStealEnter();
+#endif
 	ERR_clear_error();
 	n = SSL_read(port->ssl, ptr, len);
 	err = SSL_get_error(port->ssl, n);
 	ecode = (err != SSL_ERROR_NONE || n < 0) ? ERR_get_error() : 0;
+#ifdef USE_XTC_CARRIER
+	XtcPgNoStealLeave();
+#endif
 	switch (err)
 	{
 		case SSL_ERROR_NONE:
@@ -1303,10 +1310,17 @@ be_tls_write(Port *port, const void *ptr, size_t len, int *waitfor)
 	unsigned long ecode;
 
 	errno = 0;
+#ifdef USE_XTC_CARRIER
+	/* Phase B: OpenSSL's error queue is per-OS-thread; this span must not yield. */
+	XtcPgNoStealEnter();
+#endif
 	ERR_clear_error();
 	n = SSL_write(port->ssl, ptr, len);
 	err = SSL_get_error(port->ssl, n);
 	ecode = (err != SSL_ERROR_NONE || n < 0) ? ERR_get_error() : 0;
+#ifdef USE_XTC_CARRIER
+	XtcPgNoStealLeave();
+#endif
 	switch (err)
 	{
 		case SSL_ERROR_NONE:
