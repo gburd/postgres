@@ -688,16 +688,49 @@ xtc_pg_fiber_ctx_restore(void *ctx)
 	 * session GUC pointers: they, and the ~130 derived field caches, re-derive
 	 * on first touch via the owner-token / session-rooted accessors.
 	 *
-	 * ponytail: pinned means the saved carrier == executing loop's carrier, so
-	 * no loop->carrier re-resolution is needed yet.  When fibers can migrate (a
-	 * later gated unpin stage), the carrier must be re-resolved from the loop
-	 * this fiber actually resumed on (libxtc __xtc_current_loop) rather than
-	 * trusting the saved value.
+	 * CARRIER ROOT IS FIBER-OWNED, NOT PER-LOOP (Phase A finding).  In this
+	 * tree's xtc fiber-per-session model the PgCarrier is embedded in the
+	 * fiber's own BackendThreadStart.runtime_state (launch_backend.c) and its
+	 * current_backend/session/execution point at THIS fiber's logical state.
+	 * The fiber carries that carrier struct with it across a steal, so the
+	 * saved snap.carrier is ALREADY the correct root after a migration -- there
+	 * is no per-loop PgCarrier to "re-resolve" it from (the earlier design note
+	 * assumed a BEAM-style per-loop carrier that this architecture does not
+	 * have; xtc_exec_loop maps a loop index to an xtc_loop_t*, not a PgCarrier).
+	 * Even the carrier's ostensibly thread-affine fields are effectively
+	 * fiber-owned here: the wait_event self-pipe fds are created per fiber in
+	 * InitializeWaitEventSupport and stack_base_ptr captures the fiber's own
+	 * coroutine stack (which migrates WITH the fiber), so none of them go stale
+	 * on a steal.  The migration hazards that DO exist are per-OS-thread state
+	 * OUTSIDE the carrier struct -- the signal mask and the OpenSSL error queue
+	 * -- which Phase B tripwires cover at their affine sites, not a root swap.
+	 *
+	 * Tripwire (assert-only, dead while pinned): confirm the loop this fiber
+	 * resumed on -- xtc_exec_loop_id(), reading libxtc's __xtc_current_loop
+	 * bound by the loop step before this task runs -- equals the loop it was
+	 * spawned on (fc->owner.loop_id, the fiber pid's spawn loop, == exec_id + 1;
+	 * xtc_exec_loop_id() == exec_id, or -1 off a loop / in single-loop mode).
+	 * While fibers are PINNED the resumed loop always equals the spawn loop, so
+	 * this can never fire; it makes the fiber-owned-carrier invariant explicit
+	 * and turns "a fiber silently resumed on a different loop" (only possible
+	 * once a future gated unpin makes coros migratable) into a loud failure the
+	 * instant it becomes true without the Phase D contents refresh in place.
+	 * xtc_pg_backend_fiber_is_migratable() (false today) gates it so the
+	 * assertion becomes advisory, not a hard equality, when migration is live.
 	 */
 	fc = g_xtc_current_fiber_ctx;
 	if (ctx != NULL && fc != NULL &&
 		fc->magic == XTC_PG_FIBER_CTX_MAGIC && fc->proc_ctx == ctx)
+	{
+#ifdef USE_ASSERT_CHECKING
+		int			resume_loop = xtc_exec_loop_id();
+
+		Assert(xtc_pg_backend_fiber_is_migratable() ||
+			   resume_loop < 0 ||
+			   (uint16_t) (resume_loop + 1) == fc->owner.loop_id);
+#endif
 		PgRuntimeRestoreCurrentWorkLazy(&fc->snap);
+	}
 }
 
 /*
