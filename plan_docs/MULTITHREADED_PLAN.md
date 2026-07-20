@@ -3422,3 +3422,37 @@ THEN: integrate a new libxtc with the TLS-opts expansion (per /tmp/
 THEN (and only then): UNPIN backend fibers + re-run the A/B benchmarks (user gates
     the big run). Expect the 54%-idle/__xtc_exec_try_steal ceiling to move once
     work-stealing actually rebalances runnable fibers across idle carriers.
+
+### libxtc TLS expansion REPLY received (2026-07-20) -- v1.24.0 (main b6d57a3)
+
+/tmp/libxtc-tls-opts-expansion-reply.md: the libxtc team LANDED essentially all
+our blockers + needed items for xtc_tls_* (ships v1.24.0). Assessment:
+- Channel binding (#24) DONE: xtc_tls_get_server_cert_hash() RFC-5929 exact
+  (MD5/SHA1->SHA256 else cert sig-alg digest), XTC_E_RANGE on small buffer. This
+  was THE security must-have (else SCRAM channel binding would silently drop).
+- Peer DN/CN (#21) DONE with embedded-NUL rejection (our CVE-2009-4034 note).
+- verify_peer KEPT + verify_peer_mode tri-state added (ABI-safe; zeroed opts ==
+  old behavior; PG sets XTC_TLS_VERIFY_REQUEST). Good call.
+- Hardening #9/#12 (no-reneg, moving-write-buffer) + no-compression/no-tickets/
+  session-cache-off made UNCONDITIONAL server defaults (no knob).
+- Parity accessors all in (version/cipher/bits/issuer/serial/ALPN-selected,
+  cipher_list/ciphersuites_13/groups, crl_file/crl_dir, passphrase_cb,
+  prefer_server_ciphers). Non-OpenSSL backends return XTC_E_NOSYS/NULL (we're
+  OpenSSL-only -> fine). RFC-5705 exporter correctly NOT added (PG uses only
+  tls-server-end-point).
+
+OPEN GATES to verify BEFORE the be_tls_* -> xtc_tls_* port (do NOT assume):
+1. SNI (#29) is DEFERRED -- "blocker only when ssl_sni=on". CONFIRM PG's ssl_sni
+   default + whether our threaded config enables it. If server-side SNI matters,
+   either gate ssl_sni=off for threaded-TLS-unpin, accept it, or ask libxtc to
+   prioritize #29. This is the one remaining TLS-unpin gate.
+2. Confirm PG's SSL posture matches the UNCONDITIONAL hardening defaults (no PG
+   GUC/extension path expects to toggle no-reneg/compression/tickets/cache). If
+   identical + non-configurable -> strictly better; if PG toggles any -> subtle
+   behavior change to gate.
+
+SEQUENCE UNCHANGED: this is the THIRD step (integrate new libxtc TLS+errno). It
+comes AFTER (a) hook review (in-flight) + (b) unpin prereqs. The reply de-risks
+the TLS-fiber unpin gate (now open modulo SNI) but does NOT change the current
+step. Bump libxtc pin to v1.24.0 (fresh build dir) when we reach the TLS-port
+step, then port be_tls_* onto xtc_tls_* behind the expanded opts.
