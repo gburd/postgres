@@ -2989,3 +2989,42 @@ NEXT (agreed plan): (a) fix the pipe()->segfault (fail-closed, not crash);
 isolate the scalability limit at true ~100% CPU (durability-off removes the WAL
 fsync bound so we see the scheduler/lock ceiling). Profile the WAL-insert /
 lock-wait path (perf flamegraph) to name the top serializer.
+
+### WAL / spinlock fiber-awareness -- agreed plan (2026-07-20)
+
+DECISION: do NOT speculatively convert any lock. The mt OLTP gap (metal:
+58-64% of fork, durability-on, WAL-bound) is HYPOTHESIZED to be
+insertpos_lck (the slock_t WAL-reservation spinlock, xlog.c:396) serializing
+worse under cooperative fiber scheduling than under fork, but this is NOT yet
+profiler-confirmed.
+
+Key distinction:
+- LWLocks (WALInsertLocks x8, buffer content locks, ...) are ALREADY partly
+  fiber-aware: Phase 17's ProcWaitOnSemaphore/sem_wake_fd parks the fiber on an
+  eventfd on the deep-wait path instead of blocking the carrier. Residual cost
+  is wait/wake overhead, not a hard block. Largely handled.
+- SPINLOCKS (slock_t / s_lock) are the fiber-hostile primitive: no yield point,
+  a spinning fiber pins its carrier, and a descheduled holder causes convoying.
+  insertpos_lck is the leading candidate (contended + hot OLTP write path). But
+  spinlocks guard TINY critical sections -- converting a short-hold spinlock to
+  a yielding lock adds park/wake cost that can be WORSE than the spin, and a
+  yield inside a spinlock-protected section can deadlock/corrupt. High risk.
+
+PLAN:
+(A) WAIT for the Part B perf run (durability-off, VU=384, flamegraph) to NAME
+    the top self-time symbol. If s_lock/perform_spin_delay on insertpos_lck ->
+    confirmed; convert THAT one (review-gated, A/B neutral-or-better per the
+    Phase-18 rule). If LWLockAcquire/xtc_yield on WALInsertLocks -> tune the
+    existing Phase-17 park / add insert locks. If something else -> follow it.
+(B) PREP (read-only, no code change): survey every contended slock_t + its
+    fiber-safety -> a design map: which spinlocks are convertible, which are
+    too-short-to-convert, which want a LOCK-FREE/atomic (CAS) rewrite instead
+    (e.g. insertpos_lck -> atomic CurrBytePos advance, upstream-explored,
+    sidesteps the spinlock-vs-fiber problem with no park/wake cost). Have this
+    ready so the moment the profile lands we convert the RIGHT lock the RIGHT
+    way.
+
+Preferred fix for a confirmed hot spinlock guarding a tiny section: lock-free
+atomic reservation (CAS), NOT a yielding lock -- yielding costs more than the
+spin for short holds. A yielding (xtc_amutex-style) lock only fits locks with
+longer or sleep-capable critical sections.
