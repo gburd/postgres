@@ -3114,3 +3114,35 @@ Proposed CAS reservation sketch (ReserveXLogInsertLocation):
 STILL GATED ON: the Part B perf flamegraph (durability-off VU=384) naming the top
 self-time symbol before ANY conversion. If s_lock/perform_spin_delay on
 insertpos_lck -> do the CAS. Else follow the survey per-lock.
+
+### Next: diagnose __xtc_exec_try_steal + 54% idle (libxtc-bug vs our-misuse) (2026-07-20)
+
+Durability-off VU=384 metal perf named the mt limit: __xtc_exec_try_steal 18.76%
+self + io_uring 12-14% + 54% IDLE (mt 685k NOPM = 50.6% of fork 1.35M; box
+NOT CPU-bound). Refutes WAL-lock for the durability-off case. The bottleneck is
+the libxtc fiber scheduler's work distribution: carriers spin-scan sibling
+run-queues for work while half the machine sits idle -> runnable work is not
+being placed on idle carriers (and/or the io_uring completion -> carrier wake
+path leaves carriers idle).
+
+PLAN (agreed): diagnose the exact cause; if it's a libxtc bug/perf issue ->
+write a report for the libxtc team (to /tmp, evidence-only, per the standing
+verify-before-requesting rule). If it's OUR misuse of libxtc (carrier/exec
+config, how we spawn/park backend fibers, io_method, wake path) -> fix in our
+branch + re-test. WAIT on this diagnosis+fix before re-benchmarking.
+
+Inputs for the diagnosis:
+- libxtc source local: /home/gburd/ws/xtc (src/evt/exec.c __xtc_exec_try_steal,
+  src/evt/loop.c, src/inc/deque.h). Our pin: flake.nix rev
+  1ceab785c8fd9ab6056999b387d21eb9e378e8b0 (v1.23.3).
+- Our carrier/executor setup: src/backend/postmaster/pg_xtc_carrier.c
+  (g_xtc_exec N-loop executor when carriers>1; xtc_proc_spawn_monitor pins
+  procs=pinned tasks -> NOT work-stolen; so why is __xtc_exec_try_steal hot?).
+  Key question: pinned backend fibers are NOT stealable, so the steal loop is
+  scanning and finding nothing (wasted spin) while carriers with a runnable
+  pinned fiber can't hand it off -> idle. Is the executor's idle/steal policy
+  wrong for a PINNED-proc workload? Should carriers block/park instead of
+  spin-steal when their own run-queue is empty and peers' work is pinned?
+- io_uring 12-14%: io_method=sync was forced; check whether the AIO/io_uring
+  completion path (xtc_io) wakes the owning carrier promptly or leaves it in
+  io_cqring_wait while runnable fibers wait elsewhere.
