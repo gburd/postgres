@@ -3285,3 +3285,43 @@ save/restore 6 roots + carrier rebind + gen-invalidate; solve the GUC-rebind
 cost via direct session accessor or gen-defer). 0 warnings, test_backend_runtime
 12/14 + regress green, TWO-REVIEWER gate. Unpin + the no-steal guards are a
 SEPARATE later stage. No big re-benchmark until a gated change warrants it.
+
+### RESOLVED: errno/signals are runtime-owned; GUC session-rooting; TLS opts gap (2026-07-20)
+
+libxtc clarification from the maintainer resolves items (2)/(3):
+- SIGNALS are a runtime concern libxtc OWNS: (a) fault signals (SEGV/BUS/FPE/ILL)
+  -> per-fiber "let it crash" containment delivering DOWN (our PG_XTC_NO_FAULT_GUARD
+  interacts with this), escalates loudly on critical-section/stack-overflow faults;
+  (b) preemption via per-thread SIGVTALRM (safe-point yield only); (c) loop/pool
+  threads spawn with ALL signals blocked so process-directed SIGINT/SIGTERM land on
+  the MAIN thread. This matches our threaded-backend assumptions (fixed all-blocked
+  mask + latch-routed interrupts). => NOTHING to migrate; just confirm our
+  postmaster SIGTERM/SIGINT + fault-guard handlers compose with libxtc's model.
+- errno: libxtc does NOT expose errno; you work in XTC_E_* space; wrappers capture
+  errno right after each syscall and convert BEFORE any yield, handle EINTR/EAGAIN
+  internally, and the __xtc_unsafe_enter/leave allocator bracket keeps errno/alloc
+  consistent across the signal boundary. errno is safe UNLESS our OWN code reads
+  errno from a RAW libc syscall AFTER a possible yield point. => NO libxtc errno
+  request, NO errno-in-hook; instead AUDIT for the read-errno-across-yield
+  anti-pattern and fix (read errno immediately after the raw syscall).
+
+REVISED PLAN:
+BUILD NOW (two-reviewer gate, while still pinned, process mode byte-for-byte):
+ 1. Lazy fiber-ctx hook: chain __xtc_fiber_ctx_save/restore to save/restore the 6
+    roots + rebind `carrier` to the executing loop + bump per-fiber gen (fields
+    re-derive on first touch via existing owner tokens).
+ 2. Route session GUC reads through the SESSION ROOT POINTER so the 230-entry GUC
+    rebind vanishes (swap session root = 0.8ns; nothing to rebind). Confirm the GUC
+    hashtable's session-vs-process layering roots cleanly.
+AUDIT+FIX NOW (cheap): errno anti-pattern sweep (raw libc syscall whose errno is
+ read after a yield point) + confirm postmaster SIGTERM/SIGINT + fault-guard compose
+ with libxtc signal model.
+REQUEST FROM LIBXTC (write-up to /tmp, user passes it on): expanded xtc_tls_opts /
+ config-callback covering PG's full SSL GUC surface (cipher list + TLS1.3
+ ciphersuites, CRL/CRL-dir, ECDH curve, passphrase callback ssl_passphrase_command,
+ client-cert DN extraction, SSL_OP_NO_TICKET/NO_RENEGOTIATION/CIPHER_SERVER_PREFERENCE,
+ session-cache, SNI). xtc_tls_* IS a real fiber-aware TLS stack (tls_openssl/mbedtls/
+ gnutls/wolfssl/schannel backends) -> adopting it dissolves PG's per-OS-thread
+ OpenSSL error-queue hazard entirely; migration stages behind the expanded opts.
+ Current xtc_tls_opts only: cert/key/ca/verify_peer/alpn/min_version/max_version.
+No unpin in the hook change. No big re-benchmark until a gated change warrants it.
