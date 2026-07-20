@@ -3028,3 +3028,39 @@ Preferred fix for a confirmed hot spinlock guarding a tiny section: lock-free
 atomic reservation (CAS), NOT a yielding lock -- yielding costs more than the
 spin for short holds. A yielding (xtc_amutex-style) lock only fits locks with
 longer or sleep-capable critical sections.
+
+### Spinlock fiber-safety survey RESULTS (2026-07-20, read-only design map)
+
+Full doc: /tmp/spinlock_fiber_survey.md (condensed here for durability).
+
+Ranked payoff for the mt OLTP gap (58-64% of fork):
+1. insertpos_lck (xlog.c:396, WAL cursor CurrBytePos/PrevBytePos) -- ~40-60% of
+   the gap. SINGLE GLOBAL spinlock on EVERY insert/update/delete, ~50-200ns hold,
+   VERY HIGH contention + fiber-hostility. FIX = LOCK-FREE CAS (atomic advance of
+   CurrBytePos/PrevBytePos), NOT a yielding lock (park/wake ~1-5us > 50-200ns spin
+   -> would be worse). Upstream precedent: logInsertResult/logWriteResult atomics.
+2. LockBufHdr (bufmgr.c:~2300, per-buffer header) -- ~20-30%. Very hot, very
+   short. MONITOR; if confirmed, xtc_amutex or lock-free/per-cache-line.
+3. buffer_strategy_lock (freelist.c:35, clock-sweep hand) -- ~5-15%. MONITOR.
+4. LWLock deep-wait -- ALREADY solved (Phase 17 sem_wake_fd fiber park).
+5. WALInsertLocks (x8) fast-path spin -- low; Phase 19+ scheduler-aware backoff.
+LEAVE (uncontended / too-short): info_lck, FastPathStrongRelationLocks->mutex,
+msgnumLock, dynahash freelist mutex.
+
+CRITICAL: a GENERAL s_lock/perform_spin_delay "yield after N spins" is NOT SAFE
+-- a fiber yielding while holding a spinlock can hand its carrier to another
+fiber wanting the SAME lock -> deadlock. Spinlock protocol assumes no reschedule.
+Phase 17's LWLock park is safe only because it is a designed deep-wait boundary
+AFTER spinlock release. => conversions must be PER-LOCK; short-hold spinlocks
+want LOCK-FREE rewrites, not yielding locks.
+
+Proposed CAS reservation sketch (ReserveXLogInsertLocation):
+  do { start = pg_atomic_read_u64(&Insert->CurrBytePos);
+       /* compute end from start+size, page-boundary logic */ }
+  while (!pg_atomic_compare_exchange_u64(&Insert->CurrBytePos, &start, end));
+  -- must preserve PrevBytePos semantics + page-crossing logic; validate no
+  off-by-one; A/B gate (durability-off TPC-B, neutral-or-better) + two reviewers.
+
+STILL GATED ON: the Part B perf flamegraph (durability-off VU=384) naming the top
+self-time symbol before ANY conversion. If s_lock/perform_spin_delay on
+insertpos_lck -> do the CAS. Else follow the survey per-lock.
