@@ -44,3 +44,4 @@ lib*.pc
 /tmp_install/
 /portlock/
 .bench-run/
+plan_docs/scratch_phaseAB_analysis.md

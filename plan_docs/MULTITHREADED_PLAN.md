@@ -3775,3 +3775,54 @@ PHASED PLAN (each two-reviewer + 0-warnings + 0-Fail + 245/245 green):
  D) FLIP: spawn backend-worker coros pinned=0 -> migration goes LIVE (needs A+B+C).
  E) wake-nudge accuracy (measured). F) benchmark (user gates).
 A+B have NO dependency on the libxtc flag -> landing NOW so D is a small gated flip.
+
+### Phase A+B landed + two premise corrections (2026-07-20)
+
+Commits: Phase A 1b102560377, Phase B 75f6d32c469 (both pushed).
+
+CORRECTION 1 (the stale-1.8.0 binding ROOT CAUSE -- supersedes the "stale
+artifact" theory in 6cc4df0f4af): the Nix dev-shell injects -L.../xtc-1.8.0/lib
+into BOTH NIX_LDFLAGS and NIX_LDFLAGS_FOR_TARGET (cc-wrapper reads both) -> 1.8.0
+lands in postgres RUNPATH BEFORE 1.24.0. build.ninja only ever references 1.24.0;
+the 1.8.0 comes purely from the wrapper's -L->rpath translation. So it RECURS on
+a fresh build, it is NOT a one-time stale artifact. BUILD HYGIENE (mandatory
+before trusting any runtime validation): scrub xtc-1.8.0 from NIX_LDFLAGS AND
+NIX_LDFLAGS_FOR_TARGET, force a relink, and verify `ldd build/src/backend/postgres
+| grep xtc` -> xtc-1.24.0. (Real fix belongs in nix-config: drop the 1.8.0 -L
+from the dev shell. Tracked as a nix-config follow-up, different repo.)
+
+CORRECTION 2 (Phase A -- the design's per-loop-carrier premise was INVERTED):
+in the xtc fiber-per-session model the PgCarrier is FIBER-OWNED (embedded in
+BackendThreadStart.runtime_state.carrier, launch_backend.c:300; current_backend/
+session/execution point at that fiber's logical state), so it travels WITH the
+fiber across a steal -> snap.carrier is ALREADY correct after migration; there is
+NO per-loop PgCarrier to re-resolve from (xtc_exec_loop returns xtc_loop_t*, not
+PgCarrier). Even the ostensibly thread-affine carrier fields are fiber-owned
+(self-pipe per fiber; stack_base is the fiber's own migrating coro stack). GOOD
+NEWS: one fewer migration-safety concern. Phase A landed the CORRECT neutral form
+-- an assert-only tripwire that confirms the resumed loop (xtc_exec_loop_id(),
+reads __xtc_current_loop) == the fiber's spawn loop while pinned (dead), turning a
+future wrong-loop resume into a loud failure -- instead of a wrong root swap.
+
+PHASE B: __thread affine-section depth (USE_ASSERT_CHECKING only) with park-
+boundary Assert(is_migratable() || depth==0) at the fiber-ctx SAVE hook and
+xtc_pg_wait_fd; brackets at the OpenSSL ERR span (be_tls_read/write) and the
+sigprocmask recovery windows (postgres.c ~5493/7065); spinlock + unpack_sql_state
+documented safe-by-construction + enforced transitively. Dead while pinned
+(proven under a cassert build: A/B tripwires fired 0 times). Release + process
+byte-for-byte (Assert discards its arg in release; XtcPgNoStealEnter/Leave =
+((void)0)).
+
+VALIDATION: 0 warnings; ldd 1.24.0; test_backend_runtime 0 Fail (001=128/128,
+003=43/43, 007=46/46); process regress 245/245; cassert deadness proven.
+
+OPEN: (a) truly-independent adversarial review of 1b102560377 + 75f6d32c469
+STILL REQUIRED (sub-agent ran self-passes only). (b) Pre-existing cassert
+assertion guc.c:1363 (+ lwlock.c:1214) in the threaded snapshot test
+(test_current_work_snapshot_lazy_restore) under USE_ASSERT_CHECKING -- NOT caused
+by A/B, does not affect the release gate; worth a separate look (known
+cassert+threaded GUC memory-context issue).
+
+NEXT: independent review of A+B; then Phase C (wire migratable, gated on the
+libxtc opts request /tmp/libxtc-migratable-proc-opts-request.md); then D (flip
+pinned=0, migration live); E wake-nudge; F benchmark.
