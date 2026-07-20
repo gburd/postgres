@@ -52,6 +52,7 @@ mkdir -p "$OUT"
 RES="$OUT/hresults.tsv"
 [ -f "$RES" ] || echo -e "bench\tmode\tcarriers\tvu\tnopm\ttpm\tsut_pss_mb\tsut_cpu_pct" > "$RES"
 sudo prlimit --pid $$ --stack=67108864:67108864 2>/dev/null || true
+sudo prlimit --pid $$ --nofile=1048576:1048576 2>/dev/null || true  # threaded mode multiplexes many sessions onto ONE process fd table; the default per-process nofile (e.g. 65535) is exhausted by high carrier/VU counts, so raise it before launching either lane (identical for both -- fork mode just never approaches the limit).
 sudo sysctl -w kernel.perf_event_paranoid=1 kernel.kptr_restrict=0 >/dev/null 2>&1 || true
 
 start_pg() { # $1=mode(process|threaded) $2=carriers-or-empty
@@ -80,14 +81,27 @@ CONF
   echo $! > "$OUT/pg.pid"
   local i; for i in $(seq 1 120); do "$PGBIN/psql" -h 127.0.0.1 -p $PORT -U postgres -tAc "select 1" postgres >/dev/null 2>&1 && break; sleep 1; done
   if [ "$mode" = threaded ]; then
-    # A local select-1 can succeed before the pooled carrier scheduler is up
-    # (and while the server is still finishing startup/recovery), during which
-    # window TCP connections fork-fail under multithreaded=on.  Wait for the
-    # carriers to actually be up before letting the driver connect.
-    for i in $(seq 1 120); do grep -q "carrier scheduler thread up" "$OUT/pg_$mode.log" 2>/dev/null && break; sleep 1; done
-    grep -q "carrier scheduler thread up" "$OUT/pg_$mode.log" 2>/dev/null || { echo "CARRIERS_NOT_UP $mode"; tail -15 "$OUT/pg_$mode.log"; return 1; }
-    # settle: no more fork-fails should occur once carriers are up
-    sleep 3
+    # A local select-1 can succeed before the server has finished startup/
+    # recovery, during which window TCP connections may transiently fork-fail
+    # under multithreaded=on.  The real gate is: the driver can connect over
+    # TCP repeatedly and reliably (the pooled carrier path is engaged lazily on
+    # connect; this build does not always print a scheduler-up banner, so probe
+    # the connection path directly instead of grepping a log string).  Require
+    # the readiness log first, then require several consecutive remote-style TCP
+    # connects (127.0.0.1 forces the TCP path, like the driver) to succeed.
+    for i in $(seq 1 180); do grep -q "ready to accept connections" "$OUT/pg_$mode.log" 2>/dev/null && break; sleep 1; done
+    grep -q "ready to accept connections" "$OUT/pg_$mode.log" 2>/dev/null || { echo "THREADED_NOT_READY $mode"; tail -20 "$OUT/pg_$mode.log"; return 1; }
+    local streak=0 j
+    for j in $(seq 1 120); do
+      if "$PGBIN/psql" -h 127.0.0.1 -p $PORT -U postgres -tAc "select 1" postgres >/dev/null 2>&1; then
+        streak=$((streak+1)); [ "$streak" -ge 5 ] && break
+      else
+        streak=0
+      fi
+      sleep 1
+    done
+    [ "$streak" -ge 5 ] || { echo "THREADED_TCP_UNSTABLE $mode"; tail -20 "$OUT/pg_$mode.log"; return 1; }
+    sleep 2
   fi
   "$PGBIN/psql" -h 127.0.0.1 -p $PORT -U postgres -tAc "select 1" postgres >/dev/null 2>&1 && {
     # huge_pages=on forces failure if pages are unavailable, so reaching here
