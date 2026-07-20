@@ -90,6 +90,7 @@ extern bool xtc_pg_backend_fiber_is_migratable(void);
 extern void xtc_pg_affine_section_enter(void);
 extern void xtc_pg_affine_section_leave(void);
 extern int	xtc_pg_affine_section_depth(void);
+extern void xtc_pg_affine_section_reset(void);
 
 #define XtcPgNoStealEnter() xtc_pg_affine_section_enter()
 #define XtcPgNoStealLeave() xtc_pg_affine_section_leave()

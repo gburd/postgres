@@ -237,6 +237,22 @@ xtc_pg_affine_section_depth(void)
 {
 	return xtc_pg_affine_depth;
 }
+
+/*
+ * Reset the affine-section depth to 0.  Called at backend-fiber ENTRY and in
+ * the fiber's at-exit cleanup so a FATAL/longjmp that escapes a bracketed
+ * affine section (e.g. ereport(FATAL) on lost protocol sync inside error
+ * recovery) cannot leak a non-zero depth onto the carrier OS thread, where the
+ * NEXT fiber reusing that thread would trip the park-boundary assert
+ * spuriously.  The depth is per-OS-thread (__thread), not per-fiber, so it must
+ * be re-zeroed at each fiber boundary.  Balanced enter/leave keeps it at 0
+ * within a fiber; this makes the unwinding/terminating paths crash-safe too.
+ */
+void
+xtc_pg_affine_section_reset(void)
+{
+	xtc_pg_affine_depth = 0;
+}
 #endif							/* USE_ASSERT_CHECKING */
 
 /* Scheduler thread: run the xtc app loop forever. */
@@ -658,6 +674,15 @@ xtc_pg_fiber_ctx_clear(void *arg)
 {
 	(void) arg;
 	g_xtc_current_fiber_ctx = NULL;
+#ifdef USE_ASSERT_CHECKING
+	/*
+	 * Crash-safe reset: if this fiber exited by unwinding/terminating out of a
+	 * bracketed affine section (FATAL/longjmp), the per-OS-thread affine depth
+	 * could be left non-zero and trip the next fiber's park-boundary assert.
+	 * Re-zero it here (runs on any exit path via xtc_proc_at_exit).
+	 */
+	xtc_pg_affine_section_reset();
+#endif
 }
 
 /*
@@ -872,6 +897,16 @@ xtc_carrier_proc(void *arg)
 	 */
 
 	xtc_in_backend_fiber = true;
+
+#ifdef USE_ASSERT_CHECKING
+	/*
+	 * Start this fiber with a clean affine-section depth.  The depth is
+	 * per-OS-thread; a previous fiber on this carrier thread that terminated
+	 * out of a bracketed section (FATAL/longjmp) may have left it non-zero.
+	 * Re-zero at entry so the park-boundary assert reflects THIS fiber only.
+	 */
+	xtc_pg_affine_section_reset();
+#endif
 
 	/*
 	 * Install (or re-affirm) the chained fiber-context hook and register this
