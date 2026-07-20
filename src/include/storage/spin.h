@@ -28,6 +28,17 @@
  *	for a CHECK_FOR_INTERRUPTS() to occur while holding a spinlock, and so
  *	it is not necessary to do HOLD/RESUME_INTERRUPTS() in these functions.
  *
+ *	xtc Phase B affine-site note: a raw spinlock hold is OS-thread-affine
+ *	(slock_t lives in shared memory but the acquire/release must pair on one
+ *	thread), yet it is safe-by-construction on the fiber carrier: a spinlock
+ *	section has no cooperative yield point (no CHECK_FOR_INTERRUPTS, palloc, or
+ *	syscall, per the rule above), so a fiber holding one is RUNNING and can
+ *	never be stolen (only a parked-then-woken task migrates).  No XtcPgNoSteal
+ *	bracket is placed here -- wrapping this hot inline at every call site would
+ *	be pure overhead for a span that provably cannot park; the fiber
+ *	park-boundary tripwire (pg_xtc_carrier.c) transitively enforces it, firing
+ *	if a future change ever reached a yield while a spinlock were held.
+ *
  *	These functions are implemented in terms of hardware-dependent macros
  *	supplied by s_lock.h.  There is not currently any extra functionality
  *	added by this header, but there has been in the past and may someday

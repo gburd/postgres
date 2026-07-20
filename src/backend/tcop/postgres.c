@@ -5494,8 +5494,15 @@ PgSessionStep(PgSession *session, PgStepBudget budget)
 
 	if (sigsetjmp(local_sigjmp_buf, 0) != 0)
 	{
+#ifdef USE_XTC_CARRIER
+		/* Phase B: signal mask is per-OS-thread; recovery here must not yield. */
+		XtcPgNoStealEnter();
+#endif
 		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 		PgSessionRecoverError(session);
+#ifdef USE_XTC_CARRIER
+		XtcPgNoStealLeave();
+#endif
 
 		if (!state->ignore_till_sync)
 			state->send_ready_for_query = true;	/* after error */
@@ -7066,8 +7073,15 @@ PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session)
 
 	if (sigsetjmp(local_sigjmp_buf, 0) != 0)
 	{
+#ifdef USE_XTC_CARRIER
+		/* Phase B: signal mask is per-OS-thread; recovery here must not yield. */
+		XtcPgNoStealEnter();
+#endif
 		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 		PgSessionRecoverError(session);
+#ifdef USE_XTC_CARRIER
+		XtcPgNoStealLeave();
+#endif
 
 		if (!state->ignore_till_sync)
 			state->send_ready_for_query = true;	/* after error */
