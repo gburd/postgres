@@ -44,5 +44,18 @@ pg_noreturn extern void xtc_pg_backend_fiber_exit(int code);
  */
 extern bool xtc_pg_consume_genuine_crash(void);
 
+/*
+ * True iff a running backend fiber may be migrated across carriers (stolen).
+ *
+ * Fibers are PINNED today, so this is always false and callers can treat a
+ * true result as "a future unpin has landed".  It exists so no-migrate
+ * invariants (e.g. the ssl_sni server-side-SNI gate in be-secure-openssl.c,
+ * which relies on TLS-bearing fibers not migrating while libxtc's ClientHello
+ * context-swap #29 is deferred) can be written as active tripwires now and
+ * stay correct when the gated unpin flips this to a real per-fiber query.
+ * Only valid to consult while xtc_in_backend_fiber is true; false otherwise.
+ */
+extern bool xtc_pg_backend_fiber_is_migratable(void);
+
 #endif							/* USE_XTC_CARRIER */
 #endif							/* PG_XTC_CARRIER_H */
