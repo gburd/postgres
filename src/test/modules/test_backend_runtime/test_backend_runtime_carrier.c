@@ -995,6 +995,14 @@ test_current_work_snapshot_lazy_restore(PG_FUNCTION_ARGS)
 		ok = ok && MyLatch == &fake_latch_b;
 
 		/*
+		 * GUC-coherence check (the crux of the lazy restore): the session-
+		 * rooted GUC bucket that every session-local GUC read resolves through
+		 * (PgCurrentSessionGUCState / PgCurrentGUCVariablesRef) must now point
+		 * at B's session GUC state, not A's -- even though no rebind ran.
+		 */
+		ok = ok && PgCurrentSessionGUCState() == &state_b.logical.session.guc;
+
+		/*
 		 * Fiber A resumes: the chained hook's restore reinstalls A's roots
 		 * WITHOUT a GUC rebind.  Verify every root is A's again and that the
 		 * compatibility globals derived from them track A.
@@ -1009,6 +1017,17 @@ test_current_work_snapshot_lazy_restore(PG_FUNCTION_ARGS)
 		ok = ok && MyProc == &fake_proc_a;
 		ok = ok && MyProcNumber == 101;
 		ok = ok && MyLatch == &fake_latch_a;
+
+		/*
+		 * And the GUC read path is re-rooted back to A after the LAZY restore:
+		 * the session-local GUC bucket resolves to A's session GUC state, so a
+		 * session-local GUC read on the resumed fiber sees A's values without
+		 * any per-switch rebind having run.  This is the direct GUC-coherence
+		 * coverage for PgRuntimeRestoreCurrentWorkLazy itself (companion test
+		 * test_session_connection_guc_state_is_session_local exercises real
+		 * GUC *values* across the identical rebind=false refresh).
+		 */
+		ok = ok && PgCurrentSessionGUCState() == &state_a.logical.session.guc;
 
 		/* Detach whichever backend is current and restore the real work. */
 		if (CurrentPgCarrier == &state_a.carrier &&
