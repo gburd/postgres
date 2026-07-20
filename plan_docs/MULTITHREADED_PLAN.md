@@ -3542,3 +3542,38 @@ VALIDATION (this pass): meson build 0 warnings; test_backend_runtime 12 OK / 0
   full src/test/ssl PG_TEST_EXTRA=ssl 001/002_scram/003/004_sni all green
   (272/28/21/102) -- confirms the OpenSSL path is byte-for-byte unchanged and
   channel binding + SNI still work in process mode.
+
+### UNPIN BLOCKED: pinning is inside libxtc's coro layer, no opt-out API (2026-07-20)
+
+Attempted "make fibers no longer pinned"; VERIFIED it is NOT possible from the
+PG side (verify-before-requesting changed the answer again):
+- Every coroutine is spawned pinned=1 HARDCODED at the coro layer: coro_fctx.c:387
+  __xtc_task_spawn_ex(loop, __xtc_coro_step, c, 1, &t) (literal 1; also
+  coro_uctx.c:622, coro_winfiber.c:121). An xtc_proc IS a coroutine -> every PG
+  backend fiber is pinned at creation.
+- xtc_proc_opts_t (xtc_proc.h:72) has NO pinned/migratable field.
+- The stealable deque path (loop.c:310 `if (!t->pinned && xtc_deque_push...)`) is
+  only reachable via raw __xtc_task_spawn_ex(...,pinned=0) (task.c:194) which the
+  proc/coro layer never uses. No API unpins a live proc or spawns one migratable.
+=> Flipping xtc_pg_backend_fiber_is_migratable() to true would be a LIE: libxtc
+   would still never steal the fiber, but our invariants/guards would arm for a
+   migration that can't happen -> corruption risk. NOT DONE.
+=> REQUEST written: /tmp/libxtc-migratable-proc-request.md -- (1) an opt-in
+   xtc_proc_opts_t.migratable (threads pinned=0 down; default unchanged), (2)
+   confirm the scoped no-steal/resume-on-same-loop guarantee of
+   __xtc_unsafe_enter/leave + xtc_proc_critical_enter/leave (preempt_int.h/
+   ptc_ext.h ALREADY EXIST for lock-holders) for a MIGRATABLE proc, (3) placement
+   policy to avoid migration thrash. Everything PG-side (fiber-ctx hook, flip
+   point, guard sites) is staged waiting on this API.
+
+NO-STEAL PRIMITIVE (found, for the guards): __xtc_unsafe_enter/leave (defers
+involuntary SIGVTALRM preemption + protects lock-holders) and
+xtc_proc_critical_enter/leave. The open question for the request: do these
+guarantee resume-on-SAME-loop across a voluntary park for a migratable proc, or
+is a separate pin-for-section needed? (A running non-parked fiber is presumably
+never moved mid-instruction since stealing is at enqueue of a parked/runnable
+task -- to be confirmed by libxtc.)
+
+TLS integration (be_tls_* -> xtc_tls_*) is INDEPENDENT of unpin (only enables
+TLS-connection migration later) -> proceeding NOW as its own gated change with a
+threaded ssl harness.
