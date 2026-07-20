@@ -3577,3 +3577,60 @@ task -- to be confirmed by libxtc.)
 TLS integration (be_tls_* -> xtc_tls_*) is INDEPENDENT of unpin (only enables
 TLS-connection migration later) -> proceeding NOW as its own gated change with a
 threaded ssl harness.
+
+### DECISION: transition backend workers from xtc_proc to pure fibers (2026-07-20)
+
+USER DIRECTION: procs don't migrate, fibers do -> transition backend WORKERS to
+pure fibers (xtc_async/xtc_task coro surface, spawned pinned=0 = stealable), use
+libxtc SUPERVISOR features to monitor them; libxtc provides crash containment
+for fibers. FULLY INVESTIGATE + DESIGN using libxtc features BEFORE converting.
+(This supersedes /tmp/libxtc-migratable-proc-request.md -- no new libxtc API is
+needed; the migratable path already exists, we were just on the proc side.)
+
+VERIFIED libxtc surfaces so far:
+- xtc_async (L2, xtc_async.h): stackful fiber via ucontext, xtc_await recovers
+  return value. Spawned via xtc_task_spawn -> pinned=0 (task.c:194) = STEALABLE.
+  xtc_exec_spawn (exec.c:896) also pinned=0; xtc_exec_spawn_on pins.
+- xtc_orc (L4, xtc_orc.h): supervisor with ONE_FOR_ONE + restart intensity/policy
+  -- BUT the supervisor is itself an xtc_proc and xtc_child_spec.fn is an
+  xtc_proc_fn; it acts on child DOWN messages (proc mechanism).
+- xtc_svr (L4 gen_server): also runs as an xtc_proc.
+- Fault containment + DOWN are today L3 xtc_proc features (key on __current_proc).
+  User states libxtc provides fiber crash containment -> the design MUST locate
+  the fiber-level containment mechanism (recovery frame per coro? auto-armed?)
+  and the fiber-level exit/crash notification the supervisor observes.
+
+WHAT WE LOSE dropping xtc_proc for workers (must be re-provided via fiber
+features): (1) fault containment SIGSEGV->contained->attributed crash; (2) exit
+classification CLEAN/EXIT/SIGNAL/NOPROC (supervisor DOWN) -> likely xtc_await +
+an explicit fiber status; (3) xtc_self/pid identity (fiber-ctx hook owner-guard,
+spawn/signal path) -> re-key on xtc_task_t*; (4) mailbox (if used). Carrier +
+supervisor + crash-escalation (ExitPostmaster) are built on proc DOWN today
+(pg_xtc_carrier.c XTC_DOWN_KIND_*, spawn_monitor).
+
+DESIGN QUESTIONS to answer from source BEFORE coding:
+ - Does a pure xtc_async/xtc_task fiber get SIGSEGV fault containment (recovery
+   frame), or is proc-hood required? If fibers are contained, HOW is a crash
+   reported to a watcher (vs proc DOWN)?
+ - Can a supervisor observe fiber exit/crash without DOWN (xtc_await from a
+   supervisor fiber? a task-completion callback? a status the fiber sets)?
+ - Keep the SUPERVISOR as a proc watching fiber workers, or make everything
+   fibers? What does xtc_orc require? Does a proc-supervisor watching pinned=0
+   fiber workers even work (child_spec.fn is xtc_proc_fn)?
+ - The fiber-ctx hook (50434faae9f) currently chains proc-layer __current_proc
+   preservation and owner-guards on xtc_self/pid -- redesign for a fiber worker
+   (task handle identity; does the coro layer still call the ctx hooks for a
+   pure fiber? -- coro_fctx.c calls them, so YES).
+ - Crash escalation to ExitPostmaster must be preserved (a genuine backend fault
+   MUST escalate in a shared-process model).
+ - Preserve process mode + non-fiber threaded mode byte-for-byte; workers-as-
+   fibers only under USE_XTC_CARRIER threaded carrier.
+
+DELIVERABLE: a design doc (plan_docs/MULTITHREADED_FIBER_WORKER_DESIGN.md) with
+the exact libxtc APIs, the containment+notification mechanism, the supervisor
+shape, the identity re-keying, the fiber-ctx-hook redesign, the incremental
+conversion plan (smallest gated steps, each two-reviewer + green), and the
+migration-safety implications (once workers are stealable fibers, the no-steal
+guards for spinlock/OpenSSL-ERR spans become LIVE -- so the guard work couples
+in). NO conversion code this step -- design first, then we execute in gated
+increments.
