@@ -1163,4 +1163,20 @@ xtc_pg_consume_genuine_crash(void)
 	return atomic_exchange(&g_xtc_genuine_crash, 0) != 0;
 }
 
+/*
+ * Whether the currently-running backend fiber may migrate (be stolen) across
+ * carriers.  Backend fibers are pinned in this build -- the gated unpin has
+ * not landed -- so this is unconditionally false.  See the header comment for
+ * why the predicate exists now (no-migrate invariants written as tripwires).
+ *
+ * When the unpin lands this becomes the real per-fiber "is this fiber
+ * steal-eligible" query; until then keeping it a single false keeps every
+ * invariant that consults it dead (never fires) while pinned.
+ */
+bool
+xtc_pg_backend_fiber_is_migratable(void)
+{
+	return false;
+}
+
 #endif							/* USE_XTC_CARRIER */

@@ -37,6 +37,9 @@
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/wait_event.h"
+#ifdef USE_XTC_CARRIER
+#include "postmaster/pg_xtc_carrier.h"	/* xtc_in_backend_fiber */
+#endif
 
 /*
  * These SSL-related #includes must come after all system-provided headers.
@@ -850,6 +853,34 @@ be_tls_open_server(Port *port)
 
 	Assert(!port->ssl);
 	Assert(!port->peer);
+
+#ifdef USE_XTC_CARRIER
+
+	/*
+	 * SNI no-migrate invariant (libxtc v1.24.0 deferred #29, the ClientHello
+	 * context-swap).  This backend still drives OpenSSL directly for TLS even
+	 * when it runs as an xtc carrier fiber; that is correct today only because
+	 * TLS-bearing backend fibers are PINNED (they never migrate across
+	 * carriers, so OpenSSL's per-OS-thread error queue is never read from a
+	 * foreign thread).  A future gated unpin may migrate backend fibers.  When
+	 * that lands, a connection using server-side SNI (ssl_sni=on) must remain
+	 * pinned: xtc_tls_* cannot yet install a different context mid-handshake
+	 * from a ClientHello callback, so a migrated SNI connection could not be
+	 * served by the fiber-aware stack without silently losing per-host cert /
+	 * CA selection -- a correctness and potential security regression.
+	 *
+	 * ssl_sni defaults to off, so the common threaded-TLS path is unaffected.
+	 * This assertion is the tripwire: it fires the moment a future change both
+	 * enables ssl_sni AND unpins this fiber without honoring the invariant.
+	 * While fibers are pinned it can never fire (the condition is dead), and it
+	 * compiles to nothing in a non-assert build, so process mode and non-fiber
+	 * threaded mode are byte-for-byte unchanged.
+	 *
+	 * See plan_docs/MULTITHREADED_PLAN.md "ssl_sni no-migrate invariant" and the
+	 * carrier no-steal staging in xtc_pg_fiber_ctx_restore (pg_xtc_carrier.c).
+	 */
+	Assert(!(xtc_in_backend_fiber && ssl_sni && xtc_pg_backend_fiber_is_migratable()));
+#endif
 
 	if (!SSL_context)
 	{
