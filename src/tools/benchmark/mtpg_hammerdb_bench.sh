@@ -60,12 +60,13 @@ start_pg() { # $1=mode(process|threaded) $2=carriers-or-empty
 port = $PORT
 listen_addresses = '*'
 shared_buffers = $SHBUF
-max_connections = 512
-max_wal_size = 32GB
+max_connections = 1024
+max_wal_size = 64GB
 checkpoint_timeout = 30min
 checkpoint_completion_target = 0.9
 wal_buffers = 64MB
 io_method = sync
+huge_pages = on
 fsync = $DUR_FSYNC
 synchronous_commit = $DUR_SYNC
 full_page_writes = $DUR_FPW
@@ -88,7 +89,13 @@ CONF
     # settle: no more fork-fails should occur once carriers are up
     sleep 3
   fi
-  "$PGBIN/psql" -h 127.0.0.1 -p $PORT -U postgres -tAc "select 1" postgres >/dev/null 2>&1 && return 0
+  "$PGBIN/psql" -h 127.0.0.1 -p $PORT -U postgres -tAc "select 1" postgres >/dev/null 2>&1 && {
+    # huge_pages=on forces failure if pages are unavailable, so reaching here
+    # proves both lanes mapped huge pages.  Record the snapshot per lane.
+    grep -E 'HugePages_(Total|Free|Rsvd)' /proc/meminfo > "$OUT/hugepages_${mode}_${carriers:-none}.txt" 2>/dev/null
+    grep -qi 'HugePages' "$OUT/pg_$mode.log" && grep -i 'HugePages\|huge page' "$OUT/pg_$mode.log" >> "$OUT/hugepages_${mode}_${carriers:-none}.txt"
+    return 0
+  }
   echo "PG_START_FAIL $mode"; tail -15 "$OUT/pg_$mode.log"; return 1
 }
 stop_pg() {
