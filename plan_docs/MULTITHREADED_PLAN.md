@@ -2990,6 +2990,56 @@ isolate the scalability limit at true ~100% CPU (durability-off removes the WAL
 fsync bound so we see the scheduler/lock ceiling). Profile the WAL-insert /
 lock-wait path (perf flamegraph) to name the top serializer.
 
+### DONE 2026-07-20: pipe()->segfault FIXED + diagnostic durability-OFF run
+
+(a) **pipe()->segfault FIXED** (commit 15588c2012b, pushed). Root cause: a
+pooled-protocol carrier (a long-lived pthread, NOT a per-session fiber) called
+InitializeWaitEventSupport() whose self-pipe pipe() failed under fd exhaustion
+with elog(FATAL); FATAL runs PgBackendExit -> per-backend cleanup on a
+non-backend thread -> backend_thread_exit publication==NULL branch
+pthread_exit()s the runtime-critical carrier thread -> whole server dies
+(SIGSEGV under the fault guard when a sibling fiber then touches disrupted
+state). Same early-startup FATAL-doesn't-unwind class as 2b. FIX: create the
+carrier self-pipe on the POSTMASTER thread in
+backend_pooled_protocol_start_one_carrier() (failure -> return false ->
+connection refused, runtime intact), hand fds to the carrier via
+WaitEventSetPresupplySelfPipe(); InitializeWaitEventSupport() adopts them,
+process mode byte-for-byte unchanged. Reproduced+verified fail-closed 3 ways
+(forced fail, injected, real ulimit -n 500). Two-reviewer gate: codex SHIP,
+maki SHIP-WITH-CHANGES (annotation + kqueue guard, both added).
+
+(b) **Diagnostic durability-OFF run, m8idn.metal-96xl (192c/384vCPU/1.5TB,
+us-east-1d, %steal=0), VU=384, 256GB SB huge_pages=on, DB on 6xNVMe RAID-0,
+WAREHOUSES=1000, external c7i.24xlarge driver:**
+- fork/process: 1,354,571 NOPM (3,115,565 TPM), peak CPU 19.4%, PSS 2522 MB
+- threaded c=384: 685,053 NOPM (1,577,393 TPM), peak CPU 21.4%, PSS 1908 MB
+- **mt/fork = 50.6%.** NEITHER lane saturated CPU even durability-OFF
+  (fork 19.4%, mt 21.4% peak) -- the box is MOSTLY IDLE, so ~100% CPU is
+  unreachable and the limit is a serialization/blocking ceiling, NOT CPU.
+
+**PERF NAMES THE SERIALIZER (refutes the WAL-insert-lock hypothesis for
+durability-off):**
+- threaded top non-idle self symbol = **`__xtc_exec_try_steal` 18.76% self**
+  (the libxtc fiber scheduler's work-stealing spin), + io_uring_enter/
+  io_cqring_wait (12-14%), with **54% of all samples in CPU IDLE**
+  (swapper/mwait_idle). Carriers busy-scan sibling run-queues for work while
+  the box sits idle: the xtc executor is not distributing/feeding work to
+  carriers fast enough. NO LWLock/WALInsert symbol appears in the threaded
+  top -- WAL is NOT the durability-off serializer.
+- fork top userspace self symbol = **`LWLockAcquire` 9.98% self** + real query
+  work (_bt_compare 3.86%, PinBuffer 3.57%) + kernel scheduler load_balance/
+  update_sg_lb_stats 6.54% (Linux balancing 384 processes). Fork is
+  LWLock+Linux-scheduler bound, also at only ~19% CPU.
+
+**HEADLINE: the mt scalability limit at VU=384 durability-off is the libxtc
+fiber-scheduler work-distribution/steal loop (`__xtc_exec_try_steal`), NOT a
+WAL-insert lock and NOT a CPU ceiling.** With 384 carriers, ~19% of all cycles
+burn in the steal spin while 54% of the machine idles -- the scheduler cannot
+keep carriers fed. NEXT: investigate xtc executor work-distribution (steal
+heuristics / carrier count / run-queue handoff) before touching any PG lock;
+the durability-ON WAL-lock hypothesis is separate and unconfirmed by this
+durability-off profile. All EC2 instances terminated and verified.
+
 ### WAL / spinlock fiber-awareness -- agreed plan (2026-07-20)
 
 DECISION: do NOT speculatively convert any lock. The mt OLTP gap (metal:
