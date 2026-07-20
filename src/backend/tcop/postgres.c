@@ -5491,14 +5491,24 @@ PgSessionStep(PgSession *session, PgStepBudget budget)
 	if (sigsetjmp(local_sigjmp_buf, 0) != 0)
 	{
 #ifdef USE_XTC_CARRIER
-		/* Phase B: signal mask is per-OS-thread; recovery here must not yield. */
+		/*
+		 * Phase B no-steal tripwire: the signal mask is per-OS-thread, so the
+		 * sigprocmask() write below is the affine op that must not be parked
+		 * across.  Bracket ONLY that call -- NOT PgSessionRecoverError(), which
+		 * legitimately parks (EmitErrorReport -> pq_flush to a backpressured
+		 * client; a contended-lock ProcSleep in AbortCurrentTransaction) and can
+		 * ereport(FATAL) (lost protocol sync) that terminates the fiber without
+		 * unwinding.  Wrapping recovery would fire the park-boundary assert on a
+		 * slow client and could leak the affine depth onto the reused carrier
+		 * thread.  Recovery is not affine; the sigprocmask is.
+		 */
 		XtcPgNoStealEnter();
-#endif
 		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
-		PgSessionRecoverError(session);
-#ifdef USE_XTC_CARRIER
 		XtcPgNoStealLeave();
+#else
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 #endif
+		PgSessionRecoverError(session);
 
 		if (!state->ignore_till_sync)
 			state->send_ready_for_query = true;	/* after error */
@@ -7070,14 +7080,24 @@ PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session)
 	if (sigsetjmp(local_sigjmp_buf, 0) != 0)
 	{
 #ifdef USE_XTC_CARRIER
-		/* Phase B: signal mask is per-OS-thread; recovery here must not yield. */
+		/*
+		 * Phase B no-steal tripwire: the signal mask is per-OS-thread, so the
+		 * sigprocmask() write below is the affine op that must not be parked
+		 * across.  Bracket ONLY that call -- NOT PgSessionRecoverError(), which
+		 * legitimately parks (EmitErrorReport -> pq_flush to a backpressured
+		 * client; a contended-lock ProcSleep in AbortCurrentTransaction) and can
+		 * ereport(FATAL) (lost protocol sync) that terminates the fiber without
+		 * unwinding.  Wrapping recovery would fire the park-boundary assert on a
+		 * slow client and could leak the affine depth onto the reused carrier
+		 * thread.  Recovery is not affine; the sigprocmask is.
+		 */
 		XtcPgNoStealEnter();
-#endif
 		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
-		PgSessionRecoverError(session);
-#ifdef USE_XTC_CARRIER
 		XtcPgNoStealLeave();
+#else
+		sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 #endif
+		PgSessionRecoverError(session);
 
 		if (!state->ignore_till_sync)
 			state->send_ready_for_query = true;	/* after error */
