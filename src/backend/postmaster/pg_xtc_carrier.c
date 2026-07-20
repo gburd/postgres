@@ -548,10 +548,10 @@ extern void (*__xtc_fiber_ctx_restore) (void *);
  * captured at install) additionally guards the SAVE path against a stale
  * thread-local blob left by a bare fiber (see xtc_pg_fiber_ctx_is_current).
  * A bare fiber's save returns libxtc's proc_ctx (a struct xtc_proc *), not a
- * blob; restore reads the first word through the ctx pointer to classify it,
- * so `magic` must be the first field.  proc_ctx is a live, in-bounds heap
- * object (a spawned fiber always has one), so reading its leading word is
- * safe; the magic will simply not match.
+ * blob.  restore does NOT dereference `ctx` as a blob: it reads the thread-local
+ * current-blob slot's `magic`/`proc_ctx` and only POINTER-COMPARES
+ * `fc->proc_ctx == ctx`, so a bare fiber's proc `ctx` is never read as magic.
+ * `magic` is first so the current-blob slot is cheaply classifiable.
  */
 #define XTC_PG_FIBER_CTX_MAGIC	UINT64CONST(0x7867466962437478)	/* "xtCbFig"-ish */
 
@@ -583,6 +583,7 @@ static void (*g_xtc_prev_ctx_restore) (void *);
 
 static void *xtc_pg_fiber_ctx_save(void);
 static void xtc_pg_fiber_ctx_restore(void *ctx);
+static void xtc_pg_fiber_ctx_clear(void *arg);
 
 /*
  * Is `fc` the blob of the fiber running RIGHT NOW?  Used only from the SAVE
@@ -599,6 +600,19 @@ xtc_pg_fiber_ctx_is_current(const XtcPgFiberCtx *fc)
 	return fc != NULL &&
 		fc->magic == XTC_PG_FIBER_CTX_MAGIC &&
 		xtc_pid_eq(fc->owner, xtc_self());
+}
+
+/*
+ * xtc_proc_at_exit callback: NULL the thread-local current-blob slot when the
+ * owning fiber exits by ANY path (clean return, xtc_exit_self, or a contained
+ * fault's recovery unwind).  Runs on the carrier thread that ran the fiber.
+ * Idempotent and cheap; the clean-exit sites also NULL the slot directly.
+ */
+static void
+xtc_pg_fiber_ctx_clear(void *arg)
+{
+	(void) arg;
+	g_xtc_current_fiber_ctx = NULL;
 }
 
 /*
@@ -704,6 +718,16 @@ xtc_pg_install_fiber_ctx_hook(XtcPgFiberCtx *fc)
 		/* Not ours (proc.c's, or NULL): capture as the chain target. */
 		g_xtc_prev_ctx_save = __xtc_fiber_ctx_save;
 		g_xtc_prev_ctx_restore = __xtc_fiber_ctx_restore;
+
+		/*
+		 * Publish our hooks only AFTER the chain target is captured.  On a
+		 * weakly-ordered arch another carrier thread could otherwise observe
+		 * our published save with g_xtc_prev_ctx_save still NULL (a one-time
+		 * startup window) and lose the proc-layer save.  Benign on x86/TSO
+		 * (program-order stores); the barrier makes it correct for the
+		 * eventual multi-arch story.
+		 */
+		pg_write_barrier();
 		__xtc_fiber_ctx_save = xtc_pg_fiber_ctx_save;
 		__xtc_fiber_ctx_restore = xtc_pg_fiber_ctx_restore;
 	}
@@ -713,6 +737,20 @@ xtc_pg_install_fiber_ctx_hook(XtcPgFiberCtx *fc)
 	fc->owner = xtc_self();
 	fc->proc_ctx = NULL;
 	g_xtc_current_fiber_ctx = fc;
+
+	/*
+	 * Clear the thread-local current-blob slot on ANY exit of this fiber,
+	 * including the fault/recovery unwind that siglongjmps past this frame's
+	 * clean-exit clears.  Without this, a contained fault would abandon
+	 * xtc_carrier_proc's stack (the blob) while g_xtc_current_fiber_ctx still
+	 * points into it; a later save/restore on this carrier thread (a bare
+	 * supervisor yielding before the next backend install) would then read
+	 * fc->magic from freed/unmapped stack.  xtc_proc_at_exit callbacks run
+	 * LIFO on every proc exit (clean, xtc_exit_self, or recovery), so this
+	 * closes the dangling window deterministically rather than relying on the
+	 * whole-process fail-stop timing that masks it today.
+	 */
+	(void) xtc_proc_at_exit(xtc_pg_fiber_ctx_clear, NULL);
 }
 
 /* Fiber entry: run the tree's backend_thread_entry (all real init). */
