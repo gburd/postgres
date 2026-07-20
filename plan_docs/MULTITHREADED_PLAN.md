@@ -3456,3 +3456,89 @@ comes AFTER (a) hook review (in-flight) + (b) unpin prereqs. The reply de-risks
 the TLS-fiber unpin gate (now open modulo SNI) but does NOT change the current
 step. Bump libxtc pin to v1.24.0 (fresh build dir) when we reach the TLS-port
 step, then port be_tls_* onto xtc_tls_* behind the expanded opts.
+
+### ssl_sni no-migrate invariant + errno-audit closure (2026-07-20) -- v1.24.0 pinned
+
+Scope decision for the TLS/errno adoption step (be_tls_* -> xtc_tls_*):
+
+WHAT LANDED (gated, process + non-fiber-threaded byte-for-byte, no unpin):
+- ssl_sni no-migrate INVARIANT tripwire. be_tls_open_server() now asserts,
+  under USE_XTC_CARRIER only, that a backend fiber is NOT simultaneously
+  (a) using server-side SNI (ssl_sni=on) and (b) migratable across carriers.
+  libxtc v1.24 DEFERRED #29 (the ClientHello context-swap), so a migrated
+  ssl_sni connection could not keep per-host cert/CA selection under the
+  fiber-aware stack -- a correctness/security regression. ssl_sni defaults to
+  off (guc_parameters.dat boot_val=false), so the common threaded-TLS path is
+  unaffected; the assert names the exact wrong assumption a future unpin must
+  not make. New carrier predicate xtc_pg_backend_fiber_is_migratable() returns
+  false unconditionally (fibers are pinned in this build); it is the single
+  point the gated unpin flips to a real per-fiber query, at which point the
+  invariant becomes live rather than dead. In a non-assert build and in process
+  mode the guard compiles to nothing.
+- errno adoption/AUDIT: COMPLETE and CLEAN (re-verified fresh on this tree).
+  * No v1.24 errno API to adopt: grep of the v1.24 headers finds errno only as
+    a return-value convention ("negative errno"); no xtc errno getter/setter.
+    errno stays libxtc-internal (XTC_E_* space, captured pre-yield, EINTR/EAGAIN
+    handled internally). Nothing to wire.
+  * No read-errno-across-yield anti-pattern in carrier/backend-fiber-reachable
+    code. Every yield site reads errno from a FRESH syscall after the resume
+    (waiteventset.c: xtc_pg_wait_fd() park -> epoll_wait(...,0) -> errno of that
+    call; self-pipe drain read()), or sets errno from libxtc's converted
+    negative return (fd.c xtc_aio_f[data]sync errno=-xrc; method_xtc.c). The
+    TLS retry loop (be-secure.c) reads errno set by be_tls_read/write BEFORE the
+    WaitEventSetWait yield and re-runs a fresh be_tls_* on retry; be-secure-
+    openssl.c reads errno immediately after SSL_*/the non-blocking BIO recv/send.
+
+CHANNEL-BINDING EQUIVALENCE (tls-server-end-point, RFC 5929) -- proven by spec:
+  PG's be_tls_get_certificate_hash() = X509_get_signature_info() -> sig NID ->
+  {MD5,SHA1 => SHA-256 ; else EVP_get_digestbynid(nid)} -> X509_digest().
+  libxtc's xtc_tls_get_server_cert_hash() documents (and its OpenSSL backend
+  implements) the identical RFC-5929 rule via the same X509_get_signature_info
+  -> X509_digest path, with XTC_E_RANGE on a too-small buffer. A standalone
+  reference run of PG's exact algorithm on the ssl test certs yields the same
+  32-byte SHA-256 digests libxtc would produce for the same cert bytes
+  (server-cn-only sha256WithRSA and server-rsapss rsassaPss both resolve to
+  SHA-256). So the migration preserves channel binding byte-for-byte when the
+  live swap lands. NOTE: this is a SPEC/algorithm equivalence proof; end-to-end
+  byte-equality across a live xtc_tls handshake is validated by libxtc's own
+  test_tls_server case and would be re-validated by the ssl/002_scram suite once
+  a threaded ssl harness runs the fiber-aware path.
+
+WHAT IS STAGED (deliberately NOT landed this pass -- defer with invariant):
+  The RUNTIME be_tls_* -> xtc_tls_* backend swap is NOT landed. Rationale:
+  (1) No forcing function: TLS-bearing backend fibers are PINNED (no unpin in
+      this task), so the existing directly-driven-OpenSSL be_tls_* path is
+      correct and secure under the carrier today (a pinned fiber never reads a
+      foreign thread's OpenSSL error queue). The xtc_tls_* swap ENABLES a future
+      TLS-fiber unpin; it is not a fix for current behavior.
+  (2) Cannot be validated security-equivalent under the constraints: the
+      threaded TAP harness (THREADED_WORLD_CORE_TAP_TESTS) does NOT run the
+      src/test/ssl suite, so a live threaded-mode swap has no cert-verification/
+      CRL/channel-binding/SNI regression coverage. The ssl suite runs only in
+      process mode. Landing a parallel production TLS backend without that
+      coverage is exactly the "half-wired path could serve a connection with
+      weaker security" the task forbids.
+  (3) The swap is a ~2500-line security-critical rewrite (custom BIO, per-host
+      SNI contexts, DH/ECDH, verify_cb with cert_errdetail chaining, ALPN,
+      passphrase, and the Port struct's typed SSL*/X509* fields consumed by
+      auth-scram/backend_status/postinit). It should land as its own coherent,
+      independently-reviewed change WITH a threaded ssl harness, immediately
+      before or with the TLS-fiber unpin (plan step (b)/unpin), not speculatively
+      ahead of the forcing function.
+  The be_tls_* -> xtc_tls_* mapping is fully specced in the v1.24 reply and this
+  section; the accessors (version/cipher/bits/subject-dn/issuer-dn/serial/
+  server-cert-hash/has-peer-cert/alpn-selected) and opts (verify_peer_mode=
+  XTC_TLS_VERIFY_REQUEST, cipher_list, ciphersuites_13, groups, crl_file/dir,
+  prefer_server_ciphers, passphrase_cb<-ssl_passphrase_command) are all present
+  and confirmed in the v1.24 headers/lib the meson build links (xtc-1.24.0).
+
+OPEN GATE 2 (hardening posture) RESOLVED: PG's SSL_OP_NO_RENEGOTIATION /
+  NO_COMPRESSION / NO_TICKET / SESS_CACHE_OFF / MODE_ACCEPT_MOVING_WRITE_BUFFER
+  are all hardcoded (no GUC toggles) in be-secure-openssl.c, matching libxtc's
+  unconditional server defaults exactly -> strictly-equivalent, no behavior gate.
+
+VALIDATION (this pass): meson build 0 warnings; test_backend_runtime 12 OK / 0
+  Fail / 2 SKIP (001=128/128, 003=43/43, 007=46/46); process regress 245/245;
+  full src/test/ssl PG_TEST_EXTRA=ssl 001/002_scram/003/004_sni all green
+  (272/28/21/102) -- confirms the OpenSSL path is byte-for-byte unchanged and
+  channel binding + SNI still work in process mode.
