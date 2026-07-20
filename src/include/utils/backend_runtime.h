@@ -3224,6 +3224,7 @@ typedef struct PgCurrentWorkSnapshot
 
 extern void PgRuntimeSaveCurrentWork(PgCurrentWorkSnapshot *snap);
 extern void PgRuntimeRestoreCurrentWork(const PgCurrentWorkSnapshot *snap);
+extern void PgRuntimeRestoreCurrentWorkLazy(const PgCurrentWorkSnapshot *snap);
 extern void PgCarrierAttachBackend(PgCarrier *carrier, PgBackend *backend,
 								   PgSession *session,
 								   PgConnection *connection,
