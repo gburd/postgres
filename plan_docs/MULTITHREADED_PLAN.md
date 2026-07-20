@@ -3857,3 +3857,17 @@ confirmed. Phase C/D BLOCKED on libxtc shipping xtc_proc_opts_t.migratable
 items: independent review of the TLS-harness commit 04d79b80adc (test-infra+docs,
 low risk); pre-existing cassert guc.c:1363 assertion in the threaded snapshot
 test (not A/B-caused, does not affect release gate).
+
+### RUNPATH 1.8.0 leak: RESOLVED -- was a stale shell, not a nix-config bug (2026-07-20)
+
+Investigated the "recurs on every build" claim (Correction 1). In a FRESH
+`nix develop` shell now: NIX_LDFLAGS/NIX_LDFLAGS_FOR_TARGET contain ONLY
+xtc-1.24.0 (no 1.8.0); a clean relink produces RUNPATH with only xtc-1.24.0;
+ldd -> 1.24.0. Nothing in the store references the 1.8.0 path from this flake;
+outputs/out/lib has no xtc. => The 1.8.0 -L came from a STALE shell instance the
+earlier agents had entered before the flake was re-evaluated against the 1.24.0
+pin (the flake correctly pins only 1.24.0). NOT a persistent nix-config bug ->
+NO nix-config change needed. The permanent fix already happened (flake update +
+fresh shell). Operational lesson stands: after a libxtc pin bump, start a FRESH
+nix develop shell and verify `ldd build/src/backend/postgres | grep xtc` before
+trusting runtime validation; a long-lived shell can hold the old -L.
