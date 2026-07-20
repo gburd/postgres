@@ -3236,3 +3236,52 @@ STAGED PLAN (each stage gated):
 
 Do NOT unpin in the same change as the hook. Do NOT re-benchmark the big run
 until a landed, gated change warrants it (user gates).
+
+### Fiber-ctx-hook AUDIT + COST results (2026-07-20) -- viable, MUST be lazy
+
+Docs (in /tmp, transient): thread_bound_audit.md, fiberctx_cost.md (+ harness
+/tmp/fiberctx_bench/bench2.c). Condensed here for durability.
+
+CORRECTNESS SURFACE (small, mostly already solved):
+- The 6-root bridge owns 100% of per-backend session state: 257 derived slots +
+  230 session-GUC rebinds, all with owner-token LAZY re-derivation ALREADY built
+  in (backend_runtime_current.h:253-281 variable##MaybeRef carry owner tokens,
+  re-derive on stale token). So the hook only needs: save/restore 6 roots +
+  rebind `carrier` to the executing loop + invalidate (bump per-fiber gen).
+- NO unbridged per-backend session state exists. Every raw __thread is
+  legitimately-per-carrier (xtc_in_backend_fiber, log throttles, self-pipe fds,
+  pglz scratch, retained_top_memory_allocated), bootstrap-fallback
+  (early_*_fallback), or process-mode-only. Nothing to migrate to a struct.
+- errno + sigmask ALREADY fiber-safe on the normal cooperative-yield path:
+  Linux fcontext swaps regs+SP; PG reads errno synchronously before any yield
+  (yield is at WaitEventSetWait, outside the errno span); threaded backends keep
+  a fixed all-blocked mask + latch-routed interrupts (per-txn unblock guarded
+  out, postgres.c:7259). => do NOT need to transition to a libxtc errno/signal
+  API for cooperative yields. (Involuntary-preemption errno save is optional;
+  libxtc Linux sched is cooperative.)
+- OpenSSL per-OS-thread error queue is the real 3rd-party hazard: fix = guard
+  the ERR_clear_error()...ERR_get_error() span as NO-YIELD/NO-STEAL (already
+  contains no yield point), NOT route through __os_tls_* (a pthread-TLS-key
+  wrapper = still per-OS-thread, wouldn't fix OpenSSL's internal queue).
+
+COST (measured -O2, /tmp/fiberctx_bench/bench2.c):
+  roots-only 0.8ns | eager-full (257 fields + 230 GUC rebinds) 3832ns | lazy 5ns.
+  GUC rebind = 97% of eager (230 x ~16ns dynahash lookup+store). At ~1M
+  switches/s (~20 yields/txn x 50k TPS): EAGER = ~3.8 cores (377%) overhead ->
+  would ERASE the work-stealing win. LAZY = ~0.4% (~760x cheaper).
+  => DESIGN: LAZY / generation-checked. Hook saves/restores 6 roots + rebinds
+  carrier + bumps a per-fiber gen; fields re-derive on first touch (already
+  implemented via owner tokens); the GUC rebind is the ONLY unguarded piece ->
+  either route the ~230 GUC reads through the session accessor directly (removes
+  cost) or defer via the gen check.
+
+RANKED no-steal guards to add AT THE UNPIN STAGE (not now): (1) OpenSSL
+ERR_clear->ERR_get span; (2) error-recovery sigprocmask(UnBlockSig)
+postgres.c:5493/7065; (3) unpack_sql_state static buffer; (4) errno under
+preemption (optional). All clearable when we unpin.
+
+NEXT: implement the LAZY fiber-ctx hook WHILE STILL PINNED (correctness-neutral;
+save/restore 6 roots + carrier rebind + gen-invalidate; solve the GUC-rebind
+cost via direct session accessor or gen-defer). 0 warnings, test_backend_runtime
+12/14 + regress green, TWO-REVIEWER gate. Unpin + the no-steal guards are a
+SEPARATE later stage. No big re-benchmark until a gated change warrants it.
