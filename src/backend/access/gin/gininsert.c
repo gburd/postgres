@@ -449,7 +449,8 @@ ginHeapTupleBulkInsert(GinBuildState *buildstate, OffsetNumber attnum,
 }
 
 static void
-ginBuildCallback(Relation index, ItemPointer tid, Datum *values,
+ginBuildCallback(Relation index, ItemPointer tid, const RowID *rowid,
+				 Datum *values,
 				 bool *isnull, bool tupleIsAlive, void *state)
 {
 	GinBuildState *buildstate = (GinBuildState *) state;
@@ -567,7 +568,8 @@ ginFlushBuildState(GinBuildState *buildstate, Relation index)
  * for the whole process).
  */
 static void
-ginBuildCallbackParallel(Relation index, ItemPointer tid, Datum *values,
+ginBuildCallbackParallel(Relation index, ItemPointer tid, const RowID *rowid,
+						 Datum *values,
 						 bool *isnull, bool tupleIsAlive, void *state)
 {
 	GinBuildState *buildstate = (GinBuildState *) state;
@@ -866,12 +868,15 @@ gininsert(Relation index, Datum *values, bool *isnull,
 		  ItemPointer ht_ctid, Relation heapRel,
 		  IndexUniqueCheck checkUnique,
 		  bool indexUnchanged,
-		  IndexInfo *indexInfo)
+		  IndexInfo *indexInfo,
+		  const RowID *rowid)
 {
 	GinState   *ginstate = (GinState *) indexInfo->ii_AmCache;
 	MemoryContext oldCtx;
 	MemoryContext insertCtx;
 	int			i;
+
+	(void) rowid;				/* gin stores only the heap TID */
 
 	/* Initialize GinState cache if first call in this statement */
 	if (ginstate == NULL)

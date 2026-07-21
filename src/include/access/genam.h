@@ -15,6 +15,7 @@
 #define GENAM_H
 
 #include "access/htup.h"
+#include "access/rowid.h"
 #include "access/sdir.h"
 #include "access/skey.h"
 #include "executor/instrument_node.h"
@@ -150,7 +151,8 @@ extern bool index_insert(Relation indexRelation,
 						 Relation heapRelation,
 						 IndexUniqueCheck checkUnique,
 						 bool indexUnchanged,
-						 IndexInfo *indexInfo);
+						 IndexInfo *indexInfo,
+						 const RowID *rowid);
 extern void index_insert_cleanup(Relation indexRelation,
 								 IndexInfo *indexInfo);
 

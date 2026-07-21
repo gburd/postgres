@@ -189,7 +189,8 @@ extern bool blinsert(Relation index, Datum *values, bool *isnull,
 					 ItemPointer ht_ctid, Relation heapRel,
 					 IndexUniqueCheck checkUnique,
 					 bool indexUnchanged,
-					 struct IndexInfo *indexInfo);
+					 struct IndexInfo *indexInfo,
+					 const RowID *rowid);
 extern IndexScanDesc blbeginscan(Relation r, int nkeys, int norderbys);
 extern int64 blgetbitmap(IndexScanDesc scan, TIDBitmap *tbm);
 extern void blrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,

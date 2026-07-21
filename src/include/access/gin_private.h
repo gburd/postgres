@@ -115,7 +115,8 @@ extern bool gininsert(Relation index, Datum *values, bool *isnull,
 					  ItemPointer ht_ctid, Relation heapRel,
 					  IndexUniqueCheck checkUnique,
 					  bool indexUnchanged,
-					  struct IndexInfo *indexInfo);
+					  struct IndexInfo *indexInfo,
+					  const RowID *rowid);
 extern void ginEntryInsert(GinState *ginstate,
 						   OffsetNumber attnum, Datum key, GinNullCategory category,
 						   ItemPointerData *items, uint32 nitem,

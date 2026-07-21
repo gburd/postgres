@@ -645,8 +645,8 @@ _bt_binsrch_posting(BTScanInsert key, Page page, OffsetNumber offnum)
 	while (high > low)
 	{
 		mid = low + ((high - low) / 2);
-		res = ItemPointerCompare(key->scantid,
-								 BTreeTupleGetPostingN(itup, mid));
+		res = key->rowidcmp((const uint8 *) key->scantid,
+							(const uint8 *) BTreeTupleGetPostingN(itup, mid));
 
 		if (res > 0)
 			low = mid + 1;
@@ -847,15 +847,33 @@ _bt_compare(Relation rel,
 	 * with scantid.
 	 */
 	Assert(ntupatts >= IndexRelationGetNumberOfKeyAttributes(rel));
-	result = ItemPointerCompare(key->scantid, heapTid);
-	if (result <= 0 || !BTreeTupleIsPosting(itup))
-		return result;
+	if (key->rowidwidth <= sizeof(ItemPointerData))
+	{
+		/* Heap-width identity: compare the 6-byte TIDs directly (fast path). */
+		result = key->rowidcmp((const uint8 *) key->scantid,
+							   (const uint8 *) heapTid);
+		if (result <= 0 || !BTreeTupleIsPosting(itup))
+			return result;
+		else
+		{
+			result = key->rowidcmp((const uint8 *) key->scantid,
+								   (const uint8 *) BTreeTupleGetMaxHeapTID(itup));
+			if (result > 0)
+				return 1;
+		}
+	}
 	else
 	{
-		result = ItemPointerCompare(key->scantid,
-									BTreeTupleGetMaxHeapTID(itup));
-		if (result > 0)
-			return 1;
+		/*
+		 * Wider identity (e.g. RECNO's (TID, gen)): compare the full width-byte
+		 * RowID.  RECNO disables posting-list deduplication, so a width>6
+		 * non-pivot tuple holds exactly one RowID.
+		 */
+		RowID		tuprowid;
+
+		BTreeTupleGetRowID(itup, key->rowidwidth, &tuprowid);
+		result = key->rowidcmp(key->scantid_rowid.data, tuprowid.data);
+		return result;
 	}
 
 	return 0;

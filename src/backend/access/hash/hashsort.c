@@ -109,7 +109,7 @@ void
 _h_spool(HSpool *hspool, const ItemPointerData *self, const Datum *values, const bool *isnull)
 {
 	tuplesort_putindextuplevalues(hspool->sortstate, hspool->index,
-								  self, values, isnull);
+								  self, NULL, values, isnull);
 }
 
 /*

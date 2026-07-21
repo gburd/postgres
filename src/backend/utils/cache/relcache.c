@@ -1591,7 +1591,96 @@ RelationInitIndexAccessInfo(Relation relation)
 	relation->rd_exclops = NULL;
 	relation->rd_exclprocs = NULL;
 	relation->rd_exclstrats = NULL;
+	relation->rd_indexRowIdCmp = NULL;
+	relation->rd_indexRowIdWidth = 0;
+	relation->rd_indexRowIdPosting = NULL;
 	relation->rd_amcache = NULL;
+}
+
+/*
+ * RelationGetIndexRowIdCmp
+ *
+ * Return the Role-2 row-identity comparator for an index relation: the
+ * comparator supplied by the indexed table's AM (see access/rowid.h), or the
+ * default TID comparator (ItemPointerCompare, via rowid_tid_compare) when the
+ * table AM supplies none.  The result is cached on the index relcache entry
+ * and reset with it on invalidation.
+ *
+ * The index AM uses this as its tiebreaker over equal keys without
+ * interpreting the identity bytes: heap's comparator is exactly
+ * ItemPointerCompare, so heap indexes behave as before.
+ */
+RowIDCmpFn
+RelationGetIndexRowIdCmp(Relation indexRelation)
+{
+	Relation	heapRelation;
+	const RowIDType *rowidtype;
+
+	if (indexRelation->rd_indexRowIdCmp != NULL)
+		return indexRelation->rd_indexRowIdCmp;
+
+	Assert(indexRelation->rd_index != NULL);
+
+	/*
+	 * Fetch the indexed table's RowID descriptor.  Use the already-known heap
+	 * OID from the index's pg_index tuple; RelationIdGetRelation returns the
+	 * cached table entry (building it if needed).
+	 */
+	heapRelation = RelationIdGetRelation(indexRelation->rd_index->indrelid);
+	if (!RelationIsValid(heapRelation))
+		elog(ERROR, "could not open table with OID %u for index \"%s\"",
+			 indexRelation->rd_index->indrelid,
+			 RelationGetRelationName(indexRelation));
+
+	rowidtype = table_index_row_key_type(heapRelation);
+	if (rowidtype != NULL && rowidtype->cmp != NULL)
+	{
+		indexRelation->rd_indexRowIdCmp = rowidtype->cmp;
+		indexRelation->rd_indexRowIdWidth = rowidtype->width;
+		indexRelation->rd_indexRowIdPosting = rowidtype->posting;
+	}
+	else
+	{
+		indexRelation->rd_indexRowIdCmp = rowid_tid_compare;
+		indexRelation->rd_indexRowIdWidth = sizeof(ItemPointerData);
+		indexRelation->rd_indexRowIdPosting = NULL;
+	}
+
+	RelationClose(heapRelation);
+
+	return indexRelation->rd_indexRowIdCmp;
+}
+
+/*
+ * RelationGetIndexRowIdWidth
+ *
+ * Return the width, in bytes, of this index's stored RowID (see
+ * access/rowid.h): 6 for a heap-TID identity, wider for an AM carrying a
+ * per-version discriminator.  Resolves (and caches) via the same path as
+ * RelationGetIndexRowIdCmp.
+ */
+uint8
+RelationGetIndexRowIdWidth(Relation indexRelation)
+{
+	if (indexRelation->rd_indexRowIdCmp == NULL)
+		(void) RelationGetIndexRowIdCmp(indexRelation);
+	return indexRelation->rd_indexRowIdWidth;
+}
+
+/*
+ * RelationGetIndexRowIdPosting
+ *
+ * Return this index's table-AM-supplied deduplication posting codec (see
+ * access/rowid.h), or NULL if the AM supplies none (heap, or a wide-RowID AM
+ * without a codec -> no dedup).  Resolves (and caches) via the same path as
+ * RelationGetIndexRowIdCmp.
+ */
+const RowIDPostingOps *
+RelationGetIndexRowIdPosting(Relation indexRelation)
+{
+	if (indexRelation->rd_indexRowIdCmp == NULL)
+		(void) RelationGetIndexRowIdCmp(indexRelation);
+	return indexRelation->rd_indexRowIdPosting;
 }
 
 /*

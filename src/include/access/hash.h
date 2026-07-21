@@ -367,7 +367,8 @@ extern bool hashinsert(Relation rel, Datum *values, bool *isnull,
 					   ItemPointer ht_ctid, Relation heapRel,
 					   IndexUniqueCheck checkUnique,
 					   bool indexUnchanged,
-					   struct IndexInfo *indexInfo);
+					   struct IndexInfo *indexInfo,
+					   const RowID *rowid);
 extern bool hashgettuple(IndexScanDesc scan, ScanDirection dir);
 extern int64 hashgetbitmap(IndexScanDesc scan, TIDBitmap *tbm);
 extern IndexScanDesc hashbeginscan(Relation rel, int nkeys, int norderbys);

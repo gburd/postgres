@@ -182,7 +182,8 @@ diinsert(Relation index, Datum *values, bool *isnull,
 		 ItemPointer ht_ctid, Relation heapRel,
 		 IndexUniqueCheck checkUnique,
 		 bool indexUnchanged,
-		 IndexInfo *indexInfo)
+		 IndexInfo *indexInfo,
+		 const RowID *rowid)
 {
 	/* nothing to do */
 	return false;

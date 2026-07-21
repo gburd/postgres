@@ -72,7 +72,8 @@ initCachedPage(BloomBuildState *buildstate)
  * Per-tuple callback for table_index_build_scan.
  */
 static void
-bloomBuildCallback(Relation index, ItemPointer tid, Datum *values,
+bloomBuildCallback(Relation index, ItemPointer tid, const RowID *rowid,
+				   Datum *values,
 				   bool *isnull, bool tupleIsAlive, void *state)
 {
 	BloomBuildState *buildstate = (BloomBuildState *) state;
@@ -176,12 +177,14 @@ blinsert(Relation index, Datum *values, bool *isnull,
 		 ItemPointer ht_ctid, Relation heapRel,
 		 IndexUniqueCheck checkUnique,
 		 bool indexUnchanged,
-		 IndexInfo *indexInfo)
+		 IndexInfo *indexInfo,
+		 const RowID *rowid)
 {
 	BloomState	blstate;
 	BloomTuple *itup;
 	MemoryContext oldCtx;
 	MemoryContext insertCtx;
+
 	BloomMetaPageData *metaData;
 	Buffer		buffer,
 				metaBuffer;
@@ -190,6 +193,8 @@ blinsert(Relation index, Datum *values, bool *isnull,
 	BlockNumber blkno = InvalidBlockNumber;
 	OffsetNumber nStart;
 	GenericXLogState *state;
+
+	(void) rowid;				/* bloom stores only the heap TID */
 
 	insertCtx = AllocSetContextCreate(CurrentMemoryContext,
 									  "Bloom insert temporary context",

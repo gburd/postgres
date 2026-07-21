@@ -350,7 +350,8 @@ brininsert(Relation idxRel, Datum *values, bool *nulls,
 		   ItemPointer heaptid, Relation heapRel,
 		   IndexUniqueCheck checkUnique,
 		   bool indexUnchanged,
-		   IndexInfo *indexInfo)
+		   IndexInfo *indexInfo,
+		   const RowID *rowid)
 {
 	BlockNumber pagesPerRange;
 	BlockNumber origHeapBlk;
@@ -362,6 +363,8 @@ brininsert(Relation idxRel, Datum *values, bool *nulls,
 	MemoryContext tupcxt = NULL;
 	MemoryContext oldcxt = CurrentMemoryContext;
 	bool		autosummarize = BrinGetAutoSummarize(idxRel);
+
+	(void) rowid;				/* brin stores only the heap TID */
 
 	/*
 	 * If first time through in this statement, initialize the insert state
@@ -999,6 +1002,7 @@ brinendscan(IndexScanDesc scan)
 static void
 brinbuildCallback(Relation index,
 				  ItemPointer tid,
+				  const RowID *rowid,
 				  Datum *values,
 				  bool *isnull,
 				  bool tupleIsAlive,
@@ -1050,6 +1054,7 @@ brinbuildCallback(Relation index,
 static void
 brinbuildCallbackParallel(Relation index,
 						  ItemPointer tid,
+						  const RowID *rowid,
 						  Datum *values,
 						  bool *isnull,
 						  bool tupleIsAlive,

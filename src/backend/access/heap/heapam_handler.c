@@ -24,6 +24,7 @@
 #include "access/heaptoast.h"
 #include "access/multixact.h"
 #include "access/rewriteheap.h"
+#include "access/rowid.h"
 #include "access/syncscan.h"
 #include "access/sysattr.h"
 #include "access/tableam.h"
@@ -343,6 +344,18 @@ heapam_modified_attrs(Relation rel, Bitmapset *attrs,
 	}
 
 	return attrs;
+}
+
+/*
+ * heapam_index_row_key_type -- heap's RowID descriptor (Role-2 order).
+ *
+ * Heap identifies each row version by a distinct TID, so its index entries
+ * are ordered by ItemPointerCompare exactly as they always have been.
+ */
+static const RowIDType *
+heapam_index_row_key_type(Relation rel)
+{
+	return &HeapRowIDType;
 }
 
 static TM_Result
@@ -1745,13 +1758,13 @@ heapam_index_build_range_scan(Relation heapRelation,
 						   root_offsets[offnum - 1]);
 
 			/* Call the AM's callback routine to process the tuple */
-			callback(indexRelation, &tid, values, isnull, tupleIsAlive,
+			callback(indexRelation, &tid, NULL, values, isnull, tupleIsAlive,
 					 callback_state);
 		}
 		else
 		{
 			/* Call the AM's callback routine to process the tuple */
-			callback(indexRelation, &heapTuple->t_self, values, isnull,
+			callback(indexRelation, &heapTuple->t_self, NULL, values, isnull,
 					 tupleIsAlive, callback_state);
 		}
 	}
@@ -2016,7 +2029,8 @@ heapam_index_validate_scan(Relation heapRelation,
 						 indexInfo->ii_Unique ?
 						 UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
 						 false,
-						 indexInfo);
+						 indexInfo,
+						 NULL);
 
 			state->tups_inserted += 1;
 		}
@@ -2796,7 +2810,9 @@ static const TableAmRoutine heapam_methods = {
 
 	.scan_bitmap_next_tuple = heapam_scan_bitmap_next_tuple,
 	.scan_sample_next_block = heapam_scan_sample_next_block,
-	.scan_sample_next_tuple = heapam_scan_sample_next_tuple
+	.scan_sample_next_tuple = heapam_scan_sample_next_tuple,
+
+	.index_row_key_type = heapam_index_row_key_type
 };
 
 

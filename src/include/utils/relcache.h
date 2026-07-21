@@ -14,6 +14,7 @@
 #ifndef RELCACHE_H
 #define RELCACHE_H
 
+#include "access/rowid.h"
 #include "access/tupdesc.h"
 #include "common/relpath.h"
 #include "nodes/bitmapset.h"
@@ -85,7 +86,9 @@ extern void RelationGetExclusionInfo(Relation indexRelation,
 									 uint16 **strategies);
 
 extern void RelationInitIndexAccessInfo(Relation relation);
-
+extern RowIDCmpFn RelationGetIndexRowIdCmp(Relation indexRelation);
+extern uint8 RelationGetIndexRowIdWidth(Relation indexRelation);
+extern const RowIDPostingOps *RelationGetIndexRowIdPosting(Relation indexRelation);
 /* caller must include pg_publication.h */
 struct PublicationDesc;
 extern void RelationBuildPublicationDesc(Relation relation,

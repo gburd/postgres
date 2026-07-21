@@ -125,7 +125,8 @@ typedef bool (*aminsert_function) (Relation indexRelation,
 								   Relation heapRelation,
 								   IndexUniqueCheck checkUnique,
 								   bool indexUnchanged,
-								   IndexInfo *indexInfo);
+								   IndexInfo *indexInfo,
+								   const RowID *rowid);
 
 /* cleanup after insert */
 typedef void (*aminsertcleanup_function) (Relation indexRelation,

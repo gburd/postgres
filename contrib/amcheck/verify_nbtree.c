@@ -210,6 +210,7 @@ static void bt_child_highkey_check(BtreeCheckState *state,
 static void bt_downlink_missing_check(BtreeCheckState *state, bool rightsplit,
 									  BlockNumber blkno, Page page);
 static void bt_tuple_present_callback(Relation index, ItemPointer tid,
+									  const RowID *rowid,
 									  Datum *values, bool *isnull,
 									  bool tupleIsAlive, void *checkstate);
 static IndexTuple bt_normalize_tuple(BtreeCheckState *state,
@@ -2779,7 +2780,8 @@ bt_downlink_missing_check(BtreeCheckState *state, bool rightsplit,
  * also allows us to detect the corruption in many cases.
  */
 static void
-bt_tuple_present_callback(Relation index, ItemPointer tid, Datum *values,
+bt_tuple_present_callback(Relation index, ItemPointer tid, const RowID *rowid,
+						  Datum *values,
 						  bool *isnull, bool tupleIsAlive, void *checkstate)
 {
 	BtreeCheckState *state = (BtreeCheckState *) checkstate;
@@ -2859,6 +2861,32 @@ bt_normalize_tuple(BtreeCheckState *state, IndexTuple itup)
 
 	/* Caller should only pass "logical" non-pivot tuples here */
 	Assert(!BTreeTupleIsPosting(itup) && !BTreeTupleIsPivot(itup));
+
+	/*
+	 * For a wider-than-TID identity (e.g. RECNO's (TID, gen)) the on-page
+	 * leaf tuples carry a trailing suffix (the generation) that is NOT part
+	 * of the key+TID the heapallindexed scan reconstructs.  The suffix must
+	 * be excluded from the fingerprint: an index whose key was not touched by
+	 * an unrelated in-place UPDATE keeps its original-generation entry, while
+	 * the live tuple's shared per-row generation has since advanced -- the
+	 * key+TID still match, only the (irrelevant-here) suffix differs.  Reform
+	 * from the key datums so the leaf tuple (with suffix) and the heap-derived
+	 * tuple (without) fingerprint to the identical base tuple.  index_getattr
+	 * reads only the key attributes and ignores the trailing suffix.
+	 */
+	if (RelationGetIndexRowIdWidth(state->rel) > sizeof(ItemPointerData))
+	{
+		Datum		widevals[INDEX_MAX_KEYS];
+		bool		widenull[INDEX_MAX_KEYS];
+
+		for (i = 0; i < tupleDescriptor->natts; i++)
+			widevals[i] = index_getattr(itup, TupleDescAttr(tupleDescriptor, i)->attnum,
+										tupleDescriptor, &widenull[i]);
+		reformed = index_form_tuple(tupleDescriptor, widevals, widenull);
+		reformed->t_tid = itup->t_tid;
+		/* Continue normalization on the suffix-free base tuple. */
+		itup = reformed;
+	}
 
 	/* Easy case: It's immediately clear that tuple has no varlena datums */
 	if (!IndexTupleHasVarwidths(itup))

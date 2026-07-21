@@ -96,6 +96,20 @@ _bt_mkscankey(Relation rel, IndexTuple itup)
 	key->keysz = Min(indnkeyatts, tupnatts);
 	key->scantid = key->heapkeyspace && itup ?
 		BTreeTupleGetHeapTID(itup) : NULL;
+	key->rowidcmp = RelationGetIndexRowIdCmp(rel);
+	key->rowidwidth = RelationGetIndexRowIdWidth(rel);
+
+	/*
+	 * For a wider-than-TID identity (e.g. RECNO's (TID, gen)), assemble the
+	 * full width-byte RowID of the search key from the source tuple, so
+	 * _bt_compare can tiebreak on it.  Heap (width 6) uses key->scantid
+	 * directly and leaves this unset.
+	 */
+	if (key->scantid != NULL &&
+		key->rowidwidth > sizeof(ItemPointerData) && itup)
+		BTreeTupleGetRowID(itup, key->rowidwidth, &key->scantid_rowid);
+	else
+		key->scantid_rowid.len = 0;
 	skey = key->scankeys;
 	for (i = 0; i < indnkeyatts; i++)
 	{
@@ -699,6 +713,7 @@ _bt_truncate(Relation rel, IndexTuple lastleft, IndexTuple firstright,
 	IndexTuple	tidpivot;
 	ItemPointer pivotheaptid;
 	Size		newsize;
+	uint8		rowidwidth;
 
 	/*
 	 * We should only ever truncate non-pivot tuples from leaf pages.  It's
@@ -741,27 +756,36 @@ _bt_truncate(Relation rel, IndexTuple lastleft, IndexTuple firstright,
 	}
 
 	/*
-	 * We have to store a heap TID in the new pivot tuple, since no non-TID
-	 * key attribute value in firstright distinguishes the right side of the
-	 * split from the left side.  nbtree conceptualizes this case as an
-	 * inability to truncate away any key attributes, since heap TID is
-	 * treated as just another key attribute (despite lacking a pg_attribute
-	 * entry).
+	 * We have to store a heap TID (or, for a wide row identity, the full
+	 * width-byte RowID) in the new pivot tuple, since no non-TID key attribute
+	 * value in firstright distinguishes the right side of the split from the
+	 * left side.  nbtree conceptualizes this case as an inability to truncate
+	 * away any key attributes, since the row identity is treated as just
+	 * another key attribute (despite lacking a pg_attribute entry).
 	 *
-	 * Use enlarged space that holds a copy of pivot.  We need the extra space
-	 * to store a heap TID at the end (using the special pivot tuple
-	 * representation).  Note that the original pivot already has firstright's
-	 * possible posting list/non-key attribute values removed at this point.
+	 * For a wide identity (e.g. RECNO's (TID, gen)) the pivot MUST carry the
+	 * full width-byte RowID: two leaf entries can share a physical TID and
+	 * differ only in the generation, and a pivot truncated to the bare TID
+	 * could not separate them across the page boundary (it would misroute
+	 * searches and violate the strict-order invariant).
+	 *
+	 * Use enlarged space that holds a copy of pivot plus the trailing
+	 * width-byte RowID (special pivot tuple representation).  The original
+	 * pivot already has firstright's possible posting list/non-key attribute
+	 * values removed at this point.
 	 */
-	newsize = MAXALIGN(IndexTupleSize(pivot)) + MAXALIGN(sizeof(ItemPointerData));
+	rowidwidth = itup_key->rowidwidth;
+	if (rowidwidth < sizeof(ItemPointerData))
+		rowidwidth = sizeof(ItemPointerData);
+	newsize = MAXALIGN(IndexTupleSize(pivot)) + MAXALIGN(rowidwidth);
 	tidpivot = palloc0(newsize);
 	memcpy(tidpivot, pivot, MAXALIGN(IndexTupleSize(pivot)));
 	/* Cannot leak memory here */
 	pfree(pivot);
 
 	/*
-	 * Store all of firstright's key attribute values plus a tiebreaker heap
-	 * TID value in enlarged pivot tuple
+	 * Store all of firstright's key attribute values plus a tiebreaker
+	 * row-identity value in the enlarged pivot tuple.
 	 */
 	tidpivot->t_info &= ~INDEX_SIZE_MASK;
 	tidpivot->t_info |= newsize;
@@ -771,11 +795,31 @@ _bt_truncate(Relation rel, IndexTuple lastleft, IndexTuple firstright,
 	/*
 	 * Lehman & Yao use lastleft as the leaf high key in all cases, but don't
 	 * consider suffix truncation.  It seems like a good idea to follow that
-	 * example in cases where no truncation takes place -- use lastleft's heap
-	 * TID.  (This is also the closest value to negative infinity that's
+	 * example in cases where no truncation takes place -- use lastleft's row
+	 * identity.  (This is also the closest value to negative infinity that's
 	 * legally usable.)
 	 */
-	ItemPointerCopy(BTreeTupleGetMaxHeapTID(lastleft), pivotheaptid);
+	if (rowidwidth > sizeof(ItemPointerData))
+	{
+		RowID		leftrowid;
+		uint8		genlen = rowidwidth - sizeof(ItemPointerData);
+		char	   *suffix;
+
+		/* lastleft's full (TID, gen) identity, canonical [TID || gen] order */
+		BTreeTupleGetRowID(lastleft, rowidwidth, &leftrowid);
+
+		/*
+		 * Lay the pivot suffix out as [gen || TID] (TID last) so
+		 * BTreeTupleGetHeapTID keeps returning the physical TID from the
+		 * trailing sizeof(ItemPointerData) bytes for any width.  pivotheaptid
+		 * already points at those trailing 6 bytes.
+		 */
+		suffix = (char *) tidpivot + IndexTupleSize(tidpivot) - rowidwidth;
+		memcpy(suffix, leftrowid.data + sizeof(ItemPointerData), genlen);
+		ItemPointerCopy((ItemPointer) leftrowid.data, pivotheaptid);
+	}
+	else
+		ItemPointerCopy(BTreeTupleGetMaxHeapTID(lastleft), pivotheaptid);
 
 	/*
 	 * We're done.  Assert() that heap TID invariants hold before returning.
@@ -788,12 +832,28 @@ _bt_truncate(Relation rel, IndexTuple lastleft, IndexTuple firstright,
 	 * tiebreaker.
 	 */
 #ifndef DEBUG_NO_TRUNCATE
-	Assert(ItemPointerCompare(BTreeTupleGetMaxHeapTID(lastleft),
-							  BTreeTupleGetHeapTID(firstright)) < 0);
-	Assert(ItemPointerCompare(pivotheaptid,
-							  BTreeTupleGetHeapTID(lastleft)) >= 0);
-	Assert(ItemPointerCompare(pivotheaptid,
-							  BTreeTupleGetHeapTID(firstright)) < 0);
+	if (rowidwidth > sizeof(ItemPointerData))
+	{
+		RowID		ll,
+					fr,
+					pv;
+
+		BTreeTupleGetRowID(lastleft, rowidwidth, &ll);
+		BTreeTupleGetRowID(firstright, rowidwidth, &fr);
+		BTreeTupleGetRowID(tidpivot, rowidwidth, &pv);
+		Assert(itup_key->rowidcmp(ll.data, fr.data) < 0);
+		Assert(itup_key->rowidcmp(pv.data, ll.data) >= 0);
+		Assert(itup_key->rowidcmp(pv.data, fr.data) < 0);
+	}
+	else
+	{
+		Assert(ItemPointerCompare(BTreeTupleGetMaxHeapTID(lastleft),
+								  BTreeTupleGetHeapTID(firstright)) < 0);
+		Assert(ItemPointerCompare(pivotheaptid,
+								  BTreeTupleGetHeapTID(lastleft)) >= 0);
+		Assert(ItemPointerCompare(pivotheaptid,
+								  BTreeTupleGetHeapTID(firstright)) < 0);
+	}
 #else
 
 	/*
@@ -1179,6 +1239,16 @@ _bt_allequalimage(Relation rel, bool debugmessage)
 	/* INCLUDE indexes can never support deduplication */
 	if (IndexRelationGetNumberOfAttributes(rel) !=
 		IndexRelationGetNumberOfKeyAttributes(rel))
+		return false;
+
+	/*
+	 * A wider-than-TID identity (e.g. RECNO's (TID, gen)) can never use
+	 * deduplication: posting lists collapse equal-key entries that share a
+	 * heap TID into one, which would merge distinct (TID, gen) row versions
+	 * and defeat the per-version discriminator.  BTreeTupleGetRowID also
+	 * assumes a width>6 non-pivot tuple is never a posting tuple.
+	 */
+	if (RelationGetIndexRowIdWidth(rel) > sizeof(ItemPointerData))
 		return false;
 
 	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(rel); i++)

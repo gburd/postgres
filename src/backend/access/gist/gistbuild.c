@@ -131,6 +131,7 @@ typedef struct GistSortedBuildLevelState
 /* prototypes for private functions */
 
 static void gistSortedBuildCallback(Relation index, ItemPointer tid,
+									const RowID *rowid,
 									Datum *values, bool *isnull,
 									bool tupleIsAlive, void *state);
 static void gist_indexsortbuild(GISTBuildState *state);
@@ -144,6 +145,7 @@ static void gistInitBuffering(GISTBuildState *buildstate);
 static int	calculatePagesPerBuffer(GISTBuildState *buildstate, int levelStep);
 static void gistBuildCallback(Relation index,
 							  ItemPointer tid,
+							  const RowID *rowid,
 							  Datum *values,
 							  bool *isnull,
 							  bool tupleIsAlive,
@@ -365,6 +367,7 @@ gistbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 static void
 gistSortedBuildCallback(Relation index,
 						ItemPointer tid,
+						const RowID *rowid,
 						Datum *values,
 						bool *isnull,
 						bool tupleIsAlive,
@@ -383,7 +386,7 @@ gistSortedBuildCallback(Relation index,
 
 	tuplesort_putindextuplevalues(buildstate->sortstate,
 								  buildstate->indexrel,
-								  tid,
+								  tid, NULL,
 								  compressed_values, isnull);
 
 	MemoryContextSwitchTo(oldCtx);
@@ -821,6 +824,7 @@ calculatePagesPerBuffer(GISTBuildState *buildstate, int levelStep)
 static void
 gistBuildCallback(Relation index,
 				  ItemPointer tid,
+				  const RowID *rowid,
 				  Datum *values,
 				  bool *isnull,
 				  bool tupleIsAlive,
