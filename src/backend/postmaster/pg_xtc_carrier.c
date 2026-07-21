@@ -508,12 +508,28 @@ xtc_carrier_supervisor_proc(void *arg)
 			xtc_proc_opts_t po = {0};
 			xtc_pid_t	bpid = XTC_PID_NONE;
 			uint64_t	ref = 0;
+			PgCarrier  *bc;
 
 			memcpy(&sp, msg, sizeof(sp));
 
 			/* entry is invariant; store it once (no per-spawn wrapper). */
 			g_xtc_backend_entry = sp.entry;
 			po.name = "pg-backend";
+
+			/*
+			 * Phase D: spawn migratable (work-stealable) iff the postmaster
+			 * marked this fiber's carrier so (client backend, ssl_sni off; see
+			 * xtc_carrier_migratable).  A zeroed po.migratable keeps the fiber
+			 * pinned -- the pre-Phase-D behavior -- for every other child and
+			 * whenever the flag is off, so the flip is scoped to exactly the
+			 * fibers the design clears.  The decision rides on the fiber-owned
+			 * carrier, so this spawn-time read matches the runtime
+			 * xtc_pg_backend_fiber_is_migratable() view (both read the same
+			 * carrier.migratable).
+			 */
+			bc = xtc_pg_backend_thread_start_carrier(sp.entry_arg);
+			if (bc != NULL && bc->migratable)
+				po.migratable = 1;
 
 			/*
 			 * Atomic spawn+monitor (libxtc v1.3.0): establish the monitor
@@ -535,8 +551,8 @@ xtc_carrier_supervisor_proc(void *arg)
 
 				/* raw write: elog is unsafe from this bare fiber */
 				sn = snprintf(sbuf, sizeof(sbuf),
-							  "xtc: spawned backend fiber pid=(loop=%u,local=%u,gen=%u)\n",
-							  bpid.loop_id, bpid.local_id, bpid.gen);
+							  "xtc: spawned backend fiber pid=(loop=%u,local=%u,gen=%u) migratable=%d\n",
+							  bpid.loop_id, bpid.local_id, bpid.gen, po.migratable);
 				if (sn > 0)
 				{
 					if (sn > (int) sizeof(sbuf))
@@ -921,9 +937,13 @@ xtc_pg_launch_backend_fiber(xtc_carrier_entry_fn entry, void *entry_arg)
 		xtc_pid_t	pid = XTC_PID_NONE;
 		xtc_loop_t *loop = (g_xtc_exec != NULL && g_xtc_n_loops > 1)
 			? xtc_exec_loop(g_xtc_exec, loop_idx) : g_xtc_loop;
+		PgCarrier  *bc = xtc_pg_backend_thread_start_carrier(entry_arg);
 
 		g_xtc_backend_entry = entry;	/* invariant; see xtc_carrier_proc */
 		po.name = "pg-backend";
+		/* Phase D: honor the same migratability decision as the monitored path. */
+		if (bc != NULL && bc->migratable)
+			po.migratable = 1;
 		if (xtc_proc_spawn(loop, xtc_carrier_proc, entry_arg, &po, &pid) != XTC_OK)
 			return EAGAIN;
 		elog(LOG, "xtc: spawned backend fiber (unmonitored) pid=(loop=%u,local=%u,gen=%u)",
@@ -1074,19 +1094,60 @@ xtc_pg_consume_genuine_crash(void)
 }
 
 /*
- * Whether the currently-running backend fiber may migrate (be stolen) across
- * carriers.  Backend fibers are pinned in this build -- the gated unpin has
- * not landed -- so this is unconditionally false.  See the header comment for
- * why the predicate exists now (no-migrate invariants written as tripwires).
+ * Whether the currently-running backend fiber may migrate (be work-stolen)
+ * across carriers.
  *
- * When the unpin lands this becomes the real per-fiber "is this fiber
- * steal-eligible" query; until then keeping it a single false keeps every
- * invariant that consults it dead (never fires) while pinned.
+ * Phase D: this is now a real per-fiber query.  The migratability decision is
+ * made once on the postmaster thread (xtc_carrier_migratable: client backend,
+ * ssl_sni off) and recorded on the fiber-owned carrier root; the spawn site
+ * reads the same flag to set xtc_proc_opts_t.migratable, so the runtime answer
+ * here and the actual libxtc pinning cannot disagree.
+ *
+ * Resolved via xtc_proc_userdata() (the fiber's own PgCarrier, published at
+ * fiber entry), NOT via the thread-local current-work bridge: after a steal the
+ * bridge may still reflect whichever fiber last ran on the resuming thread
+ * until the next seam restore, but userdata always tracks THIS fiber, so the
+ * answer is correct even mid-migration.  Only meaningful while
+ * xtc_in_backend_fiber; false otherwise (bare supervisor, non-fiber threads,
+ * process mode).
  */
 bool
 xtc_pg_backend_fiber_is_migratable(void)
 {
-	return false;
+	PgCarrier  *self_carrier;
+
+	if (!xtc_in_backend_fiber)
+		return false;
+
+	self_carrier = (PgCarrier *) xtc_proc_userdata();
+	return self_carrier != NULL && self_carrier->migratable;
+}
+
+/*
+ * Diagnostic: total number of tasks work-stolen across all carrier loops since
+ * startup (summed xtc_loop_stats_t.steals).  Used by the forced-migration
+ * stress test to PROVE fibers actually migrated (a nonzero total means at
+ * least one parked-then-woken migratable fiber was rebalanced onto an idle
+ * loop).  Returns 0 in single-loop mode (no peer to steal from) and is a
+ * lock-free snapshot of relaxed atomics -- exactness across a running executor
+ * is not guaranteed, which is fine for a "did any steal happen" probe.
+ */
+uint64
+xtc_pg_carrier_total_steals(void)
+{
+	uint64		total = 0;
+
+	if (g_xtc_exec == NULL || g_xtc_n_loops <= 1)
+		return 0;
+
+	for (int i = 0; i < g_xtc_n_loops; i++)
+	{
+		xtc_loop_stats_t st;
+
+		if (xtc_exec_loop_stats(g_xtc_exec, i, &st) == XTC_OK)
+			total += st.steals;
+	}
+	return total;
 }
 
 #endif							/* USE_XTC_CARRIER */
