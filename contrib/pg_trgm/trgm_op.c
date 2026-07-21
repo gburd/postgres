@@ -57,9 +57,17 @@ pg_trgm_session_state(void)
 											 NULL);
 	if (!state->initialized)
 	{
-		state->similarity_threshold_value = 0.3;
-		state->word_similarity_threshold_value = 0.6;
-		state->strict_word_similarity_threshold_value = 0.5;
+		/*
+		 * Use the same float literals as the boot_val passed to
+		 * DefineCustomRealVariable() in _PG_init() (0.3f/0.6f/0.5f).  The
+		 * cassert-only check_GUC_init() asserts the C-variable's initial value
+		 * is bit-identical to the declared boot_val; (double) 0.3 differs from
+		 * (double) 0.3f, so a double literal here would trip that assert when
+		 * pg_trgm's GUCs are defined (e.g. CREATE EXTENSION pg_trgm).
+		 */
+		state->similarity_threshold_value = 0.3f;
+		state->word_similarity_threshold_value = 0.6f;
+		state->strict_word_similarity_threshold_value = 0.5f;
 		state->initialized = true;
 	}
 

@@ -34,6 +34,21 @@ test_backend_dsm_shutdown_is_backend_local(PG_FUNCTION_ARGS)
 	fake_backend_to_exit.wait_state.wait_event_info_ptr =
 		&fake_backend_to_exit.wait_state.local_wait_event_info;
 
+	/*
+	 * dsm_create()/dsm_backend_shutdown() take the shared
+	 * DynamicSharedMemoryControlLock, and LWLockAcquire asserts that a
+	 * backend running under the postmaster always carries a PGPROC
+	 * (!(MyProc == NULL && IsUnderPostmaster)).  MyProc resolves through
+	 * CurrentPgBackend, so the fake backends we install here must keep the
+	 * real process backend's PGPROC -- this test isolates only DSM mapping
+	 * ownership, not proc identity.  (In a non-assert build the immediate,
+	 * uncontended lock acquisition never dereferences proc, which is why the
+	 * release gate passed with a NULL my_proc; the assert correctly flags the
+	 * missing invariant under cassert.)
+	 */
+	fake_backend_with_dsm.my_proc = MyProc;
+	fake_backend_to_exit.my_proc = MyProc;
+
 	PG_TRY();
 	{
 		/*
