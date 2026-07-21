@@ -4123,3 +4123,49 @@ STATUS: cleanly on libxtc v1.25.0, green, Step 1 reviewed. Next gate = Phase C
 (libxtc PUBLIC per-proc userdata -- request /tmp/libxtc-per-proc-userdata-request.md
 -- + lazy per-resume stamp), then Phase D (flip migratable=1, migration live),
 then the A/B benchmark (only meaningful once migration is live).
+
+### Phase D HOLD: cross-fiber root leak via the unseamed GUC amutex park (2026-07-21)
+
+Independent review A of 8a2a520b3d4 (Phase D, migratable=1) found a REAL,
+BLOCKING cross-fiber root leak -> migration must NOT stay live until fixed.
+
+DEFECT (guc.c ThreadedGUCLock amutex is a NON-SEAM park that leaks the 6-root
+bridge across a work-steal):
+- ThreadedGUCLock() (guc.c:153) -> xtc_amutex_lock(xtc_amutex_static(0),-1) on
+  the B_BACKEND path (set_config_with_handle guc.c:4896; GUCSetOptionNeedsThreadedLock
+  guc.c:597 takes it for custom/extension GUCs, placeholders, assign-hook records,
+  process-global-backed records -> routine SET search_path/timezone/work_mem/ext GUCs).
+- On contention the fiber xtc_yield()s (xtc/src/ptc/sync.c:697-739). Around that
+  yield ONLY __xtc_proc_ctx_save/restore runs (preserves __current_proc ONLY);
+  NOTHING saves/restores PG's 6-root bridge (no PgRuntimeSaveCurrentWork seam).
+- Unlock does direct hand-off + xtc_waker_wake; the woken MIGRATABLE fiber is
+  enqueued on the stealable deque (loop.c:308-313) -> idle loop T2 steals+resumes.
+- On resume GUC code mutates session GUC state through T2's bridge, which still
+  points at whichever fiber last ran on T2 -> CROSS-SESSION GUC CORRUPTION.
+- SILENT in every build incl. cassert: not a seam (XtcPgVerifyCurrentWorkIsSelf
+  never runs there), not XtcPgNoStealEnter-bracketed (affine_depth==0 -> park
+  assert never fires). Test 014 missed it -- it deliberately avoids contended GUC
+  writes, exercising only the uncontended (no-yield) amutex path.
+
+ROOT-CAUSE FIX (reviewer A): seam-wrap the single chokepoint -- snapshot the
+bridge before xtc_amutex_lock and restore after it returns, in ThreadedGUCLock/
+ThreadedGUCUnlock (guc.c:136/173), mirroring the xtc_pg_wait_fd seam. THEN audit
+EVERY libxtc yielding primitive reachable on the B_BACKEND path for the same
+pattern (the arwlock sync.c:805+ parks the same way -- confirm no unseamed
+B_BACKEND caller). This is the general lesson: migratable=1 outran seam coverage
+by one unaudited yielding lock; ANY libxtc primitive that can park must be
+seam-wrapped OR proven unreachable-while-holding-affine-state on the migratable
+path.
+
+SECONDARY (from review A): (i) XtcPgVerifyCurrentWorkIsSelf is insufficient --
+carrier-only, seam-only, assert-only; consider checking all 6 roots + a
+production-safe detection. (ii) ssl_sni PGC_SIGHUP reload window: gate reads
+ssl_sni once at spawn, no re-check at handshake; release has no tripwire ->
+re-check migratability at the TLS handshake or ban migration when ssl is
+compileable/enabled. Lower severity (connection-setup only).
+
+STATUS: migration is LIVE on origin but UNSAFE. Options: (a) fix the amutex seam
++ audit siblings (preferred -- well-scoped), then re-review; (b) revert the
+Phase D flip to migratable=0 (neutral) if fix slips. Do NOT benchmark until the
+leak is fixed + two-reviewer clean. Awaiting review B (libxtc-interaction angle
+-- may surface more unseamed primitives).
