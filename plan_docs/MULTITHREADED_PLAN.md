@@ -3941,3 +3941,50 @@ symbols -- that fights an explicit ABI decision and rebreaks):
 STAY on v1.24.0 for now (green, hook works). Do NOT bump to v1.25.0 until the
 ctx-hook dependency is resolved (option 1/2/3). The migratable flag is in hand the
 moment we do.
+
+### Option 3 VERDICT: eliminate the fiber-ctx hook -> bump to v1.25.0 cleanly (2026-07-20)
+
+Design: plan_docs/MULTITHREADED_FIBERCTX_ELIMINATION_DESIGN.md. Verdict: the
+fiber-ctx hook CAN be eliminated -- a PURE DELETION for the pinned world, zero
+per-read cost, and v1.25.0 then links cleanly (no dependency on the now-hidden
+__xtc_fiber_ctx_save/restore).
+
+WHY IT'S A PURE DELETION (source-verified):
+- The hook's only job is to repoint the thread-local bridge cells to the resuming
+  fiber's 6 roots (pg_xtc_carrier.c:597-598 externs, 831-847 assign, restore via
+  PgRuntimeRestoreCurrentWorkLazy). The manual wait-boundary SEAMS ALREADY do that
+  repoint on every cooperative yield a backend fiber has: xtc_pg_wait_fd
+  (PgRuntimeSaveCurrentWork/RestoreCurrentWork around the park, verified
+  ~1248-1266), method_xtc.c:131/150/154, fd.c:543-545/602-604. Seams run
+  unconditionally and are the documented standing correctness guarantee.
+- The hook is explicitly "no-op-equivalent while pinned" (pg_xtc_carrier.c:576-587,
+  verified). Its ONLY unique coverage is involuntary SIGVTALRM-preemption switches
+  -- irrelevant while pinned, and the migration case handled at Phase D.
+- Bridge derived fields self-invalidate: the owner token IS the root pointer
+  (backend_runtime_current.h:263-275) -> swapping a root re-derives dependents for
+  free; a stale bridge is already safe.
+
+COST (measured /tmp/xtc_self_cost/bench.c, -O2, vs 1.24 shared lib):
+  bridge fast path ~0.35 ns/read; xtc_self() ~1.76 ns/read (~5x, cross-.so + TLS).
+  => Option 2 (self-validate every hot read) DISQUALIFIED (~1000x over the
+  lazy-hook budget). The recommended removal adds ZERO per-read cost.
+
+LIBXTC API: none needed for the interim elimination (seams cover pinned). For
+Phase-D unpin, want a PUBLIC per-proc void* userdata (verified absent in v1.25:
+no per-proc storage, no public switch hook, no public current-proc ptr -- only
+xtc_self()). Request drafted: /tmp/libxtc-per-proc-userdata-request.md.
+
+MIGRATION PATH:
+ Step 1 (NOW, gated): remove the hook (pure deletion; KEEP the wait-boundary seams
+   + the Phase-B affine-section reset) -> bump pin e944d00 -> 913f3c49 (v1.25.0) ->
+   wire migratable=0 (ABI-neutral, byte-identical). Correctness-neutral while
+   pinned. Gate: 0 warnings, ldd->1.25.0, process regress 245/245,
+   check-threaded-world-core, test_backend_runtime green, TWO-REVIEWER.
+ Step 2 (Phase D): land libxtc public per-proc userdata; add a LAZY per-resume
+   stamp (one check per RESUME, only when migration live, NOT per read); flip
+   migratable=1 -> migration goes live.
+ FALLBACK (static-link libxtc to keep __xtc_fiber_ctx_*): NOT recommended --
+   re-couples to declared-internal symbols.
+
+This SUPERSEDES the v1.25.0 "stay on 1.24.0" hold: we can now move to 1.25.0 by
+removing the hook first.
