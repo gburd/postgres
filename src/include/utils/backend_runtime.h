@@ -2372,6 +2372,18 @@ struct PgCarrier
 	int			threaded_reloptions_mutex_depth;
 	bool		protocol_scheduler_registered;
 	bool		protocol_scheduler_idle;
+
+	/*
+	 * xtc-carrier: whether the backend fiber that owns this carrier may be
+	 * work-stolen across carrier loops (xtc_proc_opts_t.migratable).  The
+	 * carrier struct is fiber-owned (it lives in the fiber's per-backend
+	 * BackendThreadStart, not per-loop), so this flag rides with the fiber
+	 * across a steal and can be read O(1) from any context via the fiber's
+	 * xtc_proc_userdata() -- see xtc_pg_backend_fiber_is_migratable().  Always
+	 * false in process mode and for pinned fibers (the default); set only at
+	 * spawn for the client-backend fibers the gated unpin makes migratable.
+	 */
+	bool		migratable;
 };
 
 struct PgBackend

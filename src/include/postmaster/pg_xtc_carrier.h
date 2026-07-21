@@ -11,6 +11,17 @@
 /* The tree's backend thread entry has this shape (void (*)(void *)). */
 typedef void (*xtc_carrier_entry_fn) (void *arg);
 
+/*
+ * launch_backend.c owns the private BackendThreadStart layout; this accessor
+ * recovers a fiber's own PgCarrier root (runtime_state.carrier) from the
+ * opaque BackendThreadStart * the fiber received as its entry arg.  The
+ * carrier is fiber-owned, so the returned pointer rides with the fiber across
+ * a work-stealing steal -- the carrier layer reads it via xtc_proc_userdata()
+ * for an O(1), migration-safe self-lookup that does not depend on the (maybe
+ * stale after a steal) thread-local current-work bridge.
+ */
+struct PgCarrier;
+extern struct PgCarrier *xtc_pg_backend_thread_start_carrier(void *thread_start);
 /* True on the carrier thread while a backend fiber is running. */
 extern __thread bool xtc_in_backend_fiber;
 
@@ -91,12 +102,15 @@ extern void xtc_pg_affine_section_enter(void);
 extern void xtc_pg_affine_section_leave(void);
 extern int	xtc_pg_affine_section_depth(void);
 extern void xtc_pg_affine_section_reset(void);
+extern void xtc_pg_verify_current_work_is_self(void);
 
 #define XtcPgNoStealEnter() xtc_pg_affine_section_enter()
 #define XtcPgNoStealLeave() xtc_pg_affine_section_leave()
+#define XtcPgVerifyCurrentWorkIsSelf() xtc_pg_verify_current_work_is_self()
 #else
 #define XtcPgNoStealEnter() ((void) 0)
 #define XtcPgNoStealLeave() ((void) 0)
+#define XtcPgVerifyCurrentWorkIsSelf() ((void) 0)
 #endif
 
 #else							/* !USE_XTC_CARRIER */
@@ -110,6 +124,7 @@ extern void xtc_pg_affine_section_reset(void);
  */
 #define XtcPgNoStealEnter() ((void) 0)
 #define XtcPgNoStealLeave() ((void) 0)
+#define XtcPgVerifyCurrentWorkIsSelf() ((void) 0)
 
 #endif							/* USE_XTC_CARRIER */
 #endif							/* PG_XTC_CARRIER_H */

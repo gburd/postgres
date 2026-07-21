@@ -253,6 +253,45 @@ xtc_pg_affine_section_reset(void)
 {
 	xtc_pg_affine_depth = 0;
 }
+
+/*
+ * Assert-only cross-check that a wait-boundary seam restored the current-work
+ * bridge to THIS fiber's own roots after a park.
+ *
+ * The seams snapshot the six roots on the fiber's stack before parking and
+ * restore them on resume (PgRuntimeSaveCurrentWork / RestoreCurrentWork).
+ * Because the snapshot lives on the fiber's stack it rides with the fiber
+ * across a work-stealing steal, so the restore repoints the resuming thread's
+ * bridge to the fiber's own roots regardless of which carrier loop it resumed
+ * on.  This check confirms that invariant the moment it could first break: it
+ * compares the just-restored CurrentPgCarrier against the fiber's own carrier
+ * obtained via xtc_proc_userdata() (which does NOT go through the bridge, so a
+ * mismatch means the bridge is pointing at another fiber's carrier -- a
+ * cross-fiber root leak).  While pinned the two always match (no migration);
+ * once the unpin lands this is the tripwire that catches a wrong root-repoint
+ * before it can corrupt data across sessions.  Compiled only in assert builds;
+ * a no-op elsewhere so process and release builds are byte-for-byte unchanged.
+ */
+void
+xtc_pg_verify_current_work_is_self(void)
+{
+	PgCarrier  *self_carrier;
+
+	if (!xtc_in_backend_fiber)
+		return;					/* not a backend fiber (bare supervisor) */
+
+	self_carrier = (PgCarrier *) xtc_proc_userdata();
+	if (self_carrier == NULL)
+		return;					/* userdata not set (early boot / test) */
+
+	/*
+	 * The restored carrier root must be this fiber's own carrier.  Any other
+	 * value means a park resumed with the bridge still pointing at whichever
+	 * fiber last ran on this carrier thread -- the exact cross-session data
+	 * corruption the seams exist to prevent.
+	 */
+	Assert(CurrentPgCarrier == self_carrier);
+}
 #endif							/* USE_ASSERT_CHECKING */
 
 /* Scheduler thread: run the xtc app loop forever. */
@@ -607,6 +646,23 @@ xtc_carrier_proc(void *arg)
 
 	xtc_in_backend_fiber = true;
 
+	/*
+	 * Publish this fiber's own PgCarrier root as the proc's userdata
+	 * (libxtc v1.26.0).  The carrier is fiber-owned (it lives in the
+	 * per-backend BackendThreadStart that is this fiber's entry arg), and
+	 * xtc_proc userdata rides with the proc across a work-stealing steal, so
+	 * xtc_proc_userdata() gives an O(1), migration-safe way to find THIS
+	 * fiber's roots from any context -- crucially, without consulting the
+	 * thread-local current-work bridge, which reflects whichever fiber last
+	 * ran on the resuming carrier thread and may not be this one after a
+	 * steal.  It backs xtc_pg_backend_fiber_is_migratable() (a correct
+	 * per-fiber query even mid-migration) and the assert-only seam cross-check
+	 * that the wait-boundary restore repointed the bridge to this fiber's own
+	 * roots.  Neutral while pinned (nothing migrates, so the bridge already
+	 * matches); load-bearing once the gated unpin flips migratable to 1.
+	 */
+	(void) xtc_proc_set_userdata(xtc_pg_backend_thread_start_carrier(entry_arg));
+
 #ifdef USE_ASSERT_CHECKING
 	/*
 	 * Start this fiber with a clean affine-section depth.  The depth is
@@ -933,17 +989,24 @@ xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)
 	PgCurrentWorkSnapshot snap;
 
 	/*
-	 * Phase B park-boundary tripwire (manual-seam twin of the fiber-ctx save
-	 * hook's assert): this seam is only reached while xtc_in_backend_fiber, and
-	 * both branches below park the fiber.  A bracketed thread-affine section
-	 * must not be open across the park (see xtc_pg_affine_section_enter).  This
-	 * seam runs unconditionally (unlike the global save hook, which a
-	 * concurrent spawn can transiently revert to proc.c's), so it is the
-	 * belt-and-suspenders check.  Gated on migratability: hard while pinned
-	 * (dead), advisory once unpinned.
+	 * Phase B park-boundary tripwire (manual-seam twin of the removed
+	 * fiber-ctx save hook's assert): this seam is only reached while
+	 * xtc_in_backend_fiber, and both branches below park the fiber.  A
+	 * bracketed thread-affine section (raw spinlock, OpenSSL error-queue span,
+	 * sigprocmask window) holds per-OS-thread state that would be wrong if the
+	 * fiber resumed on a different carrier, so it must never be open across a
+	 * park.  The audit (MULTITHREADED_FIBER_WORKER_DESIGN.md section 4)
+	 * established every affine span is yield-free, so the depth is always zero
+	 * here -- for a PINNED and a MIGRATABLE fiber alike.  Assert it
+	 * unconditionally: a park while an affine span is open is a bug whether or
+	 * not the fiber can migrate (while pinned the resume is on the same thread
+	 * so it would not corrupt, but it still signals a broken invariant; once
+	 * migratable it is the exact cross-carrier corruption we must catch).  This
+	 * seam runs unconditionally (unlike the removed global save hook, which a
+	 * concurrent spawn could transiently revert), so it is the standing
+	 * belt-and-suspenders check.
 	 */
-	Assert(xtc_pg_backend_fiber_is_migratable() ||
-		   xtc_pg_affine_section_depth() == 0);
+	Assert(xtc_pg_affine_section_depth() == 0);
 
 	if (fd < 0)
 	{
@@ -955,6 +1018,7 @@ xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)
 			PgRuntimeSaveCurrentWork(&sleep_snap);
 			xtc_proc_sleep(timeout_ns);
 			PgRuntimeRestoreCurrentWork(&sleep_snap);
+			XtcPgVerifyCurrentWorkIsSelf();
 			return WL_TIMEOUT;
 		}
 		return WL_LATCH_SET;	/* caller re-checks */
@@ -972,9 +1036,14 @@ xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)
 	/*
 	 * xtc_proc_wait_fd parked this fiber and the loop may have run other
 	 * backend fibers on this OS thread meanwhile, clobbering PG's current-
-	 * work thread-locals.  Restore ours before touching any PG state.
+	 * work thread-locals.  Restore ours before touching any PG state.  The
+	 * snapshot lives on this fiber's stack, so it rode with the fiber if the
+	 * park resumed on a different carrier loop (a work-steal) -- the restore
+	 * therefore repoints the bridge to this fiber's own roots regardless of
+	 * which loop resumed it.
 	 */
 	PgRuntimeRestoreCurrentWork(&snap);
+	XtcPgVerifyCurrentWorkIsSelf();
 
 	if (rc != XTC_OK && rc != XTC_E_AGAIN)
 		return WL_LATCH_SET;	/* treat as a wakeup; caller re-checks */

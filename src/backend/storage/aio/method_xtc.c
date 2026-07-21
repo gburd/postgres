@@ -152,6 +152,7 @@ pgaio_xtc_submit(uint16 num_staged_ios, PgAioHandle **staged_ios)
 			}
 
 			PgRuntimeRestoreCurrentWork(&snap);
+			XtcPgVerifyCurrentWorkIsSelf();
 		}
 
 		/*
