@@ -494,7 +494,15 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		ok = ok && scheduler->active_carrier_count == base_active_carriers;
 		ok = ok && scheduler->carrier_lease_count == base_carrier_leases;
 
-		ResetLatch(&fake_latch);
+		/*
+		 * We are deliberately detached here (CurrentPgBackend == NULL) to
+		 * simulate the parked-carrier scheduler context, so MyProcPid resolves
+		 * through the process fallback core state rather than the fake
+		 * backend.  ResetLatch() asserts latch->owner_pid == MyProcPid, which
+		 * cannot hold while detached; the latch is only used here to observe
+		 * that PgBackendRaiseInterrupt sets it, so clear is_set directly.
+		 */
+		fake_latch.is_set = false;
 		PgBackendRaiseInterrupt(&state.logical.backend,
 								PG_BACKEND_INTERRUPT_QUERY_CANCEL);
 		ok = ok && fake_latch.is_set;
@@ -502,7 +510,7 @@ test_carrier_protocol_park_prepare_commit(PG_FUNCTION_ARGS)
 		pending_interrupts = PgBackendConsumeInterrupts(&state.logical.backend);
 		ok = ok && (pending_interrupts &
 					PG_BACKEND_INTERRUPT_MASK(PG_BACKEND_INTERRUPT_QUERY_CANCEL));
-		ResetLatch(&fake_latch);
+		fake_latch.is_set = false;
 
 		ok = ok && !PgBackendMarkProtocolReadParkWake(&state.logical.backend, 0,
 													  PG_PROTOCOL_PARK_WAKE_LOGICAL,

@@ -679,10 +679,38 @@ PgBackendResetUtilityClosedState(PgBackendUtilityState *utility)
 
 	utility->notify_interrupt_pending = false;
 
-	if (utility->async_global_channel_table != NULL)
-		dshash_detach(utility->async_global_channel_table);
-	if (utility->async_global_channel_dsa != NULL)
-		dsa_detach(utility->async_global_channel_dsa);
+	/*
+	 * Release the LISTEN/NOTIFY global channel dshash + its backing DSA.
+	 *
+	 * The DSA is attached with dsa_pin_mapping() (see async.c), so it is not
+	 * released by resource-owner cleanup; something must detach the mapping
+	 * explicitly.  There are two teardown paths into this reset:
+	 *
+	 *   - Full process/thread exit (proc_exit): shmem_exit() already ran
+	 *     dsm_backend_shutdown(), which detaches every mapped DSM segment,
+	 *     including the one backing this DSA, and frees the dsm_segment.
+	 *     Detaching again here would touch freed memory (a use-after-free the
+	 *     cassert CLOBBER_FREED_MEMORY poison turns into a crash; in a
+	 *     non-assert build the stale segment happens to survive the second
+	 *     walk).  This matches upstream, which never dsa_detach()es the pinned
+	 *     global-channel DSA at exit and relies on dsm_backend_shutdown().
+	 *
+	 *   - Logical session reset without a process exit (threaded runtime
+	 *     handing a backend's session state back without exiting the OS
+	 *     process): dsm_backend_shutdown() has NOT run, so the segment is
+	 *     still live and the explicit detach here is what reclaims it.
+	 *
+	 * Distinguish the two with PgBackendExitInProgress(): only detach when we
+	 * are not tearing down the whole process, otherwise just drop the runtime
+	 * pointers and let dsm_backend_shutdown() own the segment teardown.
+	 */
+	if (!PgBackendExitInProgress())
+	{
+		if (utility->async_global_channel_table != NULL)
+			dshash_detach(utility->async_global_channel_table);
+		if (utility->async_global_channel_dsa != NULL)
+			dsa_detach(utility->async_global_channel_dsa);
+	}
 	utility->async_global_channel_table = NULL;
 	utility->async_global_channel_dsa = NULL;
 
