@@ -46,6 +46,7 @@
 #include "access/xact.h"
 #include "common/pg_prng.h"
 #include "libpq/libpq-be.h"
+#include "libpq/libpq.h"		/* ssl_sni (xtc migratability gate) */
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "pgtime.h"
@@ -739,6 +740,42 @@ xtc_pg_backend_thread_start_carrier(void *thread_start)
 		return NULL;
 	return &ts->runtime_state.carrier;
 }
+
+/*
+ * Whether a fiber-eligible child of this type may ALSO be work-stolen across
+ * carrier loops (xtc_proc_opts_t.migratable) once the gated unpin is live.
+ *
+ * Default the SAFE way.  Only regular client backends (B_BACKEND) migrate:
+ * they are the throughput target, and every cooperative park a backend fiber
+ * has is a wait-boundary seam that repoints the six fiber-owned current-work
+ * roots on resume (see xtc_pg_verify_current_work_is_self and
+ * MULTITHREADED_FIBER_WORKER_DESIGN.md), so a stolen backend resumes correctly
+ * on any loop.  Everything else stays PINNED:
+ *   - background workers (parallel query, logical replication, extension
+ *     workers) run arbitrary/extension code whose thread-affine assumptions
+ *     are not audited for migration; Phase 16 / Gate E2-Extensions owns that.
+ *   - the WAL writer/summarizer, autovacuum, slotsync, WAL receiver and other
+ *     long-lived singletons have no throughput reason to migrate and may hold
+ *     loop-affine resources; keep them on their spawn loop.
+ *   - the per-loop supervisor is a bare fiber and never routes through here.
+ *
+ * ssl_sni no-migrate invariant (libxtc SNI #29 deferred): a server-side-SNI
+ * connection drives OpenSSL's per-OS-thread state directly and cannot yet be
+ * served by the fiber-aware TLS stack from a foreign thread, so when ssl_sni
+ * is on NO backend may migrate.  ssl_sni is a process-global GUC
+ * (PG_GLOBAL_RUNTIME), authoritative on the postmaster thread where this runs,
+ * so reading it here HONORS the invariant (the be_tls_open_server assertion is
+ * the tripwire; this is the actual gate).
+ */
+static bool
+xtc_carrier_migratable(BackendType child_type)
+{
+	if (child_type != B_BACKEND)
+		return false;
+	if (ssl_sni)
+		return false;
+	return true;
+}
 #endif
 
 /*
@@ -870,6 +907,20 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	InitializePgThreadBackendRuntimeState(&thread_start->runtime_state,
 										  thread_start->child_type, NULL,
 										  NULL);
+#ifdef USE_XTC_CARRIER
+
+	/*
+	 * Phase D: decide, on the postmaster thread (where ssl_sni is
+	 * authoritative), whether this fiber may be work-stolen across carrier
+	 * loops, and record it on the fiber-owned carrier root.  The carrier layer
+	 * reads it back at the spawn site (to set xtc_proc_opts_t.migratable) and
+	 * at runtime via xtc_proc_userdata() (xtc_pg_backend_fiber_is_migratable),
+	 * so the spawn-time and runtime views cannot disagree.  Only client
+	 * backends with ssl_sni off migrate; see xtc_carrier_migratable.
+	 */
+	thread_start->runtime_state.carrier.migratable =
+		xtc_carrier_migratable(thread_start->child_type);
+#endif
 	thread_start->publication.postmaster_latch = MyLatch;
 	if (thread_start->publication.postmaster_latch == NULL)
 		thread_start->publication.postmaster_latch = PgCurrentLocalLatchData();
