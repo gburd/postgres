@@ -4089,3 +4089,37 @@ pg_trgm 0.3f + the 2 test fixes all satisfy genuine invariants, no masking, no
 coverage loss. Process/threaded byte-for-byte. NIT (non-blocking): the retained
 explicit-detach branch is test-only today (reserved for the future
 logical-session-reset path) -- worth a ponytail note, no code change.
+
+### Step 1 independent review CLOSED: SHIP (2026-07-21)
+
+Independent adversarial review of 0b46d4022ec (hook removal + v1.25.0 bump): SHIP.
+CRUX (seam completeness) SAFE -- enumerated every backend-fiber park primitive
+(socket/latch/CV via xtc_pg_wait_fd; timeout sleep; AIO r/w via method_xtc;
+fsync/fdatasync via fd.c; LWLock/buffer/group/ProcSleep sem-waits via
+ProcSemaphoreWaitFiber->xtc_pg_wait_fd; CV/deadlock-timer via WaitLatch->seam):
+ALL route through a PgRuntimeSaveCurrentWork/Restore seam. Non-seam yields are all
+off the backend-fiber path (debug inject-crash sleep(0); bare-supervisor
+recv/send/monitor). KEY DE-RISK for Phase D: the hook's ONLY unique coverage
+(involuntary preemption) is UNREACHABLE in PG's libxtc config -- preemption is off
+by default (preempt_interval_ns==0) and PG never calls xtc_exec_set_preempt /
+xtc_preempt_set_involuntary (uses only XTC_APP_OPTS_DEFAULT). So no un-seamed park
+exists, benign or latent. v1.25.0 link/ABI verified empirically (ldd->1.25.0, zero
+undefined __xtc_fiber_ctx_*, all 27 xtc_* we use present as global; public API
+diff 1.24->1.25 = zero removed/renamed). migratable=0 byte-identical ({0} opts;
+migratable appended last, default 0=pinned; headers from nix store = no struct
+skew). Affine-reset re-homing correct (same registration point/fibers, all exit
+paths LIFO, fiber-entry reset preserved, empirically 0 asserts through crash-
+recovery test 010). Process + release-threaded byte-for-byte. flake.lock hygiene
+clean (only libxtc node changed, narHash matches). One nit fixed: stale
+xtc_pg_fiber_ctx_restore comment ref in be-secure-openssl.c:870.
+
+PHASE-D OBLIGATIONS (documented, deferred, NOT dropped): when migration goes live
+(and/or if PG ever arms preemption), the universal-switch safety net is gone ->
+(a) every future affine-bracket site must be seam-audited; (b) a preemption-safe
+root-repoint (or the fiber-owned-carrier invariant) must be reinstated if
+preemption is armed. This commit makes neither live.
+
+STATUS: cleanly on libxtc v1.25.0, green, Step 1 reviewed. Next gate = Phase C
+(libxtc PUBLIC per-proc userdata -- request /tmp/libxtc-per-proc-userdata-request.md
+-- + lazy per-resume stamp), then Phase D (flip migratable=1, migration live),
+then the A/B benchmark (only meaningful once migration is live).
