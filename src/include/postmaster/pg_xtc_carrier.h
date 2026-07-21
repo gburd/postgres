@@ -110,14 +110,18 @@ extern void xtc_pg_affine_section_leave(void);
 extern int	xtc_pg_affine_section_depth(void);
 extern void xtc_pg_affine_section_reset(void);
 extern void xtc_pg_verify_current_work_is_self(void);
+struct PgCurrentWorkSnapshot;
+extern void xtc_pg_verify_snapshot_is_self(const struct PgCurrentWorkSnapshot *snap);
 
 #define XtcPgNoStealEnter() xtc_pg_affine_section_enter()
 #define XtcPgNoStealLeave() xtc_pg_affine_section_leave()
 #define XtcPgVerifyCurrentWorkIsSelf() xtc_pg_verify_current_work_is_self()
+#define XtcPgVerifySnapshotIsSelf(snap) xtc_pg_verify_snapshot_is_self(snap)
 #else
 #define XtcPgNoStealEnter() ((void) 0)
 #define XtcPgNoStealLeave() ((void) 0)
 #define XtcPgVerifyCurrentWorkIsSelf() ((void) 0)
+#define XtcPgVerifySnapshotIsSelf(snap) ((void) (snap))
 #endif
 
 #else							/* !USE_XTC_CARRIER */
@@ -132,6 +136,7 @@ extern void xtc_pg_verify_current_work_is_self(void);
 #define XtcPgNoStealEnter() ((void) 0)
 #define XtcPgNoStealLeave() ((void) 0)
 #define XtcPgVerifyCurrentWorkIsSelf() ((void) 0)
+#define XtcPgVerifySnapshotIsSelf(snap) ((void) (snap))
 
 #endif							/* USE_XTC_CARRIER */
 #endif							/* PG_XTC_CARRIER_H */
