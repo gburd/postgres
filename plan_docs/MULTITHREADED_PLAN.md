@@ -4357,3 +4357,45 @@ protocol-read-park question, which requires a substrate where steals fire (the
 DST sim-pessimal path locally, OR EC2 after the libxtc wake-nudge). The
 protocol-read-park may need NO fix (subsumed by the GUC seam). Independent review
 of this diagnosis owed. migratable stays 0 (safe) until resolved.
+
+### libxtc v1.27.0: eager-rebalance landed -- our wake-on-stealable-work request FULFILLED (2026-07-21)
+
+v1.27.0 (tag fd7a8f6 / commit 21ce22e) has ONE change vs v1.26.0 (c36118c):
+df86fb8 feat(exec): eager work-stealing rebalance for migratable procs -- EXACTLY
+our /tmp/libxtc-wake-on-stealable-work-request.md, both named gaps implemented,
+OPT-IN (default off = today):
+- NEW xtc_exec_set_eager_rebalance(exec, on). Off by default -> ABI/behavior-safe.
+- GAP #2 FIXED (the direct 54%-idle fix): __xtc_loop_step (loop.c:583) -- under
+  eager rebalance a run-queue-empty loop that still OWNS PARKED FIBERS steals a
+  sibling's runnable migratable proc BEFORE blocking in the poller on its own fds.
+  Comment quotes our exact scenario ("backends all parked on sockets run a peer's
+  runnable query instead of idling").
+- GAP #1 FIXED: __xtc_exec_nudge_idle_peer -- __xtc_loop_enqueue (loop.c:313)
+  nudges ONE idle peer's poller (xtc_io_wakeup) when it pushes migratable work,
+  bounded by an atomic n_idle counter (no thundering herd, no cost when all busy;
+  worker marks itself idle across its 1ms poll, exec.c:169).
+
+IMPACT: this is the LONG POLE lifting. It ALSO gives us the steal-capable
+substrate we needed to DECIDE the protocol-read-park "2nd leak" (was undecidable
+because this host couldn't produce a real steal). Now, with eager rebalance on,
+steals CAN fire locally -> we can confirm whether the protocol-read-park PANIC is
+subsumed by the GUC seam or a distinct park remains, BEFORE re-enabling
+migratable=1.
+
+REVISED SEQUENCE to the benchmark:
+ 1. Bump pin c36118c -> fd7a8f6 (v1.27.0); fresh build dir; verify ldd 1.27.0;
+    confirm neutral (default off) -- gate green.
+ 2. Wire xtc_exec_set_eager_rebalance(g_xtc_exec, 1) on the threaded carrier
+    (pg_xtc_carrier.c app/exec bring-up) -- gate this so it's on only under the
+    threaded carrier; process mode unaffected.
+ 3. With eager rebalance ON but STILL migratable=0: measure -- does anything
+    change? (Should be neutral: nothing migratable yet, so nothing steals. Sanity.)
+ 4. Re-enable migratable=1 (restore the child-type + ssl_sni gate) + fix the
+    pg_usleep startup-park seam first (the one reproducible our-side fragility).
+ 5. Run 014 (now steal-capable): confirm n_steals > 0 AND no protocol-read-park
+    PANIC (decides the 2nd leak: subsumed vs distinct). If a distinct park
+    surfaces NOW that steals fire, fix it (seam pattern) before proceeding.
+ 6. Two-reviewer the whole migratable=1 re-enable.
+ 7. EC2 A/B benchmark -- the real vs-fork number with work-stealing ACTIVE.
+VERIFY-BEFORE-TRUSTING: confirm eager rebalance actually produces steals in our
+usage (measure n_steals>0 in 014), don't assume the fix works for us.
