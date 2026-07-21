@@ -4321,3 +4321,39 @@ CORRECTNESS is already DST-proven. THIS IS THE LONG POLE for a benchmark that
 shows the work-stealing win: even with both PG-side leaks fixed + migratable=1
 re-enabled, TPS won't move off the ~50% baseline until libxtc rebalances under
 load. Ready for the user to forward to the libxtc team.
+
+### 2nd-leak (protocol-read-park PANIC) diagnosis: class (a), likely subsumed by the GUC seam; not reproducible here (2026-07-21)
+
+The protocol-read-park fix agent STOPPED (correctly, per the corruption-path
+directive) -- diagnosis, no code shipped, tree clean. Findings:
+- The PANIC (PgRuntimeProtocolSchedulerParkBackend returns false when
+  backend->carrier != NULL; PgCarrierDetachBackend backend_runtime.c:729 only
+  clears backend->carrier if it == the local carrier) means: at commit, the local
+  carrier (=CurrentPgCarrier, thread-local bridge) DIVERGED from the authoritative
+  backend->carrier.
+- ROOT CAUSE = class (a): an UNSEAMED park leaking the thread-local 6-root bridge
+  (same class as the GUC-amutex leak cee1805f700). The protocol-read-park PANIC is
+  a DOWNSTREAM MANIFESTATION SITE, not an independent bug. Ruled out (b) genuine
+  scheduler reassignment (state machine is spinlock-gated single-owner) and (c) a
+  data race on backend->carrier (pooled model uses real pthreads, no fiber
+  time-sharing; staging carrier is fiber-owned).
+- WITH the GUC-amutex seam present + every other command-path park audited-and-
+  seamed (xtc_pg_wait_fd, GUC amutex, ProcSemaphoreWaitFiber, fd.c, method_xtc.c),
+  NO reproducible divergence path found. => TWO possibilities, undecidable here:
+  (1) the PANIC was a PRE-SEAM ARTIFACT of the now-fixed GUC leak surfacing
+  downstream -> ALREADY RESOLVED by aba9109a15c; or (2) a DISTINCT unseamed park
+  remains that only a real steal exposes.
+- CANNOT be decided on this host: libxtc's executor is inert for the PG load
+  (n_steals==0, no real migration without the sim-only pessimal knob -- see the
+  wake-on-stealable-work request e601ba5861d). The agent's runs reproduced only
+  the SEPARATE documented concurrent-startup fragility (unseamed pg_usleep/
+  nanosleep in backend_thread_wait_until_registered -> SIGSEGV at spawn), never
+  the protocol-read-park PANIC and never a steal.
+
+IMPLICATION: the blocker list did NOT grow. The remaining our-side items to
+re-enable migratable=1 safely are: (i) the pg_usleep startup-park seam (a real,
+separately-reproduced fragility -- worth fixing regardless), (ii) decide the
+protocol-read-park question, which requires a substrate where steals fire (the
+DST sim-pessimal path locally, OR EC2 after the libxtc wake-nudge). The
+protocol-read-park may need NO fix (subsumed by the GUC seam). Independent review
+of this diagnosis owed. migratable stays 0 (safe) until resolved.
