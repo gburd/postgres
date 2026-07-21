@@ -877,7 +877,7 @@ be_tls_open_server(Port *port)
 	 * threaded mode are byte-for-byte unchanged.
 	 *
 	 * See plan_docs/MULTITHREADED_PLAN.md "ssl_sni no-migrate invariant" and the
-	 * carrier no-steal staging in xtc_pg_fiber_ctx_restore (pg_xtc_carrier.c).
+	 * carrier no-steal staging (the affine-section tripwire in pg_xtc_carrier.c).
 	 */
 	Assert(!(xtc_in_backend_fiber && ssl_sni && xtc_pg_backend_fiber_is_migratable()));
 #endif
