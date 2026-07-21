@@ -38,7 +38,8 @@ typedef struct
 
 /* Callback to process one heap tuple during table_index_build_scan */
 static void
-spgistBuildCallback(Relation index, ItemPointer tid, Datum *values,
+spgistBuildCallback(Relation index, ItemPointer tid, const RowID *rowid,
+					Datum *values,
 					bool *isnull, bool tupleIsAlive, void *state)
 {
 	SpGistBuildState *buildstate = (SpGistBuildState *) state;
@@ -184,11 +185,14 @@ spginsert(Relation index, Datum *values, bool *isnull,
 		  ItemPointer ht_ctid, Relation heapRel,
 		  IndexUniqueCheck checkUnique,
 		  bool indexUnchanged,
-		  IndexInfo *indexInfo)
+		  IndexInfo *indexInfo,
+		  const RowID *rowid)
 {
 	SpGistState spgstate;
 	MemoryContext oldCtx;
 	MemoryContext insertCtx;
+
+	(void) rowid;				/* spgist stores only the heap TID */
 
 	insertCtx = AllocSetContextCreate(CurrentMemoryContext,
 									  "SP-GiST insert temporary context",

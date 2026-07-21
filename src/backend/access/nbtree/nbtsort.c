@@ -261,9 +261,11 @@ static double _bt_spools_heapscan(Relation heap, Relation index,
 								  BTBuildState *buildstate, IndexInfo *indexInfo);
 static void _bt_spooldestroy(BTSpool *btspool);
 static void _bt_spool(BTSpool *btspool, const ItemPointerData *self,
+					  const RowID *rowid,
 					  const Datum *values, const bool *isnull);
 static void _bt_leafbuild(BTSpool *btspool, BTSpool *btspool2);
-static void _bt_build_callback(Relation index, ItemPointer tid, Datum *values,
+static void _bt_build_callback(Relation index, ItemPointer tid,
+							   const RowID *rowid, Datum *values,
 							   bool *isnull, bool tupleIsAlive, void *state);
 static BulkWriteBuffer _bt_blnewpage(BTWriteState *wstate, uint32 level);
 static BTPageState *_bt_pagestate(BTWriteState *wstate, uint32 level);
@@ -528,10 +530,10 @@ _bt_spooldestroy(BTSpool *btspool)
  * spool an index entry into the sort file.
  */
 static void
-_bt_spool(BTSpool *btspool, const ItemPointerData *self, const Datum *values, const bool *isnull)
+_bt_spool(BTSpool *btspool, const ItemPointerData *self, const RowID *rowid, const Datum *values, const bool *isnull)
 {
 	tuplesort_putindextuplevalues(btspool->sortstate, btspool->index,
-								  self, values, isnull);
+								  self, rowid, values, isnull);
 }
 
 /*
@@ -582,6 +584,7 @@ _bt_leafbuild(BTSpool *btspool, BTSpool *btspool2)
 static void
 _bt_build_callback(Relation index,
 				   ItemPointer tid,
+				   const RowID *rowid,
 				   Datum *values,
 				   bool *isnull,
 				   bool tupleIsAlive,
@@ -590,16 +593,24 @@ _bt_build_callback(Relation index,
 	BTBuildState *buildstate = (BTBuildState *) state;
 
 	/*
+	 * A wider-than-TID identity (RECNO's (TID, gen), width 10) arrives with
+	 * its full RowID in `rowid`; _bt_spool -> tuplesort_putindextuplevalues
+	 * appends the (width - 6) suffix to the spooled leaf tuple so the built
+	 * index carries the same suffix btinsert() writes, keeping equal-key
+	 * A->B->A versions distinct.  A width-6 heap identity passes rowid==NULL.
+	 */
+
+	/*
 	 * insert the index tuple into the appropriate spool file for subsequent
 	 * processing
 	 */
 	if (tupleIsAlive || buildstate->spool2 == NULL)
-		_bt_spool(buildstate->spool, tid, values, isnull);
+		_bt_spool(buildstate->spool, tid, rowid, values, isnull);
 	else
 	{
 		/* dead tuples are put into spool2 */
 		buildstate->havedead = true;
-		_bt_spool(buildstate->spool2, tid, values, isnull);
+		_bt_spool(buildstate->spool2, tid, rowid, values, isnull);
 	}
 
 	buildstate->indtuples += 1;

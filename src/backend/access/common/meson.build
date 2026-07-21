@@ -10,6 +10,7 @@ backend_sources += files(
   'printtup.c',
   'relation.c',
   'reloptions.c',
+  'rowid.c',
   'scankey.c',
   'session.c',
   'syncscan.c',

@@ -218,7 +218,8 @@ index_insert(Relation indexRelation,
 			 Relation heapRelation,
 			 IndexUniqueCheck checkUnique,
 			 bool indexUnchanged,
-			 IndexInfo *indexInfo)
+			 IndexInfo *indexInfo,
+			 const RowID *rowid)
 {
 	RELATION_CHECKS;
 	CHECK_REL_PROCEDURE(aminsert);
@@ -231,7 +232,7 @@ index_insert(Relation indexRelation,
 	return indexRelation->rd_indam->aminsert(indexRelation, values, isnull,
 											 heap_t_ctid, heapRelation,
 											 checkUnique, indexUnchanged,
-											 indexInfo);
+											 indexInfo, rowid);
 }
 
 /* -------------------------

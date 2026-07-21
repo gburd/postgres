@@ -207,14 +207,52 @@ btinsert(Relation rel, Datum *values, bool *isnull,
 		 ItemPointer ht_ctid, Relation heapRel,
 		 IndexUniqueCheck checkUnique,
 		 bool indexUnchanged,
-		 IndexInfo *indexInfo)
+		 IndexInfo *indexInfo,
+		 const RowID *rowid)
 {
 	bool		result;
 	IndexTuple	itup;
+	uint8		width = RelationGetIndexRowIdWidth(rel);
 
 	/* generate an index tuple */
 	itup = index_form_tuple(RelationGetDescr(rel), values, isnull);
 	itup->t_tid = *ht_ctid;
+
+	/*
+	 * For a wider RowID (e.g. RECNO's (TID, gen), width 10) store the trailing
+	 * (width - 6) suffix bytes at the end of the leaf tuple so
+	 * BTreeTupleGetRowID can read them back for the Role-2 tiebreak.  The
+	 * width-6 / rowid==NULL case leaves itup exactly as the heap path built
+	 * it -- byte-identical to before.
+	 */
+	if (width > sizeof(ItemPointerData) && rowid != NULL)
+	{
+		uint8		suffixlen = width - sizeof(ItemPointerData);
+		Size		basesize = IndexTupleSize(itup);
+		Size		newsize = MAXALIGN(basesize + suffixlen);
+		IndexTuple	grown;
+
+		Assert(width == rowid->len);
+		Assert(!BTreeTupleIsPosting(itup));
+		Assert(newsize <= INDEX_SIZE_MASK);
+
+		/*
+		 * Grow the tuple to hold the trailing suffix, recording a MAXALIGN'd
+		 * size so nbtree's split/highkey asserts (which require
+		 * IndexTupleSize == MAXALIGN(IndexTupleSize)) hold.  The suffix
+		 * occupies the final suffixlen bytes of the aligned tuple, where
+		 * BTreeTupleGetRowID reads it back (IndexTupleSize - suffixlen).
+		 */
+		grown = palloc0(newsize);
+		memcpy(grown, itup, basesize);
+		memcpy((char *) grown + newsize - suffixlen,
+			   rowid->data + sizeof(ItemPointerData), suffixlen);
+		grown->t_info &= ~INDEX_SIZE_MASK;
+		grown->t_info |= newsize;
+
+		pfree(itup);
+		itup = grown;
+	}
 
 	result = _bt_doinsert(rel, itup, checkUnique, indexUnchanged, heapRel);
 

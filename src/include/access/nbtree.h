@@ -16,6 +16,7 @@
 
 #include "access/amapi.h"
 #include "access/itup.h"
+#include "access/rowid.h"
 #include "access/sdir.h"
 #include "catalog/pg_am_d.h"
 #include "catalog/pg_class.h"
@@ -677,6 +678,70 @@ BTreeTupleGetMaxHeapTID(IndexTuple itup)
 }
 
 /*
+ * BTreeTupleGetRowID
+ *
+ * Assemble the width-byte RowID (the table AM's index row identity; see
+ * access/rowid.h) for a non-pivot leaf tuple into *out.  `width` is the
+ * index's RowID width (BTScanInsert.rowidwidth / rd_indexRowIdWidth): 6 for a
+ * heap-TID identity, wider for an AM carrying a per-version discriminator
+ * (RECNO's (TID, gen) is 10).
+ *
+ * The leading sizeof(ItemPointerData) bytes are the physical TID (from the
+ * header, or the first posting TID); for width > sizeof(ItemPointerData) the
+ * remaining bytes are a trailing suffix stored at the end of the tuple.  RECNO
+ * indexes disable posting-list deduplication, so a width>6 non-pivot tuple
+ * always holds exactly one TID plus its suffix.
+ *
+ * The index AM orders entries by comparing these assembled RowIDs with the
+ * descriptor's comparator; it never interprets the bytes.
+ */
+static inline void
+BTreeTupleGetRowID(IndexTuple itup, uint8 width, RowID *out)
+{
+	Assert(width >= sizeof(ItemPointerData));
+	Assert(width <= MAX_ROWID_SIZE);
+
+	out->len = width;
+
+	if (BTreeTupleIsPivot(itup))
+	{
+		/*
+		 * A pivot tuple stores its tiebreaker as a trailing suffix laid out as
+		 * [gen (width-6 bytes) || TID (6 bytes)], TID LAST, so that
+		 * BTreeTupleGetHeapTID (which reads the trailing sizeof(ItemPointerData)
+		 * bytes) still finds the physical TID unchanged for any width.  Here we
+		 * reassemble the canonical [TID || gen] order the comparator expects.
+		 */
+		const char *suffix = (const char *) itup + IndexTupleSize(itup) - width;
+		uint8		genlen = width - sizeof(ItemPointerData);
+
+		memcpy(out->data, suffix + genlen, sizeof(ItemPointerData));	/* TID */
+		if (genlen > 0)
+			memcpy(out->data + sizeof(ItemPointerData), suffix, genlen);	/* gen */
+	}
+	else
+	{
+		/*
+		 * A non-pivot leaf tuple keeps the real physical TID in the header
+		 * (t_tid / posting) and, for a wide identity, the remaining (width-6)
+		 * discriminator bytes as a trailing suffix.
+		 */
+		ItemPointer tid = BTreeTupleGetHeapTID(itup);
+
+		memcpy(out->data, tid, sizeof(ItemPointerData));
+		if (width > sizeof(ItemPointerData))
+		{
+			uint8		suffixlen = width - sizeof(ItemPointerData);
+
+			Assert(!BTreeTupleIsPosting(itup));
+			memcpy(out->data + sizeof(ItemPointerData),
+				   (char *) itup + IndexTupleSize(itup) - suffixlen,
+				   suffixlen);
+		}
+	}
+}
+
+/*
  *	Operator strategy numbers for B-tree have been moved to access/stratnum.h,
  *	because many places need to use them in ScanKeyInit() calls.
  *
@@ -800,6 +865,10 @@ typedef struct BTScanInsertData
 	bool		nextkey;
 	bool		backward;		/* backward index scan? */
 	ItemPointer scantid;		/* tiebreaker for scankeys */
+	RowIDCmpFn	rowidcmp;		/* Role-2 tiebreak comparator (table AM's) */
+	uint8		rowidwidth;		/* width of the stored RowID (table AM's) */
+	RowID		scantid_rowid;	/* full width-byte identity of scantid, when
+								 * rowidwidth > sizeof(ItemPointerData) */
 	int			keysz;			/* Size of scankeys array */
 	ScanKeyData scankeys[INDEX_MAX_KEYS];	/* Must appear last */
 } BTScanInsertData;
@@ -1156,7 +1225,8 @@ extern bool btinsert(Relation rel, Datum *values, bool *isnull,
 					 ItemPointer ht_ctid, Relation heapRel,
 					 IndexUniqueCheck checkUnique,
 					 bool indexUnchanged,
-					 struct IndexInfo *indexInfo);
+					 struct IndexInfo *indexInfo,
+					 const RowID *rowid);
 extern IndexScanDesc btbeginscan(Relation rel, int nkeys, int norderbys);
 extern Size btestimateparallelscan(Relation rel, int nkeys, int norderbys);
 extern void btinitparallelscan(void *target);

@@ -22,6 +22,7 @@ OBJS = \
 	printtup.o \
 	relation.o \
 	reloptions.o \
+	rowid.o \
 	scankey.o \
 	session.o \
 	syncscan.o \

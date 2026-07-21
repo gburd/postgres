@@ -24,6 +24,7 @@
 #include "partitioning/partdefs.h"
 #include "rewrite/prs2lock.h"
 #include "storage/block.h"
+#include "storage/itemptr.h"
 #include "storage/relfilelocator.h"
 #include "storage/smgr.h"
 #include "utils/relcache.h"
@@ -216,6 +217,23 @@ typedef struct RelationData
 	uint16	   *rd_exclstrats;	/* exclusion ops' strategy numbers, if any */
 	Oid		   *rd_indcollation;	/* OIDs of index collations */
 	bytea	  **rd_opcoptions;	/* parsed opclass-specific options */
+
+	/*
+	 * Cached Role-2 row-identity comparator for this index's table AM (see
+	 * access/rowid.h).  NULL until first resolved via RelationGetIndexRowIdCmp;
+	 * once resolved it is the table AM's descriptor comparator, or the default
+	 * TID comparator (ItemPointerCompare) if the AM supplies none.  Reset with
+	 * the rest of the relcache entry on invalidation.
+	 */
+	RowIDCmpFn	rd_indexRowIdCmp;
+
+	/*
+	 * Width, in bytes, of this index's stored RowID (the indexed table AM's
+	 * RowIDType.width): 6 for a heap-TID identity, wider for an AM that carries
+	 * a per-version discriminator (RECNO's (TID, gen) is 10).  0 until first
+	 * resolved by RelationGetIndexRowIdCmp.
+	 */
+	uint8		rd_indexRowIdWidth;
 
 	/*
 	 * rd_amcache is available for index and table AMs to cache private data

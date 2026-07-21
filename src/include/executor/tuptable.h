@@ -15,6 +15,7 @@
 #define TUPTABLE_H
 
 #include "access/htup.h"
+#include "access/rowid.h"
 #include "access/sysattr.h"
 #include "access/tupdesc.h"
 #include "storage/buf.h"
@@ -140,6 +141,11 @@ typedef struct TupleTableSlot
 
 	MemoryContext tts_mcxt;		/* slot itself is in this context */
 	ItemPointerData tts_tid;	/* stored tuple's tid */
+	RowID		tts_rowid;		/* full width-byte index row identity of the
+								 * stored tuple; len == 0 means "use tts_tid"
+								 * (heap width-6 default).  Set by table AMs
+								 * whose index identity is wider than a TID
+								 * (e.g. RECNO's (TID, gen)). */
 	Oid			tts_tableOid;	/* table oid of tuple */
 } TupleTableSlot;
 

@@ -456,7 +456,8 @@ ExecInsertIndexTuples(ResultRelInfo *resultRelInfo,
 						 heapRelation,	/* heap relation */
 						 checkUnique,	/* type of uniqueness check to do */
 						 indexUnchanged,	/* UPDATE without logical change? */
-						 indexInfo);	/* index AM may need this */
+						 indexInfo,	/* index AM may need this */
+						 slot->tts_rowid.len > 0 ? &slot->tts_rowid : NULL);
 
 		/*
 		 * If the index has an associated exclusion constraint, check that.

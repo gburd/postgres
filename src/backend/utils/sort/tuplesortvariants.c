@@ -833,7 +833,8 @@ tuplesort_putheaptuple(Tuplesortstate *state, HeapTuple tup)
  */
 void
 tuplesort_putindextuplevalues(Tuplesortstate *state, Relation rel,
-							  const ItemPointerData *self, const Datum *values,
+							  const ItemPointerData *self, const RowID *rowid,
+							  const Datum *values,
 							  const bool *isnull)
 {
 	SortTuple	stup;
@@ -846,6 +847,36 @@ tuplesort_putindextuplevalues(Tuplesortstate *state, Relation rel,
 										  isnull, base->tuplecontext);
 	tuple = ((IndexTuple) stup.tuple);
 	tuple->t_tid = *self;
+
+	/*
+	 * For a wider-than-TID identity (e.g. RECNO's (TID, gen), width 10) append
+	 * the trailing (width - 6) suffix bytes so the leaf tuple written by the
+	 * sort build carries the same suffix btinsert() would, and
+	 * BTreeTupleGetRowID can read it back.  Mirrors the tuple-growing idiom in
+	 * btinsert()/_bt_form_posting.  Heap (width 6 / rowid==NULL) leaves the
+	 * tuple byte-identical to before.
+	 */
+	if (rowid != NULL && rowid->len > sizeof(ItemPointerData))
+	{
+		uint8		suffixlen = rowid->len - sizeof(ItemPointerData);
+		Size		basesize = IndexTupleSize(tuple);
+		Size		newsize = MAXALIGN(basesize + suffixlen);
+		IndexTuple	grown;
+
+		Assert(newsize <= INDEX_SIZE_MASK);
+		grown = (IndexTuple) MemoryContextAlloc(base->tuplecontext, newsize);
+		memset(grown, 0, newsize);
+		memcpy(grown, tuple, basesize);
+		memcpy((char *) grown + newsize - suffixlen,
+			   rowid->data + sizeof(ItemPointerData), suffixlen);
+		grown->t_info &= ~INDEX_SIZE_MASK;
+		grown->t_info |= newsize;
+		/* leave the base tuple to the tuplecontext reset: bump contexts
+		 * (TupleSortUseBumpTupleCxt) do not support pfree */
+		stup.tuple = grown;
+		tuple = grown;
+	}
+
 	/* set up first-column key value */
 	stup.datum1 = index_getattr(tuple,
 								1,

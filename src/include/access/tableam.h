@@ -18,6 +18,7 @@
 #define TABLEAM_H
 
 #include "access/relscan.h"
+#include "access/rowid.h"
 #include "access/sdir.h"
 #include "access/sysattr.h"
 #include "access/xact.h"
@@ -299,6 +300,7 @@ typedef struct TM_IndexDeleteOp
 /* Typedef for callback function for table_index_build_scan */
 typedef void (*IndexBuildCallback) (Relation index,
 									ItemPointer tid,
+									const RowID *rowid,
 									Datum *values,
 									bool *isnull,
 									bool tupleIsAlive,
@@ -897,6 +899,23 @@ typedef struct TableAmRoutine
 										   SampleScanState *scanstate,
 										   TupleTableSlot *slot);
 
+
+	/* ------------------------------------------------------------------------
+	 * Index row-identity (RowID) functions.
+	 * ------------------------------------------------------------------------
+	 */
+
+	/*
+	 * Return the descriptor that governs how this AM's index entries are
+	 * ordered and made unique (Role 2).  The index AM uses the returned
+	 * descriptor's comparator as its tiebreaker over equal keys, without
+	 * interpreting the identity bytes.  May return NULL, which the index AM
+	 * treats as the default TID order (ItemPointerCompare); an AM that reuses
+	 * a TID across row versions must supply a descriptor that disambiguates
+	 * them.  See access/rowid.h.
+	 */
+	const RowIDType *(*index_row_key_type) (Relation rel);
+
 } TableAmRoutine;
 
 
@@ -911,7 +930,6 @@ typedef struct TableAmRoutine
  * tables.
  */
 extern const TupleTableSlotOps *table_slot_callbacks(Relation relation);
-
 /*
  * Returns slot using the callbacks returned by table_slot_callbacks(), and
  * registers it on *reglist.
@@ -1990,6 +2008,19 @@ table_index_validate_scan(Relation table_rel,
  * Miscellaneous functionality
  * ----------------------------------------------------------------------------
  */
+
+/*
+ * Return the RowID descriptor governing the Role-2 order of `rel`'s index
+ * entries, or NULL if the AM uses (or does not implement) the default TID
+ * order.  See access/rowid.h.
+ */
+static inline const RowIDType *
+table_index_row_key_type(Relation rel)
+{
+	if (rel->rd_tableam->index_row_key_type == NULL)
+		return NULL;
+	return rel->rd_tableam->index_row_key_type(rel);
+}
 
 /*
  * Return the current size of `rel` in bytes. If `forkNumber` is

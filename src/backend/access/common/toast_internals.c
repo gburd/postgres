@@ -333,7 +333,7 @@ toast_save_datum(Relation rel, Datum value,
 							 toastrel,
 							 toastidxs[i]->rd_index->indisunique ?
 							 UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
-							 false, NULL);
+							 false, NULL, NULL);
 		}
 
 		/*

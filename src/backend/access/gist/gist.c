@@ -167,11 +167,14 @@ gistinsert(Relation r, Datum *values, bool *isnull,
 		   ItemPointer ht_ctid, Relation heapRel,
 		   IndexUniqueCheck checkUnique,
 		   bool indexUnchanged,
-		   IndexInfo *indexInfo)
+		   IndexInfo *indexInfo,
+		   const RowID *rowid)
 {
 	GISTSTATE  *giststate = (GISTSTATE *) indexInfo->ii_AmCache;
 	IndexTuple	itup;
 	MemoryContext oldCxt;
+
+	(void) rowid;				/* gist stores only the heap TID */
 
 	/* Initialize GISTSTATE cache if first call in this statement */
 	if (giststate == NULL)

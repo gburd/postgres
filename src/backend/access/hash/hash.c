@@ -53,6 +53,7 @@ typedef struct
 
 static void hashbuildCallback(Relation index,
 							  ItemPointer tid,
+							  const RowID *rowid,
 							  Datum *values,
 							  bool *isnull,
 							  bool tupleIsAlive,
@@ -229,6 +230,7 @@ hashbuildempty(Relation index)
 static void
 hashbuildCallback(Relation index,
 				  ItemPointer tid,
+				  const RowID *rowid,
 				  Datum *values,
 				  bool *isnull,
 				  bool tupleIsAlive,
@@ -272,11 +274,22 @@ hashinsert(Relation rel, Datum *values, bool *isnull,
 		   ItemPointer ht_ctid, Relation heapRel,
 		   IndexUniqueCheck checkUnique,
 		   bool indexUnchanged,
-		   IndexInfo *indexInfo)
+		   IndexInfo *indexInfo,
+		   const RowID *rowid)
 {
 	Datum		index_values[1];
 	bool		index_isnull[1];
 	IndexTuple	itup;
+
+	/*
+	 * hash stores only the 6-byte heap TID in t_tid; a wider RowID's suffix
+	 * (e.g. RECNO's generation) has no place in a hash index tuple and is
+	 * intentionally dropped here.  Unlike nbtree, hash has no strict
+	 * (key, TID) ordering invariant, so equal-key entries that share a TID may
+	 * coexist; a scan rechecks each candidate against the live tuple and
+	 * VACUUM / kill_prior_tuple prunes superseded ones.  See access/rowid.h.
+	 */
+	(void) rowid;
 
 	/* convert data to a hash key; on failure, do not insert anything */
 	if (!_hash_convert_tuple(rel,
