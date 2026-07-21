@@ -720,6 +720,25 @@ xtc_carrier_eligible(BackendType child_type)
 			return false;
 	}
 }
+
+/*
+ * Recover a fiber's own PgCarrier root from the opaque BackendThreadStart *
+ * that xtc_carrier_proc receives as its entry arg and hands to
+ * xtc_proc_set_userdata().  The carrier lives inside the fiber-owned
+ * BackendThreadStart (runtime_state.carrier), so this pointer rides with the
+ * fiber across a work-stealing steal and is valid for the fiber's whole life.
+ * The carrier layer stays free of the private BackendThreadStart layout via
+ * this one accessor.
+ */
+PgCarrier *
+xtc_pg_backend_thread_start_carrier(void *thread_start)
+{
+	BackendThreadStart *ts = (BackendThreadStart *) thread_start;
+
+	if (ts == NULL)
+		return NULL;
+	return &ts->runtime_state.carrier;
+}
 #endif
 
 /*
