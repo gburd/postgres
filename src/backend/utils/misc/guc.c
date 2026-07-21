@@ -30,6 +30,7 @@
 #include <pthread.h>
 #ifdef USE_XTC_CARRIER
 #include "xtc_sync.h"			/* xtc_amutex_* -- fiber-aware GUC critical section */
+#include "postmaster/pg_xtc_carrier.h"	/* XtcPgVerifyCurrentWorkIsSelf */
 #endif
 #endif
 #include <sys/stat.h>
@@ -150,7 +151,39 @@ ThreadedGUCLock(void)
 	 */
 	HOLD_INTERRUPTS();
 #ifdef USE_XTC_CARRIER
-	rc = xtc_amutex_lock(xtc_amutex_static(THREADED_GUC_AMUTEX_SLOT), -1);
+
+	/*
+	 * SEAM the amutex park.  On contention xtc_amutex_lock() enqueues this
+	 * fiber and xtc_yield()s the carrier loop (xtc/src/ptc/sync.c); libxtc
+	 * preserves only __current_proc across that park, NOT PG's six current-
+	 * work roots.  A migratable backend fiber woken from that park can be
+	 * work-stolen and resumed on a DIFFERENT carrier thread whose bridge still
+	 * points at whatever fiber last ran there -- so GUC code after the lock
+	 * would mutate the wrong session's state (cross-session corruption).
+	 *
+	 * Mirror the xtc_pg_wait_fd seam (pg_xtc_carrier.c): snapshot the six
+	 * roots on a STACK-LOCAL that rides with the fiber across a steal, then
+	 * restore them after xtc_amutex_lock() returns so the resuming thread's
+	 * bridge is repointed to THIS fiber's own roots regardless of which loop
+	 * resumed it.  On the uncontended fast path the lock returns without
+	 * yielding and the restore just rewrites identical values (harmless).
+	 *
+	 * This wraps ONLY the outermost lock: nested re-entrant ThreadedGUCLock
+	 * calls returned above at `ThreadedGUCMutexDepth++ > 0` WITHOUT touching
+	 * the amutex, so they never park and never reach this seam -- no double
+	 * save/restore.  The paired outermost ThreadedGUCUnlock does NOT need a
+	 * park-seam: xtc_amutex_unlock() hands off + wakes a waiter but never
+	 * xtc_yield()s the caller, so it cannot park or leak the bridge.
+	 */
+	{
+		PgCurrentWorkSnapshot snap;
+
+		PgRuntimeSaveCurrentWork(&snap);
+		XtcPgVerifySnapshotIsSelf(&snap);
+		rc = xtc_amutex_lock(xtc_amutex_static(THREADED_GUC_AMUTEX_SLOT), -1);
+		PgRuntimeRestoreCurrentWork(&snap);
+		XtcPgVerifyCurrentWorkIsSelf();
+	}
 #else
 	rc = pthread_mutex_lock(&ThreadedGUCMutex);
 #endif

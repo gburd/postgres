@@ -264,13 +264,20 @@ xtc_pg_affine_section_reset(void)
  * across a work-stealing steal, so the restore repoints the resuming thread's
  * bridge to the fiber's own roots regardless of which carrier loop it resumed
  * on.  This check confirms that invariant the moment it could first break: it
- * compares the just-restored CurrentPgCarrier against the fiber's own carrier
- * obtained via xtc_proc_userdata() (which does NOT go through the bridge, so a
- * mismatch means the bridge is pointing at another fiber's carrier -- a
- * cross-fiber root leak).  While pinned the two always match (no migration);
- * once the unpin lands this is the tripwire that catches a wrong root-repoint
- * before it can corrupt data across sessions.  Compiled only in assert builds;
- * a no-op elsewhere so process and release builds are byte-for-byte unchanged.
+ * obtains the fiber's own carrier via xtc_proc_userdata() (which does NOT go
+ * through the bridge, so it stays correct after a steal) and asserts the
+ * just-restored carrier root equals it.  The carrier is the fiber-owned
+ * identity token; because a seam restores all six roots ATOMICALLY from one
+ * stack snapshot (PgRuntimeRestoreCurrentWork), a matching carrier means the
+ * whole bridge came from this fiber's own snapshot -- a partial repoint that
+ * left a non-carrier root stale is not possible through the seam.  The seam
+ * additionally checks, at save time, that the snapshot it is about to ride
+ * across the park already belongs to this fiber (see the GUC-amutex seam and
+ * xtc_pg_wait_fd), which catches a leak that happened BEFORE the park.  While
+ * pinned they always match (no migration); once the unpin lands this is the
+ * tripwire that catches a wrong root-repoint before it can corrupt data across
+ * sessions.  Compiled only in assert builds; a no-op elsewhere so process and
+ * release builds are byte-for-byte unchanged.
  */
 void
 xtc_pg_verify_current_work_is_self(void)
@@ -288,9 +295,39 @@ xtc_pg_verify_current_work_is_self(void)
 	 * The restored carrier root must be this fiber's own carrier.  Any other
 	 * value means a park resumed with the bridge still pointing at whichever
 	 * fiber last ran on this carrier thread -- the exact cross-session data
-	 * corruption the seams exist to prevent.
+	 * corruption the seams exist to prevent.  Because a seam restores all six
+	 * roots atomically from ONE stack snapshot, a matching carrier means the
+	 * whole bridge was repointed to this fiber's own snapshot; a partial
+	 * repoint that left a session/execution root stale cannot occur through the
+	 * seam.  The complementary save-time check (xtc_pg_verify_snapshot_is_self)
+	 * catches a bridge that was ALREADY leaked before the park was entered.
 	 */
 	Assert(CurrentPgCarrier == self_carrier);
+}
+
+/*
+ * Save-time twin of xtc_pg_verify_current_work_is_self: assert that a snapshot
+ * a seam is about to save and ride across a park already belongs to THIS
+ * fiber.  The restore-time check proves the bridge came back to the fiber's
+ * own carrier; this proves the bridge was the fiber's own to begin with, so a
+ * leak that happened on an EARLIER unseamed boundary (before this park) is
+ * caught here rather than being silently re-saved and restored.  Same
+ * migration-only relevance, same assert-only cost; a no-op outside assert
+ * builds.
+ */
+void
+xtc_pg_verify_snapshot_is_self(const PgCurrentWorkSnapshot *snap)
+{
+	PgCarrier  *self_carrier;
+
+	if (!xtc_in_backend_fiber || snap == NULL)
+		return;
+
+	self_carrier = (PgCarrier *) xtc_proc_userdata();
+	if (self_carrier == NULL)
+		return;					/* userdata not set (early boot / test) */
+
+	Assert(snap->carrier == self_carrier);
 }
 #endif							/* USE_ASSERT_CHECKING */
 
@@ -891,7 +928,9 @@ out:
  *
  * With a loop pool the fiber is placed round-robin across the executor loops,
  * so concurrent backends run on distinct loops and a fiber parked on one loop
- * cannot starve a sibling on another.
+ * cannot starve a sibling on another.  (The test-only PG_XTC_FORCE_LOOP hook
+ * below can pin migratable backends to one loop to exercise work-stealing; it
+ * is dormant while migration is disabled -- see xtc_carrier_migratable.)
  */
 int
 xtc_pg_launch_backend_fiber(xtc_carrier_entry_fn entry, void *entry_arg)
@@ -903,8 +942,40 @@ xtc_pg_launch_backend_fiber(xtc_carrier_entry_fn entry, void *entry_arg)
 
 	/* Pick a loop round-robin across the pool; loop 0 in single-loop mode. */
 	if (g_xtc_exec != NULL && g_xtc_n_loops > 1)
-		loop_idx = (int) (atomic_fetch_add(&g_xtc_next_loop, 1) %
-						  (unsigned) g_xtc_n_loops);
+	{
+		/*
+		 * Test-only forced placement (DORMANT while migration is disabled).
+		 * PG_XTC_FORCE_LOOP=N pins the MIGRATABLE client-backend fibers to loop
+		 * N instead of round-robin, mirroring libxtc's own work-steal proof
+		 * (test/m5/test_steal.c piles all tasks on loop 0 so idle peer loops
+		 * must steal).  It only fires for migratable fibers, so while
+		 * xtc_carrier_migratable() returns false (Phase D HOLD -- see
+		 * launch_backend.c) NOTHING is forced and every fiber round-robins as
+		 * before.  It is the single point a future steal-under-load test flips
+		 * on once migration is re-enabled AND libxtc's Phase E wake-nudge lands
+		 * (without the nudge an idle peer blocked in xtc_io_poll(-1) is not woken
+		 * to steal, so forcing placement alone cannot force a local steal).
+		 * Never set in production; ignored unless it names a valid loop.
+		 */
+		const char *force = getenv("PG_XTC_FORCE_LOOP");
+		PgCarrier  *fiber_carrier = xtc_pg_backend_thread_start_carrier(entry_arg);
+		bool		force_this = (force != NULL && force[0] != '\0' &&
+								 fiber_carrier != NULL && fiber_carrier->migratable);
+
+		if (force_this)
+		{
+			long		v = strtol(force, NULL, 10);
+
+			if (v >= 0 && v < g_xtc_n_loops)
+				loop_idx = (int) v;
+			else
+				loop_idx = (int) (atomic_fetch_add(&g_xtc_next_loop, 1) %
+								  (unsigned) g_xtc_n_loops);
+		}
+		else
+			loop_idx = (int) (atomic_fetch_add(&g_xtc_next_loop, 1) %
+							  (unsigned) g_xtc_n_loops);
+	}
 
 	/*
 	 * Hand the spawn to that loop's supervisor, which does an atomic

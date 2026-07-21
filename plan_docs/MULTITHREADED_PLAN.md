@@ -4169,3 +4169,99 @@ STATUS: migration is LIVE on origin but UNSAFE. Options: (a) fix the amutex seam
 Phase D flip to migratable=0 (neutral) if fix slips. Do NOT benchmark until the
 leak is fixed + two-reviewer clean. Awaiting review B (libxtc-interaction angle
 -- may surface more unseamed primitives).
+
+### Phase D HOLD RESOLVED: GUC-amutex seam landed; migration flipped OFF pending a SECOND leak (2026-07-21)
+
+Fixed the reported GUC-amutex cross-fiber leak AND, while validating it, found a
+SECOND independent unseamed leak on the migratable path -> flipped migratable=0
+(pinned, neutral) so the tree is SAFE. Fix-forward on the GUC leak is complete;
+live migration stays off until the second leak is seamed.
+
+WHAT LANDED:
+1. SEAM (guc.c ThreadedGUCLock, USE_XTC_CARRIER only): snapshot the 6-root
+   bridge on a stack-local (PgRuntimeSaveCurrentWork) before xtc_amutex_lock and
+   restore (PgRuntimeRestoreCurrentWork) after, mirroring the xtc_pg_wait_fd
+   seam. Wraps ONLY the outermost lock -- the depth counter
+   (ThreadedGUCMutexDepth = CurrentPgCarrier->threaded_guc_mutex_depth) is
+   incremented BEFORE the seam with no yield between, so snap.carrier == the
+   ++'d carrier; nested re-entrant locks return early without the amutex, never
+   park, never reach the seam. Verified: xtc_amutex_unlock does hand-off +
+   waker_wake but NO xtc_yield (xtc/src/ptc/sync.c:752), so unlock cannot park
+   -> no unlock seam needed.
+2. AUDIT of every parking libxtc primitive reachable on B_BACKEND (grep of
+   src/backend|common|port, excl in-tree libxtc + tests):
+   - xtc_amutex_* : guc.c ONLY -> NOW SEAMED.
+   - xtc_proc_wait_fd / xtc_proc_sleep : pg_xtc_carrier.c wait_fd seam -> already
+     seamed (proc_sleep(0) crash-inject never resumes).
+   - xtc_recv/xtc_send : per-loop SUPERVISOR bare fiber (no 6-root bridge to
+     leak) + cross-thread postmaster send -> safe by construction.
+   - xtc_arwlock_* : NOT used anywhere in PG (reviewer A's flag CLEARED).
+   - xtc_notify/chan/sem/waitgroup/barrier/cond/mutex : NOT used in PG.
+   => the GUC amutex was the sole unseamed parking primitive on the path.
+3. CROSS-CHECK strengthened as a save+restore PAIR, not a wider root compare.
+   Restore-time xtc_pg_verify_current_work_is_self keeps CurrentPgCarrier ==
+   xtc_proc_userdata() (fiber-owned, bridge-independent); NEW save-time
+   xtc_pg_verify_snapshot_is_self asserts snap->carrier == self_carrier so a
+   bridge already leaked BEFORE the park is caught too. A wider check of the
+   session/execution roots was tried and REVERTED: those roots and the carrier
+   are populated at DIFFERENT points during multi-phase backend startup
+   (InitializeThreadedSessionGUCOptions runs before
+   InstallPgThreadBackendRuntimeState wires the bridge), so comparing them
+   false-fired. Because a seam restores all 6 roots ATOMICALLY from one stack
+   snapshot, a matching carrier already implies the whole bridge is this fiber's
+   own -- a partial repoint cannot occur through the seam. Assert-only.
+4. SECOND LEAK FOUND -> migratable=0. Validating the seam with a contended-GUC
+   workload under migration surfaced a PANIC in PgCarrierCommitProtocolReadPark
+   ("could not enqueue committed protocol read park": carrier != backend_carrier)
+   -- a cross-carrier mismatch at the protocol read-park boundary. REPRODUCED ON
+   THE PRISTINE PRE-SEAM BINARY (migratable=1, no seam), so it is a PRE-EXISTING
+   protocol-read-park hazard, NOT a seam regression, and it is RELEASE-visible (a
+   real PANIC, not an assert tripwire). The GUC seam is correct and stays in;
+   but shipping migratable=1 while that path is unseamed would keep the tree
+   unsafe, so xtc_carrier_migratable() now returns false unconditionally (all
+   fibers pinned = pre-Phase-D neutral state). This is the task-sanctioned
+   "flip migratable=0 if more unseamed leaks remain" outcome.
+5. TEST 014 rewritten from the hollow original into a real contended-GUC gate:
+   12 sessions hammer SET search_path / SET work_mem (contended amutex park
+   path) with per-session correctness (own accumulator AND own search_path
+   readback) + the seam cross-checks armed under cassert + no-crash. Asserts the
+   PINNED (migratable=0) HOLD state. It CAUGHT the second leak (it PANICs on the
+   pristine binary under contended GUC) -- proving it is no longer hollow.
+
+STEAL-FORCING was attempted hard and is INFEASIBLE locally: a test-only
+PG_XTC_FORCE_LOOP hook (gated on migratable, dormant while pinned) piles
+migratable backends on one loop like libxtc test/m5/test_steal.c, but libxtc's
+real (non-DST) __xtc_exec_try_steal only fires when a peer loop's run queue is
+drained AND it has NO pending timer, and an idle peer already blocked in
+xtc_io_poll(-1) is NOT nudged when fresh stealable work lands on a busy peer
+(the missing "Phase E wake-nudge"); piling backends on one loop also trips
+unrelated multi-fiber-on-one-loop startup races. So a local steal (total_steals
+> 0) cannot be forced yet; libxtc's own DST (test/sim/test_sim_migratable.c)
+proves the migrated-resume path, and the EC2 A/B benchmark is the real
+steal-under-load exercise. 014 logs total_steals, does not gate on it.
+
+VALIDATION (fresh nix shell, ninja -j2, ldd -> xtc-1.26.0, refreshed
+tmp_install/initdb-template before each run):
+- Release + cassert: 0 warnings on all touched TUs.
+- test_backend_runtime: 13 OK / 0 Fail / 2 SKIP on BOTH (001=128, 003=43,
+  007=46), 014 now PASSES (5 subtests) on both. (The occasional parallel-run
+  001 FailedAssertion at guc.c guc_free is the pre-existing threaded-snapshot
+  cassert flake under parallel load -- 001 passes cleanly serial / in isolation.)
+- Process-mode core regress: 245/245.
+- All changes are inside #ifdef USE_XTC_CARRIER (guc.c seam, launch_backend flip)
+  or #ifdef USE_ASSERT_CHECKING within USE_XTC_CARRIER (the checks); process +
+  non-carrier threaded builds are byte-for-byte unchanged.
+
+REVIEW: nested subagent reviewers UNAVAILABLE in this environment -> two
+adversarial SELF-review passes performed (depth/recursion + unlock-non-park;
+byte-for-byte + audit completeness + migratable-flip neutrality), both CLEAN.
+COORDINATOR MUST run an independent review before any future migratable=1 flip.
+
+REMAINING AUDIT (owns the next re-enable): the protocol-read-park
+(PgCarrierCommitProtocolReadPark / PgRuntimeProtocolSchedulerParkBackend) path
+must be seam-audited for the same cross-carrier/bridge divergence under
+contended concurrent load before migratable=1 returns; and the startup
+pg_usleep park in backend_thread_wait_until_registered should be reviewed for
+many-fibers-on-one-loop safety. Re-enable = restore the child-type + ssl_sni
+gate in xtc_carrier_migratable, land libxtc's Phase E wake-nudge, then re-gate
+014's total_steals > 0.
