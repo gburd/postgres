@@ -4265,3 +4265,28 @@ pg_usleep park in backend_thread_wait_until_registered should be reviewed for
 many-fibers-on-one-loop safety. Re-enable = restore the child-type + ssl_sni
 gate in xtc_carrier_migratable, land libxtc's Phase E wake-nudge, then re-gate
 014's total_steals > 0.
+
+### GUC-amutex seam (aba9109a15c) independent review CLOSED: SHIP (2026-07-21)
+
+Independent review: SHIP. Verified: seam captures/restores all 6 roots via one
+atomic Save/Restore (mirrors the xtc_pg_wait_fd seam); depth ordering sound (wraps
+exactly the outermost 0->1 amutex acquire, guc.c:144->181; nested locks never
+touch the amutex; amutex_lock is PG's ONLY xtc_amutex_lock caller, only at depth
+0->1); xtc_amutex_unlock never yields (0 xtc_yield) so needs no seam; cross-checks
++ the reverted wider-compare justified; migratable=0 restores neutral pre-Phase-D
+state; process/release/non-carrier byte-for-byte. Empirical: 014 measured 656 lock
+entries / 88 real parks; seam-REMOVED -> assert cascade (session==CurrentPgSession,
+CurrentPgRuntime==self_carrier->runtime, TopMemoryContext==NULL, !locked) + hang;
+seam-PRESENT -> 5/5. 014 is a genuine regression gate.
+
+KEY INSIGHT (elevates this fix): the GUC leak is REAL EVEN SAME-THREAD-PINNED --
+it's a FIBER TIME-SHARING bug, not only a migration bug. Fiber A parks in the GUC
+amutex, fiber B runs on the same carrier thread and clobbers the thread-local
+bridge, A resumes stale -- NO migration needed. So this seam fixes a latent
+corruption in the PINNED threaded runtime we ship TODAY; it is correctness-
+critical independent of migratable=1. (Doc nit: the commit msg's "PANICs on the
+pristine pre-seam binary" is the migratable=1 SECOND-leak signature; the pinned
+GUC leak is an assert-cascade+hang -- same bug class, different signature.)
+Follow-ups already documented: protocol-read-park audit before migratable=1
+(in flight, da18262d); optional RestoreCurrentWorkLazy micro-opt on the
+uncontended GUC path.
