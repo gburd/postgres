@@ -69,6 +69,13 @@ extern bool xtc_pg_consume_genuine_crash(void);
 extern bool xtc_pg_backend_fiber_is_migratable(void);
 
 /*
+ * Diagnostic: total tasks work-stolen across all carrier loops since startup.
+ * Nonzero proves migratable fibers actually rebalanced across loops; 0 in
+ * single-loop mode.  Used by the forced-migration stress test.
+ */
+extern uint64 xtc_pg_carrier_total_steals(void);
+
+/*
  * No-steal affine-section tripwire (Phase B).
  *
  * Some short spans of backend code hold OS-thread-affine state that would be
