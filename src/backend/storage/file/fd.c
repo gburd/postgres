@@ -543,6 +543,7 @@ pg_fsync_no_writethrough(int fd)
 		PgRuntimeSaveCurrentWork(&snap);
 		xrc = xtc_aio_fsync(fd);
 		PgRuntimeRestoreCurrentWork(&snap);
+		XtcPgVerifyCurrentWorkIsSelf();
 		if (xrc < 0)
 		{
 			errno = -xrc;
@@ -602,6 +603,7 @@ pg_fdatasync(int fd)
 		PgRuntimeSaveCurrentWork(&snap);
 		xrc = xtc_aio_fdatasync(fd);
 		PgRuntimeRestoreCurrentWork(&snap);
+		XtcPgVerifyCurrentWorkIsSelf();
 		if (xrc < 0)
 		{
 			errno = -xrc;
