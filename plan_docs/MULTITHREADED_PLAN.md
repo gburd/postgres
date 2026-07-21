@@ -4290,3 +4290,34 @@ GUC leak is an assert-cascade+hang -- same bug class, different signature.)
 Follow-ups already documented: protocol-read-park audit before migratable=1
 (in flight, da18262d); optional RestoreCurrentWorkLazy micro-opt on the
 uncontended GUC path.
+
+### libxtc wake-on-stealable-work request drafted (source-verified) (2026-07-21)
+
+/tmp/libxtc-wake-on-stealable-work-request.md. VERIFIED against libxtc v1.26.0
+source (not just the agents' summary) -- the finding is MORE precise than
+"idle peer not woken": there are TWO steal-liveness gaps under a realistic PG
+load, both by construction:
+1. A loop that OWNS PARKED FIBERS never steals. __xtc_loop_step_once (loop.c:658)
+   / __xtc_loop_step (loop.c:585) only reach the steal branch when
+   `!has_tasks && !has_timers`, and has_tasks = (loop->n_alive > 0) counts PARKED
+   fibers as "has work". So a loop whose RUNNABLE queue is empty but which owns
+   fd-parked backends takes the step->xtc_io_poll-on-its-own-fds path and NEVER
+   tries to steal -- the common PG case (backends parked on client sockets while
+   a peer loop has a runnable query). This is the one that reclaims the 54% idle.
+2. Even a FULLY-drained loop discovers stealable work only on a 1ms poll tick.
+   __xtc_exec_worker (exec.c:123-160): rc==0 -> 1ms bounded xtc_io_poll + loop.
+   __xtc_loop_enqueue pushing to the deque (loop.c:308) does NOT xtc_io_wakeup any
+   peer (the only peer wakeups are exec start/stop, exec.c:322/358/791). No
+   wake-on-work-produced.
+libxtc's own comments name it (exec.c:425-431 "io_uring/event-port idle-loop wake
+miss"); its DST steal proof forces steals with a sim-only pessimal knob
+(xtc_sim_sched_pessimal) because a natural steal is otherwise hard to trigger.
+=> migratable=1 places procs on the stealable deque CORRECTLY (plumbing verified),
+but the executor is INERT for our load; n_steals==0 measured. Request asks for
+(1) wake a peer when stealable work is produced, (2) let a run-queue-empty-but-
+fd-parked loop steal before blocking (the direct 54%-idle fix), or (3) a
+steal-eagerness/eager-rebalance policy knob. Purely steal LIVENESS -- steal
+CORRECTNESS is already DST-proven. THIS IS THE LONG POLE for a benchmark that
+shows the work-stealing win: even with both PG-side leaks fixed + migratable=1
+re-enabled, TPS won't move off the ~50% baseline until libxtc rebalances under
+load. Ready for the user to forward to the libxtc team.
