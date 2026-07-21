@@ -4022,3 +4022,20 @@ full-check-threaded-under-cassert goal, NOT the scoped threaded gate. Follow-up.
 NOTE: the release build/ meson prefix was reconfigured from a mangled abs path to
 /usr/local/pgsql (build-dir config only, no source/binary impact) so meson tests
 find the installed extension.
+
+### UAF fix 39c8bf187e6 independent review CLOSED: SHIP (2026-07-21)
+
+Independent adversarial review (the required non-self pass): SHIP, no defects.
+Traced the full DSA/DSM refcount lifecycle: the fix is correct at the ROOT CAUSE
+(teardown ordering) -- dsm_backend_shutdown's on_dsm_detach hook
+(dsa_on_dsm_detach_release_in_place) already performs the exact refcnt release
+dsa_detach would, so skipping the explicit detach at exit is LEAK-FREE and
+eliminates the double-free (old code deref'd the already-pfree'd/poisoned seg).
+PgBackendExitInProgress() is set (ipc.c:297) BEFORE shmem_exit/dsm_backend_shutdown
+(ipc.c:333) and the reset (ipc.c:366) -> guard true at exit, correct. No exit
+sub-path reopens the UAF; no leak on the retained (logical-session-reset) branch.
+Upstream-equivalent (async.c relies on dsm_backend_shutdown for the pinned DSA).
+pg_trgm 0.3f + the 2 test fixes all satisfy genuine invariants, no masking, no
+coverage loss. Process/threaded byte-for-byte. NIT (non-blocking): the retained
+explicit-detach branch is test-only today (reserved for the future
+logical-session-reset path) -- worth a ponytail note, no code change.
