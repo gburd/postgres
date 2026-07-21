@@ -17,6 +17,7 @@
 #include "port/atomics.h"
 #include "postmaster/bgworker.h"
 #include "postmaster/interrupt.h"
+#include "postmaster/pg_xtc_carrier.h"	/* xtc_pg_carrier_total_steals */
 #include "storage/condition_variable.h"
 #include "storage/latch.h"
 #include "storage/lwlock.h"
@@ -40,6 +41,7 @@ PG_FUNCTION_INFO_V1(test_backend_runtime_restart_thread_bgworker);
 PG_FUNCTION_INFO_V1(test_backend_runtime_crash_thread_bgworker);
 PG_FUNCTION_INFO_V1(test_backend_runtime_custom_guc_value);
 PG_FUNCTION_INFO_V1(test_backend_runtime_custom_guc_init_count);
+PG_FUNCTION_INFO_V1(test_backend_runtime_carrier_total_steals);
 PG_FUNCTION_INFO_V1(test_backend_runtime_emit_fatal);
 PG_FUNCTION_INFO_V1(test_backend_runtime_crash_current_backend);
 PG_FUNCTION_INFO_V1(test_backend_runtime_wait_completion_enabled);
@@ -453,6 +455,23 @@ Datum
 test_backend_runtime_custom_guc_init_count(PG_FUNCTION_ARGS)
 {
 	PG_RETURN_INT32(test_backend_runtime_custom_guc_init_counter);
+}
+
+/*
+ * Total tasks work-stolen across all carrier loops since startup.  Nonzero
+ * proves migratable backend fibers actually rebalanced across loops (the
+ * forced-migration stress test asserts this after running many CPU-bound
+ * sessions on fewer carriers than sessions).  Returns 0 in single-loop mode
+ * or a non-carrier build.
+ */
+Datum
+test_backend_runtime_carrier_total_steals(PG_FUNCTION_ARGS)
+{
+#ifdef USE_XTC_CARRIER
+	PG_RETURN_INT64((int64) xtc_pg_carrier_total_steals());
+#else
+	PG_RETURN_INT64(0);
+#endif
 }
 
 Datum
