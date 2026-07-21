@@ -3989,6 +3989,56 @@ MIGRATION PATH:
 This SUPERSEDES the v1.25.0 "stay on 1.24.0" hold: we can now move to 1.25.0 by
 removing the hook first.
 
+### Step 1 LANDED: fiber-ctx hook removed, pin -> v1.25.0, migratable=0 no-op (2026-07-21)
+
+Executed Step 1 of MULTITHREADED_FIBERCTX_ELIMINATION_DESIGN.md. PURE DELETION
+for the pinned world; correctness-neutral while migratable=0.
+
+REMOVED (pg_xtc_carrier.c, all inside #ifdef USE_XTC_CARRIER): the XtcPgFiberCtx
+blob + magic, the g_xtc_current_fiber_ctx thread-local, g_xtc_prev_ctx_save/
+restore chain vars, the extern __xtc_fiber_ctx_save/restore decls,
+xtc_pg_fiber_ctx_save/restore, xtc_pg_fiber_ctx_is_current,
+xtc_pg_install_fiber_ctx_hook, xtc_pg_fiber_ctx_clear, the install call + stack
+blob at fiber entry, both g_xtc_current_fiber_ctx=NULL clears, and the Phase-A
+loop-validation assert block (it lived inside the removed restore hook; the
+xtc_exec_loop_id() call went with it).
+
+KEPT: the wait-boundary seams (xtc_pg_wait_fd, method_xtc.c, fd.c -- untouched;
+now the SOLE root-repoint mechanism, and always the standing guarantee); the
+Phase-B affine-section machinery + xtc_pg_affine_section_reset (Phase D wants it);
+PgRuntimeRestoreCurrentWorkLazy (still used by test_backend_runtime_carrier.c:1018
++ defined in backend_runtime.c, so NOT removed); the Phase-B park-boundary
+tripwire in xtc_pg_wait_fd; xtc_pg_backend_fiber_is_migratable (used by the seam
+assert + be-secure-openssl.c).
+
+AFFINE-RESET RE-HOMING: the removed xtc_pg_fiber_ctx_clear (an xtc_proc_at_exit
+callback) did two things -- NULL the blob slot (slot gone) AND (assert-only) reset
+the affine depth for crash-safety. The reset is re-homed as a standalone
+xtc_pg_affine_reset_at_exit registered via xtc_proc_at_exit at fiber ENTRY
+(USE_ASSERT_CHECKING-gated). Same LIFO all-exit-path coverage (clean/xtc_exit_self/
+recovery unwind); fiber-entry reset preserved.
+
+PIN: flake.nix rev e944d00 -> 913f3c49 (v1.25.0 tag); flake.lock refreshed. ldd
+build/src/backend/postgres -> xtc-1.25.0 (release + cassert, fresh nix shell, no
+stale 1.8/1.24 leak). nm -u: ZERO undefined __xtc_fiber_ctx_* (all 28 undefined
+xtc symbols are public xtc_*); v1.25.0 links cleanly.
+
+migratable=0: NO-OP. All 3 spawn sites (spawn_monitor + 2 xtc_proc_spawn) use
+xtc_proc_opts_t po = {0}; v1.25's opts.migratable field defaults 0 = pinned =
+byte-identical to v1.24. No .migratable= assignment added; Phase D flips it to 1.
+
+BYTE-FOR-BYTE: all changes inside #ifdef USE_XTC_CARRIER (process mode doesn't
+compile the file); affine code USE_ASSERT_CHECKING-gated (release threaded
+unchanged); flake.nix change is pin-rev + comment only.
+
+GATES (all green): 0 warnings (release + cassert); ldd -> 1.25.0; test_backend_
+runtime 12 OK/0 Fail/2 SKIP (001=128, 003=43, 007=46) on BOTH release and cassert
+(cassert = affine tripwires armed + DEAD, proving neutrality through real fiber
+exits incl. crash-recovery 010 + process-fallback 013); process regress 245/245,
+0 diffs. TWO adversarial self-review passes CLEAR (nested subagent unavailable;
+INDEPENDENT REVIEW OWED). Does NOT make migration live (Phase D). No unpin, no
+migratable=1.
+
 ### Cassert investigation: found + fixed a GENUINE runtime UAF (39c8bf187e6) (2026-07-20)
 
 The "guc.c:1363 cassert" investigation found a CLUSTER, incl. a genuine runtime
