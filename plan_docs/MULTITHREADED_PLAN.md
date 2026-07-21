@@ -3988,3 +3988,37 @@ MIGRATION PATH:
 
 This SUPERSEDES the v1.25.0 "stay on 1.24.0" hold: we can now move to 1.25.0 by
 removing the hook first.
+
+### Cassert investigation: found + fixed a GENUINE runtime UAF (39c8bf187e6) (2026-07-20)
+
+The "guc.c:1363 cassert" investigation found a CLUSTER, incl. a genuine runtime
+bug (not just test gaps):
+- GENUINE RUNTIME UAF (the important one): PgBackendResetUtilityClosedState
+  DOUBLE-DETACHED the LISTEN/NOTIFY async global-channel DSA at process exit.
+  proc_exit -> shmem_exit -> dsm_backend_shutdown frees the pinned DSA's DSM
+  segment FIRST; then this reset re-detached the freed segment (UAF).
+  Reproduces with a bare LISTEN;UNLISTEN, both modes; release limps on
+  unpoisoned memory, cassert (CLOBBER_FREED_MEMORY) crashes in dsm_detach. FIX:
+  guard the explicit detach with !PgBackendExitInProgress() (upstream model:
+  dsm_backend_shutdown owns the pinned-DSA teardown at process exit; the explicit
+  detach stays for the non-exit logical-session-reset path). Verified no leak.
+- Extension-port bug: pg_trgm session-state init used double 0.3 vs float boot_val
+  0.3f -> check_GUC_init exact-float compare fails (both modes). Fixed.
+- Two TEST-setup gaps (fake backend my_proc==NULL -> lwlock.c:1214; detached
+  MyProcPid -> latch.c:522). Fixed in the test files.
+Landed 39c8bf187e6 (4 code/test files + findings doc). SELF-reviewed (nested
+subagent unavailable) -> INDEPENDENT REVIEW OWED (esp. the UAF guard).
+Gates: release process regress 245/245; release + CASSERT test_backend_runtime
+12 OK/0 Fail/2 SKIP (001=128, exercises pg_trgm); LISTEN/NOTIFY clean both modes;
+0 warnings; global-lifetime baseline clean.
+
+OUT-OF-SCOPE (documented plan_docs/MULTITHREADED_CASSERT_TEST_BACKEND_RUNTIME_FINDINGS.md,
+NOT fixed): a full cassert PROCESS regress crashes ~15-18 cores on
+Assert(dlist_is_empty(&session->plan_cache.saved_plan_list))
+(PgSessionResetPlanCacheClosedState) -- a plan-cache teardown-ordering gap,
+pre-existing on a clean tree, BOTH modes, broader than this task. Blocks a future
+full-check-threaded-under-cassert goal, NOT the scoped threaded gate. Follow-up.
+
+NOTE: the release build/ meson prefix was reconfigured from a mangled abs path to
+/usr/local/pgsql (build-dir config only, no source/binary impact) so meson tests
+find the installed extension.
