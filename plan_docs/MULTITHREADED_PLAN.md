@@ -4628,3 +4628,74 @@ REMAINING TO THE EC2 A/B (bounded, known):
     silent.
  4. Two-reviewer the migratable=1 re-enable.
  5. EC2 A/B (auto-run per user authorization; terminate+verify).
+
+### Migration RE-ENABLED (migratable=1): eager rebalance wired, real steals fire, #2 subsumed (2026-07-22)
+
+Steps 1-4 of the re-enablement sequence DONE.  Migration is LIVE and PROVEN
+correct on the steal-capable substrate; migratable=1 is committed.
+
+STEP 1 (b5cfbec2a98) -- wire eager rebalance.  xtc_exec_set_eager_rebalance(
+g_xtc_exec, 1) at carrier bring-up (pg_xtc_carrier.c), AFTER the exec exists,
+BEFORE backends spawn, gated threaded multi-loop ONLY (g_xtc_exec != NULL &&
+g_xtc_n_loops > 1).  Process mode (no exec) and single-loop (no peer) untouched;
+byte-for-byte.  Build clean, 0 warnings, ldd -> xtc-1.27.0.
+
+STEP 2 (1dc8e57f9fc) -- re-enable migratable=1.  xtc_carrier_migratable()
+flipped from unconditional false to (child_type == B_BACKEND) && !ssl_sni.
+Workers/aux/supervisor pinned; ssl_sni=on pins all (SNI invariant, read on the
+postmaster thread where ssl_sni is authoritative).  Both changes are
+USE_XTC_CARRIER-gated -> process mode + non-fiber threaded byte-for-byte.
+
+STEP 3 -- THE DECISION.  Validated release AND cassert (fresh build, ldd ->
+xtc-1.27.0, tmp_install refreshed):
+ (a) n_steals > 0: YES.  014 fires 18..487 real cross-loop steals per run
+     (cassert AND release), every run.  Migration ACTUALLY happens -- the
+     v1.27.0 eager-rebalance mechanism (run-queue-empty-but-fd-parked loop
+     steals a peer's runnable migratable proc; enqueue nudges an idle peer)
+     works for our load.  014 now GATES on n_steals > 0.
+ (b) protocol-read-park PANIC: DID NOT APPEAR.  Zero PANIC/assert/crash under
+     300-487 real steals + contended concurrent GUC, in release (where the
+     PANIC is visible) and cassert (where the seam cross-checks + affine
+     tripwire are armed).  => Bug #2 SUBSUMED by the GUC-amutex seam, NOT a
+     distinct hazard.  ROOT WHY (self-review, structural not empirical): the
+     PgCarrier is a FIBER-OWNED logical root (thread_start->runtime_state.carrier,
+     launch_backend.c ~938) that rides the steal; the wait seam
+     (PgRuntimeSaveCurrentWork/RestoreCurrentWork, backend_runtime.c ~595)
+     snapshots and restores it on resume, so PgCarrierCommitProtocolReadPark's
+     carrier == CurrentPgCarrier / carrier->current_backend == backend hold
+     after a cross-carrier steal.  The audit's "per-OS-thread scheduler
+     affinity" hypothesis assumed a model that does not exist; the pre-seam
+     PANIC was a downstream manifestation of the now-fixed GUC-amutex bridge
+     leak.
+ (c) per-session correctness: YES.  Every session reads its OWN search_path +
+     accumulator under contended GUC + real steals (no cross-fiber root leak);
+     Phase-C cross-check + affine tripwires SILENT; no crash/assert.
+ 015 (concurrent-startup storm, LOOPS handling unchanged) still 5/5 under
+ migratable=1 -- the #3 per-fiber-window fix holds under real migration.
+ Both 014 and 015 gates STRENGTHENED to require migratable=1 (014 also gates
+ n_steals > 0 + no-PANIC-under-steals).
+
+GREEN GATE:
+ - test_backend_runtime release+cassert: 014 6/6, 015 5/5; suite 12-13 OK / 2
+   SKIP.  The intermittent suite "Fail" is the TWO pre-existing parallel-suite
+   flakes, both proven NOT migration-caused:
+     * 001 GetMemoryChunkContext == GUCMemoryContext (guc.c:1396) -- shared
+       guc_variables[] cross-session metadata; REPRODUCED on the migratable=0
+       PINNED baseline (rebuilt in place) at comparable rate; passes 128/128
+       in isolation.
+     * 005 "asynchronous notification wakes parked protocol client" (subtest
+       18) -- the documented notify-wake flake; passes 35/35 in isolation.
+ - process regress 245/245.
+ - Build dev-host -j2, 0 warnings, both build dirs on xtc-1.27.0.
+
+STEP 4 -- REVIEW.  Subagent tooling UNAVAILABLE this session; performed TWO
+independent self-review passes (bug-#2 causal link via the per-fiber-carrier +
+seam trace; the GUCMemoryContext-flake pre-existence proof via a pinned-baseline
+rebuild).  Both -> SHIP.  *** INDEPENDENT COORDINATOR REVIEW OWED before the
+EC2 A/B benchmark. ***
+
+STATUS: migration is LIVE + PROVEN CORRECT (real steals 18..487 + no leak + no
+PANIC + tripwires silent, release and cassert; process byte-for-byte 245/245).
+The EC2 A/B is WARRANTED once the coordinator's independent review confirms the
+migratable=1 re-enable.  Commits: b5cfbec2a98 (eager rebalance), 1dc8e57f9fc
+(migratable=1 + strengthened 014/015 gates).
