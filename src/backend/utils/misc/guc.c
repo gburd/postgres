@@ -1495,9 +1495,32 @@ set_string_field(struct config_generic *conf, char **field, char *newval)
 	/* Do the assignment */
 	*field = newval;
 
-	/* Free old value if it's not NULL and isn't referenced anymore */
+	/*
+	 * Free old value if it's not NULL and isn't referenced anymore.
+	 *
+	 * Under the threaded runtime a GUC record is shared metadata whose string
+	 * allocations may have been made once by the postmaster (or an earlier
+	 * startup fiber) into the PROCESS/early-fallback GUC context, not this
+	 * session's GUCMemoryContext -- e.g. a PGC_POSTMASTER/PGC_SIGHUP option's
+	 * boot/reset string set before any session existed.  A backend session
+	 * that later replaces such a field (config reload, SET/RESET) must not
+	 * pfree() a pointer owned by a foreign GUC context: guc_free()'s assert
+	 * (GetMemoryChunkContext == GUCMemoryContext) catches exactly that, and a
+	 * release-build pfree() on the wrong context would corrupt it (or another
+	 * session's context under migration).  Reclaim only what this session owns;
+	 * the process/early context frees its own allocations at process exit.
+	 * Gated on the threaded runtime so process mode (and the non-USE_XTC_CARRIER
+	 * build) keeps the exact original unconditional free -- byte-for-byte.
+	 */
 	if (oldval && !string_field_used(conf, oldval))
-		guc_free(oldval);
+	{
+#ifdef USE_XTC_CARRIER
+		if (multithreaded)
+			guc_free_if_current_context(oldval);
+		else
+#endif
+			guc_free(oldval);
+	}
 }
 
 /*
@@ -1533,9 +1556,23 @@ set_extra_field(struct config_generic *gconf, void **field, void *newval)
 	/* Do the assignment */
 	*field = newval;
 
-	/* Free old value if it's not NULL and isn't referenced anymore */
+	/*
+	 * Free old value if it's not NULL and isn't referenced anymore.  As in
+	 * set_string_field(), the prior "extra" struct may be owned by the shared
+	 * process/early-fallback GUC context (a boot/reset extra computed before
+	 * any session existed), so a session must only reclaim what its own
+	 * GUCMemoryContext owns -- see the ownership note there.  Threaded-only;
+	 * process mode keeps the original unconditional free byte-for-byte.
+	 */
 	if (oldval && !extra_field_used(gconf, oldval))
-		guc_free(oldval);
+	{
+#ifdef USE_XTC_CARRIER
+		if (multithreaded)
+			guc_free_if_current_context(oldval);
+		else
+#endif
+			guc_free(oldval);
+	}
 }
 
 static void
