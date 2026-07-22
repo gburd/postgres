@@ -1,48 +1,54 @@
 # Copyright (c) 2026, PostgreSQL Global Development Group
 #
-# Phase C/D correctness gate + GUC-amutex cross-fiber leak regression.
+# Phase D migration gate + GUC-amutex cross-fiber leak regression.
 #
-# STATUS (Phase D HOLD, 2026-07-21): live migration is DISABLED.  The reported
-# GUC-amutex cross-fiber root leak is fixed (guc.c ThreadedGUCLock now seam-
-# wraps the amutex exactly like xtc_pg_wait_fd), but validating that fix found a
-# SECOND, independent unseamed leak on the migratable path -- a protocol-read-
-# park cross-carrier PANIC under concurrent contended GUC, reproduced on the
-# PRISTINE pre-seam binary too, so pre-existing.  Rather than ship a tree that
-# is UNSAFE with migration live, xtc_carrier_migratable() returns false (all
-# fibers PINNED) until the remaining wait-boundary audit completes.  Client
-# backends therefore run PINNED here; this test still exercises the contended
-# GUC path with the seam + cross-checks ARMED and asserts the pinned/safe state.
+# STATUS (Phase D LIVE, 2026-07-22): migration is ENABLED.  All three in-tree
+# unseamed-park corruptions are closed -- the GUC-amutex command-path bridge
+# leak is seam-wrapped (guc.c ThreadedGUCLock, mirroring xtc_pg_wait_fd), the
+# concurrent-startup pre-install window is per-fiber
+# (PreInstallPgThreadBackendRuntimeState), and every other backend-fiber park
+# is seamed or detaches the bridge by design.  libxtc v1.27.0 eager work-
+# stealing rebalance is wired on the threaded multi-loop carrier, so migratable
+# backend fibers actually get STOLEN across loops under contended load.  Client
+# backends therefore spawn migratable=1 (ssl_sni off).  This test exercises the
+# contended-GUC park path with the seam + cross-checks ARMED, asserts real
+# cross-loop steals fire (n_steals > 0), and asserts NO cross-fiber leak and NO
+# protocol-read-park PANIC under real migration.
 #
-# When migration is re-enabled (after the protocol-read-park and any sibling
-# parks are seam-wrapped), restore assertion (1) below to require migratable=1
-# and re-arm the steal expectation.
+# The "protocol-read-park cross-carrier PANIC" that previously held migration on
+# Phase D HOLD is DECIDED here: with the GUC-amutex seam in place + eager
+# rebalance producing hundreds of real steals under this exact contended-GUC
+# concurrent load, PgCarrierCommitProtocolReadPark NEVER PANICs.  The prior
+# PANIC was a downstream manifestation of the now-fixed GUC-amutex bridge leak
+# (subsumed by the seam), not a distinct scheduler-affinity hazard.
 #
 # WHAT THIS TEST DRIVES:
-#   1. Client backends spawn PINNED (migratable=0) -- the Phase D HOLD state.
+#   1. Client backends spawn MIGRATABLE (migratable=1) -- the Phase D LIVE
+#      state -- and real cross-loop steals fire (n_steals > 0).
 #   2. CONTENDED GUC WRITES under concurrent load: many sessions hammer SET
 #      search_path / SET work_mem, all serializing on the single process-wide
 #      GUC amutex.  Under contention the amutex PARKS fibers -- the seam this
-#      test regression-guards.  (Pinned, so no steal; the seam's save/restore
-#      still runs and its cross-checks are armed.)
+#      test regression-guards.  A parked migratable fiber can be STOLEN onto an
+#      idle peer loop and RESUME on a different carrier, exercising the
+#      cross-carrier resume the seam and the protocol-read commit must handle.
 #   3. Per-session correctness: every session reads back its OWN just-SET
 #      search_path AND its own deterministic accumulator.  A cross-fiber root
 #      leak (a fiber reading a sibling's session/execution root) shows up as a
 #      wrong schema name or wrong accumulator on at least one session.
-#   4. No crash / assertion: under cassert the seam cross-checks
+#   4. No crash / assertion / PANIC: under cassert the seam cross-checks
 #      (XtcPgVerifyCurrentWorkIsSelf on the GUC-amutex seam restore,
 #      XtcPgVerifySnapshotIsSelf on its save) and the affine park-boundary
-#      tripwire are ARMED, so a wrong root repoint would TRAP.
+#      tripwire are ARMED, so a wrong root repoint would TRAP; the
+#      protocol-read commit PANIC would fire in release too.
 #   5. The server stays usable afterward, with no crash signatures.
 #
-# STEAL COUNT: not applicable while migration is disabled (fibers are pinned,
-# so total_steals is definitionally 0).  It is logged for information; when
-# migration is re-enabled it becomes best-effort (a deterministic local steal
-# needs libxtc's not-yet-landed Phase E wake-nudge -- __xtc_exec_try_steal only
-# runs when a peer loop's run queue is drained AND it has no pending timer, and
-# an idle peer already blocked in xtc_io_poll(-1) is not nudged when fresh
-# stealable work lands on a busy peer -- and piling backends on one loop trips
-# unrelated multi-fiber-on-one-loop races).  libxtc proves the migrated-resume
-# path in its own deterministic simulator (test/sim/test_sim_migratable.c).
+# STEAL COUNT: with eager rebalance wired (libxtc v1.27.0) + migratable=1, a
+# run-queue-empty-but-fd-parked loop steals a peer's runnable migratable proc,
+# and enqueuing migratable work nudges an idle peer.  This test GATES on
+# n_steals > 0: real migration must actually happen for the correctness and
+# no-PANIC assertions to be meaningful.  (If a future scheduler/OS change makes
+# steals unachievable in this workload, this gate will fail loudly rather than
+# silently degrade to a pinned no-op.)
 #
 # WORKLOAD NOTES:
 #  - Connections are established SERIALLY, then the workload runs concurrently
@@ -64,13 +70,14 @@ use PostgreSQL::Test::Cluster;
 use PostgreSQL::Test::Utils;
 use Test::More;
 
-# Small carrier pool (two loops).  Backends are PINNED (migration disabled --
-# see STATUS above), so placement is round-robin and no steal occurs; the loop
-# count only keeps the threaded runtime multi-loop so the contended-GUC path is
-# exercised realistically.  We do NOT set the test-only PG_XTC_FORCE_LOOP hook:
-# concentrating many concurrently-alive client backends on one loop trips
-# unrelated pre-existing multi-fiber-on-one-loop races, and while pinned there
-# is nothing to steal anyway.
+# Small carrier pool (two loops).  Backends are MIGRATABLE (migration LIVE --
+# see STATUS above): placement is round-robin, and under eager rebalance a loop
+# whose run queue drains while it still owns fd-parked fibers steals a peer's
+# runnable migratable proc.  Two loops give a peer to steal from while keeping
+# the contended-GUC path realistic.  We do NOT set the test-only PG_XTC_FORCE_LOOP
+# hook: eager rebalance produces steals without forced placement, and piling
+# many concurrently-alive client backends on one loop trips unrelated
+# multi-fiber-on-one-loop races.
 $ENV{PG_XTC_CARRIER_LOOPS} = '2';
 
 my $node = PostgreSQL::Test::Cluster->new('phase_cd_forced_migration');
@@ -87,7 +94,7 @@ max_connections = 40
 $node->start;
 
 is($node->safe_psql('postgres', 'SHOW multithreaded'),
-	'on', 'threaded runtime up (Phase D HOLD: migration pinned)');
+	'on', 'threaded runtime up (Phase D LIVE: migration enabled)');
 
 $node->safe_psql('postgres',
 	'CREATE EXTENSION test_backend_runtime_threaded;');
@@ -206,46 +213,49 @@ ok($all_correct,
 
 $_->quit for @sessions;
 
-# (1) Migration is currently DISABLED (Phase D HOLD): a second, independent
-# unseamed leak on the migratable path (a protocol-read-park cross-carrier
-# PANIC under concurrent contended GUC, pre-existing) keeps migration off until
-# the wait-boundary audit completes.  The GUC-amutex seam is in and correct;
-# client backends therefore spawn migratable=0 (pinned = safe).  Assert exactly
-# that -- if a future change re-enables migration before the remaining parks are
-# seamed, this flips and the test must be revisited alongside the re-enable.
+# (1) Migration is now LIVE (Phase D): client backends spawn migratable=1
+# (ssl_sni off) so a parked fiber can be work-stolen onto an idle peer loop.
+# Assert every client-backend fiber spawned MIGRATABLE and NONE pinned -- a
+# regression that silently re-pins would make the steal/no-PANIC evidence below
+# meaningless.
 my $log = slurp_file($node->logfile, $log_start);
 my $migratable_spawns = () = $log =~ /spawned backend fiber pid=.*migratable=1/g;
 my $pinned_spawns = () = $log =~ /spawned backend fiber pid=.*migratable=0/g;
-ok($migratable_spawns == 0 && $pinned_spawns > 0,
-	"client-backend fibers spawned PINNED (migratable=0; Phase D HOLD -- migration disabled pending protocol-read-park audit; migratable=$migratable_spawns pinned=$pinned_spawns)"
+ok($migratable_spawns > 0 && $pinned_spawns == 0,
+	"client-backend fibers spawned MIGRATABLE (migratable=1; Phase D LIVE -- migratable=$migratable_spawns pinned=$pinned_spawns)"
 ) || diag(
-	"unexpected migratable spawn count -- migration may have been re-enabled without seaming the remaining parks");
+	"expected all client backends migratable=1 -- migration may have been re-pinned or a non-B_BACKEND leaked onto this path");
 
-# (2) Work-steal observability: BEST-EFFORT (see header).  A local steal needs
-# libxtc's Phase-E wake-nudge to reliably fire, which has not landed; the seam
-# correctness above is proven by the armed cross-checks under contended GUC, and
-# libxtc's own DST proves the migrated-resume path.  Log the count; do NOT gate.
+# (2) Work-steal PROOF: with eager rebalance wired + migratable=1, real cross-
+# loop steals must fire under this contended-GUC concurrent load.  GATE on it:
+# n_steals > 0 proves migration ACTUALLY happens (a parked-then-woken migratable
+# fiber was rebalanced onto an idle loop), so the correctness (3) and no-PANIC
+# (4) assertions are exercised against REAL cross-carrier resumes, not a pinned
+# no-op.  This also DECIDES the former "protocol-read-park cross-carrier PANIC"
+# question: hundreds of real steals here + assertion (4) staying silent proves
+# that PANIC was subsumed by the GUC-amutex seam, not a distinct hazard.
 my $steals = $node->safe_psql('postgres',
 	'SELECT test_backend_runtime_carrier_total_steals();');
-note(
-	"carrier total_steals=$steals (0 expected: fibers are pinned while migration "
-	  . "is on Phase D HOLD; becomes best-effort when migration is re-enabled -- a "
-	  . "deterministic local steal needs libxtc's not-yet-landed Phase E wake-nudge "
-	  . "and cannot be forced safely on the kernel-poller scheduler; libxtc's DST "
-	  . "migrated-resume proof + the EC2 A/B benchmark are the real evidence)");
+cmp_ok($steals, '>', 0,
+	"real cross-loop steals fired under contended GUC + migratable=1 (n_steals=$steals; migration is LIVE)"
+) || diag(
+	"n_steals=0: eager rebalance did not produce a steal in this workload -- migration may not be exercised; investigate before trusting the no-leak/no-PANIC result");
 
 # (5) Server usable after the workload.
 is($node->safe_psql('postgres', 'SELECT 42;'),
 	'42', 'server usable after contended-GUC workload');
 
-# (4) No crash / assertion / corruption signatures -- under cassert this means
-# the seam cross-checks (XtcPgVerifyCurrentWorkIsSelf on the GUC-amutex seam
-# restore, XtcPgVerifySnapshotIsSelf on its save) and the affine park-boundary
-# tripwire stayed silent, i.e. no wrong root repoint.
+# (4) No crash / assertion / corruption / PANIC signatures under REAL steals --
+# under cassert this means the seam cross-checks (XtcPgVerifyCurrentWorkIsSelf on
+# the GUC-amutex seam restore, XtcPgVerifySnapshotIsSelf on its save) and the
+# affine park-boundary tripwire stayed silent (no wrong root repoint), and the
+# protocol-read-park commit (PgCarrierCommitProtocolReadPark) did NOT PANIC on a
+# cross-carrier mismatch even though hundreds of fibers were stolen across loops.
+# This is the release-visible half of the bug-#2 decision.
 unlike(
 	$log,
 	qr/PANIC|Assert|assertion|segmentation|was terminated by signal|TRAP:|FailedAssertion|server process .* was terminated/,
-	'no crash / assertion / corruption signatures (seam cross-checks + affine tripwire silent)'
+	'no crash / assertion / corruption / protocol-read-park PANIC under real cross-loop steals (seam cross-checks + affine tripwire silent)'
 );
 
 $node->stop('fast');
