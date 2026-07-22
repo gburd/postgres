@@ -4809,3 +4809,30 @@ actually re-check PROC_DIE, or the post-steal PROC_DIE delivery/interrupt_pendin
 must be made reliable). Re-dispatch to finish blocker 2 + validate BOTH (no TRAP
 over many parallel iters; clean pg_ctl -m fast stop over many real-steal iters) +
 two-reviewer, THEN re-enable migratable=1. Benchmark still gated on that.
+
+### Blocker-fix attempt #3 dispatched with the xtc_exec_loop_id idiom (2026-07-22)
+
+libxtc's v1.27 reply (/tmp/libxtc-v127-integration-status-reply.md) supplied the
+primitive the two prior attempts LACKED for blocker 2: xtc_exec_loop_id()
+re-reads the current resume's loop every call (v1.28.0, documented, DST-proven).
+Attempt #3 (agent 22f44e1b) fix mechanism:
+- BLOCKER 2 (shutdown hang): in the protocol-read staging wait loop, capture
+  xtc_exec_loop_id() before WaitEventSetWait; on return, if it changed (fiber
+  work-stolen to another loop) RE-ARM the carrier-affine interrupt_wake_fd /
+  wait-set registration so PROC_DIE is caught; PLUS a bounded re-poll that on any
+  wake (incl. timeout) checks the PROCESS-GLOBAL shutdown/die flag (not
+  carrier-bound) and honors it before re-parking. Combination guarantees a
+  stolen-then-parked backend honors fast shutdown within the bound. (Prior
+  attempts' 1000ms-cap-alone was insufficient because it lacked both the re-arm
+  and the die-flag re-check.)
+- BLOCKER 1 (guc foreign-ctx free): validate the stashed fix is COMPLETE (audit
+  ALL guc_free callers under migration), land it.
+VALIDATION BAR (the hang is ~50% intermittent -> one pass proves nothing): 014
+shutdown loop >=15x release+cassert, clean pg_ctl -m fast stop EVERY time, n_steals>0
+each; parallel suite cassert MANY iters -> no guc.c:1396 TRAP. Two-reviewer (must
+run the loops, not isolated tests). Then re-enable migratable=1.
+Substrate confirmed UCONTEXT/glibc -> unaffected by the reverted v1.26 fcontext
+memory-corruption bug; our 2 blockers are genuinely PG-side. If blocker 2 still
+resists, land blocker-1 alone + report, stay migratable=0.
+THEN (coordinator, auto per user authorization): EC2 A/B m8idn.metal-96xl, full
+methodology, terminate+verify -> stock-vs-mt with work-stealing active.
