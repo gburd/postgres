@@ -39,9 +39,12 @@
 # reintroduces the shared-fallback clobber and shows up as a crash signature in
 # the server log and/or a lost/failed connection.
 #
-# migratable stays 0: this fix does NOT re-enable migration.  Fibers spawn
-# PINNED, so the storm exercises on-loop interleaving, exactly the offending
-# path.
+# migratable is now 1 (migration re-enabled): client backends spawn migratable
+# so the concurrent-connect storm exercises the pre-install window BOTH under
+# on-loop cooperative interleaving AND under real cross-loop steals.  The
+# per-fiber-window fix must hold under migration too; assertion (5) below now
+# requires migratable=1, and the storm-safety assertions (2-4) prove no
+# pre-install-window corruption regresses once fibers can be stolen.
 
 use strict;
 use warnings FATAL => 'all';
@@ -69,7 +72,7 @@ max_connections = 100
 $node->start;
 
 is($node->safe_psql('postgres', 'SHOW multithreaded'),
-	'on', 'threaded runtime up (migration OFF; concurrent-startup storm gate)');
+	'on', 'threaded runtime up (migration ON; concurrent-startup storm gate)');
 
 my $connstr = $node->connstr('postgres');
 my $psql = $ENV{PG_REGRESS_PSQL} || $ENV{PSQL} || 'psql';
@@ -163,14 +166,16 @@ unlike(
 	'no crash / assertion / corruption signatures during concurrent-startup storm'
 );
 
-# Confirm the storm actually spawned fibers PINNED (migratable=0): this fix does
-# NOT re-enable migration, and the offending path is on-loop interleaving, which
-# pinned fibers still exercise.  If a future change flips migration on, this
-# test must be revisited (a real steal adds a distinct wait-boundary surface).
+# Confirm the storm spawned fibers MIGRATABLE (migratable=1): migration is now
+# re-enabled (xtc_carrier_migratable returns true for client backends), so the
+# per-fiber-window fix must hold while fibers can be stolen across loops.  The
+# storm-safety assertions above (no lost connect, server usable, no crash
+# signatures) prove the pre-install window stays corruption-free under
+# migration.  A regression to all-pinned here would silently weaken the gate.
 my $migratable_spawns = () = $log =~ /spawned backend fiber pid=.*migratable=1/g;
 my $pinned_spawns = () = $log =~ /spawned backend fiber pid=.*migratable=0/g;
-ok($pinned_spawns > 0 && $migratable_spawns == 0,
-	"storm backends spawned PINNED (migratable=0; migration stays OFF -- migratable=$migratable_spawns pinned=$pinned_spawns)"
+ok($migratable_spawns > 0,
+	"storm backends spawned MIGRATABLE (migration re-enabled -- migratable=$migratable_spawns pinned=$pinned_spawns)"
 );
 
 # Best-effort shutdown: if the storm crashed the runtime the postmaster is

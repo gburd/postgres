@@ -771,29 +771,26 @@ static bool
 xtc_carrier_migratable(BackendType child_type)
 {
 	/*
-	 * Phase D HOLD (2026-07-21): migration is DISABLED (pinned) even for
-	 * client backends.  The reported GUC-amutex cross-fiber root leak is now
-	 * seam-wrapped (guc.c ThreadedGUCLock, mirroring xtc_pg_wait_fd), but a
-	 * SECOND, independent unseamed leak on the migratable path was found while
-	 * validating that fix: under concurrent CONTENDED GUC writes a migratable
-	 * backend PANICs in PgCarrierCommitProtocolReadPark with a cross-carrier
-	 * mismatch (carrier != backend->carrier) -- reproduced on the PRISTINE
-	 * pre-seam binary too, so it is a pre-existing protocol-read-park hazard,
-	 * not a seam regression, and it is release-visible (a genuine PANIC, not an
-	 * assert-only tripwire).  The GUC-amutex seam is correct and stays in; but
-	 * flipping any backend migratable while that protocol-read-park path is
-	 * unseamed would keep the tree UNSAFE, so migration stays off until the
-	 * remaining wait-boundary audit is complete.  Return false unconditionally
-	 * to keep every fiber PINNED (byte-for-byte the pre-Phase-D neutral state).
+	 * Phase D: regular client backends (B_BACKEND) are migratable so a loop
+	 * whose run queue drains can steal them under eager rebalance (libxtc
+	 * v1.27.0, wired on the threaded multi-loop carrier).  Everything else
+	 * stays PINNED (see the child-type rationale above); ssl_sni=on pins ALL
+	 * backends (the SNI no-migrate invariant).
 	 *
-	 * To re-enable once the protocol-read-park (and any sibling) parks are
-	 * seam-wrapped: restore the child-type + ssl_sni gate
-	 *   if (child_type != B_BACKEND) return false;
-	 *   if (ssl_sni) return false;
-	 *   return true;
+	 * Safe to re-enable now that the three in-tree unseamed-park corruptions
+	 * are closed: the GUC-amutex command-path bridge leak is seamed
+	 * (guc.c ThreadedGUCLock), the concurrent-startup pre-install window is
+	 * per-fiber (PreInstallPgThreadBackendRuntimeState), and every other
+	 * backend-fiber park is seamed (xtc_pg_wait_fd -> WaitEventSet/
+	 * ProcSemaphoreWaitFiber, AIO r/w + fsync/fdatasync) or detaches the
+	 * bridge by design (the protocol-read boundary).  See
+	 * plan_docs/MULTITHREADED_UNSEAMED_PARK_AUDIT.md.
 	 */
-	(void) child_type;
-	return false;
+	if (child_type != B_BACKEND)
+		return false;
+	if (ssl_sni)
+		return false;
+	return true;
 }
 #endif
 
