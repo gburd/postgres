@@ -786,11 +786,23 @@ xtc_carrier_migratable(BackendType child_type)
 	 * bridge by design (the protocol-read boundary).  See
 	 * plan_docs/MULTITHREADED_UNSEAMED_PARK_AUDIT.md.
 	 */
-	if (child_type != B_BACKEND)
-		return false;
-	if (ssl_sni)
-		return false;
-	return true;
+	/*
+	 * HELD at migratable=0 (2026-07-22): an independent review of the
+	 * migratable=1 re-enable (d04f3bea68c) found TWO real, migration-only,
+	 * reproduced-clean-on-pinned regressions under real work-steals:
+	 *   (1) guc.c:1396 GUCMemoryContext corruption -- deterministic under
+	 *       parallel load, a fiber freeing on the wrong session's GUC context
+	 *       (session-root/GUC-metadata unseamed-park hazard, now live under
+	 *       real steals); does NOT reproduce on the pinned baseline.
+	 *   (2) a deterministic shutdown hang under migratable=1 (release needs
+	 *       SIGKILL); pinned shuts down cleanly.
+	 * (bug #2 protocol-read-park is confirmed SUBSUMED/safe -- not a blocker.)
+	 * Return false unconditionally to keep every fiber PINNED (safe) until both
+	 * blockers are fixed + independently re-reviewed.  The gate to restore:
+	 *   return (child_type == B_BACKEND) && !ssl_sni;
+	 */
+	(void) child_type;
+	return false;
 }
 #endif
 
