@@ -4561,3 +4561,36 @@ The 3 KNOWN, now the COMPLETE remaining set:
 hardens pinned) -> wire eager rebalance + re-enable migratable=1 -> #2 surfaces
 (or not) once real steals fire; decide/fix it -> confirm n_steals>0 + no leak +
 two-reviewer -> EC2 A/B. No unknown corruptions remain to discover.
+
+### Concurrent-startup corruption (#3) FIXED (d01ee0bdce1) (2026-07-22)
+
+The last in-tree unseamed-park corruption is closed. Root cause confirmed:
+backend_thread_entry ran MemoryContextInit + early GUC init BEFORE
+InstallPgThreadBackendRuntimeState installed the 6-root bridge, so TopMemoryContext
+(-> PgCurrentOrEarlyExecution) AND session-rooted guc_variables/GUCMemoryContext
+(-> PgCurrentOrEarlySession) resolved to the SHARED per-OS-thread
+early_execution_fallback/early_session_fallback; InitializeThreadedSessionGUCOptions
+takes the GUC amutex -> parks the fiber -> a sibling runs MemoryContextInit on the
+shared fallback -> clobber. FIX = A (per-fiber window): new
+PreInstallPgThreadBackendRuntimeState() makes the fiber-owned logical roots current
+BEFORE the window (before My* globals / InitProcessLocalLatch, so MyLatch lands on
+the logical backend); InstallPgThreadBackendRuntimeState detects pre-install and
+SKIPS the populate-fallback-then-adopt copy (which would clobber the live per-fiber
+state). Mirrors the pooled-protocol PgCarrierAttachBackend ordering. Option B (drop
+the startup GUC amutex) REJECTED -- build_guc_variables lazily builds the shared
+ConfigureNames index/name-hash under that lock; removing it races the shared build.
+Repro (pipe-gated simultaneous connect storm): BEFORE N=3 5/5 crash (single-loop
+N=8 4/5 -> cooperative interleaving, not stealing); AFTER 0/5 at N=4,8,16 (2 loops)
++ N=6,12 (1 loop), cassert AND release. Regression gate: t/015_phase_c_concurrent_
+startup_storm.pl (BIDIRECTIONAL: fails pristine HEAD, passes fixed). Green:
+test_backend_runtime 14 OK/0 Fail/2 SKIP (001=128,003=43,007=46,014=5,015=5)
+release+cassert; process regress 245/245; process byte-for-byte; migratable still 0.
+Self-reviewed (subagent unavailable) -> INDEPENDENT REVIEW OWED.
+Pre-existing (NOT this change, byte-identical on pristine HEAD): a threaded-core
+`aggregates` parallel-query plan-diff/hang -- separate, unrelated.
+
+RUNWAY NOW: #3 done (pinned runtime hardened + substrate unblocked). Remaining to
+the benchmark: independent-review #3 -> wire eager rebalance + re-enable
+migratable=1 -> #2 protocol-read-park decided once real steals fire -> confirm
+n_steals>0 + no leak + two-reviewer -> EC2 A/B (auto-run per user authorization,
+terminate+verify).
