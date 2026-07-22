@@ -121,16 +121,17 @@ sub storm
 	return ($ok, scalar @pids);
 }
 
-# Run the storm at escalating widths, several passes each, to make an on-loop
-# interleaving regression deterministic (the pristine bug was ~4-5/5 at N=4 and
-# 5/5 at N>=8, per 2 loops).  Any crashing storm escalates to a supervisor
-# GENUINE-CRASH that terminates the whole runtime, so every later connect fails
-# too -- either way $ok != $total trips.
+# Run the storm at escalating widths, several passes each, on a SINGLE loop so
+# the concurrently-starting fibers interleave their startup windows across the
+# early GUC-amutex park (the pristine bug crashes deterministically single-loop
+# after ~2 interleaved fibers; the fixed binary completes every backend).  Any
+# crashing storm escalates to a supervisor GENUINE-CRASH that terminates the
+# whole runtime, so every later connect fails too -- either way $ok != $total trips.
 my $log_start = -s $node->logfile;
 my $all_ok = 1;
-for my $n (4, 8, 16, 24)
+for my $n (4, 8, 16, 24, 32)
 {
-	for my $pass (1 .. 3)
+	for my $pass (1 .. 4)
 	{
 		my ($ok, $total) = storm($n);
 		if ($ok != $total)
