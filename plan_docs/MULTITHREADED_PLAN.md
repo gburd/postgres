@@ -4961,3 +4961,95 @@ Path: land 2a/2b (idiom) + resolve 2c via a libxtc per-park-pin request OR a
 carrier-agnostic staging-park redesign, then re-validate (014 shutdown loop >=15x
 clean + parallel no-TRAP + no 2c PANIC over many real-steal iters) + two-reviewer
 -> re-enable migratable=1 -> EC2 A/B.
+
+
+### Blocker-fix attempt #4 OUTCOME: 2c reframed, 2a/2b insufficient for the shutdown hang, migratable=0 held (2026-07-22)
+
+Dispatched to (a) redesign the staging protocol-read-park lease carrier-agnostic
+to fix 2c, (b) land the 2a/2b idiom wake fixes, (c) re-enable migratable=1 and
+validate 014 >=20x clean.  OUTCOME: reverted to migratable=0 (tree at HEAD,
+green, process byte-for-byte).  The re-enable was NOT done: the mandated 20x
+clean-shutdown validation was neither achievable nor met.  Precise findings:
+
+ENVIRONMENT NOTE (for the next attempt): the build/build-cassert dirs were
+configured against xtc-1.27.0 while the flake pins v1.28.0; only `build`
+(release) had been reconfigured.  `meson setup --reconfigure --clearcache`
+(NOT plain --reconfigure -- the dependency is cached) forced build-cassert to
+resolve xtc-1.28.0.  The nested-DESTDIR tmp_install must be refreshed with a
+FULL `env -u DESTDIR meson install -C build-cassert --quiet --no-rebuild`
+(NOT the `--only-changed` meson `tmp_install` target, which leaves a stale
+1.27.0-linked postgres in place); verify `ldd tmp_install/.../bin/postgres |
+grep xtc` -> 1.28.0 after EVERY rebuild.  A `--destdir` override double-nests
+the install (prefix is already an absolute tmp_install path).  ptrace_scope=1
+(no sudo) BLOCKS gdb-attach to running carriers, so live fiber backtraces were
+unavailable.  The agent harness's per-call execution window is shorter than one
+014 run under a shutdown hang (~40-60s+), so a 20x meson-test shutdown loop
+could NOT be run to completion in one call -- background loops get orphaned.
+This is the primary reason the mandated validation was not achievable here.
+
+2c REFRAMED (the "same carrier resume" PANIC is misnamed): read
+PgRuntimeProtocolSchedulerLeaseBackend (backend_runtime_backend.c:1935) fully.
+It is keyed on runtime+backend (both fiber-stable) under the scheduler spinlock
+and has NO physical-carrier check -- it returns false purely on a queue-state
+mismatch (scheduler_queue_state in {NONE,POLLING,LEASED} or park_state !=
+COMMITTED).  In thread-per-session staging mode (pooled_protocol_carriers=0, the
+migratable=1 config) NO pooled carrier drains the shared parked_protocol_queue
+(PgRuntimeProtocolSchedulerPollParkedReads is called ONLY from the test module;
+the production WaitParkedReads runs only on pooled carriers, which do not exist
+at carriers=0), so within staging the single fiber's commit->wait->lease is not
+raced by another carrier.  CurrentPgCarrier at postgres.c:7025 is the fiber's
+OWN carrier (installed by PgSetCurrentCarrier(&thread_start->runtime_state.carrier)
+at fiber entry and restored by the xtc_pg_wait_fd seam's stack snapshot on
+resume), NOT a stale pre-park loop carrier -- so the dispatch's stated 2c root
+cause ("captures a stale carrier before the wait") does not match the source.
+Consistent with that, across ~40+ migratable=1 014 iterations on v1.28.0 the "could
+not lease protocol read park" PANIC did NOT reproduce even once; the dominant
+(and only observed) blocker was the shutdown HANG below.  A carrier-agnostic
+re-derivation (resume carrier via xtc_proc_userdata()) is architecturally sound
+and defensible but was NOT landed: it is untestable against real migration in
+this environment and would be unvalidated migration-path code (re-crosses the
+data-corruption line the dispatch says to stay behind).
+
+THE REAL BLOCKER = the shutdown HANG (was tracked as 2a), and 2a/2b as written
+are INSUFFICIENT.  Reproduced cleanly (not orphan-contamination: confirmed with
+rigorous between-run cleanup, one meson run per call) at migratable=1 cassert:
+`pg_ctl -m fast stop` hangs for the full 60s grace, then immediate shutdown,
+then SIGKILL to recalcitrant children.  Fiber accounting at the hang: 22 backend
+fibers spawned, 20 "exiting" -> 2 client-backend fibers STRANDED, never waking
+for PROC_DIE; the shutdown checkpoint never runs (PM stuck in PM_STOP_BACKENDS
+waiting for the 2 backends).  With the stash 2a (xtc_pg_wait_fd bounded 1s
+re-poll + PROC_DIE re-check) + 2b (GUC amutex bounded retry) APPLIED, 014 still
+hangs at a high rate (multiple independent runs; NOT the plan's earlier ~18/20).
+Adding a matching bounded-wait + backend-keyed PROC_DIE re-check to the
+protocol-read park loop (postgres.c PgSessionStagingWaitProtocolRead, keyed on
+the fiber-stable `backend` param since CurrentPgBackend is NULL there) did NOT
+help either -- so the stranded fibers are parked in NEITHER xtc_pg_wait_fd,
+the GUC amutex, NOR the protocol-read park.
+
+LEADING SUSPECT (analysis, not proven -- gdb blocked): the SetLatch fiber wake
+in latch.c uses xtc_proc_wake(owner_fiber) where owner_fiber holds the
+loop_id captured at latch-arm time (WaitEventSetWaitBlock records
+latch->owner_fiber_{loop,local,gen} = xtc_self() before parking).  After a
+work-steal the fiber's loop_id CHANGES, so xtc_proc_wake with the stale loop_id
+does not nudge the fiber's CURRENT loop (the code comment itself notes
+"owner_fiber generation staleness that can drop the SetLatch xtc_proc_wake").
+The level-triggered eventfd backup (interrupt_wake_fd, test-75) covers ONLY the
+protocol-read park's FeBe wait set; a plain WaitLatch/lock wait's epoll signalfd
+is the migration-safe channel there, but a stranded fiber suggests a wait whose
+only wake path is the stale-loop xtc_proc_wake.  A correct fix likely needs a
+fiber-targeted (loop-independent) wake -- either a libxtc primitive that routes
+by (local,gen) regardless of loop, or a per-fiber level-triggered wake fd
+re-armed on the current loop for EVERY backend-fiber wait set (not just the
+protocol-read park).  Both are substantial and MUST be validated (>=20x clean
+014 + parallel) before they can be trusted; neither is a one-line idiom.
+
+DECISION (per dispatch fallback): STOP, keep migratable=0, do NOT re-enable, do
+NOT land unvalidated 2a/2b/2c or the SetLatch fix.  EC2 A/B NOT warranted
+(migration not live / not proven).  Tree at HEAD, cassert+release build clean
+(0 warnings), process mode byte-for-byte.  2a/2b/2c WIP remains in git stash@{0}
++ /tmp/blocker-fixes-all.patch; the SetLatch-fiber-wake suspect is the new lead.
+NEXT: reproduce the 2-fiber shutdown strand under a debugger-capable environment
+(ptrace enabled) to confirm the stranded park site; if it is the stale-loop
+xtc_proc_wake, resolve via a loop-independent fiber wake (libxtc request or a
+per-fiber wake-fd on all backend wait sets) THEN re-validate 20x + two-reviewer
+-> re-enable -> EC2 A/B.
