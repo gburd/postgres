@@ -4524,3 +4524,40 @@ decide protocol-read-park via real steals -> benchmark).
 BENCHMARK: NOT warranted -- migration not live, and a known concurrent-startup
 corruption blocks the substrate. Independent read of this finding owed before the
 fix is designed.
+
+### Unseamed-park audit COMPLETE: class fully mapped, ZERO new hazards (2026-07-22)
+
+plan_docs/MULTITHREADED_UNSEAMED_PARK_AUDIT.md. Exhaustive for in-tree core: every
+backend-fiber parking primitive grepped, its libxtc v1.27.0 park behavior verified,
+every indirect wait traced to its seamed funnel; all 19 PG_THREAD_LOCAL backend
+symbols classified. RESULT: NEW hazards beyond the 3 known = ZERO. The
+unseamed-park corruption class is now FULLY MAPPED -- fix the known set and stop
+being surprised; nothing else lurks.
+
+Seamed/safe (verified): xtc_pg_wait_fd (the choke point -- WaitEventSetWaitBlock +
+ProcSemaphoreWaitFiber = all LWLock/ProcSleep/semaphore waits route through it);
+GUC amutex ThreadedGUCLock (bug#1 seam, command path); AIO r/w + fsync/fdatasync;
+supervisor recv/send (not a backend fiber); the 6-root bridge + hot cells ride the
+seam; unpack_sql_state + retained_top_memory_allocated safe-by-construction;
+xtc_in_backend_fiber already hardened (sem_fiber_backed shmem key).
+
+The 3 KNOWN, now the COMPLETE remaining set:
+ #3 pre-install early_*_fallback corruption -- BITES THE PINNED RUNTIME TODAY
+    (N>=3 concurrent connects; single-loop N~6 = cooperative interleaving). Two park
+    triggers in the pre-install window: InitializeThreadedSessionGUCOptions
+    (guc.c:2705) + read_nondefault_variables->set_config_with_handle (guc.c:4929),
+    both before InstallPgThreadBackendRuntimeState (launch_backend.c:1924); target =
+    MemoryContextInit's TopMemoryContext resolving to the shared per-thread
+    early_execution_fallback. FIX IN FLIGHT (75ef77d7). Priority 1.
+ #2 protocol-read-park PANIC -- CLARIFIED: a DISTINCT mechanism (scheduler
+    carrier-affinity mismatch at PgCarrierCommitProtocolReadPark), NOT bridge
+    staleness, NOT subsumed by the GUC seam, and migratable-GATED (needs a real
+    cross-carrier steal to decide over-strict-assert vs real). Blocks migratable=1;
+    does NOT bite pinned. Decide/fix on a steal-capable substrate (eager rebalance
+    on + migratable=1, or DST sim-pessimal).
+ (theoretical: none actionable.)
+
+=> BOUNDED RUNWAY TO THE BENCHMARK: fix #3 (in flight -> unblocks the substrate +
+hardens pinned) -> wire eager rebalance + re-enable migratable=1 -> #2 surfaces
+(or not) once real steals fire; decide/fix it -> confirm n_steals>0 + no leak +
+two-reviewer -> EC2 A/B. No unknown corruptions remain to discover.
