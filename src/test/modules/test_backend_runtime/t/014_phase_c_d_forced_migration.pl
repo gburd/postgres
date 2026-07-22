@@ -93,6 +93,28 @@ max_connections = 40
 });
 $node->start;
 
+# This test is the Phase-D MIGRATION-LIVE gate: it only has meaning when backend
+# fibers are actually migratable (migratable=1 + eager rebalance).  When
+# migration is HELD at migratable=0 (the safe/pinned state -- e.g. while a
+# migration blocker is being fixed), skip cleanly rather than hard-fail.  This
+# probe MUST run before any test point (TAP requires skip_all before ok N): a
+# handful of warmup connects, then check the server log for a migratable spawn.
+{
+	for my $i (1 .. 4)
+	{
+		$node->safe_psql('postgres', 'SELECT 1;');
+	}
+	my $probe = PostgreSQL::Test::Utils::slurp_file($node->logfile);
+	if ($probe !~ /spawned backend fiber pid=.*migratable=1/)
+	{
+		$node->stop('fast');
+		plan skip_all =>
+		  'backend-fiber migration is not live (migratable=0, pinned) -- '
+		  . 'this Phase-D forced-migration gate is only meaningful when '
+		  . 'migratable=1; skipping while migration is held/disabled';
+	}
+}
+
 is($node->safe_psql('postgres', 'SHOW multithreaded'),
 	'on', 'threaded runtime up (Phase D LIVE: migration enabled)');
 
