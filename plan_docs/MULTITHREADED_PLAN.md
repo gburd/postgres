@@ -4836,3 +4836,82 @@ memory-corruption bug; our 2 blockers are genuinely PG-side. If blocker 2 still
 resists, land blocker-1 alone + report, stay migratable=0.
 THEN (coordinator, auto per user authorization): EC2 A/B m8idn.metal-96xl, full
 methodology, terminate+verify -> stock-vs-mt with work-stealing active.
+
+### Blocker-fix attempt #3 OUTCOME: blocker-1 LANDED, blocker-2 has a THIRD hazard (2026-07-22)
+
+Blocker 1 is FIXED and LANDED (commit 6847d1f5c6d), migration stays at
+migratable=0.  Blocker 2 turned out to be THREE distinct migration hazards, not
+one; the xtc_exec_loop_id idiom fixes two of them but a third -- inherent to the
+protocol-read park's design -- resists without a new libxtc API.  Full findings:
+
+BLOCKER 1 (guc foreign-ctx free) -- FIXED + VALIDATED + LANDED.
+  Root cause confirmed exactly as the two prior reviews said: set_string_field /
+  set_extra_field unconditionally guc_free(oldval), where oldval can be a
+  PGC_POSTMASTER/SIGHUP boot/reset value allocated by the postmaster into the
+  process/early GUC context -> trips guc.c:1396 (cassert) / corrupts a foreign
+  context (release).  Fix routes that free through guc_free_if_current_context()
+  under (USE_XTC_CARRIER && multithreaded), the same idiom
+  ResetGUCStateAtBackendExit already uses.  set_string_field/set_extra_field are
+  the choke points for ALL record-field frees (stacks route through them); the
+  other guc_free callers were audited safe (fresh-local newval/newextra;
+  reset-derived newextra protected by extra_field_used; clear_last_reported
+  frees only its own-context report string with a !string_field_used guard;
+  RestoreGUCState is parallel-worker-only, not a migratable client backend).
+  Validated: cassert migratable=1, 001 (ALTER SYSTEM+reload+SET/RESET, 128
+  subtests) x3 clean, NO guc.c:1396 TRAP.  The assert is unchanged.  Process
+  mode byte-for-byte (gated).
+
+BLOCKER 2 -- THREE hazards; #2a and #2b fixed by the idiom, #2c is the real
+remaining blocker.  Diagnosed empirically by instrumenting every fiber park
+(xtc_pg_wait_fd) + the amutex lock + the protocol-park loop and catching live
+hangs under the 014 contended-GUC + real-steal workload (n_steals 12..532):
+  (2a) xtc_pg_wait_fd(fd, -1) INFINITE park -- a latch/lock/protocol wait whose
+       cross-fiber wake (SetLatch self-pipe write, lock/sem hand-off) races a
+       work-steal and is stranded on the OLD loop; the fiber never wakes.  This
+       was THE observed shutdown hang: a fiber parked on an [eventpoll] fd with
+       timeout_ns=-1 that never returned; pg_ctl -m fast/immediate both hang,
+       SIGKILL-to-"recalcitrant children" is a no-op (it is a fiber).  FIX (in
+       WIP, not landed): bound each xtc_proc_wait_fd attempt at 1000ms and loop
+       -- every re-park re-registers the fd on whichever loop currently owns the
+       fiber (the xtc_exec_loop_id re-arm, expressed as "re-issue the wait"),
+       and on each bounded expiry re-check the PROCESS-GLOBAL PROC_DIE bit
+       (backend->interrupts.pending_mask, fiber-owned) and surface a latch wake
+       so shutdown always makes progress.  With this alone, 014 went from 0/N to
+       ~18/20 clean (was a guaranteed hang before).
+  (2b) xtc_amutex_lock(slot, -1) INFINITE park in ThreadedGUCLock -- the GUC
+       amutex grant hand-off wake can likewise be missed across a steal, hanging
+       a contended SET/RESET waiter forever (observed as a workload-phase hang).
+       FIX (in WIP): bounded 1s retry loop; each retry re-enqueues+re-arms the
+       waiter on the current loop.
+  (2c) PROTOCOL-READ-PARK same-carrier-resume LEASE -- the REAL remaining
+       blocker, and the "protocol-read-park cross-carrier PANIC" the prior
+       migratable=1 re-enable (d04f3bea68c) WRONGLY marked SUBSUMED.  It is NOT
+       subsumed: PgSessionStagingWaitAndResumeProtocolRead resumes and calls
+       PgRuntimeProtocolSchedulerLeaseBackend(CurrentPgRuntime, backend), which
+       elog(PANIC, "could not lease protocol read park for same carrier resume")
+       when the backend's scheduler_queue_state is not PARKED_PROTOCOL_READ.
+       A fiber work-stolen ACROSS the protocol park resumes on a different
+       carrier and violates the park's same-carrier-resume design invariant
+       (the PANIC message literally names it).  Reproduced live (~1/20 iters).
+       This needs EITHER (a) a libxtc runtime pin/unpin API to keep a proc
+       pinned across just this one yield (the current xtc_proc_opts_t.migratable
+       is spawn-time only; there is no per-park toggle) -- a libxtc feature
+       request -- OR (b) reworking the protocol-read park so its resume tolerates
+       a different carrier (drop the same-carrier lease invariant).  Neither is
+       "apply the xtc_exec_loop_id idiom"; both are substantial.
+
+DECISION (per the dispatch's explicit fallback): landed the VALIDATED blocker-1
+fix ALONE, kept migratable=0.  The 2a/2b wake fixes are correct but were NOT
+landed: at migratable=0 they add a 1 Hz re-poll to idle parked fibers for zero
+benefit (no steals -> no lost wakes), and blocker 2 as a whole is NOT solved
+(2c stands), so re-enabling would be on an unvalidated shutdown story.  The
+2a/2b/2c investigation + WIP is preserved in git stash ("attempt#3 blocker-2 WIP
+-- wait_fd+amutex bounded re-poll, 2c protocol-park lease UNRESOLVED") and
+/tmp/blocker-fixes-all.patch.
+
+NEXT for blocker 2: raise the 2c protocol-read-park hazard with libxtc (a
+per-park pin/unpin, or confirmation that same-carrier-resume can be dropped),
+OR redesign the staging protocol-read park's lease to be carrier-agnostic.
+Until then migration stays migratable=0.  EC2 A/B is NOT warranted (migration
+is not live / not proven correct).
+
