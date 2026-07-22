@@ -3202,6 +3202,7 @@ extern void InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *s
 												 BackendType backend_type,
 												 struct Port *port,
 												 struct Latch *interrupt_latch);
+extern void PreInstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state);
 extern void InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state);
 extern void InitializePgThreadBackendRuntime(PgThreadBackendRuntimeState *state,
 											 BackendType backend_type,
