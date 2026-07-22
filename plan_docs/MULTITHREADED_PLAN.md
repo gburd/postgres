@@ -4750,3 +4750,27 @@ paths that assumed a fiber stays on one carrier):
    ordering race-free, so a work-stolen parked backend reliably honors PROC_DIE.
  - Re-gate 014 to REQUIRE a clean pg_ctl -m fast stop after a real-steal workload
    (many iters, both build types) before re-flipping migratable=1. Two-reviewer.
+
+### libxtc v1.27.0 integration status report drafted (2026-07-22)
+
+/tmp/libxtc-v127-integration-status-report.md -- a STATUS/collaboration report
+for the libxtc team, deliberately NOT a bug dump. Key points (honest blame
+boundary):
+- v1.27.0 xtc_exec_set_eager_rebalance WORKS as designed: measured 137-487 real
+  cross-loop steals/run (was 0 pre-v1.27.0); resolves our wake-on-stealable-work
+  request cleanly. All migration-safety primitives (migratable/pinned deque
+  routing, xtc_proc_userdata-survives-migration, steal-only-scheduled-tasks,
+  pid-stable monitors/DOWN + fault containment) verified SAFE by two independent
+  reviews against v1.27.0 source.
+- The two blockers that forced our revert are PG-SIDE, not libxtc: (1) session-
+  GUC memory context freed on the wrong session after a steal (PG seam coverage
+  gap, not a libxtc defect -- libxtc preserved __current_proc/userdata correctly);
+  (2) a parked backend not honoring its PROC_DIE wake after a steal (PG wake-
+  registration ordering, not a libxtc wait/wake defect). Report says so plainly
+  -- we don't dump our bugs on them.
+- ONE optional question (framed as ergonomic, not a demand): is there / would
+  they consider a "you just resumed on a possibly-different carrier" notification
+  or per-fiber post-migration flag, so a consumer can re-validate carrier-affine
+  wait-set registration by default rather than remembering to seam it. We can fix
+  our case PG-side regardless; not blocked on it.
+Ready for the user to forward.
