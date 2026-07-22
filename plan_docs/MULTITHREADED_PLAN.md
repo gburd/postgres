@@ -4915,3 +4915,49 @@ OR redesign the staging protocol-read park's lease to be carrier-agnostic.
 Until then migration stays migratable=0.  EC2 A/B is NOT warranted (migration
 is not live / not proven correct).
 
+
+### Blocker-fix attempt #3 OUTCOME: blocker-1 LANDED; blocker-2 is 3 hazards, 2c needs libxtc/redesign (2026-07-22)
+
+Blocker 1 (GUC foreign-ctx free, guc.c:1396) FIXED + VALIDATED + LANDED
+(6847d1f5c6d, guc.c only, gated USE_XTC_CARRIER && multithreaded). Root cause:
+set_string_field/set_extra_field unconditionally guc_free(oldval) where oldval
+can be a boot/reset value in the shared process/early-fallback GUC context (made
+in the concurrent-startup window before a session's own GUCMemoryContext existed);
+a migratable backend replacing it frees a foreign context. Fix routes that free
+through guc_free_if_current_context (the existing ResetGUCStateAtBackendExit idiom).
+Completeness audit: set_string_field/set_extra_field are the choke points; every
+other guc_free caller is session-local/safe (empirically confirmed incl. a
+set_config_sourcefile concurrent reload+SET storm -> no trap). Validated 001 x3
+cassert migratable=1 -> no TRAP. Process byte-for-byte.
+
+BLOCKER 2 = THREE hazards (diagnosed by instrumenting every park + catching live
+hangs/PANICs under 014 contended-GUC + real steals, n_steals 12-532):
+- 2a xtc_pg_wait_fd(fd,-1) infinite-park lost-wake-across-steal = the observed
+  shutdown hang. FIXABLE via the xtc_exec_loop_id re-arm + bounded 1s re-poll +
+  process-global PROC_DIE re-check (took 014 hang->~18/20 clean). WIP, NOT landed.
+- 2b xtc_amutex_lock(-1) GUC-amutex grant missed across steal. FIXABLE same idiom.
+  WIP, NOT landed.
+- 2c protocol-read-park SAME-CARRIER-RESUME lease PANIC (postgres.c:7042
+  elog(PANIC,"could not lease protocol read park for same carrier resume")):
+  reproduced LIVE ~1/20 when a fiber is stolen ACROSS the staging park and resumes
+  on a different carrier. THE REAL BLOCKER. **This REFUTES the earlier two-reviewer
+  "protocol-read-park SUBSUMED/safe" claim** -- that was reached without a workload
+  that actually steals a fiber mid-protocol-read-park. NO in-scope fix: the affine
+  bracket is assert-only (doesn't prevent steals), migratable is spawn-time only,
+  there is NO libxtc per-park pin/unpin. Needs EITHER (i) a libxtc scoped per-park
+  no-steal/pin primitive, OR (ii) a carrier-agnostic redesign of the staging
+  protocol-read-park lease (PG-side, larger -- the lease must not bind a backend to
+  a physical carrier when the fiber can migrate).
+
+DECISION (correct): landed blocker-1 alone (real latent-corruption fix, useful at
+migratable=0 too), kept migratable=0, did NOT re-enable. 2a/2b/2c WIP preserved:
+git stash@{0} + /tmp/blocker-fixes-all.patch. EC2 A/B NOT warranted (migration not
+live). Self-reviewed only (no subagent tool) -> INDEPENDENT REVIEW of 6847d1f5c6d
++ the migratable=0 decision OWED.
+
+BENCHMARK REALITY: not reachable by our-side fixes alone. Blocker 2c is an
+architectural mismatch (same-carrier-resume lease vs work-stealing migration).
+Path: land 2a/2b (idiom) + resolve 2c via a libxtc per-park-pin request OR a
+carrier-agnostic staging-park redesign, then re-validate (014 shutdown loop >=15x
+clean + parallel no-TRAP + no 2c PANIC over many real-steal iters) + two-reviewer
+-> re-enable migratable=1 -> EC2 A/B.
