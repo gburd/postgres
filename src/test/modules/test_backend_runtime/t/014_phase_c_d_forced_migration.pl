@@ -46,12 +46,15 @@
 #
 # WORKLOAD NOTES:
 #  - Connections are established SERIALLY, then the workload runs concurrently
-#    on the already-connected backends.  A simultaneous connection storm trips a
-#    SEPARATE, pre-existing concurrent-STARTUP fragility (unseamed pg_usleep park
-#    in backend_thread_wait_until_registered when many client backends start on
-#    ONE loop at once) that is unrelated to the GUC-amutex leak.  Serial connect
-#    avoids it; the migration-relevant concurrency is the contended GUC-write
-#    execution phase.
+#    on the already-connected backends.  A simultaneous connection storm used to
+#    trip a SEPARATE, pre-existing concurrent-STARTUP corruption (the backend
+#    fiber startup window ran MemoryContextInit + early GUC init against the
+#    SHARED per-OS-thread early_execution_fallback / early_session_fallback,
+#    which a sibling fiber clobbered across the GUC-amutex park).  That is now
+#    fixed (PreInstallPgThreadBackendRuntimeState makes the window per-fiber);
+#    015_phase_c_concurrent_startup_storm is the dedicated regression gate for
+#    it.  This test keeps serial connect because its focus is the contended
+#    GUC-write execution phase, not startup concurrency.
 
 use strict;
 use warnings FATAL => 'all';

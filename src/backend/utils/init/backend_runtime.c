@@ -1185,11 +1185,36 @@ InitializePgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state,
 	state->carrier.current_execution = &logical->execution;
 }
 
+/*
+ * xtc-carrier: install the fiber-owned logical roots as current work BEFORE
+ * the dedicated backend_thread_entry() path runs MemoryContextInit() and the
+ * early GUC init.
+ *
+ * Without this, that window runs with CurrentPgExecution/CurrentPgSession ==
+ * NULL, so hot-field accessors fall back to the SHARED per-OS-thread
+ * early_execution_fallback / early_session_fallback.  On the xtc carrier many
+ * backend fibers time-share one OS thread; the early GUC init takes the
+ * process-wide GUC amutex, which PARKS the fiber under concurrent startup.
+ * While parked, a sibling backend fiber runs MemoryContextInit() on the SAME
+ * carrier thread and writes the SAME shared fallback -- tripping
+ * Assert(TopMemoryContext == NULL) (cassert) or corrupting the shared
+ * per-thread memory-context / session-GUC state (release).  Installing the
+ * per-fiber logical roots first makes the whole startup window resolve to
+ * fiber-owned storage that rides the park with the fiber, exactly as the
+ * pooled-protocol path already does via PgCarrierAttachBackend() before its
+ * own MemoryContextInit().
+ *
+ * InstallPgThreadBackendRuntimeState() below detects that the roots are
+ * already current and skips the populate-fallback-then-adopt copy (which would
+ * otherwise clobber the live per-fiber state with the now-unused fallback),
+ * while still finishing the scheduler_execution memory-context bridge and the
+ * required-GUC init.  Callers that do NOT pre-install (the roots are not yet
+ * current) keep the original adopt-from-fallback behavior unchanged.
+ */
 void
-InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
+PreInstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 {
 	PgThreadBackendLogicalState *logical;
-	PgExecution *scheduler_execution;
 
 	Assert(state != NULL);
 
@@ -1197,14 +1222,48 @@ InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
 	state->carrier.current_backend = &logical->backend;
 	state->carrier.current_session = &logical->session;
 	state->carrier.current_execution = &logical->execution;
-	PgBackendAdoptEarlyState(&logical->backend);
-	PgSessionAdoptEarlyState(&logical->session);
-	PgConnectionAdoptEarlyState(&logical->connection,
-								logical->connection.identity.port);
-	PgExecutionAdoptEarlyState(&logical->execution);
 	PgRuntimeSetCurrentWork(&thread_runtime, &state->carrier,
 							&logical->backend, &logical->session,
 							&logical->connection, &logical->execution, true);
+}
+
+void
+InstallPgThreadBackendRuntimeState(PgThreadBackendRuntimeState *state)
+{
+	PgThreadBackendLogicalState *logical;
+	PgExecution *scheduler_execution;
+	bool		pre_installed;
+
+	Assert(state != NULL);
+
+	logical = &state->logical;
+
+	/*
+	 * If PreInstallPgThreadBackendRuntimeState() already made these logical
+	 * roots current, the startup window populated them directly (per-fiber),
+	 * not the shared thread-local fallback.  Re-running the adopt copy would
+	 * overwrite that live state with the unused fallback, so skip it; the
+	 * roots are already current.  Otherwise fall through to the original
+	 * populate-fallback-then-adopt path.
+	 */
+	pre_installed = (CurrentPgExecution == &logical->execution &&
+					 CurrentPgSession == &logical->session &&
+					 CurrentPgBackend == &logical->backend);
+
+	state->carrier.current_backend = &logical->backend;
+	state->carrier.current_session = &logical->session;
+	state->carrier.current_execution = &logical->execution;
+	if (!pre_installed)
+	{
+		PgBackendAdoptEarlyState(&logical->backend);
+		PgSessionAdoptEarlyState(&logical->session);
+		PgConnectionAdoptEarlyState(&logical->connection,
+									logical->connection.identity.port);
+		PgExecutionAdoptEarlyState(&logical->execution);
+		PgRuntimeSetCurrentWork(&thread_runtime, &state->carrier,
+								&logical->backend, &logical->session,
+								&logical->connection, &logical->execution, true);
+	}
 	scheduler_execution = state->carrier.scheduler_execution;
 	if (scheduler_execution != NULL &&
 		scheduler_execution->memory_contexts.top_context == NULL)
