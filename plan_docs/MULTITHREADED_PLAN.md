@@ -4594,3 +4594,37 @@ the benchmark: independent-review #3 -> wire eager rebalance + re-enable
 migratable=1 -> #2 protocol-read-park decided once real steals fire -> confirm
 n_steals>0 + no leak + two-reviewer -> EC2 A/B (auto-run per user authorization,
 terminate+verify).
+
+### Concurrent-startup fix #3 CLOSED: independent review SHIP + test hardened (2026-07-22)
+
+Independent review of d01ee0bdce1: SHIP-WITH-CHANGES. The FIX is correct+safe
+across all 8 targets (window genuinely per-fiber -- TopMemoryContext/guc_variables/
+GUCMemoryContext resolve to logical roots not early_*_fallback; MyLatch ordering
+coherent; adopt-skip robust incl. the catastrophic false-negative ruled out; all
+four early fallbacks bypassed; only 2 real Install callers, pooled path uses
+PgCarrierAttachBackend; process byte-for-byte 245/245; migratable still 0).
+Reviewer reproduced the pristine corruption + confirmed the fix eliminates it.
+The one change: t/015 was a WEAK gate (2 loops + sub-30ms storms -> passed 12/12
+on the PRISTINE buggy binary). FIXED in ed82ae79334: PG_XTC_CARRIER_LOOPS=1
+(concentrate fibers on one loop for maximal on-loop interleave across the park) +
+storm 4/8/16/24/32 x4. VERIFIED BIDIRECTIONAL: built the pre-fix backend in place
+-> tightened 015 FAILS pristine; PASSES fixed (5/5). All test_backend_runtime pass
+in isolation (015=5,001=128,003=43,005=35,007=46,014=5); in-suite "1 Fail" = the
+known pre-existing 005 parallel notify-wake flake.
+
+STATUS: all THREE in-tree unseamed-park corruptions resolved (#1 GUC seam
+reviewed-SHIP; #3 pre-install per-fiber window reviewed-SHIP + bidirectional gate;
+#2 protocol-read-park is migratable-gated, decided once real steals fire). The
+pinned threaded runtime is now HARDENED (two production data-corruptions under
+concurrent load fixed). Substrate unblocked.
+
+REMAINING TO THE EC2 A/B (bounded, known):
+ 1. Wire xtc_exec_set_eager_rebalance(g_xtc_exec,1) on the threaded carrier
+    (>1 loop, threaded-only gate) -- v1.27.0 API in hand.
+ 2. Re-enable migratable=1 (restore child-type + ssl_sni gate).
+ 3. With eager rebalance on + migratable=1: run 014/015 + a forced-steal workload;
+    CONFIRM n_steals>0 (real migration) AND decide #2 protocol-read-park (subsumed?
+    over-strict-assert? distinct leak -> seam-fix). No cross-fiber leak; tripwires
+    silent.
+ 4. Two-reviewer the migratable=1 re-enable.
+ 5. EC2 A/B (auto-run per user authorization; terminate+verify).
