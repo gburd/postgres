@@ -46,7 +46,7 @@
 /* xtc public API */
 #include "xtc.h"
 #include "xtc_app.h"
-#include "xtc_exec.h"		/* xtc_exec_loop, xtc_exec_n_loops */
+#include "xtc_exec.h"		/* xtc_exec_loop, xtc_exec_n_loops, xtc_exec_set_eager_rebalance */
 #include "xtc_proc.h"
 #include "xtc_async.h"		/* xtc_set_stack_size */
 
@@ -883,6 +883,21 @@ xtc_pg_carrier_start(void)
 			g_xtc_n_loops = xtc_exec_n_loops(g_xtc_exec);
 		else
 			g_xtc_n_loops = 1;
+
+		/*
+		 * Eager work-stealing rebalance (libxtc v1.27.0 df86fb8), threaded
+		 * multi-loop carrier ONLY.  It makes migratable backend fibers actually
+		 * get stolen: a loop whose run queue drains but that still owns
+		 * fd-parked fibers steals a peer's runnable migratable proc before
+		 * blocking in its own poller, and enqueuing migratable work nudges one
+		 * idle peer's poller so it re-checks and steals promptly.  Opt-in
+		 * (default off = ABI/behavior-neutral); we turn it on here, AFTER the
+		 * exec exists and BEFORE any backend fiber spawns.  Process mode has no
+		 * exec (g_xtc_exec == NULL) and single-loop mode has no peer to steal
+		 * from (g_xtc_n_loops == 1), so both are left untouched.
+		 */
+		if (g_xtc_exec != NULL && g_xtc_n_loops > 1)
+			xtc_exec_set_eager_rebalance(g_xtc_exec, 1);
 
 		if (xtc_app_start(g_xtc_app, NULL, 0) != XTC_OK)
 		{
