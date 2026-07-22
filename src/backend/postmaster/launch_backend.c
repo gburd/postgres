@@ -1907,6 +1907,27 @@ backend_thread_entry(void *arg)
 	}
 #endif
 
+	/*
+	 * xtc-carrier: install this fiber's own logical roots as current work
+	 * BEFORE the per-backend startup below (the My* globals, MyLatch, the
+	 * self-pipe, MemoryContextInit(), and the early GUC init), so that whole
+	 * window resolves to per-fiber storage instead of the SHARED per-OS-thread
+	 * early_execution_fallback / early_session_fallback.  On the xtc carrier
+	 * many backend fibers time-share ONE OS thread and the early GUC init
+	 * parks the fiber on the process-wide GUC amutex under concurrent startup;
+	 * a sibling backend fiber running on the same carrier thread across that
+	 * park must not clobber the shared fallback (which otherwise trips
+	 * Assert(TopMemoryContext == NULL) / corrupts session-GUC + memory-context
+	 * state).  This mirrors the pooled-protocol path, which attaches its
+	 * logical roots via PgCarrierAttachBackend() before its own
+	 * MemoryContextInit().  It runs before the My* / InitProcessLocalLatch()
+	 * setup so MyLatch and the other backend-rooted My* globals below are
+	 * established on this fiber's logical backend, not the fallback.
+	 * InstallPgThreadBackendRuntimeState() detects the pre-install and skips
+	 * the now-redundant populate-fallback-then-adopt copy.
+	 */
+	PreInstallPgThreadBackendRuntimeState(&thread_start->runtime_state);
+
 	MyBackendType = thread_start->child_type;
 	MyPMChildSlot = thread_start->child_slot;
 	MyProcPid = (int) getpid();
