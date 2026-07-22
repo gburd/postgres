@@ -4774,3 +4774,38 @@ boundary):
   wait-set registration by default rather than remembering to seam it. We can fix
   our case PG-side regardless; not blocked on it.
 Ready for the user to forward.
+
+### Blocker-fix attempt #1: partial, NOT landed (blocker 2 hang persists) (2026-07-22)
+
+The 2-blocker fix agent reproduced BOTH blockers rigorously (incl. fixing a stale
+libxtc-1.8.0 RPATH env trap first) but the run ended mid-diagnosis on blocker 2
+and did NOT land/commit. WIP preserved (git stash + /tmp/blocker-fixes-wip.patch,
+171 lines); tree returned to SAFE HEAD 79be4bbccfa (migratable=0). NOTHING landed.
+
+What the WIP contains (3 files, unvalidated/unreviewed):
+- guc.c: BLOCKER-1 fix (looks sound) -- route set_string_field/set_extra_field
+  frees through guc_free_if_current_context under (USE_XTC_CARRIER && multithreaded)
+  so a session never pfree()s a foreign GUC context's allocation; process mode
+  byte-for-byte (keeps unconditional guc_free). The blocker-1 root cause CONFIRMED
+  reproduced: 001-parallel ALTER SYSTEM SET + reload -> ProcessConfigFile ->
+  set_config_option -> guc_free -> TRAP guc.c:1396 (GetMemoryChunkContext !=
+  GUCMemoryContext); a session freed a value owned by the process/early-fallback
+  or a sibling's GUC context.
+- postgres.c: BLOCKER-2 attempt = bounded re-check (cap the -1 infinite protocol-
+  read park at PROTOCOL_READ_PARK_MAX_WAIT_MS=1000). CORRECT APPROACH but the
+  agent's final words were "the hang persists" -> the 1000ms cap ALONE did not fix
+  it. Blocker-2 root cause deeper: a parked backend's wake path
+  (PgSessionServiceProtocolReadWake -> ProcessClientReadInterrupt(false) ->
+  ClientInterruptsPending -> ProcessInterrupts) only fires if interrupt_pending is
+  set; after a steal, PROC_DIE apparently does not reliably set/deliver that on the
+  resumed carrier, so even a 1s re-poll may not observe PROC_DIE (or the re-poll
+  loop re-parks without checking shutdown). NEEDS more work.
+- launch_backend.c: flips migratable=1 -- MUST NOT commit while blocker 2 unfixed
+  (would re-enable migration with a known shutdown hang).
+
+STATE: SAFE (migratable=0, HEAD 79be4bbccfa, tree clean). Blocker 1 fix is
+promising + root-caused; blocker 2 needs a deeper fix (the bounded re-check must
+actually re-check PROC_DIE, or the post-steal PROC_DIE delivery/interrupt_pending
+must be made reliable). Re-dispatch to finish blocker 2 + validate BOTH (no TRAP
+over many parallel iters; clean pg_ctl -m fast stop over many real-steal iters) +
+two-reviewer, THEN re-enable migratable=1. Benchmark still gated on that.
