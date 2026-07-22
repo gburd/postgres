@@ -4699,3 +4699,54 @@ PANIC + tripwires silent, release and cassert; process byte-for-byte 245/245).
 The EC2 A/B is WARRANTED once the coordinator's independent review confirms the
 migratable=1 re-enable.  Commits: b5cfbec2a98 (eager rebalance), 1dc8e57f9fc
 (migratable=1 + strengthened 014/015 gates).
+
+### migratable=1 HOLD: two independent reviews converge on 2 blockers; reverted to 0 (2026-07-22)
+
+Two independent adversarial reviews of the migratable=1 re-enable (d04f3bea68c)
+both returned HOLD, converging on the SAME two real, migration-only,
+reproduced-clean-on-pinned regressions (both reviewers used a rebuilt migratable=0
++ a 1-loop no-steal control to isolate migration as the cause):
+
+BLOCKER 1 -- GUCMemoryContext corruption (guc.c:1396,
+GetMemoryChunkContext(ptr)==GUCMemoryContext in guc_free via ProcessConfigFile/
+set_config_with_handle): DETERMINISTIC under parallel load on migratable=1, does
+NOT reproduce pinned. A fiber frees a GUC allocation on the WRONG session's
+GUC context (GUCMemoryContext is session-rooted). Same unseamed-park/shared-
+session-state class as the earlier leaks, now live once REAL steals fire. Reviewer
+B rebuilt pinned + confirmed 001-parallel PASSES pinned, TRAPs on HEAD.
+
+BLOCKER 2 -- shutdown HANG under migratable=1 with real steals (~30-40% of runs,
+release AND cassert; pinned + 1-loop-no-steal controls clean): a backend parked
+in the protocol-read staging wait (PgSessionStagingWaitProtocolRead, postgres.c
+~6296) with timeout_ms=-1 (no statement/lock timeout) relies solely on the
+level-triggered interrupt_wake_fd (interrupt.c:182 -> FeBe wait set) for its
+PROC_DIE wake. After a fiber is WORK-STOLEN, some backends never receive/honor
+that wake on shutdown -> stay parked -> postmaster loops forever in
+PM_WAIT_BACKENDS; TerminateChildren(SIGKILL) can't kill a fiber. Data-availability/
+clean-shutdown failure. Falsifies the commit's "014 6/6 green" (014 intermittently
+HANGS on teardown).
+
+CONFIRMED SAFE by BOTH reviewers (not blockers): the cross-fiber-root-leak crux
+(the wait seam restores all 6 roots unconditionally on the steal-resume path,
+before any read; XtcPgVerifyCurrentWorkIsSelf silent across 300+ steals) and bug
+#2 protocol-read-park (SUBSUMED: PgCarrier is fiber-owned in thread-per-session +
+rides the steal; the audit's per-OS-thread affinity model only exists in the
+pooled-protocol path, which is real pthreads / NOT migratable). Eager-rebalance
+scope, migratable gate, steal-only-scheduled-tasks, n_steals gate: all SAFE.
+
+ACTION TAKEN: reverted migratable=1 -> 0 (cd33473d95c). Tree SAFE + green (16 OK/
+0 Fail/3 SKIP; 014 skips when migration off; 015 stays an active pinned gate;
+process 245/245).
+
+FIX SCOPE to re-enable (both blockers share a theme: migration exposes state/wake
+paths that assumed a fiber stays on one carrier):
+ - BLOCKER 1: the GUC free/alloc must resolve to the fiber's OWN session
+   GUCMemoryContext across a steal. Likely the same seam/root-tracking gap in a
+   GUC path not covered by the ThreadedGUCLock seam (ProcessConfigFile /
+   set_config_with_handle free path). Find the exact site + make it per-fiber-
+   correct across the steal.
+ - BLOCKER 2: give the protocol-read staging park a BOUNDED re-check timeout
+   (never -1) OR make the interrupt_wake_fd add-to-wait-set + cross-steal wake
+   ordering race-free, so a work-stolen parked backend reliably honors PROC_DIE.
+ - Re-gate 014 to REQUIRE a clean pg_ctl -m fast stop after a real-steal workload
+   (many iters, both build types) before re-flipping migratable=1. Two-reviewer.
