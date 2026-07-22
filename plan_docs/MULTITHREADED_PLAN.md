@@ -4399,3 +4399,83 @@ REVISED SEQUENCE to the benchmark:
  7. EC2 A/B benchmark -- the real vs-fork number with work-stealing ACTIVE.
 VERIFY-BEFORE-TRUSTING: confirm eager rebalance actually produces steals in our
 usage (measure n_steals>0 in 014), don't assume the fix works for us.
+
+### STOP at step 1 (pg_usleep seam): the SIGSEGV-at-spawn is a PRE-EXISTING concurrent-startup corruption, NOT a thread-blocking sleep -- root-caused, not cleanly fixable in scope; migratable stays 0 (2026-07-21)
+
+Drove the migration re-enablement sequence; STOPPED at step 1 with a decisive,
+evidence-backed root cause that CHANGES the plan. The "pg_usleep startup-park
+seam" is NOT the hazard. The reproduced SIGSEGV-at-spawn is a pre-existing
+concurrent-startup DATA CORRUPTION in the thread-per-session fiber runtime that
+exists TODAY at migratable=0, independent of migration and of eager rebalance.
+
+WHAT WAS TESTED (fresh nix shell, xtc-1.27.0 verified in build.ninja for BOTH
+build dirs after a clean --wipe reconfigure of build-cassert -- it had cached a
+stale xtc-1.26.0 link path; the release build already tracked 1.27.0):
+ - Reproducer: N client backends connect CONCURRENTLY (vs 014's deliberate
+   serial connect) with PG_XTC_CARRIER_LOOPS set.  On the PRISTINE HEAD cassert
+   binary this deterministically trips
+     TRAP: failed Assert("TopMemoryContext == NULL"), mcxt.c:351
+   (release: a contained fiber SIGSEGV signal=11 -> supervisor GENUINE-CRASH DOWN
+   -> "terminating threaded server runtime after backend fiber crash").
+ - Crash rate: N=2 -> 0/5; N=3 -> 4/5; N>=4 -> 5/5 (2 loops).  Also crashes with
+   a SINGLE loop at N~6 -- proving it is ON-LOOP cooperative fiber interleaving,
+   NOT work-stealing and NOT cross-loop.  So it is unrelated to migration.
+
+ROOT CAUSE (precise): the backend-fiber startup window from
+PgRuntimeResetThreadForNewBackend() (fiber entry) to
+InstallPgThreadBackendRuntimeState() (launch_backend.c backend_thread_entry)
+runs with the six-root current-work bridge NOT yet installed, so hot-field
+accessors fall back to PER-OS-THREAD storage: early_execution_fallback
+(backend_runtime_execution.c:27, PG_THREAD_LOCAL) backs TopMemoryContext via
+PgCurrentOrEarlyExecution()->memory_contexts.top_context, and
+early_session_fallback (backend_runtime_session.c:172) backs the early session
+GUC state.  Inside that window InitializeThreadedSessionGUCOptions() (and
+read_nondefault_variables -> set_config -> GUCSetOptionNeedsThreadedLock) take
+the process-wide GUC amutex via ThreadedGUCLock(); under concurrent startup the
+amutex CONTENDS and xtc_amutex_lock() PARKS the fiber.  While parked, a sibling
+backend fiber runs on the SAME carrier OS thread, enters MemoryContextInit(),
+and either asserts TopMemoryContext==NULL (cassert) or clobbers the shared
+per-thread top_context (release) -- the first fiber resumes with a corrupted /
+sibling-owned memory-context root.  The GUC-amutex seam (cee1805f700) does NOT
+help here: it snapshots/restores the six ROOTS, but in this window
+CurrentPgExecution==NULL so the live state lives in the per-thread FALLBACK,
+which the seam does not own.  This is a class-(a) unseamed-fallback leak, but on
+the STARTUP fallback rather than an installed root.
+
+WHY THE PLANNED FIX DOES NOT WORK: swapping the registration-wait pg_usleep for
+a fiber-yielding xtc_proc_sleep was implemented, built clean (0 warnings,
+release+cassert, xtc-1.27.0), and measured NEUTRAL-to-slightly-worse: the crash
+rate is byte-identical to pg_usleep at N>=3 (the pg_usleep spin is not even the
+park that corrupts -- the GUC amutex is), and yielding there INCREASES pre-install
+window interleaving.  The registration wait is a red herring; the fix was
+REVERTED to keep the tree byte-for-byte and safe.  014 (serial connect) + the
+serial suite stay green (003=43, 007=46, 014=5); the parallel-run 001/005
+cassert flakes are pre-existing and pass in isolation (001=128, 005=35).
+
+WHY NOT FIXED IN SCOPE: a correct fix must make the pre-install startup window
+either park-free or per-fiber -- e.g. install the fiber-owned execution/memory-
+context root as current BEFORE MemoryContextInit so the window uses per-fiber
+storage that rides across a park, WITHOUT breaking the deliberate populate-
+fallback-then-adopt ordering (InstallPgThreadBackendRuntimeState ->
+PgSessionAdoptEarlyState / PgExecutionAdoptEarlyMemoryContexts copy the
+thread-local fallback INTO the fiber and then zero it).  That is a careful
+reordering of the thread-per-session early-init ownership with its own
+correctness surface and its own two-reviewer gate -- out of scope for "fix the
+pg_usleep seam", and doing it hastily RE-CROSSES the corruption line the wrong
+way.  Per the task's "if not cleanly fixable, STOP and report": STOPPED.
+
+CONSEQUENCE FOR MIGRATION: the re-enablement sequence is BLOCKED at step 1 by a
+prerequisite that is bigger than assumed.  Steps 2-6 (wire eager rebalance,
+migratable=1, decide the protocol-read-park via real steals) are NOT reached:
+the steal-capable substrate would still crash under any concurrent connect
+storm, so 014 cannot be strengthened to force real steals without first fixing
+this concurrent-startup corruption.  migratable stays 0 (safe, unchanged).  No
+EC2 benchmark is warranted (migration is not live and cannot be proven yet).
+
+OWNER OF THE NEXT STEP: fix the concurrent-startup early-init fallback ownership
+(per-fiber early execution/session, or a proven park-free pre-install window)
+as its own reviewed change; THEN resume the migration sequence from step 2.
+This is ALSO a latent production bug in the pinned runtime we ship today (>=3
+simultaneous connections corrupt), so it is worth fixing on its own merits,
+not just as a migration prerequisite -- same character as the GUC-amutex fiber-
+time-sharing insight (real even same-thread-pinned).
