@@ -4479,3 +4479,48 @@ This is ALSO a latent production bug in the pinned runtime we ship today (>=3
 simultaneous connections corrupt), so it is worth fixing on its own merits,
 not just as a migration prerequisite -- same character as the GUC-amutex fiber-
 time-sharing insight (real even same-thread-pinned).
+
+### Concurrent-startup corruption blocks migration re-enable (2026-07-22)
+
+The re-enable sequence STOPPED at step 1. The "pg_usleep startup-park" was a
+MISDIAGNOSIS (mine); the agent root-caused the real bug:
+
+A PRE-EXISTING concurrent-startup DATA CORRUPTION in the thread-per-session fiber
+runtime, LIVE TODAY at migratable=0, independent of migration AND eager rebalance:
+- Reproduced on PRISTINE HEAD (v1.27.0 cassert): >=3 simultaneous client connects
+  -> TRAP: failed Assert("TopMemoryContext == NULL") mcxt.c:351 (release: contained
+  fiber signal=11 -> supervisor GENUINE-CRASH -> "terminating threaded server
+  runtime"). Rate: N=2 0/5, N=3 4/5, N>=4 5/5 (2 loops); ALSO crashes single-loop
+  at N~6 -> on-loop cooperative fiber INTERLEAVING, NOT stealing/cross-loop/migration.
+- ROOT CAUSE: the backend-fiber startup window runs MemoryContextInit
+  (launch_backend.c:1919) BEFORE InstallPgThreadBackendRuntimeState (:1924) installs
+  the 6-root bridge, so with CurrentPgExecution==NULL TopMemoryContext falls back to
+  the SHARED per-OS-thread early_execution_fallback. InitializeThreadedSessionGUCOptions
+  / read_nondefault_variables take the GUC amutex, which PARKS the fiber under
+  concurrent startup; a sibling fiber runs MemoryContextInit on the same carrier
+  thread and corrupts the shared per-thread top_context. The GUC-amutex seam does
+  NOT cover this: it owns the 6 roots, but here the live state is the per-thread
+  FALLBACK (roots not installed yet).
+- Same CLASS as the GUC/protocol-read leaks (unseamed park + shared per-thread
+  state clobbered by a sibling), at an EARLIER site (pre-bridge-install window,
+  state in a thread-local fallback not the fiber-owned roots).
+- The fiber-yielding-sleep fix was tried, measured NEUTRAL-TO-WORSE (the
+  registration spin is not the offending park; the GUC amutex during early init
+  is), REVERTED. Tree byte-for-byte, migratable=0 safe. Doc-only c41b3da6f34.
+
+THIS IS A LATENT PRODUCTION BUG IN THE PINNED RUNTIME SHIPPED TODAY (>=3
+simultaneous connects corrupt session/memory state) -- worth fixing on its own
+merits, same character as the GUC-amutex "real even same-thread-pinned" insight.
+
+CORRECT FIX (separate reviewed change): make the pre-install startup window
+PARK-FREE or PER-FIBER -- e.g. install the fiber-owned execution/memory-context
+root BEFORE MemoryContextInit so TopMemoryContext resolves to per-fiber state (not
+the shared per-thread fallback) across the GUC-amutex park, WITHOUT breaking the
+deliberate populate-fallback-then-adopt ordering. OR make the early-init GUC work
+not take a parking amutex (per-session, no shared lock, during startup). Then
+resume the migration sequence from step 2 (wire eager rebalance -> migratable=1 ->
+decide protocol-read-park via real steals -> benchmark).
+
+BENCHMARK: NOT warranted -- migration not live, and a known concurrent-startup
+corruption blocks the substrate. Independent read of this finding owed before the
+fix is designed.
