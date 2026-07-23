@@ -5078,3 +5078,85 @@ Framed: if the answer is "you're passing a stale loop_id -> use {local,gen}/
 re-capture", that's a clean PG-side fix we'll take. gdb-attach blocked here (can't
 backtrace the stranded fiber) -> couldn't confirm the invariant locally, hence the
 question. Ready for the user to forward. Tree SAFE at migratable=0 (a53a53ea6f7).
+
+### Blocker-fix attempt #5 OUTCOME: v1.28.1 wake fix alone INSUFFICIENT, 2a/2b belt-and-suspenders ALSO insufficient (hang + stack-smash), migratable=0 HELD (2026-07-23)
+
+Dispatched to re-enable migratable=1 on v1.28.1 (72cca5e, HEAD 3efbf4a7d2a) now
+that libxtc fixed the xtc_task_waker stale-spawn-loop bug (e0bf364), and validate
+014 shutdown-loop >=20x clean on release + cassert.  OUTCOME: reverted to
+migratable=0 (tree at HEAD, clean, process byte-for-byte).  Migration is NOT
+provably clean -- the re-enable was NOT landed.  EC2 A/B NOT warranted.
+
+ENV (the trap the plan flagged, now fully mapped): the meson test harness runs
+the DOUBLE-NESTED tmp_install postgres at
+`build-cassert/tmp_install/<ABS-PREFIX>/tmp_install/usr/local/pgsql/bin/postgres`
+(PATH/LD_LIBRARY_PATH in meson-logs/testlog.txt confirm it).  A plain
+`env -u DESTDIR meson install` writes the SINGLE `tmp_install/usr/local/pgsql`
+tree, which meson test does NOT read -- so a flip looked ineffective (014 kept
+logging migratable=0 / SKIPping) even though the code was right.  The correct
+refresh is `DESTDIR=$PWD/build-cassert/tmp_install meson install -C build-cassert
+--no-rebuild` (DESTDIR = the tmp_install dir, so the abs prefix nests once = the
+path meson test uses).  Verify BOTH the single AND the double-nested
+`ldd .../bin/postgres | grep xtc` after every rebuild.  A direct
+`PG_XTC_CARRIER_LOOPS=2 pg_ctl start` of the single-tree binary is the fast probe
+that the gate flip took (it logged migratable=1 while meson still SKIPped ->
+nailed the double-nest).  Fresh `nix develop` resolves xtc-1.28.1 cleanly; the
+.direnv shell injected stale xtc-1.28.0 into NIX_LDFLAGS (scrub + re-add
+-L$(pkg-config --variable=libdir xtc)).  meson setup --reconfigure --clearcache
+forced build-cassert off its cached 1.28.0 dep.  ptrace_scope=1 still blocks
+gdb-attach (no live fiber backtrace); RLIMIT_CORE via PG_XTC_ALLOW_CORE=1 works
+but no crash produced a core here (the smash was a glibc __stack_chk_fail abort).
+
+RESULT 1 -- v1.28.1 ALONE (just the migratable=1 flip, NO 2a/2b): 014 cassert
+loop HUNG on iteration 2 of 20.  `pg_ctl -m fast stop` stalled the full 60s
+grace -> immediate shutdown -> SIGKILL (130s meson).  Server log: after "aborting
+any active transactions" (PROC_DIE broadcast), 4 backend fibers reached
+"exiting code=0" but the strand is a backend that got PROC_DIE and NEVER reached
+"exiting" -- a parked fiber whose PROC_DIE wake was lost.  So the v1.28.1
+xtc_task_waker fix (which corrects a fiber's OWN park to name its CURRENT loop)
+is real and necessary but does NOT by itself close the shutdown-strand blocker.
+Iteration 1 was clean (n_steals=34, 12 migratable spawns, 0 pinned, 0 PANIC) --
+so the gate + wake fix WORK; the strand is just still intermittently present
+(~1/2 here, matching the historical rate).
+
+RESULT 2 -- v1.28.1 + 2a (xtc_pg_wait_fd bounded 1s re-poll + PROC_DIE re-check)
++ 2b (ThreadedGUCLock amutex bounded 1s retry) from stash@{0}/blocker-fixes-all
+(guc.c set_string/extra_field halves SKIPPED -- blocker-1 6847d1f5c6d already
+lands guc_free_if_current_context): the shutdown hang dropped in frequency but
+did NOT disappear, AND a new hard corruption appeared.  Across ~75 cassert
+iterations with 2a/2b: ~73 PASS, 1 shutdown HANG (a 40-iter run hung on iter 27,
+191s timeout -- so the strand parks somewhere 2a's xtc_pg_wait_fd PROC_DIE
+re-check does NOT cover, consistent with attempt #4's finding that the stranded
+fiber is in NEITHER xtc_pg_wait_fd, the amutex, NOR the protocol-read park -- a
+WaitLatch/lock/CV park or the supervisor DOWN path), and 1 STACK-SMASH crash
+(`*** stack smashing detected ***: terminated`, a glibc stack-canary abort) in
+the WORKLOAD phase (a session mid SET/UPDATE loop, ~1/20 on the first loop, 0 on
+the next 55).  A stack smash under real steals is a hard data-corruption line;
+whether 2b's amutex re-arm-after-timeout exposes it or it is a pre-existing
+migratable=1 hazard unmasked once shutdown stopped hanging, it disqualifies the
+re-enable regardless.  smash=0 on all other iters; n_steals 15-550 (real steals
+fire heavily); with 2a/2b a clean shutdown is FAST (~12s vs 21s -- the bounded
+re-poll wakes PROC_DIE promptly when it works).
+
+DECISION (per dispatch fallback): STOP, keep migratable=0, do NOT re-enable, do
+NOT land the flip or 2a/2b.  40/40 clean was NOT achieved on EITHER config; a
+shutdown hang AND a stack-smash both recur.  Tree reverted to HEAD (3efbf4a7d2a,
+migratable=0), rebuilt clean (0 warnings, ldd->1.28.1 single+nested), 014 SKIPs,
+015 passes 5/5, process mode byte-for-byte.  2a/2b WIP remains in stash@{0} +
+/tmp/blocker-fixes-all.patch.
+
+NEXT (needs a ptrace-enabled box to nail the residual strand): the shutdown
+strand survives the v1.28.1 waker fix AND a bounded xtc_pg_wait_fd PROC_DIE
+re-poll, so the stranded park is on a channel neither covers.  Candidates: a
+plain WaitLatch/LWLock/CV park (its epoll signalfd should be migration-safe, but
+a stranded fiber says otherwise), or the supervisor DOWN observation (over a full
+run ~5 fibers reached "exiting" with no matching "supervisor observed ... DOWN" --
+the monitor DOWN wake is another cross-fiber wake that a steal can misdirect,
+though the postmaster does not block on it).  A correct fix needs the stranded
+park SITE confirmed under a debugger, then either a loop-independent fiber-
+targeted wake (libxtc request: wake-by-{local,gen}) or a per-fiber
+level-triggered wake fd re-armed on the current loop for EVERY backend-fiber wait
+set (not just the protocol-read park).  Separately, the workload-phase stack-
+smash MUST be root-caused (core backtrace) before any re-enable, since it is a
+silent-corruption class the acceptance forbids.  Re-validate 40/40 clean on
+release+cassert + two independent reviewers before re-enabling.
