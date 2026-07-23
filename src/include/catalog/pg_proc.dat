@@ -12715,4 +12715,11 @@
   proname => 'hashoid8extended', prorettype => 'int8',
   proargtypes => 'oid8 int8', prosrc => 'hashoid8extended' },
 
+# EXPERIMENT INSTRUMENT (throwaway, never posted): clock-sweep work counters
+{ oid => '8902', descr => 'bcs experiment: clock-sweep ticks and victims',
+  proname => 'bcs_sweepstats', provolatile => 'v', proparallel => 'r',
+  prorettype => 'record', proargtypes => '',
+  proallargtypes => '{int8,int8}', proargmodes => '{o,o}',
+  proargnames => '{ticks,victims}', prosrc => 'bcs_sweepstats' },
+
 ]

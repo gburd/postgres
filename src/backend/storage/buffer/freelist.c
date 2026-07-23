@@ -64,6 +64,16 @@ typedef struct
 	 * StrategyNotifyBgWriter.
 	 */
 	int			bgwprocno;
+
+	/*
+	 * EXPERIMENT (throwaway, never posted): clock-sweep work counters.
+	 * sweepTicks = ClockSweepTick() calls (descriptors visited);
+	 * sweepVictims = buffers actually claimed.  ticks/victims is the mechanism
+	 * metric for the "pegged at 5" livelock: stock ~5*NBuffers/victim and
+	 * rising under load; bcs ~NBuffers/victim and flat.
+	 */
+	pg_atomic_uint64 sweepTicks;
+	pg_atomic_uint64 sweepVictims;
 } BufferStrategyControl;
 
 /* Pointers to shared state */
@@ -366,6 +376,8 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 						AddBufferToRing(strategy, buf);
 					*buf_state = local_buf_state;
 
+					pg_atomic_fetch_add_u64(&StrategyControl->sweepVictims, 1);	/* EXPERIMENT */
+
 					TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
 
 					return buf;
@@ -476,6 +488,10 @@ StrategyCtlShmemInit(void *arg)
 
 	/* No pending notification */
 	StrategyControl->bgwprocno = -1;
+
+	/* EXPERIMENT: clock-sweep work counters */
+	pg_atomic_init_u64(&StrategyControl->sweepTicks, 0);
+	pg_atomic_init_u64(&StrategyControl->sweepVictims, 0);
 
 	/*
 	 * Decide whether to batch the clock sweep.
@@ -857,4 +873,27 @@ StrategyRejectBuffer(BufferAccessStrategy strategy, BufferDesc *buf, bool from_r
 	strategy->buffers[strategy->current] = InvalidBuffer;
 
 	return true;
+}
+
+/*
+ * EXPERIMENT INSTRUMENT (throwaway, never posted).
+ * bcs_sweepstats() -> (ticks bigint, victims bigint): cumulative clock-sweep
+ * work.  ticks/victims is the mechanism metric for the "pegged at 5" livelock.
+ */
+PG_FUNCTION_INFO_V1(bcs_sweepstats);
+Datum
+bcs_sweepstats(PG_FUNCTION_ARGS)
+{
+	TupleDesc	tupdesc;
+	Datum		values[2];
+	bool		nulls[2] = {false, false};
+	HeapTuple	tuple;
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	tupdesc = BlessTupleDesc(tupdesc);
+	values[0] = Int64GetDatum((int64) pg_atomic_read_u64(&StrategyControl->sweepTicks));
+	values[1] = Int64GetDatum((int64) pg_atomic_read_u64(&StrategyControl->sweepVictims));
+	tuple = heap_form_tuple(tupdesc, values, nulls);
+	PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
 }
