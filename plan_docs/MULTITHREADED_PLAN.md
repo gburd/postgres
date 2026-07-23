@@ -5356,3 +5356,33 @@ gate on a green full suite nor mis-attribute a 005 failure to migration.
 STATUS: review B SHIP (doc-only). Awaiting review A (process byte-for-byte +
 maybe_sleeping race -- the angle where the 2 prior self-reviews were wrong). Both
 clear -> EC2 A/B warranted.
+
+### MIGRATION LIVE + PROVEN: both independent reviews CLEARED SetLatch fix (2026-07-23)
+
+Independent review A (process byte-for-byte + maybe_sleeping race -- the angle
+where 2 prior self-reviews were WRONG): SHIP, no defect in 6 targets. Process
+byte-for-byte PROVEN (preprocessor expansion == upstream; owner_fiber_valid
+ALWAYS false in process mode -- forked backends never enter xtc_carrier_proc;
+245/245 release regress). maybe_sleeping race safe every window (self-pipe byte is
+the load-bearing owner_fiber_valid-independent wake; xtc_proc_wake belt-and-
+suspenders). Complete (covers CV/AIO/latch family; ProcSemaphore independently
+strand-immune). ~126 cassert 014 iters: 0 shutdown strands (every non-clean =
+workload-phase CPU-starvation timeout under external load 26-31 from competing
+agent trees, dies at line 193 BEFORE stop('fast'), NOT a strand).
+Review B: SHIP-WITH-CHANGES (doc-only, applied bc590c867a9) -- fix complete,
+migration leak-free (n_steals=430, 130 runs, 0 leak/PANIC/TRAP/smash); the change
+was recording the 005 async-notify subtest as a pre-existing ~1/3 flake.
+
+=> MIGRATION IS LIVE AND PROVEN CORRECT (f54a76bae4c SetLatch fix +
+cf1f7277239 migratable=1; both independently reviewed SHIP). The 5-attempt
+shutdown-strand saga is CLOSED (root cause: SetLatch quick-exit dropping a
+two-phase-parked fiber's wake; found via EC2 gdb; fixed PG-side).
+
+BENCHMARK caveats (neither a blocker): run the A/B on a QUIET box (local
+validation was under competing-agent load); the pre-existing cassert
+saved_plan_list teardown assert (backend_runtime_teardown.c:1287, process-mode,
+cassert-only, release clean) keeps its own task -- does not affect a RELEASE A/B.
+
+NEXT: adopt v1.29.0 (orthogonal; lock-free bufmgr hit path may help the numbers)
+-> EC2 A/B (release build, quiet box, m8idn.metal-96xl, full methodology,
+terminate+verify) -> stock-vs-mt with work-stealing ACTIVE.
