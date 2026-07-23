@@ -5238,6 +5238,72 @@ re-enable migratable=1 -> benchmark. With the strand fixed the hang should vanis
 local can run the loop without 120s stalls -- but a scale re-check on EC2 is prudent
 before the A/B.
 
+### SetLatch fiber-park fix LANDED + migratable=1 RE-ENABLED -- validated (2026-07-23)
+
+Built the stashed SetLatch fix on v1.28.1 (release + cassert, 0 warnings, ldd->1.28.1
+single+nested both trees) and flipped the gate to `(child_type == B_BACKEND) &&
+!ssl_sni`.  Migration is now LIVE and PROVEN on the local dev-host.
+
+CORRECTNESS REVIEW (two adversarial self-passes; background subagents unavailable in
+this harness -> COORDINATOR MUST run an independent review, SetLatch is
+process-mode-critical):
+ - Race-free: the fall-through fires only when `maybe_sleeping && owner_fiber_valid
+   && owner_pid==MyProcPid` (a fiber park genuinely in progress, in THIS process).
+   maybe_sleeping is set before the two-phase yield and cleared only after resume, so
+   is_set=1 + maybe_sleeping=true means the fiber is either parked (needs the wake) or
+   about-to-park (its own step-2 is_set recheck catches it) -- both safe; a spurious
+   fiber wake is harmless (the fiber re-checks its condition on resume).
+ - No double-set: falling through takes the `if` branch and SKIPS `else is_set=true`,
+   so is_set stays 1; the second gate (`!maybe_sleeping && !sibling_thread_owner`)
+   cannot early-return (maybe_sleeping is true), so it re-delivers WakeupOtherProcFd +
+   xtc_proc_wake -- exactly the dropped wake.
+ - Process byte-for-byte: a non-USE_XTC_CARRIER build compiles `if (is_set) {return;}
+   else is_set=true;` == the original.  In an xtc build a PROCESS-mode backend has
+   owner_fiber_valid=false (xtc_self()==none at OwnLatch), so `!(... && false && ...)`
+   == true -> plain quick-exit; only FIBER-owned latches mid-park take the new branch.
+   WIN32 shares the prologue but USE_XTC_CARRIER is Linux-only -> plain return.
+ - No hot-path storm: the extra wake only fires when maybe_sleeping (a contended park
+   is underway) AND is_set was already 1 -- i.e. exactly when a wake is owed; the
+   common "already-set, owner running" hot path (maybe_sleeping=0) still quick-exits.
+
+VALIDATION (local dev-host, -j2, box was heavily externally loaded -- other agents'
+qemu/xbench/rsync, load 10-76; correctness signals are load-independent):
+ - 014 shutdown loop CASSERT: 40/40 CLEAN, 0 hang, 0 PANIC/strand, ~11-12s each
+   (a strand hang is 150s+); n_steals=168 on the single probe, migratable=1 spawns,
+   migration LIVE.  Plus a 30x repro: 30/30 clean.  => 70/70 cassert.
+ - 014 shutdown loop RELEASE: 39/40 clean; the 1 non-clean iter was a WORKLOAD-PHASE
+   "contended-GUC gate timed out" (170s deadline) during a load-10-16 window, NOT a
+   shutdown strand (server started, first test ran, all 12 sessions were mid-workload,
+   no crash signature) and did NOT reproduce in 30 subsequent release runs.  => 69/70
+   release, 0 shutdown strands across all 80 loop runs.
+ - STACK-SMASH GONE: attempt #5's ~1/20 workload-phase glibc stack-smash did NOT
+   recur in ANY of the 140 total workload-phase runs (0 `stack smashing`, 0 guc.c:1396
+   / GUCMemoryContext TRAP) -- strongly consistent with it having been a downstream
+   symptom of the now-fixed strand.
+ - test_backend_runtime suite CASSERT: 14 OK / 0 Fail / 2 SKIP (004/009 skip because
+   "wait-completion publication is compiled out" -- pre-existing, migration-agnostic).
+   014 OK (6 subtests), 015 OK (5), 001 OK (128), 003 OK (43), 007 OK (46).
+ - Process-mode core regress RELEASE: 245/245, 0 fail.
+
+THE ONE SEPARATE SIGNAL (pre-existing, NOT a re-enable blocker): a full THREADED
+parallel pg_regress under cassert hit ONE `saved_plan_list` teardown TRAP
+(backend_runtime_teardown.c:1287).  Confirmed PRE-EXISTING + PROCESS-MODE: a full
+`meson test --suite regress` under cassert (default PROCESS mode, this tree) produced
+12 of that SAME assert and ZERO of any other kind, ZERO fork failures -- exactly the
+documented issue in MULTITHREADED_CASSERT_TEST_BACKEND_RUNTIME_FINDINGS.md ("~15-18
+cores on this single assert ... reproduced on a clean stashed tree ... fires in
+process mode too ... NOT required for the threaded test_backend_runtime gate").  It
+is a plan-cache teardown-ordering gap unrelated to the SetLatch fix or migratable=1,
+and release regress is 245/245 clean.  It gets its own task; it does not gate the
+re-enable.
+
+VERDICT: migration LIVE + PROVEN CORRECT (40/40 cassert + 39/40 release clean, 0
+strand, 0 stack-smash, 0 GUC TRAP, reviewed race-free + process byte-for-byte).  The
+EC2 A/B is WARRANTED (coordinator gates + runs it).  The lone release workload-timeout
+and the pre-existing cassert-regress plan-cache assert are non-blockers.  A scale
+re-check on a quiet box (not load-76) would firm up the release 40/40, but the strand
+is unambiguously fixed and the box noise is external.
+
 ### libxtc v1.29.0 available -- adopt AFTER the SetLatch fix validates (2026-07-23)
 
 v1.29.0 (tag 6c29c94 / commit 3a27b87). Commits v1.28.1->v1.29.0 reviewed: all
