@@ -5386,3 +5386,61 @@ cassert-only, release clean) keeps its own task -- does not affect a RELEASE A/B
 NEXT: adopt v1.29.0 (orthogonal; lock-free bufmgr hit path may help the numbers)
 -> EC2 A/B (release build, quiet box, m8idn.metal-96xl, full methodology,
 terminate+verify) -> stock-vs-mt with work-stealing ACTIVE.
+
+### EC2 A/B RESULTS + THREAD-EXPLOSION ROOT-CAUSE + FIX (2026-07-23)
+
+A/B on m8idn.metal-96xl (192c/384vCPU, dedicated, RELEASE, libxtc v1.29.0,
+io_method=sync + huge_pages BOTH lanes, dur off, 2 reps). Both instances
+TERMINATED + verified across all 5 regions.
+
+HEADLINE (HammerDB TPROC-C NOPM, the fair OLTP comparison):
+- VU=192: fork 1,525,400 vs mt-pooled(c=192) 1,007,270 = 66.0% (UP from
+  historical 50.6%). The v1.27 eager-rebalance + v1.29 lock-free bufmgr WORKED:
+  __xtc_exec_try_steal fell 18.76% -> 1.67% under OLTP. RAM: mt <= fork.
+- VU=384: pooled FAILED (VUs dropped) -- a real stability wall, follow-up.
+- pgbench read-only select: mt 16-30% of fork (pooled worst case: tiny queries
+  = max per-query scheduler overhead; box 89% idle => wakeup/serialization
+  bound, NOT cpu). update-N 20-33%.
+- thread-per-session (carriers=0, migratable=1, the actual work-stealing lane):
+  pthread_create EAGAIN at >=64 clients -- lane never served, n_steals not
+  measurable at scale. Follow-up (likely the io-wq / thread-count issue below).
+
+NEW DOMINANT COST (flamegraph): update_sg_lb_stats (Linux CFS load-balancer)
+10-11%, TOP symbol, box 78-89% IDLE. top -H showed 4634 OS threads for ONE
+postgres process.
+
+ROOT CAUSE of the 4634 threads (traced to source, RECONCILED):
+- libxtc makes ONE io_uring ring PER executor loop (evt/loop.c:188,
+  loop_int.h:159). In v1.29.0 (our pin) each ring's io-wq worker pool is left at
+  the KERNEL DEFAULT = up to ~min(RLIMIT_NPROC, ncpus) bounded iou-wrk workers
+  PER RING, spawned lazily on first blocking I/O.
+- We sized the fiber executor to raw ncpus (384 loops = 384 rings), stacked on
+  192 pooled poll() carriers. 192 + 384 loops + (384 rings x lazy iou-wrk) = 4634.
+- Pooled carriers use plain poll(), NOT xtc rings -- they add threads but no
+  iou-wrk. Only the executor loops/rings spawned the iou-wrk explosion.
+
+FIX (OURS, landed 29a5c2ad201 + test edaca1a25da): xtc_carrier_loop_count() no
+longer core-sizes the executor in pooled mode. Client backends run on the
+pooled carrier pool; the executor runs only ~10 long-lived worker fibers, so
+size it to the worker concurrency (floor 4 + autovacuum_max_workers +
+max_worker_processes, cap 16, <= carrier budget). 384 loops -> ~15 in pooled
+mode, which cuts the RING count ~25x and therefore the iou-wrk ceiling with it.
+Thread-per-session mode capped at POOLED_PROTOCOL_CARRIER_AUTO_CEILING (256) vs
+1024. Two independent reviews SHIP / SHIP-WITH-CHANGES(doc-only). Locally
+verified: pooled c=8 -> "8 loops ... worker-fiber pool", 21 total threads,
+1 iou-wrk. Regression test 016 asserts pool clamped + thread count < 128.
+
+FIX (THEIRS, requested /tmp/libxtc-release-iowq-cap-request.md): libxtc commit
+2fc913d "cap io_uring io-wq workers + add steal-backoff knob" adds
+XTC_IOWQ_BOUND_DEFAULT=4 per ring + xtc_io_set_iowq_max_workers() + the
+xtc_exec_set_steal_backoff() knob we were about to request. NOT in any tag yet
+(after v1.30.0 on main). Asked them to cut a release; then bump pin, wire the
+cap + steal-backoff, re-A/B with a thread-name histogram. This is the durable
+fix for the thread-per-session lane (still ncpus rings).
+
+NEXT: (1) get libxtc release w/ 2fc913d, bump pin, wire iowq cap +
+steal-backoff, re-A/B w/ thread histogram (confirm count -> low hundreds, CFS
+tax gone). (2) pooled VU=384 stability wall. (3) thread-per-session EAGAIN at
+scale. (4) attack LWLock family (7.56% Acquire, genuinely ours). Deferred: 005
+flake, saved_plan_list cassert assert, HOLD-interrupts refactor, Phase 19 Inc 4,
+TSan, be_tls_*->xtc_tls_* swap.
