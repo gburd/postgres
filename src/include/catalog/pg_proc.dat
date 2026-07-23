@@ -12717,7 +12717,8 @@
 
 # EXPERIMENT INSTRUMENT (throwaway, never posted): clock-sweep work counters
 { oid => '8902', descr => 'bcs experiment: clock-sweep ticks and victims',
-  proname => 'bcs_sweepstats', provolatile => 'v', proparallel => 'r',
+  proname => 'bcs_sweepstats', prorows => '1', proretset => 't',
+  provolatile => 'v', proparallel => 'r',
   prorettype => 'record', proargtypes => '',
   proallargtypes => '{int8,int8}', proargmodes => '{o,o}',
   proargnames => '{ticks,victims}', prosrc => 'bcs_sweepstats' },
