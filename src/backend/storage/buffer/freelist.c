@@ -216,6 +216,8 @@ ClockSweepTick(void)
 	victim = MyBatchPos % NBuffers;
 	MyBatchPos++;
 
+	pg_atomic_fetch_add_u64(&StrategyControl->sweepTicks, 1);	/* EXPERIMENT */
+
 	return victim;
 }
 
