@@ -5321,3 +5321,38 @@ precise obstacle), THEN bump pin 72cca5e -> 6c29c94 (v1.29.0), fresh build dir,
 re-validate green + a shutdown-loop re-check, commit as its own step. The 4986afc
 lock-free bufmgr hit path is worth a look during the eventual perf/benchmark phase
 (it may itself move the A/B numbers).
+
+### SetLatch fix independent review B: SHIP-WITH-CHANGES (doc-only) (2026-07-23)
+
+Independent review B (completeness + migration-safety under real steals) of
+f54a76bae4c + cf1f7277239: SHIP-WITH-CHANGES -- the ONE change is DOC-ONLY (no
+code fix). Rebuilt both trees (ldd->1.28.1), 130 cassert + 24 release iters.
+Findings:
+- SetLatch fix is the SOLE quick-exit; every sibling fiber wake path covered by a
+  SOUND SEPARATE mechanism: CV broadcast routes through the fixed SetLatch;
+  self-pipe/epoll covered; ResetLatch race closed by maybe_sleeping clear-before-
+  ResetLatch ordering + the ResetLatch Assert(maybe_sleeping==false); LWLock/
+  ProcSleep use a spinlock-guarded sem_wake_fd stored-wake state machine (no
+  quick-exit shape); NOTIFY/terminate/cancel use level-triggered interrupt_wake_fd
+  (immune to the SetLatch owner_fiber staleness). No unfixed sibling quick-exit.
+- Migration leak-free under real steals: 014 n_steals=430, migratable=12/pinned=0,
+  106 cassert + 24 release runs -> 0 cross-fiber leak, 0 same-carrier-resume PANIC,
+  0 XtcPgVerify tripwire; 015 10/10 no guc.c:1396 TRAP (blocker-1 holds).
+- Stack-smash: 0/~130 cassert runs (plausible strand symptom); EC2 scale re-check
+  prudent (planned).
+- Release 39/40: PROVEN load-induced (reproduced the workload-phase contended-GUC
+  timeout at external load>=40; dies BEFORE the shutdown phase; NOT a strand;
+  0 shutdown-phase failures in 130 runs).
+- Gates real (skip_all-if-not-migratable then hard-assert migratable>0/pinned==0/
+  n_steals>0/per-session-correctness/unlike-PANIC); ssl_sni pin airtight.
+DEFECT (non-blocking, PRE-EXISTING): 005 subtest 18 "async notification wakes
+parked protocol client" flakes ~1/3 (a lost/late NOTIFY wake to a protocol-read-
+parked fiber). PROVEN pre-existing: reproduced on parent 289b03a008d (migratable=0,
+no fix) at 5/15 -- same signature, without migration, outside the diff. So the
+"14 OK/0 Fail suite" claim was lucky not representative. ACTION: record 005 as a
+known pre-existing flake (its own follow-up task); the EC2 A/B run script must NOT
+gate on a green full suite nor mis-attribute a 005 failure to migration.
+
+STATUS: review B SHIP (doc-only). Awaiting review A (process byte-for-byte +
+maybe_sleeping race -- the angle where the 2 prior self-reviews were wrong). Both
+clear -> EC2 A/B warranted.
