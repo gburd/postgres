@@ -87,6 +87,21 @@ The asserts correctly caught the missing setup, not a runtime defect.
 
 ### Broader cassert process-core-regression breakage: plan-cache teardown assert
 
+**RESOLVED 2026-07-23 (commit 4a093527fac).** Root-caused via gdb on the cores:
+two subsystems SPI_keepplan() long-lived internal plans onto the session's
+saved_plan_list and neither was drained before the assert -- ruleutils'
+pg_rewrite catalog lookups (query_getviewrule, left by the plpgsql test) and
+RI's FK-enforcement queries (left by the foreign_key test).  Fixed by draining
+both in dedicated reset buckets (ruleutils_plans, ri_plans) ordered BEFORE the
+plan_cache bucket: RuleUtilsResetSessionCachedPlans (sole owner; the
+catalog_lookup bucket used to free the ruleutils plans but ran after plan_cache)
+and RIResetSessionCachedPlans (frees the RI query-cache plans the ri_globals
+bucket was leaking).  cassert plpgsql+foreign_key: 0 saved_plan_list cores.
+A SEPARATE pre-existing teardown core remains (dsa_detach in
+PgBackendResetLogicalReplicationClosedState, teardown.c:562, publication test --
+same class as the LISTEN/NOTIFY DSA double-detach fixed in 39c8bf187e6); its own
+follow-up.  Original finding below for history:
+
 - Assert: `dlist_is_empty(&session->plan_cache.saved_plan_list)`
   (`src/backend/utils/init/backend_runtime_teardown.c`, in
   `PgSessionResetPlanCacheClosedState`), fired at backend exit.

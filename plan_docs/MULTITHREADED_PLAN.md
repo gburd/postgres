@@ -5444,3 +5444,25 @@ tax gone). (2) pooled VU=384 stability wall. (3) thread-per-session EAGAIN at
 scale. (4) attack LWLock family (7.56% Acquire, genuinely ours). Deferred: 005
 flake, saved_plan_list cassert assert, HOLD-interrupts refactor, Phase 19 Inc 4,
 TSan, be_tls_*->xtc_tls_* swap.
+
+### saved_plan_list cassert teardown assert FIXED (2026-07-23, commit 4a093527fac)
+
+The pre-existing cassert core-regress crash (~12-18 cores on the
+saved_plan_list-empty assert, PgSessionResetPlanCacheClosedState
+teardown.c:1287) is FIXED.  gdb on the cores showed ruleutils' pg_rewrite
+catalog-lookup plans (query_getviewrule, plpgsql test) and RI's FK-enforcement
+plans (foreign_key test) SPI_keepplan()'d onto saved_plan_list with no drain
+before the assert.  Fix: dedicated reset buckets (ruleutils_plans, ri_plans)
+ordered BEFORE plan_cache -- RuleUtilsResetSessionCachedPlans (sole owner; the
+catalog_lookup bucket freed them but ran after plan_cache) + RIResetSessionCachedPlans
+(frees the RI query-cache plans the ri_globals bucket leaked; ri_globals still
+owns the HTAB).  No double-free (RI shared-ancestor constraints fold to one
+query-cache key/entry).  Two independent reviews: SHIP-WITH-CHANGES (dup-ownership,
+applied) + SHIP (double-free refuted from ri_BuildQueryKey key-folding).  cassert
+plpgsql+foreign_key: 0 saved_plan_list cores.  Threaded suite 18 OK / 0 Fail / 2 SKIP.
+
+STILL OPEN (separate follow-up): dsa_detach core in
+PgBackendResetLogicalReplicationClosedState (teardown.c:562, publication test) --
+same class as the LISTEN/NOTIFY DSA double-detach fixed in 39c8bf187e6: a shared
+launcher DSA (launcher_last_start_times_dsa) detached at per-session reset after
+it was already torn down.  Not addressed here.
