@@ -797,12 +797,19 @@ xtc_carrier_migratable(BackendType child_type)
 	 *   (2) a deterministic shutdown hang under migratable=1 (release needs
 	 *       SIGKILL); pinned shuts down cleanly.
 	 * (bug #2 protocol-read-park is confirmed SUBSUMED/safe -- not a blocker.)
-	 * Return false unconditionally to keep every fiber PINNED (safe) until both
-	 * blockers are fixed + independently re-reviewed.  The gate to restore:
-	 *   return (child_type == B_BACKEND) && !ssl_sni;
+	 * RE-ENABLED (2026-07-23): both blockers are resolved and re-validated under
+	 * real work-steals.  Blocker (1), the guc.c:1396 GUCMemoryContext corruption,
+	 * is fixed by guc_free_if_current_context (foreign-context-safe free).
+	 * Blocker (2), the fast-shutdown hang, was root-caused on EC2 (gdb backtrace)
+	 * to a SetLatch fiber-park quick-exit race: SetLatch's "quick exit if already
+	 * set" dropped the wake of a maybe_sleeping fiber owner across the two-phase
+	 * fiber park, permanently stranding a backend parked in a CV/AIO wait.  The
+	 * fix (latch.c) falls through to re-deliver the fiber wake when the owner is a
+	 * maybe_sleeping fiber in this process; process mode stays byte-for-byte.
+	 * Only regular client backends with ssl_sni off migrate (SNI pins all
+	 * backends -- the be_tls_open_server assertion is the tripwire).
 	 */
-	(void) child_type;
-	return false;
+	return (child_type == B_BACKEND) && !ssl_sni;
 }
 #endif
 
