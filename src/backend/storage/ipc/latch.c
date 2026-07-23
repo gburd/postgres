@@ -401,11 +401,44 @@ SetLatch(Latch *latch)
 	 */
 	pg_memory_barrier();
 
-	/* Quick exit if already set */
+	/*
+	 * Quick exit if already set.
+	 *
+	 * In process mode a set-but-unconsumed latch means the owner will see
+	 * is_set on its next check (the standard "check at the bottom of the wait
+	 * loop" convention), so no wake is owed and returning here is safe.
+	 *
+	 * The xtc fiber carrier breaks that invariant: a backend fiber parks in
+	 * two phases -- WaitEventSetWaitInternal sets maybe_sleeping=true after
+	 * seeing is_set==0, THEN WaitEventSetWaitBlock arms the fiber waker and
+	 * yields the fiber on the epoll fd.  A cross-carrier SetLatch (e.g. an AIO
+	 * completion ConditionVariableBroadcast, or the PROC_DIE shutdown
+	 * broadcast) can observe is_set==1 -- set by an earlier SetLatch the fiber
+	 * has not yet ResetLatch'd across its park/resume/migration churn -- and,
+	 * with the plain quick-exit, return WITHOUT writing the wakeup fd or poking
+	 * the owner loop.  The fiber is then genuinely parked on its epoll fd with
+	 * no pending self-pipe byte and no loop nudge: a permanently stranded
+	 * backend (observed under real work-steals as the fast-shutdown hang -- a
+	 * fiber exiting via shmem_exit -> RemoveTempRelations parked in
+	 * pgaio_io_wait's CV wait, latch is_set=1, self-pipe FIONREAD=0).  So when
+	 * a fiber owner is maybe_sleeping we must NOT quick-exit: fall through and
+	 * deliver the fiber wake below (a spurious fiber wake is always safe -- the
+	 * fiber re-checks its own condition on resume).  Process mode and
+	 * non-fiber-owned latches keep the exact byte-for-byte quick-exit.
+	 */
 	if (latch->is_set)
+	{
+#ifdef USE_XTC_CARRIER
+		if (!(latch->maybe_sleeping && latch->owner_fiber_valid &&
+			  latch->owner_pid == MyProcPid))
+			return;
+		/* fiber owner may be parked: fall through to re-deliver its wake */
+#else
 		return;
-
-	latch->is_set = true;
+#endif
+	}
+	else
+		latch->is_set = true;
 
 	pg_memory_barrier();
 #ifndef WIN32
