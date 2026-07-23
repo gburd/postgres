@@ -5237,3 +5237,21 @@ workload stack-smash is also gone/was a symptom of the same strand) + two-review
 re-enable migratable=1 -> benchmark. With the strand fixed the hang should vanish, so
 local can run the loop without 120s stalls -- but a scale re-check on EC2 is prudent
 before the A/B.
+
+### libxtc v1.29.0 available -- adopt AFTER the SetLatch fix validates (2026-07-23)
+
+v1.29.0 (tag 6c29c94 / commit 3a27b87). Commits v1.28.1->v1.29.0 reviewed: all
+ORTHOGONAL to migration -- new crypto (ChaCha20-Poly1305/SHA-3/BLAKE3/HKDF),
+Bloom/HyperLogLog, chash auto-shrink, DST bug catalog, a test-flake fix, and
+4986afc "lock-free buffer-manager hit path (+43% at 8 loops)" (a PERF change,
+interesting for later but not migration). NO change to xtc_task_waker/
+xtc_proc_wake/__resolve/exec/loop -- the wake/steal/migration semantics we depend
+on are UNCHANGED. So v1.29.0 neither helps nor conflicts with the in-flight
+SetLatch strand fix.
+SEQUENCE: do NOT bump now -- the finish-validate agent (f0a6b5b7) is mid-build/
+validate of the SetLatch fix on v1.28.1; bumping underneath it invalidates its
+work for zero benefit. Let it land (SetLatch fix validated + migratable=1 or a
+precise obstacle), THEN bump pin 72cca5e -> 6c29c94 (v1.29.0), fresh build dir,
+re-validate green + a shutdown-loop re-check, commit as its own step. The 4986afc
+lock-free bufmgr hit path is worth a look during the eventual perf/benchmark phase
+(it may itself move the A/B numbers).
