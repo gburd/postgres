@@ -786,16 +786,13 @@ PG_FUNCTION_INFO_V1(bcs_sweepstats);
 Datum
 bcs_sweepstats(PG_FUNCTION_ARGS)
 {
-	TupleDesc	tupdesc;
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
 	Datum		values[2];
 	bool		nulls[2] = {false, false};
-	HeapTuple	tuple;
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
-	tupdesc = BlessTupleDesc(tupdesc);
+	InitMaterializedSRF(fcinfo, 0);
 	values[0] = Int64GetDatum((int64) pg_atomic_read_u64(&StrategyControl->sweepTicks));
 	values[1] = Int64GetDatum((int64) pg_atomic_read_u64(&StrategyControl->sweepVictims));
-	tuple = heap_form_tuple(tupdesc, values, nulls);
-	PG_RETURN_DATUM(HeapTupleGetDatum(tuple));
+	tuplestore_putvalues(rsi->setResult, rsi->setDesc, values, nulls);
+	return (Datum) 0;
 }
