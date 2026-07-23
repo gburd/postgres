@@ -16,6 +16,7 @@
 #include "postgres.h"
 
 #include "funcapi.h"
+#include "utils/tuplestore.h"
 #include "pgstat.h"
 #include "port/atomics.h"
 #include "storage/buf_internals.h"
