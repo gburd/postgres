@@ -478,16 +478,14 @@ PgSessionResetCatalogLookupClosedState(PgSession *session)
 		session->catalog_lookup.event_trigger_cache = NULL;
 	}
 	session->catalog_lookup.event_trigger_cache_state = 0;
-	if (session->catalog_lookup.ruleutils_rule_by_oid_plan != NULL)
-	{
-		SPI_freeplan(session->catalog_lookup.ruleutils_rule_by_oid_plan);
-		session->catalog_lookup.ruleutils_rule_by_oid_plan = NULL;
-	}
-	if (session->catalog_lookup.ruleutils_view_rule_plan != NULL)
-	{
-		SPI_freeplan(session->catalog_lookup.ruleutils_view_rule_plan);
-		session->catalog_lookup.ruleutils_view_rule_plan = NULL;
-	}
+	/*
+	 * The ruleutils SPI_keepplan()'d catalog-lookup plans
+	 * (ruleutils_rule_by_oid_plan, ruleutils_view_rule_plan) are drained by the
+	 * dedicated ruleutils_plans reset bucket, which is ordered BEFORE the
+	 * plan-cache bucket so the plans are off saved_plan_list before it asserts
+	 * empty.  Do NOT free them here: this bucket runs AFTER plan_cache, so
+	 * freeing here would be too late (and double-owns the pointers).
+	 */
 	if (session->catalog_lookup.cache_memory_context != NULL)
 	{
 		if (CurrentMemoryContext == session->catalog_lookup.cache_memory_context)

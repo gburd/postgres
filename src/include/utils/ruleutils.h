@@ -55,4 +55,12 @@ extern void get_reloptions(StringInfo buf, Datum reloptions);
 
 extern char *pg_get_statisticsobjdef_string(Oid statextid);
 
+/*
+ * Drop the module's SPI_keepplan()'d catalog-lookup plans at session close so
+ * they are not left on the session's saved_plan_list (threaded/session-reset
+ * runtime).  Called from a session reset bucket before the plan-cache bucket.
+ */
+struct PgSession;
+extern void RuleUtilsResetSessionCachedPlans(struct PgSession *session);
+
 #endif							/* RULEUTILS_H */

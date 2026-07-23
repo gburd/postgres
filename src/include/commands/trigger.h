@@ -294,6 +294,15 @@ extern void RI_PartitionRemove_Check(Trigger *trigger, Relation fk_rel,
 extern int	RI_FKey_trigger_type(Oid tgfoid);
 
 /*
+ * Drop the per-session RI query cache's SPI_keepplan()'d FK-enforcement plans
+ * at session close so they are not left on the session's saved_plan_list
+ * (threaded/session-reset runtime).  Called from a session reset bucket before
+ * the plan-cache bucket.
+ */
+struct PgSession;
+extern void RIResetSessionCachedPlans(struct PgSession *session);
+
+/*
  * Callback type for end-of-trigger-batch callbacks.
  *
  * Currently used by ri_triggers.c to flush fast-path FK batches and
