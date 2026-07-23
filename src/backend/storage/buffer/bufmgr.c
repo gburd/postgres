@@ -2663,6 +2663,15 @@ again:
 		 */
 		pgstat_count_io_op(IOOBJECT_RELATION, io_context,
 						   from_ring ? IOOP_REUSE : IOOP_EVICT, 1, 0);
+
+		/*
+		 * EXPERIMENT INSTRUMENT (throwaway): record a real eviction (not a
+		 * ring reuse) of a MAIN_FORKNUM buffer, keyed by relfilenumber, so we
+		 * can classify heap vs index-inner vs index-leaf offline.  The victim
+		 * tag is still valid here.
+		 */
+		if (!from_ring && BufTagGetForkNum(&buf_hdr->tag) == MAIN_FORKNUM)
+			BcsRecordEviction(BufTagGetRelNumber(&buf_hdr->tag));
 	}
 
 	/*

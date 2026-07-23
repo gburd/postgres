@@ -12715,4 +12715,11 @@
   proname => 'hashoid8extended', prorettype => 'int8',
   proargtypes => 'oid8 int8', prosrc => 'hashoid8extended' },
 
+# EXPERIMENT INSTRUMENT (throwaway, never posted): per-relation eviction counts
+{ oid => '8901', descr => 'bcs experiment: per-relation eviction counts',
+  proname => 'bcs_evictions', prorows => '1000', proretset => 't',
+  provolatile => 'v', proparallel => 'r', prorettype => 'record',
+  proargtypes => '', proallargtypes => '{int8,int8}', proargmodes => '{o,o}',
+  proargnames => '{relfilenode,evictions}', prosrc => 'bcs_evictions' },
+
 ]

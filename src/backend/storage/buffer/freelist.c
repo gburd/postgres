@@ -15,6 +15,8 @@
  */
 #include "postgres.h"
 
+#include "funcapi.h"
+#include "miscadmin.h"
 #include "pgstat.h"
 #include "port/atomics.h"
 #include "storage/buf_internals.h"
@@ -64,6 +66,18 @@ typedef struct
 	 * StrategyNotifyBgWriter.
 	 */
 	int			bgwprocno;
+
+	/*
+	 * EXPERIMENT INSTRUMENT (throwaway, never posted): per-relation eviction
+	 * counter.  Open-addressed fixed table keyed by RelFileNumber; counts
+	 * MAIN_FORKNUM evictions at victim time so we can classify heap vs
+	 * index-inner vs index-leaf OFFLINE (join to pg_class + pg_relation_size).
+	 * Answers Andres's "which buffers get evicted" without a hot-path syscache
+	 * lookup.
+	 */
+#define BCS_EVICT_SLOTS 8192
+	pg_atomic_uint64 evictRel[BCS_EVICT_SLOTS];	/* RelFileNumber, 0 = empty */
+	pg_atomic_uint64 evictCnt[BCS_EVICT_SLOTS];	/* eviction count */
 } BufferStrategyControl;
 
 /* Pointers to shared state */
@@ -477,6 +491,13 @@ StrategyCtlShmemInit(void *arg)
 	/* No pending notification */
 	StrategyControl->bgwprocno = -1;
 
+	/* EXPERIMENT: clear the per-relation eviction counter table */
+	for (int i = 0; i < BCS_EVICT_SLOTS; i++)
+	{
+		pg_atomic_init_u64(&StrategyControl->evictRel[i], 0);
+		pg_atomic_init_u64(&StrategyControl->evictCnt[i], 0);
+	}
+
 	/*
 	 * Decide whether to batch the clock sweep.
 	 *
@@ -857,4 +878,87 @@ StrategyRejectBuffer(BufferAccessStrategy strategy, BufferDesc *buf, bool from_r
 	strategy->buffers[strategy->current] = InvalidBuffer;
 
 	return true;
+}
+
+/*
+ * EXPERIMENT INSTRUMENT (throwaway, never posted).
+ *
+ * BcsRecordEviction -- bump the per-relation eviction counter for a victim.
+ * Open-addressed linear probe on RelFileNumber; if the table fills, evictions
+ * of not-yet-tracked relations are dropped into slot 0 (relNumber 0 = "other")
+ * rather than probing forever.  Only called at victim time on MAIN_FORKNUM.
+ */
+void
+BcsRecordEviction(RelFileNumber relNumber)
+{
+	uint32		h = ((uint32) relNumber) % BCS_EVICT_SLOTS;
+
+	for (int probe = 0; probe < 64; probe++)
+	{
+		uint32		i = (h + probe) % BCS_EVICT_SLOTS;
+		uint64		cur = pg_atomic_read_u64(&StrategyControl->evictRel[i]);
+
+		if (cur == (uint64) relNumber)
+		{
+			pg_atomic_fetch_add_u64(&StrategyControl->evictCnt[i], 1);
+			return;
+		}
+		if (cur == 0)
+		{
+			uint64		expected = 0;
+
+			if (pg_atomic_compare_exchange_u64(&StrategyControl->evictRel[i],
+											   &expected, (uint64) relNumber))
+			{
+				pg_atomic_fetch_add_u64(&StrategyControl->evictCnt[i], 1);
+				return;
+			}
+			/* someone claimed it; re-check this slot */
+			if (pg_atomic_read_u64(&StrategyControl->evictRel[i]) == (uint64) relNumber)
+			{
+				pg_atomic_fetch_add_u64(&StrategyControl->evictCnt[i], 1);
+				return;
+			}
+		}
+	}
+	/* table full / long probe: dump into slot 0 as "other" */
+	pg_atomic_fetch_add_u64(&StrategyControl->evictCnt[0], 1);
+}
+
+/*
+ * bcs_evictions() SRF: (relfilenode bigint, evictions bigint).
+ * Classify offline: join to pg_class on relfilenode.
+ */
+PG_FUNCTION_INFO_V1(bcs_evictions);
+Datum
+bcs_evictions(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc	tupdesc;
+	Tuplestorestate *tupstore;
+	MemoryContext oldcontext;
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	oldcontext = MemoryContextSwitchTo(rsi->econtext->ecxt_per_query_memory);
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsi->returnMode = SFRM_Materialize;
+	rsi->setResult = tupstore;
+	rsi->setDesc = tupdesc;
+	MemoryContextSwitchTo(oldcontext);
+
+	for (int i = 0; i < BCS_EVICT_SLOTS; i++)
+	{
+		uint64		rel = pg_atomic_read_u64(&StrategyControl->evictRel[i]);
+		uint64		cnt = pg_atomic_read_u64(&StrategyControl->evictCnt[i]);
+		Datum		values[2];
+		bool		nulls[2] = {false, false};
+
+		if (cnt == 0)
+			continue;
+		values[0] = Int64GetDatum((int64) rel);
+		values[1] = Int64GetDatum((int64) cnt);
+		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+	}
+	return (Datum) 0;
 }
