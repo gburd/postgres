@@ -72,6 +72,7 @@ tests += {
       't/013_phase19_process_fallback_crash.pl',
       't/014_phase_c_d_forced_migration.pl',
       't/015_phase_c_concurrent_startup_storm.pl',
+      't/016_worker_fiber_pool_sizing.pl',
     ],
   },
 }
