@@ -50,6 +50,7 @@
 #include "utils/memutils.h"
 #include "utils/pg_locale.h"
 #include "utils/plancache.h"
+#include "utils/ruleutils.h"
 #include "utils/resowner.h"
 #include "utils/typcache.h"
 
