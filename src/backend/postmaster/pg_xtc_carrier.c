@@ -38,6 +38,7 @@
 
 #include "miscadmin.h"
 #include <sys/resource.h>
+#include "postmaster/autovacuum.h"	/* autovacuum_max_workers */
 #include "storage/latch.h"
 #include "libpq/pqsignal.h"	/* BlockSig */
 #include "postmaster/pg_xtc_carrier.h"
@@ -98,6 +99,13 @@ static pthread_mutex_t g_xtc_start_lock = PTHREAD_MUTEX_INITIALIZER;
  * cross-thread xtc_send() register message.
  */
 #define XTC_PG_MAX_SUP_LOOPS 1024
+/*
+ * Upper bound on the worker/aux fiber executor loop pool when the pooled
+ * protocol scheduler owns client backends.  The executor then runs only
+ * long-lived worker fibers, so a small fixed pool suffices; this caps the pool
+ * even if autovacuum_max_workers + max_worker_processes are set very high.
+ */
+#define XTC_PG_MAX_WORKER_FIBER_LOOPS 16
 static xtc_pid_t g_xtc_sup_pid[XTC_PG_MAX_SUP_LOOPS];
 
 /*
@@ -157,17 +165,47 @@ static xtc_carrier_entry_fn g_xtc_backend_entry;
  * backend fibers run in parallel and avoids the single-loop lost-wakeup where
  * two or more fibers parked on one loop could starve each other.
  *
- * The DEFAULT is the system core count (sysconf(_SC_NPROCESSORS_ONLN)) -- this
- * is deliberate, not a placeholder: a pool sized to the cores is how the xtc
- * carrier is meant to run, keeps the tests representative, and maximizes the
- * work that libxtc's scheduler (and DST) can see.  Override with
- * PG_XTC_CARRIER_LOOPS only for tuning or to force a specific size in a test.
+ * The pool is FIXED at startup and sized to roughly one loop per core, but
+ * bounded so a very-large-core box does not create hundreds of carrier OS
+ * threads.  Two callers create OS-thread pools under multithreaded=on: this
+ * fiber executor (worker/aux fibers, and thread-per-session client backends
+ * when pooled_protocol_carriers=0) and, independently, the pooled-protocol
+ * carrier pool (backend_pooled_protocol_*).  Both must share the SAME budget,
+ * or on a 384-vCPU box the two uncapped pools stack (e.g. 192 pooled carriers
+ * PLUS 384 fiber-executor loops = 576+ OS threads) and the kernel's CFS
+ * load-balancer (update_sg_lb_stats) dominates the profile -- measured as the
+ * top CPU consumer, 10-11%, with the box 78-89%% idle, on the 2026-07-23 EC2
+ * A/B.  So:
+ *   - PG_XTC_CARRIER_LOOPS overrides everything (tuning / tests).
+ *   - Else, when the pooled-protocol scheduler is active, the pooled carrier
+ *     pool owns client-backend parallelism and this executor runs only a
+ *     handful of long-lived worker fibers, so size it small and fixed to the
+ *     worker concurrency (NOT the core count).
+ *   - Else (thread-per-session, pooled_protocol_carriers==0), this executor IS
+ *     the backend parallelism, so size to the core count, bounded by
+ *     POOLED_PROTOCOL_CARRIER_AUTO_CEILING so the fiber pool obeys the same
+ *     ceiling as the pooled pool.
+ *
+ * NECESSARY BUT NOT THE WHOLE CURE: this removes the fiber executor's
+ * over-sizing (its 384->~15 contribution on the benchmark box).  The A/B
+ * measured 4634 OS threads, which is NOT fully accounted for by any single
+ * identifiable source (fiber executor n_loops+1, libxtc blocking pool capped
+ * at 64, singleton lock-detector/preempt/slab-PSI helpers, pooled carriers
+ * <= ceiling).  A follow-up must locate the remaining thread multiplier with a
+ * thread-name histogram; do not treat this alone as the full thread-explosion
+ * fix.
+ *
+ * ponytail: with many concurrent CPU-bound parallel workers (workers >> loops)
+ * they serialize per loop -- a latency ceiling, not a deadlock (fibers are
+ * cooperative).  Upgrade path if a workload proves it matters: elastic loop
+ * growth for the worker-fiber pool.
  */
 static int
 xtc_carrier_loop_count(void)
 {
 	const char *env = getenv("PG_XTC_CARRIER_LOOPS");
 	long		ncpus;
+	int			loops;
 
 	if (env != NULL && env[0] != '\0')
 	{
@@ -177,12 +215,51 @@ xtc_carrier_loop_count(void)
 			return (int) v;
 	}
 
+	/*
+	 * When the pooled-protocol scheduler is active, client backends run on the
+	 * pooled carrier pool (backend_pooled_protocol_*), NOT on this fiber
+	 * executor.  The executor then runs only a small, fixed set of long-lived
+	 * worker/aux fibers (autovac launcher + workers, WAL writer, WAL
+	 * summarizer, logical launcher, a few bgworkers -- on the order of ten,
+	 * bounded by autovacuum_max_workers + max_worker_processes).  Sizing this
+	 * pool to the core count would spin up hundreds of OS threads to run a
+	 * dozen fibers -- exactly the thread explosion the 2026-07-23 A/B caught
+	 * (fiber executor 384 loops stacked on 192 pooled carriers -> CFS
+	 * load-balancer became the top CPU consumer).  Size it to the worker
+	 * concurrency instead, floored small for parallelism / lost-wakeup safety
+	 * and never larger than the carrier budget.
+	 */
+	if (PgRuntimePooledProtocolRequested())
+	{
+		int			carriers = PgRuntimePooledProtocolCarrierLimit();
+		int			workers = 4;	/* floor: parallel workers, avoid single-loop starvation */
+
+		if (autovacuum_max_workers > 0)
+			workers += autovacuum_max_workers;
+		if (max_worker_processes > 0)
+			workers += max_worker_processes;
+		if (workers > XTC_PG_MAX_WORKER_FIBER_LOOPS)
+			workers = XTC_PG_MAX_WORKER_FIBER_LOOPS;
+		if (carriers >= 1 && workers > carriers)
+			workers = carriers;
+		if (workers < 1)
+			workers = 1;
+		return workers;
+	}
+
+	/*
+	 * Thread-per-session (pooled_protocol_carriers==0): this executor IS the
+	 * client-backend parallelism, so size it to the cores, bounded by the same
+	 * ceiling the pooled pool obeys so a very-large-core box cannot create an
+	 * unbounded thread pool here either.
+	 */
 	ncpus = sysconf(_SC_NPROCESSORS_ONLN);
 	if (ncpus < 1)
 		ncpus = 1;
-	if (ncpus > 1024)
-		ncpus = 1024;
-	return (int) ncpus;
+	loops = (int) ncpus;
+	if (loops > POOLED_PROTOCOL_CARRIER_AUTO_CEILING)
+		loops = POOLED_PROTOCOL_CARRIER_AUTO_CEILING;
+	return loops;
 }
 
 /*
@@ -922,9 +999,12 @@ xtc_pg_carrier_start(void)
 		 */
 		xtc_carrier_start_supervisors();
 
-		elog(LOG, "xtc: carrier scheduler thread up (%d loop%s, %d supervisor%s)",
+		elog(LOG, "xtc: carrier scheduler thread up (%d loop%s, %d supervisor%s, %s)",
 			 g_xtc_n_loops, g_xtc_n_loops == 1 ? "" : "s",
-			 g_xtc_n_sups, g_xtc_n_sups == 1 ? "" : "s");
+			 g_xtc_n_sups, g_xtc_n_sups == 1 ? "" : "s",
+			 PgRuntimePooledProtocolRequested()
+			 ? "worker-fiber pool; client backends on pooled carriers"
+			 : "thread-per-session backend pool");
 	}
 
 out:
