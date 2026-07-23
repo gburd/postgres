@@ -5053,3 +5053,28 @@ NEXT: reproduce the 2-fiber shutdown strand under a debugger-capable environment
 xtc_proc_wake, resolve via a loop-independent fiber wake (libxtc request or a
 per-fiber wake-fd on all backend wait sets) THEN re-validate 20x + two-reviewer
 -> re-enable -> EC2 A/B.
+
+### libxtc question drafted: does xtc_proc_wake reliably wake a MIGRATED proc? (2026-07-22)
+
+/tmp/libxtc-proc-wake-migrated-proc-question.md -- an honest "is this yours or
+ours?" question, NOT a bug assertion. The real blocker (attempt #4) is the
+shutdown-strand: a cross-fiber SetLatch->xtc_proc_wake(pid) of a WORK-STOLEN proc,
+where the pid's loop_id was captured at latch-arm time (latch.c:47-50) and is
+STALE after a steal.
+SOURCE HYPOTHESIS (v1.28 proc.c): xtc_proc_wake -> __resolve(pid) keys target_loop
+on pid.loop_id (proc.c:1400 Strategy 1/2), then __table_lookup(tbl, local_id, gen)
+in THAT loop's table (proc.c:1447); a resolve-miss is a silent no-op (proc.c:1580
+"gone: a wake is a harmless no-op"). THE UNKNOWN we can't see from outside: when a
+migratable proc is stolen A->B, does its proc-table entry stay in A's table (spawn
+loop -> arm-time pid still resolves it -> our bug elsewhere) or move to B (arm-time
+loop_id stale -> __resolve misses -> wake SILENTLY DROPPED -> strand)?
+QUESTIONS asked: (1) is xtc_proc_wake(pid) contracted to wake a proc stolen to a
+different loop than pid.loop_id? (2) if not, how does ANOTHER fiber/thread get a
+migratable proc's CURRENT loop for a wake (waker != target, can't use xtc_self/
+xtc_exec_loop_id)? is there a wake-by-{local,gen} loop-agnostic entry? (3) if it
+DOES resolve migrated procs, is our arm-time-loop_id capture simply the bug (store
+only {local,gen}, re-capture pid each resume)?
+Framed: if the answer is "you're passing a stale loop_id -> use {local,gen}/
+re-capture", that's a clean PG-side fix we'll take. gdb-attach blocked here (can't
+backtrace the stranded fiber) -> couldn't confirm the invariant locally, hence the
+question. Ready for the user to forward. Tree SAFE at migratable=0 (a53a53ea6f7).
