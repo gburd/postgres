@@ -5466,3 +5466,18 @@ PgBackendResetLogicalReplicationClosedState (teardown.c:562, publication test) -
 same class as the LISTEN/NOTIFY DSA double-detach fixed in 39c8bf187e6: a shared
 launcher DSA (launcher_last_start_times_dsa) detached at per-session reset after
 it was already torn down.  Not addressed here.
+
+### FULL cassert core regress now CLEAN (2026-07-23, commit 6d9591e1a61)
+
+The launcher-DSA proc-exit double-detach (dsa_detach -> dsm_detach ->
+slist_pop_head_node SIGSEGV on launcher_last_start_times_dsa, publication test)
+is FIXED -- same bug + same fix as the LISTEN/NOTIFY async DSA (39c8bf187e6):
+guard the detach with !PgBackendExitInProgress() (dsm_backend_shutdown owns the
+segment at proc_exit; explicit detach only on a live session reset).  Independent
+review SHIP (upstream has 0 dsa_detach in launcher.c; only detach site in tree).
+
+RESULT: `meson test -C build-cassert --suite regress` is now 245/245 subtests,
+0 Fail, ZERO cores.  The two teardown bugs that produced 12-18+ cores
+(saved_plan_list assert 4a093527fac + launcher-DSA detach 6d9591e1a61) are both
+gone.  The full cassert regression suite is completely clean -- a milestone: it
+unblocks running `check`/`check-threaded` under cassert.
