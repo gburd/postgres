@@ -341,6 +341,40 @@ static PG_GLOBAL_IMMUTABLE const char *const query_getrulebyoid = "SELECT * FROM
 #define plan_getviewrule (*PgCurrentRuleutilsViewRulePlanRef())
 static PG_GLOBAL_IMMUTABLE const char *const query_getviewrule = "SELECT * FROM pg_catalog.pg_rewrite WHERE ev_class = $1 AND rulename = $2";
 
+/*
+ * RuleUtilsResetSessionCachedPlans -
+ *
+ * Drop the two long-lived SPI plans this module SPI_keepplan()s on first use
+ * (plan_getrulebyoid, plan_getviewrule).  In upstream process-per-backend
+ * PostgreSQL these module statics simply vanish when the backend process
+ * exits; under the threaded/session-reset runtime a session is torn down and
+ * PgSessionResetPlanCacheClosedState asserts saved_plan_list empty, so any
+ * SPI_keepplan()'d plan still linked there trips the assert.
+ *
+ * PgSessionResetCatalogLookupClosedState used to free these, but its bucket
+ * runs AFTER the plan-cache bucket -- too late, the assert already fired.  This
+ * function is the sole owner now and is called from the ruleutils_plans reset
+ * bucket, ordered BEFORE plan_cache (the catalog_lookup bucket no longer
+ * touches these pointers).  Best-effort: if SPI never ran the pointers are
+ * NULL.  On next use the plans are lazily re-prepared (guarded by plan == NULL).
+ */
+void
+RuleUtilsResetSessionCachedPlans(PgSession *session)
+{
+	Assert(session != NULL);
+
+	if (session->catalog_lookup.ruleutils_rule_by_oid_plan != NULL)
+	{
+		SPI_freeplan(session->catalog_lookup.ruleutils_rule_by_oid_plan);
+		session->catalog_lookup.ruleutils_rule_by_oid_plan = NULL;
+	}
+	if (session->catalog_lookup.ruleutils_view_rule_plan != NULL)
+	{
+		SPI_freeplan(session->catalog_lookup.ruleutils_view_rule_plan);
+		session->catalog_lookup.ruleutils_view_rule_plan = NULL;
+	}
+}
+
 /* ----------
  * Local functions
  *

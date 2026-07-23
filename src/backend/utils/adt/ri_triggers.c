@@ -3956,6 +3956,45 @@ ri_InitHashTables(void)
 								   &ctl, HASH_ELEM | HASH_BLOBS);
 }
 
+/*
+ * RIResetSessionCachedPlans -
+ *
+ * Free every SPI plan this module SPI_keepplan()s into the per-session RI
+ * query cache (foreign-key enforcement queries such as the FK cascade/check
+ * DELETE/UPDATE/SELECT).  Like the ruleutils cached plans, these are
+ * SPI_keepplan()'d onto the session's saved_plan_list but are neither prepared
+ * statements nor PL/pgSQL/SQL-function plans, so no earlier reset bucket drains
+ * them; under the threaded/session-reset runtime that trips the
+ * saved_plan_list-empty assert in PgSessionResetPlanCacheClosedState at
+ * session close.  Free the plans here, ordered before the plan-cache bucket.
+ * We only free the plans (and clear each entry's pointer); the query_cache
+ * HTAB itself is destroyed later by PgSessionResetRIGlobalsClosedState, which
+ * owns that hash -- so plan ownership lives here, hash ownership stays there.
+ * (The constraint and compare caches hold no SPI plans.)
+ */
+void
+RIResetSessionCachedPlans(PgSession *session)
+{
+	HTAB	   *query_cache;
+	HASH_SEQ_STATUS status;
+	RI_QueryHashEntry *entry;
+
+	Assert(session != NULL);
+
+	query_cache = session->ri_globals.query_cache;
+	if (query_cache == NULL)
+		return;
+
+	hash_seq_init(&status, query_cache);
+	while ((entry = (RI_QueryHashEntry *) hash_seq_search(&status)) != NULL)
+	{
+		if (entry->plan != NULL)
+		{
+			SPI_freeplan(entry->plan);
+			entry->plan = NULL;
+		}
+	}
+}
 
 /*
  * ri_FetchPreparedPlan -
