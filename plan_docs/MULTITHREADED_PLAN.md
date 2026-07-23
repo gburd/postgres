@@ -5200,3 +5200,40 @@ on-box -> two independent reviewers -> re-enable migratable=1 -> EC2 A/B on the
 same box. If root-cause reveals YET ANOTHER distinct carrier-affine hazard, that is
 strong evidence to reconsider (per-park-pin vs ship-the-pinned-win) rather than a
 6th attempt.
+
+### BREAKTHROUGH: EC2 gdb root-caused the shutdown strand -- SetLatch fiber-park quick-exit race (2026-07-23)
+
+The EC2 ptrace-enabled debugging session (c7i.12xlarge, us-east-1, ptrace_scope=0 +
+PG_XTC_ALLOW_CORE=1) REPRODUCED the strand (~1/2 of 014 runs, matching history) and
+got the gdb BACKTRACE five blind attempts lacked. INSTANCE TERMINATED + VERIFIED +
+key/SG deleted (zero cost).
+
+ROOT CAUSE (evidence, not hypothesis): SetLatch's "quick exit if already set"
+(if (latch->is_set) return;). Process mode: correct (owner sees is_set on its next
+check). FIBER mode breaks it: the park is TWO-PHASE -- WaitEventSetWaitInternal sets
+maybe_sleeping=true after seeing is_set==0, THEN WaitEventSetWaitBlock arms the fiber
+waker + yields on the epoll fd. A cross-carrier SetLatch (AIO-completion CV
+broadcast, or the PROC_DIE shutdown broadcast) observes is_set==1 (from an earlier
+SetLatch not yet ResetLatch'd across the fiber's park/resume/migration churn) and
+QUICK-EXITS without writing the wakeup fd or poking the owner loop -> fiber parked on
+epoll with no pending byte + no nudge -> PERMANENT STRAND. Backtrace of the stranded
+fiber: shmem_exit -> RemoveTempRelations parked in pgaio_io_wait's CV wait, latch
+is_set=1, self-pipe FIONREAD=0.
+=> NOT the stale-loop-wake theory (ruled out). NOT a libxtc bug -- a genuine PG-side
+latch invariant that fiber two-phase park + cross-carrier SetLatch violates. It is a
+CV/AIO wait -> the earlier 2a/2b park-site guesses were WRONG; this SetLatch fix is
+the GENERAL fix (covers ANY fiber-owned latch wait incl. CV). One fix, not three.
+
+FIX (WIP, stashed + /tmp/latch-setlatch-fix-wip.patch, NOT built/validated/reviewed):
+when latch->is_set BUT a fiber owner is maybe_sleeping (owner_fiber_valid &&
+owner_pid==MyProcPid), do NOT quick-exit -- fall through and deliver the fiber wake
+(self-pipe write + xtc_proc_wake). Spurious fiber wakes are safe (fiber re-checks on
+resume). USE_XTC_CARRIER-gated; process mode + non-fiber-owned latches keep the exact
+byte-for-byte quick-exit. 52-line diff.
+
+STATE: tree SAFE (migratable=0, HEAD e0f41b1458e, fix stashed not landed). NEXT:
+build + validate the SetLatch fix (014 shutdown loop >=40x clean + confirm the
+workload stack-smash is also gone/was a symptom of the same strand) + two-reviewer +
+re-enable migratable=1 -> benchmark. With the strand fixed the hang should vanish, so
+local can run the loop without 120s stalls -- but a scale re-check on EC2 is prudent
+before the A/B.
