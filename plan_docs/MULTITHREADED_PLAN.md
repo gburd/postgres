@@ -5160,3 +5160,43 @@ set (not just the protocol-read park).  Separately, the workload-phase stack-
 smash MUST be root-caused (core backtrace) before any re-enable, since it is a
 silent-corruption class the acceptance forbids.  Re-validate 40/40 clean on
 release+cassert + two independent reviewers before re-enabling.
+
+### Why migration debugging must move to EC2 (local-config evidence) + attempt #5 outcome (2026-07-23)
+
+Attempt #5: v1.28.1's xtc_task_waker fix is NECESSARY but INSUFFICIENT. 014
+migratable=1 cassert still HANGS (~1/2 alone; ~1/40 with 2a/2b belt-and-suspenders)
+on a park channel neither 2a (wait_fd) nor 2b (amutex) covers -- leading candidate
+a plain WaitLatch/LWLock/CV park OR the SUPERVISOR DOWN-wake (run showed ~5 fibers
+"exiting" with no matching "supervisor observed DOWN" -> the supervisor's wake of a
+MIGRATED child may be stale-loop-targeted, a sibling of the libxtc waker bug just
+fixed). ALSO a NEW workload-phase glibc STACK-SMASH (~1/20 with 2a/2b) -- hard
+corruption. Never 40/40 clean. migratable=0 HELD (05bea09a151). Real steals fire
+(n_steals 15-550); gate + ssl_sni pin confirmed working; no PANIC.
+
+WHY EC2 (measured local config, answering "what forces this off-box"):
+ 1. HARD BLOCKER: kernel.yama.ptrace_scope=1 AND no passwordless sudo (sudo -n
+    fails). => gdb -p <live carrier> is REFUSED; cannot get the stranded fiber's
+    backtrace = the missing evidence 5 attempts lacked (they GUESSED the strand
+    site). Cannot sysctl ptrace_scope=0 without root. On a self-launched EC2 box
+    we are root -> ptrace_scope=0 -> gdb/rr attach freely.
+ 2. COMPOUNDING: the carrier drops RLIMIT_CORE to 0 (pg_xtc_carrier.c:853-865
+    unless PG_XTC_ALLOW_CORE=1), so the stack-smash produces NO core by default.
+    Fixable with PG_XTC_ALLOW_CORE=1 anywhere, but with #1 also blocking live
+    attach we get NEITHER a backtrace NOR a core locally = fully blind.
+ 3. THROUGHPUT: 8 CPU / 30GiB / NO SWAP; each HUNG 014 iter ~120s (60 fast +60
+    immediate +SIGKILL); the mandated 40x loop under cassert + parallel suite
+    can't finish in one agent harness call-window (backgrounded loops orphan). A
+    96-core metal box runs the loop fast + reproduces the intermittent strand far
+    quicker (more concurrent steals/sec).
+ => Highest-leverage LOCAL fix if we wanted it debuggable here: passwordless sudo
+    or a pre-set kernel.yama.ptrace_scope=0 on the dev-host. Absent that, diagnosis
+    moves to a root EC2 box.
+
+PLAN (option A, user-approved): EC2 ptrace-enabled box (ptrace_scope=0,
+PG_XTC_ALLOW_CORE=1, core_pattern to a known dir) -> reproduce the strand + the
+stack-smash -> gdb/coredumpctl the stranded fiber (name the exact park channel) +
+core the stack-smash -> root-cause both with EVIDENCE -> fix -> 40/40 revalidate
+on-box -> two independent reviewers -> re-enable migratable=1 -> EC2 A/B on the
+same box. If root-cause reveals YET ANOTHER distinct carrier-affine hazard, that is
+strong evidence to reconsider (per-park-pin vs ship-the-pinned-win) rather than a
+6th attempt.
