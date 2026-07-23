@@ -552,16 +552,39 @@ PgBackendResetLogicalReplicationClosedState(PgBackendLogicalReplicationState *lo
 	logical_replication->on_commit_wakeup_workers_subids = NIL;
 	logical_replication->table_states_not_ready = NIL;
 	logical_replication->seqinfos = NIL;
-	if (logical_replication->launcher_last_start_times != NULL)
+
+	/*
+	 * launcher_last_start_times_dsa is a dsa_pin_mapping()'d attachment to the
+	 * launcher's shared last-start-times DSA (see logicallauncher's
+	 * last_start_times_dsa: dsa_create/dsa_attach + dsa_pin_mapping).  As with
+	 * the LISTEN/NOTIFY global-channel DSA above, there are two teardown paths:
+	 *
+	 *   - Full process/thread exit (proc_exit): shmem_exit() already ran
+	 *     dsm_backend_shutdown(), which detached every mapped DSM segment
+	 *     (including this DSA's) and freed the dsm_segment.  Detaching again here
+	 *     is a use-after-free -- observed as a SIGSEGV in dsa_detach ->
+	 *     dsm_detach -> slist_pop_head_node on the freed segment (the publication
+	 *     regress test).  Upstream never dsa_detach()es the pinned launcher DSA
+	 *     at exit; it relies on dsm_backend_shutdown().
+	 *
+	 *   - Logical session reset without a process exit (threaded runtime handing
+	 *     a backend's session state back): dsm_backend_shutdown() has NOT run, so
+	 *     the segment is live and the explicit detach here reclaims the mapping.
+	 *
+	 * Distinguish with PgBackendExitInProgress(): only detach on a live session
+	 * reset; on process exit just drop the runtime pointers.  dsa_pin_mapping
+	 * only clears the segment's resowner, so dsm_backend_shutdown still reclaims
+	 * it -- skipping the redundant detach leaks nothing.
+	 */
+	if (!PgBackendExitInProgress())
 	{
-		dshash_detach(logical_replication->launcher_last_start_times);
-		logical_replication->launcher_last_start_times = NULL;
+		if (logical_replication->launcher_last_start_times != NULL)
+			dshash_detach(logical_replication->launcher_last_start_times);
+		if (logical_replication->launcher_last_start_times_dsa != NULL)
+			dsa_detach(logical_replication->launcher_last_start_times_dsa);
 	}
-	if (logical_replication->launcher_last_start_times_dsa != NULL)
-	{
-		dsa_detach(logical_replication->launcher_last_start_times_dsa);
-		logical_replication->launcher_last_start_times_dsa = NULL;
-	}
+	logical_replication->launcher_last_start_times = NULL;
+	logical_replication->launcher_last_start_times_dsa = NULL;
 	logical_replication->parallel_apply_worker_pool = NIL;
 	logical_replication->stream_apply_worker = NULL;
 	logical_replication->parallel_apply_subxactlist = NIL;
