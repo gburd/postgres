@@ -934,18 +934,13 @@ Datum
 bcs_evictions(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
-	TupleDesc	tupdesc;
-	Tuplestorestate *tupstore;
-	MemoryContext oldcontext;
 
-	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-		elog(ERROR, "return type must be a row type");
-	oldcontext = MemoryContextSwitchTo(rsi->econtext->ecxt_per_query_memory);
-	tupstore = tuplestore_begin_heap(true, false, work_mem);
-	rsi->returnMode = SFRM_Materialize;
-	rsi->setResult = tupstore;
-	rsi->setDesc = tupdesc;
-	MemoryContextSwitchTo(oldcontext);
+	/*
+	 * Standard materialized-SRF setup: validates the call context, builds the
+	 * tuplestore + tupdesc, and wires them into rsi.  (Doing this by hand is
+	 * what crashed the earlier version.)
+	 */
+	InitMaterializedSRF(fcinfo, 0);
 
 	for (int i = 0; i < BCS_EVICT_SLOTS; i++)
 	{
@@ -958,7 +953,7 @@ bcs_evictions(PG_FUNCTION_ARGS)
 			continue;
 		values[0] = Int64GetDatum((int64) rel);
 		values[1] = Int64GetDatum((int64) cnt);
-		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, values, nulls);
 	}
 	return (Datum) 0;
 }
