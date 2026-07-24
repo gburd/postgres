@@ -976,6 +976,21 @@ xtc_pg_carrier_start(void)
 		if (g_xtc_exec != NULL && g_xtc_n_loops > 1)
 			xtc_exec_set_eager_rebalance(g_xtc_exec, 1);
 
+		/*
+		 * Idle-poll steal backoff (libxtc v1.31.0), threaded multi-loop carrier
+		 * ONLY.  Complements eager-rebalance: when a worker's run queue is empty
+		 * AND no peer has runnable work to steal, it grows its idle poll timeout
+		 * (1ms -> 32ms across an idle streak) instead of re-scanning peers every
+		 * millisecond; any real work resets it.  This targets the residual the
+		 * 2026-07-24 metal A/B showed on idle-heavy tiny-query load (pgbench
+		 * select@384: box ~97%% idle, update_sg_lb_stats/newidle balancer
+		 * dominant from parked carriers repeatedly waking).  Opt-in (default off
+		 * = neutral); observable via pg_stat_xtc_carriers.steal_backoff.  Same
+		 * gating as eager-rebalance: no-op in process/single-loop mode.
+		 */
+		if (g_xtc_exec != NULL && g_xtc_n_loops > 1)
+			xtc_exec_set_steal_backoff(g_xtc_exec, 1);
+
 		if (xtc_app_start(g_xtc_app, NULL, 0) != XTC_OK)
 		{
 			elog(LOG, "xtc: xtc_app_start failed");
