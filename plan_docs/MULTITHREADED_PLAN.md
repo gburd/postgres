@@ -5521,3 +5521,47 @@ newidle-balancer residual. (2) tame parked-carrier polling (the 41% pgbench
 select@384 update_sg_lb_stats). (3) OLTP futex/lock dedup onto xtc primitives.
 (4) VU=384 HammerDB NOPM-emission flakiness (client-side, likely benign).
 (5) the still-open 005 NOTIFY-wake residual (correctness, stashed WIP).
+
+### 005 async-notify flake RESOLVED (2026-07-24, commit 65df449a6fa) -- observability, not lost data
+
+The ~1/3 flake in 005 subtest 18 ("asynchronous notification wakes parked
+protocol client") is FIXED, and root-caused (not guessed) via instrumentation:
+it was a TEST observability bug, NOT a lost notification.
+
+005 runs pooled_protocol_carriers=0 (thread-per-session).  The LISTEN client
+runs as an xtc fiber and parks between commands in SocketBackendStickyIdleWait's
+WaitEventSetWait branch, re-committing a FRESH protocol park every ~10ms
+(pooled_protocol_sticky_idle_ms).  NOTIFY delivery is driven by the
+generation-INDEPENDENT pending-interrupt mailbox (SendInterrupt's
+pg_atomic_fetch_or on interrupts.pending_mask + the level-triggered
+interrupt_wake_fd eventfd) -> always delivered.  But LAST_WAKE_REASONS is a
+SEPARATE snapshot field recorded against a park GENERATION and zeroed by the next
+park's resume (PgBackendResumeProtocolReadPark) -- so a 100ms external poll sees
+it for an already-reset generation.  Pure observability race.  007 (pooled,
+carriers=2) asserts the same bit and passes 46/46 reliably because pooled mode
+parks ONCE (no 10ms re-cycle).
+
+Fix (test-only, no runtime change): assert the ROBUST property -- the parked
+client RECEIVES the notification (like(query_safe, /Asynchronous notification .*
+received/)) -- and poll LAST_WAKE_REASONS best-effort (note, never fail).
+
+Two independent adversarial reviews: SHIP + SHIP.  Reviewer 1: 120/120 deliveries,
+reproduced the OLD flake on the snapshot poll (9/10) while delivery stayed
+120/120.  Reviewer 2: 160/160 deliveries across 0/5/15/50/300ms timing (straddling
+the sticky-idle boundary) + negative control 0/10 (assertion is not a tautology) +
+traced the no-lost-wake guarantee (EFD_NONBLOCK level-triggered eventfd,
+non-EPOLLET epoll, deliver-before-park).  005 loop 10/10.  The threaded
+backend-runtime gate is now clean (18 OK / 0 Fail / 2 SKIP on a quiet host).
+
+### OBSERVABILITY GAP (noted 2026-07-24): libxtc stats/log/trace NOT integrated
+libxtc exposes counters/gauges/histograms + xtc_metrics_dump_prometheus,
+structured logging (xtc_log_*), per-loop stats (xtc_exec_loop_stats:
+tasks_run+steals), xtc_dump, and per-subsystem stats (lockmgr/slab/iosched/
+alloc_audit).  We integrate exactly ONE: xtc_exec_loop_stats summed into
+xtc_pg_carrier_total_steals(), surfaced only via a test SQL function for 014.
+NOT integrated: xtc_log -> elog bridge, xtc_metrics, a pg_stat_xtc_carriers view,
+xtc_dump on crash.  This is the foundation to build BEFORE the parked-carrier /
+steal-backoff perf work so the effect is measurable in-tree (SQL/log) instead of
+requiring EC2+perf each time.  Planned order: (1) pg_stat_xtc_carriers view +
+xtc_log->elog bridge (GUC-gated), then (2) wire xtc_exec_set_steal_backoff +
+tame parked-carrier polling, measured via the new views.
