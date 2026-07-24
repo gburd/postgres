@@ -25,6 +25,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
+#include "postmaster/pg_xtc_carrier.h"
 #include "replication/logicallauncher.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
@@ -2410,4 +2411,55 @@ pg_stat_have_stats(PG_FUNCTION_ARGS)
 	PgStat_Kind kind = pgstat_get_kind_from_str(stats_type);
 
 	PG_RETURN_BOOL(pgstat_have_entry(kind, dboid, objid));
+}
+
+/*
+ * pg_stat_get_xtc_carriers - per-loop libxtc scheduler stats (fusion F0b).
+ *
+ * One row per executor carrier loop: (loop_id, tasks_run, steals,
+ * eager_rebalance, steal_backoff).  Empty set in process mode, non-fiber
+ * threaded mode, or single-loop mode (no multi-loop executor running).  This is
+ * the in-tree observability foundation for the libxtc fusion work: it surfaces
+ * libxtc's own xtc_exec_loop_stats and knob state so carrier health is a SQL
+ * query rather than an external perf/top-H run.
+ */
+#define PG_STAT_GET_XTC_CARRIERS_COLS	5
+
+Datum
+pg_stat_get_xtc_carriers(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+
+	InitMaterializedSRF(fcinfo, 0);
+
+#ifdef USE_XTC_CARRIER
+	{
+		XtcPgCarrierRuntimeInfo info;
+		XtcPgLoopStat *stats;
+		int			n;
+
+		if (!xtc_pg_carrier_runtime_info(&info) || info.n_loops <= 0)
+			return (Datum) 0;	/* not running a multi-loop executor */
+
+		stats = palloc(sizeof(XtcPgLoopStat) * info.n_loops);
+		n = xtc_pg_carrier_loop_stats(stats, info.n_loops);
+
+		for (int i = 0; i < n; i++)
+		{
+			Datum		values[PG_STAT_GET_XTC_CARRIERS_COLS] = {0};
+			bool		nulls[PG_STAT_GET_XTC_CARRIERS_COLS] = {0};
+
+			values[0] = Int32GetDatum(stats[i].loop_id);
+			values[1] = Int64GetDatum((int64) stats[i].tasks_run);
+			values[2] = Int64GetDatum((int64) stats[i].steals);
+			values[3] = BoolGetDatum(info.eager_rebalance);
+			values[4] = BoolGetDatum(info.steal_backoff);
+
+			tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc,
+								 values, nulls);
+		}
+	}
+#endif							/* USE_XTC_CARRIER */
+
+	return (Datum) 0;
 }

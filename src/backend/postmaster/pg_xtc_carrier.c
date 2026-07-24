@@ -1316,4 +1316,65 @@ xtc_pg_carrier_total_steals(void)
 	return total;
 }
 
+/*
+ * Fill a caller-provided array with a lock-free snapshot of per-loop libxtc
+ * scheduler stats (tasks_run, steals) for the pg_stat_xtc_carriers view
+ * (fusion roadmap F0b).  Writes at most max_loops entries and returns the
+ * number written (== the live loop count, capped at max_loops).  Returns 0
+ * when the multi-loop executor is not running (single-loop / process mode).
+ * The values are relaxed-atomic snapshots -- exact per-loop consistency across
+ * a running executor is not guaranteed, which is fine for a monitoring view.
+ */
+int
+xtc_pg_carrier_loop_stats(XtcPgLoopStat *out, int max_loops)
+{
+	int			n;
+
+	if (out == NULL || max_loops <= 0)
+		return 0;
+	if (g_xtc_exec == NULL || g_xtc_n_loops <= 1)
+		return 0;
+
+	n = g_xtc_n_loops;
+	if (n > max_loops)
+		n = max_loops;
+
+	for (int i = 0; i < n; i++)
+	{
+		xtc_loop_stats_t st;
+
+		out[i].loop_id = i;
+		if (xtc_exec_loop_stats(g_xtc_exec, i, &st) == XTC_OK)
+		{
+			out[i].tasks_run = st.tasks_run;
+			out[i].steals = st.steals;
+		}
+		else
+		{
+			out[i].tasks_run = 0;
+			out[i].steals = 0;
+		}
+	}
+	return n;
+}
+
+/*
+ * Runtime-scalar snapshot for pg_stat_xtc_carriers: the executor loop count and
+ * the eager-rebalance / steal-backoff knob state.  Returns false when the
+ * multi-loop executor is not running (caller shows the view empty).
+ */
+bool
+xtc_pg_carrier_runtime_info(XtcPgCarrierRuntimeInfo *out)
+{
+	if (out == NULL)
+		return false;
+	if (g_xtc_exec == NULL || g_xtc_n_loops <= 1)
+		return false;
+
+	out->n_loops = g_xtc_n_loops;
+	out->eager_rebalance = xtc_exec_get_eager_rebalance(g_xtc_exec) ? true : false;
+	out->steal_backoff = xtc_exec_get_steal_backoff(g_xtc_exec) ? true : false;
+	return true;
+}
+
 #endif							/* USE_XTC_CARRIER */

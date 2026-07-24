@@ -2504,6 +2504,12 @@ pg_stat_xact_user_tables| SELECT relid,
     n_tup_newpage_upd
    FROM pg_stat_xact_all_tables
   WHERE ((schemaname <> ALL (ARRAY['pg_catalog'::name, 'information_schema'::name])) AND (schemaname !~ '^pg_toast'::text));
+pg_stat_xtc_carriers| SELECT loop_id,
+    tasks_run,
+    steals,
+    eager_rebalance,
+    steal_backoff
+   FROM pg_stat_get_xtc_carriers() s(loop_id, tasks_run, steals, eager_rebalance, steal_backoff);
 pg_statio_all_indexes| SELECT c.oid AS relid,
     i.oid AS indexrelid,
     n.nspname AS schemaname,
