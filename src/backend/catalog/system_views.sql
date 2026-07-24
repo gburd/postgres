@@ -1060,6 +1060,15 @@ CREATE VIEW pg_stat_recovery_prefetch AS
             s.io_depth
      FROM pg_stat_get_recovery_prefetch() s;
 
+CREATE VIEW pg_stat_xtc_carriers AS
+    SELECT
+            s.loop_id,
+            s.tasks_run,
+            s.steals,
+            s.eager_rebalance,
+            s.steal_backoff
+     FROM pg_stat_get_xtc_carriers() s;
+
 CREATE VIEW pg_stat_subscription AS
     SELECT
             su.oid AS subid,
