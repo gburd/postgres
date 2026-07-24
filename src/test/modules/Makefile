@@ -53,6 +53,7 @@ SUBDIRS = \
 		  test_seqlock \
 		  test_shm_mq \
 		  test_slru \
+		  test_sparsemap \
 		  test_tidstore \
 		  unsafe_tests \
 		  worker_spi \
