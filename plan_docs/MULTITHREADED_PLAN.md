@@ -5481,3 +5481,43 @@ RESULT: `meson test -C build-cassert --suite regress` is now 245/245 subtests,
 (saved_plan_list assert 4a093527fac + launcher-DSA detach 6d9591e1a61) are both
 gone.  The full cassert regression suite is completely clean -- a milestone: it
 unblocks running `check`/`check-threaded` under cassert.
+
+### THREAD-EXPLOSION FIX VALIDATED ON METAL (2026-07-24, mt-only re-A/B, libxtc v1.31.0)
+
+mt-only re-run on the SAME hardware (m8idn.metal-96xl, us-east-1, %steal=0, RELEASE,
+io_method=sync, huge_pages, dur=off, scale 1000, wh=100, pool192, >=2 reps) as the
+2026-07-23 A/B; fork leg NOT re-measured (fixed reference).  Build linked libxtc
+v1.31.0 FULL autotools (uring); xtc_io_set_iowq_max_workers present.  Both instances
+TERMINATED + verified across all 5 regions (coordinator re-verified independently).
+
+HEADLINE -- the thread explosion is GONE:
+- postmaster thread count: 4634 -> 211-212 (95.4% reduction), fixed across
+  VU=192/384/pgbench-384 (pooled_protocol_carriers=192 caps it).
+- iou-wrk: thousands -> 0 (io_method=sync doesn't spin rings; the executor
+  loop-count fix + libxtc io-wq cap default 4/ring together remove the explosion).
+- update_sg_lb_stats CFS-tax (was 10-11%, TOP symbol): HammerDB VU=192 4.95% (no
+  longer #1; futex_wait took over), VU=384 4.56%. Still 41.29% on pgbench
+  select@384 (384 clients park on 192 carriers; newidle balancer from parked
+  poll; box 97% idle) -- a poll/park-heavy residual, next fusion target.
+
+THROUGHPUT (new mt v1.31 vs FIXED fork ref; prior mt v1.29 in parens):
+- pgbench select@192: 602,517 tps = 100.0% of fork (was 29.5%; 3.39x)
+- pgbench select@384: 683,434 = 61.5% (was 16%; 3.85x)
+- pgbench update@192: 131,936 = 115.7% -- BEATS fork (was 32.3%; 3.58x)
+- pgbench update@384: 133,138 = 75.3% (was 20.2%; 3.72x)
+- HammerDB VU=192: 1,503,533 NOPM = 98.6% of fork (was 66%; 1.49x)
+- HammerDB VU=384: SURVIVED all 384 VUs (prior mt CRASHED); NOPM emission
+  client-side flaky but server healthy at ~17M PG TPM, 212 threads.
+
+VERDICT: thread-explosion fix WORKS. mt now matches fork on point-select@192
+(100%) and BEATS fork on hot-update@192 (115.7%); OLTP VU=192 66%->98.6%; VU=384
+crash fixed.  The residual is now workload-dependent (futex/lock contention on
+OLTP; CFS newidle from parked-carrier polling on high-client point-select) --
+squarely the Phase 18 libxtc-fusion / primitive-dedup work (dedup CV/LWLock/latch
+onto xtc; tame parked-carrier poll).  Artifacts: /tmp/xtcab-v131/results/.
+
+NEXT: (1) wire xtc_exec_set_steal_backoff + re-check the pgbench-select@384
+newidle-balancer residual. (2) tame parked-carrier polling (the 41% pgbench
+select@384 update_sg_lb_stats). (3) OLTP futex/lock dedup onto xtc primitives.
+(4) VU=384 HammerDB NOPM-emission flakiness (client-side, likely benign).
+(5) the still-open 005 NOTIFY-wake residual (correctness, stashed WIP).
