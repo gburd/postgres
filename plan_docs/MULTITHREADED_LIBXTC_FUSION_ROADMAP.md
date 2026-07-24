@@ -133,7 +133,19 @@ xtc_slab INSIDE a PG-owned DSM region is sanctioned).
 - Prefer surfacing DST-visibility gains explicitly (which pthread this removes).
 
 ## Status
-- F0 is the active increment (start: F0b pg_stat_xtc_carriers is the lowest-risk
-  first step; F0a xtc_log bridge next; F0c/F0d follow).
+- **F0b DONE + cleared** (2 reviews SHIP): pg_stat_xtc_carriers view — per-loop
+  tasks_run/steals + eager_rebalance/steal_backoff, from xtc_exec_loop_stats.
+- **F0a DEFERRED (no live emitter in v1.31.0).** Built the xtc_log->elog sink
+  bridge, found it captures nothing: libxtc's only xtc_log_default emitter
+  (__os_tuning_check) is neither auto-invoked NOR ABI-exported (the xtc_*-only
+  symbol gate drops __os_*). Reverted rather than ship speculative infra with no
+  producer. Outstanding libxtc question: /tmp/libxtc-log-emitter-gap-question.md
+  (export+auto-run the tuning check, or route internal diagnostics through
+  xtc_log). Revisit when libxtc answers / a future release adds an emitter.
+- **NEXT: F3 (steal-backoff), pulled ahead of F1/F2** because it delivers
+  immediate, now-MEASURABLE (pg_stat_xtc_carriers.steal_backoff) perf value
+  against the benchmark's parked-carrier CFS-tax, and needs no new observability
+  emitter. Then F1 (our own xtc_stats carrier counters — reachable, unlike
+  libxtc-internal logs), then F2 (lock dedup).
 - Prior fusion wins already landed: eager-rebalance (v1.27), io-wq cap +
   right-sized executor (v1.31.0 + loop-count fix) — see the 2026-07-24 metal A/B.
