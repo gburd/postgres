@@ -76,6 +76,30 @@ extern bool xtc_pg_backend_fiber_is_migratable(void);
 extern uint64 xtc_pg_carrier_total_steals(void);
 
 /*
+ * Per-loop libxtc scheduler stats snapshot for the pg_stat_xtc_carriers view
+ * (libxtc fusion roadmap F0b).  Mirrors xtc_loop_stats_t plus the loop index.
+ */
+typedef struct XtcPgLoopStat
+{
+	int			loop_id;
+	uint64		tasks_run;
+	uint64		steals;
+} XtcPgLoopStat;
+
+/*
+ * Runtime-scalar snapshot for pg_stat_xtc_carriers: loop count + knob state.
+ */
+typedef struct XtcPgCarrierRuntimeInfo
+{
+	int			n_loops;
+	bool		eager_rebalance;
+	bool		steal_backoff;
+} XtcPgCarrierRuntimeInfo;
+
+extern int	xtc_pg_carrier_loop_stats(XtcPgLoopStat *out, int max_loops);
+extern bool xtc_pg_carrier_runtime_info(XtcPgCarrierRuntimeInfo *out);
+
+/*
  * No-steal affine-section tripwire (Phase B).
  *
  * Some short spans of backend code hold OS-thread-affine state that would be
