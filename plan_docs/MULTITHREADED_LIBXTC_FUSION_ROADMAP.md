@@ -1,0 +1,139 @@
+# libxtc Foundational Fusion Roadmap (guiding thought, 2026-07-24)
+
+## Directive
+
+Lean fully into libxtc — its primitives AND its methodology — across ALL of
+PostgreSQL, starting with the foundational, cross-cutting primitives (logging,
+stats, locks, ...) and working outward. This elevates Phase 18 ("libxtc
+Deduplication And Fusion") from a *performance lever that may proceed in
+parallel* to the **leading guiding thought** for the branch's evolution.
+
+This is NOT a big-bang cutover. It is aggressive, ordered, one-primitive-at-a-
+time fusion, each increment A/B-measured neutral-or-better on
+check-threaded-pooled, each keeping a fallback until proven, and each preserving:
+- process mode as a permanently supported backend model (byte-for-byte);
+- the process-lifetime exceptions (postmaster/control-plane, single-user,
+  bootstrap, crash-escalation);
+- gmake check + check-threaded + check-threaded-pooled green.
+
+It supersedes the "libxtc is merely a pluggable substrate" framing. The governing
+question is "where does fusing with libxtc make PostgreSQL faster AND simpler
+than the fork model." The 2026-07-24 metal A/B proved the thread-explosion fix
+took OLTP VU=192 to 98.6% of fork and beat fork on hot-update@192 — the fusion
+hypothesis is paying off; this roadmap systematizes the rest.
+
+## Methodology to adopt (not just the primitives)
+
+libxtc's *methodology* is as much the target as its code:
+1. **One-behaviour-at-a-time, A/B'd, fallback kept.** Never replace two things at
+   once; never delete the hand-rolled version until the xtc version is proven
+   neutral-or-better and green.
+2. **DST-visibility as a design goal.** Every retained raw pthread is invisible
+   to libxtc's Deterministic Simulation Testing and reintroduces real-hardware
+   nondeterminism (the "lucky timing window" flake class — nearly every hard bug
+   this project hit lives at the pthread<->fiber boundary). Moving a primitive
+   onto an xtc loop makes it DST-replayable. Shrink the boundary in dependency
+   order; do not convert a sync primitive to xtc before its users run on a loop.
+3. **Observability-first.** libxtc instruments itself (counters/gauges/
+   histograms, per-loop stats, structured log, xtc_dump). Surface these in-tree
+   BEFORE the perf work, so every subsequent fusion increment is measurable via
+   SQL/log instead of an external perf+EC2 run each time.
+4. **Prove equivalence, do not assume it.** For any primitive with load-bearing
+   PG semantics (lock fairness/ranking/holdoff, mctx reset-callback ordering,
+   allocator alignment), build a per-primitive equivalence harness first.
+
+## Layers today (what fusion consolidates)
+
+- **carrier layer**: xtc scheduler on a pthread pool (one loop/thread); client
+  backends are fibers; but the non-fiber fallback, aux worker families, and
+  pooled-protocol carriers are still raw pg_thread_create pthreads.
+- **synchronization**: in-backend work uses PG shmem LWLock/spinlock/latch/CV
+  (correct for both models); threaded-runtime plumbing still has raw
+  pthread_mutex/cond (pooled-protocol queue, PMChild/GUC locks, ps_status,
+  pg_locale, reloptions, backend registry).
+- **I/O**: io_method=xtc routes fiber-backend data-file reads through xtc_aio;
+  everything else uses PG's own AIO/pread/WAL.
+- **observability**: essentially NONE of libxtc's is surfaced (only
+  xtc_exec_loop_stats -> xtc_pg_carrier_total_steals(), test-only).
+
+## libxtc surface relevant to the foundation (verified in XTC_ROOT/src/inc, v1.31.0)
+
+- **xtc_log.h** (9 fns): xtc_log_create/destroy, set_floor, set_default,
+  log_default, log_write/vwrite, drain, drop_count. Levels + async drain +
+  drop-count (backpressure-aware structured logging).
+- **xtc_stats.h** (17 fns): counter/gauge/histogram create+ops+read,
+  xtc_metrics_iterate(visit_fn), xtc_metrics_dump_prometheus(fd). Cache-line-
+  local atomic counters; quantile histograms.
+- **xtc_exec.h**: xtc_exec_loop_stats(exec, idx, {tasks_run, steals}) per loop;
+  set/get_eager_rebalance; set/get_steal_backoff (v1.31.0).
+- **xtc_lwlock.h** (11), **xtc_lrlock.h** (15, reader/writer), **xtc_lockmgr.h**
+  (16, + xtc_lockmgr_stat), **xtc_sync.h** (43): the lock/CV family.
+- **xtc_dump.h**: xtc_dump(fd) full runtime dump (crash diagnostics).
+- **xtc_reg.h** (13), **xtc_svr.h**/**xtc_orc.h**/**xtc_pool.h**/**xtc_fsm.h**:
+  the OTP behaviours for the later supervision/pool/registry fusion.
+
+## Ordered increments (foundation first, outward)
+
+Dependency-ordered; each is its own commit(s) + two-reviewer gate + A/B where it
+touches a hot path. Perf-neutral infra increments (observability) need only the
+green gate; hot-path replacements (locks, latch/CV) need the A/B.
+
+### F0. Observability foundation (START HERE — perf-neutral, unlocks the rest)
+- **F0a. xtc_log -> elog bridge (GUC-gated).** Install an xtc_log sink (via
+  xtc_log_set_default) whose write callback routes into PG's ereport/elog at a
+  mapped level, gated behind a developer GUC (e.g. `xtc_log_min_messages`),
+  default off/high-floor. So libxtc-internal diagnostics (io-wq cap -ENOSYS on
+  old kernels, wake-path warnings, DST hooks) become visible in the PG log.
+  Threaded-only; process mode never installs it. Carrier-startup timing: install
+  after PG logging is up, on the scheduler thread.
+- **F0b. pg_stat_xtc_carriers view.** A SRF + system view exposing per-loop
+  xtc_exec_loop_stats (tasks_run, steals), plus total steals, loop count,
+  carrier count, idle/eager-rebalance/steal-backoff state. Promote the existing
+  test-only total_steals into a real, documented, non-test SQL surface.
+- **F0c. xtc_metrics passthrough (optional, same increment).** Expose
+  xtc_metrics_iterate as a pg_stat_xtc_metrics SRF (name/type/value) so any
+  counter/gauge/histogram libxtc or our carrier code registers is queryable;
+  and an admin function wrapping xtc_metrics_dump_prometheus(fd) for scrape.
+- **F0d. xtc_dump on threaded crash.** In the fault-guard path (pg_xtc_carrier.c
+  fault handler), call xtc_dump to a log fd before fail-stop, so a threaded crash
+  leaves a libxtc-runtime dump (loops, procs, mailboxes) alongside the backtrace.
+
+### F1. Carrier/runtime counters (build ON F0)
+Instrument our own carrier/scheduler hot paths with xtc_stats counters
+(sessions leased, protocol parks, migrations, GUC-amutex contention, wake
+deliveries) so the metrics view shows PG-side runtime health, not just libxtc's.
+This makes F2+ measurable in-tree.
+
+### F2. Lock/CV plumbing dedup (the "locks" foundation — hot path, A/B required)
+Replace the RAW pthread_mutex/pthread_cond in the threaded-runtime plumbing with
+xtc primitives, in dependency order (only where the users run on a loop):
+- pooled-protocol queue mutex+cond -> xtc_chan / xtc mailbox (producers are the
+  postmaster thread + carriers; consumers are carriers on loops).
+- GUC amutex, PMChild, ps_status, pg_locale, reloptions guards -> xtc_lwlock /
+  xtc_sync, case by case, each proven to preserve holdoff/fairness.
+DO NOT touch in-backend shmem LWLock/CV yet (correct for both models; the deeper
+Latch/LWLock/CV-onto-xtc fusion is F4, gated on more of the runtime being fibers).
+
+### F3. Steal-backoff + parked-carrier polling (the queued perf work, now measured)
+Wire xtc_exec_set_steal_backoff; tame the parked-carrier CFS newidle tax
+(update_sg_lb_stats 41% on pgbench select@384). Measured via F0/F1 views + A/B.
+
+### F4+ (later, per existing Phase 18): Latch/LWLock/CV/AIO onto xtc primitives;
+xtc_pool for carrier/worker pools; xtc_svr/xtc_orc supervision; xtc_reg backend
+registry; xtc_xproc watchdog. Each large, each gated, each A/B'd. MemoryContext
+-> xtc_mctx stays defer-until-proven; shared-memory -> xtc is a NON-GOAL (only
+xtc_slab INSIDE a PG-owned DSM region is sanctioned).
+
+## Invariants for every increment (the guardrails)
+- Process mode byte-for-byte; gate behind USE_XTC_CARRIER / multithreaded /
+  xtc_in_backend_fiber as appropriate.
+- Two independent adversarial reviews before landing.
+- A/B on check-threaded-pooled for hot-path changes; green gate for infra.
+- Keep the fallback until the replacement is proven; one behaviour at a time.
+- Prefer surfacing DST-visibility gains explicitly (which pthread this removes).
+
+## Status
+- F0 is the active increment (start: F0b pg_stat_xtc_carriers is the lowest-risk
+  first step; F0a xtc_log bridge next; F0c/F0d follow).
+- Prior fusion wins already landed: eager-rebalance (v1.27), io-wq cap +
+  right-sized executor (v1.31.0 + loop-count fix) — see the 2026-07-24 metal A/B.
