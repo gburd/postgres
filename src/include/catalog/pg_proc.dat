@@ -6113,7 +6113,7 @@
   proargnames => '{stats_reset,prefetch,hit,skip_init,skip_new,skip_fpw,skip_rep,wal_distance,block_distance,io_depth}',
   prosrc => 'pg_stat_get_recovery_prefetch' },
 
-{ oid => '6', descr => 'statistics: per-loop libxtc carrier scheduler stats',
+{ oid => '8420', descr => 'statistics: per-loop libxtc carrier scheduler stats',
   proname => 'pg_stat_get_xtc_carriers', prorows => '64', proretset => 't',
   provolatile => 'v', proparallel => 'r', prorettype => 'record',
   proargtypes => '',
