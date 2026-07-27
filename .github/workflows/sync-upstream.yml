@@ -18,7 +18,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # PAT with repo + workflow scope. The default GITHUB_TOKEN cannot push
+          # commits that touch .github/workflows/ (platform block). See SYNC_TOKEN
+          # repo secret. Falls back to GITHUB_TOKEN if unset (push will fail on
+          # workflow-file changes, but non-workflow syncs still work).
+          token: ${{ secrets.SYNC_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Configure Git
         run: |
