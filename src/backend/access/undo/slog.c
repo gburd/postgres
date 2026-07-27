@@ -39,6 +39,7 @@
 
 #include "access/relundo.h"
 #include "access/slog.h"
+#include "access/slog_internal.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "common/hashfn.h"
@@ -121,25 +122,11 @@ slog_atm_key_reloid(uint64 key)
 
 /*
  * Initial size for the sLog DSA area (backs the aborted-txn radix tree).
- * Grows dynamically as needed up to slog_dsa_max_size_mb.
+ * Grows dynamically as needed up to slog_dsa_max_size_mb.  SLOG_DSA_INIT_SIZE
+ * and the shared-state struct are defined in access/slog_internal.h, shared
+ * with the optional tuple sLog (slog_tuple.c).
  */
-#define SLOG_DSA_INIT_SIZE		(512 * 1024)	/* 512 KB */
 #define SLOG_DSA_MAX_SIZE_MB	256				/* default max: 256 MB */
-
-/* ----------------------------------------------------------------
- * Shared state definition
- * ----------------------------------------------------------------
- */
-typedef struct SLogSharedState
-{
-	/* Transaction ATM (adaptive radix tree in the DSA area below) */
-	dsa_pointer atm_handle;		/* RT handle; InvalidDsaPointer until init */
-	LWLockPadded txn_lock;		/* single LWLock serializing ATM access */
-
-	/* DSA area backing the aborted-txn radix tree */
-	dsa_area   *dsa_area;		/* set during SLogShmemInit, NULL until then */
-	char		dsa_space[SLOG_DSA_INIT_SIZE];
-} SLogSharedState;
 
 /* GUC: maximum sLog DSA area size (in MB) */
 int			slog_dsa_max_size_mb = SLOG_DSA_MAX_SIZE_MB;
@@ -148,7 +135,7 @@ int			slog_dsa_max_size_mb = SLOG_DSA_MAX_SIZE_MB;
  * Static variables
  * ----------------------------------------------------------------
  */
-static SLogSharedState *SLogState = NULL;
+SLogSharedState *SLogState = NULL;
 
 /* Per-backend DSA attachment (lazy, via SLogEnsureDsaAttached) */
 static dsa_area *slog_dsa_handle = NULL;
@@ -207,7 +194,7 @@ slog_atm_tree(void)
 Size
 SLogShmemSize(void)
 {
-	return MAXALIGN(sizeof(SLogSharedState));
+	return add_size(MAXALIGN(sizeof(SLogSharedState)), SLogTupleShmemSize());
 }
 
 /*
@@ -225,6 +212,9 @@ SLogShmemRequest(void)
 					   .size = sizeof(SLogSharedState),
 					   .ptr = (void **) &SLogState,
 		);
+
+	/* Optional tuple sLog: register its flat-hash partition block. */
+	SLogTupleShmemRequest();
 }
 
 /*
@@ -242,6 +232,9 @@ SLogShmemInit(void)
 
 	/* ---- Initialize locks ---- */
 	LWLockInitialize(&SLogState->txn_lock.lock, LWTRANCHE_SLOG);
+
+	/* ---- Optional tuple sLog: allocate + init the flat-hash partitions ---- */
+	SLogTupleShmemInit();
 
 	/* ---- Initialize DSA area (backs the aborted-txn radix tree) ---- */
 	SLogState->dsa_area = dsa_create_in_place(SLogState->dsa_space,
