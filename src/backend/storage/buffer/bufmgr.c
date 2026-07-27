@@ -2615,24 +2615,13 @@ again:
 		}
 
 		/*
-		 * If using a nondefault strategy, and this victim came from the
-		 * strategy ring, let the strategy decide whether to reject it when
-		 * reusing it would require a WAL flush.  This only applies to
-		 * permanent buffers; unlogged buffers can have fake LSNs, so
-		 * XLogNeedsFlush() is not meaningful for them.
-		 *
-		 * We need to hold the content lock in at least share-exclusive mode
-		 * to safely inspect the page LSN, so this couldn't have been done
-		 * inside StrategyGetBuffer().
+		 * We hold the content lock in share-exclusive mode (acquired above) so
+		 * it is safe to flush the dirty victim.  (Bulk reads no longer use a
+		 * ring or reject dirty victims -- scan resistance is intrinsic to the
+		 * cooling evictor -- so there is no strategy-reject step here anymore;
+		 * the write-side strategies always write their own dirty victims
+		 * inline, which is their backpressure.)
 		 */
-		if (strategy && from_ring &&
-			buf_state & BM_PERMANENT &&
-			XLogNeedsFlush(BufferGetLSN(buf_hdr)) &&
-			StrategyRejectBuffer(strategy, buf_hdr, from_ring))
-		{
-			UnlockReleaseBuffer(buf);
-			goto again;
-		}
 
 		/* OK, do the I/O */
 		FlushBuffer(buf_hdr, NULL, IOOBJECT_RELATION, io_context);
@@ -4700,10 +4689,8 @@ FlushBuffer(BufferDesc *buf, SMgrRelation reln, IOObject io_object,
 	 * being used, this is counted as an IOCONTEXT_NORMAL IOOP_WRITE.
 	 *
 	 * If a shared buffer which was added to the ring later because the
-	 * current strategy buffer is pinned or in use or because all strategy
-	 * buffers were dirty and rejected (for BAS_BULKREAD operations only)
-	 * requires flushing, this is counted as an IOCONTEXT_NORMAL IOOP_WRITE
-	 * (from_ring will be false).
+	 * current strategy buffer is pinned or in use requires flushing, this is
+	 * counted as an IOCONTEXT_NORMAL IOOP_WRITE (from_ring will be false).
 	 *
 	 * When a strategy is not in use, the write can only be a "regular" write
 	 * of a dirty shared buffer (IOCONTEXT_NORMAL IOOP_WRITE).

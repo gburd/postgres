@@ -635,8 +635,6 @@ extern void TerminateBufferIO(BufferDesc *buf, bool clear_dirty, uint64 set_flag
 extern IOContext IOContextForStrategy(BufferAccessStrategy strategy);
 extern BufferDesc *StrategyGetBuffer(BufferAccessStrategy strategy,
 									 uint64 *buf_state, bool *from_ring);
-extern bool StrategyRejectBuffer(BufferAccessStrategy strategy,
-								 BufferDesc *buf, bool from_ring);
 
 extern int	StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc);
 extern void StrategyNotifyBgWriter(int bgwprocno);

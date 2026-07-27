@@ -520,9 +520,6 @@ GetAccessStrategy(BufferAccessStrategyType btype)
 
 	/*
 	 * Select ring size to use.  See buffer/README for rationales.
-	 *
-	 * Note: if you change the ring size for BAS_BULKREAD, see also
-	 * SYNC_SCAN_REPORT_INTERVAL in access/heap/syncscan.c.
 	 */
 	switch (btype)
 	{
@@ -531,50 +528,20 @@ GetAccessStrategy(BufferAccessStrategyType btype)
 			return NULL;
 
 		case BAS_BULKREAD:
-			{
-				int			ring_max_kb;
 
-				/*
-				 * The ring always needs to be large enough to allow some
-				 * separation in time between providing a buffer to the user
-				 * of the strategy and that buffer being reused. Otherwise the
-				 * user's pin will prevent reuse of the buffer, even without
-				 * concurrent activity.
-				 *
-				 * We also need to ensure the ring always is large enough for
-				 * SYNC_SCAN_REPORT_INTERVAL, as noted above.
-				 *
-				 * Thus we start out a minimal size and increase the size
-				 * further if appropriate.
-				 */
-				ring_size_kb = 256;
+			/*
+			 * Bulk reads no longer use a ring.  The cooling-stage evictor
+			 * admits demand-loaded pages in the probationary COOL state, so a
+			 * large single-pass scan fills and drains the COOL stage without
+			 * displacing the hot working set: scan resistance is intrinsic to
+			 * replacement and the read ring is redundant.  (BAS_BULKWRITE and
+			 * BAS_VACUUM keep their rings; those bound writer writeback, which
+			 * the evictor does not do.)  The type is retained so existing
+			 * callers and the IOCONTEXT_BULKREAD statistics column keep
+			 * working; it just maps to the default strategy now.
+			 */
+			return NULL;
 
-				/*
-				 * There's no point in a larger ring if we won't be allowed to
-				 * pin sufficiently many buffers.  But we never limit to less
-				 * than the minimal size above.
-				 */
-				ring_max_kb = GetPinLimit() * (BLCKSZ / 1024);
-				ring_max_kb = Max(ring_size_kb, ring_max_kb);
-
-				/*
-				 * We would like the ring to additionally have space for the
-				 * configured degree of IO concurrency. While being read in,
-				 * buffers can obviously not yet be reused.
-				 *
-				 * Each IO can be up to io_combine_limit blocks large, and we
-				 * want to start up to effective_io_concurrency IOs.
-				 *
-				 * Note that effective_io_concurrency may be 0, which disables
-				 * AIO.
-				 */
-				ring_size_kb += (BLCKSZ / 1024) *
-					io_combine_limit * effective_io_concurrency;
-
-				if (ring_size_kb > ring_max_kb)
-					ring_size_kb = ring_max_kb;
-				break;
-			}
 		case BAS_BULKWRITE:
 			ring_size_kb = 16 * 1024;
 			break;
@@ -669,15 +636,6 @@ GetAccessStrategyPinLimit(BufferAccessStrategy strategy)
 
 	switch (strategy->btype)
 	{
-		case BAS_BULKREAD:
-
-			/*
-			 * Since BAS_BULKREAD uses StrategyRejectBuffer(), dirty buffers
-			 * shouldn't be a problem and the caller is free to pin up to the
-			 * entire ring at once.
-			 */
-			return strategy->nbuffers;
-
 		default:
 
 			/*
@@ -829,36 +787,4 @@ IOContextForStrategy(BufferAccessStrategy strategy)
 
 	elog(ERROR, "unrecognized BufferAccessStrategyType: %d", strategy->btype);
 	pg_unreachable();
-}
-
-/*
- * StrategyRejectBuffer -- consider rejecting a dirty buffer
- *
- * When a nondefault strategy is used, the buffer manager calls this function
- * when it turns out that the buffer selected by StrategyGetBuffer needs to
- * be written out and doing so would require flushing WAL too.  This gives us
- * a chance to choose a different victim.
- *
- * Returns true if buffer manager should ask for a new victim, and false
- * if this buffer should be written and re-used.
- */
-bool
-StrategyRejectBuffer(BufferAccessStrategy strategy, BufferDesc *buf, bool from_ring)
-{
-	/* We only do this in bulkread mode */
-	if (strategy->btype != BAS_BULKREAD)
-		return false;
-
-	/* Don't muck with behavior of normal buffer-replacement strategy */
-	if (!from_ring ||
-		strategy->buffers[strategy->current] != BufferDescriptorGetBuffer(buf))
-		return false;
-
-	/*
-	 * Remove the dirty buffer from the ring; necessary to prevent infinite
-	 * loop if all ring members are dirty.
-	 */
-	strategy->buffers[strategy->current] = InvalidBuffer;
-
-	return true;
 }
