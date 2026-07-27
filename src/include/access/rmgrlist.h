@@ -55,3 +55,6 @@ PG_RMGR(RM_RELUNDO_ID, "RelUndo", relundo_redo, relundo_desc, relundo_identify, 
 #ifdef USE_RECNO
 PG_RMGR(RM_RECNO_ID, "RECNO", recno_redo, recno_desc, recno_identify, NULL, NULL, recno_mask, recno_decode)
 #endif
+#ifdef USE_FLUX
+PG_RMGR(RM_FLUX_ID, "FLUX", flux_redo, flux_desc, flux_identify, NULL, NULL, flux_mask, flux_decode)
+#endif
