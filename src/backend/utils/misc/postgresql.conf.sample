@@ -924,6 +924,7 @@
 #undo_batch_size_kb = 256               # KB per UNDO batch flush (64-4096); reload
 #undo_batch_record_limit = 1000         # records per UNDO batch flush (100-100000); reload
 #slog_dsa_max_size_mb = 256             # MB; max sLog DSA area size (aborted-txn tree)
+#slog_num_partitions = 0                # 0 = auto (4x CPUs); requires restart
 #max_logical_revert_workers = 2         # 0 disables the logical revert launcher
 #logical_revert_naptime = 1s            # time between ATM scan cycles
 
