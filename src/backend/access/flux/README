@@ -1,0 +1,162 @@
+FLUX
+====
+
+FLUX is a table access method that realizes what zheap was designed to be: a
+HEAP replacement that stores old row versions in UNDO instead of leaving dead
+tuples in the main relation, while working entirely on today's index and
+executor APIs.  FLUX adds no new index-AM contract.  It was derived from the
+RECNO table AM (the closest in-tree in-place + UNDO code) and then reshaped
+into a clean, boring, correct heap replacement.
+
+This README describes FLUX's design and how it differs from heap.  For the
+UNDO substrate FLUX relies on, see src/backend/access/undo/README (the
+cluster-wide UNDO engine) and src/include/access/relundo.h (the per-relation
+UNDO fork).  The RECNO/zheap origin design notes are in DESIGN.
+
+
+What FLUX keeps from the zheap model
+------------------------------------
+
+* In-place UPDATE.  When an UPDATE touches only non-indexed columns, the new
+  tuple version overwrites the old one in the same slot (same TID).  The old
+  version is pushed to the relation's per-relation UNDO fork (RelUndo,
+  RELUNDO_FORKNUM) via the tuple header's version pointer (t_verptr).  A
+  snapshot that cannot see the updater reconstructs the old version by walking
+  that UNDO chain (flux_pvs.c, FluxReconstructVisibleVersion).  This is the
+  zheap win: an UPDATE that does not change any indexed column touches no
+  index at all.
+
+* UNDO-based rollback.  ROLLBACK (and error/abort) replays the RelUndo chain
+  backward, restoring before-images in place (relundo_apply.c).  There are no
+  dead tuples to vacuum away for a rolled-back change.
+
+* UNDO-based old-version reconstruction for MVCC.  Older snapshots read the
+  pre-update image from the UNDO fork, not from a second on-page copy.
+
+* Crash safety.  Every page modification and its UNDO record are WAL-logged
+  (resource manager RM_FLUX_ID, flux_xlog.c); recovery replays them and the
+  per-relation UNDO recovery restores any before-images for transactions that
+  were in flight at the crash.
+
+* sLog for uncommitted-writer tracking.  FLUX shares the cluster's sLog
+  extension (slog.c, registered once as SLogShmemCallbacks) for self-visibility,
+  command-level (CID) checks, and write-write conflict serialization.  The
+  authoritative commit oracle is CLOG; visibility is heap-shaped xmin/xmax
+  (see below).
+
+
+How FLUX differs from heap
+--------------------------
+
+1. Old versions live in UNDO, not in the table.  Heap keeps every old row
+   version in the relation until VACUUM removes it (bloat).  FLUX keeps only
+   the newest version on the page and stores the old one in the UNDO fork,
+   which is discarded once no snapshot needs it.  A non-in-place change's old
+   version and a DELETE's tombstone are reclaimable as soon as the transaction
+   commits and the version falls below the removable horizon.
+
+2. In-place for non-key UPDATEs; out-of-place for key-changing UPDATEs.
+   This is the central design decision and the reason FLUX needs no index-AM
+   change.  See the next section.
+
+3. Wide values use standard TOAST, not RECNO's overflow pages.  A FLUX
+   relation gets an ordinary heap TOAST table (relation_needs_toast_table
+   mirrors heap; relation_toast_am returns the heap AM).  On INSERT/UPDATE,
+   oversized varlena columns are externalized through the AM-agnostic
+   toast_helper routines (flux_toast_tuple in flux_tuple.c) exactly as heap
+   does; VACUUM deletes the external datums of dead tuples
+   (flux_toast_delete).  RECNO's overflow machinery, its attribute
+   compression, and its compression dictionary were removed entirely.
+
+4. Heap-shaped xmin/xmax visibility.  FLUX uses the "boring correct"
+   visibility model: each tuple carries t_xmin (inserter) and t_xmax
+   (deleter/updater), resolved against CLOG and the reader's snapshot exactly
+   like HeapTupleSatisfiesMVCC.  FLUX does NOT use the HLC (hybrid logical
+   clock) model that RECNO retains.
+
+
+Secondary indexes and the key-changing UPDATE (stock table-AM design)
+---------------------------------------------------------------------
+
+Secondary indexes on a FLUX table are ordinary heap-TID nbtree (or any
+standard index-AM) entries: plain 6-byte TIDs, exactly like heap.  FLUX uses
+only today's stock table-AM and index-AM interfaces -- no per-tuple
+generation, no wider index identity, no executor stale-entry recheck
+exactly like a heap table for indexing.
+
+The one hazard an in-place-with-stable-TID AM creates for a plain-TID index is
+the "A -> B -> A" problem: if the tuple stays at one TID while an indexed
+column changes, the index accumulates a stale (oldkey, TID) entry beside the
+new (newkey, TID) entry, both pointing at the same live TID; an index scan
+would then double-count or return rows under the wrong key.
+
+FLUX avoids the hazard the heap way:
+
+  * An UPDATE that changes NO indexed column is done IN PLACE (same TID).  The
+    index entries still point at the right key and TID, so no index
+    maintenance is needed.  flux_tuple_update sets *update_indexes = TU_None
+    and the executor inserts no index entries.
+
+  * An UPDATE that changes ANY indexed column is done OUT OF PLACE: FLUX stores
+    the new version at a NEW TID (DELETE old + INSERT new -- zheap's
+    non-in-place update, "essentially DELETE+INSERT").  It sets slot->tts_tid
+    to the new TID and *update_indexes = TU_All, so the executor inserts fresh
+    entries in every index at the new TID.  The old TID's index entries now
+    point at a dead tuple and are reclaimed by ordinary VACUUM -- exactly like
+    heap.  The old version remains reachable to older snapshots through the
+    UNDO before-image the DELETE recorded, and a ROLLBACK undoes both the
+    DELETE and the INSERT.
+
+Stock PostgreSQL no longer tells the AM which columns changed, so FLUX
+self-computes it (flux_indexed_attr_changed), matching heap's internal
+HeapDetermineColumnsInfo: it deforms the old on-page tuple, reads the new
+values from the slot, and value-compares every attribute referenced by any
+index (RelationGetIndexAttrBitmap HOT_BLOCKING + SUMMARIZED).  If any indexed
+attribute differs it takes the out-of-place path.  FLUX never uses
+TU_Summarizing: a key-changing UPDATE always moves the TID, so TU_All already
+rebuilds summarizing indexes too.
+
+Consequence: idxscan, seqscan, and bitmapscan return identical results across
+any sequence of key-changing UPDATEs (including A -> B -> A recurrences),
+because the index is maintained by the standard heap path and never holds two
+live entries for one TID under different keys.  Verified by amcheck
+(heapallindexed) and by the scan cross-check in the test suite.
+
+
+Registration
+------------
+
+* pg_am: amname 'flux', amhandler flux_tableam_handler, amtype 't'
+  (FLUX_TABLE_AM_OID = 9316; pg_proc oid 9402).
+* WAL resource manager: RM_FLUX_ID (rmgrlist.h), redo/desc/identify/mask in
+  flux_xlog.c / fluxdesc.c, logical decoding in decode.c (flux_decode).
+* Cluster-wide UNDO resource manager: UNDO_RMID_FLUX (=5), FluxUndoRmgrInit
+  (undormgrlist.h), used so index inserts on a FLUX table can piggyback their
+  index-UNDO onto the table's active UNDO context.
+* Two-phase commit: TWOPHASE_RM_FLUX_ID (=6), flux_twophase_* callbacks.
+* Shared memory: FluxMvccShmemCallbacks and FluxDirtyMapShmemCallbacks
+  (subsystemlist.h); the sLog is the shared SLogShmemCallbacks.
+* GUC: flux_lazy_uncommitted_clear (the RECNO compression GUCs were removed
+  with the compression subsystem).
+
+FLUX is always compiled (USE_FLUX), like RECNO, because the catalog and rmgr
+lists reference its symbols unconditionally.
+
+
+Source layout
+-------------
+
+  flux_handler.c     table-AM routine table (flux_methods), scans, TOAST hooks
+  flux_operations.c  INSERT / DELETE / UPDATE (in-place + out-of-place), VACUUM
+  flux_tuple.c       tuple form/deform, flux_toast_tuple / flux_toast_delete
+  flux_mvcc.c        heap-shaped xmin/xmax visibility state, shmem
+  flux_pvs.c         prior-version reconstruction from the UNDO fork
+  flux_slot.c        FLUX minimal tuple slot
+  flux_xlog.c        WAL record types, redo, mask
+  flux_undo.c        UNDO_RMID_FLUX resource manager (index-UNDO piggyback)
+  flux_relundo.c     per-relation UNDO fork glue
+  flux_lock.c        tuple locking (SELECT FOR UPDATE/SHARE)
+  flux_vm.c          visibility map maintenance
+  flux_fsm.c         free-space map integration
+  flux_dirtymap.c    per-block dirty map (scan-path sLog bypass), shmem
+  flux_stats.c       relation size / density estimation helpers

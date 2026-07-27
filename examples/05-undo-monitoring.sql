@@ -12,7 +12,7 @@ SELECT * FROM pg_stat_get_undo_buffers();
 -- (normally handled automatically by the UNDO worker)
 SELECT pg_undo_force_discard();
 
--- List tables using an AM that supports UNDO (i.e., recno tables)
+-- List tables using an AM that supports UNDO (i.e., flux tables)
 SELECT
     n.nspname AS schema,
     c.relname AS table,
@@ -20,7 +20,7 @@ SELECT
 FROM pg_class c
 JOIN pg_namespace n ON c.relnamespace = n.oid
 JOIN pg_am am ON c.relam = am.oid
-WHERE am.amname = 'recno'
+WHERE am.amname = 'flux'
 ORDER BY n.nspname, c.relname;
 
 -- Monitor UNDO worker activity

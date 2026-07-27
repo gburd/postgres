@@ -35,3 +35,6 @@
 /* built-in index AM UNDO resource managers */
 UNDO_RMGR_INIT(NbtreeUndoRmgrInit)
 UNDO_RMGR_INIT(HashUndoRmgrInit)
+
+/* FLUX: UNDO-based heap-replacement table AM UNDO resource manager */
+UNDO_RMGR_INIT(FluxUndoRmgrInit)

@@ -2,18 +2,18 @@
 -- Example 1: Basic UNDO Setup and Monitoring
 -- ============================================================================
 -- This example demonstrates:
--- 1. Creating a table that uses UNDO (via the recno access method)
+-- 1. Creating a table that uses UNDO (via the flux access method)
 -- 2. Performing modifications
 -- 3. Monitoring UNDO activity
 
--- STEP 1: Create a table using the recno AM (which supports UNDO)
+-- STEP 1: Create a table using the flux AM (which supports UNDO)
 -- No server-level configuration is needed; UNDO is always-on infrastructure.
 CREATE TABLE customer_data (
     id          serial PRIMARY KEY,
     name        text NOT NULL,
     email       text,
     created_at  timestamptz DEFAULT now()
-) USING recno;
+) USING flux;
 
 -- STEP 2: Insert sample data
 INSERT INTO customer_data (name, email) VALUES
@@ -21,7 +21,7 @@ INSERT INTO customer_data (name, email) VALUES
     ('Bob Johnson', 'bob@example.com'),
     ('Charlie Brown', 'charlie@example.com');
 
--- STEP 3: Perform an update (in-place for recno)
+-- STEP 3: Perform an update (in-place for flux)
 UPDATE customer_data SET email = 'alice.smith@newdomain.com' WHERE name = 'Alice Smith';
 
 -- STEP 4: Delete a row
