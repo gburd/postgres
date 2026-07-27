@@ -1105,6 +1105,20 @@
   options => 'file_extend_method_options',
 },
 
+{ name => 'flux_disable_delta_undo', type => 'bool', context => 'PGC_USERSET', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Force FLUX to store the full before-image instead of a byte-diff in the UNDO fork.',
+  long_desc => 'Developer aid for measuring the per-UPDATE WAL volume of the byte-diff (delta) UNDO optimization. When on, FLUX always writes the full old tuple, disabling the compact byte-diff path.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'flux_disable_delta_undo',
+  boot_val => 'false',
+},
+
+{ name => 'flux_lazy_uncommitted_clear', type => 'bool', context => 'PGC_USERSET', group => 'CLIENT_CONN_STATEMENT',
+  short_desc => 'Skip commit-time page re-visits for FLUX UNCOMMITTED flag clearing.',
+  variable => 'flux_lazy_uncommitted_clear',
+  boot_val => 'false',
+},
+
 { name => 'from_collapse_limit', type => 'int', context => 'PGC_USERSET', group => 'QUERY_TUNING_OTHER',
   short_desc => 'Sets the FROM-list size beyond which subqueries are not collapsed.',
   long_desc => 'The planner will merge subqueries into upper queries if the resulting FROM list would have no more than this many items.',

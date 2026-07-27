@@ -149,7 +149,68 @@ typedef struct RelUndoRecordHeader
 #define RELUNDO_INFO_HAS_TUPLE		0x0001	/* Record contains complete tuple */
 #define RELUNDO_INFO_HAS_CLR		0x0002	/* CLR pointer is valid */
 #define RELUNDO_INFO_CLR_APPLIED	0x0004	/* CLR has been applied */
-#define RELUNDO_INFO_PARTIAL_TUPLE	0x0008	/* Delta/partial tuple only */
+#define RELUNDO_INFO_PARTIAL_TUPLE	0x0008	/* Delta/partial tuple only: the
+											 * trailing tuple_len bytes are a
+											 * RelUndoDiffRecord byte-diff, not a
+											 * full before-image.  Reverse-applied
+											 * against the current on-page tuple to
+											 * reconstruct the old bytes (see
+											 * RelUndoApplyDiffReverse).  A
+											 * self-describing byte splice, so the
+											 * engine reverse-applies it with no AM
+											 * knowledge; the producing AM decides
+											 * when the change is compact enough to
+											 * be worth a delta. */
+#define RELUNDO_INFO_ESCROW			0x0010	/* commutative delta record: the
+											 * consumer AM's escrow apply hook
+											 * reverses it by ADDing the carried
+											 * negated delta, not by restoring a
+											 * full before-image */
+
+/*
+ * RelUndoDiffRecord: on-disk byte-diff carried by a RELUNDO_UPDATE record
+ * flagged RELUNDO_INFO_PARTIAL_TUPLE.
+ *
+ * A byte-diff is a single splice against the NEW (current on-page) tuple: the
+ * longest common prefix and suffix are stripped, and only the differing middle
+ * of the OLD bytes is carried.  Layout: this fixed header, then ins_len bytes
+ * of the old tuple's differing region.  Reconstruction copies the new tuple's
+ * unchanged prefix, substitutes the carried old bytes, then copies the new
+ * tuple's unchanged suffix, producing an old_total_len-byte old tuple (which
+ * may differ from the new length when the update grew or shrank the row).
+ *
+ * The format is self-describing and AM-neutral, so RelUndoApplyDiffReverse
+ * reverses it during rollback/recovery without any table-AM callback.  The
+ * producing AM (FLUX) builds it via FluxComputeTupleDiff and also reverses it
+ * in its own version-reconstruction read path via FluxApplyDiffReverse; both
+ * share this one wire struct.
+ */
+typedef struct RelUndoDiffRecord
+{
+	uint16		old_total_len;	/* length of the reconstructed old tuple */
+	uint16		offset;			/* byte offset of the splice in the new tuple */
+	uint16		del_len;		/* new bytes removed at offset */
+	uint16		ins_len;		/* old bytes inserted at offset (== count of
+								 * trailing old_bytes) */
+	/* ins_len bytes of the old tuple's differing region follow */
+} RelUndoDiffRecord;
+
+#define SizeOfRelUndoDiffRecord	(offsetof(RelUndoDiffRecord, ins_len) + sizeof(uint16))
+
+/*
+ * RelUndoApplyDiffReverse - reconstruct old tuple bytes from new bytes + diff.
+ *
+ * Generic (AM-neutral) reverse-apply of a RelUndoDiffRecord: substitutes the
+ * carried old bytes over the changed region of new_data.  out_old_data must
+ * hold diff->old_total_len bytes.  Returns true on success, false on a
+ * malformed / out-of-bounds diff.  Used by the UNDO engine's RELUNDO_UPDATE
+ * rollback path; the identical algorithm is mirrored in FLUX's PVS read path
+ * (FluxApplyDiffReverse) so a delta round-trips for both rollback and
+ * old-version reconstruction.
+ */
+extern bool RelUndoApplyDiffReverse(const char *new_data, Size new_len,
+									const RelUndoDiffRecord *diff,
+									char *out_old_data, Size *out_old_len);
 
 /*
  * RELUNDO_INSERT payload

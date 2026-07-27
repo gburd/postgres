@@ -77,6 +77,7 @@ test: brin gin gist spgist privileges init_privs security_label collate matview 
 # Additional BRIN tests
 # ----------
 test: brin_bloom brin_multi
+test: flux
 
 # ----------
 # Another group of parallel tests
