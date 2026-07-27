@@ -23,6 +23,8 @@ OBJS = \
 	relundo_worker.o \
 	relundo_xlog.o \
 	slog.o \
+	slog_flathash.o \
+	slog_tuple.o \
 	undo.o \
 	undo_bufmgr.o \
 	undo_xlog.o \

@@ -2783,6 +2783,15 @@
   max => '16384',
 },
 
+{ name => 'slog_num_partitions', type => 'int', context => 'PGC_POSTMASTER', group => 'WAL_SETTINGS',
+  short_desc => 'Number of sLog flat hash partitions (0 = auto from CPU count).',
+  long_desc => 'Controls the number of partitions for the optional sLog tuple tracking hash. More partitions reduce writer lock contention. Set 0 for auto-sizing (4x CPUs, clamped 16-256, power of 2). Requires restart.',
+  variable => 'slog_num_partitions',
+  boot_val => '0',
+  min => '0',
+  max => '256',
+},
+
 { name => 'ssl', type => 'bool', context => 'PGC_SIGHUP', group => 'CONN_AUTH_SSL',
   short_desc => 'Enables SSL connections.',
   variable => 'EnableSSL',

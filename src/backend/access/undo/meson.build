@@ -11,6 +11,8 @@ backend_sources += files(
   'relundo_worker.c',
   'relundo_xlog.c',
   'slog.c',
+  'slog_flathash.c',
+  'slog_tuple.c',
   'undo.c',
   'undo_bufmgr.c',
   'undo_xlog.c',
