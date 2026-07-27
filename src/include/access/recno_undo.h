@@ -44,6 +44,16 @@
 #define RECNO_UNDO_INSERT			0x0001
 #define RECNO_UNDO_UPDATE			0x0002	/* full-tuple before-image */
 #define RECNO_UNDO_DELETE			0x0003	/* restore deleted tuple */
+#define RECNO_UNDO_ESCROW			0x0004	/* commutative delta: reverse-apply
+											 * subtracts this record's delta
+											 * (carried as the negated delta so
+											 * rollback/reconstruct ADD it).  The
+											 * record is written into the
+											 * per-relation UNDO fork as a
+											 * RELUNDO_UPDATE flagged
+											 * RELUNDO_INFO_ESCROW, carrying a
+											 * RelUndoEscrowExtra + negated-delta
+											 * bytes (see access/relundo.h). */
 
 /*
  * Common fixed-length header for every RECNO UNDO payload.  The

@@ -1,0 +1,72 @@
+Parsed test spec with 3 sessions
+
+starting permutation: w_begin_rc w_add100 w_self rc_begin rc_read w_commit rc_read rc_commit
+step w_begin_rc: BEGIN ISOLATION LEVEL READ COMMITTED;
+step w_add100: UPDATE esc_vis SET ytd = ytd + 100 WHERE id = 1;
+step w_self: SELECT id, ytd FROM esc_vis WHERE id = 1;
+id|ytd
+--+---
+ 1|600
+(1 row)
+
+step rc_begin: BEGIN ISOLATION LEVEL READ COMMITTED;
+step rc_read: SELECT id, ytd FROM esc_vis WHERE id = 1;
+id|ytd
+--+---
+ 1|500
+(1 row)
+
+step w_commit: COMMIT;
+step rc_read: SELECT id, ytd FROM esc_vis WHERE id = 1;
+id|ytd
+--+---
+ 1|600
+(1 row)
+
+step rc_commit: COMMIT;
+
+starting permutation: rr_begin rr_snap w_begin_rc w_add100 w_commit rr_reread rc_begin rc_read rc_commit rr_commit
+step rr_begin: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step rr_snap: SELECT id, ytd FROM esc_vis WHERE id = 1;
+id|ytd
+--+---
+ 1|500
+(1 row)
+
+step w_begin_rc: BEGIN ISOLATION LEVEL READ COMMITTED;
+step w_add100: UPDATE esc_vis SET ytd = ytd + 100 WHERE id = 1;
+step w_commit: COMMIT;
+step rr_reread: SELECT id, ytd FROM esc_vis WHERE id = 1;
+id|ytd
+--+---
+ 1|500
+(1 row)
+
+step rc_begin: BEGIN ISOLATION LEVEL READ COMMITTED;
+step rc_read: SELECT id, ytd FROM esc_vis WHERE id = 1;
+id|ytd
+--+---
+ 1|600
+(1 row)
+
+step rc_commit: COMMIT;
+step rr_commit: COMMIT;
+
+starting permutation: w_begin_rr w_add100 w_self w_commit w_begin_rr w_self w_commit
+step w_begin_rr: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step w_add100: UPDATE esc_vis SET ytd = ytd + 100 WHERE id = 1;
+step w_self: SELECT id, ytd FROM esc_vis WHERE id = 1;
+id|ytd
+--+---
+ 1|600
+(1 row)
+
+step w_commit: COMMIT;
+step w_begin_rr: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step w_self: SELECT id, ytd FROM esc_vis WHERE id = 1;
+id|ytd
+--+---
+ 1|600
+(1 row)
+
+step w_commit: COMMIT;

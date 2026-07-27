@@ -30,6 +30,7 @@
 #include "access/relundo.h"
 #include "access/slog.h"
 #include "access/xact.h"
+#include "storage/bufpage.h"
 
 /*
  * RecnoRelUndoClearTransientFlags
@@ -84,6 +85,41 @@ RecnoRelUndoDiscardRetained(void)
 }
 
 /*
+ * RecnoRelUndoApplyEscrow
+ *		Reverse-apply an escrow (commutative-delta) UNDO record: add the
+ *		carried negated delta to the escrow attribute of the on-page tuple.
+ *
+ * The engine (relundo_apply.c) has pinned+exclusive-locked the data page and
+ * located the target line pointer.  We delegate the deform/add/reform to the
+ * shared RecnoEscrowApplyNegDelta so rollback and the reader's reconstruct
+ * step apply the identical arithmetic.
+ */
+static void
+RecnoRelUndoApplyEscrow(Page page, OffsetNumber offset,
+						uint16 esc_off, const char *neg_delta,
+						uint16 neg_delta_len, const char *old_image,
+						uint32 old_len)
+{
+	ItemId		lp;
+	char	   *image;
+	uint32		image_len;
+
+	if (offset == InvalidOffsetNumber || offset > PageGetMaxOffsetNumber(page))
+		elog(ERROR, "RecnoRelUndoApplyEscrow: invalid offset %u", offset);
+
+	lp = PageGetItemId(page, offset);
+	if (!ItemIdIsNormal(lp))
+		elog(ERROR, "RecnoRelUndoApplyEscrow: tuple at offset %u is not normal",
+			 offset);
+
+	image = (char *) PageGetItem(page, lp);
+	image_len = ItemIdGetLength(lp);
+
+	RecnoEscrowRollback(image, image_len, esc_off,
+						neg_delta, neg_delta_len, old_image, old_len);
+}
+
+/*
  * RecnoRelUndoInstallHooks
  *		Wire the RECNO implementations into the AM-neutral UNDO core.
  *
@@ -96,5 +132,6 @@ RecnoRelUndoInstallHooks(void)
 	RelUndoClearTransientFlags_hook = RecnoRelUndoClearTransientFlags;
 	RelUndoAbortCleanup_hook = RecnoRelUndoAbortCleanup;
 	RelUndoDiscardRetained_hook = RecnoRelUndoDiscardRetained;
+	RelUndoApplyEscrow_hook = RecnoRelUndoApplyEscrow;
 	TableAMPrepare_hook = AtPrepare_Recno;
 }

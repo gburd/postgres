@@ -150,6 +150,11 @@ typedef struct RelUndoRecordHeader
 #define RELUNDO_INFO_HAS_CLR		0x0002	/* CLR pointer is valid */
 #define RELUNDO_INFO_CLR_APPLIED	0x0004	/* CLR has been applied */
 #define RELUNDO_INFO_PARTIAL_TUPLE	0x0008	/* Delta/partial tuple only */
+#define RELUNDO_INFO_ESCROW			0x0010	/* commutative delta record: the
+											 * consumer AM's escrow apply hook
+											 * reverses it by ADDing the carried
+											 * negated delta, not by restoring a
+											 * full before-image */
 
 /*
  * RELUNDO_INSERT payload
@@ -197,6 +202,37 @@ typedef struct RelUndoTupleLockPayload
 	ItemPointerData tid;		/* Locked tuple TID */
 	uint16		lock_mode;		/* LockTupleMode */
 } RelUndoTupleLockPayload;
+
+/*
+ * Escrow (commutative-delta) extra header.
+ *
+ * A consumer AM's escrow UPDATE is written into the per-relation UNDO fork as
+ * an ordinary RELUNDO_UPDATE record (so the version chain and the reader's
+ * reconstruct walk work), but flagged RELUNDO_INFO_ESCROW.  Instead of a full
+ * before-image tuple it carries this fixed header immediately after the
+ * RelUndoUpdatePayload, followed by neg_delta_len bytes holding the NEGATED
+ * delta value (the exact on-disk datum image: int8 is 8 raw bytes, numeric is
+ * a varlena Numeric).  Rollback and the reconstruct-prior step both ADD
+ * neg_delta to the escrow attribute, undoing the forward onpage += delta.
+ * The op is absolute-per-record, so a concurrent writer's delta on the same
+ * running sum is never clobbered.  The engine parses this header to locate
+ * (attnum, neg_delta) and hands them to RelUndoApplyEscrow_hook; it never
+ * interprets the delta bytes, which are the owning AM's datum image.
+ */
+typedef struct RelUndoEscrowExtra
+{
+	int16		attnum;			/* 1-based escrow attribute number */
+	uint16		esc_off;		/* byte offset of the escrow value within the
+								 * tuple image (computed at write time, when the
+								 * TupleDesc is available, so reverse-apply needs no
+								 * catalog access -- crash recovery runs on a fake
+								 * relcache entry with no TupleDesc) */
+	uint16		neg_delta_len;	/* bytes of trailing negated-delta image */
+	uint16		pad;
+	/* neg_delta_len bytes of the negated delta value follow */
+} RelUndoEscrowExtra;
+
+#define SizeOfRelUndoEscrowExtra	(sizeof(RelUndoEscrowExtra))
 
 /*
  * Per-relation UNDO metapage structure
@@ -690,9 +726,24 @@ extern void PerformRelUndoRecovery(void);
  *   (undoworker.c) so the AM can reclaim any retained-version bookkeeping
  *   (before-images, dirty markers) that has aged out.  The reclamation
  *   horizon is the AM's own xid horizon.  NULL is a valid no-op.
+ *
+ * RelUndoApplyEscrow_hook: reverse-apply a RELUNDO_INFO_ESCROW record.  The
+ *   engine has pinned+exclusive-locked the data page, located the target line
+ *   pointer, and read the record's negated delta plus its full old
+ *   before-image (old_image/old_len).  The hook restores the old image's
+ *   header (visibility fields) but sets the escrow attribute (attnum) to
+ *   current_onpage + neg_delta -- absolute-per-record, so a sibling writer's
+ *   committed delta already on the running sum survives a rollback of a
+ *   different writer.  NULL means no in-place AM opted in.
  */
 extern void (*RelUndoClearTransientFlags_hook) (char *tuple_data);
 extern void (*RelUndoAbortCleanup_hook) (TransactionId xid);
 extern void (*RelUndoDiscardRetained_hook) (void);
+extern void (*RelUndoApplyEscrow_hook) (Page page,
+										OffsetNumber offset, uint16 esc_off,
+										const char *neg_delta,
+										uint16 neg_delta_len,
+										const char *old_image,
+										uint32 old_len);
 
 #endif							/* RELUNDO_H */

@@ -1809,6 +1809,12 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 	RelUndoRecPtr upd_undo_ptr = InvalidRelUndoRecPtr;
 	RecnoOverflowPtr *old_ovptrs = NULL;
 	bool	   *old_ovpresent = NULL;
+	AttrNumber	esc_attn = 0;		/* escrow column attnum (0 if none) */
+	bool		cas_is_escrow = false;	/* this CAS update is an escrow += */
+	char		cas_delta[RECNO_ESCROW_MAX_DELTA_IMAGE];
+	uint16		cas_delta_len = 0;
+	char		cas_neg_delta[RECNO_ESCROW_MAX_DELTA_IMAGE];
+	uint16		cas_neg_delta_len = 0;
 
 	/* Extract block and offset from old TID */
 	blkno = ItemPointerGetBlockNumber(otid);
@@ -1877,6 +1883,17 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 
 		cas_new_size = cas_new_tuple->t_len;
 
+		/*
+		 * Escrow eligibility: does this relation have a commutative
+		 * delta-accumulation (escrow) column?  Detected from the catalog
+		 * (attoptions escrow=true); rejects float at the gate.  The actual
+		 * escrow write only fires when the ONLY changed column is the escrow
+		 * column (checked under the content lock once old+new are both
+		 * available); a mixed update falls through to the normal path so
+		 * non-escrow columns keep INV-4 unchanged.
+		 */
+		esc_attn = RecnoEscrowAttnum(relation);
+
 		/* Attempt the CAS fast path */
 		buffer = ReadBuffer(relation, blkno);
 		LockBuffer(buffer, BUFFER_LOCK_SHARE_EXCLUSIVE);
@@ -1926,9 +1943,19 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 				 */
 				if (!(old_tuple_hdr->t_flags & (RECNO_TUPLE_DELETED |
 												RECNO_TUPLE_LOCKED |
-												RECNO_TUPLE_UNCOMMITTED |
 												RECNO_TUPLE_HAS_OVERFLOW |
 												RECNO_TUPLE_SPECULATIVE)) &&
+					/*
+					 * INV-4 relaxation for escrow columns: an UNCOMMITTED tuple
+					 * normally disqualifies the CAS fast path (a second writer
+					 * must XactLockTableWait the in-flight one).  For an escrow
+					 * relation we let it through here and decide under t_writer
+					 * whether this is a safe escrow += stack (escrow-only update
+					 * onto an escrow head) or must still block.  Non-escrow
+					 * relations keep the UNCOMMITTED bail unchanged.
+					 */
+					(esc_attn != 0 ||
+					 !(old_tuple_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED)) &&
 					cas_target_size == ItemIdGetLength(itemid))
 				{
 					uint32		expected = 0;
@@ -1955,6 +1982,55 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 						 */
 						bool		cas_revalidated;
 
+						/*
+						 * Escrow eligibility, decided authoritatively here under
+						 * t_writer (old on-page image now stable): the update must
+						 * change ONLY the escrow column.  If the tuple is UNCOMMITTED,
+						 * the in-flight change must ALSO be an escrow record (head
+						 * verptr flagged RELUNDO_INFO_ESCROW) -- only then is stacking
+						 * += on top safe (both reverse by subtracting their own delta;
+						 * a full-tuple restore would clobber our delta).  A non-escrow
+						 * in-flight writer keeps the ordinary UNCOMMITTED bail.
+						 */
+						cas_is_escrow = false;
+						if (esc_attn != 0 &&
+							cas_target_size == ItemIdGetLength(itemid) &&
+							!(old_tuple_hdr->t_flags & (RECNO_TUPLE_DELETED |
+														RECNO_TUPLE_LOCKED |
+														RECNO_TUPLE_HAS_OVERFLOW |
+														RECNO_TUPLE_SPECULATIVE)) &&
+							RecnoEscrowUpdateIsEligible(relation, esc_attn,
+											(char *) old_tuple_hdr,
+											ItemIdGetLength(itemid), slot))
+						{
+							if (old_tuple_hdr->t_flags & RECNO_TUPLE_UNCOMMITTED)
+							{
+								RelUndoRecPtr esc_head =
+									RecnoTupleGetVersionPtr(old_tuple_hdr,
+													ItemIdGetLength(itemid));
+								RelUndoRecordHeader esc_hdr;
+
+								if (RelUndoRecPtrIsValid(esc_head) &&
+									RelUndoReadRecordHeader(relation, esc_head, &esc_hdr) &&
+									(esc_hdr.info_flags & RELUNDO_INFO_ESCROW))
+									cas_is_escrow = true;
+							}
+							else
+								cas_is_escrow = true;
+						}
+
+						if (cas_is_escrow)
+						{
+							/*
+							 * Escrow += stacks on the running sum: skip the lost-update
+							 * and in-progress-writer bails (a committed or uncommitted
+							 * sibling escrow delta is not a conflict -- we add on top and
+							 * reverse only our own delta).
+							 */
+							cas_revalidated = true;
+						}
+						else
+						{
 						cas_revalidated =
 							!(old_tuple_hdr->t_flags & (RECNO_TUPLE_DELETED |
 														RECNO_TUPLE_LOCKED |
@@ -2008,6 +2084,7 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 							if (TransactionIdIsValid(reval_dirty_xid) &&
 								!reval_is_insert)
 								cas_revalidated = false;
+						}
 						}
 
 						if (!cas_revalidated)
@@ -2181,6 +2258,38 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 								memcpy(cas_old_copy, old_tuple_hdr, cas_old_len);
 
 								/*
+								 * Escrow eligibility + delta.  If the relation has
+								 * an escrow column and the ONLY column this UPDATE
+								 * changes is that escrow column, compute delta =
+								 * new - old and the negated delta for the UNDO
+								 * record; the on-page value already holds the
+								 * running sum, so the freshly formed new tuple
+								 * (old_visible + k) matches old_onpage + delta in
+								 * the committed single-writer case, and
+								 * cas_full_image is already the correct result
+								 * image.  (The concurrent += stacking is handled by
+								 * the INV-4 relaxation gate below.)  A mixed update
+								 * leaves cas_is_escrow false and takes the ordinary
+								 * full-before-image path.
+								 *
+								 * ponytail: single escrow column, escrow-only
+								 * updates; mixed escrow+plain updates fall through
+								 * to the normal path.  Widen if TPC-C needs a
+								 * combined escrow+plain column update.
+								 */
+								if (cas_is_escrow)
+								{
+									RecnoEscrowComputeDeltaFromSlot(relation, esc_attn,
+																	otid, snapshot,
+																	cas_old_copy, cas_old_len,
+																slot,
+																cas_delta, &cas_delta_len,
+																cas_neg_delta,
+																&cas_neg_delta_len);
+									cas_is_escrow = true;
+								}
+
+								/*
 								 * Reserve worst-case UNDO size (full-tuple
 								 * record) up front.  We commit to either
 								 * delta or full-tuple AFTER stamping the
@@ -2192,6 +2301,9 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 								 */
 								cas_undo_reserve = SizeOfRelUndoRecordHeader +
 									sizeof(RelUndoUpdatePayload) + cas_old_len;
+								if (cas_is_escrow)
+									cas_undo_reserve += SizeOfRelUndoEscrowExtra +
+										RECNO_ESCROW_MAX_DELTA_IMAGE;
 								if (smgrexists(RelationGetSmgr(relation), RELUNDO_FORKNUM))
 								{
 									cas_prev_undo =
@@ -2236,6 +2348,23 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 															cas_target_size,
 															cas_undo_ptr);
 								}
+
+								/*
+								 * Escrow running-sum: overwrite the escrow attribute
+								 * in the result image with (current on-page value +
+								 * this writer's forward delta).  cas_old_copy is the
+								 * CURRENT on-page image (copied under the content
+								 * lock), so a sibling escrow writer's uncommitted
+								 * delta already folded into it is preserved -- the
+								 * lost-update linchpin.  In the committed single-writer
+								 * case this equals the executor's new value already in
+								 * the image, so it is a no-op.
+								 */
+								if (cas_is_escrow)
+									RecnoEscrowSetOnpageSum(relation, cas_full_image,
+															cas_target_size, esc_attn,
+															cas_old_copy, cas_old_len,
+															cas_delta, cas_delta_len);
 
 								/*
 								 * Compute the diff region for WAL logging.
@@ -2341,29 +2470,81 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 									Size		cas_payload_total;
 									RelUndoUpdatePayload cas_undo_payload;
 
-									/*
-									 * Full old tuple before-image.
-									 * [header][update-payload][old tuple].
-									 */
-									cas_undo_hdr.urec_type = RELUNDO_UPDATE;
-									cas_undo_hdr.urec_len = (uint16)
-										(SizeOfRelUndoRecordHeader +
-										 sizeof(RelUndoUpdatePayload) + cas_old_len);
-									cas_undo_hdr.urec_xid = GetCurrentTransactionId();
-									cas_undo_hdr.urec_prevundorec = cas_prev_undo;
-									cas_undo_hdr.info_flags = RELUNDO_INFO_HAS_TUPLE;
-									cas_undo_hdr.tuple_len = (uint16) cas_old_len;
-
 									cas_undo_payload.oldtid = slot->tts_tid;
 									cas_undo_payload.newtid = slot->tts_tid;
 
-									cas_payload_total = sizeof(RelUndoUpdatePayload) +
-										cas_old_len;
-									cas_combined = palloc(cas_payload_total);
-									memcpy(cas_combined, &cas_undo_payload,
-										   sizeof(RelUndoUpdatePayload));
-									memcpy(cas_combined + sizeof(RelUndoUpdatePayload),
-										   cas_old_copy, cas_old_len);
+									if (cas_is_escrow)
+									{
+										/*
+										 * Escrow record: carry the NEGATED delta AND the
+										 * full old before-image (HAS_TUPLE).  Rollback
+										 * restores the old image's header (visibility
+										 * fields) but sets the escrow value to
+										 * current_onpage + neg_delta (absolute-per-record;
+										 * a sibling writer's committed delta survives).
+										 * The reader's reconstruct walk uses the old image
+										 * directly (escrow-only update changes only the
+										 * escrow column, so the old image IS the exact
+										 * prior version).  Layout:
+										 * [update-payload][escrow-extra][neg_delta][old image].
+										 */
+										RelUndoEscrowExtra cas_escrow_extra;
+										Size		cas_pre_tuple;
+
+										cas_escrow_extra.attnum = (int16) esc_attn;
+										cas_escrow_extra.esc_off = (uint16)
+											RecnoEscrowAttrOffset(relation, cas_full_image,
+																  cas_target_size, esc_attn);
+										cas_escrow_extra.neg_delta_len = cas_neg_delta_len;
+										cas_escrow_extra.pad = 0;
+
+										cas_pre_tuple = sizeof(RelUndoUpdatePayload) +
+											SizeOfRelUndoEscrowExtra + cas_neg_delta_len;
+										cas_payload_total = cas_pre_tuple + cas_old_len;
+
+										cas_undo_hdr.urec_type = RELUNDO_UPDATE;
+										cas_undo_hdr.urec_len = (uint16)
+											(SizeOfRelUndoRecordHeader + cas_payload_total);
+										cas_undo_hdr.urec_xid = GetCurrentTransactionId();
+										cas_undo_hdr.urec_prevundorec = cas_prev_undo;
+										cas_undo_hdr.info_flags =
+											RELUNDO_INFO_ESCROW | RELUNDO_INFO_HAS_TUPLE;
+										cas_undo_hdr.tuple_len = (uint16) cas_old_len;
+
+										cas_combined = palloc(cas_payload_total);
+										memcpy(cas_combined, &cas_undo_payload,
+											   sizeof(RelUndoUpdatePayload));
+										memcpy(cas_combined + sizeof(RelUndoUpdatePayload),
+											   &cas_escrow_extra, SizeOfRelUndoEscrowExtra);
+										memcpy(cas_combined + sizeof(RelUndoUpdatePayload) +
+											   SizeOfRelUndoEscrowExtra,
+											   cas_neg_delta, cas_neg_delta_len);
+										memcpy(cas_combined + cas_pre_tuple,
+											   cas_old_copy, cas_old_len);
+									}
+									else
+									{
+										/*
+										 * Full old tuple before-image.
+										 * [header][update-payload][old tuple].
+										 */
+										cas_undo_hdr.urec_type = RELUNDO_UPDATE;
+										cas_undo_hdr.urec_len = (uint16)
+											(SizeOfRelUndoRecordHeader +
+											 sizeof(RelUndoUpdatePayload) + cas_old_len);
+										cas_undo_hdr.urec_xid = GetCurrentTransactionId();
+										cas_undo_hdr.urec_prevundorec = cas_prev_undo;
+										cas_undo_hdr.info_flags = RELUNDO_INFO_HAS_TUPLE;
+										cas_undo_hdr.tuple_len = (uint16) cas_old_len;
+
+										cas_payload_total = sizeof(RelUndoUpdatePayload) +
+											cas_old_len;
+										cas_combined = palloc(cas_payload_total);
+										memcpy(cas_combined, &cas_undo_payload,
+											   sizeof(RelUndoUpdatePayload));
+										memcpy(cas_combined + sizeof(RelUndoUpdatePayload),
+											   cas_old_copy, cas_old_len);
+									}
 
 									RelUndoStage(relation, cas_undo_buffer, cas_undo_ptr,
 												 &cas_undo_hdr, cas_combined,

@@ -634,6 +634,41 @@ extern bool RecnoReconstructVisibleVersion(Relation rel, ItemPointer tid,
 										   Snapshot snapshot,
 										   char **out_data, int *out_len);
 
+/*
+ * Escrow / delta-accumulation for commutative columns (prototype).
+ * See src/backend/access/recno/recno_escrow.c.
+ */
+#define RECNO_ESCROW_MAX_DELTA_IMAGE	1024
+
+extern AttrNumber RecnoEscrowAttnum(Relation rel);
+extern bool RecnoEscrowUpdateIsEligible(Relation rel, AttrNumber attnum,
+										const char *old_image, uint32 old_len,
+										TupleTableSlot *slot);
+extern void RecnoEscrowComputeDelta(Relation rel, AttrNumber attnum,
+									const Datum *old_values, const bool *old_isnull,
+									const Datum *new_values, const bool *new_isnull,
+									Datum *delta_out,
+									char *delta_image, uint16 *delta_len,
+									char *neg_delta_image, uint16 *neg_delta_len);
+extern void RecnoEscrowComputeDeltaFromSlot(Relation rel, AttrNumber attnum,
+											ItemPointer tid, Snapshot snapshot,
+											const char *old_image, uint32 old_len,
+											TupleTableSlot *slot,
+											char *delta_image, uint16 *delta_len,
+											char *neg_delta_image,
+											uint16 *neg_delta_len);
+extern void RecnoEscrowRollback(char *image, uint32 image_len,
+								uint16 esc_off,
+								const char *neg_delta, uint16 neg_delta_len,
+								const char *old_image, uint32 old_len);
+extern uint16 RecnoEscrowAttrOffset(Relation rel, const char *image,
+									uint32 image_len, AttrNumber attnum);
+extern void RecnoEscrowSetOnpageSum(Relation rel, char *image, uint32 image_len,
+									AttrNumber attnum,
+									const char *onpage_image, uint32 onpage_len,
+									const char *delta_image, uint16 delta_len);
+extern void RecnoRelUndoInstallEscrowHook(void);
+
 /* Slot operations for RECNO tuples */
 extern PGDLLIMPORT const TupleTableSlotOps TTSOpsRecnoTuple;
 extern void RecnoSlotStoreTuple(TupleTableSlot *slot, RecnoTupleHeader *tuple,
