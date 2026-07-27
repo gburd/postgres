@@ -35,4 +35,10 @@ OBJS = \
 	xactdesc.o \
 	xlogdesc.o
 
+endif
+
+ifdef USE_FLUX
+OBJS += fluxdesc.o
+endif
+
 include $(top_srcdir)/src/backend/common.mk

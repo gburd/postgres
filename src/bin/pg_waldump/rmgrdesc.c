@@ -17,6 +17,7 @@
 #include "access/hash_xlog.h"
 #include "access/heapam_xlog.h"
 #include "access/multixact.h"
+#include "access/flux_xlog.h"
 #include "access/nbtxlog.h"
 #include "access/rmgr.h"
 #include "access/spgxlog.h"

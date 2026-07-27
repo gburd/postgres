@@ -1105,6 +1105,13 @@
   options => 'file_extend_method_options',
 },
 
+{ name => 'flux_lazy_uncommitted_clear', type => 'bool', context => 'PGC_USERSET', group => 'CLIENT_CONN_STATEMENT',
+  short_desc => 'Skip commit-time page re-visits for FLUX UNCOMMITTED flag clearing.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'flux_lazy_uncommitted_clear',
+  boot_val => 'false',
+},
+
 { name => 'from_collapse_limit', type => 'int', context => 'PGC_USERSET', group => 'QUERY_TUNING_OTHER',
   short_desc => 'Sets the FROM-list size beyond which subqueries are not collapsed.',
   long_desc => 'The planner will merge subqueries into upper queries if the resulting FROM list would have no more than this many items.',

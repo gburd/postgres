@@ -83,7 +83,8 @@ LogicalMessage
 XLOG2
 Undo
 ATM
-RelUndo$/,
+RelUndo
+FLUX$/,
 	'rmgr list');
 
 
