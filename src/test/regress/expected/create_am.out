@@ -131,10 +131,11 @@ ERROR:  function bthandler must return type table_am_handler
 SELECT amname, amhandler, amtype FROM pg_am where amtype = 't' ORDER BY 1, 2;
  amname |       amhandler       | amtype 
 --------+-----------------------+--------
+ flux   | flux_tableam_handler  | t
  heap   | heap_tableam_handler  | t
  heap2  | heap_tableam_handler  | t
  recno  | recno_tableam_handler | t
-(3 rows)
+(4 rows)
 
 -- First create tables employing the new AM using USING
 -- plain CREATE TABLE

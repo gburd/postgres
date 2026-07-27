@@ -35,4 +35,8 @@ rmgr_desc_sources = files(
 # unconditionally, so recnodesc.c must always be compiled.
 rmgr_desc_sources += files('recnodesc.c')
 
+# FLUX, like RECNO, is always built; rmgrlist.h registers flux_desc/flux_identify
+# unconditionally, so fluxdesc.c must always be compiled.
+rmgr_desc_sources += files('fluxdesc.c')
+
 backend_sources += rmgr_desc_sources

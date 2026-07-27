@@ -29,6 +29,7 @@
 #include "access/heapam_xlog.h"
 #include "access/recno.h"
 #include "access/recno_xlog.h"
+#include "access/flux_xlog.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
@@ -1042,6 +1043,63 @@ recno_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 
 		default:
 			elog(ERROR, "unexpected RM_RECNO_ID record type: %u", info);
+			break;
+	}
+}
+
+/*
+ * Handle rmgr FLUX records for LogicalDecodingProcessRecord().
+ *
+ * FLUX's WAL record layout is byte-identical to RECNO's (FLUX was derived
+ * from RECNO), and the XLOG_FLUX_* opcodes share the RECNO numeric values,
+ * so the RECNO decode helpers apply unchanged.
+ */
+void
+flux_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	uint8		info = XLogRecGetInfo(buf->record) & XLOG_FLUX_OPMASK;
+	TransactionId xid = XLogRecGetXid(buf->record);
+	SnapBuild  *builder = ctx->snapshot_builder;
+
+	ReorderBufferProcessXid(ctx->reorder, xid, buf->origptr);
+
+	if (SnapBuildCurrentState(builder) < SNAPBUILD_FULL_SNAPSHOT)
+		return;
+
+	switch (info)
+	{
+		case XLOG_FLUX_INSERT:
+			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
+				!ctx->fast_forward)
+				DecodeRecnoInsert(ctx, buf);
+			break;
+
+		case XLOG_FLUX_MULTI_INSERT:
+			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
+				!ctx->fast_forward)
+				DecodeRecnoMultiInsert(ctx, buf);
+			break;
+
+		case XLOG_FLUX_UPDATE_INPLACE:
+			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
+				!ctx->fast_forward)
+				DecodeRecnoUpdate(ctx, buf);
+			break;
+
+		case XLOG_FLUX_DELETE:
+			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
+				!ctx->fast_forward)
+				DecodeRecnoDelete(ctx, buf);
+			break;
+
+		case XLOG_FLUX_DEFRAG:
+		case XLOG_FLUX_COMPRESS:
+		case XLOG_FLUX_OVERFLOW_WRITE:
+		case XLOG_FLUX_INIT_PAGE:
+			break;
+
+		default:
+			elog(ERROR, "unexpected RM_FLUX_ID record type: %u", info);
 			break;
 	}
 }

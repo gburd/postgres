@@ -36,5 +36,8 @@
 { oid => '9315', oid_symbol => 'RECNO_TABLE_AM_OID',
   descr => 'recno table access method',
   amname => 'recno', amhandler => 'recno_tableam_handler', amtype => 't' },
+{ oid => '9316', oid_symbol => 'FLUX_TABLE_AM_OID',
+  descr => 'flux table access method',
+  amname => 'flux', amhandler => 'flux_tableam_handler', amtype => 't' },
 
 ]

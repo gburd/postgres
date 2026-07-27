@@ -16,6 +16,7 @@
 
 #include "access/multixact.h"
 #include "access/recno.h"
+#include "access/flux.h"
 #include "access/twophase_rmgr.h"
 #include "pgstat.h"
 #include "storage/lock.h"
@@ -29,7 +30,8 @@ const TwoPhaseCallback twophase_recover_callbacks[TWOPHASE_RM_MAX_ID + 1] =
 	NULL,						/* pgstat */
 	multixact_twophase_recover, /* MultiXact */
 	predicatelock_twophase_recover, /* PredicateLock */
-	recno_twophase_recover		/* RECNO */
+	recno_twophase_recover,		/* RECNO */
+	flux_twophase_recover		/* FLUX */
 };
 
 const TwoPhaseCallback twophase_postcommit_callbacks[TWOPHASE_RM_MAX_ID + 1] =
@@ -39,7 +41,8 @@ const TwoPhaseCallback twophase_postcommit_callbacks[TWOPHASE_RM_MAX_ID + 1] =
 	pgstat_twophase_postcommit, /* pgstat */
 	multixact_twophase_postcommit,	/* MultiXact */
 	NULL,						/* PredicateLock */
-	recno_twophase_postcommit	/* RECNO */
+	recno_twophase_postcommit,	/* RECNO */
+	flux_twophase_postcommit	/* FLUX */
 };
 
 const TwoPhaseCallback twophase_postabort_callbacks[TWOPHASE_RM_MAX_ID + 1] =
@@ -49,7 +52,8 @@ const TwoPhaseCallback twophase_postabort_callbacks[TWOPHASE_RM_MAX_ID + 1] =
 	pgstat_twophase_postabort,	/* pgstat */
 	multixact_twophase_postabort,	/* MultiXact */
 	NULL,						/* PredicateLock */
-	recno_twophase_postabort	/* RECNO */
+	recno_twophase_postabort,	/* RECNO */
+	flux_twophase_postabort		/* FLUX */
 };
 
 const TwoPhaseCallback twophase_standby_recover_callbacks[TWOPHASE_RM_MAX_ID + 1] =
@@ -59,5 +63,6 @@ const TwoPhaseCallback twophase_standby_recover_callbacks[TWOPHASE_RM_MAX_ID + 1
 	NULL,						/* pgstat */
 	NULL,						/* MultiXact */
 	NULL,						/* PredicateLock */
-	recno_twophase_recover		/* RECNO */
+	recno_twophase_recover,		/* RECNO */
+	flux_twophase_recover		/* FLUX */
 };

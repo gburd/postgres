@@ -20,6 +20,9 @@
 #ifdef USE_RECNO
 #include "access/recno_xlog.h"
 #endif
+#ifdef USE_FLUX
+#include "access/flux_xlog.h"
+#endif
 #include "access/nbtxlog.h"
 #include "access/rmgr.h"
 #include "access/spgxlog.h"

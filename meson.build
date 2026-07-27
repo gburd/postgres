@@ -1604,6 +1604,11 @@ endif
 recno = declare_dependency()
 cdata.set('USE_RECNO', 1)
 
+# FLUX table access method (UNDO-based heap replacement) is always built,
+# for the same reason as RECNO above.
+flux = declare_dependency()
+cdata.set('USE_FLUX', 1)
+
 
 ###############################################################
 # Library: selinux

@@ -5191,6 +5191,7 @@ List of access methods
 --------+-------
  brin   | Index
  btree  | Index
+ flux   | Table
  gin    | Index
  gist   | Index
  hash   | Index
@@ -5198,7 +5199,7 @@ List of access methods
  heap2  | Table
  recno  | Table
  spgist | Index
-(9 rows)
+(10 rows)
 
 \dA *
 List of access methods
@@ -5206,6 +5207,7 @@ List of access methods
 --------+-------
  brin   | Index
  btree  | Index
+ flux   | Table
  gin    | Index
  gist   | Index
  hash   | Index
@@ -5213,7 +5215,7 @@ List of access methods
  heap2  | Table
  recno  | Table
  spgist | Index
-(9 rows)
+(10 rows)
 
 \dA h*
 List of access methods
@@ -5243,6 +5245,7 @@ List of access methods
 --------+-------+-----------------------+----------------------------------------
  brin   | Index | brinhandler           | block range index (BRIN) access method
  btree  | Index | bthandler             | b-tree index access method
+ flux   | Table | flux_tableam_handler  | flux table access method
  gin    | Index | ginhandler            | GIN index access method
  gist   | Index | gisthandler           | GiST index access method
  hash   | Index | hashhandler           | hash index access method
@@ -5250,7 +5253,7 @@ List of access methods
  heap2  | Table | heap_tableam_handler  | 
  recno  | Table | recno_tableam_handler | recno table access method
  spgist | Index | spghandler            | SP-GiST index access method
-(9 rows)
+(10 rows)
 
 \dA+ *
                              List of access methods
@@ -5258,6 +5261,7 @@ List of access methods
 --------+-------+-----------------------+----------------------------------------
  brin   | Index | brinhandler           | block range index (BRIN) access method
  btree  | Index | bthandler             | b-tree index access method
+ flux   | Table | flux_tableam_handler  | flux table access method
  gin    | Index | ginhandler            | GIN index access method
  gist   | Index | gisthandler           | GiST index access method
  hash   | Index | hashhandler           | hash index access method
@@ -5265,7 +5269,7 @@ List of access methods
  heap2  | Table | heap_tableam_handler  | 
  recno  | Table | recno_tableam_handler | recno table access method
  spgist | Index | spghandler            | SP-GiST index access method
-(9 rows)
+(10 rows)
 
 \dA+ h*
                      List of access methods
