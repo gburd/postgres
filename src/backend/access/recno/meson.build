@@ -16,6 +16,7 @@ backend_sources += files(
   'recno_vm.c',
   'recno_undo.c',
   'recno_relundo.c',
+  'recno_escrow.c',
   'recno_pvs.c',
   'recno_posting.c',
   'recno_dict.c',

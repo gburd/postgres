@@ -144,6 +144,16 @@ RecnoReconstructVisibleVersion(Relation rel, ItemPointer tid,
 		{
 			case RELUNDO_UPDATE:
 				{
+					/*
+					 * Escrow records carry the full old before-image in the
+					 * trailing tuple bytes (HAS_TUPLE), exactly like an ordinary
+					 * in-place UPDATE -- an escrow-only update changes only the
+					 * escrow column, so the stored old image IS the exact prior
+					 * version.  The reconstruct walk therefore needs no escrow
+					 * special-casing: the shared full-tuple step below peels off
+					 * this writer's delta by stepping to its old image, and the
+					 * old image's own verptr continues the chain one writer back.
+					 */
 					if (!(urec_hdr.info_flags & RELUNDO_INFO_HAS_TUPLE) ||
 						urec_hdr.tuple_len == 0)
 					{

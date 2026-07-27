@@ -57,6 +57,12 @@
 void		(*RelUndoClearTransientFlags_hook) (char *tuple_data) = NULL;
 void		(*RelUndoAbortCleanup_hook) (TransactionId xid) = NULL;
 void		(*RelUndoDiscardRetained_hook) (void) = NULL;
+void		(*RelUndoApplyEscrow_hook) (Page page,
+										OffsetNumber offset, uint16 esc_off,
+										const char *neg_delta,
+										uint16 neg_delta_len,
+										const char *old_image,
+										uint32 old_len) = NULL;
 
 /*
  * Per-backend UNDO head page cache.

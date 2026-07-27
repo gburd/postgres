@@ -140,6 +140,8 @@ test: recno-serializable
 test: recno-serializable-conflicts
 test: recno-dirty-write
 test: recno-lost-update
+test: recno-escrow-concurrent
+test: recno-escrow-visibility
 test: recno-read-skew
 test: recno-write-skew
 test: recno-phantom

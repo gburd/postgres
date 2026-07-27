@@ -28,6 +28,7 @@ OBJS = \
 	recno_vm.o \
 	recno_undo.o \
 	recno_relundo.o \
+	recno_escrow.o \
 	recno_pvs.o \
 	recno_posting.o \
 	recno_dict.o

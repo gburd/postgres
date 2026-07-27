@@ -11,6 +11,7 @@ tests += {
       't/003_replication.pl',
       't/004_concurrent_access.pl',
       't/005_wal_consistency.pl',
+      't/006_escrow_crash.pl',
     ],
   },
 }
