@@ -12715,4 +12715,25 @@
   proname => 'hashoid8extended', prorettype => 'int8',
   proargtypes => 'oid8 int8', prosrc => 'hashoid8extended' },
 
+# EXPERIMENT INSTRUMENT (throwaway, never posted)
+{ oid => '8902', descr => 'bcs experiment: clock-sweep ticks and victims',
+  proname => 'bcs_sweepstats', prorows => '1', proretset => 't',
+  provolatile => 'v', proparallel => 'r', prorettype => 'record',
+  proargtypes => '', proallargtypes => '{int8,int8}', proargmodes => '{o,o}',
+  proargnames => '{ticks,victims}', prosrc => 'bcs_sweepstats' },
+{ oid => '8901', descr => 'bcs experiment: per-relation eviction counts',
+  proname => 'bcs_evictions', prorows => '1000', proretset => 't',
+  provolatile => 'v', proparallel => 'r', prorettype => 'record',
+  proargtypes => '', proallargtypes => '{int8,int8}', proargmodes => '{o,o}',
+  proargnames => '{relfilenode,evictions}', prosrc => 'bcs_evictions' },
+
+{ oid => '8903', descr => 'bcs experiment: thrash n random blocks (sweep isolation)',
+  proname => 'bcs_thrash', provolatile => 'v', proparallel => 'u',
+  prorettype => 'int8', proargtypes => 'regclass int8', prosrc => 'bcs_thrash' },
+
+{ oid => '8905', descr => 'bcs exp: ghost observer',
+  proname => 'bcs_ghost', prorows => '1', proretset => 't', provolatile => 'v',
+  proparallel => 'r', prorettype => 'record', proargtypes => '',
+  proallargtypes => '{int8,int8,int8}', proargmodes => '{o,o,o}',
+  proargnames => '{reads,reloads,reloads_cold}', prosrc => 'bcs_ghost' },
 ]

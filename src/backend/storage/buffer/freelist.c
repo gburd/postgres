@@ -15,6 +15,11 @@
  */
 #include "postgres.h"
 
+#include "funcapi.h"
+#include "utils/tuplestore.h"
+#include "access/relation.h"
+#include "common/pg_prng.h"
+#include "utils/rel.h"
 #include "pgstat.h"
 #include "port/atomics.h"
 #include "storage/buf_internals.h"
@@ -25,6 +30,10 @@
 #include "port/pg_numa.h"
 
 #define INT_ACCESS_ONCE(var)	((int)(*((volatile int *)&(var))))
+
+int bcs_ghost_mode = 0;
+int bcs_ghost_cms_threshold = 2;
+
 
 
 /*
@@ -64,6 +73,29 @@ typedef struct
 	 * StrategyNotifyBgWriter.
 	 */
 	int			bgwprocno;
+
+	/*
+	 * EXPERIMENT INSTRUMENT (throwaway, never posted): clock-sweep work
+	 * counters + per-relation eviction counts.  sweepTicks/sweepVictims give
+	 * ticks-per-victim (the 0..5-grind metric); evictRel/evictCnt classify the
+	 * eviction stream by relation offline.  Exposed via bcs_sweepstats() and
+	 * bcs_evictions().
+	 */
+#define BCS_EVICT_SLOTS 8192
+	pg_atomic_uint64 sweepTicks;
+	pg_atomic_uint64 sweepVictims;
+	pg_atomic_uint64 evictRel[BCS_EVICT_SLOTS];
+	pg_atomic_uint64 evictCnt[BCS_EVICT_SLOTS];
+	/* ghost observer (measurement only) */
+#define BCS_GHOST_SLOTS (1<<20)
+	pg_atomic_uint64 ghostReads;
+	pg_atomic_uint64 ghostReloads;
+	pg_atomic_uint64 ghostReloadsCold;
+	pg_atomic_uint32 ghostTag[BCS_GHOST_SLOTS];	/* 3a: fp+cold bit */
+#define BCS_CMS_ROWS 4
+#define BCS_CMS_WORDS (1<<15)	/* 8 nibble-counters per word => 256K cols */
+	pg_atomic_uint32 cms[BCS_CMS_ROWS][BCS_CMS_WORDS];
+	pg_atomic_uint64 cmsIncrements;
 } BufferStrategyControl;
 
 /* Pointers to shared state */
@@ -203,6 +235,8 @@ ClockSweepTick(void)
 
 	victim = MyBatchPos % NBuffers;
 	MyBatchPos++;
+
+	pg_atomic_fetch_add_u64(&StrategyControl->sweepTicks, 1);	/* EXPERIMENT */
 
 	return victim;
 }
@@ -366,6 +400,8 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 						AddBufferToRing(strategy, buf);
 					*buf_state = local_buf_state;
 
+					pg_atomic_fetch_add_u64(&StrategyControl->sweepVictims, 1);	/* EXPERIMENT */
+
 					TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
 
 					return buf;
@@ -477,6 +513,15 @@ StrategyCtlShmemInit(void *arg)
 	/* No pending notification */
 	StrategyControl->bgwprocno = -1;
 
+	/* EXPERIMENT: instrument counters */
+	pg_atomic_init_u64(&StrategyControl->sweepTicks, 0);
+	pg_atomic_init_u64(&StrategyControl->sweepVictims, 0);
+	for (int i = 0; i < BCS_EVICT_SLOTS; i++)
+	{
+		pg_atomic_init_u64(&StrategyControl->evictRel[i], 0);
+		pg_atomic_init_u64(&StrategyControl->evictCnt[i], 0);
+	}
+
 	/*
 	 * Decide whether to batch the clock sweep.
 	 *
@@ -499,6 +544,17 @@ StrategyCtlShmemInit(void *arg)
 										 (uint32) NBuffers);
 	else
 		StrategyControl->batchSize = 1;
+
+	/*
+	 * EXPERIMENT (throwaway): allow forcing the batch size via env, so a
+	 * single binary can be run at batch 1 / 16 / 64 to isolate the NUMA
+	 * batching effect.  Not part of the proposed patch.
+	 */
+	{
+		const char *ov = getenv("BCS_BATCH_OVERRIDE");
+		if (ov != NULL && atoi(ov) >= 1)
+			StrategyControl->batchSize = Min((uint32) atoi(ov), (uint32) NBuffers);
+	}
 }
 
 
@@ -861,4 +917,190 @@ StrategyRejectBuffer(BufferAccessStrategy strategy, BufferDesc *buf, bool from_r
 	strategy->buffers[strategy->current] = InvalidBuffer;
 
 	return true;
+}
+
+/* EXPERIMENT INSTRUMENT (throwaway, never posted). */
+void
+BcsRecordEviction(RelFileNumber relNumber)
+{
+	uint32		h = ((uint32) relNumber) % BCS_EVICT_SLOTS;
+
+	for (int probe = 0; probe < 64; probe++)
+	{
+		uint32		i = (h + probe) % BCS_EVICT_SLOTS;
+		uint64		cur = pg_atomic_read_u64(&StrategyControl->evictRel[i]);
+
+		if (cur == (uint64) relNumber)
+		{ pg_atomic_fetch_add_u64(&StrategyControl->evictCnt[i], 1); return; }
+		if (cur == 0)
+		{
+			uint64 expected = 0;
+			if (pg_atomic_compare_exchange_u64(&StrategyControl->evictRel[i], &expected, (uint64) relNumber)
+				|| pg_atomic_read_u64(&StrategyControl->evictRel[i]) == (uint64) relNumber)
+			{ pg_atomic_fetch_add_u64(&StrategyControl->evictCnt[i], 1); return; }
+		}
+	}
+	pg_atomic_fetch_add_u64(&StrategyControl->evictCnt[0], 1);
+}
+
+PG_FUNCTION_INFO_V1(bcs_sweepstats);
+Datum
+bcs_sweepstats(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Datum		values[2];
+	bool		nulls[2] = {false, false};
+
+	InitMaterializedSRF(fcinfo, 0);
+	values[0] = Int64GetDatum((int64) pg_atomic_read_u64(&StrategyControl->sweepTicks));
+	values[1] = Int64GetDatum((int64) pg_atomic_read_u64(&StrategyControl->sweepVictims));
+	tuplestore_putvalues(rsi->setResult, rsi->setDesc, values, nulls);
+	return (Datum) 0;
+}
+
+PG_FUNCTION_INFO_V1(bcs_evictions);
+Datum
+bcs_evictions(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+
+	InitMaterializedSRF(fcinfo, 0);
+	for (int i = 0; i < BCS_EVICT_SLOTS; i++)
+	{
+		uint64	rel = pg_atomic_read_u64(&StrategyControl->evictRel[i]);
+		uint64	cnt = pg_atomic_read_u64(&StrategyControl->evictCnt[i]);
+		Datum	values[2];
+		bool	nulls[2] = {false, false};
+
+		if (cnt == 0) continue;
+		values[0] = Int64GetDatum((int64) rel);
+		values[1] = Int64GetDatum((int64) cnt);
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, values, nulls);
+	}
+	return (Datum) 0;
+}
+
+/*
+ * EXPERIMENT INSTRUMENT (throwaway, never posted).
+ * bcs_thrash(rel, n): pin+release n random MAIN_FORKNUM blocks of rel with the
+ * normal (global-sweep) strategy, forcing n buffer allocations with almost no
+ * other work -- so StrategyGetBuffer / nextVictimBuffer dominates the cost.
+ * Isolates the clock-sweep mechanism from executor/protocol overhead.
+ */
+PG_FUNCTION_INFO_V1(bcs_thrash);
+Datum
+bcs_thrash(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	int64		n = PG_GETARG_INT64(1);
+	Relation	rel = relation_open(relid, AccessShareLock);
+	BlockNumber nblocks = RelationGetNumberOfBlocks(rel);
+	uint64		sum = 0;
+	pg_prng_state prng;
+
+	pg_prng_seed(&prng, (uint64) MyProcPid ^ (uint64) n);
+	for (int64 i = 0; i < n && nblocks > 0; i++)
+	{
+		BlockNumber blk = (BlockNumber) (pg_prng_uint64(&prng) % nblocks);
+		Buffer		buf = ReadBufferExtended(rel, MAIN_FORKNUM, blk,
+											 RBM_NORMAL, NULL);
+
+		sum += blk;
+		ReleaseBuffer(buf);
+		CHECK_FOR_INTERRUPTS();
+	}
+	relation_close(rel, AccessShareLock);
+	PG_RETURN_INT64((int64) sum);
+}
+
+
+/* ---- ghost observer (measurement only, never posted) ---- */
+/* Record that a block (identified by its buffer tag hash) was evicted, and
+ * whether it was cold at eviction. Stores low 31 bits of hash + cold bit. */
+void
+BcsGhostRecordEviction(uint32 taghash, bool cold)
+{
+	uint32 slot = taghash & (BCS_GHOST_SLOTS - 1);
+	uint32 val = (taghash & 0x7fffffff) | (cold ? 0x80000000u : 0);
+	pg_atomic_write_u32(&StrategyControl->ghostTag[slot], val);
+
+	if (bcs_ghost_mode == 2)
+	{
+		uint32 cols = BCS_CMS_WORDS * 8;
+		for (int r = 0; r < BCS_CMS_ROWS; r++)
+		{
+			uint32 h = taghash * (2654435761u + (uint32) r * 40503u);
+			uint32 col = (h >> 8) & (cols - 1);
+			uint32 word = col >> 3, shift = (col & 7) * 4;
+			uint32 cur = pg_atomic_read_u32(&StrategyControl->cms[r][word]);
+			uint32 nib = (cur >> shift) & 0xf;
+			if (nib < 15)
+				pg_atomic_write_u32(&StrategyControl->cms[r][word],
+									(cur & ~(0xfu << shift)) | ((nib + 1) << shift));
+		}
+		if ((pg_atomic_fetch_add_u64(&StrategyControl->cmsIncrements, 1) &
+			 ((1u << 22) - 1)) == 0)
+			for (int r = 0; r < BCS_CMS_ROWS; r++)
+				for (uint32 w = 0; w < BCS_CMS_WORDS; w++)
+				{
+					uint32 v = pg_atomic_read_u32(&StrategyControl->cms[r][w]);
+					pg_atomic_write_u32(&StrategyControl->cms[r][w], (v >> 1) & 0x77777777u);
+				}
+	}
+}
+
+static uint32
+BcsGhostCmsEstimate(uint32 taghash)
+{
+	uint32 cols = BCS_CMS_WORDS * 8, est = 15;
+	for (int r = 0; r < BCS_CMS_ROWS; r++)
+	{
+		uint32 h = taghash * (2654435761u + (uint32) r * 40503u);
+		uint32 col = (h >> 8) & (cols - 1);
+		uint32 nib = (pg_atomic_read_u32(&StrategyControl->cms[r][col >> 3])
+					  >> ((col & 7) * 4)) & 0xf;
+		if (nib < est) est = nib;
+	}
+	return est;
+}
+
+/* On a real read/alloc of a block, probe the ghost table: was this exact block
+ * recently evicted? If so it's a reload; note if it was cold when evicted. */
+bool
+BcsGhostProbeRead(uint32 taghash)
+{
+	uint32 slot = taghash & (BCS_GHOST_SLOTS - 1);
+	uint32 val = pg_atomic_read_u32(&StrategyControl->ghostTag[slot]);
+	bool	hit;
+
+	pg_atomic_fetch_add_u64(&StrategyControl->ghostReads, 1);
+	hit = ((val & 0x7fffffff) == (taghash & 0x7fffffff)) && val != 0;
+	if (hit)
+	{
+		pg_atomic_fetch_add_u64(&StrategyControl->ghostReloads, 1);
+		if (val & 0x80000000u)
+			pg_atomic_fetch_add_u64(&StrategyControl->ghostReloadsCold, 1);
+		pg_atomic_write_u32(&StrategyControl->ghostTag[slot], 0);
+	}
+	if (bcs_ghost_mode == 1)
+		return hit;
+	else if (bcs_ghost_mode == 2)
+		return BcsGhostCmsEstimate(taghash) >= (uint32) bcs_ghost_cms_threshold;
+	return false;
+}
+
+PG_FUNCTION_INFO_V1(bcs_ghost);
+Datum
+bcs_ghost(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Datum v[3];
+	bool n[3] = {false, false, false};
+
+	InitMaterializedSRF(fcinfo, 0);
+	v[0] = Int64GetDatum((int64) pg_atomic_read_u64(&StrategyControl->ghostReads));
+	v[1] = Int64GetDatum((int64) pg_atomic_read_u64(&StrategyControl->ghostReloads));
+	v[2] = Int64GetDatum((int64) pg_atomic_read_u64(&StrategyControl->ghostReloadsCold));
+	tuplestore_putvalues(rsi->setResult, rsi->setDesc, v, n);
+	return (Datum) 0;
 }

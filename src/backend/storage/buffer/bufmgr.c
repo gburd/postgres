@@ -2208,6 +2208,7 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	BufferDesc *victim_buf_hdr;
 	uint64		victim_buf_state;
 	uint64		set_bits = 0;
+	bool		bcs_readmit_hot = false;
 
 	/* Make sure we will have room to remember the buffer pin */
 	ResourceOwnerEnlarge(CurrentResourceOwner);
@@ -2326,6 +2327,8 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	Assert(BUF_STATE_GET_REFCOUNT(victim_buf_state) == 1);
 	Assert(!(victim_buf_state & (BM_TAG_VALID | BM_VALID | BM_DIRTY | BM_IO_IN_PROGRESS)));
 
+	if (BufTagGetForkNum(&newTag) == MAIN_FORKNUM)
+		bcs_readmit_hot = BcsGhostProbeRead(newHash);
 	victim_buf_hdr->tag = newTag;
 
 	/*
@@ -2340,6 +2343,8 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	 * self-evicting -- see the cooling-state notes in buf_internals.h. */
 	if (relpersistence == RELPERSISTENCE_PERMANENT || forkNum == INIT_FORKNUM)
 		set_bits |= BM_PERMANENT;
+	if (bcs_readmit_hot)	/* ghost: re-admit wrongly-evicted page HOT */
+		set_bits |= BUF_COOLSTATE_ONE;
 
 	UnlockBufHdrExt(victim_buf_hdr, victim_buf_state,
 					set_bits, 0, 0);
@@ -2663,6 +2668,13 @@ again:
 		 */
 		pgstat_count_io_op(IOOBJECT_RELATION, io_context,
 						   from_ring ? IOOP_REUSE : IOOP_EVICT, 1, 0);
+
+		/* EXPERIMENT: record real evictions of MAIN_FORKNUM by relfilenumber */
+		if (!from_ring && BufTagGetForkNum(&buf_hdr->tag) == MAIN_FORKNUM)
+		{
+			BcsRecordEviction(BufTagGetRelNumber(&buf_hdr->tag));
+			BcsGhostRecordEviction(BufTableHashCode(&buf_hdr->tag), (BUF_STATE_GET_COOLSTATE(buf_state) == BUF_COOLSTATE_COOL));
+		}
 	}
 
 	/*
