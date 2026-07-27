@@ -25,4 +25,10 @@ SUBDIRS	    = \
 	transam \
 	undo
 
+endif
+
+ifdef USE_FLUX
+SUBDIRS += flux
+endif
+
 include $(top_srcdir)/src/backend/common.mk

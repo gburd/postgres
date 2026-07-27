@@ -38,3 +38,6 @@ UNDO_RMGR_INIT(HashUndoRmgrInit)
 
 /* FILEOPS: transactional filesystem-ops UNDO resource manager */
 UNDO_RMGR_INIT(FileopsUndoRmgrInit)
+
+/* FLUX: UNDO-based heap-replacement table AM UNDO resource manager */
+UNDO_RMGR_INIT(FluxUndoRmgrInit)

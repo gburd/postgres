@@ -502,7 +502,44 @@ RelUndoApplyOneRecord(Relation rel, const RelUndoRecordHeader *header,
 
 				page = RelUndoTrackPage(rel, touched, ntouched, target_blkno);
 
-				if (tuple_data_buf && tlen > 0)
+				/*
+				 * Partial-tuple (byte-diff) record: the trailing bytes are a
+				 * RelUndoDiffRecord, not a full before-image.  Reconstruct the
+				 * old tuple from the current on-page bytes plus the diff, then
+				 * restore it exactly like a full-image update.  Reverse-apply is
+				 * a self-describing byte splice, so no table-AM callback is
+				 * needed.  Only reachable for an in-place update (oldtid ==
+				 * newtid); the producing AM emits a delta only when the on-page
+				 * slot length equals the length the diff was computed against.
+				 */
+				if ((header->info_flags & RELUNDO_INFO_PARTIAL_TUPLE) &&
+					tuple_data_buf && tlen >= SizeOfRelUndoDiffRecord)
+				{
+					const RelUndoDiffRecord *diff =
+						(const RelUndoDiffRecord *) tuple_data_buf;
+					ItemId		dlp = PageGetItemId(page, target_offset);
+
+					if (ItemIdIsNormal(dlp))
+					{
+						const char *cur = (const char *) PageGetItem(page, dlp);
+						Size		cur_len = ItemIdGetLength(dlp);
+						Size		recon_len = 0;
+						char	   *recon = palloc(diff->old_total_len);
+
+						if (RelUndoApplyDiffReverse(cur, cur_len, diff,
+												recon, &recon_len))
+							RelUndoApplyUpdate(rel, page, target_offset,
+										   recon, (uint32) recon_len);
+						else
+							elog(ERROR, "RelUndoApplyChain: byte-diff reverse-apply "
+								 "failed at (%u,%u)", target_blkno, target_offset);
+						pfree(recon);
+					}
+					else
+						elog(DEBUG2, "RelUndoApplyChain: delta target (%u,%u) not "
+							 "normal, skipping", target_blkno, target_offset);
+				}
+				else if (tuple_data_buf && tlen > 0)
 					RelUndoApplyUpdate(rel, page, target_offset,
 									   tuple_data_buf, tlen);
 
@@ -780,6 +817,58 @@ RelUndoApplyUpdate(Relation rel, Page page, OffsetNumber offset,
 
 	elog(DEBUG2, "RelUndoApplyUpdate: restored old tuple at offset %u (%u bytes)",
 		 offset, tuple_len);
+}
+
+/*
+ * RelUndoApplyDiffReverse - reconstruct old tuple bytes from new bytes + diff.
+ *
+ * Generic (AM-neutral) reverse-apply of a byte-diff (RelUndoDiffRecord).  The
+ * diff is a single splice against the new (current on-page) tuple: copy the
+ * unchanged prefix of new_data, substitute the carried old bytes, then copy
+ * the unchanged suffix, producing an old_total_len-byte old tuple.  Bounds are
+ * validated against new_len and old_total_len so a corrupt record fails
+ * cleanly rather than scribbling.  Returns true on success.
+ *
+ * FLUX's PVS read path mirrors this exact algorithm (FluxApplyDiffReverse) so
+ * a single delta record serves both rollback and old-version reconstruction.
+ */
+bool
+RelUndoApplyDiffReverse(const char *new_data, Size new_len,
+						const RelUndoDiffRecord *diff,
+						char *out_old_data, Size *out_old_len)
+{
+	Size		old_total_len;
+	Size		tail;
+
+	if (diff == NULL || new_data == NULL || out_old_data == NULL)
+		return false;
+
+	old_total_len = diff->old_total_len;
+
+	/* The spliced region must lie within the new tuple. */
+	if ((Size) diff->offset > new_len ||
+		(Size) diff->offset + diff->del_len > new_len)
+		return false;
+
+	tail = new_len - diff->offset - diff->del_len;
+
+	/* Reconstructed length must be prefix + ins + suffix. */
+	if ((Size) diff->offset + diff->ins_len + tail != old_total_len)
+		return false;
+
+	/* prefix (unchanged new bytes) */
+	memcpy(out_old_data, new_data, diff->offset);
+	/* changed region: substitute the carried old bytes */
+	memcpy(out_old_data + diff->offset,
+		   (const char *) diff + SizeOfRelUndoDiffRecord,
+		   diff->ins_len);
+	/* suffix (unchanged new bytes) */
+	memcpy(out_old_data + diff->offset + diff->ins_len,
+		   new_data + diff->offset + diff->del_len,
+		   tail);
+
+	*out_old_len = old_total_len;
+	return true;
 }
 
 /*

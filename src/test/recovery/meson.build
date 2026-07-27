@@ -67,6 +67,7 @@ tests += {
       't/055_cascade_reconnect.pl',
       't/065_undo_adversarial_crash.pl',
       't/068_fileops_2pc.pl',
+      't/069_undo_revert_retention.pl',
       't/070_fileops_standby_divergence.pl',
     ],
   },
