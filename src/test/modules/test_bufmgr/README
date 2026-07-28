@@ -1,0 +1,135 @@
+test_bufmgr - regression tests for the buffer manager
+-----------------------------------------------------
+
+This module tests the PostgreSQL buffer manager (src/backend/storage/buffer/)
+as a subsystem, not any one replacement algorithm.  It is named for the
+subsystem under test, which is stable, rather than the current eviction policy,
+which is not: the replacement algorithm changes release over release.
+
+We test properties that any correct buffer manager must have, expressed only through
+observable behavior i.e. page residency, page contents, and buffer pins and
+never through internal field encodings. These are meant to keep passing across
+an algorithm swap: on today's usage-count clock sweep, or on a future pluggable
+pool that may not even have a usagecount field.
+
+test_bufmgr_eviction_reload    Under pressure whose working set exceeds
+                               shared_buffers, some previously-resident
+                               unpinned page is evicted, reloading it returns
+                               correct contents, and the manager makes
+                               progress (no "no unpinned buffers" error).
+
+test_bufmgr_dirty_persistence  An evicted dirty page is written to disk, so a
+                               reload returns the modified contents.
+
+test_bufmgr_scan_no_retain     A page read once and never again does not
+                               indefinitely retain its buffer under pressure.
+
+test_bufmgr_truncate_stale     TRUNCATE leaves no stale cached pages that
+                               later become visible.
+
+test_bufmgr_drop_recreate_stale  A dropped relation's cached pages never
+                               resurface through a newly created relation.
+
+test_bufmgr_local_eviction     A temp relation larger than temp_buffers stays
+                               correct after local-buffer reuse.
+
+test_bufmgr_churn              Contents stay correct after many
+                               replacement/reload cycles over a working set
+                               much larger than the pool.
+
+test_bufmgr_pinned_safety      (isolation) A pinned buffer is never evicted.
+                               While one backend holds a cursor pin, another
+                               floods past the whole pool; the pinned page
+                               stays resident and unchanged while an unpinned
+                               control block is evicted (proving the flood
+                               really exceeded the pool).
+
+Guiding tenet
+-------------
+
+Core tests asserts observable outcomes, not internal encodings.  Residency is read
+as "is there a pg_buffercache row for this relation block", contents as the
+page data itself, and pins as pg_buffercache.pinning_backends, never by
+reading usagecount or any replacement-policy internal.
+
+Uniquely identifiable pages: each row's payload is a deterministic function of
+its id (md5(id::text)), so any block read back is verified by re-deriving the
+expected payload, with no assumption about how many rows land on a page or
+which page a row occupies so the tests are BLCKSZ independent.
+
+Self-calibrating flood: eviction is forced not by a hand-tuned flood size but
+by a bounded loop that grows a throwaway relation until the *observed* target
+end-state is reached (a tracked block becomes non-resident), then stops so
+the tests assert "reclaim was observed" rather than "N rows happened to be the
+right number on this machine".  A generous round cap turns a real failure into
+a prompt error instead of an infinite loop.  Where a fixed size is needed
+instead of a loop (churn, local_eviction, the pinned-safety flood), it is
+derived from the relevant GUC in *bytes* (shared_buffers or temp_buffers times
+block_size), so the working set exceeds the pool at any BLCKSZ rather than at
+one hand-tuned row count.
+
+Ring-free pressure via pg_prewarm: the flood tests pull blocks into
+shared_buffers with pg_prewarm in 'buffer' mode, which uses the normal
+replacement path with NO BufferAccessStrategy ring so that warming of pages
+is agnostic of ring buffer which is internal to buffer manager.
+
+Configuration knobs
+-------------------
+
+test_bufmgr_small.conf:
+
+shared_buffers = 8MB          1024 buffers - small enough that a modest flood
+                              forces real reclaim through the whole pool, but
+                              large enough that the test's own setup traffic
+                              doesn't perturb tracked blocks before the flood.
+temp_buffers = 100            Minimum local pool, so test_bufmgr_local_eviction
+                              can exceed it. (Cannot change once a session has
+                              touched a temp table, hence set in the config.)
+bgwriter_lru_maxpages = 0     With it enabled, BgBufferSync's own demand-driven
+                              LRU sweep runs concurrently with a test's flood
+                              and reclaims buffers on its own schedule,
+                              competing for the same clock-hand position -
+                              test_bufmgr_pinned_safety's unpinned control
+                              probe intermittently survived a flood that
+                              should have evicted it (probe_evicted flipped
+                              to false) because the bgwriter's independent
+                              sweep had already changed which buffers were
+                              reusable by the time the flood ran. Disabling
+                              it removes that second, timing-dependent source
+                              of reclaim so only the test's own flood moves
+                              the tracked blocks.
+autovacuum = off              Remove other background sources of buffer
+                              touches during each test's brief window.
+checkpoint_timeout = 1h       CHECKPOINT clears a buffer's dirty bit
+                              (pg_buffercache.isdirty t -> f) WITHOUT evicting it,
+                              the block stays resident. So a background checkpoint firing
+                              mid-test would not itself cause a failure, but
+                              it would silently do test_bufmgr_dirty_persistence's
+                              write-out for it before the flood ever evicts
+                              the block, the assertion would then pass because the checkpointer
+                              wrote it, not because eviction of a dirty
+                              buffer forces a write, which is the property actually under test.
+client_min_messages = warning  Suppresses NOTICEs.
+
+Follow-up work (TODOs)
+----------------------
+Deferred from this first iteration, roughly in the order they'd strengthen the
+suite:
+- Crash-durability of dirty pages across a real server restart (TAP test).
+- Scan resistance test: a genuinely hot page survives a
+  greater-than-pool one-touch flood.  Needs injection-point control over
+  buffer placement (or a comparative hit-ratio measure) to be portable and
+  policy-fair, rather than a single post-flood residency check.
+- Background writer as a first-class subject. Its functionally-critical
+  properties that it keeps clean, reusable victims available ahead of
+  demand, and never writes data ahead of the WAL are timing-dependent or
+  need fault injection, so they cannot be asserted deterministically in a
+  plain regress test.
+- Concurrent reads of the same relation block; only one physical read when
+  multiple backends request the same uncached block.
+- Cleanup-lock acquisition while other backends hold buffer pins.
+- Asynchronous and streaming buffer reads.
+- I/O failure handling and waiter wakeup; WAL-before-data ordering via fault
+  injection.
+- Checkpoint / buffer-writeback interactions; buffer statistics accounting.
+- Behavior across different buffer access strategies (where applicable).
