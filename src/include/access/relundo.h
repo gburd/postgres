@@ -369,6 +369,18 @@ typedef struct RelUndoMetaPageData
 										 * number allocated via system
 										 * transaction, enabling efficient
 										 * reclamation of unused pages. */
+	bool		has_ever_had_overflow;	/* True once any overflow record has been
+									 * written for this relation (set in
+									 * RecnoStoreOverflowColumn, WAL-logged).
+									 * When false, no overflow record can exist
+									 * and VACUUM skips the two-pass
+									 * orphan-overflow scan entirely.  Never
+									 * cleared: an orphan can outlive the last
+									 * live overflow-bearing tuple, so "has had
+									 * overflow" is monotonic.  A v4 metapage
+									 * upgraded in place lacks this field; readers
+									 * treat an unset/upgraded metapage
+									 * conservatively (assume true -> scan). */
 } RelUndoMetaPageData;
 
 typedef RelUndoMetaPageData *RelUndoMetaPage;
@@ -385,7 +397,7 @@ typedef RelUndoMetaPageData *RelUndoMetaPage;
 #define RELUNDO_METAPAGE_BLKNO	((BlockNumber) 0)
 
 /* Current metapage format version */
-#define RELUNDO_METAPAGE_VERSION	4
+#define RELUNDO_METAPAGE_VERSION	5
 
 /*
  * Advance a freshly PageInit'd metapage's pd_lower to cover the
@@ -664,6 +676,13 @@ extern void RelUndoHeadCacheInvalidate(Oid relid);
  *   rel - Relation to initialize
  */
 extern void RelUndoInitRelation(Relation rel);
+
+/*
+ * Overflow-presence tracking (consumed by RECNO's VACUUM to skip the
+ * orphan-overflow scan when the relation has never stored an overflow record).
+ */
+extern void RelUndoMarkHasOverflow(Relation rel);
+extern bool RelUndoHasEverHadOverflow(Relation rel);
 
 /*
  * RelUndoDropRelation - Drop per-relation UNDO when relation is dropped

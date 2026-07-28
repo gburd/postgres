@@ -1229,6 +1229,70 @@ RelUndoReadRecordHeader(Relation rel, RelUndoRecPtr ptr,
  * from a prior operation, or during recovery replay), we truncate it
  * back to zero blocks and reinitialize.
  */
+/*
+ * RelUndoMarkHasOverflow -- record that this relation has written at least one
+ * overflow record, so VACUUM can no longer safely skip the orphan-overflow
+ * scan.  Idempotent and cheap on the common (already-set) path: reads the
+ * metapage SHARE first and returns without a write if the flag is already set.
+ * The first transition false->true takes the metapage EXCLUSIVE and WAL-logs
+ * the whole metapage as a full-page image (standard, replayed by generic redo).
+ * The flag is monotonic (never cleared): an orphan overflow record can outlive
+ * the last live overflow-bearing tuple.
+ */
+void
+RelUndoMarkHasOverflow(Relation rel)
+{
+	Buffer		metabuf;
+	RelUndoMetaPage meta;
+
+	metabuf = relundo_get_metapage(rel, BUFFER_LOCK_SHARE);
+	meta = (RelUndoMetaPage) PageGetContents(BufferGetPage(metabuf));
+	if (meta->magic == RELUNDO_METAPAGE_MAGIC && meta->has_ever_had_overflow)
+	{
+		UnlockReleaseBuffer(metabuf);
+		return;					/* already set, nothing to do */
+	}
+	UnlockReleaseBuffer(metabuf);
+
+	metabuf = relundo_get_metapage(rel, BUFFER_LOCK_EXCLUSIVE);
+	meta = (RelUndoMetaPage) PageGetContents(BufferGetPage(metabuf));
+	if (meta->magic == RELUNDO_METAPAGE_MAGIC && !meta->has_ever_had_overflow)
+	{
+		START_CRIT_SECTION();
+		meta->has_ever_had_overflow = true;
+		MarkBufferDirty(metabuf);
+		if (RelationNeedsWAL(rel))
+			(void) log_newpage_buffer(metabuf, false);
+		END_CRIT_SECTION();
+	}
+	UnlockReleaseBuffer(metabuf);
+}
+
+/*
+ * RelUndoHasEverHadOverflow -- true if this relation may contain overflow
+ * records (so VACUUM must run the orphan-overflow scan).  A v4-or-older
+ * metapage upgraded in place lacks the field; such a metapage is treated
+ * conservatively as "true" (scan) via the version check, so no orphan is
+ * ever missed after an on-disk upgrade.
+ */
+bool
+RelUndoHasEverHadOverflow(Relation rel)
+{
+	Buffer		metabuf;
+	RelUndoMetaPage meta;
+	bool		result;
+
+	metabuf = relundo_get_metapage(rel, BUFFER_LOCK_SHARE);
+	meta = (RelUndoMetaPage) PageGetContents(BufferGetPage(metabuf));
+	if (meta->magic != RELUNDO_METAPAGE_MAGIC ||
+		meta->version < 5)
+		result = true;			/* unknown/old format -> assume overflow, scan */
+	else
+		result = meta->has_ever_had_overflow;
+	UnlockReleaseBuffer(metabuf);
+	return result;
+}
+
 void
 RelUndoInitRelation(Relation rel)
 {
@@ -1295,6 +1359,7 @@ RelUndoInitRelation(Relation rel)
 	meta->total_records = 0;
 	meta->discarded_records = 0;
 	meta->system_alloc_watermark = InvalidBlockNumber;
+	meta->has_ever_had_overflow = false;
 
 	/* Include the meta struct in the recorded region of any FPI. */
 	RelUndoMetaPageSetPdLower(metapage);

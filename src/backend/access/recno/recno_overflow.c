@@ -257,6 +257,14 @@ RecnoStoreOverflowColumn(Relation rel, Datum value, int attnum,
 	remaining = data_len;
 
 	/*
+	 * Record that this relation now contains overflow records, so VACUUM can
+	 * no longer skip the orphan-overflow scan.  Idempotent (cheap no-op once
+	 * set); done before writing so a crash mid-store still leaves the flag
+	 * set and any resulting orphan is reclaimable.
+	 */
+	RelUndoMarkHasOverflow(rel);
+
+	/*
 	 * Store data across overflow records.  Each record is placed on a normal
 	 * data page using PageAddItem, found via overflow page reuse or FSM.
 	 *
@@ -1360,6 +1368,17 @@ RecnoVacuumOverflowRecords(Relation rel)
 
 	nblocks = RelationGetNumberOfBlocks(rel);
 	if (nblocks == 0)
+		return;
+
+	/*
+	 * Skip the entire two-pass orphan-overflow scan when this relation has
+	 * never stored an overflow record: with no overflow record ever written,
+	 * no orphan can exist.  The flag is durable (metapage) and monotonic, so
+	 * this is safe across crashes.  This removes both full-relation scans on
+	 * the common narrow-tuple relation that never overflows.  (A v4-or-older
+	 * metapage reports "true" conservatively, preserving old behavior.)
+	 */
+	if (!RelUndoHasEverHadOverflow(rel))
 		return;
 
 	/*
