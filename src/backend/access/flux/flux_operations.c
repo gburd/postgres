@@ -27,6 +27,7 @@
 #include "access/twophase_rmgr.h"
 #include "access/flux_undo.h"
 #include "access/flux_xlog.h"
+#include "access/flux_diff.h"
 #include "access/tableam.h"
 #include "access/undobuffer.h"
 #include "access/xlog.h"
@@ -103,6 +104,13 @@ static bool flux_slog_callbacks_registered = false;
  * lookup.
  */
 bool		flux_lazy_uncommitted_clear = false;
+
+/*
+ * Developer aid (flux_disable_delta_undo GUC): when true, FLUX always stores
+ * the full old before-image in the UNDO fork, disabling the compact byte-diff
+ * (delta) path.  Used to A/B measure the delta's per-UPDATE WAL-volume savings.
+ */
+bool		flux_disable_delta_undo = false;
 
 /*
  * FluxGetUpdateStats - Return in-place update statistics
@@ -2398,30 +2406,82 @@ flux_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 									char	   *cas_combined;
 									Size		cas_payload_total;
 									RelUndoUpdatePayload cas_undo_payload;
-
-									/*
-									 * Full old tuple before-image.
-									 * [header][update-payload][old tuple].
-									 */
-									cas_undo_hdr.urec_type = RELUNDO_UPDATE;
-									cas_undo_hdr.urec_len = (uint16)
-										(SizeOfRelUndoRecordHeader +
-										 sizeof(RelUndoUpdatePayload) + cas_old_len);
-									cas_undo_hdr.urec_xid = GetCurrentTransactionId();
-									cas_undo_hdr.urec_prevundorec = cas_prev_undo;
-									cas_undo_hdr.info_flags = RELUNDO_INFO_HAS_TUPLE;
-									cas_undo_hdr.tuple_len = (uint16) cas_old_len;
+									RelUndoDiffRecord *cas_diff = NULL;
+									Size		cas_diff_size = 0;
 
 									cas_undo_payload.oldtid = slot->tts_tid;
 									cas_undo_payload.newtid = slot->tts_tid;
+									cas_undo_hdr.urec_xid = GetCurrentTransactionId();
+									cas_undo_hdr.urec_prevundorec = cas_prev_undo;
+									cas_undo_hdr.urec_type = RELUNDO_UPDATE;
 
-									cas_payload_total = sizeof(RelUndoUpdatePayload) +
-										cas_old_len;
-									cas_combined = palloc(cas_payload_total);
-									memcpy(cas_combined, &cas_undo_payload,
-										   sizeof(RelUndoUpdatePayload));
-									memcpy(cas_combined + sizeof(RelUndoUpdatePayload),
-										   cas_old_copy, cas_old_len);
+									/*
+									 * WAL-volume optimization
+									 * (FLUX_UNDO_DELTA_UPDATE): a CAS update is
+									 * always same-size (cas_target_size ==
+									 * cas_old_len).  Store the byte-diff of
+									 * old-vs-new instead of the full old tuple
+									 * when the change is compact and we are
+									 * overwriting a COMMITTED version (so at most
+									 * one relative-anchored DELTA exists per tid;
+									 * see the in-place path for the recovery
+									 * idempotency argument).  The fold record
+									 * carries the smaller before-image, cutting
+									 * per-UPDATE WAL volume.
+									 */
+									if (!flux_disable_delta_undo &&
+										!(((FluxTupleHeader *) cas_old_copy)->t_flags & FLUX_TUPLE_UNCOMMITTED))
+									{
+										cas_diff = FluxComputeTupleDiff(cas_old_copy, cas_old_len,
+																		cas_full_image, cas_target_size,
+																	&cas_diff_size);
+										if (cas_diff != NULL &&
+											!FluxDiffIsCompact(cas_diff_size, cas_old_len))
+										{
+											pfree(cas_diff);
+											cas_diff = NULL;
+										}
+									}
+
+									if (cas_diff != NULL)
+									{
+										/* Compact path: [header][payload][diff]. */
+										cas_undo_hdr.urec_len = (uint16)
+											(SizeOfRelUndoRecordHeader +
+											 sizeof(RelUndoUpdatePayload) + cas_diff_size);
+										cas_undo_hdr.info_flags =
+											RELUNDO_INFO_HAS_TUPLE | RELUNDO_INFO_PARTIAL_TUPLE;
+										cas_undo_hdr.tuple_len = (uint16) cas_diff_size;
+
+										cas_payload_total = sizeof(RelUndoUpdatePayload) +
+											cas_diff_size;
+										cas_combined = palloc(cas_payload_total);
+										memcpy(cas_combined, &cas_undo_payload,
+											   sizeof(RelUndoUpdatePayload));
+										memcpy(cas_combined + sizeof(RelUndoUpdatePayload),
+											   cas_diff, cas_diff_size);
+										pfree(cas_diff);
+									}
+									else
+									{
+										/*
+										 * Full old tuple before-image.
+										 * [header][update-payload][old tuple].
+										 */
+										cas_undo_hdr.urec_len = (uint16)
+											(SizeOfRelUndoRecordHeader +
+											 sizeof(RelUndoUpdatePayload) + cas_old_len);
+										cas_undo_hdr.info_flags = RELUNDO_INFO_HAS_TUPLE;
+										cas_undo_hdr.tuple_len = (uint16) cas_old_len;
+
+										cas_payload_total = sizeof(RelUndoUpdatePayload) +
+											cas_old_len;
+										cas_combined = palloc(cas_payload_total);
+										memcpy(cas_combined, &cas_undo_payload,
+											   sizeof(RelUndoUpdatePayload));
+										memcpy(cas_combined + sizeof(RelUndoUpdatePayload),
+											   cas_old_copy, cas_old_len);
+									}
 
 									RelUndoStage(relation, cas_undo_buffer, cas_undo_ptr,
 												 &cas_undo_hdr, cas_combined,
@@ -4239,33 +4299,103 @@ force_shrink_retry:
 		RelUndoUpdatePayload upd_undo_payload;
 		char	   *upd_combined;
 		Size		upd_payload_total;
+		RelUndoDiffRecord *upd_diff = NULL;
+		Size		upd_diff_size = 0;
 
 		/*
-		 * Full-tuple UPDATE UNDO record: store the old tuple so rollback can
-		 * restore it (RelUndoApplyUpdate handles same-size, grow, and
-		 * shrink). Layout written by RelUndoFinish: [header][payload][old
-		 * tuple].
+		 * WAL-volume optimization (FLUX_UNDO_DELTA_UPDATE): when this is a
+		 * same-size in-place overwrite of a COMMITTED before-image, store only
+		 * the byte-diff of old-vs-new instead of the full old tuple.  The UNDO
+		 * before-image is the bulk of a FLUX UPDATE's WAL, so a small change to
+		 * a wide tuple shrinks the record dramatically.  Reverse-apply
+		 * reconstructs the old bytes = current on-page bytes with the diff's
+		 * region substituted back (RelUndoApplyDiffReverse for rollback,
+		 * FluxApplyDiffReverse for PVS reads).
+		 *
+		 * Restricted to a same-size overwrite (new_tuple_size ==
+		 * old_tuple_for_inplace_wal->t_len): only then does the on-page slot
+		 * length at rollback/read equal the new_len the diff was computed
+		 * against, so the reverse splice round-trips.  Grow (delete+re-add) and
+		 * shrink (slot kept at the old, larger length) fall back to the full
+		 * before-image.
+		 *
+		 * Restricted to overwriting a COMMITTED old version so at most one
+		 * DELTA exists per tid: a relative-anchored (against the live page)
+		 * record is not idempotent across a second crash bracketing the
+		 * end-of-recovery checkpoint, and newest-first recovery re-derives the
+		 * anchor only when every newer record for the tid is absolute.
+		 * Overwriting our OWN uncommitted version could chain two relative
+		 * records, so force the full-tuple record there.
 		 */
-		upd_undo_hdr.urec_type = RELUNDO_UPDATE;
-		upd_undo_hdr.urec_len = (uint16)
-			(SizeOfRelUndoRecordHeader + sizeof(RelUndoUpdatePayload) +
-			 old_tuple_for_inplace_wal->t_len);
-		upd_undo_hdr.urec_xid = GetCurrentTransactionId();
-		upd_undo_hdr.urec_prevundorec =
-			GetPerRelUndoPtr(RelationGetRelid(relation));
-		upd_undo_hdr.info_flags = RELUNDO_INFO_HAS_TUPLE;
-		upd_undo_hdr.tuple_len = (uint16) old_tuple_for_inplace_wal->t_len;
+		if (new_tuple_size == old_tuple_for_inplace_wal->t_len &&
+			!flux_disable_delta_undo &&
+			!(old_tuple_for_inplace_wal->t_data->t_flags & FLUX_TUPLE_UNCOMMITTED))
+		{
+			upd_diff = FluxComputeTupleDiff((const char *) old_tuple_for_inplace_wal->t_data,
+											old_tuple_for_inplace_wal->t_len,
+											(const char *) new_tuple->t_data,
+											new_tuple_size,
+											&upd_diff_size);
+			if (upd_diff != NULL &&
+				!FluxDiffIsCompact(upd_diff_size, old_tuple_for_inplace_wal->t_len))
+			{
+				pfree(upd_diff);
+				upd_diff = NULL;
+			}
+		}
 
 		upd_undo_payload.oldtid = *otid;
 		upd_undo_payload.newtid = slot->tts_tid;
 
-		upd_payload_total = sizeof(RelUndoUpdatePayload) +
-			old_tuple_for_inplace_wal->t_len;
-		upd_combined = palloc(upd_payload_total);
-		memcpy(upd_combined, &upd_undo_payload, sizeof(RelUndoUpdatePayload));
-		memcpy(upd_combined + sizeof(RelUndoUpdatePayload),
-			   old_tuple_for_inplace_wal->t_data,
-			   old_tuple_for_inplace_wal->t_len);
+		upd_undo_hdr.urec_xid = GetCurrentTransactionId();
+		upd_undo_hdr.urec_prevundorec =
+			GetPerRelUndoPtr(RelationGetRelid(relation));
+
+		if (upd_diff != NULL)
+		{
+			/*
+			 * Compact path: [header][payload][RelUndoDiffRecord].  The trailing
+			 * tuple_len bytes are the diff blob, flagged PARTIAL_TUPLE so the
+			 * engine reverse-applies the splice rather than restoring it
+			 * verbatim.
+			 */
+			upd_undo_hdr.urec_type = RELUNDO_UPDATE;
+			upd_undo_hdr.urec_len = (uint16)
+				(SizeOfRelUndoRecordHeader + sizeof(RelUndoUpdatePayload) +
+				 upd_diff_size);
+			upd_undo_hdr.info_flags = RELUNDO_INFO_HAS_TUPLE | RELUNDO_INFO_PARTIAL_TUPLE;
+			upd_undo_hdr.tuple_len = (uint16) upd_diff_size;
+
+			upd_payload_total = sizeof(RelUndoUpdatePayload) + upd_diff_size;
+			upd_combined = palloc(upd_payload_total);
+			memcpy(upd_combined, &upd_undo_payload, sizeof(RelUndoUpdatePayload));
+			memcpy(upd_combined + sizeof(RelUndoUpdatePayload),
+				   upd_diff, upd_diff_size);
+			pfree(upd_diff);
+		}
+		else
+		{
+			/*
+			 * Full-tuple UPDATE UNDO record: store the old tuple so rollback
+			 * can restore it (RelUndoApplyUpdate handles same-size, grow, and
+			 * shrink). Layout written by RelUndoFinish: [header][payload][old
+			 * tuple].
+			 */
+			upd_undo_hdr.urec_type = RELUNDO_UPDATE;
+			upd_undo_hdr.urec_len = (uint16)
+				(SizeOfRelUndoRecordHeader + sizeof(RelUndoUpdatePayload) +
+				 old_tuple_for_inplace_wal->t_len);
+			upd_undo_hdr.info_flags = RELUNDO_INFO_HAS_TUPLE;
+			upd_undo_hdr.tuple_len = (uint16) old_tuple_for_inplace_wal->t_len;
+
+			upd_payload_total = sizeof(RelUndoUpdatePayload) +
+				old_tuple_for_inplace_wal->t_len;
+			upd_combined = palloc(upd_payload_total);
+			memcpy(upd_combined, &upd_undo_payload, sizeof(RelUndoUpdatePayload));
+			memcpy(upd_combined + sizeof(RelUndoUpdatePayload),
+				   old_tuple_for_inplace_wal->t_data,
+				   old_tuple_for_inplace_wal->t_len);
+		}
 
 		RelUndoFinish(relation, upd_undo_buffer, upd_undo_ptr,
 					  &upd_undo_hdr, upd_combined, upd_payload_total);

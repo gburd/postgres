@@ -150,6 +150,7 @@ Source layout
   flux_tuple.c       tuple form/deform, flux_toast_tuple / flux_toast_delete
   flux_mvcc.c        heap-shaped xmin/xmax visibility state, shmem
   flux_pvs.c         prior-version reconstruction from the UNDO fork
+  flux_diff.c        byte-diff (delta) codec for compact UNDO before-images
   flux_slot.c        FLUX minimal tuple slot
   flux_xlog.c        WAL record types, redo, mask
   flux_undo.c        UNDO_RMID_FLUX resource manager (index-UNDO piggyback)

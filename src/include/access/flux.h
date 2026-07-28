@@ -809,6 +809,7 @@ extern void FluxDirtyMapShmemInit(void);
 extern const ShmemCallbacks FluxDirtyMapShmemCallbacks;
 
 extern bool flux_lazy_uncommitted_clear;
+extern bool flux_disable_delta_undo;
 
 
 /* Lock operations */
