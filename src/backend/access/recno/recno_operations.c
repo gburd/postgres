@@ -51,6 +51,7 @@
 #include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/injection_point.h"
+#include "utils/numeric.h"
 #include "utils/rel.h"
 #include "utils/timestamp.h"
 #include "utils/wait_event.h"
@@ -1875,6 +1876,35 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 
 		/* Form the new tuple speculatively (no overflow handling) */
 		slot_getallattrs(slot);
+
+		/*
+		 * Escrow relations: normalize the numeric escrow column to its
+		 * fixed-layout image in the slot BEFORE the speculative form, so
+		 * cas_new_size matches the on-page fixed-layout width and the CAS/escrow
+		 * fast path (which requires same-width) can engage.  We pass NULL rel to
+		 * RecnoFormTuple to keep this a no-overflow speculative form; the escrow
+		 * conversion is done here explicitly rather than via the rel-driven form
+		 * path so wide non-escrow columns are not pushed to overflow here.
+		 */
+		esc_attn = RecnoEscrowAttnum(relation);
+		if (esc_attn > 0)
+		{
+			Form_pg_attribute eatt =
+				TupleDescAttr(RelationGetDescr(relation), esc_attn - 1);
+			Size		fx_len;
+
+			if (eatt->atttypid == NUMERICOID && !slot->tts_isnull[esc_attn - 1] &&
+				numeric_fixed_layout_params(eatt->atttypmod, NULL, NULL,
+											NULL, &fx_len))
+			{
+				char	   *fx = (char *) palloc(fx_len);
+
+				numeric_to_fixed_layout((Numeric) DatumGetPointer(slot->tts_values[esc_attn - 1]),
+										eatt->atttypmod, fx, fx_len);
+				slot->tts_values[esc_attn - 1] = PointerGetDatum(fx);
+			}
+		}
+
 		cas_new_tuple = RecnoFormTuple(RelationGetDescr(relation),
 									   slot->tts_values,
 									   slot->tts_isnull,
@@ -1892,7 +1922,6 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 		 * available); a mixed update falls through to the normal path so
 		 * non-escrow columns keep INV-4 unchanged.
 		 */
-		esc_attn = RecnoEscrowAttnum(relation);
 
 		/* Attempt the CAS fast path */
 		buffer = ReadBuffer(relation, blkno);
@@ -2497,6 +2526,9 @@ recno_tuple_update(Relation relation, ItemPointer otid, TupleTableSlot *slot,
 																  cas_target_size, esc_attn);
 										cas_escrow_extra.neg_delta_len = cas_neg_delta_len;
 										cas_escrow_extra.pad = 0;
+										cas_escrow_extra.typmod =
+											TupleDescAttr(RelationGetDescr(relation),
+														  esc_attn - 1)->atttypmod;
 
 										cas_pre_tuple = sizeof(RelUndoUpdatePayload) +
 											SizeOfRelUndoEscrowExtra + cas_neg_delta_len;

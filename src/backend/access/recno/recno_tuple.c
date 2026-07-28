@@ -18,6 +18,7 @@
 #include "access/tupdesc.h"
 #include "access/tupmacs.h"
 #include "catalog/pg_type.h"
+#include "utils/numeric.h"
 #include "common/hashfn.h"
 #include "executor/tuptable.h"
 #include "storage/bufpage.h"
@@ -324,6 +325,41 @@ recno_form_tuple_internal(TupleDesc tupdesc, Datum *values, bool *isnull,
 		is_overflowed = (bool *) palloc0(tupdesc->natts * sizeof(bool));
 	}
 	memcpy(work_values, values, tupdesc->natts * sizeof(Datum));
+
+	/*
+	 * Escrow numeric normalization.  If this relation has a numeric escrow
+	 * column with a fixed-layout typmod, store that column in its fixed-width
+	 * NumericLong image so every formed tuple (INSERT and the normal
+	 * CAS/grow path) has a width-stable escrow value.  That is what lets the
+	 * escrow fast path overwrite the running sum in place.  Only attempted
+	 * when rel is available (the WAL/recovery form paths pass rel == NULL and
+	 * operate on already-stored bytes).  Reads need no special handling: the
+	 * fixed-layout image is a valid numeric.
+	 */
+	if (rel != NULL)
+	{
+		AttrNumber	esc_attn = RecnoEscrowAttnum(rel);
+
+		if (esc_attn > 0)
+		{
+			Form_pg_attribute eatt = TupleDescAttr(tupdesc, esc_attn - 1);
+
+			if (eatt->atttypid == NUMERICOID && !isnull[esc_attn - 1])
+			{
+				Size		img_len;
+
+				if (numeric_fixed_layout_params(eatt->atttypmod, NULL, NULL,
+												NULL, &img_len))
+				{
+					char	   *fx = (char *) palloc(img_len);
+
+					numeric_to_fixed_layout((Numeric) DatumGetPointer(work_values[esc_attn - 1]),
+											eatt->atttypmod, fx, img_len);
+					work_values[esc_attn - 1] = PointerGetDatum(fx);
+				}
+			}
+		}
+	}
 
 	/* Initialize overflow buffers if provided */
 	if (overflow_buffers != NULL)

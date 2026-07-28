@@ -660,6 +660,7 @@ extern void RecnoEscrowComputeDeltaFromSlot(Relation rel, AttrNumber attnum,
 extern void RecnoEscrowRollback(char *image, uint32 image_len,
 								uint16 esc_off,
 								const char *neg_delta, uint16 neg_delta_len,
+								int32 typmod,
 								const char *old_image, uint32 old_len);
 extern uint16 RecnoEscrowAttrOffset(Relation rel, const char *image,
 									uint32 image_len, AttrNumber attnum);

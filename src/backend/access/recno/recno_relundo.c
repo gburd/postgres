@@ -97,7 +97,8 @@ RecnoRelUndoDiscardRetained(void)
 static void
 RecnoRelUndoApplyEscrow(Page page, OffsetNumber offset,
 						uint16 esc_off, const char *neg_delta,
-						uint16 neg_delta_len, const char *old_image,
+						uint16 neg_delta_len, int32 typmod,
+						const char *old_image,
 						uint32 old_len)
 {
 	ItemId		lp;
@@ -116,7 +117,7 @@ RecnoRelUndoApplyEscrow(Page page, OffsetNumber offset,
 	image_len = ItemIdGetLength(lp);
 
 	RecnoEscrowRollback(image, image_len, esc_off,
-						neg_delta, neg_delta_len, old_image, old_len);
+						neg_delta, neg_delta_len, typmod, old_image, old_len);
 }
 
 /*

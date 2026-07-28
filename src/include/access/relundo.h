@@ -285,6 +285,9 @@ typedef struct RelUndoEscrowExtra
 								 * relcache entry with no TupleDesc) */
 	uint16		neg_delta_len;	/* bytes of trailing negated-delta image */
 	uint16		pad;
+	int32		typmod;			/* escrow column atttypmod, so a numeric
+								 * reverse-apply can re-lay-out the fixed-width
+								 * sum with no catalog access (int8: unused) */
 	/* neg_delta_len bytes of the negated delta value follow */
 } RelUndoEscrowExtra;
 
@@ -799,6 +802,7 @@ extern void (*RelUndoApplyEscrow_hook) (Page page,
 										OffsetNumber offset, uint16 esc_off,
 										const char *neg_delta,
 										uint16 neg_delta_len,
+										int32 typmod,
 										const char *old_image,
 										uint32 old_len);
 

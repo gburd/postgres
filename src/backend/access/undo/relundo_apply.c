@@ -525,6 +525,7 @@ RelUndoApplyOneRecord(Relation rel, const RelUndoRecordHeader *header,
 					RelUndoApplyEscrow_hook(page, target_offset,
 											extra->esc_off, neg_delta,
 											extra->neg_delta_len,
+											extra->typmod,
 											old_image, old_len);
 
 					if (old_image)

@@ -128,8 +128,17 @@ RecnoReconstructVisibleVersion(Relation rel, ItemPointer tid,
 		/*
 		 * urec_xid is the xid that produced the CURRENT candidate image.  If
 		 * it is visible to the reader, the candidate is what we should serve.
+		 *
+		 * Read-your-writes: a record produced by the CURRENT transaction is
+		 * always visible to it, even though XidInMVCCSnapshot() reports an
+		 * as-yet-unassigned-at-snapshot-time xid (xid >= snapshot->xmax) as
+		 * in-progress.  Without this the walk would peel back the writer's own
+		 * uncommitted updates (e.g. repeated escrow += in one transaction),
+		 * reconstructing a stale pre-transaction value and mis-computing the
+		 * next delta.
 		 */
-		if (!XidInMVCCSnapshot(urec_hdr.urec_xid, snapshot))
+		if (TransactionIdIsCurrentTransactionId(urec_hdr.urec_xid) ||
+			!XidInMVCCSnapshot(urec_hdr.urec_xid, snapshot))
 		{
 			if (payload != NULL)
 				pfree(payload);

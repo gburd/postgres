@@ -147,24 +147,33 @@ escrow_sub(Oid typid, Datum a, Datum b)
 /*
  * escrow_datum_image_len
  *		On-disk image length of an escrow Datum (for the UNDO neg_delta blob).
+ *		int8 is 8 raw bytes; numeric is the FIXED-LAYOUT image size for the
+ *		column's typmod (constant, independent of the value), so an in-place
+ *		numeric accumulate is width-stable and the fast path can engage.
  */
 static uint16
-escrow_datum_image_len(Oid typid, Datum value)
+escrow_datum_image_len(Oid typid, int32 typmod, Datum value)
 {
+	Size		img_len;
+
 	if (typid == INT8OID)
 		return (uint16) sizeof(int64);
 
 	Assert(typid == NUMERICOID);
-	return (uint16) VARSIZE_ANY(DatumGetPointer(value));
+	(void) value;
+	if (!numeric_fixed_layout_params(typmod, NULL, NULL, NULL, &img_len))
+		elog(ERROR, "escrow numeric column has no fixed typmod");
+	return (uint16) img_len;
 }
 
 /*
  * escrow_datum_to_image / escrow_image_to_datum
  *		Serialize/deserialize an escrow Datum to/from the raw bytes carried in
- *		the UNDO record.  int8 is stored as 8 raw bytes; numeric as its varlena.
+ *		the UNDO record.  int8 is stored as 8 raw bytes; numeric as its
+ *		FIXED-LAYOUT varlena (constant size for the column typmod).
  */
 static void
-escrow_datum_to_image(Oid typid, Datum value, char *dst, uint16 len)
+escrow_datum_to_image(Oid typid, int32 typmod, Datum value, char *dst, uint16 len)
 {
 	if (typid == INT8OID)
 	{
@@ -175,7 +184,7 @@ escrow_datum_to_image(Oid typid, Datum value, char *dst, uint16 len)
 	}
 
 	Assert(typid == NUMERICOID);
-	memcpy(dst, DatumGetPointer(value), len);
+	numeric_to_fixed_layout((Numeric) DatumGetPointer(value), typmod, dst, len);
 }
 
 static Datum
@@ -225,6 +234,7 @@ RecnoEscrowComputeDelta(Relation rel, AttrNumber attnum,
 {
 	Form_pg_attribute att = TupleDescAttr(RelationGetDescr(rel), attnum - 1);
 	Oid			typid = att->atttypid;
+	int32		typmod = att->atttypmod;
 	Datum		delta;
 	Datum		neg_delta;
 	uint16		dlen;
@@ -239,15 +249,15 @@ RecnoEscrowComputeDelta(Relation rel, AttrNumber attnum,
 	delta = escrow_sub(typid, new_values[attnum - 1], old_values[attnum - 1]);
 	neg_delta = escrow_sub(typid, old_values[attnum - 1], new_values[attnum - 1]);
 
-	dlen = escrow_datum_image_len(typid, delta);
-	nlen = escrow_datum_image_len(typid, neg_delta);
+	dlen = escrow_datum_image_len(typid, typmod, delta);
+	nlen = escrow_datum_image_len(typid, typmod, neg_delta);
 	if (dlen > RECNO_ESCROW_MAX_DELTA_IMAGE || nlen > RECNO_ESCROW_MAX_DELTA_IMAGE)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
 				 errmsg("escrow delta image too large")));
 
-	escrow_datum_to_image(typid, delta, delta_image, dlen);
-	escrow_datum_to_image(typid, neg_delta, neg_delta_image, nlen);
+	escrow_datum_to_image(typid, typmod, delta, delta_image, dlen);
+	escrow_datum_to_image(typid, typmod, neg_delta, neg_delta_image, nlen);
 
 	*delta_out = delta;
 	*delta_len = dlen;
@@ -283,21 +293,25 @@ RecnoEscrowUpdateIsEligible(Relation rel, AttrNumber attnum,
 	int			i;
 
 	/*
-	 * Prototype fast-path is int8 only.  int8 is fixed-width, so the in-place
-	 * running sum never changes the tuple size and its stored form is
-	 * canonical (no numeric dscale/weight re-encoding).  A numeric escrow
-	 * column is still a valid escrow column (accumulation is correct) but its
-	 * updates take the ordinary CAS/grow path -- correct, just without the
-	 * INV-4 concurrency relaxation.  This matches the plan's "numeric growing
-	 * digits falls back to the grow path (correct, slower)", generalized to
-	 * all numeric to sidestep numeric's non-canonical byte width.
-	 *
-	 * ponytail: int8-only escrow fast-path.  Extend to numeric by storing a
-	 * canonical fixed-width running sum (e.g. scaled int128) if numeric money
-	 * columns need the concurrency win.
+	 * Fast-path types: int8 (fixed width) and numeric with an explicit
+	 * precision/scale (stored on-page in a fixed-layout NumericLong of
+	 * constant size -- see numeric_to_fixed_layout and the form path).  Both
+	 * give a width-stable in-place running sum so the INV-4 concurrency
+	 * relaxation applies.  An unconstrained numeric has no fixed layout and
+	 * takes the ordinary CAS/grow path (correct, no concurrency win).
 	 */
-	if (TupleDescAttr(tupdesc, attnum - 1)->atttypid != INT8OID)
-		return false;
+	{
+		Form_pg_attribute eatt = TupleDescAttr(tupdesc, attnum - 1);
+
+		if (eatt->atttypid == INT8OID)
+			 /* ok */ ;
+		else if (eatt->atttypid == NUMERICOID &&
+				 numeric_fixed_layout_params(eatt->atttypmod, NULL, NULL,
+											 NULL, NULL))
+			 /* ok */ ;
+		else
+			return false;
+	}
 
 	old_values = (Datum *) palloc(tupdesc->natts * sizeof(Datum));
 	old_isnull = (bool *) palloc(tupdesc->natts * sizeof(bool));
@@ -339,7 +353,7 @@ RecnoEscrowUpdateIsEligible(Relation rel, AttrNumber attnum,
 	if (escrow_changed && !other_changed)
 	{
 		RecnoTuple	newt = RecnoFormTuple(tupdesc, slot->tts_values,
-										  slot->tts_isnull, NULL, NULL);
+										  slot->tts_isnull, rel, NULL);
 		bool		same_width = (newt->t_len == old_len);
 
 		RecnoFreeTuple(newt);
@@ -472,7 +486,7 @@ RecnoEscrowSetOnpageSum(Relation rel, char *image, uint32 image_len,
 	delta = escrow_image_to_datum(typid, delta_image, delta_len);
 	values[attnum - 1] = escrow_add(typid, values[attnum - 1], delta);
 
-	reformed = RecnoFormTuple(tupdesc, values, isnull, NULL, NULL);
+	reformed = RecnoFormTuple(tupdesc, values, isnull, rel, NULL);
 
 	if (reformed->t_len != image_len)
 	{
@@ -539,12 +553,22 @@ RecnoEscrowAttrOffset(Relation rel, const char *image, uint32 image_len,
 
 	{
 		Form_pg_attribute att = TupleDescAttr(tupdesc, attnum - 1);
+		Size		val_len;
 
 		data_ptr = (char *) att_align_nominal(data_ptr, att->attalign);
-	}
 
-	if ((uint32) (data_ptr - base) + sizeof(int64) > image_len)
-		elog(ERROR, "RecnoEscrowAttrOffset: computed offset past image end");
+		if (att->atttypid == NUMERICOID)
+		{
+			if (!numeric_fixed_layout_params(att->atttypmod, NULL, NULL,
+											 NULL, &val_len))
+				elog(ERROR, "RecnoEscrowAttrOffset: numeric escrow column lacks fixed typmod");
+		}
+		else
+			val_len = sizeof(int64);
+
+		if ((uint32) (data_ptr - base) + val_len > image_len)
+			elog(ERROR, "RecnoEscrowAttrOffset: computed offset past image end");
+	}
 
 	return (uint16) (data_ptr - base);
 }
@@ -553,57 +577,84 @@ RecnoEscrowAttrOffset(Relation rel, const char *image, uint32 image_len,
  * RecnoEscrowRollback
  *		Reverse-apply an escrow record for transaction rollback / crash recovery.
  *
- * BYTE-LEVEL, catalog-free: escrow fast-path values are int8 (fixed 8 bytes)
- * at a known byte offset (esc_off, recorded at write time).  This routine must
- * run during crash recovery on a fake relcache entry with NO TupleDesc, so it
- * must NOT deform/reform -- it does raw int64 arithmetic and byte copies only.
+ * BYTE-LEVEL, catalog-free.  This routine must run during crash recovery on a
+ * fake relcache entry with NO TupleDesc, so it must NOT deform/reform.  Both
+ * value types operate on raw bytes at a known offset (esc_off, recorded at
+ * write time): int8 as a fixed 8-byte integer; numeric as a FIXED-LAYOUT
+ * NumericLong of neg_delta_len bytes (numeric_add and numeric_to_fixed_layout
+ * are pure varlena arithmetic with no syscache access, so they are safe here;
+ * the column typmod is carried in the UNDO record so the fixed re-layout needs
+ * no catalog).
  *
  * Steps:
- *  1. value = current_onpage_int64 + neg_delta_int64  (absolute-per-record
- *     subtract: a concurrent writer's committed delta in the running sum
- *     survives, since we add back only THIS writer's negated delta -- the
- *     out-of-order-abort lost-update guard, H3).
- *  2. Restore the saved old before-image header (visibility fields) so the row
- *     is visible again; if the old header's xmin is not committed (it captured
- *     a still-in-flight sibling), stamp FrozenTransactionId so the row does not
- *     vanish behind an aborted/in-progress xmin.
+ *  1. value = current_onpage + neg_delta  (absolute-per-record subtract: a
+ *     concurrent writer's committed delta in the running sum survives, since
+ *     we add back only THIS writer's negated delta -- the out-of-order-abort
+ *     lost-update guard, H3).
+ *  2. Restore the saved old before-image header (visibility fields); if the
+ *     old header's xmin is not committed (it captured a still-in-flight
+ *     sibling), stamp FrozenTransactionId so the row does not vanish.
  *  3. Clear transient flags (UNCOMMITTED/DELETED/UPDATED).
- *  4. Write the recomputed int64 value back at esc_off.
+ *  4. Write the recomputed value back at esc_off.
  *
  * ponytail: clearing UNCOMMITTED on an out-of-order abort of a non-latest
  * writer can briefly expose a still-uncommitted sibling's delta to a
  * concurrent reader (narrow dirty-read window).  The committed VALUE is always
- * correct; only that isolation edge is approximate.  int8-only (numeric escrow
- * falls to the normal path), so the value is always a fixed-width int64.
+ * correct; only that isolation edge is approximate.
  */
 void
 RecnoEscrowRollback(char *image, uint32 image_len,
 					uint16 esc_off,
 					const char *neg_delta, uint16 neg_delta_len,
+					int32 typmod,
 					const char *old_image, uint32 old_len)
 {
-	int64		cur_val;
-	int64		neg_val;
-	int64		result;
+	bool		is_int8 = (neg_delta_len == sizeof(int64));
 
 	if (old_image == NULL || old_len == 0)
 		elog(ERROR, "RecnoEscrowRollback: missing old before-image");
 	if (old_len != image_len)
 		elog(ERROR, "RecnoEscrowRollback: old image length %u != on-page %u",
 			 old_len, image_len);
-	if (neg_delta_len != sizeof(int64))
-		elog(ERROR, "RecnoEscrowRollback: unexpected neg_delta length %u",
-			 neg_delta_len);
-	if ((uint32) esc_off + sizeof(int64) > image_len)
+	if ((uint32) esc_off + neg_delta_len > image_len)
 		elog(ERROR, "RecnoEscrowRollback: escrow offset %u past image end %u",
 			 esc_off, image_len);
 
-	/* value = current running sum + this writer's negated delta */
-	memcpy(&cur_val, image + esc_off, sizeof(int64));
-	memcpy(&neg_val, neg_delta, sizeof(int64));
-	result = cur_val + neg_val;
+	/*
+	 * Step 1: recompute value = current running sum + this writer's negated
+	 * delta, in place at esc_off.  int8 is raw arithmetic; numeric is
+	 * fixed-layout NumericLong arithmetic via the public (syscache-free)
+	 * numeric functions.  Do this BEFORE overwriting the header (step 2)
+	 * because the header restore does not touch the data region.
+	 */
+	if (is_int8)
+	{
+		int64		cur_val;
+		int64		neg_val;
+		int64		result;
 
-	/* restore the old header (visibility) */
+		memcpy(&cur_val, image + esc_off, sizeof(int64));
+		memcpy(&neg_val, neg_delta, sizeof(int64));
+		result = cur_val + neg_val;
+		memcpy(image + esc_off, &result, sizeof(int64));
+	}
+	else
+	{
+		/* numeric fixed-layout: cur (on-page) + neg_delta, re-lay-out result */
+		Datum		cur = PointerGetDatum(image + esc_off);
+		Datum		neg = PointerGetDatum(unconstify(char *, neg_delta));
+		Datum		sum;
+
+		if (VARSIZE_ANY(image + esc_off) != neg_delta_len)
+			elog(ERROR, "RecnoEscrowRollback: on-page numeric size %u != record %u",
+				 (unsigned) VARSIZE_ANY(image + esc_off), neg_delta_len);
+		sum = DirectFunctionCall2(numeric_add, cur, neg);
+		numeric_to_fixed_layout((Numeric) DatumGetPointer(sum), typmod,
+								image + esc_off, neg_delta_len);
+		pfree(DatumGetPointer(sum));
+	}
+
+	/* Step 2: restore the old header (visibility) */
 	memcpy(image, old_image, RECNO_TUPLE_OVERHEAD);
 	{
 		RecnoTupleHeader *ihdr = (RecnoTupleHeader *) image;
@@ -615,9 +666,7 @@ RecnoEscrowRollback(char *image, uint32 image_len,
 			ihdr->t_flags |= RECNO_TUPLE_XMIN_COMMITTED;
 		}
 	}
+	/* Step 3: clear transient flags */
 	if (RelUndoClearTransientFlags_hook)
 		RelUndoClearTransientFlags_hook(image);
-
-	/* write the recomputed value back */
-	memcpy(image + esc_off, &result, sizeof(int64));
 }
