@@ -309,6 +309,29 @@ UNDO record I/O (RelUndoReadRecord) and the physical restore both occur
 BEFORE the critical section; only the dirty-marking, flag-setting, and
 WAL insert occur inside it.
 
+The intrinsic in-place-UNDO cost (measured, not fixable).  An in-place
+UPDATE holds TWO buffer content locks across the WAL insert: the data
+page (SHARE_EXCLUSIVE on the CAS fast path, EXCLUSIVE otherwise) AND the
+UNDO-fork page that RelUndoReserve()/RelUndoStage() locked to stage the
+before-image.  Both must stay locked and pinned when XLogInsert() emits
+the single combined record (RecnoXLogCasUpdateUndo), because that record
+atomically covers both forks: crash recovery must never see the new data
+version durable without its before-image, or vice versa.  Releasing the
+UNDO-page lock earlier would split the one atomic record into two and
+reintroduce exactly that torn-write class, so the two-lock hold is a
+correctness requirement, not an accident.  This is the fundamental cost
+of in-place MVCC-over-UNDO: every UPDATE writes the data page AND a
+durable before-image under one locked WAL insert, whereas heap leaves the
+old version in place and writes no extra durable image.  It is the same
+tradeoff zheap and OrioleDB confront.  Concurrent writers to one relation
+are spread across RELUNDO_NUM_HEADS (16) independent UNDO tail pages
+(slot = MyProcNumber % RELUNDO_NUM_HEADS, see relundo.c) so they do not
+all serialize on a single UNDO head-page content lock; the data-page
+content lock remains the per-hot-row serialization point, as it is for
+heap.  Byte-diff delta UNDO (RELUNDO_INFO_PARTIAL_TUPLE) shrinks the
+before-image WAL volume (~30% on a spread-update mix) but does not remove
+the two-lock hold.
+
 3.4 Crash During Rollback
 ---------------------------
 
