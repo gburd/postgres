@@ -12,6 +12,7 @@ backend_sources += files(
   'flux_lock.c',
   'flux_slot.c',
   'flux_vm.c',
+  'flux_diff.c',
   'flux_undo.c',
   'flux_relundo.c',
   'flux_pvs.c',

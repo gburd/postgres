@@ -24,6 +24,7 @@ OBJS = \
 	flux_lock.o \
 	flux_slot.o \
 	flux_vm.o \
+	flux_diff.o \
 	flux_undo.o \
 	flux_relundo.o \
 	flux_pvs.o

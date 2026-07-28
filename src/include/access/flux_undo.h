@@ -43,6 +43,19 @@
 #define FLUX_UNDO_INSERT			0x0001
 #define FLUX_UNDO_UPDATE			0x0002	/* full-tuple before-image */
 #define FLUX_UNDO_DELETE			0x0003	/* restore deleted tuple */
+#define FLUX_UNDO_DELTA_UPDATE		0x0004	/* byte-diff before-image: the
+											 * UPDATE's UNDO record carries a
+											 * RelUndoDiffRecord (the changed
+											 * region of the old bytes) instead of
+											 * the full old tuple, cutting
+											 * per-UPDATE WAL volume.  FLUX-local
+											 * subtype flagged on a generic
+											 * RELUNDO_UPDATE record via
+											 * RELUNDO_INFO_PARTIAL_TUPLE; the
+											 * engine reverse-applies the
+											 * self-describing splice for rollback
+											 * and FLUX's PVS path for old-version
+											 * reads (see access/flux_diff.h). */
 
 /*
  * Common fixed-length header for every FLUX UNDO payload.  The
