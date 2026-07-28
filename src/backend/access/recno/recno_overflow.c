@@ -1356,6 +1356,7 @@ RecnoVacuumOverflowRecords(Relation rel)
 	HASHCTL		hashctl;
 	int64		orphans_removed = 0;
 	int64		overflow_records_found = 0;
+	bool		saw_overflow_record = false;
 
 	nblocks = RelationGetNumberOfBlocks(rel);
 	if (nblocks == 0)
@@ -1419,7 +1420,18 @@ RecnoVacuumOverflowRecords(Relation rel)
 
 			/* Skip overflow records themselves */
 			if (RecnoIsOverflowRecord(tuple_hdr, ItemIdGetLength(itemid)))
+			{
+				/*
+				 * Note that this relation actually contains at least one
+				 * overflow record.  Pass 1 already visits every page, so this
+				 * observation is free; if no overflow record is seen anywhere,
+				 * there can be no orphans and Pass 2 (a second full scan) is
+				 * skipped entirely -- the common case for relations with no
+				 * large/overflowed values (e.g. narrow OLTP tables).
+				 */
+				saw_overflow_record = true;
 				continue;
+			}
 
 			/* Skip deleted tuples - their overflow is orphaned */
 			if (tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
@@ -1554,7 +1566,14 @@ RecnoVacuumOverflowRecords(Relation rel)
 	/*
 	 * Pass 2: Scan all pages for overflow records and remove any that are not
 	 * in the referenced set.
+	 *
+	 * Skip this second full-relation scan entirely when Pass 1 (which already
+	 * visited every page) saw no overflow record at all: with zero overflow
+	 * records present there are no orphans to reclaim, and this avoids a
+	 * per-vacuum full scan (with an EXCLUSIVE buffer lock per page) on the
+	 * common narrow-tuple relation that never overflows.
 	 */
+	if (saw_overflow_record)
 	for (blkno = 0; blkno < nblocks; blkno++)
 	{
 		Buffer		buffer;
