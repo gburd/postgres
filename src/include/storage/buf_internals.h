@@ -591,6 +591,9 @@ extern BufferDesc *StrategyGetBuffer(BufferAccessStrategy strategy,
 extern bool StrategyRejectBuffer(BufferAccessStrategy strategy,
 								 BufferDesc *buf, bool from_ring);
 
+extern void BcsRecordEviction(RelFileNumber relNumber);
+extern void BcsGhostRecordEviction(uint32 taghash, bool cold);
+extern void BcsGhostProbeRead(uint32 taghash);
 extern int	StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc);
 extern void StrategyNotifyBgWriter(int bgwprocno);
 
