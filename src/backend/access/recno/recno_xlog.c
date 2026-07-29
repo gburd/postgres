@@ -2087,6 +2087,16 @@ recno_xlog_overflow_write_redo(XLogReaderState *record)
 									 xlrec->offnum, false, false);
 				if (offnum == InvalidOffsetNumber)
 					elog(ERROR, "failed to add overflow record to page during redo");
+
+				/*
+				 * Mark the page as holding an overflow record, mirroring the
+				 * DO path (RecnoStoreOverflowColumn).  Required on this
+				 * logical (non-FPI) redo branch: without it a page recovered
+				 * via BLK_NEEDS_REDO would lose the flag and VACUUM would
+				 * wrongly skip its orphan-overflow scan.  (The BLK_RESTORED
+				 * FPI path restores the flag with the whole page.)
+				 */
+				RecnoPageSetFlag(RecnoPageGetOpaque(page), RECNO_PAGE_OVERFLOW);
 			}
 
 			PageSetLSN(page, record->EndRecPtr);

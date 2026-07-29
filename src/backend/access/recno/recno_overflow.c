@@ -257,14 +257,6 @@ RecnoStoreOverflowColumn(Relation rel, Datum value, int attnum,
 	remaining = data_len;
 
 	/*
-	 * Record that this relation now contains overflow records, so VACUUM can
-	 * no longer skip the orphan-overflow scan.  Idempotent (cheap no-op once
-	 * set); done before writing so a crash mid-store still leaves the flag
-	 * set and any resulting orphan is reclaimable.
-	 */
-	RelUndoMarkHasOverflow(rel);
-
-	/*
 	 * Store data across overflow records.  Each record is placed on a normal
 	 * data page using PageAddItem, found via overflow page reuse or FSM.
 	 *
@@ -623,6 +615,18 @@ RecnoStoreOverflowColumn(Relation rel, Datum value, int attnum,
 				}
 			}
 		}
+
+		/*
+		 * Mark the page as containing at least one overflow record, so VACUUM's
+		 * orphan-overflow scan can skip pages that hold none.  Per-page (in the
+		 * page opaque) rather than a relation-global metapage bit: no metapage
+		 * contention, and clean pages are skipped even in a relation that uses
+		 * overflow elsewhere.  Set under the crit section so the WAL FPI covers
+		 * it; the flag is set-only (monotonic per page) -- a stale-set flag only
+		 * costs one extra page scan, never a missed orphan, and RecnoInitPage
+		 * clears it when a page is recycled.
+		 */
+		RecnoPageSetFlag(RecnoPageGetOpaque(page), RECNO_PAGE_OVERFLOW);
 
 		MarkBufferDirty(buffer);
 
@@ -1364,21 +1368,9 @@ RecnoVacuumOverflowRecords(Relation rel)
 	HASHCTL		hashctl;
 	int64		orphans_removed = 0;
 	int64		overflow_records_found = 0;
-	bool		saw_overflow_record = false;
 
 	nblocks = RelationGetNumberOfBlocks(rel);
 	if (nblocks == 0)
-		return;
-
-	/*
-	 * Skip the entire two-pass orphan-overflow scan when this relation has
-	 * never stored an overflow record: with no overflow record ever written,
-	 * no orphan can exist.  The flag is durable (metapage) and monotonic, so
-	 * this is safe across crashes.  This removes both full-relation scans on
-	 * the common narrow-tuple relation that never overflows.  (A v4-or-older
-	 * metapage reports "true" conservatively, preserving old behavior.)
-	 */
-	if (!RelUndoHasEverHadOverflow(rel))
 		return;
 
 	/*
@@ -1439,18 +1431,7 @@ RecnoVacuumOverflowRecords(Relation rel)
 
 			/* Skip overflow records themselves */
 			if (RecnoIsOverflowRecord(tuple_hdr, ItemIdGetLength(itemid)))
-			{
-				/*
-				 * Note that this relation actually contains at least one
-				 * overflow record.  Pass 1 already visits every page, so this
-				 * observation is free; if no overflow record is seen anywhere,
-				 * there can be no orphans and Pass 2 (a second full scan) is
-				 * skipped entirely -- the common case for relations with no
-				 * large/overflowed values (e.g. narrow OLTP tables).
-				 */
-				saw_overflow_record = true;
 				continue;
-			}
 
 			/* Skip deleted tuples - their overflow is orphaned */
 			if (tuple_hdr->t_flags & RECNO_TUPLE_DELETED)
@@ -1584,15 +1565,11 @@ RecnoVacuumOverflowRecords(Relation rel)
 
 	/*
 	 * Pass 2: Scan all pages for overflow records and remove any that are not
-	 * in the referenced set.
-	 *
-	 * Skip this second full-relation scan entirely when Pass 1 (which already
-	 * visited every page) saw no overflow record at all: with zero overflow
-	 * records present there are no orphans to reclaim, and this avoids a
-	 * per-vacuum full scan (with an EXCLUSIVE buffer lock per page) on the
-	 * common narrow-tuple relation that never overflows.
+	 * in the referenced set.  Pages that have never held an overflow record
+	 * (RECNO_PAGE_OVERFLOW unset) are skipped per-page under a SHARE lock
+	 * below, so this loop only pays the EXCLUSIVE lock + item scan on pages
+	 * that actually hold overflow.
 	 */
-	if (saw_overflow_record)
 	for (blkno = 0; blkno < nblocks; blkno++)
 	{
 		Buffer		buffer;
@@ -1605,6 +1582,25 @@ RecnoVacuumOverflowRecords(Relation rel)
 
 		buffer = ReadBufferExtended(rel, MAIN_FORKNUM, blkno,
 									RBM_NORMAL, NULL);
+
+		/*
+		 * Per-page skip: a page that has never held an overflow record (its
+		 * RECNO_PAGE_OVERFLOW opaque flag is unset) cannot contain an orphan,
+		 * so skip it without taking the EXCLUSIVE lock.  Probe under a cheap
+		 * SHARE lock; only pages actually holding overflow records pay the
+		 * EXCLUSIVE lock + item scan below.  This is the per-page analogue of
+		 * the old relation-global gate: no metapage traffic, and clean pages
+		 * are skipped even in a relation that uses overflow on other pages.
+		 */
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buffer);
+		if (PageIsNew(page) ||
+			!(RecnoPageGetFlags(RecnoPageGetOpaque(page)) & RECNO_PAGE_OVERFLOW))
+		{
+			UnlockReleaseBuffer(buffer);
+			continue;
+		}
+		LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		page = BufferGetPage(buffer);
 
