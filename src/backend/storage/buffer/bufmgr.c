@@ -2325,6 +2325,8 @@ BufferAlloc(SMgrRelation smgr, char relpersistence, ForkNumber forkNum,
 	Assert(BUF_STATE_GET_REFCOUNT(victim_buf_state) == 1);
 	Assert(!(victim_buf_state & (BM_TAG_VALID | BM_VALID | BM_DIRTY | BM_IO_IN_PROGRESS)));
 
+	if (BufTagGetForkNum(&newTag) == MAIN_FORKNUM)
+		BcsGhostProbeRead(newHash);
 	victim_buf_hdr->tag = newTag;
 
 	/*
@@ -2659,6 +2661,11 @@ again:
 		 */
 		pgstat_count_io_op(IOOBJECT_RELATION, io_context,
 						   from_ring ? IOOP_REUSE : IOOP_EVICT, 1, 0);
+		if (!from_ring && BufTagGetForkNum(&buf_hdr->tag) == MAIN_FORKNUM)
+		{
+			BcsRecordEviction(BufTagGetRelNumber(&buf_hdr->tag));
+			BcsGhostRecordEviction(BufTableHashCode(&buf_hdr->tag), (BUF_STATE_GET_USAGECOUNT(buf_state) == 0));
+		}  /* EXPERIMENT */
 	}
 
 	/*
