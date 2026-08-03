@@ -50,6 +50,7 @@
 #include "xtc_exec.h"		/* xtc_exec_loop, xtc_exec_n_loops, xtc_exec_set_eager_rebalance */
 #include "xtc_proc.h"
 #include "xtc_async.h"		/* xtc_set_stack_size */
+#include "xtc_stats.h"		/* xtc_counter_* (fusion F1 runtime counters) */
 
 /*
  * Best-effort diagnostic write to a raw fd (STDERR) on crash/down/teardown
@@ -1390,6 +1391,107 @@ xtc_pg_carrier_runtime_info(XtcPgCarrierRuntimeInfo *out)
 	out->eager_rebalance = xtc_exec_get_eager_rebalance(g_xtc_exec) ? true : false;
 	out->steal_backoff = xtc_exec_get_steal_backoff(g_xtc_exec) ? true : false;
 	return true;
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Fusion F1: carrier/runtime hot-path counters (libxtc xtc_stats).
+ *
+ * These count events on OUR OWN pooled-protocol carrier hot paths -- the ones
+ * libxtc's per-loop xtc_exec_loop_stats (surfaced by pg_stat_xtc_carriers)
+ * does NOT see: how sessions flow through the pooled queue, park/resume, and
+ * the process-fallback + carrier-spawn control events.  Surfaced by the
+ * pg_stat_xtc_runtime SRF/view.
+ *
+ * Each counter is a libxtc xtc_counter_t: per-CPU sharded, so an inc/add on
+ * the hot path is one cache-line-local atomic add (see xtc_stats.h).  The
+ * handles are created once, on the scheduler thread at carrier bringup, via
+ * xtc_pg_runtime_counters_register().  Before registration -- and forever in
+ * process mode and non-fiber threaded mode, where register() is never called
+ * -- g_xtc_runtime_counters[] stays all-NULL and the inc/add helpers are a
+ * branch-and-return, so those paths pay nothing and stay byte-for-byte.
+ *
+ * The names/order MUST match the XtcPgRuntimeCounter enum in the header.
+ * ---------------------------------------------------------------------------
+ */
+static const char *const xtc_pg_runtime_counter_names[XTC_PG_RUNTIME_COUNTER_COUNT] = {
+	[XTC_PG_RC_SESSIONS_LEASED] = "sessions_leased",
+	[XTC_PG_RC_SESSIONS_RESUMED] = "sessions_resumed",
+	[XTC_PG_RC_PROTOCOL_PARKS] = "protocol_parks",
+	[XTC_PG_RC_WAKES_DELIVERED] = "wakes_delivered",
+	[XTC_PG_RC_CARRIERS_STARTED] = "carriers_started",
+	[XTC_PG_RC_PROCESS_FALLBACKS] = "process_fallbacks",
+	[XTC_PG_RC_QUEUE_WAITS] = "queue_waits",
+};
+
+static xtc_counter_t *g_xtc_runtime_counters[XTC_PG_RUNTIME_COUNTER_COUNT];
+static bool g_xtc_runtime_counters_registered = false;
+
+/*
+ * Create the F1 runtime counters once.  Idempotent; called on the scheduler
+ * thread from the pooled-protocol carrier bringup path (see
+ * backend_pooled_protocol_start_one_carrier).  A create failure just leaves
+ * that handle NULL -- the inc/add helper skips a NULL handle, so a partial
+ * registration degrades to "that counter reads 0", never a crash.
+ */
+void
+xtc_pg_runtime_counters_register(void)
+{
+	if (g_xtc_runtime_counters_registered)
+		return;
+	g_xtc_runtime_counters_registered = true;
+
+	for (int i = 0; i < XTC_PG_RUNTIME_COUNTER_COUNT; i++)
+	{
+		char		name[64];
+
+		snprintf(name, sizeof(name), "pg.runtime.%s",
+				 xtc_pg_runtime_counter_names[i]);
+		if (xtc_counter_create(name, &g_xtc_runtime_counters[i]) != XTC_OK)
+			g_xtc_runtime_counters[i] = NULL;
+	}
+}
+
+/*
+ * Hot-path increment.  One cache-line-local atomic add when the counter is
+ * registered; a NULL-guarded no-op otherwise (process mode, or before the
+ * pooled carrier has come up).  `c` out of range is defensively ignored.
+ */
+void
+xtc_pg_runtime_counter_add(XtcPgRuntimeCounter c, int64 delta)
+{
+	if ((unsigned) c >= XTC_PG_RUNTIME_COUNTER_COUNT)
+		return;
+	if (g_xtc_runtime_counters[c] != NULL)
+		xtc_counter_add(g_xtc_runtime_counters[c], (int64_t) delta);
+}
+
+/*
+ * Snapshot the counters for the pg_stat_xtc_runtime SRF.  Fills at most
+ * `max` entries and returns the number written.  Returns 0 (empty view) when
+ * the counters were never registered -- i.e. process mode or a threaded run
+ * that never stood up a pooled carrier -- so the view is empty exactly when
+ * there is no pooled runtime to report on.  xtc_counter_read sums the per-CPU
+ * shards, so this is the slow path by design; harmless for a monitoring view.
+ */
+int
+xtc_pg_runtime_counters_snapshot(XtcPgRuntimeCounterStat *out, int max)
+{
+	int			n = 0;
+
+	if (out == NULL || max <= 0)
+		return 0;
+	if (!g_xtc_runtime_counters_registered)
+		return 0;
+
+	for (int i = 0; i < XTC_PG_RUNTIME_COUNTER_COUNT && n < max; i++)
+	{
+		out[n].name = xtc_pg_runtime_counter_names[i];
+		out[n].value = g_xtc_runtime_counters[i] != NULL
+			? xtc_counter_read(g_xtc_runtime_counters[i]) : 0;
+		n++;
+	}
+	return n;
 }
 
 #endif							/* USE_XTC_CARRIER */

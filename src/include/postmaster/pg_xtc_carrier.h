@@ -100,6 +100,48 @@ extern int	xtc_pg_carrier_loop_stats(XtcPgLoopStat *out, int max_loops);
 extern bool xtc_pg_carrier_runtime_info(XtcPgCarrierRuntimeInfo *out);
 
 /*
+ * Fusion F1: carrier/runtime hot-path counters.
+ *
+ * A focused set of libxtc xtc_stats counters over OUR OWN pooled-protocol
+ * carrier hot paths -- the flow libxtc's per-loop stats (pg_stat_xtc_carriers)
+ * do not see.  Registered once at pooled-carrier bringup, incremented at the
+ * hot-path sites in launch_backend.c, and read back by the pg_stat_xtc_runtime
+ * SRF.  Each inc/add is one cache-line-local atomic add; a no-op before
+ * registration and forever in process/non-fiber mode (register is never
+ * called there), so those paths are byte-for-byte unchanged.
+ *
+ * Keep this enum and xtc_pg_runtime_counter_names[] in pg_xtc_carrier.c in
+ * lock-step (same order); COUNT terminates both.
+ */
+typedef enum XtcPgRuntimeCounter
+{
+	XTC_PG_RC_SESSIONS_LEASED = 0,	/* fresh session dequeued and run */
+	XTC_PG_RC_SESSIONS_RESUMED,		/* parked session leased back onto a carrier */
+	XTC_PG_RC_PROTOCOL_PARKS,		/* session parked awaiting a protocol read */
+	XTC_PG_RC_WAKES_DELIVERED,		/* parked reads found ready and re-queued */
+	XTC_PG_RC_CARRIERS_STARTED,		/* pooled carrier threads spawned */
+	XTC_PG_RC_PROCESS_FALLBACKS,	/* sessions routed to a process-fallback backend */
+	XTC_PG_RC_QUEUE_WAITS,			/* carrier blocked idle waiting for work */
+	XTC_PG_RUNTIME_COUNTER_COUNT
+} XtcPgRuntimeCounter;
+
+typedef struct XtcPgRuntimeCounterStat
+{
+	const char *name;				/* short counter name (no "pg.runtime." prefix) */
+	uint64		value;
+} XtcPgRuntimeCounterStat;
+
+extern void xtc_pg_runtime_counters_register(void);
+extern void xtc_pg_runtime_counter_add(XtcPgRuntimeCounter c, int64 delta);
+extern int	xtc_pg_runtime_counters_snapshot(XtcPgRuntimeCounterStat *out, int max);
+
+static inline void
+xtc_pg_runtime_counter_inc(XtcPgRuntimeCounter c)
+{
+	xtc_pg_runtime_counter_add(c, 1);
+}
+
+/*
  * No-steal affine-section tripwire (Phase B).
  *
  * Some short spans of backend code hold OS-thread-affine state that would be
@@ -161,6 +203,17 @@ extern void xtc_pg_verify_snapshot_is_self(const struct PgCurrentWorkSnapshot *s
 #define XtcPgNoStealLeave() ((void) 0)
 #define XtcPgVerifyCurrentWorkIsSelf() ((void) 0)
 #define XtcPgVerifySnapshotIsSelf(snap) ((void) (snap))
+
+/*
+ * Fusion F1 runtime counters are inert outside the carrier build.  The
+ * pooled-protocol hot-path sites in launch_backend.c call these
+ * unconditionally (no per-site #ifdef); here they compile to nothing so a
+ * process/non-carrier build is byte-for-byte unchanged.  register/snapshot
+ * are also defined as no-ops so their (guarded) callers need no #ifdef.
+ */
+#define xtc_pg_runtime_counter_inc(c) ((void) 0)
+#define xtc_pg_runtime_counter_add(c, delta) ((void) 0)
+#define xtc_pg_runtime_counters_register() ((void) 0)
 
 #endif							/* USE_XTC_CARRIER */
 #endif							/* PG_XTC_CARRIER_H */

@@ -55,9 +55,7 @@
 #include "postmaster/bgwriter.h"
 #include "postmaster/fork_process.h"
 #include "postmaster/pgarch.h"
-#ifdef USE_XTC_CARRIER
-#include "postmaster/pg_xtc_carrier.h"
-#endif
+#include "postmaster/pg_xtc_carrier.h"	/* fusion F1 runtime counters (no-ops off-carrier) */
 #include "postmaster/postmaster.h"
 #include "postmaster/startup.h"
 #include "postmaster/syslogger.h"
@@ -1086,6 +1084,7 @@ postmaster_pooled_protocol_process_fallback(PMChild *pmchild, int child_slot,
 		return false;
 
 	PostmasterChildSetProcess(pmchild, pid);
+	xtc_pg_runtime_counter_inc(XTC_PG_RC_PROCESS_FALLBACKS);	/* fusion F1 */
 	return true;
 #endif
 }
@@ -1300,6 +1299,15 @@ backend_pooled_protocol_start_one_carrier(void)
 	pooled_protocol_carrier_count++;
 	pooled_protocol_pool_started = true;
 	postmaster_thread_carriers_started = true;
+
+	/*
+	 * Fusion F1: register the runtime counters once, on the first carrier,
+	 * and count each carrier we spawn.  register() runs on the postmaster
+	 * thread here (the pooled-carrier bringup path); it is idempotent and a
+	 * no-op in a non-carrier build.
+	 */
+	xtc_pg_runtime_counters_register();
+	xtc_pg_runtime_counter_inc(XTC_PG_RC_CARRIERS_STARTED);
 	return true;
 }
 
@@ -1661,6 +1669,7 @@ backend_pooled_protocol_carrier_entry(void *arg)
 		backend = PgCarrierLeaseRunnableProtocolBackend(CurrentPgCarrier);
 		if (backend != NULL)
 		{
+			xtc_pg_runtime_counter_inc(XTC_PG_RC_SESSIONS_RESUMED);	/* fusion F1 */
 			logical_start =
 				backend_pooled_logical_start_from_backend(backend);
 			backend_pooled_protocol_resume_logical_start(logical_start);
@@ -1670,6 +1679,7 @@ backend_pooled_protocol_carrier_entry(void *arg)
 		logical_start = backend_pooled_protocol_dequeue();
 		if (logical_start != NULL)
 		{
+			xtc_pg_runtime_counter_inc(XTC_PG_RC_SESSIONS_LEASED);	/* fusion F1 */
 			backend_pooled_protocol_run_logical_start(carrier_start,
 													  logical_start);
 			continue;
@@ -1683,6 +1693,7 @@ backend_pooled_protocol_carrier_entry(void *arg)
 														   1000L);
 		if (nready > 0)
 		{
+			xtc_pg_runtime_counter_add(XTC_PG_RC_WAKES_DELIVERED, nready);	/* fusion F1 */
 			backend_pooled_protocol_wake_drain();
 			backend_pooled_protocol_signal_ready_work(nready);
 			continue;
@@ -1698,6 +1709,7 @@ backend_pooled_protocol_carrier_entry(void *arg)
 		 * woken by signal_work.
 		 */
 		backend_pooled_protocol_wake_drain();
+		xtc_pg_runtime_counter_inc(XTC_PG_RC_QUEUE_WAITS);	/* fusion F1 */
 		backend_pooled_protocol_wait_for_work(10000L);
 	}
 }
@@ -1821,6 +1833,7 @@ backend_pooled_protocol_run_attached_logical(BackendPooledLogicalStart *logical_
 		switch (result)
 		{
 			case PG_STEP_PARK_PROTOCOL_READ:
+				xtc_pg_runtime_counter_inc(XTC_PG_RC_PROTOCOL_PARKS);	/* fusion F1 */
 				logical_start->exit_jmp_valid = false;
 				*PgCurrentBackendThreadStartRef() = NULL;
 				return result;
