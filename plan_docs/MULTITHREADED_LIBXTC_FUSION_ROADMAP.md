@@ -142,10 +142,22 @@ xtc_slab INSIDE a PG-owned DSM region is sanctioned).
   producer. Outstanding libxtc question: /tmp/libxtc-log-emitter-gap-question.md
   (export+auto-run the tuning check, or route internal diagnostics through
   xtc_log). Revisit when libxtc answers / a future release adds an emitter.
-- **NEXT: F3 (steal-backoff), pulled ahead of F1/F2** because it delivers
+- **F3 DONE (steal-backoff), pulled ahead of F1/F2** because it delivers
   immediate, now-MEASURABLE (pg_stat_xtc_carriers.steal_backoff) perf value
   against the benchmark's parked-carrier CFS-tax, and needs no new observability
-  emitter. Then F1 (our own xtc_stats carrier counters — reachable, unlike
-  libxtc-internal logs), then F2 (lock dedup).
+  emitter.
+- **F1 IMPLEMENTED (pending 2 reviews): pg_stat_xtc_runtime view** — a focused
+  set of 7 libxtc xtc_stats counters over OUR OWN pooled-protocol carrier hot
+  paths (which libxtc's per-loop xtc_exec_loop_stats do NOT see): sessions
+  leased, sessions resumed, protocol parks, wakes delivered, carriers started,
+  process fallbacks, queue waits.  Registered once at pooled-carrier bringup on
+  the scheduler thread; each hot-path bump is one cache-line-local atomic add
+  (xtc_counter_add).  Surfaced by pg_stat_get_xtc_runtime() -> pg_stat_xtc_runtime
+  (counter,value rows), empty in process mode and any threaded run that never
+  stood up a pooled carrier (counters never register there -> hot paths
+  byte-for-byte).  Validated on EC2: process regress 245/245, backend-runtime
+  suite 15 OK / 2 intentional skips, pooled load shows parks==resumes==wakes and
+  carriers_started==pooled_protocol_carriers; process mode returns 0 rows.
+  Next: F2 (lock dedup).
 - Prior fusion wins already landed: eager-rebalance (v1.27), io-wq cap +
   right-sized executor (v1.31.0 + loop-count fix) — see the 2026-07-24 metal A/B.
