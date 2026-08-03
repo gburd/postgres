@@ -18,7 +18,6 @@ catalog_headers = [
   'pg_opclass.h',
   'pg_am.h',
   'pg_amop.h',
-  'pg_bufferpool.h',
   'pg_amproc.h',
   'pg_language.h',
   'pg_largeobject_metadata.h',
@@ -70,6 +69,7 @@ catalog_headers = [
   'pg_publication_rel.h',
   'pg_subscription.h',
   'pg_subscription_rel.h',
+  'pg_bufferpool.h',
 ]
 
 # The .dat files we need can just be listed alphabetically.
