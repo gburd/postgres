@@ -48,6 +48,7 @@
  */
 #define BUF_REFCOUNT_BITS 18
 #define BUF_HEAT_BITS 1
+#define BUF_REFBIT_BITS 1
 #define BUF_FLAG_BITS 12
 #define BUF_LOCK_BITS (18+2)
 
@@ -61,7 +62,7 @@
  */
 #define BUF_USAGECOUNT_BITS BUF_HEAT_BITS
 
-StaticAssertDecl(BUF_REFCOUNT_BITS + BUF_HEAT_BITS + BUF_FLAG_BITS + BUF_LOCK_BITS <= 64,
+StaticAssertDecl(BUF_REFCOUNT_BITS + BUF_HEAT_BITS + BUF_REFBIT_BITS + BUF_FLAG_BITS + BUF_LOCK_BITS <= 64,
 				 "parts of buffer state space need to be <= 64");
 
 /* refcount related definitions */
@@ -77,6 +78,21 @@ StaticAssertDecl(BUF_REFCOUNT_BITS + BUF_HEAT_BITS + BUF_FLAG_BITS + BUF_LOCK_BI
 #define BUF_HEAT_ONE \
 	(UINT64CONST(1) << BUF_REFCOUNT_BITS)
 
+/*
+ * Second-chance reference bit, one position above the heat field.  PinBuffer
+ * sets it on every access.  The sweep uses it to give a recently-referenced
+ * HOT buffer one extra pass of grace before cooling it: the first time the
+ * hand passes a HOT buffer whose ref bit is set, it clears the ref bit and
+ * leaves the buffer HOT; only a HOT buffer whose ref bit is already clear (not
+ * re-accessed since the previous pass) is cooled to COOL.  This protects a
+ * just-touched buffer from being cooled the instant the hand reaches it, which
+ * matters under scan-vs-hot-set contention.  It is a distinct bit, not part of
+ * the heat state, so BUF_STATE_GET_HEAT is unperturbed.
+ */
+#define BUF_REFBIT \
+	(UINT64CONST(1) << (BUF_REFCOUNT_BITS + BUF_HEAT_BITS))
+#define BUF_STATE_GET_REFBIT(state)	(((state) & BUF_REFBIT) != 0)
+
 /* Back-compat aliases (see BUF_USAGECOUNT_BITS above). */
 #define BUF_USAGECOUNT_SHIFT	BUF_HEAT_SHIFT
 #define BUF_USAGECOUNT_MASK		BUF_HEAT_MASK
@@ -84,7 +100,7 @@ StaticAssertDecl(BUF_REFCOUNT_BITS + BUF_HEAT_BITS + BUF_FLAG_BITS + BUF_LOCK_BI
 
 /* flags related definitions */
 #define BUF_FLAG_SHIFT \
-	(BUF_REFCOUNT_BITS + BUF_HEAT_BITS)
+	(BUF_REFCOUNT_BITS + BUF_HEAT_BITS + BUF_REFBIT_BITS)
 #define BUF_FLAG_MASK \
 	(((UINT64CONST(1) << BUF_FLAG_BITS) - 1) << BUF_FLAG_SHIFT)
 

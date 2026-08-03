@@ -1437,6 +1437,18 @@ TrickleWriterMain(Datum main_arg)
 	PoolLocalState *local;
 	WritebackContext wb_context;
 
+	/*
+	 * Demand-adaptive write cap: the trickle writer normally cleans at most
+	 * trickle_write_batch_size buffers per cycle, but under heavy eviction a
+	 * fixed cap lets the writer fall behind, forcing backends to write dirty
+	 * victims inline on the allocation path (and WAL-flush them).  We track
+	 * this pool's eviction count between cycles and, when demand exceeds the
+	 * fixed cap, raise the per-cycle limit toward it (bounded) so the writer
+	 * stays ahead.  last_evictions is per-worker (one trickle writer per pool).
+	 */
+	uint64		last_evictions = 0;
+	int			adaptive_batch_limit = trickle_write_batch_size;
+
 	Assert(pool_slot >= 0 && pool_slot < MAX_BUFFER_POOLS);
 	pool = &BufferPoolDescs[pool_slot];
 
@@ -1596,6 +1608,28 @@ TrickleWriterMain(Datum main_arg)
 		}
 
 		/*
+		 * Compute this cycle's demand-adaptive write cap.  Use the pool's
+		 * eviction delta since the previous cycle as the demand estimate:
+		 * that many buffers were replaced, so at least that many dirty pages
+		 * may need cleaning to keep clean victims available.  Raise the cap
+		 * toward demand but bound it at 8x the configured batch so a burst
+		 * cannot make one cycle run unboundedly long; decay back to the
+		 * configured value when demand subsides.
+		 */
+		{
+			uint64		evictions = pg_atomic_read_u64(&pool->bp_evictions);
+			uint64		demand = (evictions > last_evictions)
+				? (evictions - last_evictions) : 0;
+			int			cap = trickle_write_batch_size * 8;
+
+			last_evictions = evictions;
+			if (demand > (uint64) trickle_write_batch_size)
+				adaptive_batch_limit = (demand > (uint64) cap) ? cap : (int) demand;
+			else
+				adaptive_batch_limit = trickle_write_batch_size;
+		}
+
+		/*
 		 * Use the algorithm's trickle iterator if available.  This lets the
 		 * replacement algorithm direct us to the best flush candidates (e.g.,
 		 * LRU tail for ARC, cold pages for CAR, HIR entries for LIRS) rather
@@ -1610,7 +1644,7 @@ TrickleWriterMain(Datum main_arg)
 		{
 			void	   *iter;
 			int			buf_id;
-			int			batch_limit = trickle_write_batch_size;
+			int			batch_limit = adaptive_batch_limit;
 
 			iter = routine->trickle_iter_begin(
 											   local->strategy_data, batch_limit);
@@ -1651,7 +1685,7 @@ TrickleWriterMain(Datum main_arg)
 		else
 		{
 			/* Fallback: linear scan of pool's buffer descriptors */
-			int			batch_limit = trickle_write_batch_size;
+			int			batch_limit = adaptive_batch_limit;
 
 			for (int i = 0; i < pool->bp_nbuffers; i++)
 			{

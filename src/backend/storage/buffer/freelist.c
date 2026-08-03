@@ -40,10 +40,10 @@
 
 
 /*
- * ClockPoolState -- per-pool clock-sweep state.
+ * SweepPoolState -- per-pool clock-sweep state.
  *
  * Used by every clock-swept pool, including the DEFAULT pool: the default
- * pool is "just a pool" over [0, NBuffers) whose ClockPoolState lives in the
+ * pool is "just a pool" over [0, NBuffers) whose SweepPoolState lives in the
  * "Buffer Strategy Status" shmem region (StrategyControl), while dynamic pools
  * store theirs in their DSM segment as the pool's strategy_data.  The clock
  * hand sweeps from first_buf_id through first_buf_id + nbuffers - 1.
@@ -59,7 +59,7 @@
  * been retired.  numBufferAllocs survives only to feed
  * pg_stat_bgwriter.buffers_alloc, drained by the checkpointer.
  */
-typedef struct ClockPoolState
+typedef struct SweepPoolState
 {
 	slock_t		lock;
 	pg_atomic_uint32 nextVictimBuffer;	/* monotonically increasing, mod
@@ -68,10 +68,10 @@ typedef struct ClockPoolState
 	int			nbuffers;		/* buffer count in this pool */
 	int			first_buf_id;	/* starting buffer ID */
 	uint32		batchSize;		/* hand values claimed per fetch_add */
-} ClockPoolState;
+} SweepPoolState;
 
-/* Pointers to shared state -- the DEFAULT pool's ClockPoolState */
-static ClockPoolState *StrategyControl = NULL;
+/* Pointers to shared state -- the DEFAULT pool's SweepPoolState */
+static SweepPoolState *StrategyControl = NULL;
 
 /*
  * Active buffer pool routine and its strategy data.
@@ -192,11 +192,11 @@ static void AddBufferToRing(BufferAccessStrategy strategy,
 							BufferDesc *buf);
 
 /* Prototypes for clock-sweep vtable implementation */
-static BufferDesc *ClockGetVictim(void *strategy_data,
+static BufferDesc *HeatSweepGetPoolVictim(void *strategy_data,
 								  BufferAccessStrategy strategy,
 								  uint64 *buf_state,
 								  bool *from_ring);
-static int	ClockSyncStart(void *strategy_data,
+static int	HeatSweepSyncStart(void *strategy_data,
 						   uint32 *complete_passes,
 						   uint32 *num_buf_alloc);
 static void ClockNotifyTrickle(void *strategy_data, int bgwprocno);
@@ -229,8 +229,8 @@ const BufferPoolRoutine clock_pool_routine = {
 	.on_miss = NULL,			/* clock-sweep doesn't track misses */
 	.on_evict = NULL,			/* clock-sweep doesn't track evictions */
 	.on_new_tag = NULL,			/* clock-sweep doesn't track insertions */
-	.get_victim = ClockGetVictim,
-	.sync_start = ClockSyncStart,
+	.get_victim = HeatSweepGetPoolVictim,
+	.sync_start = HeatSweepSyncStart,
 	.notify_trickle = ClockNotifyTrickle,
 	.trickle_iter_begin = NULL, /* clock-sweep uses linear scan */
 	.trickle_iter_next = NULL,
@@ -245,30 +245,30 @@ const BufferPoolRoutine clock_pool_routine = {
 };
 
 /*
- * Clock2BitGetVictim -- examine one candidate buffer for the 2-bit clock sweep.
+ * HeatSweepGetVictim -- examine one candidate buffer for the heat-state sweep.
  *
- * The buffer's cooling state (BufferDesc->state cooling bits) is a 2-bit
- * hot/cooling/cold value.  On a tick:
+ * The buffer carries a 1-bit heat state (HOT/COOL) plus a second-chance
+ * reference bit.  On a tick:
  *   - refcount != 0            -> in use; caller advances the hand and retries
  *                                 (decrement trycounter; error at 0).
  *   - BM_LOCKED                -> wait for the header, then re-read.
- *   - cooling state > 0 (warm) -> COOL it one level via a CAS decrement and
- *                                 return NULL (caller advances the hand);
- *                                 trycounter is reset (a decrement is progress).
- *   - cooling state == 0 (cold)-> claim it: CAS the refcount to pin, add to the
+ *   - HOT + ref bit set        -> clear the ref bit, stay HOT (one pass of
+ *                                 grace); caller advances the hand.
+ *   - HOT + ref bit clear      -> cool to COOL (clear heat + ref); caller
+ *                                 advances the hand; trycounter reset.
+ *   - COOL                     -> claim it: CAS the refcount to pin, add to the
  *                                 strategy ring if any, and return the victim.
  *
- * The cooling decrement is a CAS (not a blind atomic sub): the clock hand is
- * pool-scoped and may be shared by several backends, so two sweepers can race
- * on the same buffer; CAS makes that race-correct with no risk of underflowing
- * the 2-bit field into the flag bits.
+ * State transitions use CAS (not a blind store): the hand is pool-scoped and
+ * may be shared by several backends, so two sweepers can race on the same
+ * buffer; CAS keeps the heat/ref transition and the pin race-correct.
  *
  * Marked pg_always_inline: called once per tick from the sweep loop,
  * so inlining collapses the per-tick call and keeps the hot state in
  * registers.  Contains no PG/setjmp, so force-inlining is safe.
  */
 static pg_always_inline BufferDesc *
-Clock2BitGetVictim(int victim_id, BufferAccessStrategy strategy,
+HeatSweepGetVictim(int victim_id, BufferAccessStrategy strategy,
 				   uint64 *buf_state, int *trycounter,
 				   int reset_budget)
 {
@@ -309,8 +309,19 @@ Clock2BitGetVictim(int victim_id, BufferAccessStrategy strategy,
 		}
 		if (BUF_STATE_GET_HEAT(local_buf_state) != 0)
 		{
-			/* Warm: cool one level and let the caller advance the hand. */
-			local_buf_state -= BUF_HEAT_ONE;
+			/*
+			 * HOT buffer.  Apply a single second-chance reference bit: a HOT
+			 * buffer whose ref bit is set (touched since the hand last passed
+			 * it) has the ref bit cleared and stays HOT for one more pass;
+			 * only a HOT buffer whose ref bit is already clear is cooled to
+			 * COOL (also clearing the ref bit).  Either transition is progress
+			 * toward a victim, so reset the trycounter.  The caller advances
+			 * the hand; a cooled buffer becomes a candidate on a later tick.
+			 */
+			if (local_buf_state & BUF_REFBIT)
+				local_buf_state &= ~BUF_REFBIT;		/* second chance: clear ref, stay HOT */
+			else
+				local_buf_state &= ~(BUF_HEAT_MASK | BUF_REFBIT);	/* HOT -> COOL */
 			if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
 											   local_buf_state))
 			{
@@ -338,22 +349,22 @@ Clock2BitGetVictim(int victim_id, BufferAccessStrategy strategy,
  */
 
 /*
- * Clock2BitSweep -- the ONE pool-scoped, batched 2-bit clock sweep.
+ * HeatSweep -- the ONE pool-scoped, batched 2-bit clock sweep.
  *
- * Serves both the DEFAULT pool (a ClockPoolState over [0, NBuffers) stored in
- * StrategyControl) and every dynamic pool (its own ClockPoolState in DSM).
+ * Serves both the DEFAULT pool (a SweepPoolState over [0, NBuffers) stored in
+ * StrategyControl) and every dynamic pool (its own SweepPoolState in DSM).
  * There is a single clock hand per pool (pool_state->nextVictimBuffer).  A
  * backend claims pool_state->batchSize consecutive hand values per
  * pg_atomic_fetch_add and then iterates them privately, so the contended hand
  * atomic fires ~1/batch as often -- the multi-socket win.  batchSize == 1
  * (the non-NUMA default) is byte-identical to the classic one-at-a-time sweep.
  *
- * Cooling uses the CAS decrement inside Clock2BitGetVictim (not a blind sub):
+ * Cooling uses the CAS decrement inside HeatSweepGetVictim (not a blind sub):
  * the hand is pool-scoped and may be shared by several backends, and a batch
  * only bounds -- does not eliminate -- overlap in the wrap window, so CAS is
  * required to keep the 2-bit field from underflowing into the flag bits.
  *
- * The pass count is derived in ClockSyncStart from the monotonic hand
+ * The pass count is derived in HeatSweepSyncStart from the monotonic hand
  * (hand / nbuffers), so the hot loop maintains no pass counter and takes no
  * spinlock.  (The global background writer that once used a stored pass count
  * has been retired.)
@@ -363,7 +374,7 @@ Clock2BitGetVictim(int victim_id, BufferAccessStrategy strategy,
  * PG_TRY/setjmp, so force-inlining is safe.
  */
 static pg_always_inline BufferDesc *
-Clock2BitSweep(ClockPoolState *pool_state,
+HeatSweep(SweepPoolState *pool_state,
 			   BufferAccessStrategy strategy,
 			   uint64 *buf_state,
 			   bool *from_ring)
@@ -461,7 +472,7 @@ Clock2BitSweep(ClockPoolState *pool_state,
 		victim_off = handval % (uint32) pool_nbuffers;
 		victim_id = pool_first_buf + (int) victim_off;
 
-		buf = Clock2BitGetVictim(victim_id, strategy, buf_state,
+		buf = HeatSweepGetVictim(victim_id, strategy, buf_state,
 								 &trycounter, pool_nbuffers);
 		if (buf != NULL)
 			return buf;
@@ -471,7 +482,7 @@ Clock2BitSweep(ClockPoolState *pool_state,
 }
 
 /*
- * ClockGetVictim -- clock-sweep implementation of get_victim
+ * HeatSweepGetPoolVictim -- clock-sweep implementation of get_victim
  *
  * Called by StrategyGetBuffer() via the vtable.  Selects the next candidate
  * buffer to use in GetVictimBuffer().  The only hard requirement is that the
@@ -480,31 +491,31 @@ Clock2BitSweep(ClockPoolState *pool_state,
  * strategy is a BufferAccessStrategy object, or NULL for default strategy.
  *
  * For the default pool, strategy_data points to StrategyControl (a
- * ClockPoolState over [0, NBuffers)).  For dynamic pools, strategy_data points
- * to a ClockPoolState stored in the pool's DSM segment.  Either way the sweep
- * is the same pool-scoped Clock2BitSweep.
+ * SweepPoolState over [0, NBuffers)).  For dynamic pools, strategy_data points
+ * to a SweepPoolState stored in the pool's DSM segment.  Either way the sweep
+ * is the same pool-scoped HeatSweep.
  *
  * The buffer is pinned and marked as owned, using TrackNewBufferPin(),
  * before returning.
  */
 static BufferDesc *
-ClockGetVictim(void *strategy_data,
+HeatSweepGetPoolVictim(void *strategy_data,
 			   BufferAccessStrategy strategy,
 			   uint64 *buf_state,
 			   bool *from_ring)
 {
 	/*
 	 * All clock-swept pools -- the default pool and dynamic pools alike --
-	 * store a ClockPoolState as their strategy_data, so a single call handles
-	 * both.  Clock2BitSweep is force-inlined; the default pool's hot path is
+	 * store a SweepPoolState as their strategy_data, so a single call handles
+	 * both.  HeatSweep is force-inlined; the default pool's hot path is
 	 * devirtualized in StrategyGetBuffer and does not reach this vtable slot.
 	 */
-	return Clock2BitSweep((ClockPoolState *) strategy_data,
+	return HeatSweep((SweepPoolState *) strategy_data,
 						  strategy, buf_state, from_ring);
 }
 
 /*
- * ClockSyncStart -- clock-sweep implementation of sync_start
+ * HeatSweepSyncStart -- clock-sweep implementation of sync_start
  *
  * Reports the current clock-hand position, a derived pass count, and drains
  * the pool's allocation counter.  The core no longer consumes the position or
@@ -517,9 +528,9 @@ ClockGetVictim(void *strategy_data,
  * hot loop maintains no pass counter.
  */
 static int
-ClockSyncStart(void *strategy_data, uint32 *complete_passes, uint32 *num_buf_alloc)
+HeatSweepSyncStart(void *strategy_data, uint32 *complete_passes, uint32 *num_buf_alloc)
 {
-	ClockPoolState *pool_state = (ClockPoolState *) strategy_data;
+	SweepPoolState *pool_state = (SweepPoolState *) strategy_data;
 	uint32		nbuf = (pool_state->nbuffers > 0) ? (uint32) pool_state->nbuffers : 1;
 	uint32		hand;
 
@@ -554,7 +565,7 @@ ClockNotifyTrickle(void *strategy_data, int bgwprocno)
  *
  * Consider rejecting a dirty buffer.  When a nondefault strategy is used,
  * the buffer manager calls this function when the buffer selected by
- * ClockGetVictim needs to be written out and doing so would require flushing
+ * HeatSweepGetPoolVictim needs to be written out and doing so would require flushing
  * WAL too.  This gives us a chance to choose a different victim.
  *
  * Returns true if buffer manager should ask for a new victim, and false
@@ -584,7 +595,7 @@ ClockRejectBuffer(void *strategy_data, BufferAccessStrategy strategy,
 
 
 /*
- * Clock2BitBatchSize -- pick the clock-hand batch size for a pool.
+ * HeatSweepBatchSize -- pick the clock-hand batch size for a pool.
  *
  * Off NUMA: 1 -- byte-identical to the classic one-at-a-time clock sweep.
  *
@@ -597,7 +608,7 @@ ClockRejectBuffer(void *strategy_data, BufferAccessStrategy strategy,
  * count, not the global total, so a small pool gets a small batch.
  */
 static uint32
-Clock2BitBatchSize(int pool_nbuffers)
+HeatSweepBatchSize(int pool_nbuffers)
 {
 	long		ncores;
 	uint32		target;
@@ -646,7 +657,7 @@ Clock2BitBatchSize(int pool_nbuffers)
 static Size
 ClockPoolShmemSize(int nbuffers)
 {
-	return sizeof(ClockPoolState);
+	return sizeof(SweepPoolState);
 }
 
 /*
@@ -660,7 +671,7 @@ static void
 ClockPoolShmemInit(void *strategy_data, int nbuffers,
 				   int first_buf_id, bool init)
 {
-	ClockPoolState *state = (ClockPoolState *) strategy_data;
+	SweepPoolState *state = (SweepPoolState *) strategy_data;
 
 	if (!init)
 		return;					/* re-attach: nothing to do */
@@ -670,7 +681,7 @@ ClockPoolShmemInit(void *strategy_data, int nbuffers,
 	pg_atomic_init_u32(&state->numBufferAllocs, 0);
 	state->nbuffers = nbuffers;
 	state->first_buf_id = first_buf_id;
-	state->batchSize = Clock2BitBatchSize(nbuffers);
+	state->batchSize = HeatSweepBatchSize(nbuffers);
 }
 
 
@@ -694,11 +705,11 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 	/*
 	 * Devirtualize the built-in clock sweep (the overwhelmingly common case):
 	 * call the inlinable pool-scoped sweep directly on the default pool's
-	 * ClockPoolState, bypassing the vtable indirection.  Extensions and
+	 * SweepPoolState, bypassing the vtable indirection.  Extensions and
 	 * dynamic pools keep the indirect ActivePoolRoutine->get_victim path.
 	 */
 	if (likely(ActivePoolIsClock))
-		return Clock2BitSweep(StrategyControl, strategy, buf_state, from_ring);
+		return HeatSweep(StrategyControl, strategy, buf_state, from_ring);
 
 	return ActivePoolRoutine->get_victim(ActivePoolData, strategy,
 										 buf_state, from_ring);
@@ -808,7 +819,7 @@ StrategyCtlShmemRequest(void *arg)
 	const BufferPoolRoutine *routine = ResolveDefaultPoolRoutine(false);
 
 	ShmemRequestStruct(.name = "Buffer Strategy Status",
-					   .size = sizeof(ClockPoolState),
+					   .size = sizeof(SweepPoolState),
 					   .alignment = PG_CACHE_LINE_SIZE,
 					   .ptr = (void **) &StrategyControl
 		);
@@ -833,7 +844,7 @@ static void
 StrategyCtlShmemInit(void *arg)
 {
 	/*
-	 * The DEFAULT pool is "just a pool": a ClockPoolState over [0, NBuffers)
+	 * The DEFAULT pool is "just a pool": a SweepPoolState over [0, NBuffers)
 	 * living in the "Buffer Strategy Status" region.  Initialize it exactly
 	 * like a dynamic clock pool (this also sets the NUMA auto-batch size).
 	 */
@@ -877,7 +888,7 @@ StrategyCtlShmemInit(void *arg)
 		 * hardware) AND the configured algorithm is the built-in clock sweep,
 		 * bind the default pool's buffer blocks and descriptors to nodes in
 		 * matching contiguous chunks (a buffer and its descriptor on the same
-		 * node).  The single Clock2BitSweep is itself NUMA-aware: its per-pool
+		 * node).  The single HeatSweep is itself NUMA-aware: its per-pool
 		 * batchSize was set to a NUMA-sized power of two by ClockPoolShmemInit
 		 * above, cutting cross-socket contention on the shared clock hand.
 		 * Placement is best-effort; correctness is unaffected if the kernel
@@ -934,7 +945,7 @@ StrategyCtlShmemInit(void *arg)
 		/*
 		 * A scan-resistant algorithm owns scan resistance through its own
 		 * admission policy, so enable probationary (cool) admission for it.
-		 * Clock2BitSweep declares scan_resistant = true, so this is on for the
+		 * HeatSweep declares scan_resistant = true, so this is on for the
 		 * default pool.  See ActivePoolProbationaryScan / InitialUsageCountBits.
 		 */
 		ActivePoolProbationaryScan =
@@ -983,7 +994,7 @@ static BufferDesc *
 KeepGetVictim(void *strategy_data, BufferAccessStrategy strategy,
 			  uint64 *buf_state, bool *from_ring)
 {
-	ClockPoolState *state = (ClockPoolState *) strategy_data;
+	SweepPoolState *state = (SweepPoolState *) strategy_data;
 	int			nbuffers = state->nbuffers;
 	int			first_buf_id = state->first_buf_id;
 
@@ -1034,22 +1045,22 @@ KeepGetVictim(void *strategy_data, BufferAccessStrategy strategy,
 }
 
 /*
- * KeepShmemSize -- KEEP reuses ClockPoolState for minimal bookkeeping.
+ * KeepShmemSize -- KEEP reuses SweepPoolState for minimal bookkeeping.
  */
 static Size
 KeepPoolShmemSize(int nbuffers)
 {
-	return sizeof(ClockPoolState);
+	return sizeof(SweepPoolState);
 }
 
 /*
- * KeepPoolShmemInit -- initialize per-pool KEEP state (reuses ClockPoolState).
+ * KeepPoolShmemInit -- initialize per-pool KEEP state (reuses SweepPoolState).
  */
 static void
 KeepPoolShmemInit(void *strategy_data, int nbuffers,
 				  int first_buf_id, bool init)
 {
-	ClockPoolState *state = (ClockPoolState *) strategy_data;
+	SweepPoolState *state = (SweepPoolState *) strategy_data;
 
 	if (!init)
 		return;
@@ -1155,13 +1166,13 @@ typedef enum RecycleMode
 /*
  * RecyclePoolState -- shared state for the RECYCLE pool.
  *
- * Extends ClockPoolState with per-mode statistics.  The eviction algorithm
+ * Extends SweepPoolState with per-mode statistics.  The eviction algorithm
  * is the same for all modes (one-chance clock), but tracking per-mode
  * activity helps monitor workload distribution.
  */
 typedef struct RecyclePoolState
 {
-	/* Core clock-sweep state (same layout as ClockPoolState) */
+	/* Core clock-sweep state (same layout as SweepPoolState) */
 	slock_t		lock;
 	pg_atomic_uint32 nextVictimBuffer;
 	pg_atomic_uint32 numBufferAllocs;
@@ -1200,7 +1211,7 @@ static void RecycleTrickleIterEnd(void *strategy_data, void *iter);
 /*
  * RecycleGetVictim -- one-chance clock sweep for the RECYCLE pool.
  *
- * Like ClockGetVictim but with usage_count capped at 1: if a buffer has
+ * Like HeatSweepGetPoolVictim but with usage_count capped at 1: if a buffer has
  * usage_count >= 1, we set it to 0 in one step (rather than decrementing).
  * This ensures pages loaded by scans don't persist longer than one sweep
  * cycle, preventing cache pollution from bulk operations.

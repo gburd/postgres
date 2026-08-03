@@ -3751,13 +3751,16 @@ PinBuffer(BufferDesc *buf, BufferAccessStrategy strategy,
 			if (strategy == NULL)
 			{
 				/*
-				 * On access, jump the buffer straight to HOT
-				 * (BM_HEAT_HOT): the usage state is a 2-bit hot/cooling/cold
-				 * state, and a re-referenced page is fully hot again.  (This
-				 * replaced the historical increment-by-one toward a 0..5 cap.)
+				 * On access, jump the buffer straight to HOT (BM_HEAT_HOT) and
+				 * set the second-chance reference bit.  The heat state is a
+				 * hot/cool bit and a re-referenced page is fully hot again; the
+				 * ref bit records that it was touched since the sweep last
+				 * passed, so the sweep grants it one extra pass of grace before
+				 * cooling.  (This replaced the historical increment-by-one
+				 * toward a 0..5 cap.)
 				 */
 				buf_state = (buf_state & ~BUF_HEAT_MASK) |
-					((uint64) BM_HEAT_HOT << BUF_HEAT_SHIFT);
+					((uint64) BM_HEAT_HOT << BUF_HEAT_SHIFT) | BUF_REFBIT;
 			}
 			else
 			{
