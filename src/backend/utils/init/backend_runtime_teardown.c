@@ -269,10 +269,19 @@ PgBackendResetIPCClosedState(PgBackendIPCState *ipc)
 {
 	Assert(ipc != NULL);
 
-	if (ipc->dsm_registry_table != NULL)
-		dshash_detach((dshash_table *) ipc->dsm_registry_table);
-	if (ipc->dsm_registry_dsa != NULL)
-		dsa_detach((dsa_area *) ipc->dsm_registry_dsa);
+	/*
+	 * Do NOT dshash_detach()/dsa_detach() the DSM registry handles here.
+	 * The dsm_registry DSA and dshash live in DSM segments, and this
+	 * closed-state reset runs from PgBackendExitCleanup() *after*
+	 * shmem_exit() has already called dsm_backend_shutdown(), which detaches
+	 * and frees every DSM segment (including pinned mappings) this backend
+	 * had mapped.  Re-detaching walks a freed segment list and crashes in
+	 * slist_pop_head_node() -- observed as a SIGSEGV at backend shutdown in
+	 * the test_dsa / test_dsm_registry regress suites (and in process mode
+	 * too, where the segment was likewise already gone).  The bridged
+	 * pointers are just stale here; PgBackendInitializeIPCState() clears
+	 * them back to NULL for a possible reused threaded session.
+	 */
 	if (ipc->latch_wait_set != NULL)
 		FreeWaitEventSet(ipc->latch_wait_set);
 
