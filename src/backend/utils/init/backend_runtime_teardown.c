@@ -310,9 +310,16 @@ PgBackendResetRepackClosedState(PgBackendRepackState *repack)
 	Assert(repack != NULL);
 	Assert(repack->decoding_worker == NULL);
 
-	if (repack->worker_dsm_segment != NULL)
-		dsm_detach(repack->worker_dsm_segment);
-
+	/*
+	 * Do NOT dsm_detach(worker_dsm_segment) here.  This closed-state reset
+	 * runs from PgBackendExitCleanup() *after* shmem_exit(), and shmem_exit()
+	 * already ran dsm_backend_shutdown(), which detaches and frees every DSM
+	 * segment this backend had mapped.  Re-detaching would operate on freed
+	 * memory (observed as a SIGSEGV in slist_pop_head_node under the threaded
+	 * REPACK decoding worker).  The bridged pointer is just stale state at
+	 * this point; PgBackendInitializeRepackState() below clears it back to
+	 * NULL for a possible reused threaded session.
+	 */
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(repack->message_context);
 
 	PgBackendInitializeRepackState(repack);
