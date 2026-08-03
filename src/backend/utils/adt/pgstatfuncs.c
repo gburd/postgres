@@ -2537,12 +2537,11 @@ pg_stat_have_stats(PG_FUNCTION_ARGS)
 Datum
 pg_stat_get_xtc_carriers(PG_FUNCTION_ARGS)
 {
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-
 	InitMaterializedSRF(fcinfo, 0);
 
 #ifdef USE_XTC_CARRIER
 	{
+		ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 		XtcPgCarrierRuntimeInfo info;
 		XtcPgLoopStat *stats;
 		int			n;
@@ -2590,12 +2589,11 @@ pg_stat_get_xtc_carriers(PG_FUNCTION_ARGS)
 Datum
 pg_stat_get_xtc_runtime(PG_FUNCTION_ARGS)
 {
-	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
-
 	InitMaterializedSRF(fcinfo, 0);
 
 #ifdef USE_XTC_CARRIER
 	{
+		ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 		XtcPgRuntimeCounterStat stats[XTC_PG_RUNTIME_COUNTER_COUNT];
 		int			n;
 

@@ -1279,6 +1279,16 @@ backend_pooled_protocol_start_one_carrier(void)
 	}
 #endif
 
+	/*
+	 * Fusion F1: register the runtime counters once, BEFORE spawning the
+	 * carrier thread, so the counter handles are published (happens-before)
+	 * any increment the new carrier performs -- otherwise the carrier could
+	 * race the postmaster's register() and undercount a few early events.
+	 * register() runs on the postmaster thread here; it is idempotent and a
+	 * no-op in a non-carrier build.
+	 */
+	xtc_pg_runtime_counters_register();
+
 	rc = pg_thread_create(&carrier_start->thread,
 						  "postgres pooled protocol carrier",
 						  backend_pooled_protocol_carrier_entry,
@@ -1300,13 +1310,7 @@ backend_pooled_protocol_start_one_carrier(void)
 	pooled_protocol_pool_started = true;
 	postmaster_thread_carriers_started = true;
 
-	/*
-	 * Fusion F1: register the runtime counters once, on the first carrier,
-	 * and count each carrier we spawn.  register() runs on the postmaster
-	 * thread here (the pooled-carrier bringup path); it is idempotent and a
-	 * no-op in a non-carrier build.
-	 */
-	xtc_pg_runtime_counters_register();
+	/* Fusion F1: count each carrier that actually started. */
 	xtc_pg_runtime_counter_inc(XTC_PG_RC_CARRIERS_STARTED);
 	return true;
 }
