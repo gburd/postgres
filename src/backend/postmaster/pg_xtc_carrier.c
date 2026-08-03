@@ -51,6 +51,7 @@
 #include "xtc_proc.h"
 #include "xtc_async.h"		/* xtc_set_stack_size */
 #include "xtc_stats.h"		/* xtc_counter_* (fusion F1 runtime counters) */
+#include "xtc_sync.h"		/* xtc_amutex_*, xtc_notify_* (fusion F2 pooled-queue lock) */
 
 /*
  * Best-effort diagnostic write to a raw fd (STDERR) on crash/down/teardown
@@ -1492,6 +1493,125 @@ xtc_pg_runtime_counters_snapshot(XtcPgRuntimeCounterStat *out, int max)
 		n++;
 	}
 	return n;
+}
+
+/* ---------------------------------------------------------------------------
+ * Fusion F2: pooled-protocol queue lock/notify seam (libxtc primitives).
+ *
+ * The pooled-protocol session queue in launch_backend.c is the hottest raw
+ * pthread_mutex/pthread_cond in the threaded-runtime plumbing: every pooled
+ * session enqueues/dequeues under it, and every idle carrier waits on it.
+ * F2 replaces that raw pair with libxtc primitives, keeping EXACT semantics:
+ *
+ *   pthread_mutex_t   -> xtc_amutex_t   (queue mutual exclusion)
+ *   pthread_cond_t    -> xtc_notify_t   (carrier idle-wait / work-available hint)
+ *
+ * Why these two, from RAW PTHREAD carriers (pg_thread_create, not fibers):
+ *  - xtc_amutex: when uncontended it is a fast atomic flag; when contended a
+ *    caller ON a loop parks the fiber, but a caller NOT on a loop (our case)
+ *    falls back to an internal condvar -- correct and safe from a raw pthread
+ *    today, and DST-visible / fiber-aware for free if these carriers ever
+ *    become fibers.  (xtc_lwlock was rejected: it exposes NO timed-cond-wait
+ *    -- its header says "use xtc_amutex for those scenarios".)
+ *  - xtc_notify: a stored one-shot wake flag.  A signal with no waiter is not
+ *    lost (the flag stays set; the next wait returns at once); a wait consumes
+ *    exactly one token.  Off a loop (our raw-pthread carriers) a signal does a
+ *    pthread_cond_broadcast and each woken carrier re-checks the queue via its
+ *    outer loop, so the flag is a work-available HINT, not a strict predicate
+ *    cond-wait: the carrier's for(;;) loop rechecks lease/dequeue/poll every
+ *    iteration, the wait is capped at 10ms, and a redundant wake-eventfd path
+ *    already exists.  A coalesced or slightly-late notify costs at most a few
+ *    ms of idle latency, never correctness -- and it is stronger than a raw
+ *    cond, which loses a pre-wait signal outright.  (Since the token is a
+ *    single binary flag, signalling N times is the same as signalling once;
+ *    the seam signals once and lets the broadcast + per-carrier recheck fan
+ *    the wake out to however many idle carriers exist.)
+ *
+ * Because notify is independent of the mutex, wait no longer has to be done
+ * with the queue lock held (the old code held the mutex across
+ * pthread_cond_timedwait): the carrier reads the queue length under the lock,
+ * releases it, then notify-waits unlocked.  Producers post work under the
+ * lock, then notify OUTSIDE it.  This removes a lock-held-across-wait and is
+ * strictly cheaper, while preserving the no-lost-wakeup property (notify
+ * stores the token).
+ *
+ * Lifecycle: created once, on the postmaster thread, at pooled-carrier
+ * bringup (xtc_pg_pooled_queue_init, called right beside
+ * xtc_pg_runtime_counters_register) BEFORE any carrier is spawned, so the
+ * handles are published happens-before any carrier touches them.  Never
+ * destroyed (process-lifetime, like the carrier pool itself).  In process
+ * mode and any threaded run that never stands up a pooled carrier, init() is
+ * never called and launch_backend.c never routes through this seam.
+ * ---------------------------------------------------------------------------
+ */
+static xtc_amutex_t *g_xtc_pooled_queue_mutex = NULL;
+static xtc_notify_t *g_xtc_pooled_queue_notify = NULL;
+
+void
+xtc_pg_pooled_queue_init(void)
+{
+	if (g_xtc_pooled_queue_mutex == NULL)
+	{
+		if (xtc_amutex_create(&g_xtc_pooled_queue_mutex) != XTC_OK)
+			elog(FATAL, "could not create pooled protocol queue mutex");
+	}
+	if (g_xtc_pooled_queue_notify == NULL)
+	{
+		if (xtc_notify_create(&g_xtc_pooled_queue_notify) != XTC_OK)
+			elog(FATAL, "could not create pooled protocol queue notify");
+	}
+}
+
+void
+xtc_pg_pooled_queue_lock(void)
+{
+	/* timeout_ns < 0 == block forever, matching pthread_mutex_lock. */
+	if (xtc_amutex_lock(g_xtc_pooled_queue_mutex, -1) != XTC_OK)
+		elog(FATAL, "could not lock pooled protocol queue");
+}
+
+void
+xtc_pg_pooled_queue_unlock(void)
+{
+	if (xtc_amutex_unlock(g_xtc_pooled_queue_mutex) != XTC_OK)
+		elog(FATAL, "could not unlock pooled protocol queue");
+}
+
+/*
+ * Wake idle carriers.  xtc_notify's token is a single binary flag whose
+ * off-loop signal broadcasts to all parked carriers (each then rechecks the
+ * queue via its outer loop), so `count` is advisory: one signal suffices to
+ * fan the wake out to every idle carrier.  Kept as a parameter to mirror the
+ * old signal_ready_work(count) call site.  Called with the queue lock NOT
+ * held.
+ */
+void
+xtc_pg_pooled_queue_signal(int count)
+{
+	if (g_xtc_pooled_queue_notify == NULL || count <= 0)
+		return;
+	if (xtc_notify_signal(g_xtc_pooled_queue_notify) != XTC_OK)
+		elog(FATAL, "could not signal pooled protocol queue");
+}
+
+/*
+ * Bounded idle wait for work.  Called with the queue lock NOT held (unlike the
+ * old pthread_cond_timedwait, which was called holding the mutex).  Returns
+ * after a signal or the timeout; XTC_E_AGAIN (timeout) is expected and not an
+ * error, mirroring the old ETIMEDOUT handling.
+ */
+void
+xtc_pg_pooled_queue_wait(long timeout_us)
+{
+	int64_t		timeout_ns;
+	int			rc;
+
+	if (g_xtc_pooled_queue_notify == NULL)
+		return;
+	timeout_ns = (int64_t) timeout_us * 1000;
+	rc = xtc_notify_wait(g_xtc_pooled_queue_notify, timeout_ns);
+	if (rc != XTC_OK && rc != XTC_E_AGAIN)
+		elog(FATAL, "could not wait on pooled protocol queue");
 }
 
 #endif							/* USE_XTC_CARRIER */
