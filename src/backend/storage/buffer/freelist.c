@@ -40,10 +40,10 @@
 
 
 /*
- * SweepPoolState -- per-pool clock-sweep state.
+ * SublimatePoolState -- per-pool clock-sweep state.
  *
  * Used by every clock-swept pool, including the DEFAULT pool: the default
- * pool is "just a pool" over [0, NBuffers) whose SweepPoolState lives in the
+ * pool is "just a pool" over [0, NBuffers) whose SublimatePoolState lives in the
  * "Buffer Strategy Status" shmem region (StrategyControl), while dynamic pools
  * store theirs in their DSM segment as the pool's strategy_data.  The clock
  * hand sweeps from first_buf_id through first_buf_id + nbuffers - 1.
@@ -59,7 +59,7 @@
  * been retired.  numBufferAllocs survives only to feed
  * pg_stat_bgwriter.buffers_alloc, drained by the checkpointer.
  */
-typedef struct SweepPoolState
+typedef struct SublimatePoolState
 {
 	slock_t		lock;
 	pg_atomic_uint32 nextVictimBuffer;	/* monotonically increasing, mod
@@ -68,10 +68,10 @@ typedef struct SweepPoolState
 	int			nbuffers;		/* buffer count in this pool */
 	int			first_buf_id;	/* starting buffer ID */
 	uint32		batchSize;		/* hand values claimed per fetch_add */
-} SweepPoolState;
+} SublimatePoolState;
 
-/* Pointers to shared state -- the DEFAULT pool's SweepPoolState */
-static SweepPoolState *StrategyControl = NULL;
+/* Pointers to shared state -- the DEFAULT pool's SublimatePoolState */
+static SublimatePoolState *StrategyControl = NULL;
 
 /*
  * Active buffer pool routine and its strategy data.
@@ -192,11 +192,11 @@ static void AddBufferToRing(BufferAccessStrategy strategy,
 							BufferDesc *buf);
 
 /* Prototypes for clock-sweep vtable implementation */
-static BufferDesc *HeatSweepGetPoolVictim(void *strategy_data,
+static BufferDesc *SublimateGetPoolVictim(void *strategy_data,
 								  BufferAccessStrategy strategy,
 								  uint64 *buf_state,
 								  bool *from_ring);
-static int	HeatSweepSyncStart(void *strategy_data,
+static int	SublimateSyncStart(void *strategy_data,
 						   uint32 *complete_passes,
 						   uint32 *num_buf_alloc);
 static void ClockNotifyTrickle(void *strategy_data, int bgwprocno);
@@ -229,8 +229,8 @@ const BufferPoolRoutine clock_pool_routine = {
 	.on_miss = NULL,			/* clock-sweep doesn't track misses */
 	.on_evict = NULL,			/* clock-sweep doesn't track evictions */
 	.on_new_tag = NULL,			/* clock-sweep doesn't track insertions */
-	.get_victim = HeatSweepGetPoolVictim,
-	.sync_start = HeatSweepSyncStart,
+	.get_victim = SublimateGetPoolVictim,
+	.sync_start = SublimateSyncStart,
 	.notify_trickle = ClockNotifyTrickle,
 	.trickle_iter_begin = NULL, /* clock-sweep uses linear scan */
 	.trickle_iter_next = NULL,
@@ -245,7 +245,7 @@ const BufferPoolRoutine clock_pool_routine = {
 };
 
 /*
- * HeatSweepGetVictim -- examine one candidate buffer for the heat-state sweep.
+ * SublimateGetVictim -- examine one candidate buffer for the heat-state sweep.
  *
  * The buffer carries a 1-bit heat state (HOT/COOL) plus a second-chance
  * reference bit.  On a tick:
@@ -268,9 +268,9 @@ const BufferPoolRoutine clock_pool_routine = {
  * registers.  Contains no PG/setjmp, so force-inlining is safe.
  */
 static pg_always_inline BufferDesc *
-HeatSweepGetVictim(int victim_id, BufferAccessStrategy strategy,
+SublimateGetVictim(int victim_id, BufferAccessStrategy strategy,
 				   uint64 *buf_state, int *trycounter,
-				   int reset_budget)
+				   int reset_budget, int *clean_skip)
 {
 	BufferDesc *buf = GetBufferDescriptor(victim_id);
 	uint64		old_buf_state = pg_atomic_read_u64(&buf->state);
@@ -330,6 +330,24 @@ HeatSweepGetVictim(int victim_id, BufferAccessStrategy strategy,
 			}
 			continue;
 		}
+		/*
+		 * COOL and unpinned: this is an eviction candidate.
+		 *
+		 * Clean-first bias (asymmetry-aware, cf. Papon & Athanassoulis, ICDE
+		 * 2023): evicting a DIRTY page turns the incoming read miss into a
+		 * read + a synchronous write, up to ~10x more expensive on flash.  If
+		 * this COOL victim is dirty and we still have clean-skip budget, skip
+		 * it (let the trickle writer clean it in the background) and advance
+		 * the hand to find a CLEAN COOL victim.  The budget is bounded so we
+		 * cannot livelock: once exhausted we evict the dirty page anyway,
+		 * guaranteeing forward progress.  A skip is not charged to trycounter.
+		 */
+		if ((local_buf_state & BM_DIRTY) && *clean_skip > 0)
+		{
+			(*clean_skip)--;
+			return NULL;
+		}
+
 		local_buf_state += BUF_REFCOUNT_ONE;
 		if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
 										   local_buf_state))
@@ -349,22 +367,27 @@ HeatSweepGetVictim(int victim_id, BufferAccessStrategy strategy,
  */
 
 /*
- * HeatSweep -- the ONE pool-scoped, batched 2-bit clock sweep.
+ * Sublimate -- the ONE pool-scoped, batched heat-state eviction sweep.
  *
- * Serves both the DEFAULT pool (a SweepPoolState over [0, NBuffers) stored in
- * StrategyControl) and every dynamic pool (its own SweepPoolState in DSM).
- * There is a single clock hand per pool (pool_state->nextVictimBuffer).  A
+ * "Sublimate" names the eviction strategy: a buffer transitions HOT -> COOL ->
+ * evicted the way a solid sublimates to gas, driven by the heat-state clock
+ * with a second-chance reference bit (this is the Second Chance strategy that
+ * LeanStore converged on after retiring its elaborate cooling stage).
+ *
+ * Serves both the DEFAULT pool (a SublimatePoolState over [0, NBuffers) stored in
+ * StrategyControl) and every dynamic pool (its own SublimatePoolState in DSM).
+ * There is a single hand per pool (pool_state->nextVictimBuffer).  A
  * backend claims pool_state->batchSize consecutive hand values per
  * pg_atomic_fetch_add and then iterates them privately, so the contended hand
  * atomic fires ~1/batch as often -- the multi-socket win.  batchSize == 1
  * (the non-NUMA default) is byte-identical to the classic one-at-a-time sweep.
  *
- * Cooling uses the CAS decrement inside HeatSweepGetVictim (not a blind sub):
- * the hand is pool-scoped and may be shared by several backends, and a batch
- * only bounds -- does not eliminate -- overlap in the wrap window, so CAS is
- * required to keep the 2-bit field from underflowing into the flag bits.
+ * Cooling uses a CAS inside SublimateGetVictim (not a blind store): the hand is
+ * pool-scoped and may be shared by several backends, and a batch only bounds --
+ * does not eliminate -- overlap in the wrap window, so CAS keeps the heat/ref
+ * transition and the pin race-correct.
  *
- * The pass count is derived in HeatSweepSyncStart from the monotonic hand
+ * The pass count is derived in SublimateSyncStart from the monotonic hand
  * (hand / nbuffers), so the hot loop maintains no pass counter and takes no
  * spinlock.  (The global background writer that once used a stored pass count
  * has been retired.)
@@ -374,7 +397,7 @@ HeatSweepGetVictim(int victim_id, BufferAccessStrategy strategy,
  * PG_TRY/setjmp, so force-inlining is safe.
  */
 static pg_always_inline BufferDesc *
-HeatSweep(SweepPoolState *pool_state,
+Sublimate(SublimatePoolState *pool_state,
 			   BufferAccessStrategy strategy,
 			   uint64 *buf_state,
 			   bool *from_ring)
@@ -384,6 +407,7 @@ HeatSweep(SweepPoolState *pool_state,
 	uint32		batchSize = pool_state->batchSize;
 	pg_atomic_uint32 *nextVictimPtr = &pool_state->nextVictimBuffer;
 	int			trycounter;
+	int			clean_skip;
 
 	/*
 	 * Per-backend batch of hand values claimed from the pool's clock hand.
@@ -446,8 +470,28 @@ HeatSweep(SweepPoolState *pool_state,
 	 */
 	pg_atomic_fetch_add_u32(&pool_state->numBufferAllocs, 1);
 
-	/* Use the "clock sweep" algorithm to find a free buffer */
+	/* Use the sublimate (heat-state) sweep to find a free buffer */
 	trycounter = pool_nbuffers;
+
+	/*
+	 * Clean-first skip budget (asymmetry-aware eviction, cf. ACE / ICDE 2023):
+	 * how many DIRTY COOL victims we may skip in favor of a CLEAN one before
+	 * giving up and evicting a dirty page anyway.
+	 *
+	 * DORMANT by default (budget 0 = plain eviction).  Benchmarks (EC2
+	 * clean-first A/B, 2026-08-03) confirmed the mechanism works at the I/O
+	 * level -- it cut backend inline writes ~20%% and read-forced writes ~11%%
+	 * with hit ratio unchanged -- but it REGRESSED throughput ~5%% because the
+	 * background writer was not pre-cleaning (bgw writes were ~0), so skipping a
+	 * dirty victim only added sweep search cost with no stocked clean victim to
+	 * prefer to.  Clean-first only pays off once a background writer keeps clean
+	 * victims available ahead of demand (ACE's precondition).  Kept as dormant
+	 * code with budget 0 until the per-pool trickle writer pre-cleans
+	 * aggressively enough; then raise this (or gate it on "a clean victim was
+	 * seen recently") and re-measure.
+	 */
+	clean_skip = 0;
+
 	for (;;)
 	{
 		uint32		handval;
@@ -472,8 +516,8 @@ HeatSweep(SweepPoolState *pool_state,
 		victim_off = handval % (uint32) pool_nbuffers;
 		victim_id = pool_first_buf + (int) victim_off;
 
-		buf = HeatSweepGetVictim(victim_id, strategy, buf_state,
-								 &trycounter, pool_nbuffers);
+		buf = SublimateGetVictim(victim_id, strategy, buf_state,
+								 &trycounter, pool_nbuffers, &clean_skip);
 		if (buf != NULL)
 			return buf;
 	}
@@ -482,7 +526,7 @@ HeatSweep(SweepPoolState *pool_state,
 }
 
 /*
- * HeatSweepGetPoolVictim -- clock-sweep implementation of get_victim
+ * SublimateGetPoolVictim -- clock-sweep implementation of get_victim
  *
  * Called by StrategyGetBuffer() via the vtable.  Selects the next candidate
  * buffer to use in GetVictimBuffer().  The only hard requirement is that the
@@ -491,31 +535,31 @@ HeatSweep(SweepPoolState *pool_state,
  * strategy is a BufferAccessStrategy object, or NULL for default strategy.
  *
  * For the default pool, strategy_data points to StrategyControl (a
- * SweepPoolState over [0, NBuffers)).  For dynamic pools, strategy_data points
- * to a SweepPoolState stored in the pool's DSM segment.  Either way the sweep
- * is the same pool-scoped HeatSweep.
+ * SublimatePoolState over [0, NBuffers)).  For dynamic pools, strategy_data points
+ * to a SublimatePoolState stored in the pool's DSM segment.  Either way the sweep
+ * is the same pool-scoped Sublimate.
  *
  * The buffer is pinned and marked as owned, using TrackNewBufferPin(),
  * before returning.
  */
 static BufferDesc *
-HeatSweepGetPoolVictim(void *strategy_data,
+SublimateGetPoolVictim(void *strategy_data,
 			   BufferAccessStrategy strategy,
 			   uint64 *buf_state,
 			   bool *from_ring)
 {
 	/*
 	 * All clock-swept pools -- the default pool and dynamic pools alike --
-	 * store a SweepPoolState as their strategy_data, so a single call handles
-	 * both.  HeatSweep is force-inlined; the default pool's hot path is
+	 * store a SublimatePoolState as their strategy_data, so a single call handles
+	 * both.  Sublimate is force-inlined; the default pool's hot path is
 	 * devirtualized in StrategyGetBuffer and does not reach this vtable slot.
 	 */
-	return HeatSweep((SweepPoolState *) strategy_data,
+	return Sublimate((SublimatePoolState *) strategy_data,
 						  strategy, buf_state, from_ring);
 }
 
 /*
- * HeatSweepSyncStart -- clock-sweep implementation of sync_start
+ * SublimateSyncStart -- clock-sweep implementation of sync_start
  *
  * Reports the current clock-hand position, a derived pass count, and drains
  * the pool's allocation counter.  The core no longer consumes the position or
@@ -528,9 +572,9 @@ HeatSweepGetPoolVictim(void *strategy_data,
  * hot loop maintains no pass counter.
  */
 static int
-HeatSweepSyncStart(void *strategy_data, uint32 *complete_passes, uint32 *num_buf_alloc)
+SublimateSyncStart(void *strategy_data, uint32 *complete_passes, uint32 *num_buf_alloc)
 {
-	SweepPoolState *pool_state = (SweepPoolState *) strategy_data;
+	SublimatePoolState *pool_state = (SublimatePoolState *) strategy_data;
 	uint32		nbuf = (pool_state->nbuffers > 0) ? (uint32) pool_state->nbuffers : 1;
 	uint32		hand;
 
@@ -565,7 +609,7 @@ ClockNotifyTrickle(void *strategy_data, int bgwprocno)
  *
  * Consider rejecting a dirty buffer.  When a nondefault strategy is used,
  * the buffer manager calls this function when the buffer selected by
- * HeatSweepGetPoolVictim needs to be written out and doing so would require flushing
+ * SublimateGetPoolVictim needs to be written out and doing so would require flushing
  * WAL too.  This gives us a chance to choose a different victim.
  *
  * Returns true if buffer manager should ask for a new victim, and false
@@ -595,7 +639,7 @@ ClockRejectBuffer(void *strategy_data, BufferAccessStrategy strategy,
 
 
 /*
- * HeatSweepBatchSize -- pick the clock-hand batch size for a pool.
+ * SublimateBatchSize -- pick the clock-hand batch size for a pool.
  *
  * Off NUMA: 1 -- byte-identical to the classic one-at-a-time clock sweep.
  *
@@ -608,7 +652,7 @@ ClockRejectBuffer(void *strategy_data, BufferAccessStrategy strategy,
  * count, not the global total, so a small pool gets a small batch.
  */
 static uint32
-HeatSweepBatchSize(int pool_nbuffers)
+SublimateBatchSize(int pool_nbuffers)
 {
 	long		ncores;
 	uint32		target;
@@ -657,7 +701,7 @@ HeatSweepBatchSize(int pool_nbuffers)
 static Size
 ClockPoolShmemSize(int nbuffers)
 {
-	return sizeof(SweepPoolState);
+	return sizeof(SublimatePoolState);
 }
 
 /*
@@ -671,7 +715,7 @@ static void
 ClockPoolShmemInit(void *strategy_data, int nbuffers,
 				   int first_buf_id, bool init)
 {
-	SweepPoolState *state = (SweepPoolState *) strategy_data;
+	SublimatePoolState *state = (SublimatePoolState *) strategy_data;
 
 	if (!init)
 		return;					/* re-attach: nothing to do */
@@ -681,7 +725,7 @@ ClockPoolShmemInit(void *strategy_data, int nbuffers,
 	pg_atomic_init_u32(&state->numBufferAllocs, 0);
 	state->nbuffers = nbuffers;
 	state->first_buf_id = first_buf_id;
-	state->batchSize = HeatSweepBatchSize(nbuffers);
+	state->batchSize = SublimateBatchSize(nbuffers);
 }
 
 
@@ -705,11 +749,11 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 	/*
 	 * Devirtualize the built-in clock sweep (the overwhelmingly common case):
 	 * call the inlinable pool-scoped sweep directly on the default pool's
-	 * SweepPoolState, bypassing the vtable indirection.  Extensions and
+	 * SublimatePoolState, bypassing the vtable indirection.  Extensions and
 	 * dynamic pools keep the indirect ActivePoolRoutine->get_victim path.
 	 */
 	if (likely(ActivePoolIsClock))
-		return HeatSweep(StrategyControl, strategy, buf_state, from_ring);
+		return Sublimate(StrategyControl, strategy, buf_state, from_ring);
 
 	return ActivePoolRoutine->get_victim(ActivePoolData, strategy,
 										 buf_state, from_ring);
@@ -819,7 +863,7 @@ StrategyCtlShmemRequest(void *arg)
 	const BufferPoolRoutine *routine = ResolveDefaultPoolRoutine(false);
 
 	ShmemRequestStruct(.name = "Buffer Strategy Status",
-					   .size = sizeof(SweepPoolState),
+					   .size = sizeof(SublimatePoolState),
 					   .alignment = PG_CACHE_LINE_SIZE,
 					   .ptr = (void **) &StrategyControl
 		);
@@ -844,7 +888,7 @@ static void
 StrategyCtlShmemInit(void *arg)
 {
 	/*
-	 * The DEFAULT pool is "just a pool": a SweepPoolState over [0, NBuffers)
+	 * The DEFAULT pool is "just a pool": a SublimatePoolState over [0, NBuffers)
 	 * living in the "Buffer Strategy Status" region.  Initialize it exactly
 	 * like a dynamic clock pool (this also sets the NUMA auto-batch size).
 	 */
@@ -888,7 +932,7 @@ StrategyCtlShmemInit(void *arg)
 		 * hardware) AND the configured algorithm is the built-in clock sweep,
 		 * bind the default pool's buffer blocks and descriptors to nodes in
 		 * matching contiguous chunks (a buffer and its descriptor on the same
-		 * node).  The single HeatSweep is itself NUMA-aware: its per-pool
+		 * node).  The single Sublimate is itself NUMA-aware: its per-pool
 		 * batchSize was set to a NUMA-sized power of two by ClockPoolShmemInit
 		 * above, cutting cross-socket contention on the shared clock hand.
 		 * Placement is best-effort; correctness is unaffected if the kernel
@@ -945,7 +989,7 @@ StrategyCtlShmemInit(void *arg)
 		/*
 		 * A scan-resistant algorithm owns scan resistance through its own
 		 * admission policy, so enable probationary (cool) admission for it.
-		 * HeatSweep declares scan_resistant = true, so this is on for the
+		 * Sublimate declares scan_resistant = true, so this is on for the
 		 * default pool.  See ActivePoolProbationaryScan / InitialUsageCountBits.
 		 */
 		ActivePoolProbationaryScan =
@@ -994,7 +1038,7 @@ static BufferDesc *
 KeepGetVictim(void *strategy_data, BufferAccessStrategy strategy,
 			  uint64 *buf_state, bool *from_ring)
 {
-	SweepPoolState *state = (SweepPoolState *) strategy_data;
+	SublimatePoolState *state = (SublimatePoolState *) strategy_data;
 	int			nbuffers = state->nbuffers;
 	int			first_buf_id = state->first_buf_id;
 
@@ -1045,22 +1089,22 @@ KeepGetVictim(void *strategy_data, BufferAccessStrategy strategy,
 }
 
 /*
- * KeepShmemSize -- KEEP reuses SweepPoolState for minimal bookkeeping.
+ * KeepShmemSize -- KEEP reuses SublimatePoolState for minimal bookkeeping.
  */
 static Size
 KeepPoolShmemSize(int nbuffers)
 {
-	return sizeof(SweepPoolState);
+	return sizeof(SublimatePoolState);
 }
 
 /*
- * KeepPoolShmemInit -- initialize per-pool KEEP state (reuses SweepPoolState).
+ * KeepPoolShmemInit -- initialize per-pool KEEP state (reuses SublimatePoolState).
  */
 static void
 KeepPoolShmemInit(void *strategy_data, int nbuffers,
 				  int first_buf_id, bool init)
 {
-	SweepPoolState *state = (SweepPoolState *) strategy_data;
+	SublimatePoolState *state = (SublimatePoolState *) strategy_data;
 
 	if (!init)
 		return;
@@ -1166,13 +1210,13 @@ typedef enum RecycleMode
 /*
  * RecyclePoolState -- shared state for the RECYCLE pool.
  *
- * Extends SweepPoolState with per-mode statistics.  The eviction algorithm
+ * Extends SublimatePoolState with per-mode statistics.  The eviction algorithm
  * is the same for all modes (one-chance clock), but tracking per-mode
  * activity helps monitor workload distribution.
  */
 typedef struct RecyclePoolState
 {
-	/* Core clock-sweep state (same layout as SweepPoolState) */
+	/* Core clock-sweep state (same layout as SublimatePoolState) */
 	slock_t		lock;
 	pg_atomic_uint32 nextVictimBuffer;
 	pg_atomic_uint32 numBufferAllocs;
@@ -1211,7 +1255,7 @@ static void RecycleTrickleIterEnd(void *strategy_data, void *iter);
 /*
  * RecycleGetVictim -- one-chance clock sweep for the RECYCLE pool.
  *
- * Like HeatSweepGetPoolVictim but with usage_count capped at 1: if a buffer has
+ * Like SublimateGetPoolVictim but with usage_count capped at 1: if a buffer has
  * usage_count >= 1, we set it to 0 in one step (rather than decrementing).
  * This ensures pages loaded by scans don't persist longer than one sweep
  * cycle, preventing cache pollution from bulk operations.
