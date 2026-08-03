@@ -2463,3 +2463,48 @@ pg_stat_get_xtc_carriers(PG_FUNCTION_ARGS)
 
 	return (Datum) 0;
 }
+
+/*
+ * pg_stat_get_xtc_runtime - carrier/runtime hot-path counters (fusion F1).
+ *
+ * One row per counter: (counter name, value).  These count events on our own
+ * pooled-protocol carrier hot paths -- sessions leased/resumed, protocol
+ * parks, wake deliveries, carriers started, process fallbacks, idle queue
+ * waits -- which libxtc's per-loop stats (pg_stat_xtc_carriers) do not see.
+ * Empty set in process mode and in any threaded run that never stood up a
+ * pooled carrier (the counters are never registered there).  Complements
+ * pg_stat_xtc_carriers: libxtc-scheduler health there, PG-side runtime flow
+ * here.
+ */
+#define PG_STAT_GET_XTC_RUNTIME_COLS	2
+
+Datum
+pg_stat_get_xtc_runtime(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+
+	InitMaterializedSRF(fcinfo, 0);
+
+#ifdef USE_XTC_CARRIER
+	{
+		XtcPgRuntimeCounterStat stats[XTC_PG_RUNTIME_COUNTER_COUNT];
+		int			n;
+
+		n = xtc_pg_runtime_counters_snapshot(stats, XTC_PG_RUNTIME_COUNTER_COUNT);
+
+		for (int i = 0; i < n; i++)
+		{
+			Datum		values[PG_STAT_GET_XTC_RUNTIME_COLS] = {0};
+			bool		nulls[PG_STAT_GET_XTC_RUNTIME_COLS] = {0};
+
+			values[0] = CStringGetTextDatum(stats[i].name);
+			values[1] = Int64GetDatum((int64) stats[i].value);
+
+			tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc,
+								 values, nulls);
+		}
+	}
+#endif							/* USE_XTC_CARRIER */
+
+	return (Datum) 0;
+}

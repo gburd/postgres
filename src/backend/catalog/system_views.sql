@@ -1069,6 +1069,12 @@ CREATE VIEW pg_stat_xtc_carriers AS
             s.steal_backoff
      FROM pg_stat_get_xtc_carriers() s;
 
+CREATE VIEW pg_stat_xtc_runtime AS
+    SELECT
+            s.counter,
+            s.value
+     FROM pg_stat_get_xtc_runtime() s;
+
 CREATE VIEW pg_stat_subscription AS
     SELECT
             su.oid AS subid,

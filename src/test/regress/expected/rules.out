@@ -2510,6 +2510,9 @@ pg_stat_xtc_carriers| SELECT loop_id,
     eager_rebalance,
     steal_backoff
    FROM pg_stat_get_xtc_carriers() s(loop_id, tasks_run, steals, eager_rebalance, steal_backoff);
+pg_stat_xtc_runtime| SELECT counter,
+    value
+   FROM pg_stat_get_xtc_runtime() s(counter, value);
 pg_statio_all_indexes| SELECT c.oid AS relid,
     i.oid AS indexrelid,
     n.nspname AS schemaname,

@@ -6122,6 +6122,15 @@
   proargnames => '{loop_id,tasks_run,steals,eager_rebalance,steal_backoff}',
   prosrc => 'pg_stat_get_xtc_carriers' },
 
+{ oid => '8421', descr => 'statistics: libxtc carrier/runtime hot-path counters',
+  proname => 'pg_stat_get_xtc_runtime', prorows => '16', proretset => 't',
+  provolatile => 'v', proparallel => 'r', prorettype => 'record',
+  proargtypes => '',
+  proallargtypes => '{text,int8}',
+  proargmodes => '{o,o}',
+  proargnames => '{counter,value}',
+  prosrc => 'pg_stat_get_xtc_runtime' },
+
 { oid => '2306', descr => 'statistics: information about SLRU caches',
   proname => 'pg_stat_get_slru', prorows => '100', proisstrict => 'f',
   proretset => 't', provolatile => 's', proparallel => 'r',
