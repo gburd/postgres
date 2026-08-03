@@ -161,3 +161,44 @@ xtc_slab INSIDE a PG-owned DSM region is sanctioned).
   Next: F2 (lock dedup).
 - Prior fusion wins already landed: eager-rebalance (v1.27), io-wq cap +
   right-sized executor (v1.31.0 + loop-count fix) — see the 2026-07-24 metal A/B.
+
+### F1 LANDED (2026-08-03, origin/xtc 53463e8e30d)
+pg_stat_xtc_runtime view: 7 libxtc xtc_stats counters on the pooled-protocol
+carrier hot paths (sessions_leased/resumed, protocol_parks, wakes_delivered,
+carriers_started, process_fallbacks, queue_waits). Two independent EC2 reviews
+SHIP-WITH-CHANGES -> applied: rsinfo moved inside #ifdef (warning-clean process
+build), and register() moved before pg_thread_create (publish-before-inc).
+Reviewer opcode-proved the non-carrier hot path is byte-identical; 245/245
+process regress; counters observable via SQL under load. Second fusion increment
+(after F0b).
+
+### walsender + bgworker threaded crash family FIXED (2026-08-03, origin/xtc 658dff9abc5)
+The ~40 threaded-mode failures the EC2 A/B surfaced, root-caused + fixed on EC2:
+- walsender: this branch NULLs xlogreader at StartLogicalReplication end (threaded
+  session reuse), tripping upstream's Assert(xlogreader != NULL). Fix scopes the
+  assert to REPLICATION_KIND_PHYSICAL (logical reader is owned/freed by the
+  decoding context; physical reader stays live). Currently latent (logical repl
+  blocked earlier by the process-only module guard) but correct + necessary.
+- two real double-free SIGSEGVs (REPACK worker_dsm_segment; dsm_registry DSA/dshash)
+  in the closed-state resets: re-detach after dsm_backend_shutdown already freed
+  the segment at proc_exit. Coordinator review-fix converted the initial
+  unconditional drops to `if (!PgBackendExitInProgress())` guards, matching the
+  established launcher-DSA / LISTEN-NOTIFY-DSA precedent in the same file (detach
+  only on a live session reset; skip on proc_exit where dsm_backend_shutdown owns
+  it; dsm_registry_dsa is dsa_pin_mapping'd so skipping-on-exit leaks nothing).
+- The other "segfaults" (pg_prewarm/test_aio/test_custom_stats/advice modules)
+  were NOT crashes -- clean FATAL guard-rejections (model mismatch, Phase 16
+  module-marking surface). Left as-is (clean reject, not a crash).
+Validated on EC2: build 0/0, process regress 245/245, crash-repro suites clean
+(no SIGSEGV with the guard), physical repl recovery/001_stream_rep OK. Reviewed
+by coordinator source analysis (both background reviewers aborted mid-run).
+
+STILL OPEN (documented, separate follow-ups -- pre-existing, proven on the clean
+unmodified tree in PROCESS mode, NOT this family):
+- ResetExtensionSiblingCache pfree-of-freed CacheMemoryContext entries at teardown
+  (intarray, pg_stash_advice SIGSEGV at shutdown), teardown.c ~757.
+- pgoutput_relation_sync_cache DynaHash assert (hashp->alloc == DynaHashAlloc)
+  in PgSessionResetLogicalReplicationClosedState, teardown.c ~1070
+  (subscription/recovery/pg_combinebackup) -- the "DynaHashAlloc" family.
+- ~92 exit-status-29 = process-only module load-rejections (Phase 16 module
+  marking). recovery/pg_basebackup shutdown-hang + fork-fallback ENOSYS = separate.
