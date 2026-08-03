@@ -2291,7 +2291,18 @@ exec_replication_command(const char *cmd_string)
 				/* dupe, but necessary per libpqrcv_endstreaming */
 				EndReplicationCommand(cmdtag);
 
-				Assert(xlogreader != NULL);
+				/*
+				 * For physical replication the xlogreader stays live for the
+				 * duration of the session, so it must be non-NULL here.  For
+				 * logical replication the reader is owned by the decoding
+				 * context, which StartLogicalReplication frees before it
+				 * returns; the xtc session-teardown discipline then clears the
+				 * bridged xlogreader pointer to NULL so it cannot dangle into a
+				 * reused threaded session.  So only assert for the physical
+				 * path.
+				 */
+				if (cmd->kind == REPLICATION_KIND_PHYSICAL)
+					Assert(xlogreader != NULL);
 				break;
 			}
 
