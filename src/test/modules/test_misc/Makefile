@@ -3,7 +3,8 @@
 TAP_TESTS = 1
 
 EXTRA_INSTALL=src/test/modules/injection_points \
-	contrib/test_decoding
+	contrib/test_decoding \
+	contrib/pg_buffercache
 
 # The injection points are cluster-wide, so disable installcheck
 NO_INSTALLCHECK = 1
