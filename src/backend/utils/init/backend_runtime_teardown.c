@@ -270,18 +270,36 @@ PgBackendResetIPCClosedState(PgBackendIPCState *ipc)
 	Assert(ipc != NULL);
 
 	/*
-	 * Do NOT dshash_detach()/dsa_detach() the DSM registry handles here.
-	 * The dsm_registry DSA and dshash live in DSM segments, and this
-	 * closed-state reset runs from PgBackendExitCleanup() *after*
-	 * shmem_exit() has already called dsm_backend_shutdown(), which detaches
-	 * and frees every DSM segment (including pinned mappings) this backend
-	 * had mapped.  Re-detaching walks a freed segment list and crashes in
-	 * slist_pop_head_node() -- observed as a SIGSEGV at backend shutdown in
-	 * the test_dsa / test_dsm_registry regress suites (and in process mode
-	 * too, where the segment was likewise already gone).  The bridged
-	 * pointers are just stale here; PgBackendInitializeIPCState() clears
-	 * them back to NULL for a possible reused threaded session.
+	 * dsm_registry_dsa is a dsa_pin_mapping()'d attachment to the DSM registry
+	 * DSA (dsm_registry.c: dsa_create/dsa_attach + dsa_pin_mapping), and
+	 * dsm_registry_table is a dshash inside it.  As with the launcher
+	 * last-start-times DSA and the LISTEN/NOTIFY global-channel DSA, there are
+	 * two teardown paths, distinguished by PgBackendExitInProgress():
+	 *
+	 *   - Full process/thread exit (proc_exit): shmem_exit() already ran
+	 *     dsm_backend_shutdown(), which detaches and frees every DSM segment
+	 *     (including pinned mappings) this backend had mapped.  Re-detaching
+	 *     walks a freed segment list and crashes in slist_pop_head_node()
+	 *     (observed as a SIGSEGV at backend shutdown in test_dsa /
+	 *     test_dsm_registry, and in process mode too).  Skip it; dsa_pin_mapping
+	 *     only clears the segment's resowner, so dsm_backend_shutdown still
+	 *     reclaims it and skipping the detach leaks nothing.
+	 *
+	 *   - Live threaded session reset (no proc_exit): dsm_backend_shutdown()
+	 *     has NOT run, so the DSA/dshash are still mapped and the explicit
+	 *     detaches here reclaim the mapping.
+	 *
+	 * Either way the bridged pointers are cleared below by
+	 * PgBackendInitializeIPCState() for a possible reused threaded session.
 	 */
+	if (!PgBackendExitInProgress())
+	{
+		if (ipc->dsm_registry_table != NULL)
+			dshash_detach((dshash_table *) ipc->dsm_registry_table);
+		if (ipc->dsm_registry_dsa != NULL)
+			dsa_detach((dsa_area *) ipc->dsm_registry_dsa);
+	}
+
 	if (ipc->latch_wait_set != NULL)
 		FreeWaitEventSet(ipc->latch_wait_set);
 
@@ -320,15 +338,31 @@ PgBackendResetRepackClosedState(PgBackendRepackState *repack)
 	Assert(repack->decoding_worker == NULL);
 
 	/*
-	 * Do NOT dsm_detach(worker_dsm_segment) here.  This closed-state reset
-	 * runs from PgBackendExitCleanup() *after* shmem_exit(), and shmem_exit()
-	 * already ran dsm_backend_shutdown(), which detaches and frees every DSM
-	 * segment this backend had mapped.  Re-detaching would operate on freed
-	 * memory (observed as a SIGSEGV in slist_pop_head_node under the threaded
-	 * REPACK decoding worker).  The bridged pointer is just stale state at
-	 * this point; PgBackendInitializeRepackState() below clears it back to
-	 * NULL for a possible reused threaded session.
+	 * worker_dsm_segment is a DSM segment this backend mapped for the REPACK
+	 * decoding worker.  As with the launcher last-start-times DSA and the
+	 * LISTEN/NOTIFY global-channel DSA below, there are two teardown paths and
+	 * we must distinguish them with PgBackendExitInProgress():
+	 *
+	 *   - Full process/thread exit (proc_exit): shmem_exit() already ran
+	 *     dsm_backend_shutdown(), which detaches and frees every DSM segment
+	 *     this backend had mapped.  Re-detaching here operates on freed memory
+	 *     (observed as a SIGSEGV in slist_pop_head_node under the threaded
+	 *     REPACK decoding worker, and in process mode too).  Skip it -- the
+	 *     segment is already gone.
+	 *
+	 *   - Live threaded session reset (no proc_exit): dsm_backend_shutdown()
+	 *     has NOT run, so the segment is still mapped and the explicit detach
+	 *     here reclaims the mapping.
+	 *
+	 * Either way the bridged pointer is cleared below by
+	 * PgBackendInitializeRepackState() for a possible reused threaded session.
 	 */
+	if (!PgBackendExitInProgress())
+	{
+		if (repack->worker_dsm_segment != NULL)
+			dsm_detach(repack->worker_dsm_segment);
+	}
+
 	PG_RUNTIME_DELETE_MEMORY_CONTEXT(repack->message_context);
 
 	PgBackendInitializeRepackState(repack);
