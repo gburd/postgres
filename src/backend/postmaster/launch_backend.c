@@ -307,8 +307,17 @@ typedef struct BackendPooledCarrierStart
 
 static PG_GLOBAL_RUNTIME bool postmaster_thread_carriers_started = false;
 #ifndef WIN32
+#ifndef USE_XTC_CARRIER
+/*
+ * Fusion F2: under USE_XTC_CARRIER the pooled-protocol queue lock/wait is the
+ * libxtc xtc_amutex+xtc_notify seam in pg_xtc_carrier.c (the pooled path only
+ * ever runs in a carrier build).  The raw pthread pair below is the fallback
+ * compile path for a threaded-but-non-carrier build (dead there -- pooled mode
+ * is gated on USE_XTC_CARRIER -- but kept so the TU still compiles).
+ */
 static PG_GLOBAL_RUNTIME pthread_mutex_t pooled_protocol_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 static PG_GLOBAL_RUNTIME pthread_cond_t pooled_protocol_queue_cond = PTHREAD_COND_INITIALIZER;
+#endif
 static PG_GLOBAL_RUNTIME BackendPooledLogicalStart *pooled_protocol_queue_head = NULL;
 static PG_GLOBAL_RUNTIME BackendPooledLogicalStart *pooled_protocol_queue_tail = NULL;
 static PG_GLOBAL_RUNTIME int pooled_protocol_queue_length = 0;
@@ -318,7 +327,7 @@ static PG_GLOBAL_RUNTIME bool pooled_protocol_pool_started = false;
  * Wake eventfd for the pooled carrier loop.  A carrier blocks in one poll() on
  * its parked-session fds; new work (a queued session, or a resumable backend)
  * is not visible to that poll() because it arrives on the shared queue under
- * pooled_protocol_queue_mutex.  Rather than give the poll() a short timeout and
+ * the pooled-protocol queue lock.  Rather than give the poll() a short timeout and
  * busy-recheck the queue ~100x/s per carrier (a wake storm that scales with
  * carrier count -- see plan_docs/MULTITHREADED_PHASE18_PROFILE.md), we add this
  * eventfd to every carrier's poll set and signal it when work is posted.  The
@@ -385,8 +394,10 @@ static void backend_pooled_protocol_wake_signal(void);
 static void backend_pooled_protocol_wake_drain(void);
 static void backend_pooled_protocol_signal_ready_work(int count);
 static void backend_pooled_protocol_wait_for_work(long timeout_us);
+#ifndef USE_XTC_CARRIER
 static void backend_pooled_protocol_deadline_after(long timeout_us,
 												   struct timespec *deadline);
+#endif
 static BackendPooledLogicalStart *backend_pooled_logical_start_from_backend(PgBackend *backend);
 static void backend_pooled_protocol_run_logical_start(BackendPooledCarrierStart *carrier_start,
 													  BackendPooledLogicalStart *logical_start);
@@ -1289,6 +1300,14 @@ backend_pooled_protocol_start_one_carrier(void)
 	 */
 	xtc_pg_runtime_counters_register();
 
+	/*
+	 * Fusion F2: create the pooled-protocol queue lock/notify (xtc_amutex +
+	 * xtc_notify) once, on the postmaster thread, BEFORE spawning the carrier,
+	 * for the same publish-before-spawn reason as the counters above.
+	 * Idempotent; a no-op in a non-carrier build.
+	 */
+	xtc_pg_pooled_queue_init();
+
 	rc = pg_thread_create(&carrier_start->thread,
 						  "postgres pooled protocol carrier",
 						  backend_pooled_protocol_carrier_entry,
@@ -1337,20 +1356,56 @@ backend_pooled_protocol_maybe_start_carrier_for_work(void)
 	(void) backend_pooled_protocol_start_one_carrier();
 }
 
-static void
-backend_pooled_protocol_enqueue(BackendPooledLogicalStart *logical_start)
+/*
+ * Fusion F2: pooled-protocol queue lock/wait wrappers.
+ *
+ * Under USE_XTC_CARRIER these route to the libxtc xtc_amutex+xtc_notify seam
+ * (pg_xtc_carrier.c); that is the only build in which the pooled path runs.
+ * Otherwise they use the raw pthread_mutex/cond fallback declared above.  The
+ * queue state (head/tail/length) is owned here either way; only the
+ * synchronization primitive differs.  Note the notify-based wait/signal is
+ * done with the queue lock NOT held (see the seam header comment): mutual
+ * exclusion protects the list; the notify is a bounded work-available hint.
+ */
+static inline void
+pooled_queue_lock(void)
 {
-	int			rc;
+#ifdef USE_XTC_CARRIER
+	xtc_pg_pooled_queue_lock();
+#else
+	int			rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
 
-	Assert(logical_start != NULL);
-	Assert(logical_start->next == NULL);
-
-	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
 	if (rc != 0)
 	{
 		errno = rc;
 		elog(FATAL, "could not lock pooled protocol queue: %m");
 	}
+#endif
+}
+
+static inline void
+pooled_queue_unlock(void)
+{
+#ifdef USE_XTC_CARRIER
+	xtc_pg_pooled_queue_unlock();
+#else
+	int			rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
+
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not unlock pooled protocol queue: %m");
+	}
+#endif
+}
+
+static void
+backend_pooled_protocol_enqueue(BackendPooledLogicalStart *logical_start)
+{
+	Assert(logical_start != NULL);
+	Assert(logical_start->next == NULL);
+
+	pooled_queue_lock();
 
 	if (pooled_protocol_queue_tail != NULL)
 		pooled_protocol_queue_tail->next = logical_start;
@@ -1359,26 +1414,15 @@ backend_pooled_protocol_enqueue(BackendPooledLogicalStart *logical_start)
 	pooled_protocol_queue_tail = logical_start;
 	pooled_protocol_queue_length++;
 
-	rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
-	if (rc != 0)
-	{
-		errno = rc;
-		elog(FATAL, "could not unlock pooled protocol queue: %m");
-	}
+	pooled_queue_unlock();
 }
 
 static BackendPooledLogicalStart *
 backend_pooled_protocol_dequeue(void)
 {
 	BackendPooledLogicalStart *logical_start;
-	int			rc;
 
-	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
-	if (rc != 0)
-	{
-		errno = rc;
-		elog(FATAL, "could not lock pooled protocol queue: %m");
-	}
+	pooled_queue_lock();
 
 	logical_start = pooled_protocol_queue_head;
 	if (logical_start != NULL)
@@ -1391,12 +1435,7 @@ backend_pooled_protocol_dequeue(void)
 		pooled_protocol_queue_length--;
 	}
 
-	rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
-	if (rc != 0)
-	{
-		errno = rc;
-		elog(FATAL, "could not unlock pooled protocol queue: %m");
-	}
+	pooled_queue_unlock();
 
 	return logical_start;
 }
@@ -1405,23 +1444,12 @@ static int
 backend_pooled_protocol_queue_count(void)
 {
 	int			queue_length;
-	int			rc;
 
-	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
-	if (rc != 0)
-	{
-		errno = rc;
-		elog(FATAL, "could not lock pooled protocol queue: %m");
-	}
+	pooled_queue_lock();
 
 	queue_length = pooled_protocol_queue_length;
 
-	rc = pthread_mutex_unlock(&pooled_protocol_queue_mutex);
-	if (rc != 0)
-	{
-		errno = rc;
-		elog(FATAL, "could not unlock pooled protocol queue: %m");
-	}
+	pooled_queue_unlock();
 
 	return queue_length;
 }
@@ -1476,6 +1504,15 @@ backend_pooled_protocol_wake_drain(void)
 static void
 backend_pooled_protocol_signal_work(void)
 {
+	/*
+	 * Wake one idle carrier waiting for work.  With the xtc seam the notify is
+	 * mutex-independent and stores the token if no carrier is parked yet, so we
+	 * signal WITHOUT the queue lock held (the old raw-cond path signalled under
+	 * the mutex to avoid losing a wakeup; notify does not lose it).
+	 */
+#ifdef USE_XTC_CARRIER
+	xtc_pg_pooled_queue_signal(1);
+#else
 	int			rc;
 
 	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
@@ -1498,6 +1535,7 @@ backend_pooled_protocol_signal_work(void)
 		errno = rc;
 		elog(FATAL, "could not unlock pooled protocol queue: %m");
 	}
+#endif
 
 	/* Also wake carriers blocked in poll() on the wake eventfd. */
 	backend_pooled_protocol_wake_signal();
@@ -1506,10 +1544,13 @@ backend_pooled_protocol_signal_work(void)
 static void
 backend_pooled_protocol_signal_ready_work(int count)
 {
-	int			rc;
-
 	if (count <= 0)
 		return;
+
+#ifdef USE_XTC_CARRIER
+	xtc_pg_pooled_queue_signal(count);
+#else
+	int			rc;
 
 	rc = pthread_mutex_lock(&pooled_protocol_queue_mutex);
 	if (rc != 0)
@@ -1534,11 +1575,32 @@ backend_pooled_protocol_signal_ready_work(int count)
 		errno = rc;
 		elog(FATAL, "could not unlock pooled protocol queue: %m");
 	}
+#endif
 }
 
 static void
 backend_pooled_protocol_wait_for_work(long timeout_us)
 {
+#ifdef USE_XTC_CARRIER
+	bool		have_work;
+
+	/*
+	 * Bounded idle wait.  Read the queue length under the lock; if work is
+	 * already queued, do not wait (matches the old cond predicate).  Otherwise
+	 * release the lock and notify-wait UNLOCKED for up to timeout_us: notify is
+	 * mutex-independent and stores a pre-wait signal, so releasing the lock
+	 * before waiting cannot lose a wakeup (unlike a raw cond, this needs no
+	 * atomic release-and-wait).  The carrier's outer for(;;) loop rechecks all
+	 * work sources after we return, and the redundant wake-eventfd path also
+	 * covers this carrier, so a coalesced/late notify only costs idle latency.
+	 */
+	pooled_queue_lock();
+	have_work = (pooled_protocol_queue_length != 0);
+	pooled_queue_unlock();
+
+	if (!have_work)
+		xtc_pg_pooled_queue_wait(timeout_us);
+#else
 	struct timespec deadline;
 	int			rc;
 
@@ -1568,8 +1630,10 @@ backend_pooled_protocol_wait_for_work(long timeout_us)
 		errno = rc;
 		elog(FATAL, "could not unlock pooled protocol queue: %m");
 	}
+#endif
 }
 
+#ifndef USE_XTC_CARRIER
 static void
 backend_pooled_protocol_deadline_after(long timeout_us,
 									   struct timespec *deadline)
@@ -1590,6 +1654,7 @@ backend_pooled_protocol_deadline_after(long timeout_us,
 	}
 	deadline->tv_nsec = nsec;
 }
+#endif
 
 static BackendPooledLogicalStart *
 backend_pooled_logical_start_from_backend(PgBackend *backend)

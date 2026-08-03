@@ -135,6 +135,20 @@ extern void xtc_pg_runtime_counters_register(void);
 extern void xtc_pg_runtime_counter_add(XtcPgRuntimeCounter c, int64 delta);
 extern int	xtc_pg_runtime_counters_snapshot(XtcPgRuntimeCounterStat *out, int max);
 
+/*
+ * Fusion F2: pooled-protocol queue lock/notify seam.  launch_backend.c owns
+ * the queue state; these wrap the libxtc xtc_amutex (mutual exclusion) and
+ * xtc_notify (idle-wait / work hint) that replace the raw pthread_mutex/cond.
+ * init() is idempotent, called on the postmaster thread at pooled-carrier
+ * bringup before any carrier spawns.  lock/unlock guard the queue; signal(N)
+ * wakes up to N idle carriers; wait(timeout_us) is a bounded idle wait.
+ */
+extern void xtc_pg_pooled_queue_init(void);
+extern void xtc_pg_pooled_queue_lock(void);
+extern void xtc_pg_pooled_queue_unlock(void);
+extern void xtc_pg_pooled_queue_signal(int count);
+extern void xtc_pg_pooled_queue_wait(long timeout_us);
+
 static inline void
 xtc_pg_runtime_counter_inc(XtcPgRuntimeCounter c)
 {
@@ -214,6 +228,13 @@ extern void xtc_pg_verify_snapshot_is_self(const struct PgCurrentWorkSnapshot *s
 #define xtc_pg_runtime_counter_inc(c) ((void) 0)
 #define xtc_pg_runtime_counter_add(c, delta) ((void) 0)
 #define xtc_pg_runtime_counters_register() ((void) 0)
+
+/* Fusion F2 pooled-queue seam is inert outside the carrier build. */
+#define xtc_pg_pooled_queue_init() ((void) 0)
+#define xtc_pg_pooled_queue_lock() ((void) 0)
+#define xtc_pg_pooled_queue_unlock() ((void) 0)
+#define xtc_pg_pooled_queue_signal(count) ((void) (count))
+#define xtc_pg_pooled_queue_wait(timeout_us) ((void) (timeout_us))
 
 #endif							/* USE_XTC_CARRIER */
 #endif							/* PG_XTC_CARRIER_H */
