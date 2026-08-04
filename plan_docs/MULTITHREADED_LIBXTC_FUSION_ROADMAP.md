@@ -227,3 +227,32 @@ COORDINATOR PROCESS NOTE: first landed the pre-drain-fix commit by mistake
 origin/xtc's xtc_log_drain count == 0, force-pushed the correct a2ff85921d0.
 Standing rule reinforced: after every land, verify origin/xtc SHA == the exact
 EC2-validated commit.
+
+### F4+ AUDIT: primitive dedup is COMPLETE (2026-08-04) -- see MULTITHREADED_F4_FUSION_AUDIT.md
+A rigorous source audit of ALL wait/block primitives reachable from a
+client-backend fiber hot path found the "Latch/LWLock/CV/AIO onto xtc" fusion is
+ALREADY DONE -- there is NO carrier-blocking gap.  Every primitive yields its
+carrier OS thread via one of two seams:
+  - epoll-fd park (xtc_pg_wait_fd): Latch/WaitEventSet, and everything that waits
+    via WaitLatch -- ConditionVariable, ProcSleep/heavyweight locks,
+    ProcWaitForSignal, XactLockTableWait, buffer-IO CV, SyncRep, ProcSignalBarrier.
+  - eventfd-semaphore park (ProcWaitOnSemaphore): LWLock contended sleep,
+    ProcArrayGroupClearXid, WAL flush/insertion (LWLockWaitForVar).
+  - xtc_aio: fiber data-file read/write (io_method=xtc).
+This is WHY the branch reaches 98.6% of fork -- the hot-path primitive fusion is
+substantially complete.  The risky "convert Latch/LWLock to xtc" work does NOT
+need redoing.  Intentional non-yields (spinlock pg_usleep, standby throttle) left
+as-is.
+
+xtc_pool for the carrier pool: REJECTED (no code).  xtc_pool is a bounded set of
+caller-owned resources that FIBERS check out (checkout blocks a fiber) and
+return; our carriers are raw pthreads spawned once and run forever (no
+fiber-checkout, no checkin).  The carrier spawn-half is xtc_svr/xtc_orc
+(supervisor) territory, and the session queue is already the F2-fused
+xtc_amutex+xtc_notify producer/consumer -- neither is an xtc_pool borrow/return
+slot pool.  Left the hand-rolled bookkeeping.
+
+REMAINING genuine F4+ fusion (structural, not primitive; larger, lower
+benefit-per-risk, design-first): xtc_svr/xtc_orc supervision (carrier/worker
+spawn + restart), xtc_reg backend registry, xtc_xproc watchdog.  MemoryContext
+-> xtc_mctx stays defer-until-proven; shared-memory -> xtc is a NON-GOAL.
