@@ -92,6 +92,13 @@ rule integer matches /{decdigit}(_?{decdigit})*/  { LEX_EMIT(TOK_INTEGER); }
 ** "Fix parsing of underscores in pg_plan_advice occurrence numbers").
 */
 rule integer_junk matches /{decdigit}(_?{decdigit})*{ident_start}{ident_cont}*/ {
+    /*
+     * Record the offending span as yytext (via a benign TOK_IDENT emit) so
+     * the driver's error report can say "...at or near \"12abc\"", then raise
+     * the lexer error.  The pushed token is never consumed -- the error
+     * aborts the parse.
+     */
+    if (emit) emit(user, TOK_IDENT, matched, matched_len);
     LEX_ERROR_AT("trailing junk after numeric literal");
 }
 

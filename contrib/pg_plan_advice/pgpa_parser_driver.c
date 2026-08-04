@@ -70,6 +70,16 @@ typedef struct PgpaYyScanner
 	int			cap;
 	int			next;
 	StringInfoData yytext;
+
+	/*
+	 * A lex-time error (integer out of range, trailing junk after a numeric
+	 * literal) is detected during the pre-scan, before the parser runs.  We
+	 * stash its message + offending text here so pgpa_yyerror reports it
+	 * verbatim ("<message> at or near \"<text>\"") rather than the generic
+	 * parser-position "syntax error", matching the retired flex scanner.
+	 */
+	char	   *lex_errmsg;
+	char	   *lex_errtext;
 } PgpaYyScanner;
 
 #define PGPA_TOK_QIDENT		1001	/* internal sentinel from xd_close */
@@ -178,6 +188,8 @@ pgpa_emit_cb(void *user, int token, const char *text, size_t len)
 						initStringInfo(&ctx->errmsg);
 					resetStringInfo(&ctx->errmsg);
 					appendStringInfoString(&ctx->errmsg, "integer out of range");
+					ctx->s->lex_errmsg = pstrdup("integer out of range");
+					ctx->s->lex_errtext = pnstrdup(text, len);
 					return;
 				}
 				break;
@@ -221,6 +233,25 @@ pgpa_yyerror(List **result, char **parse_error_msg_p, void *yyscanner,
 
 	if (*parse_error_msg_p)
 		return;
+
+	/*
+	 * A lex-time error (integer out of range / trailing junk after a numeric
+	 * literal) takes precedence over the generic parser "syntax error": it
+	 * pinpoints the real problem.  Report it verbatim, positioned at the
+	 * offending lexeme when we captured one.
+	 */
+	if (s != NULL && s->lex_errmsg != NULL)
+	{
+		const char *bad = s->lex_errtext ? s->lex_errtext : yytext;
+
+		if (bad[0])
+			*parse_error_msg_p = psprintf("%s at or near \"%s\"",
+										  s->lex_errmsg, bad);
+		else
+			*parse_error_msg_p = psprintf("%s", s->lex_errmsg);
+		return;
+	}
+
 	if (yytext[0])
 		*parse_error_msg_p = psprintf("%s at or near \"%s\"", message, yytext);
 	else
@@ -262,38 +293,27 @@ pgpa_scanner_init(const char *str, void **yyscannerp)
 
 	if (ctx.had_error)
 	{
-		const char *m = ctx.errmsg.data ? ctx.errmsg.data : "syntax error";
-		char	  **error_slot = (char **) ((void *) NULL);
-
-		(void) error_slot;
-
 		/*
-		 * Caller will see the queued tokens up to the error point.  We
-		 * surface the message via a fake token shape: report through a global
-		 * isn't possible here (we don't have a result slot), so push a
-		 * sentinel token (-1) so the parser fails on its %syntax_error path;
-		 * the message is set by the caller's yyerror.  For
-		 * integer-out-of-range, this matches the retired flex scanner's
-		 * behaviour: yyerror was called with "integer out of range" and the
-		 * parse continued to the %syntax_error reduction.
+		 * A lex-time value error (integer out of range).  The message and
+		 * offending text were stashed on the scanner (s->lex_errmsg /
+		 * lex_errtext); pgpa_yyerror surfaces them when the parse fails.
 		 */
-		(void) m;
 	}
 	if (lex_status != PGPA_LEX_OK)
 	{
 		const char *m = PgpaLexErrorMessage(lex);
-		char	   *copy = pstrdup(m ? m : "syntax error");
-		YYSTYPE		v = {0};
-
-		(void) copy;
-		(void) v;
 
 		/*
-		 * Surface as an unexpected -1 token to let the parser %syntax_error
-		 * fire; the message is captured in s->yytext via the last successful
-		 * emit, so yyerror formats it correctly.  See the flex scanner's
-		 * <xc><<EOF>> and <xd><<EOF>> rules for the equivalent path.
+		 * Surface the "trailing junk after numeric literal" diagnostic (from
+		 * the integer_junk rule) verbatim, matching the retired flex scanner.
+		 * Other lexer errors (unterminated/zero-length quoted identifier,
+		 * unexpected character) keep the generic parser-position "syntax
+		 * error" the expected output was written against, so we do not hijack
+		 * their message here.
 		 */
+		if (m != NULL && s->lex_errmsg == NULL &&
+			strcmp(m, "trailing junk after numeric literal") == 0)
+			s->lex_errmsg = pstrdup(m);
 	}
 
 	PgpaLexFree(lex, pgpa_pfree);
