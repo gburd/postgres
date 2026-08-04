@@ -17,7 +17,7 @@ bootscanner_lex = custom_target('bootscanner_lex',
   output: ['bootscanner_lex.c', 'bootscanner_lex.h'],
   command: lime_lex_cmd,
 )
-boot_parser_sources += bootscanner_lex
+boot_parser_sources += bootscanner_lex.to_list()
 
 # Lime-generated grammar and scanner.  Both are warning-clean as of Lime
 # v1.5.x, so -- like upstream's bison/flex output -- they are compiled

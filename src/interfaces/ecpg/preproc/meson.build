@@ -25,7 +25,7 @@ pgc_lex_gen = custom_target('pgc_lex',
   output: ['pgc_lex.c', 'pgc_lex.h'],
   command: lime_lex_cmd,
 )
-generated_sources += pgc_lex_gen
+generated_sources += pgc_lex_gen.to_list()
 
 # The hand-rolled pgc.c driver includes the generated lexer header.
 # The generated lexer .c itself is compiled into ecpg below (after the

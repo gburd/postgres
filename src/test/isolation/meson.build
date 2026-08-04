@@ -25,7 +25,7 @@ spec_scanner_lex = custom_target('specscanner_lex',
   output: ['specscanner_lex.c', 'specscanner_lex.h'],
   command: lime_lex_cmd,
 )
-generated_sources += spec_scanner_lex
+generated_sources += spec_scanner_lex.to_list()
 
 if host_system == 'windows'
   isolation_sources += rc_bin_gen.process(win32ver_rc, extra_args: [
