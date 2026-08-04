@@ -141,12 +141,13 @@ static const QuelToken quel_tokens[] = {
 	{"K_QUEL_RETRIEVE", "retrieve"},
 	{"K_QUEL_REPLACE", "replace"},	/* base SQL: REPLACE -- oracle-resolved */
 	{"K_QUEL_APPEND", "append"},
-	{"K_QUEL_DELETE_QUEL", "delete"}, /* base SQL: DELETE -- fork-resolved by 1-token peek */
+	{"K_QUEL_DELETE_QUEL", "delete"},	/* base SQL: DELETE -- fork-resolved
+										 * by 1-token peek */
 	{"K_QUEL_RANGE", "range"},	/* base SQL: RANGE -- oracle-resolved */
 	{"K_QUEL_OF", "of"},		/* base SQL: OF -- oracle-resolved */
 	{"K_QUEL_IS", "is"},		/* base SQL: IS -- oracle-resolved */
 	{"K_QUEL_TO", "to"},		/* base SQL: TO -- oracle-resolved */
-	{"K_QUEL_INTO_QUEL", "into"}, /* base SQL: INTO -- oracle-resolved */
+	{"K_QUEL_INTO_QUEL", "into"},	/* base SQL: INTO -- oracle-resolved */
 	{"K_QUEL_BY", "by"},		/* base SQL: BY -- oracle-resolved */
 };
 
@@ -261,6 +262,12 @@ quel_reduce(void *user_data, void *extra_arg, int nrhs,
 			quel_build_attr_qualified_kw(rhs_values, rhs_locs, nrhs);
 		return;
 	}
+	if (strcmp(label, "attr (name = a_expr)") == 0)
+	{
+		*(Node **) lhs_out =
+			quel_build_attr_named(rhs_values, rhs_locs, nrhs);
+		return;
+	}
 	if (strcmp(label, "attr_list (single)") == 0)
 	{
 		*(List **) lhs_out =
@@ -285,6 +292,30 @@ quel_reduce(void *user_data, void *extra_arg, int nrhs,
 	{
 		*(Node **) lhs_out =
 			quel_build_retrieve_where(rhs_values, rhs_locs, nrhs);
+		return;
+	}
+	if (strcmp(label, "retrieve unique (attr_list)") == 0)
+	{
+		*(Node **) lhs_out =
+			quel_build_retrieve_unique(rhs_values, rhs_locs, nrhs);
+		return;
+	}
+	if (strcmp(label, "retrieve unique (attr_list) WHERE a_expr") == 0)
+	{
+		*(Node **) lhs_out =
+			quel_build_retrieve_unique_where(rhs_values, rhs_locs, nrhs);
+		return;
+	}
+	if (strcmp(label, "retrieve into IDENT (attr_list)") == 0)
+	{
+		*(Node **) lhs_out =
+			quel_build_retrieve_into(rhs_values, rhs_locs, nrhs);
+		return;
+	}
+	if (strcmp(label, "retrieve into IDENT (attr_list) WHERE a_expr") == 0)
+	{
+		*(Node **) lhs_out =
+			quel_build_retrieve_into_where(rhs_values, rhs_locs, nrhs);
 		return;
 	}
 	if (strcmp(label, "retrieve (attr_list) BY sortby_list") == 0)
@@ -446,6 +477,29 @@ static const QuelRule quel_rules[] = {
 	"retrieve (attr_list) WHERE a_expr"},
 
 	/*
+	 * Berkeley QUEL: `retrieve unique (...)` and `retrieve into rel (...)`.
+	 * UNIQUE maps to SELECT DISTINCT; INTO materializes the result into a new
+	 * relation (SELECT ... INTO).  These reuse the paren attr_list and
+	 * optional WHERE just like the plain retrieve.
+	 */
+	{"quel_retrieve_stmt",
+		{"K_QUEL_RETRIEVE", "UNIQUE", "LPAREN", "quel_attr_list", "RPAREN",
+		NULL},
+	"retrieve unique (attr_list)"},
+	{"quel_retrieve_stmt",
+		{"K_QUEL_RETRIEVE", "UNIQUE", "LPAREN", "quel_attr_list", "RPAREN",
+		"WHERE", "a_expr", NULL},
+	"retrieve unique (attr_list) WHERE a_expr"},
+	{"quel_retrieve_stmt",
+		{"K_QUEL_RETRIEVE", "K_QUEL_INTO_QUEL", "IDENT", "LPAREN",
+		"quel_attr_list", "RPAREN", NULL},
+	"retrieve into IDENT (attr_list)"},
+	{"quel_retrieve_stmt",
+		{"K_QUEL_RETRIEVE", "K_QUEL_INTO_QUEL", "IDENT", "LPAREN",
+		"quel_attr_list", "RPAREN", "WHERE", "a_expr", NULL},
+	"retrieve into IDENT (attr_list) WHERE a_expr"},
+
+	/*
 	 * Berkeley QUEL: `retrieve (...) BY <sort_list>`.  Maps to SQL ORDER BY.
 	 * Reuses the base grammar's sortby_list which handles `expr ASC/DESC
 	 * NULLS FIRST/LAST` shapes.  The lexeme conflict with base SQL's BY meant
@@ -479,6 +533,8 @@ static const QuelRule quel_rules[] = {
 		{"quel_attr_list", "COMMA", "quel_attr", NULL},
 	"attr_list (cons)"},
 	{"quel_attr", {"IDENT", NULL}, "attr (single IDENT)"},
+	{"quel_attr", {"IDENT", "EQ", "a_expr", NULL},
+	"attr (name = a_expr)"},
 	{"quel_attr", {"IDENT", "DOT", "IDENT", NULL},
 	"attr (tuple_var.column)"},
 	{"quel_attr", {"bare_label_keyword", NULL},

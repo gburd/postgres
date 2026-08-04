@@ -260,6 +260,50 @@ my $sql_plan = $node->safe_psql('postgres',
 is($quel_plan, $sql_plan,
 	'EXPLAIN QUEL retrieve produces identical plan to EXPLAIN SQL SELECT');
 
+# QUEL result attribute (computed, named target) vs SQL SELECT expr AS name.
+is(
+	$node->safe_psql('postgres',
+		q{range of e is qb_emp;
+		  retrieve (nm = e.name, raise = e.salary * 1.1) where e.dept = 'shoe';}),
+	$node->safe_psql('postgres',
+		q{SELECT e.name AS nm, e.salary * 1.1 AS raise FROM qb_emp e
+		  WHERE e.dept = 'shoe';}),
+	'QUEL result attribute (name = expr) matches SQL expr AS name');
+
+# QUEL RETRIEVE UNIQUE vs SQL SELECT DISTINCT.
+{
+	my @q = sort split /\n/, $node->safe_psql('postgres',
+		q{range of e is qb_emp; retrieve unique (e.dept);});
+	my @s = sort split /\n/, $node->safe_psql('postgres',
+		q{SELECT DISTINCT dept FROM qb_emp;});
+	is_deeply(\@q, \@s,
+		'QUEL retrieve unique returns the same distinct set as SQL DISTINCT');
+}
+
+# QUEL RETRIEVE INTO <rel> vs SQL SELECT ... INTO <rel>.
+$node->safe_psql('postgres',
+	q{range of e is qb_emp;
+	  retrieve into qb_shoe_quel (e.name, e.salary) where e.dept = 'shoe';});
+$node->safe_psql('postgres',
+	q{SELECT e.name, e.salary INTO qb_shoe_sql FROM qb_emp e
+	  WHERE e.dept = 'shoe';});
+{
+	my @q = sort split /\n/, $node->safe_psql('postgres',
+		q{SELECT name, salary FROM qb_shoe_quel ORDER BY name;});
+	my @s = sort split /\n/, $node->safe_psql('postgres',
+		q{SELECT name, salary FROM qb_shoe_sql ORDER BY name;});
+	is_deeply(\@q, \@s,
+		'QUEL retrieve into materializes the same relation as SQL SELECT INTO');
+}
+
+# QUEL scalar aggregate in a result attribute vs SQL aggregate.
+is(
+	$node->safe_psql('postgres',
+		q{range of e is qb_emp; retrieve (n = count(e.name));}),
+	$node->safe_psql('postgres',
+		q{SELECT count(e.name) AS n FROM qb_emp e;}),
+	'QUEL scalar aggregate (count) matches SQL aggregate');
+
 note('QUEL complete: all four DML statements (RETRIEVE / REPLACE / '
 	. 'APPEND / DELETE) build real PG parse trees from REAL keywords '
 	. 'and produce identical results to equivalent SQL, composed '
