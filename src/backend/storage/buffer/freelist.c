@@ -425,15 +425,32 @@ Sublimate(SublimatePoolState *pool_state,
 	*from_ring = false;
 
 	/*
+	 * Scan-resistant ring bypass (matches the bcs fork's removal of
+	 * BAS_BULKREAD): the Sublimate evictor is scan-resistant on its own --
+	 * demand-loaded pages are admitted COOL (probationary, see
+	 * InitialUsageCountBits) so a one-shot sequential scan fills and drains the
+	 * COOL stage without displacing the hot set.  The BAS_BULKREAD ring is
+	 * therefore redundant here, and worse it CAPS a scan to a 256 KB ring, so
+	 * the scan never actually exercises the sweep's scan resistance.  So for a
+	 * BAS_BULKREAD strategy we IGNORE the ring entirely and route the load
+	 * through the normal sweep with probationary admission -- the algorithm
+	 * provides the protection the ring used to.  BAS_BULKWRITE and BAS_VACUUM
+	 * keep their rings: those provide WRITE back-pressure / dirty-buffer
+	 * throttling, which is a different concern the evictor does not replace.
+	 */
+	if (strategy != NULL && strategy->btype == BAS_BULKREAD)
+		strategy = NULL;
+
+	/*
 	 * If given a strategy object, see whether it can select a buffer.
 	 *
 	 * When the RECYCLE pool is enabled, dispatch through it instead of the
 	 * per-backend ring buffer.  Otherwise use the per-backend ring, exactly
 	 * as the classic clock sweep does -- this preserves the BufferAccessStrategy
-	 * ring accounting (pg_stat_io reuses/evictions in the vacuum/bulkread
-	 * contexts) that VACUUM and bulk reads depend on.  Scan resistance comes
-	 * from probationary admission (InitialUsageCountBits stamps demand-loaded
-	 * pages COOL), which is orthogonal to the ring.
+	 * ring accounting (pg_stat_io reuses/evictions in the vacuum/bulkwrite
+	 * contexts) that VACUUM and bulk writes depend on.  Bulk READ scan
+	 * resistance now comes from the ring bypass above plus probationary
+	 * admission (InitialUsageCountBits stamps demand-loaded pages COOL).
 	 */
 	if (strategy != NULL)
 	{
@@ -476,19 +493,11 @@ Sublimate(SublimatePoolState *pool_state,
 	/*
 	 * Clean-first skip budget (asymmetry-aware eviction, cf. ACE / ICDE 2023):
 	 * how many DIRTY COOL victims we may skip in favor of a CLEAN one before
-	 * giving up and evicting a dirty page anyway.
-	 *
-	 * DORMANT by default (budget 0 = plain eviction).  Benchmarks (EC2
-	 * clean-first A/B, 2026-08-03) confirmed the mechanism works at the I/O
-	 * level -- it cut backend inline writes ~20%% and read-forced writes ~11%%
-	 * with hit ratio unchanged -- but it REGRESSED throughput ~5%% because the
-	 * background writer was not pre-cleaning (bgw writes were ~0), so skipping a
-	 * dirty victim only added sweep search cost with no stocked clean victim to
-	 * prefer to.  Clean-first only pays off once a background writer keeps clean
-	 * victims available ahead of demand (ACE's precondition).  Kept as dormant
-	 * code with budget 0 until the per-pool trickle writer pre-cleans
-	 * aggressively enough; then raise this (or gate it on "a clean victim was
-	 * seen recently") and re-measure.
+	 * evicting a dirty page anyway.  Bounded (Min(nbuffers/8, 64)) so it cannot
+	 * livelock and cannot degrade to a full scan.  Paired with the trickle
+	 * writer's background pre-cleaning (which stages clean victims ahead of the
+	 * hand); together they are the ACE writeback design (see the pre-cleaning
+	 * commit + benchmark_results/preclean_ab_20260804).
 	 */
 	clean_skip = Min(pool_nbuffers / 8, 64);
 
@@ -1620,6 +1629,20 @@ GetAccessStrategyWithSize(BufferAccessStrategyType btype, int ring_size_kb)
 	strategy->recycle_pool = NULL;
 
 	return strategy;
+}
+
+/*
+ * IsBulkReadStrategy -- true if the strategy is a BAS_BULKREAD ring.
+ *
+ * Lets code outside freelist.c (which owns the opaque BufferAccessStrategyData
+ * struct) test the strategy kind -- e.g. InitialUsageCountBits, which admits a
+ * bulk-read page COOL/probationary under a scan-resistant pool instead of at
+ * usage_count 1.
+ */
+bool
+IsBulkReadStrategy(BufferAccessStrategy strategy)
+{
+	return strategy != NULL && strategy->btype == BAS_BULKREAD;
 }
 
 /*

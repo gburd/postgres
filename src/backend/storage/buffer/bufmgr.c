@@ -100,18 +100,21 @@
  * sequential scan touches each page once, so its pages stay cool and are
  * evicted first -- the algorithm provides scan resistance itself.
  *
- * Loads through a BufferAccessStrategy ring (bulkread, bulkwrite, vacuum) keep
- * usage_count 1: the ring already provides scan/vacuum protection, and the
- * ring's buffer-reuse accounting (pg_stat_io reuses/evictions) depends on the
- * classic admission value.  Probationary admission is therefore orthogonal to
- * the ring and applies only to non-strategy loads.
+ * Loads through a BufferAccessStrategy ring keep usage_count 1, EXCEPT
+ * BAS_BULKREAD under a scan-resistant pool: that ring is bypassed in the sweep
+ * (see Sublimate) because the algorithm is scan-resistant on its own, so a
+ * bulk-read page is admitted COOL/probationary just like a plain demand load.
+ * BAS_BULKWRITE and BAS_VACUUM keep usage_count 1: their rings provide write
+ * back-pressure (not scan resistance) and the ring's buffer-reuse accounting
+ * (pg_stat_io reuses/evictions) depends on the classic admission value.
  *
  * No-op for non-scan-resistant pools (which keep usage_count 1).
  */
 static inline uint64
 InitialUsageCountBits(BufferAccessStrategy strategy)
 {
-	if (unlikely(ActivePoolProbationaryScan) && strategy == NULL)
+	if (unlikely(ActivePoolProbationaryScan) &&
+		(strategy == NULL || IsBulkReadStrategy(strategy)))
 		return 0;
 	return BUF_HEAT_ONE;
 }
