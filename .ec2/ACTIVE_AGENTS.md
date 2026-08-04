@@ -15,7 +15,7 @@ Three forward items launched as background agents:
    (F1 counters / F2 queue / bringup / wake paths), classified real/benign/libxtc.
    Does NOT fix races (follow-up per race). ~4h.
 
-3. 90ec52e7-9831-4b8 -- Design docs ONLY (no EC2, no code). Produces
+3. 90ec52e7 -- design docs: DONE (700bf6613ec, pushed). F4-structural = recommend NONE (all 3 OTP behaviours fail benefit-per-risk at parity; one small win: fold registry pthread_mutex into F2). Inc-4 = 2-3 commit increment, fd-exactly-once-close is the sharp edge. No box.
    plan_docs/MULTITHREADED_F4_STRUCTURAL_DESIGN.md (xtc_svr/orc/reg/xproc
    fit+benefit-per-risk at 98.6% parity) + plan_docs/MULTITHREADED_INC4_UNWIND_DESIGN.md
    (Phase 19 Inc-4 abort-and-re-place plan). Commits local/branch, no push.
