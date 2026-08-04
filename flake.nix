@@ -9,9 +9,9 @@
     # Defaults to GitHub; for local development point it at a checkout with
     #   nix develop --override-input libxtc path:$HOME/ws/xtc
     libxtc = {
-      # Pinned to the v1.31.0 release rev (not branch HEAD: `nix flake update`
+      # Pinned to the v1.32.0 release rev (not branch HEAD: `nix flake update`
       # would otherwise pull post-tag commits).
-      url = "github:gburd/libxtc?rev=c5d4f13774b5648fc1e09657a7ea2deea143800f";
+      url = "github:gburd/libxtc?rev=563329f9487739ce33709b5fc210ba89bde03b87";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
     };
