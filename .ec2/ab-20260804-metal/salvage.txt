@@ -1,0 +1,27 @@
+Warning: Permanently added '44.199.204.45' (ED25519) to the list of known hosts.
+** WARNING: connection is not using a post-quantum key exchange algorithm.
+** This session may be vulnerable to "store now, decrypt later" attacks.
+** The server may need to be upgraded. See https://openssh.com/pq.html
+lane,vus,rep,nopm,tpm
+fork,192,1,2135144,2135144
+mt,192,1,NA,NA
+fork,192,2,NA,NA
+[15:14:46] fork vu=192 rep=1 start
+[15:21:50] fork vu=192 rep=1: NOPM=2135144
+waiting for server to shut down......... done
+server stopped
+[15:22:06] mt vu=192 rep=1 start
+[15:31:46] mt vu=192 rep=1: NOPM=NA
+waiting for server to shut down........................................................................................................................... failed
+[15:34:22] fork vu=192 rep=2 start
+[15:36:01] fork vu=192 rep=2: NOPM=NA
+waiting for server to shut down....................................................................................................................=====SERVERLOG=====
+/pgdata/main/probe.log
+/pgdata/main/log/postgresql-2026-08-04_150450.log
+/pgdata/main/log/postgresql-2026-08-04_150846.log
+/pgdata/main/log/postgresql-2026-08-04_150851.log
+/pgdata/main/log/postgresql-2026-08-04_150940.log
+/pgdata/main/log/postgresql-2026-08-04_151158.log
+/pgdata/main/log/postgresql-2026-08-04_151441.log
+/pgdata/main/log/postgresql-2026-08-04_152156.log
+/pgdata/main/log/postgresql-2026-08-04_152201.log

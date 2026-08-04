@@ -1,30 +1,25 @@
-# Active background agents (2026-08-04, beef account) -- for post-compaction handoff
+# In-flight EC2 / background agents (coordinator handoff)
 
-origin/xtc = 2b41b4883f4 (F0b,F1,F2,F0a fusion + libxtc v1.32.0 + crash-fixes + F4 audit).
+All three 2026-08-04 forward-item agents are DONE. No agents in flight.
+All EC2 resources torn down + verified clean across 5 regions (profile beef).
 
-Three forward items launched as background agents:
+1. 1ae1a227 -- TSan on the carrier: DONE. Runs on system clang18+glibc (NOT a
+   libxtc gap). plan_docs/MULTITHREADED_TSAN_FINDINGS.md: hot-cell family
+   (PgRuntime*HotCurrent*) = real new-to-threading design Q; scheduler-counter
+   race = spinlock-blind TSan false positive. Box torn down + verified.
+2. 90ec52e7 -- design docs: DONE (pushed 700bf6613ec). F4-structural =
+   recommend NONE (all 3 OTP behaviours fail benefit-per-risk at parity; one
+   small win: fold registry pthread_mutex into F2). Inc-4 = 2-3 commit
+   increment, fd-exactly-once-close is the sharp edge. No box.
+3. eb7e8f50 -- metal A/B: DONE but INVALID (harness misconfig: mt lane ran
+   UNPOOLED -> fork()=ENOSYS -> all conns failed -> mt=NA, cascaded). Agent
+   LEFT THE BOX RUNNING; coordinator terminated + verified. Findings +
+   re-run recipe in .ec2/ab-20260804-metal/FINDINGS.md. NEEDS A CLEAN RE-RUN
+   (assert pooled AT START; hard-stop between cells).
 
-1. eb7e8f50-1cb3-416 -- EC2 beef METAL A/B (item 1: beat-fork MEASURE).
-   Key xtc-ab-*. Metal box (expensive). Measures: HammerDB fork-vs-mt NOPM
-   (VU 192/384), F3 steal-backoff effect on select@384 update_sg_lb_stats,
-   LWLock contention profile, thread-count check. Verdict: is mt still ~98.6%
-   of fork + what's the beat-fork lever (LWLock vs scheduling). ~4-6h.
-
-2. 1ae1a227 -- TSan: DONE (2026-08-04). Runs on system clang18+glibc. Findings in plan_docs/MULTITHREADED_TSAN_FINDINGS.md: hot-cell family = real design Q; scheduler-counter race = spinlock-blind false positive. Box torn down + verified.
-   Key xtc-tsan-*. c7i.8xlarge. Diagnostic race inventory against the carrier
-   (F1 counters / F2 queue / bringup / wake paths), classified real/benign/libxtc.
-   Does NOT fix races (follow-up per race). ~4h.
-
-3. 90ec52e7 -- design docs: DONE (700bf6613ec, pushed). F4-structural = recommend NONE (all 3 OTP behaviours fail benefit-per-risk at parity; one small win: fold registry pthread_mutex into F2). Inc-4 = 2-3 commit increment, fd-exactly-once-close is the sharp edge. No box.
-   plan_docs/MULTITHREADED_F4_STRUCTURAL_DESIGN.md (xtc_svr/orc/reg/xproc
-   fit+benefit-per-risk at 98.6% parity) + plan_docs/MULTITHREADED_INC4_UNWIND_DESIGN.md
-   (Phase 19 Inc-4 abort-and-re-place plan). Commits local/branch, no push.
-
-COORDINATOR MUST after each: (a) get_subagent_result, (b) INDEPENDENTLY verify
-teardown across all 5 regions (--profile beef) -- agents have leaked boxes ~4x
-this project, (c) two-review gate before landing any code, (d) verify origin/xtc
-SHA == validated commit after any land.
-
-libxtc requests in /tmp: libxtc-tls-sni-transport-request.md (TLS SNI+transport;
-team is working on it), libxtc-log-emitter-gap-question.md (answered by v1.32.0).
-TSan is NOT a libxtc gap.
+## NEXT (coordinator, when resuming the beat-fork measurement)
+- RE-RUN the metal A/B with the two harness fixes (assert pooled_protocol_carriers
+  in effect at benchmark start; escalate -m fast->immediate + verify pid-gone +
+  lock-removed between cells). This is the still-open beat-fork MEASUREMENT.
+- Secondary: confirm mt `-m fast` stops cleanly from a HEALTHY pooled server
+  under load (very likely the degenerate-unpooled artifact, not a regression).
