@@ -10,7 +10,7 @@ Three forward items launched as background agents:
    LWLock contention profile, thread-count check. Verdict: is mt still ~98.6%
    of fork + what's the beat-fork lever (LWLock vs scheduling). ~4-6h.
 
-2. 1ae1a227-a03b-4c9 -- EC2 beef TSan (system clang+glibc, avoids nix skew).
+2. 1ae1a227 -- TSan: DONE (2026-08-04). Runs on system clang18+glibc. Findings in plan_docs/MULTITHREADED_TSAN_FINDINGS.md: hot-cell family = real design Q; scheduler-counter race = spinlock-blind false positive. Box torn down + verified.
    Key xtc-tsan-*. c7i.8xlarge. Diagnostic race inventory against the carrier
    (F1 counters / F2 queue / bringup / wake paths), classified real/benign/libxtc.
    Does NOT fix races (follow-up per race). ~4h.
