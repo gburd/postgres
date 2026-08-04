@@ -1,0 +1,9 @@
+mode	carriers	vu	rep	nopm	tpm
+process	0	192	1	1037814	2387388
+threaded	192	192	1	NA	NA
+process	0	192	2	1084278	2493216
+threaded	192	192	2	NA	NA
+process	0	384	1	1097489	2525576
+threaded	192	384	1	NA	NA
+process	0	384	2	1120017	2576394
+threaded	192	384	2	NA	NA

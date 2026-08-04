@@ -1,0 +1,18 @@
+START Tue Aug  4 16:35:16 UTC 2026
+OS_TUNED nvme=6 steal=0
+BUILD_SKIP libxtc+PG already built
+SCHEMA built tpcc=9761 MB
+CELL process_c0_vu192_r1 nopm=1037814
+POOLED_OK carriers=192 rows=15
+CELL threaded_c192_vu192_r1 nopm=NA
+CELL process_c0_vu192_r2 nopm=1084278
+POOLED_OK carriers=192 rows=15
+CELL threaded_c192_vu192_r2 nopm=NA
+CELL process_c0_vu384_r1 nopm=1097489
+POOLED_OK carriers=192 rows=15
+CELL threaded_c192_vu384_r1 nopm=NA
+CELL process_c0_vu384_r2 nopm=1120017
+POOLED_OK carriers=192 rows=15
+CELL threaded_c192_vu384_r2 nopm=NA
+POOLED_OK carriers=192 rows=15
+THREADS postmaster=21 iouwrk=1
