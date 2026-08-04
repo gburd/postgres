@@ -1,0 +1,4 @@
+mode	carriers	vu	rep	nopm	tpm	srv_tpm
+process	0	192	1	1067612	2455403	2319077
+threaded	192	192	1	NA	NA	21136
+process	0	192	2	1044344	2400674	2263731
