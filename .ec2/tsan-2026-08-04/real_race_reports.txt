@@ -1,0 +1,139 @@
+===================== FULL REPORT: PgRuntimeProtocolSchedulerRegisterCarrier =====================
+WARNING: ThreadSanitizer: data race (pid=48547)
+  Write of size 4 at 0x0000014dff28 by thread T17:
+    #0 PgRuntimeProtocolSchedulerRegisterCarrier /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime_backend.c:1747:32 (postgres+0xf10682) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #1 backend_pooled_protocol_carrier_entry /home/ec2-user/pg/build-tsan/../src/backend/postmaster/launch_backend.c:1722:7 (postgres+0xa8e5cc) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #2 pg_thread_start /home/ec2-user/pg/build-tsan/../src/backend/port/pg_thread.c:209:2 (postgres+0xa6821c) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #3 <null> <null> (libclang_rt.tsan.so+0x70862) (BuildId: a2a63bea012763170e5463f7cc457865bc77a4f9)
+
+  Previous read of size 4 at 0x0000014dff28 by main thread:
+    #0 PgRuntimePooledProtocolIdleCarrierCount /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:1434:29 (postgres+0xf0adce) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #1 backend_pooled_protocol_idle_carrier_count /home/ec2-user/pg/build-tsan/../src/backend/postmaster/launch_backend.c:1460:9 (postgres+0xa896ac) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #2 backend_pooled_protocol_maybe_start_carrier_for_work /home/ec2-user/pg/build-tsan/../src/backend/postmaster/launch_backend.c:1352:18 (postgres+0xa896ac)
+    #3 postmaster_pooled_protocol_launch /home/ec2-user/pg/build-tsan/../src/backend/postmaster/launch_backend.c:1186:2 (postgres+0xa896ac)
+    #4 postmaster_child_launch_carrier /home/ec2-user/pg/build-tsan/../src/backend/postmaster/launch_backend.c:438:10 (postgres+0xa896ac)
+    #5 BackendStartup /home/ec2-user/pg/build-tsan/../src/backend/postmaster/postmaster.c:4173:7 (postgres+0xa9cc48) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #6 ServerLoop /home/ec2-user/pg/build-tsan/../src/backend/postmaster/postmaster.c:1956:6 (postgres+0xa9cc48)
+    #7 PostmasterMain /home/ec2-user/pg/build-tsan/../src/backend/postmaster/postmaster.c:1591:11 (postgres+0xa996c2) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #8 main /home/ec2-user/pg/build-tsan/../src/backend/main/main.c:233:4 (postgres+0x90bf5f) (BuildId: d546942acef517206a72595b60257ecc592263db)
+
+  Location is global 'thread_runtime' of size 240 at 0x0000014dfec0 (postgres+0x14dff28)
+
+  Thread T17 (tid=48567, running) created by main thread at:
+    #0 pthread_create <null> (libclang_rt.tsan.so+0x708ff) (BuildId: a2a63bea012763170e5463f7cc457865bc77a4f9)
+    #1 pg_thread_create /home/ec2-user/pg/build-tsan/../src/backend/port/pg_thread.c:108:9 (postgres+0xa68147) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #2 backend_pooled_protocol_start_one_carrier /home/ec2-user/pg/build-tsan/../src/backend/postmaster/launch_backend.c:1311:7 (postgres+0xa8df5f) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #3 backend_pooled_protocol_start_pool /home/ec2-user/pg/build-tsan/../src/backend/postmaster/launch_backend.c:1199:9 (postgres+0xa893e3) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #4 postmaster_pooled_protocol_launch /home/ec2-user/pg/build-tsan/../src/backend/postmaster/launch_backend.c:1149:7 (postgres+0xa893e3)
+    #5 postmaster_child_launch_carrier /home/ec2-user/pg/build-tsan/../src/backend/postmaster/launch_backend.c:438:10 (postgres+0xa893e3)
+    #6 BackendStartup /home/ec2-user/pg/build-tsan/../src/backend/postmaster/postmaster.c:4173:7 (postgres+0xa9cc48) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #7 ServerLoop /home/ec2-user/pg/build-tsan/../src/backend/postmaster/postmaster.c:1956:6 (postgres+0xa9cc48)
+    #8 PostmasterMain /home/ec2-user/pg/build-tsan/../src/backend/postmaster/postmaster.c:1591:11 (postgres+0xa996c2) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #9 main /home/ec2-user/pg/build-tsan/../src/backend/main/main.c:233:4 (postgres+0x90bf5f) (BuildId: d546942acef517206a72595b60257ecc592263db)
+
+SUMMARY: ThreadSanitizer: data race /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime_backend.c:1747:32 in PgRuntimeProtocolSchedulerRegisterCarrier
+==================
+===================== FULL REPORT: PgRuntimeInstallHotCurrentCells =====================
+WARNING: ThreadSanitizer: data race (pid=48547)
+  Write of size 4 at 0x0000014d7e28 by thread T12:
+    #0 PgRuntimeInstallHotCurrentCells /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:360:35 (postgres+0xefcdc2) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #1 PgRuntimeInstallHotCurrentCellsForCurrentWork /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c (postgres+0xefcdc2)
+    #2 PgRuntimeRefreshCurrentWork /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:544:2 (postgres+0xefcdc2)
+    #3 PgRuntimeSetCurrentWork /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:579:2 (postgres+0xf09536) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #4 PgRuntimeResetThreadForNewBackend /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:816:2 (postgres+0xf09536)
+    #5 backend_thread_entry /home/ec2-user/pg/build-tsan/../src/backend/postmaster/launch_backend.c:1957:3 (postgres+0xa8c243) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #6 xtc_carrier_proc /home/ec2-user/pg/build-tsan/../src/backend/postmaster/pg_xtc_carrier.c:899:2 (postgres+0xa94cb5) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #7 __proc_entry /home/ec2-user/libxtc/build-tsan/../dist/../src/ptc/proc.c:1021:3 (libxtc.so.1+0x2de55) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #8 __coro_entry /home/ec2-user/libxtc/build-tsan/../dist/../src/evt/coro_uctx.c:246:14 (libxtc.so.1+0x204b5) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #9 <null> <null> (libc.so.6+0x54b9f) (BuildId: 62003f19c6b9b4f27360c808582d1de5095cb653)
+
+  Previous write of size 4 at 0x0000014d7e28 by thread T10:
+    #0 PgRuntimeInstallHotCurrentCells /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:360:35 (postgres+0xefcdc2) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #1 PgRuntimeInstallHotCurrentCellsForCurrentWork /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c (postgres+0xefcdc2)
+    #2 PgRuntimeRefreshCurrentWork /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:544:2 (postgres+0xefcdc2)
+    #3 PgRuntimeSetCurrentWork /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:579:2 (postgres+0xf0440d) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #4 PgRuntimeRestoreCurrentWork /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:610:2 (postgres+0xf0440d)
+    #5 ThreadedGUCLock /home/ec2-user/pg/build-tsan/../src/backend/utils/misc/guc.c:184:3 (postgres+0xf4d548) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #6 InitializeThreadedSessionGUCOptions /home/ec2-user/pg/build-tsan/../src/backend/utils/misc/guc.c:2742:11 (postgres+0xf4c571) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #7 backend_thread_entry /home/ec2-user/pg/build-tsan/../src/backend/postmaster/launch_backend.c:2040:2 (postgres+0xa8c77f) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #8 xtc_carrier_proc /home/ec2-user/pg/build-tsan/../src/backend/postmaster/pg_xtc_carrier.c:899:2 (postgres+0xa94cb5) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #9 __proc_entry /home/ec2-user/libxtc/build-tsan/../dist/../src/ptc/proc.c:1021:3 (libxtc.so.1+0x2de55) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #10 __coro_entry /home/ec2-user/libxtc/build-tsan/../dist/../src/evt/coro_uctx.c:246:14 (libxtc.so.1+0x204b5) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #11 <null> <null> (libc.so.6+0x54b9f) (BuildId: 62003f19c6b9b4f27360c808582d1de5095cb653)
+
+  Location is global 'PgRuntimeHotCurrentCellModeState' of size 4 at 0x0000014d7e28 (postgres+0x14d7e28)
+
+  Thread T12 (tid=0, running) created by thread T6 at:
+    #0 __xtc_async_ex /home/ec2-user/libxtc/build-tsan/../dist/../src/evt/coro_uctx.c:620:18 (libxtc.so.1+0x201b8) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #1 __proc_spawn_core /home/ec2-user/libxtc/build-tsan/../dist/../src/ptc/proc.c:1205:12 (libxtc.so.1+0x28c3c) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #2 xtc_proc_spawn_monitor /home/ec2-user/libxtc/build-tsan/../dist/../src/ptc/proc.c:1254:9 (libxtc.so.1+0x28ef4) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #3 xtc_carrier_supervisor_proc /home/ec2-user/pg/build-tsan/../src/backend/postmaster/pg_xtc_carrier.c:705:8 (postgres+0xa959f6) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #4 __proc_entry /home/ec2-user/libxtc/build-tsan/../dist/../src/ptc/proc.c:1021:3 (libxtc.so.1+0x2de55) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #5 __coro_entry /home/ec2-user/libxtc/build-tsan/../dist/../src/evt/coro_uctx.c:246:14 (libxtc.so.1+0x204b5) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #6 <null> <null> (libc.so.6+0x54b9f) (BuildId: 62003f19c6b9b4f27360c808582d1de5095cb653)
+
+  Thread T10 (tid=0, running) created by thread T4 at:
+    #0 __xtc_async_ex /home/ec2-user/libxtc/build-tsan/../dist/../src/evt/coro_uctx.c:620:18 (libxtc.so.1+0x201b8) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #1 __proc_spawn_core /home/ec2-user/libxtc/build-tsan/../dist/../src/ptc/proc.c:1205:12 (libxtc.so.1+0x28c3c) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #2 xtc_proc_spawn_monitor /home/ec2-user/libxtc/build-tsan/../dist/../src/ptc/proc.c:1254:9 (libxtc.so.1+0x28ef4) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #3 xtc_carrier_supervisor_proc /home/ec2-user/pg/build-tsan/../src/backend/postmaster/pg_xtc_carrier.c:705:8 (postgres+0xa959f6) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #4 __proc_entry /home/ec2-user/libxtc/build-tsan/../dist/../src/ptc/proc.c:1021:3 (libxtc.so.1+0x2de55) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #5 __coro_entry /home/ec2-user/libxtc/build-tsan/../dist/../src/evt/coro_uctx.c:246:14 (libxtc.so.1+0x204b5) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #6 <null> <null> (libc.so.6+0x54b9f) (BuildId: 62003f19c6b9b4f27360c808582d1de5095cb653)
+
+SUMMARY: ThreadSanitizer: data race /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:360:35 in PgRuntimeInstallHotCurrentCells
+==================
+===================== FULL REPORT: PgRuntimeClearHotCurrentRootRefs =====================
+WARNING: ThreadSanitizer: data race (pid=48547)
+  Write of size 8 at 0x0000014d7e30 by thread T12:
+    #0 PgRuntimeClearHotCurrentRootRefs /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:228:35 (postgres+0xefcdd7) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #1 PgRuntimeLoadHotCurrentRootRefs /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:278:4 (postgres+0xefcdd7)
+    #2 PgRuntimeInstallHotCurrentCells /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:361:2 (postgres+0xefcdd7)
+    #3 PgRuntimeInstallHotCurrentCellsForCurrentWork /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c (postgres+0xefcdd7)
+    #4 PgRuntimeRefreshCurrentWork /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:544:2 (postgres+0xefcdd7)
+    #5 PgRuntimeSetCurrentWork /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:579:2 (postgres+0xf09536) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #6 PgRuntimeResetThreadForNewBackend /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:816:2 (postgres+0xf09536)
+    #7 backend_thread_entry /home/ec2-user/pg/build-tsan/../src/backend/postmaster/launch_backend.c:1957:3 (postgres+0xa8c243) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #8 xtc_carrier_proc /home/ec2-user/pg/build-tsan/../src/backend/postmaster/pg_xtc_carrier.c:899:2 (postgres+0xa94cb5) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #9 __proc_entry /home/ec2-user/libxtc/build-tsan/../dist/../src/ptc/proc.c:1021:3 (libxtc.so.1+0x2de55) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #10 __coro_entry /home/ec2-user/libxtc/build-tsan/../dist/../src/evt/coro_uctx.c:246:14 (libxtc.so.1+0x204b5) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #11 <null> <null> (libc.so.6+0x54b9f) (BuildId: 62003f19c6b9b4f27360c808582d1de5095cb653)
+
+  Previous write of size 8 at 0x0000014d7e30 by thread T10:
+    #0 PgRuntimeClearHotCurrentRootRefs /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:228:35 (postgres+0xefcdd7) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #1 PgRuntimeLoadHotCurrentRootRefs /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:278:4 (postgres+0xefcdd7)
+    #2 PgRuntimeInstallHotCurrentCells /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:361:2 (postgres+0xefcdd7)
+    #3 PgRuntimeInstallHotCurrentCellsForCurrentWork /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c (postgres+0xefcdd7)
+    #4 PgRuntimeRefreshCurrentWork /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:544:2 (postgres+0xefcdd7)
+    #5 PgRuntimeSetCurrentWork /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:579:2 (postgres+0xf0440d) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #6 PgRuntimeRestoreCurrentWork /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:610:2 (postgres+0xf0440d)
+    #7 ThreadedGUCLock /home/ec2-user/pg/build-tsan/../src/backend/utils/misc/guc.c:184:3 (postgres+0xf4d548) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #8 InitializeThreadedSessionGUCOptions /home/ec2-user/pg/build-tsan/../src/backend/utils/misc/guc.c:2742:11 (postgres+0xf4c571) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #9 backend_thread_entry /home/ec2-user/pg/build-tsan/../src/backend/postmaster/launch_backend.c:2040:2 (postgres+0xa8c77f) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #10 xtc_carrier_proc /home/ec2-user/pg/build-tsan/../src/backend/postmaster/pg_xtc_carrier.c:899:2 (postgres+0xa94cb5) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #11 __proc_entry /home/ec2-user/libxtc/build-tsan/../dist/../src/ptc/proc.c:1021:3 (libxtc.so.1+0x2de55) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #12 __coro_entry /home/ec2-user/libxtc/build-tsan/../dist/../src/evt/coro_uctx.c:246:14 (libxtc.so.1+0x204b5) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #13 <null> <null> (libc.so.6+0x54b9f) (BuildId: 62003f19c6b9b4f27360c808582d1de5095cb653)
+
+  Location is global 'PgCurrentRuntimeHotRefProcessRef' of size 8 at 0x0000014d7e30 (postgres+0x14d7e30)
+
+  Thread T12 (tid=0, running) created by thread T6 at:
+    #0 __xtc_async_ex /home/ec2-user/libxtc/build-tsan/../dist/../src/evt/coro_uctx.c:620:18 (libxtc.so.1+0x201b8) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #1 __proc_spawn_core /home/ec2-user/libxtc/build-tsan/../dist/../src/ptc/proc.c:1205:12 (libxtc.so.1+0x28c3c) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #2 xtc_proc_spawn_monitor /home/ec2-user/libxtc/build-tsan/../dist/../src/ptc/proc.c:1254:9 (libxtc.so.1+0x28ef4) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #3 xtc_carrier_supervisor_proc /home/ec2-user/pg/build-tsan/../src/backend/postmaster/pg_xtc_carrier.c:705:8 (postgres+0xa959f6) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #4 __proc_entry /home/ec2-user/libxtc/build-tsan/../dist/../src/ptc/proc.c:1021:3 (libxtc.so.1+0x2de55) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #5 __coro_entry /home/ec2-user/libxtc/build-tsan/../dist/../src/evt/coro_uctx.c:246:14 (libxtc.so.1+0x204b5) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #6 <null> <null> (libc.so.6+0x54b9f) (BuildId: 62003f19c6b9b4f27360c808582d1de5095cb653)
+
+  Thread T10 (tid=0, running) created by thread T4 at:
+    #0 __xtc_async_ex /home/ec2-user/libxtc/build-tsan/../dist/../src/evt/coro_uctx.c:620:18 (libxtc.so.1+0x201b8) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #1 __proc_spawn_core /home/ec2-user/libxtc/build-tsan/../dist/../src/ptc/proc.c:1205:12 (libxtc.so.1+0x28c3c) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #2 xtc_proc_spawn_monitor /home/ec2-user/libxtc/build-tsan/../dist/../src/ptc/proc.c:1254:9 (libxtc.so.1+0x28ef4) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #3 xtc_carrier_supervisor_proc /home/ec2-user/pg/build-tsan/../src/backend/postmaster/pg_xtc_carrier.c:705:8 (postgres+0xa959f6) (BuildId: d546942acef517206a72595b60257ecc592263db)
+    #4 __proc_entry /home/ec2-user/libxtc/build-tsan/../dist/../src/ptc/proc.c:1021:3 (libxtc.so.1+0x2de55) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #5 __coro_entry /home/ec2-user/libxtc/build-tsan/../dist/../src/evt/coro_uctx.c:246:14 (libxtc.so.1+0x204b5) (BuildId: c65b970086e5fabde441c2272c1f8506ff54e42f)
+    #6 <null> <null> (libc.so.6+0x54b9f) (BuildId: 62003f19c6b9b4f27360c808582d1de5095cb653)
+
+SUMMARY: ThreadSanitizer: data race /home/ec2-user/pg/build-tsan/../src/backend/utils/init/backend_runtime.c:228:35 in PgRuntimeClearHotCurrentRootRefs
+==================
