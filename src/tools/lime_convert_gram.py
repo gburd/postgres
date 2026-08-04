@@ -2251,8 +2251,19 @@ def _emit_alternative(lhs_orig: str, lhs: str, alt: Alternative,
 # Validation.
 # ---------------------------------------------------------------------------
 
-def validate(decl: Declarations, rules: List[Rule]) -> int:
-    """Print warnings to stderr.  Return non-fatal warning count."""
+def validate(decl: Declarations, rules: List[Rule], no_driver: bool = False) -> int:
+    """Print warnings to stderr.  Return non-fatal warning count.
+
+    When ``no_driver`` is set the consumer supplies its own driver and value
+    model (this is the ecpg preproc case): its grammar deliberately reuses
+    backend non-terminals WITHOUT %type declarations -- ecpg's parse.pl only
+    emits %type for its own handful of symbols and lets the reused backend
+    non-terminals carry the default (string-concatenation) semantics.  In
+    that mode the "non-terminal on RHS has no %type" check is a false
+    positive (Lime accepts the default there), so it is suppressed.  The
+    other two checks -- declared-but-unused %type, and unused %token --
+    remain valid signals in every mode.
+    """
     warnings = 0
     lhs_set: Set[str] = {r.lhs for r in rules}
     rhs_syms: Set[str] = set()
@@ -2276,15 +2287,17 @@ def validate(decl: Declarations, rules: List[Rule]) -> int:
             sys.stderr.write(f"WARN: %token {tok} never used in any rule\n")
             warnings += 1
 
-    for sym in rhs_syms:
-        if sym in lhs_set and sym not in decl.type_decls:
-            # Non-terminal with no %type -- Bison defaults to int, Lime
-            # would refuse.
-            sys.stderr.write(
-                f"WARN: non-terminal {sym} appears on RHS but has no %type "
-                f"declaration\n"
-            )
-            warnings += 1
+    if not no_driver:
+        for sym in rhs_syms:
+            if sym in lhs_set and sym not in decl.type_decls:
+                # Non-terminal with no %type -- Bison defaults to int, Lime
+                # would refuse.  Only a real bug when we own the value model
+                # (i.e. NOT the --no-driver / ecpg case; see the docstring).
+                sys.stderr.write(
+                    f"WARN: non-terminal {sym} appears on RHS but has no "
+                    f"%type declaration\n"
+                )
+                warnings += 1
     return warnings
 
 
@@ -2514,7 +2527,7 @@ def main() -> int:
         f.write(output)
     sys.stderr.write(f"wrote {args.output} ({len(output.splitlines())} lines)\n")
 
-    nwarn = validate(decl, rules)
+    nwarn = validate(decl, rules, no_driver=args.no_driver)
     if nwarn:
         sys.stderr.write(f"validation: {nwarn} warning(s)\n")
     return 0
