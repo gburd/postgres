@@ -522,37 +522,6 @@ quel_build_attr_named(const void *const *rhs_values,
 }
 
 /*
- * quel_attr_list_normalize: coerce a quel_attr_list slot value to a List *.
- *
- * The grammar's base case is a unit production `quel_attr_list ::= quel_attr`.
- * Empirically, when this rule is contributed by a grammar EXTENSION and
- * merged into the base grammar by Lime's in-process composer, the unit
- * rule's reduce action does NOT fire: the parser reduces the two attrs to
- * `quel_attr` but jumps straight to the `cons` rule without running
- * `attr_list (single)`, so the slot holds the bare quel_attr value (a
- * ColumnRef Node *) instead of the 1-element List * the action would build.
- * (Lime's standalone host-reduce test fires the unit action -- see Lime
- * v1.8.2 tests/hu_grammar.lime -- so this is specific to the
- * extension-fragment compose path, reported in lime-letter-37.)  Detect the
- * bare-node case and wrap it; a real List * passes through unchanged.
- *
- * ponytail: List-or-bare-node normalize works around a composed-grammar
- * unit-action gap; drop it once Lime fires the unit reduce for composed
- * extension rules too (lime-letter-37).
- */
-static List *
-quel_attr_list_normalize(void *slot)
-{
-	Node	   *n = (Node *) slot;
-
-	if (n == NULL)
-		return NIL;
-	if (IsA(n, List))
-		return (List *) n;
-	return list_make1(n);
-}
-
-/*
  * quel_build_attr_list_single: quel_attr_list ::= quel_attr.
  * Wrap the single attr in a list.
  */
@@ -582,7 +551,7 @@ quel_build_attr_list_cons(const void *const *rhs_values,
 	Node	   *attr;
 
 	Assert(nrhs == 3);
-	prev = quel_attr_list_normalize((void *) rhs_values[0]);
+	prev = (List *) rhs_values[0];
 	/* rhs_values[1] is COMMA -- ignore. */
 	attr = (Node *) rhs_values[2];
 
@@ -717,7 +686,7 @@ quel_build_retrieve_simple(const void *const *rhs_values,
 						   const int *rhs_locs, int nrhs)
 {
 	Assert(nrhs == 4);			/* RETRIEVE LPAREN list RPAREN */
-	return quel_build_select_core(quel_attr_list_normalize((void *) rhs_values[2]),
+	return quel_build_select_core((List *) rhs_values[2],
 								  NULL, false, NULL);
 }
 
@@ -729,7 +698,7 @@ quel_build_retrieve_where(const void *const *rhs_values,
 						  const int *rhs_locs, int nrhs)
 {
 	Assert(nrhs == 6);			/* RETRIEVE ( list ) WHERE expr */
-	return quel_build_select_core(quel_attr_list_normalize((void *) rhs_values[2]),
+	return quel_build_select_core((List *) rhs_values[2],
 								  (Node *) rhs_values[5], false, NULL);
 }
 
@@ -741,7 +710,7 @@ quel_build_retrieve_unique(const void *const *rhs_values,
 						   const int *rhs_locs, int nrhs)
 {
 	Assert(nrhs == 5);			/* RETRIEVE UNIQUE ( list ) */
-	return quel_build_select_core(quel_attr_list_normalize((void *) rhs_values[3]),
+	return quel_build_select_core((List *) rhs_values[3],
 								  NULL, true, NULL);
 }
 
@@ -750,7 +719,7 @@ quel_build_retrieve_unique_where(const void *const *rhs_values,
 								 const int *rhs_locs, int nrhs)
 {
 	Assert(nrhs == 7);			/* RETRIEVE UNIQUE ( list ) WHERE expr */
-	return quel_build_select_core(quel_attr_list_normalize((void *) rhs_values[3]),
+	return quel_build_select_core((List *) rhs_values[3],
 								  (Node *) rhs_values[6], true, NULL);
 }
 
@@ -763,7 +732,7 @@ quel_build_retrieve_into(const void *const *rhs_values,
 						 const int *rhs_locs, int nrhs)
 {
 	Assert(nrhs == 6);			/* RETRIEVE INTO IDENT ( list ) */
-	return quel_build_select_core(quel_attr_list_normalize((void *) rhs_values[4]),
+	return quel_build_select_core((List *) rhs_values[4],
 								  NULL, false, (const char *) rhs_values[2]);
 }
 
@@ -772,7 +741,7 @@ quel_build_retrieve_into_where(const void *const *rhs_values,
 							   const int *rhs_locs, int nrhs)
 {
 	Assert(nrhs == 8);			/* RETRIEVE INTO IDENT ( list ) WHERE expr */
-	return quel_build_select_core(quel_attr_list_normalize((void *) rhs_values[4]),
+	return quel_build_select_core((List *) rhs_values[4],
 								  (Node *) rhs_values[7], false,
 								  (const char *) rhs_values[2]);
 }
@@ -979,7 +948,7 @@ quel_build_retrieve_by(const void *const *rhs_values,
 	List	   *target_list;
 
 	Assert(nrhs == 6);			/* RETRIEVE ( list ) BY sortby_list */
-	attr_list = quel_attr_list_normalize((void *) rhs_values[2]);
+	attr_list = (List *) rhs_values[2];
 	sortClause = (List *) rhs_values[5];
 
 	target_list = quel_make_resTarget_list(attr_list);
@@ -1007,7 +976,7 @@ quel_build_retrieve_where_by(const void *const *rhs_values,
 	List	   *target_list;
 
 	Assert(nrhs == 8);			/* RETRIEVE ( list ) WHERE expr BY sort */
-	attr_list = quel_attr_list_normalize((void *) rhs_values[2]);
+	attr_list = (List *) rhs_values[2];
 	whereClause = (Node *) rhs_values[5];
 	sortClause = (List *) rhs_values[7];
 

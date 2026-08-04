@@ -63,6 +63,10 @@ extern int	base_yyHostReduce(void *user, int ruleno,
 extern int	lime_snapshot_token_code(const ParserSnapshot * snap,
 									 const char *name);
 
+/* Lime v1.10.0: stable source-rule identity -> composed ruleno. */
+extern int	lime_snapshot_rule_by_id(const ParserSnapshot * snap,
+									 const char *rule_id);
+
 extern bool raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 									  base_yy_extra_type *yyextra,
 									  List **result);
@@ -101,29 +105,59 @@ raw_parser_lime_active(void)
 /*
  * pushparse_host_reduce
  *	  The composed snapshot's host-reduce dispatcher.  Routes a reduce by
- *	  composed rule number: base rules (ruleno < composed_base_nrule) run
- *	  the generated base actions via base_yyHostReduce; extension rules
- *	  (ruleno >= composed_base_nrule) route to their registered
- *	  PgGrammarReduceFn via pg_grammar_ext_resolve_reduce.  `user` is the
- *	  core scanner, threaded as the host_reduce user pointer.
+ *	  composed rule number: extension rules (identified via the identity-
+ *	  based ruleno map, Lime v1.10.0) route to their registered
+ *	  PgGrammarReduceFn; every other ruleno is a base-grammar rule and runs
+ *	  the generated base actions via base_yyHostReduce.  `user` is the core
+ *	  scanner, threaded as the host_reduce user pointer.
+ *
+ *	  This replaces the old positional `ruleno < base_nrule ? base : ext`
+ *	  split, which was unsound: the in-process compose renumbers rules
+ *	  (action-bearing first, across base/composed spaces), so an extension
+ *	  rule's composed ruleno is not a fixed offset from the base count.
  */
 static int
 pushparse_host_reduce(void *user, int ruleno,
 					  const void *rhs_values, const int *rhs_locs,
 					  int nrhs, void *lhs_out, int *lhs_loc_out)
 {
-	if ((unsigned int) ruleno < composed_base_nrule)
-		return base_yyHostReduce(user, ruleno, rhs_values, rhs_locs,
-								 nrhs, lhs_out, lhs_loc_out);
+	if (pg_grammar_ext_reduce_by_ruleno(ruleno, user, nrhs,
+										(const void *const *) rhs_values,
+										rhs_locs, lhs_out))
+		return 0;				/* dispatched to an extension rule */
 
-	return pg_grammar_ext_resolve_reduce((int) ((unsigned int) ruleno -
-												composed_base_nrule),
-										 user, nrhs,
-										 (const void *const *) rhs_values,
-										 rhs_locs, lhs_out);
+	return base_yyHostReduce(user, ruleno, rhs_values, rhs_locs,
+							 nrhs, lhs_out, lhs_loc_out);
 }
 
 static void pushparse_build_keyword_map(void);
+
+/*
+ * Transient snapshot pointer used by pushparse_resolve_ruleno while
+ * pg_grammar_ext_foreach_reducible iterates -- the callback needs the
+ * just-composed snapshot to resolve each rule's identity to a ruleno.
+ */
+static ParserSnapshot * pushparse_ruleno_map_snap = NULL;
+
+/*
+ * pushparse_resolve_ruleno
+ *	  pg_grammar_ext_foreach_reducible callback: resolve one extension
+ *	  rule's composed ruleno from its canonical identity string (Lime
+ *	  v1.10.0 lime_snapshot_rule_by_id) and record it in the ext ruleno map.
+ *	  A rule that fails to resolve (should not happen for a rule that
+ *	  composed) is left unmapped and simply won't dispatch as an extension
+ *	  rule.
+ */
+static void
+pushparse_resolve_ruleno(unsigned int rule_id, const char *identity, void *arg)
+{
+	int			ruleno;
+
+	(void) arg;
+	ruleno = lime_snapshot_rule_by_id(pushparse_ruleno_map_snap, identity);
+	if (ruleno >= 0)
+		pg_grammar_ext_set_ruleno(ruleno, rule_id);
+}
 
 /*
  * pg_grammar_compose_install
@@ -228,6 +262,18 @@ pg_grammar_compose_install(unsigned int *base_nrule_out, char **errmsg_out)
 	/* Route base/extension reduces through the composed dispatcher. */
 	snap->host_reduce = pushparse_host_reduce;
 	composed_snapshot = snap;
+
+	/*
+	 * Build the composed-ruleno -> extension rule_id map by IDENTITY (Lime
+	 * v1.10.0).  Each extension rule's stable canonical identity resolves to
+	 * its composed ruleno via lime_snapshot_rule_by_id; the host-reduce
+	 * router then dispatches by ruleno.  This is the correct, renumbering-
+	 * proof replacement for the old positional base_nrule split.
+	 */
+	pg_grammar_ext_reset_ruleno_map(snap->nrule);
+	pushparse_ruleno_map_snap = snap;
+	pg_grammar_ext_foreach_reducible(pushparse_resolve_ruleno, NULL);
+	pushparse_ruleno_map_snap = NULL;
 
 	/* Build the scanner keyword map (lexeme -> composed token code). */
 	pushparse_build_keyword_map();

@@ -211,19 +211,35 @@ extern void pg_grammar_ext_dispatch_reduce(unsigned int rule_id,
 										   void *lhs_out);
 
 /*
- * pg_grammar_ext_resolve_reduce
- *	  Track B host-reduce routing for EXTENSION rules.  The push parser's
- *	  composed host-reduce dispatcher calls this with the extension rule's
- *	  composed-relative index (composed_ruleno - base_nrule); it maps that
- *	  to the registered PgGrammarReduceFn and invokes it.  Returns 0 on
- *	  success.  `extra_arg` is the core scanner.
+ * pg_grammar_ext reduce dispatch (identity-based, Lime v1.10.0):
+ *
+ * The composed snapshot renumbers rules across the base/composed/extension
+ * spaces, so an extension rule's composed ruleno is not a fixed offset from
+ * the base rule count.  We therefore resolve each extension rule's composed
+ * ruleno ONCE, by its stable canonical identity ("lhs ::= rhs...", the key
+ * for lime_snapshot_rule_by_id), and dispatch by ruleno at parse time.
+ *
+ * Wiring (driven by the push parser after each compose):
+ *   1. pg_grammar_ext_reset_ruleno_map(nrule)      -- size the map.
+ *   2. pg_grammar_ext_foreach_reducible(cb, arg)   -- for each extension
+ *      rule the driver resolves its ruleno via lime_snapshot_rule_by_id
+ *      and calls pg_grammar_ext_set_ruleno(ruleno, rule_id).
+ *   3. pg_grammar_ext_reduce_by_ruleno(...)         -- host-reduce path:
+ *      returns true (and dispatches) for an extension ruleno, false for a
+ *      base-grammar ruleno.
  */
-extern int	pg_grammar_ext_resolve_reduce(int ext_rule_index,
-										  void *extra_arg,
-										  int nrhs,
-										  const void *const *rhs_values,
-										  const int *rhs_locs,
-										  void *lhs_out);
+typedef void (*PgGrammarExtRuleCB) (unsigned int rule_id,
+									const char *identity, void *arg);
+
+extern void pg_grammar_ext_reset_ruleno_map(unsigned int nrule);
+extern void pg_grammar_ext_foreach_reducible(PgGrammarExtRuleCB cb, void *arg);
+extern void pg_grammar_ext_set_ruleno(int ruleno, unsigned int rule_id);
+extern bool pg_grammar_ext_reduce_by_ruleno(int ruleno,
+											void *extra_arg,
+											int nrhs,
+											const void *const *rhs_values,
+											const int *rhs_locs,
+											void *lhs_out);
 
 /*
  * pg_grammar_ext_pending_fragments
