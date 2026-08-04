@@ -57,6 +57,17 @@ sudo sysctl -w kernel.perf_event_paranoid=1 kernel.kptr_restrict=0 >/dev/null 2>
 
 start_pg() { # $1=mode(process|threaded) $2=carriers-or-empty
   local mode="${1:-process}" carriers="${2:-}"
+  # A prior lane's postmaster must be fully gone before we reuse the data dir.
+  # A stale postmaster.pid (from a hung/killed stop) makes the next start fail
+  # with "lock file already exists" and, if the old server is still alive,
+  # cascades every subsequent cell into NA -- the exact 2026-08-04 failure.
+  local oldpid; oldpid=$(head -1 "$DATA/postmaster.pid" 2>/dev/null)
+  if [ -n "$oldpid" ] && kill -0 "$oldpid" 2>/dev/null; then
+    echo "STALE_POSTMASTER $oldpid still alive before start_pg $mode -- killing"
+    kill -9 "$oldpid" 2>/dev/null; sleep 3
+  fi
+  pkill -9 -f "postgres -D $DATA" 2>/dev/null; sleep 1
+  rm -f "$DATA/postmaster.pid" 2>/dev/null
   cat > "$DATA/postgresql.conf.mode" <<CONF
 port = $PORT
 listen_addresses = '*'
@@ -102,6 +113,19 @@ CONF
     done
     [ "$streak" -ge 5 ] || { echo "THREADED_TCP_UNSTABLE $mode"; tail -20 "$OUT/pg_$mode.log"; return 1; }
     sleep 2
+    # HARD-ASSERT the pooled carrier scheduler is actually in effect.  If
+    # pooled_protocol_carriers resolves to 0 (unpooled), multithreaded=on runs
+    # THREAD-PER-SESSION, which fork()s a backend per connection -> ENOSYS ->
+    # every client fails.  A pre-flight probe passing is NOT enough; assert it
+    # on the ACTUAL benchmark server, at start, and abort loudly if wrong.
+    local eff_c pool_rows
+    eff_c=$("$PGBIN/psql" -h 127.0.0.1 -p $PORT -U postgres -tAc 'show pooled_protocol_carriers' postgres 2>/dev/null | tr -d ' ')
+    pool_rows=$("$PGBIN/psql" -h 127.0.0.1 -p $PORT -U postgres -tAc 'select count(*) from pg_stat_xtc_carriers' postgres 2>/dev/null | tr -d ' ')
+    if [ -z "$eff_c" ] || [ "$eff_c" = 0 ] || [ -z "$pool_rows" ] || [ "$pool_rows" = 0 ]; then
+      echo "POOLED_NOT_IN_EFFECT mode=$mode requested_carriers=$carriers show=$eff_c carrier_rows=$pool_rows -- refusing to run an unpooled 'threaded' lane"
+      tail -20 "$OUT/pg_$mode.log"; return 1
+    fi
+    echo "POOLED_OK carriers=$eff_c carrier_rows=$pool_rows"
   fi
   "$PGBIN/psql" -h 127.0.0.1 -p $PORT -U postgres -tAc "select 1" postgres >/dev/null 2>&1 && {
     # huge_pages=on forces failure if pages are unavailable, so reaching here
@@ -121,10 +145,20 @@ stop_pg() {
   "$PGBIN/pg_ctl" -D "$DATA" -m fast -w -t 600 stop >/dev/null 2>&1
   local pid; pid=$(cat "$OUT/pg.pid" 2>/dev/null)
   local i; for i in $(seq 1 60); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+  # If -m fast did not bring the postmaster down (observed under multithreaded=on
+  # when the postmaster is spinning -- e.g. fork-ENOSYS), escalate to immediate
+  # rather than leaving a live server holding the lock file for the next lane.
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "FAST_STOP_HUNG pid=$pid -- escalating to immediate"
+    "$PGBIN/pg_ctl" -D "$DATA" -m immediate -w -t 120 stop >/dev/null 2>&1
+    for i in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+  fi
   kill -0 "$pid" 2>/dev/null && { kill -9 "$pid" 2>/dev/null; sleep 2; }
   pkill -9 -f "postgres -D $DATA" 2>/dev/null
   sleep 1
   rm -f "$DATA/postmaster.pid" 2>/dev/null
+  # Confirm the port is free before the caller starts the next lane.
+  for i in $(seq 1 30); do "$PGBIN/psql" -h 127.0.0.1 -p $PORT -U postgres -tAc 'select 1' postgres >/dev/null 2>&1 || break; sleep 1; done
 }
 
 sut_pss_mb() { local t=0 p v; for p in $(pgrep -x postgres 2>/dev/null); do v=$(awk '/^Pss:/{s+=$2} END{print s+0}' /proc/$p/smaps_rollup 2>/dev/null); t=$((t+${v:-0})); done; echo $((t/1024)); }
