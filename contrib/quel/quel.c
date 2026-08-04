@@ -372,7 +372,9 @@ quel_reduce(void *user_data, void *extra_arg, int nrhs,
 	/*
 	 * Forwarder rules: stmt ::= quel_stmt and quel_stmt ::= ... pass through
 	 * the child node unchanged.  These reduce ONE rhs symbol whose value
-	 * already lives at rhs_values[0].
+	 * already lives at rhs_values[0].  Per the host-reduce ABI (Lime v1.7.1),
+	 * rhs_values[0] IS the child's value by value (a Node * here), so forward
+	 * it directly -- no extra indirection.
 	 */
 	if (nrhs == 1
 		&& (strcmp(label, "stmt->quel_stmt") == 0
@@ -386,7 +388,7 @@ quel_reduce(void *user_data, void *extra_arg, int nrhs,
 			|| strcmp(label, "explainableStmt -> append") == 0
 			|| strcmp(label, "explainableStmt -> delete") == 0))
 	{
-		*(Node **) lhs_out = *(Node **) rhs_values[0];
+		*(Node **) lhs_out = (Node *) rhs_values[0];
 		return;
 	}
 }

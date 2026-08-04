@@ -188,7 +188,6 @@ static MemoryContext ext_context(void);
 static char *serialize_extension(PgGrammarExtension *ext);
 static void enqueue_pending(const char *name, const char *fragment,
 							PgGrammarExtension *ext);
-static void record_composed_rule(unsigned int rule_id);
 
 
 PgGrammarExtension *
@@ -692,22 +691,17 @@ serialize_extension(PgGrammarExtension *ext)
 			/*
 			 * Track B: the composed grammar is compiled to a runtime
 			 * ParserSnapshot (tables only -- no action code), so the rule's
-			 * action body is empty here.  At parse time the push parser's
-			 * host-reduce dispatcher routes this rule's reduce -- identified
-			 * by its composed rule number -- to
-			 * pg_grammar_ext_dispatch_reduce and on to the user's
-			 * PgGrammarReduceFn.  Record the rule_id in append order so the
-			 * dispatcher can map composed-ruleno -> rule_id (extension rules
-			 * are appended after the base grammar's rules, in fragment/text
-			 * order).
+			 * action body is empty here.  At parse time the push parser
+			 * resolves this rule's composed ruleno by identity (Lime v1.10.0
+			 * lime_snapshot_rule_by_id) and routes its reduce to the
+			 * registered PgGrammarReduceFn via
+			 * pg_grammar_ext_reduce_by_ruleno.
 			 */
-			record_composed_rule(rule->rule_id);
 			appendStringInfoString(&buf, ".\n");
 		}
 		else
 		{
-			/* Silent rule: still occupies a composed rule slot. */
-			record_composed_rule(0);
+			/* Silent rule: no reduce callback; nothing to dispatch. */
 			appendStringInfoString(&buf, ".\n");
 		}
 	}
@@ -737,73 +731,137 @@ enqueue_pending(const char *name, const char *fragment,
 }
 
 /*
- * record_composed_rule
- *	  Append `rule_id` to the composed-rule map.  Called once per rule
- *	  emitted by serialize_extension(), in the order extension rules are
- *	  appended to the merged grammar text.  The Nth recorded entry is the
- *	  rule_id of composed rule (base_nrule + N); 0 marks a silent rule
- *	  (no reduce callback).  The push parser's host-reduce dispatcher uses
- *	  this to route an extension-rule reduce to its PgGrammarReduceFn.
+ * ruleno_to_ruleid -- the composed snapshot's ruleno -> extension rule_id
+ * map, built by identity lookup after compose (Lime v1.10.0
+ * lime_snapshot_rule_by_id).  ruleno_to_ruleid[n] is the 1-based extension
+ * rule_id for composed rule n, or 0 if composed rule n is a base-grammar
+ * rule (or a silent extension rule).  Stable across the compose
+ * renumbering that the old positional composed_ruleno - base_nrule
+ * arithmetic could not survive.
  */
-static unsigned int *composed_ruleid = NULL;
-static int	composed_nrule = 0;
-static int	composed_capacity = 0;
+static unsigned int *ruleno_to_ruleid = NULL;
+static int	ruleno_to_ruleid_count = 0;
 
-static void
-record_composed_rule(unsigned int rule_id)
+/*
+ * pg_grammar_ext_build_ruleno_map
+ *	  Build the composed snapshot's ruleno -> extension rule_id map by
+ *	  IDENTITY, using Lime v1.10.0's lime_snapshot_rule_by_id.  Each
+ *	  registered extension rule's canonical identity string
+ *	  ("lhs ::= rhs1 rhs2 ...") is stable across the two-pass action-first
+ *	  rule numbering and the base/composed renumbering, unlike the raw
+ *	  ruleno.  We resolve each extension rule's composed ruleno ONCE here,
+ *	  at compose time, so the host-reduce router can dispatch by ruleno
+ *	  directly without the fragile positional composed_ruleno - base_nrule
+ *	  arithmetic (which broke whenever composition renumbered rules).
+ *
+ *	  Returns true on success; false (with *errmsg_out set) if a registered
+ *	  extension rule cannot be found in the composed snapshot by identity,
+ *	  which would indicate the fragment did not compose as expected.
+ */
+static char *
+ext_rule_identity(const ExtRule *r)
+{
+	StringInfoData id;
+
+	initStringInfo(&id);
+	appendStringInfoString(&id, r->lhs);
+	appendStringInfoString(&id, " ::=");
+	for (int i = 0; i < r->nrhs; i++)
+	{
+		appendStringInfoChar(&id, ' ');
+		appendStringInfoString(&id, r->rhs[i]);
+	}
+	return id.data;
+}
+
+/*
+ * pg_grammar_ext_reset_ruleno_map
+ *	  (Re)allocate the composed-ruleno -> extension rule_id map for a
+ *	  composed snapshot with `nrule` rules.  Called by the push driver
+ *	  before it populates the map by identity (see below).
+ */
+void
+pg_grammar_ext_reset_ruleno_map(unsigned int nrule)
 {
 	MemoryContext old = MemoryContextSwitchTo(ext_context());
 
-	if (composed_nrule == composed_capacity)
-	{
-		int			newcap = composed_capacity ? composed_capacity * 2 : 16;
-
-		if (composed_ruleid == NULL)
-			composed_ruleid = palloc0(sizeof(unsigned int) * newcap);
-		else
-			composed_ruleid = repalloc(composed_ruleid,
-									   sizeof(unsigned int) * newcap);
-		composed_capacity = newcap;
-	}
-	composed_ruleid[composed_nrule++] = rule_id;
+	ruleno_to_ruleid = palloc0(sizeof(unsigned int) * (nrule ? nrule : 1));
+	ruleno_to_ruleid_count = (int) nrule;
 	MemoryContextSwitchTo(old);
 }
 
 /*
- * pg_grammar_ext_resolve_reduce
- *	  Map an EXTENSION rule's composed-relative index (composed_ruleno -
- *	  base_nrule, i.e. the Nth appended rule) to its registered
- *	  PgGrammarReduceFn and invoke it.  Called from the push parser's
- *	  host-reduce dispatcher (parser_pushparse.c) for rulenos at or above
- *	  the base grammar's rule count.  Returns 0 on success.
+ * pg_grammar_ext_foreach_reducible
+ *	  Invoke cb(rule_id, identity, arg) for every registered extension rule
+ *	  that carries a reduce callback, where `identity` is the rule's
+ *	  canonical "lhs ::= rhs..." string (matching Lime's ruleIdentityString,
+ *	  the key for lime_snapshot_rule_by_id).  Used by the push driver to
+ *	  resolve each rule's composed ruleno by identity and record it via
+ *	  pg_grammar_ext_set_ruleno.  `identity` is palloc'd in the caller's
+ *	  context; the callback must copy anything it retains (the driver only
+ *	  uses it transiently for the lookup).
+ */
+void
+pg_grammar_ext_foreach_reducible(PgGrammarExtRuleCB cb, void *arg)
+{
+	for (unsigned int rid = 1; rid < g_next_rule_id; rid++)
+	{
+		ExtRule    *r = (rid < g_rule_table_size) ? g_rule_table[rid] : NULL;
+		char	   *identity;
+
+		if (r == NULL || r->reduce == NULL)
+			continue;
+		identity = ext_rule_identity(r);
+		cb(rid, identity, arg);
+		pfree(identity);
+	}
+}
+
+/*
+ * pg_grammar_ext_set_ruleno
+ *	  Record that composed rule `ruleno` is extension rule `rule_id`.
+ *	  Called by the push driver once per extension rule after resolving
+ *	  its composed ruleno by identity.
+ */
+void
+pg_grammar_ext_set_ruleno(int ruleno, unsigned int rule_id)
+{
+	if (ruleno >= 0 && ruleno < ruleno_to_ruleid_count)
+		ruleno_to_ruleid[ruleno] = rule_id;
+}
+
+/*
+ * pg_grammar_ext_reduce_by_ruleno
+ *	  The host-reduce dispatcher's extension path, keyed on the COMPOSED
+ *	  ruleno (resolved by identity above -- stable across compose
+ *	  renumbering, unlike the old composed_ruleno - base_nrule arithmetic).
+ *	  Returns true and dispatches to the rule's PgGrammarReduceFn if
+ *	  `ruleno` is an extension rule; returns false if it is a base-grammar
+ *	  rule (the caller then runs the base action).
  *
  *	  `extra_arg` is the core scanner (threaded as the host_reduce user
  *	  pointer), matching the base path's yyscanner.
  */
-int
-pg_grammar_ext_resolve_reduce(int ext_rule_index,
-							  void *extra_arg,
-							  int nrhs,
-							  const void *const *rhs_values,
-							  const int *rhs_locs,
-							  void *lhs_out)
+bool
+pg_grammar_ext_reduce_by_ruleno(int ruleno,
+								void *extra_arg,
+								int nrhs,
+								const void *const *rhs_values,
+								const int *rhs_locs,
+								void *lhs_out)
 {
 	unsigned int rule_id;
 
-	if (ext_rule_index < 0 || ext_rule_index >= composed_nrule)
-		ereport(ERROR,
-				(errcode(ERRCODE_INTERNAL_ERROR),
-				 errmsg("grammar extension reduce: composed rule index %d "
-						"out of range (have %d extension rules)",
-						ext_rule_index, composed_nrule)));
+	if (ruleno < 0 || ruleno >= ruleno_to_ruleid_count)
+		return false;			/* out of range: treat as base */
 
-	rule_id = composed_ruleid[ext_rule_index];
+	rule_id = ruleno_to_ruleid[ruleno];
 	if (rule_id == 0)
-		return 0;				/* silent rule: nothing to dispatch */
+		return false;			/* base-grammar rule */
 
 	pg_grammar_ext_dispatch_reduce(rule_id, extra_arg, nrhs,
 								   rhs_values, rhs_locs, lhs_out);
-	return 0;
+	return true;
 }
 
 /*
