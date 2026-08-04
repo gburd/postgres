@@ -256,3 +256,58 @@ REMAINING genuine F4+ fusion (structural, not primitive; larger, lower
 benefit-per-risk, design-first): xtc_svr/xtc_orc supervision (carrier/worker
 spawn + restart), xtc_reg backend registry, xtc_xproc watchdog.  MemoryContext
 -> xtc_mctx stays defer-until-proven; shared-memory -> xtc is a NON-GOAL.
+
+### 2026-08-04 consolidated state + the three forward items (post-F4-audit)
+
+libxtc requests filed in /tmp (pass to the team):
+- /tmp/libxtc-tls-sni-transport-request.md -- xtc_tls needs (1) a ClientHello/SNI
+  context-selection callback and (2) a custom-transport (caller recv/send) hook,
+  before we can swap PG server TLS onto xtc_tls.  NOT blocking today (OpenSSL path
+  already yields the carrier); needed to enable a future TLS-fiber unpin.
+- /tmp/libxtc-log-emitter-gap-question.md -- ANSWERED by v1.32.0 (xtc_tuning_check);
+  F0a landed.
+- TSan: NOT a libxtc gap (fiber-identity API present since v1.16.0); our blocker
+  is a nix compiler-rt<->glibc GLIBC_PRIVATE skew (build-env task).
+
+The three forward items and where each actually stands (corrected by the audits):
+
+1. BEAT FORK (measure, don't build).  Primitive fusion is COMPLETE (F4 audit);
+   branch is at 98.6% of fork on OLTP VU=192.  The residual is NOT a fusion gap
+   -- it is (a) LWLock contention (flamegraph 7.56% Acquire, genuinely ours,
+   workload-side) and (b) the CFS newidle load-balancer tax on high-client
+   point-select (41% update_sg_lb_stats on pgbench select@384 -- parked-carrier
+   polling).  NEXT: the metal A/B to MEASURE F3 steal-backoff's effect on the
+   select@384 CFS tax (steal-backoff landed but its perf effect is UNMEASURED),
+   re-confirm the thread-explosion fix on the current tree, and get an LWLock
+   contention profile.  This is a measurement task (EC2 metal A/B + flamegraph),
+   then targeted contention work -- not more fusion.
+
+2. STRUCTURAL F4+ (design-first).  The remaining genuine fusion is NOT primitive
+   dedup (done) but structural OTP behaviours: xtc_svr/xtc_orc supervision
+   (carrier + worker spawn/restart -- would replace the hand-rolled per-loop
+   supervisor + carrier bookkeeping), xtc_reg backend registry, xtc_xproc
+   watchdog (the in-tree restart-after-crash path).  Larger, lower
+   benefit-per-risk at 98.6% parity, and each needs a design pass before code.
+   xtc_pool was evaluated + REJECTED (not a fit; see F4 audit).  Recommend
+   design-doc-first, one behaviour, before any agent implementation.
+
+3. UNBLOCK THE PREREQUISITE (Phase 19 Inc 4 clean mid-command unwind).  IMPORTANT
+   correction: Phase 17's original carrier-monopolizer target (ProcWaitOnSemaphore
+   raw sem_wait) is ALREADY fiber-aware (eventfd park -- proc.c sem_wake_fd; the
+   F4 audit documents it).  So the "Phase 17 blocker" for Inc 4 is narrower than
+   the old text implies.  With STACKFUL fibers, Inc-4's unwind is NOT a
+   continuation-capture rewrite: a session hitting an incompatible module at
+   LOAD/CREATE EXTENSION/first-fmgr has committed nothing, so the unwind =
+   cleanly ABORT the uncommitted command + instead of returning to the command
+   loop, signal the postmaster to re-place the session as a fork+exec process
+   backend (Inc 1-3 already build the fork+exec backend + the classification;
+   this is the routing/abort glue).  Riskiest of the three (touches xact-abort +
+   session lifecycle); needs a design pass (where exactly to catch the
+   incompatible-module condition, how to signal re-placement without committing,
+   how the client reconnect-transparently lands on the process backend).
+
+RECOMMENDED ORDER: (1) measure to find the real beat-fork lever [EC2 metal A/B],
+then decide between the LWLock-contention work (item 1b, ours) and the
+structural F4+ (item 2) based on what the profile says; (3) Inc-4 unwind is
+independent and can be designed in parallel.  All three are design/measurement-
+first, not fire-and-forget agent work.
