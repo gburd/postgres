@@ -3974,6 +3974,14 @@
   boot_val => 'false',
 },
 
+{ name => 'xtc_log_to_server', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Routes libxtc internal log diagnostics into the server log.',
+  long_desc => 'When multithreaded=on, installs a libxtc default-log sink at carrier bringup that writes libxtc internal diagnostics -- the host-tuning advisor (CPU governor, intel_pstate, transparent hugepages, swappiness, io_uring probes, via xtc_tuning_check) -- to the server log instead of libxtc default stderr. Developer knob for the multithreaded PostgreSQL development branch; has no effect under multithreaded=off.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'xtc_log_to_server',
+  boot_val => 'false',
+},
+
 { name => 'zero_damaged_pages', type => 'bool', context => 'PGC_SUSET', group => 'DEVELOPER_OPTIONS',
   short_desc => 'Continues processing past damaged page headers.',
   long_desc => 'Detection of a damaged page header normally causes PostgreSQL to report an error, aborting the current transaction. Setting "zero_damaged_pages" to true causes the system to instead report a warning, zero out the damaged page, and continue processing. This behavior will destroy data, namely all the rows on the damaged page.',

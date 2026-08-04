@@ -318,6 +318,7 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME int max_parallel_workers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int autovacuum_max_parallel_workers;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool multithreaded;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool xtc_force_process_fallback;
+extern PGDLLIMPORT bool xtc_log_to_server;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool pg_backend_was_forkexeced;
 
 /*
