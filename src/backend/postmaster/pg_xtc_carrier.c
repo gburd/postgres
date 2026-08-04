@@ -50,8 +50,9 @@
 #include "xtc_exec.h"		/* xtc_exec_loop, xtc_exec_n_loops, xtc_exec_set_eager_rebalance */
 #include "xtc_proc.h"
 #include "xtc_async.h"		/* xtc_set_stack_size */
-#include "xtc_stats.h"		/* xtc_counter_* (fusion F1 runtime counters) */
+#include "xtc_stats.h"		/* xtc_counter_* (fusion F1 runtime counters); xtc_tuning_check (F0a) */
 #include "xtc_sync.h"		/* xtc_amutex_*, xtc_notify_* (fusion F2 pooled-queue lock) */
+#include "xtc_log.h"		/* xtc_log_set_default (fusion F0a: libxtc diagnostics -> server log) */
 
 /*
  * Best-effort diagnostic write to a raw fd (STDERR) on crash/down/teardown
@@ -65,6 +66,48 @@ xtc_diag_write(int fd, const void *buf, size_t n)
 	ssize_t		w = write(fd, buf, n);
 
 	(void) w;
+}
+
+/*
+ * Fusion F0a: libxtc default-log sink -> the PostgreSQL server log.
+ *
+ * When xtc_log_to_server is on, we install this as libxtc's default log sink
+ * (xtc_log_set_default) at carrier bringup, so libxtc's internal diagnostics
+ * reach the PG log instead of libxtc's own stderr fd.  In v1.32.0 the reachable
+ * producer is the host-tuning advisor (xtc_tuning_check, which xtc_app_start
+ * also runs): CPU-governor / intel_pstate / THP / swappiness / io_uring probes
+ * -- exactly the host mis-tuning signal that shows up as the CFS-load-balancer
+ * tax in our benchmarks.  libxtc streams no other internal log today; the sink
+ * is harmless (captures nothing) if that changes it captures those too.
+ *
+ * The sink may run on libxtc's log-consumer context (not a PG backend with a
+ * valid ereport/error stack), so it must NOT call ereport.  It writes the
+ * already-formatted line (buf includes the trailing newline) to STDERR with an
+ * [xtc <LEVEL>] prefix -- the logging collector captures it.  A plain write()
+ * is async-signal-safe and thread-safe (same discipline as xtc_diag_write).
+ * Returns 0 (never signals sink failure back to libxtc; a dropped diagnostic
+ * line is harmless).
+ */
+static int
+xtc_pg_log_sink(void *user, xtc_log_level_t lvl, const char *buf, size_t len)
+{
+	const char *tag;
+
+	(void) user;
+	switch (lvl)
+	{
+		case XTC_LOG_TRACE:	tag = "[xtc TRACE] "; break;
+		case XTC_LOG_DEBUG:	tag = "[xtc DEBUG] "; break;
+		case XTC_LOG_INFO:	tag = "[xtc INFO] "; break;
+		case XTC_LOG_WARN:	tag = "[xtc WARN] "; break;
+		case XTC_LOG_ERROR:	tag = "[xtc ERROR] "; break;
+		case XTC_LOG_FATAL:	tag = "[xtc FATAL] "; break;
+		default:			tag = "[xtc] "; break;
+	}
+	xtc_diag_write(STDERR_FILENO, tag, strlen(tag));
+	if (buf != NULL && len > 0)
+		xtc_diag_write(STDERR_FILENO, buf, len);
+	return 0;
 }
 
 /*
@@ -919,6 +962,46 @@ xtc_pg_carrier_start(void)
 
 		/* Big fiber stacks: PG backends recurse deeply (see above). */
 		xtc_set_stack_size(XTC_PG_FIBER_STACK);
+
+		/*
+		 * Fusion F0a: route libxtc's internal diagnostics into the PG server
+		 * log when xtc_log_to_server is on.  Install the sink BEFORE
+		 * xtc_app_start (which itself runs the host-tuning advisor by default in
+		 * v1.32.0) so its advisories are captured, then trigger the advisor
+		 * explicitly too (safe to call more than once).  Threaded-only; process
+		 * mode never reaches carrier bringup.  Best-effort: a failed log-create
+		 * just leaves libxtc's default stderr sink in place.  The xtc_log_t is
+		 * process-lifetime (one carrier bringup per process); not destroyed.
+		 */
+		if (xtc_log_to_server)
+		{
+			xtc_log_opts_t logopts = XTC_LOG_OPTS_DEFAULT;
+			xtc_log_t  *pglog = NULL;
+
+			logopts.sink = xtc_pg_log_sink;
+			logopts.sink_user = NULL;
+			logopts.floor = XTC_LOG_INFO;
+			if (xtc_log_create(&logopts, &pglog) == XTC_OK && pglog != NULL)
+			{
+				(void) xtc_log_set_default(pglog);
+				xtc_tuning_check();	/* fills libxtc's log ring with advisories */
+
+				/*
+				 * xtc_log is a RING BUFFER: xtc_log_write() (which
+				 * xtc_tuning_check -> XTC_LOG_INFO_F feeds) only enqueues
+				 * records; the sink callback fires only from xtc_log_drain()
+				 * (there is no background drain thread, and we deliberately
+				 * never destroy the process-lifetime log, so the destroy-time
+				 * flush never runs).  Drain explicitly here so the advisories
+				 * actually reach the sink -> the server log.  For the v1.32.0
+				 * reachable producer (the one-shot bringup advisor) this single
+				 * post-check drain is sufficient; if libxtc later streams
+				 * continuous internal log lines, a periodic drain would be
+				 * needed (revisit then).
+				 */
+				(void) xtc_log_drain(pglog);
+			}
+		}
 
 		/*
 		 * Threaded fault policy: fail-stop FAST.  A synchronous fault in a
