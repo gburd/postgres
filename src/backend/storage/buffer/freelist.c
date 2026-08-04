@@ -490,7 +490,7 @@ Sublimate(SublimatePoolState *pool_state,
 	 * aggressively enough; then raise this (or gate it on "a clean victim was
 	 * seen recently") and re-measure.
 	 */
-	clean_skip = 0;
+	clean_skip = Min(pool_nbuffers / 8, 64);
 
 	for (;;)
 	{

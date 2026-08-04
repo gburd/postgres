@@ -1684,12 +1684,44 @@ TrickleWriterMain(Datum main_arg)
 		}
 		else
 		{
-			/* Fallback: linear scan of pool's buffer descriptors */
+			/*
+			 * Fallback: background PRE-CLEANING scan ahead of the sweep hand.
+			 *
+			 * ACE's precondition for clean-first eviction (Papon &
+			 * Athanassoulis, ICDE 2023) is that clean victims are staged
+			 * ahead of demand.  Rather than cleaning arbitrary dirty buffers
+			 * from buffer 0, we start at the pool's current sweep-hand
+			 * position and scan FORWARD, cleaning dirty unpinned buffers in
+			 * the window the sweep is about to reach.  This puts clean COOL
+			 * victims exactly where SublimateGetVictim's clean-first bias will
+			 * next look, so it can prefer a clean page instead of forcing a
+			 * synchronous write on the read-miss path.
+			 *
+			 * The window we pre-clean is adaptive_batch_limit buffers ahead of
+			 * the hand (the demand-adaptive cap), so under heavy eviction we
+			 * clean a larger lookahead and under light load a small one.  We
+			 * examine up to 2x the window to find that many dirty candidates
+			 * before giving up (a mostly-clean window costs little).
+			 */
 			int			batch_limit = adaptive_batch_limit;
+			int			nbuf = pool->bp_nbuffers;
+			int			hand_buf;
+			int			start_off;
+			int			examined;
+			int			max_examine;
 
-			for (int i = 0; i < pool->bp_nbuffers; i++)
+			/* Current sweep-hand position (buffer id); NULL out-params = no drain. */
+			hand_buf = routine->sync_start(local->strategy_data, NULL, NULL);
+			start_off = hand_buf - pool->bp_first_buf;
+			if (start_off < 0 || start_off >= nbuf)
+				start_off = 0;
+
+			max_examine = Min(nbuf, batch_limit * 2);
+
+			for (examined = 0; examined < max_examine; examined++)
 			{
-				BufferDesc *bufHdr = &local->descriptors[i].bufferdesc;
+				int			idx = (start_off + examined) % nbuf;
+				BufferDesc *bufHdr = &local->descriptors[idx].bufferdesc;
 				uint64		buf_state;
 
 				buf_state = pg_atomic_read_u64(&bufHdr->state);
