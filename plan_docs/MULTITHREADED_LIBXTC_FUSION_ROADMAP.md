@@ -202,3 +202,28 @@ unmodified tree in PROCESS mode, NOT this family):
   (subscription/recovery/pg_combinebackup) -- the "DynaHashAlloc" family.
 - ~92 exit-status-29 = process-only module load-rejections (Phase 16 module
   marking). recovery/pg_basebackup shutdown-hang + fork-fallback ENOSYS = separate.
+
+### F0a LANDED (2026-08-04, origin/xtc a2ff85921d0) -- unblocked by libxtc v1.32.0
+The xtc_log->elog bridge, deferred at v1.31.0 (no reachable emitter), is now live:
+libxtc v1.32.0 (commit a18c6d2) exports xtc_tuning_check() -- the public entry to
+the host-tuning advisor -- exactly what /tmp/libxtc-log-emitter-gap-question.md
+asked for. F0a installs an xtc_log default sink (xtc_pg_log_sink -> write() to
+STDERR with an [xtc <LEVEL>] prefix, ereport-free/async-safe) at carrier bringup
+behind the developer GUC xtc_log_to_server (default off, PGC_POSTMASTER,
+threaded-only), calls xtc_tuning_check(), then xtc_log_drain() to flush.
+
+REVIEW CAUGHT A REAL BUG (drain): the first F0a filled libxtc's log RING BUFFER
+but never drained it (the sink fires only from xtc_log_drain, whose sole libxtc
+caller is xtc_log_destroy, which we deliberately never call for the
+process-lifetime log) -- so ZERO advisories reached the log despite a clean boot.
+Fixed with one line: (void) xtc_log_drain(pglog) after xtc_tuning_check().
+Re-validated on a mis-tuned EC2 box: the server log NOW shows
+"[xtc INFO] [tuning] vm.swappiness is above 10 ..." + "sched_autogroup_enabled is 1 ..."
+at carrier bringup. Build 0/0, process regress 245/245, threaded 18/0/2,
+GUC-off + process-mode both silent+clean. Fourth fusion increment (F0b, F1, F2, F0a).
+
+COORDINATOR PROCESS NOTE: first landed the pre-drain-fix commit by mistake
+(ff-only aborted, push sent stale local HEAD); caught it by verifying
+origin/xtc's xtc_log_drain count == 0, force-pushed the correct a2ff85921d0.
+Standing rule reinforced: after every land, verify origin/xtc SHA == the exact
+EC2-validated commit.
