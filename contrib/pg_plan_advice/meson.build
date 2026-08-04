@@ -22,7 +22,7 @@ pgpa_scanner = custom_target('pgpa_scanner_lex',
   output: ['pgpa_scanner_lex.c', 'pgpa_scanner_lex.h'],
   command: lime_lex_cmd,
 )
-generated_sources += pgpa_scanner
+generated_sources += pgpa_scanner.to_list()
 
 pgpa_parser = custom_target('pgpa_parser',
   input: 'pgpa_parser.lime',

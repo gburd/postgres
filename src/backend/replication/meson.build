@@ -38,14 +38,14 @@ syncrep_scanner = custom_target('syncrep_scanner_lex',
   output: ['syncrep_scanner_lex.c', 'syncrep_scanner_lex.h'],
   command: lime_lex_cmd,
 )
-generated_sources += syncrep_scanner
+generated_sources += syncrep_scanner.to_list()
 
 repl_scanner = custom_target('repl_scanner_lex',
   input: 'repl_scanner.lex',
   output: ['repl_scanner_lex.c', 'repl_scanner_lex.h'],
   command: lime_lex_cmd,
 )
-generated_sources += repl_scanner
+generated_sources += repl_scanner.to_list()
 
 repl_parser = static_library('repl_parser',
   repl_parser_sources,

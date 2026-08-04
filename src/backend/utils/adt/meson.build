@@ -148,7 +148,7 @@ jsonpath_scan_lex_gen = custom_target('jsonpath_scan_lex',
   output: ['jsonpath_scan_lex.c', 'jsonpath_scan_lex.h'],
   command: lime_lex_cmd,
 )
-generated_sources += jsonpath_scan_lex_gen
+generated_sources += jsonpath_scan_lex_gen.to_list()
 
 # so we don't need to add . as an include dir for the whole backend
 backend_link_with += static_library('jsonpath',

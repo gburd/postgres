@@ -14,7 +14,7 @@ cube_scan = custom_target('cubescan_lex',
   output: ['cubescan_lex.c', 'cubescan_lex.h'],
   command: lime_lex_cmd,
 )
-generated_sources += cube_scan
+generated_sources += cube_scan.to_list()
 
 cube_parse = custom_target('cubeparse',
   input: 'cubeparse.lime',

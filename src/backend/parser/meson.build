@@ -103,7 +103,7 @@ scan_lex_gen = custom_target('scan_lex',
   output: ['scan_lex.c', 'scan_lex.h'],
   command: lime_lex_cmd,
 )
-generated_sources += scan_lex_gen
+generated_sources += scan_lex_gen.to_list()
 
 # The `parser` lib compiles the hand-written sources, the generated
 # scanner, and the generated grammar -- but NOT gram_snapshot.c (built

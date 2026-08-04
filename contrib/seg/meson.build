@@ -14,7 +14,7 @@ seg_scan = custom_target('segscan_lex',
   output: ['segscan_lex.c', 'segscan_lex.h'],
   command: lime_lex_cmd,
 )
-generated_sources += seg_scan
+generated_sources += seg_scan.to_list()
 
 seg_parse = custom_target('segparse',
   input: 'segparse.lime',

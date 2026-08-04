@@ -31,7 +31,7 @@ guc_file_lex = custom_target('guc_file_lex',
   output: ['guc_file_lex.c', 'guc_file_lex.h'],
   command: lime_lex_cmd,
 )
-generated_sources += guc_file_lex
+generated_sources += guc_file_lex.to_list()
 
 guc_file_lib = static_library('guc_file',
   files('guc-file.c'),
