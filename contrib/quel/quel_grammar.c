@@ -40,6 +40,7 @@
 
 #include "catalog/namespace.h"
 #include "nodes/makefuncs.h"
+#include "nodes/nodeFuncs.h"
 #include "nodes/parsenodes.h"
 #include "parser/parse_node.h"
 #include "parser/parser.h"
@@ -87,63 +88,55 @@ quel_make_column_ref(const char *tvname, const char *colname, int location)
 }
 
 /*
- * walk_target_for_tvars
- *	  Recursively walk a target-list expression collecting tuple-var
- *	  references.  Used to compute the implied FROM clause for
- *	  RETRIEVE statements where Berkeley QUEL omits explicit FROM.
+ * walk_node_for_tvars / quel_tvar_walker
+ *	  Collect tuple-var references (the first field of any 2+-part
+ *	  ColumnRef) from a raw-parse expression tree, so RETRIEVE can
+ *	  synthesize the FROM clause Berkeley QUEL omits.  Uses PostgreSQL's
+ *	  raw_expression_tree_walker so it robustly covers every raw node type
+ *	  (ColumnRef, A_Expr, FuncCall for aggregates, BoolExpr, ResTarget,
+ *	  sublinks, CASE, ...) rather than a hand-enumerated subset.
  */
 static void
-walk_node_for_tvars(Node *node, List **out)
+quel_collect_tvar(const char *tvname, List **out)
 {
+	ListCell   *lc;
+
+	foreach(lc, *out)
+	{
+		if (strcmp(strVal(lfirst(lc)), tvname) == 0)
+			return;
+	}
+	*out = lappend(*out, makeString(pstrdup(tvname)));
+}
+
+static bool
+quel_tvar_walker(Node *node, void *context)
+{
+	List	  **out = (List **) context;
+
 	if (node == NULL)
-		return;
+		return false;
 
 	if (IsA(node, ColumnRef))
 	{
 		ColumnRef  *cref = (ColumnRef *) node;
-		List	   *fields = cref->fields;
 
-		if (list_length(fields) >= 2)
+		if (list_length(cref->fields) >= 2)
 		{
-			Node	   *first = linitial(fields);
+			Node	   *first = linitial(cref->fields);
 
 			if (IsA(first, String))
-			{
-				const char *tvname = strVal(first);
-				ListCell   *lc;
-				bool		seen = false;
-
-				foreach(lc, *out)
-				{
-					if (strcmp(strVal(lfirst(lc)), tvname) == 0)
-					{
-						seen = true;
-						break;
-					}
-				}
-				if (!seen)
-					*out = lappend(*out, makeString(pstrdup(tvname)));
-			}
+				quel_collect_tvar(strVal(first), out);
 		}
+		return false;
 	}
-	else if (IsA(node, A_Expr))
-	{
-		A_Expr	   *e = (A_Expr *) node;
+	return raw_expression_tree_walker(node, quel_tvar_walker, context);
+}
 
-		walk_node_for_tvars(e->lexpr, out);
-		walk_node_for_tvars(e->rexpr, out);
-	}
-	else if (IsA(node, ResTarget))
-	{
-		walk_node_for_tvars(((ResTarget *) node)->val, out);
-	}
-	else if (IsA(node, List))
-	{
-		ListCell   *lc;
-
-		foreach(lc, (List *) node)
-			walk_node_for_tvars(lfirst(lc), out);
-	}
+static void
+walk_node_for_tvars(Node *node, List **out)
+{
+	(void) quel_tvar_walker(node, (void *) out);
 }
 
 List *
@@ -495,6 +488,40 @@ quel_build_attr_qualified_kw(const void *const *rhs_values,
 }
 
 /*
+ * quel_build_attr_named: quel_attr ::= IDENT EQ a_expr.
+ *
+ * A QUEL "result attribute": a named, computed target such as
+ * `retrieve (raise = e.sal * 1.1)`.  rhs_values[0] is the result column
+ * name (IDENT, a char* via the core_YYSTYPE union), rhs_values[1] is the
+ * EQ token (ignored), rhs_values[2] is the base grammar's a_expr value
+ * (a Node*).  Produces a fully-formed named ResTarget so
+ * quel_make_resTarget_list passes it through unchanged.
+ */
+Node *
+quel_build_attr_named(const void *const *rhs_values,
+					  const int *rhs_locs, int nrhs)
+{
+	ResTarget  *rt;
+	const char *name;
+	Node	   *val;
+
+	Assert(nrhs == 3);
+	name = (const char *) rhs_values[0];
+	/* rhs_values[1] is the EQ token -- ignore. */
+	val = (Node *) rhs_values[2];
+
+	if (name == NULL || val == NULL)
+		return NULL;
+
+	rt = makeNode(ResTarget);
+	rt->name = pstrdup(name);
+	rt->indirection = NIL;
+	rt->val = val;
+	rt->location = rhs_locs[0];
+	return (Node *) rt;
+}
+
+/*
  * quel_attr_list_normalize: coerce a quel_attr_list slot value to a List *.
  *
  * The grammar's base case is a unit production `quel_attr_list ::= quel_attr`.
@@ -576,12 +603,24 @@ quel_make_resTarget_list(List *colrefs)
 
 	foreach(lc, colrefs)
 	{
-		Node	   *col = (Node *) lfirst(lc);
-		ResTarget  *rt = makeNode(ResTarget);
+		Node	   *item = (Node *) lfirst(lc);
+		ResTarget  *rt;
 
+		/*
+		 * A `name = expr` result attribute already arrives as a fully formed
+		 * ResTarget (built by quel_build_attr_named); pass it through.  A
+		 * plain column reference (ColumnRef) or any other bare expression
+		 * gets wrapped as an unnamed ResTarget.
+		 */
+		if (IsA(item, ResTarget))
+		{
+			targets = lappend(targets, item);
+			continue;
+		}
+		rt = makeNode(ResTarget);
 		rt->name = NULL;
 		rt->indirection = NIL;
-		rt->val = col;
+		rt->val = item;
 		rt->location = -1;
 		targets = lappend(targets, rt);
 	}
@@ -632,53 +671,110 @@ quel_synthesize_from(List *target_list, Node *where_clause)
  * Build a SelectStmt with target list = attr_list, FROM clause
  * synthesised from the session's tuple-variable table.
  */
-Node *
-quel_build_retrieve_simple(const void *const *rhs_values,
-						   const int *rhs_locs, int nrhs)
+/*
+ * quel_build_select_core: shared SelectStmt builder for every RETRIEVE
+ * form.  attr_list is the (normalized) list of quel_attr values;
+ * whereClause is optional; distinct selects SELECT DISTINCT; into_name,
+ * if non-NULL, materializes the result into a new relation (SELECT INTO).
+ * The FROM clause is synthesized from the tuple-vars referenced anywhere
+ * in the target list or WHERE clause.
+ */
+static Node *
+quel_build_select_core(List *attr_list, Node *whereClause,
+					   bool distinct, const char *into_name)
 {
-	SelectStmt *sel;
-	List	   *attr_list;
-	List	   *target_list;
+	SelectStmt *sel = makeNode(SelectStmt);
+	List	   *target_list = quel_make_resTarget_list(attr_list);
 
-	Assert(nrhs == 4);			/* RETRIEVE LPAREN list RPAREN */
-	attr_list = quel_attr_list_normalize((void *) rhs_values[2]);
-
-	target_list = quel_make_resTarget_list(attr_list);
-	sel = makeNode(SelectStmt);
 	sel->targetList = target_list;
-	sel->fromClause = quel_synthesize_from(target_list, NULL);
-	sel->whereClause = NULL;
+	sel->fromClause = quel_synthesize_from(target_list, whereClause);
+	sel->whereClause = whereClause;
 	sel->op = SETOP_NONE;
+	if (distinct)
+		sel->distinctClause = list_make1(NIL);	/* SELECT DISTINCT */
+	if (into_name != NULL)
+	{
+		IntoClause *into = makeNode(IntoClause);
+
+		into->rel = makeRangeVar(NULL, pstrdup(into_name), -1);
+		into->colNames = NIL;
+		into->options = NIL;
+		into->onCommit = ONCOMMIT_NOOP;
+		into->tableSpaceName = NULL;
+		into->viewQuery = NULL;
+		into->skipData = false;
+		sel->intoClause = into;
+	}
 	return (Node *) sel;
 }
 
 /*
+ * Build a SelectStmt with target list = attr_list, FROM clause
+ * synthesised from the session's tuple-variable table.
+ */
+Node *
+quel_build_retrieve_simple(const void *const *rhs_values,
+						   const int *rhs_locs, int nrhs)
+{
+	Assert(nrhs == 4);			/* RETRIEVE LPAREN list RPAREN */
+	return quel_build_select_core(quel_attr_list_normalize((void *) rhs_values[2]),
+								  NULL, false, NULL);
+}
+
+/*
  * quel_build_retrieve_where: retrieve (attr_list) WHERE a_expr.
- *
- * Same as retrieve_simple but with whereClause populated from the
- * a_expr slot.  a_expr's value is already a Node * (the base
- * grammar's a_expr type) so we just thread it through.
  */
 Node *
 quel_build_retrieve_where(const void *const *rhs_values,
 						  const int *rhs_locs, int nrhs)
 {
-	SelectStmt *sel;
-	List	   *attr_list;
-	Node	   *whereClause;
-	List	   *target_list;
-
 	Assert(nrhs == 6);			/* RETRIEVE ( list ) WHERE expr */
-	attr_list = quel_attr_list_normalize((void *) rhs_values[2]);
-	whereClause = (Node *) rhs_values[5];
+	return quel_build_select_core(quel_attr_list_normalize((void *) rhs_values[2]),
+								  (Node *) rhs_values[5], false, NULL);
+}
 
-	target_list = quel_make_resTarget_list(attr_list);
-	sel = makeNode(SelectStmt);
-	sel->targetList = target_list;
-	sel->fromClause = quel_synthesize_from(target_list, whereClause);
-	sel->whereClause = whereClause;
-	sel->op = SETOP_NONE;
-	return (Node *) sel;
+/*
+ * retrieve unique (attr_list) [WHERE a_expr] -- SELECT DISTINCT.
+ */
+Node *
+quel_build_retrieve_unique(const void *const *rhs_values,
+						   const int *rhs_locs, int nrhs)
+{
+	Assert(nrhs == 5);			/* RETRIEVE UNIQUE ( list ) */
+	return quel_build_select_core(quel_attr_list_normalize((void *) rhs_values[3]),
+								  NULL, true, NULL);
+}
+
+Node *
+quel_build_retrieve_unique_where(const void *const *rhs_values,
+								 const int *rhs_locs, int nrhs)
+{
+	Assert(nrhs == 7);			/* RETRIEVE UNIQUE ( list ) WHERE expr */
+	return quel_build_select_core(quel_attr_list_normalize((void *) rhs_values[3]),
+								  (Node *) rhs_values[6], true, NULL);
+}
+
+/*
+ * retrieve into <rel> (attr_list) [WHERE a_expr] -- SELECT ... INTO rel.
+ * rhs_values[2] is the destination relation IDENT (char *).
+ */
+Node *
+quel_build_retrieve_into(const void *const *rhs_values,
+						 const int *rhs_locs, int nrhs)
+{
+	Assert(nrhs == 6);			/* RETRIEVE INTO IDENT ( list ) */
+	return quel_build_select_core(quel_attr_list_normalize((void *) rhs_values[4]),
+								  NULL, false, (const char *) rhs_values[2]);
+}
+
+Node *
+quel_build_retrieve_into_where(const void *const *rhs_values,
+							   const int *rhs_locs, int nrhs)
+{
+	Assert(nrhs == 8);			/* RETRIEVE INTO IDENT ( list ) WHERE expr */
+	return quel_build_select_core(quel_attr_list_normalize((void *) rhs_values[4]),
+								  (Node *) rhs_values[7], false,
+								  (const char *) rhs_values[2]);
 }
 
 /*

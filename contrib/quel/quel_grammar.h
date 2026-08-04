@@ -79,6 +79,8 @@ extern Node *quel_build_attr_qualified(const void *const *rhs_values,
 									   const int *rhs_locs, int nrhs);
 extern Node *quel_build_attr_qualified_kw(const void *const *rhs_values,
 										  const int *rhs_locs, int nrhs);
+extern Node *quel_build_attr_named(const void *const *rhs_values,
+								   const int *rhs_locs, int nrhs);
 extern List *quel_build_attr_list_single(const void *const *rhs_values,
 										 const int *rhs_locs, int nrhs);
 extern List *quel_build_attr_list_cons(const void *const *rhs_values,
@@ -87,6 +89,14 @@ extern Node *quel_build_retrieve_simple(const void *const *rhs_values,
 										const int *rhs_locs, int nrhs);
 extern Node *quel_build_retrieve_where(const void *const *rhs_values,
 									   const int *rhs_locs, int nrhs);
+extern Node *quel_build_retrieve_unique(const void *const *rhs_values,
+										const int *rhs_locs, int nrhs);
+extern Node *quel_build_retrieve_unique_where(const void *const *rhs_values,
+											  const int *rhs_locs, int nrhs);
+extern Node *quel_build_retrieve_into(const void *const *rhs_values,
+									  const int *rhs_locs, int nrhs);
+extern Node *quel_build_retrieve_into_where(const void *const *rhs_values,
+											const int *rhs_locs, int nrhs);
 extern Node *quel_build_retrieve_by(const void *const *rhs_values,
 									const int *rhs_locs, int nrhs);
 extern Node *quel_build_retrieve_where_by(const void *const *rhs_values,
