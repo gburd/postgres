@@ -1,5 +1,16 @@
 # Per-transaction re-dispatch fix -- design (2026-08-05)
 
+> DECISION (2026-08-05): Increment 1's affinity_runnable_queue was IMPLEMENTED,
+> twice-reviewed, then REMOVED WITHOUT MEASURING -- it is the wrong layer.  A
+> pooled session is NOT a libxtc fiber that yields; it runs to a
+> PG_STEP_PARK_PROTOCOL_READ boundary and RETURNS to the carrier's for(;;) loop,
+> which re-dispatches it from PG-side queues.  That is a SECOND, hand-rolled
+> cooperative scheduler on top of the carrier's xtc_exec loop, and the affinity
+> queue just made that hand-rolled scheduler more elaborate -- the opposite of
+> fusing with libxtc.  See "ARCHITECTURAL CONCLUSION" at the bottom.  The
+> increments below are kept as the RECORD of what the hand-rolled path would
+> need; the actual plan is the libxtc-native redirection.
+
 Fixes the beat-fork blocker isolated in .ec2/ab4-20260804-metal/FINDINGS.md:
 under HammerDB OLTP mt runs at ~1% of fork because every transaction re-cycles
 a session through the pooled scheduler's park -> wake -> re-lease path (36%+
@@ -128,3 +139,47 @@ Inc 1 first (biggest win, self-contained), measure.  Then Inc 2 (needs Inc 1's
 affinity to know "same carrier"), measure.  Inc 3 anytime (fold into Inc 1's
 PgCarrier struct change).  Sequential -- all three touch the same hot files and
 a lost-wakeup/queue-state bug is a hang.
+
+## ARCHITECTURAL CONCLUSION (2026-08-05) -- remove the affinity queue; fuse with xtc_exec instead
+
+Inc 1's affinity_runnable_queue was removed (never A/B'd) because it deepens the
+wrong architecture rather than fixing it.  The root problem is that the pooled
+protocol scheduler is a PG-SIDE cooperative scheduler:
+  PgSessionStepUnprotected runs the protocol until PG_STEP_PARK_PROTOCOL_READ,
+  then RETURNS; the carrier's for(;;) loop commits the park to a PG queue
+  (parked_protocol_queue / runnable_queue), polls parked fds, and re-leases
+  sessions by hand -- with a shared wake eventfd and (in Inc 1) a per-carrier
+  affinity list.  That is xtc_exec's job, re-implemented in PostgreSQL.
+
+The libxtc-native design (the actual north-star fusion): a pooled session is a
+real libxtc fiber.  At the protocol-read boundary it calls xtc_pg_wait_fd on its
+client socket and YIELDS.  xtc_exec resumes it when the socket is readable.
+xtc_exec ALREADY provides run queues, work-stealing, loop locality (affinity),
+and wakeless resume -- so this DELETES the PG-side parked_protocol_queue,
+runnable_queue, the shared pooled_protocol_wake_fd, WaitParkedReads,
+MarkRunnable/PopRunnable/Lease, and the whole per-transaction re-dispatch loop,
+rather than adding an affinity list to them.  It is less code, and it is the
+fusion the north star asks for (adopt xtc behaviours, dedup PG plumbing onto
+xtc).
+
+Why this was not obvious up front, and the risk to weigh before doing it: the
+PG-side scheduler exists because a stackless boundary (run-to-park-then-return)
+lets the carrier drop the session's C stack between transactions, and because
+the protocol-read park has to compose with PG's interrupt/latch/timeout
+machinery (CHECK_FOR_INTERRUPTS, ProcSignal, statement/idle timeouts) that a
+naive xtc_pg_wait_fd yield must still honor.  A fiber that yields at the read
+boundary holds a full C stack parked per idle session -- 192-384 idle sessions x
+stack = memory the stackless design avoids.  So the redirection is real work
+with a real tradeoff (stack memory per parked session vs. deleting the
+hand-rolled scheduler + getting xtc_exec's locality for free), and it must be
+MEASURED: does a fiber-yield-at-read-boundary session cut the 36% futex storm
+and move HammerDB mt toward fork, at an acceptable parked-stack memory cost?
+
+NEXT STEP (replaces Inc 1/2/3): design + prototype the fiber-yield-at-
+protocol-read-boundary session on a SPIKE branch, A/B it against the current
+PG-side scheduler on the metal HammerDB workload (srv_tpm mt vs fork, futex%,
+RSS per idle session).  Keep the current PG-side scheduler until the fiber-yield
+variant is measured neutral-or-better on throughput AND acceptable on memory.
+The Inc 2 (wakeless resume) and Inc 3 (F1 counters) items above become moot if
+the redirection lands (xtc_exec does both); they stay only as fallback tuning
+for the PG-side scheduler if the redirection proves too costly.
