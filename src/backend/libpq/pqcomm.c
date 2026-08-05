@@ -987,6 +987,86 @@ AcceptConnection(pgsocket server_fd, ClientSocket *client_sock)
 }
 
 /*
+ * AcceptConnectionDrain -- accept up to `max` pending connections in one call,
+ * without blocking after the backlog is drained.
+ *
+ * The threaded postmaster processes the SSLRequest/startup handshake in the
+ * backend fiber AFTER handoff, and its ServerLoop otherwise accepts only one
+ * connection per iteration.  Under a large SIMULTANEOUS connection burst that
+ * serialization makes many clients wait for the 'N' negotiation byte longer
+ * than their connect timeout, and they abort ("error response during SSL
+ * exchange").  Draining the accept backlog in a bounded batch admits a burst
+ * quickly so the handshakes are not serialized behind the whole ServerLoop.
+ *
+ * The caller passes an already-accept-ready listen fd (WL_SOCKET_ACCEPT fired).
+ * We accept it, then temporarily set the listen fd non-blocking and keep
+ * accepting until EAGAIN/EWOULDBLOCK or the batch cap, then restore blocking
+ * mode.  Each accepted socket is handed to `cb` immediately (mirrors the
+ * one-per-iteration path so slot/fiber launch happens per connection).  Returns
+ * the number of connections accepted.
+ *
+ * Non-blocking is applied to the LISTEN fd only for the duration of the drain.
+ * Fork mode does not use this path, so its one-accept-per-iteration behavior is
+ * unchanged.
+ */
+int
+AcceptConnectionDrain(pgsocket server_fd, int max,
+					  void (*cb) (ClientSocket *sock))
+{
+	int			accepted = 0;
+	bool		set_nonblock = false;
+
+	while (accepted < max)
+	{
+		ClientSocket s;
+
+		s.raddr.salen = sizeof(s.raddr.addr);
+		s.sock = accept(server_fd,
+						(struct sockaddr *) &s.raddr.addr,
+						&s.raddr.salen);
+		if (s.sock == PGINVALID_SOCKET)
+		{
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				break;			/* backlog drained */
+			if (errno == EINTR)
+				continue;
+			ereport(LOG,
+					(errcode_for_socket_access(),
+					 errmsg("could not accept new connection: %m")));
+			pg_usleep(100000L);	/* back off briefly on a real error */
+			break;
+		}
+
+		/*
+		 * After the first successful accept, switch the listen fd non-blocking
+		 * so the next accept() returns EAGAIN instead of blocking once the
+		 * backlog is empty.
+		 */
+		if (!set_nonblock && accepted == 0 && max > 1)
+		{
+			if (pg_set_noblock(server_fd))
+				set_nonblock = true;
+		}
+
+		accepted++;
+		cb(&s);
+		if (s.sock != PGINVALID_SOCKET)
+		{
+			if (closesocket(s.sock) != 0)
+				elog(LOG, "could not close client socket: %m");
+		}
+
+		if (!set_nonblock)
+			break;				/* single-accept mode (max==1 or set failed) */
+	}
+
+	if (set_nonblock)
+		(void) pg_set_block(server_fd);	/* restore blocking accept */
+
+	return accepted;
+}
+
+/*
  * TouchSocketFiles -- mark socket files as recently accessed
  *
  * This routine should be called every so often to ensure that the socket
