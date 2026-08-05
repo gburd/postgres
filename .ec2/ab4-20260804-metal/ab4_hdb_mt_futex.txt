@@ -1,0 +1,356 @@
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 9K of event 'cycles'
+# Event count (approx.): 22015186158
+#
+# Overhead  Command   Shared Object         Symbol                                          
+# ........  ........  ....................  ................................................
+#
+     3.87%  postgres  [kernel.kallsyms]     [k] fdget_pos
+                       ksys_read
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       read
+                       0
+     3.02%  postgres  postgres              [.] backend_pooled_protocol_carrier_entry
+                       0
+     2.90%  postgres  [kernel.kallsyms]     [k] x64_sys_call
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+     2.36%  postgres  [kernel.kallsyms]     [k] native_queued_spin_lock_slowpath
+                                     __task_rq_lock
+                                     try_to_wake_up
+                                     wake_up_q
+                                     futex_wake
+                                     do_futex
+                                     __x64_sys_futex
+                                     do_syscall_64
+                                     entry_SYSCALL_64_after_hwframe
+     2.26%  postgres  libc.so.6             [.] __condvar_cancel_waiting
+               0x4325af
+     2.13%  postgres  [kernel.kallsyms]     [k] __get_user_8
+               rseq_get_rseq_cs.isra.0
+               __rseq_handle_notify_resume
+               exit_to_user_mode_loop
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+     2.10%  postgres  libc.so.6             [.] __futex_abstimed_wait_common
+     1.90%  postgres  libc.so.6             [.] pthread_mutex_lock@@GLIBC_2.2.5
+     1.70%  postgres  [kernel.kallsyms]     [k] futex_hash
+                                  __futex_wait
+                                  futex_wait
+                                  do_futex
+                                  __x64_sys_futex
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+     1.60%  postgres  [kernel.kallsyms]     [k] futex_ref_get
+               futex_hash
+                          do_futex
+                          __x64_sys_futex
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+     1.57%  postgres  libxtc.so.1.32.0      [.] xtc_counter_add
+               0
+     1.54%  postgres  ld-linux-x86-64.so.2  [.] __tls_get_addr
+     1.52%  postgres  [kernel.kallsyms]     [k] sched_balance_newidle
+                       pick_next_task_fair
+                       __pick_next_task
+                       __schedule
+                       schedule
+                                  __futex_wait
+                                  futex_wait
+                                  do_futex
+                                  __x64_sys_futex
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+     1.47%  postgres  libc.so.6             [.] __GI___pthread_disable_asynccancel
+     1.46%  postgres  [kernel.kallsyms]     [k] plist_add
+                       __futex_queue
+                       futex_wait_setup
+                       __futex_wait
+                       futex_wait
+                       do_futex
+                       __x64_sys_futex
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+     1.39%  postgres  postgres              [.] PgRuntimeProtocolSchedulerPopRunnable
+               0x1039240
+     1.38%  postgres  [kernel.kallsyms]     [k] dequeue_entities
+               dequeue_task_fair
+               try_to_block_task.constprop.0.isra.0
+               __schedule
+               schedule
+                          __futex_wait
+                          futex_wait
+                          do_futex
+                          __x64_sys_futex
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+     1.35%  postgres  [kernel.kallsyms]     [k] __list_add_valid_or_report
+               plist_add
+               __futex_queue
+               futex_wait_setup
+               __futex_wait
+               futex_wait
+               do_futex
+               __x64_sys_futex
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __futex_abstimed_wait_common
+     1.27%  postgres  [kernel.kallsyms]     [k] _raw_spin_lock
+                                  __futex_wait
+                                  futex_wait
+                                  do_futex
+                                  __x64_sys_futex
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  __futex_abstimed_wait_common
+     1.26%  postgres  [kernel.kallsyms]     [k] __futex_hash
+               futex_hash
+                          do_futex
+                          __x64_sys_futex
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+     1.26%  postgres  [kernel.kallsyms]     [k] __futex_wait
+                       futex_wait
+                       do_futex
+                       __x64_sys_futex
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+     1.21%  postgres  [kernel.kallsyms]     [k] restore_fpregs_from_fpstate
+               switch_fpu_return
+               arch_exit_to_user_mode_prepare.constprop.0
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __futex_abstimed_wait_common
+     1.16%  postgres  libxtc.so.1.32.0      [.] xtc_notify_wait
+     1.15%  postgres  [kernel.kallsyms]     [k] do_futex
+                       __x64_sys_futex
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+     1.15%  postgres  libc.so.6             [.] read
+                       0
+     1.10%  postgres  [kernel.kallsyms]     [k] dequeue_entity
+                       dequeue_entities
+                       dequeue_task_fair
+                       try_to_block_task.constprop.0.isra.0
+                       __schedule
+                       schedule
+                       futex_do_wait
+                       __futex_wait
+                       futex_wait
+                       do_futex
+                       __x64_sys_futex
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+     1.09%  postgres  [kernel.kallsyms]     [k] update_se
+                       update_curr
+                       dequeue_entity
+                       dequeue_entities
+                       dequeue_task_fair
+                       try_to_block_task.constprop.0.isra.0
+                       __schedule
+                       schedule
+                                  __futex_wait
+                                  futex_wait
+                                  do_futex
+                                  __x64_sys_futex
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+     1.04%  postgres  postgres              [.] xtc_pg_pooled_queue_lock
+                       0
+     1.02%  postgres  [kernel.kallsyms]     [k] _raw_spin_lock_irq
+               eventfd_read
+               vfs_read
+               ksys_read
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               read
+               0
+     0.97%  postgres  libc.so.6             [.] clock_gettime@@GLIBC_2.17
+     0.96%  postgres  [kernel.kallsyms]     [k] __x64_sys_futex
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+     0.95%  postgres  libxtc.so.1.32.0      [.] pthread_mutex_unlock@plt
+     0.94%  postgres  [kernel.kallsyms]     [k] exit_to_user_mode_loop
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+     0.93%  postgres  postgres              [.] xtc_pg_pooled_queue_wait
+                       0
+     0.87%  postgres  [kernel.kallsyms]     [k] dequeue_task_fair
+                       try_to_block_task.constprop.0.isra.0
+                       __schedule
+                       schedule
+                                  __futex_wait
+                                  futex_wait
+                                  do_futex
+                                  __x64_sys_futex
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+     0.87%  postgres  libxtc.so.1.32.0      [.] __tls_get_addr@plt
+     0.84%  postgres  libc.so.6             [.] __GI___pthread_mutex_unlock_usercnt
+     0.82%  postgres  [kernel.kallsyms]     [k] psi_group_change
+                       psi_task_switch
+                       __schedule
+                       schedule
+                                  __futex_wait
+                                  futex_wait
+                                  do_futex
+                                  __x64_sys_futex
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+     0.80%  postgres  libc.so.6             [.] pthread_cond_timedwait@@GLIBC_2.3.2
+     0.80%  postgres  [kernel.kallsyms]     [k] __list_del_entry_valid_or_report
+                       plist_del
+                       __futex_unqueue
+                       futex_unqueue
+                       __futex_wait
+                       futex_wait
+                       do_futex
+                       __x64_sys_futex
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __futex_abstimed_wait_common
+     0.76%  postgres  [kernel.kallsyms]     [k] futex_wake
+                       do_futex
+                       __x64_sys_futex
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+     0.76%  postgres  [kernel.kallsyms]     [k] do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+     0.75%  postgres  [kernel.kallsyms]     [k] switch_fpu_return
+               arch_exit_to_user_mode_prepare.constprop.0
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+     0.74%  postgres  libc.so.6             [.] __errno_location
+               0
+     0.74%  postgres  [kernel.kallsyms]     [k] vfs_read
+                       ksys_read
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       read
+                       0
+     0.72%  postgres  [kernel.kallsyms]     [k] futex_unqueue
+                       __futex_wait
+                       futex_wait
+                       do_futex
+                       __x64_sys_futex
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __futex_abstimed_wait_common
+     0.72%  postgres  [kernel.kallsyms]     [k] get_futex_key
+                          do_futex
+                          __x64_sys_futex
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+     0.68%  postgres  [vdso]                [.] __vdso_clock_gettime
+     0.66%  postgres  libxtc.so.1.32.0      [.] xtc_amutex_unlock
+     0.62%  postgres  libxtc.so.1.32.0      [.] __xtc_mtx_unlock
+     0.59%  postgres  libc.so.6             [.] pthread_mutex_unlock@@GLIBC_2.2.5
+     0.59%  postgres  [kernel.kallsyms]     [k] __schedule
+     0.59%  postgres  [kernel.kallsyms]     [k] entry_SYSCALL_64_after_hwframe
+     0.59%  postgres  [kernel.kallsyms]     [k] __x64_sys_read
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               read
+               0
+     0.59%  postgres  [kernel.kallsyms]     [k] selinux_file_permission
+               security_file_permission
+               rw_verify_area
+               vfs_read
+               ksys_read
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               read
+               0
+     0.57%  postgres  [kernel.kallsyms]     [k] finish_task_switch.isra.0
+                       __schedule
+                       schedule
+                                  __futex_wait
+                                  futex_wait
+                                  do_futex
+                                  __x64_sys_futex
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+     0.57%  postgres  [kernel.kallsyms]     [k] ksys_read
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       read
+                       0
+     0.55%  postgres  [vdso]                [.] 0x0000000000000c03
+               clock_gettime@@GLIBC_2.17
+     0.55%  postgres  [kernel.kallsyms]     [k] update_sg_lb_stats.constprop.0
+               update_sd_lb_stats.constprop.0
+               sched_balance_find_src_group
+               sched_balance_rq
+               sched_balance_newidle
+               pick_next_task_fair
+               __pick_next_task
+               __schedule
+               schedule
+               futex_do_wait
+               __futex_wait
+               futex_wait
+               do_futex
+               __x64_sys_futex
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+               __futex_abstimed_wait_common
+     0.54%  postgres  [kernel.kallsyms]     [k] update_curr
+     0.54%  postgres  [kernel.kallsyms]     [k] cpuacct_charge
+               update_se
+               update_curr
+               dequeue_entity
+               dequeue_entities
+               dequeue_task_fair
+               try_to_block_task.constprop.0.isra.0
+               __schedule
+               schedule
+               futex_do_wait
+               __futex_wait
+               futex_wait
+               do_futex
+               __x64_sys_futex
+               do_syscall_64
+               entry_SYSCALL_64_after_hwframe
+     0.54%  postgres  [kernel.kallsyms]     [k] __update_idle_core
+               set_next_task_idle
+               __pick_next_task
+               __schedule
+               schedule
+                          __futex_wait
+                          futex_wait
+                          do_futex
+                          __x64_sys_futex
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+     0.54%  postgres  [kernel.kallsyms]     [k] __update_load_avg_se
+                       update_load_avg
+                       dequeue_entity
+                       dequeue_entities
+                       dequeue_task_fair
+                       try_to_block_task.constprop.0.isra.0
+                       __schedule
+                       schedule
+                       futex_do_wait
+                       __futex_wait
+                       futex_wait
+                       do_futex
+                       __x64_sys_futex
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+     0.53%  postgres  postgres              [.] PgRuntimeProtocolSchedulerWaitParkedReads
+     0.53%  postgres  [kernel.kallsyms]     [k] fput
+                          do_syscall_64
+                          entry_SYSCALL_64_after_hwframe
+                          read
+                          0
+     0.53%  postgres  postgres              [.] __errno_location@plt
+               0
+     0.53%  postgres  libxtc.so.1.32.0      [.] xtc_amutex_lock
+     0.50%  postgres  postgres              [.] xtc_amutex_unlock@plt
+               0
+#
+#
