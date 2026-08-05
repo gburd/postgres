@@ -1,0 +1,205 @@
+#
+#
+# Total Lost Samples: 0
+#
+# Samples: 631K of event 'cycles'
+# Event count (approx.): 5707498972070
+#
+# Overhead  Command          Shared Object            Symbol                                          
+# ........  ...............  .......................  ................................................
+#
+     6.89%  swapper          [kernel.kallsyms]        [k] intel_idle
+                       cpuidle_enter_state
+                       cpuidle_enter
+                       cpuidle_idle_call
+                       do_idle
+                       cpu_startup_entry
+                       start_secondary
+                       common_startup_64
+     4.72%  postgres         postgres                 [.] LWLockAcquire
+     3.70%  postgres         postgres                 [.] PinBuffer.constprop.0
+     3.11%  postgres         postgres                 [.] _bt_compare
+     1.33%  postgres         postgres                 [.] AllocSetAlloc
+     1.30%  postgres         [kernel.kallsyms]        [k] update_sg_lb_stats.constprop.0
+                       update_sd_lb_stats.constprop.0
+                       sched_balance_find_src_group
+                       sched_balance_rq
+                                  pick_next_task_fair
+                                  __pick_next_task
+                                  __schedule
+                                  schedule
+                                             poll_schedule_timeout.constprop.0
+                                             do_poll.constprop.0
+                                             do_sys_poll
+                                             __x64_sys_poll
+                                             do_syscall_64
+                                             entry_SYSCALL_64_after_hwframe
+                                             __poll
+                                             0
+     1.26%  postgres         postgres                 [.] base_yyparse
+     1.23%  postgres         postgres                 [.] LWLockRelease
+     1.21%  postgres         postgres                 [.] BufferLockAcquire
+     1.17%  postgres         postgres                 [.] StartReadBuffer
+     1.08%  pgbench          [kernel.kallsyms]        [k] update_sg_lb_stats.constprop.0
+                       update_sd_lb_stats.constprop.0
+                       sched_balance_find_src_group
+                       sched_balance_rq
+                       sched_balance_newidle
+                       pick_next_task_fair
+                       __pick_next_task
+                       __schedule
+                       schedule
+                       schedule_hrtimeout_range_clock
+                       poll_schedule_timeout.constprop.0
+                       do_poll.constprop.0
+                       do_sys_poll
+                       __x64_sys_ppoll
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       ppoll
+     1.08%  postgres         postgres                 [.] UnlockReleaseBuffer
+     1.06%  postgres         postgres                 [.] BufferGetBlockNumber
+     1.06%  postgres         postgres                 [.] hash_search_with_hash_value
+     0.97%  pgbench          [kernel.kallsyms]        [k] _raw_spin_lock_irqsave
+     0.82%  pgbench          [kernel.kallsyms]        [k] tcp_rcv_established
+                       tcp_v4_do_rcv
+                       tcp_v4_rcv
+                       ip_protocol_deliver_rcu
+                       ip_local_deliver_finish
+                       __netif_receive_skb_one_core
+                       process_backlog
+                       __napi_poll
+                       net_rx_action
+                       handle_softirqs
+                       do_softirq
+                       __local_bh_enable_ip
+                       __dev_queue_xmit
+                       ip_finish_output2
+                       ip_output
+                       __ip_queue_xmit
+                       __tcp_transmit_skb
+                       tcp_write_xmit
+                       __tcp_push_pending_frames
+                       tcp_sendmsg_locked
+                       tcp_sendmsg
+                       __sys_sendto
+                       __x64_sys_sendto
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __send
+     0.79%  postgres         [kernel.kallsyms]        [k] skb_defer_free_flush
+                       net_rx_action
+                       handle_softirqs
+                       do_softirq
+                       __local_bh_enable_ip
+                       __dev_queue_xmit
+                       ip_finish_output2
+                       ip_output
+                       __ip_queue_xmit
+                       __tcp_transmit_skb
+                       tcp_write_xmit
+                       __tcp_push_pending_frames
+                       tcp_sendmsg_locked
+                       tcp_sendmsg
+                       __sys_sendto
+                       __x64_sys_sendto
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __send
+     0.77%  postgres         [kernel.kallsyms]        [k] __schedule
+                       schedule
+                                  poll_schedule_timeout.constprop.0
+                                  do_poll.constprop.0
+                                  do_sys_poll
+                                  __x64_sys_poll
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  __poll
+                                  0
+     0.76%  postgres         [kernel.kallsyms]        [k] tcp_rcv_established
+                       tcp_v4_do_rcv
+                       tcp_v4_rcv
+                       ip_protocol_deliver_rcu
+                       ip_local_deliver_finish
+                       __netif_receive_skb_one_core
+                       process_backlog
+                       __napi_poll
+                       net_rx_action
+                       handle_softirqs
+                       do_softirq
+                       __local_bh_enable_ip
+                       __dev_queue_xmit
+                       ip_finish_output2
+                       ip_output
+                       __ip_queue_xmit
+                       __tcp_transmit_skb
+                       tcp_write_xmit
+                       __tcp_push_pending_frames
+                       tcp_sendmsg_locked
+                       tcp_sendmsg
+                       __sys_sendto
+                       __x64_sys_sendto
+                       do_syscall_64
+                       entry_SYSCALL_64_after_hwframe
+                       __send
+     0.73%  postgres         postgres                 [.] palloc0
+     0.72%  pgbench          pgbench                  [.] threadRun
+     0.70%  postgres         postgres                 [.] stack_is_too_deep
+     0.67%  pgbench          [kernel.kallsyms]        [k] tcp_check_space
+                                  tcp_v4_do_rcv
+                                  tcp_v4_rcv
+                                  ip_protocol_deliver_rcu
+                                  ip_local_deliver_finish
+                                  __netif_receive_skb_one_core
+                                  process_backlog
+                                  __napi_poll
+                                  net_rx_action
+                                  handle_softirqs
+                                  do_softirq
+                                  __local_bh_enable_ip
+                                  __dev_queue_xmit
+                                  ip_finish_output2
+                                  ip_output
+                                  __ip_queue_xmit
+                                  __tcp_transmit_skb
+                                  tcp_write_xmit
+                                  __tcp_push_pending_frames
+                                  tcp_sendmsg_locked
+                                  tcp_sendmsg
+                                  __sys_sendto
+                                  __x64_sys_sendto
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  __send
+     0.66%  postgres         [kernel.kallsyms]        [k] tcp_check_space
+                                  tcp_v4_do_rcv
+                                  tcp_v4_rcv
+                                  ip_protocol_deliver_rcu
+                                  ip_local_deliver_finish
+                                  __netif_receive_skb_one_core
+                                  process_backlog
+                                  __napi_poll
+                                  net_rx_action
+                                  handle_softirqs
+                                  do_softirq
+                                  __local_bh_enable_ip
+                                  __dev_queue_xmit
+                                  ip_finish_output2
+                                  ip_output
+                                  __ip_queue_xmit
+                                  __tcp_transmit_skb
+                                  tcp_write_xmit
+                                  __tcp_push_pending_frames
+                                  tcp_sendmsg_locked
+                                  tcp_sendmsg
+                                  __sys_sendto
+                                  __x64_sys_sendto
+                                  do_syscall_64
+                                  entry_SYSCALL_64_after_hwframe
+                                  __send
+     0.59%  postgres         postgres                 [.] heap_hot_search_buffer
+     0.57%  postgres         postgres                 [.] palloc
+     0.55%  postgres         postgres                 [.] core_yylex
+     0.50%  postgres         [kernel.kallsyms]        [k] __inet_lookup_established
+#
+#
