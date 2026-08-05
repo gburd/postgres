@@ -1,0 +1,9 @@
+OS_TUNED nvme=6 steal=0
+LIBXTC installed p=1 ver=/usr/local/lib/libxtc.so.1.32.0
+PG built xtc_link=	libxtc.so.1 => /usr/local/lib/libxtc.so.1 (0x00007f1fee60c000)
+SCHEMA built tpcc=9763 MB
+TPS_OK multithreaded=on carriers=0 (thread-per-session fibers)
+PREFLIGHT tps multithreaded=on sample_query=100
+CELL process_c0_vu384_r1 srv_tpm=2372863 rss_mb=59 cs_per_s=406674
+TPS_OK multithreaded=on carriers=0 (thread-per-session fibers)
+CELL tps_c0_vu384_r1 srv_tpm=NA rss_mb=238 cs_per_s=NA
