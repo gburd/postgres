@@ -46,6 +46,25 @@
 
 #include "xtc_aio.h"					/* xtc_aio_preadv / xtc_aio_pwritev */
 
+#ifndef WIN32
+#include <sys/uio.h>					/* preadv2 / RWF_NOWAIT (Linux glibc) */
+#endif
+
+/*
+ * Cached-read fast path: avoid a fiber park+resume (and thus a futex wait/wake
+ * round trip) for a data-file read the OS page cache can satisfy immediately.
+ * OLTP issues many tiny, mostly-cached reads per transaction; parking the fiber
+ * for each one drives the carrier scheduler's wake path (F1 counters, F2 queue
+ * notify, re-lease) into a futex storm under high concurrency -- measured at
+ * 36% __x64_sys_futex with 192 VUs, mt collapsing to ~1% of fork.
+ * preadv2(RWF_NOWAIT) returns the data with NO park when it is already cached,
+ * and -EAGAIN when the read WOULD block -- only then do we fall through to the
+ * async park path, where yielding the carrier is actually worth the wake cost.
+ */
+#if defined(RWF_NOWAIT)
+#define XTC_AIO_HAVE_NOWAIT_READ 1
+#endif
+
 static bool pgaio_xtc_needs_synchronous_execution(PgAioHandle *ioh);
 static int	pgaio_xtc_submit(uint16 num_staged_ios, PgAioHandle **staged_ios);
 
@@ -112,6 +131,39 @@ pgaio_xtc_submit(uint16 num_staged_ios, PgAioHandle **staged_ios)
 		 * wrong state: IDLE").
 		 */
 		pgaio_io_prepare_submit(ioh);
+
+#ifdef XTC_AIO_HAVE_NOWAIT_READ
+		/*
+		 * Cached-read fast path.  For a READV, first try preadv2(RWF_NOWAIT):
+		 * a plain synchronous syscall that returns immediately from the OS page
+		 * cache when the data is resident, WITHOUT parking the fiber (so no
+		 * carrier-scheduler wake, no futex).  This is a fiber-transparent op --
+		 * no fiber switch, so no current-work save/restore is needed.  If it
+		 * fully satisfies the read, complete the handle in-line and move on.
+		 * On -EAGAIN (would block) or a partial read, fall through to the async
+		 * park path below, which is where yielding the carrier actually pays.
+		 */
+		if ((PgAioOp) ioh->op == PGAIO_OP_READV)
+		{
+			ssize_t		want = 0;
+			ssize_t		got;
+
+			for (int k = 0; k < ioh->op_data.read.iov_length; k++)
+				want += iov[k].iov_len;
+
+			got = preadv2(ioh->op_data.read.fd, iov,
+						  ioh->op_data.read.iov_length,
+						  (int64) ioh->op_data.read.offset, RWF_NOWAIT);
+			if (got == want)
+			{
+				/* fully served from cache -- no park, no futex */
+				ioh->result = (int) got;
+				pgaio_io_process_completion(ioh, ioh->result);
+				continue;
+			}
+			/* EAGAIN / short / error -> fall through to the park path */
+		}
+#endif
 
 		/*
 		 * xtc_aio_preadv/pwritev PARK the issuing fiber for the duration of the
