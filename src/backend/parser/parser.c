@@ -121,8 +121,23 @@ assign_grammar_dialect(const char *newval, void *extra)
 	(void) extra;
 }
 
+/*
+ * PG_LIME_PUSHPARSE forces the push path even with no extension active.
+ * getenv() is not free (it walks environ and, on the profile, showed up
+ * at ~4% of push-path parse time when called per query); read it once.
+ */
+static inline bool
+raw_parser_force_pushparse(void)
+{
+	static int			force = -1;
+
+	if (force < 0)
+		force = (getenv("PG_LIME_PUSHPARSE") != NULL) ? 1 : 0;
+	return force != 0;
+}
+
 #define RAW_PARSER_USE_PUSHPARSE() \
-	(raw_parser_lime_active() || getenv("PG_LIME_PUSHPARSE") != NULL)
+	(raw_parser_lime_active() || raw_parser_force_pushparse())
 
 
 /*
