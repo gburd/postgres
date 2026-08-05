@@ -1,0 +1,18 @@
+OS_TUNED nvme=6 steal=0
+LIBXTC installed p=1 ver=/usr/local/lib/libxtc.so.1.32.0
+PG built xtc_link=	libxtc.so.1 => /usr/local/lib/libxtc.so.1 (0x00007f38a7662000)
+SCHEMA built tpcc=9762 MB
+POOLED_OK carriers=192 rows=15
+PREFLIGHT io_method=xtc sample_query=100
+CELL process_c0_vu192_r1 nopm=1090995 srv_tpm=2367218
+POOLED_OK carriers=192 rows=15
+CELL threaded-sync_c192_vu192_r1 nopm=NA srv_tpm=35948
+POOLED_OK carriers=192 rows=15
+CELL threaded-xtc_c192_vu192_r1 nopm=NA srv_tpm=22155
+CELL process_c0_vu384_r1 nopm=1075229 srv_tpm=2353326
+POOLED_OK carriers=192 rows=15
+CELL threaded-sync_c192_vu384_r1 nopm=NA srv_tpm=7
+POOLED_OK carriers=192 rows=15
+CELL threaded-xtc_c192_vu384_r1 nopm=NA srv_tpm=75
+POOLED_OK carriers=192 rows=15
+THREADS postmaster=21 iouwrk=1
