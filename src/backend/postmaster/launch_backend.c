@@ -524,6 +524,21 @@ backend_thread_start_release(BackendThreadStart *thread_start)
 	if (thread_start == NULL)
 		return;
 
+	/*
+	 * Close the dup()'d client socket if it is still open, for the same
+	 * fd-leak reason as backend_pooled_logical_start_release: the clean
+	 * dedicated-thread exit path closes it and nulls the fd before teardown,
+	 * and the launch-error paths close it explicitly, so this is normally a
+	 * no-op -- but it makes release leak-proof on EVERY path (belt-and-
+	 * suspenders against a future error path that reaches here with the socket
+	 * still open).
+	 */
+	if (thread_start->client_sock.sock != PGINVALID_SOCKET)
+	{
+		closesocket(thread_start->client_sock.sock);
+		thread_start->client_sock.sock = PGINVALID_SOCKET;
+	}
+
 	scheduler_execution = thread_start->runtime_state.carrier.scheduler_execution;
 	if (scheduler_execution != NULL)
 	{
@@ -551,6 +566,23 @@ backend_pooled_logical_start_release(BackendPooledLogicalStart *logical_start)
 {
 	if (logical_start == NULL)
 		return;
+
+	/*
+	 * Close the dup()'d client socket if it is still open.  The clean pooled
+	 * exit path (backend_pooled_protocol_exit_logical) closes it and sets the
+	 * fd to PGINVALID_SOCKET before any teardown, so this is a no-op there.
+	 * But the error-recovery release paths (the sigsetjmp branches in
+	 * run/resume_logical_start, and a failed launch after the dup) reach here
+	 * with the socket STILL OPEN -- without this close, every session that
+	 * errors out during startup/auth leaks its dup'd fd, and a sustained
+	 * connection storm exhausts the postmaster fd table (observed: 8,591 open
+	 * fds -> new connections fail "error response during SSL exchange").
+	 */
+	if (logical_start->client_sock.sock != PGINVALID_SOCKET)
+	{
+		closesocket(logical_start->client_sock.sock);
+		logical_start->client_sock.sock = PGINVALID_SOCKET;
+	}
 
 	free(logical_start);
 }
@@ -985,8 +1017,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		rc = xtc_pg_launch_backend_fiber(backend_thread_entry, thread_start);
 		if (rc != 0)
 		{
-			if (child_type == B_BACKEND)
-				closesocket(thread_start->client_sock.sock);
+			/* client_sock is closed by backend_thread_start_release */
 			backend_thread_start_release(thread_start);
 			errno = rc;
 			return false;
@@ -1023,8 +1054,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 						  backend_thread_entry, thread_start);
 	if (rc != 0)
 	{
-		if (child_type == B_BACKEND)
-			closesocket(thread_start->client_sock.sock);
+		/* client_sock is closed by backend_thread_start_release */
 		backend_thread_start_release(thread_start);
 		errno = rc;
 		return false;
