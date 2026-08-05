@@ -684,6 +684,7 @@ DependencyGeneratorData
 DependencyType
 DeserialIOData
 DestReceiver
+DialectBundle
 DictISpell
 DictInt
 DictSimple

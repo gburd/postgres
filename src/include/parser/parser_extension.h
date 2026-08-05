@@ -29,9 +29,19 @@
  *
  *   - Reduce dispatch: base rules run the generated base actions
  *     through the host-reduce wrapper (base_yyHostReduce); extension
- *     rules route to their registered PgGrammarReduceFn keyed by
- *     composed-ruleno - base_nrule.  rhs_values[i] is the i-th RHS
- *     symbol's value by value (see PgGrammarReduceFn below).
+ *     rules route to their registered PgGrammarReduceFn keyed by the
+ *     stable rule identity resolved to each composed snapshot's ruleno
+ *     (Lime v1.10.0 lime_snapshot_rule_by_id).  rhs_values[i] is the
+ *     i-th RHS symbol's value by value (see PgGrammarReduceFn below).
+ *
+ *   - Per-session dialect selection: at postmaster start the driver
+ *     composes the default "all" snapshot (base SQL + every loaded
+ *     extension) AND one isolated snapshot per distinct extension name
+ *     (base SQL + that extension only).  Each session picks which one it
+ *     parses with via the grammar_dialect GUC, so different backends of
+ *     one server can parse different dialects concurrently.  Snapshots
+ *     are read-only during a parse and shared across backends; each
+ *     backend pins the one its GUC selects.
  *
  *   - Keyword override: each registered token's lexeme is published to
  *     scan.c via pg_grammar_ext_keyword_hook.  Non-colliding keywords
@@ -220,18 +230,23 @@ extern void pg_grammar_ext_dispatch_reduce(unsigned int rule_id,
  * for lime_snapshot_rule_by_id), and dispatch by ruleno at parse time.
  *
  * Wiring (driven by the push parser after each compose):
- *   1. pg_grammar_ext_reset_ruleno_map(nrule)      -- size the map.
+ *   1. map = pg_grammar_ext_reset_ruleno_map(nrule)  -- allocate + make
+ *      active the map for a freshly composed snapshot; the bundle retains
+ *      `map` to re-select later.
  *   2. pg_grammar_ext_foreach_reducible(cb, arg)   -- for each extension
  *      rule the driver resolves its ruleno via lime_snapshot_rule_by_id
  *      and calls pg_grammar_ext_set_ruleno(ruleno, rule_id).
- *   3. pg_grammar_ext_reduce_by_ruleno(...)         -- host-reduce path:
+ *   3. pg_grammar_ext_use_ruleno_map(map, count)   -- at parse time,
+ *      select the active dialect's map (or NULL for base-only).
+ *   4. pg_grammar_ext_reduce_by_ruleno(...)         -- host-reduce path:
  *      returns true (and dispatches) for an extension ruleno, false for a
  *      base-grammar ruleno.
  */
 typedef void (*PgGrammarExtRuleCB) (unsigned int rule_id,
 									const char *identity, void *arg);
 
-extern void pg_grammar_ext_reset_ruleno_map(unsigned int nrule);
+extern unsigned int *pg_grammar_ext_reset_ruleno_map(unsigned int nrule);
+extern void pg_grammar_ext_use_ruleno_map(unsigned int *map, int count);
 extern void pg_grammar_ext_foreach_reducible(PgGrammarExtRuleCB cb, void *arg);
 extern void pg_grammar_ext_set_ruleno(int ruleno, unsigned int rule_id);
 extern bool pg_grammar_ext_reduce_by_ruleno(int ruleno,
@@ -249,6 +264,23 @@ extern bool pg_grammar_ext_reduce_by_ruleno(int ruleno,
  *	  caller must not free.
  */
 extern int	pg_grammar_ext_pending_fragments(const char ***frags_out);
+
+/*
+ * Per-session dialect selection.
+ *
+ * A "dialect" is a registered grammar extension, named by
+ * pg_grammar_ext_create(name, ...).  At postmaster start the push driver
+ * composes the default "all" snapshot (base SQL + every loaded
+ * extension) AND one isolated snapshot per distinct dialect name (base
+ * SQL + only that dialect's rules).  A session selects which snapshot it
+ * parses with via the grammar_dialect GUC, so different backends of the
+ * same server can parse different dialects concurrently.
+ */
+extern int	pg_grammar_ext_dialect_count(void);
+extern const char *pg_grammar_ext_dialect_name(int idx);
+extern bool pg_grammar_ext_dialect_registered(const char *name);
+extern int	pg_grammar_ext_dialect_fragments(const char *name,
+										 const char ***frags_out);
 
 /*
  * Callback for pg_grammar_ext_foreach_token: receives one registered
@@ -372,10 +404,13 @@ extern void pg_grammar_ext_prewarm(void);
  *   must stay valid.
  *
  *   To add or remove a grammar extension: edit
- *   shared_preload_libraries, restart the postmaster.  (A future
- *   enhancement could let a GUC activate/deactivate an already-loaded
- *   dialect across a standard config reload, with a refcounted snapshot
- *   swap at the raw_parser boundary; not implemented.)
+ *   shared_preload_libraries, restart the postmaster.  A running session
+ *   CAN, however, switch among the grammars that ARE loaded: the
+ *   grammar_dialect GUC selects the default "all" grammar (''/'all'),
+ *   base SQL only ('none'), or one named loaded dialect, per session and
+ *   without a restart.  (Hot-LOADING a brand-new grammar library into a
+ *   running cluster is still not possible -- no shared_preload_libraries
+ *   extension can be.)
  *
  * Keyword override:
  *   An extension keyword resolves to its own token even when its lexeme

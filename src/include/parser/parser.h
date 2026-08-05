@@ -16,6 +16,7 @@
 #define PARSER_H
 
 #include "nodes/parsenodes.h"
+#include "utils/guc.h"
 
 
 /*
@@ -54,6 +55,15 @@ typedef enum
 
 /* GUC variable in scan.l */
 extern PGDLLIMPORT int backslash_quote;
+
+/*
+ * grammar_dialect GUC (defined in parser.c).  Selects which loaded
+ * grammar dialect this session parses with.  Declared here because the
+ * generated GUC table (guc_tables.c) includes this header.
+ */
+extern PGDLLIMPORT char *grammar_dialect_string;
+extern bool check_grammar_dialect(char **newval, void **extra, GucSource source);
+extern void assign_grammar_dialect(const char *newval, void *extra);
 
 
 /* Primary entry point for the raw parsing functions */

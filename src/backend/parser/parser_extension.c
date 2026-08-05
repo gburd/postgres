@@ -18,16 +18,19 @@
  *      batched.
  *   3. pg_grammar_ext_prewarm(), called once at postmaster start after
  *      all _PG_init()s (see miscinit.c), composes the base grammar source
- *      with every queued fragment and compiles the result to a runtime
- *      ParserSnapshot via lime_compile_grammar_in_process()
- *      (parser_pushparse.c: pg_grammar_compose_install).  No subprocess,
- *      no C compiler, no .so cache, no dlopen.  The composed snapshot is
- *      installed as the active push-parse grammar; the cost is absorbed
- *      pre-fork so backends see a warm parser with no cold-start.
- *   4. At parse time the push driver routes base rules to the generated
- *      base actions (base_yyHostReduce) and extension rules to their
- *      registered PgGrammarReduceFn via pg_grammar_ext_resolve_reduce,
- *      keyed by composed-ruleno - base_nrule.
+ *      with the queued fragments and compiles the result to runtime
+ *      ParserSnapshots via lime_compile_grammar_in_process()
+ *      (parser_pushparse.c).  It builds the default "all" snapshot (base
+ *      SQL + every extension) and one isolated snapshot per distinct
+ *      extension/dialect name (base SQL + that dialect only).  No
+ *      subprocess, no C compiler, no .so cache, no dlopen.  The cost is
+ *      absorbed pre-fork so backends see warm parsers with no cold-start.
+ *   4. At parse time a session selects one dialect snapshot via the
+ *      grammar_dialect GUC; the push driver routes base rules to the
+ *      generated base actions (base_yyHostReduce) and extension rules to
+ *      their registered PgGrammarReduceFn, keyed by each snapshot's own
+ *      ruleno -> rule_id map resolved by stable rule identity (Lime
+ *      v1.10.0 lime_snapshot_rule_by_id).
  *
  * The historical Track A path (serialize -> fork lime + cc -> dlopen a
  * cached .so) has been removed entirely; this file is the in-process
@@ -731,13 +734,24 @@ enqueue_pending(const char *name, const char *fragment,
 }
 
 /*
- * ruleno_to_ruleid -- the composed snapshot's ruleno -> extension rule_id
- * map, built by identity lookup after compose (Lime v1.10.0
+ * ruleno_to_ruleid -- the ACTIVE composed snapshot's ruleno -> extension
+ * rule_id map, built by identity lookup after compose (Lime v1.10.0
  * lime_snapshot_rule_by_id).  ruleno_to_ruleid[n] is the 1-based extension
  * rule_id for composed rule n, or 0 if composed rule n is a base-grammar
  * rule (or a silent extension rule).  Stable across the compose
  * renumbering that the old positional composed_ruleno - base_nrule
  * arithmetic could not survive.
+ *
+ * With per-session dialect selection each composed snapshot (the default
+ * "all" grammar and one per named dialect) has its OWN ruleno map, owned
+ * by the push-parse driver's dialect bundle.  parser_extension.c holds a
+ * pointer to whichever map belongs to the snapshot the current backend is
+ * parsing with; the driver swaps it via pg_grammar_ext_use_ruleno_map at
+ * compose time (to populate a bundle's map) and at parse time (to select
+ * the active bundle's map).  The array memory is allocated here (in
+ * ext_context, which survives forks) so the driver need not; the pointer
+ * is process-global but only ever read/written single-threaded per backend
+ * (one parse at a time), and the arrays are immutable after their compose.
  */
 static unsigned int *ruleno_to_ruleid = NULL;
 static int	ruleno_to_ruleid_count = 0;
@@ -776,11 +790,13 @@ ext_rule_identity(const ExtRule *r)
 
 /*
  * pg_grammar_ext_reset_ruleno_map
- *	  (Re)allocate the composed-ruleno -> extension rule_id map for a
- *	  composed snapshot with `nrule` rules.  Called by the push driver
- *	  before it populates the map by identity (see below).
+ *	  Allocate a fresh composed-ruleno -> extension rule_id map for a
+ *	  composed snapshot with `nrule` rules, make it the active map, and
+ *	  return it so the caller (a dialect bundle) can retain ownership and
+ *	  re-select it later via pg_grammar_ext_use_ruleno_map.  The push
+ *	  driver populates it by identity immediately after (see below).
  */
-void
+unsigned int *
 pg_grammar_ext_reset_ruleno_map(unsigned int nrule)
 {
 	MemoryContext old = MemoryContextSwitchTo(ext_context());
@@ -788,6 +804,24 @@ pg_grammar_ext_reset_ruleno_map(unsigned int nrule)
 	ruleno_to_ruleid = palloc0(sizeof(unsigned int) * (nrule ? nrule : 1));
 	ruleno_to_ruleid_count = (int) nrule;
 	MemoryContextSwitchTo(old);
+	return ruleno_to_ruleid;
+}
+
+/*
+ * pg_grammar_ext_use_ruleno_map
+ *	  Select which composed snapshot's ruleno -> rule_id map is active.
+ *	  Called by the push-parse driver: once per bundle at compose time so
+ *	  the map it just allocated (pg_grammar_ext_reset_ruleno_map) receives
+ *	  the set_ruleno writes, and once per parse to point dispatch at the
+ *	  dialect this backend selected.  `map` may be NULL (base-only, no
+ *	  extension rules), in which case reduce dispatch always falls through
+ *	  to the base grammar.
+ */
+void
+pg_grammar_ext_use_ruleno_map(unsigned int *map, int count)
+{
+	ruleno_to_ruleid = map;
+	ruleno_to_ruleid_count = map ? count : 0;
 }
 
 /*
@@ -894,6 +928,108 @@ pg_grammar_ext_pending_fragments(const char ***frags_out)
 
 	*frags_out = frag_array;
 	return npending;
+}
+
+/*
+ * pg_grammar_ext_dialect_count / pg_grammar_ext_dialect_name
+ *	  Enumerate the DISTINCT dialect names among the registered
+ *	  extensions, in first-registration order.  A dialect name is just the
+ *	  registered extension's name (pg_grammar_ext_create(name, ...)); a
+ *	  session picks one via the grammar_dialect GUC.  Two extensions that
+ *	  share a name compose into the same dialect snapshot.
+ */
+int
+pg_grammar_ext_dialect_count(void)
+{
+	int			n = 0;
+
+	for (int i = 0; i < npending; i++)
+	{
+		bool		seen = false;
+
+		for (int j = 0; j < i; j++)
+			if (strcmp(pending[i].name, pending[j].name) == 0)
+			{
+				seen = true;
+				break;
+			}
+		if (!seen)
+			n++;
+	}
+	return n;
+}
+
+const char *
+pg_grammar_ext_dialect_name(int idx)
+{
+	int			n = 0;
+
+	for (int i = 0; i < npending; i++)
+	{
+		bool		seen = false;
+
+		for (int j = 0; j < i; j++)
+			if (strcmp(pending[i].name, pending[j].name) == 0)
+			{
+				seen = true;
+				break;
+			}
+		if (seen)
+			continue;
+		if (n == idx)
+			return pending[i].name;
+		n++;
+	}
+	return NULL;
+}
+
+/*
+ * pg_grammar_ext_dialect_registered
+ *	  True if `name` matches a registered extension (dialect) name.
+ */
+bool
+pg_grammar_ext_dialect_registered(const char *name)
+{
+	if (name == NULL)
+		return false;
+	for (int i = 0; i < npending; i++)
+		if (strcmp(pending[i].name, name) == 0)
+			return true;
+	return false;
+}
+
+/*
+ * pg_grammar_ext_dialect_fragments
+ *	  Like pg_grammar_ext_pending_fragments, but restricted to the
+ *	  fragments registered under dialect `name`.  Used by the push driver
+ *	  to compose one isolated snapshot per named dialect (base SQL + only
+ *	  that dialect's rules).  A NULL name selects EVERY fragment (the
+ *	  default "all" grammar -- base SQL + every loaded extension), which is
+ *	  identical to pg_grammar_ext_pending_fragments.  Returns the count;
+ *	  *frags_out points at a freshly palloc'd array the caller may free
+ *	  (its element strings are owned by parser_extension.c).
+ */
+int
+pg_grammar_ext_dialect_fragments(const char *name, const char ***frags_out)
+{
+	const char **arr;
+	int			n = 0;
+
+	if (npending == 0)
+	{
+		*frags_out = NULL;
+		return 0;
+	}
+
+	arr = palloc(sizeof(char *) * npending);
+	for (int i = 0; i < npending; i++)
+	{
+		if (name != NULL && strcmp(pending[i].name, name) != 0)
+			continue;
+		arr[n++] = pending[i].fragment;
+	}
+	*frags_out = arr;
+	return n;
 }
 
 /*
