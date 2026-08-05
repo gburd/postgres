@@ -1211,6 +1211,16 @@
   max => 'MAX_KILOBYTES',
 },
 
+{ name => 'grammar_dialect', type => 'string', context => 'PGC_USERSET', group => 'CLIENT_CONN_STATEMENT',
+  short_desc => 'Selects which loaded grammar dialect this session parses with.',
+  long_desc => 'Empty or "all" uses the default composed grammar (base SQL plus every loaded grammar extension). "none" uses the base SQL grammar only. Any other value selects the named dialect (a grammar extension loaded via shared_preload_libraries), so this session parses that dialect while other sessions of the same server can parse a different one.',
+  flags => 'GUC_IS_NAME',
+  variable => 'grammar_dialect_string',
+  boot_val => '""',
+  check_hook => 'check_grammar_dialect',
+  assign_hook => 'assign_grammar_dialect',
+},
+
 { name => 'gss_accept_delegation', type => 'bool', context => 'PGC_SIGHUP', group => 'CONN_AUTH_AUTH',
   short_desc => 'Sets whether GSSAPI delegation should be accepted from the client.',
   variable => 'pg_gss_accept_delegation',

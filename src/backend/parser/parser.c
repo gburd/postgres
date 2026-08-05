@@ -62,6 +62,64 @@ extern bool raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 									  base_yy_extra_type *yyextra,
 									  List **result);
 extern bool raw_parser_lime_active(void);
+extern bool pg_grammar_dialect_select(const char *name);
+
+/*
+ * grammar_dialect GUC.  Selects which loaded grammar dialect this session
+ * parses with (see guc_parameters.dat).  The string is validated in
+ * check_grammar_dialect and applied per-parse in raw_parser via
+ * pg_grammar_dialect_select.
+ */
+char	   *grammar_dialect_string = NULL;
+
+bool
+check_grammar_dialect(char **newval, void **extra, GucSource source)
+{
+	const char *val = *newval;
+
+	/*
+	 * Empty / "all" / "none" are always valid.  A specific dialect name is
+	 * valid only if a grammar extension registered under that name; but the
+	 * extensions register at postmaster start (shared_preload_libraries
+	 * _PG_init) and this GUC is PGC_USERSET (set per session, after start),
+	 * so the registered set is known by the time a client assigns it.  Reject
+	 * an unknown dialect so a typo surfaces at SET time rather than silently
+	 * parsing base SQL.  Before the parser is composed (e.g. a value in
+	 * postgresql.conf read very early) we cannot check, so accept and let the
+	 * per-parse selection fall back to base.
+	 */
+	if (val == NULL || val[0] == '\0' ||
+		strcmp(val, "all") == 0 || strcmp(val, "none") == 0)
+		return true;
+
+	/*
+	 * Reject a specific dialect name only when grammar extensions ARE loaded
+	 * (the registry is populated) and none matches -- so a typo surfaces at
+	 * SET time.  When no extension is loaded (registry empty, or the value
+	 * comes from postgresql.conf before preload finishes) we cannot validate;
+	 * accept it and let the per-parse selection fall back to base SQL.
+	 */
+	if (pg_grammar_ext_dialect_count() > 0 &&
+		!pg_grammar_ext_dialect_registered(val))
+	{
+		GUC_check_errdetail("No loaded grammar dialect is named \"%s\".", val);
+		return false;
+	}
+	return true;
+}
+
+void
+assign_grammar_dialect(const char *newval, void *extra)
+{
+	/*
+	 * Selection is applied at each raw_parser() call (the swap point where no
+	 * parse tree yet references a snapshot), so the assign hook only needs to
+	 * publish the value; the GUC machinery stores it into
+	 * grammar_dialect_string for us.
+	 */
+	(void) newval;
+	(void) extra;
+}
 
 #define RAW_PARSER_USE_PUSHPARSE() \
 	(raw_parser_lime_active() || getenv("PG_LIME_PUSHPARSE") != NULL)
@@ -86,6 +144,16 @@ raw_parser(const char *str, RawParseMode mode)
 	 * pg_grammar_ext_register() calls fail.  Idempotent and cheap.
 	 */
 	pg_grammar_ext_lock_parser();
+
+	/*
+	 * Select this session's grammar dialect (from the grammar_dialect GUC)
+	 * before deciding push vs static.  This points reduce dispatch and the
+	 * scanner keyword hook at the chosen dialect's composed snapshot, or at
+	 * base-only for '' / 'all' default vs 'none'.  Done here, at the parse
+	 * boundary, so no in-flight parse tree yet references a snapshot when the
+	 * active dialect changes.  Cheap: a pointer swap plus a short bundle scan.
+	 */
+	pg_grammar_dialect_select(grammar_dialect_string);
 
 	/* initialize the flex scanner */
 	yyscanner = scanner_init(str, &yyextra.core_yy_extra,

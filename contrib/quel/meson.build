@@ -29,6 +29,7 @@ tests += {
   'tap': {
     'tests': [
       't/001_quel.pl',
+      't/002_per_session.pl',
     ],
   },
 }

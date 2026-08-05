@@ -73,33 +73,77 @@ extern bool raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 extern bool raw_parser_lime_active(void);
 extern bool pg_grammar_compose_install(unsigned int *base_nrule_out,
 									   char **errmsg_out);
+extern void pg_grammar_dialect_prewarm(void);
+extern bool pg_grammar_dialect_select(const char *name);
 
 /*
- * Active parser snapshot.
+ * A composed grammar snapshot plus the per-snapshot maps the push driver
+ * needs to parse with it: the ruleno -> extension rule_id dispatch map
+ * and the scanner keyword map (lexeme -> this snapshot's token codes).
+ * Both are snapshot-specific because the in-process compose assigns its
+ * own rule and token numbering, so they cannot be shared across dialects.
  *
- *   base_snapshot     -- the base SQL grammar, built once per backend.
- *   composed_snapshot -- base + registered extension grammars, compiled
- *                        in-process; NULL until pg_grammar_compose_install
- *                        runs.  When set, parses use it instead of base.
- *   composed_base_nrule -- the base grammar's rule count; the host-reduce
- *                        dispatcher routes ruleno < this to the base
- *                        actions and ruleno >= this to extension rules.
+ *   name == NULL  is the default "all" bundle: base SQL + every loaded
+ *                 extension composed into one snapshot (the historical
+ *                 single-snapshot behaviour; the default active grammar).
+ *   name != NULL  is a named dialect: base SQL + only that dialect's
+ *                 rules, so a session can parse just that dialect.
+ *
+ * All bundles are composed once at postmaster start (pg_grammar_dialect_
+ * prewarm) and inherited by every backend across fork.  Snapshots are
+ * read-only during a parse and safe to share concurrently across backends
+ * (Lime design review, TSan-proven); each backend simply points its
+ * active-bundle pointer at the one its grammar_dialect GUC selected.
+ */
+typedef struct PushparseKwEntry
+{
+	char	   *lexeme;			/* lowercase, NUL-terminated */
+	int			code;			/* extension token code in this snapshot */
+	int			base_code;		/* base SQL token code, or -1 if no collision */
+}			PushparseKwEntry;
+
+typedef struct DialectBundle
+{
+	const char *name;			/* NULL = the default "all" grammar */
+	ParserSnapshot *snapshot;
+	unsigned int *ruleno_map;	/* composed ruleno -> ext rule_id */
+	int			ruleno_map_count;
+	PushparseKwEntry *kw_map;
+	int			kw_map_count;
+}			DialectBundle;
+
+/*
+ * Active parser snapshot / dialect bundle.
+ *
+ *   base_snapshot   -- the base SQL grammar, built once per backend.
+ *   bundles         -- one DialectBundle per composed snapshot: bundles[0]
+ *                      is the default "all" grammar, bundles[1..] are the
+ *                      named dialects.  NULL until pg_grammar_dialect_prewarm
+ *                      runs (i.e. at least one grammar extension loaded).
+ *   active_bundle   -- the bundle this backend is currently parsing with,
+ *                      selected by pg_grammar_dialect_select from the
+ *                      grammar_dialect GUC.  NULL means base-only (no
+ *                      extension grammar) -- the fast static path.
  */
 static ParserSnapshot * base_snapshot = NULL;
-static ParserSnapshot * composed_snapshot = NULL;
+static DialectBundle *bundles = NULL;
+static int	nbundles = 0;
+static DialectBundle *active_bundle = NULL;
 static unsigned int composed_base_nrule = 0;
 
 /*
  * raw_parser_lime_active
- *	  True once a composed grammar snapshot (base + registered
- *	  extensions) is installed -- i.e. at least one grammar extension
- *	  registered and pg_grammar_ext_prewarm()/lock composed it.  raw_parser
- *	  uses this to decide whether to drive the push parser.
+ *	  True when this backend has a composed grammar snapshot selected for
+ *	  the current session (grammar_dialect resolved to a dialect that
+ *	  composed successfully).  raw_parser uses this to decide whether to
+ *	  drive the push parser.  A backend whose grammar_dialect is empty/
+ *	  "none", or that resolved to a dialect with no composed snapshot,
+ *	  returns false here and stays on the fast static parser.
  */
 bool
 raw_parser_lime_active(void)
 {
-	return composed_snapshot != NULL;
+	return active_bundle != NULL && active_bundle->snapshot != NULL;
 }
 
 /*
@@ -130,7 +174,8 @@ pushparse_host_reduce(void *user, int ruleno,
 							 nrhs, lhs_out, lhs_loc_out);
 }
 
-static void pushparse_build_keyword_map(void);
+static void pushparse_build_keyword_map(DialectBundle *b);
+static int	pushparse_keyword_hook(const char *lower_lexeme);
 
 /*
  * Transient snapshot pointer used by pushparse_resolve_ruleno while
@@ -160,16 +205,17 @@ pushparse_resolve_ruleno(unsigned int rule_id, const char *identity, void *arg)
 }
 
 /*
- * pg_grammar_compose_install
- *	  Merge the base grammar source with the registered extension
- *	  fragments, compile the result to a runtime ParserSnapshot
- *	  in-process (no subprocess, no C compiler), and install it as the
- *	  active composed snapshot.  Stores the base rule count in
- *	  *base_nrule_out.  Returns true on success; on failure sets
- *	  *errmsg_out to a palloc'd message and returns false.
+ * compose_snapshot_for_dialect
+ *	  Merge the base grammar source with the extension fragments for one
+ *	  dialect (name == NULL selects EVERY fragment -- the default "all"
+ *	  grammar) and compile the result to a runtime ParserSnapshot
+ *	  in-process (no subprocess, no C compiler).  On success returns the
+ *	  snapshot with host_reduce wired; on failure returns NULL and sets
+ *	  *errmsg_out to a palloc'd message.  Refuses a snapshot with >0 LALR
+ *	  conflicts (a shadowing/ambiguous grammar).
  */
-bool
-pg_grammar_compose_install(unsigned int *base_nrule_out, char **errmsg_out)
+static ParserSnapshot *
+compose_snapshot_for_dialect(const char *name, char **errmsg_out)
 {
 	const char **frags;
 	int			nfrags;
@@ -179,32 +225,9 @@ pg_grammar_compose_install(unsigned int *base_nrule_out, char **errmsg_out)
 	int			rc;
 	int			nconflict = 0;
 
-	if (base_snapshot == NULL)
-	{
-		base_snapshot = base_yyBuildSnapshot();
-		if (base_snapshot == NULL)
-		{
-			if (errmsg_out)
-				*errmsg_out = pstrdup("could not build base parser snapshot");
-			return false;
-		}
-	}
-	composed_base_nrule = base_snapshot->nrule;
-	if (base_nrule_out)
-		*base_nrule_out = composed_base_nrule;
-
-	if (base_snapshot->grammar_source == NULL ||
-		base_snapshot->grammar_source_len == 0)
-	{
-		if (errmsg_out)
-			*errmsg_out = pstrdup("base snapshot has no embedded grammar "
-								  "source; rebuild with lime -n");
-		return false;
-	}
-
-	nfrags = pg_grammar_ext_pending_fragments(&frags);
+	nfrags = pg_grammar_ext_dialect_fragments(name, &frags);
 	if (nfrags == 0)
-		return true;			/* nothing to compose; base snapshot stands */
+		return NULL;			/* no fragments for this dialect */
 
 	/* base grammar text + each extension fragment, in registration order. */
 	initStringInfo(&merged);
@@ -217,18 +240,23 @@ pg_grammar_compose_install(unsigned int *base_nrule_out, char **errmsg_out)
 		appendStringInfoChar(&merged, '\n');
 	}
 
-	elog(DEBUG1, "composing grammar in-process for %d extension(s)", nfrags);
+	if (name == NULL)
+		elog(DEBUG1, "composing grammar in-process for %d extension(s)", nfrags);
+	else
+		elog(DEBUG1, "composing grammar in-process for dialect \"%s\" "
+			 "(%d fragment(s))", name, nfrags);
 	rc = lime_compile_grammar_in_process_ex(merged.data, (size_t) merged.len,
 											&snap, &err, &nconflict);
 	pfree(merged.data);
 	if (rc != 0 || snap == NULL)
 	{
 		if (errmsg_out)
-			*errmsg_out = psprintf("in-process grammar compose failed: %s",
+			*errmsg_out = psprintf("in-process grammar compose failed for "
+								   "dialect \"%s\": %s", name ? name : "all",
 								   err ? err : "(no detail)");
 		if (err)
 			free(err);
-		return false;
+		return NULL;
 	}
 
 	/*
@@ -247,44 +275,251 @@ pg_grammar_compose_install(unsigned int *base_nrule_out, char **errmsg_out)
 	{
 		snapshot_release(snap);
 		if (errmsg_out)
-			*errmsg_out = psprintf("grammar extension compose introduced %d "
-								   "unresolved conflict(s); a loaded grammar "
-								   "extension shadows base SQL or another "
-								   "extension. Refusing to install the composed "
-								   "parser.", nconflict);
+		{
+			if (name == NULL)
+				*errmsg_out = psprintf("grammar extension compose introduced "
+									   "%d unresolved conflict(s); a loaded "
+									   "grammar extension shadows base SQL or "
+									   "another extension. Refusing to install "
+									   "the composed parser.", nconflict);
+			else
+				*errmsg_out = psprintf("grammar extension compose for dialect "
+									   "\"%s\" introduced %d unresolved "
+									   "conflict(s); a loaded grammar extension "
+									   "shadows base SQL or another extension. "
+									   "Refusing to install the composed parser.",
+									   name, nconflict);
+		}
 		if (err)
 			free(err);
-		return false;
+		return NULL;
 	}
 	if (err)
 		free(err);
 
 	/* Route base/extension reduces through the composed dispatcher. */
 	snap->host_reduce = pushparse_host_reduce;
-	composed_snapshot = snap;
+	return snap;
+}
+
+/*
+ * build_bundle
+ *	  Compose the snapshot for one dialect and populate its per-snapshot
+ *	  ruleno-dispatch and scanner-keyword maps.  Fills *b on success and
+ *	  returns true; returns false (with *errmsg_out set) on compose failure.
+ *	  A dialect with no fragments (should not happen -- callers only build
+ *	  bundles for names that registered) leaves *b's snapshot NULL.
+ */
+static bool
+build_bundle(const char *name, DialectBundle *b, char **errmsg_out)
+{
+	ParserSnapshot *snap;
+
+	b->name = name;
+	b->snapshot = NULL;
+	b->ruleno_map = NULL;
+	b->ruleno_map_count = 0;
+	b->kw_map = NULL;
+	b->kw_map_count = 0;
+
+	snap = compose_snapshot_for_dialect(name, errmsg_out);
+	if (snap == NULL)
+	{
+		/*
+		 * NULL with *errmsg_out set == compose failed; NULL without ==
+		 * this dialect had no fragments (an empty bundle, still "success").
+		 */
+		return (errmsg_out == NULL || *errmsg_out == NULL);
+	}
+
+	b->snapshot = snap;
 
 	/*
-	 * Build the composed-ruleno -> extension rule_id map by IDENTITY (Lime
-	 * v1.10.0).  Each extension rule's stable canonical identity resolves to
-	 * its composed ruleno via lime_snapshot_rule_by_id; the host-reduce
-	 * router then dispatches by ruleno.  This is the correct, renumbering-
-	 * proof replacement for the old positional base_nrule split.
+	 * Build this snapshot's composed-ruleno -> extension rule_id map by
+	 * IDENTITY (Lime v1.10.0).  pg_grammar_ext_reset_ruleno_map allocates the
+	 * array and makes it the active map so the set_ruleno writes below land
+	 * in it; the bundle retains the pointer to re-select at parse time.  Rules
+	 * belonging to OTHER dialects simply fail the identity lookup against this
+	 * snapshot (lime_snapshot_rule_by_id returns -1) and are skipped, so the
+	 * shared foreach_reducible over all rules self-filters to this dialect.
 	 */
-	pg_grammar_ext_reset_ruleno_map(snap->nrule);
+	b->ruleno_map = pg_grammar_ext_reset_ruleno_map(snap->nrule);
+	b->ruleno_map_count = (int) snap->nrule;
 	pushparse_ruleno_map_snap = snap;
 	pg_grammar_ext_foreach_reducible(pushparse_resolve_ruleno, NULL);
 	pushparse_ruleno_map_snap = NULL;
 
-	/* Build the scanner keyword map (lexeme -> composed token code). */
-	pushparse_build_keyword_map();
+	/* Build this snapshot's scanner keyword map. */
+	pushparse_build_keyword_map(b);
 	return true;
 }
 
 /*
+ * pg_grammar_dialect_prewarm
+ *	  Compose every dialect snapshot at postmaster start (before backends
+ *	  fork), after all shared_preload_libraries have registered their
+ *	  grammar extensions.  Builds bundles[0] = the default "all" grammar
+ *	  (base SQL + every loaded extension) and bundles[1..] = one isolated
+ *	  snapshot per distinct dialect name (base SQL + that dialect only).
+ *	  A compose failure is FATAL here, matching the old prewarm contract:
+ *	  a broken grammar extension stops the postmaster at startup rather
+ *	  than failing every backend's first parse.
+ *
+ *	  Idempotent: a second call (e.g. the lazy lock_parser fallback) is a
+ *	  no-op once bundles are built.  No-op when no extension registered.
+ */
+void
+pg_grammar_dialect_prewarm(void)
+{
+	int			ndialects;
+	char	   *err = NULL;
+	MemoryContext old;
+
+	if (bundles != NULL)
+		return;					/* already composed */
+
+	if (pg_grammar_ext_dialect_count() == 0)
+		return;					/* no grammar extension registered */
+
+	/* Build the base snapshot once; every dialect composes against its text. */
+	if (base_snapshot == NULL)
+	{
+		base_snapshot = base_yyBuildSnapshot();
+		if (base_snapshot == NULL)
+			ereport(FATAL,
+					(errmsg("could not build base parser snapshot")));
+	}
+	composed_base_nrule = base_snapshot->nrule;
+	if (base_snapshot->grammar_source == NULL ||
+		base_snapshot->grammar_source_len == 0)
+		ereport(FATAL,
+				(errmsg("base snapshot has no embedded grammar source; "
+						"rebuild with lime -n")));
+
+	ndialects = pg_grammar_ext_dialect_count();
+
+	old = MemoryContextSwitchTo(TopMemoryContext);
+	bundles = palloc0(sizeof(DialectBundle) * (ndialects + 1));
+	MemoryContextSwitchTo(old);
+	nbundles = ndialects + 1;
+
+	/* bundles[0] = the default "all" grammar (name == NULL). */
+	if (!build_bundle(NULL, &bundles[0], &err))
+		ereport(FATAL,
+				(errcode(ERRCODE_CONFIG_FILE_ERROR),
+				 errmsg("grammar extension compose failed at startup: %s",
+						err ? err : "(no detail)")));
+
+	/* bundles[1..] = one isolated snapshot per named dialect. */
+	for (int i = 0; i < ndialects; i++)
+	{
+		const char *dname = pg_grammar_ext_dialect_name(i);
+
+		err = NULL;
+		if (!build_bundle(dname, &bundles[i + 1], &err))
+			ereport(FATAL,
+					(errcode(ERRCODE_CONFIG_FILE_ERROR),
+					 errmsg("grammar extension compose failed at startup: %s",
+							err ? err : "(no detail)")));
+	}
+
+	/*
+	 * Default the active bundle to the "all" grammar so a backend that never
+	 * sets grammar_dialect behaves exactly as before (every loaded extension
+	 * active in one composed grammar).  pg_grammar_dialect_select overrides
+	 * this per session from the GUC.
+	 */
+	pg_grammar_dialect_select(NULL);
+}
+
+/*
+ * pg_grammar_compose_install
+ *	  Backward-compatible entry point retained for parser_extension.c's
+ *	  lock/prewarm hooks: compose all dialect bundles and report the base
+ *	  rule count.  Delegates to pg_grammar_dialect_prewarm (which builds the
+ *	  default "all" grammar plus one snapshot per named dialect).
+ */
+bool
+pg_grammar_compose_install(unsigned int *base_nrule_out, char **errmsg_out)
+{
+	(void) errmsg_out;			/* prewarm ereports FATAL on failure */
+	pg_grammar_dialect_prewarm();
+	if (base_nrule_out)
+		*base_nrule_out = composed_base_nrule;
+	return true;
+}
+
+/*
+ * pg_grammar_dialect_select
+ *	  Make `name` the active dialect for this backend and point reduce
+ *	  dispatch + the scanner keyword hook at that dialect's snapshot.
+ *	  Returns true if a composed push-parse grammar is now active (the
+ *	  backend should drive the push parser), false if the backend should
+ *	  stay on the fast static base parser.
+ *
+ *	  Resolution of `name`:
+ *	    NULL / "" / "all" -> the default "all" grammar (bundles[0]);
+ *	    "none"            -> no extension grammar (static parser);
+ *	    a registered dialect name -> that dialect's isolated snapshot;
+ *	    anything else     -> no extension grammar (static parser).
+ *
+ *	  No-op safe before prewarm (bundles == NULL) -- a backend that sets
+ *	  grammar_dialect before the parser is composed just stays on base.
+ */
+bool
+pg_grammar_dialect_select(const char *name)
+{
+	DialectBundle *sel = NULL;
+
+	if (bundles == NULL)
+	{
+		active_bundle = NULL;
+		pg_grammar_ext_use_ruleno_map(NULL, 0);
+		pg_grammar_ext_keyword_hook = NULL;
+		return false;
+	}
+
+	if (name == NULL || name[0] == '\0' || strcmp(name, "all") == 0)
+		sel = &bundles[0];		/* the default "all" grammar */
+	else if (strcmp(name, "none") == 0)
+		sel = NULL;				/* base-only, static parser */
+	else
+	{
+		for (int i = 1; i < nbundles; i++)
+		{
+			if (bundles[i].name != NULL &&
+				strcmp(bundles[i].name, name) == 0)
+			{
+				sel = &bundles[i];
+				break;
+			}
+		}
+		/* Unknown/unregistered dialect: fall back to base-only. */
+	}
+
+	active_bundle = sel;
+	if (sel != NULL && sel->snapshot != NULL)
+	{
+		pg_grammar_ext_use_ruleno_map(sel->ruleno_map, sel->ruleno_map_count);
+		pg_grammar_ext_keyword_hook =
+			(sel->kw_map_count > 0) ? pushparse_keyword_hook : NULL;
+		return true;
+	}
+
+	pg_grammar_ext_use_ruleno_map(NULL, 0);
+	pg_grammar_ext_keyword_hook = NULL;
+	return false;
+}
+
+/*
  * Scanner keyword map: lexeme (lowercase source text) -> external token
- * code in the composed snapshot.  Built once after compose by resolving
- * each registered extension token's NAME via lime_snapshot_token_code.
- * scan.c consults it (through pg_grammar_ext_keyword_hook) so an
+ * code in a composed snapshot.  Each dialect bundle owns its own map,
+ * because the in-process compose assigns each snapshot its own token
+ * numbering.  Built once per bundle after compose by resolving each
+ * registered extension token's NAME via lime_snapshot_token_code; a token
+ * absent from THIS dialect's snapshot (belongs to another dialect) fails
+ * the lookup and is skipped, so the shared foreach_token self-filters.
+ * scan.c consults the ACTIVE bundle's map (through the keyword hook) so an
  * extension keyword lexeme resolves to its composed token code.
  *
  * `base_code` records, for a lexeme that ALSO matches a base SQL
@@ -294,21 +529,16 @@ pg_grammar_compose_install(unsigned int *base_nrule_out, char **errmsg_out)
  * start, where the base keyword cannot begin a statement) the scanner
  * emits the extension code; otherwise it keeps the base code.
  */
-typedef struct PushparseKwEntry
-{
-	char	   *lexeme;			/* lowercase, NUL-terminated */
-	int			code;			/* extension token code in composed snapshot */
-	int			base_code;		/* base SQL token code, or -1 if no collision */
-}			PushparseKwEntry;
 
-static PushparseKwEntry * kw_map = NULL;
-static int	kw_map_count = 0;
-static int	kw_map_capacity = 0;
+/* The bundle currently being populated by pushparse_kw_add. */
+static DialectBundle * pushparse_kw_target = NULL;
+static int	pushparse_kw_capacity = 0;
 
 static void
 pushparse_kw_add(const char *name, const char *lexeme,
 				 PgGrammarExtKeywordCategory category, void *cb_arg)
 {
+	DialectBundle *b = pushparse_kw_target;
 	int			code;
 	int			base_code = -1;
 	int			kwnum;
@@ -316,13 +546,13 @@ pushparse_kw_add(const char *name, const char *lexeme,
 	(void) category;
 	(void) cb_arg;
 
-	if (composed_snapshot == NULL)
+	if (b == NULL || b->snapshot == NULL)
 		return;
 
-	/* Resolve the token NAME to its external code in the composed snapshot. */
-	code = lime_snapshot_token_code(composed_snapshot, name);
+	/* Resolve the token NAME to its external code in this snapshot. */
+	code = lime_snapshot_token_code(b->snapshot, name);
 	if (code < 0)
-		return;					/* token absent from composed grammar */
+		return;					/* token absent from this dialect's grammar */
 
 	/*
 	 * Does this lexeme also match a base SQL keyword?  If so it is a
@@ -334,50 +564,60 @@ pushparse_kw_add(const char *name, const char *lexeme,
 	if (kwnum >= 0)
 		base_code = ScanKeywordTokens[kwnum];
 
-	if (kw_map_count == kw_map_capacity)
+	if (b->kw_map_count == pushparse_kw_capacity || b->kw_map == NULL)
 	{
-		int			newcap = kw_map_capacity ? kw_map_capacity * 2 : 8;
+		int			newcap = pushparse_kw_capacity ? pushparse_kw_capacity * 2 : 8;
+		MemoryContext old = MemoryContextSwitchTo(TopMemoryContext);
 
-		if (kw_map == NULL)
-			kw_map = MemoryContextAlloc(TopMemoryContext,
-										sizeof(PushparseKwEntry) * newcap);
+		if (b->kw_map == NULL)
+			b->kw_map = palloc(sizeof(PushparseKwEntry) * newcap);
 		else
-			kw_map = repalloc(kw_map, sizeof(PushparseKwEntry) * newcap);
-		kw_map_capacity = newcap;
+			b->kw_map = repalloc(b->kw_map, sizeof(PushparseKwEntry) * newcap);
+		pushparse_kw_capacity = newcap;
+		MemoryContextSwitchTo(old);
 	}
-	kw_map[kw_map_count].lexeme = MemoryContextStrdup(TopMemoryContext, lexeme);
-	kw_map[kw_map_count].code = code;
-	kw_map[kw_map_count].base_code = base_code;
-	kw_map_count++;
+	b->kw_map[b->kw_map_count].lexeme =
+		MemoryContextStrdup(TopMemoryContext, lexeme);
+	b->kw_map[b->kw_map_count].code = code;
+	b->kw_map[b->kw_map_count].base_code = base_code;
+	b->kw_map_count++;
 }
 
 /*
  * pushparse_keyword_hook
  *	  Published to scan.c (pg_grammar_ext_keyword_hook).  Given a
  *	  lowercased identifier lexeme, return the extension token code if the
- *	  lexeme matches a registered extension keyword, else -1.  Linear scan
- *	  -- the registered-extension keyword set is small.
+ *	  lexeme matches a registered extension keyword in the ACTIVE dialect's
+ *	  snapshot, else -1.  Linear scan -- the keyword set is small.
  */
 static int
 pushparse_keyword_hook(const char *lower_lexeme)
 {
-	for (int i = 0; i < kw_map_count; i++)
+	DialectBundle *b = active_bundle;
+
+	if (b == NULL)
+		return -1;
+	for (int i = 0; i < b->kw_map_count; i++)
 	{
-		if (strcmp(kw_map[i].lexeme, lower_lexeme) == 0)
-			return kw_map[i].code;
+		if (strcmp(b->kw_map[i].lexeme, lower_lexeme) == 0)
+			return b->kw_map[i].code;
 	}
 	return -1;
 }
 
 static void
-pushparse_build_keyword_map(void)
+pushparse_build_keyword_map(DialectBundle *b)
 {
-	kw_map_count = 0;			/* rebuilt fresh each compose */
+	pushparse_kw_target = b;
+	pushparse_kw_capacity = 0;
 	pg_grammar_ext_foreach_token(pushparse_kw_add, NULL);
-	if (kw_map_count > 0)
-		pg_grammar_ext_keyword_hook = pushparse_keyword_hook;
-	elog(DEBUG1, "grammar extension keyword map: %d entries published",
-		 kw_map_count);
+	pushparse_kw_target = NULL;
+	if (b->name == NULL)
+		elog(DEBUG1, "grammar extension keyword map: %d entries published",
+			 b->kw_map_count);
+	else
+		elog(DEBUG1, "grammar extension keyword map for dialect \"%s\": "
+			 "%d entries", b->name, b->kw_map_count);
 }
 
 /*
@@ -406,28 +646,33 @@ pushparse_resolve_collision(ParseContext * ctx, int tok,
 							bool *need_peek,
 							int *peek_base_code, int *peek_ext_code)
 {
+	DialectBundle *b = active_bundle;
+
 	*need_peek = false;
 
-	for (int i = 0; i < kw_map_count; i++)
+	if (b == NULL)
+		return tok;
+
+	for (int i = 0; i < b->kw_map_count; i++)
 	{
 		LimeTokenAdmissibility ad_base;
 		LimeTokenAdmissibility ad_ext;
 
-		if (kw_map[i].base_code != tok)
+		if (b->kw_map[i].base_code != tok)
 			continue;			/* not a collision on this base code */
 
-		ad_base = parse_context_token_admissible(ctx, kw_map[i].base_code);
-		ad_ext = parse_context_token_admissible(ctx, kw_map[i].code);
+		ad_base = parse_context_token_admissible(ctx, b->kw_map[i].base_code);
+		ad_ext = parse_context_token_admissible(ctx, b->kw_map[i].code);
 
 		if (ad_ext != LIME_TOK_NONE && ad_base == LIME_TOK_NONE)
-			return kw_map[i].code;	/* only the extension fits here */
+			return b->kw_map[i].code;	/* only the extension fits here */
 
 		if (ad_ext != LIME_TOK_NONE && ad_base != LIME_TOK_NONE)
 		{
 			/* Genuine ambiguity: resolve with one token of lookahead. */
 			*need_peek = true;
-			*peek_base_code = kw_map[i].base_code;
-			*peek_ext_code = kw_map[i].code;
+			*peek_base_code = b->kw_map[i].base_code;
+			*peek_ext_code = b->kw_map[i].code;
 			return tok;
 		}
 
@@ -453,9 +698,13 @@ pushparse_resolve_collision(ParseContext * ctx, int tok,
 static int
 pushparse_resolve_ext_keyword(ParseContext * ctx, int tok)
 {
-	for (int i = 0; i < kw_map_count; i++)
+	DialectBundle *b = active_bundle;
+
+	if (b == NULL)
+		return tok;
+	for (int i = 0; i < b->kw_map_count; i++)
 	{
-		if (kw_map[i].code != tok)
+		if (b->kw_map[i].code != tok)
 			continue;			/* not an extension keyword code */
 
 		if (parse_context_token_admissible(ctx, tok) == LIME_TOK_NONE &&
@@ -576,6 +825,7 @@ raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 						  List **result)
 {
 	ParserSnapshot *snap;
+	bool		composed;
 	ParseContext *ctx;
 	int			rc = 0;
 	bool		accepted = false;
@@ -591,13 +841,16 @@ raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 	*result = NIL;
 
 	/*
-	 * Use the composed snapshot (base + extensions) when grammar extensions
-	 * have been installed; otherwise the base grammar.  Both carry a
-	 * host_reduce hook that runs base actions; the composed snapshot's hook
-	 * (pushparse_host_reduce) additionally routes extension-rule reduces.
+	 * Use the active dialect's composed snapshot (base + that dialect's
+	 * extensions) when one is selected for this session; otherwise the base
+	 * grammar (grammar_dialect = 'none', or PG_LIME_PUSHPARSE forcing the
+	 * push path on plain SQL).  Both carry a host_reduce hook that runs base
+	 * actions; the composed snapshot's hook (pushparse_host_reduce)
+	 * additionally routes extension-rule reduces for the active dialect.
 	 */
-	if (composed_snapshot != NULL)
-		snap = composed_snapshot;
+	composed = (active_bundle != NULL && active_bundle->snapshot != NULL);
+	if (composed)
+		snap = active_bundle->snapshot;
 	else
 	{
 		if (base_snapshot == NULL)
@@ -624,7 +877,7 @@ raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 	 * install base_yyHostReduce explicitly (it dispatches base rules only,
 	 * which is all the base grammar has).
 	 */
-	if (composed_snapshot != NULL)
+	if (composed)
 		parse_set_host_reduce(ctx, pushparse_host_reduce, yyscanner);
 	else
 		parse_set_host_reduce(ctx, base_yyHostReduce, yyscanner);
@@ -660,7 +913,7 @@ raw_parser_lime_pushparse(core_yyscan_t yyscanner,
 		 * (e.g. `range of ...` -- `range` peeks `of`, and `of` must still
 		 * resolve to K_QUEL_OF, not base OF).
 		 */
-		if (composed_snapshot != NULL)
+		if (composed)
 		{
 			bool		need_peek = false;
 			int			base_code = 0;
