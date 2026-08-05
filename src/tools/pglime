@@ -103,6 +103,47 @@ if not os.path.isfile(gen_c):
 if not os.path.isfile(gen_h):
     sys.exit(f'lime did not produce expected output: {gen_h}')
 
+# Performance fix (host-reduce hot path): the generated <Name>HostReduce
+# wrapper zeroes an ENTIRE stack yyParser on every reduce with
+#   memset(&yyp, 0, sizeof yyp);
+# but yyParser embeds yystk0[YYSTACKDEPTH] -- the parser's whole initial
+# stack (~1.6 KB for the SQL grammar).  The per-rule reduce action bodies
+# only ever read the small header fields (the %extra_argument slot and the
+# action-time lookahead state); they never touch the embedded stack (only
+# the driver's base_yyparse/yy_shift/yy_reduce do).  Profiling the push
+# path shows this single memset at ~63% of total parse time.  yystk0 is the
+# last struct member, so zeroing only the bytes before it clears every
+# field an action reads while skipping the large stack-array zero.  Rewrite
+# the emitted line in place; error out loudly if the pinned generator ever
+# stops emitting it verbatim, so a Lime upgrade cannot silently drop the fix.
+_HR_OLD = '  memset(&yyp, 0, sizeof yyp);\n'
+_HR_NEW = ('  /* host-reduce hot path: zero only the header fields the reduce\n'
+           '  ** actions read, NOT the embedded yystk0[YYSTACKDEPTH] stack\n'
+           '  ** (which no action touches).  yystk0 is the last member, so\n'
+           '  ** the byte span before it is exactly the header.  This drops\n'
+           '  ** the ~1.6 KB per-reduce memset that dominated push-parse. */\n'
+           '  memset(&yyp, 0, (size_t)((char *)&yyp.yystk0 - (char *)&yyp));\n')
+# Second hot memset: the wrapper zeroes the whole yystk[YYNRHS_MAX+2]
+# scratch (23 entries) on every reduce, but only touches yystk[0..nrhs]
+# (the RHS slots plus the empty-rule LHS slot); the higher entries are
+# never read.  Zero just the slots in play -- nrhs averages 1-3, so this
+# is a few slots instead of the full 23-entry array.
+_YS_OLD = '  memset(yystk, 0, sizeof(yystk));\n'
+_YS_NEW = ('  /* host-reduce hot path: zero only the slots actually used\n'
+           '  ** (yystk[0..nrhs]); the rest of the scratch is never read. */\n'
+           '  memset(yystk, 0, sizeof(yystk[0]) * (size_t)(nrhs + 1));\n')
+with open(gen_c, 'r') as f:
+    _c_text = f.read()
+if _HR_OLD in _c_text:
+    _c_text = _c_text.replace(_HR_OLD, _HR_NEW, 1)
+    _c_text = _c_text.replace(_YS_OLD, _YS_NEW, 1)
+    with open(gen_c, 'w') as f:
+        f.write(_c_text)
+elif 'HostReduce' in _c_text and '&yyp.yystk0' not in _c_text:
+    sys.exit('pglime: expected host-reduce memset line not found in '
+             f'{gen_c}; the Lime host-reduce wrapper changed -- update the '
+             'pglime post-process (host-reduce hot-path fix would be lost).')
+
 os.makedirs(dirname(args.output_c), exist_ok=True)
 os.makedirs(dirname(args.output_h), exist_ok=True)
 shutil.move(gen_c, args.output_c)
