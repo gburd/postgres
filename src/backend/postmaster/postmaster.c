@@ -1974,7 +1974,7 @@ ServerLoop(void)
 				{
 					(void) AcceptConnectionDrain(events[i].fd,
 												 PM_ACCEPT_DRAIN_MAX,
-											 backend_startup_accepted);
+												 backend_startup_accepted);
 					continue;
 				}
 
