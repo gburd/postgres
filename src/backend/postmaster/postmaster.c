@@ -465,6 +465,15 @@ static void UpdatePMState(PMState newState);
 pg_noreturn static void ExitPostmaster(int status);
 static int	ServerLoop(void);
 static int	BackendStartup(ClientSocket *client_sock);
+static void backend_startup_accepted(ClientSocket *client_sock);
+
+/*
+ * Max connections drained from the listen backlog in one ServerLoop iteration
+ * (threaded mode).  Bounds the time spent in the accept batch so other
+ * ServerLoop control-plane work is not starved by a sustained flood, while
+ * still admitting a normal simultaneous burst (hundreds of VUs) in one pass.
+ */
+#define PM_ACCEPT_DRAIN_MAX 1024
 static void report_fork_failure_to_client(ClientSocket *client_sock, int errnum);
 static CAC_state canAcceptConnections(BackendType backend_type);
 static void signal_child(PMChild *pmchild, int signal);
@@ -1952,6 +1961,22 @@ ServerLoop(void)
 			if (events[i].events & WL_SOCKET_ACCEPT)
 			{
 				ClientSocket s;
+
+				/*
+				 * Threaded mode: drain the accept backlog in a bounded batch so a
+				 * simultaneous connection burst is admitted quickly and the
+				 * per-fiber SSLRequest handshakes are not serialized behind the
+				 * whole ServerLoop (which would time out clients -> "error
+				 * response during SSL exchange").  Fork mode keeps the exact
+				 * one-accept-per-iteration behavior (byte-for-byte).
+				 */
+				if (multithreaded)
+				{
+					(void) AcceptConnectionDrain(events[i].fd,
+												 PM_ACCEPT_DRAIN_MAX,
+											 backend_startup_accepted);
+					continue;
+				}
 
 				if (AcceptConnection(events[i].fd, &s) == STATUS_OK)
 					BackendStartup(&s);
@@ -4195,6 +4220,17 @@ BackendStartup(ClientSocket *client_sock)
 	 * of backends.
 	 */
 	return STATUS_OK;
+}
+
+/*
+ * Callback for AcceptConnectionDrain (threaded accept-backlog drain): launch a
+ * backend for one accepted socket.  The drain loop owns closing the socket
+ * afterward, mirroring the one-per-iteration path.
+ */
+static void
+backend_startup_accepted(ClientSocket *client_sock)
+{
+	(void) BackendStartup(client_sock);
 }
 
 /*

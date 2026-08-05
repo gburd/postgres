@@ -88,6 +88,8 @@ extern int	ListenServerPort(int family, const char *hostName,
 							 unsigned short portNumber, const char *unixSocketDir,
 							 pgsocket ListenSockets[], int *NumListenSockets, int MaxListen);
 extern int	AcceptConnection(pgsocket server_fd, ClientSocket *client_sock);
+extern int	AcceptConnectionDrain(pgsocket server_fd, int max,
+								  void (*cb) (ClientSocket *sock));
 extern void TouchSocketFiles(void);
 extern void RemoveSocketFiles(void);
 extern Port *pq_init(ClientSocket *client_sock);
