@@ -213,6 +213,12 @@ typedef struct Port
 	 * SSL structures.
 	 */
 	bool		ssl_in_use;
+	/*
+	 * Threaded-mode: the postmaster already answered a client SSLRequest with
+	 * 'N' at accept time (copied from ClientSocket by pq_init).  ProcessStartupPacket
+	 * initializes ssl_done from this so it does not re-answer the negotiation.
+	 */
+	bool		ssl_prenegotiated;
 	char	   *peer_cn;
 	char	   *peer_dn;
 	bool		peer_cert_valid;
@@ -258,6 +264,15 @@ typedef struct ClientSocket
 {
 	pgsocket	sock;			/* File descriptor */
 	SockAddr	raddr;			/* remote addr (client) */
+	/*
+	 * Threaded-mode fast SSL negotiation (accept-time): true when the
+	 * postmaster already answered a client SSLRequest with 'N' (no SSL) at
+	 * accept time, so the backend fiber's ProcessStartupPacket must NOT
+	 * re-answer it and should read the real startup packet next.  Always false
+	 * in process mode and when SSL is enabled (then the fiber negotiates as
+	 * usual).  See pg_prenegotiate_ssl_request().
+	 */
+	bool		ssl_negotiated;
 } ClientSocket;
 
 #ifdef USE_SSL

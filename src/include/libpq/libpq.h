@@ -88,6 +88,7 @@ extern int	ListenServerPort(int family, const char *hostName,
 							 unsigned short portNumber, const char *unixSocketDir,
 							 pgsocket ListenSockets[], int *NumListenSockets, int MaxListen);
 extern int	AcceptConnection(pgsocket server_fd, ClientSocket *client_sock);
+extern bool pg_prenegotiate_ssl_request(ClientSocket *sock);
 extern int	AcceptConnectionDrain(pgsocket server_fd, int max,
 								  void (*cb) (ClientSocket *sock));
 extern void TouchSocketFiles(void);
