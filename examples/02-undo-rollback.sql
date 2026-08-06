@@ -3,13 +3,13 @@
 -- ============================================================================
 -- Demonstrates how UNDO records enable efficient transaction rollback
 
--- Create a table using the recno AM (supports UNDO)
+-- Create a table using the flux AM (supports UNDO)
 CREATE TABLE order_items (
     order_id   int,
     item_id    int,
     quantity   int,
     price      numeric(10,2)
-) USING recno;
+) USING flux;
 
 -- Begin transaction
 BEGIN;

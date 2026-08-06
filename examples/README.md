@@ -5,9 +5,9 @@ and transactional file operations (FILEOPS).
 
 ## Prerequisites
 
-Tables opt into UNDO by using the `recno` access method:
+Tables opt into UNDO by using the `flux` access method:
 
-    CREATE TABLE my_table (...) USING recno;
+    CREATE TABLE my_table (...) USING flux;
 
 UNDO is always-on infrastructure -- there is no GUC to enable or disable it
 globally.  Table access methods opt in via the `am_supports_undo` callback.
@@ -35,6 +35,6 @@ psql -d testdb -f examples/02-undo-rollback.sql
 
 ## Notes
 
-- UNDO is always-on; tables opt in via `USING recno`
+- UNDO is always-on; tables opt in via `USING flux`
 - FILEOPS (transactional file operations) is always-on for all tables
 - System catalogs never use UNDO

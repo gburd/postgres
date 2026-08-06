@@ -6,7 +6,7 @@ CREATE TABLE account_ledger (
     account_id  int,
     amount      numeric(10,2),
     posted_at   timestamptz DEFAULT now()
-) USING recno;
+) USING flux;
 
 BEGIN;
 

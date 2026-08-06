@@ -211,7 +211,6 @@ typedef struct FluxTupleHeader
 #define FLUX_TUPLE_UPDATED			0x0008
 #define FLUX_TUPLE_LOCKED			0x0010
 #define FLUX_TUPLE_SPECULATIVE		0x0020
-#define FLUX_TUPLE_HAS_INLINE_DIFF	0x0040	/* reserved (unused) */
 #define FLUX_TUPLE_UNCOMMITTED		0x0080	/* Inserted but not yet committed */
 #define FLUX_TUPLE_HAS_VERSION_PTR	0x0100	/* trailing RelUndoRecPtr (version-chain head) follows column data */
 #define FLUX_TUPLE_XMIN_COMMITTED	0x0200	/* t_xmin known-committed (CLOG hint, like heap HEAP_XMIN_COMMITTED) */
@@ -708,16 +707,6 @@ FluxIsOverflowRecordInline(const void *item, Size item_len)
 }
 extern void FluxGetOverflowStats(Relation rel, int64 *total_overflow_records,
 								  int64 *total_overflow_bytes, int64 *avg_chain_length);
-extern void FluxVacuumOverflowRecords(Relation rel);
-extern BlockNumber FluxFindOverflowPageForReuse(Relation rel, Page head_page,
-												 Size needed);
-
-/* Compression */
-extern Datum FluxCompressAttribute(Relation rel, Datum value, Oid typid, FluxCompressionType comp_type);
-extern Datum FluxDecompressAttribute(Oid relid, Datum value, Oid typid, FluxCompressionHeader *header);
-extern void FluxMaybeRefreshDict(Relation rel, const char *sample_buf,
-								  const size_t *sample_sizes, int nsamples,
-								  Size total);
 
 /* Free space management */
 extern BlockNumber FluxGetPageWithFreeSpace(Relation rel, Size needed);
@@ -848,9 +837,6 @@ extern const TableAmRoutine *GetFluxTableAmRoutine(void);
  * pg_proc by name.
  */
 
-/* Compression statistics and management */
-extern void FluxResetCompressionDict(void);
-
 /* In-place update statistics */
 extern void FluxGetUpdateStats(int64 *in_place, int64 *out_of_place,
 								int64 *defrag_triggered);
@@ -895,14 +881,6 @@ typedef struct FluxRelationStats
 extern void FluxCollectRelationStats(Relation rel, FluxRelationStats *stats);
 extern void FluxLogRelationStats(Relation rel, const FluxRelationStats *stats,
 								  int elevel);
-
-/* GUC variables */
-extern int	flux_compression_level;
-extern int	flux_compression_algorithm;
-extern bool flux_enable_compression;
-extern bool flux_analyze_refresh_dict;
-extern double flux_compression_min_ratio;
-extern int	flux_overflow_inline_prefix;
 
 /* sLog transaction callbacks (flux_operations.c) */
 extern void FluxEnsureSLogCallbacks(void);
