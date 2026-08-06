@@ -1,0 +1,9 @@
+mode	kind	vu	tps	rss_mb	cs_per_s	tries
+process	read	384	731103.486347	57	2196196	tries=0
+tps	read	384	NA	100	13192	tries=6
+process	write	384	143860.426784	59	2647821	tries=0
+tps	write	384	NA	100	13251	tries=6
+process	read	768	783832.124190	57	1930668	tries=0
+tps	read	768	NA	100	15230	tries=6
+process	write	768	140326.676520	59	2554686	tries=0
+tps	write	768	NA	99	14780	tries=6
