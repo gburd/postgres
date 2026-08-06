@@ -1,0 +1,9 @@
+mode	script	vu	tps	rss_mb	cs_per_s	fail	rc
+process	-S	384	818325.771566	57	2193353	12	rc=0
+tps	-S	384	NA	99	NA	2	rc=1
+process	-N	384	149210.009491	71	2767160	13	rc=0
+tps	-N	384	NA	99	NA	4	rc=1
+process	-S	768	734405.827575	58	2046449	13	rc=0
+tps	-S	768	NA	99	NA	2	rc=1
+process	-N	768	146039.365187	71	2670875	13	rc=0
+tps	-N	768	NA	99	NA	4	rc=1
