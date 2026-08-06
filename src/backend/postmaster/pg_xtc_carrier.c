@@ -1184,13 +1184,46 @@ xtc_pg_launch_backend_fiber(xtc_carrier_entry_fn entry, void *entry_arg)
 	if (loop_idx < g_xtc_n_sups)
 	{
 		xtc_sup_spawn_msg sp;
+		int			rc = XTC_E_INVAL;
+		int			attempt;
 
 		sp.magic = XTC_SUP_SPAWN_MAGIC;
 		sp.entry = entry;
 		sp.entry_arg = entry_arg;
-		if (xtc_send(g_xtc_sup_pid[loop_idx], &sp, sizeof(sp)) != XTC_OK)
-			return EAGAIN;
-		return 0;
+
+		/*
+		 * Deliver the spawn to a LIVE supervisor without dropping the accepted
+		 * connection.  Two failure modes under a large simultaneous connect
+		 * burst, both of which the fork model never hits and neither should we:
+		 *  - a supervisor whose spawn failed at startup has
+		 *    g_xtc_sup_pid[i]==XTC_PID_NONE; xtc_send returns XTC_E_INVAL there
+		 *    PERMANENTLY, so retrying that loop is futile -- rotate to the next
+		 *    supervisor instead;
+		 *  - xtc_send returns XTC_E_AGAIN (soft-full/contention) even with room;
+		 *    the libxtc contract is to retry (the supervisor drains in us).
+		 * Try each supervisor in turn (rotating), briefly backing off, until one
+		 * accepts.  The bound is a safety valve against ALL supervisors wedged.
+		 */
+		for (attempt = 0; attempt < 4000; attempt++)
+		{
+			int			idx = (loop_idx + attempt) % g_xtc_n_sups;
+			xtc_pid_t	sup = g_xtc_sup_pid[idx];
+
+			if (!xtc_pid_is_none(sup))
+			{
+				rc = xtc_send(sup, &sp, sizeof(sp));
+				if (rc == XTC_OK)
+					return 0;
+				/* XTC_E_AGAIN/INVAL: try the next supervisor; else hard-stop. */
+				if (rc != XTC_E_AGAIN && rc != XTC_E_INVAL)
+					break;
+			}
+			if (attempt >= g_xtc_n_sups)
+				pg_usleep(attempt < g_xtc_n_sups + 16 ? 10 : 100);
+		}
+		elog(WARNING, "could not hand backend fiber spawn to any carrier supervisor after retries: rc=%d",
+			 rc);
+		return EAGAIN;
 	}
 
 	/*
