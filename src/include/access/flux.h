@@ -658,6 +658,7 @@ extern FluxTuple FluxFormTupleUpdate(TupleDesc tupdesc, Datum *values,
 									   const FluxOverflowPtr *old_ovptrs,
 									   const bool *old_ovpresent);
 extern void FluxDeformTuple(Relation rel, FluxTuple tuple, TupleDesc tupdesc, Datum *values, bool *isnull);
+extern void FluxDeformTupleUpTo(Relation rel, FluxTuple tuple, TupleDesc tupdesc, Datum *values, bool *isnull, int max_natts);
 extern void FluxFreeTuple(FluxTuple tuple);
 extern bool FluxTupleToSlot(FluxTupleHeader *tuple_header, TupleTableSlot *slot);
 extern bool FluxTupleToSlotWithOverflow(FluxTupleHeader *tuple_header,

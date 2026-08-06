@@ -1874,7 +1874,30 @@ flux_indexed_attr_changed(Relation relation, ItemPointer otid,
 	old_tup.t_len = ItemIdGetLength(itemid);
 	old_tup.t_data = (FluxTupleHeader *) PageGetItem(page, itemid);
 	ItemPointerSet(&old_tup.t_self, blkno, offnum);
-	FluxDeformTuple(relation, &old_tup, tupdesc, old_values, old_isnull);
+
+	/*
+	 * Deform only as far as the highest ordinary indexed column.  Indexed
+	 * columns are usually the leading attributes, so on a wide table this
+	 * avoids deforming (walking + fetching) every trailing non-indexed column
+	 * just to compare a few keys -- one of the two per-update overheads called
+	 * out in the write-gap diagnosis.  Whole-row (attrnum 0) and system
+	 * (attrnum < 0) references are handled in the loop below without reading
+	 * old_values[], so they do not raise the bound.
+	 */
+	{
+		int			max_indexed_natts = 0;
+		int			probe = -1;
+
+		while ((probe = bms_next_member(indexed, probe)) >= 0)
+		{
+			AttrNumber	probenum = probe + FirstLowInvalidHeapAttributeNumber;
+
+			if (probenum > max_indexed_natts)
+				max_indexed_natts = probenum;
+		}
+		FluxDeformTupleUpTo(relation, &old_tup, tupdesc, old_values, old_isnull,
+							max_indexed_natts);
+	}
 
 	while (!changed && (attidx = bms_next_member(indexed, attidx)) >= 0)
 	{

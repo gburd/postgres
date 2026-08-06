@@ -539,6 +539,27 @@ flux_form_tuple_internal(TupleDesc tupdesc, Datum *values, bool *isnull,
 void
 FluxDeformTuple(Relation rel, FluxTuple tuple, TupleDesc tupdesc, Datum *values, bool *isnull)
 {
+	FluxDeformTupleUpTo(rel, tuple, tupdesc, values, isnull, tupdesc->natts);
+}
+
+/*
+ * FluxDeformTupleUpTo
+ *
+ * Like FluxDeformTuple(), but stops after extracting the first max_natts
+ * attributes.  Because FLUX (like heap) stores variable-length attributes
+ * consecutively, deforming is inherently sequential: extracting attribute N
+ * still costs walking attributes 0..N.  But a caller that only needs the
+ * low-numbered attributes (e.g. flux_indexed_attr_changed comparing indexed
+ * columns, which are typically the leading columns) can cap the walk at the
+ * highest attribute it will read instead of deforming every column of a wide
+ * tuple.  Attributes at and beyond max_natts are returned as NULL/0 so a
+ * caller that accidentally reads past its bound gets a defined (not garbage)
+ * value; callers MUST NOT rely on those tail values.
+ */
+void
+FluxDeformTupleUpTo(Relation rel, FluxTuple tuple, TupleDesc tupdesc,
+					Datum *values, bool *isnull, int max_natts)
+{
 	FluxTupleHeader *header;
 	uint8	   *nulls_bitmap;
 	char	   *data_ptr;
@@ -560,6 +581,10 @@ FluxDeformTuple(Relation rel, FluxTuple tuple, TupleDesc tupdesc, Datum *values,
 	{
 		int			tuple_natts = header->t_natts;
 		int			loop_natts = Min(tupdesc->natts, tuple_natts);
+
+		/* Cap the deform at the caller's requested bound. */
+		if (max_natts >= 0 && max_natts < loop_natts)
+			loop_natts = max_natts;
 
 		bitmap_len = BITMAPLEN(tuple_natts);
 		nulls_bitmap = (uint8 *) header->t_attrs_bitmap;
