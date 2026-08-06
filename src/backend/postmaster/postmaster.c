@@ -4230,6 +4230,22 @@ BackendStartup(ClientSocket *client_sock)
 static void
 backend_startup_accepted(ClientSocket *client_sock)
 {
+	/*
+	 * Fast SSL negotiation (threaded mode): if SSL is disabled and this is a
+	 * TCP client, answer the client's SSLRequest 'N' HERE, at accept time,
+	 * rather than letting the backend fiber do it after handoff.  On a
+	 * many-core box a large simultaneous connect burst schedules the handshake
+	 * fibers too slowly, and clients time out reading the 1-byte reply ("error
+	 * response during SSL exchange").  pg_prenegotiate_ssl_request() never
+	 * blocks (bounded non-blocking peek + 1-byte send) and only acts on an
+	 * exact SSLRequest already present; otherwise the fiber negotiates as
+	 * usual.  When SSL is enabled we do NOT pre-answer -- the fiber runs the
+	 * real negotiation/secure_open_server.  (Only reached in threaded mode:
+	 * this is the AcceptConnectionDrain callback.)
+	 */
+	if (!LoadedSSL && client_sock->raddr.addr.ss_family != AF_UNIX)
+		(void) pg_prenegotiate_ssl_request(client_sock);
+
 	(void) BackendStartup(client_sock);
 }
 

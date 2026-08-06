@@ -283,6 +283,7 @@ pq_init(ClientSocket *client_sock)
 	port = palloc0_object(Port);
 	MemoryContextSwitchTo(oldcontext);
 	port->sock = client_sock->sock;
+	port->ssl_prenegotiated = client_sock->ssl_negotiated;
 	memcpy(&port->raddr.addr, &client_sock->raddr.addr, client_sock->raddr.salen);
 	port->raddr.salen = client_sock->raddr.salen;
 
@@ -963,6 +964,7 @@ int
 AcceptConnection(pgsocket server_fd, ClientSocket *client_sock)
 {
 	/* accept connection and fill in the client (remote) address */
+	client_sock->ssl_negotiated = false;
 	client_sock->raddr.salen = sizeof(client_sock->raddr.addr);
 	if ((client_sock->sock = accept(server_fd,
 									(struct sockaddr *) &client_sock->raddr.addr,
@@ -984,6 +986,79 @@ AcceptConnection(pgsocket server_fd, ClientSocket *client_sock)
 	}
 
 	return STATUS_OK;
+}
+
+/*
+ * pg_prenegotiate_ssl_request -- answer a client's SSLRequest at accept time,
+ * in the postmaster, WITHOUT ever blocking on the client.
+ *
+ * Threaded mode emits the SSLRequest 'N' (no-SSL) negotiation byte from the
+ * backend FIBER after handoff; under a large simultaneous connect burst on a
+ * many-core box, scheduling that fiber across the executor loops is slow enough
+ * that some clients' connect-time read of the 1-byte reply times out and they
+ * abort ("server sent an error response during SSL exchange").  Answering the
+ * 'N' here, at accept time, is scheduling-independent and eliminates that race.
+ *
+ * SAFETY (why the postmaster can do this without risk):
+ *  - MSG_PEEK|MSG_DONTWAIT: a SINGLE non-blocking peek of up to 8 bytes.  If
+ *    fewer than 8 are available (slow client) it does NOTHING and returns
+ *    false -- the postmaster never blocks, never loops, never waits on data.
+ *  - It consumes + answers ONLY an exact 8-byte SSLRequest (len==8 &&
+ *    code==NEGOTIATE_SSL_CODE); a GSSRequest, a plain startup packet, a cancel
+ *    request, or anything else is left untouched for the fiber to handle.
+ *  - The reply is a single non-blocking send of 1 byte on a socket whose send
+ *    buffer is empty, so it cannot block either.
+ *  - No new MITM surface: this is exactly the plaintext SSLRequest->'N' exchange
+ *    PostgreSQL already performs; it only moves WHERE the 'N' is written.  The
+ *    caller gates it on multithreaded && !LoadedSSL (SSL off) && TCP, so when
+ *    SSL is enabled the fiber still runs the real negotiation/secure_open_server.
+ *
+ * On success (SSLRequest consumed + 'N' sent) sets sock->ssl_negotiated = true
+ * and returns true; the client then sends its real startup packet, which the
+ * fiber's ProcessStartupPacket reads (ssl_done initialized from the flag).
+ */
+bool
+pg_prenegotiate_ssl_request(ClientSocket *sock)
+{
+#ifndef WIN32
+	unsigned char	buf[8];
+	ssize_t			n;
+	uint32			len;
+	uint32			code;
+	char			reply = 'N';
+
+	sock->ssl_negotiated = false;
+
+	/* Non-blocking PEEK: inspect without consuming; never wait. */
+	n = recv(sock->sock, buf, sizeof(buf), MSG_PEEK | MSG_DONTWAIT);
+	if (n != (ssize_t) sizeof(buf))
+		return false;			/* <8 bytes ready, or error -> leave to fiber */
+
+	memcpy(&len, buf, 4);
+	memcpy(&code, buf + 4, 4);
+	len = pg_ntoh32(len);
+	code = pg_ntoh32(code);
+	if (len != 8 || code != (uint32) NEGOTIATE_SSL_CODE)
+		return false;			/* not an SSLRequest -> leave to fiber */
+
+	/* It IS an 8-byte SSLRequest.  Consume exactly those 8 bytes. */
+	n = recv(sock->sock, buf, sizeof(buf), MSG_DONTWAIT);
+	if (n != (ssize_t) sizeof(buf))
+		return false;			/* raced away; fiber will re-read */
+
+	/* Answer 'N' (no SSL).  Send buffer is empty; a 1-byte send cannot block. */
+	do
+		n = send(sock->sock, &reply, 1, MSG_DONTWAIT);
+	while (n < 0 && errno == EINTR);
+	if (n != 1)
+		return false;			/* could not send -> fiber path (rare) */
+
+	sock->ssl_negotiated = true;
+	return true;
+#else
+	sock->ssl_negotiated = false;
+	return false;
+#endif
 }
 
 /*
@@ -1020,6 +1095,7 @@ AcceptConnectionDrain(pgsocket server_fd, int max,
 	{
 		ClientSocket s;
 
+		s.ssl_negotiated = false;
 		s.raddr.salen = sizeof(s.raddr.addr);
 		s.sock = accept(server_fd,
 						(struct sockaddr *) &s.raddr.addr,

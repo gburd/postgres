@@ -547,7 +547,13 @@ ProcessStartupPacket(Port *port)
 	 * the client may make requests.
 	 */
 	gss_done = false;
-	ssl_done = false;
+	/*
+	 * If the postmaster already answered a client SSLRequest 'N' at accept
+	 * time (threaded fast-negotiation, port->ssl_prenegotiated), treat SSL
+	 * negotiation as done so we do not re-answer it -- the next bytes on the
+	 * wire are the real startup packet.  Otherwise negotiate normally.
+	 */
+	ssl_done = port->ssl_prenegotiated;
 
 retry:
 	pq_startmsgread();
