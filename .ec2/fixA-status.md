@@ -48,3 +48,30 @@ fully unblocked (A layer 1 done, layer 2 + review remain).
 ## Status
 A layer-1 done (local, unproven-for-landing).  Burst layer-2 = next diagnosis.
 All MY EC2 torn down + verified (xtc-numa-bench in us-east-2 is another owner's).
+
+## Layer-2 lead (source analysis, 2026-08-06)
+Ruled OUT: ProcessSSLStartup (runs before ProcessStartupPacket, does pq_peekbyte)
+mis-handling the post-'N' bytes -- after 'N' the client's next byte is the
+startup length high-byte (~0x00), != 0x16, so ProcessSSLStartup returns STATUS_OK
+correctly.  Not the bug.
+
+Remaining hypothesis for "server closed the connection unexpectedly" (no server
+log, burst-only, single/sequential fine): the backend fiber exits cleanly
+(no error logged) but closes the socket during startup under the 384-instant
+burst -- pointing at a fiber BRING-UP backpressure/limit (too many simultaneous
+new sessions spawned; some torn down), NOT the SSL negotiation (which A fixed).
+Next session, INSTRUMENT a failing connection on-box: log in the tps
+backend-fiber startup path (BackendInitialize/ProcessStartupPacket entry + the
+exit path) to see whether the fiber even starts for the closed connections, or
+is rejected/torn down at spawn under the burst.  If bring-up backpressure: that
+is the true remaining oversubscription-connect ceiling and needs its own fix
+(rate-limit/queue the fiber spawns, or raise the spawn concurrency).
+
+## Path to the tps NUMBER without fully solving layer-2 (pragmatic)
+Since single + sequential connects are clean, the tps STEADY-STATE throughput can
+be measured by ESTABLISHING the connections gradually (a driver that opens N
+persistent conns one/few at a time with retry, then runs the query loop and
+measures server-side xact/s) -- avoiding the instantaneous 384-burst entirely.
+That gets the throughput comparison (the thesis question) while layer-2 (the
+instantaneous-burst ceiling) is fixed separately.  This is the cleanest next
+action to finally quantify tps-vs-fork throughput at oversubscription.
