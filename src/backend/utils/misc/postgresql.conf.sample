@@ -802,6 +802,9 @@
                                         #   warning
                                         #   error
 #search_path = '"$user", public'        # schema names
+#grammar_dialect = ''                   # '' or 'all' = base SQL + all loaded
+                                        #   grammar extensions; 'none' = base
+                                        #   SQL only; or a loaded dialect name
 #row_security = on
 #default_table_access_method = 'heap'
 #default_tablespace = ''                # a tablespace name, '' uses the default

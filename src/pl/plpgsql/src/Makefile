@@ -80,7 +80,8 @@ pl_scanner.o: pl_reserved_kwlist_d.h pl_unreserved_kwlist_d.h
 pl_gram.h: pl_gram.c
 	touch $@
 
-pl_gram.c: BISONFLAGS += -d
+pl_gram.c: pl_gram.lime
+	$(LIME) -d. $<
 
 # generate plerrcodes.h from src/backend/utils/errcodes.txt
 plerrcodes.h: $(top_srcdir)/src/backend/utils/errcodes.txt generate-plerrcodes.pl

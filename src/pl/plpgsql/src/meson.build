@@ -9,10 +9,13 @@ plpgsql_sources = files(
 )
 
 pl_gram = custom_target('gram',
-  input: 'pl_gram.y',
-  kwargs: bison_kw,
+  input: 'pl_gram.lime',
+  kwargs: lime_kw,
 )
 generated_sources += pl_gram.to_list()
+
+# The Lime-generated parser is warning-clean as of Lime v1.5.x, so it is
+# compiled directly into the plpgsql module rather than isolated.
 plpgsql_sources += pl_gram
 
 gen_plerrcodes = files('generate-plerrcodes.pl')
@@ -52,7 +55,8 @@ endif
 plpgsql = shared_module('plpgsql',
   plpgsql_sources,
   c_pch: pch_postgres_h,
-  include_directories: include_directories('.'),
+  include_directories: [include_directories('.'),
+                        include_directories('../../../backend/parser')],
   kwargs: pg_mod_args,
 )
 pl_targets += plpgsql

@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+#
+# Apply `lime -F` in place to every .lime file in the source tree.
+# Companion to `lime_format_check`; this script is what
+# `meson compile lime-format` runs.
+#
+# Lime v0.6.0+ formatter is single-pass idempotent (regression-
+# tested upstream in v0.6.1).  Pre-v0.6.0 needed two passes;
+# flake.lock pins v0.6.0 so we run a single pass.
+#
+
+import argparse
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ap = argparse.ArgumentParser()
+ap.add_argument('--lime', required=True, help='path to the lime binary')
+ap.add_argument('--srcdir', required=True, help='source directory to scan')
+ap.add_argument('--quiet', action='store_true',
+                help='suppress per-file output')
+args = ap.parse_args()
+
+srcdir = Path(args.srcdir).resolve()
+if not srcdir.is_dir():
+    sys.exit(f'lime_format: srcdir not found: {srcdir}')
+
+SKIP_PATTERNS = ('build', 'install', '.git', 'tmp_install')
+
+formatted = 0
+unchanged = 0
+failures = 0
+
+for lime_path in sorted(srcdir.rglob('*.lime')):
+    rel = lime_path.relative_to(srcdir)
+    if any(part.startswith(p) for part in rel.parts for p in SKIP_PATTERNS):
+        continue
+    original = lime_path.read_text()
+    cp = subprocess.run(
+        [args.lime, '-F', str(lime_path)],
+        capture_output=True, text=True,
+    )
+    if cp.returncode != 0:
+        print(f'FAIL {rel}: lime -F exited {cp.returncode}',
+              file=sys.stderr)
+        print(cp.stderr, file=sys.stderr)
+        failures += 1
+        continue
+    formatted_path = lime_path.with_suffix(lime_path.suffix + '.formatted')
+    if not formatted_path.exists():
+        print(f'FAIL {rel}: lime -F did not produce .formatted',
+              file=sys.stderr)
+        failures += 1
+        continue
+    shutil.move(formatted_path, lime_path)
+    new = lime_path.read_text()
+    if new == original:
+        unchanged += 1
+        if not args.quiet:
+            print(f'unchanged {rel}')
+    else:
+        formatted += 1
+        if not args.quiet:
+            print(f'formatted {rel}')
+
+if failures:
+    print(f'\nlime_format: {failures} files FAILED', file=sys.stderr)
+    sys.exit(1)
+
+print(
+    f'\nlime_format: {formatted} reformatted, {unchanged} already canonical'
+)

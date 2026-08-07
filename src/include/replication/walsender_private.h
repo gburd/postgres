@@ -137,8 +137,8 @@ extern PGDLLIMPORT WalSndCtlData *WalSndCtl;
 extern void WalSndSetState(WalSndState state);
 
 /*
- * Internal functions for parsing the replication grammar, in repl_gram.y and
- * repl_scanner.l
+ * Internal functions for parsing the replication grammar, in
+ * repl_gram.lime and repl_scanner.c.
  */
 union YYSTYPE;
 typedef void *yyscan_t;

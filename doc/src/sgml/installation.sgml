@@ -89,6 +89,52 @@
     <listitem>
      <para>
       <indexterm>
+       <primary>lime</primary>
+      </indexterm>
+
+      <application>Lime</application> is required to build from a git
+      checkout.  Lime is a runtime-extensible LALR(1) parser generator
+      that <productname>PostgreSQL</productname> uses for the SQL
+      parser, the bootstrap parser, the synchronous-replication
+      parser, and several auxiliary grammars and lexers.  Lime
+      replaces the role <application>Flex</application> and
+      <application>Bison</application> formerly played in the
+      <productname>PostgreSQL</productname> build.
+     </para>
+     <para>
+      Source tarballs ship pre-generated <filename>.c</filename> and
+      <filename>.h</filename> outputs alongside the <filename>.lime</filename>
+      and <filename>.lex</filename> sources, so Lime is not required
+      when building from a source tarball.
+     </para>
+     <para>
+      Lime is not yet packaged by major distributions.  Build from
+      source:
+<screen>
+git clone https://codeberg.org/gregburd/lime.git
+cd lime
+meson setup builddir
+ninja -C builddir
+sudo ninja -C builddir install
+</screen>
+      Installs <filename>lime</filename> and the parser template
+      <filename>lempar.c</filename> under <filename>/usr/local</filename>.
+      Override the install prefix with
+      <option>meson setup --prefix=<replaceable>/path</replaceable></option>.
+     </para>
+     <para>
+      The <productname>PostgreSQL</productname> build picks up the
+      <command>lime</command> binary via
+      <envar>LIME</envar> or
+      the meson option <option>-DLIME=<replaceable>path</replaceable></option>.
+      If neither is set, <productname>PostgreSQL</productname> looks
+      for <command>lime</command> on <envar>PATH</envar>.
+     </para>
+    </listitem>
+
+    <listitem>
+     <para>
+      <indexterm>
        <primary>flex</primary>
       </indexterm>
       <indexterm>
@@ -101,10 +147,18 @@
        <primary>yacc</primary>
       </indexterm>
 
-      <application>Flex</application> and <application>Bison</application> are
-      required.  Other <application>lex</application> and
-      <application>yacc</application> programs cannot be used.
-      <application>Bison</application> needs to be at least version 2.3.
+      <application>Flex</application> and <application>Bison</application>
+      are no longer required for the in-tree
+      <productname>PostgreSQL</productname> build; the parsers and
+      lexers were ported to <application>Lime</application>.
+      <productname>PostgreSQL</productname>'s <application>PGXS</application>
+      build system continues to support <application>Flex</application>
+      and <application>Bison</application> for downstream extensions
+      whose own <filename>.l</filename> /
+      <filename>.y</filename> grammars predate the migration; the
+      tools are probed via <link linkend="configure-envvars-flex"><envar>FLEX</envar></link>
+      and <link linkend="configure-envvars-bison"><envar>BISON</envar></link>
+      but are no longer required to be present.
      </para>
     </listitem>
 

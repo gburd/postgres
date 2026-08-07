@@ -1,0 +1,5057 @@
+/*-------------------------------------------------------------------------
+ *
+ * gram.lime
+ *	  Lime grammar for the PostgreSQL backend SQL parser.
+ *
+ * Mechanically converted from src/pl/plpgsql/src/pl_gram.y by
+ * src/tools/lime_convert_gram.py.  Hand edits are expected to follow
+ * for precedence/conflict tuning and scanner glue.
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ *-------------------------------------------------------------------------
+ */
+
+/* lime_to_bison_gram nt_rename map -- DO NOT EDIT BY HAND.
+ * Each line: <bison-name> -> <lime-name>.
+ */
+%name plpgsql_yy
+%token_type {YYSTYPE}
+%extra_argument {struct GramParseExtra *extra}
+%start_symbol pl_function
+%expect 0
+%first_token 257
+%locations
+%location_type {YYLTYPE}
+
+/* Driver. */
+%include {
+#include "pl_gram_types.h"
+
+#ifndef YYEMPTY
+#define YYEMPTY (-2)
+#endif
+
+/* ---- BEGIN gram.y prologue ---- */
+
+/*-------------------------------------------------------------------------
+ *
+ * pl_gram.y			- Parser for the PL/pgSQL procedural language
+ *
+ * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1994, Regents of the University of California
+ *
+ *
+ * IDENTIFICATION
+ *	  src/pl/plpgsql/src/pl_gram.y
+ *
+ *-------------------------------------------------------------------------
+ */
+
+#include "postgres.h"
+
+#include "catalog/namespace.h"
+#include "catalog/pg_proc.h"
+#include "catalog/pg_type.h"
+#include "parser/parser.h"
+#include "parser/parse_type.h"
+#include "parser/scanner.h"
+#include "parser/scansup.h"
+#include "utils/builtins.h"
+
+#include "plpgsql.h"
+
+#include "pl_gram.h"
+
+/* Location tracking support --- simpler than bison's default */
+#define YYLLOC_DEFAULT(Current, Rhs, N) \
+	do { \
+		if (N) \
+			(Current) = (Rhs)[1]; \
+		else \
+			(Current) = (Rhs)[0]; \
+	} while (0)
+
+/*
+ * Bison doesn't allocate anything that needs to live across parser calls,
+ * so we can easily have it use palloc instead of malloc.  This prevents
+ * memory leaks if we error out during parsing.
+ */
+#define YYMALLOC palloc
+#define YYFREE   pfree
+
+
+typedef struct
+{
+	int			location;
+	yyscan_t	yyscanner;
+} sql_error_callback_arg;
+
+#define parser_errposition(pos)  plpgsql_scanner_errposition(pos, yyscanner)
+
+union YYSTYPE;					/* need forward reference for tok_is_keyword */
+
+static	bool			tok_is_keyword(int token, union YYSTYPE *lval,
+									   int kw_token, const char *kw_str);
+static	void			word_is_not_variable(PLword *word, int location, yyscan_t yyscanner);
+static	void			cword_is_not_variable(PLcword *cword, int location, yyscan_t yyscanner);
+static	void			current_token_is_not_variable(int tok, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner);
+static	PLpgSQL_expr	*make_plpgsql_expr(const char *query,
+										   RawParseMode parsemode);
+static	void			mark_expr_as_assignment_source(PLpgSQL_expr *expr,
+													   PLpgSQL_datum *target);
+static	PLpgSQL_expr	*read_sql_construct(int until,
+											int until2,
+											int until3,
+											const char *expected,
+											RawParseMode parsemode,
+											bool isexpression,
+											bool valid_sql,
+											int *startloc,
+											int *endtoken,
+											YYSTYPE *yylvalp, YYLTYPE *yyllocp,
+											yyscan_t yyscanner);
+static	PLpgSQL_expr	*read_sql_expression(int until, const char *expected,
+											 YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner);
+static	PLpgSQL_expr	*read_sql_expression2(int until, int until2,
+											  const char *expected, int *endtoken,
+											  YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner);
+static	PLpgSQL_expr	*read_sql_stmt(YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner);
+static	PLpgSQL_type	*read_datatype(int tok, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner);
+static	PLpgSQL_stmt	*make_execsql_stmt(int firsttoken, int location,
+										   PLword *word, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner);
+static	PLpgSQL_stmt_fetch *read_fetch_direction(YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner);
+static	void			 complete_direction(PLpgSQL_stmt_fetch *fetch,
+											bool *check_FROM, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner);
+static	PLpgSQL_stmt	*make_return_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner);
+static	PLpgSQL_stmt	*make_return_next_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner);
+static	PLpgSQL_stmt	*make_return_query_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner);
+static  PLpgSQL_stmt	*make_case(int location, PLpgSQL_expr *t_expr,
+								   List *case_when_list, List *else_stmts, yyscan_t yyscanner);
+static	char			*NameOfDatum(PLwdatum *wdatum);
+static	void			 check_assignable(PLpgSQL_datum *datum, int location, yyscan_t yyscanner);
+static	void			 read_into_target(PLpgSQL_variable **target, bool *strict,
+										  YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner);
+static	PLpgSQL_row		*read_into_scalar_list(char *initial_name,
+											   PLpgSQL_datum *initial_datum,
+											   int initial_location,
+											   YYSTYPE *yylvalp, YYLTYPE *yyllocp,
+											   yyscan_t yyscanner);
+static	PLpgSQL_row		*make_scalar_list1(char *initial_name,
+										   PLpgSQL_datum *initial_datum,
+										   int lineno, int location, yyscan_t yyscanner);
+static	void			 check_sql_expr(const char *stmt,
+										RawParseMode parseMode, int location, yyscan_t yyscanner);
+static	void			 plpgsql_sql_error_callback(void *arg);
+static	PLpgSQL_type	*parse_datatype(const char *string, int location, yyscan_t yyscanner);
+static	void			 check_labels(const char *start_label,
+									  const char *end_label,
+									  int end_location,
+									  yyscan_t yyscanner);
+static	PLpgSQL_expr	*read_cursor_args(PLpgSQL_var *cursor, int until,
+										  YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner);
+static	List			*read_raise_options(YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner);
+static	void			check_raise_parameters(PLpgSQL_stmt_raise *stmt);
+/* ---- END gram.y prologue ---- */
+
+/* Synthesized to fold the original %parse-param entries
+ * into a single Lime %extra_argument.  Action bodies that
+ * referenced the original idents by name keep compiling
+ * unchanged via the macro shadows below. */
+struct GramParseExtra
+{
+	PLpgSQL_stmt_block **plpgsql_parse_result_p;
+	yyscan_t yyscanner;
+};
+#line 3390 "./src/pl/plpgsql/src/pl_gram.lime"
+
+
+
+/*
+ * Check whether a token represents an "unreserved keyword".
+ * We have various places where we want to recognize a keyword in preference
+ * to a variable name, but not reserve that keyword in other contexts.
+ * Hence, this kluge.
+ */
+static bool
+tok_is_keyword(int token, union YYSTYPE *lval,
+			   int kw_token, const char *kw_str)
+{
+	if (token == kw_token)
+	{
+		/* Normal case, was recognized by scanner (no conflicting variable) */
+		return true;
+	}
+	else if (token == T_DATUM)
+	{
+		/*
+		 * It's a variable, so recheck the string name.  Note we will not
+		 * match composite names (hence an unreserved word followed by "."
+		 * will not be recognized).
+		 */
+		if (!lval->wdatum.quoted && lval->wdatum.ident != NULL &&
+			strcmp(lval->wdatum.ident, kw_str) == 0)
+			return true;
+	}
+	return false;				/* not the keyword */
+}
+
+/*
+ * Convenience routine to complain when we expected T_DATUM and got T_WORD,
+ * ie, unrecognized variable.
+ */
+static void
+word_is_not_variable(PLword *word, int location, yyscan_t yyscanner)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_SYNTAX_ERROR),
+			 errmsg("\"%s\" is not a known variable",
+					word->ident),
+			 parser_errposition(location)));
+}
+
+/* Same, for a CWORD */
+static void
+cword_is_not_variable(PLcword *cword, int location, yyscan_t yyscanner)
+{
+	ereport(ERROR,
+			(errcode(ERRCODE_SYNTAX_ERROR),
+			 errmsg("\"%s\" is not a known variable",
+					NameListToString(cword->idents)),
+			 parser_errposition(location)));
+}
+
+/*
+ * Convenience routine to complain when we expected T_DATUM and got
+ * something else.  "tok" must be the current token, since we also
+ * look at yylval and yylloc.
+ */
+static void
+current_token_is_not_variable(int tok, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner)
+{
+	if (tok == T_WORD)
+		word_is_not_variable(&(yylvalp->word), *yyllocp, yyscanner);
+	else if (tok == T_CWORD)
+		cword_is_not_variable(&(yylvalp->cword), *yyllocp, yyscanner);
+	else
+		plpgsql_yyerror(yyllocp, NULL, yyscanner, "syntax error");
+}
+
+/* Convenience routine to construct a PLpgSQL_expr struct */
+static PLpgSQL_expr *
+make_plpgsql_expr(const char *query,
+				  RawParseMode parsemode)
+{
+	PLpgSQL_expr *expr = palloc0_object(PLpgSQL_expr);
+
+	expr->query = pstrdup(query);
+	expr->parseMode = parsemode;
+	expr->func = plpgsql_curr_compile;
+	expr->ns = plpgsql_ns_top();
+	/* might get changed later during parsing: */
+	expr->target_param = -1;
+	expr->target_is_local = false;
+	/* other fields are left as zeroes until first execution */
+	return expr;
+}
+
+/* Mark a PLpgSQL_expr as being the source of an assignment to target */
+static void
+mark_expr_as_assignment_source(PLpgSQL_expr *expr, PLpgSQL_datum *target)
+{
+	/*
+	 * Mark the expression as being an assignment source, if target is a
+	 * simple variable.  We don't currently support optimized assignments to
+	 * other DTYPEs, so no need to mark in other cases.
+	 */
+	if (target->dtype == PLPGSQL_DTYPE_VAR)
+	{
+		expr->target_param = target->dno;
+
+		/*
+		 * For now, assume the target is local to the nearest enclosing
+		 * exception block.  That's correct if the function contains no
+		 * exception blocks; otherwise we'll update this later.
+		 */
+		expr->target_is_local = true;
+	}
+	else
+	{
+		expr->target_param = -1;	/* should be that already */
+		expr->target_is_local = false; /* ditto */
+	}
+}
+
+/* Convenience routine to read an expression with one possible terminator */
+static PLpgSQL_expr *
+read_sql_expression(int until, const char *expected, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner)
+{
+	return read_sql_construct(until, 0, 0, expected,
+							  RAW_PARSE_PLPGSQL_EXPR,
+							  true, true, NULL, NULL,
+							  yylvalp, yyllocp, yyscanner);
+}
+
+/* Convenience routine to read an expression with two possible terminators */
+static PLpgSQL_expr *
+read_sql_expression2(int until, int until2, const char *expected,
+					 int *endtoken, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner)
+{
+	return read_sql_construct(until, until2, 0, expected,
+							  RAW_PARSE_PLPGSQL_EXPR,
+							  true, true, NULL, endtoken,
+							  yylvalp, yyllocp, yyscanner);
+}
+
+/* Convenience routine to read a SQL statement that must end with ';' */
+static PLpgSQL_expr *
+read_sql_stmt(YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner)
+{
+	return read_sql_construct(';', 0, 0, ";",
+							  RAW_PARSE_DEFAULT,
+							  false, true, NULL, NULL,
+							  yylvalp, yyllocp, yyscanner);
+}
+
+/*
+ * Read a SQL construct and build a PLpgSQL_expr for it.
+ *
+ * until:		token code for expected terminator
+ * until2:		token code for alternate terminator (pass 0 if none)
+ * until3:		token code for another alternate terminator (pass 0 if none)
+ * expected:	text to use in complaining that terminator was not found
+ * parsemode:	raw_parser() mode to use
+ * isexpression: whether to say we're reading an "expression" or a "statement"
+ * valid_sql:   whether to check the syntax of the expr
+ * startloc:	if not NULL, location of first token is stored at *startloc
+ * endtoken:	if not NULL, ending token is stored at *endtoken
+ *				(this is only interesting if until2 or until3 isn't zero)
+ */
+static PLpgSQL_expr *
+read_sql_construct(int until,
+				   int until2,
+				   int until3,
+				   const char *expected,
+				   RawParseMode parsemode,
+				   bool isexpression,
+				   bool valid_sql,
+				   int *startloc,
+				   int *endtoken,
+				   YYSTYPE *yylvalp, YYLTYPE *yyllocp,
+				   yyscan_t yyscanner)
+{
+	int			tok;
+	StringInfoData ds;
+	IdentifierLookup save_IdentifierLookup;
+	int			startlocation = -1;
+	int			endlocation = -1;
+	int			parenlevel = 0;
+	PLpgSQL_expr *expr;
+
+	initStringInfo(&ds);
+
+	/* special lookup mode for identifiers within the SQL text */
+	save_IdentifierLookup = plpgsql_IdentifierLookup;
+	plpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_EXPR;
+
+	for (;;)
+	{
+		tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+		if (startlocation < 0)	/* remember loc of first token */
+			startlocation = *yyllocp;
+		if (tok == until && parenlevel == 0)
+			break;
+		if (tok == until2 && parenlevel == 0)
+			break;
+		if (tok == until3 && parenlevel == 0)
+			break;
+		if (tok == '(' || tok == '[')
+			parenlevel++;
+		else if (tok == ')' || tok == ']')
+		{
+			parenlevel--;
+			if (parenlevel < 0)
+				plpgsql_yyerror(yyllocp, NULL, yyscanner, "mismatched parentheses");
+		}
+
+		/*
+		 * End of function definition is an error, and we don't expect to hit
+		 * a semicolon either (unless it's the until symbol, in which case we
+		 * should have fallen out above).
+		 */
+		if (tok == 0 || tok == ';')
+		{
+			if (parenlevel != 0)
+				plpgsql_yyerror(yyllocp, NULL, yyscanner, "mismatched parentheses");
+			if (isexpression)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("missing \"%s\" at end of SQL expression",
+								expected),
+						 parser_errposition(*yyllocp)));
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("missing \"%s\" at end of SQL statement",
+								expected),
+						 parser_errposition(*yyllocp)));
+		}
+		/* Remember end+1 location of last accepted token */
+		endlocation = *yyllocp + plpgsql_token_length(yyscanner);
+	}
+
+	plpgsql_IdentifierLookup = save_IdentifierLookup;
+
+	if (startloc)
+		*startloc = startlocation;
+	if (endtoken)
+		*endtoken = tok;
+
+	/* give helpful complaint about empty input */
+	if (startlocation >= endlocation)
+	{
+		if (isexpression)
+			plpgsql_yyerror(yyllocp, NULL, yyscanner, "missing expression");
+		else
+			plpgsql_yyerror(yyllocp, NULL, yyscanner, "missing SQL statement");
+	}
+
+	/*
+	 * We save only the text from startlocation to endlocation-1.  This
+	 * suppresses the "until" token as well as any whitespace or comments
+	 * following the last accepted token.  (We used to strip such trailing
+	 * whitespace by hand, but that causes problems if there's a "-- comment"
+	 * in front of said whitespace.)
+	 */
+	plpgsql_append_source_text(&ds, startlocation, endlocation, yyscanner);
+
+	expr = make_plpgsql_expr(ds.data, parsemode);
+	pfree(ds.data);
+
+	if (valid_sql)
+		check_sql_expr(expr->query, expr->parseMode, startlocation, yyscanner);
+
+	return expr;
+}
+
+/*
+ * Read a datatype declaration, consuming the current lookahead token if any.
+ * Returns a PLpgSQL_type struct.
+ */
+static PLpgSQL_type *
+read_datatype(int tok, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner)
+{
+	StringInfoData ds;
+	char	   *type_name;
+	int			startlocation;
+	PLpgSQL_type *result = NULL;
+	int			parenlevel = 0;
+
+	/* Should only be called while parsing DECLARE sections */
+	Assert(plpgsql_IdentifierLookup == IDENTIFIER_LOOKUP_DECLARE);
+
+	/* Often there will be a lookahead token, but if not, get one */
+	if (tok == YYEMPTY)
+		tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+
+	/* The current token is the start of what we'll pass to parse_datatype */
+	startlocation = *yyllocp;
+
+	/*
+	 * If we have a simple or composite identifier, check for %TYPE and
+	 * %ROWTYPE constructs.
+	 */
+	if (tok == T_WORD)
+	{
+		char	   *dtname = yylvalp->word.ident;
+
+		tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+		if (tok == '%')
+		{
+			tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+			if (tok_is_keyword(tok, yylvalp,
+							   K_TYPE, "type"))
+				result = plpgsql_parse_wordtype(dtname);
+			else if (tok_is_keyword(tok, yylvalp,
+									K_ROWTYPE, "rowtype"))
+				result = plpgsql_parse_wordrowtype(dtname);
+		}
+	}
+	else if (plpgsql_token_is_unreserved_keyword(tok))
+	{
+		char	   *dtname = pstrdup(yylvalp->keyword);
+
+		tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+		if (tok == '%')
+		{
+			tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+			if (tok_is_keyword(tok, yylvalp,
+							   K_TYPE, "type"))
+				result = plpgsql_parse_wordtype(dtname);
+			else if (tok_is_keyword(tok, yylvalp,
+									K_ROWTYPE, "rowtype"))
+				result = plpgsql_parse_wordrowtype(dtname);
+		}
+	}
+	else if (tok == T_CWORD)
+	{
+		List	   *dtnames = yylvalp->cword.idents;
+
+		tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+		if (tok == '%')
+		{
+			tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+			if (tok_is_keyword(tok, yylvalp,
+							   K_TYPE, "type"))
+				result = plpgsql_parse_cwordtype(dtnames);
+			else if (tok_is_keyword(tok, yylvalp,
+									K_ROWTYPE, "rowtype"))
+				result = plpgsql_parse_cwordrowtype(dtnames);
+		}
+	}
+
+	/*
+	 * If we recognized a %TYPE or %ROWTYPE construct, see if it is followed
+	 * by array decoration: [ ARRAY ] [ '[' [ iconst ] ']' [ ... ] ]
+	 *
+	 * Like the core parser, we ignore the specific numbers and sizes of
+	 * dimensions; arrays of different dimensionality are still the same type
+	 * in Postgres.
+	 */
+	if (result)
+	{
+		bool		is_array = false;
+
+		tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+		if (tok_is_keyword(tok, yylvalp,
+						   K_ARRAY, "array"))
+		{
+			is_array = true;
+			tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+		}
+		while (tok == '[')
+		{
+			is_array = true;
+			tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+			if (tok == ICONST)
+				tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+			if (tok != ']')
+				plpgsql_yyerror(yyllocp, NULL, yyscanner, "syntax error, expected \"]\"");
+			tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+		}
+		plpgsql_push_back_token(tok, yylvalp, yyllocp, yyscanner);
+
+		if (is_array)
+			result = plpgsql_build_datatype_arrayof(result);
+
+		return result;
+	}
+
+	/*
+	 * Not %TYPE or %ROWTYPE, so scan to the end of the datatype declaration,
+	 * which could include typmod or array decoration.  We are not very picky
+	 * here, instead relying on parse_datatype to complain about garbage.  But
+	 * we must count parens to handle typmods within cursor_arg correctly.
+	 */
+	while (tok != ';')
+	{
+		if (tok == 0)
+		{
+			if (parenlevel != 0)
+				plpgsql_yyerror(yyllocp, NULL, yyscanner, "mismatched parentheses");
+			else
+				plpgsql_yyerror(yyllocp, NULL, yyscanner, "incomplete data type declaration");
+		}
+		/* Possible followers for datatype in a declaration */
+		if (tok == K_COLLATE || tok == K_NOT ||
+			tok == '=' || tok == COLON_EQUALS || tok == K_DEFAULT)
+			break;
+		/* Possible followers for datatype in a cursor_arg list */
+		if ((tok == ',' || tok == ')') && parenlevel == 0)
+			break;
+		if (tok == '(')
+			parenlevel++;
+		else if (tok == ')')
+			parenlevel--;
+
+		tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+	}
+
+	/* set up ds to contain complete typename text */
+	initStringInfo(&ds);
+	plpgsql_append_source_text(&ds, startlocation, *yyllocp, yyscanner);
+	type_name = ds.data;
+
+	if (type_name[0] == '\0')
+		plpgsql_yyerror(yyllocp, NULL, yyscanner, "missing data type declaration");
+
+	result = parse_datatype(type_name, startlocation, yyscanner);
+
+	pfree(ds.data);
+
+	plpgsql_push_back_token(tok, yylvalp, yyllocp, yyscanner);
+
+	return result;
+}
+
+/*
+ * Read a generic SQL statement.  We have already read its first token;
+ * firsttoken is that token's code and location its starting location.
+ * If firsttoken == T_WORD, pass its yylval value as "word", else pass NULL.
+ */
+static PLpgSQL_stmt *
+make_execsql_stmt(int firsttoken, int location, PLword *word, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner)
+{
+	StringInfoData ds;
+	IdentifierLookup save_IdentifierLookup;
+	PLpgSQL_stmt_execsql *execsql;
+	PLpgSQL_expr *expr;
+	PLpgSQL_variable *target = NULL;
+	int			tok;
+	int			prev_tok;
+	bool		have_into = false;
+	bool		have_strict = false;
+	int			into_start_loc = -1;
+	int			into_end_loc = -1;
+	int			paren_depth = 0;
+	int			begin_depth = 0;
+	bool		in_routine_definition = false;
+	int			token_count = 0;
+	char		tokens[4];		/* records the first few tokens */
+
+	initStringInfo(&ds);
+
+	memset(tokens, 0, sizeof(tokens));
+
+	/* special lookup mode for identifiers within the SQL text */
+	save_IdentifierLookup = plpgsql_IdentifierLookup;
+	plpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_EXPR;
+
+	/*
+	 * Scan to the end of the SQL command.  Identify any INTO-variables clause
+	 * lurking within it, and parse that via read_into_target().
+	 *
+	 * The end of the statement is defined by a semicolon ... except that
+	 * semicolons within parentheses or BEGIN/END blocks don't terminate a
+	 * statement.  We follow psql's lead in not recognizing BEGIN/END except
+	 * after CREATE [OR REPLACE] {FUNCTION|PROCEDURE}.  END can also appear
+	 * within a CASE construct, so we treat CASE/END like BEGIN/END.
+	 *
+	 * Because INTO is sometimes used in the main SQL grammar, we have to be
+	 * careful not to take any such usage of INTO as a PL/pgSQL INTO clause.
+	 * There are currently three such cases:
+	 *
+	 * 1. SELECT ... INTO.  We don't care, we just override that with the
+	 * PL/pgSQL definition.
+	 *
+	 * 2. INSERT INTO.  This is relatively easy to recognize since the words
+	 * must appear adjacently; but we can't assume INSERT starts the command,
+	 * because it can appear in CREATE RULE or WITH.  Unfortunately, INSERT is
+	 * *not* fully reserved, so that means there is a chance of a false match;
+	 * but it's not very likely.
+	 *
+	 * 3. IMPORT FOREIGN SCHEMA ... INTO.  This is not allowed in CREATE RULE
+	 * or WITH, so we just check for IMPORT as the command's first token. (If
+	 * IMPORT FOREIGN SCHEMA returned data someone might wish to capture with
+	 * an INTO-variables clause, we'd have to work much harder here.)
+	 *
+	 * Fortunately, INTO is a fully reserved word in the main grammar, so at
+	 * least we need not worry about it appearing as an identifier.
+	 *
+	 * Any future additional uses of INTO in the main grammar will doubtless
+	 * break this logic again ... beware!
+	 */
+	tok = firsttoken;
+	if (tok == T_WORD && strcmp(word->ident, "create") == 0)
+		tokens[token_count] = 'c';
+	token_count++;
+
+	for (;;)
+	{
+		prev_tok = tok;
+		tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+		if (have_into && into_end_loc < 0)
+			into_end_loc = *yyllocp;	/* token after the INTO part */
+		/* Detect CREATE [OR REPLACE] {FUNCTION|PROCEDURE} */
+		if (tokens[0] == 'c' && token_count < sizeof(tokens))
+		{
+			if (tok == K_OR)
+				tokens[token_count] = 'o';
+			else if (tok == T_WORD &&
+					 strcmp(yylvalp->word.ident, "replace") == 0)
+				tokens[token_count] = 'r';
+			else if (tok == T_WORD &&
+					 strcmp(yylvalp->word.ident, "function") == 0)
+				tokens[token_count] = 'f';
+			else if (tok == T_WORD &&
+					 strcmp(yylvalp->word.ident, "procedure") == 0)
+				tokens[token_count] = 'f';	/* treat same as "function" */
+			if (tokens[1] == 'f' ||
+				(tokens[1] == 'o' && tokens[2] == 'r' && tokens[3] == 'f'))
+				in_routine_definition = true;
+			token_count++;
+		}
+		/* Track paren nesting (needed for CREATE RULE syntax) */
+		if (tok == '(')
+			paren_depth++;
+		else if (tok == ')' && paren_depth > 0)
+			paren_depth--;
+		/* We need track BEGIN/END nesting only in a routine definition */
+		if (in_routine_definition && paren_depth == 0)
+		{
+			if (tok == K_BEGIN || tok == K_CASE)
+				begin_depth++;
+			else if (tok == K_END && begin_depth > 0)
+				begin_depth--;
+		}
+		/* Command-ending semicolon? */
+		if (tok == ';' && paren_depth == 0 && begin_depth == 0)
+			break;
+		if (tok == 0)
+			plpgsql_yyerror(yyllocp, NULL, yyscanner, "unexpected end of function definition");
+		if (tok == K_INTO)
+		{
+			if (prev_tok == K_INSERT)
+				continue;		/* INSERT INTO is not an INTO-target */
+			if (prev_tok == K_MERGE)
+				continue;		/* MERGE INTO is not an INTO-target */
+			if (firsttoken == K_IMPORT)
+				continue;		/* IMPORT ... INTO is not an INTO-target */
+			if (have_into)
+				plpgsql_yyerror(yyllocp, NULL, yyscanner, "INTO specified more than once");
+			have_into = true;
+			into_start_loc = *yyllocp;
+			plpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_NORMAL;
+			read_into_target(&target, &have_strict, yylvalp, yyllocp, yyscanner);
+			plpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_EXPR;
+		}
+	}
+
+	plpgsql_IdentifierLookup = save_IdentifierLookup;
+
+	if (have_into)
+	{
+		/*
+		 * Insert an appropriate number of spaces corresponding to the INTO
+		 * text, so that locations within the redacted SQL statement still
+		 * line up with those in the original source text.
+		 */
+		plpgsql_append_source_text(&ds, location, into_start_loc, yyscanner);
+		appendStringInfoSpaces(&ds, into_end_loc - into_start_loc);
+		plpgsql_append_source_text(&ds, into_end_loc, *yyllocp, yyscanner);
+	}
+	else
+		plpgsql_append_source_text(&ds, location, *yyllocp, yyscanner);
+
+	/* trim any trailing whitespace, for neatness */
+	while (ds.len > 0 && scanner_isspace(ds.data[ds.len - 1]))
+		ds.data[--ds.len] = '\0';
+
+	expr = make_plpgsql_expr(ds.data, RAW_PARSE_DEFAULT);
+	pfree(ds.data);
+
+	check_sql_expr(expr->query, expr->parseMode, location, yyscanner);
+
+	execsql = palloc0_object(PLpgSQL_stmt_execsql);
+	execsql->cmd_type = PLPGSQL_STMT_EXECSQL;
+	execsql->lineno = plpgsql_location_to_lineno(location, yyscanner);
+	execsql->stmtid = ++plpgsql_curr_compile->nstatements;
+	execsql->sqlstmt = expr;
+	execsql->into = have_into;
+	execsql->strict = have_strict;
+	execsql->target = target;
+
+	return (PLpgSQL_stmt *) execsql;
+}
+
+
+/*
+ * Read FETCH or MOVE direction clause (everything through FROM/IN).
+ */
+static PLpgSQL_stmt_fetch *
+read_fetch_direction(YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner)
+{
+	PLpgSQL_stmt_fetch *fetch;
+	int			tok;
+	bool		check_FROM = true;
+
+	/*
+	 * We create the PLpgSQL_stmt_fetch struct here, but only fill in the
+	 * fields arising from the optional direction clause
+	 */
+	fetch = (PLpgSQL_stmt_fetch *) palloc0_object(PLpgSQL_stmt_fetch);
+	fetch->cmd_type = PLPGSQL_STMT_FETCH;
+	fetch->stmtid = ++plpgsql_curr_compile->nstatements;
+	/* set direction defaults: */
+	fetch->direction = FETCH_FORWARD;
+	fetch->how_many = 1;
+	fetch->expr = NULL;
+	fetch->returns_multiple_rows = false;
+
+	tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+	if (tok == 0)
+		plpgsql_yyerror(yyllocp, NULL, yyscanner, "unexpected end of function definition");
+
+	if (tok_is_keyword(tok, yylvalp,
+					   K_NEXT, "next"))
+	{
+		/* use defaults */
+	}
+	else if (tok_is_keyword(tok, yylvalp,
+							K_PRIOR, "prior"))
+	{
+		fetch->direction = FETCH_BACKWARD;
+	}
+	else if (tok_is_keyword(tok, yylvalp,
+							K_FIRST, "first"))
+	{
+		fetch->direction = FETCH_ABSOLUTE;
+	}
+	else if (tok_is_keyword(tok, yylvalp,
+							K_LAST, "last"))
+	{
+		fetch->direction = FETCH_ABSOLUTE;
+		fetch->how_many = -1;
+	}
+	else if (tok_is_keyword(tok, yylvalp,
+							K_ABSOLUTE, "absolute"))
+	{
+		fetch->direction = FETCH_ABSOLUTE;
+		fetch->expr = read_sql_expression2(K_FROM, K_IN,
+										   "FROM or IN",
+										   NULL, yylvalp, yyllocp, yyscanner);
+		check_FROM = false;
+	}
+	else if (tok_is_keyword(tok, yylvalp,
+							K_RELATIVE, "relative"))
+	{
+		fetch->direction = FETCH_RELATIVE;
+		fetch->expr = read_sql_expression2(K_FROM, K_IN,
+										   "FROM or IN",
+										   NULL, yylvalp, yyllocp, yyscanner);
+		check_FROM = false;
+	}
+	else if (tok_is_keyword(tok, yylvalp,
+							K_ALL, "all"))
+	{
+		fetch->how_many = FETCH_ALL;
+		fetch->returns_multiple_rows = true;
+	}
+	else if (tok_is_keyword(tok, yylvalp,
+							K_FORWARD, "forward"))
+	{
+		complete_direction(fetch, &check_FROM, yylvalp, yyllocp, yyscanner);
+	}
+	else if (tok_is_keyword(tok, yylvalp,
+							K_BACKWARD, "backward"))
+	{
+		fetch->direction = FETCH_BACKWARD;
+		complete_direction(fetch, &check_FROM, yylvalp, yyllocp, yyscanner);
+	}
+	else if (tok == K_FROM || tok == K_IN)
+	{
+		/* empty direction */
+		check_FROM = false;
+	}
+	else if (tok == T_DATUM)
+	{
+		/* Assume there's no direction clause and tok is a cursor name */
+		plpgsql_push_back_token(tok, yylvalp, yyllocp, yyscanner);
+		check_FROM = false;
+	}
+	else
+	{
+		/*
+		 * Assume it's a count expression with no preceding keyword. Note: we
+		 * allow this syntax because core SQL does, but it's ambiguous with
+		 * the case of an omitted direction clause; for instance, "MOVE n IN
+		 * c" will fail if n is a variable, because the preceding else-arm
+		 * will trigger.  Perhaps this can be improved someday, but it hardly
+		 * seems worth a lot of work.
+		 */
+		plpgsql_push_back_token(tok, yylvalp, yyllocp, yyscanner);
+		fetch->expr = read_sql_expression2(K_FROM, K_IN,
+										   "FROM or IN",
+										   NULL, yylvalp, yyllocp, yyscanner);
+		fetch->returns_multiple_rows = true;
+		check_FROM = false;
+	}
+
+	/* check FROM or IN keyword after direction's specification */
+	if (check_FROM)
+	{
+		tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+		if (tok != K_FROM && tok != K_IN)
+			plpgsql_yyerror(yyllocp, NULL, yyscanner, "expected FROM or IN");
+	}
+
+	return fetch;
+}
+
+/*
+ * Process remainder of FETCH/MOVE direction after FORWARD or BACKWARD.
+ * Allows these cases:
+ *   FORWARD expr,  FORWARD ALL,  FORWARD
+ *   BACKWARD expr, BACKWARD ALL, BACKWARD
+ */
+static void
+complete_direction(PLpgSQL_stmt_fetch *fetch, bool *check_FROM, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner)
+{
+	int			tok;
+
+	tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+	if (tok == 0)
+		plpgsql_yyerror(yyllocp, NULL, yyscanner, "unexpected end of function definition");
+
+	if (tok == K_FROM || tok == K_IN)
+	{
+		*check_FROM = false;
+		return;
+	}
+
+	if (tok == K_ALL)
+	{
+		fetch->how_many = FETCH_ALL;
+		fetch->returns_multiple_rows = true;
+		*check_FROM = true;
+		return;
+	}
+
+	plpgsql_push_back_token(tok, yylvalp, yyllocp, yyscanner);
+	fetch->expr = read_sql_expression2(K_FROM, K_IN,
+									   "FROM or IN",
+									   NULL, yylvalp, yyllocp, yyscanner);
+	fetch->returns_multiple_rows = true;
+	*check_FROM = false;
+}
+
+
+static PLpgSQL_stmt *
+make_return_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner)
+{
+	PLpgSQL_stmt_return *new;
+
+	new = palloc0_object(PLpgSQL_stmt_return);
+	new->cmd_type = PLPGSQL_STMT_RETURN;
+	new->lineno = plpgsql_location_to_lineno(location, yyscanner);
+	new->stmtid = ++plpgsql_curr_compile->nstatements;
+	new->expr = NULL;
+	new->retvarno = -1;
+
+	if (plpgsql_curr_compile->fn_retset)
+	{
+		if (plpgsql_yylex(yylvalp, yyllocp, yyscanner) != ';')
+			ereport(ERROR,
+					(errcode(ERRCODE_DATATYPE_MISMATCH),
+					 errmsg("RETURN cannot have a parameter in function returning set"),
+					 errhint("Use RETURN NEXT or RETURN QUERY."),
+					 parser_errposition(*yyllocp)));
+	}
+	else if (plpgsql_curr_compile->fn_rettype == VOIDOID)
+	{
+		if (plpgsql_yylex(yylvalp, yyllocp, yyscanner) != ';')
+		{
+			if (plpgsql_curr_compile->fn_prokind == PROKIND_PROCEDURE)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("RETURN cannot have a parameter in a procedure"),
+						 parser_errposition(*yyllocp)));
+			else
+				ereport(ERROR,
+						(errcode(ERRCODE_DATATYPE_MISMATCH),
+						 errmsg("RETURN cannot have a parameter in function returning void"),
+						 parser_errposition(*yyllocp)));
+		}
+	}
+	else if (plpgsql_curr_compile->out_param_varno >= 0)
+	{
+		if (plpgsql_yylex(yylvalp, yyllocp, yyscanner) != ';')
+			ereport(ERROR,
+					(errcode(ERRCODE_DATATYPE_MISMATCH),
+					 errmsg("RETURN cannot have a parameter in function with OUT parameters"),
+					 parser_errposition(*yyllocp)));
+		new->retvarno = plpgsql_curr_compile->out_param_varno;
+	}
+	else
+	{
+		/*
+		 * We want to special-case simple variable references for efficiency.
+		 * So peek ahead to see if that's what we have.
+		 */
+		int			tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+
+		if (tok == T_DATUM && plpgsql_peek(yyscanner) == ';' &&
+			(yylvalp->wdatum.datum->dtype == PLPGSQL_DTYPE_VAR ||
+			 yylvalp->wdatum.datum->dtype == PLPGSQL_DTYPE_PROMISE ||
+			 yylvalp->wdatum.datum->dtype == PLPGSQL_DTYPE_ROW ||
+			 yylvalp->wdatum.datum->dtype == PLPGSQL_DTYPE_REC))
+		{
+			new->retvarno = yylvalp->wdatum.datum->dno;
+			/* eat the semicolon token that we only peeked at above */
+			tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+			Assert(tok == ';');
+		}
+		else
+		{
+			/*
+			 * Not (just) a variable name, so treat as expression.
+			 *
+			 * Note that a well-formed expression is _required_ here; anything
+			 * else is a compile-time error.
+			 */
+			plpgsql_push_back_token(tok, yylvalp, yyllocp, yyscanner);
+			new->expr = read_sql_expression(';', ";", yylvalp, yyllocp, yyscanner);
+		}
+	}
+
+	return (PLpgSQL_stmt *) new;
+}
+
+
+static PLpgSQL_stmt *
+make_return_next_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner)
+{
+	PLpgSQL_stmt_return_next *new;
+
+	if (!plpgsql_curr_compile->fn_retset)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				 errmsg("cannot use RETURN NEXT in a non-SETOF function"),
+				 parser_errposition(location)));
+
+	new = palloc0_object(PLpgSQL_stmt_return_next);
+	new->cmd_type = PLPGSQL_STMT_RETURN_NEXT;
+	new->lineno = plpgsql_location_to_lineno(location, yyscanner);
+	new->stmtid = ++plpgsql_curr_compile->nstatements;
+	new->expr = NULL;
+	new->retvarno = -1;
+
+	if (plpgsql_curr_compile->out_param_varno >= 0)
+	{
+		if (plpgsql_yylex(yylvalp, yyllocp, yyscanner) != ';')
+			ereport(ERROR,
+					(errcode(ERRCODE_DATATYPE_MISMATCH),
+					 errmsg("RETURN NEXT cannot have a parameter in function with OUT parameters"),
+					 parser_errposition(*yyllocp)));
+		new->retvarno = plpgsql_curr_compile->out_param_varno;
+	}
+	else
+	{
+		/*
+		 * We want to special-case simple variable references for efficiency.
+		 * So peek ahead to see if that's what we have.
+		 */
+		int			tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+
+		if (tok == T_DATUM && plpgsql_peek(yyscanner) == ';' &&
+			(yylvalp->wdatum.datum->dtype == PLPGSQL_DTYPE_VAR ||
+			 yylvalp->wdatum.datum->dtype == PLPGSQL_DTYPE_PROMISE ||
+			 yylvalp->wdatum.datum->dtype == PLPGSQL_DTYPE_ROW ||
+			 yylvalp->wdatum.datum->dtype == PLPGSQL_DTYPE_REC))
+		{
+			new->retvarno = yylvalp->wdatum.datum->dno;
+			/* eat the semicolon token that we only peeked at above */
+			tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+			Assert(tok == ';');
+		}
+		else
+		{
+			/*
+			 * Not (just) a variable name, so treat as expression.
+			 *
+			 * Note that a well-formed expression is _required_ here; anything
+			 * else is a compile-time error.
+			 */
+			plpgsql_push_back_token(tok, yylvalp, yyllocp, yyscanner);
+			new->expr = read_sql_expression(';', ";", yylvalp, yyllocp, yyscanner);
+		}
+	}
+
+	return (PLpgSQL_stmt *) new;
+}
+
+
+static PLpgSQL_stmt *
+make_return_query_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner)
+{
+	PLpgSQL_stmt_return_query *new;
+	int			tok;
+
+	if (!plpgsql_curr_compile->fn_retset)
+		ereport(ERROR,
+				(errcode(ERRCODE_DATATYPE_MISMATCH),
+				 errmsg("cannot use RETURN QUERY in a non-SETOF function"),
+				 parser_errposition(location)));
+
+	new = palloc0_object(PLpgSQL_stmt_return_query);
+	new->cmd_type = PLPGSQL_STMT_RETURN_QUERY;
+	new->lineno = plpgsql_location_to_lineno(location, yyscanner);
+	new->stmtid = ++plpgsql_curr_compile->nstatements;
+
+	/* check for RETURN QUERY EXECUTE */
+	tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+	if (!tok_is_keyword(tok, yylvalp, K_EXECUTE, "execute"))
+	{
+		/* ordinary static query */
+		plpgsql_push_back_token(tok, yylvalp, yyllocp, yyscanner);
+		new->query = read_sql_stmt(yylvalp, yyllocp, yyscanner);
+	}
+	else
+	{
+		/* dynamic SQL */
+		int			term;
+
+		new->dynquery = read_sql_expression2(';', K_USING, "; or USING",
+											 &term, yylvalp, yyllocp, yyscanner);
+		if (term == K_USING)
+		{
+			do
+			{
+				PLpgSQL_expr *expr;
+
+				expr = read_sql_expression2(',', ';', ", or ;", &term, yylvalp, yyllocp, yyscanner);
+				new->params = lappend(new->params, expr);
+			} while (term == ',');
+		}
+	}
+
+	return (PLpgSQL_stmt *) new;
+}
+
+
+/* convenience routine to fetch the name of a T_DATUM */
+static char *
+NameOfDatum(PLwdatum *wdatum)
+{
+	if (wdatum->ident)
+		return wdatum->ident;
+	Assert(wdatum->idents != NIL);
+	return NameListToString(wdatum->idents);
+}
+
+static void
+check_assignable(PLpgSQL_datum *datum, int location, yyscan_t yyscanner)
+{
+	switch (datum->dtype)
+	{
+		case PLPGSQL_DTYPE_VAR:
+		case PLPGSQL_DTYPE_PROMISE:
+		case PLPGSQL_DTYPE_REC:
+			if (((PLpgSQL_variable *) datum)->isconst)
+				ereport(ERROR,
+						(errcode(ERRCODE_ERROR_IN_ASSIGNMENT),
+						 errmsg("variable \"%s\" is declared CONSTANT",
+								((PLpgSQL_variable *) datum)->refname),
+						 parser_errposition(location)));
+			break;
+		case PLPGSQL_DTYPE_ROW:
+			/* always assignable; member vars were checked at compile time */
+			break;
+		case PLPGSQL_DTYPE_RECFIELD:
+			/* assignable if parent record is */
+			check_assignable(plpgsql_Datums[((PLpgSQL_recfield *) datum)->recparentno],
+							 location, yyscanner);
+			break;
+		default:
+			elog(ERROR, "unrecognized dtype: %d", datum->dtype);
+			break;
+	}
+}
+
+/*
+ * Read the argument of an INTO clause.  On entry, we have just read the
+ * INTO keyword.
+ */
+static void
+read_into_target(PLpgSQL_variable **target, bool *strict, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner)
+{
+	int			tok;
+
+	/* Set default results */
+	*target = NULL;
+	if (strict)
+		*strict = false;
+
+	tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+	if (strict && tok_is_keyword(tok, yylvalp, K_STRICT, "strict"))
+	{
+		*strict = true;
+		tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+	}
+
+	/*
+	 * Currently, a row or record variable can be the single INTO target, but
+	 * not a member of a multi-target list.  So we throw error if there is a
+	 * comma after it, because that probably means the user tried to write a
+	 * multi-target list.  If this ever gets generalized, we should probably
+	 * refactor read_into_scalar_list so it handles all cases.
+	 */
+	switch (tok)
+	{
+		case T_DATUM:
+			if (yylvalp->wdatum.datum->dtype == PLPGSQL_DTYPE_ROW ||
+				yylvalp->wdatum.datum->dtype == PLPGSQL_DTYPE_REC)
+			{
+				check_assignable(yylvalp->wdatum.datum, *yyllocp, yyscanner);
+				*target = (PLpgSQL_variable *) yylvalp->wdatum.datum;
+
+				if ((tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner)) == ',')
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("record variable cannot be part of multiple-item INTO list"),
+							 parser_errposition(*yyllocp)));
+				plpgsql_push_back_token(tok, yylvalp, yyllocp, yyscanner);
+			}
+			else
+			{
+				*target = (PLpgSQL_variable *)
+					read_into_scalar_list(NameOfDatum(&(yylvalp->wdatum)),
+										  yylvalp->wdatum.datum, *yyllocp, yylvalp, yyllocp, yyscanner);
+			}
+			break;
+
+		default:
+			/* just to give a better message than "syntax error" */
+			current_token_is_not_variable(tok, yylvalp, yyllocp, yyscanner);
+	}
+}
+
+/*
+ * Given the first datum and name in the INTO list, continue to read
+ * comma-separated scalar variables until we run out. Then construct
+ * and return a fake "row" variable that represents the list of
+ * scalars.
+ */
+static PLpgSQL_row *
+read_into_scalar_list(char *initial_name,
+					  PLpgSQL_datum *initial_datum,
+					  int initial_location,
+					  YYSTYPE *yylvalp, YYLTYPE *yyllocp,
+					  yyscan_t yyscanner)
+{
+	int			nfields;
+	char	   *fieldnames[1024];
+	int			varnos[1024];
+	PLpgSQL_row *row;
+	int			tok;
+
+	check_assignable(initial_datum, initial_location, yyscanner);
+	fieldnames[0] = initial_name;
+	varnos[0] = initial_datum->dno;
+	nfields = 1;
+
+	while ((tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner)) == ',')
+	{
+		/* Check for array overflow */
+		if (nfields >= 1024)
+			ereport(ERROR,
+					(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+					 errmsg("too many INTO variables specified"),
+					 parser_errposition(*yyllocp)));
+
+		tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+		switch (tok)
+		{
+			case T_DATUM:
+				check_assignable(yylvalp->wdatum.datum, *yyllocp, yyscanner);
+				if (yylvalp->wdatum.datum->dtype == PLPGSQL_DTYPE_ROW ||
+					yylvalp->wdatum.datum->dtype == PLPGSQL_DTYPE_REC)
+					ereport(ERROR,
+							(errcode(ERRCODE_SYNTAX_ERROR),
+							 errmsg("\"%s\" is not a scalar variable",
+									NameOfDatum(&(yylvalp->wdatum))),
+							 parser_errposition(*yyllocp)));
+				fieldnames[nfields] = NameOfDatum(&(yylvalp->wdatum));
+				varnos[nfields++] = yylvalp->wdatum.datum->dno;
+				break;
+
+			default:
+				/* just to give a better message than "syntax error" */
+				current_token_is_not_variable(tok, yylvalp, yyllocp, yyscanner);
+		}
+	}
+
+	/*
+	 * We read an extra, non-comma token from plpgsql_yylex(), so push it back onto
+	 * the input stream
+	 */
+	plpgsql_push_back_token(tok, yylvalp, yyllocp, yyscanner);
+
+	row = palloc0_object(PLpgSQL_row);
+	row->dtype = PLPGSQL_DTYPE_ROW;
+	row->refname = "(unnamed row)";
+	row->lineno = plpgsql_location_to_lineno(initial_location, yyscanner);
+	row->rowtupdesc = NULL;
+	row->nfields = nfields;
+	row->fieldnames = palloc_array(char *, nfields);
+	row->varnos = palloc_array(int, nfields);
+	while (--nfields >= 0)
+	{
+		row->fieldnames[nfields] = fieldnames[nfields];
+		row->varnos[nfields] = varnos[nfields];
+	}
+
+	plpgsql_adddatum((PLpgSQL_datum *) row);
+
+	return row;
+}
+
+/*
+ * Convert a single scalar into a "row" list.  This is exactly
+ * like read_into_scalar_list except we never consume any input.
+ *
+ * Note: lineno could be computed from location, but since callers
+ * have it at hand already, we may as well pass it in.
+ */
+static PLpgSQL_row *
+make_scalar_list1(char *initial_name,
+				  PLpgSQL_datum *initial_datum,
+				  int lineno, int location, yyscan_t yyscanner)
+{
+	PLpgSQL_row *row;
+
+	check_assignable(initial_datum, location, yyscanner);
+
+	row = palloc0_object(PLpgSQL_row);
+	row->dtype = PLPGSQL_DTYPE_ROW;
+	row->refname = "(unnamed row)";
+	row->lineno = lineno;
+	row->rowtupdesc = NULL;
+	row->nfields = 1;
+	row->fieldnames = palloc_object(char *);
+	row->varnos = palloc_object(int);
+	row->fieldnames[0] = initial_name;
+	row->varnos[0] = initial_datum->dno;
+
+	plpgsql_adddatum((PLpgSQL_datum *) row);
+
+	return row;
+}
+
+/*
+ * When the PL/pgSQL parser expects to see a SQL statement, it is very
+ * liberal in what it accepts; for example, we often assume an
+ * unrecognized keyword is the beginning of a SQL statement. This
+ * avoids the need to duplicate parts of the SQL grammar in the
+ * PL/pgSQL grammar, but it means we can accept wildly malformed
+ * input. To try and catch some of the more obviously invalid input,
+ * we run the strings we expect to be SQL statements through the main
+ * SQL parser.
+ *
+ * We only invoke the raw parser (not the analyzer); this doesn't do
+ * any database access and does not check any semantic rules, it just
+ * checks for basic syntactic correctness. We do this here, rather
+ * than after parsing has finished, because a malformed SQL statement
+ * may cause the PL/pgSQL parser to become confused about statement
+ * borders. So it is best to bail out as early as we can.
+ *
+ * It is assumed that "stmt" represents a copy of the function source text
+ * beginning at offset "location".  We use this assumption to transpose
+ * any error cursor position back to the function source text.
+ * If no error cursor is provided, we'll just point at "location".
+ */
+static void
+check_sql_expr(const char *stmt, RawParseMode parseMode, int location, yyscan_t yyscanner)
+{
+	sql_error_callback_arg cbarg;
+	ErrorContextCallback syntax_errcontext;
+	MemoryContext oldCxt;
+
+	if (!plpgsql_check_syntax)
+		return;
+
+	cbarg.location = location;
+	cbarg.yyscanner = yyscanner;
+
+	syntax_errcontext.callback = plpgsql_sql_error_callback;
+	syntax_errcontext.arg = &cbarg;
+	syntax_errcontext.previous = error_context_stack;
+	error_context_stack = &syntax_errcontext;
+
+	oldCxt = MemoryContextSwitchTo(plpgsql_compile_tmp_cxt);
+	(void) raw_parser(stmt, parseMode);
+	MemoryContextSwitchTo(oldCxt);
+
+	/* Restore former ereport callback */
+	error_context_stack = syntax_errcontext.previous;
+}
+
+static void
+plpgsql_sql_error_callback(void *arg)
+{
+	sql_error_callback_arg *cbarg = (sql_error_callback_arg *) arg;
+	yyscan_t	yyscanner = cbarg->yyscanner;
+	int			errpos;
+
+	/*
+	 * First, set up internalerrposition to point to the start of the
+	 * statement text within the function text.  Note this converts location
+	 * (a byte offset) to a character number.
+	 */
+	parser_errposition(cbarg->location);
+
+	/*
+	 * If the core parser provided an error position, transpose it. Note we
+	 * are dealing with 1-based character numbers at this point.
+	 */
+	errpos = geterrposition();
+	if (errpos > 0)
+	{
+		int			myerrpos = getinternalerrposition();
+
+		if (myerrpos > 0)		/* safety check */
+			internalerrposition(myerrpos + errpos - 1);
+	}
+
+	/* In any case, flush errposition --- we want internalerrposition only */
+	errposition(0);
+}
+
+/*
+ * Parse a SQL datatype name and produce a PLpgSQL_type structure.
+ *
+ * The heavy lifting is done elsewhere.  Here we are only concerned
+ * with setting up an errcontext link that will let us give an error
+ * cursor pointing into the plpgsql function source, if necessary.
+ * This is handled the same as in check_sql_expr(), and we likewise
+ * expect that the given string is a copy from the source text.
+ */
+static PLpgSQL_type *
+parse_datatype(const char *string, int location, yyscan_t yyscanner)
+{
+	TypeName   *typeName;
+	Oid			type_id;
+	int32		typmod;
+	sql_error_callback_arg cbarg;
+	ErrorContextCallback syntax_errcontext;
+	MemoryContext oldCxt;
+
+	cbarg.location = location;
+	cbarg.yyscanner = yyscanner;
+
+	syntax_errcontext.callback = plpgsql_sql_error_callback;
+	syntax_errcontext.arg = &cbarg;
+	syntax_errcontext.previous = error_context_stack;
+	error_context_stack = &syntax_errcontext;
+
+	/*
+	 * Let the main parser try to parse it under standard SQL rules.  The
+	 * parser leaks memory, so run it in temp context.
+	 */
+	oldCxt = MemoryContextSwitchTo(plpgsql_compile_tmp_cxt);
+	typeName = typeStringToTypeName(string, NULL);
+	typenameTypeIdAndMod(NULL, typeName, &type_id, &typmod);
+	MemoryContextSwitchTo(oldCxt);
+
+	/* Restore former ereport callback */
+	error_context_stack = syntax_errcontext.previous;
+
+	/* Okay, build a PLpgSQL_type data structure for it */
+	return plpgsql_build_datatype(type_id, typmod,
+								  plpgsql_curr_compile->fn_input_collation,
+								  typeName);
+}
+
+/*
+ * Check block starting and ending labels match.
+ */
+static void
+check_labels(const char *start_label, const char *end_label, int end_location, yyscan_t yyscanner)
+{
+	if (end_label)
+	{
+		if (!start_label)
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("end label \"%s\" specified for unlabeled block",
+							end_label),
+					 parser_errposition(end_location)));
+
+		if (strcmp(start_label, end_label) != 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("end label \"%s\" differs from block's label \"%s\"",
+							end_label, start_label),
+					 parser_errposition(end_location)));
+	}
+}
+
+/*
+ * Read the arguments (if any) for a cursor, followed by the until token
+ *
+ * If cursor has no args, just swallow the until token and return NULL.
+ * If it does have args, we expect to see "( arg [, arg ...] )" followed
+ * by the until token, where arg may be a plain expression, or a named
+ * parameter assignment of the form argname := expr. Consume all that and
+ * return a SELECT query that evaluates the expression(s) (without the outer
+ * parens).
+ */
+static PLpgSQL_expr *
+read_cursor_args(PLpgSQL_var *cursor, int until, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner)
+{
+	PLpgSQL_expr *expr;
+	PLpgSQL_row *row;
+	int			tok;
+	int			argc;
+	char	  **argv;
+	StringInfoData ds;
+	bool		any_named = false;
+
+	tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+	if (cursor->cursor_explicit_argrow < 0)
+	{
+		/* No arguments expected */
+		if (tok == '(')
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("cursor \"%s\" has no arguments",
+							cursor->refname),
+					 parser_errposition(*yyllocp)));
+
+		if (tok != until)
+			plpgsql_yyerror(yyllocp, NULL, yyscanner, "syntax error");
+
+		return NULL;
+	}
+
+	/* Else better provide arguments */
+	if (tok != '(')
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("cursor \"%s\" has arguments",
+						cursor->refname),
+				 parser_errposition(*yyllocp)));
+
+	/*
+	 * Read the arguments, one by one.
+	 */
+	row = (PLpgSQL_row *) plpgsql_Datums[cursor->cursor_explicit_argrow];
+	argv = (char **) palloc0_array(char *, row->nfields);
+
+	for (argc = 0; argc < row->nfields; argc++)
+	{
+		PLpgSQL_expr *item;
+		int			endtoken;
+		int			argpos;
+		int			tok1,
+					tok2;
+		int			arglocation;
+
+		/*
+		 * Check if it's a named parameter: "param := value"
+		 * or "param => value"
+		 */
+		plpgsql_peek2(&tok1, &tok2, &arglocation, NULL, yyscanner);
+		if (tok1 == IDENT && (tok2 == COLON_EQUALS || tok2 == EQUALS_GREATER))
+		{
+			char	   *argname;
+			IdentifierLookup save_IdentifierLookup;
+
+			/* Read the argument name, ignoring any matching variable */
+			save_IdentifierLookup = plpgsql_IdentifierLookup;
+			plpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_DECLARE;
+			plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+			argname = yylvalp->str;
+			plpgsql_IdentifierLookup = save_IdentifierLookup;
+
+			/* Match argument name to cursor arguments */
+			for (argpos = 0; argpos < row->nfields; argpos++)
+			{
+				if (strcmp(row->fieldnames[argpos], argname) == 0)
+					break;
+			}
+			if (argpos == row->nfields)
+				ereport(ERROR,
+						(errcode(ERRCODE_SYNTAX_ERROR),
+						 errmsg("cursor \"%s\" has no argument named \"%s\"",
+								cursor->refname, argname),
+						 parser_errposition(*yyllocp)));
+
+			/*
+			 * Eat the ":=" or "=>".  We already peeked, so the error should
+			 * never happen.
+			 */
+			tok2 = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+			if (tok2 != COLON_EQUALS && tok2 != EQUALS_GREATER)
+				plpgsql_yyerror(yyllocp, NULL, yyscanner, "syntax error");
+
+			any_named = true;
+		}
+		else
+			argpos = argc;
+
+		if (argv[argpos] != NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("value for parameter \"%s\" of cursor \"%s\" specified more than once",
+							row->fieldnames[argpos], cursor->refname),
+					 parser_errposition(arglocation)));
+
+		/*
+		 * Read the value expression. To provide the user with meaningful
+		 * parse error positions, we check the syntax immediately, instead of
+		 * checking the final expression that may have the arguments
+		 * reordered.
+		 */
+		item = read_sql_construct(',', ')', 0,
+								  ",\" or \")",
+								  RAW_PARSE_PLPGSQL_EXPR,
+								  true, true,
+								  NULL, &endtoken,
+								  yylvalp, yyllocp, yyscanner);
+
+		argv[argpos] = item->query;
+
+		if (endtoken == ')' && !(argc == row->nfields - 1))
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("not enough arguments for cursor \"%s\"",
+							cursor->refname),
+					 parser_errposition(*yyllocp)));
+
+		if (endtoken == ',' && (argc == row->nfields - 1))
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("too many arguments for cursor \"%s\"",
+							cursor->refname),
+					 parser_errposition(*yyllocp)));
+	}
+
+	/* Make positional argument list */
+	initStringInfo(&ds);
+	for (argc = 0; argc < row->nfields; argc++)
+	{
+		Assert(argv[argc] != NULL);
+
+		/*
+		 * Because named notation allows permutated argument lists, include
+		 * the parameter name for meaningful runtime errors.
+		 */
+		appendStringInfoString(&ds, argv[argc]);
+		if (any_named)
+			appendStringInfo(&ds, " AS %s",
+							 quote_identifier(row->fieldnames[argc]));
+		if (argc < row->nfields - 1)
+			appendStringInfoString(&ds, ", ");
+	}
+
+	expr = make_plpgsql_expr(ds.data, RAW_PARSE_PLPGSQL_EXPR);
+	pfree(ds.data);
+
+	/* Next we'd better find the until token */
+	tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+	if (tok != until)
+		plpgsql_yyerror(yyllocp, NULL, yyscanner, "syntax error");
+
+	return expr;
+}
+
+/*
+ * Parse RAISE ... USING options
+ */
+static List *
+read_raise_options(YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner)
+{
+	List	   *result = NIL;
+
+	for (;;)
+	{
+		PLpgSQL_raise_option *opt;
+		int			tok;
+
+		if ((tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner)) == 0)
+			plpgsql_yyerror(yyllocp, NULL, yyscanner, "unexpected end of function definition");
+
+		opt = palloc_object(PLpgSQL_raise_option);
+
+		if (tok_is_keyword(tok, yylvalp,
+						   K_ERRCODE, "errcode"))
+			opt->opt_type = PLPGSQL_RAISEOPTION_ERRCODE;
+		else if (tok_is_keyword(tok, yylvalp,
+								K_MESSAGE, "message"))
+			opt->opt_type = PLPGSQL_RAISEOPTION_MESSAGE;
+		else if (tok_is_keyword(tok, yylvalp,
+								K_DETAIL, "detail"))
+			opt->opt_type = PLPGSQL_RAISEOPTION_DETAIL;
+		else if (tok_is_keyword(tok, yylvalp,
+								K_HINT, "hint"))
+			opt->opt_type = PLPGSQL_RAISEOPTION_HINT;
+		else if (tok_is_keyword(tok, yylvalp,
+								K_COLUMN, "column"))
+			opt->opt_type = PLPGSQL_RAISEOPTION_COLUMN;
+		else if (tok_is_keyword(tok, yylvalp,
+								K_CONSTRAINT, "constraint"))
+			opt->opt_type = PLPGSQL_RAISEOPTION_CONSTRAINT;
+		else if (tok_is_keyword(tok, yylvalp,
+								K_DATATYPE, "datatype"))
+			opt->opt_type = PLPGSQL_RAISEOPTION_DATATYPE;
+		else if (tok_is_keyword(tok, yylvalp,
+								K_TABLE, "table"))
+			opt->opt_type = PLPGSQL_RAISEOPTION_TABLE;
+		else if (tok_is_keyword(tok, yylvalp,
+								K_SCHEMA, "schema"))
+			opt->opt_type = PLPGSQL_RAISEOPTION_SCHEMA;
+		else
+			plpgsql_yyerror(yyllocp, NULL, yyscanner, "unrecognized RAISE statement option");
+
+		tok = plpgsql_yylex(yylvalp, yyllocp, yyscanner);
+		if (tok != '=' && tok != COLON_EQUALS)
+			plpgsql_yyerror(yyllocp, NULL, yyscanner, "syntax error, expected \"=\"");
+
+		opt->expr = read_sql_expression2(',', ';', ", or ;", &tok, yylvalp, yyllocp, yyscanner);
+
+		result = lappend(result, opt);
+
+		if (tok == ';')
+			break;
+	}
+
+	return result;
+}
+
+/*
+ * Check that the number of parameter placeholders in the message matches the
+ * number of parameters passed to it, if a message was given.
+ */
+static void
+check_raise_parameters(PLpgSQL_stmt_raise *stmt)
+{
+	char	   *cp;
+	int			expected_nparams = 0;
+
+	if (stmt->message == NULL)
+		return;
+
+	for (cp = stmt->message; *cp; cp++)
+	{
+		if (cp[0] == '%')
+		{
+			/* ignore literal % characters */
+			if (cp[1] == '%')
+				cp++;
+			else
+				expected_nparams++;
+		}
+	}
+
+	if (expected_nparams < list_length(stmt->params))
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("too many parameters specified for RAISE")));
+	if (expected_nparams > list_length(stmt->params))
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("too few parameters specified for RAISE")));
+}
+
+/*
+ * Fix up CASE statement
+ */
+static PLpgSQL_stmt *
+make_case(int location, PLpgSQL_expr *t_expr,
+		  List *case_when_list, List *else_stmts, yyscan_t yyscanner)
+{
+	PLpgSQL_stmt_case *new;
+
+	new = palloc_object(PLpgSQL_stmt_case);
+	new->cmd_type = PLPGSQL_STMT_CASE;
+	new->lineno = plpgsql_location_to_lineno(location, yyscanner);
+	new->stmtid = ++plpgsql_curr_compile->nstatements;
+	new->t_expr = t_expr;
+	new->t_varno = 0;
+	new->case_when_list = case_when_list;
+	new->have_else = (else_stmts != NIL);
+	/* Get rid of list-with-NULL hack */
+	if (list_length(else_stmts) == 1 && linitial(else_stmts) == NULL)
+		new->else_stmts = NIL;
+	else
+		new->else_stmts = else_stmts;
+
+	/*
+	 * When test expression is present, we create a var for it and then
+	 * convert all the WHEN expressions to "VAR IN (original_expression)".
+	 * This is a bit klugy, but okay since we haven't yet done more than read
+	 * the expressions as text.  (Note that previous parsing won't have
+	 * complained if the WHEN ... THEN expression contained multiple
+	 * comma-separated values.)
+	 */
+	if (t_expr)
+	{
+		char		varname[32];
+		PLpgSQL_var *t_var;
+		ListCell   *l;
+
+		/* use a name unlikely to collide with any user names */
+		snprintf(varname, sizeof(varname), "__Case__Variable_%d__",
+				 plpgsql_nDatums);
+
+		/*
+		 * We don't yet know the result datatype of t_expr.  Build the
+		 * variable as if it were INT4; we'll fix this at runtime if needed.
+		 */
+		t_var = (PLpgSQL_var *)
+			plpgsql_build_variable(varname, new->lineno,
+								   plpgsql_build_datatype(INT4OID,
+														  -1,
+														  InvalidOid,
+														  NULL),
+								   true);
+		new->t_varno = t_var->dno;
+
+		foreach(l, case_when_list)
+		{
+			PLpgSQL_case_when *cwt = (PLpgSQL_case_when *) lfirst(l);
+			PLpgSQL_expr *expr = cwt->expr;
+			StringInfoData ds;
+
+			/* We expect to have expressions not statements */
+			Assert(expr->parseMode == RAW_PARSE_PLPGSQL_EXPR);
+
+			/* Do the string hacking */
+			initStringInfo(&ds);
+
+			appendStringInfo(&ds, "\"%s\" IN (%s)",
+							 varname, expr->query);
+
+			pfree(expr->query);
+			expr->query = pstrdup(ds.data);
+			/* Adjust expr's namespace to include the case variable */
+			expr->ns = plpgsql_ns_top();
+
+			pfree(ds.data);
+		}
+	}
+
+	return (PLpgSQL_stmt *) new;
+}
+#line 5053 "./src/pl/plpgsql/src/pl_gram.lime"
+
+#include "utils/palloc.h"
+
+extern void *plpgsql_yyAlloc(void *(*mallocProc)(size_t));
+extern void plpgsql_yyLoc(void *yyp, int yymajor, YYSTYPE yyminor,
+						  YYLTYPE yyloc, struct GramParseExtra *extra);
+extern void plpgsql_yyFree(void *p, void (*freeProc)(void *));
+
+static inline int
+plpgsql_ascii_to_lime_token(int t)
+{
+	switch (t)
+	{
+		case '(':	return LPAREN;
+		case ')':	return RPAREN;
+		case '[':	return LBRACKET;
+		case ']':	return RBRACKET;
+		case ',':	return COMMA;
+		case ';':	return SEMI;
+		case ':':	return COLON;
+		case '.':	return DOT;
+		case '+':	return PLUS;
+		case '-':	return MINUS;
+		case '*':	return STAR;
+		case '/':	return SLASH;
+		case '%':	return PERCENT;
+		case '^':	return CARET;
+		case '|':	return PIPE;
+		case '<':	return LT;
+		case '>':	return GT;
+		case '=':	return EQ;
+		case '#':	return HASH;
+		case '~':	return TILDE;
+		case '?':	return QMARK;
+		case '@':	return AT_SIGN;
+		case '!':	return BANG;
+		case '&':	return AMP;
+		case '{':	return LBRACE;
+		case '}':	return RBRACE;
+		default:	return t;
+	}
+}
+
+/* Reverse mapping: convert Lime symbolic codes back to the
+ * raw ASCII the plpgsql lexer originally returned.  Used by
+ * plpgsql_yy_drain_lookahead so a Lime lookahead pushed back
+ * onto the lexer pushback stack pops out as the same numeric
+ * token plpgsql_yylex would have returned, matching the
+ * `tok == '['`-style comparisons in pl_gram.y action bodies.
+ *
+ * Called from pl_scanner.c; the self-extern below provides the
+ * prototype at the definition site (the matching extern lives in
+ * pl_scanner.c) so it is not flagged by -Wmissing-prototypes.
+ */
+extern int	plpgsql_lime_to_ascii_token(int t);
+int
+plpgsql_lime_to_ascii_token(int t)
+{
+	switch (t)
+	{
+		case LPAREN:	return '(';
+		case RPAREN:	return ')';
+		case LBRACKET:	return '[';
+		case RBRACKET:	return ']';
+		case COMMA:	return ',';
+		case SEMI:	return ';';
+		case COLON:	return ':';
+		case DOT:	return '.';
+		case PLUS:	return '+';
+		case MINUS:	return '-';
+		case STAR:	return '*';
+		case SLASH:	return '/';
+		case PERCENT:	return '%';
+		case CARET:	return '^';
+		case PIPE:	return '|';
+		case LT:	return '<';
+		case GT:	return '>';
+		case EQ:	return '=';
+		case HASH:	return '#';
+		case TILDE:	return '~';
+		case QMARK:	return '?';
+		case AT_SIGN:	return '@';
+		case BANG:	return '!';
+		case AMP:	return '&';
+		case LBRACE:	return '{';
+		case RBRACE:	return '}';
+		default:	return t;
+	}
+}
+
+int
+plpgsql_yyparse(PLpgSQL_stmt_block **plpgsql_parse_result_p, yyscan_t yyscanner)
+{
+	struct GramParseExtra	extra = {
+		.plpgsql_parse_result_p = plpgsql_parse_result_p,
+		.yyscanner = yyscanner,
+	};
+	void	   *parser;
+	YYSTYPE		lval;
+	YYLTYPE		lloc = 0;
+	int			token;
+
+	parser = plpgsql_yyAlloc(palloc);
+	while ((token = plpgsql_yylex(&lval, &lloc, yyscanner)) != 0)
+	{
+		/* Mirror the state-mutating actions for tokens whose
+		 * grammar reduce-action sets scanner state.  In Bison's
+		 * pull model the action runs before the next yylex; in
+		 * Lime's push model the next token is already in flight
+		 * by the time the reduce fires, so the scanner sees the
+		 * old state.  Driver-level mirroring keeps state changes
+		 * in lockstep with the scanner. */
+		switch (token)
+		{
+			case K_DECLARE:
+				/* decl_start: K_DECLARE { plpgsql_IdentifierLookup =
+				 * IDENTIFIER_LOOKUP_DECLARE; } */
+				plpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_DECLARE;
+				break;
+			case K_BEGIN:
+				/* decl_sect's reduce action runs after BEGIN is
+				 * shifted: plpgsql_IdentifierLookup =
+				 * IDENTIFIER_LOOKUP_NORMAL */
+				plpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_NORMAL;
+				break;
+			default:
+				break;
+		}
+		plpgsql_yyLoc(parser, plpgsql_ascii_to_lime_token(token),
+					  lval, lloc, &extra);
+	}
+	plpgsql_yyLoc(parser, 0, lval, lloc, &extra);
+	plpgsql_yyFree(parser, pfree);
+	return 0;
+}
+}
+
+%syntax_error {
+	plpgsql_yyerror(&yyloc, extra->plpgsql_parse_result_p, extra->yyscanner, "syntax error");
+}
+
+%parse_failure {
+	plpgsql_yyerror(&yypParser->yyLookaheadLoc, extra->plpgsql_parse_result_p, extra->yyscanner, "parse failure");
+}
+
+/* ======================================================================
+ * TOKENS
+ * ====================================================================== */
+%token IDENT.
+%token UIDENT.
+%token FCONST.
+%token SCONST.
+%token USCONST.
+%token BCONST.
+%token XCONST.
+%token OP.
+%token ICONST.
+%token PARAM.
+%token TYPECAST.
+%token DOT_DOT.
+%token COLON_EQUALS.
+%token EQUALS_GREATER.
+%token LESS_EQUALS.
+%token GREATER_EQUALS.
+%token NOT_EQUALS.
+%token T_WORD.
+%token T_CWORD.
+%token T_DATUM.
+%token LESS_LESS.
+%token GREATER_GREATER.
+%token K_ABSOLUTE.
+%token K_ALIAS.
+%token K_ALL.
+%token K_AND.
+%token K_ARRAY.
+%token K_ASSERT.
+%token K_BACKWARD.
+%token K_BEGIN.
+%token K_BY.
+%token K_CALL.
+%token K_CASE.
+%token K_CHAIN.
+%token K_CLOSE.
+%token K_COLLATE.
+%token K_COLUMN.
+%token K_COLUMN_NAME.
+%token K_COMMIT.
+%token K_CONSTANT.
+%token K_CONSTRAINT.
+%token K_CONSTRAINT_NAME.
+%token K_CONTINUE.
+%token K_CURRENT.
+%token K_CURSOR.
+%token K_DATATYPE.
+%token K_DEBUG.
+%token K_DECLARE.
+%token K_DEFAULT.
+%token K_DETAIL.
+%token K_DIAGNOSTICS.
+%token K_DO.
+%token K_DUMP.
+%token K_ELSE.
+%token K_ELSIF.
+%token K_END.
+%token K_ERRCODE.
+%token K_ERROR.
+%token K_EXCEPTION.
+%token K_EXECUTE.
+%token K_EXIT.
+%token K_FETCH.
+%token K_FIRST.
+%token K_FOR.
+%token K_FOREACH.
+%token K_FORWARD.
+%token K_FROM.
+%token K_GET.
+%token K_HINT.
+%token K_IF.
+%token K_IMPORT.
+%token K_IN.
+%token K_INFO.
+%token K_INSERT.
+%token K_INTO.
+%token K_IS.
+%token K_LAST.
+%token K_LOG.
+%token K_LOOP.
+%token K_MERGE.
+%token K_MESSAGE.
+%token K_MESSAGE_TEXT.
+%token K_MOVE.
+%token K_NEXT.
+%token K_NO.
+%token K_NOT.
+%token K_NOTICE.
+%token K_NULL.
+%token K_OPEN.
+%token K_OPTION.
+%token K_OR.
+%token K_PERFORM.
+%token K_PG_CONTEXT.
+%token K_PG_DATATYPE_NAME.
+%token K_PG_EXCEPTION_CONTEXT.
+%token K_PG_EXCEPTION_DETAIL.
+%token K_PG_EXCEPTION_HINT.
+%token K_PG_ROUTINE_OID.
+%token K_PRINT_STRICT_PARAMS.
+%token K_PRIOR.
+%token K_QUERY.
+%token K_RAISE.
+%token K_RELATIVE.
+%token K_RETURN.
+%token K_RETURNED_SQLSTATE.
+%token K_REVERSE.
+%token K_ROLLBACK.
+%token K_ROW_COUNT.
+%token K_ROWTYPE.
+%token K_SCHEMA.
+%token K_SCHEMA_NAME.
+%token K_SCROLL.
+%token K_SLICE.
+%token K_SQLSTATE.
+%token K_STACKED.
+%token K_STRICT.
+%token K_TABLE.
+%token K_TABLE_NAME.
+%token K_THEN.
+%token K_TO.
+%token K_TYPE.
+%token K_USE_COLUMN.
+%token K_USE_VARIABLE.
+%token K_USING.
+%token K_VARIABLE_CONFLICT.
+%token K_WARNING.
+%token K_WHEN.
+%token K_WHILE.
+%token LPAREN.
+%token RPAREN.
+%token LBRACKET.
+%token RBRACKET.
+%token COMMA.
+%token SEMI.
+%token COLON.
+%token DOT.
+%token PLUS.
+%token MINUS.
+%token STAR.
+%token SLASH.
+%token PERCENT.
+%token CARET.
+%token PIPE.
+%token LT.
+%token GT.
+%token EQ.
+%token HASH.
+%token TILDE.
+%token QMARK.
+%token AT_SIGN.
+%token BANG.
+%token AMP.
+%token LBRACE.
+%token RBRACE.
+
+/* ======================================================================
+ * PRECEDENCE
+ * ====================================================================== */
+
+/* ======================================================================
+ * NON-TERMINAL TYPES
+ * ====================================================================== */
+%type decl_sect {struct { char *label; int n_initvars; int *initvarnos; }}
+%type decl_varname {struct { char *name; int lineno; }}
+%type decl_cursor_intro {struct { char *name; int lineno; int cursor_options; }}
+%type decl_const {bool}
+%type decl_notnull {bool}
+%type exit_type {bool}
+%type decl_defval {PLpgSQL_expr *}
+%type decl_cursor_query {PLpgSQL_expr *}
+%type decl_datatype {PLpgSQL_type *}
+%type decl_collate {Oid}
+%type decl_cursor_args {PLpgSQL_datum *}
+%type decl_cursor_arglist {List *}
+%type decl_aliasitem {PLpgSQL_nsitem *}
+%type expr_until_semi {PLpgSQL_expr *}
+%type expr_until_then {PLpgSQL_expr *}
+%type expr_until_loop {PLpgSQL_expr *}
+%type opt_expr_until_when {PLpgSQL_expr *}
+%type opt_exitcond {PLpgSQL_expr *}
+%type cursor_variable {PLpgSQL_var *}
+%type decl_cursor_arg {PLpgSQL_datum *}
+%type for_variable {struct { char *name; int lineno; PLpgSQL_datum *scalar; PLpgSQL_datum *row; }}
+%type foreach_slice {int}
+%type for_control {PLpgSQL_stmt *}
+%type any_identifier {char *}
+%type opt_block_label {char *}
+%type opt_loop_label {char *}
+%type opt_label {char *}
+%type option_value {char *}
+%type proc_sect {List *}
+%type stmt_elsifs {List *}
+%type stmt_else {List *}
+%type loop_body {struct { List *stmts; char *end_label; int end_label_location; }}
+%type proc_stmt {PLpgSQL_stmt *}
+%type pl_block {PLpgSQL_stmt *}
+%type stmt_assign {PLpgSQL_stmt *}
+%type stmt_if {PLpgSQL_stmt *}
+%type stmt_loop {PLpgSQL_stmt *}
+%type stmt_while {PLpgSQL_stmt *}
+%type stmt_exit {PLpgSQL_stmt *}
+%type stmt_return {PLpgSQL_stmt *}
+%type stmt_raise {PLpgSQL_stmt *}
+%type stmt_assert {PLpgSQL_stmt *}
+%type stmt_execsql {PLpgSQL_stmt *}
+%type stmt_dynexecute {PLpgSQL_stmt *}
+%type stmt_for {PLpgSQL_stmt *}
+%type stmt_perform {PLpgSQL_stmt *}
+%type stmt_call {PLpgSQL_stmt *}
+%type stmt_getdiag {PLpgSQL_stmt *}
+%type stmt_open {PLpgSQL_stmt *}
+%type stmt_fetch {PLpgSQL_stmt *}
+%type stmt_move {PLpgSQL_stmt *}
+%type stmt_close {PLpgSQL_stmt *}
+%type stmt_null {PLpgSQL_stmt *}
+%type stmt_commit {PLpgSQL_stmt *}
+%type stmt_rollback {PLpgSQL_stmt *}
+%type stmt_case {PLpgSQL_stmt *}
+%type stmt_foreach_a {PLpgSQL_stmt *}
+%type proc_exceptions {List *}
+%type exception_sect {PLpgSQL_exception_block *}
+%type exception_intro {PLpgSQL_exception_block *}
+%type proc_exception {PLpgSQL_exception *}
+%type proc_conditions {PLpgSQL_condition *}
+%type proc_condition {PLpgSQL_condition *}
+%type case_when {PLpgSQL_case_when *}
+%type case_when_list {List *}
+%type opt_case_else {List *}
+%type getdiag_area_opt {bool}
+%type getdiag_list {List *}
+%type getdiag_list_item {PLpgSQL_diag_item *}
+%type getdiag_target {PLpgSQL_datum *}
+%type getdiag_item {int}
+%type opt_scrollable {int}
+%type opt_fetch_direction {PLpgSQL_stmt_fetch *}
+%type opt_transaction_chain {int}
+%type unreserved_keyword {const char *}
+
+/* ======================================================================
+ * GRAMMAR RULES
+ * ====================================================================== */
+
+/* ----- pl_function ----- */
+pl_function ::= comp_options pl_block(C) opt_semi. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							*plpgsql_parse_result_p = (PLpgSQL_stmt_block *) C;
+	}
+}
+/* ----- comp_options ----- */
+comp_options ::=.
+/* empty */
+comp_options ::= comp_options comp_option.
+/* ----- comp_option ----- */
+comp_option ::= HASH K_OPTION K_DUMP. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							plpgsql_DumpExecTree = true;
+	}
+}
+comp_option ::= HASH K_PRINT_STRICT_PARAMS option_value(D). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							if (strcmp(D, "on") == 0)
+								plpgsql_curr_compile->print_strict_params = true;
+							else if (strcmp(D, "off") == 0)
+								plpgsql_curr_compile->print_strict_params = false;
+							else
+								elog(ERROR, "unrecognized print_strict_params option %s", D);
+	}
+}
+comp_option ::= HASH K_VARIABLE_CONFLICT K_ERROR. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							plpgsql_curr_compile->resolve_option = PLPGSQL_RESOLVE_ERROR;
+	}
+}
+comp_option ::= HASH K_VARIABLE_CONFLICT K_USE_VARIABLE. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							plpgsql_curr_compile->resolve_option = PLPGSQL_RESOLVE_VARIABLE;
+	}
+}
+comp_option ::= HASH K_VARIABLE_CONFLICT K_USE_COLUMN. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							plpgsql_curr_compile->resolve_option = PLPGSQL_RESOLVE_COLUMN;
+	}
+}
+/* ----- option_value ----- */
+option_value(A) ::= T_WORD(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+						A = B.word.ident;
+	}
+}
+option_value(A) ::= unreserved_keyword(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+						A = pstrdup(B);
+	}
+}
+/* ----- opt_semi ----- */
+opt_semi ::=.
+/* empty */
+opt_semi(A) ::= SEMI(B). {
+	A = B;
+}
+/* ----- pl_block ----- */
+pl_block(A) ::= decl_sect(B) K_BEGIN(C) proc_sect(D) exception_sect(E) K_END opt_label(G). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_stmt_block *new;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							new = palloc0_object(PLpgSQL_stmt_block);
+	
+							new->cmd_type	= PLPGSQL_STMT_BLOCK;
+							new->lineno		= plpgsql_location_to_lineno(@C, yyscanner);
+							new->stmtid		= ++plpgsql_curr_compile->nstatements;
+							new->label		= B.label;
+							new->n_initvars = B.n_initvars;
+							new->initvarnos = B.initvarnos;
+							new->body		= D;
+							new->exceptions	= E;
+	
+							check_labels(B.label, G, @G, yyscanner);
+							plpgsql_ns_pop();
+	
+							A = (PLpgSQL_stmt *) new;
+	}
+}
+/* ----- decl_sect ----- */
+decl_sect(A) ::= opt_block_label(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							
+							plpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_NORMAL;
+							A.label	  = B;
+							A.n_initvars = 0;
+							A.initvarnos = NULL;
+	}
+}
+decl_sect(A) ::= opt_block_label(B) decl_start. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							plpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_NORMAL;
+							A.label	  = B;
+							A.n_initvars = 0;
+							A.initvarnos = NULL;
+	}
+}
+decl_sect(A) ::= opt_block_label(B) decl_start decl_stmts. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							plpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_NORMAL;
+							A.label	  = B;
+							
+							A.n_initvars = plpgsql_add_initdatums(&(A.initvarnos));
+	}
+}
+/* ----- decl_start ----- */
+decl_start ::= K_DECLARE. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							
+							plpgsql_add_initdatums(NULL);
+							
+	
+	
+	
+							plpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_DECLARE;
+	}
+}
+/* ----- decl_stmts ----- */
+decl_stmts ::= decl_stmts decl_stmt.
+decl_stmts(A) ::= decl_stmt(B). {
+	A = B;
+}
+/* ----- decl_stmt ----- */
+decl_stmt(A) ::= decl_statement(B). {
+	A = B;
+}
+decl_stmt ::= K_DECLARE. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	}
+}
+decl_stmt ::= LESS_LESS(B) any_identifier GREATER_GREATER. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							
+	
+	
+	
+							ereport(ERROR,
+									(errcode(ERRCODE_SYNTAX_ERROR),
+									 errmsg("block label must be placed before DECLARE, not after"),
+									 parser_errposition(@B)));
+	}
+}
+/* ----- decl_statement ----- */
+decl_statement ::= decl_varname(B) decl_const(C) decl_datatype(D) decl_collate(E) decl_notnull(F) decl_defval(G). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_variable	*var;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							
+	
+	
+	
+	
+	
+							if (OidIsValid(E))
+							{
+								if (!OidIsValid(D->collation))
+									ereport(ERROR,
+											(errcode(ERRCODE_DATATYPE_MISMATCH),
+											 errmsg("collations are not supported by type %s",
+													format_type_be(D->typoid)),
+											 parser_errposition(@E)));
+								D->collation = E;
+							}
+	
+							var = plpgsql_build_variable(B.name, B.lineno,
+														 D, true);
+							var->isconst = C;
+							var->notnull = F;
+							var->default_val = G;
+	
+							
+	
+	
+	
+							if (var->notnull && var->default_val == NULL)
+								ereport(ERROR,
+										(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+										 errmsg("variable \"%s\" must have a default value, since it's declared NOT NULL",
+												var->refname),
+										 parser_errposition(@F)));
+	
+							if (var->default_val != NULL)
+								mark_expr_as_assignment_source(var->default_val,
+															   (PLpgSQL_datum *) var);
+	}
+}
+decl_statement ::= decl_varname(B) K_ALIAS K_FOR decl_aliasitem(E) SEMI. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							plpgsql_ns_additem(E->itemtype,
+											   E->itemno, B.name);
+	}
+}
+decl_statement ::= decl_cursor_intro(B) decl_cursor_args(C) decl_is_for decl_cursor_query(E). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_var *new;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							
+							plpgsql_ns_pop();
+	
+							new = (PLpgSQL_var *)
+								plpgsql_build_variable(B.name, B.lineno,
+													   plpgsql_build_datatype(REFCURSOROID,
+																			  -1,
+																			  InvalidOid,
+																			  NULL),
+													   true);
+	
+							new->cursor_explicit_expr = E;
+							if (C == NULL)
+								new->cursor_explicit_argrow = -1;
+							else
+								new->cursor_explicit_argrow = C->dno;
+							new->cursor_options = CURSOR_OPT_FAST_PLAN | B.cursor_options;
+	}
+}
+/* ----- decl_cursor_intro ----- */
+decl_cursor_intro(A) ::= decl_varname(B) opt_scrollable(C) K_CURSOR. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							plpgsql_ns_push(B.name, PLPGSQL_LABEL_OTHER);
+							A.name = B.name;
+							A.lineno = B.lineno;
+							A.cursor_options = C;
+	}
+}
+/* ----- opt_scrollable ----- */
+opt_scrollable(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = 0;
+	}
+}
+opt_scrollable(A) ::= K_NO K_SCROLL. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = CURSOR_OPT_NO_SCROLL;
+	}
+}
+opt_scrollable(A) ::= K_SCROLL. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = CURSOR_OPT_SCROLL;
+	}
+}
+/* ----- decl_cursor_query ----- */
+decl_cursor_query(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		(void) plpgsql_yy_get_lookahead(yypParser, &yylval, &yylloc);
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+							A = read_sql_stmt(&yylval, &yylloc, yyscanner);
+	}
+}
+/* ----- decl_cursor_args ----- */
+decl_cursor_args(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = NULL;
+	}
+}
+decl_cursor_args(A) ::= LPAREN(B) decl_cursor_arglist(C) RPAREN. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_row *new; int			i; ListCell   *l;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							new = palloc0_object(PLpgSQL_row);
+							new->dtype = PLPGSQL_DTYPE_ROW;
+							new->refname = "(unnamed row)";
+							new->lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							new->rowtupdesc = NULL;
+							new->nfields = list_length(C);
+							new->fieldnames = palloc_array(char *, new->nfields);
+							new->varnos = palloc_array(int, new->nfields);
+	
+							i = 0;
+							foreach (l, C)
+							{
+								PLpgSQL_variable *arg = (PLpgSQL_variable *) lfirst(l);
+								Assert(!arg->isconst);
+								new->fieldnames[i] = arg->refname;
+								new->varnos[i] = arg->dno;
+								i++;
+							}
+							list_free(C);
+	
+							plpgsql_adddatum((PLpgSQL_datum *) new);
+							A = (PLpgSQL_datum *) new;
+	}
+}
+/* ----- decl_cursor_arglist ----- */
+decl_cursor_arglist(A) ::= decl_cursor_arg(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = list_make1(B);
+	}
+}
+decl_cursor_arglist(A) ::= decl_cursor_arglist(B) COMMA decl_cursor_arg(D). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = lappend(B, D);
+	}
+}
+/* ----- decl_cursor_arg ----- */
+decl_cursor_arg(A) ::= decl_varname(B) decl_datatype(C). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = (PLpgSQL_datum *)
+								plpgsql_build_variable(B.name, B.lineno,
+													   C, true);
+	}
+}
+/* ----- decl_is_for ----- */
+decl_is_for(A) ::= K_IS(B). {
+	A = B;
+}
+decl_is_for(A) ::= K_FOR(B). {
+	A = B;
+}
+/* ----- decl_aliasitem ----- */
+decl_aliasitem(A) ::= T_WORD(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_nsitem *nsi;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							nsi = plpgsql_ns_lookup(plpgsql_ns_top(), false,
+													B.word.ident, NULL, NULL,
+													NULL);
+							if (nsi == NULL)
+								ereport(ERROR,
+										(errcode(ERRCODE_UNDEFINED_OBJECT),
+										 errmsg("variable \"%s\" does not exist",
+												B.word.ident),
+										 parser_errposition(@B)));
+							A = nsi;
+	}
+}
+decl_aliasitem(A) ::= unreserved_keyword(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_nsitem *nsi;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							nsi = plpgsql_ns_lookup(plpgsql_ns_top(), false,
+													B, NULL, NULL,
+													NULL);
+							if (nsi == NULL)
+								ereport(ERROR,
+										(errcode(ERRCODE_UNDEFINED_OBJECT),
+										 errmsg("variable \"%s\" does not exist",
+												B),
+										 parser_errposition(@B)));
+							A = nsi;
+	}
+}
+decl_aliasitem(A) ::= T_CWORD(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_nsitem *nsi;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							if (list_length(B.cword.idents) == 2)
+								nsi = plpgsql_ns_lookup(plpgsql_ns_top(), false,
+														strVal(linitial(B.cword.idents)),
+														strVal(lsecond(B.cword.idents)),
+														NULL,
+														NULL);
+							else if (list_length(B.cword.idents) == 3)
+								nsi = plpgsql_ns_lookup(plpgsql_ns_top(), false,
+														strVal(linitial(B.cword.idents)),
+														strVal(lsecond(B.cword.idents)),
+														strVal(lthird(B.cword.idents)),
+														NULL);
+							else
+								nsi = NULL;
+							if (nsi == NULL)
+								ereport(ERROR,
+										(errcode(ERRCODE_UNDEFINED_OBJECT),
+										 errmsg("variable \"%s\" does not exist",
+												NameListToString(B.cword.idents)),
+										 parser_errposition(@B)));
+							A = nsi;
+	}
+}
+/* ----- decl_varname ----- */
+decl_varname(A) ::= T_WORD(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYLTYPE	yylloc;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+	
+							A.name = B.word.ident;
+							A.lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							
+	
+	
+	
+							if (plpgsql_ns_lookup(plpgsql_ns_top(), true,
+												  B.word.ident, NULL, NULL,
+												  NULL) != NULL)
+								plpgsql_yyerror(&yylloc, NULL, yyscanner, "duplicate declaration");
+	
+							if (plpgsql_curr_compile->extra_warnings & PLPGSQL_XCHECK_SHADOWVAR ||
+								plpgsql_curr_compile->extra_errors & PLPGSQL_XCHECK_SHADOWVAR)
+							{
+								PLpgSQL_nsitem *nsi;
+								nsi = plpgsql_ns_lookup(plpgsql_ns_top(), false,
+														B.word.ident, NULL, NULL, NULL);
+								if (nsi != NULL)
+									ereport(plpgsql_curr_compile->extra_errors & PLPGSQL_XCHECK_SHADOWVAR ? ERROR : WARNING,
+											(errcode(ERRCODE_DUPLICATE_ALIAS),
+											 errmsg("variable \"%s\" shadows a previously defined variable",
+													B.word.ident),
+											 parser_errposition(@B)));
+							}
+	}
+}
+decl_varname(A) ::= unreserved_keyword(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYLTYPE	yylloc;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+	
+							A.name = pstrdup(B);
+							A.lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							
+	
+	
+	
+							if (plpgsql_ns_lookup(plpgsql_ns_top(), true,
+												  B, NULL, NULL,
+												  NULL) != NULL)
+								plpgsql_yyerror(&yylloc, NULL, yyscanner, "duplicate declaration");
+	
+							if (plpgsql_curr_compile->extra_warnings & PLPGSQL_XCHECK_SHADOWVAR ||
+								plpgsql_curr_compile->extra_errors & PLPGSQL_XCHECK_SHADOWVAR)
+							{
+								PLpgSQL_nsitem *nsi;
+								nsi = plpgsql_ns_lookup(plpgsql_ns_top(), false,
+														B, NULL, NULL, NULL);
+								if (nsi != NULL)
+									ereport(plpgsql_curr_compile->extra_errors & PLPGSQL_XCHECK_SHADOWVAR ? ERROR : WARNING,
+											(errcode(ERRCODE_DUPLICATE_ALIAS),
+											 errmsg("variable \"%s\" shadows a previously defined variable",
+													B),
+											 parser_errposition(@B)));
+							}
+	}
+}
+/* ----- decl_const ----- */
+decl_const(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = false;
+	}
+}
+decl_const(A) ::= K_CONSTANT. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = true;
+	}
+}
+/* ----- decl_datatype ----- */
+decl_datatype(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		(void) plpgsql_yy_get_lookahead(yypParser, &yylval, &yylloc);
+	
+							
+	
+	
+	
+	
+							A = read_datatype(plpgsql_yy_get_lookahead(yypParser, &yylval, &yylloc), &yylval, &yylloc, yyscanner);
+							plpgsql_yy_clear_lookahead(yypParser);
+	}
+}
+/* ----- decl_collate ----- */
+decl_collate(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = InvalidOid;
+	}
+}
+decl_collate(A) ::= K_COLLATE T_WORD(C). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = get_collation_oid(list_make1(makeString(C.word.ident)),
+												   false);
+	}
+}
+decl_collate(A) ::= K_COLLATE unreserved_keyword(C). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = get_collation_oid(list_make1(makeString(pstrdup(C))),
+												   false);
+	}
+}
+decl_collate(A) ::= K_COLLATE T_CWORD(C). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = get_collation_oid(C.cword.idents, false);
+	}
+}
+/* ----- decl_notnull ----- */
+decl_notnull(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = false;
+	}
+}
+decl_notnull(A) ::= K_NOT K_NULL. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = true;
+	}
+}
+/* ----- decl_defval ----- */
+decl_defval(A) ::= SEMI. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = NULL;
+	}
+}
+decl_defval(A) ::= decl_defkey(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+							A = read_sql_expression(';', ";", &yylval, &yylloc, yyscanner);
+	}
+}
+/* ----- decl_defkey ----- */
+decl_defkey(A) ::= assign_operator(B). {
+	A = B;
+}
+decl_defkey(A) ::= K_DEFAULT(B). {
+	A = B;
+}
+/* ----- assign_operator ----- */
+assign_operator(A) ::= EQ(B). {
+	A = B;
+}
+assign_operator(A) ::= COLON_EQUALS(B). {
+	A = B;
+}
+/* ----- proc_sect ----- */
+proc_sect(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = NIL;
+	}
+}
+proc_sect(A) ::= proc_sect(B) proc_stmt(C). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							
+							if (C == NULL)
+								A = B;
+							else
+								A = lappend(B, C);
+	}
+}
+/* ----- proc_stmt ----- */
+proc_stmt(A) ::= pl_block(B) SEMI. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_assign(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_if(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_case(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_loop(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_while(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_for(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_foreach_a(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_exit(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_return(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_raise(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_assert(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_execsql(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_dynexecute(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_perform(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_call(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_getdiag(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_open(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_fetch(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_move(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_close(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_null(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_commit(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+proc_stmt(A) ::= stmt_rollback(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = B;
+	}
+}
+/* ----- stmt_perform ----- */
+stmt_perform(A) ::= K_PERFORM(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc; PLpgSQL_stmt_perform *new; int			startloc;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+	
+							new = palloc0_object(PLpgSQL_stmt_perform);
+							new->cmd_type = PLPGSQL_STMT_PERFORM;
+							new->lineno   = plpgsql_location_to_lineno(@B, yyscanner);
+							new->stmtid = ++plpgsql_curr_compile->nstatements;
+							plpgsql_push_back_token(K_PERFORM, &yylval, &yylloc, yyscanner);
+	
+							
+	
+	
+	
+	
+	
+	
+	
+							new->expr = read_sql_construct(';', 0, 0, ";",
+														   RAW_PARSE_DEFAULT,
+														   false, false,
+														   &startloc, NULL,
+														   &yylval, &yylloc, yyscanner);
+							
+							memcpy(new->expr->query, " SELECT", 7);
+							
+							memmove(new->expr->query, new->expr->query + 1,
+									strlen(new->expr->query));
+							
+							check_sql_expr(new->expr->query, new->expr->parseMode,
+										   startloc + 1, yyscanner);
+	
+							A = (PLpgSQL_stmt *) new;
+	}
+}
+/* ----- stmt_call ----- */
+stmt_call(A) ::= K_CALL(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc; PLpgSQL_stmt_call *new;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+	
+							new = palloc0_object(PLpgSQL_stmt_call);
+							new->cmd_type = PLPGSQL_STMT_CALL;
+							new->lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							new->stmtid = ++plpgsql_curr_compile->nstatements;
+							plpgsql_push_back_token(K_CALL, &yylval, &yylloc, yyscanner);
+							new->expr = read_sql_stmt(&yylval, &yylloc, yyscanner);
+							new->is_call = true;
+	
+							
+							plpgsql_curr_compile->requires_procedure_resowner = true;
+	
+							A = (PLpgSQL_stmt *) new;
+	}
+}
+stmt_call(A) ::= K_DO(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc; PLpgSQL_stmt_call *new;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+							
+	
+							new = palloc0_object(PLpgSQL_stmt_call);
+							new->cmd_type = PLPGSQL_STMT_CALL;
+							new->lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							new->stmtid = ++plpgsql_curr_compile->nstatements;
+							plpgsql_push_back_token(K_DO, &yylval, &yylloc, yyscanner);
+							new->expr = read_sql_stmt(&yylval, &yylloc, yyscanner);
+							new->is_call = false;
+	
+							
+							plpgsql_curr_compile->requires_procedure_resowner = true;
+	
+							A = (PLpgSQL_stmt *) new;
+	}
+}
+/* ----- stmt_assign ----- */
+stmt_assign(A) ::= T_DATUM(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc; PLpgSQL_stmt_assign *new; RawParseMode pmode;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+	
+							
+							switch (B.wdatum.ident ? 1 : list_length(B.wdatum.idents))
+							{
+								case 1:
+									pmode = RAW_PARSE_PLPGSQL_ASSIGN1;
+									break;
+								case 2:
+									pmode = RAW_PARSE_PLPGSQL_ASSIGN2;
+									break;
+								case 3:
+									pmode = RAW_PARSE_PLPGSQL_ASSIGN3;
+									break;
+								default:
+									elog(ERROR, "unexpected number of names");
+									pmode = 0; 
+							}
+	
+							check_assignable(B.wdatum.datum, @B, yyscanner);
+							new = palloc0_object(PLpgSQL_stmt_assign);
+							new->cmd_type = PLPGSQL_STMT_ASSIGN;
+							new->lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							new->stmtid = ++plpgsql_curr_compile->nstatements;
+							new->varno = B.wdatum.datum->dno;
+							
+							plpgsql_push_back_token(T_DATUM, &yylval, &yylloc, yyscanner);
+							new->expr = read_sql_construct(';', 0, 0, ";",
+														   pmode,
+														   false, true,
+														   NULL, NULL,
+														   &yylval, &yylloc, yyscanner);
+							mark_expr_as_assignment_source(new->expr, B.wdatum.datum);
+	
+							A = (PLpgSQL_stmt *) new;
+	}
+}
+/* ----- stmt_getdiag ----- */
+stmt_getdiag(A) ::= K_GET(B) getdiag_area_opt(C) K_DIAGNOSTICS getdiag_list(E) SEMI. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_stmt_getdiag *new; ListCell	   *lc;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							new = palloc0_object(PLpgSQL_stmt_getdiag);
+							new->cmd_type = PLPGSQL_STMT_GETDIAG;
+							new->lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							new->stmtid = ++plpgsql_curr_compile->nstatements;
+							new->is_stacked = C;
+							new->diag_items = E;
+	
+							
+	
+	
+							foreach(lc, new->diag_items)
+							{
+								PLpgSQL_diag_item *ditem = (PLpgSQL_diag_item *) lfirst(lc);
+	
+								switch (ditem->kind)
+								{
+									
+									case PLPGSQL_GETDIAG_ROW_COUNT:
+									case PLPGSQL_GETDIAG_ROUTINE_OID:
+										if (new->is_stacked)
+											ereport(ERROR,
+													(errcode(ERRCODE_SYNTAX_ERROR),
+													 errmsg("diagnostics item %s is not allowed in GET STACKED DIAGNOSTICS",
+															plpgsql_getdiag_kindname(ditem->kind)),
+													 parser_errposition(@B)));
+										break;
+									
+									case PLPGSQL_GETDIAG_ERROR_CONTEXT:
+									case PLPGSQL_GETDIAG_ERROR_DETAIL:
+									case PLPGSQL_GETDIAG_ERROR_HINT:
+									case PLPGSQL_GETDIAG_RETURNED_SQLSTATE:
+									case PLPGSQL_GETDIAG_COLUMN_NAME:
+									case PLPGSQL_GETDIAG_CONSTRAINT_NAME:
+									case PLPGSQL_GETDIAG_DATATYPE_NAME:
+									case PLPGSQL_GETDIAG_MESSAGE_TEXT:
+									case PLPGSQL_GETDIAG_TABLE_NAME:
+									case PLPGSQL_GETDIAG_SCHEMA_NAME:
+										if (!new->is_stacked)
+											ereport(ERROR,
+													(errcode(ERRCODE_SYNTAX_ERROR),
+													 errmsg("diagnostics item %s is not allowed in GET CURRENT DIAGNOSTICS",
+															plpgsql_getdiag_kindname(ditem->kind)),
+													 parser_errposition(@B)));
+										break;
+									
+									case PLPGSQL_GETDIAG_CONTEXT:
+										break;
+									default:
+										elog(ERROR, "unrecognized diagnostic item kind: %d",
+											 ditem->kind);
+										break;
+								}
+							}
+	
+							A = (PLpgSQL_stmt *) new;
+	}
+}
+/* ----- getdiag_area_opt ----- */
+getdiag_area_opt(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = false;
+	}
+}
+getdiag_area_opt(A) ::= K_CURRENT. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = false;
+	}
+}
+getdiag_area_opt(A) ::= K_STACKED. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = true;
+	}
+}
+/* ----- getdiag_list ----- */
+getdiag_list(A) ::= getdiag_list(B) COMMA getdiag_list_item(D). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = lappend(B, D);
+	}
+}
+getdiag_list(A) ::= getdiag_list_item(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = list_make1(B);
+	}
+}
+/* ----- getdiag_list_item ----- */
+getdiag_list_item(A) ::= getdiag_target(B) assign_operator getdiag_item(D). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_diag_item *new;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							new = palloc_object(PLpgSQL_diag_item);
+							new->target = B->dno;
+							new->kind = D;
+	
+							A = new;
+	}
+}
+/* ----- getdiag_item ----- */
+getdiag_item(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc; int			tok;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		(void) plpgsql_yy_get_lookahead(yypParser, &yylval, &yylloc);
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+							tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+	
+							if (tok_is_keyword(tok, &yylval,
+											   K_ROW_COUNT, "row_count"))
+								A = PLPGSQL_GETDIAG_ROW_COUNT;
+							else if (tok_is_keyword(tok, &yylval,
+													K_PG_ROUTINE_OID, "pg_routine_oid"))
+								A = PLPGSQL_GETDIAG_ROUTINE_OID;
+							else if (tok_is_keyword(tok, &yylval,
+													K_PG_CONTEXT, "pg_context"))
+								A = PLPGSQL_GETDIAG_CONTEXT;
+							else if (tok_is_keyword(tok, &yylval,
+													K_PG_EXCEPTION_DETAIL, "pg_exception_detail"))
+								A = PLPGSQL_GETDIAG_ERROR_DETAIL;
+							else if (tok_is_keyword(tok, &yylval,
+													K_PG_EXCEPTION_HINT, "pg_exception_hint"))
+								A = PLPGSQL_GETDIAG_ERROR_HINT;
+							else if (tok_is_keyword(tok, &yylval,
+													K_PG_EXCEPTION_CONTEXT, "pg_exception_context"))
+								A = PLPGSQL_GETDIAG_ERROR_CONTEXT;
+							else if (tok_is_keyword(tok, &yylval,
+													K_COLUMN_NAME, "column_name"))
+								A = PLPGSQL_GETDIAG_COLUMN_NAME;
+							else if (tok_is_keyword(tok, &yylval,
+													K_CONSTRAINT_NAME, "constraint_name"))
+								A = PLPGSQL_GETDIAG_CONSTRAINT_NAME;
+							else if (tok_is_keyword(tok, &yylval,
+													K_PG_DATATYPE_NAME, "pg_datatype_name"))
+								A = PLPGSQL_GETDIAG_DATATYPE_NAME;
+							else if (tok_is_keyword(tok, &yylval,
+													K_MESSAGE_TEXT, "message_text"))
+								A = PLPGSQL_GETDIAG_MESSAGE_TEXT;
+							else if (tok_is_keyword(tok, &yylval,
+													K_TABLE_NAME, "table_name"))
+								A = PLPGSQL_GETDIAG_TABLE_NAME;
+							else if (tok_is_keyword(tok, &yylval,
+													K_SCHEMA_NAME, "schema_name"))
+								A = PLPGSQL_GETDIAG_SCHEMA_NAME;
+							else if (tok_is_keyword(tok, &yylval,
+													K_RETURNED_SQLSTATE, "returned_sqlstate"))
+								A = PLPGSQL_GETDIAG_RETURNED_SQLSTATE;
+							else
+								plpgsql_yyerror(&yylloc, NULL, yyscanner, "unrecognized GET DIAGNOSTICS item");
+	}
+}
+/* ----- getdiag_target ----- */
+getdiag_target(A) ::= T_DATUM(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+							
+	
+	
+	
+	
+							if (B.wdatum.datum->dtype == PLPGSQL_DTYPE_ROW ||
+								B.wdatum.datum->dtype == PLPGSQL_DTYPE_REC ||
+								plpgsql_peek(yyscanner) == '[')
+								ereport(ERROR,
+										(errcode(ERRCODE_SYNTAX_ERROR),
+										 errmsg("\"%s\" is not a scalar variable",
+												NameOfDatum(&(B.wdatum))),
+										 parser_errposition(@B)));
+							check_assignable(B.wdatum.datum, @B, yyscanner);
+							A = B.wdatum.datum;
+	}
+}
+getdiag_target ::= T_WORD(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							
+							word_is_not_variable(&(B.word), @B, yyscanner);
+	}
+}
+getdiag_target ::= T_CWORD(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							
+							cword_is_not_variable(&(B.cword), @B, yyscanner);
+	}
+}
+/* ----- stmt_if ----- */
+stmt_if(A) ::= K_IF(B) expr_until_then(C) proc_sect(D) stmt_elsifs(E) stmt_else(F) K_END K_IF SEMI. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_stmt_if *new;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							new = palloc0_object(PLpgSQL_stmt_if);
+							new->cmd_type = PLPGSQL_STMT_IF;
+							new->lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							new->stmtid = ++plpgsql_curr_compile->nstatements;
+							new->cond = C;
+							new->then_body = D;
+							new->elsif_list = E;
+							new->else_body = F;
+	
+							A = (PLpgSQL_stmt *) new;
+	}
+}
+/* ----- stmt_elsifs ----- */
+stmt_elsifs(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = NIL;
+	}
+}
+stmt_elsifs(A) ::= stmt_elsifs(B) K_ELSIF(C) expr_until_then(D) proc_sect(E). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_if_elsif *new;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							new = palloc0_object(PLpgSQL_if_elsif);
+							new->lineno = plpgsql_location_to_lineno(@C, yyscanner);
+							new->cond = D;
+							new->stmts = E;
+	
+							A = lappend(B, new);
+	}
+}
+/* ----- stmt_else ----- */
+stmt_else(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = NIL;
+	}
+}
+stmt_else(A) ::= K_ELSE proc_sect(C). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = C;
+	}
+}
+/* ----- stmt_case ----- */
+stmt_case(A) ::= K_CASE(B) opt_expr_until_when(C) case_when_list(D) opt_case_else(E) K_END K_CASE SEMI. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+							A = make_case(@B, C, D, E, yyscanner);
+	}
+}
+/* ----- opt_expr_until_when ----- */
+opt_expr_until_when(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc; PLpgSQL_expr *expr; int			tok;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		(void) plpgsql_yy_get_lookahead(yypParser, &yylval, &yylloc);
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+							expr = NULL;
+							tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+	
+							if (tok != K_WHEN)
+							{
+								plpgsql_push_back_token(tok, &yylval, &yylloc, yyscanner);
+								expr = read_sql_expression(K_WHEN, "WHEN", &yylval, &yylloc, yyscanner);
+							}
+							plpgsql_push_back_token(K_WHEN, &yylval, &yylloc, yyscanner);
+							A = expr;
+	}
+}
+/* ----- case_when_list ----- */
+case_when_list(A) ::= case_when_list(B) case_when(C). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = lappend(B, C);
+	}
+}
+case_when_list(A) ::= case_when(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = list_make1(B);
+	}
+}
+/* ----- case_when ----- */
+case_when(A) ::= K_WHEN(B) expr_until_then(C) proc_sect(D). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_case_when *new;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							new = palloc_object(PLpgSQL_case_when);
+	
+							new->lineno	= plpgsql_location_to_lineno(@B, yyscanner);
+							new->expr = C;
+							new->stmts = D;
+							A = new;
+	}
+}
+/* ----- opt_case_else ----- */
+opt_case_else(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = NIL;
+	}
+}
+opt_case_else(A) ::= K_ELSE proc_sect(C). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							
+	
+	
+	
+	
+	
+							if (C != NIL)
+								A = C;
+							else
+								A = list_make1(NULL);
+	}
+}
+/* ----- stmt_loop ----- */
+stmt_loop(A) ::= opt_loop_label(B) K_LOOP(C) loop_body(D). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_stmt_loop *new;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							new = palloc0_object(PLpgSQL_stmt_loop);
+							new->cmd_type = PLPGSQL_STMT_LOOP;
+							new->lineno = plpgsql_location_to_lineno(@C, yyscanner);
+							new->stmtid = ++plpgsql_curr_compile->nstatements;
+							new->label = B;
+							new->body = D.stmts;
+	
+							check_labels(B, D.end_label, D.end_label_location, yyscanner);
+							plpgsql_ns_pop();
+	
+							A = (PLpgSQL_stmt *) new;
+	}
+}
+/* ----- stmt_while ----- */
+stmt_while(A) ::= opt_loop_label(B) K_WHILE(C) expr_until_loop(D) loop_body(E). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_stmt_while *new;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							new = palloc0_object(PLpgSQL_stmt_while);
+							new->cmd_type = PLPGSQL_STMT_WHILE;
+							new->lineno = plpgsql_location_to_lineno(@C, yyscanner);
+							new->stmtid	= ++plpgsql_curr_compile->nstatements;
+							new->label = B;
+							new->cond = D;
+							new->body = E.stmts;
+	
+							check_labels(B, E.end_label, E.end_label_location, yyscanner);
+							plpgsql_ns_pop();
+	
+							A = (PLpgSQL_stmt *) new;
+	}
+}
+/* ----- stmt_for ----- */
+stmt_for(A) ::= opt_loop_label(B) K_FOR(C) for_control(D) loop_body(E). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							
+							if (D->cmd_type == PLPGSQL_STMT_FORI)
+							{
+								PLpgSQL_stmt_fori *new;
+	
+								new = (PLpgSQL_stmt_fori *) D;
+								new->lineno = plpgsql_location_to_lineno(@C, yyscanner);
+								new->label = B;
+								new->body = E.stmts;
+								A = (PLpgSQL_stmt *) new;
+							}
+							else
+							{
+								PLpgSQL_stmt_forq *new;
+	
+								Assert(D->cmd_type == PLPGSQL_STMT_FORS ||
+									   D->cmd_type == PLPGSQL_STMT_FORC ||
+									   D->cmd_type == PLPGSQL_STMT_DYNFORS);
+								
+								new = (PLpgSQL_stmt_forq *) D;
+								new->lineno = plpgsql_location_to_lineno(@C, yyscanner);
+								new->label = B;
+								new->body = E.stmts;
+								A = (PLpgSQL_stmt *) new;
+							}
+	
+							check_labels(B, E.end_label, E.end_label_location, yyscanner);
+							
+							plpgsql_ns_pop();
+	}
+}
+/* ----- for_control ----- */
+for_control(A) ::= for_variable(B) K_IN. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc; int			tok; int			tokloc;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+							tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+							tokloc = yylloc;
+	
+							if (tok_is_keyword(tok, &yylval,
+											   K_EXECUTE, "execute"))
+							{
+								
+								PLpgSQL_stmt_dynfors *new;
+								PLpgSQL_expr *expr;
+								int			term;
+	
+								expr = read_sql_expression2(K_LOOP, K_USING,
+															"LOOP or USING",
+															&term, &yylval, &yylloc, yyscanner);
+	
+								new = palloc0_object(PLpgSQL_stmt_dynfors);
+								new->cmd_type = PLPGSQL_STMT_DYNFORS;
+								new->stmtid = ++plpgsql_curr_compile->nstatements;
+								if (B.row)
+								{
+									new->var = (PLpgSQL_variable *) B.row;
+									check_assignable(B.row, @B, yyscanner);
+								}
+								else if (B.scalar)
+								{
+									
+									new->var = (PLpgSQL_variable *)
+										make_scalar_list1(B.name, B.scalar,
+														  B.lineno, @B, yyscanner);
+									
+								}
+								else
+								{
+									ereport(ERROR,
+											(errcode(ERRCODE_DATATYPE_MISMATCH),
+											 errmsg("loop variable of loop over rows must be a record variable or list of scalar variables"),
+											 parser_errposition(@B)));
+								}
+								new->query = expr;
+	
+								if (term == K_USING)
+								{
+									do
+									{
+										expr = read_sql_expression2(',', K_LOOP,
+																	", or LOOP",
+																	&term, &yylval, &yylloc, yyscanner);
+										new->params = lappend(new->params, expr);
+									} while (term == ',');
+								}
+	
+								A = (PLpgSQL_stmt *) new;
+							}
+							else if (tok == T_DATUM &&
+									 yylval.wdatum.datum->dtype == PLPGSQL_DTYPE_VAR &&
+									 ((PLpgSQL_var *) yylval.wdatum.datum)->datatype->typoid == REFCURSOROID)
+							{
+								
+								PLpgSQL_stmt_forc *new;
+								PLpgSQL_var	*cursor = (PLpgSQL_var *) yylval.wdatum.datum;
+	
+								new = palloc0_object(PLpgSQL_stmt_forc);
+								new->cmd_type = PLPGSQL_STMT_FORC;
+								new->stmtid = ++plpgsql_curr_compile->nstatements;
+								new->curvar = cursor->dno;
+	
+								
+								if (B.scalar && B.row)
+									ereport(ERROR,
+											(errcode(ERRCODE_SYNTAX_ERROR),
+											 errmsg("cursor FOR loop must have only one target variable"),
+											 parser_errposition(@B)));
+	
+								
+								if (cursor->cursor_explicit_expr == NULL)
+									ereport(ERROR,
+											(errcode(ERRCODE_SYNTAX_ERROR),
+											 errmsg("cursor FOR loop must use a bound cursor variable"),
+											 parser_errposition(tokloc)));
+	
+								
+								new->argquery = read_cursor_args(cursor, K_LOOP, &yylval, &yylloc, yyscanner);
+	
+								
+								new->var = (PLpgSQL_variable *)
+									plpgsql_build_record(B.name,
+														 B.lineno,
+														 NULL,
+														 RECORDOID,
+														 true);
+	
+								A = (PLpgSQL_stmt *) new;
+							}
+							else
+							{
+								PLpgSQL_expr *expr1;
+								int			expr1loc;
+								bool		reverse = false;
+	
+								
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+	
+								if (tok_is_keyword(tok, &yylval,
+												   K_REVERSE, "reverse"))
+									reverse = true;
+								else
+									plpgsql_push_back_token(tok, &yylval, &yylloc, yyscanner);
+	
+								
+	
+	
+	
+	
+	
+	
+								expr1 = read_sql_construct(DOT_DOT,
+														   K_LOOP,
+														   0,
+														   "LOOP",
+														   RAW_PARSE_DEFAULT,
+														   true,
+														   false,
+														   &expr1loc,
+														   &tok,
+														   &yylval, &yylloc, yyscanner);
+	
+								if (tok == DOT_DOT)
+								{
+									
+									PLpgSQL_expr *expr2;
+									PLpgSQL_expr *expr_by;
+									PLpgSQL_var	*fvar;
+									PLpgSQL_stmt_fori *new;
+	
+									
+	
+	
+	
+									expr1->parseMode = RAW_PARSE_PLPGSQL_EXPR;
+									check_sql_expr(expr1->query, expr1->parseMode,
+												   expr1loc, yyscanner);
+	
+									
+									expr2 = read_sql_expression2(K_LOOP, K_BY,
+																 "LOOP",
+																 &tok, &yylval, &yylloc, yyscanner);
+	
+									
+									if (tok == K_BY)
+										expr_by = read_sql_expression(K_LOOP,
+																	  "LOOP", &yylval, &yylloc, yyscanner);
+									else
+										expr_by = NULL;
+	
+									
+									if (B.scalar && B.row)
+										ereport(ERROR,
+												(errcode(ERRCODE_SYNTAX_ERROR),
+												 errmsg("integer FOR loop must have only one target variable"),
+												 parser_errposition(@B)));
+	
+									
+									fvar = (PLpgSQL_var *)
+										plpgsql_build_variable(B.name,
+															   B.lineno,
+															   plpgsql_build_datatype(INT4OID,
+																					  -1,
+																					  InvalidOid,
+																					  NULL),
+															   true);
+	
+									new = palloc0_object(PLpgSQL_stmt_fori);
+									new->cmd_type = PLPGSQL_STMT_FORI;
+									new->stmtid	= ++plpgsql_curr_compile->nstatements;
+									new->var = fvar;
+									new->reverse = reverse;
+									new->lower = expr1;
+									new->upper = expr2;
+									new->step = expr_by;
+	
+									A = (PLpgSQL_stmt *) new;
+								}
+								else
+								{
+									
+	
+	
+									PLpgSQL_stmt_fors *new;
+	
+									if (reverse)
+										ereport(ERROR,
+												(errcode(ERRCODE_SYNTAX_ERROR),
+												 errmsg("cannot specify REVERSE in query FOR loop"),
+												 parser_errposition(tokloc)));
+	
+									
+									check_sql_expr(expr1->query, expr1->parseMode,
+												   expr1loc, yyscanner);
+	
+									new = palloc0_object(PLpgSQL_stmt_fors);
+									new->cmd_type = PLPGSQL_STMT_FORS;
+									new->stmtid = ++plpgsql_curr_compile->nstatements;
+									if (B.row)
+									{
+										new->var = (PLpgSQL_variable *) B.row;
+										check_assignable(B.row, @B, yyscanner);
+									}
+									else if (B.scalar)
+									{
+										
+										new->var = (PLpgSQL_variable *)
+											make_scalar_list1(B.name, B.scalar,
+															  B.lineno, @B, yyscanner);
+										
+									}
+									else
+									{
+										ereport(ERROR,
+												(errcode(ERRCODE_SYNTAX_ERROR),
+												 errmsg("loop variable of loop over rows must be a record variable or list of scalar variables"),
+												 parser_errposition(@B)));
+									}
+	
+									new->query = expr1;
+									A = (PLpgSQL_stmt *) new;
+								}
+							}
+	}
+}
+/* ----- for_variable ----- */
+for_variable(A) ::= T_DATUM(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+							A.name = NameOfDatum(&(B.wdatum));
+							A.lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							if (B.wdatum.datum->dtype == PLPGSQL_DTYPE_ROW ||
+								B.wdatum.datum->dtype == PLPGSQL_DTYPE_REC)
+							{
+								A.scalar = NULL;
+								A.row = B.wdatum.datum;
+							}
+							else
+							{
+								int			tok;
+	
+								A.scalar = B.wdatum.datum;
+								A.row = NULL;
+								
+								tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+								plpgsql_push_back_token(tok, &yylval, &yylloc, yyscanner);
+								if (tok == ',')
+									A.row = (PLpgSQL_datum *)
+										read_into_scalar_list(A.name,
+															  A.scalar,
+															  @B,
+															  &yylval, &yylloc,
+															  yyscanner);
+							}
+	}
+}
+for_variable(A) ::= T_WORD(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc; int			tok;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+	
+							A.name = B.word.ident;
+							A.lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							A.scalar = NULL;
+							A.row = NULL;
+							
+							tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+							plpgsql_push_back_token(tok, &yylval, &yylloc, yyscanner);
+							if (tok == ',')
+								word_is_not_variable(&(B.word), @B, yyscanner);
+	}
+}
+for_variable ::= T_CWORD(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							
+							cword_is_not_variable(&(B.cword), @B, yyscanner);
+	}
+}
+/* ----- stmt_foreach_a ----- */
+stmt_foreach_a(A) ::= opt_loop_label(B) K_FOREACH(C) for_variable(D) foreach_slice(E) K_IN K_ARRAY expr_until_loop(H) loop_body(I). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_stmt_foreach_a *new;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							new = palloc0_object(PLpgSQL_stmt_foreach_a);
+							new->cmd_type = PLPGSQL_STMT_FOREACH_A;
+							new->lineno = plpgsql_location_to_lineno(@C, yyscanner);
+							new->stmtid = ++plpgsql_curr_compile->nstatements;
+							new->label = B;
+							new->slice = E;
+							new->expr = H;
+							new->body = I.stmts;
+	
+							if (D.row)
+							{
+								new->varno = D.row->dno;
+								check_assignable(D.row, @D, yyscanner);
+							}
+							else if (D.scalar)
+							{
+								new->varno = D.scalar->dno;
+								check_assignable(D.scalar, @D, yyscanner);
+							}
+							else
+							{
+								ereport(ERROR,
+										(errcode(ERRCODE_SYNTAX_ERROR),
+										 errmsg("loop variable of FOREACH must be a known variable or list of variables"),
+												 parser_errposition(@D)));
+							}
+	
+							check_labels(B, I.end_label, I.end_label_location, yyscanner);
+							plpgsql_ns_pop();
+	
+							A = (PLpgSQL_stmt *) new;
+	}
+}
+/* ----- foreach_slice ----- */
+foreach_slice(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = 0;
+	}
+}
+foreach_slice(A) ::= K_SLICE ICONST(C). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = C.ival;
+	}
+}
+/* ----- stmt_exit ----- */
+stmt_exit(A) ::= exit_type(B) opt_label(C) opt_exitcond(D). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_stmt_exit *new;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							new = palloc0_object(PLpgSQL_stmt_exit);
+							new->cmd_type = PLPGSQL_STMT_EXIT;
+							new->stmtid = ++plpgsql_curr_compile->nstatements;
+							new->is_exit = B;
+							new->lineno	= plpgsql_location_to_lineno(@B, yyscanner);
+							new->label = C;
+							new->cond = D;
+	
+							if (C)
+							{
+								
+								PLpgSQL_nsitem *label;
+	
+								label = plpgsql_ns_lookup_label(plpgsql_ns_top(), C);
+								if (label == NULL)
+									ereport(ERROR,
+											(errcode(ERRCODE_SYNTAX_ERROR),
+											 errmsg("there is no label \"%s\" "
+													"attached to any block or loop enclosing this statement",
+													C),
+											 parser_errposition(@C)));
+								
+								if (label->itemno != PLPGSQL_LABEL_LOOP && !new->is_exit)
+									ereport(ERROR,
+											(errcode(ERRCODE_SYNTAX_ERROR),
+											 errmsg("block label \"%s\" cannot be used in CONTINUE",
+													C),
+											 parser_errposition(@C)));
+							}
+							else
+							{
+								
+	
+	
+	
+	
+								if (plpgsql_ns_find_nearest_loop(plpgsql_ns_top()) == NULL)
+									ereport(ERROR,
+											(errcode(ERRCODE_SYNTAX_ERROR),
+											 new->is_exit ?
+											 errmsg("EXIT cannot be used outside a loop, unless it has a label") :
+											 errmsg("CONTINUE cannot be used outside a loop"),
+											 parser_errposition(@B)));
+							}
+	
+							A = (PLpgSQL_stmt *) new;
+	}
+}
+/* ----- exit_type ----- */
+exit_type(A) ::= K_EXIT. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = true;
+	}
+}
+exit_type(A) ::= K_CONTINUE. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = false;
+	}
+}
+/* ----- stmt_return ----- */
+stmt_return(A) ::= K_RETURN(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc; int			tok;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+	
+							tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+							if (tok == 0)
+								plpgsql_yyerror(&yylloc, NULL, yyscanner, "unexpected end of function definition");
+	
+							if (tok_is_keyword(tok, &yylval,
+											   K_NEXT, "next"))
+							{
+								A = make_return_next_stmt(@B, &yylval, &yylloc, yyscanner);
+							}
+							else if (tok_is_keyword(tok, &yylval,
+													K_QUERY, "query"))
+							{
+								A = make_return_query_stmt(@B, &yylval, &yylloc, yyscanner);
+							}
+							else
+							{
+								plpgsql_push_back_token(tok, &yylval, &yylloc, yyscanner);
+								A = make_return_stmt(@B, &yylval, &yylloc, yyscanner);
+							}
+	}
+}
+/* ----- stmt_raise ----- */
+stmt_raise(A) ::= K_RAISE(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc; PLpgSQL_stmt_raise *new; int			tok;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+	
+							new = palloc_object(PLpgSQL_stmt_raise);
+	
+							new->cmd_type = PLPGSQL_STMT_RAISE;
+							new->lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							new->stmtid	= ++plpgsql_curr_compile->nstatements;
+							new->elog_level = ERROR;	
+							new->condname = NULL;
+							new->message = NULL;
+							new->params = NIL;
+							new->options = NIL;
+	
+							tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+							if (tok == 0)
+								plpgsql_yyerror(&yylloc, NULL, yyscanner, "unexpected end of function definition");
+	
+							
+	
+	
+	
+							if (tok != ';')
+							{
+								
+	
+	
+								if (tok_is_keyword(tok, &yylval,
+												   K_EXCEPTION, "exception"))
+								{
+									new->elog_level = ERROR;
+									tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+								}
+								else if (tok_is_keyword(tok, &yylval,
+														K_WARNING, "warning"))
+								{
+									new->elog_level = WARNING;
+									tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+								}
+								else if (tok_is_keyword(tok, &yylval,
+														K_NOTICE, "notice"))
+								{
+									new->elog_level = NOTICE;
+									tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+								}
+								else if (tok_is_keyword(tok, &yylval,
+														K_INFO, "info"))
+								{
+									new->elog_level = INFO;
+									tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+								}
+								else if (tok_is_keyword(tok, &yylval,
+														K_LOG, "log"))
+								{
+									new->elog_level = LOG;
+									tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+								}
+								else if (tok_is_keyword(tok, &yylval,
+														K_DEBUG, "debug"))
+								{
+									new->elog_level = DEBUG1;
+									tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+								}
+								if (tok == 0)
+									plpgsql_yyerror(&yylloc, NULL, yyscanner, "unexpected end of function definition");
+	
+								
+	
+	
+	
+	
+	
+								if (tok == SCONST)
+								{
+									
+									new->message = yylval.str;
+									
+	
+	
+	
+	
+	
+									tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+									if (tok != ',' && tok != ';' && tok != K_USING)
+										plpgsql_yyerror(&yylloc, NULL, yyscanner, "syntax error");
+	
+									while (tok == ',')
+									{
+										PLpgSQL_expr *expr;
+	
+										expr = read_sql_construct(',', ';', K_USING,
+																  ", or ; or USING",
+																  RAW_PARSE_PLPGSQL_EXPR,
+																  true, true,
+																  NULL, &tok,
+																  &yylval, &yylloc, yyscanner);
+										new->params = lappend(new->params, expr);
+									}
+								}
+								else if (tok != K_USING)
+								{
+									
+									if (tok_is_keyword(tok, &yylval,
+													   K_SQLSTATE, "sqlstate"))
+									{
+										
+										char	   *sqlstatestr;
+	
+										if (plpgsql_yylex(&yylval, &yylloc, yyscanner) != SCONST)
+											plpgsql_yyerror(&yylloc, NULL, yyscanner, "syntax error");
+										sqlstatestr = yylval.str;
+	
+										if (strlen(sqlstatestr) != 5)
+											plpgsql_yyerror(&yylloc, NULL, yyscanner, "invalid SQLSTATE code");
+										if (strspn(sqlstatestr, "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ") != 5)
+											plpgsql_yyerror(&yylloc, NULL, yyscanner, "invalid SQLSTATE code");
+										new->condname = sqlstatestr;
+									}
+									else
+									{
+										if (tok == T_WORD)
+											new->condname = yylval.word.ident;
+										else if (plpgsql_token_is_unreserved_keyword(tok))
+											new->condname = pstrdup(yylval.keyword);
+										else
+											plpgsql_yyerror(&yylloc, NULL, yyscanner, "syntax error");
+										plpgsql_recognize_err_condition(new->condname,
+																		false);
+									}
+									tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+									if (tok != ';' && tok != K_USING)
+										plpgsql_yyerror(&yylloc, NULL, yyscanner, "syntax error");
+								}
+	
+								if (tok == K_USING)
+									new->options = read_raise_options(&yylval, &yylloc, yyscanner);
+							}
+	
+							check_raise_parameters(new);
+	
+							A = (PLpgSQL_stmt *) new;
+	}
+}
+/* ----- stmt_assert ----- */
+stmt_assert(A) ::= K_ASSERT(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc; PLpgSQL_stmt_assert	*new; int			tok;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+	
+							new = palloc_object(PLpgSQL_stmt_assert);
+	
+							new->cmd_type = PLPGSQL_STMT_ASSERT;
+							new->lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							new->stmtid = ++plpgsql_curr_compile->nstatements;
+	
+							new->cond = read_sql_expression2(',', ';',
+															 ", or ;",
+															 &tok, &yylval, &yylloc, yyscanner);
+	
+							if (tok == ',')
+								new->message = read_sql_expression(';', ";", &yylval, &yylloc, yyscanner);
+							else
+								new->message = NULL;
+	
+							A = (PLpgSQL_stmt *) new;
+	}
+}
+/* ----- loop_body ----- */
+loop_body(A) ::= proc_sect(B) K_END K_LOOP opt_label(E) SEMI. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A.stmts = B;
+							A.end_label = E;
+							A.end_label_location = @E;
+	}
+}
+/* ----- stmt_execsql ----- */
+stmt_execsql(A) ::= K_IMPORT(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+							A = make_execsql_stmt(K_IMPORT, @B, NULL, &yylval, &yylloc, yyscanner);
+	}
+}
+stmt_execsql(A) ::= K_INSERT(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+							A = make_execsql_stmt(K_INSERT, @B, NULL, &yylval, &yylloc, yyscanner);
+	}
+}
+stmt_execsql(A) ::= K_MERGE(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+							A = make_execsql_stmt(K_MERGE, @B, NULL, &yylval, &yylloc, yyscanner);
+	}
+}
+stmt_execsql(A) ::= T_WORD(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc; int			tok;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+	
+							tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+							plpgsql_push_back_token(tok, &yylval, &yylloc, yyscanner);
+							if (tok == '=' || tok == COLON_EQUALS ||
+								tok == '[' || tok == '.')
+								word_is_not_variable(&(B.word), @B, yyscanner);
+							A = make_execsql_stmt(T_WORD, @B, &(B.word), &yylval, &yylloc, yyscanner);
+	}
+}
+stmt_execsql(A) ::= T_CWORD(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc; int			tok;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+	
+							tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+							plpgsql_push_back_token(tok, &yylval, &yylloc, yyscanner);
+							if (tok == '=' || tok == COLON_EQUALS ||
+								tok == '[' || tok == '.')
+								cword_is_not_variable(&(B.cword), @B, yyscanner);
+							A = make_execsql_stmt(T_CWORD, @B, NULL, &yylval, &yylloc, yyscanner);
+	}
+}
+/* ----- stmt_dynexecute ----- */
+stmt_dynexecute(A) ::= K_EXECUTE(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc; PLpgSQL_stmt_dynexecute *new; PLpgSQL_expr *expr; int			endtoken;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+	
+							expr = read_sql_construct(K_INTO, K_USING, ';',
+													  "INTO or USING or ;",
+													  RAW_PARSE_PLPGSQL_EXPR,
+													  true, true,
+													  NULL, &endtoken,
+													  &yylval, &yylloc, yyscanner);
+	
+							new = palloc_object(PLpgSQL_stmt_dynexecute);
+							new->cmd_type = PLPGSQL_STMT_DYNEXECUTE;
+							new->lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							new->stmtid = ++plpgsql_curr_compile->nstatements;
+							new->query = expr;
+							new->into = false;
+							new->strict = false;
+							new->target = NULL;
+							new->params = NIL;
+	
+							
+	
+	
+	
+	
+	
+	
+							for (;;)
+							{
+								if (endtoken == K_INTO)
+								{
+									if (new->into)			
+										plpgsql_yyerror(&yylloc, NULL, yyscanner, "syntax error");
+									new->into = true;
+									read_into_target(&new->target, &new->strict, &yylval, &yylloc, yyscanner);
+									endtoken = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+								}
+								else if (endtoken == K_USING)
+								{
+									if (new->params)		
+										plpgsql_yyerror(&yylloc, NULL, yyscanner, "syntax error");
+									do
+									{
+										expr = read_sql_construct(',', ';', K_INTO,
+																  ", or ; or INTO",
+																  RAW_PARSE_PLPGSQL_EXPR,
+																  true, true,
+																  NULL, &endtoken,
+																  &yylval, &yylloc, yyscanner);
+										new->params = lappend(new->params, expr);
+									} while (endtoken == ',');
+								}
+								else if (endtoken == ';')
+									break;
+								else
+									plpgsql_yyerror(&yylloc, NULL, yyscanner, "syntax error");
+							}
+	
+							A = (PLpgSQL_stmt *) new;
+	}
+}
+/* ----- stmt_open ----- */
+stmt_open(A) ::= K_OPEN(B) cursor_variable(C). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc; PLpgSQL_stmt_open *new; int			tok;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+	
+							new = palloc0_object(PLpgSQL_stmt_open);
+							new->cmd_type = PLPGSQL_STMT_OPEN;
+							new->lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							new->stmtid = ++plpgsql_curr_compile->nstatements;
+							new->curvar = C->dno;
+							new->cursor_options = CURSOR_OPT_FAST_PLAN;
+	
+							if (C->cursor_explicit_expr == NULL)
+							{
+								
+								tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+								if (tok_is_keyword(tok, &yylval,
+												   K_NO, "no"))
+								{
+									tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+									if (tok_is_keyword(tok, &yylval,
+													   K_SCROLL, "scroll"))
+									{
+										new->cursor_options |= CURSOR_OPT_NO_SCROLL;
+										tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+									}
+								}
+								else if (tok_is_keyword(tok, &yylval,
+														K_SCROLL, "scroll"))
+								{
+									new->cursor_options |= CURSOR_OPT_SCROLL;
+									tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+								}
+	
+								if (tok != K_FOR)
+									plpgsql_yyerror(&yylloc, NULL, yyscanner, "syntax error, expected \"FOR\"");
+	
+								tok = plpgsql_yylex(&yylval, &yylloc, yyscanner);
+								if (tok_is_keyword(tok, &yylval,
+												   K_EXECUTE, "execute"))
+								{
+									int			endtoken;
+	
+									new->dynquery =
+										read_sql_expression2(K_USING, ';',
+															 "USING or ;",
+															 &endtoken, &yylval, &yylloc, yyscanner);
+	
+									
+									if (endtoken == K_USING)
+									{
+										PLpgSQL_expr *expr;
+	
+										do
+										{
+											expr = read_sql_expression2(',', ';',
+																		", or ;",
+																		&endtoken, &yylval, &yylloc, yyscanner);
+											new->params = lappend(new->params,
+																  expr);
+										} while (endtoken == ',');
+									}
+								}
+								else
+								{
+									plpgsql_push_back_token(tok, &yylval, &yylloc, yyscanner);
+									new->query = read_sql_stmt(&yylval, &yylloc, yyscanner);
+								}
+							}
+							else
+							{
+								
+								new->argquery = read_cursor_args(C, ';', &yylval, &yylloc, yyscanner);
+							}
+	
+							A = (PLpgSQL_stmt *) new;
+	}
+}
+/* ----- stmt_fetch ----- */
+stmt_fetch(A) ::= K_FETCH(B) opt_fetch_direction(C) cursor_variable(D) K_INTO. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc; PLpgSQL_stmt_fetch *fetch; PLpgSQL_variable *target;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+							fetch = C;
+	
+							
+							read_into_target(&target, NULL, &yylval, &yylloc, yyscanner);
+	
+							if (plpgsql_yylex(&yylval, &yylloc, yyscanner) != ';')
+								plpgsql_yyerror(&yylloc, NULL, yyscanner, "syntax error");
+	
+							
+	
+	
+	
+							if (fetch->returns_multiple_rows)
+								ereport(ERROR,
+										(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+										 errmsg("FETCH statement cannot return multiple rows"),
+										 parser_errposition(@B)));
+	
+							fetch->lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							fetch->target	= target;
+							fetch->curvar	= D->dno;
+							fetch->is_move	= false;
+	
+							A = (PLpgSQL_stmt *) fetch;
+	}
+}
+/* ----- stmt_move ----- */
+stmt_move(A) ::= K_MOVE(B) opt_fetch_direction(C) cursor_variable(D) SEMI. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_stmt_fetch *fetch;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							fetch = C;
+	
+							fetch->lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							fetch->curvar = D->dno;
+							fetch->is_move = true;
+	
+							A = (PLpgSQL_stmt *) fetch;
+	}
+}
+/* ----- opt_fetch_direction ----- */
+opt_fetch_direction(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		(void) plpgsql_yy_get_lookahead(yypParser, &yylval, &yylloc);
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+							A = read_fetch_direction(&yylval, &yylloc, yyscanner);
+	}
+}
+/* ----- stmt_close ----- */
+stmt_close(A) ::= K_CLOSE(B) cursor_variable(C) SEMI. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_stmt_close *new;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							new = palloc_object(PLpgSQL_stmt_close);
+							new->cmd_type = PLPGSQL_STMT_CLOSE;
+							new->lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							new->stmtid = ++plpgsql_curr_compile->nstatements;
+							new->curvar = C->dno;
+	
+							A = (PLpgSQL_stmt *) new;
+	}
+}
+/* ----- stmt_null ----- */
+stmt_null(A) ::= K_NULL SEMI. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							
+							A = NULL;
+	}
+}
+/* ----- stmt_commit ----- */
+stmt_commit(A) ::= K_COMMIT(B) opt_transaction_chain(C) SEMI. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_stmt_commit *new;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							new = palloc_object(PLpgSQL_stmt_commit);
+							new->cmd_type = PLPGSQL_STMT_COMMIT;
+							new->lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							new->stmtid = ++plpgsql_curr_compile->nstatements;
+							new->chain = C;
+	
+							A = (PLpgSQL_stmt *) new;
+	}
+}
+/* ----- stmt_rollback ----- */
+stmt_rollback(A) ::= K_ROLLBACK(B) opt_transaction_chain(C) SEMI. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_stmt_rollback *new;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							new = palloc_object(PLpgSQL_stmt_rollback);
+							new->cmd_type = PLPGSQL_STMT_ROLLBACK;
+							new->lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							new->stmtid = ++plpgsql_curr_compile->nstatements;
+							new->chain = C;
+	
+							A = (PLpgSQL_stmt *) new;
+	}
+}
+/* ----- opt_transaction_chain ----- */
+opt_transaction_chain(A) ::= K_AND K_CHAIN. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = true;
+	}
+}
+opt_transaction_chain(A) ::= K_AND K_NO K_CHAIN. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = false;
+	}
+}
+opt_transaction_chain(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = false;
+	}
+}
+/* ----- cursor_variable ----- */
+cursor_variable(A) ::= T_DATUM(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+							
+	
+	
+	
+	
+							if (B.wdatum.datum->dtype != PLPGSQL_DTYPE_VAR ||
+								plpgsql_peek(yyscanner) == '[')
+								ereport(ERROR,
+										(errcode(ERRCODE_DATATYPE_MISMATCH),
+										 errmsg("cursor variable must be a simple variable"),
+										 parser_errposition(@B)));
+	
+							if (((PLpgSQL_var *) B.wdatum.datum)->datatype->typoid != REFCURSOROID)
+								ereport(ERROR,
+										(errcode(ERRCODE_DATATYPE_MISMATCH),
+										 errmsg("variable \"%s\" must be of type cursor or refcursor",
+												((PLpgSQL_var *) B.wdatum.datum)->refname),
+										 parser_errposition(@B)));
+							A = (PLpgSQL_var *) B.wdatum.datum;
+	}
+}
+cursor_variable ::= T_WORD(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							
+							word_is_not_variable(&(B.word), @B, yyscanner);
+	}
+}
+cursor_variable ::= T_CWORD(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							
+							cword_is_not_variable(&(B.cword), @B, yyscanner);
+	}
+}
+/* ----- exception_sect ----- */
+exception_sect(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = NULL;
+	}
+}
+exception_sect(A) ::= exception_intro(B) proc_exceptions(C). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_exception_block *new;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							new = B;
+							new->exc_list = C;
+	
+							A = new;
+	}
+}
+/* ----- exception_intro ----- */
+exception_intro(A) ::= K_EXCEPTION(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; int			lineno; PLpgSQL_exception_block *new; PLpgSQL_variable *var;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							
+	
+	
+	
+	
+	
+							lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							new = palloc_object(PLpgSQL_exception_block);
+	
+							plpgsql_curr_compile->has_exception_block = true;
+	
+							var = plpgsql_build_variable("sqlstate", lineno,
+														 plpgsql_build_datatype(TEXTOID,
+																				-1,
+																				plpgsql_curr_compile->fn_input_collation,
+																				NULL),
+														 true);
+							var->isconst = true;
+							new->sqlstate_varno = var->dno;
+	
+							var = plpgsql_build_variable("sqlerrm", lineno,
+														 plpgsql_build_datatype(TEXTOID,
+																				-1,
+																				plpgsql_curr_compile->fn_input_collation,
+																				NULL),
+														 true);
+							var->isconst = true;
+							new->sqlerrm_varno = var->dno;
+	
+							A = new;
+	}
+}
+/* ----- proc_exceptions ----- */
+proc_exceptions(A) ::= proc_exceptions(B) proc_exception(C). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+								A = lappend(B, C);
+	}
+}
+proc_exceptions(A) ::= proc_exception(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+								A = list_make1(B);
+	}
+}
+/* ----- proc_exception ----- */
+proc_exception(A) ::= K_WHEN(B) proc_conditions(C) K_THEN proc_sect(E). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_exception *new;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+							new = palloc0_object(PLpgSQL_exception);
+							new->lineno = plpgsql_location_to_lineno(@B, yyscanner);
+							new->conditions = C;
+							new->action = E;
+	
+							A = new;
+	}
+}
+/* ----- proc_conditions ----- */
+proc_conditions(A) ::= proc_conditions(B) K_OR proc_condition(D). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; PLpgSQL_condition	*old;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+	
+								for (old = B; old->next != NULL; old = old->next)
+									 ;
+								old->next = D;
+								A = B;
+	}
+}
+proc_conditions(A) ::= proc_condition(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+								A = B;
+	}
+}
+/* ----- proc_condition ----- */
+proc_condition(A) ::= any_identifier(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+		memset(&yylval, 0, sizeof(yylval));
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	
+								if (strcmp(B, "sqlstate") != 0)
+								{
+									A = plpgsql_parse_err_condition(B);
+								}
+								else
+								{
+									PLpgSQL_condition *new;
+									char   *sqlstatestr;
+	
+									
+									if (plpgsql_yylex(&yylval, &yylloc, yyscanner) != SCONST)
+										plpgsql_yyerror(&yylloc, NULL, yyscanner, "syntax error");
+									sqlstatestr = yylval.str;
+	
+									if (strlen(sqlstatestr) != 5)
+										plpgsql_yyerror(&yylloc, NULL, yyscanner, "invalid SQLSTATE code");
+									if (strspn(sqlstatestr, "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ") != 5)
+										plpgsql_yyerror(&yylloc, NULL, yyscanner, "invalid SQLSTATE code");
+	
+									new = palloc_object(PLpgSQL_condition);
+									new->sqlerrstate =
+										MAKE_SQLSTATE(sqlstatestr[0],
+													  sqlstatestr[1],
+													  sqlstatestr[2],
+													  sqlstatestr[3],
+													  sqlstatestr[4]);
+									new->condname = sqlstatestr;
+									new->next = NULL;
+	
+									A = new;
+								}
+	}
+}
+/* ----- expr_until_semi ----- */
+expr_until_semi(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		(void) plpgsql_yy_get_lookahead(yypParser, &yylval, &yylloc);
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	 A = read_sql_expression(';', ";", &yylval, &yylloc, yyscanner);
+	}
+}
+/* ----- expr_until_then ----- */
+expr_until_then(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		(void) plpgsql_yy_get_lookahead(yypParser, &yylval, &yylloc);
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	 A = read_sql_expression(K_THEN, "THEN", &yylval, &yylloc, yyscanner);
+	}
+}
+/* ----- expr_until_loop ----- */
+expr_until_loop(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYSTYPE	yylval; YYLTYPE	yylloc;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		(void) plpgsql_yy_get_lookahead(yypParser, &yylval, &yylloc);
+		(void) plpgsql_yy_drain_lookahead(yypParser, extra->yyscanner);
+	 A = read_sql_expression(K_LOOP, "LOOP", &yylval, &yylloc, yyscanner);
+	}
+}
+/* ----- opt_block_label ----- */
+opt_block_label(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							plpgsql_ns_push(NULL, PLPGSQL_LABEL_BLOCK);
+							A = NULL;
+	}
+}
+opt_block_label(A) ::= LESS_LESS any_identifier(C) GREATER_GREATER. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							plpgsql_ns_push(C, PLPGSQL_LABEL_BLOCK);
+							A = C;
+	}
+}
+/* ----- opt_loop_label ----- */
+opt_loop_label(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							plpgsql_ns_push(NULL, PLPGSQL_LABEL_LOOP);
+							A = NULL;
+	}
+}
+opt_loop_label(A) ::= LESS_LESS any_identifier(C) GREATER_GREATER. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							plpgsql_ns_push(C, PLPGSQL_LABEL_LOOP);
+							A = C;
+	}
+}
+/* ----- opt_label ----- */
+opt_label(A) ::=. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = NULL;
+	}
+}
+opt_label(A) ::= any_identifier(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							
+							A = B;
+	}
+}
+/* ----- opt_exitcond ----- */
+opt_exitcond(A) ::= SEMI. {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = NULL;
+	}
+}
+opt_exitcond(A) ::= K_WHEN expr_until_semi(C). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	 A = C;
+	}
+}
+/* ----- any_identifier ----- */
+any_identifier(A) ::= T_WORD(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = B.word.ident;
+	}
+}
+any_identifier(A) ::= unreserved_keyword(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+	
+							A = pstrdup(B);
+	}
+}
+any_identifier(A) ::= T_DATUM(B). {
+	{ PLpgSQL_stmt_block **plpgsql_parse_result_p = extra->plpgsql_parse_result_p; yyscan_t yyscanner = extra->yyscanner; YYLTYPE	yylloc;;
+		(void)plpgsql_parse_result_p; (void)yyscanner;
+		yylloc = @B;
+	
+							if (B.wdatum.ident == NULL) 
+								plpgsql_yyerror(&yylloc, NULL, yyscanner, "syntax error");
+							A = B.wdatum.ident;
+	}
+}
+/* ----- unreserved_keyword ----- */
+unreserved_keyword(A) ::= K_ABSOLUTE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_ALIAS(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_AND(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_ARRAY(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_ASSERT(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_BACKWARD(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_CALL(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_CHAIN(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_CLOSE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_COLLATE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_COLUMN(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_COLUMN_NAME(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_COMMIT(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_CONSTANT(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_CONSTRAINT(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_CONSTRAINT_NAME(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_CONTINUE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_CURRENT(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_CURSOR(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_DATATYPE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_DEBUG(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_DEFAULT(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_DETAIL(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_DIAGNOSTICS(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_DO(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_DUMP(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_ELSIF(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_ERRCODE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_ERROR(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_EXCEPTION(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_EXECUTE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_EXIT(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_FETCH(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_FIRST(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_FORWARD(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_GET(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_HINT(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_IMPORT(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_INFO(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_INSERT(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_IS(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_LAST(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_LOG(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_MERGE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_MESSAGE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_MESSAGE_TEXT(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_MOVE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_NEXT(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_NO(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_NOTICE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_OPEN(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_OPTION(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_PERFORM(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_PG_CONTEXT(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_PG_DATATYPE_NAME(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_PG_EXCEPTION_CONTEXT(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_PG_EXCEPTION_DETAIL(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_PG_EXCEPTION_HINT(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_PG_ROUTINE_OID(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_PRINT_STRICT_PARAMS(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_PRIOR(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_QUERY(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_RAISE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_RELATIVE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_RETURN(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_RETURNED_SQLSTATE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_REVERSE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_ROLLBACK(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_ROW_COUNT(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_ROWTYPE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_SCHEMA(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_SCHEMA_NAME(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_SCROLL(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_SLICE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_SQLSTATE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_STACKED(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_STRICT(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_TABLE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_TABLE_NAME(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_TYPE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_USE_COLUMN(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_USE_VARIABLE(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_VARIABLE_CONFLICT(B). {
+	A = B.keyword;
+}
+unreserved_keyword(A) ::= K_WARNING(B). {
+	A = B.keyword;
+}

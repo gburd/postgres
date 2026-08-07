@@ -399,8 +399,36 @@ endif
 # External programs
 perl = find_program(get_option('PERL'), required: true, native: true)
 python = find_program(get_option('PYTHON'), required: true, native: true)
-flex = find_program(get_option('FLEX'), native: true)
-bison = find_program(get_option('BISON'), native: true, version: '>= 2.3')
+# flex and bison are no longer used by any in-tree grammar/scanner.
+# Phase 3 final retired bison's last consumer (ecpg's preproc, formerly
+# bison-driven from a parse.pl-generated preproc.y) in favor of Lime,
+# with parse.pl now feeding lime_convert_gram.py to produce a
+# preproc.lime artefact.  We still resolve the binaries (optional)
+# because pgxs_bins exports BISON/FLEX for downstream PG extension
+# authors who may still write .y/.l grammars; nothing in this tree
+# references bison_kw or flex_kw.
+flex = find_program(get_option('FLEX'), native: true, required: false)
+bison = find_program(get_option('BISON'), native: true, required: false)
+lime = find_program(get_option('LIME'), native: true, required: false)
+
+# Lime in-process compile API (Phase 4 Track B Phase 2 path).
+# liblime_compiler.a -- exposes lime_compile_grammar_in_process()
+# which runs the LALR(1) construction directly in our address space
+# (no fork, no exec, no temp file, no cc, no dlopen).
+#
+# Distinct from liblime_parser.a which is the runtime push-parser
+# library (parse_begin / parse_token / parse_end).  We pull both:
+# the compiler library to build snapshots from grammar text, the
+# parser library to drive parse_token against the resulting
+# snapshots.  Requires Lime >= v1.5.0 (split .pc files since v0.9.4;
+# v1.0.0 was the API-stability commitment release; v1.5.0 adds the
+# %yystype_header directive for shared lexer/parser type headers and
+# the context-sensitive token-admissibility oracle
+# (lime_token_admissible_in_state) used for multi-grammar keyword
+# disambiguation).
+lime_runtime_dep = dependency('lime', required: false, version: '>=1.11.0')
+lime_compiler_dep = dependency('lime-compiler', required: false,
+                                version: '>=1.11.0')
 sed = find_program(get_option('SED'), 'sed', native: true, required: false)
 prove = find_program(get_option('PROVE'), native: true, required: false)
 tar = find_program(get_option('TAR'), native: true, required: false)
@@ -417,11 +445,14 @@ nm = find_program('nm', required: false, native: true)
 ditaa = find_program('ditaa', native: true, required: false)
 dot = find_program('dot', native: true, required: false)
 
+# Bison/flex setup retained for pgxs_bins export only.  Downstream PG
+# extension authors writing .y/.l grammars can still use these via the
+# pgxs Makefile.global.  In-tree core + all in-tree contrib modules
+# (cube, seg, pg_plan_advice) use Lime exclusively as of Phase 5
+# completion; nothing in this tree references bison_kw or flex_kw.
 bison_flags = []
 if bison.found()
   bison_version_c = run_command(bison, '--version', check: true)
-  # bison version string helpfully is something like
-  # >>bison (GNU bison) 3.8.1<<
   bison_version = bison_version_c.stdout().split(' ')[3].split('\n')[0]
   if bison_version.version_compare('>=3.0')
     bison_flags += ['-Wno-deprecated']
@@ -446,6 +477,175 @@ flex_cmd = [python, flex_wrapper,
   '--flex', flex, '--perl', perl,
   '-i', '@INPUT@', '-o', '@OUTPUT0@',
 ]
+
+# Lime parser generator wrapper.  Analogous to pgflex/pgbison:
+# custom_target invokes `pglime` which redirects lime's output and
+# `.out` report into a private directory, then moves the generated
+# .c/.h files to the meson-declared OUTPUT paths.  Downstream
+# meson.build files can do:
+#
+#   custom_target('foo',
+#     input: 'foo.lime',
+#     output: ['foo.c', 'foo.h'],
+#     command: lime_cmd,
+#   )
+#
+# or include extra flags via `lime_cmd + ['--', '-s', '-p']`.
+lime_wrapper = files('src/tools/pglime')
+if lime.found()
+  lime_cmd = [python, lime_wrapper,
+    '--builddir', '@BUILD_ROOT@',
+    '--srcdir', '@SOURCE_ROOT@',
+    '--privatedir', '@PRIVATE_DIR@',
+    '--lime', lime,
+    '-i', '@INPUT@', '-c', '@OUTPUT0@', '-H', '@OUTPUT1@',
+  ]
+  lime_kw = {
+    'output': ['@BASENAME@.c', '@BASENAME@.h'],
+    'command': lime_cmd,
+  }
+  # Snapshot variant (non-AOT): plain codegen PLUS the runtime
+  # snapshot builder (lime -n).  Used for the backend grammar when
+  # AOT is disabled, so the runtime grammar-extension framework still
+  # has <prefix>BuildSnapshot() available.
+  lime_snapshot_cmd = [python, lime_wrapper,
+    '--builddir', '@BUILD_ROOT@',
+    '--srcdir', '@SOURCE_ROOT@',
+    '--privatedir', '@PRIVATE_DIR@',
+    '--lime', lime,
+    '--snapshot',
+    '--host-reduce',
+    '-i', '@INPUT@',
+    '-c', '@OUTPUT0@', '-H', '@OUTPUT1@',
+    '--snapshot-output', '@OUTPUT2@',
+  ]
+  lime_snapshot_kw = {
+    'output': ['@BASENAME@.c', '@BASENAME@.h', '@BASENAME@_snapshot.c'],
+    'command': lime_snapshot_cmd,
+  }
+  # AOT variant: also produces <basename>_aot.c via lime -j.
+  # The generated file contains a switch-based
+  # yy_find_shift_action_aot() that the C compiler optimises into
+  # jump tables, matching JIT performance without runtime LLVM.
+  # Consumers compile gram.c with -DYYAOT and link gram_aot.c.
+  lime_aot_cmd = [python, lime_wrapper,
+    '--builddir', '@BUILD_ROOT@',
+    '--srcdir', '@SOURCE_ROOT@',
+    '--privatedir', '@PRIVATE_DIR@',
+    '--lime', lime,
+    '--aot',
+    '-i', '@INPUT@',
+    '-c', '@OUTPUT0@', '-H', '@OUTPUT1@',
+    '--aot-output', '@OUTPUT2@',
+  ]
+  lime_aot_kw = {
+    'output': ['@BASENAME@.c', '@BASENAME@.h', '@BASENAME@_aot.c'],
+    'command': lime_aot_cmd,
+  }
+  # AOT + snapshot variant: AOT codegen PLUS the runtime snapshot
+  # builder (lime -n -> <basename>_snapshot.c).  The snapshot file
+  # provides <prefix>BuildSnapshot(), which returns a ParserSnapshot
+  # built from the generator-emitted tables with the original grammar
+  # text embedded.  Used by the runtime grammar-extension framework
+  # (parser_extension.c) to compose extension grammars in-process via
+  # lime_compile_grammar_in_process() -- no subprocess, no cc.
+  lime_aot_snapshot_cmd = [python, lime_wrapper,
+    '--builddir', '@BUILD_ROOT@',
+    '--srcdir', '@SOURCE_ROOT@',
+    '--privatedir', '@PRIVATE_DIR@',
+    '--lime', lime,
+    '--aot',
+    '--snapshot',
+    '--host-reduce',
+    '-i', '@INPUT@',
+    '-c', '@OUTPUT0@', '-H', '@OUTPUT1@',
+    '--aot-output', '@OUTPUT2@',
+    '--snapshot-output', '@OUTPUT3@',
+  ]
+  lime_aot_snapshot_kw = {
+    'output': ['@BASENAME@.c', '@BASENAME@.h', '@BASENAME@_aot.c',
+               '@BASENAME@_snapshot.c'],
+    'command': lime_aot_snapshot_cmd,
+  }
+  # Lime v0.2.2+ lexer subsystem -- compile .lex sources via
+  # `lime -X`.  Output naming convention: foo.lex -> foo_lex.c +
+  # foo_lex.h.  v0.2.2 emits the %include block natively (P0-NEW-9
+  # closed); the previous pglime-lex Python wrapper has been retired.
+  #
+  # SIMD codegen (v0.8.2+ multiversion AVX2/NEON) is left enabled.
+  # Empirically the always_inline SIMD fast-path helpers compile
+  # cleanly under PG's warning set (verified across all 14 Lime
+  # lexers: zero -Wdeclaration-after-statement / -Wshadow diagnostics
+  # with v1.3.1), so there is no reason to force the scalar fallback.
+  lime_lex_cmd = [
+    lime, '-X', '-d@OUTDIR@', '@INPUT@',
+  ]
+endif
+
+# AOT enablement: feature option lime_aot resolves to a bool we use
+# as the toggle in src/backend/parser/meson.build.  When true, gram.lime
+# is compiled with the AOT path (lime -j); when false, the table-driven
+# yy_find_shift_action is used.  Default 'auto' enables AOT when Lime
+# is found.  Requires Lime v0.2.7 or later for correct state-default
+# emission (Letter 15) and explicit-ERROR action-table entries
+# (Letter 16 / Reply 16).
+lime_aot_enabled = false
+if lime.found() and not get_option('lime_aot').disabled()
+  lime_aot_enabled = true
+endif
+
+# lime_lint test target -- runs `lime -L` over every .lime file in the
+# source tree.  Non-destructive validation: parses the grammar, checks
+# module directives, reports warnings without producing output.  Cheap
+# to run; wired as part of `meson test --suite lime_lint`.
+#
+# lime_format_check test target -- runs `lime -F` over every .lime file
+# and asserts the output is byte-equal to the source.  Catches drift
+# between source and canonical formatting.  Two passes are run because
+# Lime's formatter is not idempotent on its first pass for
+# %left/%right/%nonassoc symbol order (stabilizes after pass 2).
+#
+# Companion `lime-format` compile alias (defined below) reformats every
+# .lime file in place.  Run `meson compile -C build lime-format` after
+# editing a .lime file, then commit the result.
+if lime.found()
+  lime_lint_script = files('src/tools/lime_lint')
+  test('lime_lint',
+    python,
+    args: [
+      lime_lint_script,
+      '--lime', lime.full_path(),
+      '--srcdir', meson.project_source_root(),
+      '--quiet',
+    ],
+    suite: 'lime_lint',
+    timeout: 60,
+  )
+
+  lime_format_check_script = files('src/tools/lime_format_check')
+  test('lime_format_check',
+    python,
+    args: [
+      lime_format_check_script,
+      '--lime', lime.full_path(),
+      '--srcdir', meson.project_source_root(),
+      '--quiet',
+      '--show-diff',
+    ],
+    suite: 'lime_lint',
+    timeout: 60,
+  )
+
+  lime_format_script = files('src/tools/lime_format')
+  run_target('lime-format',
+    command: [
+      python,
+      lime_format_script,
+      '--lime', lime.full_path(),
+      '--srcdir', meson.project_source_root(),
+    ],
+  )
+endif
 
 wget = find_program('wget', required: false, native: true)
 wget_flags = ['-O', '@OUTPUT0@', '--no-use-server-timestamps']

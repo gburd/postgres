@@ -6,26 +6,31 @@ pg_plan_advice_sources = files(
   'pgpa_identifier.c',
   'pgpa_join.c',
   'pgpa_output.c',
+  'pgpa_parser_driver.c',
   'pgpa_planner.c',
   'pgpa_scan.c',
   'pgpa_trove.c',
   'pgpa_walker.c',
 )
 
-pgpa_scanner = custom_target('pgpa_scanner',
-  input: 'pgpa_scanner.l',
-  output: 'pgpa_scanner.c',
-  command: flex_cmd,
+# Lime-generated lexer (replaces pgpa_scanner.l) and parser (replaces
+# pgpa_parser.y).  Both are warning-clean as of Lime v1.5.x, so -- like
+# upstream's flex/bison output -- they are compiled directly into the
+# module rather than isolated.
+pgpa_scanner = custom_target('pgpa_scanner_lex',
+  input: 'pgpa_scanner.lex',
+  output: ['pgpa_scanner_lex.c', 'pgpa_scanner_lex.h'],
+  command: lime_lex_cmd,
 )
-generated_sources += pgpa_scanner
-pg_plan_advice_sources += pgpa_scanner
+generated_sources += pgpa_scanner.to_list()
 
 pgpa_parser = custom_target('pgpa_parser',
-  input: 'pgpa_parser.y',
-  kwargs: bison_kw,
+  input: 'pgpa_parser.lime',
+  kwargs: lime_kw,
 )
 generated_sources += pgpa_parser.to_list()
-pg_plan_advice_sources += pgpa_parser
+
+pg_plan_advice_sources += [pgpa_scanner, pgpa_parser]
 
 if host_system == 'windows'
   pg_plan_advice_sources += rc_lib_gen.process(win32ver_rc, extra_args: [

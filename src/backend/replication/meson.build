@@ -12,38 +12,47 @@ backend_sources += files(
 # see ../parser/meson.build
 repl_parser_sources = []
 
-repl_scanner = custom_target('repl_scanner',
-  input: 'repl_scanner.l',
-  output: 'repl_scanner.c',
-  command: flex_cmd,
-)
-generated_sources += repl_scanner
-repl_parser_sources += repl_scanner
+repl_parser_sources += files('repl_scanner.c')
+repl_parser_sources += files('syncrep_scanner.c')
+
+# Lime-generated grammars and scanners.  All are warning-clean as of
+# Lime v1.5.x, so -- like upstream's bison/flex output -- they are
+# compiled directly into repl_parser below rather than isolated.
 
 repl_gram = custom_target('repl_gram',
-  input: 'repl_gram.y',
-  kwargs: bison_kw,
+  input: 'repl_gram.lime',
+  kwargs: lime_kw,
 )
 generated_sources += repl_gram.to_list()
-repl_parser_sources += repl_gram
-
-syncrep_scanner = custom_target('syncrep_scanner',
-  input: 'syncrep_scanner.l',
-  output: 'syncrep_scanner.c',
-  command: flex_cmd,
-)
-generated_sources += syncrep_scanner
-repl_parser_sources += syncrep_scanner
 
 syncrep_gram = custom_target('syncrep_gram',
-  input: 'syncrep_gram.y',
-  kwargs: bison_kw,
+  input: 'syncrep_gram.lime',
+  kwargs: lime_kw,
 )
 generated_sources += syncrep_gram.to_list()
-repl_parser_sources += syncrep_gram
+
+# syncrep_scanner.c / repl_scanner.c are now parser-driver shims around
+# the generated *LexFeedBytes entry points.
+syncrep_scanner = custom_target('syncrep_scanner_lex',
+  input: 'syncrep_scanner.lex',
+  output: ['syncrep_scanner_lex.c', 'syncrep_scanner_lex.h'],
+  command: lime_lex_cmd,
+)
+generated_sources += syncrep_scanner.to_list()
+
+repl_scanner = custom_target('repl_scanner_lex',
+  input: 'repl_scanner.lex',
+  output: ['repl_scanner_lex.c', 'repl_scanner_lex.h'],
+  command: lime_lex_cmd,
+)
+generated_sources += repl_scanner.to_list()
 
 repl_parser = static_library('repl_parser',
   repl_parser_sources,
+  repl_gram,
+  syncrep_gram,
+  repl_scanner,
+  syncrep_scanner,
   dependencies: [backend_code],
   include_directories: include_directories('.'),
   kwargs: internal_lib_args,

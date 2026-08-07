@@ -24,11 +24,120 @@
 #include "gramparse.h"
 #include "mb/pg_wchar.h"
 #include "parser/parser.h"
+#include "parser/parser_extension.h"
 #include "parser/scansup.h"
 
 static bool check_uescapechar(unsigned char escape);
 static char *str_udeescape(const char *str, char escape,
 						   int position, core_yyscan_t yyscanner);
+
+/*
+ * Indirection used by raw_parser() to dispatch to either the
+ * statically-linked base_yyparse() (the default) or a base_yyparse
+ * symbol resolved via dlsym() out of a dynamically-rebuilt parser .so
+ * produced by the Phase 4 subprocess pipeline.
+ *
+ * parser_extension.c owns the swap: when a grammar extension registers
+ * and the parser lock is taken, the rebuild path stores its dlopen'd
+ * base_yyparse in this slot.  Until that happens we run the in-binary
+ * parser with zero overhead beyond an indirect call.
+ */
+int			(*base_yyparse_fn) (core_yyscan_t yyscanner) = base_yyparse;
+
+/*
+ * Track B push-parse driver (parser_pushparse.c).  Kept in a separate
+ * TU so Lime's runtime headers stay off this file's include path.
+ *
+ * raw_parser_lime_active() reports whether a composed grammar snapshot
+ * (base + registered extensions) is installed; when it is, raw_parser
+ * drives the Lime push parser so extension rules and keywords take
+ * effect.  With no extension loaded it returns false and raw_parser uses
+ * the in-binary static parser with zero added cost.
+ *
+ * The PG_LIME_PUSHPARSE environment variable forces the push path even
+ * with no extension active (used to A/B the push parser against the pull
+ * parser on plain SQL).
+ */
+extern bool raw_parser_lime_pushparse(core_yyscan_t yyscanner,
+									  base_yy_extra_type *yyextra,
+									  List **result);
+extern bool raw_parser_lime_active(void);
+extern bool pg_grammar_dialect_select(const char *name);
+
+/*
+ * grammar_dialect GUC.  Selects which loaded grammar dialect this session
+ * parses with (see guc_parameters.dat).  The string is validated in
+ * check_grammar_dialect and applied per-parse in raw_parser via
+ * pg_grammar_dialect_select.
+ */
+char	   *grammar_dialect_string = NULL;
+
+bool
+check_grammar_dialect(char **newval, void **extra, GucSource source)
+{
+	const char *val = *newval;
+
+	/*
+	 * Empty / "all" / "none" are always valid.  A specific dialect name is
+	 * valid only if a grammar extension registered under that name; but the
+	 * extensions register at postmaster start (shared_preload_libraries
+	 * _PG_init) and this GUC is PGC_USERSET (set per session, after start),
+	 * so the registered set is known by the time a client assigns it.  Reject
+	 * an unknown dialect so a typo surfaces at SET time rather than silently
+	 * parsing base SQL.  Before the parser is composed (e.g. a value in
+	 * postgresql.conf read very early) we cannot check, so accept and let the
+	 * per-parse selection fall back to base.
+	 */
+	if (val == NULL || val[0] == '\0' ||
+		strcmp(val, "all") == 0 || strcmp(val, "none") == 0)
+		return true;
+
+	/*
+	 * Reject a specific dialect name only when grammar extensions ARE loaded
+	 * (the registry is populated) and none matches -- so a typo surfaces at
+	 * SET time.  When no extension is loaded (registry empty, or the value
+	 * comes from postgresql.conf before preload finishes) we cannot validate;
+	 * accept it and let the per-parse selection fall back to base SQL.
+	 */
+	if (pg_grammar_ext_dialect_count() > 0 &&
+		!pg_grammar_ext_dialect_registered(val))
+	{
+		GUC_check_errdetail("No loaded grammar dialect is named \"%s\".", val);
+		return false;
+	}
+	return true;
+}
+
+void
+assign_grammar_dialect(const char *newval, void *extra)
+{
+	/*
+	 * Selection is applied at each raw_parser() call (the swap point where no
+	 * parse tree yet references a snapshot), so the assign hook only needs to
+	 * publish the value; the GUC machinery stores it into
+	 * grammar_dialect_string for us.
+	 */
+	(void) newval;
+	(void) extra;
+}
+
+/*
+ * PG_LIME_PUSHPARSE forces the push path even with no extension active.
+ * getenv() is not free (it walks environ and, on the profile, showed up
+ * at ~4% of push-path parse time when called per query); read it once.
+ */
+static inline bool
+raw_parser_force_pushparse(void)
+{
+	static int			force = -1;
+
+	if (force < 0)
+		force = (getenv("PG_LIME_PUSHPARSE") != NULL) ? 1 : 0;
+	return force != 0;
+}
+
+#define RAW_PARSER_USE_PUSHPARSE() \
+	(raw_parser_lime_active() || raw_parser_force_pushparse())
 
 
 /*
@@ -44,6 +153,22 @@ raw_parser(const char *str, RawParseMode mode)
 	core_yyscan_t yyscanner;
 	base_yy_extra_type yyextra;
 	int			yyresult;
+
+	/*
+	 * Lock the grammar-extension registry so subsequent
+	 * pg_grammar_ext_register() calls fail.  Idempotent and cheap.
+	 */
+	pg_grammar_ext_lock_parser();
+
+	/*
+	 * Select this session's grammar dialect (from the grammar_dialect GUC)
+	 * before deciding push vs static.  This points reduce dispatch and the
+	 * scanner keyword hook at the chosen dialect's composed snapshot, or at
+	 * base-only for '' / 'all' default vs 'none'.  Done here, at the parse
+	 * boundary, so no in-flight parse tree yet references a snapshot when the
+	 * active dialect changes.  Cheap: a pointer swap plus a short bundle scan.
+	 */
+	pg_grammar_dialect_select(grammar_dialect_string);
 
 	/* initialize the flex scanner */
 	yyscanner = scanner_init(str, &yyextra.core_yy_extra,
@@ -73,8 +198,24 @@ raw_parser(const char *str, RawParseMode mode)
 	/* initialize the bison parser */
 	parser_init(&yyextra);
 
+	/*
+	 * When grammar extensions are active, drive the Lime push parser over
+	 * the composed snapshot so extension rules and keyword overrides take
+	 * effect (running base reduce actions through the host-reduce wrapper).
+	 * With no extension loaded, fall through to the in-binary static parser.
+	 */
+	if (RAW_PARSER_USE_PUSHPARSE())
+	{
+		List	   *pushtree;
+		bool		ok;
+
+		ok = raw_parser_lime_pushparse(yyscanner, &yyextra, &pushtree);
+		scanner_finish(yyscanner);
+		return ok ? pushtree : NIL;
+	}
+
 	/* Parse! */
-	yyresult = base_yyparse(yyscanner);
+	yyresult = (*base_yyparse_fn) (yyscanner);
 
 	/* Clean up (release memory) */
 	scanner_finish(yyscanner);
