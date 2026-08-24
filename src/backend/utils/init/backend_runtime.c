@@ -1049,8 +1049,30 @@ PgRuntimeConfigureThreadedAllocator(bool pooled_protocol)
 
 	if (pooled_protocol)
 	{
+		/*
+		 * Large-allocation policy for the shared carrier address space.  Unlike
+		 * process mode -- where each backend is its own process and glibc's
+		 * mmap-per-large-alloc + munmap-on-free touches only that process's
+		 * private address space -- the carriers share ONE address space, so a
+		 * malloc-heavy query that allocates large blocks (tuplestore / sort /
+		 * hash / large StringInfo) makes glibc mmap+munmap them repeatedly, and
+		 * the kernel mmap_lock + cross-core TLB shootdowns serialize every
+		 * carrier.  Measured on a 192-core box with a CPU-bound query across the
+		 * pooled carriers: the default policy collapsed to ~3.7k tps (vs fork's
+		 * ~51k, 0.07x); disabling the mmap path (M_MMAP_MAX=0, keep large blocks
+		 * in the arena) and raising the trim threshold to 64 MB (retain freed
+		 * blocks for reuse instead of returning them to the OS) lifted it to
+		 * ~68.5k tps -- 18.5x, and 1.34x of fork -- with -S read OLTP unchanged
+		 * (~1.91M tps) and only a bounded RSS increase (+24%: 946->1170 MB).  A
+		 * 64 MB trim beat both the old 128 KB (churn) and an unbounded -1
+		 * (retention overhead).  M_TOP_PAD stays 0 so the retained footprint is
+		 * the arena free-lists, not top-of-heap padding.  Operator env overrides
+		 * still win.
+		 */
+		if (getenv("MALLOC_MMAP_MAX_") == NULL)
+			(void) mallopt(M_MMAP_MAX, 0);
 		if (getenv("MALLOC_TRIM_THRESHOLD_") == NULL)
-			(void) mallopt(M_TRIM_THRESHOLD, 128 * 1024);
+			(void) mallopt(M_TRIM_THRESHOLD, 64 * 1024 * 1024);
 		if (getenv("MALLOC_TOP_PAD_") == NULL)
 			(void) mallopt(M_TOP_PAD, 0);
 	}
