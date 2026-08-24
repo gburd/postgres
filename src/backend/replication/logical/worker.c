@@ -501,7 +501,6 @@ char	   *MySubscriptionConninfo = NULL;
 #define on_commit_wakeup_workers_subids \
 	(PgCurrentLogicalReplicationState()->on_commit_wakeup_workers_subids)
 
-bool		in_remote_transaction = false;
 
 /* fields valid only when processing streamed transaction */
 #define in_streamed_transaction \
