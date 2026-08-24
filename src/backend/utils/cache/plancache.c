@@ -2335,7 +2335,7 @@ PlanCacheRoleCallback(Datum arg, SysCacheIdentifier cacheid, uint32 hashvalue)
 	dlist_iter	iter;
 
 	if (cacheid == DATABASEOID &&
-		hashvalue != cached_db_hash &&
+		hashvalue != PgCurrentUserIdentityState()->cached_db_hash &&
 		hashvalue != 0)
 		return;					/* ignore pg_database changes for other DBs */
 
