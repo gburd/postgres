@@ -3444,6 +3444,7 @@ extern bool PgRuntimeIsPooledProtocol(PgRuntime *runtime);
 extern bool PgRuntimePooledProtocolRequested(void);
 extern int	PgRuntimePooledProtocolCarrierLimit(void);
 extern uint32 PgRuntimePooledProtocolIdleCarrierCount(void);
+extern uint32 PgRuntimePooledProtocolRunnableCount(void);
 extern PgBackendLaunchModel PgRuntimeGetBackendLaunchModel(BackendType backend_type);
 extern bool PgRuntimeShouldThreadBackend(BackendType backend_type);
 extern PgBackendModel PgRuntimeGetExtensionBackendModel(void);
