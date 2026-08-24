@@ -463,7 +463,6 @@ char	   *MySubscriptionConninfo = NULL;
 #define on_commit_wakeup_workers_subids \
 	(PgCurrentLogicalReplicationState()->on_commit_wakeup_workers_subids)
 
-bool		in_remote_transaction = false;
 #define remote_final_lsn \
 	(PgCurrentLogicalReplicationState()->remote_final_lsn)
 
