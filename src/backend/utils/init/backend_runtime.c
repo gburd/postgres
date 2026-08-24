@@ -1437,6 +1437,32 @@ PgRuntimePooledProtocolIdleCarrierCount(void)
 	return idle_carriers;
 }
 
+/*
+ * Number of protocol backends currently RUNNABLE (a parked session whose read
+ * became ready and is waiting for a carrier to resume it).  This is the demand
+ * signal the pooled pool grows against for CPU-bound sessions, which never sit
+ * in the new-connection dispatch queue: they are resumed in place, so
+ * runnable_count -- not queue_length -- reflects how many sessions want a
+ * carrier right now.  Returns 0 off the pooled path.
+ */
+uint32
+PgRuntimePooledProtocolRunnableCount(void)
+{
+	PgProtocolSchedulerState *scheduler;
+	uint32		runnable;
+
+	if (!thread_runtime_initialized ||
+		thread_runtime.kind != PG_RUNTIME_POOLED_PROTOCOL)
+		return 0;
+
+	scheduler = &thread_runtime.protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	runnable = scheduler->runnable_count;
+	SpinLockRelease(&scheduler->lock);
+
+	return runnable;
+}
+
 PgBackendLaunchModel
 PgRuntimeGetBackendLaunchModel(BackendType backend_type)
 {

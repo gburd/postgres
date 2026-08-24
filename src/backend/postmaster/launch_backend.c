@@ -335,6 +335,24 @@ static PG_GLOBAL_RUNTIME bool pooled_protocol_pool_started = false;
  * becoming readable OR new work, with no periodic self-wakeups.
  */
 static PG_GLOBAL_RUNTIME int pooled_protocol_wake_fd = -1;
+/*
+ * Cross-thread pool-grow signal.  A carrier that observes more runnable protocol
+ * backends than there are carriers (the CPU-bound case: sessions are resumed in
+ * place, so they never re-enter the postmaster-side dispatch queue that
+ * maybe_start_carrier_for_work watches) sets pooled_protocol_grow_requested and
+ * wakes the postmaster via pooled_protocol_postmaster_latch.  Carrier threads
+ * MUST NOT create carriers themselves -- pooled_protocol_carrier_count and the
+ * wake-fd/self-pipe setup in start_one_carrier are postmaster-thread-owned and
+ * unsynchronized -- so growth stays on the postmaster thread (ServerLoop calls
+ * backend_pooled_protocol_maybe_grow_for_runnable_demand once per loop).  The
+ * flag is a plain sig_atomic_t: a missed/coalesced set just defers growth to
+ * the next carrier that notices the same demand, and a spurious set makes the
+ * postmaster re-evaluate and no-op.  The latch pointer is captured on the
+ * postmaster thread before any carrier starts (happens-before the carrier that
+ * reads it).
+ */
+static PG_GLOBAL_RUNTIME volatile sig_atomic_t pooled_protocol_grow_requested = false;
+static PG_GLOBAL_RUNTIME Latch *pooled_protocol_postmaster_latch = NULL;
 #endif
 #if defined(__GLIBC__)
 #define BACKEND_THREAD_MALLOC_TRIM_THRESHOLD ((Size) 64 * 1024 * 1024)
@@ -384,6 +402,7 @@ static int	backend_thread_exitstatus(int code);
 static bool backend_pooled_protocol_start_pool(void);
 static bool backend_pooled_protocol_start_one_carrier(void);
 static void backend_pooled_protocol_maybe_start_carrier_for_work(void);
+static void backend_pooled_protocol_maybe_request_grow(void);
 static void backend_pooled_protocol_carrier_entry(void *arg);
 static void backend_pooled_protocol_enqueue(BackendPooledLogicalStart *logical_start);
 static BackendPooledLogicalStart *backend_pooled_protocol_dequeue(void);
@@ -1223,6 +1242,18 @@ postmaster_pooled_protocol_launch(PMChild *pmchild, int child_slot,
 static bool
 backend_pooled_protocol_start_pool(void)
 {
+	/*
+	 * Capture the postmaster's latch here, on the postmaster thread, before any
+	 * carrier exists, so a carrier can wake the postmaster to grow the pool
+	 * (backend_pooled_protocol_maybe_request_grow) without racing its creation.
+	 */
+	if (pooled_protocol_postmaster_latch == NULL)
+	{
+		pooled_protocol_postmaster_latch = MyLatch;
+		if (pooled_protocol_postmaster_latch == NULL)
+			pooled_protocol_postmaster_latch = PgCurrentLocalLatchData();
+	}
+
 	if (pooled_protocol_carrier_count > 0)
 		return true;
 
@@ -1369,10 +1400,15 @@ backend_pooled_protocol_maybe_start_carrier_for_work(void)
 {
 	int			queue_length;
 	uint32		idle_carriers;
+	int			carrier_limit;
+	int			demand_cap;
+	long		ncpus;
 
 	if (!pooled_protocol_pool_started)
 		return;
-	if (pooled_protocol_carrier_count >= PgRuntimePooledProtocolCarrierLimit())
+
+	carrier_limit = PgRuntimePooledProtocolCarrierLimit();
+	if (pooled_protocol_carrier_count >= carrier_limit)
 		return;
 
 	queue_length = backend_pooled_protocol_queue_count();
@@ -1383,7 +1419,162 @@ backend_pooled_protocol_maybe_start_carrier_for_work(void)
 	if ((uint32) queue_length <= idle_carriers)
 		return;
 
-	(void) backend_pooled_protocol_start_one_carrier();
+	/*
+	 * Grow to cover RUNNABLE demand, not just the instantaneous dispatch-queue
+	 * backlog.  The old test grew by one carrier only while queued work
+	 * exceeded idle carriers -- correct for short/IO-bound sessions (each parks
+	 * quickly, so a small pool keeps the queue drained), but it under-grows
+	 * badly for CPU-bound queries: a pure-CPU query has no client-read / IO /
+	 * lock-wait yield boundary, so it MONOPOLIZES its carrier for the whole
+	 * query.  Once N sessions are dispatched onto N busy carriers, the queued
+	 * remainder is not matched by any idle carrier, but the per-connection
+	 * growth call has already stopped arriving (all clients connected), so the
+	 * pool froze small (measured: 15 carriers serialize 192 CPU-bound sessions
+	 * on a 192-core box -> ~12x slower than fork).  Size the pool to the total
+	 * outstanding demand = queued + busy carriers, so each carrier a CPU-bound
+	 * session occupies is backed by a real OS thread, matching the fork model's
+	 * one-thread-per-runnable-backend.
+	 *
+	 * Guardrail (the 2026-07-23 thread-explosion A/B): never exceed the carrier
+	 * limit AND never exceed the core count, so a very-large client burst on a
+	 * modest-core box cannot spin up an unbounded OS-thread pool that makes the
+	 * CFS load-balancer the top CPU consumer.  min(limit, ncpus) is the ceiling;
+	 * the limit is already <= the auto ceiling for carriers=auto.
+	 */
+	ncpus = sysconf(_SC_NPROCESSORS_ONLN);
+	if (ncpus < 1)
+		ncpus = 1;
+	demand_cap = carrier_limit;
+	if (demand_cap > (int) ncpus)
+		demand_cap = (int) ncpus;
+
+	/*
+	 * busy = total - idle.  Target = queued + busy (every runnable unit gets a
+	 * carrier), clamped to demand_cap.  Start carriers one at a time until the
+	 * pool reaches the target or a create fails/limit is hit.  Starting several
+	 * here (vs the old one-per-call) lets a simultaneous connection burst
+	 * converge without waiting for the next connection to trigger growth.
+	 */
+	{
+		int			busy = pooled_protocol_carrier_count - (int) idle_carriers;
+		int			target;
+
+		if (busy < 0)
+			busy = 0;
+		target = queue_length + busy;
+		if (target > demand_cap)
+			target = demand_cap;
+
+		while (pooled_protocol_carrier_count < target)
+		{
+			if (!backend_pooled_protocol_start_one_carrier())
+				break;			/* create failed or hit the limit; stop */
+		}
+	}
+}
+
+/*
+ * Postmaster-thread pool growth against RUNNABLE demand.
+ *
+ * maybe_start_carrier_for_work (above) only fires when NEW sessions sit in the
+ * dispatch queue -- fine for connection bursts, but a steady set of already-
+ * connected CPU-bound sessions is resumed in place and never re-queues, so that
+ * path froze the pool at ~15 carriers while 192 sessions serialized (measured:
+ * ~12x slower than fork).  A carrier that notices runnable > carriers wakes the
+ * postmaster (maybe_request_grow) and ServerLoop calls this once per loop.  It
+ * grows toward min(limit, ncpus) so every runnable session gets a real OS
+ * thread, matching fork's one-thread-per-runnable-backend -- while the
+ * min(.,ncpus) cap holds the line against the 2026-07-23 thread-explosion (an
+ * unbounded OS-thread pool making the CFS load-balancer the top CPU consumer).
+ */
+void
+backend_pooled_protocol_maybe_grow_for_runnable_demand(void)
+{
+#ifdef USE_XTC_CARRIER
+	int			carrier_limit;
+	int			demand_cap;
+	uint32		runnable;
+	int			queue_length;
+	int			target;
+	long		ncpus;
+
+	pooled_protocol_grow_requested = false;	/* consume the request */
+
+	if (!pooled_protocol_pool_started)
+		return;
+
+	carrier_limit = PgRuntimePooledProtocolCarrierLimit();
+	if (pooled_protocol_carrier_count >= carrier_limit)
+		return;
+
+	runnable = PgRuntimePooledProtocolRunnableCount();
+	queue_length = backend_pooled_protocol_queue_count();
+	if (queue_length < 0)
+		queue_length = 0;
+
+	/* Demand = sessions wanting a carrier now (resumable + newly queued). */
+	target = (int) runnable + queue_length;
+	if (target <= pooled_protocol_carrier_count)
+		return;
+
+	ncpus = sysconf(_SC_NPROCESSORS_ONLN);
+	if (ncpus < 1)
+		ncpus = 1;
+	demand_cap = carrier_limit;
+	if (demand_cap > (int) ncpus)
+		demand_cap = (int) ncpus;
+	if (target > demand_cap)
+		target = demand_cap;
+
+	while (pooled_protocol_carrier_count < target)
+	{
+		if (!backend_pooled_protocol_start_one_carrier())
+			break;
+	}
+#endif
+}
+
+/*
+ * Carrier-thread grow request.  Called from the carrier work-pickup loop after
+ * leasing a runnable backend: if there is more runnable/queued demand than
+ * carriers and the pool is below min(limit, ncpus), set the grow flag and wake
+ * the postmaster to create more carriers.  Cheap and lock-free on the hot path
+ * (a bounded compare + one SetLatch only when actually under-provisioned);
+ * carrier threads never create carriers themselves.
+ */
+static void
+backend_pooled_protocol_maybe_request_grow(void)
+{
+#ifdef USE_XTC_CARRIER
+	int			carrier_limit;
+	long		ncpus;
+	int			demand_cap;
+	uint32		runnable;
+
+	if (pooled_protocol_grow_requested)
+		return;					/* already pending; postmaster will handle it */
+
+	carrier_limit = PgRuntimePooledProtocolCarrierLimit();
+	if (pooled_protocol_carrier_count >= carrier_limit)
+		return;
+
+	ncpus = sysconf(_SC_NPROCESSORS_ONLN);
+	if (ncpus < 1)
+		ncpus = 1;
+	demand_cap = carrier_limit;
+	if (demand_cap > (int) ncpus)
+		demand_cap = (int) ncpus;
+	if (pooled_protocol_carrier_count >= demand_cap)
+		return;
+
+	runnable = PgRuntimePooledProtocolRunnableCount();
+	if ((int) runnable <= pooled_protocol_carrier_count)
+		return;					/* enough carriers for the runnable demand */
+
+	pooled_protocol_grow_requested = true;
+	if (pooled_protocol_postmaster_latch != NULL)
+		SetLatch(pooled_protocol_postmaster_latch);
+#endif
 }
 
 /*
@@ -1769,6 +1960,13 @@ backend_pooled_protocol_carrier_entry(void *arg)
 		if (backend != NULL)
 		{
 			xtc_pg_runtime_counter_inc(XTC_PG_RC_SESSIONS_RESUMED);	/* fusion F1 */
+			/*
+			 * We just took one runnable session; if more remain runnable than
+			 * there are carriers, ask the postmaster to grow the pool (CPU-bound
+			 * sessions resume in place and never hit the dispatch-queue growth
+			 * path).  Cheap no-op unless actually under-provisioned.
+			 */
+			backend_pooled_protocol_maybe_request_grow();
 			logical_start =
 				backend_pooled_logical_start_from_backend(backend);
 			backend_pooled_protocol_resume_logical_start(logical_start);
