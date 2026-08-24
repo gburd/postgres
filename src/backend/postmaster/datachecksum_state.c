@@ -919,7 +919,7 @@ WaitForDataChecksumsWorkerState(BackgroundWorkerHandle *handle,
 		if (status == BGWH_STARTED && pidp)
 			*pidp = pid;
 
-		if (abort_requested && !termination_requested)
+		if (DataChecksumsAbortRequested && !termination_requested)
 		{
 			TerminateBackgroundWorker(handle);
 			termination_requested = true;
@@ -1018,7 +1018,7 @@ ProcessDatabase(DataChecksumsWorkerDatabase *db)
 											 WAIT_EVENT_BGWORKER_STARTUP);
 	if (status == BGWH_STOPPED)
 	{
-		if (abort_requested)
+		if (DataChecksumsAbortRequested)
 		{
 			result = DATACHECKSUMSWORKER_ABORTED;
 			goto done;
@@ -1108,7 +1108,7 @@ ProcessDatabase(DataChecksumsWorkerDatabase *db)
 		result = DATACHECKSUMSWORKER_DROPDB;
 
 	CHECK_FOR_LAUNCHER_ABORT_REQUEST();
-	if (abort_requested)
+	if (DataChecksumsAbortRequested)
 		result = DATACHECKSUMSWORKER_ABORTED;
 
 done:
@@ -1441,7 +1441,7 @@ ProcessAllDatabases(void)
 
 	/* Get a list of all databases to process */
 	WaitForAllTransactionsToFinish();
-	if (abort_requested)
+	if (DataChecksumsAbortRequested)
 		return false;
 	DatabaseList = BuildDatabaseList();
 
