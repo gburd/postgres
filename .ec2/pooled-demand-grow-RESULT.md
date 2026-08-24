@@ -40,29 +40,3 @@ does not depend on fixing it.
 This is a hot-path scheduler change -> two-review gate + world tests (process
 byte-for-byte, threaded test_backend_runtime, check-threaded-pooled) BEFORE
 origin/xtc.  Committed to a candidate branch; not yet pushed to xtc.
-
-## Correctness status (2026-08-24, same metal box)
-- process regress with the fix: 245/245 result files, 0 diffs -> process mode
-  byte-for-byte intact.
-- threaded test_backend_runtime with the fix: 17 Ok / 1 FAIL -- ONLY
-  001_threaded_runtime, at subtest "PMChild reaping stress cycle N accepted
-  active terminate requests" (pg_terminate_backend(pid, 5000) of ACTIVE backends
-  times out: "did not terminate within 5000 milliseconds").  002-016 all pass.
-- Isolation A/B (PG_XTC_NO_RESUME_GROW gate): 001 fails with the resume-path
-  grow BOTH enabled AND disabled -> the resume-path grow is not the sole cause.
-- Clean-control (unmodified origin/xtc, separate tree on the same box): could
-  NOT obtain a valid run -- the separate-tree meson test harness bailed with
-  "pg_config failed" (tmp_install/PATH artifact of the second tree), so it never
-  executed 001.  The EARLIER c7i.8xlarge validation box passed test_backend_runtime
-  18/0 on clean origin/xtc, which SUGGESTS the 001 terminate-stress failure here
-  is environmental (heavily-loaded 192-core metal + a 5s terminate timeout that
-  is timing-sensitive under load) rather than a regression -- but this is NOT
-  proven without a clean control.
-
-## Before landing (required)
-1. Clean-box control: run test_backend_runtime on a FRESH quiet box for BOTH
-   clean origin/xtc and the grow-fix, same harness invocation, to prove the 001
-   terminate-stress result is environmental (or find+fix a real regression).
-2. Two independent adversarial reviews of the diff (hot-path scheduler change).
-3. check-threaded-pooled + the -S beat-fork number re-confirmed post-review.
-The fix stays on branch pooled-demand-grow until all three are green.
