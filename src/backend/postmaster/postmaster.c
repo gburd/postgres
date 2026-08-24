@@ -1893,6 +1893,14 @@ ServerLoop(void)
 					(errmsg("terminating threaded server runtime after backend fiber crash")));
 			ExitPostmaster(1);
 		}
+		/*
+		 * Grow the pooled carrier pool toward runnable demand.  A carrier that
+		 * saw more runnable sessions than carriers woke us (SetLatch); creating
+		 * carriers must happen here, on the postmaster thread.  Safe/cheap to
+		 * call unconditionally -- it no-ops unless under-provisioned.
+		 */
+		if (multithreaded && PostmasterThreadCarriersStarted())
+			backend_pooled_protocol_maybe_grow_for_runnable_demand();
 #endif
 
 		nevents = WaitEventSetWait(pm_wait_set,

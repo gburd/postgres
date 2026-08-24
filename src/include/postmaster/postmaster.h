@@ -151,6 +151,7 @@ extern bool PostmasterThreadCarriersStarted(void);
 extern void ThreadedBackendStartupComplete(void);
 #ifdef USE_XTC_CARRIER
 extern bool ReapOrphanedThreadedWorker(BackendType child_type, int min_age_ms);
+extern void backend_pooled_protocol_maybe_grow_for_runnable_demand(void);
 #endif
 extern pid_t postmaster_child_launch(BackendType child_type,
 									 int child_slot,
