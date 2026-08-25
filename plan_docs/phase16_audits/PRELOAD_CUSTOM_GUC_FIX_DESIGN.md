@@ -460,3 +460,193 @@ inert under process mode).
 - Session/local preload (out of scope, in-session): `postinit.c:1367`.
 - Per-session VALUE cell pattern: `PgSessionEnsureExtensionPrivateState`
   `backend_runtime_session.c:2525-2555`; see `CUSTOM_GUC_FIX_DESIGN.md`.
+
+---
+
+## Adversarial review
+
+Reviewer stance: committer, read-only, hunting the fatal flaw before code lands.
+All file:line references verified against the working tree at review time.
+
+### Verdict: **REVISE — option (a) as written is INCOMPLETE.**
+
+The registry-seed correctly delivers the *descriptor* to each session, which
+fixes the "unrecognized configuration parameter" error and makes the extension's
+own behavior correct. But it does **not** deliver a correct per-session *value
+pointer* for `SHOW`/`SET`/`pg_settings`. The design's central correctness claim —
+"For a converted extension that pointer is a per-session-resolving address
+(`&macro_over_PgSessionEnsureExtensionPrivateState`), so
+`PgCurrentOrEarlySessionOwnsPointer` is true → the session boots its own cell" —
+is **false**. It is hand-waved, and the actual code path proves the opposite.
+
+### What `valueAddr` actually is (traced end to end)
+
+`DefineCustomEnumVariable("pg_stat_statements.track", ..., &pgss_track, ...)` is
+called **once, in the postmaster, during preload**
+(`pg_stat_statements.c:509-519`; no show/check/assign hooks — all three trailing
+args are `NULL`, so `SHOW` has no show_hook to dodge through).
+
+`&pgss_track` expands to `&(pgss_session_state()->track)`
+(`pg_stat_statements.c:390`). At preload time `CurrentPgSession == NULL`, so:
+
+- `pgss_session_state()` → `PgSessionEnsureExtensionPrivateState(PGSS_SESSION_STATE_KEY, ...)`
+  (`pg_stat_statements.c:331-338`).
+- With `CurrentPgSession == NULL`, `PgSessionEnsureExtensionPrivateState`
+  takes the `alloc_context = TopMemoryContext` branch and `palloc0(size)` a
+  fresh heap block, appending it to
+  `PgCurrentSessionExtensionModuleState()->private_states`
+  (`backend_runtime_session.c:2525-2555`).
+- `PgCurrentSessionExtensionModuleState()` with `CurrentPgSession == NULL`
+  returns `&early_session_extension_modules`
+  (`backend_runtime_session.c:2487-2491`), i.e. the postmaster thread's early
+  fallback list.
+
+So the value cell is a **`TopMemoryContext` heap block owned by the postmaster's
+early-session private-state list**. `DefineCustomEnumVariable` captures its
+address **once** into `GUC_VARIABLE_ENUM(var)` (`guc.c:6913`, mirror of the BOOL
+capture at `guc.c:6809`). The pointer is captured at registration, never
+re-evaluated per read. The descriptor snapshotted into
+`preload_custom_gucs[]` carries this postmaster-heap address in its
+`state->variable.enumvar`.
+
+### Why the design's ownership branch takes the WRONG arm
+
+The seed (`SeedSessionPreloadCustomGUCs`) does `*var = *tmpl` (copying that
+postmaster-heap `variable` pointer) then branches on
+`PgCurrentOrEarlySessionOwnsPointer(GUCOptionVariablePointer(var))`.
+
+`PgCurrentOrEarlySessionOwnsPointer` is a pure **address-range test**: is `ptr`
+inside `[CurrentPgSession, +sizeof(PgSession))` OR inside
+`[&early_session_fallback, +sizeof(PgSession))`
+(`backend_runtime_session.c:2089-2107`). The captured `valueAddr` is neither —
+it is a heap block reached *through* a `List *` hanging off
+`early_session_fallback.extension_modules`, not a field *inside* the
+`early_session_fallback` struct, and certainly not inside any client
+`CurrentPgSession`.
+
+Therefore `PgCurrentOrEarlySessionOwnsPointer(valueAddr)` returns **FALSE**, and
+the seed takes the `InitializeOneGUCOptionResetMetadata(var)` arm
+(`guc.c:2851-2854` pattern). That function sets only status/source/reset_val and
+**never assigns `variable`** (`guc.c:3147-3187`). Result: every seeded session's
+descriptor keeps `variable == &postmaster_early_session_cell`.
+
+### The concrete corruption
+
+- **Extension behavior (correct):** `pgss_enabled()` → `pgss_track`
+  (`pg_stat_statements.c:394-397`) reads through the macro, which for a live
+  session resolves `pgss_session_state()` to
+  `&CurrentPgSession->extension_modules` (`backend_runtime_session.c:2489-2491`)
+  — a *different, per-session* heap block. So query-tracking behavior is
+  per-session correct. Good.
+- **`SHOW` / `SET` / `pg_settings` (broken):** these read/write the descriptor
+  pointer, not the macro:
+  - `SHOW pg_stat_statements.track` → `ShowGUCOptionInternal` →
+    `config_enum_lookup_by_value(record, *GUC_VARIABLE_ENUM(record))`
+    (`guc.c:7251-7252`) — reads the **postmaster** cell.
+  - `SET pg_stat_statements.track = 'all'` → `do_assign` ENUM arm →
+    `*GUC_VARIABLE_ENUM(record) = newval;` (`guc.c:5820`) — writes the
+    **postmaster** cell, **unguarded**, shared by every session on the carrier.
+
+Net effect after the fix as designed: the "unrecognized parameter" error is
+gone, but `SHOW` reflects a value that never tracks this session's `SET`, and two
+sessions' `SET`s race on one shared word. That is precisely the cross-session
+corruption class this whole effort exists to eliminate — moved from "invisible"
+to "silently wrong," which is worse.
+
+### Root cause of the design gap
+
+Built-in threaded GUCs solve exactly this by **re-deriving** the per-session
+value pointer on every session switch via a registered accessor:
+`RebindSessionGUCVariablePointer` calls `rebind->accessor.<type>_ref()`
+(`guc.c:2895-2911`), driven by the `threaded_accessor` column in
+`guc_parameters.dat`. That accessor is a callback that returns the *current
+session's* cell address.
+
+Custom GUCs have **no such accessor registered**. The registry snapshots a
+static descriptor with a frozen pointer; nothing re-invokes the extension's
+`pgss_session_state()` in the seeding session's context. The design seeds the
+DESCRIPTOR but omits the per-session value-pointer REBIND — the exact half that
+the built-in mechanism centers on. The `*var = *tmpl` copy is not "carrying a
+per-session-resolving address"; it is carrying one frozen postmaster address.
+
+### What the seed must actually do (the missing half)
+
+`*var = *tmpl` copies a stale pointer; the seed must **re-derive** the value
+pointer in the session's context before use. Two workable shapes:
+
+1. **Per-custom accessor in the registry (mirror the built-in mechanism).**
+   Have `DefineCustom*` / `define_custom_variable` record, alongside the
+   descriptor, a `void *(*value_ref)(void)` that re-invokes the extension's
+   per-session accessor. This cannot be captured generically by core — the
+   extension must supply it. So the registry entry needs the extension to pass
+   its accessor (a new `DefineCustom*` parameter or a companion register call),
+   and the seed does `GUC_VARIABLE_<T>(var) = entry->value_ref();` for the
+   current session, exactly like `RebindSessionGUCVariablePointer`
+   (`guc.c:2895-2911`). This makes `SHOW`/`SET` correct and lets the ownership
+   guard become true naturally (the re-derived pointer *is* the per-session
+   cell).
+
+2. **Register a `show_hook` (and route `SET` through per-session storage in the
+   assign_hook) for each affine custom GUC.** `SHOW` prefers `conf->show_hook()`
+   over `*GUC_VARIABLE_*` (`guc.c:7169-7172`, ENUM has no hook path so this only
+   covers BOOL/INT/REAL/STRING; ENUM `track` would still need the accessor
+   approach or a show hook added). This is more per-extension boilerplate and
+   does not fix `SET` writing the shared cell, so it is strictly weaker than (1).
+
+Either way, **core-seed-only cannot be correct**: the correct per-session
+`valueAddr` at seed time can only come from re-invoking the extension's own
+accessor in the current session, and the plain descriptor snapshot does not carry
+one. The design's point (5) hope — "the extension reads via its own macro, so
+GUC set/show hitting the wrong cell only breaks SHOW/SET visibility, not
+behavior" — is **factually right about the mechanism but wrong about being
+acceptable**: SHOW/SET visibility and SET-isolation *are* required behavior
+(pg_settings, `SET LOCAL`, transaction rollback of a `SET`, and the doc's own
+Test-plan step 2 "Two-session SET isolation" all read/write the descriptor
+pointer). A `SET` that silently fails to affect `SHOW`, and races another
+session's word, is not a tolerable partial.
+
+### Additional consequence not covered by the design
+
+The unguarded `*GUC_VARIABLE_ENUM(record) = newval` at `guc.c:5820` (and the
+BOOL/INT/REAL twins at `:5346/:5442/:5538`) will, under the seeded-but-not-rebound
+descriptor, have *every* carrier session writing the single postmaster
+early-session cell. This also corrupts the postmaster's own early-session state
+and any future early-session bring-up that reads it. The companion
+`CUSTOM_GUC_FIX_DESIGN.md` §(a) already flags these numeric writes as unguarded;
+this design must not seed a descriptor whose `variable` points outside the
+current session, or those unguarded writes fire cross-session by construction.
+
+### Required design changes before SHIP
+
+1. Add a per-session value-pointer **rebind** to the seed. The registry entry
+   must carry an extension-supplied accessor (option 1 above), and
+   `SeedSessionPreloadCustomGUCs` must set `GUC_VARIABLE_<T>(var)` from it in the
+   session context — not rely on the frozen `*var = *tmpl` pointer nor on the
+   ownership guard flipping to true on its own.
+2. Update the false claim in §3 option (a) ("`PgCurrentOrEarlySessionOwnsPointer`
+   is true → the session boots its own cell"). As traced, it is FALSE for the
+   converted-extension pattern, because the value cell is a `TopMemoryContext`
+   heap block outside every `PgSession`/`early_session_fallback` struct.
+3. Sequencing: the extension conversion in `CUSTOM_GUC_FIX_DESIGN.md` is
+   necessary but **not sufficient**. That doc makes the *macro read* per-session;
+   it does nothing to re-point the *descriptor* the postmaster froze. Both docs
+   currently assume the other closes the value-pointer gap; neither does. State
+   explicitly which doc owns the accessor-rebind (recommend: this doc, since it
+   owns the registry that must store the accessor).
+4. Test-plan step 2 ("Two-session SET isolation") and step 4 ("config-SET
+   path") will FAIL against option (a) as currently written. Keep them — they are
+   the exact assertions that catch this flaw — but note they gate the rebind, not
+   just the descriptor seed.
+
+### Bottom line
+
+- Descriptor visibility: option (a) fixes it. ✅
+- Extension query-tracking behavior: already correct via the macro. ✅
+- `SHOW`/`SET`/`pg_settings` correctness and cross-session `SET` isolation:
+  **BROKEN** without a per-session value-pointer rebind. ❌
+
+**REVISE.** Add the accessor-driven per-session `variable` rebind to the seed
+(mirroring `RebindSessionGUCVariablePointer`), correct the ownership-guard claim,
+and nail down which doc owns the accessor registration. Do not ship the
+seed-descriptor-only design — it converts an obvious error into a silent
+cross-session data race on `SHOW`/`SET`.
