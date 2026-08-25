@@ -1030,9 +1030,13 @@ PgRuntimeConfigureThreadedAllocator(bool pooled_protocol)
 	 * Scale the cap with the carrier pool (one arena per carrier is enough to
 	 * remove the cross-carrier serialization without glibc's default
 	 * 8*ncpu explosion), with a small floor for the not-yet-sized/thread-per-
-	 * session case.  M_TRIM_THRESHOLD / M_TOP_PAD below still bound the retained
-	 * footprint per arena, so raising the count trades a bounded amount of
-	 * memory for the throughput.  An operator-provided MALLOC_ARENA_MAX wins.
+	 * session case.  Retained memory is held down NOT by the 64MB trim
+	 * threshold alone (that only raises when top-of-heap sbrk-shrinks) but by
+	 * arena free-list REUSE plus two active malloc_trim(0) valves -- idle
+	 * hibernation (postgres.c, pooled_protocol_idle_memory_compaction) and
+	 * teardown reclaim (backend_thread_maybe_malloc_trim, this file's callers)
+	 * -- so total retained ~= arenas * per-session peak working set, a plateau
+	 * bounded by the arena cap, not a ramp.  An operator MALLOC_ARENA_MAX wins.
 	 */
 	int			carriers = pooled_protocol ? PgRuntimePooledProtocolCarrierLimit() : 0;
 	int			arena_max;

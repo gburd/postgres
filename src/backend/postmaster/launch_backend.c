@@ -1558,9 +1558,23 @@ backend_pooled_protocol_maybe_request_grow(void)
 	if (pooled_protocol_carrier_count >= carrier_limit)
 		return;
 
-	ncpus = sysconf(_SC_NPROCESSORS_ONLN);
-	if (ncpus < 1)
-		ncpus = 1;
+	/*
+	 * Cache ncpus once: this runs on every runnable lease while the pool is
+	 * below carrier_limit, and _SC_NPROCESSORS_ONLN is a constant here -- no
+	 * point paying a syscall per resume.  Compute the demand cap and short-
+	 * circuit on the cheap carrier-count compare BEFORE anything else.
+	 */
+	{
+		static long cached_ncpus = 0;
+
+		if (cached_ncpus == 0)
+		{
+			cached_ncpus = sysconf(_SC_NPROCESSORS_ONLN);
+			if (cached_ncpus < 1)
+				cached_ncpus = 1;
+		}
+		ncpus = cached_ncpus;
+	}
 	demand_cap = carrier_limit;
 	if (demand_cap > (int) ncpus)
 		demand_cap = (int) ncpus;
