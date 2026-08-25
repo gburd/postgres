@@ -147,3 +147,41 @@ a pre-existing core-xml-type hazard that owns both the core xml type and xml2.
 - io write fast path: target-kernel A/B confirming pwritev2(RWF_NOWAIT) fires, then land.
 - TLS swap implementation (P0 gates first); plpython Option C implementation.
 - pg_stat_statements marker (branch phase16-contrib-tier2) lands after the preload fix.
+
+## Follow-up round 3 — surfaced-gap designs + io fast path landed
+LANDED on origin/xtc (f4a309609a):
+- io=xtc write fast path (pwritev2 RWF_NOWAIT): reviewed SHIP-WITH-NITS, validated
+  (process regress 245/245 byte-for-byte, io=xtc smoke clean, -N regression closed,
+  fast path confirmed firing on AL2023 kernel 6.1.x).  io=xtc now neutral-or-better
+  across read+write OLTP; io=sync stays default.
+
+DESIGNS PRODUCED (both design-ready, NOT implemented -- correctly gated):
+- preload custom-GUC gap: design + ADVERSARIAL REVIEW.  Review caught a fatal flaw:
+  seeding the descriptor alone is BROKEN (valueAddr is a frozen postmaster-heap
+  pointer -> all sessions' SHOW/SET race one shared cell).  Correct fix needs a NEW
+  extension-supplied per-session value accessor (mirror built-in threaded_accessor +
+  RebindSessionGUCVariablePointer) that the seed rebinds through -- core + a new
+  extension-facing API.  Larger; needs the accessor-API design + two-review gate.
+  Recorded in PRELOAD_CUSTOM_GUC_FIX_DESIGN.md.  pg_stat_statements marker stays HELD.
+- libxml error handler: design.  Finding DE-ESCALATES the concern: libxml error
+  globals are THREAD-LOCAL not process-global; with cooperative + preemption-off +
+  pinned fibers + NO yield between pg_xml_init/done, xml2 is SAFE TODAY (implicit
+  invariant).  Durable fix = per-context handlers (xmlCtxtSetErrorHandler, libxml2
+  >=2.13) version-gated in shared pg_xml_init/done (hardens core xml + xml2); libxslt
+  error globals flagged as a sibling to audit.  Recorded in
+  LIBXML_ERROR_HANDLER_THREADED_DESIGN.md.
+
+## Remaining follow-ups (updated)
+- preload custom-GUC: design the extension accessor-registration API, then implement
+  core seed+rebind (unblocks pg_stat_statements + all preloaded-module GUCs).
+- libxml: implement per-context handlers (version-gated) + audit libxslt, then mark xml2
+  (or mark xml2 now with the documented no-yield invariant guarded -- lower-risk interim).
+- TLS swap implementation (design done, P0 gates first); plpython Option C.
+- pg_stat_statements marker (branch phase16-contrib-tier2) lands after preload fix.
+
+## Landed this whole session (origin/xtc summary)
+libxtc v1.35.2->v1.37.0; pooled demand-grow (-S parity/beats fork); malloc policy
+(CPU-bound 1.53x fork); io=xtc read+write fast paths; review-gate F1/F2 fixups; 9
+contrib AFFINE markers (7 stateless + auto_explain + postgres_fdw); TLS + 2 GUC/libxml
+fix designs; 3 threaded-mode findings root-caused (livelock-was-misdiagnosis, malloc,
+preload-GUC gap).  All EC2 verified-clean, no leaks.
