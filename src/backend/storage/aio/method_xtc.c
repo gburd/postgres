@@ -62,7 +62,7 @@
  * async park path, where yielding the carrier is actually worth the wake cost.
  */
 #if defined(RWF_NOWAIT)
-#define XTC_AIO_HAVE_NOWAIT_READ 1
+#define XTC_AIO_HAVE_NOWAIT 1
 #endif
 
 static bool pgaio_xtc_needs_synchronous_execution(PgAioHandle *ioh);
@@ -132,7 +132,7 @@ pgaio_xtc_submit(uint16 num_staged_ios, PgAioHandle **staged_ios)
 		 */
 		pgaio_io_prepare_submit(ioh);
 
-#ifdef XTC_AIO_HAVE_NOWAIT_READ
+#ifdef XTC_AIO_HAVE_NOWAIT
 		/*
 		 * Cached-read fast path.  For a READV, first try preadv2(RWF_NOWAIT):
 		 * a plain synchronous syscall that returns immediately from the OS page
@@ -158,6 +158,38 @@ pgaio_xtc_submit(uint16 num_staged_ios, PgAioHandle **staged_ios)
 			{
 				/* fully served from cache -- no park, no futex */
 				ioh->result = (int) got;
+				pgaio_io_process_completion(ioh, ioh->result);
+				continue;
+			}
+			/* EAGAIN / short / error -> fall through to the park path */
+		}
+
+		/*
+		 * Non-blocking-write fast path.  For a WRITEV, try pwritev2(RWF_NOWAIT):
+		 * when the write can be absorbed immediately (dirtying page-cache pages
+		 * with no synchronous stable-storage pressure) it returns the byte count
+		 * with NO fiber park -- avoiding the per-write carrier-scheduler wake
+		 * that made io=xtc regress writes ~36% vs io=sync.  Only when the kernel
+		 * would block (RWF_NOWAIT -> -EAGAIN, e.g. under dirty-page/O_DIRECT
+		 * backpressure) do we fall through to the async park path, where
+		 * yielding the carrier is worth the wake.  Mirrors the read fast path;
+		 * fiber-transparent (no switch), so no current-work save/restore.
+		 */
+		if ((PgAioOp) ioh->op == PGAIO_OP_WRITEV)
+		{
+			ssize_t		want = 0;
+			ssize_t		put;
+
+			for (int k = 0; k < ioh->op_data.write.iov_length; k++)
+				want += iov[k].iov_len;
+
+			put = pwritev2(ioh->op_data.write.fd, iov,
+						   ioh->op_data.write.iov_length,
+						   (int64) ioh->op_data.write.offset, RWF_NOWAIT);
+			if (put == want)
+			{
+				/* fully absorbed without blocking -- no park, no futex */
+				ioh->result = (int) put;
 				pgaio_io_process_completion(ioh, ioh->result);
 				continue;
 			}
