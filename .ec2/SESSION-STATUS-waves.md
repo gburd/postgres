@@ -73,3 +73,19 @@ Recommendation: keep io=sync default for now; retire the stale futex-storm warni
   critical + large -> design-first, implement carefully MYSELF later, not fanned out.
 - Two adversarial reviews dispatched: demand-grow scheduler (LANDED), and
   malloc-policy + io-write-fastpath.
+
+## Review gate + fixups — DONE
+Two adversarial committer-grade reviews of the Wave-1 perf + io changes: both
+SHIP-WITH-NITS.  Confirmed: RSS bounded (no runaway); io write short-write
+fall-through is correct idempotent positional re-write (not a double-write).
+Actioned nits (commit 2661d776f8 on xtc):
+ - F1 (MEDIUM): gate resume-path grow on pmState==PM_RUN && Shutdown==NoShutdown
+   (was spawning carriers during shutdown -- the 001 reaping-stress surface).
+ - F2: cache ncpus in maybe_request_grow (was sysconf per lease).
+ - malloc-retention comment corrected.
+ - io branch: buffered pwritev2(RWF_NOWAIT) kernel-caveat comment (58ec94db6d).
+Validated on chiuso c7i.8xlarge (cassert): process regress 245/245 0-diffs;
+test_backend_runtime 0 actual failures across 2 runs (run1 had only the known
+015 load-flake TIMEOUT; 001 PASSED BOTH RUNS -- confirming 001 was the metal-load
+flake, and F1 is neutral-to-helpful); threaded smoke clean, FAST_STOP rc=0.
+Landing review-fixups + TLS design doc to origin/xtc.
