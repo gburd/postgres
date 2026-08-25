@@ -89,3 +89,30 @@ test_backend_runtime 0 actual failures across 2 runs (run1 had only the known
 015 load-flake TIMEOUT; 001 PASSED BOTH RUNS -- confirming 001 was the metal-load
 flake, and F1 is neutral-to-helpful); threaded smoke clean, FAST_STOP rc=0.
 Landing review-fixups + TLS design doc to origin/xtc.
+
+## Follow-up session (continued) — Phase 16 contrib + custom-GUC design
+LANDED on origin/xtc (9148d89b19):
+- 8 contrib extensions marked POOLED_PROTOCOL_AFFINE (file_fdw, lo,
+  pg_freespacemap, pg_visibility, pg_buffercache, sslinfo, pg_logicalinspect,
+  auto_explain).  Validated: test_extensions PASS; all load under mt=on;
+  auto_explain per-session GUC isolated (333ms in its own session).
+- Review-gate fixups (F1 shutdown guard + F2 + comments) LANDED + validated
+  earlier (b0f9952b4e).
+- TLS swap design doc landed (unblocked by v1.37).
+
+Custom-GUC bug — CORRECTED understanding (independent design review,
+plan_docs/phase16_audits/CUSTOM_GUC_FIX_DESIGN.md): NOT a guc.c change; STRING's
+guard is a red herring.  The fix is per-extension: redefine GUC globals as macros
+over PgSessionEnsureExtensionPrivateState cells + pass &cell to DefineCustom*.
+auto_explain already done (hence markable).  pg_stat_statements + postgres_fdw
+need this conversion before they can be marked (deferred).
+
+Branches: phase16-contrib-tier1 (landed), io-xtc-write-fastpath (pending kernel
+A/B), phase16-audit, pooled-demand-grow (landed via cherry-pick).
+
+## Remaining follow-ups
+- pg_stat_statements + postgres_fdw per-session GUC conversion, then mark.
+- xml2 libxml threaded-safety confirmation, then mark.
+- io write fast path: target-kernel A/B confirming pwritev2(RWF_NOWAIT) fires, then land.
+- TLS swap implementation (P0 gates first).
+- plpython Option C implementation.
