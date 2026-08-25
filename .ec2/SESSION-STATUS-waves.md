@@ -62,3 +62,14 @@ Recommendation: keep io=sync default for now; retire the stale futex-storm warni
 - Phase 16 implementation (custom-GUC valueAddr fix first -- real correctness bug).
 - Wave 4: TLS hook (check v1.37 for SNI/transport), Phase 17 deep-waits, Phase 19
   Inc-4, xtc_preempt experiment (low priority -- malloc fix already beats fork).
+
+## Wave 4 groundwork
+- **TLS swap UNBLOCKED by v1.37**: xtc_tls.h now has xtc_tls_ctx_set_sni_cb (SNI
+  ClientHello context selection) + xtc_tls_create_transport (BIO-like custom
+  transport) -- the two hooks the be_tls_*->xtc_tls_* swap was blocked on.
+  Dispatched a read-only design agent to map the swap (be_tls_* surface in
+  be-secure-openssl.c ~2598 lines <-> xtc_tls API; the crux is PG's
+  be_tls_read/write *waitfor non-blocking-retry vs xtc_tls fiber-park).  Security-
+  critical + large -> design-first, implement carefully MYSELF later, not fanned out.
+- Two adversarial reviews dispatched: demand-grow scheduler (LANDED), and
+  malloc-policy + io-write-fastpath.
