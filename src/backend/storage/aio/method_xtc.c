@@ -174,6 +174,17 @@ pgaio_xtc_submit(uint16 num_staged_ios, PgAioHandle **staged_ios)
 		 * backpressure) do we fall through to the async park path, where
 		 * yielding the carrier is worth the wake.  Mirrors the read fast path;
 		 * fiber-transparent (no switch), so no current-work save/restore.
+		 *
+		 * Kernel-behavior caveat: buffered (non-O_DIRECT) pwritev2(RWF_NOWAIT)
+		 * landed later and is less uniform than the read side -- on some kernels
+		 * a buffered write may ALWAYS return -EAGAIN (never taking this fast
+		 * path) rather than buffering.  That is not a correctness issue (we fall
+		 * through to the parking xtc_aio_pwritev, which re-issues the FULL write
+		 * from the original offset -- idempotent positional I/O, no double-write
+		 * or torn durable state; durability is still deferred to fsync exactly as
+		 * io=sync), but it means the write win may silently not materialize on
+		 * such kernels.  Confirm the fast path actually fires (A/B) on the target
+		 * kernel before relying on it.
 		 */
 		if ((PgAioOp) ioh->op == PGAIO_OP_WRITEV)
 		{
