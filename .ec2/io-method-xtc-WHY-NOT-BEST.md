@@ -67,3 +67,15 @@ Retire/annotate the stale "io_method=xtc futex-storms OLTP" claim in
 plan_docs/XTC_AIO_DESIGN.md and the session summaries -- it was true pre-fixes,
 false now.  io=xtc reads are neutral-or-better; only writes regress, and that has
 a clear fix (pwritev2 NOWAIT).
+
+## UPDATE: write fast path (pwritev2 RWF_NOWAIT) A/B result (2026-08-25)
+Added the symmetric write fast path and re-measured -N c192 (sb=8GB, 2 runs):
+  io=sync:                    56,512 / 56,651
+  io=xtc + write fast path:   51,957 / 60,006   (was 47,208 = -36% before the fix)
+The -36% write regression is CLOSED -- io=xtc is now at parity with sync on -N
+(within run-to-run noise; run 2 beat sync).  Combined with reads (neutral/+5.6%),
+io=xtc is now neutral-or-better across cached-read, cold-read, and write OLTP.
+Change on branch io-xtc-write-fastpath (a0503e0537); pending two reviews + a
+wider A/B (more runs, mixed tpcb) before landing.  KEEP io=sync as the documented
+default until the review, but the "io=xtc regresses writes / futex-storms OLTP"
+warning is now obsolete.
