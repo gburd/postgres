@@ -116,3 +116,34 @@ A/B), phase16-audit, pooled-demand-grow (landed via cherry-pick).
 - io write fast path: target-kernel A/B confirming pwritev2(RWF_NOWAIT) fires, then land.
 - TLS swap implementation (P0 gates first).
 - plpython Option C implementation.
+
+## Follow-up round 2 — Phase 16 tier-2 + a real preload finding
+LANDED on origin/xtc:
+- postgres_fdw marked AFFINE (395c53a8a6): fully per-session-converted
+  (application_name GUC + whole connection cache); validated under mt=on --
+  loopback FDW scan=100, pushdown=10, 0 crashes.
+- Re-audit found pg_stat_statements + postgres_fdw were BOTH already fully
+  per-session-converted (the earlier 'defer' used an incomplete heuristic).
+
+NEW FINDING (real threaded-mode gap, c05fc28255,
+.ec2/preload-custom-guc-threaded-gap.md): shared_preload_libraries custom GUCs are
+INVISIBLE per-session under multithreaded=on.  Measured A/B: pg_stat_statements.track
+resolves mt=off, errors 'unrecognized configuration parameter' mt=on, though the
+module IS dlopen'd in the postmaster.  Root cause (analysis): custom GUCs live in a
+per-session guc_hashtab; a preload module's _PG_init registers them in the postmaster
+hashtab, inherited by forked backends but NOT by fresh per-session threaded hashtabs.
+Core-runtime fix needed (seed/share preload custom-GUC registry into per-session GUC
+state) -- design-first.  Consequence: pg_stat_statements marker is correct but can't be
+validated until this is fixed -> HELD on branch phase16-contrib-tier2.
+
+xml2: stays PROCESS (defer-with-invariant) -- pg_xml_init installs a process-global
+libxml error handler (xmlSetStructuredErrorFunc) with no cross-carrier serialization;
+a pre-existing core-xml-type hazard that owns both the core xml type and xml2.
+
+## Remaining follow-ups (updated)
+- CORE: fix the preload-custom-GUC-per-session gap (unblocks pg_stat_statements +
+  any preloaded-module GUCs under threading) -- design-first, core runtime.
+- CORE: make the libxml error handler session-safe (unblocks xml2 + hardens core xml).
+- io write fast path: target-kernel A/B confirming pwritev2(RWF_NOWAIT) fires, then land.
+- TLS swap implementation (P0 gates first); plpython Option C implementation.
+- pg_stat_statements marker (branch phase16-contrib-tier2) lands after the preload fix.
