@@ -58,7 +58,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "postgres_fdw",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
 /* Default CPU cost to start up a foreign query. */
