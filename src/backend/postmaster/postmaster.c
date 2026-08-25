@@ -1896,10 +1896,19 @@ ServerLoop(void)
 		/*
 		 * Grow the pooled carrier pool toward runnable demand.  A carrier that
 		 * saw more runnable sessions than carriers woke us (SetLatch); creating
-		 * carriers must happen here, on the postmaster thread.  Safe/cheap to
-		 * call unconditionally -- it no-ops unless under-provisioned.
+		 * carriers must happen here, on the postmaster thread.
+		 *
+		 * Only while accepting work (pmState == PM_RUN, Shutdown == NoShutdown).
+		 * During shutdown/crash the carriers are draining runnable backends to
+		 * proc_exit, and each lease still nudges the grow flag; spawning NEW
+		 * carriers then would grow the PMChild population the reaper is racing to
+		 * shrink and touch the self-pipe/scheduler machinery while teardown may be
+		 * tearing it down.  The pre-existing enqueue-path growth already freezes
+		 * at shutdown because new connections are refused (canAcceptConnections
+		 * -> CAC_SHUTDOWN); gate this new resume-path growth the same way.
 		 */
-		if (multithreaded && PostmasterThreadCarriersStarted())
+		if (multithreaded && PostmasterThreadCarriersStarted() &&
+			pmState == PM_RUN && Shutdown == NoShutdown)
 			backend_pooled_protocol_maybe_grow_for_runnable_demand();
 #endif
 
