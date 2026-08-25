@@ -35,7 +35,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "pg_buffercache",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
 /*
