@@ -40,3 +40,25 @@ N -- true io_uring-style) fixes it.  Measuring on EC2.
 ## Owed follow-ups
 - Two adversarial reviews of the Wave-1 perf diff (demand-grow + malloc policy).
 - Phase 16 implementation waves (custom-GUC fix first -- it's a real correctness bug).
+
+## Wave 2 — io_method=xtc investigation: DONE (branch io-xtc-write-fastpath d762ee45ed)
+Finding (.ec2/io-method-xtc-WHY-NOT-BEST.md): the old "io=xtc futex-storms OLTP"
+is STALE.  Measured on v1.37+perf tree (192-core):
+  cached -S: io=xtc 2,023k vs sync 1,915k (+5.6%, futex ~0%)
+  write -N:  io=xtc 47k vs sync 64k (-36%)  <- the real weakness (per-write park,
+             no fast path; only READV had preadv2(RWF_NOWAIT))
+  cold -S:   parity (~4,800 both)
+Root: method_xtc is issuer-synchronous (one fiber park per IO); xtc_aio has no
+batched submit/reap; PG OLTP issues 1 IO/ReadBuffer so no batch to amortize.
+FIX built + measured: added pwritev2(RWF_NOWAIT) write fast path (mirror the read
+one).  -N recovered to parity: io=xtc 52k/60k vs sync 56k/57k -- the -36%
+regression CLOSED.  io=xtc now neutral-or-better across cached-read/cold-read/write.
+Branch io-xtc-write-fastpath pending two reviews + wider A/B before landing.
+Recommendation: keep io=sync default for now; retire the stale futex-storm warning.
+
+## Owed follow-ups (updated)
+- Two adversarial reviews of: (a) Wave-1 perf diff (demand-grow + malloc policy,
+  LANDED on xtc), (b) io write fast path (branch io-xtc-write-fastpath).
+- Phase 16 implementation (custom-GUC valueAddr fix first -- real correctness bug).
+- Wave 4: TLS hook (check v1.37 for SNI/transport), Phase 17 deep-waits, Phase 19
+  Inc-4, xtc_preempt experiment (low priority -- malloc fix already beats fork).
