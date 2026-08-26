@@ -318,6 +318,17 @@ struct config_generic
 	const char *long_desc;		/* long desc. of this variable's purpose */
 	int			flags;			/* flag bits, see guc.h */
 	enum config_type vartype;	/* type of variable */
+	/*
+	 * Per-session value accessor for a threaded CUSTOM GUC (constant after
+	 * registration).  NULL/false for built-ins (they use
+	 * ThreadedSessionGUCRebinds[]) and for custom GUCs that registered none.
+	 * Set once during shared_preload_libraries processing via
+	 * RegisterCustomGUCSessionAccessor*(); the per-session seed
+	 * (SeedPreloadCustomGUCs) rebinds the live value pointer through it,
+	 * exactly like RebindSessionGUCVariablePointer does for built-ins.
+	 */
+	ThreadedSessionGUCVariableAccessor session_accessor;
+	bool		has_session_accessor;
 	config_generic_state *state; /* per-session mutable state; NULL for
 								 * built-ins, which use the current session's
 								 * state array */

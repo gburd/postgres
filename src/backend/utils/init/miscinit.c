@@ -1901,6 +1901,17 @@ process_shared_preload_libraries(void)
 				   false);
 	process_shared_preload_libraries_in_progress = false;
 	process_shared_preload_libraries_done = true;
+
+	/*
+	 * Under multithreaded=on, preloaded modules' custom GUCs were registered
+	 * into the postmaster's per-session guc_hashtab, which threaded client
+	 * sessions do NOT inherit (they rebuild from ConfigureNames[] and never
+	 * re-run the modules' _PG_init).  Snapshot those custom descriptors into a
+	 * shared registry so each session can seed + per-session-rebind them
+	 * (SeedPreloadCustomGUCs).  No-op in process mode (fork inherits the
+	 * hashtab).
+	 */
+	SnapshotPreloadCustomGUCs();
 }
 
 /*
