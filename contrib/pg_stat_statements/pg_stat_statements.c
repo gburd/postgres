@@ -74,8 +74,7 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "pg_stat_statements",
-					.version = PG_VERSION,
-					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
+					.version = PG_VERSION
 );
 
 /* Location of permanent stats file (valid when database is shut down) */
