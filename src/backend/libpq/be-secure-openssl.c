@@ -150,6 +150,21 @@ static PG_GLOBAL_RUNTIME SSL_CTX *SSL_context = NULL;
  */
 static PG_GLOBAL_RUNTIME xtc_tls_ctx_t *xtc_tls_context = NULL;
 static PG_GLOBAL_RUNTIME bool xtc_tls_open_enabled = false;
+/*
+ * Retired-context list (SIGHUP reload safety).  xtc_tls_ctx_t is NOT refcounted
+ * (unlike OpenSSL's SSL_CTX, which each SSL pins), and per-connection xtc_tls_t
+ * objects created from a ctx dereference it (t->ctx) in the introspection path.
+ * A reload that rebuilt the ctx and freed the old one in place would be a
+ * use-after-free for any carrier fiber still holding an xtc_tls_t from the old
+ * ctx (postmaster and carriers share the address space).  So on rebuild we do
+ * NOT free the old ctx; we retire it here and never free it.
+ *
+ * ponytail: bounded leak -- one retired ctx per `ssl` reload that overlapped a
+ * live TLS connection; reloads are rare and a ctx is small.  Upgrade path: add
+ * refcounting / epoch retirement (drain at connection close) if a workload
+ * reloads SSL often enough for this to matter.
+ */
+static PG_GLOBAL_RUNTIME List *xtc_tls_retired_contexts = NIL;
 static void build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 								  int ssl_ver_max, bool isServerStart);
 #endif
@@ -619,7 +634,7 @@ be_tls_init(bool isServerStart)
 	 * (built above) governs whether TLS works at all, so this cannot regress a
 	 * server that was going to accept TLS.
 	 */
-	if (!ssl_sni && new_hosts->default_host != NULL)
+	if (!ssl_sni && new_hosts->default_host != NULL && multithreaded)
 		build_xtc_tls_context(new_hosts->default_host, ssl_ver_min, ssl_ver_max,
 							  isServerStart);
 #endif
@@ -2761,22 +2776,22 @@ build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 	xtc_tls_ctx_t *ctx = NULL;
 	int			rc;
 
-	/* Rebuild is idempotent: drop any previous ctx first (reload path). */
-	if (xtc_tls_context != NULL)
-	{
-		xtc_tls_ctx_destroy(xtc_tls_context);
-		xtc_tls_context = NULL;
-	}
-	xtc_tls_open_enabled = false;
-
 	/*
 	 * ponytail: encrypted-key configs pin to OpenSSL (P7 fallback).  A
 	 * passphrase callback that shells out to ssl_passphrase_command is P7 work;
-	 * until then, if a passphrase command is configured we simply don't build
-	 * the xtc ctx and the fiber path uses OpenSSL, which already handles it.
+	 * until then, if a passphrase command is configured we don't build the xtc
+	 * ctx and the fiber path uses OpenSSL, which already handles it.
 	 */
 	if (ssl_passphrase_command && ssl_passphrase_command[0] != '\0')
+	{
+		/* Retire (do not free) any prior ctx; then disable the xtc path. */
+		if (xtc_tls_context != NULL)
+			xtc_tls_retired_contexts = lappend(xtc_tls_retired_contexts,
+											   xtc_tls_context);
+		xtc_tls_context = NULL;
+		xtc_tls_open_enabled = false;
 		return;
+	}
 
 	memset(&opts, 0, sizeof(opts));
 	opts.cert_file = default_host->ssl_cert;
@@ -2790,6 +2805,12 @@ build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 	opts.groups = (SSLECDHCurve && SSLECDHCurve[0]) ? SSLECDHCurve : NULL;
 	opts.min_version = (ssl_ver_min > 0) ? ssl_ver_min : 0;
 	opts.max_version = (ssl_ver_max > 0) ? ssl_ver_max : 0;
+	/*
+	 * ALPN: advertise "postgresql" so direct-SSL (sslnegotiation=direct)
+	 * connections, which REQUIRE ALPN (backend_startup.c ProcessSSLStartup),
+	 * negotiate it.  Wire encoding: 1-byte length prefix + name.
+	 */
+	opts.alpn_protos = "\x0a" "postgresql";
 
 	rc = xtc_tls_ctx_create(XTC_TLS_SERVER, &opts, &ctx);
 	if (rc != XTC_OK || ctx == NULL)
@@ -2798,14 +2819,27 @@ build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 		 * Non-fatal: OpenSSL already validated the same cert/key above (we only
 		 * reach here after SSL_context is built), so a server that can serve
 		 * TLS keeps serving it via OpenSSL on the fiber path.  Log so an
-		 * operator can see the fast path was declined.
+		 * operator can see the fast path was declined.  Retire any prior ctx.
 		 */
 		ereport(LOG,
 				(errmsg("could not build xtc TLS context (rc=%d); TLS fibers will use OpenSSL",
 						rc)));
+		if (xtc_tls_context != NULL)
+			xtc_tls_retired_contexts = lappend(xtc_tls_retired_contexts,
+											   xtc_tls_context);
+		xtc_tls_context = NULL;
+		xtc_tls_open_enabled = false;
 		return;
 	}
 
+	/*
+	 * Publish the new ctx, then retire (never free -- see the retired-contexts
+	 * note) the old one.  A live carrier fiber may still hold an xtc_tls_t from
+	 * the old ctx and dereference t->ctx; freeing it here would be a UAF.
+	 */
+	if (xtc_tls_context != NULL)
+		xtc_tls_retired_contexts = lappend(xtc_tls_retired_contexts,
+										   xtc_tls_context);
 	xtc_tls_context = ctx;
 	/*
 	 * P3: the transport/read/write/close path is now wired, so enable the
@@ -2814,9 +2848,52 @@ build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 	xtc_tls_open_enabled = true;
 }
 
+/*
+ * Custom-transport callbacks for the fiber TLS path.  xtc_tls drives the wire
+ * through these (BIO-like), NOT through the raw fd, so that PG's raw_buf
+ * pushback (the ClientHello bytes secure_open_server already drained off the
+ * socket, e.g. for direct-SSL / pipelined clients) is consumed FIRST.  Using
+ * the fd path here would strand raw_buf and hang/break those connections.
+ *
+ * Contract (xtc_tls.h): read_cb returns >0 bytes, 0 = clean EOF, XTC_E_AGAIN =
+ * would-block, other negative = hard error.  secure_raw_read/secure_raw_write
+ * return >0, 0 (EOF on read), or -1 with errno (EWOULDBLOCK/EAGAIN = would
+ * block); map that onto the xtc contract.  userdata is the Port.
+ */
+static int
+xtc_tls_transport_read_cb(void *userdata, void *buf, size_t len)
+{
+	Port	   *port = (Port *) userdata;
+	ssize_t		n;
+
+	n = secure_raw_read(port, buf, len);
+	if (n > 0)
+		return (int) n;
+	if (n == 0)
+		return 0;				/* clean EOF */
+	if (errno == EWOULDBLOCK || errno == EAGAIN || errno == EINTR)
+		return XTC_E_AGAIN;
+	return XTC_E_IO;				/* hard error */
+}
+
+static int
+xtc_tls_transport_write_cb(void *userdata, const void *buf, size_t len)
+{
+	Port	   *port = (Port *) userdata;
+	ssize_t		n;
+
+	n = secure_raw_write(port, buf, len);
+	if (n > 0)
+		return (int) n;
+	if (errno == EWOULDBLOCK || errno == EAGAIN || errno == EINTR)
+		return XTC_E_AGAIN;
+	return XTC_E_IO;				/* hard error (n<=0 non-blocking) */
+}
+
 static int
 be_tls_open_server_xtc(Port *port)
 {
+	xtc_tls_transport_t transport;
 	xtc_tls_t  *tls = NULL;
 	int			rc;
 
@@ -2825,11 +2902,17 @@ be_tls_open_server_xtc(Port *port)
 	Assert(port->xtc_tls == NULL);
 	Assert(xtc_tls_context != NULL);
 
+	transport.read_cb = xtc_tls_transport_read_cb;
+	transport.write_cb = xtc_tls_transport_write_cb;
+	transport.userdata = port;
+
 	/*
-	 * Wrap the (non-blocking) client socket in an xtc TLS state machine.  fd
-	 * ownership stays with the Port (xtc_tls_destroy does not close it).
+	 * Wrap the connection in an xtc TLS state machine via the CUSTOM TRANSPORT
+	 * (not the fd path), so every wire byte flows through secure_raw_read/write
+	 * -- which drain port->raw_buf first.  The Port owns the socket; xtc_tls
+	 * neither reads the fd directly nor closes anything on destroy.
 	 */
-	rc = xtc_tls_create(xtc_tls_context, port->sock, &tls);
+	rc = xtc_tls_create_transport(xtc_tls_context, &transport, &tls);
 	if (rc != XTC_OK || tls == NULL)
 	{
 		ereport(COMMERROR,
@@ -2880,15 +2963,28 @@ be_tls_open_server_xtc(Port *port)
 	}
 
 	/*
-	 * Handshake complete.  P3 does not yet extract a client certificate
-	 * (peer_cn/peer_dn/peer_cert_valid) or ALPN -- that is P5.  Leave them
-	 * cleared so downstream auth (hba, SCRAM) behaves exactly as an
-	 * OpenSSL connection with no client cert would.
+	 * Handshake complete.  Wire ALPN so direct-SSL connections (which require
+	 * port->alpn_used, backend_startup.c ProcessSSLStartup) are accepted, exactly
+	 * as the OpenSSL body does from SSL_get0_alpn_selected.  Client-certificate
+	 * extraction (peer_cn/peer_dn/peer_cert_valid) stays deferred to P5, so those
+	 * remain cleared -- downstream auth (hba, SCRAM) then behaves like an OpenSSL
+	 * connection that presented no client cert.
 	 */
 	port->peer_cn = NULL;
 	port->peer_dn = NULL;
 	port->peer_cert_valid = false;
+
 	port->alpn_used = false;
+	{
+		const unsigned char *selected = NULL;
+		unsigned int	len = 0;
+
+		if (xtc_tls_get_alpn_selected(tls, &selected, &len) == XTC_OK &&
+			selected != NULL &&
+			len == strlen(PG_ALPN_PROTOCOL) &&
+			memcmp(selected, PG_ALPN_PROTOCOL, strlen(PG_ALPN_PROTOCOL)) == 0)
+			port->alpn_used = true;
+	}
 
 	return 0;
 }
@@ -2996,12 +3092,11 @@ be_tls_get_cipher_xtc(Port *port)
 }
 
 /*
- * Peer-certificate + cert-hash getters.  P3 does not extract a client cert
- * (that is P5) and full peer-DN / SCRAM channel-binding parity is P4, so these
- * return the "no certificate" answers for now: safe empties rather than the P1
- * FATAL, so an unexpected probe on a P3 connection (which never has a peer cert
- * yet) degrades gracefully instead of crashing the backend.  P4 replaces them
- * with xtc_tls_get_peer_* / xtc_tls_get_server_cert_hash + R3/R9 handling.
+ * Peer-certificate getters.  P3/P4 do not yet extract a client cert (that is
+ * P5), so these return the "no certificate" answers: safe empties.  The
+ * certificate-hash getter (SCRAM channel binding, below) IS implemented -- it
+ * hashes the SERVER cert, which exists regardless of client-cert verify.  P5
+ * replaces the peer_* getters with xtc_tls_get_peer_* + R3 (DN format) handling.
  */
 static void
 be_tls_get_peer_subject_name_xtc(Port *port, char *ptr, size_t len)
@@ -3027,13 +3122,34 @@ be_tls_get_peer_serial_xtc(Port *port, char *ptr, size_t len)
 		ptr[0] = '\0';
 }
 
+/*
+ * SCRAM channel binding (tls-server-end-point): the hash of the SERVER's
+ * certificate.  xtc_tls_get_server_cert_hash implements RFC 5929 identically to
+ * be_tls_get_certificate_hash (cert signature-alg digest, MD5/SHA-1 upgraded to
+ * SHA-256, SHA-256 fallback), so a SCRAM-SHA-256-PLUS exchange over the xtc path
+ * gets the same binding OpenSSL would produce.  Returning a real hash (not the
+ * P1 empty) is REQUIRED: the server advertises SCRAM-PLUS whenever ssl_in_use,
+ * and the default libpq client selects it, so an empty hash would fail every
+ * default TLS+password auth (fail-closed but broken).
+ */
 static char *
 be_tls_get_certificate_hash_xtc(Port *port, size_t *len)
 {
-	/* P4: SCRAM channel binding.  No hash available yet -> like no cert. */
-	(void) port;
+	unsigned char hash[EVP_MAX_MD_SIZE];
+	size_t		hash_len = 0;
+	char	   *cert_hash;
+	int			rc;
+
 	*len = 0;
-	return NULL;
+	rc = xtc_tls_get_server_cert_hash((xtc_tls_t *) port->xtc_tls,
+									  hash, sizeof(hash), &hash_len);
+	if (rc != XTC_OK || hash_len == 0)
+		return NULL;			/* no cert / unsupported -> no channel binding */
+
+	cert_hash = palloc(hash_len);
+	memcpy(cert_hash, hash, hash_len);
+	*len = hash_len;
+	return cert_hash;
 }
 
 #endif							/* USE_XTC_CARRIER */
