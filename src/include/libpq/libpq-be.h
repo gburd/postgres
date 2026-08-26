@@ -242,6 +242,17 @@ typedef struct Port
 #endif
 
 	/*
+	 * xtc TLS transport.  Non-NULL only on the fiber TLS path (set once by
+	 * be_tls_open_server under xtc_in_backend_fiber when the xtc stack is used);
+	 * NULL for OpenSSL and all process-mode connections.  Typed as void * here
+	 * (cast to xtc_tls_t * in be-secure-openssl.c) and stored UNCONDITIONALLY so
+	 * the Port struct offsets are identical across process/threaded builds.
+	 * be_tls_read/write/close and the be_tls_get_* introspection getters
+	 * dispatch on (xtc_tls != NULL) -- see MULTITHREADED_TLS_XTC_DESIGN.md (e).
+	 */
+	void	   *xtc_tls;
+
+	/*
 	 * This is a bit of a hack. raw_buf is data that was previously read and
 	 * buffered in a higher layer but then "unread" and needs to be read again
 	 * while establishing an SSL connection via the SSL library layer.
