@@ -185,3 +185,30 @@ libxtc v1.35.2->v1.37.0; pooled demand-grow (-S parity/beats fork); malloc polic
 contrib AFFINE markers (7 stateless + auto_explain + postgres_fdw); TLS + 2 GUC/libxml
 fix designs; 3 threaded-mode findings root-caused (livelock-was-misdiagnosis, malloc,
 preload-GUC gap).  All EC2 verified-clean, no leaks.
+
+## Follow-up round 4 — agent team fan-out (4 designs) + xml2 LANDED
+Dispatched 4 parallel read-only design/audit agents; all delivered:
+- TLS P0 gates CONFIRMED from libxtc v1.37 source (yield-free AGAIN mode; clean EOF
+  = XTC_OK n==0) -> TLS swap design implementation-ready, retry-mode correct.
+- Preload-custom-GUC accessor API design (corrected, self-consistent): option (b)
+  RegisterCustomGUCSessionAccessor*, reuses existing accessor union, core seed rebinds
+  per session like RebindSessionGUCVariablePointer; no-accessor session GUC fail-closed.
+- libxslt audit: xml2's only global hazard = per-call xsltCleanupGlobals(); error
+  globals only-read.
+- plpython Option C plan (corrected): real work is GIL (PyGILState_Ensure/Release per
+  entry), not PyThreadState re-stamp; move 2 exec-stack heads + GD per-session.
+
+LANDED on origin/xtc (b35b60cb08) -- xml2 threaded-safe + AFFINE, validated:
+- xml.c XtcPgNoStealEnter/Leave tripwire on pg_xml_init/done (enforce no-yield invariant)
+- xslt_proc.c skip xsltCleanupGlobals() under mt=on (cross-carrier libxslt-registry race)
+- xpath.c mark xml2 AFFINE
+- Validated: process regress 245/245 byte-for-byte, xml2 process regression PASS,
+  concurrent xslt_process x8 clean (all HELLO, 0 crashes/asserts), NoSteal tripwire 0-fired.
+- 4 implementation-ready designs committed (b9c6f5e4a3).
+
+## Remaining follow-ups (updated)
+- IMPLEMENT preload-custom-GUC accessor API + core seed/rebind (design ready+reviewed)
+  -> unblocks pg_stat_statements marker (branch phase16-contrib-tier2).
+- IMPLEMENT TLS be_tls_*->xtc_tls_* swap (design + P0 gates confirmed; P1 onward).
+- IMPLEMENT plpython Option C (GIL PyGILState per entry + 2 stack heads + GD per-session).
+- Durable libxml/libxslt per-context error handlers (drop the implicit no-yield reliance).
