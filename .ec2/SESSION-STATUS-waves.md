@@ -237,3 +237,26 @@ extension-shmem-under-threading + fix size.  pgss AFFINE lands after this.
 - IMPLEMENT TLS be_tls_*->xtc_tls_* swap (design + P0 gates confirmed; ready).
 - IMPLEMENT plpython Option C (GIL PyGILState per entry + 2 exec-stack heads + GD).
 - Durable libxml/libxslt per-context error handlers (drop implicit no-yield reliance).
+
+## Follow-up round 6 — pg_stat_statements FULLY threaded (chain closed)
+LANDED on origin/xtc (342f813a52): pgss shmem fix + AFFINE marker.
+ - Fix (a): pgss/pgss_hash moved from pgss_runtime_state() to plain PG_GLOBAL_SHMEM
+   statics (process-wide singletons set once by shmem_startup; the runtime-scoping
+   stranded them in the early-fallback runtime, invisible to carrier sessions).
+ - Validated: pgss view rows>0 under mt=on (was 'must be loaded' error), tracked query
+   calls>=1, reset works, session-GUC isolation PASS, 245/245 byte-for-byte, 0 crashes.
+CHAIN CLOSED: preload-GUC gap -> accessor API (2-review gate) -> pgss session GUCs
+-> pgss shmem fix -> pg_stat_statements fully functional + AFFINE under multithreaded=on.
+
+Contrib AFFINE now: the 7 stateless + auto_explain + postgres_fdw + xml2 + pg_stat_statements.
+
+## Remaining follow-ups
+- IMPLEMENT TLS be_tls_*->xtc_tls_* swap (design + P0 gates confirmed; largest ready item).
+- IMPLEMENT plpython Option C (GIL PyGILState per entry + 2 exec-stack heads + GD; design ready).
+- Durable libxml/libxslt per-context error handlers (xmlCtxtSetErrorHandler >=2.13 +
+  xsltSetTransformErrorFunc) -- drop the implicit no-yield reliance (currently guarded
+  by the XtcPgNoStealEnter/Leave tripwire).
+- General extension-shmem-under-threading fix (c): core adopts early extension-module
+  state into the threaded runtime (only needed if a future extension's shmem_startup
+  stashes state in PgRuntimeEnsureExtensionPrivateState; pgss used the small local fix).
+- Phase 16 broader contrib sweep; sanitizers/stress; Phase 17/19 deep-wait items.
