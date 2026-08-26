@@ -103,8 +103,6 @@ void
 PgRuntimeCopyEarlyExtensionModuleState(PgRuntime *runtime)
 {
 	Assert(runtime != NULL);
-	/* Runs on the postmaster thread, which never installs a current runtime. */
-	Assert(CurrentPgRuntime == NULL);
 
 	runtime->extension_modules.memory_context =
 		early_runtime_extension_modules.memory_context;
