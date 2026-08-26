@@ -91,6 +91,7 @@
 #include "libpq/pqformat.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
+#include "postmaster/pg_xtc_carrier.h"	/* XtcPgNoStealEnter/Leave (no-op off-carrier/non-assert) */
 #include "nodes/execnodes.h"
 #include "nodes/miscnodes.h"
 #include "nodes/nodeFuncs.h"
@@ -1318,6 +1319,22 @@ pg_xml_init(PgXmlStrictness strictness)
 	errcxt->saved_entityfunc = xmlGetExternalEntityLoader();
 	xmlSetExternalEntityLoader(xmlPgEntityLoader);
 
+	/*
+	 * Threaded-runtime tripwire: libxml's structured-error handler and entity
+	 * loader we just installed are OS-thread-local (per carrier), and this
+	 * pg_xml_init/pg_xml_done span holds them across libxml work.  If a future
+	 * change ever introduces a fiber yield inside that span, a cooperative
+	 * switch (or a work-steal after a park) could run a sibling session on this
+	 * carrier -- or resume us on a different carrier -- with the wrong handler
+	 * installed.  Bracket the span with XtcPgNoStealEnter: in assert carrier
+	 * builds the park choke points assert the affine depth is zero, so such a
+	 * yield trips the instant it becomes reachable.  Paired with the
+	 * XtcPgNoStealLeave at the end of pg_xml_done (every pg_xml_init has a
+	 * matching pg_xml_done on both normal and error paths).  No-op in process /
+	 * non-carrier / non-assert builds -- byte-for-byte unchanged.
+	 */
+	XtcPgNoStealEnter();
+
 	return errcxt;
 }
 
@@ -1373,6 +1390,9 @@ pg_xml_done(PgXmlErrorContext *errcxt, bool isError)
 	/* Release memory */
 	pfree(errcxt->err_buf.data);
 	pfree(errcxt);
+
+	/* Close the no-steal tripwire span opened in pg_xml_init (see there). */
+	XtcPgNoStealLeave();
 }
 
 
