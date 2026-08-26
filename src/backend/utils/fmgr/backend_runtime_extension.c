@@ -72,6 +72,53 @@ PgRuntimeEnsureExtensionModuleMemoryContext(PgRuntimeExtensionModuleState *exten
 	return extension_modules->memory_context;
 }
 
+/*
+ * Copy the early-runtime extension-module state into `runtime` WITHOUT resetting
+ * early (unlike PgRuntimeAdoptEarlyExtensionModuleState, which moves-and-resets).
+ *
+ * Used by the postmaster when it builds thread_runtime for the carrier pool:
+ * shared_preload_libraries modules ran their _PG_init (and shmem_startup) with
+ * CurrentPgRuntime == NULL, so their runtime-scoped private state landed in
+ * early_runtime_extension_modules.  In the postmaster InitializePgProcessRuntime
+ * never runs (that is a backend path), so process_runtime.extension_modules is
+ * empty; copying it into thread_runtime would strand the preload modules' state
+ * in `early`, invisible to carrier sessions (the pg_stat_statements-view-under-
+ * mt=on class of bug).  Copy from `early` instead.
+ *
+ * COPY, not move: a process-fallback backend forks from this postmaster and
+ * re-runs InitializePgProcessRuntime, which adopts the (COW-inherited) early
+ * state; if we reset early here, that fallback path would lose it.  The copied
+ * private_state structs and list cells are process-lifetime (early's
+ * memory_context lives in TopMemoryContext), and carriers share this address
+ * space, so referencing the same memory_context + a fresh list_copy in it is
+ * correct and race-free (the postmaster populates single-threaded before any
+ * carrier reads).
+ */
+void
+PgRuntimeCopyEarlyExtensionModuleState(PgRuntime *runtime)
+{
+	Assert(runtime != NULL);
+
+	runtime->extension_modules.memory_context =
+		early_runtime_extension_modules.memory_context;
+	runtime->extension_modules.rendezvous_hash =
+		early_runtime_extension_modules.rendezvous_hash;
+
+	if (early_runtime_extension_modules.private_states != NIL)
+	{
+		MemoryContext cxt =
+			early_runtime_extension_modules.memory_context != NULL ?
+			early_runtime_extension_modules.memory_context : TopMemoryContext;
+		MemoryContext old = MemoryContextSwitchTo(cxt);
+
+		runtime->extension_modules.private_states =
+			list_copy(early_runtime_extension_modules.private_states);
+		MemoryContextSwitchTo(old);
+	}
+	else
+		runtime->extension_modules.private_states = NIL;
+}
+
 void
 PgRuntimeAdoptEarlyExtensionModuleState(PgRuntime *runtime)
 {
