@@ -3139,6 +3139,16 @@ be_tls_get_peer_serial_xtc(Port *port, char *ptr, size_t len)
  * P1 empty) is REQUIRED: the server advertises SCRAM-PLUS whenever ssl_in_use,
  * and the default libpq client selects it, so an empty hash would fail every
  * default TLS+password auth (fail-closed but broken).
+ *
+ * ponytail: RSA-PSS server certs diverge.  PG's OpenSSL getter prefers
+ * X509_get_signature_info (which resolves RSA-PSS to its real digest); libxtc
+ * derives the digest via OBJ_find_sigid_algs, which cannot see through an
+ * RSA-PSS sig -> the binding hash could differ from an OpenSSL server's ->
+ * SCRAM-PLUS failure for an RSA-PSS-signed server cert on the xtc path.  RSA/
+ * ECDSA-SHA256 (the common case + all TAP certs) are unaffected (both -> the
+ * same SHA-256).  Upgrade path: teach libxtc to use X509_get_signature_info, or
+ * pin RSA-PSS server certs to OpenSSL in build_xtc_tls_context (needs cert
+ * parsing at init).  Tracked for P4/P5.
  */
 static char *
 be_tls_get_certificate_hash_xtc(Port *port, size_t *len)
