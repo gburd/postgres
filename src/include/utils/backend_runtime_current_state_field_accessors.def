@@ -136,6 +136,8 @@
 	(&PgCurrentSessionExtensionModuleState()->plpython_execution_contexts)
 #define PgCurrentPLpythonExplicitSubxactsRef() \
 	(&PgCurrentSessionExtensionModuleState()->plpython_explicit_subxacts)
+#define PgCurrentPLpythonGDRef() \
+	(&PgCurrentSessionExtensionModuleState()->plpython_gd)
 #define PgCurrentPLperlMemoryContextRef() \
 	(&PgCurrentSessionExtensionModuleState()->plperl_memory_context)
 #define PgCurrentPLperlInitedRef() \

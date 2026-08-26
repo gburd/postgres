@@ -15,6 +15,7 @@
 #include "plpy_exec.h"
 #include "plpy_main.h"
 #include "plpy_procedure.h"
+#include "utils/backend_runtime.h"
 #include "plpy_util.h"
 #include "utils/builtins.h"
 #include "utils/funccache.h"
@@ -32,6 +33,29 @@ static void PLy_compile_callback(FunctionCallInfo fcinfo,
 								 bool forValidator);
 static void PLy_delete_callback(CachedFunction *cfunc);
 static void RemovePLyProcedureCache(void *arg);
+
+/*
+ * Return this session's GD dict, creating it lazily on first use.  GD is
+ * documented session-global (shared by all functions in a session); under the
+ * threaded affine model each session owns its own GD so concurrent sessions on
+ * a shared carrier do not clobber one another.  Must be called with the GIL
+ * held (all PL entry points hold it -- see plpython3_call_handler).  Py_DECREF'd
+ * at session reset (plpython_session_reset_callback).
+ */
+static PyObject *
+PLy_session_gd(void)
+{
+	PyObject  **gdref = (PyObject **) PgCurrentPLpythonGDRef();
+
+	if (*gdref == NULL)
+	{
+		PLy_ensure_session_reset_callback();	/* register before the GD exists */
+		*gdref = PyDict_New();
+		if (*gdref == NULL)
+			PLy_elog(ERROR, NULL);
+	}
+	return *gdref;
+}
 
 
 /*
@@ -366,6 +390,16 @@ PLy_procedure_compile(PLyProcedure *proc, const char *src)
 	PyObject   *code0;
 
 	proc->globals = PyDict_Copy(PLy_interp_globals);
+	if (proc->globals == NULL)
+		PLy_elog(ERROR, NULL);
+
+	/*
+	 * PyDict_Copy is shallow, so proc->globals["GD"] still references the ONE
+	 * process-global GD template dict from _PG_init.  Overwrite it with THIS
+	 * session's GD so GD is session-global, not process-global (SetItemString
+	 * INCREFs the session GD and DECREFs the previously-referenced template GD).
+	 */
+	PyDict_SetItemString(proc->globals, "GD", PLy_session_gd());
 
 	/*
 	 * SD is private preserved data between calls. GD is global data shared by

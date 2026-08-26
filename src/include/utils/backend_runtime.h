@@ -1893,6 +1893,7 @@ typedef struct PgSessionExtensionModuleState
 	/* PL/Python per-session Option C affine state (see plpy_main.c) */
 	void	   *plpython_execution_contexts;	/* PLyExecutionContext * stack head */
 	List	   *plpython_explicit_subxacts;	/* explicit subxact stack head */
+	void	   *plpython_gd;				/* PyObject * session-global GD dict (lazy) */
 	MemoryContext plperl_memory_context;
 	bool		plperl_inited;
 	void	   *plperl_interp_hash;
