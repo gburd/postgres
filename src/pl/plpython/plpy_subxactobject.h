@@ -7,10 +7,17 @@
 
 #include "nodes/pg_list.h"
 #include "plpython.h"
+#include "utils/backend_runtime.h"
 #include "utils/resowner.h"
 
-/* a list of nested explicit subtransactions */
-extern List *explicit_subtransactions;
+/*
+ * A list of nested explicit subtransactions.  Option C (threaded affine): this
+ * is per-session state (aliased over the backend_runtime accessor); each session
+ * gets its own NIL-initialized stack head, so concurrent sessions interleaving
+ * on a carrier do not share it.  A plain per-session indirection in process mode.
+ */
+#define explicit_subtransactions \
+	(*PgCurrentPLpythonExplicitSubxactsRef())
 
 
 typedef struct PLySubtransactionObject

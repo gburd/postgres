@@ -12,8 +12,6 @@
 #include "plpy_util.h"
 #include "utils/memutils.h"
 
-List	   *explicit_subtransactions = NIL;
-
 
 static PyObject *PLy_subtransaction_enter(PyObject *self, PyObject *unused);
 static PyObject *PLy_subtransaction_exit(PyObject *self, PyObject *args);
