@@ -329,3 +329,30 @@ an ssl-cert box.  Design doc has the confirmed v1.37 xtc_tls server API + the fu
 GUC->xtc_tls_opts_t map; P2 (ctx build in be_tls_init) is the precise next step.
 #4 remains a multi-session security-critical effort (P4 = SCRAM channel-binding cert
 hash) needing per-phase 2-review + src/test/ssl TAP; not rushed into one commit.
+
+## Round 9 — #4 TLS P1+P2+P3 LANDED (through 2-review + re-review gate)
+origin/xtc = 57743cdad3.  The be_tls_* -> xtc_tls_* swap, phases P1-P3:
+- P1: Port xtc_tls field + 10-site dispatch skeleton (was branch-only; now live).
+- P2: be_tls_init builds a parallel xtc_tls server ctx from GUCs (gated `multithreaded`).
+- P3: fiber TLS served by xtc_tls via CUSTOM TRANSPORT (secure_raw_read/write -> raw_buf
+  drained), handshake parks through WaitLatchOrSocket, read/write AGAIN-retry mapped to
+  *waitfor, ALPN "postgresql", version/cipher/bits + SCRAM cert-hash getters.
+Two adversarial reviews returned BLOCK -> fixed 5 findings (fd-path/raw_buf -> transport;
+direct-SSL ALPN; SCRAM cert-hash NULL -> real hash; reload UAF -> retire-list; process-
+mode invariance -> mt guard) + a self-caught duplicate-function build bug; check-threaded-
+ssl then exposed client-cert/SNI regressions -> defer-with-invariant pins (ssl_ca/ssl_sni/
+passphrase connections stay on OpenSSL-on-fiber until P5/P6/P7).  Re-review: SHIP-WITH-NITS
+(one documented RSA-PSS cert-hash nit, tracked P4/P5).
+Validated: process + threaded check-threaded-ssl (001_ssltests/002_scram/004_sni) PASS;
+process regress 245/245 0-diffs; mt=on TLS smoke (pg_stat_ssl TLSv1.3, 8 concurrent,
+reconnect, plain fallthrough, bad-cert FATAL) clean.  P3 activation surface = server-auth-
+only TLS (the common SCRAM/password-over-TLS case).
+
+## Remaining TLS phases (P4-P8, later focused efforts)
+- P4: peer-cert introspection (subject/issuer/serial DN) + RSA-PSS cert-hash parity.
+- P5: client-cert verify (verify_peer_mode + CA store + peer_cn/dn) + ALPN detail;
+  un-pin ssl_ca configs.
+- P6: SNI (per-host ClientHello ctx selection); un-pin ssl_sni.
+- P7: ssl_dh_params_file / openssl_tls_init_hook / encrypted-key passphrase fallbacks.
+- P8: relax SNI no-migrate.
+- Retired-ctx bounded-leak -> refcount/epoch retirement if reloads become frequent.
