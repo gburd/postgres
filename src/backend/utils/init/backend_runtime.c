@@ -1113,8 +1113,10 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 		 * postmaster never ran InitializePgProcessRuntime, so
 		 * process_runtime.extension_modules is empty here.  Copy from early (not
 		 * from the empty process_runtime, and not a move -- a forked
-		 * process-fallback backend still needs to adopt the COW-inherited early
-		 * state).  Without this, such state is stranded in early and invisible to
+		 * process-fallback backend rebuilds its own early state after fork+exec
+		 * (it does not COW-inherit this postmaster's), so copy-vs-move here has
+		 * no effect on it; we copy because it is idempotent and nothing else in
+		 * the postmaster consumes early).  Without this, such state is stranded in early and invisible to
 		 * carrier sessions under mt=on.
 		 */
 		PgRuntimeCopyEarlyExtensionModuleState(&thread_runtime);
