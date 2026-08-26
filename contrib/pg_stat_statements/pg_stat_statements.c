@@ -74,7 +74,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "pg_stat_statements",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
 /* Location of permanent stats file (valid when database is shut down) */
@@ -291,8 +292,6 @@ typedef struct PgStatStatementsRuntimeState
 	ExecutorFinish_hook_type prev_ExecutorFinish;
 	ExecutorEnd_hook_type prev_ExecutorEnd;
 	ProcessUtility_hook_type prev_ProcessUtility;
-	pgssSharedState *shared_state;
-	HTAB	   *hash;
 } PgStatStatementsRuntimeState;
 
 typedef struct PgStatStatementsSessionState
@@ -307,6 +306,22 @@ typedef struct PgStatStatementsExecutionState
 {
 	int			nesting_level;
 } PgStatStatementsExecutionState;
+
+/*
+ * Pointers to the process-wide shared-memory state, set once by
+ * pgss_shmem_startup (via the RegisterShmemCallbacks .ptr wiring below).  These
+ * are genuine process-wide singletons (one shmem area per cluster), NOT
+ * per-session/per-runtime state -- carrier threads share this address space, so
+ * a plain PG_GLOBAL_SHMEM static is correct and (unlike a per-runtime cell) is
+ * visible to every session.  They were briefly moved into
+ * PgStatStatementsRuntimeState, which stranded them in the early-fallback
+ * runtime that shmem_startup runs under, invisible to client sessions under
+ * multithreaded=on (the pg_stat_statements view then errored "must be loaded via
+ * shared_preload_libraries"); moving them back fixes that.  The mt-safe
+ * invariant: set once at postmaster startup, never mutated per session.
+ */
+static PG_GLOBAL_SHMEM pgssSharedState *pgss = NULL;
+static PG_GLOBAL_SHMEM HTAB *pgss_hash = NULL;
 
 static PgStatStatementsRuntimeState *
 pgss_runtime_state(void)
@@ -385,8 +400,6 @@ static const struct config_enum_entry track_options[] =
 
 #define pgss_max (pgss_runtime_state()->max)
 #define pgss_save (pgss_runtime_state()->save)
-#define pgss (pgss_runtime_state()->shared_state)
-#define pgss_hash (pgss_runtime_state()->hash)
 #define pgss_track (pgss_session_state()->track)
 #define pgss_track_utility (pgss_session_state()->track_utility)
 #define pgss_track_planning (pgss_session_state()->track_planning)
