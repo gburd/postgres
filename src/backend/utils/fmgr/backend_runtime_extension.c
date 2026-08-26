@@ -85,19 +85,26 @@ PgRuntimeEnsureExtensionModuleMemoryContext(PgRuntimeExtensionModuleState *exten
  * in `early`, invisible to carrier sessions (the pg_stat_statements-view-under-
  * mt=on class of bug).  Copy from `early` instead.
  *
- * COPY, not move: a process-fallback backend forks from this postmaster and
- * re-runs InitializePgProcessRuntime, which adopts the (COW-inherited) early
- * state; if we reset early here, that fallback path would lose it.  The copied
- * private_state structs and list cells are process-lifetime (early's
- * memory_context lives in TopMemoryContext), and carriers share this address
- * space, so referencing the same memory_context + a fresh list_copy in it is
- * correct and race-free (the postmaster populates single-threaded before any
- * carrier reads).
+ * COPY, not move: a process-fallback backend is started via fork+exec
+ * (internal_forkexec -> SubPostmasterMain), so it does NOT COW-inherit the
+ * postmaster's `early`; it re-runs process_shared_preload_libraries and rebuilds
+ * its own `early` from scratch, then InitializePgProcessRuntime moves that.  So
+ * copy-vs-move in the postmaster has no effect on the fallback child.  We COPY
+ * simply because it is idempotent and nothing else in the postmaster consumes
+ * `early` -- there is no reason to destroy it (a move would be pointless churn
+ * and would break any future in-process re-adoption).  The copied private_state
+ * structs + list cells are process-lifetime (early's memory_context lives in
+ * TopMemoryContext), and the postmaster populates `early` fully during preload
+ * (single-threaded, before ServerLoop) and never mutates it again, so the
+ * shallow list_copy + shared memory_context is race-free for the carriers that
+ * read thread_runtime.
  */
 void
 PgRuntimeCopyEarlyExtensionModuleState(PgRuntime *runtime)
 {
 	Assert(runtime != NULL);
+	/* Runs on the postmaster thread, which never installs a current runtime. */
+	Assert(CurrentPgRuntime == NULL);
 
 	runtime->extension_modules.memory_context =
 		early_runtime_extension_modules.memory_context;
