@@ -73,12 +73,24 @@ static bool plpython_gil_initialized = false;
 
 #define plpython_reset_registered (*PgCurrentPLpythonResetRegisteredRef())
 
+/* this doesn't need to be global; use PLy_current_execution_context() */
+/*
+ * Option C (threaded affine): the exec-context stack head is per-session.  The
+ * frames themselves already live in TopTransactionContext/PortalContext (both
+ * per-session), so only the head pointer needs relocating.  Aliased over the
+ * backend_runtime per-session accessor; a no-op indirection in process mode.
+ */
+#define PLy_execution_contexts \
+	(*(PLyExecutionContext **) PgCurrentPLpythonExecutionContextsRef())
+
 /*
  * Session reset: drop this session's Python state.  Registered lazily on first
  * PL/Python touch (PLy_ensure_session_reset_callback).  Runs at session
  * teardown, BEFORE the transaction/portal memory contexts that hold the
  * exec-context and subxact-cell frames are destroyed, so we only null the heads
  * (the frames free with their contexts).  Takes the GIL to DECREF the session GD.
+ * (Placed after the PLy_execution_contexts / explicit_subtransactions aliases so
+ * those macros are in scope here.)
  */
 static void
 plpython_session_reset_callback(void *arg)
@@ -108,16 +120,6 @@ PLy_ensure_session_reset_callback(void)
 		plpython_reset_registered = true;
 	}
 }
-
-/* this doesn't need to be global; use PLy_current_execution_context() */
-/*
- * Option C (threaded affine): the exec-context stack head is per-session.  The
- * frames themselves already live in TopTransactionContext/PortalContext (both
- * per-session), so only the head pointer needs relocating.  Aliased over the
- * backend_runtime per-session accessor; a no-op indirection in process mode.
- */
-#define PLy_execution_contexts \
-	(*(PLyExecutionContext **) PgCurrentPLpythonExecutionContextsRef())
 
 
 void
