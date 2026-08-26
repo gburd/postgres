@@ -132,6 +132,10 @@
 	(&PgCurrentSessionExtensionModuleState()->plpython_memory_context)
 #define PgCurrentPLpythonResetRegisteredRef() \
 	(&PgCurrentSessionExtensionModuleState()->plpython_reset_registered)
+#define PgCurrentPLpythonExecutionContextsRef() \
+	(&PgCurrentSessionExtensionModuleState()->plpython_execution_contexts)
+#define PgCurrentPLpythonExplicitSubxactsRef() \
+	(&PgCurrentSessionExtensionModuleState()->plpython_explicit_subxacts)
 #define PgCurrentPLperlMemoryContextRef() \
 	(&PgCurrentSessionExtensionModuleState()->plperl_memory_context)
 #define PgCurrentPLperlInitedRef() \
