@@ -25,7 +25,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "xml2",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
 /* exported for use by xslt_proc.c */
