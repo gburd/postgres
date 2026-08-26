@@ -2346,9 +2346,15 @@ SnapshotPreloadCustomGUCs(void)
 		if (gconf->group != CUSTOM_OPTIONS)
 			continue;
 
-		/* Fail-closed: session-scoped custom GUC must supply an accessor. */
-		if (!gconf->has_session_accessor &&
-			(gconf->context == PGC_USERSET || gconf->context == PGC_SUSET))
+		/*
+		 * Fail-closed: a session-writable custom GUC must supply a per-session
+		 * accessor.  Session-writable = context >= PGC_SU_BACKEND (PGC_SU_BACKEND,
+		 * PGC_BACKEND, PGC_SUSET, PGC_USERSET) -- all can hold a per-session value,
+		 * so sharing one process-global cell across sessions is a data race.
+		 * PGC_INTERNAL/PGC_POSTMASTER/PGC_SIGHUP are process-wide by nature and
+		 * are exempt (their frozen pointer is carried forward in the seed).
+		 */
+		if (!gconf->has_session_accessor && gconf->context >= PGC_SU_BACKEND)
 			ereport(FATAL,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("custom configuration parameter \"%s\" is not safe under multithreaded=on",
@@ -2396,10 +2402,22 @@ SeedPreloadCustomGUCs(void)
 		var->state = state;
 
 		/*
-		 * The missing half the adversarial review identified: re-derive the
-		 * per-session value cell from the extension's accessor, before
-		 * InitializeOneGUCOption, so the ownership guard sees the per-session
-		 * cell and boots THAT cell (not the frozen postmaster cell).
+		 * Re-derive the live value pointer for this session.
+		 *
+		 * The fresh state above zeroed state->variable, discarding the frozen
+		 * postmaster pointer that rode in tmpl->state->variable.  Two cases:
+		 *
+		 *  - has_session_accessor (session-scoped custom): rebind to THIS
+		 *    session's cell via the extension accessor -- the missing half the
+		 *    adversarial review identified, the identical mechanism as the
+		 *    built-in RebindSessionGUCVariablePointer.
+		 *
+		 *  - no accessor (runtime-scoped custom, e.g. pg_stat_statements.max/
+		 *    .save): carry the frozen process-wide pointer forward from the
+		 *    template.  Its value IS process-wide and correct; NOT bridging it
+		 *    would leave state->variable NULL and crash any read of the cell
+		 *    (SHOW / pg_settings) -- a whole-process fail-stop under mt=on
+		 *    (review finding F1).
 		 */
 		if (var->has_session_accessor)
 		{
@@ -2421,19 +2439,29 @@ SeedPreloadCustomGUCs(void)
 					GUC_VARIABLE_ENUM(var) = var->session_accessor.enum_ref();
 					break;
 			}
-		}
 
-		/*
-		 * Standard init split.  A rebound session-scoped custom now points at
-		 * the per-session cell, so PgCurrentOrEarlySessionOwnsPointer() is true
-		 * and we boot that cell.  A runtime-scoped custom with no accessor keeps
-		 * its frozen process-wide pointer, is not session-owned, so we only
-		 * re-init reset metadata and never clobber the shared value.
-		 */
-		if (!PgCurrentOrEarlySessionOwnsPointer(GUCOptionVariablePointer(var)))
-			InitializeOneGUCOptionResetMetadata(var);
-		else
+			/*
+			 * Boot the rebound session cell fully -- write boot_val and fire the
+			 * assign_hook -- matching built-in rebound-GUC semantics.  We cannot
+			 * rely on the ownership guard here: the extension cell is a
+			 * PgSessionEnsureExtensionPrivateState heap block OUTSIDE the
+			 * PgSession struct, so PgCurrentOrEarlySessionOwnsPointer() returns
+			 * false for it; the reset-metadata-only arm would never initialize
+			 * the cell or call the hook (review finding F3).
+			 */
 			InitializeOneGUCOption(var);
+		}
+		else
+		{
+			/* Carry the frozen process-wide pointer forward (F1). */
+			var->state->variable = tmpl->state->variable;
+
+			/*
+			 * Not session-owned (it is the shared runtime cell); only re-init
+			 * reset metadata so we never clobber the process-wide value.
+			 */
+			InitializeOneGUCOptionResetMetadata(var);
+		}
 
 		add_guc_variable(var, ERROR);
 	}
