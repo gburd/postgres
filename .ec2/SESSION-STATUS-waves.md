@@ -212,3 +212,28 @@ LANDED on origin/xtc (b35b60cb08) -- xml2 threaded-safe + AFFINE, validated:
 - IMPLEMENT TLS be_tls_*->xtc_tls_* swap (design + P0 gates confirmed; P1 onward).
 - IMPLEMENT plpython Option C (GIL PyGILState per entry + 2 stack heads + GD per-session).
 - Durable libxml/libxslt per-context error handlers (drop the implicit no-yield reliance).
+
+## Follow-up round 5 — preload custom-GUC fix LANDED (through 2-review gate)
+LANDED on origin/xtc (9793ba0024): the preload custom-GUC per-session accessor API.
+ - New extension API RegisterCustomGUCSessionAccessor* + core registry/seed/rebind;
+   unblocks preloaded-module custom GUCs under mt=on (SHOW pg_stat_statements.track now
+   works, per-session isolated; was 'unrecognized configuration parameter').
+ - TWO-REVIEW GATE: design review corrected the approach (accessor needed, not just a
+   descriptor seed); implementation review found a BLOCK (F1 NULL-deref crash on
+   runtime-scoped no-accessor customs -> whole-process fail-stop) + F2 fail-closed hole
+   + F3 unbooted cell -- ALL fixed and re-validated.
+ - Validated: process regress 245/245 byte-for-byte; preloaded pgss mt=on track/max/save
+   visible, pg_settings scan works (F1 gone), per-session track isolation PASS, 0 crashes.
+ - pg_stat_statements accessor registrations landed; AFFINE marker DEFERRED.
+
+NEW FINDING (separate): pg_stat_statements VIEW doesn't work under mt=on ('must be
+loaded via shared_preload_libraries'; mt=off fine) -- a pgss shmem-under-threading gap
+(pgss/pgss_hash from shmem_startup not visible to the querying session's runtime state),
+NOT the GUC fix.  Investigation agent dispatched to determine pgss-specific vs general
+extension-shmem-under-threading + fix size.  pgss AFFINE lands after this.
+
+## Remaining follow-ups (updated)
+- pgss shmem-under-threading gap (in flight) -> then pgss AFFINE.
+- IMPLEMENT TLS be_tls_*->xtc_tls_* swap (design + P0 gates confirmed; ready).
+- IMPLEMENT plpython Option C (GIL PyGILState per entry + 2 exec-stack heads + GD).
+- Durable libxml/libxslt per-context error handlers (drop implicit no-yield reliance).
