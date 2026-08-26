@@ -46,7 +46,7 @@
 PG_MODULE_MAGIC_EXT(
 					.name = "plpython",
 					.version = PG_VERSION,
-					PG_MODULE_MAGIC_BACKEND_MODEL_PROCESS
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
 PG_FUNCTION_INFO_V1(plpython3_validator);
@@ -63,6 +63,51 @@ static void PLy_pop_execution_context(void);
 
 /* initialize global variables */
 PyObject   *PLy_interp_globals = NULL;
+
+/*
+ * Process-wide (NOT per-session): true once PyEval_SaveThread() has released the
+ * GIL after interpreter init, so other carrier OS threads may acquire it via
+ * PyGILState_Ensure() at PL entry.  Set once by the first session to touch Python.
+ */
+static bool plpython_gil_initialized = false;
+
+#define plpython_reset_registered (*PgCurrentPLpythonResetRegisteredRef())
+
+/*
+ * Session reset: drop this session's Python state.  Registered lazily on first
+ * PL/Python touch (PLy_ensure_session_reset_callback).  Runs at session
+ * teardown, BEFORE the transaction/portal memory contexts that hold the
+ * exec-context and subxact-cell frames are destroyed, so we only null the heads
+ * (the frames free with their contexts).  Takes the GIL to DECREF the session GD.
+ */
+static void
+plpython_session_reset_callback(void *arg)
+{
+	PyObject  **gdref = (PyObject **) PgCurrentPLpythonGDRef();
+
+	(void) arg;
+	if (*gdref != NULL)
+	{
+		PyGILState_STATE gilstate = PyGILState_Ensure();
+
+		Py_CLEAR(*gdref);		/* Py_XDECREF + set NULL */
+		PyGILState_Release(gilstate);
+	}
+	/* Heads only; the frames free with their transaction/portal contexts. */
+	PLy_execution_contexts = NULL;
+	explicit_subtransactions = NIL;
+}
+
+/* Register the session reset callback once per session (first PL touch). */
+void
+PLy_ensure_session_reset_callback(void)
+{
+	if (!plpython_reset_registered)
+	{
+		PgSessionRegisterResetCallback(plpython_session_reset_callback, NULL);
+		plpython_reset_registered = true;
+	}
+}
 
 /* this doesn't need to be global; use PLy_current_execution_context() */
 /*
@@ -129,7 +174,19 @@ _PG_init(void)
 	 * Option C: explicit_subtransactions and PLy_execution_contexts are now
 	 * per-session (backend_runtime accessors), auto-initialized to NIL/NULL for
 	 * each session, so no process-load-time reset is needed here.
+	 *
+	 * GIL: interpreter + exception objects + GD template are now fully built,
+	 * and the init OS thread holds the GIL.  Release it exactly once so any
+	 * carrier OS thread can acquire it via PyGILState_Ensure() at PL entry.  We
+	 * discard the returned PyThreadState* on purpose: from here on ALL Python
+	 * access is bracketed by PyGILState_Ensure()/Release(), never the save/restore
+	 * pairing (carriers are distinct OS threads).
 	 */
+	if (!plpython_gil_initialized)
+	{
+		(void) PyEval_SaveThread();
+		plpython_gil_initialized = true;
+	}
 }
 
 Datum
@@ -187,19 +244,31 @@ plpython3_validator(PG_FUNCTION_ARGS)
 		fake_fcinfo->context = (Node *) &etrigdata;
 	}
 
-	pcache = PLy_procedure_get(fake_fcinfo, true);
+	{
+		PyGILState_STATE gilstate = PyGILState_Ensure();
 
-	/*
-	 * Release the reference count that PLy_procedure_get acquired; the
-	 * PLyProcedure object remains valid for possible future use.  (We could
-	 * leave this to be done when the calling memory context is cleaned up,
-	 * but it seems neater to do it right away.  Note we mustn't release the
-	 * pcache object, since the memory-context reset callback has a reference
-	 * to it.)
-	 */
-	Assert(pcache->proc->cfunc.use_count > 0);
-	pcache->proc->cfunc.use_count--;
-	pcache->proc = NULL;
+		PG_TRY();
+		{
+			pcache = PLy_procedure_get(fake_fcinfo, true);
+
+			/*
+			 * Release the reference count that PLy_procedure_get acquired; the
+			 * PLyProcedure object remains valid for possible future use.  (We
+			 * could leave this to be done when the calling memory context is
+			 * cleaned up, but it seems neater to do it right away.  Note we
+			 * mustn't release the pcache object, since the memory-context reset
+			 * callback has a reference to it.)
+			 */
+			Assert(pcache->proc->cfunc.use_count > 0);
+			pcache->proc->cfunc.use_count--;
+			pcache->proc = NULL;
+		}
+		PG_FINALLY();
+		{
+			PyGILState_Release(gilstate);
+		}
+		PG_END_TRY();
+	}
 
 	PG_RETURN_VOID();
 }
@@ -211,11 +280,25 @@ plpython3_call_handler(PG_FUNCTION_ARGS)
 	Datum		retval;
 	PLyExecutionContext *exec_ctx;
 	ErrorContextCallback plerrcontext;
+	PyGILState_STATE gilstate;
 
 	nonatomic = fcinfo->context &&
 		IsA(fcinfo->context, CallContext) &&
 		!castNode(CallContext, fcinfo->context)->atomic;
 
+	/*
+	 * Acquire the GIL outermost, enclosing SPI connect/finish and the
+	 * exec-context push/pop.  Reference-counted per OS thread, so nested
+	 * PL/Python via SPI just bumps the count; released on every exit path by the
+	 * outer PG_FINALLY.  (Whole-call GIL hold: a plpython function blocking in
+	 * SPI stalls Python on other carriers for that duration --
+	 * ponytail: drop-GIL-around-SPI-wait is a throughput optimization for later,
+	 * gated on wait-boundary scheduler integration, not a correctness need.)
+	 */
+	gilstate = PyGILState_Ensure();
+
+	PG_TRY();
+	{
 	/* Note: SPI_finish() happens in plpy_exec.c, which is dubious design */
 	SPI_connect_ext(nonatomic ? SPI_OPT_NONATOMIC : 0);
 
@@ -276,6 +359,13 @@ plpython3_call_handler(PG_FUNCTION_ARGS)
 
 	/* Destroy the execution context */
 	PLy_pop_execution_context();
+	}
+	PG_FINALLY();
+	{
+		/* Release the GIL on every exit path (normal + rethrow). */
+		PyGILState_Release(gilstate);
+	}
+	PG_END_TRY();
 
 	return retval;
 }
@@ -290,7 +380,13 @@ plpython3_inline_handler(PG_FUNCTION_ARGS)
 	PLyProcedureCache pcache;
 	PLyExecutionContext *exec_ctx;
 	ErrorContextCallback plerrcontext;
+	PyGILState_STATE gilstate;
 
+	/* Acquire the GIL outermost (see plpython3_call_handler). */
+	gilstate = PyGILState_Ensure();
+
+	PG_TRY();
+	{
 	/* Note: SPI_finish() happens in plpy_exec.c, which is dubious design */
 	SPI_connect_ext(codeblock->atomic ? 0 : SPI_OPT_NONATOMIC);
 
@@ -359,6 +455,12 @@ plpython3_inline_handler(PG_FUNCTION_ARGS)
 
 	/* Now clean up the transient procedure we made */
 	PLy_procedure_delete(&proc);
+	}
+	PG_FINALLY();
+	{
+		PyGILState_Release(gilstate);
+	}
+	PG_END_TRY();
 
 	PG_RETURN_VOID();
 }
@@ -414,6 +516,7 @@ plpython_inline_error_callback(void *arg)
 PLyExecutionContext *
 PLy_current_execution_context(void)
 {
+	Assert(PyGILState_Check());	/* a PL entry point must have taken the GIL */
 	if (PLy_execution_contexts == NULL)
 		elog(ERROR, "no Python function is currently executing");
 

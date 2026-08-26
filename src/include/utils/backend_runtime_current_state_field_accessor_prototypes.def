@@ -135,6 +135,7 @@ extern void ** PgCurrentPLpythonProcedureCacheRef(void);
 extern bool * PgCurrentPLpythonResetRegisteredRef(void);
 extern void ** PgCurrentPLpythonExecutionContextsRef(void);
 extern List ** PgCurrentPLpythonExplicitSubxactsRef(void);
+extern void ** PgCurrentPLpythonGDRef(void);
 extern MemoryContext * PgCurrentPLsampleMemoryContextRef(void);
 extern int * PgCurrentPasswordEncryptionRef(void);
 extern bool * PgCurrentPgOutputPublicationsValidRef(void);
