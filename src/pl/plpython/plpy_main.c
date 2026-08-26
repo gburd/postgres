@@ -65,7 +65,14 @@ static void PLy_pop_execution_context(void);
 PyObject   *PLy_interp_globals = NULL;
 
 /* this doesn't need to be global; use PLy_current_execution_context() */
-static PLyExecutionContext *PLy_execution_contexts = NULL;
+/*
+ * Option C (threaded affine): the exec-context stack head is per-session.  The
+ * frames themselves already live in TopTransactionContext/PortalContext (both
+ * per-session), so only the head pointer needs relocating.  Aliased over the
+ * backend_runtime per-session accessor; a no-op indirection in process mode.
+ */
+#define PLy_execution_contexts \
+	(*(PLyExecutionContext **) PgCurrentPLpythonExecutionContextsRef())
 
 
 void
@@ -118,9 +125,11 @@ _PG_init(void)
 
 	Py_DECREF(main_mod);
 
-	explicit_subtransactions = NIL;
-
-	PLy_execution_contexts = NULL;
+	/*
+	 * Option C: explicit_subtransactions and PLy_execution_contexts are now
+	 * per-session (backend_runtime accessors), auto-initialized to NIL/NULL for
+	 * each session, so no process-load-time reset is needed here.
+	 */
 }
 
 Datum

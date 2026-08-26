@@ -133,6 +133,8 @@ extern void ** PgCurrentPLpgSQLSessionStateRef(void);
 extern MemoryContext * PgCurrentPLpythonMemoryContextRef(void);
 extern void ** PgCurrentPLpythonProcedureCacheRef(void);
 extern bool * PgCurrentPLpythonResetRegisteredRef(void);
+extern void ** PgCurrentPLpythonExecutionContextsRef(void);
+extern List ** PgCurrentPLpythonExplicitSubxactsRef(void);
 extern MemoryContext * PgCurrentPLsampleMemoryContextRef(void);
 extern int * PgCurrentPasswordEncryptionRef(void);
 extern bool * PgCurrentPgOutputPublicationsValidRef(void);
