@@ -559,6 +559,31 @@ extern void DefineCustomEnumVariable(const char *name,
 									 GucEnumAssignHook assign_hook,
 									 GucShowHook show_hook) pg_attribute_nonnull(1, 4);
 
+/*
+ * Register a per-session value accessor for a custom GUC previously created
+ * with DefineCustom<Type>Variable().  Under a threaded runtime (multithreaded)
+ * the accessor is called on each session's GUC bring-up to rebind the
+ * descriptor's live value pointer at the CURRENT session's storage cell,
+ * exactly as built-in threaded GUCs are rebound (see
+ * RebindSessionGUCVariablePointer).  The accessor must return the address of
+ * the same per-session cell the extension itself reads (typically via
+ * PgSessionEnsureExtensionPrivateState).  No-op under process mode.  Must be
+ * called during shared_preload_libraries processing, from the same _PG_init
+ * that defined the GUC.  A session-scoped (PGC_USERSET/PGC_SUSET) custom GUC in
+ * an affine module that registers NO accessor is refused (fail-closed): its
+ * value cell would be process-global and shared across sessions.
+ */
+extern void RegisterCustomGUCSessionAccessor(const char *name,
+											 bool *(*accessor) (void));
+extern void RegisterCustomGUCSessionAccessorInt(const char *name,
+												int *(*accessor) (void));
+extern void RegisterCustomGUCSessionAccessorReal(const char *name,
+												 double *(*accessor) (void));
+extern void RegisterCustomGUCSessionAccessorString(const char *name,
+												   char **(*accessor) (void));
+extern void RegisterCustomGUCSessionAccessorEnum(const char *name,
+												 int *(*accessor) (void));
+
 extern void MarkGUCPrefixReserved(const char *className);
 
 /* old name for MarkGUCPrefixReserved, for backwards compatibility: */
@@ -575,6 +600,7 @@ extern void InitializeGUCOptions(void);
 extern void InitializeThreadedSessionGUCOptions(void);
 extern void InitializeThreadedSessionRequiredGUCOptions(void);
 extern void RebindSessionGUCVariablePointers(void);
+extern void SnapshotPreloadCustomGUCs(void);
 extern int	ValidateSessionGUCVariableRebinds(void);
 extern bool SelectConfigFiles(const char *userDoption, const char *progname);
 extern void ResetAllOptions(void);

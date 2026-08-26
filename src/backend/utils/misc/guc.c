@@ -2275,6 +2275,170 @@ guc_custom_variable_count(void)
 	return hash_get_num_entries(guc_hashtab);
 }
 
+/*
+ * Shared registry of custom GUC descriptors registered by
+ * shared_preload_libraries.  Snapshotted once in the postmaster at the end of
+ * process_shared_preload_libraries() (SnapshotPreloadCustomGUCs), then seeded
+ * into each threaded session's per-session guc_hashtab (SeedPreloadCustomGUCs)
+ * -- because a threaded session rebuilds guc_variables from ConfigureNames[]
+ * only and does not re-run the preload modules' _PG_init.  Immutable after the
+ * postmaster populates it single-threaded, before any carrier exists (trivial
+ * happens-before for the reader carriers).  Inert in process mode (forked
+ * backends inherit the postmaster's guc_hashtab via fork()).
+ */
+static PG_GLOBAL_RUNTIME struct config_generic **preload_custom_gucs = NULL;
+static PG_GLOBAL_RUNTIME int num_preload_custom_gucs = 0;
+
+/*
+ * SnapshotPreloadCustomGUCs --- capture the postmaster's custom GUC descriptors.
+ *
+ * Called once, in the postmaster, at the end of process_shared_preload_libraries.
+ * Only under multithreaded (process mode inherits the hashtab via fork).  Each
+ * captured descriptor already carries its session_accessor (attached by
+ * RegisterCustomGUCSessionAccessor*), so nothing extra is needed here.
+ *
+ * Fail-closed: a session-scoped (PGC_USERSET/PGC_SUSET) custom GUC with no
+ * session accessor cannot be made per-session-safe (its value cell is a single
+ * process-global word shared across all sessions), so refuse startup with a
+ * clear message.  Runtime-scoped customs (PGC_POSTMASTER/PGC_SIGHUP) are
+ * process-wide by nature and need no accessor.
+ */
+void
+SnapshotPreloadCustomGUCs(void)
+{
+	HASH_SEQ_STATUS status;
+	GUCHashEntry *hentry;
+	int			n = 0;
+	int			idx;
+
+	if (!multithreaded)
+		return;
+	if (guc_hashtab == NULL)
+		return;
+
+	/* Count non-placeholder custom GUCs. */
+	hash_seq_init(&status, guc_hashtab);
+	while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
+	{
+		struct config_generic *gconf = hentry->gucvar;
+
+		if (gconf->flags & GUC_CUSTOM_PLACEHOLDER)
+			continue;
+		if (gconf->group != CUSTOM_OPTIONS)
+			continue;
+		n++;
+	}
+
+	if (n == 0)
+		return;
+
+	preload_custom_gucs = (struct config_generic **)
+		MemoryContextAlloc(TopMemoryContext,
+						   sizeof(struct config_generic *) * n);
+	idx = 0;
+	hash_seq_init(&status, guc_hashtab);
+	while ((hentry = (GUCHashEntry *) hash_seq_search(&status)) != NULL)
+	{
+		struct config_generic *gconf = hentry->gucvar;
+
+		if (gconf->flags & GUC_CUSTOM_PLACEHOLDER)
+			continue;
+		if (gconf->group != CUSTOM_OPTIONS)
+			continue;
+
+		/* Fail-closed: session-scoped custom GUC must supply an accessor. */
+		if (!gconf->has_session_accessor &&
+			(gconf->context == PGC_USERSET || gconf->context == PGC_SUSET))
+			ereport(FATAL,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("custom configuration parameter \"%s\" is not safe under multithreaded=on",
+							gconf->name),
+					 errdetail("A session-settable custom GUC from a shared_preload_libraries "
+							   "module must register a per-session value accessor "
+							   "(RegisterCustomGUCSessionAccessor) to run in a threaded backend."),
+					 errhint("Run with multithreaded=off, or update the extension.")));
+
+		Assert(idx < n);
+		preload_custom_gucs[idx++] = gconf;
+	}
+	num_preload_custom_gucs = idx;
+}
+
+/*
+ * SeedPreloadCustomGUCs --- populate a threaded session's guc_hashtab with the
+ * preload custom GUCs, rebinding each session-scoped one's live value pointer at
+ * this session's own cell via the registered accessor (the identical mechanism
+ * as the built-in RebindSessionGUCVariablePointer).  Called from
+ * InitializeThreadedSessionGUCOptions after the built-in rebind pass.
+ */
+static void
+SeedPreloadCustomGUCs(void)
+{
+	if (!multithreaded)
+		return;
+
+	for (int i = 0; i < num_preload_custom_gucs; i++)
+	{
+		struct config_generic *tmpl = preload_custom_gucs[i];
+		struct config_generic *var;
+		config_generic_state *state;
+
+		/* Already present this session (e.g. re-entry)?  Skip. */
+		if (find_option(tmpl->name, false, true, DEBUG5) != NULL)
+			continue;
+
+		/* Fresh per-session descriptor + state in this session's GUCMemoryContext. */
+		var = (struct config_generic *) guc_malloc(ERROR, sizeof(*var));
+		*var = *tmpl;			/* immutable body incl. hooks, boot_val, enum
+								 * table, session_accessor */
+		state = (config_generic_state *) guc_malloc(ERROR, sizeof(*state));
+		memset(state, 0, sizeof(*state));
+		var->state = state;
+
+		/*
+		 * The missing half the adversarial review identified: re-derive the
+		 * per-session value cell from the extension's accessor, before
+		 * InitializeOneGUCOption, so the ownership guard sees the per-session
+		 * cell and boots THAT cell (not the frozen postmaster cell).
+		 */
+		if (var->has_session_accessor)
+		{
+			switch (var->vartype)
+			{
+				case PGC_BOOL:
+					GUC_VARIABLE_BOOL(var) = var->session_accessor.bool_ref();
+					break;
+				case PGC_INT:
+					GUC_VARIABLE_INT(var) = var->session_accessor.int_ref();
+					break;
+				case PGC_REAL:
+					GUC_VARIABLE_REAL(var) = var->session_accessor.real_ref();
+					break;
+				case PGC_STRING:
+					GUC_VARIABLE_STRING(var) = var->session_accessor.string_ref();
+					break;
+				case PGC_ENUM:
+					GUC_VARIABLE_ENUM(var) = var->session_accessor.enum_ref();
+					break;
+			}
+		}
+
+		/*
+		 * Standard init split.  A rebound session-scoped custom now points at
+		 * the per-session cell, so PgCurrentOrEarlySessionOwnsPointer() is true
+		 * and we boot that cell.  A runtime-scoped custom with no accessor keeps
+		 * its frozen process-wide pointer, is not session-owned, so we only
+		 * re-init reset metadata and never clobber the shared value.
+		 */
+		if (!PgCurrentOrEarlySessionOwnsPointer(GUCOptionVariablePointer(var)))
+			InitializeOneGUCOptionResetMetadata(var);
+		else
+			InitializeOneGUCOption(var);
+
+		add_guc_variable(var, ERROR);
+	}
+}
+
 static Size
 guc_cstring_payload_size(const char *str)
 {
@@ -2749,6 +2913,8 @@ InitializeThreadedSessionGUCOptions(void)
 
 		RebindSessionGUCVariablePointers();
 		InitializeThreadedSessionReboundGUCOptions();
+
+		SeedPreloadCustomGUCs();
 
 		InitializeThreadedSessionCompatibilityGUCOptions();
 done:
@@ -6918,6 +7084,92 @@ DefineCustomEnumVariable(const char *name,
 	var->_enum.assign_hook = assign_hook;
 	var->_enum.show_hook = show_hook;
 	define_custom_variable(var);
+}
+
+/*
+ * Attach a per-session value accessor to a custom GUC descriptor (constant
+ * field; set once during preload, immutable thereafter).  It travels with the
+ * descriptor when it is copied into the shared preload-custom-GUC registry and
+ * is used by SeedPreloadCustomGUCs() to rebind the live value pointer at each
+ * session's own cell -- the same mechanism built-ins use in
+ * RebindSessionGUCVariablePointer().
+ */
+static void
+register_custom_guc_session_accessor(const char *name,
+									 enum config_type vartype,
+									 ThreadedSessionGUCVariableAccessor accessor)
+{
+	struct config_generic *var;
+
+	/*
+	 * Only meaningful under a threaded runtime.  In process mode the custom
+	 * GUC's frozen valueAddr is inherited by fork and is correct, so this is a
+	 * harmless no-op -- letting an extension call it unconditionally in
+	 * _PG_init and stay correct in both modes.
+	 */
+	if (!multithreaded)
+		return;
+
+	if (!process_shared_preload_libraries_in_progress)
+		elog(FATAL,
+			 "RegisterCustomGUCSessionAccessor must be called during "
+			 "shared_preload_libraries processing");
+
+	var = find_option(name, false, false, ERROR);
+	if (var == NULL)
+		elog(ERROR, "custom GUC \"%s\" not found", name);
+	if (var->vartype != vartype)
+		elog(ERROR, "custom GUC \"%s\" accessor type mismatch", name);
+	if (var->group != CUSTOM_OPTIONS)
+		elog(ERROR, "\"%s\" is not a custom GUC", name);
+
+	var->session_accessor = accessor;
+	var->has_session_accessor = true;
+}
+
+void
+RegisterCustomGUCSessionAccessor(const char *name, bool *(*accessor) (void))
+{
+	ThreadedSessionGUCVariableAccessor a;
+
+	a.bool_ref = accessor;
+	register_custom_guc_session_accessor(name, PGC_BOOL, a);
+}
+
+void
+RegisterCustomGUCSessionAccessorInt(const char *name, int *(*accessor) (void))
+{
+	ThreadedSessionGUCVariableAccessor a;
+
+	a.int_ref = accessor;
+	register_custom_guc_session_accessor(name, PGC_INT, a);
+}
+
+void
+RegisterCustomGUCSessionAccessorReal(const char *name, double *(*accessor) (void))
+{
+	ThreadedSessionGUCVariableAccessor a;
+
+	a.real_ref = accessor;
+	register_custom_guc_session_accessor(name, PGC_REAL, a);
+}
+
+void
+RegisterCustomGUCSessionAccessorString(const char *name, char **(*accessor) (void))
+{
+	ThreadedSessionGUCVariableAccessor a;
+
+	a.string_ref = accessor;
+	register_custom_guc_session_accessor(name, PGC_STRING, a);
+}
+
+void
+RegisterCustomGUCSessionAccessorEnum(const char *name, int *(*accessor) (void))
+{
+	ThreadedSessionGUCVariableAccessor a;
+
+	a.enum_ref = accessor;
+	register_custom_guc_session_accessor(name, PGC_ENUM, a);
 }
 
 /*

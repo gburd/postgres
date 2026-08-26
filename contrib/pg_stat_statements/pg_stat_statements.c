@@ -74,7 +74,8 @@
 
 PG_MODULE_MAGIC_EXT(
 					.name = "pg_stat_statements",
-					.version = PG_VERSION
+					.version = PG_VERSION,
+					PG_MODULE_MAGIC_BACKEND_MODEL_POOLED_PROTOCOL_AFFINE
 );
 
 /* Location of permanent stats file (valid when database is shut down) */
@@ -391,6 +392,30 @@ static const struct config_enum_entry track_options[] =
 #define pgss_track_utility (pgss_session_state()->track_utility)
 #define pgss_track_planning (pgss_session_state()->track_planning)
 
+/*
+ * Per-session value accessors for the session-scoped custom GUCs, registered
+ * with RegisterCustomGUCSessionAccessor* so a threaded backend rebinds each
+ * GUC's live value pointer at THIS session's cell (the same cell the pgss_*
+ * macros above read).  No-op / unused under process mode.
+ */
+static int *
+pgss_track_ref(void)
+{
+	return &pgss_session_state()->track;
+}
+
+static bool *
+pgss_track_utility_ref(void)
+{
+	return &pgss_session_state()->track_utility;
+}
+
+static bool *
+pgss_track_planning_ref(void)
+{
+	return &pgss_session_state()->track_planning;
+}
+
 #define pgss_enabled(level) \
 	(!IsParallelWorker() && \
 	(pgss_track == PGSS_TRACK_ALL || \
@@ -552,6 +577,17 @@ _PG_init(void)
 							 NULL);
 
 	MarkGUCPrefixReserved("pg_stat_statements");
+
+	/*
+	 * Register per-session value accessors for the session-scoped GUCs so they
+	 * work under multithreaded=on (each session rebinds to its own cell).  No-op
+	 * in process mode.  track/track_utility/track_planning are PGC_SUSET
+	 * (per-session); pg_stat_statements.max (POSTMASTER) and .save (SIGHUP) are
+	 * process-wide and correctly keep their frozen pointer -- no accessor.
+	 */
+	RegisterCustomGUCSessionAccessorEnum("pg_stat_statements.track", pgss_track_ref);
+	RegisterCustomGUCSessionAccessor("pg_stat_statements.track_utility", pgss_track_utility_ref);
+	RegisterCustomGUCSessionAccessor("pg_stat_statements.track_planning", pgss_track_planning_ref);
 
 	/*
 	 * Register our shared memory needs.
