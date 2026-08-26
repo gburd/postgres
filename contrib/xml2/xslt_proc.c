@@ -8,6 +8,7 @@
 #include "postgres.h"
 
 #include "fmgr.h"
+#include "miscadmin.h"			/* multithreaded */
 #include "utils/builtins.h"
 #include "utils/xml.h"
 #include "varatt.h"
@@ -179,7 +180,18 @@ xslt_process(PG_FUNCTION_ARGS)
 			xmlFreeDoc(doctree);
 		if (resstrv != NULL)
 			xmlFree(resstrv);
-		xsltCleanupGlobals();
+
+		/*
+		 * xsltCleanupGlobals() mutates libxslt PROCESS-GLOBAL state (its
+		 * extension-module registry + a global mutex).  xml2 never populates
+		 * that registry (no exsltRegisterAll / xsltRegisterExtModule), so the
+		 * per-call cleanup frees nothing of ours -- but under multithreaded=on
+		 * two sessions running xslt_process on different carriers would race it
+		 * (libxslt globals are NOT thread-local; xsltexports.h).  Skip it in
+		 * threaded mode; process mode keeps the historical call byte-for-byte.
+		 */
+		if (!multithreaded)
+			xsltCleanupGlobals();
 
 		pg_xml_done(xmlerrcxt, true);
 
@@ -192,7 +204,9 @@ xslt_process(PG_FUNCTION_ARGS)
 	xsltFreeSecurityPrefs(xslt_sec_prefs);
 	xsltFreeStylesheet(stylesheet);
 	xmlFreeDoc(doctree);
-	xsltCleanupGlobals();
+	/* See the note above: skip the process-global libxslt cleanup in threaded mode. */
+	if (!multithreaded)
+		xsltCleanupGlobals();
 
 	if (resstrv)
 		xmlFree(resstrv);
