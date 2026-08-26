@@ -467,3 +467,28 @@ throughout (`gmake check`).
 - **P8 (later, separate) — relax SNI no-migrate.** Only after P0(iv) proven:
   allow `ssl_sni` + migratable on the xtc path, widening the assert at
   be-secure-openssl.c:882. Its own A/B + forced-migration stress gate.
+
+## P0-gate confirmation (from libxtc v1.37 source, 2026-08-26)
+
+Both P0 gates CONFIRMED from libxtc source (/tmp/libxtc-137, tls_openssl.c) --
+the design's retry-mode assumption is correct; no rewrite needed.
+
+- **P0-gate-1 (yield-free AGAIN mode): YES.** xtc_tls_read (tls_openssl.c:896-927)
+  and xtc_tls_write (:931-958) are a single SSL_read_ex/SSL_write_ex + switch on
+  SSL_get_error: WANT_READ/WANT_WRITE -> set wants_read/wants_write and return
+  XTC_E_AGAIN immediately.  xtc_tls_handshake/_shutdown same shape.  A whole-backend
+  grep for xtc_io_*/xtc_proc*/xtc_yield/poll/select/epoll/O_NONBLOCK = ZERO matches
+  -- there is no internal park; readiness is entirely the caller's (PG's
+  secure_read/write waitfor loop, which parks the carrier via xtc_pg_wait_fd).
+- **P0-gate-2 (clean EOF): XTC_OK with *out_n == 0.** SSL_ERROR_ZERO_RETURN
+  (close_notify) -> *out_n=0; return XTC_OK (tls_openssl.c:921-924).  No distinct
+  XTC_E_EOF.  Abrupt mid-record FIN -> XTC_E_INTERNAL (== ECONNRESET, same as
+  OpenSSL today).
+- **Custom-transport would-block propagation: clean.** transport_bio_read
+  (:304-323): rc==XTC_E_AGAIN -> BIO_set_retry_read; return -1 -> SSL_ERROR_WANT_READ
+  -> XTC_E_AGAIN up to the caller; write symmetric.  A non-blocking read_cb/write_cb
+  returning XTC_E_AGAIN propagates as AGAIN, no internal retry/park.
+  xtc_tls_create_transport requires both callbacks non-NULL (:784-786).
+- **Model: retry mode is the ONLY model libxtc v1.37 offers** (no hook from its TLS
+  layer to PG's carrier for internal-park) -- the design's be_tls_read/write bodies
+  match the source one-for-one.  PROCEED to P1 implementation.
