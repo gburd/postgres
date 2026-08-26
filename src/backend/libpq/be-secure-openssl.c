@@ -626,15 +626,15 @@ be_tls_init(bool isServerStart)
 #ifdef USE_XTC_CARRIER
 
 	/*
-	 * P2: build the parallel xtc TLS server context from the default-host
-	 * config, alongside the freshly installed SSL_context.  Server ctx only, no
-	 * SNI (that is P6): if ssl_sni is on we skip the xtc ctx and TLS-bearing
-	 * fibers keep using OpenSSL.  A build failure is non-fatal -- xtc_tls_context
-	 * stays NULL and the fiber path falls back to OpenSSL; only the OpenSSL ctx
-	 * (built above) governs whether TLS works at all, so this cannot regress a
-	 * server that was going to accept TLS.
+	 * P2/P3: (re)build the parallel xtc TLS server context from the default-host
+	 * config, alongside the freshly installed SSL_context.  Always CALL the
+	 * builder (even when it will decline) so the enable flag and any retired ctx
+	 * are updated on every reload -- the builder itself decides whether to build,
+	 * skip (ssl_sni / client-cert / passphrase -> pin to OpenSSL), or retire.
+	 * Only under multithreaded, so a threaded-capable binary run in process mode
+	 * is byte-for-byte (no xtc ctx build, no stray LOG).
 	 */
-	if (!ssl_sni && new_hosts->default_host != NULL && multithreaded)
+	if (multithreaded)
 		build_xtc_tls_context(new_hosts->default_host, ssl_ver_min, ssl_ver_max,
 							  isServerStart);
 #endif
@@ -2777,14 +2777,23 @@ build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 	int			rc;
 
 	/*
-	 * ponytail: encrypted-key configs pin to OpenSSL (P7 fallback).  A
-	 * passphrase callback that shells out to ssl_passphrase_command is P7 work;
-	 * until then, if a passphrase command is configured we don't build the xtc
-	 * ctx and the fiber path uses OpenSSL, which already handles it.
+	 * Decline (retire any prior ctx + disable the xtc open path -> OpenSSL) when
+	 * the xtc stack cannot yet serve the connection correctly.  This is the
+	 * "defer-with-invariant" pin for features later phases own:
+	 *   - no default_host: nothing to build from.
+	 *   - ssl_sni on (P6): per-host ClientHello context selection isn't wired;
+	 *     the SNI no-migrate pin keeps these on OpenSSL.
+	 *   - client-cert auth (ssl_ca configured -> the server requests+verifies
+	 *     client certs): xtc client-cert verify + peer-DN extraction is P5.  Until
+	 *     then, pin so cert-auth (clientcert=verify-ca/full) keeps working via
+	 *     OpenSSL rather than failing "no root certificate store".
+	 *   - encrypted server key (ssl_passphrase_command, P7).
 	 */
-	if (ssl_passphrase_command && ssl_passphrase_command[0] != '\0')
+	if (default_host == NULL ||
+		ssl_sni ||
+		(default_host->ssl_ca && default_host->ssl_ca[0]) ||
+		(ssl_passphrase_command && ssl_passphrase_command[0] != '\0'))
 	{
-		/* Retire (do not free) any prior ctx; then disable the xtc path. */
 		if (xtc_tls_context != NULL)
 			xtc_tls_retired_contexts = lappend(xtc_tls_retired_contexts,
 											   xtc_tls_context);
@@ -2796,8 +2805,7 @@ build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 	memset(&opts, 0, sizeof(opts));
 	opts.cert_file = default_host->ssl_cert;
 	opts.key_file = default_host->ssl_key;
-	opts.ca_file = (default_host->ssl_ca && default_host->ssl_ca[0]) ?
-		default_host->ssl_ca : NULL;
+	opts.ca_file = NULL;			/* no client-cert verify yet (P5); pinned above */
 	opts.crl_file = (ssl_crl_file && ssl_crl_file[0]) ? ssl_crl_file : NULL;
 	opts.crl_dir = (ssl_crl_dir && ssl_crl_dir[0]) ? ssl_crl_dir : NULL;
 	opts.cipher_list = (SSLCipherList && SSLCipherList[0]) ? SSLCipherList : NULL;
