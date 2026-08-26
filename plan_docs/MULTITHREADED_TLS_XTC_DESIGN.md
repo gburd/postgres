@@ -492,3 +492,40 @@ the design's retry-mode assumption is correct; no rewrite needed.
 - **Model: retry mode is the ONLY model libxtc v1.37 offers** (no hook from its TLS
   layer to PG's carrier for internal-park) -- the design's be_tls_read/write bodies
   match the source one-for-one.  PROCEED to P1 implementation.
+
+## P1 landed-to-branch + P2-ready API map (2026-08-26, libxtc v1.37)
+
+P1 (Port field + dispatch skeleton) is IMPLEMENTED on branch `tls-xtc-p1` and
+builds clean locally (full ninja) with USE_XTC_CARRIER.  It is deliberately a
+NO-OP: `be_tls_xtc_available()` returns false -> `be_tls_open_server` never takes
+the xtc branch -> `port->xtc_tls` stays NULL -> all 10 dispatch head checks
+(open/read/write/close + 6 getters, +1 decision point) are dead -> OpenSSL path
+byte-for-byte.  The `void *xtc_tls` Port field is unconditional so struct offsets
+match across process/threaded builds.  The 12 `*_xtc` bodies are `elog(FATAL)`
+stubs (unreachable).  NOT landed to xtc: dead scaffolding earns its place only
+once P2/P3 make it live + validated (don't ship FATAL stubs to trunk).
+
+Exact v1.37 xtc_tls server API (confirmed from /tmp/libxtc-137/src/inc/xtc_tls.h),
+the ground P2/P3 build on:
+- ctx: `int xtc_tls_ctx_create(xtc_tls_role_t, const xtc_tls_opts_t *, xtc_tls_ctx_t **)`;
+  `void xtc_tls_ctx_destroy(xtc_tls_ctx_t *)`; `xtc_tls_ctx_set_sni_cb` (P6).
+- `xtc_tls_opts_t` -> PG GUC map (a zeroed struct = old default behavior):
+  cert_file<-ssl_cert_file, key_file<-ssl_key_file, ca_file<-ssl_ca_file,
+  crl_file/crl_dir<-ssl_crl_file/ssl_crl_dir, cipher_list<-ssl_ciphers,
+  ciphersuites_13<-ssl_tls13_ciphers, groups<-ssl_groups (or ssl_ecdh_curve),
+  min_version/max_version<-ssl_min/max_protocol_version, prefer_server_ciphers
+  <-ssl_prefer_server_ciphers, verify_peer_mode (P5), alpn_protos (P5, "postgresql"),
+  passphrase_cb/_userdata<-ssl_passphrase_command (R-fallback if hook-based).
+- transport/handshake (P3): `xtc_tls_create` + `xtc_tls_create_transport` (custom
+  transport over the PG socket), `xtc_tls_set_hostname`, `xtc_tls_handshake`
+  (retry-mode AGAIN -> park via secure_open loop), `xtc_tls_read/write/shutdown`,
+  `xtc_tls_wants_read/write`, `xtc_tls_clear_wants`, `xtc_tls_destroy`.
+- introspection (P4): `xtc_tls_get_version/cipher/cipher_bits`,
+  `xtc_tls_get_peer_common_name/subject_dn/issuer_dn/serial`,
+  `xtc_tls_get_server_cert_hash` (SCRAM channel binding -- confront R3 DN-format
+  + R9 buffer-size here), `xtc_tls_has_peer_cert`, `xtc_tls_get_alpn_selected`.
+
+P2 START: build the server `xtc_tls_ctx_t` in `be_tls_init` from default_host GUCs
+alongside SSL_context; flip `be_tls_xtc_available()` to return `ctx != NULL`.  Gate:
+init succeeds/FATALs identically for good/bad certs; no connection uses it yet
+(open still needs P3).  Needs an ssl-cert EC2 box (src/test/ssl infra) to validate.
