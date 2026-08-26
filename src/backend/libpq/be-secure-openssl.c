@@ -101,6 +101,32 @@ static bool initialize_dh(SSL_CTX *context, bool isServerStart);
 static bool initialize_ecdh(SSL_CTX *context, bool isServerStart);
 static const char *SSLerrmessageExt(unsigned long ecode, const char *replacement);
 static const char *SSLerrmessage(unsigned long ecode);
+
+#ifdef USE_XTC_CARRIER
+/*
+ * xtc TLS stack (fiber path) -- MULTITHREADED_TLS_XTC_DESIGN.md.
+ *
+ * P1 SCAFFOLDING: be_tls_xtc_available() returns false, so be_tls_open_server
+ * never takes the xtc branch, port->xtc_tls stays NULL, and every dispatch head
+ * check above is dead.  The bodies below are unreachable stubs (elog(FATAL)) so
+ * the file compiles+links; P2/P3 replace them with the real ctx build /
+ * transport / read-write-close, P4 the getters.  Process mode and non-fiber
+ * threaded mode are byte-for-byte unchanged (all of this is behind
+ * USE_XTC_CARRIER AND a NULL port->xtc_tls).
+ */
+static bool be_tls_xtc_available(void);
+static int	be_tls_open_server_xtc(Port *port);
+static ssize_t be_tls_read_xtc(Port *port, void *ptr, size_t len, int *waitfor);
+static ssize_t be_tls_write_xtc(Port *port, const void *ptr, size_t len, int *waitfor);
+static void be_tls_close_xtc(Port *port);
+static int	be_tls_get_cipher_bits_xtc(Port *port);
+static const char *be_tls_get_version_xtc(Port *port);
+static const char *be_tls_get_cipher_xtc(Port *port);
+static void be_tls_get_peer_subject_name_xtc(Port *port, char *ptr, size_t len);
+static void be_tls_get_peer_issuer_name_xtc(Port *port, char *ptr, size_t len);
+static void be_tls_get_peer_serial_xtc(Port *port, char *ptr, size_t len);
+static char *be_tls_get_certificate_hash_xtc(Port *port, size_t *len);
+#endif							/* USE_XTC_CARRIER */
 static bool init_host_context(HostsLine *host, bool isServerStart, bool *hasWarned)
 			pg_attribute_nonnull(3);
 static void host_context_cleanup_cb(void *arg);
@@ -880,6 +906,17 @@ be_tls_open_server(Port *port)
 	 * carrier no-steal staging (the affine-section tripwire in pg_xtc_carrier.c).
 	 */
 	Assert(!(xtc_in_backend_fiber && ssl_sni && xtc_pg_backend_fiber_is_migratable()));
+
+	/*
+	 * Decision point (once per connection): on a fiber, if the xtc TLS stack is
+	 * built and available, drive the whole connection through xtc_tls_* instead
+	 * of OpenSSL.  be_tls_open_server_xtc sets port->xtc_tls; read/write/close
+	 * and the be_tls_get_* getters then dispatch on it.  Until P2 builds the ctx,
+	 * be_tls_xtc_available() returns false, so this is a dead branch and every
+	 * connection stays on OpenSSL (P1 = no behavior change).
+	 */
+	if (xtc_in_backend_fiber && be_tls_xtc_available())
+		return be_tls_open_server_xtc(port);	/* sets port->xtc_tls */
 #endif
 
 	if (!SSL_context)
@@ -1209,6 +1246,13 @@ aloop:
 void
 be_tls_close(Port *port)
 {
+#ifdef USE_XTC_CARRIER
+	if (port->xtc_tls != NULL)		/* fiber xtc_tls path only (P3+) */
+	{
+		be_tls_close_xtc(port);
+		return;
+	}
+#endif
 	if (port->ssl)
 	{
 		SSL_shutdown(port->ssl);
@@ -1243,6 +1287,10 @@ be_tls_read(Port *port, void *ptr, size_t len, int *waitfor)
 	int			err;
 	unsigned long ecode;
 
+#ifdef USE_XTC_CARRIER
+	if (port->xtc_tls != NULL)		/* fiber xtc_tls path only (P3+) */
+		return be_tls_read_xtc(port, ptr, len, waitfor);
+#endif
 	errno = 0;
 #ifdef USE_XTC_CARRIER
 	/* Phase B: OpenSSL's error queue is per-OS-thread; this span must not yield. */
@@ -1309,6 +1357,10 @@ be_tls_write(Port *port, const void *ptr, size_t len, int *waitfor)
 	int			err;
 	unsigned long ecode;
 
+#ifdef USE_XTC_CARRIER
+	if (port->xtc_tls != NULL)		/* fiber xtc_tls path only (P3+) */
+		return be_tls_write_xtc(port, ptr, len, waitfor);
+#endif
 	errno = 0;
 #ifdef USE_XTC_CARRIER
 	/* Phase B: OpenSSL's error queue is per-OS-thread; this span must not yield. */
@@ -2257,6 +2309,10 @@ be_tls_get_cipher_bits(Port *port)
 {
 	int			bits;
 
+#ifdef USE_XTC_CARRIER
+	if (port->xtc_tls != NULL)
+		return be_tls_get_cipher_bits_xtc(port);
+#endif
 	if (port->ssl)
 	{
 		SSL_get_cipher_bits(port->ssl, &bits);
@@ -2269,6 +2325,10 @@ be_tls_get_cipher_bits(Port *port)
 const char *
 be_tls_get_version(Port *port)
 {
+#ifdef USE_XTC_CARRIER
+	if (port->xtc_tls != NULL)
+		return be_tls_get_version_xtc(port);
+#endif
 	if (port->ssl)
 		return SSL_get_version(port->ssl);
 	else
@@ -2278,6 +2338,10 @@ be_tls_get_version(Port *port)
 const char *
 be_tls_get_cipher(Port *port)
 {
+#ifdef USE_XTC_CARRIER
+	if (port->xtc_tls != NULL)
+		return be_tls_get_cipher_xtc(port);
+#endif
 	if (port->ssl)
 		return SSL_get_cipher(port->ssl);
 	else
@@ -2287,6 +2351,13 @@ be_tls_get_cipher(Port *port)
 void
 be_tls_get_peer_subject_name(Port *port, char *ptr, size_t len)
 {
+#ifdef USE_XTC_CARRIER
+	if (port->xtc_tls != NULL)
+	{
+		be_tls_get_peer_subject_name_xtc(port, ptr, len);
+		return;
+	}
+#endif
 	if (port->peer)
 		strlcpy(ptr, X509_NAME_to_cstring(X509_get_subject_name(port->peer)), len);
 	else
@@ -2296,6 +2367,13 @@ be_tls_get_peer_subject_name(Port *port, char *ptr, size_t len)
 void
 be_tls_get_peer_issuer_name(Port *port, char *ptr, size_t len)
 {
+#ifdef USE_XTC_CARRIER
+	if (port->xtc_tls != NULL)
+	{
+		be_tls_get_peer_issuer_name_xtc(port, ptr, len);
+		return;
+	}
+#endif
 	if (port->peer)
 		strlcpy(ptr, X509_NAME_to_cstring(X509_get_issuer_name(port->peer)), len);
 	else
@@ -2305,6 +2383,13 @@ be_tls_get_peer_issuer_name(Port *port, char *ptr, size_t len)
 void
 be_tls_get_peer_serial(Port *port, char *ptr, size_t len)
 {
+#ifdef USE_XTC_CARRIER
+	if (port->xtc_tls != NULL)
+	{
+		be_tls_get_peer_serial_xtc(port, ptr, len);
+		return;
+	}
+#endif
 	if (port->peer)
 	{
 		ASN1_INTEGER *serial;
@@ -2339,6 +2424,10 @@ be_tls_get_certificate_hash(Port *port, size_t *len)
 	int			algo_nid;
 
 	*len = 0;
+#ifdef USE_XTC_CARRIER
+	if (port->xtc_tls != NULL)
+		return be_tls_get_certificate_hash_xtc(port, len);
+#endif
 	server_cert = SSL_get_certificate(port->ssl);
 	if (server_cert == NULL)
 		return NULL;
@@ -2596,3 +2685,110 @@ default_openssl_tls_init(SSL_CTX *context, bool isServerStart)
 			SSL_CTX_set_default_passwd_cb(context, dummy_ssl_passwd_cb);
 	}
 }
+
+#ifdef USE_XTC_CARRIER
+/* ------------------------------------------------------------ */
+/* xtc TLS stack (fiber path).  P1: scaffolding only (unreachable). */
+/* ------------------------------------------------------------ */
+
+/*
+ * True once the xtc TLS server context is built and usable (P2).  P1 returns
+ * false, so be_tls_open_server never dispatches to the xtc path and none of the
+ * *_xtc bodies below are ever reached.
+ */
+static bool
+be_tls_xtc_available(void)
+{
+	return false;				/* P2 wires this to the built xtc_tls ctx */
+}
+
+/* The following are all unreachable in P1 (guarded by a NULL port->xtc_tls). */
+#define XTC_TLS_UNIMPL() \
+	elog(FATAL, "xtc TLS path reached but not implemented (P1 scaffolding)")
+
+static int
+be_tls_open_server_xtc(Port *port)
+{
+	(void) port;
+	XTC_TLS_UNIMPL();
+	return -1;
+}
+
+static ssize_t
+be_tls_read_xtc(Port *port, void *ptr, size_t len, int *waitfor)
+{
+	(void) port; (void) ptr; (void) len; (void) waitfor;
+	XTC_TLS_UNIMPL();
+	return -1;
+}
+
+static ssize_t
+be_tls_write_xtc(Port *port, const void *ptr, size_t len, int *waitfor)
+{
+	(void) port; (void) ptr; (void) len; (void) waitfor;
+	XTC_TLS_UNIMPL();
+	return -1;
+}
+
+static void
+be_tls_close_xtc(Port *port)
+{
+	(void) port;
+	XTC_TLS_UNIMPL();
+}
+
+static int
+be_tls_get_cipher_bits_xtc(Port *port)
+{
+	(void) port;
+	XTC_TLS_UNIMPL();
+	return 0;
+}
+
+static const char *
+be_tls_get_version_xtc(Port *port)
+{
+	(void) port;
+	XTC_TLS_UNIMPL();
+	return NULL;
+}
+
+static const char *
+be_tls_get_cipher_xtc(Port *port)
+{
+	(void) port;
+	XTC_TLS_UNIMPL();
+	return NULL;
+}
+
+static void
+be_tls_get_peer_subject_name_xtc(Port *port, char *ptr, size_t len)
+{
+	(void) port; (void) ptr; (void) len;
+	XTC_TLS_UNIMPL();
+}
+
+static void
+be_tls_get_peer_issuer_name_xtc(Port *port, char *ptr, size_t len)
+{
+	(void) port; (void) ptr; (void) len;
+	XTC_TLS_UNIMPL();
+}
+
+static void
+be_tls_get_peer_serial_xtc(Port *port, char *ptr, size_t len)
+{
+	(void) port; (void) ptr; (void) len;
+	XTC_TLS_UNIMPL();
+}
+
+static char *
+be_tls_get_certificate_hash_xtc(Port *port, size_t *len)
+{
+	(void) port; (void) len;
+	XTC_TLS_UNIMPL();
+	return NULL;
+}
+
+#undef XTC_TLS_UNIMPL
+#endif							/* USE_XTC_CARRIER */
