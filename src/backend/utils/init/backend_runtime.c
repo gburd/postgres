@@ -1105,7 +1105,19 @@ InitializePgThreadRuntime(PgBackendExitContinuation exit_backend)
 			thread_runtime.extension_backend_model =
 				PG_BACKEND_MODEL_THREAD_PER_SESSION;
 		}
-		thread_runtime.extension_modules = process_runtime.extension_modules;
+		/*
+		 * Carry the early-runtime extension-module state into thread_runtime.
+		 * shared_preload_libraries modules registered runtime-scoped private
+		 * state (e.g. pg_stat_statements' shmem pointers) under CurrentPgRuntime
+		 * == NULL, so it landed in early_runtime_extension_modules; the
+		 * postmaster never ran InitializePgProcessRuntime, so
+		 * process_runtime.extension_modules is empty here.  Copy from early (not
+		 * from the empty process_runtime, and not a move -- a forked
+		 * process-fallback backend still needs to adopt the COW-inherited early
+		 * state).  Without this, such state is stranded in early and invisible to
+		 * carrier sessions under mt=on.
+		 */
+		PgRuntimeCopyEarlyExtensionModuleState(&thread_runtime);
 		PgRuntimeEnsureExtensionModuleMemoryContext(&thread_runtime.extension_modules);
 		PgBackendInitializeIdCounter();
 		thread_runtime_initialized = true;
