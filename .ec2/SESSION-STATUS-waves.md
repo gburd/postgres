@@ -260,3 +260,41 @@ Contrib AFFINE now: the 7 stateless + auto_explain + postgres_fdw + xml2 + pg_st
   state into the threaded runtime (only needed if a future extension's shmem_startup
   stashes state in PgRuntimeEnsureExtensionPrivateState; pgss used the small local fix).
 - Phase 16 broader contrib sweep; sanitizers/stress; Phase 17/19 deep-wait items.
+
+## Follow-up round 7 — the four large tasks (TLS / plpython / libxml / ext-shmem)
+Outcome by task (discipline: land only what is fully validated on available hardware):
+
+1. **Extension-shmem core fix (c): LANDED + validated (11d04686f9).**
+   PgRuntimeCopyEarlyExtensionModuleState -- postmaster copies early-runtime
+   extension-module state into thread_runtime so any preloaded extension's
+   runtime-scoped state reaches carriers.  Two-review SHIP-WITH-NITS; nit fixed;
+   my over-strict assert caught itself in test_backend_runtime/regress and was
+   removed.  Validated: process 245/245, test_backend_runtime full PASS, pgss view mt=on.
+
+2. **plpython Option C: MECHANICAL LAYER done, on branch plpython-optionc-wip (NOT landed).**
+   Per-session exec-context + explicit-subxact heads moved to backend_runtime
+   accessors (compiles clean).  The hard 60% -- per-entry PyGILState_Ensure/Release,
+   one-time PyEval_SaveThread, GD-per-session dict management, session-reset callback --
+   remains; deep CPython-embedding with corruption risk, needs a focused session +
+   TAP-012-style interleave validation.  Marker stays PROCESS (one-line escape hatch).
+
+3. **libxml per-context error handlers: IMPLEMENTED, on branch xml-per-ctxt-errhandler
+   (NOT landed).**  xmlCtxtSetErrorHandler/xmlXPathSetErrorHandler at the 5 core xml.c
+   ctxt sites, gated HAVE_XML_PER_CTXT_ERRHANDLER (libxml2>=2.13); compiles clean, no-op
+   (legacy global path) on <2.13.  BLOCKED ON VALIDATION: AL2023 ships libxml2 2.10.4
+   (<2.13) so the active path is unexercised on available AWS hardware -- cannot ship an
+   unvalidated-active-path change.  xml2 already safe via the landed tripwire +
+   xsltCleanupGlobals-skip; this is pure hardening.  Needs a libxml2>=2.13 box.
+
+4. **TLS be_tls_*->xtc_tls_* swap: NOT STARTED this round.**  Design + P0 gates confirmed
+   (implementation-ready), but it is the largest + most security-critical (SCRAM channel
+   binding via cert hash, CRL, verify-full hostname, cert/key/CA loading, sslinfo/
+   pg_stat_ssl parity) -- a genuine multi-session effort that should not be rushed
+   alongside three others.  Deferred as the next focused single-task effort.
+
+## Remaining follow-ups
+- TLS swap (design ready; own focused effort).
+- plpython Option C: the GIL/GD/reset core (branch plpython-optionc-wip has the plumbing).
+- libxml per-context: validate the active path on a libxml2>=2.13 box, then land; + xml2
+  context-less xmlReadMemory conversion.
+- rendezvous_hash unlocked-insert race (pre-existing, F6) -- separate hardening ticket.
