@@ -360,6 +360,16 @@ PLy_function_cleanup_srfstate(PLyProcedureCache *pcache)
 
 	if (srfstate != NULL)
 	{
+		/*
+		 * Take the GIL: this is reached from PLy_exec_function (GIL already
+		 * held -- re-entrant) AND from ShutdownPLyFunction (ExprContext
+		 * shutdown on LIMIT/rescan/end-of-query) and RemovePLyProcedureCache
+		 * (xact abort), both of which run OUTSIDE any PL handler with NO GIL
+		 * held.  A Python DECREF without the GIL under multithreaded=on corrupts
+		 * refcounts / fail-stops the process.
+		 */
+		PyGILState_STATE gilstate = PyGILState_Ensure();
+
 		/* Release refcount on the iter, if we still have one */
 		Py_XDECREF(srfstate->iter);
 		srfstate->iter = NULL;
@@ -368,6 +378,8 @@ PLy_function_cleanup_srfstate(PLyProcedureCache *pcache)
 		if (srfstate->savedargs)
 			PLy_function_drop_args(srfstate->savedargs);
 		srfstate->savedargs = NULL;
+
+		PyGILState_Release(gilstate);
 
 		pfree(srfstate);
 		pcache->srfstate = NULL;

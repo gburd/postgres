@@ -449,9 +449,21 @@ PLy_procedure_compile(PLyProcedure *proc, const char *src)
 void
 PLy_procedure_delete(PLyProcedure *proc)
 {
+	/*
+	 * Take the GIL around the Python DECREFs: this is reached not only from a
+	 * PL handler (GIL already held -- re-entrant Ensure just bumps the count)
+	 * but also from the function_manager session-reset bucket and
+	 * RemovePLyProcedureCache at (sub)transaction abort, which run with NO GIL
+	 * held on a carrier thread.  Under multithreaded=on a Python DECREF without
+	 * the GIL corrupts refcounts / fail-stops the process.  PyGILState is
+	 * re-entrant per OS thread, so this is a no-op-cost bump when already held.
+	 */
+	PyGILState_STATE gilstate = PyGILState_Ensure();
+
 	Py_XDECREF(proc->code);
 	Py_XDECREF(proc->statics);
 	Py_XDECREF(proc->globals);
+	PyGILState_Release(gilstate);
 	MemoryContextDelete(proc->mcxt);
 }
 

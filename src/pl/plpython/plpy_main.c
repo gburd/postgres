@@ -65,11 +65,12 @@ static void PLy_pop_execution_context(void);
 PyObject   *PLy_interp_globals = NULL;
 
 /*
- * Process-wide (NOT per-session): true once PyEval_SaveThread() has released the
- * GIL after interpreter init, so other carrier OS threads may acquire it via
- * PyGILState_Ensure() at PL entry.  Set once by the first session to touch Python.
+ * Process-wide (NOT per-session): true once _PG_init has built the interpreter
+ * (and released the GIL via PyEval_SaveThread).  Guards the whole _PG_init body
+ * so the per-session re-invocation the loader does under multithreaded=on is a
+ * clean no-op, and so PyEval_SaveThread runs exactly once per process.
  */
-static bool plpython_gil_initialized = false;
+static bool plpython_process_inited = false;
 
 #define plpython_reset_registered (*PgCurrentPLpythonResetRegisteredRef())
 
@@ -130,6 +131,25 @@ _PG_init(void)
 	PyObject   *GD;
 	PyObject   *plpy_mod;
 
+	/*
+	 * Do the interpreter construction exactly ONCE per process.
+	 *
+	 * Under multithreaded=on the loader re-invokes _PG_init once per session
+	 * (dfmgr module_needs_session_init), the same way it does for plperl.  But
+	 * plpython's _PG_init is entirely PROCESS-once interpreter construction
+	 * (Py_Initialize, the plpy module, the GD template) -- it registers no
+	 * per-session custom GUCs -- so a per-session re-run must be a clean no-op:
+	 * re-running it would re-Py_Initialize/re-import/re-INCREF WITHOUT the GIL
+	 * (already released by the first session's PyEval_SaveThread below) and
+	 * double-release the GIL.  plpython_process_inited guards the whole body; it
+	 * is flipped while the init thread still holds the GIL (before
+	 * PyEval_SaveThread), so it is set-once-then-read and never re-entered
+	 * mid-construction.  (The very first load runs single-threaded via the dfmgr
+	 * load path; subsequent per-session touches hit this guard and return.)
+	 */
+	if (plpython_process_inited)
+		return;
+
 	pg_bindtextdomain(TEXTDOMAIN);
 
 	/* Add plpy to table of built-in modules. */
@@ -178,17 +198,15 @@ _PG_init(void)
 	 * each session, so no process-load-time reset is needed here.
 	 *
 	 * GIL: interpreter + exception objects + GD template are now fully built,
-	 * and the init OS thread holds the GIL.  Release it exactly once so any
-	 * carrier OS thread can acquire it via PyGILState_Ensure() at PL entry.  We
-	 * discard the returned PyThreadState* on purpose: from here on ALL Python
-	 * access is bracketed by PyGILState_Ensure()/Release(), never the save/restore
-	 * pairing (carriers are distinct OS threads).
+	 * and the init OS thread holds the GIL.  Flip the process-once guard while we
+	 * still hold the GIL, then release it exactly once so any carrier OS thread
+	 * can acquire it via PyGILState_Ensure() at PL entry.  We discard the
+	 * returned PyThreadState* on purpose: from here on ALL Python access is
+	 * bracketed by PyGILState_Ensure()/Release(), never the save/restore pairing
+	 * (carriers are distinct OS threads).
 	 */
-	if (!plpython_gil_initialized)
-	{
-		(void) PyEval_SaveThread();
-		plpython_gil_initialized = true;
-	}
+	plpython_process_inited = true;
+	(void) PyEval_SaveThread();
 }
 
 Datum
