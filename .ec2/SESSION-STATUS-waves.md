@@ -298,3 +298,24 @@ Outcome by task (discipline: land only what is fully validated on available hard
 - libxml per-context: validate the active path on a libxml2>=2.13 box, then land; + xml2
   context-less xmlReadMemory conversion.
 - rendezvous_hash unlocked-insert race (pre-existing, F6) -- separate hardening ticket.
+
+## Follow-up round 8 — #3 libxml + #2 plpython LANDED (both through 2-review gate)
+- #3 libxml per-context error handlers: LANDED (c8d530e674).  Validated by building
+  libxml2 2.14.3 from source on AL2023 (ships 2.10.4) so the >=2.13 active path is
+  exercised: process 245/245, concurrent xml/xpath error isolation across carriers,
+  tripwire 0-fired; no-op byte-for-byte on <2.13.
+- #2 plpython Option C: LANDED (ce118210b6) -> plpython3u is POOLED_PROTOCOL_AFFINE.
+  Implementation review BLOCK caught 3 whole-process-crash bugs (per-session _PG_init
+  re-run/double-SaveThread; proc-cache teardown DECREF no-GIL; SRF/abort callback DECREF
+  no-GIL) -- all fixed (rule: every Python touch under a held GIL) + a build-order bug,
+  then validated: plpython regression PASS, GD per-session isolation (6 concurrent),
+  SRF+LIMIT + abort-path SRF (both B3 paths), nested SPI, subxact, 0 crashes, 0 GIL asserts.
+
+## Remaining
+- #4 TLS be_tls_*->xtc_tls_* swap: the last + largest + most security-critical (SNI,
+  cert/key/CA/CRL, handshake, read/write, SCRAM channel-binding cert hash, verify-full,
+  sslinfo/pg_stat_ssl parity, thin dispatch).  Design + P0 gates confirmed.  Next:
+  implement in reviewable/validatable PHASES (P1 Port field + dispatch scaffolding
+  first), not one giant commit; needs TLS-cert infra to validate end-to-end.
+- Durable follow-ups: xml2 context-less xmlReadMemory conversion; rendezvous_hash
+  unlocked-insert race (pre-existing).
