@@ -319,3 +319,13 @@ Outcome by task (discipline: land only what is fully validated on available hard
   first), not one giant commit; needs TLS-cert infra to validate end-to-end.
 - Durable follow-ups: xml2 context-less xmlReadMemory conversion; rendezvous_hash
   unlocked-insert race (pre-existing).
+
+## Round 8 addendum — #4 TLS P1 on branch tls-xtc-p1 (NOT landed)
+P1 (Port xtc_tls field + 10-site dispatch skeleton, xtc branch dead, 12 elog(FATAL)
+stubs) IMPLEMENTED + full-local-build-clean with USE_XTC_CARRIER.  NO-OP by
+construction (be_tls_xtc_available()==false).  Kept on branch, NOT landed to xtc:
+dead FATAL-stub scaffolding earns trunk only once P2/P3 make it live + validated on
+an ssl-cert box.  Design doc has the confirmed v1.37 xtc_tls server API + the full
+GUC->xtc_tls_opts_t map; P2 (ctx build in be_tls_init) is the precise next step.
+#4 remains a multi-session security-critical effort (P4 = SCRAM channel-binding cert
+hash) needing per-phase 2-review + src/test/ssl TAP; not rushed into one commit.
