@@ -77,6 +77,21 @@
 #define PgXmlErrorPtr xmlErrorPtr
 #endif
 
+/*
+ * libxml2 2.13 added per-parser-context / per-xpath-context structured error
+ * handlers (xmlCtxtSetErrorHandler / xmlXPathSetErrorHandler).  When available,
+ * we attach our handler to each context we create instead of relying on the
+ * OS-thread-global xmlSetStructuredErrorFunc that pg_xml_init installs -- which
+ * under the threaded runtime is only safe because of an implicit "no fiber yield
+ * between pg_xml_init and pg_xml_done" invariant (enforced today by the
+ * XtcPgNoStealEnter/Leave tripwire).  Per-context handlers touch no global, so
+ * they are migration-safe by construction; the global install stays as a
+ * belt-and-suspenders fallback for libxml-internal call sites and for < 2.13.
+ */
+#if LIBXML_VERSION >= 21300
+#define HAVE_XML_PER_CTXT_ERRHANDLER 1
+#endif
+
 #endif							/* USE_LIBXML */
 
 #include "access/htup_details.h"
@@ -133,8 +148,7 @@ static xmlParserInputPtr xmlPgEntityLoader(const char *URL, const char *ID,
 										   xmlParserCtxtPtr ctxt);
 static void xml_errsave(Node *escontext, PgXmlErrorContext *errcxt,
 						int sqlcode, const char *msg);
-static void xml_errorHandler(void *data, PgXmlErrorPtr error);
-static int	errdetail_for_xml_code(int code);
+static void xml_errorHandler(void *data, PgXmlErrorPtr error);static int	errdetail_for_xml_code(int code);
 static void chopStringInfoNewlines(StringInfo str);
 static void appendStringInfoLineSeparator(StringInfo str);
 
@@ -1395,6 +1409,40 @@ pg_xml_done(PgXmlErrorContext *errcxt, bool isError)
 	XtcPgNoStealLeave();
 }
 
+/*
+ * pg_xml_ctxt_seterror --- attach errcxt's structured error handler directly to
+ * a parser context (libxml2 >= 2.13), so parse errors route to errcxt without
+ * touching the OS-thread-global handler.  On older libxml2 this is a no-op and
+ * the global installed by pg_xml_init() catches the errors (legacy path).  Call
+ * right after creating the parser context and before parsing.
+ */
+static inline void
+pg_xml_ctxt_seterror(PgXmlErrorContext *errcxt, xmlParserCtxtPtr ctxt)
+{
+#ifdef HAVE_XML_PER_CTXT_ERRHANDLER
+	if (ctxt != NULL)
+		xmlCtxtSetErrorHandler(ctxt, xml_errorHandler, (void *) errcxt);
+#else
+	(void) errcxt;
+	(void) ctxt;
+#endif
+}
+
+/*
+ * pg_xml_xpath_seterror --- same, for an xpath context (libxml2 >= 2.13).
+ */
+static inline void
+pg_xml_xpath_seterror(PgXmlErrorContext *errcxt, xmlXPathContextPtr xpathctx)
+{
+#ifdef HAVE_XML_PER_CTXT_ERRHANDLER
+	if (xpathctx != NULL)
+		xmlXPathSetErrorHandler(xpathctx, xml_errorHandler, (void *) errcxt);
+#else
+	(void) errcxt;
+	(void) xpathctx;
+#endif
+}
+
 
 /*
  * pg_xml_error_occurred() --- test the error flag
@@ -1893,6 +1941,7 @@ xml_parse(text *data, XmlOptionType xmloption_arg,
 			if (ctxt == NULL || xmlerrcxt->err_occurred)
 				xml_ereport(xmlerrcxt, ERROR, ERRCODE_OUT_OF_MEMORY,
 							"could not allocate parser context");
+			pg_xml_ctxt_seterror(xmlerrcxt, ctxt);
 
 			/*
 			 * Select parse options.
@@ -4486,6 +4535,7 @@ xpath_internal(text *xpath_expr_text, xmltype *data, ArrayType *namespaces,
 		if (ctxt == NULL || xmlerrcxt->err_occurred)
 			xml_ereport(xmlerrcxt, ERROR, ERRCODE_OUT_OF_MEMORY,
 						"could not allocate parser context");
+		pg_xml_ctxt_seterror(xmlerrcxt, ctxt);
 		doc = xmlCtxtReadMemory(ctxt, (char *) string + xmldecl_len,
 								len - xmldecl_len, NULL, NULL, 0);
 		if (doc == NULL || xmlerrcxt->err_occurred)
@@ -4495,6 +4545,7 @@ xpath_internal(text *xpath_expr_text, xmltype *data, ArrayType *namespaces,
 		if (xpathctx == NULL || xmlerrcxt->err_occurred)
 			xml_ereport(xmlerrcxt, ERROR, ERRCODE_OUT_OF_MEMORY,
 						"could not allocate XPath context");
+		pg_xml_xpath_seterror(xmlerrcxt, xpathctx);
 		xpathctx->node = (xmlNodePtr) doc;
 
 		/* register namespaces, if any */
@@ -4832,6 +4883,7 @@ XmlTableSetDocument(TableFuncScanState *state, Datum value)
 		if (xpathcxt == NULL || xtCxt->xmlerrcxt->err_occurred)
 			xml_ereport(xtCxt->xmlerrcxt, ERROR, ERRCODE_OUT_OF_MEMORY,
 						"could not allocate XPath context");
+		pg_xml_xpath_seterror(xtCxt->xmlerrcxt, xpathcxt);
 		xpathcxt->node = (xmlNodePtr) doc;
 	}
 	PG_CATCH();
