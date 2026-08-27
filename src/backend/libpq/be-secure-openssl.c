@@ -2783,15 +2783,12 @@ build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 	 *   - no default_host: nothing to build from.
 	 *   - ssl_sni on (P6): per-host ClientHello context selection isn't wired;
 	 *     the SNI no-migrate pin keeps these on OpenSSL.
-	 *   - client-cert auth (ssl_ca configured -> the server requests+verifies
-	 *     client certs): xtc client-cert verify + peer-DN extraction is P5.  Until
-	 *     then, pin so cert-auth (clientcert=verify-ca/full) keeps working via
-	 *     OpenSSL rather than failing "no root certificate store".
 	 *   - encrypted server key (ssl_passphrase_command, P7).
+	 * Client-cert verify (ssl_ca configured) is now handled below (P5), not
+	 * pinned.
 	 */
 	if (default_host == NULL ||
 		ssl_sni ||
-		(default_host->ssl_ca && default_host->ssl_ca[0]) ||
 		(ssl_passphrase_command && ssl_passphrase_command[0] != '\0'))
 	{
 		if (xtc_tls_context != NULL)
@@ -2805,7 +2802,23 @@ build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 	memset(&opts, 0, sizeof(opts));
 	opts.cert_file = default_host->ssl_cert;
 	opts.key_file = default_host->ssl_key;
-	opts.ca_file = NULL;			/* no client-cert verify yet (P5); pinned above */
+	/*
+	 * P5 client-cert verify: when a CA is configured, load it and REQUEST (not
+	 * require) a client certificate -- matching OpenSSL's
+	 * SSL_VERIFY_PEER|SSL_VERIFY_CLIENT_ONCE.  The decision to REQUIRE a cert is
+	 * made per-connection later from pg_hba.conf (clientcert=verify-ca/full), so
+	 * REQUEST is correct here (accept a handshake with no client cert; hba then
+	 * rejects if it demanded one).  ssl_loaded_verify_locations mirrors the
+	 * OpenSSL path so downstream code sees a CA was loaded.
+	 */
+	if (default_host->ssl_ca && default_host->ssl_ca[0])
+	{
+		opts.ca_file = default_host->ssl_ca;
+		opts.verify_peer_mode = XTC_TLS_VERIFY_REQUEST;
+		ssl_loaded_verify_locations = true;
+	}
+	else
+		opts.ca_file = NULL;
 	opts.crl_file = (ssl_crl_file && ssl_crl_file[0]) ? ssl_crl_file : NULL;
 	opts.crl_dir = (ssl_crl_dir && ssl_crl_dir[0]) ? ssl_crl_dir : NULL;
 	opts.cipher_list = (SSLCipherList && SSLCipherList[0]) ? SSLCipherList : NULL;
@@ -2973,14 +2986,54 @@ be_tls_open_server_xtc(Port *port)
 	/*
 	 * Handshake complete.  Wire ALPN so direct-SSL connections (which require
 	 * port->alpn_used, backend_startup.c ProcessSSLStartup) are accepted, exactly
-	 * as the OpenSSL body does from SSL_get0_alpn_selected.  Client-certificate
-	 * extraction (peer_cn/peer_dn/peer_cert_valid) stays deferred to P5, so those
-	 * remain cleared -- downstream auth (hba, SCRAM) then behaves like an OpenSSL
-	 * connection that presented no client cert.
+	 * as the OpenSSL body does from SSL_get0_alpn_selected.
 	 */
 	port->peer_cn = NULL;
 	port->peer_dn = NULL;
 	port->peer_cert_valid = false;
+
+	/*
+	 * P5: extract the client certificate identity if the peer presented a valid
+	 * one (xtc_tls_has_peer_cert returns non-zero only when a cert is present AND
+	 * SSL_get_verify_result == X509_V_OK).  Fill peer_cn / peer_dn /
+	 * peer_cert_valid so pg_hba.conf cert auth (clientcert=verify-ca/full) and
+	 * cert-map matching behave exactly as on the OpenSSL path.  The xtc getters
+	 * reject an embedded NUL in the CN/DN (XTC_E_INVAL) -- the CVE-2009-4034
+	 * truncation class -- which we treat as a fatal reject, matching OpenSSL.
+	 * peer_dn is RFC 2253 (matches PG's port->peer_dn).
+	 */
+	if (xtc_tls_has_peer_cert(tls))
+	{
+		char		cnbuf[MAXPGPATH];
+		char		dnbuf[MAXPGPATH];
+		int			cnrc;
+		int			dnrc;
+
+		cnrc = xtc_tls_get_peer_common_name(tls, cnbuf, sizeof(cnbuf));
+		if (cnrc == XTC_E_INVAL)
+		{
+			ereport(COMMERROR,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("SSL certificate's common name contains embedded null")));
+			goto xtc_peer_fail;
+		}
+		if (cnrc == XTC_OK)
+			port->peer_cn = MemoryContextStrdup(TopMemoryContext, cnbuf);
+		/* cnrc == XTC_E_NOTFOUND: no CN -> leave peer_cn NULL, like OpenSSL */
+
+		dnrc = xtc_tls_get_peer_subject_dn(tls, dnbuf, sizeof(dnbuf));
+		if (dnrc == XTC_E_INVAL)
+		{
+			ereport(COMMERROR,
+					(errcode(ERRCODE_PROTOCOL_VIOLATION),
+					 errmsg("SSL certificate's distinguished name contains embedded null")));
+			goto xtc_peer_fail;
+		}
+		if (dnrc == XTC_OK)
+			port->peer_dn = MemoryContextStrdup(GetMemoryChunkContext(port), dnbuf);
+
+		port->peer_cert_valid = true;
+	}
 
 	port->alpn_used = false;
 	{
@@ -2995,6 +3048,19 @@ be_tls_open_server_xtc(Port *port)
 	}
 
 	return 0;
+
+xtc_peer_fail:
+	if (port->peer_cn != NULL)
+	{
+		pfree(port->peer_cn);
+		port->peer_cn = NULL;
+	}
+	if (port->peer_dn != NULL)
+	{
+		pfree(port->peer_dn);
+		port->peer_dn = NULL;
+	}
+	return -1;
 }
 
 static ssize_t
@@ -3100,33 +3166,40 @@ be_tls_get_cipher_xtc(Port *port)
 }
 
 /*
- * Peer-certificate getters.  P3/P4 do not yet extract a client cert (that is
- * P5), so these return the "no certificate" answers: safe empties.  The
- * certificate-hash getter (SCRAM channel binding, below) IS implemented -- it
- * hashes the SERVER cert, which exists regardless of client-cert verify.  P5
- * replaces the peer_* getters with xtc_tls_get_peer_* + R3 (DN format) handling.
+ * Peer-certificate introspection (P4).  Wired to the xtc getters.  NOTE (R3):
+ * PG's OpenSSL be_tls_get_peer_subject_name/_issuer_name render the SLASH form
+ * (/CN=x/O=y) used by log_line_prefix %s and the sslinfo extension, whereas
+ * xtc_tls_get_peer_subject_dn/_issuer_dn render RFC 2253 (CN=x,O=y) -- the same
+ * form as port->peer_dn.  So on the xtc path these log/sslinfo fields are RFC
+ * 2253; a documented cosmetic divergence, not a correctness issue (auth/cert-map
+ * uses peer_cn / peer_dn, both already RFC 2253 / CN string on both paths).
+ * On no-cert / error these leave an empty string, matching OpenSSL.
  */
 static void
 be_tls_get_peer_subject_name_xtc(Port *port, char *ptr, size_t len)
 {
-	(void) port;
-	if (len > 0)
+	if (len == 0)
+		return;
+	if (xtc_tls_get_peer_subject_dn((xtc_tls_t *) port->xtc_tls, ptr, len) != XTC_OK)
 		ptr[0] = '\0';
 }
 
 static void
 be_tls_get_peer_issuer_name_xtc(Port *port, char *ptr, size_t len)
 {
-	(void) port;
-	if (len > 0)
+	if (len == 0)
+		return;
+	if (xtc_tls_get_peer_issuer_dn((xtc_tls_t *) port->xtc_tls, ptr, len) != XTC_OK)
 		ptr[0] = '\0';
 }
 
 static void
 be_tls_get_peer_serial_xtc(Port *port, char *ptr, size_t len)
 {
-	(void) port;
-	if (len > 0)
+	if (len == 0)
+		return;
+	/* xtc renders the serial as decimal (BN_bn2dec), matching OpenSSL. */
+	if (xtc_tls_get_peer_serial((xtc_tls_t *) port->xtc_tls, ptr, len) != XTC_OK)
 		ptr[0] = '\0';
 }
 
