@@ -6013,7 +6013,8 @@ PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
 										  struct pollfd *poll_scratch,
 										  int max_backends,
 										  int wake_fd,
-										  long timeout_ms)
+										  long timeout_ms,
+										  bool *had_parked)
 {
 	int			nbackends = 0;
 	int			registered_sockets = 0;
@@ -6021,6 +6022,9 @@ PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
 	int			wake_slot = -1;
 	long		wait_timeout_ms = timeout_ms;
 	int			rc;
+
+	if (had_parked != NULL)
+		*had_parked = false;
 
 	if (runtime == NULL || scratch == NULL || poll_scratch == NULL ||
 		max_backends <= 0)
@@ -6043,6 +6047,18 @@ PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
 	}
 	if (nbackends <= 0)
 		return 0;
+
+	/*
+	 * We leased >=1 parked session to poll.  Tell the caller so it keeps
+	 * re-polling these fds (looping back here every timeout_ms) instead of
+	 * sleeping on the queue-only wait_for_work: a queue-only wait would not
+	 * observe a parked session's socket becoming readable, so a low-frequency
+	 * idle session (e.g. a monitoring connection) could hang indefinitely while
+	 * every carrier sleeps -- the lost-wakeup that stalled the HammerDB monitor
+	 * VU.  had_parked keeps at least this carrier watching the parked fds.
+	 */
+	if (had_parked != NULL)
+		*had_parked = true;
 
 	for (int i = 0; i <= nbackends; i++)
 	{
