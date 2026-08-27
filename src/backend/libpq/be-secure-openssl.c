@@ -2787,21 +2787,17 @@ build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 	 *   - no default_host: nothing to build from.
 	 *   - ssl_sni on (P6): per-host ClientHello context selection isn't wired;
 	 *     the SNI no-migrate pin keeps these on OpenSSL.
-	 *   - client-cert auth (ssl_ca configured): the xtc path VERIFIES client certs
-	 *     correctly (verify_peer_mode + peer_cn/dn extraction, all implemented
-	 *     below and validated -- revoked/untrusted/missing-intermediate are all
-	 *     rejected), BUT libxtc has no verify-failure-detail hook, so the rich
-	 *     server-log errdetail ("verification failed at depth N: <reason>" +
-	 *     "Failed certificate data: subject/serial/issuer") that PG's OpenSSL
-	 *     verify_cb produces is lost.  Rather than ship degraded diagnostics,
-	 *     pin ssl_ca servers to OpenSSL until the libxtc verify-detail hook lands
-	 *     (filed: libxtc-tls-integration-findings, gap #2).  The verify/extraction
-	 *     code below is kept and correct for the moment the pin is lifted.
+	 *   - client-cert auth (ssl_ca configured): un-pinned as of libxtc v1.38.0.
+	 *     The xtc path verifies client certs (verify_peer_mode + peer_cn/dn
+	 *     extraction below), and v1.38 added xtc_tls_get_verify_error(), so the
+	 *     handshake-failure path now reports the same verify errdetail (X509_V_*
+	 *     code + reason string) that PG's OpenSSL verify_cb produces -- closing the
+	 *     diagnostics gap that had kept ssl_ca pinned.  The RSA-PSS channel-binding
+	 *     hash was also corrected in v1.38 (X509_get_signature_info).
 	 *   - encrypted server key (ssl_passphrase_command, P7).
 	 */
 	if (default_host == NULL ||
 		ssl_sni ||
-		(default_host->ssl_ca && default_host->ssl_ca[0]) ||
 		(ssl_passphrase_command && ssl_passphrase_command[0] != '\0'))
 	{
 		if (xtc_tls_context != NULL)
@@ -2818,8 +2814,11 @@ build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 	opts.key_file = default_host->ssl_key;
 	/*
 	 * P5 client-cert verify: when a CA is configured, load it and REQUEST (not
-	 * require) a client certificate -- matching OpenSSL's
-	 * SSL_VERIFY_PEER|SSL_VERIFY_CLIENT_ONCE.  The decision to REQUIRE a cert is
+	 * require) a client certificate.  This is SSL_VERIFY_PEER (verify a presented
+	 * cert, fail the handshake if invalid) WITHOUT FAIL_IF_NO_PEER_CERT -- the
+	 * same verification outcome as OpenSSL's SSL_VERIFY_PEER|SSL_VERIFY_CLIENT_ONCE
+	 * (CLIENT_ONCE only suppresses renegotiation re-requests, immaterial here).
+	 * The decision to REQUIRE a cert is
 	 * made per-connection later from pg_hba.conf (clientcert=verify-ca/full), so
 	 * REQUEST is correct here (accept a handshake with no client cert; hba then
 	 * rejects if it demanded one).  ssl_loaded_verify_locations mirrors the
@@ -2991,10 +2990,38 @@ be_tls_open_server_xtc(Port *port)
 			break;
 		if (rc != XTC_E_AGAIN)
 		{
+			/*
+			 * Attach client-certificate verify detail if the failure was a
+			 * verification error, matching PG's OpenSSL verify_cb errdetail.
+			 * xtc_tls_get_verify_error (libxtc v1.38) returns the backend
+			 * X509_V_* code + a human-readable reason; X509_V_OK (0) means the
+			 * failure was not a cert-verify problem (protocol/EOF/etc.), so we
+			 * only add detail for a non-OK verify result.
+			 */
+			long		vfy_err = 0;
+			char		vfy_buf[256];
+			bool		have_vfy;
+
+			vfy_buf[0] = '\0';
+			have_vfy = (xtc_tls_get_verify_error(tls, &vfy_err, vfy_buf,
+												 sizeof(vfy_buf)) == XTC_OK &&
+						vfy_err != 0 && vfy_buf[0] != '\0');
+			/*
+			 * ponytail: errdetail says "at depth 0" and omits the failing cert's
+			 * subject/serial/issuer (PG's OpenSSL verify_cb second line).
+			 * xtc_tls_get_verify_error returns only the result code + reason, not
+			 * the failure depth or the offending cert -- those need a libxtc verify
+			 * CALLBACK (filed, LIBXTC_TLS_INTEGRATION_FINDINGS residual gap).  Auth
+			 * is correct/fail-closed; this is reduced log detail only (7 src/test/
+			 * ssl 001 "log matches" assertions stay red on the second line).
+			 */
 			ereport(COMMERROR,
 					(errcode(ERRCODE_PROTOCOL_VIOLATION),
 					 errmsg("could not accept xtc TLS connection: %s",
-							xtc_strerror(rc))));
+							xtc_strerror(rc)),
+					 have_vfy ?
+					 errdetail_internal("Client certificate verification failed: %s.",
+										vfy_buf) : 0));
 			xtc_tls_destroy(tls);
 			port->xtc_tls = NULL;
 			port->ssl_in_use = false;
