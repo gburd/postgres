@@ -55,3 +55,28 @@ server certs may diverge on the SCRAM cert-hash (PG uses X509_get_signature_info
 libxtc uses OBJ_find_sigid_algs) -> SCRAM-PLUS could fail for an RSA-PSS-signed server
 cert on the xtc path.  RSA/ECDSA-SHA256 (common case + all TAP certs) unaffected.
 Process regress 245/245 0-diffs (shared-file change does not regress the non-TLS path).
+
+## P4+P5 (2026-08-27, origin/xtc 8f1d587adb)
+- P4: peer-cert introspection getters (subject/issuer DN, serial) wired to xtc_tls_get_*.
+- P5: client-cert verify (verify_peer_mode=REQUEST + ca_file) + peer_cn/dn/cert_valid
+  extraction + per-connection ssl_loaded_verify_locations; CheckCertAuth core assert
+  fixed (port->ssl -> port->ssl_in_use; the xtc path has no OpenSSL SSL*).
+- check-threaded-ssl (001/002/004) showed the xtc client-cert path AUTHENTICATES
+  correctly (revoked/untrusted/missing-intermediate all rejected, all outcome asserts
+  pass), but 12 ': log matches' fail: the rich verify-FAILURE errdetail from PG's OpenSSL
+  verify_cb is unavailable on the xtc path (libxtc gap #2, filed).  Decision: keep ssl_ca
+  servers pinned to OpenSSL until the libxtc verify-detail hook lands, to avoid shipping
+  degraded failure diagnostics.  P5 verify/extraction code kept + correct for un-pin.
+- Result: process + threaded check-threaded-ssl (001/002/004) PASS; process regress
+  245/245 0-diffs.  Bugs caught by the gate: (1) ssl_loaded_verify_locations set at
+  init not per-conn (P5 no-op); (2) TRAP Assert(port->ssl) in CheckCertAuth (crash).
+
+## TLS phase status
+- P1 (dispatch), P2 (ctx build), P3 (transport/handshake/rw/close/ALPN/SCRAM cert-hash),
+  P4 (introspection), P5 (client-cert verify code): LANDED.
+- Active xtc surface: server-auth-only TLS (SCRAM/password over TLS).
+- Pinned to OpenSSL-on-fiber (defer-with-invariant): ssl_ca/client-cert (P5, until
+  libxtc verify-detail hook), ssl_sni (P6, until libxtc ClientHello ctx-swap #29),
+  ssl_passphrase_command (P7), ssl_dh_params_file (P7), openssl_tls_init_hook (P7),
+  RSA-PSS server cert SCRAM hash (until libxtc uses X509_get_signature_info).
+- libxtc requests filed: plan_docs/.../LIBXTC_TLS_INTEGRATION_FINDINGS.md.
