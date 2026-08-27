@@ -150,6 +150,10 @@ static PG_GLOBAL_RUNTIME SSL_CTX *SSL_context = NULL;
  */
 static PG_GLOBAL_RUNTIME xtc_tls_ctx_t *xtc_tls_context = NULL;
 static PG_GLOBAL_RUNTIME bool xtc_tls_open_enabled = false;
+/* True if xtc_tls_context was built with a client-CA (verify enabled).  Read per
+ * connection in be_tls_open_server_xtc to set the per-connection
+ * ssl_loaded_verify_locations, mirroring what sni_clienthello_cb does for OpenSSL. */
+static PG_GLOBAL_RUNTIME bool xtc_tls_ctx_has_ca = false;
 /*
  * Retired-context list (SIGHUP reload safety).  xtc_tls_ctx_t is NOT refcounted
  * (unlike OpenSSL's SSL_CTX, which each SSL pins), and per-connection xtc_tls_t
@@ -2796,6 +2800,7 @@ build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 											   xtc_tls_context);
 		xtc_tls_context = NULL;
 		xtc_tls_open_enabled = false;
+		xtc_tls_ctx_has_ca = false;
 		return;
 	}
 
@@ -2815,10 +2820,13 @@ build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 	{
 		opts.ca_file = default_host->ssl_ca;
 		opts.verify_peer_mode = XTC_TLS_VERIFY_REQUEST;
-		ssl_loaded_verify_locations = true;
+		xtc_tls_ctx_has_ca = true;
 	}
 	else
+	{
 		opts.ca_file = NULL;
+		xtc_tls_ctx_has_ca = false;
+	}
 	opts.crl_file = (ssl_crl_file && ssl_crl_file[0]) ? ssl_crl_file : NULL;
 	opts.crl_dir = (ssl_crl_dir && ssl_crl_dir[0]) ? ssl_crl_dir : NULL;
 	opts.cipher_list = (SSLCipherList && SSLCipherList[0]) ? SSLCipherList : NULL;
@@ -2850,6 +2858,7 @@ build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 											   xtc_tls_context);
 		xtc_tls_context = NULL;
 		xtc_tls_open_enabled = false;
+		xtc_tls_ctx_has_ca = false;
 		return;
 	}
 
@@ -2944,6 +2953,16 @@ be_tls_open_server_xtc(Port *port)
 	}
 	port->xtc_tls = tls;
 	port->ssl_in_use = true;
+
+	/*
+	 * Per-connection: record that a client-CA verify store is in effect (the ctx
+	 * was built with a CA).  ssl_loaded_verify_locations is a PER-CONNECTION
+	 * signal (auth.c gates clientcert on it), reset false for each connection, so
+	 * it must be set here on the fiber -- not once at ctx-build time in the
+	 * postmaster.  This mirrors what sni_clienthello_cb does for OpenSSL.
+	 */
+	if (xtc_tls_ctx_has_ca)
+		ssl_loaded_verify_locations = true;
 
 	/*
 	 * Drive the non-blocking handshake, parking the carrier through PG's
