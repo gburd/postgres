@@ -1963,6 +1963,7 @@ backend_pooled_protocol_carrier_entry(void *arg)
 		BackendPooledLogicalStart *logical_start;
 		PgBackend  *backend;
 		int			nready;
+		bool		had_parked = false;
 
 		Assert(CurrentPgCarrier == &carrier_start->carrier);
 		Assert(CurrentPgBackend == NULL);
@@ -2001,7 +2002,8 @@ backend_pooled_protocol_carrier_entry(void *arg)
 														   poll_scratch,
 														   max_scratch_backends,
 														   pooled_protocol_wake_fd,
-														   1000L);
+														   1000L,
+														   &had_parked);
 		if (nready > 0)
 		{
 			xtc_pg_runtime_counter_add(XTC_PG_RC_WAKES_DELIVERED, nready);	/* fusion F1 */
@@ -2020,6 +2022,18 @@ backend_pooled_protocol_carrier_entry(void *arg)
 		 * woken by signal_work.
 		 */
 		backend_pooled_protocol_wake_drain();
+		/*
+		 * If this carrier is watching parked sessions (had_parked), loop back to
+		 * re-poll them rather than sleeping on the queue-only wait_for_work.
+		 * WaitParkedReads already blocked a bounded 1000ms, so this is not a busy
+		 * spin; it keeps the parked fds continuously watched.  A queue-only wait
+		 * wakes ONLY on newly QUEUED work, so it would miss a parked session's
+		 * socket becoming readable -- a low-frequency idle session (the HammerDB
+		 * monitor VU's periodic pg_stat_database read) would then hang forever
+		 * while every carrier slept.  Only wait_for_work when nothing is parked.
+		 */
+		if (had_parked)
+			continue;
 		xtc_pg_runtime_counter_inc(XTC_PG_RC_QUEUE_WAITS);	/* fusion F1 */
 		backend_pooled_protocol_wait_for_work(10000L);
 	}

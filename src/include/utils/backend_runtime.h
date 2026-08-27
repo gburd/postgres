@@ -3503,7 +3503,8 @@ extern int	PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
 													 struct pollfd *poll_scratch,
 													 int max_backends,
 													 int wake_fd,
-													 long timeout_ms);
+													 long timeout_ms,
+													 bool *had_parked);
 extern bool PgRuntimeProtocolSchedulerRegisterCarrier(PgRuntime *runtime,
 													  PgCarrier *carrier);
 extern bool PgRuntimeProtocolSchedulerUnregisterCarrier(PgRuntime *runtime,
