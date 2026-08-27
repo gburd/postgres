@@ -2787,12 +2787,21 @@ build_xtc_tls_context(HostsLine *default_host, int ssl_ver_min,
 	 *   - no default_host: nothing to build from.
 	 *   - ssl_sni on (P6): per-host ClientHello context selection isn't wired;
 	 *     the SNI no-migrate pin keeps these on OpenSSL.
+	 *   - client-cert auth (ssl_ca configured): the xtc path VERIFIES client certs
+	 *     correctly (verify_peer_mode + peer_cn/dn extraction, all implemented
+	 *     below and validated -- revoked/untrusted/missing-intermediate are all
+	 *     rejected), BUT libxtc has no verify-failure-detail hook, so the rich
+	 *     server-log errdetail ("verification failed at depth N: <reason>" +
+	 *     "Failed certificate data: subject/serial/issuer") that PG's OpenSSL
+	 *     verify_cb produces is lost.  Rather than ship degraded diagnostics,
+	 *     pin ssl_ca servers to OpenSSL until the libxtc verify-detail hook lands
+	 *     (filed: libxtc-tls-integration-findings, gap #2).  The verify/extraction
+	 *     code below is kept and correct for the moment the pin is lifted.
 	 *   - encrypted server key (ssl_passphrase_command, P7).
-	 * Client-cert verify (ssl_ca configured) is now handled below (P5), not
-	 * pinned.
 	 */
 	if (default_host == NULL ||
 		ssl_sni ||
+		(default_host->ssl_ca && default_host->ssl_ca[0]) ||
 		(ssl_passphrase_command && ssl_passphrase_command[0] != '\0'))
 	{
 		if (xtc_tls_context != NULL)
