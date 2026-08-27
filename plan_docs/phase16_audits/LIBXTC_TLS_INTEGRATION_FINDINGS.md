@@ -135,3 +135,31 @@ MUST NOT destroy the old ctx in place (use-after-free). PostgreSQL retires old c
 to a never-freed list instead. If you'd consider refcounting the ctx wrapper (so
 `xtc_tls_destroy` on the last connection drops the ctx), that would let consumers avoid
 the bounded leak. Optional.
+
+## UPDATE (2026-08-27, after v1.38.0): #1 and #2 FIXED, one residual
+
+v1.38.0 fixed finding #1 (RSA-PSS channel-binding hash now uses
+X509_get_signature_info) and added xtc_tls_get_verify_error() for #2 -- both
+verified in PG: 002_scram (SCRAM channel binding + client-cert PLUS) now PASSES
+on the xtc path, and ssl_ca (client-cert) is UN-PINNED.  Thank you.
+
+### Residual [GAP]: verify-error accessor gives the RESULT, not the failing CERT
+xtc_tls_get_verify_error(tls, &x509_err, buf, len) returns SSL_get_verify_result +
+X509_verify_cert_error_string -- enough to log line 1 of PG's errdetail
+("Client certificate verification failed at depth 0: <reason>") which now MATCHES.
+But PG's OpenSSL verify_cb ALSO logs a second line naming the FAILING cert:
+  Failed certificate data (unverified): subject "/CN=ssltestuser", serial number N,
+  issuer "/CN=Test CA ..."
+Reproducing that needs the FAILING peer certificate (subject/serial/issuer) at the
+point of failure -- available to OpenSSL's per-depth X509_STORE_CTX verify callback,
+but NOT reachable from the final-result accessor (xtc_tls_has_peer_cert() returns 0
+on a failed verify, so the getters can't fetch it either).  7 src/test/ssl
+001_ssltests "log matches" assertions require this second line and stay red on the
+xtc path.  Auth is CORRECT (revoked/untrusted/missing-intermediate all rejected);
+this is a diagnostics-parity gap only.
+
+Request: a verify CALLBACK (OpenSSL SSL_set_verify(..., cb) shape) invoked per
+depth with the X509_STORE_CTX, OR an accessor that returns the failing cert's
+subject/serial/issuer + depth after a failed handshake (e.g. via
+SSL_get0_verified_chain / the last cert seen).  That closes the last errdetail-
+parity gap and turns check-threaded-ssl 001 fully green on the fiber path.
