@@ -2732,7 +2732,14 @@ CheckCertAuth(Port *port)
 	int			status_check_usermap = STATUS_ERROR;
 	char	   *peer_username = NULL;
 
-	Assert(port->ssl);
+	/*
+	 * TLS must be in use to have a client cert.  Assert on ssl_in_use rather
+	 * than port->ssl specifically: under multithreaded=on a fiber TLS connection
+	 * is served by the xtc_tls stack (port->xtc_tls set, port->ssl NULL), and it
+	 * fills port->peer_cn/peer_dn/peer_cert_valid the same way -- so cert auth is
+	 * stack-agnostic here.
+	 */
+	Assert(port->ssl_in_use);
 
 	/* select the correct field to compare */
 	switch (port->hba->clientcertname)
