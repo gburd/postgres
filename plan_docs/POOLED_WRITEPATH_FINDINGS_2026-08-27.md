@@ -60,3 +60,47 @@ connections"; harmless (the harness already tolerates it), but a client connecti
 in that window gets a hard fork-fail rather than a retry/wait.  Consider holding
 early client connections until the pool is ready instead of falling through to
 fork under multithreaded=on.
+
+## UPDATE (2026-08-27 pm): root-cause profiled -- it's carrier IDLE, not WAL
+
+Clean pgbench TPC-B (scale-200, c=64, durability ON, NVMe, -c overrides):
+fork 54,215 tps @ 6.9% idle  vs  pooled(32 car) 38,606-39,251 tps @ 25.8-28.5% idle
+= pooled is 0.71-0.72x fork and leaves ~27% of the machine IDLE under load.
+
+perf (system-wide): threaded lane = __cpuidle 44% self; all non-idle top symbols
+are TCP loopback (send/tcp_sendmsg/epoll_wait).  NO insertpos_lck, NO
+perform_spin_delay, NO LWLock, NO XLogFlush in top-30.  => the 2026-07-20
+WAL-spinlock hypothesis is REFUTED for write-heavy OLTP; the bottleneck is the
+scheduler leaving carriers idle, same class as the 2026-07-20 durability-off
+"__xtc_exec_try_steal + 54% idle" finding.
+
+Verified the write path already yields: pg_fdatasync/pg_fsync -> xtc_aio_* (park,
+fd.c); WAL/xact waits -> Phase-17 eventfd park.  So it is NOT a serialized fsync
+or a spinning carrier.  It is latency-overlap: sessions run to a protocol-read
+boundary then park for the client's network RTT; at any instant only ~1 session
+is runnable (pg_stat_activity active=1), so the woken carrier drains it and
+re-parks while cores idle.  Fork overlaps 64 clients' RTT across 64 kernel
+processes; pooled cannot manufacture more concurrent runnable work than clients
+supply, and the dispatch concentrates on loop 0 (pg_stat_xtc_carriers: loop0
+tasks_run=864, loops1-14 ~1; steals=0, carriers pinned migratable=0).
+
+### Two concrete BUGS found (separate tickets, both HANGS):
+1. pooled_protocol_carriers set EXPLICITLY > cores (48/64/96 on 32 vCPU) WEDGES:
+   pgbench stalls at "starting vacuum...end", server stops answering.  Auto-sizing
+   (caps effective at ~ncpu) avoids it, so default users don't hit it, but an
+   explicit over-core value should clamp or work, not hang.  Limit is the raw GUC
+   (PgRuntimePooledProtocolCarrierLimit == pooled_protocol_carriers, no ncpu clamp).
+2. thread-per-session (pooled_protocol_carriers=0) WEDGES at c=64 write load
+   (pgbench stuck, 0 tps) -- the known "could not lease protocol read park for
+   same carrier resume" class, now also reproduced on plain pgbench TPC-B.
+
+### Fix directions (A/B-gated, neutral-or-better on read-S/CPU, per Phase-18 rule):
+- Keep >1 session runnable per carrier: prefetch/pipeline the next protocol
+  message for parked sessions (xtc_io batching) so a carrier isn't idle waiting
+  for the sole runnable session's RTT.
+- Spread leased sessions across exec loops (round-robin the session onto the
+  least-busy loop, or make pooled sessions migratable so idle loops steal) --
+  today loop 0 does ~all the work.
+- Fix the two wedges above (they block any oversubscription experiment).
+No code changed: profiling only, per "name the symbol before converting."  Symbol
+named = carrier IDLE -> fix is scheduler feeding, not a lock conversion.
