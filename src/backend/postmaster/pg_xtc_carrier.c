@@ -48,6 +48,7 @@
 #include "xtc.h"
 #include "xtc_app.h"
 #include "xtc_exec.h"		/* xtc_exec_loop, xtc_exec_n_loops, xtc_exec_set_eager_rebalance */
+#include "xtc_loop.h"		/* xtc_loop_wake (v1.39: lost-wake-free cross-thread loop nudge) */
 #include "xtc_proc.h"
 #include "xtc_async.h"		/* xtc_set_stack_size */
 #include "xtc_stats.h"		/* xtc_counter_* (fusion F1 runtime counters); xtc_tuning_check (F0a) */
@@ -1708,6 +1709,35 @@ xtc_pg_pooled_queue_signal(int count)
 		return;
 	if (xtc_notify_signal(g_xtc_pooled_queue_notify) != XTC_OK)
 		elog(FATAL, "could not signal pooled protocol queue");
+
+	/*
+	 * Producer-must-nudge (libxtc v1.39, cross-loop wake contract): a carrier
+	 * whose fiber has yielded back to its executor loop is parked in the loop's
+	 * I/O wait (xtc_io_poll), NOT necessarily watching the pooled queue notify or
+	 * the wake eventfd at this instant.  xtc_notify_signal only wakes a carrier
+	 * actually blocked in xtc_notify_wait; a carrier idle in its loop poll would
+	 * miss it, stranding a just-made-runnable session while the loop sleeps (the
+	 * write-load stall diagnosed 2026-08-27: all carriers in xtc_io_poll, a
+	 * runnable session unpicked).  xtc_loop_wake nudges the loop's poller out of
+	 * its wait, lost-wake-free (it writes the loop's own wakeup fd, kept armed
+	 * across the drain), so the carrier re-runs and re-checks the ready set.  The
+	 * enqueue/mark-runnable already happened before this call (caller ordering),
+	 * so this is the required "make runnable FIRST, then nudge" sequence.  A
+	 * spurious wake is harmless -- the loop just re-polls.  Nudge every carrier
+	 * loop, matching the broadcast semantics of xtc_notify_signal above.
+	 */
+	if (g_xtc_exec != NULL && g_xtc_n_loops > 1)
+	{
+		for (int i = 0; i < g_xtc_n_loops; i++)
+		{
+			xtc_loop_t *loop = xtc_exec_loop(g_xtc_exec, i);
+
+			if (loop != NULL)
+				(void) xtc_loop_wake(loop);
+		}
+	}
+	else if (g_xtc_loop != NULL)
+		(void) xtc_loop_wake(g_xtc_loop);
 }
 
 /*
