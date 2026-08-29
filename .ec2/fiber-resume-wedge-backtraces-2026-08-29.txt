@@ -1,0 +1,73 @@
+=== NATIVE io_uring fiber wedge (1/8 scale-100 init) ===
+Thread 38 (Thread 0x7f3b1e353640 (LWP 56353) "postgres"):
+#3  0x00007f41828221e2 in xtc_exec_run () from /usr/local/lib64/libxtc.so.1
+Thread 37 (Thread 0x7f3b1d952640 (LWP 56354) "postgres"):
+#2  0x0000000000858dd2 in PGSemaphoreLock (sema=0x7f416daf0a00) at ../src/backend/port/posix_sema.c:320
+#4  0x000000000094fa95 in LWLockAcquire (lock=lock@entry=0x7f3b1f360b80, mode=mode@entry=LW_EXCLUSIVE) at ../src/backend/storage/lmgr/lwlock.c:1308
+#5  0x0000000000623a10 in XLogBackgroundFlush () at ../src/backend/access/transam/xlog.c:3124
+#6  0x00000000008804ff in WalWriterMain (startup_data=<optimized out>, startup_data_len=<optimized out>) at ../src/backend/postmaster/walwriter.c:252
+Thread 36 (Thread 0x7f3b1cf51640 (LWP 56355) "postgres"):
+#2  0x00007f418281e5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+#5  0x00007f41828218a0 in __xtc_exec_worker () from /usr/local/lib64/libxtc.so.1
+Thread 35 (Thread 0x7f3b17fff640 (LWP 56356) "postgres"):
+#2  0x00007f418281e5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+#5  0x00007f41828218a0 in __xtc_exec_worker () from /usr/local/lib64/libxtc.so.1
+Thread 34 (Thread 0x7f3b175fe640 (LWP 56357) "postgres"):
+#2  0x00007f418281e5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+#5  0x00007f41828218a0 in __xtc_exec_worker () from /usr/local/lib64/libxtc.so.1
+Thread 33 (Thread 0x7f3b16bfd640 (LWP 56358) "postgres"):
+#2  0x00007f418281e5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+#5  0x00007f41828218a0 in __xtc_exec_worker () from /usr/local/lib64/libxtc.so.1
+Thread 32 (Thread 0x7f3b161fc640 (LWP 56359) "postgres"):
+#2  0x00007f418281e5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+#5  0x00007f41828218a0 in __xtc_exec_worker () from /usr/local/lib64/libxtc.so.1
+Thread 31 (Thread 0x7f3b157fb640 (LWP 56360) "postgres"):
+#2  0x00007f418281e5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+#5  0x00007f41828218a0 in __xtc_exec_worker () from /usr/local/lib64/libxtc.so.1
+Thread 30 (Thread 0x7f3b14dfa640 (LWP 56361) "postgres"):
+#2  0x00007f418281e5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+#5  0x00007f41828218a0 in __xtc_exec_worker () from /usr/local/lib64/libxtc.so.1
+Thread 29 (Thread 0x7f3b0ffff640 (LWP 56362) "postgres"):
+#2  0x00007f418281e5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+#5  0x00007f41828218a0 in __xtc_exec_worker () from /usr/local/lib64/libxtc.so.1
+Thread 28 (Thread 0x7f3b0f5fe640 (LWP 56363) "postgres"):
+#2  0x00007f418281e5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+#5  0x00007f41828218a0 in __xtc_exec_worker () from /usr/local/lib64/libxtc.so.1
+Thread 27 (Thread 0x7f3b0ebfd640 (LWP 56364) "postgres"):
+#2  0x00007f418281e5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+#5  0x00007f41828218a0 in __xtc_exec_worker () from /usr/local/lib64/libxtc.so.1
+Thread 26 (Thread 0x7f3b03fff640 (LWP 56365) "postgres"):
+#2  0x00007f418281e5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+#5  0x00007f41828218a0 in __xtc_exec_worker () from /usr/local/lib64/libxtc.so.1
+
+=== FORCED-OFFLOAD fiber wedge (deterministic) ===
+Thread 69 (Thread 0x7f14d0f53640 (LWP 54438) "postgres"):
+Thread 68 (Thread 0x7f14cbfff640 (LWP 54439) "postgres"):
+#4  0x000000000094fa95 in LWLockAcquire (lock=lock@entry=0x7f14d1f60b80, mode=mode@entry=LW_EXCLUSIVE) at ../src/backend/storage/lmgr/lwlock.c:1308
+#5  0x0000000000623a10 in XLogBackgroundFlush () at ../src/backend/access/transam/xlog.c:3124
+#6  0x00000000008804ff in WalWriterMain (startup_data=<optimized out>, startup_data_len=<optimized out>) at ../src/backend/postmaster/walwriter.c:252
+Thread 67 (Thread 0x7f14cb5fe640 (LWP 54440) "postgres"):
+#2  0x00007f1b34ebd5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+Thread 66 (Thread 0x7f14c3fff640 (LWP 54441) "postgres"):
+#2  0x00007f1b34ebd5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+Thread 65 (Thread 0x7f14cabfd640 (LWP 54442) "postgres"):
+#2  0x00007f1b34ebd5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+Thread 64 (Thread 0x7f14ca1fc640 (LWP 54443) "postgres"):
+#2  0x00007f1b34ebd5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+Thread 63 (Thread 0x7f14c97fb640 (LWP 54444) "postgres"):
+#2  0x00007f1b34ebd5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+Thread 62 (Thread 0x7f14c8dfa640 (LWP 54445) "postgres"):
+#2  0x00007f1b34ebd5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+Thread 61 (Thread 0x7f14c35fe640 (LWP 54446) "postgres"):
+#2  0x00007f1b34ebd5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+Thread 60 (Thread 0x7f14c2bfd640 (LWP 54447) "postgres"):
+#2  0x00007f1b34ebd5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+Thread 59 (Thread 0x7f14c09f9640 (LWP 54448) "postgres"):
+#2  0x00007f1b34ebd5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+Thread 58 (Thread 0x7f14bfff8640 (LWP 54449) "postgres"):
+#2  0x00007f1b34ebd5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+Thread 57 (Thread 0x7f14b77f7640 (LWP 54450) "postgres"):
+#2  0x00007f1b34ebd5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+Thread 56 (Thread 0x7f14b4df2640 (LWP 54451) "postgres"):
+#2  0x00007f1b34ebd5a6 in xtc_io_poll () from /usr/local/lib64/libxtc.so.1
+Thread 55 (Thread 0x7f14ac3e1640 (LWP 54452) "postgres"):
