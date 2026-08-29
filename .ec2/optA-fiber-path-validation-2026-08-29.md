@@ -46,3 +46,15 @@ that wedges 1/8 fails the "outright win, stability at scale" bar.  Sequence:
     stackless pool available via an explicit positive carriers value, keep process mode
     byte-for-byte.  Two-review gate; A/B neutral-or-better on read-S/CPU.
  3. Full matrix (pgbench -S, CPU, HammerDB TPROC-C/H) at 85% RAM vs fork -> the win.
+
+## Fork baseline (for when the fiber path is un-wedged)
+Same box/config, 64-client TPC-B, 90s, fsync=on, NVMe, SB=40% RAM:
+ - FORK (mt=off): tps = 41,058 (3.69M txns, 0 failed, latency avg 1.56ms).  <-- the number
+   option A must beat.
+ - fibers0 (option A): could not get a clean 64-client throughput number -- the -c 64 run
+   hit the fiber-resume wake-miss and wedged mid-bench (log stops at vacuum).  A clean
+   fibers0 throughput comparison is BLOCKED on the libxtc fiber-resume fix.
+The earlier fibers0 = 34,811 tps datapoint (first pivotal experiment, 100s run) shows the
+model is in the right ballpark and, once wedge-free, is a credible base to push past fork
+with libxtc-fused primitives; but it is not yet a clean win and not yet trustworthy until
+the wake-miss is gone.
