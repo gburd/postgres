@@ -1,0 +1,22 @@
+=== fibers0 concurrent-commit starvation on v1.40.1 (64-client TPC-B) ===
+pgbench: 1029 tps for first 2s, then 0.0 tps forever. server commits delta_4s=2.
+Both active committer fibers parked in LWLockAcquireOrWait(WALWriteLock) -> ProcSemaphoreWaitFiber -> xtc_pg_wait_fd; no fiber holds the lock; 29-31 loops idle in xtc_io_poll.
+
+Thread 56 (Thread 0x7f76d99fb640 (LWP 51869) "postgres"):
+#8  0x00000000008741ad in xtc_pg_wait_fd (fd=107, interest_pg=interest_pg@entry=2, timeout_ms=timeout_ms@entry=-1) at ../src/backend/postmaster/pg_xtc_carrier.c:1365
+#9  0x000000000095e126 in ProcSemaphoreWaitFiber (proc=0x7f7d2f28a700) at ../src/backend/storage/lmgr/proc.c:2327
+#11 0x0000000000950065 in LWLockAcquireOrWait (lock=lock@entry=0x7f76e0b60b80, mode=mode@entry=LW_EXCLUSIVE) at ../src/backend/storage/lmgr/lwlock.c:1484
+#12 0x000000000062086b in XLogFlush (record=1324554656) at ../src/backend/access/transam/xlog.c:2887
+#14 CommitTransaction () at ../src/backend/access/transam/xact.c:2432
+#15 0x0000000000616575 in CommitTransactionCommandInternal () at ../src/backend/access/transam/xact.c:3420
+#16 CommitTransactionCommand () at ../src/backend/access/transam/xact.c:3241
+#18 0x000000000097437b in exec_simple_query (query_string=0x2bef1c0 "END;") at ../src/backend/tcop/postgres.c:1739
+Thread 33 (Thread 0x7f76b19cf640 (LWP 51892) "postgres"):
+#9  0x00000000008741ad in xtc_pg_wait_fd (fd=95, interest_pg=interest_pg@entry=2, timeout_ms=timeout_ms@entry=-1) at ../src/backend/postmaster/pg_xtc_carrier.c:1365
+#10 0x000000000095e126 in ProcSemaphoreWaitFiber (proc=0x7f7d2f288f00) at ../src/backend/storage/lmgr/proc.c:2327
+#12 0x0000000000950065 in LWLockAcquireOrWait (lock=lock@entry=0x7f76e0b60b80, mode=mode@entry=LW_EXCLUSIVE) at ../src/backend/storage/lmgr/lwlock.c:1484
+#13 0x000000000062086b in XLogFlush (record=1324493680) at ../src/backend/access/transam/xlog.c:2887
+#15 CommitTransaction () at ../src/backend/access/transam/xact.c:2432
+#16 0x0000000000616575 in CommitTransactionCommandInternal () at ../src/backend/access/transam/xact.c:3420
+#17 CommitTransactionCommand () at ../src/backend/access/transam/xact.c:3241
+#19 0x000000000097437b in exec_simple_query (query_string=0x297c500 "END;") at ../src/backend/tcop/postgres.c:1739
