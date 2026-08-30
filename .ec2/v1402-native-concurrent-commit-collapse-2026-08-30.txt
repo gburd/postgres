@@ -1,0 +1,23 @@
+=== v1.40.2 native-path concurrent-commit collapse (64 clients) — bt census ===
+commits frozen (delta=2/4s); 32 loops idle in xtc_io_poll; BackendMain=0 (all client fibers parked);
+iou-wrk=25 (NATIVE io_uring path), blk_worker=0/xtc_blocking=0 (NOT the offload path v1.40.2 fixed);
+checkpointer in CheckpointWriteDelay (normal throttle). No visible lock holder in a running frame.
+
+     35 in start_thread (
+     32 in __xtc_loop_step_once (
+     32 in __xtc_loop_step (
+     32 in xtc_io_poll (
+     32 in __xtc_exec_worker (
+     29 in _io_uring_get_cqe (
+     26 in __io_uring_get_cqe (
+      4 in epoll_wait (
+      3 in WaitEventSetWaitBlock (
+      3 in io_uring_wait_cqes (
+      2 in WaitLatch (
+      2 in pg_thread_start (
+      2 in backend_thread_run_worker (
+      1 in xtc_exec_run (
+      1 in xtc_carrier_sched_thread (
+      1 in ServerLoop (
+      1 in PostmasterMain (
+      1 in __os_sleep_ns (
