@@ -1,0 +1,52 @@
+# TSan suppressions for the PG-XTC fiber runtime.
+# Goal: silence the STRUCTURALLY-BLIND / known-benign buckets (documented in
+# plan_docs/MULTITHREADED_TSAN_FINDINGS.md) so the REAL native-path fiber-resume
+# race under concurrent commit stands out.
+
+# --- A. TSan is blind to PG spinlocks (custom inline asm, not pthread mutex) ---
+# lock-protected scheduler counters look racy but are under scheduler->lock.
+race:PgRuntimeProtocolSchedulerRegisterCarrier
+race:PgRuntimePooledProtocolIdleCarrierCount
+race:PgRuntimePooledProtocolRunnableCount
+race:s_lock
+race:SpinLockAcquire
+race:SpinLockRelease
+
+# --- C. PG documented lock-free / shmem discipline TSan can't verify (process too) ---
+race:LWLockAttemptLock
+race:LWLockRelease
+race:LWLockAcquire
+race:LWLockWaitListLock
+race:pg_atomic_*
+race:ReadBuffer*
+race:BufferAlloc
+race:PinBuffer*
+race:UnpinBuffer*
+race:XLogInsertRecord
+race:ReserveXLogInsertLocation
+race:WALInsertLockAcquire
+race:AdvanceXLInsertBuffer
+race:GetSnapshotData
+race:ComputeXidHorizons
+race:SetLatch
+race:ResetLatch
+race:dynahash
+race:hash_search*
+race:pgstat_*
+race:DataChecksumsEnabled
+
+# signal handlers (async, benign)
+race:pqsignal
+race:handle_sig*
+
+# --- D. libxtc-internal context-frame noise that rides under every fiber report
+#         (NOT the resume race we are hunting; keep exec/steal/park visible though) ---
+race:__xtc_async_ex
+race:__xtc_coro_step
+called_from_lib:libc.so
+# NOTE: deliberately NOT suppressing exec.c steal/worker, xtc_io_poll,
+# __xtc_loop_dispatch_event, xtc_blocking_run, aio.c, xtc_proc_wake, or the
+# task waker -- those are exactly where the native-path resume race should show.
+
+# deadlock detection off-target for cooperative fibers
+deadlock:xtc_
