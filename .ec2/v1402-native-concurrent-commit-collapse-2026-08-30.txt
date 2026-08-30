@@ -21,3 +21,11 @@ checkpointer in CheckpointWriteDelay (normal throttle). No visible lock holder i
       1 in ServerLoop (
       1 in PostmasterMain (
       1 in __os_sleep_ns (
+
+=== native vs offload @ 64 clients on v1.40.2 (both collapse) ===
+native  (default io_uring FSYNC):  COLLAPSED, 1/15 nonzero progress samples
+offload (XTC_AIO_FORCE_OFFLOAD=1):  COLLAPSED, 0 nonzero samples
+c=192, c=256: same collapse, no PANIC.
+=> the concurrent-commit resume wedge is NOT the offload close-vs-write race v1.40.2 fixed;
+   it reproduces on the NATIVE io_uring completion path and still on offload under 64-way
+   concurrency.  A separate resume gap; TSan run queued (team's suggestion).
