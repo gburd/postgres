@@ -1,0 +1,131 @@
+
+WARNING: ThreadSanitizer: data race (pid=55698)
+  Write of size 8 at 0x7220000380b0 by thread T48:
+    #0 __xtc_loop_step /mnt/work/xtc/build/../src/evt/loop.c:834 (libxtc.so.1+0x2634b) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #1 __xtc_loop_step_once /mnt/work/xtc/build/../src/evt/loop.c:969 (libxtc.so.1+0x2688e) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #2 __xtc_exec_worker /mnt/work/xtc/build/../src/evt/exec.c:210 (libxtc.so.1+0x2e0fd) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #3 __cxa_guard_abort ??:? (libclang_rt.tsan.so+0x70862) (BuildId: a2a63bea012763170e5463f7cc457865bc77a4f9)
+
+  Previous write of size 8 at 0x7220000380b0 by thread T46:
+    #0 __xtc_loop_enqueue /mnt/work/xtc/build/../src/evt/loop.c:357 (libxtc.so.1+0x24192) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #1 __xtc_inbox_drain /mnt/work/xtc/build/../src/evt/loop.c:138 (libxtc.so.1+0x23a90) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #2 __xtc_loop_step /mnt/work/xtc/build/../src/evt/loop.c:596 (libxtc.so.1+0x25749) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #3 __xtc_loop_step_once /mnt/work/xtc/build/../src/evt/loop.c:969 (libxtc.so.1+0x2688e) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #4 __xtc_exec_worker /mnt/work/xtc/build/../src/evt/exec.c:210 (libxtc.so.1+0x2e0fd) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #5 __cxa_guard_abort ??:? (libclang_rt.tsan.so+0x70862) (BuildId: a2a63bea012763170e5463f7cc457865bc77a4f9)
+
+  Location is heap block of size 120 at 0x722000038080 allocated by thread T18:
+    #0 calloc ??:? (libclang_rt.tsan.so+0x6f1aa) (BuildId: a2a63bea012763170e5463f7cc457865bc77a4f9)
+    #1 __default_calloc /mnt/work/xtc/build/../src/os/os_alloc.c:40 (libxtc.so.1+0x131e5) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #2 __os_calloc /mnt/work/xtc/build/../src/os/os_alloc.c:159 (libxtc.so.1+0x12a84) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #3 __task_alloc /mnt/work/xtc/build/../src/evt/task.c:65 (libxtc.so.1+0x286b1) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #4 __xtc_task_spawn_ex /mnt/work/xtc/build/../src/evt/task.c:134 (libxtc.so.1+0x27eb4) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #5 __xtc_async_ex /mnt/work/xtc/build/../src/evt/coro_uctx.c:623 (libxtc.so.1+0x2b5cd) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #6 __proc_spawn_core /mnt/work/xtc/build/../src/ptc/proc.c:1253 (libxtc.so.1+0x392e3) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #7 xtc_proc_spawn_monitor /mnt/work/xtc/build/../src/ptc/proc.c:1302 (libxtc.so.1+0x3972f) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #8 xtc_carrier_supervisor_proc /mnt/work/pg/build/../src/backend/postmaster/pg_xtc_carrier.c:706 (postgres+0xe48e4b) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #9 __proc_entry /mnt/work/xtc/build/../src/ptc/proc.c:1068 (libxtc.so.1+0x433be) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #10 __coro_entry /mnt/work/xtc/build/../src/evt/coro_uctx.c:246 (libxtc.so.1+0x2ba75) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #11 __push___start_context :? (libc.so.6+0x54b9f) (BuildId: 62003f19c6b9b4f27360c808582d1de5095cb653)
+
+  Thread T48 (tid=55762, running) created by thread T3 at:
+    #0 pthread_create ??:? (libclang_rt.tsan.so+0x708ff) (BuildId: a2a63bea012763170e5463f7cc457865bc77a4f9)
+    #1 __os_pthread_create_masked /mnt/work/xtc/build/../src/os/os_thread.c:91 (libxtc.so.1+0x14262) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #2 __os_thread_create /mnt/work/xtc/build/../src/os/os_thread.c:61 (libxtc.so.1+0x14165) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #3 xtc_exec_run /mnt/work/xtc/build/../src/evt/exec.c:517 (libxtc.so.1+0x2db7d) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #4 xtc_app_run /mnt/work/xtc/build/../src/orc/app.c:97 (libxtc.so.1+0x77fe1) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #5 xtc_carrier_sched_thread /mnt/work/pg/build/../src/backend/postmaster/pg_xtc_carrier.c:464 (postgres+0xe46ba0) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #6 __cxa_guard_abort ??:? (libclang_rt.tsan.so+0x70862) (BuildId: a2a63bea012763170e5463f7cc457865bc77a4f9)
+
+  Thread T46 (tid=55760, running) created by thread T3 at:
+    #0 pthread_create ??:? (libclang_rt.tsan.so+0x708ff) (BuildId: a2a63bea012763170e5463f7cc457865bc77a4f9)
+    #1 __os_pthread_create_masked /mnt/work/xtc/build/../src/os/os_thread.c:91 (libxtc.so.1+0x14262) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #2 __os_thread_create /mnt/work/xtc/build/../src/os/os_thread.c:61 (libxtc.so.1+0x14165) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #3 xtc_exec_run /mnt/work/xtc/build/../src/evt/exec.c:517 (libxtc.so.1+0x2db7d) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #4 xtc_app_run /mnt/work/xtc/build/../src/orc/app.c:97 (libxtc.so.1+0x77fe1) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #5 xtc_carrier_sched_thread /mnt/work/pg/build/../src/backend/postmaster/pg_xtc_carrier.c:464 (postgres+0xe46ba0) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #6 __cxa_guard_abort ??:? (libclang_rt.tsan.so+0x70862) (BuildId: a2a63bea012763170e5463f7cc457865bc77a4f9)
+
+  Thread T18 (tid=0, running) created by main thread at:
+    #0 __xtc_async_ex /mnt/work/xtc/build/../src/evt/coro_uctx.c:620 (libxtc.so.1+0x2b55f) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #1 __proc_spawn_core /mnt/work/xtc/build/../src/ptc/proc.c:1253 (libxtc.so.1+0x392e3) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #2 xtc_proc_spawn /mnt/work/xtc/build/../src/ptc/proc.c:1114 (libxtc.so.1+0x385c2) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #3 xtc_carrier_start_supervisors /mnt/work/pg/build/../src/backend/postmaster/pg_xtc_carrier.c:752 (postgres+0xe46d03) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #4 xtc_pg_carrier_start /mnt/work/pg/build/../src/backend/postmaster/pg_xtc_carrier.c:1101 (postgres+0xe46615) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #5 xtc_pg_launch_backend_fiber /mnt/work/pg/build/../src/backend/postmaster/pg_xtc_carrier.c:1136 (postgres+0xe46dd3) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #6 postmaster_backend_thread_launch /mnt/work/pg/build/../src/backend/postmaster/launch_backend.c:1036 (postgres+0xe3560e) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #7 postmaster_child_launch_carrier /mnt/work/pg/build/../src/backend/postmaster/launch_backend.c:499 (postgres+0xe33ef5) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #8 StartChildProcess /mnt/work/pg/build/../src/backend/postmaster/postmaster.c:4662 (postgres+0xe4fc32) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #9 LaunchMissingBackgroundProcesses /mnt/work/pg/build/../src/backend/postmaster/postmaster.c:3794 (postgres+0xe5491a) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #10 ServerLoop /mnt/work/pg/build/../src/backend/postmaster/postmaster.c:2014 (postgres+0xe5062d) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #11 PostmasterMain /mnt/work/pg/build/../src/backend/postmaster/postmaster.c:1601 (postgres+0xe4df5c) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #12 main /mnt/work/pg/build/../src/backend/main/main.c:233 (postgres+0xb9b482) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+
+SUMMARY: ThreadSanitizer: data race /mnt/work/xtc/build/../src/evt/loop.c:834 in __xtc_loop_step
+
+==================
+
+WARNING: ThreadSanitizer: data race (pid=55698)
+  Write of size 4 at 0x722000038098 by thread T48:
+    #0 __xtc_loop_step /mnt/work/xtc/build/../src/evt/loop.c:637 (libxtc.so.1+0x25987) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #1 __xtc_loop_step_once /mnt/work/xtc/build/../src/evt/loop.c:969 (libxtc.so.1+0x2688e) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #2 __xtc_exec_worker /mnt/work/xtc/build/../src/evt/exec.c:210 (libxtc.so.1+0x2e0fd) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #3 __cxa_guard_abort ??:? (libclang_rt.tsan.so+0x70862) (BuildId: a2a63bea012763170e5463f7cc457865bc77a4f9)
+
+  Previous write of size 4 at 0x722000038098 by thread T46:
+    #0 __xtc_inbox_drain /mnt/work/xtc/build/../src/evt/loop.c:137 (libxtc.so.1+0x23a4c) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #1 __xtc_loop_step /mnt/work/xtc/build/../src/evt/loop.c:596 (libxtc.so.1+0x25749) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #2 __xtc_loop_step_once /mnt/work/xtc/build/../src/evt/loop.c:969 (libxtc.so.1+0x2688e) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #3 __xtc_exec_worker /mnt/work/xtc/build/../src/evt/exec.c:210 (libxtc.so.1+0x2e0fd) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #4 __cxa_guard_abort ??:? (libclang_rt.tsan.so+0x70862) (BuildId: a2a63bea012763170e5463f7cc457865bc77a4f9)
+
+  Location is heap block of size 120 at 0x722000038080 allocated by thread T18:
+    #0 calloc ??:? (libclang_rt.tsan.so+0x6f1aa) (BuildId: a2a63bea012763170e5463f7cc457865bc77a4f9)
+    #1 __default_calloc /mnt/work/xtc/build/../src/os/os_alloc.c:40 (libxtc.so.1+0x131e5) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #2 __os_calloc /mnt/work/xtc/build/../src/os/os_alloc.c:159 (libxtc.so.1+0x12a84) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #3 __task_alloc /mnt/work/xtc/build/../src/evt/task.c:65 (libxtc.so.1+0x286b1) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #4 __xtc_task_spawn_ex /mnt/work/xtc/build/../src/evt/task.c:134 (libxtc.so.1+0x27eb4) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #5 __xtc_async_ex /mnt/work/xtc/build/../src/evt/coro_uctx.c:623 (libxtc.so.1+0x2b5cd) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #6 __proc_spawn_core /mnt/work/xtc/build/../src/ptc/proc.c:1253 (libxtc.so.1+0x392e3) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #7 xtc_proc_spawn_monitor /mnt/work/xtc/build/../src/ptc/proc.c:1302 (libxtc.so.1+0x3972f) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #8 xtc_carrier_supervisor_proc /mnt/work/pg/build/../src/backend/postmaster/pg_xtc_carrier.c:706 (postgres+0xe48e4b) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #9 __proc_entry /mnt/work/xtc/build/../src/ptc/proc.c:1068 (libxtc.so.1+0x433be) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #10 __coro_entry /mnt/work/xtc/build/../src/evt/coro_uctx.c:246 (libxtc.so.1+0x2ba75) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #11 __push___start_context :? (libc.so.6+0x54b9f) (BuildId: 62003f19c6b9b4f27360c808582d1de5095cb653)
+
+  Thread T48 (tid=55762, running) created by thread T3 at:
+    #0 pthread_create ??:? (libclang_rt.tsan.so+0x708ff) (BuildId: a2a63bea012763170e5463f7cc457865bc77a4f9)
+    #1 __os_pthread_create_masked /mnt/work/xtc/build/../src/os/os_thread.c:91 (libxtc.so.1+0x14262) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #2 __os_thread_create /mnt/work/xtc/build/../src/os/os_thread.c:61 (libxtc.so.1+0x14165) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #3 xtc_exec_run /mnt/work/xtc/build/../src/evt/exec.c:517 (libxtc.so.1+0x2db7d) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #4 xtc_app_run /mnt/work/xtc/build/../src/orc/app.c:97 (libxtc.so.1+0x77fe1) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #5 xtc_carrier_sched_thread /mnt/work/pg/build/../src/backend/postmaster/pg_xtc_carrier.c:464 (postgres+0xe46ba0) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #6 __cxa_guard_abort ??:? (libclang_rt.tsan.so+0x70862) (BuildId: a2a63bea012763170e5463f7cc457865bc77a4f9)
+
+  Thread T46 (tid=55760, running) created by thread T3 at:
+    #0 pthread_create ??:? (libclang_rt.tsan.so+0x708ff) (BuildId: a2a63bea012763170e5463f7cc457865bc77a4f9)
+    #1 __os_pthread_create_masked /mnt/work/xtc/build/../src/os/os_thread.c:91 (libxtc.so.1+0x14262) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #2 __os_thread_create /mnt/work/xtc/build/../src/os/os_thread.c:61 (libxtc.so.1+0x14165) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #3 xtc_exec_run /mnt/work/xtc/build/../src/evt/exec.c:517 (libxtc.so.1+0x2db7d) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #4 xtc_app_run /mnt/work/xtc/build/../src/orc/app.c:97 (libxtc.so.1+0x77fe1) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #5 xtc_carrier_sched_thread /mnt/work/pg/build/../src/backend/postmaster/pg_xtc_carrier.c:464 (postgres+0xe46ba0) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #6 __cxa_guard_abort ??:? (libclang_rt.tsan.so+0x70862) (BuildId: a2a63bea012763170e5463f7cc457865bc77a4f9)
+
+  Thread T18 (tid=0, running) created by main thread at:
+    #0 __xtc_async_ex /mnt/work/xtc/build/../src/evt/coro_uctx.c:620 (libxtc.so.1+0x2b55f) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #1 __proc_spawn_core /mnt/work/xtc/build/../src/ptc/proc.c:1253 (libxtc.so.1+0x392e3) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #2 xtc_proc_spawn /mnt/work/xtc/build/../src/ptc/proc.c:1114 (libxtc.so.1+0x385c2) (BuildId: 7ca7d74c287a3fa72df32465638a71cd4f496c9a)
+    #3 xtc_carrier_start_supervisors /mnt/work/pg/build/../src/backend/postmaster/pg_xtc_carrier.c:752 (postgres+0xe46d03) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #4 xtc_pg_carrier_start /mnt/work/pg/build/../src/backend/postmaster/pg_xtc_carrier.c:1101 (postgres+0xe46615) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #5 xtc_pg_launch_backend_fiber /mnt/work/pg/build/../src/backend/postmaster/pg_xtc_carrier.c:1136 (postgres+0xe46dd3) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #6 postmaster_backend_thread_launch /mnt/work/pg/build/../src/backend/postmaster/launch_backend.c:1036 (postgres+0xe3560e) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #7 postmaster_child_launch_carrier /mnt/work/pg/build/../src/backend/postmaster/launch_backend.c:499 (postgres+0xe33ef5) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #8 StartChildProcess /mnt/work/pg/build/../src/backend/postmaster/postmaster.c:4662 (postgres+0xe4fc32) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #9 LaunchMissingBackgroundProcesses /mnt/work/pg/build/../src/backend/postmaster/postmaster.c:3794 (postgres+0xe5491a) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #10 ServerLoop /mnt/work/pg/build/../src/backend/postmaster/postmaster.c:2014 (postgres+0xe5062d) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #11 PostmasterMain /mnt/work/pg/build/../src/backend/postmaster/postmaster.c:1601 (postgres+0xe4df5c) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+    #12 main /mnt/work/pg/build/../src/backend/main/main.c:233 (postgres+0xb9b482) (BuildId: 88b410a504b204055f4ec4808a9cc06696da1917)
+
+SUMMARY: ThreadSanitizer: data race /mnt/work/xtc/build/../src/evt/loop.c:637 in __xtc_loop_step
+
+==================
