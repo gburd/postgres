@@ -311,3 +311,38 @@ then decide between the LWLock-contention work (item 1b, ours) and the
 structural F4+ (item 2) based on what the profile says; (3) Inc-4 unwind is
 independent and can be designed in parallel.  All three are design/measurement-
 first, not fire-and-forget agent work.
+
+## Session close-out (2026-08-31): staged the unblock + advanced F0/F4-design
+
+State: the WRITE-heavy outright-win (the user's bar) is gated on ONE remaining libxtc fix
+-- the cross-loop task->state resume race (LIBXTC_V1403_TASK_STATE_CROSS_LOOP_RACE.md,
+filed; the 4th in the cross-loop-step family after v1.39/v1.40.2/v1.40.3).  Everything that
+can be made "ready to use the moment that lands" without depending on it has been done:
+
+- **Option A default-flip STAGED (dormant, default off)** -- new GUC
+  pooled_protocol_fiber_sessions steers the carriers=-1 auto default to 0 (fiber-per-session)
+  when on.  Validated on EC2: off=byte-for-byte (carriers auto=cores), on=carriers 0
+  (fibers), explicit override honored, process mode clean, 245/245 process regress.  TO GO
+  LIVE: flip boot_val to true + re-run P-A4 (no wedge at 64/192/256 + full matrix) + two
+  reviews, AFTER the libxtc task->state fix.
+- **F0d LANDED** -- xtc_dump full-runtime dump on a genuine threaded crash before fail-stop.
+  Completes the F0 observability foundation (F0b view + F1 counters + F0d dump; F0a still
+  deferred pending a libxtc log emitter).
+- **F4-SUP DESIGNED** (MULTITHREADED_F4_SUPERVISION_FUSION_DESIGN.md) -- dedup the
+  hand-rolled per-loop supervisor + XTC_SUP_SPAWN mailbox + manual DOWN classifier onto
+  libxtc xtc_orc/xtc_svr; backend children stay TEMPORARY (crash => fail-stop, never
+  auto-restart).  Gated on Option A being live (thin surface until backends are fibers).
+
+Why the rest of F4+ (Latch/LWLock/CV/AIO onto xtc primitives, xtc_pool, xtc_reg, xtc_xproc)
+is NOT yet landed: each is hot-path or lifecycle-critical, each REQUIRES an EC2 A/B
+neutral-or-better gate, and most are gated on Option A being live (the roadmap invariant:
+"do not convert a sync primitive to xtc before its users run on a loop"; "never delete the
+hand-rolled version until proven neutral-or-better").  Landing them unmeasured, before the
+fiber default is on, would violate the branch's own discipline and risk regressions.  They
+are next in line the moment (a) the libxtc task->state fix lands, (b) Option A is flipped
+live + validated, and (c) an EC2 metal A/B says which lever (LWLock-contention vs structural
+F4) the profile points at.
+
+Follow-up filed this session (not blocking): a cassert-only crash-TEARDOWN race,
+pmsignal.c:304 slot Assert in RegisterPostmasterChildActive <- aux-fiber InitProcess racing
+the genuine-crash fail-stop (.ec2/fusion-staging-validation-2026-08-31.md).
