@@ -54,6 +54,7 @@
 #include "xtc_stats.h"		/* xtc_counter_* (fusion F1 runtime counters); xtc_tuning_check (F0a) */
 #include "xtc_sync.h"		/* xtc_amutex_*, xtc_notify_* (fusion F2 pooled-queue lock) */
 #include "xtc_log.h"		/* xtc_log_set_default (fusion F0a: libxtc diagnostics -> server log) */
+#include "xtc_dump.h"		/* xtc_dump (fusion F0d: full runtime dump on threaded crash) */
 
 /*
  * Best-effort diagnostic write to a raw fd (STDERR) on crash/down/teardown
@@ -622,6 +623,21 @@ xtc_carrier_supervisor_proc(void *arg)
 				 * mode) immediately, rather than only on its next idle-timeout
 				 * wakeup.
 				 */
+				/*
+				 * F0d (fusion observability): dump the full libxtc runtime
+				 * state -- every scheduler loop with its run-queue/steal
+				 * stats, all procs, the faulting thread's C backtrace -- to
+				 * the server log BEFORE we escalate the whole process down.
+				 * A threaded genuine crash fail-stops the process (no
+				 * core-dump hang), so this dump is the primary post-mortem
+				 * for what the scheduler was doing at the crash.  Runs only
+				 * on the genuine-crash path (never a hot path), from the
+				 * supervisor fiber in normal context where xtc_dump's
+				 * per-loop inspection locks are reliable.  STDERR_FILENO is
+				 * the postmaster's stderr == the server log.
+				 */
+				xtc_dump(STDERR_FILENO);
+
 				atomic_store(&g_xtc_genuine_crash, 1);
 				{
 					Latch	   *pml = atomic_load(&g_xtc_postmaster_latch);
