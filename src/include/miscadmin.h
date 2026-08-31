@@ -335,6 +335,7 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool pg_backend_was_forkexeced;
 #define PG_BACKEND_WAS_FORKEXECED	(pg_backend_was_forkexeced)
 #endif
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pooled_protocol_carriers;
+extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool pooled_protocol_fiber_sessions;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pooled_protocol_sticky_idle_ms;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pooled_protocol_hibernate_after_ms;
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pooled_protocol_idle_memory_compaction;

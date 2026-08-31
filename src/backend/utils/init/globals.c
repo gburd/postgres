@@ -102,6 +102,19 @@ bool		xtc_log_to_server = false;
  */
 PG_GLOBAL_RUNTIME bool pg_backend_was_forkexeced = false;
 PG_GLOBAL_RUNTIME int pooled_protocol_carriers = -1;
+/*
+ * Option A staging (sessions-as-fibers): when true, the -1 (auto) resolution of
+ * pooled_protocol_carriers picks the fiber-per-session model (carriers=0 =>
+ * each B_BACKEND runs as an xtc fiber on the carrier-loop pool, parking in place
+ * on in-command waits including WAL fsync) instead of the stackless inline pool.
+ * DEFAULT off: today's behavior (auto => one stackless carrier per core) is
+ * byte-for-byte unchanged.  Flip to on once the libxtc cross-loop task->state
+ * resume race is fixed and the write-heavy concurrent-commit collapse is gone
+ * (see plan_docs/MULTITHREADED_SESSIONS_AS_FIBERS_PLAN.md).  An explicit
+ * pooled_protocol_carriers value (0 or positive) is honored verbatim and
+ * ignores this knob -- it only steers the -1 auto default.
+ */
+PG_GLOBAL_RUNTIME bool pooled_protocol_fiber_sessions = false;
 PG_GLOBAL_RUNTIME int pooled_protocol_sticky_idle_ms = 10;
 PG_GLOBAL_RUNTIME int pooled_protocol_hibernate_after_ms = 5000;
 PG_GLOBAL_RUNTIME int pooled_protocol_idle_memory_compaction =
