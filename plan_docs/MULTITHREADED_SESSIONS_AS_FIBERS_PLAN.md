@@ -29,6 +29,21 @@ cohort" coupling -- by construction, and uniformly for reads/fsync/lock-waits.
   fiber park.
 
 ## Plan (phased, two-review-gated, process mode byte-for-byte, A/B neutral-or-better on read-S/CPU)
+
+### STAGED (2026-08-31, dormant behind `pooled_protocol_fiber_sessions`, default off)
+The default-flip machinery is now wired and byte-for-byte dormant so it is READY to
+activate the moment the libxtc cross-loop task->state resume race is fixed:
+- New GUC `pooled_protocol_fiber_sessions` (bool, PGC_POSTMASTER, default off).  When on,
+  the `pooled_protocol_carriers = -1` (auto) resolution in postmaster.c resolves to 0
+  (fiber-per-session) instead of one stackless carrier per core.  carriers=0 already routes
+  every B_BACKEND through postmaster_backend_thread_launch -> xtc_pg_launch_backend_fiber
+  (a fiber on the carrier-loop pool that parks in place on WAL fsync / LWLock / buffer pin),
+  which is exactly the Option-A model.  An explicit carriers value overrides and ignores
+  the knob.  Default off => today's auto (stackless carrier-per-core) is unchanged.
+- TO FLIP when libxtc lands the task->state fix: set boot_val => 'true' on the GUC (one
+  line), re-run P-A4 validation (no wedge at 64/192/256 + full matrix), two-review gate.
+
+### Remaining P-A steps (blocked on the libxtc task->state cross-loop fix)
 P-A1. Prototype: spawn ONE session as a fiber on the exec loop (xtc_proc_spawn on
       g_xtc_loop / xtc_exec_loop), run PostgresMain-equivalent to the read boundary,
       park via xtc_pg_wait_fd holding its stack, resume on readable.  Prove

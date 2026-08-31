@@ -935,7 +935,26 @@ PostmasterMain(int argc, char *argv[])
 	{
 		int			resolved;
 
-		if (multithreaded)
+		if (multithreaded && pooled_protocol_fiber_sessions)
+		{
+			/*
+			 * Option A (staged, default off): run each session as an xtc
+			 * fiber on the carrier-loop pool instead of the stackless inline
+			 * carrier pool.  carriers=0 is exactly the fiber-per-session
+			 * model (postmaster_child_launch_carrier routes B_BACKEND through
+			 * postmaster_backend_thread_launch -> xtc_pg_launch_backend_fiber
+			 * when PgRuntimePooledProtocolRequested() is false, i.e.
+			 * carriers==0), so an in-command wait (WAL fsync, LWLock, buffer
+			 * pin) parks the fiber and frees its carrier for siblings rather
+			 * than pinning a whole OS thread.  Flip pooled_protocol_fiber_
+			 * sessions on only after the libxtc cross-loop task->state resume
+			 * race is fixed (see plan_docs/MULTITHREADED_SESSIONS_AS_FIBERS_
+			 * PLAN.md); until then this branch is dormant and auto keeps the
+			 * stackless carrier-per-core default below, byte-for-byte.
+			 */
+			resolved = 0;
+		}
+		else if (multithreaded)
 		{
 			long		ncpus = sysconf(_SC_NPROCESSORS_ONLN);
 

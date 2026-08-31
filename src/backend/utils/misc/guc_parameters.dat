@@ -2573,6 +2573,14 @@
   max => 'INT_MAX / 2',
 },
 
+{ name => 'pooled_protocol_fiber_sessions', type => 'bool', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'When auto-sizing carriers, run each session as an xtc fiber instead of the stackless carrier pool.',
+  long_desc => 'Option A staging. Steers only the pooled_protocol_carriers=-1 (auto) default: when on, auto resolves to the fiber-per-session model (each backend is an xtc fiber that parks in place on in-command waits, including WAL fsync, freeing its carrier for siblings) rather than the stackless inline carrier pool. Off (the default) keeps auto => one stackless carrier per core, byte-for-byte unchanged. An explicit pooled_protocol_carriers value overrides and ignores this. Ignored when multithreaded=off.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'pooled_protocol_fiber_sessions',
+  boot_val => 'false',
+},
+
 { name => 'pooled_protocol_hibernate_after_ms', type => 'int', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
   short_desc => 'Sets the idle duration before pooled protocol sessions hibernate.',
   long_desc => 'A pooled protocol session that remains parked for this many milliseconds is resumed and reparked with idle memory compaction applied once.',
