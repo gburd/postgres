@@ -99,7 +99,7 @@
 
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgRuntimeCurrentBridge
 			PgRuntimeCurrentBridgeState = {0};
-PG_GLOBAL_RUNTIME int PgRuntimeHotCurrentCellModeState =
+PG_THREAD_LOCAL PG_GLOBAL_CARRIER int PgRuntimeHotCurrentCellModeState =
 			PG_RUNTIME_HOT_CURRENT_CELLS_FALLBACK;
 PG_THREAD_LOCAL PG_GLOBAL_CARRIER PgRuntimeBridgeFallbackStats
 			PgRuntimeBridgeFallbackStatsState = {0};
@@ -225,18 +225,30 @@ PgRuntimeReportBridgeFallbackStats(void)
 static void
 PgRuntimeClearHotCurrentRootRefs(void)
 {
-	PgCurrentRuntimeHotRefProcessRef = NULL;
+	/*
+	 * Thread-local refs are always cleared (per-carrier-thread, race-free).
+	 * The process-global *ProcessRef pointers are shared across all carrier
+	 * threads: a threaded carrier must NOT write them (same TSan-confirmed
+	 * cross-carrier race as the ProcessCell clear above).  Only a genuine
+	 * process / non-carrier context clears the process refs.
+	 */
 	PgCurrentRuntimeHotRefThreadRef = NULL;
-	PgCurrentCarrierHotRefProcessRef = NULL;
 	PgCurrentCarrierHotRefThreadRef = NULL;
-	PgCurrentBackendHotRefProcessRef = NULL;
 	PgCurrentBackendHotRefThreadRef = NULL;
-	PgCurrentSessionHotRefProcessRef = NULL;
 	PgCurrentSessionHotRefThreadRef = NULL;
-	PgCurrentConnectionHotRefProcessRef = NULL;
 	PgCurrentConnectionHotRefThreadRef = NULL;
-	PgCurrentExecutionHotRefProcessRef = NULL;
 	PgCurrentExecutionHotRefThreadRef = NULL;
+
+	if (CurrentPgCarrier != NULL &&
+		CurrentPgCarrier->kind == PG_CARRIER_THREAD)
+		return;
+
+	PgCurrentRuntimeHotRefProcessRef = NULL;
+	PgCurrentCarrierHotRefProcessRef = NULL;
+	PgCurrentBackendHotRefProcessRef = NULL;
+	PgCurrentSessionHotRefProcessRef = NULL;
+	PgCurrentConnectionHotRefProcessRef = NULL;
+	PgCurrentExecutionHotRefProcessRef = NULL;
 }
 
 static void
@@ -347,11 +359,32 @@ PgRuntimeClearHotCurrentCells(void)
 #define PG_RUNTIME_HOT_CELL(variable, owner, owner_type, type, field) \
 	do { \
 		PgRuntimeCurrentBridgeState.variable = NULL; \
-		variable##ProcessCell = NULL; \
 		variable##ThreadCell = NULL; \
 	} while (0);
 #include "utils/backend_runtime_hot_cells.def"
 #undef PG_RUNTIME_HOT_CELL
+
+	/*
+	 * The per-process ProcessCell pointers are shared across all carrier OS
+	 * threads (PG_GLOBAL_RUNTIME).  A threaded carrier must NOT write them --
+	 * doing so races every other carrier and the postmaster's own current-work
+	 * (the concurrent-commit strand root-caused via TSan 2026-09-01: a
+	 * process-global cell written from N carrier threads on every work switch).
+	 * A carrier resolves its current-work exclusively through the thread-local
+	 * ThreadCell/ThreadRef set, so it only clears those above; only a genuine
+	 * process context (postmaster / process-mode backend / non-carrier) owns
+	 * and clears the ProcessCell.
+	 */
+	if (!(CurrentPgCarrier != NULL &&
+		  CurrentPgCarrier->kind == PG_CARRIER_THREAD))
+	{
+#define PG_RUNTIME_HOT_CELL(variable, owner, owner_type, type, field) \
+		do { \
+			variable##ProcessCell = NULL; \
+		} while (0);
+#include "utils/backend_runtime_hot_cells.def"
+#undef PG_RUNTIME_HOT_CELL
+	}
 }
 
 static void
