@@ -61,3 +61,56 @@ stall is GONE across many runs; (2) a deliberate deadlock (two sessions cross-lo
 detected + broken within deadlock_timeout on the fiber path; (3) statement_timeout /
 lock_timeout fire correctly on a fiber; (4) 245/245 process regress unchanged; (5) the
 isolation/deadlock TAP + timeouts tests green threaded.
+
+## REFINEMENT (2026-09-01, deeper trace): it is the LOGICAL-timeout delivery for fiber lock-waits, NOT setitimer/PostgresMain
+
+Corrected the earlier "setitimer/PostgresMain unconditional" hypothesis by reading the code:
+- PostgresMain (postgres.c:7255) is ALREADY correctly gated:
+    if (threaded_backend) InitializeLogicalTimeouts(); else InitializeTimeouts();
+  So a fiber client backend uses LOGICAL timeouts (timeout_signal_delivery=false), NOT
+  setitimer/SIGALRM.  My "process-wide setitimer clobber" mechanism is therefore NOT what a
+  fiber backend hits.  (backend_startup.c also gates InitializeTimeouts to
+  BACKEND_STARTUP_PROCESS only.)
+- The logical-timeout machinery is fully built and per-fiber: schedule_alarm's
+  !timeout_signal_delivery branch skips setitimer and records signal_due_at/alarm_enabled
+  (per-fiber bucket); WaitEventSetWait clamps block_timeout to get_logical_timeout_delay_ms()
+  and calls process_due_logical_timeouts() on a timeout return; that fires due timeouts +
+  sets got_deadlock_timeout.  ProcSleep waits via WaitLatch(MyLatch, 0) -> WaitEventSetWait,
+  which is exactly the clamped path.  alarm_enabled / signal_pending / signal_due_at /
+  num_active_timeouts are all per-fiber (PG_RUNTIME_FAST_BUCKET_ACCESSOR
+  CurrentPgBackendTimeoutRuntimeState).
+
+So on INSPECTION the logical-timeout path is correct and should fire the DEADLOCK_TIMEOUT on
+the waiting fiber.  Yet empirically, under 64-client row contention, a fiber lock-cycle is
+not broken (commits freeze; the stall bt shows fibers in PROC_WAIT_STATUS_WAITING on
+heavyweight locks with no deadlock resolution).  The bug is therefore a SUBTLE RUNTIME EDGE
+in the logical-timeout delivery for fiber lock-waits, not a missing gate.  Candidates to
+INSTRUMENT (the definitive next step):
+  1. Does get_logical_timeout_delay_ms() actually return the DEADLOCK deadline while a fiber
+     is parked in ProcSleep's WaitLatch, or -1 (e.g. alarm_enabled cleared by a prior
+     process_due_logical_timeouts disable_alarm() and not re-enabled, so the clamp is
+     skipped and the park is infinite)?
+  2. When the clamp IS applied, does the fiber's xtc_pg_wait_fd actually wake at the
+     deadline (a v1.40.6 timer-park corner) and does the WaitEventSetWait loop then call
+     process_due_logical_timeouts()?
+  3. Does fire_due_timeouts() run CheckDeadLock's handler (set got_deadlock_timeout) for the
+     RIGHT fiber, and does ProcSleep's loop re-check got_deadlock_timeout after the clamped
+     wake?
+  4. Interaction: the LWLock fiber-park (ProcSemaphoreWaitFiber -> xtc_pg_wait_fd(sem_wake_fd,
+     -1) INFINITE) is a SEPARATE, un-clamped park used for LWLock deep-waits.  A heavyweight
+     LOCK wait uses WaitLatch (clamped); but if any part of the WAL-commit lock chain waits
+     via the infinite sem park, THAT wait ignores the deadlock deadline.  Verify which park
+     each contended lock in the wedge uses.
+
+Hypothesis (4) is the most likely: ProcSemaphoreWaitFiber parks INFINITE (timeout=-1) and is
+used for LWLock/buffer-content/group-update deep-waits -- NONE of which consult the logical
+timeout.  If the cycle involves an LWLock deep-wait (WALWriteLock is an LWLock!), the waiter
+parks forever with no deadlock check -- but LWLocks are not deadlock-checked in PG anyway
+(they are acquired in a fixed order).  The heavyweight row locks (transactionid/tuple) DO
+use WaitLatch + deadlock detection.  So instrument (1)/(3) on the heavyweight path first.
+
+NEXT: instrument get_logical_timeout_delay_ms + process_due_logical_timeouts (elog DEBUG) on
+a fiber under the wedge repro; catch whether the clamp fires and whether CheckDeadLock runs.
+Do NOT ship a fix into the deadlock-detection path without that runtime evidence.  This is
+PG-side (no libxtc report); the fix will be in the logical-timeout delivery edge, once the
+instrument names it.
