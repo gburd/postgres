@@ -77,3 +77,30 @@ here is the fiber-off-thread-holding-WALWriteLock + all-loops-idle signature you
 If it would help, we can build a focused libxtc-only harness (a migratable fiber doing
 xtc_aio_fdatasync in a loop while a foreign thread hammers xtc_proc_wake + eager rebalance)
 -- the same shape that reproduced #1-#4 -- to give you a TSan/standalone repro without PG.
+
+## UPDATE 2026-09-01: v1.40.6 (timer-park fix) applied -- INTERMITTENT strand remains
+
+libxtc v1.40.6 (rev 3edc2e9, the cancel-before-re-arm timer-park fix) is in.  The fiber
+path (pooled_protocol_carriers=0) at pgbench -c 64 is now INTERMITTENT, not a hard 100%
+hang:
+- One capture progressed at ~1730 commits/s (8658 commits / 5s) mid-run -- healthy.
+- Another run hung at "starting vacuum...end" (the very first transactions), timeout-killed
+  at 120s on a -T 30 bench (rc=124).
+- xtc_dump at a stalled moment: 64 park=fd (idle clients), 35 park=-, and exactly ONE
+  park=timer proc -- the one timer-parked fiber, the shape v1.40.6 targets.
+So v1.40.6 HELPED (some runs now make full-rate progress where v1.40.4 always stalled) but a
+residual INTERMITTENT strand remains, and it correlates with the single park=timer fiber --
+suggesting the timer-park resume race is reduced but not fully closed for our exact pattern
+(a migratable backend fiber timed-waiting -- likely a WaitLatch-with-timeout or LWLock
+timed wait -- under 64-way steal churn), OR a second timed-wait site in our adapter path.
+
+Correction to earlier framing: this is NOT the xtc_aio_fdatasync completion (team verified
+that path sound, and our progressing runs confirm fsync-under-WALWriteLock releases fine).
+It is a timed-park resume, intermittent, at high steal churn.  The stackless pool default
+stays 100% healthy (37.9k tps, always completes).
+
+NEXT: give the libxtc team the intermittent characterization + the park=timer correlation;
+if they want, build the PG-free harness they suggested (migratable fibers doing a
+WaitLatch-with-timeout-shaped timed park under eager rebalance) to reproduce the RESIDUAL
+intermittency deterministically.  Option A flip stays staged (dormant) until the fiber path
+is 0-hang across many runs at 64/192/256.
