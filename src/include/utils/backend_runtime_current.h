@@ -180,7 +180,7 @@ typedef enum PgRuntimeHotCurrentCellMode
 	PG_RUNTIME_HOT_CURRENT_CELLS_THREAD = 2
 } PgRuntimeHotCurrentCellMode;
 
-extern PGDLLIMPORT PG_GLOBAL_RUNTIME int PgRuntimeHotCurrentCellModeState;
+extern PGDLLIMPORT PG_THREAD_LOCAL PG_GLOBAL_CARRIER int PgRuntimeHotCurrentCellModeState;
 
 #define PG_RUNTIME_CURRENT_ROOT_REF_DECL(name, type) \
 extern PGDLLIMPORT PG_GLOBAL_RUNTIME type *name##ProcessRef; \
