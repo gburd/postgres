@@ -1,0 +1,5 @@
+=== v1.40.4 fiber-path collapse: clean diagnostic + the KEY correction ===
+APPLES (64-client, scale-100, 60s): fork=44960 tps (completed); stackless-pool(carriers=-1)=37393 tps (COMPLETED, HEALTHY); fiber(carriers=0)=NO_TPS (did NOT complete -- hangs).
+-> The stackless pooled DEFAULT is fine.  ONLY the Option-A fiber path hangs.
+Fiber-path pg_stat_activity mid-collapse: 16 LWLock/WALWrite, 1 IO/WalSync, 25 Lock/transactionid, 22 Lock/tuple; commits delta 3/3s (pool path: 115/3s).
+gdb: xtc_aio=0 fdatasync=0 on all stacks, iou-wrk=23, io_poll=30, WALWriteLock held exclusive -> fsync fiber parked in xtc_aio_fdatasync, io completion serviced, NOT resumed.
