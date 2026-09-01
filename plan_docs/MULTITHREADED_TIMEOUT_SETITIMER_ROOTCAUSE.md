@@ -170,3 +170,26 @@ Option C is the safest immediate guard (bounds the blast radius to "slow" not "h
 A/B are the true fix.  Two-review (deadlock-detection correctness).  The trace instrument
 (PG_XTC_TIMEOUT_TRACE) stays available (env-gated, zero-cost off) for the next session to
 run check A vs B.
+
+## FINAL (2026-09-01, instrumented WaitLatch return): the root is a libxtc xtc_proc_wait_fd TIMEOUT lost-wake, NOT PG
+
+Instrumented the exact WaitLatch return in ProcSleep's fiber wait (logging rc + WL_TIMEOUT/
+WL_LATCH bits).  Definitive:
+- Healthy windows: every wake is WL_LATCH_SET; WL_TIMEOUT is NEVER set even though the
+  fiber passes a finite (1000ms) timeout to WaitLatch -> xtc_proc_wait_fd(timeout_ns=1e9).
+- Hang windows: the WaitLatch(1000ms) returns 0 times in 4 seconds -- the fiber is stuck
+  INSIDE xtc_proc_wait_fd; the timeout never fires and, with no SetLatch coming (the waker
+  is itself parked behind the stuck holder), it parks forever.
+
+So my option-C mitigation (bound the fiber lock-wait by deadlock_timeout + defensive
+CheckDeadLock) is INERT: the timeout wake it relies on does not fire.  The num_active=0 /
+logical_delay=-1 earlier was a real (secondary) per-fiber bucket glitch, but the PRIMARY,
+sufficient cause of the hang is that xtc_proc_wait_fd's finite timeout is not delivered to a
+migratable fiber under load -- a libxtc lost-timeout-wake on the fd-park path, the sibling
+of the xtc_proc_sleep/xtc_recv timer-park that v1.40.6 fixed.  This is a LIBXTC bug (6th
+cross-loop surface).  Filed: LIBXTC_V1406_FD_PARK_TIMEOUT_LOST.md (+ /tmp/...).
+
+The belt-and-suspenders guard in ProcSleep is KEPT (correct code): once libxtc delivers the
+fd-park timeout, it bounds any residual glitch to a slow deadlock check instead of a hang.
+Ruled out this session with instrumentation: deadlock detector (works), setitimer (gated),
+hot-cell race (fixed), aio completion (sound).

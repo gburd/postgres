@@ -1673,12 +1673,44 @@ ProcSleep(LOCALLOCK *locallock)
 		}
 		else
 		{
-			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH, 0,
+			long		wait_timeout = 0;	/* 0 = wait indefinitely (upstream) */
+
+			/*
+			 * Multithreaded belt-and-suspenders (XTC): a backend FIBER must never
+			 * park a lock wait indefinitely.  Upstream relies on the
+			 * DEADLOCK_TIMEOUT firing (SIGALRM, or the logical-timeout clamp) to
+			 * wake this wait and run CheckDeadLock.  On the fiber path the per-
+			 * fiber timeout bucket is resolved through the hot current-work
+			 * accessor (CurrentPgBackend); if that is momentarily inconsistent for
+			 * a migrating fiber when enable_timeout_after(DEADLOCK_TIMEOUT) ran,
+			 * the timeout can fail to arm (num_active==0) and the logical clamp
+			 * returns -1 -> an INFINITE park -> a real lock cycle is never broken
+			 * -> permanent hang (root cause: MULTITHREADED_TIMEOUT_SETITIMER_
+			 * ROOTCAUSE.md).  Bound the fiber's park directly by DeadlockTimeout
+			 * so a bucket glitch degrades to a slightly-late deadlock check
+			 * instead of a hang, and run CheckDeadLock on every bounded wake
+			 * regardless of got_deadlock_timeout.  Process mode and the non-fiber
+			 * threaded path are byte-for-byte (wait_timeout stays 0).
+			 */
+			if (xtc_in_backend_fiber && DeadlockTimeout > 0)
+				wait_timeout = (long) DeadlockTimeout;
+
+			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH,
+							 wait_timeout,
 							 PG_WAIT_LOCK | locallock->tag.lock.locktag_type);
 			ResetLatch(MyLatch);
 			/* check for deadlocks first, as that's probably log-worthy */
-			if (got_deadlock_timeout)
+			if (got_deadlock_timeout ||
+				(xtc_in_backend_fiber && wait_timeout > 0))
 			{
+				/*
+				 * On a fiber we may reach here from the bounded wake WITHOUT
+				 * got_deadlock_timeout set (the timeout failed to arm on this
+				 * fiber's bucket).  CheckDeadLock is safe to run on any wake --
+				 * it returns DS_NO_DEADLOCK when the lock has since been granted
+				 * or no cycle exists -- so running it defensively here is the
+				 * guard that turns a would-be infinite wait into a bounded one.
+				 */
 				deadlock_state = CheckDeadLock();
 				got_deadlock_timeout = false;
 			}
