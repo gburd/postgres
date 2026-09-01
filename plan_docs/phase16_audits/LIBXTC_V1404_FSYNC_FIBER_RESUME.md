@@ -78,7 +78,7 @@ If it would help, we can build a focused libxtc-only harness (a migratable fiber
 xtc_aio_fdatasync in a loop while a foreign thread hammers xtc_proc_wake + eager rebalance)
 -- the same shape that reproduced #1-#4 -- to give you a TSan/standalone repro without PG.
 
-## UPDATE 2026-09-01: v1.40.6 (timer-park fix) applied -- INTERMITTENT strand remains
+## UPDATE 2026-09-01: v1.40.6 (timer-park fix) applied -- INTERMITTENT strand remains; OWNERSHIP NOT YET PROVEN
 
 libxtc v1.40.6 (rev 3edc2e9, the cancel-before-re-arm timer-park fix) is in.  The fiber
 path (pooled_protocol_carriers=0) at pgbench -c 64 is now INTERMITTENT, not a hard 100%
@@ -86,21 +86,31 @@ hang:
 - One capture progressed at ~1730 commits/s (8658 commits / 5s) mid-run -- healthy.
 - Another run hung at "starting vacuum...end" (the very first transactions), timeout-killed
   at 120s on a -T 30 bench (rc=124).
-- xtc_dump at a stalled moment: 64 park=fd (idle clients), 35 park=-, and exactly ONE
-  park=timer proc -- the one timer-parked fiber, the shape v1.40.6 targets.
-So v1.40.6 HELPED (some runs now make full-rate progress where v1.40.4 always stalled) but a
-residual INTERMITTENT strand remains, and it correlates with the single park=timer fiber --
-suggesting the timer-park resume race is reduced but not fully closed for our exact pattern
-(a migratable backend fiber timed-waiting -- likely a WaitLatch-with-timeout or LWLock
-timed wait -- under 64-way steal churn), OR a second timed-wait site in our adapter path.
 
-Correction to earlier framing: this is NOT the xtc_aio_fdatasync completion (team verified
-that path sound, and our progressing runs confirm fsync-under-WALWriteLock releases fine).
-It is a timed-park resume, intermittent, at high steal churn.  The stackless pool default
-stays 100% healthy (37.9k tps, always completes).
+So v1.40.6 HELPED (some runs now make full-rate progress where v1.40.4 always stalled) but
+a residual INTERMITTENT strand remains on the fiber path.  The stackless pool default stays
+100% healthy (37.9k tps, always completes).
 
-NEXT: give the libxtc team the intermittent characterization + the park=timer correlation;
-if they want, build the PG-free harness they suggested (migratable fibers doing a
-WaitLatch-with-timeout-shaped timed park under eager rebalance) to reproduce the RESIDUAL
-intermittency deterministically.  Option A flip stays staged (dormant) until the fiber path
-is 0-hang across many runs at 64/192/256.
+WHAT IS NOT YET PROVEN (do NOT file a libxtc report until this is closed):
+- The xtc_dump at one stalled moment showed 64 park=fd (idle clients) + 35 park=- + exactly
+  ONE park=timer proc.  I DID NOT capture that timer proc's STACK, so I cannot say it is the
+  strand.  Static analysis says it may well be a RED HERRING: bgwriter/checkpointer do a
+  normal periodic WaitLatch(timeout=100/200ms) (seen in the bt as wait classes 0x05/0x09),
+  which is a legitimate park=timer that re-arms every wake -- NOT a strand.
+- I do NOT have the stranded WALWriteLock holder's fiber stack on v1.40.6.  Earlier captures
+  that showed the holder were on v1.40.3/v1.40.4 (pre-timer-fix) and are stale.
+- Ownership (libxtc vs PG) is therefore UNDETERMINED.  The one PG-side thing the team's
+  reply named -- a hand-rolled xtc_task_park_on_timer re-park loop -- is ABSENT in PG (our
+  timed waits route through xtc_proc_sleep / xtc_proc_wait_fd, both v1.40.6-fixed library
+  primitives).  That points AWAY from a trivial PG fix but does NOT prove a libxtc gap.
+
+CORRECTION to earlier framing: this is NOT confirmed to be the xtc_aio_fdatasync completion
+(team verified that path sound; our progressing runs release WALWriteLock fine).  Nor is it
+confirmed to be a timer-park.  It is an INTERMITTENT strand of undetermined mechanism.
+
+NEXT (required before any libxtc report): reproduce a stall on v1.40.6 and capture the
+STRANDED HOLDER's fiber stack + park kind (find the PGPROC holding WALWriteLock, read its
+task->park_fd / park_timer / state).  Only then decide PG-vs-libxtc and write the report.
+Option A flip stays staged (dormant) until the fiber path is 0-hang across many runs at
+64/192/256.
+
