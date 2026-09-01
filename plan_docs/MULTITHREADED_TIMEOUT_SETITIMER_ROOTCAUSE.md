@@ -114,3 +114,59 @@ a fiber under the wedge repro; catch whether the clamp fires and whether CheckDe
 Do NOT ship a fix into the deadlock-detection path without that runtime evidence.  This is
 PG-side (no libxtc report); the fix will be in the logical-timeout delivery edge, once the
 instrument names it.
+
+## PINNED (2026-09-01, instrumented): hang = DEADLOCK_TIMEOUT not armed on the fiber (num_active=0, logical_delay=-1) -- a per-fiber timeout-bucket consistency issue
+
+Added elog trace to ProcSleep (PG_XTC_TIMEOUT_TRACE) logging logical_delay_ms +
+num_active + deadlock_due + got_dl at each fiber lock-wait park, and whether CheckDeadLock
+fires.  Two run classes, definitive:
+
+PROGRESSING run (commits ~600/s): every ProcSleep park shows
+  logical_delay_ms=1000 num_active=1 -> the DEADLOCK_TIMEOUT IS armed, the logical clamp
+  fires, CheckDeadLock ran 394x, cycles broken, commits flow.  The machinery WORKS.
+
+HANG run (commits delta=2, frozen): every ProcSleep park shows
+  logical_delay_ms=-1 num_active=0 got_dl=0, and during the hang CheckDeadLock fires
+  delta=0, park delta=0 (everything frozen).  So on the hung fiber the DEADLOCK_TIMEOUT was
+  NOT armed (num_active=0) -> get_logical_timeout_delay_ms returns -1 -> the fiber's
+  WaitLatch park is INFINITE with no deadlock deadline -> a lock cycle is never broken ->
+  permanent hang.
+
+Why num_active=0 after enable_timeout_after(DEADLOCK_TIMEOUT)?  The timeout state
+(all_timeouts[], num_active_timeouts, all_timeouts_initialized) is a PER-FIBER bucket
+resolved through the HOT CURRENT-WORK accessor:
+  CurrentPgBackendTimeoutRuntimeState -> PG_RUNTIME_FAST_BUCKET_ACCESSOR(...,
+  PgCurrentTimeoutState) -> resolved via CurrentPgBackend (the hot current-work ref cells).
+enable_timeout has Assert(all_timeouts[id].timeout_handler != NULL) -- COMPILED OUT in the
+cassert=false production build.  So if, at the enable_timeout_after moment, CurrentPgBackend
+(hence the timeout bucket) is inconsistent/stale for a migrating fiber -- the same hot
+current-work cell consistency class we already touched -- the arm lands on the wrong (or an
+uninitialized/unregistered) bucket, num_active stays 0, and the subsequent park reads a
+bucket with no active deadlock timeout -> infinite park.  Intermittent because it depends on
+the fiber's migration/current-work timing at that instant.
+
+## This ties the timeout hang to the current-work-bucket consistency on the fiber path
+The earlier hot-cell fix (mode-state thread-local + guarded process-cell clears) addressed
+TSan-visible races but did NOT guarantee CurrentPgBackend is CONSISTENT across an
+enable_timeout_after -> WaitLatch-park sequence on a migrating fiber.  The timeout bucket is
+one concrete victim; there may be others (any PER-FIBER bucket read after a current-work
+switch).  Still PG-side; NOT libxtc (libxtc timer/park primitives verified sound).
+
+## FIX DIRECTION (do NOT rush into the current-work/deadlock core)
+Candidates, needs one more targeted check (does CurrentPgBackend actually differ between the
+enable_timeout_after and the park, or is the bucket simply never registered for this fiber?):
+ A. If it is a stale-CurrentPgBackend read: ensure the current-work roots are pinned/
+    consistent for the whole ProcSleep enable+park window on a fiber (the roots must not be
+    repointed by a concurrent carrier between arming and parking).  This is the deeper
+    hot-cell consistency fix.
+ B. If it is a missing per-fiber registration: guarantee RegisterTimeout(DEADLOCK_TIMEOUT..)
+    ran for THIS fiber's bucket before ProcSleep, and make enable_timeout hard-fail (elog,
+    not a compiled-out assert) when a timeout is enabled on an unregistered id under
+    multithreaded -- so this can never silently no-op into an infinite park.
+ C. Belt-and-suspenders: ProcSleep on a fiber must NEVER park infinitely for a lock wait --
+    always bound the WaitLatch by min(deadlock_timeout, ...) directly (not solely via the
+    logical clamp), so a bucket glitch degrades to a slow deadlock check, never a hang.
+Option C is the safest immediate guard (bounds the blast radius to "slow" not "hung");
+A/B are the true fix.  Two-review (deadlock-detection correctness).  The trace instrument
+(PG_XTC_TIMEOUT_TRACE) stays available (env-gated, zero-cost off) for the next session to
+run check A vs B.
