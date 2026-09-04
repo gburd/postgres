@@ -48,3 +48,9 @@ PG_RMGR(RM_REPLORIGIN_ID, "ReplicationOrigin", replorigin_redo, replorigin_desc,
 PG_RMGR(RM_GENERIC_ID, "Generic", generic_redo, generic_desc, generic_identify, NULL, NULL, generic_mask, NULL)
 PG_RMGR(RM_LOGICALMSG_ID, "LogicalMessage", logicalmsg_redo, logicalmsg_desc, logicalmsg_identify, NULL, NULL, NULL, logicalmsg_decode)
 PG_RMGR(RM_XLOG2_ID, "XLOG2", xlog2_redo, xlog2_desc, xlog2_identify, NULL, NULL, NULL, xlog2_decode)
+PG_RMGR(RM_UNDO_ID, "Undo", undo_redo, undo_desc, undo_identify, NULL, NULL, NULL, NULL)
+PG_RMGR(RM_ATM_ID, "ATM", atm_redo, atm_desc, atm_identify, NULL, NULL, NULL, NULL)
+PG_RMGR(RM_RELUNDO_ID, "RelUndo", relundo_redo, relundo_desc, relundo_identify, relundo_startup, relundo_cleanup, relundo_mask, NULL)
+#ifdef USE_FLUX
+PG_RMGR(RM_FLUX_ID, "FLUX", flux_redo, flux_desc, flux_identify, NULL, NULL, flux_mask, flux_decode)
+#endif

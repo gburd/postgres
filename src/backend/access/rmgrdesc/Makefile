@@ -9,6 +9,7 @@ top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
 OBJS = \
+	atmdesc.o \
 	brindesc.o \
 	clogdesc.o \
 	committsdesc.o \
@@ -22,6 +23,7 @@ OBJS = \
 	mxactdesc.o \
 	nbtdesc.o \
 	relmapdesc.o \
+	relundodesc.o \
 	replorigindesc.o \
 	rmgrdesc_utils.o \
 	seqdesc.o \
@@ -29,7 +31,14 @@ OBJS = \
 	spgdesc.o \
 	standbydesc.o \
 	tblspcdesc.o \
+	undodesc.o \
 	xactdesc.o \
 	xlogdesc.o
+
+endif
+
+ifdef USE_FLUX
+OBJS += fluxdesc.o
+endif
 
 include $(top_srcdir)/src/backend/common.mk

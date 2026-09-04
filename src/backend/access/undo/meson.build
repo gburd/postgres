@@ -1,0 +1,28 @@
+# Copyright (c) 2022-2026, PostgreSQL Global Development Group
+
+backend_sources += files(
+  'atm.c',
+  'logical_revert_worker.c',
+  'relundo.c',
+  'relundo_apply.c',
+  'relundo_discard.c',
+  'relundo_page.c',
+  'relundo_recovery.c',
+  'relundo_worker.c',
+  'relundo_xlog.c',
+  'slog.c',
+  'slog_flathash.c',
+  'slog_tuple.c',
+  'undo.c',
+  'undo_bufmgr.c',
+  'undo_xlog.c',
+  'undoapply.c',
+  'undobuffer.c',
+  'undoinsert.c',
+  'undolog.c',
+  'undorecord.c',
+  'undormgr.c',
+  'undostats.c',
+  'undoworker.c',
+  'xactundo.c',
+)

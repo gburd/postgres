@@ -51,6 +51,7 @@ SUBDIRS = \
 		  test_rls_hooks \
 		  test_saslprep \
 		  test_shmem \
+		  test_seqlock \
 		  test_shm_mq \
 		  test_slru \
 		  test_tidstore \
