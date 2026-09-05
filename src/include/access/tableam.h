@@ -19,6 +19,7 @@
 
 #include "access/relscan.h"
 #include "access/sdir.h"
+#include "access/sysattr.h"
 #include "access/xact.h"
 #include "executor/tuptable.h"
 #include "storage/read_stream.h"
@@ -124,22 +125,6 @@ typedef enum TM_Result
 	/* lock couldn't be acquired, action skipped. Only used by lock_tuple */
 	TM_WouldBlock,
 } TM_Result;
-
-/*
- * Result codes for table_update(..., update_indexes*..).
- * Used to determine which indexes to update.
- */
-typedef enum TU_UpdateIndexes
-{
-	/* No indexed columns were updated (incl. TID addressing of tuple) */
-	TU_None,
-
-	/* A non-summarizing indexed column was updated, or the TID has changed */
-	TU_All,
-
-	/* Only summarized columns were updated, TID is unchanged */
-	TU_Summarizing,
-} TU_UpdateIndexes;
 
 /*
  * When table_tuple_update, table_tuple_delete, or table_tuple_lock fail
@@ -488,12 +473,38 @@ typedef struct TableAmRoutine
 	 * index_fetch_tuple iff it is guaranteed that no backend needs to see
 	 * that tuple. Index AMs can use that to avoid returning that tid in
 	 * future searches.
+	 *
+	 * If a tuple is returned, the table AM may have reached it by walking
+	 * private update-chain state (for heap, a HOT-selectively-updated hop
+	 * after the arriving entry's own tuple) that leaves the arriving entry's
+	 * stored key possibly disagreeing with the live tuple.  Whether that is
+	 * so for a particular index is reported separately, on demand, via
+	 * index_entry_needs_recheck; how the AM records it is the AM's private
+	 * business.  AMs without such update chains need not track anything.
 	 */
 	bool		(*index_fetch_tuple) (struct IndexFetchTableData *scan,
 									  ItemPointer tid,
 									  Snapshot snapshot,
 									  TupleTableSlot *slot,
 									  bool *call_again, bool *all_dead);
+
+	/*
+	 * After index_fetch_tuple returned a tuple, report whether the arriving
+	 * index entry (from indexRelation) may fail to exactly identify the live
+	 * tuple's current key, so a scan requiring exact agreement must skip it.
+	 *
+	 * The table AM decides this from its own private per-fetch state (for
+	 * heap, whether the chain walk crossed a HOT/SIU hop that changed a
+	 * column indexRelation covers).  If indexRelation is NULL, report the
+	 * AM's raw "the walk crossed such a hop at all" signal without narrowing
+	 * it to any particular index (used by unique-check callers that perform
+	 * their own key comparison).
+	 *
+	 * AMs without such update chains may leave this NULL; the wrapper then
+	 * reports false.
+	 */
+	bool		(*index_entry_needs_recheck) (struct IndexFetchTableData *scan,
+										  Relation indexRelation);
 
 
 	/* ------------------------------------------------------------------------
@@ -586,7 +597,30 @@ typedef struct TableAmRoutine
 								 bool wait,
 								 TM_FailureData *tmfd,
 								 LockTupleMode *lockmode,
-								 TU_UpdateIndexes *update_indexes);
+								 const Bitmapset *modified_attrs,
+								 bool *row_moved);
+
+	/*
+	 * Given a candidate set of attribute numbers (in the
+	 * FirstLowInvalidHeapAttributeNumber-offset bitmap convention) and two
+	 * versions of a row, return the subset that actually changed value
+	 * between oldslot and newslot.  See table_modified_attrs().
+	 *
+	 * This lets the executor decide, in an access-method-agnostic way, which
+	 * indexes an UPDATE must maintain (those whose attributes overlap the
+	 * returned set) while leaving the mechanics of "did this attribute
+	 * change?" -- value comparison, and the meaning of any system columns --
+	 * to the AM.  The AM may modify and return the passed-in set, or return a
+	 * new one; the caller must use only the returned pointer.
+	 *
+	 * Optional callback: an AM that leaves it NULL is treated as though every
+	 * candidate attribute changed (the conservative "maintain all indexes"
+	 * answer).
+	 */
+	Bitmapset  *(*modified_attrs) (Relation rel,
+								   Bitmapset *attrs,
+								   TupleTableSlot *oldslot,
+								   TupleTableSlot *newslot);
 
 	/* see table_tuple_lock() for reference about parameters */
 	TM_Result	(*tuple_lock) (Relation rel,
@@ -1314,15 +1348,43 @@ table_index_fetch_tuple(struct IndexFetchTableData *scan,
 }
 
 /*
+ * After table_index_fetch_tuple returned a tuple, ask the table AM whether
+ * the arriving index entry (from indexRelation) may fail to exactly identify
+ * the live tuple's current key, so a scan requiring exact agreement must skip
+ * it.  Pass indexRelation NULL to get the AM's raw "the walk crossed such a
+ * hop at all" signal, un-narrowed to any index.  AMs without such update
+ * chains leave the callback NULL; we then report false.
+ */
+static inline bool
+table_index_entry_needs_recheck(struct IndexFetchTableData *scan,
+								Relation indexRelation)
+{
+	if (scan->rel->rd_tableam->index_entry_needs_recheck == NULL)
+		return false;
+
+	return scan->rel->rd_tableam->index_entry_needs_recheck(scan,
+															indexRelation);
+}
+
+/*
  * This is a convenience wrapper around table_index_fetch_tuple() which
  * returns whether there are table tuple items corresponding to an index
  * entry.  This likely is only useful to verify if there's a conflict in a
  * unique index.
+ *
+ * If keep_slot is non-NULL, on a positive result the function stores the
+ * fetched tuple into *keep_slot (which must be a valid slot of the
+ * relation's type) and returns with the slot populated; the caller is
+ * responsible for clearing the slot.  When keep_slot is NULL a temporary
+ * slot is created internally and dropped before return, matching the
+ * pre-existing behaviour.
  */
 extern bool table_index_fetch_tuple_check(Relation rel,
 										  ItemPointer tid,
 										  Snapshot snapshot,
-										  bool *all_dead);
+										  bool *all_dead,
+										  bool *entry_needs_recheck,
+										  TupleTableSlot *keep_slot);
 
 
 /* ------------------------------------------------------------------------
@@ -1577,12 +1639,22 @@ table_tuple_delete(Relation rel, ItemPointer tid, CommandId cid,
  *		yet accurate for the new relation.
  *	crosscheck - if not InvalidSnapshot, also check old tuple against this
  *
+ * In parameters:
+ *	modified_attrs - input only; the set of indexed attributes whose values
+ *		changed (FirstLowInvalidHeapAttributeNumber convention).  Caller-owned;
+ *		the table AM must not modify it.  A table AM may use it to choose
+ *		between HOT and non-HOT storage of the new tuple.
+ *
  * Output parameters:
  *	slot - newly constructed tuple data to store
  *	tmfd - filled in failure cases (see below)
  *	lockmode - filled with lock mode acquired on tuple
- *	update_indexes - in success cases this is set if new index entries
- *		are required for this tuple; see TU_UpdateIndexes
+ *	row_moved - set true iff the AM stored the new tuple such that index
+ *		entries referencing the old version no longer locate it (for heap, a
+ *		non-HOT update at a new TID), meaning every index needs a fresh entry.
+ *		When false, the caller consults each index's own attributes against
+ *		modified_attrs to decide per index (the HOT / selective-index-update
+ *		cases).
  *
  * Normal, successful return value is TM_Ok, which means we did actually
  * update it.  Failure return codes are TM_SelfModified, TM_Updated, and
@@ -1603,12 +1675,43 @@ table_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot,
 				   CommandId cid, uint32 options,
 				   Snapshot snapshot, Snapshot crosscheck,
 				   bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
-				   TU_UpdateIndexes *update_indexes)
+				   const Bitmapset *modified_attrs, bool *row_moved)
 {
 	return rel->rd_tableam->tuple_update(rel, otid, slot,
 										 cid, options, snapshot, crosscheck,
-										 wait, tmfd,
-										 lockmode, update_indexes);
+										 wait, tmfd, lockmode,
+										 modified_attrs, row_moved);
+}
+
+/*
+ * Determine which of a candidate set of attributes actually changed value
+ * between two versions of a row.
+ *
+ * 'attrs' is a candidate set of attribute numbers using the
+ * FirstLowInvalidHeapAttributeNumber-offset bitmap convention (typically the
+ * relation's full indexed-attribute set); oldslot and newslot hold the old
+ * and new versions of the row.  Returns the subset of 'attrs' whose values
+ * differ between the two, so the executor can maintain only the indexes whose
+ * attributes overlap that subset.
+ *
+ * The AM owns the mechanics: how two values of one of its attributes compare,
+ * and what a system column means.  The executor owns the policy that consumes
+ * the result.  The AM may mutate and return 'attrs' (e.g. via bms_del_member,
+ * which can pfree it) or return a fresh set; callers must use only the
+ * returned pointer, not their original 'attrs'.
+ *
+ * If the AM does not provide the callback, treat every candidate attribute as
+ * changed (the conservative answer: maintain all candidate indexes) by
+ * returning 'attrs' unmodified.
+ */
+static inline Bitmapset *
+table_modified_attrs(Relation rel, Bitmapset *attrs,
+					 TupleTableSlot *oldslot, TupleTableSlot *newslot)
+{
+	if (rel->rd_tableam->modified_attrs == NULL)
+		return attrs;
+
+	return rel->rd_tableam->modified_attrs(rel, attrs, oldslot, newslot);
 }
 
 /*
@@ -2093,7 +2196,8 @@ extern void simple_table_tuple_delete(Relation rel, ItemPointer tid,
 									  Snapshot snapshot);
 extern void simple_table_tuple_update(Relation rel, ItemPointer otid,
 									  TupleTableSlot *slot, Snapshot snapshot,
-									  TU_UpdateIndexes *update_indexes);
+									  const Bitmapset *modified_attrs,
+									  bool *row_moved);
 
 
 /* ----------------------------------------------------------------------------

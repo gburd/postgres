@@ -130,6 +130,20 @@ typedef struct IndexFetchHeapData
 
 	/* Current heap block's corresponding page in the visibility map */
 	Buffer		xs_vmbuffer;
+
+	/*
+	 * Private HOT-selectively-updated (HOT/SIU) recheck state, produced by
+	 * the chain walk in heapam_index_fetch_tuple and consumed by
+	 * heapam_index_entry_needs_recheck.  xs_hot_indexed_recheck is true iff
+	 * the walk to the live tuple crossed a HOT/SIU hop after the arriving
+	 * entry's own tuple (its key may no longer match the live tuple).
+	 * xs_hot_indexed_crossed is the union of the per-hop modified-attrs
+	 * bitmaps the walk crossed, over heap attribute numbers (bit attnum-1 for
+	 * a 1-based attnum); the recheck callback tests it against a given
+	 * index's key columns to judge staleness without a key comparison.
+	 */
+	bool		xs_hot_indexed_recheck;
+	uint8	   *xs_hot_indexed_crossed;
 } IndexFetchHeapData;
 
 /* Result codes for HeapTupleSatisfiesVacuum */
@@ -384,12 +398,47 @@ extern TM_Result heap_delete(Relation relation, const ItemPointerData *tid,
 							 bool wait, TM_FailureData *tmfd);
 extern void heap_finish_speculative(Relation relation, const ItemPointerData *tid);
 extern void heap_abort_speculative(Relation relation, const ItemPointerData *tid);
+
+/*
+ * HeapUpdateIndexMode --
+ *	Three-valued classification returned by HeapUpdateHotAllowable() that
+ *	tells heap_update() whether a HOT update is permitted for this tuple and,
+ *	if so, whether the indexes may be maintained selectively.
+ *
+ *	HEAP_UPDATE_ALL_INDEXES
+ *		HOT is not allowed; the new tuple must go on its own TID and every
+ *		index receives a fresh entry.  This is the classic pre-HOT-indexed
+ *		behavior for updates that modify a non-summarizing indexed attribute.
+ *
+ *	HEAP_HEAP_ONLY_UPDATE
+ *		Classic HOT update: no non-summarizing indexed attribute changed (only
+ *		summarizing ones, if any), so no index needs a new entry.
+ *
+ *	HEAP_SELECTIVE_INDEX_UPDATE
+ *		HOT with selective index update: at least one non-summarizing index's
+ *		attribute changed, but the new tuple can still join the HOT chain on
+ *		the same page; only the indexes whose attributes changed receive a new
+ *		entry.  As for classic HOT, heap_update() still falls back to a
+ *		non-HOT update if the new tuple does not fit on the page.
+ *
+ *	Callers should spell the exact mode they care about.  HEAP_UPDATE_ALL_INDEXES
+ *	is the zero/false value and doubles as a distinguished "no HOT" sentinel
+ *	(e.g. testing hot_mode != HEAP_UPDATE_ALL_INDEXES), but the values are not
+ *	meaningful as a numeric ordering.
+ */
+typedef enum HeapUpdateIndexMode
+{
+	HEAP_UPDATE_ALL_INDEXES = 0,
+	HEAP_HEAP_ONLY_UPDATE = 1,
+	HEAP_SELECTIVE_INDEX_UPDATE = 2,
+} HeapUpdateIndexMode;
+
 extern TM_Result heap_update(Relation relation, const ItemPointerData *otid,
-							 HeapTuple newtup,
-							 CommandId cid, uint32 options,
+							 HeapTuple newtup, CommandId cid, uint32 options,
 							 Snapshot crosscheck, bool wait,
-							 TM_FailureData *tmfd, LockTupleMode *lockmode,
-							 TU_UpdateIndexes *update_indexes);
+							 TM_FailureData *tmfd, LockTupleMode lockmode,
+							 const Bitmapset *modified_idx_attrs,
+							 HeapUpdateIndexMode hot_mode);
 extern TM_Result heap_lock_tuple(Relation relation, HeapTuple tuple,
 								 CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
 								 bool follow_updates,
@@ -424,7 +473,7 @@ extern bool heap_tuple_needs_eventual_freeze(HeapTupleHeader tuple);
 extern void simple_heap_insert(Relation relation, HeapTuple tup);
 extern void simple_heap_delete(Relation relation, const ItemPointerData *tid);
 extern void simple_heap_update(Relation relation, const ItemPointerData *otid,
-							   HeapTuple tup, TU_UpdateIndexes *update_indexes);
+							   HeapTuple tup, bool *update_all_indexes);
 
 extern TransactionId heap_index_delete_tuples(Relation rel,
 											  TM_IndexDeleteOp *delstate);
@@ -435,11 +484,16 @@ extern void heapam_index_fetch_reset(IndexFetchTableData *scan);
 extern void heapam_index_fetch_end(IndexFetchTableData *scan);
 extern bool heap_hot_search_buffer(ItemPointer tid, Relation relation,
 								   Buffer buffer, Snapshot snapshot, HeapTuple heapTuple,
-								   bool *all_dead, bool first_call);
+								   bool *all_dead, bool first_call,
+								   bool *hot_indexed_recheck,
+								   uint8 *crossed_bitmap,
+								   bool *prefix_all_dead);
 extern bool heapam_index_fetch_tuple(struct IndexFetchTableData *scan,
 									 ItemPointer tid, Snapshot snapshot,
 									 TupleTableSlot *slot, bool *heap_continue,
 									 bool *all_dead);
+extern bool heapam_index_entry_needs_recheck(struct IndexFetchTableData *scan,
+											 Relation indexRelation);
 
 /* in heap/pruneheap.c */
 extern void heap_page_prune_opt(Relation relation, Buffer buffer,
@@ -452,7 +506,8 @@ extern void heap_page_prune_and_freeze(PruneFreezeParams *params,
 extern void heap_page_prune_execute(Buffer buffer, bool lp_truncate_only,
 									OffsetNumber *redirected, int nredirected,
 									OffsetNumber *nowdead, int ndead,
-									OffsetNumber *nowunused, int nunused);
+									OffsetNumber *nowunused, int nunused,
+									OffsetNumber *stubs, int nstubs);
 extern void heap_get_root_tuples(Page page, OffsetNumber *root_offsets);
 extern void log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 									  Buffer vmbuffer, uint8 vmflags,
@@ -462,7 +517,15 @@ extern void log_heap_prune_and_freeze(Relation relation, Buffer buffer,
 									  HeapTupleFreeze *frozen, int nfrozen,
 									  OffsetNumber *redirected, int nredirected,
 									  OffsetNumber *dead, int ndead,
-									  OffsetNumber *unused, int nunused);
+									  OffsetNumber *unused, int nunused,
+									  OffsetNumber *stubs, int nstubs);
+
+/* in heap/heapam.c */
+
+extern HeapUpdateIndexMode HeapUpdateHotAllowable(Relation relation,
+												const Bitmapset *modified_idx_attrs);
+extern LockTupleMode HeapUpdateDetermineLockmode(Relation relation,
+												 const Bitmapset *modified_idx_attrs);
 
 /* in heap/vacuumlazy.c */
 extern void heap_vacuum_rel(Relation rel,
