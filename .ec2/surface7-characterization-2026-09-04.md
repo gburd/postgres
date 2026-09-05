@@ -52,3 +52,30 @@ Option A default flip stays staged/dormant (hang rate ~60% at c=64; and now show
 even at c=16).  Do NOT file a libxtc report yet: ownership is undetermined -- the holder may
 be waiting on its CLIENT socket (a PG-side issue) rather than a lost runtime wake.  The
 PGPROC->fiber->park_fd correlation above decides it.
+
+## RESOLVED (same session): surface #7 IS the aio-fsync fiber resume; report filed
+Followed the recorded next step (find the root blocker + what it waits on).  Result:
+ - pg_blocking_pids root blockers are ALL sessions running "END;" (COMMIT) with
+   wait_event = LWLock/WALWrite, in_xact=t.  So WALWriteLock IS the epicenter after all --
+   my earlier "no LWLock contended" reading was an artifact of sampling a bt at an instant
+   when no thread was mid-LWLockAcquire (the waiters are PARKED FIBERS, invisible to gdb).
+ - WALWriteLock state = 0x80040000 => HELD EXCLUSIVE for the whole stall.
+ - EXACTLY ONE backend reports IO/WalSync => it holds the lock and is in issue_xlog_fsync ->
+   pg_fdatasync -> xtc_aio_fdatasync.
+ - 3x bt (1s apart, identical): xtc_aio=0 fdatasync=0 XLogWrite=0 on every thread => that
+   fiber is PARKED, not spinning; iou-wrk=19 => its FDATASYNC was submitted and serviced.
+ - xtc_dump: 34 park=- (no fd, no timer == the aio-completion park shape), 33 park=fd (idle
+   sessions on client sockets), 1 park=timer; ALL parked; all 32 loops alive w/ steals.
+=> The WAL-fsync fiber parked on xtc_aio_fdatasync is NEVER RESUMED while holding
+   WALWriteLock; 19 committers queue behind it holding row locks; everyone else queues on
+   those rows -> the global stall.  The row-lock convoy is the SYMPTOM.
+
+Ownership: libxtc (the aio-completion resume; PG does nothing between the park and its
+return).  The team verified the pure-aio path 0/20 clean in isolation, so the trigger is what
+our shape adds: an LWLock held ACROSS the parked fsync + ~33 concurrent fd-parked migratable
+fibers + steal churn (possible steal between submit and completion).  Report filed with the
+full evidence + a suggested harness delta:
+plan_docs/phase16_audits/LIBXTC_V1407_AIO_FSYNC_FIBER_NOT_RESUMED.md
+(+ /tmp/libxtc-v1407-aio-fsync-fiber-not-resumed-2026-09-04.md).
+Note: our ProcSleep guard cannot mitigate this one -- the stuck fiber is inside
+xtc_aio_fdatasync, not in ProcSleep.
