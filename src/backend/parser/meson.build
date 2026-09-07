@@ -86,8 +86,14 @@ if lime_runtime_dep.found()
   # / parse_token / parse_end / snapshot), so it is compiled in its own
   # library with the Lime include directory -- kept off the rest of the
   # backend, which uses PostgreSQL's own snapshot.h.
+  #
+  # parser_pushparse.c includes gramparse.h, which includes the generated
+  # gram.h.  Pass the grammar's .h output (index 1) as a source so ninja
+  # orders the grammar generation before this compile; without it the
+  # build races and fails with "gram.h: No such file or directory".
   parser_pushparse_lib = static_library('parser_pushparse',
     files('parser_pushparse.c'),
+    backend_parser[1],
     dependencies: [backend_code, lime_runtime_dep],
     include_directories: [include_directories('.'), lime_runtime_incdir],
     kwargs: internal_lib_args,

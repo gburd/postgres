@@ -451,6 +451,7 @@ dot = find_program('dot', native: true, required: false)
 # (cube, seg, pg_plan_advice) use Lime exclusively as of Phase 5
 # completion; nothing in this tree references bison_kw or flex_kw.
 bison_flags = []
+bison_version = 'not found'
 if bison.found()
   bison_version_c = run_command(bison, '--version', check: true)
   bison_version = bison_version_c.stdout().split(' ')[3].split('\n')[0]
@@ -465,6 +466,7 @@ bison_kw = {
 }
 
 flex_flags = []
+flex_version = 'not found'
 if flex.found()
   flex_version_c = run_command(flex, '--version', check: true)
   flex_version = flex_version_c.stdout().split(' ')[1].split('\n')[0]
@@ -4498,9 +4500,10 @@ endif
 
 summary(
   {
-    'bison': '@0@ @1@'.format(bison.full_path(), bison_version),
+    'bison': bison.found() ? '@0@ @1@'.format(bison.full_path(), bison_version) : 'not found (unused)',
     'dtrace': dtrace,
-    'flex': '@0@ @1@'.format(flex.full_path(), flex_version),
+    'flex': flex.found() ? '@0@ @1@'.format(flex.full_path(), flex_version) : 'not found (unused)',
+    'lime': lime.found() ? lime.full_path() : 'not found',
   },
   section: 'Programs',
 )
