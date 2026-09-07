@@ -105,10 +105,33 @@ hang, server-side `sum(xact_commit)` moves by **2-3 over a 4 second window** (vs
 when healthy), and it never recovers over multi-minute observation.  A 6-10ms p99 fsync floor
 cannot produce that.  It is a freeze, not a tail-latency artifact.
 
-## (d) --enable-diagnostic
+## (d) --enable-diagnostic: ran it -- ZERO guards fired, and it still hangs 4/6
 
-Not run yet -- it is next on my list, and I will send the result separately.  I wanted you to
-have (a)-(c) immediately since (a) is the one you said unblocks everything.
+Built libxtc at 749c881 with `meson -Ddiagnostic=true` (the meson equivalent of
+`--enable-diagnostic`; `XTC_DIAGNOSTIC` confirmed defined in the generated config, and the
+installed .so is visibly larger from the added guards), relinked PG against it, and re-ran the
+repro:
+
+```
+run 1: PASS tps = 2970.86  (no guard)
+run 2: PASS tps = 2212.33  (no guard)
+run 3: HANG rc=124, NO guard fired
+run 4: HANG rc=124, NO guard fired
+run 5: HANG rc=124, NO guard fired
+run 6: HANG rc=124, NO guard fired
+=> PASS=2  HANG=4  GUARD_FIRED=0  / 6
+```
+
+**This is the most useful negative result of the set.**  With the owner-thread guards ACTIVE,
+the hang still reproduces at the same rate and **no guard ever fires** -- so the wedge is NOT
+preceded by any cross-thread mutation of a loop-owned structure that those guards cover.
+
+That rules out the entire shape that produced surfaces #1-#8 ("a migratable fiber interacting
+with state owned by another loop").  Whatever strands us is either (i) a lost wake that
+involves no illegal cross-thread write at all -- e.g. a correctly-synchronised wake that is
+simply never generated, or generated against a stale/!armed waker -- or (ii) something outside
+the guards' coverage.  Combined with (a) `wake_pending` CLEAR and (b) zero SCHEDULED, the
+picture is consistently "the wake was never delivered", not "state got corrupted".
 
 --------------------------------------------------------------------------------
 ## Summary of what this says

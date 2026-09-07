@@ -1,0 +1,8 @@
+run 1: PASS tps = 2970.864678 (no guard)
+run 2: PASS tps = 2212.327060 (no guard)
+run 3: HANG rc=124, NO guard fired
+run 4: HANG rc=124, NO guard fired
+run 5: HANG rc=124, NO guard fired
+run 6: HANG rc=124, NO guard fired
+DIAGNOSTIC RUN: PASS=2 HANG=4 GUARD_FIRED=0 / 6
+DR_COMPLETE
