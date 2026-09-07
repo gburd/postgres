@@ -496,9 +496,43 @@ psqlscan_record_initial_keyword(const char *identifier, int len,
 			psqlscan_ident_is(identifier, len, "replace") ||
 			psqlscan_ident_is(identifier, len, "schema"))
 			idents[*idents_count] = pg_tolower((unsigned char) identifier[0]);
+		else if (psqlscan_ident_is(identifier, len, "copy") ||
+				 psqlscan_ident_is(identifier, len, "from") ||
+				 psqlscan_ident_is(identifier, len, "stdin") ||
+				 psqlscan_ident_is(identifier, len, "stdout"))
+			idents[*idents_count] = pg_toupper((unsigned char) identifier[0]);
 		/* For other keywords or identifiers, leave '\0' in the array entry */
 		(*idents_count)++;
 	}
+}
+
+/*
+ * Does the current input match COPY ... FROM STDIN?
+ */
+static bool
+psqlscan_is_copy_from_stdin(PsqlScanState state)
+{
+	const char *idents = state->init_idents;
+
+	/*
+	 * The first word must be COPY, but after that there could be up to four
+	 * identifiers (BINARY database.schema.table) before FROM.  Since some of
+	 * the words we track are not reserved words, don't assume the intervening
+	 * array entries are '\0'.  Life is simplified here by the fact that
+	 * psqlscan_track_identifier ignores everything within parens: we won't
+	 * see column lists nor the query in COPY (query).
+	 */
+	if (idents[0] != 'C')
+		return false;
+	for (int i = 1; i < lengthof(state->init_idents) - 1; i++)
+	{
+		/* Scan to find FROM; if not seen within range, it's not valid COPY */
+		if (idents[i] != 'F')
+			continue;
+		/* It's COPY FROM STDIN only if the next word is STDIN */
+		return (idents[i + 1] == 'S');
+	}
+	return false;
 }
 
 /*
@@ -602,6 +636,22 @@ psql_scan_reset(PsqlScanState state)
 		free(state->dolqstart);
 	state->dolqstart = NULL;
 	state->begin_depth = 0;
+	state->copy_stdin_count = 0;
+	state->init_idents_count = 0;
+}
+
+/*
+ * Called from psqlscan.lex at a subcommand boundary (semicolon, or "\;",
+ * at paren_depth == 0 && begin_depth == 0).  Counts the just-finished
+ * subcommand if it was COPY ... FROM STDIN, then resets the
+ * initial-keyword tracking so the next subcommand starts fresh.
+ */
+void
+psqlscan_end_subcommand(PsqlScanState state)
+{
+	/* Remember if this subcommand was COPY FROM STDIN */
+	if (psqlscan_is_copy_from_stdin(state))
+		state->copy_stdin_count++;
 	state->init_idents_count = 0;
 }
 
@@ -609,6 +659,26 @@ void
 psql_scan_reselect_sql_lexer(PsqlScanState state)
 {
 	state->start_state = ST_INITIAL;
+}
+
+/*
+ * Return the number of COPY ... FROM STDIN commands in the input string.
+ *
+ * This should be called only after we've finished parsing a complete
+ * string and are ready to send it to the backend.
+ */
+int
+psql_scan_count_copy_from_stdin(PsqlScanState state)
+{
+	if (state->init_idents_count > 0)
+	{
+		/* Count any COPY FROM STDIN following the last semicolon */
+		if (psqlscan_is_copy_from_stdin(state))
+			state->copy_stdin_count++;
+		/* ... but do so only once */
+		state->init_idents_count = 0;
+	}
+	return state->copy_stdin_count;
 }
 
 bool

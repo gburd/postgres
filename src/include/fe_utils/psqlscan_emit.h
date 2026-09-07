@@ -113,4 +113,12 @@ extern void psql_emit_var_squote(void *user, const char *p, size_t len);
 extern void psql_emit_var_dquote(void *user, const char *p, size_t len);
 extern void psql_emit_var_test(void *user, const char *p, size_t len);
 
+/*
+ * Called from psqlscan.lex when a semicolon (or "\;") is seen at outer
+ * level, i.e. at a subcommand boundary.  Counts the just-finished
+ * subcommand if it was a COPY ... FROM STDIN, then resets the
+ * initial-keyword tracking for the next subcommand.
+ */
+extern void psqlscan_end_subcommand(PsqlScanState state);
+
 #endif							/* PSQLSCAN_EMIT_H */

@@ -291,6 +291,17 @@ psql_scan_slash_command(PsqlScanState state)
 
 	psql_scan_reselect_sql_lexer(state);
 
+	/*
+	 * The lexer appends command-name text to mybuf, so a buffer enlargement
+	 * failure during lexing can leave mybuf broken even if initialization
+	 * succeeded.
+	 */
+	if (PQExpBufferDataBroken(mybuf))
+	{
+		pg_log_error("out of memory");
+		return NULL;
+	}
+
 	return mybuf.data;
 }
 
@@ -328,6 +339,16 @@ psql_scan_slash_option(PsqlScanState state,
 	final_state = state->start_state;
 
 	psql_scan_reselect_sql_lexer(state);
+
+	/*
+	 * The lexer appends option text to mybuf, so a buffer enlargement failure
+	 * during lexing can leave mybuf broken even if initialization succeeded.
+	 */
+	if (PQExpBufferDataBroken(mybuf))
+	{
+		pg_log_error("out of memory");
+		return NULL;
+	}
 
 	switch (final_state)
 	{
@@ -396,17 +417,49 @@ psql_scan_slash_command_end(PsqlScanState state)
 	psql_scan_reselect_sql_lexer(state);
 }
 
-int
-psql_scan_get_paren_depth(PsqlScanState state)
+/*
+ * Save current lexer state
+ *
+ * Relevant parts of the state are returned in a pg_malloc'd struct.
+ * It is caller's responsibility to free the struct eventually.
+ */
+PsqlScanStateSave *
+psql_scan_get_lex_state(PsqlScanState state)
 {
-	return state->paren_depth;
+	PsqlScanStateSave *lex_state = pg_malloc_object(PsqlScanStateSave);
+	StaticAssertDecl(sizeof(lex_state->init_idents) == sizeof(state->init_idents),
+					 "init_idents array lengths must match");
+	StaticAssertDecl(sizeof(lex_state->sub_idents) == sizeof(state->sub_idents),
+					 "sub_idents array lengths must match");
+
+	lex_state->paren_depth = state->paren_depth;
+	lex_state->begin_depth = state->begin_depth;
+	lex_state->copy_stdin_count = state->copy_stdin_count;
+	lex_state->init_idents_count = state->init_idents_count;
+	memcpy(lex_state->init_idents, state->init_idents,
+		   sizeof(lex_state->init_idents));
+	lex_state->sub_idents_count = state->sub_idents_count;
+	memcpy(lex_state->sub_idents, state->sub_idents,
+		   sizeof(lex_state->sub_idents));
+	return lex_state;
 }
 
+/*
+ * Restore lexer state to what it was when saved
+ */
 void
-psql_scan_set_paren_depth(PsqlScanState state, int depth)
+psql_scan_set_lex_state(PsqlScanState state,
+						const PsqlScanStateSave *lex_state)
 {
-	Assert(depth >= 0);
-	state->paren_depth = depth;
+	state->paren_depth = lex_state->paren_depth;
+	state->begin_depth = lex_state->begin_depth;
+	state->copy_stdin_count = lex_state->copy_stdin_count;
+	state->init_idents_count = lex_state->init_idents_count;
+	memcpy(state->init_idents, lex_state->init_idents,
+		   sizeof(state->init_idents));
+	state->sub_idents_count = lex_state->sub_idents_count;
+	memcpy(state->sub_idents, lex_state->sub_idents,
+		   sizeof(state->sub_idents));
 }
 
 void
@@ -443,13 +496,22 @@ void
 slash_evaluate_backtick(PsqlScanState state)
 {
 	PQExpBuffer output_buf = state->output_buf;
-	char	   *cmd = output_buf->data + slash_backtick_start_offset;
+	char	   *cmd;
 	PQExpBufferData cmd_output;
 	FILE	   *fd;
 	bool		error = false;
 	int			exit_code = 0;
 	char		buf[512];
 	size_t		result;
+
+	/*
+	 * The option buffer is already broken; avoid touching the static
+	 * oom_buffer and let psql_scan_slash_option() return NULL.
+	 */
+	if (PQExpBufferBroken(output_buf))
+		return;
+
+	cmd = output_buf->data + slash_backtick_start_offset;
 
 	initPQExpBuffer(&cmd_output);
 

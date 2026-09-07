@@ -270,7 +270,7 @@ rule semi matches /;/ {
     psqlscan_emit(s, matched, matched_len);
     if (s->paren_depth == 0 && s->begin_depth == 0) {
         s->start_state = PSQL_STATE_INITIAL;
-        s->init_idents_count = 0;
+        psqlscan_end_subcommand(s);
         PSQL_TERMINATE_AT(user, STOP_SEMI, matched_len);
         LEX_TERMINATE();
     }
@@ -279,11 +279,11 @@ rule semi matches /;/ {
 
 /* "\\;" / "\\:" : emit only the second char, keep scanning */
 rule bslash_special matches /\\[;:]/ {
-    /* Reset BEGIN/END tracking if semi at outer level */
+    /* Reset BEGIN/END/COPY tracking if semi at outer level */
     if (matched[1] == ';' &&
         PSQL_STATE(user)->paren_depth == 0 &&
         PSQL_STATE(user)->begin_depth == 0)
-        PSQL_STATE(user)->init_idents_count = 0;
+        psqlscan_end_subcommand(PSQL_STATE(user));
     psqlscan_emit(PSQL_STATE(user), matched + 1, 1);
     LEX_SKIP();
 }
