@@ -1,3 +1,10 @@
+> **SUPERSEDED 2026-09-07 (later)** -- the `cq_unreaped>0` conclusion here is WITHDRAWN.
+> Those were SINGLE samples of a transient condition.  With the libxtc team's three-sample
+> `xtc-rings` form at a fresh hang, ALL 32 rings show `unreaped=0` in all three samples --
+> no ring is stuck.  (They had warned of exactly this: they measured one ring at 218
+> unreaped then 1 three seconds later.)  See LIBXTC_TAIL_ZERO_AIO_PARKS.md.  The io-wq
+> census (cap not saturated) below still stands.
+
 # fdinfo result: `cq_unreaped > 0` -- the kernel POSTED the completions and libxtc never drained those rings
 
 Date: 2026-09-07
