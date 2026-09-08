@@ -1,3 +1,12 @@
+> **SUPERSEDED 2026-09-07 (later)** -- the "zero aio parks, absence is real, ring did not
+> wrap" claim is WITHDRAWN.  A shorter load (-T 8) with a prompt dump captured 3533 events
+> including 1546 aio PARKs, so the earlier dump simply caught a window dominated by
+> pre-load mailbox traffic.  Both readings offered there are also eliminated: an
+> aio_offload counter shows 0 offloads (healthy AND hung), and backends reach aio_do
+> constantly.  The real finding is in LIBXTC_TAIL_FOUND_FDATASYNC_PARK.md: pid 27.1.1
+> parked on XTC_AIO_FDATASYNC (op=3) after 41 clean cycles and never resumed, with loop 27
+> going silent at the same instant.  The unreaped=0 three-sample result below stands.
+
 # xtc_tail result: your caveat was right (unreaped=0 in all 3 samples), and the timeline shows ZERO aio parks during the hang
 
 Date: 2026-09-07

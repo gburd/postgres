@@ -1,0 +1,7 @@
+CONTROL (healthy, c=4): offload-probe lines=0
+=== run 1 HANG ===
+  OFFLOAD probe lines (each = 64 offloads): 0
+  tail events=3533 ; SCHED PARK field-count histogram (6 fields = aio):
+        140 5
+       1546 6
+SA_COMPLETE
