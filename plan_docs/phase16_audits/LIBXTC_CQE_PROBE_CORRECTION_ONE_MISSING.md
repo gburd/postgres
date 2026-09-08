@@ -1,3 +1,11 @@
+> **SUPERSEDED 2026-09-07 (later same day)** -- the "submitted successfully, kernel never
+> completed it => submit-side" conclusion here is ALSO wrong.  /proc/<pid>/fdinfo shows
+> `cq_unreaped > 0`: the kernel DID post the completions and libxtc never drained those
+> rings.  The `cmp` trace line only fires when libxtc reaps, so an unreaped CQE is
+> indistinguishable from a never-posted one in that trace.  See
+> LIBXTC_FDINFO_UNREAPED_CQES.md.  The per-tag counting method and the two
+> guard-eliminations (0 drops, 0 batch-full) below still stand.
+
 # CORRECTION + the real answer: exactly ONE submission never completed (my earlier MISSING_COUNT=0 was a tag-reuse artifact)
 
 Date: 2026-09-07
