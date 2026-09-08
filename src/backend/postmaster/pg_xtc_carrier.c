@@ -55,6 +55,7 @@
 #include "xtc_sync.h"		/* xtc_amutex_*, xtc_notify_* (fusion F2 pooled-queue lock) */
 #include "xtc_log.h"		/* xtc_log_set_default (fusion F0a: libxtc diagnostics -> server log) */
 #include "xtc_dump.h"		/* xtc_dump (fusion F0d: full runtime dump on threaded crash) */
+#include "xtc_tail.h"		/* xtc_tail_enable (v1.41.1 diagnostic timeline; PG_XTC_TAIL) */
 
 /*
  * Best-effort diagnostic write to a raw fd (STDERR) on crash/down/teardown
@@ -1062,6 +1063,29 @@ xtc_pg_carrier_start(void)
 			g_xtc_n_loops = xtc_exec_n_loops(g_xtc_exec);
 		else
 			g_xtc_n_loops = 1;
+
+		/*
+		 * Diagnostic timeline (libxtc v1.41.1 xtc_tail): a bounded in-process
+		 * ring of runtime events.  The SCHED source brackets the aio park with
+		 * PARK (detail = op) and, on resume, RUN (detail = park-to-run latency in
+		 * ns) -- so a fiber stranded on an I/O completion shows up as a PARK with
+		 * NO matching RUN for that pid.  That is the direct test for the
+		 * lost-completion-wake hang we are chasing with the libxtc team (see
+		 * plan_docs/phase16_audits/LIBXTC_FDINFO_UNREAPED_CQES.md).
+		 *
+		 * OFF unless PG_XTC_TAIL is set: when a source is disabled xtc_tail is one
+		 * branch and reads no clock, but we still gate it so production never even
+		 * allocates the ring.  The ring holds 16384 records and overwrites
+		 * oldest-first, so a busy run WILL wrap -- dump it promptly at the hang,
+		 * and use xtc_tail_reset() before a load phase if you need the tightest
+		 * window.
+		 */
+		{
+			const char *tail = getenv("PG_XTC_TAIL");
+
+			if (tail != NULL && tail[0] != '\0')
+				(void) xtc_tail_enable(XTC_TAIL_SCHED | XTC_TAIL_MSG);
+		}
 
 		/*
 		 * Eager work-stealing rebalance (libxtc v1.27.0 df86fb8), threaded
