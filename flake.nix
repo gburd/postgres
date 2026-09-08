@@ -9,11 +9,10 @@
     # Defaults to GitHub; for local development point it at a checkout with
     #   nix develop --override-input libxtc path:$HOME/ws/xtc
     libxtc = {
-      # Pinned to libxtc HEAD rev 27d327b (post-v1.41.0, UNTAGGED).  Carries the
-      # 749c881 park-recheck fix + the 27d327b xtc-stranded helper (incl. the local_id-0
-      # suspect-filter fix we suggested).  Re-pin to a real
-      # tag once they cut one.
-      url = "github:gburd/libxtc?rev=27d327b1102ff89b27ca26953a9d47c37a51e62b";
+      # Pinned to the v1.41.1 release tag.  Carries the adb670f n_alive/idle-predicate
+      # fix, the 25a6e03 aio PARK/RUN tail brackets (so a lost completion wake is
+      # VISIBLE as a PARK with no RUN), and the xtc-rings / xtc-tail-dump gdb tools.
+      url = "github:gburd/libxtc?rev=cbaff0a79b3cf78d695851865acdd194f66f993f";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
     };
