@@ -1,0 +1,26 @@
+=== run 1 HANG (pid=48746): which loop owns the unreaped ring? ===
+  UNREAPED ring fd=560 count=6
+  UNREAPED ring fd=578 count=21
+n_loops=32 target_fd=578
+  --- all thread stacks mentioning io_poll / loop_step (who should be draining) ---
+Thread 58 (Thread 0x7f416a953640 (LWP 48764) "postgres"):
+Thread 57 (Thread 0x7f4169f52640 (LWP 48765) "postgres"):
+Thread 56 (Thread 0x7f4169551640 (LWP 48766) "postgres"):
+#1  0x00007f47cf1cf7bf in io_uring_wait_cqes () from /lib64/liburing.so.2
+#2  0x00007f47cedf08fe in xtc_io_poll (io=0x9726960, events=events@entry=0x7f41695133f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7f41695133e4) at ../src/io/io_uring.c:578
+#3  0x00007f47cedf24ce in __xtc_loop_step (loop=loop@entry=0x97470a0) at ../src/evt/loop.c:964
+Thread 55 (Thread 0x7f4168b50640 (LWP 48767) "postgres"):
+#1  0x00007f47cf1cf7bf in io_uring_wait_cqes () from /lib64/liburing.so.2
+#2  0x00007f47cedf08fe in xtc_io_poll (io=0x9748b40, events=events@entry=0x7f4168b123f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7f4168b123e4) at ../src/io/io_uring.c:578
+#3  0x00007f47cedf24ce in __xtc_loop_step (loop=loop@entry=0x9747df0) at ../src/evt/loop.c:964
+Thread 54 (Thread 0x7f4163fff640 (LWP 48768) "postgres"):
+#2  0x00007f47cedf08fe in xtc_io_poll (io=0x9749bf0, events=events@entry=0x7f4163fc13f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7f4163fc13e4) at ../src/io/io_uring.c:578
+#3  0x00007f47cedf24ce in __xtc_loop_step (loop=loop@entry=0x9748ea0) at ../src/evt/loop.c:964
+Thread 53 (Thread 0x7f41635fe640 (LWP 48769) "postgres"):
+#2  0x00007f47cedf08fe in xtc_io_poll (io=0x974aca0, events=events@entry=0x7f41635c03f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7f41635c03e4) at ../src/io/io_uring.c:578
+#3  0x00007f47cedf24ce in __xtc_loop_step (loop=loop@entry=0x9749f50) at ../src/evt/loop.c:964
+Thread 52 (Thread 0x7f4162bfd640 (LWP 48770) "postgres"):
+#2  0x00007f47cedf08fe in xtc_io_poll (io=0x974bd50, events=events@entry=0x7f4162bbf3f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7f4162bbf3e4) at ../src/io/io_uring.c:578
+#3  0x00007f47cedf24ce in __xtc_loop_step (loop=loop@entry=0x974b000) at ../src/evt/loop.c:964
+Thread 51 (Thread 0x7f41621fc640 (LWP 48771) "postgres"):
+WL_COMPLETE

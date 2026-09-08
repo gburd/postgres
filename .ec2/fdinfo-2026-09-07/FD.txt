@@ -1,0 +1,23 @@
+=== run 1: HANG rc=124 -- FDINFO PROBE (pid=46518) ===
+  fd=560 cq_unreaped=15 sq_unconsumed=0
+  RINGS=32  TOTAL_CQ_UNREAPED=15
+  total threads=53
+  thread-name census:
+         36 postgres
+          1 iou-wrk-46570
+          1 iou-wrk-46568
+          1 iou-wrk-46566
+          1 iou-wrk-46563
+          1 iou-wrk-46562
+  iou-wrk total=17
+  iou-wrk per owning tid (cap is 4 bounded/ring):
+          1 iou-wrk-46570
+          1 iou-wrk-46568
+          1 iou-wrk-46566
+          1 iou-wrk-46563
+          1 iou-wrk-46562
+          1 iou-wrk-46559
+          1 iou-wrk-46557
+          1 iou-wrk-46550
+  trace: sub=18507 cmp=18506
+FD_COMPLETE
