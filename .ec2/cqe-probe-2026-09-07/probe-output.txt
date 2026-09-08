@@ -1,0 +1,24 @@
+=== run 1: HANG rc=124 -- THE PROBE ===
+  submits(unique tags)=65  completions(unique tags)=65
+  submitted-but-NEVER-completed (comm -23):
+  => MISSING_COUNT=0
+  --- xtc-stranded (27d327b, local_id-0 filtered) ---
+proc states:
+    PARKED       68
+    RUNNING      1
+park kinds (PARKED procs only):
+    park=-        33
+    park=fd       34
+    park=timer    1
+0x64e38c0          1.1.1      -        clear          <-- SUSPECT: no source, no latched wake
+0x66b0ef0          27.1.1     -        clear          <-- SUSPECT: no source, no latched wake
+(68 parked, 2 suspect, 31 idle service fiber(s) excluded)
+NOTE: 31 proc(s) with local_id 0 park with no source and no latched wake.  That is the NORMAL idle state of a per-loop service fiber blocked in xtc_recv(..., -1), so they are excluded above.  If YOUR long-lived receivers have a non-zero local_id they will still appear as suspects -- check them against what you know parks forever by design.
+For each suspect, confirm its wake source actually completed (e.g. iou-wrk threads present for an aio park) before reporting a lost wake -- a pending syscall is not a strand.
+  --- task fields for suspect proc 0x64e38c0 ---
+    park_fd=-1 park_timer=(nil) park_requested=0 wake_revents=65536 state=2
+    home_loop=0x649d020 home_io=0x649dd70
+  --- task fields for suspect proc 0x66b0ef0 ---
+    park_fd=-1 park_timer=(nil) park_requested=0 wake_revents=0 state=2
+    home_loop=0x64db200 home_io=0x64dbf50
+CQ_COMPLETE
