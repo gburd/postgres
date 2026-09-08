@@ -1,0 +1,153 @@
+=== run 1 HANG (pid=46436) ===
+  --- xtc-rings sample 1 ---
+0x00007fb3b131017e in epoll_wait () from /lib64/libc.so.6
+loop               id     io                 ring_fd  owner_tid            unreaped  alive
+0x2395030          0      0x2395d80          560      140382295107136      0         3
+0x23b90b0          1      0x2398970          563      140382214026816      0         2
+0x23b9e00          2      0x23bab50          566      140382203536960      0         2
+0x23baeb0          3      0x23bbc00          569      140382193047104      0         1
+0x23bbf60          4      0x23bccb0          572      140382182557248      0         1
+0x23bd010          5      0x23bdd60          575      140382172067392      0         1
+0x23be0c0          6      0x23bee10          578      140382161577536      0         1
+0x23bf170          7      0x23bfec0          581      140382079809088      0         1
+0x23c0250          8      0x23c0fa0          584      140382069319232      0         2
+0x23c1330          9      0x23c2080          587      140382058829376      0         1
+0x23c2410          10     0x23c3160          590      140382023161408      0         1
+0x23c34f0          11     0x23c4240          593      140381836518976      0         1
+0x23c45d0          12     0x23c5320          596      140381683353152      0         1
+0x23c56b0          13     0x23c6400          599      140381656077888      0         1
+0x23c6790          14     0x23c74e0          602      140381637195328      0         1
+0x23c7870          15     0x23c85c0          605      140381618312768      0         1
+0x23c8950          16     0x23c96a0          608      140381607822912      0         1
+0x23c9a30          17     0x23ca780          611      140381597333056      0         1
+0x23cab10          18     0x23cb860          614      140381586843200      0         1
+0x23cbbf0          19     0x23cc940          617      140381576353344      0         1
+0x23cccd0          20     0x23cda20          620      140381565863488      0         1
+0x23cddb0          21     0x23ceb00          623      140381555373632      0         1
+0x23cee90          22     0x23cfbe0          626      140381544883776      0         1
+0x23cff70          23     0x23d0cc0          629      140381534393920      0         1
+0x23d1050          24     0x23d1da0          632      140381523904064      0         1
+0x23d2130          25     0x23d2e80          635      140381513414208      0         1
+0x23d3210          26     0x23d3f60          638      140381502924352      0         1
+0x23d42f0          27     0x23d5040          641      140381492434496      0         1
+0x23d53d0          28     0x23d6120          644      140381481944640      0         1
+0x23d64b0          29     0x23d7200          647      140381471454784      0         1
+0x23d7590          30     0x23d82e0          650      140381460964928      0         1
+0x23d8670          31     0x23d93c0          653      140381450475072      0         1
+(32 ring(s); unreaped > 0 means the kernel posted completions this loop never drained)
+  --- xtc-rings sample 2 ---
+0x00007fb3b131017e in epoll_wait () from /lib64/libc.so.6
+loop               id     io                 ring_fd  owner_tid            unreaped  alive
+0x2395030          0      0x2395d80          560      140382295107136      0         3
+0x23b90b0          1      0x2398970          563      140382214026816      0         2
+0x23b9e00          2      0x23bab50          566      140382203536960      0         2
+0x23baeb0          3      0x23bbc00          569      140382193047104      0         1
+0x23bbf60          4      0x23bccb0          572      140382182557248      0         1
+0x23bd010          5      0x23bdd60          575      140382172067392      0         1
+0x23be0c0          6      0x23bee10          578      140382161577536      0         1
+0x23bf170          7      0x23bfec0          581      140382079809088      0         1
+0x23c0250          8      0x23c0fa0          584      140382069319232      0         2
+0x23c1330          9      0x23c2080          587      140382058829376      0         1
+0x23c2410          10     0x23c3160          590      140382023161408      0         1
+0x23c34f0          11     0x23c4240          593      140381836518976      0         1
+0x23c45d0          12     0x23c5320          596      140381683353152      0         1
+0x23c56b0          13     0x23c6400          599      140381656077888      0         1
+0x23c6790          14     0x23c74e0          602      140381637195328      0         1
+0x23c7870          15     0x23c85c0          605      140381618312768      0         1
+0x23c8950          16     0x23c96a0          608      140381607822912      0         1
+0x23c9a30          17     0x23ca780          611      140381597333056      0         1
+0x23cab10          18     0x23cb860          614      140381586843200      0         1
+0x23cbbf0          19     0x23cc940          617      140381576353344      0         1
+0x23cccd0          20     0x23cda20          620      140381565863488      0         1
+0x23cddb0          21     0x23ceb00          623      140381555373632      0         1
+0x23cee90          22     0x23cfbe0          626      140381544883776      0         1
+0x23cff70          23     0x23d0cc0          629      140381534393920      0         1
+0x23d1050          24     0x23d1da0          632      140381523904064      0         1
+0x23d2130          25     0x23d2e80          635      140381513414208      0         1
+0x23d3210          26     0x23d3f60          638      140381502924352      0         1
+0x23d42f0          27     0x23d5040          641      140381492434496      0         1
+0x23d53d0          28     0x23d6120          644      140381481944640      0         1
+0x23d64b0          29     0x23d7200          647      140381471454784      0         1
+0x23d7590          30     0x23d82e0          650      140381460964928      0         1
+0x23d8670          31     0x23d93c0          653      140381450475072      0         1
+(32 ring(s); unreaped > 0 means the kernel posted completions this loop never drained)
+  --- xtc-rings sample 3 ---
+0x00007fb3b131017e in epoll_wait () from /lib64/libc.so.6
+loop               id     io                 ring_fd  owner_tid            unreaped  alive
+0x2395030          0      0x2395d80          560      140382295107136      0         3
+0x23b90b0          1      0x2398970          563      140382214026816      0         2
+0x23b9e00          2      0x23bab50          566      140382203536960      0         2
+0x23baeb0          3      0x23bbc00          569      140382193047104      0         1
+0x23bbf60          4      0x23bccb0          572      140382182557248      0         1
+0x23bd010          5      0x23bdd60          575      140382172067392      0         1
+0x23be0c0          6      0x23bee10          578      140382161577536      0         1
+0x23bf170          7      0x23bfec0          581      140382079809088      0         1
+0x23c0250          8      0x23c0fa0          584      140382069319232      0         2
+0x23c1330          9      0x23c2080          587      140382058829376      0         1
+0x23c2410          10     0x23c3160          590      140382023161408      0         1
+0x23c34f0          11     0x23c4240          593      140381836518976      0         1
+0x23c45d0          12     0x23c5320          596      140381683353152      0         1
+0x23c56b0          13     0x23c6400          599      140381656077888      0         1
+0x23c6790          14     0x23c74e0          602      140381637195328      0         1
+0x23c7870          15     0x23c85c0          605      140381618312768      0         1
+0x23c8950          16     0x23c96a0          608      140381607822912      0         1
+0x23c9a30          17     0x23ca780          611      140381597333056      0         1
+0x23cab10          18     0x23cb860          614      140381586843200      0         1
+0x23cbbf0          19     0x23cc940          617      140381576353344      0         1
+0x23cccd0          20     0x23cda20          620      140381565863488      0         1
+0x23cddb0          21     0x23ceb00          623      140381555373632      0         1
+0x23cee90          22     0x23cfbe0          626      140381544883776      0         1
+0x23cff70          23     0x23d0cc0          629      140381534393920      0         1
+0x23d1050          24     0x23d1da0          632      140381523904064      0         1
+0x23d2130          25     0x23d2e80          635      140381513414208      0         1
+0x23d3210          26     0x23d3f60          638      140381502924352      0         1
+0x23d42f0          27     0x23d5040          641      140381492434496      0         1
+0x23d53d0          28     0x23d6120          644      140381481944640      0         1
+0x23d64b0          29     0x23d7200          647      140381471454784      0         1
+0x23d7590          30     0x23d82e0          650      140381460964928      0         1
+0x23d8670          31     0x23d93c0          653      140381450475072      0         1
+(32 ring(s); unreaped > 0 means the kernel posted completions this loop never drained)
+  --- xtc-stranded ---
+proc states:
+    PARKED       37
+park kinds (PARKED procs only):
+    park=-        32
+    park=fd       4
+    park=timer    1
+0x23db8d0          1.1.1      -        clear          <-- SUSPECT: no source, no latched wake
+(37 parked, 1 suspect, 31 idle service fiber(s) excluded)
+NOTE: 31 proc(s) with local_id 0 park with no source and no latched wake.  That is the NORMAL idle state of a per-loop service fiber blocked in xtc_recv(..., -1), so they are excluded above.  If YOUR long-lived receivers have a non-zero local_id they will still appear as suspects -- check them against what you know parks forever by design.
+For each suspect, confirm its wake source actually completed (e.g. iou-wrk threads present for an aio park) before reporting a lost wake -- a pending syscall is not a strand.
+  --- tail dump: 25423 bytes ---
+  events=2501
+  kind histogram:
+         35 EXIT
+       1123 PARK
+       1090 RUN
+         72 SPAWN
+  --- PARK vs RUN per pid: pids with PARK but NO RUN (= stranded) ---
+    pids with PARK>RUN: 33
+      1.0.1 park=689 run=688 last=PARK
+      1.1.1 park=4 run=3 last=PARK
+      10.0.1 park=3 run=2 last=PARK
+      11.0.1 park=3 run=2 last=PARK
+      12.0.1 park=3 run=2 last=PARK
+      13.0.1 park=3 run=2 last=PARK
+      14.0.1 park=3 run=2 last=PARK
+      15.0.1 park=3 run=2 last=PARK
+      16.0.1 park=3 run=2 last=PARK
+      17.0.1 park=3 run=2 last=PARK
+  --- last 12 timeline events ---
+     69150967482 ns  SCHED PARK      pid=1.0.1     
+     69250978915 ns  SCHED RUN       pid=1.0.1       wake->run ns=100011359
+     69250979376 ns  SCHED PARK      pid=1.0.1     
+     69350990705 ns  SCHED RUN       pid=1.0.1       wake->run ns=100011254
+     69350991135 ns  SCHED PARK      pid=1.0.1     
+     69451002478 ns  SCHED RUN       pid=1.0.1       wake->run ns=100011263
+     69451002854 ns  SCHED PARK      pid=1.0.1     
+     69551014381 ns  SCHED RUN       pid=1.0.1       wake->run ns=100011450
+     69551014770 ns  SCHED PARK      pid=1.0.1     
+     69879476618 ns  SCHED RUN       pid=1.0.1       wake->run ns=328460859
+     69879478865 ns  SCHED PARK      pid=1.0.1     
+    -- 2500 of 2500 events --
+TP_COMPLETE
