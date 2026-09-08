@@ -1,3 +1,9 @@
+> **SUPERSEDED 2026-09-07** -- the `MISSING_COUNT=0` headline in this document is WRONG.
+> It was a tag-reuse artifact (`comm -23` compares unique tags; the `xtc_aio_t*` tag lives on
+> the fiber stack and is reused, masking the miss).  Counting PER TAG shows exactly one
+> submission never completed.  See LIBXTC_CQE_PROBE_CORRECTION_ONE_MISSING.md.  The
+> xtc-stranded / task-field content below still stands.
+
 # Probe result: MISSING_COUNT=0 -- every CQE arrived. The loss is downstream of the reap.
 
 Date: 2026-09-07
