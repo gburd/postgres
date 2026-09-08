@@ -1,0 +1,4 @@
+=== per-tag submit/completion imbalance at the hang (libxtc 27d327b + tracing) ===
+raw lines: sub=828 cmp=827 (ONE missing); distinct tags: 53/53 (why comm -23 was empty)
+tag 0x7f1bb7fc4480: submits=30 completions=29 MISSING=1  (last sub line; submit rc=1)
+drop(got>=max)=0  batch-full(surplus CQEs)=0  -> both 'unreachable' guards confirmed unreachable
