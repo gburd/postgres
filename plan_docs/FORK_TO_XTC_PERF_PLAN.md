@@ -173,17 +173,35 @@ R2. SETTLED 2026-09-07 (measured against libxtc v1.42.0 sources, not estimated).
     (A/B it -- refaulting on resume costs page faults on a hot path) or ask libxtc
     to make XTC_STACK_POOL_MAX tunable. Do NOT pre-emptively enable S1: measure
     first, per the neutral-or-better rule.
-R3. WAL device: co-locating WAL + data on one NVMe may bottleneck both lanes equally
-    (fair) but hide the threaded commit-path story. Decide: single NVMe (simple, fair)
-    vs separate WAL NVMe (isolates the commit path). Keep identical across lanes.
-R4. Is the goal to WIN on write-heavy durable OLTP specifically, or to win on the
-    aggregate (read + CPU already won, write at parity acceptable)? This sets P4's exit
-    bar. The user's framing ("much faster ... apples-to-apples") suggests we target a
-    real write-heavy win, which depends on B2 being fully closable — the honest risk is
-    that write-heavy durable OLTP is fork's best case (independent per-backend commit)
-    and threaded reaches parity, not a large win, there. Read/CPU/oversubscription +
-    RSS/p99 predictability may be the stronger demonstrable wins. Agree the bar at
-    review.
+R3. SETTLED 2026-09-07: SINGLE NVMe, both lanes identical.
+    Rationale is evidence-based, not convenience: the write-heavy root-cause profile
+    (.ec2/writeheavy-rootcause-profile-2026-08-27.md) found the gap is NOT WAL or I/O
+    contention -- "NO WAL-insert spinlock (insertpos_lck)", fsync explicitly cleared,
+    and the loss attributed to carrier under-utilization / scheduler feeding ("the fix
+    is scheduler feeding, not a lock conversion"). A separate WAL device isolates a
+    commit path that the profile says is not the limiter, so it would add cost and a
+    config difference without buying evidence.
+    INVARIANT that would reverse this: if a P3/P4 profile shows the WAL device
+    saturated (device util near 100%, or IO/WalSync/IO/WalWrite dominating the wait
+    profile) in BOTH lanes, then the single device is masking the commit path and P4
+    must re-run with a dedicated WAL NVMe before drawing a write-heavy conclusion.
+R4. SETTLED 2026-09-07 by user directive, and the evidence says it is achievable.
+    THE BAR: PG/XTC must OUTRIGHT WIN on ALL performance tests versus stock fork PG by
+    a significant margin, with particular weight on STABILITY UNDER LOAD AT SCALE.
+    Parity on write-heavy is therefore NOT an acceptable exit for P4.
+
+    This is demanding but not unreasoned. The concern behind R4 was that write-heavy
+    durable OLTP is fork's structural best case (independent per-backend commit) and so
+    threaded might only reach parity. The write-heavy root-cause profile refutes that
+    framing for our current gap: the limiter is OUR scheduler feeding carriers, not
+    fork's commit independence -- no WAL-insert spinlock contention, fsync cleared as
+    culprit, ~26-28% of cores left idle under write load. A self-inflicted idle-core
+    gap is fixable; a structural advantage would not be. So the bar stands and P4 aims
+    at the feeding gap.
+    HONEST CAVEAT retained: if, after the feeding gap is closed, write-heavy lands at
+    parity rather than a win, that result gets reported as-is with the profile that
+    explains it. The bar drives the work; it does not license flattering the numbers.
+
 R5. libxtc dependency: B1 Track B (if needed) is an external round-trip. P4 can proceed
     on read/CPU wins in parallel, but the write-heavy headline waits on B1.
 
