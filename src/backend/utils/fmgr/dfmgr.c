@@ -18,6 +18,11 @@
 
 #ifndef WIN32
 #include <dlfcn.h>
+#include <pthread.h>
+#ifdef USE_XTC_CARRIER
+#include "xtc_sync.h"			/* xtc_amutex_* -- fiber-aware dfmgr critical section */
+#include "postmaster/pg_xtc_carrier.h"	/* XtcPgVerifyCurrentWorkIsSelf */
+#endif
 #endif							/* !WIN32 */
 
 #include "fmgr.h"
@@ -61,6 +66,47 @@ struct DynamicFileList
 static PG_GLOBAL_RUNTIME DynamicFileList *file_list = NULL;
 static PG_GLOBAL_RUNTIME DynamicFileList *file_tail = NULL;
 
+/*
+ * dfmgr's write path (internal_load_library(): file_list/file_tail link-in,
+ * plus find_rendezvous_variable()'s lazy hash creation and hash_search(...,
+ * HASH_ENTER) below) mutates runtime-global state with no other locking.  In
+ * process mode this is safe (one process, one caller).  Under multithreaded
+ * carriers, several carrier OS threads share ONE address space and can each
+ * call load_external_function()/load_file() concurrently (e.g. two sessions
+ * on separate carriers independently first-referencing the same C function or
+ * LOADing the same library) -- a genuine data race on the file_list linked
+ * list and the rendezvous hash's dynahash internals (hash_create() is not
+ * safe for concurrent first-creation into the same HTAB* slot; hash_search()
+ * HASH_ENTER on a non-partitioned, non-shared HTAB has no internal locking at
+ * all, see dynahash.c).
+ *
+ * Serialize with the same fiber-aware critical section pattern already used
+ * for the threaded GUC and reloptions critical sections (guc.c, reloptions.c).
+ * This MUST be fiber-aware, not a raw pthread_mutex_lock: internal_load_library
+ * calls call_module_init_function(), which runs the loaded module's arbitrary
+ * _PG_init(), and essentially every real extension's _PG_init() calls
+ * DefineCustomXXXVariable()/MarkGUCPrefixReserved(), which take the threaded
+ * GUC critical section.  Under USE_XTC_CARRIER that GUC lock is a fiber-aware
+ * xtc_amutex that PARKS (yields the carrier loop) on contention rather than
+ * blocking the OS thread.  If dfmgr's own lock were a raw pthread mutex held
+ * across that nested park, another fiber scheduled onto the same carrier OS
+ * thread while the first is parked could try to enter dfmgr's critical section
+ * and deadlock the carrier (the pthread mutex never blocks the *loop*, only
+ * the current fiber's OS thread -- but the parked owner cannot make progress
+ * to release it because the scheduler cannot resume it off-loop).  Use
+ * xtc_amutex here for exactly the same reason guc.c does; without
+ * USE_XTC_CARRIER (no threaded runtime build) keep the plain pthread mutex,
+ * matching reloptions.c's non-carrier fallback.
+ */
+#ifndef WIN32
+#ifdef USE_XTC_CARRIER
+#define THREADED_DFMGR_AMUTEX_SLOT 1u	/* GUC owns slot 0; see guc.c */
+#else
+static PG_GLOBAL_RUNTIME pthread_mutex_t ThreadedDfmgrMutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
+#define ThreadedDfmgrMutexDepth (*PgCurrentThreadedDfmgrMutexDepthRef())
+#endif
+
 /* stat() call under Win32 returns an st_ino field, but it has no meaning */
 #ifndef WIN32
 #define SAME_INODE(A,B) ((A).st_ino == (B).inode && (A).st_dev == (B).device)
@@ -68,7 +114,10 @@ static PG_GLOBAL_RUNTIME DynamicFileList *file_tail = NULL;
 #define SAME_INODE(A,B) false
 #endif
 
+static bool ThreadedDfmgrLock(void);
+static void ThreadedDfmgrUnlock(bool locked);
 static void *internal_load_library(const char *libname);
+static void *internal_load_library_locked(const char *libname);
 static void call_module_init_function(DynamicFileList *file_scanner);
 static bool module_needs_session_init(DynamicFileList *file_scanner);
 static void remember_module_session_init(DynamicFileList *file_scanner);
@@ -197,6 +246,128 @@ lookup_external_function(void *filehandle, const char *funcname)
 }
 
 
+static bool
+ThreadedDfmgrLock(void)
+{
+#ifndef WIN32
+	int			rc;
+
+	if (!multithreaded)
+		return false;
+	if (ThreadedDfmgrMutexDepth++ > 0)
+		return false;
+
+	/*
+	 * A die interrupt while this process-wide critical section is held can
+	 * strand other carriers in dlopen()/_PG_init() or the rendezvous hash.
+	 * Match the GUC/reloptions critical sections by deferring interrupts
+	 * until the outermost unlock.
+	 */
+	HOLD_INTERRUPTS();
+#ifdef USE_XTC_CARRIER
+
+	/*
+	 * SEAM the amutex park, exactly as ThreadedGUCLock() does (guc.c) and for
+	 * the same reason: xtc_amutex_lock() can xtc_yield() the carrier loop on
+	 * contention, and libxtc preserves only __current_proc across that park,
+	 * not PG's six current-work roots.  A migratable fiber resumed on a
+	 * different carrier thread would otherwise run dfmgr code (or the nested
+	 * _PG_init()/GUC critical section it calls into) against the wrong
+	 * session.  Snapshot/restore the six roots around the lock call.
+	 */
+	{
+		PgCurrentWorkSnapshot snap;
+
+		PgRuntimeSaveCurrentWork(&snap);
+		XtcPgVerifySnapshotIsSelf(&snap);
+		rc = xtc_amutex_lock(xtc_amutex_static(THREADED_DFMGR_AMUTEX_SLOT), -1);
+		PgRuntimeRestoreCurrentWork(&snap);
+		XtcPgVerifyCurrentWorkIsSelf();
+	}
+#else
+	rc = pthread_mutex_lock(&ThreadedDfmgrMutex);
+#endif
+	if (rc != 0)
+	{
+		ThreadedDfmgrMutexDepth--;
+		RESUME_INTERRUPTS();
+		errno = rc;
+		ereport(FATAL,
+				(errmsg("could not enter threaded dfmgr critical section: %m")));
+	}
+
+	return true;
+#else
+	return false;
+#endif
+}
+
+static void
+ThreadedDfmgrUnlock(bool locked)
+{
+#ifndef WIN32
+	int			rc;
+
+	/*
+	 * Drive everything off the per-carrier depth counter, not off a fresh read
+	 * of `multithreaded`; see the matching comment in ThreadedGUCUnlock()
+	 * (guc.c) for why (the GUC that flips it can itself be the call being
+	 * unlocked).
+	 */
+	if (ThreadedDfmgrMutexDepth == 0)
+	{
+		Assert(!locked);
+		return;
+	}
+
+	if (--ThreadedDfmgrMutexDepth > 0)
+	{
+		Assert(!locked);
+		return;
+	}
+
+	/* outermost release */
+	Assert(locked);
+#ifdef USE_XTC_CARRIER
+	rc = xtc_amutex_unlock(xtc_amutex_static(THREADED_DFMGR_AMUTEX_SLOT));
+#else
+	rc = pthread_mutex_unlock(&ThreadedDfmgrMutex);
+#endif
+
+	/*
+	 * Normally the matching call here would be RESUME_INTERRUPTS(), undoing
+	 * the HOLD_INTERRUPTS() above.  But unlike guc.c/reloptions.c's locked
+	 * regions, this one (internal_load_library_locked() / the body of
+	 * find_rendezvous_variable()) routinely calls ereport(ERROR) under
+	 * completely ordinary conditions -- a bad library path, an incompatible
+	 * magic block, a backend-model mismatch, or a loaded module's own
+	 * _PG_init() erroring out.  errfinish() unconditionally resets
+	 * InterruptHoldoffCount to 0 while unwinding ANY error (elog.c), and that
+	 * reset can run before this PG_FINALLY block does (e.g. CREATE FUNCTION
+	 * against a bad C library, which src/test/regress/sql/create_function*
+	 * and create_procedure exercise as ordinary, expected-to-ERROR cases). A
+	 * plain RESUME_INTERRUPTS() would then hit its own
+	 * Assert(InterruptHoldoffCount > 0) even though the unlock itself is
+	 * entirely legitimate. Tolerate a count already reset to 0 by an
+	 * intervening error unwind; only decrement if there is something to
+	 * undo.  (Confirmed live: gmake check-threaded on EC2 tripped exactly
+	 * this assert on create_operator/create_schema error-path regression
+	 * cases before this guard was added.)
+	 */
+	if (InterruptHoldoffCount > 0)
+		InterruptHoldoffCount--;
+
+	if (rc != 0)
+	{
+		errno = rc;
+		elog(FATAL, "could not leave threaded dfmgr critical section: %m");
+	}
+#else
+	(void) locked;
+#endif
+}
+
+
 /*
  * Load the specified dynamic-link library file, unless it already is
  * loaded.  Return the pg_dl* handle for the file.
@@ -210,6 +381,34 @@ lookup_external_function(void *filehandle, const char *funcname)
  */
 static void *
 internal_load_library(const char *libname)
+{
+	void	   *result;
+	bool		locked;
+
+	locked = ThreadedDfmgrLock();
+	PG_TRY();
+	{
+		result = internal_load_library_locked(libname);
+	}
+	PG_FINALLY();
+	{
+		ThreadedDfmgrUnlock(locked);
+	}
+	PG_END_TRY();
+
+	return result;
+}
+
+/*
+ * Actual work for internal_load_library(), called with the threaded dfmgr
+ * critical section held (a no-op lock in process mode).  Split out purely so
+ * the lock/unlock wrapper above has one clean PG_TRY/PG_FINALLY boundary
+ * around the whole scan-load-link sequence; see the ThreadedDfmgrLock comment
+ * near the top of this file for why the lock exists and why it must be
+ * fiber-aware under USE_XTC_CARRIER.
+ */
+static void *
+internal_load_library_locked(const char *libname)
 {
 	DynamicFileList *file_scanner;
 	PGModuleMagicFunction magic_func;
@@ -927,21 +1126,40 @@ find_rendezvous_variable(const char *varName)
 	HTAB	  **rendezvous_hash;
 	rendezvousHashEntry *hentry;
 	bool		found;
+	bool		locked;
 
-	/* Create a hashtable if we haven't already done so in this process */
-	rendezvous_hash = PgCurrentRendezvousHashRef();
-	if (*rendezvous_hash == NULL)
-		*rendezvous_hash = create_rendezvous_hash();
+	/*
+	 * The hash pointer's lazy creation (create_rendezvous_hash()) and every
+	 * hash_search() call below race across carrier OS threads exactly like
+	 * internal_load_library()'s file_list -- see the ThreadedDfmgrLock
+	 * comment near the top of this file.  hash_search()'s stable-entry-
+	 * pointer guarantee (dynahash.c) means it is safe to return &hentry->
+	 * varValue and let the caller keep using it after this function (and its
+	 * lock) returns; only the lazy-create + insert must be serialized.
+	 */
+	locked = ThreadedDfmgrLock();
+	PG_TRY();
+	{
+		/* Create a hashtable if we haven't already done so in this process */
+		rendezvous_hash = PgCurrentRendezvousHashRef();
+		if (*rendezvous_hash == NULL)
+			*rendezvous_hash = create_rendezvous_hash();
 
-	/* Find or create the hashtable entry for this varName */
-	hentry = (rendezvousHashEntry *) hash_search(*rendezvous_hash,
-												 varName,
-												 HASH_ENTER,
-												 &found);
+		/* Find or create the hashtable entry for this varName */
+		hentry = (rendezvousHashEntry *) hash_search(*rendezvous_hash,
+													 varName,
+													 HASH_ENTER,
+													 &found);
 
-	/* Initialize to NULL if first time */
-	if (!found)
-		hentry->varValue = NULL;
+		/* Initialize to NULL if first time */
+		if (!found)
+			hentry->varValue = NULL;
+	}
+	PG_FINALLY();
+	{
+		ThreadedDfmgrUnlock(locked);
+	}
+	PG_END_TRY();
 
 	return &hentry->varValue;
 }
