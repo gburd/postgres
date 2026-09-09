@@ -1084,7 +1084,22 @@ xtc_pg_carrier_start(void)
 			const char *tail = getenv("PG_XTC_TAIL");
 
 			if (tail != NULL && tail[0] != '\0')
+			{
+				/*
+				 * LOOP_POLL (libxtc >= 1.42.0) and WAKE (>= 1.43.0) ride the
+				 * XTC_TAIL_SCHED mask -- they are event KINDS, not mask bits, so
+				 * no extra flag is needed here.  Worth knowing what changed under
+				 * us: in 1.42.0 LOOP_POLL fired on EVERY poll and, with 32 loops,
+				 * consumed 87-93 % of the 16384-record ring, which made "loop L
+				 * emitted no polls" unfalsifiable (evicted vs never happened).
+				 * 1.43.0 makes it IDLE-ONLY (emitted only when a poll dispatched
+				 * nothing, loop.c: n_out == 0) and adds xtc_tail_dropped(), so
+				 * absence is interpretable again.  XTC_TAIL_WAKE records the
+				 * DISPATCH side -- the missing link between "CQE reaped" and
+				 * "task never ran".
+				 */
 				(void) xtc_tail_enable(XTC_TAIL_SCHED | XTC_TAIL_MSG);
+			}
 		}
 
 		/*
