@@ -141,8 +141,38 @@ R1. 85% shared_buffers is much higher than the usual 25% rule. It is fair (ident
     shifts to WAL/checkpoint I/O, not buffer cache — so 85% may not change the write
     result much and could starve work_mem/carrier stacks. Confirm we want 85% for the
     headline, and/or also run the standard 25% for a "recommended config" comparison.
-R2. Carrier stacks: each carrier fiber holds a C stack; 192 carriers * stack size must
-    fit in the 15% non-buffer RAM alongside work_mem. Size-check before the big run.
+R2. SETTLED 2026-09-07 (measured against libxtc v1.42.0 sources, not estimated).
+    Fiber stack = XTC_PG_FIBER_STACK = 8 MiB (pg_xtc_carrier.c:122), matching the
+    tree's pthread stack; xtc allocates it as anonymous mmap + one PROT_NONE guard
+    page (coro_fctx.c:337-367), so it is LAZILY FAULTED -- the 8 MiB is virtual
+    reserve, not RSS.
+
+    Per-session budget is therefore a non-issue at the sizes we care about:
+      host  61GB, 85% SB -> 9.1GB non-buffer; 256 sessions = 2.0GB VIRTUAL (21.9%),
+                            but only ~0.25GB RSS if each stack faults ~1MB (2.7%).
+      host 192GB, 85% SB -> 28.8GB non-buffer; 384 sessions = 3.0GB virtual (10.4%),
+                            ~0.38GB RSS at 1MB faulted (1.3%).
+
+    THE REAL RISK IS NOT PER-SESSION, IT IS THE STACK POOL. coro_common.h:44
+    XTC_STACK_POOL_MAX = 64 and the pool is XTC_THREAD_LOCAL, i.e. up to 64 retained
+    8 MiB stacks PER CARRIER THREAD. Recycled stacks are NOT madvise'd, so whatever
+    each stack faulted at its high-water mark stays resident:
+       32 carriers x 64 x 8MiB  = 16GB   worst case retained
+       96 carriers x 64 x 8MiB  = 48GB
+      192 carriers x 64 x 8MiB  = 96GB
+    16GB EXCEEDS the entire 9.1GB non-buffer budget of a 61GB host at 85% SB. The
+    worst case needs deep-recursion sessions (parser/planner) to fault most of a
+    stack, so the expected case is far smaller -- but it is a real ceiling and it
+    scales with carrier count, which is exactly what Option A raises.
+
+    MITIGATION AVAILABLE, CURRENTLY UNUSED: libxtc lever S1,
+    xtc_stack_reclaim_enable(keep_bytes) (coro_common.h:88), madvise(MADV_DONTNEED)s
+    the unused tail of a parking fiber's stack; OFF by default and PG never calls it.
+    ACTION for the big run: instrument RSS vs pooled-stack count, and if retained
+    stack RSS is material, either call xtc_stack_reclaim_enable at carrier start
+    (A/B it -- refaulting on resume costs page faults on a hot path) or ask libxtc
+    to make XTC_STACK_POOL_MAX tunable. Do NOT pre-emptively enable S1: measure
+    first, per the neutral-or-better rule.
 R3. WAL device: co-locating WAL + data on one NVMe may bottleneck both lanes equally
     (fair) but hide the threaded commit-path story. Decide: single NVMe (simple, fair)
     vs separate WAL NVMe (isolates the commit path). Keep identical across lanes.
