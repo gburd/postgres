@@ -176,11 +176,15 @@ R2. SETTLED 2026-09-07 (measured against libxtc v1.42.0 sources, not estimated).
 R3. SETTLED 2026-09-07: SINGLE NVMe, both lanes identical.
     Rationale is evidence-based, not convenience: the write-heavy root-cause profile
     (.ec2/writeheavy-rootcause-profile-2026-08-27.md) found the gap is NOT WAL or I/O
-    contention -- "NO WAL-insert spinlock (insertpos_lck)", fsync explicitly cleared,
-    and the loss attributed to carrier under-utilization / scheduler feeding ("the fix
-    is scheduler feeding, not a lock conversion"). A separate WAL device isolates a
-    commit path that the profile says is not the limiter, so it would add cost and a
-    config difference without buying evidence.
+    contention -- "NO WAL-insert spinlock (insertpos_lck)", no perform_spin_delay, no
+    LWLock, no XLogFlush in the top 30, fsync explicitly cleared. A separate WAL device
+    isolates a commit path that the profile says is not the limiter, so it would add
+    cost and a config difference without buying evidence.
+    NOTE (2026-09-07): that RCA ran the driver ON the SUT, so its idle-core headline is
+    confounded (see the caveat banner on the doc). The NEGATIVE result relied on here is
+    robust to that confound -- a co-located driver cannot remove server-side lock
+    contention from a profile -- so R3's basis stands, but P3 must re-confirm under
+    section-1 methodology.
     INVARIANT that would reverse this: if a P3/P4 profile shows the WAL device
     saturated (device util near 100%, or IO/WalSync/IO/WalWrite dominating the wait
     profile) in BOTH lanes, then the single device is masking the commit path and P4
@@ -193,11 +197,16 @@ R4. SETTLED 2026-09-07 by user directive, and the evidence says it is achievable
     This is demanding but not unreasoned. The concern behind R4 was that write-heavy
     durable OLTP is fork's structural best case (independent per-backend commit) and so
     threaded might only reach parity. The write-heavy root-cause profile refutes that
-    framing for our current gap: the limiter is OUR scheduler feeding carriers, not
-    fork's commit independence -- no WAL-insert spinlock contention, fsync cleared as
-    culprit, ~26-28% of cores left idle under write load. A self-inflicted idle-core
-    gap is fixable; a structural advantage would not be. So the bar stands and P4 aims
-    at the feeding gap.
+    framing for our current gap: no WAL-insert spinlock contention, no LWLock/XLogFlush
+    in the top 30, fsync cleared as culprit -- i.e. the gap is not fork's commit
+    independence. A self-inflicted gap is fixable; a structural advantage would not be.
+    So the bar stands.
+    CALIBRATION (2026-09-07): the specific claim "~26-28% of cores idle => scheduler
+    feeding is the limiter" comes from a run with the DRIVER CO-LOCATED on the SUT,
+    where pgbench competed for the same 32 vCPUs; co-located load can manufacture an
+    idle-core signature. That claim is downgraded to a hypothesis. P3 re-establishes the
+    profile with a separate loadgen BEFORE P4 picks its lever, so P4 fixes the limiter
+    the clean profile names rather than the one the confounded profile suggested.
     HONEST CAVEAT retained: if, after the feeding gap is closed, write-heavy lands at
     parity rather than a win, that result gets reported as-is with the profile that
     explains it. The bar drives the work; it does not license flattering the numbers.

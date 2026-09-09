@@ -1,3 +1,29 @@
+> **CAVEAT ADDED 2026-09-07 -- LOADGEN WAS CO-LOCATED ON THE SUT.**
+> This study ran pgbench on the SUT itself: TCP loopback symbols (__send, tcp_sendmsg,
+> tcp_write_xmit, epoll_wait) dominate the non-idle profile in BOTH lanes, which is only
+> possible with a local driver.  That violates the apples-to-apples methodology later
+> fixed in plan_docs/FORK_TO_XTC_PERF_PLAN.md section 1 (driver on a SEPARATE host).
+>
+> Why it matters directionally, not just formally: pgbench with 64 clients competes for
+> the same 32 vCPUs as the server, so the headline "44% swapper/__cpuidle => carriers
+> are starved" reading is CONFOUNDED.  Co-located load can manufacture an idle-core
+> signature (driver descheduled -> server has nothing to do), and it also depresses both
+> lanes' absolute tps.  The 0.71-0.72x RATIO is more trustworthy than the idle% is,
+> because both lanes paid the same driver tax -- but fork and threaded do not
+> necessarily pay it EQUALLY (fork's per-backend processes and the threaded carriers
+> interleave with the driver differently), so even the ratio is not airtight.
+>
+> What still stands, because it is a NEGATIVE result robust to the confound: no
+> WAL-insert spinlock (insertpos_lck), no perform_spin_delay, no LWLock, no XLogFlush
+> in the top 30 -- co-locating a driver cannot REMOVE server-side lock contention from
+> a profile.  So "the write gap is not WAL/lock contention" holds; "the write gap IS
+> carrier under-utilization" is downgraded to a hypothesis pending a re-run with a
+> separate loadgen.
+>
+> ACTION: P3 must re-establish this profile under section-1 methodology before P4
+> commits to the scheduler-feeding fix.  The dispatch-affinity finding below (loop 0
+> gets 29/23 of the work, steals=0) is independent of the driver placement and stands.
+
 # HammerDB/pgbench write-heavy disparity — root-cause profiling (2026-08-27)
 
 Follow-up to hammerdb-nvme-fork-vs-threaded-2026-08-27.md.  Goal: find WHY pooled
