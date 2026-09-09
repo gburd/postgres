@@ -1692,16 +1692,21 @@ ProcSleep(LOCALLOCK *locallock)
 			 * regardless of got_deadlock_timeout.  Process mode and the non-fiber
 			 * threaded path are byte-for-byte (wait_timeout stays 0).
 			 */
+#ifdef USE_XTC_CARRIER
 			if (xtc_in_backend_fiber && DeadlockTimeout > 0)
 				wait_timeout = (long) DeadlockTimeout;
+#endif
 
 			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH,
 							 wait_timeout,
 							 PG_WAIT_LOCK | locallock->tag.lock.locktag_type);
 			ResetLatch(MyLatch);
 			/* check for deadlocks first, as that's probably log-worthy */
-			if (got_deadlock_timeout ||
-				(xtc_in_backend_fiber && wait_timeout > 0))
+			if (got_deadlock_timeout
+#ifdef USE_XTC_CARRIER
+				|| (xtc_in_backend_fiber && wait_timeout > 0)
+#endif
+				)
 			{
 				/*
 				 * On a fiber we may reach here from the bounded wake WITHOUT
