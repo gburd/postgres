@@ -33,6 +33,15 @@ PG_MODULE_MAGIC_EXT(
 
 PgXmlErrorContext *pgxml_parser_init(PgXmlStrictness strictness);
 
+/*
+ * Declared non-static in xml.c for exactly this purpose: attach our error
+ * context to a parser/xpath context we create, instead of relying on the
+ * carrier-thread-global xmlSetStructuredErrorFunc handler that pg_xml_init()
+ * installs.  See LIBXML_ERROR_HANDLER_THREADED_DESIGN.md.
+ */
+extern void pg_xml_ctxt_seterror(PgXmlErrorContext *errcxt, xmlParserCtxtPtr ctxt);
+extern void pg_xml_xpath_seterror(PgXmlErrorContext *errcxt, xmlXPathContextPtr xpathctx);
+
 /* workspace for pgxml_xpath() */
 
 typedef struct
@@ -513,6 +522,7 @@ static xpath_workspace *
 pgxml_xpath(text *document, xmlChar *xpath, PgXmlErrorContext *xmlerrcxt)
 {
 	int32		docsize = VARSIZE_ANY_EXHDR(document);
+	xmlParserCtxtPtr volatile pctxt = NULL;
 	xmlXPathCompExprPtr volatile comppath = NULL;
 	xpath_workspace *workspace = palloc0_object(xpath_workspace);
 
@@ -522,15 +532,31 @@ pgxml_xpath(text *document, xmlChar *xpath, PgXmlErrorContext *xmlerrcxt)
 
 	PG_TRY();
 	{
-		workspace->doctree = xmlReadMemory((char *) VARDATA_ANY(document),
-										   docsize, NULL, NULL,
-										   XML_PARSE_NOENT);
+		/*
+		 * Parse via an explicit parser context so we can attach our error
+		 * context directly to it (pg_xml_ctxt_seterror), instead of relying on
+		 * the carrier-thread-global handler that pg_xml_init() installs.  See
+		 * plan_docs/phase16_audits/LIBXML_ERROR_HANDLER_THREADED_DESIGN.md.
+		 */
+		pctxt = xmlNewParserCtxt();
+		if (pctxt == NULL)
+			xml_ereport(xmlerrcxt, ERROR, ERRCODE_OUT_OF_MEMORY,
+						"could not allocate parser context");
+		pg_xml_ctxt_seterror(xmlerrcxt, pctxt);
+
+		workspace->doctree = xmlCtxtReadMemory(pctxt, (char *) VARDATA_ANY(document),
+											   docsize, NULL, NULL,
+											   XML_PARSE_NOENT);
+		xmlFreeParserCtxt(pctxt);
+		pctxt = NULL;
+
 		if (workspace->doctree != NULL)
 		{
 			workspace->ctxt = xmlXPathNewContext(workspace->doctree);
 			if (workspace->ctxt == NULL)
 				xml_ereport(xmlerrcxt, ERROR, ERRCODE_OUT_OF_MEMORY,
 							"could not allocate XPath context");
+			pg_xml_xpath_seterror(xmlerrcxt, workspace->ctxt);
 
 			workspace->ctxt->node = xmlDocGetRootElement(workspace->doctree);
 
@@ -549,6 +575,8 @@ pgxml_xpath(text *document, xmlChar *xpath, PgXmlErrorContext *xmlerrcxt)
 	}
 	PG_CATCH();
 	{
+		if (pctxt != NULL)
+			xmlFreeParserCtxt(pctxt);
 		if (comppath != NULL)
 			xmlXPathFreeCompExpr(comppath);
 		cleanup_workspace(workspace);
@@ -678,6 +706,7 @@ xpath_table(PG_FUNCTION_ARGS)
 	StringInfoData query_buf;
 	PgXmlErrorContext *xmlerrcxt;
 	volatile xmlDocPtr doctree = NULL;
+	xmlParserCtxtPtr volatile pctxt = NULL;
 	xmlXPathContextPtr volatile ctxt = NULL;
 	xmlXPathObjectPtr volatile res = NULL;
 	xmlXPathCompExprPtr volatile comppath = NULL;
@@ -789,11 +818,35 @@ xpath_table(PG_FUNCTION_ARGS)
 			/* Insert primary key */
 			values[0] = pkey;
 
-			/* Parse the document */
+			/*
+			 * Parse the document.  Use an explicit parser context so the
+			 * error handler is attached to THIS parse (pg_xml_ctxt_seterror)
+			 * rather than relying on the OS-thread-global handler that
+			 * pg_xml_init() installs -- under threaded carriers several
+			 * sessions can parse concurrently in one address space.  See
+			 * plan_docs/phase16_audits/LIBXML_ERROR_HANDLER_THREADED_DESIGN.md.
+			 *
+			 * A not-well-formed document is an ordinary, expected outcome here
+			 * (it yields an all-NULL row below), so a failure to allocate the
+			 * context is treated the same way rather than raised: keep the
+			 * legacy behaviour of this loop, which never errors out on a bad
+			 * document.
+			 */
 			if (xmldoc)
-				doctree = xmlReadMemory(xmldoc, strlen(xmldoc),
-										NULL, NULL,
-										XML_PARSE_NOENT);
+			{
+				pctxt = xmlNewParserCtxt();
+				if (pctxt != NULL)
+				{
+					pg_xml_ctxt_seterror(xmlerrcxt, pctxt);
+					doctree = xmlCtxtReadMemory(pctxt, xmldoc, strlen(xmldoc),
+												NULL, NULL,
+												XML_PARSE_NOENT);
+					xmlFreeParserCtxt(pctxt);
+					pctxt = NULL;
+				}
+				else
+					doctree = NULL;
+			}
 			else				/* treat NULL as not well-formed */
 				doctree = NULL;
 
@@ -825,6 +878,7 @@ xpath_table(PG_FUNCTION_ARGS)
 							xml_ereport(xmlerrcxt,
 										ERROR, ERRCODE_OUT_OF_MEMORY,
 										"could not allocate XPath context");
+						pg_xml_xpath_seterror(xmlerrcxt, ctxt);
 
 						ctxt->node = xmlDocGetRootElement(doctree);
 
@@ -929,6 +983,8 @@ xpath_table(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
+		if (pctxt != NULL)
+			xmlFreeParserCtxt(pctxt);
 		if (resstr != NULL)
 			xmlFree(resstr);
 		for (j = 1; j < rsinfo->setDesc->natts; j++)
