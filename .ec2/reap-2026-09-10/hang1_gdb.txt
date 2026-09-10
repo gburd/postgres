@@ -1,0 +1,95 @@
+[New LWP 46034]
+[New LWP 46033]
+[New LWP 46032]
+[New LWP 46031]
+[New LWP 46030]
+[New LWP 46029]
+[New LWP 46028]
+[New LWP 46027]
+[New LWP 46026]
+[New LWP 46025]
+[New LWP 46024]
+[New LWP 46023]
+[New LWP 46022]
+[New LWP 46021]
+[New LWP 46020]
+[New LWP 46012]
+[New LWP 46008]
+[New LWP 46007]
+[New LWP 46003]
+[New LWP 46002]
+[New LWP 46001]
+[New LWP 46000]
+[New LWP 45999]
+[New LWP 45998]
+[New LWP 45997]
+[New LWP 45996]
+[New LWP 45995]
+[New LWP 45994]
+[New LWP 45993]
+[New LWP 45992]
+[New LWP 45991]
+[New LWP 45990]
+[New LWP 45989]
+[New LWP 45988]
+[New LWP 45987]
+[New LWP 45986]
+[New LWP 45985]
+[New LWP 45984]
+[New LWP 45983]
+[New LWP 45982]
+[New LWP 45981]
+[New LWP 45980]
+[New LWP 45979]
+[New LWP 45978]
+[New LWP 45977]
+[New LWP 45976]
+[New LWP 45975]
+[New LWP 45974]
+[New LWP 45973]
+[New LWP 45972]
+[New LWP 45971]
+[New LWP 45970]
+[New LWP 45969]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+0x00007fb1f291017e in epoll_wait () from /lib64/libc.so.6
+xtc-gdb loaded: xtc-loops, xtc-rings, xtc-procs, xtc-proc, xtc-stranded, xtc-tail-dropped, xtc-mailbox, xtc-self, xtc-trace, xtc-tail-dump, xtc-help
+emitted=794367  ring=16384  buffered=16384  dropped=777983
+WARNING: 777983 record(s) were OVERWRITTEN.  Any claim that rests on an event being ABSENT is unfalsifiable for this capture.
+wrote 16384 events (155382 bytes) to /mnt/work/traces/hang1.xtcl -- view with tools/xtc-tail.py /mnt/work/traces/hang1.xtcl
+loop               id     io                 ring_fd  owner_tid            unreaped  alive
+0x172d3060         0      0x172d3db0         560      140374697834048      46        4
+0x172f70e0         1      0x172d69a0         563      140374687344192      0         3
+0x172f7e30         2      0x172f8b80         566      140374676854336      0         3
+0x172f8ee0         3      0x172f9c30         569      140374666364480      0         2
+0x172f9f90         4      0x172face0         572      140374655874624      0         2
+0x172fb040         5      0x172fbd90         575      140374645384768      0         2
+0x172fc0f0         6      0x172fce40         578      140374563616320      0         3
+0x172fd1a0         7      0x172fdef0         581      140374553126464      0         2
+0x172fe280         8      0x172fefd0         584      140374542636608      0         2
+0x172ff360         9      0x173000b0         587      140374532146752      0         2
+0x17300440         10     0x17301190         590      140374513264192      0         2
+0x17301520         11     0x17302270         593      140374362289728      0         2
+0x17302600         12     0x17303350         596      140374276265536      0         2
+0x173036e0         13     0x17304430         599      140374165063232      0         2
+0x173047c0         14     0x17305510         602      140374137787968      0         2
+0x173058a0         15     0x173065f0         605      140374102120000      0         2
+0x17306980         16     0x173076d0         608      140374083237440      0         2
+0x17307a60         17     0x173087b0         611      140374072747584      0         2
+0x17308b40         18     0x17309890         614      140374062257728      0         2
+0x17309c20         19     0x1730a970         617      140374051767872      0         2
+0x1730ad00         20     0x1730ba50         620      140374041278016      0         2
+0x1730bde0         21     0x1730cb30         623      140374030788160      0         2
+0x1730cec0         22     0x1730dc10         626      140374020298304      0         2
+0x1730dfa0         23     0x1730ecf0         629      140374009808448      0         2
+0x1730f080         24     0x1730fdd0         632      140373999318592      0         2
+0x17310160         25     0x17310eb0         635      140373988828736      0         2
+0x17311240         26     0x17311f90         638      140373978338880      0         2
+0x17312320         27     0x17313070         641      140373967849024      0         2
+0x17313400         28     0x17314150         644      140373957359168      0         2
+0x173144e0         29     0x17315230         647      140373946869312      0         2
+0x173155c0         30     0x17316310         650      140373936379456      0         2
+0x173166a0         31     0x173173f0         653      140373925889600      0         2
+(32 ring(s); unreaped > 0 means the kernel posted completions this loop never drained)
+[Inferior 1 (process 45903) detached]
