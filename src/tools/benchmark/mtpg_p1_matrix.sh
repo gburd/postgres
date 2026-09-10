@@ -53,6 +53,9 @@
 #   RUNS         repeats per cell, median reported (default 1; use >=3 for a
 #                headline run per section 1)
 #   PORT         (default 5439)
+#   PG_COMMIT    override the recorded PG commit (auto-detected via git when the
+#                script runs from a checkout; falls back to 'unknown' when run from
+#                a tarball extraction with no .git -- set this explicitly there)
 #   LOCAL_DRIVER set to 1 (or pass --local-driver) to allow LOADGEN unset / == SUT_IP;
 #                tags every row DEGRADED and forces idle_meaningful=no.
 set -uo pipefail
@@ -130,7 +133,9 @@ SB_MB=$(( RAM_KB/1024*RAM_PCT/100 ))
 NCORE=$(nproc)
 SUT_HOST=$(hostname -f 2>/dev/null || hostname)
 DRIVER_HOST_LABEL="$LOADGEN"; [ "$COLOCATED" = 1 ] && DRIVER_HOST_LABEL="$SUT_HOST(colocated)"
-PG_COMMIT=$(cd "$here/../../.." && git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+PG_COMMIT="${PG_COMMIT:-}"
+[ -z "$PG_COMMIT" ] && PG_COMMIT=$(cd "$here/../../.." && git rev-parse --short=12 HEAD 2>/dev/null)
+[ -z "$PG_COMMIT" ] && PG_COMMIT=unknown  # e.g. running from a tarball extraction with no .git
 LIBXTC_VERSION=$(pkg-config --modversion xtc 2>/dev/null || echo unknown)
 DATA_DEVICE=$(findmnt -no SOURCE --target "$(dirname "$DATA")" 2>/dev/null || echo unknown)
 WAL_DEVICE="$DATA_DEVICE"  # R3 settled: single device, both lanes identical -- see plan section 1/R3
