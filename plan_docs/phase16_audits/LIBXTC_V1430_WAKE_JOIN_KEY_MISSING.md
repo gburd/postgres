@@ -1,3 +1,12 @@
+> **UPDATED 2026-09-10.** The join key shipped (libxtc c67cf33, XTC_TAIL_PARK_TASK) and the
+> question is ANSWERED: no WAKE is ever dispatched to the stranded task, in 15 strands across
+> 2 hangs -- so the loss is UPSTREAM of dispatch (reap/event-array/handoff), not in the waker's
+> CAS/enqueue.  See LIBXTC_JOIN_NO_WAKE_DISPATCHED.md.
+> ALSO: the "two bugs" suggestion in this doc is WITHDRAWN.  It rested on hang B's
+> 0-idle-LOOP_POLL, an absence measured in a wrapped ring; xtc-tail-dropped now reports 366k
+> dropped records for such captures, which makes that count worthless.  The libxtc team
+> refused the claim on exactly this basis and they were right.
+
 # v1.43.0: lost wake CONFIRMED, and the WAKE↔PARK join key is missing (so the branch question is still open)
 
 Date: 2026-09-09
