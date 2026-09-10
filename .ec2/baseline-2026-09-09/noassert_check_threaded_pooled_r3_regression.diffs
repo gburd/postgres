@@ -1,0 +1,56 @@
+diff -U3 /mnt/nvme/work/pg_noassert/src/test/regress/expected/subselect.out /mnt/nvme/work/pg_noassert/src/test/regress/results/subselect.out
+--- /mnt/nvme/work/pg_noassert/src/test/regress/expected/subselect.out	2026-09-09 23:14:58.000000000 +0000
++++ /mnt/nvme/work/pg_noassert/src/test/regress/results/subselect.out	2026-09-10 03:26:51.285313468 +0000
+@@ -739,25 +739,36 @@
+ order by t1.a, t2.a;
+                                               QUERY PLAN                                              
+ ------------------------------------------------------------------------------------------------------
+- Nested Loop
++ Incremental Sort
+    Output: t1.a, t1.b, t2.a, t2.b
+-   ->  Merge Join
+-         Output: t1.a, t1.b, t3.b
+-         Merge Cond: (t3.a = t1.a)
+-         ->  Unique
+-               Output: t3.a, t3.b
+-               ->  Index Only Scan using semijoin_unique_tbl_a_b_idx on public.semijoin_unique_tbl t3
++   Sort Key: t1.a, t2.a
++   Presorted Key: t1.a
++   ->  Nested Loop
++         Output: t1.a, t1.b, t2.a, t2.b
++         ->  Merge Join
++               Output: t1.a, t1.b, t3.b
++               Merge Cond: (t3.a = t1.a)
++               ->  Sort
+                      Output: t3.a, t3.b
+-         ->  Index Only Scan using semijoin_unique_tbl_a_b_idx on public.semijoin_unique_tbl t1
+-               Output: t1.a, t1.b
+-   ->  Memoize
+-         Output: t2.a, t2.b
+-         Cache Key: t3.b
+-         Cache Mode: logical
+-         ->  Index Only Scan using semijoin_unique_tbl_a_b_idx on public.semijoin_unique_tbl t2
++                     Sort Key: t3.a
++                     ->  HashAggregate
++                           Output: t3.a, t3.b
++                           Group Key: t3.a, t3.b
++                           ->  Seq Scan on public.semijoin_unique_tbl t3
++                                 Output: t3.a, t3.b
++               ->  Sort
++                     Output: t1.a, t1.b
++                     Sort Key: t1.a
++                     ->  Seq Scan on public.semijoin_unique_tbl t1
++                           Output: t1.a, t1.b
++         ->  Memoize
+                Output: t2.a, t2.b
+-               Index Cond: (t2.a = t3.b)
+-(18 rows)
++               Cache Key: t3.b
++               Cache Mode: logical
++               ->  Index Only Scan using semijoin_unique_tbl_a_b_idx on public.semijoin_unique_tbl t2
++                     Output: t2.a, t2.b
++                     Index Cond: (t2.a = t3.b)
++(29 rows)
+ 
+ -- Ensure that we can unique-ify expressions more complex than plain Vars
+ explain (verbose, costs off)

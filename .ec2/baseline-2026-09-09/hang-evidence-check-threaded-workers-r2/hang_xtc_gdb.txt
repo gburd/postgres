@@ -1,0 +1,116 @@
+[New LWP 81370]
+[New LWP 81369]
+[New LWP 81368]
+[New LWP 81367]
+[New LWP 81366]
+[New LWP 81365]
+[New LWP 81364]
+[New LWP 81363]
+[New LWP 81362]
+[New LWP 81361]
+[New LWP 81360]
+[New LWP 81359]
+[New LWP 81358]
+[New LWP 81357]
+[New LWP 81356]
+[New LWP 81355]
+[New LWP 81354]
+[New LWP 81353]
+[New LWP 81352]
+[New LWP 81351]
+[New LWP 81350]
+[New LWP 81349]
+[New LWP 81348]
+[New LWP 81347]
+[New LWP 81346]
+[New LWP 81345]
+[New LWP 81344]
+[New LWP 81343]
+[New LWP 81342]
+[New LWP 81341]
+[New LWP 81340]
+[New LWP 81339]
+[New LWP 81338]
+[New LWP 81337]
+[New LWP 81336]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+0x00007f687dd1017e in epoll_wait () from /lib64/libc.so.6
+xtc-gdb loaded: xtc-loops, xtc-rings, xtc-procs, xtc-proc, xtc-stranded, xtc-mailbox, xtc-self, xtc-trace, xtc-tail-dump, xtc-help
+loop 0x1e9ae470  [exec#0]  procs=3  alive=3  tasks_run=461  steals=6
+loop 0x1e9a06a0  [exec#1]  procs=2  alive=2  tasks_run=285  steals=1
+loop 0x1e9bd700  [exec#2]  procs=2  alive=2  tasks_run=547  steals=0
+loop 0x1e9be570  [exec#3]  procs=2  alive=2  tasks_run=242  steals=3
+loop 0x1e9bf620  [exec#4]  procs=1  alive=1  tasks_run=396  steals=4
+loop 0x1e9c06d0  [exec#5]  procs=1  alive=1  tasks_run=502  steals=2
+loop 0x1e9c1780  [exec#6]  procs=1  alive=1  tasks_run=303  steals=0
+loop 0x1e9c2830  [exec#7]  procs=1  alive=1  tasks_run=453  steals=8
+loop 0x1e9c38e0  [exec#8]  procs=1  alive=1  tasks_run=297  steals=5
+loop 0x1e9c4990  [exec#9]  procs=1  alive=1  tasks_run=248  steals=2
+loop 0x1e9c5a40  [exec#10]  procs=1  alive=1  tasks_run=414  steals=0
+loop 0x1e9c6af0  [exec#11]  procs=1  alive=1  tasks_run=571  steals=5
+loop 0x1e9c7ba0  [exec#12]  procs=1  alive=1  tasks_run=202  steals=2
+loop 0x1e9c8c80  [exec#13]  procs=1  alive=1  tasks_run=292  steals=2
+loop 0x1e9c9d60  [exec#14]  procs=1  alive=1  tasks_run=313  steals=10
+loop 0x1e9cae40  [exec#15]  procs=1  alive=1  tasks_run=607  steals=4
+loop 0x1e9cbf20  [exec#16]  procs=1  alive=1  tasks_run=284  steals=6
+loop 0x1e9cd000  [exec#17]  procs=1  alive=1  tasks_run=512  steals=13
+loop 0x1e9ce0e0  [exec#18]  procs=1  alive=1  tasks_run=245  steals=1
+loop 0x1e9cf1c0  [exec#19]  procs=1  alive=1  tasks_run=523  steals=7
+loop 0x1e9d02a0  [exec#20]  procs=1  alive=1  tasks_run=759  steals=5
+loop 0x1e9d1380  [exec#21]  procs=1  alive=1  tasks_run=1148  steals=8
+loop 0x1e9d2460  [exec#22]  procs=1  alive=1  tasks_run=825  steals=1
+loop 0x1e9d3540  [exec#23]  procs=2  alive=2  tasks_run=677  steals=17
+loop 0x1e9d4620  [exec#24]  procs=2  alive=2  tasks_run=351  steals=1
+loop 0x1e9d5700  [exec#25]  procs=2  alive=2  tasks_run=558  steals=21
+loop 0x1e9d67e0  [exec#26]  procs=2  alive=2  tasks_run=158  steals=2
+loop 0x1e9d78c0  [exec#27]  procs=2  alive=2  tasks_run=447  steals=14
+loop 0x1e9d89a0  [exec#28]  procs=1  alive=1  tasks_run=68  steals=0
+loop 0x1e9d9a80  [exec#29]  procs=1  alive=1  tasks_run=103  steals=0
+loop 0x1e9dab60  [exec#30]  procs=1  alive=1  tasks_run=103  steals=0
+loop 0x1e9dbc40  [exec#31]  procs=1  alive=1  tasks_run=127  steals=0
+proc               pid        task                mbox  peak  save state              lnk/mon
+0x1e9ddda0         1.0.1      0x1e9decd0             0     0     0 PARKED(timer)      0/0
+0x1e9deea0         1.1.1      0x1e9dfdd0             1     1     0 PARKED             0/3
+0x7f6858001450     1.2.1      0x7f68580023c0         0     0     0 RUNNING            0/0
+0x1e9e0120         2.0.1      0x1e9e1160             0     1     0 PARKED             0/4
+0x7f684c001120     2.1.1      0x7f684c002050         0     0     0 PARKED(fd 206)     0/0
+0x1e9e14b0         3.0.1      0x1e9e24f0             0     1     0 PARKED             0/4
+0x1ea20f20         3.1.1      0x1ea23260             0     0     0 PARKED(fd 468)     0/0
+0x1e9e2840         4.0.1      0x1e9e3b10             0     1     0 PARKED             0/4
+0x7f6858023e30     4.1.1      0x7f6858024d60         0     0     0 PARKED(fd 469)     0/0
+0x1e9e3e60         5.0.1      0x1e9e4ea0             0     1     0 PARKED             0/4
+0x1e9e51f0         6.0.1      0x1e9e6230             0     1     0 PARKED             0/4
+0x1e9e6580         7.0.1      0x1e9e75c0             0     1     0 PARKED             0/4
+0x1e9e7910         8.0.1      0x1e9e8be0             0     1     0 PARKED             0/3
+0x1e9e8f30         9.0.1      0x1e9e9f70             0     1     0 PARKED             0/3
+0x1e9ea2c0         10.0.1     0x1e9eb300             0     1     0 PARKED             0/3
+0x1e9eb650         11.0.1     0x1e9ec690             0     1     0 PARKED             0/3
+0x1e9ec9e0         12.0.1     0x1e9edcb0             0     1     0 PARKED             0/3
+0x1e9ee000         13.0.1     0x1e9ef040             0     1     0 PARKED             0/3
+0x1e9ef390         14.0.1     0x1e9f03d0             0     1     0 PARKED             0/3
+0x1e9f0720         15.0.1     0x1e9f1760             0     1     0 PARKED             0/3
+0x1e9f1ab0         16.0.1     0x1e9f2af0             0     1     0 PARKED             0/3
+0x1e9f2e40         17.0.1     0x1e9f3e80             0     1     0 PARKED             0/3
+0x1e9f41d0         18.0.1     0x1e9f5210             0     1     0 PARKED             0/3
+0x1e9f5560         19.0.1     0x1e9f65a0             0     1     0 PARKED             0/3
+0x1e9f68f0         20.0.1     0x1e9f7930             0     1     0 PARKED             0/3
+0x1e9f7c80         21.0.1     0x1e9f8cc0             0     1     0 PARKED             0/3
+0x1e9f9010         22.0.1     0x1e9fa050             0     1     0 PARKED             0/3
+0x1e9fa3a0         23.0.1     0x1e9fb3e0             0     1     0 PARKED             0/3
+0x1e9fb730         24.0.1     0x1e9fc770             0     1     0 PARKED             0/3
+0x7f684c0a6570     24.1.3     0x7f684c3525f0         0     0     0 PARKED(fd 156)     0/0
+0x1e9fcac0         25.0.1     0x1e9fdb00             0     1     0 PARKED             0/3
+0x7f68580bf520     25.1.3     0x7f68585f0bd0         0     0     0 PARKED(fd 158)     0/0
+0x1e9fde50         26.0.1     0x1e9fee90             0     1     0 PARKED             0/3
+0x7f68601bc3f0     26.1.3     0x7f686040b130         0     0     0 PARKED(fd 160)     0/0
+0x1e9ff1e0         27.0.1     0x1ea00220             0     1     0 PARKED             0/3
+0x1ebefc70         27.1.3     0x1ec4d970             0     0     0 PARKED(fd 162)     0/0
+0x1ea00570         28.0.1     0x1ea015b0             0     1     0 PARKED             0/3
+0x7f684c305bf0     28.1.3     0x7f684c306330         0     0     0 PARKED(fd 164)     0/0
+0x1ea01900         29.0.1     0x1ea02940             0     1     0 PARKED             0/3
+0x1ea02c90         30.0.1     0x1ea03cd0             0     1     0 PARKED             0/3
+0x1ea04020         31.0.1     0x1ea05060             0     1     0 PARKED             0/3
+0x1ea053b0         32.0.1     0x1ea063f0             0     1     0 PARKED             0/3
+(42 procs)
+[Inferior 1 (process 81331) detached]
