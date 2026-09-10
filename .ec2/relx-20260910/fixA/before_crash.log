@@ -1,0 +1,22 @@
+xtc: spawned backend fiber pid=(loop=1,local=2,gen=1) migratable=0
+2026-09-10 03:16:16.235 UTC [68183] ERROR:  user-defined relation parameter types limit exceeded
+2026-09-10 03:16:16.235 UTC [68183] STATEMENT:  SELECT reloptprobe_exhaust_kinds();
+TRAP: failed Assert("InterruptHoldoffCount > 0"), File: "../src/backend/access/common/reloptions.c", Line: 670, PID: 68183
+postgres: ec2-user postgres 127.0.0.1(55014) (ExceptionalCondition+0x5e)[0xb9039e]
+postgres: ec2-user postgres 127.0.0.1(55014) [0x5863c6]
+postgres: ec2-user postgres 127.0.0.1(55014) [0x587011]
+postgres: ec2-user postgres 127.0.0.1(55014) (add_bool_reloption+0x10)[0x5873f0]
+/home/ec2-user/work/pg-prefix/inst/lib64/postgresql/reloptprobe.so(reloptprobe_huge_name_bool+0x4c)[0x7feead71a26c]
+postgres: ec2-user postgres 127.0.0.1(55014) [0x7962ef]
+postgres: ec2-user postgres 127.0.0.1(55014) [0x7e2d6a]
+postgres: ec2-user postgres 127.0.0.1(55014) (standard_ExecutorRun+0x1a3)[0x79ae33]
+postgres: ec2-user postgres 127.0.0.1(55014) [0xa1d4e8]
+postgres: ec2-user postgres 127.0.0.1(55014) (PortalRun+0x48e)[0xa1f50e]
+postgres: ec2-user postgres 127.0.0.1(55014) [0xa14662]
+postgres: ec2-user postgres 127.0.0.1(55014) (PgSessionRunProtocolSchedulerUntilBoundary+0x180d)[0xa1bcfd]
+postgres: ec2-user postgres 127.0.0.1(55014) [0x8ec384]
+postgres: ec2-user postgres 127.0.0.1(55014) [0x8ed65c]
+postgres: ec2-user postgres 127.0.0.1(55014) [0x8edd4e]
+postgres: ec2-user postgres 127.0.0.1(55014) [0x8d75ad]
+/lib64/libc.so.6(+0x8b2ea)[0x7feead88b2ea]
+/lib64/libc.so.6(+0x110b40)[0x7feead910b40]

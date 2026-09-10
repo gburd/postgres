@@ -1,0 +1,156 @@
+[New LWP 119131]
+[New LWP 119130]
+[New LWP 119105]
+[New LWP 119104]
+[New LWP 119103]
+[New LWP 119102]
+[New LWP 119101]
+[New LWP 119100]
+[New LWP 119099]
+[New LWP 119098]
+[New LWP 119097]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+0x00007f27bcb1017e in epoll_wait () from /lib64/libc.so.6
+
+Thread 12 (Thread 0x7f27a2b67640 (LWP 119097) "postgres"):
+#0  0x00007f27bcad5dd5 in clock_nanosleep@GLIBC_2.2.5 () from /lib64/libc.so.6
+#1  0x00007f27bcada9c7 in nanosleep () from /lib64/libc.so.6
+#2  0x0000000000c5ab95 in __os_sleep_ns (ns=ns@entry=2000000) at ../dist/../src/os/os_time.c:205
+#3  0x0000000000c5e602 in xtc_exec_run (e=0x1ebe4ad0) at ../dist/../src/evt/exec.c:608
+#4  0x0000000000c6c96c in xtc_app_run (a=<optimized out>) at ../dist/../src/orc/app.c:97
+#5  0x000000000092f150 in xtc_carrier_sched_thread (arg=<optimized out>) at pg_xtc_carrier.c:466
+#6  0x00007f27bca8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007f27bcb10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 11 (Thread 0x7f27a2166640 (LWP 119098) "postgres"):
+#0  0x00007f27bcb1017e in epoll_wait () from /lib64/libc.so.6
+#1  0x0000000000c6e631 in xtc_io_poll (io=0x1ec64310, events=events@entry=0x7f27a21285f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7f27a21285dc) at ../dist/../src/io/io_epoll.c:159
+#2  0x0000000000c5c2ce in __xtc_loop_step (loop=loop@entry=0x1ec756b0) at ../dist/../src/evt/loop.c:966
+#3  0x0000000000c5c584 in __xtc_loop_step_once (loop=loop@entry=0x1ec756b0) at ../dist/../src/evt/loop.c:1178
+#4  0x0000000000c5dbe8 in __xtc_exec_worker (arg=0x1ec756b0) at ../dist/../src/evt/exec.c:230
+#5  0x00007f27bca8b2ea in start_thread () from /lib64/libc.so.6
+#6  0x00007f27bcb10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 10 (Thread 0x7f27a1765640 (LWP 119099) "postgres"):
+#0  0x00007f27bcb1017e in epoll_wait () from /lib64/libc.so.6
+#1  0x0000000000c6e631 in xtc_io_poll (io=0x1ec64330, events=events@entry=0x7f27a17275f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7f27a17275dc) at ../dist/../src/io/io_epoll.c:159
+#2  0x0000000000c5c2ce in __xtc_loop_step (loop=loop@entry=0x1ec678e0) at ../dist/../src/evt/loop.c:966
+#3  0x0000000000c5c584 in __xtc_loop_step_once (loop=loop@entry=0x1ec678e0) at ../dist/../src/evt/loop.c:1178
+#4  0x0000000000c5dbe8 in __xtc_exec_worker (arg=0x1ec678e0) at ../dist/../src/evt/exec.c:230
+#5  0x00007f27bca8b2ea in start_thread () from /lib64/libc.so.6
+#6  0x00007f27bcb10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 9 (Thread 0x7f27a0d64640 (LWP 119100) "postgres"):
+#0  0x00007f27bcb1017e in epoll_wait () from /lib64/libc.so.6
+#1  0x0000000000c6e631 in xtc_io_poll (io=0x1ec76640, events=events@entry=0x7f27a0d265f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7f27a0d265dc) at ../dist/../src/io/io_epoll.c:159
+#2  0x0000000000c5c2ce in __xtc_loop_step (loop=loop@entry=0x1ec84940) at ../dist/../src/evt/loop.c:966
+#3  0x0000000000c5c584 in __xtc_loop_step_once (loop=loop@entry=0x1ec84940) at ../dist/../src/evt/loop.c:1178
+#4  0x0000000000c5dbe8 in __xtc_exec_worker (arg=0x1ec84940) at ../dist/../src/evt/exec.c:230
+#5  0x00007f27bca8b2ea in start_thread () from /lib64/libc.so.6
+#6  0x00007f27bcb10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 8 (Thread 0x7f279bfff640 (LWP 119101) "postgres"):
+#0  0x00007f27bcb1017e in epoll_wait () from /lib64/libc.so.6
+#1  0x0000000000c6e631 in xtc_io_poll (io=0x1ec76660, events=events@entry=0x7f279bfc15f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7f279bfc15dc) at ../dist/../src/io/io_epoll.c:159
+#2  0x0000000000c5c2ce in __xtc_loop_step (loop=loop@entry=0x1ec85690) at ../dist/../src/evt/loop.c:966
+#3  0x0000000000c5c584 in __xtc_loop_step_once (loop=loop@entry=0x1ec85690) at ../dist/../src/evt/loop.c:1178
+#4  0x0000000000c5dbe8 in __xtc_exec_worker (arg=0x1ec85690) at ../dist/../src/evt/exec.c:230
+#5  0x00007f27bca8b2ea in start_thread () from /lib64/libc.so.6
+#6  0x00007f27bcb10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 7 (Thread 0x7f27a3b69640 (LWP 119102) "postgres"):
+#0  0x00007f27bcb1017e in epoll_wait () from /lib64/libc.so.6
+#1  0x00000000009f67e7 in WaitEventSetWaitBlock (nevents=<optimized out>, occurred_events=0x7f27a3b2b710, cur_timeout=<optimized out>, set=0x7f279c0094b8) at waiteventset.c:1495
+#2  WaitEventSetWaitInternal (callback_arg=<synthetic pointer>) at waiteventset.c:1386
+#3  WaitEventSetWait (set=0x7f279c0094b8, timeout=timeout@entry=300000, occurred_events=occurred_events@entry=0x7f27a3b2b710, nevents=nevents@entry=1, wait_event_info=wait_event_info@entry=83886084) at waiteventset.c:1223
+#4  0x00000000009e3b72 in WaitLatch (latch=<optimized out>, wakeEvents=wakeEvents@entry=41, timeout=<optimized out>, wait_event_info=wait_event_info@entry=83886084) at latch.c:290
+#5  0x0000000000918919 in CheckpointerMain (startup_data=<optimized out>, startup_data_len=<optimized out>) at checkpointer.c:618
+#6  0x0000000000525bdf in backend_thread_run_worker (thread_start=0x1eca0220) at launch_backend.c:2368
+#7  backend_thread_entry (arg=arg@entry=0x1eca0220) at launch_backend.c:2322
+#8  0x000000000090b630 in pg_thread_start (arg=0x1ec02a30) at pg_thread.c:209
+#9  0x00007f27bca8b2ea in start_thread () from /lib64/libc.so.6
+#10 0x00007f27bcb10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 6 (Thread 0x7f278f7fe640 (LWP 119103) "postgres"):
+#0  0x00007f27bcb1017e in epoll_wait () from /lib64/libc.so.6
+#1  0x00000000009f67e7 in WaitEventSetWaitBlock (nevents=<optimized out>, occurred_events=0x7f278f7bf300, cur_timeout=<optimized out>, set=0x1ecb6d98) at waiteventset.c:1495
+#2  WaitEventSetWaitInternal (callback_arg=<synthetic pointer>) at waiteventset.c:1386
+#3  WaitEventSetWait (set=0x1ecb6d98, timeout=timeout@entry=10000, occurred_events=occurred_events@entry=0x7f278f7bf300, nevents=nevents@entry=1, wait_event_info=wait_event_info@entry=83886082) at waiteventset.c:1223
+#4  0x00000000009e3b72 in WaitLatch (latch=<optimized out>, wakeEvents=wakeEvents@entry=41, timeout=<optimized out>, wait_event_info=wait_event_info@entry=83886082) at latch.c:290
+#5  0x0000000000916835 in BackgroundWriterMain (startup_data=<optimized out>, startup_data_len=<optimized out>) at bgwriter.c:345
+#6  0x0000000000525bdf in backend_thread_run_worker (thread_start=0x1ecad530) at launch_backend.c:2368
+#7  backend_thread_entry (arg=arg@entry=0x1ecad530) at launch_backend.c:2322
+#8  0x000000000090b630 in pg_thread_start (arg=0x1ec64140) at pg_thread.c:209
+#9  0x00007f27bca8b2ea in start_thread () from /lib64/libc.so.6
+#10 0x00007f27bcb10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 5 (Thread 0x7f278effd640 (LWP 119104) "postgres"):
+#0  0x00007f27bcb1017e in epoll_wait () from /lib64/libc.so.6
+#1  0x00000000009f67e7 in WaitEventSetWaitBlock (nevents=<optimized out>, occurred_events=0x7f278efbea10, cur_timeout=<optimized out>, set=0x7f27901288b8) at waiteventset.c:1495
+#2  WaitEventSetWaitInternal (callback_arg=<synthetic pointer>) at waiteventset.c:1386
+#3  WaitEventSetWait (set=0x7f27901288b8, timeout=timeout@entry=10, occurred_events=occurred_events@entry=0x7f278efbea10, nevents=nevents@entry=1, wait_event_info=wait_event_info@entry=134217733) at waiteventset.c:1223
+#4  0x00000000009e3b72 in WaitLatch (latch=<optimized out>, wakeEvents=wakeEvents@entry=41, timeout=timeout@entry=10, wait_event_info=wait_event_info@entry=134217733) at latch.c:290
+#5  0x000000000094934e in logicalrep_worker_stop_internal (worker=0x7f27acdc1398, signo=signo@entry=15) at launcher.c:663
+#6  0x0000000000949c41 in logicalrep_worker_stop (wtype=WORKERTYPE_APPLY, subid=36576, relid=0) at launcher.c:711
+#7  0x000000000075450b in DropSubscription (stmt=stmt@entry=0x7f279038aa70, isTopLevel=isTopLevel@entry=true) at subscriptioncmds.c:2733
+#8  0x0000000000a393cb in ProcessUtilitySlow (pstate=pstate@entry=0x7f2790095570, pstmt=pstmt@entry=0x7f27900c3478, queryString=queryString@entry=0x7f279038a2d8 "DROP SUBSCRIPTION regress_testsub;", context=context@entry=PROCESS_UTILITY_TOPLEVEL, params=params@entry=0x0, queryEnv=queryEnv@entry=0x0, qc=<optimized out>, dest=<optimized out>) at utility.c:1885
+#9  0x0000000000a37cb9 in standard_ProcessUtility (pstmt=0x7f27900c3478, queryString=0x7f279038a2d8 "DROP SUBSCRIPTION regress_testsub;", readOnlyTree=<optimized out>, context=PROCESS_UTILITY_TOPLEVEL, params=<optimized out>, queryEnv=0x0, dest=<optimized out>, qc=<optimized out>) at utility.c:1072
+#10 0x0000000000a35841 in PortalRunUtility (portal=portal@entry=0x7f27901f3160, pstmt=pstmt@entry=0x7f27900c3478, isTopLevel=isTopLevel@entry=true, setHoldSnapshot=setHoldSnapshot@entry=false, dest=0x7f2790715c80, qc=0x7f278efbf2b0) at pquery.c:1142
+#11 0x0000000000a359c6 in PortalRunMulti (portal=portal@entry=0x7f27901f3160, isTopLevel=isTopLevel@entry=true, setHoldSnapshot=setHoldSnapshot@entry=false, dest=<optimized out>, dest@entry=0x7f2790715c80, altdest=<optimized out>, altdest@entry=0x7f2790715c80, qc=qc@entry=0x7f278efbf2b0) at pquery.c:1307
+#12 0x0000000000a36489 in PortalRun (portal=portal@entry=0x7f27901f3160, count=count@entry=9223372036854775807, isTopLevel=isTopLevel@entry=true, dest=dest@entry=0x7f2790715c80, altdest=altdest@entry=0x7f2790715c80, qc=qc@entry=0x7f278efbf2b0) at pquery.c:777
+#13 0x0000000000a2c698 in exec_simple_query (query_string=<optimized out>) at postgres.c:1715
+#14 0x0000000000a32f95 in PgSessionStepUnprotected (return_logical_exits=true, protocol_park_enabled=true, max_messages=0, session=0x1ee8c890) at postgres.c:5187
+#15 PgSessionRunProtocolSchedulerUntilBoundary (session=session@entry=0x1ee8c890) at postgres.c:7132
+#16 0x000000000091dbf4 in backend_pooled_protocol_run_attached_logical (logical_start=logical_start@entry=0x1ee88a70, session=session@entry=0x1ee8c890) at launch_backend.c:2157
+#17 0x000000000091ec81 in backend_pooled_protocol_run_logical_start (carrier_start=carrier_start@entry=0x1ecec090, logical_start=logical_start@entry=0x1ee88a70) at launch_backend.c:2113
+#18 0x000000000091f256 in backend_pooled_protocol_carrier_entry (arg=arg@entry=0x1ecec090) at launch_backend.c:1995
+#19 0x000000000090b630 in pg_thread_start (arg=0x1ed31cf0) at pg_thread.c:209
+#20 0x00007f27bca8b2ea in start_thread () from /lib64/libc.so.6
+#21 0x00007f27bcb10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 4 (Thread 0x7f278e7fc640 (LWP 119105) "postgres"):
+#0  0x00007f27bca8837a in __futex_abstimed_wait_common () from /lib64/libc.so.6
+#1  0x00007f27bca8aabf in pthread_cond_timedwait@@GLIBC_2.3.2 () from /lib64/libc.so.6
+#2  0x0000000000c65eb7 in cv_wait_until (ts=0x7f278e7be7f0, lock=0x1ed31c70, cv=0x1ed31c98) at ../dist/../src/ptc/sync.c:59
+#3  xtc_notify_wait (n=0x1ed31c70, timeout_ns=timeout_ns@entry=10000000) at ../dist/../src/ptc/sync.c:248
+#4  0x000000000093069f in xtc_pg_pooled_queue_wait (timeout_us=timeout_us@entry=10000) at pg_xtc_carrier.c:1813
+#5  0x000000000091f2ed in backend_pooled_protocol_wait_for_work (timeout_us=10000) at launch_backend.c:1837
+#6  backend_pooled_protocol_carrier_entry (arg=arg@entry=0x1ed39760) at launch_backend.c:2038
+#7  0x000000000090b630 in pg_thread_start (arg=0x1ed3ac10) at pg_thread.c:209
+#8  0x00007f27bca8b2ea in start_thread () from /lib64/libc.so.6
+#9  0x00007f27bcb10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 3 (Thread 0x7f278dffb640 (LWP 119130) "postgres"):
+#0  0x00007f27bca8837a in __futex_abstimed_wait_common () from /lib64/libc.so.6
+#1  0x00007f27bca8aabf in pthread_cond_timedwait@@GLIBC_2.3.2 () from /lib64/libc.so.6
+#2  0x0000000000c65eb7 in cv_wait_until (ts=0x7f278dfbd7f0, lock=0x1ed31c70, cv=0x1ed31c98) at ../dist/../src/ptc/sync.c:59
+#3  xtc_notify_wait (n=0x1ed31c70, timeout_ns=timeout_ns@entry=10000000) at ../dist/../src/ptc/sync.c:248
+#4  0x000000000093069f in xtc_pg_pooled_queue_wait (timeout_us=timeout_us@entry=10000) at pg_xtc_carrier.c:1813
+#5  0x000000000091f2ed in backend_pooled_protocol_wait_for_work (timeout_us=10000) at launch_backend.c:1837
+#6  backend_pooled_protocol_carrier_entry (arg=arg@entry=0x1ed49f80) at launch_backend.c:2038
+#7  0x000000000090b630 in pg_thread_start (arg=0x1ed4b430) at pg_thread.c:209
+#8  0x00007f27bca8b2ea in start_thread () from /lib64/libc.so.6
+#9  0x00007f27bcb10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 2 (Thread 0x7f278d7fa640 (LWP 119131) "postgres"):
+#0  0x00007f27bca8837a in __futex_abstimed_wait_common () from /lib64/libc.so.6
+#1  0x00007f27bca8aabf in pthread_cond_timedwait@@GLIBC_2.3.2 () from /lib64/libc.so.6
+#2  0x0000000000c65eb7 in cv_wait_until (ts=0x7f278d7bc7f0, lock=0x1ed31c70, cv=0x1ed31c98) at ../dist/../src/ptc/sync.c:59
+#3  xtc_notify_wait (n=0x1ed31c70, timeout_ns=timeout_ns@entry=10000000) at ../dist/../src/ptc/sync.c:248
+#4  0x000000000093069f in xtc_pg_pooled_queue_wait (timeout_us=timeout_us@entry=10000) at pg_xtc_carrier.c:1813
+#5  0x000000000091f2ed in backend_pooled_protocol_wait_for_work (timeout_us=10000) at launch_backend.c:1837
+#6  backend_pooled_protocol_carrier_entry (arg=arg@entry=0x1ed52ec0) at launch_backend.c:2038
+#7  0x000000000090b630 in pg_thread_start (arg=0x1ed54370) at pg_thread.c:209
+#8  0x00007f27bca8b2ea in start_thread () from /lib64/libc.so.6
+#9  0x00007f27bcb10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 1 (Thread 0x7f27bd83fc80 (LWP 119092) "postgres"):
+#0  0x00007f27bcb1017e in epoll_wait () from /lib64/libc.so.6
+#1  0x00000000009f67e7 in WaitEventSetWaitBlock (nevents=<optimized out>, occurred_events=0x7ffeb1da9f90, cur_timeout=<optimized out>, set=0x1ebe0ee0) at waiteventset.c:1495
+#2  WaitEventSetWaitInternal (callback_arg=<synthetic pointer>) at waiteventset.c:1386
+#3  WaitEventSetWait (set=0x1ebe0ee0, timeout=<optimized out>, occurred_events=occurred_events@entry=0x7ffeb1da9f90, nevents=nevents@entry=64, wait_event_info=wait_event_info@entry=0) at waiteventset.c:1223
+#4  0x000000000092777f in ServerLoop () at postmaster.c:1934
+#5  0x0000000000929e08 in PostmasterMain (argc=argc@entry=8, argv=argv@entry=0x1ebdff10) at postmaster.c:1620
+#6  0x0000000000560502 in main (argc=8, argv=0x1ebdff10) at main.c:233
+[Inferior 1 (process 119092) detached]
