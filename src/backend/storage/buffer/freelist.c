@@ -73,7 +73,6 @@ typedef struct
 	int32		firstBuffer;
 	int32		numBuffers;
 
- *
 	/*
 	 * clock-sweep hand: index of next buffer to consider grabbing. Note that
 	 * this isn't a concrete buffer - we only ever increase the value. So, to
@@ -252,6 +251,19 @@ static int clocksweep_partition_current = -1;
 static int clocksweep_partition_budget = 0;
 
 /*
+ * Batched clock-sweep claim (Greg Burd / Jim Mlodgenski, ported onto the
+ * partitioned sweep).  Instead of one atomic fetch-add per buffer visited,
+ * a backend claims a run of consecutive clock-hand values with a single
+ * fetch-add and then walks them privately.  Per-partition, since each
+ * partition has its own hand.
+ */
+static uint32 bcs_batch_pos[MAX_BUFFER_PARTITIONS];
+static uint32 bcs_batch_end[MAX_BUFFER_PARTITIONS];
+static bool   bcs_batch_init = false;
+static uint32 bcs_batch_size = 1;
+
+
+/*
  * ClockSweepTick - Helper routine for StrategyGetBuffer()
  *
  * Move the clock hand one buffer ahead of its current position and return the
@@ -267,8 +279,32 @@ ClockSweepTick(ClockSweep *sweep)
 	 * doing this, this can lead to buffers being returned slightly out of
 	 * apparent order.
 	 */
-	victim =
-		pg_atomic_fetch_add_u32(&sweep->nextVictimBuffer, 1);
+	{
+		int			pidx = sweep - StrategyControl->sweeps;
+
+		if (unlikely(!bcs_batch_init))
+		{
+			for (int i = 0; i < MAX_BUFFER_PARTITIONS; i++)
+				bcs_batch_pos[i] = bcs_batch_end[i] = 0;
+			bcs_batch_init = true;
+		}
+
+		if (bcs_batch_size > 1 && bcs_batch_pos[pidx] < bcs_batch_end[pidx])
+		{
+			/* still inside a previously claimed run */
+			victim = bcs_batch_pos[pidx]++;
+		}
+		else if (bcs_batch_size > 1)
+		{
+			uint32	claim = Min(bcs_batch_size, (uint32) sweep->numBuffers);
+
+			victim = pg_atomic_fetch_add_u32(&sweep->nextVictimBuffer, claim);
+			bcs_batch_pos[pidx] = victim + 1;
+			bcs_batch_end[pidx] = victim + claim;
+		}
+		else
+			victim = pg_atomic_fetch_add_u32(&sweep->nextVictimBuffer, 1);
+	}
 
 	if (victim >= sweep->numBuffers)
 	{
@@ -289,7 +325,15 @@ ClockSweepTick(ClockSweep *sweep)
 			uint32		wrapped;
 			bool		success = false;
 
-			expected = originalVictim + 1;
+			/*
+			 * With a batched claim the hand advanced by more than one, so the
+			 * expected post-claim value is the end of our claimed run, not
+			 * originalVictim+1.  Using the run end keeps the CAS/completePasses
+			 * bookkeeping correct when several backends wrap in the same pass.
+			 */
+			expected = originalVictim + ((bcs_batch_size > 1)
+										 ? Min(bcs_batch_size, (uint32) sweep->numBuffers)
+										 : 1);
 
 			while (!success)
 			{
@@ -1148,6 +1192,16 @@ StrategyCtlShmemInit(void *arg)
 			else
 				StrategyControl->sweeps[i].balance[j] = 0;
 		}
+	}
+
+	{
+		/* batch size for the ported batched claim (env override for A/B) */
+		const char *bs = getenv("BCS_BATCH_SIZE");
+
+		if (bs != NULL && atoi(bs) >= 1)
+			bcs_batch_size = (uint32) atoi(bs);
+		else
+			bcs_batch_size = PG_CACHE_LINE_SIZE / sizeof(uint32);
 	}
 
 	/* No pending notification */
