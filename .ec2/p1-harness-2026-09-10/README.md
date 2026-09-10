@@ -137,3 +137,56 @@ evidence the harness reports what actually happened rather than smoothing it awa
 Both instances terminated, security group deleted, key pair deleted, local `.pem`
 shredded, 5-region sweep for `key-name=xtc-p1b-*` performed.  See the harness task
 final report for the terminate/verify transcript.
+
+
+--------------------------------------------------------------------------------
+## Reviewer note (2026-09-10): two findings in this validation data worth escalating
+
+The harness was the deliverable, but its first real two-host run produced two results that are
+themselves evidence. Recording them here so they are not lost as "harness noise".
+
+### 1. xtc does not scale from c=8 to c=16; fork nearly doubles
+
+```
+select  fork  c=8   54,855 tps      select  xtc(eff=8)  c=8   54,394 tps
+select  fork  c=16  95,931 tps      select  xtc(eff=8)  c=16  54,704 tps   <-- FLAT
+tpcb    fork  c=8    6,095 tps      tpcb   xtc(eff=8)   c=8    6,444 tps
+tpcb    fork  c=16   9,921 tps      tpcb   xtc(eff=8)   c=16   6,319 tps   <-- FLAT/DOWN
+```
+
+At c=8 xtc MATCHES fork on select (0.99x) and BEATS it on tpcb (1.06x). At c=16 fork scales
+1.75x/1.63x while xtc stays flat -- ending at 0.57x and 0.64x. Note `carriers_eff=8` on an
+8-vCPU c6id.2xlarge: at c=16 there are 2 sessions per carrier, which is exactly the
+multiplexing regime. Flat-not-degrading is the signature of a concurrency ceiling (a serialization
+point or a scheduler that will not overlap 2 sessions per carrier), not of overload.
+
+This is measured on a small box with a 30 s cell, so it is a POINTER, not a headline. But it
+matches the "carrier under-utilization / scheduler feeding" hypothesis in
+FORK_TO_XTC_PERF_PLAN.md P4 -- and unlike the 2026-08-27 RCA that hypothesis came from, this run
+has a SEPARATE loadgen, so it is not confounded by driver CPU contention. That makes it the first
+clean evidence for the P4 lever.
+
+### 2. A ~30 s max latency in BOTH xtc c=16 cells -- on a 30 s run
+
+```
+select  xtc  c=16  max_ms = 29,979.164     (99.9 % of the entire 30 s run)
+tpcb    xtc  c=16  max_ms = 29,982.415     (99.9 %)
+fork, both workloads, both client counts: max_ms <= 26.4
+```
+
+p50/p95/p99 stay healthy (0.181 ms / 1.725 ms at p99), so this is ONE session starved for
+essentially the whole run while its peers ran normally. That is a starvation/lost-wake shape, not
+a latency tail.
+
+**Crucially, `select` is pgbench `-S`: read-only, no WAL, no commit, no fsync.** So this is NOT
+the `xtc_aio_fdatasync` lost-wake we have open with libxtc, and NOT the checkpointer/fiber
+buffer-lock deadlock in THREADED_TEST_BASELINE_2026-09.md (this ran the pooled lane and completed).
+It is a third starvation shape, reproducible in both workloads, appearing exactly when
+sessions > carriers.
+
+**Caveat, stated plainly:** n=1 per cell, 30 s, 8 vCPU, and I have not re-run it. Two cells
+agreeing is suggestive, not conclusive. The falsifiable next step is cheap: re-run the c=16 xtc
+cells N times with `PG_XTC_TAIL=1` and see whether a fiber shows a PARK with no matching RUN while
+its loop keeps polling -- the same instrument that localized the fdatasync bug. If it reproduces,
+it is a better repro than the fsync hang (read-only, no I/O, 30 s, deterministic-ish) and should
+become the primary lost-wake test case.
