@@ -242,7 +242,30 @@ ThreadedGUCUnlock(bool locked)
 #else
 	rc = pthread_mutex_unlock(&ThreadedGUCMutex);
 #endif
-	RESUME_INTERRUPTS();
+
+	/*
+	 * Normally the matching call here would be a plain RESUME_INTERRUPTS(),
+	 * undoing the HOLD_INTERRUPTS() in ThreadedGUCLock().  But the locked
+	 * region (set_config_with_handle_internal() and friends) routinely
+	 * reaches ereport(ERROR) under completely ordinary conditions -- an
+	 * invalid SET value, a permission check, a custom GUC's check hook
+	 * rejecting input -- exactly what src/test/regress/sql/guc.sql and every
+	 * SET statement in the regression suite exercise.  errfinish()
+	 * unconditionally resets InterruptHoldoffCount to 0 while unwinding ANY
+	 * error (elog.c), and that reset can run before this PG_FINALLY block
+	 * does, so by the time we get here the count may legitimately already be
+	 * 0.  A plain RESUME_INTERRUPTS() would then trip its own
+	 * Assert(InterruptHoldoffCount > 0) and crash on an entirely ordinary SQL
+	 * error.  Same hazard, same shape of fix as the dfmgr and reloptions
+	 * critical sections; tolerate a count already reset to 0 by an
+	 * intervening error unwind and only decrement if there is something to
+	 * undo.  (Confirmed live: gmake check-threaded-pooled on EC2 tripped
+	 * exactly this assert at an ordinary SET statement in the subselect
+	 * regression test before this guard was added.)
+	 */
+	if (InterruptHoldoffCount > 0)
+		InterruptHoldoffCount--;
+
 	if (rc != 0)
 	{
 		errno = rc;
