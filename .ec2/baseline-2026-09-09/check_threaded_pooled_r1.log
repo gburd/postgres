@@ -1,0 +1,719 @@
+gmake -C ../../../src/backend generated-headers
+gmake[1]: Entering directory '/mnt/nvme/work/pg/src/backend'
+gmake -C ../include/catalog generated-headers
+gmake[2]: Entering directory '/mnt/nvme/work/pg/src/include/catalog'
+gmake[2]: Nothing to be done for 'generated-headers'.
+gmake[2]: Leaving directory '/mnt/nvme/work/pg/src/include/catalog'
+gmake -C nodes generated-header-symlinks
+gmake[2]: Entering directory '/mnt/nvme/work/pg/src/backend/nodes'
+gmake[2]: Nothing to be done for 'generated-header-symlinks'.
+gmake[2]: Leaving directory '/mnt/nvme/work/pg/src/backend/nodes'
+gmake -C utils generated-header-symlinks
+gmake[2]: Entering directory '/mnt/nvme/work/pg/src/backend/utils'
+gmake -C adt jsonpath_gram.h
+gmake[3]: Entering directory '/mnt/nvme/work/pg/src/backend/utils/adt'
+gmake[3]: 'jsonpath_gram.h' is up to date.
+gmake[3]: Leaving directory '/mnt/nvme/work/pg/src/backend/utils/adt'
+gmake[2]: Leaving directory '/mnt/nvme/work/pg/src/backend/utils'
+gmake[1]: Leaving directory '/mnt/nvme/work/pg/src/backend'
+gmake -C ../../../src/port all
+gmake[1]: Entering directory '/mnt/nvme/work/pg/src/port'
+gmake[1]: Nothing to be done for 'all'.
+gmake[1]: Leaving directory '/mnt/nvme/work/pg/src/port'
+gmake -C ../../../src/common all
+gmake[1]: Entering directory '/mnt/nvme/work/pg/src/common'
+gmake[1]: Nothing to be done for 'all'.
+gmake[1]: Leaving directory '/mnt/nvme/work/pg/src/common'
+rm -rf '/mnt/nvme/work/pg'/tmp_install
+/usr/bin/mkdir -p '/mnt/nvme/work/pg'/tmp_install/log
+gmake -C '../../..' DESTDIR='/mnt/nvme/work/pg'/tmp_install install >'/mnt/nvme/work/pg'/tmp_install/log/install.log 2>&1
+gmake -j1  checkprep >>'/mnt/nvme/work/pg'/tmp_install/log/install.log 2>&1
+if test x'linux' = xdarwin; then find '/mnt/nvme/work/pg'/tmp_install/usr/local/pgsql/bin '/mnt/nvme/work/pg'/tmp_install/usr/local/pgsql/lib -type f | while read f; do if otool -L "$f" 2>/dev/null | grep -q '/usr/local/pgsql/lib/libpq.5.so'; then install_name_tool -change '/usr/local/pgsql/lib/libpq.5.so' '/mnt/nvme/work/pg'/tmp_install/usr/local/pgsql/lib/libpq.5.so "$f"; fi; done; fi
+PATH="/mnt/nvme/work/pg/tmp_install/usr/local/pgsql/bin:/mnt/nvme/work/pg/src/test/regress:$PATH" LD_LIBRARY_PATH="/mnt/nvme/work/pg/tmp_install/usr/local/pgsql/lib" INITDB_TEMPLATE='/mnt/nvme/work/pg'/tmp_install/initdb-template  initdb --auth trust --no-sync --no-instructions --lc-messages=C --no-clean '/mnt/nvme/work/pg'/tmp_install/initdb-template >>'/mnt/nvme/work/pg'/tmp_install/log/initdb-template.log 2>&1
+echo "# +++ regress check in src/test/regress +++" && PATH="/mnt/nvme/work/pg/tmp_install/usr/local/pgsql/bin:/mnt/nvme/work/pg/src/test/regress:$PATH" LD_LIBRARY_PATH="/mnt/nvme/work/pg/tmp_install/usr/local/pgsql/lib" INITDB_TEMPLATE='/mnt/nvme/work/pg'/tmp_install/initdb-template  ../../../src/test/regress/pg_regress --temp-instance=./tmp_check --inputdir=. --bindir=     --temp-config=./threaded_pooled.conf --dlpath=. --max-concurrent-tests=20  --schedule=./parallel_schedule  
+# +++ regress check in src/test/regress +++
+# initializing database system by copying initdb template
+# using temp instance on port 52544 with PID 71713
+ok 1         - test_setup                                470 ms
+# parallel group (20 tests):  name int2 varchar char int4 boolean text oid int8 float4 float8 bit enum uuid txid pg_lsn regproc money numeric rangetypes
+ok 2         + boolean                                    51 ms
+ok 3         + char                                       45 ms
+ok 4         + name                                       27 ms
+ok 5         + varchar                                    32 ms
+ok 6         + text                                       57 ms
+ok 7         + int2                                       27 ms
+ok 8         + int4                                       49 ms
+ok 9         + int8                                       78 ms
+ok 10        + oid                                        66 ms
+ok 11        + float4                                     92 ms
+ok 12        + float8                                    118 ms
+ok 13        + bit                                       125 ms
+ok 14        + numeric                                   516 ms
+ok 15        + txid                                      222 ms
+ok 16        + uuid                                      219 ms
+ok 17        + enum                                      204 ms
+ok 18        + money                                     258 ms
+ok 19        + rangetypes                                802 ms
+ok 20        + pg_lsn                                    235 ms
+ok 21        + regproc                                   250 ms
+# parallel group (20 tests):  md5 lseg point numerology path line circle date timetz time strings box timestamp polygon inet macaddr interval macaddr8 timestamptz multirangetypes
+ok 22        + strings                                   179 ms
+ok 23        + md5                                        18 ms
+ok 24        + numerology                                 41 ms
+ok 25        + point                                      37 ms
+ok 26        + lseg                                       27 ms
+ok 27        + line                                       55 ms
+ok 28        + box                                       483 ms
+ok 29        + path                                       51 ms
+ok 30        + polygon                                   513 ms
+ok 31        + circle                                     69 ms
+ok 32        + date                                      106 ms
+ok 33        + time                                      142 ms
+ok 34        + timetz                                    127 ms
+ok 35        + timestamp                                 488 ms
+ok 36        + timestamptz                               568 ms
+ok 37        + interval                                  552 ms
+ok 38        + inet                                      531 ms
+ok 39        + macaddr                                   533 ms
+ok 40        + macaddr8                                  556 ms
+ok 41        + multirangetypes                           915 ms
+# parallel group (19 tests):  tstypes horology geometry misc_sanity comments expressions unicode xid type_sanity regex mvcc pg_dependencies pg_ndistinct encoding oid8 euc_kr database stats_import opr_sanity
+ok 42        + geometry                                  106 ms
+ok 43        + horology                                   88 ms
+ok 44        + tstypes                                    46 ms
+ok 45        + regex                                     316 ms
+ok 46        + type_sanity                               225 ms
+ok 47        + opr_sanity                                663 ms
+ok 48        + misc_sanity                               123 ms
+ok 49        + comments                                  129 ms
+ok 50        + expressions                               179 ms
+ok 51        + unicode                                   190 ms
+ok 52        + xid                                       220 ms
+ok 53        + mvcc                                      336 ms
+ok 54        + database                                  550 ms
+ok 55        + stats_import                              636 ms
+ok 56        + pg_ndistinct                              364 ms
+ok 57        + pg_dependencies                           351 ms
+ok 58        + oid8                                      426 ms
+ok 59        + encoding                                  401 ms
+ok 60        + euc_kr                                    435 ms
+# parallel group (6 tests):  copyencoding copyselect copydml copy insert_conflict insert
+ok 61        + copy                                      219 ms
+ok 62        + copyselect                                 41 ms
+ok 63        + copydml                                    46 ms
+ok 64        + copyencoding                               30 ms
+ok 65        + insert                                    593 ms
+ok 66        + insert_conflict                           265 ms
+# parallel group (7 tests):  create_function_c create_operator create_type create_misc create_procedure create_schema create_table
+ok 67        + create_function_c                          17 ms
+ok 68        + create_misc                                68 ms
+ok 69        + create_operator                            32 ms
+ok 70        + create_procedure                           69 ms
+ok 71        + create_table                              664 ms
+ok 72        + create_type                                56 ms
+ok 73        + create_schema                             178 ms
+# parallel group (5 tests):  create_view index_including index_including_gist create_index_spgist create_index
+# diff -U3 /mnt/nvme/work/pg/src/test/regress/expected/create_index.out /mnt/nvme/work/pg/src/test/regress/results/create_index.out
+# --- /mnt/nvme/work/pg/src/test/regress/expected/create_index.out	2026-09-09 23:14:58.000000000 +0000
+# +++ /mnt/nvme/work/pg/src/test/regress/results/create_index.out	2026-09-10 01:58:42.048085932 +0000
+# @@ -2862,732 +2862,7 @@
+#  CREATE TABLE concur_appclass_tab(i tsvector, j tsvector, k tsvector);
+#  CREATE INDEX concur_appclass_ind on concur_appclass_tab
+#    USING gist (i tsvector_ops (siglen='1000'), j tsvector_ops (siglen='500'));
+# -CREATE INDEX concur_appclass_ind_2 on concur_appclass_tab
+# -  USING gist (k tsvector_ops (siglen='300'), j tsvector_ops);
+# -REINDEX TABLE CONCURRENTLY concur_appclass_tab;
+# -\d concur_appclass_tab
+# -         Table "public.concur_appclass_tab"
+# - Column |   Type   | Collation | Nullable | Default 
+# ---------+----------+-----------+----------+---------
+# - i      | tsvector |           |          | 
+# - j      | tsvector |           |          | 
+# - k      | tsvector |           |          | 
+# -Indexes:
+# -    "concur_appclass_ind" gist (i tsvector_ops (siglen='1000'), j tsvector_ops (siglen='500'))
+# -    "concur_appclass_ind_2" gist (k tsvector_ops (siglen='300'), j)
+# -
+# -DROP TABLE concur_appclass_tab;
+# --- Partitions
+# --- Create some partitioned tables
+# -CREATE TABLE concur_reindex_part (c1 int, c2 int) PARTITION BY RANGE (c1);
+# -CREATE TABLE concur_reindex_part_0 PARTITION OF concur_reindex_part
+# -  FOR VALUES FROM (0) TO (10) PARTITION BY list (c2);
+# -CREATE TABLE concur_reindex_part_0_1 PARTITION OF concur_reindex_part_0
+# -  FOR VALUES IN (1);
+# -CREATE TABLE concur_reindex_part_0_2 PARTITION OF concur_reindex_part_0
+# -  FOR VALUES IN (2);
+# --- This partitioned table will have no partitions.
+# -CREATE TABLE concur_reindex_part_10 PARTITION OF concur_reindex_part
+# -  FOR VALUES FROM (10) TO (20) PARTITION BY list (c2);
+# --- Create some partitioned indexes
+# -CREATE INDEX concur_reindex_part_index ON ONLY concur_reindex_part (c1);
+# -CREATE INDEX concur_reindex_part_index_0 ON ONLY concur_reindex_part_0 (c1);
+# -ALTER INDEX concur_reindex_part_index ATTACH PARTITION concur_reindex_part_index_0;
+# --- This partitioned index will have no partitions.
+# -CREATE INDEX concur_reindex_part_index_10 ON ONLY concur_reindex_part_10 (c1);
+# -ALTER INDEX concur_reindex_part_index ATTACH PARTITION concur_reindex_part_index_10;
+# -CREATE INDEX concur_reindex_part_index_0_1 ON ONLY concur_reindex_part_0_1 (c1);
+# -ALTER INDEX concur_reindex_part_index_0 ATTACH PARTITION concur_reindex_part_index_0_1;
+# -CREATE INDEX concur_reindex_part_index_0_2 ON ONLY concur_reindex_part_0_2 (c1);
+# -ALTER INDEX concur_reindex_part_index_0 ATTACH PARTITION concur_reindex_part_index_0_2;
+# -SELECT relid, parentrelid, level FROM pg_partition_tree('concur_reindex_part_index')
+# -  ORDER BY relid, level;
+# -             relid             |         parentrelid         | level 
+# --------------------------------+-----------------------------+-------
+# - concur_reindex_part_index     |                             |     0
+# - concur_reindex_part_index_0   | concur_reindex_part_index   |     1
+# - concur_reindex_part_index_10  | concur_reindex_part_index   |     1
+# - concur_reindex_part_index_0_1 | concur_reindex_part_index_0 |     2
+# - concur_reindex_part_index_0_2 | concur_reindex_part_index_0 |     2
+# -(5 rows)
+# -
+# -SELECT relid, parentrelid, level FROM pg_partition_tree('concur_reindex_part_index')
+# -  ORDER BY relid, level;
+# -             relid             |         parentrelid         | level 
+# --------------------------------+-----------------------------+-------
+# - concur_reindex_part_index     |                             |     0
+# - concur_reindex_part_index_0   | concur_reindex_part_index   |     1
+# - concur_reindex_part_index_10  | concur_reindex_part_index   |     1
+# - concur_reindex_part_index_0_1 | concur_reindex_part_index_0 |     2
+# - concur_reindex_part_index_0_2 | concur_reindex_part_index_0 |     2
+# -(5 rows)
+# -
+# --- REINDEX should preserve dependencies of partition tree.
+# -SELECT pg_describe_object(classid, objid, objsubid) as obj,
+# -       pg_describe_object(refclassid,refobjid,refobjsubid) as objref,
+# -       deptype
+# -FROM pg_depend
+# -WHERE classid = 'pg_class'::regclass AND
+# -  objid in ('concur_reindex_part'::regclass,
+# -            'concur_reindex_part_0'::regclass,
+# -            'concur_reindex_part_0_1'::regclass,
+# -            'concur_reindex_part_0_2'::regclass,
+# -            'concur_reindex_part_index'::regclass,
+# -            'concur_reindex_part_index_0'::regclass,
+# -            'concur_reindex_part_index_0_1'::regclass,
+# (diff output truncated and silencing output for further failing tests...)
+not ok 74    + create_index                             1307 ms
+# (test process exited with exit code 2)
+ok 75        + create_index_spgist                       863 ms
+ok 76        + create_view                               441 ms
+ok 77        + index_including                           686 ms
+ok 78        + index_including_gist                      698 ms
+# parallel group (18 tests):  create_cast constraints create_aggregate select inherit create_function_sql triggers typed_table vacuum drop_if_exists roleattributes updatable_views create_am hash_func errors infinite_recurse create_property_graph for_portion_of
+# (diff output truncated and silencing output for further failing tests...)
+not ok 79    + create_aggregate                            3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 80    + create_function_sql                         3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 81    + create_cast                                 3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 82    + constraints                                 3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 83    + triggers                                    3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 84    + select                                      3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 85    + inherit                                     3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 86    + typed_table                                 3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 87    + vacuum                                      3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 88    + drop_if_exists                              3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 89    + updatable_views                             3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 90    + roleattributes                              3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 91    + create_am                                   3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 92    + hash_func                                   3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 93    + errors                                      3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 94    + infinite_recurse                            3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 95    + create_property_graph                       3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 96    + for_portion_of                              3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 97    - sanity_check                                3 ms
+# (test process exited with exit code 2)
+# parallel group (20 tests):  select_distinct select_distinct_on select_into select_implicit select_having subselect union case join aggregates transactions portals random btree_index hash_index update arrays delete prepared_xacts namespace
+# (diff output truncated and silencing output for further failing tests...)
+not ok 98    + select_into                                 3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 99    + select_distinct                             3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 100   + select_distinct_on                          3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 101   + select_implicit                             3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 102   + select_having                               3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 103   + subselect                                   3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 104   + union                                       3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 105   + case                                        3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 106   + join                                        3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 107   + aggregates                                  3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 108   + transactions                                3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 109   + random                                      3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 110   + portals                                     3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 111   + arrays                                      3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 112   + btree_index                                 3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 113   + hash_index                                  3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 114   + update                                      3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 115   + delete                                      3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 116   + namespace                                   3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 117   + prepared_xacts                              3 ms
+# (test process exited with exit code 2)
+# parallel group (20 tests):  brin gin gist spgist privileges init_privs security_label collate matview replica_identity rowsecurity lock object_address drop_operator groupingsets tablesample password identity generated_stored join_hash
+# (diff output truncated and silencing output for further failing tests...)
+not ok 118   + brin                                        3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 119   + gin                                         3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 120   + gist                                        3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 121   + spgist                                      3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 122   + privileges                                  3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 123   + init_privs                                  3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 124   + security_label                              3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 125   + collate                                     3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 126   + matview                                     3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 127   + lock                                        3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 128   + replica_identity                            3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 129   + rowsecurity                                 3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 130   + object_address                              3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 131   + tablesample                                 3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 132   + groupingsets                                3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 133   + drop_operator                               3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 134   + password                                    3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 135   + identity                                    3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 136   + generated_stored                            3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 137   + join_hash                                   3 ms
+# (test process exited with exit code 2)
+# parallel group (2 tests):  brin_bloom brin_multi
+# (diff output truncated and silencing output for further failing tests...)
+not ok 138   + brin_bloom                                  3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 139   + brin_multi                                  3 ms
+# (test process exited with exit code 2)
+# parallel group (20 tests):  create_table_like alter_generic alter_operator misc async dbsize merge misc_functions nls sysviews tsrf tidscan tid tidrangescan collate.utf8 collate.icu.utf8 incremental_sort create_role without_overlaps generated_virtual
+# (diff output truncated and silencing output for further failing tests...)
+not ok 140   + create_table_like                           3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 141   + alter_generic                               3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 142   + alter_operator                              3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 143   + misc                                        3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 144   + async                                       3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 145   + dbsize                                      3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 146   + merge                                       3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 147   + misc_functions                              3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 148   + nls                                         3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 149   + sysviews                                    3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 150   + tsrf                                        3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 151   + tid                                         3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 152   + tidscan                                     3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 153   + tidrangescan                                3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 154   + collate.utf8                                3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 155   + collate.icu.utf8                            3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 156   + incremental_sort                            3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 157   + create_role                                 3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 158   + without_overlaps                            3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 159   + generated_virtual                           3 ms
+# (test process exited with exit code 2)
+# parallel group (8 tests):  rules psql psql_crosstab psql_pipeline amutils stats_ext collate.linux.utf8 collate.windows.win1252
+# (diff output truncated and silencing output for further failing tests...)
+not ok 160   + rules                                       3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 161   + psql                                        3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 162   + psql_crosstab                               3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 163   + psql_pipeline                               3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 164   + amutils                                     3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 165   + stats_ext                                   3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 166   + collate.linux.utf8                          3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 167   + collate.windows.win1252                     3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 168   - select_parallel                             2 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 169   - write_parallel                              2 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 170   - vacuum_parallel                             3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 171   - maintain_every                              3 ms
+# (test process exited with exit code 2)
+# parallel group (2 tests):  publication subscription
+# (diff output truncated and silencing output for further failing tests...)
+not ok 172   + publication                                 3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 173   + subscription                                3 ms
+# (test process exited with exit code 2)
+# parallel group (18 tests):  select_views portals_p2 foreign_key dependency guc bitmapops combocid tsearch tsdicts foreign_data window xmlmap advisory_lock equivclass functional_deps indirect_toast stats_rewrite graph_table
+# (diff output truncated and silencing output for further failing tests...)
+not ok 174   + select_views                                3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 175   + portals_p2                                  3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 176   + foreign_key                                 3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 177   + dependency                                  3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 178   + guc                                         3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 179   + bitmapops                                   3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 180   + combocid                                    3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 181   + tsearch                                     3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 182   + tsdicts                                     3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 183   + foreign_data                                3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 184   + window                                      3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 185   + xmlmap                                      3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 186   + functional_deps                             3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 187   + advisory_lock                               3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 188   + indirect_toast                              3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 189   + equivclass                                  3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 190   + stats_rewrite                               3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 191   + graph_table                                 3 ms
+# (test process exited with exit code 2)
+# parallel group (9 tests):  json jsonb json_encoding jsonpath jsonpath_encoding jsonb_jsonpath sqljson sqljson_queryfuncs sqljson_jsontable
+# (diff output truncated and silencing output for further failing tests...)
+not ok 192   + json                                        3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 193   + jsonb                                       3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 194   + json_encoding                               3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 195   + jsonpath                                    3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 196   + jsonpath_encoding                           3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 197   + jsonb_jsonpath                              3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 198   + sqljson                                     3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 199   + sqljson_queryfuncs                          3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 200   + sqljson_jsontable                           3 ms
+# (test process exited with exit code 2)
+# parallel group (18 tests):  plancache limit plpgsql copy2 temp domain rangefuncs prepare conversion truncate alter_table sequence polymorphism largeobject rowtypes returning with xml
+# (diff output truncated and silencing output for further failing tests...)
+not ok 201   + plancache                                   3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 202   + limit                                       3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 203   + plpgsql                                     3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 204   + copy2                                       3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 205   + temp                                        3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 206   + domain                                      3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 207   + rangefuncs                                  3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 208   + prepare                                     3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 209   + conversion                                  3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 210   + truncate                                    3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 211   + alter_table                                 3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 212   + sequence                                    3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 213   + polymorphism                                3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 214   + rowtypes                                    3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 215   + returning                                   3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 216   + largeobject                                 3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 217   + with                                        3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 218   + xml                                         3 ms
+# (test process exited with exit code 2)
+# parallel group (18 tests):  partition_merge partition_split partition_join partition_prune reloptions hash_part indexing partition_aggregate partition_info tuplesort explain memoize predicate stats eager_aggregate numa graph_table_rls planner_est
+# (diff output truncated and silencing output for further failing tests...)
+not ok 219   + partition_merge                             3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 220   + partition_split                             3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 221   + partition_join                              3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 222   + partition_prune                             3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 223   + reloptions                                  3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 224   + hash_part                                   3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 225   + indexing                                    3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 226   + partition_aggregate                         3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 227   + partition_info                              3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 228   + tuplesort                                   3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 229   + explain                                     3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 230   + memoize                                     3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 231   + stats                                       3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 232   + predicate                                   3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 233   + numa                                        3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 234   + eager_aggregate                             3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 235   + graph_table_rls                             3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 236   + planner_est                                 3 ms
+# (test process exited with exit code 2)
+# parallel group (4 tests):  compression compression_lz4 compression_pglz cluster
+# (diff output truncated and silencing output for further failing tests...)
+not ok 237   + compression                                 3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 238   + compression_lz4                             3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 239   + compression_pglz                            3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 240   + cluster                                     3 ms
+# (test process exited with exit code 2)
+# parallel group (2 tests):  oidjoins event_trigger
+# (diff output truncated and silencing output for further failing tests...)
+not ok 241   + oidjoins                                    2 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 242   + event_trigger                               3 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 243   - event_trigger_login                         2 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 244   - fast_default                                2 ms
+# (test process exited with exit code 2)
+# (diff output truncated and silencing output for further failing tests...)
+not ok 245   - tablespace                                  3 ms
+# (test process exited with exit code 2)
+pg_ctl: could not send stop signal (PID: 71713): No such process
+# could not stop postmaster: exit code was 256
+Bail out!gmake: *** [GNUmakefile:122: check-threaded-pooled] Error 2

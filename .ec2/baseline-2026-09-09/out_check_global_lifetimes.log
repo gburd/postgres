@@ -1,0 +1,55 @@
+'/usr/bin/perl' ./src/tools/global_lifetime/scan_global_lifetimes.pl \
+	--baseline ./src/tools/global_lifetime/global_lifetime_baseline.tsv \
+	--enforce-local-runtime-boundary
+global lifetime scan summary
+  declarations scanned: 1218
+  backend-local:       5
+  carrier-local:       23
+  connection-local:    2
+  dynamic-singleton:   1
+  execution-local:     2
+  immutable-singleton: 133
+  runtime-global:      886
+  session-local:       3
+  shared-memory:       126
+  unclassified:        37
+
+new unclassified mutable globals:
+  src/backend/access/transam/xlogwait.c:73 [waitLSNShmemExitRegistered] static bool waitLSNShmemExitRegistered = false;
+  src/backend/optimizer/path/costsize.c:139 [enable_groupagg] bool enable_groupagg = true;
+  src/backend/postmaster/pg_xtc_carrier.c:124 [g_xtc_app] static xtc_app_t *g_xtc_app;
+  src/backend/postmaster/pg_xtc_carrier.c:125 [g_xtc_loop] static xtc_loop_t *g_xtc_loop;
+  src/backend/postmaster/pg_xtc_carrier.c:126 [g_xtc_exec] static xtc_exec_t *g_xtc_exec;
+  src/backend/postmaster/pg_xtc_carrier.c:127 [g_xtc_n_loops] static int g_xtc_n_loops = 1;
+  src/backend/postmaster/pg_xtc_carrier.c:128 [g_xtc_next_loop] static _Atomic unsigned g_xtc_next_loop;
+  src/backend/postmaster/pg_xtc_carrier.c:129 [g_xtc_thread] static pthread_t g_xtc_thread;
+  src/backend/postmaster/pg_xtc_carrier.c:130 [g_xtc_ready] static volatile bool g_xtc_ready;
+  src/backend/postmaster/pg_xtc_carrier.c:131 [g_xtc_start_lock] static pthread_mutex_t g_xtc_start_lock = PTHREAD_MUTEX_INITIALIZER;
+  src/backend/postmaster/pg_xtc_carrier.c:157 [g_xtc_sup_pid] static xtc_pid_t g_xtc_sup_pid[XTC_PG_MAX_SUP_LOOPS];
+  src/backend/postmaster/pg_xtc_carrier.c:165 [g_xtc_genuine_crash] static _Atomic uint32_t g_xtc_genuine_crash;
+  src/backend/postmaster/pg_xtc_carrier.c:174 [g_xtc_postmaster_latch] static Latch *_Atomic g_xtc_postmaster_latch;
+  src/backend/postmaster/pg_xtc_carrier.c:177 [g_xtc_inject_entry_count] static _Atomic unsigned g_xtc_inject_entry_count;
+  src/backend/postmaster/pg_xtc_carrier.c:178 [g_xtc_n_sups] static int g_xtc_n_sups = 0;
+  src/backend/postmaster/pg_xtc_carrier.c:209 [g_xtc_backend_entry] static xtc_carrier_entry_fn g_xtc_backend_entry;
+  src/backend/postmaster/pg_xtc_carrier.c:320 [xtc_in_backend_fiber] __thread bool xtc_in_backend_fiber = false;
+  src/backend/postmaster/pg_xtc_carrier.c:345 [xtc_pg_affine_depth] static __thread int xtc_pg_affine_depth = 0;
+  src/backend/postmaster/pg_xtc_carrier.c:1600 [g_xtc_runtime_counters] static xtc_counter_t *g_xtc_runtime_counters[XTC_PG_RUNTIME_COUNTER_COUNT];
+  src/backend/postmaster/pg_xtc_carrier.c:1601 [g_xtc_runtime_counters_registered] static bool g_xtc_runtime_counters_registered = false;
+  src/backend/postmaster/pg_xtc_carrier.c:1719 [g_xtc_pooled_queue_mutex] static xtc_amutex_t *g_xtc_pooled_queue_mutex = NULL;
+  src/backend/postmaster/pg_xtc_carrier.c:1720 [g_xtc_pooled_queue_notify] static xtc_notify_t *g_xtc_pooled_queue_notify = NULL;
+  src/backend/postmaster/syslogger.c:84 [syslogger_setup_done] bool syslogger_setup_done = false;
+  src/backend/replication/logical/logical.c:61 [output_plugin_libraries_string] char *output_plugin_libraries_string;
+  src/backend/replication/logical/worker.c:459 [MySubscriptionConninfo] char *MySubscriptionConninfo = NULL;
+  src/backend/storage/ipc/waiteventset.c:213 [presupplied_selfpipe_readfd] static __thread int presupplied_selfpipe_readfd = -1;
+  src/backend/storage/ipc/waiteventset.c:214 [presupplied_selfpipe_writefd] static __thread int presupplied_selfpipe_writefd = -1;
+  src/backend/utils/adt/ri_triggers.c:319 [ri_fpmeta_dead_list] static FastPathMeta *ri_fpmeta_dead_list = NULL;
+  src/backend/utils/init/globals.c:91 [xtc_log_to_server] bool xtc_log_to_server = false;
+  src/backend/utils/misc/guc_tables.c:562 [log_statement_max_length] int log_statement_max_length = -1;
+  src/include/miscadmin.h:321 [xtc_log_to_server] extern PGDLLIMPORT bool xtc_log_to_server;
+  src/include/optimizer/cost.h:227 [enable_groupagg] extern PGDLLIMPORT bool enable_groupagg;
+  src/include/postmaster/pg_xtc_carrier.h:26 [xtc_in_backend_fiber] extern __thread bool xtc_in_backend_fiber;
+  src/include/postmaster/syslogger.h:91 [syslogger_setup_done] extern PGDLLIMPORT bool syslogger_setup_done;
+  src/include/replication/logical.h:158 [output_plugin_libraries_string] extern PGDLLIMPORT char *output_plugin_libraries_string;
+  src/include/replication/worker_internal.h:271 [MySubscriptionConninfo] extern PGDLLIMPORT char *MySubscriptionConninfo;
+  src/include/utils/guc.h:401 [log_statement_max_length] extern PGDLLIMPORT int log_statement_max_length;
+gmake: *** [GNUmakefile:198: check-global-lifetimes] Error 1

@@ -1,0 +1,50 @@
+[New LWP 81370]
+[New LWP 81369]
+[New LWP 81368]
+[New LWP 81367]
+[New LWP 81366]
+[New LWP 81365]
+[New LWP 81364]
+[New LWP 81363]
+[New LWP 81362]
+[New LWP 81361]
+[New LWP 81360]
+[New LWP 81359]
+[New LWP 81358]
+[New LWP 81357]
+[New LWP 81356]
+[New LWP 81355]
+[New LWP 81354]
+[New LWP 81353]
+[New LWP 81352]
+[New LWP 81351]
+[New LWP 81350]
+[New LWP 81349]
+[New LWP 81348]
+[New LWP 81347]
+[New LWP 81346]
+[New LWP 81345]
+[New LWP 81344]
+[New LWP 81343]
+[New LWP 81342]
+[New LWP 81341]
+[New LWP 81340]
+[New LWP 81339]
+[New LWP 81338]
+[New LWP 81337]
+[New LWP 81336]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+0x00007f687dd1017e in epoll_wait () from /lib64/libc.so.6
+xtc-gdb loaded: xtc-loops, xtc-rings, xtc-procs, xtc-proc, xtc-stranded, xtc-mailbox, xtc-self, xtc-trace, xtc-tail-dump, xtc-help
+proc 0x1e9deea0  pid=1.1.1  loop=0x1e9ae470
+  state        : PARKED
+  alive        : 1   kill_pending=0
+  mailbox      : depth=1 peak=1 cap=4096 saved=0 recv_total=6 drop_total=0
+  wm           : lvl=0 fired=0
+  links        : 0   monitors=3  monitored_by=0
+  recovery     : armed=1 fired=0 crit_depth=0
+  entry fn     : 0xa55d50 <xtc_carrier_supervisor_proc>
+  [  0] env 0x7f687da82200  from=0.0.0  size=24
+  1 message(s); save-queue=0
+[Inferior 1 (process 81331) detached]

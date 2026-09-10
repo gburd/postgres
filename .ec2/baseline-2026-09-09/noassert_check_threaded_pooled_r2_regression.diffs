@@ -1,0 +1,89 @@
+diff -U3 /mnt/nvme/work/pg_noassert/src/test/regress/expected/join.out /mnt/nvme/work/pg_noassert/src/test/regress/results/join.out
+--- /mnt/nvme/work/pg_noassert/src/test/regress/expected/join.out	2026-09-09 23:14:58.000000000 +0000
++++ /mnt/nvme/work/pg_noassert/src/test/regress/results/join.out	2026-09-10 03:25:47.272102681 +0000
+@@ -10451,44 +10451,39 @@
+ explain (verbose, costs off)
+ select * from j1
+ inner join (select distinct id from j3) j3 on j1.id = j3.id;
+-               QUERY PLAN                
+------------------------------------------
++            QUERY PLAN             
++-----------------------------------
+  Nested Loop
+    Output: j1.id, j3.id
+    Inner Unique: true
+    Join Filter: (j1.id = j3.id)
+-   ->  Unique
++   ->  HashAggregate
+          Output: j3.id
+-         ->  Sort
++         Group Key: j3.id
++         ->  Seq Scan on public.j3
+                Output: j3.id
+-               Sort Key: j3.id
+-               ->  Seq Scan on public.j3
+-                     Output: j3.id
+    ->  Seq Scan on public.j1
+          Output: j1.id
+-(13 rows)
++(11 rows)
+ 
+ -- ensure group by clause allows the inner to become unique
+ explain (verbose, costs off)
+ select * from j1
+ inner join (select id from j3 group by id) j3 on j1.id = j3.id;
+-               QUERY PLAN                
+------------------------------------------
++            QUERY PLAN             
++-----------------------------------
+  Nested Loop
+    Output: j1.id, j3.id
+    Inner Unique: true
+    Join Filter: (j1.id = j3.id)
+-   ->  Group
++   ->  HashAggregate
+          Output: j3.id
+          Group Key: j3.id
+-         ->  Sort
++         ->  Seq Scan on public.j3
+                Output: j3.id
+-               Sort Key: j3.id
+-               ->  Seq Scan on public.j3
+-                     Output: j3.id
+    ->  Seq Scan on public.j1
+          Output: j1.id
+-(14 rows)
++(11 rows)
+ 
+ drop table j1;
+ drop table j2;
+@@ -10683,20 +10678,23 @@
+ ---------------------------------------------------------------------------------
+  Nested Loop
+    Output: t1.unique1, t2.hundred
+-   ->  Merge Join
++   ->  Hash Join
+          Output: t1.unique1, t3.tenthous
+-         Merge Cond: (t3.thousand = t1.unique1)
+-         ->  Unique
++         Hash Cond: (t3.thousand = t1.unique1)
++         ->  HashAggregate
+                Output: t3.thousand, t3.tenthous
++               Group Key: t3.thousand, t3.tenthous
+                ->  Index Only Scan using tenk1_thous_tenthous on public.tenk1 t3
+                      Output: t3.thousand, t3.tenthous
+-         ->  Index Only Scan using onek_unique1 on public.onek t1
++         ->  Hash
+                Output: t1.unique1
+-               Index Cond: (t1.unique1 < 1)
++               ->  Index Only Scan using onek_unique1 on public.onek t1
++                     Output: t1.unique1
++                     Index Cond: (t1.unique1 < 1)
+    ->  Index Only Scan using tenk1_hundred on public.tenk1 t2
+          Output: t2.hundred
+          Index Cond: (t2.hundred = t3.tenthous)
+-(15 rows)
++(18 rows)
+ 
+ -- ... unless it actually is unique
+ create table j3 as select unique1, tenthous from onek;
