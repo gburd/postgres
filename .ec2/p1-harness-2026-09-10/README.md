@@ -146,6 +146,12 @@ The harness was the deliverable, but its first real two-host run produced two re
 themselves evidence. Recording them here so they are not lost as "harness noise".
 
 ### 1. xtc does not scale from c=8 to c=16; fork nearly doubles
+> **ROOT-CAUSED 2026-09-10, and my "concurrency ceiling" framing below is SUPERSEDED.**
+> This is not a throughput ceiling: the pooled scheduler STARVES every session beyond the carrier
+> count, because a carrier is only released at a protocol-read park (i.e. when the client goes
+> quiet) or session exit. A busy pgbench client never goes quiet, so it holds its carrier for the
+> whole run. Measured law: working = min(clients, carriers). See
+> plan_docs/phase16_audits/POOLED_SESSION_STARVATION.md.
 
 ```
 select  fork  c=8   54,855 tps      select  xtc(eff=8)  c=8   54,394 tps
@@ -167,6 +173,9 @@ has a SEPARATE loadgen, so it is not confounded by driver CPU contention. That m
 clean evidence for the P4 lever.
 
 ### 2. A ~30 s max latency in BOTH xtc c=16 cells -- on a 30 s run
+> **ROOT-CAUSED 2026-09-10.** Confirmed real (3/3 reruns) and explained: it is the FIRST and ONLY
+> transaction of each starved client, issued at t=0 and answered when the load stopped. Not a
+> latency tail and not a lost wake. See POOLED_SESSION_STARVATION.md.
 
 ```
 select  xtc  c=16  max_ms = 29,979.164     (99.9 % of the entire 30 s run)
