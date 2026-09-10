@@ -1,0 +1,1317 @@
+2026-09-10 03:28:15.426 UTC postmaster[116745] LOG:  multithreaded=on: routing io_method=worker to the in-fiber "xtc" method
+2026-09-10 03:28:15.426 UTC postmaster[116745] DETAIL:  Forked io workers cannot wake in-process fiber backends; set io_method explicitly to override.
+2026-09-10 03:28:15.435 UTC postmaster[116745] LOG:  starting PostgreSQL 20devel on x86_64-pc-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-5), 64-bit
+2026-09-10 03:28:15.435 UTC postmaster[116745] LOG:  listening on Unix socket "/tmp/pg_regress-rntETa/.s.PGSQL.52544"
+2026-09-10 03:28:15.438 UTC postmaster[116745] LOG:  database system was shut down at 2026-09-10 03:28:15 UTC
+2026-09-10 03:28:15.464 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:15.514 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:15.564 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:15.614 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:15.664 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:15.714 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:15.765 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:15.815 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:15.865 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:15.915 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:15.965 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.015 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.065 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.116 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.166 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.216 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.266 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.316 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.366 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.416 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.467 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.517 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.567 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.617 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.667 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.717 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.767 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.818 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.868 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.918 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:16.968 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.018 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.068 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.118 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.169 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.219 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.269 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.319 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.369 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.419 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.469 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.520 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.570 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.620 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.670 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.720 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.770 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.820 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.871 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.921 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:17.971 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.021 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.071 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.121 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.171 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.221 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.272 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.322 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.372 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.422 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.472 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.522 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.572 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.623 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.673 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.723 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.773 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.823 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.873 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.923 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:18.974 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.024 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.074 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.124 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.174 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.224 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.274 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.325 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.375 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.425 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.475 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.525 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.575 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.625 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.676 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.726 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.776 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.826 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.876 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.926 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:19.976 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:20.027 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:20.077 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:20.127 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:20.177 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:20.227 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:20.277 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:20.327 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:20.378 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:20.428 UTC postmaster[116745] LOG:  could not fork new process for connection: Function not implemented
+2026-09-10 03:28:20.447 UTC postmaster[116745] LOG:  database system is ready to accept connections
+2026-09-10 03:28:20.450 UTC postmaster[116745] LOG:  xtc: carrier scheduler thread up (32 loops, 32 supervisors, thread-per-session backend pool)
+2026-09-10 03:28:20.450 UTC postmaster[116745] LOG:  xtc: walwriter launched as xtc fiber (child_slot=285)
+xtc: spawned backend fiber pid=(loop=1,local=2,gen=1) migratable=0
+2026-09-10 03:28:20.450 UTC postmaster[116745] LOG:  xtc: autovacuum launcher launched as xtc fiber (child_slot=221)
+xtc: spawned backend fiber pid=(loop=2,local=1,gen=1) migratable=0
+2026-09-10 03:28:20.450 UTC postmaster[116745] LOG:  xtc: walsummarizer launched as xtc fiber (child_slot=284)
+xtc: spawned backend fiber pid=(loop=3,local=1,gen=1) migratable=0
+2026-09-10 03:28:20.450 UTC postmaster[116745] LOG:  xtc: background worker launched as xtc fiber (child_slot=238)
+xtc: spawned backend fiber pid=(loop=4,local=1,gen=1) migratable=0
+2026-09-10 03:28:20.478 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=1)
+xtc: spawned backend fiber pid=(loop=5,local=1,gen=1) migratable=1
+xtc: backend fiber exiting pid=(loop=5,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=5,local=1,gen=1)
+2026-09-10 03:28:20.501 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=1)
+xtc: spawned backend fiber pid=(loop=6,local=1,gen=1) migratable=1
+xtc: backend fiber exiting pid=(loop=6,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=6,local=1,gen=1)
+2026-09-10 03:28:20.595 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=1)
+xtc: spawned backend fiber pid=(loop=7,local=1,gen=1) migratable=1
+xtc: backend fiber exiting pid=(loop=7,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=7,local=1,gen=1)
+2026-09-10 03:28:21.001 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=1)
+2026-09-10 03:28:21.001 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=2)
+xtc: spawned backend fiber pid=(loop=8,local=1,gen=1) migratable=1
+xtc: spawned backend fiber pid=(loop=9,local=1,gen=1) migratable=1
+2026-09-10 03:28:21.001 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=3)
+2026-09-10 03:28:21.001 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=4)
+xtc: spawned backend fiber pid=(loop=10,local=1,gen=1) migratable=1
+xtc: spawned backend fiber pid=(loop=11,local=1,gen=1) migratable=1
+2026-09-10 03:28:21.001 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=5)
+xtc: spawned backend fiber pid=(loop=12,local=1,gen=1) migratable=1
+2026-09-10 03:28:21.001 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=6)
+xtc: spawned backend fiber pid=(loop=13,local=1,gen=1) migratable=1
+2026-09-10 03:28:21.001 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=7)
+xtc: spawned backend fiber pid=(loop=14,local=1,gen=1) migratable=1
+2026-09-10 03:28:21.002 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=8)
+xtc: spawned backend fiber pid=(loop=15,local=1,gen=1) migratable=1
+2026-09-10 03:28:21.002 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=9)
+xtc: spawned backend fiber pid=(loop=16,local=1,gen=1) migratable=1
+2026-09-10 03:28:21.002 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=10)
+xtc: spawned backend fiber pid=(loop=17,local=1,gen=1) migratable=1
+2026-09-10 03:28:21.002 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=11)
+xtc: spawned backend fiber pid=(loop=18,local=1,gen=1) migratable=1
+2026-09-10 03:28:21.002 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=12)
+xtc: spawned backend fiber pid=(loop=19,local=1,gen=1) migratable=1
+2026-09-10 03:28:21.003 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=13)
+xtc: spawned backend fiber pid=(loop=20,local=1,gen=1) migratable=1
+2026-09-10 03:28:21.003 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=14)
+xtc: spawned backend fiber pid=(loop=21,local=1,gen=1) migratable=1
+2026-09-10 03:28:21.003 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=15)
+xtc: spawned backend fiber pid=(loop=22,local=1,gen=1) migratable=1
+2026-09-10 03:28:21.003 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=16)
+xtc: spawned backend fiber pid=(loop=23,local=1,gen=1) migratable=1
+2026-09-10 03:28:21.003 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=17)
+xtc: spawned backend fiber pid=(loop=24,local=1,gen=1) migratable=1
+2026-09-10 03:28:21.003 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=18)
+xtc: spawned backend fiber pid=(loop=25,local=1,gen=1) migratable=1
+2026-09-10 03:28:21.003 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=19)
+xtc: spawned backend fiber pid=(loop=26,local=1,gen=1) migratable=1
+2026-09-10 03:28:21.003 UTC postmaster[116745] LOG:  xtc: client backend launched as xtc fiber (child_slot=20)
+xtc: spawned backend fiber pid=(loop=27,local=1,gen=1) migratable=1
+2026-09-10 03:28:21.059 UTC postmaster[116745] pg_regress/int2 ERROR:  invalid input syntax for type smallint: "34.5" at character 34
+2026-09-10 03:28:21.059 UTC postmaster[116745] pg_regress/int2 STATEMENT:  INSERT INTO INT2_TBL(f1) VALUES ('34.5');
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/boolean ERROR:  invalid input syntax for type boolean: "test" at character 13
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/boolean STATEMENT:  SELECT bool 'test' AS error;
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/int2 ERROR:  value "100000" is out of range for type smallint at character 34
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/int2 STATEMENT:  INSERT INTO INT2_TBL(f1) VALUES ('100000');
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/int2 ERROR:  invalid input syntax for type smallint: "asdf" at character 34
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/int2 STATEMENT:  INSERT INTO INT2_TBL(f1) VALUES ('asdf');
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/boolean ERROR:  invalid input syntax for type boolean: "foo" at character 13
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/boolean STATEMENT:  SELECT bool 'foo' AS error;
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/int2 ERROR:  invalid input syntax for type smallint: "    " at character 34
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/int2 STATEMENT:  INSERT INTO INT2_TBL(f1) VALUES ('    ');
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/int2 ERROR:  invalid input syntax for type smallint: "- 1234" at character 34
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/int2 STATEMENT:  INSERT INTO INT2_TBL(f1) VALUES ('- 1234');
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/int2 ERROR:  invalid input syntax for type smallint: "4 444" at character 34
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/int2 STATEMENT:  INSERT INTO INT2_TBL(f1) VALUES ('4 444');
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/boolean ERROR:  invalid input syntax for type boolean: "yeah" at character 13
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/boolean STATEMENT:  SELECT bool 'yeah' AS error;
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/int2 ERROR:  invalid input syntax for type smallint: "123 dt" at character 34
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/int2 STATEMENT:  INSERT INTO INT2_TBL(f1) VALUES ('123 dt');
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/int2 ERROR:  invalid input syntax for type smallint: "" at character 34
+2026-09-10 03:28:21.060 UTC postmaster[116745] pg_regress/int2 STATEMENT:  INSERT INTO INT2_TBL(f1) VALUES ('');
+2026-09-10 03:28:21.061 UTC postmaster[116745] pg_regress/text ERROR:  function length(integer) does not exist at character 8
+2026-09-10 03:28:21.061 UTC postmaster[116745] pg_regress/text DETAIL:  No function of that name accepts the given argument types.
+2026-09-10 03:28:21.061 UTC postmaster[116745] pg_regress/text HINT:  You might need to add explicit type casts.
+2026-09-10 03:28:21.061 UTC postmaster[116745] pg_regress/text STATEMENT:  select length(42);
+2026-09-10 03:28:21.061 UTC postmaster[116745] pg_regress/boolean ERROR:  invalid input syntax for type boolean: "nay" at character 13
+2026-09-10 03:28:21.061 UTC postmaster[116745] pg_regress/boolean STATEMENT:  SELECT bool 'nay' AS error;
+2026-09-10 03:28:21.061 UTC postmaster[116745] pg_regress/int4 ERROR:  invalid input syntax for type integer: "34.5" at character 34
+2026-09-10 03:28:21.061 UTC postmaster[116745] pg_regress/int4 STATEMENT:  INSERT INTO INT4_TBL(f1) VALUES ('34.5');
+2026-09-10 03:28:21.061 UTC postmaster[116745] pg_regress/int4 ERROR:  value "1000000000000" is out of range for type integer at character 34
+2026-09-10 03:28:21.061 UTC postmaster[116745] pg_regress/int4 STATEMENT:  INSERT INTO INT4_TBL(f1) VALUES ('1000000000000');
+2026-09-10 03:28:21.061 UTC postmaster[116745] pg_regress/boolean ERROR:  invalid input syntax for type boolean: "o" at character 13
+2026-09-10 03:28:21.061 UTC postmaster[116745] pg_regress/boolean STATEMENT:  SELECT bool 'o' AS error;
+2026-09-10 03:28:21.061 UTC postmaster[116745] pg_regress/char ERROR:  value too long for type character(1)
+2026-09-10 03:28:21.061 UTC postmaster[116745] pg_regress/char STATEMENT:  INSERT INTO CHAR_TBL (f1) VALUES ('cd');
+2026-09-10 03:28:21.061 UTC postmaster[116745] pg_regress/int4 ERROR:  invalid input syntax for type integer: "asdf" at character 34
+2026-09-10 03:28:21.061 UTC postmaster[116745] pg_regress/int4 STATEMENT:  INSERT INTO INT4_TBL(f1) VALUES ('asdf');
+2026-09-10 03:28:21.061 UTC postmaster[116745] pg_regress/boolean ERROR:  invalid input syntax for type boolean: "on_" at character 13
+2026-09-10 03:28:21.061 UTC postmaster[116745] pg_regress/boolean STATEMENT:  SELECT bool 'on_' AS error;
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int8 ERROR:  invalid input syntax for type bigint: "      " at character 34
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int8 STATEMENT:  INSERT INTO INT8_TBL(q1) VALUES ('      ');
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int4 ERROR:  invalid input syntax for type integer: "     " at character 34
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int4 STATEMENT:  INSERT INTO INT4_TBL(f1) VALUES ('     ');
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/boolean ERROR:  invalid input syntax for type boolean: "off_" at character 13
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/boolean STATEMENT:  SELECT bool 'off_' AS error;
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int4 ERROR:  invalid input syntax for type integer: "   asdf   " at character 34
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int4 STATEMENT:  INSERT INTO INT4_TBL(f1) VALUES ('   asdf   ');
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int8 ERROR:  invalid input syntax for type bigint: "xxx" at character 34
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int8 STATEMENT:  INSERT INTO INT8_TBL(q1) VALUES ('xxx');
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int8 ERROR:  value "3908203590239580293850293850329485" is out of range for type bigint at character 34
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int8 STATEMENT:  INSERT INTO INT8_TBL(q1) VALUES ('3908203590239580293850293850329485');
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int4 ERROR:  invalid input syntax for type integer: "- 1234" at character 34
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int4 STATEMENT:  INSERT INTO INT4_TBL(f1) VALUES ('- 1234');
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int8 ERROR:  value "-1204982019841029840928340329840934" is out of range for type bigint at character 34
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int8 STATEMENT:  INSERT INTO INT8_TBL(q1) VALUES ('-1204982019841029840928340329840934');
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/text ERROR:  operator does not exist: integer || numeric at character 10
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/text DETAIL:  No operator of that name accepts the given argument types.
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/text HINT:  You might need to add explicit type casts.
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/text STATEMENT:  select 3 || 4.0;
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/boolean ERROR:  invalid input syntax for type boolean: "11" at character 13
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/boolean STATEMENT:  SELECT bool '11' AS error;
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int4 ERROR:  invalid input syntax for type integer: "123       5" at character 34
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int4 STATEMENT:  INSERT INTO INT4_TBL(f1) VALUES ('123       5');
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int8 ERROR:  invalid input syntax for type bigint: "- 123" at character 34
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int8 STATEMENT:  INSERT INTO INT8_TBL(q1) VALUES ('- 123');
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int4 ERROR:  invalid input syntax for type integer: "" at character 34
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int4 STATEMENT:  INSERT INTO INT4_TBL(f1) VALUES ('');
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int8 ERROR:  invalid input syntax for type bigint: "  345     5" at character 34
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int8 STATEMENT:  INSERT INTO INT8_TBL(q1) VALUES ('  345     5');
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/rangetypes ERROR:  malformed range literal: "" at character 8
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/rangetypes DETAIL:  Missing left parenthesis or bracket.
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/rangetypes STATEMENT:  select ''::textrange;
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/boolean ERROR:  invalid input syntax for type boolean: "000" at character 13
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/boolean STATEMENT:  SELECT bool '000' AS error;
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int8 ERROR:  invalid input syntax for type bigint: "" at character 34
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/int8 STATEMENT:  INSERT INTO INT8_TBL(q1) VALUES ('');
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/rangetypes ERROR:  malformed range literal: "-[a,z)" at character 8
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/rangetypes DETAIL:  Missing left parenthesis or bracket.
+2026-09-10 03:28:21.062 UTC postmaster[116745] pg_regress/rangetypes STATEMENT:  select '-[a,z)'::textrange;
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/boolean ERROR:  invalid input syntax for type boolean: "" at character 13
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/boolean STATEMENT:  SELECT bool '' AS error;
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes ERROR:  malformed range literal: "[a,z) - " at character 8
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes DETAIL:  Junk after right parenthesis or bracket.
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes STATEMENT:  select '[a,z) - '::textrange;
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes ERROR:  malformed range literal: "(",a)" at character 8
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes DETAIL:  Unexpected end of input.
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes STATEMENT:  select '(",a)'::textrange;
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes ERROR:  malformed range literal: "(,,a)" at character 8
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes DETAIL:  Too many commas.
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes STATEMENT:  select '(,,a)'::textrange;
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes ERROR:  malformed range literal: "(),a)" at character 8
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes DETAIL:  Missing comma after lower bound.
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes STATEMENT:  select '(),a)'::textrange;
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/txid ERROR:  invalid input syntax for type pg_snapshot: "31:12:" at character 8
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/txid STATEMENT:  select '31:12:'::txid_snapshot;
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes ERROR:  malformed range literal: "(a,))" at character 8
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes DETAIL:  Junk after right parenthesis or bracket.
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes STATEMENT:  select '(a,))'::textrange;
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/txid ERROR:  invalid input syntax for type pg_snapshot: "0:1:" at character 8
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/txid STATEMENT:  select '0:1:'::txid_snapshot;
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes ERROR:  malformed range literal: "(],a)" at character 8
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes DETAIL:  Missing comma after lower bound.
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes STATEMENT:  select '(],a)'::textrange;
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/int2 ERROR:  table "f" has 1 columns available but 2 columns specified
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT * FROM INT2_TBL AS f(a, b);
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes ERROR:  malformed range literal: "(a,])" at character 8
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes DETAIL:  Junk after right parenthesis or bracket.
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/rangetypes STATEMENT:  select '(a,])'::textrange;
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/txid ERROR:  invalid input syntax for type pg_snapshot: "12:13:0" at character 8
+2026-09-10 03:28:21.063 UTC postmaster[116745] pg_regress/txid STATEMENT:  select '12:13:0'::txid_snapshot;
+2026-09-10 03:28:21.064 UTC postmaster[116745] pg_regress/int2 ERROR:  table "s" has 1 columns available but 2 columns specified
+2026-09-10 03:28:21.064 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT * FROM (TABLE int2_tbl) AS s (a, b);
+2026-09-10 03:28:21.064 UTC postmaster[116745] pg_regress/rangetypes ERROR:  range lower bound must be less than or equal to range upper bound at character 8
+2026-09-10 03:28:21.064 UTC postmaster[116745] pg_regress/rangetypes STATEMENT:  select '[z,a]'::textrange;
+2026-09-10 03:28:21.064 UTC postmaster[116745] pg_regress/txid ERROR:  invalid input syntax for type pg_snapshot: "12:16:14,13" at character 8
+2026-09-10 03:28:21.064 UTC postmaster[116745] pg_regress/txid STATEMENT:  select '12:16:14,13'::txid_snapshot;
+2026-09-10 03:28:21.064 UTC postmaster[116745] pg_regress/float4 ERROR:  "10e70" is out of range for type real at character 36
+2026-09-10 03:28:21.064 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('10e70');
+2026-09-10 03:28:21.064 UTC postmaster[116745] pg_regress/varchar ERROR:  value too long for type character varying(1)
+2026-09-10 03:28:21.064 UTC postmaster[116745] pg_regress/varchar STATEMENT:  INSERT INTO VARCHAR_TBL (f1) VALUES ('cd');
+2026-09-10 03:28:21.064 UTC postmaster[116745] pg_regress/float4 ERROR:  "-10e70" is out of range for type real at character 36
+2026-09-10 03:28:21.064 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('-10e70');
+2026-09-10 03:28:21.064 UTC postmaster[116745] pg_regress/float4 ERROR:  "10e-70" is out of range for type real at character 36
+2026-09-10 03:28:21.064 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('10e-70');
+2026-09-10 03:28:21.064 UTC postmaster[116745] pg_regress/float4 ERROR:  "-10e-70" is out of range for type real at character 36
+2026-09-10 03:28:21.064 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('-10e-70');
+2026-09-10 03:28:21.065 UTC postmaster[116745] pg_regress/float4 ERROR:  value out of range: overflow
+2026-09-10 03:28:21.065 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('10e70'::float8);
+2026-09-10 03:28:21.065 UTC postmaster[116745] pg_regress/bit ERROR:  bit string length 2 does not match type bit(11)
+2026-09-10 03:28:21.065 UTC postmaster[116745] pg_regress/bit STATEMENT:  INSERT INTO BIT_TABLE VALUES (B'10');
+2026-09-10 03:28:21.065 UTC postmaster[116745] pg_regress/float4 ERROR:  value out of range: overflow
+2026-09-10 03:28:21.065 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('-10e70'::float8);
+2026-09-10 03:28:21.065 UTC postmaster[116745] pg_regress/float4 ERROR:  value out of range: underflow
+2026-09-10 03:28:21.065 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('10e-70'::float8);
+2026-09-10 03:28:21.065 UTC postmaster[116745] pg_regress/float4 ERROR:  value out of range: underflow
+2026-09-10 03:28:21.065 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('-10e-70'::float8);
+2026-09-10 03:28:21.065 UTC postmaster[116745] pg_regress/float4 ERROR:  "10e400" is out of range for type real at character 36
+2026-09-10 03:28:21.065 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('10e400');
+2026-09-10 03:28:21.065 UTC postmaster[116745] pg_regress/float4 ERROR:  "-10e400" is out of range for type real at character 36
+2026-09-10 03:28:21.065 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('-10e400');
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/float4 ERROR:  "10e-400" is out of range for type real at character 36
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('10e-400');
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/float4 ERROR:  "-10e-400" is out of range for type real at character 36
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('-10e-400');
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/pg_lsn ERROR:  invalid input syntax for type pg_lsn: "G/0" at character 32
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/pg_lsn STATEMENT:  INSERT INTO PG_LSN_TBL VALUES ('G/0');
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/float4 ERROR:  invalid input syntax for type real: "" at character 36
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('');
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/bit ERROR:  bit string length 12 does not match type bit(11)
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/bit STATEMENT:  INSERT INTO BIT_TABLE VALUES (B'101011111010');
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/float4 ERROR:  invalid input syntax for type real: "       " at character 36
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('       ');
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/float4 ERROR:  invalid input syntax for type real: "xyz" at character 36
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('xyz');
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/float4 ERROR:  invalid input syntax for type real: "5.0.0" at character 36
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('5.0.0');
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/float4 ERROR:  invalid input syntax for type real: "5 . 0" at character 36
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('5 . 0');
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/float8 ERROR:  "10e400" is out of range for type double precision at character 8
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT '10e400'::float8;
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/float4 ERROR:  invalid input syntax for type real: "5.   0" at character 36
+2026-09-10 03:28:21.066 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('5.   0');
+2026-09-10 03:28:21.067 UTC postmaster[116745] pg_regress/char ERROR:  value too long for type character(4)
+2026-09-10 03:28:21.067 UTC postmaster[116745] pg_regress/char STATEMENT:  INSERT INTO CHAR_TBL (f1) VALUES ('abcde');
+2026-09-10 03:28:21.067 UTC postmaster[116745] pg_regress/float4 ERROR:  invalid input syntax for type real: "     - 3.0" at character 36
+2026-09-10 03:28:21.067 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('     - 3.0');
+2026-09-10 03:28:21.067 UTC postmaster[116745] pg_regress/float8 ERROR:  "-10e400" is out of range for type double precision at character 8
+2026-09-10 03:28:21.067 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT '-10e400'::float8;
+2026-09-10 03:28:21.067 UTC postmaster[116745] pg_regress/float4 ERROR:  invalid input syntax for type real: "123            5" at character 36
+2026-09-10 03:28:21.067 UTC postmaster[116745] pg_regress/float4 STATEMENT:  INSERT INTO FLOAT4_TBL(f1) VALUES ('123            5');
+2026-09-10 03:28:21.067 UTC postmaster[116745] pg_regress/float8 ERROR:  "10e-400" is out of range for type double precision at character 8
+2026-09-10 03:28:21.067 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT '10e-400'::float8;
+2026-09-10 03:28:21.067 UTC postmaster[116745] pg_regress/float8 ERROR:  "-10e-400" is out of range for type double precision at character 8
+2026-09-10 03:28:21.067 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT '-10e-400'::float8;
+2026-09-10 03:28:21.067 UTC postmaster[116745] pg_regress/pg_lsn ERROR:  invalid input syntax for type pg_lsn: "-1/0" at character 32
+2026-09-10 03:28:21.067 UTC postmaster[116745] pg_regress/pg_lsn STATEMENT:  INSERT INTO PG_LSN_TBL VALUES ('-1/0');
+2026-09-10 03:28:21.067 UTC postmaster[116745] pg_regress/oid ERROR:  invalid input syntax for type oid: "" at character 33
+2026-09-10 03:28:21.067 UTC postmaster[116745] pg_regress/oid STATEMENT:  INSERT INTO OID_TBL(f1) VALUES ('');
+2026-09-10 03:28:21.067 UTC postmaster[116745] pg_regress/pg_lsn ERROR:  invalid input syntax for type pg_lsn: " 0/12345678" at character 32
+2026-09-10 03:28:21.067 UTC postmaster[116745] pg_regress/pg_lsn STATEMENT:  INSERT INTO PG_LSN_TBL VALUES (' 0/12345678');
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/oid ERROR:  invalid input syntax for type oid: "    " at character 33
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/oid STATEMENT:  INSERT INTO OID_TBL(f1) VALUES ('    ');
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/pg_lsn ERROR:  invalid input syntax for type pg_lsn: "ABCD/" at character 32
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/pg_lsn STATEMENT:  INSERT INTO PG_LSN_TBL VALUES ('ABCD/');
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/float8 ERROR:  invalid input syntax for type double precision: "" at character 36
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/float8 STATEMENT:  INSERT INTO FLOAT8_TBL(f1) VALUES ('');
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/float8 ERROR:  invalid input syntax for type double precision: "     " at character 36
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/float8 STATEMENT:  INSERT INTO FLOAT8_TBL(f1) VALUES ('     ');
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/pg_lsn ERROR:  invalid input syntax for type pg_lsn: "/ABCD" at character 32
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/pg_lsn STATEMENT:  INSERT INTO PG_LSN_TBL VALUES ('/ABCD');
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/float8 ERROR:  invalid input syntax for type double precision: "xyz" at character 36
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/float8 STATEMENT:  INSERT INTO FLOAT8_TBL(f1) VALUES ('xyz');
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/oid ERROR:  invalid input syntax for type oid: "asdfasd" at character 33
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/oid STATEMENT:  INSERT INTO OID_TBL(f1) VALUES ('asdfasd');
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/float8 ERROR:  invalid input syntax for type double precision: "5.0.0" at character 36
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/float8 STATEMENT:  INSERT INTO FLOAT8_TBL(f1) VALUES ('5.0.0');
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/float8 ERROR:  invalid input syntax for type double precision: "5 . 0" at character 36
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/float8 STATEMENT:  INSERT INTO FLOAT8_TBL(f1) VALUES ('5 . 0');
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/enum ERROR:  invalid input value for enum rainbow: "mauve" at character 8
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/enum STATEMENT:  SELECT 'mauve'::rainbow;
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/float4 ERROR:  invalid input syntax for type real: "N A N" at character 8
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/float4 STATEMENT:  SELECT 'N A N'::float4;
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/oid ERROR:  invalid input syntax for type oid: "99asdfasd" at character 33
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/oid STATEMENT:  INSERT INTO OID_TBL(f1) VALUES ('99asdfasd');
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/float8 ERROR:  invalid input syntax for type double precision: "5.   0" at character 36
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/float8 STATEMENT:  INSERT INTO FLOAT8_TBL(f1) VALUES ('5.   0');
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/float4 ERROR:  invalid input syntax for type real: "NaN x" at character 8
+2026-09-10 03:28:21.068 UTC postmaster[116745] pg_regress/float4 STATEMENT:  SELECT 'NaN x'::float4;
+2026-09-10 03:28:21.069 UTC postmaster[116745] pg_regress/int2 ERROR:  smallint out of range
+2026-09-10 03:28:21.069 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT i.f1, i.f1 * int2 '2' AS x FROM INT2_TBL i;
+2026-09-10 03:28:21.069 UTC postmaster[116745] pg_regress/float4 ERROR:  invalid input syntax for type real: " INFINITY    x" at character 8
+2026-09-10 03:28:21.069 UTC postmaster[116745] pg_regress/float4 STATEMENT:  SELECT ' INFINITY    x'::float4;
+2026-09-10 03:28:21.069 UTC postmaster[116745] pg_regress/float8 ERROR:  invalid input syntax for type double precision: "    - 3" at character 36
+2026-09-10 03:28:21.069 UTC postmaster[116745] pg_regress/float8 STATEMENT:  INSERT INTO FLOAT8_TBL(f1) VALUES ('    - 3');
+2026-09-10 03:28:21.069 UTC postmaster[116745] pg_regress/float8 ERROR:  invalid input syntax for type double precision: "123           5" at character 36
+2026-09-10 03:28:21.069 UTC postmaster[116745] pg_regress/float8 STATEMENT:  INSERT INTO FLOAT8_TBL(f1) VALUES ('123           5');
+2026-09-10 03:28:21.069 UTC postmaster[116745] pg_regress/oid ERROR:  invalid input syntax for type oid: "5    d" at character 33
+2026-09-10 03:28:21.069 UTC postmaster[116745] pg_regress/oid STATEMENT:  INSERT INTO OID_TBL(f1) VALUES ('5    d');
+2026-09-10 03:28:21.069 UTC postmaster[116745] pg_regress/bit ERROR:  bit string too long for type bit varying(11)
+2026-09-10 03:28:21.069 UTC postmaster[116745] pg_regress/bit STATEMENT:  INSERT INTO VARBIT_TABLE VALUES (B'101011111010');
+2026-09-10 03:28:21.069 UTC postmaster[116745] pg_regress/int2 ERROR:  smallint out of range
+2026-09-10 03:28:21.069 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT i.f1, i.f1 + int2 '2' AS x FROM INT2_TBL i;
+2026-09-10 03:28:21.069 UTC postmaster[116745] pg_regress/oid ERROR:  invalid input syntax for type oid: "    5d" at character 33
+2026-09-10 03:28:21.069 UTC postmaster[116745] pg_regress/oid STATEMENT:  INSERT INTO OID_TBL(f1) VALUES ('    5d');
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/bit ERROR:  " " is not a valid binary digit at character 8
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/bit STATEMENT:  SELECT b' 0';
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/bit ERROR:  " " is not a valid binary digit at character 8
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/bit STATEMENT:  SELECT b'0 ';
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/oid ERROR:  invalid input syntax for type oid: "5    5" at character 33
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/oid STATEMENT:  INSERT INTO OID_TBL(f1) VALUES ('5    5');
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/bit ERROR:  " " is not a valid hexadecimal digit at character 8
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/bit STATEMENT:  SELECT x' 0';
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/enum ERROR:  enum label "foo" used more than once
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/enum STATEMENT:  CREATE TYPE dup_enum AS ENUM ('foo','bar','foo');
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/boolean ERROR:  invalid input syntax for type boolean: "  tru e "
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/boolean STATEMENT:  SELECT '  tru e '::text::boolean AS invalid;
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/bit ERROR:  " " is not a valid hexadecimal digit at character 8
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/bit STATEMENT:  SELECT x'0 ';
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/int2 ERROR:  smallint out of range
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT i.f1, i.f1 - int2 '2' AS x FROM INT2_TBL i;
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/oid ERROR:  invalid input syntax for type oid: " - 500" at character 33
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/oid STATEMENT:  INSERT INTO OID_TBL(f1) VALUES (' - 500');
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/int4 ERROR:  integer out of range
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT i.f1, i.f1 * int2 '2' AS x FROM INT4_TBL i;
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/oid ERROR:  value "32958209582039852935" is out of range for type oid at character 33
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/oid STATEMENT:  INSERT INTO OID_TBL(f1) VALUES ('32958209582039852935');
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/boolean ERROR:  invalid input syntax for type boolean: ""
+2026-09-10 03:28:21.070 UTC postmaster[116745] pg_regress/boolean STATEMENT:  SELECT ''::text::boolean AS invalid;
+2026-09-10 03:28:21.071 UTC postmaster[116745] pg_regress/oid ERROR:  value "-23582358720398502385" is out of range for type oid at character 33
+2026-09-10 03:28:21.071 UTC postmaster[116745] pg_regress/oid STATEMENT:  INSERT INTO OID_TBL(f1) VALUES ('-23582358720398502385');
+2026-09-10 03:28:21.071 UTC postmaster[116745] pg_regress/int4 ERROR:  integer out of range
+2026-09-10 03:28:21.071 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT i.f1, i.f1 * int4 '2' AS x FROM INT4_TBL i;
+2026-09-10 03:28:21.071 UTC postmaster[116745] pg_regress/float8 ERROR:  invalid input syntax for type double precision: "N A N" at character 8
+2026-09-10 03:28:21.071 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT 'N A N'::float8;
+xtc: backend fiber exiting pid=(loop=8,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=8,local=1,gen=1)
+2026-09-10 03:28:21.071 UTC postmaster[116745] pg_regress/float8 ERROR:  invalid input syntax for type double precision: "NaN x" at character 8
+2026-09-10 03:28:21.071 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT 'NaN x'::float8;
+2026-09-10 03:28:21.071 UTC postmaster[116745] pg_regress/int4 ERROR:  integer out of range
+2026-09-10 03:28:21.071 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT i.f1, i.f1 + int2 '2' AS x FROM INT4_TBL i;
+2026-09-10 03:28:21.071 UTC postmaster[116745] pg_regress/float8 ERROR:  invalid input syntax for type double precision: " INFINITY    x" at character 8
+2026-09-10 03:28:21.071 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT ' INFINITY    x'::float8;
+2026-09-10 03:28:21.072 UTC postmaster[116745] pg_regress/int2 ERROR:  smallint out of range
+2026-09-10 03:28:21.072 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT (-32768)::int2 * (-1)::int2;
+2026-09-10 03:28:21.072 UTC postmaster[116745] pg_regress/int2 ERROR:  smallint out of range
+2026-09-10 03:28:21.072 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT (-32768)::int2 / (-1)::int2;
+2026-09-10 03:28:21.072 UTC postmaster[116745] pg_regress/int4 ERROR:  integer out of range
+2026-09-10 03:28:21.072 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT i.f1, i.f1 + int4 '2' AS x FROM INT4_TBL i;
+2026-09-10 03:28:21.072 UTC postmaster[116745] pg_regress/text ERROR:  VARIADIC argument must be an array at character 32
+2026-09-10 03:28:21.072 UTC postmaster[116745] pg_regress/text STATEMENT:  select concat_ws(',', variadic 10);
+2026-09-10 03:28:21.073 UTC postmaster[116745] pg_regress/int4 ERROR:  integer out of range
+2026-09-10 03:28:21.073 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT i.f1, i.f1 - int2 '2' AS x FROM INT4_TBL i;
+2026-09-10 03:28:21.073 UTC postmaster[116745] pg_regress/varchar ERROR:  value too long for type character varying(4)
+2026-09-10 03:28:21.073 UTC postmaster[116745] pg_regress/varchar STATEMENT:  INSERT INTO VARCHAR_TBL (f1) VALUES ('abcde');
+2026-09-10 03:28:21.073 UTC postmaster[116745] pg_regress/uuid LOG:  process 116745 acquired ExclusiveLock on extension of relation 2608 of database 16384 after 0.105 ms
+2026-09-10 03:28:21.073 UTC postmaster[116745] pg_regress/uuid CONTEXT:  waiting for ExclusiveLock on extension of relation 2608 of database 16384
+2026-09-10 03:28:21.073 UTC postmaster[116745] pg_regress/uuid STATEMENT:  CREATE TABLE guid3
+	(
+		id SERIAL,
+		guid_field UUID,
+		guid_encoded text GENERATED ALWAYS AS (encode(guid_field::bytea, 'base32hex')) STORED
+	);
+2026-09-10 03:28:21.073 UTC postmaster[116745] pg_regress/int4 ERROR:  integer out of range
+2026-09-10 03:28:21.073 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT i.f1, i.f1 - int4 '2' AS x FROM INT4_TBL i;
+2026-09-10 03:28:21.073 UTC postmaster[116745] pg_regress/int2 ERROR:  invalid input syntax for type smallint: "0b" at character 13
+2026-09-10 03:28:21.073 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT int2 '0b';
+2026-09-10 03:28:21.073 UTC postmaster[116745] pg_regress/int2 ERROR:  invalid input syntax for type smallint: "0o" at character 13
+2026-09-10 03:28:21.073 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT int2 '0o';
+2026-09-10 03:28:21.074 UTC postmaster[116745] pg_regress/float4 ERROR:  division by zero
+2026-09-10 03:28:21.074 UTC postmaster[116745] pg_regress/float4 STATEMENT:  SELECT f.f1 / '0.0' from FLOAT4_TBL f;
+2026-09-10 03:28:21.074 UTC postmaster[116745] pg_regress/int2 ERROR:  invalid input syntax for type smallint: "0x" at character 13
+2026-09-10 03:28:21.074 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT int2 '0x';
+2026-09-10 03:28:21.074 UTC postmaster[116745] pg_regress/int2 ERROR:  value "0b1000000000000000" is out of range for type smallint at character 13
+2026-09-10 03:28:21.074 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT int2 '0b1000000000000000';
+2026-09-10 03:28:21.074 UTC postmaster[116745] pg_regress/int2 ERROR:  value "0o100000" is out of range for type smallint at character 13
+2026-09-10 03:28:21.074 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT int2 '0o100000';
+2026-09-10 03:28:21.074 UTC postmaster[116745] pg_regress/int2 ERROR:  value "0x8000" is out of range for type smallint at character 13
+2026-09-10 03:28:21.074 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT int2 '0x8000';
+2026-09-10 03:28:21.075 UTC postmaster[116745] pg_regress/int2 ERROR:  value "-0b1000000000000001" is out of range for type smallint at character 13
+2026-09-10 03:28:21.075 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT int2 '-0b1000000000000001';
+2026-09-10 03:28:21.075 UTC postmaster[116745] pg_regress/text ERROR:  too few arguments for format()
+2026-09-10 03:28:21.075 UTC postmaster[116745] pg_regress/text STATEMENT:  select format('Hello %s %s', 'World');
+2026-09-10 03:28:21.075 UTC postmaster[116745] pg_regress/int2 ERROR:  value "-0o100001" is out of range for type smallint at character 13
+2026-09-10 03:28:21.075 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT int2 '-0o100001';
+2026-09-10 03:28:21.075 UTC postmaster[116745] pg_regress/text ERROR:  too few arguments for format()
+2026-09-10 03:28:21.075 UTC postmaster[116745] pg_regress/text STATEMENT:  select format('Hello %s');
+2026-09-10 03:28:21.075 UTC postmaster[116745] pg_regress/bit ERROR:  negative substring length not allowed
+2026-09-10 03:28:21.075 UTC postmaster[116745] pg_regress/bit STATEMENT:  SELECT SUBSTRING('01010101'::bit(8) FROM -10 FOR -2147483646) AS "error";
+2026-09-10 03:28:21.075 UTC postmaster[116745] pg_regress/txid ERROR:  invalid input syntax for type pg_snapshot: "1:9223372036854775808:3" at character 22
+2026-09-10 03:28:21.075 UTC postmaster[116745] pg_regress/txid STATEMENT:  SELECT txid_snapshot '1:9223372036854775808:3';
+2026-09-10 03:28:21.075 UTC postmaster[116745] pg_regress/int2 ERROR:  value "-0x8001" is out of range for type smallint at character 13
+2026-09-10 03:28:21.075 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT int2 '-0x8001';
+2026-09-10 03:28:21.075 UTC postmaster[116745] pg_regress/enum ERROR:  invalid enum label "plutoplutoplutoplutoplutoplutoplutoplutoplutoplutoplutoplutoplutopluto"
+2026-09-10 03:28:21.075 UTC postmaster[116745] pg_regress/enum DETAIL:  Labels must be 63 bytes or less.
+2026-09-10 03:28:21.075 UTC postmaster[116745] pg_regress/enum STATEMENT:  ALTER TYPE planets ADD VALUE
+	  'plutoplutoplutoplutoplutoplutoplutoplutoplutoplutoplutoplutoplutopluto';
+xtc: backend fiber exiting pid=(loop=10,local=1,gen=1) code=0
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/enum ERROR:  "zeus" is not an existing enum label
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/enum STATEMENT:  ALTER TYPE planets ADD VALUE 'pluto' AFTER 'zeus';
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/text ERROR:  unrecognized format() type specifier "x"
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/text HINT:  For a single "%" use "%%".
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/text STATEMENT:  select format('Hello %x', 20);
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/float4 ERROR:  smallint out of range
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/float4 STATEMENT:  SELECT '32767.6'::float4::int2;
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=10,local=1,gen=1)
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/enum ERROR:  enum label "mercury" already exists
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/enum STATEMENT:  ALTER TYPE planets ADD VALUE 'mercury';
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/name ERROR:  string is not a valid identifier: "foo.boo[]"
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/name STATEMENT:  SELECT parse_ident('foo.boo[]');
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/bit ERROR:  negative substring length not allowed
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/bit STATEMENT:  SELECT SUBSTRING('01010101'::varbit FROM -10 FOR -2147483646) AS "error";
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/float4 ERROR:  smallint out of range
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/float4 STATEMENT:  SELECT '-32768.6'::float4::int2;
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/uuid ERROR:  invalid input syntax for type uuid: "11111111-1111-1111-1111-111111111111F" at character 38
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/uuid STATEMENT:  INSERT INTO guid1(guid_field) VALUES('11111111-1111-1111-1111-111111111111F');
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/uuid ERROR:  invalid input syntax for type uuid: "{11111111-1111-1111-1111-11111111111}" at character 38
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/uuid STATEMENT:  INSERT INTO guid1(guid_field) VALUES('{11111111-1111-1111-1111-11111111111}');
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/int2 ERROR:  invalid input syntax for type smallint: "_100" at character 13
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT int2 '_100';
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/float4 ERROR:  integer out of range
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/float4 STATEMENT:  SELECT '2147483647'::float4::int4;
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/name ERROR:  string is not a valid identifier: " "
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/name STATEMENT:  SELECT parse_ident(' ');
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/int2 ERROR:  invalid input syntax for type smallint: "100_" at character 13
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT int2 '100_';
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/uuid ERROR:  invalid input syntax for type uuid: "111-11111-1111-1111-1111-111111111111" at character 38
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/uuid STATEMENT:  INSERT INTO guid1(guid_field) VALUES('111-11111-1111-1111-1111-111111111111');
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/int2 ERROR:  invalid input syntax for type smallint: "10__000" at character 13
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/int2 STATEMENT:  SELECT int2 '10__000';
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/name ERROR:  string is not a valid identifier: " .aaa"
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/name DETAIL:  No valid identifier before ".".
+2026-09-10 03:28:21.076 UTC postmaster[116745] pg_regress/name STATEMENT:  SELECT parse_ident(' .aaa');
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/uuid ERROR:  invalid input syntax for type uuid: "{22222222-2222-2222-2222-222222222222 " at character 38
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/uuid STATEMENT:  INSERT INTO guid1(guid_field) VALUES('{22222222-2222-2222-2222-222222222222 ');
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/regproc ERROR:  constant of the type regrole cannot be used here
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/regproc STATEMENT:  CREATE TABLE regrole_test (rolid OID DEFAULT 'regress_regrole_test'::regrole);
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/float4 ERROR:  integer out of range
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/float4 STATEMENT:  SELECT '-2147483900'::float4::int4;
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/name ERROR:  string is not a valid identifier: " aaa . "
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/name DETAIL:  No valid identifier after ".".
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/name STATEMENT:  SELECT parse_ident(' aaa . ');
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/uuid ERROR:  invalid input syntax for type uuid: "11111111-1111-1111-G111-111111111111" at character 38
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/uuid STATEMENT:  INSERT INTO guid1(guid_field) VALUES('11111111-1111-1111-G111-111111111111');
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/name ERROR:  string is not a valid identifier: "aaa.a%b"
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/name STATEMENT:  SELECT parse_ident('aaa.a%b');
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/uuid ERROR:  invalid input syntax for type uuid: "11+11111-1111-1111-1111-111111111111" at character 38
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/uuid STATEMENT:  INSERT INTO guid1(guid_field) VALUES('11+11111-1111-1111-1111-111111111111');
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/float4 ERROR:  bigint out of range
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/float4 STATEMENT:  SELECT '9223372036854775807'::float4::int8;
+xtc: backend fiber exiting pid=(loop=12,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=12,local=1,gen=1)
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/name ERROR:  string is not a valid identifier: "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/name STATEMENT:  SELECT parse_ident(E'X\rXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX');
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/float4 ERROR:  bigint out of range
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/float4 STATEMENT:  SELECT '-9223380000000000000'::float4::int8;
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/int4 ERROR:  integer out of range
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT (-2147483648)::int4 * (-1)::int4;
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/regproc ERROR:  constant of the type regdatabase cannot be used here
+2026-09-10 03:28:21.077 UTC postmaster[116745] pg_regress/regproc STATEMENT:  CREATE TABLE regdatabase_test (datid OID DEFAULT 'template1'::regdatabase);
+2026-09-10 03:28:21.078 UTC postmaster[116745] pg_regress/int4 ERROR:  integer out of range
+2026-09-10 03:28:21.078 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT (-2147483648)::int4 / (-1)::int4;
+2026-09-10 03:28:21.078 UTC postmaster[116745] pg_regress/pg_lsn ERROR:  pg_lsn out of range
+2026-09-10 03:28:21.078 UTC postmaster[116745] pg_regress/pg_lsn STATEMENT:  SELECT 'FFFFFFFF/FFFFFFFE'::pg_lsn + 2::numeric;
+2026-09-10 03:28:21.078 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.078 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT q1, q2, q1 * q2 AS multiply FROM INT8_TBL;
+2026-09-10 03:28:21.078 UTC postmaster[116745] pg_regress/name ERROR:  string is not a valid identifier: ""c".X XXXXXXXXXX"
+2026-09-10 03:28:21.078 UTC postmaster[116745] pg_regress/name STATEMENT:  SELECT parse_ident(E'"c".X XXXX\002XXXXXX');
+2026-09-10 03:28:21.078 UTC postmaster[116745] pg_regress/int4 ERROR:  integer out of range
+2026-09-10 03:28:21.078 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT (-2147483648)::int4 * (-1)::int2;
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/name ERROR:  string is not a valid identifier: "1020"
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/name STATEMENT:  SELECT parse_ident('1020');
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/name ERROR:  string is not a valid identifier: "10.20"
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/name STATEMENT:  SELECT parse_ident('10.20');
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/int4 ERROR:  integer out of range
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT (-2147483648)::int4 / (-1)::int2;
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/pg_lsn ERROR:  pg_lsn out of range
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/pg_lsn STATEMENT:  SELECT '0/1'::pg_lsn - 2::numeric;
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/name ERROR:  string is not a valid identifier: "."
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/name DETAIL:  No valid identifier before ".".
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/name STATEMENT:  SELECT parse_ident('.');
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/name ERROR:  string is not a valid identifier: ".1020"
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/name DETAIL:  No valid identifier before ".".
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/name STATEMENT:  SELECT parse_ident('.1020');
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/regproc ERROR:  operator does not exist: ||// at character 16
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regoper('||//');
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/name ERROR:  string is not a valid identifier: "xxx.1020"
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/name DETAIL:  No valid identifier after ".".
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/name STATEMENT:  SELECT parse_ident('xxx.1020');
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/text ERROR:  null values cannot be formatted as an SQL identifier
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/text STATEMENT:  select format('INSERT INTO %I VALUES(%L,%L)', NULL, 10, 'Hello');
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/regproc ERROR:  operator does not exist: ++(int4,int4) at character 20
+2026-09-10 03:28:21.079 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regoperator('++(int4,int4)');
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc ERROR:  function "know" does not exist at character 16
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regproc('know');
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc ERROR:  function "absinthe(numeric)" does not exist at character 21
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regprocedure('absinthe(numeric)');
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc ERROR:  relation "pg_classes" does not exist at character 17
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regclass('pg_classes');
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc ERROR:  type "int3" does not exist at character 16
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regtype('int3');
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/boolean ERROR:  invalid input syntax for type boolean: "XXX" at character 43
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/boolean STATEMENT:  INSERT INTO BOOLTBL2 (f1)
+	   VALUES (bool 'XXX');
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc ERROR:  operator does not exist: ng_catalog.||/ at character 16
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regoper('ng_catalog.||/');
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc ERROR:  operator does not exist: ng_catalog.+(int4,int4) at character 20
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regoperator('ng_catalog.+(int4,int4)');
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc ERROR:  function "ng_catalog.now" does not exist at character 16
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regproc('ng_catalog.now');
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc ERROR:  function "ng_catalog.abs(numeric)" does not exist at character 21
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regprocedure('ng_catalog.abs(numeric)');
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc ERROR:  relation "ng_catalog.pg_class" does not exist at character 17
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regclass('ng_catalog.pg_class');
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc ERROR:  schema "ng_catalog" does not exist at character 16
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regtype('ng_catalog.int4');
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc ERROR:  collation "ng_catalog.POSIX" for encoding "UTF8" does not exist at character 21
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regcollation('ng_catalog."POSIX"');
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc ERROR:  role "regress_regrole_test" does not exist at character 16
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regrole('regress_regrole_test');
+xtc: backend fiber exiting pid=(loop=13,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=13,local=1,gen=1)
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc ERROR:  role "regress_regrole_test" does not exist at character 16
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regrole('"regress_regrole_test"');
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/pg_lsn ERROR:  cannot add NaN to pg_lsn
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/pg_lsn STATEMENT:  SELECT '0/16AE7F7'::pg_lsn + 'NaN'::numeric;
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc ERROR:  role "nonexistent" does not exist at character 16
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regrole('Nonexistent');
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc ERROR:  role "Nonexistent" does not exist at character 16
+2026-09-10 03:28:21.080 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regrole('"Nonexistent"');
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/money ERROR:  value "123456789012345678" is out of range for type money at character 8
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '123456789012345678'::money;
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/regproc ERROR:  invalid name syntax at character 16
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regrole('foo.bar');
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/money ERROR:  value "9223372036854775807" is out of range for type money at character 8
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '9223372036854775807'::money;
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/regproc ERROR:  schema "nonexistent" does not exist at character 21
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regnamespace('Nonexistent');
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/regproc ERROR:  schema "Nonexistent" does not exist at character 21
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regnamespace('"Nonexistent"');
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/regproc ERROR:  invalid name syntax at character 21
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regnamespace('foo.bar');
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/regproc ERROR:  database "nonexistent" does not exist at character 20
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regdatabase('Nonexistent');
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/money ERROR:  value "-123456789012345678" is out of range for type money at character 8
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '-123456789012345678'::money;
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/pg_lsn ERROR:  cannot subtract NaN from pg_lsn
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/pg_lsn STATEMENT:  SELECT '0/16AE7F7'::pg_lsn - 'NaN'::numeric;
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/money ERROR:  value "-9223372036854775808" is out of range for type money at character 8
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '-9223372036854775808'::money;
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/regproc ERROR:  database "Nonexistent" does not exist at character 20
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regdatabase('"Nonexistent"');
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/regproc ERROR:  invalid name syntax at character 20
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT regdatabase('foo.bar');
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/text ERROR:  too few arguments for format()
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/text STATEMENT:  select format('%1$s %4$s', 1, 2, 3);
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/int4 ERROR:  integer out of range
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT gcd((-2147483648)::int4, 0::int4);
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/text ERROR:  too few arguments for format()
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/text STATEMENT:  select format('%1$s %13$s', 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12);
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/text ERROR:  format specifies argument 0, but arguments are numbered from 1
+2026-09-10 03:28:21.081 UTC postmaster[116745] pg_regress/text STATEMENT:  select format('%0$s', 'Hello');
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/int4 ERROR:  integer out of range
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT gcd((-2147483648)::int4, (-2147483648)::int4);
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/text ERROR:  format specifies argument 0, but arguments are numbered from 1
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/text STATEMENT:  select format('%*0$s', 'Hello');
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/money ERROR:  value "-92233720368547758.09" is out of range for type money at character 8
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '-92233720368547758.09'::money;
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/text ERROR:  unterminated format() type specifier
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/text HINT:  For a single "%" use "%%".
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/text STATEMENT:  select format('%1$', 1);
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/money ERROR:  value "92233720368547758.08" is out of range for type money at character 8
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '92233720368547758.08'::money;
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/money ERROR:  value "-92233720368547758.085" is out of range for type money at character 8
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '-92233720368547758.085'::money;
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/money ERROR:  value "92233720368547758.075" is out of range for type money at character 8
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '92233720368547758.075'::money;
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/text ERROR:  unterminated format() type specifier
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/text HINT:  For a single "%" use "%%".
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/text STATEMENT:  select format('%1$1', 1);
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/rangetypes ERROR:  range lower bound must be less than or equal to range upper bound
+2026-09-10 03:28:21.082 UTC postmaster[116745] pg_regress/rangetypes STATEMENT:  select numrange(2.0, 1.0);
+2026-09-10 03:28:21.083 UTC postmaster[116745] pg_regress/float8 ERROR:  zero raised to a negative power is undefined
+2026-09-10 03:28:21.083 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT power(float8 '0', float8 '-inf');
+2026-09-10 03:28:21.084 UTC postmaster[116745] pg_regress/money ERROR:  money out of range
+2026-09-10 03:28:21.084 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '92233720368547758.07'::money + '0.01'::money;
+xtc: backend fiber exiting pid=(loop=22,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=22,local=1,gen=1)
+2026-09-10 03:28:21.084 UTC postmaster[116745] pg_regress/money ERROR:  money out of range
+2026-09-10 03:28:21.084 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '-92233720368547758.08'::money - '0.01'::money;
+2026-09-10 03:28:21.084 UTC postmaster[116745] pg_regress/money ERROR:  money out of range
+2026-09-10 03:28:21.084 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '92233720368547758.07'::money * 2::float8;
+2026-09-10 03:28:21.084 UTC postmaster[116745] pg_regress/money ERROR:  money out of range
+2026-09-10 03:28:21.084 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '-1'::money / 1.175494e-38::float4;
+2026-09-10 03:28:21.084 UTC postmaster[116745] pg_regress/money ERROR:  money out of range
+2026-09-10 03:28:21.084 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '92233720368547758.07'::money * 2::int4;
+2026-09-10 03:28:21.084 UTC postmaster[116745] pg_regress/money ERROR:  money out of range
+2026-09-10 03:28:21.084 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '-92233720368547758.08'::money * -1::int8;
+2026-09-10 03:28:21.084 UTC postmaster[116745] pg_regress/money ERROR:  money out of range
+2026-09-10 03:28:21.084 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '-92233720368547758.08'::money / -1::int8;
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/money ERROR:  money out of range
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '-92233720368547758.08'::money / -1::int4;
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/int4 ERROR:  integer out of range
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT lcm((-2147483648)::int4, 1::int4);
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/int4 ERROR:  integer out of range
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT lcm(2147483647::int4, 2147483646::int4);
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/money ERROR:  money out of range
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '-92233720368547758.08'::money / -1::int2;
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/money ERROR:  division by zero
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '1'::money / 0::int2;
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/money ERROR:  money out of range
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '42'::money * 'inf'::float8;
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/money ERROR:  money out of range
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '42'::money * '-inf'::float8;
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/money ERROR:  money out of range
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/money STATEMENT:  SELECT '42'::money * 'nan'::float4;
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/int4 ERROR:  invalid input syntax for type integer: "0b" at character 13
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT int4 '0b';
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/int4 ERROR:  invalid input syntax for type integer: "0o" at character 13
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT int4 '0o';
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/int4 ERROR:  invalid input syntax for type integer: "0x" at character 13
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT int4 '0x';
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/int4 ERROR:  value "0b10000000000000000000000000000000" is out of range for type integer at character 13
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT int4 '0b10000000000000000000000000000000';
+xtc: backend fiber exiting pid=(loop=23,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=23,local=1,gen=1)
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/int4 ERROR:  value "0o20000000000" is out of range for type integer at character 13
+2026-09-10 03:28:21.085 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT int4 '0o20000000000';
+2026-09-10 03:28:21.086 UTC postmaster[116745] pg_regress/int4 ERROR:  value "0x80000000" is out of range for type integer at character 13
+2026-09-10 03:28:21.086 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT int4 '0x80000000';
+2026-09-10 03:28:21.086 UTC postmaster[116745] pg_regress/int4 ERROR:  value "-0b10000000000000000000000000000001" is out of range for type integer at character 13
+2026-09-10 03:28:21.086 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT int4 '-0b10000000000000000000000000000001';
+2026-09-10 03:28:21.086 UTC postmaster[116745] pg_regress/int4 ERROR:  value "-0o20000000001" is out of range for type integer at character 13
+2026-09-10 03:28:21.086 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT int4 '-0o20000000001';
+2026-09-10 03:28:21.086 UTC postmaster[116745] pg_regress/int4 ERROR:  value "-0x80000001" is out of range for type integer at character 13
+2026-09-10 03:28:21.086 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT int4 '-0x80000001';
+2026-09-10 03:28:21.087 UTC postmaster[116745] pg_regress/int4 ERROR:  invalid input syntax for type integer: "_100" at character 13
+2026-09-10 03:28:21.087 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT int4 '_100';
+2026-09-10 03:28:21.087 UTC postmaster[116745] pg_regress/int4 ERROR:  invalid input syntax for type integer: "100_" at character 13
+2026-09-10 03:28:21.087 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT int4 '100_';
+2026-09-10 03:28:21.087 UTC postmaster[116745] pg_regress/int4 ERROR:  invalid input syntax for type integer: "100__000" at character 13
+2026-09-10 03:28:21.087 UTC postmaster[116745] pg_regress/int4 STATEMENT:  SELECT int4 '100__000';
+2026-09-10 03:28:21.087 UTC postmaster[116745] pg_regress/regproc ERROR:  syntax error at or near "type" at character 11
+2026-09-10 03:28:21.087 UTC postmaster[116745] pg_regress/regproc CONTEXT:  invalid type name "incorrect type name syntax"
+2026-09-10 03:28:21.087 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT * FROM pg_input_error_info('incorrect type name syntax', 'regtype');
+2026-09-10 03:28:21.087 UTC postmaster[116745] pg_regress/regproc ERROR:  invalid NUMERIC type modifier
+2026-09-10 03:28:21.087 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT * FROM pg_input_error_info('numeric(1,2,3)', 'regtype');
+2026-09-10 03:28:21.087 UTC postmaster[116745] pg_regress/float8 ERROR:  a negative number raised to a non-integer power yields a complex result
+2026-09-10 03:28:21.087 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT power(float8 '-inf', float8 '3.5');
+2026-09-10 03:28:21.087 UTC postmaster[116745] pg_regress/regproc ERROR:  improper qualified name (too many dotted names): way.too.many.names
+2026-09-10 03:28:21.087 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT * FROM pg_input_error_info('way.too.many.names', 'regtype');
+2026-09-10 03:28:21.087 UTC postmaster[116745] pg_regress/regproc ERROR:  cross-database references are not implemented: no_such_catalog.schema.name
+2026-09-10 03:28:21.087 UTC postmaster[116745] pg_regress/regproc STATEMENT:  SELECT * FROM pg_input_error_info('no_such_catalog.schema.name', 'regtype');
+xtc: backend fiber exiting pid=(loop=14,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=14,local=1,gen=1)
+xtc: backend fiber exiting pid=(loop=26,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=26,local=1,gen=1)
+xtc: backend fiber exiting pid=(loop=16,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=16,local=1,gen=1)
+xtc: backend fiber exiting pid=(loop=17,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=17,local=1,gen=1)
+2026-09-10 03:28:21.088 UTC postmaster[116745] pg_regress/rangetypes ERROR:  result of range union would not be contiguous
+2026-09-10 03:28:21.088 UTC postmaster[116745] pg_regress/rangetypes STATEMENT:  select numrange(1.0, 2.0) + numrange(2.5, 3.0);
+xtc: backend fiber exiting pid=(loop=27,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=27,local=1,gen=1)
+xtc: backend fiber exiting pid=(loop=11,local=1,gen=1) code=0
+2026-09-10 03:28:21.090 UTC postmaster[116745] pg_regress/bit ERROR:  cannot AND bit strings of different sizes
+2026-09-10 03:28:21.090 UTC postmaster[116745] pg_regress/bit STATEMENT:  select B'001' & B'10';
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=11,local=1,gen=1)
+2026-09-10 03:28:21.090 UTC postmaster[116745] pg_regress/bit ERROR:  cannot OR bit strings of different sizes
+2026-09-10 03:28:21.090 UTC postmaster[116745] pg_regress/bit STATEMENT:  select B'0111' | B'011';
+2026-09-10 03:28:21.090 UTC postmaster[116745] pg_regress/bit ERROR:  cannot XOR bit strings of different sizes
+2026-09-10 03:28:21.090 UTC postmaster[116745] pg_regress/bit STATEMENT:  select B'0010' # B'011101';
+2026-09-10 03:28:21.091 UTC postmaster[116745] pg_regress/uuid ERROR:  duplicate key value violates unique constraint "guid1_unique_btree"
+2026-09-10 03:28:21.091 UTC postmaster[116745] pg_regress/uuid DETAIL:  Key (guid_field)=(11111111-1111-1111-1111-111111111111) already exists.
+2026-09-10 03:28:21.091 UTC postmaster[116745] pg_regress/uuid STATEMENT:  INSERT INTO guid1(guid_field) VALUES('11111111-1111-1111-1111-111111111111');
+2026-09-10 03:28:21.091 UTC postmaster[116745] pg_regress/float8 ERROR:  value out of range: overflow
+2026-09-10 03:28:21.091 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT f.f1 * '1e200' from FLOAT8_TBL f;
+2026-09-10 03:28:21.092 UTC postmaster[116745] pg_regress/float8 ERROR:  value out of range: overflow
+2026-09-10 03:28:21.092 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT f.f1 ^ '1e200' from FLOAT8_TBL f;
+2026-09-10 03:28:21.093 UTC postmaster[116745] pg_regress/float8 ERROR:  cannot take logarithm of zero
+2026-09-10 03:28:21.093 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT ln(f.f1) from FLOAT8_TBL f where f.f1 = '0.0' ;
+2026-09-10 03:28:21.093 UTC postmaster[116745] pg_regress/float8 ERROR:  cannot take logarithm of a negative number
+2026-09-10 03:28:21.093 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT ln(f.f1) from FLOAT8_TBL f where f.f1 < '0.0' ;
+2026-09-10 03:28:21.094 UTC postmaster[116745] pg_regress/float8 ERROR:  value out of range: underflow
+2026-09-10 03:28:21.094 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT exp(f.f1) from FLOAT8_TBL f;
+2026-09-10 03:28:21.094 UTC postmaster[116745] pg_regress/float8 ERROR:  division by zero
+2026-09-10 03:28:21.094 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT f.f1 / '0.0' from FLOAT8_TBL f;
+xtc: backend fiber exiting pid=(loop=9,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=9,local=1,gen=1)
+2026-09-10 03:28:21.097 UTC postmaster[116745] pg_regress/int8 ERROR:  value "-9223372036854775809" is out of range for type bigint at character 8
+2026-09-10 03:28:21.097 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '-9223372036854775809'::int8;
+2026-09-10 03:28:21.098 UTC postmaster[116745] pg_regress/int8 ERROR:  value "9223372036854775808" is out of range for type bigint at character 8
+2026-09-10 03:28:21.098 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '9223372036854775808'::int8;
+2026-09-10 03:28:21.101 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.101 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select -('-9223372036854775808'::int8);
+2026-09-10 03:28:21.102 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.102 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select 0::int8 - '-9223372036854775808'::int8;
+2026-09-10 03:28:21.102 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.102 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '9223372036854775800'::int8 + '9223372036854775800'::int8;
+2026-09-10 03:28:21.103 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.103 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '-9223372036854775800'::int8 + '-9223372036854775800'::int8;
+2026-09-10 03:28:21.103 UTC postmaster[116745] pg_regress/float8 ERROR:  input is out of range
+2026-09-10 03:28:21.103 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT acosh(float8 '-infinity');
+2026-09-10 03:28:21.104 UTC postmaster[116745] pg_regress/bit ERROR:  bit index 16 out of valid range (0..15)
+2026-09-10 03:28:21.104 UTC postmaster[116745] pg_regress/bit STATEMENT:  SELECT set_bit(B'0101011000100100', 16, 1);
+2026-09-10 03:28:21.104 UTC postmaster[116745] pg_regress/float8 ERROR:  input is out of range
+2026-09-10 03:28:21.104 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT atanh(float8 'infinity');
+2026-09-10 03:28:21.104 UTC postmaster[116745] pg_regress/float8 ERROR:  input is out of range
+2026-09-10 03:28:21.104 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT atanh(float8 '-infinity');
+2026-09-10 03:28:21.105 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.105 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '9223372036854775800'::int8 - '-9223372036854775800'::int8;
+2026-09-10 03:28:21.105 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.105 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '-9223372036854775800'::int8 - '9223372036854775800'::int8;
+2026-09-10 03:28:21.106 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.106 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '9223372036854775800'::int8 * '9223372036854775800'::int8;
+2026-09-10 03:28:21.106 UTC postmaster[116745] pg_regress/enum ERROR:  value for domain rgb violates check constraint "rgb_check"
+2026-09-10 03:28:21.106 UTC postmaster[116745] pg_regress/enum STATEMENT:  SELECT 'purple'::rgb;
+2026-09-10 03:28:21.106 UTC postmaster[116745] pg_regress/int8 ERROR:  division by zero
+2026-09-10 03:28:21.106 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '9223372036854775800'::int8 / '0'::int8;
+2026-09-10 03:28:21.106 UTC postmaster[116745] pg_regress/enum ERROR:  value for domain rgb violates check constraint "rgb_check"
+2026-09-10 03:28:21.106 UTC postmaster[116745] pg_regress/enum STATEMENT:  SELECT 'purple'::rainbow::rgb;
+2026-09-10 03:28:21.106 UTC postmaster[116745] pg_regress/int8 ERROR:  division by zero
+2026-09-10 03:28:21.106 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '9223372036854775800'::int8 % '0'::int8;
+2026-09-10 03:28:21.107 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.107 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select abs('-9223372036854775808'::int8);
+2026-09-10 03:28:21.107 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.107 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '9223372036854775800'::int8 + '100'::int4;
+2026-09-10 03:28:21.107 UTC postmaster[116745] pg_regress/float8 ERROR:  value out of range: overflow
+2026-09-10 03:28:21.107 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT gamma(float8 '-infinity');
+2026-09-10 03:28:21.108 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.108 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '-9223372036854775800'::int8 - '100'::int4;
+2026-09-10 03:28:21.108 UTC postmaster[116745] pg_regress/float8 ERROR:  value out of range: underflow
+2026-09-10 03:28:21.108 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT gamma(float8 '-1000.5');
+2026-09-10 03:28:21.108 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.108 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '9223372036854775800'::int8 * '100'::int4;
+2026-09-10 03:28:21.108 UTC postmaster[116745] pg_regress/float8 ERROR:  value out of range: overflow
+2026-09-10 03:28:21.108 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT gamma(float8 '-1');
+2026-09-10 03:28:21.109 UTC postmaster[116745] pg_regress/float8 ERROR:  value out of range: overflow
+2026-09-10 03:28:21.109 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT lgamma(float8 '-1');
+2026-09-10 03:28:21.109 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.109 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '100'::int4 + '9223372036854775800'::int8;
+2026-09-10 03:28:21.109 UTC postmaster[116745] pg_regress/float8 ERROR:  value out of range: overflow
+2026-09-10 03:28:21.109 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT gamma(float8 '0');
+2026-09-10 03:28:21.109 UTC postmaster[116745] pg_regress/float8 ERROR:  value out of range: overflow
+2026-09-10 03:28:21.109 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT lgamma(float8 '0');
+2026-09-10 03:28:21.109 UTC postmaster[116745] pg_regress/float8 ERROR:  value out of range: overflow
+2026-09-10 03:28:21.109 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT gamma(float8 '1000');
+2026-09-10 03:28:21.110 UTC postmaster[116745] pg_regress/float8 ERROR:  value out of range: overflow
+2026-09-10 03:28:21.110 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT lgamma(float8 '1e308');
+2026-09-10 03:28:21.111 UTC postmaster[116745] pg_regress/float8 ERROR:  "10e400" is out of range for type double precision at character 36
+2026-09-10 03:28:21.111 UTC postmaster[116745] pg_regress/float8 STATEMENT:  INSERT INTO FLOAT8_TBL(f1) VALUES ('10e400');
+2026-09-10 03:28:21.111 UTC postmaster[116745] pg_regress/float8 ERROR:  "-10e400" is out of range for type double precision at character 36
+2026-09-10 03:28:21.111 UTC postmaster[116745] pg_regress/float8 STATEMENT:  INSERT INTO FLOAT8_TBL(f1) VALUES ('-10e400');
+2026-09-10 03:28:21.112 UTC postmaster[116745] pg_regress/float8 ERROR:  "10e-400" is out of range for type double precision at character 36
+2026-09-10 03:28:21.112 UTC postmaster[116745] pg_regress/float8 STATEMENT:  INSERT INTO FLOAT8_TBL(f1) VALUES ('10e-400');
+2026-09-10 03:28:21.112 UTC postmaster[116745] pg_regress/float8 ERROR:  "-10e-400" is out of range for type double precision at character 36
+2026-09-10 03:28:21.112 UTC postmaster[116745] pg_regress/float8 STATEMENT:  INSERT INTO FLOAT8_TBL(f1) VALUES ('-10e-400');
+2026-09-10 03:28:21.115 UTC postmaster[116745] pg_regress/float8 ERROR:  smallint out of range
+2026-09-10 03:28:21.115 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT '32767.6'::float8::int2;
+2026-09-10 03:28:21.118 UTC postmaster[116745] pg_regress/enum ERROR:  insert or update on table "enumtest_child" violates foreign key constraint "enumtest_child_parent_fkey"
+2026-09-10 03:28:21.118 UTC postmaster[116745] pg_regress/enum DETAIL:  Key (parent)=(blue) is not present in table "enumtest_parent".
+2026-09-10 03:28:21.118 UTC postmaster[116745] pg_regress/enum STATEMENT:  INSERT INTO enumtest_child VALUES ('blue');
+2026-09-10 03:28:21.118 UTC postmaster[116745] pg_regress/float8 ERROR:  smallint out of range
+2026-09-10 03:28:21.118 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT '-32768.6'::float8::int2;
+2026-09-10 03:28:21.119 UTC postmaster[116745] pg_regress/enum ERROR:  update or delete on table "enumtest_parent" violates foreign key constraint "enumtest_child_parent_fkey" on table "enumtest_child"
+2026-09-10 03:28:21.119 UTC postmaster[116745] pg_regress/enum DETAIL:  Key (id)=(red) is still referenced from table "enumtest_child".
+2026-09-10 03:28:21.119 UTC postmaster[116745] pg_regress/enum STATEMENT:  DELETE FROM enumtest_parent;
+2026-09-10 03:28:21.120 UTC postmaster[116745] pg_regress/enum ERROR:  foreign key constraint "enumtest_bogus_child_parent_fkey" cannot be implemented
+2026-09-10 03:28:21.120 UTC postmaster[116745] pg_regress/enum DETAIL:  Key columns "parent" of the referencing table and "id" of the referenced table are of incompatible types: bogus and rainbow.
+2026-09-10 03:28:21.120 UTC postmaster[116745] pg_regress/enum STATEMENT:  CREATE TABLE enumtest_bogus_child(parent bogus REFERENCES enumtest_parent);
+2026-09-10 03:28:21.120 UTC postmaster[116745] pg_regress/float8 ERROR:  integer out of range
+2026-09-10 03:28:21.120 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT '2147483647.6'::float8::int4;
+2026-09-10 03:28:21.121 UTC postmaster[116745] pg_regress/float8 ERROR:  integer out of range
+2026-09-10 03:28:21.121 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT '-2147483648.6'::float8::int4;
+2026-09-10 03:28:21.121 UTC postmaster[116745] pg_regress/enum ERROR:  "red" is not an existing enum label
+2026-09-10 03:28:21.121 UTC postmaster[116745] pg_regress/enum STATEMENT:  ALTER TYPE rainbow RENAME VALUE 'red' TO 'crimson';
+2026-09-10 03:28:21.121 UTC postmaster[116745] pg_regress/enum ERROR:  enum label "green" already exists
+2026-09-10 03:28:21.121 UTC postmaster[116745] pg_regress/enum STATEMENT:  ALTER TYPE rainbow RENAME VALUE 'blue' TO 'green';
+2026-09-10 03:28:21.121 UTC postmaster[116745] pg_regress/float8 ERROR:  bigint out of range
+2026-09-10 03:28:21.121 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT '9223372036854775807'::float8::int8;
+2026-09-10 03:28:21.122 UTC postmaster[116745] pg_regress/float8 ERROR:  bigint out of range
+2026-09-10 03:28:21.122 UTC postmaster[116745] pg_regress/float8 STATEMENT:  SELECT '-9223372036854780000'::float8::int8;
+2026-09-10 03:28:21.122 UTC postmaster[116745] pg_regress/enum ERROR:  unsafe use of new value "new" of enum type bogus at character 8
+2026-09-10 03:28:21.122 UTC postmaster[116745] pg_regress/enum HINT:  New enum values must be committed before they can be used.
+2026-09-10 03:28:21.122 UTC postmaster[116745] pg_regress/enum STATEMENT:  SELECT 'new'::bogus;
+2026-09-10 03:28:21.123 UTC postmaster[116745] pg_regress/enum ERROR:  unsafe use of new value "new" of enum type bogus
+2026-09-10 03:28:21.123 UTC postmaster[116745] pg_regress/enum HINT:  New enum values must be committed before they can be used.
+2026-09-10 03:28:21.123 UTC postmaster[116745] pg_regress/enum STATEMENT:  SELECT enum_last(null::bogus);
+2026-09-10 03:28:21.123 UTC postmaster[116745] pg_regress/enum ERROR:  unsafe use of new value "new" of enum type bogus
+2026-09-10 03:28:21.123 UTC postmaster[116745] pg_regress/enum HINT:  New enum values must be committed before they can be used.
+2026-09-10 03:28:21.123 UTC postmaster[116745] pg_regress/enum STATEMENT:  SELECT enum_range(null::bogus);
+2026-09-10 03:28:21.124 UTC postmaster[116745] pg_regress/enum ERROR:  unsafe use of new value "bad" of enum type bogon at character 8
+2026-09-10 03:28:21.124 UTC postmaster[116745] pg_regress/enum HINT:  New enum values must be committed before they can be used.
+2026-09-10 03:28:21.124 UTC postmaster[116745] pg_regress/enum STATEMENT:  SELECT 'bad'::bogon;
+xtc: backend fiber exiting pid=(loop=19,local=1,gen=1) code=0
+2026-09-10 03:28:21.126 UTC postmaster[116745] pg_regress/float8 ERROR:  type "no_such_type" does not exist at character 69
+2026-09-10 03:28:21.126 UTC postmaster[116745] pg_regress/float8 STATEMENT:  create type xfloat8 (input = xfloat8in, output = xfloat8out, like = no_such_type);
+xtc: backend fiber exiting pid=(loop=25,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=25,local=1,gen=1)
+xtc: backend fiber exiting pid=(loop=18,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=18,local=1,gen=1)
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=19,local=1,gen=1)
+2026-09-10 03:28:21.143 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.143 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '-100'::int4 - '9223372036854775800'::int8;
+2026-09-10 03:28:21.143 UTC postmaster[116745] pg_regress/uuid ERROR:  interval out of range for UUID version 7
+2026-09-10 03:28:21.143 UTC postmaster[116745] pg_regress/uuid DETAIL:  UUID version 7 does not support infinite intervals.
+2026-09-10 03:28:21.143 UTC postmaster[116745] pg_regress/uuid STATEMENT:  SELECT uuidv7('infinity'::interval);
+2026-09-10 03:28:21.144 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.144 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '100'::int4 * '9223372036854775800'::int8;
+2026-09-10 03:28:21.144 UTC postmaster[116745] pg_regress/uuid ERROR:  interval out of range for UUID version 7
+2026-09-10 03:28:21.144 UTC postmaster[116745] pg_regress/uuid DETAIL:  UUID version 7 does not support infinite intervals.
+2026-09-10 03:28:21.144 UTC postmaster[116745] pg_regress/uuid STATEMENT:  SELECT uuidv7('-infinity'::interval);
+2026-09-10 03:28:21.144 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.144 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '9223372036854775800'::int8 + '100'::int2;
+2026-09-10 03:28:21.144 UTC postmaster[116745] pg_regress/uuid ERROR:  timestamp out of range for UUID version 7
+2026-09-10 03:28:21.144 UTC postmaster[116745] pg_regress/uuid DETAIL:  UUID version 7 supports timestamps from 1970-01-01 to approximately year 10889.
+2026-09-10 03:28:21.144 UTC postmaster[116745] pg_regress/uuid STATEMENT:  SELECT uuidv7('-1000 years'::interval);
+2026-09-10 03:28:21.144 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.144 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '-9223372036854775800'::int8 - '100'::int2;
+2026-09-10 03:28:21.144 UTC postmaster[116745] pg_regress/uuid ERROR:  timestamp out of range for UUID version 7
+2026-09-10 03:28:21.144 UTC postmaster[116745] pg_regress/uuid DETAIL:  UUID version 7 supports timestamps from 1970-01-01 to approximately year 10889.
+2026-09-10 03:28:21.144 UTC postmaster[116745] pg_regress/uuid STATEMENT:  SELECT uuidv7('9000 years'::interval);
+2026-09-10 03:28:21.144 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.144 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '9223372036854775800'::int8 * '100'::int2;
+2026-09-10 03:28:21.145 UTC postmaster[116745] pg_regress/int8 ERROR:  division by zero
+2026-09-10 03:28:21.145 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '-9223372036854775808'::int8 / '0'::int2;
+2026-09-10 03:28:21.145 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.145 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '100'::int2 + '9223372036854775800'::int8;
+2026-09-10 03:28:21.145 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.145 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '-100'::int2 - '9223372036854775800'::int8;
+2026-09-10 03:28:21.146 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.146 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '100'::int2 * '9223372036854775800'::int8;
+2026-09-10 03:28:21.146 UTC postmaster[116745] pg_regress/int8 ERROR:  division by zero
+2026-09-10 03:28:21.146 UTC postmaster[116745] pg_regress/int8 STATEMENT:  select '100'::int2 / '0'::int8;
+2026-09-10 03:28:21.146 UTC postmaster[116745] pg_regress/int8 ERROR:  integer out of range
+2026-09-10 03:28:21.146 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT CAST(q1 AS int4) FROM int8_tbl WHERE q2 <> 456;
+2026-09-10 03:28:21.147 UTC postmaster[116745] pg_regress/int8 ERROR:  smallint out of range
+2026-09-10 03:28:21.147 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT CAST(q1 AS int2) FROM int8_tbl WHERE q2 <> 456;
+2026-09-10 03:28:21.149 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.149 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT CAST('922337203685477580700.0'::float8 AS int8);
+2026-09-10 03:28:21.149 UTC postmaster[116745] pg_regress/uuid ERROR:  invalid input length for type uuid
+2026-09-10 03:28:21.149 UTC postmaster[116745] pg_regress/uuid DETAIL:  Expected 16 bytes, got 8.
+2026-09-10 03:28:21.149 UTC postmaster[116745] pg_regress/uuid STATEMENT:  SELECT '\x1234567890abcdef'::bytea::uuid;
+2026-09-10 03:28:21.149 UTC postmaster[116745] pg_regress/int8 ERROR:  OID out of range
+2026-09-10 03:28:21.149 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT CAST(q1 AS oid) FROM INT8_TBL;
+2026-09-10 03:28:21.154 UTC postmaster[116745] pg_regress/int8 ERROR:  step size cannot equal zero
+2026-09-10 03:28:21.154 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT * FROM generate_series('+4567890123456789'::int8, '+4567890123456799'::int8, 0);
+xtc: backend fiber exiting pid=(loop=21,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=21,local=1,gen=1)
+2026-09-10 03:28:21.155 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.155 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT (-9223372036854775808)::int8 * (-1)::int8;
+2026-09-10 03:28:21.155 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.155 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT (-9223372036854775808)::int8 / (-1)::int8;
+2026-09-10 03:28:21.155 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.155 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT (-9223372036854775808)::int8 * (-1)::int4;
+2026-09-10 03:28:21.155 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.155 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT (-9223372036854775808)::int8 / (-1)::int4;
+2026-09-10 03:28:21.156 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.156 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT (-9223372036854775808)::int8 * (-1)::int2;
+2026-09-10 03:28:21.156 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.156 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT (-9223372036854775808)::int8 / (-1)::int2;
+2026-09-10 03:28:21.157 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.157 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT gcd((-9223372036854775808)::int8, 0::int8);
+2026-09-10 03:28:21.157 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.157 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT gcd((-9223372036854775808)::int8, (-9223372036854775808)::int8);
+2026-09-10 03:28:21.158 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.158 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT lcm((-9223372036854775808)::int8, 1::int8);
+2026-09-10 03:28:21.158 UTC postmaster[116745] pg_regress/int8 ERROR:  bigint out of range
+2026-09-10 03:28:21.158 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT lcm(9223372036854775807::int8, 9223372036854775806::int8);
+2026-09-10 03:28:21.159 UTC postmaster[116745] pg_regress/int8 ERROR:  invalid input syntax for type bigint: "0b" at character 13
+2026-09-10 03:28:21.159 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT int8 '0b';
+2026-09-10 03:28:21.159 UTC postmaster[116745] pg_regress/int8 ERROR:  invalid input syntax for type bigint: "0o" at character 13
+2026-09-10 03:28:21.159 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT int8 '0o';
+2026-09-10 03:28:21.159 UTC postmaster[116745] pg_regress/int8 ERROR:  invalid input syntax for type bigint: "0x" at character 13
+2026-09-10 03:28:21.159 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT int8 '0x';
+2026-09-10 03:28:21.159 UTC postmaster[116745] pg_regress/int8 ERROR:  value "0b1000000000000000000000000000000000000000000000000000000000000000" is out of range for type bigint at character 13
+2026-09-10 03:28:21.159 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT int8 '0b1000000000000000000000000000000000000000000000000000000000000000';
+2026-09-10 03:28:21.159 UTC postmaster[116745] pg_regress/int8 ERROR:  value "0o1000000000000000000000" is out of range for type bigint at character 13
+2026-09-10 03:28:21.159 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT int8 '0o1000000000000000000000';
+2026-09-10 03:28:21.160 UTC postmaster[116745] pg_regress/int8 ERROR:  value "0x8000000000000000" is out of range for type bigint at character 13
+2026-09-10 03:28:21.160 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT int8 '0x8000000000000000';
+2026-09-10 03:28:21.160 UTC postmaster[116745] pg_regress/int8 ERROR:  value "-0b1000000000000000000000000000000000000000000000000000000000000001" is out of range for type bigint at character 13
+2026-09-10 03:28:21.160 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT int8 '-0b1000000000000000000000000000000000000000000000000000000000000001';
+2026-09-10 03:28:21.160 UTC postmaster[116745] pg_regress/int8 ERROR:  value "-0o1000000000000000000001" is out of range for type bigint at character 13
+2026-09-10 03:28:21.160 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT int8 '-0o1000000000000000000001';
+2026-09-10 03:28:21.160 UTC postmaster[116745] pg_regress/int8 ERROR:  value "-0x8000000000000001" is out of range for type bigint at character 13
+2026-09-10 03:28:21.160 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT int8 '-0x8000000000000001';
+2026-09-10 03:28:21.161 UTC postmaster[116745] pg_regress/int8 ERROR:  invalid input syntax for type bigint: "_100" at character 13
+2026-09-10 03:28:21.161 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT int8 '_100';
+2026-09-10 03:28:21.161 UTC postmaster[116745] pg_regress/int8 ERROR:  invalid input syntax for type bigint: "100_" at character 13
+2026-09-10 03:28:21.161 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT int8 '100_';
+2026-09-10 03:28:21.161 UTC postmaster[116745] pg_regress/int8 ERROR:  invalid input syntax for type bigint: "100__000" at character 13
+2026-09-10 03:28:21.161 UTC postmaster[116745] pg_regress/int8 STATEMENT:  SELECT int8 '100__000';
+xtc: backend fiber exiting pid=(loop=15,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=15,local=1,gen=1)
+2026-09-10 03:28:21.249 UTC postmaster[116745] pg_regress/numeric ERROR:  division by zero
+2026-09-10 03:28:21.249 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT 'inf'::numeric / '0';
+2026-09-10 03:28:21.249 UTC postmaster[116745] pg_regress/numeric ERROR:  division by zero
+2026-09-10 03:28:21.249 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT '-inf'::numeric / '0';
+2026-09-10 03:28:21.249 UTC postmaster[116745] pg_regress/numeric ERROR:  division by zero
+2026-09-10 03:28:21.249 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT '0'::numeric / '0';
+2026-09-10 03:28:21.249 UTC postmaster[116745] pg_regress/numeric ERROR:  division by zero
+2026-09-10 03:28:21.249 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT 'inf'::numeric % '0';
+2026-09-10 03:28:21.249 UTC postmaster[116745] pg_regress/numeric ERROR:  division by zero
+2026-09-10 03:28:21.249 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT '-inf'::numeric % '0';
+2026-09-10 03:28:21.250 UTC postmaster[116745] pg_regress/numeric ERROR:  division by zero
+2026-09-10 03:28:21.250 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT '0'::numeric % '0';
+2026-09-10 03:28:21.250 UTC postmaster[116745] pg_regress/numeric ERROR:  division by zero
+2026-09-10 03:28:21.250 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT div('inf'::numeric, '0');
+2026-09-10 03:28:21.250 UTC postmaster[116745] pg_regress/numeric ERROR:  division by zero
+2026-09-10 03:28:21.250 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT div('-inf'::numeric, '0');
+2026-09-10 03:28:21.250 UTC postmaster[116745] pg_regress/numeric ERROR:  division by zero
+2026-09-10 03:28:21.250 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT div('0'::numeric, '0');
+2026-09-10 03:28:21.252 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take square root of a negative number
+2026-09-10 03:28:21.252 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT sqrt('-1'::numeric);
+2026-09-10 03:28:21.252 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take square root of a negative number
+2026-09-10 03:28:21.252 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT sqrt('-inf'::numeric);
+2026-09-10 03:28:21.252 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of zero
+2026-09-10 03:28:21.252 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT ln('0'::numeric);
+2026-09-10 03:28:21.253 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of a negative number
+2026-09-10 03:28:21.253 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT ln('-1'::numeric);
+2026-09-10 03:28:21.253 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of a negative number
+2026-09-10 03:28:21.253 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT ln('-inf'::numeric);
+2026-09-10 03:28:21.253 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of zero
+2026-09-10 03:28:21.253 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT log('0'::numeric, '10');
+2026-09-10 03:28:21.253 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of zero
+2026-09-10 03:28:21.253 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT log('10'::numeric, '0');
+2026-09-10 03:28:21.254 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of a negative number
+2026-09-10 03:28:21.254 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT log('-inf'::numeric, '10');
+2026-09-10 03:28:21.254 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of a negative number
+2026-09-10 03:28:21.254 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT log('10'::numeric, '-inf');
+2026-09-10 03:28:21.254 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of zero
+2026-09-10 03:28:21.254 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT log('inf'::numeric, '0');
+2026-09-10 03:28:21.254 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of a negative number
+2026-09-10 03:28:21.254 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT log('inf'::numeric, '-inf');
+2026-09-10 03:28:21.254 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of a negative number
+2026-09-10 03:28:21.254 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT log('-inf'::numeric, 'inf');
+2026-09-10 03:28:21.255 UTC postmaster[116745] pg_regress/numeric ERROR:  zero raised to a negative power is undefined
+2026-09-10 03:28:21.255 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT power('0'::numeric, '-1');
+2026-09-10 03:28:21.255 UTC postmaster[116745] pg_regress/numeric ERROR:  zero raised to a negative power is undefined
+2026-09-10 03:28:21.255 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT power('0'::numeric, '-inf');
+2026-09-10 03:28:21.255 UTC postmaster[116745] pg_regress/numeric ERROR:  a negative number raised to a non-integer power yields a complex result
+2026-09-10 03:28:21.255 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT power('-2'::numeric, '3.3');
+2026-09-10 03:28:21.256 UTC postmaster[116745] pg_regress/numeric ERROR:  a negative number raised to a non-integer power yields a complex result
+2026-09-10 03:28:21.256 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT power('-2'::numeric, '-1.5');
+2026-09-10 03:28:21.257 UTC postmaster[116745] pg_regress/numeric ERROR:  a negative number raised to a non-integer power yields a complex result
+2026-09-10 03:28:21.257 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT power('-inf'::numeric, '4.5');
+2026-09-10 03:28:21.260 UTC postmaster[116745] pg_regress/numeric ERROR:  numeric field overflow
+2026-09-10 03:28:21.260 UTC postmaster[116745] pg_regress/numeric DETAIL:  A field with precision 4, scale 4 must round to an absolute value less than 1.
+2026-09-10 03:28:21.260 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO fract_only VALUES (3, '1.0');
+2026-09-10 03:28:21.261 UTC postmaster[116745] pg_regress/numeric ERROR:  numeric field overflow
+2026-09-10 03:28:21.261 UTC postmaster[116745] pg_regress/numeric DETAIL:  A field with precision 4, scale 4 must round to an absolute value less than 1.
+2026-09-10 03:28:21.261 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO fract_only VALUES (6, '0.99995');
+2026-09-10 03:28:21.262 UTC postmaster[116745] pg_regress/numeric ERROR:  numeric field overflow
+2026-09-10 03:28:21.262 UTC postmaster[116745] pg_regress/numeric DETAIL:  A field with precision 4, scale 4 cannot hold an infinite value.
+2026-09-10 03:28:21.262 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO fract_only VALUES (10, 'Inf');
+2026-09-10 03:28:21.262 UTC postmaster[116745] pg_regress/numeric ERROR:  numeric field overflow
+2026-09-10 03:28:21.262 UTC postmaster[116745] pg_regress/numeric DETAIL:  A field with precision 4, scale 4 cannot hold an infinite value.
+2026-09-10 03:28:21.262 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO fract_only VALUES (11, '-Inf');
+2026-09-10 03:28:21.263 UTC postmaster[116745] pg_regress/numeric ERROR:  bigint out of range
+2026-09-10 03:28:21.263 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT (-9223372036854775808.5)::int8;
+2026-09-10 03:28:21.264 UTC postmaster[116745] pg_regress/numeric ERROR:  bigint out of range
+2026-09-10 03:28:21.264 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT 9223372036854775807.5::int8;
+2026-09-10 03:28:21.264 UTC postmaster[116745] pg_regress/numeric ERROR:  integer out of range
+2026-09-10 03:28:21.264 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT (-2147483648.5)::int4;
+2026-09-10 03:28:21.264 UTC postmaster[116745] pg_regress/numeric ERROR:  integer out of range
+2026-09-10 03:28:21.264 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT 2147483647.5::int4;
+2026-09-10 03:28:21.264 UTC postmaster[116745] pg_regress/numeric ERROR:  smallint out of range
+2026-09-10 03:28:21.264 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT (-32768.5)::int2;
+2026-09-10 03:28:21.265 UTC postmaster[116745] pg_regress/numeric ERROR:  smallint out of range
+2026-09-10 03:28:21.265 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT 32767.5::int2;
+2026-09-10 03:28:21.267 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot convert NaN to smallint
+2026-09-10 03:28:21.267 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT 'NaN'::numeric::int2;
+2026-09-10 03:28:21.267 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot convert infinity to smallint
+2026-09-10 03:28:21.267 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT 'Infinity'::numeric::int2;
+2026-09-10 03:28:21.267 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot convert infinity to smallint
+2026-09-10 03:28:21.267 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT '-Infinity'::numeric::int2;
+2026-09-10 03:28:21.267 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot convert NaN to integer
+2026-09-10 03:28:21.267 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT 'NaN'::numeric::int4;
+2026-09-10 03:28:21.267 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot convert infinity to integer
+2026-09-10 03:28:21.267 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT 'Infinity'::numeric::int4;
+2026-09-10 03:28:21.267 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot convert infinity to integer
+2026-09-10 03:28:21.267 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT '-Infinity'::numeric::int4;
+2026-09-10 03:28:21.267 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot convert NaN to bigint
+2026-09-10 03:28:21.267 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT 'NaN'::numeric::int8;
+2026-09-10 03:28:21.268 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot convert infinity to bigint
+2026-09-10 03:28:21.268 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT 'Infinity'::numeric::int8;
+2026-09-10 03:28:21.268 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot convert infinity to bigint
+2026-09-10 03:28:21.268 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT '-Infinity'::numeric::int8;
+2026-09-10 03:28:21.273 UTC postmaster[116745] pg_regress/numeric ERROR:  value overflows numeric format
+2026-09-10 03:28:21.273 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT round(5.5e131071, -131072);
+2026-09-10 03:28:21.275 UTC postmaster[116745] pg_regress/numeric ERROR:  count must be greater than zero
+2026-09-10 03:28:21.275 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT width_bucket(5.0, 3.0, 4.0, 0);
+2026-09-10 03:28:21.275 UTC postmaster[116745] pg_regress/numeric ERROR:  count must be greater than zero
+2026-09-10 03:28:21.275 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT width_bucket(5.0, 3.0, 4.0, -5);
+2026-09-10 03:28:21.276 UTC postmaster[116745] pg_regress/numeric ERROR:  lower bound cannot equal upper bound
+2026-09-10 03:28:21.276 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT width_bucket(3.5, 3.0, 3.0, 888);
+2026-09-10 03:28:21.276 UTC postmaster[116745] pg_regress/numeric ERROR:  count must be greater than zero
+2026-09-10 03:28:21.276 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT width_bucket(5.0::float8, 3.0::float8, 4.0::float8, 0);
+2026-09-10 03:28:21.276 UTC postmaster[116745] pg_regress/numeric ERROR:  count must be greater than zero
+2026-09-10 03:28:21.276 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT width_bucket(5.0::float8, 3.0::float8, 4.0::float8, -5);
+2026-09-10 03:28:21.276 UTC postmaster[116745] pg_regress/numeric ERROR:  lower bound cannot equal upper bound
+2026-09-10 03:28:21.276 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT width_bucket(3.5::float8, 3.0::float8, 3.0::float8, 888);
+2026-09-10 03:28:21.276 UTC postmaster[116745] pg_regress/numeric ERROR:  lower and upper bounds cannot be NaN
+2026-09-10 03:28:21.276 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT width_bucket(0, 'NaN', 4.0, 888);
+2026-09-10 03:28:21.277 UTC postmaster[116745] pg_regress/numeric ERROR:  lower and upper bounds cannot be NaN
+2026-09-10 03:28:21.277 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT width_bucket(0::float8, 'NaN', 4.0::float8, 888);
+2026-09-10 03:28:21.277 UTC postmaster[116745] pg_regress/numeric ERROR:  lower and upper bounds must be finite
+2026-09-10 03:28:21.277 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT width_bucket(2.0, 3.0, '-inf', 888);
+2026-09-10 03:28:21.277 UTC postmaster[116745] pg_regress/numeric ERROR:  lower and upper bounds must be finite
+2026-09-10 03:28:21.277 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT width_bucket(0::float8, '-inf', 4.0::float8, 888);
+2026-09-10 03:28:21.280 UTC postmaster[116745] pg_regress/numeric ERROR:  lower and upper bounds must be finite
+2026-09-10 03:28:21.280 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT width_bucket(0.0::numeric, 'Infinity'::numeric, 5, 10);
+2026-09-10 03:28:21.280 UTC postmaster[116745] pg_regress/numeric ERROR:  lower and upper bounds must be finite
+2026-09-10 03:28:21.280 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT width_bucket(0.0::numeric, 5, '-Infinity'::numeric, 20);
+2026-09-10 03:28:21.280 UTC postmaster[116745] pg_regress/numeric ERROR:  lower and upper bounds must be finite
+2026-09-10 03:28:21.280 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT width_bucket(0.0::float8, 'Infinity'::float8, 5, 10);
+2026-09-10 03:28:21.280 UTC postmaster[116745] pg_regress/numeric ERROR:  lower and upper bounds must be finite
+2026-09-10 03:28:21.280 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT width_bucket(0.0::float8, 5, '-Infinity'::float8, 20);
+2026-09-10 03:28:21.284 UTC postmaster[116745] pg_regress/numeric ERROR:  integer out of range
+2026-09-10 03:28:21.284 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT width_bucket(1::float8, 0, 1, 2147483647);
+2026-09-10 03:28:21.284 UTC postmaster[116745] pg_regress/numeric ERROR:  integer out of range
+2026-09-10 03:28:21.284 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT width_bucket(0::float8, 1, 0, 2147483647);
+2026-09-10 03:28:21.305 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid Roman numeral
+2026-09-10 03:28:21.305 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT to_number('viv', 'RN');
+2026-09-10 03:28:21.305 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid Roman numeral
+2026-09-10 03:28:21.305 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT to_number('DCCCD', 'RN');
+2026-09-10 03:28:21.305 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid Roman numeral
+2026-09-10 03:28:21.305 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT to_number('XIXL', 'RN');
+2026-09-10 03:28:21.305 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid Roman numeral
+2026-09-10 03:28:21.305 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT to_number('MCCM', 'RN');
+2026-09-10 03:28:21.306 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid Roman numeral
+2026-09-10 03:28:21.306 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT to_number('MMMM', 'RN');
+2026-09-10 03:28:21.306 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid Roman numeral
+2026-09-10 03:28:21.306 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT to_number('VV', 'RN');
+2026-09-10 03:28:21.306 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid Roman numeral
+2026-09-10 03:28:21.306 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT to_number('IL', 'RN');
+2026-09-10 03:28:21.306 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid Roman numeral
+2026-09-10 03:28:21.306 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT to_number('VIX', 'RN');
+2026-09-10 03:28:21.306 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid Roman numeral
+2026-09-10 03:28:21.306 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT to_number('LXC', 'RN');
+2026-09-10 03:28:21.306 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid Roman numeral
+2026-09-10 03:28:21.306 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT to_number('DCM', 'RN');
+2026-09-10 03:28:21.306 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid Roman numeral
+2026-09-10 03:28:21.306 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT to_number('MMMDCM', 'RN');
+2026-09-10 03:28:21.306 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid Roman numeral
+2026-09-10 03:28:21.306 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT to_number('CLXC', 'RN');
+2026-09-10 03:28:21.307 UTC postmaster[116745] pg_regress/numeric ERROR:  "RN" is incompatible with other formats
+2026-09-10 03:28:21.307 UTC postmaster[116745] pg_regress/numeric DETAIL:  "RN" may only be used together with "FM".
+2026-09-10 03:28:21.307 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT to_number('CM', 'MIRN');
+2026-09-10 03:28:21.307 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot use "RN" twice
+2026-09-10 03:28:21.307 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT to_number('CM', 'RNRN');
+2026-09-10 03:28:21.307 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid Roman numeral
+2026-09-10 03:28:21.307 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT to_number('qiv', 'RN');
+2026-09-10 03:28:21.307 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: " "
+2026-09-10 03:28:21.307 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT to_number('', 'RN');
+2026-09-10 03:28:21.307 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid Roman numeral
+2026-09-10 03:28:21.307 UTC postmaster[116745] pg_regress/numeric STATEMENT:  SELECT to_number(' ', 'RN');
+2026-09-10 03:28:21.313 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "     " at character 40
+2026-09-10 03:28:21.313 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('     ');
+2026-09-10 03:28:21.313 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "   1234   %" at character 40
+2026-09-10 03:28:21.313 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('   1234   %');
+2026-09-10 03:28:21.313 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "xyz" at character 40
+2026-09-10 03:28:21.313 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('xyz');
+2026-09-10 03:28:21.313 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "- 1234" at character 40
+2026-09-10 03:28:21.313 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('- 1234');
+2026-09-10 03:28:21.313 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "5 . 0" at character 40
+2026-09-10 03:28:21.313 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('5 . 0');
+2026-09-10 03:28:21.313 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "5. 0   " at character 40
+2026-09-10 03:28:21.313 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('5. 0   ');
+2026-09-10 03:28:21.313 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "" at character 40
+2026-09-10 03:28:21.313 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('');
+2026-09-10 03:28:21.314 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: " N aN " at character 40
+2026-09-10 03:28:21.314 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES (' N aN ');
+2026-09-10 03:28:21.314 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "+NaN" at character 40
+2026-09-10 03:28:21.314 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('+NaN');
+2026-09-10 03:28:21.314 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "-NaN" at character 40
+2026-09-10 03:28:21.314 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('-NaN');
+2026-09-10 03:28:21.314 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "+ infinity" at character 40
+2026-09-10 03:28:21.314 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('+ infinity');
+2026-09-10 03:28:21.314 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "_123" at character 40
+2026-09-10 03:28:21.314 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('_123');
+2026-09-10 03:28:21.314 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "123_" at character 40
+2026-09-10 03:28:21.314 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('123_');
+2026-09-10 03:28:21.314 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "12__34" at character 40
+2026-09-10 03:28:21.314 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('12__34');
+2026-09-10 03:28:21.314 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "123_.456" at character 40
+2026-09-10 03:28:21.314 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('123_.456');
+2026-09-10 03:28:21.314 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "123._456" at character 40
+2026-09-10 03:28:21.314 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('123._456');
+2026-09-10 03:28:21.315 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "1.2e_34" at character 40
+2026-09-10 03:28:21.315 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('1.2e_34');
+2026-09-10 03:28:21.315 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "1.2e34_" at character 40
+2026-09-10 03:28:21.315 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('1.2e34_');
+2026-09-10 03:28:21.315 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "1.2e3__4" at character 40
+2026-09-10 03:28:21.315 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('1.2e3__4');
+2026-09-10 03:28:21.315 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "0b1112" at character 40
+2026-09-10 03:28:21.315 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('0b1112');
+2026-09-10 03:28:21.315 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "0c1112" at character 40
+2026-09-10 03:28:21.315 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('0c1112');
+2026-09-10 03:28:21.315 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "0o12345678" at character 40
+2026-09-10 03:28:21.315 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('0o12345678');
+2026-09-10 03:28:21.315 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "0x1eg" at character 40
+2026-09-10 03:28:21.315 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('0x1eg');
+2026-09-10 03:28:21.315 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "0x12.34" at character 40
+2026-09-10 03:28:21.315 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('0x12.34');
+2026-09-10 03:28:21.315 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "0x__1234" at character 40
+2026-09-10 03:28:21.315 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('0x__1234');
+2026-09-10 03:28:21.316 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "0x1234_" at character 40
+2026-09-10 03:28:21.316 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('0x1234_');
+2026-09-10 03:28:21.316 UTC postmaster[116745] pg_regress/numeric ERROR:  invalid input syntax for type numeric: "0x12__34" at character 40
+2026-09-10 03:28:21.316 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_input_test(n1) VALUES ('0x12__34');
+2026-09-10 03:28:21.332 UTC postmaster[116745] pg_regress/numeric ERROR:  numeric field overflow
+2026-09-10 03:28:21.332 UTC postmaster[116745] pg_regress/numeric DETAIL:  A field with precision 3, scale -6 cannot hold an infinite value.
+2026-09-10 03:28:21.332 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_typemod_test (millions) VALUES ('inf');
+2026-09-10 03:28:21.332 UTC postmaster[116745] pg_regress/numeric ERROR:  numeric field overflow
+2026-09-10 03:28:21.332 UTC postmaster[116745] pg_regress/numeric DETAIL:  A field with precision 3, scale -6 must round to an absolute value less than 10^9.
+2026-09-10 03:28:21.332 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_typemod_test (millions) VALUES (999500000);
+2026-09-10 03:28:21.333 UTC postmaster[116745] pg_regress/numeric ERROR:  numeric field overflow
+2026-09-10 03:28:21.333 UTC postmaster[116745] pg_regress/numeric DETAIL:  A field with precision 3, scale -3 must round to an absolute value less than 10^6.
+2026-09-10 03:28:21.333 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_typemod_test (thousands) VALUES (999500);
+2026-09-10 03:28:21.333 UTC postmaster[116745] pg_regress/numeric ERROR:  numeric field overflow
+2026-09-10 03:28:21.333 UTC postmaster[116745] pg_regress/numeric DETAIL:  A field with precision 3, scale 0 must round to an absolute value less than 10^3.
+2026-09-10 03:28:21.333 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_typemod_test (units) VALUES (999.5);
+2026-09-10 03:28:21.333 UTC postmaster[116745] pg_regress/numeric ERROR:  numeric field overflow
+2026-09-10 03:28:21.333 UTC postmaster[116745] pg_regress/numeric DETAIL:  A field with precision 3, scale 3 must round to an absolute value less than 1.
+2026-09-10 03:28:21.333 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_typemod_test (thousandths) VALUES (0.9995);
+2026-09-10 03:28:21.333 UTC postmaster[116745] pg_regress/numeric ERROR:  numeric field overflow
+2026-09-10 03:28:21.333 UTC postmaster[116745] pg_regress/numeric DETAIL:  A field with precision 3, scale 6 must round to an absolute value less than 10^-3.
+2026-09-10 03:28:21.333 UTC postmaster[116745] pg_regress/numeric STATEMENT:  INSERT INTO num_typemod_test (millionths) VALUES (0.0009995);
+2026-09-10 03:28:21.353 UTC postmaster[116745] pg_regress/numeric ERROR:  value overflows numeric format
+2026-09-10 03:28:21.353 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select 10.0 ^ 2147483647 as overflows;
+2026-09-10 03:28:21.353 UTC postmaster[116745] pg_regress/numeric ERROR:  value overflows numeric format
+2026-09-10 03:28:21.353 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select 117743296169.0 ^ 1000000000 as overflows;
+2026-09-10 03:28:21.357 UTC postmaster[116745] pg_regress/numeric ERROR:  zero raised to a negative power is undefined
+2026-09-10 03:28:21.357 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select 0.0 ^ (-12.34);
+2026-09-10 03:28:21.357 UTC postmaster[116745] pg_regress/numeric ERROR:  a negative number raised to a non-integer power yields a complex result
+2026-09-10 03:28:21.357 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select (-12.34) ^ 1.2;
+2026-09-10 03:28:21.361 UTC postmaster[116745] pg_regress/numeric ERROR:  step size cannot equal zero
+2026-09-10 03:28:21.361 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select * from generate_series(-100::numeric, 100::numeric, 0::numeric);
+2026-09-10 03:28:21.362 UTC postmaster[116745] pg_regress/numeric ERROR:  step size cannot be NaN
+2026-09-10 03:28:21.362 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select * from generate_series(-100::numeric, 100::numeric, 'nan'::numeric);
+2026-09-10 03:28:21.362 UTC postmaster[116745] pg_regress/numeric ERROR:  start value cannot be NaN
+2026-09-10 03:28:21.362 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select * from generate_series('nan'::numeric, 100::numeric, 10::numeric);
+2026-09-10 03:28:21.362 UTC postmaster[116745] pg_regress/numeric ERROR:  stop value cannot be NaN
+2026-09-10 03:28:21.362 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select * from generate_series(0::numeric, 'nan'::numeric, 10::numeric);
+2026-09-10 03:28:21.362 UTC postmaster[116745] pg_regress/numeric ERROR:  start value cannot be infinity
+2026-09-10 03:28:21.362 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select * from generate_series('inf'::numeric, 'inf'::numeric, 10::numeric);
+2026-09-10 03:28:21.362 UTC postmaster[116745] pg_regress/numeric ERROR:  stop value cannot be infinity
+2026-09-10 03:28:21.362 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select * from generate_series(0::numeric, 'inf'::numeric, 10::numeric);
+2026-09-10 03:28:21.362 UTC postmaster[116745] pg_regress/numeric ERROR:  step size cannot be infinity
+2026-09-10 03:28:21.362 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select * from generate_series(0::numeric, '42'::numeric, '-inf'::numeric);
+2026-09-10 03:28:21.364 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of a negative number
+2026-09-10 03:28:21.364 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select ln(-12.34);
+2026-09-10 03:28:21.364 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of zero
+2026-09-10 03:28:21.364 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select ln(0.0);
+2026-09-10 03:28:21.365 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of a negative number
+2026-09-10 03:28:21.365 UTC postmaster[116745] pg_regress/numeric CONTEXT:  SQL function "log" statement 1
+2026-09-10 03:28:21.365 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select log(-12.34);
+2026-09-10 03:28:21.365 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of zero
+2026-09-10 03:28:21.365 UTC postmaster[116745] pg_regress/numeric CONTEXT:  SQL function "log" statement 1
+2026-09-10 03:28:21.365 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select log(0.0);
+2026-09-10 03:28:21.367 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of a negative number
+2026-09-10 03:28:21.367 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select log(-12.34, 56.78);
+2026-09-10 03:28:21.367 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of a negative number
+2026-09-10 03:28:21.367 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select log(-12.34, -56.78);
+2026-09-10 03:28:21.367 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of a negative number
+2026-09-10 03:28:21.367 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select log(12.34, -56.78);
+2026-09-10 03:28:21.367 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of zero
+2026-09-10 03:28:21.367 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select log(0.0, 12.34);
+2026-09-10 03:28:21.367 UTC postmaster[116745] pg_regress/numeric ERROR:  cannot take logarithm of zero
+2026-09-10 03:28:21.367 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select log(12.34, 0.0);
+2026-09-10 03:28:21.368 UTC postmaster[116745] pg_regress/numeric ERROR:  division by zero
+2026-09-10 03:28:21.368 UTC postmaster[116745] pg_regress/numeric STATEMENT:  select log(1.0, 12.34);
+2026-09-10 03:28:21.459 UTC postmaster[116745] LOG:  xtc: background worker launched as xtc fiber (child_slot=239)
+xtc: spawned backend fiber pid=(loop=28,local=1,gen=1) migratable=0
+2026-09-10 03:28:21.459 UTC postmaster[116745] LOG:  xtc: background worker launched as xtc fiber (child_slot=240)
+2026-09-10 03:28:21.459 UTC postmaster[116745] LOG:  xtc: background worker launched as xtc fiber (child_slot=241)
+xtc: spawned backend fiber pid=(loop=29,local=1,gen=1) migratable=0
+2026-09-10 03:28:21.459 UTC postmaster[116745] LOG:  xtc: background worker launched as xtc fiber (child_slot=242)
+xtc: spawned backend fiber pid=(loop=30,local=1,gen=1) migratable=0
+xtc: spawned backend fiber pid=(loop=31,local=1,gen=1) migratable=0
+xtc: backend fiber exiting pid=(loop=28,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=28,local=1,gen=1)
+xtc: backend fiber exiting pid=(loop=29,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=29,local=1,gen=1)
+xtc: backend fiber exiting pid=(loop=30,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=30,local=1,gen=1)
+xtc: backend fiber exiting pid=(loop=31,local=1,gen=1) code=0
+xtc: supervisor observed normal backend fiber DOWN pid=(loop=31,local=1,gen=1)
+2026-09-10 03:28:21.491 UTC postmaster[116745] LOG:  xtc: background worker launched as xtc fiber (child_slot=242)
+2026-09-10 03:28:21.491 UTC postmaster[116745] LOG:  xtc: background worker launched as xtc fiber (child_slot=241)
+xtc: spawned backend fiber pid=(loop=32,local=1,gen=1) migratable=0
+2026-09-10 03:28:21.491 UTC postmaster[116745] LOG:  xtc: background worker launched as xtc fiber (child_slot=240)
+2026-09-10 03:28:21.491 UTC postmaster[116745] LOG:  xtc: background worker launched as xtc fiber (child_slot=239)
+xtc: spawned backend fiber pid=(loop=2,local=2,gen=1) migratable=0
+xtc: spawned backend fiber pid=(loop=3,local=2,gen=1) migratable=0
+xtc: spawned backend fiber pid=(loop=1,local=3,gen=1) migratable=0
+2026-09-10 03:29:20.559 UTC postmaster[116745] LOG:  xtc: autovacuum worker launched as xtc fiber (child_slot=222)
+xtc: spawned backend fiber pid=(loop=4,local=2,gen=1) migratable=0
+2026-09-10 03:30:20.757 UTC postmaster[116745] WARNING:  autovacuum worker took too long to start; canceled
+2026-09-10 03:30:20.757 UTC postmaster[116745] LOG:  xtc: autovacuum worker launched as xtc fiber (child_slot=223)
+xtc: spawned backend fiber pid=(loop=5,local=1,gen=2) migratable=0
+2026-09-10 03:31:20.956 UTC postmaster[116745] WARNING:  autovacuum worker took too long to start; canceled
+2026-09-10 03:31:20.956 UTC postmaster[116745] LOG:  xtc: autovacuum worker launched as xtc fiber (child_slot=224)
+xtc: spawned backend fiber pid=(loop=6,local=1,gen=2) migratable=0
+2026-09-10 03:32:21.054 UTC postmaster[116745] WARNING:  autovacuum worker took too long to start; canceled
+2026-09-10 03:32:21.155 UTC postmaster[116745] LOG:  xtc: autovacuum worker launched as xtc fiber (child_slot=225)
+xtc: spawned backend fiber pid=(loop=7,local=1,gen=2) migratable=0
+2026-09-10 03:33:20.561 UTC postmaster[116745] LOG:  checkpoint starting: time
+2026-09-10 03:33:21.353 UTC postmaster[116745] WARNING:  autovacuum worker took too long to start; canceled
+2026-09-10 03:33:21.353 UTC postmaster[116745] LOG:  xtc: autovacuum worker launched as xtc fiber (child_slot=226)
+xtc: spawned backend fiber pid=(loop=8,local=1,gen=2) migratable=0
+2026-09-10 03:34:21.651 UTC postmaster[116745] WARNING:  autovacuum worker took too long to start; canceled
+2026-09-10 03:34:21.651 UTC postmaster[116745] LOG:  xtc: autovacuum worker launched as xtc fiber (child_slot=227)
+xtc: spawned backend fiber pid=(loop=9,local=1,gen=2) migratable=0
+2026-09-10 03:35:21.850 UTC postmaster[116745] WARNING:  autovacuum worker took too long to start; canceled
+2026-09-10 03:35:21.850 UTC postmaster[116745] LOG:  xtc: autovacuum worker launched as xtc fiber (child_slot=228)
+xtc: spawned backend fiber pid=(loop=10,local=1,gen=2) migratable=0
+2026-09-10 03:36:22.147 UTC postmaster[116745] WARNING:  autovacuum worker took too long to start; canceled
+2026-09-10 03:36:22.247 UTC postmaster[116745] LOG:  xtc: autovacuum worker launched as xtc fiber (child_slot=229)
+xtc: spawned backend fiber pid=(loop=11,local=1,gen=2) migratable=0
+2026-09-10 03:36:54.728 UTC postmaster[116745] LOG:  checkpoint complete: time: wrote 2143 buffers (13.1%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=214.166 s, sync=0.001 s, total=214.167 s; sync files=0, longest=0.000 s, average=0.000 s; distance=15961 kB, estimate=15961 kB; lsn=0/02786E88, redo lsn=0/02786DF0
+2026-09-10 03:37:22.345 UTC postmaster[116745] WARNING:  autovacuum worker took too long to start; canceled
+2026-09-10 03:37:22.446 UTC postmaster[116745] LOG:  xtc: autovacuum worker launched as xtc fiber (child_slot=230)
+xtc: spawned backend fiber pid=(loop=12,local=1,gen=2) migratable=0
+2026-09-10 03:38:22.545 UTC postmaster[116745] WARNING:  autovacuum worker took too long to start; canceled
+2026-09-10 03:38:22.545 UTC postmaster[116745] LOG:  xtc: autovacuum worker launched as xtc fiber (child_slot=231)
+xtc: spawned backend fiber pid=(loop=13,local=1,gen=2) migratable=0

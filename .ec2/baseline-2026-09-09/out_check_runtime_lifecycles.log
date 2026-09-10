@@ -1,0 +1,54 @@
+'/usr/bin/perl' ./src/tools/runtime_lifecycle/check_runtime_lifecycles.pl \
+	--header ./src/include/utils/backend_runtime.h \
+	--manifest ./MULTITHREADED_RUNTIME_LIFECYCLE.tsv \
+	--owner-map ./MULTITHREADED_RUNTIME_OWNERS.tsv \
+	--source ./src/backend/utils/init/backend_runtime.c \
+	--source ./src/backend/utils/init/backend_runtime_backend.c \
+	--source ./src/backend/utils/init/backend_runtime_execution.c \
+	--source ./src/backend/utils/init/backend_runtime_session.c \
+	--source ./src/backend/utils/init/backend_runtime_teardown.c \
+	--source ./src/backend/tcop/backend_runtime_tcop.c \
+	--source ./src/backend/utils/cache/backend_runtime_cache.c \
+	--source ./src/backend/utils/activity/backend_runtime_pgstat.c \
+	--source ./src/backend/utils/activity/backend_status.c \
+	--source ./src/backend/utils/adt/backend_runtime_pseudorandom.c \
+	--source ./src/backend/utils/adt/backend_runtime_ri.c \
+	--source ./src/backend/utils/error/backend_runtime_error.c \
+	--source ./src/backend/utils/fmgr/backend_runtime_extension.c \
+	--source ./src/backend/utils/misc/backend_runtime_guc.c \
+	--source ./src/backend/utils/misc/backend_runtime_utility.c \
+	--source ./src/backend/utils/misc/timeout.c \
+	--source ./src/backend/utils/mb/backend_runtime_mb.c \
+	--source ./src/backend/utils/mmgr/backend_runtime_memory.c \
+	--source ./src/backend/utils/mmgr/backend_runtime_portal.c \
+	--source ./src/backend/regex/backend_runtime_regex.c \
+	--source ./src/backend/optimizer/util/backend_runtime_optimizer.c \
+	--source ./src/backend/commands/backend_runtime_async.c \
+	--source ./src/backend/commands/event_trigger.c \
+	--source ./src/backend/commands/backend_runtime_event_trigger.c \
+	--source ./src/backend/commands/backend_runtime_trigger.c \
+	--source ./src/backend/replication/logical/backend_runtime_logical.c \
+	--source ./src/backend/postmaster/interrupt.c \
+	--source ./src/backend/jit/backend_runtime_jit.c \
+	--source ./src/backend/access/transam/backend_runtime_parallel.c \
+	--source ./src/backend/access/transam/backend_runtime_xact.c \
+	--source ./src/backend/libpq/backend_runtime_connection.c \
+	--source ./src/backend/storage/large_object/backend_runtime_large_object.c \
+	--source ./src/backend/storage/buffer/backend_runtime_buffer.c \
+	--source ./src/backend/storage/file/backend_runtime_file.c \
+	--source ./src/backend/storage/lmgr/backend_runtime_lmgr.c \
+	--source ./src/backend/storage/ipc/backend_runtime_ipc.c \
+	--source ./src/backend/storage/ipc/dsm.c \
+	--source ./src/backend/storage/ipc/ipc.c
+runtime lifecycle check failed:
+  missing lifecycle row for PgCarrier.migratable
+  ./MULTITHREADED_RUNTIME_OWNERS.tsv:409: owner source contrib/spi/refint.c does not exist
+  ./MULTITHREADED_RUNTIME_OWNERS.tsv:410: owner source contrib/spi/refint.c does not exist
+  ./MULTITHREADED_RUNTIME_OWNERS.tsv:411: owner source contrib/spi/refint.c does not exist
+  ./MULTITHREADED_RUNTIME_OWNERS.tsv:412: owner source contrib/spi/refint.c does not exist
+  missing bucket definition for PgCarrier.migratable
+  src/backend/utils/init/backend_runtime_session_reset_buckets.def:40: stale reset definition for PgSession.ruleutils_plans
+  src/backend/utils/init/backend_runtime_session_reset_buckets.def:40: reset definition for PgSession.ruleutils_plans has no lifecycle manifest row
+  src/backend/utils/init/backend_runtime_session_reset_buckets.def:41: stale reset definition for PgSession.ri_plans
+  src/backend/utils/init/backend_runtime_session_reset_buckets.def:41: reset definition for PgSession.ri_plans has no lifecycle manifest row
+gmake: *** [GNUmakefile:203: check-runtime-lifecycles] Error 1

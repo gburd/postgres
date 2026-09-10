@@ -1,0 +1,99 @@
+[New LWP 102335]
+[New LWP 102334]
+[New LWP 102333]
+[New LWP 102332]
+[New LWP 102331]
+[New LWP 102330]
+[New LWP 102329]
+[New LWP 102328]
+[New LWP 102327]
+[New LWP 102326]
+[New LWP 102325]
+[New LWP 102324]
+[New LWP 102323]
+[New LWP 102322]
+[New LWP 102321]
+[New LWP 102320]
+[New LWP 102319]
+[New LWP 102318]
+[New LWP 102317]
+[New LWP 102316]
+[New LWP 102315]
+[New LWP 102314]
+[New LWP 102313]
+[New LWP 102312]
+[New LWP 102311]
+[New LWP 102310]
+[New LWP 102309]
+[New LWP 102308]
+[New LWP 102307]
+[New LWP 102306]
+[New LWP 102305]
+[New LWP 102304]
+[New LWP 102303]
+[New LWP 102302]
+[New LWP 102301]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+0x00007fb4e971017e in epoll_wait () from /lib64/libc.so.6
+xtc-gdb loaded: xtc-loops, xtc-rings, xtc-procs, xtc-proc, xtc-stranded, xtc-mailbox, xtc-self, xtc-trace, xtc-tail-dump, xtc-help
+proc states:
+    PARKED       46
+    RUNNING      1
+park kinds (PARKED procs only):
+    park=-        32
+    park=fd       13
+    park=timer    1
+
+proc               pid        park     wake_pending   verdict
+0x180dcb0          1.0.1      timer    clear          
+0x180edd0          1.1.1      -        clear          <-- SUSPECT: no source, no latched wake
+0x7fb4c0001450     1.2.1      fd       clear          
+0x1810050          2.0.1      -        clear          (local_id 0: service fiber, idle is normal)
+0x7fb4b4001120     2.1.1      fd       clear          
+0x7fb4b4297850     2.2.3      fd       clear          
+0x18113e0          3.0.1      -        clear          (local_id 0: service fiber, idle is normal)
+0x1848dc0          3.1.1      fd       clear          
+0x1bea790          3.2.3      fd       clear          
+0x1812770          4.0.1      -        clear          (local_id 0: service fiber, idle is normal)
+0x7fb4c05346f0     4.1.4      fd       clear          
+0x1813b00          5.0.1      -        clear          (local_id 0: service fiber, idle is normal)
+0x1815120          6.0.1      -        clear          (local_id 0: service fiber, idle is normal)
+0x1a842e0          6.1.4      fd       clear          
+0x18164b0          7.0.1      -        clear          (local_id 0: service fiber, idle is normal)
+0x1817840          8.0.1      -        clear          (local_id 0: service fiber, idle is normal)
+0x1818e60          9.0.1      -        clear          (local_id 0: service fiber, idle is normal)
+0x7fb4c80ab720     9.1.4      fd       clear          
+0x181a1f0          10.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x181b580          11.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x181c910          12.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x7fb4c03d7a60     12.1.4     fd       clear          
+0x181df30          13.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x181f2c0          14.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x1820650          15.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x18219e0          16.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x1e2ff00          16.1.4     fd       clear          
+0x1822d70          17.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x1824100          18.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x1825490          19.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x1826820          20.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x1827bb0          21.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x1828f40          22.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x182a2d0          23.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x182b660          24.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x182c9f0          25.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x182dd80          26.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x182f110          27.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x18304a0          28.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x1cf39d0          28.1.3     fd       clear          
+0x1831830          29.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x1832bc0          30.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x1833f50          31.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x7fb4c8289370     31.1.3     fd       clear          
+0x18352e0          32.0.1     -        clear          (local_id 0: service fiber, idle is normal)
+0x1917e60          32.1.3     fd       clear          
+
+(46 parked, 1 suspect, 31 idle service fiber(s) excluded)
+NOTE: 31 proc(s) with local_id 0 park with no source and no latched wake.  That is the NORMAL idle state of a per-loop service fiber blocked in xtc_recv(..., -1), so they are excluded above.  If YOUR long-lived receivers have a non-zero local_id they will still appear as suspects -- check them against what you know parks forever by design.
+For each suspect, confirm its wake source actually completed (e.g. iou-wrk threads present for an aio park) before reporting a lost wake -- a pending syscall is not a strand.
+[Inferior 1 (process 102296) detached]

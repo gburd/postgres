@@ -1,0 +1,450 @@
+[New LWP 109372]
+[New LWP 109371]
+[New LWP 109370]
+[New LWP 109369]
+[New LWP 109368]
+[New LWP 109367]
+[New LWP 109366]
+[New LWP 109365]
+[New LWP 109364]
+[New LWP 109363]
+[New LWP 109362]
+[New LWP 109361]
+[New LWP 109360]
+[New LWP 109359]
+[New LWP 109358]
+[New LWP 109357]
+[New LWP 109356]
+[New LWP 109355]
+[New LWP 109354]
+[New LWP 109353]
+[New LWP 109352]
+[New LWP 109351]
+[New LWP 109350]
+[New LWP 109349]
+[New LWP 109348]
+[New LWP 109347]
+[New LWP 109346]
+[New LWP 109345]
+[New LWP 109344]
+[New LWP 109343]
+[New LWP 109342]
+[New LWP 109341]
+[New LWP 109340]
+[New LWP 109339]
+[New LWP 109338]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+0x00007fb51db1017e in epoll_wait () from /lib64/libc.so.6
+
+Thread 36 (Thread 0x7fb4ff7fe640 (LWP 109338) "postgres"):
+#0  0x00007fb51dad5dd5 in clock_nanosleep@GLIBC_2.2.5 () from /lib64/libc.so.6
+#1  0x00007fb51dada9c7 in nanosleep () from /lib64/libc.so.6
+#2  0x0000000000df21e5 in __os_sleep_ns (ns=ns@entry=2000000) at ../dist/../src/os/os_time.c:205
+#3  0x0000000000df5c52 in xtc_exec_run (e=0x32637960) at ../dist/../src/evt/exec.c:608
+#4  0x00000000009f5db2 in xtc_carrier_sched_thread (arg=0x326567e0) at pg_xtc_carrier.c:466
+#5  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#6  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 35 (Thread 0x7fb4fedfd640 (LWP 109339) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e8017bf in io_uring_wait_cqes () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326c9600, events=events@entry=0x7fb4fedbf5f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4fedbf5dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326b5e40) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326b5e40) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326b5e40) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 34 (Thread 0x7fb4fe3fc640 (LWP 109340) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e8017bf in io_uring_wait_cqes () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326b6cb0, events=events@entry=0x7fb4fe3be5f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4fe3be5dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326d66e0) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326d66e0) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326d66e0) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 33 (Thread 0x7fb4fd9fb640 (LWP 109341) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e8017bf in io_uring_wait_cqes () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326d8180, events=events@entry=0x7fb4fd9bd5f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4fd9bd5dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326d7430) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326d7430) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326d7430) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 32 (Thread 0x7fb4fcffa640 (LWP 109342) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326d9110, events=events@entry=0x7fb4fcfbc5f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4fcfbc5dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326d83c0) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326d83c0) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326d83c0) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 31 (Thread 0x7fb4f7fff640 (LWP 109343) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326da1c0, events=events@entry=0x7fb4f7fc15f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4f7fc15dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326d9470) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326d9470) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326d9470) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 30 (Thread 0x7fb4f75fe640 (LWP 109344) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326db270, events=events@entry=0x7fb4f75c05f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4f75c05dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326da520) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326da520) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326da520) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 29 (Thread 0x7fb4f6bfd640 (LWP 109345) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326dc320, events=events@entry=0x7fb4f6bbf5f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4f6bbf5dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326db5d0) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326db5d0) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326db5d0) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 28 (Thread 0x7fb4f61fc640 (LWP 109346) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326dd3d0, events=events@entry=0x7fb4f61be5f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4f61be5dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326dc680) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326dc680) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326dc680) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 27 (Thread 0x7fb4f57fb640 (LWP 109347) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326de480, events=events@entry=0x7fb4f57bd5f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4f57bd5dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326dd730) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326dd730) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326dd730) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 26 (Thread 0x7fb4f4dfa640 (LWP 109348) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326df560, events=events@entry=0x7fb4f4dbc5f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4f4dbc5dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326de810) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326de810) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326de810) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 25 (Thread 0x7fb4f43f9640 (LWP 109349) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326e0640, events=events@entry=0x7fb4f43bb5f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4f43bb5dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326df8f0) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326df8f0) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326df8f0) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 24 (Thread 0x7fb4eb7fe640 (LWP 109350) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326e1720, events=events@entry=0x7fb4eb7c05f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4eb7c05dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326e09d0) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326e09d0) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326e09d0) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 23 (Thread 0x7fb4e5df3640 (LWP 109351) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326e2800, events=events@entry=0x7fb4e5db55f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4e5db55dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326e1ab0) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326e1ab0) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326e1ab0) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 22 (Thread 0x7fb4dfbe7640 (LWP 109352) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326e38e0, events=events@entry=0x7fb4dfba95f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4dfba95dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326e2b90) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326e2b90) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326e2b90) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 21 (Thread 0x7fb4dd9e3640 (LWP 109353) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326e49c0, events=events@entry=0x7fb4dd9a55f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4dd9a55dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326e3c70) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326e3c70) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326e3c70) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 20 (Thread 0x7fb504b69640 (LWP 109354) "postgres"):
+#0  0x00007fb51da8837a in __futex_abstimed_wait_common () from /lib64/libc.so.6
+#1  0x00007fb51da93328 in __new_sem_wait_slow64.constprop.0 () from /lib64/libc.so.6
+#2  0x00000000009c9964 in PGSemaphoreLock (sema=0x7fb50dcc5b80) at pg_sema.c:320
+#3  0x0000000000b05205 in ProcSemaphoreWaitCallback (callback_arg=0x7fb504b29e78) at proc.c:2293
+#4  0x0000000000b0537e in ProcWaitOnSemaphore (proc=0x7fb50dc9e900, wait_event_info=67108867) at proc.c:2444
+#5  0x0000000000ab24c4 in BufferLockAcquire (buffer=5608, buf_hdr=0x7fb50513cc40, mode=BUFFER_LOCK_SHARE_EXCLUSIVE) at bufmgr.c:6190
+#6  0x0000000000ab07d9 in FlushUnlockedBuffer (buf=0x7fb50513cc40, reln=0x0, io_object=IOOBJECT_RELATION, io_context=IOCONTEXT_NORMAL) at bufmgr.c:4833
+#7  0x0000000000aafe0b in SyncOneBuffer (buf_id=5607, skip_recently_used=false, wb_context=0x7fb504b29f70) at bufmgr.c:4263
+#8  0x0000000000aaf74f in BufferSync (flags=256) at bufmgr.c:3852
+#9  0x0000000000ab04aa in CheckPointBuffers (flags=256) at bufmgr.c:4636
+#10 0x00000000005c8aad in CheckPointGuts (checkPointRedo=200697208, flags=256) at xlog.c:8098
+#11 0x00000000005c7fe7 in CreateCheckPoint (flags=256) at xlog.c:7751
+#12 0x00000000009d8376 in CheckpointerMain (startup_data=0x0, startup_data_len=0) at checkpointer.c:512
+#13 0x00000000009e28a4 in backend_thread_run_worker (thread_start=0x32733cf0) at launch_backend.c:2368
+#14 0x00000000009e2661 in backend_thread_entry (arg=0x32733cf0) at launch_backend.c:2322
+#15 0x00000000009c9636 in pg_thread_start (arg=0x32655920) at pg_thread.c:209
+#16 0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#17 0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 19 (Thread 0x7fb4db7df640 (LWP 109355) "postgres"):
+#0  0x0000000000d736c8 in pg_rotate_left32 (word=104865, n=5) at ../../../../src/include/port/pg_bitutils.h:402
+#1  0x0000000000d77221 in guc_name_hash (key=0x7fb47dc2b398, keysize=8) at guc.c:2179
+#2  0x0000000000d3e62a in hash_search (hashp=0x326a5b18, keyPtr=0x7fb47dc2b398, action=HASH_FIND, foundPtr=0x0) at dynahash.c:895
+#3  0x0000000000d77441 in find_builtin_option (name=0x1032b06 "enable_memoize") at guc.c:2257
+#4  0x0000000000d76ed4 in find_option (name=0x1032b06 "enable_memoize", create_placeholders=false, skip_errors=false, elevel=24) at guc.c:2073
+#5  0x0000000000d7913d in RebindSessionGUCVariablePointer (rebind=0x103c980 <ThreadedSessionGUCRebinds+1344>) at guc.c:3086
+#6  0x0000000000d792a2 in RebindSessionGUCVariablePointers () at guc.c:3116
+#7  0x0000000000d4b0af in PgRuntimeRefreshCurrentWork (rebind_session_gucs=true) at backend_runtime.c:584
+#8  0x0000000000d4b156 in PgRuntimeSetCurrentWork (runtime=0x1249f60 <thread_runtime>, carrier=0x32829870, backend=0x328298d8, session=0x3282d6e0, connection=0x3282fa48, execution=0x3282fbe8, rebind_session_gucs=true) at backend_runtime.c:612
+#9  0x0000000000d4b216 in PgRuntimeRestoreCurrentWork (snap=0x7fb47dc2b590) at backend_runtime.c:643
+#10 0x00000000009f7058 in xtc_pg_wait_fd (fd=78, interest_pg=2, timeout_ms=-1) at pg_xtc_carrier.c:1420
+#11 0x0000000000b052cd in ProcSemaphoreWaitFiber (proc=0x7fb50dc85500) at proc.c:2364
+#12 0x0000000000b05370 in ProcWaitOnSemaphore (proc=0x7fb50dc85500, wait_event_info=16777282) at proc.c:2429
+#13 0x0000000000af8b39 in LWLockAcquire (lock=0x7fb504b7c880, mode=LW_EXCLUSIVE) at lwlock.c:1308
+#14 0x00000000005bae8b in WALInsertLockAcquire () at xlog.c:1440
+#15 0x00000000005ba0e7 in XLogInsertRecord (rdata=0x32830368, fpw_lsn=188692432, flags=0 '\000', num_fpi=0, fpi_bytes=0, topxid_included=false) at xlog.c:863
+#16 0x00000000005d1db3 in XLogInsert (rmid=11 '\v', info=0 '\000') at xloginsert.c:562
+#17 0x0000000000559ba9 in _bt_insertonpg (rel=0x7fb4f832ae60, heaprel=0x7fb4f83306e0, itup_key=0x7fb4ecdb4080, buf=5608, cbuf=0, stack=0x7fb4ec45d720, itup=0x7fb4ec45d708, itemsz=16, newitemoff=219, postingoff=0, split_only_page=false) at nbtinsert.c:1409
+#18 0x00000000005585a4 in _bt_doinsert (rel=0x7fb4f832ae60, itup=0x7fb4ec45d708, checkUnique=UNIQUE_CHECK_YES, indexUnchanged=false, heapRel=0x7fb4f83306e0) at nbtinsert.c:263
+#19 0x0000000000568fb1 in btinsert (rel=0x7fb4f832ae60, values=0x7fb47dc2bb30, isnull=0x7fb47dc2bb10, ht_ctid=0x7fb4ec45d794, heapRel=0x7fb4f83306e0, checkUnique=UNIQUE_CHECK_YES, indexUnchanged=false, indexInfo=0x7fb4ec45d190) at nbtree.c:219
+#20 0x00000000005536ce in index_insert (indexRelation=0x7fb4f832ae60, values=0x7fb47dc2bb30, isnull=0x7fb47dc2bb10, heap_t_ctid=0x7fb4ec45d794, heapRelation=0x7fb4f83306e0, checkUnique=UNIQUE_CHECK_YES, indexUnchanged=false, indexInfo=0x7fb4ec45d190) at indexam.c:231
+#21 0x00000000006153af in CatalogIndexInsert (indstate=0x7fb4ec45c7d0, heapTuple=0x7fb4ec45d790, updateIndexes=TU_All) at indexing.c:170
+#22 0x0000000000615533 in CatalogTuplesMultiInsertWithInfo (heapRel=0x7fb4f83306e0, slot=0x7fb4ec489c18, ntuples=6, indstate=0x7fb4ec45c7d0) at indexing.c:294
+#23 0x000000000060706f in InsertPgAttributeTuples (pg_attribute_rel=0x7fb4f83306e0, tupdesc=0x7fb4ec489c60, new_rel_oid=30927, tupdesc_extra=0x0, indstate=0x7fb4ec45c7d0) at heap.c:824
+#24 0x0000000000607250 in AddNewAttributeTuples (new_rel_oid=30927, tupdesc=0x7fb5008e19b0, relkind=116 't') at heap.c:900
+#25 0x00000000006083a2 in heap_create_with_catalog (relname=0x7fb47dc2c070 "pg_toast_30919", relnamespace=99, reltablespace=0, relid=30927, reltypeid=0, reloftypeid=0, ownerid=28522, accessmtd=2, tupdesc=0x7fb4ec519a50, cooked_constraints=0x0, relkind=116 't', relpersistence=112 'p', shared_relation=false, mapped_relation=false, oncommit=ONCOMMIT_NOOP, reloptions=0, use_user_acl=false, allow_system_table_mods=true, is_internal=true, relrewrite=0, typaddress=0x0) at heap.c:1460
+#26 0x000000000064e34e in create_toast_table (rel=0x7fb5008e2470, toastOid=0, toastIndexOid=0, reloptions=0, lockmode=8, check=false, OIDOldToast=0) at toasting.c:254
+#27 0x000000000064ddf4 in CheckAndCreateToastTable (relOid=30919, reloptions=0, lockmode=8, check=false, OIDOldToast=0) at toasting.c:87
+#28 0x000000000064dd91 in NewRelationCreateToastTable (relOid=30919, reloptions=0) at toasting.c:74
+#29 0x0000000000b287e7 in ProcessUtilitySlow (pstate=0x7fb5003721b8, pstmt=0x7fb4f817bb80, queryString=0x32a3f970 "CREATE TABLE current_check (currentid int, payload text, rlsuser text);", context=PROCESS_UTILITY_TOPLEVEL, params=0x0, queryEnv=0x0, dest=0x7fb4ec19db40, qc=0x7fb47dc2c940) at utility.c:1197
+#30 0x0000000000b284fe in standard_ProcessUtility (pstmt=0x7fb4f817bb80, queryString=0x32a3f970 "CREATE TABLE current_check (currentid int, payload text, rlsuser text);", readOnlyTree=false, context=PROCESS_UTILITY_TOPLEVEL, params=0x0, queryEnv=0x0, dest=0x7fb4ec19db40, qc=0x7fb47dc2c940) at utility.c:1072
+#31 0x0000000000b2768c in ProcessUtility (pstmt=0x7fb4f817bb80, queryString=0x32a3f970 "CREATE TABLE current_check (currentid int, payload text, rlsuser text);", readOnlyTree=false, context=PROCESS_UTILITY_TOPLEVEL, params=0x0, queryEnv=0x0, dest=0x7fb4ec19db40, qc=0x7fb47dc2c940) at utility.c:528
+#32 0x0000000000b25e98 in PortalRunUtility (portal=0x7fb4f888e098, pstmt=0x7fb4f817bb80, isTopLevel=true, setHoldSnapshot=false, dest=0x7fb4ec19db40, qc=0x7fb47dc2c940) at pquery.c:1142
+#33 0x0000000000b26170 in PortalRunMulti (portal=0x7fb4f888e098, isTopLevel=true, setHoldSnapshot=false, dest=0x7fb4ec19db40, altdest=0x7fb4ec19db40, qc=0x7fb47dc2c940) at pquery.c:1300
+#34 0x0000000000b25582 in PortalRun (portal=0x7fb4f888e098, count=9223372036854775807, isTopLevel=true, dest=0x7fb4ec19db40, altdest=0x7fb4ec19db40, qc=0x7fb47dc2c940) at pquery.c:777
+#35 0x0000000000b16e89 in exec_simple_query (query_string=0x32a3f970 "CREATE TABLE current_check (currentid int, payload text, rlsuser text);") at postgres.c:1715
+#36 0x0000000000b1e3a4 in PgSessionStepUnprotected (session=0x3282d6e0, max_messages=0, protocol_park_enabled=true, return_logical_exits=true) at postgres.c:5187
+#37 0x0000000000b2215e in PgSessionRunProtocolSchedulerUntilBoundary (session=0x3282d6e0) at postgres.c:7132
+#38 0x0000000000b221fa in PgSessionRunProtocolSchedulerStaging (session=0x3282d6e0) at postgres.c:7165
+#39 0x0000000000b22c41 in PostgresRunSession (session=0x3282d6e0) at postgres.c:7447
+#40 0x0000000000b1003c in BackendMainWithStartupData (bsdata=0x32830ff0, client_sock=0x328315c8, startup_mode=BACKEND_STARTUP_THREAD) at backend_startup.c:146
+#41 0x00000000009e27e4 in backend_thread_run_backend (thread_start=0x32829850) at launch_backend.c:2335
+#42 0x00000000009e2653 in backend_thread_entry (arg=0x32829850) at launch_backend.c:2320
+#43 0x00000000009f654d in xtc_carrier_proc (arg=0x32829850) at pg_xtc_carrier.c:917
+#44 0x0000000000dfb14c in __proc_entry (arg=0x7fb4f824a110) at ../dist/../src/ptc/proc.c:1100
+#45 0x0000000000df47df in __coro_entry () at ../dist/../src/evt/coro_uctx.c:246
+#46 0x00007fb51da54ba0 in ?? () from /lib64/libc.so.6
+#47 0x0000000000000000 in ?? ()
+
+Thread 18 (Thread 0x7fb4dadde640 (LWP 109356) "postgres"):
+#0  0x00007fb51db1017e in epoll_wait () from /lib64/libc.so.6
+#1  0x0000000000ae3b84 in WaitEventSetWaitBlock (set=0x7fb4ec006800, cur_timeout=1485, occurred_events=0x7fb4dad9f200, nevents=1) at waiteventset.c:1495
+#2  0x0000000000ae3941 in WaitEventSetWaitInternal (callback_arg=0x7fb4dad9f1b0) at waiteventset.c:1386
+#3  0x0000000000ae373d in WaitEventSetWait (set=0x7fb4ec006800, timeout=10000, occurred_events=0x7fb4dad9f200, nevents=1, wait_event_info=83886082) at waiteventset.c:1223
+#4  0x0000000000acf621 in WaitLatch (latch=0x7fb50dc9ee58, wakeEvents=41, timeout=10000, wait_event_info=83886082) at latch.c:290
+#5  0x00000000009d712a in BackgroundWriterMain (startup_data=0x0, startup_data_len=0) at bgwriter.c:345
+#6  0x00000000009e28a4 in backend_thread_run_worker (thread_start=0x32741000) at launch_backend.c:2368
+#7  0x00000000009e2661 in backend_thread_entry (arg=0x32741000) at launch_backend.c:2322
+#8  0x00000000009c9636 in pg_thread_start (arg=0x326bb3c0) at pg_thread.c:209
+#9  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#10 0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 17 (Thread 0x7fb4da5dd640 (LWP 109357) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326e6b80, events=events@entry=0x7fb4da59f5f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4da59f5dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326e5e30) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326e5e30) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326e5e30) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 16 (Thread 0x7fb4d9bdc640 (LWP 109358) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326e7c60, events=events@entry=0x7fb4d9b9e5f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4d9b9e5dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326e6f10) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326e6f10) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326e6f10) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 15 (Thread 0x7fb4d91db640 (LWP 109359) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326e8d40, events=events@entry=0x7fb4d919d5f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4d919d5dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326e7ff0) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326e7ff0) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326e7ff0) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 14 (Thread 0x7fb4d87da640 (LWP 109360) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326e9e20, events=events@entry=0x7fb4d879c5f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4d879c5dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326e90d0) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326e90d0) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326e90d0) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 13 (Thread 0x7fb4d7dd9640 (LWP 109361) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326eaf00, events=events@entry=0x7fb4d7d9b5f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4d7d9b5dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326ea1b0) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326ea1b0) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326ea1b0) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 12 (Thread 0x7fb4d73d8640 (LWP 109362) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326ebfe0, events=events@entry=0x7fb4d739a5f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4d739a5dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326eb290) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326eb290) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326eb290) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 11 (Thread 0x7fb4d69d7640 (LWP 109363) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326ed0c0, events=events@entry=0x7fb4d69995f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4d69995dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326ec370) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326ec370) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326ec370) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 10 (Thread 0x7fb4d5fd6640 (LWP 109364) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326ee1a0, events=events@entry=0x7fb4d5f985f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4d5f985dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326ed450) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326ed450) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326ed450) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 9 (Thread 0x7fb4d55d5640 (LWP 109365) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326ef280, events=events@entry=0x7fb4d55975f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4d55975dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326ee530) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326ee530) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326ee530) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 8 (Thread 0x7fb4d4bd4640 (LWP 109366) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326f0360, events=events@entry=0x7fb4d4b965f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4d4b965dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326ef610) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326ef610) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326ef610) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 7 (Thread 0x7fb4d41d3640 (LWP 109367) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326f1440, events=events@entry=0x7fb4d41955f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4d41955dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326f06f0) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326f06f0) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326f06f0) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 6 (Thread 0x7fb4d37d2640 (LWP 109368) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326f2520, events=events@entry=0x7fb4d37945f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4d37945dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326f17d0) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326f17d0) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326f17d0) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 5 (Thread 0x7fb4d2dd1640 (LWP 109369) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326f3600, events=events@entry=0x7fb4d2d935f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4d2d935dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326f28b0) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326f28b0) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326f28b0) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 4 (Thread 0x7fb4d23d0640 (LWP 109370) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326f46e0, events=events@entry=0x7fb4d23925f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4d23925dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326f3990) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326f3990) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326f3990) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 3 (Thread 0x7fb4d19cf640 (LWP 109371) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326f57c0, events=events@entry=0x7fb4d19915f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4d19915dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326f4a70) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326f4a70) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326f4a70) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 2 (Thread 0x7fb4d0fce640 (LWP 109372) "postgres"):
+#0  0x00007fb51e800cec in _io_uring_get_cqe () from /lib64/liburing.so.2
+#1  0x00007fb51e801385 in __io_uring_get_cqe () from /lib64/liburing.so.2
+#2  0x0000000000e065af in xtc_io_poll (io=0x326f68a0, events=events@entry=0x7fb4d0f905f0, max=max@entry=16, timeout_ns=<optimized out>, n_out=n_out@entry=0x7fb4d0f905dc) at ../dist/../src/io/io_uring.c:561
+#3  0x0000000000df391e in __xtc_loop_step (loop=loop@entry=0x326f5b50) at ../dist/../src/evt/loop.c:966
+#4  0x0000000000df3bd4 in __xtc_loop_step_once (loop=loop@entry=0x326f5b50) at ../dist/../src/evt/loop.c:1178
+#5  0x0000000000df5238 in __xtc_exec_worker (arg=0x326f5b50) at ../dist/../src/evt/exec.c:230
+#6  0x00007fb51da8b2ea in start_thread () from /lib64/libc.so.6
+#7  0x00007fb51db10b40 in clone3 () from /lib64/libc.so.6
+
+Thread 1 (Thread 0x7fb51d9a4c80 (LWP 109333) "postgres"):
+#0  0x00007fb51db1017e in epoll_wait () from /lib64/libc.so.6
+#1  0x0000000000ae3b84 in WaitEventSetWaitBlock (set=0x32633cd0, cur_timeout=57403, occurred_events=0x7ffed7772030, nevents=64) at waiteventset.c:1495
+#2  0x0000000000ae3941 in WaitEventSetWaitInternal (callback_arg=0x7ffed7771f60) at waiteventset.c:1386
+#3  0x0000000000ae373d in WaitEventSetWait (set=0x32633cd0, timeout=60000, occurred_events=0x7ffed7772030, nevents=64, wait_event_info=0) at waiteventset.c:1223
+#4  0x00000000009ea62f in ServerLoop () at postmaster.c:1934
+#5  0x00000000009e9f5e in PostmasterMain (argc=8, argv=0x32632e00) at postmaster.c:1620
+#6  0x0000000000877754 in main (argc=8, argv=0x32632e00) at main.c:233
+[Inferior 1 (process 109333) detached]
