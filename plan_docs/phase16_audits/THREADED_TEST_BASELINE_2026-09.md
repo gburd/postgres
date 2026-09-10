@@ -124,3 +124,49 @@ that signature.
   worker fibers, which would remove the raw-pthread-in-sem_wait shape entirely).
 * Narrow the repro below full `check-threaded` -- `create_index` alone, or just the
   `REINDEX CONCURRENTLY` + concurrent-checkpoint pair.
+
+
+--------------------------------------------------------------------------------
+## UPDATE 2026-09-10: the 77/168 baseline is a STACK of at least five independent bugs
+
+Validating unrelated fixes on a second box (`c6id.4xlarge`, vs this baseline's `c6id.8xlarge`) peeled
+the failure open. The threaded suite does not have "a" bug; it has a queue of them, each masking the
+next. Fixing one just moves the wall.
+
+| # | bug | status |
+|---|---|---|
+| 1 | `guc.c` `ThreadedGUCUnlock()` unconditional `RESUME_INTERRUPTS()` -- **any invalid `SET` crashes the server** in threaded mode | **FIXED** `491c47d65e` |
+| 2 | `reloptions.c` `ThreadedRelOptionsUnlock()` same unwind hazard | **FIXED** `a6e6d00abc` |
+| 3 | `dfmgr.c` rendezvous-hash/file_list race (needed the same unwind guard) | **FIXED** `9db33b7674` |
+| 4 | checkpointer/backend-fiber **buffer-lock ABBA deadlock** on `create_index` (`REINDEX CONCURRENTLY`) | **OPEN** -- documented above |
+| 5 | `mcxt.c` `Assert("parent->firstchild == context")` in `MemoryContextSetParent` <- `MemoryContextDelete` <- `AtEOXact_RI` (RI trigger teardown), hit in the `plpgsql` group | **OPEN, NEW** -- `.ec2/relx-20260910/fixA/UNRELATED_mcxt_ri_triggers_crash_not_fixed.md` |
+| 6 | `DROP SUBSCRIPTION` hangs in `logicalrep_worker_stop_internal` (worker never observes SIGTERM), `publication`/`subscription` group | **OPEN, NEW** -- 2/5 runs, identical stack 5 min apart |
+
+Bugs 1-3 are the SAME defect in three places: a threaded critical section pairing
+`HOLD_INTERRUPTS()` with an unconditional `RESUME_INTERRUPTS()`, while `errfinish()` resets
+`InterruptHoldoffCount` to 0 during any error unwind -- so an ordinary SQL error crashes the
+server. All three now use the identical `if (InterruptHoldoffCount > 0) InterruptHoldoffCount--;`
+guard. **Bug 1 was pre-existing since `da1a57e156` (2026-07-16), ~2 months.** That single fix is
+why the suite can now reach test ~172-218 instead of dying at 74.
+
+### A striking correlation that I am NOT treating as causal
+On the second box, unmodified HEAD hit the `create_index` deadlock **4/4**; the patched tree
+**0/5**. Tempting, and wrong to bank: none of the three fixes touch buffer locking, checkpointing,
+`REINDEX`, or `launcher.c` (verified -- `git diff` over those commits touches
+`reloptions.c`/`guc.c`/`xml*`/`xpath.c`/`xslt_proc.c` and nothing on the deadlock's
+`CheckPointBuffers`/`heap_index_delete_tuples`/`_bt_*` path). Bug 4 is an ABBA lock-order race, so
+its window is scheduling-sensitive; **rebuilding the binary at all changes code layout and
+timing**, which is sufficient to explain a different draw. The honest statement: this data changes
+**where** the suite dies, not **whether**.
+
+Likewise "unmodified HEAD never showed bugs 5 and 6" is uninformative -- HEAD died at test 74 and
+never reached tests 172/218 in any run, so those paths were simply never exercised.
+
+### Revised guidance
+* **`gmake check` (process, 245/245) remains the only trustworthy gate.**
+* Do not compare threaded runs against `77/168` any more -- with bugs 1-3 fixed the wall has moved.
+  Re-baseline before using any threaded target as a gate.
+* Expect **plan-shape diffs** (`select_distinct`, `subselect`, `union`, `join`) on runs that now get
+  far enough to finish. These are EXPLAIN-output differences, not wrong answers -- consistent with
+  autovacuum/ANALYZE timing under threaded scheduling. Do not chase them as correctness bugs
+  without checking the diff is cosmetic.
