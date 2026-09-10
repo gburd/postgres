@@ -65,6 +65,57 @@ Symbols that dominate the pooled lane but not the process lane are the
 per-command threaded overhead -- target those, then A/B the fix with the gate
 above.  Needs `perf` and `kernel.perf_event_paranoid <= 1`.
 
+## P1 (fork-vs-XTC apples-to-apples matrix): `mtpg_p1_matrix.sh`
+
+plan_docs/FORK_TO_XTC_PERF_PLAN.md item P1: ONE command that runs the fixed
+section-1 methodology for BOTH lanes (fork, xtc) and BOTH workloads (pgbench
+`-S` read-mostly, `tpcb-like` write-heavy) over a client x carrier grid, on a
+SEPARATE loadgen host, and emits `results.tsv` + a companion `latencies.tsv`
+(percentiles via `pgbench_pctl`).
+
+    LOADGEN=ec2-user@<loadgen-private-ip> SUT_IP=<sut-private-ip> \
+      PGBIN=/path/to/inst/usr/local/pgsql/bin \
+      LANES='fork xtc' CARRIERS='auto' WORKLOADS='select tpcb' \
+      CLIENTS='16 32 64' SCALE=100 DURATION=120 WARMUP=30 RUNS=3 \
+      OUT=/mnt/nvme/p1out DATA=/mnt/nvme/p1data \
+      bash src/tools/benchmark/mtpg_p1_matrix.sh
+
+Every run gets a FRESH `initdb` + start + stop (requirement 1 below) --
+expensive but the only way to avoid the half-dead-postmaster cascade that once
+fabricated a 7/8 "hang rate" that was really 4/6 (some "hangs" were a reused
+server stuck fork-failing after a prior timeout-kill).
+
+It hard-fails at startup unless `LOADGEN` is a host distinct from `SUT_IP`
+(requirement 7); pass `--local-driver` to force a co-located smoke run, which
+tags every emitted row `degraded=yes` and `idle_meaningful=no` so a co-located
+number can never later be mistaken for a headline (this is exactly the class
+of error `.ec2/writeheavy-rootcause-profile-2026-08-27.md` made and had to be
+retroactively caveated).
+
+Each `results.tsv` row carries the full confound context on its own
+(requirement 8): driver host, SUT host, carriers requested/effective, clients,
+shared_buffers (+ % of RAM), fsync/synchronous_commit/full_page_writes,
+io_method, data device, WAL device, libxtc version (`pkg-config --modversion
+xtc`), PG commit -- so methodology is auditable from the TSV alone.
+
+`pooled_protocol_carriers` is asserted, not assumed (requirement 5): the xtc
+lane checks `SHOW pooled_protocol_carriers` resolved to the requested value (or
+something sane for `auto`) AND that `pg_stat_xtc_carriers` has rows, failing
+the run loudly (`ASSERT_FAIL ...`) rather than silently benchmarking an
+unpooled thread-per-session server.
+
+A failed tps parse is `TPS_PARSE_FAIL` in the `tps` column with the raw
+pgbench output kept on disk and pg_stat_activity wait-event diagnostics
+captured into the row's `notes` column (requirement 4 + 3) -- never a silent
+`NA` that could be misread as "ran, produced nothing."  Diagnostics are always
+gathered before any server stop, so a `-m immediate` FATAL-flood at teardown
+can never be captured and mistaken for a crash.
+
+Stall detection is monitor-independent: a background sampler polls
+`sum(xact_commit+xact_rollback) from pg_stat_database` every 10s across the
+measured window and flags a frozen counter (>1/3 of samples unchanged) as
+`STALL:n/m` in the `stall` column.
+
 ## Steady-state, external-driver A/B: `mtpg_remote_bench.sh` + `mtpg_ec2_ab_provision.sh`
 
 The gate above (necessary-minimum viability) proves neutral-or-better.  The
