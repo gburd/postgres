@@ -36,6 +36,14 @@
 /* declarations to come from xpath.c */
 extern PgXmlErrorContext *pgxml_parser_init(PgXmlStrictness strictness);
 
+/*
+ * Declared non-static in xml.c for exactly this purpose: attach our error
+ * context to a parser context we create, instead of relying on the
+ * carrier-thread-global xmlSetStructuredErrorFunc handler that pg_xml_init()
+ * installs.  See LIBXML_ERROR_HANDLER_THREADED_DESIGN.md.
+ */
+extern void pg_xml_ctxt_seterror(PgXmlErrorContext *errcxt, xmlParserCtxtPtr ctxt);
+
 /* local defs */
 static const char **parse_params(text *paramstr);
 #endif							/* USE_LIBXSLT */
@@ -58,6 +66,7 @@ xslt_process(PG_FUNCTION_ARGS)
 	volatile xmlDocPtr doctree = NULL;
 	volatile xmlDocPtr ssdoc = NULL;
 	volatile xmlDocPtr restree = NULL;
+	xmlParserCtxtPtr volatile pctxt = NULL;
 	volatile xsltSecurityPrefsPtr xslt_sec_prefs = NULL;
 	volatile xsltTransformContextPtr xslt_ctxt = NULL;
 	volatile int resstat = -1;
@@ -83,19 +92,41 @@ xslt_process(PG_FUNCTION_ARGS)
 		bool		xslt_sec_prefs_error;
 		int			reslen = 0;
 
-		/* Parse document */
-		doctree = xmlReadMemory((char *) VARDATA_ANY(doct),
-								VARSIZE_ANY_EXHDR(doct), NULL, NULL,
-								XML_PARSE_NOENT);
+		/*
+		 * Parse document.  Use an explicit parser context so the error handler
+		 * is attached to THIS parse (pg_xml_ctxt_seterror) instead of the
+		 * OS-thread-global handler pg_xml_init() installs; under threaded
+		 * carriers several sessions parse concurrently in one address space.
+		 * See plan_docs/phase16_audits/LIBXML_ERROR_HANDLER_THREADED_DESIGN.md.
+		 */
+		pctxt = xmlNewParserCtxt();
+		if (pctxt == NULL)
+			xml_ereport(xmlerrcxt, ERROR, ERRCODE_OUT_OF_MEMORY,
+						"could not allocate parser context");
+		pg_xml_ctxt_seterror(xmlerrcxt, pctxt);
+
+		doctree = xmlCtxtReadMemory(pctxt, (char *) VARDATA_ANY(doct),
+									VARSIZE_ANY_EXHDR(doct), NULL, NULL,
+									XML_PARSE_NOENT);
+		xmlFreeParserCtxt(pctxt);
+		pctxt = NULL;
 
 		if (doctree == NULL || pg_xml_error_occurred(xmlerrcxt))
 			xml_ereport(xmlerrcxt, ERROR, ERRCODE_INVALID_XML_DOCUMENT,
 						"error parsing XML document");
 
-		/* Same for stylesheet */
-		ssdoc = xmlReadMemory((char *) VARDATA_ANY(ssheet),
-							  VARSIZE_ANY_EXHDR(ssheet), NULL, NULL,
-							  XML_PARSE_NOENT);
+		/* Same for stylesheet, with its own parser context */
+		pctxt = xmlNewParserCtxt();
+		if (pctxt == NULL)
+			xml_ereport(xmlerrcxt, ERROR, ERRCODE_OUT_OF_MEMORY,
+						"could not allocate parser context");
+		pg_xml_ctxt_seterror(xmlerrcxt, pctxt);
+
+		ssdoc = xmlCtxtReadMemory(pctxt, (char *) VARDATA_ANY(ssheet),
+								  VARSIZE_ANY_EXHDR(ssheet), NULL, NULL,
+								  XML_PARSE_NOENT);
+		xmlFreeParserCtxt(pctxt);
+		pctxt = NULL;
 
 		if (ssdoc == NULL || pg_xml_error_occurred(xmlerrcxt))
 			xml_ereport(xmlerrcxt, ERROR, ERRCODE_INVALID_XML_DOCUMENT,
@@ -165,6 +196,8 @@ xslt_process(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
+		if (pctxt != NULL)
+			xmlFreeParserCtxt(pctxt);
 		if (restree != NULL)
 			xmlFreeDoc(restree);
 		if (xslt_ctxt != NULL)

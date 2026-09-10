@@ -1,0 +1,526 @@
+2026-09-10 03:52:35.844 UTC [106971] LOG:  multithreaded=on: routing io_method=worker to the in-fiber "xtc" method
+2026-09-10 03:52:35.844 UTC [106971] DETAIL:  Forked io workers cannot wake in-process fiber backends; set io_method explicitly to override.
+2026-09-10 03:52:35.859 UTC [106971] LOG:  starting PostgreSQL 20devel on x86_64-pc-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-5), 64-bit
+2026-09-10 03:52:35.860 UTC [106971] LOG:  listening on IPv4 address "127.0.0.1", port 5435
+2026-09-10 03:52:35.862 UTC [106971] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5435"
+2026-09-10 03:52:35.868 UTC [106971] LOG:  database system was shut down at 2026-09-10 03:52:22 UTC
+2026-09-10 03:52:40.883 UTC [106971] LOG:  database system is ready to accept connections
+2026-09-10 03:52:40.886 UTC [106971] LOG:  xtc: carrier scheduler thread up (4 loops, 4 supervisors, worker-fiber pool; client backends on pooled carriers)
+2026-09-10 03:52:40.886 UTC [106971] LOG:  xtc: walwriter launched as xtc fiber (child_slot=485)
+2026-09-10 03:52:40.887 UTC [106971] LOG:  xtc: background worker launched as xtc fiber (child_slot=438)
+xtc: spawned backend fiber pid=(loop=1,local=2,gen=1) migratable=0
+xtc: spawned backend fiber pid=(loop=2,local=1,gen=1) migratable=0
+2026-09-10 03:53:54.965 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:54.965 UTC [106971] DETAIL:  line 1: xmlParseEntityRef: no name
+	<doc><int>&</int></doc>
+	           ^
+2026-09-10 03:53:54.965 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:55.503 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:55.503 UTC [106971] DETAIL:  line 1: expected '>'
+	<doc><int>1</int
+	                ^
+2026-09-10 03:53:55.503 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:55.900 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:55.900 UTC [106971] DETAIL:  line 1: expected '>'
+	<doc><int>1</int
+	                ^
+2026-09-10 03:53:55.900 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:55.948 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:55.948 UTC [106971] DETAIL:  line 1: expected '>'
+	<doc><int>1</int
+	                ^
+2026-09-10 03:53:55.948 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:55.996 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:55.996 UTC [106971] DETAIL:  line 1: expected '>'
+	<doc><int>1</int
+	                ^
+2026-09-10 03:53:55.996 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:56.424 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:56.424 UTC [106971] DETAIL:  line 1: expected '>'
+	<doc><int>1</int
+	                ^
+2026-09-10 03:53:56.424 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:56.581 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:56.581 UTC [106971] DETAIL:  line 1: xmlParseEntityRef: no name
+	<doc><int>&</int></doc>
+	           ^
+2026-09-10 03:53:56.581 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:56.975 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:56.975 UTC [106971] DETAIL:  line 1: expected '>'
+	<doc><int>1</int
+	                ^
+2026-09-10 03:53:56.975 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:57.341 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:57.341 UTC [106971] DETAIL:  line 1: expected '>'
+	<doc><int>1</int
+	                ^
+2026-09-10 03:53:57.341 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:57.404 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:57.404 UTC [106971] DETAIL:  line 1: xmlParseEntityRef: no name
+	<doc><int>&</int></doc>
+	           ^
+2026-09-10 03:53:57.404 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:57.445 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:57.445 UTC [106971] DETAIL:  line 1: xmlParseEntityRef: no name
+	<doc><int>&</int></doc>
+	           ^
+2026-09-10 03:53:57.445 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:58.360 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:58.360 UTC [106971] DETAIL:  line 1: expected '>'
+	<doc><int>1</int
+	                ^
+2026-09-10 03:53:58.360 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:58.516 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:58.516 UTC [106971] DETAIL:  line 1: expected '>'
+	<doc><int>1</int
+	                ^
+2026-09-10 03:53:58.516 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:58.553 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:58.553 UTC [106971] DETAIL:  line 1: expected '>'
+	<doc><int>1</int
+	                ^
+2026-09-10 03:53:58.553 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:58.666 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:58.666 UTC [106971] DETAIL:  line 1: expected '>'
+	<doc><int>1</int
+	                ^
+2026-09-10 03:53:58.666 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:58.693 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:58.693 UTC [106971] DETAIL:  line 1: xmlParseEntityRef: no name
+	<doc><int>&</int></doc>
+	           ^
+2026-09-10 03:53:58.693 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:59.079 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:59.079 UTC [106971] DETAIL:  line 1: expected '>'
+	<doc><int>1</int
+	                ^
+2026-09-10 03:53:59.079 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:59.356 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:59.356 UTC [106971] DETAIL:  line 1: expected '>'
+	<doc><int>1</int
+	                ^
+2026-09-10 03:53:59.356 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:59.458 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:59.458 UTC [106971] DETAIL:  line 1: xmlParseEntityRef: no name
+	<doc><int>&</int></doc>
+	           ^
+2026-09-10 03:53:59.458 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:59.605 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:59.605 UTC [106971] DETAIL:  line 1: xmlParseEntityRef: no name
+	<doc><int>&</int></doc>
+	           ^
+2026-09-10 03:53:59.605 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:53:59.712 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:53:59.712 UTC [106971] DETAIL:  line 1: xmlParseEntityRef: no name
+	<doc><int>&</int></doc>
+	           ^
+2026-09-10 03:53:59.712 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:54:00.178 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:54:00.178 UTC [106971] DETAIL:  line 1: expected '>'
+	<doc><int>1</int
+	                ^
+2026-09-10 03:54:00.178 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:54:00.246 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:54:00.246 UTC [106971] DETAIL:  line 1: expected '>'
+	<doc><int>1</int
+	                ^
+2026-09-10 03:54:00.246 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:54:00.854 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:54:00.854 UTC [106971] DETAIL:  line 1: xmlParseEntityRef: no name
+	<doc><int>&</int></doc>
+	           ^
+2026-09-10 03:54:00.854 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:54:00.870 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:54:00.870 UTC [106971] DETAIL:  line 1: expected '>'
+	<doc><int>1</int
+	                ^
+2026-09-10 03:54:00.870 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:54:01.163 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:54:01.163 UTC [106971] DETAIL:  line 1: expected '>'
+	<doc><int>1</int
+	                ^
+2026-09-10 03:54:01.163 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:54:01.188 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:54:01.188 UTC [106971] DETAIL:  line 1: xmlParseEntityRef: no name
+	<doc><int>&</int></doc>
+	           ^
+2026-09-10 03:54:01.188 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:54:01.638 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:54:01.638 UTC [106971] DETAIL:  line 1: xmlParseEntityRef: no name
+	<doc><int>&</int></doc>
+	           ^
+2026-09-10 03:54:01.638 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:54:02.577 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:54:02.577 UTC [106971] DETAIL:  line 1: xmlParseEntityRef: no name
+	<doc><int>&</int></doc>
+	           ^
+2026-09-10 03:54:02.577 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:54:02.693 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:54:02.693 UTC [106971] DETAIL:  line 1: xmlParseEntityRef: no name
+	<doc><int>&</int></doc>
+	           ^
+2026-09-10 03:54:02.693 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:54:03.450 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:54:03.450 UTC [106971] DETAIL:  line 1: expected '>'
+	<doc><int>1</int
+	                ^
+2026-09-10 03:54:03.450 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:54:08.320 UTC [106971] ERROR:  error parsing XML document
+2026-09-10 03:54:08.320 UTC [106971] DETAIL:  line 1: xmlParseEntityRef: no name
+	<doc><int>&</int></doc>
+	           ^
+2026-09-10 03:54:08.320 UTC [106971] STATEMENT:  SELECT length(xslt_process(
+	  (SELECT xmldoc FROM hammer_docs WHERE xmldoc LIKE '<doc>%' ORDER BY random() LIMIT 1),
+	  $$<xsl:stylesheet version="1.0" xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+	<xsl:output method="xml" indent="yes" />
+	<xsl:template match="*">
+	  <xsl:copy>
+	     <xsl:copy-of select="@*" />
+	     <xsl:apply-templates />
+	  </xsl:copy>
+	</xsl:template>
+	</xsl:stylesheet>
+	$$::text));
+2026-09-10 03:57:40.982 UTC [106971] LOG:  checkpoint starting: time
+2026-09-10 03:57:49.009 UTC [106971] LOG:  checkpoint complete: time: wrote 80 buffers (0.5%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=8.017 s, sync=0.003 s, total=8.027 s; sync files=59, longest=0.002 s, average=0.001 s; distance=460 kB, estimate=460 kB; lsn=0/01863950, redo lsn=0/018638B8

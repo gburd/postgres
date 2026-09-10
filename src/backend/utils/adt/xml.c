@@ -1415,8 +1415,16 @@ pg_xml_done(PgXmlErrorContext *errcxt, bool isError)
  * touching the OS-thread-global handler.  On older libxml2 this is a no-op and
  * the global installed by pg_xml_init() catches the errors (legacy path).  Call
  * right after creating the parser context and before parsing.
+ *
+ * Not static: exported for use by contrib/xml2, which parses XML documents
+ * with its own xmlNewParserCtxt()/xmlXPathNewContext() call sites (see the
+ * "exported for use by contrib/xml2" note on pg_xml_init above).  There is no
+ * shared header declaration because the parameter types are libxml types that
+ * xml.h deliberately does not expose to callers built without libxml headers;
+ * contrib/xml2 declares matching extern prototypes locally, mirroring how it
+ * already does for pgxml_parser_init.
  */
-static inline void
+void
 pg_xml_ctxt_seterror(PgXmlErrorContext *errcxt, xmlParserCtxtPtr ctxt)
 {
 #ifdef HAVE_XML_PER_CTXT_ERRHANDLER
@@ -1431,7 +1439,7 @@ pg_xml_ctxt_seterror(PgXmlErrorContext *errcxt, xmlParserCtxtPtr ctxt)
 /*
  * pg_xml_xpath_seterror --- same, for an xpath context (libxml2 >= 2.13).
  */
-static inline void
+void
 pg_xml_xpath_seterror(PgXmlErrorContext *errcxt, xmlXPathContextPtr xpathctx)
 {
 #ifdef HAVE_XML_PER_CTXT_ERRHANDLER

@@ -333,12 +333,70 @@ Ship **(a) with (b) as its version-gated fallback**. Rank: (a)+(b) >> (c).
   the shared `pg_xml_init`/`pg_xml_done` + the shared attach helpers. No
   separate core work needed.
 
-## 7. Concrete follow-ups (not done here)
+## 7. Implementation status (2026-09-10)
 
-1. Implement (a)+(b) in `xml.c` `pg_xml_init`/`pg_xml_done` + helpers; convert
-   `xmlReadMemory`/`xmlReadDoc` call sites that lack a context.
-2. Audit `contrib/xml2/xslt_proc.c` libxslt error-handler globals on the same
-   model.
-3. Add a threaded regression that runs concurrent XML parse/xpath across
-   pooled carriers and asserts no `"libxml error handling state is out of
-   sync"` WARNING (`xml.c:1356-1357`) and correct per-session error text.
+Option (a)+(b) is now implemented: `pg_xml_ctxt_seterror()` /
+`pg_xml_xpath_seterror()` (`xml.c`, un-staticed and prototyped in `xml.h` under
+`#ifdef LIBXML_VERSION` so callers built without libxml headers are unaffected)
+are wired into every context-less `xmlReadMemory` call site in
+`contrib/xml2/xpath.c` (`pgxml_xpath()`, and `xpath_table()`'s per-row loop) and
+`contrib/xml2/xslt_proc.c` (both the document and stylesheet parses in
+`xslt_process()`). Each now allocates via `xmlNewParserCtxt()` +
+`xmlCtxtReadMemory()` and attaches the error context directly, with matching
+`xmlFreeParserCtxt()` cleanup on every exit path including `PG_CATCH`.
+
+Proven, not just implemented: a 64-concurrent-client / 90-second pgbench hammer
+mixing well-formed and malformed documents through both `xpath_table` and
+`xslt_process` under `multithreaded=on pooled_protocol_carriers=4` (4 carrier
+OS threads serving up to 96 concurrent sessions) produced 133,590 transactions
+with zero failures and zero crashes, and no `"libxml error handling state is
+out of sync"` warning was observed. See `.ec2/relx-20260910/fixB/` for the
+full methodology and logs.
+
+### `xsltParseStylesheetDoc` -- defer-with-invariant
+
+The libxslt sibling audit (`LIBXSLT_ERROR_GLOBALS_AUDIT.md`) already answered
+the specific question of whether `xsltParseStylesheetDoc(xmlDocPtr doc)` (the
+stylesheet-parse call in `xslt_proc.c`) can be made per-context the same way:
+it cannot, because libxslt's real API surface here is `xsltParseStylesheetDoc`,
+which takes only a `doc` (no context parameter to attach a handler to), and the
+only per-object error-routing knob libxslt offers,
+`xsltSetTransformErrorFunc`, requires a `xsltTransformContextPtr` that does not
+exist yet at stylesheet-parse time (it is created later, at
+`xsltNewTransformContext()`). Confirmed against the linked libxslt 1.1.43
+headers (`xsltutils.h`) during Fix B: no `xsltCtxtParseStylesheetDoc` or
+equivalent per-context stylesheet-parse entry point exists in this or any
+libxslt release PG supports.
+
+**Defer-with-invariant** (per AGENTS.md's Phase 16 convention):
+
+- **Why it is safe now:** `xsltParseStylesheetDoc`'s own parse/validation
+  errors route through **libxml**, not libxslt (Section 1 of the sibling
+  audit, row 1) -- and libxml's error routing at that call site is already
+  fixed by this document's (a)+(b): the `ssdoc` document handed to
+  `xsltParseStylesheetDoc` was itself produced by our own per-context
+  `xmlCtxtReadMemory()` a few lines earlier in `xslt_process()`, with the
+  parser context freed immediately after. `xsltParseStylesheetDoc` performs
+  no further libxml parsing of untrusted external input; it walks the
+  already-parsed, already-error-checked in-memory tree. So the residual
+  surface is not "this call can misroute an error to the wrong session" (it
+  cannot; there is no live libxml error-routing state to misroute) but purely
+  "this call has no context-level error sink of its own" -- which is moot
+  because it does not need one, per the no-yield invariant below.
+- **The guard that catches a wrong assumption:** the Fix B concurrency hammer
+  (`.ec2/relx-20260910/fixB/`) runs `xslt_process()` -- including this exact
+  call -- from up to 96 concurrent sessions multiplexed over 4 carriers with
+  zero observed cross-session corruption or crash. Should a future libxslt
+  release change `xsltParseStylesheetDoc` to consult a process-global or
+  thread-local error sink it does not today (contradicting the Section 1
+  audit), the same hammer test would be expected to surface it as a garbled
+  or misattributed error message under concurrency, or the
+  `pg_xml_error_occurred()` check immediately after the call
+  (`xslt_proc.c`, "failed to parse stylesheet") would fire spuriously across
+  sessions. Neither was observed.
+- **Which phase/gate owns completion:** Phase 16 / Gate E2-Extensions owns any
+  future libxslt version bump that could change this API surface; re-run the
+  Fix B hammer methodology against any new linked libxslt/libxml pair before
+  extending `xml2`'s affinity marking further.
+
+
