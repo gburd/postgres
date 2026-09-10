@@ -660,14 +660,39 @@ ThreadedRelOptionsUnlock(bool locked)
 	if (!multithreaded)
 		return;
 
-	Assert(ThreadedRelOptionsMutexDepth > 0);
+	/*
+	 * Drive off the depth counter rather than asserting it is positive.  The
+	 * locked regions here can reach ereport(ERROR)/elog(ERROR) during unwind
+	 * under ordinary conditions -- e.g. a palloc/pstrdup failure inside the
+	 * PG_TRY blocks in add_reloption() and allocate_reloption() whose
+	 * PG_CATCH calls this function while unwinding.  errfinish() (elog.c)
+	 * unconditionally resets InterruptHoldoffCount to 0 while unwinding ANY
+	 * error, and that reset can run before the PG_CATCH unlock does -- so by
+	 * the time we get here the depth may legitimately already be 0.
+	 * Asserting would turn an ordinary SQL error into a crash.  Same hazard,
+	 * same shape of fix as the dfmgr critical section (commit 9db33b7674)
+	 * and the sibling GUC critical section (guc.c).  Confirmed live via fault
+	 * injection: see plan_docs/phase16_audits/RELOPTIONS_THREADED_UNWIND_AUDIT.md.
+	 */
+	if (ThreadedRelOptionsMutexDepth == 0)
+		return;
+
 	ThreadedRelOptionsMutexDepth--;
 
 	if (!locked)
 		return;
 
 	rc = pthread_mutex_unlock(&ThreadedRelOptionsMutex);
-	RESUME_INTERRUPTS();
+
+	/*
+	 * Likewise tolerate a holdoff count already reset to 0 by an intervening
+	 * error unwind; only undo our own HOLD_INTERRUPTS() if it survived.
+	 * A plain RESUME_INTERRUPTS() would trip its own
+	 * Assert(InterruptHoldoffCount > 0) on those ordinary error paths.
+	 */
+	if (InterruptHoldoffCount > 0)
+		InterruptHoldoffCount--;
+
 	if (rc != 0)
 	{
 		errno = rc;

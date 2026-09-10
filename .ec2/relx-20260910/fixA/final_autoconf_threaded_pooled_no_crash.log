@@ -1,0 +1,16 @@
+2026-09-10 04:09:47.374 UTC [117734] LOG:  multithreaded=on: routing io_method=worker to the in-fiber "xtc" method
+2026-09-10 04:09:47.374 UTC [117734] DETAIL:  Forked io workers cannot wake in-process fiber backends; set io_method explicitly to override.
+2026-09-10 04:09:47.388 UTC [117734] LOG:  starting PostgreSQL 20devel on x86_64-pc-linux-gnu, compiled by gcc (GCC) 11.5.0 20240719 (Red Hat 11.5.0-5), 64-bit
+2026-09-10 04:09:47.389 UTC [117734] LOG:  listening on IPv4 address "127.0.0.1", port 5436
+2026-09-10 04:09:47.391 UTC [117734] LOG:  listening on Unix socket "/tmp/.s.PGSQL.5436"
+2026-09-10 04:09:47.397 UTC [117734] LOG:  database system was shut down at 2026-09-10 04:09:33 UTC
+2026-09-10 04:09:52.409 UTC [117734] LOG:  database system is ready to accept connections
+2026-09-10 04:09:52.412 UTC [117734] LOG:  xtc: carrier scheduler thread up (4 loops, 4 supervisors, worker-fiber pool; client backends on pooled carriers)
+2026-09-10 04:09:52.413 UTC [117734] LOG:  xtc: walwriter launched as xtc fiber (child_slot=285)
+2026-09-10 04:09:52.413 UTC [117734] LOG:  xtc: background worker launched as xtc fiber (child_slot=238)
+xtc: spawned backend fiber pid=(loop=1,local=2,gen=1) migratable=0
+xtc: spawned backend fiber pid=(loop=2,local=1,gen=1) migratable=0
+2026-09-10 04:10:29.051 UTC [117734] ERROR:  user-defined relation parameter types limit exceeded
+2026-09-10 04:10:29.051 UTC [117734] STATEMENT:  SELECT reloptprobe_exhaust_kinds();
+2026-09-10 04:10:29.970 UTC [117734] ERROR:  invalid memory alloc request size 2147483648
+2026-09-10 04:10:29.970 UTC [117734] STATEMENT:  SELECT reloptprobe_huge_name_bool();

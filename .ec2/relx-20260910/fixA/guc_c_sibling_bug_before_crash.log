@@ -1,0 +1,68 @@
+Evidence for the guc.c ThreadedGUCUnlock() Assert("InterruptHoldoffCount > 0") crash
+(a THIRD, pre-existing instance of the same bug class as Fix A -- not reloptions.c,
+not in the original task's assigned scope, but blocking the mandatory
+check-threaded-pooled validation gate for Fix A/Fix B entirely, since virtually
+any SQL statement can reach a SET or GUC check that ereport(ERROR)s under this
+lock).
+
+Captured from: gmake -C src/test/regress check-threaded-pooled
+(pg-autoconf tree, USE_XTC_CARRIER=1, multithreaded=on pooled_protocol_carriers=4,
+cassert build), BEFORE the guc.c fix was applied.
+
+---
+
+2026-09-10 03:37:57.236 UTC postmaster[99466] pg_regress/subselect ERROR:  operator does not exist: bigint = text at character 33
+2026-09-10 03:37:57.236 UTC postmaster[99466] pg_regress/subselect DETAIL:  No operator of that name accepts the given argument types.
+2026-09-10 03:37:57.236 UTC postmaster[99466] pg_regress/subselect HINT:  You might need to add explicit type casts.
+2026-09-10 03:37:57.236 UTC postmaster[99466] pg_regress/subselect STATEMENT:  select * from int8_tbl where q1 in (select c1 from inner_text);
+TRAP: failed Assert("InterruptHoldoffCount > 0"), File: "guc.c", Line: 245, PID: 99466
+postgres: ec2-user regression [local] (ExceptionalCondition+0x55)[0xbadab5]
+postgres: ec2-user regression [local] [0xbf264e]
+postgres: ec2-user regression [local] (set_config_with_handle+0x198)[0xbfb9a8]
+postgres: ec2-user regression [local] (set_config_option+0x51)[0xbfbbf1]
+postgres: ec2-user regression [local] (ExecSetVariableStmt+0x7c)[0xc0730c]
+postgres: ec2-user regression [local] (standard_ProcessUtility+0x5c3)[0xa37f43]
+postgres: ec2-user regression [local] [0xa35841]
+postgres: ec2-user regression [local] [0xa359c6]
+postgres: ec2-user regression [local] (PortalRun+0x5c9)[0xa36489]
+postgres: ec2-user regression [local] [0xa2c698]
+postgres: ec2-user regression [local] (PgSessionRunProtocolSchedulerUntilBoundary+0x1545)[0xa32f95]
+postgres: ec2-user regression [local] [0x91dbf4]
+postgres: ec2-user regression [local] [0x91ec81]
+postgres: ec2-user regression [local] [0x91f256]
+postgres: ec2-user regression [local] [0x90b630]
+/lib64/libc.so.6(+0x8b2ea)[0x7f9e08a8b2ea]
+/lib64/libc.so.6(+0x110b40)[0x7f9e08b10b40]
+
+pg_regress driver observed: all remaining tests in the parallel_schedule failed
+at the same elapsed time (~4ms each), and "pg_ctl: could not send stop signal
+(PID: 99466): No such process" -- server process gone, consistent with the
+task's documented "known bug" signature EXCEPT this is a genuine ordinary-SQL-
+error crash, not the libxtc lost-wake hang; the two look identical from the
+pg_regress driver's point of view (server disappears mid-run) and must be
+distinguished by the server log, which named the exact Assert/File/Line.
+
+---
+
+Root cause (same shape as Fix A / the prior dfmgr.c fix, commit 9db33b7674):
+
+ThreadedGUCUnlock() (guc.c, pre-fix) ended with an unconditional
+RESUME_INTERRUPTS() after the outermost pthread_mutex_unlock()/xtc_amutex_unlock().
+The locked region (set_config_with_handle_internal(), reached from every SET
+statement) routinely calls ereport(ERROR) on ordinary conditions (invalid value,
+permission check, custom GUC check-hook rejection).  errfinish() unconditionally
+resets InterruptHoldoffCount to 0 while unwinding ANY error (elog.c), and that
+reset can run BEFORE the PG_FINALLY block's ThreadedGUCUnlock() call does.  By
+the time RESUME_INTERRUPTS() ran, InterruptHoldoffCount could legitimately
+already be 0, tripping Assert(InterruptHoldoffCount > 0).
+
+Fix applied: identical pattern to reloptions.c/dfmgr.c -- tolerate
+InterruptHoldoffCount already being 0 (an intervening error unwind reset it);
+only decrement if there is something to undo.
+
+AFTER the fix: `gmake check-threaded-pooled`'s full parallel_schedule run got
+further (reached mcxt.c's unrelated pre-existing "parent->firstchild == context"
+assert, a third and separate bug -- see FIXA_GUC_C_SIDE_FIX.md), and the
+narrower reloptions/guc/xml/xml2-only schedule (which avoids the domain/FK
+tests that trip the mcxt.c bug) ran clean: see
+.ec2/relx-20260910/fixA/, .ec2/relx-20260910/fixB/.
