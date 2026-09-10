@@ -156,3 +156,32 @@ high-connection / bursty patterns are where the fork model pays a per-process
 tax the pooled model does not).  The LOADGEN host needs the same `pgbench` binary
 and `libpq` reachable on its PATH/`LD_LIBRARY_PATH`.
 
+
+## P1 requirement audit of the pre-existing scripts (2026-09-10)
+
+plan_docs/FORK_TO_XTC_PERF_PLAN.md P1 lists nine hardening requirements, each a
+real bug that produced a false result in an earlier session.  Auditing the
+scripts that predate `mtpg_p1_matrix.sh` against that list, so the gap is on
+record rather than rediscovered:
+
+| # | requirement | mtpg_matrix.sh | mtpg_hammerdb_bench.sh | mtpg_remote_bench.sh |
+|---|---|---|---|---|
+| 1 | fresh server per run | VIOLATES: one server per (lane,vu) cell, not per run; the schema is built once and every VU/lane cell restarts postgres but reuses the same data dir for the whole matrix | OK-ish: `start_pg`/`stop_pg` restart postgres per (mode,carriers,vu) cell and detect+kill a stale postmaster.pid, but the data dir (and any accumulated bloat/state) persists across the whole VU sweep | VIOLATES: `start_server`/`stop_server` re-`initdb` per (workload,carriers) cell but reuse the SAME running server across the whole `CLIENTS` sweep within that cell |
+| 2 | `pgbench -i` under `timeout` | N/A directly -- schema build goes through HammerDB's `buildschema`, not pgbench | N/A directly -- same, HammerDB `buildschema` | VIOLATES: `"$PGBIN/pgbench" -i -s $SCALE` calls are unguarded, no `timeout` wrapper |
+| 3 | diagnostics captured before teardown | PARTIAL: samples `pg_stat_database`/context-switches/RSS during the run and before `stop_lane`, but the HammerDB-side NOPM grep happens via an ssh call issued right before `stop_lane` with only an informal ordering, not an explicit pre-stop snapshot | OK: `stop_pg` issues an explicit `CHECKPOINT` before `pg_ctl -m fast`, specifically to avoid the immediate-stop FATAL flood, but there is no separate diagnostic (wait-event) snapshot step | VIOLATES: no diagnostic capture step at all; `stop_server` is a bare `kill`/`kill -9` with no checkpoint and no pre-stop snapshot |
+| 4 | loud tps-parse failure | N/A (HammerDB NOPM, not pgbench tps) | N/A (HammerDB NOPM) | VIOLATES: `drive()` greps for `tps` and falls back to a bare `${tps:-NA}` with no distinction between "no transactions completed" and "the grep pattern broke" |
+| 5 | assert effective carrier count | OK: `start_lane` asserts `mt=on` and `carriers=-1` before proceeding, returns failure otherwise | OK: `start_pg` hard-asserts `pooled_protocol_carriers` and `pg_stat_xtc_carriers` row count are both nonzero, aborting the lane if the pool is not actually up | VIOLATES: reads `show pooled_protocol_carriers` into `eff` purely for the results-row label; never compares it against what was requested, never checks `pg_stat_xtc_carriers` |
+| 6 | no `| tail -N` masking a failed build | N/A -- none of the three build PostgreSQL; they consume an already-built `PGBIN` | N/A | N/A |
+| 7 | separate driver enforced | VIOLATES: `LOADGEN` and `SUT_IP` are required env vars but never checked against each other; a co-located run is not prevented and no output is ever tainted | VIOLATES: same pattern -- required but unchecked, no tainting | VIOLATES: same pattern -- required but unchecked, no tainting |
+| 8 | confound context in every row | PARTIAL: `results.tsv` carries carriers/rss/cpu/csw/stall but no driver/SUT host column and no fsync/synchronous_commit/io_method/device columns | VIOLATES: `hresults.tsv` has only bench/mode/carriers/vu/nopm/tpm/pss/cpu -- no host, no durability flags, no device, even though `DURABILITY` is a script parameter it is not recorded per row | VIOLATES: `results.tsv` has tps/latency/pss/cpu but no host, no durability flags, no shared_buffers, no device columns |
+| 9 | idle%/CPU gated on requirement 7 | VIOLATES: reports `cpu` unconditionally; there is no requirement-7 tracking to gate on | VIOLATES: same | VIOLATES: same |
+
+Net: the closest of the three to the P1 bar was `mtpg_hammerdb_bench.sh`
+(requirement 5 solid, requirement 3 partly covered by the explicit
+checkpoint-before-stop), but none of the three enforce requirement 7 -- the one
+that actually confounded a real study (the 2026-08-27 write-heavy RCA) -- and
+none carry the full confound context per row.  `mtpg_p1_matrix.sh` was written
+fresh to close all nine at once rather than patch three scripts with divergent
+per-cell/per-run granularity; the HammerDB scripts remain the right tool once a
+Tcl/Java driver install is available on the loadgen, and can be wired in as an
+additional lane in `mtpg_p1_matrix.sh` later rather than reimplemented.
