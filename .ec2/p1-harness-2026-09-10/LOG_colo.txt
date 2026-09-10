@@ -1,0 +1,9 @@
+[04:12:01] P1 MATRIX START: lanes='fork xtc' workloads='select' clients='8' carriers='auto' runs=1 colocated=1
+[04:12:01] WARNING: --local-driver / co-located mode -- every row will be tagged DEGRADED and idle_meaningful=no (requirement 7).
+[04:12:03] lane=fork up: mt=off carriers_req=- carriers_eff=- shared_buffers=13346MB cores=8
+[04:12:30] diag: active_backends=1 cpu_busy=0%
+[04:12:36] DONE bench=select lane=fork carriers_req=- carriers_eff=- clients=8 tps=181823.412600 p95=0.0440ms p99=0.0530ms stall=no degraded=yes
+[04:12:45] lane=xtc up: mt=on carriers_req=auto carriers_eff=8 shared_buffers=13346MB cores=8
+[04:13:22] diag: active_backends=1 cpu_busy=0.25%
+[04:13:27] DONE bench=select lane=xtc carriers_req=auto carriers_eff=8 clients=8 tps=176468.049072 p95=0.0460ms p99=0.0550ms stall=no degraded=yes
+[04:13:28] P1 MATRIX DONE. results: /mnt/nvme/p1out_colo/results.tsv  latencies: /mnt/nvme/p1out_colo/latencies.tsv
