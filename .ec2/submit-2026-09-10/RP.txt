@@ -1,0 +1,92 @@
+run 1: PASS tps = 1658.546273
+run 2: PASS tps = 1691.336266
+=== HANG #1 (run 3) ===
+--- xtc-tail-dropped ---
+  emitted=694296  ring=16384  buffered=16384  dropped=677912
+  WARNING: 677912 record(s) were OVERWRITTEN.  Any claim that rests on an event being ABSENT is unfalsifiable for this capture.
+--- THE ANSWER: xtc-tail.py --strands ---
+=== 33 parked task(s), classified by how far the wake got ===
+  never submitted  33
+  no REAP          0
+  REAP, no WAKE    0
+  WAKE, no RUN     0
+  resumed          0
+
+--- never submitted ---
+    no SQE was queued for this park -- we never asked
+    pid=21.1.1     task=0x7fd298095910  parked at 35138579 ns
+    pid=7.1.1      task=0x7fd29800bd50  parked at 35162844 ns
+    pid=23.1.1     task=0x7fd2ac11df90  parked at 35269426 ns
+    pid=19.1.1     task=0x7fd2ac0109d0  parked at 35718130 ns
+    pid=28.1.1     task=0x15e34b0  parked at 35729061 ns
+    pid=25.1.1     task=0x7fd29818c490  parked at 805228677 ns
+    pid=12.1.1     task=0x7fd2a40ba850  parked at 835335048 ns
+    pid=1.3.1      task=0x7fd2a44bfbd0  parked at 839185767 ns
+    pid=11.1.1     task=0x1554e90  parked at 1032077013 ns
+    pid=8.1.1      task=0x7fd2a4066360  parked at 5568011735 ns
+    pid=9.1.1      task=0x7fd2ac088bb0  parked at 5568477295 ns
+    pid=14.1.1     task=0x155c920  parked at 5568626268 ns
+    pid=10.1.1     task=0x7fd298055740  parked at 5568954998 ns
+    pid=18.1.1     task=0x7fd2a422c850  parked at 5575599355 ns
+    pid=16.1.1     task=0x7fd2ac084b70  parked at 5575631367 ns
+    pid=20.1.1     task=0x15e1cb0  parked at 5576347975 ns
+    pid=17.1.1     task=0x7fd2980cf630  parked at 5576368951 ns
+    pid=15.1.1     task=0x7fd2980d2d20  parked at 5576806325 ns
+    pid=22.1.1     task=0x7fd2a41e5930  parked at 5576817296 ns
+    pid=26.1.1     task=0x7fd2a42dcc20  parked at 5583541700 ns
+    ... 13 more
+
+NOTE: every bucket here is an ABSENCE claim.  Check dropped first
+      (xtc-tail-dropped, or the dump header) -- in a wrapped ring
+      an absence may only mean the event was evicted.
+--- REAP detail split (tagged vs 0) ---
+  total REAP: 7014
+  REAP detail=0 (consumed, not handed on): 0
+run 4: PASS tps = 692.074486
+run 5: PASS tps = 1641.577389
+run 6: PASS tps = 1285.322360
+run 7: PASS tps = 1925.014186
+run 8: PASS tps = 1928.992735
+=== HANG #2 (run 9) ===
+--- xtc-tail-dropped ---
+  emitted=502135  ring=16384  buffered=16384  dropped=485751
+  WARNING: 485751 record(s) were OVERWRITTEN.  Any claim that rests on an event being ABSENT is unfalsifiable for this capture.
+--- THE ANSWER: xtc-tail.py --strands ---
+=== 32 parked task(s), classified by how far the wake got ===
+  never submitted  31
+  no REAP          0
+  REAP, no WAKE    0
+  WAKE, no RUN     0
+  resumed          1
+
+--- never submitted ---
+    no SQE was queued for this park -- we never asked
+    pid=10.1.1     task=0x37c24e90  parked at 17839606 ns
+    pid=23.1.1     task=0x7fdb781a9160  parked at 17853758 ns
+    pid=9.1.1      task=0x7fdb78088bb0  parked at 18025250 ns
+    pid=21.1.1     task=0x7fdb640d07d0  parked at 18074619 ns
+    pid=4.1.2      task=0x7fdb700993f0  parked at 18114661 ns
+    pid=17.1.1     task=0x7fdb640fa680  parked at 18202128 ns
+    pid=26.1.1     task=0x7fdb702f3c20  parked at 18360232 ns
+    pid=20.1.1     task=0x37b9ad90  parked at 18400143 ns
+    pid=5.1.2      task=0x7fdb78397950  parked at 18595665 ns
+    pid=11.1.1     task=0x7fdb6400b960  parked at 18653223 ns
+    pid=18.1.1     task=0x7fdb7021cee0  parked at 18845239 ns
+    pid=8.1.1      task=0x7fdb700b1e10  parked at 18855419 ns
+    pid=25.1.1     task=0x7fdb64223300  parked at 18868794 ns
+    pid=1.0.1      task=0x37a93730  parked at 76592131 ns
+    pid=3.2.1      task=0x37df3870  parked at 899326111 ns
+    pid=12.1.1     task=0x7fdb70066360  parked at 919168626 ns
+    pid=7.1.1      task=0x7fdb640235a0  parked at 6757657665 ns
+    pid=13.1.1     task=0x7fdb7805efe0  parked at 6758050820 ns
+    pid=14.1.1     task=0x37c2c940  parked at 6758155271 ns
+    pid=16.1.1     task=0x7fdb7817b410  parked at 6765184546 ns
+    ... 11 more
+
+NOTE: every bucket here is an ABSENCE claim.  Check dropped first
+      (xtc-tail-dropped, or the dump header) -- in a wrapped ring
+      an absence may only mean the event was evicted.
+--- REAP detail split (tagged vs 0) ---
+  total REAP: 6848
+  REAP detail=0 (consumed, not handed on): 0
+RP_COMPLETE hangs=2
