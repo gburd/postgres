@@ -1,0 +1,17 @@
+bench	lane	carriers_req	clients	run	pctl_line
+select	fork	-	8	1	count=1644675  avg=0.144ms  p50=0.144ms  p95=0.161ms  p99=0.182ms  max=16.117ms
+TSV	count	1644675	avg_ms	0.1443	p50_ms	0.1440	p95_ms	0.1610	p99_ms	0.1820	max_ms	16.1170
+select	fork	-	16	1	count=2877305  avg=0.165ms  p50=0.160ms  p95=0.202ms  p99=0.224ms  max=2.680ms
+TSV	count	2877305	avg_ms	0.1652	p50_ms	0.1600	p95_ms	0.2020	p99_ms	0.2240	max_ms	2.6800
+select	xtc	auto	8	1	count=1631432  avg=0.146ms  p50=0.145ms  p95=0.165ms  p99=0.194ms  max=5.639ms
+TSV	count	1631432	avg_ms	0.1455	p50_ms	0.1450	p95_ms	0.1650	p99_ms	0.1940	max_ms	5.6390
+select	xtc	auto	16	1	count=1639997  avg=0.291ms  p50=0.145ms  p95=0.161ms  p99=0.181ms  max=29979.164ms
+TSV	count	1639997	avg_ms	0.2909	p50_ms	0.1450	p95_ms	0.1610	p99_ms	0.1810	max_ms	29979.1640
+tpcb	fork	-	8	1	count=182773  avg=1.310ms  p50=1.247ms  p95=1.604ms  p99=2.638ms  max=15.103ms
+TSV	count	182773	avg_ms	1.3104	p50_ms	1.2470	p95_ms	1.6040	p99_ms	2.6380	max_ms	15.1030
+tpcb	fork	-	16	1	count=297818  avg=1.609ms  p50=1.541ms  p95=2.077ms  p99=2.527ms  max=26.354ms
+TSV	count	297818	avg_ms	1.6093	p50_ms	1.5410	p95_ms	2.0770	p99_ms	2.5270	max_ms	26.3540
+tpcb	xtc	auto	8	1	count=193294  avg=1.239ms  p50=1.210ms  p95=1.463ms  p99=1.686ms  max=16.569ms
+TSV	count	193294	avg_ms	1.2391	p50_ms	1.2100	p95_ms	1.4630	p99_ms	1.6860	max_ms	16.5690
+tpcb	xtc	auto	16	1	count=189467  avg=2.530ms  p50=1.234ms  p95=1.494ms  p99=1.725ms  max=29982.415ms
+TSV	count	189467	avg_ms	2.5295	p50_ms	1.2340	p95_ms	1.4940	p99_ms	1.7250	max_ms	29982.4150

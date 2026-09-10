@@ -1,0 +1,26 @@
+[04:19:18] P1 MATRIX START: lanes='fork xtc' workloads='select tpcb' clients='8 16' carriers='auto' runs=1 colocated=0
+[04:19:21] lane=fork up: mt=off carriers_req=- carriers_eff=- shared_buffers=13346MB cores=8
+[04:20:04] diag: active_backends=1 cpu_busy=0%
+[04:20:07] DONE bench=select lane=fork carriers_req=- carriers_eff=- clients=8 tps=54855.581573 p95=0.1610ms p99=0.1820ms stall=no degraded=no
+[04:20:11] lane=fork up: mt=off carriers_req=- carriers_eff=- shared_buffers=13346MB cores=8
+[04:20:54] diag: active_backends=1 cpu_busy=0%
+[04:20:59] DONE bench=select lane=fork carriers_req=- carriers_eff=- clients=16 tps=95930.932516 p95=0.2020ms p99=0.2240ms stall=no degraded=no
+[04:21:08] lane=xtc up: mt=on carriers_req=auto carriers_eff=8 shared_buffers=13346MB cores=8
+[04:22:01] diag: active_backends=1 cpu_busy=0.25%
+[04:22:05] DONE bench=select lane=xtc carriers_req=auto carriers_eff=8 clients=8 tps=54393.763984 p95=0.1650ms p99=0.1940ms stall=no degraded=no
+[04:22:14] lane=xtc up: mt=on carriers_req=auto carriers_eff=8 shared_buffers=13346MB cores=8
+[04:23:07] diag: active_backends=1 cpu_busy=0%
+[04:23:10] DONE bench=select lane=xtc carriers_req=auto carriers_eff=8 clients=16 tps=54704.261550 p95=0.1610ms p99=0.1810ms stall=no degraded=no
+[04:23:14] lane=fork up: mt=off carriers_req=- carriers_eff=- shared_buffers=13346MB cores=8
+[04:23:57] diag: active_backends=1 cpu_busy=0.12%
+[04:23:58] DONE bench=tpcb lane=fork carriers_req=- carriers_eff=- clients=8 tps=6094.687758 p95=1.6040ms p99=2.6380ms stall=no degraded=no
+[04:24:02] lane=fork up: mt=off carriers_req=- carriers_eff=- shared_buffers=13346MB cores=8
+[04:24:45] diag: active_backends=1 cpu_busy=0%
+[04:24:46] DONE bench=tpcb lane=fork carriers_req=- carriers_eff=- clients=16 tps=9921.003537 p95=2.0770ms p99=2.5270ms stall=no degraded=no
+[04:24:55] lane=xtc up: mt=on carriers_req=auto carriers_eff=8 shared_buffers=13346MB cores=8
+[04:25:48] diag: active_backends=1 cpu_busy=0%
+[04:25:49] DONE bench=tpcb lane=xtc carriers_req=auto carriers_eff=8 clients=8 tps=6444.317799 p95=1.4630ms p99=1.6860ms stall=no degraded=no
+[04:25:58] lane=xtc up: mt=on carriers_req=auto carriers_eff=8 shared_buffers=13346MB cores=8
+[04:26:52] diag: active_backends=1 cpu_busy=0.38%
+[04:26:52] DONE bench=tpcb lane=xtc carriers_req=auto carriers_eff=8 clients=16 tps=6319.243835 p95=1.4940ms p99=1.7250ms stall=no degraded=no
+[04:26:54] P1 MATRIX DONE. results: /mnt/nvme/p1out/results.tsv  latencies: /mnt/nvme/p1out/latencies.tsv
