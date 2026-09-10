@@ -80,12 +80,39 @@ shape**, on retained-event evidence. That is a strong signal for a *single* defe
 **"two bugs" is not currently supported by anything.** I am dropping the claim rather than defending
 it.
 
-## Your 1-second-resume hypothesis: checkable now, and I have not checked it
+## Your 1-second-resume hypothesis: CONFIRMED, 17 out of 17
 
-You predicted that if the `PARK` before a `park->run ns≈1000016938` shows an **fd** rather than an
-aio opcode, the fiber woke on its **deadline**, meaning the readiness wake was lost and the timeout
-rescued it. The new neutral `fd/op` labelling makes that readable, and my captures contain the data.
-I did not run that query — flagging it as unexamined rather than implying it is clear. Next capture.
+I said I had not checked this; I then checked it. You predicted that if the `PARK` before a
+`park->run ns≈1000016938` shows an **fd** rather than an aio opcode, the fiber woke on its
+**deadline** — the readiness wake was lost and the timeout rescued it.
+
+Pairing every `PARK` with that pid's next `RUN` and filtering to 0.9–1.1 s latencies:
+
+```
+hang 1:  4222 RUNs paired,  10 at ~1 s with a known preceding PARK
+           preceding PARK was an AIO opcode (0-5):   0
+           preceding PARK was an FD (>5):           10     fds: 701,734,734,735,784,830,832,834,873
+hang 2:  3903 RUNs paired,   7 at ~1 s with a known preceding PARK
+           preceding PARK was an AIO opcode (0-5):   0
+           preceding PARK was an FD (>5):            7     fds: 697,700,702,734,742,825,873
+```
+
+**17 of 17, zero aio.** Every one of these fibers woke on its **1 s deadline**, never on readiness.
+
+This is a second, independent line of evidence for the same conclusion, and it strengthens it in a
+way the strand data alone does not: these are fibers whose readiness wake was **also** lost, but
+which happened to be parked *with a timeout* and so recovered. The stranded fibers are the same
+failure without a deadline to rescue them. So the population of lost wakes is much larger than the
+15 permanent strands — most are simply masked by a timeout, at a 1-second latency cost each.
+
+Note the mechanism-level consequence: this is an **fd-readiness** loss, and my strands include both
+aio and fd parks. Same upstream step, two park flavours, which is consistent with the shared
+reap/handoff hypothesis below rather than anything aio-specific.
+
+(Method note, since it bit me: the ~1 s `RUN`s sit early in the retained window, so their `PARK`
+predates the trace and a naive backward scan finds nothing — my first attempt reported
+`fd/op=none` 14/14 and I nearly recorded that as "unmeasurable". Pairing forward from each PARK
+instead is what makes it work.)
 
 ## Where I think this points (inference, labelled)
 
