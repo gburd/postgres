@@ -1,5 +1,6 @@
 # Keep this fork's master rebased on postgres/postgres master, carrying only
-# the fork-owned CI files (.github/workflows/fork-*.yml and .github/ocr/).
+# the fork-owned CI stubs (.github/workflows/fork-*.yml). The workflows they
+# call, and the OCR review rules, live in gburd/ci-workflows.
 #
 # Requires the SYNC_TOKEN secret: a PAT with repo+workflow scope. The default
 # GITHUB_TOKEN is not allowed to push commits that touch .github/workflows/,
@@ -38,7 +39,7 @@ jobs:
           # Master carries fork CI only. Anything else means work landed here
           # that belongs on a branch; force-rebasing it on a timer would be wrong.
           if git diff --name-only upstream/master...HEAD |
-               grep -vE '^(\.github/workflows/fork-|\.github/ocr/)'; then
+               grep -v '^\.github/workflows/fork-'; then
             echo "::error::master carries non-CI changes (listed above); move them to a branch"
             exit 1
           fi
