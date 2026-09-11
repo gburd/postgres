@@ -1,0 +1,47 @@
+# Keep this fork's master rebased on postgres/postgres master, carrying only
+# the fork-owned CI files (.github/workflows/fork-*.yml and .github/ocr/).
+#
+# Requires the SYNC_TOKEN secret: a PAT with repo+workflow scope. The default
+# GITHUB_TOKEN is not allowed to push commits that touch .github/workflows/,
+# and every commit we carry does.
+
+name: Sync from upstream
+
+on:
+  schedule:
+    - cron: '17 */3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: fork-sync-upstream
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Rebase master onto upstream
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/postgres/postgres.git
+          git fetch --no-tags upstream master
+
+          # Master carries fork CI only. Anything else means work landed here
+          # that belongs on a branch; force-rebasing it on a timer would be wrong.
+          if git diff --name-only upstream/master...HEAD |
+               grep -vE '^(\.github/workflows/fork-|\.github/ocr/)'; then
+            echo "::error::master carries non-CI changes (listed above); move them to a branch"
+            exit 1
+          fi
+
+          git rebase upstream/master
+          git push --force-with-lease
