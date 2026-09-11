@@ -24,7 +24,9 @@
 #include <numaif.h>
 #endif
 
+#include "funcapi.h"
 #include "pgstat.h"
+#include "utils/tuplestore.h"
 #include "port/atomics.h"
 #include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
@@ -126,6 +128,18 @@ typedef struct
 {
 	/* Spinlock: protects the values below */
 	slock_t		buffer_strategy_lock;
+
+	/*
+	 * MEASUREMENT ONLY (throwaway): per-relfilenode eviction counts, shared
+	 * across all clock-sweep partitions.  Open-addressed table; slot 0 is the
+	 * overflow bucket.
+	 */
+#define BCS_EVICT_SLOTS 8192
+	pg_atomic_uint64 evictRel[BCS_EVICT_SLOTS];
+	pg_atomic_uint64 evictCnt[BCS_EVICT_SLOTS];
+	pg_atomic_uint64 sweepTicks;	/* MEASUREMENT: clock-hand visits */
+	pg_atomic_uint64 sweepVictims;	/* MEASUREMENT: victims claimed */
+
 
 	/*
 	 * Bgworker process to be notified upon activity or -1 if none. See
@@ -268,6 +282,7 @@ ClockSweepTick(ClockSweep *sweep)
 	 */
 	victim =
 		pg_atomic_fetch_add_u32(&sweep->nextVictimBuffer, 1);
+	pg_atomic_fetch_add_u64(&StrategyControl->sweepTicks, 1);	/* MEASUREMENT */
 
 	if (victim >= sweep->numBuffers)
 	{
@@ -685,6 +700,7 @@ StrategyGetBufferPartition(ClockSweep *sweep, BufferAccessStrategy strategy,
 						AddBufferToRing(strategy, buf);
 					*buf_state = local_buf_state;
 
+					pg_atomic_fetch_add_u64(&StrategyControl->sweepVictims, 1);	/* MEASUREMENT */
 					TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
 
 					return buf;
@@ -1149,6 +1165,15 @@ StrategyCtlShmemInit(void *arg)
 		}
 	}
 
+	/* MEASUREMENT ONLY: clear the eviction table */
+	for (int i = 0; i < BCS_EVICT_SLOTS; i++)
+	{
+		pg_atomic_init_u64(&StrategyControl->evictRel[i], 0);
+		pg_atomic_init_u64(&StrategyControl->evictCnt[i], 0);
+	}
+	pg_atomic_init_u64(&StrategyControl->sweepTicks, 0);
+	pg_atomic_init_u64(&StrategyControl->sweepVictims, 0);
+
 	/* No pending notification */
 	StrategyControl->bgwprocno = -1;
 }
@@ -1542,4 +1567,76 @@ ClockSweepPartitionGetInfo(int idx,
 	{
 		(*weights)[i] = (int) sweep->balance[i];
 	}
+}
+
+
+/* ---- MEASUREMENT ONLY (throwaway, never posted) ---- */
+void
+BcsRecordEviction(RelFileNumber relNumber)
+{
+	uint32		h = ((uint32) relNumber) % BCS_EVICT_SLOTS;
+
+	for (int probe = 0; probe < 64; probe++)
+	{
+		uint32		i = (h + probe) % BCS_EVICT_SLOTS;
+		uint64		cur = pg_atomic_read_u64(&StrategyControl->evictRel[i]);
+
+		if (cur == (uint64) relNumber)
+		{
+			pg_atomic_fetch_add_u64(&StrategyControl->evictCnt[i], 1);
+			return;
+		}
+		if (cur == 0)
+		{
+			uint64		expected = 0;
+
+			if (pg_atomic_compare_exchange_u64(&StrategyControl->evictRel[i],
+											  &expected, (uint64) relNumber) ||
+				pg_atomic_read_u64(&StrategyControl->evictRel[i]) == (uint64) relNumber)
+			{
+				pg_atomic_fetch_add_u64(&StrategyControl->evictCnt[i], 1);
+				return;
+			}
+		}
+	}
+	pg_atomic_fetch_add_u64(&StrategyControl->evictCnt[0], 1);
+}
+
+PG_FUNCTION_INFO_V1(bcs_evictions);
+Datum
+bcs_evictions(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+
+	InitMaterializedSRF(fcinfo, 0);
+	for (int i = 0; i < BCS_EVICT_SLOTS; i++)
+	{
+		uint64		rel = pg_atomic_read_u64(&StrategyControl->evictRel[i]);
+		uint64		cnt = pg_atomic_read_u64(&StrategyControl->evictCnt[i]);
+		Datum		values[2];
+		bool		nulls[2] = {false, false};
+
+		if (cnt == 0)
+			continue;
+		values[0] = Int64GetDatum((int64) rel);
+		values[1] = Int64GetDatum((int64) cnt);
+		tuplestore_putvalues(rsi->setResult, rsi->setDesc, values, nulls);
+	}
+	return (Datum) 0;
+}
+
+
+PG_FUNCTION_INFO_V1(bcs_sweepstats);
+Datum
+bcs_sweepstats(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsi = (ReturnSetInfo *) fcinfo->resultinfo;
+	Datum		values[2];
+	bool		nulls[2] = {false, false};
+
+	InitMaterializedSRF(fcinfo, 0);
+	values[0] = Int64GetDatum((int64) pg_atomic_read_u64(&StrategyControl->sweepTicks));
+	values[1] = Int64GetDatum((int64) pg_atomic_read_u64(&StrategyControl->sweepVictims));
+	tuplestore_putvalues(rsi->setResult, rsi->setDesc, values, nulls);
+	return (Datum) 0;
 }
