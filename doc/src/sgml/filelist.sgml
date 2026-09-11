@@ -148,6 +148,7 @@
 <!ENTITY pgbuffercache   SYSTEM "pgbuffercache.sgml">
 <!ENTITY pgcrypto        SYSTEM "pgcrypto.sgml">
 <!ENTITY pgfreespacemap  SYSTEM "pgfreespacemap.sgml">
+<!ENTITY pgfts           SYSTEM "pgfts.sgml">
 <!ENTITY pglogicalinspect  SYSTEM "pglogicalinspect.sgml">
 <!ENTITY pgoverexplain   SYSTEM "pgoverexplain.sgml">
 <!ENTITY pgplanadvice    SYSTEM "pgplanadvice.sgml">
