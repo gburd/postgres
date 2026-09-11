@@ -1595,6 +1595,7 @@ static const char *const xtc_pg_runtime_counter_names[XTC_PG_RUNTIME_COUNTER_COU
 	[XTC_PG_RC_CARRIERS_STARTED] = "carriers_started",
 	[XTC_PG_RC_PROCESS_FALLBACKS] = "process_fallbacks",
 	[XTC_PG_RC_QUEUE_WAITS] = "queue_waits",
+	[XTC_PG_RC_BUDGET_YIELDS] = "budget_yields",
 };
 
 static xtc_counter_t *g_xtc_runtime_counters[XTC_PG_RUNTIME_COUNTER_COUNT];
@@ -1813,6 +1814,123 @@ xtc_pg_pooled_queue_wait(long timeout_us)
 	rc = xtc_notify_wait(g_xtc_pooled_queue_notify, timeout_ns);
 	if (rc != XTC_OK && rc != XTC_E_AGAIN)
 		elog(FATAL, "could not wait on pooled protocol queue");
+}
+
+/*
+ * ---------------------------------------------------------------------------
+ * Aux-worker restart-intensity tracking (supervision tree, detection+
+ * escalation half).
+ *
+ * WHY THIS IS NOT xtc_orc, AND CANNOT BE: xtc_orc (libxtc's OTP supervisor,
+ * xtc_orc.h) offers exactly this bookkeeping (xtc_sup_n_restarts, restart
+ * intensity, escalation) -- but ONLY for a child it spawned itself.  Every
+ * public xtc_orc counter is updated from a single call site inside its own
+ * xtc_recv loop (upstream src/orc/sup.c __sup_entry, guarded by
+ * __should_restart), reached only for a DOWN on a proc __spawn_child()
+ * created.  There is no "adopt an already-running proc" call and no "record
+ * an external restart event" call -- so an embedder that cannot hand it
+ * spawn ownership gets NOTHING from it, not even observability.  We verified
+ * this and filed it: plan_docs/phase16_audits/LIBXTC_ORC_NO_PER_CHILD_DOWN.md.
+ *
+ * We cannot hand xtc_orc spawn ownership of an aux worker for two
+ * independent, already-documented reasons (see
+ * plan_docs/phase16_audits/SUPERVISION_SCOPE_WHY_NO_CRASH_RESPAWN.md):
+ *   1. PMChild slot assignment (AssignPostmasterChildSlot) and
+ *      ActiveChildList mutation are postmaster-thread-affine; xtc_orc
+ *      restarts a child from the SUPERVISOR'S OWN carrier-loop thread.
+ *   2. Even where xtc_orc's internal classification is correct (v1.44.0
+ *      fixed the spawn-then-monitor race we reported), its public API has
+ *      no per-child DOWN detail -- see LIBXTC_ORC_NO_PER_CHILD_DOWN.md.
+ *
+ * So restart OWNERSHIP for these singletons stays exactly where it already
+ * safely is: PostgreSQL's own postmaster-thread-affine
+ * LaunchMissingBackgroundProcesses() (postmaster.c), which relaunches a
+ * missing walwriter/bgwriter/checkpointer every ServerLoop tick when
+ * pmState allows it -- unchanged, and already correct for a fiber-backed
+ * worker (reap_aux_or_backend_child routes both process and fiber/thread
+ * exits through the same per-type cleanup_*_child()).
+ *
+ * What WAS missing is restart-INTENSITY tracking for that relaunch: nothing
+ * previously noticed a worker dying and relaunching in a tight loop (a
+ * "flapping" worker -- alive just long enough to publish a clean exit,
+ * then dying again).  That is real OTP escalation and it is ours to add,
+ * because the restart decision was always ours.  The algorithm below is
+ * intentionally the SAME sliding-window design as xtc_orc's own
+ * __record_restart/__intensity_exceeded (upstream src/orc/sup.c), so the
+ * day per-child DOWN classification is added AND the PMChild thread-
+ * affinity hazard has a safe answer, swapping this for a real
+ * xtc_sup_start()-owned child is a mechanical mapping, not a re-derivation.
+ *
+ * Scope: ONE tracker per aux-worker family (an array indexed by BackendType
+ * would generalize this trivially; only B_WAL_WRITER is wired to it today --
+ * see xtc_pg_aux_worker_note_relaunch's caller in postmaster.c).  Detection
+ * and escalation for a GENUINE CRASH remain on the existing, unrelated,
+ * already-correct path: xtc_proc_spawn_monitor() + the per-loop supervisor's
+ * XTC_DOWN_KIND_SIGNAL classifier (above in this file) -> xtc_dump ->
+ * g_xtc_genuine_crash -> postmaster latch -> ExitPostmaster(1).  This
+ * tracker answers a DIFFERENT question ("is this singleton flapping on
+ * CLEAN exits") and must never suppress or duplicate that path.
+ * ---------------------------------------------------------------------------
+ */
+#define XTC_PG_AUX_FLAP_MAX_RESTARTS 3	/* mirrors xtc_orc's own default */
+#define XTC_PG_AUX_FLAP_PERIOD_NS (5LL * 1000 * 1000 * 1000)	/* 5s, mirrors xtc_orc's default */
+#define XTC_PG_AUX_FLAP_WINDOW_CAP (XTC_PG_AUX_FLAP_MAX_RESTARTS + 4)
+
+typedef struct XtcPgAuxFlapTracker
+{
+	int64		recent[XTC_PG_AUX_FLAP_WINDOW_CAP];
+	int			n;
+	int			total_restarts;
+} XtcPgAuxFlapTracker;
+
+static XtcPgAuxFlapTracker g_xtc_walwriter_flap;
+
+/*
+ * Record one relaunch of an aux-worker singleton and report whether it has
+ * exceeded restart intensity (XTC_PG_AUX_FLAP_MAX_RESTARTS relaunches within
+ * XTC_PG_AUX_FLAP_PERIOD_NS).  Called from the postmaster thread only (the
+ * same thread that owns the relaunch decision), so no locking is needed --
+ * mirrors xtc_orc's own single-threaded-supervisor assumption.
+ *
+ * Sliding-window algorithm identical in shape to upstream libxtc's
+ * src/orc/sup.c __record_restart + __intensity_exceeded: keep a small ring
+ * of recent relaunch timestamps; a relaunch is "in the window" if it is
+ * newer than (now - period); if more than max_restarts are in the window,
+ * intensity is exceeded.
+ */
+bool
+xtc_pg_aux_worker_note_relaunch(const char *worker_name)
+{
+	XtcPgAuxFlapTracker *t = &g_xtc_walwriter_flap;
+	int64		now = GetCurrentTimestamp();
+	int			in_window;
+
+	if (t->n < XTC_PG_AUX_FLAP_WINDOW_CAP)
+		t->recent[t->n++] = now;
+	else
+	{
+		memmove(&t->recent[0], &t->recent[1],
+				(size_t) (XTC_PG_AUX_FLAP_WINDOW_CAP - 1) * sizeof(int64));
+		t->recent[XTC_PG_AUX_FLAP_WINDOW_CAP - 1] = now;
+	}
+	t->total_restarts++;
+
+	in_window = 0;
+	for (int i = 0; i < t->n; i++)
+	{
+		/* GetCurrentTimestamp() is microseconds since the PG epoch. */
+		if (t->recent[i] > now - (XTC_PG_AUX_FLAP_PERIOD_NS / 1000))
+			in_window++;
+	}
+
+	if (in_window > XTC_PG_AUX_FLAP_MAX_RESTARTS)
+	{
+		elog(LOG,
+			 "xtc: aux worker \"%s\" exceeded restart intensity (%d relaunches within %ld ms); escalating",
+			 worker_name, in_window, (long) (XTC_PG_AUX_FLAP_PERIOD_NS / 1000000));
+		return true;
+	}
+	return false;
 }
 
 #endif							/* USE_XTC_CARRIER */

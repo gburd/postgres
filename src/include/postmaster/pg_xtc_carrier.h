@@ -149,6 +149,18 @@ extern void xtc_pg_pooled_queue_unlock(void);
 extern void xtc_pg_pooled_queue_signal(int count);
 extern void xtc_pg_pooled_queue_wait(long timeout_us);
 
+/*
+ * Aux-worker restart-intensity (flap) escalation.  See the long comment at
+ * xtc_pg_aux_worker_note_relaunch's definition in pg_xtc_carrier.c for why
+ * this is NOT xtc_orc (their supervisor cannot track a restart it did not
+ * spawn) and what would need to change to swap onto it.  Call once per
+ * postmaster-owned relaunch of a singleton aux worker (e.g. from
+ * cleanup_wal_writer_child after LaunchMissingBackgroundProcesses decides to
+ * relaunch); returns true if this worker has exceeded restart intensity and
+ * the caller should escalate to the same fail-stop a genuine crash gets.
+ */
+extern bool xtc_pg_aux_worker_note_relaunch(const char *worker_name);
+
 static inline void
 xtc_pg_runtime_counter_inc(XtcPgRuntimeCounter c)
 {
@@ -235,6 +247,13 @@ extern void xtc_pg_verify_snapshot_is_self(const struct PgCurrentWorkSnapshot *s
 #define xtc_pg_pooled_queue_unlock() ((void) 0)
 #define xtc_pg_pooled_queue_signal(count) ((void) (count))
 #define xtc_pg_pooled_queue_wait(timeout_us) ((void) (timeout_us))
+
+/*
+ * Aux-worker flap tracker is inert outside the carrier build: there is no
+ * fiber-backed relaunch path to escalate from, so the check always reports
+ * "not flapping" without touching worker_name.
+ */
+#define xtc_pg_aux_worker_note_relaunch(worker_name) ((void) (worker_name), false)
 
 #endif							/* USE_XTC_CARRIER */
 #endif							/* PG_XTC_CARRIER_H */
