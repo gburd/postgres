@@ -27,6 +27,7 @@
 #include "postgres.h"
 
 #include "access/heapam_xlog.h"
+#include "access/flux_xlog.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
@@ -68,6 +69,8 @@ static inline bool FilterPrepare(LogicalDecodingContext *ctx,
 static bool DecodeTXNNeedSkip(LogicalDecodingContext *ctx,
 							  XLogRecordBuffer *buf, Oid txn_dbid,
 							  ReplOriginId origin_id);
+static inline bool FilterByOrigin(LogicalDecodingContext *ctx,
+								  ReplOriginId origin_id);
 
 /*
  * Take every XLogReadRecord()ed record and perform the actions required to
@@ -560,6 +563,465 @@ heap_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 
 		default:
 			elog(ERROR, "unexpected RM_HEAP_ID record type: %u", info);
+			break;
+	}
+}
+
+/*
+ * Parse XLOG_FLUX_INSERT from wal into proper tuplebufs.
+ *
+ * Inserts contain the new tuple in FLUX format.
+ */
+static void
+DecodeFluxInsert(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	Size		datalen;
+	char	   *tupledata;
+	XLogReaderState *r = buf->record;
+	xl_flux_insert *xlrec;
+	ReorderBufferChange *change;
+	RelFileLocator target_locator;
+
+	xlrec = (xl_flux_insert *) XLogRecGetData(r);
+
+	/* only interested in our database */
+	XLogRecGetBlockTag(r, 0, &target_locator, NULL, NULL);
+	if (target_locator.dbOid != ctx->slot->data.database)
+		return;
+
+	/* output plugin doesn't look for this origin, no need to queue */
+	if (FilterByOrigin(ctx, XLogRecGetOrigin(r)))
+		return;
+
+	change = ReorderBufferAllocChange(ctx->reorder);
+	change->action = REORDER_BUFFER_CHANGE_INSERT;
+	change->origin_id = XLogRecGetOrigin(r);
+
+	memcpy(&change->data.tp.rlocator, &target_locator, sizeof(RelFileLocator));
+
+	/*
+	 * Get FLUX tuple data from WAL record. The tuple follows the
+	 * xl_flux_insert structure.
+	 */
+	tupledata = (char *) xlrec + sizeof(xl_flux_insert);
+	datalen = xlrec->tuple_len;
+
+	/*
+	 * When FLUX_WAL_LOGICAL_TUPLE is set, the write path appended a
+	 * heap-format image at the END of the main WAL data: ... [heap bytes]
+	 * [uint32 heap_len] Read heap_len from the last 4 bytes, then back up
+	 * heap_len more bytes to find the heap tuple payload.  This is immune to
+	 * whatever compression data precedes it.
+	 */
+	if (xlrec->flags & FLUX_WAL_LOGICAL_TUPLE)
+	{
+		Size		full_len = XLogRecGetDataLen(r);
+		char	   *end = (char *) xlrec + full_len;
+		uint32		heap_len;
+		char	   *heap_data;
+
+		memcpy(&heap_len, end - sizeof(uint32), sizeof(uint32));
+		elog(DEBUG1, "FLUX DecodeInsert: full_len=%zu heap_len=%u action=INSERT lsn=%X/%X",
+			 full_len, heap_len,
+			 (uint32) (buf->origptr >> 32), (uint32) buf->origptr);
+		heap_data = end - sizeof(uint32) - heap_len;
+
+		change->data.tp.newtuple =
+			ReorderBufferAllocTupleBuf(ctx->reorder,
+									   heap_len - SizeofHeapTupleHeader);
+		change->data.tp.newtuple->t_len = heap_len;
+		ItemPointerSetInvalid(&change->data.tp.newtuple->t_self);
+		change->data.tp.newtuple->t_tableOid = InvalidOid;
+		memcpy(change->data.tp.newtuple->t_data, heap_data, heap_len);
+	}
+	else
+	{
+		/*
+		 * Legacy path: no heap image in WAL (publisher compiled without or
+		 * table not logically logged when the record was written). pgoutput
+		 * will most likely reject this; initial-sync via COPY still works, so
+		 * this is only a streaming-decoding concern.
+		 */
+		change->data.tp.newtuple =
+			ReorderBufferAllocTupleBuf(ctx->reorder, datalen);
+		memcpy(change->data.tp.newtuple->t_data, tupledata, datalen);
+		change->data.tp.newtuple->t_len = datalen;
+		ItemPointerSetInvalid(&change->data.tp.newtuple->t_self);
+		change->data.tp.newtuple->t_tableOid = InvalidOid;
+	}
+
+	change->data.tp.clear_toast_afterwards = true;
+
+	ReorderBufferQueueChange(ctx->reorder, XLogRecGetXid(r), buf->origptr,
+							 change, false);
+}
+
+/*
+ * Parse XLOG_FLUX_MULTI_INSERT from wal into proper tuplebufs.
+ *
+ * A batched insert carries N tuples on one page.  The record layout is:
+ *
+ *	xl_flux_multi_insert							-- header
+ *	N * { xl_flux_multi_insert_tuple | FLUX body }-- per-tuple region
+ *	N * { heap body | uint32 len }					-- when FLUX_WAL_LOGICAL_TUPLE
+ *
+ * We queue one REORDER_BUFFER_CHANGE_INSERT per tuple, preferring the
+ * trailing heap-format image when present (mirrors DecodeFluxInsert).  The
+ * heap images are appended in tuple order, so the i-th image from the front
+ * of the trailing region corresponds to the i-th per-tuple entry.
+ */
+static void
+DecodeFluxMultiInsert(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	XLogReaderState *r = buf->record;
+	xl_flux_multi_insert *xlrec;
+	RelFileLocator target_locator;
+	char	   *data;
+	char	   *cursor;
+	Size		total_len;
+	int			ntuples;
+	int			i;
+	bool		has_logical;
+	char	  **image_data = NULL;
+	uint32	   *image_len = NULL;
+
+	xlrec = (xl_flux_multi_insert *) XLogRecGetData(r);
+	ntuples = xlrec->ntuples;
+
+	/* only interested in our database */
+	XLogRecGetBlockTag(r, 0, &target_locator, NULL, NULL);
+	if (target_locator.dbOid != ctx->slot->data.database)
+		return;
+
+	/* output plugin doesn't look for this origin, no need to queue */
+	if (FilterByOrigin(ctx, XLogRecGetOrigin(r)))
+		return;
+
+	data = XLogRecGetData(r);
+	total_len = XLogRecGetDataLen(r);
+	has_logical = (xlrec->flags & FLUX_WAL_LOGICAL_TUPLE) != 0;
+
+	/*
+	 * When heap-format images are present, locate each one up front by
+	 * walking the trailing image region from the record tail backward (each
+	 * region is "[heap bytes][uint32 len]").  The images were appended in
+	 * tuple order, so walking back collects them in reverse; we store them
+	 * indexed by tuple so the queue loop can read them front-to-back.
+	 */
+	if (has_logical)
+	{
+		const char *end = data + total_len;
+
+		image_data = (char **) palloc(ntuples * sizeof(char *));
+		image_len = (uint32 *) palloc(ntuples * sizeof(uint32));
+
+		for (i = ntuples - 1; i >= 0; i--)
+		{
+			uint32		heap_len;
+
+			memcpy(&heap_len, end - sizeof(uint32), sizeof(uint32));
+			end -= sizeof(uint32);
+			end -= heap_len;
+			image_data[i] = (char *) end;
+			image_len[i] = heap_len;
+		}
+	}
+
+	/* Walk the per-tuple region forward, queuing one INSERT per tuple */
+	cursor = data + SizeOfFluxMultiInsert;
+	for (i = 0; i < ntuples; i++)
+	{
+		xl_flux_multi_insert_tuple *tuphdr;
+		char	   *tupledata;
+		ReorderBufferChange *change;
+
+		cursor = (char *) SHORTALIGN(cursor);
+		tuphdr = (xl_flux_multi_insert_tuple *) cursor;
+		cursor += SizeOfFluxMultiInsertTuple;
+		tupledata = cursor;
+		cursor += tuphdr->datalen;
+
+		change = ReorderBufferAllocChange(ctx->reorder);
+		change->action = REORDER_BUFFER_CHANGE_INSERT;
+		change->origin_id = XLogRecGetOrigin(r);
+		memcpy(&change->data.tp.rlocator, &target_locator,
+			   sizeof(RelFileLocator));
+
+		if (has_logical)
+		{
+			uint32		heap_len = image_len[i];
+
+			change->data.tp.newtuple =
+				ReorderBufferAllocTupleBuf(ctx->reorder,
+										   heap_len - SizeofHeapTupleHeader);
+			change->data.tp.newtuple->t_len = heap_len;
+			ItemPointerSetInvalid(&change->data.tp.newtuple->t_self);
+			change->data.tp.newtuple->t_tableOid = InvalidOid;
+			memcpy(change->data.tp.newtuple->t_data, image_data[i], heap_len);
+		}
+		else
+		{
+			/*
+			 * Legacy path: no heap image (table not logically logged when the
+			 * record was written).  Queue the raw FLUX body; pgoutput will
+			 * most likely reject it, but initial COPY sync still works.
+			 */
+			change->data.tp.newtuple =
+				ReorderBufferAllocTupleBuf(ctx->reorder, tuphdr->datalen);
+			memcpy(change->data.tp.newtuple->t_data, tupledata,
+				   tuphdr->datalen);
+			change->data.tp.newtuple->t_len = tuphdr->datalen;
+			ItemPointerSetInvalid(&change->data.tp.newtuple->t_self);
+			change->data.tp.newtuple->t_tableOid = InvalidOid;
+		}
+
+		change->data.tp.clear_toast_afterwards = (i == ntuples - 1);
+
+		ReorderBufferQueueChange(ctx->reorder, XLogRecGetXid(r), buf->origptr,
+								 change, false);
+	}
+
+	if (has_logical)
+	{
+		pfree(image_data);
+		pfree(image_len);
+	}
+}
+
+/*
+ * Parse XLOG_FLUX_UPDATE_INPLACE from wal into proper tuplebufs.
+ *
+ * Updates contain both the old and new tuple in FLUX format.
+ */
+static void
+DecodeFluxUpdate(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	XLogReaderState *r = buf->record;
+	xl_flux_update *xlrec;
+	ReorderBufferChange *change;
+	char	   *old_tuple_data;
+	char	   *new_tuple_data;
+	RelFileLocator target_locator;
+
+	xlrec = (xl_flux_update *) XLogRecGetData(r);
+
+	/* only interested in our database */
+	XLogRecGetBlockTag(r, 0, &target_locator, NULL, NULL);
+	if (target_locator.dbOid != ctx->slot->data.database)
+		return;
+
+	/* output plugin doesn't look for this origin, no need to queue */
+	if (FilterByOrigin(ctx, XLogRecGetOrigin(r)))
+		return;
+
+	change = ReorderBufferAllocChange(ctx->reorder);
+	change->action = REORDER_BUFFER_CHANGE_UPDATE;
+	change->origin_id = XLogRecGetOrigin(r);
+	memcpy(&change->data.tp.rlocator, &target_locator, sizeof(RelFileLocator));
+
+	/*
+	 * Get old and new tuple data from WAL record. The structure is:
+	 * xl_flux_update | old_tuple | new_tuple [| logical images]
+	 */
+	old_tuple_data = (char *) xlrec + sizeof(xl_flux_update);
+	new_tuple_data = old_tuple_data + xlrec->old_tuple_len;
+
+	if (xlrec->flags & FLUX_WAL_LOGICAL_TUPLE)
+	{
+		/*
+		 * Two heap-format images appended at the END of the record, each with
+		 * trailing length:
+		 *
+		 * ... [old_heap bytes] [uint32 old_heap_len] [new_heap bytes] [uint32
+		 * new_heap_len]
+		 *
+		 * Walk backwards from end: read new_heap_len last, then old_heap_len
+		 * before the new bytes + its length.
+		 */
+		Size		full_len = XLogRecGetDataLen(r);
+		char	   *end = (char *) xlrec + full_len;
+		uint32		old_heap_len;
+		uint32		new_heap_len;
+		char	   *old_heap_data;
+		char	   *new_heap_data;
+
+		memcpy(&new_heap_len, end - sizeof(uint32), sizeof(uint32));
+		new_heap_data = end - sizeof(uint32) - new_heap_len;
+		memcpy(&old_heap_len,
+			   new_heap_data - sizeof(uint32), sizeof(uint32));
+		old_heap_data = new_heap_data - sizeof(uint32) - old_heap_len;
+
+		change->data.tp.oldtuple =
+			ReorderBufferAllocTupleBuf(ctx->reorder,
+									   old_heap_len - SizeofHeapTupleHeader);
+		change->data.tp.oldtuple->t_len = old_heap_len;
+		ItemPointerSetInvalid(&change->data.tp.oldtuple->t_self);
+		change->data.tp.oldtuple->t_tableOid = InvalidOid;
+		memcpy(change->data.tp.oldtuple->t_data, old_heap_data, old_heap_len);
+
+		change->data.tp.newtuple =
+			ReorderBufferAllocTupleBuf(ctx->reorder,
+									   new_heap_len - SizeofHeapTupleHeader);
+		change->data.tp.newtuple->t_len = new_heap_len;
+		ItemPointerSetInvalid(&change->data.tp.newtuple->t_self);
+		change->data.tp.newtuple->t_tableOid = InvalidOid;
+		memcpy(change->data.tp.newtuple->t_data, new_heap_data, new_heap_len);
+	}
+	else
+	{
+		/* Legacy: FLUX-format bytes (will confuse pgoutput) */
+		change->data.tp.oldtuple =
+			ReorderBufferAllocTupleBuf(ctx->reorder, xlrec->old_tuple_len);
+		memcpy(change->data.tp.oldtuple->t_data, old_tuple_data,
+			   xlrec->old_tuple_len);
+		change->data.tp.oldtuple->t_len = xlrec->old_tuple_len;
+		ItemPointerSetInvalid(&change->data.tp.oldtuple->t_self);
+		change->data.tp.oldtuple->t_tableOid = InvalidOid;
+
+		change->data.tp.newtuple =
+			ReorderBufferAllocTupleBuf(ctx->reorder, xlrec->new_tuple_len);
+		memcpy(change->data.tp.newtuple->t_data, new_tuple_data,
+			   xlrec->new_tuple_len);
+		change->data.tp.newtuple->t_len = xlrec->new_tuple_len;
+		ItemPointerSetInvalid(&change->data.tp.newtuple->t_self);
+		change->data.tp.newtuple->t_tableOid = InvalidOid;
+	}
+
+	change->data.tp.clear_toast_afterwards = true;
+
+	ReorderBufferQueueChange(ctx->reorder, XLogRecGetXid(r), buf->origptr,
+							 change, false);
+}
+
+/*
+ * Parse XLOG_FLUX_DELETE from wal into proper tuplebufs.
+ *
+ * Deletes contain the old tuple for UNDO purposes.
+ */
+static void
+DecodeFluxDelete(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	XLogReaderState *r = buf->record;
+	xl_flux_delete *xlrec;
+	ReorderBufferChange *change;
+	char	   *tupledata;
+	RelFileLocator target_locator;
+
+	xlrec = (xl_flux_delete *) XLogRecGetData(r);
+
+	/* only interested in our database */
+	XLogRecGetBlockTag(r, 0, &target_locator, NULL, NULL);
+	if (target_locator.dbOid != ctx->slot->data.database)
+		return;
+
+	/* output plugin doesn't look for this origin, no need to queue */
+	if (FilterByOrigin(ctx, XLogRecGetOrigin(r)))
+		return;
+
+	change = ReorderBufferAllocChange(ctx->reorder);
+	change->action = REORDER_BUFFER_CHANGE_DELETE;
+	change->origin_id = XLogRecGetOrigin(r);
+	memcpy(&change->data.tp.rlocator, &target_locator, sizeof(RelFileLocator));
+
+	/*
+	 * Get old tuple data from WAL record. The tuple follows the
+	 * xl_flux_delete structure.
+	 */
+	tupledata = (char *) xlrec + sizeof(xl_flux_delete);
+
+	if (xlrec->flags & FLUX_WAL_LOGICAL_TUPLE)
+	{
+		/*
+		 * Heap image is the last region of the WAL record: ... [heap bytes]
+		 * [uint32 heap_len]
+		 */
+		Size		full_len = XLogRecGetDataLen(r);
+		char	   *end = (char *) xlrec + full_len;
+		uint32		heap_len;
+		char	   *heap_data;
+
+		memcpy(&heap_len, end - sizeof(uint32), sizeof(uint32));
+		heap_data = end - sizeof(uint32) - heap_len;
+
+		change->data.tp.oldtuple =
+			ReorderBufferAllocTupleBuf(ctx->reorder,
+									   heap_len - SizeofHeapTupleHeader);
+		change->data.tp.oldtuple->t_len = heap_len;
+		ItemPointerSetInvalid(&change->data.tp.oldtuple->t_self);
+		change->data.tp.oldtuple->t_tableOid = InvalidOid;
+		memcpy(change->data.tp.oldtuple->t_data, heap_data, heap_len);
+	}
+	else
+	{
+		/* Legacy path */
+		change->data.tp.oldtuple =
+			ReorderBufferAllocTupleBuf(ctx->reorder, xlrec->tuple_len);
+		memcpy(change->data.tp.oldtuple->t_data, tupledata,
+			   xlrec->tuple_len);
+		change->data.tp.oldtuple->t_len = xlrec->tuple_len;
+		ItemPointerSetInvalid(&change->data.tp.oldtuple->t_self);
+		change->data.tp.oldtuple->t_tableOid = InvalidOid;
+	}
+
+	change->data.tp.clear_toast_afterwards = true;
+
+	ReorderBufferQueueChange(ctx->reorder, XLogRecGetXid(r), buf->origptr,
+							 change, false);
+}
+
+
+/*
+ * Handle rmgr FLUX records for LogicalDecodingProcessRecord().
+ *
+ * FLUX's WAL record layout and the XLOG_FLUX_* opcodes are defined in
+ * flux_xlog.h; the FLUX decode helpers above interpret them directly.
+ */
+void
+flux_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	uint8		info = XLogRecGetInfo(buf->record) & XLOG_FLUX_OPMASK;
+	TransactionId xid = XLogRecGetXid(buf->record);
+	SnapBuild  *builder = ctx->snapshot_builder;
+
+	ReorderBufferProcessXid(ctx->reorder, xid, buf->origptr);
+
+	if (SnapBuildCurrentState(builder) < SNAPBUILD_FULL_SNAPSHOT)
+		return;
+
+	switch (info)
+	{
+		case XLOG_FLUX_INSERT:
+			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
+				!ctx->fast_forward)
+				DecodeFluxInsert(ctx, buf);
+			break;
+
+		case XLOG_FLUX_MULTI_INSERT:
+			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
+				!ctx->fast_forward)
+				DecodeFluxMultiInsert(ctx, buf);
+			break;
+
+		case XLOG_FLUX_UPDATE_INPLACE:
+			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
+				!ctx->fast_forward)
+				DecodeFluxUpdate(ctx, buf);
+			break;
+
+		case XLOG_FLUX_DELETE:
+			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
+				!ctx->fast_forward)
+				DecodeFluxDelete(ctx, buf);
+			break;
+
+		case XLOG_FLUX_DEFRAG:
+		case XLOG_FLUX_COMPRESS:
+		case XLOG_FLUX_OVERFLOW_WRITE:
+		case XLOG_FLUX_INIT_PAGE:
+			break;
+
+		default:
+			elog(ERROR, "unexpected RM_FLUX_ID record type: %u", info);
 			break;
 	}
 }

@@ -60,6 +60,7 @@ typedef enum ForkNumber
 	FSM_FORKNUM,
 	VISIBILITYMAP_FORKNUM,
 	INIT_FORKNUM,
+	RELUNDO_FORKNUM,
 
 	/*
 	 * NOTE: if you add a new fork, change MAX_FORKNUM and possibly
@@ -68,9 +69,9 @@ typedef enum ForkNumber
 	 */
 } ForkNumber;
 
-#define MAX_FORKNUM		INIT_FORKNUM
+#define MAX_FORKNUM		RELUNDO_FORKNUM
 
-#define FORKNAMECHARS	4		/* max chars for a fork name */
+#define FORKNAMECHARS	7		/* max chars for a fork name ("relundo") */
 
 extern PGDLLIMPORT const char *const forkNames[];
 

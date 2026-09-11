@@ -17,6 +17,8 @@
 
 #include "access/hash.h"
 #include "access/hash_xlog.h"
+#include "access/tableam.h"
+#include "access/undobuffer.h"
 #include "access/xloginsert.h"
 #include "miscadmin.h"
 #include "storage/predicate.h"
@@ -237,6 +239,14 @@ restart_insert:
 	PageSetLSN(BufferGetPage(metabuf), recptr);
 
 	END_CRIT_SECTION();
+
+	/*
+	 * Write UNDO record for the insertion if the parent table AM supports
+	 * UNDO.  This must happen after WAL logging but while we still hold the
+	 * buffer pin (needed for BufferGetBlockNumber).
+	 */
+	if (RelationAmSupportsUndo(heapRel) && UndoBufferIsActive(heapRel))
+		HashUndoLogInsert(rel, heapRel, buf, itup_off);
 
 	/* drop lock on metapage, but keep pin */
 	LockBuffer(metabuf, BUFFER_LOCK_UNLOCK);

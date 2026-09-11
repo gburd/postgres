@@ -40,6 +40,12 @@
 #include "replication/origin.h"
 #include "storage/standby.h"
 #include "utils/relmapper.h"
+#include "access/undo_xlog.h"
+#include "access/atm.h"
+#include "access/relundo_xlog.h"
+#ifdef USE_FLUX
+#include "access/flux_xlog.h"
+#endif
 /* IWYU pragma: end_keep */
 
 

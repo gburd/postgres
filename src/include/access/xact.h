@@ -138,6 +138,39 @@ typedef enum
 
 typedef void (*XactCallback) (XactEvent event, void *arg);
 
+/*
+ * TableAMPrepare_hook: called from PrepareTransaction(), between
+ * StartPrepare() and EndPrepare(), where RegisterTwoPhaseRecord() is valid.
+ *
+ * This window is narrower than any XactCallback event: XACT_EVENT_PRE_PREPARE
+ * fires BEFORE StartPrepare() (before "the remaining actions cannot call any
+ * user-defined code" section begins), so a table AM that needs to register
+ * two-phase-commit records for tuples/rows it is tracking (e.g. an in-place
+ * MVCC AM saving per-tuple UNDO state so COMMIT PREPARED / ROLLBACK PREPARED
+ * can locate and finalize them) cannot do so from an ordinary XactCallback
+ * and needs this dedicated, narrower hook instead.  NULL is a valid no-op
+ * for a build with no such AM compiled in.
+ */
+extern void (*TableAMPrepare_hook) (void);
+
+/*
+ * PendingPhysOps{Do,PostPrepare,AtSubCommit,AtSubAbort}_hook: mirror the
+ * matching core smgr{DoPendingDeletes,PostPrepare,AtSubCommit,AtSubAbort}
+ * calls in xact.c.  A subsystem that manages pending structural filesystem
+ * operations needs the SAME commit/abort-sequencing position
+ * as smgr's own pending-deletes housekeeping -- e.g.
+ * PendingPhysOpsDo_hook(true) is placed immediately after
+ * smgrDoPendingDeletes(true), which core's own comment there documents as
+ * "best done after releasing relcache and buffer pins... this ordering is
+ * definitely critical during abort" -- a physical-file-cleanup ordering
+ * requirement no ordinary XactCallback/SubXactCallback event exposes.  NULL
+ * is a valid no-op for a build with no such subsystem compiled in.
+ */
+extern void (*PendingPhysOpsDo_hook) (bool isCommit);
+extern void (*PendingPhysOpsPostPrepare_hook) (void);
+extern void (*PendingPhysOpsAtSubCommit_hook) (void);
+extern void (*PendingPhysOpsAtSubAbort_hook) (void);
+
 typedef enum
 {
 	SUBXACT_EVENT_START_SUB,
@@ -368,7 +401,27 @@ typedef struct xl_xact_prepare
 	uint16		gidlen;			/* length of the GID - GID follows the header */
 	XLogRecPtr	origin_lsn;		/* lsn of this record at origin node */
 	TimestampTz origin_timestamp;	/* time of prepare at origin node */
+
+	/*
+	 * UNDO chain head LSN per persistence level (3 == NUndoPersistenceLevels
+	 * from undodefs.h; hardcoded here to keep xact.h free of UNDO headers).
+	 * If NUndoPersistenceLevels changes, this array must be updated and both
+	 * XLOG_PAGE_MAGIC (xlog_internal.h) and TWOPHASE_MAGIC (twophase.c) must
+	 * be bumped.  See StaticAssertDecl in xactundo.c for compile-time guard.
+	 */
+	XLogRecPtr	last_batch_lsn[3];
 } xl_xact_prepare;
+
+#define SizeOfXactPrepare sizeof(xl_xact_prepare)
+
+/*
+ * Verify xl_xact_prepare contains the UNDO last_batch_lsn field.  This struct
+ * is written into WAL as part of XLOG_XACT_PREPARE records, and into 2PC
+ * state files via TwoPhaseFileHeader.  Any layout change requires bumping both
+ * XLOG_PAGE_MAGIC (xlog_internal.h) and TWOPHASE_MAGIC (twophase.c).
+ */
+StaticAssertDecl(offsetof(xl_xact_prepare, last_batch_lsn) > 0,
+				 "xl_xact_prepare must contain last_batch_lsn for UNDO WAL compat");
 
 /*
  * Commit/Abort records in the above form are a bit verbose to parse, so
@@ -439,6 +492,8 @@ typedef struct xl_xact_parsed_abort
  */
 extern bool IsTransactionState(void);
 extern bool IsAbortedTransactionBlockState(void);
+extern int	EnterInlineUndoApplyState(void);
+extern void LeaveInlineUndoApplyState(int saved);
 extern TransactionId GetTopTransactionId(void);
 extern TransactionId GetTopTransactionIdIfAny(void);
 extern TransactionId GetCurrentTransactionId(void);
@@ -534,5 +589,9 @@ extern void ParsePrepareRecord(uint8 info, xl_xact_prepare *xlrec, xl_xact_parse
 extern void EnterParallelMode(void);
 extern void ExitParallelMode(void);
 extern bool IsInParallelMode(void);
+
+/* UNDO chain management */
+extern void SetCurrentTransactionUndoRecPtr(uint64 undo_ptr);
+extern uint64 GetCurrentTransactionUndoRecPtr(void);
 
 #endif							/* XACT_H */

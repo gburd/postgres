@@ -2806,6 +2806,7 @@ Selectivity
 SelfJoinCandidate
 SemTPadded
 SemiAntiJoinFactors
+SeqLock
 SeqScan
 SeqScanInstrumentation
 SeqScanState
@@ -4509,6 +4510,7 @@ xl_multixact_truncate
 xl_overwrite_contrecord
 xl_parameter_change
 xl_relmap_update
+xl_relundo_truncate
 xl_replorigin_drop
 xl_replorigin_set
 xl_restore_point
