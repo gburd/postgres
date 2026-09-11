@@ -1525,18 +1525,23 @@ typedef struct pg_signal_info
  * When there is no sigsetjmp, its functionality is provided by plain
  * setjmp.  We now support the case only on Windows.  However, it seems
  * that MinGW-64 has some longstanding issues in its setjmp support,
- * so on that toolchain we cheat and use gcc's builtins.
+ * so on that toolchain we cheat and use gcc's builtins.  That workaround
+ * only applies to x86_64 MinGW: on aarch64 (ARM64) MinGW toolchains
+ * clang does not implement __builtin_setjmp/__builtin_longjmp at all
+ * ("__builtin_setjmp is not supported for the current target"), and its
+ * prototype takes a void ** rather than PostgreSQL's sigjmp_buf, so fall
+ * back to plain setjmp there.
  */
 #ifdef WIN32
-#ifdef __MINGW64__
+#if defined(__MINGW64__) && !defined(__aarch64__)
 typedef intptr_t sigjmp_buf[5];
 #define sigsetjmp(x,y) __builtin_setjmp(x)
 #define siglongjmp __builtin_longjmp
-#else							/* !__MINGW64__ */
+#else							/* !__MINGW64__ || __aarch64__ */
 #define sigjmp_buf jmp_buf
 #define sigsetjmp(x,y) setjmp(x)
 #define siglongjmp longjmp
-#endif							/* __MINGW64__ */
+#endif							/* __MINGW64__ && !__aarch64__ */
 #endif							/* WIN32 */
 
 /* /port compatibility functions */
