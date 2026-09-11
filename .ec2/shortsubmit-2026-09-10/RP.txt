@@ -1,0 +1,148 @@
+=== HANG #1 (run 1) ===
+--- xtc-tail-dropped ---
+  emitted=47240  ring=16384  buffered=16384  dropped=30856
+  WARNING: 30856 record(s) were OVERWRITTEN.  Any claim that rests on an event being ABSENT is unfalsifiable for this capture.
+--- THE ANSWER: xtc-tail.py --strands ---
+=== 36 parked task(s), classified by how far the wake got ===
+  never submitted  2
+  no REAP          32
+  REAP, no WAKE    0
+  WAKE, no RUN     0
+  resumed          2
+
+--- never submitted ---
+    no SQE was queued for this park -- we never asked
+    pid=1.0.1      task=0xd013730  parked at 1022650809 ns
+    pid=7.0.1      task=0xd01c030  parked at 54926042777 ns
+
+--- no REAP ---
+    submitted, but the completion never came back
+    pid=14.1.1     task=0xd182610  parked at 999918521 ns
+    pid=6.1.2      task=0xd5321c0  parked at 999922214 ns
+    pid=30.1.1     task=0x7f02b8251960  parked at 999946623 ns
+    pid=21.1.1     task=0x7f02b01b5770  parked at 999967859 ns
+    pid=5.1.2      task=0x7f02c01cc9f0  parked at 999994897 ns
+    pid=19.1.1     task=0x7f02c0090750  parked at 1000018439 ns
+    pid=16.1.1     task=0xd282470  parked at 1000054499 ns
+    pid=28.1.1     task=0xd368b70  parked at 1000161056 ns
+    pid=26.1.1     task=0x7f02b8103d50  parked at 1000198728 ns
+    pid=4.1.2      task=0x7f02b83ccfb0  parked at 1000236296 ns
+    pid=29.1.1     task=0x7f02b0333440  parked at 1000297934 ns
+    pid=17.1.1     task=0x7f02b01b9ed0  parked at 1000381171 ns
+    pid=32.1.1     task=0xd525550  parked at 1000468214 ns
+    pid=20.1.1     task=0xd1eb5a0  parked at 1000501684 ns
+    pid=18.1.1     task=0x7f02b805bd10  parked at 1000543403 ns
+    pid=25.1.1     task=0x7f02b033ac60  parked at 1000664395 ns
+    pid=31.1.1     task=0x7f02c01721b0  parked at 1000815352 ns
+    pid=22.1.1     task=0x7f02b805bd90  parked at 1000869804 ns
+    pid=12.1.1     task=0x7f02b808dd40  parked at 1000898480 ns
+    pid=11.1.1     task=0x7f02b00b0740  parked at 1000959793 ns
+    ... 12 more
+
+--- submitted-but-never-reaped: was that ring still polled? ---
+    pid=14.1.1     submitted on loop 16   idle polls on that loop after the park: 0   <-- loop went QUIET
+    pid=6.1.2      submitted on loop 8    idle polls on that loop after the park: 6
+    pid=30.1.1     submitted on loop 27   idle polls on that loop after the park: 10
+    pid=21.1.1     submitted on loop 16   idle polls on that loop after the park: 0   <-- loop went QUIET
+    pid=5.1.2      submitted on loop 20   idle polls on that loop after the park: 14
+    pid=19.1.1     submitted on loop 27   idle polls on that loop after the park: 10
+    pid=16.1.1     submitted on loop 10   idle polls on that loop after the park: 5
+    pid=28.1.1     submitted on loop 10   idle polls on that loop after the park: 5
+    pid=26.1.1     submitted on loop 8    idle polls on that loop after the park: 5
+    pid=4.1.2      submitted on loop 10   idle polls on that loop after the park: 5
+    pid=29.1.1     submitted on loop 20   idle polls on that loop after the park: 13
+    pid=17.1.1     submitted on loop 11   idle polls on that loop after the park: 2
+    pid=32.1.1     submitted on loop 25   idle polls on that loop after the park: 9
+    pid=20.1.1     submitted on loop 25   idle polls on that loop after the park: 9
+    pid=18.1.1     submitted on loop 11   idle polls on that loop after the park: 2
+    pid=25.1.1     submitted on loop 10   idle polls on that loop after the park: 3
+    pid=31.1.1     submitted on loop 20   idle polls on that loop after the park: 9
+    pid=22.1.1     submitted on loop 10   idle polls on that loop after the park: 1
+    pid=12.1.1     submitted on loop 27   idle polls on that loop after the park: 5
+    pid=11.1.1     submitted on loop 25   idle polls on that loop after the park: 5
+    (a loop that kept polling was alive and still got no
+     completion; one that went quiet was never re-entered --
+     note an always-busy loop emits no IDLE poll either, so
+     read 0 together with that loop's other activity.)
+
+NOTE: every bucket here is an ABSENCE claim.  Check dropped first
+      (xtc-tail-dropped, or the dump header) -- in a wrapped ring
+      an absence may only mean the event was evicted.
+--- REAP detail split (tagged vs 0) ---
+  total REAP: 6314
+  REAP detail=0 (consumed, not handed on): 0
+run 2: PASS tps = 24.244195
+=== HANG #2 (run 3) ===
+--- xtc-tail-dropped ---
+  emitted=1019876  ring=16384  buffered=16384  dropped=1003492
+  WARNING: 1003492 record(s) were OVERWRITTEN.  Any claim that rests on an event being ABSENT is unfalsifiable for this capture.
+--- THE ANSWER: xtc-tail.py --strands ---
+=== 34 parked task(s), classified by how far the wake got ===
+  never submitted  2
+  no REAP          32
+  REAP, no WAKE    0
+  WAKE, no RUN     0
+  resumed          0
+
+--- never submitted ---
+    no SQE was queued for this park -- we never asked
+    pid=1.0.1      task=0x1a595730  parked at 2811151 ns
+    pid=7.0.1      task=0x1a59e030  parked at 48600458533 ns
+
+--- no REAP ---
+    submitted, but the completion never came back
+    pid=32.1.1     task=0x1a8fa450  parked at 10302065 ns
+    pid=9.1.1      task=0x7f1dac088bb0  parked at 13341370 ns
+    pid=29.1.1     task=0x7f1d98456a90  parked at 13345117 ns
+    pid=31.1.1     task=0x7f1dac190e20  parked at 13370104 ns
+    pid=2.2.1      task=0x7f1d98595dd0  parked at 13469713 ns
+    pid=10.1.1     task=0x1a726e70  parked at 13524016 ns
+    pid=15.1.1     task=0x7f1da4038b90  parked at 13529057 ns
+    pid=19.1.1     task=0x7f1dac080010  parked at 13554653 ns
+    pid=22.1.1     task=0x7f1da41cce10  parked at 13566413 ns
+    pid=4.1.2      task=0x7f1da42e6190  parked at 13629431 ns
+    pid=28.1.1     task=0x1a8b0490  parked at 13639937 ns
+    pid=13.1.1     task=0x7f1dac05fbf0  parked at 13656033 ns
+    pid=18.1.1     task=0x7f1da4085160  parked at 13823975 ns
+    pid=21.1.1     task=0x7f1d98226960  parked at 13905973 ns
+    pid=14.1.1     task=0x1a72e920  parked at 13951506 ns
+    pid=6.1.2      task=0x1a9db7d0  parked at 14039948 ns
+    pid=30.1.1     task=0x7f1da41981b0  parked at 14051008 ns
+    pid=16.1.1     task=0x7f1dac010c60  parked at 14101996 ns
+    pid=12.1.1     task=0x7f1da408dd00  parked at 14201288 ns
+    pid=7.1.1      task=0x7f1d980a3d50  parked at 14246364 ns
+    ... 12 more
+
+--- submitted-but-never-reaped: was that ring still polled? ---
+    pid=32.1.1     submitted on loop 0    idle polls on that loop after the park: 5
+    pid=9.1.1      submitted on loop 16   idle polls on that loop after the park: 6
+    pid=29.1.1     submitted on loop 0    idle polls on that loop after the park: 0   <-- loop went QUIET
+    pid=31.1.1     submitted on loop 0    idle polls on that loop after the park: 0   <-- loop went QUIET
+    pid=2.2.1      submitted on loop 0    idle polls on that loop after the park: 0   <-- loop went QUIET
+    pid=10.1.1     submitted on loop 19   idle polls on that loop after the park: 18
+    pid=15.1.1     submitted on loop 25   idle polls on that loop after the park: 17
+    pid=19.1.1     submitted on loop 25   idle polls on that loop after the park: 17
+    pid=22.1.1     submitted on loop 28   idle polls on that loop after the park: 9
+    pid=4.1.2      submitted on loop 19   idle polls on that loop after the park: 18
+    pid=28.1.1     submitted on loop 2    idle polls on that loop after the park: 17
+    pid=13.1.1     submitted on loop 6    idle polls on that loop after the park: 20
+    pid=18.1.1     submitted on loop 10   idle polls on that loop after the park: 5
+    pid=21.1.1     submitted on loop 28   idle polls on that loop after the park: 7
+    pid=14.1.1     submitted on loop 16   idle polls on that loop after the park: 5
+    pid=6.1.2      submitted on loop 10   idle polls on that loop after the park: 2
+    pid=30.1.1     submitted on loop 7    idle polls on that loop after the park: 16
+    pid=16.1.1     submitted on loop 28   idle polls on that loop after the park: 5
+    pid=12.1.1     submitted on loop 6    idle polls on that loop after the park: 15
+    pid=7.1.1      submitted on loop 7    idle polls on that loop after the park: 14
+    (a loop that kept polling was alive and still got no
+     completion; one that went quiet was never re-entered --
+     note an always-busy loop emits no IDLE poll either, so
+     read 0 together with that loop's other activity.)
+
+NOTE: every bucket here is an ABSENCE claim.  Check dropped first
+      (xtc-tail-dropped, or the dump header) -- in a wrapped ring
+      an absence may only mean the event was evicted.
+--- REAP detail split (tagged vs 0) ---
+  total REAP: 7087
+  REAP detail=0 (consumed, not handed on): 0
+RP_COMPLETE hangs=2
