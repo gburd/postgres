@@ -1,0 +1,169 @@
+[New LWP 48242]
+[New LWP 48241]
+[New LWP 48240]
+[New LWP 48239]
+[New LWP 48238]
+[New LWP 48237]
+[New LWP 48236]
+[New LWP 48235]
+[New LWP 48234]
+[New LWP 48233]
+[New LWP 48232]
+[New LWP 48224]
+[New LWP 48174]
+[New LWP 48173]
+[New LWP 48169]
+[New LWP 48168]
+[New LWP 48167]
+[New LWP 48166]
+[New LWP 48165]
+[New LWP 48164]
+[New LWP 48163]
+[New LWP 48162]
+[New LWP 48161]
+[New LWP 48160]
+[New LWP 48159]
+[New LWP 48158]
+[New LWP 48157]
+[New LWP 48156]
+[New LWP 48155]
+[New LWP 48154]
+[New LWP 48153]
+[New LWP 48152]
+[New LWP 48151]
+[New LWP 48150]
+[New LWP 48149]
+[New LWP 48148]
+[New LWP 48147]
+[New LWP 48146]
+[New LWP 48145]
+[New LWP 48144]
+[New LWP 48143]
+[New LWP 48142]
+[New LWP 48141]
+[New LWP 48140]
+[New LWP 48139]
+[New LWP 48138]
+[New LWP 48137]
+[New LWP 48136]
+[New LWP 48135]
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib64/libthread_db.so.1".
+0x00007fd2deb1017e in epoll_wait () from /lib64/libc.so.6
+xtc-gdb loaded: xtc-loops, xtc-rings, xtc-cqes, xtc-procs, xtc-proc, xtc-stranded, xtc-tail-dropped, xtc-mailbox, xtc-self, xtc-trace, xtc-tail-dump, xtc-help
+emitted=69685  ring=16384  buffered=16384  dropped=53301
+WARNING: 53301 record(s) were OVERWRITTEN.  Any claim that rests on an event being ABSENT is unfalsifiable for this capture.
+wrote 16384 events (167140 bytes) to /mnt/work/traces/v6.xtcl -- view with tools/xtc-tail.py /mnt/work/traces/v6.xtcl
+loop               id     io                 ring_fd  owner_tid            unreaped  ovf   alive
+0x399a060          0      0x399adb0          560      140516096210496      11        0     4
+0x39be0e0          1      0x399d9a0          563      140516085720640      0         0     3
+0x39bee30          2      0x39bfb80          566      140516075230784      0         0     3
+0x39bfee0          3      0x39c0c30          569      140516064740928      0         0     2
+0x39c0f90          4      0x39c1ce0          572      140516054251072      0         0     2
+0x39c2040          5      0x39c2d90          575      140516043761216      0         0     2
+0x39c30f0          6      0x39c3e40          578      140515961992768      0         0     2
+0x39c41a0          7      0x39c4ef0          581      140515951502912      0         0     2
+0x39c5280          8      0x39c5fd0          584      140515941013056      0         0     2
+0x39c6360          9      0x39c70b0          587      140515930523200      0         0     2
+0x39c7440          10     0x39c8190          590      140515920033344      0         0     2
+0x39c8520          11     0x39c9270          593      140515760666176      0         0     2
+0x39c9600          12     0x39ca350          596      140515716605504      0         0     2
+0x39ca6e0          13     0x39cb430          599      140515597010496      0         0     2
+0x39cb7c0          14     0x39cc510          602      140515536164416      0         0     2
+0x39cc8a0          15     0x39cd5f0          605      140515500496448      0         0     2
+0x39cd980          16     0x39ce6d0          608      140515481613888      0         0     2
+0x39cea60          17     0x39cf7b0          611      140515471124032      0         0     2
+0x39cfb40          18     0x39d0890          614      140515460634176      0         0     2
+0x39d0c20          19     0x39d1970          617      140515450144320      0         0     2
+0x39d1d00          20     0x39d2a50          620      140515439654464      0         0     2
+0x39d2de0          21     0x39d3b30          623      140515429164608      0         0     2
+0x39d3ec0          22     0x39d4c10          626      140515418674752      0         0     2
+0x39d4fa0          23     0x39d5cf0          629      140515408184896      0         0     2
+0x39d6080          24     0x39d6dd0          632      140515397695040      0         0     2
+0x39d7160          25     0x39d7eb0          635      140515387205184      0         0     2
+0x39d8240          26     0x39d8f90          638      140515376715328      0         0     2
+0x39d9320          27     0x39da070          641      140515366225472      0         0     2
+0x39da400          28     0x39db150          644      140515355735616      0         0     2
+0x39db4e0          29     0x39dc230          647      140515345245760      0         0     2
+0x39dc5c0          30     0x39dd310          650      140515334755904      0         0     2
+0x39dd6a0          31     0x39de3f0          653      140515324266048      0         0     2
+(32 ring(s).  unreaped > 0 is the NORMAL state of a busy ring -- sample 3x before
+ calling one stuck.  unreaped == 0 does NOT mean empty: it saturates at the CQ
+ size and cannot see the kernel overflow list, so read it with ovf -- 0 with
+ ovf=1 means completions ARE pending and invisible here.)
+loop 0x399a060 id=0 ring_fd=560  CqHead=2959 CqTail=2970 unreaped=11
+    [ 0] user_data=0x0                res=0      flags=0x0    NULL (discarded cancel CQE)
+    [ 1] user_data=0x7fcc6c66cdb0     res=-125   flags=0x0    uring_fd 0x7fcc6c66cdb0  fd=704 task=0x7fcc6c0b1e20 DEAD
+    [ 2] user_data=0x7fcc6c70e720     res=1      flags=0x2    uring_fd 0x7fcc6c70e720  fd=711 task=0x7fcc6c067410
+    [ 3] user_data=0x0                res=0      flags=0x0    NULL (discarded cancel CQE)
+    [ 4] user_data=0x7fcc6c200650     res=-125   flags=0x0    uring_fd 0x7fcc6c200650  fd=662 task=0x7fcc6c0023c0 DEAD
+    [ 5] user_data=0x7fcc6c83fc50     res=1      flags=0x2    uring_fd 0x7fcc6c83fc50  fd=704 task=0x7fcc6c0b1e20
+    [ 6] user_data=0x7fcc372b4481     res=0      flags=0x0    aio 0x7fcc372b4480  task=0x7fcc74391300 op=3
+    [ 7] user_data=0x7fcc6c7f2840     res=1      flags=0x2    uring_fd 0x7fcc6c7f2840  fd=886 task=0x7fcc6c2ff420 DEAD
+    [ 8] user_data=0x7fcc6c566420     res=1      flags=0x2    uring_fd 0x7fcc6c566420  fd=835 task=0x7fcc742244d0 DEAD
+    [ 9] user_data=0x7fcc6c70e720     res=1      flags=0x2    uring_fd 0x7fcc6c70e720  fd=711 task=0x7fcc6c067410
+    [10] user_data=0x7fcc6c83fc50     res=1      flags=0x2    uring_fd 0x7fcc6c83fc50  fd=704 task=0x7fcc6c0b1e20
+loop 0x39be0e0 id=1 ring_fd=563  CqHead=2537 CqTail=2537 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39bee30 id=2 ring_fd=566  CqHead=154 CqTail=154 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39bfee0 id=3 ring_fd=569  CqHead=823 CqTail=823 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39c0f90 id=4 ring_fd=572  CqHead=87 CqTail=87 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39c2040 id=5 ring_fd=575  CqHead=43 CqTail=43 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39c30f0 id=6 ring_fd=578  CqHead=102 CqTail=102 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39c41a0 id=7 ring_fd=581  CqHead=24 CqTail=24 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39c5280 id=8 ring_fd=584  CqHead=137 CqTail=137 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39c6360 id=9 ring_fd=587  CqHead=1982 CqTail=1982 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39c7440 id=10 ring_fd=590  CqHead=2646 CqTail=2646 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39c8520 id=11 ring_fd=593  CqHead=1170 CqTail=1170 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39c9600 id=12 ring_fd=596  CqHead=372 CqTail=372 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39ca6e0 id=13 ring_fd=599  CqHead=4 CqTail=4 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39cb7c0 id=14 ring_fd=602  CqHead=681 CqTail=681 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39cc8a0 id=15 ring_fd=605  CqHead=282 CqTail=282 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39cd980 id=16 ring_fd=608  CqHead=74 CqTail=74 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39cea60 id=17 ring_fd=611  CqHead=150 CqTail=150 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39cfb40 id=18 ring_fd=614  CqHead=22 CqTail=22 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39d0c20 id=19 ring_fd=617  CqHead=2563 CqTail=2563 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39d1d00 id=20 ring_fd=620  CqHead=114 CqTail=114 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39d2de0 id=21 ring_fd=623  CqHead=176 CqTail=176 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39d3ec0 id=22 ring_fd=626  CqHead=362 CqTail=362 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39d4fa0 id=23 ring_fd=629  CqHead=80 CqTail=80 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39d6080 id=24 ring_fd=632  CqHead=4 CqTail=4 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39d7160 id=25 ring_fd=635  CqHead=177 CqTail=177 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39d8240 id=26 ring_fd=638  CqHead=246 CqTail=246 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39d9320 id=27 ring_fd=641  CqHead=2209 CqTail=2209 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39da400 id=28 ring_fd=644  CqHead=912 CqTail=912 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39db4e0 id=29 ring_fd=647  CqHead=2824 CqTail=2824 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39dc5c0 id=30 ring_fd=650  CqHead=2665 CqTail=2665 unreaped=0
+    (nothing unreaped in the visible CQ)
+loop 0x39dd6a0 id=31 ring_fd=653  CqHead=4 CqTail=4 unreaped=0
+    (nothing unreaped in the visible CQ)
+(task=0x... joins to PARK_TASK / SUBMIT / REAP / WAKE in an xtc_tail trace)
+[Inferior 1 (process 48117) detached]
