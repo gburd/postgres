@@ -17,6 +17,7 @@
 #ifndef TABLEAM_H
 #define TABLEAM_H
 
+#include "access/amlocator.h"
 #include "access/relscan.h"
 #include "access/sdir.h"
 #include "access/xact.h"
@@ -322,6 +323,19 @@ typedef struct TableAmRoutine
 {
 	/* this must be set to T_TableAmRoutine */
 	NodeTag		type;
+
+	/* ------------------------------------------------------------------------
+	 * Declared capabilities.
+	 * ------------------------------------------------------------------------
+	 */
+
+	/*
+	 * The locator this AM hands to indexes to identify a row, and expects back
+	 * when they ask for one.  Every in-core AM provides LOCATOR_CAP_TID.  An
+	 * index can only be created on this table if its index AM supports this
+	 * locator; see amlocator.h.
+	 */
+	LocatorCapability locator_capability;
 
 
 	/* ------------------------------------------------------------------------

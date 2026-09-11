@@ -127,6 +127,7 @@ blhandler(PG_FUNCTION_ARGS)
 		.amusemaintenanceworkmem = false,
 		.amparallelvacuumoptions =
 		VACUUM_OPTION_PARALLEL_BULKDEL | VACUUM_OPTION_PARALLEL_CLEANUP,
+		.amcanlocators = LOCATOR_CAP_MASK(LOCATOR_CAP_TID),
 		.amkeytype = InvalidOid,
 
 		.ambuild = blbuild,

@@ -12,6 +12,7 @@
 #ifndef AMAPI_H
 #define AMAPI_H
 
+#include "access/amlocator.h"
 #include "access/cmptype.h"
 #include "access/genam.h"
 #include "access/stratnum.h"
@@ -281,6 +282,12 @@ typedef struct IndexAmRoutine
 	bool		amusemaintenanceworkmem;
 	/* does AM store tuple information only at block granularity? */
 	bool		amsummarizing;
+	/*
+	 * Bitmask of the locator capabilities this AM can store, built with
+	 * LOCATOR_CAP_MASK().  An index can only be created on a table whose
+	 * table AM provides a locator this AM supports; see amlocator.h.
+	 */
+	uint32		amcanlocators;
 	/* OR of parallel vacuum flags.  See vacuum.h for flags. */
 	uint8		amparallelvacuumoptions;
 	/* type of data stored in index, or InvalidOid if variable */
