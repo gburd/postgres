@@ -30,6 +30,11 @@ tests += {
       'test_saslprep',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_saslprep_ranges.py',
+    ],
+  },
   'tap': {
     'tests': [
       't/001_saslprep_ranges.pl',

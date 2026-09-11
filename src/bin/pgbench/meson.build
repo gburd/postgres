@@ -45,4 +45,10 @@ tests += {
       't/002_pgbench_no_server.pl',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_pgbench_with_server.py',
+      'pyt/test_002_pgbench_no_server.py',
+    ],
+  },
 }

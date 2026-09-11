@@ -83,6 +83,24 @@ tests += {
       't/200_connstr.pl',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_010_clusterdb.py',
+      'pyt/test_011_clusterdb_all.py',
+      'pyt/test_020_createdb.py',
+      'pyt/test_040_createuser.py',
+      'pyt/test_050_dropdb.py',
+      'pyt/test_070_dropuser.py',
+      'pyt/test_080_pg_isready.py',
+      'pyt/test_090_reindexdb.py',
+      'pyt/test_091_reindexdb_all.py',
+      'pyt/test_100_vacuumdb.py',
+      'pyt/test_101_vacuumdb_all.py',
+      'pyt/test_102_vacuumdb_stages.py',
+      'pyt/test_200_connstr.py',
+    ],
+    'env': {'with_icu': icu.found() ? 'yes' : 'no'},
+  },
 }
 
 subdir('po', if_found: libintl)

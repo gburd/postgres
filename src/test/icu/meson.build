@@ -4,6 +4,12 @@ tests += {
   'name': 'icu',
   'sd': meson.current_source_dir(),
   'bd': meson.current_build_dir(),
+  'pytest': {
+    'tests': [
+      'pyt/test_010_database.py',
+    ],
+    'env': {'with_icu': icu.found() ? 'yes' : 'no'},
+  },
   'tap': {
     'tests': [
       't/010_database.pl',

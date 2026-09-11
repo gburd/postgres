@@ -49,4 +49,9 @@ tests += {
       't/001_sepgsql.pl',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_sepgsql.py',
+    ],
+  },
 }

@@ -84,4 +84,17 @@ tests += {
     },
     'deps': [oauth_hook_client],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_server.py',
+      'pyt/test_002_client.py',
+    ],
+    'env': {
+      'PYTHON': python.full_path(),
+      'with_libcurl': oauth_flow_supported ? 'yes' : 'no',
+      'with_python': 'yes',
+      'cert_dir': meson.project_source_root() / 'src/test/ssl/ssl',
+    },
+    'deps': [oauth_hook_client],
+  },
 }

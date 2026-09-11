@@ -26,6 +26,11 @@ tests += {
       't/001_pg_config.pl',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_pg_config.py',
+    ],
+  },
 }
 
 subdir('po', if_found: libintl)

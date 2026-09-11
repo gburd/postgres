@@ -19,4 +19,9 @@ tests += {
       't/001_base.pl',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_base.py',
+    ],
+  },
 }
