@@ -5329,6 +5329,28 @@ cleanup_wal_writer_child(PMChild *child, int exitstatus)
 	WalWriterPMChild = NULL;
 	if (!EXIT_STATUS_0(exitstatus))
 		HandleChildCrash(0, exitstatus, _("WAL writer process"));
+#ifdef USE_XTC_CARRIER
+	else if (multithreaded && PostmasterThreadCarriersStarted() &&
+			 pmState == PM_RUN && Shutdown == NoShutdown)
+	{
+		/*
+		 * Supervision tree, detection+escalation half (see the long comment
+		 * at xtc_pg_aux_worker_note_relaunch's definition): a CLEAN exit here
+		 * while the server is normally running means LaunchMissingBackground
+		 * Processes is about to relaunch this singleton on its very next
+		 * tick (WalWriterPMChild is now NULL and pmState==PM_RUN).  Note the
+		 * relaunch for restart-intensity tracking; a worker that flaps
+		 * (dies-and-relaunches repeatedly) is a sick server and should
+		 * fail-stop rather than spin, exactly like a genuine crash -- same
+		 * escalation path, different trigger.  A genuine crash (nonzero
+		 * exitstatus) already took the HandleChildCrash branch above and is
+		 * unaffected; an orderly shutdown (Shutdown != NoShutdown) is
+		 * excluded so a clean stop-time exit is never counted as a flap.
+		 */
+		if (xtc_pg_aux_worker_note_relaunch("WAL writer"))
+			HandleChildCrash(0, exitstatus, _("WAL writer process (restart intensity exceeded)"));
+	}
+#endif
 
 	return true;
 }
