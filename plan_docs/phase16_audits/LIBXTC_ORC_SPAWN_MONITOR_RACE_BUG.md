@@ -146,3 +146,46 @@ immediately; the repro is deterministic, so verification should be quick on both
 Found by source inspection plus standalone C programs linked against a pristine `c1a7bda` build
 (meson, `-Dbuildtype=debugoptimized -Dtls=openssl -Dshared=true`), Linux x86_64, glibc.
 No PostgreSQL involvement in the repro path at all.
+
+
+--------------------------------------------------------------------------------
+## Addendum 2026-09-11: it is DETERMINISTIC on the topology every embedder will use
+
+A standalone repro (`test_orc_spawn_monitor_race.c`) shows the misclassification is **0% correct
+same-loop** — deterministic, not probabilistic — and only intermittent under cross-loop placement.
+
+Our real topology is **one supervisor per loop, children spawned onto that same loop**. That is
+the deterministic-loss case. So a fast-crashing child under `xtc_orc` reliably arrives as
+`XTC_DOWN_KIND_NOPROC` rather than `SIGNAL`, every time.
+
+This matters for priority: the failing configuration is not an exotic corner. "Supervisor and its
+children on the same loop" is the natural, documented shape for a single-loop app and for a
+per-loop supervision tree — arguably the *most* common embedding. On that shape **`xtc_orc`'s
+crash classification fails 100% of the time.**
+
+### Why this blocks us from adopting `xtc_orc` for backend children at all
+
+Our fail-stop trigger is a crash classification:
+
+```
+pg_xtc_carrier.c:723   xtc_proc_spawn_monitor(my_loop, xtc_carrier_proc, ...)   /* ATOMIC */
+pg_xtc_carrier.c       else if (di.kind == XTC_DOWN_KIND_SIGNAL)
+                           -> xtc_dump(STDERR_FILENO)
+                           -> atomic_store(&g_xtc_genuine_crash, 1)
+                           -> SetLatch(postmaster)  ->  ExitPostmaster(1)
+```
+
+Because we spawn with the **atomic** primitive, we get `SIGNAL` and the escalation fires. If we
+moved backend children under `xtc_sup_add_child`, we would get `NOPROC` deterministically, the
+`SIGNAL` branch would never run, and **a crashed backend with possibly-corrupted shared memory
+would not fail-stop.** The server would keep serving on corrupt state — a silent data-integrity
+failure, the worst available failure shape.
+
+So we are keeping `xtc_proc_spawn_monitor()` + our own classifier for backend fibers, and using
+`xtc_orc` for the supervision *structure* (child specs, policy, intensity, escalation) and for aux
+workers, where a misclassification is not a correctness catastrophe. Moving backend children under
+your supervisor is a one-line change we will make **the day `__spawn_child` uses
+`xtc_proc_spawn_monitor()`** — the primitive you already ship, which our code has been using for
+exactly this reason since v1.3.0.
+
+That is the whole ask, and the fix is the one your own header prescribes.
