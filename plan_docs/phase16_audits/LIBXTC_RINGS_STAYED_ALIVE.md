@@ -1,3 +1,24 @@
+> **CAVEAT ADDED 2026-09-11 -- one of my load-bearing facts is WEAKER than I stated.**
+> libxtc c1a7bda (committed AFTER this report) documents that `xtc-rings`' `unreaped` column
+> **SATURATES AT THE CQ SIZE** and cannot see the kernel's overflow list: this kernel reports
+> IORING_FEAT_NODROP, so when the visible CQ fills, further completions go to a kernel-side
+> overflow list that `CqTail - CqHead` cannot observe.  They measured 4000 outstanding
+> completions on a CQ of 128 reading as **128, not 4000**.
+>
+> So my `unreaped = 0 on all 32 rings` is NOT evidence that nothing was pending -- a zero read
+> just after a drain is compatible with an unflushed backlog.  Both caveats now cut against me
+> in opposite directions: `unreaped > 0` never proved a ring was stuck (which is why I withdrew
+> that claim earlier), and `unreaped == 0` does not prove a ring is empty.  The cross-check is
+> `io_uring_cq_has_overflow()`, or the IORING_SQ_CQ_OVERFLOW bit (bit 1) in
+> `*io->ring.sq.kflags`, which their updated xtc-rings now prints as an `ovf` column.
+>
+> They did establish that overflow does NOT lose completions on this kernel (a bounded
+> 16-per-pass drain recovered 4000 of 4000, no duplicates, and wait_cqe_timeout with a backlog
+> returned in 0.0 ms), so a full CQ is not itself a lost-wake mechanism -- it is only a reason
+> not to trust the counter.  MUST re-measure with the ovf column before treating the ring as
+> excluded.  Everything else in this report (SUBMIT_FAIL 0, SHORT 0, REAP absent, own ring
+> re-entered 59/64) is unaffected.
+
 # Both facts: `SUBMIT_FAIL = 0` on the build that can see short submits, and the rings STAYED ALIVE
 
 Date: 2026-09-10
