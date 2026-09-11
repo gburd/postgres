@@ -2659,6 +2659,9 @@ again:
 		 */
 		pgstat_count_io_op(IOOBJECT_RELATION, io_context,
 						   from_ring ? IOOP_REUSE : IOOP_EVICT, 1, 0);
+		/* MEASUREMENT ONLY */
+		if (!from_ring && BufTagGetForkNum(&buf_hdr->tag) == MAIN_FORKNUM)
+			BcsRecordEviction(BufTagGetRelNumber(&buf_hdr->tag));
 	}
 
 	/*
