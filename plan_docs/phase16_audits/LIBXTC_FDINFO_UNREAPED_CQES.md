@@ -1,3 +1,13 @@
+> **RE-MEASURED 2026-09-11 -- the original cq_unreaped finding is OVERTURNED.**
+> With libxtc c1a7bda's `ovf` column and three samples ~1s apart at a fresh hang, TWO rings
+> per hang show a STABLE nonzero unreaped (35,35,35 and 29,29,29; 2,2,2 and 14,14,14) with
+> `ovf=0`, while the other 30 sit at 0.  Identical across samples, localized to 2 of 32 rings,
+> and not the CQ-saturation artifact.  So completions ARE sitting in the visible CQ
+> unconsumed -- the ring IS stuck.  This also means my repeated "unreaped = 0 on all 32
+> rings" was wrong.  Ironically the ORIGINAL fdinfo finding was closer to right than the
+> retraction that replaced it; what was missing then was stability + ovf to justify it.
+> See LIBXTC_RING_IS_STUCK.md.
+
 > **SUPERSEDED 2026-09-07 (later)** -- the `cq_unreaped>0` conclusion here is WITHDRAWN.
 > Those were SINGLE samples of a transient condition.  With the libxtc team's three-sample
 > `xtc-rings` form at a fresh hang, ALL 32 rings show `unreaped=0` in all three samples --
