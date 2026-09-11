@@ -67,6 +67,7 @@ spghandler(PG_FUNCTION_ARGS)
 		.amcaninclude = true,
 		.amusemaintenanceworkmem = false,
 		.amsummarizing = false,
+		.amcanlocators = LOCATOR_CAP_MASK(LOCATOR_CAP_TID),
 		.amparallelvacuumoptions =
 		VACUUM_OPTION_PARALLEL_BULKDEL | VACUUM_OPTION_PARALLEL_COND_CLEANUP,
 		.amkeytype = InvalidOid,

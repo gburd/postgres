@@ -13,6 +13,7 @@ top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
 OBJS = \
+	amlocator.o \
 	attmap.o \
 	bufmask.o \
 	detoast.o \

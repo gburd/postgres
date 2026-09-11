@@ -1486,10 +1486,10 @@ JsonTablePath
 JsonTablePathScan
 JsonTablePathSpec
 JsonTablePlan
+JsonTablePlanJoinType
 JsonTablePlanRowSource
 JsonTablePlanSpec
 JsonTablePlanState
-JsonTablePlanJoinType
 JsonTablePlanType
 JsonTableSiblingJoin
 JsonTokenType
@@ -1635,6 +1635,8 @@ LocalTransactionId
 Location
 LocationIndex
 LocationLen
+LocatorCapability
+LocatorCapabilityInfo
 LockAcquireResult
 LockClauseStrength
 LockData
@@ -2302,8 +2304,8 @@ PgStatShared_CustomVarEntry
 PgStatShared_Database
 PgStatShared_Function
 PgStatShared_HashEntry
-PgStatShared_Index
 PgStatShared_IO
+PgStatShared_Index
 PgStatShared_Lock
 PgStatShared_Relation
 PgStatShared_ReplSlot

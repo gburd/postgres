@@ -2651,6 +2651,9 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
 static const TableAmRoutine heapam_methods = {
 	.type = T_TableAmRoutine,
 
+	/* heap identifies a row by its TID; see amlocator.h */
+	.locator_capability = LOCATOR_CAP_TID,
+
 	.slot_callbacks = heapam_slot_callbacks,
 
 	.scan_begin = heap_beginscan,
