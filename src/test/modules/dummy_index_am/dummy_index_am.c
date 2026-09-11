@@ -316,6 +316,7 @@ dihandler(PG_FUNCTION_ARGS)
 		.amcaninclude = false,
 		.amusemaintenanceworkmem = false,
 		.amsummarizing = false,
+		.amcanlocators = LOCATOR_CAP_MASK(LOCATOR_CAP_TID),
 		.amparallelvacuumoptions = VACUUM_OPTION_NO_PARALLEL,
 		.amkeytype = InvalidOid,
 
