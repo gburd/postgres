@@ -6230,6 +6230,24 @@ IsLogicalWorker(void)
 }
 
 /*
+ * Return the HOT-indexed apply mode of the current logical replication
+ * worker's subscription.
+ *
+ * Callers outside worker.c (notably heapam.c's HeapUpdateHotAllowable) use
+ * this accessor to avoid pulling in worker_internal.h or the Subscription
+ * struct.  When MySubscription is NULL (any process that is not a logical
+ * replication worker) it returns LOGICALREP_HOT_INDEXED_OFF, which is the
+ * conservative value; callers are expected to guard with IsLogicalWorker()
+ * first for clarity, but the accessor is safe either way.
+ */
+char
+GetHotIndexedApplyMode(void)
+{
+	return MySubscription ? MySubscription->hotindexedonapply
+		: LOGICALREP_HOT_INDEXED_OFF;
+}
+
+/*
  * Is current process a logical replication parallel apply worker?
  */
 bool
