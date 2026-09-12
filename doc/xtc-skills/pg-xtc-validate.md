@@ -70,8 +70,16 @@ HEAD. That assumption was made and was wrong.
 # NVMe, libxtc, then PG. Adapt .ec2/loop-poll-2026-09-07/xtcpg_build.sh
 sudo mkfs.xfs -f /dev/nvme1n1; sudo mount /dev/nvme1n1 /mnt/nvme
 
+# libxtc: FORCE -Dio-backend=uring.  `io-backend=auto` (the default) SILENTLY falls
+# back to epoll when liburing-devel is absent (meson.build: elif have_uring ...
+# elif have_epoll) -- producing an epoll-backed binary that is NOT the io_uring
+# runtime you meant to benchmark, with no error.  An entire v1.44.1 benchmark was
+# likely run epoll-backed this way and had to be discarded.  Install liburing-devel
+# FIRST, pass -Dio-backend=uring so a missing liburing ERRORS, and VERIFY at runtime
+# (io_uring ring fds in /proc/<pid>/fdinfo, or xtc-rings shows rings) -- do not trust
+# the build log alone.
 # libxtc: debugoptimized -- release strips the debug info the gdb helpers walk
-meson setup build -Dtls=openssl -Dshared=true -Dbuildtype=debugoptimized
+meson setup build -Dtls=openssl -Dshared=true -Dbuildtype=debugoptimized -Dio-backend=uring
 ninja -C build && sudo ninja -C build install
 echo /usr/local/lib64 | sudo tee /etc/ld.so.conf.d/usrlocal.conf && sudo ldconfig
 
