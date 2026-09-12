@@ -12,7 +12,7 @@
       # Pinned to the v1.41.1 release tag.  Carries the adb670f n_alive/idle-predicate
       # fix, the 25a6e03 aio PARK/RUN tail brackets (so a lost completion wake is
       # VISIBLE as a PARK with no RUN), and the xtc-rings / xtc-tail-dump gdb tools.
-      url = "github:gburd/libxtc?rev=ce6a99d7b76020745538d0cf3f2cde2607cbfab4";
+      url = "github:gburd/libxtc?rev=e9a2e14e1285ca76cc8185073b3401d8f9aa8f63";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
     };
