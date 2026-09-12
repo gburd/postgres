@@ -1,3 +1,17 @@
+> **RETRACTION 2026-09-12 -- the f4ec2a937b bisection below is INVALID.**
+> HEAD does not compile with USE_XTC_CARRIER: f4ec2a937b committed the counter NAME
+> `[XTC_PG_RC_BUDGET_YIELDS] = "budget_yields"` (pg_xtc_carrier.c:1598) but the enum MEMBER
+> that defines XTC_PG_RC_BUDGET_YIELDS lives only in the stashed pooled-starvation WIP
+> (stash@{0}), never committed.  The two agents' work was interdependent and got split.
+> Consequence: my v1.44.1 build only compiled because that WIP was in the working tree at
+> build time, so it was HEAD + f4ec2a937b + the ENTIRE 360-line budget-yield fix -- NOT a
+> clean f4ec2a937b build.  The bisection therefore did not isolate f4ec2a937b; the crash I
+> attributed to it may be the WIP's (the pgstat_is_initialized assert seen with the WIP
+> active is consistent with that).  A genuinely clean build (HEAD + only the missing enum
+> member, no WIP) is being established now to re-test whether the pmchild double-release
+> even reproduces.  The 'hang is GONE, 0/12' result is UNAFFECTED -- that was measured on the
+> same build and a lost-wake hang is a different, positive-evidence signal from a crash.
+
 # v1.44.1: the hang is GONE (0/12), but a PG-side double-release crash now blocks the benchmark
 
 Date: 2026-09-12
