@@ -122,6 +122,7 @@ typedef enum XtcPgRuntimeCounter
 	XTC_PG_RC_CARRIERS_STARTED,		/* pooled carrier threads spawned */
 	XTC_PG_RC_PROCESS_FALLBACKS,	/* sessions routed to a process-fallback backend */
 	XTC_PG_RC_QUEUE_WAITS,			/* carrier blocked idle waiting for work */
+	XTC_PG_RC_BUDGET_YIELDS,		/* session yielded its carrier on message budget */
 	XTC_PG_RUNTIME_COUNTER_COUNT
 } XtcPgRuntimeCounter;
 
