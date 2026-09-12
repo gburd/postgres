@@ -138,3 +138,32 @@ awk '{c[$1]++} END{for(k in c) print k, c[k]}' pgbench_log.* | sort -k2 -n
 ```
 
 Artifacts: `.ec2/starve-2026-09-10/` (fairness sweep, `-j` sweep, per-txn logs, psql control).
+
+
+--------------------------------------------------------------------------------
+## WIP fix defect corrected 2026-09-12 (not the hypothesized pgstat-attach bug)
+
+Validating the stashed PG_STEP_YIELD_BUDGET WIP found its real defect is NOT the missing
+pgstat_ensure_shmem_attached on the pooled resume path that was hypothesized -- the pooled resume
+path (backend_pooled_protocol_resume_logical_start via PgCarrierLeaseRunnableProtocolBackend ->
+PgCarrierAttachBackend -> pgstat_ensure_shmem_attached) is correct; 14000+ pooled budget-yields under
+cassert did NOT trap.
+
+The REAL defect: the budget check in PgSessionRunProtocolSchedulerUntilBoundary (postgres.c) fires for
+ANY thread-backed session, including **thread-per-session** (carriers=0), and can return
+PG_STEP_YIELD_BUDGET.  The pooled carrier loop (launch_backend.c:2173) handles that; but the TPS
+staging loop (PgSessionRunProtocolSchedulerStaging, postgres.c:7218) has `case PG_STEP_YIELD_BUDGET:
+pg_unreachable()`.  So a TPS session hitting the budget yields, gets detached by
+PgCarrierYieldRunnableOnBudget onto a runnable_queue no TPS carrier drains, and hits the
+pg_unreachable (cassert: TRAP pgstat_is_initialized at pgstat.c:1665; non-cassert: UB).  Repro:
+multithreaded=on pooled_protocol_carriers=0 pooled_protocol_carrier_message_budget=5 -> traps on the
+first budget yield.
+
+Fix: gate the budget to the POOLED path only (PgRuntimePooledProtocolRequested / carriers>0).  The
+message budget exists to multiplex sessions over a bounded carrier pool; thread-per-session has one
+dedicated carrier per session and nothing to multiplex, so it must never yield-on-budget and the
+pg_unreachable is then genuinely unreachable.
+
+Validation must use pgbench -S (READ): pooled write-heavy still hangs on the separate write-wedge
+keystone (WALWriteLock / aux-fiber raw-semaphore, LWLOCK_WEDGE_ROOTCAUSE_AUX_CARRIER_STARVATION.md,
+fixed by a sibling agent), which is unrelated to starvation and would confound a write measurement.
