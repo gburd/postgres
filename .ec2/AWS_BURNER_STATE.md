@@ -27,3 +27,27 @@
 
 ## Earlier dead profiles
 mala (724081032357), chiuso -- both expired.
+
+--------------------------------------------------------------------------------
+## OS DIRECTIVE 2026-09-12: use latest Debian, NOT AL2023
+
+All future EC2 testing runs on the latest Debian (Debian 13 "trixie").
+
+### Debian 13 AMIs (official Debian, owner 136693071363), captured 2026-09-12
+  us-east-1  ami-0871da4641e8b4413    eu-west-1  ami-0eca3c5f23eadb7e0
+  us-east-2  ami-079a2ca459cdd6817    us-west-2  ami-0266196d6ac0fb766
+  (re-resolve with: aws ec2 describe-images --owners 136693071363
+   --filters "Name=name,Values=debian-13-amd64-*" --query
+   'sort_by(Images,&CreationDate)[-1].ImageId')
+
+### Debian differences from AL2023 (all bite the build recipe)
+  SSH user:    **admin** (NOT ec2-user)
+  pkg manager: **apt-get** (NOT dnf); run `sudo apt-get update -y` FIRST
+  dep install (one line):
+    sudo apt-get install -y gcc g++ make meson ninja-build pkg-config \
+      liburing-dev libssl-dev libreadline-dev zlib1g-dev libzstd-dev liblz4-dev \
+      libxml2-dev libxslt1-dev libicu-dev bison flex libperl-dev libipc-run-perl \
+      psmisc gdb python3
+  CRITICAL: liburing-dev must be installed BEFORE building libxtc, and libxtc
+  MUST be built -Dio-backend=uring (io-backend=auto silently falls to epoll).
+  Verify io_uring at runtime (ring fds in /proc/<pid>/fdinfo, or xtc-rings).
