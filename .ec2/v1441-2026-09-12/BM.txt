@@ -1,0 +1,14 @@
+run 1: server gone (crash, not hang)
+run 2: INIT_FAIL (unexpected on pre-build!)
+run 3: server gone (crash, not hang)
+run 4: server gone (crash, not hang)
+run 5: server gone (crash, not hang)
+run 6: server gone (crash, not hang)
+run 7: PASS tps = 26.458511
+run 8: server gone (crash, not hang)
+run 9: server gone (crash, not hang)
+run 10: server gone (crash, not hang)
+run 11: server gone (crash, not hang)
+run 12: server gone (crash, not hang)
+BM_SUMMARY pass=1 hang=0 of 12
+BM_COMPLETE
