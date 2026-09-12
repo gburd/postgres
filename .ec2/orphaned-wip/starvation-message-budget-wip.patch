@@ -1,0 +1,360 @@
+diff --git a/src/backend/postmaster/launch_backend.c b/src/backend/postmaster/launch_backend.c
+index b5e4326b48..f97ab9b815 100644
+--- a/src/backend/postmaster/launch_backend.c
++++ b/src/backend/postmaster/launch_backend.c
+@@ -1971,6 +1971,31 @@ backend_pooled_protocol_carrier_entry(void *arg)
+ 		Assert(CurrentPgConnection == NULL);
+ 		Assert(CurrentPgExecution == NULL);
+ 
++		/*
++		 * Check the dispatch queue (brand-new, never-yet-attached connections)
++		 * BEFORE the runnable queue.  This ordering is load-bearing for the
++		 * message-budget fairness fix (PG_STEP_YIELD_BUDGET,
++		 * plan_docs/phase16_audits/POOLED_SESSION_STARVATION.md): a backend
++		 * that just yielded its carrier on an exhausted budget is pushed onto
++		 * the runnable queue and, with no other carrier contending, would be
++		 * the ONLY entry there -- if this carrier re-checked the runnable
++		 * queue first, it would immediately re-lease the very backend it just
++		 * released, monopolizing this carrier forever and never draining the
++		 * dispatch queue (reproducing the original starvation exactly, one
++		 * carrier per queued-forever session).  Checking dequeue() first
++		 * guarantees every dispatch-queue session gets attached, and once the
++		 * dispatch queue is empty this check is a cheap lock+compare that
++		 * falls straight through to the runnable-queue round-robin below.
++		 */
++		logical_start = backend_pooled_protocol_dequeue();
++		if (logical_start != NULL)
++		{
++			xtc_pg_runtime_counter_inc(XTC_PG_RC_SESSIONS_LEASED);	/* fusion F1 */
++			backend_pooled_protocol_run_logical_start(carrier_start,
++													  logical_start);
++			continue;
++		}
++
+ 		backend = PgCarrierLeaseRunnableProtocolBackend(CurrentPgCarrier);
+ 		if (backend != NULL)
+ 		{
+@@ -1988,15 +2013,6 @@ backend_pooled_protocol_carrier_entry(void *arg)
+ 			continue;
+ 		}
+ 
+-		logical_start = backend_pooled_protocol_dequeue();
+-		if (logical_start != NULL)
+-		{
+-			xtc_pg_runtime_counter_inc(XTC_PG_RC_SESSIONS_LEASED);	/* fusion F1 */
+-			backend_pooled_protocol_run_logical_start(carrier_start,
+-													  logical_start);
+-			continue;
+-		}
+-
+ 		nready = PgRuntimeProtocolSchedulerWaitParkedReads(CurrentPgRuntime,
+ 														   scratch,
+ 														   poll_scratch,
+@@ -2163,6 +2179,20 @@ backend_pooled_protocol_run_attached_logical(BackendPooledLogicalStart *logical_
+ 				*PgCurrentBackendThreadStartRef() = NULL;
+ 				return result;
+ 
++			case PG_STEP_YIELD_BUDGET:
++				/*
++				 * The backend is already detached and re-enqueued on the shared
++				 * RUNNABLE queue (PgCarrierYieldRunnableOnBudget, called from
++				 * PgSessionRunProtocolSchedulerUntilBoundary).  Return to the
++				 * carrier loop exactly like a protocol-read park so the carrier
++				 * picks up its next unit of work (dispatch queue first, then any
++				 * runnable backend -- which may or may not be this one) instead
++				 * of looping this session back onto itself here.
++				 */
++				logical_start->exit_jmp_valid = false;
++				*PgCurrentBackendThreadStartRef() = NULL;
++				return result;
++
+ 			case PG_STEP_DONE:
+ 				backend_pooled_protocol_exit_logical(0);
+ 
+diff --git a/src/backend/postmaster/walwriter.c b/src/backend/postmaster/walwriter.c
+index a90d914d3f..cbdd13475b 100644
+--- a/src/backend/postmaster/walwriter.c
++++ b/src/backend/postmaster/walwriter.c
+@@ -245,6 +245,32 @@ WalWriterMain(const void *startup_data, size_t startup_data_len)
+ 		/* Process any signals received recently */
+ 		ProcessMainLoopInterrupts();
+ 
++		/*
++		 * Debug-only test hook (supervision self-heal TAP test): if
++		 * PG_XTC_WALWRITER_TEST_EXIT is set, exit(0) cleanly after that many
++		 * loop iterations instead of running forever.  This lets a TAP test
++		 * drive a repeatable clean exit + relaunch (and, by setting it low
++		 * and letting the relaunched walwriter also honor it, a flap) without
++		 * a new postmaster<->aux-worker signalling path: a fiber-backed aux
++		 * worker's SQL-visible "pid" is a synthetic small integer (not in
++		 * procArray), so pg_terminate_backend()/pg_signal_backend() cannot
++		 * target it, and there is no real OS pid to kill() from outside the
++		 * process either.  Never set in production; mirrors the
++		 * PG_XTC_INJECT_CRASH pattern in pg_xtc_carrier.c.
++		 */
++		{
++			const char *test_exit = getenv("PG_XTC_WALWRITER_TEST_EXIT");
++
++			if (test_exit != NULL && test_exit[0] != '\0')
++			{
++				static int	iters = 0;
++				long		target = strtol(test_exit, NULL, 10);
++
++				if (target > 0 && ++iters >= target)
++					proc_exit(0);
++			}
++		}
++
+ 		/*
+ 		 * Do what we're here for; then, if XLogBackgroundFlush() found useful
+ 		 * work to do, reset hibernation counter.
+diff --git a/src/backend/tcop/postgres.c b/src/backend/tcop/postgres.c
+index 6baa567363..f8eb9690a2 100644
+--- a/src/backend/tcop/postgres.c
++++ b/src/backend/tcop/postgres.c
+@@ -7031,6 +7031,25 @@ PgSessionCommitCurrentProtocolReadPark(PgSession *session)
+ 	PgCarrierCommitProtocolReadPark(carrier, session->backend);
+ }
+ 
++/*
++ * Yield the carrier on an exhausted per-attachment message budget.  The
++ * session has a next message already available (it is not waiting on the
++ * client), so it goes straight onto the shared RUNNABLE queue -- see
++ * PgCarrierYieldRunnableOnBudget().
++ */
++static void
++PgSessionYieldRunnableOnBudget(PgSession *session)
++{
++	PgCarrier  *carrier = CurrentPgCarrier;
++
++	Assert(session != NULL);
++	Assert(carrier != NULL);
++	Assert(session->backend != NULL);
++	Assert(session->backend == CurrentPgBackend);
++
++	PgCarrierYieldRunnableOnBudget(carrier, session->backend);
++}
++
+ static uint32
+ PgSessionStagingWaitAndResumeProtocolRead(PgSession *session,
+ 										  PgBackend *backend,
+@@ -7073,6 +7092,8 @@ PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session)
+ 	sigjmp_buf *save_exception_stack;
+ 	ErrorContextCallback *save_context_stack;
+ 	sigjmp_buf	local_sigjmp_buf;
++	int			message_budget = pooled_protocol_carrier_message_budget;
++	int			processed_messages = 0;
+ 
+ 	Assert(session != NULL);
+ 	Assert(CurrentPgRuntime != NULL);
+@@ -7083,7 +7104,16 @@ PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session)
+ 	/*
+ 	 * Keep one error boundary for the whole active attachment, matching the
+ 	 * process/thread-per-session loop shape.  Returning to the carrier loop is
+-	 * still controlled only by protocol parks or logical exit.
++	 * controlled by protocol parks, logical exit, or -- when
++	 * pooled_protocol_carrier_message_budget is positive -- exhausting the
++	 * per-attachment message budget below (PG_STEP_YIELD_BUDGET).  Without a
++	 * budget, a continuously busy session (PG_STEP_CONTINUE on every message,
++	 * e.g. a tight pgbench loop) never reaches a protocol-read park and holds
++	 * its carrier for the whole run, starving any queued sibling session --
++	 * see plan_docs/phase16_audits/POOLED_SESSION_STARVATION.md.  The budget
++	 * check only fires on PG_STEP_CONTINUE, i.e. between complete protocol
++	 * messages, the same safe boundary the protocol-read park already uses;
++	 * it never fires mid-message.
+ 	 */
+ 	exception_stack_ref = PgCurrentExceptionStackRefFast();
+ 	context_stack_ref = PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentErrorContextStackHotRef,
+@@ -7133,6 +7163,17 @@ PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session)
+ 		switch (result)
+ 		{
+ 			case PG_STEP_CONTINUE:
++				processed_messages++;
++				if (message_budget > 0 &&
++					processed_messages >= message_budget)
++				{
++					xtc_pg_runtime_counter_inc(XTC_PG_RC_BUDGET_YIELDS);	/* fusion F1 */
++					*exception_stack_ref = save_exception_stack;
++					*context_stack_ref = save_context_stack;
++					state->step_error_boundary_active = false;
++					PgSessionYieldRunnableOnBudget(session);
++					return PG_STEP_YIELD_BUDGET;
++				}
+ 				break;
+ 
+ 			case PG_STEP_PARK_PROTOCOL_READ:
+@@ -7150,6 +7191,7 @@ PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session)
+ 				return result;
+ 
+ 			case PG_STEP_ERROR_RECOVERED:
++			case PG_STEP_YIELD_BUDGET:
+ 				pg_unreachable();
+ 		}
+ 	}
+diff --git a/src/backend/utils/init/backend_runtime_backend.c b/src/backend/utils/init/backend_runtime_backend.c
+index b642608847..136c573062 100644
+--- a/src/backend/utils/init/backend_runtime_backend.c
++++ b/src/backend/utils/init/backend_runtime_backend.c
+@@ -2462,6 +2462,63 @@ PgCarrierCommitProtocolReadPark(PgCarrier *carrier, PgBackend *backend)
+ 			 backend->carrier);
+ }
+ 
++/*
++ * Yield the carrier on an exhausted per-attachment message budget
++ * (PG_STEP_YIELD_BUDGET; see PgSessionRunProtocolSchedulerUntilBoundary() and
++ * plan_docs/phase16_audits/POOLED_SESSION_STARVATION.md).  Unlike a real
++ * protocol-read park, the session is not waiting on client input -- it
++ * already has its next message ready and simply needs a turn on some
++ * carrier.  Reuse the same PG_PROTOCOL_PARK_COMMITTED / detached-carrier
++ * shape a protocol-read park leaves behind (so
++ * PgCarrierLeaseRunnableProtocolBackend()'s consistency check and
++ * PgBackendResumeProtocolReadPark()'s resume path are unchanged and
++ * unaware which path produced the state), but push straight onto the
++ * RUNNABLE queue instead of the parked-protocol-read queue: this backend is
++ * immediately eligible for any carrier, not waiting on a socket event.
++ * FIFO ordering on the shared runnable queue is what gives the other queued
++ * sessions their turn -- this session goes to the tail, so a fresh
++ * dispatch-queue arrival or an already-runnable sibling is served first if
++ * the pool re-checks the dispatch queue ahead of the runnable queue (see the
++ * carrier loop in launch_backend.c).
++ */
++void
++PgCarrierYieldRunnableOnBudget(PgCarrier *carrier, PgBackend *backend)
++{
++	PgBackendProtocolParkState *park_state;
++	PgRuntime  *runtime;
++	PgProtocolSchedulerState *scheduler;
++
++	Assert(carrier != NULL);
++	Assert(backend != NULL);
++	Assert(carrier == CurrentPgCarrier);
++	Assert(backend == CurrentPgBackend);
++	Assert(carrier->current_backend == backend);
++
++	park_state = &backend->protocol_park;
++	Assert(park_state->state == PG_PROTOCOL_PARK_NONE);
++	Assert(park_state->scheduler_queue_state == PG_PROTOCOL_SCHEDULER_QUEUE_NONE);
++
++	runtime = carrier->runtime;
++	Assert(runtime != NULL);
++
++	MemSet(&park_state->spec, 0, sizeof(park_state->spec));
++	park_state->state = PG_PROTOCOL_PARK_COMMITTED;
++	park_state->parked_carrier = carrier;
++	park_state->committed_at = 0;
++	park_state->wake_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
++	park_state->wake_events = 0;
++	park_state->wake_generation = 0;
++	PgCarrierDetachBackend(carrier, backend);
++
++	scheduler = &runtime->protocol_scheduler;
++	SpinLockAcquire(&scheduler->lock);
++	dlist_push_tail(&scheduler->runnable_queue, &park_state->scheduler_node);
++	park_state->scheduler_queue_state = PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE;
++	scheduler->runnable_count++;
++	scheduler->runnable_enqueue_count++;
++	SpinLockRelease(&scheduler->lock);
++}
++
+ bool
+ PgBackendMarkProtocolReadParkWake(PgBackend *backend, uint64 generation,
+ 								  uint32 wake_reasons, uint32 wake_events)
+diff --git a/src/backend/utils/init/globals.c b/src/backend/utils/init/globals.c
+index 4b56f7b6d0..85017973b9 100644
+--- a/src/backend/utils/init/globals.c
++++ b/src/backend/utils/init/globals.c
+@@ -102,6 +102,14 @@ bool		xtc_log_to_server = false;
+  */
+ PG_GLOBAL_RUNTIME bool pg_backend_was_forkexeced = false;
+ PG_GLOBAL_RUNTIME int pooled_protocol_carriers = -1;
++/*
++ * Per-attachment protocol message budget for the pooled protocol scheduler.
++ * See PgSessionRunProtocolSchedulerUntilBoundary()/PG_STEP_YIELD_BUDGET for the
++ * fairness bug this fixes (a continuously busy session held its carrier for
++ * the whole run because PG_STEP_CONTINUE never returned to the carrier loop).
++ * 0 keeps the pre-fix unbounded behavior exactly.
++ */
++PG_GLOBAL_RUNTIME int pooled_protocol_carrier_message_budget = 32;
+ /*
+  * Option A staging (sessions-as-fibers): when true, the -1 (auto) resolution of
+  * pooled_protocol_carriers picks the fiber-per-session model (carriers=0 =>
+diff --git a/src/backend/utils/misc/guc_parameters.dat b/src/backend/utils/misc/guc_parameters.dat
+index dfa992b736..d32001b965 100644
+--- a/src/backend/utils/misc/guc_parameters.dat
++++ b/src/backend/utils/misc/guc_parameters.dat
+@@ -2563,6 +2563,16 @@
+   options => 'plan_cache_mode_options',
+ },
+ 
++{ name => 'pooled_protocol_carrier_message_budget', type => 'int', context => 'PGC_SIGHUP', group => 'DEVELOPER_OPTIONS',
++  short_desc => 'Sets the per-attachment protocol message budget for the pooled protocol scheduler.',
++  long_desc => 'A pooled protocol session normally keeps its carrier for as long as it has a next frontend message already in flight (PG_STEP_CONTINUE never returns to the carrier loop), so a continuously busy session never releases its carrier to a queued sibling -- excess sessions beyond the carrier count are starved rather than time-sliced. A positive value bounds how many protocol messages an attachment processes before yielding the carrier back to the scheduler (re-enqueued RUNNABLE, not parked-on-client-input, so it is resumed on the next available carrier). 0 preserves the original unbounded behavior exactly, for an instant runtime revert. Ignored (unbounded) off the pooled protocol path.',
++  flags => 'GUC_NOT_IN_SAMPLE',
++  variable => 'pooled_protocol_carrier_message_budget',
++  boot_val => '32',
++  min => '0',
++  max => 'INT_MAX / 2',
++},
++
+ { name => 'pooled_protocol_carriers', type => 'int', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
+   short_desc => 'Sets the carrier count for the pooled protocol scheduler.',
+   long_desc => 'Under multithreaded=on, -1 (the default) auto-sizes the carrier pool to one carrier per CPU core (floored at 8, capped by max_connections) so CPU-bound concurrent sessions each get a carrier; 0 forces thread-per-session; a positive value reserves that many carriers. Ignored (thread-per-session) when multithreaded=off.',
+diff --git a/src/include/miscadmin.h b/src/include/miscadmin.h
+index 2bc24fef5d..5b844a9656 100644
+--- a/src/include/miscadmin.h
++++ b/src/include/miscadmin.h
+@@ -335,6 +335,7 @@ extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool pg_backend_was_forkexeced;
+ #define PG_BACKEND_WAS_FORKEXECED	(pg_backend_was_forkexeced)
+ #endif
+ extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pooled_protocol_carriers;
++extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pooled_protocol_carrier_message_budget;
+ extern PGDLLIMPORT PG_GLOBAL_RUNTIME bool pooled_protocol_fiber_sessions;
+ extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pooled_protocol_sticky_idle_ms;
+ extern PGDLLIMPORT PG_GLOBAL_RUNTIME int pooled_protocol_hibernate_after_ms;
+diff --git a/src/include/postmaster/pg_xtc_carrier.h b/src/include/postmaster/pg_xtc_carrier.h
+index 1512cab4ba..a786a47900 100644
+--- a/src/include/postmaster/pg_xtc_carrier.h
++++ b/src/include/postmaster/pg_xtc_carrier.h
+@@ -122,6 +122,7 @@ typedef enum XtcPgRuntimeCounter
+ 	XTC_PG_RC_CARRIERS_STARTED,		/* pooled carrier threads spawned */
+ 	XTC_PG_RC_PROCESS_FALLBACKS,	/* sessions routed to a process-fallback backend */
+ 	XTC_PG_RC_QUEUE_WAITS,			/* carrier blocked idle waiting for work */
++	XTC_PG_RC_BUDGET_YIELDS,		/* session yielded its carrier on message budget */
+ 	XTC_PG_RUNTIME_COUNTER_COUNT
+ } XtcPgRuntimeCounter;
+ 
+diff --git a/src/include/utils/backend_runtime.h b/src/include/utils/backend_runtime.h
+index 3b3dfcdfe5..bedef644aa 100644
+--- a/src/include/utils/backend_runtime.h
++++ b/src/include/utils/backend_runtime.h
+@@ -180,7 +180,8 @@ typedef enum PgStepResult
+ 	PG_STEP_PARK_PROTOCOL_READ,
+ 	PG_STEP_ERROR_RECOVERED,
+ 	PG_STEP_DONE,
+-	PG_STEP_FATAL_EXIT
++	PG_STEP_FATAL_EXIT,
++	PG_STEP_YIELD_BUDGET
+ } PgStepResult;
+ 
+ /*
+@@ -3561,6 +3562,8 @@ extern bool PgBackendPrepareProtocolReadPark(PgBackend *backend,
+ 											 PgProtocolParkSpec *spec);
+ extern void PgCarrierCommitProtocolReadPark(PgCarrier *carrier,
+ 											PgBackend *backend);
++extern void PgCarrierYieldRunnableOnBudget(PgCarrier *carrier,
++											  PgBackend *backend);
+ extern bool PgBackendMarkProtocolReadParkWake(PgBackend *backend,
+ 											  uint64 generation,
+ 											  uint32 wake_reasons,
+diff --git a/src/test/modules/test_backend_runtime/meson.build b/src/test/modules/test_backend_runtime/meson.build
+index ddc10c5164..0f7a19e984 100644
+--- a/src/test/modules/test_backend_runtime/meson.build
++++ b/src/test/modules/test_backend_runtime/meson.build
+@@ -73,6 +73,7 @@ tests += {
+       't/014_phase_c_d_forced_migration.pl',
+       't/015_phase_c_concurrent_startup_storm.pl',
+       't/016_worker_fiber_pool_sizing.pl',
++      't/017_supervision_walwriter_selfheal.pl',
+     ],
+   },
+ }
