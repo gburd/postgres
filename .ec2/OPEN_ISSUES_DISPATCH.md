@@ -23,3 +23,15 @@ Five open issues from FIBER_PATH_STATE_2026-09-12.md, dispatched by dependency +
   #3 is answered; if not, the old claims are refuted and #3 is moot.
 
 So the 5 issues collapse to: 2 diagnoses running, 1 fix running, 1 fix queued, 1 folded in.
+
+## Update 2026-09-12 (later): ABBA agent hit its limit without a fix
+- **#5 ABBA deadlock: STILL OPEN.** Agent 0e7398c4 ran ~2h, ended mid-diagnosis (limit reached),
+  committed NO fix, and left a Debian box (xtc-abba3, us-west-2) which I terminated + cleaned
+  (verified KeyName+Name tag; SG+key deleted, pem shredded).  No salvageable artifacts on it (it was
+  still in Debian setup).  Needs a fresh, tightly-scoped agent -- the deadlock is deterministic so a
+  focused repro-fix-verify pass should be quick, but it must be given a HARD turn budget and told to
+  commit incrementally so partial progress survives a limit hit.
+- Live and progressing: #2 read-gap (be16cc5a, 2 us-east-2 boxes = SUT+separate driver, as intended)
+  and #1 write-wedge (235c046c), both restarting on Debian + forced-uring.
+- Reminder for the ABBA re-dispatch: it edits proc.c, so keep #4 starvation (also near proc.c) queued
+  behind it still.
