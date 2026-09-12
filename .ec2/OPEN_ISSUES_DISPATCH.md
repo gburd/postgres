@@ -35,3 +35,21 @@ So the 5 issues collapse to: 2 diagnoses running, 1 fix running, 1 fix queued, 1
   and #1 write-wedge (235c046c), both restarting on Debian + forced-uring.
 - Reminder for the ABBA re-dispatch: it edits proc.c, so keep #4 starvation (also near proc.c) queued
   behind it still.
+
+## Update 2026-09-12 (write-wedge diagnosed -> fix dispatched)
+- **#1 write wedge: DIAGNOSED** (fiber-write-wedge-diagnosis-2026-09-12.md) = 3 PG-side bugs on BOTH
+  schedulers. Dispatched a FIX for the keystone (finding 2, lost LWLock wakeup, c=8 single-backend)
+  as agent 082077eb, with a HARD 300-turn budget + commit-incrementally mandate (prior agents kept
+  hitting limits mid-task). It owns lwlock.c + proc.c lwlock-wait paths.
+- Findings 1 (WalWriter livelock) and 3 (raw-semaphore carriers) remain to fix AFTER the keystone --
+  #2 may clear the write path on its own; re-measure before fixing them.
+- **#5 ABBA: still OPEN, still un-dispatched** (its agent hit a limit). Its files (bufmgr/checkpointer)
+  do NOT overlap the lwlock fix, so it CAN run in parallel -- but hold it one beat so the lwlock agent
+  establishes proc.c ground truth first (the lwlock fix touches proc.c wait paths; ABBA touches
+  proc.c semaphore paths -- adjacent). Re-dispatch ABBA once the lwlock agent has committed its repro.
+- **#4 starvation: still queued** behind both proc.c-touching fixes.
+- **#2 read-gap sweep: in flight** (be16cc5a, SUT+driver in us-east-2, Debian+uring, pooled default).
+
+## Live agents right now
+- 082077eb  lwlock-wakeup fix (keystone)   -- dispatching, Debian+uring
+- be16cc5a  read-gap 3-lane c=8..384 sweep  -- running, SUT+driver us-east-2
