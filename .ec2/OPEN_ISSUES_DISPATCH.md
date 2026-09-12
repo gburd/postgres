@@ -71,3 +71,21 @@ So the 5 issues collapse to: 2 diagnoses running, 1 fix running, 1 fix queued, 1
 ## Live agents
 - 082077eb  lost-LWLock-wakeup fix (write keystone)  -- us-east-1
 - de68f552  pooled-starvation yield-budget fix + scaling sweep (THE north-star fix)
+
+
+## Update 2026-09-12 (keystone diagnosed as a 4th bug; fix re-dispatched)
+- **#1 keystone**: agent 082077eb hit its limit mid-diagnosis (no commit, LEAKED its box -> I
+  terminated + cleaned it, verified).  But its diagnosis was gold: RULED OUT the CAS-race and
+  proclist hypotheses, and found the REAL cause -- a FOURTH bug: an aux process (WalWriter,
+  sem_fiber_backed=false at proc.c:842) blocking on a raw PGSemaphoreLock freezes the carrier OS
+  thread that runs xtc_io_poll for a colocated backend fiber, so that fiber's READY completion is
+  never reaped.  Preserved in LWLOCK_WEDGE_ROOTCAUSE_AUX_CARRIER_STARVATION.md, root cause + fix
+  location re-verified in source.
+- **Fix re-dispatched** as agent 0127e37b (220-turn budget): make aux fibers sem_fiber_backed from
+  xtc_in_backend_fiber (like InitProcess:613) so their LWLock waits PARK instead of freezing the
+  thread.  Scoped to proc.c InitAuxiliaryProcess ONLY -- disjoint from de68f552's
+  postgres.c/launch_backend.c starvation fix.
+
+## Two north-star fix agents live in parallel (disjoint files)
+- 0127e37b  aux-fiber sem_fiber_backed fix (WRITE keystone)  -- proc.c InitAuxiliaryProcess
+- de68f552  pooled-starvation yield-budget fix + scaling sweep (READ scaling) -- postgres.c etc.
