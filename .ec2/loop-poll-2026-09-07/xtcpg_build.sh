@@ -10,7 +10,7 @@ fi
 mountpoint /mnt/nvme && echo "NVMe mounted"
 echo "=== libxtc (debugoptimized: xtc-stranded/xtc-rings/xtc_tail need -g) ==="
 cd /mnt/work && { find xtc -mindepth 1 -delete 2>/dev/null; rmdir xtc 2>/dev/null; }; mkdir -p xtc && cd xtc && tar xzf /tmp/libxtc.tar.gz
-meson setup build -Dtls=openssl -Dshared=true -Dbuildtype=debugoptimized && ninja -C build && sudo ninja -C build install || { echo LIBXTC_FAIL; exit 1; }
+meson setup build -Dtls=openssl -Dshared=true -Dbuildtype=debugoptimized -Dio-backend=uring && ninja -C build && sudo ninja -C build install || { echo LIBXTC_FAIL; exit 1; }
 echo "/usr/local/lib64" | sudo tee /etc/ld.so.conf.d/usrlocal.conf >/dev/null; sudo ldconfig
 grep -c XTC_TAIL_LOOP_POLL src/evt/loop.c && echo "libxtc OK (LOOP_POLL present)"
 echo "=== PG ==="
