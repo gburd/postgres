@@ -223,3 +223,44 @@ R5. libxtc dependency: B1 Track B (if needed) is an external round-trip. P4 can 
 3. Settle R1 (85% vs 25%) and R4 (write-win vs aggregate-win bar) before P3/P4.
 4. Keep every scheduler change under the two-review gate + neutral-or-better-on-
    read/CPU rule; process mode stays byte-for-byte.
+
+
+--------------------------------------------------------------------------------
+## VERIFIED RESULT 2026-09-12 (Debian 13, io_uring-verified, separate driver)
+
+The authoritative read `-S` three-lane sweep (fiber-read-gap-diagnosis-2026-09-12.md):
+
+| c   | fork    | pooled(default) | pooled/fork | pooled starved |
+|-----|---------|-----------------|-------------|----------------|
+| 16  | 142,221 | 140,756         | 0.990x      | 0 |
+| 32  | 261,733 | 261,928         | **1.001x**  | 0 |
+| 64  | 396,323 | 258,778         | 0.653x      | 23 |
+| 128 | 609,807 | 260,510         | 0.427x      | 87 |
+| 192 | 742,398 | 259,881         | 0.350x      | 150 |
+| 256 | 773,015 | 258,126         | 0.334x      | 217 |
+| 384 | 747,870 | 259,473         | 0.347x      | 346 |
+
+**Findings, all evidence-based:**
+- The shipped pooled default reaches **exact parity with fork at c=32** (== cores == auto carrier
+  ceiling), starved=0.  Genuine, un-confounded.
+- **Above c=32 pooled PLATEAUS at ~260k** (bounded by carrier count) while fork climbs to 773k.
+  The plateau IS the POOLED_SESSION_STARVATION bug (working = min(clients, carriers)), reproduced
+  independently, starved clients growing linearly with clients-32.
+- The old "pooled beats fork 1.02-1.04x at c>=192" claim is **REFUTED as a win** and re-explained:
+  it was measured before the starvation bug was discovered (16 days earlier) and reported only
+  aggregate tps, which hides the starvation.  At c>=64 fork wins outright on read.
+- **thread-per-session (carriers=0) never reaches fork** (0.53x -> 0.39x, degrading with
+  oversubscription).  My earlier 0.18x was real for that lane but it is not the shipped path.
+- perf named the thread-per-session bottleneck: 32% self-time in
+  xtc_pg_wait_fd -> PgRuntimeRestoreCurrentWork(eager) -> RebindSessionGUCVariablePointers
+  (~230-entry GUC rehash) on EVERY protocol-read resume.  A LAZY variant
+  (PgRuntimeRestoreCurrentWorkLazy) already exists, tested, unused at this site.  The pooled lane
+  shows zero cost from this chain.  Scheduler/io_uring/network/lock all <1% -- ruled out.
+
+**Bottom line vs the north star:** at the config that ships (pooled default), fiber is at PARITY
+with fork up to the core count and LOSES beyond it (to the starvation bug).  It does NOT "beat fork
+by a significant margin" on read anywhere.  To even approach the north star: (1) fix pooled
+starvation so carriers>cores sessions make progress (candidate WIP stashed); (2) the GUC-rebind
+lazy fix would help thread-per-session but that is not the shipped path; (3) write-heavy is
+separately wedged (3 bugs, keystone fix in flight).  Parity-at-core-count is real and worth
+recording, but it is parity, not a win.
