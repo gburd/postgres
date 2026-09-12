@@ -64,6 +64,18 @@ the open lost-wake bug**, `io_method=sync`); `check-threaded-pooled` → `thread
 **Do not assume `check-threaded-pooled` is the "healthy" lane** — it fails identically on clean
 HEAD. That assumption was made and was wrong.
 
+## OS: latest Debian (13/trixie), NOT AL2023
+
+All EC2 testing runs on the latest Debian. SSH user is **admin** (not ec2-user); package manager is
+**apt-get** (run `sudo apt-get update -y` first). Dep one-liner (note `liburing-dev` — its absence is
+what silently produced epoll-backed libxtc on AL2023):
+```
+sudo apt-get install -y gcc g++ make meson ninja-build pkg-config liburing-dev libssl-dev   libreadline-dev zlib1g-dev libzstd-dev liblz4-dev libxml2-dev libxslt1-dev libicu-dev   bison flex libperl-dev libipc-run-perl psmisc gdb python3
+```
+Debian 13 AMIs (owner 136693071363; re-resolve with `--filters Name=name,Values=debian-13-amd64-*`):
+us-east-1 `ami-0871da4641e8b4413`, eu-west-1 `ami-0eca3c5f23eadb7e0`, us-east-2 `ami-079a2ca459cdd6817`,
+us-west-2 `ami-0266196d6ac0fb766`.
+
 ## Build recipe (EC2)
 
 ```bash
