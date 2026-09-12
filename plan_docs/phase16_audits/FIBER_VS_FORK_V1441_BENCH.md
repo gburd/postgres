@@ -1,3 +1,18 @@
+> **FRAMING CORRECTION 2026-09-12 (later).** This benchmark set `pooled_protocol_carriers=0`,
+> which is the THREAD-PER-SESSION path, NOT the pooled scheduler.  Verified in source:
+> `PgRuntimePooledProtocolRequested() = multithreaded && pooled_protocol_carriers > 0`
+> (backend_runtime.c:1486), so carriers=0 is false -> thread-per-session; carriers=-1 (auto,
+> the DEFAULT) resolves to core-count > 0 -> the pooled scheduler (postmaster.c:934).
+> The prior 'fiber beats fork 1.02-1.04x at c>=192' claim (a4eda7ba30, an ancestor of HEAD)
+> and the SHIPPED default are the POOLED scheduler.  So this run measured the non-default
+> path and compared its 0.18x to a claim about the default path -- an apples-to-oranges
+> framing error of mine.  AGENTS.md notes thread-per-session 'is not the final normal-mode
+> target'.  A three-lane sweep (fork / thread-per-session carriers=0 / pooled default auto)
+> across c=8..384 is in flight to establish whether the POOLED default beats fork and where,
+> and whether thread-per-session is simply categorically slower.  The write WEDGE is likewise
+> being re-checked on both configs -- it may be thread-per-session-specific.  Treat the
+> numbers below as a thread-per-session measurement, not a verdict on the shipped path.
+
 # Fiber-vs-fork benchmark on libxtc v1.44.1: the honest result — fiber is NOT yet competitive
 
 Date: 2026-09-12. SUT: EC2 c6id.8xlarge (32 vCPU, 61 GB), us-east-1, XFS on local NVMe.
