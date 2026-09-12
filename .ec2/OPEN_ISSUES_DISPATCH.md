@@ -53,3 +53,21 @@ So the 5 issues collapse to: 2 diagnoses running, 1 fix running, 1 fix queued, 1
 ## Live agents right now
 - 082077eb  lwlock-wakeup fix (keystone)   -- dispatching, Debian+uring
 - be16cc5a  read-gap 3-lane c=8..384 sweep  -- running, SUT+driver us-east-2
+
+## Update 2026-09-12 (north-star push: starvation fix dispatched)
+- **#4 pooled starvation -> the north-star fix, DISPATCHED** as agent de68f552 (320-turn budget,
+  commit-incrementally).  Rationale: the verified read sweep shows pooled = parity at c=32 then
+  PLATEAUS (starvation) above it while fork climbs.  Fixing starvation is what lets pooled scale
+  past the carrier count and BEAT fork at high concurrency = the north star.  It validates the
+  stashed PG_STEP_YIELD_BUDGET WIP, fixes its pgstat-on-resume assert (normal resume calls
+  pgstat_ensure_shmem_attached at postgres.c:7061; the yield path skips it), picks a positive default
+  budget, and MEASURES the before/after scaling curve vs fork with a separate driver.
+  Files: postgres.c/launch_backend.c/backend_runtime.h/walwriter.c/guc -- NO overlap with the lwlock
+  agent's lwlock.c/proc.c, so safe in parallel; told to STOP if it hits a conflict near those.
+- **#1 keystone lwlock fix: in flight** (082077eb, box up us-east-1).
+- Two fix agents now running in parallel (disjoint files): lwlock (write path) + starvation (read
+  scaling).  Between them they target the two things keeping fiber at/below fork.
+
+## Live agents
+- 082077eb  lost-LWLock-wakeup fix (write keystone)  -- us-east-1
+- de68f552  pooled-starvation yield-budget fix + scaling sweep (THE north-star fix)
