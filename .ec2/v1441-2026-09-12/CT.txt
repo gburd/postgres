@@ -1,0 +1,6 @@
+FORK          : INIT OK
+POOLED(car=-1): INIT OK
+POOLED(car=4) : INIT OK
+FIBER (car=0) : INIT_FAIL (pgbench: error: query failed: server closed the connection unexpectedly) srv_alive=
+   last query: pgbench: detail: Query was: alter table pgbench_tellers add primary key (tid)
+CT_COMPLETE

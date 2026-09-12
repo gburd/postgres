@@ -1,0 +1,5 @@
+run 1: INIT OK (pre-f4ec2a937b, v1.44.1 libxtc)
+run 2: INIT OK (pre-f4ec2a937b, v1.44.1 libxtc)
+run 3: INIT OK (pre-f4ec2a937b, v1.44.1 libxtc)
+IT_SUMMARY ok=3 fail=0
+IT_COMPLETE
