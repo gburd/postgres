@@ -1,0 +1,14 @@
+lane   workload  cl       run tps
+fork   write     c=32 1 PASS tps=49382.709878 starved=0
+fork   write     c=32 2 PASS tps=48535.531600 starved=0
+fork   write     c=32 3 PASS tps=51169.050782 starved=0
+xtc    write     c=32 1 CRASH(gone) 
+xtc    write     c=32 2 CRASH(gone) 
+xtc    write     c=32 3 PASS tps=3052.411571 starved=0
+fork   read      c=32 1 PASS tps=471682.271505 starved=0
+fork   read      c=32 2 PASS tps=474250.935557 starved=0
+fork   read      c=32 3 PASS tps=473830.317656 starved=0
+xtc    read      c=32 1 PASS tps=56035.374699 starved=0
+xtc    read      c=32 2 PASS tps=85861.581010 starved=0
+xtc    read      c=32 3 PASS tps=84757.483464 starved=0
+BENCH_COMPLETE
