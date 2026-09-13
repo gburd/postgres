@@ -43,7 +43,15 @@ activate the moment the libxtc cross-loop task->state resume race is fixed:
 - TO FLIP when libxtc lands the task->state fix: set boot_val => 'true' on the GUC (one
   line), re-run P-A4 validation (no wedge at 64/192/256 + full matrix), two-review gate.
 
-### Remaining P-A steps (blocked on the libxtc task->state cross-loop fix)
+### UNBLOCKED 2026-09-13: the libxtc task->state cross-loop race is FIXED (v1.44.1)
+The blocker below ("the libxtc task->state cross-loop resume race") is the lost-wake bug libxtc
+v1.44.1 FIXED and we verified (0/12 write-heavy fiber-path hangs, was 22-60%).  Per the standing
+directive we build to the libxtc contract as bug-free; xtc_proc_spawn + xtc_proc_wait_fd + migratable
+work-stealing + xtc_exec_class fully support this design.  So Option A is the ACTIVE path now, and it
+replaces the hand-rolled pooled scheduler + the interim 2.85x fairness sweep (which is a workaround the
+directive forbids).  See plan_docs/phase16_audits/POOLED_SCHEDULER_IS_HANDROLLED_TRANSFORM_TO_FIBERS.md.
+
+### Remaining P-A steps (NO LONGER blocked -- ACTIVE)
 P-A1. Prototype: spawn ONE session as a fiber on the exec loop (xtc_proc_spawn on
       g_xtc_loop / xtc_exec_loop), run PostgresMain-equivalent to the read boundary,
       park via xtc_pg_wait_fd holding its stack, resume on readable.  Prove
