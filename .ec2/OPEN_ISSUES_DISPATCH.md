@@ -164,3 +164,21 @@ Merge each branch to xtc after it validates.  Disjoint files + separate worktree
 ## Live agents
 - 06c5ea80  pooled lease FAIRNESS (read north-star curve)   -- worktree xtc-fairness / fairness-fix
 - 215888e8  WalWriter GUC-rebind LIVELOCK (write finding #1) -- worktree xtc-livelock / livelock-fix
+
+
+## Update 2026-09-13c: livelock REPRODUCED + fix built (unvalidated); validation re-dispatched
+- Livelock agent 215888e8 REPRODUCED write finding #1 live (gdb: RebindSessionGUCVariablePointers <-
+  PgRuntimeRestoreCurrentWork <- xtc_pg_wait_fd:1420 <- ProcSemaphoreWaitFiber <- XLogFlush; 100% of a
+  core; 14 unreaped ring completions) and switched the 2 HOT fiber-resume sites (pg_xtc_carrier.c
+  :1457/:1405) to PgRuntimeRestoreCurrentWorkLazy -- leaving the 5 lower-freq sites eager (correct
+  conservative call).  Builds clean.  ABORTED right before validating the AFTER.
+- Committed as UNVALIDATED WIP 9e6167edac on branch livelock-fix (pushed).  NOT merged to xtc.
+- Validation re-dispatched (agent 08a8cb80, 160-turn budget, livelock-fix worktree): prove
+  livelock-GONE at c=32 + the STALE-GUC data-integrity test (the critical safety gate) + gmake check
+  245/245.  A stale GUC read on the lazy path = STOP-and-report bug, not ship-around.
+- No EC2 leaked (livelock work was local).  EC2 clean.
+
+## Live agents
+- 06c5ea80  pooled lease FAIRNESS (read north-star curve)  -- worktree xtc-fairness / fairness-fix
+- 08a8cb80  livelock fix VALIDATION (write finding #1)      -- worktree xtc-livelock / livelock-fix
+Branches: fairness-fix, livelock-fix (WIP pushed) -- merge each to xtc after it validates.
