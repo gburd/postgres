@@ -2489,6 +2489,17 @@ PgCarrierYieldRunnableOnBudget(PgCarrier *carrier, PgBackend *backend)
 	Assert(backend == CurrentPgBackend);
 	Assert(carrier->current_backend == backend);
 
+	/*
+	 * TEMPORARY instrumentation for the c>carriers fairness investigation (see
+	 * plan_docs/phase16_audits/POOLED_STARVATION_BUDGET_NECESSARY_NOT_SUFFICIENT.md).
+	 * Env-gated (PG_XTC_FAIRNESS_TRACE=1) and off by default.
+	 */
+	if (getenv("PG_XTC_FAIRNESS_TRACE") != NULL)
+		fprintf(stderr,
+				"FAIRNESS_TRACE carrier=%p yielded_on_budget backend_id=" UINT64_FORMAT
+				"\n",
+				(void *) carrier, backend->id);
+
 	park_state = &backend->protocol_park;
 	Assert(park_state->state == PG_PROTOCOL_PARK_NONE);
 	Assert(park_state->scheduler_queue_state == PG_PROTOCOL_SCHEDULER_QUEUE_NONE);

@@ -1695,6 +1695,23 @@ backend_pooled_protocol_idle_carrier_count(void)
 	return PgRuntimePooledProtocolIdleCarrierCount();
 }
 
+/*
+ * TEMPORARY instrumentation for the c>carriers fairness investigation (see
+ * plan_docs/phase16_audits/POOLED_STARVATION_BUDGET_NECESSARY_NOT_SUFFICIENT.md).
+ * Env-gated (PG_XTC_FAIRNESS_TRACE=1) and off by default, so it costs nothing
+ * in normal operation; remove once the fairness fix has replaced its own
+ * ad-hoc proof with the permanent regression test.
+ */
+static bool
+pg_xtc_fairness_trace_enabled(void)
+{
+	static int	cached = -1;
+
+	if (cached < 0)
+		cached = (getenv("PG_XTC_FAIRNESS_TRACE") != NULL) ? 1 : 0;
+	return cached != 0;
+}
+
 static void
 backend_pooled_protocol_wake_signal(void)
 {
@@ -1971,10 +1988,94 @@ backend_pooled_protocol_carrier_entry(void *arg)
 		Assert(CurrentPgConnection == NULL);
 		Assert(CurrentPgExecution == NULL);
 
+		/*
+		 * Fairness (plan_docs/phase16_audits/POOLED_SESSION_STARVATION.md,
+		 * POOLED_STARVATION_BUDGET_NECESSARY_NOT_SUFFICIENT.md): when a
+		 * continuously busy session yields on its message budget
+		 * (PgCarrierYieldRunnableOnBudget), it is pushed onto the TAIL of the
+		 * shared runnable_queue and this carrier's very next lease call pops
+		 * the HEAD.  If no OTHER session has reached the runnable queue yet --
+		 * because the other sessions are sitting in the PARKED_PROTOCOL_READ
+		 * queue waiting for their client's next request, and nothing has
+		 * proactively checked whether that request has already arrived -- the
+		 * queue holds only the backend that was just yielded, so the pop
+		 * returns it right back to this same carrier.  Under c<=carriers this
+		 * never matters (every session gets its own carrier); under c>carriers
+		 * with all sessions busy, two carriers can end up ping-ponging the same
+		 * two hot backends forever while every other runnable-but-not-yet-
+		 * recognized sibling starves (measured: 6 of 8 clients got exactly 1
+		 * transaction each; the other 2 ran to completion alone).
+		 *
+		 * The fix is to make the runnable queue's FIFO order actually reflect
+		 * READINESS order, not just yield order: before leasing, do one cheap
+		 * non-blocking (0 ms) sweep of the parked-protocol-read queue and
+		 * promote any session whose client request has already arrived to
+		 * RUNNABLE.  Those sessions land at the runnable_queue TAIL behind the
+		 * just-yielded backend that pushed them there moments earlier is
+		 * exactly backwards -- but since the just-yielded backend is popped
+		 * from the HEAD immediately after in the very same iteration where
+		 * this sweep runs first, any sibling this sweep promotes gets to the
+		 * head of the NEXT iteration's queue ahead of the busy session's next
+		 * yield.  This breaks the ping-pong: a hot session can still win one
+		 * more turn immediately after yielding (there is nothing wrong with
+		 * that -- it has nowhere else to go if truly nothing else is ready),
+		 * but every sibling that HAS become ready gets discovered and queued
+		 * before the hot session's SECOND consecutive re-lease, so it cannot
+		 * monopolize indefinitely.  Bounded cost: it only leases backends
+		 * already sitting in the parked queue (no syscall if empty) and each
+		 * poll is a 0 ms WaitEventSetWait, so an all-idle pool costs nothing
+		 * extra and a fully-busy pool costs one bounded non-blocking sweep per
+		 * lease attempt.
+		 */
+		{
+			int			eager_nready;
+			bool		eager_had_parked;
+
+			/*
+			 * One bounded, non-blocking (0 ms) sweep of the parked-protocol-
+			 * read queue per lease attempt, using the SAME batched poll()
+			 * PgRuntimeProtocolSchedulerWaitParkedReads() already uses for
+			 * the blocking wait below -- a single syscall covering every
+			 * currently-parked fd, not one syscall per backend.  When the
+			 * parked queue is empty this is a lock+dlist_is_empty check and
+			 * an early return, no syscall at all.
+			 *
+			 * A gated version (only sweep when runnable_count==0) looked
+			 * appealing but does NOT work: right after a hot backend yields,
+			 * PgCarrierYieldRunnableOnBudget() has already pushed it onto
+			 * runnable_queue, so runnable_count is 1, not 0, at the top of
+			 * the very next iteration -- the gate never fires and the
+			 * monopoly reproduces exactly.  Sweeping unconditionally is what
+			 * actually breaks the ping-pong (measured: even ~1% per-client
+			 * spread at c=8/carriers=2/budget=5, vs the ungated single-fd
+			 * variant's uneven-but-improved spread).  A per-carrier idle
+			 * pool costs one empty-check per loop; a fully-busy pool costs
+			 * one batched poll() per lease attempt, which measured 2-3x
+			 * the raw budget-yield rate in overhead -- real, but bounded and
+			 * far cheaper than the starvation it removes.
+			 */
+			eager_nready = PgRuntimeProtocolSchedulerWaitParkedReads(CurrentPgRuntime,
+																	  scratch,
+																	  poll_scratch,
+																	  max_scratch_backends,
+																	  -1,
+																	  0L,
+																	  &eager_had_parked);
+			if (eager_nready > 0)
+				backend_pooled_protocol_signal_ready_work(eager_nready);
+		}
+
 		backend = PgCarrierLeaseRunnableProtocolBackend(CurrentPgCarrier);
 		if (backend != NULL)
 		{
 			xtc_pg_runtime_counter_inc(XTC_PG_RC_SESSIONS_RESUMED);	/* fusion F1 */
+			if (pg_xtc_fairness_trace_enabled())
+				fprintf(stderr,
+						"FAIRNESS_TRACE carrier=%p leased backend_id=" UINT64_FORMAT
+						" runnable_count=%u parked_count=%u\n",
+						(void *) CurrentPgCarrier, backend->id,
+						CurrentPgCarrier->runtime->protocol_scheduler.runnable_count,
+						CurrentPgCarrier->runtime->protocol_scheduler.parked_protocol_count);
 			/*
 			 * We just took one runnable session; if more remain runnable than
 			 * there are carriers, ask the postmaster to grow the pool (CPU-bound
@@ -1992,6 +2093,11 @@ backend_pooled_protocol_carrier_entry(void *arg)
 		if (logical_start != NULL)
 		{
 			xtc_pg_runtime_counter_inc(XTC_PG_RC_SESSIONS_LEASED);	/* fusion F1 */
+			if (pg_xtc_fairness_trace_enabled())
+				fprintf(stderr,
+						"FAIRNESS_TRACE carrier=%p dequeued_new backend_id=" UINT64_FORMAT "\n",
+						(void *) CurrentPgCarrier,
+						logical_start->logical.backend.id);
 			backend_pooled_protocol_run_logical_start(carrier_start,
 													  logical_start);
 			continue;
