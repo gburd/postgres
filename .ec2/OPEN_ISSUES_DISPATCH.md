@@ -139,3 +139,28 @@ RULES going forward:
    the read -S scaling sweep vs fork (the north-star curve).
 3. ABBA checkpointer/fiber deadlock (#5) -- still open, blocks threaded regress.
 Use separate git worktrees per parallel agent (shared-tree hazard learned this session).
+
+
+## Update 2026-09-13b: two fixes dispatched in ISOLATED WORKTREES (hazard-mitigated), disjoint files
+Per the shared-worktree hazard, each parallel agent now gets its OWN git worktree + branch:
+- **fairness** (agent 06c5ea80, worktree /home/gburd/ws/postgres/xtc-fairness, branch fairness-fix):
+  the READ north-star fix.  Extract budget (pooled-gated) from the preserved patch + fix the LEASE
+  FAIRNESS (the 33501-vs-1 monopoly).  Mechanism to confirm by instrumentation: 2 hot sessions
+  ping-pong across 2 carriers while 6 parked siblings never get leased, despite pop-head/push-tail
+  looking FIFO.  Files: launch_backend.c (carrier loop), backend_runtime_backend.c
+  (Yield/PopRunnable), postgres.c (budget gate), guc/globals.  Deliver the EC2 read -S scaling curve
+  vs fork (does pooled scale past c=32 now?).
+- **livelock** (agent 215888e8, worktree /home/gburd/ws/postgres/xtc-livelock, branch livelock-fix):
+  the WRITE finding #1.  Switch the eager PgRuntimeRestoreCurrentWork to the LAZY variant
+  (PgRuntimeRestoreCurrentWorkLazy, exists, unwired) at fiber fd-resume sites -- THE site is
+  pg_xtc_carrier.c:1420 (xtc_pg_wait_fd resume runs a 231-entry GUC rebind every park/wake -> 100%
+  CPU spin, never re-polls the ring).  Per-site safety check + a stale-GUC data-integrity test (a
+  wrong lazy switch = silent stale GUC read = the one class we must NOT trade away).  Files:
+  pg_xtc_carrier.c/method_xtc.c/fd.c/dfmgr.c/guc.c -- DISJOINT from fairness.
+
+Both: 260-300 turn budgets, commit+push-per-step to their own branch, tear-down-on-any-exit.
+Merge each branch to xtc after it validates.  Disjoint files + separate worktrees => truly parallel.
+
+## Live agents
+- 06c5ea80  pooled lease FAIRNESS (read north-star curve)   -- worktree xtc-fairness / fairness-fix
+- 215888e8  WalWriter GUC-rebind LIVELOCK (write finding #1) -- worktree xtc-livelock / livelock-fix
