@@ -114,3 +114,28 @@ RULES going forward:
    edit->commit window a real data-loss window, not just a crash window.
 4. When two agents' file scopes are truly disjoint AND both commit-fast, parallel-in-one-tree is
    tolerable; when scopes can overlap (both touched proc.c here), serialize or use worktrees.
+
+
+## Update 2026-09-13: write keystone FIXED (ef06a6b07c); NO live agents; EC2 clean
+- **#1 write keystone (aux-fiber sem_fiber_backed) FIXED + validated** by agent 0127e37b (commit
+  ef06a6b07c): c=8 pgbench -i -s 300 wedge reproduced pre-fix, GONE post-fix 3/3, gmake check 245/245
+  (isolated worktree).  Two agents independently converged on this exact fix -- strong evidence.
+  Validated LOCALLY (uring-backed) -- creds AuthFailure blocked EC2, re-confirm on Debian/EC2 later.
+  Doc: WRITE_KEYSTONE_FIXED_AUX_FIBER_2026-09-13.md.
+- **The NEXT write blocker is finding #1-livelock**: c>=32 write hits WalWriter livelock in
+  ProcSemaphoreWaitFiber's GUC-rebind retry (100% CPU spin).  Fix = GUC lazy-rebind
+  (PgRuntimeRestoreCurrentWorkLazy exists at that site, unwired).
+- **Read starvation = TWO bugs**: budget (necessary, done-in-WIP, pooled-gated) + lease fairness
+  (open, the 33501-vs-1 spread).  Next read fix = FIFO round-robin fairness in the yield/re-enqueue.
+- NO live agents.  EC2 clean across 6 regions.  Working tree clean.  A creds AuthFailure was seen
+  mid-agent-run -- check `lava` creds freshness before the next EC2 dispatch.
+
+## Live agents
+- (none)
+
+## Ready-to-dispatch queue (ordered)
+1. Write finding #1: WalWriter GUC-rebind livelock -> lazy-rebind.  Then re-measure c>=32 write.
+2. Read fairness: FIFO round-robin in PgCarrierYieldRunnableOnBudget/PopRunnable.  Then re-measure
+   the read -S scaling sweep vs fork (the north-star curve).
+3. ABBA checkpointer/fiber deadlock (#5) -- still open, blocks threaded regress.
+Use separate git worktrees per parallel agent (shared-tree hazard learned this session).
