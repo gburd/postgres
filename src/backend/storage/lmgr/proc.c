@@ -830,22 +830,54 @@ InitAuxiliaryProcess(void)
 	PGSemaphoreReset(MyProc->sem);
 
 #ifdef USE_XTC_CARRIER
-	/* Auxiliary procs never run as backend fibers: keep them on the sem path
-	 * and clear any stale fiber deep-wait state from a prior tenant.  Skip the
-	 * eventfd drain in a fork+exec'd child, whose sem_wake_fd integer refers to
-	 * a since-closed (EFD_CLOEXEC) fd that may have been reused. */
-	if (MyProc->sem_wake_fd >= 0)
+	/*
+	 * An auxiliary process (WalWriter, BgWriter, Checkpointer, ...) that runs
+	 * as an xtc fiber can block on a contended LWLock exactly like a regular
+	 * backend fiber does, so it needs the SAME fiber-aware wait path -- keyed
+	 * off xtc_in_backend_fiber exactly as InitProcess does above -- or its
+	 * LWLockAcquire wait takes the raw blocking PGSemaphoreLock path
+	 * (ProcSemaphoreWaitCallback) and freezes the WHOLE carrier OS thread,
+	 * including xtc_io_poll for every sibling backend fiber colocated on that
+	 * loop (see plan_docs/phase16_audits/
+	 * LWLOCK_WEDGE_ROOTCAUSE_AUX_CARRIER_STARVATION.md).  A colocated fiber's
+	 * already-ready io_uring completion then never gets reaped and it wedges
+	 * forever, even though the LWLock is free and every libxtc wake fired.
+	 *
+	 * xtc_in_backend_fiber is per-carrier-OS-thread __thread state, true only
+	 * while THIS aux process is actually running as an xtc fiber (false for a
+	 * dedicated-thread-carrier aux process such as the archiver, and false for
+	 * a process-mode aux process), so this cannot mis-flip an aux worker that
+	 * is not fiber-backed.  Guard identically to InitProcess's own
+	 * sem_wake_fd>=0 && !PG_BACKEND_WAS_FORKEXECED check: a fork+exec'd child's
+	 * sem_wake_fd integer refers to a since-closed (EFD_CLOEXEC) fd that may
+	 * have been reused, so it must stay untouched and unclassified as fiber-
+	 * backed there.
+	 */
+	if (MyProc->sem_wake_fd >= 0 && !PG_BACKEND_WAS_FORKEXECED)
 	{
 		uint64		buf;
 
+		SpinLockAcquire(&MyProc->sem_fiber_lock);
+		MyProc->sem_fiber_backed = xtc_in_backend_fiber;
+		MyProc->sem_fiber_armed = false;
+		MyProc->sem_fiber_wake_pending = false;
+		SpinLockRelease(&MyProc->sem_fiber_lock);
+		while (read(MyProc->sem_wake_fd, &buf, sizeof(buf)) == sizeof(buf))
+			;
+	}
+	else if (MyProc->sem_wake_fd >= 0)
+	{
+		/*
+		 * fork+exec'd aux process (currently unreachable in practice -- aux
+		 * processes are not routed through the process-fallback path -- but
+		 * mirrored from InitProcess for EXEC_BACKEND builds and future-proofing):
+		 * never fiber-backed, and the fd must not be read/written.
+		 */
 		SpinLockAcquire(&MyProc->sem_fiber_lock);
 		MyProc->sem_fiber_backed = false;
 		MyProc->sem_fiber_armed = false;
 		MyProc->sem_fiber_wake_pending = false;
 		SpinLockRelease(&MyProc->sem_fiber_lock);
-		if (!PG_BACKEND_WAS_FORKEXECED)
-			while (read(MyProc->sem_wake_fd, &buf, sizeof(buf)) == sizeof(buf))
-				;
 	}
 #endif
 
