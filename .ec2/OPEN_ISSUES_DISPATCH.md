@@ -89,3 +89,28 @@ So the 5 issues collapse to: 2 diagnoses running, 1 fix running, 1 fix queued, 1
 ## Two north-star fix agents live in parallel (disjoint files)
 - 0127e37b  aux-fiber sem_fiber_backed fix (WRITE keystone)  -- proc.c InitAuxiliaryProcess
 - de68f552  pooled-starvation yield-budget fix + scaling sweep (READ scaling) -- postgres.c etc.
+
+
+## HAZARD LEARNED 2026-09-12: parallel agents SHARE the working tree -- a checkout/reset nukes a sibling's uncommitted edits
+Two fix agents ran in parallel in the SAME checkout (/home/gburd/ws/postgres/xtc).  The starvation
+agent (de68f552) drifted out of scope and left an uncommitted proc.c aux-fiber fix in the tree.  To
+let the aux-fiber agent (0127e37b) land ITS proc.c fix cleanly, I ran
+`git checkout -- src/backend/storage/lmgr/proc.c` to reset -- which silently REVERTED 0127e37b's OWN
+uncommitted proc.c edit (it had an edit live in the shared tree).  0127e37b noticed its fix "vanished
+to HEAD with no stash/commit trace" and correctly stopped chasing it as shared-worktree interference.
+
+Root cause: multiple background agents operate on ONE working tree.  Any `git checkout`/`git reset`/
+`git stash` by me OR by an agent affects EVERY agent's uncommitted work in that tree.  This is the
+SECOND time uncommitted state crossed between contexts (cf. the dirty-tree-supplied-a-symbol
+bisection trap).
+
+RULES going forward:
+1. NEVER `git checkout -- <file>` / reset / stash to clean up one agent's mess while another agent
+   is live in the same checkout and might have uncommitted edits to that file.  Preserve as a patch,
+   then let the OWNING agent reset its own tree, or wait until all siblings have committed.
+2. Prefer separate git worktrees (`git worktree add`) per parallel agent when they might touch
+   nearby files -- disjoint FILE lists is not enough; the WORKING TREE is shared.
+3. Agents must commit within one turn of editing (already mandated) -- the shared tree makes the
+   edit->commit window a real data-loss window, not just a crash window.
+4. When two agents' file scopes are truly disjoint AND both commit-fast, parallel-in-one-tree is
+   tolerable; when scopes can overlap (both touched proc.c here), serialize or use worktrees.
