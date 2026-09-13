@@ -2163,6 +2163,21 @@ backend_pooled_protocol_run_attached_logical(BackendPooledLogicalStart *logical_
 				*PgCurrentBackendThreadStartRef() = NULL;
 				return result;
 
+			case PG_STEP_YIELD_BUDGET:
+
+				/*
+				 * The backend is already detached and re-enqueued on the shared
+				 * RUNNABLE queue (PgCarrierYieldRunnableOnBudget, called from
+				 * PgSessionRunProtocolSchedulerUntilBoundary).  Return to the
+				 * carrier loop exactly like a protocol-read park so the carrier
+				 * picks up its next unit of work (dispatch queue first, then any
+				 * runnable backend -- which may or may not be this one) instead
+				 * of looping this session back onto itself here.
+				 */
+				logical_start->exit_jmp_valid = false;
+				*PgCurrentBackendThreadStartRef() = NULL;
+				return result;
+
 			case PG_STEP_DONE:
 				backend_pooled_protocol_exit_logical(0);
 

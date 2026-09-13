@@ -103,6 +103,14 @@ bool		xtc_log_to_server = false;
 PG_GLOBAL_RUNTIME bool pg_backend_was_forkexeced = false;
 PG_GLOBAL_RUNTIME int pooled_protocol_carriers = -1;
 /*
+ * Per-attachment protocol message budget for the pooled protocol scheduler.
+ * See PgSessionRunProtocolSchedulerUntilBoundary()/PG_STEP_YIELD_BUDGET for the
+ * fairness bug this fixes (a continuously busy session held its carrier for
+ * the whole run because PG_STEP_CONTINUE never returned to the carrier loop).
+ * 0 keeps the pre-fix unbounded behavior exactly.
+ */
+PG_GLOBAL_RUNTIME int pooled_protocol_carrier_message_budget = 32;
+/*
  * Option A staging (sessions-as-fibers): when true, the -1 (auto) resolution of
  * pooled_protocol_carriers picks the fiber-per-session model (carriers=0 =>
  * each B_BACKEND runs as an xtc fiber on the carrier-loop pool, parking in place

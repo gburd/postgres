@@ -2462,6 +2462,58 @@ PgCarrierCommitProtocolReadPark(PgCarrier *carrier, PgBackend *backend)
 			 backend->carrier);
 }
 
+/*
+ * Yield the carrier on an exhausted per-attachment message budget
+ * (PG_STEP_YIELD_BUDGET; see PgSessionRunProtocolSchedulerUntilBoundary() and
+ * plan_docs/phase16_audits/POOLED_SESSION_STARVATION.md).  Unlike a real
+ * protocol-read park, the session is not waiting on client input -- it
+ * already has its next message ready and simply needs a turn on some
+ * carrier.  Reuse the same PG_PROTOCOL_PARK_COMMITTED / detached-carrier
+ * shape a protocol-read park leaves behind (so
+ * PgCarrierLeaseRunnableProtocolBackend()'s consistency check and
+ * PgBackendResumeProtocolReadPark()'s resume path are unchanged and
+ * unaware which path produced the state), but push straight onto the
+ * RUNNABLE queue instead of the parked-protocol-read queue: this backend is
+ * immediately eligible for any carrier, not waiting on a socket event.
+ */
+void
+PgCarrierYieldRunnableOnBudget(PgCarrier *carrier, PgBackend *backend)
+{
+	PgBackendProtocolParkState *park_state;
+	PgRuntime  *runtime;
+	PgProtocolSchedulerState *scheduler;
+
+	Assert(carrier != NULL);
+	Assert(backend != NULL);
+	Assert(carrier == CurrentPgCarrier);
+	Assert(backend == CurrentPgBackend);
+	Assert(carrier->current_backend == backend);
+
+	park_state = &backend->protocol_park;
+	Assert(park_state->state == PG_PROTOCOL_PARK_NONE);
+	Assert(park_state->scheduler_queue_state == PG_PROTOCOL_SCHEDULER_QUEUE_NONE);
+
+	runtime = carrier->runtime;
+	Assert(runtime != NULL);
+
+	MemSet(&park_state->spec, 0, sizeof(park_state->spec));
+	park_state->state = PG_PROTOCOL_PARK_COMMITTED;
+	park_state->parked_carrier = carrier;
+	park_state->committed_at = 0;
+	park_state->wake_reasons = PG_PROTOCOL_PARK_WAKE_NONE;
+	park_state->wake_events = 0;
+	park_state->wake_generation = 0;
+	PgCarrierDetachBackend(carrier, backend);
+
+	scheduler = &runtime->protocol_scheduler;
+	SpinLockAcquire(&scheduler->lock);
+	dlist_push_tail(&scheduler->runnable_queue, &park_state->scheduler_node);
+	park_state->scheduler_queue_state = PG_PROTOCOL_SCHEDULER_QUEUE_RUNNABLE;
+	scheduler->runnable_count++;
+	scheduler->runnable_enqueue_count++;
+	SpinLockRelease(&scheduler->lock);
+}
+
 bool
 PgBackendMarkProtocolReadParkWake(PgBackend *backend, uint64 generation,
 								  uint32 wake_reasons, uint32 wake_events)

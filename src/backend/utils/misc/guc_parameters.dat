@@ -2563,6 +2563,16 @@
   options => 'plan_cache_mode_options',
 },
 
+{ name => 'pooled_protocol_carrier_message_budget', type => 'int', context => 'PGC_SIGHUP', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Sets the per-attachment protocol message budget for the pooled protocol scheduler.',
+  long_desc => 'A pooled protocol session normally keeps its carrier for as long as it has a next frontend message already in flight (PG_STEP_CONTINUE never returns to the carrier loop), so a continuously busy session never releases its carrier to a queued sibling -- excess sessions beyond the carrier count are starved rather than time-sliced. A positive value bounds how many protocol messages an attachment processes before yielding the carrier back to the scheduler (re-enqueued RUNNABLE, not parked-on-client-input, so it is resumed on the next available carrier). 0 preserves the original unbounded behavior exactly, for an instant runtime revert. Ignored (unbounded) off the pooled protocol path.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'pooled_protocol_carrier_message_budget',
+  boot_val => '32',
+  min => '0',
+  max => 'INT_MAX / 2',
+},
+
 { name => 'pooled_protocol_carriers', type => 'int', context => 'PGC_POSTMASTER', group => 'DEVELOPER_OPTIONS',
   short_desc => 'Sets the carrier count for the pooled protocol scheduler.',
   long_desc => 'Under multithreaded=on, -1 (the default) auto-sizes the carrier pool to one carrier per CPU core (floored at 8, capped by max_connections) so CPU-bound concurrent sessions each get a carrier; 0 forces thread-per-session; a positive value reserves that many carriers. Ignored (thread-per-session) when multithreaded=off.',

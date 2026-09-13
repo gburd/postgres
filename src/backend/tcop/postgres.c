@@ -7031,6 +7031,25 @@ PgSessionCommitCurrentProtocolReadPark(PgSession *session)
 	PgCarrierCommitProtocolReadPark(carrier, session->backend);
 }
 
+/*
+ * Yield the carrier on an exhausted per-attachment message budget.  The
+ * session has a next message already available (it is not waiting on the
+ * client), so it goes straight onto the shared RUNNABLE queue -- see
+ * PgCarrierYieldRunnableOnBudget().
+ */
+static void
+PgSessionYieldRunnableOnBudget(PgSession *session)
+{
+	PgCarrier  *carrier = CurrentPgCarrier;
+
+	Assert(session != NULL);
+	Assert(carrier != NULL);
+	Assert(session->backend != NULL);
+	Assert(session->backend == CurrentPgBackend);
+
+	PgCarrierYieldRunnableOnBudget(carrier, session->backend);
+}
+
 static uint32
 PgSessionStagingWaitAndResumeProtocolRead(PgSession *session,
 										  PgBackend *backend,
@@ -7073,6 +7092,8 @@ PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session)
 	sigjmp_buf *save_exception_stack;
 	ErrorContextCallback *save_context_stack;
 	sigjmp_buf	local_sigjmp_buf;
+	int			message_budget;
+	int			processed_messages = 0;
 
 	Assert(session != NULL);
 	Assert(CurrentPgRuntime != NULL);
@@ -7081,9 +7102,35 @@ PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session)
 	Assert(!state->step_error_boundary_active);
 
 	/*
+	 * The message budget only means anything on the pooled protocol
+	 * scheduler: yielding hands the carrier to a QUEUED sibling session
+	 * waiting on the shared runnable/dispatch queues
+	 * (PgCarrierYieldRunnableOnBudget()).  Thread-per-session
+	 * (PgRuntimeIsPooledProtocol() false, carriers=0) has exactly one
+	 * dedicated carrier per session and no such queue: its outer loop is
+	 * PgSessionRunProtocolSchedulerStaging(), which has no case for
+	 * PG_STEP_YIELD_BUDGET (by design -- yielding is meaningless there) and
+	 * would hit its own pg_unreachable() on that result.  Force the budget
+	 * off outside pooled mode so this path can never produce
+	 * PG_STEP_YIELD_BUDGET there; the GUC is documented as pooled-only
+	 * (guc_parameters.dat) but nothing upstream of here enforced it.
+	 */
+	message_budget = PgRuntimeIsPooledProtocol(CurrentPgRuntime) ?
+		pooled_protocol_carrier_message_budget : 0;
+
+	/*
 	 * Keep one error boundary for the whole active attachment, matching the
 	 * process/thread-per-session loop shape.  Returning to the carrier loop is
-	 * still controlled only by protocol parks or logical exit.
+	 * controlled by protocol parks, logical exit, or -- when
+	 * pooled_protocol_carrier_message_budget is positive -- exhausting the
+	 * per-attachment message budget below (PG_STEP_YIELD_BUDGET).  Without a
+	 * budget, a continuously busy session (PG_STEP_CONTINUE on every message,
+	 * e.g. a tight pgbench loop) never reaches a protocol-read park and holds
+	 * its carrier for the whole run, starving any queued sibling session --
+	 * see plan_docs/phase16_audits/POOLED_SESSION_STARVATION.md.  The budget
+	 * check only fires on PG_STEP_CONTINUE, i.e. between complete protocol
+	 * messages, the same safe boundary the protocol-read park already uses;
+	 * it never fires mid-message.
 	 */
 	exception_stack_ref = PgCurrentExceptionStackRefFast();
 	context_stack_ref = PG_RUNTIME_CURRENT_HOT_FIELD_REF(PgCurrentErrorContextStackHotRef,
@@ -7133,6 +7180,17 @@ PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session)
 		switch (result)
 		{
 			case PG_STEP_CONTINUE:
+				processed_messages++;
+				if (message_budget > 0 &&
+					processed_messages >= message_budget)
+				{
+					xtc_pg_runtime_counter_inc(XTC_PG_RC_BUDGET_YIELDS);	/* fusion F1 */
+					*exception_stack_ref = save_exception_stack;
+					*context_stack_ref = save_context_stack;
+					state->step_error_boundary_active = false;
+					PgSessionYieldRunnableOnBudget(session);
+					return PG_STEP_YIELD_BUDGET;
+				}
 				break;
 
 			case PG_STEP_PARK_PROTOCOL_READ:
@@ -7150,6 +7208,7 @@ PgSessionRunProtocolSchedulerUntilBoundary(PgSession *session)
 				return result;
 
 			case PG_STEP_ERROR_RECOVERED:
+			case PG_STEP_YIELD_BUDGET:
 				pg_unreachable();
 		}
 	}
@@ -7211,6 +7270,17 @@ PgSessionRunProtocolSchedulerStaging(PgSession *session)
 
 			case PG_STEP_FATAL_EXIT:
 				PgBackendExit(1);
+
+			case PG_STEP_YIELD_BUDGET:
+
+				/*
+				 * Thread-per-session has no queue to yield to;
+				 * PgSessionRunProtocolSchedulerUntilBoundary() forces the budget
+				 * to 0 outside pooled mode, so this must not happen.  Guard
+				 * defensively rather than silently falling through with a
+				 * detached CurrentPgBackend.
+				 */
+				elog(PANIC, "unexpected budget yield outside pooled protocol mode");
 
 			case PG_STEP_CONTINUE:
 			case PG_STEP_ERROR_RECOVERED:

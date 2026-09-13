@@ -180,7 +180,8 @@ typedef enum PgStepResult
 	PG_STEP_PARK_PROTOCOL_READ,
 	PG_STEP_ERROR_RECOVERED,
 	PG_STEP_DONE,
-	PG_STEP_FATAL_EXIT
+	PG_STEP_FATAL_EXIT,
+	PG_STEP_YIELD_BUDGET
 } PgStepResult;
 
 /*
@@ -3561,6 +3562,8 @@ extern bool PgBackendPrepareProtocolReadPark(PgBackend *backend,
 											 PgProtocolParkSpec *spec);
 extern void PgCarrierCommitProtocolReadPark(PgCarrier *carrier,
 											PgBackend *backend);
+extern void PgCarrierYieldRunnableOnBudget(PgCarrier *carrier,
+											  PgBackend *backend);
 extern bool PgBackendMarkProtocolReadParkWake(PgBackend *backend,
 											  uint64 generation,
 											  uint32 wake_reasons,
