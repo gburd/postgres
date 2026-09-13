@@ -1392,7 +1392,17 @@ xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)
 
 			PgRuntimeSaveCurrentWork(&sleep_snap);
 			xtc_proc_sleep(timeout_ns);
-			PgRuntimeRestoreCurrentWork(&sleep_snap);
+
+			/*
+			 * LAZY restore (2026-09-13 livelock fix): this is the fiber-
+			 * resume-then-return-to-caller-that-re-checks-a-predicate shape
+			 * the lazy variant exists for (backend_runtime.c
+			 * PgRuntimeRestoreCurrentWorkLazy).  The caller only returns
+			 * WL_TIMEOUT to a predicate loop; nothing here reads/writes GUC
+			 * backing storage directly.  See the eager->lazy rationale at
+			 * the main fd-park restore below (same function, same fix).
+			 */
+			PgRuntimeRestoreCurrentWorkLazy(&sleep_snap);
 			XtcPgVerifyCurrentWorkIsSelf();
 			return WL_TIMEOUT;
 		}
@@ -1416,8 +1426,35 @@ xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)
 	 * park resumed on a different carrier loop (a work-steal) -- the restore
 	 * therefore repoints the bridge to this fiber's own roots regardless of
 	 * which loop resumed it.
+	 *
+	 * LAZY restore (2026-09-13 livelock fix): this is THE hot fiber wait/
+	 * resume seam -- every LWLock/latch/socket park a backend fiber takes
+	 * comes through here (ProcSemaphoreWaitFiber, WaitEventSetWaitBlock).
+	 * The eager PgRuntimeRestoreCurrentWork() ran the ~231-entry
+	 * RebindSessionGUCVariablePointers() pass on EVERY park/wake cycle.
+	 * Under a hot retry loop (ProcWaitOnSemaphore's for(;;) around this
+	 * call, e.g. WalWriter/backends contending WALWriteLock at c>=32
+	 * write) wakes arrive faster than the predicate becomes true, so the
+	 * carrier OS thread spent 100% of a core inside PG's own GUC-rebind
+	 * code and never returned to libxtc's __xtc_loop_step to poll its
+	 * io_uring ring -- a livelock that starves every fiber sharing that
+	 * loop (diagnosed in plan_docs/phase16_audits/
+	 * fiber-write-wedge-diagnosis-2026-09-12.md, Finding 1).
+	 *
+	 * Safe to switch to the lazy restore: every caller of xtc_pg_wait_fd
+	 * does exactly the fiber-switch-hook pattern the lazy variant was
+	 * built for -- restore the six root pointers, then return an event
+	 * mask/WL_LATCH_SET to a caller that only RE-CHECKS A PREDICATE
+	 * (ProcWaitOnSemaphore's wait loop, WaitEventSetWaitBlock's caller).
+	 * Nothing here or in any caller touches GUC backing storage directly;
+	 * every session-local GUC read re-resolves through the just-restored
+	 * CurrentPgSession root via the owner-token hot-field caches (see
+	 * PgRuntimeRestoreCurrentWorkLazy's own doc, backend_runtime.c).
+	 * XtcPgVerifyCurrentWorkIsSelf() below checks the root pointers only
+	 * (CurrentPgCarrier), which the lazy restore installs identically to
+	 * the eager one, so the cross-fiber-leak tripwire is unaffected.
 	 */
-	PgRuntimeRestoreCurrentWork(&snap);
+	PgRuntimeRestoreCurrentWorkLazy(&snap);
 	XtcPgVerifyCurrentWorkIsSelf();
 
 	if (rc != XTC_OK && rc != XTC_E_AGAIN)
