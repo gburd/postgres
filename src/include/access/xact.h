@@ -368,7 +368,23 @@ typedef struct xl_xact_prepare
 	uint16		gidlen;			/* length of the GID - GID follows the header */
 	XLogRecPtr	origin_lsn;		/* lsn of this record at origin node */
 	TimestampTz origin_timestamp;	/* time of prepare at origin node */
+
+	/*
+	 * UNDO chain head LSN per persistence level (3 == NUndoPersistenceLevels
+	 * from undodefs.h; hardcoded here to keep xact.h free of UNDO headers).
+	 * If NUndoPersistenceLevels changes, this array must be updated and both
+	 * XLOG_PAGE_MAGIC (xlog_internal.h) and TWOPHASE_MAGIC (twophase.c) must
+	 * be bumped.  See StaticAssertDecl in xactundo.c for compile-time guard.
+	 */
+	XLogRecPtr	last_batch_lsn[3];
 } xl_xact_prepare;
+
+/*
+ * xl_xact_prepare is written into WAL as part of XLOG_XACT_PREPARE records,
+ * and into 2PC state files via TwoPhaseFileHeader.  Any layout change
+ * requires bumping both XLOG_PAGE_MAGIC (xlog_internal.h) and TWOPHASE_MAGIC
+ * (twophase.c).
+ */
 
 /*
  * Commit/Abort records in the above form are a bit verbose to parse, so
@@ -439,6 +455,8 @@ typedef struct xl_xact_parsed_abort
  */
 extern bool IsTransactionState(void);
 extern bool IsAbortedTransactionBlockState(void);
+extern int	EnterInlineUndoApplyState(void);
+extern void LeaveInlineUndoApplyState(int saved);
 extern TransactionId GetTopTransactionId(void);
 extern TransactionId GetTopTransactionIdIfAny(void);
 extern TransactionId GetCurrentTransactionId(void);

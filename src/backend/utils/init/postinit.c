@@ -24,6 +24,7 @@
 #include "access/htup_details.h"
 #include "access/session.h"
 #include "access/tableam.h"
+#include "access/undo.h"
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
@@ -856,6 +857,9 @@ InitPostgres(const char *in_dbname, Oid dboid,
 	RelationCacheInitialize();
 	InitCatalogCache();
 	InitPlanCache();
+
+	/* Initialize per-backend undo subsystem state */
+	InitializeUndo();
 
 	/* Initialize portal manager */
 	EnablePortalManager();
