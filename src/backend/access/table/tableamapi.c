@@ -36,6 +36,7 @@ GetTableAmRoutine(Oid amhandler)
 		elog(ERROR, "table access method handler %u did not return a TableAmRoutine struct",
 			 amhandler);
 
+
 	/*
 	 * Assert that all required callbacks are present. That makes it a bit
 	 * easier to keep AMs up to date, e.g. when forward porting them to a new
