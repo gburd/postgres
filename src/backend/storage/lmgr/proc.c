@@ -1729,7 +1729,23 @@ ProcSleep(LOCALLOCK *locallock)
 				wait_timeout = (long) DeadlockTimeout;
 #endif
 
-			(void) WaitLatch(MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH,
+			/*
+			 * WaitLatch() only HONORS its timeout argument when WL_TIMEOUT is in
+			 * wakeEvents -- otherwise it passes -1 (infinite) down to
+			 * WaitEventSetWait() and the timeout is silently DISCARDED (latch.c:
+			 * "(wakeEvents & WL_TIMEOUT) ? timeout : -1").  Without that flag the
+			 * bounded-park guard above was a no-op: the fiber parked FOREVER on
+			 * its latch (observed via gdb as xtc_pg_wait_fd(timeout_ms=-1) under
+			 * WaitLatch(timeout=1000), wakeEvents=33), so a lock cycle was never
+			 * broken and the write path wedged at 0 tps with waiters piled on
+			 * Lock/tuple.  Only request WL_TIMEOUT when a bounded wait is
+			 * actually wanted, so process mode and the non-fiber threaded path
+			 * keep upstream's indefinite wait byte-for-byte (wait_timeout is 0
+			 * there).
+			 */
+			(void) WaitLatch(MyLatch,
+							 WL_LATCH_SET | WL_EXIT_ON_PM_DEATH |
+							 (wait_timeout > 0 ? WL_TIMEOUT : 0),
 							 wait_timeout,
 							 PG_WAIT_LOCK | locallock->tag.lock.locktag_type);
 			ResetLatch(MyLatch);
@@ -2394,6 +2410,7 @@ ProcSemaphoreWaitFiber(PGPROC *proc)
 	 * return is safe (the caller's predicate loop re-parks via a fresh call).
 	 */
 	(void) xtc_pg_wait_fd(proc->sem_wake_fd, WL_SOCKET_READABLE, -1);
+
 
 	/*
 	 * Disarm under the lock on EVERY return, so armed is never left stale after

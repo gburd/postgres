@@ -1392,7 +1392,12 @@ xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)
 
 			PgRuntimeSaveCurrentWork(&sleep_snap);
 			xtc_proc_sleep(timeout_ns);
-			PgRuntimeRestoreCurrentWork(&sleep_snap);
+			/*
+			 * Lazy restore, same reasoning as the fd-park resume below: this is
+			 * a per-wake fiber-switch site, so an eager ~231-entry GUC rebind
+			 * here would be paid on every timer wake.
+			 */
+			PgRuntimeRestoreCurrentWorkLazy(&sleep_snap);
 			XtcPgVerifyCurrentWorkIsSelf();
 			return WL_TIMEOUT;
 		}
@@ -1416,8 +1421,25 @@ xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)
 	 * park resumed on a different carrier loop (a work-steal) -- the restore
 	 * therefore repoints the bridge to this fiber's own roots regardless of
 	 * which loop resumed it.
+	 *
+	 * Use the LAZY restore.  This is a per-park/per-wake path -- the hottest
+	 * fiber-switch site there is -- and the eager variant re-runs
+	 * RebindSessionGUCVariablePointers(), a ~231-entry hash pass, on EVERY
+	 * wake.  When a waiter's predicate is not yet true (an LWLock/buffer-lock
+	 * retry loop re-parks immediately), that rebind becomes a 100%-CPU spin
+	 * that never returns control to __xtc_loop_step, so this carrier thread
+	 * stops calling xtc_io_poll and every fiber whose completion lives on this
+	 * loop starves -- observed as a hard write-path wedge (0 tps) with waiters
+	 * on Buffer/BufferExclusive and Lock/tuple whose pg_blocking_pids() is
+	 * EMPTY, and one thread burning a core in
+	 * BufferLockAcquire -> ProcSemaphoreWaitFiber -> xtc_pg_wait_fd ->
+	 * PgRuntimeRestoreCurrentWork -> find_option.  The lazy variant restores
+	 * the six roots and lets the ~130 derived caches and the session-rooted
+	 * GUC arrays re-derive on first touch through the existing owner-token
+	 * mechanism, which is exactly what the fiber-context-switch hook already
+	 * relies on (see PgRuntimeRestoreCurrentWorkLazy's own contract).
 	 */
-	PgRuntimeRestoreCurrentWork(&snap);
+	PgRuntimeRestoreCurrentWorkLazy(&snap);
 	XtcPgVerifyCurrentWorkIsSelf();
 
 	if (rc != XTC_OK && rc != XTC_E_AGAIN)
