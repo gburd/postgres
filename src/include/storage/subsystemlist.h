@@ -101,4 +101,7 @@ PG_SHMEM_SUBSYSTEM(UndoShmemCallbacks)
  */
 PG_SHMEM_SUBSYSTEM(SLogShmemCallbacks)
 
+/* FLUX table access method subsystems */
+PG_SHMEM_SUBSYSTEM(FluxMvccShmemCallbacks)
+PG_SHMEM_SUBSYSTEM(FluxDirtyMapShmemCallbacks)
 

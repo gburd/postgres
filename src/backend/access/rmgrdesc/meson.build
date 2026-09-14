@@ -32,5 +32,7 @@ rmgr_desc_sources = files(
 
 
 # FLUX is always built; rmgrlist.h registers flux_desc/flux_identify
+# unconditionally, so fluxdesc.c must always be compiled.
+rmgr_desc_sources += files('fluxdesc.c')
 
 backend_sources += rmgr_desc_sources
