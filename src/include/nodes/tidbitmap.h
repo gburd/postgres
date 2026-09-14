@@ -30,8 +30,32 @@
  * 8K pages, or 1024 with 32K pages).  So there's not much point in making
  * the per-page bitmaps variable size.  We just legislate that the size
  * is this:
+ *
+ * This ceiling must cover every table AM's line-pointer array, not just
+ * heap's.  FLUX pages mix full tuples with small overflow-continuation
+ * records and do not clamp offsets to MaxHeapTuplesPerPage (FluxPageAddTuple
+ * omits PAI_IS_HEAP), so a FLUX page can legitimately place tuples at offsets
+ * above MaxHeapTuplesPerPage (~408 vs 291 at 8K).  Index bitmap scans feed the
+ * raw heap TIDs from the index into tbm_add_tuples() with no knowledge of the
+ * underlying AM, so if this ceiling were only heap-sized, a FLUX bitmap scan
+ * of a page with high offsets errors out with "tuple offset out of range".
+ * Size the ceiling for the widest AM (FLUX).  The FLUX bound is spelled out
+ * from page geometry here to avoid pulling FLUX's include chain into this
+ * widely-included header; a StaticAssert in flux_handler.c keeps it honest
+ * against the real MaxFluxItemsPerPage.
+ *
+ * FLUX_TBM_HDR_OPAQUE == MAXALIGN(SizeOfPageHeaderData(24)) +
+ *   MAXALIGN(sizeof(FluxPageOpaqueData)(8)) == 32
+ * FLUX_TBM_TUPPITCH == MAXALIGN(sizeof(FluxOverflowRecordHeader)(16)) +
+ *   sizeof(ItemIdData)(4) == 20
  */
-#define TBM_MAX_TUPLES_PER_PAGE  MaxHeapTuplesPerPage
+#define FLUX_TBM_HDR_OPAQUE		32
+#define FLUX_TBM_TUPPITCH		20
+#define MaxFluxTuplesPerBitmapPage \
+	((int) ((BLCKSZ - FLUX_TBM_HDR_OPAQUE) / FLUX_TBM_TUPPITCH))
+#define TBM_MAX_TUPLES_PER_PAGE  \
+	(MaxHeapTuplesPerPage > MaxFluxTuplesPerBitmapPage ? \
+	 MaxHeapTuplesPerPage : MaxFluxTuplesPerBitmapPage)
 
 /*
  * Actual bitmap representation is private to tidbitmap.c.  Callers can

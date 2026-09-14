@@ -354,6 +354,22 @@ typedef struct TableAmRoutine
 	bool		am_supports_undo;
 
 	/*
+	 * am_inplace_update_keeps_tid: this AM updates a row in place, so the row
+	 * keeps its TID for the whole of its lifetime.
+	 *
+	 * Heap writes a new tuple version at a new TID on every UPDATE, so a
+	 * TUPLE_LOCK_FLAG_FIND_LAST_VERSION lock that reaches the latest version
+	 * of a row it had found outdated must have followed the update chain to a
+	 * different TID, and reports TM_FailureData.traversed.  An AM that sets
+	 * this flag reaches the latest version without moving, so it correctly
+	 * reports traversed = false, and code that asserts a traversal must
+	 * accept that.
+	 *
+	 * The heap AM leaves this false.
+	 */
+	bool		am_inplace_update_keeps_tid;
+
+	/*
 	 * am_undo_engine: which UNDO engine this AM writes UNDO to.  Only
 	 * consulted when am_supports_undo is true.
 	 *
@@ -2221,6 +2237,16 @@ extern const TableAmRoutine *GetTableAmRoutine(Oid amhandler);
  */
 
 extern const TableAmRoutine *GetHeapamTableAmRoutine(void);
+
+/*
+ * Does this relation's AM overwrite a row's storage on UPDATE?  False for
+ * relations without a table AM (foreign tables, views, partitioned tables).
+ */
+static inline bool
+RelationUpdatesInPlace(Relation rel)
+{
+	return rel->rd_tableam != NULL && rel->rd_tableam->am_inplace_update_keeps_tid;
+}
 
 /* ----------------------------------------------------------------------------
  * Functions in tableam.c
