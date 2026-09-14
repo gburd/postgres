@@ -4279,7 +4279,17 @@ backend_startup_accepted(ClientSocket *client_sock)
 	 * real negotiation/secure_open_server.  (Only reached in threaded mode:
 	 * this is the AcceptConnectionDrain callback.)
 	 */
+#ifdef USE_SSL
 	if (!LoadedSSL && client_sock->raddr.addr.ss_family != AF_UNIX)
+#else
+
+	/*
+	 * Built without SSL: there is no LoadedSSL symbol (it is defined under
+	 * USE_SSL), and SSL can never be active, so the "SSL disabled" branch
+	 * above applies unconditionally for TCP clients.
+	 */
+	if (client_sock->raddr.addr.ss_family != AF_UNIX)
+#endif
 		(void) pg_prenegotiate_ssl_request(client_sock);
 
 	(void) BackendStartup(client_sock);
