@@ -193,6 +193,16 @@ UndoRecordIsValid(UndoRecPtr urp)
 {
 	UndoLogControl *log = UndoLogGet(UndoRecPtrGetLogNo(urp));
 
+	/*
+	 * No log means the record is gone, which is exactly the "already
+	 * discarded" answer: return false.  Per this function's contract the
+	 * discard_lock is released on a false return -- but with no log there is
+	 * no lock to release, and the caller could not have acquired one either,
+	 * so simply return.
+	 */
+	if (log == NULL)
+		return false;
+
 	Assert(LWLockHeldByMeInMode(&log->discard_lock, LW_SHARED));
 
 	if (log->oldest_data == InvalidUndoRecPtr)

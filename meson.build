@@ -1597,7 +1597,9 @@ flux = declare_dependency()
 cdata.set('USE_FLUX', 1)
 
 # recno table access method (Phase 10) is likewise always built so its WAL
+# rmgr ID (rmgrlist.h USE_RECNO block) is stable across every translation unit.
 recno = declare_dependency()
+cdata.set('USE_RECNO', 1)
 
 
 ###############################################################
