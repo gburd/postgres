@@ -28,6 +28,7 @@
 
 #include "access/heapam_xlog.h"
 #include "access/flux_xlog.h"
+#include "access/recno_xlog.h"
 #include "access/transam.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
@@ -1047,6 +1048,199 @@ flux_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
 	}
 }
 
+/*
+ * Read one heap-format logical image that RECNO appended at the end of the
+ * record, at byte offset *cursor from the end, and hand back a ReorderBuffer
+ * tuple.  RECNO's on-page tuple is not heap-format, so the appended image is
+ * the only decodable copy; a record without RECNO_WAL_LOGICAL_TUPLE has
+ * nothing to decode.  Images are appended in order (INSERT: the new tuple;
+ * UPDATE: old then new; DELETE: the old tuple), each as [heap bytes][uint32
+ * len], so reading from the end yields them last-appended-first.
+ */
+static HeapTuple
+DecodeRecnoReadImageFromEnd(LogicalDecodingContext *ctx, XLogReaderState *r,
+							char *reclrec, Size *endoff)
+{
+	Size		full_len = XLogRecGetDataLen(r);
+	char	   *end = reclrec + full_len - *endoff;
+	uint32		heap_len;
+	char	   *heap_data;
+	HeapTuple	tup;
+
+	memcpy(&heap_len, end - sizeof(uint32), sizeof(uint32));
+	heap_data = end - sizeof(uint32) - heap_len;
+
+	tup = ReorderBufferAllocTupleBuf(ctx->reorder,
+									 heap_len - SizeofHeapTupleHeader);
+	tup->t_len = heap_len;
+	ItemPointerSetInvalid(&tup->t_self);
+	tup->t_tableOid = InvalidOid;
+	memcpy(tup->t_data, heap_data, heap_len);
+
+	*endoff += sizeof(uint32) + heap_len;
+	return tup;
+}
+
+static void
+DecodeRecnoInsert(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	XLogReaderState *r = buf->record;
+	xl_recno_insert *xlrec = (xl_recno_insert *) XLogRecGetData(r);
+	ReorderBufferChange *change;
+	RelFileLocator target_locator;
+	Size		endoff = 0;
+
+	/* A speculative-confirm record adds no new row. */
+	if (xlrec->flags & RECNO_WAL_SPEC_CONFIRM)
+		return;
+
+	/* Nothing decodable without the appended heap image. */
+	if (!(xlrec->flags & RECNO_WAL_LOGICAL_TUPLE))
+		return;
+
+	XLogRecGetBlockTag(r, 0, &target_locator, NULL, NULL);
+	if (target_locator.dbOid != ctx->slot->data.database)
+		return;
+	if (FilterByOrigin(ctx, XLogRecGetOrigin(r)))
+		return;
+
+	change = ReorderBufferAllocChange(ctx->reorder);
+	change->action = REORDER_BUFFER_CHANGE_INSERT;
+	change->origin_id = XLogRecGetOrigin(r);
+	memcpy(&change->data.tp.rlocator, &target_locator, sizeof(RelFileLocator));
+	change->data.tp.newtuple =
+		DecodeRecnoReadImageFromEnd(ctx, r, (char *) xlrec, &endoff);
+	change->data.tp.clear_toast_afterwards = true;
+
+	ReorderBufferQueueChange(ctx->reorder, XLogRecGetXid(r), buf->origptr,
+							 change, false);
+}
+
+static void
+DecodeRecnoUpdate(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	XLogReaderState *r = buf->record;
+	xl_recno_update *xlrec = (xl_recno_update *) XLogRecGetData(r);
+	ReorderBufferChange *change;
+	RelFileLocator target_locator;
+	Size		endoff = 0;
+
+	if (!(xlrec->flags & RECNO_WAL_LOGICAL_TUPLE))
+		return;
+
+	XLogRecGetBlockTag(r, 0, &target_locator, NULL, NULL);
+	if (target_locator.dbOid != ctx->slot->data.database)
+		return;
+	if (FilterByOrigin(ctx, XLogRecGetOrigin(r)))
+		return;
+
+	change = ReorderBufferAllocChange(ctx->reorder);
+	change->action = REORDER_BUFFER_CHANGE_UPDATE;
+	change->origin_id = XLogRecGetOrigin(r);
+	memcpy(&change->data.tp.rlocator, &target_locator, sizeof(RelFileLocator));
+
+	/*
+	 * Images were appended old then new, so from the end the new tuple comes
+	 * first, then the old.
+	 */
+	change->data.tp.newtuple =
+		DecodeRecnoReadImageFromEnd(ctx, r, (char *) xlrec, &endoff);
+	change->data.tp.oldtuple =
+		DecodeRecnoReadImageFromEnd(ctx, r, (char *) xlrec, &endoff);
+	change->data.tp.clear_toast_afterwards = true;
+
+	ReorderBufferQueueChange(ctx->reorder, XLogRecGetXid(r), buf->origptr,
+							 change, false);
+}
+
+static void
+DecodeRecnoDelete(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	XLogReaderState *r = buf->record;
+	xl_recno_delete *xlrec = (xl_recno_delete *) XLogRecGetData(r);
+	ReorderBufferChange *change;
+	RelFileLocator target_locator;
+	Size		endoff = 0;
+
+	if (!(xlrec->flags & RECNO_WAL_LOGICAL_TUPLE))
+		return;
+
+	XLogRecGetBlockTag(r, 0, &target_locator, NULL, NULL);
+	if (target_locator.dbOid != ctx->slot->data.database)
+		return;
+	if (FilterByOrigin(ctx, XLogRecGetOrigin(r)))
+		return;
+
+	change = ReorderBufferAllocChange(ctx->reorder);
+	change->action = REORDER_BUFFER_CHANGE_DELETE;
+	change->origin_id = XLogRecGetOrigin(r);
+	memcpy(&change->data.tp.rlocator, &target_locator, sizeof(RelFileLocator));
+	change->data.tp.oldtuple =
+		DecodeRecnoReadImageFromEnd(ctx, r, (char *) xlrec, &endoff);
+	change->data.tp.clear_toast_afterwards = true;
+
+	ReorderBufferQueueChange(ctx->reorder, XLogRecGetXid(r), buf->origptr,
+							 change, false);
+}
+
+/*
+ * Handle rmgr RECNO records for LogicalDecodingProcessRecord().
+ *
+ * Like FLUX, RECNO's on-page tuple is not heap-format, so the decode side
+ * relies on the heap-format image the write path appends when the relation is
+ * logically logged (RECNO_WAL_LOGICAL_TUPLE); the batch-insert and same-size
+ * CAS paths are refused for such relations so every row change reaches a
+ * record that carries its image.  Records with no image, and page-maintenance
+ * / lock / VM records, carry no logical change and are ignored.
+ */
+void
+recno_decode(LogicalDecodingContext *ctx, XLogRecordBuffer *buf)
+{
+	uint8		info = XLogRecGetInfo(buf->record) & XLOG_RECNO_OPMASK;
+	TransactionId xid = XLogRecGetXid(buf->record);
+	SnapBuild  *builder = ctx->snapshot_builder;
+
+	ReorderBufferProcessXid(ctx->reorder, xid, buf->origptr);
+
+	if (SnapBuildCurrentState(builder) < SNAPBUILD_FULL_SNAPSHOT)
+		return;
+
+	switch (info)
+	{
+		case XLOG_RECNO_INSERT:
+			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
+				!ctx->fast_forward)
+				DecodeRecnoInsert(ctx, buf);
+			break;
+
+		case XLOG_RECNO_UPDATE_INPLACE:
+			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
+				!ctx->fast_forward)
+				DecodeRecnoUpdate(ctx, buf);
+			break;
+
+		case XLOG_RECNO_DELETE:
+			if (SnapBuildProcessChange(builder, xid, buf->origptr) &&
+				!ctx->fast_forward)
+				DecodeRecnoDelete(ctx, buf);
+			break;
+
+		case XLOG_RECNO_INIT_PAGE:
+		case XLOG_RECNO_DEFRAG:
+		case XLOG_RECNO_OVERFLOW_WRITE:
+		case XLOG_RECNO_COMPRESS:
+		case XLOG_RECNO_LOCK:
+		case XLOG_RECNO_VM_SET:
+		case XLOG_RECNO_VM_CLEAR:
+		case XLOG_RECNO_CROSS_PAGE_DEFRAG:
+			/* No row change to decode. */
+			break;
+
+		default:
+			elog(ERROR, "unexpected RM_RECNO_ID record type: %u", info);
+			break;
+	}
+}
 
 /*
  * Ask output plugin whether we want to skip this PREPARE and send

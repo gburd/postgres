@@ -101,6 +101,7 @@ Undo
 ATM
 FLUX
 FileOps
+Recno
 UndoLog
 UndoAction$/,
 	'rmgr list');

@@ -104,3 +104,9 @@ PG_SHMEM_SUBSYSTEM(SLogShmemCallbacks)
 /* FLUX table access method subsystems */
 PG_SHMEM_SUBSYSTEM(FluxMvccShmemCallbacks)
 PG_SHMEM_SUBSYSTEM(FluxDirtyMapShmemCallbacks)
+
+/* RECNO table access method subsystems (Phase 10) */
+PG_SHMEM_SUBSYSTEM(RecnoHLCShmemCallbacks)
+PG_SHMEM_SUBSYSTEM(RecnoMvccShmemCallbacks)
+PG_SHMEM_SUBSYSTEM(RecnoSLogShmemCallbacks)
+PG_SHMEM_SUBSYSTEM(RecnoClockShmemCallbacks)

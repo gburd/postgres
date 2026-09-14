@@ -261,6 +261,8 @@ USE_FLUX = 1
 override CPPFLAGS += -DUSE_FLUX
 
 # recno table access method (Phase 10) always built (stable WAL rmgr IDs).
+USE_RECNO = 1
+override CPPFLAGS += -DUSE_RECNO
 
 # FILEOPS transactional filesystem operations (WAL rmgr RM_FILEOPS_ID) is
 # always built.  Its own guard, independent of USE_FLUX, so the FILEOPS WAL

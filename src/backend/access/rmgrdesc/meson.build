@@ -34,6 +34,7 @@ rmgr_desc_sources = files(
 # FLUX is always built; rmgrlist.h registers flux_desc/flux_identify
 # unconditionally, so fluxdesc.c must always be compiled.
 rmgr_desc_sources += files('fluxdesc.c')
+rmgr_desc_sources += files('recnodesc.c')
 
 # FILEOPS is always built (USE_FILEOPS); rmgrlist.h registers
 # fileops_desc/fileops_identify, so fileopsdesc.c must always be compiled or

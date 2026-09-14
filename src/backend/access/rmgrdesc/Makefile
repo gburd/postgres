@@ -16,6 +16,7 @@ OBJS = \
 	dbasedesc.o \
 	fileopsdesc.o \
 	fluxdesc.o \
+	recnodesc.o \
 	genericdesc.o \
 	gindesc.o \
 	gistdesc.o \
