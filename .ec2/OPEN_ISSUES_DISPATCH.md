@@ -182,3 +182,31 @@ Merge each branch to xtc after it validates.  Disjoint files + separate worktree
 - 06c5ea80  pooled lease FAIRNESS (read north-star curve)  -- worktree xtc-fairness / fairness-fix
 - 08a8cb80  livelock fix VALIDATION (write finding #1)      -- worktree xtc-livelock / livelock-fix
 Branches: fairness-fix, livelock-fix (WIP pushed) -- merge each to xtc after it validates.
+
+
+## Update 2026-09-13d: libxtc v1.45.0 adopted; Option-A fiber transform DISPATCHED (the north star)
+- libxtc v1.44.1 -> v1.45.0 (493f245c10): xtc_tail dial9 microscope + aio force-offload TSan fix; no
+  behavior change on the normal path.  Verified end-to-end (built, linked, threaded server runs, 112
+  io_uring ring fds).  All worktrees rebased to this base.
+- DECISION recorded (c341e2ceb6): the pooled scheduler is hand-rolled-on-libxtc; both the read
+  fairness monopoly AND the write wedge are artifacts of it.  Contract-honest fix = Option A (pooled
+  sessions as real libxtc fibers), UNBLOCKED now that v1.44.1 fixed the cross-loop lost-wake.
+- **Option-A P-A1 dispatched** (agent 5dfb48ae, worktree xtc-fibers/optionA-fibers, 300-turn budget):
+  prove ONE pooled session runs as a real libxtc fiber + FIX the converging thread-per-session PANIC
+  (postgres.c:7058 "could not lease protocol read park for same carrier resume", c>=192).  Scoped to
+  P-A1 ONLY (prototype + PANIC fix); NOT the full default-flip.  Told to file /tmp libxtc bug reports
+  (no workarounds) if a contract fails, and to use the v1.45.0 xtc_tail.
+
+## Interim fixes parked on branches (references, NOT ship paths -- Option A supersedes)
+- fairness-fix (574cfc37f3): the 2.85x eager-sweep fairness workaround -- the mechanism reference;
+  Option A deletes its cause.  Do NOT merge.
+- livelock-fix (9e6167edac): the lazy-GUC-restore fix, UNVALIDATED (validation agent stopped).  Still
+  worth validating + merging (helps the fd-resume path Option A leans on), but lower priority than
+  P-A1.  Reproduced-live but AFTER not proven.
+
+## Live agents
+- 5dfb48ae  Option-A P-A1: pooled-session-as-fiber prototype + PANIC fix (NORTH STAR) -- xtc-fibers
+
+## Branch map
+- xtc @ 493f245c10 (v1.45.0)  | optionA-fibers (active, P-A1)  | fairness-fix (ref, no merge)
+  | livelock-fix (unvalidated, merge after validating)
