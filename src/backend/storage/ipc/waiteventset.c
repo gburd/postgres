@@ -1273,6 +1273,7 @@ WaitEventSetWaitInternal(void *callback_arg)
 	int			nevents = args->nevents;
 	uint32		wait_event_info = args->wait_event_info;
 	int			returned_events = 0;
+	bool		skip_logical_clamp;
 	instr_time	start_time;
 	instr_time	cur_time;
 	long		cur_timeout = -1;
@@ -1300,6 +1301,14 @@ WaitEventSetWaitInternal(void *callback_arg)
 	/* Ensure that signals are serviced even if latch is already set */
 	pgwin32_dispatch_queued_signals();
 #endif
+
+	/*
+	 * Set once if clamping the sleep to an already-due LOGICAL timeout fails to
+	 * fire anything: after that we stop clamping, so a zero-timeout readiness
+	 * poll cannot be retried in a hot loop.  See the rc == 0 handling below.
+	 */
+	skip_logical_clamp = false;
+
 	while (returned_events == 0)
 	{
 		int			rc;
@@ -1373,7 +1382,7 @@ WaitEventSetWaitInternal(void *callback_arg)
 		 * Clamp the kernel sleep to the next backend-local timeout so the
 		 * normal timeout handlers can run while this backend is blocked.
 		 */
-		logical_timeout = get_logical_timeout_delay_ms();
+		logical_timeout = skip_logical_clamp ? -1 : get_logical_timeout_delay_ms();
 		if (logical_timeout >= 0 &&
 			(block_timeout < 0 || logical_timeout < block_timeout))
 			block_timeout = logical_timeout;
@@ -1398,6 +1407,43 @@ WaitEventSetWaitInternal(void *callback_arg)
 		}
 		else
 			returned_events += rc;
+
+		/*
+		 * Nothing was ready.  If we clamped the sleep to a LOGICAL timeout that
+		 * is already due (get_logical_timeout_delay_ms() returns 0 once
+		 * active_timeouts[0] has expired), we must run the due handlers here.
+		 *
+		 * Otherwise this loop spins: block_timeout==0 makes the readiness poll
+		 * non-blocking, a non-blocking poll with nothing ready legitimately
+		 * returns 0 ("retry"), and the cur_timeout recomputation below is
+		 * skipped whenever the CALLER asked for an infinite wait (timeout < 0) --
+		 * so we would come straight back with block_timeout==0 forever, never
+		 * firing the timeout that caused the clamp in the first place.  That was
+		 * observed as a write-path wedge: a fiber in
+		 * ProcSleep -> WaitLatch(1000) -> xtc_pg_wait_fd(timeout_ms=0) burning a
+		 * core in the current-work restore, while its lock waiters sat with an
+		 * empty pg_blocking_pids() and the other carrier loops went idle.
+		 *
+		 * The deadlock check that ProcSleep relies on is exactly one of these
+		 * logical timeouts, so running them here is also what lets a real lock
+		 * cycle be broken on the fiber path.
+		 */
+		if (rc == 0 && logical_timeout == 0)
+		{
+			if (!process_due_logical_timeouts())
+			{
+				/*
+				 * The clamp said a timeout was due but nothing could be fired
+				 * (e.g. timeouts are being delivered by signal, or it was
+				 * cancelled underneath us).  Stop clamping for the rest of this
+				 * wait so we cannot spin on a zero-timeout poll; the next pass
+				 * blocks on the caller's own timeout instead.
+				 */
+				skip_logical_clamp = true;
+			}
+			if (returned_events == 0 && timeout < 0)
+				continue;
+		}
 
 		/* If we're not done, update cur_timeout for next iteration */
 		if (returned_events == 0 && timeout >= 0)
