@@ -17,6 +17,8 @@
 
 #include "access/hash.h"
 #include "access/hash_xlog.h"
+#include "access/tableam.h"
+#include "access/undobuffer.h"
 #include "access/xloginsert.h"
 #include "miscadmin.h"
 #include "storage/predicate.h"
@@ -237,6 +239,27 @@ restart_insert:
 	PageSetLSN(BufferGetPage(metabuf), recptr);
 
 	END_CRIT_SECTION();
+
+	/*
+	 * Write UNDO record for the insertion if the parent table AM supports
+	 * UNDO.  This must happen after WAL logging but while we still hold the
+	 * buffer pin (needed for BufferGetBlockNumber).
+	 */
+	/*
+	 * Route index UNDO to the engine the parent table AM uses.  The
+	 * UNDO-in-WAL (design (a)) path piggybacks on the active shared UNDO
+	 * buffer; PERBACKEND AMs have no such buffer, so gate them only on undo
+	 * support.  HashUndoLogInsert() itself dispatches on RelationUndoEngine().
+	 *
+	 * A delete-marking table AM (FLUX Phase 8c) drives its own index cleanup
+	 * on rollback through its table UNDO, so hash must NOT write index UNDO for
+	 * it (see tableam.h am_index_delete_marking).
+	 */
+	if (RelationAmSupportsUndo(heapRel) &&
+		!RelationSupportsDeleteMarking(heapRel) &&
+		(RelationUndoEngine(heapRel) == UNDO_ENGINE_PERBACKEND ||
+		 UndoBufferIsActive(heapRel)))
+		HashUndoLogInsert(rel, heapRel, buf, itup_off);
 
 	/* drop lock on metapage, but keep pin */
 	LockBuffer(metabuf, BUFFER_LOCK_UNLOCK);

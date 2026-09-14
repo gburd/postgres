@@ -308,6 +308,34 @@ typedef void (*IndexBuildCallback) (Relation index,
 									bool tupleIsAlive,
 									void *state);
 
+/*
+ * API struct for a table AM.  Note this must be allocated in a
+ * server-lifetime manner, typically as a static const struct, which then gets
+ * returned by FormData_pg_am.amhandler.
+ *
+ * In most cases it's not appropriate to call the callbacks directly, use the
+ * table_* wrapper functions instead.
+ *
+ * GetTableAmRoutine() asserts that required callbacks are filled in, remember
+ * to update when adding a callback.
+ */
+/*
+ * UndoEngine -- which UNDO engine an AM writes its UNDO records to.
+ *
+ * Index AMs (nbtree/hash) write index UNDO into the SAME engine the parent
+ * table AM uses, so index rollback stays part of the table transaction's UNDO
+ * context.  RelationUndoEngine() reports the parent table's engine.
+ *
+ *   UNDO_ENGINE_NONE       -- AM does not use UNDO (e.g. heap).
+ *   UNDO_ENGINE_PERBACKEND -- per-backend UNDO engine (access/undo/perbackend);
+ *                             FLUX/ZHEAP/RECNO use this.  This is the only
+ *                             engine a table AM may declare.
+ */
+typedef enum UndoEngine
+{
+	UNDO_ENGINE_NONE = 0,
+	UNDO_ENGINE_PERBACKEND,
+} UndoEngine;
 
 typedef struct TableAmRoutine
 {
@@ -344,7 +372,38 @@ typedef struct TableAmRoutine
 	 */
 	bool		am_supports_undo;
 
+	/*
+	 * am_undo_engine: which UNDO engine this AM writes UNDO to.  Only
+	 * consulted when am_supports_undo is true.
+	 *
+	 * An AM with am_supports_undo = true MUST set this to
+	 * UNDO_ENGINE_PERBACKEND (FLUX/ZHEAP/RECNO); the per-relation fork engine
+	 * has been removed, so it is the only supported value.
+	 *
+	 * See RelationUndoEngine() for the mapping and access/nbtree/nbtree_undo.c
+	 * for how the index UNDO write path routes on it.
+	 */
+	UndoEngine	am_undo_engine;
 
+	/*
+	 * am_index_delete_marking: true if this AM performs in-place UPDATE of an
+	 * indexed column via nbtree delete-marking (Phase 5) rather than moving the
+	 * row to a new TID.  When true:
+	 *   - the row keeps a STABLE TID across an indexed-column UPDATE;
+	 *   - the AM itself drives index maintenance for the changed indexes
+	 *     (insert the new (k_new,TID) entry + delete-mark the old (k_old,TID)
+	 *     entry via index_delete_mark) and reports TU_None so the executor does
+	 *     NOT re-insert;
+	 *   - the AM's own UNDO drives index cleanup on rollback (remove the new
+	 *     entry + clear the old delete-mark), so index AMs must NOT write their
+	 *     own index UNDO for such a parent table (see nbtinsert.c/hashinsert.c);
+	 *   - index-only scans are suppressed for indexes on the table (a
+	 *     delete-marked entry's key may be stale -- Phase 5 invariant I4), which
+	 *     the planner enforces via RelationSupportsDeleteMarking() in
+	 *     get_relation_info().
+	 * Only meaningful when am_supports_undo is true.  FLUX sets this (Phase 8c).
+	 */
+	bool		am_index_delete_marking;
 
 	/* ------------------------------------------------------------------------
 	 * Slot related callbacks.
@@ -2217,5 +2276,7 @@ extern const TableAmRoutine *GetHeapamTableAmRoutine(void);
  */
 
 extern bool RelationAmSupportsUndo(Relation rel);
+extern UndoEngine RelationUndoEngine(Relation rel);
+extern bool RelationSupportsDeleteMarking(Relation rel);
 
 #endif							/* TABLEAM_H */

@@ -1000,6 +1000,61 @@ btree_xlog_reuse_page(XLogReaderState *record)
 												   xlrec->locator);
 }
 
+/*
+ * btree_xlog_delete_mark - redo an in-place delete-mark/unmark of a leaf tuple
+ *
+ * The record carries the final tuple image (already in delete-marked or plain
+ * form) as block data; we overwrite the item at offnum with it.  Logging the
+ * exact bytes keeps redo byte-for-byte deterministic for
+ * wal_consistency_checking (Phase 5).
+ */
+static void
+btree_xlog_delete_mark(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_btree_delete_mark *xlrec = (xl_btree_delete_mark *) XLogRecGetData(record);
+	Buffer		buf;
+
+	if (XLogReadBufferForRedo(record, 0, &buf) == BLK_NEEDS_REDO)
+	{
+		Page		page = BufferGetPage(buf);
+
+		if (xlrec->deleted)
+		{
+			/* Phase 8c full-page fallback: the entry was removed in place. */
+			PageIndexTupleDelete(page, xlrec->offnum);
+		}
+		else
+		{
+			Size		newsize = 0;
+			char	   *newtup = XLogRecGetBlockData(record, 0, &newsize);
+
+			if (!PageIndexTupleOverwrite(page, xlrec->offnum,
+										 (IndexTuple) newtup, newsize))
+				elog(ERROR, "btree_xlog_delete_mark: failed to overwrite item at offset %u",
+					 xlrec->offnum);
+
+			/*
+			 * Clearing the mark makes the entry live again, so the LP_DEAD hint
+			 * must not survive: a scan would otherwise keep skipping it.
+			 */
+			if (!xlrec->setmark)
+			{
+				ItemId		itemid = PageGetItemId(page, xlrec->offnum);
+
+				if (ItemIdIsDead(itemid))
+					ItemIdSetNormal(itemid, ItemIdGetOffset(itemid),
+									ItemIdGetLength(itemid));
+			}
+		}
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buf);
+	}
+	if (BufferIsValid(buf))
+		UnlockReleaseBuffer(buf);
+}
+
 void
 btree_redo(XLogReaderState *record)
 {
@@ -1051,6 +1106,9 @@ btree_redo(XLogReaderState *record)
 			break;
 		case XLOG_BTREE_META_CLEANUP:
 			_bt_restore_meta(record, 0);
+			break;
+		case XLOG_BTREE_DELETE_MARK:
+			btree_xlog_delete_mark(record);
 			break;
 		default:
 			elog(PANIC, "btree_redo: unknown op code %u", info);
