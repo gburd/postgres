@@ -7442,10 +7442,35 @@ PostgresRunSession(PgSession *session)
 {
 	Assert(session != NULL);
 
-	if (PgRuntimeIsThreadBacked(CurrentPgRuntime) &&
+	/*
+	 * Only the pooled protocol scheduler needs the stackless staging loop:
+	 * pooled carriers time-share many logical sessions on one OS thread, so a
+	 * parked session must detach from its carrier (PgSessionCommitCurrent
+	 * ProtocolReadPark) and get re-leased/re-attached on resume, possibly onto
+	 * a different carrier.  That detach/park/re-lease bookkeeping is exactly
+	 * what produced the c>=192 "could not lease protocol read park for same
+	 * carrier resume" PANIC: a fiber work-stolen while parked in the shared
+	 * stackless parked_protocol_queue.
+	 *
+	 * A thread-per-session backend is a real fiber: it holds its own stack for
+	 * the whole session and parks IN PLACE on client input via
+	 * xtc_pg_wait_fd() inside WaitEventSetWait(), reached from the plain
+	 * for (;;) PgSessionStepUnprotected() loop below -- the same loop process
+	 * mode uses.  It must never enter the stackless staging: there is no
+	 * second carrier to hand it to, and the lease/re-attach dance is pooled-
+	 * only machinery that this fiber does not depend on.  (Session/GUC roots,
+	 * pgstat shmem attach, and the error boundary are all established before
+	 * PostgresRunSession is reached -- PreInstallPgThreadBackendRuntimeState /
+	 * InstallPgThreadBackendRuntimeState at fiber entry, and PgSessionRun's
+	 * own sigsetjmp boundary -- so nothing staging-specific needs replicating
+	 * here.)  Interrupt/cancel/NOTIFY/timeout delivery is independent of this
+	 * choice: it works off MyProc/MyLatch/backend->pending_interrupts, not
+	 * protocol_park state.
+	 */
+	if (PgRuntimeIsPooledProtocol(CurrentPgRuntime) &&
 		IsExternalConnectionBackend(MyBackendType))
-		PgSessionRunProtocolSchedulerStaging(session);
-	PgSessionRun(session);
+		PgSessionRunProtocolSchedulerStaging(session);	/* pooled protocol scheduler only */
+	PgSessionRun(session);								/* thread-per-session fiber + process mode: park in place */
 }
 
 void
