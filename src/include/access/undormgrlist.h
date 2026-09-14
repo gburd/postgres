@@ -32,15 +32,6 @@
 
 /* there is deliberately not an #ifndef UNDORMGRLIST_H here */
 
-/* built-in index AM UNDO resource managers */
-UNDO_RMGR_INIT(NbtreeUndoRmgrInit)
-UNDO_RMGR_INIT(HashUndoRmgrInit)
 
-/* FLUX: UNDO-based heap-replacement table AM UNDO resource manager */
-UNDO_RMGR_INIT(FluxUndoRmgrInit)
 
-/* recno (Phase 10): resurrected RECNO in-place-MVCC table AM UNDO rmgr */
-UNDO_RMGR_INIT(RecnoUndoRmgrInit)
 
-/* FILEOPS: transactional filesystem operations UNDO rmgr (UNDO_RMID_FILEOPS=2) */
-UNDO_RMGR_INIT(FileopsUndoRmgrInit)
