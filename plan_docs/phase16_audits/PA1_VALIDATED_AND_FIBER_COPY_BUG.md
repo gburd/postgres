@@ -65,3 +65,38 @@ Found while setting up the autoconf `make check` for this validation.
 - A regression test under `src/test/modules/test_backend_runtime`.
 - The declining tps with concurrency (24.8k -> 16.8k from c=64 -> 256) is unexplained and is the
   fiber-model scaling question; separate from this fix.
+
+
+--------------------------------------------------------------------------------
+## RESOLVED 2026-09-14: the fiber COPY bug was a PHANTOM TIMEOUT (fixed, fa3a6b0dd2)
+
+Root-caused and fixed. It was NOT a lost wake and NOT a libxtc issue -- no bug report warranted.
+
+**Mechanism.** On the fiber path `WaitEventSetWaitBlock` parks on the epoll fd via `xtc_pg_wait_fd`,
+then harvests with a **non-blocking** `epoll_wait(..., 0)` and fell through to the shared return-code
+handling. There, `rc == 0` is mapped to `-1` (timeout) -- correct ONLY for the BLOCKING
+`epoll_wait(cur_timeout)` further down. On the fiber path `rc == 0` merely means "the epoll fd reported
+readable, but nothing was left to report by harvest time," which happens legitimately: epoll readiness
+is level-triggered on the SET, and the condition can be consumed or change between the fiber's unpark
+and the harvest (a latch drained by another path, or a readiness edge for an event this caller did not
+request).
+
+Result: `WaitEventSetWaitInternal` saw `-1`, broke out as "timeout occurred", `WaitEventSetWait`
+returned 0, `secure_read` set `errno = ETIMEDOUT`, and a healthy connection died mid-COPY. The function
+documents the contract itself -- "If -1 is returned, a timeout has occurred, if 0 we have to retry" --
+and the fiber path was violating it.
+
+**Fix.** Return 0 (retry) on an empty non-blocking harvest rather than falling into the `rc == 0` arm,
+so the caller retries with its remaining timeout per the contract. epoll is the only backend with a
+fiber park path, so this is complete.
+
+**Validation.** Fiber path: s=20 COPY **6/6 OK**, s=50 COPY (3.5x larger) **3/3 OK**, with **zero**
+`could not receive data from client` / `protocol synchronization was lost` lines -- versus BASE 2/4
+FAILED and pre-fix 1/2 failed. meson regress suite passes (Fail: 0). Process mode unaffected (the
+changed code is inside `if (xtc_in_backend_fiber || ...)` under `USE_XTC_CARRIER`).
+
+**Still open (separate, pre-existing):** a write workload at c=64 on the fiber path wedges on
+heavyweight `Lock` waits (tuple 34 / transactionid 25 / extend 5) -- the write-path wedge
+(aux-fiber/livelock family), not this bug. The server stays alive and responsive through it. This is
+the next fiber-path blocker, and it now matters more because the fiber model is the surviving threaded
+model.
