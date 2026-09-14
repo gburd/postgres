@@ -189,9 +189,10 @@ CreateSchemaCommand(ParseState *pstate, CreateSchemaStmt *stmt,
 
 	/*
 	 * Examine the list of commands embedded in the CREATE SCHEMA command, and
-	 * do preliminary transformations.  Note that the result is still a list
-	 * of raw parsetrees --- we cannot, in general, run parse analysis on one
-	 * statement until we have actually executed the prior ones.
+	 * reorganize them into a sequentially executable order with no forward
+	 * references.  Note that the result is still a list of raw parsetrees ---
+	 * we cannot, in general, run parse analysis on one statement until we
+	 * have actually executed the prior ones.
 	 */
 	parsetree_list = transformCreateSchemaStmtElements(pstate,
 													   stmt->schemaElts,
@@ -205,14 +206,14 @@ CreateSchemaCommand(ParseState *pstate, CreateSchemaStmt *stmt,
 	 */
 	foreach(parsetree_item, parsetree_list)
 	{
-		Node	   *stmt = (Node *) lfirst(parsetree_item);
+		Node	   *node = (Node *) lfirst(parsetree_item);
 		PlannedStmt *wrapper;
 
 		/* need to make a wrapper PlannedStmt */
 		wrapper = makeNode(PlannedStmt);
 		wrapper->commandType = CMD_UTILITY;
 		wrapper->canSetTag = false;
-		wrapper->utilityStmt = stmt;
+		wrapper->utilityStmt = node;
 		wrapper->stmt_location = stmt_location;
 		wrapper->stmt_len = stmt_len;
 		wrapper->planOrigin = PLAN_STMT_INTERNAL;

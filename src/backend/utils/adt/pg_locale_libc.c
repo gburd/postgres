@@ -299,10 +299,37 @@ wc_isxdigit_libc_mb(pg_wchar wc, pg_locale_t locale)
 }
 
 static bool
-wc_iscased_libc_mb(pg_wchar wc, pg_locale_t locale)
+wc_iscased_libc_other_mb(pg_wchar wc, pg_locale_t locale)
 {
+	/*
+	 * For non-UTF8 multibyte encodings, we conservatively assume that any
+	 * non-ASCII character could be case-varying.
+	 */
+	if (wc > (pg_wchar) 127)
+		return true;
+
+	/* ASCII: pass directly to isupper_l()/islower_l() */
+	return isupper_l((unsigned char) wc, locale->lt) ||
+		islower_l((unsigned char) wc, locale->lt);
+}
+
+static bool
+wc_iscased_libc_utf8(pg_wchar wc, pg_locale_t locale)
+{
+	/*
+	 * If sizeof(wchar_t) < 4 (that is, on Windows), then return false. This
+	 * is consistent with the behavior of strlower_libc_mb(): the UTF8 string
+	 * will be decoded into 16-bit wchar_t, so strlower_libc_mb() will never
+	 * deal with codepoints beyond 0xFFFF. It may deal with surrogate pairs,
+	 * but those characters map to themselves anyway.
+	 */
 	if (sizeof(wchar_t) < 4 && wc > (pg_wchar) 0xFFFF)
 		return false;
+
+	/*
+	 * For UTF8, pg_wchar is a codepoint and we assume we can pass it directly
+	 * to iswupper_l()/iswlower_l().
+	 */
 	return iswupper_l((wint_t) wc, locale->lt) ||
 		iswlower_l((wint_t) wc, locale->lt);
 }
@@ -363,41 +390,12 @@ tolower_libc_mb(pg_wchar wc, pg_locale_t locale)
 		return wc;
 }
 
-/*
- * Characters A..Z always downcase to a..z, even in the Turkish
- * locale. Characters beyond 127 use tolower().
- */
-static size_t
-downcase_ident_libc_sb(char *dst, size_t dstsize, const char *src,
-					   size_t srclen, pg_locale_t locale)
-{
-	locale_t	loc = locale->lt;
-	size_t		i;
-
-	for (i = 0; i < srclen && i < dstsize; i++)
-	{
-		unsigned char ch = (unsigned char) src[i];
-
-		if (ch >= 'A' && ch <= 'Z')
-			ch = pg_ascii_tolower(ch);
-		else if (IS_HIGHBIT_SET(ch) && isupper_l(ch, loc))
-			ch = tolower_l(ch, loc);
-		dst[i] = (char) ch;
-	}
-
-	if (i < dstsize)
-		dst[i] = '\0';
-
-	return srclen;
-}
-
 static const struct ctype_methods ctype_methods_libc_sb = {
 	.strlower = strlower_libc_sb,
 	.strtitle = strtitle_libc_sb,
 	.strupper = strupper_libc_sb,
 	/* in libc, casefolding is the same as lowercasing */
 	.strfold = strlower_libc_sb,
-	.downcase_ident = downcase_ident_libc_sb,
 	.wc_isdigit = wc_isdigit_libc_sb,
 	.wc_isalpha = wc_isalpha_libc_sb,
 	.wc_isalnum = wc_isalnum_libc_sb,
@@ -415,7 +413,8 @@ static const struct ctype_methods ctype_methods_libc_sb = {
 
 /*
  * Non-UTF8 multibyte encodings use multibyte semantics for case mapping, but
- * single-byte semantics for pattern matching.
+ * single-byte semantics for pattern matching (except wc_iscased which needs
+ * to be consistent with case mapping).
  */
 static const struct ctype_methods ctype_methods_libc_other_mb = {
 	.strlower = strlower_libc_mb,
@@ -423,8 +422,6 @@ static const struct ctype_methods ctype_methods_libc_other_mb = {
 	.strupper = strupper_libc_mb,
 	/* in libc, casefolding is the same as lowercasing */
 	.strfold = strlower_libc_mb,
-	/* uses plain ASCII semantics for historical reasons */
-	.downcase_ident = NULL,
 	.wc_isdigit = wc_isdigit_libc_sb,
 	.wc_isalpha = wc_isalpha_libc_sb,
 	.wc_isalnum = wc_isalnum_libc_sb,
@@ -435,7 +432,7 @@ static const struct ctype_methods ctype_methods_libc_other_mb = {
 	.wc_ispunct = wc_ispunct_libc_sb,
 	.wc_isspace = wc_isspace_libc_sb,
 	.wc_isxdigit = wc_isxdigit_libc_sb,
-	.wc_iscased = wc_iscased_libc_sb,
+	.wc_iscased = wc_iscased_libc_other_mb,
 	.wc_toupper = toupper_libc_sb,
 	.wc_tolower = tolower_libc_sb,
 };
@@ -446,8 +443,6 @@ static const struct ctype_methods ctype_methods_libc_utf8 = {
 	.strupper = strupper_libc_mb,
 	/* in libc, casefolding is the same as lowercasing */
 	.strfold = strlower_libc_mb,
-	/* uses plain ASCII semantics for historical reasons */
-	.downcase_ident = NULL,
 	.wc_isdigit = wc_isdigit_libc_mb,
 	.wc_isalpha = wc_isalpha_libc_mb,
 	.wc_isalnum = wc_isalnum_libc_mb,
@@ -458,7 +453,7 @@ static const struct ctype_methods ctype_methods_libc_utf8 = {
 	.wc_ispunct = wc_ispunct_libc_mb,
 	.wc_isspace = wc_isspace_libc_mb,
 	.wc_isxdigit = wc_isxdigit_libc_mb,
-	.wc_iscased = wc_iscased_libc_mb,
+	.wc_iscased = wc_iscased_libc_utf8,
 	.wc_toupper = toupper_libc_mb,
 	.wc_tolower = tolower_libc_mb,
 };

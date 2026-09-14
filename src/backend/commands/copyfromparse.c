@@ -167,7 +167,7 @@ static int	CopyGetData(CopyFromState cstate, void *databuf,
 						int minread, int maxread);
 static inline bool CopyGetInt32(CopyFromState cstate, int32 *val);
 static inline bool CopyGetInt16(CopyFromState cstate, int16 *val);
-static void CopyLoadInputBuf(CopyFromState cstate);
+static void CopyLoadInputBuf(CopyFromState cstate, bool speculative);
 static int	CopyReadBinaryData(CopyFromState cstate, char *dest, int nbytes);
 
 void
@@ -651,11 +651,30 @@ CopyLoadRawBuf(CopyFromState cstate)
  *
  * If INPUT_BUF_BYTES(cstate) > 0, the unprocessed bytes are moved to the start
  * of the buffer and then we load more data after that.
+ *
+ * If "speculative" is true, this function skips reporting any encoding or
+ * conversion errors, provided there are still data for the caller to process.
+ * It also won't read past a backslash in text mode, since that might begin an
+ * end-of-copy marker (in which case there's no point in waiting for more data,
+ * which might not materialize anyway).  Such callers must be prepared for this
+ * function to return without loading anything.
  */
 static void
-CopyLoadInputBuf(CopyFromState cstate)
+CopyLoadInputBuf(CopyFromState cstate, bool speculative)
 {
 	int			nbytes = INPUT_BUF_BYTES(cstate);
+
+	/*
+	 * If "speculative" is true and we're in text mode, refuse to wait for
+	 * more input if there's a backslash in the buffer that the caller still
+	 * needs to process.  That might be the start of an end-of-copy marker. If
+	 * it _is_ an end-of-copy marker, we don't need any more data, and more
+	 * data might not show up, anyway (e.g., from a pipe that was left open).
+	 */
+	if (speculative && cstate->opts.format == COPY_FORMAT_TEXT &&
+		memchr(cstate->input_buf + cstate->input_buf_index, '\\',
+			   nbytes) != NULL)
+		return;
 
 	/*
 	 * The caller has updated input_buf_index to indicate how much of the
@@ -681,10 +700,16 @@ CopyLoadInputBuf(CopyFromState cstate)
 		/*
 		 * If we reached an invalid byte sequence, or we're at an incomplete
 		 * multi-byte character but there is no more raw input data, report
-		 * conversion error.
+		 * conversion error.  As an exception, if "speculative" is true and
+		 * there are still data for the caller to process, just return
+		 * instead.
 		 */
 		if (cstate->input_reached_error)
+		{
+			if (speculative && INPUT_BUF_BYTES(cstate) > 0)
+				return;
 			CopyConversionError(cstate);
+		}
 
 		/* no more input, and everything has been converted */
 		if (cstate->input_reached_eof)
@@ -1381,7 +1406,7 @@ CopyReadLineTextSIMDHelper(CopyFromState cstate, bool is_csv,
 		{
 			REFILL_LINEBUF;
 
-			CopyLoadInputBuf(cstate);
+			CopyLoadInputBuf(cstate, true);
 			/* update our local variables */
 			*hit_eof_p = cstate->input_reached_eof;
 			input_buf_ptr = cstate->input_buf_index;
@@ -1566,7 +1591,7 @@ CopyReadLineText(CopyFromState cstate, bool is_csv)
 		{
 			REFILL_LINEBUF;
 
-			CopyLoadInputBuf(cstate);
+			CopyLoadInputBuf(cstate, false);
 			/* update our local variables */
 			hit_eof = cstate->input_reached_eof;
 			input_buf_ptr = cstate->input_buf_index;

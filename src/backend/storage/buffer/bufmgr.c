@@ -1344,7 +1344,7 @@ ReadBuffer_common(Relation rel, SMgrRelation smgr, char smgr_persistence,
 {
 	ReadBuffersOperation operation;
 	Buffer		buffer;
-	int			flags;
+	int			readflags;
 	char		persistence;
 
 	/*
@@ -1366,7 +1366,7 @@ ReadBuffer_common(Relation rel, SMgrRelation smgr, char smgr_persistence,
 	 */
 	if (unlikely(blockNum == P_NEW))
 	{
-		uint32		flags = EB_SKIP_EXTENSION_LOCK;
+		uint32		ebflags = EB_SKIP_EXTENSION_LOCK;
 
 		/*
 		 * Since no-one else can be looking at the page contents yet, there is
@@ -1374,9 +1374,9 @@ ReadBuffer_common(Relation rel, SMgrRelation smgr, char smgr_persistence,
 		 * lock.
 		 */
 		if (mode == RBM_ZERO_AND_LOCK || mode == RBM_ZERO_AND_CLEANUP_LOCK)
-			flags |= EB_LOCK_FIRST;
+			ebflags |= EB_LOCK_FIRST;
 
-		return ExtendBufferedRel(BMR_REL(rel), forkNum, strategy, flags);
+		return ExtendBufferedRel(BMR_REL(rel), forkNum, strategy, ebflags);
 	}
 
 	if (rel)
@@ -1414,9 +1414,9 @@ ReadBuffer_common(Relation rel, SMgrRelation smgr, char smgr_persistence,
 	 * waiting, there is no benefit in actually executing the IO
 	 * asynchronously, it would just add dispatch overhead.
 	 */
-	flags = READ_BUFFERS_SYNCHRONOUSLY;
+	readflags = READ_BUFFERS_SYNCHRONOUSLY;
 	if (mode == RBM_ZERO_ON_ERROR)
-		flags |= READ_BUFFERS_ZERO_ON_ERROR;
+		readflags |= READ_BUFFERS_ZERO_ON_ERROR;
 	operation.smgr = smgr;
 	operation.rel = rel;
 	operation.persistence = persistence;
@@ -1425,7 +1425,7 @@ ReadBuffer_common(Relation rel, SMgrRelation smgr, char smgr_persistence,
 	if (StartReadBuffer(&operation,
 						&buffer,
 						blockNum,
-						flags))
+						readflags))
 		WaitReadBuffers(&operation);
 
 	return buffer;
@@ -6983,12 +6983,12 @@ LockBufferForCleanup(Buffer buffer)
 			if (log_recovery_conflict_waits && waitStart == 0)
 				waitStart = GetCurrentTimestamp();
 
-			/* Publish the bufid that Startup process waits on */
-			SetStartupBufferPinWaitBufId(buffer - 1);
+			/* Publish the buffer that Startup process waits on */
+			SetStartupBufferPinWaitBuf(buffer);
 			/* Set alarm and then wait to be signaled by UnpinBuffer() */
 			ResolveRecoveryConflictWithBufferPin();
-			/* Reset the published bufid */
-			SetStartupBufferPinWaitBufId(-1);
+			/* Reset the published buffer */
+			SetStartupBufferPinWaitBuf(InvalidBuffer);
 		}
 		else
 			ProcWaitForSignal(WAIT_EVENT_BUFFER_CLEANUP);
@@ -7042,18 +7042,18 @@ cleanup_lock_acquired:
 bool
 HoldingBufferPinThatDelaysRecovery(void)
 {
-	int			bufid = GetStartupBufferPinWaitBufId();
+	Buffer		buffer = GetStartupBufferPinWaitBuf();
 
 	/*
 	 * If we get woken slowly then it's possible that the Startup process was
 	 * already woken by other backends before we got here. Also possible that
 	 * we get here by multiple interrupts or interrupts at inappropriate
-	 * times, so make sure we do nothing if the bufid is not set.
+	 * times, so make sure we do nothing if the buffer is not set.
 	 */
-	if (bufid < 0)
+	if (buffer == InvalidBuffer)
 		return false;
 
-	if (GetPrivateRefCount(bufid + 1) > 0)
+	if (GetPrivateRefCount(buffer) > 0)
 		return true;
 
 	return false;

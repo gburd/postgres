@@ -103,18 +103,22 @@ typedef struct
 /*
  * Walker context for expression_has_grouping_conflict.  get_eqop is a callback
  * that returns the equality operator used for grouping.  cb_context is opaque
- * to the walker and is forwarded to get_eqop unchanged.
+ * to the walker and is forwarded to get_eqop unchanged.  case_var is the Var
+ * that the CaseTestExprs of the simple CASE being walked stand for, or NULL if
+ * there is none.
  */
 typedef struct
 {
 	grouping_eqop_callback get_eqop;
 	void	   *cb_context;
+	Var		   *case_var;
 } grouping_walker_ctx;
 
 static bool contain_agg_clause_walker(Node *node, void *context);
 static bool find_window_functions_walker(Node *node, WindowFuncLists *lists);
 static bool contain_subplans_walker(Node *node, void *context);
 static bool contain_mutable_functions_walker(Node *node, void *context);
+static bool xmlexpr_is_immutable(XmlExpr *xexpr);
 static bool contain_volatile_functions_walker(Node *node, void *context);
 static bool contain_volatile_functions_not_nextval_walker(Node *node, void *context);
 static bool max_parallel_hazard_walker(Node *node,
@@ -468,6 +472,13 @@ contain_mutable_functions_walker(Node *node, void *context)
 		return true;
 	}
 
+	if (IsA(node, XmlExpr))
+	{
+		/* some variants of XmlExpr are only stable */
+		if (!xmlexpr_is_immutable((XmlExpr *) node))
+			return true;
+	}
+
 	if (IsA(node, NextValueExpr))
 	{
 		/* NextValueExpr is volatile */
@@ -477,11 +488,10 @@ contain_mutable_functions_walker(Node *node, void *context)
 	/*
 	 * It should be safe to treat MinMaxExpr as immutable, because it will
 	 * depend on a non-cross-type btree comparison function, and those should
-	 * always be immutable.  Treating XmlExpr as immutable is more dubious,
-	 * and treating CoerceToDomain as immutable is outright dangerous.  But we
-	 * have done so historically, and changing this would probably cause more
-	 * problems than it would fix.  In practice, if you have a non-immutable
-	 * domain constraint you are in for pain anyhow.
+	 * always be immutable.  Treating CoerceToDomain as immutable is outright
+	 * dangerous, but we have done so historically, and changing this would
+	 * probably cause more problems than it would fix.  In practice, if you
+	 * have a non-immutable domain constraint you are in for pain anyhow.
 	 */
 
 	/* Recurse to check arguments */
@@ -494,6 +504,44 @@ contain_mutable_functions_walker(Node *node, void *context)
 	}
 	return expression_tree_walker(node, contain_mutable_functions_walker,
 								  context);
+}
+
+/*
+ * xmlexpr_is_immutable
+ *	  True if this XmlExpr node represents immutable processing
+ *	  (considering just the node itself, not its arguments)
+ */
+static bool
+xmlexpr_is_immutable(XmlExpr *xexpr)
+{
+	switch (xexpr->op)
+	{
+		case IS_XMLCONCAT:
+		case IS_XMLPARSE:
+		case IS_XMLPI:
+		case IS_XMLROOT:
+		case IS_XMLSERIALIZE:
+		case IS_DOCUMENT:
+			/* These variants manipulate XML text in a self-contained way */
+			return true;
+
+		case IS_XMLELEMENT:
+		case IS_XMLFOREST:
+
+			/*
+			 * These variants invoke I/O conversion functions for a wide range
+			 * of data types, and have various special rules too, so in some
+			 * cases they are only stable.  In principle we could analyze
+			 * their behavior precisely, but keeping such code in sync with
+			 * the actual implementation seems like more maintenance risk than
+			 * it's worth.
+			 */
+			return false;
+
+			/* There is intentionally no default: case here */
+	}
+	/* We shouldn't get here, but if we do, say "not immutable" */
+	return false;
 }
 
 /*
@@ -649,8 +697,9 @@ contain_volatile_functions_walker(Node *node, void *context)
 
 	/*
 	 * See notes in contain_mutable_functions_walker about why we treat
-	 * MinMaxExpr, XmlExpr, and CoerceToDomain as immutable, while
-	 * SQLValueFunction is stable.  Hence, none of them are of interest here.
+	 * MinMaxExpr and CoerceToDomain as immutable.  SQLValueFunction is
+	 * stable, and XmlExpr might be immutable or stable, but it should never
+	 * be volatile.  Hence, none of them are of interest here.
 	 */
 
 	/* Recurse to check arguments */
@@ -723,10 +772,11 @@ contain_volatile_functions_not_nextval_walker(Node *node, void *context)
 
 	/*
 	 * See notes in contain_mutable_functions_walker about why we treat
-	 * MinMaxExpr, XmlExpr, and CoerceToDomain as immutable, while
-	 * SQLValueFunction is stable.  Hence, none of them are of interest here.
-	 * Also, since we're intentionally ignoring nextval(), presumably we
-	 * should ignore NextValueExpr.
+	 * MinMaxExpr and CoerceToDomain as immutable.  SQLValueFunction is
+	 * stable, and XmlExpr might be immutable or stable, but it should never
+	 * be volatile.  Hence, none of them are of interest here.  Also, since
+	 * we're intentionally ignoring nextval(), presumably we should ignore
+	 * NextValueExpr.
 	 */
 
 	/* Recurse to check arguments */
@@ -1205,7 +1255,8 @@ contain_exec_param_walker(Node *node, List *param_ids)
  * not nested within another one, or they'll see the wrong test value.  If one
  * appears "bare" in the arguments of a SQL function, then we can't inline the
  * SQL function for fear of creating such a situation.  The same applies for
- * CaseTestExpr used within the elemexpr of an ArrayCoerceExpr.
+ * CaseTestExpr used within the elemexpr of an ArrayCoerceExpr or the coercion
+ * of a JsonConstructorExpr.
  *
  * CoerceToDomainValue would have the same issue if domain CHECK expressions
  * could get inlined into larger expressions, but presently that's impossible.
@@ -1274,6 +1325,26 @@ contain_context_dependent_node_walker(Node *node, int *flags)
 		save_flags = *flags;
 		*flags |= CCDN_CASETESTEXPR_OK;
 		res = contain_context_dependent_node_walker((Node *) ac->elemexpr,
+													flags);
+		*flags = save_flags;
+		return res;
+	}
+	else if (IsA(node, JsonConstructorExpr))
+	{
+		JsonConstructorExpr *jce = (JsonConstructorExpr *) node;
+		int			save_flags;
+		bool		res;
+
+		/* Check the args and func expressions */
+		if (contain_context_dependent_node_walker((Node *) jce->args, flags))
+			return true;
+		if (contain_context_dependent_node_walker((Node *) jce->func, flags))
+			return true;
+
+		/* Check the coercion, which is allowed to contain CaseTestExpr */
+		save_flags = *flags;
+		*flags |= CCDN_CASETESTEXPR_OK;
+		res = contain_context_dependent_node_walker((Node *) jce->coercion,
 													flags);
 		*flags = save_flags;
 		return res;
@@ -2033,11 +2104,12 @@ find_forced_null_vars(Node *node)
  *		*only* nullness of the particular Var, not any other conditions.
  *
  * This is just the single-clause case of find_forced_null_vars(), without
- * any allowance for AND conditions.  It's used by initsplan.c on individual
- * qual clauses.  The reason for not just applying find_forced_null_vars()
- * is that if an AND of an IS NULL clause with something else were to somehow
- * survive AND/OR flattening, initsplan.c might get fooled into discarding
- * the whole clause when only the IS NULL part of it had been proved redundant.
+ * any allowance for AND conditions.  It's used by prepjointree.c on
+ * individual qual clauses.  The reason for not just applying
+ * find_forced_null_vars() is that if an AND of an IS NULL clause with
+ * something else were to somehow survive AND/OR flattening, prepjointree.c
+ * might get fooled into discarding the whole clause when only the IS NULL
+ * part of it had been proved redundant.
  */
 Var *
 find_forced_null_var(Node *node)
@@ -3339,6 +3411,8 @@ eval_const_expressions_mutator(Node *node,
 		case T_JsonConstructorExpr:
 			{
 				JsonConstructorExpr *jce = (JsonConstructorExpr *) node;
+				JsonConstructorExpr *newjce;
+				Node	   *save_case_val;
 
 				/*
 				 * JSCTOR_JSON_ARRAY_QUERY carries a pre-built executable form
@@ -3349,16 +3423,43 @@ eval_const_expressions_mutator(Node *node,
 				if (jce->type == JSCTOR_JSON_ARRAY_QUERY)
 					return eval_const_expressions_mutator((Node *) jce->func,
 														  context);
+
+				/*
+				 * Copy the node and const-simplify its arguments.  We can't
+				 * use ece_generic_processing() here because we need to mess
+				 * with case_val only while processing the coercion.
+				 */
+				newjce = makeNode(JsonConstructorExpr);
+				memcpy(newjce, jce, sizeof(JsonConstructorExpr));
+				newjce->args = (List *)
+					eval_const_expressions_mutator((Node *) jce->args,
+												   context);
+				newjce->func = (Expr *)
+					eval_const_expressions_mutator((Node *) jce->func,
+												   context);
+
+				/*
+				 * Set up for the CaseTestExpr node contained in the coercion.
+				 * We must prevent it from absorbing any outer CASE value.
+				 */
+				save_case_val = context->case_val;
+				context->case_val = NULL;
+
+				newjce->coercion = (Expr *)
+					eval_const_expressions_mutator((Node *) jce->coercion,
+												   context);
+
+				context->case_val = save_case_val;
+
+				return (Node *) newjce;
 			}
-			break;
 		case T_SubPlan:
 		case T_AlternativeSubPlan:
 
 			/*
 			 * Return a SubPlan unchanged --- too late to do anything with it.
-			 *
-			 * XXX should we ereport() here instead?  Probably this routine
-			 * should never be invoked after SubPlan creation.
+			 * This can happen in estimation mode, which runs after SubPlans
+			 * have been created.
 			 */
 			return node;
 		case T_RelabelType:
@@ -3786,6 +3887,20 @@ eval_const_expressions_mutator(Node *node,
 				else
 					return copyObject((Node *) svf);
 			}
+		case T_XmlExpr:
+			{
+				/*
+				 * Some variants of XmlExpr are immutable.  Others are only
+				 * stable, but in estimation mode those are still fair game to
+				 * simplify.
+				 */
+				node = ece_generic_processing(node);
+				if ((context->estimate ||
+					 xmlexpr_is_immutable((XmlExpr *) node)) &&
+					ece_all_arguments_const(node))
+					return ece_evaluate_expr(node);
+				return node;
+			}
 		case T_FieldSelect:
 			{
 				/*
@@ -4150,20 +4265,28 @@ eval_const_expressions_mutator(Node *node,
 				return (Node *) newcdomain;
 			}
 		case T_PlaceHolderVar:
-
-			/*
-			 * In estimation mode, just strip the PlaceHolderVar node
-			 * altogether; this amounts to estimating that the contained value
-			 * won't be forced to null by an outer join.  In regular mode we
-			 * just use the default behavior (ie, simplify the expression but
-			 * leave the PlaceHolderVar node intact).
-			 */
-			if (context->estimate)
 			{
 				PlaceHolderVar *phv = (PlaceHolderVar *) node;
 
-				return eval_const_expressions_mutator((Node *) phv->phexpr,
-													  context);
+				/*
+				 * Leave a PHV of an upper query level alone: its expression
+				 * belongs to that level, which has already preprocessed it.
+				 * But we do copy the subtree, just to conform to this
+				 * function's API spec.
+				 */
+				if (phv->phlevelsup > 0)
+					return copyObject(node);
+
+				/*
+				 * In estimation mode, just strip the PlaceHolderVar node
+				 * altogether; this amounts to estimating that the contained
+				 * value won't be forced to null by an outer join.  In regular
+				 * mode we just use the default behavior (ie, simplify the
+				 * expression but leave the PlaceHolderVar node intact).
+				 */
+				if (context->estimate)
+					return eval_const_expressions_mutator((Node *) phv->phexpr,
+														  context);
 			}
 			break;
 		case T_ConvertRowtypeExpr:
@@ -6376,6 +6499,7 @@ expression_has_grouping_conflict(Node *expr,
 
 	ctx.get_eqop = get_eqop;
 	ctx.cb_context = context;
+	ctx.case_var = NULL;
 
 	return grouping_conflict_walker(expr, &ctx);
 }
@@ -6394,10 +6518,13 @@ expression_has_grouping_conflict(Node *expr,
  * member, and RowCompareExpr (one operator and collation per column).  A
  * simple CASE (CaseExpr with a non-NULL arg) is a comparison in disguise:
  * parse analysis builds each WHEN as "OpExpr(CaseTestExpr op val)", with the
- * CaseTestExpr standing in for the arg, so the arg is effectively an operand
- * of each WHEN's comparison.  Those WHEN operators are always the type-default
- * "=", matching the grouping eqop, so only a collation conflict is possible
- * there.
+ * CaseTestExpr standing in for the arg.  If the arg is a Var (after looking
+ * through RelabelType), it is bound in ctx->case_var while the WHEN
+ * conditions are walked and each CaseTestExpr is resolved to it, so the Var
+ * is checked exactly as each WHEN uses it.  Any other arg is walked once as
+ * a non-operand and its CaseTestExprs are ignored, as are those in an
+ * ArrayCoerceExpr's elemexpr and a JsonConstructorExpr's coercion, which
+ * stand for something else.
  */
 static bool
 grouping_conflict_walker(Node *node, grouping_walker_ctx *ctx)
@@ -6464,54 +6591,88 @@ grouping_conflict_walker(Node *node, grouping_walker_ctx *ctx)
 		}
 		return false;
 	}
+	else if (IsA(node, CaseTestExpr))
+	{
+		/*
+		 * A direct operand of a comparison is handled by
+		 * grouping_check_operand; any other use is a non-operand reference to
+		 * the Var it stands for, if any.
+		 */
+		return grouping_conflict_walker((Node *) ctx->case_var, ctx);
+	}
+	else if (IsA(node, ArrayCoerceExpr))
+	{
+		ArrayCoerceExpr *acexpr = (ArrayCoerceExpr *) node;
+		Var		   *save_case_var = ctx->case_var;
+		bool		result;
+
+		if (grouping_conflict_walker((Node *) acexpr->arg, ctx))
+			return true;
+
+		/* The CaseTestExpr in elemexpr is an array element, not case_var. */
+		ctx->case_var = NULL;
+		result = grouping_conflict_walker((Node *) acexpr->elemexpr, ctx);
+		ctx->case_var = save_case_var;
+		return result;
+	}
+	else if (IsA(node, JsonConstructorExpr))
+	{
+		JsonConstructorExpr *ctor = (JsonConstructorExpr *) node;
+		Var		   *save_case_var = ctx->case_var;
+		bool		result;
+
+		if (grouping_conflict_walker((Node *) ctor->args, ctx))
+			return true;
+		if (grouping_conflict_walker((Node *) ctor->func, ctx))
+			return true;
+
+		/* The CaseTestExpr in coercion is the JSON result, not case_var. */
+		ctx->case_var = NULL;
+		result = grouping_conflict_walker((Node *) ctor->coercion, ctx);
+		ctx->case_var = save_case_var;
+		return result;
+	}
 	else if (IsA(node, CaseExpr) && ((CaseExpr *) node)->arg != NULL)
 	{
 		CaseExpr   *cexpr = (CaseExpr *) node;
 		Node	   *arg = (Node *) cexpr->arg;
+		Var		   *save_case_var = ctx->case_var;
+		bool		result = false;
 
 		/* Look through RelabelType to find a direct Var arg. */
 		while (arg && IsA(arg, RelabelType))
 			arg = (Node *) ((RelabelType *) arg)->arg;
 
-		if (arg && IsA(arg, Var))
-		{
-			Var		   *var = (Var *) arg;
-
-			/*
-			 * The arg is a grouping column compared by every WHEN.  For a
-			 * nondeterministic collation, reject if any WHEN applies a
-			 * different collation.
-			 */
-			if (OidIsValid(ctx->get_eqop(var, ctx->cb_context)) &&
-				OidIsValid(var->varcollid) &&
-				!get_collation_isdeterministic(var->varcollid))
-			{
-				foreach_node(CaseWhen, cw, cexpr->args)
-				{
-					Oid			collid = exprInputCollation((Node *) cw->expr);
-
-					if (OidIsValid(collid) && collid != var->varcollid)
-						return true;
-				}
-			}
-		}
-		else if (grouping_conflict_walker((Node *) cexpr->arg, ctx))
-		{
-			/* arg is a complex expression; walked as a non-operand */
-			return true;
-		}
-
 		/*
-		 * Walk the WHEN conditions, their results, and the default result as
-		 * non-operands.  The WHEN conditions hold a CaseTestExpr in place of
-		 * the arg, so they contribute no grouping operand of their own, but
-		 * the condition expression or the substitution result may reference
-		 * another grouping column.
+		 * A Var arg needs no walk of its own: each WHEN condition refers to
+		 * it through a CaseTestExpr, which is resolved to the Var and checked
+		 * as the WHEN uses it.  Any other arg is a non-operand reference in
+		 * its own right: walk it once here and ignore its CaseTestExprs.
 		 */
+		if (arg && IsA(arg, Var))
+			ctx->case_var = (Var *) arg;
+		else
+		{
+			if (grouping_conflict_walker(arg, ctx))
+				return true;
+			ctx->case_var = NULL;
+		}
 		foreach_node(CaseWhen, cw, cexpr->args)
 		{
-			if (grouping_conflict_walker((Node *) cw->expr, ctx) ||
-				grouping_conflict_walker((Node *) cw->result, ctx))
+			if (grouping_conflict_walker((Node *) cw->expr, ctx))
+			{
+				result = true;
+				break;
+			}
+		}
+		ctx->case_var = save_case_var;
+		if (result)
+			return true;
+
+		/* The results and the default result contain no CaseTestExpr. */
+		foreach_node(CaseWhen, cw, cexpr->args)
+		{
+			if (grouping_conflict_walker((Node *) cw->result, ctx))
 				return true;
 		}
 		return grouping_conflict_walker((Node *) cexpr->defresult, ctx);
@@ -6544,12 +6705,13 @@ grouping_check_operands(Oid opno, Oid inputcollid, List *args,
  *		Handle one operand 'arg' of a comparison with operator 'opno' and
  *		collation 'inputcollid'.
  *
- * If 'arg' is a grouping column (after looking through RelabelType), verify
- * that comparison's operator has equality semantics compatible with the
- * grouping eqop and, for a nondeterministic collation, that it uses the same
- * collation; such a direct operand is then fully handled and is not recursed
- * into.  Any other operand is walked normally, so a grouping column buried
- * inside it is seen as a non-operand reference.
+ * If 'arg' is a grouping column (after looking through RelabelType, or through
+ * a CaseTestExpr to the Var it stands for), verify that comparison's operator
+ * has equality semantics compatible with the grouping eqop and, for a
+ * nondeterministic collation, that it uses the same collation; such a direct
+ * operand is then fully handled and is not recursed into.  Any other operand
+ * is walked normally, so a grouping column buried inside it is seen as a
+ * non-operand reference.
  */
 static bool
 grouping_check_operand(Node *arg, Oid opno, Oid inputcollid,
@@ -6559,6 +6721,9 @@ grouping_check_operand(Node *arg, Oid opno, Oid inputcollid,
 
 	while (node && IsA(node, RelabelType))
 		node = (Node *) ((RelabelType *) node)->arg;
+
+	if (node && IsA(node, CaseTestExpr))
+		node = (Node *) ctx->case_var;
 
 	if (node && IsA(node, Var))
 	{

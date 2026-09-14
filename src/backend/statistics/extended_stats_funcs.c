@@ -234,7 +234,7 @@ expand_stxkind(HeapTuple tup, StakindFlags *enabled)
 								   Anum_pg_statistic_ext_stxkind);
 	arr = DatumGetArrayTypeP(datum);
 	if (ARR_NDIM(arr) != 1 || ARR_HASNULL(arr) || ARR_ELEMTYPE(arr) != CHAROID)
-		elog(ERROR, "stxkind is not a one-dimension char array");
+		elog(ERROR, "stxkind is not a one-dimensional char array");
 
 	kinds = (char *) ARR_DATA_PTR(arr);
 
@@ -1059,7 +1059,7 @@ array_in_safe(FmgrInfo *array_in, const char *s, Oid typid, int32 typmod,
 	 * Overwriting the existing hint (if any) is not ideal, and an error
 	 * context would only work for level >= ERROR.
 	 */
-	if (!InputFunctionCallSafe(array_in, (char *) s, typid, typmod,
+	if (!InputFunctionCallSafe(array_in, s, typid, typmod,
 							   (Node *) &escontext, &result))
 	{
 		StringInfoData hint_str;

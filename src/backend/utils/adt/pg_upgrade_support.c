@@ -150,6 +150,17 @@ binary_upgrade_set_next_toast_pg_class_oid(PG_FUNCTION_ARGS)
 }
 
 Datum
+binary_upgrade_set_next_toast_chunk_id_typoid(PG_FUNCTION_ARGS)
+{
+	Oid			typoid = PG_GETARG_OID(0);
+
+	CHECK_IS_BINARY_UPGRADE;
+	binary_upgrade_next_toast_chunk_id_typoid = typoid;
+
+	PG_RETURN_VOID();
+}
+
+Datum
 binary_upgrade_set_next_toast_relfilenode(PG_FUNCTION_ARGS)
 {
 	RelFileNumber relfilenumber = PG_GETARG_OID(0);
@@ -227,10 +238,10 @@ binary_upgrade_create_empty_extension(PG_FUNCTION_ARGS)
 		deconstruct_array_builtin(textArray, TEXTOID, &textDatums, NULL, &ndatums);
 		for (i = 0; i < ndatums; i++)
 		{
-			char	   *extName = TextDatumGetCString(textDatums[i]);
-			Oid			extOid = get_extension_oid(extName, false);
+			char	   *reqExtName = TextDatumGetCString(textDatums[i]);
+			Oid			reqExtOid = get_extension_oid(reqExtName, false);
 
-			requiredExtensions = lappend_oid(requiredExtensions, extOid);
+			requiredExtensions = lappend_oid(requiredExtensions, reqExtOid);
 		}
 	}
 

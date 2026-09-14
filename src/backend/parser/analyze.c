@@ -90,6 +90,9 @@ static Query *transformValuesClause(ParseState *pstate, SelectStmt *stmt);
 static Query *transformSetOperationStmt(ParseState *pstate, SelectStmt *stmt);
 static Node *transformSetOperationTree(ParseState *pstate, SelectStmt *stmt,
 									   bool isTopLevel, List **targetlist);
+static void constructSetOpTargetlist(ParseState *pstate, SetOperationStmt *op,
+									 const List *ltargetlist, const List *rtargetlist,
+									 List **targetlist, const char *context, bool recursive);
 static void determineRecursiveColTypes(ParseState *pstate,
 									   Node *larg, List *nrtargetlist);
 static Query *transformReturnStmt(ParseState *pstate, ReturnStmt *stmt);
@@ -1462,8 +1465,7 @@ transformForPortionOfClause(ParseState *pstate,
 										 EXPR_KIND_FOR_PORTION);
 		actual_arg_types[0] = exprType(result->targetFrom);
 		actual_arg_types[1] = exprType(result->targetTo);
-		args = list_make2(copyObject(result->targetFrom),
-						  copyObject(result->targetTo));
+		args = list_make2(result->targetFrom, result->targetTo);
 
 		/*
 		 * Check the bound types separately, for better error message and
@@ -1487,6 +1489,15 @@ transformForPortionOfClause(ParseState *pstate,
 					 parser_errposition(pstate, exprLocation(forPortionOf->target_end))));
 
 		make_fn_arguments(pstate, args, actual_arg_types, declared_arg_types);
+
+		/*
+		 * Keep the *coerced* bounds.  This lets prepared statements use
+		 * parameters without explicit casts, and it improves deparsing when
+		 * FOR PORTION OF appears in a function or RULE.
+		 */
+		result->targetFrom = copyObject((Node *) linitial(args));
+		result->targetTo = copyObject((Node *) lsecond(args));
+
 		result->targetRange = (Node *) makeFuncExpr(get_range_constructor2(attbasetype),
 													attbasetype,
 													args,
@@ -2597,7 +2608,7 @@ transformSetOperationTree(ParseState *pstate, SelectStmt *stmt,
  * given SetOperationStmt node.  context is a string for error messages
  * ("UNION" etc.).  recursive is true if it is a recursive union.
  */
-void
+static void
 constructSetOpTargetlist(ParseState *pstate, SetOperationStmt *op,
 						 const List *ltargetlist, const List *rtargetlist,
 						 List **targetlist, const char *context, bool recursive)
@@ -3995,15 +4006,6 @@ transformLockingClause(ParseState *pstate, Query *qry, LockingClause *lc,
 							/*------
 							  translator: %s is a SQL row locking clause such as FOR UPDATE */
 									 errmsg("%s cannot be applied to a named tuplestore",
-											LCS_asString(lc->strength)),
-									 parser_errposition(pstate, thisrel->location)));
-							break;
-						case RTE_GRAPH_TABLE:
-							ereport(ERROR,
-									(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							/*------
-							  translator: %s is a SQL row locking clause such as FOR UPDATE */
-									 errmsg("%s cannot be applied to GRAPH_TABLE",
 											LCS_asString(lc->strength)),
 									 parser_errposition(pstate, thisrel->location)));
 							break;

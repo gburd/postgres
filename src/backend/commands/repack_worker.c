@@ -108,8 +108,14 @@ RepackWorkerMain(Datum main_arg)
 	pq_set_parallel_leader(shared->backend_pid,
 						   shared->backend_proc_number);
 
-	/* Connect to the database. LOGIN is not required. */
+	/*
+	 * Connect to the database, skipping the connection authorization checks
+	 * as parallel workers do.  Note that we run as the owner of the table
+	 * being repacked, who need not be able to log in or connect; the leader
+	 * checked the invoking user's privileges before starting us.
+	 */
 	BackgroundWorkerInitializeConnectionByOid(shared->dbid, shared->roleid,
+											  BGWORKER_BYPASS_ALLOWCONN |
 											  BGWORKER_BYPASS_ROLELOGINCHECK);
 
 	/*
@@ -454,7 +460,7 @@ decode_concurrent_changes(LogicalDecodingContext *ctx,
 
 		if (record == NULL)
 		{
-			int64		timeout = 0;
+			int			timeout = 0;
 			WaitLSNResult res;
 
 			/*
@@ -473,7 +479,7 @@ decode_concurrent_changes(LogicalDecodingContext *ctx,
 			 * should already have been flushed to disk.
 			 */
 			if (!XLogRecPtrIsValid(lsn_upto))
-				timeout = 100L;
+				timeout = 100;
 			res = WaitForLSN(WAIT_LSN_TYPE_PRIMARY_FLUSH,
 							 ctx->reader->EndRecPtr + 1,
 							 timeout);

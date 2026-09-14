@@ -585,7 +585,7 @@ CREATE TABLE FKTABLE (
   FOREIGN KEY (tid, fk_id_del_set_default) REFERENCES PKTABLE ON DELETE SET DEFAULT (fk_id_del_set_default, fk_id_del_set_default)
 );
 
-SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'fktable'::regclass::oid ORDER BY oid;
+SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = 'fktable'::regclass::oid ORDER BY conname COLLATE "C";
 
 INSERT INTO PKTABLE VALUES (1, 0), (1, 1), (1, 2);
 INSERT INTO FKTABLE VALUES
@@ -1449,14 +1449,14 @@ ALTER TABLE fk_partitioned_fk ATTACH PARTITION fk_partitioned_fk_1 FOR VALUES FR
 
 -- Child constraint will remain valid.
 SELECT conname, convalidated, conrelid::regclass FROM pg_constraint
-WHERE conrelid::regclass::text like 'fk_partitioned_fk%' ORDER BY oid::regclass::text;
+WHERE conrelid::regclass::text like 'fk_partitioned_fk%' ORDER BY conname COLLATE "C";
 
 -- Validate the constraint
 ALTER TABLE fk_partitioned_fk VALIDATE CONSTRAINT fk_partitioned_fk_a_b_fkey;
 
 -- All constraints are now valid.
 SELECT conname, convalidated, conrelid::regclass FROM pg_constraint
-WHERE conrelid::regclass::text like 'fk_partitioned_fk%' ORDER BY oid::regclass::text;
+WHERE conrelid::regclass::text like 'fk_partitioned_fk%' ORDER BY conname COLLATE "C";
 
 -- Attaching a child with a NOT VALID constraint.
 CREATE TABLE fk_partitioned_fk_2 (a int, b int);
@@ -1472,7 +1472,7 @@ ALTER TABLE fk_partitioned_fk ATTACH PARTITION fk_partitioned_fk_2 FOR VALUES FR
 
 -- The child constraint will also be valid.
 SELECT conname, convalidated FROM pg_constraint
-WHERE conrelid = 'fk_partitioned_fk_2'::regclass ORDER BY oid::regclass::text;
+WHERE conrelid = 'fk_partitioned_fk_2'::regclass ORDER BY conname COLLATE "C";
 
 -- Test case where the child constraint is invalid, the grandchild constraint
 -- is valid, and the validation for the grandchild should be skipped when a
@@ -1486,7 +1486,7 @@ ALTER TABLE fk_partitioned_fk ATTACH PARTITION fk_partitioned_fk_3 FOR VALUES FR
 
 -- All constraints are now valid.
 SELECT conname, convalidated, conrelid::regclass FROM pg_constraint
-WHERE conrelid::regclass::text like 'fk_partitioned_fk%' ORDER BY oid::regclass::text;
+WHERE conrelid::regclass::text like 'fk_partitioned_fk%' ORDER BY conname COLLATE "C";
 
 DROP TABLE fk_partitioned_fk, fk_notpartitioned_pk;
 
@@ -1505,14 +1505,14 @@ ALTER TABLE fk_notpartitioned_fk ADD CONSTRAINT fk_notpartitioned_fk_a_b_fkey2
 
 -- All constraints will be invalid, and _fkey2 constraints will not be enforced.
 SELECT conname, conenforced, convalidated FROM pg_constraint
-WHERE conrelid = 'fk_notpartitioned_fk'::regclass ORDER BY oid::regclass::text;
+WHERE conrelid = 'fk_notpartitioned_fk'::regclass ORDER BY conname COLLATE "C";
 
 ALTER TABLE fk_notpartitioned_fk VALIDATE CONSTRAINT fk_notpartitioned_fk_a_b_fkey;
 ALTER TABLE fk_notpartitioned_fk ALTER CONSTRAINT fk_notpartitioned_fk_a_b_fkey2 ENFORCED;
 
 -- All constraints are now valid and enforced.
 SELECT conname, conenforced, convalidated FROM pg_constraint
-WHERE conrelid = 'fk_notpartitioned_fk'::regclass ORDER BY oid::regclass::text;
+WHERE conrelid = 'fk_notpartitioned_fk'::regclass ORDER BY conname COLLATE "C";
 
 -- test a self-referential FK
 ALTER TABLE fk_partitioned_pk ADD CONSTRAINT selffk FOREIGN KEY (a, b) REFERENCES fk_partitioned_pk NOT VALID;
@@ -1521,12 +1521,12 @@ CREATE TABLE fk_partitioned_pk_3 PARTITION OF fk_partitioned_pk FOR VALUES FROM 
 CREATE TABLE fk_partitioned_pk_3_1 PARTITION OF fk_partitioned_pk_3 FOR VALUES FROM (2000) TO (2100);
 SELECT conname, conenforced, convalidated FROM pg_constraint
 WHERE conrelid = 'fk_partitioned_pk'::regclass AND contype = 'f'
-ORDER BY oid::regclass::text;
+ORDER BY conname COLLATE "C";
 ALTER TABLE fk_partitioned_pk_2 VALIDATE CONSTRAINT selffk;
 ALTER TABLE fk_partitioned_pk VALIDATE CONSTRAINT selffk;
 SELECT conname, conenforced, convalidated FROM pg_constraint
 WHERE conrelid = 'fk_partitioned_pk'::regclass AND contype = 'f'
-ORDER BY oid::regclass::text;
+ORDER BY conname COLLATE "C";
 
 DROP TABLE fk_notpartitioned_fk, fk_partitioned_pk;
 
@@ -2653,6 +2653,71 @@ INSERT INTO fp_fk_cci VALUES (1), (2), (3);
 
 DROP TABLE fp_fk_cci, fp_pk_cci;
 DROP FUNCTION fp_auto_pk;
+
+-- A STABLE cast used by an FK check must see changes made by earlier AFTER
+-- triggers, using the check's snapshot rather than the outer query's snapshot.
+-- Compare the per-row fast path with a partitioned-parent SPI check.
+BEGIN;
+CREATE SCHEMA ri_snapshot;
+SET LOCAL search_path = ri_snapshot, pg_catalog;
+
+CREATE TYPE lookup_key AS (v int);
+CREATE TABLE lookup_rows (v int);
+CREATE FUNCTION lookup_key_to_int(k lookup_key) RETURNS int
+LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    result int;
+BEGIN
+    SELECT r.v INTO result FROM lookup_rows AS r WHERE r.v = k.v;
+    RETURN coalesce(result, -1);
+END;
+$$;
+CREATE CAST (lookup_key AS int)
+    WITH FUNCTION lookup_key_to_int(lookup_key) AS IMPLICIT;
+
+CREATE TABLE pk_fast (v int PRIMARY KEY);
+CREATE TABLE pk_spi (v int PRIMARY KEY) PARTITION BY RANGE (v);
+CREATE TABLE pk_spi_p PARTITION OF pk_spi
+    FOR VALUES FROM (MINVALUE) TO (MAXVALUE);
+INSERT INTO pk_fast VALUES (1);
+INSERT INTO pk_spi VALUES (1);
+CREATE TABLE fk_fast (k lookup_key REFERENCES pk_fast(v));
+CREATE TABLE fk_spi (k lookup_key REFERENCES pk_spi(v));
+
+CREATE FUNCTION add_lookup_row() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    INSERT INTO lookup_rows VALUES ((NEW.k).v);
+    RETURN NEW;
+END;
+$$;
+-- Sort before the RI trigger, so the lookup row is inserted first.
+CREATE TRIGGER "AAA_lookup" AFTER INSERT ON fk_fast
+    FOR EACH ROW EXECUTE FUNCTION add_lookup_row();
+CREATE TRIGGER "AAA_lookup" AFTER INSERT ON fk_spi
+    FOR EACH ROW EXECUTE FUNCTION add_lookup_row();
+
+-- Invoke the fast-path check from another FK's cast.  Even with batching
+-- enabled, a check nested inside the end-of-batch flush takes the per-row path.
+CREATE TYPE driver_key AS (v int);
+CREATE FUNCTION driver_key_to_int(k driver_key) RETURNS int
+LANGUAGE plpgsql VOLATILE AS $$
+BEGIN
+    INSERT INTO fk_fast VALUES (ROW(k.v)::lookup_key);
+    RETURN k.v;
+END;
+$$;
+CREATE CAST (driver_key AS int)
+    WITH FUNCTION driver_key_to_int(driver_key) AS IMPLICIT;
+CREATE TABLE driver (k driver_key REFERENCES pk_fast(v));
+
+-- Both checks must succeed.  Without an active snapshot for the per-row
+-- check, its STABLE cast misses the lookup row and returns -1 instead of 1.
+INSERT INTO driver VALUES (ROW(1)::driver_key);
+SELECT count(*) FROM fk_fast;
+DELETE FROM lookup_rows;
+INSERT INTO fk_spi VALUES (ROW(1)::lookup_key);
+SELECT count(*) FROM fk_spi;
+ROLLBACK;
 
 -- Multi-column FK: exercises batched per-row probing with composite keys
 CREATE TABLE fp_pk_multi (a int, b int, PRIMARY KEY (a, b));

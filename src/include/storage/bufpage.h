@@ -367,7 +367,7 @@ PageValidateSpecialPointer(const PageData *page)
 #define PageGetSpecialPointer(page) \
 ( \
 	PageValidateSpecialPointer(page), \
-	((page) + ((PageHeader) (page))->pd_special) \
+	((page) + ((const PageHeaderData *) (page))->pd_special) \
 )
 
 /*

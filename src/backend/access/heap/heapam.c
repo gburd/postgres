@@ -2484,19 +2484,19 @@ heap_multi_insert(Relation relation, TupleTableSlot **slots, int ntuples,
 		{
 			PageSetAllVisible(page);
 			PageClearPrunable(page);
-			visibilitymap_set(BufferGetBlockNumber(buffer),
-							  vmbuffer,
-							  VISIBILITYMAP_ALL_VISIBLE |
-							  VISIBILITYMAP_ALL_FROZEN,
-							  relation->rd_locator);
+			(void) visibilitymap_set(BufferGetBlockNumber(buffer),
+									 vmbuffer,
+									 VISIBILITYMAP_ALL_VISIBLE |
+									 VISIBILITYMAP_ALL_FROZEN,
+									 relation->rd_locator);
 		}
 
 		/*
 		 * Set pd_prune_xid. See heap_insert() for more on why we do this when
-		 * inserting tuples. This only makes sense if we aren't already
-		 * setting the page frozen in the VM and we're not in bootstrap mode.
+		 * inserting tuples. This only makes sense if the tuples aren't frozen
+		 * and we're not in bootstrap mode.
 		 */
-		if (!all_frozen_set && TransactionIdIsNormal(xid))
+		if (TransactionIdIsNormal(xid) && !(options & HEAP_INSERT_FROZEN))
 			PageSetPrunable(page, xid);
 
 		MarkBufferDirty(buffer);
@@ -3961,8 +3961,12 @@ l2:
 		 */
 		if (need_toast)
 		{
-			/* Note we always use WAL and FSM during updates */
-			heaptup = heap_toast_insert_or_update(relation, newtup, &oldtup, 0);
+			/*
+			 * If logical decoding is not needed, suppress it for the TOAST
+			 * tuples too. We never skip the FSM here.
+			 */
+			heaptup = heap_toast_insert_or_update(relation, newtup, &oldtup,
+												  walLogical ? 0 : HEAP_INSERT_NO_LOGICAL);
 			newtupsize = MAXALIGN(heaptup->t_len);
 		}
 		else

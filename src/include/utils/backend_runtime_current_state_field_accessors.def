@@ -102,6 +102,8 @@
 	(&PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_toast_pg_class_oid_value)
 #define PgCurrentBinaryUpgradeNextToastPgClassRelfilenumberRef() \
 	(&PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_toast_pg_class_relfilenumber_value)
+#define PgCurrentBinaryUpgradeNextToastChunkIdTypoidRef() \
+	(&PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_toast_chunk_id_typoid_value)
 #define PgCurrentBinaryUpgradeNextPgEnumOidRef() \
 	(&PgCurrentSessionBinaryUpgradeState()->binary_upgrade_next_pg_enum_oid_value)
 #define PgCurrentBinaryUpgradeNextPgAuthidOidRef() \

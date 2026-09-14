@@ -26,6 +26,7 @@ extern Oid * PgCurrentBinaryUpgradeNextPgEnumOidRef(void);
 extern Oid * PgCurrentBinaryUpgradeNextPgTablespaceOidRef(void);
 extern Oid * PgCurrentBinaryUpgradeNextPgTypeOidRef(void);
 extern Oid * PgCurrentBinaryUpgradeNextToastPgClassOidRef(void);
+extern Oid * PgCurrentBinaryUpgradeNextToastChunkIdTypoidRef(void);
 extern RelFileNumber * PgCurrentBinaryUpgradeNextToastPgClassRelfilenumberRef(void);
 extern bool * PgCurrentBinaryUpgradeRecordInitPrivsRef(void);
 extern MemoryContext * PgCurrentBloomContextRef(void);

@@ -182,15 +182,14 @@ pg_locale_release_external(pg_locale_t locale)
 				ucasemap_close(locale->icu.ucasemap);
 				locale->icu.ucasemap = NULL;
 			}
-			if (locale->icu.lt != (locale_t) 0)
-			{
-#ifdef WIN32
-				_free_locale(locale->icu.lt);
-#else
-				freelocale(locale->icu.lt);
-#endif
-				locale->icu.lt = (locale_t) 0;
-			}
+
+			/*
+			 * No locale_t to free here: `lt` and `icu` are alternatives of the
+			 * SAME UNION (see struct pg_locale_struct), so an ICU locale never
+			 * has an lt -- that storage holds icu.locale/ucol/ucasemap.  Freeing
+			 * locale->lt on this path would hand freelocale() a UCollator
+			 * pointer.  Only COLLPROVIDER_LIBC owns an lt, and it frees it above.
+			 */
 			break;
 #endif
 
@@ -1563,6 +1562,9 @@ strupper_c(char *dst, size_t dstsize, const char *src, size_t srclen)
  * Convert src to lowercase, and return the result length (not including
  * terminating NUL).
  *
+ * Lowercasing is intended for human-readable display.  If the goal is to
+ * convert to a canonical caseless form, see pg_strfold().
+ *
  * src must be in the database encoding with no embedded NULs.  If dstsize is
  * zero, dst may be NULL, which is useful for calculating the required buffer
  * size before allocating.
@@ -1570,15 +1572,22 @@ strupper_c(char *dst, size_t dstsize, const char *src, size_t srclen)
  * If the result length is less than dstsize, the NUL-terminated result is
  * stored in dst.  Otherwise, the contents of dst are undefined, and the
  * caller should use the return value to resize the buffer and retry.
+ *
+ * See pg_locale.h for limits on string expansion.
  */
 size_t
 pg_strlower(char *dst, size_t dstsize, const char *src, size_t srclen,
 			pg_locale_t locale)
 {
+	size_t		result;
+
 	if (locale->ctype == NULL)
-		return strlower_c(dst, dstsize, src, srclen);
+		result = strlower_c(dst, dstsize, src, srclen);
 	else
-		return locale->ctype->strlower(dst, dstsize, src, srclen, locale);
+		result = locale->ctype->strlower(dst, dstsize, src, srclen, locale);
+
+	Assert(result <= (uint64) srclen * PG_MAX_CASEMAP_EXPANSION);
+	return result;
 }
 
 /*
@@ -1587,6 +1596,11 @@ pg_strlower(char *dst, size_t dstsize, const char *src, size_t srclen,
  * Convert src to titlecase, and return the result length (not including
  * terminating NUL).
  *
+ * Titlecasing is intended for human-readable display.  A titlecase string has
+ * the initial letter of each word uppercased (or changed to a special
+ * titlecase form, if available), and all other characters lowercased.  Used
+ * to implement the SQL INITCAP() function.
+ *
  * src must be in the database encoding with no embedded NULs.  If dstsize is
  * zero, dst may be NULL, which is useful for calculating the required buffer
  * size before allocating.
@@ -1594,15 +1608,22 @@ pg_strlower(char *dst, size_t dstsize, const char *src, size_t srclen,
  * If the result length is less than dstsize, the NUL-terminated result is
  * stored in dst.  Otherwise, the contents of dst are undefined, and the
  * caller should use the return value to resize the buffer and retry.
+ *
+ * See pg_locale.h for limits on string expansion.
  */
 size_t
 pg_strtitle(char *dst, size_t dstsize, const char *src, size_t srclen,
 			pg_locale_t locale)
 {
+	size_t		result;
+
 	if (locale->ctype == NULL)
-		return strtitle_c(dst, dstsize, src, srclen);
+		result = strtitle_c(dst, dstsize, src, srclen);
 	else
-		return locale->ctype->strtitle(dst, dstsize, src, srclen, locale);
+		result = locale->ctype->strtitle(dst, dstsize, src, srclen, locale);
+
+	Assert(result <= (uint64) srclen * PG_MAX_CASEMAP_EXPANSION);
+	return result;
 }
 
 /*
@@ -1611,6 +1632,9 @@ pg_strtitle(char *dst, size_t dstsize, const char *src, size_t srclen,
  * Convert src to uppercase, and return the result length (not including
  * terminating NUL).
  *
+ * Uppercasing is intended for human-readable display.  If the goal is to
+ * convert to a canonical caseless form, see pg_strfold().
+ *
  * src must be in the database encoding with no embedded NULs.  If dstsize is
  * zero, dst may be NULL, which is useful for calculating the required buffer
  * size before allocating.
@@ -1618,21 +1642,38 @@ pg_strtitle(char *dst, size_t dstsize, const char *src, size_t srclen,
  * If the result length is less than dstsize, the NUL-terminated result is
  * stored in dst.  Otherwise, the contents of dst are undefined, and the
  * caller should use the return value to resize the buffer and retry.
+ *
+ * See pg_locale.h for limits on string expansion.
  */
 size_t
 pg_strupper(char *dst, size_t dstsize, const char *src, size_t srclen,
 			pg_locale_t locale)
 {
+	size_t		result;
+
 	if (locale->ctype == NULL)
-		return strupper_c(dst, dstsize, src, srclen);
+		result = strupper_c(dst, dstsize, src, srclen);
 	else
-		return locale->ctype->strupper(dst, dstsize, src, srclen, locale);
+		result = locale->ctype->strupper(dst, dstsize, src, srclen, locale);
+
+	Assert(result <= (uint64) srclen * PG_MAX_CASEMAP_EXPANSION);
+	return result;
 }
 
 /*
  * pg_strfold()
  *
- * Casefold src, and return the result length (not including terminating NUL).
+ * Casefold src, and return the result length (not including terminating
+ * NUL).
+ *
+ * Casefolding produces a canonical string such that, iff the casefolded
+ * strings are equal, the original strings are a case-insensitive match (the
+ * strength of this guarantee depends on normalization, provider and locale).
+ * In practice the result is similar to lowercasing, but the purpose is
+ * different: lowercasing is for human-readable display; whereas casefolding
+ * is meant to canonicalize complex mappings reliably without regard for
+ * display.  Unicode guarantees that casefolding is stable across versions if
+ * the original string consists only of assigned code points.
  *
  * src must be in the database encoding with no embedded NULs.  If dstsize is
  * zero, dst may be NULL, which is useful for calculating the required buffer
@@ -1641,40 +1682,23 @@ pg_strupper(char *dst, size_t dstsize, const char *src, size_t srclen,
  * If the result length is less than dstsize, the NUL-terminated result is
  * stored in dst.  Otherwise, the contents of dst are undefined, and the
  * caller should use the return value to resize the buffer and retry.
+ *
+ * See pg_locale.h for limits on string expansion.
  */
 size_t
 pg_strfold(char *dst, size_t dstsize, const char *src, size_t srclen,
 		   pg_locale_t locale)
 {
+	size_t		result;
+
 	/* in the C locale, casefolding is the same as lowercasing */
 	if (locale->ctype == NULL)
-		return strlower_c(dst, dstsize, src, srclen);
+		result = strlower_c(dst, dstsize, src, srclen);
 	else
-		return locale->ctype->strfold(dst, dstsize, src, srclen, locale);
-}
+		result = locale->ctype->strfold(dst, dstsize, src, srclen, locale);
 
-/*
- * pg_downcase_ident()
- *
- * Lowercase an identifier using historical identifier-folding semantics, and
- * return the result length (not including terminating NUL). If the result
- * length is less than dstsize, the NUL-terminated result is stored in dst;
- * otherwise the contents of dst are undefined.
- *
- * XXX: callers currently depend on the result length being equal to srclen,
- * but that may change in the future if we change to proper case folding.
- */
-size_t
-pg_downcase_ident(char *dst, size_t dstsize, const char *src, size_t srclen)
-{
-	pg_locale_t locale = default_locale;
-
-	if (locale == NULL || locale->ctype == NULL ||
-		locale->ctype->downcase_ident == NULL)
-		return strlower_c(dst, dstsize, src, srclen);
-	else
-		return locale->ctype->downcase_ident(dst, dstsize, src, srclen,
-											 locale);
+	Assert(result <= (uint64) srclen * PG_MAX_CASEMAP_EXPANSION);
+	return result;
 }
 
 /*
@@ -1962,6 +1986,11 @@ pg_iswxdigit(pg_wchar wc, pg_locale_t locale)
 		return locale->ctype->wc_isxdigit(wc, locale);
 }
 
+/*
+ * Is the character potentially case-varying? Used by ILIKE to extract a
+ * prefix suitable for an index search. Safe to return true if the character
+ * can't be easily classified.
+ */
 bool
 pg_iswcased(pg_wchar wc, pg_locale_t locale)
 {

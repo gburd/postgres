@@ -37,7 +37,6 @@
 #include "storage/ipc.h"
 #include "storage/predicate.h"
 #include "storage/proc.h"
-#include "storage/spin.h"
 #include "tcop/tcopprot.h"
 #include "utils/backend_runtime.h"
 #include "utils/combocid.h"
@@ -102,11 +101,8 @@ typedef struct FixedParallelState
 	TimestampTz stmt_ts;
 	SerializableXactHandle serializable_xact_handle;
 
-	/* Mutex protects remaining fields. */
-	slock_t		mutex;
-
 	/* Maximum XactLastRecEnd of any worker. */
-	XLogRecPtr	last_xlog_end;
+	pg_atomic_uint64 last_xlog_end;
 } FixedParallelState;
 
 /*
@@ -367,8 +363,7 @@ InitializeParallelDSM(ParallelContext *pcxt)
 	fps->xact_ts = GetCurrentTransactionStartTimestamp();
 	fps->stmt_ts = GetCurrentStatementStartTimestamp();
 	fps->serializable_xact_handle = ShareSerializableXact();
-	SpinLockInit(&fps->mutex);
-	fps->last_xlog_end = InvalidXLogRecPtr;
+	pg_atomic_init_u64(&fps->last_xlog_end, InvalidXLogRecPtr);
 	shm_toc_insert(pcxt->toc, PARALLEL_KEY_FIXED, fps);
 
 	/* We can skip the rest of this if we're not budgeting for any workers. */
@@ -541,7 +536,7 @@ ReinitializeParallelDSM(ParallelContext *pcxt)
 
 	/* Reset a few bits of fixed parallel state to a clean state. */
 	fps = shm_toc_lookup(pcxt->toc, PARALLEL_KEY_FIXED, false);
-	fps->last_xlog_end = InvalidXLogRecPtr;
+	pg_atomic_write_u64(&fps->last_xlog_end, InvalidXLogRecPtr);
 
 	/* Recreate error queues (if they exist). */
 	if (pcxt->nworkers > 0)
@@ -910,10 +905,12 @@ WaitForParallelWorkersToFinish(ParallelContext *pcxt)
 	if (pcxt->toc != NULL)
 	{
 		FixedParallelState *fps;
+		XLogRecPtr	last_xlog_end;
 
 		fps = shm_toc_lookup(pcxt->toc, PARALLEL_KEY_FIXED, false);
-		if (fps->last_xlog_end > XactLastRecEnd)
-			XactLastRecEnd = fps->last_xlog_end;
+		last_xlog_end = pg_atomic_read_u64(&fps->last_xlog_end);
+		if (last_xlog_end > XactLastRecEnd)
+			XactLastRecEnd = last_xlog_end;
 	}
 }
 
@@ -1229,7 +1226,7 @@ ProcessParallelMessage(ParallelContext *pcxt, int i, StringInfo msg)
 				break;
 			}
 
-		case PqMsg_Progress:
+		case PqParallelMsg_Progress:
 			{
 				/*
 				 * Only incremental progress reporting is currently supported.
@@ -1606,10 +1603,7 @@ ParallelWorkerReportLastRecEnd(XLogRecPtr last_xlog_end)
 	FixedParallelState *fps = MyFixedParallelState;
 
 	Assert(fps != NULL);
-	SpinLockAcquire(&fps->mutex);
-	if (fps->last_xlog_end < last_xlog_end)
-		fps->last_xlog_end = last_xlog_end;
-	SpinLockRelease(&fps->mutex);
+	pg_atomic_monotonic_advance_u64(&fps->last_xlog_end, last_xlog_end);
 }
 
 /*

@@ -124,13 +124,13 @@ pg_control_checkpoint(PG_FUNCTION_ARGS)
 											 XidFromFullTransactionId(ControlFile->checkPointCopy.nextXid)));
 	nulls[7] = false;
 
-	values[8] = ObjectIdGetDatum(ControlFile->checkPointCopy.nextOid);
+	values[8] = ObjectId8GetDatum(ControlFile->checkPointCopy.nextOid);
 	nulls[8] = false;
 
 	values[9] = TransactionIdGetDatum(ControlFile->checkPointCopy.nextMulti);
 	nulls[9] = false;
 
-	values[10] = TransactionIdGetDatum(ControlFile->checkPointCopy.nextMultiOffset);
+	values[10] = Int64GetDatum(ControlFile->checkPointCopy.nextMultiOffset);
 	nulls[10] = false;
 
 	values[11] = TransactionIdGetDatum(ControlFile->checkPointCopy.oldestXid);

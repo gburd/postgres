@@ -69,19 +69,19 @@
 
 /*
  * When we store an oversize datum externally, we divide it into chunks
- * containing at most TOAST_MAX_CHUNK_SIZE data bytes.  This number *must*
+ * containing at most TOAST_OID_MAX_CHUNK_SIZE data bytes.  This number *must*
  * be small enough that the completed toast-table tuple (including the
  * ID and sequence fields and all overhead) will fit on a page.
  * The coding here sets the size on the theory that we want to fit
  * EXTERN_TUPLES_PER_PAGE tuples of maximum size onto a page.
  *
- * NB: Changing TOAST_MAX_CHUNK_SIZE requires an initdb.
+ * NB: Changing TOAST_OID_MAX_CHUNK_SIZE requires an initdb.
  */
 #define EXTERN_TUPLES_PER_PAGE	4	/* tweak only this */
 
 #define EXTERN_TUPLE_MAX_SIZE	MaximumBytesPerTuple(EXTERN_TUPLES_PER_PAGE)
 
-#define TOAST_MAX_CHUNK_SIZE	\
+#define TOAST_OID_MAX_CHUNK_SIZE	\
 	(EXTERN_TUPLE_MAX_SIZE -							\
 	 MAXALIGN(SizeofHeapTupleHeader) -					\
 	 sizeof(Oid) -										\
@@ -142,7 +142,7 @@ extern HeapTuple toast_build_flattened_tuple(TupleDesc tupleDesc,
  *	Fetch a slice from a toast value stored in a heap table.
  * ----------
  */
-extern void heap_fetch_toast_slice(Relation toastrel, Oid valueid,
+extern void heap_fetch_toast_slice(Relation toastrel, Oid8 valueid,
 								   int32 attrsize, int32 sliceoffset,
 								   int32 slicelength, varlena *result);
 

@@ -1,0 +1,1378 @@
+HammerDB CLI v5.0
+Copyright © HammerDB Ltd hosted by tpc.org 2019-2025
+Type "help" for a list of commands
+Initialized Jobs on-disk database /tmp/hammer.DB using existing tables (987,136 bytes)
+Database set to PostgreSQL
+Benchmark set to TPC-C for PostgreSQL
+Value localhost for connection:pg_host is the same as existing value localhost, no change made
+Value 5432 for connection:pg_port is the same as existing value 5432, no change made
+Dictionary "connection" for PostgreSQL exists but key "pg_superuser" doesn't, key "pg_superuser" is in the "tpcc" dictionary
+Type "print dict" for valid dictionaries and keys for PostgreSQL
+Dictionary "connection" for PostgreSQL exists but key "pg_superuserpass" doesn't, key "pg_superuserpass" is in the "tpcc" dictionary
+Type "print dict" for valid dictionaries and keys for PostgreSQL
+Dictionary "connection" for PostgreSQL exists but key "pg_defaultdbase" doesn't, key "pg_defaultdbase" is in the "tpcc" dictionary
+Type "print dict" for valid dictionaries and keys for PostgreSQL
+Value timed for tpcc:pg_driver is the same as existing value timed, no change made
+Value 2 for tpcc:pg_rampup is the same as existing value 2, no change made
+Value 5 for tpcc:pg_duration is the same as existing value 5, no change made
+Value 100 for tpcc:pg_count_ware is the same as existing value 100, no change made
+Value false for tpcc:pg_storedprocs is the same as existing value false, no change made
+Value true for tpcc:pg_allwarehouse is the same as existing value true, no change made
+Script loaded, Type "print script" to view
+Vuser 1 created MONITOR - WAIT IDLE
+Vuser 2 created - WAIT IDLE
+Vuser 3 created - WAIT IDLE
+Vuser 4 created - WAIT IDLE
+Vuser 5 created - WAIT IDLE
+Vuser 6 created - WAIT IDLE
+Vuser 7 created - WAIT IDLE
+Vuser 8 created - WAIT IDLE
+Vuser 9 created - WAIT IDLE
+Vuser 10 created - WAIT IDLE
+Vuser 11 created - WAIT IDLE
+Vuser 12 created - WAIT IDLE
+Vuser 13 created - WAIT IDLE
+Vuser 14 created - WAIT IDLE
+Vuser 15 created - WAIT IDLE
+Vuser 16 created - WAIT IDLE
+Vuser 17 created - WAIT IDLE
+Vuser 18 created - WAIT IDLE
+Vuser 19 created - WAIT IDLE
+Vuser 20 created - WAIT IDLE
+Vuser 21 created - WAIT IDLE
+Vuser 22 created - WAIT IDLE
+Vuser 23 created - WAIT IDLE
+Vuser 24 created - WAIT IDLE
+Vuser 25 created - WAIT IDLE
+Vuser 26 created - WAIT IDLE
+Vuser 27 created - WAIT IDLE
+Vuser 28 created - WAIT IDLE
+Vuser 29 created - WAIT IDLE
+Vuser 30 created - WAIT IDLE
+Vuser 31 created - WAIT IDLE
+Vuser 32 created - WAIT IDLE
+Vuser 33 created - WAIT IDLE
+Vuser 34 created - WAIT IDLE
+Vuser 35 created - WAIT IDLE
+Vuser 36 created - WAIT IDLE
+Vuser 37 created - WAIT IDLE
+Vuser 38 created - WAIT IDLE
+Vuser 39 created - WAIT IDLE
+Vuser 40 created - WAIT IDLE
+Vuser 41 created - WAIT IDLE
+Vuser 42 created - WAIT IDLE
+Vuser 43 created - WAIT IDLE
+Vuser 44 created - WAIT IDLE
+Vuser 45 created - WAIT IDLE
+Vuser 46 created - WAIT IDLE
+Vuser 47 created - WAIT IDLE
+Vuser 48 created - WAIT IDLE
+Vuser 49 created - WAIT IDLE
+Vuser 50 created - WAIT IDLE
+Vuser 51 created - WAIT IDLE
+Vuser 52 created - WAIT IDLE
+Vuser 53 created - WAIT IDLE
+Vuser 54 created - WAIT IDLE
+Vuser 55 created - WAIT IDLE
+Vuser 56 created - WAIT IDLE
+Vuser 57 created - WAIT IDLE
+Vuser 58 created - WAIT IDLE
+Vuser 59 created - WAIT IDLE
+Vuser 60 created - WAIT IDLE
+Vuser 61 created - WAIT IDLE
+Vuser 62 created - WAIT IDLE
+Vuser 63 created - WAIT IDLE
+Vuser 64 created - WAIT IDLE
+Vuser 65 created - WAIT IDLE
+Vuser 66 created - WAIT IDLE
+Vuser 67 created - WAIT IDLE
+Vuser 68 created - WAIT IDLE
+Vuser 69 created - WAIT IDLE
+Vuser 70 created - WAIT IDLE
+Vuser 71 created - WAIT IDLE
+Vuser 72 created - WAIT IDLE
+Vuser 73 created - WAIT IDLE
+Vuser 74 created - WAIT IDLE
+Vuser 75 created - WAIT IDLE
+Vuser 76 created - WAIT IDLE
+Vuser 77 created - WAIT IDLE
+Vuser 78 created - WAIT IDLE
+Vuser 79 created - WAIT IDLE
+Vuser 80 created - WAIT IDLE
+Vuser 81 created - WAIT IDLE
+Vuser 82 created - WAIT IDLE
+Vuser 83 created - WAIT IDLE
+Vuser 84 created - WAIT IDLE
+Vuser 85 created - WAIT IDLE
+Vuser 86 created - WAIT IDLE
+Vuser 87 created - WAIT IDLE
+Vuser 88 created - WAIT IDLE
+Vuser 89 created - WAIT IDLE
+Vuser 90 created - WAIT IDLE
+Vuser 91 created - WAIT IDLE
+Vuser 92 created - WAIT IDLE
+Vuser 93 created - WAIT IDLE
+Vuser 94 created - WAIT IDLE
+Vuser 95 created - WAIT IDLE
+Vuser 96 created - WAIT IDLE
+Vuser 97 created - WAIT IDLE
+Vuser 98 created - WAIT IDLE
+Vuser 99 created - WAIT IDLE
+Vuser 100 created - WAIT IDLE
+Vuser 101 created - WAIT IDLE
+Vuser 102 created - WAIT IDLE
+Vuser 103 created - WAIT IDLE
+Vuser 104 created - WAIT IDLE
+Vuser 105 created - WAIT IDLE
+Vuser 106 created - WAIT IDLE
+Vuser 107 created - WAIT IDLE
+Vuser 108 created - WAIT IDLE
+Vuser 109 created - WAIT IDLE
+Vuser 110 created - WAIT IDLE
+Vuser 111 created - WAIT IDLE
+Vuser 112 created - WAIT IDLE
+Vuser 113 created - WAIT IDLE
+Vuser 114 created - WAIT IDLE
+Vuser 115 created - WAIT IDLE
+Vuser 116 created - WAIT IDLE
+Vuser 117 created - WAIT IDLE
+Vuser 118 created - WAIT IDLE
+Vuser 119 created - WAIT IDLE
+Vuser 120 created - WAIT IDLE
+Vuser 121 created - WAIT IDLE
+Vuser 122 created - WAIT IDLE
+Vuser 123 created - WAIT IDLE
+Vuser 124 created - WAIT IDLE
+Vuser 125 created - WAIT IDLE
+Vuser 126 created - WAIT IDLE
+Vuser 127 created - WAIT IDLE
+Vuser 128 created - WAIT IDLE
+Vuser 129 created - WAIT IDLE
+Vuser 130 created - WAIT IDLE
+Vuser 131 created - WAIT IDLE
+Vuser 132 created - WAIT IDLE
+Vuser 133 created - WAIT IDLE
+Vuser 134 created - WAIT IDLE
+Vuser 135 created - WAIT IDLE
+Vuser 136 created - WAIT IDLE
+Vuser 137 created - WAIT IDLE
+Vuser 138 created - WAIT IDLE
+Vuser 139 created - WAIT IDLE
+Vuser 140 created - WAIT IDLE
+Vuser 141 created - WAIT IDLE
+Vuser 142 created - WAIT IDLE
+Vuser 143 created - WAIT IDLE
+Vuser 144 created - WAIT IDLE
+Vuser 145 created - WAIT IDLE
+Vuser 146 created - WAIT IDLE
+Vuser 147 created - WAIT IDLE
+Vuser 148 created - WAIT IDLE
+Vuser 149 created - WAIT IDLE
+Vuser 150 created - WAIT IDLE
+Vuser 151 created - WAIT IDLE
+Vuser 152 created - WAIT IDLE
+Vuser 153 created - WAIT IDLE
+Vuser 154 created - WAIT IDLE
+Vuser 155 created - WAIT IDLE
+Vuser 156 created - WAIT IDLE
+Vuser 157 created - WAIT IDLE
+Vuser 158 created - WAIT IDLE
+Vuser 159 created - WAIT IDLE
+Vuser 160 created - WAIT IDLE
+Vuser 161 created - WAIT IDLE
+Vuser 162 created - WAIT IDLE
+Vuser 163 created - WAIT IDLE
+Vuser 164 created - WAIT IDLE
+Vuser 165 created - WAIT IDLE
+Vuser 166 created - WAIT IDLE
+Vuser 167 created - WAIT IDLE
+Vuser 168 created - WAIT IDLE
+Vuser 169 created - WAIT IDLE
+Vuser 170 created - WAIT IDLE
+Vuser 171 created - WAIT IDLE
+Vuser 172 created - WAIT IDLE
+Vuser 173 created - WAIT IDLE
+Vuser 174 created - WAIT IDLE
+Vuser 175 created - WAIT IDLE
+Vuser 176 created - WAIT IDLE
+Vuser 177 created - WAIT IDLE
+Vuser 178 created - WAIT IDLE
+Vuser 179 created - WAIT IDLE
+Vuser 180 created - WAIT IDLE
+Vuser 181 created - WAIT IDLE
+Vuser 182 created - WAIT IDLE
+Vuser 183 created - WAIT IDLE
+Vuser 184 created - WAIT IDLE
+Vuser 185 created - WAIT IDLE
+Vuser 186 created - WAIT IDLE
+Vuser 187 created - WAIT IDLE
+Vuser 188 created - WAIT IDLE
+Vuser 189 created - WAIT IDLE
+Vuser 190 created - WAIT IDLE
+Vuser 191 created - WAIT IDLE
+Vuser 192 created - WAIT IDLE
+Vuser 193 created - WAIT IDLE
+Logging activated
+to /tmp/hammerdb_6A72068063AF03E253339353.log
+193 Virtual Users Created with Monitor VU
+Vuser 1:RUNNING
+Vuser 1:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 1: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 1:FINISHED FAILED
+Vuser 2:RUNNING
+Vuser 2:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 2: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 2:FINISHED FAILED
+Vuser 3:RUNNING
+Vuser 3:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 3: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 3:FINISHED FAILED
+Vuser 4:RUNNING
+Vuser 4:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 4: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 4:FINISHED FAILED
+Vuser 5:RUNNING
+Vuser 5:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 5: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 5:FINISHED FAILED
+Vuser 6:RUNNING
+Vuser 6:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 6: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 6:FINISHED FAILED
+Vuser 7:RUNNING
+Vuser 7:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 7: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 7:FINISHED FAILED
+Vuser 8:RUNNING
+Vuser 8:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 8: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 8:FINISHED FAILED
+Vuser 9:RUNNING
+Vuser 9:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 9: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 9:FINISHED FAILED
+Vuser 10:RUNNING
+Vuser 10:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 10: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 10:FINISHED FAILED
+Vuser 11:RUNNING
+Vuser 11:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 11: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 11:FINISHED FAILED
+Vuser 12:RUNNING
+Vuser 12:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 12: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 12:FINISHED FAILED
+Vuser 13:RUNNING
+Vuser 13:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 13: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 13:FINISHED FAILED
+Vuser 14:RUNNING
+Vuser 14:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 14: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 14:FINISHED FAILED
+Vuser 15:RUNNING
+Vuser 15:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 15: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 15:FINISHED FAILED
+Vuser 16:RUNNING
+Vuser 16:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 16: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 16:FINISHED FAILED
+Vuser 17:RUNNING
+Vuser 17:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 17: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 17:FINISHED FAILED
+Vuser 18:RUNNING
+Vuser 18:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 18: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 18:FINISHED FAILED
+Vuser 19:RUNNING
+Vuser 19:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 19: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 19:FINISHED FAILED
+Vuser 20:RUNNING
+Vuser 20:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 20: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 20:FINISHED FAILED
+Vuser 21:RUNNING
+Vuser 21:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 21: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 21:FINISHED FAILED
+Vuser 22:RUNNING
+Vuser 22:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 22: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 22:FINISHED FAILED
+Vuser 23:RUNNING
+Vuser 23:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 23: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 23:FINISHED FAILED
+Vuser 24:RUNNING
+Vuser 24:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 24: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 24:FINISHED FAILED
+Vuser 25:RUNNING
+Vuser 25:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 25: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 25:FINISHED FAILED
+Vuser 26:RUNNING
+Vuser 26:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 26: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 26:FINISHED FAILED
+Vuser 27:RUNNING
+Vuser 27:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 27: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 27:FINISHED FAILED
+Vuser 28:RUNNING
+Vuser 28:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 28: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 28:FINISHED FAILED
+Vuser 29:RUNNING
+Vuser 29:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 29: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 29:FINISHED FAILED
+Vuser 30:RUNNING
+Vuser 30:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 30: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 30:FINISHED FAILED
+Vuser 31:RUNNING
+Vuser 31:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 31: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 31:FINISHED FAILED
+Vuser 32:RUNNING
+Vuser 32:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 32: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 32:FINISHED FAILED
+Vuser 33:RUNNING
+Vuser 33:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 33: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 33:FINISHED FAILED
+Vuser 34:RUNNING
+Vuser 34:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 34: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 34:FINISHED FAILED
+Vuser 35:RUNNING
+Vuser 35:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 35: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 35:FINISHED FAILED
+Vuser 36:RUNNING
+Vuser 36:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 36: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 36:FINISHED FAILED
+Vuser 37:RUNNING
+Vuser 37:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 37: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 37:FINISHED FAILED
+Vuser 38:RUNNING
+Vuser 38:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 38: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 38:FINISHED FAILED
+Vuser 39:RUNNING
+Vuser 39:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 39: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 39:FINISHED FAILED
+Vuser 40:RUNNING
+Vuser 40:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 40: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 40:FINISHED FAILED
+Vuser 41:RUNNING
+Vuser 41:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 41: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 41:FINISHED FAILED
+Vuser 42:RUNNING
+Vuser 42:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 42: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 42:FINISHED FAILED
+Vuser 43:RUNNING
+Vuser 43:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 43: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 43:FINISHED FAILED
+Vuser 44:RUNNING
+Vuser 44:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 44: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 44:FINISHED FAILED
+Vuser 45:RUNNING
+Vuser 45:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 45: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 45:FINISHED FAILED
+Vuser 46:RUNNING
+Vuser 46:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 46: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 46:FINISHED FAILED
+Vuser 47:RUNNING
+Vuser 47:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 47: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 47:FINISHED FAILED
+Vuser 48:RUNNING
+Vuser 48:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 48: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 48:FINISHED FAILED
+Vuser 49:RUNNING
+Vuser 49:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 49: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 49:FINISHED FAILED
+Vuser 50:RUNNING
+Vuser 50:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 50: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 50:FINISHED FAILED
+Vuser 51:RUNNING
+Vuser 51:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 51: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 51:FINISHED FAILED
+Vuser 52:RUNNING
+Vuser 52:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 52: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 52:FINISHED FAILED
+Vuser 53:RUNNING
+Vuser 53:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 53: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 53:FINISHED FAILED
+Vuser 54:RUNNING
+Vuser 54:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 54: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 54:FINISHED FAILED
+Vuser 55:RUNNING
+Vuser 55:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 55: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 55:FINISHED FAILED
+Vuser 56:RUNNING
+Vuser 56:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 56: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 56:FINISHED FAILED
+Vuser 57:RUNNING
+Vuser 57:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 57: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 57:FINISHED FAILED
+Vuser 58:RUNNING
+Vuser 58:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 58: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 58:FINISHED FAILED
+Vuser 59:RUNNING
+Vuser 59:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 59: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 59:FINISHED FAILED
+Vuser 60:RUNNING
+Vuser 60:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 60: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 60:FINISHED FAILED
+Vuser 61:RUNNING
+Vuser 61:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 61: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 61:FINISHED FAILED
+Vuser 62:RUNNING
+Vuser 62:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 62: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 62:FINISHED FAILED
+Vuser 63:RUNNING
+Vuser 63:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 63: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 63:FINISHED FAILED
+Vuser 64:RUNNING
+Vuser 64:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 64: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 64:FINISHED FAILED
+Vuser 65:RUNNING
+Vuser 65:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 65: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 65:FINISHED FAILED
+Vuser 66:RUNNING
+Vuser 66:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 66: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 66:FINISHED FAILED
+Vuser 67:RUNNING
+Vuser 67:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 67: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 67:FINISHED FAILED
+Vuser 68:RUNNING
+Vuser 68:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 68: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 68:FINISHED FAILED
+Vuser 69:RUNNING
+Vuser 69:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 69: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 69:FINISHED FAILED
+Vuser 70:RUNNING
+Vuser 70:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 70: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 70:FINISHED FAILED
+Vuser 71:RUNNING
+Vuser 71:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 71: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 71:FINISHED FAILED
+Vuser 72:RUNNING
+Vuser 72:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 72: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 72:FINISHED FAILED
+Vuser 73:RUNNING
+Vuser 73:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 73: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 73:FINISHED FAILED
+Vuser 74:RUNNING
+Vuser 74:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 74: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 74:FINISHED FAILED
+Vuser 75:RUNNING
+Vuser 75:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 75: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 75:FINISHED FAILED
+Vuser 76:RUNNING
+Vuser 76:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 76: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 76:FINISHED FAILED
+Vuser 77:RUNNING
+Vuser 77:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 77: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 77:FINISHED FAILED
+Vuser 78:RUNNING
+Vuser 78:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 78: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 78:FINISHED FAILED
+Vuser 79:RUNNING
+Vuser 79:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 79: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 79:FINISHED FAILED
+Vuser 80:RUNNING
+Vuser 80:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 80: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 80:FINISHED FAILED
+Vuser 81:RUNNING
+Vuser 81:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 81: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 81:FINISHED FAILED
+Vuser 82:RUNNING
+Vuser 82:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 82: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 82:FINISHED FAILED
+Vuser 83:RUNNING
+Vuser 83:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 83: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 83:FINISHED FAILED
+Vuser 84:RUNNING
+Vuser 84:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 84: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 84:FINISHED FAILED
+Vuser 85:RUNNING
+Vuser 85:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 85: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 85:FINISHED FAILED
+Vuser 86:RUNNING
+Vuser 86:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 86: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 86:FINISHED FAILED
+Vuser 87:RUNNING
+Vuser 87:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 87: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 87:FINISHED FAILED
+Vuser 88:RUNNING
+Vuser 88:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 88: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 88:FINISHED FAILED
+Vuser 89:RUNNING
+Vuser 89:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 89: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 89:FINISHED FAILED
+Vuser 90:RUNNING
+Vuser 90:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 90: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 90:FINISHED FAILED
+Vuser 91:RUNNING
+Vuser 91:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 91: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 91:FINISHED FAILED
+Vuser 92:RUNNING
+Vuser 92:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 92: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 92:FINISHED FAILED
+Vuser 93:RUNNING
+Vuser 93:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 93: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 93:FINISHED FAILED
+Vuser 94:RUNNING
+Vuser 94:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 94: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 94:FINISHED FAILED
+Vuser 95:RUNNING
+Vuser 95:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 95: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 95:FINISHED FAILED
+Vuser 96:RUNNING
+Vuser 96:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 96: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 96:FINISHED FAILED
+Vuser 97:RUNNING
+Vuser 97:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 97: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 97:FINISHED FAILED
+Vuser 98:RUNNING
+Vuser 98:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 98: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 98:FINISHED FAILED
+Vuser 99:RUNNING
+Vuser 99:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 99: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 99:FINISHED FAILED
+Vuser 100:RUNNING
+Vuser 100:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 100: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 100:FINISHED FAILED
+Vuser 101:RUNNING
+Vuser 101:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 101: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 101:FINISHED FAILED
+Vuser 102:RUNNING
+Vuser 102:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 102: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 102:FINISHED FAILED
+Vuser 103:RUNNING
+Vuser 103:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 103: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 103:FINISHED FAILED
+Vuser 104:RUNNING
+Vuser 104:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 104: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 104:FINISHED FAILED
+Vuser 105:RUNNING
+Vuser 105:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 105: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 105:FINISHED FAILED
+Vuser 106:RUNNING
+Vuser 106:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 106: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 106:FINISHED FAILED
+Vuser 107:RUNNING
+Vuser 107:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 107: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 107:FINISHED FAILED
+Vuser 108:RUNNING
+Vuser 108:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 108: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 108:FINISHED FAILED
+Vuser 109:RUNNING
+Vuser 109:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 109: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 109:FINISHED FAILED
+Vuser 110:RUNNING
+Vuser 110:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 110: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 110:FINISHED FAILED
+Vuser 111:RUNNING
+Vuser 111:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 111: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 111:FINISHED FAILED
+Vuser 112:RUNNING
+Vuser 112:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 112: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 112:FINISHED FAILED
+Vuser 113:RUNNING
+Vuser 113:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 113: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 113:FINISHED FAILED
+Vuser 114:RUNNING
+Vuser 114:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 114: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 114:FINISHED FAILED
+Vuser 115:RUNNING
+Vuser 115:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 115: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 115:FINISHED FAILED
+Vuser 116:RUNNING
+Vuser 116:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 116: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 116:FINISHED FAILED
+Vuser 117:RUNNING
+Vuser 117:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 117: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 117:FINISHED FAILED
+Vuser 118:RUNNING
+Vuser 118:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 118: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 118:FINISHED FAILED
+Vuser 119:RUNNING
+Vuser 119:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 119: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 119:FINISHED FAILED
+Vuser 120:RUNNING
+Vuser 120:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 120: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 120:FINISHED FAILED
+Vuser 121:RUNNING
+Vuser 121:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 121: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 121:FINISHED FAILED
+Vuser 122:RUNNING
+Vuser 122:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 122: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 122:FINISHED FAILED
+Vuser 123:RUNNING
+Vuser 123:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 123: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 123:FINISHED FAILED
+Vuser 124:RUNNING
+Vuser 124:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 124: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 124:FINISHED FAILED
+Vuser 125:RUNNING
+Vuser 125:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 125: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 125:FINISHED FAILED
+Vuser 126:RUNNING
+Vuser 126:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 126: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 126:FINISHED FAILED
+Vuser 127:RUNNING
+Vuser 127:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 127: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 127:FINISHED FAILED
+Vuser 128:RUNNING
+Vuser 128:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 128: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 128:FINISHED FAILED
+Vuser 129:RUNNING
+Vuser 129:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 129: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 129:FINISHED FAILED
+Vuser 130:RUNNING
+Vuser 130:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 130: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 130:FINISHED FAILED
+Vuser 131:RUNNING
+Vuser 131:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 131: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 131:FINISHED FAILED
+Vuser 132:RUNNING
+Vuser 132:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 132: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 132:FINISHED FAILED
+Vuser 133:RUNNING
+Vuser 133:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 133: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 133:FINISHED FAILED
+Vuser 134:RUNNING
+Vuser 134:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 134: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 134:FINISHED FAILED
+Vuser 135:RUNNING
+Vuser 135:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 135: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 135:FINISHED FAILED
+Vuser 136:RUNNING
+Vuser 136:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 136: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 136:FINISHED FAILED
+Vuser 137:RUNNING
+Vuser 137:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 137: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 137:FINISHED FAILED
+Vuser 138:RUNNING
+Vuser 138:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 138: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 138:FINISHED FAILED
+Vuser 139:RUNNING
+Vuser 139:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 139: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 139:FINISHED FAILED
+Vuser 140:RUNNING
+Vuser 140:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 140: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 140:FINISHED FAILED
+Vuser 141:RUNNING
+Vuser 141:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 141: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 141:FINISHED FAILED
+Vuser 142:RUNNING
+Vuser 142:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 142: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 142:FINISHED FAILED
+Vuser 143:RUNNING
+Vuser 143:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 143: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 143:FINISHED FAILED
+Vuser 144:RUNNING
+Vuser 144:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 144: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 144:FINISHED FAILED
+Vuser 145:RUNNING
+Vuser 145:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 145: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 145:FINISHED FAILED
+Vuser 146:RUNNING
+Vuser 146:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 146: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 146:FINISHED FAILED
+Vuser 147:RUNNING
+Vuser 147:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 147: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 147:FINISHED FAILED
+Vuser 148:RUNNING
+Vuser 148:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 148: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 148:FINISHED FAILED
+Vuser 149:RUNNING
+Vuser 149:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 149: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 149:FINISHED FAILED
+Vuser 150:RUNNING
+Vuser 150:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 150: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 150:FINISHED FAILED
+Vuser 151:RUNNING
+Vuser 151:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 151: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 151:FINISHED FAILED
+Vuser 152:RUNNING
+Vuser 152:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 152: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 152:FINISHED FAILED
+Vuser 153:RUNNING
+Vuser 153:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 153: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 153:FINISHED FAILED
+Vuser 154:RUNNING
+Vuser 154:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 154: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 154:FINISHED FAILED
+Vuser 155:RUNNING
+Vuser 155:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 155: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 155:FINISHED FAILED
+Vuser 156:RUNNING
+Vuser 156:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 156: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 156:FINISHED FAILED
+Vuser 157:RUNNING
+Vuser 157:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 157: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 157:FINISHED FAILED
+Vuser 158:RUNNING
+Vuser 158:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 158: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 158:FINISHED FAILED
+Vuser 159:RUNNING
+Vuser 159:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 159: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 159:FINISHED FAILED
+Vuser 160:RUNNING
+Vuser 160:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 160: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 160:FINISHED FAILED
+Vuser 161:RUNNING
+Vuser 161:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 161: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 161:FINISHED FAILED
+Vuser 162:RUNNING
+Vuser 162:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 162: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 162:FINISHED FAILED
+Vuser 163:RUNNING
+Vuser 163:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 163: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 163:FINISHED FAILED
+Vuser 164:RUNNING
+Vuser 164:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 164: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 164:FINISHED FAILED
+Vuser 165:RUNNING
+Vuser 165:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 165: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 165:FINISHED FAILED
+Vuser 166:RUNNING
+Vuser 166:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 166: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 166:FINISHED FAILED
+Vuser 167:RUNNING
+Vuser 167:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 167: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 167:FINISHED FAILED
+Vuser 168:RUNNING
+Vuser 168:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 168: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 168:FINISHED FAILED
+Vuser 169:RUNNING
+Vuser 169:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 169: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 169:FINISHED FAILED
+Vuser 170:RUNNING
+Vuser 170:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 170: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 170:FINISHED FAILED
+Vuser 171:RUNNING
+Vuser 171:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 171: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 171:FINISHED FAILED
+Vuser 172:RUNNING
+Vuser 172:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 172: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 172:FINISHED FAILED
+Vuser 173:RUNNING
+Vuser 173:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 173: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 173:FINISHED FAILED
+Vuser 174:RUNNING
+Vuser 174:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 174: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 174:FINISHED FAILED
+Vuser 175:RUNNING
+Vuser 175:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 175: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 175:FINISHED FAILED
+Vuser 176:RUNNING
+Vuser 176:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 176: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 176:FINISHED FAILED
+Vuser 177:RUNNING
+Vuser 177:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 177: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 177:FINISHED FAILED
+Vuser 178:RUNNING
+Vuser 178:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 178: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 178:FINISHED FAILED
+Vuser 179:RUNNING
+Vuser 179:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 179: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 179:FINISHED FAILED
+Vuser 180:RUNNING
+Vuser 180:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 180: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 180:FINISHED FAILED
+Vuser 181:RUNNING
+Vuser 181:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 181: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 181:FINISHED FAILED
+Vuser 182:RUNNING
+Vuser 182:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 182: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 182:FINISHED FAILED
+Vuser 183:RUNNING
+Vuser 183:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 183: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 183:FINISHED FAILED
+Vuser 184:RUNNING
+Vuser 184:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 184: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 184:FINISHED FAILED
+Vuser 185:RUNNING
+Vuser 185:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 185: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 185:FINISHED FAILED
+Vuser 186:RUNNING
+Vuser 186:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 186: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 186:FINISHED FAILED
+Vuser 187:RUNNING
+Vuser 187:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 187: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 187:FINISHED FAILED
+Vuser 188:RUNNING
+Vuser 188:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 188: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 188:FINISHED FAILED
+Vuser 189:RUNNING
+Vuser 189:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 189: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 189:FINISHED FAILED
+Vuser 190:RUNNING
+Vuser 190:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 190: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 190:FINISHED FAILED
+Vuser 191:RUNNING
+Vuser 191:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 191: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 191:FINISHED FAILED
+Vuser 192:RUNNING
+Vuser 192:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 192: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 192:FINISHED FAILED
+Vuser 193:RUNNING
+Vuser 193:Connection to database failed connection to server at localhost (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+Error in Virtual User 193: Connection to database failed
+connection to server at "localhost" (127.0.0.1), port 5432 failed: server sent an error response during SSL exchange
+
+Vuser 193:FINISHED FAILED
+ALL VIRTUAL USERS COMPLETE
+vudestroy success
+

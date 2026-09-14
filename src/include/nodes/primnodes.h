@@ -217,6 +217,9 @@ typedef struct Expr
  * row identity information during UPDATE/DELETE/MERGE.  This value should
  * never be seen outside the planner.
  *
+ * INVALID_VAR should never appear as anything's varno.  We use it in a
+ * few APIs to denote removal of an RTE.
+ *
  * varnullingrels is the set of RT indexes of outer joins that can force
  * the Var's value to null (at the point where it appears in the query).
  * See optimizer/README for discussion of that.
@@ -244,6 +247,7 @@ typedef struct Expr
 #define    OUTER_VAR		(-2)	/* reference to outer subplan */
 #define    INDEX_VAR		(-3)	/* reference to index column */
 #define    ROWID_VAR		(-4)	/* row identity column during planning */
+#define    INVALID_VAR		(-5)	/* this is not a valid varno! */
 
 #define IS_SPECIAL_VARNO(varno)		((int) (varno) < 0)
 
@@ -1356,11 +1360,11 @@ typedef struct CaseWhen
  *	* Placeholder for intermediate results in some SQL/JSON expression nodes,
  *	  such as JsonConstructorExpr.
  *
- * The uses in CaseExpr and ArrayCoerceExpr are safe only to the extent that
- * there is not any other CaseExpr or ArrayCoerceExpr between the value source
- * node and its child CaseTestExpr(s).  This is true in the parse analysis
- * output, but the planner's function-inlining logic has to be careful not to
- * break it.
+ * The uses in CaseExpr, ArrayCoerceExpr, and JsonConstructorExpr are safe
+ * only to the extent that there is not any other such node between the
+ * value source node and its child CaseTestExpr(s).  This is true in the
+ * parse analysis output, but the planner's constant-folding of simple CASE
+ * and its function-inlining logic have to be careful not to break it.
  *
  * The nested-assignment-expression case is safe because the only node types
  * that can be above such CaseTestExprs are FieldStore and SubscriptingRef.
@@ -2179,30 +2183,6 @@ typedef struct ReturningExpr
 	bool		retold;			/* true for OLD, false for NEW */
 	Expr	   *retexpr;		/* expression to be returned */
 } ReturningExpr;
-
-/*
- * GraphLabelRef - label reference in label expression inside GRAPH_TABLE clause
- */
-typedef struct GraphLabelRef
-{
-	NodeTag		type;
-	Oid			labelid;
-	ParseLoc	location;
-} GraphLabelRef;
-
-/*
- * GraphPropertyRef - property reference inside GRAPH_TABLE clause
- */
-typedef struct GraphPropertyRef
-{
-	Expr		xpr;
-	const char *elvarname;
-	Oid			propid;
-	Oid			typeId;
-	int32		typmod;
-	Oid			collation;
-	ParseLoc	location;
-} GraphPropertyRef;
 
 /*--------------------
  * TargetEntry -

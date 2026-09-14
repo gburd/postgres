@@ -350,31 +350,13 @@ typedef struct
 	List	   *already_used;	/* expressions already dealt with */
 } ec_member_foreign_arg;
 
-/* Pairs of remote columns with local columns */
-typedef struct
-{
-	AttrNumber	local_attnum;
-	char	   *local_attname;
-	char	   *remote_attname;
-	int			res_index;
-} RemoteAttributeMapping;
-
-/* Result sets that are returned from a foreign statistics scan */
-typedef struct
-{
-	PGresult   *rel;
-	PGresult   *att;
-	double		livetuples;
-	double		deadtuples;
-	int			version;
-} RemoteStatsResults;
-
 /* Column order in relation stats query */
 enum RelStatsColumns
 {
 	RELSTATS_RELPAGES = 0,
 	RELSTATS_RELTUPLES,
 	RELSTATS_RELKIND,
+	RELSTATS_RELHASSUBCLASS,
 	RELSTATS_NUM_FIELDS,
 };
 
@@ -397,6 +379,25 @@ enum AttStatsColumns
 	ATTSTATS_RANGE_BOUNDS_HISTOGRAM,
 	ATTSTATS_NUM_FIELDS,
 };
+
+/* Results that are returned from a foreign statistics scan */
+typedef struct
+{
+	int			version;		/* version of remote server */
+	BlockNumber relpages;		/* # of pages in remote table */
+	double		reltuples;		/* # of tuples in remote table */
+	PGresult   *rel;			/* result for relation stats query */
+	PGresult   *att;			/* result for attribute stats query */
+} RemoteStatsResults;
+
+/* Pairs of remote columns with local columns */
+typedef struct
+{
+	AttrNumber	local_attnum;	/* attribute number of local column */
+	char	   *local_attname;	/* attribute name of local column */
+	char	   *remote_attname; /* attribute name of remote column */
+	int			res_index;		/* index of row in attribute stats result */
+} RemoteAttributeMapping;
 
 /*
  * SQL functions
@@ -593,12 +594,13 @@ static void analyze_row_processor(PGresult *res, int row,
 								  PgFdwAnalyzeState *astate);
 static bool fetch_remote_statistics(Relation relation,
 									List *va_cols,
-									ForeignTable *table,
 									const char *local_schemaname,
 									const char *local_relname,
-									int *p_attrcnt,
+									ForeignTable *table,
+									ForeignServer *server,
+									RemoteStatsResults *remstats,
 									RemoteAttributeMapping **p_remattrmap,
-									RemoteStatsResults *remstats);
+									int *p_attrcnt);
 static PGresult *fetch_relstats(PGconn *conn, Relation relation);
 static PGresult *fetch_attstats(PGconn *conn, int server_version_num,
 								const char *remote_schemaname, const char *remote_relname,
@@ -613,18 +615,17 @@ static bool match_attrmap(PGresult *res,
 						  const char *local_relname,
 						  const char *remote_schemaname,
 						  const char *remote_relname,
-						  int attrcnt,
-						  RemoteAttributeMapping *remattrmap);
+						  RemoteAttributeMapping *remattrmap,
+						  int attrcnt);
 static bool import_fetched_statistics(Relation relation,
 									  const char *schemaname,
 									  const char *relname,
-									  int attrcnt,
+									  RemoteStatsResults *remstats,
 									  const RemoteAttributeMapping *remattrmap,
-									  RemoteStatsResults *remstats);
+									  int attrcnt);
 static char *get_opt_value(PGresult *res, int row, int col);
 static void set_text_arg(NullableDatum *arg, const char *s);
 static void set_int32_arg(NullableDatum *arg, const char *s);
-static void set_uint32_arg(NullableDatum *arg, const char *s);
 static void set_float_arg(NullableDatum *arg, const char *s);
 static void set_floatarr_arg(NullableDatum *arg, const char *s);
 static void produce_tuple_asynchronously(AsyncRequest *areq, bool fetch);
@@ -2003,7 +2004,7 @@ postgresPlanForeignModify(PlannerInfo *root,
 {
 	CmdType		operation = plan->operation;
 	RangeTblEntry *rte = planner_rt_fetch(resultRelation, root);
-	Relation	rel;
+	Relation	targetrel;
 	StringInfoData sql;
 	List	   *targetAttrs = NIL;
 	List	   *withCheckOptionList = NIL;
@@ -2018,7 +2019,7 @@ postgresPlanForeignModify(PlannerInfo *root,
 	 * Core code already has some lock on each rel being planned, so we can
 	 * use NoLock here.
 	 */
-	rel = table_open(rte->relid, NoLock);
+	targetrel = table_open(rte->relid, NoLock);
 
 	/*
 	 * In an INSERT, we transmit all columns that are defined in the foreign
@@ -2033,10 +2034,10 @@ postgresPlanForeignModify(PlannerInfo *root,
 	 */
 	if (operation == CMD_INSERT ||
 		(operation == CMD_UPDATE &&
-		 rel->trigdesc &&
-		 rel->trigdesc->trig_update_before_row))
+		 targetrel->trigdesc &&
+		 targetrel->trigdesc->trig_update_before_row))
 	{
-		TupleDesc	tupdesc = RelationGetDescr(rel);
+		TupleDesc	tupdesc = RelationGetDescr(targetrel);
 		int			attnum;
 
 		for (attnum = 1; attnum <= tupdesc->natts; attnum++)
@@ -2050,8 +2051,8 @@ postgresPlanForeignModify(PlannerInfo *root,
 	else if (operation == CMD_UPDATE)
 	{
 		int			col;
-		RelOptInfo *rel = find_base_rel(root, resultRelation);
-		Bitmapset  *allUpdatedCols = get_rel_all_updated_cols(root, rel);
+		RelOptInfo *baserel = find_base_rel(root, resultRelation);
+		Bitmapset  *allUpdatedCols = get_rel_all_updated_cols(root, baserel);
 
 		col = -1;
 		while ((col = bms_next_member(allUpdatedCols, col)) >= 0)
@@ -2096,19 +2097,19 @@ postgresPlanForeignModify(PlannerInfo *root,
 	switch (operation)
 	{
 		case CMD_INSERT:
-			deparseInsertSql(&sql, rte, resultRelation, rel,
+			deparseInsertSql(&sql, rte, resultRelation, targetrel,
 							 targetAttrs, doNothing,
 							 withCheckOptionList, returningList,
 							 &retrieved_attrs, &values_end_len);
 			break;
 		case CMD_UPDATE:
-			deparseUpdateSql(&sql, rte, resultRelation, rel,
+			deparseUpdateSql(&sql, rte, resultRelation, targetrel,
 							 targetAttrs,
 							 withCheckOptionList, returningList,
 							 &retrieved_attrs);
 			break;
 		case CMD_DELETE:
-			deparseDeleteSql(&sql, rte, resultRelation, rel,
+			deparseDeleteSql(&sql, rte, resultRelation, targetrel,
 							 returningList,
 							 &retrieved_attrs);
 			break;
@@ -2117,7 +2118,7 @@ postgresPlanForeignModify(PlannerInfo *root,
 			break;
 	}
 
-	table_close(rel, NoLock);
+	table_close(targetrel, NoLock);
 
 	/*
 	 * Build the fdw_private list that will be available to the executor.
@@ -5296,7 +5297,7 @@ postgresGetAnalyzeInfoForForeignTable(Relation relation, bool *can_tablesample)
 
 	if (PQntuples(res) != 1 || PQnfields(res) != RELSTATS_NUM_FIELDS)
 		elog(ERROR, "unexpected result from deparseAnalyzeInfoSql query");
-	/* We don't use relpages here */
+	/* We don't use relpages/relhassubclass here */
 	reltuples = strtod(PQgetvalue(res, 0, RELSTATS_RELTUPLES), NULL);
 	relkind = *(PQgetvalue(res, 0, RELSTATS_RELKIND));
 	PQclear(res);
@@ -5764,17 +5765,16 @@ postgresImportForeignStatistics(Relation relation, List *va_cols, int elevel)
 	starttime = GetCurrentTimestamp();
 
 	ok = fetch_remote_statistics(relation, va_cols,
-								 table, schemaname, relname,
-								 &attrcnt, &remattrmap, &remstats);
+								 schemaname, relname, table, server,
+								 &remstats, &remattrmap, &attrcnt);
 
 	if (ok)
 		ok = import_fetched_statistics(relation, schemaname, relname,
-									   attrcnt, remattrmap, &remstats);
+									   &remstats, remattrmap, attrcnt);
 
 	if (ok)
 	{
-		pgstat_report_analyze(relation,
-							  remstats.livetuples, remstats.deadtuples,
+		pgstat_report_analyze(relation, remstats.reltuples, 0,
 							  (va_cols == NIL), starttime);
 
 		ereport(elevel,
@@ -5795,12 +5795,13 @@ postgresImportForeignStatistics(Relation relation, List *va_cols, int elevel)
 static bool
 fetch_remote_statistics(Relation relation,
 						List *va_cols,
-						ForeignTable *table,
 						const char *local_schemaname,
 						const char *local_relname,
-						int *p_attrcnt,
+						ForeignTable *table,
+						ForeignServer *server,
+						RemoteStatsResults *remstats,
 						RemoteAttributeMapping **p_remattrmap,
-						RemoteStatsResults *remstats)
+						int *p_attrcnt)
 {
 	const char *remote_schemaname = NULL;
 	const char *remote_relname = NULL;
@@ -5809,15 +5810,13 @@ fetch_remote_statistics(Relation relation,
 	PGresult   *relstats = NULL;
 	PGresult   *attstats = NULL;
 	int			server_version_num;
-	RemoteAttributeMapping *remattrmap = NULL;
-	int			attrcnt = 0;
 	char		relkind;
 	double		reltuples;
 	bool		ok = false;
 	ListCell   *lc;
 
 	/*
-	 * Assume the remote schema/relation names are the same as the local name
+	 * Assume the remote schema/table names are the same as the local name
 	 * unless the foreign table's options tell us otherwise.
 	 */
 	remote_schemaname = local_schemaname;
@@ -5835,6 +5834,9 @@ fetch_remote_statistics(Relation relation,
 	/*
 	 * Get connection to the foreign server.  Connection manager will
 	 * establish new connection if necessary.
+	 *
+	 * Note that unlike the sampling case, we only query pg_class and
+	 * pg_stats, so we do the remote access as the current user.
 	 */
 	user = GetUserMapping(GetUserId(), table->serverid);
 	conn = GetConnection(user, false, NULL);
@@ -5868,41 +5870,64 @@ fetch_remote_statistics(Relation relation,
 	}
 
 	/*
-	 * If the reltuples value > 0, then we can expect to find attribute stats
-	 * for the remote table.
-	 *
-	 * In v14 or later, if a reltuples value is -1, it means the table has
-	 * never been analyzed, so we wouldn't expect to find the stats for the
-	 * table; fallback to sampling in that case.  If the value is 0, it means
-	 * it was empty; in which case skip the stats and import relation stats
-	 * only.
-	 *
-	 * In versions prior to v14, a value of 0 was ambiguous; it could mean
-	 * that the table had never been analyzed, or that it was empty.  Either
-	 * way, we wouldn't expect to find the stats for the table, so we fallback
-	 * to sampling.
+	 * For now, we don't support the case where the remote table is (or was
+	 * once) inherited; fallback to sampling in that case.  XXX FIXME: for the
+	 * case where it is inherited, we could also support it by fetching and
+	 * adding the relation stats for child tables as well.
 	 */
-	reltuples = strtod(PQgetvalue(relstats, 0, RELSTATS_RELTUPLES), NULL);
-	if (((server_version_num < 140000) && (reltuples == 0)) ||
-		((server_version_num >= 140000) && (reltuples == -1)))
+	if ((relkind == RELKIND_RELATION || relkind == RELKIND_FOREIGN_TABLE) &&
+		strcmp(PQgetvalue(relstats, 0, RELSTATS_RELHASSUBCLASS), "t") == 0)
 	{
 		ereport(WARNING,
-				errmsg("could not import statistics for foreign table \"%s.%s\" --- remote table \"%s.%s\" has no relation statistics to import",
+				errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				errmsg("could not import statistics for foreign table \"%s.%s\" --- remote table \"%s.%s\" is (or was once) inherited",
 					   local_schemaname, local_relname,
 					   remote_schemaname, remote_relname));
 		goto fetch_cleanup;
 	}
 
+	/*
+	 * If the reltuples value > 0, then we can expect to find attribute stats
+	 * for the remote table.
+	 *
+	 * In v14 or later, if the value is -1, it means the table had never been
+	 * analyzed, so we wouldn't expect to find the stats; fallback to sampling
+	 * in that case.  If the value is 0, it means it was empty, in which case
+	 * we don't need the stats, so import relation stats only.
+	 *
+	 * In versions prior to v14, a value of 0 was ambiguous; it could mean
+	 * that the table had never been analyzed, or that it was empty.  Assuming
+	 * the former, fallback to sampling.
+	 */
+	remstats->reltuples = reltuples =
+		strtod(PQgetvalue(relstats, 0, RELSTATS_RELTUPLES), NULL);
 	if (reltuples > 0)
 	{
+		RemoteAttributeMapping *remattrmap;
+		int			attrcnt;
 		StringInfoData column_list;
 
+		/* For columns to analyze, create mappings of local/remote columns. */
 		*p_remattrmap = remattrmap = build_remattrmap(relation, va_cols,
 													  &attrcnt, &column_list);
 		*p_attrcnt = attrcnt;
 
+		/* Try to get attribute stats if needed. */
 		if (attrcnt > 0)
 		{
+			/*
+			 * The fetch_attstats query sends COLLATE "C" to the remote
+			 * server; if it hasn't got it, fallback to sampling.
+			 */
+			if (server_version_num < 90100)
+			{
+				ereport(WARNING,
+						errmsg("could not import statistics for foreign table \"%s.%s\" --- foreign server \"%s\" is too old to support attribute statistics import",
+							   local_schemaname, local_relname,
+							   server->servername));
+				goto fetch_cleanup;
+			}
+
 			/* Fetch attribute stats. */
 			remstats->att = attstats = fetch_attstats(conn,
 													  server_version_num,
@@ -5914,14 +5939,29 @@ fetch_remote_statistics(Relation relation,
 			if (!match_attrmap(attstats,
 							   local_schemaname, local_relname,
 							   remote_schemaname, remote_relname,
-							   attrcnt, remattrmap))
+							   remattrmap, attrcnt))
 				goto fetch_cleanup;
 		}
 	}
+	else if (((server_version_num < 140000) && (reltuples == 0)) ||
+			 ((server_version_num >= 140000) && (reltuples == -1)))
+	{
+		ereport(WARNING,
+				errmsg("could not import statistics for foreign table \"%s.%s\" --- remote table \"%s.%s\" has no relation statistics to import",
+					   local_schemaname, local_relname,
+					   remote_schemaname, remote_relname));
+		goto fetch_cleanup;
+	}
 
-	/* We assume that we have no dead tuple. */
-	remstats->deadtuples = 0.0;
-	remstats->livetuples = reltuples;
+	/*
+	 * If the remote table is partitioned, import relpages = 0, to match the
+	 * sampling case.
+	 */
+	if (relkind == RELKIND_PARTITIONED_TABLE)
+		remstats->relpages = 0;
+	else
+		remstats->relpages =
+			strtoul(PQgetvalue(relstats, 0, RELSTATS_RELPAGES), NULL, 10);
 
 	ok = true;
 
@@ -5962,6 +6002,9 @@ fetch_attstats(PGconn *conn, int server_version_num,
 {
 	StringInfoData sql;
 	PGresult   *res;
+
+	/* The caller guarantees the remote server is v9.1 or later. */
+	Assert(server_version_num >= 90100);
 
 	initStringInfo(&sql);
 	appendStringInfoString(&sql,
@@ -6005,13 +6048,12 @@ fetch_attstats(PGconn *conn, int server_version_num,
 					 " AND attname = ANY(%s)",
 					 column_list);
 
-	/* inherited is supported since Postgres 9.0 */
-	if (server_version_num >= 90000)
-		appendStringInfoString(&sql,
-							   " ORDER BY attname COLLATE \"C\", inherited DESC");
-	else
-		appendStringInfoString(&sql,
-							   " ORDER BY attname COLLATE \"C\"");
+	/*
+	 * inherited and COLLATE are supported since Postgres 9.0 and 9.1,
+	 * respectively.
+	 */
+	appendStringInfoString(&sql,
+						   " ORDER BY attname COLLATE \"C\", inherited DESC");
 
 	res = pgfdw_exec_query(conn, sql.data, NULL);
 	if (PQresultStatus(res) != PGRES_TUPLES_OK)
@@ -6024,8 +6066,9 @@ fetch_attstats(PGconn *conn, int server_version_num,
 }
 
 /*
- * Build the mappings of local columns to remote columns and create a column
- * list used for constructing the fetch_attstats query.
+ * For columns to analyze, build the mappings of local columns to remote
+ * columns, and create a column list used for constructing the fetch_attstats
+ * query.
  */
 static RemoteAttributeMapping *
 build_remattrmap(Relation relation, List *va_cols,
@@ -6043,7 +6086,7 @@ build_remattrmap(Relation relation, List *va_cols,
 		Form_pg_attribute attr = TupleDescAttr(tupdesc, i);
 		char	   *attname = NameStr(attr->attname);
 		AttrNumber	attnum = attr->attnum;
-		char	   *remote_attname;
+		char	   *colname;
 		List	   *fc_options;
 		ListCell   *lc;
 
@@ -6054,8 +6097,11 @@ build_remattrmap(Relation relation, List *va_cols,
 		if (!attribute_is_analyzable(relation, attnum, attr, NULL))
 			continue;
 
-		/* If the column_name option is not specified, go with attname. */
-		remote_attname = attname;
+		/*
+		 * Assume the remote column names are the same as the local name
+		 * unless the foreign column's options tell us otherwise.
+		 */
+		colname = attname;
 		fc_options = GetForeignColumnOptions(RelationGetRelid(relation), attnum);
 		foreach(lc, fc_options)
 		{
@@ -6063,24 +6109,24 @@ build_remattrmap(Relation relation, List *va_cols,
 
 			if (strcmp(def->defname, "column_name") == 0)
 			{
-				remote_attname = defGetString(def);
+				colname = defGetString(def);
 				break;
 			}
 		}
 
 		if (attrcnt > 0)
 			appendStringInfoString(column_list, ", ");
-		deparseStringLiteral(column_list, remote_attname);
+		deparseStringLiteral(column_list, colname);
 
 		remattrmap[attrcnt].local_attnum = attnum;
 		remattrmap[attrcnt].local_attname = pstrdup(attname);
-		remattrmap[attrcnt].remote_attname = pstrdup(remote_attname);
+		remattrmap[attrcnt].remote_attname = pstrdup(colname);
 		remattrmap[attrcnt].res_index = -1;
 		attrcnt++;
 	}
 	appendStringInfoChar(column_list, ']');
 
-	/* Sort mappings by remote attribute name if needed. */
+	/* Sort the mappings by remote_attname if needed. */
 	if (attrcnt > 1)
 		qsort(remattrmap, attrcnt, sizeof(RemoteAttributeMapping), remattrmap_cmp);
 
@@ -6149,7 +6195,7 @@ remattrmap_cmp(const void *v1, const void *v2)
  * As the result set consists of the attribute stats for some/all of distinct
  * mapped remote columns in the RemoteAttributeMapping, every entry in it
  * should have at most one match in the result set; which is also ordered by
- * attname, so we find such pairs by doing a merge join.
+ * remote_attname, so we find such pairs by doing a merge join.
  *
  * Returns true if every entry in it has a match, and false if not.
  */
@@ -6159,8 +6205,8 @@ match_attrmap(PGresult *res,
 			  const char *local_relname,
 			  const char *remote_schemaname,
 			  const char *remote_relname,
-			  int attrcnt,
-			  RemoteAttributeMapping *remattrmap)
+			  RemoteAttributeMapping *remattrmap,
+			  int attrcnt)
 {
 	int			numrows = PQntuples(res);
 	int			row = -1;
@@ -6247,11 +6293,10 @@ static bool
 import_fetched_statistics(Relation relation,
 						  const char *schemaname,
 						  const char *relname,
-						  int attrcnt,
+						  RemoteStatsResults *remstats,
 						  const RemoteAttributeMapping *remattrmap,
-						  RemoteStatsResults *remstats)
+						  int attrcnt)
 {
-	PGresult   *res;
 	NullableDatum args[ATTSTATS_NUM_FIELDS];
 
 	/* Set the 'version' parameter, which is common to both statistics. */
@@ -6263,9 +6308,10 @@ import_fetched_statistics(Relation relation,
 	 * prone to errors.  This avoids making a modification of pg_class that
 	 * will just get rolled back by a failed attribute import.
 	 */
-	res = remstats->att;
-	if (res != NULL)
+	if (remstats->att != NULL)
 	{
+		PGresult   *res = remstats->att;
+
 		Assert(PQnfields(res) == ATTSTATS_NUM_FIELDS);
 		Assert(PQntuples(res) >= 1);
 
@@ -6331,16 +6377,13 @@ import_fetched_statistics(Relation relation,
 	/*
 	 * Import relation statistics.
 	 */
-	res = remstats->rel;
-	Assert(res != NULL);
-	Assert(PQnfields(res) == RELSTATS_NUM_FIELDS);
-	Assert(PQntuples(res) == 1);
 
 	/* Set the remaining parameters. */
-	set_uint32_arg(&args[1], get_opt_value(res, 0, RELSTATS_RELPAGES));
-	Assert(!args[1].isnull);
-	set_float_arg(&args[2], get_opt_value(res, 0, RELSTATS_RELTUPLES));
-	Assert(!args[2].isnull);
+	args[1].value = Int32GetDatum(remstats->relpages);
+	args[1].isnull = false;
+	args[2].value = Float4GetDatum(remstats->reltuples);
+	args[2].isnull = false;
+	/* We don't import relallvisible/relallfrozen. */
 	args[3].value = (Datum) 0;
 	args[3].isnull = true;
 	args[4].value = (Datum) 0;
@@ -6409,26 +6452,6 @@ set_int32_arg(NullableDatum *arg, const char *s)
 }
 
 /*
- * Convenience routine for setting optional uint32 arguments
- */
-static void
-set_uint32_arg(NullableDatum *arg, const char *s)
-{
-	if (s)
-	{
-		uint32		val = uint32in_subr(s, NULL, "uint32", NULL);
-
-		arg->value = UInt32GetDatum(val);
-		arg->isnull = false;
-	}
-	else
-	{
-		arg->value = (Datum) 0;
-		arg->isnull = true;
-	}
-}
-
-/*
  * Convenience routine for setting optional float arguments
  */
 static void
@@ -6460,7 +6483,7 @@ set_floatarr_arg(NullableDatum *arg, const char *s)
 		Datum		val;
 
 		fmgr_info(F_ARRAY_IN, &flinfo);
-		val = InputFunctionCall(&flinfo, (char *) s, FLOAT4OID, -1);
+		val = InputFunctionCall(&flinfo, s, FLOAT4OID, -1);
 
 		arg->value = val;
 		arg->isnull = false;
@@ -6929,8 +6952,9 @@ init_func_stub_fpinfo(const PgFdwRelationInfo *fpinfo_foreign,
 
 	stub->pushdown_safe = true;
 
-	/* Server-level options, inherited from the foreign side. */
+	/* Connection information and options, inherited from the foreign side */
 	stub->server = fpinfo_foreign->server;
+	stub->user = fpinfo_foreign->user;
 	stub->shippable_extensions = fpinfo_foreign->shippable_extensions;
 	stub->fdw_startup_cost = fpinfo_foreign->fdw_startup_cost;
 	stub->fdw_tuple_cost = fpinfo_foreign->fdw_tuple_cost;
@@ -7062,8 +7086,6 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
 	PgFdwRelationInfo *fpinfo_i;
 	ListCell   *lc;
 	List	   *joinclauses;
-	bool		outer_is_function = false;
-	bool		inner_is_function = false;
 
 	/*
 	 * We support pushing down INNER, LEFT, RIGHT, FULL OUTER and SEMI joins.
@@ -7087,40 +7109,22 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
 	 * function RTE can be absorbed into joins on multiple foreign servers
 	 * (each call gets its own stub fpinfo and rechecks shippability for the
 	 * specific server).
+	 *
+	 * A function rel has no fdw_private of its own, so when one side is a
+	 * function RTE we replace its NULL fpinfo with a stub, and the rest of
+	 * this function and the cost estimator can then treat both sides
+	 * uniformly.  We hand the stub to the joinrel's deparser via the same
+	 * path the foreign side uses, but we never permanently attach it to the
+	 * function rel's fdw_private (different joinrels may pair the same
+	 * function RTE with different foreign servers).
 	 */
 	fpinfo = (PgFdwRelationInfo *) joinrel->fdw_private;
-	if (jointype == JOIN_INNER && innerrel->rtekind == RTE_FUNCTION &&
-		(fpinfo_o = (PgFdwRelationInfo *) outerrel->fdw_private) &&
-		fpinfo_o->pushdown_safe &&
-		function_rte_pushdown_ok(root, innerrel, outerrel))
-	{
-		inner_is_function = true;
-	}
-	else if (jointype == JOIN_INNER && outerrel->rtekind == RTE_FUNCTION &&
-			 (fpinfo_i = (PgFdwRelationInfo *) innerrel->fdw_private) &&
-			 fpinfo_i->pushdown_safe &&
-			 function_rte_pushdown_ok(root, outerrel, innerrel))
-	{
-		outer_is_function = true;
-	}
-	else
-	{
-		fpinfo_o = (PgFdwRelationInfo *) outerrel->fdw_private;
-		fpinfo_i = (PgFdwRelationInfo *) innerrel->fdw_private;
-		if (!fpinfo_o || !fpinfo_o->pushdown_safe ||
-			!fpinfo_i || !fpinfo_i->pushdown_safe)
-			return false;
-	}
+	fpinfo_o = (PgFdwRelationInfo *) outerrel->fdw_private;
+	fpinfo_i = (PgFdwRelationInfo *) innerrel->fdw_private;
 
-	/*
-	 * If one side is a function RTE, allocate a stub fpinfo so the rest of
-	 * this function and the cost estimator can treat it uniformly.  We hand
-	 * the stub to the joinrel's deparser via the same path the foreign side
-	 * uses, but we never permanently attach it to the function rel's
-	 * fdw_private (different joinrels may pair the same function RTE with
-	 * different foreign servers).
-	 */
-	if (inner_is_function)
+	if (jointype == JOIN_INNER && innerrel->rtekind == RTE_FUNCTION &&
+		fpinfo_o && fpinfo_o->pushdown_safe &&
+		function_rte_pushdown_ok(root, innerrel, outerrel))
 	{
 		fpinfo_i = init_func_stub_fpinfo(fpinfo_o, innerrel);
 
@@ -7135,15 +7139,20 @@ foreign_join_ok(PlannerInfo *root, RelOptInfo *joinrel, JoinType jointype,
 						   &fpinfo_i->remote_conds, &fpinfo_i->local_conds);
 		fpinfo->inner_func_fpinfo = fpinfo_i;
 	}
-	else if (outer_is_function)
+	else if (jointype == JOIN_INNER && outerrel->rtekind == RTE_FUNCTION &&
+			 fpinfo_i && fpinfo_i->pushdown_safe &&
+			 function_rte_pushdown_ok(root, outerrel, innerrel))
 	{
 		fpinfo_o = init_func_stub_fpinfo(fpinfo_i, outerrel);
 
-		/* See the comment in the inner_is_function branch above. */
+		/* See the comment in the branch above. */
 		classifyConditions(root, outerrel, fpinfo_o, outerrel->baserestrictinfo,
 						   &fpinfo_o->remote_conds, &fpinfo_o->local_conds);
 		fpinfo->outer_func_fpinfo = fpinfo_o;
 	}
+	else if (!fpinfo_o || !fpinfo_o->pushdown_safe ||
+			 !fpinfo_i || !fpinfo_i->pushdown_safe)
+		return false;
 
 	/*
 	 * If joining relations have local conditions, those conditions are
@@ -8963,7 +8972,7 @@ make_tuple_from_result_row(PGresult *res,
 	foreach(lc, retrieved_attrs)
 	{
 		int			i = lfirst_int(lc);
-		char	   *valstr;
+		const char *valstr;
 
 		/* fetch next column's textual value */
 		if (PQgetisnull(res, row, j))

@@ -216,7 +216,7 @@ typedef struct
 	char		nextxlogfile[25];
 	uint32		chkpnt_nxtxid;
 	uint32		chkpnt_nxtepoch;
-	uint32		chkpnt_nxtoid;
+	Oid8		chkpnt_nxtoid;
 	uint32		chkpnt_nxtmulti;
 	uint64		chkpnt_nxtmxoff;
 	uint32		chkpnt_oldstMulti;
@@ -470,6 +470,7 @@ void		cleanup_output_dirs(void);
 void		prep_status(const char *fmt, ...) pg_attribute_printf(1, 2);
 void		prep_status_progress(const char *fmt, ...) pg_attribute_printf(1, 2);
 unsigned int str2uint(const char *str);
+uint64		str2uint64(const char *str);
 
 
 /* version.c */

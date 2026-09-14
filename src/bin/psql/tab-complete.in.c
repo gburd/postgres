@@ -816,14 +816,6 @@ static const SchemaQuery Query_for_list_of_partitioned_indexes = {
 	.result = "c.relname",
 };
 
-static const SchemaQuery Query_for_list_of_propgraphs = {
-	.catname = "pg_catalog.pg_class c",
-	.selcondition = "c.relkind IN (" CppAsString2(RELKIND_PROPGRAPH) ")",
-	.viscondition = "pg_catalog.pg_table_is_visible(c.oid)",
-	.namespace = "c.relnamespace",
-	.result = "pg_catalog.quote_ident(c.relname)",
-};
-
 
 /* All relations */
 static const SchemaQuery Query_for_list_of_relations = {
@@ -1040,8 +1032,8 @@ static const SchemaQuery Query_for_trigger_of_table = {
 #define Query_for_list_of_database_vars \
 "SELECT conf FROM ("\
 "       SELECT setdatabase, pg_catalog.split_part(pg_catalog.unnest(setconfig),'=',1) conf"\
-"         FROM pg_db_role_setting "\
-"       ) s, pg_database d "\
+"         FROM pg_catalog.pg_db_role_setting "\
+"       ) s, pg_catalog.pg_database d "\
 " WHERE s.setdatabase = d.oid "\
 "   AND conf LIKE '%s'"\
 "   AND d.datname LIKE '%s'"
@@ -1331,7 +1323,6 @@ static const pgsql_thing_t words_after_create[] = {
 	{"PARSER", NULL, NULL, &Query_for_list_of_ts_parsers, NULL, THING_NO_SHOW},
 	{"POLICY", NULL, NULL, NULL},
 	{"PROCEDURE", NULL, NULL, Query_for_list_of_procedures},
-	{"PROPERTY GRAPH", NULL, NULL, &Query_for_list_of_propgraphs},
 	{"PUBLICATION", Query_for_list_of_publications},
 	{"ROLE", Query_for_list_of_roles},
 	{"ROUTINE", NULL, NULL, &Query_for_list_of_routines, NULL, THING_NO_CREATE},
@@ -1450,6 +1441,7 @@ static const char *const table_storage_parameters[] = {
 	"toast.vacuum_max_eager_freeze_failure_rate",
 	"toast.vacuum_truncate",
 	"toast_tuple_target",
+	"toast_value_type",
 	"user_catalog_table",
 	"vacuum_index_cleanup",
 	"vacuum_max_eager_freeze_failure_rate",
@@ -2198,11 +2190,7 @@ match_previous_words(int pattern_id,
 	{
 		/* only some object types can be created as part of CREATE SCHEMA */
 		if (HeadMatches("CREATE", "SCHEMA"))
-			COMPLETE_WITH("AGGREGATE", "COLLATION", "DOMAIN", "FUNCTION",
-						  "INDEX", "OPERATOR", "PROCEDURE", "SEQUENCE", "TABLE",
-						  "TEXT SEARCH CONFIGURATION", "TEXT SEARCH DICTIONARY",
-						  "TEXT SEARCH PARSER", "TEXT SEARCH TEMPLATE",
-						  "TRIGGER", "TYPE", "VIEW",
+			COMPLETE_WITH("TABLE", "VIEW", "INDEX", "SEQUENCE", "TRIGGER",
 			/* for INDEX and TABLE/SEQUENCE, respectively */
 						  "UNIQUE", "UNLOGGED");
 		else
@@ -2761,20 +2749,6 @@ match_previous_words(int pattern_id,
 	else if (Matches("ALTER", "POLICY", MatchAny, "ON", MatchAny, "WITH", "CHECK"))
 		COMPLETE_WITH("(");
 
-	/* ALTER PROPERTY GRAPH */
-	else if (Matches("ALTER", "PROPERTY", "GRAPH"))
-		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_propgraphs);
-	else if (Matches("ALTER", "PROPERTY", "GRAPH", MatchAny))
-		COMPLETE_WITH("ADD", "ALTER", "DROP", "OWNER TO", "RENAME TO", "SET SCHEMA");
-	else if (Matches("ALTER", "PROPERTY", "GRAPH", MatchAny, "ADD|ALTER|DROP"))
-		COMPLETE_WITH("VERTEX", "EDGE");
-	else if (Matches("ALTER", "PROPERTY", "GRAPH", MatchAny, "ADD|DROP", "VERTEX|EDGE"))
-		COMPLETE_WITH("TABLES");
-	else if (HeadMatches("ALTER", "PROPERTY", "GRAPH", MatchAny, "ADD") && TailMatches("EDGE"))
-		COMPLETE_WITH("TABLES");
-	else if (Matches("ALTER", "PROPERTY", "GRAPH", MatchAny, "ALTER", "VERTEX|EDGE"))
-		COMPLETE_WITH("TABLE");
-
 	/* ALTER RULE <name>, add ON */
 	else if (Matches("ALTER", "RULE", MatchAny))
 		COMPLETE_WITH("ON");
@@ -2821,7 +2795,6 @@ match_previous_words(int pattern_id,
 					  "OWNER TO", "SET", "VALIDATE CONSTRAINT",
 					  "REPLICA IDENTITY", "ATTACH PARTITION",
 					  "DETACH PARTITION", "FORCE ROW LEVEL SECURITY",
-					  "SPLIT PARTITION", "MERGE PARTITIONS (",
 					  "OF", "NOT OF");
 	/* ALTER TABLE xxx ADD */
 	else if (Matches("ALTER", "TABLE", MatchAny, "ADD"))
@@ -3084,29 +3057,16 @@ match_previous_words(int pattern_id,
 		COMPLETE_WITH("FROM (", "IN (", "WITH (");
 
 	/*
-	 * If we have ALTER TABLE <foo> DETACH|SPLIT PARTITION, provide a list of
+	 * If we have ALTER TABLE <foo> DETACH PARTITION, provide a list of
 	 * partitions of <foo>.
 	 */
-	else if (Matches("ALTER", "TABLE", MatchAny, "DETACH|SPLIT", "PARTITION"))
+	else if (Matches("ALTER", "TABLE", MatchAny, "DETACH", "PARTITION"))
 	{
 		set_completion_reference(prev3_wd);
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_partition_of_table);
 	}
 	else if (Matches("ALTER", "TABLE", MatchAny, "DETACH", "PARTITION", MatchAny))
 		COMPLETE_WITH("CONCURRENTLY", "FINALIZE");
-
-	/* ALTER TABLE <name> SPLIT PARTITION <name> */
-	else if (Matches("ALTER", "TABLE", MatchAny, "SPLIT", "PARTITION", MatchAny))
-		COMPLETE_WITH("INTO ( PARTITION");
-
-	/* ALTER TABLE <name> MERGE PARTITIONS ( */
-	else if (Matches("ALTER", "TABLE", MatchAny, "MERGE", "PARTITIONS", "("))
-	{
-		set_completion_reference(prev4_wd);
-		COMPLETE_WITH_SCHEMA_QUERY(Query_for_partition_of_table);
-	}
-	else if (Matches("ALTER", "TABLE", MatchAny, "MERGE", "PARTITIONS", "(*)"))
-		COMPLETE_WITH("INTO");
 
 	/* ALTER TABLE <name> OF */
 	else if (Matches("ALTER", "TABLE", MatchAny, "OF"))
@@ -3313,7 +3273,7 @@ match_previous_words(int pattern_id,
 					  "FOREIGN DATA WRAPPER", "FOREIGN TABLE",
 					  "FUNCTION", "INDEX", "LANGUAGE", "LARGE OBJECT",
 					  "MATERIALIZED VIEW", "OPERATOR", "POLICY",
-					  "PROCEDURE", "PROCEDURAL LANGUAGE", "PROPERTY GRAPH", "PUBLICATION", "ROLE",
+					  "PROCEDURE", "PROCEDURAL LANGUAGE", "PUBLICATION", "ROLE",
 					  "ROUTINE", "RULE", "SCHEMA", "SEQUENCE", "SERVER",
 					  "STATISTICS", "SUBSCRIPTION", "TABLE",
 					  "TABLESPACE", "TEXT SEARCH", "TRANSFORM FOR",
@@ -3351,8 +3311,6 @@ match_previous_words(int pattern_id,
 	}
 	else if (Matches("COMMENT", "ON", "PROCEDURAL", "LANGUAGE"))
 		COMPLETE_WITH_QUERY(Query_for_list_of_languages);
-	else if (Matches("COMMENT", "ON", "PROPERTY", "GRAPH"))
-		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_propgraphs);
 	else if (Matches("COMMENT", "ON", "RULE", MatchAny))
 		COMPLETE_WITH("ON");
 	else if (Matches("COMMENT", "ON", "RULE", MatchAny, "ON"))
@@ -3532,15 +3490,15 @@ match_previous_words(int pattern_id,
 	else if (Matches("CREATE", "DATABASE", MatchAny, "STRATEGY"))
 		COMPLETE_WITH("WAL_LOG", "FILE_COPY");
 
-	/* CREATE DOMAIN --- is allowed inside CREATE SCHEMA, so use TailMatches */
-	else if (TailMatches("CREATE", "DOMAIN", MatchAny))
+	/* CREATE DOMAIN */
+	else if (Matches("CREATE", "DOMAIN", MatchAny))
 		COMPLETE_WITH("AS");
-	else if (TailMatches("CREATE", "DOMAIN", MatchAny, "AS"))
+	else if (Matches("CREATE", "DOMAIN", MatchAny, "AS"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_datatypes);
-	else if (TailMatches("CREATE", "DOMAIN", MatchAny, "AS", MatchAny))
+	else if (Matches("CREATE", "DOMAIN", MatchAny, "AS", MatchAny))
 		COMPLETE_WITH("COLLATE", "DEFAULT", "CONSTRAINT",
 					  "NOT NULL", "NULL", "CHECK (");
-	else if (TailMatches("CREATE", "DOMAIN", MatchAny, "COLLATE"))
+	else if (Matches("CREATE", "DOMAIN", MatchAny, "COLLATE"))
 		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_collations);
 
 	/* CREATE EXTENSION */
@@ -3712,25 +3670,6 @@ match_previous_words(int pattern_id,
 	else if (Matches("CREATE", "POLICY", MatchAny, "ON", MatchAny, "AS", MatchAny, "USING"))
 		COMPLETE_WITH("(");
 
-/* CREATE PROPERTY GRAPH */
-	else if (Matches("CREATE", "PROPERTY"))
-		COMPLETE_WITH("GRAPH");
-	else if (Matches("CREATE", "PROPERTY", "GRAPH", MatchAny))
-		COMPLETE_WITH("VERTEX");
-	else if (Matches("CREATE", "PROPERTY", "GRAPH", MatchAny, "VERTEX|NODE"))
-		COMPLETE_WITH("TABLES");
-	else if (Matches("CREATE", "PROPERTY", "GRAPH", MatchAny, "VERTEX|NODE", "TABLES"))
-		COMPLETE_WITH("(");
-	else if (Matches("CREATE", "PROPERTY", "GRAPH", MatchAny, "VERTEX|NODE", "TABLES", "("))
-		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_tables);
-	else if (Matches("CREATE", "PROPERTY", "GRAPH", MatchAny, "VERTEX|NODE", "TABLES", "(*)"))
-		COMPLETE_WITH("EDGE");
-	else if (HeadMatches("CREATE", "PROPERTY", "GRAPH") && TailMatches("EDGE|RELATIONSHIP"))
-		COMPLETE_WITH("TABLES");
-	else if (HeadMatches("CREATE", "PROPERTY", "GRAPH") && TailMatches("EDGE|RELATIONSHIP", "TABLES"))
-		COMPLETE_WITH("(");
-	else if (HeadMatches("CREATE", "PROPERTY", "GRAPH") && TailMatches("EDGE|RELATIONSHIP", "TABLES", "("))
-		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_tables);
 
 /* CREATE PUBLICATION */
 	else if (Matches("CREATE", "PUBLICATION", MatchAny))
@@ -3904,10 +3843,10 @@ match_previous_words(int pattern_id,
 	else if (Matches("CREATE", "TABLESPACE", MatchAny, "OWNER", MatchAny))
 		COMPLETE_WITH("LOCATION");
 
-/* CREATE TEXT SEARCH --- is allowed inside CREATE SCHEMA, so use TailMatches */
-	else if (TailMatches("CREATE", "TEXT", "SEARCH"))
+/* CREATE TEXT SEARCH */
+	else if (Matches("CREATE", "TEXT", "SEARCH"))
 		COMPLETE_WITH("CONFIGURATION", "DICTIONARY", "PARSER", "TEMPLATE");
-	else if (TailMatches("CREATE", "TEXT", "SEARCH", "CONFIGURATION|DICTIONARY|PARSER|TEMPLATE", MatchAny))
+	else if (Matches("CREATE", "TEXT", "SEARCH", "CONFIGURATION|DICTIONARY|PARSER|TEMPLATE", MatchAny))
 		COMPLETE_WITH("(");
 
 /* CREATE TRANSFORM */
@@ -4477,14 +4416,6 @@ match_previous_words(int pattern_id,
 	else if (Matches("DROP", "POLICY", MatchAny, "ON", MatchAny))
 		COMPLETE_WITH("CASCADE", "RESTRICT");
 
-	/* DROP PROPERTY GRAPH */
-	else if (Matches("DROP", "PROPERTY"))
-		COMPLETE_WITH("GRAPH");
-	else if (Matches("DROP", "PROPERTY", "GRAPH"))
-		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_propgraphs);
-	else if (Matches("DROP", "PROPERTY", "GRAPH", MatchAny))
-		COMPLETE_WITH("CASCADE", "RESTRICT");
-
 	/* DROP RULE */
 	else if (Matches("DROP", "RULE", MatchAny))
 		COMPLETE_WITH("ON");
@@ -4729,7 +4660,6 @@ match_previous_words(int pattern_id,
 											"LARGE OBJECT",
 											"PARAMETER",
 											"PROCEDURE",
-											"PROPERTY GRAPH",
 											"ROUTINE",
 											"SCHEMA",
 											"SEQUENCE",
@@ -4887,14 +4817,6 @@ match_previous_words(int pattern_id,
 		else
 			COMPLETE_WITH("FROM");
 	}
-
-/* GRAPH_TABLE */
-	else if (TailMatches("GRAPH_TABLE"))
-		COMPLETE_WITH("(");
-	else if (TailMatches("GRAPH_TABLE", "("))
-		COMPLETE_WITH_SCHEMA_QUERY(Query_for_list_of_propgraphs);
-	else if (TailMatches("GRAPH_TABLE", "(", MatchAny))
-		COMPLETE_WITH("MATCH");
 
 /* GROUP BY */
 	else if (TailMatches("FROM", MatchAny, "GROUP"))
@@ -5755,8 +5677,6 @@ match_previous_words(int pattern_id,
 			COMPLETE_WITH("OBJECT");
 		else if (TailMatches("CREATE|ALTER|DROP", "MATERIALIZED"))
 			COMPLETE_WITH("VIEW");
-		else if (TailMatches("CREATE|ALTER|DROP", "PROPERTY"))
-			COMPLETE_WITH("GRAPH");
 		else if (TailMatches("CREATE|ALTER|DROP", "TEXT"))
 			COMPLETE_WITH("SEARCH");
 		else if (TailMatches("CREATE|ALTER|DROP", "USER"))

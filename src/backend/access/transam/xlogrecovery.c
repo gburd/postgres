@@ -843,7 +843,7 @@ InitWalRecovery(ControlFileData *ControlFile, bool *wasShutdown_ptr,
 							LSN_FORMAT_ARGS(checkPoint.redo),
 							wasShutdown ? "true" : "false"));
 	ereport(DEBUG1,
-			(errmsg_internal("next transaction ID: " UINT64_FORMAT "; next OID: %u",
+			(errmsg_internal("next transaction ID: " UINT64_FORMAT "; next OID: " OID8_FORMAT,
 							 U64FromFullTransactionId(checkPoint.nextXid),
 							 checkPoint.nextOid)));
 	ereport(DEBUG1,
@@ -4496,6 +4496,32 @@ CheckPromoteSignal(void)
 		return true;
 
 	return false;
+}
+
+/*
+ * Has hot standby initialization started pg_subtrans?
+ */
+bool
+RecoverySubtransInitialized(void)
+{
+	bool		result;
+
+	SpinLockAcquire(&XLogRecoveryCtl->info_lck);
+	result = XLogRecoveryCtl->SharedRecoverySubtransInitialized;
+	SpinLockRelease(&XLogRecoveryCtl->info_lck);
+
+	return result;
+}
+
+/*
+ * Remember that hot standby initialization has started pg_subtrans.
+ */
+void
+SetRecoverySubtransInitialized(void)
+{
+	SpinLockAcquire(&XLogRecoveryCtl->info_lck);
+	XLogRecoveryCtl->SharedRecoverySubtransInitialized = true;
+	SpinLockRelease(&XLogRecoveryCtl->info_lck);
 }
 
 /*

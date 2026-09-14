@@ -61,6 +61,7 @@
 #include "storage/smgr.h"
 #include "utils/backend_runtime.h"
 #include "utils/hsearch.h"
+#include "utils/injection_point.h"
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 #include "utils/wait_event.h"
@@ -244,6 +245,8 @@ WalWriterMain(const void *startup_data, size_t startup_data_len)
 
 		/* Process any signals received recently */
 		ProcessMainLoopInterrupts();
+
+		INJECTION_POINT("walwriter-before-background-flush", NULL);
 
 		/*
 		 * Do what we're here for; then, if XLogBackgroundFlush() found useful

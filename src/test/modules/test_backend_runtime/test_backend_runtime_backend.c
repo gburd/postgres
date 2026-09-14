@@ -838,13 +838,13 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 		AllocSetContextCreate(TopMemoryContext,
 							  "test apply context",
 							  ALLOCSET_SMALL_SIZES);
-	logical_replication->apply_error_callback_arg.rel =
+	logical_replication->remote_ctx.rel =
 		(struct LogicalRepRelMapEntry *) &fake_backend;
-	logical_replication->apply_error_callback_arg.remote_attnum = 10;
-	logical_replication->apply_error_callback_arg.remote_xid =
+	logical_replication->remote_ctx.remote_attnum = 10;
+	logical_replication->remote_ctx.remote_xid =
 		FirstNormalTransactionId;
-	logical_replication->apply_error_callback_arg.finish_lsn = 42;
-	logical_replication->apply_error_callback_arg.origin_name =
+	logical_replication->remote_ctx.finish_lsn = 42;
+	logical_replication->remote_ctx.origin_name =
 		pstrdup("origin");
 	logical_replication->my_parallel_shared =
 		(ParallelApplyWorkerShared *) &fake_backend;
@@ -1302,13 +1302,13 @@ test_backend_reset_closed_state(PG_FUNCTION_ARGS)
 	ok = ok && logical_replication->subxact_data.subxact_last ==
 		InvalidTransactionId;
 	ok = ok && logical_replication->apply_context == NULL;
-	ok = ok && logical_replication->apply_error_callback_arg.rel == NULL;
-	ok = ok && logical_replication->apply_error_callback_arg.remote_attnum == -1;
-	ok = ok && logical_replication->apply_error_callback_arg.remote_xid ==
+	ok = ok && logical_replication->remote_ctx.rel == NULL;
+	ok = ok && logical_replication->remote_ctx.remote_attnum == -1;
+	ok = ok && logical_replication->remote_ctx.remote_xid ==
 		InvalidTransactionId;
-	ok = ok && logical_replication->apply_error_callback_arg.finish_lsn ==
+	ok = ok && logical_replication->remote_ctx.finish_lsn ==
 		InvalidXLogRecPtr;
-	ok = ok && logical_replication->apply_error_callback_arg.origin_name ==
+	ok = ok && logical_replication->remote_ctx.origin_name ==
 		NULL;
 	ok = ok && logical_replication->my_parallel_shared == NULL;
 	ok = ok && locks->fast_path_local_use_counts == NULL;

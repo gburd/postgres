@@ -563,15 +563,15 @@ PgBackendResetLogicalReplicationClosedState(PgBackendLogicalReplicationState *lo
 	logical_replication->subxact_data.nsubxacts_max = 0;
 	logical_replication->subxact_data.subxact_last = InvalidTransactionId;
 
-	if (logical_replication->apply_error_callback_arg.origin_name != NULL)
+	if (logical_replication->remote_ctx.origin_name != NULL)
 	{
-		pfree(logical_replication->apply_error_callback_arg.origin_name);
-		logical_replication->apply_error_callback_arg.origin_name = NULL;
+		pfree(logical_replication->remote_ctx.origin_name);
+		logical_replication->remote_ctx.origin_name = NULL;
 	}
-	logical_replication->apply_error_callback_arg.rel = NULL;
-	logical_replication->apply_error_callback_arg.remote_attnum = -1;
-	logical_replication->apply_error_callback_arg.remote_xid = InvalidTransactionId;
-	logical_replication->apply_error_callback_arg.finish_lsn = InvalidXLogRecPtr;
+	logical_replication->remote_ctx.rel = NULL;
+	logical_replication->remote_ctx.remote_attnum = -1;
+	logical_replication->remote_ctx.remote_xid = InvalidTransactionId;
+	logical_replication->remote_ctx.finish_lsn = InvalidXLogRecPtr;
 
 	if (logical_replication->slotsync_observed_primary_conninfo != NULL)
 	{

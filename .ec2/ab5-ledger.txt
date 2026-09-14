@@ -1,0 +1,5 @@
+ts: 20260805-102232
+key: xtc-ab5-20260805-102232
+sg: sg-082beaf4a7f2c08a7
+iid: i-079cf53bffaeaa429
+region: us-east-1

@@ -1153,9 +1153,9 @@ text_position_next_internal(char *start_ptr, TextPositionState *state)
 	int			needle_len = state->len2;
 	int			skiptablemask = state->skiptablemask;
 	const char *haystack = state->str1;
-	const char *needle = state->str2;
+	char	   *needle = state->str2;
 	const char *haystack_end = &haystack[haystack_len];
-	const char *hptr;
+	char	   *hptr;
 
 	Assert(start_ptr >= haystack && start_ptr <= haystack_end);
 	Assert(needle_len > 0);
@@ -1184,7 +1184,7 @@ text_position_next_internal(char *start_ptr, TextPositionState *state)
 		 * collation would accept an empty match, returning one would send
 		 * callers that search for successive matches into an infinite loop.)
 		 */
-		const char *result_hptr = NULL;
+		char	   *result_hptr = NULL;
 
 		hptr = start_ptr;
 		while (hptr < haystack_end)
@@ -1198,7 +1198,7 @@ text_position_next_internal(char *start_ptr, TextPositionState *state)
 			if (!state->greedy &&
 				haystack_end - hptr >= needle_len &&
 				pg_strncoll(hptr, needle_len, needle, needle_len, state->locale) == 0)
-				return (char *) hptr;
+				return hptr;
 
 			/*
 			 * Else check if any of the non-empty substrings starting at hptr
@@ -1223,7 +1223,7 @@ text_position_next_internal(char *start_ptr, TextPositionState *state)
 			hptr += pg_mblen_range(hptr, haystack_end);
 		}
 
-		return (char *) result_hptr;
+		return result_hptr;
 	}
 	else if (needle_len == 1)
 	{
@@ -1234,21 +1234,21 @@ text_position_next_internal(char *start_ptr, TextPositionState *state)
 		while (hptr < haystack_end)
 		{
 			if (*hptr == nchar)
-				return (char *) hptr;
+				return hptr;
 			hptr++;
 		}
 	}
 	else
 	{
-		const char *needle_last = &needle[needle_len - 1];
+		char	   *needle_last = &needle[needle_len - 1];
 
 		/* Start at startpos plus the length of the needle */
 		hptr = start_ptr + needle_len - 1;
 		while (hptr < haystack_end)
 		{
 			/* Match the needle scanning *backward* */
-			const char *nptr;
-			const char *p;
+			char	   *nptr;
+			char	   *p;
 
 			nptr = needle_last;
 			p = hptr;
@@ -1256,7 +1256,7 @@ text_position_next_internal(char *start_ptr, TextPositionState *state)
 			{
 				/* Matched it all?	If so, return 1-based position */
 				if (nptr == needle)
-					return (char *) p;
+					return p;
 				nptr--, p--;
 			}
 
@@ -3253,7 +3253,7 @@ appendStringInfoRegexpSubstr(StringInfo str, text *replace_text,
 
 	while (p < p_end)
 	{
-		const char *chunk_start = p;
+		const char *replace_start = p;
 		int			so;
 		int			eo;
 
@@ -3263,8 +3263,8 @@ appendStringInfoRegexpSubstr(StringInfo str, text *replace_text,
 			p = p_end;
 
 		/* Copy the text we just scanned over, if any. */
-		if (p > chunk_start)
-			appendBinaryStringInfo(str, chunk_start, p - chunk_start);
+		if (p > replace_start)
+			appendBinaryStringInfo(str, replace_start, p - replace_start);
 
 		/* Done if at end of string, else advance over escape char. */
 		if (p >= p_end)
@@ -4261,7 +4261,7 @@ pg_column_toast_chunk_id(PG_FUNCTION_ARGS)
 {
 	int			typlen;
 	varlena    *attr;
-	varatt_external toast_pointer;
+	varatt_external_oid toast_pointer;
 
 	/* On first call, get the input type's typlen, and save at *fn_extra */
 	if (fcinfo->flinfo->fn_extra == NULL)
@@ -4290,7 +4290,7 @@ pg_column_toast_chunk_id(PG_FUNCTION_ARGS)
 
 	VARATT_EXTERNAL_GET_POINTER(toast_pointer, attr);
 
-	PG_RETURN_OID(toast_pointer.va_valueid);
+	PG_RETURN_OID8(toast_pointer.va_valueid);
 }
 
 /*
@@ -4470,7 +4470,7 @@ string_agg_deserialize(PG_FUNCTION_ARGS)
 	bytea	   *sstate;
 	StringInfo	result;
 	StringInfoData buf;
-	char	   *data;
+	const char *data;
 	int			datalen;
 
 	/* cannot be called directly because of internal-type argument */
@@ -4492,7 +4492,7 @@ string_agg_deserialize(PG_FUNCTION_ARGS)
 
 	/* data */
 	datalen = VARSIZE_ANY_EXHDR(sstate) - 4;
-	data = (char *) pq_getmsgbytes(&buf, datalen);
+	data = pq_getmsgbytes(&buf, datalen);
 	appendBinaryStringInfo(result, data, datalen);
 
 	pq_getmsgend(&buf);
@@ -4714,7 +4714,18 @@ text_right(PG_FUNCTION_ARGS)
 	int			off;
 
 	if (n < 0)
-		n = -n;
+	{
+		/*
+		 * Negating PG_INT32_MIN would overflow, so clamp instead.  Any n
+		 * whose absolute value is at least the string's length skips the
+		 * whole string, and len can't exceed PG_INT32_MAX, so this is
+		 * equivalent.
+		 */
+		if (unlikely(n == PG_INT32_MIN))
+			n = PG_INT32_MAX;
+		else
+			n = -n;
+	}
 	else
 		n = pg_mbstrlen_with_len(p, len) - n;
 	off = pg_mbcharcliplen(p, len, n);
@@ -4784,7 +4795,7 @@ Datum
 text_format(PG_FUNCTION_ARGS)
 {
 	text	   *fmt;
-	StringInfoData str;
+	StringInfoData result_str;
 	const char *cp;
 	const char *start_ptr;
 	const char *end_ptr;
@@ -4857,7 +4868,7 @@ text_format(PG_FUNCTION_ARGS)
 	fmt = PG_GETARG_TEXT_PP(0);
 	start_ptr = VARDATA_ANY(fmt);
 	end_ptr = start_ptr + VARSIZE_ANY_EXHDR(fmt);
-	initStringInfo(&str);
+	initStringInfo(&result_str);
 	arg = 1;					/* next argument position to print */
 
 	/* Scan format string, looking for conversion specifiers. */
@@ -4877,7 +4888,7 @@ text_format(PG_FUNCTION_ARGS)
 		 */
 		if (*cp != '%')
 		{
-			appendStringInfoCharMacro(&str, *cp);
+			appendStringInfoCharMacro(&result_str, *cp);
 			continue;
 		}
 
@@ -4886,7 +4897,7 @@ text_format(PG_FUNCTION_ARGS)
 		/* Easy case: %% outputs a single % */
 		if (*cp == '%')
 		{
-			appendStringInfoCharMacro(&str, *cp);
+			appendStringInfoCharMacro(&result_str, *cp);
 			continue;
 		}
 
@@ -5019,7 +5030,7 @@ text_format(PG_FUNCTION_ARGS)
 			case 's':
 			case 'I':
 			case 'L':
-				text_format_string_conversion(&str, *cp, &typoutputfinfo,
+				text_format_string_conversion(&result_str, *cp, &typoutputfinfo,
 											  value, isNull,
 											  flags, width);
 				break;
@@ -5041,8 +5052,8 @@ text_format(PG_FUNCTION_ARGS)
 		pfree(nulls);
 
 	/* Generate results. */
-	result = cstring_to_text_with_len(str.data, str.len);
-	pfree(str.data);
+	result = cstring_to_text_with_len(result_str.data, result_str.len);
+	pfree(result_str.data);
 
 	PG_RETURN_TEXT_P(result);
 }

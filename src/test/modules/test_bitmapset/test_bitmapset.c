@@ -24,6 +24,7 @@
 #include "nodes/bitmapset.h"
 #include "nodes/nodes.h"
 #include "nodes/pg_list.h"
+#include "nodes/readfuncs.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/timestamp.h"
@@ -86,16 +87,53 @@ PG_FUNCTION_INFO_V1(test_random_offset_operations);
 				 #expr, __FILE__, __LINE__); \
 	} while (0)
 
-/* Encode/Decode to/from TEXT and Bitmapset */
+/* Encode Bitmapset to TEXT */
 #define BITMAPSET_TO_TEXT(bms) cstring_to_text(nodeToString(bms))
-#define TEXT_TO_BITMAPSET(str) ((Bitmapset *) stringToNode(text_to_cstring(str)))
+
+/*
+ * Decode Bitmapset from text
+ */
+static Bitmapset *
+text_to_bitmapset(text *txt)
+{
+	char	   *str = text_to_cstring(txt);
+	ReadNodeContext ctx;
+	const char *token;
+	int			length;
+	bool		is_bitmapset = false;
+	Node	   *node;
+
+	ctx.str = str;
+
+	token = pg_strtok(&ctx, &length);
+
+	/* Check empty case, translated to "<>". */
+	if (token != NULL && length == 0)
+		return NULL;
+
+	/* First token has to be a single '('. */
+	if (token != NULL && length == 1 && token[0] == '(')
+	{
+		/* Second token has to be a single 'b'. */
+		token = pg_strtok(&ctx, &length);
+		is_bitmapset = (token != NULL && length == 1 && token[0] == 'b');
+	}
+
+	if (!is_bitmapset)
+		elog(ERROR, "argument is not a Bitmapset");
+
+	node = stringToNode(str);
+	Assert(node == NULL || IsA(node, Bitmapset));
+
+	return (Bitmapset *) node;
+}
 
 /*
  * Helper macro to fetch text parameters as Bitmapsets. SQL-NULL means empty
  * set.
  */
 #define PG_ARG_GETBITMAPSET(n) \
-	(PG_ARGISNULL(n) ? NULL : TEXT_TO_BITMAPSET(PG_GETARG_TEXT_PP(n)))
+	(PG_ARGISNULL(n) ? NULL : text_to_bitmapset(PG_GETARG_TEXT_PP(n)))
 
 /*
  * Helper macro to handle converting sets back to text, returning the
@@ -598,10 +636,11 @@ test_bitmap_match(PG_FUNCTION_ARGS)
  * equivalent C functions, this stresses Bitmapsets in a random fashion for
  * various operations.
  *
- * "min_value" is the minimal value used for the members, that will stand
- * up to a range of "max_range".  "num_ops" defines the number of time each
- * operation is done.  "seed" is a random seed used to calculate the member
- * values.  When "seed" is NULL, a random seed will be chosen automatically.
+ * Arguments:
+ *  arg1: optional random seed.  NULL autoselects the seed.
+ *  arg2: defines the number of times each operation is done.
+ *  arg3: the minimum bitmapset member number to use in the random set.
+ *  arg4: the maximum bitmapset member number to use in the random set.
  *
  * The return value is the number of times all operations have been executed.
  */
@@ -615,9 +654,10 @@ test_random_operations(PG_FUNCTION_ARGS)
 	pg_prng_state state;
 	uint64		seed = GetCurrentTimestamp();
 	int			num_ops;
-	int			max_range;
 	int			min_value;
+	int			max_value;
 	int			member;
+	uint32		range;
 	int		   *members;
 	int			num_members = 0;
 	int			total_ops = 0;
@@ -625,18 +665,22 @@ test_random_operations(PG_FUNCTION_ARGS)
 	if (!PG_ARGISNULL(0))
 		seed = PG_GETARG_INT64(0);
 
-	num_ops = PG_GETARG_INT32(1);
-	max_range = PG_GETARG_INT32(2);
-	min_value = PG_GETARG_INT32(3);
-
-	if (PG_ARGISNULL(1) || num_ops <= 0)
+	if (PG_ARGISNULL(1) || PG_GETARG_INT32(1) <= 0)
 		elog(ERROR, "invalid number of operations");
-	if (PG_ARGISNULL(2) || max_range <= 0)
-		elog(ERROR, "invalid maximum range");
-	if (PG_ARGISNULL(3) || min_value < 0)
+	if (PG_ARGISNULL(2) || PG_GETARG_INT32(2) < 0)
 		elog(ERROR, "invalid minimum value");
+	if (PG_ARGISNULL(3) || PG_GETARG_INT32(3) < 0)
+		elog(ERROR, "invalid maximum value");
+
+	num_ops = PG_GETARG_INT32(1);
+	min_value = PG_GETARG_INT32(2);
+	max_value = PG_GETARG_INT32(3);
+
+	if (max_value < min_value)
+		elog(ERROR, "maximum value must be greater than or equal to minimum value");
 
 	pg_prng_seed(&state, seed);
+	range = (uint32) max_value - (uint32) min_value + 1;
 
 	/*
 	 * There can be up to "num_ops" members added.  This is very unlikely,
@@ -650,7 +694,7 @@ test_random_operations(PG_FUNCTION_ARGS)
 	{
 		CHECK_FOR_INTERRUPTS();
 
-		member = pg_prng_uint32(&state) % max_range + min_value;
+		member = min_value + (pg_prng_uint32(&state) % range);
 
 		if (!bms_is_member(member, bms1))
 			members[num_members++] = member;
@@ -662,7 +706,7 @@ test_random_operations(PG_FUNCTION_ARGS)
 	{
 		CHECK_FOR_INTERRUPTS();
 
-		member = pg_prng_uint32(&state) % max_range + min_value;
+		member = min_value + (pg_prng_uint32(&state) % range);
 
 		if (!bms_is_member(member, bms2))
 			members[num_members++] = member;
@@ -737,7 +781,7 @@ test_random_operations(PG_FUNCTION_ARGS)
 		switch (pg_prng_uint32(&state) % 3)
 		{
 			case 0:				/* add */
-				member = pg_prng_uint32(&state) % max_range + min_value;
+				member = min_value + (pg_prng_uint32(&state) % range);
 				if (!bms_is_member(member, bms))
 					members[num_members++] = member;
 				bms = bms_add_member(bms, member);
@@ -790,8 +834,8 @@ test_random_operations(PG_FUNCTION_ARGS)
  * Arguments:
  *  arg1: optional random seed.  NULL means use a random seed.
  *  arg2: the number of operations to perform.
- *  arg3: the maximum bitmapset member number to use in the random set.
- *  arg4: the minimum bitmapset member number to use in the random set.
+ *  arg3: the minimum bitmapset member number to use in the random set.
+ *  arg4: the maximum bitmapset member number to use in the random set.
  */
 Datum
 test_random_offset_operations(PG_FUNCTION_ARGS)
@@ -799,27 +843,32 @@ test_random_offset_operations(PG_FUNCTION_ARGS)
 	pg_prng_state state;
 	int64		seed;
 	int			num_ops;
-	int			max_range;
 	int			min_value;
+	int			max_value;
 	int			member;
+	uint32		range;
 
 	if (PG_ARGISNULL(0))
 		seed = GetCurrentTimestamp();
 	else
 		seed = PG_GETARG_INT64(0);
 
-	num_ops = PG_GETARG_INT32(1);
-	max_range = PG_GETARG_INT32(2);
-	min_value = PG_GETARG_INT32(3);
-
-	if (PG_ARGISNULL(1) || num_ops <= 0)
+	if (PG_ARGISNULL(1) || PG_GETARG_INT32(1) <= 0)
 		elog(ERROR, "invalid number of operations");
-	if (PG_ARGISNULL(2) || max_range <= 0)
-		elog(ERROR, "invalid maximum range");
-	if (PG_ARGISNULL(3) || min_value < 0)
+	if (PG_ARGISNULL(2) || PG_GETARG_INT32(2) < 0)
 		elog(ERROR, "invalid minimum value");
+	if (PG_ARGISNULL(3) || PG_GETARG_INT32(3) < 0)
+		elog(ERROR, "invalid maximum value");
+
+	num_ops = PG_GETARG_INT32(1);
+	min_value = PG_GETARG_INT32(2);
+	max_value = PG_GETARG_INT32(3);
+
+	if (max_value < min_value)
+		elog(ERROR, "maximum value must be greater than or equal to minimum value");
 
 	pg_prng_seed(&state, (uint64) seed);
+	range = (uint32) max_value - (uint32) min_value + 1;
 
 	for (int op = 0; op < num_ops; op++)
 	{
@@ -827,17 +876,29 @@ test_random_offset_operations(PG_FUNCTION_ARGS)
 		Bitmapset  *offset_bms1;
 		Bitmapset  *offset_bms2 = NULL;
 		int			offset;
-		int			nmembers;
+		uint32		nmembers;
 
 		CHECK_FOR_INTERRUPTS();
 
-		/* Figure out a random offset and how many members to add */
-		offset = (pg_prng_uint32(&state) % max_range) - (pg_prng_uint32(&state) % max_range);
-		nmembers = pg_prng_uint32(&state) % max_range + min_value;
+		/*
+		 * Choose a random offset for passing to bms_offset_members().  We
+		 * want a number between -max_value and max_value so we test both left
+		 * and right shifting and also test cases that push members,
+		 * occasionally all of them, off the bottom of the set.
+		 */
+		offset = (int) (pg_prng_uint32(&state) % ((uint32) max_value + 1));
+		offset -= (int) (pg_prng_uint32(&state) % ((uint32) max_value + 1));
 
-		for (int i = 0; i < nmembers; i++)
+		/* decide how many members to add */
+		nmembers = pg_prng_uint32(&state) % range;
+
+		/*
+		 * Add a random number of members with values between the minimum and
+		 * maximum values.
+		 */
+		for (uint32 i = 0; i < nmembers; i++)
 		{
-			member = pg_prng_uint32(&state) % max_range + min_value;
+			member = min_value + (pg_prng_uint32(&state) % range);
 			random_bms = bms_add_member(random_bms, member);
 		}
 

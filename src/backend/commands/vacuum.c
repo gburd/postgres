@@ -31,6 +31,7 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/multixact.h"
+#include "access/reloptions.h"
 #include "access/tableam.h"
 #include "access/transam.h"
 #include "access/xact.h"
@@ -158,6 +159,7 @@ ExecVacuum(ParseState *pstate, VacuumStmt *vacstmt, bool isTopLevel)
 
 	/* Will be set later if we recurse to a TOAST table. */
 	params.toast_parent = InvalidOid;
+	params.main_relopts = NULL;
 
 	/*
 	 * Set this to an invalid value so it is clear whether or not a
@@ -2009,6 +2011,8 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 	int			save_sec_context;
 	int			save_nestlevel;
 	VacuumParams toast_vacuum_params;
+	StdRdOptions *relopts;
+	StdRdOptions relopts_copy;
 
 	/*
 	 * This function scribbles on the parameters, so make a copy early to
@@ -2172,6 +2176,15 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 	LockRelationIdForSession(&lockrelid, lmode);
 
 	/*
+	 * Determine the storage parameters to use.  A TOAST table takes any
+	 * storage parameter it accepts but does not set from its main table,
+	 * whose parameters the caller handed down for that purpose.  For anything
+	 * else, params.main_relopts is NULL, and this just copies our own.
+	 */
+	relopts = merge_toast_reloptions((StdRdOptions *) rel->rd_options,
+									 params.main_relopts);
+
+	/*
 	 * Set index_cleanup option based on index_cleanup reloption if it wasn't
 	 * specified in VACUUM command, or when running in an autovacuum worker
 	 */
@@ -2179,11 +2192,10 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 	{
 		StdRdOptIndexCleanup vacuum_index_cleanup;
 
-		if (rel->rd_options == NULL)
+		if (relopts == NULL)
 			vacuum_index_cleanup = STDRD_OPTION_VACUUM_INDEX_CLEANUP_NOT_SET;
 		else
-			vacuum_index_cleanup =
-				((StdRdOptions *) rel->rd_options)->vacuum_index_cleanup;
+			vacuum_index_cleanup = relopts->vacuum_index_cleanup;
 
 		switch (vacuum_index_cleanup)
 		{
@@ -2215,10 +2227,8 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 	 * Check if the vacuum_max_eager_freeze_failure_rate table storage
 	 * parameter was specified. This overrides the GUC value.
 	 */
-	if (rel->rd_options != NULL &&
-		((StdRdOptions *) rel->rd_options)->relopt_vacuum_max_eager_freeze_failure_rate >= 0)
-		params.max_eager_freeze_failure_rate =
-			((StdRdOptions *) rel->rd_options)->relopt_vacuum_max_eager_freeze_failure_rate;
+	if (relopts != NULL && relopts->relopt_vacuum_max_eager_freeze_failure_rate >= 0)
+		params.max_eager_freeze_failure_rate = relopts->relopt_vacuum_max_eager_freeze_failure_rate;
 
 	/*
 	 * Set truncate option based on truncate reloption or GUC if it wasn't
@@ -2226,11 +2236,9 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 	 */
 	if (params.truncate == VACOPTVALUE_UNSPECIFIED)
 	{
-		StdRdOptions *opts = (StdRdOptions *) rel->rd_options;
-
-		if (opts && opts->relopt_vacuum_truncate != PG_TERNARY_UNSET)
+		if (relopts && relopts->relopt_vacuum_truncate != PG_TERNARY_UNSET)
 		{
-			if (opts->relopt_vacuum_truncate == PG_TERNARY_TRUE)
+			if (relopts->relopt_vacuum_truncate == PG_TERNARY_TRUE)
 				params.truncate = VACOPTVALUE_ENABLED;
 			else
 				params.truncate = VACOPTVALUE_DISABLED;
@@ -2262,6 +2270,17 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 		toast_relid = rel->rd_rel->reltoastrelid;
 	else
 		toast_relid = InvalidOid;
+
+	/*
+	 * Hand our storage parameters down for the TOAST table to inherit.  Take
+	 * a copy while we still have the relation open; the relcache entry can go
+	 * away once we close it.
+	 */
+	if (OidIsValid(toast_relid) && rel->rd_options)
+	{
+		memcpy(&relopts_copy, rel->rd_options, sizeof(StdRdOptions));
+		toast_vacuum_params.main_relopts = &relopts_copy;
+	}
 
 	/*
 	 * Switch to the table owner's userid, so that any index functions are run
@@ -2570,6 +2589,9 @@ vacuum_delay_point(bool is_analyze)
 		 * besides "check after napping".
 		 */
 		AutoVacuumUpdateCostLimit();
+
+		if (AmAutoVacuumWorkerProcess())
+			parallel_vacuum_propagate_shared_delay_params();
 
 		/* Might have gotten an interrupt while sleeping */
 		CHECK_FOR_INTERRUPTS();

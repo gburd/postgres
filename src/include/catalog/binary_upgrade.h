@@ -83,6 +83,8 @@ extern bool *PgCurrentBinaryUpgradeRecordInitPrivsRef(void);
 	(*PgCurrentBinaryUpgradeNextToastPgClassOidRef())
 #define binary_upgrade_next_toast_pg_class_relfilenumber \
 	(*PgCurrentBinaryUpgradeNextToastPgClassRelfilenumberRef())
+#define binary_upgrade_next_toast_chunk_id_typoid \
+	(*PgCurrentBinaryUpgradeNextToastChunkIdTypoidRef())
 
 #define binary_upgrade_next_pg_enum_oid \
 	(*PgCurrentBinaryUpgradeNextPgEnumOidRef())

@@ -4916,20 +4916,37 @@ parse_and_validate_value(const struct config_generic *record,
 				if (newval->intval < conf->min || newval->intval > conf->max)
 				{
 					const char *unit = get_config_unit_name(record->flags);
-					const char *unitspace;
 
 					if (unit)
-						unitspace = " ";
+					{
+						ereport(elevel,
+								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+								 errmsg("%d %s is outside the valid range for parameter \"%s\" (%d %s .. %d %s)",
+										newval->intval, unit,
+										record->name,
+										conf->min, unit,
+										conf->max, unit)));
+					}
+					else if (record->flags & GUC_SHOW_IN_OCTAL)
+					{
+						ereport(elevel,
+								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+								 errmsg("0%03o is outside the valid range for parameter \"%s\" (0%03o .. 0%03o)",
+										newval->intval,
+										record->name,
+										conf->min,
+										conf->max)));
+					}
 					else
-						unit = unitspace = "";
-
-					ereport(elevel,
-							(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-							 errmsg("%d%s%s is outside the valid range for parameter \"%s\" (%d%s%s .. %d%s%s)",
-									newval->intval, unitspace, unit,
-									record->name,
-									conf->min, unitspace, unit,
-									conf->max, unitspace, unit)));
+					{
+						ereport(elevel,
+								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+								 errmsg("%d is outside the valid range for parameter \"%s\" (%d .. %d)",
+										newval->intval,
+										record->name,
+										conf->min,
+										conf->max)));
+					}
 					return false;
 				}
 
@@ -7482,7 +7499,7 @@ ShowGUCOptionInternal(const struct config_generic *record, bool use_units)
 
 				if (conf->show_hook)
 					val = conf->show_hook();
-				else
+				else if (use_units && (record->flags & GUC_UNIT))
 				{
 					/*
 					 * Use int64 arithmetic to avoid overflows in units
@@ -7491,7 +7508,7 @@ ShowGUCOptionInternal(const struct config_generic *record, bool use_units)
 					int64		result = *GUC_VARIABLE_INT(record);
 					const char *unit;
 
-					if (use_units && result > 0 && (record->flags & GUC_UNIT))
+					if (result > 0)
 						convert_int_from_base_unit(result,
 												   record->flags & GUC_UNIT,
 												   &result, &unit);
@@ -7500,6 +7517,18 @@ ShowGUCOptionInternal(const struct config_generic *record, bool use_units)
 
 					snprintf(buffer, sizeof(buffer), INT64_FORMAT "%s",
 							 result, unit);
+					val = buffer;
+				}
+				else if (record->flags & GUC_SHOW_IN_OCTAL)
+				{
+					snprintf(buffer, sizeof(buffer), "0%03o",
+							 *GUC_VARIABLE_INT(record));
+					val = buffer;
+				}
+				else
+				{
+					snprintf(buffer, sizeof(buffer), "%d",
+							 *GUC_VARIABLE_INT(record));
 					val = buffer;
 				}
 			}

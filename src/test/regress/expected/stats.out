@@ -157,6 +157,7 @@ CREATE TABLE trunc_stats_test1(id serial, stuff text);
 CREATE TABLE trunc_stats_test2(id serial);
 CREATE TABLE trunc_stats_test3(id serial, stuff text);
 CREATE TABLE trunc_stats_test4(id serial);
+CREATE TABLE trunc_stats_test5(id serial);
 -- check that n_live_tup is reset to 0 after truncate
 INSERT INTO trunc_stats_test DEFAULT VALUES;
 INSERT INTO trunc_stats_test DEFAULT VALUES;
@@ -202,6 +203,19 @@ INSERT INTO trunc_stats_test4 DEFAULT VALUES;
 TRUNCATE trunc_stats_test4;
 INSERT INTO trunc_stats_test4 DEFAULT VALUES;
 ROLLBACK;
+-- truncate-only flush: this should count 3 inserts, 1 update and 1 delete.
+INSERT INTO trunc_stats_test5 DEFAULT VALUES;
+INSERT INTO trunc_stats_test5 DEFAULT VALUES;
+INSERT INTO trunc_stats_test5 DEFAULT VALUES;
+UPDATE trunc_stats_test5 SET id = id + 10 WHERE id = 1;
+DELETE FROM trunc_stats_test5 WHERE id = 2;
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+TRUNCATE trunc_stats_test5;
 -- do a seqscan
 SELECT count(*) FROM tenk2;
  count 
@@ -239,7 +253,16 @@ SELECT relname, n_tup_ins, n_tup_upd, n_tup_del, n_live_tup, n_dead_tup
  trunc_stats_test2 |         1 |         0 |         0 |          1 |          0
  trunc_stats_test3 |         4 |         0 |         0 |          2 |          2
  trunc_stats_test4 |         2 |         0 |         0 |          0 |          2
-(5 rows)
+ trunc_stats_test5 |         3 |         1 |         1 |          0 |          0
+(6 rows)
+
+SELECT relname, n_ins_since_vacuum
+  FROM pg_stat_user_tables
+ WHERE relname = 'trunc_stats_test5';
+      relname      | n_ins_since_vacuum 
+-------------------+--------------------
+ trunc_stats_test5 |                  0
+(1 row)
 
 SELECT st.seq_scan >= pr.seq_scan + 1,
        st.seq_tup_read >= pr.seq_tup_read + cl.reltuples,
@@ -269,6 +292,68 @@ FROM prevstats AS pr;
 (1 row)
 
 COMMIT;
+-----
+-- Basic tests for pg_stat_all_indexes
+-----
+CREATE TEMPORARY TABLE test_idx_tup_read AS
+  SELECT g AS a FROM generate_series(1, 200) g;
+CREATE INDEX ON test_idx_tup_read(a);
+BEGIN;
+SET LOCAL enable_seqscan TO off;
+-- plain index scan
+SET LOCAL enable_bitmapscan TO off;
+EXPLAIN (COSTS off) SELECT count(*) FROM test_idx_tup_read WHERE a BETWEEN 1 AND 200;
+                             QUERY PLAN                              
+---------------------------------------------------------------------
+ Aggregate
+   ->  Index Scan using test_idx_tup_read_a_idx on test_idx_tup_read
+         Index Cond: ((a >= 1) AND (a <= 200))
+(3 rows)
+
+SELECT count(*) FROM test_idx_tup_read WHERE a BETWEEN 1 AND 200;
+ count 
+-------
+   200
+(1 row)
+
+-- bitmap index scan
+SET LOCAL enable_indexscan TO off;
+SET LOCAL enable_bitmapscan TO on;
+EXPLAIN (COSTS off) SELECT count(*) FROM test_idx_tup_read WHERE a BETWEEN 1 AND 200;
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Aggregate
+   ->  Bitmap Heap Scan on test_idx_tup_read
+         Recheck Cond: ((a >= 1) AND (a <= 200))
+         ->  Bitmap Index Scan on test_idx_tup_read_a_idx
+               Index Cond: ((a >= 1) AND (a <= 200))
+(5 rows)
+
+SELECT count(*) FROM test_idx_tup_read WHERE a BETWEEN 1 AND 200;
+ count 
+-------
+   200
+(1 row)
+
+COMMIT;
+-- We expect 2 index scans and a total of 400 tuples read (200 from plain
+-- index scan, 200 from bitmap index scan).  However, we only expect 200 tuple
+-- fetches, because bitmap index scans/heap scans don't affect the relevant
+-- counter.
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+SELECT idx_scan, idx_tup_read, idx_tup_fetch FROM pg_stat_all_indexes
+  WHERE indexrelid = 'test_idx_tup_read_a_idx'::regclass;
+ idx_scan | idx_tup_read | idx_tup_fetch 
+----------+--------------+---------------
+        2 |          400 |           200
+(1 row)
+
+DROP TABLE test_idx_tup_read;
 ----
 -- Basic tests for track_functions
 ---
@@ -673,7 +758,7 @@ SELECT pg_stat_get_live_tuples(:drop_stats_test_subxact_oid);
                        0
 (1 row)
 
-DROP TABLE trunc_stats_test, trunc_stats_test1, trunc_stats_test2, trunc_stats_test3, trunc_stats_test4;
+DROP TABLE trunc_stats_test, trunc_stats_test1, trunc_stats_test2, trunc_stats_test3, trunc_stats_test4, trunc_stats_test5;
 DROP TABLE prevstats;
 -----
 -- Test that last_seq_scan, last_idx_scan are correctly maintained

@@ -628,12 +628,11 @@
 { name => 'data_directory_mode', type => 'int', context => 'PGC_INTERNAL', group => 'PRESET_OPTIONS',
   short_desc => 'Shows the mode of the data directory.',
   long_desc => 'The parameter value is a numeric mode specification in the form accepted by the chmod and umask system calls. (To use the customary octal format the number must start with a 0 (zero).)',
-  flags => 'GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE | GUC_RUNTIME_COMPUTED',
+  flags => 'GUC_NOT_IN_SAMPLE | GUC_DISALLOW_IN_FILE | GUC_RUNTIME_COMPUTED | GUC_SHOW_IN_OCTAL',
   variable => 'data_directory_mode',
   boot_val => '0700',
   min => '0000',
   max => '0777',
-  show_hook => 'show_data_directory_mode',
 },
 
 { name => 'data_sync_retry', type => 'bool', context => 'PGC_POSTMASTER', group => 'ERROR_HANDLING_OPTIONS',
@@ -1405,6 +1404,7 @@
 
 { name => 'idle_replication_slot_timeout', type => 'int', context => 'PGC_SIGHUP', group => 'REPLICATION_SENDING',
   short_desc => 'Sets the duration a replication slot can remain idle before it is invalidated.',
+  long_desc => '0 disables the timeout.',
   flags => 'GUC_UNIT_S',
   variable => 'idle_replication_slot_timeout_secs',
   boot_val => '0',
@@ -1495,6 +1495,7 @@
 
 { name => 'io_max_concurrency', type => 'int', context => 'PGC_POSTMASTER', group => 'RESOURCES_IO',
   short_desc => 'Max number of IOs that one process can execute simultaneously.',
+  long_desc => '-1 means use a value based on "shared_buffers" and the maximum number of processes.',
   variable => 'io_max_concurrency',
   boot_val => '-1',
   min => '-1',
@@ -1843,11 +1844,11 @@
 { name => 'log_file_mode', type => 'int', context => 'PGC_SIGHUP', group => 'LOGGING_WHERE',
   short_desc => 'Sets the file permissions for log files.',
   long_desc => 'The parameter value is expected to be a numeric mode specification in the form accepted by the chmod and umask system calls. (To use the customary octal format the number must start with a 0 (zero).)',
+  flags => 'GUC_SHOW_IN_OCTAL',
   variable => 'Log_file_mode',
   boot_val => '0600',
   min => '0000',
   max => '0777',
-  show_hook => 'show_log_file_mode',
 },
 
 { name => 'log_filename', type => 'string', context => 'PGC_SIGHUP', group => 'LOGGING_WHERE',
@@ -2026,7 +2027,7 @@
 
 { name => 'log_statement_max_length', type => 'int', context => 'PGC_SUSET', group => 'LOGGING_WHAT',
   short_desc => 'Sets the maximum length in bytes of logged statement text.',
-  long_desc => '-1 means log statement in full; 0 means log only an ellipsis.',
+  long_desc => '-1 means log statements in full. 0 means log only an ellipsis.',
   flags => 'GUC_UNIT_BYTE',
   variable => 'log_statement_max_length',
   boot_val => '-1',
@@ -2545,7 +2546,7 @@
 
 { name => 'password_expiration_warning_threshold', type => 'int', context => 'PGC_SIGHUP', group => 'CONN_AUTH_AUTH',
   short_desc => 'Threshold for password expiration warnings.',
-  long_desc => '0 means not to emit these warnings.',
+  long_desc => '0 disables these warnings.',
   flags => 'GUC_UNIT_S',
   variable => 'password_expiration_warning_threshold',
   boot_val => '604800',
@@ -3599,11 +3600,11 @@
 { name => 'unix_socket_permissions', type => 'int', context => 'PGC_POSTMASTER', group => 'CONN_AUTH_SETTINGS',
   short_desc => 'Sets the access permissions of the Unix-domain socket.',
   long_desc => 'Unix-domain sockets use the usual Unix file system permission set. The parameter value is expected to be a numeric mode specification in the form accepted by the chmod and umask system calls. (To use the customary octal format the number must start with a 0 (zero).)',
+  flags => 'GUC_SHOW_IN_OCTAL',
   variable => 'Unix_socket_permissions',
   boot_val => '0777',
   min => '0000',
   max => '0777',
-  show_hook => 'show_unix_socket_permissions',
 },
 
 { name => 'update_process_title', type => 'bool', context => 'PGC_SUSET', group => 'PROCESS_TITLE',
@@ -3882,7 +3883,7 @@
 
 { name => 'wal_sender_shutdown_timeout', type => 'int', context => 'PGC_USERSET', group => 'REPLICATION_SENDING',
   short_desc => 'Sets the maximum time the server waits during shutdown for all WAL data to be replicated to the receiver.',
-  long_desc => '-1 disables the timeout and waits for the receiver to catch up; 0 does not wait for the receiver to catch up.',
+  long_desc => '-1 means wait indefinitely. 0 means do not wait.',
   flags => 'GUC_UNIT_MS',
   variable => 'wal_sender_shutdown_timeout',
   threaded_accessor => 'PgCurrentWalSenderShutdownTimeoutRef',
@@ -3893,6 +3894,7 @@
 
 { name => 'wal_sender_timeout', type => 'int', context => 'PGC_USERSET', group => 'REPLICATION_SENDING',
   short_desc => 'Sets the maximum time to wait for WAL replication.',
+  long_desc => '0 disables the timeout.',
   flags => 'GUC_UNIT_MS',
   variable => 'wal_sender_timeout',
   threaded_accessor => 'PgCurrentWalSenderTimeoutRef',

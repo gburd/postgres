@@ -475,17 +475,60 @@ if (defined($ENV{oldinstall}))
 	}
 }
 
+# In a VPATH build, we'll be started in the source directory, but we want
+# to run pg_upgrade in the build directory so that any files generated finish
+# in it, like delete_old_cluster.{sh,bat}.
+chdir ${PostgreSQL::Test::Utils::tmp_check};
+
+# Checks with the old server still running.
+SKIP:
+{
+	skip "Timing issues with live server detection on Windows", 5
+	  if ($windows_os);
+
+	my @live_check_command = (
+		'pg_upgrade', '--no-sync',
+		'--old-datadir' => $oldnode->data_dir,
+		'--new-datadir' => $newnode->data_dir,
+		'--old-bindir' => $oldbindir,
+		'--new-bindir' => $newbindir,
+		'--socketdir' => $newnode->host,
+		'--old-port' => $oldnode->port);
+
+	# A live check must use different ports for the running old server and
+	# the temporary new server.
+	command_checks_all(
+		[
+			@live_check_command,
+			'--new-port' => $oldnode->port,
+			$mode, '--check',
+		],
+		1,
+		[
+			qr/When checking a live server, the old and new port numbers must be different\./
+		],
+		[],
+		'pg_upgrade --check with the same old and new ports');
+
+	rmtree($newnode->data_dir . "/pg_upgrade_output.d");
+
+	# Check the old cluster while it is running.
+	command_like(
+		[
+			@live_check_command,
+			'--new-port' => $newnode->port,
+			$mode, '--check',
+		],
+		qr/Performing Consistency Checks on Old Live Server/,
+		'run of pg_upgrade --check with old instance running');
+}
+
 # Create an invalid database, will be deleted below
 $oldnode->safe_psql(
 	'postgres', qq(
   CREATE DATABASE regression_invalid;
   UPDATE pg_database SET datconnlimit = -2 WHERE datname = 'regression_invalid';
 ));
-
-# In a VPATH build, we'll be started in the source directory, but we want
-# to run pg_upgrade in the build directory so that any files generated finish
-# in it, like delete_old_cluster.{sh,bat}.
-chdir ${PostgreSQL::Test::Utils::tmp_check};
 
 # Upgrade the instance.
 $oldnode->stop;
@@ -545,6 +588,20 @@ $oldnode->start;
 $oldnode->safe_psql('postgres', 'DROP DATABASE regression_invalid');
 $oldnode->stop;
 
+# The OID counter is 8 bytes wide, check that it is carried.  Older versions
+# may not support 8-byte OIDs, so skip in this case.
+my $big_next_oid = '4295067296';    # 2^32 + 100000
+if (!defined($ENV{oldinstall}))
+{
+	command_ok(
+		[
+			'pg_resetwal',
+			'--next-oid' => $big_next_oid,
+			$oldnode->data_dir
+		],
+		'set an 8-byte OID counter in the old instance');
+}
+
 # --check command works here, cleans up pg_upgrade_output.d.
 command_ok(
 	[
@@ -580,6 +637,17 @@ ok( !-d $newnode->data_dir . "/pg_upgrade_output.d",
 	"pg_upgrade_output.d/ removed after pg_upgrade success");
 
 $newnode->start;
+
+# The 8-byte OID has been carried.
+if (!defined($ENV{oldinstall}))
+{
+	is( $newnode->safe_psql(
+			'postgres',
+			"SELECT next_oid >= '$big_next_oid'::oid8 FROM pg_control_checkpoint()"
+		),
+		't',
+		'8-byte OID counter is carried over by pg_upgrade');
+}
 
 # Check if there are any logs coming from pg_upgrade, that would only be
 # retained on failure.

@@ -40,11 +40,11 @@
 #include "miscadmin.h"
 #include "pg_trace.h"
 #include "pgstat.h"
+#include "port/atomics.h"
 #include "storage/lmgr.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/shmem.h"
-#include "storage/spin.h"
 #include "storage/standby.h"
 #include "storage/subsystems.h"
 #include "utils/backend_runtime.h"
@@ -305,13 +305,7 @@ static PROCLOCK *FastPathGetRelationLockEntry(LOCALLOCK *locallock);
 #define FastPathStrongLockHashPartition(hashcode) \
 	((hashcode) % FAST_PATH_STRONG_LOCK_HASH_PARTITIONS)
 
-typedef struct
-{
-	slock_t		mutex;
-	uint32		count[FAST_PATH_STRONG_LOCK_HASH_PARTITIONS];
-} FastPathStrongRelationLockData;
-
-static PG_GLOBAL_SHMEM volatile FastPathStrongRelationLockData *FastPathStrongRelationLocks;
+static PG_GLOBAL_SHMEM pg_atomic_uint32 *FastPathStrongRelationLocks;
 
 static void LockManagerShmemRequest(void *arg);
 static void LockManagerShmemInit(void *arg);
@@ -477,7 +471,8 @@ LockManagerShmemRequest(void *arg)
 		);
 
 	ShmemRequestStruct(.name = "Fast Path Strong Relation Lock Data",
-					   .size = sizeof(FastPathStrongRelationLockData),
+					   .size = mul_size(sizeof(pg_atomic_uint32),
+										FAST_PATH_STRONG_LOCK_HASH_PARTITIONS),
 					   .ptr = (void **) (void *) &FastPathStrongRelationLocks,
 		);
 }
@@ -485,7 +480,8 @@ LockManagerShmemRequest(void *arg)
 static void
 LockManagerShmemInit(void *arg)
 {
-	SpinLockInit(&FastPathStrongRelationLocks->mutex);
+	for (int i = 0; i < FAST_PATH_STRONG_LOCK_HASH_PARTITIONS; i++)
+		pg_atomic_init_u32(&FastPathStrongRelationLocks[i], 0);
 }
 
 /*
@@ -671,6 +667,38 @@ LockHeldByMe(const LOCKTAG *locktag,
 		{
 			if (LockHeldByMe(locktag, slockmode, false))
 				return true;
+		}
+	}
+
+	return false;
+}
+
+/*
+ * GetAnyGrantedHeavyweightLock -- find some heavyweight lock this backend owns
+ *
+ * Returns true and stores the tag of an arbitrary granted lock in *locktag if
+ * the local lock table represents any lock we own, false otherwise.  Which
+ * lock is reported is unspecified when we hold several; callers use it only to
+ * give the user a starting point.
+ *
+ * A LOCALLOCK entry can remain after an unsuccessful lock acquisition, so only
+ * entries with a positive local hold count represent locks we own.
+ */
+bool
+GetAnyGrantedHeavyweightLock(LOCKTAG *locktag)
+{
+	HASH_SEQ_STATUS status;
+	LOCALLOCK  *locallock;
+
+	hash_seq_init(&status, LockMethodLocalHash);
+
+	while ((locallock = (LOCALLOCK *) hash_seq_search(&status)) != NULL)
+	{
+		if (locallock->nLocks > 0)
+		{
+			*locktag = locallock->tag.lock;
+			hash_seq_term(&status);
+			return true;
 		}
 	}
 
@@ -1006,11 +1034,11 @@ LockAcquireExtended(const LOCKTAG *locktag,
 			/*
 			 * LWLockAcquire acts as a memory sequencing point, so it's safe
 			 * to assume that any strong locker whose increment to
-			 * FastPathStrongRelationLocks->counts becomes visible after we
-			 * test it has yet to begin to transfer fast-path locks.
+			 * FastPathStrongRelationLocks becomes visible after we test it
+			 * has yet to begin to transfer fast-path locks.
 			 */
 			LWLockAcquire(&MyProc->fpInfoLock, LW_EXCLUSIVE);
-			if (FastPathStrongRelationLocks->count[fasthashcode] != 0)
+			if (pg_atomic_read_u32(&FastPathStrongRelationLocks[fasthashcode]) != 0)
 				acquired = false;
 			else
 				acquired = FastPathGrantRelationLock(locktag->locktag_field2,
@@ -1515,11 +1543,9 @@ RemoveLocalLock(LOCALLOCK *locallock)
 
 		fasthashcode = FastPathStrongLockHashPartition(locallock->hashcode);
 
-		SpinLockAcquire(&FastPathStrongRelationLocks->mutex);
-		Assert(FastPathStrongRelationLocks->count[fasthashcode] > 0);
-		FastPathStrongRelationLocks->count[fasthashcode]--;
+		Assert(pg_atomic_read_u32(&FastPathStrongRelationLocks[fasthashcode]) > 0);
+		pg_atomic_fetch_sub_u32(&FastPathStrongRelationLocks[fasthashcode], 1);
 		locallock->holdsStrongLockCount = false;
-		SpinLockRelease(&FastPathStrongRelationLocks->mutex);
 	}
 
 	if (!hash_search(LockMethodLocalHash,
@@ -1848,20 +1874,9 @@ BeginStrongLockAcquire(LOCALLOCK *locallock, uint32 fasthashcode)
 	Assert(StrongLockInProgress == NULL);
 	Assert(locallock->holdsStrongLockCount == false);
 
-	/*
-	 * Adding to a memory location is not atomic, so we take a spinlock to
-	 * ensure we don't collide with someone else trying to bump the count at
-	 * the same time.
-	 *
-	 * XXX: It might be worth considering using an atomic fetch-and-add
-	 * instruction here, on architectures where that is supported.
-	 */
-
-	SpinLockAcquire(&FastPathStrongRelationLocks->mutex);
-	FastPathStrongRelationLocks->count[fasthashcode]++;
+	pg_atomic_fetch_add_u32(&FastPathStrongRelationLocks[fasthashcode], 1);
 	locallock->holdsStrongLockCount = true;
 	StrongLockInProgress = locallock;
-	SpinLockRelease(&FastPathStrongRelationLocks->mutex);
 }
 
 /*
@@ -1889,12 +1904,10 @@ AbortStrongLockAcquire(void)
 
 	fasthashcode = FastPathStrongLockHashPartition(locallock->hashcode);
 	Assert(locallock->holdsStrongLockCount == true);
-	SpinLockAcquire(&FastPathStrongRelationLocks->mutex);
-	Assert(FastPathStrongRelationLocks->count[fasthashcode] > 0);
-	FastPathStrongRelationLocks->count[fasthashcode]--;
+	Assert(pg_atomic_read_u32(&FastPathStrongRelationLocks[fasthashcode]) > 0);
+	pg_atomic_fetch_sub_u32(&FastPathStrongRelationLocks[fasthashcode], 1);
 	locallock->holdsStrongLockCount = false;
 	StrongLockInProgress = NULL;
-	SpinLockRelease(&FastPathStrongRelationLocks->mutex);
 }
 
 /*
@@ -3378,10 +3391,8 @@ LockRefindAndRelease(LockMethod lockMethodTable, PGPROC *proc,
 	{
 		uint32		fasthashcode = FastPathStrongLockHashPartition(hashcode);
 
-		SpinLockAcquire(&FastPathStrongRelationLocks->mutex);
-		Assert(FastPathStrongRelationLocks->count[fasthashcode] > 0);
-		FastPathStrongRelationLocks->count[fasthashcode]--;
-		SpinLockRelease(&FastPathStrongRelationLocks->mutex);
+		Assert(pg_atomic_read_u32(&FastPathStrongRelationLocks[fasthashcode]) > 0);
+		pg_atomic_fetch_sub_u32(&FastPathStrongRelationLocks[fasthashcode], 1);
 	}
 }
 
@@ -4530,9 +4541,7 @@ lock_twophase_recover(FullTransactionId fxid, uint16 info,
 	{
 		uint32		fasthashcode = FastPathStrongLockHashPartition(hashcode);
 
-		SpinLockAcquire(&FastPathStrongRelationLocks->mutex);
-		FastPathStrongRelationLocks->count[fasthashcode]++;
-		SpinLockRelease(&FastPathStrongRelationLocks->mutex);
+		pg_atomic_fetch_add_u32(&FastPathStrongRelationLocks[fasthashcode], 1);
 	}
 
 	LWLockRelease(partitionLock);

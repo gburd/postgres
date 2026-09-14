@@ -1531,7 +1531,7 @@ OidFunctionCall9Coll(Oid functionId, Oid collation, Datum arg1, Datum arg2,
  * the same as FunctionCall3.
  */
 Datum
-InputFunctionCall(FmgrInfo *flinfo, char *str, Oid typioparam, int32 typmod)
+InputFunctionCall(FmgrInfo *flinfo, const char *str, Oid typioparam, int32 typmod)
 {
 	LOCAL_FCINFO(fcinfo, 3);
 	Datum		result;
@@ -1585,7 +1585,7 @@ InputFunctionCall(FmgrInfo *flinfo, char *str, Oid typioparam, int32 typmod)
  * InputFunctionCall; the result will always be true if control returns.
  */
 bool
-InputFunctionCallSafe(FmgrInfo *flinfo, char *str,
+InputFunctionCallSafe(FmgrInfo *flinfo, const char *str,
 					  Oid typioparam, int32 typmod,
 					  Node *escontext,
 					  Datum *result)
@@ -1640,7 +1640,7 @@ InputFunctionCallSafe(FmgrInfo *flinfo, char *str,
  * look at FmgrInfo, since there won't be any.
  */
 bool
-DirectInputFunctionCallSafe(PGFunction func, char *str,
+DirectInputFunctionCallSafe(PGFunction func, const char *str,
 							Oid typioparam, int32 typmod,
 							Node *escontext,
 							Datum *result)
@@ -1754,7 +1754,7 @@ SendFunctionCall(FmgrInfo *flinfo, Datum val)
  * in seldom-executed code paths.  They are not only slow but leak memory.
  */
 Datum
-OidInputFunctionCall(Oid functionId, char *str, Oid typioparam, int32 typmod)
+OidInputFunctionCall(Oid functionId, const char *str, Oid typioparam, int32 typmod)
 {
 	FmgrInfo	flinfo;
 

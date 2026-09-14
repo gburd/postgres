@@ -185,7 +185,7 @@ CreateTriggerFiringOn(const CreateTrigStmt *stmt, const char *queryString,
 	int16	   *columns;
 	int2vector *tgattr;
 	List	   *whenRtable;
-	char	   *qual;
+	char	   *tgqual;
 	Datum		values[Natts_pg_trigger];
 	bool		nulls[Natts_pg_trigger];
 	Relation	rel;
@@ -682,7 +682,7 @@ CreateTriggerFiringOn(const CreateTrigStmt *stmt, const char *queryString,
 		/* we'll need the rtable for recordDependencyOnExpr */
 		whenRtable = pstate->p_rtable;
 
-		qual = nodeToString(whenClause);
+		tgqual = nodeToString(whenClause);
 
 		free_parsestate(pstate);
 	}
@@ -690,11 +690,11 @@ CreateTriggerFiringOn(const CreateTrigStmt *stmt, const char *queryString,
 	{
 		whenClause = NULL;
 		whenRtable = NIL;
-		qual = NULL;
+		tgqual = NULL;
 	}
 	else
 	{
-		qual = nodeToString(whenClause);
+		tgqual = nodeToString(whenClause);
 		whenRtable = NIL;
 	}
 
@@ -902,8 +902,10 @@ CreateTriggerFiringOn(const CreateTrigStmt *stmt, const char *queryString,
 		if (nargs > PG_INT16_MAX)
 			ereport(ERROR,
 					errcode(ERRCODE_TOO_MANY_ARGUMENTS),
-					errmsg("triggers cannot have more than %d arguments",
-						   PG_INT16_MAX));
+					errmsg_plural("triggers cannot have more than %d argument",
+								  "triggers cannot have more than %d arguments",
+								  PG_INT16_MAX,
+								  PG_INT16_MAX));
 
 		foreach(le, stmt->args)
 		{
@@ -983,8 +985,8 @@ CreateTriggerFiringOn(const CreateTrigStmt *stmt, const char *queryString,
 	values[Anum_pg_trigger_tgattr - 1] = PointerGetDatum(tgattr);
 
 	/* set tgqual if trigger has WHEN clause */
-	if (qual)
-		values[Anum_pg_trigger_tgqual - 1] = CStringGetTextDatum(qual);
+	if (tgqual)
+		values[Anum_pg_trigger_tgqual - 1] = CStringGetTextDatum(tgqual);
 	else
 		nulls[Anum_pg_trigger_tgqual - 1] = true;
 

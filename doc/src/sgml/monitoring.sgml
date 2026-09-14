@@ -417,7 +417,7 @@ postgres   27093  0.0  0.0  30096  2752 ?        Ss   11:34   0:00 postgres: ser
       <entry><structname>pg_stat_progress_repack</structname><indexterm><primary>pg_stat_progress_repack</primary></indexterm></entry>
       <entry>One row for each backend running <command>REPACK</command>,
        <command>CLUSTER</command> or <command>VACUUM FULL</command>, showing current progress.
-       <xref linkend="repack-progress-reporting"/>.
+       See <xref linkend="repack-progress-reporting"/>.
       </entry>
      </row>
 
@@ -1361,11 +1361,7 @@ description | Waiting for a newly initialized WAL file to reach durable storage
      Extensions can add <literal>Extension</literal>,
      <literal>InjectionPoint</literal>, and <literal>LWLock</literal> events
      to the lists shown in <xref linkend="wait-event-extension-table"/> and
-     <xref linkend="wait-event-lwlock-table"/>. In some cases, the name
-     of an <literal>LWLock</literal> assigned by an extension will not be
-     available in all server processes.  It might be reported as just
-     <quote><literal>extension</literal></quote> rather than the
-     extension-assigned name.
+     <xref linkend="wait-event-lwlock-table"/>.
     </para>
    </note>
  </sect2>
@@ -5943,6 +5939,24 @@ description | Waiting for a newly initialized WAL file to reach durable storage
       <row>
        <entry role="func_table_entry"><para role="func_signature">
         <indexterm>
+         <primary>pg_stat_force_next_flush</primary>
+        </indexterm>
+        <function>pg_stat_force_next_flush</function> ()
+        <returnvalue>void</returnvalue>
+       </para>
+       <para>
+        Forces the statistics accumulated by the current session to be
+        flushed to shared memory when the current transaction ends,
+        without waiting for the
+        <varname>PGSTAT_MIN_INTERVAL</varname> delay between flushes. This
+        is mainly useful in tests that need this flush to happen without
+        that delay.
+       </para></entry>
+      </row>
+
+      <row>
+       <entry role="func_table_entry"><para role="func_signature">
+        <indexterm>
          <primary>pg_stat_reset</primary>
         </indexterm>
         <function>pg_stat_reset</function> ()
@@ -6329,7 +6343,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
         backend with the specified ID.
         The fields returned are <parameter>subxact_count</parameter>, which
         is the number of subtransactions in the backend's subtransaction cache,
-        and <parameter>subxact_overflow</parameter>, which indicates whether
+        and <parameter>subxact_overflowed</parameter>, which indicates whether
         the backend's subtransaction cache is overflowed or not.
        </para></entry>
       </row>
@@ -6726,7 +6740,8 @@ FROM pg_stat_get_backend_idset() AS backendid;
    <command>VACUUM FULL</command> is running,
    the backwards-compatibility <structname>pg_stat_progress_cluster</structname>
    view will
-   contain a row for each backend that is currently running either command.
+   contain a row for each backend that is currently running one of these
+   commands.
    The tables below describe the information that will be reported and
    provide information about how to interpret it.
   </para>
@@ -6790,8 +6805,9 @@ FROM pg_stat_get_backend_idset() AS backendid;
        The command that is running. Either <command>CLUSTER</command> or
        <command>VACUUM FULL</command>.
        Because this view exists for backwards-compatibility purposes only,
-       it will translate any <command>REPACK</command> command into one of
-       these other two.
+       it will translate a <command>REPACK</command> command into
+       <command>CLUSTER</command> if index ordering is requested,
+       or <command>VACUUM FULL</command> otherwise.
       </para></entry>
      </row>
 
@@ -6809,8 +6825,8 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <structfield>cluster_index_relid</structfield> <type>oid</type>
       </para>
       <para>
-       If the table is being scanned using an index, this is the OID of the
-       index being used; otherwise, it is zero.
+       OID of the index defining the order of the rewritten table, or zero
+       if no index ordering is requested.
       </para></entry>
      </row>
 
@@ -7400,10 +7416,11 @@ FROM pg_stat_get_backend_idset() AS backendid;
   </indexterm>
 
   <para>
-   Whenever <command>REPACK</command> is running,
+   Whenever <command>REPACK</command>, <command>CLUSTER</command>, or
+   <command>VACUUM FULL</command> is running,
    the <structname>pg_stat_progress_repack</structname> view will contain a
-   row for each backend that is currently running the command.  The tables
-   below describe the information that will be reported and provide
+   row for each backend that is currently running one of these commands.
+   The tables below describe the information that will be reported and provide
    information about how to interpret it.
   </para>
 
@@ -7454,7 +7471,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <structfield>relid</structfield> <type>oid</type>
       </para>
       <para>
-       OID of the table being repacked.
+       OID of the table being processed.
       </para></entry>
      </row>
 
@@ -7463,8 +7480,8 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <structfield>command</structfield> <type>text</type>
       </para>
       <para>
-       The command that is running. Either <command>REPACK</command> or
-       <command>VACUUM FULL</command>, or <command>CLUSTER</command>.
+       The command that is running. One of <command>CLUSTER</command>,
+       <command>REPACK</command>, or <command>VACUUM FULL</command>.
       </para></entry>
      </row>
 
@@ -7482,8 +7499,8 @@ FROM pg_stat_get_backend_idset() AS backendid;
        <structfield>repack_index_relid</structfield> <type>oid</type>
       </para>
       <para>
-       If the table is being scanned using an index, this is the OID of the
-       index being used; otherwise, it is zero.
+       OID of the index defining the order of the rewritten table, or zero
+       if no index ordering is requested.
       </para></entry>
      </row>
 
@@ -7657,10 +7674,12 @@ FROM pg_stat_get_backend_idset() AS backendid;
    currently vacuuming.  The tables below describe the information
    that will be reported and provide information about how to interpret it.
    Progress for <command>VACUUM FULL</command> commands is reported via
-   <structname>pg_stat_progress_cluster</structname>
+   <structname>pg_stat_progress_repack</structname>, and is also visible via
+   the backwards-compatibility <structname>pg_stat_progress_cluster</structname>
    because both <command>VACUUM FULL</command> and <command>CLUSTER</command>
    rewrite the table, while regular <command>VACUUM</command> only modifies it
-   in place. See <xref linkend="cluster-progress-reporting"/>.
+   in place. See <xref linkend="repack-progress-reporting"/> and
+   <xref linkend="cluster-progress-reporting"/>.
   </para>
 
   <table id="pg-stat-progress-vacuum-view" xreflabel="pg_stat_progress_vacuum">
@@ -8320,7 +8339,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
         <structfield>blocks_total</structfield> <type>bigint</type>
        </para>
        <para>
-        The number of blocks in the current relation which will be processed,
+        The number of blocks in the current relation fork which will be processed,
         or <literal>NULL</literal> if the worker process hasn't
         calculated the number of blocks yet. The launcher process has
         this set to <literal>NULL</literal>.
@@ -8334,7 +8353,7 @@ FROM pg_stat_get_backend_idset() AS backendid;
         <structfield>blocks_done</structfield> <type>bigint</type>
        </para>
        <para>
-        The number of blocks in the current relation which have been processed.
+        The number of blocks in the current relation fork which have been processed.
         The launcher process has this set to <literal>NULL</literal>.
        </para>
       </entry>

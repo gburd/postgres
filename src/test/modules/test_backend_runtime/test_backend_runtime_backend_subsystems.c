@@ -1994,27 +1994,27 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 	MemSet(&fake_backend2, 0, sizeof(fake_backend2));
 	dlist_init(&fake_backend1.logical_replication.lsn_mapping);
 	dlist_init(&fake_backend2.logical_replication.lsn_mapping);
-	fake_backend1.logical_replication.apply_error_callback_arg.remote_attnum = -1;
-	fake_backend1.logical_replication.apply_error_callback_arg.remote_xid =
+	fake_backend1.logical_replication.remote_ctx.remote_attnum = -1;
+	fake_backend1.logical_replication.remote_ctx.remote_xid =
 		InvalidTransactionId;
-	fake_backend1.logical_replication.apply_error_callback_arg.finish_lsn =
+	fake_backend1.logical_replication.remote_ctx.finish_lsn =
 		InvalidXLogRecPtr;
 	fake_backend1.logical_replication.subxact_data.subxact_last =
 		InvalidTransactionId;
-	fake_backend1.logical_replication.remote_final_lsn = InvalidXLogRecPtr;
+	fake_backend1.logical_replication.remote_ctx.finish_lsn = InvalidXLogRecPtr;
 	fake_backend1.logical_replication.stream_xid = InvalidTransactionId;
 	fake_backend1.logical_replication.skip_xact_finish_lsn = InvalidXLogRecPtr;
 	fake_backend1.logical_replication.last_flushpos = InvalidXLogRecPtr;
 	fake_backend1.logical_replication.slotsync_sleep_ms =
 		PG_BACKEND_SLOTSYNC_INITIAL_SLEEP_MS;
-	fake_backend2.logical_replication.apply_error_callback_arg.remote_attnum = -1;
-	fake_backend2.logical_replication.apply_error_callback_arg.remote_xid =
+	fake_backend2.logical_replication.remote_ctx.remote_attnum = -1;
+	fake_backend2.logical_replication.remote_ctx.remote_xid =
 		InvalidTransactionId;
-	fake_backend2.logical_replication.apply_error_callback_arg.finish_lsn =
+	fake_backend2.logical_replication.remote_ctx.finish_lsn =
 		InvalidXLogRecPtr;
 	fake_backend2.logical_replication.subxact_data.subxact_last =
 		InvalidTransactionId;
-	fake_backend2.logical_replication.remote_final_lsn = InvalidXLogRecPtr;
+	fake_backend2.logical_replication.remote_ctx.finish_lsn = InvalidXLogRecPtr;
 	fake_backend2.logical_replication.stream_xid = InvalidTransactionId;
 	fake_backend2.logical_replication.skip_xact_finish_lsn = InvalidXLogRecPtr;
 	fake_backend2.logical_replication.last_flushpos = InvalidXLogRecPtr;
@@ -2025,13 +2025,13 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 	{
 		PgSetCurrentBackend(&fake_backend1);
 		logical1 = PgCurrentLogicalReplicationState();
-		logical1->apply_error_callback_arg.command = LOGICAL_REP_MSG_INSERT;
-		logical1->apply_error_callback_arg.rel =
+		logical1->remote_ctx.command = LOGICAL_REP_MSG_INSERT;
+		logical1->remote_ctx.rel =
 			(struct LogicalRepRelMapEntry *) &fake_backend1;
-		logical1->apply_error_callback_arg.remote_attnum = 11;
-		logical1->apply_error_callback_arg.remote_xid = 12;
-		logical1->apply_error_callback_arg.finish_lsn = UINT64CONST(13);
-		logical1->apply_error_callback_arg.origin_name = (char *) &fake_backend1;
+		logical1->remote_ctx.remote_attnum = 11;
+		logical1->remote_ctx.remote_xid = 12;
+		logical1->remote_ctx.finish_lsn = UINT64CONST(13);
+		logical1->remote_ctx.origin_name = (char *) &fake_backend1;
 		logical1->subxact_data.nsubxacts = 14;
 		logical1->subxact_data.nsubxacts_max = 15;
 		logical1->subxact_data.subxact_last = 16;
@@ -2048,7 +2048,7 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 			(LogicalRepWorker *) &fake_backend1;
 		logical1->on_commit_wakeup_workers_subids = (List *) &fake_backend1;
 		logical1->in_remote_transaction = true;
-		logical1->remote_final_lsn = UINT64CONST(101);
+		logical1->remote_ctx.finish_lsn = UINT64CONST(101);
 		logical1->in_streamed_transaction = true;
 		logical1->stream_xid = 102;
 		logical1->parallel_stream_nchanges = 103;
@@ -2080,14 +2080,14 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		PgSetCurrentBackend(&fake_backend2);
 		logical2 = PgCurrentLogicalReplicationState();
 		ok = ok && dlist_is_empty(&logical2->lsn_mapping);
-		ok = ok && logical2->apply_error_callback_arg.command == 0;
-		ok = ok && logical2->apply_error_callback_arg.rel == NULL;
-		ok = ok && logical2->apply_error_callback_arg.remote_attnum == -1;
-		ok = ok && logical2->apply_error_callback_arg.remote_xid ==
+		ok = ok && logical2->remote_ctx.command == 0;
+		ok = ok && logical2->remote_ctx.rel == NULL;
+		ok = ok && logical2->remote_ctx.remote_attnum == -1;
+		ok = ok && logical2->remote_ctx.remote_xid ==
 			InvalidTransactionId;
-		ok = ok && logical2->apply_error_callback_arg.finish_lsn ==
+		ok = ok && logical2->remote_ctx.finish_lsn ==
 			InvalidXLogRecPtr;
-		ok = ok && logical2->apply_error_callback_arg.origin_name == NULL;
+		ok = ok && logical2->remote_ctx.origin_name == NULL;
 		ok = ok && logical2->subxact_data.nsubxacts == 0;
 		ok = ok && logical2->subxact_data.nsubxacts_max == 0;
 		ok = ok && logical2->subxact_data.subxact_last == InvalidTransactionId;
@@ -2101,7 +2101,7 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && logical2->my_logical_rep_worker == NULL;
 		ok = ok && logical2->on_commit_wakeup_workers_subids == NIL;
 		ok = ok && !logical2->in_remote_transaction;
-		ok = ok && logical2->remote_final_lsn == InvalidXLogRecPtr;
+		ok = ok && logical2->remote_ctx.finish_lsn == InvalidXLogRecPtr;
 		ok = ok && !logical2->in_streamed_transaction;
 		ok = ok && logical2->stream_xid == InvalidTransactionId;
 		ok = ok && logical2->parallel_stream_nchanges == 0;
@@ -2131,13 +2131,13 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && logical2->parallel_apply_subxactlist == NIL;
 
 		logical2->apply_context = (MemoryContext) &fake_backend2;
-		logical2->apply_error_callback_arg.command = LOGICAL_REP_MSG_UPDATE;
-		logical2->apply_error_callback_arg.rel =
+		logical2->remote_ctx.command = LOGICAL_REP_MSG_UPDATE;
+		logical2->remote_ctx.rel =
 			(struct LogicalRepRelMapEntry *) &fake_backend2;
-		logical2->apply_error_callback_arg.remote_attnum = 21;
-		logical2->apply_error_callback_arg.remote_xid = 22;
-		logical2->apply_error_callback_arg.finish_lsn = UINT64CONST(23);
-		logical2->apply_error_callback_arg.origin_name = (char *) &fake_backend2;
+		logical2->remote_ctx.remote_attnum = 21;
+		logical2->remote_ctx.remote_xid = 22;
+		logical2->remote_ctx.finish_lsn = UINT64CONST(23);
+		logical2->remote_ctx.origin_name = (char *) &fake_backend2;
 		logical2->subxact_data.nsubxacts = 24;
 		logical2->subxact_data.nsubxacts_max = 25;
 		logical2->subxact_data.subxact_last = 26;
@@ -2153,7 +2153,7 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 			(LogicalRepWorker *) &fake_backend2;
 		logical2->on_commit_wakeup_workers_subids = (List *) &fake_backend2;
 		logical2->in_remote_transaction = true;
-		logical2->remote_final_lsn = UINT64CONST(201);
+		logical2->remote_ctx.finish_lsn = UINT64CONST(201);
 		logical2->in_streamed_transaction = true;
 		logical2->stream_xid = 202;
 		logical2->parallel_stream_nchanges = 203;
@@ -2185,14 +2185,14 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		PgSetCurrentBackend(&fake_backend1);
 		logical1 = PgCurrentLogicalReplicationState();
 		ok = ok && dlist_is_empty(&logical1->lsn_mapping);
-		ok = ok && logical1->apply_error_callback_arg.command ==
+		ok = ok && logical1->remote_ctx.command ==
 			LOGICAL_REP_MSG_INSERT;
-		ok = ok && logical1->apply_error_callback_arg.rel ==
+		ok = ok && logical1->remote_ctx.rel ==
 			(struct LogicalRepRelMapEntry *) &fake_backend1;
-		ok = ok && logical1->apply_error_callback_arg.remote_attnum == 11;
-		ok = ok && logical1->apply_error_callback_arg.remote_xid == 12;
-		ok = ok && logical1->apply_error_callback_arg.finish_lsn == UINT64CONST(13);
-		ok = ok && logical1->apply_error_callback_arg.origin_name ==
+		ok = ok && logical1->remote_ctx.remote_attnum == 11;
+		ok = ok && logical1->remote_ctx.remote_xid == 12;
+		ok = ok && logical1->remote_ctx.finish_lsn == UINT64CONST(13);
+		ok = ok && logical1->remote_ctx.origin_name ==
 			(char *) &fake_backend1;
 		ok = ok && logical1->subxact_data.nsubxacts == 14;
 		ok = ok && logical1->subxact_data.nsubxacts_max == 15;
@@ -2212,7 +2212,7 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && logical1->on_commit_wakeup_workers_subids ==
 			(List *) &fake_backend1;
 		ok = ok && logical1->in_remote_transaction;
-		ok = ok && logical1->remote_final_lsn == UINT64CONST(101);
+		ok = ok && logical1->remote_ctx.finish_lsn == UINT64CONST(101);
 		ok = ok && logical1->in_streamed_transaction;
 		ok = ok && logical1->stream_xid == 102;
 		ok = ok && logical1->parallel_stream_nchanges == 103;
@@ -2248,14 +2248,14 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		PgSetCurrentBackend(&fake_backend2);
 		logical2 = PgCurrentLogicalReplicationState();
 		ok = ok && dlist_is_empty(&logical2->lsn_mapping);
-		ok = ok && logical2->apply_error_callback_arg.command ==
+		ok = ok && logical2->remote_ctx.command ==
 			LOGICAL_REP_MSG_UPDATE;
-		ok = ok && logical2->apply_error_callback_arg.rel ==
+		ok = ok && logical2->remote_ctx.rel ==
 			(struct LogicalRepRelMapEntry *) &fake_backend2;
-		ok = ok && logical2->apply_error_callback_arg.remote_attnum == 21;
-		ok = ok && logical2->apply_error_callback_arg.remote_xid == 22;
-		ok = ok && logical2->apply_error_callback_arg.finish_lsn == UINT64CONST(23);
-		ok = ok && logical2->apply_error_callback_arg.origin_name ==
+		ok = ok && logical2->remote_ctx.remote_attnum == 21;
+		ok = ok && logical2->remote_ctx.remote_xid == 22;
+		ok = ok && logical2->remote_ctx.finish_lsn == UINT64CONST(23);
+		ok = ok && logical2->remote_ctx.origin_name ==
 			(char *) &fake_backend2;
 		ok = ok && logical2->subxact_data.nsubxacts == 24;
 		ok = ok && logical2->subxact_data.nsubxacts_max == 25;
@@ -2275,7 +2275,7 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && logical2->on_commit_wakeup_workers_subids ==
 			(List *) &fake_backend2;
 		ok = ok && logical2->in_remote_transaction;
-		ok = ok && logical2->remote_final_lsn == UINT64CONST(201);
+		ok = ok && logical2->remote_ctx.finish_lsn == UINT64CONST(201);
 		ok = ok && logical2->in_streamed_transaction;
 		ok = ok && logical2->stream_xid == 202;
 		ok = ok && logical2->parallel_stream_nchanges == 203;
@@ -2373,7 +2373,6 @@ test_backend_xlog_state_is_backend_local(PG_FUNCTION_ARGS)
 		xlog1->open_log_seg_no = 108;
 		xlog1->open_log_tli = 109;
 		xlog1->local_min_recovery_point = UINT64CONST(110);
-		xlog1->local_min_recovery_point_tli = 111;
 		xlog1->update_min_recovery_point = false;
 		xlog1->local_data_checksum_state = PG_DATA_CHECKSUM_INPROGRESS_ON;
 		xlog1->my_lock_no = 112;
@@ -2399,7 +2398,7 @@ test_backend_xlog_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && xlog2->open_log_seg_no == 0;
 		ok = ok && xlog2->open_log_tli == 0;
 		ok = ok && xlog2->local_min_recovery_point == InvalidXLogRecPtr;
-		ok = ok && xlog2->local_min_recovery_point_tli == 0;
+		ok = ok && xlog2->open_log_tli == 0;
 		ok = ok && xlog2->update_min_recovery_point;
 		ok = ok && xlog2->local_data_checksum_state == PG_DATA_CHECKSUM_OFF;
 		ok = ok && xlog2->my_lock_no == 0;
@@ -2423,7 +2422,6 @@ test_backend_xlog_state_is_backend_local(PG_FUNCTION_ARGS)
 		xlog2->open_log_seg_no = 208;
 		xlog2->open_log_tli = 209;
 		xlog2->local_min_recovery_point = UINT64CONST(210);
-		xlog2->local_min_recovery_point_tli = 211;
 		xlog2->update_min_recovery_point = false;
 		xlog2->local_data_checksum_state = PG_DATA_CHECKSUM_INPROGRESS_OFF;
 		xlog2->my_lock_no = 212;
@@ -2449,7 +2447,6 @@ test_backend_xlog_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && xlog1->open_log_seg_no == 108;
 		ok = ok && xlog1->open_log_tli == 109;
 		ok = ok && xlog1->local_min_recovery_point == UINT64CONST(110);
-		ok = ok && xlog1->local_min_recovery_point_tli == 111;
 		ok = ok && !xlog1->update_min_recovery_point;
 		ok = ok && xlog1->local_data_checksum_state ==
 			PG_DATA_CHECKSUM_INPROGRESS_ON;
@@ -2476,7 +2473,6 @@ test_backend_xlog_state_is_backend_local(PG_FUNCTION_ARGS)
 		ok = ok && xlog2->open_log_seg_no == 208;
 		ok = ok && xlog2->open_log_tli == 209;
 		ok = ok && xlog2->local_min_recovery_point == UINT64CONST(210);
-		ok = ok && xlog2->local_min_recovery_point_tli == 211;
 		ok = ok && !xlog2->update_min_recovery_point;
 		ok = ok && xlog2->local_data_checksum_state ==
 			PG_DATA_CHECKSUM_INPROGRESS_OFF;

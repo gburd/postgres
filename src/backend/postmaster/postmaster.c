@@ -374,6 +374,15 @@ static PG_GLOBAL_RUNTIME time_t AbortStartTime = 0;
 
 static PG_GLOBAL_RUNTIME bool ReachedNormalRunning = false;	/* T if we've reached PM_RUN */
 
+/*
+ * ClientAuthInProgress is NOT a process global here: it is per-CONNECTION state
+ * reached through PgCurrentClientAuthInProgressRef() (the ClientAuthInProgress
+ * macro in postmaster.h), because several sessions authenticate concurrently on
+ * one carrier thread.  Upstream keeps a plain global and, as of the 2026-09
+ * sync, defines it in this file; do NOT reintroduce that definition -- the
+ * macro would expand it into a bogus assignment to an accessor call.
+ */
+
 PG_GLOBAL_RUNTIME bool redirection_done = false;	/* stderr redirected for syslogger? */
 
 /* received START_AUTOVAC_LAUNCHER signal */
