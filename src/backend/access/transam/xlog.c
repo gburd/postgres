@@ -55,7 +55,10 @@
 #include "access/timeline.h"
 #include "access/transam.h"
 #include "access/twophase.h"
+#include "access/undolog.h"
+#include "access/undo_xlog.h"
 #include "access/xact.h"
+#include "access/xactundo.h"
 #include "access/xlog_internal.h"
 #include "access/xlogarchive.h"
 #include "access/xloginsert.h"
@@ -6837,6 +6840,14 @@ StartupXLOG(void)
 	UpdateFullPageWrites();
 
 	/*
+	 * Roll back the transactions the crash left in progress that wrote UNDO
+	 * records, and WAL-log each rollback, before the end-of-recovery
+	 * checkpoint or record below makes the rollbacks durable.
+	 */
+	if (performedWalRecovery)
+		UndoRecoveryRollBack();
+
+	/*
 	 * Emit checkpoint or end-of-recovery record in XLOG, if required.
 	 */
 	if (performedWalRecovery)
@@ -8055,6 +8066,14 @@ CreateCheckPoint(int flags)
 	if (!shutdown && XLogStandbyInfoActive())
 		LogStandbySnapshot();
 
+	/*
+	 * Tell crash recovery, which starts at our redo pointer, about the UNDO
+	 * chains of transactions still in flight; it would not replay the batches
+	 * they wrote before the redo pointer.
+	 */
+	if (!shutdown)
+		LogXactUndoInflight();
+
 	START_CRIT_SECTION();
 
 	/*
@@ -8230,6 +8249,7 @@ CreateCheckPoint(int flags)
 	 */
 	if (!RecoveryInProgress())
 		TruncateSUBTRANS(GetOldestTransactionIdConsideredRunning());
+
 
 	/* Real work is done; log and update stats. */
 	LogCheckpointEnd(false, flags);
@@ -8969,6 +8989,26 @@ KeepLogSeg(XLogRecPtr recptr, XLogSegNo *logSegNo)
 		XLByteToSeg(keep, unsummarized_segno, wal_segment_size);
 		if (unsummarized_segno < segno)
 			segno = unsummarized_segno;
+	}
+
+	/*
+	 * If UNDO-in-WAL is active, retain WAL segments that contain UNDO records
+	 * still needed for rollback of in-progress transactions.
+	 *
+	 * Scan live per-backend UNDO batch LSN slots at every checkpoint rather
+	 * than using the worker-updated cached horizon, to ensure WAL retention
+	 * is accurate even when the UNDO worker lags.
+	 */
+	{
+		keep = UndoGetOldestBatchLSN();
+		if (XLogRecPtrIsValid(keep))
+		{
+			XLogSegNo	undo_segno;
+
+			XLByteToSeg(keep, undo_segno, wal_segment_size);
+			if (undo_segno < segno)
+				segno = undo_segno;
+		}
 	}
 
 	/* but, keep at least wal_keep_size if that's set */
