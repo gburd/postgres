@@ -39,6 +39,11 @@ extern void undolog_desc(StringInfo buf, XLogReaderState *record);
 extern const char *undolog_identify(uint8 info);
 extern void undoaction_desc(StringInfo buf, XLogReaderState *record);
 extern const char *undoaction_identify(uint8 info);
+#ifdef USE_RECNO
+/* recno (Phase 10) WAL rmgr desc/identify routines (access/rmgrdesc/recnodesc.c) */
+extern void recno_desc(StringInfo buf, XLogReaderState *record);
+extern const char *recno_identify(uint8 info);
+#endif
 #include "storage/standbydefs.h"
 #include "utils/relmapper.h"
 

@@ -56,5 +56,9 @@ PG_RMGR(RM_FLUX_ID, "FLUX", flux_redo, flux_desc, flux_identify, NULL, NULL, flu
 #ifdef USE_FILEOPS
 PG_RMGR(RM_FILEOPS_ID, "FileOps", fileops_redo, fileops_desc, fileops_identify, NULL, NULL, NULL, NULL)
 #endif
+#ifdef USE_RECNO
+/* recno (Phase 10): resurrected RECNO in-place-MVCC table AM WAL rmgr */
+PG_RMGR(RM_RECNO_ID, "Recno", recno_redo, recno_desc, recno_identify, NULL, NULL, recno_mask, NULL)
+#endif
 PG_RMGR(RM_UNDOLOG_ID, "UndoLog", undolog_redo, undolog_desc, undolog_identify, NULL, NULL, NULL, NULL)
 PG_RMGR(RM_UNDOACTION_ID, "UndoAction", undoaction_redo, undoaction_desc, undoaction_identify, NULL, NULL, NULL, NULL)

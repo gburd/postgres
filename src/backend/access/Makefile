@@ -25,5 +25,6 @@ SUBDIRS	    = \
 	transam \
 	undo \
 	flux \
+	recno
 
 include $(top_srcdir)/src/backend/common.mk
