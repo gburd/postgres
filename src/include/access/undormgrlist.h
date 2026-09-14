@@ -36,6 +36,5 @@
 UNDO_RMGR_INIT(NbtreeUndoRmgrInit)
 UNDO_RMGR_INIT(HashUndoRmgrInit)
 
-
-
-
+/* FILEOPS: transactional filesystem operations UNDO rmgr (UNDO_RMID_FILEOPS=2) */
+UNDO_RMGR_INIT(FileopsUndoRmgrInit)
