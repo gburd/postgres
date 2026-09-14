@@ -1487,6 +1487,31 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 		/* Harvest ready events without blocking. */
 		rc = epoll_wait(set->epoll_fd, set->epoll_ret_events,
 						Min(nevents, set->nevents_space), 0);
+
+		/*
+		 * A ZERO here is NOT a timeout: this epoll_wait is NON-BLOCKING (0 ms),
+		 * so rc==0 only means "the epoll fd reported readable, but by the time we
+		 * harvested there was nothing left to report".  That happens legitimately
+		 * -- epoll readiness is level-triggered on the SET, and the condition can
+		 * be consumed or change between the fiber's unpark and this harvest (e.g.
+		 * a latch drained by another path, or a readiness edge for an event this
+		 * caller did not ask for).  Per this function's own contract (see
+		 * WaitEventSetWaitInternal: "If -1 is returned, a timeout has occurred, if
+		 * 0 we have to retry"), that case must return 0 so the caller RETRIES the
+		 * wait with its remaining timeout.
+		 *
+		 * Falling through to the shared code below would hit its `rc == 0` arm,
+		 * which is correct ONLY for the BLOCKING epoll_wait(cur_timeout) further
+		 * down (where 0 really does mean the timeout elapsed) and maps to -1.  On
+		 * this fiber path that produced a PHANTOM TIMEOUT: WaitEventSetWait
+		 * returned 0, secure_read set errno=ETIMEDOUT, and a healthy connection
+		 * died with "could not receive data from client: Connection timed out" --
+		 * observed as intermittent COPY failures (protocol synchronization lost)
+		 * on the fiber path only.  See
+		 * plan_docs/phase16_audits/PA1_VALIDATED_AND_FIBER_COPY_BUG.md.
+		 */
+		if (rc == 0)
+			return 0;			/* woke, nothing ready: retry, NOT a timeout */
 		goto xtc_have_rc;
 	}
 #endif
