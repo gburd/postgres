@@ -1,0 +1,42 @@
+RECNO vs Heap Performance Benchmark Suite
+==========================================
+
+This directory contains SQL-based benchmarks comparing the RECNO table access
+method against the standard heap storage engine in PostgreSQL.
+
+Prerequisites
+-------------
+- PostgreSQL built with RECNO support (--with-recno or -Drecno=true)
+- A running PostgreSQL instance with a database to test against
+- Sufficient shared_buffers for the workload (at least 256MB recommended)
+
+Running the benchmarks
+----------------------
+To run all benchmarks via the driver:
+
+    psql -d <dbname> -f src/test/storageperf/driver.sql
+
+To run an individual benchmark:
+
+    psql -d <dbname> -f src/test/storageperf/sql/insert_throughput.sql
+
+Benchmark descriptions
+----------------------
+insert_throughput.sql   - Bulk and individual insert performance comparison
+update_performance.sql  - In-place (RECNO) vs copy-on-write (heap) updates
+vacuum_overhead.sql     - RECNO UNDO cleanup vs heap dead-tuple VACUUM
+rollback_cost.sql       - ATM instant abort vs synchronous UNDO rollback
+storage_footprint.sql   - Compression ratios and per-row storage overhead
+read_under_writes.sql   - Read performance with concurrent write pressure
+
+Output
+------
+Each benchmark prints timing information (\timing on) and a summary table
+comparing heap and RECNO metrics. The driver.sql aggregates results into a
+final comparison table at the end.
+
+Notes
+-----
+- Results will vary by hardware, configuration, and data distribution.
+- Run benchmarks on an idle system for more consistent results.
+- The benchmarks create and drop their own tables; no persistent state remains.
