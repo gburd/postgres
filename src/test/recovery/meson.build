@@ -75,6 +75,7 @@ tests += {
       't/064_fileops_2pc.pl',
       't/065_fileops_standby_divergence.pl',
       't/066_fileops_crash_undo.pl',
+      't/067_fileops_createdb_crash.pl',
     ],
   },
 }
