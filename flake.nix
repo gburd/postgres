@@ -9,10 +9,13 @@
     # Defaults to GitHub; for local development point it at a checkout with
     #   nix develop --override-input libxtc path:$HOME/ws/xtc
     libxtc = {
-      # Pinned to the v1.41.1 release tag.  Carries the adb670f n_alive/idle-predicate
-      # fix, the 25a6e03 aio PARK/RUN tail brackets (so a lost completion wake is
-      # VISIBLE as a PARK with no RUN), and the xtc-rings / xtc-tail-dump gdb tools.
-      url = "github:gburd/libxtc?rev=e9a2e14e1285ca76cc8185073b3401d8f9aa8f63";
+      # Pinned to the v1.45.0 release tag (619bdcd).  Carries the v1.44.1 (2c851a5)
+      # cross-loop aio lost-wake fix (xtc_loop_wake on migrated-loop resume), the
+      # v1.44.0 xtc_orc spawn+monitor atomic fix, and the v1.45.0 xtc_tail dial9-native
+      # microscope (production spill via xtc_fs_open, dial9 trace format) plus a TSan
+      # fix making the aio force-offload flag atomic on the migratable path.  Behavior
+      # on the normal aio/scheduler path is unchanged from v1.44.1.
+      url = "github:gburd/libxtc?rev=619bdcd0941c8dcd5959bd802a7af364c2596dba";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
     };
