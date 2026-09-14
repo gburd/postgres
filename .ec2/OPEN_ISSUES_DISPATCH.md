@@ -226,3 +226,35 @@ Branches: fairness-fix, livelock-fix (WIP pushed) -- merge each to xtc after it 
 
 ## Live agents
 - b0b3451b  P-A1 implement+validate (one-line branch fix) -- xtc-fibers / optionA-fibers
+
+
+## Update 2026-09-14: SYNCED with upstream/master (214 commits) + fiber COPY bug FIXED
+- Added the real `upstream` remote (git.postgresql.org) -- origin/master is a fork mirror that was 214
+  commits behind and carries only CI automation.  MERGED upstream/master into xtc (ae54b793a7): 13
+  conflicts / 18 hunks, resolved biased toward upstream code, touching only what the threaded runtime
+  requires.  Chose merge over rebase (496 commits x 143 overlapping files would rewrite branch history).
+- Divergence REDUCED where upstream moved our way: adopted its ApplyErrorCallbackArg -> ApplyRemoteCtx
+  rename and its removal of remote_final_lsn; took its pg_atomic FastPathStrongRelationLocks.
+- FOUR latent bugs surfaced + fixed by the merge: (1) guc.c GUC_SHOW_IN_OCTAL read raw *conf->variable
+  and SEGFAULTED every backend (regress could not start); (2) pg_locale.c freed locale->icu.lt though
+  lt and icu are UNION alternatives -- freelocale() on a UCollator pointer; (3) datachecksum_state.c
+  used upstream's abort_requested global instead of our accessor; (4) removed the dead
+  local_min_recovery_point_tli session field.
+- Post-merge validation: meson regress PASSES (Fail: 0).  Full run Ok 327 / Fail 55, and the failures
+  are PRE-EXISTING (documented threaded bug stack + e.g. pg_upgrade/004_subscription, verified failing
+  identically on the pre-merge commit 825fe5db90).
+- Fiber model healthy post-merge: 8 loops/8 supervisors, COPY 3/3 OK, ZERO bad log lines, and read tps
+  nearly DOUBLED from upstream's improvements (c=64: 24.8k -> 45.7k; c=128: 20.8k -> 40.7k).
+- Earlier this session: fixed the fiber-path phantom ETIMEDOUT that broke COPY (a non-blocking
+  epoll harvest returning 0 was mapped to timeout instead of retry, violating this function's own
+  documented contract).  s=20 6/6 and s=50 3/3 clean, vs base 2/4 failing.
+
+## Still open (next, toward the two-model north star)
+1. WRITE path on the fiber model still wedges at c=64 on heavyweight Lock waits (tuple/transactionid/
+   extend) -- the aux-fiber/livelock family.  Top fiber-path blocker; livelock-fix branch (lazy GUC
+   restore) is an unvalidated candidate.
+2. Then: make fiber-on-fixed-pool the DEFAULT threaded model; DELETE the stackless pool + the
+   hand-rolled scheduler (REMOVE_HANDROLLED_LIBXTC_REIMPLEMENTATIONS.md TARGET 1); collapse the runtime
+   enum to exactly TWO models (fork + fiber-pool) per TWO_CONCURRENCY_MODELS_FORK_AND_FIBER_POOL.md.
+3. Declining tps with concurrency (45.7k at c=64 -> 40.7k at c=128) is unexplained -- the fiber-model
+   scaling question the north star must answer.
