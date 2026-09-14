@@ -210,3 +210,19 @@ Branches: fairness-fix, livelock-fix (WIP pushed) -- merge each to xtc after it 
 ## Branch map
 - xtc @ 493f245c10 (v1.45.0)  | optionA-fibers (active, P-A1)  | fairness-fix (ref, no merge)
   | livelock-fix (unvalidated, merge after validating)
+
+
+## Update 2026-09-14: P-A1 root-caused; the fix is a ONE-LINE branch (deletion of a detour), dispatched
+- Agent 5dfb48ae did design-complete P-A1 investigation (no code, no leak): the c>=192 lease PANIC is
+  thread-per-session sharing the pooled STACKLESS scheduler unnecessarily.  Source-verified.
+- Fix: PostgresRunSession (postgres.c:7445) branch on PgRuntimeIsPooledProtocol instead of blanket
+  PgRuntimeIsThreadBacked -> thread-per-session falls through to plain PgSessionRun and parks IN PLACE
+  via xtc_pg_wait_fd, never entering the stackless staging.  Doc:
+  PA1_PANIC_ROOTCAUSE_THREAD_PER_SESSION_STACKLESS_SHARE.md.
+- Implement+validate re-dispatched (agent b0b3451b, 240-turn, optionA-fibers worktree): apply the
+  branch, gdb-confirm in-place park, sweep c=64..384 no-PANIC, verify interrupt/cancel/NOTIFY/timeout,
+  gmake check 245/245, pooled default untouched.  This makes thread-per-session a clean real-fiber path
+  with NO stackless-scheduler dependency = the foundation for deleting the hand-rolled scheduler.
+
+## Live agents
+- b0b3451b  P-A1 implement+validate (one-line branch fix) -- xtc-fibers / optionA-fibers
