@@ -2089,6 +2089,74 @@ ServerLoop(void)
 			TerminateChildren(send_abort_for_kill ? SIGABRT : SIGKILL);
 			/* reset flag so we don't SIGKILL again */
 			AbortStartTime = 0;
+
+			/*
+			 * Threaded backstop: for a FIBER child, TerminateChildren() above
+			 * did NOT deliver a signal.  signal_child() routes a logical
+			 * backend through thread_child_signal_interrupt(), where SIGQUIT,
+			 * SIGKILL and SIGABRT all degrade to the COOPERATIVE
+			 * PG_BACKEND_INTERRUPT_PROC_DIE -- a flag the fiber only observes
+			 * if it reaches CHECK_FOR_INTERRUPTS().  A fiber wedged in a lock
+			 * wait never does, so this "last measure to get them unwedged" is
+			 * a no-op there and the postmaster would wait forever: observed as
+			 * a cluster that ignores both `pg_ctl -m fast` and `-m immediate`
+			 * and needs an external SIGKILL, with the log showing this very
+			 * message immediately beforehand.
+			 *
+			 * A signal cannot reach a fiber and libxtc's async kill
+			 * (xtc_exit_pid) is not yet safe to use here -- ProcSemaphoreWaitFiber
+			 * documents the prerequisite: a parked backend fiber must first be
+			 * made kill-safe (uninterruptible park, or xtc_proc_at_exit doing
+			 * LWLockReleaseAll) or an async kill could abandon a held buffer
+			 * content lock / spinlock and corrupt shared state -- strictly worse
+			 * than the hang.  See
+			 * plan_docs/phase16_audits/IMMEDIATE_SHUTDOWN_CANNOT_KILL_WEDGED_FIBER.md.
+			 *
+			 * Until that lands, honour the operator contract that an immediate
+			 * shutdown ALWAYS terminates the cluster by fail-stopping the whole
+			 * carrier process.  Every session lives in this address space, so
+			 * exiting it removes the wedged fiber along with everything else --
+			 * the threaded analogue of "the kernel removes you" -- and it matches
+			 * this project's existing stance that a genuine crash under
+			 * multithreaded=on fail-stops the process rather than limping on.
+			 * Crash-safety is unaffected: an immediate shutdown already promises
+			 * no clean shutdown checkpoint, so recovery replays WAL exactly as it
+			 * would after any immediate stop.
+			 */
+			if (multithreaded)
+			{
+				int			stuck_fibers = 0;
+				dlist_iter	iter;
+
+				dlist_foreach(iter, &ActiveChildList)
+				{
+					PMChild    *bp = dlist_container(PMChild, elem, iter.cur);
+
+					if (PostmasterChildHasLogicalBackendPublication(bp))
+						stuck_fibers++;
+				}
+
+				if (stuck_fibers > 0)
+				{
+					ereport(LOG,
+							(errmsg("terminating the multithreaded server process: %d fiber-backed child(ren) did not exit after %s",
+									stuck_fibers,
+									send_abort_for_kill ? "SIGABRT" : "SIGKILL"),
+							 errdetail("A signal cannot force a fiber-backed backend to exit, so the server process itself is exiting to complete the immediate shutdown."),
+							 errhint("This indicates a backend fiber was stuck and could not process the shutdown request.")));
+
+					/*
+					 * Exit through ExitPostmaster() rather than ereport(FATAL) so
+					 * the normal postmaster exit path runs (proc_exit callbacks,
+					 * which unlink postmaster.pid).  Leaving a stale pid file
+					 * behind is recoverable -- startup handles it -- but it makes
+					 * pg_ctl report "server does not shut down" for what was
+					 * actually a successful stop.  Status 1 marks it as an
+					 * unclean shutdown, which it is.
+					 */
+					ExitPostmaster(1);
+				}
+			}
 		}
 
 		/*
