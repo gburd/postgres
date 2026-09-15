@@ -2656,6 +2656,7 @@ static const LocatorDesc heapam_locator_desc = {
 	.max_offset = MaxHeapTuplesPerPage,
 	.name = "tid",
 	.old_version_retained = true,
+	.bitmap_and_inexact = NULL,
 };
 
 static const LocatorDesc *

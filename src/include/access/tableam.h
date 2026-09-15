@@ -1002,6 +1002,7 @@ RelationGetLocatorDesc(Relation rel)
 			.max_offset = MaxHeapTuplesPerPage,
 			.name = "tid",
 			.old_version_retained = true,
+			.bitmap_and_inexact = NULL,
 		};
 
 		rel->rd_locdesc = rel->rd_tableam->relation_locator ?
