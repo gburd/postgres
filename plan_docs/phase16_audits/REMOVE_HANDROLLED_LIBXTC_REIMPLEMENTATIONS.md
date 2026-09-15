@@ -80,3 +80,40 @@ fiber baseline, not the hand-rolled one.
 4. TARGET 3 audit sweep once the fiber baseline exists.
 Do NOT delete Target 1 before step 1 lands (nothing to run on). Do NOT merge the fairness-sweep or the
 message-budget as permanent -- they are the workarounds this directive removes.
+
+
+--------------------------------------------------------------------------------
+## Evaluated 2026-09-14: xtc_cfg for GUCs -- CANNOT adopt yet (feature request filed)
+
+Asked whether libxtc already supports managing GUCs, since we should not hand-roll what libxtc
+provides.  `xtc_cfg` (xtc_cfg.h) IS a close conceptual match: named+typed vars (bool/int/int64/double/
+string/enum), declared defaults, inclusive numeric bounds, enum label arrays, a validator callback, a
+change callback, config-file load, SIGHUP reload, and a count/kind discovery surface -- i.e. almost 1:1
+with PG's config_generic + check_hook/assign_hook + postgresql.conf + pg_settings.
+
+BLOCKER, stated in libxtc's own header: *"Not yet implemented: per-session/per-database scoping (an
+override-stack model that needs the M16 session layer)"* and *"Single global registry keyed by name."*
+One global value per name is unusable for a database server: **231 of our 450 builtin GUCs need real
+per-session storage** (they are exactly the ones carrying a `threaded_accessor`, because concurrent
+sessions share a carrier thread).  `SET work_mem` must affect one session only.
+
+Additional gaps beyond scoping, from PG's side:
+- a transactional override stack per (var, session) for SET LOCAL / SET-then-ROLLBACK / proconfig /
+  subtransactions -- pervasive here (**226 GucStack references in guc.c**);
+- source precedence + provenance (PGC_S_DEFAULT..PGC_S_OVERRIDE, and pg_settings.source);
+- change-permission contexts (PGC_POSTMASTER/SIGHUP/SU_BACKEND/BACKEND/SUSET/USERSET);
+- reset_val vs boot_val (RESET can return to a per-role/per-database default);
+- scale + hot-read cost: the registry is a mutex-protected linear scan ("~hundreds of vars"), while we
+  have 450 builtins plus extension GUCs, and PG reads GUCs through a cached POINTER, never by name.
+  Name-keyed reads on hot paths are precisely the trap we already hit -- a per-resume rebind of 231
+  GUC pointers, each a find_option() hash lookup, showed up as a 100%-CPU spin in perf.
+
+DECISION: keep PG's GUC registry for now; do NOT build a workaround inside libxtc's model.  Filed
+`/tmp/libxtc-cfg-needs-per-session-scoping-for-gucs-2026-09-14.md` requesting per-session scoping, a
+transactional override stack, source precedence, and (most important for adoption) **stable
+pointer-like read handles** so hot reads avoid name lookup.  If per-session scoping lands in the M16
+session layer, revisit -- the swap should then be mechanical.
+
+Note what we are ALREADY doing right and must not undo: the GUC critical sections use
+`xtc_amutex_static()` (guc.c:183), not a hand-rolled lock.  The hand-rolled part is the registry and
+per-session storage, which is the part libxtc cannot yet express.
