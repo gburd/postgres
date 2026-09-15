@@ -141,7 +141,11 @@ MultiExecBitmapAnd(BitmapAndState *node)
 			elog(ERROR, "unrecognized result from subplan");
 
 		if (result == NULL)
+		{
 			result = subresult; /* first subplan */
+			if (node->bitmap_heaprel != NULL)
+				tbm_set_heaprel(result, node->bitmap_heaprel);
+		}
 		else
 		{
 			tbm_intersect(result, subresult);

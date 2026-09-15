@@ -1602,6 +1602,8 @@ typedef struct BitmapAndState
 	PlanState	ps;				/* its first field is NodeTag */
 	PlanState **bitmapplans;	/* array of PlanStates for my inputs */
 	int			nplans;			/* number of input plans */
+	/* heap relation this bitmap will scan, threaded down by BitmapHeapScan */
+	Relation	bitmap_heaprel;
 } BitmapAndState;
 
 /* ----------------
