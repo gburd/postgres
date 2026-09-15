@@ -113,3 +113,49 @@ rather than waiting forever. That is a small, safe change and I would land it fi
 This is independent of the buffer-lock wedge and worth fixing on its own merits: even with the wedge
 fixed, any future bug that parks a fiber indefinitely would again make the cluster unstoppable. The
 wedge is the trigger; this is the missing safety net.
+
+
+--------------------------------------------------------------------------------
+## Correction 2026-09-15: libxtc is NOT missing the machinery; the blocker is PG's crash contract
+
+My original text above said the park "is not kill-safe" and implied libxtc lacked what we need. That was
+wrong on the first count and unfair on the second. Correcting it, and recording the real blocker.
+
+**libxtc v1.45.0 already provides everything needed for cancellation-SAFE release:**
+- `__xtc_proc_kill_deliver()` honours a mask -- `mask_depth == 0` unwinds via `xtc_exit_self`;
+  `mask_depth > 0` DEFERS and latches the reason, firing when the mask drops to 0.
+- `xtc_uncancelable()` IS the "uninterruptible park" this doc asked for.
+- `xtc_cancel_poll()`, `xtc_cancel_requested()`, `xtc_proc_at_exit()` (where LWLockReleaseAll would go),
+  and `xtc_scope` finalizers that run on async kill.
+
+**The actual blocker is architectural, on our side.** In process mode `quickdie()` deliberately abandons
+shared state -- it does NOT release locks or unwind -- and that is safe ONLY because the postmaster then
+does `all server processes terminated; reinitializing`: the whole shared memory segment is discarded and
+the cluster replays WAL. Nothing ever reads the abandoned state.
+
+Threaded mode has no such boundary. Killing ONE fiber leaves the same address space and every other
+session running, so an async kill at an arbitrary park point can leave a partially-written WAL record (a
+fiber killed inside XLogInsertRecord holding a WAL insertion slot), a partially-updated shared buffer
+(killed mid-heap_update), or a broken cross-structure invariant. `LWLockReleaseAll()` fixes lock
+OWNERSHIP; it cannot fix data MID-MUTATION.
+
+And masking cannot rescue the wedged case: for a stuck fiber the dangerous window is exactly where it is
+stuck, so `xtc_uncancelable()` would defer the kill FOREVER -- the hang we are trying to break. Masking
+makes cancellation safe; it does not make a stuck critical section killable. Different problems.
+
+**Therefore the process-level fail-stop we shipped is not a workaround -- it is the threaded analogue of
+PostgreSQL's own contract.** Process mode's answer to "a backend is stuck and must die now" is also "take
+the process down and recover from WAL"; we do the same at the granularity a shared address space forces.
+It stays as the final backstop regardless of what per-fiber kill later becomes possible.
+
+Filed `/tmp/libxtc-async-kill-of-wedged-pg-backend-fiber-2026-09-15.md` asking for the things that would
+let a per-fiber kill beat a process fail-stop: (1) a kill deadline / delivered-vs-deferred-vs-timed-out
+RETURN from `xtc_exit_pid` (today it cannot tell us which happened); (2) supervisor-side visibility of
+`mask_depth`/`mask_deferred` via `xtc_proc_info`/`xtc_inspect_procs`, so a supervisor can distinguish
+"unwinding" from "wedged inside a mask" -- useful on its own, not just for killing; (3) documented
+guidance on cancelling a fiber that mutates state other fibers keep using; (4) noted-only: a fiber
+group/arena whose shared allocations can be discarded wholesale on kill.
+
+So the earlier "obvious fix" is NOT available, and the reason is worth understanding rather than
+routing around: it is a genuine impedance mismatch between PG's crash-recovery model and per-fiber
+cancellation, not a gap in libxtc's API.
