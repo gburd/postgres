@@ -33,4 +33,9 @@ tests += {
       't/001_late_shmem_alloc.pl',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_late_shmem_alloc.py',
+    ],
+  },
 }
