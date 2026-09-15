@@ -1420,6 +1420,21 @@ _bt_insertonpg(Relation rel,
 
 		END_CRIT_SECTION();
 
+		/*
+		 * Write nbtree UNDO record for the insertion.  This is done after the
+		 * critical section (UNDO insertion involves I/O) but while we still
+		 * hold the buffer lock.  The UNDO record enables cleanup of this
+		 * index entry if the transaction aborts.
+		 *
+		 * Only write UNDO if the parent table AM supports UNDO. The heaprel
+		 * parameter is NULL during index builds and recovery.
+		 */
+		if (heaprel != NULL && RelationAmSupportsUndo(heaprel))
+		{
+			NbtreeUndoLogInsert(rel, heaprel, buf, itup,
+								itemsz, newitemoff, isleaf);
+		}
+
 		/* Release subsidiary buffers */
 		if (BufferIsValid(metabuf))
 			_bt_relbuf(rel, metabuf);

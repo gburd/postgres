@@ -1,0 +1,7 @@
+CREATE EXTENSION test_seqlock;
+SELECT test_seqlock();
+ test_seqlock 
+--------------
+ 
+(1 row)
+

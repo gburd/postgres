@@ -36,6 +36,23 @@ Regular locks should be used for all user-driven lock requests.
 
 * SIReadLock predicate locks.  See separate README-SSI file for details.
 
+In addition to those four interprocess lock types, there is a specialized
+reader/writer primitive:
+
+* Sequence locks (seqlocks; see src/include/storage/seqlock.h).  A seqlock
+protects read-mostly, rarely-written shared data with a single sequence
+counter (even = stable, odd = write in progress).  Readers take no lock and
+pay no atomic read-modify-write and no StoreLoad fence on the common path:
+they read the counter, copy the data into local variables, re-read the
+counter, and retry if it changed.  A writer bumps the counter odd, mutates
+the single copy in place, and bumps it even; writer-vs-writer exclusion is
+the caller's responsibility (typically an LWLock already held for other
+reasons).  Readers may retry if a writer intervenes, so a reader is not
+wait-free and can be starved by continuous writers -- seqlocks suit
+read-mostly data with short, infrequent writes.  Because the data has a
+single copy that the writer mutates in place, a reader must not retain
+pointers into it across the re-check.
+
 Acquisition of either a spinlock or a lightweight lock causes query
 cancel and die() interrupts to be held off until all such locks are
 released. No such restriction exists for regular locks, however.  Also
