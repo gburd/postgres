@@ -9,15 +9,17 @@
     # Defaults to GitHub; for local development point it at a checkout with
     #   nix develop --override-input libxtc path:$HOME/ws/xtc
     libxtc = {
-      # Pinned to the v1.47.0 release tag (76d1f73).  Carries the v1.44.1 (2c851a5)
-      # cross-loop aio lost-wake fix, the v1.44.0 xtc_orc atomic spawn+monitor, the
-      # v1.45.0 xtc_tail dial9 microscope, and four fixes made in response to our
-      # reports: park_reason now names the MAILBOX park (a sourceless park was
-      # indistinguishable from a lost wake -- it manufactured our wedge evidence),
-      # xtc-gdb/lldb fail LOUD instead of printing an empty census when libxtc has
-      # no debug info, xtc_exit_pid_deadline + mask state in xtc_proc_info, and
-      # xtc_cfg_ref pointer-stable read handles.
-      url = "github:gburd/libxtc?rev=76d1f736d40a055c5a0d765b69d02eaede4a18b7";
+      # Pinned to the v1.48.1 release tag (560a5bc).  Carries the WRONG-PROC STRAND
+      # fixes that are the root cause of our write-path wedge: xtc_proc_wait_fd
+      # (v1.48.0) and xtc_proc_sleep (v1.48.1) both took `self` from the
+      # __current_proc thread-local, which the coroutine layer restores to a
+      # DIFFERENT proc across yields (measured 99.2% wrong under the multi-loop
+      # executor).  wait_fd displaced another fiber's fd registration; sleep
+      # CANCELLED another fiber's live park timer, stranding a lock holder with no
+      # wake source and wedging everything queued behind it.  Also: xtc-stranded now
+      # joins fd parks against CQ-overflow state (our request), plus the v1.47.0
+      # mailbox-park label, xtc_exit_pid_deadline, and xtc_cfg_ref.
+      url = "github:gburd/libxtc?rev=560a5bc5e12e4b677b5c4a21c633d5592d5b9b4c";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
     };
