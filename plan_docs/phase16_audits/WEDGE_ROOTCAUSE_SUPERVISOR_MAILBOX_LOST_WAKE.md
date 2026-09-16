@@ -1,3 +1,35 @@
+# RETRACTED 2026-09-16: this RCA was WRONG -- the diagnostic mislabelled a healthy park
+
+**This document's conclusion is retracted.** libxtc v1.47.0 (commit bbe49a4) found that `park_reason`
+never named the MAILBOX park: the branch meant to catch it tested `task->park_requested`, which the coro
+substrate CONSUMES when converting the yield into PENDING, so it was always 0 by the time the task
+reached PARKED -- dead code since it was written. A fiber healthily blocked in `xtc_recv(..., -1)`
+therefore reported a bare, sourceless `PARKED`, which is ALSO what a lost wake looks like. The evidence
+below was manufactured by that mislabel.
+
+They could not reproduce a lost wake (20,000 cross-thread sends drained 6/6; all 17,615 deliveries that
+found `waker_armed == 0` landed on a RUNNING receiver) and added a POSIX gate pinning it. Verified here
+on v1.47.0: the same supervisor now reads `PARKED(mailbox)` with `mbox=0`, and `xtc-stranded` reports
+`park=mailbox 8` with **0 suspects** (was 1). Our `/tmp` bug report is withdrawn.
+
+**What survives:** the wedge itself is real and reproduces on a genuinely clean server at v1.47.0
+(write 1354 -> 1763 -> 394 -> 0.0 forever), with libxtc confirmed healthy. The wait census at the hang is
+`BufferExclusive` 30 / `transactionid` 16 / `tuple` 11 / `WALInsert` 6, so it is a PostgreSQL-side
+buffer-content-lock problem -- which means my EARLIER buffer-lock findings
+(`WEDGE_RCA_FINAL_HELD_BUFFER_LOCK_2026-09-14.md`) were closer to the truth than this document, and the
+"reframing" this document did to them was itself wrong.
+
+**Lesson, recorded so it is not repeated:** a "sourceless park" is a statement about the TOOL's
+knowledge, not about the runtime. It must never be read as a lost wake without a second independent
+signal. My four controls here were individually sound but all downstream of one mislabelled field --
+they could not distinguish a healthy mailbox park from a dropped wake, so they agreed with each other
+while being collectively uninformative. This is the fourth time in this investigation I attributed the
+wedge to the wrong layer.
+
+Original (incorrect) analysis retained below.
+
+--------------------------------------------------------------------------------
+
 # WEDGE ROOT CAUSE FOUND: the per-loop supervisor's mailbox wake is lost (libxtc bug, reported)
 
 Date: 2026-09-15. Found with a DEBUG libxtc build + `xtc-procs` / `xtc-proc` / `xtc-mailbox` /
