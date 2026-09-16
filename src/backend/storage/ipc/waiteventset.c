@@ -91,6 +91,54 @@
  * useful to manually specify the used primitive.  If desired, just add a
  * define somewhere before this block.
  */
+/*
+ * TEMPORARY park-path instrumentation (PG_XTC_PARK_TRACE=1).  Records, per
+ * fiber park: the requested timeout, what xtc_pg_wait_fd returned, and what the
+ * following NON-BLOCKING epoll_wait harvested.  Used to find why a fiber parked
+ * on a ready epoll fd is never resumed (the write-path wedge).  Remove once the
+ * root cause is fixed.
+ */
+#ifdef USE_XTC_CARRIER
+static int	xtc_park_trace_on = -1;
+
+#define XTC_PARK_TRACE(set_, to_, wl_, rc_, tag_) \
+	do { \
+		if (unlikely(xtc_park_trace_on < 0)) \
+		{ \
+			const char *e_ = getenv("PG_XTC_PARK_TRACE"); \
+			xtc_park_trace_on = (e_ != NULL && e_[0] == '1') ? 1 : 0; \
+		} \
+		if (xtc_park_trace_on == 1) \
+		{ \
+			xtc_pid_t	self_ = xtc_self(); \
+			fprintf(stderr, \
+					"PARKTRACE pid=%u.%u.%u efd=%d timeout=%ld wl=0x%x rc=%d nev=%d %s\n", \
+					self_.loop_id, self_.local_id, self_.gen, \
+					(set_)->epoll_fd, (long) (to_), (unsigned) (wl_), (rc_), \
+					(set_)->nevents, (tag_)); \
+		} \
+	} while (0)
+#else
+#define XTC_PARK_TRACE(set_, to_, wl_, rc_, tag_) ((void) 0)
+#endif
+
+#ifdef USE_XTC_CARRIER
+#define XTC_PARK_TRACE2(set_, to_, wl_, rc_, pos_, ev_, epev_) \
+	do { \
+		if (xtc_park_trace_on == 1) \
+		{ \
+			xtc_pid_t	self2_ = xtc_self(); \
+			fprintf(stderr, \
+					"PARKTRACE2 pid=%u.%u.%u efd=%d timeout=%ld rc=%d pos=%d pgev=0x%x epev=0x%x\n", \
+					self2_.loop_id, self2_.local_id, self2_.gen, \
+					(set_)->epoll_fd, (long) (to_), (rc_), (pos_), \
+					(unsigned) (ev_), (unsigned) (epev_)); \
+		} \
+	} while (0)
+#else
+#define XTC_PARK_TRACE2(set_, to_, wl_, rc_, pos_, ev_, epev_) ((void) 0)
+#endif
+
 #if defined(WAIT_USE_EPOLL) || defined(WAIT_USE_POLL) || \
 	defined(WAIT_USE_KQUEUE) || defined(WAIT_USE_WIN32)
 /* don't overwrite manual choice */
@@ -1529,10 +1577,53 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 		wl = xtc_pg_wait_fd(set->epoll_fd, WL_SOCKET_READABLE,
 							(long) cur_timeout);
 		if (wl & WL_TIMEOUT)
+		{
+			XTC_PARK_TRACE(set, cur_timeout, wl, -999, "WL_TIMEOUT");
 			return -1;			/* timeout occurred */
+		}
 		/* Harvest ready events without blocking. */
 		rc = epoll_wait(set->epoll_fd, set->epoll_ret_events,
 						Min(nevents, set->nevents_space), 0);
+		if (rc > 0)
+		{
+			WaitEvent  *e0 = (WaitEvent *) set->epoll_ret_events[0].data.ptr;
+
+			XTC_PARK_TRACE2(set, cur_timeout, wl, rc,
+							e0 != NULL ? e0->pos : -1,
+							e0 != NULL ? (int) e0->events : -1,
+							(int) set->epoll_ret_events[0].events);
+
+			/*
+			 * DESYNC DETECTOR (temporary): epoll returned readiness that the
+			 * WaitEvent mirror did not ask for.  That means event->events and the
+			 * kernel registration disagree, which makes ModifyWaitEvent's
+			 * "nothing changed, skip epoll_ctl" fast path unsound and spins this
+			 * loop (wake -> decode finds nothing -> re-park -> wake ...).
+			 */
+			if (xtc_park_trace_on == 1 && e0 != NULL &&
+				(e0->events & (WL_SOCKET_READABLE | WL_SOCKET_WRITEABLE |
+							   WL_SOCKET_CLOSED)) != 0)
+			{
+				uint32		want = 0;
+
+				if (e0->events & WL_SOCKET_READABLE)
+					want |= EPOLLIN;
+				if (e0->events & WL_SOCKET_WRITEABLE)
+					want |= EPOLLOUT;
+				if (e0->events & WL_SOCKET_CLOSED)
+					want |= EPOLLRDHUP;
+
+				if ((set->epoll_ret_events[0].events &
+					 (EPOLLIN | EPOLLOUT | EPOLLRDHUP) & ~want) != 0)
+					fprintf(stderr,
+							"PARKDESYNC efd=%d pos=%d fd=%d pgev=0x%x want_ep=0x%x got_ep=0x%x\n",
+							set->epoll_fd, e0->pos, e0->fd,
+							(unsigned) e0->events, (unsigned) want,
+							(unsigned) set->epoll_ret_events[0].events);
+			}
+		}
+		else
+			XTC_PARK_TRACE(set, cur_timeout, wl, rc, "harvest");
 
 		/*
 		 * A ZERO here is NOT a timeout: this epoll_wait is NON-BLOCKING (0 ms),
