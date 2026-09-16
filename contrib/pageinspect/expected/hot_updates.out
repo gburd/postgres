@@ -493,62 +493,38 @@ SELECT * FROM get_hot_count('hot_jsonb_test');
 
 DROP TABLE hot_jsonb_test;
 -- ---------------------------------------------------------------------------
--- 9. XML expression index: any change to the indexed column is non-HOT
+-- 10. A change to a GIN-indexed column is HOT-indexed
 --
--- Parallel to the JSONB case above: xpath() over the doc column feeds an
--- expression index, so any change to doc disqualifies HOT-indexed (expression
--- indexes are not yet supported) and also blocks classic HOT, even when only a
--- non-indexed sub-path changed.  (xpath() returns xml[], which has no default
--- btree opclass; index and compare the first extracted node cast to text.)
+-- The read side filters a stale leaf via the crossed-attribute bitmap, which
+-- is access-method agnostic, so a GIN-covered column is HOT-indexed like any
+-- other: only the GIN index is maintained, and a GIN scan (which rechecks on
+-- the heap) returns correct results across the chain.
 -- ---------------------------------------------------------------------------
-CREATE TABLE hot_xml_test (
+CREATE TABLE hot_gin_test (
     id int PRIMARY KEY,
-    doc xml
+    tags text[],
+    properties jsonb
 ) WITH (fillfactor = 50);
-CREATE INDEX hot_xml_name_idx
-    ON hot_xml_test (((xpath('/person/name/text()', doc))[1]::text));
-INSERT INTO hot_xml_test VALUES
-    (1, '<person><name>Alice</name><age>30</age></person>'),
-    (2, '<person><name>Bob</name><age>25</age></person>');
--- Change only the non-indexed age sub-path: still non-HOT, because the whole
--- doc column is the expression index's input.
-UPDATE hot_xml_test SET doc = '<person><name>Alice</name><age>31</age></person>' WHERE id = 1;
+CREATE INDEX hot_gin_tags_idx ON hot_gin_test USING gin (tags);
+CREATE INDEX hot_gin_props_idx ON hot_gin_test USING gin (properties);
+INSERT INTO hot_gin_test VALUES
+    (1, ARRAY['tag1', 'tag2'], '{"key1":"val1","key2":"val2"}'),
+    (2, ARRAY['tag3', 'tag4'], '{"key3":"val3","key4":"val4"}');
+-- Reorder tags: a GIN-covered column changes, so this is HOT-indexed.
+UPDATE hot_gin_test SET tags = ARRAY['tag2', 'tag1'] WHERE id = 1;
 SELECT pg_stat_force_next_flush();
  pg_stat_force_next_flush 
 --------------------------
  
 (1 row)
 
-SELECT * FROM get_hot_count('hot_xml_test');
+SELECT * FROM get_hot_count('hot_gin_test');
  updates | hot 
 ---------+-----
-       1 |   0
+       1 |   1
 (1 row)
 
--- A change to the indexed name sub-path is likewise non-HOT.
-UPDATE hot_xml_test SET doc = '<person><name>Alice2</name><age>31</age></person>' WHERE id = 1;
-SELECT pg_stat_force_next_flush();
- pg_stat_force_next_flush 
---------------------------
- 
-(1 row)
-
-SELECT * FROM get_hot_count('hot_xml_test');
- updates | hot 
----------+-----
-       2 |   0
-(1 row)
-
--- The expression index still resolves the current value.
-SET enable_seqscan = off;
-SELECT id FROM hot_xml_test WHERE (xpath('/person/name/text()', doc))[1]::text = 'Alice2';
- id 
-----
-  1
-(1 row)
-
-RESET enable_seqscan;
-DROP TABLE hot_xml_test;
+DROP TABLE hot_gin_test;
 -- ---------------------------------------------------------------------------
 -- Cleanup
 -- ---------------------------------------------------------------------------

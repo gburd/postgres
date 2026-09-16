@@ -32,10 +32,13 @@
  *	stable		   -- false: a heap update that does not fit on the row's
  *					  current page stores the new version elsewhere, leaving the
  *					  old index entry behind.
- *	may_be_inexact -- false: every stored TID identifies exactly the row version
- *					  a fetch through it produces.  A table AM that wants to
- *					  store entries which only approximately locate a row sets
- *					  this and marks those entries.
+ *	may_be_inexact -- true: a HOT-indexed (selective index update) fresh entry
+ *					  points at a mid-chain heap-only tuple rather than at the
+ *					  chain root, so it does not exactly locate the row version a
+ *					  fetch through an unrelated index will produce.  The heap
+ *					  marks such entries (ItemPointerRecheckHintFlag) when it
+ *					  stores them, and a bitmap scan degrades their page to
+ *					  lossy; see tidbitmap.c and execIndexing.c.
  */
 static const LocatorCapabilityInfo locator_capabilities[LOCATOR_CAP_COUNT] = {
 	[LOCATOR_CAP_TID] = {
@@ -45,7 +48,7 @@ static const LocatorCapabilityInfo locator_capabilities[LOCATOR_CAP_COUNT] = {
 		.decomposable = true,
 		.prefetchable = true,
 		.stable = false,
-		.may_be_inexact = false,
+		.may_be_inexact = true,
 	},
 };
 
