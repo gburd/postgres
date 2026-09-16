@@ -422,8 +422,16 @@ retry:
 
 		ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetSocketPos, waitfor, NULL);
 
+		if (xtc_sread_trace_on == 1)
+			fprintf(stderr, "SWRITEWAIT pid=%d n=%zd errno=%d waitfor=0x%x enter\n",
+					(int) MyProcPid, n, errno, (unsigned) waitfor);
+
 		WaitEventSetWait(FeBeWaitSet, -1 /* no timeout */ , &event, 1,
 						 WAIT_EVENT_CLIENT_WRITE);
+
+		if (xtc_sread_trace_on == 1)
+			fprintf(stderr, "SWRITEWAIT pid=%d ev=0x%x pos=%d woke\n",
+					(int) MyProcPid, (unsigned) event.events, event.pos);
 
 		/* See comments in secure_read. */
 		if (event.events & WL_POSTMASTER_DEATH)
