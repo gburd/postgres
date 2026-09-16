@@ -14,4 +14,15 @@ tests += {
       'with_krb_srvnam': 'postgres',
     },
   },
+  'pytest': {
+    'test_kwargs': {'priority': 40}, # kerberos tests are slow, start early
+    'tests': [
+      'pyt/test_001_auth.py',
+    ],
+    'env': {
+      'with_gssapi': gssapi.found() ? 'yes' : 'no',
+      'with_krb_srvnam': 'postgres',
+      'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
+    },
+  },
 }

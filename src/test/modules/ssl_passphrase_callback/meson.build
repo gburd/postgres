@@ -54,4 +54,10 @@ tests += {
     ],
     'env': {'with_ssl': 'openssl'},
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_testfunc.py',
+    ],
+    'env': {'with_ssl': 'openssl'},
+  },
 }

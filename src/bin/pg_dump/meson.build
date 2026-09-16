@@ -89,6 +89,24 @@ tests += {
   'name': 'pg_dump',
   'sd': meson.current_source_dir(),
   'bd': meson.current_build_dir(),
+  'pytest': {
+    'env': {
+      'GZIP_PROGRAM': gzip.found() ? gzip.full_path() : '',
+      'LZ4': program_lz4.found() ? program_lz4.full_path() : '',
+      'ZSTD': program_zstd.found() ? program_zstd.full_path() : '',
+      'with_icu': icu.found() ? 'yes' : 'no',
+    },
+    'tests': [
+      'pyt/test_001_basic.py',
+      'pyt/test_002_pg_dump.py',
+      'pyt/test_003_pg_dump_with_server.py',
+      'pyt/test_004_pg_dump_parallel.py',
+      'pyt/test_010_dump_connstr.py',
+      'pyt/test_007_pg_dumpall.py',
+      'pyt/test_006_pg_dump_compress.py',
+      'pyt/test_005_pg_dump_filterfile.py',
+    ],
+  },
   'tap': {
     'env': {
       'GZIP_PROGRAM': gzip.found() ? gzip.full_path() : '',
