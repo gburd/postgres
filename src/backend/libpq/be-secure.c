@@ -177,6 +177,36 @@ secure_close(Port *port)
 /*
  *	Read data from a secure connection.
  */
+
+/*
+ * TEMPORARY secure_read loop trace (PG_XTC_SREAD_TRACE=1).  The fiber path parks
+ * HERE (PgSessionRun -> pq_getbyte -> secure_read -> WaitEventSetWait), so this
+ * is where a discarded readable wake would spin.  Decoded WL_* values, to avoid
+ * the constant-misreading that produced two wrong root causes:
+ *   WL_LATCH_SET=0x1 WL_SOCKET_READABLE=0x2 WL_SOCKET_WRITEABLE=0x4
+ *   WL_TIMEOUT=0x8   WL_POSTMASTER_DEATH=0x10 WL_SOCKET_CLOSED=0x80
+ * FeBe positions: 0=socket 1=latch 2=pmdeath 3=interrupt_wake_fd
+ */
+#ifdef USE_XTC_CARRIER
+static int	xtc_sread_trace_on = -1;
+
+#define XTC_SREAD_TRACE(waitfor_, to_, ev_, pos_, tag_) \
+	do { \
+		if (unlikely(xtc_sread_trace_on < 0)) \
+		{ \
+			const char *e_ = getenv("PG_XTC_SREAD_TRACE"); \
+			xtc_sread_trace_on = (e_ != NULL && e_[0] == '1') ? 1 : 0; \
+		} \
+		if (xtc_sread_trace_on == 1) \
+			fprintf(stderr, \
+					"SREADTRACE pid=%d waitfor=0x%x timeout=%ld ev=0x%x pos=%d %s\n", \
+					(int) MyProcPid, (unsigned) (waitfor_), (long) (to_), \
+					(unsigned) (ev_), (pos_), (tag_)); \
+	} while (0)
+#else
+#define XTC_SREAD_TRACE(waitfor_, to_, ev_, pos_, tag_) ((void) 0)
+#endif
+
 ssize_t
 secure_read(Port *port, void *ptr, size_t len)
 {
@@ -210,6 +240,10 @@ retry:
 	}
 
 	/* In blocking mode, wait until the socket is ready */
+	if (xtc_sread_trace_on == 1)
+		fprintf(stderr, "SREADRESULT pid=%d n=%zd errno=%d noblock=%d waitfor=0x%x\n",
+				(int) MyProcPid, n, n < 0 ? errno : 0,
+				(int) port->noblock, (unsigned) waitfor);
 	if (n < 0 && !port->noblock && (errno == EWOULDBLOCK || errno == EAGAIN))
 	{
 		WaitEvent	event;
@@ -237,9 +271,11 @@ retry:
 		if (WaitEventSetWait(FeBeWaitSet, timeout, &event, 1,
 							 WAIT_EVENT_CLIENT_READ) == 0)
 		{
+			XTC_SREAD_TRACE(waitfor, timeout, 0, -1, "TIMEOUT0");
 			errno = ETIMEDOUT;
 			return -1;
 		}
+		XTC_SREAD_TRACE(waitfor, timeout, event.events, event.pos, "event");
 
 		/*
 		 * If the postmaster has died, it's not safe to continue running,

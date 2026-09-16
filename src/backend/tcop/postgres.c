@@ -6308,6 +6308,40 @@ PgRuntimeProtocolSchedulerWaitParkedReads(PgRuntime *runtime,
 	return nready;
 }
 
+
+/*
+ * TEMPORARY wake-classification trace (PG_XTC_WAKE_TRACE=1).  Confirms or kills
+ * the hypothesis that a readable wake is discarded because
+ * park_spec->transport_wait_events is 0/stale or the transport generation moved,
+ * so the resume path re-parks forever.  Prints the decoded WL_* names to avoid
+ * the constant-misreading mistake that cost two wrong root causes.
+ *   WL_LATCH_SET=0x1  WL_SOCKET_READABLE=0x2  WL_SOCKET_WRITEABLE=0x4
+ *   WL_TIMEOUT=0x8    WL_POSTMASTER_DEATH=0x10  WL_SOCKET_CLOSED=0x80
+ */
+#ifdef USE_XTC_CARRIER
+static int	xtc_wake_trace_on = -1;
+
+#define XTC_WAKE_TRACE(be_, ps_, we_, tag_) \
+	do { \
+		if (unlikely(xtc_wake_trace_on < 0)) \
+		{ \
+			const char *e_ = getenv("PG_XTC_WAKE_TRACE"); \
+			xtc_wake_trace_on = (e_ != NULL && e_[0] == '1') ? 1 : 0; \
+		} \
+		if (xtc_wake_trace_on == 1) \
+			fprintf(stderr, \
+					"WAKETRACE be=" UINT64_FORMAT " gen=%u twe=0x%x sock=%d tgen=%u cgen=%u we=0x%x %s\n", \
+					(be_) != NULL ? (be_)->id : 0, \
+					(ps_)->generation, (unsigned) (ps_)->transport_wait_events, \
+					(int) (ps_)->socket, (ps_)->transport_generation, \
+					(ps_)->connection != NULL ? \
+					(ps_)->connection->socket_io.transport_generation : 0u, \
+					(unsigned) (we_), (tag_)); \
+	} while (0)
+#else
+#define XTC_WAKE_TRACE(be_, ps_, we_, tag_) ((void) 0)
+#endif
+
 static uint32
 PgSessionStagingWaitProtocolRead(PgBackend *backend,
 								 PgProtocolParkSpec *park_spec)
@@ -6335,6 +6369,7 @@ PgSessionStagingWaitProtocolRead(PgBackend *backend,
 	 */
 	if (park_spec->transport_buffered_input)
 	{
+		XTC_WAKE_TRACE(backend, park_spec, 0, "BUFFERED_INPUT");
 		(void) PgBackendMarkProtocolReadParkWake(backend,
 												 park_spec->generation,
 												 PG_PROTOCOL_PARK_WAKE_BUFFERED_INPUT,
@@ -6345,6 +6380,7 @@ PgSessionStagingWaitProtocolRead(PgBackend *backend,
 	if (park_spec->transport_wait_events == 0 ||
 		park_spec->socket == PGINVALID_SOCKET)
 	{
+		XTC_WAKE_TRACE(backend, park_spec, 0, "STALE_TRANSPORT");
 		(void) PgBackendMarkProtocolReadParkWake(backend,
 												 park_spec->generation,
 												 PG_PROTOCOL_PARK_WAKE_STALE_TRANSPORT,
@@ -6472,6 +6508,9 @@ PgSessionStagingWaitProtocolRead(PgBackend *backend,
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
+
+	XTC_WAKE_TRACE(backend, park_spec, wake_events,
+				   wake_events == 0 ? "ZERO" : "WAKE");
 
 	if (wake_events != 0)
 		PgBackendMarkProtocolReadParkWakeEvents(backend, park_spec,
