@@ -9,13 +9,15 @@
     # Defaults to GitHub; for local development point it at a checkout with
     #   nix develop --override-input libxtc path:$HOME/ws/xtc
     libxtc = {
-      # Pinned to the v1.45.0 release tag (619bdcd).  Carries the v1.44.1 (2c851a5)
-      # cross-loop aio lost-wake fix (xtc_loop_wake on migrated-loop resume), the
-      # v1.44.0 xtc_orc spawn+monitor atomic fix, and the v1.45.0 xtc_tail dial9-native
-      # microscope (production spill via xtc_fs_open, dial9 trace format) plus a TSan
-      # fix making the aio force-offload flag atomic on the migratable path.  Behavior
-      # on the normal aio/scheduler path is unchanged from v1.44.1.
-      url = "github:gburd/libxtc?rev=619bdcd0941c8dcd5959bd802a7af364c2596dba";
+      # Pinned to the v1.47.0 release tag (76d1f73).  Carries the v1.44.1 (2c851a5)
+      # cross-loop aio lost-wake fix, the v1.44.0 xtc_orc atomic spawn+monitor, the
+      # v1.45.0 xtc_tail dial9 microscope, and four fixes made in response to our
+      # reports: park_reason now names the MAILBOX park (a sourceless park was
+      # indistinguishable from a lost wake -- it manufactured our wedge evidence),
+      # xtc-gdb/lldb fail LOUD instead of printing an empty census when libxtc has
+      # no debug info, xtc_exit_pid_deadline + mask state in xtc_proc_info, and
+      # xtc_cfg_ref pointer-stable read handles.
+      url = "github:gburd/libxtc?rev=76d1f736d40a055c5a0d765b69d02eaede4a18b7";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
     };
