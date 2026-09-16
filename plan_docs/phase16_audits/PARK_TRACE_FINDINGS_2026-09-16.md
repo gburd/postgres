@@ -83,3 +83,46 @@ false conclusions here.
 `PG_XTC_PARK_TRACE=1` (off by default, `USE_XTC_CARRIER` only): `PARKTRACE` per park (timeout, wl, rc),
 `PARKTRACE2` when an event is harvested (pos, PG mask, epoll bits), and `PARKDESYNC` when epoll returns a
 bit the mirror did not request. `meson regress` passes with it compiled in.
+
+
+--------------------------------------------------------------------------------
+## CORRECTION (same day): I misread the WL_* constants; there is NO desync
+
+I built the "waiting for writable but epoll says readable" theory on wrong constant values. The actual
+values (`storage/waiteventset.h:34-46`) are:
+
+```
+WL_LATCH_SET        = 1<<0 = 0x1
+WL_SOCKET_READABLE  = 1<<1 = 0x2      <-- not 0x1
+WL_SOCKET_WRITEABLE = 1<<2 = 0x4      <-- not 0x2
+```
+
+So the dominant trace line `pos=0 pgev=0x2 epev=0x1` reads: **`WL_SOCKET_READABLE` requested, `EPOLLIN`
+returned** -- a perfectly matched read wait. And `pgev=0x1` (5198 cases) is `WL_LATCH_SET`, also correct.
+There is no mirror/kernel disagreement, the `ModifyWaitEvent` fast path is not implicated, and my desync
+detector was right to stay silent.
+
+**The detector is now conclusive, not merely unconfirmed.** I re-ran it until it wedged hard (187 zero-tps
+intervals, 134,148 park traces) and `PARKDESYNC` fired **0 times** while 118,353 matched-read harvests
+were recorded. Both facts together prove the wait layer is behaving correctly.
+
+## What that leaves (the corrected conclusion)
+`WaitEventSetWaitBlock`'s fiber branch is **healthy**: it parks, wakes, and returns a genuine
+`WL_SOCKET_READABLE` event ~800 times/second for the stuck session. The session still makes no progress.
+So the defect is in the **caller above `WaitEventSetWait`** -- something receives a valid "your socket is
+readable" answer and neither consumes the socket nor exits the loop. Ruled out by this run: the wait
+primitive, the epoll registration, the mirror, libxtc's wake delivery (all previously suspected).
+
+Candidate call sites, all of which take a readable wake and decide what to do with it:
+- `PgSessionStagingWaitProtocolRead` / `PgBackendPollProtocolReadPark` (postgres.c ~5790-6480) --
+  `PgBackendMarkProtocolReadParkWakeEvents` maps `wake_events & park_spec->transport_wait_events` to
+  `PG_PROTOCOL_PARK_WAKE_TRANSPORT`; if `transport_wait_events` is 0 or stale for this generation, a
+  readable wake is recorded but classified as "not transport", and the resume path may re-park.
+- the `park_spec->generation` / `timeout_generation` staleness checks around it (a wake attributed to a
+  superseded generation is dropped).
+
+## Lesson (second instance today, so recording it prominently)
+Both of today's wrong turns came from **reading a numeric field without verifying its encoding**: first
+`BUF_FLAG_SHIFT` for the buffer-lock bits, now the `WL_*` bitmask. Before drawing any conclusion from an
+instrumented hex value, print the constant table alongside it. I have added the decoded names to the
+trace macro's own comment so the next reader cannot repeat it.
