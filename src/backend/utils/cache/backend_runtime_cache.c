@@ -19,6 +19,7 @@
 #include "executor/spi.h"
 #include "utils/backend_runtime.h"
 #include "utils/memutils.h"
+#include "utils/typcache.h"
 #include "../init/backend_runtime_internal.h"
 
 PgExecutionCatalogState *
