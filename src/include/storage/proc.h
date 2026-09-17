@@ -285,6 +285,9 @@ typedef struct PGPROC
 	 * over-posted for a fiber waiter.
 	 */
 	int			sem_wake_fd;		/* per-PGPROC eventfd; -1 if none */
+#ifdef USE_XTC_CARRIER
+	uint64		xtc_wake_count;	/* debug: ProcWakeSemaphore fd-writes (PG_XTC_WAKE_STORM) */
+#endif
 	slock_t		sem_fiber_lock;	/* serializes arm/disarm vs the waker */
 	bool		sem_fiber_backed; /* this proc's backend runs as an xtc fiber */
 	bool		sem_fiber_armed; /* a fiber is parked on sem_wake_fd */

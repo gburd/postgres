@@ -2585,6 +2585,19 @@ ProcWakeSemaphore(PGPROC *proc)
 			 */
 			wrc = write(proc->sem_wake_fd, &one, sizeof(one));
 			(void) wrc;			/* eventfd add; only fails at UINT64_MAX-1 */
+#ifdef USE_XTC_CARRIER
+			{
+				static int xtc_wake_trace = -1;
+				if (xtc_wake_trace < 0) { const char *e=getenv("PG_XTC_WAKE_STORM"); xtc_wake_trace=(e&&e[0]=='1')?1:0; }
+				if (xtc_wake_trace == 1)
+				{
+					proc->xtc_wake_count++;
+					if ((proc->xtc_wake_count % 5000) == 0)
+						fprintf(stderr, "WAKESTORM proc pid=%d wakes=%lu\n",
+								proc->pid, (unsigned long) proc->xtc_wake_count);
+				}
+			}
+#endif
 			if (!xtc_pid_is_none(owner))
 				(void) xtc_proc_wake(owner);
 		}
