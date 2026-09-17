@@ -892,6 +892,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 
 	if (child_type != B_ARCHIVER &&
 		child_type != B_BACKEND &&
+		child_type != B_DEAD_END_BACKEND &&
 		child_type != B_AUTOVAC_LAUNCHER &&
 		child_type != B_AUTOVAC_WORKER &&
 		child_type != B_BG_WRITER &&
@@ -908,7 +909,7 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 		errno = ENOSYS;
 		return false;
 	}
-	if (child_type == B_BACKEND &&
+	if ((child_type == B_BACKEND || child_type == B_DEAD_END_BACKEND) &&
 		(client_sock == NULL ||
 		 startup_data == NULL ||
 		 startup_data_len != sizeof(BackendStartupData)))
