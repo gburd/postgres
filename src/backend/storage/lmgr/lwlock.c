@@ -1500,6 +1500,27 @@ LWLockAcquireOrWait(LWLock *lock, LWLockMode mode)
 			LWLockReportWaitEnd();
 
 			LOG_LWDEBUG("LWLockAcquireOrWait", lock, "awakened");
+
+			/*
+			 * Allow LWLockRelease to release waiters again.  LWLockAcquire's
+			 * own wait loop clears this on every retry (see the identical line
+			 * there); LWLockAcquireOrWait was MISSING it, which is a
+			 * self-sustaining deadlock: this path queues LW_WAIT_UNTIL_FREE and
+			 * is woken by LWLockWakeup, but if it never clears
+			 * LW_FLAG_WAKE_IN_PROGRESS then the NEXT LWLockRelease sees the flag
+			 * still set, takes check_waiters == false, and skips waking the
+			 * queue -- so every subsequent WALWriteLock waiter strands.
+			 * Observed as the write wedge at 32-core commit concurrency: a
+			 * CommitTransaction -> XLogFlush -> LWLockAcquireOrWait(WALWriteLock)
+			 * fiber spinning while 25 committers queue behind it and every
+			 * carrier loop sits idle (see
+			 * plan_docs/phase16_audits/WRITE_WEDGE_WALWRITELOCK_32CORE_2026-09-17.md).
+			 * The flag is our own addition (LW_FLAG_WAKE_IN_PROGRESS); the three
+			 * existing clear sites -- LWLockAcquire's two and LWLockWaitForVar's,
+			 * also an LW_WAIT_UNTIL_FREE waiter -- all had it, and this was the
+			 * one waiter path that did not.
+			 */
+			pg_atomic_fetch_and_u32(&lock->state, ~LW_FLAG_WAKE_IN_PROGRESS);
 		}
 		else
 		{
