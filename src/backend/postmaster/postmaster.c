@@ -70,6 +70,7 @@
 #include <time.h>
 #include <sys/wait.h>
 #include <ctype.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <fcntl.h>
@@ -1228,6 +1229,51 @@ PostmasterMain(int argc, char *argv[])
 	 * semaphores, because on some platforms semaphores count as open files.
 	 */
 	set_max_safe_fds();
+
+#ifdef USE_XTC_CARRIER
+
+	/*
+	 * Threaded mode needs a much larger descriptor budget than process mode,
+	 * and running out is a LATE, confusing failure: every PGPROC gets two
+	 * eventfds (sem_wake_fd + interrupt_wake_fd, see InitProcess), all of them
+	 * in ONE address space rather than spread over forked children.  With the
+	 * common distro default of 1024 a server configured for a few hundred
+	 * connections dies partway through PGPROC setup with
+	 *   FATAL: could not create interrupt-wake eventfd for PGPROC: Too many open files
+	 * which names neither the real limit nor the fix.  (Observed on a 32-core
+	 * box: max_connections=600 was unstartable until nofile was raised.)
+	 *
+	 * Check it up front and say exactly what is needed.  This is a WARNING, not
+	 * a FATAL: the estimate below is deliberately conservative, the kernel limit
+	 * can be raised while the server runs, and refusing to start a server that
+	 * might be fine would be worse than a loud warning.
+	 */
+	if (multithreaded)
+	{
+		struct rlimit rlim;
+
+		if (getrlimit(RLIMIT_NOFILE, &rlim) == 0 &&
+			rlim.rlim_cur != RLIM_INFINITY)
+		{
+			/*
+			 * Two eventfds per PGPROC, plus one io_uring ring per carrier loop,
+			 * plus the usual per-connection socket and the shared/WAL/relation
+			 * files that max_safe_fds already accounts for.  NUM_RESERVED_FDS
+			 * worth of slack on top.
+			 */
+			long		want = (long) MaxBackends * 3 + 1024;
+
+			if ((long) rlim.rlim_cur < want)
+				ereport(WARNING,
+						(errmsg("open file limit %ld is too low for multithreaded mode with %d backends",
+								(long) rlim.rlim_cur, MaxBackends),
+						 errdetail("Threaded mode keeps two eventfds per backend plus one io_uring ring per carrier in a single process, so it needs roughly %ld descriptors.",
+								   want),
+						 errhint("Raise the open file limit (ulimit -n, LimitNOFILE= for systemd, or /etc/security/limits.conf) to at least %ld, or reduce max_connections.",
+								 want)));
+		}
+	}
+#endif
 
 	/*
 	 * Initialize pipe (or process handle on Windows) that allows children to
