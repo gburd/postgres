@@ -1412,6 +1412,16 @@ xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)
 
 	PgRuntimeSaveCurrentWork(&snap);
 	rc = xtc_proc_wait_fd(fd, interest, timeout_ns, &revents);
+#ifdef USE_XTC_CARRIER
+	{
+		static int wf_trace = -1;
+		static unsigned long wf_n = 0;
+		if (wf_trace < 0) { const char *e = getenv("PG_XTC_WAITFD_TRACE"); wf_trace = (e && e[0] == '1') ? 1 : 0; }
+		if (wf_trace == 1 && (++wf_n % 20000) == 0)
+			fprintf(stderr, "WAITFD fd=%d interest=0x%x rc=%d revents=0x%x timeout_ns=%lld n=%lu\n",
+					fd, interest, rc, revents, (long long) timeout_ns, wf_n);
+	}
+#endif
 
 	/*
 	 * xtc_proc_wait_fd parked this fiber and the loop may have run other
