@@ -1557,6 +1557,23 @@ PgRuntimeShouldThreadBackend(BackendType backend_type)
 	 * infrastructure as they get dedicated signal and lifecycle conversion.
 	 */
 	return backend_type == B_BACKEND ||
+
+	/*
+	 * A dead-end backend must be threadable too, or the postmaster cannot
+	 * refuse a connection at all once any carrier exists: AllocDeadEndChild()
+	 * produces a B_DEAD_END_BACKEND, postmaster_child_launch_carrier() finds no
+	 * carrier for it, falls through to the fork-without-exec path, and that path
+	 * is (correctly) refused with ENOSYS -- so the client gets "could not fork
+	 * new process for connection" instead of "sorry, too many clients already",
+	 * and EVERY subsequent connection fails the same way while the server stays
+	 * up.  Observed on a 32-core box under pgbench -c 64.
+	 *
+	 * It is trivially safe as a fiber: a dead-end child only reports its
+	 * canAcceptConnections reason and exits.  It ereport(FATAL)s inside
+	 * BackendInitialize(), i.e. BEFORE InitProcess(), so it never creates a
+	 * PGPROC, never attaches shared memory, and never takes an LWLock.
+	 */
+		backend_type == B_DEAD_END_BACKEND ||
 		backend_type == B_ARCHIVER ||
 		backend_type == B_AUTOVAC_LAUNCHER ||
 		backend_type == B_AUTOVAC_WORKER ||
