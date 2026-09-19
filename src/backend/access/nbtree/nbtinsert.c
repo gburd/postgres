@@ -1418,6 +1418,23 @@ _bt_insertonpg(Relation rel,
 
 		END_CRIT_SECTION();
 
+		/*
+		 * Write an nbtree UNDO record for this insertion, so an abort can
+		 * reverse the provisionally-inserted entry without waiting for
+		 * VACUUM.  Done after the critical section (UNDO insertion does I/O)
+		 * but while the buffer lock is still held.
+		 *
+		 * Only when the parent table asks for it via the index_undo
+		 * reloption.  RelationUsesIndexUndo() applies every other condition
+		 * too -- delete-marking parents, non-WAL relations, and indexes built
+		 * in this transaction are all excluded there.
+		 */
+		if (RelationUsesIndexUndo(rel, heaprel))
+		{
+			NbtreeUndoLogInsert(rel, heaprel, buf, itup,
+								itemsz, newitemoff, isleaf);
+		}
+
 		/* Release subsidiary buffers */
 		if (BufferIsValid(metabuf))
 			_bt_relbuf(rel, metabuf);

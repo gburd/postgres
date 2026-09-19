@@ -22,6 +22,7 @@ OBJS = \
 	nbtree.o \
 	nbtsearch.o \
 	nbtsort.o \
+	nbtree_undo.o \
 	nbtsplitloc.o \
 	nbtutils.o \
 	nbtvalidate.o \

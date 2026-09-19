@@ -309,6 +309,26 @@ typedef void (*IndexBuildCallback) (Relation index,
 									void *state);
 
 
+/*
+ * UndoEngine -- which UNDO engine an AM writes its UNDO records to.
+ *
+ * This describes where a TABLE AM writes its own TABLE UNDO, and nothing else.
+ * Index UNDO is NOT routed on it: nbtree/hash write their structural UNDO to the
+ * cluster-wide UNDO-in-WAL stream, gated per relation by
+ * RelationUsesIndexUndo() (the index_undo reloption).  A table AM therefore
+ * neither enables nor disables index UNDO by choosing an engine, and plain heap
+ * -- UNDO_ENGINE_NONE -- can and does use index UNDO.
+ *
+ *   UNDO_ENGINE_NONE       -- AM does not use UNDO (e.g. heap).
+ *   UNDO_ENGINE_PERBACKEND -- per-backend UNDO engine (access/undo/perbackend).
+ *                             This is the only engine a table AM may declare.
+ */
+typedef enum UndoEngine
+{
+	UNDO_ENGINE_NONE = 0,
+	UNDO_ENGINE_PERBACKEND,
+} UndoEngine;
+
 typedef struct TableAmRoutine
 {
 	/* this must be set to T_TableAmRoutine */
@@ -365,6 +385,19 @@ typedef struct TableAmRoutine
 	 * The heap AM leaves this false.
 	 */
 	bool		am_inplace_update_keeps_tid;
+
+	/*
+	 * am_undo_engine: which UNDO engine this AM writes UNDO to.  Only
+	 * consulted when am_supports_undo is true.
+	 *
+	 * An AM with am_supports_undo = true MUST set this to
+	 * UNDO_ENGINE_PERBACKEND; it is the only supported value.
+	 *
+	 * See RelationUndoEngine() for the mapping.  The index UNDO write path does
+	 * NOT route on this; see the UndoEngine comment above and
+	 * RelationUsesIndexUndo().
+	 */
+	UndoEngine	am_undo_engine;
 
 
 
@@ -2239,5 +2272,7 @@ extern const TableAmRoutine *GetHeapamTableAmRoutine(void);
  */
 
 extern bool RelationAmSupportsUndo(Relation rel);
+extern bool RelationUsesIndexUndo(Relation indexrel, Relation heaprel);
+extern UndoEngine RelationUndoEngine(Relation rel);
 
 #endif							/* TABLEAM_H */

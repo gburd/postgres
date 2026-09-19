@@ -10,6 +10,7 @@ backend_sources += files(
   'nbtree.c',
   'nbtsearch.c',
   'nbtsort.c',
+  'nbtree_undo.c',
   'nbtsplitloc.c',
   'nbtutils.c',
   'nbtvalidate.c',
