@@ -366,6 +366,24 @@ typedef struct TableAmRoutine
 	 */
 	UndoEngine	am_undo_engine;
 
+	/*
+	 * am_index_delete_marking: true if this AM performs in-place UPDATE of an
+	 * indexed column via nbtree delete-marking rather than moving the row to
+	 * a new TID.  When true: - the row keeps a STABLE TID across an
+	 * indexed-column UPDATE; - the AM itself drives index maintenance for the
+	 * changed indexes (insert the new (k_new,TID) entry + delete-mark the old
+	 * (k_old,TID) entry via index_delete_mark) and reports TU_None so the
+	 * executor does NOT re-insert; - the AM's own UNDO drives index cleanup
+	 * on rollback (remove the new entry + clear the old delete-mark), so
+	 * index AMs must NOT write their own index UNDO for such a parent table
+	 * (see nbtinsert.c/hashinsert.c); - index-only scans are suppressed for
+	 * indexes on the table (a delete-marked entry's key may not match the
+	 * live tuple), which the planner enforces via
+	 * RelationSupportsDeleteMarking() in get_relation_info(). Only meaningful
+	 * when am_supports_undo is true.
+	 */
+	bool		am_index_delete_marking;
+
 
 	/* ------------------------------------------------------------------------
 	 * Slot related callbacks.
@@ -2211,5 +2229,6 @@ extern const TableAmRoutine *GetHeapamTableAmRoutine(void);
 
 extern bool RelationUsesIndexUndo(Relation indexrel, Relation heaprel);
 extern UndoEngine RelationUndoEngine(Relation rel);
+extern bool RelationSupportsDeleteMarking(Relation rel);
 
 #endif							/* TABLEAM_H */
