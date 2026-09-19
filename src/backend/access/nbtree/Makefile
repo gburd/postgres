@@ -20,9 +20,9 @@ OBJS = \
 	nbtpreprocesskeys.o \
 	nbtreadpage.o \
 	nbtree.o \
+	nbtree_undo.o \
 	nbtsearch.o \
 	nbtsort.o \
-	nbtree_undo.o \
 	nbtsplitloc.o \
 	nbtutils.o \
 	nbtvalidate.o \

@@ -1490,7 +1490,20 @@ bt_target_page_check(BtreeCheckState *state)
 		{
 			IndexTuple	norm;
 
-			if (BTreeTupleIsPosting(itup))
+			if (BTreeTupleIsDeleteMarked(itup))
+			{
+				/*
+				 * Delete-marked tombstone (Phase 5): its index key intentionally
+				 * no longer matches the CURRENT key of the heap tuple it points
+				 * at (the live version is reachable under a different key via a
+				 * separate live entry).  It is therefore EXPECTED that this entry
+				 * is not derivable from the heap, so we must not fingerprint it
+				 * -- doing so would make heapallindexed report a spurious
+				 * inconsistency.  Structural checks (TID validity, key ordering,
+				 * alt-TID subtype) above still apply to it.
+				 */
+			}
+			else if (BTreeTupleIsPosting(itup))
 			{
 				/* Fingerprint all elements as distinct "plain" tuples */
 				for (int i = 0; i < BTreeTupleGetNPosting(itup); i++)

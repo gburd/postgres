@@ -36,8 +36,8 @@ GetTableAmRoutine(Oid amhandler)
 		elog(ERROR, "table access method handler %u did not return a TableAmRoutine struct",
 			 amhandler);
 
-
 	/*
+	 * The per-relation UNDO fork engine has been removed.
 	 * Any AM that uses UNDO must write it to the per-backend engine, so reject
 	 * an AM that declares UNDO support with any other engine.
 	 */
