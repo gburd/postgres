@@ -159,6 +159,8 @@ _bt_doinsert(Relation rel, IndexTuple itup,
 	insertstate.bounds_valid = false;
 	insertstate.buf = InvalidBuffer;
 	insertstate.postingoff = 0;
+	/* delete-marking indexes must never posting-split on insert (Phase 8c) */
+	insertstate.nopostingsplit = (heapRel != NULL && RelationSupportsDeleteMarking(heapRel));
 
 search:
 
@@ -260,6 +262,7 @@ search:
 		 */
 		newitemoff = _bt_findinsertloc(rel, &insertstate, checkingunique,
 									   indexUnchanged, stack, heapRel);
+
 		_bt_insertonpg(rel, heapRel, itup_key, insertstate.buf, InvalidBuffer,
 					   stack, itup, insertstate.itemsz, newitemoff,
 					   insertstate.postingoff, false);
@@ -519,6 +522,16 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 					/* Advanced curitup */
 					curitup = (IndexTuple) PageGetItem(page, curitemid);
 					Assert(!BTreeTupleIsPivot(curitup));
+
+					/*
+					 * A delete-marked entry (Phase 5) is a tombstone: its key no
+					 * longer describes the live version of the heap tuple, so it
+					 * must NOT count as a duplicate of the NEW key (invariant
+					 * I3).  Skip it; the live (k_new, T) entry is the authority.
+					 * (Fall through to the offset-advance logic below.)
+					 */
+					if (BTreeTupleIsDeleteMarked(curitup))
+						goto next_uniqueness_offset;
 				}
 
 				/* okay, we gotta fetch the heap tuple using htid ... */
@@ -716,6 +729,7 @@ _bt_check_unique(Relation rel, BTInsertState insertstate, Relation heapRel,
 			}
 		}
 
+next_uniqueness_offset:
 		if (inposting && curposti < BTreeTupleGetNPosting(curitup) - 1)
 		{
 			/* Advance to next TID in same posting list */
@@ -1417,6 +1431,32 @@ _bt_insertonpg(Relation rel,
 		PageSetLSN(page, recptr);
 
 		END_CRIT_SECTION();
+
+		/*
+		 * Write nbtree UNDO record for the insertion.  This is done after the
+		 * critical section (UNDO insertion involves I/O) but while we still
+		 * hold the buffer lock.  The UNDO record enables cleanup of this
+		 * index entry if the transaction aborts.
+		 *
+		 * Only write UNDO if the parent table AM supports UNDO. The heaprel
+		 * parameter is NULL during index builds and recovery.
+		 */
+		/*
+		 * Only write UNDO if the parent table AM supports UNDO. The heaprel
+		 * parameter is NULL during index builds and recovery.
+		 *
+		 * A delete-marking table AM (FLUX Phase 8c) drives its own index
+		 * cleanup on rollback through its table UNDO (remove the new entry +
+		 * clear the old delete-mark), so nbtree must NOT write separate index
+		 * UNDO for it: doing so would double-remove or fight the table AM's
+		 * apply.  See tableam.h am_index_delete_marking.
+		 */
+		if (heaprel != NULL && RelationAmSupportsUndo(heaprel) &&
+			!RelationSupportsDeleteMarking(heaprel))
+		{
+			NbtreeUndoLogInsert(rel, heaprel, buf, itup,
+								itemsz, newitemoff, isleaf);
+		}
 
 		/* Release subsidiary buffers */
 		if (BufferIsValid(metabuf))
@@ -2820,8 +2860,21 @@ _bt_delete_or_dedup_one_page(Relation rel, Relation heapRel,
 		_bt_bottomupdel_pass(rel, buffer, heapRel, insertstate->itemsz))
 		return;
 
-	/* Perform deduplication pass (when enabled and index-is-allequalimage) */
-	if (BTGetDeduplicateItems(rel) && itup_key->allequalimage)
+	/*
+	 * Perform deduplication pass (when enabled and index-is-allequalimage).
+	 *
+	 * Phase 8c: deduplication is DISABLED for a delete-marking table's index.
+	 * A delete-marked tombstone is an alt-TID leaf tuple whose t_tid holds
+	 * status metadata (not a heap TID) and which must linger until VACUUM;
+	 * folding equal-key entries into posting lists around such tombstones (and
+	 * around the revive/re-insert an in-place key UPDATE produces) breaks
+	 * nbtree's posting-list TID-ordering invariants.  Dedup is only a space
+	 * optimization, so we simply skip it here.  Restoring dedup on these
+	 * indexes would require teaching _bt_dedup to fully respect tombstones:
+	 * never use one as a posting base and never merge across one.
+	 */
+	if (BTGetDeduplicateItems(rel) && itup_key->allequalimage &&
+		!(heapRel != NULL && RelationSupportsDeleteMarking(heapRel)))
 		_bt_dedup_pass(rel, buffer, insertstate->itup, insertstate->itemsz,
 					   (indexUnchanged || uniquedup));
 }
@@ -2887,6 +2940,17 @@ _bt_simpledel_pass(Relation rel, Buffer buffer, Relation heapRel,
 		TM_IndexStatus *ostatus = &delstate.status[delstate.ndeltids];
 		BlockNumber tidblock;
 		void	   *match;
+
+		/*
+		 * A delete-marked tombstone (Phase 5) is never LP_DEAD and its t_tid
+		 * holds alt-TID metadata rather than a heap TID; skip it so we never
+		 * feed a bogus TID into the table AM's index-deletion call.
+		 */
+		if (BTreeTupleIsDeleteMarked(itup))
+		{
+			Assert(!ItemIdIsDead(itemid));
+			continue;
+		}
 
 		if (!BTreeTupleIsPosting(itup))
 		{

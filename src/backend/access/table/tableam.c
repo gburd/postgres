@@ -780,3 +780,52 @@ table_block_relation_estimate_size(Relation rel, int32 *attr_widths,
 	else
 		*allvisfrac = (double) relallvisible / curpages;
 }
+
+/*
+ * RelationAmSupportsUndo
+ *		Returns true if the relation's table AM declared UNDO support.
+ *		Used by index AMs to gate UNDO record generation on the parent table.
+ */
+bool
+RelationAmSupportsUndo(Relation rel)
+{
+	if (!rel->rd_tableam)
+		return false;
+	return rel->rd_tableam->am_supports_undo;
+}
+
+/*
+ * RelationUndoEngine
+ *		Report which UNDO engine the relation's table AM writes UNDO to.
+ *
+ * Index AMs use this to route their index-UNDO writes to the same engine the
+ * parent table uses so a single transaction's UNDO is not split across engines.
+ * An AM that does not support UNDO maps to UNDO_ENGINE_NONE; one that supports
+ * UNDO uses the per-backend engine (the only engine a table AM may declare).
+ */
+UndoEngine
+RelationUndoEngine(Relation rel)
+{
+	if (!rel->rd_tableam || !rel->rd_tableam->am_supports_undo)
+		return UNDO_ENGINE_NONE;
+
+	/* The per-relation fork engine has been removed; UNDO is per-backend. */
+	Assert(rel->rd_tableam->am_undo_engine == UNDO_ENGINE_PERBACKEND);
+	return UNDO_ENGINE_PERBACKEND;
+}
+
+/*
+ * RelationSupportsDeleteMarking
+ *		Returns true if the relation's table AM does in-place indexed-column
+ *		UPDATE via nbtree delete-marking (Phase 5).  Index AMs use this to
+ *		suppress their own index UNDO (the table AM's UNDO drives index cleanup
+ *		on rollback) and the planner uses it to disable index-only scans
+ *		(a delete-marked entry's key may be stale -- Phase 5 invariant I4).
+ */
+bool
+RelationSupportsDeleteMarking(Relation rel)
+{
+	if (!rel->rd_tableam || !rel->rd_tableam->am_supports_undo)
+		return false;
+	return rel->rd_tableam->am_index_delete_marking;
+}

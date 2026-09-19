@@ -1585,6 +1585,22 @@ else
 endif
 
 
+###############################################################
+# Library: FLUX
+###############################################################
+
+# FLUX table access method (UNDO-based heap replacement) is always built:
+# guc_parameters.dat and pg_proc.dat reference flux symbols unconditionally,
+# so a build with USE_FLUX unset fails to link.  USE_FLUX is therefore always
+# defined and the sources are always compiled.
+flux = declare_dependency()
+cdata.set('USE_FLUX', 1)
+
+# recno table access method (Phase 10) is likewise always built so its WAL
+# rmgr ID (rmgrlist.h USE_RECNO block) is stable across every translation unit.
+recno = declare_dependency()
+cdata.set('USE_RECNO', 1)
+
 
 ###############################################################
 # Library: selinux

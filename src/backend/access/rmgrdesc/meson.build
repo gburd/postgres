@@ -2,6 +2,7 @@
 
 # used by frontend programs like pg_waldump
 rmgr_desc_sources = files(
+  'atmdesc.c',
   'brindesc.c',
   'clogdesc.c',
   'committsdesc.c',
@@ -22,8 +23,17 @@ rmgr_desc_sources = files(
   'spgdesc.c',
   'standbydesc.c',
   'tblspcdesc.c',
+  'pbu_undoactiondesc.c',
+  'pbu_undologdesc.c',
+  'undodesc.c',
   'xactdesc.c',
   'xlogdesc.c',
 )
+
+
+# FLUX is always built; rmgrlist.h registers flux_desc/flux_identify
+# unconditionally, so fluxdesc.c must always be compiled.
+rmgr_desc_sources += files('fluxdesc.c')
+rmgr_desc_sources += files('recnodesc.c')
 
 backend_sources += rmgr_desc_sources

@@ -284,7 +284,20 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			for (i = 0; i < ncolumns; i++)
 			{
 				info->indexkeys[i] = index->indkey.values[i];
-				info->canreturn[i] = index_can_return(indexRelation, i + 1);
+
+				/*
+				 * Suppress index-only scans for indexes on a delete-marking
+				 * table (FLUX Phase 8c / Phase 5 invariant I4): a delete-marked
+				 * entry can carry a STALE key that no longer matches the live
+				 * heap tuple, so an IOS that trusted the index key without
+				 * visiting the heap could return a wrong result.  We do this
+				 * here (not in btcanreturn) because we hold the fully-built heap
+				 * relcache entry, so RelationSupportsDeleteMarking() is safe --
+				 * reaching for the table AM from inside btcanreturn crashes on
+				 * half-built relcache entries during bootstrap.
+				 */
+				info->canreturn[i] = index_can_return(indexRelation, i + 1) &&
+					!RelationSupportsDeleteMarking(relation);
 			}
 
 			for (i = 0; i < nkeycolumns; i++)

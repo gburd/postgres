@@ -131,3 +131,8 @@ test: ddl-dependency-locking
 test: tablespace-dependency-locking
 test: pub-concurrent-drop
 test: drop-owned-grant
+test: flux_conflict
+test: flux_inplace
+test: flux_lostupdate
+test: recno_oldsnap
+test: recno_lostupdate

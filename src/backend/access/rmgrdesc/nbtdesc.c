@@ -132,6 +132,15 @@ btree_desc(StringInfo buf, XLogReaderState *record)
 								 xlrec->last_cleanup_num_delpages);
 				break;
 			}
+		case XLOG_BTREE_DELETE_MARK:
+			{
+				xl_btree_delete_mark *xlrec = (xl_btree_delete_mark *) rec;
+
+				appendStringInfo(buf, "offnum: %u, setmark: %c",
+								 xlrec->offnum,
+								 xlrec->setmark ? 'T' : 'F');
+				break;
+			}
 	}
 }
 
@@ -186,6 +195,9 @@ btree_identify(uint8 info)
 			break;
 		case XLOG_BTREE_META_CLEANUP:
 			id = "META_CLEANUP";
+			break;
+		case XLOG_BTREE_DELETE_MARK:
+			id = "DELETE_MARK";
 			break;
 	}
 

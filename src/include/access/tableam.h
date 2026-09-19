@@ -319,11 +319,91 @@ typedef void (*IndexBuildCallback) (Relation index,
  * GetTableAmRoutine() asserts that required callbacks are filled in, remember
  * to update when adding a callback.
  */
+/*
+ * UndoEngine -- which UNDO engine an AM writes its UNDO records to.
+ *
+ * Index AMs (nbtree/hash) write index UNDO into the SAME engine the parent
+ * table AM uses, so index rollback stays part of the table transaction's UNDO
+ * context.  RelationUndoEngine() reports the parent table's engine.
+ *
+ *   UNDO_ENGINE_NONE       -- AM does not use UNDO (e.g. heap).
+ *   UNDO_ENGINE_PERBACKEND -- per-backend UNDO engine (access/undo/perbackend);
+ *                             FLUX/ZHEAP/RECNO use this.  This is the only
+ *                             engine a table AM may declare.
+ */
+typedef enum UndoEngine
+{
+	UNDO_ENGINE_NONE = 0,
+	UNDO_ENGINE_PERBACKEND,
+} UndoEngine;
+
 typedef struct TableAmRoutine
 {
 	/* this must be set to T_TableAmRoutine */
 	NodeTag		type;
 
+	/*
+	 * am_supports_undo: true if this AM supports cluster-wide UNDO.
+	 *
+	 * An AM that sets this to true must: 1. Register an UNDO resource manager
+	 * via RegisterUndoRmgr() (see src/include/access/undormgr.h) with an
+	 * rm_undo callback that handles its own page format during rollback. 2.
+	 * Write UNDO records tagged with its own urec_rmid so that undoapply.c
+	 * dispatches to the correct apply handler. 3. Generate CLR (Compensation
+	 * Log Records) in its rm_undo callback for crash-recovery idempotency.
+	 *
+	 * The UNDO infrastructure is AM-agnostic: UndoRecordHeader carries an
+	 * opaque payload interpreted exclusively by the owning RM's callbacks.
+	 * Each AM handles its own page format in its own rm_undo implementation.
+	 * There is no requirement to use heap page layout.
+	 *
+	 * For UNDO record generation, AMs can either: (a) Use the shared Tier 2
+	 * buffer (UndoBufferAddRecord() / UndoBufferAddRecordParts() from
+	 * undobuffer.h) to embed UNDO data into DML WAL records, or (b) Create a
+	 * standalone UndoRecordSet for batched/deferred writes.
+	 *
+	 * How an AM decides whether UNDO is active for a given relation is
+	 * AM-specific.  The heap AM does not use UNDO (am_supports_undo = false).
+	 * A future in-place-update AM will set am_supports_undo = true and
+	 * register its own UNDO RM.
+	 *
+	 * See src/include/access/undormgr.h for the RM registration API and
+	 * src/backend/access/undo/undoapply.c for the dispatch mechanism.
+	 */
+	bool		am_supports_undo;
+
+	/*
+	 * am_undo_engine: which UNDO engine this AM writes UNDO to.  Only
+	 * consulted when am_supports_undo is true.
+	 *
+	 * An AM with am_supports_undo = true MUST set this to
+	 * UNDO_ENGINE_PERBACKEND (FLUX/ZHEAP/RECNO); the per-relation fork engine
+	 * has been removed, so it is the only supported value.
+	 *
+	 * See RelationUndoEngine() for the mapping and access/nbtree/nbtree_undo.c
+	 * for how the index UNDO write path routes on it.
+	 */
+	UndoEngine	am_undo_engine;
+
+	/*
+	 * am_index_delete_marking: true if this AM performs in-place UPDATE of an
+	 * indexed column via nbtree delete-marking (Phase 5) rather than moving the
+	 * row to a new TID.  When true:
+	 *   - the row keeps a STABLE TID across an indexed-column UPDATE;
+	 *   - the AM itself drives index maintenance for the changed indexes
+	 *     (insert the new (k_new,TID) entry + delete-mark the old (k_old,TID)
+	 *     entry via index_delete_mark) and reports TU_None so the executor does
+	 *     NOT re-insert;
+	 *   - the AM's own UNDO drives index cleanup on rollback (remove the new
+	 *     entry + clear the old delete-mark), so index AMs must NOT write their
+	 *     own index UNDO for such a parent table (see nbtinsert.c/hashinsert.c);
+	 *   - index-only scans are suppressed for indexes on the table (a
+	 *     delete-marked entry's key may be stale -- Phase 5 invariant I4), which
+	 *     the planner enforces via RelationSupportsDeleteMarking() in
+	 *     get_relation_info().
+	 * Only meaningful when am_supports_undo is true.  FLUX sets this (Phase 8c).
+	 */
+	bool		am_index_delete_marking;
 
 	/* ------------------------------------------------------------------------
 	 * Slot related callbacks.
@@ -598,6 +678,19 @@ typedef struct TableAmRoutine
 							   LockWaitPolicy wait_policy,
 							   uint8 flags,
 							   TM_FailureData *tmfd);
+
+	/*
+	 * Notify the AM that a bulk DML operation is about to begin.
+	 *
+	 * The AM can use this hint to pre-allocate resources, enable batched UNDO
+	 * recording, or otherwise optimize for the expected workload. 'nrows' is
+	 * the planner's estimate of the number of rows to be modified (0 means
+	 * unknown).
+	 *
+	 * Optional callback.
+	 */
+	void		(*begin_bulk_insert) (Relation rel, uint32 options,
+									  int64 nrows);
 
 	/*
 	 * Perform operations necessary to complete insertions made via
@@ -1676,6 +1769,21 @@ table_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot,
 }
 
 /*
+ * Notify the AM that a bulk DML operation is about to begin.
+ *
+ * 'nrows' is the planner's row count estimate (0 = unknown).
+ * The AM may use this to pre-allocate UNDO buffers, enable batched
+ * recording, or other bulk-mode optimizations.
+ */
+static inline void
+table_begin_bulk_insert(Relation rel, uint32 options, int64 nrows)
+{
+	/* optional callback */
+	if (rel->rd_tableam && rel->rd_tableam->begin_bulk_insert)
+		rel->rd_tableam->begin_bulk_insert(rel, options, nrows);
+}
+
+/*
  * Perform operations necessary to complete insertions made via
  * tuple_insert and multi_insert with a BulkInsertState specified.
  */
@@ -2161,5 +2269,14 @@ extern const TableAmRoutine *GetTableAmRoutine(Oid amhandler);
  */
 
 extern const TableAmRoutine *GetHeapamTableAmRoutine(void);
+
+/* ----------------------------------------------------------------------------
+ * Functions in tableam.c
+ * ----------------------------------------------------------------------------
+ */
+
+extern bool RelationAmSupportsUndo(Relation rel);
+extern UndoEngine RelationUndoEngine(Relation rel);
+extern bool RelationSupportsDeleteMarking(Relation rel);
 
 #endif							/* TABLEAM_H */
