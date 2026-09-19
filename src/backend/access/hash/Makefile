@@ -15,6 +15,7 @@ include $(top_builddir)/src/Makefile.global
 OBJS = \
 	hash.o \
 	hash_xlog.o \
+	hash_undo.o \
 	hashfunc.o \
 	hashinsert.o \
 	hashovfl.o \
