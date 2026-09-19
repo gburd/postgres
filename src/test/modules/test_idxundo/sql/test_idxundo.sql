@@ -1,10 +1,10 @@
 -- ---------------------------------------------------------------------------
 -- Index UNDO, end to end through the real abort path.
 --
--- A table created WITH (index_undo = on) makes its btree indexes write UNDO
--- into the cluster-wide UNDO-in-WAL stream.  On ROLLBACK, AtAbort_XactUndo()
--- walks the chain and the apply callback marks the provisionally-inserted
--- entries LP_DEAD -- no VACUUM required.
+-- A table created WITH (index_undo = on) makes its btree and hash indexes
+-- write UNDO into the cluster-wide UNDO-in-WAL stream.  On ROLLBACK,
+-- AtAbort_XactUndo() walks the chain and the apply callbacks mark the
+-- provisionally-inserted entries LP_DEAD -- no VACUUM required.
 -- ---------------------------------------------------------------------------
 CREATE EXTENSION test_idxundo;
 CREATE EXTENSION amcheck;
@@ -136,6 +136,25 @@ SELECT count(*) AS heap_rows FROM iu_split;
 SELECT bt_index_check('iu_split_idx', heapallindexed => true);
 
 -- ===========================================================================
+-- hash indexes
+-- ===========================================================================
+
+CREATE TABLE iu_hash (id int, val text) WITH (index_undo = on);
+CREATE INDEX iu_hash_idx ON iu_hash USING hash (id);
+INSERT INTO iu_hash SELECT g, 'committed' FROM generate_series(1, 200) g;
+SELECT idxundo_count_dead_all('iu_hash_idx') AS dead_before;
+BEGIN;
+INSERT INTO iu_hash SELECT g, 'aborted' FROM generate_series(1001, 1100) g;
+SELECT idxundo_undo_chain_published() AS chain_published;
+ROLLBACK;
+SELECT idxundo_count_dead_all('iu_hash_idx') AS dead_after_rollback;
+SET enable_seqscan = off;
+SELECT count(*) AS committed_via_index FROM iu_hash WHERE id BETWEEN 1 AND 200;
+SELECT count(*) AS aborted_via_index FROM iu_hash WHERE id BETWEEN 1001 AND 1100;
+RESET enable_seqscan;
+SELECT count(*) AS heap_rows FROM iu_hash;
+
+-- ===========================================================================
 -- Turning the option on AFTER rows already exist.
 --
 -- The option only governs whether NEW inserts write UNDO; pre-existing entries
@@ -158,7 +177,7 @@ SELECT count(*) AS preexisting_via_index FROM iu_late WHERE id BETWEEN 1 AND 100
 RESET enable_seqscan;
 SELECT bt_index_check('iu_late_idx', heapallindexed => true);
 
-DROP TABLE iu_btree, iu_off, iu_sub, iu_split, iu_late;
+DROP TABLE iu_btree, iu_off, iu_sub, iu_split, iu_hash, iu_late;
 
 -- ===========================================================================
 -- DEFERRED BATCHING SAFETY
@@ -315,7 +334,20 @@ SELECT count(*) AS prepared_via_index FROM iu_2pc WHERE id BETWEEN 501 AND 560;
 RESET enable_seqscan;
 SELECT bt_index_check('iu_2pc_idx', heapallindexed => true);
 
-DROP TABLE iu_def, iu_sub2, iu_sub3, iu_nest, iu_big, iu_2pc;
+-- --- 7. hash AM, same deferral path -----------------------------------------
+CREATE TABLE iu_hash2 (id int, val text) WITH (index_undo = on);
+CREATE INDEX iu_hash2_idx ON iu_hash2 USING hash (id);
+INSERT INTO iu_hash2 SELECT g, 'committed' FROM generate_series(1, 200) g;
+BEGIN;
+INSERT INTO iu_hash2 SELECT g, 'aborted' FROM generate_series(1001, 1100) g;
+ROLLBACK;
+SELECT idxundo_count_dead_all('iu_hash2_idx') AS dead_after_rollback;
+SET enable_seqscan = off;
+SELECT count(*) AS committed_via_index FROM iu_hash2 WHERE id BETWEEN 1 AND 200;
+SELECT count(*) AS aborted_via_index FROM iu_hash2 WHERE id BETWEEN 1001 AND 1100;
+RESET enable_seqscan;
+
+DROP TABLE iu_def, iu_sub2, iu_sub3, iu_nest, iu_big, iu_2pc, iu_hash2;
 
 DROP EXTENSION amcheck;
 DROP EXTENSION test_idxundo;
