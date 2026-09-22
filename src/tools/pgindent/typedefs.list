@@ -846,6 +846,7 @@ FdwRoutine
 FetchDirection
 FetchDirectionKeywords
 FetchStmt
+FiberIdentityTest
 FieldSelect
 FieldStore
 File

@@ -12,6 +12,179 @@
  */
 #include "test_backend_runtime.h"
 
+#ifdef USE_XTC_CARRIER
+#include "postmaster/pg_xtc_carrier.h"
+#include "xtc.h"
+#include "xtc_loop.h"
+#include "xtc_proc.h"
+
+/* One private loop/thread: no PG roots or error stack in these callbacks. */
+typedef struct FiberIdentityTest
+{
+	xtc_loop_t *loop;
+	xtc_pid_t	supervisor;
+	xtc_pid_t	backend;
+	int			failures;
+	int			completed;
+	int			exited;
+} FiberIdentityTest;
+
+#define FIBER_IDENTITY_CHECK(test, expr) \
+	do { \
+		if (!(expr)) \
+			(test)->failures++; \
+	} while (0)
+
+static void
+fiber_identity_receive(FiberIdentityTest *test)
+{
+	void	   *msg = NULL;
+	size_t		len = 0;
+
+	FIBER_IDENTITY_CHECK(test, xtc_recv(&msg, &len, 1000000000) == XTC_OK);
+	if (msg != NULL)
+		xtc_free(msg);
+}
+
+static void
+fiber_identity_at_exit(void *arg)
+{
+	FiberIdentityTest *test = arg;
+
+	FIBER_IDENTITY_CHECK(test, !xtc_pg_in_backend_fiber());
+	FIBER_IDENTITY_CHECK(test, !xtc_pid_is_none(xtc_self()));
+	test->exited++;
+}
+
+static void
+fiber_identity_sibling(void *arg)
+{
+	FiberIdentityTest *test = arg;
+	PgCarrier	carrier = {0};
+
+	FIBER_IDENTITY_CHECK(test, !xtc_pg_in_backend_fiber());
+	FIBER_IDENTITY_CHECK(test, xtc_proc_set_userdata(&carrier) == XTC_OK);
+	FIBER_IDENTITY_CHECK(test, xtc_pg_in_backend_fiber());
+	FIBER_IDENTITY_CHECK(test, xtc_proc_at_exit(fiber_identity_at_exit, test) == XTC_OK);
+	FIBER_IDENTITY_CHECK(test, xtc_proc_set_userdata(NULL) == XTC_OK);
+	/* No yield: the sibling exits before the backend can consume this wake. */
+	FIBER_IDENTITY_CHECK(test, xtc_send(test->backend, "wake", 5) == XTC_OK);
+	xtc_exit_self(0);
+}
+
+static void
+fiber_identity_backend(void *arg)
+{
+	FiberIdentityTest *test = arg;
+	PgCarrier  *carrier = calloc(1, sizeof(PgCarrier));
+	xtc_pid_t	self = xtc_self();
+
+	FIBER_IDENTITY_CHECK(test, carrier != NULL);
+	if (carrier == NULL)
+		return;
+	/* Identity must work before any PG current-work roots are installed. */
+	FIBER_IDENTITY_CHECK(test, !xtc_pg_in_backend_fiber());
+	carrier->migratable = true;
+	FIBER_IDENTITY_CHECK(test, xtc_proc_set_userdata(carrier) == XTC_OK);
+	FIBER_IDENTITY_CHECK(test, xtc_pg_in_backend_fiber());
+	FIBER_IDENTITY_CHECK(test, xtc_pg_backend_fiber_is_migratable());
+	FIBER_IDENTITY_CHECK(test, xtc_proc_at_exit(fiber_identity_at_exit, test) == XTC_OK);
+	FIBER_IDENTITY_CHECK(test, xtc_send(test->supervisor, "ready", 6) == XTC_OK);
+	fiber_identity_receive(test);
+	/* A parked, supervisor resumed, B exited, then A resumed on this thread. */
+	FIBER_IDENTITY_CHECK(test, test->exited == 1);
+	FIBER_IDENTITY_CHECK(test, xtc_pid_eq(xtc_self(), self));
+	FIBER_IDENTITY_CHECK(test, xtc_proc_userdata() == carrier);
+	FIBER_IDENTITY_CHECK(test, xtc_pg_in_backend_fiber());
+	FIBER_IDENTITY_CHECK(test, xtc_pg_backend_fiber_is_migratable());
+	FIBER_IDENTITY_CHECK(test, xtc_proc_set_userdata(NULL) == XTC_OK);
+	free(carrier);
+	/* Final exit-only span: no owner, but still a libxtc proc. */
+	FIBER_IDENTITY_CHECK(test, !xtc_pg_in_backend_fiber());
+	FIBER_IDENTITY_CHECK(test, !xtc_pg_backend_fiber_is_migratable());
+	test->completed++;
+}
+
+static void
+fiber_identity_supervisor(void *arg)
+{
+	FiberIdentityTest *test = arg;
+	xtc_pid_t	child;
+	uint64_t	ref;
+
+	test->supervisor = xtc_self();
+	FIBER_IDENTITY_CHECK(test, !xtc_pg_in_backend_fiber());
+	FIBER_IDENTITY_CHECK(test, xtc_proc_spawn_monitor(test->loop, fiber_identity_backend,
+													 test, NULL, &test->backend, &ref) == XTC_OK);
+	fiber_identity_receive(test);
+	FIBER_IDENTITY_CHECK(test, !xtc_pg_in_backend_fiber());
+	FIBER_IDENTITY_CHECK(test, !xtc_pg_backend_fiber_is_migratable());
+	FIBER_IDENTITY_CHECK(test, xtc_proc_spawn_monitor(test->loop, fiber_identity_sibling,
+													 test, NULL, &child, &ref) == XTC_OK);
+	/* Both monitored children must exit; each receive has a finite timeout. */
+	for (int i = 0; i < 2; i++)
+	{
+		void	   *msg = NULL;
+		size_t		len = 0;
+		int			reason;
+
+		FIBER_IDENTITY_CHECK(test, xtc_recv(&msg, &len, 1000000000) == XTC_OK);
+		if (msg != NULL)
+		{
+			if (xtc_down_decode(msg, len, &child, &reason) == XTC_OK)
+				FIBER_IDENTITY_CHECK(test, reason == 0);
+			else
+				test->failures++;
+			xtc_free(msg);
+		}
+	}
+	FIBER_IDENTITY_CHECK(test, !xtc_pg_in_backend_fiber());
+	FIBER_IDENTITY_CHECK(test, xtc_loop_stop(test->loop) == XTC_OK);
+}
+
+static void
+fiber_identity_thread(void *arg)
+{
+	FiberIdentityTest *test = arg;
+
+	FIBER_IDENTITY_CHECK(test, !xtc_pg_in_backend_fiber());
+	if (xtc_loop_init(&test->loop) != XTC_OK)
+	{
+		test->failures++;
+		return;
+	}
+	if (xtc_proc_spawn(test->loop, fiber_identity_supervisor, test, NULL, NULL) == XTC_OK)
+		FIBER_IDENTITY_CHECK(test, xtc_loop_run(test->loop) == XTC_OK);
+	else
+		test->failures++;
+	FIBER_IDENTITY_CHECK(test, !xtc_pg_in_backend_fiber());
+	FIBER_IDENTITY_CHECK(test, test->completed == 1 && test->exited == 2);
+	FIBER_IDENTITY_CHECK(test, xtc_loop_fini(test->loop) == XTC_OK);
+}
+#endif
+
+PG_FUNCTION_INFO_V1(test_carrier_fiber_identity);
+Datum
+test_carrier_fiber_identity(PG_FUNCTION_ARGS)
+{
+#ifdef USE_XTC_CARRIER
+	FiberIdentityTest test = {0};
+	PgThread	thread;
+	int			rc;
+
+	/* Do not nest a loop in the SQL caller's possibly active backend fiber. */
+	rc = pg_thread_create(&thread, "fiber identity test", fiber_identity_thread, &test);
+	if (rc != 0)
+		elog(ERROR, "could not create fiber identity test thread: %d", rc);
+	rc = pg_thread_join(&thread);
+	if (rc != 0)
+		elog(ERROR, "could not join fiber identity test thread: %d", rc);
+	if (test.failures != 0)
+		elog(ERROR, "fiber identity checks failed: %d", test.failures);
+#endif
+	PG_RETURN_BOOL(true);
+}
+
 PG_FUNCTION_INFO_V1(test_carrier_misc_state_is_carrier_local);
 Datum
 test_carrier_misc_state_is_carrier_local(PG_FUNCTION_ARGS)

@@ -56,6 +56,9 @@
 #include "postmaster/fork_process.h"
 #include "postmaster/pgarch.h"
 #include "postmaster/pg_xtc_carrier.h"	/* fusion F1 runtime counters (no-ops off-carrier) */
+#ifdef USE_XTC_CARRIER
+#include "xtc_proc.h"
+#endif
 #include "postmaster/postmaster.h"
 #include "postmaster/startup.h"
 #include "postmaster/syslogger.h"
@@ -787,7 +790,8 @@ xtc_carrier_eligible(BackendType child_type)
  * that xtc_carrier_proc receives as its entry arg and hands to
  * xtc_proc_set_userdata().  The carrier lives inside the fiber-owned
  * BackendThreadStart (runtime_state.carrier), so this pointer rides with the
- * fiber across a work-stealing steal and is valid for the fiber's whole life.
+ * fiber across a work-stealing steal.  backend_thread_finish clears userdata
+ * before releasing this owner; the final fiber-exit seam needs no PG roots.
  * The carrier layer stays free of the private BackendThreadStart layout via
  * this one accessor.
  */
@@ -2212,7 +2216,7 @@ backend_thread_entry(void *arg)
 	 * flags) is still present.  Restore the fresh-thread invariant before
 	 * touching any session/GUC/timezone accessor below.
 	 */
-	if (xtc_in_backend_fiber)
+	if (xtc_pg_in_backend_fiber())
 		PgRuntimeResetThreadForNewBackend();
 #endif
 
@@ -2228,7 +2232,7 @@ backend_thread_entry(void *arg)
 	 * after the postmaster published the PMChild and stored the orphan-start
 	 * pointer.
 	 */
-	if (xtc_in_backend_fiber)
+	if (xtc_pg_in_backend_fiber())
 	{
 		/*
 		 * Publish that the fiber body began, then close the race with
@@ -2603,7 +2607,7 @@ backend_thread_exit(int code)
 	if (publication == NULL)
 	{
 #ifdef USE_XTC_CARRIER
-		if (xtc_in_backend_fiber)
+		if (xtc_pg_in_backend_fiber())
 			xtc_pg_backend_fiber_exit(backend_thread_exitstatus(code));
 #endif
 		pg_thread_exit();
@@ -2736,6 +2740,11 @@ backend_thread_finish(int code)
 
 	ShutdownWaitEventSupport();
 	backend_thread_set_current_start(NULL);
+#ifdef USE_XTC_CARRIER
+	/* userdata borrows the carrier embedded in thread_start. */
+	if (is_fiber)
+		(void) xtc_proc_set_userdata(NULL);
+#endif
 	backend_thread_start_release(thread_start);
 #ifdef USE_XTC_CARRIER
 	if (is_fiber)

@@ -535,7 +535,7 @@ pg_fsync_no_writethrough(int fd)
 	 * fsync's 0 / -1-with-errno convention.  Off a fiber, fall through to the
 	 * ordinary blocking syscall (process mode / aux backends unchanged).
 	 */
-	if (xtc_in_backend_fiber)
+	if (xtc_pg_in_backend_fiber())
 	{
 		PgCurrentWorkSnapshot snap;
 		int			xrc;
@@ -595,7 +595,7 @@ pg_fdatasync(int fd)
 #ifdef USE_XTC_CARRIER
 	/* See pg_fsync_no_writethrough: park the fiber on the async fdatasync
 	 * (the page/WAL flush hot path) rather than blocking the carrier loop. */
-	if (xtc_in_backend_fiber)
+	if (xtc_pg_in_backend_fiber())
 	{
 		PgCurrentWorkSnapshot snap;
 		int			xrc;
