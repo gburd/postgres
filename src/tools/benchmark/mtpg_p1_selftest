@@ -16,6 +16,7 @@ cleanup_test(){
 trap cleanup_test EXIT
 mkdir "$tmp/bin"
 REAL_SLEEP=$(command -v sleep)
+REAL_TIMEOUT=$(command -v timeout)
 export TEST_ROOT=$tmp REAL_SLEEP
 cat > "$tmp/bin/fake" <<'MOCK'
 #!/usr/bin/env bash
@@ -30,12 +31,18 @@ postgres)
  echo "$*" > "$TEST_ROOT/server.args"
  [ "${TEST_START_FAIL:-0}" = 0 ] || exit 7
  echo 'ready to accept connections'
- trap 'exit' TERM
+ trap '"$REAL_SLEEP" "${TEST_CHILD_DELAY:-0}"; exit "${TEST_CHILD_RC:-0}"' TERM
  while :; do "$REAL_SLEEP" .05; done;;
 pg_ctl|pkill)
  [ "${TEST_STOP_FAIL:-0}" = 0 ] || exit 7
+ [ "${TEST_CHILD_LINGERS:-0}" = 0 ] || exit 0
  if [ -f "$TEST_ROOT/server.pid" ]; then kill "$(< "$TEST_ROOT/server.pid")" 2>/dev/null || :; rm "$TEST_ROOT/server.pid"; fi;;
-sleep) "$REAL_SLEEP" .02;;
+sleep)
+ if [ "$1" = 10 ] && [ "${TEST_SAMPLER_KILLED:-0}" = 1 ]; then
+  n=$(< "$TEST_ROOT/counter"); n=$((n+1)); echo "$n" > "$TEST_ROOT/counter"
+  if [ "$n" = 3 ]; then kill -TERM "$PPID"; fi
+ fi
+ "$REAL_SLEEP" .02;;
 psql)
  echo "$*" >> "$TEST_ROOT/queries"
  case "$*" in
@@ -64,6 +71,7 @@ pgbench)
   for arg; do case "$arg" in --log-prefix=*) p=${arg#*=};; esac; done
   if [ "${TEST_NO_LOG:-0}" = 0 ]; then printf '0 1 1000 0 0 0\n' > "$p.123"; fi
   [ "${TEST_PARSE_FAIL:-0}" = 1 ] || echo 'tps = 123'
+  [ "${TEST_COUNT_MISSING:-0}" = 1 ] || echo "number of transactions ${TEST_COUNT_LABEL:-actually processed}: ${TEST_COUNT:-1}"
   exit "${TEST_RUN_RC:-0}";;
  *) echo WARMUP_OUTPUT; exit "${TEST_WARM_RC:-0}";;
  esac;;
@@ -102,7 +110,7 @@ run(){
  echo 0 > "$tmp/counter"
  : > "$tmp/timeouts"; : > "$tmp/queries"; : > "$tmp/driver.args"
  rc=0
- bash "$harness" > "$tmp/$1.output" 2>&1 || rc=$?
+ "$REAL_TIMEOUT" -k 2 8 bash "$harness" > "$tmp/$1.output" 2>&1 || rc=$?
  # Failed shutdown deliberately preserves the server for manual cleanup.
  if [ -f "$tmp/server.pid" ]; then kill "$(< "$tmp/server.pid")" 2>/dev/null || :; rm "$tmp/server.pid"; fi
 }
@@ -160,6 +168,49 @@ run stop-fail
 check test "$rc" = 1
 check row_has 29 STOP_FAIL
 unset TEST_STOP_FAIL
+TEST_CHILD_LINGERS=1; export TEST_CHILD_LINGERS
+run child-lingers
+check test "$rc" = 1
+check row_has 29 'STOP_FAIL.*rc=124'
+check test -f "$DATA/pgdata/postgresql.conf"
+check bash -c 'find "$1" -name stop.log -exec grep -l child_exit_timeout {} \; | grep -q .' _ "$OUT"
+unset TEST_CHILD_LINGERS
+TEST_CHILD_DELAY=.1; export TEST_CHILD_DELAY
+run child-delayed
+check test "$rc" = 0
+check bash -c 'find "$1" -name stop.log -exec grep -l child_exit_rc=0 {} \; | grep -q .' _ "$OUT"
+unset TEST_CHILD_DELAY
+TEST_CHILD_RC=7; export TEST_CHILD_RC
+run child-error
+check test "$rc" = 1
+check row_has 29 'STOP_FAIL.*rc=7'
+check test -f "$DATA/pgdata/postgresql.conf"
+unset TEST_CHILD_RC
+TEST_SAMPLER_KILLED=1; export TEST_SAMPLER_KILLED
+run sampler-killed
+check test "$rc" = 1
+check row_has 28 '^UNKNOWN$'
+check row_has 29 'PROGRESS_SAMPLER_FAIL.*rc=143'
+check bash -c 'find "$1" -name "*.123" | grep -q .' _ "$OUT"
+unset TEST_SAMPLER_KILLED
+TEST_COUNT=2; export TEST_COUNT
+run truncated-log
+check test "$rc" = 1
+check row_has 29 'TXN_COUNT_MISMATCH.*reported=2.*retained=1'
+check bash -c 'find "$1" -name "*.123" | grep -q .' _ "$OUT"
+unset TEST_COUNT
+TEST_COUNT_MISSING=1; export TEST_COUNT_MISSING
+run missing-count
+check test "$rc" = 1
+check row_has 29 TXN_COUNT_PARSE_FAIL
+unset TEST_COUNT_MISSING
+for label in processed 'successfully processed' completed; do
+ TEST_COUNT_LABEL=$label; export TEST_COUNT_LABEL
+ run "count-${label// /-}"
+ check test "$rc" = 0
+ check row_has 11 '^1$'
+done
+unset TEST_COUNT_LABEL
 TEST_INITDB_RC=7; export TEST_INITDB_RC
 run initdb-fail
 check test "$rc" = 1
