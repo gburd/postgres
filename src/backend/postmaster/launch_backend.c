@@ -962,7 +962,8 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	thread_start->publication.pmchild = pmchild;
 	thread_start->child_type = child_type;
 	thread_start->child_slot = child_slot;
-	if (child_type == B_BACKEND)
+	/* Dead-end children still need the client startup packet and socket. */
+	if (child_type == B_BACKEND || child_type == B_DEAD_END_BACKEND)
 	{
 		thread_start->startup_data = *((BackendStartupData *) startup_data);
 		thread_start->client_sock = *client_sock;
@@ -991,7 +992,8 @@ postmaster_backend_thread_launch(PMChild *pmchild,
 	pg_atomic_init_u32(&thread_start->fiber_entered, 0);
 	thread_start->launch_time = GetCurrentTimestamp();
 
-	if (child_type == B_BACKEND && thread_start->client_sock.sock < 0)
+	if ((child_type == B_BACKEND || child_type == B_DEAD_END_BACKEND) &&
+		thread_start->client_sock.sock < 0)
 	{
 		int			save_errno = errno;
 
@@ -2317,7 +2319,8 @@ backend_thread_entry(void *arg)
 	MyStartTime = timestamptz_to_time_t(MyStartTimestamp);
 	backend_thread_init_random_state();
 
-	if (thread_start->child_type == B_BACKEND)
+	if (thread_start->child_type == B_BACKEND ||
+		thread_start->child_type == B_DEAD_END_BACKEND)
 		backend_thread_run_backend(thread_start);
 	else
 		backend_thread_run_worker(thread_start);
