@@ -406,10 +406,6 @@ pltcl_interp_htab	PgSession	extension_modules	pltcl_interp_hash	PgCurrentPLTclIn
 pltcl_proc_htab	PgSession	extension_modules	pltcl_proc_hash	PgCurrentPLTclProcHashRef	src/include/utils/backend_runtime.h	PL/Tcl procedure descriptor hash
 pltcl_current_call_state	PgSession	extension_modules	pltcl_current_call_state	PgCurrentPLTclCurrentCallStateRef	src/include/utils/backend_runtime.h	PL/Tcl current call-state pointer
 PL/Sample session context	PgSession	extension_modules	plsample_memory_context	PgCurrentPLsampleMemoryContextRef	src/include/utils/backend_runtime.h	PL/Sample session-owned parent context for function and procedure call contexts
-FPlans	PgSession	extension_modules	refint_foreign_plans	refint_session_state	contrib/spi/refint.c	refint cached foreign-key SPI plan array
-nFPlans	PgSession	extension_modules	refint_num_foreign_plans	refint_session_state	contrib/spi/refint.c	refint cached foreign-key SPI plan count
-PPlans	PgSession	extension_modules	refint_primary_plans	refint_session_state	contrib/spi/refint.c	refint cached primary-key SPI plan array
-nPPlans	PgSession	extension_modules	refint_num_primary_plans	refint_session_state	contrib/spi/refint.c	refint cached primary-key SPI plan count
 auth_delay_milliseconds	PgSession	extension_modules	auth_delay_milliseconds	auth_delay_session_state	contrib/auth_delay/auth_delay.c	auth_delay custom GUC backing integer
 shell_command	PgSession	extension_modules	basebackup_to_shell_command	basebackup_to_shell_session_state	contrib/basebackup_to_shell/basebackup_to_shell.c	basebackup_to_shell command custom GUC backing string
 shell_required_role	PgSession	extension_modules	basebackup_to_shell_required_role	basebackup_to_shell_session_state	contrib/basebackup_to_shell/basebackup_to_shell.c	basebackup_to_shell required-role custom GUC backing string
