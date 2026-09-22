@@ -152,8 +152,24 @@ stop_lane(){
 		PGPID=""
 		return "$rc"
 	fi
-	wait "$PGPID" 2>/dev/null || :
+	# pg_ctl can observe pidfile removal before the postmaster exits. Bash
+	# reaps exited children asynchronously; only wait after the child is gone,
+	# so a stuck exit callback cannot wedge this harness indefinitely.
+	local i
+	for ((i=0; i<30; i++)); do
+		kill -0 "$PGPID" 2>/dev/null || break
+		sleep 1
+	done
+	if kill -0 "$PGPID" 2>/dev/null; then
+		echo "child_exit_timeout pid=$PGPID rc=124" >> "$OUT/stop.log"
+		say "STOP_FAIL rc=124 pid=$PGPID; preserving DATA=$DATA; manual cleanup required"
+		PGPID=""
+		return 124
+	fi
+	wait "$PGPID" 2>/dev/null; rc=$?
+	echo "child_exit_rc=$rc" >> "$OUT/stop.log"
 	PGPID=""
+	return "$rc"
 }
 # Called by the EXIT trap, including exits from within run_cell.
 # shellcheck disable=SC2317
@@ -297,9 +313,12 @@ run_cell(){
 	) & STALLPID=$!
 	wait "$DRIVERPID"; rc=$?; DRIVERPID=""
 	[ -z "$CPUPID" ] || { kill "$CPUPID" 2>/dev/null || :; wait "$CPUPID" 2>/dev/null || :; CPUPID=""; }
-	wait "$STALLPID"; STALLPID=""
+	local sampler_rc
+	wait "$STALLPID"; sampler_rc=$?; STALLPID=""
+	echo "sampler_exit_rc=$sampler_rc" >> "$OUT/progress-errors.log"
 	stall=$(awk '/^[0-9]+$/ {if (n++) {samples++; if ($1==prev) froze++} prev=$1; next}
 		{bad=1} END {if (bad || samples<2) print "UNKNOWN"; else if (froze>samples/3) printf "STALL:%d/%d\n",froze,samples; else print "no"}' "$OUT/progress.log")
+	[ "$sampler_rc" = 0 ] || stall=UNKNOWN
 	# Retain raw transaction logs on success AND failure. Remote originals are
 	# deliberately left in place if transfer fails. Percentiles reuse pgbench_pctl.
 	mkdir "$OUT/transactions"
@@ -315,6 +334,7 @@ run_cell(){
 		local why=PGBENCH_FAIL; [ "$rc" != 124 ] || why=PGBENCH_TIMEOUT
 		fail_cell "$why rc=$rc fetch_rc=$fetch_rc"; return
 	fi
+	if [ "$sampler_rc" != 0 ]; then fail_cell "PROGRESS_SAMPLER_FAIL rc=$sampler_rc fetch_rc=$fetch_rc"; return; fi
 	local tps
 	tps=$(awk '/^tps = [0-9]+([.][0-9]+)?([[:space:]]|$)/ {print $3; exit}' "$OUT/pgbench.log")
 	if [ -z "$tps" ]; then fail_cell TPS_PARSE_FAIL; return; fi
@@ -324,6 +344,16 @@ run_cell(){
 	if [ "$rc" != 0 ]; then fail_cell "PCTL_FAIL rc=$rc"; return; fi
 	local cnt p50 p95 p99 pmax _unused
 	IFS=$'\t' read -r _unused _unused cnt _unused _unused _unused p50 _unused p95 _unused p99 _unused pmax < <(grep '^TSV' "$OUT/percentiles.log")
+	# pgbench can report TPS despite failed/buffered log writes. Full logging
+	# must contain one valid latency per successful transaction, independently
+	# of TPS. Accept known summary labels, never guess a count from throughput.
+	local reported
+	reported=$(awk -F ': ' '/^number of transactions ((actually |successfully )?processed|completed): [0-9]+$/ {n++; count=$2}
+		END {if(n==1) print count}' "$OUT/pgbench.log")
+	if [ -z "$reported" ]; then fail_cell TXN_COUNT_PARSE_FAIL; return; fi
+	if [ "$cnt" != "$reported" ]; then
+		fail_cell "TXN_COUNT_MISMATCH reported=$reported retained=$cnt"; return
+	fi
 	local cpu_busy=NA idle_meaningful=no
 	if [ -f "$OUT/mpstat.log" ]; then
 		cpu_busy=$(awk '$0 ~ /all/ && $NF ~ /^[0-9.]+$/ {sum+=100-$NF;n++} END {if(n) printf "%.2f",sum/n; else print "NA"}' "$OUT/mpstat.log")
