@@ -29,17 +29,14 @@ PG_SESSION_RESET_BUCKET(temp_file, PgSessionResetTempFileClosedState(session))
  * be drained before plan_cache or they trip the same saved_plan_list-empty
  * assert (seen as ~12-18 cores across a full cassert regress -- plpgsql leaves
  * the ruleutils plan, foreign_key leaves the RI plans; PROCESS mode too, not
- * threaded-only).  ruleutils_plans is the sole owner of the two ruleutils
- * plans (the later catalog_lookup bucket used to free them, but ran after
- * plan_cache -- too late).  ri_plans frees the RI query-cache plans (the later
- * ri_globals bucket only hash_destroy()s that cache and would leak the plans);
- * ri_globals still owns destroying the query_cache HTAB itself.
+ * threaded-only).  Drain these plans at the start of the plan_cache reset
+ * step, without inventing root fields for the prerequisite cleanup.  The
+ * later catalog_lookup and ri_globals steps still own their cache storage,
+ * but must not free the saved plans again.
  */
 PG_SESSION_RESET_BUCKET(extension_modules, PgSessionResetExtensionModuleClosedState(session))
 PG_SESSION_RESET_BUCKET(function_manager, PgSessionResetFunctionManagerClosedState(session))
-PG_SESSION_RESET_BUCKET(ruleutils_plans, RuleUtilsResetSessionCachedPlans(session))
-PG_SESSION_RESET_BUCKET(ri_plans, RIResetSessionCachedPlans(session))
-PG_SESSION_RESET_BUCKET(plan_cache, PgSessionResetPlanCacheClosedState(session))
+PG_SESSION_RESET_BUCKET(plan_cache, RuleUtilsResetSessionCachedPlans(session); RIResetSessionCachedPlans(session); PgSessionResetPlanCacheClosedState(session))
 PG_SESSION_RESET_BUCKET(on_commit, PG_RUNTIME_LIST_FREE_DEEP(session->on_commit.on_commits))
 PG_SESSION_RESET_BUCKET(xact_callbacks, PgSessionResetXactCallbackClosedState(session))
 PG_SESSION_RESET_BUCKET(backup, PgSessionResetBackupClosedState(session))

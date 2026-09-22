@@ -482,9 +482,8 @@ PgSessionResetCatalogLookupClosedState(PgSession *session)
 	/*
 	 * The ruleutils SPI_keepplan()'d catalog-lookup plans
 	 * (ruleutils_rule_by_oid_plan, ruleutils_view_rule_plan) are drained by the
-	 * dedicated ruleutils_plans reset bucket, which is ordered BEFORE the
-	 * plan-cache bucket so the plans are off saved_plan_list before it asserts
-	 * empty.  Do NOT free them here: this bucket runs AFTER plan_cache, so
+	 * prerequisite cleanup in the plan_cache reset step, so the plans are
+	 * off saved_plan_list before that step asserts empty.  Do NOT free them here: this bucket runs AFTER plan_cache, so
 	 * freeing here would be too late (and double-owns the pointers).
 	 */
 	if (session->catalog_lookup.cache_memory_context != NULL)
