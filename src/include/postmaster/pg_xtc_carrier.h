@@ -22,8 +22,8 @@ typedef void (*xtc_carrier_entry_fn) (void *arg);
  */
 struct PgCarrier;
 extern struct PgCarrier *xtc_pg_backend_thread_start_carrier(void *thread_start);
-/* True on the carrier thread while a backend fiber is running. */
-extern __thread bool xtc_in_backend_fiber;
+/* True for the current backend proc while its PG owner is live, not supervisors. */
+extern bool xtc_pg_in_backend_fiber(void);
 
 /* Start the single-loop xtc scheduler thread (idempotent). */
 extern int	xtc_pg_carrier_start(void);
@@ -41,7 +41,7 @@ extern int	xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms);
  * thread would kill the whole scheduler, not just this fiber).  Instead the
  * fiber returns control to the xtc loop via xtc_exit_self(), releasing its
  * proc slot so the Nth backend behaves exactly like the 1st.  Does not
- * return.  Only valid while xtc_in_backend_fiber is true.
+ * return.  Valid after the PG owner was cleared on the final exit path too.
  */
 pg_noreturn extern void xtc_pg_backend_fiber_exit(int code);
 
@@ -58,13 +58,8 @@ extern bool xtc_pg_consume_genuine_crash(void);
 /*
  * True iff a running backend fiber may be migrated across carriers (stolen).
  *
- * Fibers are PINNED today, so this is always false and callers can treat a
- * true result as "a future unpin has landed".  It exists so no-migrate
- * invariants (e.g. the ssl_sni server-side-SNI gate in be-secure-openssl.c,
- * which relies on TLS-bearing fibers not migrating while libxtc's ClientHello
- * context-swap #29 is deferred) can be written as active tripwires now and
- * stay correct when the gated unpin flips this to a real per-fiber query.
- * Only valid to consult while xtc_in_backend_fiber is true; false otherwise.
+ * The decision is stored on the fiber-owned carrier at launch.  False for
+ * supervisors, native threads, and after the PG owner has been cleared.
  */
 extern bool xtc_pg_backend_fiber_is_migratable(void);
 

@@ -14,7 +14,7 @@
  *	SAME fd registered into FeBeWaitSet -- so the read fd and the wait fd
  *	never diverge (the exact bug that stalled the fork spike).
  *
- *	The runtime seam is in waiteventset.c: while xtc_in_backend_fiber is
+ *	The runtime seam is in waiteventset.c: while xtc_pg_in_backend_fiber() is
  *	true, WaitEventSetWaitBlock() waits on set->epoll_fd via
  *	xtc_proc_wait_fd() (yielding the fiber to the xtc loop) instead of a
  *	blocking epoll_wait() that would monopolize the carrier thread.
@@ -311,13 +311,15 @@ xtc_carrier_loop_count(void)
 }
 
 /*
- * True (in the carrier/scheduler thread) while a backend fiber is running,
- * so WaitEventSetWaitBlock() yields the fiber via xtc_proc_wait_fd() instead
- * of blocking the carrier in epoll_wait().  It is thread-local: only the
- * scheduler thread sets it, other threads (postmaster, other carriers) keep
- * their own copy false.
+ * Only backend procs publish userdata, before PG startup; supervisors leave it
+ * NULL.  libxtc carries it across sibling switches and migration.  The borrowed
+ * carrier pointer is cleared before its BackendThreadStart owner is freed.
  */
-__thread bool xtc_in_backend_fiber = false;
+bool
+xtc_pg_in_backend_fiber(void)
+{
+	return xtc_proc_userdata() != NULL;
+}
 
 /*
  * Phase B no-steal tripwire: per-fiber affine-section nesting depth.
@@ -409,9 +411,6 @@ xtc_pg_verify_current_work_is_self(void)
 {
 	PgCarrier  *self_carrier;
 
-	if (!xtc_in_backend_fiber)
-		return;					/* not a backend fiber (bare supervisor) */
-
 	self_carrier = (PgCarrier *) xtc_proc_userdata();
 	if (self_carrier == NULL)
 		return;					/* userdata not set (early boot / test) */
@@ -445,7 +444,7 @@ xtc_pg_verify_snapshot_is_self(const PgCurrentWorkSnapshot *snap)
 {
 	PgCarrier  *self_carrier;
 
-	if (!xtc_in_backend_fiber || snap == NULL)
+	if (snap == NULL)
 		return;
 
 	self_carrier = (PgCarrier *) xtc_proc_userdata();
@@ -830,14 +829,13 @@ xtc_carrier_proc(void *arg)
 	 */
 	xtc_carrier_entry_fn entry = g_xtc_backend_entry;
 	void	   *entry_arg = arg;
+	PgCarrier  *carrier = xtc_pg_backend_thread_start_carrier(entry_arg);
 
 	/*
 	 * Do NOT elog() here: the fiber has no PG error stack / ErrorContext yet
 	 * (backend_thread_entry sets those up).  An early ereport would call
 	 * errstart -> exit() and tear down the shared postmaster.
 	 */
-
-	xtc_in_backend_fiber = true;
 
 	/*
 	 * Publish this fiber's own PgCarrier root as the proc's userdata
@@ -854,7 +852,14 @@ xtc_carrier_proc(void *arg)
 	 * roots.  Neutral while pinned (nothing migrates, so the bridge already
 	 * matches); load-bearing once the gated unpin flips migratable to 1.
 	 */
-	(void) xtc_proc_set_userdata(xtc_pg_backend_thread_start_carrier(entry_arg));
+	if (carrier == NULL || xtc_proc_set_userdata(carrier) != XTC_OK)
+	{
+		const char msg[] = "xtc: could not install backend fiber identity\n";
+
+		xtc_diag_write(STDERR_FILENO, msg, sizeof(msg) - 1);
+		/* No PG error stack yet: fail-stop, as in the quickdie path. */
+		_exit(2);
+	}
 
 #ifdef USE_ASSERT_CHECKING
 	/*
@@ -916,8 +921,8 @@ xtc_carrier_proc(void *arg)
 	 */
 	entry(entry_arg);
 
-	/* If it ever returns, leave the fiber cleanly. */
-	xtc_in_backend_fiber = false;
+	/* If it ever returns, drop the borrowed owner before leaving the fiber. */
+	(void) xtc_proc_set_userdata(NULL);
 	xtc_exit_self(0);
 }
 
@@ -1335,7 +1340,8 @@ xtc_pg_backend_fiber_exit(int code)
 		}
 	}
 
-	xtc_in_backend_fiber = false;
+	/* Also covers early exits that retain the startup allocation. */
+	(void) xtc_proc_set_userdata(NULL);
 
 	xtc_exit_self(code);
 
@@ -1348,7 +1354,7 @@ xtc_pg_backend_fiber_exit(int code)
  * Runtime seam used by waiteventset.c.  Yield the current backend fiber
  * until `fd` is ready for `interest_pg` (PG WL_* bits) or timeout.  Returns
  * WL_* bits that fired.  timeout_ms < 0 means wait forever.  Only called
- * when xtc_in_backend_fiber is true.
+ * when a libxtc proc is running (including waiteventset's non-backend fallback).
  */
 #include "storage/waiteventset.h"	/* WL_* */
 #include "xtc_io.h"					/* XTC_IO_* */
@@ -1365,8 +1371,7 @@ xtc_pg_wait_fd(int fd, int interest_pg, long timeout_ms)
 
 	/*
 	 * Phase B park-boundary tripwire (manual-seam twin of the removed
-	 * fiber-ctx save hook's assert): this seam is only reached while
-	 * xtc_in_backend_fiber, and both branches below park the fiber.  A
+	 * fiber-ctx save hook's assert): both branches below can park the fiber.  A
 	 * bracketed thread-affine section (raw spinlock, OpenSSL error-queue span,
 	 * sigprocmask window) holds per-OS-thread state that would be wrong if the
 	 * fiber resumed on a different carrier, so it must never be open across a
@@ -1484,17 +1489,13 @@ xtc_pg_consume_genuine_crash(void)
  * fiber entry), NOT via the thread-local current-work bridge: after a steal the
  * bridge may still reflect whichever fiber last ran on the resuming thread
  * until the next seam restore, but userdata always tracks THIS fiber, so the
- * answer is correct even mid-migration.  Only meaningful while
- * xtc_in_backend_fiber; false otherwise (bare supervisor, non-fiber threads,
- * process mode).
+ * answer is correct even mid-migration.  False without a live PG owner (bare
+ * supervisor, non-fiber threads, process mode, or final exit after owner clear).
  */
 bool
 xtc_pg_backend_fiber_is_migratable(void)
 {
 	PgCarrier  *self_carrier;
-
-	if (!xtc_in_backend_fiber)
-		return false;
 
 	self_carrier = (PgCarrier *) xtc_proc_userdata();
 	return self_carrier != NULL && self_carrier->migratable;
