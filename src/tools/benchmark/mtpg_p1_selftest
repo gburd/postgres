@@ -1,0 +1,235 @@
+#!/usr/bin/env bash
+# Execute the real harness with fake external programs; no DB, SSH, or AWS needed.
+# Shell fragments below intentionally expand in the child shell, not here.
+# shellcheck disable=SC2016
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+harness=${1:-$here/mtpg_p1_matrix.sh}
+tmp=$(mktemp -d)
+# Test-owned fake servers only; the harness deliberately leaves failed stops.
+cleanup_test(){
+ if [ -f "$tmp/server.pid" ]; then kill "$(< "$tmp/server.pid")" 2>/dev/null || :; fi
+ find "$tmp" -name driver-logs.txt -exec awk -F= '/^log_prefix=/{print $2}' {} + |
+  while IFS= read -r prefix; do rm -f "$prefix".*; done
+ find "$tmp" -mindepth 1 -delete; rmdir "$tmp"
+}
+trap cleanup_test EXIT
+mkdir "$tmp/bin"
+REAL_SLEEP=$(command -v sleep)
+export TEST_ROOT=$tmp REAL_SLEEP
+cat > "$tmp/bin/fake" <<'MOCK'
+#!/usr/bin/env bash
+case ${0##*/} in
+initdb)
+ [ "${TEST_INITDB_RC:-0}" = 0 ] || exit "$TEST_INITDB_RC"
+ while [ "$1" != -D ]; do shift; done
+ mkdir -p "$2"; touch "$2/postgresql.conf" "$2/pg_hba.conf";;
+postgres)
+ if [ "${1:-}" = --version ]; then echo 'postgres test'; exit; fi
+ echo $$ > "$TEST_ROOT/server.pid"
+ echo "$*" > "$TEST_ROOT/server.args"
+ [ "${TEST_START_FAIL:-0}" = 0 ] || exit 7
+ echo 'ready to accept connections'
+ trap 'exit' TERM
+ while :; do "$REAL_SLEEP" .05; done;;
+pg_ctl|pkill)
+ [ "${TEST_STOP_FAIL:-0}" = 0 ] || exit 7
+ if [ -f "$TEST_ROOT/server.pid" ]; then kill "$(< "$TEST_ROOT/server.pid")" 2>/dev/null || :; rm "$TEST_ROOT/server.pid"; fi;;
+sleep) "$REAL_SLEEP" .02;;
+psql)
+ echo "$*" >> "$TEST_ROOT/queries"
+ case "$*" in
+ *'show multithreaded'*) if grep -q multithreaded=on "$TEST_ROOT/server.args"; then echo on; else echo off; fi;;
+ *'show pooled_protocol_carriers'*)
+  grep -o 'pooled_protocol_carriers=[0-9]*' "$TEST_ROOT/server.args" | cut -d= -f2;;
+ *'count(*) from pg_stat_xtc_carriers'*) echo "${TEST_ROWS:-4}";;
+ *'show all'*) [ "${TEST_SETTINGS_FAIL:-0}" = 0 ] || exit 7; printf 'fsync|on\nsynchronous_commit|on\nfull_page_writes|on\nio_method|sync\n';;
+ *pg_stat_database*)
+  [ "${TEST_SAMPLE_FAIL:-0}" = 0 ] || exit 7
+  # Queries in postgres commit to the workload counter; template1 does not.
+  n=$(< "$TEST_ROOT/counter")
+  if [ "${!#}" = postgres ]; then n=$((n+1)); echo "$n" > "$TEST_ROOT/counter"; fi
+  echo "$n";;
+ *) echo on;;
+ esac;;
+pgbench)
+ [ "${1:-}" != --version ] || { echo 'pgbench test'; exit 0; }
+ case " $* " in *' -i '*) exit "${TEST_INIT_RC:-0}";; esac
+ echo "$*" >> "$TEST_ROOT/driver.args"
+ case " $* " in
+ *' --log '*)
+  touch "$TEST_ROOT/measuring"
+  "$REAL_SLEEP" .3
+  rm "$TEST_ROOT/measuring"
+  for arg; do case "$arg" in --log-prefix=*) p=${arg#*=};; esac; done
+  if [ "${TEST_NO_LOG:-0}" = 0 ]; then printf '0 1 1000 0 0 0\n' > "$p.123"; fi
+  [ "${TEST_PARSE_FAIL:-0}" = 1 ] || echo 'tps = 123'
+  exit "${TEST_RUN_RC:-0}";;
+ *) echo WARMUP_OUTPUT; exit "${TEST_WARM_RC:-0}";;
+ esac;;
+mpstat)
+ # Wait for the driver: if started after it ends, this reports no overlap.
+ for ((i=0;i<30;i++)); do
+  if [ -f "$TEST_ROOT/measuring" ]; then echo 'Average: all 25'; exit; fi
+  "$REAL_SLEEP" .02
+ done
+ echo 'Average: all 100';;
+timeout)
+ [ "${1:-}" = -k ] && shift 2
+ budget=$1; shift
+ echo "$budget $*" >> "$TEST_ROOT/timeouts"
+ exec "$@";;
+ssh)
+ # Execute the transported command locally, from a different working dir.
+ # This tests quoting/globbing, NOT real host separation or SSH transport.
+ [ "${TEST_SSH_FAIL:-0}" = 0 ] || exit 255
+ if [[ "$*" == *boot_id* ]]; then
+  if [ "${TEST_SAME_HOST:-0}" = 1 ]; then cat /proc/sys/kernel/random/boot_id; else echo separate-host; fi
+ else cd "$TEST_ROOT"; bash -c "${!#}"; fi;;
+column) shift; cat "$@";;
+*) exit 1;;
+esac
+MOCK
+chmod +x "$tmp/bin/fake"
+for b in initdb postgres pg_ctl psql pgbench pkill sleep mpstat timeout ssh column; do ln -s fake "$tmp/bin/$b"; done
+export PATH="$tmp/bin:$PATH" PGBIN="$tmp/bin" LOADGEN_PGBIN="$tmp/bin"
+export SUT_IP=192.0.2.1 LOADGEN='' LOCAL_DRIVER=1 LANES=fork WORKLOADS=select
+export CLIENTS=1 RUNS=1 WARMUP=120 DURATION=300 RAM_PCT=1 CARRIERS=4 FIBER_LOOPS=4
+failures=0
+check(){ if "$@"; then echo "ok: $*"; else echo "FAIL: $*" >&2; failures=$((failures+1)); fi; }
+run(){
+ export OUT="$tmp/out-$1" DATA="$tmp/data-$1"
+ echo 0 > "$tmp/counter"
+ : > "$tmp/timeouts"; : > "$tmp/queries"; : > "$tmp/driver.args"
+ rc=0
+ bash "$harness" > "$tmp/$1.output" 2>&1 || rc=$?
+ # Failed shutdown deliberately preserves the server for manual cleanup.
+ if [ -f "$tmp/server.pid" ]; then kill "$(< "$tmp/server.pid")" 2>/dev/null || :; rm "$tmp/server.pid"; fi
+}
+row_has(){ awk -F '\t' -v col="$1" -v val="$2" 'NR>1 && $col ~ val {ok=1} END {exit !ok}' "$OUT/results.tsv"; }
+run normal
+check test "$rc" = 0
+check row_has 6 '^123$'
+check row_has 12 '^75([.]00)?$'
+check row_has 28 '^STALL:'
+check row_has 14 '^yes$'
+check row_has 13 '^no$'
+check row_has 18 '^1$'
+check row_has 19 '^on$'
+check row_has 22 '^sync$'
+check awk '$1 > 300 && /--log / {ok=1} END {exit !ok}' "$tmp/timeouts"
+check bash -c 'find "$1" -name "*.123" | grep -q .' _ "$OUT"
+check bash -c 'find "$1" -name postgresql.conf | grep -q .' _ "$OUT"
+check bash -c 'find "$1" -name warmup.log -exec grep -l WARMUP_OUTPUT {} \; | grep -q .' _ "$OUT"
+for stage in WARM RUN INIT; do
+ export "TEST_${stage}_RC=7"
+ run "fail-$stage"
+ check test "$rc" = 1
+ case $stage in WARM) why=WARMUP_FAIL;; RUN) why=PGBENCH_FAIL;; INIT) why=PGBENCH_INIT_FAIL;; esac
+ check row_has 29 "$why.*rc=7"
+ unset "TEST_${stage}_RC"
+done
+TEST_RUN_RC=124; export TEST_RUN_RC
+run timeout
+check test "$rc" = 1
+check row_has 29 'PGBENCH_TIMEOUT.*rc=124'
+unset TEST_RUN_RC
+TEST_PARSE_FAIL=1; export TEST_PARSE_FAIL
+run parse
+check test "$rc" = 1
+check row_has 29 TPS_PARSE_FAIL
+unset TEST_PARSE_FAIL
+TEST_NO_LOG=1; export TEST_NO_LOG
+run no-log
+check test "$rc" = 1
+check row_has 29 LOG_FETCH_FAIL
+unset TEST_NO_LOG
+TEST_SAMPLE_FAIL=1; export TEST_SAMPLE_FAIL
+run sample-fail
+check test "$rc" = 1
+check row_has 28 '^UNKNOWN$'
+check row_has 29 PROGRESS_SAMPLE_FAIL
+unset TEST_SAMPLE_FAIL
+TEST_SETTINGS_FAIL=1; export TEST_SETTINGS_FAIL
+run settings-fail
+check test "$rc" = 1
+check row_has 29 'SETTINGS_FAIL.*rc=7'
+unset TEST_SETTINGS_FAIL
+TEST_STOP_FAIL=1; export TEST_STOP_FAIL
+run stop-fail
+check test "$rc" = 1
+check row_has 29 STOP_FAIL
+unset TEST_STOP_FAIL
+TEST_INITDB_RC=7; export TEST_INITDB_RC
+run initdb-fail
+check test "$rc" = 1
+check row_has 29 'INITDB_FAIL.*rc=7'
+unset TEST_INITDB_RC
+TEST_START_FAIL=1; export TEST_START_FAIL
+run startup-fail
+check test "$rc" = 1
+check row_has 29 SERVER_DIED_ON_STARTUP
+unset TEST_START_FAIL
+WARMUP=0; export WARMUP
+run no-warmup
+check test "$rc" = 0
+check test "$(wc -l < "$tmp/driver.args")" = 1
+WARMUP=120; export WARMUP
+LANES=xtc; export LANES
+run legacy-xtc
+check test "$rc" = 0
+check row_has 4 '^4$'
+CARRIERS=0; export CARRIERS
+run legacy-fiber
+check test "$rc" = 0
+check row_has 4 '^0$'
+CARRIERS=4; export CARRIERS
+LANES=fiber TEST_ROWS=3; export LANES TEST_ROWS
+run mismatch
+check test "$rc" = 1
+check row_has 29 'ASSERT_FAIL.*rows=3.*want=4'
+TEST_ROWS=4; export TEST_ROWS
+run fiber
+check test "$rc" = 0
+check row_has 4 '^4$'
+LANES=stock STOCK_PGBIN=$PGBIN STOCK_COMMIT=merge-base-test; export LANES STOCK_PGBIN STOCK_COMMIT
+run stock
+check test "$rc" = 0
+check row_has 26 '^merge-base-test$'
+check bash -c '! grep -q "show multithreaded" "$1"' _ "$tmp/queries"
+LANES=fork LOCAL_DRIVER=0 LOADGEN=admin@192.0.2.1; export LANES LOCAL_DRIVER LOADGEN
+run same-address
+check test "$rc" = 2
+check grep -q REQUIREMENT-7 "$tmp/same-address.output"
+LOADGEN=admin@alias TEST_SAME_HOST=1; export LOADGEN TEST_SAME_HOST
+run same-identity
+check test "$rc" = 2
+check grep -q REQUIREMENT-7 "$tmp/same-identity.output"
+unset TEST_SAME_HOST
+TEST_SSH_FAIL=1; export TEST_SSH_FAIL
+run ssh-fail
+check test "$rc" = 2
+check grep -q 'rc=255' "$tmp/ssh-fail.output"
+unset TEST_SSH_FAIL
+run remote
+check test "$rc" = 0
+check row_has 13 '^yes$'
+check row_has 14 '^no$'
+check bash -c 'find "$1" -name "*.123" | grep -q .' _ "$OUT"
+# Reusing OUT must add a cell directory, not overwrite the first run.
+run remote
+check test "$rc" = 0
+check test "$(find "$OUT" -name pgbench.log | wc -l)" = 2
+check awk -F '\t' 'NF!=29 {exit 1}' "$OUT/results.tsv"
+# Refuse to wipe a data directory that may belong to a live server.
+mkdir -p "$DATA/pgdata"; echo 123 > "$DATA/pgdata/postmaster.pid"
+rc=0; bash "$harness" > "$tmp/live-data.output" 2>&1 || rc=$?
+check test "$rc" = 2
+check test -f "$DATA/pgdata/postmaster.pid"
+# Single-loop observability must fail closed before creating a server.
+FIBER_LOOPS=1; export FIBER_LOOPS
+run single-loop
+check test "$rc" = 2
+check grep -q 'FIBER_LOOPS=2..1024' "$tmp/single-loop.output"
+echo "mtpg_p1_selftest: $failures failures"
+[ "$failures" = 0 ]
