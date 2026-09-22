@@ -1545,7 +1545,7 @@ WaitEventSetWaitBlock(WaitEventSet *set, int cur_timeout,
 	 * epoll fd readable and unparks the fiber -- no separate latch path
 	 * needed for this single-backend bringup.
 	 */
-	if (xtc_in_backend_fiber || !xtc_pid_is_none(xtc_self()))
+	if (xtc_pg_in_backend_fiber() || !xtc_pid_is_none(xtc_self()))
 	{
 		int			wl;
 

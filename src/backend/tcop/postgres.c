@@ -639,7 +639,7 @@ SocketBackendStickyIdleWait(PgSession *session, PgProtocolByteProbe *probe)
 	wait_events = probe->transport_wait_events | WL_SOCKET_CLOSED;
 	if (probe->transport_wait_events == WL_SOCKET_READABLE
 #ifdef USE_XTC_CARRIER
-		&& !xtc_in_backend_fiber
+		&& !xtc_pg_in_backend_fiber()
 #endif
 		)
 	{

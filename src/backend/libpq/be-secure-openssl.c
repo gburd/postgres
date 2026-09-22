@@ -956,7 +956,7 @@ be_tls_open_server(Port *port)
 	 * See plan_docs/MULTITHREADED_PLAN.md "ssl_sni no-migrate invariant" and the
 	 * carrier no-steal staging (the affine-section tripwire in pg_xtc_carrier.c).
 	 */
-	Assert(!(xtc_in_backend_fiber && ssl_sni && xtc_pg_backend_fiber_is_migratable()));
+	Assert(!(xtc_pg_in_backend_fiber() && ssl_sni && xtc_pg_backend_fiber_is_migratable()));
 
 	/*
 	 * Decision point (once per connection): on a fiber, if the xtc TLS stack is
@@ -968,7 +968,7 @@ be_tls_open_server(Port *port)
 	 * connection uses OpenSSL (P2 gate: init succeeds/FATALs identically, no
 	 * connection uses the xtc ctx).
 	 */
-	if (xtc_in_backend_fiber && xtc_tls_open_enabled && be_tls_xtc_available())
+	if (xtc_pg_in_backend_fiber() && xtc_tls_open_enabled && be_tls_xtc_available())
 		return be_tls_open_server_xtc(port);	/* sets port->xtc_tls */
 #endif
 
