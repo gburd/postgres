@@ -1,65 +1,78 @@
-# Write wedge at 32 cores: a WALWriteLock acquire never completes; one fiber spins, 31 loops idle
+# Write wedge at 32 cores: WALWrite wait observations, not a root cause
 
-Date: 2026-09-17. Captured live on the 32-core EC2 SUT (libxtc v1.48.1, uring) at the exact concurrency
-where it bites (write c=32), which the 8-core box could not produce.
+> **SUPERSEDED DIAGNOSIS -- corrected 2026-09-22.** The September 17 claim of a
+> located PG-side LWLock-wake defect was not established. The observations below
+> are retained as historical evidence, not a current validation result. The
+> later sampled `xtc_proc_wait_fd` errors narrow the failing path, not its root
+> cause: see [the corrected return-code report](WRITE_WEDGE_ROOTCAUSE_XTC_PROC_WAIT_FD_EINTERNAL_2026-09-17.md).
 
-## The captured state
-Driving `pgbench -c 32` write from the separate driver wedges within ~12 s (WALWrite waiters 22 -> 25,
-0 tps). At the wedge:
+## Reported capture (2026-09-17)
 
-**The chain head** -- two client backends, `active`, executing `END;` (commit), with EMPTY
-`pg_blocking_pids()`:
+SUT: 32-vCPU EC2, libxtc v1.48.1, uring. A separate driver running write
+`pgbench -c 32` reportedly stopped making progress within about 12 seconds;
+WALWrite waiters rose from 22 to 25 and throughput fell to 0 tps.
+
+Two client backends were reported as active on `END;`, with empty
+`pg_blocking_pids()` results:
+
 ```
 pid 9  active  LWLock/WALWrite  END;
 pid 12 active  LWLock/WALWrite  END;
 ```
 
-**The one busy thread** (tid 72749, ~100% of a core, stable across samples) is a commit fiber stuck
-acquiring WALWriteLock:
+**These are not identified chain heads.** `pg_blocking_pids()` describes
+heavyweight-lock blockers; an empty result does not identify an LWLock holder,
+queue head, or missing wake.
+
+The reported busy thread (tid 72749, roughly one CPU across samples) had this
+stack:
+
 ```
-#3 read()                         <- draining its sem_wake_fd
+#3 read()                         <- draining sem_wake_fd
 #4 ProcWaitOnSemaphore
-#5 LWLockAcquireOrWait            <- WALWriteLock (lwlock.c)
+#5 LWLockAcquireOrWait            <- WALWriteLock
 #6 XLogFlush
 #7 CommitTransaction
 #8 CommitTransactionCommand
 #9 exec_simple_query
-#10 PgSessionRun                  <- the fiber path (my P-A1 routing)
+#10 PgSessionRun
 ```
 
-**Everything else is idle**: of 32 exec loops, 31 are parked in `xtc_io_poll` /
-`__io_uring_get_cqe` with nothing to run. So this is NOT heavy CPU contention on the lock -- it is ONE
-fiber hot-looping in `LWLockAcquireOrWait`'s retry (`for(;;){ ProcWaitOnSemaphore; if lwWaiting ==
-NOT_WAITING break; }`) while 25 committers queue behind it and every carrier thread sits idle.
+The other 31 exec loops were reported in `xtc_io_poll` /
+`__io_uring_get_cqe`. These samples locate the busy path and the sampled wait
+states. They do not establish why progress stopped or that every other fiber
+was unrunnable. An eventfd count of zero is an instantaneous observation, not
+proof that no wake was delivered: the wait path drains the fd on return.
+The fd 59 snapshot must not be treated as kernel-state evidence for fd 61 in
+the later WAITFD trace without matching run, process, fd, and time identity.
 
-**The wake channel shows no pending wake**: the spinner's eventfds all read `eventfd-count: 0`. So it is
-not "a wake arrived and was missed"; the fiber parks, `xtc_pg_wait_fd` returns, `lwWaiting` is still
-`LW_WS_WAITING`, and it re-parks -- burning a core -- because the release that should clear `lwWaiting`
-and post the fd never happens (or happened against a different waiter).
+## Withdrawn LWLock explanation
 
-## Why this is the write wedge, and why it eluded the 8-core traces
-- On 8 cores the same bug presented as `tuple` / `BufferExclusive` waiters; here it is `WALWrite`. Same
-  root shape (a queued LWLock waiter never released), different most-contended lock because the WAL
-  flush path is the bottleneck at 32-core write concurrency. This is why every read-path elimination on
-  8 cores (wait layer, secure_read, epoll) correctly cleared -- the wedge was never on the read side; it
-  is the WALWriteLock release/wake on the fiber path, and it only concentrates on WALWriteLock at scale.
-- libxtc v1.48.1 reports itself clean (its wrong-proc strand fixes helped -- the wedge moved from ~45s to
-  ~105s locally and the read matrix is now at parity), so the residual is PG-side: `LWLockRelease` /
-  `LWLockWakeup` for WALWriteLock, or the `LWLockAcquireOrWait` fast-path interaction with the
-  fiber-backed `ProcWaitOnSemaphore`.
+Commit `a141499c86` added a clear of `LW_FLAG_WAKE_IN_PROGRESS` after the wait
+in `LWLockAcquireOrWait`. That change is reverted in the bounded integrity
+repair; it was not a demonstrated fix and reportedly did not change the wedge.
 
-## Prime suspect (to instrument next, at 32 cores)
-`LWLockAcquireOrWait` is the odd one: it acquires OR waits-until-free without holding, and its waiter
-uses `LW_WAIT_UNTIL_FREE` semantics. The releaser's `LWLockWakeup` must wake a `LW_WAIT_UNTIL_FREE`
-waiter AND clear its `lwWaiting`. If a concurrent releaser sees `LW_FLAG_WAKE_IN_PROGRESS` still set (the
-flag only a woken waiter clears), it skips the wakeup -- and a fiber that was "woken" but never actually
-resumed to clear the flag would strand the queue. That is the classic self-sustaining shape, and it fits
-"one fiber spins, everyone else queues, no loop does work". Instrument `LWLockRelease`/`LWLockWakeup` for
-WALWriteLock to log when a releaser sees waiters queued but skips the wakeup, or when a waiter's
-`lwWaiting` is not cleared across a `ProcWaitOnSemaphore` return.
+The flag is upstream PostgreSQL logic, not a branch addition. In
+`LWLockWakeup`, `new_wake_in_progress` is set only for a waiter whose mode is
+**not** `LW_WAIT_UNTIL_FREE`. `LWLockAcquireOrWait` queues with
+`LW_WAIT_UNTIL_FREE` and returns without acquiring when the wait completes.
+Unlike `LWLockAcquire`, it does not automatically retry acquisition there.
+It must not clear a flag potentially representing another acquiring waiter.
+The separate clear in `LWLockWaitForVar` does not justify adding one here.
 
-## Status against the north star
-This is the single gate between the read parity we now have and a real write comparison. It is a
-concrete, located, PG-side LWLock-wake defect on the WAL commit path, reproducible in ~12 s at c=32 on
-32 cores. Not fixed yet; the repro and the exact stack are now on record so the fix can be built and
-validated where it actually occurs.
+## Evidence limits and next gate
+
+- The different `tuple` / `BufferExclusive` shape in earlier eight-loop runs
+  does not prove a common cause, nor that this failure is impossible at eight
+  loops. Preserve the 32-loop workload as a reproducer, not a minimum threshold.
+- A clean libxtc strand report is not proof that all libxtc paths are correct.
+  Neither PG-side nor libxtc-only fault ownership follows from these stacks.
+- Lack of PANIC output does not exclude a fault. Reported responsiveness during
+  sampled intervals supports a live stall then, not a complete crash history.
+- The write wedge is an open issue, not the only remaining correctness gate.
+  See `THREADED_TEST_BASELINE_2026-09.md` for other recorded failures.
+
+No new instrumentation, retry workaround, or error-policy change is part of
+this repair. Controlled old/new dependency runs and process/threaded gates
+remain pending. EC2 is blocked by lava `InvalidClientTokenId`; no new runtime
+validation is claimed here.
