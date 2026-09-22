@@ -82,7 +82,7 @@ const IoMethodOps pgaio_xtc_ops = {
 static bool
 pgaio_xtc_needs_synchronous_execution(PgAioHandle *ioh)
 {
-	if (!xtc_in_backend_fiber)
+	if (!xtc_pg_in_backend_fiber())
 		return true;
 
 	switch ((PgAioOp) ioh->op)
@@ -122,7 +122,7 @@ pgaio_xtc_submit(uint16 num_staged_ios, PgAioHandle **staged_ios)
 		 * needs_synchronous_execution() guarantees we only see READV/WRITEV
 		 * issued from a backend fiber.
 		 */
-		Assert(xtc_in_backend_fiber);
+		Assert(xtc_pg_in_backend_fiber());
 
 		/*
 		 * Advance the handle to SUBMITTED before running the IO, exactly like

@@ -610,7 +610,7 @@ InitProcess(void)
 		uint64		buf;
 
 		SpinLockAcquire(&MyProc->sem_fiber_lock);
-		MyProc->sem_fiber_backed = xtc_in_backend_fiber;
+		MyProc->sem_fiber_backed = xtc_pg_in_backend_fiber();
 		MyProc->sem_fiber_armed = false;
 		MyProc->sem_fiber_wake_pending = false;
 		SpinLockRelease(&MyProc->sem_fiber_lock);
@@ -843,11 +843,9 @@ InitAuxiliaryProcess(void)
 	 * already-ready io_uring completion then never gets reaped and it wedges
 	 * forever, even though the LWLock is free and every libxtc wake fired.
 	 *
-	 * xtc_in_backend_fiber is per-carrier-OS-thread __thread state, true only
-	 * while THIS aux process is actually running as an xtc fiber (false for a
-	 * dedicated-thread-carrier aux process such as the archiver, and false for
-	 * a process-mode aux process), so this cannot mis-flip an aux worker that
-	 * is not fiber-backed.  Guard identically to InitProcess's own
+	 * The current proc's userdata identifies backend fibers across sibling
+	 * exits and migrations; dedicated-thread and process backends have none.
+	 * Guard identically to InitProcess's own
 	 * sem_wake_fd>=0 && !PG_BACKEND_WAS_FORKEXECED check: a fork+exec'd child's
 	 * sem_wake_fd integer refers to a since-closed (EFD_CLOEXEC) fd that may
 	 * have been reused, so it must stay untouched and unclassified as fiber-
@@ -858,7 +856,7 @@ InitAuxiliaryProcess(void)
 		uint64		buf;
 
 		SpinLockAcquire(&MyProc->sem_fiber_lock);
-		MyProc->sem_fiber_backed = xtc_in_backend_fiber;
+		MyProc->sem_fiber_backed = xtc_pg_in_backend_fiber();
 		MyProc->sem_fiber_armed = false;
 		MyProc->sem_fiber_wake_pending = false;
 		SpinLockRelease(&MyProc->sem_fiber_lock);
@@ -1725,7 +1723,7 @@ ProcSleep(LOCALLOCK *locallock)
 			 * threaded path are byte-for-byte (wait_timeout stays 0).
 			 */
 #ifdef USE_XTC_CARRIER
-			if (xtc_in_backend_fiber && DeadlockTimeout > 0)
+			if (xtc_pg_in_backend_fiber() && DeadlockTimeout > 0)
 				wait_timeout = (long) DeadlockTimeout;
 #endif
 
@@ -1752,7 +1750,7 @@ ProcSleep(LOCALLOCK *locallock)
 			/* check for deadlocks first, as that's probably log-worthy */
 			if (got_deadlock_timeout
 #ifdef USE_XTC_CARRIER
-				|| (xtc_in_backend_fiber && wait_timeout > 0)
+				|| (xtc_pg_in_backend_fiber() && wait_timeout > 0)
 #endif
 				)
 			{
