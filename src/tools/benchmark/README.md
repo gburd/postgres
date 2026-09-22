@@ -88,6 +88,10 @@ against the same DATA, OUT or port. An existing `postmaster.pid` is refused,
 even if stale: inspect and stop that server yourself before removing it.
 A fresh initdb/server is used per cell. Failed shutdown aborts the matrix,
 retaining the server/data for manual cleanup; it never kills by a path regex.
+Even after pg_ctl succeeds, actual child exit must occur within 30 one-second
+polls. A lingering child produces STOP_FAIL rc=124; a nonzero child exit is
+also STOP_FAIL with its exact status recorded in stop.log. Neither permits the
+next cell to wipe DATA.
 The server has no fixed lifetime; the bounded stages and exit trap own shutdown.
 Network access is trust-authenticated: use isolated benchmark hosts and restrict
 port access at the firewall. This is not a production deployment tool.
@@ -138,6 +142,11 @@ as a tar archive, extracted locally, and summarized by the existing
 `driver-logs.txt` gives their prefix for recovery/cleanup. Budget disk space
 on both hosts, verify collected files before deleting remote originals, and
 retain OUT with the report. Percentiles still sort all samples in memory.
+The retained valid transaction count must equal pgbench's reported processed/
+successful/completed transaction count. Missing or ambiguous summary counts
+fail as TXN_COUNT_PARSE_FAIL; a difference fails as TXN_COUNT_MISMATCH, even
+when pgbench exits zero and prints TPS. This checks count completeness, not
+log-content integrity or per-client fairness.
 
 `mpstat` runs concurrently with measurement (including client startup and
 failure/timeout time), not afterward. CPU is NA when no samples exist; idle is
@@ -145,7 +154,10 @@ meaningful only with samples and a separate driver. A sampler connects to
 **template1**, querying only the workload database **postgres** every 10 seconds:
 its own commits cannot manufacture workload progress. Frozen counters across
 more than one third of intervals yield `STALL:n/m`; fewer than two intervals
-yield `UNKNOWN`. Sampler query errors fail the cell. This aggregate heuristic
+yield `UNKNOWN`. Sampler query errors fail the cell. Abnormal sampler exit
+also fails it (PROGRESS_SAMPLER_FAIL with the exact status), preserves partial
+samples and transaction logs, and forces UNKNOWN rather than trusting partial
+numeric samples. This aggregate heuristic
 is NOT per-client fairness validation; other activity/autovacuum in postgres
 can still mask a stall. Inspect retained per-client transaction logs separately.
 
