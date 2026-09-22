@@ -65,56 +65,110 @@ Symbols that dominate the pooled lane but not the process lane are the
 per-command threaded overhead -- target those, then A/B the fix with the gate
 above.  Needs `perf` and `kernel.perf_event_paranoid <= 1`.
 
-## P1 (fork-vs-XTC apples-to-apples matrix): `mtpg_p1_matrix.sh`
+## P1 external-driver matrix: `mtpg_p1_matrix.sh`
 
-plan_docs/FORK_TO_XTC_PERF_PLAN.md item P1: ONE command that runs the fixed
-section-1 methodology for BOTH lanes (fork, xtc) and BOTH workloads (pgbench
-`-S` read-mostly, `tpcb-like` write-heavy) over a client x carrier grid, on a
-SEPARATE loadgen host, and emits `results.tsv` + a companion `latencies.tsv`
-(percentiles via `pgbench_pctl`).
+The primary comparison is **upstream merge-base stock, branch fork, branch
+fiber**. `fork` is this branch with `multithreaded=off`; it is NOT stock.
+The default lanes are `fork fiber`. Optional `stock` requires `STOCK_PGBIN`
+and `STOCK_COMMIT`: supply an independently built upstream merge-base install,
+not an arbitrary upstream tip or another branch build. This harness neither
+builds binaries nor verifies their source provenance.
 
-    LOADGEN=ec2-user@<loadgen-private-ip> SUT_IP=<sut-private-ip> \
-      PGBIN=/path/to/inst/usr/local/pgsql/bin \
-      LANES='fork xtc' CARRIERS='auto' WORKLOADS='select tpcb' \
-      CLIENTS='16 32 64' SCALE=100 DURATION=120 WARMUP=30 RUNS=3 \
+    LOADGEN=admin@<driver-ip> SUT_IP=<sut-ip> \
+      PGBIN=/path/to/branch/bin PG_COMMIT=<branch-revision> \
+      STOCK_PGBIN=/path/to/upstream-merge-base/bin STOCK_COMMIT=<merge-base> \
+      LANES='stock fork fiber' FIBER_LOOPS=16 WORKLOADS='select tpcb' \
+      CLIENTS='16 32 64' SCALE=100 DURATION=300 WARMUP=120 RUNS=3 \
       OUT=/mnt/nvme/p1out DATA=/mnt/nvme/p1data \
       bash src/tools/benchmark/mtpg_p1_matrix.sh
 
-Every run gets a FRESH `initdb` + start + stop (requirement 1 below) --
-expensive but the only way to avoid the half-dead-postmaster cascade that once
-fabricated a 7/8 "hang rate" that was really 4/6 (some "hangs" were a reused
-server stuck fork-failing after a prior timeout-kill).
+Run ON the SUT as a non-root database owner, using dedicated destructive
+`DATA` scratch space and a disjoint `OUT`. Do not run concurrent invocations
+against the same DATA, OUT or port. An existing `postmaster.pid` is refused,
+even if stale: inspect and stop that server yourself before removing it.
+A fresh initdb/server is used per cell. Failed shutdown aborts the matrix,
+retaining the server/data for manual cleanup; it never kills by a path regex.
+The server has no fixed lifetime; the bounded stages and exit trap own shutdown.
+Network access is trust-authenticated: use isolated benchmark hosts and restrict
+port access at the firewall. This is not a production deployment tool.
 
-It hard-fails at startup unless `LOADGEN` is a host distinct from `SUT_IP`
-(requirement 7); pass `--local-driver` to force a co-located smoke run, which
-tags every emitted row `degraded=yes` and `idle_meaningful=no` so a co-located
-number can never later be mistaken for a headline (this is exactly the class
-of error `.ec2/writeheavy-rootcause-profile-2026-08-27.md` made and had to be
-retroactively caveated).
+Prerequisites: Linux, Bash, GNU timeout/coreutils, Perl, tar, SSH and optionally
+sysstat/mpstat. Preinstall/verify SSH host keys; `LOADGEN_KEY` remains supported.
+The driver needs Bash, timeout, tar and pgbench (`LOADGEN_PGBIN`, default PATH).
+Use the SAME measured pgbench binary for every lane. Server and driver version
+strings are retained, but equal version strings do not prove identical builds.
+`PG_COMMIT` defaults to the harness checkout revision, not the binary revision;
+override it when those differ. `pkg-config`'s libxtc version is advisory, not
+proof of the server's loaded library/backend. Verify these separately.
 
-Each `results.tsv` row carries the full confound context on its own
-(requirement 8): driver host, SUT host, carriers requested/effective, clients,
-shared_buffers (+ % of RAM), fsync/synchronous_commit/full_page_writes,
-io_method, data device, WAL device, libxtc version (`pkg-config --modversion
-xtc`), PG commit -- so methodology is auditable from the TSV alone.
+Compatibility and defaults:
 
-`pooled_protocol_carriers` is asserted, not assumed (requirement 5): the xtc
-lane checks `SHOW pooled_protocol_carriers` resolved to the requested value (or
-something sane for `auto`) AND that `pg_stat_xtc_carriers` has rows, failing
-the run loudly (`ASSERT_FAIL ...`) rather than silently benchmarking an
-unpooled thread-per-session server.
+- Existing variables and the 29-column `results.tsv` layout remain supported.
+  Per-row `notes` now identifies a unique artifact directory; old flat log
+  filenames are replaced by these directories to prevent overwrite.
+- `LANES='fork xtc' CARRIERS='auto 4 0'` remains available for diagnostics.
+  `xtc` is the legacy stackless-pool lane, not the primary performance target.
+  Its `carriers_req/eff` describe the pooled-protocol GUC (0 means fiber).
+- `fiber` sets `pooled_protocol_carriers=0`; its carrier columns describe
+  executor loops. `FIBER_LOOPS` defaults to min(online CPUs,256), and explicitly
+  sets `PG_XTC_CARRIER_LOOPS` in threaded lanes, including legacy `xtc`.
+  Both the pooled GUC and independent executor row count are asserted. These
+  are different pools: the carrier view does not measure stackless pool size.
+  Single-loop executors have no view rows and are deliberately unsupported;
+  specify `FIBER_LOOPS=2..1024` (also on single-core smoke hosts).
+- Defaults: WORKLOADS='select tpcb', CLIENTS='16 32', SCALE=50, RAM_PCT=85,
+  DURATION=60, WARMUP=15, RUNS=1, PORT=5439, TIMEOUT_GRACE=60.
+  WARMUP=0 skips warmup. Warmup and measurement have separate duration+grace
+  deadlines, enforced locally and on the driver, with a 5-second kill grace.
+  Initialization retains its 300-second deadline. Use RUNS>=3 for comparisons;
+  rows remain individual runs, not medians. Lanes alternate within each repeat.
 
-A failed tps parse is `TPS_PARSE_FAIL` in the `tps` column with the raw
-pgbench output kept on disk and pg_stat_activity wait-event diagnostics
-captured into the row's `notes` column (requirement 4 + 3) -- never a silent
-`NA` that could be misread as "ran, produced nothing."  Diagnostics are always
-gathered before any server stop, so a `-m immediate` FATAL-flood at teardown
-can never be captured and mistaken for a crash.
+Separation fails closed: unset LOADGEN, equal addresses after stripping SSH
+users, equal Linux boot IDs (including aliases), or failed identity queries
+exit 2. `--local-driver` / LOCAL_DRIVER=1 unconditionally runs locally, marks
+all rows `degraded=yes`, and forces `idle_meaningful=no`. Boot ID is an
+operational check between trusted hosts, not hardware attestation; containers,
+VMs, routing and a misdirected SUT_IP still require operator verification.
 
-Stall detection is monitor-independent: a background sampler polls
-`sum(xact_commit+xact_rollback) from pg_stat_database` every 10s across the
-measured window and flags a frozen counter (>1/3 of samples unchanged) as
-`STALL:n/m` in the `stall` column.
+Warmup and measured stdout/stderr, commands, raw transaction logs, configs,
+SHOW ALL, version/context records, CPU samples and progress samples are retained
+in unique per-cell directories on success and failure. Remote logs are fetched
+as a tar archive, extracted locally, and summarized by the existing
+`pgbench_pctl`; remote originals are intentionally NOT deleted. The saved
+`driver-logs.txt` gives their prefix for recovery/cleanup. Budget disk space
+on both hosts, verify collected files before deleting remote originals, and
+retain OUT with the report. Percentiles still sort all samples in memory.
+
+`mpstat` runs concurrently with measurement (including client startup and
+failure/timeout time), not afterward. CPU is NA when no samples exist; idle is
+meaningful only with samples and a separate driver. A sampler connects to
+**template1**, querying only the workload database **postgres** every 10 seconds:
+its own commits cannot manufacture workload progress. Frozen counters across
+more than one third of intervals yield `STALL:n/m`; fewer than two intervals
+yield `UNKNOWN`. Sampler query errors fail the cell. This aggregate heuristic
+is NOT per-client fairness validation; other activity/autovacuum in postgres
+can still mask a stall. Inspect retained per-client transaction logs separately.
+
+Exit 0 means commands and artifact processing succeeded, NOT a performance or
+fairness gate: inspect stall/degraded/idle fields. Exit 1 means a cell failed;
+exit 2 means preflight/artifact-output setup failed. Failures preserve stage and
+return code in notes (for example WARMUP_FAIL rc=7, PGBENCH_TIMEOUT rc=124,
+LOG_FETCH_FAIL), rather than classifying every nonzero exit as a TPS parse
+failure. GNU timeout's kill escalation can return 137 rather than 124; that
+exact code is retained without claiming whether the cause was timeout or an
+external kill. `TPS_PARSE_FAIL` remains in the TPS column for parse-only errors.
+Diagnostics are captured before teardown; shutdown errors are in stop.log.
+Interrupted invocations retain existing files but may lack a completed row;
+remote commands remain subject to their own deadlines. Disk exhaustion cannot
+guarantee artifact retention. Redirect the harness's console output to a file
+outside DATA as well, particularly for preflight failures.
+
+Local checks (mock external commands only; no PostgreSQL/SSH/AWS validation):
+
+    src/tools/benchmark/mtpg_p1_selftest
+    src/tools/benchmark/mtpg_ab_selftest
+    bash -n src/tools/benchmark/mtpg_p1_matrix.sh src/tools/benchmark/mtpg_p1_selftest
+    shellcheck src/tools/benchmark/mtpg_p1_matrix.sh src/tools/benchmark/mtpg_p1_selftest
 
 ## Steady-state, external-driver A/B: `mtpg_remote_bench.sh` + `mtpg_ec2_ab_provision.sh`
 
