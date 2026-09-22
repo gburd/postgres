@@ -2030,7 +2030,6 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 			(struct LogicalRepRelMapEntry *) &fake_backend1;
 		logical1->remote_ctx.remote_attnum = 11;
 		logical1->remote_ctx.remote_xid = 12;
-		logical1->remote_ctx.finish_lsn = UINT64CONST(13);
 		logical1->remote_ctx.origin_name = (char *) &fake_backend1;
 		logical1->subxact_data.nsubxacts = 14;
 		logical1->subxact_data.nsubxacts_max = 15;
@@ -2136,7 +2135,6 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 			(struct LogicalRepRelMapEntry *) &fake_backend2;
 		logical2->remote_ctx.remote_attnum = 21;
 		logical2->remote_ctx.remote_xid = 22;
-		logical2->remote_ctx.finish_lsn = UINT64CONST(23);
 		logical2->remote_ctx.origin_name = (char *) &fake_backend2;
 		logical2->subxact_data.nsubxacts = 24;
 		logical2->subxact_data.nsubxacts_max = 25;
@@ -2191,7 +2189,6 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 			(struct LogicalRepRelMapEntry *) &fake_backend1;
 		ok = ok && logical1->remote_ctx.remote_attnum == 11;
 		ok = ok && logical1->remote_ctx.remote_xid == 12;
-		ok = ok && logical1->remote_ctx.finish_lsn == UINT64CONST(13);
 		ok = ok && logical1->remote_ctx.origin_name ==
 			(char *) &fake_backend1;
 		ok = ok && logical1->subxact_data.nsubxacts == 14;
@@ -2254,7 +2251,6 @@ test_backend_logical_replication_state_is_backend_local(PG_FUNCTION_ARGS)
 			(struct LogicalRepRelMapEntry *) &fake_backend2;
 		ok = ok && logical2->remote_ctx.remote_attnum == 21;
 		ok = ok && logical2->remote_ctx.remote_xid == 22;
-		ok = ok && logical2->remote_ctx.finish_lsn == UINT64CONST(23);
 		ok = ok && logical2->remote_ctx.origin_name ==
 			(char *) &fake_backend2;
 		ok = ok && logical2->subxact_data.nsubxacts == 24;
