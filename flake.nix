@@ -9,17 +9,13 @@
     # Defaults to GitHub; for local development point it at a checkout with
     #   nix develop --override-input libxtc path:$HOME/ws/xtc
     libxtc = {
-      # Pinned to the v1.48.1 release tag (560a5bc).  Carries the WRONG-PROC STRAND
-      # fixes that are the root cause of our write-path wedge: xtc_proc_wait_fd
-      # (v1.48.0) and xtc_proc_sleep (v1.48.1) both took `self` from the
-      # __current_proc thread-local, which the coroutine layer restores to a
-      # DIFFERENT proc across yields (measured 99.2% wrong under the multi-loop
-      # executor).  wait_fd displaced another fiber's fd registration; sleep
-      # CANCELLED another fiber's live park timer, stranding a lock holder with no
-      # wake source and wedging everything queued behind it.  Also: xtc-stranded now
-      # joins fd parks against CQ-overflow state (our request), plus the v1.47.0
-      # mailbox-park label, xtc_exit_pid_deadline, and xtc_cfg_ref.
-      url = "github:gburd/libxtc?rev=560a5bc5e12e4b677b5c4a21c633d5592d5b9b4c";
+      # v1.49.2: fd-registration/cancellation lifetime fixes, paired cancellation
+      # masks, and fiber-scoped configuration. Rebuild PG against these exact
+      # headers: libxtc's 1.x caller-allocated structs are not minor-ABI-stable.
+      # This pin does not establish that the PG write wedge is fixed. Completed
+      # fibers still retain their stacks until loop teardown (KNOWN_ISSUES.md);
+      # connection-churn validation must account for that unresolved limitation.
+      url = "github:gburd/libxtc?rev=542a67d9ea37a425a2ab7d6b11dff8993bd42871";
       inputs.nixpkgs.follows = "nixpkgs";
       inputs.flake-utils.follows = "flake-utils";
     };
