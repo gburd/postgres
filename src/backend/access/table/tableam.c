@@ -223,6 +223,7 @@ table_beginscan_parallel_tidrange(Relation relation,
 
 
 
+
 /* ------------------------------------------------------------------------
  * Functions for non-modifying operations on individual tuples
  * ------------------------------------------------------------------------
@@ -336,8 +337,7 @@ simple_table_tuple_update(Relation rel, ItemPointer otid,
 								0, snapshot, InvalidSnapshot,
 								true /* wait for commit */ ,
 								&tmfd, &lockmode,
-								modified_attrs,
-								row_moved);
+								modified_attrs, row_moved);
 
 	switch (result)
 	{
