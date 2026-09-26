@@ -22,6 +22,9 @@ SUBDIRS	    = \
 	sequence \
 	table \
 	tablesample \
-	transam
+	transam \
+	undo \
+	flux \
+	recno
 
 include $(top_srcdir)/src/backend/common.mk

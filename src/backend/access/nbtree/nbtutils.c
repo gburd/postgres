@@ -333,6 +333,17 @@ _bt_killitems(IndexScanDesc scan)
 				if (j == nposting)
 					killtuple = true;
 			}
+			else if (BTreeTupleIsDeleteMarked(ituple))
+			{
+				/*
+				 * A delete-marked tombstone (Phase 5) is never LP_DEAD-killed
+				 * via kill_prior_tuple: it must linger for old-snapshot readers
+				 * until VACUUM decides it is removable (invariant I5).  Also,
+				 * its t_tid holds alt-TID metadata rather than the heap TID, so
+				 * comparing it against kitem->heapTid would be meaningless.
+				 * Leave killtuple false.
+				 */
+			}
 			else if (ItemPointerEquals(&ituple->t_tid, &kitem->heapTid))
 				killtuple = true;
 
@@ -699,12 +710,36 @@ _bt_truncate(Relation rel, IndexTuple lastleft, IndexTuple firstright,
 	IndexTuple	tidpivot;
 	ItemPointer pivotheaptid;
 	Size		newsize;
+	IndexTuple	firstright_plain = NULL;
 
 	/*
 	 * We should only ever truncate non-pivot tuples from leaf pages.  It's
 	 * never okay to truncate when splitting an internal page.
 	 */
 	Assert(!BTreeTupleIsPivot(lastleft) && !BTreeTupleIsPivot(firstright));
+
+	/*
+	 * Phase 5/8c: a delete-marked leaf tuple carries alt-TID status metadata
+	 * in t_tid and its heap TID in a trailer.  index_truncate_tuple() would
+	 * copy that alt-TID metadata / oversized trailer into the new pivot,
+	 * producing a malformed separator whose heap-TID tiebreaker is wrong (a
+	 * later scantid descent then routes to the wrong leaf -- the delete-mark
+	 * revive miss that leaves a duplicate (key,TID)).  Demote firstright to a
+	 * plain leaf tuple (same key attrs, heap TID back in t_tid, no trailer, no
+	 * status bit) for forming the pivot; the pivot only needs key + heap TID.
+	 */
+	if (BTreeTupleIsDeleteMarked(firstright))
+	{
+		Datum		vals[INDEX_MAX_KEYS];
+		bool		nulls[INDEX_MAX_KEYS];
+		ItemPointerData htid;
+
+		ItemPointerCopy(BTreeTupleGetHeapTID(firstright), &htid);
+		index_deform_tuple(firstright, itupdesc, vals, nulls);
+		firstright_plain = index_form_tuple(itupdesc, vals, nulls);
+		firstright_plain->t_tid = htid;
+		firstright = firstright_plain;
+	}
 
 	/* Determine how many attributes must be kept in truncated tuple */
 	keepnatts = _bt_keep_natts(rel, lastleft, firstright, itup_key);
@@ -737,6 +772,8 @@ _bt_truncate(Relation rel, IndexTuple lastleft, IndexTuple firstright,
 	if (keepnatts <= nkeyatts)
 	{
 		BTreeTupleSetNAtts(pivot, keepnatts, false);
+		if (firstright_plain != NULL)
+			pfree(firstright_plain);
 		return pivot;
 	}
 
@@ -819,6 +856,8 @@ _bt_truncate(Relation rel, IndexTuple lastleft, IndexTuple firstright,
 							  BTreeTupleGetHeapTID(firstright)) < 0);
 #endif
 
+	if (firstright_plain != NULL)
+		pfree(firstright_plain);
 	return tidpivot;
 }
 

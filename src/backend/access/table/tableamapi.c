@@ -37,6 +37,16 @@ GetTableAmRoutine(Oid amhandler)
 			 amhandler);
 
 	/*
+	 * The per-relation UNDO fork engine has been removed.
+	 * Any AM that uses UNDO must write it to the per-backend engine, so reject
+	 * an AM that declares UNDO support with any other engine.
+	 */
+	if (routine->am_supports_undo &&
+		routine->am_undo_engine != UNDO_ENGINE_PERBACKEND)
+		elog(ERROR, "table access method handler %u declares UNDO support but not the per-backend UNDO engine",
+			 amhandler);
+
+	/*
 	 * Assert that all required callbacks are present. That makes it a bit
 	 * easier to keep AMs up to date, e.g. when forward porting them to a new
 	 * major version.

@@ -1755,7 +1755,15 @@ ldelete:
 					switch (result)
 					{
 						case TM_Ok:
-							Assert(context->tmfd.traversed);
+							/*
+							 * We asked for the latest version of a row we found
+							 * outdated.  An AM that moves a row on update must have
+							 * followed the chain to a different TID to get there.
+							 * An AM that updates in place reaches the latest version
+							 * without moving, and correctly reports no traversal.
+							 */
+							Assert(context->tmfd.traversed ||
+								   resultRelationDesc->rd_tableam->am_inplace_update_keeps_tid);
 							epqslot = EvalPlanQual(context->epqstate,
 												   resultRelationDesc,
 												   resultRelInfo->ri_RangeTableIndex,
@@ -2660,7 +2668,15 @@ redo_act:
 					switch (result)
 					{
 						case TM_Ok:
-							Assert(context->tmfd.traversed);
+							/*
+							 * We asked for the latest version of a row we found
+							 * outdated.  An AM that moves a row on update must have
+							 * followed the chain to a different TID to get there.
+							 * An AM that updates in place reaches the latest version
+							 * without moving, and correctly reports no traversal.
+							 */
+							Assert(context->tmfd.traversed ||
+								   resultRelationDesc->rd_tableam->am_inplace_update_keeps_tid);
 
 							epqslot = EvalPlanQual(context->epqstate,
 												   resultRelationDesc,
@@ -5464,6 +5480,34 @@ ExecInitModifyTable(ModifyTable *node, EState *estate, int eflags)
 	}
 
 	/*
+	 * Signal the table AM about DML operations.
+	 *
+	 * Tell the AM that a DML operation is starting so it can enable
+	 * optimizations like the UNDO write buffer.  This is always done for
+	 * INSERT, UPDATE, and DELETE operations regardless of estimated row count
+	 * -- the UNDO write buffer overhead is negligible (one palloc of ~512
+	 * bytes, reused for the entire transaction) and the benefit of batched
+	 * UNDO recording applies to operations of any size.
+	 *
+	 * We pass the subplan's row estimate (input rows to be modified) as a
+	 * hint; the AM may use it for buffer pre-sizing.
+	 */
+	{
+		Cardinality estimated_rows = subplan->plan_rows;
+
+		if (operation == CMD_INSERT || operation == CMD_UPDATE ||
+			operation == CMD_DELETE)
+		{
+			for (i = 0; i < mtstate->mt_nrels; i++)
+			{
+				resultRelInfo = mtstate->resultRelInfo + i;
+				rel = resultRelInfo->ri_RelationDesc;
+				table_begin_bulk_insert(rel, 0, (int64) estimated_rows);
+			}
+		}
+	}
+
+	/*
 	 * Lastly, if this is not the primary (canSetTag) ModifyTable node, add it
 	 * to estate->es_auxmodifytables so that it will be run to completion by
 	 * ExecPostprocessPlan.  (It'd actually work fine to add the primary
@@ -5493,12 +5537,15 @@ ExecEndModifyTable(ModifyTableState *node)
 	int			i;
 
 	/*
-	 * Allow any FDWs to shut down
+	 * Allow any FDWs to shut down, and finalize bulk insert mode.
 	 */
 	for (i = 0; i < node->mt_nrels; i++)
 	{
 		int			j;
 		ResultRelInfo *resultRelInfo = node->resultRelInfo + i;
+
+		/* End bulk insert mode (flushes pending UNDO records) */
+		table_finish_bulk_insert(resultRelInfo->ri_RelationDesc, 0);
 
 		if (!resultRelInfo->ri_usesFdwDirectModify &&
 			resultRelInfo->ri_FdwRoutine != NULL &&
