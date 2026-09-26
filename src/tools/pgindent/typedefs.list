@@ -1633,6 +1633,8 @@ LocalTransactionId
 Location
 LocationIndex
 LocationLen
+LocatorBitmapMode
+LocatorDesc
 LockAcquireResult
 LockClauseStrength
 LockData

@@ -17,6 +17,7 @@
 #ifndef TABLEAM_H
 #define TABLEAM_H
 
+#include "access/amlocator.h"
 #include "access/relscan.h"
 #include "access/sdir.h"
 #include "access/xact.h"
@@ -147,7 +148,7 @@ typedef enum TU_UpdateIndexes
  * because the target tuple is already outdated, they fill in this struct to
  * provide information to the caller about what happened. When those functions
  * succeed, the contents of this struct should not be relied upon, except for
- * `traversed`, which may be set in both success and failure cases.
+ * `retargeted`, which may be set in both success and failure cases.
  *
  * ctid is the target's ctid link: it is the same as the target's TID if the
  * target was deleted, or the location of the replacement tuple if the target
@@ -164,15 +165,25 @@ typedef enum TU_UpdateIndexes
  * HeapTupleHeaderGetCmax doesn't work for tuples outdated in other
  * transactions.)
  *
- * traversed indicates if an update chain was followed in order to try to lock
- * the target tuple.  (This may be set in both success and failure cases.)
+ * retargeted indicates that the tuple actually locked is not the one the caller
+ * named: the caller's locator was stale and *tid has been updated to the tuple
+ * that was locked instead.  A caller holding a slot fetched through the old
+ * locator must re-evaluate it (re-check quals, run EvalPlanQual) before using
+ * it.  (This may be set in both success and failure cases.)
+ *
+ * Only an AM whose locator moves a row on update can set this.  An AM whose
+ * locator is stable (see the `stable` property in amlocator.h) updates rows
+ * without relocating them, so the tuple it locks is always exactly the one the
+ * caller named, and it always reports false.  Callers must therefore not infer
+ * "no concurrent update occurred" from false; it means only "your locator is
+ * still valid".  Use table_locator_is_stable() when the distinction matters.
  */
 typedef struct TM_FailureData
 {
 	ItemPointerData ctid;
 	TransactionId xmax;
 	CommandId	cmax;
-	bool		traversed;
+	bool		retargeted;
 } TM_FailureData;
 
 /*
@@ -323,6 +334,19 @@ typedef struct TableAmRoutine
 {
 	/* this must be set to T_TableAmRoutine */
 	NodeTag		type;
+
+	/* ------------------------------------------------------------------------
+	 * Locator.
+	 * ------------------------------------------------------------------------
+	 */
+
+	/*
+	 * Return the locator descriptor for this relation, which describes the
+	 * locator this AM hands to indexes; see amlocator.h.  Must not return
+	 * NULL.  The relcache keeps the pointer for the life of the relation's
+	 * cache entry.  Callers use RelationGetLocatorDesc().
+	 */
+	const struct LocatorDesc *(*relation_locator) (Relation rel);
 
 
 	/* ------------------------------------------------------------------------
@@ -931,6 +955,52 @@ table_beginscan_common(Relation rel, Snapshot snapshot, int nkeys,
 		elog(ERROR, "scan started during logical decoding");
 
 	return rel->rd_tableam->scan_begin(rel, snapshot, nkeys, key, pscan, flags);
+}
+
+/* ----------------------------------------------------------------------------
+ * Locator inspection functions
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Return the relation's locator descriptor, fetching it from the table AM the
+ * first time and keeping it in the relcache entry after that.
+ */
+static inline const struct LocatorDesc *
+RelationGetLocatorDesc(Relation rel)
+{
+	if (rel->rd_locdesc == NULL)
+	{
+		/*
+		 * A table AM that predates the locator contract has no
+		 * relation_locator callback.  Treat it as heap does: a fixed-width
+		 * TID that serves bitmap scans and moves a row on update.
+		 */
+		static const LocatorDesc default_locdesc = {
+			.fixed_width = true,
+			.width = sizeof(ItemPointerData),
+			.name = "tid",
+			.bitmap_mode = LOCATOR_BITMAP_DIRECT,
+			.stable = false,
+			.bucket_may_disagree = NULL,
+		};
+
+		rel->rd_locdesc = rel->rd_tableam->relation_locator ?
+			rel->rd_tableam->relation_locator(rel) : &default_locdesc;
+	}
+	return rel->rd_locdesc;
+}
+
+/*
+ * Does a row keep its locator across an UPDATE?  An AM whose rows do never
+ * retargets a caller's locator, so it always reports TM_FailureData.retargeted
+ * as false; code that would treat false as "the row cannot have changed" must
+ * consult this instead.
+ */
+static inline bool
+table_locator_is_stable(Relation rel)
+{
+	return RelationGetLocatorDesc(rel)->stable;
 }
 
 /*
@@ -1660,9 +1730,11 @@ table_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot,
  *
  * In the failure cases other than TM_Invisible and TM_Deleted, the routine
  * fills *tmfd with the tuple's t_ctid, t_xmax, and, if possible, t_cmax.
- * Additionally, in both success and failure cases, tmfd->traversed is set if
- * an update chain was followed.  See comments for struct TM_FailureData for
- * additional info.
+ * Additionally, in both success and failure cases, tmfd->retargeted is set if
+ * the tuple locked is not the one named by *tid, in which case *tid has been
+ * updated to the tuple that was locked.  An AM with a stable locator never
+ * retargets and so always reports false; see comments for struct
+ * TM_FailureData for additional info.
  */
 static inline TM_Result
 table_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot,

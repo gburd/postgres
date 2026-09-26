@@ -20,6 +20,7 @@
 #include "postgres.h"
 
 #include "access/genam.h"
+#include "access/amlocator.h"
 #include "access/heapam.h"
 #include "access/heaptoast.h"
 #include "access/multixact.h"
@@ -274,7 +275,7 @@ heapam_tuple_lock(Relation relation, ItemPointer tid, Snapshot snapshot,
 	bool		follow_updates;
 
 	follow_updates = (flags & TUPLE_LOCK_FLAG_LOCK_UPDATE_IN_PROGRESS) != 0;
-	tmfd->traversed = false;
+	tmfd->retargeted = false;
 
 	Assert(TTS_IS_BUFFERTUPLE(slot));
 
@@ -302,7 +303,7 @@ tuple_lock_retry:
 			priorXmax = tmfd->xmax;
 
 			/* signal that a tuple later in the chain is getting locked */
-			tmfd->traversed = true;
+			tmfd->retargeted = true;
 
 			/*
 			 * fetch target tuple
@@ -2649,8 +2650,32 @@ BitmapHeapScanNextBlock(TableScanDesc scan,
  * ------------------------------------------------------------------------
  */
 
+/*
+ * A heap row is located by its TID: a fixed-width block number and line
+ * pointer offset.  A bitmap scan uses the block as the bucket and the offset
+ * as the slot.  An UPDATE that does not fit on the row's page moves it to a
+ * new TID, and the old version stays on its page until VACUUM.
+ */
+static const LocatorDesc heapam_locator_desc = {
+	.fixed_width = true,
+	.width = sizeof(ItemPointerData),
+	.name = "tid",
+	.bitmap_mode = LOCATOR_BITMAP_DIRECT,
+	.stable = false,
+	.bucket_may_disagree = NULL,
+};
+
+static const LocatorDesc *
+heapam_relation_locator(Relation rel)
+{
+	return &heapam_locator_desc;
+}
+
 static const TableAmRoutine heapam_methods = {
 	.type = T_TableAmRoutine,
+
+	/* heap identifies a row by its TID; see amlocator.h */
+	.relation_locator = heapam_relation_locator,
 
 	.slot_callbacks = heapam_slot_callbacks,
 
