@@ -1,0 +1,4 @@
+comment = 'Test code for the sparse bitmap set (sbm) ADT'
+default_version = '1.0'
+module_pathname = '$libdir/test_sbm'
+relocatable = true
