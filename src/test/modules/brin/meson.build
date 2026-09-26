@@ -9,6 +9,12 @@ tests += {
       'summarization-and-inprogress-insertion',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_01_workitems.py',
+      'pyt/test_02_wal_consistency.py',
+    ],
+  },
   'tap': {
     'tests': [
       't/01_workitems.pl',
