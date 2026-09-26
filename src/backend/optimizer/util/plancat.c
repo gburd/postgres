@@ -311,7 +311,9 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 				info->amcanparallel = amroutine->amcanparallel;
 				info->amhasgettuple = (amroutine->amgettuple != NULL);
 				info->amhasgetbitmap = amroutine->amgetbitmap != NULL &&
-					relation->rd_tableam->scan_bitmap_next_tuple != NULL;
+					relation->rd_tableam->scan_bitmap_next_tuple != NULL &&
+					RelationGetLocatorDesc(relation)->bitmap_mode !=
+					LOCATOR_BITMAP_NONE;
 				info->amcanmarkpos = (amroutine->ammarkpos != NULL &&
 									  amroutine->amrestrpos != NULL);
 				info->amcostestimate = amroutine->amcostestimate;

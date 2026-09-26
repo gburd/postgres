@@ -431,6 +431,17 @@ ExecInitBitmapHeapScan(BitmapHeapScan *node, EState *estate, int eflags)
 	outerPlanState(scanstate) = ExecInitNode(outerPlan(node), estate, eflags);
 
 	/*
+	 * Thread the heap relation down to the top bitmap node.  BitmapAnd needs
+	 * it to ask the table AM, per block, whether two indexes' offsets may
+	 * disagree (see tbm_set_heaprel / bucket_may_disagree).  Only BitmapAnd
+	 * intersects, so only its accumulator needs the relation; a plain
+	 * BitmapIndexScan or BitmapOr does not.
+	 */
+	if (IsA(outerPlan(node), BitmapAnd))
+		((BitmapAndState *) outerPlanState(scanstate))->bitmap_heaprel =
+			currentRelation;
+
+	/*
 	 * get the scan type from the relation descriptor.
 	 */
 	ExecInitScanTupleSlot(estate, &scanstate->ss,

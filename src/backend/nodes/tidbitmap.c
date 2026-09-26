@@ -43,6 +43,7 @@
 #include "access/htup_details.h"
 #include "common/hashfn.h"
 #include "common/int.h"
+#include "access/tableam.h"
 #include "nodes/bitmapset.h"
 #include "nodes/tidbitmap.h"
 #include "storage/lwlock.h"
@@ -159,6 +160,18 @@ struct TIDBitmap
 	dsa_pointer ptpages;		/* dsa_pointer to the page array */
 	dsa_pointer ptchunks;		/* dsa_pointer to the chunk array */
 	dsa_area   *dsa;			/* reference to per-query dsa area */
+
+	/*
+	 * The heap relation this bitmap describes, or NULL.  Recorded at create
+	 * time by the executor (where the relation is in scope) so that BitmapAnd
+	 * can ask the table AM, per block, whether two indexes' offsets may
+	 * disagree (see bucket_may_disagree in amlocator.h).  gin's private
+	 * intermediate bitmap leaves this NULL and behaves exactly as before.
+	 */
+	Relation	heaprel;
+	bool		(*bucket_may_disagree) (Relation rel, uint64 bucket,
+									   Buffer *cache);
+	Buffer		vmcache;		/* pinned VM buffer reused across intersect */
 };
 
 /*
@@ -270,8 +283,29 @@ tbm_create(Size maxbytes, dsa_area *dsa)
 	tbm->dsapagetableold = InvalidDsaPointer;
 	tbm->ptpages = InvalidDsaPointer;
 	tbm->ptchunks = InvalidDsaPointer;
+	tbm->heaprel = NULL;
+	tbm->bucket_may_disagree = NULL;
+	tbm->vmcache = InvalidBuffer;
 
 	return tbm;
+}
+
+/*
+ * tbm_set_heaprel
+ *		Record the heap relation this bitmap describes.
+ *
+ * Called by the executor after tbm_create() when the relation is in scope, so
+ * that tbm_intersect() can consult the table AM's bucket_may_disagree hook.
+ * A bitmap with no relation set (gin's private intermediate) intersects
+ * offsets exactly, as it always has.
+ */
+void
+tbm_set_heaprel(TIDBitmap *tbm, Relation heaprel)
+{
+	const LocatorDesc *desc = RelationGetLocatorDesc(heaprel);
+
+	tbm->heaprel = heaprel;
+	tbm->bucket_may_disagree = desc->bucket_may_disagree;
 }
 
 /*
@@ -311,6 +345,11 @@ tbm_create_pagetable(TIDBitmap *tbm)
 void
 tbm_free(TIDBitmap *tbm)
 {
+	if (BufferIsValid(tbm->vmcache))
+	{
+		ReleaseBuffer(tbm->vmcache);
+		tbm->vmcache = InvalidBuffer;
+	}
 	if (tbm->pagetable)
 		pagetable_destroy(tbm->pagetable);
 	if (tbm->spages)
@@ -637,13 +676,38 @@ tbm_intersect_page(TIDBitmap *a, PagetableEntry *apage, const TIDBitmap *b)
 		{
 			/* Both pages are exact, merge at the bit level */
 			Assert(!bpage->ischunk);
-			for (int wordnum = 0; wordnum < WORDS_PER_PAGE; wordnum++)
+
+			/*
+			 * If the table AM says two indexes' entries for one row may name
+			 * different offsets within this block (a selective-indexed update;
+			 * see bucket_may_disagree in amlocator.h), union the offsets and
+			 * force a recheck instead of intersecting: an exact intersection
+			 * would drop the row when the two entries disagree.  Otherwise
+			 * intersect exactly, as always.  The hook is a lock-free VM probe
+			 * for heap and NULL for every table without selective-indexed
+			 * indexes, so the common path is unchanged.
+			 */
+			if (a->bucket_may_disagree != NULL &&
+				a->bucket_may_disagree(a->heaprel, apage->blockno, &a->vmcache))
 			{
-				apage->words[wordnum] &= bpage->words[wordnum];
-				if (apage->words[wordnum] != 0)
-					candelete = false;
+				for (int wordnum = 0; wordnum < WORDS_PER_PAGE; wordnum++)
+				{
+					apage->words[wordnum] |= bpage->words[wordnum];
+					if (apage->words[wordnum] != 0)
+						candelete = false;
+				}
+				apage->recheck = true;
 			}
-			apage->recheck |= bpage->recheck;
+			else
+			{
+				for (int wordnum = 0; wordnum < WORDS_PER_PAGE; wordnum++)
+				{
+					apage->words[wordnum] &= bpage->words[wordnum];
+					if (apage->words[wordnum] != 0)
+						candelete = false;
+				}
+				apage->recheck |= bpage->recheck;
+			}
 		}
 		/* If there is no matching b page, we can just delete the a page */
 		return candelete;
