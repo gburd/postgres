@@ -982,6 +982,7 @@ RelationGetLocatorDesc(Relation rel)
 			.name = "tid",
 			.bitmap_mode = LOCATOR_BITMAP_DIRECT,
 			.stable = false,
+			.old_version_retained = true,
 			.bucket_may_disagree = NULL,
 		};
 
@@ -1001,6 +1002,28 @@ static inline bool
 table_locator_is_stable(Relation rel)
 {
 	return RelationGetLocatorDesc(rel)->stable;
+}
+
+/*
+ * Is a row's pre-update version still fetchable by locator after the UPDATE
+ * that replaced it?  See the field of the same name in amlocator.h.
+ */
+static inline bool
+table_locator_old_version_retained(Relation rel)
+{
+	return RelationGetLocatorDesc(rel)->old_version_retained;
+}
+
+/*
+ * Does this relation's table AM overwrite a row's storage on UPDATE?  If so,
+ * code that needs the pre-update image after the write must capture it first.
+ * False for a relation without a table AM, such as a foreign table.
+ */
+static inline bool
+RelationUpdatesInPlace(Relation rel)
+{
+	return rel->rd_tableam != NULL &&
+		!RelationGetLocatorDesc(rel)->old_version_retained;
 }
 
 /*

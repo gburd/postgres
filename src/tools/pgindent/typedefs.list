@@ -36,6 +36,7 @@ AfterTriggerEvent
 AfterTriggerEventChunk
 AfterTriggerEventData
 AfterTriggerEventList
+AfterTriggerImage
 AfterTriggerShared
 AfterTriggerSharedData
 AfterTriggersData
