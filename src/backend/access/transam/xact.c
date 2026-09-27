@@ -2819,11 +2819,14 @@ PrepareTransaction(void)
 	 * Don't allow PREPARE TRANSACTION if this transaction generated any UNDO
 	 * that has no working ROLLBACK PREPARED apply path.  cluster-wide UNDO's
 	 * chain-head LSN is durably saved in the 2PC state file
-	 * (xl_xact_prepare.last_batch_lsn) and FinishPreparedTransaction()
-	 * applies it synchronously via ApplyUndoChainFromWAL() on ROLLBACK
-	 * PREPARED, so cluster-wide UNDO is recoverable across 2PC.  This choke
-	 * point stays so any future UNDO mechanism that is not 2PC-safe can
-	 * re-assert a guard.
+	 * (xl_xact_prepare.last_batch_lsn) but nothing on the COMMIT PREPARED /
+	 * ROLLBACK PREPARED path or crash-recovery path ever reads it back or
+	 * calls into the UNDO apply machinery (confirmed: twophase.c's
+	 * RecordTransactionCommitPrepared/RecordTransactionAbortPrepared never
+	 * call AtAbort_XactUndo() or ATMAddAborted(), the only two entry points
+	 * that trigger UNDO application).  Silently proceeding would make
+	 * ROLLBACK PREPARED a no-op for either kind of UNDO, corrupting data.
+	 * Reject early, before StartPrepare() writes any 2PC state.
 	 */
 	if (XactUndoHasUnrecoverableUndo())
 		ereport(ERROR,

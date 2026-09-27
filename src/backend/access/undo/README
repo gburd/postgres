@@ -165,6 +165,45 @@ UNDOPERSISTENCE_UNLOGGED records are skipped (unlogged table data forks are rese
 to their empty init fork on crash recovery).  This mirrors the behavior of the
 standard heap AM for these persistence levels.
 
+## Instant Abort: ATM, sLog, and the Logical Revert Worker
+
+The cluster-wide engine applies a transaction's UNDO chain inline at
+abort.  On top of that, three cooperating components make rollback of a
+large transaction O(1) from the client's perspective ("instant abort"),
+deferring the physical undo to the background:
+
+  - **ATM (Aborted Transaction Map, atm.c).**  AtAbort_XactUndo()
+    classifies the transaction by UNDO volume
+    (undo_instant_abort_threshold, default 64 KB).  Small transactions
+    apply their UNDO chain inline before ROLLBACK returns.  Large
+    transactions take the instant-abort path: ATMAddAborted() records the
+    xid in the shared-memory ATM (WAL-logged via RM_ATM_ID:
+    XLOG_ATM_ABORT / XLOG_ATM_FORGET, so the map is reconstructed during
+    redo) and returns immediately.  ROLLBACK latency is then O(1)
+    regardless of how much UNDO the transaction wrote.
+
+  - **sLog (slog.c, slog_flathash.c, slog_tuple.c).**  A shared-memory
+    map consulted by an in-place-update AM's visibility checks so that an
+    aborted transaction's writes are invisible to every reader
+    immediately, before any physical undo has run.  The sLog serves the
+    abort/self-visibility window; the commit oracle remains CLOG.  The
+    optional per-tuple flat-hash extension (the tuple sLog) tracks
+    uncommitted writers for bounded recovery and is engine-agnostic
+    (keyed on physical tuple identity).
+
+  - **Logical Revert worker (logical_revert_worker.c).**  A background
+    worker that scans the ATM for entries not yet reverted and calls
+    ApplyUndoChainFromWAL() to physically walk and apply each one's UNDO
+    chain, generating a CLR (XLOG_UNDO_APPLY_RECORD) per page it
+    restores.  This work is fully decoupled from ROLLBACK's return to the
+    client; a loser transaction found unresolved at end of crash recovery
+    is queued to the ATM and reverted here too.
+
+During crash recovery, PerformUndoRecovery() applies the chains of
+transactions that were in-flight at the crash; transactions already in
+the ATM before the crash are handled by the ATM / Logical Revert worker
+exactly as during normal runtime operation.
+
 ## 2. UndoRecPtr Format
 
 UndoRecPtr is a 64-bit pointer encoding both log identity and position:

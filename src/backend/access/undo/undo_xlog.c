@@ -33,6 +33,7 @@
  */
 #include "postgres.h"
 
+#include "access/atm.h"
 #include "access/htup_details.h"
 #include "access/twophase.h"
 #include "access/undo_xlog.h"
@@ -780,9 +781,11 @@ PerformUndoRecovery(void)
 		/*
 		 * If any UNDO records were skipped (e.g., due to syscache not being
 		 * initialized during early recovery), track this transaction for
-		 * deferred processing.  We cannot apply it during recovery, so we add
-		 * it to an in-memory list that will be applied after recovery
-		 * completes (when InRedo is set to false).
+		 * deferred processing.  We cannot add it to the ATM yet because
+		 * ATMAddAborted() writes WAL, which isn't allowed during recovery.
+		 *
+		 * Instead, we add it to an in-memory list that will be flushed to the
+		 * ATM after recovery completes (when InRedo is set to false).
 		 *
 		 * Use the permanent persistence level's last_batch_lsn for tracking.
 		 * TEMP and UNLOGGED are skipped during crash recovery anyway.
@@ -837,17 +840,15 @@ PerformUndoRecovery(void)
 }
 
 /*
- * FlushDeferredUndoXacts - Apply UNDO chains deferred during recovery
+ * FlushDeferredUndoXacts - Add deferred transactions to the ATM
  *
- * Called after recovery completes (when InRedo is false) for any transactions
- * that were deferred during UNDO recovery because their records could not be
- * applied inline (e.g. the syscache was not yet initialized).
+ * Called after recovery completes (when InRedo is false) to add any
+ * transactions that were deferred during UNDO recovery to the Aborted
+ * Transaction Map (ATM).  These transactions will be processed
+ * asynchronously by the logical revert worker.
  *
- * These chains cannot be applied from the startup process: applying UNDO opens
- * relations, which requires the syscache/relcache that only a database-
- * connected backend has.  Until an asynchronous applier exists, the deferred
- * chains are reported and dropped here so recovery can complete; the WAL
- * holding them is retained by UndoGetOldestBatchLSN's other checks.
+ * This must be called after InRedo is set to false because ATMAddAborted()
+ * writes WAL, which is not allowed during recovery.
  */
 void
 FlushDeferredUndoXacts(void)
@@ -858,19 +859,24 @@ FlushDeferredUndoXacts(void)
 	if (deferred_undo_xacts == NULL)
 		return;
 
-	/* Walk the list, reporting each deferred transaction. */
+	ereport(LOG,
+			(errmsg("flushing deferred UNDO transactions to ATM")));
+
+	/* Walk the list and add each transaction to the ATM */
 	while (deferred_undo_xacts != NULL)
 	{
 		deferred = deferred_undo_xacts;
 		deferred_undo_xacts = deferred->next;
+
+		ATMAddAborted(deferred->xid, deferred->dboid, deferred->last_batch_lsn);
 		count++;
+
 		pfree(deferred);
 	}
 
 	if (count > 0)
-		ereport(WARNING,
-				(errmsg("%d transaction(s) with UNDO were deferred during recovery "
-						"and could not be applied from the startup process",
+		ereport(LOG,
+				(errmsg("added %d deferred transaction(s) to ATM for async UNDO processing",
 						count)));
 }
 

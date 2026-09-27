@@ -60,6 +60,7 @@
  */
 #include "postgres.h"
 
+#include "access/atm.h"
 #include "access/undo.h"
 #include "access/undo_xlog.h"
 #include "access/xlog.h"
@@ -77,6 +78,9 @@
 #include "storage/lmgr.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+
+/* GUC: UNDO bytes threshold for instant abort via ATM */
+int			undo_instant_abort_threshold = 65536;
 
 /*
  * Initial capacity for the dynamically-grown subtransaction stack.
@@ -645,8 +649,8 @@ XActUndoUpdateLastBatchLSN(XLogRecPtr lsn, UndoPersistenceLevel plevel)
  *     last_batch_lsn): the permanent chain-head LSN is durably saved in
  *     xl_xact_prepare, its WAL is pinned while the xact stays prepared
  *     (undo_batch_lsn in twophase.c / UndoGetOldestBatchLSN), and
- *     FinishPreparedTransaction() applies it synchronously via
- *     ApplyUndoChainFromWAL() on ROLLBACK PREPARED.
+ *     FinishPreparedTransaction() feeds it to ATMAddAborted() on ROLLBACK
+ *     PREPARED.
  *
  * Nothing remains that PREPARE must reject on UNDO grounds, so this returns
  * false unconditionally.  Kept as a single choke point (rather than deleting
@@ -737,8 +741,8 @@ AtCommit_XactUndo(void)
  * PREPARE TRANSACTION hands ownership of this transaction's cluster-wide UNDO
  * to the 2PC state: the permanent chain-head LSN was durably saved in
  * xl_xact_prepare (twophase.c gxact->undo_batch_lsn), its WAL is pinned while
- * the xact stays prepared, and ROLLBACK PREPARED applies that LSN
- * synchronously via ApplyUndoChainFromWAL().
+ * the xact stays prepared, and ROLLBACK PREPARED feeds that LSN to
+ * ATMAddAborted() so the logical revert worker walks the chain.
  *
  * The in-memory UndoRecordSets, however, live in TopTransactionContext, which
  * PrepareTransaction() destroys (AtCommit_Memory) right after this.  We must
@@ -796,13 +800,12 @@ AtAbort_XactUndo(void)
 	 * deferred-batch scheme rests on.
 	 *
 	 * The has_undo test immediately below, and the last_batch_lsn[] chain
-	 * head the apply path walks, are both only set by InsertXactUndoData().
-	 * A record that is still pending has therefore published nothing, and
-	 * every one of the aborted index entries it describes would be left for
-	 * VACUUM -- the exact silent no-op this module's header warns about.
-	 * Flushing here, at the top of the abort path and before
-	 * RecordTransactionAbort() runs, makes the deferral invisible to
-	 * everything downstream.
+	 * head the apply path walks, are both only set by InsertXactUndoData(). A
+	 * record that is still pending has therefore published nothing, and every
+	 * one of the aborted index entries it describes would be left for VACUUM
+	 * -- the exact silent no-op this module's header warns about. Flushing
+	 * here, at the top of the abort path and before RecordTransactionAbort()
+	 * runs, makes the deferral invisible to everything downstream.
 	 *
 	 * This also covers an error thrown mid-statement: the error unwinds into
 	 * AbortTransaction(), which calls us, so the partial statement's records
@@ -837,8 +840,15 @@ AtAbort_XactUndo(void)
 	CollapseXactUndoSubTransactions();
 
 	/*
-	 * UNDO application strategy: apply the transaction's cluster-wide UNDO
-	 * chain synchronously in this backend, here at abort.
+	 * UNDO application strategy: inline for small transactions, deferred for
+	 * large ones.  Controlled by undo_instant_abort_threshold GUC.
+	 *
+	 * For small transactions (< threshold bytes of UNDO): apply UNDO
+	 * synchronously in this backend.  This avoids ATM pool accumulation and
+	 * eliminates the dependency on the background logical revert worker.
+	 *
+	 * For large transactions (>= threshold): register in the ATM for deferred
+	 * asynchronous rollback by the logical revert worker.
 	 *
 	 * The BumpContext issue (pfree crashes during abort) is avoided by: -
 	 * Creating a temporary AllocSetContext for inline UNDO application -
@@ -851,6 +861,16 @@ AtAbort_XactUndo(void)
 
 		if (XLogRecPtrIsValid(perm_lsn))
 		{
+			Size		total_undo_bytes = 0;
+
+			/* Calculate total UNDO data size for threshold comparison */
+			for (i = 0; i < NUndoPersistenceLevels; i++)
+			{
+				if (XactUndo.record_set[i] != NULL)
+					total_undo_bytes += UndoRecordSetGetSize(
+															 XactUndo.record_set[i]);
+			}
+
 			/*
 			 * The UNDO batch records were inserted into the WAL buffers
 			 * during this transaction but may not yet be flushed to disk. The
@@ -870,91 +890,125 @@ AtAbort_XactUndo(void)
 			 */
 			XLogFlush(XactLastRecEnd);
 
+			if (undo_instant_abort_threshold > 0 &&
+				total_undo_bytes < (Size) undo_instant_abort_threshold)
 			{
 				/*
-				 * Apply UNDO inline.  Use a dedicated AllocSetContext to
-				 * avoid BumpContext pfree issues.
+				 * Small transaction: apply UNDO inline.  Use a dedicated
+				 * AllocSetContext to avoid BumpContext pfree issues.
 				 */
 				MemoryContext undo_ctx;
 				MemoryContext old_ctx;
 				int			saved_trans_state;
-				bool		undo_applied = false;
 
 				undo_ctx = AllocSetContextCreate(TopMemoryContext,
 												 "Inline UNDO Apply",
 												 ALLOCSET_DEFAULT_SIZES);
 				old_ctx = MemoryContextSwitchTo(undo_ctx);
 
-				/*
-				 * Validate the batch LSN points to an actual UNDO record
-				 * before attempting inline application.  Stale LSNs from
-				 * chain_prev tracking anomalies can point to non-UNDO WAL
-				 * records, which would cause "not an UNDO batch" warnings.
-				 */
-				if (!UndoValidateBatchLSN(perm_lsn))
 				{
-					elog(DEBUG1, "inline UNDO: last_batch_lsn %X/%X is not "
-						 "a valid UNDO batch",
-						 LSN_FORMAT_ARGS(perm_lsn));
-					undo_applied = false;
-					goto inline_undo_done;
-				}
+					bool		undo_applied = false;
 
-				/*
-				 * AbortTransaction() has already advanced the transaction
-				 * state to TRANS_ABORT, but the relcache, locks, and resource
-				 * owner are all still live.  UNDO appliers open relations,
-				 * which asserts IsTransactionState(); temporarily present
-				 * TRANS_INPROGRESS for the duration of the inline apply and
-				 * always restore the real state afterward.
-				 */
-				saved_trans_state = EnterInlineUndoApplyState();
-				PG_TRY();
-				{
-					undo_applied = ApplyUndoChainFromWAL(perm_lsn);
-				}
-				PG_CATCH();
-				{
 					/*
-					 * If inline UNDO throws an error, release any content
-					 * locks the failed chain left held before unwinding.
+					 * Validate the batch LSN points to an actual UNDO record
+					 * before attempting inline application.  Stale LSNs from
+					 * chain_prev tracking anomalies can point to non-UNDO WAL
+					 * records, which would cause "not an UNDO batch"
+					 * warnings.
 					 */
-					BufferLockReleaseAll();
+					if (!UndoValidateBatchLSN(perm_lsn))
+					{
+						elog(DEBUG1, "inline UNDO: last_batch_lsn %X/%X is not "
+							 "a valid UNDO batch, deferring to ATM",
+							 LSN_FORMAT_ARGS(perm_lsn));
+						undo_applied = false;
+						goto inline_undo_done;
+					}
+
+					/*
+					 * AbortTransaction() has already advanced the transaction
+					 * state to TRANS_ABORT, but the relcache, locks, and
+					 * resource owner are all still live.  UNDO appliers open
+					 * relations, which asserts IsTransactionState();
+					 * temporarily present TRANS_INPROGRESS for the duration
+					 * of the inline apply and always restore the real state
+					 * afterward.
+					 */
+					saved_trans_state = EnterInlineUndoApplyState();
+					PG_TRY();
+					{
+						undo_applied = ApplyUndoChainFromWAL(perm_lsn);
+					}
+					PG_CATCH();
+					{
+						/*
+						 * If inline UNDO throws an error, fall back to ATM.
+						 * Release any content locks the failed chain left
+						 * held before unwinding.
+						 */
+						BufferLockReleaseAll();
+						LeaveInlineUndoApplyState(saved_trans_state);
+						FlushErrorState();
+						undo_applied = false;
+					}
+					PG_END_TRY();
 					LeaveInlineUndoApplyState(saved_trans_state);
-					FlushErrorState();
-					undo_applied = false;
-				}
-				PG_END_TRY();
-				LeaveInlineUndoApplyState(saved_trans_state);
 
-				MemoryContextSwitchTo(old_ctx);
-				MemoryContextDelete(undo_ctx);
+					MemoryContextSwitchTo(old_ctx);
+					MemoryContextDelete(undo_ctx);
 
-		inline_undo_done:
-				if (!undo_applied)
-				{
-					/*
-					 * Inline UNDO failed (WAL recycled, wrong record type, or
-					 * chain walk aborted).  Retain the per-backend UNDO LSN
-					 * slot so the WAL segment holding our UNDO data is not
-					 * recycled; the slot is cleared at backend exit.
-					 */
-					elog(WARNING, "inline UNDO failed for xid %u",
-						 GetCurrentTransactionId());
+			inline_undo_done:
+					if (!undo_applied)
+					{
+						/*
+						 * Inline UNDO failed (WAL recycled, wrong record
+						 * type, or chain walk aborted).  Register in ATM for
+						 * deferred processing by the revert worker.
+						 */
+						elog(DEBUG1, "inline UNDO failed for xid %u, "
+							 "deferring to ATM",
+							 GetCurrentTransactionId());
+
+						if (ATMAddAborted(GetCurrentTransactionId(),
+										  MyDatabaseId, perm_lsn))
+							lsn_safely_held = true; /* ATM holds the LSN */
+						else
+							elog(WARNING, "ATM full: could not record aborted transaction %u", GetCurrentTransactionId());
+
+
+
+
+					}
+					else
+					{
+						lsn_safely_held = true; /* UNDO fully applied, WAL can
+												 * be recycled */
+						ereport(DEBUG2,
+								(errmsg("inline UNDO applied for xid %u "
+										"(%zu bytes)",
+										GetCurrentTransactionId(),
+										total_undo_bytes)));
+					}
 				}
+			}
+			else
+			{
+				/*
+				 * Large transaction or threshold=0: register in ATM for
+				 * deferred rollback by the logical revert worker.
+				 */
+				if (ATMAddAborted(GetCurrentTransactionId(),
+								  MyDatabaseId, perm_lsn))
+					lsn_safely_held = true;
 				else
-				{
-					lsn_safely_held = true; /* UNDO fully applied, WAL can be
-											 * recycled */
-					ereport(DEBUG2,
-							(errmsg("inline UNDO applied for xid %u",
-									GetCurrentTransactionId())));
-				}
+					elog(WARNING,
+						 "ATM full: could not record aborted transaction %u",
+						 GetCurrentTransactionId());
 			}
 		}
 	}
 
-	INJECTION_POINT("undo-xact-abort-after-apply", NULL);
+	INJECTION_POINT("undo-xact-abort-after-atm", NULL);
 
 	/* Free all per-persistence-level record sets. */
 	for (i = 0; i < NUndoPersistenceLevels; i++)

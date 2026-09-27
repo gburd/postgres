@@ -27,6 +27,7 @@
  */
 #include "postgres.h"
 
+#include "access/atm.h"
 #include "access/transam.h"
 #include "access/twophase.h"
 #include "access/undolog.h"
@@ -359,6 +360,7 @@ XLogRecPtr
 UndoGetOldestBatchLSN(void)
 {
 	XLogRecPtr	oldest = InvalidXLogRecPtr;
+	XLogRecPtr	atm_oldest;
 	int			i;
 
 	if (UndoLogShared == NULL)
@@ -378,10 +380,21 @@ UndoGetOldestBatchLSN(void)
 	}
 
 	/*
+	 * Check ATM for aborted transactions whose UNDO chains haven't been
+	 * applied yet.  Their WAL segments must not be recycled.
+	 */
+	atm_oldest = ATMGetOldestUnrevertedLSN();
+	if (XLogRecPtrIsValid(atm_oldest))
+	{
+		if (!XLogRecPtrIsValid(oldest) || atm_oldest < oldest)
+			oldest = atm_oldest;
+	}
+
+	/*
 	 * Check prepared (2PC) transactions.  A xact can sit PREPARED
 	 * indefinitely; its UNDO-batch WAL must survive until ROLLBACK PREPARED
-	 * reads it.  The per-backend slot is cleared when the preparing backend
-	 * exits, so it does not cover this.
+	 * reads it.  Neither the per-backend slot (cleared when the preparing
+	 * backend exits) nor the ATM (prepared xacts aren't in it) covers this.
 	 */
 	{
 		XLogRecPtr	prep_oldest = TwoPhaseGetOldestUndoBatchLSN();

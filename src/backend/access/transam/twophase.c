@@ -77,7 +77,7 @@
 #include <unistd.h>
 
 #include "access/commit_ts.h"
-#include "access/undorecord.h"
+#include "access/atm.h"
 #include "access/xactundo.h"
 #include "access/htup_details.h"
 #include "access/subtrans.h"
@@ -1703,11 +1703,13 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 									   gid);
 
 		/*
-		 * ROLLBACK PREPARED: apply any cluster-wide UNDO chain synchronously,
-		 * here, before the prepared transaction's resources are torn down.
+		 * ROLLBACK PREPARED: hand any cluster-wide UNDO chain to the same
+		 * async revert machinery an ordinary large-transaction abort uses.
 		 * The permanent-level chain-head LSN was durably saved in the 2PC
-		 * header at PREPARE; ApplyUndoChainFromWAL() walks the UNDO chain
-		 * backwards from that LSN, restoring before-images.
+		 * header at PREPARE; ATMAddAborted() records (xid, dboid,
+		 * last_batch_lsn) in the sLog Aborted Transaction Map, and the
+		 * logical revert worker walks the UNDO chain backwards from that LSN,
+		 * restoring before-images.  No apply code lives here.
 		 *
 		 * Only the permanent level is applied: TEMP undo is gone (the
 		 * originating backend exited) and UNLOGGED forks are reset on crash;
@@ -1717,8 +1719,11 @@ FinishPreparedTransaction(const char *gid, bool isCommit)
 			XLogRecPtr	perm_lsn =
 				hdr->last_batch_lsn[UNDOPERSISTENCE_PERMANENT];
 
-			if (XLogRecPtrIsValid(perm_lsn))
-				(void) ApplyUndoChainFromWAL(perm_lsn);
+			if (XLogRecPtrIsValid(perm_lsn) &&
+				!ATMAddAborted(xid, hdr->database, perm_lsn))
+				elog(WARNING,
+					 "ATM full: could not record rolled-back prepared "
+					 "transaction %u for UNDO", xid);
 		}
 	}
 
