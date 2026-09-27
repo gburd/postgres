@@ -2958,7 +2958,7 @@ ri_FastPathProbeOne(Relation pk_rel, Relation idx_rel,
 
 	index_rescan(scandesc, skey, nkeys, NULL, 0);
 
-	if (table_index_getnext_slot(scandesc, ForwardScanDirection, slot))
+	while (table_index_getnext_slot(scandesc, ForwardScanDirection, slot))
 	{
 		bool		concurrently_updated;
 
@@ -2970,6 +2970,7 @@ ri_FastPathProbeOne(Relation pk_rel, Relation idx_rel,
 			else
 				found = true;
 		}
+		break;
 	}
 
 	return found;
