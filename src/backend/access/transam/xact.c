@@ -1211,6 +1211,49 @@ GetCurrentTransactionUndoRecPtr(void)
 }
 
 /*
+ * SetCurrentTransactionPbuUndoLocation
+ *		Record a per-backend UNDO record pointer for the current transaction.
+ *
+ * Called from the per-backend UNDO engine (SetCurrentUndoLocation) after each
+ * InsertPreparedUndo.  The first call in a transaction captures the chain
+ * start (used as the rollback request's start pointer at abort); every call
+ * updates the latest pointer.  Kept separate from undoRecPtr so the
+ * per-relation and per-backend UNDO engines coexist without stepping on each
+ * other's transaction state.
+ */
+void
+SetCurrentTransactionPbuUndoLocation(uint64 urec_ptr)
+{
+	TransactionState s = CurrentTransactionState;
+
+	if (s->pbuUndoStartPtr == 0)
+		s->pbuUndoStartPtr = urec_ptr;
+	s->pbuUndoLatestPtr = urec_ptr;
+}
+
+/*
+ * GetCurrentTransactionPbuUndoStart
+ *		Get the per-backend UNDO chain start pointer for the current
+ *		transaction (0 if this transaction produced no per-backend UNDO).
+ */
+uint64
+GetCurrentTransactionPbuUndoStart(void)
+{
+	return CurrentTransactionState->pbuUndoStartPtr;
+}
+
+/*
+ * GetCurrentTransactionPbuUndoLatest
+ *		Get the most recent per-backend UNDO record pointer for the current
+ *		transaction (0 if none).  Used as the rollback "from" pointer.
+ */
+uint64
+GetCurrentTransactionPbuUndoLatest(void)
+{
+	return CurrentTransactionState->pbuUndoLatestPtr;
+}
+
+/*
  *	CommandCounterIncrement
  */
 void
@@ -3133,6 +3176,28 @@ AbortTransaction(void)
 
 	/* Clean up transaction undo state (free per-persistence record sets) */
 	AtAbort_XactUndo();
+
+	/*
+	 * Roll back the per-backend UNDO engine's records for this transaction,
+	 * if any.  This engine coexists with the per-relation engine handled by
+	 * AtAbort_XactUndo() above; the call is a no-op unless the per-backend
+	 * engine produced UNDO for this xact (which no access method does yet).
+	 * UNDO appliers open relations, so present TRANS_INPROGRESS for the
+	 * duration (all backing resources are still live at this point).
+	 */
+	{
+		int			pbu_saved_state = EnterInlineUndoApplyState();
+
+		PG_TRY();
+		{
+			PbuAtAbort_ApplyUndo();
+		}
+		PG_FINALLY();
+		{
+			LeaveInlineUndoApplyState(pbu_saved_state);
+		}
+		PG_END_TRY();
+	}
 
 	/*
 	 * do abort processing

@@ -73,6 +73,28 @@ changes) writes one interleaved chain, and the single global horizon is
 the right granularity because such operations are not concentrated on
 any one relation.
 
+### The UNDO Store: Per-Backend UNDO Logs
+
+Alongside the cluster-wide store, the per-backend UNDO logs
+(access/undo/perbackend/) give each backend its own append-only log, so
+the hot path has no shared insertion-point contention, and a discard
+worker reclaims undo once no snapshot needs it.  Records go to dedicated
+segment files (base/undo, routed through the SMGR_UNDO storage manager
+and the SYNC_HANDLER_UNDO sync handler) rather than into the common WAL
+stream.  This is the store a **high-churn in-place-update table AM**
+uses, where UNDO volume is dominated by rows being updated repeatedly.
+
+The two stores share the UNDO record header format and the
+rollback-dispatch machinery (undormgr.c); their storage and discard
+paths are independent.  The per-backend engine adds two resource managers
+(UndoLog and UndoAction) and its own two-phase resource manager
+(TWOPHASE_RM_PERBACKEND_ID) so a prepared transaction's per-backend
+chain-head survives 2PC.  On crash recovery, PbuPerformUndoRecovery()
+reverse-applies loser transactions' per-backend UNDO after the redo pass,
+alongside the cluster-wide engine's PerformUndoRecovery().  No in-tree
+access method writes per-backend UNDO yet; the engine compiles, links,
+and registers, and its dispatch path is ready for a future consumer.
+
 
 ## Recovery Model: Constant-Time Recovery (CTR), not ARIES
 

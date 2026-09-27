@@ -70,6 +70,7 @@ tests += {
       't/059_fileops_2pc.pl',
       't/060_fileops_standby_divergence.pl',
       't/061_fileops_2pc_deferred.pl',
+      't/071_perbackend_undo.pl',
       't/072_perbackend_crash_undo.pl',
     ],
   },

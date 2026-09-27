@@ -756,6 +756,16 @@ static XLogRecPtr CreateOverwriteContrecordRecord(XLogRecPtr aborted_lsn,
 												  TimeLineID newTLI);
 static void CheckPointGuts(XLogRecPtr checkPointRedo, int flags);
 
+/*
+ * Per-backend UNDO engine checkpoint/startup entry points.  Declared locally
+ * (by prototype) rather than via access/perbackend/pbu_undolog.h, because that
+ * header redefines types (UndoRecPtr, UndoLogControl) that conflict with the
+ * cluster-wide UNDO engine headers already pulled in here.  Both entry points
+ * take only XLogRecPtr arguments, so no pbu-specific type is needed.
+ */
+extern void CheckPointUndoLogs(XLogRecPtr checkPointRedo,
+							   XLogRecPtr priorCheckPointRedo);
+extern void StartupUndoLogs(XLogRecPtr checkPointRedo);
 static void KeepLogSeg(XLogRecPtr recptr, XLogSegNo *logSegNo);
 
 static void AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli,
@@ -6319,6 +6329,19 @@ StartupXLOG(void)
 	StartupMultiXact();
 
 	/*
+	 * Rebuild the per-backend UNDO engine's UndoLogControl banks and
+	 * freelists from the pg_undo/<redo> snapshot written by
+	 * CheckPointUndoLogs() at the checkpoint we are starting recovery from.
+	 * This must precede WAL replay: redo of RM_UNDOLOG_ID records
+	 * (META/ATTACH/EXTEND/DISCARD) advances the in-memory log metadata seeded
+	 * here, and redo of registered undo pages reads/writes those logs'
+	 * backing segments.  On a cluster that has never persisted per-backend
+	 * undo (no snapshot file for this redo), this is a tolerated no-op
+	 * (StartupUndoLogs treats a missing snapshot as "no active logs").
+	 */
+	StartupUndoLogs(checkPoint.redo);
+
+	/*
 	 * Ditto for commit timestamps.  Activate the facility if the setting is
 	 * enabled in the control file, as there should be no tracking of commit
 	 * timestamps done when the setting was disabled.  This facility can be
@@ -8457,6 +8480,19 @@ CheckPointGuts(XLogRecPtr checkPointRedo, int flags)
 
 	/* Persist UNDO log discard pointers and log statistics */
 	CheckPointUndoLog();
+
+	/*
+	 * Persist per-backend UNDO log metadata (the pg_undo/<redo> snapshot) so
+	 * the per-backend engine's UndoLogControl banks and freelists can be
+	 * rebuilt by StartupUndoLogs() at recovery.  The undo-page contents
+	 * themselves are WAL-logged (attached to producer WAL records) and
+	 * flushed by CheckPointBuffers() below; here we record the table of undo
+	 * logs and their insert/discard pointers.  priorCheckPointRedo is the
+	 * previous checkpoint's redo point (ControlFile->checkPointCopy.redo is
+	 * not yet advanced to the new checkpoint at this stage of
+	 * CreateCheckPoint), used to clean up the now-obsolete snapshot file.
+	 */
+	CheckPointUndoLogs(checkPointRedo, ControlFile->checkPointCopy.redo);
 
 	/* Write out all dirty data in SLRUs and the main buffer pool */
 	TRACE_POSTGRESQL_BUFFER_CHECKPOINT_START(flags);

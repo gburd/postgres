@@ -593,5 +593,9 @@ extern bool IsInParallelMode(void);
 /* UNDO chain management */
 extern void SetCurrentTransactionUndoRecPtr(uint64 undo_ptr);
 extern uint64 GetCurrentTransactionUndoRecPtr(void);
+extern void SetCurrentTransactionPbuUndoLocation(uint64 urec_ptr);
+extern uint64 GetCurrentTransactionPbuUndoStart(void);
+extern uint64 GetCurrentTransactionPbuUndoLatest(void);
+extern void PbuAtAbort_ApplyUndo(void);
 
 #endif							/* XACT_H */
