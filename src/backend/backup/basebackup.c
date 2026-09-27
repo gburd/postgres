@@ -1314,7 +1314,9 @@ sendDir(bbsink *sink, const char *path, int basepathlen, bool sizeonly,
 
 		/*
 		 * If there could be non-temporary relation files in this directory,
-		 * try to parse the filename.
+		 * try to parse the filename.  Undo directories are not relation
+		 * directories: their segments must be copied whole, not selected by
+		 * the relation block maps in WAL summaries.
 		 */
 		if (isRelationDir)
 			isRelationFile =
@@ -1591,6 +1593,8 @@ sendFile(bbsink *sink, const char *readfilename, const char *tarfilename,
 	off_t		cnt;
 	pgoff_t		bytes_done = 0;
 	bool		verify_checksum = false;
+	BlockNumber undo_blockoffset;
+	bool		is_undo = ParseUndoSegmentPath(readfilename, &undo_blockoffset);
 	pg_checksum_context checksum_ctx;
 	int			ibindex = 0;
 
@@ -1623,7 +1627,7 @@ sendFile(bbsink *sink, const char *readfilename, const char *tarfilename,
 	 * disabled while the backup runs, thus we check at each point where we
 	 * could be validating a checksum.
 	 */
-	if (!noverify_checksums && RelFileNumberIsValid(relfilenumber) &&
+	if (!noverify_checksums && (RelFileNumberIsValid(relfilenumber) || is_undo) &&
 		backup_checksums_verifiable(sink->bbs_state->startptr))
 		verify_checksum = true;
 
@@ -1712,7 +1716,7 @@ sendFile(bbsink *sink, const char *readfilename, const char *tarfilename,
 			 */
 			cnt = read_file_data_into_buffer(sink, readfilename, fd,
 											 bytes_done, remaining,
-											 blkno + segno * RELSEG_SIZE,
+											 blkno + (is_undo ? undo_blockoffset : segno * RELSEG_SIZE),
 											 verify_checksum,
 											 &checksum_failures);
 		}
