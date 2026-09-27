@@ -2655,6 +2655,7 @@ static const LocatorDesc heapam_locator_desc = {
 	.width = sizeof(ItemPointerData),
 	.max_offset = MaxHeapTuplesPerPage,
 	.name = "tid",
+	.old_version_retained = true,
 };
 
 static const LocatorDesc *

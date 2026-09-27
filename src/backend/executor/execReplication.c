@@ -946,7 +946,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		resultRelInfo->ri_TrigDesc->trig_update_before_row)
 	{
 		if (!ExecBRUpdateTriggers(estate, epqstate, resultRelInfo,
-								  tid, NULL, slot, NULL, NULL, false))
+								  tid, NULL, slot, NULL, NULL, false, true))
 			skip_tuple = true;	/* "do nothing" */
 	}
 
@@ -968,6 +968,14 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 			ExecConstraints(resultRelInfo, slot, estate);
 		if (rel->rd_rel->relispartition)
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
+
+		/*
+		 * The conflict report and AFTER ROW triggers below read searchslot
+		 * after the update.  If the table's AM overwrites rows in place, copy
+		 * the old row out of the page first.
+		 */
+		if (RelationUpdatesInPlace(rel))
+			ExecMaterializeSlot(searchslot);
 
 		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,
 								  &update_indexes);
@@ -1000,7 +1008,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		/* AFTER ROW UPDATE Triggers */
 		ExecARUpdateTriggers(estate, resultRelInfo,
 							 NULL, NULL,
-							 tid, NULL, slot,
+							 tid, NULL, searchslot, slot,
 							 recheckIndexes, NULL, false);
 
 		list_free(recheckIndexes);
@@ -1029,7 +1037,8 @@ ExecSimpleRelationDelete(ResultRelInfo *resultRelInfo,
 		resultRelInfo->ri_TrigDesc->trig_delete_before_row)
 	{
 		skip_tuple = !ExecBRDeleteTriggers(estate, epqstate, resultRelInfo,
-										   tid, NULL, NULL, NULL, NULL, false);
+										   tid, NULL, NULL, NULL, NULL, false,
+										   true);
 	}
 
 	if (!skip_tuple)
