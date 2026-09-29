@@ -17,6 +17,7 @@
 #ifndef TABLEAM_H
 #define TABLEAM_H
 
+#include "access/amlocator.h"
 #include "access/relscan.h"
 #include "access/sdir.h"
 #include "access/xact.h"
@@ -323,6 +324,19 @@ typedef struct TableAmRoutine
 {
 	/* this must be set to T_TableAmRoutine */
 	NodeTag		type;
+
+	/* ------------------------------------------------------------------------
+	 * Declared capabilities.
+	 * ------------------------------------------------------------------------
+	 */
+
+	/*
+	 * The locator this AM hands to indexes to identify a row, and expects back
+	 * when they ask for one.  Every in-core AM provides LOCATOR_CAP_TID.  An
+	 * index can only be created on this table if its index AM supports this
+	 * locator; see amlocator.h.
+	 */
+	LocatorCapability locator_capability;
 
 
 	/* ------------------------------------------------------------------------
@@ -931,6 +945,40 @@ table_beginscan_common(Relation rel, Snapshot snapshot, int nkeys,
 		elog(ERROR, "scan started during logical decoding");
 
 	return rel->rd_tableam->scan_begin(rel, snapshot, nkeys, key, pscan, flags);
+}
+
+/* ----------------------------------------------------------------------------
+ * Locator capability inspection functions
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Does this table's locator continue to identify the same row across an update?
+ *
+ * True for an AM that updates rows without relocating them.  Such an AM never
+ * follows an update chain to lock a different tuple, so it always reports
+ * TM_FailureData.traversed as false; code that treats false as "the row cannot
+ * have changed" must consult this instead.
+ */
+static inline bool
+table_locator_is_stable(Relation rel)
+{
+	return GetLocatorCapability(rel->rd_tableam->locator_capability)->stable;
+}
+
+/*
+ * Can the pre-update version of a row still be fetched through its own locator
+ * after the update, for the remainder of the command?
+ *
+ * True for heap, where the old version remains on its page until VACUUM.  False
+ * for an AM that overwrites in place: code needing the old image later must
+ * capture it at the time of the update rather than re-fetching the locator,
+ * which would yield the new image.
+ */
+static inline bool
+table_locator_old_version_is_materialized(Relation rel)
+{
+	return GetLocatorCapability(rel->rd_tableam->locator_capability)->old_version_is_materialized;
 }
 
 /*
