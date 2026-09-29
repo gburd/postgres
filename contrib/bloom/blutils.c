@@ -108,6 +108,7 @@ blhandler(PG_FUNCTION_ARGS)
 		.amsupport = BLOOM_NPROC,
 		.amoptsprocnum = BLOOM_OPTIONS_PROC,
 		.amcanorder = false,
+		.ambtreeopfamilies = false,
 		.amcanorderbyop = false,
 		.amcanhash = false,
 		.amconsistentequality = false,
