@@ -23,6 +23,7 @@
 
 #include "access/amapi.h"
 #include "access/amlocator.h"
+#include "access/bark.h"
 #include "commands/vacuum.h"
 #include "utils/fmgrprotos.h"
 
