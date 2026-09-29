@@ -22,6 +22,7 @@
 #include "postgres.h"
 
 #include "access/amapi.h"
+#include "access/bark.h"
 #include "commands/vacuum.h"
 #include "utils/fmgrprotos.h"
 
