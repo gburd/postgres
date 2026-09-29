@@ -260,6 +260,10 @@ BackgroundWorkerHandle
 BackgroundWorkerSlot
 BackupState
 Barrier
+BarkEntryShape
+BarkMetaPageData
+BarkPageOpaque
+BarkPageOpaqueData
 BaseBackupCmd
 BaseBackupTargetHandle
 BaseBackupTargetType

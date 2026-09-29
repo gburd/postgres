@@ -1,0 +1,100 @@
+BARK Indexing
+=============
+
+BARK is an index access method designed as a successor to nbtree (see the
+top-level BARK-Design.mediawiki for the full contract catalog and roadmap).
+This directory holds the implementation; this README describes the on-disk
+format defined in src/include/access/bark.h.  The reading and writing code
+arrives in later commits -- at this point the format is defined but no index
+can yet be built.
+
+Page structure
+--------------
+
+BARK borrows nbtree's Lehman & Yao page structure so the high-concurrency
+search and split algorithm can be shared.  Every page is a standard
+PostgreSQL page whose special space holds a BarkPageOpaqueData:
+
+    bark_prev / bark_next   right-linked sibling chain (BARK_P_NONE at edges)
+    bark_level              0 for leaf pages, increasing toward the root
+    bark_flags              page role: BARK_LEAF, BARK_ROOT, BARK_META,
+                            BARK_DELETED, BARK_HALF_DEAD,
+                            BARK_INCOMPLETE_SPLIT, BARK_HAS_GARBAGE
+    bark_page_id            BARK_PAGE_ID, so external tools can recognize the
+                            page (mirrors nbtree's use of the last two bytes
+                            of special space)
+
+As in nbtree, each page carries a high key (an upper bound on the keys the
+page may hold) and a right-link to its sibling, which together let a scan
+detect and recover from a concurrent split without holding read locks across
+pages.
+
+Block 0 is always the meta page (BarkMetaPageData): a magic number
+(BARK_MAGIC), the on-disk version (BARK_VERSION), the current root block and
+its level, and whether all key columns are "equalimage" (which governs
+whether duplicate keys can be deduplicated losslessly).
+
+Entry encoding (the C-KEYSHAPE contract)
+----------------------------------------
+
+A BARK entry is a normal IndexTupleData: the key columns follow the tuple
+header.  What varies is the value side.  BARK reuses PostgreSQL's per-AM
+reserved bit, INDEX_AM_RESERVED_BIT in t_info, as an "alternate t_tid" marker
+exactly as nbtree does.  When the bit is clear, t_tid is a plain heap locator.
+When it is set, t_tid is repurposed: its offset-number field is split into a
+high-nibble status region (BARK_STATUS_OFFSET_MASK) and a low twelve-bit count
+(BARK_OFFSET_MASK), the same partition nbtree uses.
+
+There are four entry shapes (BarkEntryShape):
+
+  SINGLE   The plain nbtree shape.  The alt-TID bit is clear and t_tid holds a
+           single heap locator.  A scalar unique or ordinary index produces
+           only this shape.
+
+  LIST     Sorted duplicates -- the libdb shape.  The alt-TID bit is set with
+           BARK_IS_LIST; the locators are stored in ascending order in the
+           tuple body after the key, and the low offset bits hold their count.
+           Used when a key maps to a modest number of rows.
+
+  POSTING  An inverted locator set.  The alt-TID bit is set with
+           BARK_IS_POSTING; the set is stored as an sbm serialization (see
+           lib/sbm.h) in the tuple body after the key.  Used when the set is
+           large and clustered enough that sbm's compression wins -- roughly
+           0.2 to 1.9 bytes per locator for a clustered set, versus about 24
+           for a scattered one, so a scattered set stays a LIST.
+
+  PIVOT    A downlink or high-key tuple on an internal page (or a leaf high
+           key).  The alt-TID bit is set with neither list nor posting status;
+           t_tid carries the child block number, and the low offset bits hold
+           the number of key attributes actually present, since a pivot may be
+           shortened by suffix truncation.
+
+The encoding of a leaf entry is chosen per entry, by cardinality: a key with
+one row is SINGLE, a few rows is LIST, and a large clustered set is POSTING.
+This is what lets a scalar index and an inverted (GIN/RUM-style) index share
+one access method and one page format, rather than needing an AM apiece.
+
+Delete marking (the C-DELETE contract)
+--------------------------------------
+
+A leaf entry of any shape may be delete-marked: BARK_IS_DELETE_MARKED in the
+status region records that the entry is logically deleted but retained so an
+UNDO rollback can restore it, rather than being removed and left for VACUUM.
+The bit value matches nbtree's BT_IS_DELETE_MARKED so the generic index
+delete-marking path (index_delete_mark / index_undo_mark) treats both AMs
+alike.  Delete-marking is orthogonal to an entry's shape and shares the status
+region with it; it is never set on a PIVOT.
+
+Invariants
+----------
+
+  * Block 0 is the meta page; its bark_magic is BARK_MAGIC and its
+    bark_version is <= BARK_VERSION.
+  * Keys are ordered by a btree-family operator class (BARK declares
+    ambtreeopfamilies), so BARK's opfamily OIDs are btree sort opfamilies.
+  * On a leaf page, entries are in key order; within one key, LIST locators
+    are ascending and a POSTING set is canonical (see lib/sbm.h).
+  * The alt-TID status bits are mutually exclusive in what they encode: an
+    entry is exactly one of SINGLE, LIST, POSTING, or PIVOT; BARK_IS_DELETE_MARKED
+    is an independent flag that may accompany a leaf shape but never a PIVOT.
+  * bark_page_id is BARK_PAGE_ID on every BARK page.
