@@ -277,6 +277,7 @@ brinhandler(PG_FUNCTION_ARGS)
 		.amcaninclude = false,
 		.amusemaintenanceworkmem = false,
 		.amsummarizing = true,
+		.amcanlocators = LOCATOR_CAP_MASK(LOCATOR_CAP_TID),
 		.amparallelvacuumoptions =
 		VACUUM_OPTION_PARALLEL_CLEANUP,
 		.amkeytype = InvalidOid,

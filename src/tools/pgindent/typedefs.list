@@ -1631,6 +1631,8 @@ LocalTransactionId
 Location
 LocationIndex
 LocationLen
+LocatorCapability
+LocatorCapabilityInfo
 LockAcquireResult
 LockClauseStrength
 LockData
