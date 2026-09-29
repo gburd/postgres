@@ -305,6 +305,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 				/* We copy just the fields we need, not all of rd_indam */
 				amroutine = indexRelation->rd_indam;
 				info->amcanorderbyop = amroutine->amcanorderbyop;
+				info->ambtreeopfamilies = amroutine->ambtreeopfamilies;
 				info->amoptionalkey = amroutine->amoptionalkey;
 				info->amsearcharray = amroutine->amsearcharray;
 				info->amsearchnulls = amroutine->amsearchnulls;
@@ -323,11 +324,13 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 				/*
 				 * Fetch the ordering information for the index, if any.
 				 */
-				if (info->relam == BTREE_AM_OID)
+				if (amroutine->ambtreeopfamilies)
 				{
 					/*
-					 * If it's a btree index, we can use its opfamily OIDs
-					 * directly as the sort ordering opfamily OIDs.
+					 * If the AM's operator families are btree operator
+					 * families (as the btree AM's are), we can use its
+					 * opfamily OIDs directly as the sort ordering opfamily
+					 * OIDs.
 					 */
 					Assert(amroutine->amcanorder);
 
@@ -406,6 +409,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			else
 			{
 				info->amcanorderbyop = false;
+				info->ambtreeopfamilies = false;
 				info->amoptionalkey = false;
 				info->amsearcharray = false;
 				info->amsearchnulls = false;

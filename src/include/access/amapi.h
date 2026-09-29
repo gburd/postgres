@@ -246,6 +246,15 @@ typedef struct IndexAmRoutine
 	uint16		amoptsprocnum;
 	/* does AM support ORDER BY indexed column's value? */
 	bool		amcanorder;
+	/*
+	 * Are this AM's operator families btree operator families?  True means the
+	 * AM's pg_opfamily rows use the btree strategy numbers and sort semantics,
+	 * so the planner may use the index's opfamily OIDs directly as sort-ordering
+	 * opfamily OIDs and may apply btree row-comparison / equivalence-class
+	 * clause matching to it, exactly as it does for the btree AM itself.  Only
+	 * an AM that shares btree's opfamily infrastructure may set this.
+	 */
+	bool		ambtreeopfamilies;
 	/* does AM support ORDER BY result of an operator on indexed column? */
 	bool		amcanorderbyop;
 	/* does AM support hashing using API consistent with the hash AM? */
