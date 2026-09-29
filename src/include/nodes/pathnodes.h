@@ -1434,6 +1434,8 @@ typedef struct IndexOptInfo
 	 * (IndexAmRoutine).  These fields are not set for partitioned indexes.
 	 */
 	bool		amcanorderbyop;
+	/* are the AM's operator families btree operator families? */
+	bool		ambtreeopfamilies;
 	bool		amoptionalkey;
 	bool		amsearcharray;
 	bool		amsearchnulls;
