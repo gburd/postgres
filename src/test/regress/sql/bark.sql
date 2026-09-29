@@ -1,0 +1,28 @@
+--
+-- BARK index access method: skeleton registration.
+--
+-- At this point BARK is registered and recognized as a valid index access
+-- method, but it has no operator classes and no implemented storage yet, so
+-- an index cannot actually be created.  These tests pin that state: the AM
+-- exists in the catalog, CREATE INDEX resolves it as a real AM (distinct from
+-- an unknown AM), and it fails at operator-class resolution rather than being
+-- rejected outright.
+--
+
+-- The AM is registered in pg_am.
+SELECT amname, amtype FROM pg_am WHERE amname = 'bark';
+
+-- Its handler is a valid index_am_handler.
+SELECT amname, amhandler::regproc FROM pg_am WHERE amname = 'bark';
+
+CREATE TABLE bark_tab (a int, b text);
+
+-- Contrast: an unknown AM is rejected outright ...
+CREATE INDEX ON bark_tab USING nosuchbark (a);
+
+-- ... whereas BARK is a recognized AM, so CREATE INDEX gets as far as
+-- operator-class resolution and fails there (BARK has no operator classes
+-- yet).  This confirms the AM is registered and validated.
+CREATE INDEX ON bark_tab USING bark (a);
+
+DROP TABLE bark_tab;
