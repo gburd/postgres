@@ -1,12 +1,13 @@
 --
--- BARK index access method: registration, default opclasses, and build.
+-- BARK index access method: registration, default opclasses, build, and insert.
 --
 -- BARK is registered as an index AM, provides default operator classes for
 -- the common scalar types (its operator families are btree operator
--- families), and can build an index over a heap.  Inserting into an existing
--- index and scanning are not implemented yet, so these tests exercise build
--- only; the prohibitive cost estimate keeps the planner from choosing a BARK
--- index meanwhile.
+-- families), builds an index over a heap, and accepts row inserts into an
+-- existing index (splitting pages and growing the tree as needed).  Scanning
+-- is not implemented yet, so these tests exercise build and insert only; the
+-- prohibitive cost estimate keeps the planner from choosing a BARK index
+-- meanwhile.
 --
 
 -- The AM is registered in pg_am, with a valid index_am_handler.
@@ -46,4 +47,18 @@ CREATE INDEX bark_multi_idx ON bark_tab USING bark (a, b);
 -- A query still works via a sequential scan.
 SELECT count(*) FROM bark_tab WHERE a = 1000;
 
-DROP TABLE bark_tab, bark_small, bark_empty;
+-- Insert into an existing index.  Building the index empty and then inserting
+-- rows forces leaf splits and tree-height growth through the aminsert path.
+CREATE TABLE bark_ins (a int);
+CREATE INDEX bark_ins_idx ON bark_ins USING bark (a);	-- empty index first
+INSERT INTO bark_ins SELECT g FROM generate_series(1, 5000) g;	-- ascending
+INSERT INTO bark_ins SELECT g FROM generate_series(10000, 5001, -1) g;	-- descending
+INSERT INTO bark_ins SELECT 42 FROM generate_series(1, 50) g;	-- duplicates
+SELECT count(*) FROM bark_ins;							-- all rows present (seqscan)
+SELECT pg_relation_size('bark_ins_idx') > 8192 * 2 AS grew_past_two_pages;
+
+-- Inserting into a freshly built (non-empty) index also works.
+INSERT INTO bark_tab VALUES (99999, 'late');
+SELECT count(*) FROM bark_tab WHERE a = 99999;
+
+DROP TABLE bark_tab, bark_small, bark_empty, bark_ins;

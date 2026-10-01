@@ -54,8 +54,8 @@ barkinsert(Relation index, Datum *values, bool *isnull,
 		   IndexUniqueCheck checkUnique, bool indexUnchanged,
 		   IndexInfo *indexInfo)
 {
-	BARK_NOT_IMPLEMENTED();
-	return false;
+	return bark_insert(index, values, isnull, ht_ctid, heapRel,
+					   checkUnique, indexUnchanged, indexInfo);
 }
 
 static IndexBulkDeleteResult *
