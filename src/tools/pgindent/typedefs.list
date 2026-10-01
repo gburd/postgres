@@ -265,6 +265,8 @@ BarkKeyInfo
 BarkMetaPageData
 BarkPageState
 BarkSortArg
+BarkStack
+BarkStackData
 BarkBuildState
 BarkPageOpaque
 BarkPageOpaqueData
