@@ -302,4 +302,33 @@ extern IndexBuildResult *bark_build(Relation heap, Relation index,
 extern void bark_buildempty(Relation index);
 extern bool barkvalidate(Oid opclassoid);
 
+/*
+ * Search descent stack: the path from the root to a leaf, recorded during a
+ * search so an insert that splits the leaf can walk back up inserting the
+ * downlinks.  Each entry names the block visited and the offset of the
+ * downlink followed out of it.
+ */
+typedef struct BarkStackData
+{
+	BlockNumber bark_blkno;		/* internal page visited */
+	OffsetNumber bark_offset;	/* offset of the downlink followed */
+	struct BarkStackData *bark_parent;	/* next level up, or NULL at the root */
+} BarkStackData;
+
+typedef BarkStackData *BarkStack;
+
+/*
+ * Descend to the leaf that should contain `key`, returning that leaf's buffer
+ * (write-locked when forwrite) and, when stack is non-NULL, the parent path.
+ * key is an index tuple whose key columns are compared with bark_compare_itups.
+ */
+extern Buffer bark_search(Relation index, BarkKeyInfo *keyinfo,
+						  IndexTuple key, bool forwrite, BarkStack *stack);
+extern void bark_freestack(BarkStack stack);
+
+extern bool bark_insert(Relation index, Datum *values, bool *isnull,
+						 ItemPointer ht_ctid, Relation heapRel,
+						 IndexUniqueCheck checkUnique,
+						 bool indexUnchanged, IndexInfo *indexInfo);
+
 #endif							/* BARK_H */
