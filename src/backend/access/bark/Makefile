@@ -13,6 +13,9 @@ top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
 
 OBJS = \
-	bark.o
+	bark.o \
+	barksort.o \
+	barkutils.o \
+	barkvalidate.o
 
 include $(top_srcdir)/src/backend/common.mk
