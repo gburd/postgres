@@ -2036,4 +2036,18 @@
 { amprocfamily => 'brin/box_inclusion_ops', amproclefttype => 'box',
   amprocrighttype => 'box', amprocnum => '13', amproc => 'box_contain' },
 
+# BARK support functions.  Support function 1 is the ordering comparator
+# (btree's BTORDER_PROC convention); BARK reuses each type's existing btree
+# comparison function.
+{ amprocfamily => 'bark/integer_ops', amproclefttype => 'int2',
+  amprocrighttype => 'int2', amprocnum => '1', amproc => 'btint2cmp' },
+{ amprocfamily => 'bark/integer_ops', amproclefttype => 'int4',
+  amprocrighttype => 'int4', amprocnum => '1', amproc => 'btint4cmp' },
+{ amprocfamily => 'bark/integer_ops', amproclefttype => 'int8',
+  amprocrighttype => 'int8', amprocnum => '1', amproc => 'btint8cmp' },
+{ amprocfamily => 'bark/oid_ops', amproclefttype => 'oid',
+  amprocrighttype => 'oid', amprocnum => '1', amproc => 'btoidcmp' },
+{ amprocfamily => 'bark/text_ops', amproclefttype => 'text',
+  amprocrighttype => 'text', amprocnum => '1', amproc => 'bttextcmp' },
+
 ]

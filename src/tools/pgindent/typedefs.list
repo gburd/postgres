@@ -261,7 +261,12 @@ BackgroundWorkerSlot
 BackupState
 Barrier
 BarkEntryShape
+BarkKeyColumn
+BarkKeyInfo
 BarkMetaPageData
+BarkPageState
+BarkSortArg
+BarkBuildState
 BarkPageOpaque
 BarkPageOpaqueData
 BaseBackupCmd

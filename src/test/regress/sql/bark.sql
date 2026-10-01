@@ -1,28 +1,49 @@
 --
--- BARK index access method: skeleton registration.
+-- BARK index access method: registration, default opclasses, and build.
 --
--- At this point BARK is registered and recognized as a valid index access
--- method, but it has no operator classes and no implemented storage yet, so
--- an index cannot actually be created.  These tests pin that state: the AM
--- exists in the catalog, CREATE INDEX resolves it as a real AM (distinct from
--- an unknown AM), and it fails at operator-class resolution rather than being
--- rejected outright.
+-- BARK is registered as an index AM, provides default operator classes for
+-- the common scalar types (its operator families are btree operator
+-- families), and can build an index over a heap.  Inserting into an existing
+-- index and scanning are not implemented yet, so these tests exercise build
+-- only; the prohibitive cost estimate keeps the planner from choosing a BARK
+-- index meanwhile.
 --
 
--- The AM is registered in pg_am.
+-- The AM is registered in pg_am, with a valid index_am_handler.
 SELECT amname, amtype FROM pg_am WHERE amname = 'bark';
-
--- Its handler is a valid index_am_handler.
 SELECT amname, amhandler::regproc FROM pg_am WHERE amname = 'bark';
 
+-- An unknown AM is still rejected outright (contrast with bark below).
 CREATE TABLE bark_tab (a int, b text);
-
--- Contrast: an unknown AM is rejected outright ...
 CREATE INDEX ON bark_tab USING nosuchbark (a);
 
--- ... whereas BARK is a recognized AM, so CREATE INDEX gets as far as
--- operator-class resolution and fails there (BARK has no operator classes
--- yet).  This confirms the AM is registered and validated.
-CREATE INDEX ON bark_tab USING bark (a);
+-- BARK provides default operator classes, so CREATE INDEX resolves the
+-- opclass and builds the index.
+INSERT INTO bark_tab SELECT g, 'row' || g FROM generate_series(1, 2000) g;
+CREATE INDEX bark_int_idx ON bark_tab USING bark (a);
+CREATE INDEX bark_text_idx ON bark_tab USING bark (b);
 
-DROP TABLE bark_tab;
+-- The indexes exist and have pages (a meta page plus the tree).
+SELECT c.relname AS index, pg_relation_size(c.oid) > 0 AS has_storage
+FROM pg_index i
+  JOIN pg_class c ON c.oid = i.indexrelid
+WHERE i.indrelid = 'bark_tab'::regclass
+ORDER BY c.relname;
+
+-- Build over a tiny table (unsorted input) and an empty table both work.
+CREATE TABLE bark_small (a int);
+INSERT INTO bark_small VALUES (3), (1), (2);
+CREATE INDEX ON bark_small USING bark (a);
+
+CREATE TABLE bark_empty (a int);
+CREATE INDEX ON bark_empty USING bark (a);
+
+-- Multicolumn build.
+CREATE INDEX bark_multi_idx ON bark_tab USING bark (a, b);
+
+-- Scanning is not implemented yet: the planner never picks a BARK index
+-- (prohibitive cost), and forcing it is not possible since amgettuple errors.
+-- A query still works via a sequential scan.
+SELECT count(*) FROM bark_tab WHERE a = 1000;
+
+DROP TABLE bark_tab, bark_small, bark_empty;

@@ -493,4 +493,18 @@
 
 # no brin opclass for the geometric types except box
 
+# BARK default operator classes.  Each indexes one scalar type through a
+# BARK operator family whose members are the type's existing btree
+# comparison operators and support function (see pg_amop.dat / pg_amproc.dat).
+{ oid => '9465', opcmethod => 'bark', opcname => 'int2_ops',
+  opcfamily => 'bark/integer_ops', opcintype => 'int2' },
+{ oid => '9466', opcmethod => 'bark', opcname => 'int4_ops',
+  opcfamily => 'bark/integer_ops', opcintype => 'int4' },
+{ oid => '9467', opcmethod => 'bark', opcname => 'int8_ops',
+  opcfamily => 'bark/integer_ops', opcintype => 'int8' },
+{ oid => '9468', opcmethod => 'bark', opcname => 'oid_ops',
+  opcfamily => 'bark/oid_ops', opcintype => 'oid' },
+{ oid => '9469', opcmethod => 'bark', opcname => 'text_ops',
+  opcfamily => 'bark/text_ops', opcintype => 'text' },
+
 ]
