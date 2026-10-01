@@ -38,14 +38,13 @@
 static IndexBuildResult *
 barkbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 {
-	BARK_NOT_IMPLEMENTED();
-	return NULL;				/* keep compiler quiet */
+	return bark_build(heap, index, indexInfo);
 }
 
 static void
 barkbuildempty(Relation index)
 {
-	BARK_NOT_IMPLEMENTED();
+	bark_buildempty(index);
 }
 
 static bool
@@ -101,14 +100,8 @@ barkoptions(Datum reloptions, bool validate)
 }
 
 /*
- * Opclass validation.  Accept any opclass for now; the storage-format commit
- * will tighten this to what BARK can actually store.
+ * Opclass validation lives in barkvalidate.c.
  */
-static bool
-barkvalidate(Oid opclassoid)
-{
-	return true;
-}
 
 static IndexScanDesc
 barkbeginscan(Relation r, int nkeys, int norderbys)
@@ -159,8 +152,8 @@ barkhandler(PG_FUNCTION_ARGS)
 {
 	static const IndexAmRoutine amroutine = {
 		.type = T_IndexAmRoutine,
-		.amstrategies = 0,
-		.amsupport = 0,
+		.amstrategies = 5,
+		.amsupport = 1,
 		.amoptsprocnum = 0,
 		.amcanorder = true,
 		.ambtreeopfamilies = true,
