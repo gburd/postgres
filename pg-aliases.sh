@@ -451,6 +451,7 @@ pg-test-one() {
 	local outdir
 	outdir=$(mktemp -d /tmp/pg-test-one-XXXXXX)
 	echo "Test output: $outdir"
+	LD_LIBRARY_PATH="$bdir/tmp_install$PG_INSTALL_DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
 	"$bdir/src/test/regress/pg_regress" \
 		--bindir="$tmpbin" \
 		--inputdir="$PG_SOURCE_DIR/src/test/regress" \
@@ -548,6 +549,8 @@ pg-format() {
 	if [ ! -f "$PG_SOURCE_DIR/src/tools/pgindent/pgindent" ]; then
 		echo "Error: pgindent not found at $PG_SOURCE_DIR/src/tools/pgindent/pgindent"
 	else
+		# pgindent needs pg_bsd_indent; meson builds it in-tree.
+		export PATH="$PG_BUILD_DIR/src/tools/pg_bsd_indent:$PATH"
 
 		modified_files=$(git diff --name-only "${since}" | grep -E "\.c$|\.h$")
 
