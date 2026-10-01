@@ -548,6 +548,45 @@ extern "C++"
 #endif
 
 /*
+ * pg_prefetch
+ *
+ * Non-binding hint asking the CPU to begin fetching the cache line containing
+ * *addr into cache for a subsequent read.  It never affects correctness and is
+ * safe to drop on compilers that lack the intrinsic; use it only where a later
+ * dependent load is far enough ahead that hiding its latency measurably helps.
+ */
+#if defined(__GNUC__) || defined(__clang__)
+#define pg_prefetch(addr) __builtin_prefetch((addr), 0, 1)
+#else
+#define pg_prefetch(addr) ((void) 0)
+#endif
+
+/*
+ * pg_tailcall(call)
+ *
+ * Write "pg_tailcall(f(x));" in place of "return f(x);" where code is
+ * deliberately structured so that the call is a tail call, typically a
+ * recursion that must not grow the stack.  It marks the intent for readers,
+ * and on compilers that support the musttail attribute (clang 13+, gcc 15+)
+ * it also makes the compiler either emit a jump or fail the build, in every
+ * optimization mode.  That turns a later edit that silently breaks the tail
+ * call -- adding work after the call, or passing the address of a local --
+ * into a compile-time error.
+ *
+ * The call must have the same return type as the enclosing function, nothing
+ * may be done with its result, and no local variable's address may still be
+ * live across it.  Elsewhere this degrades to a plain return, which
+ * optimizing compilers will usually still turn into a jump.
+ */
+#if __has_attribute(musttail)
+/* the block keeps -Wdeclaration-after-statement quiet about the attribute */
+#define pg_tailcall(call) \
+	do { __attribute__((musttail)) return call; } while (0)
+#else
+#define pg_tailcall(call) return call
+#endif
+
+/*
  * When we call clang to generate bitcode, we might be using configure results
  * from a different compiler, which might not be fully compatible with the
  * clang we are using.  The fully correct solution would be to run a separate
