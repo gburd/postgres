@@ -14,6 +14,8 @@ include $(top_builddir)/src/Makefile.global
 
 OBJS = \
 	bark.o \
+	barkinsert.o \
+	barksearch.o \
 	barksort.o \
 	barkutils.o \
 	barkvalidate.o
