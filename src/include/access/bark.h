@@ -84,6 +84,23 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
 #define BarkPageIsDeleted(opaque)	(((opaque)->bark_flags & BARK_DELETED) != 0)
 #define BarkPageIsMeta(opaque)		(((opaque)->bark_flags & BARK_META) != 0)
 
+/*
+ * A page is leftmost / rightmost at its level when it has no left / right
+ * sibling.  A non-rightmost page carries a high key -- an upper bound on the
+ * keys it may hold -- as its first item (BARK_P_HIKEY); real data then starts
+ * at BARK_P_FIRSTKEY.  The rightmost page has no high key (its implicit upper
+ * bound is +infinity), so its data starts at BARK_P_HIKEY.  This is nbtree's
+ * Lehman & Yao layout, which lets a scan detect a concurrent split by
+ * comparing its key against the high key and following the right link.
+ */
+#define BarkPageLeftmost(opaque)	((opaque)->bark_prev == BARK_P_NONE)
+#define BarkPageRightmost(opaque)	((opaque)->bark_next == BARK_P_NONE)
+
+#define BARK_P_HIKEY		((OffsetNumber) 1)	/* high key, if present */
+#define BARK_P_FIRSTKEY		((OffsetNumber) 2)	/* first data item after it */
+#define BarkPageFirstDataKey(opaque) \
+	(BarkPageRightmost(opaque) ? BARK_P_HIKEY : BARK_P_FIRSTKEY)
+
 /* ----------------------------------------------------------------------------
  * Meta page
  *
@@ -94,6 +111,16 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
 #define BARK_METAPAGE		0	/* block number of the meta page */
 #define BARK_MAGIC			0x5241424B	/* "BARK" as a big-endian uint32 */
 #define BARK_VERSION		1	/* current on-disk version */
+
+/*
+ * BARK uses the btree strategy numbers and support-function convention (its
+ * operator families are btree operator families; see ambtreeopfamilies).
+ * Strategies 1..5 are <, <=, =, >=, >; support function 1 is the ordering
+ * comparator (btree's BTORDER_PROC).
+ */
+#define BARK_NSTRATEGIES	5	/* number of strategies (btree's set) */
+#define BARK_NPROCS			1	/* number of support functions */
+#define BARK_ORDER_PROC		1	/* support function 1: 3-way comparator */
 
 typedef struct BarkMetaPageData
 {
@@ -198,5 +225,81 @@ BarkEntryIsAltTID(const IndexTupleData *itup)
 {
 	return (itup->t_info & INDEX_AM_RESERVED_BIT) != 0;
 }
+
+/* ----------------------------------------------------------------------------
+ * PIVOT entry accessors (internal downlinks and page high keys)
+ *
+ * A pivot tuple sets the alt-TID bit; its t_tid offset-number field carries
+ * BARK_PIVOT_META in the status bits and the number of key attributes present
+ * (after suffix truncation) in the low BARK_OFFSET_MASK bits, and the t_tid
+ * block-number field carries the child block for a downlink.  This mirrors
+ * nbtree's pivot encoding exactly, so the bit layout in itemptr.h is shared.
+ * ----------------------------------------------------------------------------
+ */
+
+/* Number of key attributes recorded in a pivot tuple. */
+static inline uint16
+BarkPivotGetNAtts(const IndexTupleData *itup)
+{
+	return (ItemPointerGetOffsetNumberNoCheck(&itup->t_tid) &
+			BARK_OFFSET_MASK);
+}
+
+/* Stamp a pivot tuple's status bits and attribute count into t_tid. */
+static inline void
+BarkPivotSetNAtts(IndexTupleData *itup, uint16 natts)
+{
+	Assert((natts & BARK_STATUS_OFFSET_MASK) == 0);
+	itup->t_info |= INDEX_AM_RESERVED_BIT;
+	ItemPointerSetOffsetNumber(&itup->t_tid,
+							   (OffsetNumber) (natts | BARK_PIVOT_META));
+}
+
+/* Downlink: the child block a pivot on an internal page points at. */
+static inline BlockNumber
+BarkPivotGetDownLink(const IndexTupleData *itup)
+{
+	return ItemPointerGetBlockNumberNoCheck(&itup->t_tid);
+}
+
+static inline void
+BarkPivotSetDownLink(IndexTupleData *itup, BlockNumber blkno)
+{
+	ItemPointerSetBlockNumber(&itup->t_tid, blkno);
+}
+
+/* ----------------------------------------------------------------------------
+ * Shared prototypes (bark.c, barkutils.c, barksort.c, barkvalidate.c)
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Per-column comparison state for a BARK index: the ordering comparator
+ * FmgrInfo for each key column, with its collation and sort direction, built
+ * once from the index's operator class and reused for every comparison during
+ * a build or search.
+ */
+typedef struct BarkKeyColumn
+{
+	FmgrInfo	cmp;			/* support function 1 (3-way comparator) */
+	Oid			collation;		/* collation to pass to the comparator */
+	bool		reverse;		/* DESC: invert the comparison result */
+	bool		nulls_first;	/* NULLs sort before non-NULLs */
+} BarkKeyColumn;
+
+typedef struct BarkKeyInfo
+{
+	int			nkeys;			/* number of key columns */
+	BarkKeyColumn cols[FLEXIBLE_ARRAY_MEMBER];
+} BarkKeyInfo;
+
+extern BarkKeyInfo *bark_build_keyinfo(Relation index);
+extern int	bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
+							   IndexTuple a, IndexTuple b);
+
+extern IndexBuildResult *bark_build(Relation heap, Relation index,
+									IndexInfo *indexInfo);
+extern void bark_buildempty(Relation index);
+extern bool barkvalidate(Oid opclassoid);
 
 #endif							/* BARK_H */
