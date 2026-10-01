@@ -4,33 +4,6 @@
   system,
   libumemPkg,
 }: let
-  # Create a patched glibc only for the dev shell.
-  #
-  # Glibc's features.h emits a `-Wcpp` diagnostic when _FORTIFY_SOURCE is
-  # defined without an optimization level.  Meson's dependency probes
-  # (notably the libcurl thread-safety check) compile small snippets with
-  # `-O0 -Werror` under the nixpkgs hardening defaults, which turns that cpp
-  # warning into a hard error and breaks reconfigure.  The patch drops the
-  # warning.  It is scoped to this dev shell only and never leaks into system
-  # glibc or release builds.
-  # Patch glibc's features.h to drop a -Wcpp warning.
-  #
-  # Glibc's features.h emits a `-Wcpp` diagnostic when _FORTIFY_SOURCE is
-  # defined without an optimization level.  Meson's dependency probes
-  # (notably the libcurl thread-safety check) compile small snippets with
-  # `-O0 -Werror` under the nixpkgs hardening defaults, which turns that cpp
-  # warning into a hard error and breaks reconfigure.  The patch drops the
-  # warning.  It is scoped to this dev shell only and never leaks into system
-  # glibc or release builds.  Kept on the stable nixpkgs glibc so it matches
-  # the shell's base tools and the (stable-following) libumem input.
-  patchedGlibc = pkgs.glibc.overrideAttrs (oldAttrs: {
-    patches =
-      (oldAttrs.patches or [])
-      ++ [
-        ./glibc-no-fortify-warning.patch
-      ];
-  });
-
   # Modern toolchain, pinned to nixpkgs-unstable.
   gccPkg = pkgs-unstable.gcc16;
   gdbPkg = pkgs-unstable.gdb;
@@ -146,8 +119,6 @@
       openldap
       liburing
       libselinux
-      patchedGlibc
-      patchedGlibc.dev
     ];
 
   # GDB configuration for PostgreSQL debugging
@@ -652,6 +623,10 @@
   # Development shell (GCC 16 + glibc)
   devShell = pkgs.mkShell {
     name = "postgresql-dev";
+    # Meson probes compile with -O0 -Werror; glibc's fortify-without-O
+    # warning would fail them.  Drop fortify rather than carry a patched
+    # glibc, which collided with the glibc gcc16 (unstable) links against.
+    hardeningDisable = ["fortify" "fortify3"];
     buildInputs =
       postgreSQLDeps
       ++ [
@@ -692,6 +667,7 @@
   # Clang 22 + glibc variant
   clangDevShell = pkgs.mkShell {
     name = "postgresql-clang-glibc";
+    hardeningDisable = ["fortify" "fortify3"];
     buildInputs =
       postgreSQLDeps
       ++ [
