@@ -309,4 +309,12 @@
 { oid => '6158',
   opfmethod => 'gist', opfname => 'multirange_ops' },
 
+# BARK operator families.  BARK's operator families are btree operator
+# families (ambtreeopfamilies): they use the btree strategy numbers and the
+# same underlying comparison functions, so an existing scalar type can be
+# indexed by BARK with no new operators or support functions of its own.
+{ oid => '9462', opfmethod => 'bark', opfname => 'integer_ops' },
+{ oid => '9463', opfmethod => 'bark', opfname => 'oid_ops' },
+{ oid => '9464', opfmethod => 'bark', opfname => 'text_ops' },
+
 ]

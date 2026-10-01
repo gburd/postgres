@@ -2114,7 +2114,12 @@ ORDER BY 1, 2, 3;
        4000 |           28 | ^@
        4000 |           29 | <^
        4000 |           30 | >^
-(124 rows)
+       9460 |            1 | <
+       9460 |            2 | <=
+       9460 |            3 | =
+       9460 |            4 | >=
+       9460 |            5 | >
+(129 rows)
 
 -- Check that all opclass search operators have selectivity estimators.
 -- This is not absolutely required, but it seems a reasonable thing
