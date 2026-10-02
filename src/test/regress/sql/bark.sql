@@ -332,4 +332,39 @@ RESET enable_indexscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_post;
 
+-- BitmapAnd / BitmapOr: a BARK bitmap scan must produce an exact TIDBitmap
+-- that the executor can combine with other bitmaps.  Build two BARK indexes
+-- (and one btree) on one table and check that AND/OR plans over them -- plus a
+-- bark+btree mix -- return exactly what a sequential scan does, with no heap
+-- recheck (BARK is exact).
+CREATE TABLE bark_bmap (a int, b int, c int);
+INSERT INTO bark_bmap
+  SELECT g % 100, g % 30, g % 7 FROM generate_series(1, 30000) g;
+CREATE INDEX bark_bmap_a ON bark_bmap USING bark (a);
+CREATE INDEX bark_bmap_b ON bark_bmap USING bark (b);
+CREATE INDEX bark_bmap_c ON bark_bmap USING btree (c);
+SET enable_seqscan = off;
+SET enable_indexscan = off;
+SET enable_bitmapscan = on;
+-- BitmapAnd over two BARK indexes; the heap scan recheck is skipped (exact).
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bark_bmap WHERE a = 10 AND b = 10;
+SELECT count(*) AS and_idx FROM bark_bmap WHERE a = 10 AND b = 10;
+-- BitmapOr over two BARK indexes.
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bark_bmap WHERE a = 10 OR b = 5;
+SELECT count(*) AS or_idx FROM bark_bmap WHERE a = 10 OR b = 5;
+-- Mixed: BARK AND btree, and a three-way OR across both AMs.
+SELECT count(*) AS andmix_idx FROM bark_bmap WHERE a = 10 AND c = 3;
+SELECT count(*) AS or3_idx FROM bark_bmap WHERE a = 10 OR b = 5 OR c = 3;
+-- Differential against a sequential scan: every count must match exactly.
+SET enable_bitmapscan = off;
+SET enable_seqscan = on;
+SELECT count(*) AS and_seq FROM bark_bmap WHERE a = 10 AND b = 10;
+SELECT count(*) AS or_seq FROM bark_bmap WHERE a = 10 OR b = 5;
+SELECT count(*) AS andmix_seq FROM bark_bmap WHERE a = 10 AND c = 3;
+SELECT count(*) AS or3_seq FROM bark_bmap WHERE a = 10 OR b = 5 OR c = 3;
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_bmap;
+
 DROP TABLE bark_tab, bark_small, bark_empty, bark_ins, bark_scan;
