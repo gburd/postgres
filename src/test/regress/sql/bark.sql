@@ -443,3 +443,98 @@ RESET max_parallel_workers_per_gather;
 DROP TABLE bark_pscan;
 
 DROP TABLE bark_tab, bark_small, bark_empty, bark_ins, bark_scan;
+
+-- ===========================================================================
+-- Oversized keys (P04): a key larger than BarkMaxItemSize is stored on an
+-- overflow page chain, transparently to compare / scan / dedup / uniqueness /
+-- vacuum.  nbtree errors on such a key; BARK indexes it.  Keys are built from a
+-- deterministic md5 chain so they are incompressible (really exceed the item
+-- ceiling, not merely large) and the test output is reproducible.
+-- ===========================================================================
+
+-- Deterministic incompressible string of ~n bytes, seeded by s (repeatable).
+CREATE FUNCTION bark_bigstr(s int, n int) RETURNS text
+  LANGUAGE sql IMMUTABLE AS
+$$ SELECT substr(string_agg(md5(s::text || g::text), ''), 1, n)
+   FROM generate_series(1, (n + 31) / 32) g $$;
+
+-- A mix of small keys and oversized keys (prefix-distinct), built by CREATE
+-- INDEX (the bulk loader's oversized second pass) over an already-filled heap.
+CREATE TABLE bark_big (id int, k text);
+INSERT INTO bark_big SELECT g, 'small-' || lpad(g::text, 6, '0')
+  FROM generate_series(1, 40) g;
+INSERT INTO bark_big SELECT 100 + g,
+  'K' || lpad(g::text, 6, '0') || bark_bigstr(g, 5000)
+  FROM generate_series(1, 30) g;
+CREATE INDEX bark_big_idx ON bark_big USING bark (k);
+
+-- Insert more oversized keys into the built index, forcing leaf splits of
+-- pages that hold oversized entries (and oversized pivots on internal pages).
+INSERT INTO bark_big SELECT 200 + g,
+  'M' || lpad(g::text, 6, '0') || bark_bigstr(1000 + g, 6000)
+  FROM generate_series(1, 40) g;
+
+-- Counts and the ordered-scan hash must match a sequential scan exactly: this
+-- is the transparency proof (ordering of oversized keys == full-value order).
+SET enable_seqscan = off;
+SELECT count(*) AS idx_total FROM bark_big;
+SELECT count(*) AS idx_oversized FROM bark_big WHERE k >= 'K';
+SELECT md5(string_agg(id::text, ',' ORDER BY k)) AS idx_order_hash FROM bark_big;
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS seq_total FROM bark_big;
+SELECT count(*) AS seq_oversized FROM bark_big WHERE k >= 'K';
+SELECT md5(string_agg(id::text, ',' ORDER BY k)) AS seq_order_hash FROM bark_big;
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+
+-- Keys sharing a long common prefix but differing only in the tail: a
+-- prefix-only compare would wrongly tie them.  Equality must find exactly one,
+-- and index order must equal full-value order.
+CREATE TABLE bark_pfx (id int, k text);
+INSERT INTO bark_pfx SELECT g, repeat('P', 5000) || lpad(g::text, 8, '0')
+  FROM generate_series(1, 50) g;
+CREATE INDEX bark_pfx_idx ON bark_pfx USING bark (k);
+SET enable_seqscan = off;
+SELECT id FROM bark_pfx WHERE k = repeat('P', 5000) || lpad('23', 8, '0');
+SELECT md5(string_agg(id::text, ',' ORDER BY k)) AS pfx_idx_hash FROM bark_pfx;
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SELECT md5(string_agg(id::text, ',' ORDER BY k)) AS pfx_seq_hash FROM bark_pfx;
+RESET enable_seqscan;
+RESET enable_indexscan;
+
+-- Truly huge keys (20KB, 64KB): larger than a single page, multi-page overflow
+-- chain.  Both index_form_tuple and nbtree reject these outright.
+CREATE TABLE bark_huge (id int, k text);
+INSERT INTO bark_huge VALUES (1, bark_bigstr(1, 20000));
+INSERT INTO bark_huge VALUES (2, bark_bigstr(2, 65000));
+INSERT INTO bark_huge VALUES (3, 'tiny');
+CREATE INDEX bark_huge_idx ON bark_huge USING bark (k);
+SET enable_seqscan = off;
+SELECT id, length(k) FROM bark_huge ORDER BY k;
+SELECT id FROM bark_huge WHERE k = bark_bigstr(2, 65000);
+RESET enable_seqscan;
+
+-- Uniqueness over oversized keys: a duplicate oversized key must be rejected.
+CREATE TABLE bark_uniq (k text);
+INSERT INTO bark_uniq VALUES (bark_bigstr(7, 5000));
+CREATE UNIQUE INDEX bark_uniq_idx ON bark_uniq USING bark (k);
+INSERT INTO bark_uniq VALUES (bark_bigstr(7, 5000));  -- duplicate: must error
+
+-- Delete + VACUUM must reclaim overflow pages (mark them deleted) and leave the
+-- index consistent; the remaining rows must still scan correctly.
+DELETE FROM bark_big WHERE id > 200;
+VACUUM bark_big;
+SET enable_seqscan = off;
+SELECT count(*) AS idx_after_vacuum FROM bark_big;
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SELECT count(*) AS seq_after_vacuum FROM bark_big;
+RESET enable_seqscan;
+RESET enable_indexscan;
+
+DROP TABLE bark_big, bark_pfx, bark_huge, bark_uniq;
+DROP FUNCTION bark_bigstr(int, int);
