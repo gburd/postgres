@@ -129,17 +129,21 @@ bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
 				   IndexTuple a, IndexTuple b)
 {
 	TupleDesc	tupdesc = RelationGetDescr(index);
-	int			na = BarkEntryIsAltTID(a) ? BarkPivotGetNAtts(a) : keyinfo->nkeys;
-	int			nb = BarkEntryIsAltTID(b) ? BarkPivotGetNAtts(b) : keyinfo->nkeys;
+	int			na = (BarkEntryGetShape(a) == BARK_SHAPE_PIVOT) ? BarkPivotGetNAtts(a) : keyinfo->nkeys;
+	int			nb = (BarkEntryGetShape(b) == BARK_SHAPE_PIVOT) ? BarkPivotGetNAtts(b) : keyinfo->nkeys;
 	int			ncmp = Min(na, nb);
 
 	/*
-	 * Compare the key attributes both tuples carry.  A pivot tuple may have
-	 * been truncated to fewer attributes (BarkPivotGetNAtts); the leftmost
-	 * downlink on an internal page is the extreme case, a minus-infinity
-	 * pivot with zero key attributes.  Such a tuple compares less than any
-	 * tuple that agrees on the attributes they share but has more of them,
-	 * which is what keeps a minus-infinity downlink first in key order.
+	 * Compare the key attributes both tuples carry.  Only a PIVOT tuple may
+	 * have been truncated to fewer attributes (BarkPivotGetNAtts); the
+	 * leftmost downlink on an internal page is the extreme case, a
+	 * minus-infinity pivot with zero key attributes.  Such a tuple compares
+	 * less than any tuple that agrees on the attributes they share but has
+	 * more of them, which keeps a minus-infinity downlink first in key order.
+	 * LIST and POSTING entries also set the alt-TID bit, but their offset-field
+	 * low bits hold a locator count, not an attribute count -- they carry the
+	 * full set of key attributes, exactly like a SINGLE entry, so they compare
+	 * on all nkeys.
 	 */
 	for (int i = 0; i < ncmp; i++)
 	{
@@ -175,4 +179,119 @@ bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
 	if (na != nb)
 		return (na < nb) ? -1 : 1;
 	return 0;
+}
+
+/* ----------------------------------------------------------------------------
+ * LIST entry construction and reading
+ *
+ * A LIST entry stores one key with many heap locators.  It is a SINGLE-shape
+ * key tuple (header + attribute data) extended with an ascending, duplicate-
+ * free array of ItemPointerData locators appended after the key, starting at
+ * the MAXALIGNed end of the key prefix.  The alt-TID bit is set with
+ * BARK_IS_LIST; the t_tid offset field carries the locator count and the t_tid
+ * block field records the body offset (so the key/body split point is O(1)
+ * recoverable even though t_info's size covers the whole entry).
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Form a LIST entry from a SINGLE-shape key tuple and `ntids` ascending,
+ * distinct locators.  The key's own t_tid is overwritten with the LIST status
+ * bits, count, and body offset.  Returns a palloc'd entry.
+ */
+IndexTuple
+bark_form_list(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids)
+{
+	Size		keysz = IndexTupleSize(key);
+	Size		bodyoff = MAXALIGN(keysz);
+	Size		total = bodyoff + ntids * sizeof(ItemPointerData);
+	IndexTuple	entry;
+
+	Assert(ntids >= 1 && ntids <= BARK_LIST_MAX_COUNT);
+	Assert(bodyoff <= BARK_OFFSET_MASK);		/* fits a uint16 body offset */
+	Assert(total <= INDEX_SIZE_MASK);
+
+	entry = (IndexTuple) palloc0(total);
+	memcpy(entry, key, keysz);
+
+	/* Record the whole-entry size in t_info, preserving the null bitmap bit. */
+	entry->t_info = (key->t_info & ~INDEX_SIZE_MASK) | (uint16) total;
+
+	/* Stamp the alt-TID status, count, and body offset into t_tid. */
+	entry->t_info |= INDEX_AM_RESERVED_BIT;
+	ItemPointerSetOffsetNumber(&entry->t_tid,
+							   (OffsetNumber) ((uint16) ntids | BARK_IS_LIST));
+	BarkEntrySetBodyOffset(entry, (uint16) bodyoff);
+
+	memcpy(BarkListGetTIDArray(entry), tids, ntids * sizeof(ItemPointerData));
+	return entry;
+}
+
+/* Number of heap locators a leaf entry holds (SINGLE = 1, LIST = count). */
+int
+bark_entry_count_tids(IndexTuple itup)
+{
+	switch (BarkEntryGetShape(itup))
+	{
+		case BARK_SHAPE_SINGLE:
+			return 1;
+		case BARK_SHAPE_LIST:
+			return BarkListGetCount(itup);
+		default:
+			elog(ERROR, "BARK leaf entry has unexpected shape %d",
+				 (int) BarkEntryGetShape(itup));
+			return 0;			/* keep the compiler happy */
+	}
+}
+
+/*
+ * Copy a leaf entry's heap locators, ascending, into `out` (capacity maxout).
+ * Returns the number written.  SINGLE yields its single t_tid; LIST yields its
+ * stored array verbatim (already ascending).
+ */
+int
+bark_entry_get_tids(IndexTuple itup, ItemPointer out, int maxout)
+{
+	switch (BarkEntryGetShape(itup))
+	{
+		case BARK_SHAPE_SINGLE:
+			Assert(maxout >= 1);
+			out[0] = itup->t_tid;
+			return 1;
+		case BARK_SHAPE_LIST:
+			{
+				int			n = BarkListGetCount(itup);
+
+				Assert(maxout >= n);
+				memcpy(out, BarkListGetTIDArray(itup),
+					   n * sizeof(ItemPointerData));
+				return n;
+			}
+		default:
+			elog(ERROR, "BARK leaf entry has unexpected shape %d",
+				 (int) BarkEntryGetShape(itup));
+			return 0;
+	}
+}
+
+/*
+ * Reform a clean SINGLE-shape key tuple from any leaf entry.  The key and
+ * INCLUDE attributes sit at the front of every leaf shape, so deforming with
+ * the index tuple descriptor and reforming yields a tuple with no appended
+ * body and no alt-TID status.  When `tid` is given it becomes the result's
+ * locator (SINGLE shape); otherwise the caller sets t_tid itself.
+ */
+IndexTuple
+bark_single_from_list(Relation index, IndexTuple entry, ItemPointer tid)
+{
+	TupleDesc	tupdesc = RelationGetDescr(index);
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+	IndexTuple	single;
+
+	index_deform_tuple(entry, tupdesc, values, isnull);
+	single = index_form_tuple(tupdesc, values, isnull);
+	if (tid != NULL)
+		single->t_tid = *tid;
+	return single;
 }

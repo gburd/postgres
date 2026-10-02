@@ -92,6 +92,9 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		OffsetNumber maxoff;
 		OffsetNumber todelete[MaxOffsetNumber];
 		int			ndelete = 0;
+		int			ndelete_single = 0;
+		GenericXLogState *gstate = NULL;
+		Page		p = NULL;
 
 		vacuum_delay_point(false);
 
@@ -109,25 +112,103 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 
 		opaque = BarkPageGetOpaque(page);
 		maxoff = PageGetMaxOffsetNumber(page);
+
+		/*
+		 * First pass: shrink LIST entries that lost some (but not all) members
+		 * in place with PageIndexTupleOverwrite, which keeps every offset
+		 * number stable (it only moves the item data).  Fully-dead entries
+		 * (SINGLE whose TID is dead, or LIST whose every member is dead) are
+		 * recorded for the MultiDelete pass below.  Doing the shrinks first and
+		 * the deletes last means the recorded offsets stay valid until the
+		 * single MultiDelete renumbers them.
+		 */
 		for (OffsetNumber off = BarkPageFirstDataKey(opaque);
 			 off <= maxoff; off = OffsetNumberNext(off))
 		{
 			ItemId		iid = PageGetItemId(page, off);
 			IndexTuple	itup = (IndexTuple) PageGetItem(page, iid);
 
-			if (callback(&itup->t_tid, callback_state))
-				todelete[ndelete++] = off;
+			if (BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE)
+			{
+				if (callback(&itup->t_tid, callback_state))
+				{
+					todelete[ndelete++] = off;
+					ndelete_single++;
+				}
+			}
+			else
+			{
+				ItemPointerData tids[MaxOffsetNumber];
+				int			ntids = bark_entry_get_tids(itup, tids,
+														   MaxOffsetNumber);
+				int			nlive = 0;
+
+				for (int i = 0; i < ntids; i++)
+				{
+					if (!callback(&tids[i], callback_state))
+						tids[nlive++] = tids[i];
+				}
+
+				if (nlive == ntids)
+					continue;	/* nothing dead in this entry */
+
+				stats->tuples_removed += ntids - nlive;
+
+				if (nlive == 0)
+				{
+					todelete[ndelete++] = off;	/* whole entry dies */
+					continue;
+				}
+
+				if (gstate == NULL)
+				{
+					gstate = GenericXLogStart(index);
+					p = GenericXLogRegisterBuffer(gstate, buf, 0);
+					page = p;	/* overwrite/delete on the registered copy */
+				}
+
+				{
+					/*
+					 * Rebuild with the live members: a shrunken LIST, or a plain
+					 * SINGLE when exactly one survives.  Both are no larger than
+					 * the original entry, so PageIndexTupleOverwrite fits in place.
+					 */
+					IndexTuple	key = bark_single_from_list(index, itup, NULL);
+					IndexTuple	newentry;
+
+					if (nlive == 1)
+					{
+						newentry = key;
+						newentry->t_tid = tids[0];
+					}
+					else
+					{
+						newentry = bark_form_list(RelationGetDescr(index), key,
+												  tids, nlive);
+						pfree(key);
+					}
+					if (!PageIndexTupleOverwrite(page, off, (char *) newentry,
+												 IndexTupleSize(newentry)))
+						elog(ERROR, "failed to shrink BARK list entry during vacuum");
+					pfree(newentry);
+				}
+			}
 		}
 
 		if (ndelete > 0)
 		{
-			GenericXLogState *gstate = GenericXLogStart(index);
-			Page		p = GenericXLogRegisterBuffer(gstate, buf, 0);
-
-			PageIndexMultiDelete(p, todelete, ndelete);
-			GenericXLogFinish(gstate);
-			stats->tuples_removed += ndelete;
+			if (gstate == NULL)
+			{
+				gstate = GenericXLogStart(index);
+				p = GenericXLogRegisterBuffer(gstate, buf, 0);
+				page = p;
+			}
+			PageIndexMultiDelete(page, todelete, ndelete);
+			stats->tuples_removed += ndelete_single;
 		}
+
+		if (gstate != NULL)
+			GenericXLogFinish(gstate);
 
 		UnlockReleaseBuffer(buf);
 	}

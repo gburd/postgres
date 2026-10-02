@@ -33,6 +33,7 @@
 #include "access/itup.h"
 #include "access/tableam.h"
 #include "miscadmin.h"
+#include "nodes/execnodes.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
@@ -68,6 +69,36 @@ bark_leaf_insert_off(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 }
 
 /*
+ * Produce a clean key-only tuple (SINGLE shape, no appended body) from any
+ * leaf entry.  A LIST or POSTING entry's key attributes sit at the front, just
+ * like a SINGLE entry, but it carries extra body bytes and alt-TID status in
+ * t_tid; a pivot formed from it must drop both.  index_truncate_tuple's
+ * "easy case" (leavenatts == natts, i.e. a key-only index) would otherwise
+ * copy the body verbatim, so reform the key attributes explicitly here.  For a
+ * SINGLE or already-pivot source there is nothing extra to strip and we hand
+ * the source back unchanged.
+ */
+static IndexTuple
+bark_strip_to_key(Relation index, IndexTuple src, bool *allocated)
+{
+	*allocated = false;
+	if (BarkEntryGetShape(src) == BARK_SHAPE_LIST ||
+		BarkEntryGetShape(src) == BARK_SHAPE_POSTING)
+	{
+		TupleDesc	tupdesc = RelationGetDescr(index);
+		Datum		values[INDEX_MAX_KEYS];
+		bool		isnull[INDEX_MAX_KEYS];
+		IndexTuple	key;
+
+		index_deform_tuple(src, tupdesc, values, isnull);
+		key = index_form_tuple(tupdesc, values, isnull);
+		*allocated = true;
+		return key;
+	}
+	return src;
+}
+
+/*
  * A pivot (downlink) tuple: a key truncated to its key attributes, carrying
  * natts + a child block.  Non-key INCLUDE attributes (and any lower-key
  * suffix) are physically removed with index_truncate_tuple so they do not
@@ -77,9 +108,13 @@ static IndexTuple
 bark_make_downlink(Relation index, IndexTuple key, BlockNumber child,
 				   int nkeyatts)
 {
-	IndexTuple	pivot = index_truncate_tuple(RelationGetDescr(index), key,
+	bool		allocated;
+	IndexTuple	src = bark_strip_to_key(index, key, &allocated);
+	IndexTuple	pivot = index_truncate_tuple(RelationGetDescr(index), src,
 											 nkeyatts);
 
+	if (allocated)
+		pfree(src);
 	BarkPivotSetNAtts(pivot, (uint16) nkeyatts);
 	BarkPivotSetDownLink(pivot, child);
 	return pivot;
@@ -89,9 +124,13 @@ bark_make_downlink(Relation index, IndexTuple key, BlockNumber child,
 static IndexTuple
 bark_make_hikey(Relation index, IndexTuple key, int nkeyatts)
 {
-	IndexTuple	hikey = index_truncate_tuple(RelationGetDescr(index), key,
+	bool		allocated;
+	IndexTuple	src = bark_strip_to_key(index, key, &allocated);
+	IndexTuple	hikey = index_truncate_tuple(RelationGetDescr(index), src,
 											 nkeyatts);
 
+	if (allocated)
+		pfree(src);
 	BarkPivotSetNAtts(hikey, (uint16) nkeyatts);
 	BarkPivotSetDownLink(hikey, BARK_P_NONE);
 	return hikey;
@@ -685,6 +724,22 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 	*is_unique = true;
 	InitDirtySnapshot(SnapshotDirty);
 
+	/*
+	 * The scan below only moves right from the insert leaf (where the insert
+	 * descent, nextkey=true, lands -- the leaf holding the position just past
+	 * the last key equal to itup's).  This finds every conflicting entry
+	 * because of how BARK inserts: a new entry for a key always goes at the
+	 * END of that key's run, so any existing live entry for the same key sits
+	 * at or after the first equal entry on the insert leaf and is reachable by
+	 * scanning right.  Dead, not-yet-vacuumed duplicates may extend the run
+	 * left across earlier leaves, but the single live survivor cannot be left
+	 * of the insert leaf's first equal entry.
+	 *
+	 * ponytail: this relies on the insert descent using nextkey=true.  If the
+	 * insert positioning ever changes so the live entry could land strictly
+	 * left of the descent leaf, this check must first walk left to the first
+	 * leaf of the equal-key run (or descend the check with nextkey=false).
+	 */
 	for (;;)
 	{
 		Page		page = BufferGetPage(curbuf);
@@ -808,6 +863,110 @@ done:
 	return InvalidTransactionId;
 }
 
+/*
+ * Try to coalesce `newtid` into an existing leaf entry on `buf` that has the
+ * same key as `key` (a SINGLE-shape key tuple), forming or extending a LIST,
+ * rather than adding another SINGLE entry.  Returns true and performs the
+ * replacement (WAL-logged) when it coalesced; returns false (page unchanged)
+ * when there is no equal entry, or when the resulting LIST would be too large
+ * -- in which case the caller inserts a plain SINGLE and the duplicates stay
+ * as separate entries.
+ *
+ * Only called for non-unique indexes: a unique index never legitimately holds
+ * two live tuples with the same key, so it never forms a LIST.  `off` is the
+ * leaf insert position (one past the last entry <= key), so the candidate
+ * equal entry, if any, is at off-1.
+ *
+ * ponytail: the size ceiling is BarkMaxItemSize (~1/3 page).  A key with more
+ * duplicates than fit in one LIST keeps the overflow as separate entries
+ * until A11 promotes the run to a POSTING set; both are correct, LIST is just
+ * the compact form up to the ceiling.
+ */
+static bool
+bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
+				   ItemPointer newtid, Buffer buf, OffsetNumber off)
+{
+	Page		page = BufferGetPage(buf);
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	OffsetNumber firstdata = BarkPageFirstDataKey(opaque);
+	OffsetNumber eqoff;
+	ItemId		iid;
+	IndexTuple	cur;
+	ItemPointerData tids[MaxOffsetNumber];
+	int			nold;
+	int			nnew;
+	int			ins;
+	IndexTuple	list;
+	Size		listsz;
+
+	/* No entry precedes the insert point: nothing to coalesce with. */
+	if (off <= firstdata)
+		return false;
+	eqoff = OffsetNumberPrev(off);
+	iid = PageGetItemId(page, eqoff);
+	cur = (IndexTuple) PageGetItem(page, iid);
+
+	/* Only coalesce with a leaf-data entry whose key equals the new key. */
+	if (!BarkEntryIsLeafData(cur) ||
+		bark_compare_itups(keyinfo, index, key, cur) != 0)
+		return false;
+
+	/* Gather the existing locators plus the new one, in ascending order. */
+	nold = bark_entry_get_tids(cur, tids, MaxOffsetNumber);
+	if (nold >= BARK_LIST_MAX_COUNT)
+		return false;			/* count field is full: keep separate */
+
+	/* Insert newtid keeping the array sorted and distinct. */
+	for (ins = 0; ins < nold; ins++)
+	{
+		int			c = ItemPointerCompare(newtid, &tids[ins]);
+
+		if (c == 0)
+			return true;		/* already present (should not happen): done */
+		if (c < 0)
+			break;
+	}
+	memmove(&tids[ins + 1], &tids[ins],
+			(nold - ins) * sizeof(ItemPointerData));
+	tids[ins] = *newtid;
+	nnew = nold + 1;
+
+	/* Build the candidate LIST and check it against the page item ceiling. */
+	list = bark_form_list(RelationGetDescr(index), key, tids, nnew);
+	listsz = MAXALIGN(IndexTupleSize(list));
+	if (listsz > BarkMaxItemSize)
+	{
+		pfree(list);
+		return false;			/* too big for one entry: keep separate */
+	}
+
+	/*
+	 * The LIST replaces the old entry.  Removing the old entry and adding the
+	 * larger LIST must fit: the net growth is listsz minus the old item's
+	 * size.  PageGetFreeSpace plus the reclaimed old slot must cover it.
+	 */
+	if (PageGetFreeSpace(page) + MAXALIGN(ItemIdGetLength(iid)) < listsz)
+	{
+		pfree(list);
+		return false;			/* no room to grow here: caller splits */
+	}
+
+	{
+		GenericXLogState *gstate = GenericXLogStart(index);
+		Page		p = GenericXLogRegisterBuffer(gstate, buf, 0);
+		OffsetNumber deloff = eqoff;
+
+		PageIndexMultiDelete(p, &deloff, 1);
+		if (PageAddItem(p, (char *) list, IndexTupleSize(list), eqoff,
+						false, false) == InvalidOffsetNumber)
+			elog(ERROR, "failed to replace BARK leaf entry with a list");
+		GenericXLogFinish(gstate);
+	}
+
+	pfree(list);
+	return true;
+}
+
 bool
 bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 			Relation heapRel, IndexUniqueCheck checkUnique,
@@ -920,6 +1079,23 @@ retry:
 			/* NULL key: unconditionally considered unique. */
 			result = true;
 		}
+	}
+
+	/*
+	 * Non-unique index: coalesce the new locator into an existing equal-key
+	 * entry, forming or extending a LIST instead of adding another SINGLE.
+	 * A unique index never does this -- it would mean two live tuples with the
+	 * same key, which the uniqueness check above already rejected.
+	 */
+	if (!indexInfo->ii_Unique &&
+		bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf, off))
+	{
+		UnlockReleaseBuffer(buf);
+		if (stack)
+			bark_freestack(stack);
+		pfree(itup);
+		pfree(keyinfo);
+		return result;
 	}
 
 	if (PageGetFreeSpace(page) >= itemsz)
