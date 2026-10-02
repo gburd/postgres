@@ -118,4 +118,27 @@ CREATE UNIQUE INDEX ON bark_uniq_build USING bark (a);	-- errors at build
 
 DROP TABLE bark_uniq, bark_uniq_build;
 
+-- Backward scans: an ordered index serves ORDER BY DESC without a sort and
+-- supports scrollable cursors fetching in both directions.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexscan = on;
+CREATE TABLE bark_bwd (a int);
+INSERT INTO bark_bwd SELECT g FROM generate_series(1, 1000) g;
+CREATE INDEX bark_bwd_idx ON bark_bwd USING bark (a);
+EXPLAIN (COSTS OFF) SELECT a FROM bark_bwd WHERE a <= 5 ORDER BY a DESC;
+SELECT a FROM bark_bwd WHERE a <= 5 ORDER BY a DESC;
+SELECT a FROM bark_bwd ORDER BY a DESC LIMIT 5;
+BEGIN;
+DECLARE bark_cur SCROLL CURSOR FOR
+  SELECT a FROM bark_bwd WHERE a BETWEEN 10 AND 20 ORDER BY a;
+FETCH 3 FROM bark_cur;
+FETCH BACKWARD 2 FROM bark_cur;
+FETCH 2 FROM bark_cur;
+COMMIT;
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_bwd;
+
 DROP TABLE bark_tab, bark_small, bark_empty, bark_ins, bark_scan;
