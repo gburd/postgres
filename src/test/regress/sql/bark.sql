@@ -82,8 +82,22 @@ SET enable_indexscan = off;
 WITH seq AS (SELECT count(*) c FROM bark_scan WHERE a BETWEEN 1000 AND 2000)
 SELECT c AS range_seq FROM seq;
 
+-- Index-only scans: BARK can return indexed columns without a heap fetch.
+SET enable_seqscan = off;
+SET enable_indexscan = on;
+VACUUM (ANALYZE) bark_scan;					-- succeeds; sets the visibility map
+EXPLAIN (COSTS OFF)
+  SELECT a FROM bark_scan WHERE a BETWEEN 1000 AND 1010;
+SELECT a FROM bark_scan WHERE a BETWEEN 1000 AND 1010 ORDER BY a;
+SELECT count(a) AS ios_count FROM bark_scan WHERE a < 5000;
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SELECT count(a) AS seq_count FROM bark_scan WHERE a < 5000;
+
 RESET enable_seqscan;
 RESET enable_indexscan;
 RESET enable_bitmapscan;
+RESET enable_indexonlyscan;
 
 DROP TABLE bark_tab, bark_small, bark_empty, bark_ins, bark_scan;
