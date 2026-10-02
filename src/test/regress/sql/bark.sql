@@ -282,4 +282,54 @@ RESET enable_indexscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_list, bark_list_u;
 
+-- POSTING entries (sbm-backed inverted sets): a key with enough clustered
+-- duplicates that the serialized sbm is smaller than a flat locator list is
+-- promoted from LIST to POSTING automatically.  Insert many rows per key (so
+-- the heap TIDs for a key are clustered on consecutive blocks, which the sbm
+-- encodes densely) and prove every scan mode still matches a sequential scan.
+CREATE TABLE bark_post (a int, b int);
+CREATE INDEX bark_post_idx ON bark_post USING bark (a);
+-- 10 keys x 400 clustered duplicates: rows for one key are inserted together,
+-- so their heap TIDs land on consecutive blocks and the sbm encodes them
+-- densely -- the serialized set beats the flat locator list and the entry is
+-- promoted from LIST to POSTING.
+INSERT INTO bark_post SELECT k, g
+  FROM generate_series(0, 9) k, generate_series(1, 400) g;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexscan = on;
+-- Equality on a promoted key: index count == seqscan count.
+SELECT count(*) AS eq_idx FROM bark_post WHERE a = 5;
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SELECT count(*) AS eq_seq FROM bark_post WHERE a = 5;
+-- Range, ordered, index-only, and bitmap scans all agree with a seqscan.
+SET enable_seqscan = off;
+SET enable_indexscan = on;
+SELECT count(*) AS range_idx FROM bark_post WHERE a BETWEEN 3 AND 7;
+SELECT DISTINCT a FROM bark_post WHERE a <= 2 ORDER BY a;
+SELECT count(a) AS ios_idx FROM bark_post WHERE a < 5;
+SET enable_indexscan = off;
+SET enable_bitmapscan = on;
+SELECT count(*) AS bitmap_idx FROM bark_post WHERE a IN (1, 5, 9);
+SET enable_seqscan = on;
+SET enable_bitmapscan = off;
+SELECT count(*) AS range_seq FROM bark_post WHERE a BETWEEN 3 AND 7;
+SELECT count(*) AS bitmap_seq FROM bark_post WHERE a IN (1, 5, 9);
+-- VACUUM removing part of a promoted key's rows: the POSTING set shrinks (and
+-- may demote back toward LIST/SINGLE), and the survivors still scan correctly.
+DELETE FROM bark_post WHERE a = 5 AND b <= 300;
+VACUUM bark_post;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexscan = on;
+SELECT count(*) AS after_vac_idx FROM bark_post WHERE a = 5;
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SELECT count(*) AS after_vac_seq FROM bark_post WHERE a = 5;
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_post;
+
 DROP TABLE bark_tab, bark_small, bark_empty, bark_ins, bark_scan;

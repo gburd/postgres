@@ -865,22 +865,36 @@ done:
 
 /*
  * Try to coalesce `newtid` into an existing leaf entry on `buf` that has the
- * same key as `key` (a SINGLE-shape key tuple), forming or extending a LIST,
- * rather than adding another SINGLE entry.  Returns true and performs the
- * replacement (WAL-logged) when it coalesced; returns false (page unchanged)
- * when there is no equal entry, or when the resulting LIST would be too large
- * -- in which case the caller inserts a plain SINGLE and the duplicates stay
- * as separate entries.
+ * same key as `key` (a SINGLE-shape key tuple), forming or extending a LIST or
+ * POSTING entry rather than adding another SINGLE.  Returns true and performs
+ * the replacement (WAL-logged) when it coalesced; returns false (page
+ * unchanged) when there is no equal entry, or when the merged entry would not
+ * fit on this page -- in which case the caller inserts a plain SINGLE and the
+ * duplicates stay as separate entries until a later insert can merge them.
+ *
+ * The merged set is encoded as whichever shape is smaller: a LIST (sorted
+ * locator array) for a modest number of duplicates, or a POSTING (sbm
+ * serialization) once the set is large/clustered enough that the sbm envelope
+ * beats the flat array.  bark_form_posting returns NULL when LIST would still
+ * win, so the shape is chosen by actual encoded size, not a fixed count.
  *
  * Only called for non-unique indexes: a unique index never legitimately holds
- * two live tuples with the same key, so it never forms a LIST.  `off` is the
- * leaf insert position (one past the last entry <= key), so the candidate
- * equal entry, if any, is at off-1.
+ * two live tuples with the same key, so it never forms a LIST or POSTING.
+ * `off` is the leaf insert position (one past the last entry <= key), so the
+ * candidate equal entry, if any, is at off-1.
  *
- * ponytail: the size ceiling is BarkMaxItemSize (~1/3 page).  A key with more
- * duplicates than fit in one LIST keeps the overflow as separate entries
- * until A11 promotes the run to a POSTING set; both are correct, LIST is just
- * the compact form up to the ceiling.
+ * ponytail: the size ceiling is BarkMaxItemSize (~1/3 page).  A single key
+ * with more duplicates than a POSTING entry can hold within that ceiling keeps
+ * the overflow as separate entries; splitting one key's posting set across
+ * entries is a later space optimization, not a correctness matter.
+ *
+ * ponytail: each coalesce re-reads the whole set, re-sorts in the new locator,
+ * and re-serializes, so building up one key's set by N single-row inserts is
+ * O(N^2).  Fine for the moderate duplicate counts an OLTP workload inserts one
+ * row at a time; a bulk load that needs a huge per-key set should build the
+ * index after loading (the bulk loader forms the compact shapes directly).  An
+ * incremental sbm_add into an embedded, growable body would make it O(N) and
+ * is the upgrade path.
  */
 static bool
 bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
@@ -892,12 +906,14 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 	OffsetNumber eqoff;
 	ItemId		iid;
 	IndexTuple	cur;
-	ItemPointerData tids[MaxOffsetNumber];
+	ItemPointer tids;
+	int			maxtids;
 	int			nold;
 	int			nnew;
 	int			ins;
-	IndexTuple	list;
-	Size		listsz;
+	IndexTuple	newentry;
+	IndexTuple	posting;
+	Size		newsz;
 
 	/* No entry precedes the insert point: nothing to coalesce with. */
 	if (off <= firstdata)
@@ -911,10 +927,15 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		bark_compare_itups(keyinfo, index, key, cur) != 0)
 		return false;
 
-	/* Gather the existing locators plus the new one, in ascending order. */
-	nold = bark_entry_get_tids(cur, tids, MaxOffsetNumber);
-	if (nold >= BARK_LIST_MAX_COUNT)
-		return false;			/* count field is full: keep separate */
+	/*
+	 * Gather the existing locators plus the new one, in ascending order.  A
+	 * POSTING entry can already hold many thousands of TIDs, so the buffer is
+	 * palloc'd to the current count plus one rather than a fixed stack array.
+	 */
+	nold = bark_entry_count_tids(cur);
+	maxtids = nold + 1;
+	tids = (ItemPointer) palloc(maxtids * sizeof(ItemPointerData));
+	nold = bark_entry_get_tids(cur, tids, maxtids);
 
 	/* Insert newtid keeping the array sorted and distinct. */
 	for (ins = 0; ins < nold; ins++)
@@ -922,7 +943,10 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		int			c = ItemPointerCompare(newtid, &tids[ins]);
 
 		if (c == 0)
+		{
+			pfree(tids);
 			return true;		/* already present (should not happen): done */
+		}
 		if (c < 0)
 			break;
 	}
@@ -931,23 +955,39 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 	tids[ins] = *newtid;
 	nnew = nold + 1;
 
-	/* Build the candidate LIST and check it against the page item ceiling. */
-	list = bark_form_list(RelationGetDescr(index), key, tids, nnew);
-	listsz = MAXALIGN(IndexTupleSize(list));
-	if (listsz > BarkMaxItemSize)
+	/*
+	 * Encode the merged set as whichever shape is smaller.  bark_form_posting
+	 * returns NULL when the LIST form would be no larger, so a small set stays
+	 * a LIST and a large/clustered one is promoted to POSTING -- the LIST ->
+	 * POSTING promotion happens automatically at the size crossover.
+	 */
+	posting = bark_form_posting(RelationGetDescr(index), key, tids, nnew);
+	if (posting != NULL)
+		newentry = posting;
+	else if (nnew <= BARK_LIST_MAX_COUNT)
+		newentry = bark_form_list(RelationGetDescr(index), key, tids, nnew);
+	else
 	{
-		pfree(list);
+		pfree(tids);
+		return false;			/* too many for a LIST and POSTING did not win */
+	}
+	pfree(tids);
+
+	newsz = MAXALIGN(IndexTupleSize(newentry));
+	if (newsz > BarkMaxItemSize)
+	{
+		pfree(newentry);
 		return false;			/* too big for one entry: keep separate */
 	}
 
 	/*
-	 * The LIST replaces the old entry.  Removing the old entry and adding the
-	 * larger LIST must fit: the net growth is listsz minus the old item's
-	 * size.  PageGetFreeSpace plus the reclaimed old slot must cover it.
+	 * The merged entry replaces the old one.  Removing the old entry and
+	 * adding the (possibly larger) new one must fit: PageGetFreeSpace plus the
+	 * reclaimed old slot must cover it.
 	 */
-	if (PageGetFreeSpace(page) + MAXALIGN(ItemIdGetLength(iid)) < listsz)
+	if (PageGetFreeSpace(page) + MAXALIGN(ItemIdGetLength(iid)) < newsz)
 	{
-		pfree(list);
+		pfree(newentry);
 		return false;			/* no room to grow here: caller splits */
 	}
 
@@ -957,13 +997,13 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		OffsetNumber deloff = eqoff;
 
 		PageIndexMultiDelete(p, &deloff, 1);
-		if (PageAddItem(p, (char *) list, IndexTupleSize(list), eqoff,
+		if (PageAddItem(p, (char *) newentry, IndexTupleSize(newentry), eqoff,
 						false, false) == InvalidOffsetNumber)
-			elog(ERROR, "failed to replace BARK leaf entry with a list");
+			elog(ERROR, "failed to replace BARK leaf entry with a merged entry");
 		GenericXLogFinish(gstate);
 	}
 
-	pfree(list);
+	pfree(newentry);
 	return true;
 }
 

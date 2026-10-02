@@ -436,6 +436,24 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		elog(ERROR, "index \"%s\" already contains data",
 			 RelationGetRelationName(index));
 
+	/*
+	 * A POSTING entry maps a TID to block * MaxHeapTuplesPerPage + offset - 1
+	 * (bark_tid_to_key), which is reversible only for offsets up to
+	 * MaxHeapTuplesPerPage; GIN refuses such a table for the same bound.
+	 */
+	{
+		const LocatorDesc *locdesc = RelationGetLocatorDesc(heap);
+
+		if (locdesc->max_offset > MaxHeapTuplesPerPage)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("access method \"%s\" cannot index table \"%s\"",
+							"bark", RelationGetRelationName(heap)),
+					 errdetail("The table's \"%s\" locator uses offsets up to %u, but \"%s\" can store offsets only up to %u.",
+							   locdesc->name, (unsigned int) locdesc->max_offset,
+							   "bark", (unsigned int) MaxHeapTuplesPerPage)));
+	}
+
 	memset(&bs, 0, sizeof(bs));
 	bs.heap = heap;
 	bs.index = index;
