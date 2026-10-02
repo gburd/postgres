@@ -566,3 +566,32 @@ RESET enable_seqscan;
 
 DROP TABLE bark_big, bark_pfx, bark_huge, bark_uniq, bark_inc_big;
 DROP FUNCTION bark_bigstr(int, int);
+
+-- ===========================================================================
+-- C-STATS cost model (P06): the planner must choose a BARK index when it is
+-- cheaper and a sequential scan when it is not, accounting for LIST/POSTING
+-- compression (a posting-list scan touches far fewer leaf pages than N
+-- singletons) and overflow-page I/O for oversized keys.  COSTS OFF keeps the
+-- plan shape deterministic; the point is which path the planner picks.
+-- ===========================================================================
+
+CREATE TABLE bark_cost (a int, b int);
+INSERT INTO bark_cost SELECT g, g % 1000 FROM generate_series(1, 100000) g;
+CREATE INDEX bark_cost_idx ON bark_cost USING bark (a);
+ANALYZE bark_cost;
+-- Selective point lookup: index.
+EXPLAIN (COSTS OFF) SELECT * FROM bark_cost WHERE a = 42;
+-- Non-selective whole-table predicate: sequential scan.
+EXPLAIN (COSTS OFF) SELECT * FROM bark_cost WHERE a >= 0;
+DROP TABLE bark_cost;
+
+-- Posting-list compression: 100k rows, 10 distinct keys (10k duplicates each).
+-- One key is a single POSTING entry on a handful of leaf pages, so an equality
+-- scan is costed far below a sequential scan even though it returns 10k rows --
+-- the planner picks an index path.
+CREATE TABLE bark_cost_dup (k int, v int);
+INSERT INTO bark_cost_dup SELECT g % 10, g FROM generate_series(1, 100000) g;
+CREATE INDEX bark_cost_dup_idx ON bark_cost_dup USING bark (k);
+ANALYZE bark_cost_dup;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bark_cost_dup WHERE k = 3;
+DROP TABLE bark_cost_dup;
