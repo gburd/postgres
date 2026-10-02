@@ -164,4 +164,24 @@ RESET enable_indexscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_inc, bark_inc_u;
 
+-- VACUUM: deleting rows then vacuuming removes the dead index entries, and
+-- the index keeps answering scans correctly (including after the freed key
+-- range is reused by new rows).
+CREATE TABLE bark_vac (a int);
+INSERT INTO bark_vac SELECT g FROM generate_series(1, 3000) g;
+CREATE INDEX bark_vac_idx ON bark_vac USING bark (a);
+DELETE FROM bark_vac WHERE a <= 1500;
+VACUUM bark_vac;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexscan = on;
+SELECT count(*) AS dead_gone FROM bark_vac WHERE a <= 1500;		-- 0
+SELECT count(*) AS live FROM bark_vac WHERE a > 1500;			-- 1500
+INSERT INTO bark_vac SELECT g FROM generate_series(1, 750) g;	-- reuse freed range
+SELECT count(*) AS reused FROM bark_vac WHERE a <= 750;			-- 750
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_vac;
+
 DROP TABLE bark_tab, bark_small, bark_empty, bark_ins, bark_scan;
