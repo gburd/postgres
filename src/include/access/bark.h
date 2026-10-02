@@ -349,6 +349,8 @@ typedef struct BarkScanOpaqueData
 	Buffer		currentBuffer;	/* current leaf, or InvalidBuffer */
 	OffsetNumber nextOffset;	/* next offset to read on currentBuffer */
 	bool		firstCall;		/* true until the scan has been positioned */
+	char	   *currTuple;		/* scratch copy of the returned index tuple for
+								 * index-only scans (NULL when not wanted) */
 } BarkScanOpaqueData;
 
 typedef BarkScanOpaqueData *BarkScanOpaque;
@@ -357,6 +359,7 @@ extern IndexScanDesc bark_beginscan(Relation index, int nkeys, int norderbys);
 extern void bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 						ScanKey orderbys, int norderbys);
 extern bool bark_gettuple(IndexScanDesc scan, ScanDirection dir);
+extern bool bark_canreturn(Relation index, int attno);
 extern int64 bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm);
 extern void bark_endscan(IndexScanDesc scan);
 
