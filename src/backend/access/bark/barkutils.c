@@ -25,8 +25,10 @@
 #include "postgres.h"
 
 #include "access/bark.h"
+#include "access/htup_details.h"
 #include "access/itup.h"
 #include "catalog/pg_type.h"
+#include "lib/sbm.h"
 #include "utils/rel.h"
 
 /*
@@ -227,7 +229,7 @@ bark_form_list(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids)
 	return entry;
 }
 
-/* Number of heap locators a leaf entry holds (SINGLE = 1, LIST = count). */
+/* Number of heap locators a leaf entry holds (SINGLE = 1, LIST/POSTING = set). */
 int
 bark_entry_count_tids(IndexTuple itup)
 {
@@ -237,6 +239,8 @@ bark_entry_count_tids(IndexTuple itup)
 			return 1;
 		case BARK_SHAPE_LIST:
 			return BarkListGetCount(itup);
+		case BARK_SHAPE_POSTING:
+			return bark_posting_count(itup);
 		default:
 			elog(ERROR, "BARK leaf entry has unexpected shape %d",
 				 (int) BarkEntryGetShape(itup));
@@ -247,7 +251,8 @@ bark_entry_count_tids(IndexTuple itup)
 /*
  * Copy a leaf entry's heap locators, ascending, into `out` (capacity maxout).
  * Returns the number written.  SINGLE yields its single t_tid; LIST yields its
- * stored array verbatim (already ascending).
+ * stored array verbatim (already ascending); POSTING is iterated through its
+ * sbm (ascending by construction).
  */
 int
 bark_entry_get_tids(IndexTuple itup, ItemPointer out, int maxout)
@@ -267,6 +272,8 @@ bark_entry_get_tids(IndexTuple itup, ItemPointer out, int maxout)
 					   n * sizeof(ItemPointerData));
 				return n;
 			}
+		case BARK_SHAPE_POSTING:
+			return bark_posting_get_tids(itup, out, maxout);
 		default:
 			elog(ERROR, "BARK leaf entry has unexpected shape %d",
 				 (int) BarkEntryGetShape(itup));
@@ -294,4 +301,135 @@ bark_single_from_list(Relation index, IndexTuple entry, ItemPointer tid)
 	if (tid != NULL)
 		single->t_tid = *tid;
 	return single;
+}
+
+/* ----------------------------------------------------------------------------
+ * POSTING entry construction and reading (sbm-backed inverted locator set)
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Reversible, block-clustered TID <-> uint64 mapping.  A run of heap TIDs on
+ * one block maps to a contiguous run of sbm indexes, which the sbm encodes
+ * densely.  offset is 1-based on a heap page, so it is biased by one.
+ */
+uint64
+bark_tid_to_key(ItemPointer tid)
+{
+	BlockNumber blk = ItemPointerGetBlockNumberNoCheck(tid);
+	OffsetNumber off = ItemPointerGetOffsetNumberNoCheck(tid);
+
+	return (uint64) blk * MaxHeapTuplesPerPage + (off - 1);
+}
+
+void
+bark_key_to_tid(uint64 key, ItemPointer tid)
+{
+	BlockNumber blk = (BlockNumber) (key / MaxHeapTuplesPerPage);
+	OffsetNumber off = (OffsetNumber) (key % MaxHeapTuplesPerPage) + 1;
+
+	ItemPointerSet(tid, blk, off);
+}
+
+/*
+ * Build a POSTING entry from a SINGLE-shape key tuple and `ntids` ascending,
+ * distinct locators.  The locator set is serialized with sbm into the entry's
+ * body.  Returns NULL when the serialized form is not smaller than the
+ * equivalent LIST (the caller then keeps the LIST), so POSTING is used only
+ * when it actually saves space.
+ */
+IndexTuple
+bark_form_posting(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids)
+{
+	Size		keysz = IndexTupleSize(key);
+	Size		bodyoff = MAXALIGN(keysz);
+	Size		listsz;
+	Size		serialized;
+	Size		total;
+	Sbm		   *map = NULL;
+	uint8	   *out;
+	IndexTuple	entry;
+
+	Assert(ntids >= 1);
+
+	/* Build the sbm from the block-clustered keys. */
+	for (int i = 0; i < ntids; i++)
+	{
+		if (sbm_add_grow(&map, bark_tid_to_key(&tids[i])) == SBM_IDX_MAX)
+			elog(ERROR, "sbm_add_grow failed building BARK posting entry");
+	}
+	map = sbm_shrink_to_fit(map);
+
+	serialized = sbm_serialized_size(map);
+	total = bodyoff + MAXALIGN(serialized);
+	listsz = MAXALIGN(bodyoff + ntids * sizeof(ItemPointerData));
+
+	/* Only worth it when the serialized set is smaller than the LIST form. */
+	if (MAXALIGN(total) >= listsz)
+	{
+		sbm_free(map);
+		return NULL;
+	}
+
+	Assert(bodyoff <= BARK_OFFSET_MASK);
+	Assert(total <= INDEX_SIZE_MASK);
+
+	entry = (IndexTuple) palloc0(total);
+	memcpy(entry, key, keysz);
+	entry->t_info = (key->t_info & ~INDEX_SIZE_MASK) | (uint16) total;
+	entry->t_info |= INDEX_AM_RESERVED_BIT;
+	ItemPointerSetOffsetNumber(&entry->t_tid, (OffsetNumber) BARK_IS_POSTING);
+	BarkEntrySetBodyOffset(entry, (uint16) bodyoff);
+
+	out = BarkPostingGetData(entry);
+	if (sbm_serialize(map, out, serialized) != serialized)
+		elog(ERROR, "sbm_serialize wrote unexpected length for BARK posting entry");
+	sbm_free(map);
+	return entry;
+}
+
+/* Open a POSTING entry's serialized sbm (caller must sbm_free the result). */
+static Sbm *
+bark_posting_open(IndexTuple itup)
+{
+	Sbm		   *map = sbm_deserialize(BarkPostingGetData(itup),
+								  BarkPostingGetDataSize(itup));
+
+	if (map == NULL)
+		elog(ERROR, "BARK posting entry has a corrupt sbm serialization");
+	return map;
+}
+
+/* Number of locators in a POSTING entry's sbm set. */
+int
+bark_posting_count(IndexTuple itup)
+{
+	Sbm		   *map = bark_posting_open(itup);
+	int			n = (int) sbm_cardinality(map);
+
+	sbm_free(map);
+	return n;
+}
+
+/*
+ * Read a POSTING entry's locators, ascending, into `out` (capacity maxout).
+ * Returns the number written.  sbm iterates in ascending index order, which
+ * the block-clustered mapping turns back into ascending TID order.
+ */
+int
+bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout)
+{
+	Sbm		   *map = bark_posting_open(itup);
+	SbmCursor	cur = SBM_CURSOR_INIT;
+	uint64		idx = SBM_IDX_MAX;
+	int			n = 0;
+
+	while ((idx = sbm_next_member(map, idx, &cur)) != SBM_IDX_MAX)
+	{
+		Assert(n < maxout);
+		bark_key_to_tid(idx, &out[n]);
+		n++;
+	}
+	sbm_free(map);
+	return n;
 }
