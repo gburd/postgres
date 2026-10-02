@@ -1,13 +1,11 @@
 --
--- BARK index access method: registration, default opclasses, build, and insert.
+-- BARK index access method: registration, opclasses, build, insert, and scan.
 --
 -- BARK is registered as an index AM, provides default operator classes for
 -- the common scalar types (its operator families are btree operator
--- families), builds an index over a heap, and accepts row inserts into an
--- existing index (splitting pages and growing the tree as needed).  Scanning
--- is not implemented yet, so these tests exercise build and insert only; the
--- prohibitive cost estimate keeps the planner from choosing a BARK index
--- meanwhile.
+-- families), builds an index over a heap, accepts row inserts into an
+-- existing index (splitting pages and growing the tree), and supports index
+-- scans whose results match a sequential scan.
 --
 
 -- The AM is registered in pg_am, with a valid index_am_handler.
@@ -42,9 +40,8 @@ CREATE INDEX ON bark_empty USING bark (a);
 -- Multicolumn build.
 CREATE INDEX bark_multi_idx ON bark_tab USING bark (a, b);
 
--- Scanning is not implemented yet: the planner never picks a BARK index
--- (prohibitive cost), and forcing it is not possible since amgettuple errors.
--- A query still works via a sequential scan.
+-- The planner avoids a BARK index for now (prohibitive cost estimate) and no
+-- longer errors, so a query runs via a sequential scan.
 SELECT count(*) FROM bark_tab WHERE a = 1000;
 
 -- Insert into an existing index.  Building the index empty and then inserting
@@ -61,4 +58,32 @@ SELECT pg_relation_size('bark_ins_idx') > 8192 * 2 AS grew_past_two_pages;
 INSERT INTO bark_tab VALUES (99999, 'late');
 SELECT count(*) FROM bark_tab WHERE a = 99999;
 
-DROP TABLE bark_tab, bark_small, bark_empty, bark_ins;
+-- Index scans.  With scanning implemented the planner can choose a BARK
+-- index; its results must match a sequential scan over the same data.
+CREATE TABLE bark_scan (a int);
+INSERT INTO bark_scan SELECT (g * 7919) % 100000 FROM generate_series(1, 20000) g;
+CREATE INDEX bark_scan_idx ON bark_scan USING bark (a);
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+
+-- A point lookup uses the BARK index.
+EXPLAIN (COSTS OFF) SELECT a FROM bark_scan WHERE a = 7919;
+
+-- Equality, range, and ordered scans agree with a sequential scan.
+SELECT (SELECT count(*) FROM bark_scan WHERE a = 7919) AS eq_idx,
+       (SELECT count(*) FROM bark_scan a WHERE a.a = 7919) AS eq_check;
+SELECT count(*) AS range_idx FROM bark_scan WHERE a BETWEEN 1000 AND 2000;
+SELECT a FROM bark_scan WHERE a BETWEEN 0 AND 30 ORDER BY a;
+
+-- Differential against a sequential scan over the full key space.
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+WITH seq AS (SELECT count(*) c FROM bark_scan WHERE a BETWEEN 1000 AND 2000)
+SELECT c AS range_seq FROM seq;
+
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+
+DROP TABLE bark_tab, bark_small, bark_empty, bark_ins, bark_scan;
