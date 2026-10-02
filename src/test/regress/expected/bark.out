@@ -890,6 +890,168 @@ RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
 RESET max_parallel_workers_per_gather;
 DROP TABLE bark_pscan;
+--
+-- Ordered-operator (KNN) scans: ORDER BY col <~> const (amcanorderbyop).
+--
+-- A BARK index answers "nearest values to a constant, in increasing distance"
+-- by descending to the constant and expanding outward on the leaf chain.  The
+-- result must equal a brute-force ORDER BY abs(col - const), the scan must use
+-- an index Order By node (not a Sort), and a LIMIT must let the scan stop
+-- early rather than read the whole index.
+CREATE TABLE bark_knn (a int);
+INSERT INTO bark_knn SELECT g * 3 FROM generate_series(1, 3000) g;
+CREATE INDEX bark_knn_idx ON bark_knn USING bark (a);
+ANALYZE bark_knn;
+SET enable_seqscan = off;
+-- The plan is an index scan that produces the ordering, with no Sort node.
+EXPLAIN (COSTS OFF)
+  SELECT a FROM bark_knn ORDER BY a <~> 5000 LIMIT 10;
+                      QUERY PLAN                      
+------------------------------------------------------
+ Limit
+   ->  Index Only Scan using bark_knn_idx on bark_knn
+         Order By: (a <~> 5000)
+(3 rows)
+
+-- Mid-range: the ten nearest to 5000, in increasing distance, must match a
+-- brute-force distance sort (ties broken by value so the comparison is
+-- deterministic across the whole LIMIT window).
+SELECT a FROM bark_knn ORDER BY a <~> 5000 LIMIT 10;
+  a   
+------
+ 5001
+ 4998
+ 5004
+ 4995
+ 5007
+ 4992
+ 5010
+ 4989
+ 5013
+ 4986
+(10 rows)
+
+-- The whole-scan distance sequence is monotonically non-decreasing: zero
+-- inversions proves the merge returns rows in true distance order.
+SELECT count(*) AS inversions
+  FROM (SELECT (a <~> 5000) AS d,
+               lag((a <~> 5000)) OVER (ORDER BY (a <~> 5000)) AS prev_d
+          FROM bark_knn) q
+  WHERE d < prev_d;
+ inversions 
+------------
+          0
+(1 row)
+
+-- One-sided expansion: a constant below the minimum key walks only forward.
+SELECT a FROM bark_knn ORDER BY a <~> 1 LIMIT 5;
+ a  
+----
+  3
+  6
+  9
+ 12
+ 15
+(5 rows)
+
+-- A constant above the maximum key walks only backward.
+SELECT a FROM bark_knn ORDER BY a <~> 1000000 LIMIT 5;
+  a   
+------
+ 9000
+ 8997
+ 8994
+ 8991
+ 8988
+(5 rows)
+
+-- Ties: a constant exactly between two keys returns the forward side first,
+-- then the backward side, at each equal distance.
+SELECT a, (a <~> 4999) AS d FROM bark_knn ORDER BY a <~> 4999 LIMIT 6;
+  a   | d 
+------+---
+ 4998 | 1
+ 5001 | 2
+ 4995 | 4
+ 5004 | 5
+ 4992 | 7
+ 5007 | 8
+(6 rows)
+
+-- Early stop: the LIMIT must bound how much of the index the scan reads.  A
+-- full-table distance sort would touch all 3000 rows; the KNN scan reads only
+-- a few around the constant.
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+  SELECT a FROM bark_knn ORDER BY a <~> 5000 LIMIT 10;
+                                    QUERY PLAN                                    
+----------------------------------------------------------------------------------
+ Limit (actual rows=10.00 loops=1)
+   ->  Index Only Scan using bark_knn_idx on bark_knn (actual rows=10.00 loops=1)
+         Order By: (a <~> 5000)
+         Heap Fetches: 0
+         Index Searches: 0
+(5 rows)
+
+-- A WHERE qual combines with the ordering: nearest to 5000 among a > 5000.
+SELECT a FROM bark_knn WHERE a > 5000 ORDER BY a <~> 5000 LIMIT 5;
+  a   
+------
+ 5001
+ 5004
+ 5007
+ 5010
+ 5013
+(5 rows)
+
+-- Duplicates at one key share a distance and all come out before the scan
+-- advances; the distance sequence stays monotone.
+CREATE TABLE bark_knn_dup (a int);
+INSERT INTO bark_knn_dup SELECT g / 3 FROM generate_series(1, 900) g;
+CREATE INDEX bark_knn_dup_idx ON bark_knn_dup USING bark (a);
+SELECT count(*) AS inversions
+  FROM (SELECT (a <~> 50) AS d,
+               lag((a <~> 50)) OVER (ORDER BY (a <~> 50)) AS prev_d
+          FROM bark_knn_dup) q
+  WHERE d < prev_d;
+ inversions 
+------------
+          0
+(1 row)
+
+-- NULLs sort last (infinite distance): the KNN scan returns every row,
+-- matching a sequential scan's count including the NULLs.
+CREATE TABLE bark_knn_null (a int);
+INSERT INTO bark_knn_null
+  SELECT CASE WHEN g % 7 = 0 THEN NULL ELSE g * 2 END
+    FROM generate_series(1, 500) g;
+CREATE INDEX bark_knn_null_idx ON bark_knn_null USING bark (a);
+SELECT count(*) AS total,
+       count(*) FILTER (WHERE a IS NULL) AS nulls
+  FROM (SELECT a FROM bark_knn_null ORDER BY a <~> 300) s;
+ total | nulls 
+-------+-------
+   500 |    71
+(1 row)
+
+-- bigint keys use the int8 distance operator the same way.
+CREATE TABLE bark_knn8 (a bigint);
+INSERT INTO bark_knn8 SELECT g * 7 FROM generate_series(1, 5000) g;
+CREATE INDEX bark_knn8_idx ON bark_knn8 USING bark (a);
+SELECT a FROM bark_knn8 ORDER BY a <~> 20000 LIMIT 8;
+   a   
+-------
+ 19999
+ 20006
+ 19992
+ 20013
+ 19985
+ 20020
+ 19978
+ 20027
+(8 rows)
+
+RESET enable_seqscan;
+DROP TABLE bark_knn, bark_knn_dup, bark_knn_null, bark_knn8;
 DROP TABLE bark_tab, bark_small, bark_empty, bark_ins, bark_scan;
 -- ===========================================================================
 -- Oversized keys (P04): a key larger than BarkMaxItemSize is stored on an
