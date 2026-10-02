@@ -154,7 +154,7 @@ barkhandler(PG_FUNCTION_ARGS)
 	static const IndexAmRoutine amroutine = {
 		.type = T_IndexAmRoutine,
 		.amstrategies = 5,
-		.amsupport = 1,
+		.amsupport = BARK_NPROCS,
 		.amoptsprocnum = 0,
 		.amcanorder = true,
 		.ambtreeopfamilies = true,

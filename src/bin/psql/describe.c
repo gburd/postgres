@@ -7092,7 +7092,8 @@ listOperatorFamilies(const char *access_method_pattern,
 					  "  (SELECT\n"
 					  "     pg_catalog.string_agg(pg_catalog.format_type(oc.opcintype, NULL), ', ')\n"
 					  "   FROM pg_catalog.pg_opclass oc\n"
-					  "   WHERE oc.opcfamily = f.oid) \"%s\"",
+					  "   WHERE oc.opcfamily = f.oid\n"
+					  "     AND oc.opcmethod = f.opfmethod) \"%s\"",
 					  gettext_noop("AM"),
 					  gettext_noop("Operator family"),
 					  gettext_noop("Applicable types"));
