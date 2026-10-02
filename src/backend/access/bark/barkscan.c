@@ -41,6 +41,25 @@
 #include "utils/wait_event.h"
 
 /*
+ * Resolve a leaf entry to a tuple whose key and INCLUDE attributes can be read
+ * with index_getattr.  For an OVERSIZED entry the attributes live out of line,
+ * so fetch the full tuple from the overflow chain; the caller pfrees the result
+ * when *fetched is set.  Every other shape carries its attributes inline, so
+ * the entry is returned unchanged.
+ */
+static IndexTuple
+bark_scan_resolve(Relation index, IndexTuple itup, bool *fetched)
+{
+	if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+	{
+		*fetched = true;
+		return bark_fetch_oversized(index, itup);
+	}
+	*fetched = false;
+	return itup;
+}
+
+/*
  * Test one index tuple against all scan keys.  Returns true when every key is
  * satisfied.  A NULL index value never satisfies an ordinary (non-IS NULL)
  * comparison key.
@@ -120,10 +139,16 @@ bark_make_lower_bound(IndexScanDesc scan)
 			 * bound: the descent only needs to land at or before the first
 			 * match, and the per-tuple test filters precisely.
 			 *
-			 * index_form_tuple reads one entry per descriptor attribute, so the
-			 * arrays must cover all index attributes (key plus any INCLUDE
-			 * columns), not just the key attributes.
+			 * bark_form_full_tuple reads one entry per descriptor attribute, so
+			 * the arrays must cover all index attributes (key plus any INCLUDE
+			 * columns), not just the key attributes; and it forms the bound
+			 * without the 8191-byte cap so an oversized search argument does not
+			 * error here.  bark_search descends with this bound; bark_compare_itups
+			 * compares it (fetching an oversized leaf entry's overflow chain as
+			 * needed), so the descent lands correctly even for an oversized bound.
 			 */
+			Size		fulllen;
+
 			natts = IndexRelationGetNumberOfAttributes(index);
 			values = (Datum *) palloc(natts * sizeof(Datum));
 			isnull = (bool *) palloc(natts * sizeof(bool));
@@ -134,7 +159,7 @@ bark_make_lower_bound(IndexScanDesc scan)
 				values[c] = (Datum) 0;
 				isnull[c] = true;
 			}
-			key = index_form_tuple(tupdesc, values, isnull);
+			key = bark_form_full_tuple(tupdesc, values, isnull, &fulllen);
 			pfree(values);
 			pfree(isnull);
 			break;
@@ -155,6 +180,7 @@ bark_beginscan(Relation index, int nkeys, int norderbys)
 	so->firstCall = true;
 	so->parallelReleased = false;
 	so->currTuple = NULL;
+	so->currTupleSize = 0;
 	so->memberTids = NULL;
 	so->nMembersAlloc = 0;
 	so->nMembers = 0;
@@ -257,7 +283,7 @@ bark_find_start_block(IndexScanDesc scan, ScanDirection dir)
 					: BarkPageFirstDataKey(opaque);
 				ItemId		iid = PageGetItemId(page, off);
 				IndexTuple	itup = (IndexTuple) PageGetItem(page, iid);
-				BlockNumber child = BarkPivotGetDownLink(itup);
+				BlockNumber child = BarkEntryGetDownLink(itup);
 
 				UnlockReleaseBuffer(buf);
 				blkno = child;
@@ -414,7 +440,10 @@ bark_position(IndexScanDesc scan, ScanDirection dir)
 
 	/* Allocate the index-only-scan scratch buffer on first use. */
 	if (scan->xs_want_itup && so->currTuple == NULL)
+	{
 		so->currTuple = palloc(BLCKSZ);
+		so->currTupleSize = BLCKSZ;
+	}
 
 	so->firstCall = false;
 	so->parallelReleased = false;	/* the page we claim below has not yet
@@ -461,7 +490,7 @@ bark_position(IndexScanDesc scan, ScanDirection dir)
  * per bark_gettuple call by bark_emit_member.
  */
 static void
-bark_load_members(IndexScanDesc scan, IndexTuple itup)
+bark_load_members(IndexScanDesc scan, IndexTuple itup, IndexTuple resolved)
 {
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	int			n = bark_entry_count_tids(itup);
@@ -479,8 +508,10 @@ bark_load_members(IndexScanDesc scan, IndexTuple itup)
 	/*
 	 * Index-only scan: every member shares this entry's key, so build a clean
 	 * key-only tuple once (dropping any LIST/POSTING body); bark_emit_member
-	 * patches its t_tid per member.  index_deform_tuple reads the key and any
-	 * INCLUDE attributes, which sit at the front of every leaf shape.
+	 * patches its t_tid per member.  `resolved` is the deformable tuple -- the
+	 * entry itself for an inline shape, or the full tuple fetched from the
+	 * overflow chain for an OVERSIZED entry -- so an oversized key or INCLUDE
+	 * payload is returned correctly by an index-only scan.
 	 */
 	if (scan->xs_want_itup)
 	{
@@ -491,10 +522,16 @@ bark_load_members(IndexScanDesc scan, IndexTuple itup)
 		IndexTuple	key;
 		Size		sz;
 
-		index_deform_tuple(itup, tupdesc, values, isnull);
-		key = index_form_tuple(tupdesc, values, isnull);
-		sz = IndexTupleSize(key);
-		Assert(sz <= BLCKSZ);
+		index_deform_tuple(resolved, tupdesc, values, isnull);
+		/* bark_form_full_tuple: an oversized key/payload may exceed 8191 bytes. */
+		key = bark_form_full_tuple(tupdesc, values, isnull, &sz);
+		if (sz > so->currTupleSize)
+		{
+			/* An oversized key/INCLUDE payload needs a larger scratch buffer. */
+			pfree(so->currTuple);
+			so->currTupleSize = sz;
+			so->currTuple = palloc(sz);
+		}
 		memcpy(so->currTuple, key, sz);
 		pfree(key);
 	}
@@ -622,20 +659,31 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 			iid = PageGetItemId(page, off);
 			itup = (IndexTuple) PageGetItem(page, iid);
 
-			if (bark_tuple_matches(scan, itup))
 			{
-				/*
-				 * Decode this entry's heap locators into memberTids (SINGLE
-				 * yields one; LIST/POSTING expand into many) and remember its
-				 * key for index-only scans.  The members are then emitted one
-				 * per call, starting at the direction-appropriate end.
-				 */
-				bark_load_members(scan, itup);
-				so->lastOffset = off;
-				so->memberIdx = backward ? so->nMembers - 1 : 0;
-				bark_emit_member(scan);
-				LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-				return true;
+				bool		fetched;
+				IndexTuple	resolved = bark_scan_resolve(index, itup, &fetched);
+				bool		matched = bark_tuple_matches(scan, resolved);
+
+				if (matched)
+				{
+					/*
+					 * Decode this entry's heap locators into memberTids (SINGLE
+					 * and OVERSIZED yield one; LIST/POSTING expand into many)
+					 * and remember its key for index-only scans.  The members
+					 * are then emitted one per call, starting at the
+					 * direction-appropriate end.
+					 */
+					bark_load_members(scan, itup, resolved);
+					so->lastOffset = off;
+					so->memberIdx = backward ? so->nMembers - 1 : 0;
+					bark_emit_member(scan);
+					if (fetched)
+						pfree(resolved);
+					LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+					return true;
+				}
+				if (fetched)
+					pfree(resolved);
 			}
 		}
 
@@ -720,9 +768,14 @@ bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 		{
 			ItemId		iid = PageGetItemId(page, off);
 			IndexTuple	itup = (IndexTuple) PageGetItem(page, iid);
+			bool		fetched;
+			IndexTuple	resolved = bark_scan_resolve(index, itup, &fetched);
+			bool		matched = bark_tuple_matches(scan, resolved);
 			int			n;
 
-			if (!bark_tuple_matches(scan, itup))
+			if (fetched)
+				pfree(resolved);
+			if (!matched)
 				continue;
 
 			n = bark_entry_count_tids(itup);
