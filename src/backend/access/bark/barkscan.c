@@ -449,16 +449,79 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 	return false;
 }
 
+/*
+ * amgetbitmap: add every matching heap TID to the TIDBitmap.
+ *
+ * Walk the leaves forward from the first possibly-matching page (the same
+ * positioning as a forward gettuple scan) and, for every entry that satisfies
+ * the scan keys, add all of its heap locators to the bitmap in one call.  For
+ * a SINGLE entry that is one TID; for a LIST or POSTING entry it is the whole
+ * set, decoded in one shot -- the natural fast path, since a posting set is
+ * exactly an inverted TID set.  BARK is exact, so every TID is added with
+ * recheck=false and the executor's BitmapAnd / BitmapOr combine the resulting
+ * bitmaps without any heap recheck.
+ */
 int64
 bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 {
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	Relation	index = scan->indexRelation;
+	ItemPointer tids = NULL;
+	int			tidsalloc = 0;
 	int64		ntids = 0;
 
-	while (bark_gettuple(scan, ForwardScanDirection))
+	if (so->firstCall)
+		bark_position(scan, ForwardScanDirection);
+
+	while (BufferIsValid(so->currentBuffer))
 	{
-		tbm_add_tuples(tbm, &scan->xs_heaptid, 1, false);
-		ntids++;
+		Buffer		buf = so->currentBuffer;
+		Page		page;
+		BarkPageOpaque opaque;
+		OffsetNumber off,
+					maxoff,
+					firstdata;
+		BlockNumber nextblk;
+
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		PredicateLockPage(index, BufferGetBlockNumber(buf), scan->xs_snapshot);
+
+		page = BufferGetPage(buf);
+		opaque = BarkPageGetOpaque(page);
+		maxoff = PageGetMaxOffsetNumber(page);
+		firstdata = BarkPageFirstDataKey(opaque);
+
+		for (off = firstdata; off <= maxoff; off = OffsetNumberNext(off))
+		{
+			ItemId		iid = PageGetItemId(page, off);
+			IndexTuple	itup = (IndexTuple) PageGetItem(page, iid);
+			int			n;
+
+			if (!bark_tuple_matches(scan, itup))
+				continue;
+
+			n = bark_entry_count_tids(itup);
+			if (n > tidsalloc)
+			{
+				if (tids)
+					pfree(tids);
+				tidsalloc = Max(n, 128);
+				tids = (ItemPointer) palloc(tidsalloc * sizeof(ItemPointerData));
+			}
+			n = bark_entry_get_tids(itup, tids, tidsalloc);
+			tbm_add_tuples(tbm, tids, n, false);
+			ntids += n;
+		}
+
+		nextblk = opaque->bark_next;
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		ReleaseBuffer(buf);
+		so->currentBuffer = (nextblk != BARK_P_NONE) ?
+			ReadBuffer(index, nextblk) : InvalidBuffer;
 	}
+
+	if (tids)
+		pfree(tids);
 	return ntids;
 }
 
