@@ -51,3 +51,27 @@ SELECT bark_index_check('bark_check_post_idx');
 DROP TABLE bark_check_post;
 
 DROP TABLE bark_check_tab;
+
+-- A parallel build produces a structurally valid index that is identical in
+-- content to a serially built one.  Force parallel workers on for the first
+-- build, off for the second, over the same 200k-row table.
+CREATE TABLE bark_par_tab (a int, b int);
+INSERT INTO bark_par_tab
+  SELECT (g * 7919) % 200000, g % 100 FROM generate_series(1, 200000) g;
+SET max_parallel_maintenance_workers = 4;
+SET maintenance_work_mem = '4MB';
+CREATE INDEX bark_par_idx ON bark_par_tab USING bark (a);  -- parallel build
+SELECT bark_index_check('bark_par_idx');
+SET max_parallel_maintenance_workers = 0;
+CREATE INDEX bark_ser_idx ON bark_par_tab USING bark (a);  -- serial build
+SELECT bark_index_check('bark_ser_idx');
+-- Both indexes return the same rows for the same scans.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS n FROM bark_par_tab WHERE a BETWEEN 1000 AND 50000;
+SELECT (SELECT count(*) FROM bark_par_tab WHERE a = 7919) AS par_eq;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET max_parallel_maintenance_workers;
+RESET maintenance_work_mem;
+DROP TABLE bark_par_tab;
