@@ -30,6 +30,53 @@
 #include "utils/rel.h"
 
 /*
+ * Translate between BARK strategy numbers and the generic CompareType.  BARK
+ * uses the btree strategy numbers (1=<, 2=<=, 3==, 4=>=, 5=>), so these are
+ * the same mappings the btree AM uses; the planner needs them to find an
+ * opfamily's equality operator by compare type (e.g. when building pathkeys
+ * for an ordered scan).
+ */
+CompareType
+bark_translate_strategy(StrategyNumber strategy, Oid opfamily)
+{
+	switch (strategy)
+	{
+		case BTLessStrategyNumber:
+			return COMPARE_LT;
+		case BTLessEqualStrategyNumber:
+			return COMPARE_LE;
+		case BTEqualStrategyNumber:
+			return COMPARE_EQ;
+		case BTGreaterEqualStrategyNumber:
+			return COMPARE_GE;
+		case BTGreaterStrategyNumber:
+			return COMPARE_GT;
+		default:
+			return COMPARE_INVALID;
+	}
+}
+
+StrategyNumber
+bark_translate_cmptype(CompareType cmptype, Oid opfamily)
+{
+	switch (cmptype)
+	{
+		case COMPARE_LT:
+			return BTLessStrategyNumber;
+		case COMPARE_LE:
+			return BTLessEqualStrategyNumber;
+		case COMPARE_EQ:
+			return BTEqualStrategyNumber;
+		case COMPARE_GE:
+			return BTGreaterEqualStrategyNumber;
+		case COMPARE_GT:
+			return BTGreaterStrategyNumber;
+		default:
+			return InvalidStrategy;
+	}
+}
+
+/*
  * Build the per-column comparison state for a BARK index.
  *
  * Resolves support function 1 (the ordering comparator) for each key column
@@ -82,8 +129,19 @@ bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
 				   IndexTuple a, IndexTuple b)
 {
 	TupleDesc	tupdesc = RelationGetDescr(index);
+	int			na = BarkEntryIsAltTID(a) ? BarkPivotGetNAtts(a) : keyinfo->nkeys;
+	int			nb = BarkEntryIsAltTID(b) ? BarkPivotGetNAtts(b) : keyinfo->nkeys;
+	int			ncmp = Min(na, nb);
 
-	for (int i = 0; i < keyinfo->nkeys; i++)
+	/*
+	 * Compare the key attributes both tuples carry.  A pivot tuple may have
+	 * been truncated to fewer attributes (BarkPivotGetNAtts); the leftmost
+	 * downlink on an internal page is the extreme case, a minus-infinity
+	 * pivot with zero key attributes.  Such a tuple compares less than any
+	 * tuple that agrees on the attributes they share but has more of them,
+	 * which is what keeps a minus-infinity downlink first in key order.
+	 */
+	for (int i = 0; i < ncmp; i++)
 	{
 		BarkKeyColumn *col = &keyinfo->cols[i];
 		bool		anull;
@@ -109,5 +167,12 @@ bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
 			return col->reverse ? -cmp : cmp;
 	}
 
+	/*
+	 * Equal on every shared attribute.  The tuple with fewer key attributes
+	 * (a more-truncated pivot) sorts first; equal attribute counts are equal
+	 * keys.
+	 */
+	if (na != nb)
+		return (na < nb) ? -1 : 1;
 	return 0;
 }
