@@ -300,6 +300,8 @@ typedef struct BarkKeyInfo
 extern BarkKeyInfo *bark_build_keyinfo(Relation index);
 extern int	bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
 							   IndexTuple a, IndexTuple b);
+extern CompareType bark_translate_strategy(StrategyNumber strategy, Oid opfamily);
+extern StrategyNumber bark_translate_cmptype(CompareType cmptype, Oid opfamily);
 
 extern IndexBuildResult *bark_build(Relation heap, Relation index,
 									IndexInfo *indexInfo);
@@ -334,5 +336,28 @@ extern bool bark_insert(Relation index, Datum *values, bool *isnull,
 						 ItemPointer ht_ctid, Relation heapRel,
 						 IndexUniqueCheck checkUnique,
 						 bool indexUnchanged, IndexInfo *indexInfo);
+
+/*
+ * Scan state (scan->opaque).  A BARK scan positions on a leaf and walks the
+ * right-link chain, returning the heap TID of each entry that satisfies the
+ * scan keys.  currentBuffer is the pinned (and, while reading, share-locked)
+ * leaf; nextOffset is the next item to examine on it.
+ */
+typedef struct BarkScanOpaqueData
+{
+	BarkKeyInfo *keyinfo;		/* key comparison state for this index */
+	Buffer		currentBuffer;	/* current leaf, or InvalidBuffer */
+	OffsetNumber nextOffset;	/* next offset to read on currentBuffer */
+	bool		firstCall;		/* true until the scan has been positioned */
+} BarkScanOpaqueData;
+
+typedef BarkScanOpaqueData *BarkScanOpaque;
+
+extern IndexScanDesc bark_beginscan(Relation index, int nkeys, int norderbys);
+extern void bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
+						ScanKey orderbys, int norderbys);
+extern bool bark_gettuple(IndexScanDesc scan, ScanDirection dir);
+extern int64 bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm);
+extern void bark_endscan(IndexScanDesc scan);
 
 #endif							/* BARK_H */
