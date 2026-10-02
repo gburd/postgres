@@ -264,6 +264,9 @@ BarkKeyInfo
 BarkLeader
 BarkMetaPageData
 BarkPageState
+BarkParallelScanDesc
+BarkParallelScanDescData
+BarkParallelState
 BarkScanOpaque
 BarkScanOpaqueData
 BarkShared
