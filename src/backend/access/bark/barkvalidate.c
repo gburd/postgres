@@ -140,6 +140,36 @@ barkvalidate(Oid opclassoid)
 		HeapTuple	oprtup = &oprlist->members[i]->tuple;
 		Form_pg_amop oprform = (Form_pg_amop) GETSTRUCT(oprtup);
 
+		/*
+		 * An ORDER BY operator is BARK's KNN distance operator (`<~>`): it has
+		 * amoppurpose 'o', the KNN strategy number, a sort family, and returns
+		 * the distance type (float8).  Validate it separately from the search
+		 * operators, which use the btree 1..5 strategies and return boolean.
+		 */
+		if (oprform->amoppurpose == AMOP_ORDER)
+		{
+			if (oprform->amopstrategy != BARK_KNN_STRATEGY)
+			{
+				ereport(INFO,
+						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+						 errmsg("operator family \"%s\" of access method %s contains operator %s with invalid strategy number %d",
+								opfamilyname, "bark",
+								format_operator(oprform->amopopr),
+								oprform->amopstrategy)));
+				result = false;
+			}
+			if (!OidIsValid(oprform->amopsortfamily))
+			{
+				ereport(INFO,
+						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+						 errmsg("operator family \"%s\" of access method %s contains invalid ORDER BY specification for operator %s",
+								opfamilyname, "bark",
+								format_operator(oprform->amopopr))));
+				result = false;
+			}
+			continue;
+		}
+
 		if (oprform->amopstrategy < 1 ||
 			oprform->amopstrategy > BARK_NSTRATEGIES)
 		{
@@ -150,18 +180,6 @@ barkvalidate(Oid opclassoid)
 							format_operator(oprform->amopopr),
 							oprform->amopstrategy)));
 			result = false;
-		}
-
-		/* BARK only supports plain comparison (search) operators. */
-		if (oprform->amoppurpose != AMOP_SEARCH)
-		{
-			ereport(INFO,
-					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-					 errmsg("operator family \"%s\" of access method %s contains invalid ORDER BY specification for operator %s",
-							opfamilyname, "bark",
-							format_operator(oprform->amopopr))));
-			result = false;
-			continue;
 		}
 
 		/* Comparison operators must return boolean. */
