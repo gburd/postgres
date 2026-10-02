@@ -96,7 +96,7 @@ bark_make_lower_bound(IndexScanDesc scan)
 {
 	Relation	index = scan->indexRelation;
 	TupleDesc	tupdesc = RelationGetDescr(index);
-	int			nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
+	int			natts;
 	Datum	   *values;
 	bool	   *isnull;
 	IndexTuple	key = NULL;
@@ -112,17 +112,22 @@ bark_make_lower_bound(IndexScanDesc scan)
 			sk->sk_strategy == BTGreaterEqualStrategyNumber)
 		{
 			/*
-			 * Form a one-column key tuple holding this bound; the remaining
-			 * key columns are NULL, which bark_compare_itups treats per the
-			 * column's NULLS ordering.  That is a safe lower bound: the
-			 * descent only needs to land at or before the first match, and
-			 * the per-tuple test filters precisely.
+			 * Form a lower-bound key tuple holding this bound in the leading
+			 * column; every other attribute is NULL, which bark_compare_itups
+			 * treats per the column's NULLS ordering.  That is a safe lower
+			 * bound: the descent only needs to land at or before the first
+			 * match, and the per-tuple test filters precisely.
+			 *
+			 * index_form_tuple reads one entry per descriptor attribute, so the
+			 * arrays must cover all index attributes (key plus any INCLUDE
+			 * columns), not just the key attributes.
 			 */
-			values = (Datum *) palloc(nkeyatts * sizeof(Datum));
-			isnull = (bool *) palloc(nkeyatts * sizeof(bool));
+			natts = IndexRelationGetNumberOfAttributes(index);
+			values = (Datum *) palloc(natts * sizeof(Datum));
+			isnull = (bool *) palloc(natts * sizeof(bool));
 			values[0] = sk->sk_argument;
 			isnull[0] = false;
-			for (int c = 1; c < nkeyatts; c++)
+			for (int c = 1; c < natts; c++)
 			{
 				values[c] = (Datum) 0;
 				isnull[c] = true;
