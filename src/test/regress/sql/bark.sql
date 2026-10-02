@@ -100,4 +100,22 @@ RESET enable_indexscan;
 RESET enable_bitmapscan;
 RESET enable_indexonlyscan;
 
+-- Uniqueness: a unique BARK index rejects duplicate keys, treats NULLs as
+-- distinct, and catches duplicates both at insert time and at build time.
+CREATE TABLE bark_uniq (a int);
+CREATE UNIQUE INDEX bark_uniq_idx ON bark_uniq USING bark (a);
+INSERT INTO bark_uniq VALUES (1), (2), (3);
+INSERT INTO bark_uniq VALUES (2);				-- duplicate: errors
+INSERT INTO bark_uniq VALUES (NULL), (NULL);		-- NULLs are distinct: ok
+UPDATE bark_uniq SET a = 1 WHERE a = 3;			-- would duplicate: errors
+SELECT a FROM bark_uniq WHERE a IS NOT NULL ORDER BY a;
+SELECT count(*) AS total, count(a) AS non_null FROM bark_uniq;
+
+-- A unique index built over data that already contains a duplicate fails.
+CREATE TABLE bark_uniq_build (a int);
+INSERT INTO bark_uniq_build VALUES (10), (20), (10);
+CREATE UNIQUE INDEX ON bark_uniq_build USING bark (a);	-- errors at build
+
+DROP TABLE bark_uniq, bark_uniq_build;
+
 DROP TABLE bark_tab, bark_small, bark_empty, bark_ins, bark_scan;
