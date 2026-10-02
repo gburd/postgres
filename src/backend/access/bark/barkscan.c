@@ -152,6 +152,10 @@ bark_beginscan(Relation index, int nkeys, int norderbys)
 	so->lastOffset = InvalidOffsetNumber;
 	so->firstCall = true;
 	so->currTuple = NULL;
+	so->memberTids = NULL;
+	so->nMembersAlloc = 0;
+	so->nMembers = 0;
+	so->memberIdx = 0;
 
 	/*
 	 * Set up the index tuple descriptor for index-only scans.  The scratch
@@ -176,6 +180,8 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	}
 	so->lastOffset = InvalidOffsetNumber;
 	so->firstCall = true;
+	so->nMembers = 0;
+	so->memberIdx = 0;
 
 	if (scankey && nscankeys > 0)
 		memcpy(scan->keyData, scankey, nscankeys * sizeof(ScanKeyData));
@@ -261,14 +267,101 @@ bark_position(IndexScanDesc scan, ScanDirection dir)
 	so->firstCall = false;
 }
 
+/*
+ * Decode the heap locators of a matched leaf entry into so->memberTids (in
+ * ascending order) and, for an index-only scan, build the key-only tuple the
+ * scan will hand back for each member.  A SINGLE entry yields one locator;
+ * LIST and POSTING entries expand into many.  The members are then emitted one
+ * per bark_gettuple call by bark_emit_member.
+ */
+static void
+bark_load_members(IndexScanDesc scan, IndexTuple itup)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	int			n = bark_entry_count_tids(itup);
+
+	if (so->memberTids == NULL || n > so->nMembersAlloc)
+	{
+		if (so->memberTids)
+			pfree(so->memberTids);
+		so->nMembersAlloc = Max(n, 16);
+		so->memberTids = (ItemPointer)
+			palloc(so->nMembersAlloc * sizeof(ItemPointerData));
+	}
+	so->nMembers = bark_entry_get_tids(itup, so->memberTids, so->nMembersAlloc);
+
+	/*
+	 * Index-only scan: every member shares this entry's key, so build a clean
+	 * key-only tuple once (dropping any LIST/POSTING body); bark_emit_member
+	 * patches its t_tid per member.  index_deform_tuple reads the key and any
+	 * INCLUDE attributes, which sit at the front of every leaf shape.
+	 */
+	if (scan->xs_want_itup)
+	{
+		Relation	index = scan->indexRelation;
+		TupleDesc	tupdesc = RelationGetDescr(index);
+		Datum		values[INDEX_MAX_KEYS];
+		bool		isnull[INDEX_MAX_KEYS];
+		IndexTuple	key;
+		Size		sz;
+
+		index_deform_tuple(itup, tupdesc, values, isnull);
+		key = index_form_tuple(tupdesc, values, isnull);
+		sz = IndexTupleSize(key);
+		Assert(sz <= BLCKSZ);
+		memcpy(so->currTuple, key, sz);
+		pfree(key);
+	}
+}
+
+/*
+ * Hand back the member at so->memberIdx: its heap TID (always), and for an
+ * index-only scan the key tuple with that TID stamped in.  BARK is exact, so
+ * no heap recheck is ever required.
+ */
+static void
+bark_emit_member(IndexScanDesc scan)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+
+	Assert(so->memberIdx >= 0 && so->memberIdx < so->nMembers);
+	scan->xs_heaptid = so->memberTids[so->memberIdx];
+	scan->xs_recheck = false;
+
+	if (scan->xs_want_itup)
+	{
+		IndexTuple	key = (IndexTuple) so->currTuple;
+
+		key->t_tid = so->memberTids[so->memberIdx];
+		scan->xs_itup = key;
+	}
+}
+
 bool
 bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 {
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	Relation	index = scan->indexRelation;
+	bool		backward = ScanDirectionIsBackward(dir);
 
 	if (so->firstCall)
 		bark_position(scan, dir);
+
+	/*
+	 * If the entry last landed on still has unreturned members (a LIST or
+	 * POSTING expands into several heap TIDs, one per call), emit the next one
+	 * in the scan direction before reading any further on the page.
+	 */
+	if (so->nMembers > 0)
+	{
+		so->memberIdx += backward ? -1 : 1;
+		if (so->memberIdx >= 0 && so->memberIdx < so->nMembers)
+		{
+			bark_emit_member(scan);
+			return true;
+		}
+		so->nMembers = 0;		/* entry exhausted: fall through to advance */
+	}
 
 	while (BufferIsValid(so->currentBuffer))
 	{
@@ -278,7 +371,6 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 		OffsetNumber off,
 					maxoff,
 					firstdata;
-		bool		backward = ScanDirectionIsBackward(dir);
 
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 
@@ -325,23 +417,16 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 
 			if (bark_tuple_matches(scan, itup))
 			{
-				scan->xs_heaptid = itup->t_tid;
-				scan->xs_recheck = false;
-
 				/*
-				 * Index-only scan: hand back the index tuple itself.  Copy it
-				 * into the scan-owned scratch buffer first, since the page lock
-				 * (and thus the on-page tuple) is released before we return.
+				 * Decode this entry's heap locators into memberTids (SINGLE
+				 * yields one; LIST/POSTING expand into many) and remember its
+				 * key for index-only scans.  The members are then emitted one
+				 * per call, starting at the direction-appropriate end.
 				 */
-				if (scan->xs_want_itup)
-				{
-					Size		sz = IndexTupleSize(itup);
-
-					memcpy(so->currTuple, itup, sz);
-					scan->xs_itup = (IndexTuple) so->currTuple;
-				}
-
+				bark_load_members(scan, itup);
 				so->lastOffset = off;
+				so->memberIdx = backward ? so->nMembers - 1 : 0;
+				bark_emit_member(scan);
 				LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 				return true;
 			}
@@ -388,6 +473,8 @@ bark_endscan(IndexScanDesc scan)
 		ReleaseBuffer(so->currentBuffer);
 	if (so->currTuple)
 		pfree(so->currTuple);
+	if (so->memberTids)
+		pfree(so->memberTids);
 	if (so->keyinfo)
 		pfree(so->keyinfo);
 	pfree(so);
