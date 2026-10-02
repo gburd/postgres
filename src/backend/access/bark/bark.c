@@ -21,6 +21,8 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/amapi.h"
 #include "access/amlocator.h"
 #include "access/bark.h"
@@ -29,6 +31,7 @@
 #include "storage/bufmgr.h"
 #include "utils/fmgrprotos.h"
 #include "utils/selfuncs.h"
+#include "utils/spccache.h"
 
 /*
  * Every data-touching entry point routes through this: BARK accepts and
@@ -329,8 +332,37 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 }
 
 /*
- * Cost estimator.  Use the generic btree-style estimator so the planner can
- * choose a BARK index when it is cheaper than a sequential scan.
+ * barkcostestimate -- the C-STATS cost model for a BARK index scan.
+ *
+ * Starts from genericcostestimate but tunes two things BARK does differently
+ * from a plain one-tuple-per-row index, keeping the estimate honest rather than
+ * elaborate:
+ *
+ *  1. Entry coalescing (LIST / POSTING).  A key with many duplicate rows is one
+ *     leaf entry, not N, so a scan touches far fewer leaf tuples -- and pages --
+ *     than the number of heap rows it returns.  index->tuples is the number of
+ *     leaf entries (barkvacuumcleanup counts entries, not heap rows), so we feed
+ *     genericcostestimate the number of *entries* a scan visits
+ *     (indexSelectivity * entries) instead of letting it derive leaf tuples from
+ *     the heap row count; its pro-rata page formula then reflects the
+ *     compression.  (genericcostestimate still caps heap-row fetch cost
+ *     elsewhere; here we only correct the index-page side.)
+ *
+ *  2. Oversized-key / oversized-INCLUDE overflow I/O.  An oversized entry's full
+ *     value lives on an overflow chain the scan must read in addition to the
+ *     leaf page.  We estimate the average overflow chain length from the index's
+ *     own size -- bytes per entry beyond what a leaf slot holds -- and add a
+ *     random-page charge per visited entry for those extra reads.  An index with
+ *     no oversized entries (average entry well under the item cap) adds nothing,
+ *     so a normal index costs exactly as genericcostestimate says.
+ *
+ * ponytail: the overflow surcharge is derived from the index's average entry
+ * size, not from a count of how many visited entries are actually oversized
+ * (which would need a per-index oversized-entry statistic the AM does not keep).
+ * It is a correct expected-value charge for an index whose entries are
+ * uniformly large, and zero for an index with none; a mixed index is charged
+ * the average.  A dedicated oversized-entry count in the meta/stats is the
+ * upgrade path if the planner ever misjudges a skewed mix.
  */
 static void
 barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
@@ -338,9 +370,70 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 				 Selectivity *indexSelectivity, double *indexCorrelation,
 				 double *indexPages)
 {
+	IndexOptInfo *index = path->indexinfo;
 	GenericCosts costs = {0};
+	double		entries = index->tuples;
+	double		nvisited;
 
-	genericcostestimate(root, path, loop_count, &costs);
+	/*
+	 * (1) Model leaf *entries* visited, not heap rows.  genericcostestimate
+	 * derives numIndexTuples from indexSelectivity * heap-rows when we leave it
+	 * zero; for a coalescing index that overcounts whenever duplicates are
+	 * packed into LIST/POSTING entries.  Supply the entry estimate ourselves.
+	 * (genericcostestimate clamps it to [1, index->tuples] internally.)
+	 */
+	if (entries > 0)
+	{
+		Selectivity sel;
+
+		/*
+		 * Reuse genericcostestimate's own selectivity by a cheap pre-pass: run
+		 * it once to obtain indexSelectivity, then convert to entries.  (A
+		 * second call with numIndexTuples set is cheap; the quals are already
+		 * cached.)
+		 */
+		genericcostestimate(root, path, loop_count, &costs);
+		sel = costs.indexSelectivity;
+		nvisited = rint(sel * entries);
+		if (nvisited < 1.0)
+			nvisited = 1.0;
+
+		memset(&costs, 0, sizeof(costs));
+		costs.numIndexTuples = nvisited;
+		genericcostestimate(root, path, loop_count, &costs);
+	}
+	else
+	{
+		genericcostestimate(root, path, loop_count, &costs);
+		nvisited = costs.numIndexTuples;
+	}
+
+	/*
+	 * (2) Overflow-page surcharge.  Estimate the average bytes per entry from
+	 * the index's physical size; entries larger than a leaf slot (BarkMaxItemSize)
+	 * carry the overage on an overflow chain of ~overage / BarkOverflowChunkSize
+	 * pages.  Charge one random page read per such page per visited entry.  For
+	 * an index with small entries this is zero.
+	 */
+	if (entries > 0 && index->pages > 0)
+	{
+		double		avg_entry_bytes = (double) index->pages * BLCKSZ / entries;
+
+		if (avg_entry_bytes > BarkMaxItemSize)
+		{
+			double		overflow_bytes = avg_entry_bytes - BarkMaxItemSize;
+			double		chain_pages = ceil(overflow_bytes / BarkOverflowChunkSize);
+			double		spc_random_page_cost;
+			Cost		surcharge;
+
+			get_tablespace_page_costs(index->reltablespace,
+									  &spc_random_page_cost, NULL);
+			surcharge = nvisited * chain_pages * spc_random_page_cost;
+			costs.indexTotalCost += surcharge;
+			/* First overflow read is part of fetching the first matching entry. */
+			costs.indexStartupCost += chain_pages * spc_random_page_cost;
+		}
+	}
 
 	*indexStartupCost = costs.indexStartupCost;
 	*indexTotalCost = costs.indexTotalCost;
