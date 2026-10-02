@@ -3486,4 +3486,22 @@
   oprcom => '<=(oid8,oid8)', oprnegate => '<(oid8,oid8)', oprcode => 'oid8ge',
   oprrest => 'scalargesel', oprjoin => 'scalargejoinsel' },
 
+# BARK KNN distance operators: ORDER BY col <~> const returns the nearest
+# values to const.  Each is its own commutator (distance is symmetric) and
+# has no negator; the result is a float8 distance.  They are ordering
+# operators only (registered in btree's integer_ops family with purpose 'o'),
+# so they carry no restriction/join selectivity estimators.
+{ oid => '9473', descr => 'bark KNN distance between',
+  oprname => '<~>', oprleft => 'int2', oprright => 'int2',
+  oprresult => 'float8', oprcom => '<~>(int2,int2)',
+  oprcode => 'bark_int2_distance' },
+{ oid => '9474', descr => 'bark KNN distance between',
+  oprname => '<~>', oprleft => 'int4', oprright => 'int4',
+  oprresult => 'float8', oprcom => '<~>(int4,int4)',
+  oprcode => 'bark_int4_distance' },
+{ oid => '9475', descr => 'bark KNN distance between',
+  oprname => '<~>', oprleft => 'int8', oprright => 'int8',
+  oprresult => 'float8', oprcom => '<~>(int8,int8)',
+  oprcode => 'bark_int8_distance' },
+
 ]
