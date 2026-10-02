@@ -33,6 +33,7 @@
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
+#include "utils/injection_point.h"
 #include "utils/rel.h"
 
 /* Find the offset at which to insert key on a leaf page (first key > key). */
@@ -96,9 +97,38 @@ bark_page_insert_at(Page page, IndexTuple itup, OffsetNumber off)
 		elog(ERROR, "failed to insert item into BARK page");
 }
 
+/*
+ * Clear the BARK_INCOMPLETE_SPLIT flag on block `clearblk` as part of the
+ * caller's generic-WAL record `gstate`.  Called when the downlink that makes
+ * that page's right sibling reachable is being written, so the split becomes
+ * complete atomically with the downlink insert.  Returns the locked buffer so
+ * the caller can release it after GenericXLogFinish, or InvalidBuffer when
+ * clearblk is BARK_P_NONE (an ordinary insert, not split recovery).
+ */
+static Buffer
+bark_clear_incomplete_split(Relation index, GenericXLogState *gstate,
+							BlockNumber clearblk)
+{
+	Buffer		cbuf;
+	Page		cpage;
+
+	if (clearblk == BARK_P_NONE)
+		return InvalidBuffer;
+
+	cbuf = ReadBuffer(index, clearblk);
+	LockBuffer(cbuf, BUFFER_LOCK_EXCLUSIVE);
+	cpage = GenericXLogRegisterBuffer(gstate, cbuf, 0);
+	Assert((BarkPageGetOpaque(cpage)->bark_flags & BARK_INCOMPLETE_SPLIT) != 0);
+	BarkPageGetOpaque(cpage)->bark_flags &= ~BARK_INCOMPLETE_SPLIT;
+	return cbuf;
+}
+
 static void bark_insert_parent(Relation index, BarkKeyInfo *keyinfo,
 							   BarkStack stack, IndexTuple downlink,
 							   BlockNumber leftblk, BlockNumber rightblk);
+static void bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
+					   Buffer buf, OffsetNumber newoff, IndexTuple newitup,
+					   BlockNumber clearblk);
 
 /* Compare a downlink's key against a parent page's high key. */
 static int
@@ -229,7 +259,7 @@ bark_insert_first_leaf(Relation index, IndexTuple itup)
  */
 static void
 bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
-		   OffsetNumber newoff, IndexTuple newitup)
+		   OffsetNumber newoff, IndexTuple newitup, BlockNumber clearblk)
 {
 	int			nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	Page		origpage = BufferGetPage(buf);
@@ -296,7 +326,16 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 		lo->bark_prev = origopaque->bark_prev;
 		lo->bark_next = rightblk;	/* right link to the new page */
 		lo->bark_level = origopaque->bark_level;
-		lo->bark_flags = origopaque->bark_flags & ~BARK_ROOT;
+		/*
+		 * Mark the left page as having an unfinished split: its new right
+		 * sibling exists and is right-linked, but the downlink that would make
+		 * the sibling reachable from the parent is written in a separate step
+		 * below.  A crash in between leaves the flag set; the next writer that
+		 * descends here finishes the split (bark_finish_split).  The flag is
+		 * cleared atomically with the downlink insert in bark_insert_parent.
+		 */
+		lo->bark_flags = (origopaque->bark_flags & ~BARK_ROOT) |
+			BARK_INCOMPLETE_SPLIT;
 		lo->bark_page_id = BARK_PAGE_ID;
 	}
 	splitkey = items[splitidx];		/* first key on the right page */
@@ -333,21 +372,30 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 	/*
 	 * If the original page had a right sibling, that sibling's bark_prev must
 	 * now point at the new right page.  Register and fix it in the same WAL
-	 * record.
+	 * record.  If this split is finishing a child's incomplete split (clearblk
+	 * set), the child's downlink is being written here, so clear the child's
+	 * BARK_INCOMPLETE_SPLIT flag atomically in the same record.
 	 */
-	if (!origrightmost)
 	{
-		Buffer		sbuf = ReadBuffer(index, origright);
-		Page		spage;
+		Buffer		sbuf = InvalidBuffer;
+		Buffer		cbuf;
 
-		LockBuffer(sbuf, BUFFER_LOCK_EXCLUSIVE);
-		spage = GenericXLogRegisterBuffer(gstate, sbuf, 0);
-		BarkPageGetOpaque(spage)->bark_prev = rightblk;
+		if (!origrightmost)
+		{
+			Page		spage;
+
+			sbuf = ReadBuffer(index, origright);
+			LockBuffer(sbuf, BUFFER_LOCK_EXCLUSIVE);
+			spage = GenericXLogRegisterBuffer(gstate, sbuf, 0);
+			BarkPageGetOpaque(spage)->bark_prev = rightblk;
+		}
+		cbuf = bark_clear_incomplete_split(index, gstate, clearblk);
 		GenericXLogFinish(gstate);
-		UnlockReleaseBuffer(sbuf);
+		if (cbuf != InvalidBuffer)
+			UnlockReleaseBuffer(cbuf);
+		if (sbuf != InvalidBuffer)
+			UnlockReleaseBuffer(sbuf);
 	}
-	else
-		GenericXLogFinish(gstate);
 
 	/* The left (original) and right buffers are now consistent on disk. */
 	UnlockReleaseBuffer(rbuf);
@@ -355,6 +403,19 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 	/* Form the downlink for the right page and insert it into the parent. */
 	downlink = bark_make_downlink(splitkey, rightblk, nkeyatts);
 	UnlockReleaseBuffer(buf);		/* release leaf before touching parent */
+
+	/*
+	 * The split is now durable but its downlink is not yet in the parent --
+	 * the window a crash would leave as an incomplete split.  A test may stop
+	 * here (via the injection point) to exercise bark_finish_split recovery.
+	 */
+#ifdef USE_INJECTION_POINTS
+	if (isleaf)
+		INJECTION_POINT("bark-leave-leaf-split-incomplete", NULL);
+	else
+		INJECTION_POINT("bark-leave-internal-split-incomplete", NULL);
+#endif
+
 	bark_insert_parent(index, keyinfo, stack, downlink, origblk, rightblk);
 	pfree(downlink);
 
@@ -430,7 +491,19 @@ bark_new_root(Relation index, IndexTuple downlink, BlockNumber leftblk,
 		meta->bark_level = childlevel + 1;
 	}
 
-	GenericXLogFinish(gstate);
+	/*
+	 * The left child's downlink now exists (as the minus-infinity entry), so
+	 * clear its incomplete-split flag in the same record.  ponytail: locks the
+	 * child under the root while BARK is single-writer; revisit for
+	 * concurrency (P-series).
+	 */
+	{
+		Buffer		cbuf = bark_clear_incomplete_split(index, gstate, leftblk);
+
+		GenericXLogFinish(gstate);
+		if (cbuf != InvalidBuffer)
+			UnlockReleaseBuffer(cbuf);
+	}
 	UnlockReleaseBuffer(metabuf);
 	UnlockReleaseBuffer(rootbuf);
 }
@@ -491,19 +564,69 @@ bark_insert_parent(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
 
 	if (PageGetFreeSpace(ppage) >= itemsz)
 	{
-		/* Fits: insert the downlink and log the parent. */
+		/*
+		 * Fits: insert the downlink and log the parent.  The downlink is now
+		 * durably reachable, so clear the left child's incomplete-split flag in
+		 * the same WAL record.
+		 *
+		 * ponytail: locks the child (leftblk) while holding the parent, i.e.
+		 * down the tree -- safe while BARK has no concurrent inserters; revisit
+		 * the lock order when concurrency lands (P-series).
+		 */
 		GenericXLogState *gstate = GenericXLogStart(index);
 		Page		p = GenericXLogRegisterBuffer(gstate, pbuf, 0);
+		Buffer		cbuf;
 
 		bark_page_insert_at(p, downlink, off);
+		cbuf = bark_clear_incomplete_split(index, gstate, leftblk);
 		GenericXLogFinish(gstate);
+		if (cbuf != InvalidBuffer)
+			UnlockReleaseBuffer(cbuf);
 		UnlockReleaseBuffer(pbuf);
 	}
 	else
 	{
-		/* Parent is full: split it, carrying the stack one level up. */
-		bark_split(index, keyinfo, stack->bark_parent, pbuf, off, downlink);
+		/* Parent is full: split it, carrying the stack one level up.  The
+		 * parent split writes this downlink, so it clears leftblk's flag. */
+		bark_split(index, keyinfo, stack->bark_parent, pbuf, off, downlink,
+				   leftblk);
 	}
+}
+
+/*
+ * Finish a split that was interrupted (by a crash) after the right sibling was
+ * published but before its downlink reached the parent: the left page `lbuf`
+ * carries BARK_INCOMPLETE_SPLIT.  Reconstruct the missing downlink from the
+ * left page's high key -- which equals the right sibling's first key, i.e. the
+ * split key -- pointing at the right sibling, and insert it into the parent.
+ * bark_insert_parent clears the flag atomically with that insert.
+ *
+ * `lbuf` is write-locked on entry and released here.  `stack` is the parent
+ * path to `lbuf` from the current descent.
+ */
+static void
+bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
+				  BarkStack stack)
+{
+	int			nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
+	Page		lpage = BufferGetPage(lbuf);
+	BarkPageOpaque lopaque = BarkPageGetOpaque(lpage);
+	BlockNumber lblk = BufferGetBlockNumber(lbuf);
+	BlockNumber rblk = lopaque->bark_next;
+	ItemId		hiid = PageGetItemId(lpage, BARK_P_HIKEY);
+	IndexTuple	hikey = (IndexTuple) PageGetItem(lpage, hiid);
+	IndexTuple	downlink;
+
+	Assert((lopaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0);
+	Assert(!BarkPageRightmost(lopaque));	/* has a right sibling */
+
+	INJECTION_POINT("bark-finish-incomplete-split", NULL);
+
+	/* The high key is the split key; make a downlink to the right sibling. */
+	downlink = bark_make_downlink(hikey, rblk, nkeyatts);
+	UnlockReleaseBuffer(lbuf);
+	bark_insert_parent(index, keyinfo, stack, downlink, lblk, rblk);
+	pfree(downlink);
 }
 
 bool
@@ -521,6 +644,7 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 
 	itup->t_tid = *ht_ctid;		/* SINGLE shape: locator in t_tid */
 
+retry:
 	buf = bark_search(index, keyinfo, itup, true, &stack);
 
 	if (buf == InvalidBuffer)
@@ -530,6 +654,21 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 		pfree(itup);
 		pfree(keyinfo);
 		return false;
+	}
+
+	/*
+	 * If this leaf has an unfinished split (a crash left its right sibling
+	 * without a parent downlink), complete it before inserting, then descend
+	 * again: the parent now has the missing downlink and the key may belong on
+	 * the right sibling.
+	 */
+	if ((BarkPageGetOpaque(BufferGetPage(buf))->bark_flags &
+		 BARK_INCOMPLETE_SPLIT) != 0)
+	{
+		bark_finish_split(index, keyinfo, buf, stack);	/* releases buf */
+		if (stack)
+			bark_freestack(stack);
+		goto retry;
 	}
 
 	page = BufferGetPage(buf);
@@ -546,7 +685,8 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 	}
 	else
 	{
-		bark_split(index, keyinfo, stack, buf, off, itup);
+		/* Leaf split: no child below, so no incomplete-split flag to clear. */
+		bark_split(index, keyinfo, stack, buf, off, itup, BARK_P_NONE);
 		buf = InvalidBuffer;	/* bark_split released it */
 	}
 
