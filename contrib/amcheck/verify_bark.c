@@ -31,6 +31,7 @@
 #include "access/bark.h"
 #include "catalog/pg_am_d.h"
 #include "fmgr.h"
+#include "lib/sbm.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "utils/rel.h"
@@ -43,6 +44,8 @@ static void bark_check_structure(Relation rel, Relation heaprel,
 static void bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo);
 static void bark_check_list(Relation rel, BlockNumber blkno, OffsetNumber off,
 							IndexTuple itup);
+static void bark_check_posting(Relation rel, BlockNumber blkno, OffsetNumber off,
+							   IndexTuple itup);
 
 /*
  * bark_index_check(index regclass)
@@ -146,12 +149,17 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 
 		/*
 		 * A LIST entry (sorted duplicates) on a leaf page must carry at least
-		 * two locators, stored strictly ascending.  SINGLE entries and pivots
-		 * need no extra checks here.
+		 * two locators, stored strictly ascending.  A POSTING entry must hold a
+		 * valid sbm serialization with at least two members.  SINGLE entries
+		 * and pivots need no extra checks here.
 		 */
-		if (BarkPageIsLeaf(opaque) &&
-			BarkEntryGetShape(itup) == BARK_SHAPE_LIST)
-			bark_check_list(rel, blkno, off, itup);
+		if (BarkPageIsLeaf(opaque))
+		{
+			if (BarkEntryGetShape(itup) == BARK_SHAPE_LIST)
+				bark_check_list(rel, blkno, off, itup);
+			else if (BarkEntryGetShape(itup) == BARK_SHAPE_POSTING)
+				bark_check_posting(rel, blkno, off, itup);
+		}
 
 		prev = itup;
 	}
@@ -215,4 +223,35 @@ bark_check_list(Relation rel, BlockNumber blkno, OffsetNumber off,
 					 errmsg("BARK index \"%s\" has out-of-order list locators on page %u at offset %u",
 							RelationGetRelationName(rel), blkno, off)));
 	}
+}
+
+/*
+ * Validate a POSTING entry: its body must be a valid sbm serialization that
+ * passes a structural self-check and holds at least two members (a smaller set
+ * would never have been promoted from a LIST).
+ */
+static void
+bark_check_posting(Relation rel, BlockNumber blkno, OffsetNumber off,
+				   IndexTuple itup)
+{
+	Sbm		   *map = sbm_deserialize(BarkPostingGetData(itup),
+									 BarkPostingGetDataSize(itup));
+
+	if (map == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("BARK index \"%s\" has a corrupt posting set on page %u at offset %u",
+						RelationGetRelationName(rel), blkno, off)));
+
+	if (!sbm_validate(map) || sbm_cardinality(map) < 2)
+	{
+		size_t		card = sbm_cardinality(map);
+
+		sbm_free(map);
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("BARK index \"%s\" has an invalid posting set (%zu members) on page %u at offset %u",
+						RelationGetRelationName(rel), card, blkno, off)));
+	}
+	sbm_free(map);
 }

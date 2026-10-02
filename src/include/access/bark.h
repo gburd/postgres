@@ -379,6 +379,42 @@ BarkListGetTID(IndexTupleData *itup, int n)
 }
 
 /* ----------------------------------------------------------------------------
+ * POSTING entry accessors (sbm-backed inverted locator set)
+ *
+ * A POSTING entry has the same key prefix as a SINGLE/LIST entry, extended
+ * with an sbm serialization (see lib/sbm.h) of its locator set in the body.
+ * The alt-TID bit is set with BARK_IS_POSTING; the body offset is in the t_tid
+ * block field (as for LIST), and the body occupies the rest of the entry (its
+ * length is the entry size minus the body offset).  The member count is not
+ * stored in the offset field -- it can exceed BARK_OFFSET_MASK -- but is read
+ * back from the sbm; the offset low bits are left zero.
+ *
+ * A heap TID maps to an sbm index with a reversible, block-clustered encoding
+ * so a run of TIDs on one heap block becomes a dense sbm run:
+ *
+ *     key    = (uint64) block * MaxHeapTuplesPerPage + (offset - 1)
+ *     block  = key / MaxHeapTuplesPerPage
+ *     offset = (key % MaxHeapTuplesPerPage) + 1
+ *
+ * (offset is 1-based on a heap page, so it is biased by one into the set.)
+ * ----------------------------------------------------------------------------
+ */
+
+/* Pointer to a POSTING entry's serialized sbm body. */
+static inline uint8 *
+BarkPostingGetData(IndexTupleData *itup)
+{
+	return (uint8 *) ((char *) itup + BarkEntryGetBodyOffset(itup));
+}
+
+/* Length in bytes of a POSTING entry's serialized sbm body. */
+static inline Size
+BarkPostingGetDataSize(IndexTupleData *itup)
+{
+	return IndexTupleSize(itup) - BarkEntryGetBodyOffset(itup);
+}
+
+/* ----------------------------------------------------------------------------
  * Shared prototypes (bark.c, barkutils.c, barksort.c, barkvalidate.c)
  * ----------------------------------------------------------------------------
  */
@@ -423,9 +459,10 @@ extern IndexTuple bark_form_list(TupleDesc tupdesc, IndexTuple key,
 								 ItemPointer tids, int ntids);
 
 /*
- * Collect the heap locators of a leaf entry (SINGLE or LIST) into `out` in
- * ascending order, returning the count.  `out` must have room for at least
- * bark_entry_count_tids(itup) locators.
+ * Collect the heap locators of a leaf entry (SINGLE, LIST, or POSTING) into
+ * `out` in ascending order, returning the count.  `out` must have room for at
+ * least bark_entry_count_tids(itup) locators.  A POSTING entry is iterated
+ * through its sbm.
  */
 extern int	bark_entry_get_tids(IndexTuple itup, ItemPointer out, int maxout);
 
@@ -434,12 +471,32 @@ extern int	bark_entry_count_tids(IndexTuple itup);
 
 /*
  * Reform a clean SINGLE-shape key tuple from a leaf entry (dropping any LIST
- * body and alt-TID status).  When `tid` is non-NULL the result's t_tid is set
- * to it; otherwise t_tid is left as index_form_tuple leaves it.  Used by
- * VACUUM to collapse a LIST down to a SINGLE and to recover a plain key.
+ * or POSTING body and alt-TID status).  When `tid` is non-NULL the result's
+ * t_tid is set to it; otherwise t_tid is left as index_form_tuple leaves it.
+ * Used by VACUUM to collapse a LIST/POSTING down to a SINGLE and to recover a
+ * plain key.
  */
 extern IndexTuple bark_single_from_list(Relation index, IndexTuple entry,
 										ItemPointer tid);
+
+/*
+ * POSTING shape: an inverted locator set stored as an sbm serialization.
+ *
+ * bark_tid_to_key / bark_key_to_tid are the reversible, block-clustered TID
+ * <-> uint64 mapping documented in the POSTING accessor section above.
+ *
+ * bark_form_posting builds a POSTING entry from the key columns of `key` and
+ * the `ntids` ascending locators in `tids`; it returns NULL when the sbm
+ * envelope would not be smaller than the equivalent LIST (caller keeps the
+ * LIST).  bark_posting_count / bark_posting_get_tids read a POSTING entry's
+ * set back.
+ */
+extern uint64 bark_tid_to_key(ItemPointer tid);
+extern void bark_key_to_tid(uint64 key, ItemPointer tid);
+extern IndexTuple bark_form_posting(TupleDesc tupdesc, IndexTuple key,
+									ItemPointer tids, int ntids);
+extern int	bark_posting_count(IndexTuple itup);
+extern int	bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout);
 
 extern IndexBuildResult *bark_build(Relation heap, Relation index,
 									IndexInfo *indexInfo);

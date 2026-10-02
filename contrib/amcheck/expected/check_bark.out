@@ -62,4 +62,27 @@ SELECT bark_index_check('bark_check_list_idx');
 (1 row)
 
 DROP TABLE bark_check_list;
+-- Enough clustered duplicates of one key promote its entry from LIST to
+-- POSTING (an sbm serialization); the verifier checks the sbm deserializes,
+-- self-validates, and holds >= 2 members.  Verify after the promotion and
+-- again after a partial-set vacuum.
+CREATE TABLE bark_check_post (a int, b int);
+CREATE INDEX bark_check_post_idx ON bark_check_post USING bark (a);
+INSERT INTO bark_check_post SELECT k, g
+  FROM generate_series(0, 4) k, generate_series(1, 400) g;
+SELECT bark_index_check('bark_check_post_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DELETE FROM bark_check_post WHERE a = 2 AND b <= 300;
+VACUUM bark_check_post;
+SELECT bark_index_check('bark_check_post_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE bark_check_post;
 DROP TABLE bark_check_tab;

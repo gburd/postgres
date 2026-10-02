@@ -138,11 +138,12 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 			}
 			else
 			{
-				ItemPointerData tids[MaxOffsetNumber];
-				int			ntids = bark_entry_get_tids(itup, tids,
-														   MaxOffsetNumber);
+				int			ntids = bark_entry_count_tids(itup);
+				ItemPointer tids = (ItemPointer)
+					palloc(ntids * sizeof(ItemPointerData));
 				int			nlive = 0;
 
+				ntids = bark_entry_get_tids(itup, tids, ntids);
 				for (int i = 0; i < ntids; i++)
 				{
 					if (!callback(&tids[i], callback_state))
@@ -150,13 +151,17 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 				}
 
 				if (nlive == ntids)
+				{
+					pfree(tids);
 					continue;	/* nothing dead in this entry */
+				}
 
 				stats->tuples_removed += ntids - nlive;
 
 				if (nlive == 0)
 				{
 					todelete[ndelete++] = off;	/* whole entry dies */
+					pfree(tids);
 					continue;
 				}
 
@@ -169,17 +174,26 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 
 				{
 					/*
-					 * Rebuild with the live members: a shrunken LIST, or a plain
-					 * SINGLE when exactly one survives.  Both are no larger than
-					 * the original entry, so PageIndexTupleOverwrite fits in place.
+					 * Rebuild with the surviving members, re-choosing the shape:
+					 * a POSTING if its sbm still wins, else a LIST, else a plain
+					 * SINGLE when exactly one survives.  Removing members only
+					 * shrinks the set, so the new entry is no larger than the
+					 * original and PageIndexTupleOverwrite fits in place.
 					 */
 					IndexTuple	key = bark_single_from_list(index, itup, NULL);
 					IndexTuple	newentry;
+					IndexTuple	posting;
 
 					if (nlive == 1)
 					{
 						newentry = key;
 						newentry->t_tid = tids[0];
+					}
+					else if ((posting = bark_form_posting(RelationGetDescr(index),
+															  key, tids, nlive)) != NULL)
+					{
+						newentry = posting;
+						pfree(key);
 					}
 					else
 					{
@@ -189,9 +203,10 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 					}
 					if (!PageIndexTupleOverwrite(page, off, (char *) newentry,
 												 IndexTupleSize(newentry)))
-						elog(ERROR, "failed to shrink BARK list entry during vacuum");
+						elog(ERROR, "failed to shrink BARK leaf entry during vacuum");
 					pfree(newentry);
 				}
+				pfree(tids);
 			}
 		}
 
