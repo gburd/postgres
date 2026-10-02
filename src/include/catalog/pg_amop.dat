@@ -167,6 +167,26 @@
   amoprighttype => 'int4', amopstrategy => '5', amopopr => '>(int8,int4)',
   amopmethod => 'btree' },
 
+# BARK KNN ordering operators (amcanorderbyop).  These live in btree's
+# integer_ops family but name BARK as their access method and carry
+# amoppurpose 'o' (ORDER BY): btree does not define ordering operators, but a
+# btree-compatible AM may add its own to the shared family -- the same rule
+# F07 established for opclasses, extended to amop rows (see opr_sanity's
+# amopmethod/opfmethod exemption).  They sort by the btree float_ops family
+# because the distance is float8.
+{ amopfamily => 'btree/integer_ops', amoplefttype => 'int2',
+  amoprighttype => 'int2', amopstrategy => '6', amoppurpose => 'o',
+  amopopr => '<~>(int2,int2)', amopmethod => 'bark',
+  amopsortfamily => 'btree/float_ops' },
+{ amopfamily => 'btree/integer_ops', amoplefttype => 'int4',
+  amoprighttype => 'int4', amopstrategy => '6', amoppurpose => 'o',
+  amopopr => '<~>(int4,int4)', amopmethod => 'bark',
+  amopsortfamily => 'btree/float_ops' },
+{ amopfamily => 'btree/integer_ops', amoplefttype => 'int8',
+  amoprighttype => 'int8', amopstrategy => '6', amoppurpose => 'o',
+  amopopr => '<~>(int8,int8)', amopmethod => 'bark',
+  amopsortfamily => 'btree/float_ops' },
+
 # btree oid_ops
 
 { amopfamily => 'btree/oid_ops', amoplefttype => 'oid', amoprighttype => 'oid',

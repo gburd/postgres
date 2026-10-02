@@ -491,10 +491,9 @@ barkendscan(IndexScanDesc scan)
  *
  * Returns an IndexAmRoutine that declares BARK's capabilities.  BARK is an
  * ordered index whose operator families are btree operator families (like
- * the btree AM's), it stores the heap-TID locator, and reserves the KNN
- * (amcanorderbyop) capability for a later phase.  The interface functions are
- * present so opclass validation and CREATE INDEX planning work; the ones that
- * would touch index data error out until their implementing commits land.
+ * the btree AM's), it stores the heap-TID locator, and it answers ordered-
+ * operator (KNN) scans -- ORDER BY col <~> const -- over its scalar key
+ * (amcanorderbyop; see barkknn.c).
  */
 Datum
 barkhandler(PG_FUNCTION_ARGS)
@@ -506,7 +505,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amoptsprocnum = 0,
 		.amcanorder = true,
 		.ambtreeopfamilies = true,
-		.amcanorderbyop = false,	/* reserved; implemented in a later phase */
+		.amcanorderbyop = true,	/* KNN: ORDER BY col <~> const (see barkknn.c) */
 		.amcanhash = false,
 		.amconsistentequality = true,
 		.amconsistentordering = true,

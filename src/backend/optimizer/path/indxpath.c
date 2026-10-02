@@ -1058,6 +1058,55 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 		}
 	}
 
+	/*
+	 * 6. If the index can also answer ordering-operator (KNN) scans, generate
+	 * those paths too.  An index may be both key-ordered (amcanorder, handled
+	 * in steps 2/5 above) and able to return rows in an ordering operator's
+	 * order (amcanorderbyop) -- BARK is both.  The two are independent path
+	 * shapes: the steps above produced the key-ordered paths, and this step
+	 * adds a path for ORDER BY col <-> const.  (For an AM that is only
+	 * amcanorderbyop, like GiST/SP-GiST, index_is_ordered is false and the
+	 * amcanorderbyop branch in step 2 already produced this path, so skip to
+	 * avoid duplicating it.)
+	 */
+	if (index->amcanorderbyop && index_is_ordered && pathkeys_possibly_useful)
+	{
+		List	   *obclauses = NIL;
+		List	   *obcols = NIL;
+		List	   *obpathkeys;
+
+		match_pathkeys_to_index(index, root->query_pathkeys,
+								&obclauses, &obcols);
+		if (obclauses != NIL)
+		{
+			if (list_length(root->query_pathkeys) == list_length(obclauses))
+				obpathkeys = root->query_pathkeys;
+			else
+				obpathkeys = list_copy_head(root->query_pathkeys,
+											list_length(obclauses));
+
+			ipath = create_index_path(root, index,
+									  index_clauses,
+									  obclauses,
+									  obcols,
+									  obpathkeys,
+									  ForwardScanDirection,
+									  index_only_scan,
+									  outer_relids,
+									  loop_count,
+									  false);
+			result = lappend(result, ipath);
+
+			/*
+			 * No parallel KNN path: the outward two-sided merge is driven from a
+			 * single center position, not a page cursor handed out across
+			 * workers, so it is not parallelized here (each worker would restart
+			 * at the center and re-emit the same nearest rows).  The key-ordered
+			 * paths above still consider parallelism.
+			 */
+		}
+	}
+
 	return result;
 }
 
