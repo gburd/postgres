@@ -536,5 +536,33 @@ SELECT count(*) AS seq_after_vacuum FROM bark_big;
 RESET enable_seqscan;
 RESET enable_indexscan;
 
-DROP TABLE bark_big, bark_pfx, bark_huge, bark_uniq;
+-- Oversized INCLUDE payload (P05): a small key with a non-key INCLUDE column too
+-- large for the leaf is stored on the overflow chain with the key and returned
+-- in full by an index-only scan.  Pivots never carry the INCLUDE column (they
+-- are truncated to key attributes), so an oversized INCLUDE never bloats an
+-- internal page.  32KB payloads force leaf splits of INCLUDE-oversized entries.
+CREATE TABLE bark_inc_big (k int, payload text);
+INSERT INTO bark_inc_big SELECT g, bark_bigstr(g, 32000)
+  FROM generate_series(1, 15) g;
+CREATE INDEX bark_inc_big_idx ON bark_inc_big USING bark (k) INCLUDE (payload);
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+-- Index-only scan returns the full 32KB INCLUDE value, byte-for-byte.
+EXPLAIN (COSTS OFF)
+  SELECT k, length(payload) FROM bark_inc_big WHERE k BETWEEN 1 AND 15;
+SELECT k, length(payload) FROM bark_inc_big WHERE k BETWEEN 1 AND 15 ORDER BY k;
+SELECT bool_and(payload = bark_bigstr(k, 32000)) AS ios_payload_match
+  FROM bark_inc_big WHERE k BETWEEN 1 AND 15;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+-- Delete + vacuum reclaims the INCLUDE overflow chains; the rest still scans.
+DELETE FROM bark_inc_big WHERE k <= 8;
+VACUUM bark_inc_big;
+SET enable_seqscan = off;
+SELECT bool_and(payload = bark_bigstr(k, 32000)) AS after_vacuum_match
+  FROM bark_inc_big WHERE k BETWEEN 1 AND 15;
+SELECT count(*) AS idx_remaining FROM bark_inc_big WHERE k BETWEEN 1 AND 15;
+RESET enable_seqscan;
+
+DROP TABLE bark_big, bark_pfx, bark_huge, bark_uniq, bark_inc_big;
 DROP FUNCTION bark_bigstr(int, int);
