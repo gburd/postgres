@@ -35,8 +35,10 @@
 #include "miscadmin.h"
 #include "nodes/tidbitmap.h"
 #include "storage/bufmgr.h"
+#include "storage/lwlock.h"
 #include "storage/predicate.h"
 #include "utils/rel.h"
+#include "utils/wait_event.h"
 
 /*
  * Test one index tuple against all scan keys.  Returns true when every key is
@@ -188,43 +190,42 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 }
 
 /*
- * Position the scan on its first leaf.
- *
- * Forward: descend to the leftmost possibly matching leaf (via a first-column
- * lower bound when available), else the leftmost leaf of the tree.  Backward:
- * start at the rightmost leaf and walk left, applying the scan keys per tuple.
- * Leaves the leaf pinned but not locked; bark_gettuple locks per page read.
+ * Find the block number of the leaf the scan should start on, without keeping
+ * the buffer: leftmost possibly-matching leaf for a forward scan (via a
+ * first-column lower bound when available), else the leftmost leaf; rightmost
+ * leaf for a backward scan.  Returns BARK_P_NONE for an empty index.
  *
  * ponytail: a backward scan always starts rightmost rather than descending to
  * an upper bound first; sharper backward positioning is an optimization, not a
  * correctness matter (symmetric to the forward no-lower-bound case).
  */
-static void
-bark_position(IndexScanDesc scan, ScanDirection dir)
+static BlockNumber
+bark_find_start_block(IndexScanDesc scan, ScanDirection dir)
 {
 	Relation	index = scan->indexRelation;
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	bool		backward = ScanDirectionIsBackward(dir);
 	IndexTuple	lower = backward ? NULL : bark_make_lower_bound(scan);
-	Buffer		buf;
-
-	/* Allocate the index-only-scan scratch buffer on first use. */
-	if (scan->xs_want_itup && so->currTuple == NULL)
-		so->currTuple = palloc(BLCKSZ);
+	BlockNumber startblk;
 
 	if (lower != NULL)
 	{
-		buf = bark_search(index, so->keyinfo, lower, false, false, NULL);
+		Buffer		buf = bark_search(index, so->keyinfo, lower, false, false,
+									  NULL);
+
 		pfree(lower);
-		if (buf != InvalidBuffer)
-			LockBuffer(buf, BUFFER_LOCK_UNLOCK);	/* search left it share-locked */
+		if (buf == InvalidBuffer)
+			return BARK_P_NONE;	/* empty index */
+		startblk = BufferGetBlockNumber(buf);
+		UnlockReleaseBuffer(buf);	/* search left it share-locked */
+		return startblk;
 	}
-	else
+
+	/*
+	 * No usable bound: walk down the spine to the extreme leaf -- leftmost for
+	 * a forward scan, rightmost for a backward scan.
+	 */
 	{
-		/*
-		 * No usable bound: walk down the spine to the extreme leaf -- leftmost
-		 * for a forward scan, rightmost for a backward scan.
-		 */
 		BlockNumber blkno;
 		Buffer		metabuf = ReadBuffer(index, BARK_METAPAGE);
 
@@ -232,19 +233,20 @@ bark_position(IndexScanDesc scan, ScanDirection dir)
 		blkno = BarkPageGetMeta(BufferGetPage(metabuf))->bark_root;
 		UnlockReleaseBuffer(metabuf);
 
-		buf = InvalidBuffer;
+		startblk = BARK_P_NONE;
 		while (blkno != BARK_P_NONE)
 		{
+			Buffer		buf = ReadBuffer(index, blkno);
 			Page		page;
 			BarkPageOpaque opaque;
 
-			buf = ReadBuffer(index, blkno);
 			LockBuffer(buf, BUFFER_LOCK_SHARE);
 			page = BufferGetPage(buf);
 			opaque = BarkPageGetOpaque(page);
 			if (BarkPageIsLeaf(opaque))
 			{
-				LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+				startblk = blkno;
+				UnlockReleaseBuffer(buf);
 				break;
 			}
 			/* Follow the first (forward) or last (backward) downlink. */
@@ -256,15 +258,199 @@ bark_position(IndexScanDesc scan, ScanDirection dir)
 				BlockNumber child = BarkPivotGetDownLink(itup);
 
 				UnlockReleaseBuffer(buf);
-				buf = InvalidBuffer;
 				blkno = child;
 			}
 		}
+		return startblk;
 	}
+}
 
-	so->currentBuffer = buf;
-	so->lastOffset = InvalidOffsetNumber;	/* set on first page read */
+/* ---------------------------------------------------------------------------
+ * Parallel scan coordination (modeled on nbtree's _bt_parallel_seize/release)
+ *
+ * A parallel BARK scan hands out leaf pages one at a time from a shared
+ * cursor.  Only one worker advances the cursor at a time: a worker seizes the
+ * scan, reads the page it was handed, then releases the page's sibling (in the
+ * scan direction) as the next page for another worker.  Because the direction
+ * of a parallel scan never changes, a single next-page cursor is all the
+ * coordination needs.
+ * ---------------------------------------------------------------------------
+ */
+
+static BarkParallelScanDesc
+bark_get_parallel_desc(IndexScanDesc scan)
+{
+	ParallelIndexScanDesc pscan = scan->parallel_scan;
+
+	return (BarkParallelScanDesc) OffsetToPointer(pscan, pscan->ps_offset_am);
+}
+
+/*
+ * Mark the parallel scan complete so no worker waits forever for a next page.
+ */
+static void
+bark_parallel_done(IndexScanDesc scan)
+{
+	BarkParallelScanDesc bps;
+
+	if (scan->parallel_scan == NULL)
+		return;
+	bps = bark_get_parallel_desc(scan);
+
+	LWLockAcquire(&bps->bps_lock, LW_EXCLUSIVE);
+	if (bps->bps_state != BARK_PARALLEL_DONE)
+		bps->bps_state = BARK_PARALLEL_DONE;
+	LWLockRelease(&bps->bps_lock);
+	ConditionVariableBroadcast(&bps->bps_cv);
+}
+
+/*
+ * Seize the parallel scan to obtain the next leaf block to scan.
+ *
+ * Returns true and sets *next_block when this worker should scan a page:
+ *   - *next_block == a valid leaf block: scan it.
+ *   - *next_block == BARK_P_NONE together with a true return and `first`:
+ *     this worker won the right to position the scan (descend to the start
+ *     leaf) and must call bark_parallel_release with the block it finds.
+ * Returns false when the scan is finished (no pages remain).
+ *
+ * Only the backend that positions the scan passes first=true (from
+ * bark_position); it alone may initialize an uninitialized scan.
+ */
+static bool
+bark_parallel_seize(IndexScanDesc scan, BlockNumber *next_block, bool first)
+{
+	BarkParallelScanDesc bps = bark_get_parallel_desc(scan);
+	bool		exit_loop = false;
+	bool		status = true;
+	bool		endscan = false;
+
+	*next_block = InvalidBlockNumber;
+
+	for (;;)
+	{
+		LWLockAcquire(&bps->bps_lock, LW_EXCLUSIVE);
+
+		if (bps->bps_state == BARK_PARALLEL_DONE)
+		{
+			status = false;		/* scan already finished */
+		}
+		else if (bps->bps_state == BARK_PARALLEL_NOT_INITIALIZED)
+		{
+			if (first)
+			{
+				/* We get to position the scan; signal that via BARK_P_NONE. */
+				bps->bps_state = BARK_PARALLEL_ADVANCING;
+				*next_block = BARK_P_NONE;
+				exit_loop = true;
+			}
+			else
+			{
+				/* A non-positioning worker must wait for initialization. */
+				LWLockRelease(&bps->bps_lock);
+				ConditionVariableSleep(&bps->bps_cv,
+									   WAIT_EVENT_BARK_PAGE);
+				continue;
+			}
+		}
+		else if (bps->bps_state == BARK_PARALLEL_IDLE &&
+				 bps->bps_nextPage == BARK_P_NONE)
+		{
+			/* Cursor exhausted: end the scan. */
+			status = false;
+			endscan = true;
+		}
+		else if (bps->bps_state == BARK_PARALLEL_IDLE)
+		{
+			/* Seized: claim the next page and mark the scan as advancing. */
+			bps->bps_state = BARK_PARALLEL_ADVANCING;
+			*next_block = bps->bps_nextPage;
+			exit_loop = true;
+		}
+
+		LWLockRelease(&bps->bps_lock);
+		if (exit_loop || !status)
+			break;
+		/* Another worker is advancing; wait for it to release a page. */
+		ConditionVariableSleep(&bps->bps_cv, WAIT_EVENT_BARK_PAGE);
+	}
+	ConditionVariableCancelSleep();
+
+	if (endscan)
+		bark_parallel_done(scan);
+
+	return status;
+}
+
+/*
+ * Release the parallel scan: publish next_block as the page another worker
+ * should scan, and mark the scan idle.  next_block is BARK_P_NONE at the end
+ * of the chain, which bark_parallel_seize treats as end-of-scan.
+ */
+static void
+bark_parallel_release(IndexScanDesc scan, BlockNumber next_block)
+{
+	BarkParallelScanDesc bps = bark_get_parallel_desc(scan);
+
+	LWLockAcquire(&bps->bps_lock, LW_EXCLUSIVE);
+	bps->bps_nextPage = next_block;
+	bps->bps_state = BARK_PARALLEL_IDLE;
+	LWLockRelease(&bps->bps_lock);
+	ConditionVariableSignal(&bps->bps_cv);
+}
+
+/*
+ * Position the scan on its first leaf.
+ *
+ * Serial: find the start leaf and pin it.  Parallel: seize the shared cursor;
+ * the first worker to seize descends to the start leaf and releases it so the
+ * whole pool (itself included) then claims pages from the cursor.  Leaves the
+ * leaf pinned but not locked; bark_gettuple locks per page read.
+ */
+static void
+bark_position(IndexScanDesc scan, ScanDirection dir)
+{
+	Relation	index = scan->indexRelation;
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BlockNumber startblk;
+
+	/* Allocate the index-only-scan scratch buffer on first use. */
+	if (scan->xs_want_itup && so->currTuple == NULL)
+		so->currTuple = palloc(BLCKSZ);
+
 	so->firstCall = false;
+	so->lastOffset = InvalidOffsetNumber;	/* set on first page read */
+
+	if (scan->parallel_scan != NULL)
+	{
+		BlockNumber next;
+
+		/* Try to seize the scan as the backend that positions it. */
+		if (!bark_parallel_seize(scan, &next, true))
+		{
+			so->currentBuffer = InvalidBuffer;	/* scan already finished */
+			return;
+		}
+
+		if (next == BARK_P_NONE)
+		{
+			/* We won the right to position: descend and publish the start. */
+			startblk = bark_find_start_block(scan, dir);
+			bark_parallel_release(scan, startblk);
+			/* Now claim a page like any other worker. */
+			if (!bark_parallel_seize(scan, &next, false))
+			{
+				so->currentBuffer = InvalidBuffer;
+				return;
+			}
+		}
+		startblk = next;
+	}
+	else
+		startblk = bark_find_start_block(scan, dir);
+
+	so->currentBuffer = (startblk == BARK_P_NONE) ? InvalidBuffer
+		: ReadBuffer(index, startblk);
 }
 
 /*
@@ -440,7 +626,22 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 			ReleaseBuffer(buf);
 			so->currentBuffer = InvalidBuffer;
 			so->lastOffset = InvalidOffsetNumber;
-			if (nextblk != BARK_P_NONE)
+
+			if (scan->parallel_scan != NULL)
+			{
+				BlockNumber claimed;
+
+				/*
+				 * Parallel: publish this page's sibling as the next page for
+				 * the pool (BARK_P_NONE ends the chain), then seize our own
+				 * next page.  Each leaf is thus scanned by exactly one worker.
+				 */
+				bark_parallel_release(scan, nextblk);
+				if (bark_parallel_seize(scan, &claimed, false) &&
+					claimed != BARK_P_NONE)
+					so->currentBuffer = ReadBuffer(index, claimed);
+			}
+			else if (nextblk != BARK_P_NONE)
 			{
 				so->currentBuffer = ReadBuffer(index, nextblk);
 			}
@@ -554,4 +755,52 @@ bool
 bark_canreturn(Relation index, int attno)
 {
 	return true;
+}
+
+/*
+ * bark_estimateparallelscan -- shared-memory size for a parallel BARK scan.
+ *
+ * BARK's parallel state is a fixed-size cursor (unlike nbtree, there are no
+ * ScalarArrayOp arrays to size for), so this ignores nkeys/norderbys.
+ */
+Size
+bark_estimateparallelscan(Relation index, int nkeys, int norderbys)
+{
+	return sizeof(BarkParallelScanDescData);
+}
+
+/*
+ * bark_initparallelscan -- initialize the shared parallel scan descriptor.
+ */
+void
+bark_initparallelscan(void *target)
+{
+	BarkParallelScanDesc bps = (BarkParallelScanDesc) target;
+
+	LWLockInitialize(&bps->bps_lock, LWTRANCHE_PARALLEL_BARK_SCAN);
+	ConditionVariableInit(&bps->bps_cv);
+	bps->bps_nextPage = InvalidBlockNumber;
+	bps->bps_state = BARK_PARALLEL_NOT_INITIALIZED;
+}
+
+/*
+ * bark_parallelrescan -- reset the shared parallel scan to its initial state.
+ */
+void
+bark_parallelrescan(IndexScanDesc scan)
+{
+	BarkParallelScanDesc bps;
+
+	Assert(scan->parallel_scan);
+	bps = (BarkParallelScanDesc) OffsetToPointer(scan->parallel_scan,
+												 scan->parallel_scan->ps_offset_am);
+
+	/*
+	 * No other workers should be running at rescan, but take the lock anyway
+	 * for consistency (as nbtree does).
+	 */
+	LWLockAcquire(&bps->bps_lock, LW_EXCLUSIVE);
+	bps->bps_nextPage = InvalidBlockNumber;
+	bps->bps_state = BARK_PARALLEL_NOT_INITIALIZED;
+	LWLockRelease(&bps->bps_lock);
 }

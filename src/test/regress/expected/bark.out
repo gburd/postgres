@@ -804,4 +804,90 @@ RESET min_parallel_table_scan_size;
 RESET max_parallel_maintenance_workers;
 RESET maintenance_work_mem;
 DROP TABLE bark_par;
+-- Parallel index scan (amcanparallel).  Workers claim leaf pages from a shared
+-- cursor rather than each walking the whole right-link chain; the union of
+-- what the workers return must equal a serial scan.  Force the planner to pick
+-- a parallel plan with the cost/size knobs, then prove the parallel result
+-- count matches a forced-serial scan and a sequential scan.
+CREATE TABLE bark_pscan (a int, b text);
+INSERT INTO bark_pscan
+  SELECT (g * 7919) % 100000, 'r' || g FROM generate_series(1, 100000) g;
+CREATE INDEX bark_pscan_idx ON bark_pscan USING bark (a);
+ANALYZE bark_pscan;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET max_parallel_workers_per_gather = 4;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+-- A Gather over a Parallel Index (Only) Scan.
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bark_pscan WHERE a < 50000;
+                                  QUERY PLAN                                   
+-------------------------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather
+         Workers Planned: 4
+         ->  Partial Aggregate
+               ->  Parallel Index Only Scan using bark_pscan_idx on bark_pscan
+                     Index Cond: (a < 50000)
+(6 rows)
+
+SELECT count(*) AS par_count FROM bark_pscan WHERE a < 50000;
+ par_count 
+-----------
+     50000
+(1 row)
+
+-- A plain parallel index scan (heap fetch for the non-indexed column).
+EXPLAIN (COSTS OFF)
+  SELECT count(b) FROM bark_pscan WHERE a BETWEEN 1000 AND 60000;
+                                QUERY PLAN                                
+--------------------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather
+         Workers Planned: 4
+         ->  Partial Aggregate
+               ->  Parallel Index Scan using bark_pscan_idx on bark_pscan
+                     Index Cond: ((a >= 1000) AND (a <= 60000))
+(6 rows)
+
+SELECT count(b) AS par_plain FROM bark_pscan WHERE a BETWEEN 1000 AND 60000;
+ par_plain 
+-----------
+     59001
+(1 row)
+
+-- The parallel result must match a forced-serial index scan ...
+SET max_parallel_workers_per_gather = 0;
+SELECT count(*) AS ser_count FROM bark_pscan WHERE a < 50000;
+ ser_count 
+-----------
+     50000
+(1 row)
+
+SELECT count(b) AS ser_plain FROM bark_pscan WHERE a BETWEEN 1000 AND 60000;
+ ser_plain 
+-----------
+     59001
+(1 row)
+
+-- ... and a sequential scan over the same data.
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SELECT count(*) AS seq_count FROM bark_pscan WHERE a < 50000;
+ seq_count 
+-----------
+     50000
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+RESET min_parallel_table_scan_size;
+RESET min_parallel_index_scan_size;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET max_parallel_workers_per_gather;
+DROP TABLE bark_pscan;
 DROP TABLE bark_tab, bark_small, bark_empty, bark_ins, bark_scan;
