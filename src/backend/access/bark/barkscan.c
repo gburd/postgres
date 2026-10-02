@@ -35,6 +35,7 @@
 #include "miscadmin.h"
 #include "nodes/tidbitmap.h"
 #include "storage/bufmgr.h"
+#include "storage/predicate.h"
 #include "utils/rel.h"
 
 /*
@@ -266,6 +267,15 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 					maxoff;
 
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
+
+		/*
+		 * Predicate-lock this leaf for serializable transactions: a read here
+		 * conflicts with a concurrent insert onto the same page.  BARK sets
+		 * ampredlocks, so the generic index layer does not take a coarser
+		 * relation-level lock on our behalf -- we must lock each page we read.
+		 */
+		PredicateLockPage(index, BufferGetBlockNumber(buf), scan->xs_snapshot);
+
 		page = BufferGetPage(buf);
 		opaque = BarkPageGetOpaque(page);
 		maxoff = PageGetMaxOffsetNumber(page);
