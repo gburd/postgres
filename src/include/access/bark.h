@@ -113,13 +113,17 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
 #define BARK_VERSION		1	/* current on-disk version */
 
 /*
- * BARK uses the btree strategy numbers and support-function convention (its
- * operator families are btree operator families; see ambtreeopfamilies).
- * Strategies 1..5 are <, <=, =, >=, >; support function 1 is the ordering
- * comparator (btree's BTORDER_PROC).
+ * BARK uses the btree strategy numbers and support-function convention: its
+ * operator classes live in the btree operator families (see
+ * ambtreeopfamilies), so it shares btree's numbering.  Strategies 1..5 are
+ * <, <=, =, >=, >.  Support function 1 is the ordering comparator (btree's
+ * BTORDER_PROC), the only one BARK requires; the remaining btree support
+ * functions (2..6: sortsupport, in_range, equalimage, options, skipsupport)
+ * are optional and may be present in the shared family without BARK using
+ * them, so amsupport covers the whole btree range.
  */
 #define BARK_NSTRATEGIES	5	/* number of strategies (btree's set) */
-#define BARK_NPROCS			1	/* number of support functions */
+#define BARK_NPROCS			6	/* btree's support-function range (BTNProcs) */
 #define BARK_ORDER_PROC		1	/* support function 1: 3-way comparator */
 
 typedef struct BarkMetaPageData
