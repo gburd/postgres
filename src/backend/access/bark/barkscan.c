@@ -144,7 +144,7 @@ bark_beginscan(Relation index, int nkeys, int norderbys)
 
 	so->keyinfo = bark_build_keyinfo(index);
 	so->currentBuffer = InvalidBuffer;
-	so->nextOffset = InvalidOffsetNumber;
+	so->lastOffset = InvalidOffsetNumber;
 	so->firstCall = true;
 	so->currTuple = NULL;
 
@@ -169,7 +169,7 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 		ReleaseBuffer(so->currentBuffer);
 		so->currentBuffer = InvalidBuffer;
 	}
-	so->nextOffset = InvalidOffsetNumber;
+	so->lastOffset = InvalidOffsetNumber;
 	so->firstCall = true;
 
 	if (scankey && nscankeys > 0)
@@ -177,17 +177,24 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 }
 
 /*
- * Position the scan on its first leaf: descend to the leftmost possibly
- * matching leaf (via a first-column lower bound when available), else the
- * leftmost leaf of the tree.  Leaves the leaf pinned but not locked;
- * bark_gettuple locks per page read.
+ * Position the scan on its first leaf.
+ *
+ * Forward: descend to the leftmost possibly matching leaf (via a first-column
+ * lower bound when available), else the leftmost leaf of the tree.  Backward:
+ * start at the rightmost leaf and walk left, applying the scan keys per tuple.
+ * Leaves the leaf pinned but not locked; bark_gettuple locks per page read.
+ *
+ * ponytail: a backward scan always starts rightmost rather than descending to
+ * an upper bound first; sharper backward positioning is an optimization, not a
+ * correctness matter (symmetric to the forward no-lower-bound case).
  */
 static void
-bark_position(IndexScanDesc scan)
+bark_position(IndexScanDesc scan, ScanDirection dir)
 {
 	Relation	index = scan->indexRelation;
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
-	IndexTuple	lower = bark_make_lower_bound(scan);
+	bool		backward = ScanDirectionIsBackward(dir);
+	IndexTuple	lower = backward ? NULL : bark_make_lower_bound(scan);
 	Buffer		buf;
 
 	/* Allocate the index-only-scan scratch buffer on first use. */
@@ -203,7 +210,10 @@ bark_position(IndexScanDesc scan)
 	}
 	else
 	{
-		/* No lower bound: walk down the leftmost spine to the first leaf. */
+		/*
+		 * No usable bound: walk down the spine to the extreme leaf -- leftmost
+		 * for a forward scan, rightmost for a backward scan.
+		 */
 		BlockNumber blkno;
 		Buffer		metabuf = ReadBuffer(index, BARK_METAPAGE);
 
@@ -226,9 +236,10 @@ bark_position(IndexScanDesc scan)
 				LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 				break;
 			}
-			/* Follow the first downlink. */
+			/* Follow the first (forward) or last (backward) downlink. */
 			{
-				OffsetNumber off = BarkPageFirstDataKey(opaque);
+				OffsetNumber off = backward ? PageGetMaxOffsetNumber(page)
+					: BarkPageFirstDataKey(opaque);
 				ItemId		iid = PageGetItemId(page, off);
 				IndexTuple	itup = (IndexTuple) PageGetItem(page, iid);
 				BlockNumber child = BarkPivotGetDownLink(itup);
@@ -241,7 +252,7 @@ bark_position(IndexScanDesc scan)
 	}
 
 	so->currentBuffer = buf;
-	so->nextOffset = InvalidOffsetNumber;	/* set on first page read */
+	so->lastOffset = InvalidOffsetNumber;	/* set on first page read */
 	so->firstCall = false;
 }
 
@@ -251,12 +262,8 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	Relation	index = scan->indexRelation;
 
-	/* Forward scans only for now. */
-	if (dir != ForwardScanDirection && dir != NoMovementScanDirection)
-		elog(ERROR, "BARK supports only forward index scans");
-
 	if (so->firstCall)
-		bark_position(scan);
+		bark_position(scan, dir);
 
 	while (BufferIsValid(so->currentBuffer))
 	{
@@ -264,7 +271,9 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 		Page		page;
 		BarkPageOpaque opaque;
 		OffsetNumber off,
-					maxoff;
+					maxoff,
+					firstdata;
+		bool		backward = ScanDirectionIsBackward(dir);
 
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 
@@ -279,14 +288,35 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 		page = BufferGetPage(buf);
 		opaque = BarkPageGetOpaque(page);
 		maxoff = PageGetMaxOffsetNumber(page);
+		firstdata = BarkPageFirstDataKey(opaque);
 
-		if (so->nextOffset == InvalidOffsetNumber)
-			so->nextOffset = BarkPageFirstDataKey(opaque);
+		/*
+		 * Pick the first offset to examine.  On a fresh page (no item returned
+		 * yet) start at the end matching the direction; otherwise step one past
+		 * the last-returned item in the current direction.  Deriving the start
+		 * from the last-returned offset (rather than a stored "next") keeps a
+		 * scroll cursor correct when the fetch direction reverses.
+		 */
+		if (so->lastOffset == InvalidOffsetNumber)
+			off = backward ? maxoff : firstdata;
+		else
+			off = backward ? OffsetNumberPrev(so->lastOffset)
+				: OffsetNumberNext(so->lastOffset);
 
-		for (off = so->nextOffset; off <= maxoff; off = OffsetNumberNext(off))
+		for (;
+			 backward ? (off >= firstdata && off != InvalidOffsetNumber)
+			 : off <= maxoff;
+			 off = backward ? OffsetNumberPrev(off) : OffsetNumberNext(off))
 		{
-			ItemId		iid = PageGetItemId(page, off);
-			IndexTuple	itup = (IndexTuple) PageGetItem(page, iid);
+			ItemId		iid;
+			IndexTuple	itup;
+
+			/* An empty page (maxoff < firstdata) has nothing to return. */
+			if (off < firstdata || off > maxoff)
+				break;
+
+			iid = PageGetItemId(page, off);
+			itup = (IndexTuple) PageGetItem(page, iid);
 
 			if (bark_tuple_matches(scan, itup))
 			{
@@ -306,23 +336,23 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 					scan->xs_itup = (IndexTuple) so->currTuple;
 				}
 
-				so->nextOffset = OffsetNumberNext(off);
+				so->lastOffset = off;
 				LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 				return true;
 			}
 		}
 
-		/* Exhausted this page; advance to the right sibling. */
+		/* Exhausted this page; advance to the sibling in the scan direction. */
 		{
-			BlockNumber right = opaque->bark_next;
+			BlockNumber nextblk = backward ? opaque->bark_prev : opaque->bark_next;
 
 			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 			ReleaseBuffer(buf);
 			so->currentBuffer = InvalidBuffer;
-			so->nextOffset = InvalidOffsetNumber;
-			if (right != BARK_P_NONE)
+			so->lastOffset = InvalidOffsetNumber;
+			if (nextblk != BARK_P_NONE)
 			{
-				so->currentBuffer = ReadBuffer(index, right);
+				so->currentBuffer = ReadBuffer(index, nextblk);
 			}
 		}
 	}
