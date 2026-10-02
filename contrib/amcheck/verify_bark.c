@@ -1,0 +1,179 @@
+/*-------------------------------------------------------------------------
+ *
+ * verify_bark.c
+ *		Verify the structural integrity of a BARK index.
+ *
+ * bark_index_check(index regclass) walks every page of a BARK index and
+ * checks the invariants the access method relies on:
+ *
+ *	- within each page, data entries are in non-decreasing key order;
+ *	- every data key is less than or equal to the page's high key (the bound
+ *	  the page's parent downlink promises);
+ *	- sibling links are consistent (the right sibling's left link points back,
+ *	  and levels match across a sibling link);
+ *	- no page is still flagged with an unfinished split, which a clean index
+ *	  never leaves behind.
+ *
+ * This is a lightweight structural check: it does not cross-check the index
+ * against the heap, nor verify that every downlink's child is reachable.  It
+ * is modeled on amcheck's other per-AM verifiers (verify_gin.c) and uses the
+ * shared amcheck_lock_relation_and_check harness.
+ *
+ * Copyright (c) 2017-2026, PostgreSQL Global Development Group
+ *
+ * IDENTIFICATION
+ *	  contrib/amcheck/verify_bark.c
+ *
+ *-------------------------------------------------------------------------
+ */
+#include "postgres.h"
+
+#include "access/bark.h"
+#include "catalog/pg_am_d.h"
+#include "fmgr.h"
+#include "miscadmin.h"
+#include "storage/bufmgr.h"
+#include "utils/rel.h"
+#include "verify_common.h"
+
+PG_FUNCTION_INFO_V1(bark_index_check);
+
+static void bark_check_structure(Relation rel, Relation heaprel,
+								  void *callback_state, bool readonly);
+static void bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo);
+
+/*
+ * bark_index_check(index regclass)
+ *
+ * Verify the structural integrity of a BARK index.  Takes AccessShareLock on
+ * the heap and index.
+ */
+Datum
+bark_index_check(PG_FUNCTION_ARGS)
+{
+	Oid			indrelid = PG_GETARG_OID(0);
+
+	amcheck_lock_relation_and_check(indrelid,
+									BARK_AM_OID,
+									bark_check_structure,
+									AccessShareLock,
+									NULL);
+
+	PG_RETURN_VOID();
+}
+
+/*
+ * Main entry: iterate over every page and check per-page and cross-page
+ * invariants.
+ */
+static void
+bark_check_structure(Relation rel, Relation heaprel, void *callback_state,
+					  bool readonly)
+{
+	BarkKeyInfo *keyinfo = bark_build_keyinfo(rel);
+	BlockNumber npages = RelationGetNumberOfBlocks(rel);
+
+	for (BlockNumber blkno = BARK_METAPAGE + 1; blkno < npages; blkno++)
+	{
+		CHECK_FOR_INTERRUPTS();
+		bark_check_page(rel, blkno, keyinfo);
+	}
+
+	pfree(keyinfo);
+}
+
+/*
+ * Check one page's invariants, plus the consistency of its right-sibling link.
+ */
+static void
+bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
+{
+	Buffer		buf = ReadBuffer(rel, blkno);
+	Page		page;
+	BarkPageOpaque opaque;
+	OffsetNumber maxoff;
+	OffsetNumber firstdata;
+	IndexTuple	hikey = NULL;
+	IndexTuple	prev = NULL;
+
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buf);
+
+	if (PageIsNew(page))
+	{
+		UnlockReleaseBuffer(buf);
+		return;
+	}
+
+	opaque = BarkPageGetOpaque(page);
+
+	/* A clean index never leaves an unfinished split behind. */
+	if ((opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("BARK index \"%s\" has an unfinished split on page %u",
+						RelationGetRelationName(rel), blkno)));
+
+	maxoff = PageGetMaxOffsetNumber(page);
+	firstdata = BarkPageFirstDataKey(opaque);
+
+	/* The high key, when present, is the first item on a non-rightmost page. */
+	if (!BarkPageRightmost(opaque) && maxoff >= BARK_P_HIKEY)
+		hikey = (IndexTuple) PageGetItem(page, PageGetItemId(page, BARK_P_HIKEY));
+
+	for (OffsetNumber off = firstdata; off <= maxoff;
+		 off = OffsetNumberNext(off))
+	{
+		IndexTuple	itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, off));
+
+		/* Keys must be in non-decreasing order within the page. */
+		if (prev != NULL &&
+			bark_compare_itups(keyinfo, rel, prev, itup) > 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" has out-of-order keys on page %u at offset %u",
+							RelationGetRelationName(rel), blkno, off)));
+
+		/* Every data key must be within the page's high-key bound. */
+		if (hikey != NULL &&
+			bark_compare_itups(keyinfo, rel, itup, hikey) > 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" has a key past the high key on page %u at offset %u",
+							RelationGetRelationName(rel), blkno, off)));
+
+		prev = itup;
+	}
+
+	/*
+	 * Cross-check the right-sibling link: the sibling's left link must point
+	 * back here and the two pages must be at the same level.
+	 */
+	if (!BarkPageRightmost(opaque))
+	{
+		BlockNumber rightblk = opaque->bark_next;
+		Buffer		rbuf = ReadBuffer(rel, rightblk);
+		Page		rpage;
+		BarkPageOpaque ropaque;
+
+		LockBuffer(rbuf, BUFFER_LOCK_SHARE);
+		rpage = BufferGetPage(rbuf);
+		if (!PageIsNew(rpage))
+		{
+			ropaque = BarkPageGetOpaque(rpage);
+			if (ropaque->bark_prev != blkno)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a broken sibling link: page %u's right sibling %u does not link back",
+								RelationGetRelationName(rel), blkno, rightblk)));
+			if (ropaque->bark_level != opaque->bark_level)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a level mismatch across the sibling link from page %u to %u",
+								RelationGetRelationName(rel), blkno, rightblk)));
+		}
+		UnlockReleaseBuffer(rbuf);
+	}
+
+	UnlockReleaseBuffer(buf);
+}
