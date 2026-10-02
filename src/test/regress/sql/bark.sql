@@ -141,4 +141,27 @@ RESET enable_indexscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_bwd;
 
+-- INCLUDE columns: non-key payload rides along in leaf tuples and is returned
+-- by index-only scans, but is physically truncated from pivots (internal
+-- pages and high keys), which route by key only.  Uniqueness and ordering use
+-- the key alone.
+CREATE TABLE bark_inc (a int, b int, c text);
+INSERT INTO bark_inc SELECT g, g * 2, md5(g::text) FROM generate_series(1, 2000) g;
+CREATE INDEX bark_inc_idx ON bark_inc USING bark (a) INCLUDE (b, c);
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexscan = on;
+EXPLAIN (COSTS OFF) SELECT a, b, c FROM bark_inc WHERE a = 100;
+SELECT a, b, c FROM bark_inc WHERE a = 100;
+SELECT sum(b) AS inc_sum FROM bark_inc WHERE a < 500;
+-- A unique key with differing INCLUDE values still conflicts on the key alone.
+CREATE TABLE bark_inc_u (a int, b int);
+CREATE UNIQUE INDEX ON bark_inc_u USING bark (a) INCLUDE (b);
+INSERT INTO bark_inc_u VALUES (1, 10);
+INSERT INTO bark_inc_u VALUES (1, 99);			-- same key, different payload: errors
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_inc, bark_inc_u;
+
 DROP TABLE bark_tab, bark_small, bark_empty, bark_ins, bark_scan;
