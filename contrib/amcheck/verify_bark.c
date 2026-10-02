@@ -41,6 +41,8 @@ PG_FUNCTION_INFO_V1(bark_index_check);
 static void bark_check_structure(Relation rel, Relation heaprel,
 								  void *callback_state, bool readonly);
 static void bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo);
+static void bark_check_list(Relation rel, BlockNumber blkno, OffsetNumber off,
+							IndexTuple itup);
 
 /*
  * bark_index_check(index regclass)
@@ -142,6 +144,15 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 					 errmsg("BARK index \"%s\" has a key past the high key on page %u at offset %u",
 							RelationGetRelationName(rel), blkno, off)));
 
+		/*
+		 * A LIST entry (sorted duplicates) on a leaf page must carry at least
+		 * two locators, stored strictly ascending.  SINGLE entries and pivots
+		 * need no extra checks here.
+		 */
+		if (BarkPageIsLeaf(opaque) &&
+			BarkEntryGetShape(itup) == BARK_SHAPE_LIST)
+			bark_check_list(rel, blkno, off, itup);
+
 		prev = itup;
 	}
 
@@ -176,4 +187,32 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 	}
 
 	UnlockReleaseBuffer(buf);
+}
+
+/*
+ * Validate a LIST entry: it must carry at least two locators, and they must
+ * be stored strictly ascending (the invariant the insert and vacuum paths
+ * maintain, and the one the scan relies on to return TIDs in order).
+ */
+static void
+bark_check_list(Relation rel, BlockNumber blkno, OffsetNumber off,
+				IndexTuple itup)
+{
+	int			n = BarkListGetCount(itup);
+
+	if (n < 2)
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("BARK index \"%s\" has a list entry with %d locators on page %u at offset %u",
+						RelationGetRelationName(rel), n, blkno, off)));
+
+	for (int i = 1; i < n; i++)
+	{
+		if (ItemPointerCompare(BarkListGetTID(itup, i - 1),
+							   BarkListGetTID(itup, i)) >= 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" has out-of-order list locators on page %u at offset %u",
+							RelationGetRelationName(rel), blkno, off)));
+	}
 }
