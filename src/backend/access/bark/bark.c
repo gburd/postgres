@@ -191,7 +191,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amcanunique = true,
 		.amcanmulticol = true,
 		.amoptionalkey = true,
-		.amsearcharray = true,
+		.amsearcharray = false,	/* no ScalarArrayOp (SAOP) scan support yet */
 		.amsearchnulls = true,
 		.amstorage = false,
 		.amclusterable = true,
