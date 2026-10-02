@@ -67,22 +67,30 @@ bark_leaf_insert_off(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 	return low;
 }
 
-/* A pivot (downlink) tuple: a key copy carrying natts + a child block. */
+/*
+ * A pivot (downlink) tuple: a key truncated to its key attributes, carrying
+ * natts + a child block.  Non-key INCLUDE attributes (and any lower-key
+ * suffix) are physically removed with index_truncate_tuple so they do not
+ * bloat internal pages or risk overflowing a pivot; pivots only route by key.
+ */
 static IndexTuple
-bark_make_downlink(IndexTuple key, BlockNumber child, int nkeyatts)
+bark_make_downlink(Relation index, IndexTuple key, BlockNumber child,
+				   int nkeyatts)
 {
-	IndexTuple	pivot = CopyIndexTuple(key);
+	IndexTuple	pivot = index_truncate_tuple(RelationGetDescr(index), key,
+											 nkeyatts);
 
 	BarkPivotSetNAtts(pivot, (uint16) nkeyatts);
 	BarkPivotSetDownLink(pivot, child);
 	return pivot;
 }
 
-/* A high-key tuple: a key copy carrying natts, no downlink. */
+/* A high-key tuple: a key truncated to its key attributes, no downlink. */
 static IndexTuple
-bark_make_hikey(IndexTuple key, int nkeyatts)
+bark_make_hikey(Relation index, IndexTuple key, int nkeyatts)
 {
-	IndexTuple	hikey = CopyIndexTuple(key);
+	IndexTuple	hikey = index_truncate_tuple(RelationGetDescr(index), key,
+											 nkeyatts);
 
 	BarkPivotSetNAtts(hikey, (uint16) nkeyatts);
 	BarkPivotSetDownLink(hikey, BARK_P_NONE);
@@ -344,7 +352,7 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 	}
 	splitkey = items[splitidx];		/* first key on the right page */
 	{
-		IndexTuple	lhikey = bark_make_hikey(splitkey, nkeyatts);
+		IndexTuple	lhikey = bark_make_hikey(index, splitkey, nkeyatts);
 		OffsetNumber o = BARK_P_HIKEY;
 
 		bark_page_insert_at(leftpage, lhikey, o++);
@@ -413,7 +421,7 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 	PredicateLockPageSplit(index, origblk, rightblk);
 
 	/* Form the downlink for the right page and insert it into the parent. */
-	downlink = bark_make_downlink(splitkey, rightblk, nkeyatts);
+	downlink = bark_make_downlink(index, splitkey, rightblk, nkeyatts);
 	UnlockReleaseBuffer(buf);		/* release leaf before touching parent */
 
 	/*
@@ -483,13 +491,13 @@ bark_new_root(Relation index, IndexTuple downlink, BlockNumber leftblk,
 	 * key below the split key to the left child.  Second is the split-key
 	 * downlink to the right child.
 	 */
-	leftdown = CopyIndexTuple(downlink);
+	leftdown = index_truncate_tuple(RelationGetDescr(index), downlink, 0);
 	BarkPivotSetNAtts(leftdown, 0);
 	BarkPivotSetDownLink(leftdown, leftblk);
 	bark_page_insert_at(rootpage, leftdown, BARK_P_HIKEY);
 	pfree(leftdown);
 	{
-		IndexTuple	rightdown = bark_make_downlink(downlink, rightblk, nkeyatts);
+		IndexTuple	rightdown = bark_make_downlink(index, downlink, rightblk, nkeyatts);
 
 		bark_page_insert_at(rootpage, rightdown, BARK_P_FIRSTKEY);
 		pfree(rightdown);
@@ -635,7 +643,7 @@ bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
 	INJECTION_POINT("bark-finish-incomplete-split", NULL);
 
 	/* The high key is the split key; make a downlink to the right sibling. */
-	downlink = bark_make_downlink(hikey, rblk, nkeyatts);
+	downlink = bark_make_downlink(index, hikey, rblk, nkeyatts);
 	UnlockReleaseBuffer(lbuf);
 	bark_insert_parent(index, keyinfo, stack, downlink, lblk, rblk);
 	pfree(downlink);
