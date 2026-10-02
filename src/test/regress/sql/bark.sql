@@ -154,6 +154,9 @@ SET enable_indexscan = on;
 EXPLAIN (COSTS OFF) SELECT a, b, c FROM bark_inc WHERE a = 100;
 SELECT a, b, c FROM bark_inc WHERE a = 100;
 SELECT sum(b) AS inc_sum FROM bark_inc WHERE a < 500;
+-- A lower-bound (>=) scan on an INCLUDE index forms a bounded search key
+-- covering all index attributes, not just the key column.
+SELECT count(*) AS inc_ge FROM bark_inc WHERE a >= 1500;
 -- A unique key with differing INCLUDE values still conflicts on the key alone.
 CREATE TABLE bark_inc_u (a int, b int);
 CREATE UNIQUE INDEX ON bark_inc_u USING bark (a) INCLUDE (b);
