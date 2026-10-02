@@ -174,9 +174,10 @@ bark_pagestate(BarkBuildState *bs, BulkWriteState *bulk, uint32 level)
 
 /* Pivot (downlink) tuple for a finished page: its low key + child block. */
 static IndexTuple
-bark_form_downlink(IndexTuple lowkey, BlockNumber child, int nkeyatts)
+bark_form_downlink(TupleDesc tupdesc, IndexTuple lowkey, BlockNumber child,
+				   int nkeyatts)
 {
-	IndexTuple	pivot = CopyIndexTuple(lowkey);
+	IndexTuple	pivot = index_truncate_tuple(tupdesc, lowkey, nkeyatts);
 
 	BarkPivotSetNAtts(pivot, (uint16) nkeyatts);
 	BarkPivotSetDownLink(pivot, child);
@@ -186,14 +187,14 @@ bark_form_downlink(IndexTuple lowkey, BlockNumber child, int nkeyatts)
 /*
  * High-key tuple for a page that has gained a right sibling: a pivot copy of
  * the right sibling's first key, serving as the (inclusive upper) bound on
- * the keys the page may hold.  Suffix truncation of the high key is deferred
- * to a later commit (A03); for now the whole key is kept, with no heap TID in
- * t_tid (it carries the PIVOT natts/status instead).
+ * the keys the page may hold.  Non-key attributes are physically truncated
+ * (index_truncate_tuple): pivots only route by key, so INCLUDE columns and any
+ * lower-key suffix must not bloat internal pages.
  */
 static IndexTuple
-bark_form_hikey(IndexTuple firstright, int nkeyatts)
+bark_form_hikey(TupleDesc tupdesc, IndexTuple firstright, int nkeyatts)
 {
-	IndexTuple	hikey = CopyIndexTuple(firstright);
+	IndexTuple	hikey = index_truncate_tuple(tupdesc, firstright, nkeyatts);
 
 	BarkPivotSetNAtts(hikey, (uint16) nkeyatts);
 	/* A high key has no downlink; leave the block number as the sentinel. */
@@ -272,7 +273,7 @@ bark_flush_page(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 	BarkPageState *fresh;
 
 	/* Rebuild the page as [high key, data...]; the high key bounds the page. */
-	hikey = bark_form_hikey(firstright, bs->nkeyatts);
+	hikey = bark_form_hikey(RelationGetDescr(bs->index), firstright, bs->nkeyatts);
 	bark_prepend_hikey((Page) flushedbuf, hikey);
 	pfree(hikey);
 
@@ -282,7 +283,8 @@ bark_flush_page(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 		parent = bark_pagestate(bs, bulk, st->level + 1);
 		st->parent = parent;
 	}
-	downlink = bark_form_downlink(flushedlow, flushedblk, bs->nkeyatts);
+	downlink = bark_form_downlink(RelationGetDescr(bs->index), flushedlow,
+								  flushedblk, bs->nkeyatts);
 	bark_buildadd(bs, bulk, parent, downlink);
 	pfree(downlink);
 
@@ -377,7 +379,8 @@ bark_finish(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *leaf)
 			 * promoted to the parent, exactly as a flush would do, so the
 			 * parent's rightmost downlink exists.
 			 */
-			IndexTuple	downlink = bark_form_downlink(st->lowkey, st->blkno,
+			IndexTuple	downlink = bark_form_downlink(RelationGetDescr(bs->index),
+													  st->lowkey, st->blkno,
 													  bs->nkeyatts);
 
 			bark_buildadd(bs, bulk, parent, downlink);
