@@ -263,11 +263,12 @@ Barrier
 BarkEntryShape
 BarkKeyColumn
 BarkKeyInfo
+BarkLeader
 BarkMetaPageData
 BarkPageState
 BarkScanOpaque
 BarkScanOpaqueData
-BarkSortArg
+BarkShared
 BarkStack
 BarkStackData
 BarkBuildState
