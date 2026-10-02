@@ -366,5 +366,38 @@ RESET enable_seqscan;
 RESET enable_indexscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_bmap;
+-- Parallel index build (amcanbuildparallel).  Forcing maintenance workers on,
+-- a parallel build of a large index must produce the same results as a serial
+-- build of the same data: workers scan slices of the heap into a shared sort,
+-- the leader merges and writes the one tree.  min_parallel_table_scan_size=0
+-- and parallel_*_cost=0 ensure the planner actually grants workers.
+CREATE TABLE bark_par (a int, b text);
+INSERT INTO bark_par
+  SELECT (g * 7919) % 100000, 'r' || g FROM generate_series(1, 100000) g;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_maintenance_workers = 4;
+SET maintenance_work_mem = '1MB';				-- force a disk-spilling sort
+CREATE INDEX bark_par_idx ON bark_par USING bark (a);	-- parallel build
+SET max_parallel_maintenance_workers = 0;
+CREATE INDEX bark_ser_idx ON bark_par USING bark (a);	-- serial build
+-- The two builds index the same rows: scans over either must agree, and must
+-- match a sequential scan.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexscan = on;
+SELECT count(*) AS par_range FROM bark_par WHERE a BETWEEN 1000 AND 2000;
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SELECT count(*) AS seq_range FROM bark_par WHERE a BETWEEN 1000 AND 2000;
+SET enable_seqscan = off;
+SET enable_indexscan = on;
+SELECT a FROM bark_par WHERE a BETWEEN 0 AND 20 ORDER BY a;
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+RESET min_parallel_table_scan_size;
+RESET max_parallel_maintenance_workers;
+RESET maintenance_work_mem;
+DROP TABLE bark_par;
 
 DROP TABLE bark_tab, bark_small, bark_empty, bark_ins, bark_scan;
