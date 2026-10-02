@@ -145,6 +145,14 @@ bark_beginscan(Relation index, int nkeys, int norderbys)
 	so->currentBuffer = InvalidBuffer;
 	so->nextOffset = InvalidOffsetNumber;
 	so->firstCall = true;
+	so->currTuple = NULL;
+
+	/*
+	 * Set up the index tuple descriptor for index-only scans.  The scratch
+	 * buffer that holds a returned tuple is allocated lazily on the first read
+	 * (bark_position), because xs_want_itup is set after beginscan returns.
+	 */
+	scan->xs_itupdesc = RelationGetDescr(index);
 	scan->opaque = so;
 	return scan;
 }
@@ -180,6 +188,10 @@ bark_position(IndexScanDesc scan)
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	IndexTuple	lower = bark_make_lower_bound(scan);
 	Buffer		buf;
+
+	/* Allocate the index-only-scan scratch buffer on first use. */
+	if (scan->xs_want_itup && so->currTuple == NULL)
+		so->currTuple = palloc(BLCKSZ);
 
 	if (lower != NULL)
 	{
@@ -270,6 +282,20 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 			{
 				scan->xs_heaptid = itup->t_tid;
 				scan->xs_recheck = false;
+
+				/*
+				 * Index-only scan: hand back the index tuple itself.  Copy it
+				 * into the scan-owned scratch buffer first, since the page lock
+				 * (and thus the on-page tuple) is released before we return.
+				 */
+				if (scan->xs_want_itup)
+				{
+					Size		sz = IndexTupleSize(itup);
+
+					memcpy(so->currTuple, itup, sz);
+					scan->xs_itup = (IndexTuple) so->currTuple;
+				}
+
 				so->nextOffset = OffsetNumberNext(off);
 				LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 				return true;
@@ -315,8 +341,22 @@ bark_endscan(IndexScanDesc scan)
 		return;
 	if (BufferIsValid(so->currentBuffer))
 		ReleaseBuffer(so->currentBuffer);
+	if (so->currTuple)
+		pfree(so->currTuple);
 	if (so->keyinfo)
 		pfree(so->keyinfo);
 	pfree(so);
 	scan->opaque = NULL;
+}
+
+/*
+ * bark_canreturn -- can an index-only scan return column `attno`?
+ *
+ * A BARK leaf entry is the full index tuple (every indexed column plus the
+ * heap TID in t_tid), so any column can be returned without a heap fetch.
+ */
+bool
+bark_canreturn(Relation index, int attno)
+{
+	return true;
 }
