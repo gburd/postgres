@@ -33,6 +33,7 @@
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
+#include "storage/predicate.h"
 #include "utils/injection_point.h"
 #include "utils/rel.h"
 
@@ -400,6 +401,14 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 	/* The left (original) and right buffers are now consistent on disk. */
 	UnlockReleaseBuffer(rbuf);
 
+	/*
+	 * Transfer predicate locks for serializable transactions: a read of the
+	 * original page must now also conflict with inserts onto the new right
+	 * page, since keys that were covered by one page's read are now split
+	 * across both.
+	 */
+	PredicateLockPageSplit(index, origblk, rightblk);
+
 	/* Form the downlink for the right page and insert it into the parent. */
 	downlink = bark_make_downlink(splitkey, rightblk, nkeyatts);
 	UnlockReleaseBuffer(buf);		/* release leaf before touching parent */
@@ -673,6 +682,15 @@ retry:
 
 	page = BufferGetPage(buf);
 	off = bark_leaf_insert_off(index, keyinfo, itup, page);
+
+	/*
+	 * Serializable conflict check: inserting here conflicts with a concurrent
+	 * serializable transaction that read this leaf page.  BARK sets
+	 * ampredlocks, so this is our responsibility rather than the generic
+	 * index layer's.  Done while holding the write lock on the target leaf,
+	 * before the insert or split.
+	 */
+	CheckForSerializableConflictIn(index, NULL, BufferGetBlockNumber(buf));
 
 	if (PageGetFreeSpace(page) >= itemsz)
 	{
