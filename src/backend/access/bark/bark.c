@@ -24,6 +24,7 @@
 #include "access/amapi.h"
 #include "access/amlocator.h"
 #include "access/bark.h"
+#include "access/generic_xlog.h"
 #include "commands/vacuum.h"
 #include "storage/bufmgr.h"
 #include "utils/fmgrprotos.h"
@@ -64,37 +65,125 @@ static IndexBulkDeleteResult *
 barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 			   IndexBulkDeleteCallback callback, void *callback_state)
 {
-	BARK_NOT_IMPLEMENTED();
-	return NULL;
+	Relation	index = info->index;
+	BlockNumber npages;
+
+	if (stats == NULL)
+		stats = palloc0_object(IndexBulkDeleteResult);
+
+	/*
+	 * Scan every leaf page and delete the entries whose heap TID the callback
+	 * reports dead.  Only leaf pages hold heap TIDs; the meta page and
+	 * internal (pivot) pages are skipped.  Each page is modified and WAL-
+	 * logged under its own generic-WAL record.
+	 *
+	 * ponytail: a linear scan of the whole index (like bloom and GIN) rather
+	 * than tracking which pages hold dead TIDs; and no page is emptied/
+	 * recycled yet -- an all-dead leaf is left in place.  Page reclamation and
+	 * right-link repair are a later commit; leaving a now-empty but still
+	 * linked leaf is correct, just not space-optimal.
+	 */
+	npages = RelationGetNumberOfBlocks(index);
+	for (BlockNumber blkno = BARK_METAPAGE + 1; blkno < npages; blkno++)
+	{
+		Buffer		buf;
+		Page		page;
+		BarkPageOpaque opaque;
+		OffsetNumber maxoff;
+		OffsetNumber todelete[MaxOffsetNumber];
+		int			ndelete = 0;
+
+		vacuum_delay_point(false);
+
+		buf = ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_NORMAL,
+								 info->strategy);
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		page = BufferGetPage(buf);
+
+		/* Only leaf pages carry heap TIDs (the meta page, block 0, is skipped). */
+		if (PageIsNew(page) || !BarkPageIsLeaf(BarkPageGetOpaque(page)))
+		{
+			UnlockReleaseBuffer(buf);
+			continue;
+		}
+
+		opaque = BarkPageGetOpaque(page);
+		maxoff = PageGetMaxOffsetNumber(page);
+		for (OffsetNumber off = BarkPageFirstDataKey(opaque);
+			 off <= maxoff; off = OffsetNumberNext(off))
+		{
+			ItemId		iid = PageGetItemId(page, off);
+			IndexTuple	itup = (IndexTuple) PageGetItem(page, iid);
+
+			if (callback(&itup->t_tid, callback_state))
+				todelete[ndelete++] = off;
+		}
+
+		if (ndelete > 0)
+		{
+			GenericXLogState *gstate = GenericXLogStart(index);
+			Page		p = GenericXLogRegisterBuffer(gstate, buf, 0);
+
+			PageIndexMultiDelete(p, todelete, ndelete);
+			GenericXLogFinish(gstate);
+			stats->tuples_removed += ndelete;
+		}
+
+		UnlockReleaseBuffer(buf);
+	}
+
+	return stats;
 }
 
 static IndexBulkDeleteResult *
 barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 {
 	Relation	index = info->index;
+	BlockNumber npages;
 
 	/* ANALYZE has nothing to clean up. */
 	if (info->analyze_only)
 		return stats;
 
-	/*
-	 * BARK does not reclaim space or delete pages yet (that arrives with
-	 * bulk deletion in a later commit), so cleanup only reports index-wide
-	 * statistics.  Returning valid stats lets VACUUM finish and set the heap
-	 * visibility map, which is what makes index-only scans worthwhile.
-	 *
-	 * This is reached only when there were no dead tuples to remove (VACUUM
-	 * calls ambulkdelete first otherwise); barkbulkdelete still errors until
-	 * deletion is implemented, so a cleanup here never has to account for
-	 * tuples a bulk delete claimed to have removed.
-	 *
-	 * ponytail: stats-only cleanup, no page/FSM reclamation; real reclamation
-	 * lands with VACUUM support (A13).
-	 */
 	if (stats == NULL)
 		stats = palloc0_object(IndexBulkDeleteResult);
 
-	stats->num_pages = RelationGetNumberOfBlocks(index);
+	/*
+	 * Report index-wide statistics.  When barkbulkdelete did not run (no dead
+	 * tuples this cycle) we count the live leaf entries here so the planner
+	 * has an up-to-date tuple count; when it did run, num_index_tuples is
+	 * recomputed the same way.  Returning valid stats also lets VACUUM finish
+	 * and set the heap visibility map, which is what makes index-only scans
+	 * worthwhile.
+	 *
+	 * ponytail: no page/FSM reclamation -- empty leaves are left linked in
+	 * place; recycling freed pages is a later space optimization.
+	 */
+	npages = RelationGetNumberOfBlocks(index);
+	stats->num_pages = npages;
+	stats->num_index_tuples = 0;
+
+	for (BlockNumber blkno = BARK_METAPAGE + 1; blkno < npages; blkno++)
+	{
+		Buffer		buf;
+		Page		page;
+		BarkPageOpaque opaque;
+
+		vacuum_delay_point(false);
+
+		buf = ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_NORMAL,
+								 info->strategy);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+
+		if (!PageIsNew(page) && BarkPageIsLeaf(BarkPageGetOpaque(page)))
+		{
+			opaque = BarkPageGetOpaque(page);
+			stats->num_index_tuples +=
+				PageGetMaxOffsetNumber(page) - BarkPageFirstDataKey(opaque) + 1;
+		}
+		UnlockReleaseBuffer(buf);
+	}
 
 	return stats;
 }
