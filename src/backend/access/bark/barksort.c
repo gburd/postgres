@@ -93,6 +93,23 @@ bark_sort_cmp(const void *a, const void *b, void *arg)
 							  *(IndexTuple *) a, *(IndexTuple *) b);
 }
 
+/* True when any key attribute of `itup` is NULL (NULLs are distinct in SQL). */
+static bool
+bark_itup_has_null_key(BarkBuildState *bs, IndexTuple itup)
+{
+	TupleDesc	tupdesc = RelationGetDescr(bs->index);
+
+	for (int i = 0; i < bs->nkeyatts; i++)
+	{
+		bool		isnull;
+
+		(void) index_getattr(itup, i + 1, tupdesc, &isnull);
+		if (isnull)
+			return true;
+	}
+	return false;
+}
+
 /* table_index_build_scan callback: form and collect one index tuple. */
 static void
 bark_build_callback(Relation index, ItemPointer tid, Datum *values,
@@ -441,7 +458,37 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	/* Load the sorted tuples into leaf pages, growing the tree upward. */
 	leaf = bark_pagestate(&bs, bulk, 0);
 	for (int64 i = 0; i < bs.ntuples; i++)
+	{
+		/*
+		 * A unique index must reject duplicate keys at build time too.  The
+		 * sort placed equal keys adjacently, so comparing each tuple with its
+		 * predecessor catches every duplicate.  NULLs are distinct in SQL, so
+		 * a key containing any NULL never conflicts (bark_itup_has_null_key).
+		 */
+		if (indexInfo->ii_Unique && i > 0 &&
+			!bark_itup_has_null_key(&bs, bs.tuples[i]) &&
+			!bark_itup_has_null_key(&bs, bs.tuples[i - 1]) &&
+			bark_compare_itups(bs.keyinfo, index,
+							   bs.tuples[i], bs.tuples[i - 1]) == 0)
+		{
+			Datum		values[INDEX_MAX_KEYS];
+			bool		isnull[INDEX_MAX_KEYS];
+			char	   *key_desc;
+
+			index_deform_tuple(bs.tuples[i], RelationGetDescr(index),
+							   values, isnull);
+			key_desc = BuildIndexValueDescription(index, values, isnull);
+			ereport(ERROR,
+					(errcode(ERRCODE_UNIQUE_VIOLATION),
+					 errmsg("could not create unique index \"%s\"",
+							RelationGetRelationName(index)),
+					 key_desc ? errdetail("Key %s is duplicated.", key_desc) :
+					 errdetail("Duplicate keys exist."),
+					 errtableconstraint(heap,
+										 RelationGetRelationName(index))));
+		}
 		bark_buildadd(&bs, bulk, leaf, bs.tuples[i]);
+	}
 
 	bark_finish(&bs, bulk, leaf);
 	smgr_bulk_finish(bulk);

@@ -28,14 +28,17 @@
 #include "postgres.h"
 
 #include "access/bark.h"
+#include "access/genam.h"
 #include "access/generic_xlog.h"
 #include "access/itup.h"
+#include "access/tableam.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "utils/injection_point.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 
 /* Find the offset at which to insert key on a leaf page (first key > key). */
 static OffsetNumber
@@ -638,6 +641,165 @@ bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
 	pfree(downlink);
 }
 
+/*
+ * Check whether inserting `itup` would violate a unique constraint.
+ *
+ * Scans forward from the first possibly-equal entry on `buf` (continuing into
+ * right siblings while keys stay equal) and, for every index entry whose key
+ * equals itup's, fetches the referenced heap tuple under SnapshotDirty.  A
+ * visible or in-progress match is a conflict.
+ *
+ *  - UNIQUE_CHECK_EXISTING skips the entry that is itup itself (the tuple is
+ *    already in the heap; we are only verifying that it is unique).
+ *  - A conflict with an in-progress transaction returns that xact's id so the
+ *    caller can wait for it and retry; *is_unique is left false.
+ *  - UNIQUE_CHECK_PARTIAL never errors: on any conflict it sets *is_unique to
+ *    false and returns, letting a deferred constraint recheck decide later.
+ *  - Otherwise a live conflict raises ERRCODE_UNIQUE_VIOLATION.
+ *
+ * Returns InvalidTransactionId when no wait is needed (unique, or already
+ * errored).  The caller holds the write lock on `buf` throughout and still
+ * holds it on return.
+ *
+ * ponytail: no speculative-insertion (INSERT ... ON CONFLICT) handling and no
+ * killing of known-dead index entries yet; both are optimizations layered on
+ * the correct check here.
+ */
+static TransactionId
+bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
+				  Buffer buf, Relation heapRel, IndexUniqueCheck checkUnique,
+				  bool *is_unique)
+{
+	SnapshotData SnapshotDirty;
+	Buffer		curbuf = buf;
+	bool		ownbuf = false;		/* do we need to release curbuf? */
+
+	*is_unique = true;
+	InitDirtySnapshot(SnapshotDirty);
+
+	for (;;)
+	{
+		Page		page = BufferGetPage(curbuf);
+		BarkPageOpaque opaque = BarkPageGetOpaque(page);
+		OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+		OffsetNumber lo = BarkPageFirstDataKey(opaque);
+		OffsetNumber hi = OffsetNumberNext(maxoff);
+		OffsetNumber off;
+		bool		go_right = false;
+
+		/*
+		 * Binary-search for the first entry whose key is >= itup's.  (The leaf
+		 * insert position is one past the last *equal* key, so it would skip
+		 * the duplicates we are looking for.)
+		 */
+		while (lo < hi)
+		{
+			OffsetNumber mid = lo + ((hi - lo) / 2);
+			ItemId		iid = PageGetItemId(page, mid);
+			IndexTuple	mitup = (IndexTuple) PageGetItem(page, iid);
+
+			if (bark_compare_itups(keyinfo, index, itup, mitup) > 0)
+				lo = OffsetNumberNext(mid);	/* mid < itup: go right */
+			else
+				hi = mid;					/* mid >= itup: go left */
+		}
+
+		for (off = lo; off <= maxoff; off = OffsetNumberNext(off))
+		{
+			ItemId		iid = PageGetItemId(page, off);
+			IndexTuple	curitup = (IndexTuple) PageGetItem(page, iid);
+			ItemPointerData htid;
+			bool		all_dead = false;
+
+			/* Stop at the first key greater than itup's: no more equal keys. */
+			if (bark_compare_itups(keyinfo, index, itup, curitup) != 0)
+				goto done;
+
+			htid = curitup->t_tid;
+
+			/* The tuple we are checking is itself, not a conflict. */
+			if (checkUnique == UNIQUE_CHECK_EXISTING &&
+				ItemPointerCompare(&htid, &itup->t_tid) == 0)
+				continue;
+
+			if (table_fetch_tid(heapRel, &htid, &SnapshotDirty, &all_dead))
+			{
+				TransactionId xwait;
+
+				/* Deferred check: record non-uniqueness, don't error. */
+				if (checkUnique == UNIQUE_CHECK_PARTIAL)
+				{
+					if (ownbuf)
+						UnlockReleaseBuffer(curbuf);
+					*is_unique = false;
+					return InvalidTransactionId;
+				}
+
+				/*
+				 * If the conflicting tuple is still being inserted or deleted,
+				 * return the responsible xact so the caller can wait and retry.
+				 */
+				xwait = TransactionIdIsValid(SnapshotDirty.xmin) ?
+					SnapshotDirty.xmin : SnapshotDirty.xmax;
+				if (TransactionIdIsValid(xwait))
+				{
+					if (ownbuf)
+						UnlockReleaseBuffer(curbuf);
+					return xwait;
+				}
+
+				/* A committed, visible duplicate: raise the constraint error. */
+				{
+					Datum		values[INDEX_MAX_KEYS];
+					bool		isnull[INDEX_MAX_KEYS];
+					char	   *key_desc;
+
+					if (ownbuf)
+						UnlockReleaseBuffer(curbuf);
+
+					index_deform_tuple(itup, RelationGetDescr(index),
+									   values, isnull);
+					key_desc = BuildIndexValueDescription(index, values, isnull);
+					ereport(ERROR,
+							(errcode(ERRCODE_UNIQUE_VIOLATION),
+							 errmsg("duplicate key value violates unique constraint \"%s\"",
+									RelationGetRelationName(index)),
+							 key_desc ? errdetail("Key %s already exists.",
+												   key_desc) : 0,
+							 errtableconstraint(heapRel,
+													RelationGetRelationName(index))));
+				}
+			}
+			/* else: the heap tuple is dead to everyone; not a conflict. */
+		}
+
+		/*
+		 * Ran off the end of this page while keys were still equal: equal keys
+		 * may continue on the right sibling, so follow the right link.
+		 */
+		if (!BarkPageRightmost(opaque))
+			go_right = true;
+
+		if (!go_right)
+			break;
+		{
+			BlockNumber right = opaque->bark_next;
+			Buffer		next = ReadBuffer(index, right);
+
+			LockBuffer(next, BUFFER_LOCK_SHARE);
+			if (ownbuf)
+				UnlockReleaseBuffer(curbuf);
+			curbuf = next;
+			ownbuf = true;
+		}
+	}
+
+done:
+	if (ownbuf)
+		UnlockReleaseBuffer(curbuf);
+	return InvalidTransactionId;
+}
+
 bool
 bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 			Relation heapRel, IndexUniqueCheck checkUnique,
@@ -650,6 +812,7 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 	Page		page;
 	OffsetNumber off;
 	Size		itemsz = MAXALIGN(IndexTupleSize(itup));
+	bool		result = false;		/* significant only for UNIQUE_CHECK_PARTIAL */
 
 	itup->t_tid = *ht_ctid;		/* SINGLE shape: locator in t_tid */
 
@@ -662,7 +825,7 @@ retry:
 		bark_insert_first_leaf(index, itup);
 		pfree(itup);
 		pfree(keyinfo);
-		return false;
+		return true;			/* nothing to conflict with: unique */
 	}
 
 	/*
@@ -692,6 +855,65 @@ retry:
 	 */
 	CheckForSerializableConflictIn(index, NULL, BufferGetBlockNumber(buf));
 
+	/*
+	 * Uniqueness check.  Skipped when the caller doesn't want it, and when the
+	 * new key has any NULL attribute (SQL treats NULLs as distinct, so a NULL
+	 * key never conflicts).  If a conflicting tuple is still in progress,
+	 * bark_check_unique returns its xact id: wait for that transaction to
+	 * finish, then re-descend and check again.
+	 */
+	if (checkUnique != UNIQUE_CHECK_NO)
+	{
+		bool		nulls_present = false;
+		TransactionId xwait;
+		bool		is_unique;
+
+		for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+		{
+			if (isnull[i])
+			{
+				nulls_present = true;
+				break;
+			}
+		}
+
+		if (!nulls_present)
+		{
+			xwait = bark_check_unique(index, keyinfo, itup, buf, heapRel,
+									  checkUnique, &is_unique);
+			if (TransactionIdIsValid(xwait))
+			{
+				/* Conflict with an in-progress xact: wait and retry. */
+				UnlockReleaseBuffer(buf);
+				if (stack)
+					bark_freestack(stack);
+				XactLockTableWait(xwait, index, &itup->t_tid,
+								  XLTW_InsertIndex);
+				goto retry;
+			}
+			result = is_unique;
+
+			/*
+			 * UNIQUE_CHECK_EXISTING only verifies that the already-inserted
+			 * tuple is unique; it must not add another index entry.
+			 */
+			if (checkUnique == UNIQUE_CHECK_EXISTING)
+			{
+				UnlockReleaseBuffer(buf);
+				if (stack)
+					bark_freestack(stack);
+				pfree(itup);
+				pfree(keyinfo);
+				return result;
+			}
+		}
+		else
+		{
+			/* NULL key: unconditionally considered unique. */
+			result = true;
+		}
+	}
+
 	if (PageGetFreeSpace(page) >= itemsz)
 	{
 		GenericXLogState *gstate = GenericXLogStart(index);
@@ -712,5 +934,5 @@ retry:
 		bark_freestack(stack);
 	pfree(itup);
 	pfree(keyinfo);
-	return false;
+	return result;
 }
