@@ -341,13 +341,17 @@ extern bool bark_insert(Relation index, Datum *values, bool *isnull,
  * Scan state (scan->opaque).  A BARK scan positions on a leaf and walks the
  * right-link chain, returning the heap TID of each entry that satisfies the
  * scan keys.  currentBuffer is the pinned (and, while reading, share-locked)
- * leaf; nextOffset is the next item to examine on it.
+ * leaf; lastOffset is the offset of the item most recently returned on it
+ * (InvalidOffsetNumber before the first item), so the next item is found by
+ * stepping from lastOffset in the current scan direction -- which keeps scroll
+ * cursors correct when the direction reverses.
  */
 typedef struct BarkScanOpaqueData
 {
 	BarkKeyInfo *keyinfo;		/* key comparison state for this index */
 	Buffer		currentBuffer;	/* current leaf, or InvalidBuffer */
-	OffsetNumber nextOffset;	/* next offset to read on currentBuffer */
+	OffsetNumber lastOffset;	/* offset last returned on currentBuffer, or
+								 * InvalidOffsetNumber before the first item */
 	bool		firstCall;		/* true until the scan has been positioned */
 	char	   *currTuple;		/* scratch copy of the returned index tuple for
 								 * index-only scans (NULL when not wanted) */
