@@ -208,7 +208,7 @@ bark_position(IndexScanDesc scan, ScanDirection dir)
 
 	if (lower != NULL)
 	{
-		buf = bark_search(index, so->keyinfo, lower, false, NULL);
+		buf = bark_search(index, so->keyinfo, lower, false, false, NULL);
 		pfree(lower);
 		if (buf != InvalidBuffer)
 			LockBuffer(buf, BUFFER_LOCK_UNLOCK);	/* search left it share-locked */
