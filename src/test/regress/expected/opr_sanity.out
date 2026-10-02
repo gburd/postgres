@@ -1896,10 +1896,15 @@ WHERE c1.opcmethod = 0 OR c1.opcnamespace = 0 OR c1.opcfamily = 0
 -----
 (0 rows)
 
--- opcmethod must match owning opfamily's opfmethod
+-- opcmethod must match owning opfamily's opfmethod, except that an operator
+-- class may live in a btree operator family even when its own access method
+-- is a different, btree-compatible one (the ambtreeopfamilies capability): such
+-- an AM reuses btree's operator families rather than registering redundant
+-- ones of its own.
 SELECT c1.oid, f1.oid
 FROM pg_opclass AS c1, pg_opfamily AS f1
-WHERE c1.opcfamily = f1.oid AND c1.opcmethod != f1.opfmethod;
+WHERE c1.opcfamily = f1.oid AND c1.opcmethod != f1.opfmethod
+  AND f1.opfmethod != (SELECT oid FROM pg_am WHERE amname = 'btree');
  oid | oid 
 -----+-----
 (0 rows)
@@ -2114,12 +2119,7 @@ ORDER BY 1, 2, 3;
        4000 |           28 | ^@
        4000 |           29 | <^
        4000 |           30 | >^
-       9460 |            1 | <
-       9460 |            2 | <=
-       9460 |            3 | =
-       9460 |            4 | >=
-       9460 |            5 | >
-(129 rows)
+(124 rows)
 
 -- Check that all opclass search operators have selectivity estimators.
 -- This is not absolutely required, but it seems a reasonable thing

@@ -432,7 +432,22 @@ DefineOpClass(CreateOpClassStmt *stmt)
 	 */
 	if (stmt->opfamilyname)
 	{
-		opfamilyoid = get_opfamily_oid(amoid, stmt->opfamilyname, false);
+		/*
+		 * A btree-compatible access method (ambtreeopfamilies) reuses btree's
+		 * operator families rather than registering its own, so an operator
+		 * class for such an AM may name a family that belongs to btree.  Try
+		 * this AM's own families first, then fall back to btree's.
+		 */
+		opfamilyoid = get_opfamily_oid(amoid, stmt->opfamilyname, true);
+		if (!OidIsValid(opfamilyoid) && amroutine->ambtreeopfamilies &&
+			amoid != BTREE_AM_OID)
+			opfamilyoid = get_opfamily_oid(BTREE_AM_OID,
+										   stmt->opfamilyname, true);
+		if (!OidIsValid(opfamilyoid))
+		{
+			/* not found under either AM; re-run for the normal error */
+			opfamilyoid = get_opfamily_oid(amoid, stmt->opfamilyname, false);
+		}
 	}
 	else
 	{
