@@ -14,6 +14,7 @@
 
 #include "postgres.h"
 
+#include "access/bark.h"
 #include "access/brin.h"
 #include "access/gin.h"
 #include "access/nbtree.h"
@@ -143,6 +144,9 @@ static const struct
 	},
 	{
 		"_bt_parallel_build_main", _bt_parallel_build_main
+	},
+	{
+		"_bark_parallel_build_main", _bark_parallel_build_main
 	},
 	{
 		"_brin_parallel_build_main", _brin_parallel_build_main
