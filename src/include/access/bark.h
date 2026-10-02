@@ -28,8 +28,10 @@
 
 #include "access/amapi.h"
 #include "access/itup.h"
-#include "storage/bufpage.h"
 #include "storage/block.h"
+#include "storage/bufpage.h"
+#include "storage/condition_variable.h"
+#include "storage/lwlock.h"
 
 /*
  * BARK uses the same page size and block-addressing as the rest of the
@@ -565,6 +567,11 @@ typedef struct BarkScanOpaqueData
 	OffsetNumber lastOffset;	/* offset last returned on currentBuffer, or
 								 * InvalidOffsetNumber before the first item */
 	bool		firstCall;		/* true until the scan has been positioned */
+	bool		parallelReleased;	/* parallel scan: the cursor has already been
+									 * advanced past currentBuffer to its sibling, so
+									 * this worker owns currentBuffer and must not
+									 * release the cursor again before seizing the
+									 * next page */
 	char	   *currTuple;		/* scratch copy of the returned index tuple for
 								 * index-only scans (NULL when not wanted) */
 
@@ -585,6 +592,34 @@ typedef struct BarkScanOpaqueData
 
 typedef BarkScanOpaqueData *BarkScanOpaque;
 
+/*
+ * Shared state for a parallel BARK scan, stored in DSM.  A BARK scan walks the
+ * leaf right-link (or left-link, backward) chain; in parallel, workers claim
+ * leaf pages one at a time from a shared cursor rather than each walking the
+ * whole chain.  Only one worker advances the cursor at a time (seize/release),
+ * so the next block each worker gets is distinct and every leaf is scanned by
+ * exactly one worker.  Modeled on nbtree's BTParallelScanDescData, without the
+ * ScalarArrayOp primitive-scan machinery BARK does not have.
+ */
+typedef enum BarkParallelState
+{
+	BARK_PARALLEL_NOT_INITIALIZED,	/* no worker has positioned the scan yet */
+	BARK_PARALLEL_ADVANCING,		/* a worker is advancing the cursor */
+	BARK_PARALLEL_IDLE,				/* cursor holds the next page to hand out */
+	BARK_PARALLEL_DONE,				/* no pages remain (or error exit) */
+} BarkParallelState;
+
+typedef struct BarkParallelScanDescData
+{
+	BlockNumber bps_nextPage;	/* next leaf block to hand out, or BARK_P_NONE
+								 * at the end of the chain */
+	BarkParallelState bps_state;	/* coordination state (see above) */
+	LWLock		bps_lock;		/* protects the fields above */
+	ConditionVariable bps_cv;	/* workers wait here while another advances */
+} BarkParallelScanDescData;
+
+typedef struct BarkParallelScanDescData *BarkParallelScanDesc;
+
 extern IndexScanDesc bark_beginscan(Relation index, int nkeys, int norderbys);
 extern void bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 						ScanKey orderbys, int norderbys);
@@ -592,5 +627,10 @@ extern bool bark_gettuple(IndexScanDesc scan, ScanDirection dir);
 extern bool bark_canreturn(Relation index, int attno);
 extern int64 bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm);
 extern void bark_endscan(IndexScanDesc scan);
+
+/* Parallel scan (barkscan.c). */
+extern Size bark_estimateparallelscan(Relation index, int nkeys, int norderbys);
+extern void bark_initparallelscan(void *target);
+extern void bark_parallelrescan(IndexScanDesc scan);
 
 #endif							/* BARK_H */
