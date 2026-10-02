@@ -68,32 +68,59 @@ barkvalidate(Oid opclassoid)
 	oprlist = SearchSysCacheList1(AMOPSTRATEGY, ObjectIdGetDatum(opfamilyoid));
 	proclist = SearchSysCacheList1(AMPROCNUM, ObjectIdGetDatum(opfamilyoid));
 
-	/* Check support functions: only BARK_ORDER_PROC is defined. */
+	/*
+	 * Check support functions.  BARK opclasses live in btree operator
+	 * families, so the family may legitimately carry any of btree's support
+	 * functions (the comparator plus the optional sortsupport, in_range,
+	 * equalimage, options, and skipsupport procs).  Validate each against the
+	 * same signature btree requires; BARK requires only the comparator
+	 * (support function 1) and simply does not call the others.
+	 */
 	for (i = 0; i < proclist->n_members; i++)
 	{
 		HeapTuple	proctup = &proclist->members[i]->tuple;
 		Form_pg_amproc procform = (Form_pg_amproc) GETSTRUCT(proctup);
 		bool		ok;
 
-		if (procform->amprocnum == BARK_ORDER_PROC)
+		switch (procform->amprocnum)
 		{
-			ok = check_amproc_signature(procform->amproc, INT4OID, true,
-										2, 2, procform->amproclefttype,
-										procform->amprocrighttype);
-			if (procform->amproclefttype == opcintype &&
-				procform->amprocrighttype == opcintype)
-				seen_order_proc = true;
-		}
-		else
-		{
-			ereport(INFO,
-					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-					 errmsg("operator family \"%s\" of access method %s contains function %s with invalid support number %d",
-							opfamilyname, "bark",
-							format_procedure(procform->amproc),
-							procform->amprocnum)));
-			result = false;
-			continue;
+			case BARK_ORDER_PROC:	/* 1: three-way comparator */
+				ok = check_amproc_signature(procform->amproc, INT4OID, true,
+											2, 2, procform->amproclefttype,
+											procform->amprocrighttype);
+				if (procform->amproclefttype == opcintype &&
+					procform->amprocrighttype == opcintype)
+					seen_order_proc = true;
+				break;
+			case 2:					/* sortsupport */
+			case 6:					/* skipsupport */
+				ok = check_amproc_signature(procform->amproc, VOIDOID, true,
+											1, 1, INTERNALOID);
+				break;
+			case 3:					/* in_range */
+				ok = check_amproc_signature(procform->amproc, BOOLOID, true,
+											5, 5,
+											procform->amproclefttype,
+											procform->amproclefttype,
+											procform->amprocrighttype,
+											BOOLOID, BOOLOID);
+				break;
+			case 4:					/* equalimage */
+				ok = check_amproc_signature(procform->amproc, BOOLOID, true,
+											1, 1, OIDOID);
+				break;
+			case 5:					/* options */
+				ok = check_amoptsproc_signature(procform->amproc);
+				break;
+			default:
+				ereport(INFO,
+						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+						 errmsg("operator family \"%s\" of access method %s contains function %s with invalid support number %d",
+								opfamilyname, "bark",
+								format_procedure(procform->amproc),
+								procform->amprocnum)));
+				result = false;
+				continue;
 		}
 		if (!ok)
 		{
