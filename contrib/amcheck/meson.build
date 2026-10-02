@@ -1,6 +1,7 @@
 # Copyright (c) 2022-2026, PostgreSQL Global Development Group
 
 amcheck_sources = files(
+  'verify_bark.c',
   'verify_common.c',
   'verify_gin.c',
   'verify_heapam.c',
@@ -27,6 +28,7 @@ install_data(
   'amcheck--1.2--1.3.sql',
   'amcheck--1.3--1.4.sql',
   'amcheck--1.4--1.5.sql',
+  'amcheck--1.5--1.6.sql',
   kwargs: contrib_data_args,
 )
 
@@ -39,6 +41,7 @@ tests += {
       'check',
       'check_btree',
       'check_gin',
+      'check_bark',
       'check_heap',
     ],
   },
