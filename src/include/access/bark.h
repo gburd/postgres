@@ -101,6 +101,18 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
 #define BarkPageFirstDataKey(opaque) \
 	(BarkPageRightmost(opaque) ? BARK_P_HIKEY : BARK_P_FIRSTKEY)
 
+/*
+ * The largest item BARK will place on a page.  Like nbtree's BTMaxItemSize,
+ * this bounds a single entry to roughly a third of the usable page so at
+ * least three entries fit, keeping the tree from degenerating.  A LIST or
+ * POSTING entry that would exceed this is split (A10) or, for POSTING,
+ * compacted; see the LIST/POSTING growth paths in barkinsert.c.
+ */
+#define BarkMaxItemSize \
+	MAXALIGN_DOWN((BLCKSZ - \
+				   MAXALIGN(SizeOfPageHeaderData + 3 * sizeof(ItemIdData)) - \
+				   MAXALIGN(sizeof(BarkPageOpaqueData))) / 3)
+
 /* ----------------------------------------------------------------------------
  * Meta page
  *
@@ -230,6 +242,32 @@ BarkEntryIsAltTID(const IndexTupleData *itup)
 	return (itup->t_info & INDEX_AM_RESERVED_BIT) != 0;
 }
 
+/* Decode the shape of a leaf or pivot entry from its status bits. */
+static inline BarkEntryShape
+BarkEntryGetShape(const IndexTupleData *itup)
+{
+	OffsetNumber status;
+
+	if (!BarkEntryIsAltTID(itup))
+		return BARK_SHAPE_SINGLE;
+	status = ItemPointerGetOffsetNumberNoCheck(&itup->t_tid) &
+		BARK_STATUS_OFFSET_MASK;
+	if (status & BARK_IS_LIST)
+		return BARK_SHAPE_LIST;
+	if (status & BARK_IS_POSTING)
+		return BARK_SHAPE_POSTING;
+	return BARK_SHAPE_PIVOT;
+}
+
+/* True for a leaf entry that holds one or more heap locators (not a pivot). */
+static inline bool
+BarkEntryIsLeafData(const IndexTupleData *itup)
+{
+	BarkEntryShape shape = BarkEntryGetShape(itup);
+
+	return shape != BARK_SHAPE_PIVOT;
+}
+
 /* ----------------------------------------------------------------------------
  * PIVOT entry accessors (internal downlinks and page high keys)
  *
@@ -273,6 +311,74 @@ BarkPivotSetDownLink(IndexTupleData *itup, BlockNumber blkno)
 }
 
 /* ----------------------------------------------------------------------------
+ * LIST entry accessors (sorted duplicates)
+ *
+ * A LIST entry is a normal IndexTuple -- the key attributes follow the header
+ * exactly as in a SINGLE entry -- extended with a packed, ascending array of
+ * ItemPointerData locators appended after the key data.  The alt-TID bit is
+ * set with BARK_IS_LIST; the low BARK_OFFSET_MASK bits of the t_tid offset
+ * field hold the locator count.  The t_tid block field is unused (left zero).
+ *
+ * The locator array begins at the first MAXALIGN boundary after the key data,
+ * which is where index_form_tuple leaves the tuple's used size; locators are
+ * themselves naturally aligned (ItemPointerData is 6 bytes but the array base
+ * is MAXALIGNed, matching how heap TID arrays are laid out elsewhere).
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * The number of locators a LIST or POSTING entry carries can be at most the
+ * low twelve bits of the offset field.  LIST uses the field as a live count;
+ * when a LIST would exceed BARK_LIST_MAX_COUNT members it is converted to a
+ * POSTING entry (A11), whose count field instead records that it is a set.
+ */
+#define BARK_LIST_MAX_COUNT		BARK_OFFSET_MASK
+
+/* Number of locators recorded in a LIST entry. */
+static inline uint16
+BarkListGetCount(const IndexTupleData *itup)
+{
+	return (ItemPointerGetOffsetNumberNoCheck(&itup->t_tid) &
+			BARK_OFFSET_MASK);
+}
+
+/*
+ * Byte offset within a LIST or POSTING entry at which its appended body (the
+ * locator array or the sbm blob) begins.  A LIST/POSTING entry is a key tuple
+ * (header + attribute data) with a body appended after it; the body starts at
+ * the MAXALIGNed end of the key prefix.  Because the entry's t_info size
+ * covers the whole entry (key + body), the split point cannot be recovered
+ * from t_info alone, so the constructor records it in the t_tid block-number
+ * field (which a LIST/POSTING entry does not otherwise use), giving O(1)
+ * recovery -- the same device nbtree uses for its posting-list offset.
+ */
+static inline uint16
+BarkEntryGetBodyOffset(const IndexTupleData *itup)
+{
+	return (uint16) ItemPointerGetBlockNumberNoCheck(&itup->t_tid);
+}
+
+static inline void
+BarkEntrySetBodyOffset(IndexTupleData *itup, uint16 bodyoff)
+{
+	ItemPointerSetBlockNumber(&itup->t_tid, (BlockNumber) bodyoff);
+}
+
+/* Pointer to the first locator of a LIST entry. */
+static inline ItemPointer
+BarkListGetTIDArray(IndexTupleData *itup)
+{
+	return (ItemPointer) ((char *) itup + BarkEntryGetBodyOffset(itup));
+}
+
+/* The n'th locator (0-based) of a LIST entry. */
+static inline ItemPointer
+BarkListGetTID(IndexTupleData *itup, int n)
+{
+	return &BarkListGetTIDArray(itup)[n];
+}
+
+/* ----------------------------------------------------------------------------
  * Shared prototypes (bark.c, barkutils.c, barksort.c, barkvalidate.c)
  * ----------------------------------------------------------------------------
  */
@@ -302,6 +408,38 @@ extern int	bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
 							   IndexTuple a, IndexTuple b);
 extern CompareType bark_translate_strategy(StrategyNumber strategy, Oid opfamily);
 extern StrategyNumber bark_translate_cmptype(CompareType cmptype, Oid opfamily);
+
+/* ----------------------------------------------------------------------------
+ * LIST / POSTING entry construction and reading (barkutils.c)
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Build a LIST entry: the key columns of `key` (a SINGLE-shape index tuple)
+ * extended with the `ntids` locators in `tids` (which must be sorted
+ * ascending and distinct) stored in the body.  Returns a palloc'd entry.
+ */
+extern IndexTuple bark_form_list(TupleDesc tupdesc, IndexTuple key,
+								 ItemPointer tids, int ntids);
+
+/*
+ * Collect the heap locators of a leaf entry (SINGLE or LIST) into `out` in
+ * ascending order, returning the count.  `out` must have room for at least
+ * bark_entry_count_tids(itup) locators.
+ */
+extern int	bark_entry_get_tids(IndexTuple itup, ItemPointer out, int maxout);
+
+/* Number of locators a leaf entry holds. */
+extern int	bark_entry_count_tids(IndexTuple itup);
+
+/*
+ * Reform a clean SINGLE-shape key tuple from a leaf entry (dropping any LIST
+ * body and alt-TID status).  When `tid` is non-NULL the result's t_tid is set
+ * to it; otherwise t_tid is left as index_form_tuple leaves it.  Used by
+ * VACUUM to collapse a LIST down to a SINGLE and to recover a plain key.
+ */
+extern IndexTuple bark_single_from_list(Relation index, IndexTuple entry,
+										ItemPointer tid);
 
 extern IndexBuildResult *bark_build(Relation heap, Relation index,
 									IndexInfo *indexInfo);
@@ -362,6 +500,20 @@ typedef struct BarkScanOpaqueData
 	bool		firstCall;		/* true until the scan has been positioned */
 	char	   *currTuple;		/* scratch copy of the returned index tuple for
 								 * index-only scans (NULL when not wanted) */
+
+	/*
+	 * Within-entry iteration for multi-locator entries (LIST, POSTING): a
+	 * single leaf entry at lastOffset may expand into several heap TIDs, one
+	 * returned per bark_gettuple call.  memberTids holds the entry's locators
+	 * in ascending order; nMembers is how many, and memberIdx is the next one
+	 * to return in the scan direction (-1 or nMembers means the entry is
+	 * exhausted and the scan should advance to the next offset).  A SINGLE
+	 * entry has nMembers == 1 and uses the same machinery.
+	 */
+	ItemPointer memberTids;		/* palloc'd locator buffer, or NULL */
+	int			nMembersAlloc;	/* capacity of memberTids */
+	int			nMembers;		/* locators in the current entry */
+	int			memberIdx;		/* next locator to return */
 } BarkScanOpaqueData;
 
 typedef BarkScanOpaqueData *BarkScanOpaque;

@@ -219,5 +219,67 @@ RESET enable_seqscan;
 RESET enable_indexscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_dup;
+-- Duplicate keys (LIST entries): a non-unique index coalesces many heap
+-- tuples that share a key into one leaf entry holding a sorted locator list.
+-- Scans must expand a LIST back into its member TIDs so index results match a
+-- sequential scan exactly, in every mode (equality, range, ORDER BY, IOS,
+-- bitmap).  VACUUM must remove dead members from within a LIST and keep the
+-- survivors scannable.
+CREATE TABLE bark_list (a int, b int);
+-- 20000 rows over 100 distinct keys => ~200 duplicates per key, enough to
+-- form LIST entries.  b distinguishes rows within a key.
+INSERT INTO bark_list SELECT g % 100, g FROM generate_series(1, 20000) g;
+CREATE INDEX bark_list_idx ON bark_list USING bark (a);
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexscan = on;
+-- Equality on a heavily-duplicated key: index count == seqscan count.
+SELECT (SELECT count(*) FROM bark_list WHERE a = 42) AS eq_idx;
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SELECT count(*) AS eq_seq FROM bark_list WHERE a = 42;
+-- Range and ordered scans over duplicated keys agree with a sequential scan.
+SET enable_seqscan = off;
+SET enable_indexscan = on;
+SELECT count(*) AS range_idx FROM bark_list WHERE a BETWEEN 10 AND 20;
+SELECT a FROM bark_list WHERE a <= 2 ORDER BY a LIMIT 10;
+SELECT a FROM bark_list WHERE a >= 98 ORDER BY a DESC LIMIT 10;
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SELECT count(*) AS range_seq FROM bark_list WHERE a BETWEEN 10 AND 20;
+-- Bitmap scan over duplicated keys.
+SET enable_seqscan = off;
+SET enable_indexscan = off;
+SET enable_bitmapscan = on;
+SELECT count(*) AS bitmap_idx FROM bark_list WHERE a IN (1, 2, 3);
+SET enable_seqscan = on;
+SET enable_bitmapscan = off;
+SELECT count(*) AS bitmap_seq FROM bark_list WHERE a IN (1, 2, 3);
+-- VACUUM removing members from within LISTs: delete some (not all) of a key's
+-- rows plus a whole other key, vacuum, then the survivors still scan correctly
+-- and the index agrees with a sequential scan.  Key 42's b values are all even
+-- (g = 42, 142, 242, ... are congruent to 42 mod 100), so a parity predicate
+-- would delete the whole key; delete by magnitude instead to leave survivors.
+DELETE FROM bark_list WHERE a = 42 AND b < 10000;
+DELETE FROM bark_list WHERE a = 7;
+VACUUM bark_list;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexscan = on;
+SELECT count(*) AS after_vac_42_idx FROM bark_list WHERE a = 42;
+SELECT count(*) AS after_vac_7_idx FROM bark_list WHERE a = 7;
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SELECT count(*) AS after_vac_42_seq FROM bark_list WHERE a = 42;
+-- A unique index never forms a LIST: a second live row with the same key is
+-- rejected even though a non-unique index would have coalesced it.
+CREATE TABLE bark_list_u (a int);
+CREATE UNIQUE INDEX ON bark_list_u USING bark (a);
+INSERT INTO bark_list_u SELECT g FROM generate_series(1, 100) g;
+INSERT INTO bark_list_u VALUES (50);			-- duplicate: errors
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_list, bark_list_u;
 
 DROP TABLE bark_tab, bark_small, bark_empty, bark_ins, bark_scan;
