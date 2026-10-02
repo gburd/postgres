@@ -26,6 +26,7 @@
 #include "access/bark.h"
 #include "commands/vacuum.h"
 #include "utils/fmgrprotos.h"
+#include "utils/selfuncs.h"
 
 /*
  * Every data-touching entry point routes through this: BARK accepts and
@@ -74,9 +75,8 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 }
 
 /*
- * Cost estimator.  Report a prohibitive cost so the planner never chooses a
- * BARK index while the scan machinery is unimplemented; a real estimator
- * arrives with the scan support.
+ * Cost estimator.  Use the generic btree-style estimator so the planner can
+ * choose a BARK index when it is cheaper than a sequential scan.
  */
 static void
 barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
@@ -84,11 +84,15 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 				 Selectivity *indexSelectivity, double *indexCorrelation,
 				 double *indexPages)
 {
-	*indexStartupCost = 1.0e10;
-	*indexTotalCost = 1.0e10;
-	*indexSelectivity = 1;
-	*indexCorrelation = 0;
-	*indexPages = 1;
+	GenericCosts costs = {0};
+
+	genericcostestimate(root, path, loop_count, &costs);
+
+	*indexStartupCost = costs.indexStartupCost;
+	*indexTotalCost = costs.indexTotalCost;
+	*indexSelectivity = costs.indexSelectivity;
+	*indexCorrelation = costs.indexCorrelation;
+	*indexPages = costs.numIndexPages;
 }
 
 /*
@@ -107,35 +111,32 @@ barkoptions(Datum reloptions, bool validate)
 static IndexScanDesc
 barkbeginscan(Relation r, int nkeys, int norderbys)
 {
-	BARK_NOT_IMPLEMENTED();
-	return NULL;
+	return bark_beginscan(r, nkeys, norderbys);
 }
 
 static void
 barkrescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 		   ScanKey orderbys, int norderbys)
 {
-	BARK_NOT_IMPLEMENTED();
+	bark_rescan(scan, scankey, nscankeys, orderbys, norderbys);
 }
 
 static bool
 barkgettuple(IndexScanDesc scan, ScanDirection dir)
 {
-	BARK_NOT_IMPLEMENTED();
-	return false;
+	return bark_gettuple(scan, dir);
 }
 
 static int64
 barkgetbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 {
-	BARK_NOT_IMPLEMENTED();
-	return 0;
+	return bark_getbitmap(scan, tbm);
 }
 
 static void
 barkendscan(IndexScanDesc scan)
 {
-	BARK_NOT_IMPLEMENTED();
+	bark_endscan(scan);
 }
 
 /*
@@ -204,8 +205,8 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amestimateparallelscan = NULL,
 		.aminitparallelscan = NULL,
 		.amparallelrescan = NULL,
-		.amtranslatestrategy = NULL,
-		.amtranslatecmptype = NULL,
+		.amtranslatestrategy = bark_translate_strategy,
+		.amtranslatecmptype = bark_translate_cmptype,
 	};
 
 	PG_RETURN_POINTER(&amroutine);
