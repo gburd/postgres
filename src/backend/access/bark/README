@@ -69,6 +69,19 @@ There are four entry shapes (BarkEntryShape):
            the number of key attributes actually present, since a pivot may be
            shortened by suffix truncation.
 
+  OVERSIZED  A key (or key + INCLUDE payload) whose formed tuple exceeds
+           BarkMaxItemSize.  The alt-TID bit is set with BARK_IS_LIST and
+           BARK_IS_POSTING together (a code point no other shape uses).  The
+           full index tuple is stored out-of-line on a chain of BARK_OVERFLOW
+           pages; the on-page entry is a bare header plus a BarkOverflowRef
+           (full byte length, heap locator or downlink, and -- for a pivot --
+           its key-attribute count), with the first overflow block in t_tid.
+           This is what lets BARK index a key larger than ~1/3 page, where
+           nbtree errors: comparison, scan, uniqueness, and vacuum fetch the
+           full value from the chain, so an oversized key behaves exactly like
+           an inline key of the same value.  A normal-size entry never uses
+           this shape, so it is pure overhead-free opt-in.
+
 The encoding of a leaf entry is chosen per entry, by cardinality: a key with
 one row is SINGLE, a few rows is LIST, and a large clustered set is POSTING.
 This is what lets a scalar index and an inverted (GIN/RUM-style) index share
@@ -95,6 +108,13 @@ Invariants
   * On a leaf page, entries are in key order; within one key, LIST locators
     are ascending and a POSTING set is canonical (see lib/sbm.h).
   * The alt-TID status bits are mutually exclusive in what they encode: an
-    entry is exactly one of SINGLE, LIST, POSTING, or PIVOT; BARK_IS_DELETE_MARKED
-    is an independent flag that may accompany a leaf shape but never a PIVOT.
+    entry is exactly one of SINGLE, LIST, POSTING, OVERSIZED, or PIVOT;
+    BARK_IS_DELETE_MARKED is an independent flag that may accompany a leaf
+    shape but never a PIVOT.
+  * An OVERSIZED entry's full tuple lives on a chain of BARK_OVERFLOW pages
+    (bark_flags has BARK_OVERFLOW, not BARK_LEAF): each page holds up to
+    BarkOverflowChunkSize raw bytes of the tuple and links to the next chunk
+    via bark_next (BARK_P_NONE at the tail); the chunks concatenate to the full
+    tuple.  Overflow pages carry no items and are skipped by the leaf scans
+    (vacuum, cleanup) and by amcheck's per-page checks.
   * bark_page_id is BARK_PAGE_ID on every BARK page.

@@ -41,6 +41,28 @@
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 
+/*
+ * Materialize the page-resident SINGLE/OVERSIZED leaf entry for `full` (a full
+ * in-memory key tuple carrying its heap locator).  When `oversized`, writes the
+ * full tuple to a fresh overflow chain and returns a small OVERSIZED entry
+ * referencing it; otherwise returns a plain copy that is placed inline exactly
+ * as before this capability.  Always returns a palloc'd tuple the caller
+ * places and then pfrees.
+ */
+static IndexTuple
+bark_leaf_page_entry(Relation index, IndexTuple full, bool oversized,
+					 Size fulllen)
+{
+	BlockNumber firstblk;
+
+	if (!oversized)
+		return CopyIndexTuple(full);
+
+	firstblk = bark_write_overflow_chain(index, full, fulllen);
+	return bark_form_oversized_entry(&full->t_tid, fulllen, firstblk,
+									 true /* leaf */ , 0);
+}
+
 /* Find the offset at which to insert key on a leaf page (first key > key). */
 static OffsetNumber
 bark_leaf_insert_off(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
@@ -81,9 +103,16 @@ bark_leaf_insert_off(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 static IndexTuple
 bark_strip_to_key(Relation index, IndexTuple src, bool *allocated)
 {
+	BarkEntryShape shape = BarkEntryGetShape(src);
+
 	*allocated = false;
-	if (BarkEntryGetShape(src) == BARK_SHAPE_LIST ||
-		BarkEntryGetShape(src) == BARK_SHAPE_POSTING)
+	if (shape == BARK_SHAPE_OVERSIZED)
+	{
+		/* The key attributes are out of line; fetch the full tuple. */
+		*allocated = true;
+		return bark_fetch_oversized(index, src);
+	}
+	if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
 	{
 		TupleDesc	tupdesc = RelationGetDescr(index);
 		Datum		values[INDEX_MAX_KEYS];
@@ -99,41 +128,85 @@ bark_strip_to_key(Relation index, IndexTuple src, bool *allocated)
 }
 
 /*
- * A pivot (downlink) tuple: a key truncated to its key attributes, carrying
- * natts + a child block.  Non-key INCLUDE attributes (and any lower-key
- * suffix) are physically removed with index_truncate_tuple so they do not
- * bloat internal pages or risk overflowing a pivot; pivots only route by key.
+ * Build a pivot (downlink or high key) from the key `key`, truncated to its key
+ * attributes, carrying `natts` and (for a downlink) `child` -- BARK_P_NONE for
+ * a high key.  Non-key INCLUDE attributes and any lower-key suffix are
+ * physically removed (index_truncate_tuple): pivots only route by key.
+ *
+ * When the truncated key still exceeds the item ceiling (an oversized key),
+ * the pivot is an OVERSIZED pivot: its full key is written to a fresh overflow
+ * chain the pivot owns, and the pivot is the small OVERSIZED entry referencing
+ * it.  bark_compare_itups fetches that chain, so an oversized pivot routes on
+ * the full key exactly as a leaf entry does.  The caller must not hold an open
+ * generic-WAL state, since writing the chain starts its own WAL records.
+ */
+static IndexTuple
+bark_make_pivot(Relation index, IndexTuple key, BlockNumber child, int nkeyatts)
+{
+	bool		allocated;
+	IndexTuple	src = bark_strip_to_key(index, key, &allocated);
+	TupleDesc	tupdesc = RelationGetDescr(index);
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+	Size		fulllen;
+	IndexTuple	full;
+	IndexTuple	pivot;
+
+	/*
+	 * Form the truncated key with bark_form_full_tuple (no 8191 cap) so an
+	 * oversized key does not error here; a normal key comes out identical to
+	 * index_truncate_tuple's result.
+	 */
+	if (nkeyatts < tupdesc->natts)
+	{
+		TupleDesc	truncdesc = CreateTupleDescTruncatedCopy(tupdesc, nkeyatts);
+
+		index_deform_tuple(src, truncdesc, values, isnull);
+		full = bark_form_full_tuple(truncdesc, values, isnull, &fulllen);
+		FreeTupleDesc(truncdesc);
+	}
+	else
+	{
+		index_deform_tuple(src, tupdesc, values, isnull);
+		full = bark_form_full_tuple(tupdesc, values, isnull, &fulllen);
+	}
+	if (allocated)
+		pfree(src);
+
+	if (bark_len_is_oversized(fulllen))
+	{
+		ItemPointerData locator;
+		BlockNumber firstblk = bark_write_overflow_chain(index, full, fulllen);
+
+		ItemPointerSetBlockNumber(&locator, child);
+		ItemPointerSetOffsetNumber(&locator, InvalidOffsetNumber);
+		pivot = bark_form_oversized_entry(&locator, fulllen, firstblk,
+										  false /* pivot */ , (uint16) nkeyatts);
+		pfree(full);
+		return pivot;
+	}
+
+	pivot = full;
+	BarkPivotSetNAtts(pivot, (uint16) nkeyatts);
+	BarkPivotSetDownLink(pivot, child);
+	return pivot;
+}
+
+/*
+ * A pivot (downlink) tuple pointing at `child`.
  */
 static IndexTuple
 bark_make_downlink(Relation index, IndexTuple key, BlockNumber child,
 				   int nkeyatts)
 {
-	bool		allocated;
-	IndexTuple	src = bark_strip_to_key(index, key, &allocated);
-	IndexTuple	pivot = index_truncate_tuple(RelationGetDescr(index), src,
-											 nkeyatts);
-
-	if (allocated)
-		pfree(src);
-	BarkPivotSetNAtts(pivot, (uint16) nkeyatts);
-	BarkPivotSetDownLink(pivot, child);
-	return pivot;
+	return bark_make_pivot(index, key, child, nkeyatts);
 }
 
 /* A high-key tuple: a key truncated to its key attributes, no downlink. */
 static IndexTuple
 bark_make_hikey(Relation index, IndexTuple key, int nkeyatts)
 {
-	bool		allocated;
-	IndexTuple	src = bark_strip_to_key(index, key, &allocated);
-	IndexTuple	hikey = index_truncate_tuple(RelationGetDescr(index), src,
-											 nkeyatts);
-
-	if (allocated)
-		pfree(src);
-	BarkPivotSetNAtts(hikey, (uint16) nkeyatts);
-	BarkPivotSetDownLink(hikey, BARK_P_NONE);
-	return hikey;
+	return bark_make_pivot(index, key, BARK_P_NONE, nkeyatts);
 }
 
 /*
@@ -219,11 +292,15 @@ bark_parent_insert_off(Relation index, BarkKeyInfo *keyinfo,
 }
 
 /*
- * Create the first leaf of an empty index, holding `itup`, and point the meta
+ * Create the first leaf of an empty index, holding `entry`, and point the meta
  * page at it as the (leaf) root.  Called when bark_search finds no root.
+ * `full` is the full key tuple used for comparison on the fallback path (when
+ * another backend created the root first); `entry` is the page-resident tuple
+ * to place (a SINGLE copy, or an OVERSIZED entry whose overflow chain the
+ * caller already wrote before any page lock was taken).
  */
 static void
-bark_insert_first_leaf(Relation index, IndexTuple itup)
+bark_insert_first_leaf(Relation index, IndexTuple full, IndexTuple entry)
 {
 	Buffer		metabuf = ReadBuffer(index, BARK_METAPAGE);
 	Buffer		leafbuf;
@@ -249,14 +326,14 @@ bark_insert_first_leaf(Relation index, IndexTuple itup)
 			Page		page;
 			OffsetNumber off;
 
-			buf = bark_search(index, keyinfo, itup, true, true, &stack);
+			buf = bark_search(index, keyinfo, full, true, true, &stack);
 			page = BufferGetPage(buf);
-			off = bark_leaf_insert_off(index, keyinfo, itup, page);
+			off = bark_leaf_insert_off(index, keyinfo, full, page);
 			{
 				GenericXLogState *g = GenericXLogStart(index);
 				Page		p = GenericXLogRegisterBuffer(g, buf, 0);
 
-				bark_page_insert_at(p, itup, off);
+				bark_page_insert_at(p, entry, off);
 				GenericXLogFinish(g);
 			}
 			UnlockReleaseBuffer(buf);
@@ -285,7 +362,7 @@ bark_insert_first_leaf(Relation index, IndexTuple itup)
 		lo->bark_flags = BARK_LEAF | BARK_ROOT;
 		lo->bark_page_id = BARK_PAGE_ID;
 	}
-	bark_page_insert_at(leafpage, itup, BARK_P_HIKEY);
+	bark_page_insert_at(leafpage, entry, BARK_P_HIKEY);
 
 	{
 		BarkMetaPageData *meta = BarkPageGetMeta(metapage);
@@ -334,6 +411,7 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 	GenericXLogState *gstate;
 	Page		leftpage;
 	IndexTuple	splitkey;
+	IndexTuple	lhikey;
 	IndexTuple	downlink;
 
 	/* Preserve the original high key (if any) for the new right page. */
@@ -359,6 +437,15 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 	splitidx = n / 2;
 	if (splitidx < 1)
 		splitidx = 1;
+	splitkey = items[splitidx];		/* first key on the right page */
+
+	/*
+	 * Form the left page's high key (= the right page's first key) BEFORE
+	 * opening the generic-WAL state: an oversized split key makes an OVERSIZED
+	 * hikey, which writes its own overflow chain under its own WAL records, and
+	 * generic WAL states cannot nest.
+	 */
+	lhikey = bark_make_hikey(index, splitkey, nkeyatts);
 
 	/* Allocate the right sibling. */
 	rbuf = ReadBuffer(index, P_NEW);
@@ -391,7 +478,6 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 	}
 	splitkey = items[splitidx];		/* first key on the right page */
 	{
-		IndexTuple	lhikey = bark_make_hikey(index, splitkey, nkeyatts);
 		OffsetNumber o = BARK_P_HIKEY;
 
 		bark_page_insert_at(leftpage, lhikey, o++);
@@ -496,7 +582,6 @@ static void
 bark_new_root(Relation index, IndexTuple downlink, BlockNumber leftblk,
 			  BlockNumber rightblk, uint32 childlevel)
 {
-	int			nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	Buffer		rootbuf = ReadBuffer(index, P_NEW);
 	Buffer		metabuf;
 	GenericXLogState *gstate;
@@ -528,19 +613,17 @@ bark_new_root(Relation index, IndexTuple downlink, BlockNumber leftblk,
 	/*
 	 * First downlink is minus-infinity (zero key attributes): it routes every
 	 * key below the split key to the left child.  Second is the split-key
-	 * downlink to the right child.
+	 * downlink to the right child -- the caller's `downlink`, which already
+	 * points at rightblk, reused as-is (re-forming it would re-fetch and
+	 * re-write an oversized key's overflow chain, and would do so inside this
+	 * open generic-WAL state).
 	 */
 	leftdown = index_truncate_tuple(RelationGetDescr(index), downlink, 0);
 	BarkPivotSetNAtts(leftdown, 0);
 	BarkPivotSetDownLink(leftdown, leftblk);
 	bark_page_insert_at(rootpage, leftdown, BARK_P_HIKEY);
 	pfree(leftdown);
-	{
-		IndexTuple	rightdown = bark_make_downlink(index, downlink, rightblk, nkeyatts);
-
-		bark_page_insert_at(rootpage, rightdown, BARK_P_FIRSTKEY);
-		pfree(rightdown);
-	}
+	bark_page_insert_at(rootpage, downlink, BARK_P_FIRSTKEY);
 
 	/* Point the meta page at the new root. */
 	{
@@ -778,7 +861,14 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 			if (bark_compare_itups(keyinfo, index, itup, curitup) != 0)
 				goto done;
 
-			htid = curitup->t_tid;
+			/*
+			 * Read the entry's heap locator by shape: a unique index only ever
+			 * holds SINGLE or OVERSIZED entries (it never coalesces), each with
+			 * exactly one locator.  An OVERSIZED entry keeps the locator in its
+			 * ref, not in t_tid (which holds the overflow block), so read it the
+			 * uniform way rather than from t_tid directly.
+			 */
+			bark_entry_get_tids(curitup, &htid, 1);
 
 			/* The tuple we are checking is itself, not a conflict. */
 			if (checkUnique == UNIQUE_CHECK_EXISTING &&
@@ -1013,15 +1103,30 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 			bool indexUnchanged, IndexInfo *indexInfo)
 {
 	BarkKeyInfo *keyinfo = bark_build_keyinfo(index);
-	IndexTuple	itup = index_form_tuple(RelationGetDescr(index), values, isnull);
+	Size		fulllen;
+	IndexTuple	itup = bark_form_full_tuple(RelationGetDescr(index), values,
+										   isnull, &fulllen);
+	bool		oversized = bark_len_is_oversized(fulllen);
 	Buffer		buf;
 	BarkStack	stack;
 	Page		page;
 	OffsetNumber off;
-	Size		itemsz = MAXALIGN(IndexTupleSize(itup));
+	Size		itemsz;
 	bool		result = false;		/* significant only for UNIQUE_CHECK_PARTIAL */
 
 	itup->t_tid = *ht_ctid;		/* SINGLE shape: locator in t_tid */
+
+	/*
+	 * `itup` is the full in-memory key tuple at any size; bark_compare_itups
+	 * compares it directly (index_getattr does not care about the 8191-byte
+	 * cap).  Only when the entry is actually placed on a page is an oversized
+	 * key written to an overflow chain and replaced by a small OVERSIZED entry
+	 * (done at the leaf-insert / coalesce / split sites below).  itemsz is the
+	 * page footprint: tiny for an oversized key, the tuple size otherwise.
+	 */
+	itemsz = oversized
+		? MAXALIGN(sizeof(IndexTupleData) + MAXALIGN(sizeof(BarkOverflowRef)))
+		: MAXALIGN(IndexTupleSize(itup));
 
 retry:
 	buf = bark_search(index, keyinfo, itup, true, true, &stack);
@@ -1029,7 +1134,10 @@ retry:
 	if (buf == InvalidBuffer)
 	{
 		/* Empty index: create the first leaf and point the meta page at it. */
-		bark_insert_first_leaf(index, itup);
+		IndexTuple	entry = bark_leaf_page_entry(index, itup, oversized, fulllen);
+
+		bark_insert_first_leaf(index, itup, entry);
+		pfree(entry);
 		pfree(itup);
 		pfree(keyinfo);
 		return true;			/* nothing to conflict with: unique */
@@ -1125,9 +1233,14 @@ retry:
 	 * Non-unique index: coalesce the new locator into an existing equal-key
 	 * entry, forming or extending a LIST instead of adding another SINGLE.
 	 * A unique index never does this -- it would mean two live tuples with the
-	 * same key, which the uniqueness check above already rejected.
+	 * same key, which the uniqueness check above already rejected.  An
+	 * oversized key never coalesces: a LIST/POSTING of oversized keys could not
+	 * fit the item ceiling, and each oversized row keeps its own OVERSIZED
+	 * entry + overflow chain (ponytail: duplicate oversized keys are not
+	 * deduplicated; a shared overflow chain for identical oversized values is a
+	 * later space optimization, not a correctness matter).
 	 */
-	if (!indexInfo->ii_Unique &&
+	if (!indexInfo->ii_Unique && !oversized &&
 		bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf, off))
 	{
 		UnlockReleaseBuffer(buf);
@@ -1138,20 +1251,26 @@ retry:
 		return result;
 	}
 
-	if (PageGetFreeSpace(page) >= itemsz)
 	{
-		GenericXLogState *gstate = GenericXLogStart(index);
-		Page		p = GenericXLogRegisterBuffer(gstate, buf, 0);
+		/* The entry actually placed on the page (OVERSIZED when oversized). */
+		IndexTuple	entry = bark_leaf_page_entry(index, itup, oversized, fulllen);
 
-		bark_page_insert_at(p, itup, off);
-		GenericXLogFinish(gstate);
-		UnlockReleaseBuffer(buf);
-	}
-	else
-	{
-		/* Leaf split: no child below, so no incomplete-split flag to clear. */
-		bark_split(index, keyinfo, stack, buf, off, itup, BARK_P_NONE);
-		buf = InvalidBuffer;	/* bark_split released it */
+		if (PageGetFreeSpace(page) >= itemsz)
+		{
+			GenericXLogState *gstate = GenericXLogStart(index);
+			Page		p = GenericXLogRegisterBuffer(gstate, buf, 0);
+
+			bark_page_insert_at(p, entry, off);
+			GenericXLogFinish(gstate);
+			UnlockReleaseBuffer(buf);
+		}
+		else
+		{
+			/* Leaf split: no child below, so no incomplete-split flag to clear. */
+			bark_split(index, keyinfo, stack, buf, off, entry, BARK_P_NONE);
+			buf = InvalidBuffer;	/* bark_split released it */
+		}
+		pfree(entry);
 	}
 
 	if (stack)

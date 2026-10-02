@@ -265,6 +265,7 @@ BarkKeyColumn
 BarkKeyInfo
 BarkLeader
 BarkMetaPageData
+BarkOverflowRef
 BarkPageState
 BarkParallelScanDesc
 BarkParallelScanDescData
