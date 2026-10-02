@@ -264,6 +264,8 @@ BarkKeyColumn
 BarkKeyInfo
 BarkMetaPageData
 BarkPageState
+BarkScanOpaque
+BarkScanOpaqueData
 BarkSortArg
 BarkStack
 BarkStackData
