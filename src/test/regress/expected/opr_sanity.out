@@ -1187,6 +1187,7 @@ ORDER BY 1, 2;
  <=   | >=
  <>   | <>
  <@   | @>
+ <~>  | <~>
  =    | =
  ?#   | ?#
  ?-   | ?-
@@ -1199,7 +1200,7 @@ ORDER BY 1, 2;
  ~<=~ | ~>=~
  ~<~  | ~>~
  ~=   | ~=
-(29 rows)
+(30 rows)
 
 -- Likewise for negator pairs.
 SELECT DISTINCT o1.oprname AS op1, o2.oprname AS op2
@@ -1979,9 +1980,15 @@ WHERE NOT ((a1.amoppurpose = 's' AND a1.amopsortfamily = 0) OR
 (0 rows)
 
 -- amopmethod must match owning opfamily's opfmethod
+-- amopmethod must match owning opfamily's opfmethod, except that a
+-- btree-compatible access method may add its own ORDER BY (KNN) operators to
+-- a btree operator family it shares (the ambtreeopfamilies capability): such
+-- amop rows name the compatible AM but live in btree's family, mirroring the
+-- opcmethod/opfmethod exemption above.
 SELECT a1.oid, f1.oid
 FROM pg_amop AS a1, pg_opfamily AS f1
-WHERE a1.amopfamily = f1.oid AND a1.amopmethod != f1.opfmethod;
+WHERE a1.amopfamily = f1.oid AND a1.amopmethod != f1.opfmethod
+  AND f1.opfmethod != (SELECT oid FROM pg_am WHERE amname = 'btree');
  oid | oid 
 -----+-----
 (0 rows)
@@ -2119,7 +2126,8 @@ ORDER BY 1, 2, 3;
        4000 |           28 | ^@
        4000 |           29 | <^
        4000 |           30 | >^
-(124 rows)
+       9460 |            6 | <~>
+(125 rows)
 
 -- Check that all opclass search operators have selectivity estimators.
 -- This is not absolutely required, but it seems a reasonable thing
