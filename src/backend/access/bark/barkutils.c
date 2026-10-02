@@ -24,6 +24,8 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/bark.h"
 #include "access/detoast.h"
 #include "access/generic_xlog.h"
@@ -843,4 +845,46 @@ bark_free_oversized(Relation index, IndexTuple entry)
 		UnlockReleaseBuffer(buf);
 		blkno = nextblk;
 	}
+}
+
+/* ----------------------------------------------------------------------------
+ * KNN (ordered-operator) distance functions
+ *
+ * These back the `<~>` ordering operators registered in btree's integer_ops
+ * family for BARK (see pg_amop.dat and BARK_KNN_STRATEGY).  The distance of a
+ * scalar key from the ORDER BY constant is simply |key - const|, returned as
+ * float8 so the executor can order and (if ever needed) recheck it with the
+ * btree float_ops family.  The subtraction is done in float8 to avoid signed
+ * overflow at the extremes of the integer range (e.g. INT64_MIN - INT64_MAX).
+ * ----------------------------------------------------------------------------
+ */
+PG_FUNCTION_INFO_V1(bark_int2_distance);
+PG_FUNCTION_INFO_V1(bark_int4_distance);
+PG_FUNCTION_INFO_V1(bark_int8_distance);
+
+Datum
+bark_int2_distance(PG_FUNCTION_ARGS)
+{
+	double		a = (double) PG_GETARG_INT16(0);
+	double		b = (double) PG_GETARG_INT16(1);
+
+	PG_RETURN_FLOAT8(fabs(a - b));
+}
+
+Datum
+bark_int4_distance(PG_FUNCTION_ARGS)
+{
+	double		a = (double) PG_GETARG_INT32(0);
+	double		b = (double) PG_GETARG_INT32(1);
+
+	PG_RETURN_FLOAT8(fabs(a - b));
+}
+
+Datum
+bark_int8_distance(PG_FUNCTION_ARGS)
+{
+	double		a = (double) PG_GETARG_INT64(0);
+	double		b = (double) PG_GETARG_INT64(1);
+
+	PG_RETURN_FLOAT8(fabs(a - b));
 }
