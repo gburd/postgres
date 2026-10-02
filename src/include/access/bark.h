@@ -142,6 +142,19 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
 #define BARK_NPROCS			6	/* btree's support-function range (BTNProcs) */
 #define BARK_ORDER_PROC		1	/* support function 1: 3-way comparator */
 
+/*
+ * Ordered-operator (KNN) scans.  Strategy 6 is BARK's distance ordering
+ * operator (`<->`): `ORDER BY col <-> const` returns the key values nearest
+ * to const, in increasing distance.  Unlike the search strategies 1..5 (which
+ * BARK shares with btree), this one is BARK-specific: it carries
+ * amoppurpose='o' and sorts by the btree float_ops family (distances are
+ * float8).  btree does not define it, so the amop rows that register it in
+ * btree's operator families name BARK as their access method -- the same
+ * "a btree-compatible AM may live in btree's families" rule F07 established
+ * for opclasses, extended here to the ordering amop rows.
+ */
+#define BARK_KNN_STRATEGY	6
+
 typedef struct BarkMetaPageData
 {
 	uint32		bark_magic;		/* should equal BARK_MAGIC */
@@ -737,6 +750,69 @@ extern bool bark_insert(Relation index, Datum *values, bool *isnull,
 						 bool indexUnchanged, IndexInfo *indexInfo);
 
 /*
+ * KNN (ordered-operator) scan state (barkknn.c).
+ *
+ * `ORDER BY col <-> const` over a scalar B-tree key is answered by descending
+ * to const and expanding OUTWARD in both directions: the nearest key values
+ * to const are the ones immediately at/after it (walking the leaf chain
+ * forward) merged with the ones immediately before it (walking backward).  At
+ * each step the side whose next candidate is closer to const wins; a tie is
+ * broken toward the forward (>= const) side.  This is a two-way merge of two
+ * monotonic distance streams, so it returns keys in exact increasing distance
+ * and stops as soon as the caller's LIMIT is satisfied -- it never scans the
+ * whole index.
+ *
+ * Each side is an independent position cursor over the leaf chain: a pinned
+ * leaf buffer and the offset of the entry it last produced.  The forward
+ * cursor starts at the first entry whose key is >= const on the center leaf
+ * and steps toward higher keys; the backward cursor starts just before it and
+ * steps toward lower keys.  A matched entry may be a LIST/POSTING holding
+ * several heap TIDs at one key (hence one distance): those are emitted one per
+ * gettuple call, all before the merge advances.
+ *
+ * ponytail: one ordering key only (the first ORDER BY <-> clause); multi-key
+ * KNN would need a priority queue like GiST's.  A scalar B-tree has a single
+ * distance axis, so one key is the whole useful case here.
+ */
+typedef struct BarkKnnCursor
+{
+	Buffer		buf;			/* pinned leaf, or InvalidBuffer when exhausted */
+	OffsetNumber off;			/* offset last examined on buf */
+	bool		backward;		/* true: this cursor walks toward lower keys */
+	bool		primed;			/* true once positioned on its first entry */
+	bool		centerleaf;		/* buf is still the shared center leaf (the one
+								 * step where backward must start one entry before
+								 * the forward cursor so the sides don't overlap) */
+	OffsetNumber splitoff;		/* on the center leaf, the first offset whose key
+								 * is >= center: forward starts here, backward one
+								 * entry earlier (meaningful only when centerleaf) */
+	bool		have;			/* a buffered candidate is ready in dist/key */
+	double		dist;			/* distance of the buffered candidate */
+	ItemPointer tids;			/* buffered candidate's heap locators */
+	int			ntids;			/* number of them */
+	int			ntidsAlloc;		/* capacity of tids */
+	char	   *keytup;			/* buffered candidate's key tuple (IOS), or NULL */
+} BarkKnnCursor;
+
+typedef struct BarkKnnScanState
+{
+	FmgrInfo	distfn;			/* the ordering operator's distance function */
+	Oid			distcollation;	/* its input collation */
+	Datum		center;			/* the ORDER BY constant (sk_argument) */
+	bool		centernull;		/* the constant is NULL (no rows ordered) */
+	AttrNumber	attno;			/* index column being ordered (1-based) */
+	BarkKnnCursor fwd;			/* forward (>= center) cursor */
+	BarkKnnCursor bwd;			/* backward (< center) cursor */
+
+	/* Members of the entry currently being emitted (one TID per gettuple). */
+	ItemPointer emitTids;		/* locators of the entry being emitted */
+	int			nEmit;			/* number of them */
+	int			emitIdx;		/* next one to return */
+	double		emitDist;		/* their shared distance */
+	char	   *emitKey;			/* their shared key tuple (IOS), or NULL */
+} BarkKnnScanState;
+
+/*
  * Scan state (scan->opaque).  A BARK scan positions on a leaf and walks the
  * right-link chain, returning the heap TID of each entry that satisfies the
  * scan keys.  currentBuffer is the pinned (and, while reading, share-locked)
@@ -769,6 +845,13 @@ typedef struct BarkScanOpaqueData
 	int			nMembersAlloc;	/* capacity of memberTids */
 	int			nMembers;		/* locators in the current entry */
 	int			memberIdx;		/* next locator to return */
+
+	/*
+	 * KNN (ordered-operator) scan state, allocated lazily on the first
+	 * ordered gettuple when the scan has ORDER BY <-> keys; NULL for a plain
+	 * scan, which takes exactly the same path as before.
+	 */
+	BarkKnnScanState *knn;
 } BarkScanOpaqueData;
 
 typedef BarkScanOpaqueData *BarkScanOpaque;
@@ -808,6 +891,11 @@ extern bool bark_gettuple(IndexScanDesc scan, ScanDirection dir);
 extern bool bark_canreturn(Relation index, int attno);
 extern int64 bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm);
 extern void bark_endscan(IndexScanDesc scan);
+
+/* KNN (ordered-operator) scan (barkknn.c). */
+extern void bark_knn_rescan(IndexScanDesc scan, ScanKey orderbys, int norderbys);
+extern bool bark_knn_gettuple(IndexScanDesc scan);
+extern void bark_knn_endscan(IndexScanDesc scan);
 
 /* Parallel scan (barkscan.c). */
 extern Size bark_estimateparallelscan(Relation index, int nkeys, int norderbys);

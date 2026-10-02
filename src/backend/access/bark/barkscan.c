@@ -184,6 +184,7 @@ bark_beginscan(Relation index, int nkeys, int norderbys)
 	so->nMembersAlloc = 0;
 	so->nMembers = 0;
 	so->memberIdx = 0;
+	so->knn = NULL;
 
 	/*
 	 * Set up the index tuple descriptor for index-only scans.  The scratch
@@ -191,6 +192,20 @@ bark_beginscan(Relation index, int nkeys, int norderbys)
 	 * (bark_position), because xs_want_itup is set after beginscan returns.
 	 */
 	scan->xs_itupdesc = RelationGetDescr(index);
+
+	/*
+	 * An ordered-operator (KNN) scan reports a per-tuple distance in
+	 * xs_orderbyvals/xs_orderbynulls; RelationGetIndexScan only allocates
+	 * orderByData, so allocate these here (as GiST does) when the scan has
+	 * ORDER BY keys.
+	 */
+	if (norderbys > 0)
+	{
+		scan->xs_orderbyvals = palloc0_array(Datum, norderbys);
+		scan->xs_orderbynulls = palloc_array(bool, norderbys);
+		memset(scan->xs_orderbynulls, true, sizeof(bool) * norderbys);
+	}
+
 	scan->opaque = so;
 	return scan;
 }
@@ -213,6 +228,18 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 
 	if (scankey && nscankeys > 0)
 		memcpy(scan->keyData, scankey, nscankeys * sizeof(ScanKeyData));
+
+	/*
+	 * An ordered-operator (KNN) scan carries ORDER BY <~> keys; copy them in
+	 * and hand them to the KNN machinery, which runs the outward two-sided
+	 * merge in bark_gettuple.  A plain scan (norderbys == 0) is untouched and
+	 * takes exactly the same path as before.
+	 */
+	if (scan->numberOfOrderBys > 0 && orderbys && norderbys > 0)
+	{
+		memcpy(scan->orderByData, orderbys, norderbys * sizeof(ScanKeyData));
+		bark_knn_rescan(scan, scan->orderByData, norderbys);
+	}
 }
 
 /*
@@ -567,6 +594,14 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 	Relation	index = scan->indexRelation;
 	bool		backward = ScanDirectionIsBackward(dir);
 
+	/*
+	 * Ordered-operator (KNN) scan: distances dictate the order, not the key
+	 * order, so hand off to the two-sided outward merge.  The executor only
+	 * ever drives a KNN scan forward.
+	 */
+	if (scan->numberOfOrderBys > 0)
+		return bark_knn_gettuple(scan);
+
 	if (so->firstCall)
 		bark_position(scan, dir);
 
@@ -786,6 +821,7 @@ bark_endscan(IndexScanDesc scan)
 
 	if (so == NULL)
 		return;
+	bark_knn_endscan(scan);
 	if (BufferIsValid(so->currentBuffer))
 		ReleaseBuffer(so->currentBuffer);
 	if (so->currTuple)

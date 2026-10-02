@@ -263,6 +263,8 @@ Barrier
 BarkEntryShape
 BarkKeyColumn
 BarkKeyInfo
+BarkKnnCursor
+BarkKnnScanState
 BarkLeader
 BarkMetaPageData
 BarkOverflowRef
