@@ -86,6 +86,26 @@ SELECT bark_index_check('bark_check_big_idx');
 DROP TABLE bark_check_big;
 DROP FUNCTION bark_chk_bigstr(int, int);
 
+-- Oversized INCLUDE payload (P05): a small key with a non-key INCLUDE column
+-- too large for the leaf is stored on the overflow chain with the key.  The
+-- verifier validates the chain the same way as for an oversized key; pivots are
+-- truncated to the key, so the INCLUDE column never reaches an internal page.
+CREATE FUNCTION bark_chk_bigstr(s int, n int) RETURNS text
+  LANGUAGE sql IMMUTABLE AS
+$$ SELECT substr(string_agg(md5(s::text || g::text), ''), 1, n)
+   FROM generate_series(1, (n + 31) / 32) g $$;
+CREATE TABLE bark_check_inc (k int, payload text);
+INSERT INTO bark_check_inc SELECT g, bark_chk_bigstr(g, 32000)
+  FROM generate_series(1, 20) g;
+CREATE INDEX bark_check_inc_idx
+  ON bark_check_inc USING bark (k) INCLUDE (payload);
+SELECT bark_index_check('bark_check_inc_idx');
+DELETE FROM bark_check_inc WHERE k <= 10;
+VACUUM bark_check_inc;
+SELECT bark_index_check('bark_check_inc_idx');
+DROP TABLE bark_check_inc;
+DROP FUNCTION bark_chk_bigstr(int, int);
+
 -- A parallel build produces a structurally valid index that is identical in
 -- content to a serially built one.  Force parallel workers on for the first
 -- build, off for the second, over the same 200k-row table.
