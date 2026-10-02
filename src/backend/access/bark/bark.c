@@ -25,6 +25,7 @@
 #include "access/amlocator.h"
 #include "access/bark.h"
 #include "commands/vacuum.h"
+#include "storage/bufmgr.h"
 #include "utils/fmgrprotos.h"
 #include "utils/selfuncs.h"
 
@@ -70,8 +71,32 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 static IndexBulkDeleteResult *
 barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 {
-	BARK_NOT_IMPLEMENTED();
-	return NULL;
+	Relation	index = info->index;
+
+	/* ANALYZE has nothing to clean up. */
+	if (info->analyze_only)
+		return stats;
+
+	/*
+	 * BARK does not reclaim space or delete pages yet (that arrives with
+	 * bulk deletion in a later commit), so cleanup only reports index-wide
+	 * statistics.  Returning valid stats lets VACUUM finish and set the heap
+	 * visibility map, which is what makes index-only scans worthwhile.
+	 *
+	 * This is reached only when there were no dead tuples to remove (VACUUM
+	 * calls ambulkdelete first otherwise); barkbulkdelete still errors until
+	 * deletion is implemented, so a cleanup here never has to account for
+	 * tuples a bulk delete claimed to have removed.
+	 *
+	 * ponytail: stats-only cleanup, no page/FSM reclamation; real reclamation
+	 * lands with VACUUM support (A13).
+	 */
+	if (stats == NULL)
+		stats = palloc0_object(IndexBulkDeleteResult);
+
+	stats->num_pages = RelationGetNumberOfBlocks(index);
+
+	return stats;
 }
 
 /*
@@ -187,7 +212,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		.aminsertcleanup = NULL,
 		.ambulkdelete = barkbulkdelete,
 		.amvacuumcleanup = barkvacuumcleanup,
-		.amcanreturn = NULL,
+		.amcanreturn = bark_canreturn,
 		.amcostestimate = barkcostestimate,
 		.amgettreeheight = NULL,
 		.amoptions = barkoptions,

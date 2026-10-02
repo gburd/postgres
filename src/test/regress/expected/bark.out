@@ -93,9 +93,9 @@ SET enable_seqscan = off;
 SET enable_bitmapscan = off;
 -- A point lookup uses the BARK index.
 EXPLAIN (COSTS OFF) SELECT a FROM bark_scan WHERE a = 7919;
-                 QUERY PLAN                  
----------------------------------------------
- Index Scan using bark_scan_idx on bark_scan
+                    QUERY PLAN                    
+--------------------------------------------------
+ Index Only Scan using bark_scan_idx on bark_scan
    Index Cond: (a = 7919)
 (2 rows)
 
@@ -135,7 +135,42 @@ SELECT c AS range_seq FROM seq;
        198
 (1 row)
 
+-- Index-only scans: BARK can return indexed columns without a heap fetch.
+SET enable_seqscan = off;
+SET enable_indexscan = on;
+VACUUM (ANALYZE) bark_scan;					-- succeeds; sets the visibility map
+EXPLAIN (COSTS OFF)
+  SELECT a FROM bark_scan WHERE a BETWEEN 1000 AND 1010;
+                    QUERY PLAN                    
+--------------------------------------------------
+ Index Only Scan using bark_scan_idx on bark_scan
+   Index Cond: ((a >= 1000) AND (a <= 1010))
+(2 rows)
+
+SELECT a FROM bark_scan WHERE a BETWEEN 1000 AND 1010 ORDER BY a;
+  a   
+------
+ 1002
+ 1007
+(2 rows)
+
+SELECT count(a) AS ios_count FROM bark_scan WHERE a < 5000;
+ ios_count 
+-----------
+      1000
+(1 row)
+
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SELECT count(a) AS seq_count FROM bark_scan WHERE a < 5000;
+ seq_count 
+-----------
+      1000
+(1 row)
+
 RESET enable_seqscan;
 RESET enable_indexscan;
 RESET enable_bitmapscan;
+RESET enable_indexonlyscan;
 DROP TABLE bark_tab, bark_small, bark_empty, bark_ins, bark_scan;
