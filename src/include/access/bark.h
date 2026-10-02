@@ -327,9 +327,16 @@ typedef BarkStackData *BarkStack;
  * Descend to the leaf that should contain `key`, returning that leaf's buffer
  * (write-locked when forwrite) and, when stack is non-NULL, the parent path.
  * key is an index tuple whose key columns are compared with bark_compare_itups.
+ *
+ * nextkey chooses which leaf a run of equal keys lands on: true (insert / true
+ * key) descends to the rightmost leaf that can hold the key; false (lower-bound
+ * scan) descends to the leftmost such leaf, so a forward equality or
+ * lower-bound scan does not skip earlier duplicates when a run of equal keys
+ * spans several leaves.
  */
 extern Buffer bark_search(Relation index, BarkKeyInfo *keyinfo,
-						  IndexTuple key, bool forwrite, BarkStack *stack);
+						  IndexTuple key, bool forwrite, bool nextkey,
+						  BarkStack *stack);
 extern void bark_freestack(BarkStack stack);
 
 extern bool bark_insert(Relation index, Datum *values, bool *isnull,

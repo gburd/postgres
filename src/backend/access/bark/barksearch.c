@@ -59,14 +59,25 @@ bark_should_move_right(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 }
 
 /*
- * On an internal page, find the offset of the downlink to follow for `key`:
- * the last data entry whose key is <= the search key (binary search).  On a
- * leaf page, find the offset at which `key` should be inserted (the first
- * entry whose key is > the search key, i.e. one past the last key <= key).
+ * On an internal page, find the offset of the downlink to follow for `key`.
+ * On a leaf page, find the offset at which `key` should be inserted (the first
+ * entry whose key is > the search key).
+ *
+ * `nextkey` selects which child a run of equal keys routes to on an internal
+ * page.  With nextkey=true (the insert / true-key descent) we follow the last
+ * downlink whose key is <= the search key -- the rightmost child that can hold
+ * the key.  With nextkey=false (a lower-bound scan descent) we follow the last
+ * downlink whose key is strictly < the search key -- the leftmost child that
+ * can hold the key.  The distinction matters only when equal downlink keys
+ * exist, which happens when a leaf splits in the middle of a run of equal
+ * keys: a forward equality or lower-bound scan must then start at the FIRST
+ * such leaf, or it silently skips the earlier duplicates.  (Each leaf's high
+ * key equals the next leaf's first key, so an earlier leaf of the run still
+ * holds matching keys; landing on the last leaf of the run loses them.)
  */
 static OffsetNumber
 bark_binsrch(Relation index, BarkKeyInfo *keyinfo, IndexTuple key, Page page,
-			 bool *leaf_out)
+			 bool nextkey, bool *leaf_out)
 {
 	BarkPageOpaque opaque = BarkPageGetOpaque(page);
 	OffsetNumber low = BarkPageFirstDataKey(opaque);
@@ -80,8 +91,9 @@ bark_binsrch(Relation index, BarkKeyInfo *keyinfo, IndexTuple key, Page page,
 		return low;				/* empty page */
 
 	/*
-	 * Binary search for the first offset whose key is strictly greater than
-	 * the search key.  Invariant: everything below `low` is <= key.
+	 * Binary search for the first offset whose key is > the search key
+	 * (nextkey=true) or >= the search key (nextkey=false).  Invariant:
+	 * everything below `low` is on the near side of that boundary.
 	 */
 	high = OffsetNumberNext(high);	/* high is now one past the last item */
 	while (low < high)
@@ -89,17 +101,16 @@ bark_binsrch(Relation index, BarkKeyInfo *keyinfo, IndexTuple key, Page page,
 		OffsetNumber mid = low + ((high - low) / 2);
 		int			cmp = bark_compare_off(index, keyinfo, key, page, mid);
 
-		if (cmp >= 0)
-			low = OffsetNumberNext(mid);	/* key >= mid: search right */
+		if (nextkey ? (cmp >= 0) : (cmp > 0))
+			low = OffsetNumberNext(mid);	/* mid is before the boundary */
 		else
-			high = mid;			/* key < mid: search left */
+			high = mid;			/* mid is at or past the boundary */
 	}
 
 	/*
-	 * `low` is the first offset whose key is > the search key.  For a leaf
-	 * that is the insert position.  For an internal page the downlink to
-	 * descend is the one just before it (the last key <= search key); clamp
-	 * to the first data key when the search key precedes every entry.
+	 * `low` is the boundary offset.  For a leaf that is the insert position.
+	 * For an internal page the downlink to descend is the one just before it;
+	 * clamp to the first data key when the search key precedes every entry.
 	 */
 	if (isleaf)
 		return low;
@@ -141,7 +152,7 @@ bark_get_root(Relation index, uint32 *level_out)
  */
 Buffer
 bark_search(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
-			bool forwrite, BarkStack *stack)
+			bool forwrite, bool nextkey, BarkStack *stack)
 {
 	BlockNumber blkno;
 	Buffer		buf;
@@ -207,7 +218,7 @@ bark_search(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		}
 
 		/* Internal page: find the downlink to follow and push the stack. */
-		off = bark_binsrch(index, keyinfo, key, page, &isleaf);
+		off = bark_binsrch(index, keyinfo, key, page, nextkey, &isleaf);
 		{
 			ItemId		iid = PageGetItemId(page, off);
 			IndexTuple	itup = (IndexTuple) PageGetItem(page, iid);

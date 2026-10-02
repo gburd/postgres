@@ -187,4 +187,37 @@ RESET enable_indexscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_vac;
 
+-- Equal keys spanning multiple leaves: when one key value has enough rows that
+-- its entries fill more than one leaf page, a leaf split lands two leaves whose
+-- downlinks carry the same (equal) key.  A forward equality or lower-bound
+-- scan must descend to the FIRST such leaf, not the last, or it silently skips
+-- the earlier duplicates.  Build the index over scattered duplicates (so the
+-- bulk loader stores many single-locator entries per key, not one coalesced
+-- entry) and check every per-key index count matches a sequential scan.
+CREATE TABLE bark_dup (a int, b int);
+INSERT INTO bark_dup SELECT g % 100, g FROM generate_series(1, 20000) g;
+CREATE INDEX bark_dup_idx ON bark_dup USING bark (a);
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexscan = on;
+-- A deep key (its run starts partway through the tree) is the regression case.
+SELECT count(*) AS eq42_idx FROM bark_dup WHERE a = 42;
+SELECT count(*) AS eq99_idx FROM bark_dup WHERE a = 99;
+-- Capture every key's index-scan count (one equality scan per key).
+CREATE TEMP TABLE bark_dup_idx_counts AS
+  SELECT k, (SELECT count(*) FROM bark_dup WHERE a = k) AS c
+  FROM generate_series(0, 99) k;
+-- Compare against the sequential-scan counts: no key may differ.
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SELECT count(*) AS key_count_mismatches
+FROM bark_dup_idx_counts ic
+  JOIN (SELECT a AS k, count(*) AS c FROM bark_dup GROUP BY a) sc
+    ON ic.k = sc.k
+WHERE ic.c <> sc.c;
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_dup;
+
 DROP TABLE bark_tab, bark_small, bark_empty, bark_ins, bark_scan;
