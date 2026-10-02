@@ -383,7 +383,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amclusterable = true,
 		.ampredlocks = true,
 		.amcanparallel = false,
-		.amcanbuildparallel = false,
+		.amcanbuildparallel = true,
 		.amcaninclude = true,
 		.amusemaintenanceworkmem = false,
 		.amsummarizing = false,
