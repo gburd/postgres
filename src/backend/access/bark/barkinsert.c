@@ -210,7 +210,7 @@ bark_insert_first_leaf(Relation index, IndexTuple itup)
 			Page		page;
 			OffsetNumber off;
 
-			buf = bark_search(index, keyinfo, itup, true, &stack);
+			buf = bark_search(index, keyinfo, itup, true, true, &stack);
 			page = BufferGetPage(buf);
 			off = bark_leaf_insert_off(index, keyinfo, itup, page);
 			{
@@ -825,7 +825,7 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 	itup->t_tid = *ht_ctid;		/* SINGLE shape: locator in t_tid */
 
 retry:
-	buf = bark_search(index, keyinfo, itup, true, &stack);
+	buf = bark_search(index, keyinfo, itup, true, true, &stack);
 
 	if (buf == InvalidBuffer)
 	{
