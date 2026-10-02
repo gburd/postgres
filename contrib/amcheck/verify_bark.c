@@ -46,6 +46,8 @@ static void bark_check_list(Relation rel, BlockNumber blkno, OffsetNumber off,
 							IndexTuple itup);
 static void bark_check_posting(Relation rel, BlockNumber blkno, OffsetNumber off,
 							   IndexTuple itup);
+static void bark_check_oversized(Relation rel, BlockNumber blkno, OffsetNumber off,
+								 IndexTuple itup, BarkKeyInfo *keyinfo);
 
 /*
  * bark_index_check(index regclass)
@@ -112,6 +114,13 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 
 	opaque = BarkPageGetOpaque(page);
 
+	/* Overflow pages hold raw out-of-line bytes, not tree items; skip them. */
+	if (BarkPageIsOverflow(opaque))
+	{
+		UnlockReleaseBuffer(buf);
+		return;
+	}
+
 	/* A clean index never leaves an unfinished split behind. */
 	if ((opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0)
 		ereport(ERROR,
@@ -159,6 +168,13 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 				bark_check_list(rel, blkno, off, itup);
 			else if (BarkEntryGetShape(itup) == BARK_SHAPE_POSTING)
 				bark_check_posting(rel, blkno, off, itup);
+			else if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+				bark_check_oversized(rel, blkno, off, itup, keyinfo);
+		}
+		else if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+		{
+			/* An oversized downlink / high key also has a chain to validate. */
+			bark_check_oversized(rel, blkno, off, itup, keyinfo);
 		}
 
 		prev = itup;
@@ -254,4 +270,66 @@ bark_check_posting(Relation rel, BlockNumber blkno, OffsetNumber off,
 						RelationGetRelationName(rel), card, blkno, off)));
 	}
 	sbm_free(map);
+}
+
+/*
+ * Validate an OVERSIZED entry: its overflow chain must be reachable and yield
+ * exactly the recorded number of bytes (so the full tuple can be reconstructed
+ * and compared), and the reconstructed tuple's leading key must agree with the
+ * entry's position in key order (checked implicitly by the per-page order and
+ * high-key checks, which fetch the chain through bark_compare_itups).  Here we
+ * verify the chain structure directly: every page a BARK_OVERFLOW page, linked
+ * through to the recorded length, with no premature terminus.
+ */
+static void
+bark_check_oversized(Relation rel, BlockNumber blkno, OffsetNumber off,
+					 IndexTuple itup, BarkKeyInfo *keyinfo)
+{
+	BarkOverflowRef *ref = BarkOverflowGetRef(itup);
+	uint32		fulllen = ref->fulllen;
+	BlockNumber chainblk = BarkOverflowGetFirstBlock(itup);
+	BlockNumber npages = RelationGetNumberOfBlocks(rel);
+	uint32		got = 0;
+	IndexTuple	full;
+
+	while (chainblk != BARK_P_NONE && got < fulllen)
+	{
+		Buffer		cbuf;
+		Page		cpage;
+		BarkPageOpaque copaque;
+
+		if (chainblk >= npages)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" oversized entry on page %u at offset %u points at out-of-range overflow block %u",
+							RelationGetRelationName(rel), blkno, off, chainblk)));
+
+		cbuf = ReadBuffer(rel, chainblk);
+		LockBuffer(cbuf, BUFFER_LOCK_SHARE);
+		cpage = BufferGetPage(cbuf);
+		copaque = BarkPageGetOpaque(cpage);
+
+		if (PageIsNew(cpage) || !BarkPageIsOverflow(copaque))
+		{
+			UnlockReleaseBuffer(cbuf);
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" oversized entry on page %u at offset %u references non-overflow block %u",
+							RelationGetRelationName(rel), blkno, off, chainblk)));
+		}
+
+		got += Min((uint32) BarkOverflowChunkSize, fulllen - got);
+		chainblk = copaque->bark_next;
+		UnlockReleaseBuffer(cbuf);
+	}
+
+	if (got != fulllen)
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("BARK index \"%s\" oversized entry on page %u at offset %u has a truncated overflow chain (%u of %u bytes)",
+						RelationGetRelationName(rel), blkno, off, got, fulllen)));
+
+	/* The reconstructed tuple must deform without error. */
+	full = bark_fetch_oversized(rel, itup);
+	pfree(full);
 }

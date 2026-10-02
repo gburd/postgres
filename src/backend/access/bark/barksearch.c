@@ -222,7 +222,7 @@ bark_search(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		{
 			ItemId		iid = PageGetItemId(page, off);
 			IndexTuple	itup = (IndexTuple) PageGetItem(page, iid);
-			BlockNumber child = BarkPivotGetDownLink(itup);
+			BlockNumber child = BarkEntryGetDownLink(itup);
 			BarkStack	item = palloc(sizeof(BarkStackData));
 
 			item->bark_blkno = blkno;

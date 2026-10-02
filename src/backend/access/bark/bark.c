@@ -93,6 +93,8 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		OffsetNumber todelete[MaxOffsetNumber];
 		int			ndelete = 0;
 		int			ndelete_single = 0;
+		BlockNumber oversized_free[MaxOffsetNumber];
+		int			noversized_free = 0;
 		GenericXLogState *gstate = NULL;
 		Page		p = NULL;
 
@@ -132,6 +134,25 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 			{
 				if (callback(&itup->t_tid, callback_state))
 				{
+					todelete[ndelete++] = off;
+					ndelete_single++;
+				}
+			}
+			else if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+			{
+				/*
+				 * An OVERSIZED entry holds exactly one heap locator (inline in
+				 * its ref).  If it is dead, delete the leaf entry and remember
+				 * its overflow chain to free after the leaf WAL record finishes
+				 * (freeing the chain starts its own WAL records, which cannot
+				 * nest inside the leaf's generic-WAL state).
+				 */
+				ItemPointerData loc = BarkOverflowGetRef(itup)->locator;
+
+				if (callback(&loc, callback_state))
+				{
+					oversized_free[noversized_free++] =
+						BarkOverflowGetFirstBlock(itup);
 					todelete[ndelete++] = off;
 					ndelete_single++;
 				}
@@ -226,6 +247,29 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 			GenericXLogFinish(gstate);
 
 		UnlockReleaseBuffer(buf);
+
+		/*
+		 * Reclaim the overflow chains of the OVERSIZED entries just deleted,
+		 * now that the leaf no longer references them and its WAL record is
+		 * durable.  Each chain is freed under its own generic-WAL records.
+		 */
+		for (int i = 0; i < noversized_free; i++)
+		{
+			ItemPointerData dummy;
+			IndexTuple	stub;
+
+			/*
+			 * bark_free_oversized reads only the first-block field of the
+			 * entry's t_tid, so a tiny stub carrying that block is enough.
+			 */
+			ItemPointerSetBlockNumber(&dummy, oversized_free[i]);
+			ItemPointerSetOffsetNumber(&dummy, (OffsetNumber) BARK_IS_OVERFLOW);
+			stub = (IndexTuple) palloc0(sizeof(IndexTupleData));
+			stub->t_info = INDEX_AM_RESERVED_BIT | sizeof(IndexTupleData);
+			stub->t_tid = dummy;
+			bark_free_oversized(index, stub);
+			pfree(stub);
+		}
 	}
 
 	return stats;
