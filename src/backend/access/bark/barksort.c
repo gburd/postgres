@@ -97,6 +97,8 @@ typedef struct BarkBuildState
 	BlockNumber nblocks;		/* next block number to assign (after meta) */
 	int			nkeyatts;		/* number of key attributes */
 	bool		isunique;		/* enforce uniqueness during load */
+	bool		has_oversized;	/* saw a key too large to sort/load inline */
+	IndexInfo  *indexInfo;		/* for the oversized second-pass insert */
 
 	/* the sort this build feeds; set up by the caller */
 	Tuplesortstate *sortstate;
@@ -136,6 +138,7 @@ typedef struct BarkShared
 	double		reltuples;
 	double		indtuples;
 	bool		brokenhotchain;
+	bool		has_oversized;	/* any worker saw an oversized key */
 
 	/*
 	 * A ParallelTableScanDescData follows, past the alignment padding; it
@@ -183,9 +186,33 @@ bark_build_callback(Relation index, ItemPointer tid, Datum *values,
 					bool *isnull, bool tupleIsAlive, void *state)
 {
 	BarkBuildState *bs = (BarkBuildState *) state;
+	IndexTuple	full;
+	Size		fulllen;
 
 	if (!tupleIsAlive)
 		return;
+
+	/*
+	 * Classify the row by its formed size.  An oversized key cannot go through
+	 * the sort (tuplesort re-forms via index_form_tuple, which caps a tuple at
+	 * 8191 bytes), nor can the bottom-up loader place it inline; such rows are
+	 * recorded and inserted after the tree is loaded, via the normal
+	 * overflow-aware insert path (bark_build_oversized_pass).
+	 *
+	 * ponytail: this forms every row once here to measure, then tuplesort forms
+	 * the non-oversized ones again -- a size-only estimator that mirrors
+	 * bark_form_full_tuple's TOAST decisions would avoid the second form.
+	 */
+	full = bark_form_full_tuple(RelationGetDescr(index), values, isnull,
+							   &fulllen);
+	if (bark_len_is_oversized(fulllen))
+	{
+		bs->has_oversized = true;
+		bs->indtuples += 1;
+		pfree(full);
+		return;
+	}
+	pfree(full);
 
 	/*
 	 * Spool a SINGLE-shape entry: the formed index tuple with the heap TID in
@@ -542,6 +569,63 @@ bark_load(BarkBuildState *bs, Tuplesortstate *sortstate)
 	smgr_bulk_finish(bulk);
 }
 
+/*
+ * Second-pass callback: insert one oversized row into the just-loaded tree via
+ * the normal overflow-aware insert path.  Non-oversized rows are already in the
+ * tree from bark_load, so they are skipped here.
+ */
+static void
+bark_oversized_pass_callback(Relation index, ItemPointer tid, Datum *values,
+							 bool *isnull, bool tupleIsAlive, void *state)
+{
+	BarkBuildState *bs = (BarkBuildState *) state;
+	IndexTuple	full;
+	Size		fulllen;
+	IndexUniqueCheck checkUnique;
+
+	if (!tupleIsAlive)
+		return;
+
+	full = bark_form_full_tuple(RelationGetDescr(index), values, isnull,
+							   &fulllen);
+	if (!bark_len_is_oversized(fulllen))
+	{
+		pfree(full);
+		return;				/* already loaded inline */
+	}
+	pfree(full);
+
+	/*
+	 * Insert via the normal path, which writes the overflow chain and places
+	 * an OVERSIZED entry.  A unique index checks uniqueness here (the heap
+	 * tuples are visible during build), matching how bark_load would have
+	 * rejected an inline duplicate.
+	 */
+	checkUnique = bs->isunique ? UNIQUE_CHECK_YES : UNIQUE_CHECK_NO;
+	bark_insert(index, values, isnull, tid, bs->heap, checkUnique, false,
+				bs->indexInfo);
+}
+
+/*
+ * Insert the oversized rows the first scan deferred (bs->has_oversized) into
+ * the loaded tree.  A full second heap scan identifies them again.
+ *
+ * ponytail: a second heap scan to find the oversized rows, rather than
+ * remembering their TIDs from the first scan -- simplest for both serial and
+ * parallel builds (parallel workers cannot share a palloc'd TID list), and
+ * oversized-key builds are rare.  Fold the oversized rows into the first scan
+ * if such builds become common.
+ */
+static void
+bark_build_oversized_pass(BarkBuildState *bs)
+{
+	if (!bs->has_oversized)
+		return;
+
+	(void) table_index_build_scan(bs->heap, bs->index, bs->indexInfo, true,
+								  true, bark_oversized_pass_callback, bs, NULL);
+}
+
 /* ---------------------------------------------------------------------------
  * Parallel build (modeled on nbtsort.c: _bt_begin_parallel et al.)
  *
@@ -612,6 +696,8 @@ bark_parallel_scan_and_sort(Relation heap, Relation index,
 	barkshared->indtuples += bs.indtuples;
 	if (indexInfo->ii_BrokenHotChain)
 		barkshared->brokenhotchain = true;
+	if (bs.has_oversized)
+		barkshared->has_oversized = true;
 	SpinLockRelease(&barkshared->mutex);
 
 	ConditionVariableSignal(&barkshared->workersdonecv);
@@ -780,6 +866,7 @@ bark_begin_parallel(BarkBuildState *bs, bool isconcurrent, int request)
 	barkshared->reltuples = 0.0;
 	barkshared->indtuples = 0.0;
 	barkshared->brokenhotchain = false;
+	barkshared->has_oversized = false;
 	table_parallelscan_initialize(bs->heap,
 								  ParallelTableScanFromBarkShared(barkshared),
 								  snapshot);
@@ -869,6 +956,7 @@ bark_parallel_heapscan(BarkBuildState *bs)
 		if (barkshared->nparticipantsdone == nparticipanttuplesorts)
 		{
 			bs->indtuples = barkshared->indtuples;
+			bs->has_oversized = barkshared->has_oversized;
 			reltuples = barkshared->reltuples;
 			SpinLockRelease(&barkshared->mutex);
 			break;
@@ -912,6 +1000,7 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	bs.nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	bs.nblocks = 1;				/* block 0 is reserved for the meta page */
 	bs.isunique = indexInfo->ii_Unique;
+	bs.indexInfo = indexInfo;	/* for the oversized second-pass insert */
 
 	/* Launch parallel workers when the planner asked for them. */
 	if (indexInfo->ii_ParallelWorkers > 0)
@@ -953,6 +1042,14 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 
 	if (bs.barkleader)
 		bark_end_parallel(bs.barkleader);
+
+	/*
+	 * Insert any oversized keys the sort/load path could not place inline, now
+	 * that the tree exists.  Done after end_parallel so only the leader (which
+	 * has the full IndexInfo and the heap open) performs it, via the normal
+	 * overflow-aware insert path.
+	 */
+	bark_build_oversized_pass(&bs);
 
 	result = palloc_object(IndexBuildResult);
 	result->heap_tuples = reltuples;

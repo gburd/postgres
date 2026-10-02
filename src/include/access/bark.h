@@ -80,11 +80,13 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
 #define BARK_HALF_DEAD		(1 << 4)	/* empty but still linked in the tree */
 #define BARK_INCOMPLETE_SPLIT (1 << 5)	/* right sibling's downlink is missing */
 #define BARK_HAS_GARBAGE	(1 << 6)	/* page has known-dead entries */
+#define BARK_OVERFLOW		(1 << 7)	/* holds a chunk of an oversized value */
 
 #define BarkPageIsLeaf(opaque)		(((opaque)->bark_flags & BARK_LEAF) != 0)
 #define BarkPageIsRoot(opaque)		(((opaque)->bark_flags & BARK_ROOT) != 0)
 #define BarkPageIsDeleted(opaque)	(((opaque)->bark_flags & BARK_DELETED) != 0)
 #define BarkPageIsMeta(opaque)		(((opaque)->bark_flags & BARK_META) != 0)
+#define BarkPageIsOverflow(opaque)	(((opaque)->bark_flags & BARK_OVERFLOW) != 0)
 
 /*
  * A page is leftmost / rightmost at its level when it has no left / right
@@ -219,6 +221,18 @@ typedef struct BarkMetaPageData
 #define BARK_IS_DELETE_MARKED		0x4000	/* leaf entry is delete-marked */
 #define BARK_IS_LIST				0x8000	/* leaf entry is a sorted list */
 
+/*
+ * An oversized entry (a key, or key + INCLUDE payload, too large to fit on a
+ * page under the BarkMaxItemSize ceiling) is marked with BARK_IS_LIST and
+ * BARK_IS_POSTING set together -- a combination no SINGLE/LIST/POSTING/PIVOT
+ * entry ever uses, so it is a free sixteenth code point in the status nibble.
+ * Its full index tuple lives on a BARK_OVERFLOW page chain; the leaf (or pivot)
+ * entry keeps only a fixed-size reference (BarkOverflowRef) and the heap
+ * locator, so the entry is tiny regardless of the value's size.  See the
+ * OVERSIZED accessor section below.
+ */
+#define BARK_IS_OVERFLOW			(BARK_IS_LIST | BARK_IS_POSTING)
+
 StaticAssertDecl(BARK_OFFSET_MASK >= INDEX_MAX_KEYS,
 				 "BARK_OFFSET_MASK can't fit INDEX_MAX_KEYS");
 
@@ -231,6 +245,7 @@ typedef enum BarkEntryShape
 	BARK_SHAPE_SINGLE = 0,		/* one heap locator in t_tid (no alt-TID) */
 	BARK_SHAPE_LIST,			/* sorted list of locators in the body */
 	BARK_SHAPE_POSTING,			/* sbm-serialized locator set in the body */
+	BARK_SHAPE_OVERSIZED,		/* full tuple stored on an overflow chain */
 	BARK_SHAPE_PIVOT,			/* internal downlink / high key */
 } BarkEntryShape;
 
@@ -254,6 +269,9 @@ BarkEntryGetShape(const IndexTupleData *itup)
 		return BARK_SHAPE_SINGLE;
 	status = ItemPointerGetOffsetNumberNoCheck(&itup->t_tid) &
 		BARK_STATUS_OFFSET_MASK;
+	/* OVERFLOW first: it sets LIST and POSTING together, so test it before them. */
+	if ((status & BARK_IS_OVERFLOW) == BARK_IS_OVERFLOW)
+		return BARK_SHAPE_OVERSIZED;
 	if (status & BARK_IS_LIST)
 		return BARK_SHAPE_LIST;
 	if (status & BARK_IS_POSTING)
@@ -417,6 +435,103 @@ BarkPostingGetDataSize(IndexTupleData *itup)
 }
 
 /* ----------------------------------------------------------------------------
+ * OVERSIZED entry accessors and overflow page format
+ *
+ * A key (or key + INCLUDE payload) whose formed index tuple exceeds
+ * BarkMaxItemSize cannot sit inline on a page.  BARK stores the full index
+ * tuple out-of-line on a chain of BARK_OVERFLOW pages and leaves a small,
+ * fixed-size OVERSIZED entry inline, so the page stays well within its item
+ * ceiling no matter how large the value is.  (This is BARK's libdb-class
+ * capability: nbtree errors on such a key; BARK indexes it transparently.)
+ *
+ * The inline entry carries no attribute data; its t_tid offset field holds the
+ * BARK_IS_OVERFLOW status and its t_tid block field holds the first overflow
+ * block.  A BarkOverflowRef appended after the (empty) key records the full
+ * tuple's byte length, the entry's locator, and -- for a pivot -- its key-
+ * attribute count.  Everything the hot paths need (locator, downlink, pivot
+ * natts) is read inline from the ref; only key comparison fetches the full
+ * tuple from the overflow chain (bark_compare_itups), so two keys that share a
+ * long prefix still order on their full value.
+ *
+ * The overflow chain reuses the standard BARK page: each BARK_OVERFLOW page's
+ * bark_next links to the next chunk (BARK_P_NONE at the tail), and the page's
+ * data area (PageHeader .. special) holds up to BarkOverflowChunkSize raw bytes
+ * of the full tuple.  The chunks concatenate in chain order to the full tuple.
+ * ----------------------------------------------------------------------------
+ */
+
+/* Marks a BarkOverflowRef as belonging to a leaf entry rather than a pivot. */
+#define BARK_OVERFLOW_LEAF		0xFFFF
+
+/*
+ * The fixed metadata an OVERSIZED entry keeps inline, appended after its (zero-
+ * attribute) key prefix.  locator is the heap TID for a leaf entry; for a pivot
+ * its block field is the downlink and natts is the key-attribute count.
+ */
+typedef struct BarkOverflowRef
+{
+	uint32		fulllen;		/* byte length of the full IndexTuple in overflow */
+	ItemPointerData locator;	/* heap TID (leaf) or downlink block (pivot) */
+	uint16		natts;			/* pivot key-attr count, or BARK_OVERFLOW_LEAF */
+} BarkOverflowRef;
+
+/* The first overflow block of an OVERSIZED entry's chain. */
+static inline BlockNumber
+BarkOverflowGetFirstBlock(const IndexTupleData *itup)
+{
+	return ItemPointerGetBlockNumberNoCheck(&itup->t_tid);
+}
+
+/*
+ * The BarkOverflowRef appended after the entry's (empty) key prefix.  Unlike a
+ * LIST/POSTING entry, an OVERSIZED entry uses the t_tid block field for its
+ * first overflow block, so the body offset cannot be read from there; it is the
+ * MAXALIGNed header offset (the entry stores no inline attribute data).
+ */
+static inline BarkOverflowRef *
+BarkOverflowGetRef(IndexTupleData *itup)
+{
+	return (BarkOverflowRef *) ((char *) itup +
+							   MAXALIGN(IndexInfoFindDataOffset(itup->t_info)));
+}
+
+/* True when an OVERSIZED entry is a leaf (heap-locator) rather than a pivot. */
+static inline bool
+BarkOverflowIsLeaf(IndexTupleData *itup)
+{
+	return BarkOverflowGetRef(itup)->natts == BARK_OVERFLOW_LEAF;
+}
+
+/*
+ * The downlink child block of a pivot entry, whatever its shape.  A plain PIVOT
+ * keeps it in t_tid; an OVERSIZED pivot keeps it in its ref (t_tid holds the
+ * first overflow block instead), so descent must read it the shape-aware way.
+ */
+static inline BlockNumber
+BarkEntryGetDownLink(IndexTupleData *itup)
+{
+	if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+		return ItemPointerGetBlockNumberNoCheck(&BarkOverflowGetRef(itup)->locator);
+	return ItemPointerGetBlockNumberNoCheck(&itup->t_tid);
+}
+
+/* The key-attribute count of a pivot entry, whatever its shape. */
+static inline uint16
+BarkEntryGetPivotNAtts(IndexTupleData *itup)
+{
+	if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+		return BarkOverflowGetRef(itup)->natts;
+	return BarkPivotGetNAtts(itup);
+}
+
+/*
+ * Bytes of the full tuple a single overflow page can hold: the page's whole
+ * data area between the standard header and the BARK page opaque.
+ */
+#define BarkOverflowChunkSize \
+	(BLCKSZ - MAXALIGN(SizeOfPageHeaderData) - MAXALIGN(sizeof(BarkPageOpaqueData)))
+
+/* ----------------------------------------------------------------------------
  * Shared prototypes (bark.c, barkutils.c, barksort.c, barkvalidate.c)
  * ----------------------------------------------------------------------------
  */
@@ -500,6 +615,76 @@ extern IndexTuple bark_form_posting(TupleDesc tupdesc, IndexTuple key,
 extern int	bark_posting_count(IndexTuple itup);
 extern int	bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout);
 
+/* ----------------------------------------------------------------------------
+ * OVERSIZED entry construction and overflow-chain I/O (barkutils.c)
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Form the complete index tuple for a row's values, WITHOUT nbtree's 1/3-page
+ * (or index_form_tuple's 8191-byte) ceiling: an oversized key or payload is
+ * returned as a full, correctly-laid-out IndexTuple whose byte length is
+ * written to *fulllen (the t_info size field wraps past 8191 and must not be
+ * read for such a tuple -- use *fulllen).  When the result fits inline
+ * (*fulllen <= BarkMaxItemSize) it is byte-identical to index_form_tuple, so
+ * the common no-overflow path is unchanged.  The caller stores an oversized
+ * result on an overflow chain and places a small OVERSIZED entry on the page.
+ */
+extern IndexTuple bark_form_full_tuple(TupleDesc tupdesc, const Datum *values,
+									   const bool *isnull, Size *fulllen);
+
+/* True when `fulllen` bytes cannot sit inline and need overflow storage. */
+extern bool bark_len_is_oversized(Size fulllen);
+
+/*
+ * Number of overflow pages the chain for a tuple of `fulllen` bytes needs.
+ */
+extern BlockNumber bark_overflow_nchunks(Size fulllen);
+
+/*
+ * Form the small fixed-size OVERSIZED entry that references an already-written
+ * overflow chain beginning at `firstblk`.  `locator` is the entry's heap TID
+ * (leaf) or its downlink block as a TID (pivot); pass is_leaf=false with the
+ * key-attribute count in `natts` for a pivot.  Returns a palloc'd entry.
+ */
+extern IndexTuple bark_form_oversized_entry(ItemPointer locator, Size fulllen,
+											BlockNumber firstblk,
+											bool is_leaf, uint16 natts);
+
+/*
+ * Write `full` (fulllen bytes) across a chain of BARK_OVERFLOW pages via the
+ * buffer pool (P_NEW + generic WAL), returning the first block.  Used by the
+ * insert path; the build path uses bark_init_overflow_page directly against
+ * its bulk-write buffers.
+ */
+extern BlockNumber bark_write_overflow_chain(Relation index, IndexTuple full,
+											 Size fulllen);
+
+/*
+ * Lay out the `which`'th overflow chunk of a tuple of `fulllen` bytes into
+ * `page` (already palloc'd / bulk-reserved), copying its slice of `full` and
+ * linking it to `nextblk`.  The build path calls this to format bulk-write
+ * buffers; the insert path uses bark_write_overflow_chain.
+ */
+extern void bark_init_overflow_page(Page page, const char *full, Size fulllen,
+									BlockNumber which, BlockNumber nextblk);
+
+/*
+ * Reconstruct the full index tuple an OVERSIZED entry references by walking its
+ * overflow chain.  Returns a palloc'd tuple the caller pfrees.  Its byte length
+ * is the entry's recorded fulllen (available via BarkOverflowGetRef); the
+ * t_info size field may be wrapped, so callers that need the length use the
+ * ref.  Used by key comparison, scans, and amcheck.
+ */
+extern IndexTuple bark_fetch_oversized(Relation index, IndexTuple entry);
+
+/*
+ * Free the overflow chain an OVERSIZED entry references (its pages become
+ * BARK_DELETED), as part of VACUUM removing the owning leaf entry.  WAL-logged
+ * under its own generic-WAL records.
+ */
+extern void bark_free_oversized(Relation index, IndexTuple entry);
+
 extern IndexBuildResult *bark_build(Relation heap, Relation index,
 									IndexInfo *indexInfo);
 extern void bark_buildempty(Relation index);
@@ -574,6 +759,7 @@ typedef struct BarkScanOpaqueData
 									 * next page */
 	char	   *currTuple;		/* scratch copy of the returned index tuple for
 								 * index-only scans (NULL when not wanted) */
+	Size		currTupleSize;	/* allocated capacity of currTuple */
 
 	/*
 	 * Within-entry iteration for multi-locator entries (LIST, POSTING): a
