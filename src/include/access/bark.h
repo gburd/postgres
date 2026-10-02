@@ -504,6 +504,16 @@ extern void bark_buildempty(Relation index);
 extern bool barkvalidate(Oid opclassoid);
 
 /*
+ * Parallel index-build worker entry point.  Reachable by name from
+ * parallel.c's internal worker table (see CreateParallelContext with the
+ * "postgres" library in barksort.c).
+ */
+struct dsm_segment;
+struct shm_toc;
+extern void _bark_parallel_build_main(struct dsm_segment *seg,
+									  struct shm_toc *toc);
+
+/*
  * Search descent stack: the path from the root to a leaf, recorded during a
  * search so an insert that splits the leaf can walk back up inserting the
  * downlinks.  Each entry names the block visited and the offset of the
