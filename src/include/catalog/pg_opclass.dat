@@ -493,18 +493,21 @@
 
 # no brin opclass for the geometric types except box
 
-# BARK default operator classes.  Each indexes one scalar type through a
-# BARK operator family whose members are the type's existing btree
-# comparison operators and support function (see pg_amop.dat / pg_amproc.dat).
+# BARK default operator classes.  BARK's operator families are btree operator
+# families (the ambtreeopfamilies capability), so each BARK opclass lives
+# directly in the btree operator family for its type rather than a redundant
+# BARK-owned one: it reuses the type's existing btree operators and support
+# function, and the planner sees exactly one operator family per type (no
+# duplicate families to confuse equivalence-class and merge-join planning).
 { oid => '9465', opcmethod => 'bark', opcname => 'int2_ops',
-  opcfamily => 'bark/integer_ops', opcintype => 'int2' },
+  opcfamily => 'btree/integer_ops', opcintype => 'int2' },
 { oid => '9466', opcmethod => 'bark', opcname => 'int4_ops',
-  opcfamily => 'bark/integer_ops', opcintype => 'int4' },
+  opcfamily => 'btree/integer_ops', opcintype => 'int4' },
 { oid => '9467', opcmethod => 'bark', opcname => 'int8_ops',
-  opcfamily => 'bark/integer_ops', opcintype => 'int8' },
+  opcfamily => 'btree/integer_ops', opcintype => 'int8' },
 { oid => '9468', opcmethod => 'bark', opcname => 'oid_ops',
-  opcfamily => 'bark/oid_ops', opcintype => 'oid' },
+  opcfamily => 'btree/oid_ops', opcintype => 'oid' },
 { oid => '9469', opcmethod => 'bark', opcname => 'text_ops',
-  opcfamily => 'bark/text_ops', opcintype => 'text' },
+  opcfamily => 'btree/text_ops', opcintype => 'text' },
 
 ]
