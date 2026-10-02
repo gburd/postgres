@@ -891,3 +891,157 @@ RESET parallel_tuple_cost;
 RESET max_parallel_workers_per_gather;
 DROP TABLE bark_pscan;
 DROP TABLE bark_tab, bark_small, bark_empty, bark_ins, bark_scan;
+-- ===========================================================================
+-- Oversized keys (P04): a key larger than BarkMaxItemSize is stored on an
+-- overflow page chain, transparently to compare / scan / dedup / uniqueness /
+-- vacuum.  nbtree errors on such a key; BARK indexes it.  Keys are built from a
+-- deterministic md5 chain so they are incompressible (really exceed the item
+-- ceiling, not merely large) and the test output is reproducible.
+-- ===========================================================================
+-- Deterministic incompressible string of ~n bytes, seeded by s (repeatable).
+CREATE FUNCTION bark_bigstr(s int, n int) RETURNS text
+  LANGUAGE sql IMMUTABLE AS
+$$ SELECT substr(string_agg(md5(s::text || g::text), ''), 1, n)
+   FROM generate_series(1, (n + 31) / 32) g $$;
+-- A mix of small keys and oversized keys (prefix-distinct), built by CREATE
+-- INDEX (the bulk loader's oversized second pass) over an already-filled heap.
+CREATE TABLE bark_big (id int, k text);
+INSERT INTO bark_big SELECT g, 'small-' || lpad(g::text, 6, '0')
+  FROM generate_series(1, 40) g;
+INSERT INTO bark_big SELECT 100 + g,
+  'K' || lpad(g::text, 6, '0') || bark_bigstr(g, 5000)
+  FROM generate_series(1, 30) g;
+CREATE INDEX bark_big_idx ON bark_big USING bark (k);
+-- Insert more oversized keys into the built index, forcing leaf splits of
+-- pages that hold oversized entries (and oversized pivots on internal pages).
+INSERT INTO bark_big SELECT 200 + g,
+  'M' || lpad(g::text, 6, '0') || bark_bigstr(1000 + g, 6000)
+  FROM generate_series(1, 40) g;
+-- Counts and the ordered-scan hash must match a sequential scan exactly: this
+-- is the transparency proof (ordering of oversized keys == full-value order).
+SET enable_seqscan = off;
+SELECT count(*) AS idx_total FROM bark_big;
+ idx_total 
+-----------
+       110
+(1 row)
+
+SELECT count(*) AS idx_oversized FROM bark_big WHERE k >= 'K';
+ idx_oversized 
+---------------
+           110
+(1 row)
+
+SELECT md5(string_agg(id::text, ',' ORDER BY k)) AS idx_order_hash FROM bark_big;
+          idx_order_hash          
+----------------------------------
+ 61cb09aa2c35c7da5402575a6899d401
+(1 row)
+
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS seq_total FROM bark_big;
+ seq_total 
+-----------
+       110
+(1 row)
+
+SELECT count(*) AS seq_oversized FROM bark_big WHERE k >= 'K';
+ seq_oversized 
+---------------
+           110
+(1 row)
+
+SELECT md5(string_agg(id::text, ',' ORDER BY k)) AS seq_order_hash FROM bark_big;
+          seq_order_hash          
+----------------------------------
+ 61cb09aa2c35c7da5402575a6899d401
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+-- Keys sharing a long common prefix but differing only in the tail: a
+-- prefix-only compare would wrongly tie them.  Equality must find exactly one,
+-- and index order must equal full-value order.
+CREATE TABLE bark_pfx (id int, k text);
+INSERT INTO bark_pfx SELECT g, repeat('P', 5000) || lpad(g::text, 8, '0')
+  FROM generate_series(1, 50) g;
+CREATE INDEX bark_pfx_idx ON bark_pfx USING bark (k);
+SET enable_seqscan = off;
+SELECT id FROM bark_pfx WHERE k = repeat('P', 5000) || lpad('23', 8, '0');
+ id 
+----
+ 23
+(1 row)
+
+SELECT md5(string_agg(id::text, ',' ORDER BY k)) AS pfx_idx_hash FROM bark_pfx;
+           pfx_idx_hash           
+----------------------------------
+ 0b3e2461abad4646040e86ee0da94219
+(1 row)
+
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SELECT md5(string_agg(id::text, ',' ORDER BY k)) AS pfx_seq_hash FROM bark_pfx;
+           pfx_seq_hash           
+----------------------------------
+ 0b3e2461abad4646040e86ee0da94219
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_indexscan;
+-- Truly huge keys (20KB, 64KB): larger than a single page, multi-page overflow
+-- chain.  Both index_form_tuple and nbtree reject these outright.
+CREATE TABLE bark_huge (id int, k text);
+INSERT INTO bark_huge VALUES (1, bark_bigstr(1, 20000));
+INSERT INTO bark_huge VALUES (2, bark_bigstr(2, 65000));
+INSERT INTO bark_huge VALUES (3, 'tiny');
+CREATE INDEX bark_huge_idx ON bark_huge USING bark (k);
+SET enable_seqscan = off;
+SELECT id, length(k) FROM bark_huge ORDER BY k;
+ id | length 
+----+--------
+  2 |  65000
+  1 |  20000
+  3 |      4
+(3 rows)
+
+SELECT id FROM bark_huge WHERE k = bark_bigstr(2, 65000);
+ id 
+----
+  2
+(1 row)
+
+RESET enable_seqscan;
+-- Uniqueness over oversized keys: a duplicate oversized key must be rejected.
+CREATE TABLE bark_uniq (k text);
+INSERT INTO bark_uniq VALUES (bark_bigstr(7, 5000));
+CREATE UNIQUE INDEX bark_uniq_idx ON bark_uniq USING bark (k);
+INSERT INTO bark_uniq VALUES (bark_bigstr(7, 5000));  -- duplicate: must error
+ERROR:  duplicate key value violates unique constraint "bark_uniq_idx"
+DETAIL:  Key (k)=(e2c420d928d4bf8ce0ff2ec19b37151432bb90e8976aab5298d5da10fe66f21dd2ddea18f00665ce8623e36bd4e3c7c5ad61ab143223efbc24c7d2583be69251d09bf41544a3365a46c9077ebb5e35c3fbd7939d674997cdb4692d34de8633c428dd2c7955ce926456240b2ff0100bde35f4a8d465e6e1edc05f3d8ab658c551d1fe173d08e959397adf34b1d77e88d7e70611883d2760c8bbafb4acb29e34466081594975a764c8e3a691fa2b3a321d19bc916108fc6938f52cb96f7e08794107c5807d0d927dcd0980f86024e5208bd14220ee66aeec73c49038385428ec4c8df707a948fac1b4a0f97aa554886ec8e7f8a7fb0b77bcb3b283af5be021448f788d986905533aba051261497ecffcbb50c3d7614917b24303ee6a220679dab32afe4567e1bf64d32a5527244d104cea5f2c22cb4a5380af7ca75622a6426917aba3b6fd5d186d28e06ff97135cade7fc8ed21db4f678f3b13b9d5ee1648908808419be897405321542838d77f8552267f1171a78ce0780a2142a6eb7bc4f3c882f2b308c3b01637c607ce05f52a2fed0d3180d672e08b4c5312dcdafdf6ef36fb89705ae6d743bf1e848c206e16a1d7d4c2e4a3297fe25a71d030b67eb83bfc5751ec3e9a4feab575962e78e006250dd5cfead94f5350c12c322b5b664544c159c33016884a62116be975a9bb8257e3ba3866600c3540f67c1e9575e213be0a6c29793a140a811d0c45ce03c1c93a28e995f98d56967d946471af29d7bf99f16cd67d9b6f0150c77bda2eda01ae484c6bc24fc1ab650b25b4114e93a98f1ebaa5cdd4aa0048b187f7182f1b9ce7a6a7217eedd1ba8c592db97d0dbe54c7adfcdf263d996281d984952c07998dc54358edfbe1afcf9246bb0d40eb4d8027d90f2e65f2f2fdaf6c699b223c61b1b5ab89e94550c93cd70fe748e6982b3439ad3b5c572eca050594c7bc3c36e7e8ab95500537fb40a68c18da59a35c2bfe1ca5545f0f5e5f33945135b874349cfbed4fb9185e65bc40581880c4f2c82958de8cfe8d317bdcf4aafcfc22149d77babee96de49b8b4053df9505e1f48c3a701c0682b056eb1587586b71e2da9acfe4fbd19eb137fdd1f79d56c7edf3365fea7520f2912d2b1c7b2826caf99687388d2e8f7ca1d33d0dfec820b41b54430b50e96b5c6f2268bd1d3d3ebaabb04d6b5d099425872488f88d1b2db54d55bc8bba2fad1bccb0989662211f61edae2e26d58ea92f2823f4797102ce1a1aec05359cc16dd9470e7a4f017a5476afb7eeb3f8b96f9bbf62768ca46b6c3b5bea9515d1a1fc45fa14d4fe2f19414de3ebd9f63d5c01692ca65f58e35d9ad45bf7f3ae5cfd08f188ae6372cfdc5df69a976e893f4d554b06997f04a7db92466a2baa6ebc8b872deefc9e10ebdc4a2333b42b2dbb8f27b65807a685d1a9ab3b599035bc566ce2b9d840cc5d906c3e9c84374c8919d2074e959a557f5f6beb411fd954f3f34b21c3f2201f5191c4e92cc5af043eebfd09463a835d3215755c435ef4fe9965a3f2a0288cc0ff022877bd3df94bc9360b9c5d4ea06fbc83cdd0a06020c35d50e1e89ab7ee6f5f9aa5cd17ca1aea43ce848496e57c6b956a6521b28495f2886ca0977a86b122d4358357d834a87ce618a55de04e0928de075538c593fbdabb0c5ef2c3c0f168ce8900fa56e57789e2a2f2c9d08c6744c9d42ec2cb9e8885b54ff744d0f1c1592588411002af340cbaedd6fc33e07413354875be01a996dc560274708e67d96d458abdef21792e6d8e590244e7a8e864d04c95572d1aece099af852d0a7143d7fbadfa4693b9eec507d9d3744372da7fd6d1302c0a159f6436d01e9eb06e0721b2c6977135b916ef286bcb49ecfc8001f834f6a5f0561080d134d53d294b04a686b0ad13dce35fa99fa4161c6561b4a64be663682e8cb037d9719ad8cd3621f1454cacf995530ea53652ddf8fbc15da1f2b5e5ed6e6837a3802f0d159368053af2923e00204c3ca7c6a3150cf72dace78f80bc92e6d7493423d729448edf7f28ac89ca37bf1abd2f6c184fe1cf96ea64f3a1aa2fd00c72faacf0cb8ac9da8ce53cf0240070ce6c69c48cd588ee82489c9737cc245530c7a6ebef3753ec7c590f01490190db0ed02a5070e20f0135cf8659cfcb13224cbd47863a34fc58beb22fb694d513edcf5533cf006dfeae9e3cfc48eccf81a0d57663e129aef3cb28267ab848bcf807b2ed53c3a8f8fc8a9d94c8981a48d12adfeecfe1ae6e0ec1b33128cb0089003ddfb5199e1b679652c9d9edbf9b9e23eb5d4819bbcce9b07862b98e188905060143a433b1363b32662be8328f41144106f7144802f23674874cc05b35c2f937c5bd9e7d41d3686fffa9d34fb66d81367590fdd5337324233a09676fac73eda6cac726c43e43e86c585bca8566db79f3788be9efd96c9ed70d51311013e51adebc3c34d2cc591fefee7da9fd85999f583e3906f99a3ee589111ab60b5e8bd4eac8a7537abb5936aadcba7609ee5789cc4dff171045a693a65f3501672ebc68a5524629080e3ef60aef20d039f53b4a6786c21ee0dbcd2d2c5d5301c4d888f5204274439e6dcf5fdb5447267ca39f652c0de27a4b27c5e11c40860b37e28ec7ba614f00f9246949561dbc19986e5c658d4135bd559a0b37c0bc2adee8815dd939548ee6b2772524b6f2ac3870fcad1cfc367825cda0101eee62738a6457be8432bab553e21b4235dd97df334b223e699294764c2bb7ae40d8dbe3a54649aeec04cf1c13907bc6c5c8aa64986d86a17424eeac96b08a6d51905980f7325fa857de62fafe85f7a30273cbcb93980bc94a17e36d6de5da28b99785ffa1e107c6469dafa0016703450e26ede3019767b1b23f82883c9850356b71d6bcc2bdb799f873f02080ae277f291da19afbe998374ca7326d35d8418078609650e207ab6946b5d78b377ae0144b9e0732b127307a606effdcc8e51f60a45922adf7e293599134777339fdc40ddfa8184206e38996fae4028a26d43b24f68d32604f2c31e67034642b288d76a8df11d5d0f3cac4d12fa2668b1ffbc4e3254253cb77649f5d53798edfa0ff40dae463227a02741932bb4c9d3920fbc2f4b6080f581b41df0cd50ace849e061ef74827fc348a38cd25abeab0e440f37510e9b1fa817c99c4861918e518dca75d712983eb914101ec47c52b48a7b6ccc6f5a76f1ff5aa4bd09c07d8b2f65bad6c7cd3358f380a2d63cef1d5d702278e2b561e2e51f6b6d2a114a9644419dc8d2315f22401b2005ea31710de47466d9e53068edc71219d0a315520ccbbb971bba8f5d455fe251c5ffd6b62cc21c446c963c76cf21416f852a6d01b6065c8ff5cc11caae9c6c20bb2d9a50d5ac1f713f8b34d9aac5afc394e9935fbd62c8aedc372464e1965185e48a43c7f63acf74b1bd58827b5104b55df75e2e804bab559aa885be403100c836be97564457619349887cf51b3ba9ecff5455677b38d19f49ce658ef06084bb236de7787ceedafdff83bb8ea47106e01383f) already exists.
+-- Delete + VACUUM must reclaim overflow pages (mark them deleted) and leave the
+-- index consistent; the remaining rows must still scan correctly.
+DELETE FROM bark_big WHERE id > 200;
+VACUUM bark_big;
+SET enable_seqscan = off;
+SELECT count(*) AS idx_after_vacuum FROM bark_big;
+ idx_after_vacuum 
+------------------
+               70
+(1 row)
+
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SELECT count(*) AS seq_after_vacuum FROM bark_big;
+ seq_after_vacuum 
+------------------
+               70
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_indexscan;
+DROP TABLE bark_big, bark_pfx, bark_huge, bark_uniq;
+DROP FUNCTION bark_bigstr(int, int);
