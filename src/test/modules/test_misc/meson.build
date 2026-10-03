@@ -4,6 +4,26 @@ tests += {
   'name': 'test_misc',
   'sd': meson.current_source_dir(),
   'bd': meson.current_build_dir(),
+  'pytest': {
+    'env': {
+       'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
+    },
+    'tests': [
+      'pyt/test_001_constraint_validation.py',
+      'pyt/test_002_tablespace.py',
+      'pyt/test_003_check_guc.py',
+      'pyt/test_004_io_direct.py',
+      'pyt/test_008_replslot_single_user.py',
+      'pyt/test_009_log_temp_files.py',
+      'pyt/test_010_index_concurrently_upsert.py',
+      'pyt/test_005_timeouts.py',
+      'pyt/test_006_signal_autovacuum.py',
+      'pyt/test_007_catcache_inval.py',
+      'pyt/test_011_lock_stats.py',
+      'pyt/test_012_ddlutils.py',
+      'pyt/test_013_temp_obj_multisession.py',
+    ],
+  },
   'tap': {
     'env': {
        'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
