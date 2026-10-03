@@ -66,6 +66,12 @@ tests += {
       't/055_cascade_reconnect.pl',
       't/056_standby_snapshot_export.pl',
       't/057_snapshot_commit_race.pl',
+      't/058_fileops_recovery.pl',
+      't/059_fileops_2pc.pl',
+      't/060_fileops_standby_divergence.pl',
+      't/061_fileops_2pc_deferred.pl',
+      't/071_perbackend_undo.pl',
+      't/072_perbackend_crash_undo.pl',
     ],
   },
 }

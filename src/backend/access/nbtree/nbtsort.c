@@ -1153,7 +1153,8 @@ _bt_load(BTWriteState *wstate, BTSpool *btspool, BTSpool *btspool2)
 	wstate->bulkstate = smgr_bulk_start_rel(wstate->index, MAIN_FORKNUM);
 
 	deduplicate = wstate->inskey->allequalimage && !btspool->isunique &&
-		BTGetDeduplicateItems(wstate->index);
+		BTGetDeduplicateItems(wstate->index) &&
+		!(wstate->heap != NULL && RelationSupportsDeleteMarking(wstate->heap));
 
 	if (merge)
 	{

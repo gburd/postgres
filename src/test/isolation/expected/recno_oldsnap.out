@@ -1,0 +1,30 @@
+Parsed test spec with 3 sessions
+
+starting permutation: w_update o_read_seq o_read_idx n_read o_commit
+  v
+---
+100
+(1 row)
+
+step w_update: UPDATE recno_os SET v = 999 WHERE id = 5;
+step o_read_seq: SET enable_seqscan = on; SET enable_indexscan = off; SET enable_bitmapscan = off;
+                  SELECT v FROM recno_os WHERE id = 5;
+  v
+---
+100
+(1 row)
+
+step o_read_idx: SET enable_seqscan = off; SET enable_indexscan = on; SET enable_bitmapscan = off;
+                  SELECT v FROM recno_os WHERE id = 5;
+  v
+---
+100
+(1 row)
+
+step n_read: SELECT v FROM recno_os WHERE id = 5;
+  v
+---
+999
+(1 row)
+
+step o_commit: COMMIT;
