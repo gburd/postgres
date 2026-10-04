@@ -779,29 +779,35 @@ bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
  *  - UNIQUE_CHECK_EXISTING skips the entry that is itup itself (the tuple is
  *    already in the heap; we are only verifying that it is unique).
  *  - A conflict with an in-progress transaction returns that xact's id so the
- *    caller can wait for it and retry; *is_unique is left false.
+ *    caller can wait for it and retry; *is_unique is left false.  When that
+ *    transaction is itself a speculative inserter (an INSERT ... ON CONFLICT
+ *    that has inserted its heap tuple but not yet confirmed or killed it),
+ *    *speculativeToken is set to its token so the caller can wait on the
+ *    speculative insertion (which resolves the moment the inserter confirms or
+ *    kills, not when its whole xact ends) rather than on the xact.
  *  - UNIQUE_CHECK_PARTIAL never errors: on any conflict it sets *is_unique to
  *    false and returns, letting a deferred constraint recheck decide later.
  *  - Otherwise a live conflict raises ERRCODE_UNIQUE_VIOLATION.
  *
  * Returns InvalidTransactionId when no wait is needed (unique, or already
- * errored).  The caller holds the write lock on `buf` throughout and still
- * holds it on return.
+ * errored); *speculativeToken is set to zero unless a speculative conflict was
+ * found.  The caller holds the write lock on `buf` throughout and still holds
+ * it on return.
  *
- * ponytail: no speculative-insertion (INSERT ... ON CONFLICT) handling and no
- * killing of known-dead index entries yet; both are optimizations layered on
- * the correct check here.
+ * ponytail: no killing of known-dead index entries yet (an orthogonal
+ * optimization layered on the correct check here).
  */
 static TransactionId
 bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 				  Buffer buf, Relation heapRel, IndexUniqueCheck checkUnique,
-				  bool *is_unique)
+				  bool *is_unique, uint32 *speculativeToken)
 {
 	SnapshotData SnapshotDirty;
 	Buffer		curbuf = buf;
 	bool		ownbuf = false;		/* do we need to release curbuf? */
 
 	*is_unique = true;
+	*speculativeToken = 0;
 	InitDirtySnapshot(SnapshotDirty);
 
 	/*
@@ -888,6 +894,9 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 				/*
 				 * If the conflicting tuple is still being inserted or deleted,
 				 * return the responsible xact so the caller can wait and retry.
+				 * A speculative inserter also reports its token here, so the
+				 * caller can wait on the speculative insertion rather than on
+				 * the whole transaction.
 				 */
 				xwait = TransactionIdIsValid(SnapshotDirty.xmin) ?
 					SnapshotDirty.xmin : SnapshotDirty.xmax;
@@ -895,6 +904,7 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 				{
 					if (ownbuf)
 						UnlockReleaseBuffer(curbuf);
+					*speculativeToken = SnapshotDirty.speculativeToken;
 					return xwait;
 				}
 
@@ -1172,12 +1182,18 @@ retry:
 	 * new key has any NULL attribute (SQL treats NULLs as distinct, so a NULL
 	 * key never conflicts).  If a conflicting tuple is still in progress,
 	 * bark_check_unique returns its xact id: wait for that transaction to
-	 * finish, then re-descend and check again.
+	 * finish, then re-descend and check again.  If the conflict is with a
+	 * speculative insertion (INSERT ... ON CONFLICT), it also returns the
+	 * speculative token, and we wait on the speculative insertion -- which
+	 * wakes us the moment the speculative inserter confirms or kills its tuple,
+	 * so a losing speculative insert of the same key does not block to end of
+	 * xact.  This matches nbtree's _bt_doinsert speculative-wait path exactly.
 	 */
 	if (checkUnique != UNIQUE_CHECK_NO)
 	{
 		bool		nulls_present = false;
 		TransactionId xwait;
+		uint32		speculativeToken;
 		bool		is_unique;
 
 		for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
@@ -1192,15 +1208,18 @@ retry:
 		if (!nulls_present)
 		{
 			xwait = bark_check_unique(index, keyinfo, itup, buf, heapRel,
-									  checkUnique, &is_unique);
+									  checkUnique, &is_unique, &speculativeToken);
 			if (TransactionIdIsValid(xwait))
 			{
 				/* Conflict with an in-progress xact: wait and retry. */
 				UnlockReleaseBuffer(buf);
 				if (stack)
 					bark_freestack(stack);
-				XactLockTableWait(xwait, index, &itup->t_tid,
-								  XLTW_InsertIndex);
+				if (speculativeToken)
+					SpeculativeInsertionWait(xwait, speculativeToken);
+				else
+					XactLockTableWait(xwait, index, &itup->t_tid,
+									  XLTW_InsertIndex);
 				goto retry;
 			}
 			result = is_unique;
