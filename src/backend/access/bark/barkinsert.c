@@ -1358,9 +1358,12 @@ retry:
 	 * fit the item ceiling, and each oversized row keeps its own OVERSIZED
 	 * entry + overflow chain (duplicate oversized keys are not deduplicated; a
 	 * shared overflow chain for identical oversized values would be a space
-	 * optimization, not a correctness matter).
+	 * optimization, not a correctness matter).  Nor do keys whose equal values
+	 * can have different stored images, or indexes with INCLUDE columns: a
+	 * shared entry would return one row's bytes for all of them (see
+	 * bark_allequalimage).
 	 */
-	if (!indexInfo->ii_Unique && !oversized &&
+	if (!indexInfo->ii_Unique && !oversized && bark_allequalimage(index) &&
 		bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf, off))
 	{
 		UnlockReleaseBuffer(buf);
