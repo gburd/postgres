@@ -121,6 +121,22 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 		return;
 	}
 
+	/*
+	 * A deleted page has been unlinked from the tree and recorded free for
+	 * reuse; it holds no live items.  Verify it is genuinely unlinked (no
+	 * sibling links) and skip the item/sibling checks below.
+	 */
+	if (BarkPageIsDeleted(opaque))
+	{
+		if (!BarkPageLeftmost(opaque) || !BarkPageRightmost(opaque))
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" has a deleted page %u that is still linked to a sibling",
+							RelationGetRelationName(rel), blkno)));
+		UnlockReleaseBuffer(buf);
+		return;
+	}
+
 	/* A clean index never leaves an unfinished split behind. */
 	if ((opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0)
 		ereport(ERROR,
