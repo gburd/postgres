@@ -1321,3 +1321,119 @@ EXPLAIN (COSTS OFF) SELECT count(*) FROM bark_cost_dup WHERE k = 3;
 (5 rows)
 
 DROP TABLE bark_cost_dup;
+-- ===========================================================================
+-- Page / FSM reclamation (A13-A15): VACUUM unlinks emptied interior leaves and
+-- returns them (plus freed overflow-chain pages) to the free space map, and the
+-- page allocator reuses them before extending the relation.  A delete-heavy
+-- workload that repeatedly empties most of the index and refills it with a
+-- disjoint key range must therefore NOT grow the relation without bound.  Here
+-- four full delete/vacuum/insert cycles must leave the index within a small
+-- constant of its one-cycle size (the old behavior doubled it every cycle).
+-- The scan results after reclamation must still match a sequential scan.
+-- ===========================================================================
+CREATE TABLE bark_recycle (a int) WITH (autovacuum_enabled = off);
+CREATE INDEX bark_recycle_idx ON bark_recycle USING bark (a);
+INSERT INTO bark_recycle SELECT g FROM generate_series(1, 50000) g;
+-- Record the one-cycle size, then run four disjoint delete/vacuum/insert cycles.
+CREATE TEMP TABLE bark_recycle_sz AS
+  SELECT pg_relation_size('bark_recycle_idx') / 8192 AS base_pages;
+-- cycle 1
+DELETE FROM bark_recycle WHERE a > 1000;
+VACUUM bark_recycle;
+INSERT INTO bark_recycle SELECT g FROM generate_series(100001, 150000) g;
+VACUUM bark_recycle;
+-- cycle 2
+DELETE FROM bark_recycle WHERE a > 101000;
+VACUUM bark_recycle;
+INSERT INTO bark_recycle SELECT g FROM generate_series(200001, 250000) g;
+VACUUM bark_recycle;
+-- cycle 3
+DELETE FROM bark_recycle WHERE a > 201000;
+VACUUM bark_recycle;
+INSERT INTO bark_recycle SELECT g FROM generate_series(300001, 350000) g;
+VACUUM bark_recycle;
+-- cycle 4
+DELETE FROM bark_recycle WHERE a > 301000;
+VACUUM bark_recycle;
+INSERT INTO bark_recycle SELECT g FROM generate_series(400001, 450000) g;
+VACUUM bark_recycle;
+-- Reuse works: growth across four cycles stays well under a single refill's
+-- worth of pages (~245).  Without reclamation this would be ~4x.  Report a
+-- boolean so the expected output is stable across platforms.
+SELECT (pg_relation_size('bark_recycle_idx') / 8192) <= base_pages + 100
+         AS index_growth_bounded
+  FROM bark_recycle_sz;
+ index_growth_bounded 
+----------------------
+ t
+(1 row)
+
+DROP TABLE bark_recycle_sz;
+-- The reclaimed-and-reused index still answers scans correctly: an index-only
+-- range scan over the live keys must match a sequential count.
+SET enable_seqscan = off;
+SELECT count(*) AS idx_live FROM bark_recycle WHERE a > 0;
+ idx_live 
+----------
+    54000
+(1 row)
+
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS seq_live FROM bark_recycle WHERE a > 0;
+ seq_live 
+----------
+    54000
+(1 row)
+
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_recycle;
+-- Freed overflow-chain pages are reclaimed too: a table of oversized keys that
+-- is bulk-deleted and vacuumed, then refilled with new oversized keys, reuses
+-- the freed BARK_OVERFLOW pages rather than extending without bound.
+CREATE TABLE bark_recycle_big (a text) WITH (autovacuum_enabled = off);
+CREATE INDEX bark_recycle_big_idx ON bark_recycle_big USING bark (a);
+INSERT INTO bark_recycle_big
+  SELECT repeat('k', 4000) || lpad(g::text, 8, '0')
+    FROM generate_series(1, 400) g;
+CREATE TEMP TABLE bark_recycle_big_sz AS
+  SELECT pg_relation_size('bark_recycle_big_idx') / 8192 AS base_pages;
+-- cycle 1
+DELETE FROM bark_recycle_big;
+VACUUM bark_recycle_big;
+INSERT INTO bark_recycle_big
+  SELECT repeat('m', 4000) || lpad((1000 + g)::text, 8, '0')
+    FROM generate_series(1, 400) g;
+VACUUM bark_recycle_big;
+-- cycle 2
+DELETE FROM bark_recycle_big;
+VACUUM bark_recycle_big;
+INSERT INTO bark_recycle_big
+  SELECT repeat('m', 4000) || lpad((2000 + g)::text, 8, '0')
+    FROM generate_series(1, 400) g;
+VACUUM bark_recycle_big;
+-- cycle 3
+DELETE FROM bark_recycle_big;
+VACUUM bark_recycle_big;
+INSERT INTO bark_recycle_big
+  SELECT repeat('m', 4000) || lpad((3000 + g)::text, 8, '0')
+    FROM generate_series(1, 400) g;
+VACUUM bark_recycle_big;
+SELECT (pg_relation_size('bark_recycle_big_idx') / 8192) <= base_pages * 2
+         AS overflow_growth_bounded
+  FROM bark_recycle_big_sz;
+ overflow_growth_bounded 
+-------------------------
+ t
+(1 row)
+
+DROP TABLE bark_recycle_big_sz;
+SELECT count(*) AS big_live FROM bark_recycle_big;
+ big_live 
+----------
+      400
+(1 row)
+
+DROP TABLE bark_recycle_big;

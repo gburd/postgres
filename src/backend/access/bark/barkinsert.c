@@ -344,8 +344,7 @@ bark_insert_first_leaf(Relation index, IndexTuple full, IndexTuple entry)
 		return;
 	}
 
-	leafbuf = ReadBuffer(index, P_NEW);
-	LockBuffer(leafbuf, BUFFER_LOCK_EXCLUSIVE);
+	leafbuf = bark_get_free_page(index);
 	leafblk = BufferGetBlockNumber(leafbuf);
 
 	gstate = GenericXLogStart(index);
@@ -447,9 +446,8 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 	 */
 	lhikey = bark_make_hikey(index, splitkey, nkeyatts);
 
-	/* Allocate the right sibling. */
-	rbuf = ReadBuffer(index, P_NEW);
-	LockBuffer(rbuf, BUFFER_LOCK_EXCLUSIVE);
+	/* Allocate the right sibling (reusing a reclaimed page if the FSM has one). */
+	rbuf = bark_get_free_page(index);
 	rightblk = BufferGetBlockNumber(rbuf);
 
 	gstate = GenericXLogStart(index);
@@ -582,7 +580,7 @@ static void
 bark_new_root(Relation index, IndexTuple downlink, BlockNumber leftblk,
 			  BlockNumber rightblk, uint32 childlevel)
 {
-	Buffer		rootbuf = ReadBuffer(index, P_NEW);
+	Buffer		rootbuf = bark_get_free_page(index);
 	Buffer		metabuf;
 	GenericXLogState *gstate;
 	Page		rootpage;
@@ -590,7 +588,6 @@ bark_new_root(Relation index, IndexTuple downlink, BlockNumber leftblk,
 	BlockNumber rootblk;
 	IndexTuple	leftdown;
 
-	LockBuffer(rootbuf, BUFFER_LOCK_EXCLUSIVE);
 	rootblk = BufferGetBlockNumber(rootbuf);
 	metabuf = ReadBuffer(index, BARK_METAPAGE);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);

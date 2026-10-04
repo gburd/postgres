@@ -29,6 +29,7 @@
 #include "access/generic_xlog.h"
 #include "commands/vacuum.h"
 #include "storage/bufmgr.h"
+#include "storage/indexfsm.h"
 #include "utils/fmgrprotos.h"
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
@@ -41,6 +42,235 @@
 	ereport(ERROR, \
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED), \
 			 errmsg("BARK index access method is not yet implemented")))
+
+/*
+ * Find the parent page that holds the downlink to `childblk` and the offset of
+ * that downlink.  Descends from the root toward the child's key range (using
+ * the child's high key, which an interior page always carries) and then scans
+ * the resulting parent -- continuing into right siblings if a concurrent split
+ * moved the downlink -- for the entry whose downlink block equals `childblk`.
+ *
+ * Returns the parent buffer write-locked with *downoff set, or InvalidBuffer
+ * when the downlink cannot be found (the caller then declines to delete the
+ * child, leaving it linked -- correct, just not reclaimed).  Modeled on
+ * nbtree's _bt_getstackbuf downlink search.
+ */
+static Buffer
+bark_find_parent_downlink(Relation index, BarkKeyInfo *keyinfo,
+						  IndexTuple childhikey, BlockNumber childblk,
+						  OffsetNumber *downoff)
+{
+	BarkStack	stack;
+	Buffer		pbuf;
+	BlockNumber pblk;
+
+	/*
+	 * Descend to the leaf for the child's high key, recording the parent path.
+	 * nextkey=false lands us at or left of the child so the parent we want is
+	 * on the recorded stack (or just right of it).
+	 */
+	{
+		Buffer		lbuf = bark_search(index, keyinfo, childhikey, false, false,
+									   &stack);
+
+		if (lbuf != InvalidBuffer)
+			UnlockReleaseBuffer(lbuf);
+	}
+	if (stack == NULL)
+		return InvalidBuffer;	/* one-level tree: child is the root, no parent */
+
+	pblk = stack->bark_blkno;
+	bark_freestack(stack);
+
+	/* Scan the parent (and right siblings) for the downlink to childblk. */
+	pbuf = ReadBuffer(index, pblk);
+	LockBuffer(pbuf, BUFFER_LOCK_EXCLUSIVE);
+	for (;;)
+	{
+		Page		ppage = BufferGetPage(pbuf);
+		BarkPageOpaque popaque = BarkPageGetOpaque(ppage);
+		OffsetNumber maxoff = PageGetMaxOffsetNumber(ppage);
+		OffsetNumber firstdata = BarkPageFirstDataKey(popaque);
+
+		for (OffsetNumber off = firstdata; off <= maxoff;
+			 off = OffsetNumberNext(off))
+		{
+			IndexTuple	itup = (IndexTuple)
+				PageGetItem(ppage, PageGetItemId(ppage, off));
+
+			if (BarkEntryGetDownLink(itup) == childblk)
+			{
+				*downoff = off;
+				return pbuf;
+			}
+		}
+
+		/* Not on this page; follow the right link if the parent split. */
+		if (BarkPageRightmost(popaque))
+			break;
+		{
+			BlockNumber right = popaque->bark_next;
+
+			UnlockReleaseBuffer(pbuf);
+			pbuf = ReadBuffer(index, right);
+			LockBuffer(pbuf, BUFFER_LOCK_EXCLUSIVE);
+		}
+	}
+
+	UnlockReleaseBuffer(pbuf);
+	return InvalidBuffer;
+}
+
+/*
+ * Delete an empty leaf page from the tree and record it in the FSM for reuse.
+ *
+ * Reclaims the common case a delete-heavy workload produces: an interior leaf
+ * (one with both a left and a right sibling) whose every entry VACUUM removed.
+ * The page is unlinked from the leaf chain (its left sibling's right link and
+ * its right sibling's left link are spliced across it), its parent downlink is
+ * removed, and the page is flagged BARK_DELETED and handed to the FSM, so the
+ * next split or overflow write reuses it instead of extending the relation.
+ * All four touched pages (left sibling, target, right sibling, parent) are
+ * updated under one generic-WAL record so the unlink is crash-atomic.
+ *
+ * Returns true when the leaf was deleted.  Declines (returns false, leaving the
+ * leaf linked and correct) when the page is not an eligible interior empty
+ * leaf, or when its parent downlink is the leftmost (minus-infinity) entry
+ * (whose removal would require promoting the next downlink to minus-infinity --
+ * a reshuffle this minimal reclaimer leaves for a later commit).
+ *
+ * ponytail: this reclaims interior empty leaves only.  A leftmost or rightmost
+ * empty leaf, an empty leaf whose parent downlink is the minus-infinity entry,
+ * and an emptied internal page are all left linked in place (correct, just not
+ * reclaimed); full nbtree-style multi-level / edge-page deletion is the upgrade
+ * path.  ponytail: it locks the left sibling, target, right sibling and parent
+ * together under VACUUM's exclusive-ish lock, matching BARK's current
+ * single-writer model (the same model the insert/split paths document); the
+ * concurrent-safe XID-gated recycling nbtree uses is deferred to the P-series
+ * concurrency work.
+ */
+static bool
+bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
+{
+	Buffer		buf;
+	Buffer		lbuf;
+	Buffer		rbuf;
+	Buffer		pbuf;
+	Page		page;
+	BarkPageOpaque opaque;
+	BlockNumber leftblk;
+	BlockNumber rightblk;
+	IndexTuple	hikey;
+	OffsetNumber downoff;
+	GenericXLogState *gstate;
+	Page		p;
+
+	buf = ReadBuffer(index, blkno);
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	page = BufferGetPage(buf);
+
+	/* Re-check under the lock: must be an interior, empty, live leaf. */
+	if (PageIsNew(page))
+	{
+		UnlockReleaseBuffer(buf);
+		return false;
+	}
+	opaque = BarkPageGetOpaque(page);
+	if (!BarkPageIsLeaf(opaque) || BarkPageIsDeleted(opaque) ||
+		(opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0 ||
+		BarkPageIsRoot(opaque) ||
+		BarkPageLeftmost(opaque) || BarkPageRightmost(opaque) ||
+		PageGetMaxOffsetNumber(page) >= BarkPageFirstDataKey(opaque))
+	{
+		UnlockReleaseBuffer(buf);
+		return false;			/* not an eligible interior empty leaf */
+	}
+
+	leftblk = opaque->bark_prev;
+	rightblk = opaque->bark_next;
+
+	/*
+	 * The high key (first item on this non-rightmost page) names the key range
+	 * boundary; use it to locate the parent downlink.  Copy it before dropping
+	 * the lock, since finding the parent re-descends the tree.
+	 */
+	hikey = CopyIndexTuple((IndexTuple)
+						   PageGetItem(page, PageGetItemId(page, BARK_P_HIKEY)));
+	UnlockReleaseBuffer(buf);
+
+	pbuf = bark_find_parent_downlink(index, keyinfo, hikey, blkno, &downoff);
+	pfree(hikey);
+	if (pbuf == InvalidBuffer)
+		return false;			/* parent downlink not found: leave it linked */
+
+	/*
+	 * Decline when the downlink is the parent's leftmost (minus-infinity)
+	 * entry: removing it would need the next downlink promoted to
+	 * minus-infinity, which this reclaimer does not do.
+	 */
+	if (downoff <= BarkPageFirstDataKey(BarkPageGetOpaque(BufferGetPage(pbuf))))
+	{
+		UnlockReleaseBuffer(pbuf);
+		return false;
+	}
+
+	/* Lock the siblings and re-acquire the target, then re-validate. */
+	lbuf = ReadBuffer(index, leftblk);
+	LockBuffer(lbuf, BUFFER_LOCK_EXCLUSIVE);
+	buf = ReadBuffer(index, blkno);
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	rbuf = ReadBuffer(index, rightblk);
+	LockBuffer(rbuf, BUFFER_LOCK_EXCLUSIVE);
+
+	page = BufferGetPage(buf);
+	opaque = BarkPageGetOpaque(page);
+
+	/* Re-check the target is still the empty interior leaf we expect. */
+	if (PageIsNew(page) || !BarkPageIsLeaf(opaque) || BarkPageIsDeleted(opaque) ||
+		(opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0 ||
+		opaque->bark_prev != leftblk || opaque->bark_next != rightblk ||
+		PageGetMaxOffsetNumber(page) >= BarkPageFirstDataKey(opaque) ||
+		BarkEntryGetDownLink((IndexTuple)
+							 PageGetItem(BufferGetPage(pbuf),
+										 PageGetItemId(BufferGetPage(pbuf),
+													   downoff))) != blkno)
+	{
+		UnlockReleaseBuffer(rbuf);
+		UnlockReleaseBuffer(buf);
+		UnlockReleaseBuffer(lbuf);
+		UnlockReleaseBuffer(pbuf);
+		return false;
+	}
+
+	/* Splice the target out of the chain, drop its downlink, flag it deleted. */
+	gstate = GenericXLogStart(index);
+	{
+		Page		lp = GenericXLogRegisterBuffer(gstate, lbuf, 0);
+		Page		rp = GenericXLogRegisterBuffer(gstate, rbuf, 0);
+		Page		pp = GenericXLogRegisterBuffer(gstate, pbuf, 0);
+		OffsetNumber del = downoff;
+
+		p = GenericXLogRegisterBuffer(gstate, buf, 0);
+
+		BarkPageGetOpaque(lp)->bark_next = rightblk;
+		BarkPageGetOpaque(rp)->bark_prev = leftblk;
+		PageIndexMultiDelete(pp, &del, 1);
+
+		BarkPageGetOpaque(p)->bark_flags |= BARK_DELETED;
+		BarkPageGetOpaque(p)->bark_prev = BARK_P_NONE;
+		BarkPageGetOpaque(p)->bark_next = BARK_P_NONE;
+	}
+	GenericXLogFinish(gstate);
+
+	UnlockReleaseBuffer(rbuf);
+	UnlockReleaseBuffer(buf);
+	UnlockReleaseBuffer(lbuf);
+	UnlockReleaseBuffer(pbuf);
+
+	/* Record for reuse (made durable by IndexFreeSpaceMapVacuum). */
+	RecordFreeIndexPage(index, blkno);
+	return true;
+}
 
 static IndexBuildResult *
 barkbuild(Relation heap, Relation index, IndexInfo *indexInfo)
@@ -81,10 +311,10 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	 * logged under its own generic-WAL record.
 	 *
 	 * ponytail: a linear scan of the whole index (like bloom and GIN) rather
-	 * than tracking which pages hold dead TIDs; and no page is emptied/
-	 * recycled yet -- an all-dead leaf is left in place.  Page reclamation and
-	 * right-link repair are a later commit; leaving a now-empty but still
-	 * linked leaf is correct, just not space-optimal.
+	 * than tracking which pages hold dead TIDs.  An all-dead leaf is emptied
+	 * here and unlinked/FSM-recycled in barkvacuumcleanup (not in this pass,
+	 * which holds only one page's lock); leaving a now-empty but still-linked
+	 * leaf between the two passes is correct, just briefly not space-optimal.
 	 */
 	npages = RelationGetNumberOfBlocks(index);
 	for (BlockNumber blkno = BARK_METAPAGE + 1; blkno < npages; blkno++)
@@ -283,6 +513,10 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 {
 	Relation	index = info->index;
 	BlockNumber npages;
+	BarkKeyInfo *keyinfo;
+	BlockNumber *emptyleaves;
+	int			nempty = 0;
+	int			emptyalloc;
 
 	/* ANALYZE has nothing to clean up. */
 	if (info->analyze_only)
@@ -299,12 +533,21 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	 * and set the heap visibility map, which is what makes index-only scans
 	 * worthwhile.
 	 *
-	 * ponytail: no page/FSM reclamation -- empty leaves are left linked in
-	 * place; recycling freed pages is a later space optimization.
+	 * In the same walk we collect the empty interior leaves VACUUM produced
+	 * (all their entries were removed as dead) so they can be unlinked and
+	 * returned to the FSM below -- this is what keeps a delete-heavy index from
+	 * growing the relation without bound across delete/vacuum/insert cycles.
+	 * We only collect them here (under a share lock); the actual unlink takes
+	 * exclusive locks on the siblings and parent in a second pass, so the walk
+	 * stays a cheap read.
 	 */
 	npages = RelationGetNumberOfBlocks(index);
 	stats->num_pages = npages;
 	stats->num_index_tuples = 0;
+	stats->pages_free = 0;
+
+	emptyalloc = 64;
+	emptyleaves = (BlockNumber *) palloc(emptyalloc * sizeof(BlockNumber));
 
 	for (BlockNumber blkno = BARK_METAPAGE + 1; blkno < npages; blkno++)
 	{
@@ -319,14 +562,57 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 		page = BufferGetPage(buf);
 
-		if (!PageIsNew(page) && BarkPageIsLeaf(BarkPageGetOpaque(page)))
+		if (!PageIsNew(page) && !BarkPageIsOverflow(BarkPageGetOpaque(page)) &&
+			BarkPageIsLeaf(BarkPageGetOpaque(page)))
 		{
+			OffsetNumber maxoff;
+
 			opaque = BarkPageGetOpaque(page);
-			stats->num_index_tuples +=
-				PageGetMaxOffsetNumber(page) - BarkPageFirstDataKey(opaque) + 1;
+			maxoff = PageGetMaxOffsetNumber(page);
+			stats->num_index_tuples += maxoff - BarkPageFirstDataKey(opaque) + 1;
+
+			/*
+			 * An empty interior leaf (no data entries, has both siblings, not
+			 * deleted/half-dead) is a reclamation candidate.
+			 */
+			if (!BarkPageIsDeleted(opaque) &&
+				(opaque->bark_flags & BARK_INCOMPLETE_SPLIT) == 0 &&
+				!BarkPageIsRoot(opaque) &&
+				!BarkPageLeftmost(opaque) && !BarkPageRightmost(opaque) &&
+				maxoff < BarkPageFirstDataKey(opaque))
+			{
+				if (nempty >= emptyalloc)
+				{
+					emptyalloc *= 2;
+					emptyleaves = (BlockNumber *)
+						repalloc(emptyleaves, emptyalloc * sizeof(BlockNumber));
+				}
+				emptyleaves[nempty++] = blkno;
+			}
 		}
+		else if (!PageIsNew(page) &&
+				 BarkPageIsDeleted(BarkPageGetOpaque(page)))
+			stats->pages_free++;
+
 		UnlockReleaseBuffer(buf);
 	}
+
+	/*
+	 * Second pass: unlink and FSM-recycle the empty leaves collected above.
+	 * Each deletion re-validates the page under exclusive locks, so a leaf that
+	 * was concurrently refilled or already reclaimed is simply skipped.
+	 */
+	keyinfo = bark_build_keyinfo(index);
+	for (int i = 0; i < nempty; i++)
+	{
+		if (bark_delete_empty_leaf(index, keyinfo, emptyleaves[i]))
+			stats->pages_free++;
+	}
+	pfree(keyinfo);
+	pfree(emptyleaves);
+
+	/* Make the FSM entries recorded this cycle durable and searchable. */
+	IndexFreeSpaceMapVacuum(index);
 
 	return stats;
 }
