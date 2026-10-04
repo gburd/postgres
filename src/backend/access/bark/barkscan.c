@@ -6,10 +6,14 @@
  * A BARK scan positions on a leaf and walks the right-link chain, returning
  * the heap TID of each entry that satisfies the scan keys.  When the keys
  * provide a lower bound on the leading index columns (an =, >, or >= qual, or
- * a `col = ANY(array)` SAOP whose smallest element bounds column 1), the scan
- * descends the tree to the first leaf that can contain a match; otherwise it
- * starts at the leftmost leaf.  It stops early once the leading index columns
- * pass an upper bound (an =, <, or <= qual).
+ * a `col = ANY(array)` SAOP whose current element bounds column 1), the scan
+ * descends the tree to the first leaf that can contain a match: the descent
+ * key uses every usable leading column (bark_make_lower_bound), so a selective
+ * second-column bound such as WHERE a = 5 AND b >= 100 lands near the match
+ * rather than at the first a = 5 leaf.  Otherwise it starts at the leftmost
+ * leaf.  A forward scan also stops early once the leading column passes an
+ * upper bound (an =, <, or <= qual: bark_past_upper_bound), so a bounded scan
+ * reads only the matching span, not the rest of the index.
  *
  * Modeled on nbtree's scan (nbtsearch.c _bt_first / _bt_next / _bt_readpage),
  * simplified for the SINGLE entry shape: every leaf entry is one heap TID in
@@ -23,10 +27,10 @@
  * also drives positioning, so the scan seeks to each element in turn rather
  * than reading the whole index.
  *
- * ponytail: positioning uses only a first-column lower bound; a multi-column
- * or upper-bound-only qual starts at the leftmost leaf and relies on the
- * per-tuple key test.  Sharper positioning is a later optimization, not a
- * correctness matter.
+ * ponytail: a backward scan still starts at the rightmost leaf rather than
+ * descending to an upper bound, and does not terminate early at a lower bound;
+ * sharper backward positioning is an optimization (symmetric to the forward
+ * case), not a correctness matter.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -53,6 +57,8 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/wait_event.h"
+
+static int	bark_lead_cmp(IndexScanDesc scan, IndexTuple itup, Datum elem);
 
 /*
  * Resolve a leaf entry to a tuple whose key and INCLUDE attributes can be read
@@ -329,24 +335,83 @@ bark_tuple_matches(IndexScanDesc scan, IndexTuple itup)
 }
 
 /*
- * Build an index-tuple search key from a lower bound on the first index
- * column, for descending to the first possibly-matching leaf.  Returns NULL
+ * Can a forward scan stop now, because tuple `itup` is past an upper bound on
+ * the leading index column?
+ *
+ * A forward scan visits leaf entries in increasing index order.  An =, <, or
+ * <= qual on column 1 is an upper bound in index order (for a DESC column, =,
+ * >, or >= is, since the physical order is reversed); once the leading value
+ * sorts strictly after that bound in index order, every later entry does too,
+ * so no further entry can match and the scan is finished.  A NULL leading
+ * value never participates (it fails any ordinary comparison key, and under
+ * NULLS LAST sorts last anyway, so the pre-tuple match test ends the scan).
+ *
+ * Only the leading column is used: a non-leading upper bound cannot terminate
+ * the scan early (later leading values may still have matching trailing
+ * values), it only filters per tuple.  SAOP keys are skipped -- their upper
+ * extent is the largest array element, handled by the leading-array cursor and
+ * membership filter, not here.
+ */
+static bool
+bark_past_upper_bound(IndexScanDesc scan, IndexTuple itup)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	bool		reverse = so->keyinfo->cols[0].reverse;
+
+	for (int i = 0; i < scan->numberOfKeys; i++)
+	{
+		ScanKey		sk = &scan->keyData[i];
+		bool		is_upper;
+
+		if (sk->sk_attno != 1 || (sk->sk_flags & SK_ISNULL) ||
+			(sk->sk_flags & SK_SEARCHARRAY))
+			continue;
+
+		/* Which strategies bound the high end of index order on column 1. */
+		if (!reverse)
+			is_upper = (sk->sk_strategy == BTEqualStrategyNumber ||
+						sk->sk_strategy == BTLessStrategyNumber ||
+						sk->sk_strategy == BTLessEqualStrategyNumber);
+		else
+			is_upper = (sk->sk_strategy == BTEqualStrategyNumber ||
+						sk->sk_strategy == BTGreaterStrategyNumber ||
+						sk->sk_strategy == BTGreaterEqualStrategyNumber);
+		if (!is_upper)
+			continue;
+
+		/*
+		 * bark_lead_cmp returns the index-order comparison (DESC inverted), so
+		 * a strictly-greater result means itup sorts after the bound in index
+		 * order -- past every possible match.  A value equal to the bound is
+		 * still handled by the per-tuple match test (it matches for = and <=,
+		 * is rejected for <), so stopping strictly past the bound loses nothing.
+		 */
+		if (bark_lead_cmp(scan, itup, sk->sk_argument) > 0)
+			return true;
+	}
+	return false;
+}
+
+/*
+ * Build an index-tuple search key from a lower bound on the leading index
+ * columns, for descending to the first possibly-matching leaf.  Returns NULL
  * (start at the leftmost leaf) when no bound on column 1 is present.
  *
- * The column-1 bound comes from an =, >, or >= qual, or -- when a SAOP
- * (`col = ANY(array)`) constrains column 1 -- from that array's current
- * element (so->leadArray->cur), so a merged array scan descends straight to
- * the element it is about to visit instead of starting leftmost.
+ * The descent key uses every usable leading column, not just column 1: the
+ * longest run of leading columns 1..k where columns 1..k-1 each have an
+ * equality qual (or, on column 1, a SAOP whose current element is the
+ * equality value) and column k has an =, >, or >= qual.  For WHERE a = 5 AND
+ * b >= 100 on a (a,b) index this descends to (5,100) rather than to the first
+ * a = 5 leaf, so a selective second-column bound no longer starts the scan at
+ * the leftmost a = 5 row.
  *
- * The bound is formed as a pivot carrying only the leading column (natts = 1).
- * This matters on a multi-column index: a lower bound must leave the trailing
- * columns at minus-infinity so the descent lands at or before the first match,
- * never past it.  A pivot truncated to one attribute is exactly minus-infinity
- * on the dropped columns -- bark_compare_itups orders a tuple with fewer key
- * attributes before one that agrees on the shared attributes but has more.
- * (Padding the trailing columns with NULL instead would, under the default
- * NULLS LAST ordering, sort as plus-infinity and overshoot the whole run of
- * matching rows.)
+ * The key is formed as a k-attribute pivot.  A lower bound must leave the
+ * columns after k at minus-infinity so the descent lands at or before the
+ * first match, never past it; a pivot truncated to k attributes is exactly
+ * minus-infinity on the dropped columns -- bark_compare_itups orders a tuple
+ * with fewer key attributes before one that agrees on the shared attributes
+ * but has more.  (Padding with NULL instead would, under the default NULLS
+ * LAST ordering, sort as plus-infinity and overshoot the matching run.)
  */
 static IndexTuple
 bark_make_lower_bound(IndexScanDesc scan)
@@ -354,93 +419,117 @@ bark_make_lower_bound(IndexScanDesc scan)
 	Relation	index = scan->indexRelation;
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	TupleDesc	tupdesc = RelationGetDescr(index);
-	int			natts;
+	int			nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
+	int			natts = IndexRelationGetNumberOfAttributes(index);
 	Datum	   *values;
 	bool	   *isnull;
-	Datum		bound = (Datum) 0;
-	bool		have_bound = false;
+	int			nbound = 0;		/* leading columns the descent key carries */
 	IndexTuple	full;
 	IndexTuple	key;
 	Size		fulllen;
 
-	/*
-	 * A leading-column SAOP drives positioning: descend to its current
-	 * element.  (nelems == 0 was handled as arrayDone before we get here.)
-	 */
-	if (so->leadArray != NULL && so->leadArray->nelems > 0)
-	{
-		bound = so->leadArray->elems[so->leadArray->cur];
-		have_bound = true;
-	}
-	else
-	{
-		for (int i = 0; i < scan->numberOfKeys; i++)
-		{
-			ScanKey		sk = &scan->keyData[i];
-
-			if (sk->sk_attno != 1 || (sk->sk_flags & SK_ISNULL) ||
-				(sk->sk_flags & SK_SEARCHARRAY))
-				continue;
-			if (sk->sk_strategy == BTEqualStrategyNumber ||
-				sk->sk_strategy == BTGreaterStrategyNumber ||
-				sk->sk_strategy == BTGreaterEqualStrategyNumber)
-			{
-				bound = sk->sk_argument;
-				have_bound = true;
-				break;
-			}
-		}
-	}
-
-	if (!have_bound)
-		return NULL;
-
-	/*
-	 * Form the leading-column value as a (possibly oversized) tuple, then
-	 * truncate it to a one-attribute pivot.  bark_form_full_tuple reads one
-	 * entry per descriptor attribute and forms it without the 8191-byte cap, so
-	 * an oversized search argument does not error here; the trailing attributes
-	 * are left NULL only because the former requires a value for every column,
-	 * and are then physically dropped by the truncation.  bark_search descends
-	 * with the pivot; bark_compare_itups compares it (fetching an oversized
-	 * leaf entry's overflow chain as needed), so the descent lands correctly
-	 * even for an oversized bound.
-	 */
-	natts = IndexRelationGetNumberOfAttributes(index);
 	values = (Datum *) palloc(natts * sizeof(Datum));
 	isnull = (bool *) palloc(natts * sizeof(bool));
-	values[0] = bound;
-	isnull[0] = false;
-	for (int c = 1; c < natts; c++)
+	for (int c = 0; c < natts; c++)
 	{
 		values[c] = (Datum) 0;
 		isnull[c] = true;
 	}
+
+	/*
+	 * Walk the leading key columns in order.  Column 1 may be bounded by the
+	 * leading SAOP's current element; every column may be bounded by an =, >,
+	 * or >= qual.  An equality column lets us include the next column too; a
+	 * strict/non-strict lower bound (>, >=) is the last column we can use (the
+	 * descent must not assume anything about columns past it).
+	 */
+	for (int col = 1; col <= nkeyatts; col++)
+	{
+		Datum		bound = (Datum) 0;
+		bool		have = false;
+		bool		is_equality = false;
+
+		if (col == 1 && so->leadArray != NULL && so->leadArray->nelems > 0)
+		{
+			bound = so->leadArray->elems[so->leadArray->cur];
+			have = true;
+			is_equality = true;	/* the array drives one element at a time */
+		}
+		else
+		{
+			for (int i = 0; i < scan->numberOfKeys; i++)
+			{
+				ScanKey		sk = &scan->keyData[i];
+
+				if (sk->sk_attno != col || (sk->sk_flags & SK_ISNULL) ||
+					(sk->sk_flags & SK_SEARCHARRAY))
+					continue;
+				if (sk->sk_strategy == BTEqualStrategyNumber)
+				{
+					bound = sk->sk_argument;
+					have = true;
+					is_equality = true;
+					break;
+				}
+				if (sk->sk_strategy == BTGreaterStrategyNumber ||
+					sk->sk_strategy == BTGreaterEqualStrategyNumber)
+				{
+					bound = sk->sk_argument;
+					have = true;
+					is_equality = false;
+					/* keep scanning in case an = on the same col appears */
+				}
+			}
+		}
+
+		if (!have)
+			break;				/* no bound on this column: stop extending */
+
+		values[col - 1] = bound;
+		isnull[col - 1] = false;
+		nbound = col;
+
+		if (!is_equality)
+			break;				/* a lower bound is the last usable column */
+	}
+
+	if (nbound == 0)
+	{
+		pfree(values);
+		pfree(isnull);
+		return NULL;
+	}
+
+	/*
+	 * Form the leading values as a (possibly oversized) tuple without the
+	 * 8191-byte cap, so an oversized search argument does not error here, then
+	 * truncate it to an nbound-attribute pivot.  bark_search descends with the
+	 * pivot; bark_compare_itups compares it (fetching an oversized leaf entry's
+	 * overflow chain as needed), so the descent lands correctly.
+	 */
 	full = bark_form_full_tuple(tupdesc, values, isnull, &fulllen);
 	pfree(values);
 	pfree(isnull);
 
-	/*
-	 * Truncate to a one-attribute pivot (minus-infinity on the trailing
-	 * columns).  index_truncate_tuple cannot handle an oversized leading value;
-	 * in that rare case leave the bound untruncated -- it is still a safe lower
-	 * bound for a single-column index, and an oversized leading key on a
-	 * multi-column index is not supported for sharper positioning here.
-	 */
-	if (natts > 1 && !bark_len_is_oversized(fulllen))
+	if (nbound < natts && !bark_len_is_oversized(fulllen))
 	{
-		key = index_truncate_tuple(tupdesc, full, 1);
-		BarkPivotSetNAtts(key, 1);
+		key = index_truncate_tuple(tupdesc, full, nbound);
+		BarkPivotSetNAtts(key, (uint16) nbound);
 		pfree(full);
 	}
-	else if (natts > 1)
+	else if (nbound < natts)
 	{
-		/* Oversized leading key: mark the full tuple as a 1-attr pivot. */
+		/*
+		 * Oversized leading value: index_truncate_tuple cannot shorten it, so
+		 * mark the full tuple as an nbound-attribute pivot.  (An oversized key
+		 * on a multi-column index with trailing bounds is rare; the pivot still
+		 * compares correctly on the attributes it carries.)
+		 */
 		key = full;
-		BarkPivotSetNAtts(key, 1);
+		BarkPivotSetNAtts(key, (uint16) nbound);
 	}
 	else
-		key = full;				/* single-column index: no trailing columns */
+		key = full;				/* bound covers every attribute: no truncation */
 
 	return key;
 }
@@ -1099,6 +1188,28 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 
 				matched = bark_tuple_matches(scan, resolved);
 
+				/*
+				 * Forward early termination: if this entry is already past an
+				 * upper bound on the leading column, no later entry can match, so
+				 * end the scan instead of filtering the rest of the index.  (A
+				 * SAOP leading-array scan ends via arrayDone above; this covers
+				 * plain =, <, <= quals.)  In a parallel scan the pages are handed
+				 * out in forward chain order, so once one worker sees a page past
+				 * the bound every later page is too -- mark the whole scan done.
+				 */
+				if (!matched && !backward && so->leadArray == NULL &&
+					bark_past_upper_bound(scan, resolved))
+				{
+					if (fetched)
+						pfree(resolved);
+					LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+					ReleaseBuffer(buf);
+					so->currentBuffer = InvalidBuffer;
+					if (scan->parallel_scan != NULL)
+						bark_parallel_done(scan);
+					return false;
+				}
+
 				if (matched)
 				{
 					/*
@@ -1256,6 +1367,26 @@ bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 			IndexTuple	resolved = bark_scan_resolve(index, itup, &fetched);
 			bool		matched = bark_tuple_matches(scan, resolved);
 			int			n;
+
+			/*
+			 * Early termination, as in the forward gettuple scan: once an entry
+			 * is past an upper bound on the leading column no later entry can
+			 * match, so stop adding to the bitmap.  (SAOP has no single upper
+			 * bound to terminate on -- its extent is the largest array element
+			 * and the membership filter handles it -- so skip when leadArray.)
+			 */
+			if (!matched && so->leadArray == NULL &&
+				bark_past_upper_bound(scan, resolved))
+			{
+				if (fetched)
+					pfree(resolved);
+				LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+				ReleaseBuffer(buf);
+				so->currentBuffer = InvalidBuffer;
+				if (tids)
+					pfree(tids);
+				return ntids;
+			}
 
 			if (fetched)
 				pfree(resolved);
