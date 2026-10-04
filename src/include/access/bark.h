@@ -814,12 +814,12 @@ extern bool bark_insert(Relation index, Datum *values, bool *isnull,
  * several heap TIDs at one key (hence one distance): those are emitted one per
  * gettuple call, all before the merge advances.
  *
- * ponytail: one ordering key only (the first ORDER BY <-> clause); multi-key
- * KNN would need a priority queue like GiST's.  A scalar B-tree has a single
- * distance axis, so one key is the whole useful case here.  KNN is also never
- * parallel -- intrinsic to a single-center outward merge, not a deferred
- * optimization; see the barkknn.c header for why a two-sided split would buy
- * nothing on an output-bounded scan.
+ * This handles one ordering key (the first ORDER BY <-> clause); multi-key
+ * KNN would need a priority queue like GiST's, but a scalar B-tree has a
+ * single distance axis, so one key is the whole useful case here.  KNN is
+ * likewise never parallel -- that is intrinsic to a single-center outward
+ * merge, not a deferred optimization; see the barkknn.c header for why a
+ * two-sided split would buy nothing on an output-bounded scan.
  */
 typedef struct BarkKnnCursor
 {

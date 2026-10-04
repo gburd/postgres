@@ -204,14 +204,15 @@ bark_get_free_page(Relation index)
  * imposes, which is what lets BARK share btree operator families.
  *
  * An OVERSIZED entry carries no key attributes inline (its full tuple lives on
- * an overflow chain), so when either operand is OVERSIZED we fetch the full
- * tuple(s) and compare those.  This is what makes out-of-line storage
- * transparent: two keys that share a long prefix still order on their full
- * value, because the comparison always sees the whole key.  (The caller must
- * pass a non-NULL `index` so the overflow chain can be read; every caller does.
- * ponytail: no inline prefix shortcut yet -- an OVERSIZED compare always reads
- * the chain.  A length/prefix fast path that resolves most compares without a
- * fetch is a later optimization, not a correctness matter.)
+ * an overflow chain).  Two OVERSIZED entries whose first key column sorts
+ * bytewise (a C/POSIX collation) are first compared on the short inline prefix
+ * each one caches (BarkOverflowRef.prefix); only when those prefixes tie, or
+ * when either operand lacks a usable prefix, do we fetch the full tuple(s) from
+ * the chain and compare those.  Fetching the whole key is what makes out-of-
+ * line storage transparent: two keys that share a long prefix still order on
+ * their full value, because the comparison ultimately sees the whole key.  (The
+ * caller must pass a non-NULL `index` so the overflow chain can be read; every
+ * caller does.)
  */
 int
 bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,

@@ -137,17 +137,16 @@ bark_find_parent_downlink(Relation index, BarkKeyInfo *keyinfo,
  * leaf linked and correct) when the page is not an eligible interior empty
  * leaf, or when its parent downlink is the leftmost (minus-infinity) entry
  * (whose removal would require promoting the next downlink to minus-infinity --
- * a reshuffle this minimal reclaimer leaves for a later commit).
+ * a reshuffle this reclaimer does not perform).
  *
- * ponytail: this reclaims interior empty leaves only.  A leftmost or rightmost
- * empty leaf, an empty leaf whose parent downlink is the minus-infinity entry,
- * and an emptied internal page are all left linked in place (correct, just not
- * reclaimed); full nbtree-style multi-level / edge-page deletion is the upgrade
- * path.  ponytail: it locks the left sibling, target, right sibling and parent
- * together under VACUUM's exclusive-ish lock, matching BARK's current
- * single-writer model (the same model the insert/split paths document); the
- * concurrent-safe XID-gated recycling nbtree uses is deferred to the P-series
- * concurrency work.
+ * This reclaims interior empty leaves only.  A leftmost or rightmost empty
+ * leaf, an empty leaf whose parent downlink is the minus-infinity entry, and
+ * an emptied internal page are all left linked in place -- correct, and still
+ * reusable once their siblings are rewritten, just not directly unlinked here.
+ * It locks the left sibling, target, right sibling, and parent together, which
+ * is sound under BARK's single-writer page model (the same model the insert
+ * and split paths rely on); the XID-gated concurrent recycling nbtree performs
+ * belongs with the concurrency work, not this reclaimer.
  */
 static bool
 bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
@@ -310,11 +309,11 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	 * internal (pivot) pages are skipped.  Each page is modified and WAL-
 	 * logged under its own generic-WAL record.
 	 *
-	 * ponytail: a linear scan of the whole index (like bloom and GIN) rather
+	 * This is a linear scan of the whole index, as bloom and GIN do, rather
 	 * than tracking which pages hold dead TIDs.  An all-dead leaf is emptied
 	 * here and unlinked/FSM-recycled in barkvacuumcleanup (not in this pass,
-	 * which holds only one page's lock); leaving a now-empty but still-linked
-	 * leaf between the two passes is correct, just briefly not space-optimal.
+	 * which holds only one page's lock); a now-empty but still-linked leaf
+	 * between the two passes is correct, just briefly not space-optimal.
 	 */
 	npages = RelationGetNumberOfBlocks(index);
 	for (BlockNumber blkno = BARK_METAPAGE + 1; blkno < npages; blkno++)
@@ -642,13 +641,13 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
  *     no oversized entries (average entry well under the item cap) adds nothing,
  *     so a normal index costs exactly as genericcostestimate says.
  *
- * ponytail: the overflow surcharge is derived from the index's average entry
- * size, not from a count of how many visited entries are actually oversized
- * (which would need a per-index oversized-entry statistic the AM does not keep).
- * It is a correct expected-value charge for an index whose entries are
- * uniformly large, and zero for an index with none; a mixed index is charged
- * the average.  A dedicated oversized-entry count in the meta/stats is the
- * upgrade path if the planner ever misjudges a skewed mix.
+ * The overflow surcharge is derived from the index's average entry size, not
+ * from a count of how many visited entries are actually oversized (which would
+ * need a per-index oversized-entry statistic the AM does not keep).  It is a
+ * correct expected-value charge for an index whose entries are uniformly large,
+ * and zero for an index with none; a mixed index is charged the average.  A
+ * dedicated oversized-entry count in the meta/stats would let the planner
+ * sharpen this for a skewed mix.
  */
 static void
 barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,

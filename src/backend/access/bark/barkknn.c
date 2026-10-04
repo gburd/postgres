@@ -26,10 +26,11 @@
  * false) and the executor returns tuples straight through without a reorder
  * queue.
  *
- * ponytail: one ordering key only (the first ORDER BY <~> clause).  A scalar
- * B-tree has a single distance axis, so a second ordering key cannot refine
- * the order the way it would for a multidimensional GiST index; supporting
- * several would need GiST's priority queue for no gain here.
+ * A scalar B-tree orders on a single distance axis, so only one ordering key
+ * (the first ORDER BY <~> clause) is meaningful: a second ordering key cannot
+ * refine the order the way it would for a multidimensional GiST index, which
+ * is why BARK answers one ordering key and ignores any others.  Supporting
+ * several would need GiST's priority queue and would buy nothing here.
  *
  * No parallel KNN -- and this is intrinsic to a single-center outward merge,
  * not a deferred optimization.  The scan is driven from one point: at every
@@ -503,9 +504,9 @@ bark_knn_rescan(IndexScanDesc scan, ScanKey orderbys, int norderbys)
 
 	/*
 	 * Take the single ordering key.  Only the first ORDER BY <~> clause is
-	 * used (see the ponytail note in bark.h); any further ordering keys are a
-	 * B-tree can't refine with and are ignored, which is correct because a
-	 * single scalar distance fully determines the order.
+	 * used (see the design note in bark.h); any further ordering keys are ones
+	 * a scalar B-tree cannot refine with and are ignored, which is correct
+	 * because a single scalar distance fully determines the order.
 	 */
 	ob = &orderbys[0];
 	fmgr_info_copy(&knn->distfn, &ob->sk_func, CurrentMemoryContext);
