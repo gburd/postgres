@@ -1,0 +1,5 @@
+# nbuffers  stock_maxticks  hotcool_maxticks  claim_maxticks  precool_maxticks
+524288      524326          522266            34              34
+1048576     1048614         1046554           35              34
+4194304     4194342         4192282           34              33
+12582912    12582950        12579000          34              34

@@ -1,0 +1,292 @@
+== Bounded Clock Sweep and the Cooling-Stage Evictor ==
+
+=== Request for Comments [RFC] PROPOSED / EXPERIMENTAL &mdash; NOT MERGED ===
+
+This page describes a four-patch series against the PostgreSQL buffer manager.
+It is '''experimental''': it has not been reviewed on pgsql-hackers in this
+form, it changes the hottest path in the buffer manager, and the production
+evidence for the problem it solves is still partly second-hand.  Do not run it
+on anything you care about.
+
+The series addresses a failure mode in the existing clock sweep that is not a
+throughput problem and does not show up in any standard benchmark: under the
+right conditions a '''single buffer read can sweep the entire buffer pool''',
+and the cost grows linearly with <code>shared_buffers</code>.
+
+---
+
+== The problem ==
+
+A buffer becomes eligible for eviction only when its <code>usage_count</code>
+reaches zero.  Two facts combine badly:
+
+* <code>PinBuffer()</code> saturates <code>usage_count</code> back to
+  <code>BM_MAX_USAGE_COUNT</code> (5) on every access.
+* The clock hand decrements by one per visit, and a decrement counts as
+  progress, so it resets <code>trycounter</code>.
+
+Let ''T'' be the time for the hand to complete one pass of the pool.  A page
+must then go roughly ''5T'' without a single access before it can be reclaimed.
+''T'' grows with <code>NBuffers</code>.  On a large pool, any workload that
+touches much of the pool more often than once per five passes re-promotes
+buffers faster than the hand demotes them.  The population of evictable buffers
+collapses, and because cooling resets the try counter there is '''no bound''' on
+how long one <code>StrategyGetBuffer()</code> call will search.
+
+Modelling the accesses to a page as a Poisson process of rate ''r'', the
+fraction of the pool that is evictable is approximately
+<code>e^(-k·r·T)</code>, with ''k''=5 for the current counter.  The eviction
+candidate density therefore decays '''exponentially''' in both the access rate
+and the pool size.  At ''rT''=1 that is 0.0067 of the pool; at ''rT''=2 it is
+3.4e-5.
+
+This is the mechanism behind reports of large instances where a scan stalls for
+seconds with no I/O wait and no lock contention.
+
+== What does ''not'' fix it ==
+
+Replacing the 0..5 counter with a single HOT/COOL bit (''k''=1 instead of
+''k''=5) moves the cliff out by about 5x in ''r·T'' and reduces measured sweep
+amplification by ~1.75x.  '''It does not remove the cliff.'''  Measured worst
+case is still 0.998 of <code>NBuffers</code>.  Fewer states is a better
+constant, not a bound.  This correction matters: the 1-bit evictor was
+originally proposed on simplicity grounds and benchmarked as a throughput wash,
+and neither argument is the real one.
+
+== The series ==
+
+=== 0001 &mdash; cooling-stage evictor ===
+
+Replace <code>usage_count</code> with a one-bit cooling state, reusing the same
+field so the 64-bit buffer-state layout is unchanged.
+
+{| class="wikitable"
+|-
+! transition !! stock !! this patch
+|-
+| admit || <code>usage_count = 1</code> || '''COOL''' (probation)
+|-
+| pin (no strategy) || <code>min(uc+1, 5)</code> || COOL &rarr; HOT
+|-
+| pin (ring) || <code>max(uc, 1)</code> || no change
+|-
+| sweep visit, HOT || <code>uc--</code>, keep scanning || HOT &rarr; COOL, keep scanning
+|-
+| sweep visit, COOL || if <code>uc==0</code>, CAS-claim || CAS-claim
+|}
+
+Demotion and reclamation happen on '''separate ticks''', so a buffer always
+survives the pass that cools it and gets one full sweep of grace in which a new
+access can rescue it.  A ring access deliberately does not promote, which
+preserves the existing rule that ring buffers must not evict others from the
+pool and keeps <code>GetBufferFromRing()</code>'s reuse test correct.
+
+=== 0002 &mdash; the bound (the patch that matters) ===
+
+Once a single <code>StrategyGetBuffer()</code> call has demoted
+<code>BUF_COOL_CLAIM_THRESHOLD</code> buffers without finding one evictable,
+the pool is ''demonstrably'' hotter than the hand can grind down.  From that
+point in the same call, the sweep claims the next unpinned buffer outright
+instead of merely demoting it.
+
+The cost is evicting a buffer that had not finished probation, which is the
+right trade only when the alternative is an unbounded scan; the threshold is
+derived from the cache line size, not exposed as a tunable, and is set well
+above what a healthy workload reaches.  Under no pressure the counter never
+reaches it and behaviour is '''unchanged'''.  A shared counter
+(<code>numCoolClaims</code>) records how often this happens, which is the
+signal that the pool is undersized for its access rate.
+
+=== 0003 &mdash; background staging ===
+
+The background writer's cleaning scan already walks buffers ahead of the hand
+and already holds each buffer header lock, so demoting an unpinned HOT buffer
+as it passes costs one masked store on work being done anyway, with no CAS.
+
+Crucially it stages candidates '''only while <code>numCoolClaims</code> is
+rising'''.  Cooling buffers nobody is waiting for would shorten every buffer's
+probation for no benefit &mdash; the mistake a fixed background cooler makes.
+Staged buffers count toward <code>reusable_buffers</code>, so the existing
+demand estimate bounds the work and it cannot run away and cool the pool.
+
+=== 0004 &mdash; why the rings stay ===
+
+COOL admission makes a read-once page self-evicting, which is the
+pollution-avoidance job the <code>BufferAccessStrategy</code> rings were
+introduced for.  It does not replace their other roles:
+<code>BAS_BULKREAD</code> drives <code>StrategyRejectBuffer()</code>, and
+<code>BAS_BULKWRITE</code>/<code>BAS_VACUUM</code> dirty their buffers on first
+touch, so admission policy cannot make them self-evicting.  All strategies are
+retained; see [[#Vacuum ring|the vacuum measurement]] below for what is and is
+not known.
+
+---
+
+== Measured results ==
+
+Two bare-metal instances: '''z1d.metal''' (48 cores, 2 NUMA nodes, datadir on
+local NVMe RAID0) and '''r8i.metal-96xl''' (384 cores, 6 NUMA nodes).
+<code>debugoptimized</code>, <code>cassert=off</code>, huge pages on.
+
+'''Workload''' (this is the part that matters &mdash; standard benchmarks do not
+reproduce the problem): point lookups with
+<code>random_zipfian(s=1.10)</code> over a table 1.15x
+<code>shared_buffers</code>, 3 runs per point, counters sampled after a 60s
+warmup.  Uniform access over a working set much larger than the pool '''does
+not''' reproduce it, because each page's individual access rate is then too low
+for anything to become un-evictable.
+
+=== Sweep amplification and the tail ===
+
+<code>max ticks</code> = the most clock-hand advances any single allocation
+performed.  <code>ticks/victim</code> = total advances / buffers reclaimed.
+
+{| class="wikitable"
+|-
+! nodes !! clients !! s_b !! NBuffers !! arm !! ticks/victim !! max ticks !! max / NBuffers
+|-
+| 2 || 24 || 8GB || 1,048,576 || master || 5.90 || 1,048,614 || '''1.0000'''
+|-
+| 2 || 24 || 8GB || 1,048,576 || 0001 || 3.36 || 1,046,554 || '''0.9981'''
+|-
+| 2 || 24 || 8GB || 1,048,576 || +0002 || 3.39 || '''35''' || 0.00003
+|-
+| 2 || 24 || 8GB || 1,048,576 || +0003 || 3.09 || '''34''' || 0.00003
+|-
+| 2 || 24 || 32GB || 4,194,304 || master || 2.11 || 4,194,342 || '''1.0000'''
+|-
+| 2 || 24 || 32GB || 4,194,304 || 0001 || 1.32 || 4,192,282 || '''0.9995'''
+|-
+| 2 || 24 || 32GB || 4,194,304 || +0002 || 1.32 || '''34''' || 0.00001
+|-
+| 6 || 192 || 8GB || 1,048,576 || master || 6.01 || 1,048,614 || '''1.0000'''
+|-
+| 6 || 192 || 8GB || 1,048,576 || 0001 || 3.41 || 1,046,554 || '''0.9981'''
+|-
+| 6 || 192 || 8GB || 1,048,576 || +0002 || 3.42 || '''37''' || 0.00004
+|-
+| 6 || 192 || 8GB || 1,048,576 || +0003 || 3.05 || '''35''' || 0.00003
+|-
+| 6 || 192 || 32GB || 4,194,304 || master || 3.68 || 4,194,342 || '''1.0000'''
+|-
+| 6 || 192 || 32GB || 4,194,304 || +0002 || 2.87 || '''34''' || 0.00001
+|-
+| 6 || 192 || 96GB || 12,582,912 || master || 1.17 || 12,582,950 || '''1.0000'''
+|}
+
+Two things to read off this table:
+
+* '''Master's worst single allocation equals <code>NBuffers</code> to five
+  significant figures at every pool size from 4GB to 96GB.'''  It is exactly one
+  full pass of the pool, scaling linearly with <code>shared_buffers</code>:
+  O(''NBuffers'').
+* '''0002 makes it constant''' at 33-37 ticks regardless of pool size: O(1).
+  That is a ~31,000x reduction at 32GB and ~370,000x at 96GB.
+
+The result is '''NUMA-independent'''.  Master pins to exactly the same max-ticks
+value on 2 nodes and on 6; node count changes throughput (613k vs 970k TPS) but
+not the amplification or the tail.
+
+=== What this is not ===
+
+Throughput and hit ratio are '''flat across all four arms''' at every point
+measured, within ~2% and with overlapping run-to-run ranges.  This is a
+bounded-work and tail-latency change.  Installations with small pools, uniform
+access patterns, or working sets much larger than
+<code>shared_buffers</code> will see nothing.
+
+=== Vacuum ring ===
+
+<code>vacuum_buffer_usage_limit = 0</code> already makes
+<code>GetAccessStrategyWithSize()</code> return NULL, so whether vacuum's ring
+still earns its keep is measurable '''without a patch'''.  With this series
+applied (6 NUMA, s_b=8GB, scale 1000, 64 OLTP clients concurrent with one large
+VACUUM, 3 runs alternated):
+
+{| class="wikitable"
+|-
+! metric !! ring on !! ring off !! note
+|-
+| OLTP tps || 56,444 || 57,944 || ranges overlap &mdash; neutral
+|-
+| OLTP p99 (ms) || 4.29 || 4.38 || neutral
+|-
+| VACUUM wall clock (s) || 66.6 || '''19.9''' || ranges separate &mdash; 3.3x faster
+|-
+| buffer hit % || 96.02 || 96.10 || identical
+|}
+
+This is evidence '''for''' removability, and it contradicts the writeback-pacing
+argument originally given for keeping the ring.  It is not enough to act on: one
+workload shape, one pool size, one storage class, explicit VACUUM rather than
+many concurrent autovacuum workers, and local NVMe rather than slower storage
+that might reward pacing.  Removing <code>BAS_VACUUM</code> would also remove
+<code>IOCONTEXT_VACUUM</code> and the <code>vacuum</code> context from
+<code>pg_stat_io</code>, and render the documented
+<code>vacuum_buffer_usage_limit</code> GUC meaningless.  The rings therefore
+stay and the series changes replacement policy only.
+
+---
+
+== Reproducing it ==
+
+No patch is required to observe the problem.  Size a pool large enough that a
+pass takes real time, a working set slightly larger than the pool, and use
+'''skewed''' access:
+
+<pre>
+shared_buffers = 8GB
+huge_pages = on
+autovacuum = off
+
+-- table ~1.15x shared_buffers
+CREATE TABLE w (id bigint, pad text) WITH (fillfactor=100);
+INSERT INTO w SELECT g, repeat('x',100) FROM generate_series(1,82000000) g;
+CREATE UNIQUE INDEX w_pk ON w (id);
+VACUUM ANALYZE w;
+</pre>
+
+<pre>
+# probe.sql
+\set k random_zipfian(1, 82000000, 1.10)
+SELECT pad FROM w WHERE id = :k;
+</pre>
+
+<pre>
+pgbench -n -M prepared -f probe.sql -c 24 -j 24 -T 90
+</pre>
+
+Then ask the pool what state it is in:
+
+<pre>
+SELECT usage_count, buffers FROM pg_buffercache_usage_counts()
+ ORDER BY usage_count;
+</pre>
+
+'''If the pool is piled at <code>usage_count</code> 5 with little or nothing at
+0, the sweep has no candidates and every allocation is paying for the search.'''
+That query is the cheapest diagnostic for whether this affects a given
+installation, and it needs no patch and no restart.
+
+== Status and open questions ==
+
+* '''Experimental.''' Not reviewed on-list in this form.
+* Production evidence that this costs real users is still second-hand; the
+  <code>pg_buffercache_usage_counts()</code> histogram above is the ask.
+* 0002 is independently useful '''on top of the existing 0..5 counter''' if the
+  1-bit evictor is not wanted; the bound does not depend on the state change.
+* The threshold is cache-line-derived and unmeasured for sensitivity.  Whether
+  it wants to be adaptive is open.
+* At high enough ''r·T'' even 0002 evicts buffers that have not served their
+  probation.  Whether that measurably hurts hit ratio in a regime we have not
+  constructed is unknown.
+* Branch: <code>bcs</code> on <code>github.com/gburd/postgres</code>.
+
+== See also ==
+
+* [[Clock sweep]], <code>src/backend/storage/buffer/freelist.c</code>
+* Stock's own admission in <code>buf_internals.h</code>: "it can take as many as
+  <code>BM_MAX_USAGE_COUNT+1</code> complete cycles of the clock-sweep hand to
+  find a free buffer"
+* LeanStore (Leis et al., ICDE 2018) &mdash; the cooling-stage model
+* [[HOT with Selective Index Updates]] &mdash; unrelated, same RFC format
