@@ -654,6 +654,7 @@ extern void StrategySyncPrepare(int *num_parts, uint32 *num_buf_alloc);
 extern int	StrategySyncStart(int partition, uint32 *complete_passes,
 							  int *first_buffer, int *num_buffers);
 extern void StrategyNotifyBgWriter(int bgwprocno);
+extern uint64 StrategyCoolClaims(int partition);
 
 /* buf_table.c */
 extern uint32 BufTableHashCode(BufferTag *tagPtr);

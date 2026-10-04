@@ -83,6 +83,7 @@
 /* Bits in SyncOneBuffer's return value */
 #define BUF_WRITTEN				0x01
 #define BUF_REUSABLE			0x02
+#define BUF_COOLED				0x04
 
 #define RELS_BSEARCH_THRESHOLD		20
 
@@ -636,7 +637,7 @@ static void PinBuffer_Locked(BufferDesc *buf);
 static void UnpinBuffer(BufferDesc *buf);
 static void UnpinBufferNoOwner(BufferDesc *buf);
 static void BufferSync(int flags);
-static int	SyncOneBuffer(int buf_id, bool skip_recently_used,
+static int	SyncOneBuffer(int buf_id, bool skip_recently_used, bool cool_if_hot,
 						  WritebackContext *wb_context);
 static void WaitIO(BufferDesc *buf);
 static void AbortBufferIO(Buffer buffer);
@@ -3799,7 +3800,7 @@ BufferSync(int flags)
 		 */
 		if (pg_atomic_read_u64(&bufHdr->state) & BM_CHECKPOINT_NEEDED)
 		{
-			if (SyncOneBuffer(buf_id, false, &wb_context) & BUF_WRITTEN)
+			if (SyncOneBuffer(buf_id, false, false, &wb_context) & BUF_WRITTEN)
 			{
 				TRACE_POSTGRESQL_BUFFER_SYNC_WRITTEN(buf_id);
 				PendingCheckpointerStats.buffers_written++;
@@ -3904,6 +3905,15 @@ BgBufferSyncPartition(WritebackContext *wb_context, int num_partitions,
 	int			num_to_scan;
 	int			num_written;
 	int			reusable_buffers;
+	bool		cool_if_hot;
+	uint64		cool_claims;
+
+	/*
+	 * Cool-claim count as of our previous cycle, to get a rate not a total.
+	 * Per-partition: each partition has its own hand and can starve
+	 * independently, so staging is decided for each one separately.
+	 */
+	static uint64 *prev_cool_claims = NULL;
 
 	/* Variables for final smoothed_density update */
 	long		new_strategy_delta;
@@ -4077,11 +4087,42 @@ BgBufferSyncPartition(WritebackContext *wb_context, int num_partitions,
 	num_written = 0;
 	reusable_buffers = reusable_buffers_est;
 
+	/*
+	 * Decide whether to stage eviction candidates as we go.
+	 *
+	 * The foreground sweep only finds a victim if some buffer is COOL when the
+	 * clock hand reaches it.  StrategyGetBuffer() reports, via
+	 * StrategyCoolClaims(), how many allocations had to claim a still-HOT
+	 * buffer because no COOL one could be found.  A non-zero rate means the
+	 * pool is being re-promoted faster than the hand demotes it, and that
+	 * backends are paying for the search on the critical path.
+	 *
+	 * When that happens we demote HOT buffers as the cleaning scan passes
+	 * them.  The scan is already walking these buffers and already holds each
+	 * header lock, so staging costs a masked store on work we are doing
+	 * anyway, and it moves the demotion off the allocating backend.  When the
+	 * foreground is not starving we do not touch the cooling state at all, so
+	 * a healthy workload keeps the full probation period and is unaffected.
+	 */
+	if (prev_cool_claims == NULL)
+	{
+		/* Same reason as saved_info below: a variable-length static. */
+		prev_cool_claims = calloc(num_partitions, sizeof(uint64));
+		if (prev_cool_claims == NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_OUT_OF_MEMORY),
+					 errmsg("out of memory")));
+	}
+
+	cool_claims = StrategyCoolClaims(partition);
+	cool_if_hot = (cool_claims > prev_cool_claims[partition]);
+	prev_cool_claims[partition] = cool_claims;
+
 	/* Execute the LRU scan */
 	while (num_to_scan > 0 && reusable_buffers < upcoming_alloc_est)
 	{
 		int			sync_state = SyncOneBuffer(saved->next_to_clean, true,
-											   wb_context);
+											   cool_if_hot, wb_context);
 
 		if (++saved->next_to_clean >= (first_buffer + num_buffers))
 		{
@@ -4100,6 +4141,15 @@ BgBufferSyncPartition(WritebackContext *wb_context, int num_partitions,
 			}
 		}
 		else if (sync_state & BUF_REUSABLE)
+			reusable_buffers++;
+
+		/*
+		 * A buffer we demoted is a victim the sweep will not have to demote
+		 * itself.  Count it toward the supply we are building so the scan
+		 * stops once it has staged enough for the predicted demand, rather
+		 * than cooling the whole pool.
+		 */
+		if (sync_state & BUF_COOLED)
 			reusable_buffers++;
 	}
 
@@ -4225,16 +4275,25 @@ BgBufferSync(WritebackContext *wb_context)
  * If skip_recently_used is true, we don't write currently-pinned buffers, nor
  * buffers marked recently used, as these are not replacement candidates.
  *
+ * If cool_if_hot is true, an unpinned HOT buffer is demoted to COOL as we pass
+ * it, staging it as an eviction candidate so the foreground clock sweep finds a
+ * victim without having to demote buffers itself.  We hold the buffer header
+ * lock, so the demotion is a plain masked store rather than a CAS, and a
+ * concurrent PinBuffer() simply promotes the buffer back to HOT -- the intended
+ * behaviour, since a buffer that is being accessed should not be evicted.
+ *
  * Returns a bitmask containing the following flag bits:
  *	BUF_WRITTEN: we wrote the buffer.
  *	BUF_REUSABLE: buffer is available for replacement, ie, it has
  *		pin count 0 and is COOL (an eviction candidate).
+ *	BUF_COOLED: we demoted this buffer from HOT to COOL.
  *
  * (BUF_WRITTEN could be set in error if FlushBuffer finds the buffer clean
  * after locking it, but we don't care all that much.)
  */
 static int
-SyncOneBuffer(int buf_id, bool skip_recently_used, WritebackContext *wb_context)
+SyncOneBuffer(int buf_id, bool skip_recently_used, bool cool_if_hot,
+			  WritebackContext *wb_context)
 {
 	BufferDesc *bufHdr = GetBufferDescriptor(buf_id);
 	int			result = 0;
@@ -4255,6 +4314,21 @@ SyncOneBuffer(int buf_id, bool skip_recently_used, WritebackContext *wb_context)
 	 * upcoming changes and so we are not required to write such dirty buffer.
 	 */
 	buf_state = LockBufHdr(bufHdr);
+
+	/*
+	 * Stage an eviction candidate if asked.  An unpinned HOT buffer is demoted
+	 * to COOL here so the foreground sweep can claim it on its next visit.  We
+	 * already hold the header lock, so this costs one masked store and no
+	 * atomic retry.
+	 */
+	if (cool_if_hot &&
+		BUF_STATE_GET_REFCOUNT(buf_state) == 0 &&
+		BUF_STATE_GET_COOLSTATE(buf_state) != BUF_COOLSTATE_COOL)
+	{
+		UnlockBufHdrExt(bufHdr, buf_state, 0, BUF_USAGECOUNT_MASK, 0);
+		buf_state = LockBufHdr(bufHdr);
+		result |= BUF_COOLED;
+	}
 
 	if (BUF_STATE_GET_REFCOUNT(buf_state) == 0 &&
 		BUF_STATE_GET_COOLSTATE(buf_state) == BUF_COOLSTATE_COOL)

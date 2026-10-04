@@ -1146,6 +1146,23 @@ StrategySyncStart(int partition, uint32 *complete_passes,
 }
 
 /*
+ * StrategyCoolClaims -- how many allocations had to claim a HOT buffer
+ *
+ * Returns a monotonically increasing count of allocations that could not find
+ * a COOL victim and claimed a still-HOT buffer instead.  The background writer
+ * compares successive readings: a rising count means the foreground sweep is
+ * starving for eviction candidates, which is the condition under which staging
+ * candidates in the background pays for itself.
+ */
+uint64
+StrategyCoolClaims(int partition)
+{
+	Assert((partition >= 0) && (partition < StrategyControl->num_partitions));
+
+	return pg_atomic_read_u64(&StrategyControl->sweeps[partition].numCoolClaims);
+}
+
+/*
  * StrategyNotifyBgWriter -- set or clear allocation notification latch
  *
  * If bgwprocno isn't -1, the next invocation of StrategyGetBuffer will
