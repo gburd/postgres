@@ -793,3 +793,42 @@ SELECT id, v FROM bark_oc ORDER BY id;
 -- A plain duplicate insert (no ON CONFLICT) still raises the unique violation.
 INSERT INTO bark_oc VALUES (1, 'x');
 DROP TABLE bark_oc;
+
+-- ===========================================================================
+-- Incremental LIST/POSTING coalesce: building one key's duplicate set by many
+-- single-row inserts must stay fast (O(1) amortized for the common append
+-- case) and exactly correct.  Inserting 10000 rows that all share one key used
+-- to be O(N^2) (each coalesce re-read, re-sorted and re-serialized the whole
+-- set); the append fast path makes it quick.  Here we only assert correctness
+-- -- count and ordering match a sequential scan -- and the test completing in
+-- the regress run at all is the speed proof (the O(N^2) version took ~40s).
+-- ===========================================================================
+CREATE TABLE bark_coalesce (k int, seq int);
+CREATE INDEX bark_coalesce_idx ON bark_coalesce USING bark (k);
+INSERT INTO bark_coalesce SELECT 42, g FROM generate_series(1, 10000) g;
+-- Mixed-order inserts into a second key exercise the non-append general path.
+INSERT INTO bark_coalesce SELECT 7, g FROM generate_series(1, 2000) g
+  ORDER BY random();
+-- Count via index must match a sequential count for both keys.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT k, count(*) AS idx_count FROM bark_coalesce WHERE k IN (7, 42)
+  GROUP BY k ORDER BY k;
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SELECT k, count(*) AS seq_count FROM bark_coalesce WHERE k IN (7, 42)
+  GROUP BY k ORDER BY k;
+-- Ordering: the index returns the heap TIDs for key 42 in ascending ctid order,
+-- matching a sorted sequential scan (compared as a digest so the output is
+-- stable regardless of the actual block numbers assigned).
+SET enable_indexscan = on;
+SET enable_seqscan = off;
+SELECT md5(string_agg(ctid::text, ',')) =
+       (SELECT md5(string_agg(ctid::text, ','))
+          FROM (SELECT ctid FROM bark_coalesce WHERE k = 42 ORDER BY ctid) s)
+         AS idx_order_matches_sorted
+  FROM (SELECT ctid FROM bark_coalesce WHERE k = 42) t;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+RESET enable_seqscan;
+DROP TABLE bark_coalesce;

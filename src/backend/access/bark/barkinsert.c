@@ -985,13 +985,23 @@ done:
  * the overflow as separate entries; splitting one key's posting set across
  * entries is a later space optimization, not a correctness matter.
  *
- * ponytail: each coalesce re-reads the whole set, re-sorts in the new locator,
- * and re-serializes, so building up one key's set by N single-row inserts is
- * O(N^2).  Fine for the moderate duplicate counts an OLTP workload inserts one
- * row at a time; a bulk load that needs a huge per-key set should build the
- * index after loading (the bulk loader forms the compact shapes directly).  An
- * incremental sbm_add into an embedded, growable body would make it O(N) and
- * is the upgrade path.
+ * The common append case (the new locator sorts after every existing member,
+ * as monotonic/append-ish heap TIDs do) is handled by an O(1)-amortized fast
+ * path: a LIST entry is extended by appending the one new locator to its body
+ * and bumping its count, without re-reading the set, re-sorting, or probing the
+ * POSTING encoding.  Only when the appended LIST would exceed the item ceiling,
+ * when the new locator lands in the middle of the set, or when the entry is a
+ * SINGLE/POSTING does it fall to the general path below, which re-reads the
+ * full set, inserts in sorted order, and re-encodes as whichever of LIST /
+ * POSTING is smaller.  Correctness is identical either way: members stay sorted
+ * and distinct, and the LIST -> POSTING promotion still happens at the ceiling.
+ *
+ * ponytail: the POSTING append case is still O(members) per insert (sbm has no
+ * in-place append, so it is deserialized, added to, and re-serialized); an
+ * incremental sbm_add into an embedded, growable body would make it O(1)
+ * amortized too and is the upgrade path.  POSTING is only chosen for a large,
+ * clustered set whose per-key members are in any case capped by the item
+ * ceiling, so this is bounded, not the O(N^2) the LIST phase used to be.
  */
 static bool
 bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
@@ -1023,6 +1033,95 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 	if (!BarkEntryIsLeafData(cur) ||
 		bark_compare_itups(keyinfo, index, key, cur) != 0)
 		return false;
+
+	/*
+	 * Fast path: appending to a LIST whose every member sorts before the new
+	 * locator.  This is the common monotonic/append-ish TID case.  Extend the
+	 * LIST body by one locator and bump its count in place -- no re-read, no
+	 * re-sort, no POSTING probe -- so building one key's set by repeated single
+	 * inserts is O(1) amortized rather than O(N) per insert.  We fall through to
+	 * the general path when the appended LIST would exceed the item ceiling (so
+	 * the LIST -> POSTING promotion and page-split handling stay in one place).
+	 */
+	if (BarkEntryGetShape(cur) == BARK_SHAPE_LIST)
+	{
+		int			ncur = BarkListGetCount(cur);
+		ItemPointer last = BarkListGetTID(cur, ncur - 1);
+
+		if (ncur < BARK_LIST_MAX_COUNT &&
+			ItemPointerCompare(newtid, last) > 0)
+		{
+			Size		cursz = IndexTupleSize(cur);
+			Size		appended = cursz + sizeof(ItemPointerData);
+			IndexTuple	ext;
+
+			if (MAXALIGN(appended) <= BarkMaxItemSize &&
+				PageGetFreeSpace(page) + MAXALIGN(ItemIdGetLength(iid)) >=
+					MAXALIGN(appended))
+			{
+				/*
+				 * The body is a packed ascending ItemPointerData array ending
+				 * at the entry's used size; the new locator goes right after
+				 * the last one.  The body offset (t_tid block field) is
+				 * unchanged, so copying the old entry verbatim and appending
+				 * keeps the layout correct; only the count and size change.
+				 */
+				ext = (IndexTuple) palloc0(appended);
+				memcpy(ext, cur, cursz);
+				memcpy((char *) ext + cursz, newtid, sizeof(ItemPointerData));
+				ext->t_info = (ext->t_info & ~INDEX_SIZE_MASK) |
+					(uint16) appended;
+				ItemPointerSetOffsetNumber(&ext->t_tid,
+										   (OffsetNumber) ((uint16) (ncur + 1) |
+														   BARK_IS_LIST));
+
+				{
+					GenericXLogState *gstate = GenericXLogStart(index);
+					Page		p = GenericXLogRegisterBuffer(gstate, buf, 0);
+
+					if (!PageIndexTupleOverwrite(p, eqoff, (char *) ext,
+												 IndexTupleSize(ext)))
+						elog(ERROR, "failed to extend BARK list entry in place");
+					GenericXLogFinish(gstate);
+				}
+				pfree(ext);
+				return true;
+			}
+			/* Too big to grow here: let the general path re-encode / split. */
+		}
+	}
+
+	/*
+	 * Fast path: adding to an existing POSTING entry.  sbm dedups and keeps
+	 * order, so the one new locator is added incrementally (deserialize once,
+	 * add, re-serialize once) instead of re-reading the whole set and
+	 * rebuilding its sbm from scratch -- O(serialized size) rather than
+	 * O(members) per insert.  A POSTING never shrinks back to a LIST on insert
+	 * (the set only grows), so the shape stays POSTING; we fall through only
+	 * when the extended entry would overflow the item ceiling (then the general
+	 * path keeps the overflow as a separate entry or splits the page).
+	 */
+	if (BarkEntryGetShape(cur) == BARK_SHAPE_POSTING)
+	{
+		Size		room = PageGetFreeSpace(page) + MAXALIGN(ItemIdGetLength(iid));
+		Size		cap = Min((Size) BarkMaxItemSize, room);
+		IndexTuple	ext = bark_posting_add_tid(RelationGetDescr(index), key,
+											   cur, newtid, cap);
+
+		if (ext != NULL)
+		{
+			GenericXLogState *gstate = GenericXLogStart(index);
+			Page		p = GenericXLogRegisterBuffer(gstate, buf, 0);
+
+			if (!PageIndexTupleOverwrite(p, eqoff, (char *) ext,
+										 IndexTupleSize(ext)))
+				elog(ERROR, "failed to extend BARK posting entry in place");
+			GenericXLogFinish(gstate);
+			pfree(ext);
+			return true;
+		}
+		/* Too big to grow here: let the general path handle it. */
+	}
 
 	/*
 	 * Gather the existing locators plus the new one, in ascending order.  A

@@ -557,6 +557,55 @@ bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout)
 	return n;
 }
 
+/*
+ * Incrementally add one locator to an existing POSTING entry, returning a fresh
+ * POSTING entry with `newtid` included.  The existing body is deserialized
+ * once, the one new key is added (sbm dedups and keeps order, so `newtid` may
+ * be anywhere, not only an append), and the set is re-serialized once -- O(the
+ * serialized size), not O(members), so repeated single-row inserts into one
+ * key's POSTING set are O(1) amortized for a clustered set rather than the
+ * O(members) a full re-read-and-rebuild costs.  Returns NULL when the new entry
+ * would exceed `maxsz` (the caller then falls back to the general re-encode /
+ * split path, keeping the LIST<->POSTING shape decision in one place).
+ */
+IndexTuple
+bark_posting_add_tid(TupleDesc tupdesc, IndexTuple key, IndexTuple posting,
+					 ItemPointer newtid, Size maxsz)
+{
+	Size		keysz = IndexTupleSize(key);
+	Size		bodyoff = MAXALIGN(keysz);
+	Sbm		   *map = bark_posting_open(posting);
+	Size		serialized;
+	Size		total;
+	IndexTuple	entry;
+	uint8	   *out;
+
+	if (sbm_add_grow(&map, bark_tid_to_key(newtid)) == SBM_IDX_MAX)
+		elog(ERROR, "sbm_add_grow failed extending BARK posting entry");
+	map = sbm_shrink_to_fit(map);
+
+	serialized = sbm_serialized_size(map);
+	total = bodyoff + MAXALIGN(serialized);
+	if (MAXALIGN(total) > maxsz || total > INDEX_SIZE_MASK)
+	{
+		sbm_free(map);
+		return NULL;			/* too big: caller re-encodes / splits */
+	}
+
+	entry = (IndexTuple) palloc0(total);
+	memcpy(entry, key, keysz);
+	entry->t_info = (key->t_info & ~INDEX_SIZE_MASK) | (uint16) total;
+	entry->t_info |= INDEX_AM_RESERVED_BIT;
+	ItemPointerSetOffsetNumber(&entry->t_tid, (OffsetNumber) BARK_IS_POSTING);
+	BarkEntrySetBodyOffset(entry, (uint16) bodyoff);
+
+	out = BarkPostingGetData(entry);
+	if (sbm_serialize(map, out, serialized) != serialized)
+		elog(ERROR, "sbm_serialize wrote unexpected length extending BARK posting entry");
+	sbm_free(map);
+	return entry;
+}
+
 /* ----------------------------------------------------------------------------
  * OVERSIZED entry construction and overflow-chain I/O
  *

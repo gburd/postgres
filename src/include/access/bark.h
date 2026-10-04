@@ -636,6 +636,9 @@ extern uint64 bark_tid_to_key(ItemPointer tid);
 extern void bark_key_to_tid(uint64 key, ItemPointer tid);
 extern IndexTuple bark_form_posting(TupleDesc tupdesc, IndexTuple key,
 									ItemPointer tids, int ntids);
+extern IndexTuple bark_posting_add_tid(TupleDesc tupdesc, IndexTuple key,
+									   IndexTuple posting, ItemPointer newtid,
+									   Size maxsz);
 extern int	bark_posting_count(IndexTuple itup);
 extern int	bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout);
 
