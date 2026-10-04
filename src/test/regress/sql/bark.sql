@@ -986,3 +986,42 @@ RESET enable_seqscan;
 RESET enable_bitmapscan;
 
 DROP TABLE bark_pos, bark_ub, bark_desc;
+
+-- ===========================================================================
+-- Oversized-key inline-prefix fast path: an OVERSIZED entry over a C-collation
+-- text column stores a short prefix inline so two oversized keys that differ
+-- early order without fetching the overflow chain; keys sharing a long prefix
+-- fall through to the full value.  Correctness must match a sequential scan
+-- either way.  (The index column uses the C collation so the bytewise prefix
+-- shortcut is sound.)
+-- ===========================================================================
+CREATE TABLE bark_pfxfast (k text COLLATE "C");
+-- Mix: keys differing in the first byte (prefix decides), keys sharing an
+-- 8000-char prefix differing only in the tail (prefix ties -> full fetch), and
+-- small keys (no overflow).  All oversized ones exceed the ~2.7KB item cap.
+INSERT INTO bark_pfxfast VALUES
+  (repeat('A', 9000) || '1'),
+  (repeat('A', 9000) || '3'),
+  (repeat('A', 9000) || '2'),
+  (repeat('B', 9000)),
+  (repeat('Z', 9000)),
+  ('short-a'), ('short-b');
+CREATE INDEX bark_pfxfast_idx ON bark_pfxfast USING bark (k);
+CREATE EXTENSION IF NOT EXISTS amcheck;
+SELECT bark_index_check('bark_pfxfast_idx');
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+-- Ordering of the shared-prefix group must break on the tail (1,2,3), proving
+-- the full-fetch tie-break; the whole ordering must match a seqscan.
+SELECT right(k, 1) AS tail FROM bark_pfxfast WHERE k LIKE 'A%' ORDER BY k;
+-- Equality on an oversized key differing early (prefix decides, no fetch needed).
+SELECT count(*) AS eq_b FROM bark_pfxfast WHERE k = repeat('B', 9000);
+-- Range over the oversized keys agrees with a seqscan.
+SELECT count(*) AS rng_idx FROM bark_pfxfast WHERE k >= repeat('A', 9000);
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+SELECT count(*) AS rng_seq FROM bark_pfxfast WHERE k >= repeat('A', 9000);
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_pfx;
