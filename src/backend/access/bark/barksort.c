@@ -199,8 +199,8 @@ bark_build_callback(Relation index, ItemPointer tid, Datum *values,
 	 * recorded and inserted after the tree is loaded, via the normal
 	 * overflow-aware insert path (bark_build_oversized_pass).
 	 *
-	 * ponytail: this forms every row once here to measure, then tuplesort forms
-	 * the non-oversized ones again -- a size-only estimator that mirrors
+	 * This forms every row once here to measure its size, then tuplesort forms
+	 * the non-oversized ones again; a size-only estimator mirroring
 	 * bark_form_full_tuple's TOAST decisions would avoid the second form.
 	 */
 	full = bark_form_full_tuple(RelationGetDescr(index), values, isnull,
@@ -610,11 +610,11 @@ bark_oversized_pass_callback(Relation index, ItemPointer tid, Datum *values,
  * Insert the oversized rows the first scan deferred (bs->has_oversized) into
  * the loaded tree.  A full second heap scan identifies them again.
  *
- * ponytail: a second heap scan to find the oversized rows, rather than
- * remembering their TIDs from the first scan -- simplest for both serial and
- * parallel builds (parallel workers cannot share a palloc'd TID list), and
- * oversized-key builds are rare.  Fold the oversized rows into the first scan
- * if such builds become common.
+ * A full second heap scan identifies the oversized rows again rather than
+ * remembering their TIDs from the first scan -- the simplest approach for both
+ * serial and parallel builds (parallel workers cannot share a palloc'd TID
+ * list), and oversized-key builds are rare.  The oversized rows could be
+ * folded into the first scan if such builds become common.
  */
 static void
 bark_build_oversized_pass(BarkBuildState *bs)

@@ -638,9 +638,9 @@ bark_new_root(Relation index, IndexTuple downlink, BlockNumber leftblk,
 
 	/*
 	 * The left child's downlink now exists (as the minus-infinity entry), so
-	 * clear its incomplete-split flag in the same record.  ponytail: locks the
-	 * child under the root while BARK is single-writer; revisit for
-	 * concurrency (P-series).
+	 * clear its incomplete-split flag in the same record.  This locks the child
+	 * under the root, which is safe under BARK's single-writer page model (the
+	 * same model the insert and split paths rely on throughout).
 	 */
 	{
 		Buffer		cbuf = bark_clear_incomplete_split(index, gstate, leftblk);
@@ -712,11 +712,9 @@ bark_insert_parent(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
 		/*
 		 * Fits: insert the downlink and log the parent.  The downlink is now
 		 * durably reachable, so clear the left child's incomplete-split flag in
-		 * the same WAL record.
-		 *
-		 * ponytail: locks the child (leftblk) while holding the parent, i.e.
-		 * down the tree -- safe while BARK has no concurrent inserters; revisit
-		 * the lock order when concurrency lands (P-series).
+		 * the same WAL record.  This locks the child (leftblk) while holding
+		 * the parent -- safe under BARK's single-writer page model, the same
+		 * model the insert and split paths rely on throughout.
 		 */
 		GenericXLogState *gstate = GenericXLogStart(index);
 		Page		p = GenericXLogRegisterBuffer(gstate, pbuf, 0);
@@ -800,8 +798,8 @@ bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
  * found.  The caller holds the write lock on `buf` throughout and still holds
  * it on return.
  *
- * ponytail: no killing of known-dead index entries yet (an orthogonal
- * optimization layered on the correct check here).
+ * This does not opportunistically kill known-dead index entries during the
+ * check; that is an orthogonal optimization layered on the correct check here.
  */
 static TransactionId
 bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
@@ -827,10 +825,11 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 	 * left across earlier leaves, but the single live survivor cannot be left
 	 * of the insert leaf's first equal entry.
 	 *
-	 * ponytail: this relies on the insert descent using nextkey=true.  If the
-	 * insert positioning ever changes so the live entry could land strictly
-	 * left of the descent leaf, this check must first walk left to the first
-	 * leaf of the equal-key run (or descend the check with nextkey=false).
+	 * This correctness argument relies on the insert descent using
+	 * nextkey=true.  If the insert positioning ever changes so the live entry
+	 * could land strictly left of the descent leaf, this check would have to
+	 * first walk left to the first leaf of the equal-key run (or descend the
+	 * check with nextkey=false).
 	 */
 	for (;;)
 	{
@@ -986,10 +985,10 @@ done:
  * `off` is the leaf insert position (one past the last entry <= key), so the
  * candidate equal entry, if any, is at off-1.
  *
- * ponytail: the size ceiling is BarkMaxItemSize (~1/3 page).  A single key
+ * The per-entry size ceiling is BarkMaxItemSize (~1/3 page).  A single key
  * with more duplicates than a POSTING entry can hold within that ceiling keeps
  * the overflow as separate entries; splitting one key's posting set across
- * entries is a later space optimization, not a correctness matter.
+ * entries is a space optimization, not a correctness matter.
  *
  * The common append case (the new locator sorts after every existing member,
  * as monotonic/append-ish heap TIDs do) is handled by an O(1)-amortized fast
@@ -1002,12 +1001,12 @@ done:
  * POSTING is smaller.  Correctness is identical either way: members stay sorted
  * and distinct, and the LIST -> POSTING promotion still happens at the ceiling.
  *
- * ponytail: the POSTING append case is still O(members) per insert (sbm has no
- * in-place append, so it is deserialized, added to, and re-serialized); an
- * incremental sbm_add into an embedded, growable body would make it O(1)
- * amortized too and is the upgrade path.  POSTING is only chosen for a large,
- * clustered set whose per-key members are in any case capped by the item
- * ceiling, so this is bounded, not the O(N^2) the LIST phase used to be.
+ * The POSTING append case is still O(members) per insert (the sbm
+ * serialization has no in-place append, so it is deserialized, added to, and
+ * re-serialized); an incremental sbm_add into an embedded, growable body would
+ * make it O(1) amortized too.  POSTING is only chosen for a large, clustered
+ * set whose per-key members are in any case capped by the item ceiling, so
+ * this is bounded, not the O(N^2) the LIST phase used to be.
  */
 static bool
 bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
@@ -1357,9 +1356,9 @@ retry:
 	 * same key, which the uniqueness check above already rejected.  An
 	 * oversized key never coalesces: a LIST/POSTING of oversized keys could not
 	 * fit the item ceiling, and each oversized row keeps its own OVERSIZED
-	 * entry + overflow chain (ponytail: duplicate oversized keys are not
-	 * deduplicated; a shared overflow chain for identical oversized values is a
-	 * later space optimization, not a correctness matter).
+	 * entry + overflow chain (duplicate oversized keys are not deduplicated; a
+	 * shared overflow chain for identical oversized values would be a space
+	 * optimization, not a correctness matter).
 	 */
 	if (!indexInfo->ii_Unique && !oversized &&
 		bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf, off))
