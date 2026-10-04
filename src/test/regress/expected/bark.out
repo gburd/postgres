@@ -1437,3 +1437,36 @@ SELECT count(*) AS big_live FROM bark_recycle_big;
 (1 row)
 
 DROP TABLE bark_recycle_big;
+-- ===========================================================================
+-- Speculative insertion: INSERT ... ON CONFLICT on a BARK unique index.  The
+-- aminsert path must participate in the executor's speculative insert/confirm/
+-- kill protocol so DO NOTHING on a duplicate is a no-op (not an error) and DO
+-- UPDATE updates the existing row.  (Concurrent speculative inserts of the same
+-- key are covered by src/test/isolation/specs/insert-conflict-bark.spec.)
+-- ===========================================================================
+CREATE TABLE bark_oc (id int, v text);
+CREATE UNIQUE INDEX bark_oc_idx ON bark_oc USING bark (id);
+INSERT INTO bark_oc VALUES (1, 'a'), (2, 'b'), (3, 'c');
+-- DO NOTHING on an existing key: a no-op, no error.
+INSERT INTO bark_oc VALUES (2, 'dup') ON CONFLICT (id) DO NOTHING;
+-- DO NOTHING on a new key: inserts.
+INSERT INTO bark_oc VALUES (4, 'd') ON CONFLICT (id) DO NOTHING;
+-- DO UPDATE on an existing key: updates the stored row.
+INSERT INTO bark_oc VALUES (2, 'updated') ON CONFLICT (id) DO UPDATE SET v = excluded.v;
+-- DO UPDATE on a new key: inserts.
+INSERT INTO bark_oc VALUES (5, 'e') ON CONFLICT (id) DO UPDATE SET v = excluded.v;
+SELECT id, v FROM bark_oc ORDER BY id;
+ id |    v    
+----+---------
+  1 | a
+  2 | updated
+  3 | c
+  4 | d
+  5 | e
+(5 rows)
+
+-- A plain duplicate insert (no ON CONFLICT) still raises the unique violation.
+INSERT INTO bark_oc VALUES (1, 'x');
+ERROR:  duplicate key value violates unique constraint "bark_oc_idx"
+DETAIL:  Key (id)=(1) already exists.
+DROP TABLE bark_oc;
