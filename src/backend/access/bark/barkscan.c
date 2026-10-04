@@ -5,14 +5,23 @@
  *
  * A BARK scan positions on a leaf and walks the right-link chain, returning
  * the heap TID of each entry that satisfies the scan keys.  When the keys
- * provide a lower bound on the first index column (an =, >, or >= qual), the
- * scan descends the tree to the first leaf that can contain a match; otherwise
- * it starts at the leftmost leaf.  It stops early once the first index column
- * passes an upper bound (an =, <, or <= qual).
+ * provide a lower bound on the leading index columns (an =, >, or >= qual, or
+ * a `col = ANY(array)` SAOP whose smallest element bounds column 1), the scan
+ * descends the tree to the first leaf that can contain a match; otherwise it
+ * starts at the leftmost leaf.  It stops early once the leading index columns
+ * pass an upper bound (an =, <, or <= qual).
  *
  * Modeled on nbtree's scan (nbtsearch.c _bt_first / _bt_next / _bt_readpage),
  * simplified for the SINGLE entry shape: every leaf entry is one heap TID in
  * t_tid.  The index is exact, so no heap recheck is required.
+ *
+ * ScalarArrayOp (SAOP) quals (`col = ANY(array)` / `col IN (...)`) are pushed
+ * into a single scan: bark_rescan sorts and de-duplicates each array into the
+ * index's key order (see BarkArrayKeyState in bark.h) and the scan visits the
+ * matching keys in index order -- a merged sequence of equality scans.  Every
+ * array key filters per tuple by membership; an array on the leading column
+ * also drives positioning, so the scan seeks to each element in turn rather
+ * than reading the whole index.
  *
  * ponytail: positioning uses only a first-column lower bound; a multi-column
  * or upper-bound-only qual starts at the leftmost leaf and relies on the
@@ -32,11 +41,16 @@
 #include "access/bark.h"
 #include "access/relscan.h"
 #include "access/skey.h"
+#include "catalog/pg_type.h"
+#include "lib/qunique.h"
 #include "miscadmin.h"
 #include "nodes/tidbitmap.h"
 #include "storage/bufmgr.h"
 #include "storage/lwlock.h"
 #include "storage/predicate.h"
+#include "utils/array.h"
+#include "utils/datum.h"
+#include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/wait_event.h"
 
@@ -60,15 +74,205 @@ bark_scan_resolve(Relation index, IndexTuple itup, bool *fetched)
 }
 
 /*
+ * ---------------------------------------------------------------------------
+ * ScalarArrayOp (SAOP) support
+ *
+ * A SAOP scankey (SK_SEARCHARRAY) carries an array Datum in sk_argument.  We
+ * sort its elements into the index's key order for that column and remove
+ * duplicates once, at rescan time, into a BarkArrayKeyState.  The scan then
+ * (a) filters every tuple by array membership and (b) for an array on the
+ * leading column, seeks to each element in turn so it visits the matching
+ * keys in index order without reading the whole index -- a merged sequence of
+ * equality scans.
+ * ---------------------------------------------------------------------------
+ */
+
+/* Per-column comparator state for sorting/searching array elements. */
+typedef struct BarkArraySortCtx
+{
+	FmgrInfo   *cmp;			/* support-1 three-way comparator */
+	Oid			collation;		/* collation to pass it */
+	bool		reverse;		/* DESC column: invert the result */
+} BarkArraySortCtx;
+
+/* qsort_arg comparator: order two array element Datums as the index does. */
+static int
+bark_array_cmp(const void *a, const void *b, void *arg)
+{
+	BarkArraySortCtx *ctx = (BarkArraySortCtx *) arg;
+	Datum		da = *((const Datum *) a);
+	Datum		db = *((const Datum *) b);
+	int32		c = DatumGetInt32(FunctionCall2Coll(ctx->cmp, ctx->collation,
+												da, db));
+
+	if (ctx->reverse)
+		INVERT_COMPARE_RESULT(c);
+	return c;
+}
+
+/* Is `datum` one of the array key's elements?  Binary search over the sort. */
+static bool
+bark_array_contains(BarkScanOpaque so, BarkArrayKeyState *ak, Datum datum)
+{
+	BarkKeyColumn *col = &so->keyinfo->cols[ak->attno - 1];
+	BarkArraySortCtx ctx;
+	int			lo = 0;
+	int			hi = ak->nelems - 1;
+
+	ctx.cmp = &col->cmp;
+	ctx.collation = col->collation;
+	ctx.reverse = col->reverse;
+
+	while (lo <= hi)
+	{
+		int			mid = lo + ((hi - lo) / 2);
+		int			c = bark_array_cmp(&datum, &ak->elems[mid], &ctx);
+
+		if (c == 0)
+			return true;
+		else if (c < 0)
+			hi = mid - 1;
+		else
+			lo = mid + 1;
+	}
+	return false;
+}
+
+/*
+ * Preprocess every SK_SEARCHARRAY scankey into a BarkArrayKeyState: deconstruct
+ * its array, sort the elements into the index's key order for the column, drop
+ * duplicates, and record the array key that constrains the leading column.  A
+ * NULL array element is dropped (a NULL never satisfies an equality qual).  An
+ * empty array leaves nelems == 0, which makes the scan return nothing.
+ *
+ * Called from bark_rescan; freed by bark_free_array_keys (endscan/rescan).
+ */
+static void
+bark_setup_array_keys(IndexScanDesc scan)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	int			narrays = 0;
+
+	so->arrayKeys = NULL;
+	so->numArrayKeys = 0;
+	so->leadArray = NULL;
+	so->arrayDone = false;
+
+	for (int i = 0; i < scan->numberOfKeys; i++)
+		if (scan->keyData[i].sk_flags & SK_SEARCHARRAY)
+			narrays++;
+	if (narrays == 0)
+		return;
+
+	so->arrayKeys = (BarkArrayKeyState *)
+		palloc0(narrays * sizeof(BarkArrayKeyState));
+
+	for (int i = 0; i < scan->numberOfKeys; i++)
+	{
+		ScanKey		sk = &scan->keyData[i];
+		BarkArrayKeyState *ak;
+		ArrayType  *arr;
+		int16		elmlen;
+		bool		elmbyval;
+		char		elmalign;
+		Datum	   *rawelems;
+		bool	   *rawnulls;
+		int			nrawelems;
+		int			nelems;
+		BarkKeyColumn *col;
+		BarkArraySortCtx ctx;
+
+		if (!(sk->sk_flags & SK_SEARCHARRAY))
+			continue;
+
+		ak = &so->arrayKeys[so->numArrayKeys++];
+		ak->scankeyidx = i;
+		ak->attno = sk->sk_attno;
+		ak->cur = 0;
+
+		/* A NULL array argument matches nothing: leave nelems == 0. */
+		if (sk->sk_flags & SK_ISNULL)
+		{
+			ak->elems = NULL;
+			ak->nelems = 0;
+			ak->elmbyval = true;
+			if (ak->attno == 1)
+				so->leadArray = ak;
+			continue;
+		}
+
+		arr = DatumGetArrayTypeP(sk->sk_argument);
+		get_typlenbyvalalign(ARR_ELEMTYPE(arr), &elmlen, &elmbyval, &elmalign);
+		ak->elmbyval = elmbyval;
+		deconstruct_array(arr, ARR_ELEMTYPE(arr), elmlen, elmbyval, elmalign,
+						  &rawelems, &rawnulls, &nrawelems);
+
+		/* Drop NULL elements (a NULL never satisfies an equality qual). */
+		nelems = 0;
+		for (int e = 0; e < nrawelems; e++)
+		{
+			if (rawnulls[e])
+				continue;
+			rawelems[nelems++] = rawelems[e];
+		}
+
+		col = &so->keyinfo->cols[ak->attno - 1];
+		ctx.cmp = &col->cmp;
+		ctx.collation = col->collation;
+		ctx.reverse = col->reverse;
+
+		if (nelems > 1)
+		{
+			qsort_arg(rawelems, nelems, sizeof(Datum), bark_array_cmp, &ctx);
+			nelems = qunique_arg(rawelems, nelems, sizeof(Datum),
+								 bark_array_cmp, &ctx);
+		}
+
+		ak->elems = rawelems;	/* deconstruct_array palloc'd this */
+		ak->nelems = nelems;
+		pfree(rawnulls);
+
+		if (ak->attno == 1)
+			so->leadArray = ak;
+	}
+
+	/*
+	 * If the leading array is empty (an empty IN-list, or all-NULL), the whole
+	 * scan matches nothing; mark it done so positioning returns immediately.
+	 */
+	if (so->leadArray != NULL && so->leadArray->nelems == 0)
+		so->arrayDone = true;
+}
+
+/* Release SAOP state (endscan, and before rebuilding it on rescan). */
+static void
+bark_free_array_keys(BarkScanOpaque so)
+{
+	if (so->arrayKeys == NULL)
+		return;
+	for (int i = 0; i < so->numArrayKeys; i++)
+		if (so->arrayKeys[i].elems)
+			pfree(so->arrayKeys[i].elems);
+	pfree(so->arrayKeys);
+	so->arrayKeys = NULL;
+	so->numArrayKeys = 0;
+	so->leadArray = NULL;
+	so->arrayDone = false;
+}
+
+/*
  * Test one index tuple against all scan keys.  Returns true when every key is
  * satisfied.  A NULL index value never satisfies an ordinary (non-IS NULL)
- * comparison key.
+ * comparison key.  A SK_SEARCHARRAY key is satisfied when the tuple's value is
+ * a member of its (preprocessed, sorted) array.
  */
 static bool
 bark_tuple_matches(IndexScanDesc scan, IndexTuple itup)
 {
 	Relation	index = scan->indexRelation;
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	TupleDesc	tupdesc = RelationGetDescr(index);
+	int			nextarray = 0;
 
 	for (int i = 0; i < scan->numberOfKeys; i++)
 	{
@@ -77,6 +281,23 @@ bark_tuple_matches(IndexScanDesc scan, IndexTuple itup)
 		bool		isnull;
 
 		datum = index_getattr(itup, key->sk_attno, tupdesc, &isnull);
+
+		/*
+		 * SAOP key: satisfied when the value is a member of the array (NULL
+		 * never matches an equality).  The array keys were preprocessed in
+		 * scankey order, so step the matching BarkArrayKeyState in lockstep.
+		 */
+		if (key->sk_flags & SK_SEARCHARRAY)
+		{
+			BarkArrayKeyState *ak = &so->arrayKeys[nextarray++];
+
+			Assert(ak->scankeyidx == i);
+			if (isnull)
+				return false;
+			if (!bark_array_contains(so, ak, datum))
+				return false;
+			continue;
+		}
 
 		if (key->sk_flags & SK_ISNULL)
 		{
@@ -110,61 +331,117 @@ bark_tuple_matches(IndexScanDesc scan, IndexTuple itup)
 /*
  * Build an index-tuple search key from a lower bound on the first index
  * column, for descending to the first possibly-matching leaf.  Returns NULL
- * (start at the leftmost leaf) when no =, >, or >= qual on column 1 is present.
+ * (start at the leftmost leaf) when no bound on column 1 is present.
+ *
+ * The column-1 bound comes from an =, >, or >= qual, or -- when a SAOP
+ * (`col = ANY(array)`) constrains column 1 -- from that array's current
+ * element (so->leadArray->cur), so a merged array scan descends straight to
+ * the element it is about to visit instead of starting leftmost.
+ *
+ * The bound is formed as a pivot carrying only the leading column (natts = 1).
+ * This matters on a multi-column index: a lower bound must leave the trailing
+ * columns at minus-infinity so the descent lands at or before the first match,
+ * never past it.  A pivot truncated to one attribute is exactly minus-infinity
+ * on the dropped columns -- bark_compare_itups orders a tuple with fewer key
+ * attributes before one that agrees on the shared attributes but has more.
+ * (Padding the trailing columns with NULL instead would, under the default
+ * NULLS LAST ordering, sort as plus-infinity and overshoot the whole run of
+ * matching rows.)
  */
 static IndexTuple
 bark_make_lower_bound(IndexScanDesc scan)
 {
 	Relation	index = scan->indexRelation;
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	TupleDesc	tupdesc = RelationGetDescr(index);
 	int			natts;
 	Datum	   *values;
 	bool	   *isnull;
-	IndexTuple	key = NULL;
+	Datum		bound = (Datum) 0;
+	bool		have_bound = false;
+	IndexTuple	full;
+	IndexTuple	key;
+	Size		fulllen;
 
-	for (int i = 0; i < scan->numberOfKeys; i++)
+	/*
+	 * A leading-column SAOP drives positioning: descend to its current
+	 * element.  (nelems == 0 was handled as arrayDone before we get here.)
+	 */
+	if (so->leadArray != NULL && so->leadArray->nelems > 0)
 	{
-		ScanKey		sk = &scan->keyData[i];
-
-		if (sk->sk_attno != 1 || (sk->sk_flags & SK_ISNULL))
-			continue;
-		if (sk->sk_strategy == BTEqualStrategyNumber ||
-			sk->sk_strategy == BTGreaterStrategyNumber ||
-			sk->sk_strategy == BTGreaterEqualStrategyNumber)
+		bound = so->leadArray->elems[so->leadArray->cur];
+		have_bound = true;
+	}
+	else
+	{
+		for (int i = 0; i < scan->numberOfKeys; i++)
 		{
-			/*
-			 * Form a lower-bound key tuple holding this bound in the leading
-			 * column; every other attribute is NULL, which bark_compare_itups
-			 * treats per the column's NULLS ordering.  That is a safe lower
-			 * bound: the descent only needs to land at or before the first
-			 * match, and the per-tuple test filters precisely.
-			 *
-			 * bark_form_full_tuple reads one entry per descriptor attribute, so
-			 * the arrays must cover all index attributes (key plus any INCLUDE
-			 * columns), not just the key attributes; and it forms the bound
-			 * without the 8191-byte cap so an oversized search argument does not
-			 * error here.  bark_search descends with this bound; bark_compare_itups
-			 * compares it (fetching an oversized leaf entry's overflow chain as
-			 * needed), so the descent lands correctly even for an oversized bound.
-			 */
-			Size		fulllen;
+			ScanKey		sk = &scan->keyData[i];
 
-			natts = IndexRelationGetNumberOfAttributes(index);
-			values = (Datum *) palloc(natts * sizeof(Datum));
-			isnull = (bool *) palloc(natts * sizeof(bool));
-			values[0] = sk->sk_argument;
-			isnull[0] = false;
-			for (int c = 1; c < natts; c++)
+			if (sk->sk_attno != 1 || (sk->sk_flags & SK_ISNULL) ||
+				(sk->sk_flags & SK_SEARCHARRAY))
+				continue;
+			if (sk->sk_strategy == BTEqualStrategyNumber ||
+				sk->sk_strategy == BTGreaterStrategyNumber ||
+				sk->sk_strategy == BTGreaterEqualStrategyNumber)
 			{
-				values[c] = (Datum) 0;
-				isnull[c] = true;
+				bound = sk->sk_argument;
+				have_bound = true;
+				break;
 			}
-			key = bark_form_full_tuple(tupdesc, values, isnull, &fulllen);
-			pfree(values);
-			pfree(isnull);
-			break;
 		}
 	}
+
+	if (!have_bound)
+		return NULL;
+
+	/*
+	 * Form the leading-column value as a (possibly oversized) tuple, then
+	 * truncate it to a one-attribute pivot.  bark_form_full_tuple reads one
+	 * entry per descriptor attribute and forms it without the 8191-byte cap, so
+	 * an oversized search argument does not error here; the trailing attributes
+	 * are left NULL only because the former requires a value for every column,
+	 * and are then physically dropped by the truncation.  bark_search descends
+	 * with the pivot; bark_compare_itups compares it (fetching an oversized
+	 * leaf entry's overflow chain as needed), so the descent lands correctly
+	 * even for an oversized bound.
+	 */
+	natts = IndexRelationGetNumberOfAttributes(index);
+	values = (Datum *) palloc(natts * sizeof(Datum));
+	isnull = (bool *) palloc(natts * sizeof(bool));
+	values[0] = bound;
+	isnull[0] = false;
+	for (int c = 1; c < natts; c++)
+	{
+		values[c] = (Datum) 0;
+		isnull[c] = true;
+	}
+	full = bark_form_full_tuple(tupdesc, values, isnull, &fulllen);
+	pfree(values);
+	pfree(isnull);
+
+	/*
+	 * Truncate to a one-attribute pivot (minus-infinity on the trailing
+	 * columns).  index_truncate_tuple cannot handle an oversized leading value;
+	 * in that rare case leave the bound untruncated -- it is still a safe lower
+	 * bound for a single-column index, and an oversized leading key on a
+	 * multi-column index is not supported for sharper positioning here.
+	 */
+	if (natts > 1 && !bark_len_is_oversized(fulllen))
+	{
+		key = index_truncate_tuple(tupdesc, full, 1);
+		BarkPivotSetNAtts(key, 1);
+		pfree(full);
+	}
+	else if (natts > 1)
+	{
+		/* Oversized leading key: mark the full tuple as a 1-attr pivot. */
+		key = full;
+		BarkPivotSetNAtts(key, 1);
+	}
+	else
+		key = full;				/* single-column index: no trailing columns */
+
 	return key;
 }
 
@@ -230,6 +507,14 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 
 	if (scankey && nscankeys > 0)
 		memcpy(scan->keyData, scankey, nscankeys * sizeof(ScanKeyData));
+
+	/*
+	 * Rebuild ScalarArrayOp state from the (possibly new) scan keys: sort and
+	 * de-duplicate each SK_SEARCHARRAY array once, so the scan can visit the
+	 * matching keys in index order.  A plain scan builds nothing here.
+	 */
+	bark_free_array_keys(so);
+	bark_setup_array_keys(scan);
 
 	/*
 	 * An ordered-operator (KNN) scan carries ORDER BY <~> keys; copy them in
@@ -477,6 +762,13 @@ bark_position(IndexScanDesc scan, ScanDirection dir)
 									 * published its sibling to the cursor */
 	so->lastOffset = InvalidOffsetNumber;	/* set on first page read */
 
+	/* A leading SAOP with no elements (empty IN-list) matches nothing. */
+	if (so->arrayDone)
+	{
+		so->currentBuffer = InvalidBuffer;
+		return;
+	}
+
 	if (scan->parallel_scan != NULL)
 	{
 		BlockNumber next;
@@ -587,6 +879,76 @@ bark_emit_member(IndexScanDesc scan)
 	}
 }
 
+/*
+ * Compare index tuple `itup`'s leading-column value against a leading-array
+ * element `elem`, in the index's key order (DESC inverted).  A NULL leading
+ * value sorts per the column's NULLS option.  Returns <0, 0, >0 as itup's
+ * leading value is before, equal to, or after `elem`.
+ */
+static int
+bark_lead_cmp(IndexScanDesc scan, IndexTuple itup, Datum elem)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	TupleDesc	tupdesc = RelationGetDescr(scan->indexRelation);
+	BarkKeyColumn *col = &so->keyinfo->cols[0];
+	bool		isnull;
+	Datum		datum = index_getattr(itup, 1, tupdesc, &isnull);
+	int			c;
+
+	if (isnull)
+		return col->nulls_first ? -1 : 1;	/* NULL vs non-NULL elem */
+	c = DatumGetInt32(FunctionCall2Coll(&col->cmp, col->collation, datum, elem));
+	return col->reverse ? -c : c;
+}
+
+/*
+ * Leading-array re-seek: advance the leading-array cursor past the element the
+ * scan just finished and descend to the next element's start leaf, so the scan
+ * skips the gap between array elements instead of filtering every tuple.  Used
+ * only on a forward serial scan with a leading array (the pure membership
+ * filter stays correct for backward and parallel scans, which take the plain
+ * path).  Advances cur to `target` (the first element not yet covered) and
+ * re-positions; sets arrayDone and releases the buffer when the array is
+ * exhausted.
+ */
+static void
+bark_saop_reseek(IndexScanDesc scan, int target)
+{
+	Relation	index = scan->indexRelation;
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BarkArrayKeyState *lead = so->leadArray;
+	IndexTuple	lower;
+	Buffer		buf;
+
+	Assert(lead != NULL);
+
+
+	if (BufferIsValid(so->currentBuffer))
+	{
+		ReleaseBuffer(so->currentBuffer);
+		so->currentBuffer = InvalidBuffer;
+	}
+	so->lastOffset = InvalidOffsetNumber;
+	so->nMembers = 0;
+
+	if (target >= lead->nelems)
+	{
+		so->arrayDone = true;	/* every element visited */
+		return;
+	}
+	lead->cur = target;
+
+	lower = bark_make_lower_bound(scan);	/* uses lead->cur */
+	if (lower == NULL)
+		return;					/* shouldn't happen with a leading array */
+	buf = bark_search(index, so->keyinfo, lower, false, false, NULL);
+	pfree(lower);
+	if (buf == InvalidBuffer)
+		return;					/* empty index */
+	so->currentBuffer = ReadBuffer(index, BufferGetBlockNumber(buf));
+	UnlockReleaseBuffer(buf);	/* bark_search left it share-locked */
+}
+
 bool
 bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 {
@@ -604,6 +966,7 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 
 	if (so->firstCall)
 		bark_position(scan, dir);
+
 
 	/*
 	 * If the entry last landed on still has unreturned members (a LIST or
@@ -679,6 +1042,7 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 			off = backward ? OffsetNumberPrev(so->lastOffset)
 				: OffsetNumberNext(so->lastOffset);
 
+
 		for (;
 			 backward ? (off >= firstdata && off != InvalidOffsetNumber)
 			 : off <= maxoff;
@@ -697,7 +1061,43 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 			{
 				bool		fetched;
 				IndexTuple	resolved = bark_scan_resolve(index, itup, &fetched);
-				bool		matched = bark_tuple_matches(scan, resolved);
+				bool		matched;
+
+				/*
+				 * Leading-array cursor (forward serial scan).  Once the leading
+				 * value passes the current element, that element's run of equal
+				 * keys is over; advance cur to the first element not before this
+				 * value.  We keep walking the page in order -- the membership
+				 * filter emits later elements correctly -- and only jump the gap
+				 * to a far element at the page boundary (bark_saop_reseek), which
+				 * keeps the scan from ever re-reading tuples it already returned.
+				 * A parallel scan does not advance a shared cursor this way (each
+				 * worker reads a disjoint set of pages); it relies on the
+				 * membership filter alone, which is always correct.
+				 */
+				if (so->leadArray != NULL && !backward &&
+					scan->parallel_scan == NULL)
+				{
+					BarkArrayKeyState *lead = so->leadArray;
+
+					while (lead->cur < lead->nelems &&
+						   bark_lead_cmp(scan, resolved,
+										 lead->elems[lead->cur]) > 0)
+						lead->cur++;
+					if (lead->cur >= lead->nelems)
+					{
+						/* Past the last element: no further matches anywhere. */
+						if (fetched)
+							pfree(resolved);
+						so->arrayDone = true;
+						LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+						ReleaseBuffer(buf);
+						so->currentBuffer = InvalidBuffer;
+						return false;
+					}
+				}
+
+				matched = bark_tuple_matches(scan, resolved);
 
 				if (matched)
 				{
@@ -722,7 +1122,56 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 			}
 		}
 
-		/* Exhausted this page; advance to the sibling in the scan direction. */
+		/*
+		 * Exhausted this page.  For a forward leading-array scan, decide
+		 * whether the next element lives strictly beyond the immediate sibling
+		 * and, if so, jump straight to it (bark_saop_reseek) instead of walking
+		 * every intervening page.
+		 *
+		 * A page holds keys strictly less than its high key (the first key of
+		 * the right sibling, L&Y layout).  The next element is strictly past
+		 * the immediate sibling exactly when it sorts strictly after the high
+		 * key -- the comparison must be strict, because a non-strict reseek on
+		 * an element equal to the high key would re-descend (nextkey=false) to
+		 * the leftmost leaf of that element's run, which can be this very page
+		 * when a run of equal keys spans a page boundary, re-reading tuples we
+		 * already returned.  When the element is only one sibling away we take
+		 * the plain sibling advance below, which never moves backward.
+		 */
+		if (so->leadArray != NULL && !backward &&
+			scan->parallel_scan == NULL &&
+			!BarkPageRightmost(opaque) &&
+			so->leadArray->cur < so->leadArray->nelems)
+		{
+			ItemId		hiid = PageGetItemId(page, BARK_P_HIKEY);
+			IndexTuple	hikey = (IndexTuple) PageGetItem(page, hiid);
+			Datum		elem = so->leadArray->elems[so->leadArray->cur];
+			bool		reseek;
+
+			/*
+			 * A truncated (zero-attribute) high key compares as -infinity, and
+			 * an OVERSIZED high key carries no inline attributes; only reseek
+			 * when the high key is an ordinary pivot that actually carries the
+			 * leading column, so bark_lead_cmp (which reads attribute 1) is
+			 * meaningful.  Otherwise fall through to the plain sibling advance,
+			 * which is always correct.
+			 */
+			reseek = (BarkEntryGetShape(hikey) != BARK_SHAPE_OVERSIZED &&
+					  BarkEntryGetPivotNAtts(hikey) >= 1 &&
+					  bark_lead_cmp(scan, hikey, elem) < 0);
+
+			if (reseek)
+			{
+				LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+				ReleaseBuffer(buf);
+				so->currentBuffer = InvalidBuffer;
+				so->lastOffset = InvalidOffsetNumber;
+				bark_saop_reseek(scan, so->leadArray->cur);
+				continue;
+			}
+		}
+
+		/* Advance to the sibling in the scan direction. */
 		{
 			BlockNumber nextblk = backward ? opaque->bark_prev : opaque->bark_next;
 
@@ -846,6 +1295,7 @@ bark_endscan(IndexScanDesc scan)
 	if (so == NULL)
 		return;
 	bark_knn_endscan(scan);
+	bark_free_array_keys(so);
 	if (BufferIsValid(so->currentBuffer))
 		ReleaseBuffer(so->currentBuffer);
 	if (so->currTuple)

@@ -259,6 +259,8 @@ BackgroundWorkerHandle
 BackgroundWorkerSlot
 BackupState
 Barrier
+BarkArrayKeyState
+BarkArraySortCtx
 BarkEntryShape
 BarkKeyColumn
 BarkKeyInfo
