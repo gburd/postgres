@@ -27,10 +27,10 @@
  * also drives positioning, so the scan seeks to each element in turn rather
  * than reading the whole index.
  *
- * ponytail: a backward scan still starts at the rightmost leaf rather than
- * descending to an upper bound, and does not terminate early at a lower bound;
- * sharper backward positioning is an optimization (symmetric to the forward
- * case), not a correctness matter.
+ * A backward scan starts at the rightmost leaf rather than descending to an
+ * upper bound, and does not terminate early at a lower bound; sharper backward
+ * positioning would be an optimization (symmetric to the forward case), with
+ * no effect on correctness.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -624,9 +624,9 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
  * first-column lower bound when available), else the leftmost leaf; rightmost
  * leaf for a backward scan.  Returns BARK_P_NONE for an empty index.
  *
- * ponytail: a backward scan always starts rightmost rather than descending to
- * an upper bound first; sharper backward positioning is an optimization, not a
- * correctness matter (symmetric to the forward no-lower-bound case).
+ * A backward scan always starts rightmost rather than descending to an upper
+ * bound first; sharper backward positioning would be an optimization, with no
+ * effect on correctness (symmetric to the forward no-lower-bound case).
  */
 static BlockNumber
 bark_find_start_block(IndexScanDesc scan, ScanDirection dir)
