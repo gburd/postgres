@@ -1,0 +1,53 @@
+Parsed test spec with 2 sessions
+
+starting permutation: donothing1 donothing2 c1 select2 c2
+step donothing1: INSERT INTO ints(key, val) VALUES(1, 'donothing1') ON CONFLICT (key) DO NOTHING;
+step donothing2: INSERT INTO ints(key, val) VALUES(1, 'donothing2') ON CONFLICT (key) DO NOTHING; <waiting ...>
+step c1: COMMIT;
+step donothing2: <... completed>
+step select2: SELECT key, val FROM ints ORDER BY key;
+key|val       
+---+----------
+  1|donothing1
+(1 row)
+
+step c2: COMMIT;
+
+starting permutation: donothing1 donothing2 a1 select2 c2
+step donothing1: INSERT INTO ints(key, val) VALUES(1, 'donothing1') ON CONFLICT (key) DO NOTHING;
+step donothing2: INSERT INTO ints(key, val) VALUES(1, 'donothing2') ON CONFLICT (key) DO NOTHING; <waiting ...>
+step a1: ABORT;
+step donothing2: <... completed>
+step select2: SELECT key, val FROM ints ORDER BY key;
+key|val       
+---+----------
+  1|donothing2
+(1 row)
+
+step c2: COMMIT;
+
+starting permutation: doupdate1 doupdate2 c1 select2 c2
+step doupdate1: INSERT INTO ints(key, val) VALUES(1, 'doupdate1') ON CONFLICT (key) DO UPDATE SET val = excluded.val;
+step doupdate2: INSERT INTO ints(key, val) VALUES(1, 'doupdate2') ON CONFLICT (key) DO UPDATE SET val = excluded.val; <waiting ...>
+step c1: COMMIT;
+step doupdate2: <... completed>
+step select2: SELECT key, val FROM ints ORDER BY key;
+key|val      
+---+---------
+  1|doupdate2
+(1 row)
+
+step c2: COMMIT;
+
+starting permutation: doupdate1 doupdate2 a1 select2 c2
+step doupdate1: INSERT INTO ints(key, val) VALUES(1, 'doupdate1') ON CONFLICT (key) DO UPDATE SET val = excluded.val;
+step doupdate2: INSERT INTO ints(key, val) VALUES(1, 'doupdate2') ON CONFLICT (key) DO UPDATE SET val = excluded.val; <waiting ...>
+step a1: ABORT;
+step doupdate2: <... completed>
+step select2: SELECT key, val FROM ints ORDER BY key;
+key|val      
+---+---------
+  1|doupdate2
+(1 row)
+
+step c2: COMMIT;

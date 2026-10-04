@@ -112,6 +112,7 @@ test: predicate-hash
 test: predicate-gist
 test: predicate-gin
 test: predicate-bark
+test: insert-conflict-bark
 test: partition-concurrent-attach
 test: partition-drop-index-locking
 test: partition-key-update-1
