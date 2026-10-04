@@ -37,6 +37,7 @@
 #include "lib/sbm.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
+#include "utils/pg_locale.h"
 #include "utils/rel.h"
 
 /*
@@ -121,6 +122,19 @@ bark_build_keyinfo(Relation index)
 		col->collation = index->rd_indcollation[i];
 		col->reverse = (indoption & INDOPTION_DESC) != 0;
 		col->nulls_first = (indoption & INDOPTION_NULLS_FIRST) != 0;
+
+		/*
+		 * The OVERSIZED inline-prefix fast path (see bark_compare_itups) is
+		 * sound only when a leading-byte difference in the first key column's
+		 * datum decides its order -- i.e. the column sorts bytewise.  That is
+		 * true for a text/bytea-style column under a C/POSIX collation; a
+		 * locale-aware collation can reorder across the prefix boundary, so
+		 * the fast path is disabled there and comparison fetches the full
+		 * value.  Only the first key column matters (the prefix only shortcuts
+		 * when the leading column differs).
+		 */
+		col->bytewise = (i == 0 && OidIsValid(col->collation) &&
+						 pg_newlocale_from_collation(col->collation)->collate_is_c);
 	}
 
 	return keyinfo;
@@ -212,6 +226,57 @@ bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
 	int			 result = 0;
 	int			 na_override = -1;
 	int			 nb_override = -1;
+
+	/*
+	 * OVERSIZED compare fast path.  When both operands are OVERSIZED entries
+	 * that carry an inline prefix of a bytewise (C/POSIX-collation) first key
+	 * column, compare those prefixes before touching the overflow chains: a
+	 * leading-byte difference decides the order with no I/O.  The chains are
+	 * fetched (below) only when the prefixes tie and at least one is truncated,
+	 * so a tie might not be real.  Two complete prefixes that are byte-equal
+	 * and the same length are equal on the first column -- but there may be
+	 * further key columns, so a decisive answer here requires the prefix
+	 * comparison to be non-zero; an equal prefix always falls through to the
+	 * full compare.  reverse is applied exactly as the per-column loop does.
+	 */
+	if (keyinfo->nkeys > 0 && keyinfo->cols[0].bytewise &&
+		BarkEntryGetShape(a) == BARK_SHAPE_OVERSIZED &&
+		BarkEntryGetShape(b) == BARK_SHAPE_OVERSIZED)
+	{
+		BarkOverflowRef *ra = BarkOverflowGetRef(a);
+		BarkOverflowRef *rb = BarkOverflowGetRef(b);
+
+		if (ra->prefixlen > 0 && rb->prefixlen > 0)
+		{
+			uint16		cmplen = Min(ra->prefixlen, rb->prefixlen);
+			int			c = memcmp(ra->prefix, rb->prefix, cmplen);
+
+			if (c != 0)
+				return keyinfo->cols[0].reverse ? -c : c;
+
+			/*
+			 * Equal over the shared prefix length.  If the shorter prefix is
+			 * COMPLETE (its whole column fit), the columns differ in length:
+			 * the shorter column sorts first (bytewise, a prefix is less than
+			 * a longer string sharing it).  Only decide here when the longer
+			 * side actually has more bytes; equal length + both complete is a
+			 * genuine first-column tie that must fall through to later columns.
+			 */
+			if (ra->prefixlen != rb->prefixlen)
+			{
+				bool		shorter_a = ra->prefixlen < rb->prefixlen;
+				bool		shorter_complete = shorter_a ? ra->prefixcomplete
+					: rb->prefixcomplete;
+
+				if (shorter_complete)
+				{
+					c = shorter_a ? -1 : 1;
+					return keyinfo->cols[0].reverse ? -c : c;
+				}
+			}
+			/* else: tie so far with a truncated prefix -- fall through, fetch. */
+		}
+	}
 
 	/*
 	 * Resolve any OVERSIZED operand to its full, inline-comparable tuple.  An
@@ -822,6 +887,57 @@ bark_form_oversized_entry(ItemPointer locator, Size fulllen,
 	ref->locator = *locator;
 	ref->natts = is_leaf ? BARK_OVERFLOW_LEAF : natts;
 	return entry;
+}
+
+/*
+ * Populate an OVERSIZED entry's inline comparison prefix from the full tuple it
+ * references, when the first key column sorts bytewise (keyinfo->cols[0].
+ * bytewise).  The prefix is the leading bytes of the first key column's datum;
+ * up to BARK_OVERSIZED_PREFIX_LEN bytes are copied, and prefixcomplete records
+ * whether the whole column fit.  A NULL or non-bytewise first column leaves
+ * prefixlen 0, so bark_compare_itups always fetches the full tuple for that
+ * entry -- the safe default.  `full` is the complete (uncapped) index tuple
+ * that was written to the overflow chain.
+ */
+void
+bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
+{
+	BarkOverflowRef *ref = BarkOverflowGetRef(entry);
+	TupleDesc	tupdesc = RelationGetDescr(index);
+	Oid			collation = index->rd_indcollation[0];
+	Datum		d;
+	bool		isnull;
+	char	   *data;
+	Size		len;
+
+	ref->prefixlen = 0;
+	ref->prefixcomplete = false;
+
+	/*
+	 * The prefix fast path is sound only when a leading-byte difference in the
+	 * first key column decides its order -- a text/bytea-style column under a
+	 * C/POSIX collation.  A locale-aware collation can reorder across the
+	 * prefix boundary, so leave prefixlen 0 and let comparison fetch the full
+	 * value.  (Only the first key column drives the prefix.)
+	 */
+	if (!OidIsValid(collation) ||
+		!pg_newlocale_from_collation(collation)->collate_is_c)
+		return;
+
+	d = index_getattr(full, 1, tupdesc, &isnull);
+	if (isnull)
+		return;
+
+	/* A C-collation text/bytea datum is a varlena: use its data area. */
+	data = VARDATA_ANY(DatumGetPointer(d));
+	len = VARSIZE_ANY_EXHDR(DatumGetPointer(d));
+
+	if (len <= BARK_OVERSIZED_PREFIX_LEN)
+		ref->prefixcomplete = true;
+	else
+		len = BARK_OVERSIZED_PREFIX_LEN;
+	memcpy(ref->prefix, data, len);
+	ref->prefixlen = (uint16) len;
 }
 
 /*
