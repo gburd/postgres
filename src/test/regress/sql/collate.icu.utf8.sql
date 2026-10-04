@@ -587,6 +587,19 @@ SELECT 'aBcD' COLLATE lt_insensitive = 'AbCd' COLLATE lt_insensitive;
 CREATE COLLATION lt_upperfirst (provider = icu, locale = 'und-u-kf-upper');
 SELECT 'Z' COLLATE lt_upperfirst < 'z' COLLATE lt_upperfirst;
 
+-- A BARK index on a nondeterministic collation must not coalesce rows whose
+-- keys compare equal but differ in bytes: an index-only scan returns each
+-- row's own value.
+CREATE TABLE test_bark_ci (x text COLLATE case_insensitive);
+CREATE INDEX test_bark_ci_idx ON test_bark_ci USING bark (x);
+INSERT INTO test_bark_ci VALUES ('abc'), ('ABC'), ('Abc');
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT x FROM test_bark_ci WHERE x = 'abc' ORDER BY x COLLATE "C";
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP TABLE test_bark_ci;
+
 CREATE TABLE test1cs (x text COLLATE case_sensitive);
 CREATE TABLE test2cs (x text COLLATE case_sensitive);
 CREATE TABLE test3cs (x text COLLATE case_sensitive);
