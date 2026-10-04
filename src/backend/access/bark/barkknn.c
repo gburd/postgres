@@ -31,6 +31,24 @@
  * the order the way it would for a multidimensional GiST index; supporting
  * several would need GiST's priority queue for no gain here.
  *
+ * No parallel KNN -- and this is intrinsic to a single-center outward merge,
+ * not a deferred optimization.  The scan is driven from one point: at every
+ * step it emits the globally nearest remaining key by comparing the two
+ * frontier candidates, a decision that is inherently sequential.  The only
+ * correct way to split it is to give the forward (>= const) side to one worker
+ * and the backward (< const) side to another, but that is 2-way at best, and
+ * the leader must still merge the two distance streams in order (it cannot
+ * offload the ordering that is the whole point of the scan).  It would buy
+ * nothing: a KNN scan is output-bounded -- it stops at the caller's LIMIT and
+ * reads only the handful of leaves holding the k nearest keys -- so there is
+ * no large page range to divide, and the parallel-scan page cursor (which
+ * hands out leaves in index order, see BarkParallelScanDescData) does not even
+ * model distance-order traversal.  The planner agrees: an amcanorderbyop
+ * ordered scan is never given a parallel index path, so a KNN scan always runs
+ * single-copy.  bark_knn_gettuple therefore ignores scan->parallel_scan; were a
+ * single-copy gather to set it, the one worker still runs the full merge once
+ * and the result is unchanged.
+ *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *

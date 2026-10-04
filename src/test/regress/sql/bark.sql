@@ -520,6 +520,21 @@ INSERT INTO bark_knn8 SELECT g * 7 FROM generate_series(1, 5000) g;
 CREATE INDEX bark_knn8_idx ON bark_knn8 USING bark (a);
 SELECT a FROM bark_knn8 ORDER BY a <~> 20000 LIMIT 8;
 
+-- Parallelism is intrinsic to the single-center outward merge: the planner
+-- never gives an ordered (amcanorderbyop) scan a parallel index path, so a KNN
+-- scan always runs single-copy.  Forcing a parallel plan therefore yields a
+-- single-copy Gather over the index Order By scan, and the result is identical
+-- to the serial scan -- no duplicate or missing rows.
+SET debug_parallel_query = on;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+EXPLAIN (COSTS OFF)
+  SELECT a FROM bark_knn ORDER BY a <~> 5000 LIMIT 6;
+SELECT a FROM bark_knn ORDER BY a <~> 5000 LIMIT 6;
+RESET debug_parallel_query;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+
 RESET enable_seqscan;
 DROP TABLE bark_knn, bark_knn_dup, bark_knn_null, bark_knn8;
 

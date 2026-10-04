@@ -786,7 +786,10 @@ extern bool bark_insert(Relation index, Datum *values, bool *isnull,
  *
  * ponytail: one ordering key only (the first ORDER BY <-> clause); multi-key
  * KNN would need a priority queue like GiST's.  A scalar B-tree has a single
- * distance axis, so one key is the whole useful case here.
+ * distance axis, so one key is the whole useful case here.  KNN is also never
+ * parallel -- intrinsic to a single-center outward merge, not a deferred
+ * optimization; see the barkknn.c header for why a two-sided split would buy
+ * nothing on an output-bounded scan.
  */
 typedef struct BarkKnnCursor
 {
