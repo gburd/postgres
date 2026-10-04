@@ -31,6 +31,32 @@ typedef void *Block;
  * If adding a new BufferAccessStrategyType, also add a new IOContext so
  * IO statistics using this strategy are tracked.
  */
+/*
+ * Buffer access strategies.
+ *
+ * Note on the cooling-stage evictor: admitting a demand-loaded page COOL makes
+ * a read-once page self-evicting, which covers the pollution-avoidance role
+ * these rings were introduced for.  That raises a fair question about whether
+ * the rings are still needed, and the answer differs per strategy.
+ *
+ * BAS_BULKREAD drives StrategyRejectBuffer(), which declines a victim whose
+ * eviction would require flushing WAL.  That is not a replacement-policy
+ * decision and has no equivalent in an admission rule, so it stays.
+ *
+ * BAS_BULKWRITE and BAS_VACUUM dirty their buffers on first touch, so COOL
+ * admission does not make them self-evicting: it chooses which buffer is
+ * evicted next, not whether that eviction must write.  Measurement is the only
+ * way to settle whether their rings still earn their keep.  For vacuum, that
+ * experiment needs no patch -- vacuum_buffer_usage_limit = 0 (or
+ * BUFFER_USAGE_LIMIT 0 on the command) already makes
+ * GetAccessStrategyWithSize() return NULL and gives vacuum unrestricted use of
+ * shared buffers, which is exactly what removing the ring would impose.
+ *
+ * All strategies are retained here.  This is a deliberate decision to keep a
+ * replacement-policy change separate from a change to writeback pacing and to
+ * the pg_stat_io I/O-context breakdown, not a claim that every ring is still
+ * necessary.
+ */
 typedef enum BufferAccessStrategyType
 {
 	BAS_NORMAL,					/* Normal random access */
