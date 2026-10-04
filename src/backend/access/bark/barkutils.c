@@ -36,6 +36,7 @@
 #include "catalog/pg_type.h"
 #include "lib/sbm.h"
 #include "storage/bufmgr.h"
+#include "storage/indexfsm.h"
 #include "utils/rel.h"
 
 /*
@@ -123,6 +124,61 @@ bark_build_keyinfo(Relation index)
 	}
 
 	return keyinfo;
+}
+
+/*
+ * Allocate a page for the index, reusing an FSM-recorded free page when one is
+ * available and extending the relation only otherwise.  Modeled on bloom's
+ * BloomNewBuffer: a recycled page may have been grabbed by someone else since
+ * the FSM named it, so we take the lock conditionally and re-check that the
+ * page really is free (new, or still flagged BARK_DELETED) before handing it
+ * back; a page that no longer qualifies is skipped and the FSM is asked again.
+ *
+ * The returned buffer is pinned and exclusive-locked; its page is left as-is
+ * (new or deleted), so the caller's PageInit fully reinitializes it.
+ */
+Buffer
+bark_get_free_page(Relation index)
+{
+	Buffer		buf;
+
+	for (;;)
+	{
+		BlockNumber blkno = GetFreeIndexPage(index);
+
+		if (blkno == InvalidBlockNumber)
+			break;
+
+		/* The meta page is never free; ignore a stale FSM entry for it. */
+		if (blkno == BARK_METAPAGE)
+			continue;
+
+		buf = ReadBuffer(index, blkno);
+
+		/*
+		 * Someone may already have recycled this page (and be holding its
+		 * lock); only reuse it if we can take the lock without waiting and the
+		 * page still looks free.
+		 */
+		if (ConditionalLockBuffer(buf))
+		{
+			Page		page = BufferGetPage(buf);
+
+			if (PageIsNew(page))
+				return buf;		/* never initialized: OK */
+			if (BarkPageIsDeleted(BarkPageGetOpaque(page)))
+				return buf;		/* deleted and FSM-recycled: OK */
+
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		}
+
+		ReleaseBuffer(buf);		/* not usable: try the next FSM entry */
+	}
+
+	/* No reusable page: extend the relation. */
+	buf = ReadBuffer(index, P_NEW);
+	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+	return buf;
 }
 
 /*
@@ -738,8 +794,7 @@ bark_write_overflow_chain(Relation index, IndexTuple full, Size fulllen)
 	/* Reserve all chunk blocks first so each page's next-link is known. */
 	for (BlockNumber i = 0; i < nchunks; i++)
 	{
-		bufs[i] = ReadBuffer(index, P_NEW);
-		LockBuffer(bufs[i], BUFFER_LOCK_EXCLUSIVE);
+		bufs[i] = bark_get_free_page(index);
 		blks[i] = BufferGetBlockNumber(bufs[i]);
 	}
 	firstblk = blks[0];
@@ -807,15 +862,16 @@ bark_fetch_oversized(Relation index, IndexTuple entry)
 }
 
 /*
- * Free the overflow chain an OVERSIZED entry references: mark each page deleted
- * and unlink it.  Called by VACUUM when the owning leaf entry is removed.
+ * Free the overflow chain an OVERSIZED entry references: mark each page deleted,
+ * unlink it, and record it in the FSM so a later overflow write or split reuses
+ * it instead of extending the relation.  Called by VACUUM when the owning leaf
+ * entry is removed.  WAL-logged under its own generic-WAL records; the FSM
+ * record is a hint made durable by the subsequent IndexFreeSpaceMapVacuum in
+ * barkvacuumcleanup.
  *
- * ponytail: freed overflow pages are flagged BARK_DELETED and left in place
- * (not returned to the FSM or truncated away), exactly as the rest of BARK
- * leaves empty leaves linked today; page recycling is a shared later commit.
- * A reused index therefore does not grow unboundedly across delete/vacuum
- * cycles only once FSM reclamation lands; until then the deleted pages persist
- * but are never read.
+ * An overflow page carries no sibling/parent references other than its own
+ * forward chain link (which we clear here), so it is safe to recycle the moment
+ * the leaf entry that owned the chain is gone -- no half-dead protocol needed.
  */
 void
 bark_free_oversized(Relation index, IndexTuple entry)
@@ -843,6 +899,10 @@ bark_free_oversized(Relation index, IndexTuple entry)
 		GenericXLogFinish(gstate);
 
 		UnlockReleaseBuffer(buf);
+
+		/* Make the now-deleted page available for reuse. */
+		RecordFreeIndexPage(index, blkno);
+
 		blkno = nextblk;
 	}
 }
