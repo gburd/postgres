@@ -49,6 +49,15 @@ typedef struct
 	pg_atomic_uint32 numBufferAllocs;	/* Buffers allocated since last reset */
 
 	/*
+	 * Allocations that had to claim a still-HOT buffer because the sweep
+	 * could not find a COOL one (see StrategyGetBuffer).  A non-zero and
+	 * growing value means the pool is hotter than the clock hand can keep
+	 * up with, which is the condition the background pre-cooling in
+	 * BgBufferSync() exists to prevent.
+	 */
+	pg_atomic_uint64 numCoolClaims;
+
+	/*
 	 * Bgworker process to be notified upon activity or -1 if none. See
 	 * StrategyNotifyBgWriter.
 	 */
@@ -186,6 +195,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 	BufferDesc *buf;
 	int			bgwprocno;
 	int			trycounter;
+	int			cooled = 0;		/* HOT buffers demoted by this call */
 
 	*from_ring = false;
 
@@ -282,20 +292,65 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 			if (BUF_STATE_GET_COOLSTATE(local_buf_state) != BUF_COOLSTATE_COOL)
 			{
 				/*
-				 * HOT buffer: cool it in place this tick and keep scanning.  We
-				 * do NOT claim it now -- a demoted buffer only becomes a victim
-				 * on a later tick, so a HOT buffer always survives the pass that
-				 * cools it and gets a full sweep of grace in which a new access
-				 * can promote it back to HOT.  Cooling is progress toward a
-				 * victim, so reset trycounter.
+				 * HOT buffer.  Normally we cool it in place and keep
+				 * scanning: a demoted buffer only becomes a victim on a later
+				 * tick, so a HOT buffer survives the pass that cools it and
+				 * gets a full sweep of grace in which a new access can promote
+				 * it back.  Cooling is progress toward a victim, so reset
+				 * trycounter.
+				 *
+				 * That grace period is the right default, but it is not free.
+				 * A buffer is only evictable if it is still COOL when the hand
+				 * returns, so with a pass time of T a page must go roughly T
+				 * without an access to be reclaimable.  T grows with NBuffers,
+				 * so on a large pool under a workload that touches much of the
+				 * pool more often than that, buffers are re-promoted before
+				 * the hand comes back, the supply of COOL victims collapses,
+				 * and this loop can cool indefinitely without finding one --
+				 * unbounded work for a single allocation, because cooling
+				 * resets trycounter.
+				 *
+				 * So we give up the grace period when, and only when, the
+				 * evidence says it is unaffordable: once this call has cooled
+				 * BUF_COOL_CLAIM_THRESHOLD buffers without finding a single
+				 * COOL one, the pool is demonstrably hotter than the hand can
+				 * grind down, and we claim the next unpinned HOT buffer
+				 * instead of merely cooling it.  Under no pressure the counter
+				 * never reaches the threshold and behaviour is unchanged.
 				 */
-				local_buf_state &= ~BUF_USAGECOUNT_MASK;	/* HOT -> COOL */
+				if (cooled < BUF_COOL_CLAIM_THRESHOLD)
+				{
+					local_buf_state &= ~BUF_USAGECOUNT_MASK;	/* HOT -> COOL */
+
+					if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
+													   local_buf_state))
+					{
+						cooled++;
+						trycounter = NBuffers;
+						break;
+					}
+					continue;
+				}
+
+				/*
+				 * Pressure case: claim this HOT buffer.  The cooling state is
+				 * cleared when the victim is reused (InvalidateVictimBuffer),
+				 * so there is no need to demote it first.
+				 */
+				pg_atomic_fetch_add_u64(&StrategyControl->numCoolClaims, 1);
+				local_buf_state += BUF_REFCOUNT_ONE;
 
 				if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
 												   local_buf_state))
 				{
-					trycounter = NBuffers;
-					break;
+					/* Found a usable buffer */
+					if (strategy != NULL)
+						AddBufferToRing(strategy, buf);
+					*buf_state = local_buf_state;
+
+					TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
+
+					return buf;
 				}
 			}
 			else
@@ -409,6 +464,7 @@ StrategyCtlShmemInit(void *arg)
 	/* Clear statistics */
 	StrategyControl->completePasses = 0;
 	pg_atomic_init_u32(&StrategyControl->numBufferAllocs, 0);
+	pg_atomic_init_u64(&StrategyControl->numCoolClaims, 0);
 
 	/* No pending notification */
 	StrategyControl->bgwprocno = -1;
@@ -775,3 +831,4 @@ StrategyRejectBuffer(BufferAccessStrategy strategy, BufferDesc *buf, bool from_r
 
 	return true;
 }
+

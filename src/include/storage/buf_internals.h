@@ -90,6 +90,23 @@ StaticAssertDecl(BUF_REFCOUNT_BITS + BUF_USAGECOUNT_BITS + BUF_FLAG_BITS + BUF_L
 #define BUF_COOLSTATE_ONE	BUF_USAGECOUNT_ONE
 
 /*
+ * How many HOT buffers a single StrategyGetBuffer() call will demote before it
+ * gives up on the probation rule and claims a still-HOT buffer outright.
+ *
+ * The cooling stage only yields victims if a demoted buffer is still COOL when
+ * the clock hand returns to it.  When the pool is accessed faster than the hand
+ * can traverse it, buffers are re-promoted before that happens, the supply of
+ * COOL buffers collapses, and a sweep can cool indefinitely without ever
+ * finding a victim.  Claiming a HOT buffer after this many fruitless demotions
+ * bounds the work of one allocation; the cost is evicting a buffer that had not
+ * finished its probation, so the threshold wants to be high enough that healthy
+ * workloads never reach it.  One cache line of buffer descriptors' worth of
+ * demotions is a cheap, hardware-derived choice.
+ */
+#define BUF_COOL_CLAIM_THRESHOLD	\
+	(PG_CACHE_LINE_SIZE / sizeof(uint32))
+
+/*
  * The cooling state is one bit, so the field must be at least that wide.
  * Assert it here so a future change to BUF_USAGECOUNT_BITS cannot silently
  * narrow the field out from under the cooling state.
