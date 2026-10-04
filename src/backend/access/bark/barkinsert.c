@@ -59,8 +59,13 @@ bark_leaf_page_entry(Relation index, IndexTuple full, bool oversized,
 		return CopyIndexTuple(full);
 
 	firstblk = bark_write_overflow_chain(index, full, fulllen);
-	return bark_form_oversized_entry(&full->t_tid, fulllen, firstblk,
-									 true /* leaf */ , 0);
+	{
+		IndexTuple	entry = bark_form_oversized_entry(&full->t_tid, fulllen,
+														 firstblk, true /* leaf */ , 0);
+
+		bark_set_oversized_prefix(entry, index, full);
+		return entry;
+	}
 }
 
 /* Find the offset at which to insert key on a leaf page (first key > key). */
@@ -182,6 +187,7 @@ bark_make_pivot(Relation index, IndexTuple key, BlockNumber child, int nkeyatts)
 		ItemPointerSetOffsetNumber(&locator, InvalidOffsetNumber);
 		pivot = bark_form_oversized_entry(&locator, fulllen, firstblk,
 										  false /* pivot */ , (uint16) nkeyatts);
+		bark_set_oversized_prefix(pivot, index, full);
 		pfree(full);
 		return pivot;
 	}

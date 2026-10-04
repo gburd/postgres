@@ -347,5 +347,42 @@ bark_check_oversized(Relation rel, BlockNumber blkno, OffsetNumber off,
 
 	/* The reconstructed tuple must deform without error. */
 	full = bark_fetch_oversized(rel, itup);
+
+	/*
+	 * If the entry carries an inline comparison prefix, it must match the
+	 * leading bytes of the reconstructed first key column (that is the
+	 * invariant the compare fast path relies on).
+	 */
+	if (ref->prefixlen > 0)
+	{
+		TupleDesc	tupdesc = RelationGetDescr(rel);
+		Datum		d;
+		bool		isnull;
+
+		d = index_getattr(full, 1, tupdesc, &isnull);
+		if (isnull)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" oversized entry on page %u at offset %u has a prefix but a NULL first key column",
+							RelationGetRelationName(rel), blkno, off)));
+		else
+		{
+			char	   *data = VARDATA_ANY(DatumGetPointer(d));
+			Size		fulllen1 = VARSIZE_ANY_EXHDR(DatumGetPointer(d));
+
+			if (ref->prefixcomplete && fulllen1 != ref->prefixlen)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" oversized entry on page %u at offset %u claims a complete %u-byte prefix but the first key column is %zu bytes",
+								RelationGetRelationName(rel), blkno, off,
+								ref->prefixlen, fulllen1)));
+			if (fulllen1 < ref->prefixlen ||
+				memcmp(data, ref->prefix, ref->prefixlen) != 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" oversized entry on page %u at offset %u has a prefix that does not match its first key column",
+								RelationGetRelationName(rel), blkno, off)));
+		}
+	}
 	pfree(full);
 }
