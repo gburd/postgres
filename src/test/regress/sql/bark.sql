@@ -832,3 +832,72 @@ RESET enable_indexscan;
 RESET enable_bitmapscan;
 RESET enable_seqscan;
 DROP TABLE bark_coalesce;
+-- ScalarArrayOp (SAOP): `col = ANY(array)` / `col IN (...)` pushed into a
+-- single BARK index scan (amsearcharray).  The scan sorts and de-duplicates
+-- the array into index order and visits the matching keys in order, so the
+-- result exactly matches a sequential scan and ORDER BY stays correct.  The
+-- array must show up as an Index Cond, not a filter.
+-- ===========================================================================
+CREATE TABLE bark_saop (a int, b int);
+-- 500 distinct keys, 20 dups each (POSTING-heavy), spanning several leaves.
+INSERT INTO bark_saop SELECT g % 500, g FROM generate_series(1, 10000) g;
+CREATE INDEX bark_saop_idx ON bark_saop USING bark (a);
+ANALYZE bark_saop;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+-- The array is an Index Cond on the BARK scan, not a Filter.
+EXPLAIN (COSTS OFF)
+  SELECT count(*) FROM bark_saop WHERE a IN (3, 7, 42, 499);
+EXPLAIN (COSTS OFF)
+  SELECT count(*) FROM bark_saop WHERE a = ANY('{3,7,42,499}');
+-- Counts match a seqscan: present values, absent values, mix, edges.
+SELECT a, count(*) FROM bark_saop WHERE a IN (3, 7, 42, 499) GROUP BY a ORDER BY a;
+SELECT count(*) AS absent_only FROM bark_saop WHERE a IN (500, 501, -1);
+SELECT count(*) AS mix FROM bark_saop WHERE a IN (3, 500);
+-- Unsorted + duplicate array input is handled (sort+dedup) and equals a seqscan.
+SELECT count(*) AS unsorted_dup FROM bark_saop WHERE a = ANY('{499,42,7,3,3,42}');
+-- Empty array returns nothing.
+SELECT count(*) AS empty_arr FROM bark_saop WHERE a = ANY('{}'::int[]);
+-- ORDER BY stays correct with an array qual (no Sort node; the scan is ordered).
+EXPLAIN (COSTS OFF)
+  SELECT a FROM bark_saop WHERE a IN (499, 3, 42, 7) ORDER BY a LIMIT 5;
+SELECT a FROM bark_saop WHERE a IN (499, 3, 42, 7) ORDER BY a LIMIT 5;
+-- SAOP combined with an ordinary qual filters correctly.
+SELECT count(*) AS saop_and_qual
+  FROM bark_saop WHERE a IN (3, 7) AND b > 5000;
+-- Content equality against a seqscan over an array spanning many leaves.
+SELECT (SELECT md5(string_agg(a||':'||b, ',' ORDER BY a, b))
+          FROM bark_saop WHERE a = ANY('{10,250,499,3,7}'))
+     = (SELECT md5(string_agg(a||':'||b, ',' ORDER BY a, b))
+          FROM (SELECT a, b FROM bark_saop) s WHERE a = ANY('{10,250,499,3,7}'))
+       AS saop_matches_full_set;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+
+-- Multi-column SAOP: an array on the leading column and/or a trailing column.
+-- The leading-column lower bound is a one-attribute pivot (minus-infinity on
+-- the trailing columns), so the descent lands at the first match and does not
+-- overshoot the run of equal leading keys.
+CREATE TABLE bark_saop_mc (a int, b int);
+INSERT INTO bark_saop_mc SELECT (g / 300) % 50, g % 30
+  FROM generate_series(1, 60000) g;
+CREATE INDEX bark_saop_mc_idx ON bark_saop_mc USING bark (a, b);
+ANALYZE bark_saop_mc;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF)
+  SELECT count(*) FROM bark_saop_mc WHERE a IN (3, 7, 40) AND b IN (5, 15);
+-- Plain multi-column leading equality must also descend to the first match
+-- (this exercises the one-attribute-pivot lower bound directly).
+SELECT count(*) AS plain_mc_eq FROM bark_saop_mc WHERE a = 7;
+SELECT count(*) AS plain_mc_eq2 FROM bark_saop_mc WHERE a = 7 AND b = 15;
+SELECT a, b, count(*) FROM bark_saop_mc
+  WHERE a IN (3, 7, 40) AND b IN (5, 15) GROUP BY a, b ORDER BY a, b;
+SELECT count(*) AS lead_array_sec_eq
+  FROM bark_saop_mc WHERE a IN (3, 7) AND b = 15;
+SELECT count(*) AS lead_eq_sec_array
+  FROM bark_saop_mc WHERE a = 7 AND b IN (5, 15, 25);
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+
+DROP TABLE bark_saop, bark_saop_mc;
