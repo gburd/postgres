@@ -141,6 +141,7 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
 #define BARK_NSTRATEGIES	5	/* number of strategies (btree's set) */
 #define BARK_NPROCS			6	/* btree's support-function range (BTNProcs) */
 #define BARK_ORDER_PROC		1	/* support function 1: 3-way comparator */
+#define BARK_EQUALIMAGE_PROC 4	/* support function 4: equalimage (BTEQUALIMAGE_PROC) */
 
 /*
  * Ordered-operator (KNN) scans.  Strategy 6 is BARK's distance ordering
@@ -598,6 +599,7 @@ typedef struct BarkKeyInfo
 } BarkKeyInfo;
 
 extern BarkKeyInfo *bark_build_keyinfo(Relation index);
+extern bool bark_allequalimage(Relation index);
 extern int	bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
 							   IndexTuple a, IndexTuple b);
 

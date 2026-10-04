@@ -1025,3 +1025,18 @@ RESET enable_seqscan;
 RESET enable_indexscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_pfx;
+-- Equal keys share a LIST/POSTING entry only when they are byte-identical
+-- (bark_allequalimage, nbtree's _bt_allequalimage rule).  An INCLUDE index
+-- never coalesces: rows with the same key carry different payloads, and an
+-- index-only scan must return each row's own payload, not the first row's.
+CREATE TABLE bark_inc_dup (a int, p text);
+CREATE INDEX bark_inc_dup_idx ON bark_inc_dup USING bark (a) INCLUDE (p);
+INSERT INTO bark_inc_dup SELECT 1, 'row' || g FROM generate_series(1, 5) g;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT a, p FROM bark_inc_dup WHERE a = 1;
+SELECT a, p FROM bark_inc_dup WHERE a = 1 ORDER BY p;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT bark_index_check('bark_inc_dup_idx');
+DROP TABLE bark_inc_dup;

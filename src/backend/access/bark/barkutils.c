@@ -37,6 +37,7 @@
 #include "lib/sbm.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
+#include "utils/lsyscache.h"
 #include "utils/pg_locale.h"
 #include "utils/rel.h"
 
@@ -138,6 +139,41 @@ bark_build_keyinfo(Relation index)
 	}
 
 	return keyinfo;
+}
+
+/*
+ * Can equal keys in this index share one leaf entry (LIST or POSTING)?
+ *
+ * A LIST or POSTING entry stores its key attributes once, and an index-only
+ * scan returns those bytes for every member.  That is only correct when every
+ * row that compares equal also has an identical stored image, so the same
+ * rule nbtree applies to deduplication (_bt_allequalimage) applies here: no
+ * INCLUDE columns (their values differ between rows with equal keys), and
+ * every key column's opclass must have an equalimage support function that
+ * says yes for the column's collation.  Without it, text under a
+ * nondeterministic collation or numeric (1.0 = 1.00) would hand back the
+ * first row's value for all of them.
+ */
+bool
+bark_allequalimage(Relation index)
+{
+	if (IndexRelationGetNumberOfAttributes(index) !=
+		IndexRelationGetNumberOfKeyAttributes(index))
+		return false;
+
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+	{
+		Oid			opcintype = index->rd_opcintype[i];
+		Oid			proc = get_opfamily_proc(index->rd_opfamily[i], opcintype,
+											opcintype, BARK_EQUALIMAGE_PROC);
+
+		if (!OidIsValid(proc) ||
+			!DatumGetBool(OidFunctionCall1Coll(proc, index->rd_indcollation[i],
+											   ObjectIdGetDatum(opcintype))))
+			return false;
+	}
+
+	return true;
 }
 
 /*
