@@ -1697,3 +1697,135 @@ SELECT count(*) AS lead_eq_sec_array
 RESET enable_seqscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_saop, bark_saop_mc;
+-- ===========================================================================
+-- Sharper scan positioning: a multi-column lower bound uses every usable
+-- leading column (WHERE a = k AND b >= m descends near (k,m), not to the first
+-- a = k leaf), and a forward scan terminates once the leading column passes an
+-- upper bound (=, <, <=) instead of filtering the rest of the index.  The bar
+-- is correctness (== seqscan); EXPLAIN (BUFFERS) is omitted because its page
+-- counts are not reproducible, but the queries below would read the whole
+-- index without the optimization.
+-- ===========================================================================
+CREATE TABLE bark_pos (a int, b int);
+-- 5 distinct a-values, 2000 b-values each: an a-run spans several leaves, so a
+-- second-column bound that starts at the first a-row would read many pages.
+INSERT INTO bark_pos SELECT g / 2000, g % 2000 FROM generate_series(0, 9999) g;
+CREATE INDEX bark_pos_idx ON bark_pos USING bark (a, b);
+ANALYZE bark_pos;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+-- Multi-column lower bound: a = 3 AND b >= 1990 lands near the match.
+SELECT count(*) AS mc_lb FROM bark_pos WHERE a = 3 AND b >= 1990;
+ mc_lb 
+-------
+    10
+(1 row)
+
+SELECT a, b FROM bark_pos WHERE a = 3 AND b >= 1997 ORDER BY a, b;
+ a |  b   
+---+------
+ 3 | 1997
+ 3 | 1998
+ 3 | 1999
+(3 rows)
+
+-- a = 2 AND b BETWEEN 500 AND 509 (lower bound + per-tuple upper filter).
+SELECT count(*) AS mc_between FROM bark_pos WHERE a = 2 AND b BETWEEN 500 AND 509;
+ mc_between 
+------------
+         10
+(1 row)
+
+-- Content equality against a seqscan for the multi-column bound.
+SELECT (SELECT md5(string_agg(a||':'||b, ',' ORDER BY a, b))
+          FROM bark_pos WHERE a = 1 AND b >= 1500)
+     = (SELECT md5(string_agg(a||':'||b, ',' ORDER BY a, b))
+          FROM (SELECT a, b FROM bark_pos) s WHERE a = 1 AND b >= 1500)
+       AS mc_lb_matches;
+ mc_lb_matches 
+---------------
+ t
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+-- Upper-bound early termination on a single-column index.
+CREATE TABLE bark_ub (a int);
+INSERT INTO bark_ub SELECT g FROM generate_series(1, 20000) g;
+CREATE INDEX bark_ub_idx ON bark_ub USING bark (a);
+ANALYZE bark_ub;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+-- < , <= and = all stop the forward scan early; results equal a seqscan.
+SELECT count(*) AS ub_lt FROM bark_ub WHERE a < 10;
+ ub_lt 
+-------
+     9
+(1 row)
+
+SELECT count(*) AS ub_le FROM bark_ub WHERE a <= 100;
+ ub_le 
+-------
+   100
+(1 row)
+
+SELECT count(*) AS ub_eq FROM bark_ub WHERE a = 12345;
+ ub_eq 
+-------
+     1
+(1 row)
+
+SELECT count(*) AS ub_range FROM bark_ub WHERE a >= 5000 AND a <= 5010;
+ ub_range 
+----------
+       11
+(1 row)
+
+-- Early termination also applies to bitmap scans.
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = on;
+SELECT count(*) AS ub_bitmap FROM bark_ub WHERE a <= 50;
+ ub_bitmap 
+-----------
+        50
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+-- DESC index: the index-order upper bound is >, >=, = (physical order flipped),
+-- so a forward scan over a DESC index also terminates early and stays correct.
+CREATE TABLE bark_desc (a int);
+INSERT INTO bark_desc SELECT g FROM generate_series(1, 20000) g;
+CREATE INDEX bark_desc_idx ON bark_desc USING bark (a DESC);
+ANALYZE bark_desc;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS desc_gt FROM bark_desc WHERE a > 19990;
+ desc_gt 
+---------
+      10
+(1 row)
+
+SELECT a FROM bark_desc WHERE a > 19995 ORDER BY a DESC;
+   a   
+-------
+ 20000
+ 19999
+ 19998
+ 19997
+ 19996
+(5 rows)
+
+SELECT count(*) AS desc_lt FROM bark_desc WHERE a < 10;
+ desc_lt 
+---------
+       9
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_pos, bark_ub, bark_desc;
