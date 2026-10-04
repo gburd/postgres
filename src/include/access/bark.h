@@ -827,6 +827,32 @@ typedef struct BarkKnnScanState
 } BarkKnnScanState;
 
 /*
+ * ScalarArrayOp (SAOP) scan state.  When amsearcharray lets the planner push a
+ * `col = ANY(array)` / `col IN (...)` qual into a BARK scan, the executor hands
+ * us the scankey with SK_SEARCHARRAY set and sk_argument carrying the array
+ * Datum.  bark_rescan preprocesses each such key into one BarkArrayKeyState:
+ * the array's elements, sorted into the index's key order for that column and
+ * de-duplicated, so a scan can visit the matching keys in index order (ORDER
+ * BY stays correct) exactly as a merged sequence of equality scans would.
+ *
+ * Every array key filters per tuple by membership (bark_array_contains, a
+ * binary search over `elems`), which alone makes the scan correct.  The array
+ * key on the leading index column additionally drives positioning: `cur` walks
+ * the sorted elements, the scan seeks to each in turn, so it starts at the
+ * first element rather than the leftmost leaf and skips the gaps between
+ * elements instead of filtering every tuple in between.
+ */
+typedef struct BarkArrayKeyState
+{
+	int			scankeyidx;		/* index into scan->keyData of the SAOP key */
+	AttrNumber	attno;			/* 1-based index column the array constrains */
+	Datum	   *elems;			/* sorted, de-duplicated array elements */
+	int			nelems;			/* number of them (0: empty array, no matches) */
+	int			cur;			/* leading-array cursor: element the scan is on */
+	bool		elmbyval;		/* element type pass-by-value (for pfree care) */
+} BarkArrayKeyState;
+
+/*
  * Scan state (scan->opaque).  A BARK scan positions on a leaf and walks the
  * right-link chain, returning the heap TID of each entry that satisfies the
  * scan keys.  currentBuffer is the pinned (and, while reading, share-locked)
@@ -864,6 +890,18 @@ typedef struct BarkScanOpaqueData
 	int			nMembersAlloc;	/* capacity of memberTids */
 	int			nMembers;		/* locators in the current entry */
 	int			memberIdx;		/* next locator to return */
+
+	/*
+	 * ScalarArrayOp (SAOP) state: one BarkArrayKeyState per SK_SEARCHARRAY
+	 * scankey, built by bark_rescan.  numArrayKeys == 0 for a plain scan,
+	 * which takes exactly the same path as before.  leadArray points at the
+	 * array key (if any) on the leading index column, which drives positioning;
+	 * it is NULL when no array constrains column 1.
+	 */
+	BarkArrayKeyState *arrayKeys;	/* palloc'd array, or NULL */
+	int			numArrayKeys;	/* number of SAOP keys */
+	BarkArrayKeyState *leadArray;	/* the array key on column 1, or NULL */
+	bool		arrayDone;		/* a leading array exhausted all its elements */
 
 	/*
 	 * KNN (ordered-operator) scan state, allocated lazily on the first
