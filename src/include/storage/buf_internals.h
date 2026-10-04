@@ -643,6 +643,7 @@ extern bool StrategyRejectBuffer(BufferAccessStrategy strategy,
 
 extern int	StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc);
 extern void StrategyNotifyBgWriter(int bgwprocno);
+extern uint64 StrategyCoolClaims(void);
 
 /* buf_table.c */
 extern uint32 BufTableHashCode(BufferTag *tagPtr);
