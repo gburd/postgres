@@ -572,6 +572,17 @@ typedef struct BarkKeyInfo
 extern BarkKeyInfo *bark_build_keyinfo(Relation index);
 extern int	bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
 							   IndexTuple a, IndexTuple b);
+
+/*
+ * Allocate a page for the index, preferring a page the FSM says is free
+ * (recorded by VACUUM when it emptied a leaf or freed an overflow chain) over
+ * extending the relation.  Returns a pinned, exclusive-locked buffer whose page
+ * the caller must (re)initialize; a recycled page is handed back still flagged
+ * BARK_DELETED (or PageIsNew), so the caller's PageInit overwrites it.  This is
+ * what keeps a delete-heavy index from growing the relation without bound: a
+ * split or overflow write reuses a reclaimed page instead of P_NEW.
+ */
+extern Buffer bark_get_free_page(Relation index);
 extern CompareType bark_translate_strategy(StrategyNumber strategy, Oid opfamily);
 extern StrategyNumber bark_translate_cmptype(CompareType cmptype, Oid opfamily);
 
