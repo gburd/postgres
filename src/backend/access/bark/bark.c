@@ -799,7 +799,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amcanunique = true,
 		.amcanmulticol = true,
 		.amoptionalkey = true,
-		.amsearcharray = false,	/* no ScalarArrayOp (SAOP) scan support yet */
+		.amsearcharray = true,	/* ScalarArrayOp (SAOP): col = ANY(array), see barkscan.c */
 		.amsearchnulls = true,
 		.amstorage = false,
 		.amclusterable = true,
