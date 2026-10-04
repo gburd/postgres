@@ -477,6 +477,14 @@ BarkPostingGetDataSize(IndexTupleData *itup)
 #define BARK_OVERFLOW_LEAF		0xFFFF
 
 /*
+ * Bytes of the first key column kept inline in an OVERSIZED entry for the
+ * compare fast path (see BarkOverflowRef.prefix).  A few dozen bytes resolve
+ * the vast majority of oversized-key orderings without an overflow fetch while
+ * keeping the inline entry tiny.
+ */
+#define BARK_OVERSIZED_PREFIX_LEN	32
+
+/*
  * The fixed metadata an OVERSIZED entry keeps inline, appended after its (zero-
  * attribute) key prefix.  locator is the heap TID for a leaf entry; for a pivot
  * its block field is the downlink and natts is the key-attribute count.
@@ -486,6 +494,22 @@ typedef struct BarkOverflowRef
 	uint32		fulllen;		/* byte length of the full IndexTuple in overflow */
 	ItemPointerData locator;	/* heap TID (leaf) or downlink block (pivot) */
 	uint16		natts;			/* pivot key-attr count, or BARK_OVERFLOW_LEAF */
+
+	/*
+	 * Inline comparison prefix: the leading bytes of the first key column's
+	 * datum, used to order two OVERSIZED entries without fetching the overflow
+	 * chain when the prefixes already decide the order.  Only populated (and
+	 * only consulted) when the first key column compares bytewise -- i.e. a
+	 * C/POSIX collation or a non-collatable binary-sortable type -- where a
+	 * leading-byte difference determines the full order.  For any other
+	 * column (locale-aware text, etc.) prefixlen is 0 and comparison always
+	 * fetches the full tuple.  prefixcomplete is true when the whole first
+	 * column fit in the prefix, so an exhausted prefix with equal bytes is a
+	 * genuine tie on that column rather than a truncation.
+	 */
+	uint16		prefixlen;		/* bytes of prefix stored (0 = no prefix) */
+	bool		prefixcomplete; /* the whole first column fit in the prefix */
+	uint8		prefix[BARK_OVERSIZED_PREFIX_LEN];
 } BarkOverflowRef;
 
 /* The first overflow block of an OVERSIZED entry's chain. */
@@ -561,6 +585,10 @@ typedef struct BarkKeyColumn
 	Oid			collation;		/* collation to pass to the comparator */
 	bool		reverse;		/* DESC: invert the comparison result */
 	bool		nulls_first;	/* NULLs sort before non-NULLs */
+	bool		bytewise;		/* first-column prefix compare is byte-exact
+								 * (C/POSIX collation or a non-collatable
+								 * binary-sortable type); enables the OVERSIZED
+								 * inline-prefix fast path for this column */
 } BarkKeyColumn;
 
 typedef struct BarkKeyInfo
@@ -677,6 +705,8 @@ extern BlockNumber bark_overflow_nchunks(Size fulllen);
 extern IndexTuple bark_form_oversized_entry(ItemPointer locator, Size fulllen,
 											BlockNumber firstblk,
 											bool is_leaf, uint16 natts);
+extern void bark_set_oversized_prefix(IndexTuple entry, Relation index,
+									  IndexTuple full);
 
 /*
  * Write `full` (fulllen bytes) across a chain of BARK_OVERFLOW pages via the
