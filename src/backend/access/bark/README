@@ -82,6 +82,66 @@ that no later page holds.  BARK has no heap-TID tiebreaker, so equal keys may
 sit on both sides of a split, but a new equal key always goes to the end of
 its run, which is what makes the single-value split pay off.
 
+Suffix truncation
+-----------------
+
+A pivot (a page's high key, or the downlink to a page) keeps only as many
+leading key attributes as it needs, as in nbtree (_bt_truncate).  When a leaf
+splits between lastleft, the left page's last item, and firstright, the right
+page's first item, the left page's new high key is firstright with every key
+attribute after the first one on which the two differ removed: it keeps
+1 + (the number of leading key attributes on which lastleft and firstright
+are equal), up to all of them (bark_truncate_pivot, bark_keep_natts).  nbtree
+keeps a heap TID when the two are equal on every key attribute; BARK has no
+heap TID in its key space, and keeps every key attribute instead.  INCLUDE
+columns are never kept.  Equality is decided by the opclass comparator, not by
+comparing stored images: two values can differ in image yet compare equal,
+and what matters is how the pivot compares.  The downlink inserted into the
+parent is a copy of the high key, so the parent separates the two pages by
+the same tuple.  An internal page's items are pivots already, so its split
+copies the right page's first item, with the attributes it has, as the new
+high key.  CREATE INDEX does the same: each finished leaf's high key is
+truncated against its last item, and a copy of that high key is the next
+page's downlink (nbtsort.c's _bt_buildadd).  A single-column index never
+truncates.
+
+The removed attributes compare as minus infinity (bark_compare_itups orders a
+pivot with fewer attributes before a key that agrees on the attributes it
+has, which also makes a level's first downlink, with none, minus infinity).
+So if T is firstright truncated, lastleft < T <= firstright, and T equals
+firstright only when nothing was removed.  BARK's invariant, keys(left page)
+<= high key <= keys(right page), still holds, and so does
+keys(child i-1) <= downlink i <= keys(child i) for every downlink.  The
+consequences, with no heap-TID tiebreaker:
+
+  * A lower-bound descent (nextkey=false, scans) follows the last downlink
+    less than its bound, so it never starts right of the first match.
+  * An insert descent (nextkey=true) follows the last downlink less than or
+    equal to its key, and still lands at the end of a run of equal keys: a
+    pivot inside a run of equal keys is never truncated, because there
+    lastleft equals firstright.  bark_check_unique's forward-only scan from
+    the insert leaf relies on that.
+  * A key that is greater than T but less than firstright (it shares T's
+    attributes and sorts below firstright) now belongs to the right page, for
+    inserts and searches alike.  No such key existed when the split was made,
+    since lastleft and firstright were adjacent.
+  * A lower-bound scan whose bound equals a truncated pivot descends to the
+    page left of it and reads one leaf that holds no match before moving
+    right.  nbtree avoids that extra leaf for forward scans by treating a
+    bound equal to a truncated pivot as greater than it (_bt_compare); BARK
+    does not.
+
+The split-point choice (barksplitloc.c) prefers split points whose neighbors
+differ on an earlier attribute, so the high key keeps fewer attributes.  As
+in nbtree, it sizes the new high key as if nothing were truncated.
+
+An OVERSIZED pivot stays OVERSIZED when one of the attributes it keeps is too
+large to fit inline; its BarkOverflowRef.natts records the attributes kept.
+A high key and the downlink copied from it share one overflow chain, as do an
+internal page's high key and the item it is copied from.  Pivot chains are
+never freed (VACUUM frees only the chains of leaf entries it removes), so the
+sharing needs no reference count.
+
 Block 0 is always the meta page (BarkMetaPageData): a magic number
 (BARK_MAGIC), the on-disk version (BARK_VERSION), the current root block and
 its level, and whether all key columns are "equalimage" (which governs
@@ -208,6 +268,13 @@ Invariants
     (vacuum, cleanup) and by amcheck's per-page checks.
   * bark_page_id is BARK_PAGE_ID on every BARK page.
   * No leaf entry is larger than BarkMaxItemSize.
+  * A high key is a pivot with between one and all of the index's key
+    attributes, and no INCLUDE attributes.  Every key on its page is less
+    than or equal to it, and strictly less when attributes were removed.
+    Every key on the right sibling is greater than or equal to it.
+  * A downlink is a pivot with at most the index's key attributes, the first
+    downlink of a level has none, and the first key on the child it points
+    at is greater than or equal to it.
   * A POSTING entry is at least as large as BarkPostingEntrySize of its key
     and of sbm_removal_bound of its set.  An sbm is not size-monotone:
     removing members from a dense run turns all-ones vectors (a 2-bit flag)
