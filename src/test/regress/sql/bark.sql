@@ -332,6 +332,34 @@ RESET enable_indexscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_post;
 
+-- Deleting an empty interior leaf hands its key space to its right sibling in
+-- the parent, as nbtree does.  Refilling the emptied range must leave every
+-- key under the right downlink: amcheck verifies parent order, and the index
+-- counts must equal a sequential scan's.  A temp table, so that no other
+-- session's snapshot keeps VACUUM from removing the rows and deleting the
+-- leaves.
+CREATE EXTENSION IF NOT EXISTS amcheck;
+CREATE TEMP TABLE bark_vgap (a int);
+CREATE INDEX bark_vgap_idx ON bark_vgap USING bark (a);
+INSERT INTO bark_vgap SELECT g * 10 FROM generate_series(1, 20000) g;
+DELETE FROM bark_vgap WHERE a BETWEEN 50000 AND 150000;
+VACUUM bark_vgap;
+SELECT bark_index_check('bark_vgap_idx');
+INSERT INTO bark_vgap SELECT g * 10 + 1 FROM generate_series(5000, 15000) g;
+SELECT bark_index_check('bark_vgap_idx');
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS idx_all FROM bark_vgap WHERE a >= 0;
+SELECT count(*) AS idx_gap FROM bark_vgap WHERE a BETWEEN 50000 AND 150010;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS seq_gap FROM bark_vgap WHERE a BETWEEN 50000 AND 150010;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_vgap;
+
 -- VACUUM rewrites a POSTING entry in place even when the survivors' sbm
 -- encodes larger than the whole set did.  An sbm is not size-monotone:
 -- removing every Nth TID of a dense run turns all-ones vectors (stored as a
