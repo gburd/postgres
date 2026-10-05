@@ -12,7 +12,9 @@
  *	- sibling links are consistent (the right sibling's left link points back,
  *	  and levels match across a sibling link);
  *	- no page is still flagged with an unfinished split, which a clean index
- *	  never leaves behind.
+ *	  never leaves behind;
+ *	- no leaf entry is larger than BarkMaxItemSize, and every POSTING entry
+ *	  reserves room for the largest encoding of any subset of its set.
  *
  * This is a lightweight structural check: it does not cross-check the index
  * against the heap, nor verify that every downlink's child is reachable.  It
@@ -174,12 +176,21 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 
 		/*
 		 * A LIST entry (sorted duplicates) on a leaf page must carry at least
-		 * two locators, stored strictly ascending.  A POSTING entry must hold a
-		 * valid sbm serialization with at least two members.  SINGLE entries
-		 * and pivots need no extra checks here.
+		 * two locators, stored strictly ascending.  A POSTING entry must hold
+		 * a valid sbm serialization with at least two members.  SINGLE
+		 * entries and pivots need no extra checks here.  No leaf entry may
+		 * exceed the item ceiling the insert and vacuum paths keep to (an
+		 * OVERSIZED entry is a small stub, so it always passes).
 		 */
 		if (BarkPageIsLeaf(opaque))
 		{
+			if (IndexTupleSize(itup) > BarkMaxItemSize)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a %zu-byte leaf entry on page %u at offset %u, larger than the %zu-byte limit",
+								RelationGetRelationName(rel), IndexTupleSize(itup),
+								blkno, off, (Size) BarkMaxItemSize)));
+
 			if (BarkEntryGetShape(itup) == BARK_SHAPE_LIST)
 				bark_check_list(rel, blkno, off, itup);
 			else if (BarkEntryGetShape(itup) == BARK_SHAPE_POSTING)
@@ -260,15 +271,20 @@ bark_check_list(Relation rel, BlockNumber blkno, OffsetNumber off,
 /*
  * Validate a POSTING entry: its body must be a valid sbm serialization that
  * passes a structural self-check and holds at least two members (a smaller set
- * would never have been promoted from a LIST).
+ * would never have been promoted from a LIST), and the entry must be at least
+ * as large as a POSTING entry sized for the set's removal bound.  VACUUM
+ * relies on that reserve to rewrite the entry in place after removing members.
  */
 static void
 bark_check_posting(Relation rel, BlockNumber blkno, OffsetNumber off,
 				   IndexTuple itup)
 {
-	Sbm		   *map = sbm_deserialize(BarkPostingGetData(itup),
-									 BarkPostingGetDataSize(itup));
+	Sbm		   *map = NULL;
+	Size		reserved;
 
+	if (BarkPostingDataFits(itup))
+		map = sbm_deserialize(BarkPostingGetData(itup),
+							  BarkPostingGetDataSize(itup));
 	if (map == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_INDEX_CORRUPTED),
@@ -285,7 +301,16 @@ bark_check_posting(Relation rel, BlockNumber blkno, OffsetNumber off,
 				 errmsg("BARK index \"%s\" has an invalid posting set (%zu members) on page %u at offset %u",
 						RelationGetRelationName(rel), card, blkno, off)));
 	}
+
+	reserved = BarkPostingEntrySize(BarkEntryGetBodyOffset(itup),
+									sbm_removal_bound(map));
 	sbm_free(map);
+	if (IndexTupleSize(itup) < reserved)
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("BARK index \"%s\" has a %zu-byte posting entry on page %u at offset %u, smaller than the %zu bytes its set's removal bound requires",
+						RelationGetRelationName(rel), IndexTupleSize(itup),
+						blkno, off, reserved)));
 }
 
 /*

@@ -173,6 +173,18 @@ index be a BARK opclass instead of a separate AM. The encoding decision
 (single / list / posting-set) is per entry and driven by cardinality, using
 sbm only where its density envelope wins.
 
+Removing locators must never make an entry grow, because VACUUM rewrites an
+entry in place under the page's one WAL record (as nbtree shrinks a posting
+list), with no split and no re-insert that a concurrent scan or a crash could
+observe half done. A TID array (nbtree, LIST) and GIN's varbyte lists shrink
+on removal by construction; an sbm does not, since removing members breaks
+all-ones vectors and RLE runs into stored vectors. So a posting-set entry
+reserves its worst case: it is sized for <code>sbm_removal_bound</code>, the
+largest serialization any subset of its set can have, which is
+non-increasing under removal. The reserve costs at most one bit per locator of
+a dense run (8 bytes per 64 locators), and the posting-set shape is chosen only
+when it beats the list shape with the reserve included.
+
 === C-STATS: statistics and cost ===
 
 BARK feeds the planner the same statistics contract as nbtree:

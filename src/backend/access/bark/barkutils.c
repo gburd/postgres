@@ -560,22 +560,53 @@ bark_key_to_tid(uint64 key, ItemPointer tid)
 }
 
 /*
+ * Lay out a POSTING entry of `total` bytes (see BarkPostingEntrySize) holding
+ * key's columns and the serialization of `map`.  The space between the end of
+ * the serialization and `total` is the entry's reserve for later removals; it
+ * is zeroed.
+ */
+static IndexTuple
+bark_posting_from_map(IndexTuple key, Sbm *map, Size total)
+{
+	Size		keysz = IndexTupleSize(key);
+	Size		bodyoff = MAXALIGN(keysz);
+	Size		serialized = sbm_serialized_size(map);
+	uint16		datalen = (uint16) serialized;
+	IndexTuple	entry;
+
+	Assert(bodyoff <= BARK_OFFSET_MASK);
+	Assert(total <= INDEX_SIZE_MASK);
+	Assert(bodyoff + sizeof(uint16) + serialized <= total);
+
+	entry = (IndexTuple) palloc0(total);
+	memcpy(entry, key, keysz);
+	entry->t_info = (key->t_info & ~INDEX_SIZE_MASK) | (uint16) total;
+	entry->t_info |= INDEX_AM_RESERVED_BIT;
+	ItemPointerSetOffsetNumber(&entry->t_tid, (OffsetNumber) BARK_IS_POSTING);
+	BarkEntrySetBodyOffset(entry, (uint16) bodyoff);
+
+	memcpy((char *) entry + bodyoff, &datalen, sizeof(uint16));
+	if (sbm_serialize(map, BarkPostingGetData(entry), serialized) != serialized)
+		elog(ERROR, "sbm_serialize wrote unexpected length for BARK posting entry");
+	return entry;
+}
+
+/*
  * Build a POSTING entry from a SINGLE-shape key tuple and `ntids` ascending,
  * distinct locators.  The locator set is serialized with sbm into the entry's
- * body.  Returns NULL when the serialized form is not smaller than the
- * equivalent LIST (the caller then keeps the LIST), so POSTING is used only
- * when it actually saves space.
+ * body, and the entry is sized for the set's removal bound, so that VACUUM
+ * can rewrite it in place whatever members it removes.  Returns NULL when
+ * that size is not smaller than the equivalent LIST (the caller then keeps
+ * the LIST), so POSTING is used only when it saves space even with the
+ * reserve, or when it would not fit t_info's size field.
  */
 IndexTuple
 bark_form_posting(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids)
 {
 	Size		keysz = IndexTupleSize(key);
-	Size		bodyoff = MAXALIGN(keysz);
 	Size		listsz;
-	Size		serialized;
 	Size		total;
 	Sbm		   *map = NULL;
-	uint8	   *out;
 	IndexTuple	entry;
 
 	Assert(ntids >= 1);
@@ -586,32 +617,16 @@ bark_form_posting(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids
 		if (sbm_add_grow(&map, bark_tid_to_key(&tids[i])) == SBM_IDX_MAX)
 			elog(ERROR, "sbm_add_grow failed building BARK posting entry");
 	}
-	map = sbm_shrink_to_fit(map);
 
-	serialized = sbm_serialized_size(map);
-	total = bodyoff + MAXALIGN(serialized);
-	listsz = MAXALIGN(bodyoff + ntids * sizeof(ItemPointerData));
-
-	/* Only worth it when the serialized set is smaller than the LIST form. */
-	if (MAXALIGN(total) >= listsz)
+	total = BarkPostingEntrySize(keysz, sbm_removal_bound(map));
+	listsz = MAXALIGN(MAXALIGN(keysz) + ntids * sizeof(ItemPointerData));
+	if (total >= listsz || total > INDEX_SIZE_MASK)
 	{
 		sbm_free(map);
 		return NULL;
 	}
 
-	Assert(bodyoff <= BARK_OFFSET_MASK);
-	Assert(total <= INDEX_SIZE_MASK);
-
-	entry = (IndexTuple) palloc0(total);
-	memcpy(entry, key, keysz);
-	entry->t_info = (key->t_info & ~INDEX_SIZE_MASK) | (uint16) total;
-	entry->t_info |= INDEX_AM_RESERVED_BIT;
-	ItemPointerSetOffsetNumber(&entry->t_tid, (OffsetNumber) BARK_IS_POSTING);
-	BarkEntrySetBodyOffset(entry, (uint16) bodyoff);
-
-	out = BarkPostingGetData(entry);
-	if (sbm_serialize(map, out, serialized) != serialized)
-		elog(ERROR, "sbm_serialize wrote unexpected length for BARK posting entry");
+	entry = bark_posting_from_map(key, map, total);
 	sbm_free(map);
 	return entry;
 }
@@ -620,9 +635,11 @@ bark_form_posting(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids
 static Sbm *
 bark_posting_open(IndexTuple itup)
 {
-	Sbm		   *map = sbm_deserialize(BarkPostingGetData(itup),
-								  BarkPostingGetDataSize(itup));
+	Sbm		   *map = NULL;
 
+	if (BarkPostingDataFits(itup))
+		map = sbm_deserialize(BarkPostingGetData(itup),
+							  BarkPostingGetDataSize(itup));
 	if (map == NULL)
 		elog(ERROR, "BARK posting entry has a corrupt sbm serialization");
 	return map;
@@ -669,44 +686,31 @@ bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout)
  * be anywhere, not only an append), and the set is re-serialized once -- O(the
  * serialized size), not O(members), so repeated single-row inserts into one
  * key's POSTING set are O(1) amortized for a clustered set rather than the
- * O(members) a full re-read-and-rebuild costs.  Returns NULL when the new entry
- * would exceed `maxsz` (the caller then falls back to the general re-encode /
- * split path, keeping the LIST<->POSTING shape decision in one place).
+ * O(members) a full re-read-and-rebuild costs.  Like bark_form_posting, the
+ * new entry is sized for the grown set's removal bound.  Returns NULL when the
+ * new entry would exceed `maxsz` (the caller then falls back to the general
+ * re-encode / split path, keeping the LIST<->POSTING shape decision in one
+ * place).
  */
 IndexTuple
 bark_posting_add_tid(TupleDesc tupdesc, IndexTuple key, IndexTuple posting,
 					 ItemPointer newtid, Size maxsz)
 {
-	Size		keysz = IndexTupleSize(key);
-	Size		bodyoff = MAXALIGN(keysz);
 	Sbm		   *map = bark_posting_open(posting);
-	Size		serialized;
 	Size		total;
 	IndexTuple	entry;
-	uint8	   *out;
 
 	if (sbm_add_grow(&map, bark_tid_to_key(newtid)) == SBM_IDX_MAX)
 		elog(ERROR, "sbm_add_grow failed extending BARK posting entry");
-	map = sbm_shrink_to_fit(map);
 
-	serialized = sbm_serialized_size(map);
-	total = bodyoff + MAXALIGN(serialized);
-	if (MAXALIGN(total) > maxsz || total > INDEX_SIZE_MASK)
+	total = BarkPostingEntrySize(IndexTupleSize(key), sbm_removal_bound(map));
+	if (total > maxsz || total > INDEX_SIZE_MASK)
 	{
 		sbm_free(map);
 		return NULL;			/* too big: caller re-encodes / splits */
 	}
 
-	entry = (IndexTuple) palloc0(total);
-	memcpy(entry, key, keysz);
-	entry->t_info = (key->t_info & ~INDEX_SIZE_MASK) | (uint16) total;
-	entry->t_info |= INDEX_AM_RESERVED_BIT;
-	ItemPointerSetOffsetNumber(&entry->t_tid, (OffsetNumber) BARK_IS_POSTING);
-	BarkEntrySetBodyOffset(entry, (uint16) bodyoff);
-
-	out = BarkPostingGetData(entry);
-	if (sbm_serialize(map, out, serialized) != serialized)
-		elog(ERROR, "sbm_serialize wrote unexpected length extending BARK posting entry");
+	entry = bark_posting_from_map(key, map, total);
 	sbm_free(map);
 	return entry;
 }

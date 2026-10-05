@@ -219,6 +219,11 @@ SELECT test_sbm_random_operations(3, 10000, 0, 100000000) >= 0 AS ok;
 -- long contiguous runs (indexes clustered near each other)
 SELECT test_sbm_random_operations(4, 20000, 0, 256) >= 0 AS ok;
 
+-- sbm_removal_bound: no subset of a set serializes larger than the set's
+-- bound, and the bound never grows under removal (rounds * 6 subsets)
+SELECT test_sbm_removal_bound(1, 150);
+SELECT test_sbm_removal_bound(2, 150);
+
 -- ------------------------------------------------------------------
 -- encoding transitions (small <-> chunk, sparse <-> RLE), every
 -- allocation lineage, splits at every interesting position, and every

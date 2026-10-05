@@ -113,6 +113,7 @@ test: predicate-gist
 test: predicate-gin
 test: predicate-bark
 test: insert-conflict-bark
+test: bark-vacuum-posting
 test: partition-concurrent-attach
 test: partition-drop-index-locking
 test: partition-key-update-1

@@ -1106,6 +1106,168 @@ test_sbm_random_operations(PG_FUNCTION_ARGS)
 	PG_RETURN_INT32(n);
 }
 
+/*
+ * sbm_removal_bound must cover the serialized size of every subset of a set,
+ * and must never grow as members are removed.  Build sets of several shapes
+ * (long runs that become RLE chunks, block-clustered runs like a heap TID
+ * set, scattered members, small-set mode), compute the bound, and check it
+ * against subsets made in two ways: by sbm_remove on a copy (the encoding the
+ * removal path leaves) and by building the subset from scratch (what a
+ * caller that re-encodes the survivors gets).
+ *
+ * Args: (seed bigint, rounds int).  Returns the number of subsets checked.
+ */
+PG_FUNCTION_INFO_V1(test_sbm_removal_bound);
+
+Datum
+test_sbm_removal_bound(PG_FUNCTION_ARGS)
+{
+	uint64		seed = (uint64) PG_GETARG_INT64(0);
+	int			rounds = PG_GETARG_INT32(1);
+	pg_prng_state state;
+	int			checked = 0;
+
+	pg_prng_seed(&state, seed);
+	for (int r = 0; r < rounds; r++)
+	{
+		uint64	   *members = palloc_array(uint64, 30000);
+		uint64	   *keep = palloc_array(uint64, 30000);
+		int			n = 0;
+		uint64		base;
+		Sbm		   *orig = NULL;
+		size_t		bound;
+
+		CHECK_FOR_INTERRUPTS();
+
+		/* Start at 0, on a chunk window boundary, or anywhere. */
+		switch (pg_prng_uint32(&state) % 3)
+		{
+			case 0:
+				base = 0;
+				break;
+			case 1:
+				base = (uint64) (pg_prng_uint32(&state) % 1000) * 2048;
+				break;
+			default:
+				base = pg_prng_uint32(&state) % 3000000;
+				break;
+		}
+
+		switch (r % 4)
+		{
+			case 0:				/* one long run */
+				{
+					int			len = 2 + pg_prng_uint32(&state) % 20000;
+
+					for (int i = 0; i < len; i++)
+						members[n++] = base + i;
+					break;
+				}
+			case 1:				/* runs of 1..291 per 291-wide "block" */
+				{
+					int			nblocks = 1 + pg_prng_uint32(&state) % 100;
+					int			per = 1 + pg_prng_uint32(&state) % 291;
+
+					for (int b = 0; b < nblocks && n + per <= 30000; b++)
+						for (int i = 0; i < per; i++)
+							members[n++] = base + (uint64) b * 291 + i;
+					break;
+				}
+			case 2:				/* scattered, ascending */
+				{
+					int			count = 2 + pg_prng_uint32(&state) % 3000;
+					int			gap = 1 + pg_prng_uint32(&state) % 200;
+					uint64		v = base;
+
+					for (int i = 0; i < count; i++)
+					{
+						members[n++] = v;
+						v += 1 + pg_prng_uint32(&state) % gap;
+					}
+					break;
+				}
+			default:			/* small-set range, dense or not */
+				{
+					int			density = 1 + pg_prng_uint32(&state) % 4;
+
+					for (int i = 0; i < 1024; i++)
+						if (pg_prng_uint32(&state) % density == 0)
+							members[n++] = i;
+					break;
+				}
+		}
+		if (n == 0)
+			members[n++] = base;
+
+		for (int i = 0; i < n; i++)
+			EXPECT_TRUE(sbm_add_grow(&orig, members[i]) != SBM_IDX_MAX);
+		bound = sbm_removal_bound(orig);
+		EXPECT_TRUE(sbm_serialized_size(orig) <= bound);
+
+		for (int s = 0; s < 6; s++)
+		{
+			Sbm		   *viaremove = sbm_copy(orig);
+			Sbm		   *fresh = NULL;
+			Sbm		   *bulk;
+			int			nkeep = 0;
+			int			every = 2 + pg_prng_uint32(&state) % 12;
+			int			pct = pg_prng_uint32(&state) % 100;
+
+			for (int i = 0; i < n; i++)
+			{
+				bool		drop;
+
+				/* Every Nth member, or a random fraction, or all but one. */
+				if (s < 2)
+					drop = (i % every) == 0;
+				else if (s < 5)
+					drop = (int) (pg_prng_uint32(&state) % 100) < pct;
+				else
+					drop = i != n / 2;
+
+				/* A removal can need more room; grow and retry on ENOSPC. */
+				if (drop)
+				{
+					while (sbm_remove(viaremove, members[i]) == SBM_IDX_MAX)
+						viaremove = sbm_set_data_size(viaremove, NULL,
+													  sbm_get_capacity(viaremove) * 2);
+				}
+				else
+					keep[nkeep++] = members[i];
+			}
+			for (int i = 0; i < nkeep; i++)
+				EXPECT_TRUE(sbm_add_grow(&fresh, keep[i]) != SBM_IDX_MAX);
+			bulk = sbm_create_from_array(keep, nkeep);
+
+			if (sbm_cardinality(viaremove) != (size_t) nkeep ||
+				sbm_cardinality(bulk) != (size_t) nkeep)
+				elog(ERROR, "subset cardinality mismatch, seed " UINT64_FORMAT " round %d",
+					 seed, r);
+			if (sbm_serialized_size(viaremove) > bound ||
+				sbm_serialized_size(fresh) > bound ||
+				sbm_serialized_size(bulk) > bound)
+				elog(ERROR, "subset of %d members serializes to %zu/%zu/%zu bytes, over the bound %zu of the %d-member set, seed " UINT64_FORMAT " round %d",
+					 nkeep, sbm_serialized_size(viaremove),
+					 sbm_serialized_size(fresh), sbm_serialized_size(bulk),
+					 bound, n, seed, r);
+			if (sbm_removal_bound(viaremove) > bound ||
+				sbm_removal_bound(fresh) > bound ||
+				sbm_removal_bound(bulk) > bound)
+				elog(ERROR, "bound grew under removal, seed " UINT64_FORMAT " round %d",
+					 seed, r);
+			sbm_free(viaremove);
+			sbm_free(fresh);
+			sbm_free(bulk);
+			checked++;
+		}
+		sbm_free(orig);
+		pfree(members);
+		pfree(keep);
+	}
+
+	PG_RETURN_INT32(checked);
+}
+
 /* --------------------------------------------------------------------------
  * Additional coverage: constructors, bulk ops, aliases, in-place ops,
  * introspection, buffer lifecycle, scan, and the locator family.  These

@@ -10101,6 +10101,121 @@ sbm_serialized_size(const Sbm *map)
 	return SBM_WIRE_HEADER_LEN + sbm_get_size(map);
 }
 
+/*
+ * Upper bound on sbm_serialized_size() of map and of every subset of it.
+ *
+ * Removing members can make an encoding larger.  An all-ones vector costs
+ * only its 2-bit descriptor flag, and removing one of its members turns it
+ * into a stored mixed vector (+8 bytes); clearing a bit inside an RLE run,
+ * which costs one descriptor however long it is, splits it into sparse
+ * chunks.  A caller that keeps a serialized map in a fixed-size slot and
+ * rewrites it in place after removing members (a BARK POSTING entry under
+ * VACUUM) reserves this many bytes when it first stores the map.
+ *
+ * The bound is a function of the set alone, not of its encoding.  Let nwin
+ * be the number of chunk windows (SBM_CHUNK_MAX_CAPACITY bits, aligned)
+ * that hold a member, nvec the number of aligned 64-bit vectors that hold a
+ * member, and top the highest such vector below SBM_SMALL_MAX_BITS, if any.
+ * Then:
+ *
+ *	- A chunk-mode encoding is at most 8 (chunk count) + 16 (start index and
+ *	  descriptor) per chunk + 8 per stored vector.  Every chunk starts on a
+ *	  window boundary, no two share a window, and none is empty (a sparse
+ *	  chunk lies within its window; an RLE run begins at the chunk's start),
+ *	  so there are at most nwin chunks; every stored vector is mixed, so it
+ *	  holds a member, and there are at most nvec of them.  An RLE chunk is
+ *	  charged here for every window and vector its run touches, which is
+ *	  what it costs once removals have split it into sparse chunks.
+ *	- A small-set encoding is exactly 8 + 8 * (top + 1) bytes, because the
+ *	  words above the highest member are never stored.
+ *
+ * The bound is the larger of the two, plus the wire header.  Removing a
+ * member can only lower nwin, nvec and top, so the bound of any subset is at
+ * most the bound of the set: a slot sized for the set holds every subset of
+ * it, whichever encoding the subset ends up with.
+ */
+size_t
+sbm_removal_bound(const Sbm *map)
+{
+	uint64		nwin = 0;
+	uint64		nvec = 0;
+	int			top = -1;
+	size_t		chunkform;
+	size_t		smallform = 0;
+
+	if (map != NULL && sbm_is_small(map))
+	{
+		const uint64 *w = sbm_small_words(map);
+		const size_t n = sbm_small_nwords(map);
+
+		for (size_t i = 0; i < n; i++)
+		{
+			if (w[i] != 0)
+			{
+				nvec++;
+				top = (int) i;
+			}
+		}
+		nwin = (nvec > 0) ? 1 : 0;
+	}
+	else if (map != NULL)
+	{
+		const size_t count = sbm_get_chunk_count(map);
+		uint8	   *p = sbm_get_chunk_data(map, 0);
+
+		sbm_check_invariants(map);
+		for (size_t i = 0; i < count; i++)
+		{
+			const SbmIdx start = sbm_load_idx(p);
+			SbmChunk	chunk;
+
+			sbm_chunk_init(&chunk, p + SBM_SIZEOF_OVERHEAD);
+			if (sbm_chunk_is_rle(&chunk))
+			{
+				const uint64 len = sbm_chunk_rle_get_length(&chunk);
+
+				nwin += (len + SBM_CHUNK_MAX_CAPACITY - 1) / SBM_CHUNK_MAX_CAPACITY;
+				nvec += (len + SBM_BITS_PER_VECTOR - 1) / SBM_BITS_PER_VECTOR;
+				if (start == 0 && len > 0)
+					top = (int) (Min(len, SBM_SMALL_MAX_BITS) - 1) /
+						SBM_BITS_PER_VECTOR;
+			}
+			else
+			{
+				/*
+				 * The high bit of a 2-bit flag is set for ONES (11) and MIXED
+				 * (10) and clear for ZEROS (00) and NONE (01).
+				 */
+				const uint64 held = chunk.m_data[0] &
+					UINT64CONST(0xAAAAAAAAAAAAAAAA);
+
+				if (held != 0)
+				{
+					nwin++;
+					nvec += pg_popcount64(held);
+				}
+				if (start == 0)
+				{
+					/* Flags 0 .. SBM_SMALL_MAX_WORDS-1, two bits each. */
+					const uint64 low = held &
+						((UINT64CONST(1) << (2 * SBM_SMALL_MAX_WORDS)) - 1);
+
+					if (low != 0)
+						top = pg_leftmost_one_pos64(low) / 2;
+				}
+			}
+			p += SBM_SIZEOF_OVERHEAD + sbm_chunk_get_size(&chunk);
+		}
+	}
+
+	chunkform = SBM_SIZEOF_OVERHEAD +
+		nwin * (SBM_SIZEOF_OVERHEAD + sizeof(SbmBitvec)) +
+		nvec * sizeof(SbmBitvec);
+	if (top >= 0)
+		smallform = SBM_SIZEOF_OVERHEAD + (top + 1) * sizeof(uint64);
+	return SBM_WIRE_HEADER_LEN + Max(chunkform, smallform);
+}
+
 size_t
 sbm_serialize(const Sbm *map, uint8 *out, size_t out_size)
 {
