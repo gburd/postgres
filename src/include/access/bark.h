@@ -80,11 +80,15 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
 	((BarkPageOpaque) PageGetSpecialPointer(page))
 
 /*
- * A fixed marker in the last two bytes of the special space, identifying the
- * page as belonging to a BARK index.  Any distinctive value works; this one
- * spells "BK".
+ * The page ID is for the convenience of pg_filedump and similar utilities,
+ * which otherwise would have a hard time telling pages of different index
+ * types apart.  It is the last 2 bytes of the page.  The value must be above
+ * MAX_BT_CYCLE_ID (0xFF7F): tools recognize an nbtree page by its last two
+ * bytes, which hold the vacuum cycle ID and so never exceed that value, and
+ * the other index AMs (hash 0xFF80, GiST 0xFF81, SP-GiST 0xFF82, bloom
+ * 0xFF83) take the values just above it.
  */
-#define BARK_PAGE_ID		0xB43C
+#define BARK_PAGE_ID		0xFF84
 
 /* Bits defined in bark_flags */
 #define BARK_LEAF			(1 << 0)	/* leaf page (else internal) */
