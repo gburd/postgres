@@ -13,6 +13,11 @@
 # a PL/pgSQL loop so the output is a count, not 54000 rows.  Afterwards an
 # index-only scan, which trusts the heap pages VACUUM has marked all-visible,
 # must count only the live rows: a dead TID left in the index would count.
+#
+# VACUUM takes a cleanup lock on every leaf, so it waits while the cursor
+# holds its pin on a leaf; isolationtester does not see that wait, hence (*).
+# VACUUM finishes once s1fetchall has run the scan to its end, and is reported
+# after s1fetchall either way.
 
 setup
 {
@@ -68,4 +73,4 @@ step s2count
   SELECT count(*) AS index_only_rows FROM bark_vp WHERE a = 1;
 }
 
-permutation s1open s1fetch1 s2vacuum s1fetchall s1count s1commit s2count
+permutation s1open s1fetch1 s2vacuum(*) s1fetchall s1count s1commit s2count
