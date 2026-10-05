@@ -419,6 +419,27 @@ SELECT k, after = before AS in_place FROM bark_vgrow_pages ORDER BY k;
 DROP FUNCTION bark_vgrow_counts(text);
 DROP TABLE bark_vgrow, bark_vgrow_cnt, bark_vgrow_pages;
 
+-- A second VACUUM after one that deleted a leaf page.  The deleted page keeps
+-- the items it had when it was unlinked, its old high key among them, and
+-- VACUUM used to read it as a live leaf and fail with "BARK leaf entry has
+-- unexpected shape".  A temp table, so that only this session's snapshot
+-- limits what VACUUM can remove.
+CREATE TEMP TABLE bark_vac2 (a int);
+CREATE INDEX bark_vac2_idx ON bark_vac2 USING bark (a);
+INSERT INTO bark_vac2 SELECT g FROM generate_series(1, 3000) g;
+DELETE FROM bark_vac2 WHERE a BETWEEN 1000 AND 2000;
+VACUUM bark_vac2;						-- deletes the emptied leaves
+DELETE FROM bark_vac2 WHERE a = 5;
+VACUUM bark_vac2;						-- visits the deleted pages
+SELECT bark_index_check('bark_vac2_idx');
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS idx_count FROM bark_vac2 WHERE a > 0;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT count(*) AS heap_count FROM bark_vac2;
+DROP TABLE bark_vac2;
+
 -- BitmapAnd / BitmapOr: a BARK bitmap scan must produce an exact TIDBitmap
 -- that the executor can combine with other bitmaps.  Build two BARK indexes
 -- (and one btree) on one table and check that AND/OR plans over them -- plus a
