@@ -1935,7 +1935,13 @@ RegisterPoolTrickleWriter(BufferPoolDesc *pool, int slot)
 
 	if (!RegisterDynamicBackgroundWorker(&bgw, &handle))
 	{
-		ereport(WARNING,
+		/*
+		 * Not fatal: the pool works without a trickle writer (backends clean
+		 * their own victims).  LOG, not WARNING: worker-slot exhaustion is a
+		 * server-side capacity condition, like a parallel query getting
+		 * fewer workers, and must not leak into the client's output.
+		 */
+		ereport(LOG,
 				(errmsg("could not register trickle writer for buffer pool \"%s\"",
 						NameStr(pool->bp_name)),
 				 errhint("Consider increasing max_worker_processes.")));

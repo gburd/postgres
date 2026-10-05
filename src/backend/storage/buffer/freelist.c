@@ -24,6 +24,7 @@
 #include "postgres.h"
 
 #include "fmgr.h"
+#include "miscadmin.h"
 #include "pgstat.h"
 #include "port/atomics.h"
 #include "storage/buf_internals.h"
@@ -956,7 +957,9 @@ StrategyCtlShmemInit(void *arg)
 								  sizeof(BufferDescPadded),
 								  NBuffers);
 
-			elog(LOG, "default buffer pool using batched clock-sweep with NUMA interleaved placement across %d nodes, batch=%u",
+			/* LOG only under a postmaster: initdb must emit no stderr */
+			elog(IsPostmasterEnvironment ? LOG : DEBUG1,
+				 "default buffer pool using batched clock-sweep with NUMA interleaved placement across %d nodes, batch=%u",
 				 Min(nnodes, BufPoolNumaNodes()), StrategyControl->batchSize);
 		}
 		else
@@ -969,7 +972,8 @@ StrategyCtlShmemInit(void *arg)
 			 * regression-testable): a zero-config cluster must log
 			 * "clock-sweep".
 			 */
-			elog(LOG, "default buffer pool using %s replacement algorithm",
+			elog(IsPostmasterEnvironment ? LOG : DEBUG1,
+				 "default buffer pool using %s replacement algorithm",
 				 (ActivePoolRoutine == &clock_pool_routine)
 				 ? "clock-sweep"
 				 : (buffer_pool_algorithm ? buffer_pool_algorithm : "clock-sweep"));
