@@ -143,6 +143,67 @@ warmup.  Uniform access over a working set much larger than the pool '''does
 not''' reproduce it, because each page's individual access rate is then too low
 for anything to become un-evictable.
 
+=== Seven algorithms, three axes ===
+
+Before applying the three axes to one algorithm in depth, they were applied
+across algorithm families.  A pluggable-buffer-pool tree exposes replacement as
+a runtime-selectable policy behind one victim-selection interface, so CLOCK,
+LRU, ARC, CAR, LIRS-2, CLIR and OSIC run in the '''same binary, against the
+same data, with the same instrument at the same call site'''.
+
+Because "clock advances" is not portable (ARC has no clock hand), the
+cross-algorithm cost axes are '''cycles spent inside the victim selector''' --
+what a stalling backend actually pays, and proportional to advances for a CLOCK
+variant.
+
+{| class="wikitable"
+|-
+! policy !! tps !! ampl. (cyc/victim) !! tail (max cyc) !! pool hit % !! '''hot hit %'''
+|-
+| CLOCK || 607,572 || '''2,694''' || '''124,790''' || 99.716 || '''100.00'''
+|-
+| LRU || 118,438 || 9,081,142 || 22,716,364 || 99.234 || 100.00
+|-
+| ARC || 483,981 || 1,161,949 || 7,198,494 || 99.631 || 99.99
+|-
+| CAR || 296,788 || 9,846,948 || 19,790,400 || ''99.686'' || 99.62
+|-
+| LIRS-2 || 95,511 || 4,261,171 || 10,977,220 || 99.126 || 98.83
+|-
+| CLIR || 104,598 || 737,994 || 3,796,126 || 98.813 || '''31.19'''
+|-
+| OSIC || 177,290 || 17,503,592 || 361,211,700 || 99.636 || '''64.48'''
+|}
+
+'''This is the methodological argument in one table.'''  Three readings, each a
+case where the conventional metric points the wrong way:
+
+* '''Hit ratio mis-ranks on the tail.'''  CAR has the second-best pool-wide hit
+  ratio (99.686%, within 0.03pt of CLOCK), so a hit-ratio evaluation would rank
+  it a near-peer.  Its worst single allocation costs '''138x''' CLOCK's.
+* '''Pool-wide hit ratio hides what was evicted.'''  CLIR has the best
+  amplification of any non-CLOCK policy (271x better than CAR) and an
+  unremarkable-looking 98.8% pool-wide -- but retains only '''31.19%''' of the
+  hot set.  OSIC: 99.636% pool-wide, '''64.48%''' of the hot set.  The pool-wide
+  figure is dominated by the cold stream that every policy serves equally
+  badly.
+* '''The axes do not co-vary.'''  Best amplification among the sophisticated
+  policies comes with the worst replacement quality; worst tail by two orders of
+  magnitude comes with a top-three pool-wide hit ratio.  Each axis orders the
+  seven policies differently, so no single scalar summarises them.
+
+'''A note on CLOCK:''' it is two to four orders of magnitude cheaper than every
+sophisticated policy here on both cost axes while matching or beating them on
+replacement quality for this workload.  That reframes the rest of this page --
+the stock algorithm is not a weak baseline but a very cheap one with exactly
+one unbounded case, and the patches below find and close that case rather than
+replacing the algorithm.
+
+''Caveat: one workload on one machine, not a general ranking.  The sophisticated
+policies target reuse patterns this workload does not exhibit and several carry
+a global lock this concurrency punishes.  The claim is only that three axes must
+be reported, which holds regardless of which policy wins.''
+
 === The three axes, five arms ===
 
 <code>max ticks</code> = the most clock-hand advances any single allocation

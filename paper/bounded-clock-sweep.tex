@@ -39,10 +39,16 @@ descriptors. Hit ratio is unchanged while this happens, so no hit-ratio
 benchmark can see it.
 
 We propose evaluating an evictor on three axes instead of one---amplification
-(advances per victim), the tail (worst advances for one allocation), and
-replacement quality---and we show that the axes are independent enough that
-optimising any one of them in isolation produces a wrong answer. Three results
-make the case. First, replacing the 0..5 counter with a one-bit cooling state,
+(cost per victim), the tail (worst cost for one allocation), and replacement
+quality measured on the set the workload re-reads---and we show the axes are
+independent enough that optimising any one in isolation produces a wrong
+answer. We apply the methodology to seven algorithms in one
+system---CLOCK, LRU, ARC, CAR, LIRS-2, CLIR and OSIC, as pluggable policies
+behind a common interface---and find that pool-wide hit ratio, the field's
+standard metric, mis-ranks on both other axes: the algorithm with the
+second-best hit ratio has a $138\times$ worse tail than CLOCK, and two
+algorithms with competitive pool-wide ratios retain only $31\%$ and $64\%$ of
+the hot set. Four further results make the case within one algorithm family. First, replacing the 0..5 counter with a one-bit cooling state,
 which we had previously proposed on grounds of simplicity, improves
 amplification by $1.75\times$ and leaves the tail at $0.998$ of the pool: a
 better constant, not a bound. Second, a termination rule that abandons
@@ -106,6 +112,9 @@ the conventional metric.
   construction needed to exercise each axis (\S\ref{sec:method}), including the
   observation that the workload conventionally used to stress eviction is
   precisely the one that cannot reveal a tail.
+\item Its application to seven replacement policies in one system
+  (\S\ref{sec:algos}), showing that pool-wide hit ratio mis-ranks on both other
+  axes and that the three axes order the policies differently.
 \item A residency model (\S\ref{sec:model}) predicting candidate density
   $e^{-krT}$, and its empirical confirmation: PostgreSQL's worst-case
   allocation equals $N_{\text{buffers}}$ across a $24\times$ range
@@ -175,6 +184,89 @@ at $130\%$ of the pool that forces continuous eviction, and we report hit ratio
 \emph{and resident page count for the hot relation specifically}. That is the
 number probation exists to protect, and \S\ref{sec:theta} shows it moving when
 pool-wide figures barely do.
+
+\section{Seven algorithms, three axes}
+\label{sec:algos}
+
+Before applying the methodology to one algorithm in depth, we apply it across
+families. The system under test exposes page replacement as a pluggable
+policy behind a single victim-selection interface, so CLOCK, LRU,
+ARC~\cite{megiddo2003arc}, CAR, LIRS-2~\cite{jiang2002lirs}, CLIR and OSIC can
+be selected at runtime in the same binary, against the same data, with the same
+instrument at the same call site. Differences are therefore attributable to the
+policy rather than to the integration.
+
+Because ``clock advances'' is not a portable quantity---ARC has no clock
+hand---the cross-algorithm axes are measured in cycles spent inside the victim
+selector. That is the honest generalisation: it is what a stalling backend
+actually pays, and for a CLOCK variant it is proportional to advances.
+
+\begin{table}[t]
+\centering
+\caption{The three axes across seven replacement policies, same binary, same
+workload, same instrument. Medians of three runs. ``pool hit'' is the
+conventional metric; ``hot hit'' is measured on the relation that $80\%$ of
+queries re-read.}
+\label{tab:algos}
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+policy & tps & ampl. & tail & pool hit & \textbf{hot hit} \\
+       &     & (cyc/victim) & (max cyc) & \% & \textbf{\%} \\
+\midrule
+CLOCK   & 607{,}572 & \textbf{2{,}694} & \textbf{124{,}790} & 99.716 & \textbf{100.00} \\
+LRU     & 118{,}438 & 9{,}081{,}142 & 22{,}716{,}364 & 99.234 & 100.00 \\
+ARC     & 483{,}981 & 1{,}161{,}949 & 7{,}198{,}494 & 99.631 & 99.99 \\
+CAR     & 296{,}788 & 9{,}846{,}948 & 19{,}790{,}400 & \underline{99.686} & 99.62 \\
+LIRS-2  & 95{,}511  & 4{,}261{,}171 & 10{,}977{,}220 & 99.126 & 98.83 \\
+CLIR    & 104{,}598 & 737{,}994 & 3{,}796{,}126 & 98.813 & \textbf{31.19} \\
+OSIC    & 177{,}290 & 17{,}503{,}592 & 361{,}211{,}700 & 99.636 & \textbf{64.48} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:algos} is the methodological argument in one place. Three
+readings, each a case where the conventional metric points the wrong way.
+
+\paragraph{Hit ratio mis-ranks on the tail.} CAR has the second-best pool-wide
+hit ratio in the table, $99.686\%$, within $0.03$ points of CLOCK. An
+evaluation on hit ratio would rank it a near-peer and a reasonable choice. Its
+worst single allocation costs $138\times$ CLOCK's. Choosing it on the strength
+of its hit ratio means shipping a stall that no hit-ratio measurement can see.
+
+\paragraph{Pool-wide hit ratio hides what was evicted.} CLIR has the best
+amplification of any non-CLOCK policy here, $271\times$ better than CAR, and a
+pool-wide hit ratio of $98.8\%$ that looks merely unremarkable. Measured on the
+relation the workload actually re-reads, it retains $31.19\%$ of the hot set.
+OSIC is the same story less extremely: a competitive-looking $99.636\%$
+pool-wide, and $64.48\%$ of the hot set. The pool-wide figure is dominated by
+the cold stream, which any policy serves equally badly, so it averages away the
+only part a user would notice.
+
+\paragraph{The axes do not co-vary.} The best amplification among the
+sophisticated policies (CLIR) comes with the worst replacement quality; the
+best replacement quality among them (CAR, on the hot-set axis among
+non-trivial policies) comes with near-worst amplification; and the policy with
+the worst tail by two orders of magnitude (OSIC) has a pool-wide hit ratio in
+the top three. A single scalar cannot summarise this, which is the case for
+reporting three.
+
+\paragraph{A note on CLOCK.} CLOCK is two to four orders of magnitude cheaper
+than every sophisticated policy measured here on both cost axes, while
+matching or beating them on replacement quality for this workload. That is
+worth stating plainly because it reframes the rest of this paper: the stock
+algorithm is not a weak baseline that better algorithms improve upon, it is a
+very cheap algorithm with---as \S\ref{sec:tail} shows---exactly one unbounded
+case. The remainder of the paper is about finding and closing that case rather
+than replacing the algorithm.
+
+These measurements are a single workload on a single machine and are not a
+general ranking of replacement policies; the sophisticated policies are
+designed for workloads with reuse patterns this one does not exhibit, and
+several carry a global lock that this concurrency level punishes. The claim is
+narrower and does not depend on which policy wins: whatever the workload, three
+axes must be reported, because here each of the three orders the policies
+differently.
 
 \section{A residency model}
 \label{sec:model}
@@ -513,13 +605,19 @@ four orders of magnitude of tail reduction cost no measurable replacement
 quality, and an adaptive version of that dial is measurably worse than leaving
 it fixed.
 
-What we would most like to see adopted is the methodology. Each of the three
-results above is a case where the conventional metric is silent: hit ratio
-cannot see an unbounded allocation, throughput cannot see it either, and the
-pool-wide hit ratio that would judge the fix understates its cost by a factor
-of three compared to measuring the set the workload actually re-reads. An
-evictor that is never asked what its worst allocation costs can hide one that
-costs everything.
+What we would most like to see adopted is the methodology. Every result here
+is a case where the conventional metric is silent or actively misleading. Hit
+ratio cannot see an unbounded allocation, and throughput cannot either. The
+pool-wide hit ratio that would judge our fix understates its cost threefold
+against measuring the set the workload re-reads. And across seven policies in
+one system, pool-wide hit ratio ranks CAR a near-peer of CLOCK while CAR's
+worst allocation costs $138\times$ as much, and rates CLIR and OSIC
+competitive while they discard two thirds and one third of the hot set
+respectively. Each axis orders those seven policies differently, so no single
+scalar summarises them.
+
+An evictor that is never asked what its worst allocation costs can hide one
+that costs everything.
 
 \bibliographystyle{ACM-Reference-Format}
 \bibliography{refs}
