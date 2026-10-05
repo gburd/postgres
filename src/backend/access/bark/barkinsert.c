@@ -37,6 +37,7 @@
 #include "access/genam.h"
 #include "access/generic_xlog.h"
 #include "access/itup.h"
+#include "access/nbtree.h"
 #include "access/tableam.h"
 #include "miscadmin.h"
 #include "nodes/execnodes.h"
@@ -309,6 +310,7 @@ bark_create_root_leaf(Relation index)
 		lo->bark_prev = BARK_P_NONE;
 		lo->bark_next = BARK_P_NONE;
 		lo->bark_level = 0;
+		lo->bark_cycleid = 0;
 		lo->bark_flags = BARK_LEAF | BARK_ROOT;
 		lo->bark_page_id = BARK_PAGE_ID;
 	}
@@ -370,6 +372,7 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 	IndexTuple	splitkey;
 	IndexTuple	lhikey;
 	IndexTuple	downlink;
+	BTCycleId	cycleid;
 
 	/* Preserve the original high key (if any) for the new right page. */
 	if (!origrightmost)
@@ -459,6 +462,21 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 			bark_page_insert_at(rightpage, orighikey, o++);	/* keep high key */
 		for (int i = splitidx; i < n; i++)
 			bark_page_insert_at(rightpage, items[i], o++);
+	}
+
+	/*
+	 * Stamp both halves of a leaf split with the cycle ID of the VACUUM now
+	 * scanning this index (zero if none), as _bt_split does.  The entries just
+	 * moved to the right page may land on a block VACUUM has already passed;
+	 * the stamp is how barkbulkdelete notices and goes back for them.  It must
+	 * be read while both pages are exclusive-locked, so a VACUUM that starts
+	 * right after cannot process either page before the split is complete.
+	 */
+	if (isleaf)
+	{
+		cycleid = _bt_vacuum_cycleid(index);
+		BarkPageGetOpaque(leftpage)->bark_cycleid = cycleid;
+		BarkPageGetOpaque(rightpage)->bark_cycleid = cycleid;
 	}
 
 	/*
@@ -564,6 +582,7 @@ bark_new_root(Relation index, Buffer metabuf, Buffer lbuf, IndexTuple downlink)
 		ro->bark_prev = BARK_P_NONE;
 		ro->bark_next = BARK_P_NONE;
 		ro->bark_level = childlevel + 1;
+		ro->bark_cycleid = 0;
 		ro->bark_flags = BARK_ROOT;
 		ro->bark_page_id = BARK_PAGE_ID;
 	}

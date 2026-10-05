@@ -8,13 +8,14 @@ bark_vp_fetch
              
 (1 row)
 
-step s2vacuum: VACUUM bark_vp;
+step s2vacuum: VACUUM bark_vp; <waiting ...>
 step s1fetchall: SELECT bark_vp_fetch('c', 1000000);
 bark_vp_fetch
 -------------
              
 (1 row)
 
+step s2vacuum: <... completed>
 step s1count: 
   SELECT count(*) AS fetched, count(DISTINCT b) AS distinct_rows,
          count(*) FILTER (WHERE b % 10 = 0) AS deleted_rows
