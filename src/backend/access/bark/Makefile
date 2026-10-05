@@ -19,6 +19,7 @@ OBJS = \
 	barkscan.o \
 	barksearch.o \
 	barksort.o \
+	barksplitloc.o \
 	barkutils.o \
 	barkvalidate.o
 

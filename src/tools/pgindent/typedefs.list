@@ -276,6 +276,7 @@ BarkParallelState
 BarkScanOpaque
 BarkScanOpaqueData
 BarkShared
+BarkSplitPoint
 BarkStack
 BarkStackData
 BarkBuildState

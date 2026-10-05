@@ -51,6 +51,18 @@ The new downlink goes immediately after the one to its left sibling.  A split
 of a root page that no longer is the root (another backend added a level)
 finds its parent from the leftmost page of the next level up.
 
+The split point is chosen as nbtree's nbtsplitloc.c chooses it
+(bark_findsplitloc, barksplitloc.c), by bytes rather than item count: the
+rightmost page on a level leaves its left half at the fillfactor (the leaf
+fillfactor reloption, or BARK_NONLEAF_FILLFACTOR), so ascending inserts fill
+pages the way CREATE INDEX does; other pages split evenly.  On a leaf the
+choice among nearby split points prefers one between keys that differ early,
+moves out of a run of equal keys when the page is not all one run, and leaves
+the left page BARK_SINGLEVAL_FILLFACTOR full when the page holds a single key
+that no later page holds.  BARK has no heap-TID tiebreaker, so equal keys may
+sit on both sides of a split, but a new equal key always goes to the end of
+its run, which is what makes the single-value split pay off.
+
 Block 0 is always the meta page (BarkMetaPageData): a magic number
 (BARK_MAGIC), the on-disk version (BARK_VERSION), the current root block and
 its level, and whether all key columns are "equalimage" (which governs

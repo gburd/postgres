@@ -122,11 +122,24 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
 /*
  * Fill factors, as in nbtree.  CREATE INDEX packs leaf pages to the index's
  * fillfactor reloption and internal pages to BARK_NONLEAF_FILLFACTOR, so the
- * first inserts after a build do not split every page they touch.
+ * first inserts after a build do not split every page they touch.  A split of
+ * the rightmost page on a level leaves the left page at the same fill factor,
+ * so ascending inserts fill pages as full as a build does; other splits divide
+ * the space evenly (barksplitloc.c).
+ *
+ * A leaf page holding a single key value is split leaving the left page
+ * BARK_SINGLEVAL_FILLFACTOR full, whether or not it is rightmost, provided no
+ * later page holds the same key.  BARK has no heap-TID tiebreaker, but an
+ * equal key is always inserted at the end of its run (the insert descent uses
+ * nextkey), so such a page only receives appends.  After the split they all
+ * go to the right page, whose downlink equals the key: the insert descent
+ * follows the last downlink that is <= its key.  The left page receives no
+ * more inserts of the key, so space left free there would mostly stay free.
  */
 #define BARK_MIN_FILLFACTOR		10
 #define BARK_DEFAULT_FILLFACTOR	90
 #define BARK_NONLEAF_FILLFACTOR	70
+#define BARK_SINGLEVAL_FILLFACTOR	96
 
 /*
  * Parsed reloptions (barkoptions), stored in rd_options.  New options are
@@ -857,6 +870,11 @@ extern bool bark_insert(Relation index, Datum *values, bool *isnull,
 						 ItemPointer ht_ctid, Relation heapRel,
 						 IndexUniqueCheck checkUnique,
 						 bool indexUnchanged, IndexInfo *indexInfo);
+
+/* Split-point choice for bark_split (barksplitloc.c). */
+extern int	bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo,
+							  IndexTuple *items, int n, int newitemidx,
+							  bool isleaf, IndexTuple orighikey);
 
 /*
  * KNN (ordered-operator) scan state (barkknn.c).

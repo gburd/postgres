@@ -2255,3 +2255,315 @@ RESET enable_indexscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_ff_wide;
 DROP TABLE bark_ff;
+-- ===========================================================================
+-- Split-point choice (barksplitloc.c).  A split of the rightmost leaf leaves
+-- the left page at the fillfactor, so ascending inserts fill pages as full as
+-- CREATE INDEX packs them; other splits balance bytes, not items.  Page
+-- counts are compared as booleans, against a build or a btree index on the
+-- same data, so the expected output does not depend on exact sizes.
+-- ===========================================================================
+CREATE TABLE bark_split_seq (a int) WITH (autovacuum_enabled = off);
+CREATE INDEX bark_split_seq90 ON bark_split_seq USING bark (a);
+CREATE INDEX bark_split_seq70 ON bark_split_seq USING bark (a) WITH (fillfactor = 70);
+INSERT INTO bark_split_seq SELECT g FROM generate_series(1, 100000) g;
+CREATE INDEX bark_split_seq90_build ON bark_split_seq USING bark (a);
+CREATE INDEX bark_split_seq70_build ON bark_split_seq USING bark (a) WITH (fillfactor = 70);
+-- Inserted and built page counts agree within 5% at both fillfactors (a
+-- 50/50 split of the rightmost leaf takes almost twice the built count).
+SELECT abs(pg_relation_size('bark_split_seq90') -
+           pg_relation_size('bark_split_seq90_build')) <=
+       pg_relation_size('bark_split_seq90_build') * 0.05 AS seq_ff90_like_build,
+       abs(pg_relation_size('bark_split_seq70') -
+           pg_relation_size('bark_split_seq70_build')) <=
+       pg_relation_size('bark_split_seq70_build') * 0.05 AS seq_ff70_like_build,
+       pg_relation_size('bark_split_seq70') >
+       pg_relation_size('bark_split_seq90') AS seq_ff70_larger;
+ seq_ff90_like_build | seq_ff70_like_build | seq_ff70_larger 
+---------------------+---------------------+-----------------
+ t                   | t                   | t
+(1 row)
+
+SELECT bark_index_check('bark_split_seq90');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_index_check('bark_split_seq70');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE bark_split_seq;
+-- Random and descending inserts take about as many pages as btree, and the
+-- index agrees with a seqscan.
+SELECT setseed(0.42);
+ setseed 
+---------
+ 
+(1 row)
+
+CREATE TABLE bark_split_rnd (a int) WITH (autovacuum_enabled = off);
+CREATE INDEX bark_split_rnd_idx ON bark_split_rnd USING bark (a);
+CREATE INDEX bark_split_rnd_bt ON bark_split_rnd USING btree (a);
+INSERT INTO bark_split_rnd
+  SELECT (random() * 1000000000)::int FROM generate_series(1, 100000);
+SELECT pg_relation_size('bark_split_rnd_idx') <=
+       pg_relation_size('bark_split_rnd_bt') * 1.1 AS rnd_like_btree;
+ rnd_like_btree 
+----------------
+ t
+(1 row)
+
+SELECT bark_index_check('bark_split_rnd_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP INDEX bark_split_rnd_bt;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) FROM bark_split_rnd WHERE a >= 500000000;
+ count 
+-------
+ 49947
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) FROM bark_split_rnd WHERE a >= 500000000;
+ count 
+-------
+ 49947
+(1 row)
+
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_split_rnd;
+CREATE TABLE bark_split_desc (a int) WITH (autovacuum_enabled = off);
+CREATE INDEX bark_split_desc_idx ON bark_split_desc USING bark (a);
+CREATE INDEX bark_split_desc_bt ON bark_split_desc USING btree (a);
+INSERT INTO bark_split_desc SELECT g FROM generate_series(100000, 1, -1) g;
+SELECT pg_relation_size('bark_split_desc_idx') <=
+       pg_relation_size('bark_split_desc_bt') * 1.1 AS desc_like_btree;
+ desc_like_btree 
+-----------------
+ t
+(1 row)
+
+SELECT bark_index_check('bark_split_desc_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP INDEX bark_split_desc_bt;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), min(a), max(a) FROM bark_split_desc WHERE a >= 0;
+ count  | min |  max   
+--------+-----+--------
+ 100000 |   1 | 100000
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_split_desc;
+-- Mixed sizes: three ~2.6kB keys inserted after 61 short ones.  Splitting by
+-- item count put all three big keys and half the short ones on the right
+-- page, which did not fit ("failed to insert item into BARK page").
+CREATE TABLE bark_split_mixed (t text) WITH (autovacuum_enabled = off);
+CREATE INDEX bark_split_mixed_idx ON bark_split_mixed USING bark (t);
+INSERT INTO bark_split_mixed
+  SELECT 'a' || lpad(g::text, 4, '0') FROM generate_series(1, 61) g;
+INSERT INTO bark_split_mixed
+  SELECT 'b' || g || (SELECT string_agg(md5(g::text || i::text), '')
+                      FROM generate_series(1, 80) i)
+  FROM generate_series(1, 3) g;
+SELECT bark_index_check('bark_split_mixed_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+-- Keys of very different lengths in random order.
+SELECT setseed(0.17);
+ setseed 
+---------
+ 
+(1 row)
+
+INSERT INTO bark_split_mixed
+  SELECT lpad(g::text, 6, '0') ||
+         CASE WHEN random() < 0.1
+              THEN (SELECT string_agg(md5(g::text || i::text), '')
+                    FROM generate_series(1, (random() * 70)::int + 1) i)
+              ELSE '' END
+  FROM generate_series(1, 5000) g ORDER BY random();
+SELECT bark_index_check('bark_split_mixed_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), sum(length(t)) FROM bark_split_mixed WHERE t >= '';
+ count |  sum   
+-------+--------
+  5064 | 556967
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT count(*), sum(length(t)) FROM bark_split_mixed;
+ count |  sum   
+-------+--------
+  5064 | 556967
+(1 row)
+
+DROP TABLE bark_split_mixed;
+-- A key that fits a page but whose row, with its INCLUDE column, does not:
+-- the leaf entry is OVERSIZED and small, but a high key made from it holds
+-- the key inline, so the split must reserve room for the larger high key.
+CREATE TABLE bark_split_incov (k text, p text) WITH (autovacuum_enabled = off);
+CREATE INDEX bark_split_incov_idx ON bark_split_incov USING bark (k) INCLUDE (p);
+INSERT INTO bark_split_incov
+  SELECT lpad(g::text, 5, '0') ||
+         (SELECT string_agg(md5(g::text || i::text), '') FROM generate_series(1, 60) i),
+         (SELECT string_agg(md5(i::text || g::text), '') FROM generate_series(1, 30) i)
+  FROM generate_series(1, 400) g;
+SELECT bark_index_check('bark_split_incov_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT count(*) FROM bark_split_incov;
+ count 
+-------
+   400
+(1 row)
+
+DROP TABLE bark_split_incov;
+-- Duplicate runs.  With coalescing, 20k rows over 10 keys in random order
+-- become LIST/POSTING entries; the index must agree with the heap per key.
+SELECT setseed(0.5);
+ setseed 
+---------
+ 
+(1 row)
+
+CREATE TABLE bark_split_dup (k int, x int) WITH (autovacuum_enabled = off);
+CREATE INDEX bark_split_dup_idx ON bark_split_dup USING bark (k);
+INSERT INTO bark_split_dup
+  SELECT (random() * 9)::int, g FROM generate_series(1, 20000) g ORDER BY random();
+SELECT bark_index_check('bark_split_dup_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+CREATE TEMP TABLE bark_split_dup_counts AS
+  SELECT k, count(*) AS n FROM bark_split_dup WHERE k >= 0 GROUP BY k;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS per_key_mismatches
+  FROM (SELECT k, count(*) AS n FROM bark_split_dup GROUP BY k) h
+  FULL JOIN bark_split_dup_counts i USING (k)
+  WHERE h.n IS DISTINCT FROM i.n;
+ per_key_mismatches 
+--------------------
+                  0
+(1 row)
+
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_split_dup_counts;
+DROP TABLE bark_split_dup;
+-- Without coalescing (an INCLUDE column), equal keys stay separate entries
+-- and runs span pages.  A split inside a run moves to the edge of the run;
+-- a page holding a single key, with no later page holding it, is left about
+-- 96% full, since BARK appends equal keys to the end of their run and the
+-- left page gets no more of them; and a run edge is not used when that would
+-- start the right page with the new item of a descending sequence.  Each
+-- case takes about as many pages as btree on the same data.
+SELECT setseed(0.5);
+ setseed 
+---------
+ 
+(1 row)
+
+CREATE TABLE bark_split_inc (k int, x int) WITH (autovacuum_enabled = off);
+CREATE INDEX bark_split_inc_idx ON bark_split_inc USING bark (k) INCLUDE (x);
+CREATE INDEX bark_split_inc_bt ON bark_split_inc USING btree (k) INCLUDE (x);
+INSERT INTO bark_split_inc
+  SELECT (random() * 9)::int, g FROM generate_series(1, 20000) g ORDER BY random();
+SELECT pg_relation_size('bark_split_inc_idx') <=
+       pg_relation_size('bark_split_inc_bt') * 1.1 AS dup10_like_btree;
+ dup10_like_btree 
+------------------
+ t
+(1 row)
+
+SELECT bark_index_check('bark_split_inc_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+TRUNCATE bark_split_inc;
+INSERT INTO bark_split_inc SELECT 1, g FROM generate_series(1, 20000) g;
+SELECT pg_relation_size('bark_split_inc_idx') <=
+       pg_relation_size('bark_split_inc_bt') * 1.1 AS single_value_like_btree;
+ single_value_like_btree 
+-------------------------
+ t
+(1 row)
+
+SELECT bark_index_check('bark_split_inc_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+TRUNCATE bark_split_inc;
+INSERT INTO bark_split_inc SELECT 0, g FROM generate_series(1, 5000) g;
+INSERT INTO bark_split_inc SELECT 20000 - g, g FROM generate_series(1, 20000) g;
+SELECT pg_relation_size('bark_split_inc_idx') <=
+       pg_relation_size('bark_split_inc_bt') * 1.1 AS dups_then_desc_like_btree;
+ dups_then_desc_like_btree 
+---------------------------
+ t
+(1 row)
+
+SELECT bark_index_check('bark_split_inc_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP INDEX bark_split_inc_bt;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), count(DISTINCT k) FROM bark_split_inc WHERE k >= 0;
+ count | count 
+-------+-------
+ 25000 | 20000
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_split_inc;
