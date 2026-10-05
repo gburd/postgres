@@ -42,14 +42,27 @@ it only once it holds the parent's write lock and has written the downlink
 are taken child before parent at every level.
 
 So a backend that sees BARK_INCOMPLETE_SPLIT under a page lock is looking at a
-split nobody is completing: an error or crash interrupted it.  Writers that
-find the flag finish the split before going on (bark_finish_split), with the
-same locking.  Inserting a downlink finds the parent by matching the child's
-block number in the parent level, starting at the descent's stack entry and
-moving right, rather than by key (bark_getstackbuf, after _bt_getstackbuf).
-The new downlink goes immediately after the one to its left sibling.  A split
-of a root page that no longer is the root (another backend added a level)
-finds its parent from the leftmost page of the next level up.
+split nobody is completing: an error or crash interrupted it.  An insert's
+descent finishes every such split it reaches, at any level, before it moves
+right past it or descends from it (bark_finish_split, with the same locking),
+as nbtree's _bt_moveright does.  Merely moving right would not be enough: the
+right half has no downlink, so inserts that only ever land on the right half
+would split it with no parent entry to insert after.  Every descent, for read
+or write, also moves right past pages flagged BARK_DELETED or BARK_HALF_DEAD,
+which are never the page a key belongs on.
+
+Inserting a downlink finds the parent by matching the child's block number in
+the parent level, starting at the descent's stack entry and moving right,
+rather than by key (bark_getstackbuf, after _bt_getstackbuf).  The new
+downlink goes immediately after the one to its left sibling.  A split of a
+root page that no longer is the root (another backend added a level) finds
+its parent from the leftmost page of the next level up.
+
+An empty index (one whose meta page names no root, which only an unlogged
+index reset after a crash can be) gets an empty root leaf under the meta
+page's exclusive lock; the insert then descends again and goes through the
+normal checks, so two backends racing to insert the first key cannot both
+skip the uniqueness check.
 
 The split point is chosen as nbtree's nbtsplitloc.c chooses it
 (bark_findsplitloc, barksplitloc.c), by bytes rather than item count: the
