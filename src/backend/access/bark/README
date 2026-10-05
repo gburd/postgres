@@ -29,6 +29,28 @@ page may hold) and a right-link to its sibling, which together let a scan
 detect and recover from a concurrent split without holding read locks across
 pages.
 
+Page splits and the incomplete-split flag
+-----------------------------------------
+
+A split is two WAL records, as in nbtree.  The first rebuilds the left page,
+fills the new right page, and links it in; the left page is flagged
+BARK_INCOMPLETE_SPLIT.  The second inserts the right page's downlink into the
+parent and clears the flag.  The splitting backend keeps the left page
+write-locked from before the first record until after the second, releasing
+it only once it holds the parent's write lock and has written the downlink
+(the right page is released as soon as the first record is written).  Locks
+are taken child before parent at every level.
+
+So a backend that sees BARK_INCOMPLETE_SPLIT under a page lock is looking at a
+split nobody is completing: an error or crash interrupted it.  Writers that
+find the flag finish the split before going on (bark_finish_split), with the
+same locking.  Inserting a downlink finds the parent by matching the child's
+block number in the parent level, starting at the descent's stack entry and
+moving right, rather than by key (bark_getstackbuf, after _bt_getstackbuf).
+The new downlink goes immediately after the one to its left sibling.  A split
+of a root page that no longer is the root (another backend added a level)
+finds its parent from the leftmost page of the next level up.
+
 Block 0 is always the meta page (BarkMetaPageData): a magic number
 (BARK_MAGIC), the on-disk version (BARK_VERSION), the current root block and
 its level, and whether all key columns are "equalimage" (which governs
