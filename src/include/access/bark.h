@@ -28,6 +28,8 @@
 
 #include "access/amapi.h"
 #include "access/itup.h"
+#include "catalog/pg_am_d.h"
+#include "catalog/pg_class.h"
 #include "storage/block.h"
 #include "storage/bufpage.h"
 #include "storage/condition_variable.h"
@@ -116,6 +118,34 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
 	MAXALIGN_DOWN((BLCKSZ - \
 				   MAXALIGN(SizeOfPageHeaderData + 3 * sizeof(ItemIdData)) - \
 				   MAXALIGN(sizeof(BarkPageOpaqueData))) / 3)
+
+/*
+ * Fill factors, as in nbtree.  CREATE INDEX packs leaf pages to the index's
+ * fillfactor reloption and internal pages to BARK_NONLEAF_FILLFACTOR, so the
+ * first inserts after a build do not split every page they touch.
+ */
+#define BARK_MIN_FILLFACTOR		10
+#define BARK_DEFAULT_FILLFACTOR	90
+#define BARK_NONLEAF_FILLFACTOR	70
+
+/*
+ * Parsed reloptions (barkoptions), stored in rd_options.  New options are
+ * appended here and to the parse table in barkoptions.
+ */
+typedef struct BarkOptions
+{
+	int32		vl_len_;		/* varlena header (do not touch directly!) */
+	int			fillfactor;		/* leaf page fill factor in percent (10..100) */
+} BarkOptions;
+
+#define BarkGetFillFactor(relation) \
+	(AssertMacro(relation->rd_rel->relkind == RELKIND_INDEX && \
+				 relation->rd_rel->relam == BARK_AM_OID), \
+	 (relation)->rd_options ? \
+	 ((BarkOptions *) (relation)->rd_options)->fillfactor : \
+	 BARK_DEFAULT_FILLFACTOR)
+#define BarkGetTargetPageFreeSpace(relation) \
+	(BLCKSZ * (100 - BarkGetFillFactor(relation)) / 100)
 
 /* ----------------------------------------------------------------------------
  * Meta page
@@ -788,6 +818,7 @@ typedef BarkStackData *BarkStack;
 extern Buffer bark_search(Relation index, BarkKeyInfo *keyinfo,
 						  IndexTuple key, bool forwrite, bool nextkey,
 						  BarkStack *stack);
+extern BlockNumber bark_get_root(Relation index, uint32 *level_out);
 extern void bark_freestack(BarkStack stack);
 
 extern bool bark_insert(Relation index, Datum *values, bool *isnull,
