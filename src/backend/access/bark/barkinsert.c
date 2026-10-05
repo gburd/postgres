@@ -5,7 +5,8 @@
  *
  * bark_insert descends to the target leaf (bark_search), inserts the new
  * SINGLE-shape entry in key order, and -- when the page overflows -- splits
- * it: a new right page takes the upper half, the left page's high key becomes
+ * it: a new right page takes the items above a split point chosen by
+ * bark_findsplitloc (barksplitloc.c), the left page's high key becomes
  * the split key, the right link is published before the parent downlink, and
  * the downlink is inserted into the parent (growing a new root if the split
  * reached the top).  Page changes are made through the buffer pool and
@@ -343,10 +344,10 @@ bark_insert_first_leaf(Relation index, IndexTuple full, IndexTuple entry)
 
 /*
  * Split `buf` (a full page) to make room for `newitup` at insert offset
- * `newoff`.  Allocates a right sibling, moves the upper half of the items to
- * it, sets the left page's high key to the right page's first key, chains the
- * right links, and inserts the right page's downlink into the parent via the
- * stack.  The split itself is one generic WAL record; the right link is
+ * `newoff`.  Allocates a right sibling, moves the items from the split point
+ * bark_findsplitloc chooses onward to it, sets the left page's high key to the
+ * right page's first key, chains the right links, and inserts the right page's
+ * downlink into the parent via the stack.  The split itself is one generic WAL record; the right link is
  * published before the parent downlink so a concurrent descender can always
  * move right to find a key.
  *
@@ -406,10 +407,9 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 		items[n++] = CopyIndexTuple(newitup);
 	Assert(n == ntotal);
 
-	/* Split roughly in half; the right page gets items[splitidx..]. */
-	splitidx = n / 2;
-	if (splitidx < 1)
-		splitidx = 1;
+	/* The right page gets items[splitidx..]; the new item is at newoff. */
+	splitidx = bark_findsplitloc(index, keyinfo, items, n,
+								 newoff - firstdata, isleaf, orighikey);
 	splitkey = items[splitidx];		/* first key on the right page */
 
 	/*
@@ -458,7 +458,7 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 			bark_page_insert_at(leftpage, items[i], o++);
 	}
 
-	/* --- Build the right page: original high key, upper half. --- */
+	/* --- Build the right page: original high key, items[splitidx..]. --- */
 	PageInit(rightpage, BLCKSZ, sizeof(BarkPageOpaqueData));
 	{
 		BarkPageOpaque ro = BarkPageGetOpaque(rightpage);
