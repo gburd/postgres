@@ -17,8 +17,9 @@
  * until the parent is write-locked and the new downlink written, the parent's
  * downlink to the left page is found by its block number (bark_getstackbuf),
  * and locks are always taken child before parent.  A split interrupted by an
- * error or crash is finished by the next writer to land on its left page
- * (bark_finish_split).  Modeled on nbtinsert.c (_bt_doinsert /
+ * error or crash is finished by the next writer whose descent reaches its
+ * left page (bark_finish_split, called from bark_search's move-right step).
+ * Modeled on nbtinsert.c (_bt_doinsert /
  * _bt_insertonpg / _bt_split / _bt_insert_parent / _bt_getstackbuf /
  * _bt_finish_split / _bt_newlevel).
  *
@@ -255,59 +256,42 @@ static void bark_insert_parent(Relation index, BarkKeyInfo *keyinfo,
 static void bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
 					   Buffer buf, OffsetNumber newoff, IndexTuple newitup,
 					   Buffer cbuf);
-static void bark_finish_split(Relation index, BarkKeyInfo *keyinfo,
-							  Buffer lbuf, BarkStack stack);
 
 /*
- * Create the first leaf of an empty index, holding `entry`, and point the meta
- * page at it as the (leaf) root.  Called when bark_search finds no root.
- * `full` is the full key tuple used for comparison on the fallback path (when
- * another backend created the root first); `entry` is the page-resident tuple
- * to place (a SINGLE copy, or an OVERSIZED entry whose overflow chain the
- * caller already wrote before any page lock was taken).
+ * Give an empty index, one whose meta page names no root, its first page: an
+ * empty leaf that is also the root.  Called when an insert's descent finds no
+ * root.  The caller then descends again and inserts through the normal path,
+ * with its uniqueness, serializable-conflict and free-space checks, as nbtree
+ * does after _bt_getroot creates the root of an empty index.
+ *
+ * Two backends can both see the index empty.  Creation is serialized on the
+ * meta page's exclusive lock and the root re-checked under it, so only one
+ * creates a root; the other finds it and simply returns.  Neither inserts
+ * here, so the loser of the race cannot slip a row past the checks.
+ *
+ * Only the state bark_buildempty writes has no root, and an unlogged index is
+ * reset to it after a crash; CREATE INDEX writes a root leaf even for an empty
+ * table.
  */
 static void
-bark_insert_first_leaf(Relation index, IndexTuple full, IndexTuple entry)
+bark_create_root_leaf(Relation index)
 {
-	Buffer		metabuf = ReadBuffer(index, BARK_METAPAGE);
+	Buffer		metabuf;
 	Buffer		leafbuf;
 	GenericXLogState *gstate;
 	Page		leafpage;
 	Page		metapage;
 	BlockNumber leafblk;
 
-	/*
-	 * Serialize first-leaf creation on the meta page's exclusive lock so two
-	 * backends inserting into a brand-new empty index cannot both create a
-	 * root.  A second waiter re-checks bark_root after acquiring the lock.
-	 */
+	/* A test may stop here, after the descent found no root. */
+	INJECTION_POINT("bark-create-root-leaf", NULL);
+
+	metabuf = ReadBuffer(index, BARK_METAPAGE);
 	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 	if (BarkPageGetMeta(BufferGetPage(metabuf))->bark_root != BARK_P_NONE)
 	{
-		/* Someone else created the root; fall back to the normal path. */
+		/* Someone else created the root first. */
 		UnlockReleaseBuffer(metabuf);
-		{
-			BarkKeyInfo *keyinfo = bark_build_keyinfo(index);
-			Buffer		buf;
-			BarkStack	stack;
-			Page		page;
-			OffsetNumber off;
-
-			buf = bark_search(index, keyinfo, full, true, true, &stack);
-			page = BufferGetPage(buf);
-			off = bark_leaf_insert_off(index, keyinfo, full, page);
-			{
-				GenericXLogState *g = GenericXLogStart(index);
-				Page		p = GenericXLogRegisterBuffer(g, buf, 0);
-
-				bark_page_insert_at(p, entry, off);
-				GenericXLogFinish(g);
-			}
-			UnlockReleaseBuffer(buf);
-			if (stack)
-				bark_freestack(stack);
-			pfree(keyinfo);
-		}
 		return;
 	}
 
@@ -328,7 +312,6 @@ bark_insert_first_leaf(Relation index, IndexTuple full, IndexTuple entry)
 		lo->bark_flags = BARK_LEAF | BARK_ROOT;
 		lo->bark_page_id = BARK_PAGE_ID;
 	}
-	bark_page_insert_at(leafpage, entry, BARK_P_HIKEY);
 
 	{
 		BarkMetaPageData *meta = BarkPageGetMeta(metapage);
@@ -836,9 +819,7 @@ bark_insert_parent(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
 		ereport(ERROR,
 				(errcode(ERRCODE_INDEX_CORRUPTED),
 				 errmsg_internal("failed to re-find parent downlink for block %u in BARK index \"%s\"",
-								 leftblk, RelationGetRelationName(index)),
-				 errdetail_internal("Block %u may be the right half of an incomplete split of the page to its left; an insert onto that page finishes the split.",
-									leftblk)));
+								 leftblk, RelationGetRelationName(index))));
 
 	/* The new downlink goes immediately after the one to its left sibling. */
 	off = OffsetNumberNext(stack->bark_offset);
@@ -875,7 +856,7 @@ bark_insert_parent(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
  * NULL when `lbuf` was reached from the top of the tree; bark_insert_parent
  * then decides from the meta page whether this was a root split.
  */
-static void
+void
 bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
 				  BarkStack stack)
 {
@@ -1369,24 +1350,19 @@ retry:
 
 	if (buf == InvalidBuffer)
 	{
-		/* Empty index: create the first leaf and point the meta page at it. */
-		IndexTuple	entry = bark_leaf_page_entry(index, itup, oversized, fulllen);
-
-		bark_insert_first_leaf(index, itup, entry);
-		pfree(entry);
-		pfree(itup);
-		pfree(keyinfo);
-		return true;			/* nothing to conflict with: unique */
+		/* Empty index: give it a root leaf, then insert as usual. */
+		bark_create_root_leaf(index);
+		goto retry;
 	}
 
 	/*
-	 * If this leaf has an unfinished split (an error or crash left its right
-	 * sibling without a parent downlink), complete it before inserting, then
-	 * descend again: the parent now has the missing downlink and the key may
-	 * belong on the right sibling.  The flag is tested under the exclusive
-	 * lock bark_search returned: a backend in the middle of its own split
-	 * holds that lock until the split is complete, so a set flag here always
-	 * means an abandoned split, never one that is still in progress.
+	 * bark_search finishes any incomplete split it meets on the way down, so
+	 * the leaf it returns should never carry the flag.  The test is cheap and
+	 * keeps the insert safe if it ever does: complete the split, then descend
+	 * again, since the key may belong on the right sibling.  The flag is
+	 * tested under the exclusive lock bark_search returned, and a backend in
+	 * the middle of its own split holds that lock until the split is
+	 * complete, so a set flag here would mean an abandoned split.
 	 */
 	if ((BarkPageGetOpaque(BufferGetPage(buf))->bark_flags &
 		 BARK_INCOMPLETE_SPLIT) != 0)
