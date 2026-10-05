@@ -2,8 +2,9 @@
 
 EXTRA_INSTALL = src/test/modules/injection_points contrib/amcheck
 
-REGRESS = bark_incomplete_splits
+REGRESS = bark_incomplete_splits bark_split_moveright
 ISOLATION = bark_concurrent_split
+TAP_TESTS = 1
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

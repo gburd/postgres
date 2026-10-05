@@ -6,9 +6,11 @@
  * bark_search descends from the root (named by the meta page) to the leaf
  * that should hold a given key, following right links when a page has split
  * since its parent downlink was written -- the Lehman & Yao move-right rule,
- * detected by comparing the key against each page's high key.  It records the
- * path in a BarkStack so an insert that splits the leaf can insert the new
- * downlinks on the way back up.
+ * detected by comparing the key against each page's high key -- and past
+ * pages that are being removed from the tree.  A descent for an insert also
+ * finishes any incomplete split it meets on the way.  It records the path in
+ * a BarkStack so an insert that splits the leaf can insert the new downlinks
+ * on the way back up.
  *
  * This is modeled on nbtsearch.c's _bt_search / _bt_moveright / _bt_binsrch.
  * BARK compares with bark_compare_itups (the opclass's support-1 comparator)
@@ -42,20 +44,83 @@ bark_compare_off(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 }
 
 /*
- * Should the search move right off this page?  True when the page is not
- * rightmost and the key is greater than the page's high key, meaning the page
- * split after our parent pointed here and the key now lives further right.
+ * Move right from `buf`, as far as needed, to the page at this level that can
+ * hold `key`, and return it locked in mode `access`.  A port of nbtree's
+ * _bt_moveright.
+ *
+ * Move right past a page that split after our parent pointed at it (the key
+ * is greater than its high key) and past a page that is being removed from
+ * the tree (BARK_DELETED or BARK_HALF_DEAD; such a page keeps its right link
+ * so that descents and scans already on their way to it can step past it).
+ *
+ * A write descent (forwrite) also finishes any incomplete split it finds on
+ * the way, holding the page's exclusive lock while it does, and `stack` is
+ * the path to this level's parent that bark_finish_split needs.  This is what
+ * guarantees that an abandoned split gets its downlink even when every later
+ * insert lands to the right of its left half: if those inserts merely moved
+ * right, the right half would have no downlink of its own when it split in
+ * turn.  The flag is only ever seen on a split nobody is completing, since a
+ * backend that is in the middle of a split holds the left page's lock until
+ * the downlink is written.
  */
-static bool
-bark_should_move_right(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
-					   Page page)
+static Buffer
+bark_moveright(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
+			   Buffer buf, bool forwrite, BarkStack stack,
+			   BufferLockMode access)
 {
-	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	Page		page;
+	BarkPageOpaque opaque;
 
-	if (BarkPageRightmost(opaque))
-		return false;
-	/* High key is at BARK_P_HIKEY; move right if key > high key. */
-	return bark_compare_off(index, keyinfo, key, page, BARK_P_HIKEY) > 0;
+	for (;;)
+	{
+		page = BufferGetPage(buf);
+		opaque = BarkPageGetOpaque(page);
+
+		if (BarkPageRightmost(opaque))
+			break;
+
+		if (forwrite && (opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0)
+		{
+			BlockNumber blkno = BufferGetBlockNumber(buf);
+
+			if (access == BUFFER_LOCK_SHARE)
+			{
+				LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+				LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+			}
+			if ((opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0)
+				bark_finish_split(index, keyinfo, buf, stack);	/* releases buf */
+			else
+				UnlockReleaseBuffer(buf);
+
+			/* Re-read the page in the caller's lock mode and look again. */
+			buf = ReadBuffer(index, blkno);
+			LockBuffer(buf, access);
+			continue;
+		}
+
+		if ((opaque->bark_flags & (BARK_DELETED | BARK_HALF_DEAD)) != 0 ||
+			bark_compare_off(index, keyinfo, key, page, BARK_P_HIKEY) > 0)
+		{
+			BlockNumber right = opaque->bark_next;
+
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+			buf = ReleaseAndReadBuffer(buf, index, right);
+			LockBuffer(buf, access);
+			continue;
+		}
+		break;
+	}
+
+	/*
+	 * A page being removed is never the rightmost page of its level while it
+	 * is still linked, so reaching one here means the level ended under us.
+	 */
+	if ((opaque->bark_flags & (BARK_DELETED | BARK_HALF_DEAD)) != 0)
+		elog(ERROR, "fell off the end of BARK index \"%s\"",
+			 RelationGetRelationName(index));
+
+	return buf;
 }
 
 /*
@@ -77,15 +142,12 @@ bark_should_move_right(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
  */
 static OffsetNumber
 bark_binsrch(Relation index, BarkKeyInfo *keyinfo, IndexTuple key, Page page,
-			 bool nextkey, bool *leaf_out)
+			 bool nextkey)
 {
 	BarkPageOpaque opaque = BarkPageGetOpaque(page);
 	OffsetNumber low = BarkPageFirstDataKey(opaque);
 	OffsetNumber high = PageGetMaxOffsetNumber(page);
 	bool		isleaf = BarkPageIsLeaf(opaque);
-
-	if (leaf_out)
-		*leaf_out = isleaf;
 
 	if (high < low)
 		return low;				/* empty page */
@@ -148,6 +210,13 @@ bark_get_root(Relation index, uint32 *level_out)
  * non-NULL it is set to the parent path (caller frees with bark_freestack);
  * it is NULL for a one-level tree (root is the leaf) or an empty index.
  *
+ * A write descent finishes every incomplete split it meets, at every level
+ * (see bark_moveright), so the leaf it returns never carries
+ * BARK_INCOMPLETE_SPLIT.  As in nbtree's _bt_search, internal pages are
+ * share-locked and the leaf is locked exclusively straight from its parent,
+ * except when the root is itself the leaf; then the share lock is traded for
+ * an exclusive one and the page re-checked for a split made in between.
+ *
  * Returns InvalidBuffer when the index has no root yet (empty index); the
  * caller creates the first leaf.
  */
@@ -158,6 +227,7 @@ bark_search(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 	BlockNumber blkno;
 	Buffer		buf;
 	BarkStack	path = NULL;
+	BufferLockMode access = BUFFER_LOCK_SHARE;
 
 	if (stack)
 		*stack = NULL;
@@ -166,75 +236,67 @@ bark_search(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 	if (blkno == BARK_P_NONE)
 		return InvalidBuffer;	/* empty index */
 
-	/* Descend internal levels with share locks, recording the stack. */
+	buf = ReadBuffer(index, blkno);
+	LockBuffer(buf, access);
+
 	for (;;)
 	{
 		Page		page;
 		BarkPageOpaque opaque;
 		OffsetNumber off;
-		bool		isleaf;
+		IndexTuple	itup;
+		BarkStack	item;
 
-		buf = ReadBuffer(index, blkno);
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		/*
+		 * The page may have split since we read its downlink (or the meta
+		 * page), and a writer may have to finish an incomplete split here.
+		 * `path` is this level's parent path, which is what finishing a split
+		 * at this level needs.
+		 */
+		buf = bark_moveright(index, keyinfo, key, buf, forwrite, path, access);
+
 		page = BufferGetPage(buf);
 		opaque = BarkPageGetOpaque(page);
-
-		/* Move right if a split put the key beyond this page. */
-		if (bark_should_move_right(index, keyinfo, key, page))
-		{
-			BlockNumber right = opaque->bark_next;
-
-			UnlockReleaseBuffer(buf);
-			blkno = right;
-			continue;
-		}
-
 		if (BarkPageIsLeaf(opaque))
-		{
-			/*
-			 * Reached the target leaf.  Re-lock for write if asked: drop the
-			 * share lock and take an exclusive one, then re-check for a split
-			 * that may have happened in between by moving right as needed.
-			 */
-			if (forwrite)
-			{
-				LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-				LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-				page = BufferGetPage(buf);
-				while (bark_should_move_right(index, keyinfo, key, page))
-				{
-					BlockNumber right = BarkPageGetOpaque(page)->bark_next;
-
-					LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-					buf = ReleaseAndReadBuffer(buf, index, right);
-					LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-					page = BufferGetPage(buf);
-				}
-			}
-			if (stack)
-				*stack = path;
-			else
-				bark_freestack(path);
-			return buf;
-		}
+			break;
 
 		/* Internal page: find the downlink to follow and push the stack. */
-		off = bark_binsrch(index, keyinfo, key, page, nextkey, &isleaf);
-		{
-			ItemId		iid = PageGetItemId(page, off);
-			IndexTuple	itup = (IndexTuple) PageGetItem(page, iid);
-			BlockNumber child = BarkEntryGetDownLink(itup);
-			BarkStack	item = palloc(sizeof(BarkStackData));
+		off = bark_binsrch(index, keyinfo, key, page, nextkey);
+		itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, off));
 
-			item->bark_blkno = blkno;
-			item->bark_offset = off;
-			item->bark_parent = path;
-			path = item;
+		item = palloc(sizeof(BarkStackData));
+		item->bark_blkno = BufferGetBlockNumber(buf);
+		item->bark_offset = off;
+		item->bark_parent = path;
+		path = item;
 
-			blkno = child;
-			UnlockReleaseBuffer(buf);
-		}
+		/* The children of a level-1 page are leaves: lock them for write. */
+		if (forwrite && opaque->bark_level == 1)
+			access = BUFFER_LOCK_EXCLUSIVE;
+
+		blkno = BarkEntryGetDownLink(itup);
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		buf = ReleaseAndReadBuffer(buf, index, blkno);
+		LockBuffer(buf, access);
 	}
+
+	if (forwrite && access == BUFFER_LOCK_SHARE)
+	{
+		/*
+		 * The root is the leaf, so it was share-locked.  Trade up, and move
+		 * right again in case it split while it was unlocked.
+		 */
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
+		buf = bark_moveright(index, keyinfo, key, buf, true, path,
+							 BUFFER_LOCK_EXCLUSIVE);
+	}
+
+	if (stack)
+		*stack = path;
+	else
+		bark_freestack(path);
+	return buf;
 }
 
 void
