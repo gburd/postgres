@@ -23,9 +23,12 @@ PostgreSQL page whose special space holds a BarkPageOpaqueData:
     bark_flags              page role: BARK_LEAF, BARK_ROOT, BARK_META,
                             BARK_DELETED, BARK_HALF_DEAD,
                             BARK_INCOMPLETE_SPLIT, BARK_HAS_GARBAGE
-    bark_page_id            BARK_PAGE_ID, so external tools can recognize the
-                            page (mirrors nbtree's use of the last two bytes
-                            of special space)
+    bark_page_id            BARK_PAGE_ID (0xFF84), so external tools can
+                            tell BARK pages from nbtree pages: nbtree keeps
+                            its vacuum cycle ID in the last two bytes of the
+                            special space, and those never exceed
+                            MAX_BT_CYCLE_ID (0xFF7F); hash, GiST, SP-GiST and
+                            bloom use 0xFF80-0xFF83
 
 As in nbtree, each page carries a high key (an upper bound on the keys the
 page may hold) and a right-link to its sibling, which together let a scan
