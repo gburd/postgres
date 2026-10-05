@@ -49,6 +49,14 @@ typedef struct
 	pg_atomic_uint32 numBufferAllocs;	/* Buffers allocated since last reset */
 
 	/*
+	 * Allocations that had to claim a buffer whose usage_count had not reached
+	 * zero, because the sweep could not find one that had (see
+	 * StrategyGetBuffer).  A growing value means the pool is hotter than the
+	 * clock hand can keep up with.
+	 */
+	pg_atomic_uint64 numForcedClaims;
+
+	/*
 	 * Bgworker process to be notified upon activity or -1 if none. See
 	 * StrategyNotifyBgWriter.
 	 */
@@ -186,6 +194,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 	BufferDesc *buf;
 	int			bgwprocno;
 	int			trycounter;
+	int			decremented = 0;	/* buffers decremented by this call */
 
 	*from_ring = false;
 
@@ -285,13 +294,67 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 
 			if (BUF_STATE_GET_USAGECOUNT(local_buf_state) != 0)
 			{
-				local_buf_state -= BUF_USAGECOUNT_ONE;
+				/*
+				 * The buffer is in use.  Normally we decrement its usage_count
+				 * and keep scanning, and a buffer must be passed
+				 * BM_MAX_USAGE_COUNT times before it becomes a candidate.
+				 *
+				 * That is the right default, but it is not free.  With a pass
+				 * time of T, a buffer only reaches zero if it goes roughly
+				 * BM_MAX_USAGE_COUNT * T without an access, because PinBuffer
+				 * saturates the count on every access.  T grows with
+				 * NBuffers, so on a large pool under a workload that touches
+				 * much of the pool more often than that, buffers are
+				 * re-promoted faster than the hand decrements them.  The
+				 * supply of candidates collapses, and because a decrement
+				 * counts as progress and resets trycounter, this loop can
+				 * decrement indefinitely without ever finding a victim --
+				 * unbounded work for a single allocation.
+				 *
+				 * So we give up the usage-count ladder when, and only when,
+				 * the evidence says it is unaffordable: once this call has
+				 * decremented BUF_DECREMENT_CLAIM_THRESHOLD buffers without
+				 * finding a single one at zero, the pool is demonstrably
+				 * hotter than the hand can grind down, and we claim the next
+				 * unpinned buffer we see instead of merely decrementing it.
+				 * That bounds the work of an allocation at the cost of
+				 * evicting a buffer that had not been passed over
+				 * BM_MAX_USAGE_COUNT times.  Under no pressure the counter
+				 * never reaches the threshold and behaviour is unchanged.
+				 */
+				if (decremented < BUF_DECREMENT_CLAIM_THRESHOLD)
+				{
+					local_buf_state -= BUF_USAGECOUNT_ONE;
+
+					if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
+													   local_buf_state))
+					{
+						decremented++;
+						trycounter = NBuffers;
+						break;
+					}
+					continue;
+				}
+
+				/*
+				 * Pressure case: claim this buffer.  usage_count is cleared
+				 * when the victim is reused (see InvalidateVictimBuffer), so
+				 * there is no need to drive it to zero first.
+				 */
+				pg_atomic_fetch_add_u64(&StrategyControl->numForcedClaims, 1);
+				local_buf_state += BUF_REFCOUNT_ONE;
 
 				if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
 												   local_buf_state))
 				{
-					trycounter = NBuffers;
-					break;
+					/* Found a usable buffer */
+					if (strategy != NULL)
+						AddBufferToRing(strategy, buf);
+					*buf_state = local_buf_state;
+
+					TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
+
+					return buf;
 				}
 			}
 			else
@@ -405,6 +468,7 @@ StrategyCtlShmemInit(void *arg)
 	/* Clear statistics */
 	StrategyControl->completePasses = 0;
 	pg_atomic_init_u32(&StrategyControl->numBufferAllocs, 0);
+	pg_atomic_init_u64(&StrategyControl->numForcedClaims, 0);
 
 	/* No pending notification */
 	StrategyControl->bgwprocno = -1;
