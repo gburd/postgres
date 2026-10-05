@@ -6,12 +6,14 @@
  * bark_insert descends to the target leaf (bark_search), inserts the new
  * SINGLE-shape entry in key order, and -- when the page overflows -- splits
  * it: a new right page takes the items above a split point chosen by
- * bark_findsplitloc (barksplitloc.c), the left page's high key becomes
- * the split key, the right link is published before the parent downlink, and
- * the downlink is inserted into the parent (growing a new root if the split
- * reached the top).  Page changes are made through the buffer pool and
- * WAL-logged with generic WAL (the same facility bloom uses), so no
- * BARK-specific WAL record is needed.
+ * bark_findsplitloc (barksplitloc.c), the left page gets a new high key (on a
+ * leaf, the right page's first key without the attributes not needed to tell
+ * it from the left page's last key), the right link is published before the
+ * parent downlink, and a copy of the high key is inserted into the parent as
+ * the right page's downlink (growing a new root if the split reached the
+ * top).  Page changes are made through the buffer pool and WAL-logged with
+ * generic WAL (the same facility bloom uses), so no BARK-specific WAL record
+ * is needed.
  *
  * Locks follow nbtree's protocol: a split keeps the left page write-locked
  * until the parent is write-locked and the new downlink written, the parent's
@@ -140,10 +142,9 @@ bark_strip_to_key(Relation index, IndexTuple src, bool *allocated)
 }
 
 /*
- * Build a pivot (downlink or high key) from the key `key`, truncated to its key
- * attributes, carrying `natts` and (for a downlink) `child` -- BARK_P_NONE for
- * a high key.  Non-key INCLUDE attributes and any lower-key suffix are
- * physically removed (index_truncate_tuple): pivots only route by key.
+ * Build a high key from the leaf entry `key`, keeping its first `keepnatts`
+ * key attributes.  Non-key INCLUDE attributes and the key attributes after
+ * the first keepnatts are physically removed: pivots only route by key.
  *
  * When the truncated key still exceeds the item ceiling (an oversized key),
  * the pivot is an OVERSIZED pivot: its full key is written to a fresh overflow
@@ -153,7 +154,7 @@ bark_strip_to_key(Relation index, IndexTuple src, bool *allocated)
  * generic-WAL state, since writing the chain starts its own WAL records.
  */
 static IndexTuple
-bark_make_pivot(Relation index, IndexTuple key, BlockNumber child, int nkeyatts)
+bark_make_pivot(Relation index, IndexTuple key, int keepnatts)
 {
 	bool		allocated;
 	IndexTuple	src = bark_strip_to_key(index, key, &allocated);
@@ -169,9 +170,9 @@ bark_make_pivot(Relation index, IndexTuple key, BlockNumber child, int nkeyatts)
 	 * oversized key does not error here; a normal key comes out identical to
 	 * index_truncate_tuple's result.
 	 */
-	if (nkeyatts < tupdesc->natts)
+	if (keepnatts < tupdesc->natts)
 	{
-		TupleDesc	truncdesc = CreateTupleDescTruncatedCopy(tupdesc, nkeyatts);
+		TupleDesc	truncdesc = CreateTupleDescTruncatedCopy(tupdesc, keepnatts);
 
 		index_deform_tuple(src, truncdesc, values, isnull);
 		full = bark_form_full_tuple(truncdesc, values, isnull, &fulllen);
@@ -190,36 +191,44 @@ bark_make_pivot(Relation index, IndexTuple key, BlockNumber child, int nkeyatts)
 		ItemPointerData locator;
 		BlockNumber firstblk = bark_write_overflow_chain(index, full, fulllen);
 
-		ItemPointerSetBlockNumber(&locator, child);
+		ItemPointerSetBlockNumber(&locator, BARK_P_NONE);
 		ItemPointerSetOffsetNumber(&locator, InvalidOffsetNumber);
 		pivot = bark_form_oversized_entry(&locator, fulllen, firstblk,
-										  false /* pivot */ , (uint16) nkeyatts);
+										  false /* pivot */ , (uint16) keepnatts);
 		bark_set_oversized_prefix(pivot, index, full);
 		pfree(full);
 		return pivot;
 	}
 
 	pivot = full;
-	BarkPivotSetNAtts(pivot, (uint16) nkeyatts);
-	BarkPivotSetDownLink(pivot, child);
+	BarkPivotSetNAtts(pivot, (uint16) keepnatts);
+	BarkPivotSetDownLink(pivot, BARK_P_NONE);
 	return pivot;
 }
 
 /*
- * A pivot (downlink) tuple pointing at `child`.
+ * Form the high key for the left half of a leaf split, whose last item is
+ * `lastleft`; `firstright` is the first item of the right half.  As nbtree's
+ * _bt_truncate does, keep only as many of firstright's leading key attributes
+ * as it takes to tell it from lastleft (bark_keep_natts); the attributes
+ * dropped compare as minus infinity, so the high key sorts after lastleft and
+ * no later than firstright.  Two items equal on every key attribute keep them
+ * all, since BARK has no heap-TID tiebreaker to add.  The README section
+ * "Suffix truncation" explains why the result separates the two pages.
+ *
+ * CREATE INDEX forms its leaf high keys here too (barksort.c).  Its items are
+ * never OVERSIZED, and a truncated key is no larger than the item it comes
+ * from, so the build never reaches the overflow-chain write in
+ * bark_make_pivot.
  */
-static IndexTuple
-bark_make_downlink(Relation index, IndexTuple key, BlockNumber child,
-				   int nkeyatts)
+IndexTuple
+bark_truncate_pivot(Relation index, BarkKeyInfo *keyinfo, IndexTuple lastleft,
+					IndexTuple firstright)
 {
-	return bark_make_pivot(index, key, child, nkeyatts);
-}
+	int			nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
+	int			keepnatts = bark_keep_natts(index, keyinfo, lastleft, firstright);
 
-/* A high-key tuple: a key truncated to its key attributes, no downlink. */
-static IndexTuple
-bark_make_hikey(Relation index, IndexTuple key, int nkeyatts)
-{
-	return bark_make_pivot(index, key, BARK_P_NONE, nkeyatts);
+	return bark_make_pivot(index, firstright, Min(keepnatts, nkeyatts));
 }
 
 /*
@@ -330,11 +339,11 @@ bark_create_root_leaf(Relation index)
 /*
  * Split `buf` (a full page) to make room for `newitup` at insert offset
  * `newoff`.  Allocates a right sibling, moves the items from the split point
- * bark_findsplitloc chooses onward to it, sets the left page's high key to the
- * right page's first key, chains the right links, and inserts the right page's
- * downlink into the parent via the stack.  The split itself is one generic WAL record; the right link is
- * published before the parent downlink so a concurrent descender can always
- * move right to find a key.
+ * bark_findsplitloc chooses onward to it, gives the left page a new high key,
+ * chains the right links, and inserts the right page's downlink, a copy of
+ * that high key, into the parent via the stack.  The split itself is one
+ * generic WAL record; the right link is published before the parent downlink
+ * so a concurrent descender can always move right to find a key.
  *
  * `buf` is write-locked on entry and stays locked until bark_insert_parent
  * has write-locked the parent and written the downlink, so the left page's
@@ -348,7 +357,6 @@ static void
 bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 		   OffsetNumber newoff, IndexTuple newitup, Buffer cbuf)
 {
-	int			nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	Page		origpage = BufferGetPage(buf);
 	BarkPageOpaque origopaque = BarkPageGetOpaque(origpage);
 	bool		isleaf = BarkPageIsLeaf(origopaque);
@@ -369,7 +377,6 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 	BlockNumber rightblk;
 	GenericXLogState *gstate;
 	Page		leftpage;
-	IndexTuple	splitkey;
 	IndexTuple	lhikey;
 	IndexTuple	downlink;
 	BTCycleId	cycleid;
@@ -396,19 +403,36 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 	/* The right page gets items[splitidx..]; the new item is at newoff. */
 	splitidx = bark_findsplitloc(index, keyinfo, items, n,
 								 newoff - firstdata, isleaf, orighikey);
-	splitkey = items[splitidx];		/* first key on the right page */
 
 	/*
-	 * Form the left page's high key (= the right page's first key) BEFORE
-	 * opening the generic-WAL state: an oversized split key makes an OVERSIZED
-	 * hikey, which writes its own overflow chain under its own WAL records, and
-	 * generic WAL states cannot nest.
+	 * Form the left page's high key BEFORE opening the generic-WAL state: an
+	 * oversized key makes an OVERSIZED high key, which writes its own
+	 * overflow chain under its own WAL records, and generic WAL states cannot
+	 * nest.  A leaf's high key is the right page's first key, truncated
+	 * against the left page's last key.  An internal page's items are pivots
+	 * already, so its high key is a copy of the right page's first item with
+	 * the attributes that item has, as in nbtree.
 	 */
-	lhikey = bark_make_hikey(index, splitkey, nkeyatts);
+	if (isleaf)
+		lhikey = bark_truncate_pivot(index, keyinfo, items[splitidx - 1],
+									 items[splitidx]);
+	else
+	{
+		lhikey = CopyIndexTuple(items[splitidx]);
+		BarkEntrySetDownLink(lhikey, BARK_P_NONE);
+	}
 
 	/* Allocate the right sibling (reusing a reclaimed page if the FSM has one). */
 	rbuf = bark_get_free_page(index);
 	rightblk = BufferGetBlockNumber(rbuf);
+
+	/*
+	 * The right page's downlink is the same tuple as the left page's high
+	 * key, so the parent separates the two pages exactly as the high key
+	 * does.  An OVERSIZED high key and its downlink share one overflow chain.
+	 */
+	downlink = CopyIndexTuple(lhikey);
+	BarkEntrySetDownLink(downlink, rightblk);
 
 	gstate = GenericXLogStart(index);
 	leftpage = GenericXLogRegisterBuffer(gstate, buf, GENERIC_XLOG_FULL_IMAGE);
@@ -434,7 +458,6 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 			BARK_INCOMPLETE_SPLIT;
 		lo->bark_page_id = BARK_PAGE_ID;
 	}
-	splitkey = items[splitidx];		/* first key on the right page */
 	{
 		OffsetNumber o = BARK_P_HIKEY;
 
@@ -522,9 +545,6 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 	 * across both.
 	 */
 	PredicateLockPageSplit(index, origblk, rightblk);
-
-	/* Form the downlink for the right page and insert it into the parent. */
-	downlink = bark_make_downlink(index, splitkey, rightblk, nkeyatts);
 
 	/*
 	 * The split is now durable but its downlink is not yet in the parent --
@@ -863,10 +883,10 @@ bark_insert_parent(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
 /*
  * Finish a split that was interrupted (by an error or crash) after the right
  * sibling was published but before its downlink reached the parent: the left
- * page `lbuf` carries BARK_INCOMPLETE_SPLIT.  Reconstruct the missing downlink
- * from the left page's high key -- which equals the right sibling's first key,
- * i.e. the split key -- pointing at the right sibling, and insert it into the
- * parent.  bark_insert_parent clears the flag atomically with that insert.
+ * page `lbuf` carries BARK_INCOMPLETE_SPLIT.  The missing downlink is a copy
+ * of the left page's high key pointing at the right sibling, exactly the
+ * tuple the interrupted split would have inserted; insert it into the parent.
+ * bark_insert_parent clears the flag atomically with that insert.
  *
  * `lbuf` is write-locked on entry and released by bark_insert_parent, which
  * keeps it locked until the parent is locked, exactly as for a split this
@@ -879,7 +899,6 @@ void
 bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
 				  BarkStack stack)
 {
-	int			nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	Page		lpage = BufferGetPage(lbuf);
 	BarkPageOpaque lopaque = BarkPageGetOpaque(lpage);
 	IndexTuple	hikey;
@@ -890,9 +909,13 @@ bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
 
 	INJECTION_POINT("bark-finish-incomplete-split", NULL);
 
-	/* The high key is the split key; make a downlink to the right sibling. */
+	/*
+	 * Copy the high key, which keeps its own attribute count and, if it is
+	 * OVERSIZED, its overflow chain, and point the copy at the right sibling.
+	 */
 	hikey = (IndexTuple) PageGetItem(lpage, PageGetItemId(lpage, BARK_P_HIKEY));
-	downlink = bark_make_downlink(index, hikey, lopaque->bark_next, nkeyatts);
+	downlink = CopyIndexTuple(hikey);
+	BarkEntrySetDownLink(downlink, lopaque->bark_next);
 	bark_insert_parent(index, keyinfo, stack, lbuf, downlink);
 	pfree(downlink);
 }
@@ -947,8 +970,11 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 	 * END of that key's run, so any existing live entry for the same key sits
 	 * at or after the first equal entry on the insert leaf and is reachable by
 	 * scanning right.  Dead, not-yet-vacuumed duplicates may extend the run
-	 * left across earlier leaves, but the single live survivor cannot be left
-	 * of the insert leaf's first equal entry.
+	 * left across earlier leaves, but the single live survivor cannot be
+	 * left of the insert leaf's first equal entry.  Suffix truncation does
+	 * not change this: a pivot inside a run of equal keys keeps every key
+	 * attribute (see bark_truncate_pivot), so the descent still reaches the
+	 * end of the run.
 	 *
 	 * This correctness argument relies on the insert descent using
 	 * nextkey=true.  If the insert positioning ever changes so the live entry
