@@ -1,0 +1,39 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1open s1fetch1 s2vacuum s1fetchall s1count s1commit s2count
+step s1open: BEGIN; DECLARE c CURSOR FOR SELECT b FROM bark_vp WHERE a = 1;
+step s1fetch1: SELECT bark_vp_fetch('c', 1);
+bark_vp_fetch
+-------------
+             
+(1 row)
+
+step s2vacuum: VACUUM bark_vp;
+step s1fetchall: SELECT bark_vp_fetch('c', 1000000);
+bark_vp_fetch
+-------------
+             
+(1 row)
+
+step s1count: 
+  SELECT count(*) AS fetched, count(DISTINCT b) AS distinct_rows,
+         count(*) FILTER (WHERE b % 10 = 0) AS deleted_rows
+    FROM bark_vp_got;
+
+fetched|distinct_rows|deleted_rows
+-------+-------------+------------
+  54000|        54000|           0
+(1 row)
+
+step s1commit: COMMIT;
+step s2count: 
+  SET enable_seqscan = off;
+  SET enable_bitmapscan = off;
+  SET enable_indexonlyscan = on;
+  SELECT count(*) AS index_only_rows FROM bark_vp WHERE a = 1;
+
+index_only_rows
+---------------
+          54000
+(1 row)
+
