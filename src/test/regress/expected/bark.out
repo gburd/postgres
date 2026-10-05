@@ -2147,6 +2147,44 @@ RESET enable_indexscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_pfx;
 ERROR:  table "bark_pfx" does not exist
+-- The inline prefix must hold the value's bytes, not the compressed bytes:
+-- an oversized key with a compressible tail is stored compressed in the
+-- overflow chain (lz4 or pglz), and compressed images do not sort like the
+-- values.  Keys share a 4-digit lead and differ in random md5 text.
+CREATE TABLE bark_pfxcomp (t text COLLATE "C");
+CREATE INDEX bark_pfxcomp_idx ON bark_pfxcomp USING bark (t);
+INSERT INTO bark_pfxcomp
+  SELECT lpad((g / 2)::text, 4, '0') ||
+         (SELECT string_agg(md5((g / 2)::text || i::text), '')
+          FROM generate_series(1, 100) i)
+  FROM generate_series(1, 1000) g ORDER BY md5(g::text);
+SELECT bark_index_check('bark_pfxcomp_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS idx_count FROM bark_pfxcomp WHERE t >= '0300';
+ idx_count 
+-----------
+       401
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS seq_count FROM bark_pfxcomp WHERE t >= '0300';
+ seq_count 
+-----------
+       401
+(1 row)
+
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_pfxcomp;
 -- Equal keys share a LIST/POSTING entry only when they are byte-identical
 -- (bark_allequalimage, nbtree's _bt_allequalimage rule).  An INCLUDE index
 -- never coalesces: rows with the same key carry different payloads, and an
