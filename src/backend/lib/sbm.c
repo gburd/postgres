@@ -10220,7 +10220,7 @@ size_t
 sbm_serialize(const Sbm *map, uint8 *out, size_t out_size)
 {
 	size_t		needed;
-	uint64		cardinality;
+	uint64		reserved = 0;
 	uint8		flags;
 	uint32		magic = SBM_WIRE_MAGIC;
 
@@ -10230,8 +10230,6 @@ sbm_serialize(const Sbm *map, uint8 *out, size_t out_size)
 	if (out_size < needed)
 		return 0;
 
-	cardinality =
-		(map == NULL || sbm_is_empty(map)) ? 0 : sbm_cardinality(map);
 	flags = sbm_host_is_little_endian() ? SBM_WIRE_FLAG_LE : 0;
 
 	/* Header: writes via memcpy so it works on strict-alignment cpus. */
@@ -10240,7 +10238,14 @@ sbm_serialize(const Sbm *map, uint8 *out, size_t out_size)
 	out[5] = flags;
 	out[6] = (map != NULL && sbm_is_small(map)) ? SBM_WIRE_FLAG_SMALL : 0;
 	out[7] = 0;
-	memcpy(out + 8, &cardinality, 8);
+
+	/*
+	 * Bytes 8-15 are reserved and written as zero.  They once carried the
+	 * member count, but no reader used it, and computing it walked every
+	 * chunk: a cost each caller that serializes after a mutation paid in
+	 * full, because mutation invalidates the cardinality cache.
+	 */
+	memcpy(out + 8, &reserved, 8);
 
 	/*
 	 * Body: existing internal format (or just an SBM_SIZEOF_OVERHEAD zeroed
