@@ -448,10 +448,18 @@ BarkListGetTID(IndexTupleData *itup, int n)
  * A POSTING entry has the same key prefix as a SINGLE/LIST entry, extended
  * with an sbm serialization (see lib/sbm.h) of its locator set in the body.
  * The alt-TID bit is set with BARK_IS_POSTING; the body offset is in the t_tid
- * block field (as for LIST), and the body occupies the rest of the entry (its
- * length is the entry size minus the body offset).  The member count is not
- * stored in the offset field -- it can exceed BARK_OFFSET_MASK -- but is read
- * back from the sbm; the offset low bits are left zero.
+ * block field (as for LIST).  The member count is not stored in the offset
+ * field -- it can exceed BARK_OFFSET_MASK -- but is read back from the sbm;
+ * the offset low bits are left zero.
+ *
+ * The body is a uint16 holding the serialization's length, the serialization,
+ * and zero padding to the end of the entry.  The entry is sized for the sbm's
+ * removal bound (sbm_removal_bound), the largest serialization any subset of
+ * the set can have, rather than for the serialization itself: removing
+ * members can enlarge an sbm, and this way VACUUM can always rewrite the
+ * entry in place.  The sbm format does not record its own length, so it is
+ * stored ahead of it.  sbm_deserialize copies the bytes before reading them,
+ * so the serialization needs no alignment.
  *
  * A heap TID maps to an sbm index with a reversible, block-clustered encoding
  * so a run of TIDs on one heap block becomes a dense sbm run:
@@ -464,18 +472,42 @@ BarkListGetTID(IndexTupleData *itup, int n)
  * ----------------------------------------------------------------------------
  */
 
-/* Pointer to a POSTING entry's serialized sbm body. */
+/*
+ * Size of a POSTING entry whose key tuple is keysz bytes and whose set has
+ * removal bound `bound`.
+ */
+static inline Size
+BarkPostingEntrySize(Size keysz, Size bound)
+{
+	return MAXALIGN(keysz) + MAXALIGN(sizeof(uint16) + bound);
+}
+
+/* Pointer to a POSTING entry's serialized sbm. */
 static inline uint8 *
 BarkPostingGetData(IndexTupleData *itup)
 {
-	return (uint8 *) ((char *) itup + BarkEntryGetBodyOffset(itup));
+	return (uint8 *) itup + BarkEntryGetBodyOffset(itup) + sizeof(uint16);
 }
 
-/* Length in bytes of a POSTING entry's serialized sbm body. */
+/*
+ * Length in bytes of a POSTING entry's serialized sbm.  Readers check it
+ * against the entry size before using it.
+ */
 static inline Size
 BarkPostingGetDataSize(IndexTupleData *itup)
 {
-	return IndexTupleSize(itup) - BarkEntryGetBodyOffset(itup);
+	return *(uint16 *) ((char *) itup + BarkEntryGetBodyOffset(itup));
+}
+
+/* True when a POSTING entry's length word and sbm lie within the entry. */
+static inline bool
+BarkPostingDataFits(IndexTupleData *itup)
+{
+	Size		bodyoff = BarkEntryGetBodyOffset(itup);
+
+	return bodyoff + sizeof(uint16) <= IndexTupleSize(itup) &&
+		bodyoff + sizeof(uint16) + BarkPostingGetDataSize(itup) <=
+		IndexTupleSize(itup);
 }
 
 /* ----------------------------------------------------------------------------
@@ -687,10 +719,10 @@ extern IndexTuple bark_single_from_list(Relation index, IndexTuple entry,
  * <-> uint64 mapping documented in the POSTING accessor section above.
  *
  * bark_form_posting builds a POSTING entry from the key columns of `key` and
- * the `ntids` ascending locators in `tids`; it returns NULL when the sbm
- * envelope would not be smaller than the equivalent LIST (caller keeps the
- * LIST).  bark_posting_count / bark_posting_get_tids read a POSTING entry's
- * set back.
+ * the `ntids` ascending locators in `tids`, sized for the set's removal
+ * bound; it returns NULL when that entry would not be smaller than the
+ * equivalent LIST (caller keeps the LIST).  bark_posting_count /
+ * bark_posting_get_tids read a POSTING entry's set back.
  */
 extern uint64 bark_tid_to_key(ItemPointer tid);
 extern void bark_key_to_tid(uint64 key, ItemPointer tid);

@@ -694,6 +694,14 @@ extern void sbm_statistics(const Sbm *map, SbmStats *stats);
 /* Bytes sbm_serialize() will write. */
 extern size_t sbm_serialized_size(const Sbm *map);
 
+/*
+ * Upper bound on sbm_serialized_size() of map and of every subset of it.
+ * Removing members can enlarge an encoding, so storage that is rewritten in
+ * place after removals must reserve this much.  The bound of a subset never
+ * exceeds the bound of the set.
+ */
+extern size_t sbm_removal_bound(const Sbm *map);
+
 /* Write map into out; returns bytes written, or 0 if out_size is short. */
 extern size_t sbm_serialize(const Sbm *map, uint8 *out, size_t out_size);
 
