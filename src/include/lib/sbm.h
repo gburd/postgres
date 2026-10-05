@@ -686,7 +686,8 @@ extern void sbm_statistics(const Sbm *map, SbmStats *stats);
  * Serialization
  *
  * The format is a 16-byte header (magic "sm10", version, endianness flag,
- * cardinality hint) followed by the map's encoding in host byte order.
+ * small-set flag, then reserved bytes written as zero) followed by the map's
+ * encoding in host byte order.
  * Streams are portable only between hosts of the same byte order;
  * sbm_deserialize() rejects any other.
  */

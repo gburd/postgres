@@ -656,6 +656,29 @@ bark_posting_count(IndexTuple itup)
 	return n;
 }
 
+/* Destination for bark_posting_collect: an ItemPointer array and its fill. */
+typedef struct BarkTidSink
+{
+	ItemPointer out;
+	int			n;
+	int			maxout;
+} BarkTidSink;
+
+/*
+ * sbm_scan callback: append a batch of members, as heap TIDs, to a
+ * BarkTidSink.  Decoding a whole entry through sbm_scan costs one chunk walk;
+ * sbm_next_member re-finds the chunk on every call.
+ */
+static void
+bark_posting_collect(uint64 vec[], size_t n, void *aux)
+{
+	BarkTidSink *sink = (BarkTidSink *) aux;
+
+	Assert(sink->n + n <= (size_t) sink->maxout);
+	for (size_t i = 0; i < n; i++)
+		bark_key_to_tid(vec[i], &sink->out[sink->n++]);
+}
+
 /*
  * Read a POSTING entry's locators, ascending, into `out` (capacity maxout).
  * Returns the number written.  sbm iterates in ascending index order, which
@@ -665,18 +688,14 @@ int
 bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout)
 {
 	Sbm		   *map = bark_posting_open(itup);
-	SbmCursor	cur = SBM_CURSOR_INIT;
-	uint64		idx = SBM_IDX_MAX;
-	int			n = 0;
+	BarkTidSink sink;
 
-	while ((idx = sbm_next_member(map, idx, &cur)) != SBM_IDX_MAX)
-	{
-		Assert(n < maxout);
-		bark_key_to_tid(idx, &out[n]);
-		n++;
-	}
+	sink.out = out;
+	sink.n = 0;
+	sink.maxout = maxout;
+	sbm_scan(map, bark_posting_collect, 0, &sink);
 	sbm_free(map);
-	return n;
+	return sink.n;
 }
 
 /*
