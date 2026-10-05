@@ -17,6 +17,9 @@ PostgreSQL page whose special space holds a BarkPageOpaqueData:
 
     bark_prev / bark_next   right-linked sibling chain (BARK_P_NONE at edges)
     bark_level              0 for leaf pages, increasing toward the root
+                            (16 bits)
+    bark_cycleid            vacuum cycle ID of the latest leaf split, or 0
+                            (16 bits; see "VACUUM" below)
     bark_flags              page role: BARK_LEAF, BARK_ROOT, BARK_META,
                             BARK_DELETED, BARK_HALF_DEAD,
                             BARK_INCOMPLETE_SPLIT, BARK_HAS_GARBAGE
@@ -80,6 +83,38 @@ Block 0 is always the meta page (BarkMetaPageData): a magic number
 (BARK_MAGIC), the on-disk version (BARK_VERSION), the current root block and
 its level, and whether all key columns are "equalimage" (which governs
 whether duplicate keys can be deduplicated losslessly).
+
+VACUUM
+------
+
+barkbulkdelete reads the index in physical block order, as btbulkdelete
+does, and deletes the entries whose heap TIDs are dead.  Only live leaf pages
+are cleaned; deleted pages, internal pages and overflow pages are skipped.
+
+A leaf split during the scan can move entries from a page the scan has not
+reached yet to a right page at a block it has already passed (a split takes
+its right page from the free space map, which can hand out any block).  To
+catch that, BARK uses nbtree's vacuum cycle IDs, and nbtree's registry of
+them (_bt_start_vacuum, _bt_vacuum_cycleid, _bt_end_vacuum), which keys on
+the relation's LockRelId and is not specific to nbtree.  A leaf split stamps
+both halves with the cycle ID of the VACUUM running on the index, if any,
+while it holds both pages locked.  When VACUUM cleans a page that carries its
+cycle ID and whose right sibling is at a lower block than the scan position,
+it follows the right link and cleans that page too, and so on while the pages
+it reaches carry its cycle ID.  It clears the cycle ID from each such page it
+cleans, so the page is not cleaned a second time.  The clear is WAL-logged,
+where nbtree treats it as a hint: generic WAL replays whole page images or
+deltas, and an unlogged change would make the primary and standby pages
+differ.
+
+VACUUM takes a cleanup lock on every live leaf, whether or not it has
+entries to delete, as nbtree does (see "Deleting index tuples during VACUUM"
+in the nbtree README).  A scan keeps a pin on the leaf it is returning
+entries from, so VACUUM cannot delete a TID the scan has read but not yet
+returned, and the heap line pointer the TID refers to cannot be reused while
+the scan still needs it.  Generic WAL replay takes an ordinary exclusive lock,
+not a cleanup lock, so this interlock is not provided to scans on a hot
+standby.
 
 Entry encoding (the C-KEYSHAPE contract)
 ----------------------------------------
