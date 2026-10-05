@@ -27,6 +27,7 @@
 #include "access/amlocator.h"
 #include "access/bark.h"
 #include "access/generic_xlog.h"
+#include "access/reloptions.h"
 #include "commands/vacuum.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
@@ -750,12 +751,34 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 }
 
 /*
- * No AM-specific reloptions yet.
+ * Parse and validate the index's reloptions into a BarkOptions.
  */
 static bytea *
 barkoptions(Datum reloptions, bool validate)
 {
-	return NULL;
+	static const relopt_parse_elt tab[] = {
+		{"fillfactor", RELOPT_TYPE_INT, offsetof(BarkOptions, fillfactor)},
+	};
+
+	return (bytea *) build_reloptions(reloptions, validate,
+									  RELOPT_KIND_BARK,
+									  sizeof(BarkOptions),
+									  tab, lengthof(tab));
+}
+
+/*
+ * Tree height for the planner's descent-cost charge: the level of the root,
+ * zero for a single-page or empty index.  This reads the meta page each time
+ * rather than caching it in rd_amcache as nbtree does; the planner calls it
+ * once per index per plan, and BARK keeps no other meta page cache.
+ */
+static int
+barkgettreeheight(Relation rel)
+{
+	uint32		level;
+
+	(void) bark_get_root(rel, &level);
+	return (int) level;
 }
 
 /*
@@ -842,7 +865,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amvacuumcleanup = barkvacuumcleanup,
 		.amcanreturn = bark_canreturn,
 		.amcostestimate = barkcostestimate,
-		.amgettreeheight = NULL,
+		.amgettreeheight = barkgettreeheight,
 		.amoptions = barkoptions,
 		.amproperty = NULL,
 		.ambuildphasename = NULL,

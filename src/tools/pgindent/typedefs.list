@@ -267,6 +267,7 @@ BarkKnnCursor
 BarkKnnScanState
 BarkLeader
 BarkMetaPageData
+BarkOptions
 BarkOverflowRef
 BarkPageState
 BarkParallelScanDesc

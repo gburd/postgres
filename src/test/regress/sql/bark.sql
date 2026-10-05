@@ -1040,3 +1040,50 @@ RESET enable_seqscan;
 RESET enable_bitmapscan;
 SELECT bark_index_check('bark_inc_dup_idx');
 DROP TABLE bark_inc_dup;
+
+-- fillfactor reloption.  CREATE INDEX packs leaf pages to the fillfactor
+-- (default 90), as nbtree does; out-of-range and unknown options are rejected.
+CREATE TABLE bark_ff (a int);
+INSERT INTO bark_ff SELECT g FROM generate_series(1, 100000) g;
+CREATE INDEX bark_ff100_idx ON bark_ff USING bark (a) WITH (fillfactor = 100);
+CREATE INDEX bark_ff90_idx ON bark_ff USING bark (a);
+CREATE INDEX bark_ff50_idx ON bark_ff USING bark (a) WITH (fillfactor = 50);
+SELECT relname, reloptions FROM pg_class
+  WHERE relname IN ('bark_ff100_idx', 'bark_ff90_idx', 'bark_ff50_idx')
+  ORDER BY relname;
+SELECT pg_relation_size('bark_ff50_idx') > pg_relation_size('bark_ff90_idx') AND
+       pg_relation_size('bark_ff90_idx') > pg_relation_size('bark_ff100_idx')
+  AS ff_orders_size;
+SELECT bark_index_check('bark_ff100_idx');
+SELECT bark_index_check('bark_ff90_idx');
+SELECT bark_index_check('bark_ff50_idx');
+ALTER INDEX bark_ff50_idx SET (fillfactor = 80);
+SELECT reloptions FROM pg_class WHERE relname = 'bark_ff50_idx';
+ALTER INDEX bark_ff50_idx RESET (fillfactor);
+SELECT reloptions FROM pg_class WHERE relname = 'bark_ff50_idx';
+CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (fillfactor = 5);
+CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (fillfactor = 101);
+CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (deduplicate_items = off);
+-- A low fillfactor with wide keys still puts at least two entries on each
+-- page: 200 incompressible ~1kB keys at fillfactor 10 must take fewer than
+-- 200 pages, internal levels and meta page included.
+CREATE TABLE bark_ff_wide (t text);
+INSERT INTO bark_ff_wide
+  SELECT lpad(g::text, 3, '0') ||
+         (SELECT string_agg(md5(g::text || i::text), '') FROM generate_series(1, 30) i)
+  FROM generate_series(1, 200) g;
+CREATE INDEX bark_ff_wide_idx ON bark_ff_wide USING bark (t) WITH (fillfactor = 10);
+SELECT pg_relation_size('bark_ff_wide_idx') / 8192 < 200 AS two_per_page;
+SELECT bark_index_check('bark_ff_wide_idx');
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) FROM bark_ff_wide WHERE t >= '150';
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) FROM bark_ff_wide WHERE t >= '150';
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_ff_wide;
+DROP TABLE bark_ff;
