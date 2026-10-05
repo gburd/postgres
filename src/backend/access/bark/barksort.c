@@ -330,27 +330,16 @@ bark_prepend_hikey(Page page, IndexTuple hikey)
 }
 
 /*
- * Flush st's current page because `firstright` (the item that did not fit)
- * will start a new page: give this page its high key, write the page, chain
- * the right-link, add the page's downlink to the parent, and start a fresh
- * page in st for firstright and what follows.
- *
- * On a leaf the high key is firstright truncated against the page's last
- * item (bark_truncate_pivot); on an internal page, whose items are pivots
- * already, it is a copy of firstright.  A copy of the high key is kept as the
- * new page's downlink, so the parent separates the two pages exactly as the
- * high key does.  This is how nbtsort.c's _bt_buildadd pairs them.
+ * The high key for st's current page when `firstright` starts the next page:
+ * on a leaf, firstright truncated against the page's last item
+ * (bark_truncate_pivot); on an internal page, whose items are pivots already,
+ * a copy of firstright.
  */
-static void
-bark_flush_page(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
-				IndexTuple firstright)
+static IndexTuple
+bark_build_hikey(BarkBuildState *bs, BarkPageState *st, IndexTuple firstright)
 {
 	Page		page = (Page) st->buf;
 	IndexTuple	hikey;
-	BlockNumber flushedblk = st->blkno;
-	BulkWriteBuffer flushedbuf = st->buf;
-	BarkPageState *parent = st->parent;
-	BarkPageState *fresh;
 
 	if (st->level == 0)
 	{
@@ -365,6 +354,55 @@ bark_flush_page(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 	{
 		hikey = CopyIndexTuple(firstright);
 		BarkPivotSetDownLink(hikey, BARK_P_NONE);
+	}
+	return hikey;
+}
+
+/*
+ * Flush st's current page because `firstright` (the item that did not fit)
+ * will start a new page: give this page its high key, write the page, chain
+ * the right-link, add the page's downlink to the parent, and start a fresh
+ * page in st for firstright and what follows.
+ *
+ * The high key comes from bark_build_hikey.  A copy of it is kept as the
+ * new page's downlink, so the parent separates the two pages exactly as the
+ * high key does.  This is how nbtsort.c's _bt_buildadd pairs them.
+ */
+static void
+bark_flush_page(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
+				IndexTuple firstright)
+{
+	Page		page = (Page) st->buf;
+	IndexTuple	hikey;
+	IndexTuple	moved = NULL;
+	BlockNumber flushedblk = st->blkno;
+	BulkWriteBuffer flushedbuf = st->buf;
+	BarkPageState *parent = st->parent;
+	BarkPageState *fresh;
+
+	hikey = bark_build_hikey(bs, st, firstright);
+
+	/*
+	 * bark_buildadd reserves room for a high key the size of the item it
+	 * adds, but the high key comes from the next item, which can be wider.
+	 * When it does not fit, move this page's last item to the next page, as
+	 * nbtsort.c's _bt_buildadd always does, and bound the page by that item
+	 * instead: its high key is no larger than the item, so it fits in the
+	 * space the item leaves.  A page holding a single item always has room,
+	 * since an item is at most BarkMaxItemSize, a third of a page.
+	 */
+	if (PageGetFreeSpace(page) < MAXALIGN(IndexTupleSize(hikey)))
+	{
+		OffsetNumber lastoff = OffsetNumberPrev(st->nextoff);
+
+		Assert(lastoff > BARK_P_HIKEY);
+		moved = CopyIndexTuple((IndexTuple)
+							   PageGetItem(page, PageGetItemId(page, lastoff)));
+		PageIndexTupleDelete(page, lastoff);
+		st->nextoff = lastoff;
+		pfree(hikey);
+		hikey = bark_build_hikey(bs, st, moved);
+		Assert(PageGetFreeSpace(page) >= MAXALIGN(IndexTupleSize(hikey)));
 	}
 
 	/* Rebuild the page as [high key, data...]; the high key bounds the page. */
@@ -398,6 +436,16 @@ bark_flush_page(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 	st->parent = parent;
 	pfree(fresh->lowkey);
 	pfree(fresh);
+
+	/* The item moved off the flushed page leads the new one. */
+	if (moved != NULL)
+	{
+		if (PageAddItem((Page) st->buf, (char *) moved, IndexTupleSize(moved),
+						st->nextoff, false, false) == InvalidOffsetNumber)
+			elog(ERROR, "failed to add item to BARK page during build");
+		st->nextoff = OffsetNumberNext(st->nextoff);
+		pfree(moved);
+	}
 }
 
 /*
