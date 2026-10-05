@@ -644,6 +644,16 @@ BarkEntryGetDownLink(IndexTupleData *itup)
 	return ItemPointerGetBlockNumberNoCheck(&itup->t_tid);
 }
 
+/* Point a pivot entry, whatever its shape, at child block `blkno`. */
+static inline void
+BarkEntrySetDownLink(IndexTupleData *itup, BlockNumber blkno)
+{
+	if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+		ItemPointerSetBlockNumber(&BarkOverflowGetRef(itup)->locator, blkno);
+	else
+		ItemPointerSetBlockNumber(&itup->t_tid, blkno);
+}
+
 /* The key-attribute count of a pivot entry, whatever its shape. */
 static inline uint16
 BarkEntryGetPivotNAtts(IndexTupleData *itup)
@@ -693,6 +703,8 @@ extern BarkKeyInfo *bark_build_keyinfo(Relation index);
 extern bool bark_allequalimage(Relation index);
 extern int	bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
 							   IndexTuple a, IndexTuple b);
+extern int	bark_keep_natts(Relation index, BarkKeyInfo *keyinfo,
+							IndexTuple lastleft, IndexTuple firstright);
 
 /*
  * Allocate a page for the index, preferring a page the FSM says is free
@@ -886,6 +898,11 @@ extern bool bark_insert(Relation index, Datum *values, bool *isnull,
 						 ItemPointer ht_ctid, Relation heapRel,
 						 IndexUniqueCheck checkUnique,
 						 bool indexUnchanged, IndexInfo *indexInfo);
+
+/* Leaf high key for a split between lastleft and firstright (barkinsert.c). */
+extern IndexTuple bark_truncate_pivot(Relation index, BarkKeyInfo *keyinfo,
+									  IndexTuple lastleft,
+									  IndexTuple firstright);
 
 /* Split-point choice for bark_split (barksplitloc.c). */
 extern int	bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo,
