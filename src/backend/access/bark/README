@@ -80,10 +80,14 @@ There are four entry shapes (BarkEntryShape):
 
   POSTING  An inverted locator set.  The alt-TID bit is set with
            BARK_IS_POSTING; the set is stored as an sbm serialization (see
-           lib/sbm.h) in the tuple body after the key.  Used when the set is
-           large and clustered enough that sbm's compression wins -- roughly
-           0.2 to 1.9 bytes per locator for a clustered set, versus about 24
-           for a scattered one, so a scattered set stays a LIST.
+           lib/sbm.h) in the tuple body after the key: a uint16 holding the
+           serialization's length, the serialization, and zero padding up to
+           the entry's size.  The entry is sized for the set's removal bound
+           (sbm_removal_bound), the largest serialization any subset of the
+           set can have; see the invariants below.  Used when the set is large
+           and clustered enough that sbm's compression wins even with that
+           reserve, which costs at most one bit per locator of a dense run, so
+           a scattered set stays a LIST.
 
   PIVOT    A downlink or high-key tuple on an internal page (or a leaf high
            key).  The alt-TID bit is set with neither list nor posting status;
@@ -140,3 +144,16 @@ Invariants
     tuple.  Overflow pages carry no items and are skipped by the leaf scans
     (vacuum, cleanup) and by amcheck's per-page checks.
   * bark_page_id is BARK_PAGE_ID on every BARK page.
+  * No leaf entry is larger than BarkMaxItemSize.
+  * A POSTING entry is at least as large as BarkPostingEntrySize of its key
+    and of sbm_removal_bound of its set.  An sbm is not size-monotone:
+    removing members from a dense run turns all-ones vectors (a 2-bit flag)
+    into stored mixed vectors and splits RLE runs into sparse chunks, so the
+    survivors of a VACUUM can need more bytes than the whole set did.  The
+    removal bound of a subset never exceeds that of the set, so when VACUUM
+    re-encodes an entry's survivors (as a POSTING sized for their own bound, a
+    LIST if that is smaller, or a SINGLE) the result fits the entry's slot,
+    and VACUUM rewrites it in place in the page's one WAL record, never
+    splitting a page or moving locators to another entry.  POSTING entries
+    written before this reserve existed (with no length word) are not
+    readable; BARK has not been released, so there is no version bump.

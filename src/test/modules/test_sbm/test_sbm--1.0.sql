@@ -199,6 +199,11 @@ CREATE FUNCTION test_sbm_random_operations(bigint, integer, integer, integer)
 RETURNS integer
 AS 'MODULE_PATHNAME' LANGUAGE C;
 
+-- sbm_removal_bound against random subsets of random sets
+CREATE FUNCTION test_sbm_removal_bound(bigint, integer)
+RETURNS integer
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
 -- Aliases, in-place ops, constructors, bulk ops, introspection, buffer
 -- lifecycle, scan, and the locator family (additional coverage).
 CREATE FUNCTION test_sbm_or(bigint[], bigint[]) RETURNS bigint[]
