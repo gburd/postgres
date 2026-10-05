@@ -17,4 +17,12 @@ tests += {
     # parallelism to keep the local-attach semantics deterministic.
     'runningcheck': false,
   },
+  'isolation': {
+    'specs': [
+      'bark_concurrent_split',
+    ],
+    'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
+    # Injection points are cluster-wide.
+    'runningcheck': false,
+  },
 }

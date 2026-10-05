@@ -1,8 +1,9 @@
 # src/test/modules/bark/Makefile
 
-EXTRA_INSTALL = src/test/modules/injection_points
+EXTRA_INSTALL = src/test/modules/injection_points contrib/amcheck
 
 REGRESS = bark_incomplete_splits
+ISOLATION = bark_concurrent_split
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config
