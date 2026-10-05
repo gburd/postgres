@@ -450,11 +450,16 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 
 				{
 					/*
-					 * Rebuild with the surviving members, re-choosing the shape:
-					 * a POSTING if its sbm still wins, else a LIST, else a plain
-					 * SINGLE when exactly one survives.  Removing members only
-					 * shrinks the set, so the new entry is no larger than the
-					 * original and PageIndexTupleOverwrite fits in place.
+					 * Rebuild with the surviving members, re-choosing the
+					 * shape: a POSTING if its sbm still wins, else a LIST,
+					 * else a plain SINGLE when exactly one survives.  The new
+					 * entry is never larger than the original, so
+					 * PageIndexTupleOverwrite rewrites it in place, in this
+					 * page's one WAL record.  A POSTING entry is sized for
+					 * the removal bound of its set (see bark_form_posting),
+					 * which no subset exceeds; a LIST of fewer locators is
+					 * shorter; a LIST is chosen over the POSTING only when it
+					 * is the smaller; and a SINGLE is smaller than either.
 					 */
 					IndexTuple	key = bark_single_from_list(index, itup, NULL);
 					IndexTuple	newentry;
@@ -477,9 +482,15 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 												  tids, nlive);
 						pfree(key);
 					}
-					if (!PageIndexTupleOverwrite(page, off, (char *) newentry,
+					Assert(MAXALIGN(IndexTupleSize(newentry)) <=
+						   MAXALIGN(ItemIdGetLength(iid)));
+					if (MAXALIGN(IndexTupleSize(newentry)) >
+						MAXALIGN(ItemIdGetLength(iid)) ||
+						!PageIndexTupleOverwrite(page, off, (char *) newentry,
 												 IndexTupleSize(newentry)))
-						elog(ERROR, "failed to shrink BARK leaf entry during vacuum");
+						elog(ERROR, "failed to shrink BARK leaf entry during vacuum: entry at offset %u of block %u grew from %u to %zu bytes",
+							 off, blkno, ItemIdGetLength(iid),
+							 IndexTupleSize(newentry));
 					pfree(newentry);
 				}
 				pfree(tids);
