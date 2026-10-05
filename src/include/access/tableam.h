@@ -309,6 +309,26 @@ typedef void (*IndexBuildCallback) (Relation index,
 									void *state);
 
 /*
+ * UndoEngine -- which UNDO engine an AM writes its UNDO records to.
+ *
+ * This describes where a TABLE AM writes its own TABLE UNDO, and nothing else.
+ * Index UNDO is NOT routed on it: nbtree/hash write their structural UNDO to the
+ * cluster-wide UNDO-in-WAL stream, gated per relation by
+ * RelationUsesIndexUndo() (the index_undo reloption).  A table AM therefore
+ * neither enables nor disables index UNDO by choosing an engine, and plain heap
+ * -- UNDO_ENGINE_NONE -- can and does use index UNDO.
+ *
+ *   UNDO_ENGINE_NONE       -- AM does not use UNDO (e.g. heap).
+ *   UNDO_ENGINE_PERBACKEND -- per-backend UNDO engine (access/undo/perbackend).
+ *                             This is the only engine a table AM may declare.
+ */
+typedef enum UndoEngine
+{
+	UNDO_ENGINE_NONE = 0,
+	UNDO_ENGINE_PERBACKEND,
+} UndoEngine;
+
+/*
  * API struct for a table AM.  Note this must be allocated in a
  * server-lifetime manner, typically as a static const struct, which then gets
  * returned by FormData_pg_am.amhandler.
@@ -323,6 +343,62 @@ typedef struct TableAmRoutine
 {
 	/* this must be set to T_TableAmRoutine */
 	NodeTag		type;
+
+	/*
+	 * am_supports_undo: true if this AM records UNDO for its own table
+	 * changes and relies on applying it to roll back an aborted transaction,
+	 * rather than on visibility rules alone as heap does.  The records are
+	 * opaque to the UNDO core; the AM's own UNDO resource manager interprets
+	 * them and its page format.  Heap leaves this false.
+	 */
+	bool		am_supports_undo;
+
+	/*
+	 * am_inplace_update_keeps_tid: this AM updates a row in place, so the row
+	 * keeps its TID for the whole of its lifetime.
+	 *
+	 * Heap writes a new tuple version at a new TID on every UPDATE, so a
+	 * TUPLE_LOCK_FLAG_FIND_LAST_VERSION lock that reaches the latest version
+	 * of a row it had found outdated must have followed the update chain to a
+	 * different TID, and reports TM_FailureData.traversed.  An AM that sets
+	 * this flag reaches the latest version without moving, so it correctly
+	 * reports traversed = false, and code that asserts a traversal must
+	 * accept that.
+	 *
+	 * The heap AM leaves this false.
+	 */
+	bool		am_inplace_update_keeps_tid;
+
+	/*
+	 * am_undo_engine: which UNDO engine this AM writes UNDO to.  Only
+	 * consulted when am_supports_undo is true.
+	 *
+	 * An AM with am_supports_undo = true MUST set this to
+	 * UNDO_ENGINE_PERBACKEND; it is the only supported value.
+	 *
+	 * See RelationUndoEngine() for the mapping.  The index UNDO write path
+	 * does NOT route on this; see the UndoEngine comment above and
+	 * RelationUsesIndexUndo().
+	 */
+	UndoEngine	am_undo_engine;
+
+	/*
+	 * am_index_delete_marking: true if this AM performs in-place UPDATE of an
+	 * indexed column via nbtree delete-marking rather than moving the row to
+	 * a new TID.  When true: - the row keeps a STABLE TID across an
+	 * indexed-column UPDATE; - the AM itself drives index maintenance for the
+	 * changed indexes (insert the new (k_new,TID) entry + delete-mark the old
+	 * (k_old,TID) entry via index_delete_mark) and reports TU_None so the
+	 * executor does NOT re-insert; - the AM's own UNDO drives index cleanup
+	 * on rollback (remove the new entry + clear the old delete-mark), so
+	 * index AMs must NOT write their own index UNDO for such a parent table
+	 * (see nbtinsert.c/hashinsert.c); - index-only scans are suppressed for
+	 * indexes on the table (a delete-marked entry's key may not match the
+	 * live tuple), which the planner enforces via
+	 * RelationSupportsDeleteMarking() in get_relation_info(). Only meaningful
+	 * when am_supports_undo is true.
+	 */
+	bool		am_index_delete_marking;
 
 
 	/* ------------------------------------------------------------------------
@@ -2161,5 +2237,24 @@ extern const TableAmRoutine *GetTableAmRoutine(Oid amhandler);
  */
 
 extern const TableAmRoutine *GetHeapamTableAmRoutine(void);
+
+/*
+ * Does this relation's AM overwrite a row's storage on UPDATE?  False for
+ * relations without a table AM (foreign tables, views, partitioned tables).
+ */
+static inline bool
+RelationUpdatesInPlace(Relation rel)
+{
+	return rel->rd_tableam != NULL && rel->rd_tableam->am_inplace_update_keeps_tid;
+}
+
+/* ----------------------------------------------------------------------------
+ * Functions in tableam.c
+ * ----------------------------------------------------------------------------
+ */
+
+extern bool RelationUsesIndexUndo(Relation indexrel, Relation heaprel);
+extern UndoEngine RelationUndoEngine(Relation rel);
+extern bool RelationSupportsDeleteMarking(Relation rel);
 
 #endif							/* TABLEAM_H */

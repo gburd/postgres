@@ -555,7 +555,7 @@ _bt_binsrch_insert(Relation rel, BTInsertState insertstate)
 		 * posting list when postingoff is set.  This should happen
 		 * infrequently.
 		 */
-		if (unlikely(result == 0 && key->scantid != NULL))
+		if (unlikely(result == 0 && key->scantid != NULL && !insertstate->nopostingsplit))
 		{
 			/*
 			 * postingoff should never be set more than once per leaf page
@@ -1637,6 +1637,9 @@ _bt_returnitem(IndexScanDesc scan, BTScanOpaque so)
 
 	/* Return next item, per amgettuple contract */
 	scan->xs_heaptid = currItem->heapTid;
+	/* Delete-marked entries force a recheck of the qual (invariant I2) */
+	if (currItem->recheck)
+		scan->xs_recheck = true;
 	if (so->currTuples)
 		scan->xs_itup = (IndexTuple) (so->currTuples + currItem->tupleOffset);
 }
