@@ -638,6 +638,58 @@ RESET enable_seqscan;
 RESET enable_indexscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_post;
+-- Deleting an empty interior leaf hands its key space to its right sibling in
+-- the parent, as nbtree does.  Refilling the emptied range must leave every
+-- key under the right downlink: amcheck verifies parent order, and the index
+-- counts must equal a sequential scan's.  A temp table, so that no other
+-- session's snapshot keeps VACUUM from removing the rows and deleting the
+-- leaves.
+CREATE EXTENSION IF NOT EXISTS amcheck;
+CREATE TEMP TABLE bark_vgap (a int);
+CREATE INDEX bark_vgap_idx ON bark_vgap USING bark (a);
+INSERT INTO bark_vgap SELECT g * 10 FROM generate_series(1, 20000) g;
+DELETE FROM bark_vgap WHERE a BETWEEN 50000 AND 150000;
+VACUUM bark_vgap;
+SELECT bark_index_check('bark_vgap_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+INSERT INTO bark_vgap SELECT g * 10 + 1 FROM generate_series(5000, 15000) g;
+SELECT bark_index_check('bark_vgap_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS idx_all FROM bark_vgap WHERE a >= 0;
+ idx_all 
+---------
+   20000
+(1 row)
+
+SELECT count(*) AS idx_gap FROM bark_vgap WHERE a BETWEEN 50000 AND 150010;
+ idx_gap 
+---------
+   10002
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS seq_gap FROM bark_vgap WHERE a BETWEEN 50000 AND 150010;
+ seq_gap 
+---------
+   10002
+(1 row)
+
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_vgap;
 -- VACUUM rewrites a POSTING entry in place even when the survivors' sbm
 -- encodes larger than the whole set did.  An sbm is not size-monotone:
 -- removing every Nth TID of a dense run turns all-ones vectors (stored as a
@@ -650,6 +702,7 @@ DROP TABLE bark_post;
 -- Temp tables, so that only this session's snapshot limits what VACUUM can
 -- remove.
 CREATE EXTENSION IF NOT EXISTS amcheck;
+NOTICE:  extension "amcheck" already exists, skipping
 CREATE TEMP TABLE bark_vgrow (a int, b int);
 CREATE INDEX bark_vgrow_idx ON bark_vgrow USING bark (a);
 CREATE TEMP TABLE bark_vgrow_cnt (k text, n bigint);
