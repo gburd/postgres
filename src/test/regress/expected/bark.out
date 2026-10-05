@@ -2602,3 +2602,335 @@ SELECT count(*), count(DISTINCT k) FROM bark_split_inc WHERE k >= 0;
 RESET enable_seqscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_split_inc;
+-- ===========================================================================
+-- Suffix truncation of pivots.  A leaf split's high key, and the downlink
+-- copied from it, keep only the leading key attributes needed to separate the
+-- last key on the left from the first key on the right; the rest compare as
+-- minus infinity.  Every query below runs once through a BARK index and once
+-- as a sequential scan, and the two results must agree.  bark_sfx_check
+-- reports 'no index' when the plan did not use the BARK index.
+-- ===========================================================================
+CREATE FUNCTION bark_sfx_check(q text, bitmap bool DEFAULT false)
+RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  plan text;
+  viaidx text;
+  viaseq text;
+BEGIN
+  PERFORM set_config('enable_seqscan', 'off', true);
+  PERFORM set_config('enable_indexscan', (NOT bitmap)::text, true);
+  PERFORM set_config('enable_indexonlyscan', (NOT bitmap)::text, true);
+  PERFORM set_config('enable_bitmapscan', bitmap::text, true);
+  PERFORM set_config('enable_hashjoin', 'off', true);
+  PERFORM set_config('enable_mergejoin', 'off', true);
+  PERFORM set_config('enable_material', 'off', true);
+  EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO plan;
+  EXECUTE 'SELECT md5(string_agg(x::text, '' '')) FROM (' || q || ') x'
+    INTO viaidx;
+  PERFORM set_config('enable_seqscan', 'on', true);
+  PERFORM set_config('enable_indexscan', 'off', true);
+  PERFORM set_config('enable_indexonlyscan', 'off', true);
+  PERFORM set_config('enable_bitmapscan', 'off', true);
+  PERFORM set_config('enable_hashjoin', 'on', true);
+  PERFORM set_config('enable_mergejoin', 'on', true);
+  PERFORM set_config('enable_material', 'on', true);
+  EXECUTE 'SELECT md5(string_agg(x::text, '' '')) FROM (' || q || ') x'
+    INTO viaseq;
+  IF position('"Index Name": "bark_sfx' IN plan) = 0 THEN
+    RETURN 'no index';
+  END IF;
+  RETURN CASE WHEN viaidx IS NOT DISTINCT FROM viaseq THEN 'ok'
+              ELSE 'MISMATCH' END;
+END $$;
+-- Three key columns: a has ten values, b about a thousand, c is unique.
+-- Some rows have NULL b or NULL c, and one in eight repeats an earlier
+-- (a, b), so equal keys on two attributes also span pages.
+SELECT setseed(0.31);
+ setseed 
+---------
+ 
+(1 row)
+
+CREATE TABLE bark_sfx_src AS
+  SELECT g AS id, (random() * 9)::int AS a,
+         CASE WHEN g % 97 = 0 THEN NULL ELSE (random() * 1000)::int END AS b,
+         CASE WHEN g % 89 = 0 THEN NULL ELSE md5(g::text) END AS c,
+         g % 7 AS d
+  FROM generate_series(1, 8000) g;
+UPDATE bark_sfx_src SET b = 500 WHERE id % 8 = 0;
+CREATE TABLE bark_sfx (id int, a int, b int, c text, d int)
+  WITH (autovacuum_enabled = off);
+CREATE TABLE bark_sfx_queries (n int, q text, bitmap bool DEFAULT false);
+INSERT INTO bark_sfx_queries (n, q) VALUES
+  (1, 'SELECT a, count(*), sum(b) FROM bark_sfx WHERE a = 3 GROUP BY a'),
+  (2, 'SELECT a, b, c FROM bark_sfx WHERE a = 3 AND b = 500 ORDER BY a, b, c'),
+  (3, 'SELECT a, b, c FROM bark_sfx WHERE a = 3 AND b = 17 AND c IS NOT NULL ORDER BY a, b, c'),
+  (4, 'SELECT a, b, c FROM bark_sfx WHERE a = 5 AND b BETWEEN 100 AND 300 ORDER BY a, b, c'),
+  (5, 'SELECT a, b, c FROM bark_sfx WHERE a >= 4 AND a < 6 ORDER BY a, b, c'),
+  (6, 'SELECT a, b, c FROM bark_sfx WHERE a > 7 ORDER BY a, b, c'),
+  (7, 'SELECT a, b, c FROM bark_sfx WHERE a = 6 AND b >= 990 ORDER BY a, b, c'),
+  (8, 'SELECT a, b, c FROM bark_sfx WHERE a = 2 ORDER BY a DESC, b DESC, c DESC'),
+  (9, 'SELECT a, b, c FROM bark_sfx WHERE a <= 1 ORDER BY a DESC, b DESC, c DESC'),
+  (10, 'SELECT a, b, c FROM bark_sfx WHERE a = ANY (''{1,4,8}'') ORDER BY a, b, c'),
+  (11, 'SELECT a, b, c FROM bark_sfx WHERE a = 2 AND b = ANY (''{0,17,500,999,1000}'') ORDER BY a, b, c'),
+  (12, 'SELECT a, b FROM bark_sfx WHERE a = 7 ORDER BY a, b'),
+  (13, 'SELECT a, b, c FROM bark_sfx WHERE a = 3 AND b IS NULL ORDER BY a, b, c'),
+  (14, 'SELECT a, b, c FROM bark_sfx WHERE a = 4 AND b = 250 AND c IS NULL ORDER BY a, b, c'),
+  (15, 'SELECT a, b, c FROM bark_sfx WHERE a = 8 AND b >= 900 ORDER BY a, b, c'),
+  (16, 'SELECT count(*), count(DISTINCT (a, b)) FROM bark_sfx WHERE a IS NOT NULL'),
+  (17, 'SELECT s.a, count(t.a) FROM (SELECT DISTINCT a FROM bark_sfx_src) s
+          LEFT JOIN bark_sfx t ON t.a = s.a GROUP BY s.a ORDER BY s.a'),
+  (18, 'SELECT count(t.a), count(*) FILTER (WHERE t.a IS NULL)
+          FROM (SELECT DISTINCT a, b FROM bark_sfx_src WHERE b % 10 = 0) s
+          LEFT JOIN bark_sfx t ON t.a = s.a AND t.b = s.b'),
+  (19, 'SELECT count(t.a), count(*) FILTER (WHERE t.a IS NULL)
+          FROM (SELECT a, b, c FROM bark_sfx_src WHERE id % 50 = 0) s
+          LEFT JOIN bark_sfx t ON t.a = s.a AND t.b = s.b AND t.c = s.c'),
+  (20, 'SELECT a, d, count(*) FROM bark_sfx WHERE a = 6 AND d = 3 GROUP BY a, d');
+INSERT INTO bark_sfx_queries VALUES
+  (21, 'SELECT count(*) FROM bark_sfx WHERE a = 3 AND b = 500', true),
+  (22, 'SELECT count(*) FROM bark_sfx WHERE a = ANY (''{0,9}'') AND b < 100', true);
+-- Run every query against each index definition, built by CREATE INDEX or
+-- by inserting the rows in random order into an empty index.  Only inserts
+-- form LIST and POSTING entries, which the (a, b) and (a, d) indexes get.  A
+-- definition cannot answer every query (the (a, d) index, for one, has no
+-- b), so only queries that use the index are reported.
+CREATE TABLE bark_sfx_defs (n int, def text, how text);
+INSERT INTO bark_sfx_defs VALUES
+  (1, '(a, b, c)', 'build'),
+  (1, '(a, b, c)', 'insert'),
+  (2, '(a DESC, b, c DESC)', 'build'),
+  (2, '(a DESC, b, c DESC)', 'insert'),
+  (3, '(a, b NULLS FIRST, c)', 'insert'),
+  (4, '(a, b) INCLUDE (c)', 'build'),
+  (5, '(a, b)', 'insert'),
+  (6, '(a, d)', 'insert');
+CREATE TABLE bark_sfx_results (def int, how text, q int, result text);
+DO $$
+DECLARE
+  d record;
+BEGIN
+  FOR d IN SELECT * FROM bark_sfx_defs ORDER BY n, how LOOP
+      TRUNCATE bark_sfx;
+      IF d.how = 'build' THEN
+        INSERT INTO bark_sfx SELECT * FROM bark_sfx_src;
+        EXECUTE 'CREATE INDEX bark_sfx_idx ON bark_sfx USING bark ' || d.def;
+      ELSE
+        EXECUTE 'CREATE INDEX bark_sfx_idx ON bark_sfx USING bark ' || d.def;
+        INSERT INTO bark_sfx SELECT * FROM bark_sfx_src ORDER BY md5(id::text);
+      END IF;
+      PERFORM bark_index_check('bark_sfx_idx');
+      INSERT INTO bark_sfx_results
+        SELECT d.n, d.how, q.n, bark_sfx_check(q.q, q.bitmap)
+        FROM bark_sfx_queries q;
+      DROP INDEX bark_sfx_idx;
+  END LOOP;
+END $$;
+SELECT def, how, count(*) FILTER (WHERE result = 'ok') AS ok,
+       count(*) FILTER (WHERE result = 'no index') AS unused,
+       string_agg(q::text, ',' ORDER BY q) FILTER (WHERE result = 'MISMATCH')
+         AS mismatches
+  FROM bark_sfx_results GROUP BY def, how ORDER BY def, how DESC;
+ def |  how   | ok | unused | mismatches 
+-----+--------+----+--------+------------
+   1 | insert | 22 |      0 | 
+   1 | build  | 22 |      0 | 
+   2 | insert | 22 |      0 | 
+   2 | build  | 22 |      0 | 
+   3 | insert | 22 |      0 | 
+   4 | build  | 22 |      0 | 
+   5 | insert | 22 |      0 | 
+   6 | insert | 22 |      0 | 
+(8 rows)
+
+-- A unique index whose pivots are truncated: re-inserting every row with ON
+-- CONFLICT finds each existing key, including the keys on either side of a
+-- truncated pivot, whether the key routes left or right of it.
+CREATE TABLE bark_sfx_u (a int, b int, c text, v int)
+  WITH (autovacuum_enabled = off);
+CREATE UNIQUE INDEX bark_sfx_u_idx ON bark_sfx_u USING bark (a, b, c);
+INSERT INTO bark_sfx_u
+  SELECT a, b, c, 0 FROM bark_sfx_src WHERE b IS NOT NULL AND c IS NOT NULL
+  ORDER BY md5(id::text);
+INSERT INTO bark_sfx_u
+  SELECT a, b, c, 1 FROM bark_sfx_src WHERE b IS NOT NULL AND c IS NOT NULL
+  ON CONFLICT DO NOTHING;
+INSERT INTO bark_sfx_u
+  SELECT a, b, c, 2 FROM bark_sfx_src WHERE b IS NOT NULL AND c IS NOT NULL
+  ON CONFLICT (a, b, c) DO UPDATE SET v = excluded.v;
+SELECT v, count(*) FROM bark_sfx_u GROUP BY v ORDER BY v;
+ v | count 
+---+-------
+ 2 |  7839
+(1 row)
+
+SELECT bark_index_check('bark_sfx_u_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+INSERT INTO bark_sfx_u
+  SELECT a, b, c, 3 FROM bark_sfx_u WHERE a = 4 ORDER BY a, b, c LIMIT 1;
+ERROR:  duplicate key value violates unique constraint "bark_sfx_u_idx"
+DETAIL:  Key (a, b, c)=(4, 5, 8a36dfc67ebfbbea9bd01cd8a4c8ad32) already exists.
+DROP TABLE bark_sfx_u;
+-- Truncation is what keeps internal pages small.  With a wide second column
+-- and a first column that differs between most neighbors, nearly every pivot
+-- keeps only the first column, so the index is about the size of a btree
+-- index on the same rows (btree truncates too).  Keeping both columns in
+-- every pivot made the BARK index about twice as large.
+CREATE TABLE bark_sfx_wide (a int, w text) WITH (autovacuum_enabled = off);
+INSERT INTO bark_sfx_wide
+  SELECT g / 2, (SELECT string_agg(md5(g::text || i::text), '')
+                 FROM generate_series(1, 60) i)
+  FROM generate_series(1, 1200) g;
+CREATE INDEX bark_sfx_wide_idx ON bark_sfx_wide USING bark (a, w);
+CREATE INDEX bark_sfx_wide_bt ON bark_sfx_wide USING btree (a, w);
+SELECT pg_relation_size('bark_sfx_wide_idx') <=
+       pg_relation_size('bark_sfx_wide_bt') * 1.1 AS build_like_btree;
+ build_like_btree 
+------------------
+ t
+(1 row)
+
+SELECT bark_index_check('bark_sfx_wide_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP INDEX bark_sfx_wide_idx;
+DROP INDEX bark_sfx_wide_bt;
+TRUNCATE bark_sfx_wide;
+CREATE INDEX bark_sfx_wide_idx ON bark_sfx_wide USING bark (a, w);
+CREATE INDEX bark_sfx_wide_bt ON bark_sfx_wide USING btree (a, w);
+SELECT setseed(0.7);
+ setseed 
+---------
+ 
+(1 row)
+
+INSERT INTO bark_sfx_wide
+  SELECT g / 2, (SELECT string_agg(md5(g::text || i::text), '')
+                 FROM generate_series(1, 60) i)
+  FROM generate_series(1, 1200) g ORDER BY random();
+SELECT pg_relation_size('bark_sfx_wide_idx') <=
+       pg_relation_size('bark_sfx_wide_bt') * 1.1 AS insert_like_btree;
+ insert_like_btree 
+-------------------
+ t
+(1 row)
+
+SELECT bark_index_check('bark_sfx_wide_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP INDEX bark_sfx_wide_bt;
+SELECT bark_sfx_check('SELECT a, length(w) FROM bark_sfx_wide WHERE a >= 300 ORDER BY a, w');
+ bark_sfx_check 
+----------------
+ ok
+(1 row)
+
+SELECT bark_sfx_check('SELECT a, length(w) FROM bark_sfx_wide WHERE a = 450');
+ bark_sfx_check 
+----------------
+ ok
+(1 row)
+
+DROP TABLE bark_sfx_wide;
+-- A lower-bound scan whose bound equals a truncated pivot.  Each value of a
+-- has four rows, inserted in random order, so nearly every leaf split falls
+-- between two values of a and its high key is (a) alone.  An equality or
+-- lower-bound scan on a value whose run starts a leaf then has a bound equal
+-- to a pivot; the descent starts one leaf to the left of the run, and the
+-- scan must still return the whole run.
+CREATE TABLE bark_sfx_lb (a int, b int) WITH (autovacuum_enabled = off);
+CREATE INDEX bark_sfx_lb_idx ON bark_sfx_lb USING bark (a, b);
+INSERT INTO bark_sfx_lb
+  SELECT g / 4, g FROM generate_series(0, 11999) g ORDER BY md5(g::text);
+SELECT bark_index_check('bark_sfx_lb_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_sfx_check('SELECT s.a, count(t.a) FROM generate_series(0, 3000) s(a)
+  LEFT JOIN bark_sfx_lb t ON t.a = s.a GROUP BY s.a ORDER BY s.a');
+ bark_sfx_check 
+----------------
+ ok
+(1 row)
+
+SELECT bark_sfx_check('SELECT s.a, count(t.a) FROM generate_series(0, 3000) s(a)
+  LEFT JOIN bark_sfx_lb t ON t.a = s.a AND t.b >= s.a * 4 + 2 GROUP BY s.a ORDER BY s.a');
+ bark_sfx_check 
+----------------
+ ok
+(1 row)
+
+SELECT bark_sfx_check('SELECT a, b FROM bark_sfx_lb WHERE a >= 1234 AND a < 1240 ORDER BY a, b');
+ bark_sfx_check 
+----------------
+ ok
+(1 row)
+
+DROP TABLE bark_sfx_lb;
+-- OVERSIZED keys in the first column: a pivot keeps the oversized value when
+-- it is one of the attributes it needs, and stays OVERSIZED, recording the
+-- attributes it kept; otherwise the pivot drops it.  (Storage is plain so
+-- the keys are not compressed into short inline entries.)
+CREATE TABLE bark_sfx_big (t text COLLATE "C", b int)
+  WITH (autovacuum_enabled = off);
+ALTER TABLE bark_sfx_big ALTER t SET STORAGE plain;
+CREATE INDEX bark_sfx_big_idx ON bark_sfx_big USING bark (t, b);
+INSERT INTO bark_sfx_big
+  SELECT CASE WHEN g % 3 = 0
+              THEN lpad((g / 6)::text, 4, '0') ||
+                   (SELECT string_agg(md5((g / 6)::text || i::text), '')
+                    FROM generate_series(1, 100) i)
+              ELSE lpad((g / 6)::text, 4, '0') END,
+         g
+  FROM generate_series(1, 3000) g ORDER BY md5(g::text);
+SELECT bark_index_check('bark_sfx_big_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_sfx_check('SELECT left(t, 8), length(t), b FROM bark_sfx_big WHERE t >= ''0100'' ORDER BY t, b');
+ bark_sfx_check 
+----------------
+ ok
+(1 row)
+
+SELECT bark_sfx_check('SELECT left(t, 8), length(t), b FROM bark_sfx_big ORDER BY t DESC, b DESC');
+ bark_sfx_check 
+----------------
+ ok
+(1 row)
+
+SELECT bark_sfx_check('SELECT count(x.b), count(*) FILTER (WHERE x.b IS NULL)
+  FROM (SELECT t, b FROM bark_sfx_big WHERE b % 7 = 0) s
+  LEFT JOIN bark_sfx_big x ON x.t = s.t AND x.b = s.b');
+ bark_sfx_check 
+----------------
+ ok
+(1 row)
+
+SELECT bark_sfx_check('SELECT left(t, 8), b FROM bark_sfx_big WHERE t >= ''0300'' AND t < ''0302'' ORDER BY t, b');
+ bark_sfx_check 
+----------------
+ ok
+(1 row)
+
+DROP TABLE bark_sfx_big;
+DROP TABLE bark_sfx_results;
+DROP TABLE bark_sfx_defs;
+DROP TABLE bark_sfx_queries;
+DROP TABLE bark_sfx;
+DROP TABLE bark_sfx_src;
+DROP FUNCTION bark_sfx_check(text, bool);

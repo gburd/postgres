@@ -8,18 +8,28 @@
  *
  *	- within each page, data entries are in non-decreasing key order;
  *	- every data key is less than or equal to the page's high key (the bound
- *	  the page's parent downlink promises);
+ *	  the page's parent downlink promises), and strictly less when suffix
+ *	  truncation dropped key attributes from the high key, which has between
+ *	  one and all of the key attributes;
  *	- sibling links are consistent (the right sibling's left link points back,
- *	  and levels match across a sibling link);
+ *	  and levels match across a sibling link), and the right sibling's first
+ *	  key is not less than the page's high key;
+ *	- every downlink points at a page one level down whose first key is not
+ *	  less than the downlink;
  *	- no page is still flagged with an unfinished split, which a clean index
  *	  never leaves behind;
  *	- no leaf entry is larger than BarkMaxItemSize, and every POSTING entry
  *	  reserves room for the largest encoding of any subset of its set.
  *
  * This is a lightweight structural check: it does not cross-check the index
- * against the heap, nor verify that every downlink's child is reachable.  It
- * is modeled on amcheck's other per-AM verifiers (verify_gin.c) and uses the
- * shared amcheck_lock_relation_and_check harness.
+ * against the heap, nor verify that every page is reachable from the root.
+ * It is modeled on amcheck's other per-AM verifiers (verify_gin.c) and uses
+ * the shared amcheck_lock_relation_and_check harness.
+ *
+ * Only AccessShareLock is held, so the index can change underneath.  Each
+ * cross-page check holds share locks on both pages, taken in an order the
+ * write paths also use (left page before right sibling, child before parent),
+ * so it cannot deadlock with a split and sees the two pages consistently.
  *
  * Copyright (c) 2017-2026, PostgreSQL Global Development Group
  *
@@ -44,6 +54,8 @@ PG_FUNCTION_INFO_V1(bark_index_check);
 static void bark_check_structure(Relation rel, Relation heaprel,
 								  void *callback_state, bool readonly);
 static void bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo);
+static void bark_check_downlinks(Relation rel, BlockNumber blkno,
+								 BarkKeyInfo *keyinfo);
 static void bark_check_list(Relation rel, BlockNumber blkno, OffsetNumber off,
 							IndexTuple itup);
 static void bark_check_posting(Relation rel, BlockNumber blkno, OffsetNumber off,
@@ -86,6 +98,7 @@ bark_check_structure(Relation rel, Relation heaprel, void *callback_state,
 	{
 		CHECK_FOR_INTERRUPTS();
 		bark_check_page(rel, blkno, keyinfo);
+		bark_check_downlinks(rel, blkno, keyinfo);
 	}
 
 	pfree(keyinfo);
@@ -103,6 +116,7 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 	OffsetNumber maxoff;
 	OffsetNumber firstdata;
 	IndexTuple	hikey = NULL;
+	int			hikeynatts = 0;
 	IndexTuple	prev = NULL;
 
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
@@ -149,9 +163,28 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 	maxoff = PageGetMaxOffsetNumber(page);
 	firstdata = BarkPageFirstDataKey(opaque);
 
-	/* The high key, when present, is the first item on a non-rightmost page. */
+	/*
+	 * The high key, when present, is the first item on a non-rightmost page.
+	 * It is a pivot with at least one key attribute: only a page's downlink
+	 * can be minus infinity.
+	 */
 	if (!BarkPageRightmost(opaque) && maxoff >= BARK_P_HIKEY)
+	{
 		hikey = (IndexTuple) PageGetItem(page, PageGetItemId(page, BARK_P_HIKEY));
+		if (BarkEntryIsLeafData(hikey) &&
+			(BarkEntryGetShape(hikey) != BARK_SHAPE_OVERSIZED ||
+			 BarkOverflowIsLeaf(hikey)))
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" has a high key on page %u that is not a pivot",
+							RelationGetRelationName(rel), blkno)));
+		hikeynatts = BarkEntryGetPivotNAtts(hikey);
+		if (hikeynatts < 1 || hikeynatts > keyinfo->nkeys)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" has a high key with %d key attributes on page %u",
+							RelationGetRelationName(rel), hikeynatts, blkno)));
+	}
 
 	for (OffsetNumber off = firstdata; off <= maxoff;
 		 off = OffsetNumberNext(off))
@@ -166,7 +199,13 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 					 errmsg("BARK index \"%s\" has out-of-order keys on page %u at offset %u",
 							RelationGetRelationName(rel), blkno, off)));
 
-		/* Every data key must be within the page's high-key bound. */
+		/*
+		 * Every data key must be within the page's high-key bound.  Equal
+		 * keys may sit on both sides of a page boundary, so a key may equal
+		 * an untruncated high key.  A truncated high key must be strictly
+		 * greater, which is what this test checks for it: a pivot with fewer
+		 * key attributes never compares equal to a full key.
+		 */
 		if (hikey != NULL &&
 			bark_compare_itups(keyinfo, rel, itup, hikey) > 0)
 			ereport(ERROR,
@@ -209,7 +248,9 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 
 	/*
 	 * Cross-check the right-sibling link: the sibling's left link must point
-	 * back here and the two pages must be at the same level.
+	 * back here, the two pages must be at the same level, and the sibling's
+	 * first key must not be less than this page's high key.  The sibling is
+	 * locked while this page still is, so neither can split in between.
 	 */
 	if (!BarkPageRightmost(opaque))
 	{
@@ -233,11 +274,142 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 						(errcode(ERRCODE_INDEX_CORRUPTED),
 						 errmsg("BARK index \"%s\" has a level mismatch across the sibling link from page %u to %u",
 								RelationGetRelationName(rel), blkno, rightblk)));
+			if (hikey != NULL &&
+				(ropaque->bark_flags & (BARK_DELETED | BARK_HALF_DEAD)) == 0 &&
+				PageGetMaxOffsetNumber(rpage) >= BarkPageFirstDataKey(ropaque))
+			{
+				IndexTuple	rfirst = (IndexTuple)
+					PageGetItem(rpage, PageGetItemId(rpage,
+													 BarkPageFirstDataKey(ropaque)));
+
+				if (bark_compare_itups(keyinfo, rel, rfirst, hikey) < 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_INDEX_CORRUPTED),
+							 errmsg("BARK index \"%s\" has a first key on page %u that is less than the high key of its left sibling %u",
+									RelationGetRelationName(rel), rightblk, blkno)));
+			}
 		}
 		UnlockReleaseBuffer(rbuf);
 	}
 
 	UnlockReleaseBuffer(buf);
+}
+
+/*
+ * Check every downlink on internal page `blkno`: it must point at a page one
+ * level down whose first key is not less than the downlink, since the child
+ * holds the keys from its downlink up to its high key.
+ *
+ * The parent is read once for its list of children.  Each child is then
+ * locked before the parent is locked again, the order a split takes them in
+ * (the reverse could deadlock with a split waiting for the parent while
+ * holding the child), and the downlink is looked up again under both locks.
+ * A downlink a concurrent split has moved to the parent's right sibling is
+ * not found and goes unchecked here; it is checked when that page is.
+ */
+static void
+bark_check_downlinks(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
+{
+	BlockNumber npages = RelationGetNumberOfBlocks(rel);
+	Buffer		pbuf = ReadBuffer(rel, blkno);
+	Page		ppage;
+	BarkPageOpaque popaque;
+	uint32		level;
+	BlockNumber *children;
+	int			nchildren = 0;
+
+	LockBuffer(pbuf, BUFFER_LOCK_SHARE);
+	ppage = BufferGetPage(pbuf);
+	if (PageIsNew(ppage))
+	{
+		UnlockReleaseBuffer(pbuf);
+		return;
+	}
+	popaque = BarkPageGetOpaque(ppage);
+	if (BarkPageIsOverflow(popaque) || BarkPageIsDeleted(popaque) ||
+		BarkPageIsLeaf(popaque) || BarkPageIsMeta(popaque))
+	{
+		UnlockReleaseBuffer(pbuf);
+		return;
+	}
+	level = popaque->bark_level;
+	children = palloc(MaxIndexTuplesPerPage * sizeof(BlockNumber));
+	for (OffsetNumber off = BarkPageFirstDataKey(popaque);
+		 off <= PageGetMaxOffsetNumber(ppage); off = OffsetNumberNext(off))
+		children[nchildren++] = BarkEntryGetDownLink((IndexTuple)
+													 PageGetItem(ppage, PageGetItemId(ppage, off)));
+	LockBuffer(pbuf, BUFFER_LOCK_UNLOCK);
+
+	for (int i = 0; i < nchildren; i++)
+	{
+		BlockNumber child = children[i];
+		Buffer		cbuf;
+		Page		cpage;
+		BarkPageOpaque copaque;
+		IndexTuple	downlink = NULL;
+
+		CHECK_FOR_INTERRUPTS();
+
+		if (child == BARK_METAPAGE || child >= npages)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" has a downlink on page %u to invalid block %u",
+							RelationGetRelationName(rel), blkno, child)));
+
+		cbuf = ReadBuffer(rel, child);
+		LockBuffer(cbuf, BUFFER_LOCK_SHARE);
+		LockBuffer(pbuf, BUFFER_LOCK_SHARE);
+
+		/*
+		 * While unlocked the parent may have been deleted and its block
+		 * reused; look for the downlink only on a live internal page.
+		 */
+		for (OffsetNumber off = BarkPageFirstDataKey(popaque);
+			 (popaque->bark_flags & (BARK_LEAF | BARK_DELETED | BARK_OVERFLOW)) == 0 &&
+			 popaque->bark_level == level &&
+			 off <= PageGetMaxOffsetNumber(ppage); off = OffsetNumberNext(off))
+		{
+			IndexTuple	itup = (IndexTuple) PageGetItem(ppage,
+														PageGetItemId(ppage, off));
+
+			if (BarkEntryGetDownLink(itup) == child)
+			{
+				downlink = itup;
+				break;
+			}
+		}
+
+		cpage = BufferGetPage(cbuf);
+		copaque = PageIsNew(cpage) ? NULL : BarkPageGetOpaque(cpage);
+		if (downlink != NULL && copaque != NULL &&
+			(copaque->bark_flags & (BARK_DELETED | BARK_HALF_DEAD)) == 0)
+		{
+			if (BarkPageIsOverflow(copaque) || copaque->bark_level + 1 != level)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a downlink on page %u at level %u to page %u, which is not at level %u",
+								RelationGetRelationName(rel), blkno, level,
+								child, level - 1)));
+			if (PageGetMaxOffsetNumber(cpage) >= BarkPageFirstDataKey(copaque))
+			{
+				IndexTuple	first = (IndexTuple)
+					PageGetItem(cpage, PageGetItemId(cpage,
+													 BarkPageFirstDataKey(copaque)));
+
+				if (bark_compare_itups(keyinfo, rel, first, downlink) < 0)
+					ereport(ERROR,
+							(errcode(ERRCODE_INDEX_CORRUPTED),
+							 errmsg("BARK index \"%s\" has a first key on page %u that is less than its downlink on page %u",
+									RelationGetRelationName(rel), child, blkno)));
+			}
+		}
+
+		LockBuffer(pbuf, BUFFER_LOCK_UNLOCK);
+		UnlockReleaseBuffer(cbuf);
+	}
+
+	pfree(children);
+	ReleaseBuffer(pbuf);
 }
 
 /*
