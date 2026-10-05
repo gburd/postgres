@@ -120,10 +120,11 @@ bark_binsrch(Relation index, BarkKeyInfo *keyinfo, IndexTuple key, Page page,
 }
 
 /*
- * Read the root block number from the meta page.  Returns BARK_P_NONE when
- * the index is empty (no root yet).
+ * Read the root block number, and the root's level when level_out is not
+ * NULL, from the meta page.  Returns BARK_P_NONE when the index is empty (no
+ * root yet).
  */
-static BlockNumber
+BlockNumber
 bark_get_root(Relation index, uint32 *level_out)
 {
 	Buffer		metabuf = ReadBuffer(index, BARK_METAPAGE);

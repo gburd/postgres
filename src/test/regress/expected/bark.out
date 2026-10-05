@@ -1964,3 +1964,111 @@ SELECT bark_index_check('bark_inc_dup_idx');
 (1 row)
 
 DROP TABLE bark_inc_dup;
+-- fillfactor reloption.  CREATE INDEX packs leaf pages to the fillfactor
+-- (default 90), as nbtree does; out-of-range and unknown options are rejected.
+CREATE TABLE bark_ff (a int);
+INSERT INTO bark_ff SELECT g FROM generate_series(1, 100000) g;
+CREATE INDEX bark_ff100_idx ON bark_ff USING bark (a) WITH (fillfactor = 100);
+CREATE INDEX bark_ff90_idx ON bark_ff USING bark (a);
+CREATE INDEX bark_ff50_idx ON bark_ff USING bark (a) WITH (fillfactor = 50);
+SELECT relname, reloptions FROM pg_class
+  WHERE relname IN ('bark_ff100_idx', 'bark_ff90_idx', 'bark_ff50_idx')
+  ORDER BY relname;
+    relname     |    reloptions    
+----------------+------------------
+ bark_ff100_idx | {fillfactor=100}
+ bark_ff50_idx  | {fillfactor=50}
+ bark_ff90_idx  | 
+(3 rows)
+
+SELECT pg_relation_size('bark_ff50_idx') > pg_relation_size('bark_ff90_idx') AND
+       pg_relation_size('bark_ff90_idx') > pg_relation_size('bark_ff100_idx')
+  AS ff_orders_size;
+ ff_orders_size 
+----------------
+ t
+(1 row)
+
+SELECT bark_index_check('bark_ff100_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_index_check('bark_ff90_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_index_check('bark_ff50_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+ALTER INDEX bark_ff50_idx SET (fillfactor = 80);
+SELECT reloptions FROM pg_class WHERE relname = 'bark_ff50_idx';
+   reloptions    
+-----------------
+ {fillfactor=80}
+(1 row)
+
+ALTER INDEX bark_ff50_idx RESET (fillfactor);
+SELECT reloptions FROM pg_class WHERE relname = 'bark_ff50_idx';
+ reloptions 
+------------
+ 
+(1 row)
+
+CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (fillfactor = 5);
+ERROR:  value 5 out of bounds for option "fillfactor"
+DETAIL:  Valid values are between "10" and "100".
+CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (fillfactor = 101);
+ERROR:  value 101 out of bounds for option "fillfactor"
+DETAIL:  Valid values are between "10" and "100".
+CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (deduplicate_items = off);
+ERROR:  unrecognized parameter "deduplicate_items"
+-- A low fillfactor with wide keys still puts at least two entries on each
+-- page: 200 incompressible ~1kB keys at fillfactor 10 must take fewer than
+-- 200 pages, internal levels and meta page included.
+CREATE TABLE bark_ff_wide (t text);
+INSERT INTO bark_ff_wide
+  SELECT lpad(g::text, 3, '0') ||
+         (SELECT string_agg(md5(g::text || i::text), '') FROM generate_series(1, 30) i)
+  FROM generate_series(1, 200) g;
+CREATE INDEX bark_ff_wide_idx ON bark_ff_wide USING bark (t) WITH (fillfactor = 10);
+SELECT pg_relation_size('bark_ff_wide_idx') / 8192 < 200 AS two_per_page;
+ two_per_page 
+--------------
+ t
+(1 row)
+
+SELECT bark_index_check('bark_ff_wide_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) FROM bark_ff_wide WHERE t >= '150';
+ count 
+-------
+    51
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) FROM bark_ff_wide WHERE t >= '150';
+ count 
+-------
+    51
+(1 row)
+
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_ff_wide;
+DROP TABLE bark_ff;

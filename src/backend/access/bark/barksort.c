@@ -24,6 +24,11 @@
  * added to the parent level.  A per-level BarkPageState stack is carried up as
  * the tree grows.
  *
+ * As in nbtsort.c, pages are not packed full: then the first inserts after
+ * the build would split nearly every page they touch, and the splits would
+ * cascade up the tree.  Leaf pages are packed to the index's fillfactor
+ * reloption (default 90%) and internal pages to BARK_NONLEAF_FILLFACTOR.
+ *
  * The sort uses tuplesort.c with a btree-family ordering comparator.  BARK's
  * operator classes live in btree's operator families (ambtreeopfamilies), so
  * tuplesort_begin_index_btree() produces exactly the total order
@@ -82,6 +87,7 @@ typedef struct BarkPageState
 	BlockNumber blkno;			/* block number assigned to this page */
 	OffsetNumber nextoff;		/* next free item offset */
 	uint32		level;			/* tree level (0 = leaf) */
+	Size		full;			/* page is "full" below this much free space */
 	IndexTuple	lowkey;			/* first key on this page (palloc'd copy) */
 	BlockNumber prevblk;		/* previous page at this level (for right-link) */
 	BulkWriteBuffer prevbuf;	/* previous page's buffer, awaiting its next-link */
@@ -244,6 +250,10 @@ bark_pagestate(BarkBuildState *bs, BulkWriteState *bulk, uint32 level)
 	 */
 	st->nextoff = BARK_P_HIKEY;
 	st->level = level;
+	if (level > 0)
+		st->full = BLCKSZ * (100 - BARK_NONLEAF_FILLFACTOR) / 100;
+	else
+		st->full = BarkGetTargetPageFreeSpace(bs->index);
 	st->prevblk = BARK_P_NONE;
 	st->prevbuf = NULL;
 
@@ -413,9 +423,16 @@ bark_buildadd(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 	 * high key (worst case itup's own size) would not fit.  Requiring room
 	 * for two items keeps at least one item per page and guarantees the high
 	 * key prepended at flush fits.
+	 *
+	 * Also flush, as nbtsort.c does, once the page's free space has dropped
+	 * below the fillfactor target, provided it already holds two data items;
+	 * the minimum keeps a low fillfactor with wide keys from producing pages
+	 * of a single entry.
 	 */
 	if (st->nextoff > BARK_P_HIKEY &&
-		!bark_page_has_room(st->buf, itemsz + itemsz))
+		(!bark_page_has_room(st->buf, itemsz + itemsz) ||
+		 (PageGetFreeSpace((Page) st->buf) < st->full &&
+		  st->nextoff > BARK_P_FIRSTKEY)))
 		bark_flush_page(bs, bulk, st, itup);
 
 	off = st->nextoff;
