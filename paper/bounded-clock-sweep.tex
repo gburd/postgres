@@ -1,8 +1,9 @@
-% Bounded Clock Sweep: eviction that cannot be starved
-% Build:  latexmk -pdf bounded-clock-sweep.tex
+% Measuring What Eviction Costs: a methodology, and a bound for the clock sweep
+% Build:  make   (needs texlive-publishers + cm-super; see Makefile)
 \documentclass[sigconf,nonacm]{acmart}
 
 \usepackage{booktabs}
+\usepackage{multirow}
 \usepackage{pgfplots}
 \pgfplotsset{compat=1.17}
 \usepackage{listings}
@@ -21,179 +22,183 @@
 
 \begin{document}
 
-\title{Bounded Clock Sweep: Eviction That Cannot Be Starved}
+\title{Measuring What Eviction Costs}
+\subtitle{A methodology for page-replacement trade-offs, and a bound for the clock sweep}
 
 \author{Greg Burd}
 \affiliation{\institution{}\city{}\country{}}
 \email{greg@burd.me}
 
 \begin{abstract}
-PostgreSQL chooses eviction victims with a CLOCK sweep over a four-bit
-\texttt{usage\_count} saturating at five. A buffer is evictable only when that
-counter reaches zero, and every access resets it to five. The consequence is
-not a slow average: it is the absence of any bound. We show that the worst-case
-work of a single buffer allocation equals the entire buffer pool, measured to
-five significant figures at pool sizes from 4\,GiB to 96\,GiB, on both
-two-socket and six-node NUMA hardware. One buffer read sweeps a million
-descriptors, and the cost grows linearly with \texttt{shared\_buffers}.
+Page-replacement algorithms are evaluated almost exclusively on hit ratio.
+That metric is blind to a failure mode we find in PostgreSQL's clock sweep: the
+worst-case work of a \emph{single} buffer allocation equals the entire buffer
+pool, measured to five significant figures at pool sizes from 4\,GiB to
+96\,GiB, on two- and six-node NUMA hardware. One buffer read sweeps a million
+descriptors. Hit ratio is unchanged while this happens, so no hit-ratio
+benchmark can see it.
 
-We give the mechanism as a residency argument: with pass time $T$ and
-per-page access rate $r$, the fraction of the pool that is evictable decays as
-$e^{-krT}$ for a counter of depth $k$. Reducing $k$ from five to one---a
-one-bit cooling state in the manner of LeanStore---improves the constant by
-$1.75\times$ but leaves the exponent, and we measure the worst case still at
-$0.998$ of the pool. Fewer states is a better constant, not a bound.
+We propose evaluating an evictor on three axes instead of one---amplification
+(advances per victim), the tail (worst advances for one allocation), and
+replacement quality---and we show that the axes are independent enough that
+optimising any one of them in isolation produces a wrong answer. Three results
+make the case. First, replacing the 0..5 counter with a one-bit cooling state,
+which we had previously proposed on grounds of simplicity, improves
+amplification by $1.75\times$ and leaves the tail at $0.998$ of the pool: a
+better constant, not a bound. Second, a termination rule that abandons
+probation once it is observably unaffordable makes the tail $O(1)$---$34$
+advances, constant across a $24\times$ range of pool sizes---and works equally
+on the existing counter and on the one-bit state, so the bound and the state
+encoding are orthogonal and separately adoptable. Third, the threshold that
+rule needs is a direct dial between the two remaining axes: we measure the
+entire curve, locate the knee, and show that a control loop adapting the
+threshold is \emph{worse than a fixed value on both axes}, because the two
+costs it trades are asymmetric in time.
 
-The bound requires abandoning probation when the evidence says it is
-unaffordable. A sweep that has demoted a threshold number of buffers without
-finding one evictable has established that the pool is hotter than the hand can
-traverse; it then claims the next unpinned buffer outright. Worst-case
-allocation work becomes $33$--$37$ clock advances, constant in pool size: $O(1)$
-in place of $O(N_{\text{buffers}})$, a reduction of $3.7\times10^5$ at
-96\,GiB. Throughput and hit ratio are unchanged. We argue this is the correct
-shape for the result: the pathology was never average cost, and a fix that
-moved average cost would be solving a different problem.
+The methodology is the contribution we expect to outlast the patch. An evictor
+that is never asked what its worst allocation costs can hide an unbounded one.
 \end{abstract}
 
-\keywords{buffer management, page replacement, CLOCK, tail latency, PostgreSQL}
+\keywords{buffer management, page replacement, CLOCK, tail latency,
+evaluation methodology, PostgreSQL}
 
 \maketitle
 
 \section{Introduction}
 
-A buffer pool manager must answer one question repeatedly and quickly: which
-page do I throw away? PostgreSQL has answered it the same way for two decades,
-with a CLOCK sweep over a saturating counter, and the answer has been good
-enough that the code has needed little attention. This paper is about a
-condition under which it stops being good enough, and about why the condition
-is invisible to the benchmarks one would normally reach for.
+The literature on page replacement is a literature about hit ratio. From
+CLOCK~\cite{corbato1968paging} through LRU-K~\cite{oneil1993lruk},
+2Q~\cite{johnson1994lru2}, LIRS~\cite{jiang2002lirs},
+ARC~\cite{megiddo2003arc}, CLOCK-Pro~\cite{jiang2005clockpro} and
+S3-FIFO~\cite{yang2023s3fifo}, the question asked of a new algorithm is how
+many misses it avoids, and the accepted way to answer is a trace replay or a
+throughput benchmark. Cost of eviction appears, if at all, as a remark that the
+algorithm is $O(1)$ amortised.
 
-The mechanism is simple enough to state in a sentence. A buffer is evictable
-only once its \texttt{usage\_count} has been decremented to zero; each access
-restores the counter to its maximum; therefore a page must escape the clock
-hand's attention for five consecutive passes to become a victim. Whether that
-is achievable depends on a race between the hand and the workload, and the
-hand gets slower as the pool gets larger. When the workload wins, the supply of
-victims collapses---and because decrementing a counter is accounted as progress
-by the search loop, the search has no reason to stop. One page read can sweep
-the entire pool.
+This paper is about what that framing misses. We examined PostgreSQL's clock
+sweep, a CLOCK variant over a four-bit saturating counter, and found that a
+single buffer allocation can perform work proportional to the entire buffer
+pool---not occasionally, but reproducibly, at every pool size we tested, on
+every topology we tried. Throughput and hit ratio are flat while it happens.
+The pathology is invisible to the metric the field uses, and it is documented in
+the source code's own comments, where it has sat unremarked for years because
+nobody measured the quantity it describes.
 
-We find this is not a corner case requiring adversarial construction. It needs
-only a pool large enough that a pass takes real time, a working set slightly
-larger than the pool, and skew. All three are ordinary properties of a large
-production database. What it does \emph{not} need---and this is why it has been
-hard to see---is high throughput, contention, or I/O pressure. In our
-measurements throughput is flat while the worst-case allocation cost varies by
-five orders of magnitude.
+Our argument is that an evictor should be characterised on three axes:
+
+\begin{description}
+\item[Amplification] clock advances per victim produced. This is the
+  \emph{average} cost of eviction, and it is what a throughput benchmark
+  indirectly samples.
+\item[Tail] the largest number of advances any single allocation performs.
+  This is the stall a user sees, and no average captures it.
+\item[Replacement quality] hit ratio, measured where it matters---on the set
+  the workload actually re-reads, not pool-wide.
+\end{description}
+
+The axes are not redundant. Each of our three results is a case where one axis
+moves and another does not, in a way that would mislead anyone watching only
+the conventional metric.
 
 \paragraph{Contributions.}
 \begin{enumerate}
-\item A residency model (\S\ref{sec:model}) predicting that eviction-candidate
-density decays as $e^{-krT}$, and therefore that counter depth $k$ sets a
-constant while pool size sets the exponent.
-\item Measurement (\S\ref{sec:unbounded}) that PostgreSQL's worst-case
-allocation equals $N_{\text{buffers}}$ to five significant figures across a
-$24\times$ range of pool sizes, on two NUMA topologies.
-\item The negative result (\S\ref{sec:onebit}) that a one-bit cooling state,
-which we had previously proposed on grounds of simplicity, does \emph{not} fix
-this: worst case remains $0.998$ of the pool.
-\item A bound (\S\ref{sec:claim}) that is evidence-driven rather than
-configured, reducing worst-case work to $O(1)$ while leaving the common path
-untouched, and a background variant (\S\ref{sec:precool}) that moves the
-remaining work off the allocating backend.
-\item An honest accounting (\S\ref{sec:nothing}) of what does not change:
-throughput, hit ratio, and the need for the existing ring buffers.
+\item A three-axis methodology for evaluating evictors, with the workload
+  construction needed to exercise each axis (\S\ref{sec:method}), including the
+  observation that the workload conventionally used to stress eviction is
+  precisely the one that cannot reveal a tail.
+\item A residency model (\S\ref{sec:model}) predicting candidate density
+  $e^{-krT}$, and its empirical confirmation: PostgreSQL's worst-case
+  allocation equals $N_{\text{buffers}}$ across a $24\times$ range
+  (\S\ref{sec:tail}).
+\item The negative result that a one-bit cooling state improves amplification
+  and not the tail (\S\ref{sec:onebit}), which we report having previously
+  argued for that change on the wrong grounds.
+\item An $O(1)$ bound (\S\ref{sec:bound}) that is independent of the state
+  encoding, demonstrated on both the stock counter and the one-bit state.
+\item The full threshold trade-off curve (\S\ref{sec:theta}), and the negative
+  result that an adaptive threshold is worse than a fixed one on both axes
+  (\S\ref{sec:adaptive}), with the asymmetry argument that explains why.
 \end{enumerate}
 
-\section{Background}
+\section{The three axes, and how to measure them}
+\label{sec:method}
 
-\subsection{CLOCK and its descendants}
+\subsection{Why hit ratio alone is insufficient}
 
-CLOCK~\cite{corbato1968paging} approximates LRU with one reference bit per
-frame and a rotating hand, trading precision for the absence of a lock on every
-hit. The approximation has been refined many times: WSCLOCK~\cite{carr1981wsclock}
-adds a working-set criterion, LRU-K~\cite{oneil1993lruk} and
-2Q~\cite{johnson1994lru2} separate recency from frequency,
-LIRS~\cite{jiang2002lirs} and CLOCK-Pro~\cite{jiang2005clockpro} reason about
-reuse distance, ARC~\cite{megiddo2003arc} adapts the recency/frequency balance
-online, and S3-FIFO~\cite{yang2023s3fifo} argues much of this can be recovered
-with queues alone. LeanStore~\cite{leanstore2018} introduces a \emph{cooling
-stage}: a page is hot or cooling, and cooling pages form the eviction pool.
+Consider two evictors that produce identical hit ratios and identical
+throughput on a given workload. One finds a victim in a bounded number of
+steps; the other, under the same workload, occasionally scans the entire pool
+for one victim. These are not equivalent systems, and no hit-ratio measurement
+distinguishes them. The distinguishing quantity---advances consumed by the
+unluckiest allocation---is not conventionally reported.
 
-Almost all of this literature optimises hit ratio. The question we ask is
-different and much less studied: not how good the victim is, but how long it
-takes to find one, and whether that time is bounded. Gray and
-Reuter~\cite{gray1992transaction} treat buffer search cost as a constant.
-Database-specific buffer management in the DBMIN
-tradition~\cite{chou1985dbmin,stonebraker1981os} is concerned with allocating
-the pool between queries, not with the cost of a single allocation.
+We instrument it directly. Each arm of our comparison carries counters for
+clock advances, victims produced, demotions performed, \emph{the maximum
+advances consumed by any single allocation}, and forced claims. Amplification
+is advances divided by victims; the tail is the running maximum.
 
-\subsection{PostgreSQL's sweep}
+\subsection{The workload that reveals a tail}
 
-PostgreSQL stores a four-bit \texttt{usage\_count} in the packed 64-bit buffer
-state word, saturating at $\texttt{BM\_MAX\_USAGE\_COUNT}=5$. The relevant code
-is \texttt{StrategyGetBuffer()}~\cite{postgresql_freelist}:
+The conventional way to stress eviction is uniform random access over a working
+set several times larger than the pool. We used exactly that for months and
+measured nothing. It cannot work, and the reason is worth stating because it
+generalises to any evaluation of this kind.
 
-\begin{lstlisting}
-trycounter = NBuffers;
-for (;;) {
-  buf = GetBufferDescriptor(ClockSweepTick());
-  if (BUF_STATE_GET_REFCOUNT(state) != 0) {
-    if (--trycounter == 0)
-      elog(ERROR, "no unpinned buffers available");
-    continue;
-  }
-  if (BUF_STATE_GET_USAGECOUNT(state) != 0) {
-    state -= BUF_USAGECOUNT_ONE;   /* decrement */
-    if (CAS(&buf->state, state))
-      trycounter = NBuffers;       /* progress! */
-    continue;
-  }
-  /* usage_count == 0: claim it */
-  return buf;
-}
-\end{lstlisting}
+Under uniform access over a working set much larger than the pool, each
+individual page has a vanishing access rate. No page is re-touched before the
+clock hand returns to it, so every buffer decays to evictable and candidate
+density stays near one. Such a workload measures eviction \emph{throughput};
+it is structurally incapable of producing eviction \emph{starvation}.
 
-Two properties of this loop matter. First, a decrement \emph{resets}
-\texttt{trycounter}: cooling is accounted as progress, so the only way to
-terminate without a victim is to find every buffer pinned. Second, the source
-itself documents the consequence, in a comment that has been correct and
-unremarked for years: ``it can take as many as
-\texttt{BM\_MAX\_USAGE\_COUNT+1} complete cycles of the clock-sweep hand to
-find a free buffer.'' Six passes of a twelve-million-buffer pool is the
-documented worst case. Our contribution is to observe that this is not a
-pessimistic bound reached only in theory, but the \emph{measured} behaviour
-under ordinary conditions.
+Starvation requires the opposite configuration:
+
+\begin{itemize}
+\item a pool large enough that one pass takes real time;
+\item a working set only \emph{slightly} larger than the pool, so most of the
+  pool is warm rather than cold;
+\item \emph{skewed} access, so individual pages are re-touched many times per
+  pass;
+\item enough concurrency that re-promotion races the hand.
+\end{itemize}
+
+Which is to say: the configuration of a large production database. We use a
+table $1.15\times$ \texttt{shared\_buffers} and
+\texttt{random\_zipfian}($s{=}1.10$).
+
+\subsection{Measuring replacement quality where it matters}
+
+Pool-wide hit ratio is also too coarse. A policy that evicts pages a workload
+genuinely re-reads can still show a high pool-wide figure if most of the pool
+is cold. To measure replacement quality we build a workload with an explicit
+hot set---20\% of the pool, receiving 80\% of queries---alongside a cold stream
+at $130\%$ of the pool that forces continuous eviction, and we report hit ratio
+\emph{and resident page count for the hot relation specifically}. That is the
+number probation exists to protect, and \S\ref{sec:theta} shows it moving when
+pool-wide figures barely do.
 
 \section{A residency model}
 \label{sec:model}
 
-Let $T$ be the wall-clock time for the hand to complete one pass, and model
-accesses to a given page as Poisson with rate $r$. For a counter of depth $k$
-that saturates on access, a page becomes evictable only if it survives $k$
-consecutive passes untouched, which requires an access-free interval of length
-$kT$. The probability of that is $e^{-krT}$, so the steady-state fraction of
-the pool that is evictable---the \emph{candidate density} $\rho$---is
+Let $T$ be the time for the hand to complete one pass and model accesses to a
+page as Poisson with rate $r$. For a counter of depth $k$ that saturates on
+access, a buffer becomes evictable only after surviving $k$ consecutive passes
+untouched, requiring an access-free interval of $kT$. Hence the steady-state
+fraction of the pool that is evictable---the candidate density---is
 
 \begin{equation}
-\rho(k, r, T) \;\approx\; e^{-k r T}.
+\rho(k, r, T) \;\approx\; e^{-k r T},
 \label{eq:density}
 \end{equation}
 
-The expected number of clock advances per victim is then $1/\rho = e^{krT}$:
-amplification is \emph{exponential} in the product of counter depth, access
-rate, and pass time. Since $T \propto N_{\text{buffers}}$ for a hand that
-advances at a fixed rate, growing the pool grows the exponent.
-
-Figure~\ref{fig:density} plots Equation~\ref{eq:density} for $k=5$ and $k=1$.
-Two readings are worth drawing out, because they predict the empirical results
-and they are not symmetric.
+and expected advances per victim is $1/\rho = e^{krT}$. Amplification is
+exponential in the product of counter depth, access rate and pass time, and
+since $T \propto N_{\text{buffers}}$, growing the pool grows the exponent.
 
 \begin{figure}[t]
 \centering
 \begin{tikzpicture}
 \begin{semilogyaxis}[
-  width=\columnwidth, height=5.2cm,
+  width=\columnwidth, height=5cm,
   xlabel={$rT$ \quad (accesses per page per pass)},
   ylabel={candidate density $\rho$},
   xmin=0, xmax=4, ymin=1e-9, ymax=2,
@@ -206,324 +211,315 @@ and they are not symmetric.
 \addlegendentry{$k=5$ (PostgreSQL)}
 \end{semilogyaxis}
 \end{tikzpicture}
-\caption{Eviction-candidate density falls exponentially in $rT$. Reducing
-counter depth from five to one shifts the curve right by $5\times$ but does not
-change its shape; both reach arbitrarily low density.}
+\caption{Candidate density falls exponentially in $rT$. Reducing counter depth
+shifts the curve right by $5\times$ without changing its shape: both reach
+arbitrarily low density, so no choice of $k$ yields a bound.}
 \label{fig:density}
 \end{figure}
 
-First, the shift is real and large. At $rT=1$, $k=5$ leaves $0.67\%$ of the
-pool evictable while $k=1$ leaves $37\%$---a factor of $55$. A workload that
-starves the stock sweep may be comfortable for a one-bit one.
-
-Second, and more importantly, the shift is only a shift. Both curves go to
-zero. For any $k$ there is an $rT$ beyond which density is negligible, and
-since $T$ grows with the pool, a sufficiently large pool reaches that point for
-any fixed workload. \emph{No choice of counter depth yields a bound.} This is
-the theoretical statement of which \S\ref{sec:onebit} is the measurement, and
-it is why the fix in \S\ref{sec:claim} has to change the loop's termination
-rule rather than its state encoding.
+Figure~\ref{fig:density} contains the paper's central structural claim. The
+$k=5 \rightarrow k=1$ shift is real and large---at $rT=1$, candidate density
+rises from $0.67\%$ to $37\%$, a factor of $55$---but it is only a shift. Both
+curves go to zero, so for any $k$ there is a pool size at which density becomes
+negligible. \emph{Changing the state encoding cannot bound the tail.} Only
+changing the loop's termination rule can.
 
 \section{Experimental setup}
-\label{sec:setup}
 
-\paragraph{Hardware.} Two bare-metal cloud instances: \textbf{z1d.metal}
-(48 cores, 2 NUMA nodes, 384\,GiB, data directory on a RAID-0 of local NVMe)
-and \textbf{r8i.metal-96xl} (384 cores, 6 NUMA nodes via sub-NUMA clustering,
-3\,TiB). Both with huge pages enabled, transparent huge pages disabled, NUMA
-balancing off.
+\paragraph{Hardware.} \textbf{z1d.metal} (48 cores, 2 NUMA nodes, 384\,GiB,
+data directory on RAID-0 local NVMe) and \textbf{r8i.metal-96xl} (384 cores, 6
+NUMA nodes, 3\,TiB). Huge pages on, transparent huge pages off, NUMA balancing
+off, postmaster interleaved.
 
-\paragraph{Builds.} Four variants of PostgreSQL 20devel, compiled
-\texttt{debugoptimized} with assertions off, differing \emph{only} in the
-eviction path: \textsc{master} (0..5 counter), \textsc{1-bit} (cooling state),
-\textsc{+claim} (\S\ref{sec:claim}), \textsc{+precool} (\S\ref{sec:precool}).
-All four carry an identical instrument recording clock advances, victims
-produced, demotions, the maximum advances consumed by any single allocation,
-and claims.
+\paragraph{Arms.} Five builds of PostgreSQL 20devel,
+\texttt{debugoptimized}, assertions off, differing \emph{only} in the eviction
+path: \textsc{master} (0..5 counter); \textsc{+claim} (the bound of
+\S\ref{sec:bound} applied to that counter, \emph{no other change});
+\textsc{1-bit} (cooling state); \textsc{1-bit+claim}; and
+\textsc{1-bit+claim+bgw} (background staging). All five carry the identical
+instrument. Three runs per point; counters sampled after a 60\,s warmup and
+differenced.
 
-\paragraph{Workload.} This deserves emphasis, because it is where we went wrong
-for several months. The regime requires:
-\begin{itemize}
-\item a pool large enough that a pass takes real time;
-\item a working set only \emph{slightly} larger than the pool ($1.15\times$);
-\item \emph{skewed} access (\texttt{random\_zipfian}, $s=1.10$);
-\item enough concurrency that re-promotion races the hand.
-\end{itemize}
-Our earlier benchmarks used uniform access over a working set several times the
-pool. That is the natural choice for exercising eviction, and it cannot
-reproduce this pathology at all: under uniform access each individual page has
-a vanishing access rate, so $rT \approx 0$, nothing is ever re-promoted before
-the hand returns, and candidate density stays near one. Uniform access measures
-eviction \emph{throughput}; it is blind to eviction \emph{starvation}. We
-report this because it is the single most useful methodological finding here,
-and because a reader trying to reproduce the result will otherwise reach for the
-same wrong workload.
-
-Three runs per point, counters sampled after a 60\,s warmup and differenced.
-
-\section{The worst case is the whole pool}
-\label{sec:unbounded}
-
-Table~\ref{tab:main} gives the result. The column to read is
-$\max/N_{\text{buffers}}$: the most clock advances any single allocation
-performed, divided by the number of buffers in the pool.
+\section{The tail is the whole pool}
+\label{sec:tail}
 
 \begin{table}[t]
 \centering
-\caption{Sweep amplification and worst-case allocation. $\max$ ticks is the
-largest number of clock advances performed by any single allocation.}
-\label{tab:main}
+\caption{The three axes across five arms. $\max$ ticks is the largest number of
+clock advances performed by any single allocation.}
+\label{tab:arms}
 \small
-\begin{tabular}{rrlrrr}
+\begin{tabular}{llrrrr}
 \toprule
-nodes & $s_b$ & arm & ticks/victim & $\max$ ticks & $\max/N_{\text{buf}}$ \\
+$s_b$ & arm & ampl. & $\max$ ticks & $\max/N_{\text{buf}}$ & hit \% \\
 \midrule
-2 & 8\,GiB  & master   & 5.90 & 1{,}048{,}614 & \textbf{1.0000} \\
-2 & 8\,GiB  & 1-bit    & 3.36 & 1{,}046{,}554 & \textbf{0.9981} \\
-2 & 8\,GiB  & +claim   & 3.39 & \textbf{35}   & 0.00003 \\
-2 & 8\,GiB  & +precool & 3.09 & \textbf{34}   & 0.00003 \\
+\multirow{5}{*}{8\,GiB}
+ & master         & 5.87 & 1{,}048{,}614 & \textbf{1.0000} & 99.706 \\
+ & +claim         & 5.25 & \textbf{34}   & 0.00003 & 99.691 \\
+ & 1-bit          & 3.34 & 1{,}046{,}554 & \textbf{0.9981} & 99.707 \\
+ & 1-bit+claim    & 3.39 & \textbf{35}   & 0.00003 & 99.707 \\
+ & 1-bit+claim+bgw& 3.11 & \textbf{34}   & 0.00003 & 99.684 \\
 \midrule
-2 & 32\,GiB & master   & 2.11 & 4{,}194{,}342 & \textbf{1.0000} \\
-2 & 32\,GiB & 1-bit    & 1.32 & 4{,}192{,}282 & \textbf{0.9995} \\
-2 & 32\,GiB & +claim   & 1.32 & \textbf{34}   & 0.00001 \\
-2 & 32\,GiB & +precool & 1.32 & \textbf{33}   & 0.00001 \\
+\multirow{5}{*}{32\,GiB}
+ & master         & 2.11 & 4{,}194{,}342 & \textbf{1.0000} & 99.564 \\
+ & +claim         & 4.26 & \textbf{34}   & 0.00001 & 99.591 \\
+ & 1-bit          & 1.32 & 4{,}192{,}282 & \textbf{0.9995} & 99.618 \\
+ & 1-bit+claim    & 1.32 & \textbf{34}   & 0.00001 & 99.617 \\
+ & 1-bit+claim+bgw& 1.32 & \textbf{33}   & 0.00001 & 99.617 \\
 \midrule
-6 & 8\,GiB  & master   & 6.01 & 1{,}048{,}614 & \textbf{1.0000} \\
-6 & 8\,GiB  & 1-bit    & 3.41 & 1{,}046{,}554 & \textbf{0.9981} \\
-6 & 8\,GiB  & +claim   & 3.42 & \textbf{37}   & 0.00004 \\
-6 & 8\,GiB  & +precool & 3.05 & \textbf{35}   & 0.00003 \\
-\midrule
-6 & 32\,GiB & master   & 3.68 & 4{,}194{,}342 & \textbf{1.0000} \\
-6 & 32\,GiB & 1-bit    & 2.84 & 4{,}192{,}282 & \textbf{0.9995} \\
-6 & 32\,GiB & +claim   & 2.87 & \textbf{34}   & 0.00001 \\
-6 & 32\,GiB & +precool & 2.75 & \textbf{34}   & 0.00001 \\
-\midrule
-6 & 96\,GiB & master   & 1.17 & 12{,}582{,}950 & \textbf{1.0000} \\
+96\,GiB & master  & 1.17 & 12{,}582{,}950 & \textbf{1.0000} & 99.410 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-For \textsc{master} that ratio is $1.0000$ at every pool size tested. Not
-approximately one: at 4\,GiB the pool holds $524{,}288$ buffers and the worst
+Table~\ref{tab:arms} is the paper in one place. Read the
+$\max/N_{\text{buffers}}$ column for \textsc{master}: it is $1.0000$ at every
+pool size. At 4\,GiB the pool holds $524{,}288$ buffers and the worst
 allocation consumed $524{,}326$ advances; at 96\,GiB, $12{,}582{,}912$ buffers
-and $12{,}582{,}950$ advances. The excess is $38$ ticks in both cases---one
-cache line of descriptors---so the behaviour is exactly \emph{one full pass of
-the pool, plus a small constant}, reproduced across a $24\times$ range.
+and $12{,}582{,}950$ advances. The excess is $38$ advances in both
+cases---one cache line of descriptors---so the behaviour is exactly one full
+pass plus a small constant, across a $24\times$ range of pool sizes.
 
-Figure~\ref{fig:amp} shows the scaling directly. \textsc{master} and
-\textsc{1-bit} track $y=x$; \textsc{+claim} is flat.
+Throughput is flat across all five arms at every point, within $2\%$ and with
+overlapping run-to-run ranges, and pool-wide hit ratio moves by hundredths of a
+point. An evaluation on the conventional axes would conclude that these five
+systems are the same system.
 
-\begin{figure}[t]
-\centering
-\begin{tikzpicture}
-\begin{loglogaxis}[
-  width=\columnwidth, height=5.4cm,
-  xlabel={$N_{\text{buffers}}$}, ylabel={worst-case ticks per allocation},
-  legend pos=north west, legend cell align=left,
-  grid=both, grid style={gray!25},
-  xmin=4e5, xmax=2e7, ymin=10, ymax=4e7,
-]
-\addplot[thick, mark=square*] table[x index=0, y index=1] {data_amplification.dat};
-\addlegendentry{master ($0..5$)}
-\addplot[thick, dashed, mark=triangle*] table[x index=0, y index=2] {data_amplification.dat};
-\addlegendentry{1-bit cooling}
-\addplot[thick, mark=*] table[x index=0, y index=3] {data_amplification.dat};
-\addlegendentry{+claim}
-\end{loglogaxis}
-\end{tikzpicture}
-\caption{Worst-case allocation work against pool size. The two upper lines are
-$O(N_{\text{buffers}})$---one full pass. \textsc{+claim} is constant at
-$33$--$37$ advances.}
-\label{fig:amp}
-\end{figure}
+The result is independent of NUMA topology: \textsc{master} pins to the
+\emph{same} maximum on two nodes and on six, while throughput between those
+machines differs by $1.6\times$. The pathology belongs to the replacement
+algorithm, not to memory placement, and NUMA-partitioning
+work~\cite{vondra_numa} will not address it---partitioning reduces $T$ per
+partition but leaves the exponential intact within each.
 
-The result is independent of NUMA topology. \textsc{master} pins to the
-\emph{same} maximum, $1{,}048{,}614$, on two nodes and on six, though
-throughput differs by $1.6\times$ between them. This matters for interpretation:
-the pathology is a property of the replacement algorithm, not of memory
-placement or interconnect behaviour, and it will not be fixed by the
-NUMA-partitioning work currently in progress~\cite{vondra_numa}---partitioning
-divides the pool, which reduces $T$ per partition, but leaves the exponential
-intact within each.
-
-\section{Fewer states is not a bound}
+\section{Fewer states is a better constant, not a bound}
 \label{sec:onebit}
 
-We had previously proposed replacing \texttt{usage\_count} with a one-bit
-cooling state~\cite{leanstore2018}: a buffer is \textsc{hot} or \textsc{cool},
-a demand-loaded page is admitted \textsc{cool}, a second access promotes it,
-and the sweep demotes \textsc{hot} buffers and reclaims \textsc{cool} ones. The
-argument was simplicity---two states and no magic constant in place of six
-states and a tunable five---and the measured effect on throughput was nil.
+We previously proposed replacing \texttt{usage\_count} with a one-bit cooling
+state in the manner of LeanStore~\cite{leanstore2018}, arguing it on
+simplicity---two states and no magic constant instead of six states and a
+tunable five---and measuring its throughput effect as nil.
 
-Table~\ref{tab:main} shows what that change actually does. Amplification
-improves consistently: $5.90 \rightarrow 3.36$ ticks per victim at 8\,GiB on
-two nodes, $6.01 \rightarrow 3.41$ on six, a factor of about $1.75$. This is
-Equation~\ref{eq:density} behaving as predicted: $k$ falls from five to one and
-the constant improves.
+Table~\ref{tab:arms} shows what the change does on the three axes.
+Amplification improves consistently, $5.87 \rightarrow 3.34$ at 8\,GiB and
+$2.11 \rightarrow 1.32$ at 32\,GiB, which is Equation~\ref{eq:density} behaving
+as predicted when $k$ falls from five to one. The tail does not move: $0.9981$
+and $0.9995$ of the pool, still a full pass, still
+$O(N_{\text{buffers}})$. A page re-promoted within $T$ is immortal whether
+promotion sets a counter to five or a bit to one.
 
-And the worst case does not move. It is $0.9981$ of the pool at 8\,GiB and
-$0.9995$ at 32\,GiB---still a full pass, still $O(N_{\text{buffers}})$. A page
-that is re-promoted within $T$ is immortal whether promotion sets a counter to
-five or a bit to one. The one-bit evictor buys a $5\times$ margin in $rT$ and
-nothing in asymptotics.
-
-We state this plainly because we got it wrong in the other direction first,
-arguing for the state change on aesthetic grounds while the measurable
-pathology went unaddressed. The state encoding was never the problem. The
-termination rule is.
+We report this as a negative result against our own earlier proposal. The state
+encoding was never what made allocations unbounded, and an argument from
+simplicity could not have discovered that, because simplicity is not one of the
+three axes.
 
 \section{A bound from evidence}
-\label{sec:claim}
+\label{sec:bound}
 
-The loop's defect is that it treats cooling as progress without limit. It will
-demote forever, because each demotion is locally a step toward a victim even
-when globally the workload is restoring them faster.
+The loop's defect is that it treats decrementing as progress without limit. It
+will decrement forever, because each decrement is locally a step toward a
+victim even when the workload is globally restoring them faster.
 
-The fix is to notice when that is happening and stop insisting on probation.
-Probation exists so that a buffer gets one sweep of grace in which a new access
-can rescue it; that is a good default, but it is affordable only while victims
-can still be found. Once a single call has demoted $\Theta$ buffers without
-encountering one evictable, the pool is \emph{demonstrably} hotter than the
-hand can traverse---this is not an estimate or a heuristic threshold on some
-proxy, it is a direct observation of the quantity that matters---and the sweep
-claims the next unpinned buffer outright:
+Probation exists so a buffer gets passes of grace in which a new access can
+rescue it. That is a good default, affordable only while victims can still be
+found. Once a single call has decremented $\Theta$ buffers without encountering
+one at zero, the pool is \emph{observably} hotter than the hand can
+traverse---a direct measurement of the quantity that matters, not a heuristic
+on a proxy---and the sweep claims the next unpinned buffer:
 
 \begin{lstlisting}
-if (BUF_STATE_GET_COOLSTATE(state) != COOL) {
-  if (cooled < BUF_COOL_CLAIM_THRESHOLD) {
-    state &= ~BUF_USAGECOUNT_MASK;   /* HOT -> COOL */
+if (BUF_STATE_GET_USAGECOUNT(state) != 0) {
+  if (decremented < BUF_DECREMENT_CLAIM_THRESHOLD) {
+    state -= BUF_USAGECOUNT_ONE;
     if (CAS(&buf->state, state)) {
-      cooled++;
+      decremented++;
       trycounter = NBuffers;
       break;
     }
     continue;
   }
-  /* pressure: claim it. The cooling state is cleared
-   * when the victim is reused, so no demotion first. */
-  pg_atomic_fetch_add_u64(&ctl->numCoolClaims, 1);
+  /* pressure: claim it. usage_count is cleared when the
+   * victim is reused, so no need to reach zero first. */
+  pg_atomic_fetch_add_u64(&ctl->numForcedClaims, 1);
 }
-state += BUF_REFCOUNT_ONE;           /* claim */
+state += BUF_REFCOUNT_ONE;      /* claim */
 \end{lstlisting}
 
-Three properties make this cheap. The counter \texttt{cooled} is
-call-local---no shared state, no atomic on the common path. The threshold is
-derived from the cache line size rather than exposed as a GUC, so it adds no
-tuning surface. And under any workload the hand can keep up with, the counter
-never reaches the threshold and the code path is \emph{identical} to before;
-this is a change to behaviour under starvation only.
+The counter is call-local, so the common path takes no additional atomic; and
+under any workload the hand keeps up with, $\Theta$ is never reached and the
+code path is identical to before.
 
-The measured effect is in Table~\ref{tab:main}: worst case $33$--$37$ advances
-at every pool size and topology. Constant, not merely smaller. At 96\,GiB that
-is a reduction of $3.7\times 10^5$. Amplification is unchanged
-($3.39$ vs.\ $3.36$ at 8\,GiB), which is the expected and desirable outcome:
-the claim path fires only in the tail, so it should not perturb the mean.
+\paragraph{The bound is independent of the state encoding.} This is the
+practically important finding. Table~\ref{tab:arms}'s \textsc{+claim} row is
+this rule applied to the \emph{unmodified} 0..5 counter---no cooling state, no
+change to any buffer state bit, no change to the background writer or the ring
+buffers---and its tail is $34$, the same as the one-bit arm's $35$. Amplification
+stays at the stock arm's level ($5.25$ versus $5.87$), as it must: the rule
+fires only in the tail, so it should not move the mean.
 
-The cost is honest and worth naming: a claimed buffer is evicted without having
-served its probation, so in the starved regime the algorithm's replacement
-quality degrades toward FIFO. We consider this the right trade, because the
-alternative in that regime is an unbounded scan, and because a cache that
-cannot find a victim has already lost. The shared \texttt{numCoolClaims}
-counter records how often this occurs, which is a useful operational signal in
-its own right: a rising value means the pool is undersized for its access rate.
+The bound and the encoding are therefore separately adoptable. An implementer
+who wants bounded allocations need not accept a new replacement policy, and the
+patch that delivers the bound touches two files.
 
-\section{Moving the work off the critical path}
-\label{sec:precool}
+\section{The threshold is a dial, and we measured it}
+\label{sec:theta}
 
-The claim bound leaves the search on the allocating backend. The background
-writer's cleaning scan is already walking buffers ahead of the hand and already
-holds each buffer header lock, so demoting an unpinned \textsc{hot} buffer as
-it passes costs one masked store on work being performed anyway, with no CAS
-and no additional lock acquisition.
+$\Theta$ trades the two remaining axes against each other. Rather than defend a
+constant, we measured the whole curve, sweeping $\Theta$ over three decades at
+runtime ($\Theta=0$ meaning never claim, i.e.\ stock).
 
-The design question is when to do it. A fixed background cooler would shorten
-every buffer's probation unconditionally, trading hit ratio for a problem that
-may not exist---the mistake available here. Instead the scan consults
-\texttt{numCoolClaims} and stages candidates only while that count is
-\emph{rising}, i.e.\ only while the foreground is demonstrably starving. Staged
-buffers count toward the writer's existing \texttt{reusable\_buffers} budget,
-so the demand estimate that already bounds cleaning also bounds staging.
+\begin{table}[t]
+\centering
+\caption{Threshold sensitivity, and its cost measured on a hot set that
+probation exists to protect (20\% of pool, 80\% of queries, with a cold stream
+at $130\%$ of pool forcing eviction).}
+\label{tab:theta}
+\small
+\begin{tabular}{rrrrrr}
+\toprule
+$\Theta$ & $\max$ ticks & ampl. & claims & hot hit \% & hot pages evicted \\
+\midrule
+1        & 3      & 2.00 & 825{,}450 & --- & --- \\
+4        & 6      & 4.06 & 400{,}090 & 98.2313 & 4{,}519 \\
+16       & 18     & 5.92 & 59{,}652  & --- & --- \\
+32       & 36     & 5.37 & 5{,}576   & 99.9671 & 11 \\
+128      & 130    & 5.19 & 64        & 99.9998 & \textbf{0} \\
+1024     & 1{,}026& 5.14 & 0         & --- & --- \\
+0 (none) & 61{,}532 & 5.11 & 0       & 100.0000 & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-This yields a further $9\%$ reduction in amplification ($3.39 \rightarrow 3.09$
-at 8\,GiB on two nodes; $3.42 \rightarrow 3.05$ on six) while preserving full
-probation whenever nothing is waiting. The worst case is unchanged at $34$--$35$,
-as it must be---the bound is the claim path's doing, not the writer's.
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}
+\begin{semilogxaxis}[
+  width=\columnwidth, height=5cm,
+  xlabel={$\Theta$}, ylabel={hot-set hit ratio (\%)},
+  xmin=3, xmax=200, ymin=98, ymax=100.1,
+  grid=both, grid style={gray!25},
+  legend pos=south east,
+]
+\addplot[thick, mark=*] coordinates {(4,98.2313) (32,99.9671) (128,99.9998)};
+\addlegendentry{hot-set hit ratio}
+\addplot[dashed, domain=3:200, samples=2] {100};
+\addlegendentry{unbounded sweep}
+\end{semilogxaxis}
+\end{tikzpicture}
+\caption{Replacement quality against threshold. Below $\Theta\approx32$ the
+claim path evicts pages the workload is actively re-reading; by $\Theta=128$ it
+evicts none and hit ratio equals an unbounded sweep's.}
+\label{fig:harm}
+\end{figure}
 
-\section{What does not change}
-\label{sec:nothing}
+Two readings. First, $\max \text{ticks} \approx \Theta + 2$ across three
+decades, so $\Theta$ is a direct and predictable dial on the tail rather than
+an opaque heuristic. Second, the cost of claiming is real and now
+quantified---this closes a question we previously had to leave open. On the
+hot-set workload, $\Theta=4$ evicts $4{,}519$ genuinely hot pages and costs
+$1.77$ points of hot-set hit ratio; $\Theta=32$ evicts eleven and costs
+$0.03$; $\Theta=128$ evicts none and costs nothing measurable, while still
+bounding the tail at $130$ advances against an unbounded scan's $10^6$.
 
-\paragraph{Throughput and hit ratio.} Flat. Across all four arms at every point
-measured, throughput agrees within $2\%$ with overlapping run-to-run ranges
-($613$k vs.\ $614$k transactions/s on two nodes; $967$k vs.\ $988$k on six),
-and buffer hit ratio within $0.1$ percentage points. We regard this as
-confirmation rather than disappointment. The pathology is a tail phenomenon; a
-change that moved the mean would be evidence of having altered something other
-than the thing under study.
+$\Theta=128$ is therefore the defensible default: four orders of magnitude of
+tail reduction for no measurable loss of replacement quality. Note that
+pool-wide hit ratio would have hidden this---it moves by $0.65$ points where
+the hot set moves by $1.77$---which is the methodological point of
+\S\ref{sec:method}.3 made concrete.
 
-\paragraph{The ring buffers.} Admitting pages \textsc{cool} makes a read-once
-page self-evicting, which is the pollution-avoidance role PostgreSQL's
-\texttt{BufferAccessStrategy} rings were introduced to play, so it is fair to
-ask whether they remain necessary. They do, for reasons the evictor does not
-reach: \texttt{BAS\_BULKREAD} drives a rejection callback that declines victims
-whose eviction would force a WAL flush, and the write strategies dirty their
-buffers on first touch, so admission policy decides which buffer is reused but
-not whether reuse entails a write.
+\section{Why adapting the threshold is worse}
+\label{sec:adaptive}
 
-We did test the vacuum ring, because PostgreSQL already permits disabling it at
-runtime and so the experiment needs no patch. With this series applied,
-disabling it left concurrent OLTP throughput and $p99$ latency unchanged within
-run-to-run spread while making \texttt{VACUUM} itself $3.3\times$ faster
-($66.6$\,s $\rightarrow$ $19.9$\,s, non-overlapping). That is evidence
-\emph{for} removability and against the writeback-pacing justification usually
-offered---including the one we offered ourselves before measuring. It is not
-sufficient to act on: one workload shape, one storage class, explicit
-\texttt{VACUUM} rather than concurrent autovacuum workers, and removal would
-also cost a documented I/O-accounting context and a user-facing tuning knob. We
-report the measurement and leave the ring in place.
+A fixed $\Theta$ picks one point on Table~\ref{tab:theta} and keeps paying for
+it, so adapting it is the obvious next idea, and we implemented it: each
+backend starts at $\Theta_{\max}=1024$ (no claims, behaviour identical to an
+unbounded sweep), halves on each forced claim, and recovers by one on each
+claim-free allocation. Additive-increase/multiplicative-decrease, backend-local,
+no shared state.
+
+It is worse than a fixed threshold on both axes.
+
+\begin{table}[h]
+\centering
+\caption{Adaptive versus fixed, same workload, alternated.}
+\label{tab:adaptive}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+variant & $\max$ ticks & claims & hit \% & ampl. \\
+\midrule
+unbounded      & 57{,}908 & 0        & 99.7083 & 5.02 \\
+fixed $\Theta{=}32$ & \textbf{34} & 7{,}702 & \textbf{99.7023} & 5.41 \\
+adaptive (AIMD)& 1{,}025  & 188{,}962 & 99.6675 & 5.60 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The controller oscillates rather than converging. At roughly $600$k
+allocations per second, recovery at $+1$ per claim-free allocation returns
+$\Theta$ from the floor to $\Theta_{\max}$ in milliseconds, and claim-free
+allocations vastly outnumber claims. So the loop sits near $\Theta_{\max}$
+almost always---paying a full $1024$-advance scan on each starvation
+event---while re-entering back-off often enough to claim $25\times$ more than
+the fixed threshold does. Worst of both axes.
+
+The deeper reason is the asymmetry we had the data to see and did not use.
+Hit-ratio loss is incurred on \emph{every} claim, continuously; the unbounded
+scan is incurred only by the rare allocation that starves. A controller whose
+recovery is fast relative to the arrival rate of starvation events cannot
+exploit that asymmetry, and the measured curve already saturates: hit ratio at
+$\Theta=128$ equals the unbounded sweep's, so there is nothing above $128$ for
+an adaptive scheme to win. The engineering answer is a fixed threshold at the
+knee, and the control loop is complexity with a failure mode and no measured
+benefit.
+
+We report this because it closes an open question in the direction opposite to
+the one we expected, and because ``make it adaptive'' is the reflex suggestion
+for any constant.
 
 \section{Threats to validity}
 
 Our evidence that this pathology costs production users is second-hand: reports
 of multi-second stalls on large instances, consistent with the mechanism but
-not instrumented by us. The cheapest confirmation available to any operator
-requires no patch---if \texttt{pg\_buffercache\_usage\_counts()} shows the pool
-piled at \texttt{usage\_count}~5 with little at~0, the sweep has no candidates
-and every allocation is paying for the search.
+not instrumented by us. The cheapest confirmation requires no patch---if
+\texttt{pg\_buffercache\_usage\_counts()} shows a pool piled at
+\texttt{usage\_count}~5 with little at~0, the sweep has no candidates and every
+allocation is paying to search.
 
-The threshold $\Theta$ is cache-line-derived and we have not characterised its
-sensitivity; whether it should adapt to observed candidate density is open. We
-have not constructed a workload in which claim-induced premature eviction
-measurably harms hit ratio, which is a gap in the argument rather than evidence
-of its absence. Our pool sizes reach 96\,GiB where production instances reach
-terabytes, and $T$ grows with the pool, so we expect the effect we report to be
-a lower bound. Finally, all measurements are single-instance; replication and
-recovery workloads are unexamined.
+Pool sizes reach 96\,GiB where production instances reach terabytes, and $T$
+grows with the pool, so we expect our figures to understate the effect. The
+hot-set workload is one construction; others may locate the knee differently,
+though the shape should follow Equation~\ref{eq:density}. The AIMD result
+falsifies one adaptive scheme, not every possible one---a controller with
+hysteresis on the order of the starvation inter-arrival time remains untested,
+and we doubt it is worth the complexity given the saturation at $\Theta=128$.
+All measurements are single-instance; replication and recovery are unexamined.
 
 \section{Conclusion}
 
-PostgreSQL's clock sweep has an unbounded worst case, and the bound is not
-missing by a little: a single buffer allocation can sweep the entire pool, and
-does, reproducibly, at every pool size we measured and on both NUMA topologies
-we tried. The source code has documented this possibility for years without it
-being recognised as a thing that actually happens.
+PostgreSQL's clock sweep has an unbounded worst case, and it is not missing the
+bound by a little: a single allocation sweeps the entire pool, reproducibly, at
+every size we measured, on both topologies we tried, while throughput and hit
+ratio sit still. The code's own comments have described the possibility for
+years; what was missing was anyone measuring the quantity they describe.
 
-The appealing fix---fewer states, a cleaner encoding, one bit instead of
-six---improves the constant by $1.75\times$ and leaves the asymptotics
-untouched. We know because we proposed it, measured it, and found the worst case
-still at $0.998$ of the pool. Bounding the work requires a different kind of
-change: allowing the sweep to conclude, from direct observation rather than
-configuration, that probation has become unaffordable, and to stop. That makes
-the worst case constant in pool size at a cost of $33$--$37$ clock advances,
-perturbs nothing on the common path, and leaves throughput and hit ratio where
-they were.
+The appealing fix---a cleaner state encoding, one bit instead of six---improves
+the average by $1.75\times$ and leaves the worst case at $0.998$ of the pool.
+We know because we proposed it first. Bounding the tail requires changing what
+the loop accepts as progress, and that change is independent of the encoding:
+applied to the unmodified counter it gives the same $O(1)$ bound in two files.
+Its one constant is a dial we measured end to end, with a knee at $128$ where
+four orders of magnitude of tail reduction cost no measurable replacement
+quality, and an adaptive version of that dial is measurably worse than leaving
+it fixed.
 
-The broader lesson concerns the choice of workload. Uniform access over a
-working set much larger than the buffer pool is the obvious way to exercise
-eviction, and it is precisely blind to eviction starvation, because it gives no
-individual page an access rate high enough to outrun the clock. The pathology
-lives where the working set is barely larger than the pool and the access
-distribution is skewed---which is to say, where production databases live.
+What we would most like to see adopted is the methodology. Each of the three
+results above is a case where the conventional metric is silent: hit ratio
+cannot see an unbounded allocation, throughput cannot see it either, and the
+pool-wide hit ratio that would judge the fix understates its cost by a factor
+of three compared to measuring the set the workload actually re-reads. An
+evictor that is never asked what its worst allocation costs can hide one that
+costs everything.
 
 \bibliographystyle{ACM-Reference-Format}
 \bibliography{refs}

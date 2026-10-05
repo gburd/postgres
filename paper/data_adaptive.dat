@@ -1,0 +1,4 @@
+# variant  max_ticks  claims  hit_pct  tps  ticks_per_victim
+unbounded  57908  0  99.7083  649376  5.02
+fixed32  34  7702  99.7023  643487  5.41
+adaptive  1025  188962  99.6675  647291  5.60

@@ -13,6 +13,13 @@ throughput problem and does not show up in any standard benchmark: under the
 right conditions a '''single buffer read can sweep the entire buffer pool''',
 and the cost grows linearly with <code>shared_buffers</code>.
 
+'''The fix does not require changing the replacement state.'''  The bound has
+been measured applied to the unmodified 0..5 <code>usage_count</code> sweep --
+two files, no new buffer state, no change to the background writer or the ring
+buffers -- and it produces the same O(1) worst case as the 1-bit variant.  The
+bound and the 1-bit cooling state are orthogonal and separately adoptable; see
+[[#Measured results|the five-arm table]].
+
 ---
 
 == The problem ==
@@ -136,42 +143,38 @@ warmup.  Uniform access over a working set much larger than the pool '''does
 not''' reproduce it, because each page's individual access rate is then too low
 for anything to become un-evictable.
 
-=== Sweep amplification and the tail ===
+=== The three axes, five arms ===
 
 <code>max ticks</code> = the most clock-hand advances any single allocation
-performed.  <code>ticks/victim</code> = total advances / buffers reclaimed.
+performed.  <code>ampl.</code> = total advances / buffers reclaimed.  All five
+arms differ '''only''' in the eviction path and carry the identical instrument;
+3 runs per point, counters sampled after a 60s warmup.
 
 {| class="wikitable"
 |-
-! nodes !! clients !! s_b !! NBuffers !! arm !! ticks/victim !! max ticks !! max / NBuffers
+! s_b !! arm !! ampl. !! max ticks !! max / NBuffers !! claims !! hit %
 |-
-| 2 || 24 || 8GB || 1,048,576 || master || 5.90 || 1,048,614 || '''1.0000'''
+| 8GB || master 0..5 || 5.87 || 1,048,614 || '''1.0000''' || 0 || 99.706
 |-
-| 2 || 24 || 8GB || 1,048,576 || 0001 || 3.36 || 1,046,554 || '''0.9981'''
+| 8GB || '''0..5 + claim''' || 5.25 || '''34''' || 0.00003 || 6,226 || 99.691
 |-
-| 2 || 24 || 8GB || 1,048,576 || +0002 || 3.39 || '''35''' || 0.00003
+| 8GB || 1-bit || 3.34 || 1,046,554 || '''0.9981''' || 0 || 99.707
 |-
-| 2 || 24 || 8GB || 1,048,576 || +0003 || 3.09 || '''34''' || 0.00003
+| 8GB || 1-bit + claim || 3.39 || '''35''' || 0.00003 || 1,485 || 99.707
 |-
-| 2 || 24 || 32GB || 4,194,304 || master || 2.11 || 4,194,342 || '''1.0000'''
+| 8GB || 1-bit + claim + bgw || 3.11 || '''34''' || 0.00003 || 1,919 || 99.684
 |-
-| 2 || 24 || 32GB || 4,194,304 || 0001 || 1.32 || 4,192,282 || '''0.9995'''
+| 32GB || master 0..5 || 2.11 || 4,194,342 || '''1.0000''' || 0 || 99.564
 |-
-| 2 || 24 || 32GB || 4,194,304 || +0002 || 1.32 || '''34''' || 0.00001
+| 32GB || '''0..5 + claim''' || 4.26 || '''34''' || 0.00001 || 15,797 || 99.591
 |-
-| 6 || 192 || 8GB || 1,048,576 || master || 6.01 || 1,048,614 || '''1.0000'''
+| 32GB || 1-bit || 1.32 || 4,192,282 || '''0.9995''' || 0 || 99.618
 |-
-| 6 || 192 || 8GB || 1,048,576 || 0001 || 3.41 || 1,046,554 || '''0.9981'''
+| 32GB || 1-bit + claim || 1.32 || '''34''' || 0.00001 || 0 || 99.617
 |-
-| 6 || 192 || 8GB || 1,048,576 || +0002 || 3.42 || '''37''' || 0.00004
+| 32GB || 1-bit + claim + bgw || 1.32 || '''33''' || 0.00001 || 0 || 99.617
 |-
-| 6 || 192 || 8GB || 1,048,576 || +0003 || 3.05 || '''35''' || 0.00003
-|-
-| 6 || 192 || 32GB || 4,194,304 || master || 3.68 || 4,194,342 || '''1.0000'''
-|-
-| 6 || 192 || 32GB || 4,194,304 || +0002 || 2.87 || '''34''' || 0.00001
-|-
-| 6 || 192 || 96GB || 12,582,912 || master || 1.17 || 12,582,950 || '''1.0000'''
+| 96GB || master 0..5 || 1.17 || 12,582,950 || '''1.0000''' || 0 || 99.410
 |}
 
 Two things to read off this table:
@@ -194,6 +197,82 @@ measured, within ~2% and with overlapping run-to-run ranges.  This is a
 bounded-work and tail-latency change.  Installations with small pools, uniform
 access patterns, or working sets much larger than
 <code>shared_buffers</code> will see nothing.
+
+=== The threshold is a measured dial, not a guess ===
+
+&Theta; (<code>BUF_DECREMENT_CLAIM_THRESHOLD</code>) trades the tail against
+replacement quality.  Rather than defend a constant, the whole curve was swept
+at runtime over three decades (&Theta;=0 means never claim, i.e. stock):
+
+{| class="wikitable"
+|-
+! &Theta; !! max ticks !! ampl. !! claims !! hot-set hit % !! hot pages evicted
+|-
+| 1 || 3 || 2.00 || 825,450 || &mdash; || &mdash;
+|-
+| 4 || 6 || 4.06 || 400,090 || 98.2313 || 4,519
+|-
+| 16 || 18 || 5.92 || 59,652 || &mdash; || &mdash;
+|-
+| 32 || 36 || 5.37 || 5,576 || 99.9671 || 11
+|-
+| '''128''' || '''130''' || 5.19 || 64 || '''99.9998''' || '''0'''
+|-
+| 1024 || 1,026 || 5.14 || 0 || &mdash; || &mdash;
+|-
+| 0 (none) || 61,532 || 5.11 || 0 || 100.0000 || 0
+|}
+
+'''<code>max ticks</code> &asymp; &Theta; + 2''' across three decades, so
+&Theta; is a direct and predictable dial rather than an opaque heuristic.
+
+The hot-set columns come from a workload built to make probation matter: a hot
+set of 20% of the pool receiving 80% of queries, with a cold stream at 130% of
+the pool forcing continuous eviction.  '''This closes the question of whether
+premature eviction actually harms hit ratio: it does.'''  At &Theta;=4 the
+claim path evicts 4,519 genuinely hot pages for 1.77 points of hot-set hit
+ratio; at &Theta;=32 it evicts eleven; at &Theta;=128 it evicts none and the
+cost is not measurable, while the tail is still bounded at 130 advances against
+an unbounded scan's 10<sup>6</sup>.
+
+'''&Theta;=128 is therefore the default.'''  Note that pool-wide hit ratio
+would have hidden this effect -- it moves 0.65 points where the hot set moves
+1.77 -- which is why replacement quality must be measured on the set the
+workload actually re-reads.
+
+=== Adapting the threshold is worse (negative result) ===
+
+A fixed &Theta; picks one point on that curve, so adapting it is the obvious
+next idea.  It was implemented and measured: per-backend AIMD starting at
+&Theta;<sub>max</sub>=1024, halving on each forced claim, recovering by one on
+each claim-free allocation.
+
+{| class="wikitable"
+|-
+! variant !! max ticks !! claims !! hit % !! ampl.
+|-
+| unbounded || 57,908 || 0 || 99.7083 || 5.02
+|-
+| '''fixed &Theta;=32''' || '''34''' || 7,702 || '''99.7023''' || 5.41
+|-
+| adaptive (AIMD) || 1,025 || 188,962 || 99.6675 || 5.60
+|}
+
+'''The controller is worse than a fixed value on both axes.'''  At ~600k
+allocations/sec, recovery at +1 per claim-free allocation returns &Theta; to
+its maximum in milliseconds, and claim-free allocations vastly outnumber
+claims, so the loop sits near &Theta;<sub>max</sub> almost always (paying a
+full 1024-advance scan on each starvation event) while re-entering back-off
+often enough to claim 25x more than the fixed threshold.  It oscillates instead
+of converging.
+
+The underlying asymmetry: hit-ratio loss is paid on '''every''' claim,
+continuously, while the unbounded scan is paid only by the rare allocation that
+starves.  A controller whose recovery is fast relative to the arrival of
+starvation events cannot exploit that, and since hit ratio already saturates at
+&Theta;=128 there is nothing above it to win.  The experiment is preserved on
+branch <code>adaptive-experiment</code>; the shippable code uses a fixed
+&Theta;.
 
 === Vacuum ring ===
 
@@ -280,7 +359,11 @@ installation, and it needs no patch and no restart.
 * At high enough ''r·T'' even 0002 evicts buffers that have not served their
   probation.  Whether that measurably hurts hit ratio in a regime we have not
   constructed is unknown.
-* Branch: <code>bcs</code> on <code>github.com/gburd/postgres</code>.
+* Branches on <code>github.com/gburd/postgres</code>:
+** <code>stock-claim</code> &mdash; '''the bound alone, against pristine
+   master''' (two files; this is the one to review first)
+** <code>bcs</code> &mdash; 1-bit evictor + bound + background staging
+** <code>adaptive-experiment</code> &mdash; the AIMD negative result
 
 == See also ==
 
