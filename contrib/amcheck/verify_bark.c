@@ -12,7 +12,8 @@
  *	- sibling links are consistent (the right sibling's left link points back,
  *	  and levels match across a sibling link);
  *	- no page is still flagged with an unfinished split, which a clean index
- *	  never leaves behind.
+ *	  never leaves behind;
+ *	- no leaf entry is larger than BarkMaxItemSize.
  *
  * This is a lightweight structural check: it does not cross-check the index
  * against the heap, nor verify that every downlink's child is reachable.  It
@@ -174,12 +175,21 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 
 		/*
 		 * A LIST entry (sorted duplicates) on a leaf page must carry at least
-		 * two locators, stored strictly ascending.  A POSTING entry must hold a
-		 * valid sbm serialization with at least two members.  SINGLE entries
-		 * and pivots need no extra checks here.
+		 * two locators, stored strictly ascending.  A POSTING entry must hold
+		 * a valid sbm serialization with at least two members.  SINGLE
+		 * entries and pivots need no extra checks here.  No leaf entry may
+		 * exceed the item ceiling the insert and vacuum paths keep to (an
+		 * OVERSIZED entry is a small stub, so it always passes).
 		 */
 		if (BarkPageIsLeaf(opaque))
 		{
+			if (IndexTupleSize(itup) > BarkMaxItemSize)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a %zu-byte leaf entry on page %u at offset %u, larger than the %zu-byte limit",
+								RelationGetRelationName(rel), IndexTupleSize(itup),
+								blkno, off, (Size) BarkMaxItemSize)));
+
 			if (BarkEntryGetShape(itup) == BARK_SHAPE_LIST)
 				bark_check_list(rel, blkno, off, itup);
 			else if (BarkEntryGetShape(itup) == BARK_SHAPE_POSTING)

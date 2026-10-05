@@ -672,6 +672,20 @@ extern IndexTuple bark_posting_add_tid(TupleDesc tupdesc, IndexTuple key,
 extern int	bark_posting_count(IndexTuple itup);
 extern int	bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout);
 
+/*
+ * Re-encode a leaf entry's locator set after VACUUM removed members.
+ * bark_reform_entry returns the smallest SINGLE/POSTING/LIST encoding of the
+ * `nlive` ascending locators with orig's key whose MAXALIGN'd size is at most
+ * `limit`, or NULL when none fits (removing members can enlarge an sbm).
+ * bark_reform_prefix encodes the longest leading run of them it finds that
+ * fits, reporting its length in *nfit.
+ */
+extern IndexTuple bark_reform_entry(Relation index, IndexTuple orig,
+									ItemPointer tids, int nlive, Size limit);
+extern IndexTuple bark_reform_prefix(Relation index, IndexTuple orig,
+									 ItemPointer tids, int nlive, Size limit,
+									 int *nfit);
+
 /* ----------------------------------------------------------------------------
  * OVERSIZED entry construction and overflow-chain I/O (barkutils.c)
  * ----------------------------------------------------------------------------

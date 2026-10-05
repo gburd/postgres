@@ -27,10 +27,13 @@
 #include "access/amlocator.h"
 #include "access/bark.h"
 #include "access/generic_xlog.h"
+#include "catalog/index.h"
 #include "commands/vacuum.h"
+#include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
 #include "utils/fmgrprotos.h"
+#include "utils/memutils.h"
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
 
@@ -293,12 +296,26 @@ barkinsert(Relation index, Datum *values, bool *isnull,
 					   checkUnique, indexUnchanged, indexInfo);
 }
 
+/*
+ * Survivors of one leaf entry that VACUUM could not keep in the rewritten
+ * entry, to be re-inserted once the page is released (see barkbulkdelete).
+ */
+typedef struct BarkVacuumReinsert
+{
+	IndexTuple	key;			/* the entry's key columns, as a SINGLE */
+	ItemPointer tids;			/* the locators to re-insert, ascending */
+	int			ntids;
+} BarkVacuumReinsert;
+
 static IndexBulkDeleteResult *
 barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 			   IndexBulkDeleteCallback callback, void *callback_state)
 {
 	Relation	index = info->index;
 	BlockNumber npages;
+	IndexInfo  *indexInfo = NULL;
+	MemoryContext insertcxt = NULL;
+	bool		reinserted;
 
 	if (stats == NULL)
 		stats = palloc0_object(IndexBulkDeleteResult);
@@ -314,7 +331,16 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	 * here and unlinked/FSM-recycled in barkvacuumcleanup (not in this pass,
 	 * which holds only one page's lock); a now-empty but still-linked leaf
 	 * between the two passes is correct, just briefly not space-optimal.
+	 *
+	 * A pass that re-inserted survivors of an entry (see below) is followed
+	 * by another full pass.  A re-insert can split the leaf it lands on and
+	 * move entries that still hold dead TIDs onto a page this pass has
+	 * already visited or onto a new block past npages, and every dead TID
+	 * must be gone before we return.  Each pass that re-inserts removes at
+	 * least one dead TID and re-inserts only live ones, so the passes end.
 	 */
+restart:
+	reinserted = false;
 	npages = RelationGetNumberOfBlocks(index);
 	for (BlockNumber blkno = BARK_METAPAGE + 1; blkno < npages; blkno++)
 	{
@@ -327,6 +353,8 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		int			ndelete_single = 0;
 		BlockNumber oversized_free[MaxOffsetNumber];
 		int			noversized_free = 0;
+		BarkVacuumReinsert *reinsert = NULL;
+		int			nreinsert = 0;
 		GenericXLogState *gstate = NULL;
 		Page		p = NULL;
 
@@ -427,36 +455,50 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 
 				{
 					/*
-					 * Rebuild with the surviving members, re-choosing the shape:
-					 * a POSTING if its sbm still wins, else a LIST, else a plain
-					 * SINGLE when exactly one survives.  Removing members only
-					 * shrinks the set, so the new entry is no larger than the
-					 * original and PageIndexTupleOverwrite fits in place.
+					 * Rewrite the entry in place with the surviving members.
+					 * The limit is PageIndexTupleOverwrite's own condition
+					 * (the old item's space plus the page's free space),
+					 * capped at the item ceiling, so the overwrite cannot
+					 * fail.
+					 *
+					 * The rewritten entry can be larger than the original: an
+					 * sbm is not size-monotone (see bark_reform_entry).  When
+					 * no encoding of all survivors fits, the entry keeps a
+					 * leading run of them and the rest are re-inserted below.
+					 * Leaving the dead members in place instead is not an
+					 * option: once ambulkdelete returns, VACUUM marks every
+					 * TID it reported dead LP_UNUSED, and the slot can then
+					 * be reused by an unrelated tuple that a stale index
+					 * entry would point at.
 					 */
-					IndexTuple	key = bark_single_from_list(index, itup, NULL);
+					Size		limit;
 					IndexTuple	newentry;
-					IndexTuple	posting;
+					int			nfit;
 
-					if (nlive == 1)
+					limit = Min((Size) BarkMaxItemSize,
+								MAXALIGN(ItemIdGetLength(iid)) +
+								PageGetExactFreeSpace(page));
+					newentry = bark_reform_prefix(index, itup, tids, nlive,
+												  limit, &nfit);
+
+					/* Save the key first: the overwrite moves itup's bytes. */
+					if (nfit < nlive)
 					{
-						newentry = key;
-						newentry->t_tid = tids[0];
+						BarkVacuumReinsert *r;
+
+						if (reinsert == NULL)
+							reinsert = palloc_array(BarkVacuumReinsert, maxoff);
+						r = &reinsert[nreinsert++];
+						r->key = bark_single_from_list(index, itup, NULL);
+						r->ntids = nlive - nfit;
+						r->tids = palloc_array(ItemPointerData, r->ntids);
+						memcpy(r->tids, tids + nfit,
+							   r->ntids * sizeof(ItemPointerData));
 					}
-					else if ((posting = bark_form_posting(RelationGetDescr(index),
-															  key, tids, nlive)) != NULL)
-					{
-						newentry = posting;
-						pfree(key);
-					}
-					else
-					{
-						newentry = bark_form_list(RelationGetDescr(index), key,
-												  tids, nlive);
-						pfree(key);
-					}
+
 					if (!PageIndexTupleOverwrite(page, off, (char *) newentry,
 												 IndexTupleSize(newentry)))
-						elog(ERROR, "failed to shrink BARK leaf entry during vacuum");
+						elog(ERROR, "failed to rewrite BARK leaf entry during vacuum");
 					pfree(newentry);
 				}
 				pfree(tids);
@@ -474,6 +516,14 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 			PageIndexMultiDelete(page, todelete, ndelete);
 			stats->tuples_removed += ndelete_single;
 		}
+
+		/*
+		 * From the page rewrite until the moved survivors are back in the
+		 * index, a query cancel would leave them out of it.  Hold interrupts
+		 * over that stretch; the next vacuum_delay_point services them.
+		 */
+		if (nreinsert > 0)
+			HOLD_INTERRUPTS();
 
 		if (gstate != NULL)
 			GenericXLogFinish(gstate);
@@ -502,7 +552,68 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 			bark_free_oversized(index, stub);
 			pfree(stub);
 		}
+
+		/*
+		 * Re-insert the survivors that did not fit back into their rewritten
+		 * entries, each as an ordinary insert of a live row whose key is
+		 * unchanged.  This is exactly what inserting those rows would have
+		 * done, so it may coalesce them into another entry of the key or
+		 * split a page, as any insert can.
+		 *
+		 * The page lock is released first: the insert path descends from the
+		 * root and may need this very page.  Between the two steps the moved
+		 * locators are in no entry, so a concurrent scan of this key that
+		 * reads the page in that window misses them, and a scan that copied
+		 * the entry's locators before the rewrite returns them again when it
+		 * reaches the re-inserted entries.  A crash in that window loses them
+		 * from the index until it is rebuilt.  This happens only for an entry
+		 * whose survivors no longer fit its page, which is uncommon.
+		 *
+		 * The re-inserted entries hold only live locators, so a later visit
+		 * by this loop leaves them alone.  What the loop can miss is an entry
+		 * that still holds dead locators being moved by a split the re-insert
+		 * causes onto a block it has passed or onto a new block past npages;
+		 * hence the extra pass at the end.
+		 */
+		for (int i = 0; i < nreinsert; i++)
+		{
+			Datum		values[INDEX_MAX_KEYS];
+			bool		isnull[INDEX_MAX_KEYS];
+
+			/* aminsert may leak into its context; reset it per insert. */
+			if (indexInfo == NULL)
+			{
+				indexInfo = BuildIndexInfo(index);
+				insertcxt = AllocSetContextCreate(CurrentMemoryContext,
+												  "BARK vacuum re-insert",
+												  ALLOCSET_DEFAULT_SIZES);
+			}
+			index_deform_tuple(reinsert[i].key, RelationGetDescr(index),
+							   values, isnull);
+			for (int j = 0; j < reinsert[i].ntids; j++)
+			{
+				MemoryContext oldcxt = MemoryContextSwitchTo(insertcxt);
+
+				bark_insert(index, values, isnull, &reinsert[i].tids[j],
+							info->heaprel, UNIQUE_CHECK_NO, false, indexInfo);
+				MemoryContextSwitchTo(oldcxt);
+				MemoryContextReset(insertcxt);
+			}
+			pfree(reinsert[i].tids);
+			pfree(reinsert[i].key);
+			reinserted = true;
+		}
+		if (nreinsert > 0)
+			RESUME_INTERRUPTS();
+		if (reinsert != NULL)
+			pfree(reinsert);
 	}
+
+	if (reinserted)
+		goto restart;
+
+	if (insertcxt != NULL)
+		MemoryContextDelete(insertcxt);
 
 	return stats;
 }

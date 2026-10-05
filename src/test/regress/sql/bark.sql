@@ -332,6 +332,77 @@ RESET enable_indexscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_post;
 
+-- VACUUM must finish, and remove every dead TID, even when the survivors of a
+-- POSTING entry encode larger than the whole set did.  An sbm is not
+-- size-monotone: removing every Nth TID of a dense run turns all-ones vectors
+-- (stored as a 2-bit flag) into stored mixed vectors.  The rewritten entry is
+-- limited to what fits in place and under the item ceiling (bark_index_check
+-- reports any leaf entry larger than that); survivors that do not fit are
+-- re-inserted.  After each VACUUM the index must agree with a seqscan on the
+-- key.  A second delete + VACUUM then rewrites the already-rewritten entries.
+CREATE EXTENSION IF NOT EXISTS amcheck;
+CREATE TABLE bark_vgrow (a int, b int) WITH (autovacuum_enabled = off);
+CREATE INDEX bark_vgrow_idx ON bark_vgrow USING bark (a);
+CREATE TABLE bark_vgrow_cnt (k text, n bigint);
+CREATE FUNCTION bark_vgrow_counts(tag text) RETURNS void LANGUAGE plpgsql AS $$
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL enable_indexscan = on;
+  SET LOCAL enable_indexonlyscan = on;
+  INSERT INTO bark_vgrow_cnt SELECT tag || ' ios', count(*) FROM bark_vgrow WHERE a = 1;
+  SET LOCAL enable_indexonlyscan = off;
+  INSERT INTO bark_vgrow_cnt SELECT tag || ' idx', count(*) FROM bark_vgrow WHERE a = 1;
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_bitmapscan = on;
+  INSERT INTO bark_vgrow_cnt SELECT tag || ' bitmap', count(*) FROM bark_vgrow WHERE a = 1;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL enable_seqscan = on;
+  INSERT INTO bark_vgrow_cnt SELECT tag || ' seq', count(*) FROM bark_vgrow WHERE a = 1;
+END $$;
+-- 60000 TIDs of one key, every 10th deleted: the survivors' POSTING does not
+-- fit (VACUUM used to fail with "failed to shrink BARK leaf entry").
+INSERT INTO bark_vgrow SELECT 1, g FROM generate_series(1, 60000) g;
+DELETE FROM bark_vgrow WHERE b % 10 = 0;
+VACUUM bark_vgrow;
+SELECT bark_index_check('bark_vgrow_idx');
+SELECT bark_vgrow_counts('60000/10 vac1');
+DELETE FROM bark_vgrow WHERE b % 10 = 5;
+VACUUM bark_vgrow;
+SELECT bark_index_check('bark_vgrow_idx');
+SELECT bark_vgrow_counts('60000/10 vac2');
+-- 20000 TIDs, every 2nd deleted: VACUUM used to succeed but leave a
+-- 3424-byte entry, over the item ceiling.
+TRUNCATE bark_vgrow;
+INSERT INTO bark_vgrow SELECT 1, g FROM generate_series(1, 20000) g;
+DELETE FROM bark_vgrow WHERE b % 2 = 0;
+VACUUM bark_vgrow;
+SELECT bark_index_check('bark_vgrow_idx');
+SELECT bark_vgrow_counts('20000/2 vac1');
+DELETE FROM bark_vgrow WHERE b % 4 = 1;
+VACUUM bark_vgrow;
+SELECT bark_index_check('bark_vgrow_idx');
+SELECT bark_vgrow_counts('20000/2 vac2');
+-- 120000 TIDs over several leaves, every 2nd deleted: re-inserting the
+-- survivors that no longer fit splits leaves, which moves entries that still
+-- hold dead TIDs to pages VACUUM's pass has already visited or that did not
+-- exist when it started.  VACUUM must remove those too; a dead TID left
+-- behind would point at a reused heap slot, and the index-only scan (which
+-- trusts the all-visible pages) would count it.
+TRUNCATE bark_vgrow;
+INSERT INTO bark_vgrow SELECT 1, g FROM generate_series(1, 120000) g;
+DELETE FROM bark_vgrow WHERE b % 2 = 0;
+VACUUM bark_vgrow;
+SELECT bark_index_check('bark_vgrow_idx');
+SELECT bark_vgrow_counts('120000/2 vac1');
+DELETE FROM bark_vgrow WHERE b % 4 = 1;
+VACUUM bark_vgrow;
+SELECT bark_index_check('bark_vgrow_idx');
+SELECT bark_vgrow_counts('120000/2 vac2');
+SELECT k, n FROM bark_vgrow_cnt ORDER BY k;
+DROP FUNCTION bark_vgrow_counts(text);
+DROP TABLE bark_vgrow, bark_vgrow_cnt;
+
 -- BitmapAnd / BitmapOr: a BARK bitmap scan must produce an exact TIDBitmap
 -- that the executor can combine with other bitmaps.  Build two BARK indexes
 -- (and one btree) on one table and check that AND/OR plans over them -- plus a
@@ -1007,7 +1078,6 @@ INSERT INTO bark_pfxfast VALUES
   (repeat('Z', 9000)),
   ('short-a'), ('short-b');
 CREATE INDEX bark_pfxfast_idx ON bark_pfxfast USING bark (k);
-CREATE EXTENSION IF NOT EXISTS amcheck;
 SELECT bark_index_check('bark_pfxfast_idx');
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;

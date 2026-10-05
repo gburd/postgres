@@ -279,6 +279,7 @@ BarkScanOpaqueData
 BarkShared
 BarkStack
 BarkStackData
+BarkVacuumReinsert
 BarkBuildState
 BarkPageOpaque
 BarkPageOpaqueData

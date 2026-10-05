@@ -589,15 +589,19 @@ bark_form_posting(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids
 	total = bodyoff + MAXALIGN(serialized);
 	listsz = MAXALIGN(bodyoff + ntids * sizeof(ItemPointerData));
 
-	/* Only worth it when the serialized set is smaller than the LIST form. */
-	if (MAXALIGN(total) >= listsz)
+	/*
+	 * Only worth it when the serialized set is smaller than the LIST form,
+	 * and only possible when the entry's size fits t_info.  A set the insert
+	 * path builds never comes near that, but one VACUUM re-encodes after
+	 * removing members can (see bark_reform_entry).
+	 */
+	if (MAXALIGN(total) >= listsz || total > INDEX_SIZE_MASK)
 	{
 		sbm_free(map);
 		return NULL;
 	}
 
 	Assert(bodyoff <= BARK_OFFSET_MASK);
-	Assert(total <= INDEX_SIZE_MASK);
 
 	entry = (IndexTuple) palloc0(total);
 	memcpy(entry, key, keysz);
@@ -611,6 +615,103 @@ bark_form_posting(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids
 		elog(ERROR, "sbm_serialize wrote unexpected length for BARK posting entry");
 	sbm_free(map);
 	return entry;
+}
+
+/*
+ * Encode the `nlive` ascending, distinct locators in `tids` as one leaf entry
+ * carrying orig's key, in the smallest shape whose MAXALIGN'd size is at most
+ * `limit`: SINGLE for one locator, else POSTING when its sbm beats the LIST
+ * form, else LIST.  Returns a palloc'd entry, or NULL when no shape fits.
+ *
+ * VACUUM uses this to rewrite an entry that lost members, and must not assume
+ * the result is smaller than the original.  An sbm is not size-monotone under
+ * removal: an all-ones vector costs only its descriptor flag, so removing
+ * every Nth locator of a dense run turns many such vectors into stored mixed
+ * vectors, and the survivors can need more bytes than the full set did.
+ */
+IndexTuple
+bark_reform_entry(Relation index, IndexTuple orig, ItemPointer tids,
+				  int nlive, Size limit)
+{
+	TupleDesc	tupdesc = RelationGetDescr(index);
+	IndexTuple	key = bark_single_from_list(index, orig, NULL);
+	IndexTuple	result = NULL;
+
+	Assert(nlive >= 1);
+
+	if (nlive == 1)
+	{
+		key->t_tid = tids[0];
+		if (MAXALIGN(IndexTupleSize(key)) <= limit)
+			return key;
+	}
+	else if ((result = bark_form_posting(tupdesc, key, tids, nlive)) != NULL)
+	{
+		/* A POSTING is smaller than the LIST, so if it misses, both do. */
+		if (MAXALIGN(IndexTupleSize(result)) > limit)
+		{
+			pfree(result);
+			result = NULL;
+		}
+	}
+	else if (nlive <= BARK_LIST_MAX_COUNT &&
+			 MAXALIGN(MAXALIGN(IndexTupleSize(key)) +
+					  nlive * sizeof(ItemPointerData)) <= limit)
+		result = bark_form_list(tupdesc, key, tids, nlive);
+
+	pfree(key);
+	return result;
+}
+
+/*
+ * Like bark_reform_entry, but when the whole set does not fit in `limit`,
+ * encode a leading run tids[0 .. *nfit - 1] that does, as long as possible.
+ * One locator always fits when `limit` is at least BarkMaxItemSize or orig's
+ * own size: a key that has a LIST or POSTING entry is not oversized, so its
+ * SINGLE form is smaller than either.
+ *
+ * The prefix length is found by binary search.  Because sbm size is not
+ * monotone in the member count (adding a locator can complete an all-ones
+ * vector and shrink the encoding), the result is a prefix that fits with the
+ * next longer one not fitting, which is not always the longest that fits.
+ */
+IndexTuple
+bark_reform_prefix(Relation index, IndexTuple orig, ItemPointer tids,
+				   int nlive, Size limit, int *nfit)
+{
+	IndexTuple	best;
+	int			lo = 1;
+	int			hi = nlive;
+
+	best = bark_reform_entry(index, orig, tids, nlive, limit);
+	if (best != NULL)
+	{
+		*nfit = nlive;
+		return best;
+	}
+
+	best = bark_reform_entry(index, orig, tids, 1, limit);
+	if (best == NULL)
+		elog(ERROR, "no room to rewrite BARK leaf entry with one locator");
+
+	/* Invariant: a prefix of lo locators fits (best), one of hi does not. */
+	while (hi - lo > 1)
+	{
+		int			mid = lo + (hi - lo) / 2;
+		IndexTuple	e = bark_reform_entry(index, orig, tids, mid, limit);
+
+		if (e != NULL)
+		{
+			pfree(best);
+			best = e;
+			lo = mid;
+		}
+		else
+			hi = mid;
+	}
+
+	*nfit = lo;
+	return best;
 }
 
 /* Open a POSTING entry's serialized sbm (caller must sbm_free the result). */

@@ -118,3 +118,10 @@ Invariants
     tuple.  Overflow pages carry no items and are skipped by the leaf scans
     (vacuum, cleanup) and by amcheck's per-page checks.
   * bark_page_id is BARK_PAGE_ID on every BARK page.
+  * No leaf entry is larger than BarkMaxItemSize.  VACUUM keeps to this when it
+    rewrites a LIST or POSTING entry that lost members, which can need more
+    room than before: an sbm is not size-monotone, since removing members from
+    a dense run turns all-ones vectors (a 2-bit flag) into stored ones.  The
+    rewritten entry keeps the survivors that fit in place; VACUUM re-inserts
+    the rest as ordinary inserts, because every dead TID must leave the index
+    before the heap pass marks its line pointer unused.
