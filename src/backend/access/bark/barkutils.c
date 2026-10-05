@@ -887,6 +887,7 @@ bark_init_overflow_page(Page page, const char *full, Size fulllen,
 	opaque->bark_prev = BARK_P_NONE;
 	opaque->bark_next = nextblk;	/* chain to the next chunk */
 	opaque->bark_level = 0;
+	opaque->bark_cycleid = 0;
 	opaque->bark_flags = BARK_OVERFLOW;		/* not BARK_LEAF: vacuum skips it */
 	opaque->bark_page_id = BARK_PAGE_ID;
 
