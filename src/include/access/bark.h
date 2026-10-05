@@ -48,16 +48,28 @@
  * Every BARK page is a standard PostgreSQL page (PageHeaderData + line
  * pointers + tuples growing toward each other) with a BarkPageOpaqueData in
  * the special space.  The opaque area carries the Lehman & Yao sibling links,
- * the tree level, and the page-role flags.  The last two bytes of the special
- * space hold a page-type identifier so pg_filedump and amcheck-style tools
- * can recognize a BARK page, mirroring nbtree's use of the cycle-id slot.
+ * the tree level, the vacuum cycle ID, and the page-role flags.  The last two
+ * bytes of the special space hold a page-type identifier so pg_filedump and
+ * amcheck-style tools can recognize a BARK page.
+ *
+ * bark_cycleid works as nbtree's btpo_cycleid does: a leaf split that happens
+ * while VACUUM is scanning the index stamps both halves with that VACUUM's
+ * cycle ID (zero when no VACUUM is running), so VACUUM can tell that entries
+ * moved to a right sibling it may already have passed, and go back for them.
+ * The values come from nbtree's cycle-ID registry (a BTCycleId).  nbtree keeps
+ * its cycle ID in the last two bytes of the special space; BARK keeps
+ * BARK_PAGE_ID there, so the cycle ID takes half of the old 32-bit level
+ * field instead.  A 16-bit level is ample (a tree of 65536 levels cannot be
+ * built), and the struct stays at 16 bytes, so the special space and
+ * BarkMaxItemSize do not change.
  * ----------------------------------------------------------------------------
  */
 typedef struct BarkPageOpaqueData
 {
 	BlockNumber bark_prev;		/* left sibling, or BARK_P_NONE if leftmost */
 	BlockNumber bark_next;		/* right sibling, or BARK_P_NONE if rightmost */
-	uint32		bark_level;		/* tree level; zero for leaf pages */
+	uint16		bark_level;		/* tree level; zero for leaf pages */
+	uint16		bark_cycleid;	/* vacuum cycle ID of latest leaf split */
 	uint16		bark_flags;		/* flag bits, see below */
 	uint16		bark_page_id;	/* BARK_PAGE_ID, for tool identification */
 } BarkPageOpaqueData;

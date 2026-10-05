@@ -21,6 +21,7 @@ tests += {
   'isolation': {
     'specs': [
       'bark_concurrent_split',
+      'bark_vacuum_split',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # Injection points are cluster-wide.
