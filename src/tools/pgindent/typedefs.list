@@ -280,6 +280,7 @@ BarkShared
 BarkSplitPoint
 BarkStack
 BarkStackData
+BarkTidSink
 BarkBuildState
 BarkPageOpaque
 BarkPageOpaqueData
