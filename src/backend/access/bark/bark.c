@@ -143,10 +143,15 @@ bark_find_parent_downlink(Relation index, BarkKeyInfo *keyinfo,
  * leaf, an empty leaf whose parent downlink is the minus-infinity entry, and
  * an emptied internal page are all left linked in place -- correct, and still
  * reusable once their siblings are rewritten, just not directly unlinked here.
- * It locks the left sibling, target, right sibling, and parent together, which
- * is sound under BARK's single-writer page model (the same model the insert
- * and split paths rely on); the XID-gated concurrent recycling nbtree performs
- * belongs with the concurrency work, not this reclaimer.
+ *
+ * It locks the parent first and then the left sibling, target and right
+ * sibling, which is the reverse of the insert path's order (an inserter that
+ * splits a leaf keeps the leaf locked until it has locked the parent).  To
+ * avoid a deadlock between the two, the three leaf locks are only tried
+ * conditionally while the parent is held, and the leaf is skipped if any of
+ * them is busy; a later VACUUM retries it.  nbtree avoids the inversion by
+ * locking the leaf level before the parent (_bt_mark_page_halfdead), and the
+ * XID-gated recycling nbtree performs is likewise not done here.
  */
 static bool
 bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
@@ -163,6 +168,8 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 	OffsetNumber downoff;
 	GenericXLogState *gstate;
 	Page		p;
+	bool		lockedl;
+	bool		lockedt;
 
 	buf = ReadBuffer(index, blkno);
 	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
@@ -213,13 +220,28 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 		return false;
 	}
 
-	/* Lock the siblings and re-acquire the target, then re-validate. */
+	/*
+	 * Lock the siblings and re-acquire the target, then re-validate.  These
+	 * are tried without waiting, since we already hold the parent (see
+	 * above); if any is busy, give up on this leaf.
+	 */
 	lbuf = ReadBuffer(index, leftblk);
-	LockBuffer(lbuf, BUFFER_LOCK_EXCLUSIVE);
 	buf = ReadBuffer(index, blkno);
-	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 	rbuf = ReadBuffer(index, rightblk);
-	LockBuffer(rbuf, BUFFER_LOCK_EXCLUSIVE);
+	lockedl = ConditionalLockBuffer(lbuf);
+	lockedt = lockedl && ConditionalLockBuffer(buf);
+	if (!lockedt || !ConditionalLockBuffer(rbuf))
+	{
+		if (lockedt)
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		if (lockedl)
+			LockBuffer(lbuf, BUFFER_LOCK_UNLOCK);
+		ReleaseBuffer(rbuf);
+		ReleaseBuffer(buf);
+		ReleaseBuffer(lbuf);
+		UnlockReleaseBuffer(pbuf);
+		return false;
+	}
 
 	page = BufferGetPage(buf);
 	opaque = BarkPageGetOpaque(page);
