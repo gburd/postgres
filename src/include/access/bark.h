@@ -877,6 +877,14 @@ extern int	bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo,
 							  bool isleaf, IndexTuple orighikey);
 
 /*
+ * Finish the interrupted split of `lbuf` (write-locked, flagged
+ * BARK_INCOMPLETE_SPLIT) by inserting its right sibling's downlink into the
+ * parent; `stack` is the parent path to `lbuf`.  Releases `lbuf`.
+ */
+extern void bark_finish_split(Relation index, BarkKeyInfo *keyinfo,
+							  Buffer lbuf, BarkStack stack);
+
+/*
  * KNN (ordered-operator) scan state (barkknn.c).
  *
  * `ORDER BY col <-> const` over a scalar B-tree key is answered by descending
