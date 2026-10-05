@@ -144,22 +144,28 @@ StaticAssertDecl(MAX_BACKENDS_BITS <= (BUF_LOCK_BITS - 2),
 #define BM_MAX_USAGE_COUNT	5
 
 /*
- * How many buffers a single StrategyGetBuffer() call will decrement before it
- * abandons the usage-count ladder and claims a buffer whose count has not yet
- * reached zero.
+ * Bounds on the adaptive claim threshold.
  *
- * A buffer only becomes a candidate if it survives BM_MAX_USAGE_COUNT passes
- * of the clock hand untouched.  When the pool is accessed faster than the hand
- * can traverse it, buffers are re-promoted before that happens, the supply of
- * candidates collapses, and a sweep can decrement indefinitely without finding
- * a victim.  Claiming a buffer after this many fruitless decrements bounds the
- * work of one allocation; the cost is evicting a buffer that has not been
- * passed over the full number of times, so the threshold wants to be high
- * enough that healthy workloads never reach it.  One cache line of buffer
- * descriptors' worth of decrements is a cheap, hardware-derived choice.
+ * The threshold is how many buffers one StrategyGetBuffer() call will decrement
+ * before it abandons the usage-count ladder and claims a buffer whose count has
+ * not reached zero.  It controls a direct trade: the worst-case advances an
+ * allocation performs is the threshold plus a small constant, while every claim
+ * evicts a buffer that had not been passed over BM_MAX_USAGE_COUNT times and so
+ * costs a little hit ratio.
+ *
+ * The two costs are not symmetric in time.  Hit-ratio loss is paid on every
+ * claim; the unbounded scan is paid only by the rare allocation that starves.
+ * A backend therefore starts at the maximum -- full probation, no claims, and
+ * behaviour identical to an unbounded sweep -- and halves the threshold each
+ * time it is forced to claim, recovering by one on each allocation that
+ * succeeds without claiming.  That spends hit ratio only while the pool is
+ * demonstrably starving and gives it back when the pressure passes.
+ *
+ * The minimum is chosen from measurement: below about four, the hit-ratio cost
+ * grows sharply for little further reduction in the tail.
  */
-#define BUF_DECREMENT_CLAIM_THRESHOLD \
-	(PG_CACHE_LINE_SIZE / sizeof(uint32))
+#define BUF_CLAIM_THRESHOLD_MIN		4
+#define BUF_CLAIM_THRESHOLD_MAX		1024
 
 StaticAssertDecl(BM_MAX_USAGE_COUNT < (UINT64CONST(1) << BUF_USAGECOUNT_BITS),
 				 "BM_MAX_USAGE_COUNT doesn't fit in BUF_USAGECOUNT_BITS bits");

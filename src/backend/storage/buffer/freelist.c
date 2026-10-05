@@ -63,6 +63,13 @@ typedef struct
 	int			bgwprocno;
 } BufferStrategyControl;
 
+/*
+ * Per-backend claim threshold, adapted by AIMD in StrategyGetBuffer().  Starts
+ * at the maximum so a backend that never experiences starvation never spends
+ * hit ratio on premature eviction.
+ */
+static int	ClaimThreshold = BUF_CLAIM_THRESHOLD_MAX;
+
 /* Pointers to shared state */
 static BufferStrategyControl *StrategyControl = NULL;
 
@@ -195,6 +202,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 	int			bgwprocno;
 	int			trycounter;
 	int			decremented = 0;	/* buffers decremented by this call */
+	bool		claimed = false;
 
 	*from_ring = false;
 
@@ -322,7 +330,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 				 * BM_MAX_USAGE_COUNT times.  Under no pressure the counter
 				 * never reaches the threshold and behaviour is unchanged.
 				 */
-				if (decremented < BUF_DECREMENT_CLAIM_THRESHOLD)
+				if (decremented < ClaimThreshold)
 				{
 					local_buf_state -= BUF_USAGECOUNT_ONE;
 
@@ -342,6 +350,7 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 				 * there is no need to drive it to zero first.
 				 */
 				pg_atomic_fetch_add_u64(&StrategyControl->numForcedClaims, 1);
+				claimed = true;
 				local_buf_state += BUF_REFCOUNT_ONE;
 
 				if (pg_atomic_compare_exchange_u64(&buf->state, &old_buf_state,
@@ -353,6 +362,21 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 					*buf_state = local_buf_state;
 
 					TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
+
+					/*
+					 * Adapt the threshold (AIMD).  Having to claim is evidence
+					 * that probation is currently unaffordable, so back off
+					 * fast; completing an allocation without claiming is
+					 * evidence that it is affordable again, so recover slowly.
+					 * Backend-local: no shared state, no atomic, and a backend
+					 * that never starves keeps ClaimThreshold at its maximum
+					 * and behaves exactly as the unmodified sweep does.
+					 */
+					if (claimed)
+						ClaimThreshold = Max(ClaimThreshold / 2,
+											 BUF_CLAIM_THRESHOLD_MIN);
+					else if (ClaimThreshold < BUF_CLAIM_THRESHOLD_MAX)
+						ClaimThreshold++;
 
 					return buf;
 				}
@@ -371,6 +395,21 @@ StrategyGetBuffer(BufferAccessStrategy strategy, uint64 *buf_state, bool *from_r
 					*buf_state = local_buf_state;
 
 					TrackNewBufferPin(BufferDescriptorGetBuffer(buf));
+
+					/*
+					 * Adapt the threshold (AIMD).  Having to claim is evidence
+					 * that probation is currently unaffordable, so back off
+					 * fast; completing an allocation without claiming is
+					 * evidence that it is affordable again, so recover slowly.
+					 * Backend-local: no shared state, no atomic, and a backend
+					 * that never starves keeps ClaimThreshold at its maximum
+					 * and behaves exactly as the unmodified sweep does.
+					 */
+					if (claimed)
+						ClaimThreshold = Max(ClaimThreshold / 2,
+											 BUF_CLAIM_THRESHOLD_MIN);
+					else if (ClaimThreshold < BUF_CLAIM_THRESHOLD_MAX)
+						ClaimThreshold++;
 
 					return buf;
 				}
