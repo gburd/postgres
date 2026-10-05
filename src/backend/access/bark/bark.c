@@ -34,6 +34,7 @@
 #include "storage/indexfsm.h"
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
+#include "storage/predicate.h"
 #include "utils/fmgrprotos.h"
 #include "utils/injection_point.h"
 #include "utils/selfuncs.h"
@@ -132,22 +133,22 @@ bark_find_parent_downlink(Relation index, BarkKeyInfo *keyinfo,
  * Reclaims the common case a delete-heavy workload produces: an interior leaf
  * (one with both a left and a right sibling) whose every entry VACUUM removed.
  * The page is unlinked from the leaf chain (its left sibling's right link and
- * its right sibling's left link are spliced across it), its parent downlink is
- * removed, and the page is flagged BARK_DELETED and handed to the FSM, so the
- * next split or overflow write reuses it instead of extending the relation.
+ * its right sibling's left link are spliced across it), its key space passes
+ * to its right sibling in the parent, and the page is flagged BARK_DELETED
+ * and handed to the FSM, so the next split or overflow write reuses it
+ * instead of extending the relation.
  * All four touched pages (left sibling, target, right sibling, parent) are
  * updated under one generic-WAL record so the unlink is crash-atomic.
  *
  * Returns true when the leaf was deleted.  Declines (returns false, leaving the
  * leaf linked and correct) when the page is not an eligible interior empty
- * leaf, or when its parent downlink is the leftmost (minus-infinity) entry
- * (whose removal would require promoting the next downlink to minus-infinity --
- * a reshuffle this reclaimer does not perform).
+ * leaf, or when it is its parent's last child, so that its right sibling's
+ * downlink is not on the same parent page.
  *
  * This reclaims interior empty leaves only.  A leftmost or rightmost empty
- * leaf, an empty leaf whose parent downlink is the minus-infinity entry, and
- * an emptied internal page are all left linked in place -- correct, and still
- * reusable once their siblings are rewritten, just not directly unlinked here.
+ * leaf, an empty leaf that is its parent's last child, and an emptied
+ * internal page are all left linked in place -- correct, and still reusable
+ * once their siblings are rewritten, just not directly unlinked here.
  *
  * It locks the parent first and then the left sibling, target and right
  * sibling, which is the reverse of the insert path's order (an inserter that
@@ -215,11 +216,12 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 		return false;			/* parent downlink not found: leave it linked */
 
 	/*
-	 * Decline when the downlink is the parent's leftmost (minus-infinity)
-	 * entry: removing it would need the next downlink promoted to
-	 * minus-infinity, which this reclaimer does not do.
+	 * The right sibling must be the target's next child in the same parent:
+	 * its downlink is the one this deletion removes (see below).  Decline
+	 * when the target is the parent's last child, as nbtree does for the
+	 * rightmost child of a parent.
 	 */
-	if (downoff <= BarkPageFirstDataKey(BarkPageGetOpaque(BufferGetPage(pbuf))))
+	if (downoff >= PageGetMaxOffsetNumber(BufferGetPage(pbuf)))
 	{
 		UnlockReleaseBuffer(pbuf);
 		return false;
@@ -259,7 +261,13 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 		BarkEntryGetDownLink((IndexTuple)
 							 PageGetItem(BufferGetPage(pbuf),
 										 PageGetItemId(BufferGetPage(pbuf),
-													   downoff))) != blkno)
+													   downoff))) != blkno ||
+		BarkEntryGetDownLink((IndexTuple)
+							 PageGetItem(BufferGetPage(pbuf),
+										 PageGetItemId(BufferGetPage(pbuf),
+													   OffsetNumberNext(downoff)))) != rightblk ||
+		(BarkPageGetOpaque(BufferGetPage(rbuf))->bark_flags &
+		 (BARK_DELETED | BARK_HALF_DEAD)) != 0)
 	{
 		UnlockReleaseBuffer(rbuf);
 		UnlockReleaseBuffer(buf);
@@ -268,19 +276,33 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 		return false;
 	}
 
-	/* Splice the target out of the chain, drop its downlink, flag it deleted. */
+	/*
+	 * The target's key space moves right, to its right sibling, as in
+	 * nbtree's _bt_mark_page_halfdead: point the target's downlink at the
+	 * right sibling and delete the right sibling's own downlink, the next
+	 * item.  The parent then routes the target's whole range to the right
+	 * sibling, whose keys all sort at or above that range.  Dropping the
+	 * target's downlink instead would route the range to the left sibling,
+	 * whose high key does not cover it, and an insert there would move right
+	 * onto the right sibling below that page's downlink.
+	 */
+	PredicateLockPageCombine(index, blkno, rightblk);
+
+	/* Splice the target out of the chain, move its key space, flag it deleted. */
 	gstate = GenericXLogStart(index);
 	{
 		Page		lp = GenericXLogRegisterBuffer(gstate, lbuf, 0);
 		Page		rp = GenericXLogRegisterBuffer(gstate, rbuf, 0);
 		Page		pp = GenericXLogRegisterBuffer(gstate, pbuf, 0);
-		OffsetNumber del = downoff;
+		IndexTuple	downlink;
 
 		p = GenericXLogRegisterBuffer(gstate, buf, 0);
 
 		BarkPageGetOpaque(lp)->bark_next = rightblk;
 		BarkPageGetOpaque(rp)->bark_prev = leftblk;
-		PageIndexMultiDelete(pp, &del, 1);
+		downlink = (IndexTuple) PageGetItem(pp, PageGetItemId(pp, downoff));
+		BarkEntrySetDownLink(downlink, rightblk);
+		PageIndexTupleDelete(pp, OffsetNumberNext(downoff));
 
 		BarkPageGetOpaque(p)->bark_flags |= BARK_DELETED;
 		BarkPageGetOpaque(p)->bark_prev = BARK_P_NONE;
