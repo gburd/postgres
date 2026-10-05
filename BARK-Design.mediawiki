@@ -185,6 +185,296 @@ non-increasing under removal. The reserve costs at most one bit per locator of
 a dense run (8 bytes per 64 locators), and the posting-set shape is chosen only
 when it beats the list shape with the reserve included.
 
+==== Value sets that outgrow one entry ====
+
+The question this section answers: should BARK keep a large key's locator set
+in a structure of its own (a B-tree per key, as GIN does, or WiredTiger-style
+skiplists), rather than in entries of the main tree? It records what was
+measured, the options, and the order in which to do the ones worth doing.
+sbm stays the posting-set encoding throughout.
+
+'''What BARK does today.''' An entry holds at most
+<code>BarkMaxItemSize</code> (2712 bytes). When a key's LIST or POSTING entry
+cannot grow, the next locator for that key becomes a new entry of the same
+key, next to it in the main tree. BARK keys need not be unique, so the main
+tree already does the job of GIN's posting tree: a key's entries sit on
+consecutive leaves under ordinary pivots, a scan reads them in order, and
+none of this has a per-locator cost (run 2: an index-only scan spends 90 ns
+per locator on a key spread over 31 entries, and 94 ns on keys of one entry
+each). GIN needs a separate tree only because
+its entry tree holds each key once. The one thing a per-key tree would add is
+locator order within a key. Insert coalesces into the entry just before the
+insert point, which is the last entry of the key's run, so the entries of a
+key are in arrival order and their locator ranges can overlap.
+
+'''Measurements.''' All on a release build (<code>-Dcassert=false</code>),
+one session, 8-CPU laptop, <code>shared_buffers=2GB</code>,
+<code>synchronous_commit=off</code>, <code>fsync=off</code>. "Retail" means
+the index exists before <code>INSERT ... SELECT</code>; "build" means
+<code>CREATE INDEX</code> after the load. Datasets: ''one'' is 1M rows of a
+single key; ''kc'' is 10M rows over 1000 keys, each key's rows inserted
+together (clustered); ''ks'' is 10M rows over 1000 keys, round-robin
+(scattered). <code>bark(a) INCLUDE (b)</code> never coalesces, so it is BARK
+with only SINGLE entries. Runs 1 and 2 were taken on BARK before the
+POSTING removal reserve; run 3 on the reserve commit; runs 4 and 5 on the
+current tip, which adds byte- and fillfactor-based split points. Page counts
+are deterministic. Times on this shared host vary by up to 2x with load from
+other work, so each A/B row below alternates the two binaries on one data
+directory, restarting the server between runs. The datasets are
+<code>SELECT 1, (g/1000)%1000 FROM generate_series(1,1000000) g</code>
+(''one''), <code>SELECT (g-1)/10000, g%1000 FROM generate_series(1,10000000) g</code>
+(kc) and <code>SELECT g%1000, (g/1000)%1000 FROM generate_series(1,10000000) g</code>
+(ks), loaded from an unlogged copy into <code>r (a int, b int)</code>.
+Scan times are the best of 5 <code>EXPLAIN ANALYZE</code> runs with the
+other paths disabled.
+
+{| class="wikitable"
+|+ Retail insert, 10M rows (time s / index pages / WAL MB)
+! dataset !! bark(a) !! bark(a) INCLUDE(b), SINGLE only !! btree(a) !! gin(a)
+|-
+| kc, run 2 || 28.8 / 203 / 1610 || 22.0 / 49261 / 1770 || 6.2 / 8041 / 1228 || 7.6 / 3477 / 2146
+|-
+| ks, run 2 || 50.8 / 12825 / 11175 || 29.6 / 49137 / 3410 || 9.1 / 8044 / 1225 || 8.3 / 4917 / 2183
+|-
+| kc, run 5 || 59.7 / 252 / 1690 || 35.7 / 26093 / 1586 || 14.3 / 8041 / 1218 || -
+|-
+| ks, run 5 || 111.6 / 8028 / 11593 || 25.2 / 26091 / 1672 || 10.3 / 8044 / 1229 || -
+|}
+
+Run 5's times were taken at load average 6-13 and are only good for ratios
+within the run. Its sizes and WAL are exact. On ks the SINGLE-only WAL
+fell from 3.4 GB to 1.7 GB with the new split points, within 40% of
+btree's.
+
+{| class="wikitable"
+|+ Where the insert time goes (perf, release; share of insert CPU)
+! workload !! generic WAL page diff (<code>computeRegionDelta</code>) !! value-set work
+|-
+| SINGLE only (INCLUDE, 1 key x 200k, run 2) || 55% || none
+|-
+| ks, LIST appends (1M rows, run 2) || 50% || small; the cost is WAL volume
+|-
+| kc, POSTING appends (1000 keys x 1000, run 2) || 52% || 8% (sbm)
+|-
+| one hot key, POSTING appends (300k rows, run 3) || 20% || 41% in <code>bark_posting_add_tid</code>, 33 points of it in <code>sbm_cardinality</code>
+|}
+
+* With WAL turned off (UNLOGGED, run 2), coalescing costs the same CPU for
+  LIST and POSTING: +6.9 s (kc) and +6.6 s (ks) over SINGLE-only, about
+  0.7 us per row. With WAL on, LIST costs +21 s on ks, because
+  <code>PageIndexTupleOverwrite</code> of a grown entry moves every tuple
+  between <code>pd_upper</code> and the entry, and the generic delta covers
+  that whole range. pg_waldump: 2.6 kB per record, and generic records are
+  97.7% of WAL bytes (run 1). POSTING usually keeps its
+  <code>MAXALIGN</code> size when it gains a locator, so kc's WAL stays near
+  btree's.
+* nbtree's equivalent of a lazy merge costs nothing. btree(a) with
+  <code>deduplicate_items</code> on vs off (run 3): kc 5.6 vs 5.8 s, 8041 vs
+  26127 pages; ks 10.5 vs 12.7 s. pg_waldump shows one
+  <code>XLOG_BTREE_DEDUP</code> per 122 leaf inserts.
+* CREATE INDEX forms only SINGLE entries (current tip): ''one'' 2737 pages
+  vs btree 849; kc and ks 27346 vs 8489. Retail insert of the same data gives
+  28, 252 and 8028 pages (runs 4 and 5).
+* Freed heap space refilled with one hot key's new rows (run 3, TIDs
+  arriving below the key's existing maximum): 451305 low TIDs went into the
+  existing POSTING sets (an sbm takes a member anywhere), and the result was
+  291 POSTING entries in 164 pages (btree 3019). Arrival order does not
+  break the shape, although insert was 3.6 s against btree's 0.8 s.
+
+{| class="wikitable"
+|+ A/B tests run for this note (alternating binaries, same data directory)
+! change !! workload !! before !! after
+|-
+| <code>sbm_serialize</code> writes 0 instead of computing the header's cardinality hint || ''one'', retail, 3 rounds on tip || 5.50 5.02 5.02 s || 3.59 3.48 3.46 s (-31%)
+|-
+| same || kc, retail, 3 rounds on the reserve commit || 35.3 32.7 34.1 s || 26.9 27.6 26.3 s (-21%)
+|-
+| POSTING decode with <code>sbm_scan</code> (64 members per callback) instead of <code>sbm_next_member</code> per member || ''one'', bitmap index node, best of 5 x 3 rounds || 74.1 76.7 75.3 ms || 7.8 7.5 7.4 ms
+|-
+| same || ''one'', index-only scan total || 173 175 173 ms || 106 101 104 ms
+|-
+| same || kc, key with 10000 rows, bitmap index node || 0.62 0.60 0.61 ms || 0.10 0.10 0.10 ms
+|}
+
+For reference, on the same data directory: btree(a) has a bitmap node of
+21.0 ms (''one'') and 0.19 ms (kc), and an index-only scan of 66.5 ms
+(''one''). SINGLE-only BARK has a bitmap node of 31.0 ms (''one''). Neither
+change alters a page or a WAL byte. The batch-decode binary returned the
+same <code>sum(b)</code> and 1000000 distinct ctids as a sequential scan.
+Nothing reads bytes 8-15 of the sbm serialization header:
+<code>sbm_deserialize</code> skips them, and grep finds no other reader. Yet
+<code>sbm_add</code> invalidates the cardinality cache, so every POSTING
+insert walked every chunk once to fill in an unused field. The decode cost
+was the per-call chunk walk in <code>sbm_next_member</code>, not the
+encoding: with batches, a POSTING set decodes 2-3x faster per locator than
+btree, and 4x faster than BARK's own SINGLE entries.
+
+So the measurements point away from new structures. Generic WAL is half of
+every insert, whatever shape the entry has. LIST appends cost WAL volume.
+POSTING appends and POSTING scans cost two sbm calls that do avoidable work.
+No measured cost scales with how many entries a key has.
+
+'''Options.'''
+
+; (a) Nothing beyond what is merged.
+: Cost: none. Keeps hot-key insert at 3-8x btree (run 2), ks WAL at 9.4x
+  btree, POSTING bitmap scans at 3-3.6x btree's node time, and CREATE INDEX at
+  3.2x btree's size. Touches nothing.
+
+; (b) A GIN-style posting tree per key.
+: A TID-keyed B-tree rooted in the same relation, with sbm-compressed leaf
+  segments, referenced from the key's one main-tree entry. GIN's version
+  (<code>gindatapage.c</code>) splits each leaf into varbyte segments of at
+  most 384 bytes (target 256) and re-encodes only the segment an insert
+  touches. Its WAL record carries only the added TIDs
+  (<code>GIN_SEGMENT_ADDITEMS</code>), and varbyte never grows on removal.
+  It also needs its own page type, Lehman and Yao descent and move-right, a
+  two-pass VACUUM (leaf pass, then cleanup-locked page deletion from the
+  root), a predicate lock on the posting-tree root, and a custom WAL rmgr.
+: Benefit: locators in order within a key, and a re-encode bounded by one
+  segment. After the cardinality-hint fix, the sbm work left in
+  <code>bark_posting_add_tid</code> is about 8% of hot-key insert, which is
+  all that bounding the re-encode can win back. Order within a key matters
+  only for an exact (key, locator) lookup: retail delete, and C-DELETE's
+  <code>amdeletemark</code>. That is better solved the way nbtree solved it
+  (heap TID as the final key attribute, with posting splits), and it is
+  needed for SINGLE entries too.
+: Cost: a second tree protocol inside one AM, at the moment the concurrency,
+  scan, VACUUM and split work is making the one tree correct. Every one of
+  them would need a posting-tree version: VACUUM cycle IDs, deleted-page
+  handling, the page-at-a-time scan position, split-point choice. Rejected.
+
+; (c) A WiredTiger-style per-page delta, merged when the page fills.
+: WiredTiger never changes a disk page image in place. New keys go into
+  in-memory skiplists hung off the page (<code>WT_INSERT_HEAD</code>, one
+  per on-disk slot), and reconciliation, at eviction or checkpoint, merges
+  them into a new page image. PostgreSQL pages are updated in place in
+  shared buffers, so the skiplist has no counterpart here, and a structure
+  outside the page would need WAL of its own. The part that does carry over
+  is the merge itself: new locators go onto the page as plain SINGLE
+  entries, and when the page fills, one pass folds each key's run into its
+  LIST or POSTING entry. This is exactly <code>_bt_dedup_pass</code>, and
+  nbtree's numbers above say it costs nothing.
+: For BARK the pass replaces the per-insert coalesce in
+  <code>bark_coalesce_list</code>. An insert becomes a SINGLE insert: measured
+  at 0.6-0.76 of bark(a)'s time on kc and 0.23-0.58 on ks, with WAL at
+  0.94-1.1x (kc) and 0.14-0.31x (ks) of bark(a)'s (runs 2 and 5). Then one
+  page rewrite per page fill is added. At nbtree's rate (one pass per 122
+  inserts), with the pass logged as a full-page delta under generic WAL, the
+  estimate is about 0.65 GB of WAL per 10M rows. That is an estimate, not a
+  measurement. It still puts ks near 2.3 GB, against 11.6 GB now and btree's
+  1.2 GB. Index size should stay at the retail sizes or drop below them. Each
+  pass sorts a merged run's locators, so locators are in order within an
+  entry, and it merges a run's several small entries into one, which the
+  per-insert path never does.
+: Touches: <code>barkinsert.c</code> (drop the coalesce call; call the pass
+  where a leaf would split), a new <code>barkdedup.c</code>, and
+  <code>bark_allequalimage</code> as the gate, the rule insert coalescing
+  already follows. A run merged into a POSTING is sized for its removal
+  bound, as today. Like nbtree's pass, it keeps a run as several entries
+  when one entry would exceed <code>BarkMaxItemSize</code>.
+
+; (d) A GIN-fastupdate-style pending list.
+: Unsorted pending pages hang off the metapage and are merged into the tree
+  when they pass <code>gin_pending_list_limit</code> (4 MB), or by VACUUM.
+  Every scan reads the whole list. SSI turns every scan into a lock on the
+  metapage, which means the whole index. Ordered scans would need a merge
+  with the list. On the hot-key test (run 2), GIN with fastupdate was slower
+  than without (18.5 vs 12.2 s) and wrote 1.8x the WAL. BARK's whole reason
+  to exist is ordered scans, and a pending list gives them up. Rejected.
+
+; (e) A BARK WAL resource manager instead of generic WAL.
+: Generic WAL copies the page twice and diffs it
+  (<code>computeRegionDelta</code>) on every change: 50-55% of insert CPU for
+  every shape, which no value-set structure can touch. A BARK rmgr would log
+  what changed, as nbtree does: insert one tuple, add locators to an entry,
+  split, dedup pass, vacuum, page deletion. It also gives BARK something
+  generic WAL cannot. <code>generic_redo</code> resolves no recovery
+  conflicts, but reusing a deleted page needs one (nbtree's
+  <code>XLOG_BTREE_REUSE_PAGE</code>, GiST's
+  <code>gistXLogPageReuse</code>), or a hot-standby scan can follow a link
+  into a recycled page. Moves: insert CPU toward SINGLE-only UNLOGGED (kc
+  7.2 s, btree 3.2 s, run 2), and WAL toward btree's for every shape.
+: Cost: the largest of the options. An rmgr id, a redo routine per record,
+  <code>rm_desc</code>, <code>rm_identify</code>, <code>rm_mask</code> for
+  <code>wal_consistency_checking</code>, and a rewrite of every
+  <code>GenericXLogStart</code> site (13 in <code>bark.c</code>,
+  <code>barkinsert.c</code> and <code>barkutils.c</code>). Each of those sites
+  is being changed right now by the concurrency, VACUUM and split work.
+
+; (f) Build LIST and POSTING entries at CREATE INDEX.
+: <code>bark_load</code> receives tuples sorted by key and then heap TID
+  (<code>tuplesort_begin_index_btree</code> breaks ties on
+  <code>t_tid</code>), so it can group each equal-key run, as nbtree's
+  <code>_bt_load</code> does when it deduplicates, and emit SINGLE, LIST or
+  POSTING through the same chooser as insert. Moves: build size from 27346
+  pages to about the retail sizes (252 kc, 8028 ks, 28 ''one'') or below,
+  because the locators arrive sorted. Build time should drop with the page
+  count. It applies insert's <code>bark_allequalimage</code> gate. Touches
+  <code>barksort.c</code> only.
+
+'''Recommendation, in order.'''
+
+# '''Drop the cardinality hint from <code>sbm_serialize</code>.''' One
+  commit in <code>sbm.c</code>/<code>sbm.h</code>. Write 0 in bytes 8-15, or
+  write the cached value only when it is already valid, and document the
+  field as reserved. Either way the wire format does not change, so
+  <code>SBM_WIRE_VERSION</code> stays. The <code>test_sbm</code>
+  round-trip tests cover it, since nothing reads the field. Cuts insert
+  time for POSTING appends by 21% (kc) to 31% (''one''). Changes no page or
+  WAL byte, and touches no file other work is changing.
+# '''Batch POSTING decode.''' One commit: <code>bark_posting_get_tids</code>
+  decodes through <code>sbm_scan</code>, about 15 lines, which is the change
+  measured above. Test: the POSTING differential tests in
+  <code>bark.sql</code> already compare every scan mode with a sequential
+  scan. Makes the POSTING bitmap node 6-10x faster and index-only scans
+  35-40% faster. The page-at-a-time scan position also reads members
+  through <code>bark_entry_get_tids</code>, so it gets the speedup without
+  changes.
+# '''Form LIST/POSTING at CREATE INDEX''' (option f). One commit in
+  <code>barksort.c</code>, with a size test: build vs retail page counts
+  within a factor, <code>bark_index_check</code> clean, index results equal
+  to a sequential scan. Leaves stay packed to fillfactor, as now. The
+  build's <code>bark_form_hikey</code> and <code>bark_form_downlink</code>
+  truncate with <code>index_truncate_tuple</code>, which copies the whole
+  tuple, body included, when the index has no INCLUDE columns. Once the
+  build emits LIST and POSTING entries, pivots must be formed from the
+  entry stripped to its key, as <code>bark_strip_to_key</code> does for
+  insert-side splits. Suffix truncation's build path, which forms the pivot
+  from lastleft and firstright, needs the same.
+# '''The page-fill merge pass''' (option c). One commit, after scans keep a
+  page-at-a-time position. Today a scan resumes by page offset, and a pass
+  that rewrites a page moves offsets just as an insert does. A page-at-a-time
+  scan copies a page's matches when it reads the page, as
+  <code>_bt_readpage</code> does, and that copy is what makes nbtree's
+  in-place dedup pass safe for scans. The pass runs under the leaf's exclusive
+  lock, at the point where <code>bark_insert</code> would call
+  <code>bark_split</code>. That is the slot nbtree uses
+  (<code>_bt_delete_or_dedup_one_page</code>, just before
+  <code>_bt_split</code>). It replaces <code>bark_coalesce_list</code>, leaves
+  the split protocol alone, and writes its page rewrite as one generic record.
+  VACUUM cycle IDs are not affected, because the pass never moves an entry to
+  another page. If leaf prefix compression lands first, the pass reads items
+  through its leaf-item accessor and rebuilds the page as a split does,
+  re-encoding against the page's anchor. Tests: bark.sql differential per-key
+  counts and order after mixed-order inserts into a few hot keys, amcheck
+  clean, and a WAL-volume check on ks against the per-insert coalesce.
+  Expected: ks WAL 11.6 GB down to about 2-3 GB, and insert time down to near
+  SINGLE-only, measured on a quiet host.
+# '''A BARK WAL rmgr''' (option e), as a series once the concurrency, VACUUM
+  and split work has merged: one commit for the rmgr skeleton and the insert,
+  split and newroot records; one for VACUUM, page deletion and the reuse
+  conflict record; one for the dedup-pass record; one for
+  <code>rm_mask</code>, with <code>027_stream_regress</code> run under
+  <code>wal_consistency_checking=all</code>. This is the only item that moves
+  the 50-55% that is common to all shapes, and the only way to get the
+  hot-standby conflict that page recycling needs.
+
+Not recommended: a per-key posting tree (b) and a pending list (d), for the
+reasons above. If C-DELETE or retail delete later needs to find one
+(key, locator) pair, make the locator a tie-breaking key attribute in
+pivots, as nbtree did in version 4, rather than adding a second tree.
+
 === C-STATS: statistics and cost ===
 
 BARK feeds the planner the same statistics contract as nbtree:
