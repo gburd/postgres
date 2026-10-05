@@ -225,10 +225,13 @@ bark_get_free_page(Relation index)
 		ReleaseBuffer(buf);		/* not usable: try the next FSM entry */
 	}
 
-	/* No reusable page: extend the relation. */
-	buf = ReadBuffer(index, P_NEW);
-	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-	return buf;
+	/*
+	 * No reusable page: extend the relation.  ExtendBufferedRel takes the
+	 * relation extension lock, so concurrent extenders each get a distinct
+	 * new block (ReadBuffer(P_NEW) skips that lock and would let two splits
+	 * receive the same page).  As in nbtree's _bt_allocbuf.
+	 */
+	return ExtendBufferedRel(BMR_REL(index), MAIN_FORKNUM, NULL, EB_LOCK_FIRST);
 }
 
 /*
