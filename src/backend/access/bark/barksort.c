@@ -79,7 +79,7 @@
 /*
  * One page under construction, per tree level.  A full page is flushed (its
  * block number is assigned from the writer's running counter) and a new page
- * started; the flushed page's low key is promoted to the parent as a downlink.
+ * started; the flushed page's downlink is added to the parent.
  */
 typedef struct BarkPageState
 {
@@ -88,7 +88,7 @@ typedef struct BarkPageState
 	OffsetNumber nextoff;		/* next free item offset */
 	uint32		level;			/* tree level (0 = leaf) */
 	Size		full;			/* page is "full" below this much free space */
-	IndexTuple	lowkey;			/* first key on this page (palloc'd copy) */
+	IndexTuple	lowkey;			/* this page's downlink, without its block */
 	BlockNumber prevblk;		/* previous page at this level (for right-link) */
 	BulkWriteBuffer prevbuf;	/* previous page's buffer, awaiting its next-link */
 	struct BarkPageState *parent;	/* next level up; created on demand */
@@ -257,6 +257,15 @@ bark_pagestate(BarkBuildState *bs, BulkWriteState *bulk, uint32 level)
 	st->prevblk = BARK_P_NONE;
 	st->prevbuf = NULL;
 
+	/*
+	 * The first page of a level is reached through a minus-infinity downlink
+	 * (no key attributes), as nbtree's and bark_new_root's are.  Later pages
+	 * get the previous page's high key (bark_flush_page).
+	 */
+	st->lowkey = palloc0_object(IndexTupleData);
+	st->lowkey->t_info = sizeof(IndexTupleData);
+	BarkPivotSetNAtts(st->lowkey, 0);
+
 	opaque = BarkPageGetOpaque((Page) st->buf);
 	opaque->bark_prev = BARK_P_NONE;
 	opaque->bark_next = BARK_P_NONE;
@@ -266,36 +275,6 @@ bark_pagestate(BarkBuildState *bs, BulkWriteState *bulk, uint32 level)
 	opaque->bark_page_id = BARK_PAGE_ID;
 
 	return st;
-}
-
-/* Pivot (downlink) tuple for a finished page: its low key + child block. */
-static IndexTuple
-bark_form_downlink(TupleDesc tupdesc, IndexTuple lowkey, BlockNumber child,
-				   int nkeyatts)
-{
-	IndexTuple	pivot = index_truncate_tuple(tupdesc, lowkey, nkeyatts);
-
-	BarkPivotSetNAtts(pivot, (uint16) nkeyatts);
-	BarkPivotSetDownLink(pivot, child);
-	return pivot;
-}
-
-/*
- * High-key tuple for a page that has gained a right sibling: a pivot copy of
- * the right sibling's first key, serving as the (inclusive upper) bound on
- * the keys the page may hold.  Non-key attributes are physically truncated
- * (index_truncate_tuple): pivots only route by key, so INCLUDE columns and any
- * lower-key suffix must not bloat internal pages.
- */
-static IndexTuple
-bark_form_hikey(TupleDesc tupdesc, IndexTuple firstright, int nkeyatts)
-{
-	IndexTuple	hikey = index_truncate_tuple(tupdesc, firstright, nkeyatts);
-
-	BarkPivotSetNAtts(hikey, (uint16) nkeyatts);
-	/* A high key has no downlink; leave the block number as the sentinel. */
-	BarkPivotSetDownLink(hikey, BARK_P_NONE);
-	return hikey;
 }
 
 /* Does an item of the given size fit on this page? */
@@ -352,37 +331,54 @@ bark_prepend_hikey(Page page, IndexTuple hikey)
 
 /*
  * Flush st's current page because `firstright` (the item that did not fit)
- * will start a new page: set this page's high key to firstright, write the
- * page, chain the right-link, promote the page's low key to the parent as a
- * downlink, and start a fresh page in st for firstright and what follows.
+ * will start a new page: give this page its high key, write the page, chain
+ * the right-link, add the page's downlink to the parent, and start a fresh
+ * page in st for firstright and what follows.
+ *
+ * On a leaf the high key is firstright truncated against the page's last
+ * item (bark_truncate_pivot); on an internal page, whose items are pivots
+ * already, it is a copy of firstright.  A copy of the high key is kept as the
+ * new page's downlink, so the parent separates the two pages exactly as the
+ * high key does.  This is how nbtsort.c's _bt_buildadd pairs them.
  */
 static void
 bark_flush_page(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 				IndexTuple firstright)
 {
-	IndexTuple	downlink;
+	Page		page = (Page) st->buf;
 	IndexTuple	hikey;
 	BlockNumber flushedblk = st->blkno;
 	BulkWriteBuffer flushedbuf = st->buf;
-	IndexTuple	flushedlow = st->lowkey;
 	BarkPageState *parent = st->parent;
 	BarkPageState *fresh;
 
-	/* Rebuild the page as [high key, data...]; the high key bounds the page. */
-	hikey = bark_form_hikey(RelationGetDescr(bs->index), firstright, bs->nkeyatts);
-	bark_prepend_hikey((Page) flushedbuf, hikey);
-	pfree(hikey);
+	if (st->level == 0)
+	{
+		IndexTuple	lastleft = (IndexTuple)
+			PageGetItem(page, PageGetItemId(page, OffsetNumberPrev(st->nextoff)));
 
-	/* Promote the flushed page's low key as a downlink into the parent. */
+		Assert(BarkEntryGetShape(firstright) != BARK_SHAPE_OVERSIZED);
+		hikey = bark_truncate_pivot(bs->index, bs->keyinfo, lastleft,
+									firstright);
+	}
+	else
+	{
+		hikey = CopyIndexTuple(firstright);
+		BarkPivotSetDownLink(hikey, BARK_P_NONE);
+	}
+
+	/* Rebuild the page as [high key, data...]; the high key bounds the page. */
+	bark_prepend_hikey(page, hikey);
+
+	/* Add the flushed page's downlink to the parent. */
 	if (parent == NULL)
 	{
 		parent = bark_pagestate(bs, bulk, st->level + 1);
 		st->parent = parent;
 	}
-	downlink = bark_form_downlink(RelationGetDescr(bs->index), flushedlow,
-								  flushedblk, bs->nkeyatts);
-	bark_buildadd(bs, bulk, parent, downlink);
-	pfree(downlink);
+	BarkPivotSetDownLink(st->lowkey, flushedblk);
+	bark_buildadd(bs, bulk, parent, st->lowkey);
+	pfree(st->lowkey);
 
 	/* Start a fresh page at this level and chain siblings both ways. */
 	fresh = bark_pagestate(bs, bulk, st->level);
@@ -396,21 +392,20 @@ bark_flush_page(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 	st->buf = fresh->buf;
 	st->blkno = fresh->blkno;
 	st->nextoff = fresh->nextoff;
-	st->lowkey = NULL;
+	st->lowkey = hikey;
 	st->prevblk = flushedblk;
 	st->prevbuf = flushedbuf;
 	st->parent = parent;
+	pfree(fresh->lowkey);
 	pfree(fresh);
-	if (flushedlow != NULL)
-		pfree(flushedlow);
 }
 
 /*
  * Add itup to the page in st, flushing to a new page first if it does not
- * fit (passing itup as the finished page's high key).  Records the page's low
- * key the first time an item lands on it.  Data items occupy BARK_P_HIKEY and
- * up during the build; at flush a high key is prepended (shifting data to
- * BARK_P_FIRSTKEY), and the rightmost page per level keeps data at offset 1.
+ * fit (passing itup as the first item of the next page).  Data items occupy
+ * BARK_P_HIKEY and up during the build; at flush a high key is prepended
+ * (shifting data to BARK_P_FIRSTKEY), and the rightmost page per level keeps
+ * data at offset 1.
  */
 static void
 bark_buildadd(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
@@ -421,9 +416,9 @@ bark_buildadd(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 
 	/*
 	 * Flush when the page already holds a data item and the new item plus a
-	 * high key (worst case itup's own size) would not fit.  Requiring room
-	 * for two items keeps at least one item per page and guarantees the high
-	 * key prepended at flush fits.
+	 * high key would not fit.  The high key is formed from the new item and
+	 * is no larger than it.  Requiring room for two items keeps at least one
+	 * item per page and guarantees the high key prepended at flush fits.
 	 *
 	 * Also flush, as nbtsort.c does, once the page's free space has dropped
 	 * below the fillfactor target, provided it already holds two data items;
@@ -441,9 +436,6 @@ bark_buildadd(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 		InvalidOffsetNumber)
 		elog(ERROR, "failed to add item to BARK page during build");
 	st->nextoff = OffsetNumberNext(off);
-
-	if (st->lowkey == NULL)
-		st->lowkey = CopyIndexTuple(itup);
 }
 
 /*
@@ -478,17 +470,14 @@ bark_finish(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *leaf)
 		else
 		{
 			/*
-			 * Not the root: this level's last page still needs its low key
-			 * promoted to the parent, exactly as a flush would do, so the
+			 * Not the root: this level's last page still needs its downlink
+			 * added to the parent, exactly as a flush would do, so the
 			 * parent's rightmost downlink exists.
 			 */
-			IndexTuple	downlink = bark_form_downlink(RelationGetDescr(bs->index),
-													  st->lowkey, st->blkno,
-													  bs->nkeyatts);
-
-			bark_buildadd(bs, bulk, parent, downlink);
-			pfree(downlink);
+			BarkPivotSetDownLink(st->lowkey, st->blkno);
+			bark_buildadd(bs, bulk, parent, st->lowkey);
 		}
+		pfree(st->lowkey);
 
 		/*
 		 * This page is the rightmost at its level, so it has no high key;
