@@ -1043,6 +1043,17 @@ bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
 	if (isnull)
 		return;
 
+	/*
+	 * The prefix must be the value's own leading bytes.  bark_form_full_tuple
+	 * may have compressed the datum (index_form_tuple compresses large
+	 * varlenas), and compressed bytes do not sort like the value, so leave
+	 * such an entry without a prefix.  An external datum cannot occur: index
+	 * tuples hold their values inline.
+	 */
+	if (VARATT_IS_COMPRESSED(DatumGetPointer(d)))
+		return;
+	Assert(!VARATT_IS_EXTERNAL(DatumGetPointer(d)));
+
 	/* A C-collation text/bytea datum is a varlena: use its data area. */
 	data = VARDATA_ANY(DatumGetPointer(d));
 	len = VARSIZE_ANY_EXHDR(DatumGetPointer(d));
