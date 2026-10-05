@@ -1243,6 +1243,31 @@ SET enable_bitmapscan = off;
 SELECT count(*) FROM bark_ff_wide WHERE t >= '150';
 RESET enable_indexscan;
 RESET enable_bitmapscan;
+-- At fillfactor 100 a page fills to the last byte, so a wide key arriving
+-- after narrow ones leaves no room for the high key formed from it: every
+-- 300th key here is ~2.6kB.  The build then moves the page's last item to
+-- the next page, as nbtree's build does, instead of failing.
+CREATE TABLE bark_ff_room (t text);
+INSERT INTO bark_ff_room
+  SELECT lpad(g::text, 8, '0') ||
+         CASE WHEN g % 300 = 0
+              THEN (SELECT string_agg(md5(g::text || i::text), '')
+                    FROM generate_series(1, 80) i)
+              ELSE '' END
+  FROM generate_series(1, 30000) g;
+CREATE INDEX bark_ff_room_idx ON bark_ff_room USING bark (t) WITH (fillfactor = 100);
+SELECT bark_index_check('bark_ff_room_idx');
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS idx_count FROM bark_ff_room WHERE t >= '00015000';
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS seq_count FROM bark_ff_room WHERE t >= '00015000';
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_ff_room;
 DROP TABLE bark_ff_wide;
 DROP TABLE bark_ff;
 
