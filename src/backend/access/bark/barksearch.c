@@ -136,9 +136,10 @@ bark_moveright(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
  * can hold the key.  The distinction matters only when equal downlink keys
  * exist, which happens when a leaf splits in the middle of a run of equal
  * keys: a forward equality or lower-bound scan must then start at the FIRST
- * such leaf, or it silently skips the earlier duplicates.  (Each leaf's high
- * key equals the next leaf's first key, so an earlier leaf of the run still
- * holds matching keys; landing on the last leaf of the run loses them.)
+ * such leaf, or it silently skips the earlier duplicates.  (Inside a run, a
+ * leaf's high key equals the next leaf's first key, since suffix truncation
+ * removes nothing there, so an earlier leaf of the run still holds matching
+ * keys; landing on the last leaf of the run loses them.)
  */
 static OffsetNumber
 bark_binsrch(Relation index, BarkKeyInfo *keyinfo, IndexTuple key, Page page,
