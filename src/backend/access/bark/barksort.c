@@ -261,6 +261,7 @@ bark_pagestate(BarkBuildState *bs, BulkWriteState *bulk, uint32 level)
 	opaque->bark_prev = BARK_P_NONE;
 	opaque->bark_next = BARK_P_NONE;
 	opaque->bark_level = level;
+	opaque->bark_cycleid = 0;
 	opaque->bark_flags = (level == 0) ? BARK_LEAF : 0;
 	opaque->bark_page_id = BARK_PAGE_ID;
 
@@ -508,6 +509,7 @@ bark_finish(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *leaf)
 		opaque->bark_prev = BARK_P_NONE;
 		opaque->bark_next = BARK_P_NONE;
 		opaque->bark_level = 0;
+		opaque->bark_cycleid = 0;
 		opaque->bark_flags = BARK_META;
 		opaque->bark_page_id = BARK_PAGE_ID;
 	}
@@ -1094,6 +1096,7 @@ bark_buildempty(Relation index)
 	opaque->bark_prev = BARK_P_NONE;
 	opaque->bark_next = BARK_P_NONE;
 	opaque->bark_level = 0;
+	opaque->bark_cycleid = 0;
 	opaque->bark_flags = BARK_META;
 	opaque->bark_page_id = BARK_PAGE_ID;
 
