@@ -19,9 +19,10 @@
  * - On a leaf, among the split points close to that target, the one whose
  *   neighboring items agree on the fewest leading key attributes is taken:
  *   a split between two very different keys leaves a pivot that separates
- *   them on fewer attributes.  When every split point near the target falls
- *   inside one run of equal keys, the split moves to the edge of the run if
- *   the page has one (nbtree's "many duplicates" strategy).
+ *   them on fewer attributes, and suffix truncation (bark_truncate_pivot)
+ *   keeps only those.  When every split point near the target falls inside
+ *   one run of equal keys, the split moves to the edge of the run if the
+ *   page has one (nbtree's "many duplicates" strategy).
  * - A leaf that holds a single key value is split so the left page is left
  *   BARK_SINGLEVAL_FILLFACTOR full (nbtree's "single value" strategy).
  *
@@ -71,12 +72,15 @@ bark_split_itemsz(IndexTuple itup)
  * Bytes, line pointer included, of the high key bark_split forms for the left
  * page when `firstright` becomes the right page's first item.
  *
- * The high key holds only the key attributes, so a LIST or POSTING entry's
- * locator body is left behind; nbtree makes the same adjustment for posting
- * lists.  An oversized leaf key in an index with INCLUDE columns is the one
- * case where the high key can be larger than the item: without the INCLUDE
- * columns the key may fit inline, at up to BarkMaxItemSize.  Anything else
- * yields a high key no larger than the item itself.
+ * The high key holds at most the key attributes, so a LIST or POSTING
+ * entry's locator body is left behind; nbtree makes the same adjustment for
+ * posting lists.  Suffix truncation (bark_truncate_pivot) can drop further
+ * attributes, but as in nbtree the estimate does not try to predict it: the
+ * high key is sized as if nothing were truncated, which can only overstate
+ * it.  The one case where the high key can be larger than the item is an
+ * oversized leaf key in an index of more than one column: without the
+ * INCLUDE columns, or truncated to its leading key attributes, the key may
+ * fit inline, at up to BarkMaxItemSize.
  */
 static int
 bark_split_hikeysz(Relation index, IndexTuple firstright)
@@ -87,8 +91,7 @@ bark_split_hikeysz(Relation index, IndexTuple firstright)
 	if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
 		sz = BarkEntryGetBodyOffset(firstright);
 	else if (shape == BARK_SHAPE_OVERSIZED && BarkOverflowIsLeaf(firstright) &&
-			 IndexRelationGetNumberOfKeyAttributes(index) <
-			 IndexRelationGetNumberOfAttributes(index))
+			 IndexRelationGetNumberOfAttributes(index) > 1)
 		sz = BarkMaxItemSize;
 	return MAXALIGN(sz) + sizeof(ItemIdData);
 }
@@ -144,51 +147,6 @@ bark_split_interval(BarkSplitPoint *splits, int nsplits, int databytes)
 			return i;
 	}
 	return nsplits;
-}
-
-/*
- * The number of leading key attributes on which two leaf items are equal,
- * by the opclass comparator (NULLs equal only to NULLs), as nbtree's
- * _bt_keep_natts counts them.  This is the penalty of a split between
- * `lastleft` and `firstright`: a pivot separating them needs one attribute
- * more than this.  An OVERSIZED item's key is read from its overflow chain.
- */
-static int
-bark_split_penalty(Relation index, BarkKeyInfo *keyinfo,
-				   IndexTuple lastleft, IndexTuple firstright)
-{
-	TupleDesc	tupdesc = RelationGetDescr(index);
-	IndexTuple	left = lastleft;
-	IndexTuple	right = firstright;
-	int			nequal = 0;
-
-	if (BarkEntryGetShape(left) == BARK_SHAPE_OVERSIZED)
-		left = bark_fetch_oversized(index, left);
-	if (BarkEntryGetShape(right) == BARK_SHAPE_OVERSIZED)
-		right = bark_fetch_oversized(index, right);
-
-	for (int i = 0; i < keyinfo->nkeys; i++)
-	{
-		BarkKeyColumn *col = &keyinfo->cols[i];
-		bool		lnull;
-		bool		rnull;
-		Datum		ldatum = index_getattr(left, i + 1, tupdesc, &lnull);
-		Datum		rdatum = index_getattr(right, i + 1, tupdesc, &rnull);
-
-		if (lnull != rnull)
-			break;
-		if (!lnull &&
-			DatumGetInt32(FunctionCall2Coll(&col->cmp, col->collation,
-											ldatum, rdatum)) != 0)
-			break;
-		nequal++;
-	}
-
-	if (left != lastleft)
-		pfree(left);
-	if (right != firstright)
-		pfree(right);
-	return nequal;
 }
 
 /*
@@ -293,9 +251,10 @@ bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo, IndexTuple *items,
 	/*
 	 * Every split point in the interval lies between its lowest and highest,
 	 * so the penalty of splitting between those two is the least any of them
-	 * can have.  If even that is all of the key, the interval is inside one
-	 * run of equal keys, and the strategy changes, as in nbtree's
-	 * _bt_strategy.
+	 * can have.  The penalty is the number of attributes the high key keeps
+	 * (bark_keep_natts); nkeyatts + 1 means the two items are equal on all
+	 * of them, so the interval is inside one run of equal keys, and the
+	 * strategy changes, as in nbtree's _bt_strategy.
 	 */
 	interval = bark_split_interval(splits, nsplits, totalbytes);
 	low = high = splits[0].firstright;
@@ -304,12 +263,12 @@ bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo, IndexTuple *items,
 		low = Min(low, splits[i].firstright);
 		high = Max(high, splits[i].firstright);
 	}
-	perfectpenalty = bark_split_penalty(index, keyinfo,
-										items[low - 1], items[high]);
-	if (perfectpenalty == nkeyatts)
+	perfectpenalty = bark_keep_natts(index, keyinfo,
+									 items[low - 1], items[high]);
+	if (perfectpenalty > nkeyatts)
 	{
-		if (bark_split_penalty(index, keyinfo, items[pagelow - 1],
-							   items[pagehigh]) < nkeyatts)
+		if (bark_keep_natts(index, keyinfo, items[pagelow - 1],
+							items[pagehigh]) <= nkeyatts)
 		{
 			/*
 			 * The page is not one run: consider every split point and take
@@ -317,7 +276,7 @@ bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo, IndexTuple *items,
 			 */
 			manyduplicates = true;
 			interval = nsplits;
-			perfectpenalty = nkeyatts - 1;
+			perfectpenalty = nkeyatts;
 		}
 		else if (rightmost ||
 				 bark_compare_itups(keyinfo, index, orighikey,
@@ -339,9 +298,9 @@ bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo, IndexTuple *items,
 	/* The lowest penalty wins; ties go to the point closest to the target. */
 	for (int i = 0; i < interval; i++)
 	{
-		int			penalty = bark_split_penalty(index, keyinfo,
-												 items[splits[i].firstright - 1],
-												 items[splits[i].firstright]);
+		int			penalty = bark_keep_natts(index, keyinfo,
+											  items[splits[i].firstright - 1],
+											  items[splits[i].firstright]);
 
 		if (penalty < bestpenalty)
 		{

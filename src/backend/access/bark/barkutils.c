@@ -405,6 +405,57 @@ out:
 	return result;
 }
 
+/*
+ * The number of leading key attributes a pivot that separates `lastleft` from
+ * `firstright`, adjacent leaf items in key order, must keep: one more than the
+ * number of leading attributes on which the two are equal.  A return of
+ * nkeyatts + 1 means they are equal on every key attribute; nbtree then keeps
+ * a heap TID, and BARK, which has none, keeps every key attribute.  A port of
+ * nbtree's _bt_keep_natts, also used as the penalty of a split point.
+ *
+ * Equality is decided by the opclass comparator (NULLs equal only to NULLs),
+ * not by image equality: the pivot must compare correctly against both keys,
+ * and two values can have different images yet compare equal.  An OVERSIZED
+ * item's key is read from its overflow chain.
+ */
+int
+bark_keep_natts(Relation index, BarkKeyInfo *keyinfo, IndexTuple lastleft,
+				IndexTuple firstright)
+{
+	TupleDesc	tupdesc = RelationGetDescr(index);
+	IndexTuple	left = lastleft;
+	IndexTuple	right = firstright;
+	int			keepnatts = 1;
+
+	if (BarkEntryGetShape(left) == BARK_SHAPE_OVERSIZED)
+		left = bark_fetch_oversized(index, left);
+	if (BarkEntryGetShape(right) == BARK_SHAPE_OVERSIZED)
+		right = bark_fetch_oversized(index, right);
+
+	for (int i = 0; i < keyinfo->nkeys; i++)
+	{
+		BarkKeyColumn *col = &keyinfo->cols[i];
+		bool		lnull;
+		bool		rnull;
+		Datum		ldatum = index_getattr(left, i + 1, tupdesc, &lnull);
+		Datum		rdatum = index_getattr(right, i + 1, tupdesc, &rnull);
+
+		if (lnull != rnull)
+			break;
+		if (!lnull &&
+			DatumGetInt32(FunctionCall2Coll(&col->cmp, col->collation,
+											ldatum, rdatum)) != 0)
+			break;
+		keepnatts++;
+	}
+
+	if (left != lastleft)
+		pfree(left);
+	if (right != firstright)
+		pfree(right);
+	return keepnatts;
+}
+
 /* ----------------------------------------------------------------------------
  * LIST entry construction and reading
  *
