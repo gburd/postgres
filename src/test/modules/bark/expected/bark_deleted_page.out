@@ -1,0 +1,260 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_attach_descend s1_count s2_vacuum s3_wakeup_descend s1_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s1_attach_descend: 
+	SELECT injection_points_attach('bark-search-descend', 'wait');
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_count: SELECT count(*) AS index_count FROM bark_dp WHERE a >= 1500; <waiting ...>
+step s2_vacuum: VACUUM (INDEX_CLEANUP ON, TRUNCATE OFF) bark_dp;
+step s3_wakeup_descend: 
+	SELECT injection_points_detach('bark-search-descend');
+	SELECT injection_points_wakeup('bark-search-descend');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_count: <... completed>
+index_count
+-----------
+         10
+(1 row)
+
+step s1_check: 
+	SELECT bark_index_check('bark_dp_idx');
+	BEGIN;
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_indexonlyscan = off;
+	SELECT count(*) AS heap_count_from_1500 FROM bark_dp WHERE a >= 1500;
+	SELECT count(*) AS heap_count FROM bark_dp;
+	COMMIT;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+heap_count_from_1500
+--------------------
+                  10
+(1 row)
+
+heap_count
+----------
+      1009
+(1 row)
+
+
+starting permutation: s1_snapshot s2_vacuum s2_xid s2_vacuum s2_report s2_insert1 s2_report s1_commit s2_vacuum s2_report s2_insert2 s2_report s1_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s1_snapshot: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT count(*) AS snapshot_count FROM bark_dp;
+
+snapshot_count
+--------------
+          1009
+(1 row)
+
+step s2_vacuum: VACUUM (INDEX_CLEANUP ON, TRUNCATE OFF) bark_dp;
+step s2_xid: SELECT pg_current_xact_id() IS NOT NULL AS xid_assigned;
+xid_assigned
+------------
+t           
+(1 row)
+
+step s2_vacuum: VACUUM (INDEX_CLEANUP ON, TRUNCATE OFF) bark_dp;
+step s2_report: 
+	SELECT pg_relation_size('bark_dp_idx') / 8192 - built AS pages_added,
+		   (SELECT count(*) FROM pg_freespace('bark_dp_idx')
+			 WHERE avail > 0) AS free_pages
+	  FROM bark_dp_built;
+
+pages_added|free_pages
+-----------+----------
+          0|         0
+(1 row)
+
+step s2_insert1: INSERT INTO bark_dp SELECT g FROM generate_series(3001, 3500) g;
+step s2_report: 
+	SELECT pg_relation_size('bark_dp_idx') / 8192 - built AS pages_added,
+		   (SELECT count(*) FROM pg_freespace('bark_dp_idx')
+			 WHERE avail > 0) AS free_pages
+	  FROM bark_dp_built;
+
+pages_added|free_pages
+-----------+----------
+          1|         0
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_vacuum: VACUUM (INDEX_CLEANUP ON, TRUNCATE OFF) bark_dp;
+step s2_report: 
+	SELECT pg_relation_size('bark_dp_idx') / 8192 - built AS pages_added,
+		   (SELECT count(*) FROM pg_freespace('bark_dp_idx')
+			 WHERE avail > 0) AS free_pages
+	  FROM bark_dp_built;
+
+pages_added|free_pages
+-----------+----------
+          1|         5
+(1 row)
+
+step s2_insert2: INSERT INTO bark_dp SELECT g FROM generate_series(3501, 3800) g;
+step s2_report: 
+	SELECT pg_relation_size('bark_dp_idx') / 8192 - built AS pages_added,
+		   (SELECT count(*) FROM pg_freespace('bark_dp_idx')
+			 WHERE avail > 0) AS free_pages
+	  FROM bark_dp_built;
+
+pages_added|free_pages
+-----------+----------
+          1|         4
+(1 row)
+
+step s1_check: 
+	SELECT bark_index_check('bark_dp_idx');
+	BEGIN;
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_indexonlyscan = off;
+	SELECT count(*) AS heap_count_from_1500 FROM bark_dp WHERE a >= 1500;
+	SELECT count(*) AS heap_count FROM bark_dp;
+	COMMIT;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+heap_count_from_1500
+--------------------
+                 810
+(1 row)
+
+heap_count
+----------
+      1809
+(1 row)
+
+
+starting permutation: s2_attach_after s2_vacuum s1_cursor s3_wakeup_after s2_report s1_fetch_rest s2_xid s2_vacuum s2_report s1_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s2_attach_after: 
+	SELECT injection_points_attach('bark-bulkdelete-after-page', 'wait',
+		(pg_relation_size('bark_dp_idx') / 8192 - 1)::text);
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s2_vacuum: VACUUM (INDEX_CLEANUP ON, TRUNCATE OFF) bark_dp; <waiting ...>
+step s1_cursor: 
+	BEGIN;
+	DECLARE c CURSOR FOR SELECT a FROM bark_dp WHERE a > 0 ORDER BY a;
+	MOVE FORWARD 800 IN c;
+
+step s3_wakeup_after: 
+	SELECT injection_points_detach('bark-bulkdelete-after-page');
+	SELECT injection_points_wakeup('bark-bulkdelete-after-page');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s2_vacuum: <... completed>
+step s2_report: 
+	SELECT pg_relation_size('bark_dp_idx') / 8192 - built AS pages_added,
+		   (SELECT count(*) FROM pg_freespace('bark_dp_idx')
+			 WHERE avail > 0) AS free_pages
+	  FROM bark_dp_built;
+
+pages_added|free_pages
+-----------+----------
+          0|         0
+(1 row)
+
+step s1_fetch_rest: 
+	SELECT bark_dp_fetch_rest('c');
+	COMMIT;
+
+bark_dp_fetch_rest                                   
+-----------------------------------------------------
+209 rows from 801 to 3000, 0 repeated or out of order
+(1 row)
+
+step s2_xid: SELECT pg_current_xact_id() IS NOT NULL AS xid_assigned;
+xid_assigned
+------------
+t           
+(1 row)
+
+step s2_vacuum: VACUUM (INDEX_CLEANUP ON, TRUNCATE OFF) bark_dp;
+step s2_report: 
+	SELECT pg_relation_size('bark_dp_idx') / 8192 - built AS pages_added,
+		   (SELECT count(*) FROM pg_freespace('bark_dp_idx')
+			 WHERE avail > 0) AS free_pages
+	  FROM bark_dp_built;
+
+pages_added|free_pages
+-----------+----------
+          0|         5
+(1 row)
+
+step s1_check: 
+	SELECT bark_index_check('bark_dp_idx');
+	BEGIN;
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_indexonlyscan = off;
+	SELECT count(*) AS heap_count_from_1500 FROM bark_dp WHERE a >= 1500;
+	SELECT count(*) AS heap_count FROM bark_dp;
+	COMMIT;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+heap_count_from_1500
+--------------------
+                  10
+(1 row)
+
+heap_count
+----------
+      1009
+(1 row)
+

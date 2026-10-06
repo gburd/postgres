@@ -590,7 +590,10 @@ are cited by name in each phase's commit messages.
   sbm-backed for clustered value sets; BitmapAnd/BitmapOr via sbm set-algebra.
 * '''A13-A15''' -- deletion, VACUUM, page recycling; then C-DELETE
   delete-marking (<code>amdeletemark</code>/<code>amundomark</code>) once the
-  table is UNDO-backed.
+  table is UNDO-backed. Page recycling follows nbtree: a deleted page keeps
+  its sibling links and records a safexid, and is reused only once
+  <code>GlobalVisCheckRemovableFullXid</code> says no snapshot can still hold
+  a link to it (the README's "Page deletion and recycling").
 * '''A16-A18''' -- parallel build, parallel scan, and the amcheck contract for
   BARK.
 
