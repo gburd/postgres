@@ -447,9 +447,9 @@ SELECT k, after = before AS in_place FROM bark_vgrow_pages ORDER BY k;
 DROP FUNCTION bark_vgrow_counts(text);
 DROP TABLE bark_vgrow, bark_vgrow_cnt, bark_vgrow_pages;
 
--- A second VACUUM after one that deleted a leaf page.  The deleted page keeps
--- the items it had when it was unlinked, its old high key among them, and
--- VACUUM used to read it as a live leaf and fail with "BARK leaf entry has
+-- A second VACUUM after one that deleted a leaf page.  A deleted page once
+-- kept the items it had when it was unlinked, its old high key among them,
+-- and VACUUM used to read it as a live leaf and fail with "BARK leaf entry has
 -- unexpected shape".  A temp table, so that only this session's snapshot
 -- limits what VACUUM can remove.
 CREATE TEMP TABLE bark_vac2 (a int);
@@ -467,6 +467,54 @@ RESET enable_seqscan;
 RESET enable_bitmapscan;
 SELECT count(*) AS heap_count FROM bark_vac2;
 DROP TABLE bark_vac2;
+
+-- Deleted leaves keep their sibling links.  Delete the middle of the key
+-- range, VACUUM (deleting the emptied leaves), and scan across the deleted
+-- range forward, backward, and with a scroll cursor that changes direction
+-- there; each must return exactly the live keys.  amcheck checks the deleted
+-- pages' layout and the live pages' links.  The deleted pages are reused once
+-- no transaction older than their deletion remains: safexid is the next XID
+-- at deletion, so a transaction that took an XID after it must have ended,
+-- and the second VACUUM below then records them.  Refilling
+-- the range then takes the deleted pages before it extends the index: on
+-- 8kB pages the index has 19 pages, the VACUUM deletes 7, and the refill needs
+-- 13, so it grows the index to 25 pages with reuse and to 32 without.  A temp
+-- table, so that only this session's snapshot holds back reuse.
+CREATE TEMP TABLE bark_dpg (a int);
+CREATE INDEX bark_dpg_idx ON bark_dpg USING bark (a);
+INSERT INTO bark_dpg SELECT g FROM generate_series(1, 6000) g;
+CREATE TEMP TABLE bark_dpg_sz AS
+  SELECT pg_relation_size('bark_dpg_idx') / 8192 AS built_pages;
+DELETE FROM bark_dpg WHERE a BETWEEN 1500 AND 4500;
+VACUUM bark_dpg;
+SELECT bark_index_check('bark_dpg_idx');
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT (SELECT array_agg(a) FROM
+          (SELECT a FROM bark_dpg WHERE a BETWEEN 1000 AND 5000 ORDER BY a) s) =
+       (SELECT array_agg(g ORDER BY g) FROM generate_series(1000, 5000) g
+         WHERE g NOT BETWEEN 1500 AND 4500) AS forward_ok,
+       (SELECT array_agg(a) FROM
+          (SELECT a FROM bark_dpg WHERE a BETWEEN 1000 AND 5000 ORDER BY a DESC) s) =
+       (SELECT array_agg(g ORDER BY g DESC) FROM generate_series(1000, 5000) g
+         WHERE g NOT BETWEEN 1500 AND 4500) AS backward_ok;
+BEGIN;
+DECLARE bark_dpg_c SCROLL CURSOR FOR SELECT a FROM bark_dpg ORDER BY a;
+MOVE FORWARD 1497 IN bark_dpg_c;
+FETCH FORWARD 3 FROM bark_dpg_c;
+FETCH BACKWARD 3 FROM bark_dpg_c;
+COMMIT;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT pg_current_xact_id() > '0'::xid8 AS xid_assigned;
+VACUUM bark_dpg;
+INSERT INTO bark_dpg SELECT g FROM generate_series(1500, 4500) g;
+SELECT bark_index_check('bark_dpg_idx');
+SELECT pg_relation_size('bark_dpg_idx') / 8192 < built_pages + 10
+         AS refill_reused_pages
+  FROM bark_dpg_sz;
+SELECT count(*) AS live_count FROM bark_dpg;
+DROP TABLE bark_dpg, bark_dpg_sz;
 
 -- BitmapAnd / BitmapOr: a BARK bitmap scan must produce an exact TIDBitmap
 -- that the executor can combine with other bitmaps.  Build two BARK indexes
@@ -833,15 +881,26 @@ DROP TABLE bark_cost_dup;
 -- returns them (plus freed overflow-chain pages) to the free space map, and the
 -- page allocator reuses them before extending the relation.  A delete-heavy
 -- workload that repeatedly empties most of the index and refills it with a
--- disjoint key range must therefore NOT grow the relation without bound.  Here
--- four full delete/vacuum/insert cycles must leave the index within a small
--- constant of its one-cycle size (the old behavior doubled it every cycle).
--- The scan results after reclamation must still match a sequential scan.
+-- disjoint key range must therefore NOT grow the relation without bound.
+--
+-- A deleted page is reused only once every transaction that might still hold
+-- a link to it has ended (its safexid), as in nbtree.  Each cycle below
+-- deletes pages (first VACUUM), refills, and vacuums again; the refill's
+-- transaction ends after the deletion, so the second VACUUM records the
+-- deleted pages in the free space map, and the next cycle's refill reuses
+-- them.  Only a refill that finds no recorded pages extends the index, and
+-- that can happen once: in cycle 1, or in cycle 2 if another session's commit
+-- let cycle 1's refill reuse its own cycle's pages.  So four cycles must
+-- leave the index within one refill (about base_pages) of its starting size;
+-- without reuse each cycle adds one.  On 8kB pages the index has 139 pages,
+-- then 275, 278, 281 and 284 after each cycle.  Temp tables, so that other
+-- sessions' snapshots do not hold back reuse.  The scan results after
+-- reclamation must still match a sequential scan.
 -- ===========================================================================
-CREATE TABLE bark_recycle (a int) WITH (autovacuum_enabled = off);
+CREATE TEMP TABLE bark_recycle (a int);
 CREATE INDEX bark_recycle_idx ON bark_recycle USING bark (a);
 INSERT INTO bark_recycle SELECT g FROM generate_series(1, 50000) g;
--- Record the one-cycle size, then run four disjoint delete/vacuum/insert cycles.
+-- Record the starting size, then run four disjoint cycles.
 CREATE TEMP TABLE bark_recycle_sz AS
   SELECT pg_relation_size('bark_recycle_idx') / 8192 AS base_pages;
 -- cycle 1
@@ -864,10 +923,9 @@ DELETE FROM bark_recycle WHERE a > 301000;
 VACUUM bark_recycle;
 INSERT INTO bark_recycle SELECT g FROM generate_series(400001, 450000) g;
 VACUUM bark_recycle;
--- Reuse works: growth across four cycles stays well under a single refill's
--- worth of pages (~245).  Without reclamation this would be ~4x.  Report a
--- boolean so the expected output is stable across platforms.
-SELECT (pg_relation_size('bark_recycle_idx') / 8192) <= base_pages + 100
+-- Reuse works: growth across four cycles stays within one refill's worth of
+-- pages.  Report a boolean so the expected output is stable across platforms.
+SELECT (pg_relation_size('bark_recycle_idx') / 8192) <= 2 * base_pages + 20
          AS index_growth_bounded
   FROM bark_recycle_sz;
 DROP TABLE bark_recycle_sz;
@@ -886,8 +944,10 @@ DROP TABLE bark_recycle;
 
 -- Freed overflow-chain pages are reclaimed too: a table of oversized keys that
 -- is bulk-deleted and vacuumed, then refilled with new oversized keys, reuses
--- the freed BARK_OVERFLOW pages rather than extending without bound.
-CREATE TABLE bark_recycle_big (a text) WITH (autovacuum_enabled = off);
+-- the freed BARK_OVERFLOW pages rather than extending without bound.  As
+-- above, the first refill cannot reuse them yet (on 8kB pages: 5 pages, then
+-- 7, 8 and 8), and a temp table keeps other sessions' snapshots out of it.
+CREATE TEMP TABLE bark_recycle_big (a text);
 CREATE INDEX bark_recycle_big_idx ON bark_recycle_big USING bark (a);
 INSERT INTO bark_recycle_big
   SELECT repeat('k', 4000) || lpad(g::text, 8, '0')

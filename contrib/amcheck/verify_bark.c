@@ -138,16 +138,23 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 	}
 
 	/*
-	 * A deleted page has been unlinked from the tree and recorded free for
-	 * reuse; it holds no live items.  Verify it is genuinely unlinked (no
-	 * sibling links) and skip the item/sibling checks below.
+	 * A deleted page has been unlinked from the tree and holds no items, only
+	 * its safexid.  It keeps the sibling links it had when it was deleted,
+	 * for readers that still held a link to it, and those siblings need not
+	 * link back to it any more, so the link checks below do not apply.  Check
+	 * only that it has the deleted-page layout (see BarkDeletedPageData).
 	 */
 	if (BarkPageIsDeleted(opaque))
 	{
-		if (!BarkPageLeftmost(opaque) || !BarkPageRightmost(opaque))
+		PageHeader	phdr = (PageHeader) page;
+
+		if (phdr->pd_lower != SizeOfPageHeaderData ||
+			phdr->pd_upper != phdr->pd_special -
+			MAXALIGN(sizeof(BarkDeletedPageData)) ||
+			(opaque->bark_flags & (BARK_LEAF | BARK_OVERFLOW)) != 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INDEX_CORRUPTED),
-					 errmsg("BARK index \"%s\" has a deleted page %u that is still linked to a sibling",
+					 errmsg("BARK index \"%s\" has a deleted page %u that does not have the deleted-page layout",
 							RelationGetRelationName(rel), blkno)));
 		UnlockReleaseBuffer(buf);
 		return;

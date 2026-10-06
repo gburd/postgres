@@ -10,8 +10,10 @@
 # VACUUM while the heap line pointers they reference are freed.
 #
 # The setup builds an index, deletes and vacuums a key range so that leaf
-# blocks are deleted and recorded in the free space map (bark_vs_free), then
-# deletes every other row of a higher key range for the next VACUUM to remove.
+# blocks are deleted, and vacuums again, after a transaction that ends later
+# than the deletion, so that the deleted blocks are recorded in the free space
+# map (bark_vs_free).  Then it deletes every other row of a higher key range
+# for the next VACUUM to remove.
 #
 # The first permutation stops VACUUM after the block just above the free ones
 # (bark-bulkdelete-after-page, conditioned on that block number), then splits
@@ -43,7 +45,15 @@ setup
 }
 setup
 {
-	CREATE TABLE bark_vs_free AS
+	CREATE TABLE bark_vs_free (blkno int8);
+}
+setup
+{
+	VACUUM (INDEX_CLEANUP ON) bark_vs;
+}
+setup
+{
+	INSERT INTO bark_vs_free
 		SELECT blkno FROM pg_freespace('bark_vs_idx') WHERE avail > 0;
 	DELETE FROM bark_vs WHERE a BETWEEN 20010 AND 30000 AND a % 20 = 0;
 

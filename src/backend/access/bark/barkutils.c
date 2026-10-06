@@ -178,17 +178,27 @@ bark_allequalimage(Relation index)
 
 /*
  * Allocate a page for the index, reusing an FSM-recorded free page when one is
- * available and extending the relation only otherwise.  Modeled on bloom's
- * BloomNewBuffer: a recycled page may have been grabbed by someone else since
- * the FSM named it, so we take the lock conditionally and re-check that the
- * page really is free (new, or still flagged BARK_DELETED) before handing it
- * back; a page that no longer qualifies is skipped and the FSM is asked again.
+ * available and extending the relation only otherwise.  Modeled on nbtree's
+ * _bt_allocbuf: a page the FSM names may have been reused by someone else
+ * since, so we take the lock conditionally and re-check that the page really
+ * is free before handing it back; a page that no longer qualifies is skipped
+ * and the FSM is asked again.
+ *
+ * A page is free when it is new or when it is deleted and safe to recycle
+ * (BarkPageIsRecyclable).  VACUUM records a deleted page in the FSM only once
+ * it is recyclable, so the second test normally passes; it is repeated here
+ * because the FSM is not WAL-logged and a page can be listed there by mistake
+ * (after a crash, say).  heaprel is the index's heap, which chooses the
+ * visibility horizon for that test; callers that have none pass NULL, which
+ * uses the stricter horizon of shared relations (see BarkPageIsRecyclable).
+ * A deleted page that is not yet recyclable is left alone; a later VACUUM
+ * records it again.
  *
  * The returned buffer is pinned and exclusive-locked; its page is left as-is
  * (new or deleted), so the caller's PageInit fully reinitializes it.
  */
 Buffer
-bark_get_free_page(Relation index)
+bark_get_free_page(Relation index, Relation heaprel)
 {
 	Buffer		buf;
 
@@ -216,8 +226,8 @@ bark_get_free_page(Relation index)
 
 			if (PageIsNew(page))
 				return buf;		/* never initialized: OK */
-			if (BarkPageIsDeleted(BarkPageGetOpaque(page)))
-				return buf;		/* deleted and FSM-recycled: OK */
+			if (BarkPageIsRecyclable(page, heaprel))
+				return buf;		/* deleted long enough ago: OK */
 
 			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 		}
@@ -1080,7 +1090,8 @@ bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
  * leaves only orphaned, BARK_P_NONE-terminated pages that no entry references.
  */
 BlockNumber
-bark_write_overflow_chain(Relation index, IndexTuple full, Size fulllen)
+bark_write_overflow_chain(Relation index, Relation heaprel, IndexTuple full,
+						  Size fulllen)
 {
 	BlockNumber nchunks = bark_overflow_nchunks(fulllen);
 	Buffer	   *bufs = palloc(nchunks * sizeof(Buffer));
@@ -1090,7 +1101,7 @@ bark_write_overflow_chain(Relation index, IndexTuple full, Size fulllen)
 	/* Reserve all chunk blocks first so each page's next-link is known. */
 	for (BlockNumber i = 0; i < nchunks; i++)
 	{
-		bufs[i] = bark_get_free_page(index);
+		bufs[i] = bark_get_free_page(index, heaprel);
 		blks[i] = BufferGetBlockNumber(bufs[i]);
 	}
 	firstblk = blks[0];
@@ -1144,6 +1155,18 @@ bark_fetch_oversized(Relation index, IndexTuple entry)
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 		page = BufferGetPage(buf);
 		opaque = BarkPageGetOpaque(page);
+
+		/*
+		 * Callers read a chain while holding a lock on the page of the entry
+		 * that owns it, and VACUUM frees a chain only after removing that
+		 * entry under a cleanup lock, so a chain page is never found freed
+		 * (deleted, or reused for something else).  Check anyway: a freed
+		 * page's chunk bytes are gone, and copying them would return a wrong
+		 * value rather than fail.
+		 */
+		if (PageIsNew(page) || !BarkPageIsOverflow(opaque))
+			elog(ERROR, "BARK overflow chain for an oversized entry reaches block %u, which is not an overflow page",
+				 blkno);
 		len = Min((Size) BarkOverflowChunkSize, fulllen - got);
 		memcpy(out + got, BarkOverflowPageData(page), len);
 		got += len;
@@ -1158,49 +1181,44 @@ bark_fetch_oversized(Relation index, IndexTuple entry)
 }
 
 /*
- * Free the overflow chain an OVERSIZED entry references: mark each page deleted,
- * unlink it, and record it in the FSM so a later overflow write or split reuses
- * it instead of extending the relation.  Called by VACUUM when the owning leaf
- * entry is removed.  WAL-logged under its own generic-WAL records; the FSM
- * record is a hint made durable by the subsequent IndexFreeSpaceMapVacuum in
- * barkvacuumcleanup.
+ * Free the overflow chain an OVERSIZED entry references: make each page a
+ * deleted page (BarkPageSetDeleted).  Called by VACUUM when the owning leaf
+ * entry is removed.  WAL-logged under its own generic-WAL records.
  *
- * An overflow page carries no sibling/parent references other than its own
- * forward chain link (which we clear here), so it is safe to recycle the moment
- * the leaf entry that owned the chain is gone -- no half-dead protocol needed.
+ * The pages are not put in the FSM here.  A scan that copied the OVERSIZED
+ * entry from the leaf before VACUUM removed it may still be walking the
+ * chain, so each page keeps its link to the next chunk and is reused only
+ * once its safexid shows that no such scan can remain.  barkvacuumcleanup
+ * records the pages in the FSM when BarkPageIsRecyclable allows it, in this
+ * VACUUM or a later one.  Returns the number of pages freed.
  */
-void
+BlockNumber
 bark_free_oversized(Relation index, IndexTuple entry)
 {
 	BlockNumber blkno = BarkOverflowGetFirstBlock(entry);
+	BlockNumber nfreed = 0;
 
 	while (blkno != BARK_P_NONE)
 	{
 		Buffer		buf = ReadBuffer(index, blkno);
-		Page		page;
-		BarkPageOpaque opaque;
 		BlockNumber nextblk;
 		GenericXLogState *gstate;
 		Page		p;
 
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-		page = BufferGetPage(buf);
-		opaque = BarkPageGetOpaque(page);
-		nextblk = opaque->bark_next;
+		nextblk = BarkPageGetOpaque(BufferGetPage(buf))->bark_next;
 
 		gstate = GenericXLogStart(index);
 		p = GenericXLogRegisterBuffer(gstate, buf, 0);
-		BarkPageGetOpaque(p)->bark_flags |= BARK_DELETED;
-		BarkPageGetOpaque(p)->bark_next = BARK_P_NONE;
+		BarkPageSetDeleted(p, ReadNextFullTransactionId());
 		GenericXLogFinish(gstate);
 
 		UnlockReleaseBuffer(buf);
-
-		/* Make the now-deleted page available for reuse. */
-		RecordFreeIndexPage(index, blkno);
+		nfreed++;
 
 		blkno = nextblk;
 	}
+	return nfreed;
 }
 
 /* ----------------------------------------------------------------------------
