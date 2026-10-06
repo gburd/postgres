@@ -948,6 +948,7 @@ bark_parallel_scan_and_sort(Relation heap, Relation index,
 	bs.heap = heap;
 	bs.index = index;
 	bs.keyinfo = bark_build_keyinfo(index);
+	bs.keyinfo->heaprel = heap;
 	bs.nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	bs.isunique = false;		/* leader enforces uniqueness during load */
 	bs.sortstate = sortstate;
@@ -1270,6 +1271,7 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	bs.heap = heap;
 	bs.index = index;
 	bs.keyinfo = bark_build_keyinfo(index);
+	bs.keyinfo->heaprel = heap;
 	bs.nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	bs.nblocks = 1;				/* block 0 is reserved for the meta page */
 	bs.isunique = indexInfo->ii_Unique;

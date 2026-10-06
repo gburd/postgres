@@ -26,10 +26,12 @@
 #include "access/amapi.h"
 #include "access/amlocator.h"
 #include "access/bark.h"
+#include "access/barkxlog.h"
 #include "access/generic_xlog.h"
 #include "access/nbtree.h"
 #include "access/reloptions.h"
 #include "commands/vacuum.h"
+#include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
 #include "storage/ipc.h"
@@ -137,8 +139,8 @@ bark_find_parent_downlink(Relation index, BarkKeyInfo *keyinfo,
  * its right sibling's left link are spliced across it), its key space passes
  * to its right sibling in the parent, and the page becomes a deleted page
  * (BarkPageSetDeleted).  All four touched pages (left sibling, target, right
- * sibling, parent) are updated under one generic-WAL record so the unlink is
- * crash-atomic.
+ * sibling, parent) are updated under one XLOG_BARK_UNLINK_PAGE record so the
+ * unlink is crash-atomic.
  *
  * The deleted page keeps its sibling links, as in nbtree, so a scan or
  * descent that read a link to it before the deletion moves right through it.
@@ -178,8 +180,11 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 	BlockNumber rightblk;
 	IndexTuple	hikey;
 	OffsetNumber downoff;
-	GenericXLogState *gstate;
-	Page		p;
+	Page		lpage;
+	Page		rpage;
+	Page		ppage;
+	IndexTuple	downlink;
+	XLogRecPtr	recptr;
 	bool		lockedl;
 	bool		lockedt;
 
@@ -304,25 +309,56 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 	 * nobody can hold a link to the page.
 	 */
 	*safexid = ReadNextFullTransactionId();
-	gstate = GenericXLogStart(index);
+	lpage = BufferGetPage(lbuf);
+	rpage = BufferGetPage(rbuf);
+	ppage = BufferGetPage(pbuf);
+
+	/* No ereport(ERROR) until changes are logged */
+	START_CRIT_SECTION();
+
+	BarkPageGetOpaque(lpage)->bark_next = rightblk;
+	BarkPageGetOpaque(rpage)->bark_prev = leftblk;
+	downlink = (IndexTuple) PageGetItem(ppage, PageGetItemId(ppage, downoff));
+	BarkEntrySetDownLink(downlink, rightblk);
+	PageIndexTupleDelete(ppage, OffsetNumberNext(downoff));
+	BarkPageSetDeleted(page, leftblk, rightblk, *safexid);
+
+	MarkBufferDirty(lbuf);
+	MarkBufferDirty(buf);
+	MarkBufferDirty(rbuf);
+	MarkBufferDirty(pbuf);
+
+	if (RelationNeedsWAL(index))
 	{
-		Page		lp = GenericXLogRegisterBuffer(gstate, lbuf, 0);
-		Page		rp = GenericXLogRegisterBuffer(gstate, rbuf, 0);
-		Page		pp = GenericXLogRegisterBuffer(gstate, pbuf, 0);
-		IndexTuple	downlink;
+		xl_bark_unlink_page xlrec;
 
-		p = GenericXLogRegisterBuffer(gstate, buf, 0);
+		xlrec.leftsib = leftblk;
+		xlrec.rightsib = rightblk;
+		xlrec.safexid = *safexid;
+		xlrec.poffset = downoff;
 
-		BarkPageGetOpaque(lp)->bark_next = rightblk;
-		BarkPageGetOpaque(rp)->bark_prev = leftblk;
-		downlink = (IndexTuple) PageGetItem(pp, PageGetItemId(pp, downoff));
-		BarkEntrySetDownLink(downlink, rightblk);
-		PageIndexTupleDelete(pp, OffsetNumberNext(downoff));
+		/*
+		 * The target is rebuilt from the record in redo, so it needs no
+		 * image, as in _bt_unlink_halfdead_page.
+		 */
+		XLogBeginInsert();
+		XLogRegisterBuffer(0, buf, REGBUF_WILL_INIT);
+		XLogRegisterBuffer(1, lbuf, REGBUF_STANDARD);
+		XLogRegisterBuffer(2, rbuf, REGBUF_STANDARD);
+		XLogRegisterBuffer(3, pbuf, REGBUF_STANDARD);
+		XLogRegisterData(&xlrec, SizeOfBarkUnlinkPage);
 
-		BarkPageSetDeleted(p, *safexid);
-		BarkPageGetOpaque(p)->bark_cycleid = 0;
+		recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_UNLINK_PAGE);
 	}
-	GenericXLogFinish(gstate);
+	else
+		recptr = XLogGetFakeLSN(index);
+
+	PageSetLSN(lpage, recptr);
+	PageSetLSN(page, recptr);
+	PageSetLSN(rpage, recptr);
+	PageSetLSN(ppage, recptr);
+
+	END_CRIT_SECTION();
 
 	UnlockReleaseBuffer(rbuf);
 	UnlockReleaseBuffer(buf);
@@ -351,6 +387,96 @@ barkinsert(Relation index, Datum *values, bool *isnull,
 {
 	return bark_insert(index, values, isnull, ht_ctid, heapRel,
 					   checkUnique, indexUnchanged, indexInfo);
+}
+
+/*
+ * Apply VACUUM's changes to leaf `buf` and WAL-log them as XLOG_BARK_VACUUM:
+ * rewrite the entries at updatedoffsets with `updated` (each no larger than
+ * the entry it replaces), delete the entries at `deletable`, and clear the
+ * vacuum cycle ID.  As nbtree's _bt_delitems_vacuum, the rewrites come first,
+ * since PageIndexTupleOverwrite keeps offsets stable and the deletion
+ * renumbers them.  `buf` is cleanup-locked.  Redo (bark_xlog_vacuum) makes
+ * the same changes in the same order.
+ */
+static void
+bark_delitems_vacuum(Relation index, Buffer buf,
+					 OffsetNumber *deletable, int ndeletable,
+					 OffsetNumber *updatedoffsets, IndexTuple *updated,
+					 int nupdated)
+{
+	Page		page = BufferGetPage(buf);
+	bool		needswal = RelationNeedsWAL(index);
+	char	   *updatedbuf = NULL;
+	Size		updatedbuflen = 0;
+	XLogRecPtr	recptr;
+
+	/*
+	 * Gather the new entries into one buffer for the WAL record, as
+	 * _bt_delitems_update does, each padded to MAXALIGN so that redo can step
+	 * from one to the next.
+	 */
+	if (needswal && nupdated > 0)
+	{
+		for (int i = 0; i < nupdated; i++)
+			updatedbuflen += MAXALIGN(IndexTupleSize(updated[i]));
+		updatedbuf = palloc0(updatedbuflen);
+		updatedbuflen = 0;
+		for (int i = 0; i < nupdated; i++)
+		{
+			memcpy(updatedbuf + updatedbuflen, updated[i],
+				   IndexTupleSize(updated[i]));
+			updatedbuflen += MAXALIGN(IndexTupleSize(updated[i]));
+		}
+	}
+
+	/* No ereport(ERROR) until changes are logged */
+	START_CRIT_SECTION();
+
+	for (int i = 0; i < nupdated; i++)
+	{
+		if (!PageIndexTupleOverwrite(page, updatedoffsets[i], updated[i],
+									 IndexTupleSize(updated[i])))
+			elog(PANIC, "failed to rewrite BARK leaf entry at offset %u of block %u of index \"%s\"",
+				 updatedoffsets[i], BufferGetBlockNumber(buf),
+				 RelationGetRelationName(index));
+	}
+	if (ndeletable > 0)
+		PageIndexMultiDelete(page, deletable, ndeletable);
+	BarkPageGetOpaque(page)->bark_cycleid = 0;
+
+	MarkBufferDirty(buf);
+
+	if (needswal)
+	{
+		xl_bark_vacuum xlrec;
+
+		xlrec.ndeleted = ndeletable;
+		xlrec.nupdated = nupdated;
+
+		XLogBeginInsert();
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+		XLogRegisterData(&xlrec, SizeOfBarkVacuum);
+		if (ndeletable > 0)
+			XLogRegisterBufData(0, deletable,
+								ndeletable * sizeof(OffsetNumber));
+		if (nupdated > 0)
+		{
+			XLogRegisterBufData(0, updatedoffsets,
+								nupdated * sizeof(OffsetNumber));
+			XLogRegisterBufData(0, updatedbuf, updatedbuflen);
+		}
+
+		recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_VACUUM);
+	}
+	else
+		recptr = XLogGetFakeLSN(index);
+
+	PageSetLSN(page, recptr);
+
+	END_CRIT_SECTION();
+
+	if (updatedbuf != NULL)
+		pfree(updatedbuf);
 }
 
 /*
@@ -413,10 +539,12 @@ bark_vacuum_page(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		OffsetNumber todelete[MaxOffsetNumber];
 		int			ndelete = 0;
 		int			ndelete_single = 0;
+		OffsetNumber updatedoffsets[MaxOffsetNumber];
+		IndexTuple	updated[MaxOffsetNumber];
+		int			nupdated = 0;
 		BlockNumber oversized_free[MaxOffsetNumber];
 		int			noversized_free = 0;
-		GenericXLogState *gstate = NULL;
-		Page		p = NULL;
+		bool		clearcycleid;
 		BlockNumber backtrack_to = BARK_P_NONE;
 
 		buf = ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_NORMAL,
@@ -456,13 +584,13 @@ bark_vacuum_page(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		maxoff = PageGetMaxOffsetNumber(page);
 
 		/*
-		 * First pass: shrink LIST entries that lost some (but not all) members
-		 * in place with PageIndexTupleOverwrite, which keeps every offset
-		 * number stable (it only moves the item data).  Fully-dead entries
-		 * (SINGLE whose TID is dead, or LIST whose every member is dead) are
-		 * recorded for the MultiDelete pass below.  Doing the shrinks first and
-		 * the deletes last means the recorded offsets stay valid until the
-		 * single MultiDelete renumbers them.
+		 * Decide what to do to the page before changing it, so that the
+		 * changes and their WAL record can be made in one critical section,
+		 * as _bt_delitems_vacuum does.  Fully-dead entries (SINGLE or
+		 * OVERSIZED whose TID is dead, LIST or POSTING whose every member is
+		 * dead) are collected for deletion; LIST and POSTING entries that
+		 * lost some members are re-formed with the survivors and collected
+		 * as updates.
 		 */
 		for (OffsetNumber off = BarkPageFirstDataKey(opaque);
 			 off <= maxoff; off = OffsetNumberNext(off))
@@ -483,9 +611,9 @@ bark_vacuum_page(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 				/*
 				 * An OVERSIZED entry holds exactly one heap locator (inline in
 				 * its ref).  If it is dead, delete the leaf entry and remember
-				 * its overflow chain to free after the leaf WAL record finishes
-				 * (freeing the chain starts its own WAL records, which cannot
-				 * nest inside the leaf's generic-WAL state).
+				 * its overflow chain, to free once the leaf no longer
+				 * references it (bark_free_oversized locks and logs each chain
+				 * page in turn, so it does not run under the leaf's lock).
 				 */
 				ItemPointerData loc = BarkOverflowGetRef(itup)->locator;
 
@@ -526,25 +654,18 @@ bark_vacuum_page(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 					continue;
 				}
 
-				if (gstate == NULL)
-				{
-					gstate = GenericXLogStart(index);
-					p = GenericXLogRegisterBuffer(gstate, buf, 0);
-					page = p;	/* overwrite/delete on the registered copy */
-				}
-
 				{
 					/*
 					 * Rebuild with the surviving members, re-choosing the
 					 * shape: a POSTING if its sbm still wins, else a LIST,
 					 * else a plain SINGLE when exactly one survives.  The new
 					 * entry is never larger than the original, so
-					 * PageIndexTupleOverwrite rewrites it in place, in this
-					 * page's one WAL record.  A POSTING entry is sized for
-					 * the removal bound of its set (see bark_form_posting),
-					 * which no subset exceeds; a LIST of fewer locators is
-					 * shorter; a LIST is chosen over the POSTING only when it
-					 * is the smaller; and a SINGLE is smaller than either.
+					 * PageIndexTupleOverwrite rewrites it in place below.  A
+					 * POSTING entry is sized for the removal bound of its set
+					 * (see bark_form_posting), which no subset exceeds; a LIST
+					 * of fewer locators is shorter; a LIST is chosen over the
+					 * POSTING only when it is the smaller; and a SINGLE is
+					 * smaller than either.
 					 */
 					IndexTuple	key = bark_single_from_list(index, itup, NULL);
 					IndexTuple	newentry;
@@ -567,60 +688,44 @@ bark_vacuum_page(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 												  tids, nlive);
 						pfree(key);
 					}
-					Assert(MAXALIGN(IndexTupleSize(newentry)) <=
-						   MAXALIGN(ItemIdGetLength(iid)));
 					if (MAXALIGN(IndexTupleSize(newentry)) >
-						MAXALIGN(ItemIdGetLength(iid)) ||
-						!PageIndexTupleOverwrite(page, off, (char *) newentry,
-												 IndexTupleSize(newentry)))
+						MAXALIGN(ItemIdGetLength(iid)))
 						elog(ERROR, "failed to shrink BARK leaf entry during vacuum: entry at offset %u of block %u grew from %u to %zu bytes",
 							 off, blkno, ItemIdGetLength(iid),
 							 IndexTupleSize(newentry));
-					pfree(newentry);
+					updatedoffsets[nupdated] = off;
+					updated[nupdated++] = newentry;
 				}
 				pfree(tids);
 			}
 		}
 
-		if (ndelete > 0)
-		{
-			if (gstate == NULL)
-			{
-				gstate = GenericXLogStart(index);
-				p = GenericXLogRegisterBuffer(gstate, buf, 0);
-				page = p;
-			}
-			PageIndexMultiDelete(page, todelete, ndelete);
-			stats->tuples_removed += ndelete_single;
-		}
-
 		/*
 		 * Clear our cycle ID from a page split during this VACUUM, so that a
 		 * later backtrack stops here instead of cleaning the page again.
-		 * nbtree does this as an unlogged hint; a generic-WAL page has no
-		 * redo mask for the field, so it is logged, in the page's record when
-		 * there is one.
+		 * nbtree does this as an unlogged hint.  BARK logs it, in the page's
+		 * XLOG_BARK_VACUUM record, because inserts and splits still log the
+		 * whole page through generic WAL: a hint the standby never saw would
+		 * reappear in the next full-page image and fail the consistency
+		 * check.  A page that has nothing to delete gets a record only when
+		 * it has a cycle ID to clear, so a VACUUM that finds nothing to do
+		 * logs nothing.
 		 */
-		if (cycleid != 0 && opaque->bark_cycleid == cycleid)
-		{
-			if (gstate == NULL)
-			{
-				gstate = GenericXLogStart(index);
-				p = GenericXLogRegisterBuffer(gstate, buf, 0);
-				page = p;
-			}
-			BarkPageGetOpaque(page)->bark_cycleid = 0;
-		}
+		clearcycleid = (cycleid != 0 && opaque->bark_cycleid == cycleid);
 
-		if (gstate != NULL)
-			GenericXLogFinish(gstate);
+		if (ndelete > 0 || nupdated > 0 || clearcycleid)
+			bark_delitems_vacuum(index, buf, todelete, ndelete,
+								 updatedoffsets, updated, nupdated);
+		stats->tuples_removed += ndelete_single;
+		for (int i = 0; i < nupdated; i++)
+			pfree(updated[i]);
 
 		UnlockReleaseBuffer(buf);
 
 		/*
 		 * Reclaim the overflow chains of the OVERSIZED entries just deleted,
 		 * now that the leaf no longer references them and its WAL record is
-		 * durable.  Each chain is freed under its own generic-WAL records.
+		 * logged.  Each chain page is freed under its own WAL record.
 		 */
 		for (int i = 0; i < noversized_free; i++)
 		{
@@ -893,6 +998,7 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	 * deleted pages are kept in `pending`, in deletion order, for the FSM.
 	 */
 	keyinfo = bark_build_keyinfo(index);
+	keyinfo->heaprel = info->heaprel;
 	pending = palloc_array(BarkPendingFSM, Max(nempty, 1));
 	for (int i = 0; i < nempty; i++)
 	{
