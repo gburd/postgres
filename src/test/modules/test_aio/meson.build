@@ -25,6 +25,17 @@ tests += {
   'name': 'test_aio',
   'sd': meson.current_source_dir(),
   'bd': meson.current_build_dir(),
+  'pytest': {
+    'env': {
+       'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
+    },
+    'tests': [
+      'pyt/test_001_aio.py',
+      'pyt/test_002_io_workers.py',
+      'pyt/test_003_initdb.py',
+      'pyt/test_004_read_stream.py',
+    ],
+  },
   'tap': {
     'env': {
        'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',

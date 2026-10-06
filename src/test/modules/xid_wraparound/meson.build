@@ -33,4 +33,12 @@ tests += {
       't/004_notify_freeze.pl',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_emergency_vacuum.py',
+      'pyt/test_002_limits.py',
+      'pyt/test_003_wraparounds.py',
+      'pyt/test_004_notify_freeze.py',
+    ],
+  },
 }

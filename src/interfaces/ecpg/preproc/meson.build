@@ -91,6 +91,13 @@ tests += {
   'name': 'ecpg',
   'sd': meson.current_source_dir(),
   'bd': meson.current_build_dir(),
+  'pytest': {
+    'tests': [
+      'pyt/test_001_ecpg_err_warn_msg.py',
+      'pyt/test_002_ecpg_err_warn_msg_informix.py',
+    ],
+    'deps': [ecpg_exe],
+  },
   'tap': {
     'tests': [
       't/001_ecpg_err_warn_msg.pl',

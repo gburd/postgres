@@ -93,4 +93,10 @@ tests += {
     ],
     'deps': libpq_oauth_test_deps,
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_oauth.py',
+    ],
+    'deps': libpq_oauth_test_deps,
+  },
 }

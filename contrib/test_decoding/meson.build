@@ -86,4 +86,9 @@ tests += {
       't/001_repl_stats.pl',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_repl_stats.py',
+    ],
+  },
 }
