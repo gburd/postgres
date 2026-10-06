@@ -429,9 +429,12 @@ ExecSupportsMarkRestore(Path *pathnode)
 		case T_IndexOnlyScan:
 
 			/*
-			 * Not all index types support mark/restore.
+			 * Not all index types support mark/restore.  Nor does a scan with
+			 * ORDER BY operators: its node reorders tuples in a queue that
+			 * restoring the index position would not rewind.
 			 */
-			return castNode(IndexPath, pathnode)->indexinfo->amcanmarkpos;
+			return castNode(IndexPath, pathnode)->indexinfo->amcanmarkpos &&
+				castNode(IndexPath, pathnode)->indexorderbys == NIL;
 
 		case T_Material:
 		case T_Sort:
