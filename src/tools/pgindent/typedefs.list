@@ -283,6 +283,7 @@ BarkSplitPoint
 BarkStack
 BarkStackData
 BarkTidSink
+BarkVacState
 BarkBuildState
 BarkPageOpaque
 BarkPageOpaqueData
