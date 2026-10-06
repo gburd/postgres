@@ -283,6 +283,41 @@ bark_xlog_reuse_page(XLogReaderState *record)
 												   xlrec->locator);
 }
 
+/*
+ * Replay the addition of one heap TID to a LIST or POSTING entry
+ * (bark_add_tid_entry): re-form the entry as the primary did and overwrite
+ * it.  The primary checked that the result fits the page, and the page
+ * replayed here is the same, so a failure means the two disagree.
+ */
+static void
+bark_xlog_add_tid(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_bark_add_tid *xlrec = (xl_bark_add_tid *) XLogRecGetData(record);
+	Buffer		buffer;
+
+	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
+	{
+		Page		page = BufferGetPage(buffer);
+		IndexTuple	entry;
+		IndexTuple	ext;
+
+		entry = (IndexTuple) PageGetItem(page,
+										 PageGetItemId(page, xlrec->offnum));
+		ext = bark_entry_add_tid(entry, &xlrec->tid, BarkMaxItemSize);
+		if (ext == NULL ||
+			!PageIndexTupleOverwrite(page, xlrec->offnum, ext,
+									 IndexTupleSize(ext)))
+			elog(PANIC, "failed to add a TID to a BARK entry during replay");
+		pfree(ext);
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
+
 void
 bark_redo(XLogReaderState *record)
 {
@@ -310,6 +345,9 @@ bark_redo(XLogReaderState *record)
 			break;
 		case XLOG_BARK_OVERWRITE:
 			bark_xlog_overwrite(record);
+			break;
+		case XLOG_BARK_ADD_TID:
+			bark_xlog_add_tid(record);
 			break;
 		default:
 			elog(PANIC, "bark_redo: unknown op code %u", info);

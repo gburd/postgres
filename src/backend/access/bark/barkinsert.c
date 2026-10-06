@@ -366,6 +366,50 @@ bark_overwrite_entry(Relation index, Buffer buf, OffsetNumber off,
 }
 
 /*
+ * Add heap TID `tid` to the LIST or POSTING entry at `off` on the
+ * exclusive-locked leaf `buf`, replacing it with `ext`, the result of
+ * bark_entry_add_tid on it, and log just the TID (XLOG_BARK_ADD_TID): replay
+ * re-forms `ext` from the entry and the TID.  The caller has checked that
+ * `ext` fits.
+ */
+static void
+bark_add_tid_entry(Relation index, Buffer buf, OffsetNumber off,
+				   IndexTuple ext, ItemPointer tid)
+{
+	Page		page = BufferGetPage(buf);
+	XLogRecPtr	recptr;
+
+	/* No ereport(ERROR) until changes are logged */
+	START_CRIT_SECTION();
+
+	if (!PageIndexTupleOverwrite(page, off, ext, IndexTupleSize(ext)))
+		elog(PANIC, "failed to replace entry at offset %u of block %u in BARK index \"%s\"",
+			 off, BufferGetBlockNumber(buf), RelationGetRelationName(index));
+
+	MarkBufferDirty(buf);
+
+	if (RelationNeedsWAL(index))
+	{
+		xl_bark_add_tid xlrec;
+
+		xlrec.offnum = off;
+		xlrec.tid = *tid;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfBarkAddTid);
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+
+		recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_ADD_TID);
+	}
+	else
+		recptr = XLogGetFakeLSN(index);
+
+	PageSetLSN(page, recptr);
+
+	END_CRIT_SECTION();
+}
+
+/*
  * Clear the BARK_INCOMPLETE_SPLIT flag on the left half of a split, `cbuf`,
  * as part of the caller's generic-WAL record `gstate`, which also writes the
  * downlink to cbuf's right sibling.  The split thus becomes complete in the
@@ -1315,78 +1359,31 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		return false;
 
 	/*
-	 * Fast path: appending to a LIST whose every member sorts before the new
-	 * locator.  This is the common monotonic/append-ish TID case.  Extend the
-	 * LIST body by one locator and bump its count in place -- no re-read, no
-	 * re-sort, no POSTING probe -- so building one key's set by repeated single
-	 * inserts is O(1) amortized rather than O(N) per insert.  We fall through to
-	 * the general path when the appended LIST would exceed the item ceiling (so
-	 * the LIST -> POSTING promotion and page-split handling stay in one place).
+	 * Fast path: add the one new locator to the existing LIST or POSTING
+	 * entry (bark_entry_add_tid).  A LIST takes it when it sorts after every
+	 * member (the common monotonic/append-ish TID case): the body is
+	 * extended by one locator, no re-read, no re-sort, no POSTING probe, so
+	 * building one key's set by repeated single inserts is O(1) amortized.
+	 * A POSTING takes it anywhere: sbm dedups and keeps order, so the set is
+	 * deserialized once, added to and re-serialized once, O(serialized size)
+	 * rather than O(members).  A POSTING never shrinks back to a LIST on
+	 * insert.  Either way only the TID is logged.  When the grown entry would
+	 * exceed the item ceiling or the page, fall through to the general path
+	 * (LIST -> POSTING promotion, or a separate entry, or a split).
 	 */
-	if (BarkEntryGetShape(cur) == BARK_SHAPE_LIST)
-	{
-		int			ncur = BarkListGetCount(cur);
-		ItemPointer last = BarkListGetTID(cur, ncur - 1);
-
-		if (ncur < BARK_LIST_MAX_COUNT &&
-			ItemPointerCompare(newtid, last) > 0)
-		{
-			Size		cursz = IndexTupleSize(cur);
-			Size		appended = cursz + sizeof(ItemPointerData);
-			IndexTuple	ext;
-
-			if (MAXALIGN(appended) <= BarkMaxItemSize &&
-				PageGetFreeSpace(page) + MAXALIGN(ItemIdGetLength(iid)) >=
-					MAXALIGN(appended))
-			{
-				/*
-				 * The body is a packed ascending ItemPointerData array ending
-				 * at the entry's used size; the new locator goes right after
-				 * the last one.  The body offset (t_tid block field) is
-				 * unchanged, so copying the old entry verbatim and appending
-				 * keeps the layout correct; only the count and size change.
-				 */
-				ext = (IndexTuple) palloc0(appended);
-				memcpy(ext, cur, cursz);
-				memcpy((char *) ext + cursz, newtid, sizeof(ItemPointerData));
-				ext->t_info = (ext->t_info & ~INDEX_SIZE_MASK) |
-					(uint16) appended;
-				ItemPointerSetOffsetNumber(&ext->t_tid,
-										   (OffsetNumber) ((uint16) (ncur + 1) |
-														   BARK_IS_LIST));
-
-				bark_overwrite_entry(index, buf, eqoff, ext);
-				pfree(ext);
-				return true;
-			}
-			/* Too big to grow here: let the general path re-encode / split. */
-		}
-	}
-
-	/*
-	 * Fast path: adding to an existing POSTING entry.  sbm dedups and keeps
-	 * order, so the one new locator is added incrementally (deserialize once,
-	 * add, re-serialize once) instead of re-reading the whole set and
-	 * rebuilding its sbm from scratch -- O(serialized size) rather than
-	 * O(members) per insert.  A POSTING never shrinks back to a LIST on insert
-	 * (the set only grows), so the shape stays POSTING; we fall through only
-	 * when the extended entry would overflow the item ceiling (then the general
-	 * path keeps the overflow as a separate entry or splits the page).
-	 */
-	if (BarkEntryGetShape(cur) == BARK_SHAPE_POSTING)
+	if (BarkEntryGetShape(cur) == BARK_SHAPE_LIST ||
+		BarkEntryGetShape(cur) == BARK_SHAPE_POSTING)
 	{
 		Size		room = PageGetFreeSpace(page) + MAXALIGN(ItemIdGetLength(iid));
-		Size		cap = Min((Size) BarkMaxItemSize, room);
-		IndexTuple	ext = bark_posting_add_tid(RelationGetDescr(index), key,
-											   cur, newtid, cap);
+		IndexTuple	ext = bark_entry_add_tid(cur, newtid,
+											 Min((Size) BarkMaxItemSize, room));
 
 		if (ext != NULL)
 		{
-			bark_overwrite_entry(index, buf, eqoff, ext);
+			bark_add_tid_entry(index, buf, eqoff, ext, newtid);
 			pfree(ext);
 			return true;
 		}
-		/* Too big to grow here: let the general path handle it. */
 	}
 
 	/*
