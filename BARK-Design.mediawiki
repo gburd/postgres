@@ -483,13 +483,15 @@ No measured cost scales with how many entries a key has.
   Expected: ks WAL 11.6 GB down to about 2-3 GB, and insert time down to near
   SINGLE-only, measured on a quiet host.
 # '''A BARK WAL rmgr''' (option e), as a series once the concurrency, VACUUM
-  and split work has merged: one commit for the rmgr skeleton and the insert,
-  split and newroot records; one for VACUUM, page deletion and the reuse
-  conflict record; one for the dedup-pass record; one for
-  <code>rm_mask</code>, with <code>027_stream_regress</code> run under
-  <code>wal_consistency_checking=all</code>. This is the only item that moves
-  the 50-55% that is common to all shapes, and the only way to get the
-  hot-standby conflict that page recycling needs.
+  and split work has merged. The first commit is done: the "Bark" resource
+  manager with <code>rm_mask</code>, and records for VACUUM (replayed under a
+  cleanup lock), page deletion, freeing an overflow page and page reuse, whose
+  replay resolves the hot-standby conflict that page recycling needs
+  (<code>027_stream_regress</code> passes under
+  <code>wal_consistency_checking=all</code>; see "WAL" in the bark README).
+  Still to come: the insert records, then split and newroot, then overflow
+  chains and the remaining generic sites. Only these move the 50-55% that is
+  common to all shapes.
 
 Not recommended: a per-key posting tree (b) and a pending list (d), for the
 reasons above. If C-DELETE or retail delete later needs to find one
