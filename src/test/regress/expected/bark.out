@@ -1458,6 +1458,55 @@ SELECT string_agg(a::text, ',') AS bwd FROM
 
 RESET enable_seqscan;
 RESET enable_bitmapscan;
+-- Cross-type keys position and stop the scan through the opfamily's ORDER
+-- procs (int2, int4 and int8 against each other), so a point lookup on an
+-- int8 column with an int4 constant reads a few pages, not the index.
+CREATE TABLE bark_xt (a8 int8, a4 int4, a2 int2);
+INSERT INTO bark_xt SELECT g, g, (g % 30000)::int2
+  FROM generate_series(-200000, 200000) g;
+CREATE INDEX bark_xt_a8 ON bark_xt USING bark (a8);
+CREATE INDEX bark_xt_a4 ON bark_xt USING bark (a4 DESC);
+CREATE INDEX bark_xt_a2 ON bark_xt USING bark (a2);
+VACUUM ANALYZE bark_xt;
+TRUNCATE bark_bnd_q;
+INSERT INTO bark_bnd_q VALUES
+  ('a8 = 42'), ('a8 = 42::int2'), ('a8 > 199990'), ('a8 < -199990::int4'),
+  ('a8 BETWEEN 5::int2 AND 9::int4'), ('a8 > 3000000000::int8'),
+  ('a4 = 42::int8'), ('a4 = 42::int2'), ('a4 > -4294967295::int8'),
+  ('a4 < 3000000000::int8 AND a4 > 5'), ('a4 > 3000000000::int8'),
+  ('a4 < -3000000000::int8'), ('a4 >= 199995::int8'), ('a4 = 4294967338::int8'),
+  ('a2 = 42'), ('a2 = 42::int8'), ('a2 > 29990::int8'), ('a2 > 40000::int4');
+SELECT * FROM bark_bnd_check('bark_xt') WHERE idx <> seq;
+ q | idx | seq 
+---+-----+-----
+(0 rows)
+
+CREATE FUNCTION bark_xt_buffers(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+  line text;
+  n int := 0;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  FOR line IN EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+    IF line ~ 'Buffers: shared' AND n = 0 THEN
+      n := coalesce(substring(line from 'hit=([0-9]+)')::int, 0) +
+           coalesce(substring(line from 'read=([0-9]+)')::int, 0);
+    END IF;
+  END LOOP;
+  RETURN n;
+END $$;
+SELECT bark_xt_buffers('SELECT a8 FROM bark_xt WHERE a8 = 42') < 20 AS int8_eq_int4_positions,
+       bark_xt_buffers('SELECT a4 FROM bark_xt WHERE a4 = 42::int8') < 20 AS int4_eq_int8_positions,
+       bark_xt_buffers('SELECT a4 FROM bark_xt WHERE a4 < 1000::int8 ORDER BY a4 DESC LIMIT 10') < 20 AS desc_upper_positions,
+       bark_xt_buffers('SELECT a8 FROM bark_xt WHERE a8 < 1000 ORDER BY a8 DESC LIMIT 10') < 20 AS backward_upper_positions;
+ int8_eq_int4_positions | int4_eq_int8_positions | desc_upper_positions | backward_upper_positions 
+------------------------+------------------------+----------------------+--------------------------
+ t                      | t                      | t                    | t
+(1 row)
+
+DROP FUNCTION bark_xt_buffers(text);
+DROP TABLE bark_xt;
 DROP FUNCTION bark_bnd_check(text);
 DROP TABLE bark_bnd, bark_bnd_q;
 -- Row comparisons filter in value order (known bug 11 crashed the backend),
