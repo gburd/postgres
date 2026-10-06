@@ -4,8 +4,8 @@
  *	  WAL replay logic for BARK indexes.
  *
  * See "WAL" in src/backend/access/bark/README for the records and the locks
- * their redo takes.  Changes that have no record here are logged with
- * generic WAL and replayed by generic_redo.
+ * their redo takes.  Changes that have no record here (splits, new roots,
+ * overflow chains) are logged with generic WAL and replayed by generic_redo.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -22,6 +22,94 @@
 #include "access/bufmask.h"
 #include "access/xlogutils.h"
 #include "storage/standby.h"
+
+/*
+ * Clear BARK_INCOMPLETE_SPLIT on the left half of a split whose downlink an
+ * INSERT_UPPER record added, as nbtree's _bt_clear_incomplete_split.
+ */
+static void
+bark_xlog_clear_incomplete_split(XLogReaderState *record, uint8 block_id)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	Buffer		buffer;
+
+	if (XLogReadBufferForRedo(record, block_id, &buffer) == BLK_NEEDS_REDO)
+	{
+		Page		page = BufferGetPage(buffer);
+		BarkPageOpaque opaque = BarkPageGetOpaque(page);
+
+		Assert((opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0);
+		opaque->bark_flags &= ~BARK_INCOMPLETE_SPLIT;
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
+
+/*
+ * Replay the insertion of one entry (bark_insert_entry): a leaf entry, or a
+ * downlink that finishes a child's split.
+ *
+ * The primary keeps the child locked until the downlink is in the parent.
+ * Replay clears the child's flag first and does not couple the two locks, as
+ * btree_xlog_insert does not: the flag matters only to writers, and there
+ * are none during recovery, while readers reach the right half through the
+ * child's right link either way.
+ */
+static void
+bark_xlog_insert(bool isleaf, XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_bark_insert *xlrec = (xl_bark_insert *) XLogRecGetData(record);
+	Buffer		buffer;
+
+	if (!isleaf)
+		bark_xlog_clear_incomplete_split(record, 1);
+
+	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
+	{
+		Page		page = BufferGetPage(buffer);
+		Size		datalen;
+		char	   *datapos = XLogRecGetBlockData(record, 0, &datalen);
+
+		if (PageAddItem(page, datapos, datalen, xlrec->offnum,
+						false, false) == InvalidOffsetNumber)
+			elog(PANIC, "failed to add BARK entry during replay");
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
+
+/*
+ * Replay the replacement of one leaf entry (bark_overwrite_entry).
+ */
+static void
+bark_xlog_overwrite(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_bark_overwrite *xlrec = (xl_bark_overwrite *) XLogRecGetData(record);
+	Buffer		buffer;
+
+	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
+	{
+		Page		page = BufferGetPage(buffer);
+		Size		datalen;
+		char	   *datapos = XLogRecGetBlockData(record, 0, &datalen);
+
+		if (!PageIndexTupleOverwrite(page, xlrec->offnum, datapos, datalen))
+			elog(PANIC, "failed to replace BARK leaf entry during replay");
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
 
 /*
  * Replay VACUUM's changes to one leaf, in the order bark_delitems_vacuum made
@@ -213,6 +301,15 @@ bark_redo(XLogReaderState *record)
 			break;
 		case XLOG_BARK_MARK_DELETED:
 			bark_xlog_mark_deleted(record);
+			break;
+		case XLOG_BARK_INSERT_LEAF:
+			bark_xlog_insert(true, record);
+			break;
+		case XLOG_BARK_INSERT_UPPER:
+			bark_xlog_insert(false, record);
+			break;
+		case XLOG_BARK_OVERWRITE:
+			bark_xlog_overwrite(record);
 			break;
 		default:
 			elog(PANIC, "bark_redo: unknown op code %u", info);
