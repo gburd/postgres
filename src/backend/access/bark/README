@@ -265,13 +265,22 @@ wrote them.  The records:
       A parent that must split to take the downlink is logged as a split.
 
   XLOG_BARK_OVERWRITE (bark_overwrite_entry, from bark_coalesce_list)
-      One leaf: an entry's offset and its replacement, usually larger: a
-      LIST or POSTING that gains a locator, or a SINGLE or LIST re-encoded
-      as a LIST or POSTING.  Primary and redo both call
-      PageIndexTupleOverwrite, which keeps the offset and moves only the
-      entries stored below the replaced one.  The record carries just the
-      new entry, where a generic delta covered every byte that moved
-      (pd_upper to the entry).
+      One leaf: an entry's offset and its replacement: a SINGLE or LIST
+      re-encoded as a LIST or POSTING by bark_coalesce_list's general path.
+      Primary and redo both call PageIndexTupleOverwrite, which keeps the
+      offset and moves only the entries stored below the replaced one.  The
+      record carries just the new entry, where a generic delta covered every
+      byte that moved (pd_upper to the entry).
+
+  XLOG_BARK_ADD_TID (bark_add_tid_entry, from bark_coalesce_list)
+      One leaf: an entry's offset and one heap TID added to it, by either
+      fast path (a LIST append, or an add to a POSTING set).  Like nbtree's
+      INSERT_POST, the record carries only the TID: redo calls
+      bark_entry_add_tid on the entry, as the primary did, and overwrites
+      the entry with the result.  bark_entry_add_tid depends on nothing but
+      the entry and the TID (it takes the key from the entry, not from the
+      inserted tuple), so both sides build the same bytes;
+      wal_consistency_checking checks that they do.
 
   XLOG_BARK_VACUUM (bark_delitems_vacuum)
       One leaf: the offsets of entries deleted whole, and the offsets and new
