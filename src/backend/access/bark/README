@@ -236,6 +236,20 @@ one row is SINGLE, a few rows is LIST, and a large clustered set is POSTING.
 This is what lets a scalar index and an inverted (GIN/RUM-style) index share
 one access method and one page format, rather than needing an AM apiece.
 
+Insert coalesces a row into an equal key's entry only in a non-unique index
+whose equal keys always have equal images (bark_allequalimage, nbtree's
+_bt_allequalimage rule: no INCLUDE columns, and every key opclass's
+equalimage function says yes).  CREATE INDEX applies the same rule.  The
+sort hands bark_load each run of equal keys with its heap TIDs ascending, as
+nbtsort.c's _bt_load sees them when it deduplicates, and the run is written
+as the smaller of LIST and POSTING for the longest prefix whose entry fits in
+a tenth of a page, the limit _bt_load puts on a posting list, then the same
+for the rest of the run.  Entries of BarkMaxItemSize would leave room for
+only two of them on a leaf beside its high key.  Insert may later grow a
+built entry up to BarkMaxItemSize.  The meta page's bark_allequalimage
+records the rule's result, as nbtree's btm_allequalimage does; nothing reads
+it yet.
+
 Delete marking (the C-DELETE contract)
 --------------------------------------
 

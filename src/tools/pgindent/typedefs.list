@@ -260,6 +260,7 @@ BackupState
 Barrier
 BarkArrayKeyState
 BarkArraySortCtx
+BarkBuildRun
 BarkEntryShape
 BarkKeyColumn
 BarkKeyInfo
