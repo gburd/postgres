@@ -1274,9 +1274,21 @@ typedef struct BarkScanOpaqueData
 
 	BarkScanPosData currPos;	/* current position */
 
-	/* index-only scans: key tuples of the entries in currPos.items */
+	/*
+	 * Mark/restore (nbtree's markItemIndex/markPos).  A mark on the page in
+	 * currPos only records markItemIndex; bark_steppage copies currPos into
+	 * markPos when the scan is about to leave that page.  So a mark is in
+	 * markItemIndex when it is >= 0, else in markPos.  markPos has its own
+	 * items array and, for an index-only scan, its own tuple workspace.
+	 */
+	int			markItemIndex;	/* itemIndex, or -1 if not valid */
+	BarkScanPosData markPos;	/* marked position, if any */
+
+	/* index-only scans: key tuples of the entries in currPos/markPos.items */
 	char	   *currTuples;		/* palloc'd workspace, or NULL */
 	uint32		currTuplesSize; /* its allocated size */
+	char	   *markTuples;		/* palloc'd workspace, or NULL */
+	uint32		markTuplesSize; /* its allocated size */
 
 	/* scratch buffer for one entry's member TIDs while reading a page */
 	ItemPointer entryTids;
@@ -1341,6 +1353,8 @@ extern bool bark_canreturn(Relation index, int attno);
 extern bool bark_tuple_matches(IndexScanDesc scan, IndexTuple itup);
 extern int64 bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm);
 extern void bark_endscan(IndexScanDesc scan);
+extern void bark_markpos(IndexScanDesc scan);
+extern void bark_restrpos(IndexScanDesc scan);
 
 /* KNN (ordered-operator) scan (barkknn.c). */
 extern void bark_knn_rescan(IndexScanDesc scan, ScanKey orderbys, int norderbys);
