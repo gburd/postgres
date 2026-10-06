@@ -179,6 +179,52 @@ the scan still needs it.  Generic WAL replay takes an ordinary exclusive lock,
 not a cleanup lock, so this interlock is not provided to scans on a hot
 standby.
 
+Page deletion and recycling
+---------------------------
+
+barkvacuumcleanup deletes the empty interior leaves the leaf pass left
+behind (bark_delete_empty_leaf): in one generic-WAL record it splices the
+leaf out of the sibling chain, points the leaf's downlink in the parent at
+the right sibling and removes the right sibling's old downlink (so the leaf's
+key space moves right, as in nbtree), and turns the leaf into a deleted page.
+VACUUM also deletes the overflow pages of the OVERSIZED entries it removes
+(bark_free_oversized).
+
+A deleted page has no items (pd_lower = SizeOfPageHeaderData) and holds a
+BarkDeletedPageData at the end of the tuple area (pd_upper = pd_special -
+MAXALIGN(sizeof(BarkDeletedPageData))); its flags are BARK_DELETED alone of
+the role flags (BARK_LEAF, BARK_OVERFLOW and BARK_HALF_DEAD are cleared).
+BarkDeletedPageData holds safexid, the next full transaction ID read while
+the page and its neighbours were locked for the deletion.  nbtree puts its
+BTDeletedPageData at the start of the tuple area under pd_lower; BARK puts it
+at the end so that a reader which does not test the flag sees an empty page.
+
+The page keeps the sibling links it had (an overflow page keeps its link to
+the next chunk).  A descent that read the parent's downlink, or a scan that
+read a sibling link, before the deletion can arrive at the page afterwards;
+it moves right through it, as nbtree's readers move through P_IGNORE pages.
+Its neighbours no longer link back to it, which amcheck allows.
+
+A deleted page is reused only when BarkPageIsRecyclable says so, which is
+nbtree's BTPageIsRecyclable test: GlobalVisCheckRemovableFullXid(heaprel,
+safexid).  Any backend that might hold a link to the page took its snapshot
+before the deletion, so its xmin is no later than safexid; once safexid is
+removable by that horizon, no such backend remains.  VACUUM keeps the leaves
+it deletes in a pending list and records in the FSM, at its end, those whose
+safexid is already removable (nbtree's _bt_pendingfsm_finalize).  The cleanup
+pass's page walk records every other deleted page in the FSM once it becomes
+recyclable, so a page not recyclable at one VACUUM is recorded by a later
+one; it also counts the deleted pages (pages_deleted).  bark_get_free_page
+repeats the test before it reuses an FSM page, since the FSM is not crash-
+safe.  The insert path passes the heap relation down for the test; the paths
+that have none (bark_finish_split and the overflow chains of OVERSIZED pivots)
+pass NULL, which uses the horizon of shared relations, the most conservative.
+
+safexid is ReadNextFullTransactionId() rather than an assigned XID, as in
+nbtree, so a deleted page becomes recyclable only after some transaction that
+starts after the deletion takes an XID and ends: on an idle system, pages
+deleted by one VACUUM are recorded by the next one after the next write.
+
 Entry encoding (the C-KEYSHAPE contract)
 ----------------------------------------
 

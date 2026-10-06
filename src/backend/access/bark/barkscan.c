@@ -672,6 +672,18 @@ bark_find_start_block(IndexScanDesc scan, ScanDirection dir)
 			LockBuffer(buf, BUFFER_LOCK_SHARE);
 			page = BufferGetPage(buf);
 			opaque = BarkPageGetOpaque(page);
+
+			/*
+			 * A page deleted after we read its downlink keeps its right link
+			 * and is never the rightmost page of its level: step right past
+			 * it, as nbtree's _bt_get_endpoint does.
+			 */
+			if ((opaque->bark_flags & (BARK_DELETED | BARK_HALF_DEAD)) != 0)
+			{
+				blkno = opaque->bark_next;
+				UnlockReleaseBuffer(buf);
+				continue;
+			}
 			if (BarkPageIsLeaf(opaque))
 			{
 				startblk = blkno;
@@ -1251,7 +1263,7 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 		 */
 		if (so->leadArray != NULL && !backward &&
 			scan->parallel_scan == NULL &&
-			!BarkPageRightmost(opaque) &&
+			!BarkPageRightmost(opaque) && !BarkPageIsDeleted(opaque) &&
 			so->leadArray->cur < so->leadArray->nelems)
 		{
 			ItemId		hiid = PageGetItemId(page, BARK_P_HIKEY);
