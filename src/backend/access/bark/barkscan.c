@@ -8,7 +8,7 @@
  * provide a lower bound on the leading index columns (an =, >, or >= qual, or
  * a `col = ANY(array)` SAOP whose current element bounds column 1), the scan
  * descends the tree to the first leaf that can contain a match: the descent
- * key uses every usable leading column (bark_make_lower_bound), so a selective
+ * key uses every usable leading column (bark_make_bound), so a selective
  * second-column bound such as WHERE a = 5 AND b >= 100 lands near the match
  * rather than at the first a = 5 leaf.  Otherwise it starts at the leftmost
  * leaf.  A forward scan also stops early once the leading column passes an
@@ -62,6 +62,7 @@
 
 static int	bark_lead_cmp(IndexScanDesc scan, IndexTuple itup, Datum elem);
 static bool bark_array_reseek(IndexScanDesc scan, ScanDirection dir);
+static int	bark_key_cmp(IndexScanDesc scan, int i, IndexTuple itup);
 
 /*
  * Resolve a leaf entry to a tuple whose key and INCLUDE attributes can be read
@@ -406,19 +407,15 @@ bark_tuple_matches(IndexScanDesc scan, IndexTuple itup)
  * Returns false for a key that cannot position or stop the scan; such a key
  * is still applied by bark_tuple_matches as a filter.  That covers a key with
  * a NULL argument (including IS [NOT] NULL), a SAOP array (the leading-array
- * logic positions on those), a row comparison, and a cross-type key.
- * Positioning and stopping compare the key's argument with the column's own
- * comparator, and bark_make_lower_bound forms the argument into an index tuple
- * of the column's type.  Both are meaningful only when the argument has the
- * column's type: a qual such as int4col < 3000000000::bigint cannot be read
- * as an int4.  A cross-type qual is therefore filter-only.  It returns the
- * right rows, but the scan starts at the end of the index rather than at the
- * bound and does not stop early on it.
+ * logic positions on those), a row comparison, and a cross-type key whose
+ * opfamily has no ORDER proc for its pair of types.  Every other key, cross-
+ * type ones included, is compared through so->keyCmp, the ORDER proc for
+ * the column type and the argument's type (bark_setup_key_procs), so a qual
+ * such as int4col < 3000000000::bigint positions and stops correctly.
  */
 static bool
 bark_key_bounds(IndexScanDesc scan, ScanKey sk, bool *lower, bool *upper)
 {
-	Relation	index = scan->indexRelation;
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	StrategyNumber strat = sk->sk_strategy;
 	bool		less;
@@ -426,8 +423,7 @@ bark_key_bounds(IndexScanDesc scan, ScanKey sk, bool *lower, bool *upper)
 
 	if (sk->sk_flags & (SK_ISNULL | SK_SEARCHARRAY | SK_ROW_HEADER))
 		return false;
-	if (OidIsValid(sk->sk_subtype) &&
-		sk->sk_subtype != index->rd_opcintype[sk->sk_attno - 1])
+	if (!OidIsValid(so->keyCmp[sk - scan->keyData].fn_oid))
 		return false;
 
 	less = (strat == BTEqualStrategyNumber ||
@@ -480,7 +476,7 @@ bark_past_bound(IndexScanDesc scan, IndexTuple itup, ScanDirection dir)
 			continue;
 		if (forward ? !upper : !lower)
 			continue;
-		c = bark_lead_cmp(scan, itup, sk->sk_argument);
+		c = bark_key_cmp(scan, i, itup);
 		if (forward ? c > 0 : c < 0)
 			return true;
 	}
@@ -488,138 +484,102 @@ bark_past_bound(IndexScanDesc scan, IndexTuple itup, ScanDirection dir)
 }
 
 /*
- * Build an index-tuple search key from a lower bound on the leading index
- * columns, for descending to the first possibly-matching leaf.  Returns NULL
- * (start at the leftmost leaf) when no bound on column 1 is present.
- *
- * The descent key uses every usable leading column, not just column 1: the
- * longest run of leading columns 1..k where columns 1..k-1 each have an
- * equality qual (or, on column 1, a SAOP whose current element is the
- * equality value) and column k has an =, >, or >= qual.  For WHERE a = 5 AND
- * b >= 100 on a (a,b) index this descends to (5,100) rather than to the first
- * a = 5 leaf, so a selective second-column bound no longer starts the scan at
- * the leftmost a = 5 row.
- *
- * The key is formed as a k-attribute pivot.  A lower bound must leave the
- * columns after k at minus-infinity so the descent lands at or before the
- * first match, never past it; a pivot truncated to k attributes is exactly
- * minus-infinity on the dropped columns -- bark_compare_itups orders a tuple
- * with fewer key attributes before one that agrees on the shared attributes
- * but has more.  (Padding with NULL instead would, under the default NULLS
- * LAST ordering, sort as plus-infinity and overshoot the matching run.)
+ * Compare index tuple itup's value in scan key i's column with the key's
+ * argument, through the key's ORDER proc: <0, 0 or >0 as the value sorts
+ * before, with or after the argument in index order (DESC inverted).  A NULL
+ * value sorts per the column's NULLS option.
  */
-static IndexTuple
-bark_make_lower_bound(IndexScanDesc scan)
+static int
+bark_key_cmp(IndexScanDesc scan, int i, IndexTuple itup)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	ScanKey		sk = &scan->keyData[i];
+	BarkKeyColumn *col = &so->keyinfo->cols[sk->sk_attno - 1];
+	bool		isnull;
+	Datum		datum = index_getattr(itup, sk->sk_attno,
+									  RelationGetDescr(scan->indexRelation),
+									  &isnull);
+	int32		c;
+
+	if (isnull)
+		return col->nulls_first ? -1 : 1;
+	c = DatumGetInt32(FunctionCall2Coll(&so->keyCmp[i], sk->sk_collation,
+										datum, sk->sk_argument));
+	return col->reverse ? -c : c;
+}
+
+/*
+ * Build the bound a scan in direction dir starts from: the leading index
+ * columns the keys bound in index order, for bark_search_bound.  Returns
+ * false when column 1 is unbounded in that direction; the scan then starts
+ * at the end of the index.
+ *
+ * Forward, the bound is a lower bound; backward, an upper bound.  It uses the
+ * longest run of leading columns 1..k where columns 1..k-1 each have an
+ * equality key (or, on column 1, a SAOP whose current element is the equality
+ * value) and column k has a key that bounds it in the scan direction.  For
+ * WHERE a = 5 AND b >= 100 on (a, b) a forward scan descends to (5, 100), not
+ * to the first a = 5 leaf.  Columns after k are minus infinity in a lower
+ * bound and plus infinity in an upper one, so the descent lands at or before
+ * the first match in scan order, never past it.  A key's argument may be of
+ * any type the opfamily has an ORDER proc for, as nbtree's _bt_first allows.
+ * When several keys bound one column, the first is used; the others filter.
+ */
+static bool
+bark_make_bound(IndexScanDesc scan, ScanDirection dir, BarkScanBound *bound)
 {
 	Relation	index = scan->indexRelation;
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
-	TupleDesc	tupdesc = RelationGetDescr(index);
 	int			nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
-	int			natts = IndexRelationGetNumberOfAttributes(index);
-	Datum	   *values;
-	bool	   *isnull;
-	int			nbound = 0;		/* leading columns the descent key carries */
-	IndexTuple	full;
-	IndexTuple	key;
-	Size		fulllen;
+	bool		forward = ScanDirectionIsForward(dir);
 
-	values = (Datum *) palloc(natts * sizeof(Datum));
-	isnull = (bool *) palloc(natts * sizeof(bool));
-	for (int c = 0; c < natts; c++)
-	{
-		values[c] = (Datum) 0;
-		isnull[c] = true;
-	}
+	bound->nkeys = 0;
+	bound->upper = !forward;
 
-	/*
-	 * Walk the leading key columns in order.  Column 1 may be bounded by the
-	 * leading SAOP's current element; every column may be bounded by an =, >,
-	 * or >= qual.  An equality column lets us include the next column too; a
-	 * strict/non-strict lower bound (>, >=) is the last column we can use (the
-	 * descent must not assume anything about columns past it).
-	 */
 	for (int col = 1; col <= nkeyatts; col++)
 	{
-		Datum		bound = (Datum) 0;
-		bool		have = false;
-		bool		is_equality = false;
+		int			found = -1;
+		bool		equality = false;
 
-		if (col == 1 && so->leadArray != NULL && so->leadArray->nelems > 0)
+		if (col == 1 && so->leadArray != NULL && so->leadArray->nelems > 0 &&
+			forward)
 		{
-			bound = so->leadArray->elems[so->leadArray->cur];
-			have = true;
-			is_equality = true;	/* the array drives one element at a time */
+			bound->args[0] = so->leadArray->elems[so->leadArray->cur];
+			bound->procs[0] = &so->keyinfo->cols[0].cmp;
+			bound->collations[0] = so->keyinfo->cols[0].collation;
+			bound->nkeys = 1;
+			continue;			/* an equality, one element at a time */
 		}
-		else
+
+		for (int i = 0; i < scan->numberOfKeys; i++)
 		{
-			for (int i = 0; i < scan->numberOfKeys; i++)
+			ScanKey		sk = &scan->keyData[i];
+			bool		lower;
+			bool		upper;
+
+			if (sk->sk_attno != col ||
+				!bark_key_bounds(scan, sk, &lower, &upper) ||
+				!(forward ? lower : upper))
+				continue;
+			if (found < 0 || (lower && upper))
 			{
-				ScanKey		sk = &scan->keyData[i];
-				bool		lower;
-				bool		upper;
-
-				if (sk->sk_attno != col ||
-					!bark_key_bounds(scan, sk, &lower, &upper) || !lower)
-					continue;
-				bound = sk->sk_argument;
-				have = true;
-				is_equality = upper;
-				if (is_equality)
-					break;
-				/* keep scanning in case an = on the same col appears */
+				found = i;
+				equality = lower && upper;
 			}
+			if (equality)
+				break;			/* prefer an equality on this column */
 		}
+		if (found < 0)
+			break;
 
-		if (!have)
-			break;				/* no bound on this column: stop extending */
-
-		values[col - 1] = bound;
-		isnull[col - 1] = false;
-		nbound = col;
-
-		if (!is_equality)
-			break;				/* a lower bound is the last usable column */
+		bound->args[col - 1] = scan->keyData[found].sk_argument;
+		bound->procs[col - 1] = &so->keyCmp[found];
+		bound->collations[col - 1] = scan->keyData[found].sk_collation;
+		bound->nkeys = col;
+		if (!equality)
+			break;				/* a range bound is the last usable column */
 	}
-
-	if (nbound == 0)
-	{
-		pfree(values);
-		pfree(isnull);
-		return NULL;
-	}
-
-	/*
-	 * Form the leading values as a (possibly oversized) tuple without the
-	 * 8191-byte cap, so an oversized search argument does not error here, then
-	 * truncate it to an nbound-attribute pivot.  bark_search descends with the
-	 * pivot; bark_compare_itups compares it (fetching an oversized leaf entry's
-	 * overflow chain as needed), so the descent lands correctly.
-	 */
-	full = bark_form_full_tuple(tupdesc, values, isnull, &fulllen);
-	pfree(values);
-	pfree(isnull);
-
-	if (nbound < natts && !bark_len_is_oversized(fulllen))
-	{
-		key = index_truncate_tuple(tupdesc, full, nbound);
-		BarkPivotSetNAtts(key, (uint16) nbound);
-		pfree(full);
-	}
-	else if (nbound < natts)
-	{
-		/*
-		 * Oversized leading value: index_truncate_tuple cannot shorten it, so
-		 * mark the full tuple as an nbound-attribute pivot.  (An oversized key
-		 * on a multi-column index with trailing bounds is rare; the pivot still
-		 * compares correctly on the attributes it carries.)
-		 */
-		key = full;
-		BarkPivotSetNAtts(key, (uint16) nbound);
-	}
-	else
-		key = full;				/* bound covers every attribute: no truncation */
-
-	return key;
+	return bound->nkeys > 0;
 }
 
 /*
@@ -763,10 +723,10 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
  * Descend to the leaf where a scan in direction dir must start, and return it
  * share-locked; InvalidBuffer for an empty index.
  *
- * A forward scan with a lower bound on the leading columns descends to the
- * first leaf that can hold a match (bark_make_lower_bound); otherwise, and
- * for a backward scan, it starts at the leftmost or rightmost leaf.  The
- * returned leaf is never deleted or half-dead.
+ * A scan bounded in its direction on the leading columns descends to the
+ * first leaf in that direction that can hold a match (bark_make_bound);
+ * otherwise it starts at the leftmost or rightmost leaf.  The returned leaf
+ * is never deleted or half-dead.
  */
 static Buffer
 bark_start_leaf(IndexScanDesc scan, ScanDirection dir)
@@ -774,18 +734,19 @@ bark_start_leaf(IndexScanDesc scan, ScanDirection dir)
 	Relation	index = scan->indexRelation;
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	bool		backward = ScanDirectionIsBackward(dir);
-	IndexTuple	lower = backward ? NULL : bark_make_lower_bound(scan);
+	BarkScanBound bound;
 	BlockNumber blkno;
 	Buffer		buf;
 	Page		page;
 	BarkPageOpaque opaque;
 
-	if (lower != NULL)
-	{
-		buf = bark_search(index, so->keyinfo, lower, false, false, NULL);
-		pfree(lower);
-		return buf;				/* share-locked leaf, or InvalidBuffer */
-	}
+	/*
+	 * A lower bound descends to the leftmost leaf that can hold a match
+	 * (nextkey = false); an upper bound, to the rightmost (nextkey = true),
+	 * from which a backward scan reads leftward.
+	 */
+	if (bark_make_bound(scan, dir, &bound))
+		return bark_search_bound(index, so->keyinfo, &bound, backward);
 
 	/*
 	 * No usable bound: walk down the edge of the tree, as nbtree's
