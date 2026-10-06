@@ -9,6 +9,8 @@
 # 2. Reusing a deleted page logs a conflict horizon, which cancels a
 #    standby snapshot that might still hold a link to the page.
 # 3. VACUUM writes no BARK record for a leaf it does not change.
+# 4. Inserts are logged as BARK INSERT_LEAF, INSERT_UPPER and OVERWRITE
+#    records, and the standby's index finds the same rows as the primary's.
 
 use strict;
 use warnings FATAL => 'all';
@@ -171,6 +173,40 @@ $node_primary->safe_psql($db, 'VACUUM (INDEX_CLEANUP ON) quiet_t');
 $lsn_after = $node_primary->safe_psql($db, 'SELECT pg_current_wal_insert_lsn()');
 is(waldump_count($lsn_before, $lsn_after, 'VACUUM'), 0,
 	"$sect: VACUUM of an unchanged index writes no Bark VACUUM record");
+
+
+## 4: insert records
+$sect = 'insert records';
+
+# Unique keys add entries and split leaves under a parent with room
+# (INSERT_LEAF, INSERT_UPPER); keys inserted round-robin grow LIST entries,
+# and keys inserted in runs grow POSTING entries (OVERWRITE).
+$lsn_before = $node_primary->safe_psql($db, 'SELECT pg_current_wal_insert_lsn()');
+$node_primary->safe_psql(
+	$db, qq[
+CREATE TABLE ins_t (a int, b int);
+CREATE INDEX ins_t_idx ON ins_t USING bark (a);
+INSERT INTO ins_t SELECT g, g FROM generate_series(1, 20000) g;
+INSERT INTO ins_t SELECT 100000 + g % 100, g FROM generate_series(1, 20000) g;
+INSERT INTO ins_t SELECT 200000 + (g - 1) / 1000, g FROM generate_series(1, 20000) g;
+]);
+$lsn_after = $node_primary->safe_psql($db, 'SELECT pg_current_wal_insert_lsn()');
+$node_primary->wait_for_replay_catchup($node_standby);
+
+foreach my $type ('INSERT_LEAF', 'INSERT_UPPER', 'OVERWRITE')
+{
+	cmp_ok(waldump_count($lsn_before, $lsn_after, $type),
+		'>', 0, "$sect: primary logged Bark $type records");
+}
+
+my $ins_query = qq[
+SET enable_seqscan = off; SET enable_bitmapscan = off;
+SELECT count(*), sum(a), sum(b) FROM ins_t WHERE a > 0];
+$primary_count = $node_primary->safe_psql($db, $ins_query);
+is($primary_count, '60000|6201190000|600030000',
+	"$sect: primary index scan finds every row");
+is($node_standby->safe_psql($db, $ins_query),
+	$primary_count, "$sect: standby index scan matches the primary");
 
 $psql_standby->quit;
 $node_standby->stop;
