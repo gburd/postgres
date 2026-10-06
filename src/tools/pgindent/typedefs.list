@@ -4489,7 +4489,9 @@ worktable
 wrap
 ws_file_info
 ws_options
+xl_bark_insert
 xl_bark_mark_deleted
+xl_bark_overwrite
 xl_bark_reuse_page
 xl_bark_unlink_page
 xl_bark_vacuum
