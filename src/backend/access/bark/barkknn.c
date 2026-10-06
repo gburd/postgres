@@ -70,52 +70,6 @@
 #include "utils/rel.h"
 
 /*
- * Does index tuple `itup` satisfy every search (WHERE) scan key?  Shared logic
- * with the plain scan's bark_tuple_matches, duplicated here so the KNN path
- * stays self-contained; a KNN scan may still carry ordinary quals
- * (ORDER BY col <~> c combined with WHERE col > lo), which must filter the
- * candidates before they enter the merge.
- */
-static bool
-bark_knn_match_keys(IndexScanDesc scan, IndexTuple itup)
-{
-	TupleDesc	tupdesc = RelationGetDescr(scan->indexRelation);
-
-	for (int i = 0; i < scan->numberOfKeys; i++)
-	{
-		ScanKey		key = &scan->keyData[i];
-		Datum		datum;
-		bool		isnull;
-
-		datum = index_getattr(itup, key->sk_attno, tupdesc, &isnull);
-
-		if (key->sk_flags & SK_ISNULL)
-		{
-			if (key->sk_flags & SK_SEARCHNULL)
-			{
-				if (!isnull)
-					return false;
-				continue;
-			}
-			if (key->sk_flags & SK_SEARCHNOTNULL)
-			{
-				if (isnull)
-					return false;
-				continue;
-			}
-			return false;
-		}
-		if (isnull)
-			return false;
-
-		if (!DatumGetBool(FunctionCall2Coll(&key->sk_func, key->sk_collation,
-											datum, key->sk_argument)))
-			return false;
-	}
-	return true;
-}
-
-/*
  * Compute the ordering distance of index tuple `itup` from the center
  * constant.  A NULL key sorts last (distance +infinity), matching the
  * executor's NULLS LAST default for an ascending ORDER BY.
@@ -340,7 +294,7 @@ bark_knn_advance(IndexScanDesc scan, BarkKnnCursor *cur)
 			iid = PageGetItemId(page, off);
 			itup = (IndexTuple) PageGetItem(page, iid);
 
-			if (!bark_knn_match_keys(scan, itup))
+			if (!bark_tuple_matches(scan, itup))
 				continue;
 
 			/* Buffer this candidate: distance, locators, and (IOS) its key. */

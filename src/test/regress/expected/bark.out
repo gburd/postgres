@@ -1252,7 +1252,284 @@ RESET min_parallel_index_scan_size;
 RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
 RESET max_parallel_workers_per_gather;
+-- Parallel merge join and LIMIT read only part of the scan.  Workers must not
+-- wait for one another while a consumer has stopped pulling (that hung the
+-- base code), and the results must equal a serial plan's.
+SET statement_timeout = '30s';
+CREATE TABLE bark_pscan2 (a int);
+INSERT INTO bark_pscan2 SELECT g FROM generate_series(1, 100000, 2) g;
+CREATE INDEX bark_pscan2_idx ON bark_pscan2 USING bark (a);
+ANALYZE bark_pscan2;
+SET min_parallel_table_scan_size = 0;
+SET min_parallel_index_scan_size = 0;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET max_parallel_workers_per_gather = 4;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_hashjoin = off;
+SET enable_nestloop = off;
+SELECT count(*) AS par_mj FROM bark_pscan JOIN bark_pscan2 USING (a);
+ par_mj 
+--------
+  50000
+(1 row)
+
+SELECT sum(a) AS par_limit FROM
+  (SELECT a FROM bark_pscan WHERE a > 10 ORDER BY a LIMIT 100) x;
+ par_limit 
+-----------
+      6050
+(1 row)
+
+SELECT sum(a) AS par_limit_desc FROM
+  (SELECT a FROM bark_pscan WHERE a < 90000 ORDER BY a DESC LIMIT 100) x;
+ par_limit_desc 
+----------------
+        8994950
+(1 row)
+
+SET max_parallel_workers_per_gather = 0;
+SELECT count(*) AS ser_mj FROM bark_pscan JOIN bark_pscan2 USING (a);
+ ser_mj 
+--------
+  50000
+(1 row)
+
+SELECT sum(a) AS ser_limit FROM
+  (SELECT a FROM bark_pscan WHERE a > 10 ORDER BY a LIMIT 100) x;
+ ser_limit 
+-----------
+      6050
+(1 row)
+
+SELECT sum(a) AS ser_limit_desc FROM
+  (SELECT a FROM bark_pscan WHERE a < 90000 ORDER BY a DESC LIMIT 100) x;
+ ser_limit_desc 
+----------------
+        8994950
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET enable_hashjoin;
+RESET enable_nestloop;
+RESET min_parallel_table_scan_size;
+RESET min_parallel_index_scan_size;
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET max_parallel_workers_per_gather;
+RESET statement_timeout;
+DROP TABLE bark_pscan2;
 DROP TABLE bark_pscan;
+-- Scroll cursors over a multi-page index: every FETCH direction, including
+-- backward after the scan ran off the end, must return what a btree index
+-- over the same data returns.
+CREATE TABLE bark_scroll (a int, pad text);
+INSERT INTO bark_scroll SELECT g, repeat('x', 200) FROM generate_series(1, 3000) g;
+CREATE INDEX bark_scroll_idx ON bark_scroll USING bark (a);
+ANALYZE bark_scroll;
+CREATE TABLE bark_scroll_out (am text, n int, a int);
+CREATE FUNCTION bark_scroll_run(am text) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE
+  c refcursor := 'bark_scroll_c';
+  v int;
+  n int := 0;
+  cmds text[] := ARRAY['NEXT', 'NEXT', 'NEXT', 'NEXT', 'NEXT', 'PRIOR', 'PRIOR',
+                       'PRIOR', 'ABSOLUTE 1500', 'RELATIVE -700', 'LAST',
+                       'PRIOR', 'PRIOR', 'FIRST', 'LAST', 'NEXT', 'PRIOR',
+                       'PRIOR', 'NEXT', 'NEXT', 'ABSOLUTE 2', 'PRIOR', 'PRIOR',
+                       'NEXT'];
+  cmd text;
+BEGIN
+  OPEN c SCROLL FOR SELECT a FROM bark_scroll WHERE a > 100 ORDER BY a;
+  FOREACH cmd IN ARRAY cmds LOOP
+    EXECUTE format('FETCH %s FROM bark_scroll_c', cmd) INTO v;
+    n := n + 1;
+    INSERT INTO bark_scroll_out VALUES (am, n, v);
+  END LOOP;
+  CLOSE c;
+END $$;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_indexonlyscan = off;
+SELECT bark_scroll_run('bark');
+ bark_scroll_run 
+-----------------
+ 
+(1 row)
+
+SET enable_indexonlyscan = on;
+SELECT bark_scroll_run('bark ios');
+ bark_scroll_run 
+-----------------
+ 
+(1 row)
+
+DROP INDEX bark_scroll_idx;
+CREATE INDEX bark_scroll_bt ON bark_scroll USING btree (a);
+SELECT bark_scroll_run('btree');
+ bark_scroll_run 
+-----------------
+ 
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET enable_indexonlyscan;
+SELECT b.n, b.a AS bark, i.a AS bark_ios, t.a AS btree
+FROM bark_scroll_out b
+  JOIN bark_scroll_out i ON i.am = 'bark ios' AND i.n = b.n
+  JOIN bark_scroll_out t ON t.am = 'btree' AND t.n = b.n
+WHERE b.am = 'bark' AND (b.a IS DISTINCT FROM t.a OR i.a IS DISTINCT FROM t.a);
+ n | bark | bark_ios | btree 
+---+------+----------+-------
+(0 rows)
+
+SELECT string_agg(coalesce(a::text, 'none'), ',' ORDER BY n) AS fetched
+FROM bark_scroll_out WHERE am = 'bark';
+                                                  fetched                                                   
+------------------------------------------------------------------------------------------------------------
+ 101,102,103,104,105,104,103,102,1600,900,3000,2999,2998,101,3000,none,3000,2999,3000,none,102,101,none,101
+(1 row)
+
+DROP FUNCTION bark_scroll_run(text);
+DROP TABLE bark_scroll, bark_scroll_out;
+-- Bounds that the base scan got wrong (known bug 10): a DESC column, and
+-- cross-type keys whose constant is outside the column type's range.  Each
+-- index count must equal a sequential scan's.
+CREATE TABLE bark_bnd (a int);
+INSERT INTO bark_bnd SELECT g FROM generate_series(-20000, 20000) g;
+CREATE INDEX bark_bnd_desc ON bark_bnd USING bark (a DESC);
+CREATE TABLE bark_bnd_q (q text);
+INSERT INTO bark_bnd_q VALUES
+  ('a > 5'), ('a >= 100'), ('a < 100'), ('a <= -100'), ('a BETWEEN -10 AND 10'),
+  ('a > -4294967295::bigint'), ('a < 3000000000::bigint AND a > 5'),
+  ('a > 3000000000::bigint'), ('a < -3000000000::bigint'),
+  ('a = 42::bigint'), ('a = 42::smallint'), ('a >= 7::smallint AND a < 9::bigint');
+CREATE FUNCTION bark_bnd_check(tbl text) RETURNS TABLE (q text, idx bigint, seq bigint)
+LANGUAGE plpgsql AS $$
+DECLARE
+  r record;
+BEGIN
+  FOR r IN SELECT bark_bnd_q.q FROM bark_bnd_q LOOP
+    q := r.q;
+    SET LOCAL enable_seqscan = off;
+    SET LOCAL enable_bitmapscan = off;
+    EXECUTE format('SELECT count(*) FROM %I WHERE %s', tbl, r.q) INTO idx;
+    SET LOCAL enable_seqscan = on;
+    SET LOCAL enable_indexscan = off;
+    SET LOCAL enable_indexonlyscan = off;
+    EXECUTE format('SELECT count(*) FROM %I WHERE %s', tbl, r.q) INTO seq;
+    RESET enable_seqscan;
+    RESET enable_indexscan;
+    RESET enable_indexonlyscan;
+    RESET enable_bitmapscan;
+    RETURN NEXT;
+  END LOOP;
+END $$;
+SELECT * FROM bark_bnd_check('bark_bnd') WHERE idx <> seq;
+ q | idx | seq 
+---+-----+-----
+(0 rows)
+
+SELECT count(*) AS queries FROM bark_bnd_check('bark_bnd');
+ queries 
+---------
+      12
+(1 row)
+
+DROP INDEX bark_bnd_desc;
+CREATE INDEX bark_bnd_asc ON bark_bnd USING bark (a);
+SELECT * FROM bark_bnd_check('bark_bnd') WHERE idx <> seq;
+ q | idx | seq 
+---+-----+-----
+(0 rows)
+
+-- Backward scans stop at a lower bound and start at an upper one.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT string_agg(a::text, ',') AS bwd FROM
+  (SELECT a FROM bark_bnd WHERE a BETWEEN 10 AND 15 ORDER BY a DESC) x;
+        bwd        
+-------------------
+ 15,14,13,12,11,10
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP FUNCTION bark_bnd_check(text);
+DROP TABLE bark_bnd, bark_bnd_q;
+-- Row comparisons filter in value order (known bug 11 crashed the backend),
+-- on ASC and mixed-direction indexes, and in a KNN scan.  A KNN scan also
+-- filters by SAOP membership (it used to treat the array as a scalar).
+CREATE TABLE bark_rowc (a int, b int);
+INSERT INTO bark_rowc SELECT g / 10, g % 10 FROM generate_series(1, 5000) g;
+CREATE INDEX bark_rowc_ab ON bark_rowc USING bark (a, b);
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS rc_gt FROM bark_rowc WHERE (a, b) > (100, 5);
+ rc_gt 
+-------
+  3995
+(1 row)
+
+SELECT count(*) AS rc_le FROM bark_rowc WHERE (a, b) <= (3, 2);
+ rc_le 
+-------
+    32
+(1 row)
+
+SELECT count(*) AS rc_knn FROM
+  (SELECT a FROM bark_rowc WHERE (a, b) > (100, 5) ORDER BY a <~> 120 LIMIT 10) x;
+ rc_knn 
+--------
+     10
+(1 row)
+
+SELECT string_agg(a::text, ',' ORDER BY a) AS knn_saop FROM
+  (SELECT DISTINCT a FROM (SELECT a FROM bark_rowc WHERE a = ANY ('{5,7,9}')
+   ORDER BY a <~> 6 LIMIT 30) y) x;
+ knn_saop 
+----------
+ 5,7,9
+(1 row)
+
+DROP INDEX bark_rowc_ab;
+CREATE INDEX bark_rowc_abd ON bark_rowc USING bark (a, b DESC);
+SELECT count(*) AS rc_gt_desc FROM bark_rowc WHERE (a, b) > (100, 5);
+ rc_gt_desc 
+------------
+       3995
+(1 row)
+
+SELECT count(*) AS rc_le_desc FROM bark_rowc WHERE (a, b) <= (3, 2);
+ rc_le_desc 
+------------
+         32
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS seq_rc_gt FROM bark_rowc WHERE (a, b) > (100, 5);
+ seq_rc_gt 
+-----------
+      3995
+(1 row)
+
+SELECT count(*) AS seq_rc_le FROM bark_rowc WHERE (a, b) <= (3, 2);
+ seq_rc_le 
+-----------
+        32
+(1 row)
+
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_rowc;
 --
 -- Ordered-operator (KNN) scans: ORDER BY col <~> const (amcanorderbyop).
 --
