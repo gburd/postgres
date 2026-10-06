@@ -31,6 +31,7 @@ tests += {
   'tap': {
     'tests': [
       't/001_empty_index_race.pl',
+      't/002_standby.pl',
     ],
   },
 }

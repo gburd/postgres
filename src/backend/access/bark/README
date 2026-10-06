@@ -166,34 +166,37 @@ cycle ID and whose right sibling is at a lower block than the scan position,
 it follows the right link and cleans that page too, and so on while the pages
 it reaches carry its cycle ID.  It clears the cycle ID from each such page it
 cleans, so the page is not cleaned a second time.  The clear is WAL-logged,
-where nbtree treats it as a hint: generic WAL replays whole page images or
-deltas, and an unlogged change would make the primary and standby pages
-differ.
+in the page's XLOG_BARK_VACUUM record (see "WAL" below), where nbtree treats
+it as a hint.
 
 VACUUM takes a cleanup lock on every live leaf, whether or not it has
 entries to delete, as nbtree does (see "Deleting index tuples during VACUUM"
 in the nbtree README).  A scan keeps a pin on the leaf it is returning
 entries from, so VACUUM cannot delete a TID the scan has read but not yet
 returned, and the heap line pointer the TID refers to cannot be reused while
-the scan still needs it.  Generic WAL replay takes an ordinary exclusive lock,
-not a cleanup lock, so this interlock is not provided to scans on a hot
-standby.
+the scan still needs it.  Replay of VACUUM's record takes a cleanup lock too,
+as nbtree's does, so the interlock also holds for scans on a hot standby:
+replay waits for a standby scan's pin, or cancels the scan once
+max_standby_streaming_delay has passed.
 
 Page deletion and recycling
 ---------------------------
 
 barkvacuumcleanup deletes the empty interior leaves the leaf pass left
-behind (bark_delete_empty_leaf): in one generic-WAL record it splices the
-leaf out of the sibling chain, points the leaf's downlink in the parent at
-the right sibling and removes the right sibling's old downlink (so the leaf's
-key space moves right, as in nbtree), and turns the leaf into a deleted page.
+behind (bark_delete_empty_leaf): in one XLOG_BARK_UNLINK_PAGE record it
+splices the leaf out of the sibling chain, points the leaf's downlink in the
+parent at the right sibling and removes the right sibling's old downlink (so
+the leaf's key space moves right, as in nbtree), and turns the leaf into a
+deleted page.
 VACUUM also deletes the overflow pages of the OVERSIZED entries it removes
 (bark_free_oversized).
 
 A deleted page has no items (pd_lower = SizeOfPageHeaderData) and holds a
 BarkDeletedPageData at the end of the tuple area (pd_upper = pd_special -
-MAXALIGN(sizeof(BarkDeletedPageData))); its flags are BARK_DELETED alone of
-the role flags (BARK_LEAF, BARK_OVERFLOW and BARK_HALF_DEAD are cleared).
+MAXALIGN(sizeof(BarkDeletedPageData))); BARK_DELETED is its only flag, and
+its level and cycle ID are zero.  BarkPageSetDeleted reinitializes the page
+in this form from its links and safexid alone, so that VACUUM and WAL redo
+build the same page.
 BarkDeletedPageData holds safexid, the next full transaction ID read while
 the page and its neighbours were locked for the deletion.  nbtree puts its
 BTDeletedPageData at the start of the tuple area under pd_lower; BARK puts it
@@ -216,14 +219,80 @@ pass's page walk records every other deleted page in the FSM once it becomes
 recyclable, so a page not recyclable at one VACUUM is recorded by a later
 one; it also counts the deleted pages (pages_deleted).  bark_get_free_page
 repeats the test before it reuses an FSM page, since the FSM is not crash-
-safe.  The insert path passes the heap relation down for the test; the paths
-that have none (bark_finish_split and the overflow chains of OVERSIZED pivots)
-pass NULL, which uses the horizon of shared relations, the most conservative.
+safe.  Every path that allocates a page passes the index's heap relation for
+the test: inserts and VACUUM directly, and the paths reached from a descent
+(bark_finish_split, the overflow chains of OVERSIZED pivots) through
+BarkKeyInfo.heaprel, which the insert or VACUUM that started the descent set.
+
+A page reused from the FSM is reused on a hot standby too, by replay of the
+record that reinitializes it, and a standby query may still hold a link to
+it: the standby's snapshots are not part of the primary's horizon unless
+hot_standby_feedback is on.  So before reusing a deleted page,
+bark_get_free_page writes an XLOG_BARK_REUSE_PAGE record carrying the page's
+safexid, as nbtree's _bt_allocbuf does, whenever wal_level allows hot standby.
+Its replay cancels every standby query whose snapshot's xmin is not after
+safexid (ResolveRecoveryConflictWithSnapshotFullXid), which is the standby's
+version of the GlobalVisCheckRemovableFullXid test the primary made.
 
 safexid is ReadNextFullTransactionId() rather than an assigned XID, as in
 nbtree, so a deleted page becomes recyclable only after some transaction that
 starts after the deletion takes an XID and ends: on an idle system, pages
 deleted by one VACUUM are recorded by the next one after the next write.
+
+WAL
+---
+
+BARK has its own WAL resource manager, "Bark" (RM_BARK_ID; barkxlog.h,
+barkxlog.c, rmgrdesc/barkdesc.c), for VACUUM and page deletion.  Inserts,
+splits, new roots, overflow chains and CREATE INDEX are still logged with
+generic WAL (generic_xlog.c), which logs a delta of each registered page.
+The two kinds coexist because each change to a page is in exactly one
+record: replay applies a page's records in LSN order whichever resource
+manager wrote them.  The records:
+
+  XLOG_BARK_VACUUM (bark_delitems_vacuum)
+      One leaf: the offsets of entries deleted whole, and the offsets and new
+      contents of LIST and POSTING entries rewritten with the members that
+      survive (nbtree logs which TIDs left a posting list instead and re-forms
+      it in redo; re-forming a POSTING entry needs the tuple descriptor, which
+      redo lacks).  Redo rewrites, then deletes, then clears the cycle ID.
+      Redo takes a cleanup lock, as btree_xlog_vacuum does.  A page with
+      nothing to delete gets a record only when it carries the running
+      VACUUM's cycle ID, so a VACUUM that finds nothing logs nothing.
+
+  XLOG_BARK_UNLINK_PAGE (bark_delete_empty_leaf)
+      Four pages: the target leaf (reinitialized as a deleted page from the
+      record's links and safexid, no image needed), its left sibling's right
+      link, its right sibling's left link, and the parent, where the target's
+      downlink is pointed at the right sibling and the right sibling's own
+      downlink is removed.  This is nbtree's MARK_PAGE_HALFDEAD and
+      UNLINK_PAGE in one record, since BARK deletes only leaves whose
+      right sibling has the same parent.  Redo takes exclusive locks on the
+      left sibling, target, right sibling and parent, in that order, and
+      holds them all until the record is applied.
+
+  XLOG_BARK_MARK_DELETED (bark_free_oversized)
+      One overflow page, reinitialized as a deleted page that keeps its link
+      to the next chunk.  Overflow pages are not in the tree, so the page has
+      no siblings to fix, and UNLINK_PAGE's four-page layout would not fit.
+      Redo takes an exclusive lock on the page.
+
+  XLOG_BARK_REUSE_PAGE (bark_get_free_page)
+      No pages.  The relation, block and the page's safexid as
+      snapshotConflictHorizon, plus whether the heap is a catalog for
+      logical decoding.  In hot standby, redo resolves the recovery conflict
+      (see "Page deletion and recycling").  The page's reinitialization is in
+      the allocating record that follows.
+
+The vacuum cycle ID's clear is logged, in XLOG_BARK_VACUUM, although nbtree
+treats it as a hint and masks it in btree_mask.  A hint would make a
+standby's page differ from the primary's in a field that the generic records
+for inserts and splits copy whole, so a consistency check of the next such
+record, which compares the replayed page against the full-page image, would
+fail.  Once those records are BARK records too, the clear can become a hint
+and bark_mask can mask it.  Until then bark_mask (wal_consistency_checking)
+masks only the LSN, checksum, page-header hint bits and the unused space:
+BARK sets no LP_DEAD bits and makes no other unlogged changes.
 
 Entry encoding (the C-KEYSHAPE contract)
 ----------------------------------------
