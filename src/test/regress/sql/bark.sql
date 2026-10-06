@@ -2160,3 +2160,185 @@ RESET enable_bitmapscan;
 RESET max_parallel_maintenance_workers;
 RESET min_parallel_index_scan_size;
 DROP TABLE bark_pvac;
+-- ===========================================================================
+-- Mark/restore (ammarkpos/amrestrpos).  A merge join marks its inner scan at
+-- the first inner row of each run of equal keys and restores the mark for
+-- every further outer row with that key, so a BARK index scan can be the
+-- inner side directly, with no Materialize node over it.  The outer side
+-- here is an ordered subquery, which cannot itself be restored, so the plans
+-- put the BARK index on the inner side.  Each outer key appears three times,
+-- so each inner run is read once and restored twice.
+--
+-- bark_mj_check runs a query as a merge join and as a hash join and compares
+-- the results; it reports 'not merge inner' when the merge plan does not
+-- have the named index directly under a merge join's inner side.
+-- ===========================================================================
+CREATE FUNCTION bark_mj_check(q text, idx text)
+RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  plan jsonb;
+  viamerge text;
+  viahash text;
+BEGIN
+  PERFORM set_config('enable_hashjoin', 'off', true);
+  PERFORM set_config('enable_nestloop', 'off', true);
+  PERFORM set_config('enable_material', 'off', true);
+  PERFORM set_config('enable_sort', 'off', true);
+  PERFORM set_config('enable_bitmapscan', 'off', true);
+  EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO plan;
+  EXECUTE 'SELECT x::text FROM (' || q || ') x' INTO viamerge;
+  PERFORM set_config('enable_mergejoin', 'off', true);
+  PERFORM set_config('enable_hashjoin', 'on', true);
+  PERFORM set_config('enable_sort', 'on', true);
+  EXECUTE 'SELECT x::text FROM (' || q || ') x' INTO viahash;
+  IF NOT jsonb_path_exists(plan,
+         '$.** ? (@."Node Type" == "Merge Join" && @.Plans[1]."Index Name" == $i)',
+         jsonb_build_object('i', idx)) THEN
+    RETURN 'not merge inner';
+  END IF;
+  RETURN CASE WHEN viamerge IS NOT DISTINCT FROM viahash
+              THEN 'ok ' || viamerge
+              ELSE 'MISMATCH ' || viamerge || ' vs ' || viahash END;
+END $$;
+
+-- The outer side: keys 0..119, three rows each (keys 100..119 match nothing).
+CREATE TABLE bark_mj_o (k int, a int, b int) WITH (autovacuum_enabled = off);
+INSERT INTO bark_mj_o SELECT g % 120, g % 25, g % 9 FROM generate_series(1, 360) g;
+-- LIST keys: 100 keys, each key's rows scattered over the heap.
+CREATE TABLE bark_mj_list (k int, v int) WITH (autovacuum_enabled = off);
+INSERT INTO bark_mj_list SELECT g % 100, g FROM generate_series(1, 20000) g;
+CREATE INDEX bark_mj_list_idx ON bark_mj_list USING bark (k);
+-- POSTING keys: 100 keys, each key's 400 rows together on the heap.
+CREATE TABLE bark_mj_post (k int, v int) WITH (autovacuum_enabled = off);
+INSERT INTO bark_mj_post SELECT k, g FROM generate_series(0, 99) k, generate_series(1, 400) g;
+CREATE INDEX bark_mj_post_idx ON bark_mj_post USING bark (k);
+-- NULL keys (one row in ten) and a two-column key; the same rows under a
+-- DESC column.
+CREATE TABLE bark_mj_misc (k int, a int, b int, v int) WITH (autovacuum_enabled = off);
+INSERT INTO bark_mj_misc
+  SELECT CASE WHEN g % 10 = 0 THEN NULL ELSE g % 100 END, g % 20, g % 7, g
+  FROM generate_series(1, 20000) g;
+CREATE INDEX bark_mj_null_idx ON bark_mj_misc USING bark (k);
+CREATE INDEX bark_mj_ab_idx ON bark_mj_misc USING bark (a, b);
+CREATE TABLE bark_mj_desc (k int, v int) WITH (autovacuum_enabled = off);
+INSERT INTO bark_mj_desc SELECT k, v FROM bark_mj_misc;
+CREATE INDEX bark_mj_desc_idx ON bark_mj_desc USING bark (k DESC);
+-- Wide INCLUDE rows (no coalescing): key 50's 3000 rows span many leaves.
+-- Each row's payload p is its own number, so an index-only scan that returns
+-- another row's copy changes the sum.
+CREATE TABLE bark_mj_wide (k int, v int, p text) WITH (autovacuum_enabled = off);
+INSERT INTO bark_mj_wide
+  SELECT CASE WHEN g % 2 = 0 THEN 50 ELSE g % 100 END, g, lpad(g::text, 100, '0')
+  FROM generate_series(1, 6000) g;
+CREATE INDEX bark_mj_wide_idx ON bark_mj_wide USING bark (k) INCLUDE (p);
+VACUUM ANALYZE bark_mj_o, bark_mj_list, bark_mj_post, bark_mj_misc, bark_mj_desc,
+  bark_mj_wide;
+SELECT pg_relation_size('bark_mj_wide_idx') / 8192 > 40 AS wide_run_spans_leaves;
+
+-- The inner BARK scans need no Materialize: neither an index scan nor an
+-- index-only scan.
+SET enable_hashjoin = off;
+SET enable_nestloop = off;
+SET enable_material = off;
+SET enable_sort = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF)
+SELECT count(*), sum(i.v)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_list i ON o.k = i.k;
+EXPLAIN (COSTS OFF)
+SELECT count(*), sum(i.p::int)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_wide i ON o.k = i.k;
+RESET enable_hashjoin;
+RESET enable_nestloop;
+RESET enable_material;
+RESET enable_sort;
+RESET enable_bitmapscan;
+
+-- Merge join equals hash join.  With a filter on the inner side, the first
+-- member of a LIST or POSTING entry is often rejected, so the mark falls on a
+-- later member of the entry, and the scan must resume at that member.
+SELECT bark_mj_check('SELECT count(*), sum(i.v)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_list i ON o.k = i.k', 'bark_mj_list_idx') AS list;
+SELECT bark_mj_check('SELECT count(*), sum(i.v)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_list i ON o.k = i.k AND i.v % 3 <> 1', 'bark_mj_list_idx') AS list_mid;
+SELECT bark_mj_check('SELECT count(*), sum(i.v)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_post i ON o.k = i.k', 'bark_mj_post_idx') AS post;
+SELECT bark_mj_check('SELECT count(*), sum(i.v)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_post i ON o.k = i.k AND i.v % 3 <> 1', 'bark_mj_post_idx') AS post_mid;
+SELECT bark_mj_check('SELECT count(*), sum(i.k)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_post i ON o.k = i.k', 'bark_mj_post_idx') AS post_ios;
+SELECT bark_mj_check('SELECT count(*), sum(i.v), count(o.k), count(i.k)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  FULL JOIN bark_mj_misc i ON o.k = i.k', 'bark_mj_null_idx') AS nulls;
+SELECT bark_mj_check('SELECT count(*), sum(v) FROM
+  (SELECT o.k, i.v FROM (SELECT k FROM bark_mj_o ORDER BY k DESC OFFSET 0) o
+   JOIN bark_mj_desc i ON o.k = i.k ORDER BY o.k DESC) j',
+  'bark_mj_desc_idx') AS desc_fwd;
+SELECT bark_mj_check('SELECT count(*), sum(i.v)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_desc i ON o.k = i.k', 'bark_mj_desc_idx') AS desc_bwd;
+SELECT bark_mj_check('SELECT count(*), sum(i.v)
+  FROM (SELECT a, b FROM bark_mj_o ORDER BY a, b OFFSET 0) o
+  JOIN bark_mj_misc i ON o.a = i.a AND o.b = i.b', 'bark_mj_ab_idx') AS two_col;
+-- Key 50's run spans many leaves, so the scan leaves the marked page and the
+-- mark is restored from its saved copy, for a plain and an index-only scan.
+SELECT bark_mj_check('SELECT count(*), sum(i.v)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_wide i ON o.k = i.k', 'bark_mj_wide_idx') AS long_run;
+SELECT bark_mj_check('SELECT count(*), sum(i.p::int)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_wide i ON o.k = i.k', 'bark_mj_wide_idx') AS long_run_ios;
+-- A leading-array (SAOP) inner scan, whose position carries the array cursor.
+SELECT bark_mj_check('SELECT count(*), sum(i.v)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_wide i ON o.k = i.k WHERE i.k = ANY (''{11,21,49,50,51,91}'')',
+  'bark_mj_wide_idx') AS saop;
+SELECT bark_mj_check('SELECT count(*), sum(i.v)
+  FROM (SELECT k FROM bark_mj_o ORDER BY k OFFSET 0) o
+  JOIN bark_mj_post i ON o.k = i.k WHERE i.k = ANY (''{3,17,40,41,77,99}'')',
+  'bark_mj_post_idx') AS saop_post;
+
+-- An ordered-operator (KNN) scan cannot be restored: the executor reorders
+-- its tuples in a queue that restoring the index position does not rewind.
+-- So a KNN scan (the planner considers one only for an ORDER BY on the
+-- distance) is never a merge join's inner side on its own.  With Materialize
+-- disabled, the plan puts it on the outer side, and the join returns what a
+-- hash join does.
+CREATE TABLE bark_mj_knn (a int) WITH (autovacuum_enabled = off);
+INSERT INTO bark_mj_knn SELECT g FROM generate_series(1, 10000) g;
+CREATE INDEX bark_mj_knn_idx ON bark_mj_knn USING bark (a);
+CREATE TABLE bark_mj_dist (f float8) WITH (autovacuum_enabled = off);
+INSERT INTO bark_mj_dist SELECT (g % 50)::float8 FROM generate_series(1, 300) g;
+CREATE INDEX bark_mj_dist_idx ON bark_mj_dist USING btree (f);
+VACUUM ANALYZE bark_mj_knn, bark_mj_dist;
+SET enable_hashjoin = off;
+SET enable_nestloop = off;
+SET enable_material = off;
+SET enable_sort = off;
+SET enable_seqscan = off;
+EXPLAIN (COSTS OFF)
+SELECT d.f, i.a FROM bark_mj_dist d JOIN bark_mj_knn i ON d.f = (i.a <~> 5000)
+  ORDER BY i.a <~> 5000;
+SELECT count(*), sum(a) FROM
+  (SELECT d.f, i.a FROM bark_mj_dist d JOIN bark_mj_knn i ON d.f = (i.a <~> 5000)
+   ORDER BY i.a <~> 5000) x;
+RESET enable_hashjoin;
+RESET enable_nestloop;
+RESET enable_material;
+RESET enable_sort;
+RESET enable_seqscan;
+SET enable_mergejoin = off;
+SELECT count(*), sum(a) FROM
+  (SELECT d.f, i.a FROM bark_mj_dist d JOIN bark_mj_knn i ON d.f = (i.a <~> 5000)
+   ORDER BY i.a <~> 5000) x;
+RESET enable_mergejoin;
+DROP TABLE bark_mj_o, bark_mj_list, bark_mj_post, bark_mj_misc, bark_mj_desc,
+  bark_mj_wide, bark_mj_knn, bark_mj_dist;
+DROP FUNCTION bark_mj_check(text, text);
