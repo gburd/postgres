@@ -1,0 +1,170 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1begin s1fwd s1fetch s2ins s1rest s1commit s1count
+step s1begin: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1fwd: DECLARE c CURSOR FOR SELECT a FROM bark_shift WHERE a > 0 ORDER BY a;
+step s1fetch: SELECT bark_shift_fetch('c', 50);
+bark_shift_fetch
+----------------
+                
+(1 row)
+
+step s2ins: INSERT INTO bark_shift SELECT g FROM generate_series(1, 20) g;
+step s1rest: SELECT bark_shift_fetch('c', 1000000);
+bark_shift_fetch
+----------------
+                
+(1 row)
+
+step s1commit: COMMIT;
+step s1count: 
+	SELECT count(*) AS fetched, count(DISTINCT a) AS distinct_rows,
+		   min(a), max(a) FROM bark_shift_got;
+	TRUNCATE bark_shift_got;
+
+fetched|distinct_rows|min| max
+-------+-------------+---+----
+    100|          100| 10|1000
+(1 row)
+
+
+starting permutation: s1begin s1bwd s1fetch s2ins s1rest s1commit s1count
+step s1begin: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1bwd: DECLARE c CURSOR FOR SELECT a FROM bark_shift WHERE a > 0 ORDER BY a DESC;
+step s1fetch: SELECT bark_shift_fetch('c', 50);
+bark_shift_fetch
+----------------
+                
+(1 row)
+
+step s2ins: INSERT INTO bark_shift SELECT g FROM generate_series(1, 20) g;
+step s1rest: SELECT bark_shift_fetch('c', 1000000);
+bark_shift_fetch
+----------------
+                
+(1 row)
+
+step s1commit: COMMIT;
+step s1count: 
+	SELECT count(*) AS fetched, count(DISTINCT a) AS distinct_rows,
+		   min(a), max(a) FROM bark_shift_got;
+	TRUNCATE bark_shift_got;
+
+fetched|distinct_rows|min| max
+-------+-------------+---+----
+    100|          100| 10|1000
+(1 row)
+
+
+starting permutation: s1begin s1fwd s1fetch s2split s1rest s1commit s1count
+step s1begin: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1fwd: DECLARE c CURSOR FOR SELECT a FROM bark_shift WHERE a > 0 ORDER BY a;
+step s1fetch: SELECT bark_shift_fetch('c', 50);
+bark_shift_fetch
+----------------
+                
+(1 row)
+
+step s2split: INSERT INTO bark_shift SELECT g * 10 + 5, 'z' FROM generate_series(1, 2000) g;
+step s1rest: SELECT bark_shift_fetch('c', 1000000);
+bark_shift_fetch
+----------------
+                
+(1 row)
+
+step s1commit: COMMIT;
+step s1count: 
+	SELECT count(*) AS fetched, count(DISTINCT a) AS distinct_rows,
+		   min(a), max(a) FROM bark_shift_got;
+	TRUNCATE bark_shift_got;
+
+fetched|distinct_rows|min| max
+-------+-------------+---+----
+    100|          100| 10|1000
+(1 row)
+
+
+starting permutation: s1begin s1bwd s1fetch s2split s1rest s1commit s1count
+step s1begin: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1bwd: DECLARE c CURSOR FOR SELECT a FROM bark_shift WHERE a > 0 ORDER BY a DESC;
+step s1fetch: SELECT bark_shift_fetch('c', 50);
+bark_shift_fetch
+----------------
+                
+(1 row)
+
+step s2split: INSERT INTO bark_shift SELECT g * 10 + 5, 'z' FROM generate_series(1, 2000) g;
+step s1rest: SELECT bark_shift_fetch('c', 1000000);
+bark_shift_fetch
+----------------
+                
+(1 row)
+
+step s1commit: COMMIT;
+step s1count: 
+	SELECT count(*) AS fetched, count(DISTINCT a) AS distinct_rows,
+		   min(a), max(a) FROM bark_shift_got;
+	TRUNCATE bark_shift_got;
+
+fetched|distinct_rows|min| max
+-------+-------------+---+----
+    100|          100| 10|1000
+(1 row)
+
+
+starting permutation: s1begin s1list s1fetch1 s2inslist s1rest s1commit s1count
+step s1begin: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1list: DECLARE c CURSOR FOR SELECT a FROM bark_shift_list WHERE a >= 0 ORDER BY a;
+step s1fetch1: SELECT bark_shift_fetch('c', 1);
+bark_shift_fetch
+----------------
+                
+(1 row)
+
+step s2inslist: INSERT INTO bark_shift_list SELECT 0 FROM generate_series(1, 30);
+step s1rest: SELECT bark_shift_fetch('c', 1000000);
+bark_shift_fetch
+----------------
+                
+(1 row)
+
+step s1commit: COMMIT;
+step s1count: 
+	SELECT count(*) AS fetched, count(DISTINCT a) AS distinct_rows,
+		   min(a), max(a) FROM bark_shift_got;
+	TRUNCATE bark_shift_got;
+
+fetched|distinct_rows|min|max
+-------+-------------+---+---
+    300|            6|  0|  5
+(1 row)
+
+
+starting permutation: s2delhalf s1beginrc s1vac s1fetch s2vacuum s1rest s1commit s1count
+step s2delhalf: DELETE FROM bark_shift_vac WHERE a % 2 = 0;
+step s1beginrc: BEGIN ISOLATION LEVEL READ COMMITTED;
+step s1vac: DECLARE c CURSOR FOR SELECT a FROM bark_shift_vac WHERE a > 0 ORDER BY a;
+step s1fetch: SELECT bark_shift_fetch('c', 50);
+bark_shift_fetch
+----------------
+                
+(1 row)
+
+step s2vacuum: VACUUM (INDEX_CLEANUP ON) bark_shift_vac;
+step s1rest: SELECT bark_shift_fetch('c', 1000000);
+bark_shift_fetch
+----------------
+                
+(1 row)
+
+step s1commit: COMMIT;
+step s1count: 
+	SELECT count(*) AS fetched, count(DISTINCT a) AS distinct_rows,
+		   min(a), max(a) FROM bark_shift_got;
+	TRUNCATE bark_shift_got;
+
+fetched|distinct_rows|min| max
+-------+-------------+---+----
+   2500|         2500|  1|4999
+(1 row)
+
