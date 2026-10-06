@@ -109,7 +109,7 @@ bark_knn_ensure_tids(BarkKnnCursor *cur, int n)
 /*
  * Build the lower-bound key tuple used to descend to the center leaf: the
  * center constant in the ordered column, every other attribute NULL (exactly
- * as the plain scan's bark_make_lower_bound does).  The caller pfrees it.
+ * as a plain scan's lower bound does).  The caller pfrees it.
  */
 static IndexTuple
 bark_knn_center_key(IndexScanDesc scan)
