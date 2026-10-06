@@ -21,6 +21,7 @@
 #include "access/transam.h"
 #include "access/xlogreader.h"
 #include "lib/stringinfo.h"
+#include "storage/itemptr.h"
 #include "storage/off.h"
 
 /*
@@ -39,6 +40,8 @@
 #define XLOG_BARK_INSERT_UPPER	0x50	/* add a downlink to an internal page,
 										 * finishing a child's split */
 #define XLOG_BARK_OVERWRITE		0x60	/* replace an entry on a leaf */
+#define XLOG_BARK_ADD_TID		0x70	/* add one heap TID to a LIST or
+										 * POSTING entry */
 
 /*
  * VACUUM's changes to one leaf page, as nbtree's xl_btree_vacuum: entries
@@ -157,6 +160,24 @@ typedef struct xl_bark_overwrite
 } xl_bark_overwrite;
 
 #define SizeOfBarkOverwrite	(offsetof(xl_bark_overwrite, offnum) + sizeof(OffsetNumber))
+
+/*
+ * One heap TID added to a LIST or POSTING entry on a leaf, by either of
+ * bark_coalesce_list's fast paths.  Only the TID is logged: redo calls
+ * bark_entry_add_tid on the entry at offnum, as the primary did, and
+ * overwrites the entry with the result, as nbtree's XLOG_BTREE_INSERT_POST
+ * logs the new item and has redo re-form the posting list.  The result
+ * depends only on the entry and the TID, so both sides build the same bytes.
+ *
+ * Backup Blk 0: leaf page
+ */
+typedef struct xl_bark_add_tid
+{
+	OffsetNumber offnum;		/* entry gaining the TID */
+	ItemPointerData tid;		/* the TID */
+} xl_bark_add_tid;
+
+#define SizeOfBarkAddTid	(offsetof(xl_bark_add_tid, tid) + sizeof(ItemPointerData))
 
 /*
  * prototypes for functions in barkxlog.c

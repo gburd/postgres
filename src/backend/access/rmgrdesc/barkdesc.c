@@ -95,6 +95,15 @@ bark_desc(StringInfo buf, XLogReaderState *record)
 				appendStringInfo(buf, "off: %u", xlrec->offnum);
 				break;
 			}
+		case XLOG_BARK_ADD_TID:
+			{
+				xl_bark_add_tid *xlrec = (xl_bark_add_tid *) rec;
+
+				appendStringInfo(buf, "off: %u, tid: (%u,%u)", xlrec->offnum,
+								 ItemPointerGetBlockNumber(&xlrec->tid),
+								 ItemPointerGetOffsetNumber(&xlrec->tid));
+				break;
+			}
 	}
 }
 
@@ -125,6 +134,9 @@ bark_identify(uint8 info)
 			break;
 		case XLOG_BARK_OVERWRITE:
 			id = "OVERWRITE";
+			break;
+		case XLOG_BARK_ADD_TID:
+			id = "ADD_TID";
 			break;
 	}
 
