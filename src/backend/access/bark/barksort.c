@@ -12,11 +12,12 @@
  * finish, so a BARK index built this way is crash-safe and replicatable
  * without any BARK-specific WAL record.
  *
- * This commit implements build only.  Every leaf entry is SINGLE (one heap
- * TID in t_tid, no alt-TID bit); internal downlinks are PIVOT tuples (see
- * bark.h).  Insert into an existing index, and scanning, arrive in later
- * commits; until then the cost estimator is prohibitive so the planner never
- * chooses a BARK index.
+ * Leaf entries are the ones insert would form.  Where insert coalesces equal
+ * keys (bark_allequalimage, in a non-unique index), bark_load writes each run
+ * of equal keys as LIST and POSTING entries, as nbtsort.c's _bt_load
+ * deduplicates into posting lists; otherwise every row is a SINGLE (one heap
+ * TID in t_tid, no alt-TID bit).  Internal downlinks are PIVOT tuples (see
+ * bark.h).
  *
  * The write follows nbtsort.c's model: block numbers are assigned in a single
  * increasing sequence as pages are handed to the writer, so a page's block is
@@ -94,6 +95,44 @@ typedef struct BarkPageState
 	struct BarkPageState *parent;	/* next level up; created on demand */
 } BarkPageState;
 
+/*
+ * The largest leaf entry CREATE INDEX forms from a run of equal keys.  As
+ * nbtsort.c's _bt_load limits its posting lists (maxpostingsize), this is a
+ * tenth of a page less one line pointer: the space a leaf packed to the
+ * default fillfactor of 90 leaves free.  An entry of BarkMaxItemSize, a third
+ * of a page, would leave room for only two of them beside the high key.
+ * Retail insert may still grow a built entry up to BarkMaxItemSize.
+ */
+#define BARK_BUILD_MAX_ENTRY_SIZE \
+	(MAXALIGN_DOWN(BLCKSZ * 10 / 100) - sizeof(ItemIdData))
+
+StaticAssertDecl(BARK_BUILD_MAX_ENTRY_SIZE <= BarkMaxItemSize,
+				 "BARK build entry limit exceeds the item ceiling");
+
+/*
+ * More heap TIDs than one built entry can hold.  A LIST is far smaller, and a
+ * POSTING entry's removal bound (sbm_removal_bound) charges a stored 64-bit
+ * vector for every vector that holds a member, so each member costs at least
+ * one bit of the entry.
+ */
+#define BARK_BUILD_MAX_ENTRY_TIDS	(8 * (int) BARK_BUILD_MAX_ENTRY_SIZE)
+
+/*
+ * A run of equal keys bark_load is gathering: the run's first tuple, which
+ * supplies the key of every entry formed from the run, and the heap TIDs of
+ * the run's tuples not yet written, ascending.  The array holds two entries'
+ * worth; when it fills, the entries that cannot get longer are written out,
+ * so a key with any number of rows needs a bounded amount of memory.
+ */
+typedef struct BarkBuildRun
+{
+	IndexTuple	key;			/* first tuple of the run, or NULL */
+	ItemPointer tids;			/* pending heap TIDs, ascending */
+	int			ntids;
+} BarkBuildRun;
+
+#define BARK_BUILD_RUN_TIDS		(2 * BARK_BUILD_MAX_ENTRY_TIDS)
+
 /* The whole build: the writer, the comparison state, and the level stack. */
 typedef struct BarkBuildState
 {
@@ -103,6 +142,7 @@ typedef struct BarkBuildState
 	BlockNumber nblocks;		/* next block number to assign (after meta) */
 	int			nkeyatts;		/* number of key attributes */
 	bool		isunique;		/* enforce uniqueness during load */
+	bool		allequalimage;	/* bark_allequalimage(index) */
 	bool		has_oversized;	/* saw a key too large to sort/load inline */
 	IndexInfo  *indexInfo;		/* for the oversized second-pass insert */
 
@@ -460,21 +500,30 @@ bark_buildadd(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 			  IndexTuple itup)
 {
 	Size		itemsz = IndexTupleSize(itup);
+	Size		hikeysz = itemsz;
 	OffsetNumber off;
 
 	/*
 	 * Flush when the page already holds a data item and the new item plus a
-	 * high key would not fit.  The high key is formed from the new item and
-	 * is no larger than it.  Requiring room for two items keeps at least one
-	 * item per page and guarantees the high key prepended at flush fits.
+	 * high key would not fit.  The high key is formed from the next item and
+	 * is no larger than it; the new item stands in for it here, and for a
+	 * LIST or POSTING item only its key is counted, since that is all a high
+	 * key keeps (bark_make_pivot strips the body).  When the high key turns
+	 * out wider, bark_flush_page moves the page's last item to the next page.
+	 * Requiring room for the item and a high key keeps at least one item per
+	 * page.
 	 *
 	 * Also flush, as nbtsort.c does, once the page's free space has dropped
 	 * below the fillfactor target, provided it already holds two data items;
 	 * the minimum keeps a low fillfactor with wide keys from producing pages
 	 * of a single entry.
 	 */
+	if (BarkEntryGetShape(itup) == BARK_SHAPE_LIST ||
+		BarkEntryGetShape(itup) == BARK_SHAPE_POSTING)
+		hikeysz = BarkEntryGetBodyOffset(itup);
+
 	if (st->nextoff > BARK_P_HIKEY &&
-		(!bark_page_has_room(st->buf, itemsz + itemsz) ||
+		(!bark_page_has_room(st->buf, itemsz + hikeysz) ||
 		 (PageGetFreeSpace((Page) st->buf) < st->full &&
 		  st->nextoff > BARK_P_FIRSTKEY)))
 		bark_flush_page(bs, bulk, st, itup);
@@ -555,7 +604,7 @@ bark_finish(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *leaf)
 	meta->bark_version = BARK_VERSION;
 	meta->bark_root = rootblk;
 	meta->bark_level = rootlevel;
-	meta->bark_allequalimage = false;	/* dedup/equalimage is a later phase */
+	meta->bark_allequalimage = bs->allequalimage;
 	((PageHeader) metabuf)->pd_lower =
 		((char *) meta + sizeof(BarkMetaPageData)) - (char *) metabuf;
 
@@ -563,10 +612,145 @@ bark_finish(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *leaf)
 }
 
 /*
+ * bark_form_posting's result for the first ntids locators, or NULL when that
+ * is not a POSTING entry within BARK_BUILD_MAX_ENTRY_SIZE.
+ */
+static IndexTuple
+bark_build_posting(TupleDesc tupdesc, IndexTuple key, ItemPointer tids,
+				   int ntids)
+{
+	IndexTuple	entry = bark_form_posting(tupdesc, key, tids, ntids);
+
+	if (entry != NULL && IndexTupleSize(entry) > BARK_BUILD_MAX_ENTRY_SIZE)
+	{
+		pfree(entry);
+		entry = NULL;
+	}
+	return entry;
+}
+
+/*
+ * Form one leaf entry of `key` from a prefix of the ascending locators
+ * tids[0..ntids) and set *nused to the length of that prefix.  The entry is
+ * the smaller of POSTING and LIST for the prefix, as bark_coalesce_list
+ * chooses on insert, and the prefix is the longest one whose entry fits in
+ * BARK_BUILD_MAX_ENTRY_SIZE.  One locator, or a key too wide for a LIST of
+ * two, makes a SINGLE.
+ *
+ * Both shapes grow with the prefix: a LIST by one locator per member, a
+ * POSTING by its removal bound, which never shrinks as members are added.  So
+ * the LIST limit is computed directly and the encodings are compared there.
+ * When POSTING wins, it is tried with every locator an entry can hold, which
+ * covers the whole run for most keys, and only when that does not fit is the
+ * POSTING limit found by bisection.
+ */
+static IndexTuple
+bark_build_form_entry(BarkBuildState *bs, IndexTuple key, ItemPointer tids,
+					  int ntids, int *nused)
+{
+	TupleDesc	tupdesc = RelationGetDescr(bs->index);
+	Size		keysz = MAXALIGN(IndexTupleSize(key));
+	int			nlist = 0;
+	int			n;
+	IndexTuple	entry;
+
+	if (keysz < BARK_BUILD_MAX_ENTRY_SIZE)
+		nlist = Min(BARK_LIST_MAX_COUNT,
+					(int) ((BARK_BUILD_MAX_ENTRY_SIZE - keysz) /
+						   sizeof(ItemPointerData)));
+
+	if (ntids == 1 || nlist < 2)
+	{
+		entry = CopyIndexTuple(key);
+		entry->t_tid = tids[0];
+		*nused = 1;
+		return entry;
+	}
+
+	n = Min(ntids, nlist);
+	entry = bark_build_posting(tupdesc, key, tids, n);
+	if (entry == NULL)
+	{
+		*nused = n;
+		return bark_form_list(tupdesc, key, tids, n);
+	}
+
+	if (ntids > n)
+	{
+		int			lo = n;		/* fits */
+		int			hi = Min(ntids, BARK_BUILD_MAX_ENTRY_TIDS);
+		IndexTuple	probe = bark_build_posting(tupdesc, key, tids, hi);
+
+		if (probe != NULL)
+		{
+			pfree(entry);
+			*nused = hi;
+			return probe;
+		}
+		hi--;
+		while (lo < hi)
+		{
+			int			mid = lo + (hi - lo + 1) / 2;
+
+			probe = bark_build_posting(tupdesc, key, tids, mid);
+			if (probe != NULL)
+			{
+				pfree(entry);
+				entry = probe;
+				lo = mid;
+			}
+			else
+				hi = mid - 1;
+		}
+		n = lo;
+	}
+	*nused = n;
+	return entry;
+}
+
+/*
+ * Write out the entries of the pending run.  At the end of the run (`final`)
+ * every locator is written.  Otherwise only the entries whose extent no later
+ * locator can change are: an entry is cut from the longest prefix that fits,
+ * and no entry holds more than BARK_BUILD_MAX_ENTRY_TIDS, so a cut made while
+ * more than that many locators remain is the same cut the whole run would
+ * get.  The rest move to the front of the array.
+ */
+static void
+bark_build_flush_run(BarkBuildState *bs, BulkWriteState *bulk,
+					 BarkPageState *leaf, BarkBuildRun *run, bool final)
+{
+	int			keep = final ? 0 : BARK_BUILD_MAX_ENTRY_TIDS;
+	int			done = 0;
+
+	while (run->ntids - done > keep)
+	{
+		int			nused;
+		IndexTuple	entry = bark_build_form_entry(bs, run->key,
+												  run->tids + done,
+												  run->ntids - done, &nused);
+
+		bark_buildadd(bs, bulk, leaf, entry);
+		pfree(entry);
+		done += nused;
+	}
+
+	run->ntids -= done;
+	memmove(run->tids, run->tids + done, run->ntids * sizeof(ItemPointerData));
+}
+
+/*
  * Load the sorted spool into the tree: pull index tuples from the finished
  * tuplesort in key order, enforce uniqueness for a unique index, write leaf
  * pages left to right, and build the upper levels and meta page.  Only the
  * leader ever calls this -- workers only feed the shared sort.
+ *
+ * Where insert would coalesce equal keys (bark_insert: a non-unique index
+ * whose equal keys have equal images; oversized keys never reach this
+ * point), each run of equal keys becomes LIST and POSTING entries, as
+ * nbtsort.c's _bt_load deduplicates into posting lists.  The sort breaks
+ * ties on the heap TID, so a run's locators arrive ascending, as both shapes
+ * store them.
  */
 static void
 bark_load(BarkBuildState *bs, Tuplesortstate *sortstate)
@@ -575,9 +759,35 @@ bark_load(BarkBuildState *bs, Tuplesortstate *sortstate)
 	BarkPageState *leaf = bark_pagestate(bs, bulk, 0);
 	IndexTuple	itup;
 	IndexTuple	prev = NULL;
+	bool		coalesce = bs->allequalimage && !bs->isunique;
+	BarkBuildRun run = {0};
+
+	if (coalesce)
+		run.tids = palloc_array(ItemPointerData, BARK_BUILD_RUN_TIDS);
 
 	while ((itup = tuplesort_getindextuple(sortstate, true)) != NULL)
 	{
+		if (coalesce)
+		{
+			if (run.key != NULL &&
+				bark_compare_itups(bs->keyinfo, bs->index, itup, run.key) == 0)
+			{
+				if (run.ntids == BARK_BUILD_RUN_TIDS)
+					bark_build_flush_run(bs, bulk, leaf, &run, false);
+				run.tids[run.ntids++] = itup->t_tid;
+				continue;
+			}
+			if (run.key != NULL)
+			{
+				bark_build_flush_run(bs, bulk, leaf, &run, true);
+				pfree(run.key);
+			}
+			run.key = CopyIndexTuple(itup);
+			run.tids[0] = itup->t_tid;
+			run.ntids = 1;
+			continue;
+		}
+
 		/*
 		 * A unique index must reject duplicate keys at build time too.  The
 		 * sort placed equal keys adjacently (with a heap-TID tiebreak), so
@@ -620,6 +830,13 @@ bark_load(BarkBuildState *bs, Tuplesortstate *sortstate)
 	}
 	if (prev != NULL)
 		pfree(prev);
+	if (run.key != NULL)
+	{
+		bark_build_flush_run(bs, bulk, leaf, &run, true);
+		pfree(run.key);
+	}
+	if (run.tids != NULL)
+		pfree(run.tids);
 
 	bark_finish(bs, bulk, leaf);
 	smgr_bulk_finish(bulk);
@@ -1056,6 +1273,7 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	bs.nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	bs.nblocks = 1;				/* block 0 is reserved for the meta page */
 	bs.isunique = indexInfo->ii_Unique;
+	bs.allequalimage = bark_allequalimage(index);
 	bs.indexInfo = indexInfo;	/* for the oversized second-pass insert */
 
 	/* Launch parallel workers when the planner asked for them. */
@@ -1142,7 +1360,7 @@ bark_buildempty(Relation index)
 	meta->bark_version = BARK_VERSION;
 	meta->bark_root = BARK_P_NONE;
 	meta->bark_level = 0;
-	meta->bark_allequalimage = false;
+	meta->bark_allequalimage = bark_allequalimage(index);
 	((PageHeader) metabuf)->pd_lower =
 		((char *) meta + sizeof(BarkMetaPageData)) - (char *) metabuf;
 
