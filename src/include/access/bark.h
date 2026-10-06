@@ -109,6 +109,13 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
 #define BarkPageIsOverflow(opaque)	(((opaque)->bark_flags & BARK_OVERFLOW) != 0)
 
 /*
+ * A deleted or half-dead page keeps valid sibling links but holds nothing a
+ * reader should return; readers step over it, as nbtree does with P_IGNORE.
+ */
+#define BarkPageIgnore(opaque) \
+	(((opaque)->bark_flags & (BARK_DELETED | BARK_HALF_DEAD)) != 0)
+
+/*
  * A page is leftmost / rightmost at its level when it has no left / right
  * sibling.  A non-rightmost page carries a high key -- an upper bound on the
  * keys it may hold -- as its first item (BARK_P_HIKEY); real data then starts
@@ -1116,55 +1123,129 @@ typedef struct BarkArrayKeyState
 } BarkArrayKeyState;
 
 /*
- * Scan state (scan->opaque).  A BARK scan positions on a leaf and walks the
- * right-link chain, returning the heap TID of each entry that satisfies the
- * scan keys.  currentBuffer is the pinned (and, while reading, share-locked)
- * leaf; lastOffset is the offset of the item most recently returned on it
- * (InvalidOffsetNumber before the first item), so the next item is found by
- * stepping from lastOffset in the current scan direction -- which keeps scroll
- * cursors correct when the direction reverses.
+ * Scan position (modeled on nbtree's BTScanPosData).  A scan reads one leaf at
+ * a time: under a single share lock bark_readpage copies every matching heap
+ * TID on the page into items[], then releases the lock, and bark_gettuple
+ * returns items from that local copy without touching the page again.  A
+ * concurrent insert or split on the leaf therefore cannot shift the scan's
+ * place on it; the scan moves on by the sibling links it saved when it read
+ * the page.
+ *
+ * items[] is always in index order (ascending offset, and ascending TID within
+ * one LIST or POSTING entry), whichever direction the page was read in;
+ * itemIndex is the item most recently returned.  It is grown as needed rather
+ * than sized like nbtree's MaxTIDsPerBTreePage, because one POSTING entry can
+ * expand to far more TIDs than that bound.
+ *
+ * For an index-only scan each matching entry's key tuple is copied once into
+ * the scan's tuple workspace (currTuples), and every member item refers to it
+ * by tupleOffset.  The workspace can exceed 64kB when a page holds OVERSIZED
+ * entries (each resolves to its full tuple), so tupleOffset is wider than
+ * nbtree's LocationIndex.
+ */
+typedef struct BarkScanPosItem
+{
+	ItemPointerData heapTid;	/* one member TID */
+	OffsetNumber indexOffset;	/* entry's offset on the page when read */
+	uint32		tupleOffset;	/* entry's copy in currTuples (IOS only) */
+} BarkScanPosItem;
+
+typedef struct BarkScanPosData
+{
+	Buffer		buf;			/* currPage, pinned; InvalidBuffer if unpinned */
+
+	/* page details as of the bark_readpage call that filled items[] */
+	BlockNumber currPage;		/* page read, or InvalidBlockNumber if none */
+	BlockNumber prevPage;		/* currPage's bark_prev when read */
+	BlockNumber nextPage;		/* currPage's bark_next when read */
+	ScanDirection dir;			/* direction the page was read in */
+
+	/* may there be matching entries left / right of currPage? */
+	bool		moreLeft;
+	bool		moreRight;
+
+	/*
+	 * Leading-array (SAOP) cursor as of the end of a forward read, and whether
+	 * the next element lies beyond the immediate right sibling, so the next
+	 * forward step should re-descend to it rather than read nextPage.  Kept in
+	 * the position, not only in the array state, so that a scroll cursor that
+	 * reverses direction cannot leave the cursor ahead of the position.  A
+	 * backward read leaves arrayCur at 0 and arrayReseek false (see barkscan.c).
+	 */
+	int			arrayCur;
+	bool		arrayReseek;
+
+	int			firstItem;		/* first valid index in items[] */
+	int			lastItem;		/* last valid index in items[] */
+	int			itemIndex;		/* item most recently returned */
+	uint32		nextTupleOffset;	/* first free byte in currTuples */
+
+	BarkScanPosItem *items;		/* palloc'd, maxItems entries */
+	int			maxItems;
+} BarkScanPosData;
+
+typedef BarkScanPosData *BarkScanPos;
+
+/* A position is valid once a page has been read into it (nbtree's rules). */
+#define BarkScanPosIsValid(pos)		BlockNumberIsValid((pos).currPage)
+#define BarkScanPosIsPinned(pos)	BufferIsValid((pos).buf)
+#define BarkScanPosUnpinIfPinned(pos) \
+	do { \
+		if (BarkScanPosIsPinned(pos)) \
+		{ \
+			ReleaseBuffer((pos).buf); \
+			(pos).buf = InvalidBuffer; \
+		} \
+	} while (0)
+#define BarkScanPosInvalidate(pos) \
+	do { \
+		(pos).buf = InvalidBuffer; \
+		(pos).currPage = InvalidBlockNumber; \
+	} while (0)
+
+/*
+ * Scan state (scan->opaque).
  */
 typedef struct BarkScanOpaqueData
 {
 	BarkKeyInfo *keyinfo;		/* key comparison state for this index */
-	Buffer		currentBuffer;	/* current leaf, or InvalidBuffer */
-	OffsetNumber lastOffset;	/* offset last returned on currentBuffer, or
-								 * InvalidOffsetNumber before the first item */
-	bool		firstCall;		/* true until the scan has been positioned */
-	bool		parallelReleased;	/* parallel scan: the cursor has already been
-									 * advanced past currentBuffer to its sibling, so
-									 * this worker owns currentBuffer and must not
-									 * release the cursor again before seizing the
-									 * next page */
-	char	   *currTuple;		/* scratch copy of the returned index tuple for
-								 * index-only scans (NULL when not wanted) */
-	Size		currTupleSize;	/* allocated capacity of currTuple */
+	bool		firstCall;		/* KNN: true until the scan has been positioned */
+	MemoryContext scanCxt;		/* context the scan was begun in */
 
 	/*
-	 * Within-entry iteration for multi-locator entries (LIST, POSTING): a
-	 * single leaf entry at lastOffset may expand into several heap TIDs, one
-	 * returned per bark_gettuple call.  memberTids holds the entry's locators
-	 * in ascending order; nMembers is how many, and memberIdx is the next one
-	 * to return in the scan direction (-1 or nMembers means the entry is
-	 * exhausted and the scan should advance to the next offset).  A SINGLE
-	 * entry has nMembers == 1 and uses the same machinery.
+	 * Per scan key, the three-way ORDER proc that compares the indexed column
+	 * with the key's argument, used to stop the scan at a bound; fn_oid is
+	 * InvalidOid for a key that only filters.  See bark_setup_key_procs.
+	 * Built on the first rescan: the keys' types do not change after that.
 	 */
-	ItemPointer memberTids;		/* palloc'd locator buffer, or NULL */
-	int			nMembersAlloc;	/* capacity of memberTids */
-	int			nMembers;		/* locators in the current entry */
-	int			memberIdx;		/* next locator to return */
+	FmgrInfo   *keyCmp;
+	bool		keyCmpReady;
+
+	/*
+	 * Drop the leaf pin, not only the lock, once a page has been read?  See
+	 * bark_rescan for when this is safe.
+	 */
+	bool		dropPin;
+
+	BarkScanPosData currPos;	/* current position */
+
+	/* index-only scans: key tuples of the entries in currPos.items */
+	char	   *currTuples;		/* palloc'd workspace, or NULL */
+	uint32		currTuplesSize; /* its allocated size */
+
+	/* scratch buffer for one entry's member TIDs while reading a page */
+	ItemPointer entryTids;
+	int			entryTidsAlloc;
 
 	/*
 	 * ScalarArrayOp (SAOP) state: one BarkArrayKeyState per SK_SEARCHARRAY
-	 * scankey, built by bark_rescan.  numArrayKeys == 0 for a plain scan,
-	 * which takes exactly the same path as before.  leadArray points at the
-	 * array key (if any) on the leading index column, which drives positioning;
-	 * it is NULL when no array constrains column 1.
+	 * scankey, built by bark_rescan.  numArrayKeys == 0 for a plain scan.
+	 * leadArray points at the array key (if any) on the leading index column,
+	 * which drives positioning; it is NULL when no array constrains column 1.
 	 */
 	BarkArrayKeyState *arrayKeys;	/* palloc'd array, or NULL */
 	int			numArrayKeys;	/* number of SAOP keys */
 	BarkArrayKeyState *leadArray;	/* the array key on column 1, or NULL */
-	bool		arrayDone;		/* a leading array exhausted all its elements */
 
 	/*
 	 * KNN (ordered-operator) scan state, allocated lazily on the first
@@ -1195,8 +1276,11 @@ typedef enum BarkParallelState
 
 typedef struct BarkParallelScanDescData
 {
-	BlockNumber bps_nextPage;	/* next leaf block to hand out, or BARK_P_NONE
-								 * at the end of the chain */
+	BlockNumber bps_nextPage;	/* next leaf block to hand out, BARK_P_NONE at
+								 * the end of the chain, or InvalidBlockNumber
+								 * before the scan is positioned */
+	BlockNumber bps_lastPage;	/* the page bps_nextPage was linked from; a
+								 * backward step validates against it */
 	BarkParallelState bps_state;	/* coordination state (see above) */
 	LWLock		bps_lock;		/* protects the fields above */
 	ConditionVariable bps_cv;	/* workers wait here while another advances */
@@ -1209,6 +1293,7 @@ extern void bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 						ScanKey orderbys, int norderbys);
 extern bool bark_gettuple(IndexScanDesc scan, ScanDirection dir);
 extern bool bark_canreturn(Relation index, int attno);
+extern bool bark_tuple_matches(IndexScanDesc scan, IndexTuple itup);
 extern int64 bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm);
 extern void bark_endscan(IndexScanDesc scan);
 
