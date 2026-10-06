@@ -1562,6 +1562,17 @@ SELECT x FROM test_bark_ci WHERE x = 'abc' ORDER BY x COLLATE "C";
  abc
 (3 rows)
 
+-- CREATE INDEX must not coalesce them either.
+DROP INDEX test_bark_ci_idx;
+CREATE INDEX test_bark_ci_idx ON test_bark_ci USING bark (x);
+SELECT x FROM test_bark_ci WHERE x = 'abc' ORDER BY x COLLATE "C";
+  x  
+-----
+ ABC
+ Abc
+ abc
+(3 rows)
+
 RESET enable_seqscan;
 RESET enable_bitmapscan;
 DROP TABLE test_bark_ci;
