@@ -645,6 +645,10 @@ bark_beginscan(Relation index, int nkeys, int norderbys)
 	BarkScanPosInvalidate(so->currPos);
 	so->currPos.items = NULL;
 	so->currPos.maxItems = 0;
+	so->markItemIndex = -1;
+	BarkScanPosInvalidate(so->markPos);
+	so->markPos.items = NULL;
+	so->markPos.maxItems = 0;
 
 	/*
 	 * Index-only scans read the key columns from xs_itup, described by the
@@ -678,6 +682,9 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 
 	BarkScanPosUnpinIfPinned(so->currPos);
 	BarkScanPosInvalidate(so->currPos);
+	so->markItemIndex = -1;
+	BarkScanPosUnpinIfPinned(so->markPos);
+	BarkScanPosInvalidate(so->markPos);
 	so->firstCall = true;
 
 	/*
@@ -937,13 +944,10 @@ bark_lead_cmp(IndexScanDesc scan, IndexTuple itup, Datum elem)
 	return col->reverse ? -c : c;
 }
 
-/* Make room for at least n more items in currPos.items. */
+/* Make room for at least `need` items in pos->items. */
 static void
-bark_pos_reserve(BarkScanOpaque so, int n)
+bark_pos_reserve(BarkScanOpaque so, BarkScanPosData *pos, int need)
 {
-	BarkScanPosData *pos = &so->currPos;
-	int			need = pos->lastItem + 1 + n;
-
 	if (need <= pos->maxItems)
 		return;
 	pos->maxItems = Max(need, Max(pos->maxItems * 2, 256));
@@ -953,6 +957,58 @@ bark_pos_reserve(BarkScanOpaque so, int n)
 	else
 		pos->items = repalloc(pos->items,
 							  pos->maxItems * sizeof(BarkScanPosItem));
+}
+
+/*
+ * Make an index-only scan's tuple workspace (currTuples or markTuples) hold
+ * at least `need` bytes, keeping its contents.
+ */
+static void
+bark_tuples_reserve(BarkScanOpaque so, char **tuples, uint32 *size, Size need)
+{
+	Size		newsize;
+
+	if (*tuples != NULL && need <= *size)
+		return;
+	newsize = Max((Size) BLCKSZ, Max((Size) *size * 2, need));
+	if (*tuples == NULL)
+		*tuples = MemoryContextAlloc(so->scanCxt, newsize);
+	else
+		*tuples = repalloc(*tuples, newsize);
+	*size = newsize;
+}
+
+/*
+ * Copy position src into dst, as nbtree's mark/restore copies a BTScanPosData:
+ * the page details, the items read from the page and, for an index-only scan,
+ * the tuple workspace those items refer to (srctuples, into *dsttuples).  dst
+ * keeps its own items array, grown to fit.  When src holds a pin, dst gets a
+ * pin of its own on the same buffer.
+ */
+static void
+bark_copy_pos(BarkScanOpaque so, BarkScanPosData *dst, char **dsttuples,
+			  uint32 *dsttuplessize, BarkScanPosData *src, char *srctuples)
+{
+	BarkScanPosItem *items;
+	int			maxItems;
+
+	Assert(!BarkScanPosIsPinned(*dst));
+	bark_pos_reserve(so, dst, src->lastItem + 1);
+	items = dst->items;
+	maxItems = dst->maxItems;
+	*dst = *src;
+	dst->items = items;
+	dst->maxItems = maxItems;
+	if (src->lastItem >= 0)
+		memcpy(dst->items, src->items,
+			   (src->lastItem + 1) * sizeof(BarkScanPosItem));
+	if (src->nextTupleOffset > 0)
+	{
+		bark_tuples_reserve(so, dsttuples, dsttuplessize, src->nextTupleOffset);
+		memcpy(*dsttuples, srctuples, src->nextTupleOffset);
+	}
+	if (BarkScanPosIsPinned(*src))
+		IncrBufferRefCount(src->buf);
 }
 
 /*
@@ -978,18 +1034,8 @@ bark_save_tuple(BarkScanOpaque so, IndexTuple entry, IndexTuple resolved)
 	else
 		len = IndexTupleSize(entry);
 
-	if (so->currTuples == NULL || off + MAXALIGN(len) > so->currTuplesSize)
-	{
-		Size		newsize = Max((Size) BLCKSZ,
-								  Max(so->currTuplesSize * 2, off + MAXALIGN(len)));
-
-		if (so->currTuples == NULL)
-			so->currTuples = MemoryContextAlloc(so->scanCxt, newsize);
-		else
-			so->currTuples = repalloc(so->currTuples, newsize);
-		so->currTuplesSize = newsize;
-	}
-
+	bark_tuples_reserve(so, &so->currTuples, &so->currTuplesSize,
+						off + MAXALIGN(len));
 	copy = (IndexTuple) (so->currTuples + off);
 	memcpy(copy, resolved, len);
 	if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
@@ -1135,7 +1181,7 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 		if (fetched)
 			pfree(resolved);
 
-		bark_pos_reserve(so, ntids);
+		bark_pos_reserve(so, pos, pos->lastItem + 1 + ntids);
 		if (forward)
 		{
 			for (int i = 0; i < ntids; i++)
@@ -1527,6 +1573,22 @@ bark_steppage(IndexScanDesc scan, ScanDirection dir)
 	BlockNumber lastcurrblkno;
 
 	Assert(BarkScanPosIsValid(so->currPos));
+
+	/*
+	 * A mark on this page is only an itemIndex so far; before leaving the
+	 * page, make it a full copy of the position (nbtree's _bt_steppage).
+	 * The array cursor and its re-descent flag travel with the copy, so
+	 * restoring the mark also restores where a leading-array scan goes next.
+	 */
+	if (so->markItemIndex >= 0)
+	{
+		Assert(scan->parallel_scan == NULL);
+		bark_copy_pos(so, &so->markPos, &so->markTuples, &so->markTuplesSize,
+					  &so->currPos, so->currTuples);
+		so->markPos.itemIndex = so->markItemIndex;
+		so->markItemIndex = -1;
+	}
+
 	BarkScanPosUnpinIfPinned(so->currPos);
 
 	blkno = ScanDirectionIsForward(dir) ? so->currPos.nextPage :
@@ -1642,10 +1704,15 @@ bark_endscan(IndexScanDesc scan)
 	bark_knn_endscan(scan);
 	bark_free_array_keys(so);
 	BarkScanPosUnpinIfPinned(so->currPos);
+	BarkScanPosUnpinIfPinned(so->markPos);
 	if (so->currPos.items)
 		pfree(so->currPos.items);
+	if (so->markPos.items)
+		pfree(so->markPos.items);
 	if (so->currTuples)
 		pfree(so->currTuples);
+	if (so->markTuples)
+		pfree(so->markTuples);
 	if (so->entryTids)
 		pfree(so->entryTids);
 	if (so->keyCmp)
@@ -1654,6 +1721,77 @@ bark_endscan(IndexScanDesc scan)
 		pfree(so->keyinfo);
 	pfree(so);
 	scan->opaque = NULL;
+}
+
+/*
+ * bark_markpos -- remember the current scan position (nbtree's btmarkpos).
+ *
+ * Only the itemIndex is recorded.  If the scan leaves the page before the
+ * mark is moved, bark_steppage makes the full copy in markPos; a merge join
+ * usually moves its mark first, so that copy is rarely needed.
+ */
+void
+bark_markpos(IndexScanDesc scan)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+
+	/* The planner never asks a parallel or an ordered-operator scan. */
+	Assert(scan->parallel_scan == NULL);
+	Assert(scan->numberOfOrderBys == 0);
+
+	/* An older mark may hold a pin (never a lock). */
+	BarkScanPosUnpinIfPinned(so->markPos);
+
+	if (BarkScanPosIsValid(so->currPos))
+		so->markItemIndex = so->currPos.itemIndex;
+	else
+	{
+		BarkScanPosInvalidate(so->markPos);
+		so->markItemIndex = -1;
+	}
+}
+
+/*
+ * bark_restrpos -- return the scan to the marked position (nbtree's
+ * btrestrpos).  The next bark_gettuple advances from the marked item in the
+ * scan direction.  An item inside a LIST or POSTING entry is restored to the
+ * same member, since every member is its own item.
+ */
+void
+bark_restrpos(IndexScanDesc scan)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+
+	/* The planner never asks a parallel or an ordered-operator scan. */
+	Assert(scan->parallel_scan == NULL);
+	Assert(scan->numberOfOrderBys == 0);
+
+	if (so->markItemIndex >= 0)
+	{
+		/*
+		 * The scan has not left the marked page, so currPos still holds it;
+		 * markPos may be stale and is not used.
+		 */
+		so->currPos.itemIndex = so->markItemIndex;
+	}
+	else
+	{
+		BarkScanPosUnpinIfPinned(so->currPos);
+		if (BarkScanPosIsValid(so->markPos))
+			bark_copy_pos(so, &so->currPos, &so->currTuples,
+						  &so->currTuplesSize, &so->markPos, so->markTuples);
+		else
+		{
+			/*
+			 * No mark was taken on a page, so the next gettuple starts the scan
+			 * again (bark_first), as nbtree's does; so does the leading-array
+			 * cursor, which a forward bark_first takes as it finds it.
+			 */
+			BarkScanPosInvalidate(so->currPos);
+			if (so->leadArray != NULL)
+				so->leadArray->cur = 0;
+		}
+	}
 }
 
 /*
