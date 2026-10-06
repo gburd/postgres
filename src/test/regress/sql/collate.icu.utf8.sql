@@ -596,6 +596,10 @@ INSERT INTO test_bark_ci VALUES ('abc'), ('ABC'), ('Abc');
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
 SELECT x FROM test_bark_ci WHERE x = 'abc' ORDER BY x COLLATE "C";
+-- CREATE INDEX must not coalesce them either.
+DROP INDEX test_bark_ci_idx;
+CREATE INDEX test_bark_ci_idx ON test_bark_ci USING bark (x);
+SELECT x FROM test_bark_ci WHERE x = 'abc' ORDER BY x COLLATE "C";
 RESET enable_seqscan;
 RESET enable_bitmapscan;
 DROP TABLE test_bark_ci;
