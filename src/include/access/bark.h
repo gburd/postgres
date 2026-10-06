@@ -28,12 +28,14 @@
 
 #include "access/amapi.h"
 #include "access/itup.h"
+#include "access/transam.h"
 #include "catalog/pg_am_d.h"
 #include "catalog/pg_class.h"
 #include "storage/block.h"
 #include "storage/bufpage.h"
 #include "storage/condition_variable.h"
 #include "storage/lwlock.h"
+#include "utils/snapmgr.h"
 
 /*
  * BARK uses the same page size and block-addressing as the rest of the
@@ -117,6 +119,107 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
  */
 #define BarkPageLeftmost(opaque)	((opaque)->bark_prev == BARK_P_NONE)
 #define BarkPageRightmost(opaque)	((opaque)->bark_next == BARK_P_NONE)
+
+/*
+ * BarkDeletedPageData is the page contents of a deleted page, as nbtree's
+ * BTDeletedPageData is.  It records the next full transaction ID at the time
+ * of deletion (safexid): the page cannot be reused until no snapshot that
+ * might still hold a link to it exists, that is, until safexid is older than
+ * every running transaction's xmin.
+ *
+ * nbtree stores this struct at the start of the tuple area and covers it with
+ * pd_lower, so a deleted nbtree page appears to have line pointers and every
+ * reader must test the deleted flag before reading items.  BARK stores it at
+ * the end of the tuple area instead (pd_upper = pd_special minus its size)
+ * and leaves the line pointer array empty (pd_lower = SizeOfPageHeaderData),
+ * so a reader that reaches a deleted page through a stale link and does not
+ * test the flag still sees an empty page, whose sibling links lead on into
+ * the live tree.  The struct lies between pd_upper and pd_special, so generic
+ * WAL logs it and full-page images keep it.
+ *
+ * A deleted page keeps the sibling links it had when it was deleted: a scan
+ * or descent that read a link to it before the deletion moves right through
+ * it, as nbtree's readers do through P_IGNORE pages.  A deleted overflow page
+ * keeps its link to the next chunk of the chain it belonged to.
+ */
+typedef struct BarkDeletedPageData
+{
+	FullTransactionId safexid;	/* see BarkPageIsRecyclable() */
+} BarkDeletedPageData;
+
+static inline BarkDeletedPageData *
+BarkPageGetDeletedContents(Page page)
+{
+	Assert(((PageHeader) page)->pd_upper ==
+		   ((PageHeader) page)->pd_special -
+		   MAXALIGN(sizeof(BarkDeletedPageData)));
+	return (BarkDeletedPageData *) ((char *) page +
+									((PageHeader) page)->pd_upper);
+}
+
+/*
+ * Turn `page` into a deleted page: drop its items and its leaf, overflow and
+ * half-dead roles, set BARK_DELETED and record safexid.  bark_prev and
+ * bark_next are left as they are.
+ */
+static inline void
+BarkPageSetDeleted(Page page, FullTransactionId safexid)
+{
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	PageHeader	header = (PageHeader) page;
+
+	opaque->bark_flags &= ~(BARK_LEAF | BARK_OVERFLOW | BARK_HALF_DEAD);
+	opaque->bark_flags |= BARK_DELETED;
+	header->pd_lower = SizeOfPageHeaderData;
+	header->pd_upper = header->pd_special -
+		MAXALIGN(sizeof(BarkDeletedPageData));
+
+	BarkPageGetDeletedContents(page)->safexid = safexid;
+}
+
+static inline FullTransactionId
+BarkPageGetDeleteXid(Page page)
+{
+	/* We only expect to be called with a deleted page */
+	Assert(!PageIsNew(page));
+	Assert(BarkPageIsDeleted(BarkPageGetOpaque(page)));
+
+	return BarkPageGetDeletedContents(page)->safexid;
+}
+
+/*
+ * Is a deleted page safe to reuse?  As nbtree's BTPageIsRecyclable.
+ *
+ * heaprel is the index's heap, which selects the visibility horizon.  It may
+ * be NULL where the caller has none; the check then uses the horizon of
+ * shared relations, which takes every database's snapshots into account and
+ * so is never less safe, only slower to allow reuse.
+ */
+static inline bool
+BarkPageIsRecyclable(Page page, Relation heaprel)
+{
+	Assert(!PageIsNew(page));
+
+	/* Recycling okay iff page is deleted and safexid is old enough */
+	if (BarkPageIsDeleted(BarkPageGetOpaque(page)))
+	{
+		FullTransactionId safexid = BarkPageGetDeleteXid(page);
+
+		/*
+		 * The page was deleted, but when?  If it was just deleted, a scan
+		 * might have seen a link to it (a downlink, a sibling link or an
+		 * overflow-chain link), and will read the page later.  As long as
+		 * that can happen, the deleted page must stay as a tombstone.
+		 *
+		 * So check whether the deletion XID could still be visible to anyone.
+		 * If not, no scan still in progress can have seen a link to the page,
+		 * and it can be recycled.
+		 */
+		return GlobalVisCheckRemovableFullXid(heaprel, safexid);
+	}
+
+	return false;
+}
 
 #define BARK_P_HIKEY		((OffsetNumber) 1)	/* high key, if present */
 #define BARK_P_FIRSTKEY		((OffsetNumber) 2)	/* first data item after it */
@@ -708,14 +811,15 @@ extern int	bark_keep_natts(Relation index, BarkKeyInfo *keyinfo,
 
 /*
  * Allocate a page for the index, preferring a page the FSM says is free
- * (recorded by VACUUM when it emptied a leaf or freed an overflow chain) over
+ * (recorded by VACUUM once a page it deleted became safe to reuse) over
  * extending the relation.  Returns a pinned, exclusive-locked buffer whose page
  * the caller must (re)initialize; a recycled page is handed back still flagged
  * BARK_DELETED (or PageIsNew), so the caller's PageInit overwrites it.  This is
  * what keeps a delete-heavy index from growing the relation without bound: a
- * split or overflow write reuses a reclaimed page instead of P_NEW.
+ * split or overflow write reuses a reclaimed page instead of extending.
+ * heaprel is the index's heap relation, or NULL (see BarkPageIsRecyclable).
  */
-extern Buffer bark_get_free_page(Relation index);
+extern Buffer bark_get_free_page(Relation index, Relation heaprel);
 extern CompareType bark_translate_strategy(StrategyNumber strategy, Oid opfamily);
 extern StrategyNumber bark_translate_cmptype(CompareType cmptype, Oid opfamily);
 
@@ -815,12 +919,13 @@ extern void bark_set_oversized_prefix(IndexTuple entry, Relation index,
 
 /*
  * Write `full` (fulllen bytes) across a chain of BARK_OVERFLOW pages via the
- * buffer pool (P_NEW + generic WAL), returning the first block.  Used by the
- * insert path; the build path uses bark_init_overflow_page directly against
- * its bulk-write buffers.
+ * buffer pool (bark_get_free_page + generic WAL), returning the first block.
+ * Used by the insert path; the build path uses bark_init_overflow_page
+ * directly against its bulk-write buffers.  heaprel is passed on to
+ * bark_get_free_page.
  */
-extern BlockNumber bark_write_overflow_chain(Relation index, IndexTuple full,
-											 Size fulllen);
+extern BlockNumber bark_write_overflow_chain(Relation index, Relation heaprel,
+											 IndexTuple full, Size fulllen);
 
 /*
  * Lay out the `which`'th overflow chunk of a tuple of `fulllen` bytes into
@@ -842,10 +947,11 @@ extern IndexTuple bark_fetch_oversized(Relation index, IndexTuple entry);
 
 /*
  * Free the overflow chain an OVERSIZED entry references (its pages become
- * BARK_DELETED), as part of VACUUM removing the owning leaf entry.  WAL-logged
- * under its own generic-WAL records.
+ * deleted pages, recycled once safe), as part of VACUUM removing the owning
+ * leaf entry.  WAL-logged under its own generic-WAL records.  Returns the
+ * number of pages freed.
  */
-extern void bark_free_oversized(Relation index, IndexTuple entry);
+extern BlockNumber bark_free_oversized(Relation index, IndexTuple entry);
 
 extern IndexBuildResult *bark_build(Relation heap, Relation index,
 									IndexInfo *indexInfo);

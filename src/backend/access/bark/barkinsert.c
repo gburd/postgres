@@ -59,15 +59,15 @@
  * places and then pfrees.
  */
 static IndexTuple
-bark_leaf_page_entry(Relation index, IndexTuple full, bool oversized,
-					 Size fulllen)
+bark_leaf_page_entry(Relation index, Relation heaprel, IndexTuple full,
+					 bool oversized, Size fulllen)
 {
 	BlockNumber firstblk;
 
 	if (!oversized)
 		return CopyIndexTuple(full);
 
-	firstblk = bark_write_overflow_chain(index, full, fulllen);
+	firstblk = bark_write_overflow_chain(index, heaprel, full, fulllen);
 	{
 		IndexTuple	entry = bark_form_oversized_entry(&full->t_tid, fulllen,
 														 firstblk, true /* leaf */ , 0);
@@ -152,6 +152,9 @@ bark_strip_to_key(Relation index, IndexTuple src, bool *allocated)
  * it.  bark_compare_itups fetches that chain, so an oversized pivot routes on
  * the full key exactly as a leaf entry does.  The caller must not hold an open
  * generic-WAL state, since writing the chain starts its own WAL records.
+ * The chain's pages are allocated without the heap relation, which
+ * bark_truncate_pivot's callers do not all have (bark_get_free_page then
+ * reuses deleted pages under the shared-relation horizon).
  */
 static IndexTuple
 bark_make_pivot(Relation index, IndexTuple key, int keepnatts)
@@ -189,7 +192,8 @@ bark_make_pivot(Relation index, IndexTuple key, int keepnatts)
 	if (bark_len_is_oversized(fulllen))
 	{
 		ItemPointerData locator;
-		BlockNumber firstblk = bark_write_overflow_chain(index, full, fulllen);
+		BlockNumber firstblk = bark_write_overflow_chain(index, NULL, full,
+														 fulllen);
 
 		ItemPointerSetBlockNumber(&locator, BARK_P_NONE);
 		ItemPointerSetOffsetNumber(&locator, InvalidOffsetNumber);
@@ -260,12 +264,12 @@ bark_clear_incomplete_split(GenericXLogState *gstate, Buffer cbuf)
 	BarkPageGetOpaque(cpage)->bark_flags &= ~BARK_INCOMPLETE_SPLIT;
 }
 
-static void bark_insert_parent(Relation index, BarkKeyInfo *keyinfo,
-							   BarkStack stack, Buffer buf,
-							   IndexTuple downlink);
-static void bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
-					   Buffer buf, OffsetNumber newoff, IndexTuple newitup,
-					   Buffer cbuf);
+static void bark_insert_parent(Relation index, Relation heaprel,
+							   BarkKeyInfo *keyinfo, BarkStack stack,
+							   Buffer buf, IndexTuple downlink);
+static void bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
+					   BarkStack stack, Buffer buf, OffsetNumber newoff,
+					   IndexTuple newitup, Buffer cbuf);
 
 /*
  * Give an empty index, one whose meta page names no root, its first page: an
@@ -284,7 +288,7 @@ static void bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
  * table.
  */
 static void
-bark_create_root_leaf(Relation index)
+bark_create_root_leaf(Relation index, Relation heaprel)
 {
 	Buffer		metabuf;
 	Buffer		leafbuf;
@@ -305,7 +309,7 @@ bark_create_root_leaf(Relation index)
 		return;
 	}
 
-	leafbuf = bark_get_free_page(index);
+	leafbuf = bark_get_free_page(index, heaprel);
 	leafblk = BufferGetBlockNumber(leafbuf);
 
 	gstate = GenericXLogStart(index);
@@ -352,10 +356,12 @@ bark_create_root_leaf(Relation index)
  * write-locked left half of a child split when `buf` is an internal page
  * receiving that child's downlink (InvalidBuffer for a leaf); its flag is
  * cleared in the split's WAL record and it is released once that is logged.
+ * `heaprel` is the index's heap relation, or NULL, for bark_get_free_page.
  */
 static void
-bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
-		   OffsetNumber newoff, IndexTuple newitup, Buffer cbuf)
+bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
+		   BarkStack stack, Buffer buf, OffsetNumber newoff,
+		   IndexTuple newitup, Buffer cbuf)
 {
 	Page		origpage = BufferGetPage(buf);
 	BarkPageOpaque origopaque = BarkPageGetOpaque(origpage);
@@ -423,7 +429,7 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 	}
 
 	/* Allocate the right sibling (reusing a reclaimed page if the FSM has one). */
-	rbuf = bark_get_free_page(index);
+	rbuf = bark_get_free_page(index, heaprel);
 	rightblk = BufferGetBlockNumber(rbuf);
 
 	/*
@@ -560,7 +566,7 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
 		INJECTION_POINT("bark-leave-internal-split-incomplete", NULL);
 #endif
 
-	bark_insert_parent(index, keyinfo, stack, buf, downlink);
+	bark_insert_parent(index, heaprel, keyinfo, stack, buf, downlink);
 	pfree(downlink);
 
 	/* Clean up. */
@@ -580,11 +586,12 @@ bark_split(Relation index, BarkKeyInfo *keyinfo, BarkStack stack, Buffer buf,
  * released here.
  */
 static void
-bark_new_root(Relation index, Buffer metabuf, Buffer lbuf, IndexTuple downlink)
+bark_new_root(Relation index, Relation heaprel, Buffer metabuf, Buffer lbuf,
+			  IndexTuple downlink)
 {
 	BlockNumber leftblk = BufferGetBlockNumber(lbuf);
 	uint32		childlevel = BarkPageGetOpaque(BufferGetPage(lbuf))->bark_level;
-	Buffer		rootbuf = bark_get_free_page(index);
+	Buffer		rootbuf = bark_get_free_page(index, heaprel);
 	BlockNumber rootblk = BufferGetBlockNumber(rootbuf);
 	GenericXLogState *gstate;
 	Page		rootpage;
@@ -812,8 +819,8 @@ bark_getstackbuf(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
  * level up.
  */
 static void
-bark_insert_parent(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
-				   Buffer buf, IndexTuple downlink)
+bark_insert_parent(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
+				   BarkStack stack, Buffer buf, IndexTuple downlink)
 {
 	BlockNumber leftblk = BufferGetBlockNumber(buf);
 	BarkStackData fakestack;
@@ -837,7 +844,7 @@ bark_insert_parent(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
 		LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
 		if (BarkPageGetMeta(BufferGetPage(metabuf))->bark_root == leftblk)
 		{
-			bark_new_root(index, metabuf, buf, downlink);
+			bark_new_root(index, heaprel, metabuf, buf, downlink);
 			return;
 		}
 		UnlockReleaseBuffer(metabuf);
@@ -876,8 +883,8 @@ bark_insert_parent(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
 		UnlockReleaseBuffer(pbuf);
 	}
 	else
-		bark_split(index, keyinfo, stack->bark_parent, pbuf, off, downlink,
-				   buf);
+		bark_split(index, heaprel, keyinfo, stack->bark_parent, pbuf, off,
+				   downlink, buf);
 }
 
 /*
@@ -894,6 +901,9 @@ bark_insert_parent(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
  * backend is completing this split.  `stack` is the parent path to `lbuf`, or
  * NULL when `lbuf` was reached from the top of the tree; bark_insert_parent
  * then decides from the meta page whether this was a root split.
+ *
+ * The descents that call this have no heap relation, so any page the parent
+ * insert allocates is taken with heaprel NULL (see bark_get_free_page).
  */
 void
 bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
@@ -916,7 +926,7 @@ bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
 	hikey = (IndexTuple) PageGetItem(lpage, PageGetItemId(lpage, BARK_P_HIKEY));
 	downlink = CopyIndexTuple(hikey);
 	BarkEntrySetDownLink(downlink, lopaque->bark_next);
-	bark_insert_parent(index, keyinfo, stack, lbuf, downlink);
+	bark_insert_parent(index, NULL, keyinfo, stack, lbuf, downlink);
 	pfree(downlink);
 }
 
@@ -1396,7 +1406,7 @@ retry:
 	if (buf == InvalidBuffer)
 	{
 		/* Empty index: give it a root leaf, then insert as usual. */
-		bark_create_root_leaf(index);
+		bark_create_root_leaf(index, heapRel);
 		goto retry;
 	}
 
@@ -1525,7 +1535,8 @@ retry:
 
 	{
 		/* The entry actually placed on the page (OVERSIZED when oversized). */
-		IndexTuple	entry = bark_leaf_page_entry(index, itup, oversized, fulllen);
+		IndexTuple	entry = bark_leaf_page_entry(index, heapRel, itup,
+												 oversized, fulllen);
 
 		if (PageGetFreeSpace(page) >= itemsz)
 		{
@@ -1539,7 +1550,8 @@ retry:
 		else
 		{
 			/* Leaf split: no child below, so no incomplete-split flag to clear. */
-			bark_split(index, keyinfo, stack, buf, off, entry, InvalidBuffer);
+			bark_split(index, heapRel, keyinfo, stack, buf, off, entry,
+					   InvalidBuffer);
 			buf = InvalidBuffer;	/* bark_split released it */
 		}
 		pfree(entry);

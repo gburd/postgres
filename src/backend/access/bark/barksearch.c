@@ -30,6 +30,7 @@
 #include "access/bark.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
+#include "utils/injection_point.h"
 #include "utils/rel.h"
 
 /* Compare search key against the index tuple at offset `off` on `page`. */
@@ -277,6 +278,13 @@ bark_search(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 
 		blkno = BarkEntryGetDownLink(itup);
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+
+		/*
+		 * Tests stop a descent here, holding a downlink it has read but not
+		 * followed, so that VACUUM can delete the child first.
+		 */
+		INJECTION_POINT("bark-search-descend", NULL);
+
 		buf = ReleaseAndReadBuffer(buf, index, blkno);
 		LockBuffer(buf, access);
 	}
