@@ -790,6 +790,11 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	 * in it, so BARK shares it instead of keeping a copy.  It could move out
 	 * of nbtree into a common place.  The ENSURE block releases our registry
 	 * entry if the scan fails.
+	 *
+	 * Parallel VACUUM may run this, and barkvacuumcleanup, in a worker; each
+	 * index is still processed by one backend at a time, so nothing here is
+	 * shared with another backend beyond what serial VACUUM already shares
+	 * (the cycle-ID registry, buffer locks, WAL and the FSM).
 	 */
 	PG_ENSURE_ERROR_CLEANUP(_bt_end_vacuum_callback, PointerGetDatum(index));
 	{
@@ -904,6 +909,11 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		stats = palloc0_object(IndexBulkDeleteResult);
 
 	/*
+	 * This pass reads the whole index whether or not barkbulkdelete ran, so
+	 * BARK declares VACUUM_OPTION_PARALLEL_CLEANUP, as GIN does, rather than
+	 * nbtree's VACUUM_OPTION_PARALLEL_COND_CLEANUP: nbtree's cleanup is
+	 * nearly free after a bulk delete, BARK's is not.
+	 *
 	 * Report index-wide statistics.  When barkbulkdelete did not run (no dead
 	 * tuples this cycle) we count the live leaf entries here so the planner
 	 * has an up-to-date tuple count; when it did run, num_index_tuples is
@@ -1239,7 +1249,8 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amcaninclude = true,
 		.amusemaintenanceworkmem = false,
 		.amsummarizing = false,
-		.amparallelvacuumoptions = VACUUM_OPTION_NO_PARALLEL,
+		.amparallelvacuumoptions =
+		VACUUM_OPTION_PARALLEL_BULKDEL | VACUUM_OPTION_PARALLEL_CLEANUP,
 		.amkeytype = InvalidOid,
 
 		.ambuild = barkbuild,
