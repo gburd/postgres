@@ -809,7 +809,7 @@ bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout)
  * place).
  */
 IndexTuple
-bark_posting_add_tid(TupleDesc tupdesc, IndexTuple key, IndexTuple posting,
+bark_posting_add_tid(IndexTuple key, IndexTuple posting,
 					 ItemPointer newtid, Size maxsz)
 {
 	Sbm		   *map = bark_posting_open(posting);
@@ -829,6 +829,79 @@ bark_posting_add_tid(TupleDesc tupdesc, IndexTuple key, IndexTuple posting,
 	entry = bark_posting_from_map(key, map, total);
 	sbm_free(map);
 	return entry;
+}
+
+/*
+ * The key part of a LIST or POSTING entry as a key tuple of its own: the
+ * bytes before the body, with t_info's size set to them and the alt-TID bit
+ * cleared.  The result's t_tid is meaningless; callers overwrite it.
+ */
+static IndexTuple
+bark_entry_key_part(IndexTuple entry)
+{
+	Size		keysz = BarkEntryGetBodyOffset(entry);
+	IndexTuple	key = (IndexTuple) palloc(keysz);
+
+	memcpy(key, entry, keysz);
+	key->t_info = (key->t_info & ~(INDEX_SIZE_MASK | INDEX_AM_RESERVED_BIT)) |
+		(uint16) keysz;
+	return key;
+}
+
+/*
+ * Return `entry`, a LIST or POSTING entry, with heap TID `tid` added, or NULL
+ * when the result would be larger than `maxsz` (or, for a LIST, when the TID
+ * does not sort after every member, or the LIST is full).
+ *
+ * This is the whole of an insert's change to the entry, so that WAL can log
+ * just the TID (XLOG_BARK_ADD_TID) and replay can call this function again
+ * on the same entry.  It must therefore depend on nothing but its arguments:
+ * the key comes from the entry itself, not from the inserted tuple, whose key
+ * is equal but whose image may differ (the TOAST compression method of a
+ * large value, say); bark_allequalimage only promises that equal keys mean
+ * the same value.
+ */
+IndexTuple
+bark_entry_add_tid(IndexTuple entry, ItemPointer tid, Size maxsz)
+{
+	if (BarkEntryGetShape(entry) == BARK_SHAPE_LIST)
+	{
+		int			ncur = BarkListGetCount(entry);
+		Size		cursz = IndexTupleSize(entry);
+		Size		appended = cursz + sizeof(ItemPointerData);
+		IndexTuple	ext;
+
+		if (ncur >= BARK_LIST_MAX_COUNT ||
+			ItemPointerCompare(tid, BarkListGetTID(entry, ncur - 1)) <= 0 ||
+			MAXALIGN(appended) > maxsz)
+			return NULL;
+
+		/*
+		 * The body is a packed ascending ItemPointerData array ending at the
+		 * entry's used size; the new locator goes right after the last one.
+		 * The body offset (t_tid block field) is unchanged, so copying the
+		 * old entry verbatim and appending keeps the layout correct; only the
+		 * count and size change.
+		 */
+		ext = (IndexTuple) palloc0(appended);
+		memcpy(ext, entry, cursz);
+		memcpy((char *) ext + cursz, tid, sizeof(ItemPointerData));
+		ext->t_info = (ext->t_info & ~INDEX_SIZE_MASK) | (uint16) appended;
+		ItemPointerSetOffsetNumber(&ext->t_tid,
+								   (OffsetNumber) ((uint16) (ncur + 1) |
+												   BARK_IS_LIST));
+		return ext;
+	}
+	else
+	{
+		IndexTuple	key = bark_entry_key_part(entry);
+		IndexTuple	ext;
+
+		Assert(BarkEntryGetShape(entry) == BARK_SHAPE_POSTING);
+		ext = bark_posting_add_tid(key, entry, tid, maxsz);
+		pfree(key);
+		return ext;
+	}
 }
 
 /* ----------------------------------------------------------------------------

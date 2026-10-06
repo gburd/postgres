@@ -496,10 +496,12 @@ No measured cost scales with how many entries a key has.
   keys (POSTING) 3.3-3.7 s to 1.74 s, but 481 to 705 MB; 1000 scattered keys
   (LIST) 6.3-6.9 s to 2.44 s and 1782 to 1282 MB. <code>OVERWRITE</code> logs
   the whole new entry, which a LIST grows up to the 2712-byte item limit, and
-  an sbm add changes fewer bytes than the entry holds. Logging only the
-  added locator, with redo re-forming the entry, would cut both; that is
-  open. Still to come: split and newroot, then overflow chains and the
-  remaining generic sites.
+  an sbm add changes fewer bytes than the entry holds. The third commit logs
+  only the added locator (<code>ADD_TID</code>, as nbtree's
+  <code>INSERT_POST</code>; redo re-forms the entry): POSTING appends 1.74 to
+  1.24 s and 705 to 121 MB (481 MB with generic WAL), LIST appends 2.44 to
+  1.42 s and 1282 to 129 MB (1782 MB with generic WAL). Still to come: split
+  and newroot, then overflow chains and the remaining generic sites.
 
 Not recommended: a per-key posting tree (b) and a pending list (d), for the
 reasons above. If C-DELETE or retail delete later needs to find one
