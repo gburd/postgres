@@ -1004,6 +1004,33 @@ typedef BarkStackData *BarkStack;
 extern Buffer bark_search(Relation index, BarkKeyInfo *keyinfo,
 						  IndexTuple key, bool forwrite, bool nextkey,
 						  BarkStack *stack);
+
+/*
+ * A scan's bound on the leading key columns, for descending to the leaf
+ * where the scan starts (nbtree's insertion scan key built by _bt_first).
+ * Column i (0-based) is compared as procs[i](index value, args[i]), the
+ * opfamily's ORDER proc for the column type and the argument's type, so an
+ * argument of another type in the opfamily (an int4 constant against an
+ * int8 column) compares correctly.  The bound has a value for the first
+ * nkeys columns only; on the columns after them it is minus infinity, or
+ * plus infinity when `upper` (so that every entry equal to it on the bounded
+ * columns sorts before it).
+ */
+typedef struct BarkScanBound
+{
+	int			nkeys;
+	bool		upper;
+	Datum		args[INDEX_MAX_KEYS];
+	FmgrInfo   *procs[INDEX_MAX_KEYS];
+	Oid			collations[INDEX_MAX_KEYS];
+} BarkScanBound;
+
+/*
+ * Descend to the leaf where a scan with this bound starts, share-locked;
+ * InvalidBuffer for an empty index.  nextkey as for bark_search.
+ */
+extern Buffer bark_search_bound(Relation index, BarkKeyInfo *keyinfo,
+								const BarkScanBound *bound, bool nextkey);
 extern BlockNumber bark_get_root(Relation index, uint32 *level_out);
 extern void bark_freestack(BarkStack stack);
 
