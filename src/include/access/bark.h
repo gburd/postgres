@@ -141,8 +141,9 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
  * and leaves the line pointer array empty (pd_lower = SizeOfPageHeaderData),
  * so a reader that reaches a deleted page through a stale link and does not
  * test the flag still sees an empty page, whose sibling links lead on into
- * the live tree.  The struct lies between pd_upper and pd_special, so generic
- * WAL logs it and full-page images keep it.
+ * the live tree.  The struct lies between pd_upper and pd_special, so a
+ * full-page image, which omits the hole between pd_lower and pd_upper, keeps
+ * it.
  *
  * A deleted page keeps the sibling links it had when it was deleted: a scan
  * or descent that read a link to it before the deletion moves right through
@@ -165,18 +166,25 @@ BarkPageGetDeletedContents(Page page)
 }
 
 /*
- * Turn `page` into a deleted page: drop its items and its leaf, overflow and
- * half-dead roles, set BARK_DELETED and record safexid.  bark_prev and
- * bark_next are left as they are.
+ * Reinitialize `page` as a deleted page with sibling links `prev` and `next`
+ * and deletion XID `safexid`.  BARK deletes only leaves and overflow pages, so
+ * the level is zero, and BARK_DELETED is the only flag.  VACUUM and WAL redo
+ * both build a deleted page here, from the same inputs, so the page a standby
+ * replays is the page the primary wrote.
  */
 static inline void
-BarkPageSetDeleted(Page page, FullTransactionId safexid)
+BarkPageSetDeleted(Page page, BlockNumber prev, BlockNumber next,
+				   FullTransactionId safexid)
 {
-	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	BarkPageOpaque opaque;
 	PageHeader	header = (PageHeader) page;
 
-	opaque->bark_flags &= ~(BARK_LEAF | BARK_OVERFLOW | BARK_HALF_DEAD);
-	opaque->bark_flags |= BARK_DELETED;
+	PageInit(page, BLCKSZ, sizeof(BarkPageOpaqueData));
+	opaque = BarkPageGetOpaque(page);
+	opaque->bark_prev = prev;
+	opaque->bark_next = next;
+	opaque->bark_flags = BARK_DELETED;
+	opaque->bark_page_id = BARK_PAGE_ID;
 	header->pd_lower = SizeOfPageHeaderData;
 	header->pd_upper = header->pd_special -
 		MAXALIGN(sizeof(BarkDeletedPageData));
@@ -805,6 +813,9 @@ typedef struct BarkKeyColumn
 
 typedef struct BarkKeyInfo
 {
+	Relation	heaprel;		/* the index's heap, or NULL; set by writers
+								 * for the pages a split allocates (see
+								 * bark_get_free_page) */
 	int			nkeys;			/* number of key columns */
 	BarkKeyColumn cols[FLEXIBLE_ARRAY_MEMBER];
 } BarkKeyInfo;
@@ -824,7 +835,8 @@ extern int	bark_keep_natts(Relation index, BarkKeyInfo *keyinfo,
  * BARK_DELETED (or PageIsNew), so the caller's PageInit overwrites it.  This is
  * what keeps a delete-heavy index from growing the relation without bound: a
  * split or overflow write reuses a reclaimed page instead of extending.
- * heaprel is the index's heap relation, or NULL (see BarkPageIsRecyclable).
+ * heaprel is the index's heap relation; every caller has it, through
+ * BarkKeyInfo.heaprel where the call is reached from a descent.
  */
 extern Buffer bark_get_free_page(Relation index, Relation heaprel);
 extern CompareType bark_translate_strategy(StrategyNumber strategy, Oid opfamily);

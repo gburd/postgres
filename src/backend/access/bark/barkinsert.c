@@ -12,8 +12,8 @@
  * parent downlink, and a copy of the high key is inserted into the parent as
  * the right page's downlink (growing a new root if the split reached the
  * top).  Page changes are made through the buffer pool and WAL-logged with
- * generic WAL (the same facility bloom uses), so no BARK-specific WAL record
- * is needed.
+ * generic WAL (the same facility bloom uses); BARK's own WAL records cover
+ * only VACUUM and page deletion so far (see "WAL" in the README).
  *
  * Locks follow nbtree's protocol: a split keeps the left page write-locked
  * until the parent is write-locked and the new downlink written, the parent's
@@ -152,12 +152,11 @@ bark_strip_to_key(Relation index, IndexTuple src, bool *allocated)
  * it.  bark_compare_itups fetches that chain, so an oversized pivot routes on
  * the full key exactly as a leaf entry does.  The caller must not hold an open
  * generic-WAL state, since writing the chain starts its own WAL records.
- * The chain's pages are allocated without the heap relation, which
- * bark_truncate_pivot's callers do not all have (bark_get_free_page then
- * reuses deleted pages under the shared-relation horizon).
+ * heaprel is the index's heap, for bark_get_free_page.
  */
 static IndexTuple
-bark_make_pivot(Relation index, IndexTuple key, int keepnatts)
+bark_make_pivot(Relation index, Relation heaprel, IndexTuple key,
+				int keepnatts)
 {
 	bool		allocated;
 	IndexTuple	src = bark_strip_to_key(index, key, &allocated);
@@ -192,7 +191,7 @@ bark_make_pivot(Relation index, IndexTuple key, int keepnatts)
 	if (bark_len_is_oversized(fulllen))
 	{
 		ItemPointerData locator;
-		BlockNumber firstblk = bark_write_overflow_chain(index, NULL, full,
+		BlockNumber firstblk = bark_write_overflow_chain(index, heaprel, full,
 														 fulllen);
 
 		ItemPointerSetBlockNumber(&locator, BARK_P_NONE);
@@ -223,7 +222,7 @@ bark_make_pivot(Relation index, IndexTuple key, int keepnatts)
  * CREATE INDEX forms its leaf high keys here too (barksort.c).  Its items are
  * never OVERSIZED, and a truncated key is no larger than the item it comes
  * from, so the build never reaches the overflow-chain write in
- * bark_make_pivot.
+ * bark_make_pivot, the one place keyinfo->heaprel is used here.
  */
 IndexTuple
 bark_truncate_pivot(Relation index, BarkKeyInfo *keyinfo, IndexTuple lastleft,
@@ -232,7 +231,8 @@ bark_truncate_pivot(Relation index, BarkKeyInfo *keyinfo, IndexTuple lastleft,
 	int			nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	int			keepnatts = bark_keep_natts(index, keyinfo, lastleft, firstright);
 
-	return bark_make_pivot(index, firstright, Min(keepnatts, nkeyatts));
+	return bark_make_pivot(index, keyinfo->heaprel, firstright,
+						   Min(keepnatts, nkeyatts));
 }
 
 /*
@@ -356,7 +356,7 @@ bark_create_root_leaf(Relation index, Relation heaprel)
  * write-locked left half of a child split when `buf` is an internal page
  * receiving that child's downlink (InvalidBuffer for a leaf); its flag is
  * cleared in the split's WAL record and it is released once that is logged.
- * `heaprel` is the index's heap relation, or NULL, for bark_get_free_page.
+ * `heaprel` is the index's heap relation, for bark_get_free_page.
  */
 static void
 bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
@@ -902,8 +902,9 @@ bark_insert_parent(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
  * NULL when `lbuf` was reached from the top of the tree; bark_insert_parent
  * then decides from the meta page whether this was a root split.
  *
- * The descents that call this have no heap relation, so any page the parent
- * insert allocates is taken with heaprel NULL (see bark_get_free_page).
+ * The descents that call this pass no heap relation of their own; a page the
+ * parent insert allocates is taken with keyinfo->heaprel, which the insert
+ * that started the descent set.
  */
 void
 bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
@@ -926,7 +927,7 @@ bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
 	hikey = (IndexTuple) PageGetItem(lpage, PageGetItemId(lpage, BARK_P_HIKEY));
 	downlink = CopyIndexTuple(hikey);
 	BarkEntrySetDownLink(downlink, lopaque->bark_next);
-	bark_insert_parent(index, NULL, keyinfo, stack, lbuf, downlink);
+	bark_insert_parent(index, keyinfo->heaprel, keyinfo, stack, lbuf, downlink);
 	pfree(downlink);
 }
 
@@ -1387,6 +1388,7 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 	bool		result = false;		/* significant only for UNIQUE_CHECK_PARTIAL */
 
 	itup->t_tid = *ht_ctid;		/* SINGLE shape: locator in t_tid */
+	keyinfo->heaprel = heapRel; /* for pages a split allocates */
 
 	/*
 	 * `itup` is the full in-memory key tuple at any size; bark_compare_itups
