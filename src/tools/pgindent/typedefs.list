@@ -261,6 +261,7 @@ Barrier
 BarkArrayKeyState
 BarkArraySortCtx
 BarkBuildRun
+BarkDeletedPageData
 BarkEntryShape
 BarkKeyColumn
 BarkKeyInfo
@@ -274,6 +275,7 @@ BarkPageState
 BarkParallelScanDesc
 BarkParallelScanDescData
 BarkParallelState
+BarkPendingFSM
 BarkScanOpaque
 BarkScanOpaqueData
 BarkShared

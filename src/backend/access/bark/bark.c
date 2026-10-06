@@ -35,6 +35,7 @@
 #include "storage/ipc.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "storage/procarray.h"
 #include "utils/fmgrprotos.h"
 #include "utils/injection_point.h"
 #include "utils/selfuncs.h"
@@ -128,17 +129,22 @@ bark_find_parent_downlink(Relation index, BarkKeyInfo *keyinfo,
 }
 
 /*
- * Delete an empty leaf page from the tree and record it in the FSM for reuse.
+ * Delete an empty leaf page from the tree.
  *
  * Reclaims the common case a delete-heavy workload produces: an interior leaf
  * (one with both a left and a right sibling) whose every entry VACUUM removed.
  * The page is unlinked from the leaf chain (its left sibling's right link and
  * its right sibling's left link are spliced across it), its key space passes
- * to its right sibling in the parent, and the page is flagged BARK_DELETED
- * and handed to the FSM, so the next split or overflow write reuses it
- * instead of extending the relation.
- * All four touched pages (left sibling, target, right sibling, parent) are
- * updated under one generic-WAL record so the unlink is crash-atomic.
+ * to its right sibling in the parent, and the page becomes a deleted page
+ * (BarkPageSetDeleted).  All four touched pages (left sibling, target, right
+ * sibling, parent) are updated under one generic-WAL record so the unlink is
+ * crash-atomic.
+ *
+ * The deleted page keeps its sibling links, as in nbtree, so a scan or
+ * descent that read a link to it before the deletion moves right through it.
+ * It is not handed to the FSM here: *safexid is set to the transaction ID it
+ * must age past before reuse, and the caller records the page in the FSM once
+ * that is safe (see barkvacuumcleanup).
  *
  * Returns true when the leaf was deleted.  Declines (returns false, leaving the
  * leaf linked and correct) when the page is not an eligible interior empty
@@ -156,11 +162,11 @@ bark_find_parent_downlink(Relation index, BarkKeyInfo *keyinfo,
  * avoid a deadlock between the two, the three leaf locks are only tried
  * conditionally while the parent is held, and the leaf is skipped if any of
  * them is busy; a later VACUUM retries it.  nbtree avoids the inversion by
- * locking the leaf level before the parent (_bt_mark_page_halfdead), and the
- * XID-gated recycling nbtree performs is likewise not done here.
+ * locking the leaf level before the parent (_bt_mark_page_halfdead).
  */
 static bool
-bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
+bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
+					   FullTransactionId *safexid)
 {
 	Buffer		buf;
 	Buffer		lbuf;
@@ -288,7 +294,16 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 	 */
 	PredicateLockPageCombine(index, blkno, rightblk);
 
-	/* Splice the target out of the chain, move its key space, flag it deleted. */
+	/*
+	 * Splice the target out of the chain, move its key space, and mark it
+	 * deleted.  safexid is read while all four pages are locked, as nbtree's
+	 * _bt_unlink_halfdead_page does: a backend that read a link to the target
+	 * before we locked these pages took its snapshot before now, so its xmin
+	 * is no later than safexid, and a backend that reads a link after we
+	 * unlock finds the new links.  Once no snapshot as old as safexid exists,
+	 * nobody can hold a link to the page.
+	 */
+	*safexid = ReadNextFullTransactionId();
 	gstate = GenericXLogStart(index);
 	{
 		Page		lp = GenericXLogRegisterBuffer(gstate, lbuf, 0);
@@ -304,9 +319,8 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 		BarkEntrySetDownLink(downlink, rightblk);
 		PageIndexTupleDelete(pp, OffsetNumberNext(downoff));
 
-		BarkPageGetOpaque(p)->bark_flags |= BARK_DELETED;
-		BarkPageGetOpaque(p)->bark_prev = BARK_P_NONE;
-		BarkPageGetOpaque(p)->bark_next = BARK_P_NONE;
+		BarkPageSetDeleted(p, *safexid);
+		BarkPageGetOpaque(p)->bark_cycleid = 0;
 	}
 	GenericXLogFinish(gstate);
 
@@ -314,9 +328,6 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno)
 	UnlockReleaseBuffer(buf);
 	UnlockReleaseBuffer(lbuf);
 	UnlockReleaseBuffer(pbuf);
-
-	/* Record for reuse (made durable by IndexFreeSpaceMapVacuum). */
-	RecordFreeIndexPage(index, blkno);
 	return true;
 }
 
@@ -345,9 +356,8 @@ barkinsert(Relation index, Datum *values, bool *isnull,
 /*
  * Should bark_vacuum_page clean this page?  Only live leaf pages hold heap
  * TIDs: the meta page, internal pages, overflow pages and pages deleted from
- * the tree are skipped.  A deleted page in particular still carries the items
- * it held when it was unlinked (its old high key among them), so reading it as
- * a leaf would misinterpret a pivot as a data entry.  A page reached by
+ * the tree are skipped (barkvacuumcleanup accounts for deleted pages and
+ * returns them to the FSM).  A page reached by
  * backtracking is cleaned only if it was split during this VACUUM (it carries
  * our cycle ID); otherwise it was processed already, in its turn in the scan.
  */
@@ -626,7 +636,7 @@ bark_vacuum_page(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 			stub = (IndexTuple) palloc0(sizeof(IndexTupleData));
 			stub->t_info = INDEX_AM_RESERVED_BIT | sizeof(IndexTupleData);
 			stub->t_tid = dummy;
-			bark_free_oversized(index, stub);
+			stats->pages_newly_deleted += bark_free_oversized(index, stub);
 			pfree(stub);
 		}
 
@@ -664,7 +674,7 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	 * Scan every page in physical order and delete the entries whose heap TID
 	 * the callback reports dead (bark_vacuum_page).  This is a linear scan of
 	 * the whole index, as nbtree, bloom and GIN do, rather than a walk of the
-	 * leaf chain.  An all-dead leaf is emptied here and unlinked/FSM-recycled
+	 * leaf chain.  An all-dead leaf is emptied here and deleted from the tree
 	 * in barkvacuumcleanup (not in this pass, which holds only one page's
 	 * lock); a now-empty but still-linked leaf between the two passes is
 	 * correct, just briefly not space-optimal.
@@ -718,6 +728,56 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	return stats;
 }
 
+/*
+ * A leaf page deleted by this VACUUM and its safexid, kept so that the pages
+ * can be put in the FSM at the end of the VACUUM, once nothing can still
+ * hold a link to them.  As nbtree's BTPendingFSM.
+ */
+typedef struct BarkPendingFSM
+{
+	BlockNumber target;			/* page deleted by this VACUUM */
+	FullTransactionId safexid;	/* its BarkDeletedPageData.safexid */
+} BarkPendingFSM;
+
+/*
+ * Record in the FSM the pages this VACUUM deleted that are already safe to
+ * reuse, as nbtree's _bt_pendingfsm_finalize does.  The rest stay deleted
+ * and unrecorded; a later VACUUM finds them in its page walk and records
+ * them once BarkPageIsRecyclable says so.
+ */
+static void
+bark_pendingfsm_finalize(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
+						 BarkPendingFSM *pending, int npending)
+{
+	if (npending == 0)
+		return;
+
+	/*
+	 * Recompute this backend's view of the XID horizon.  We do not need the
+	 * result; computing it updates the state GlobalVisCheckRemovableFullXid
+	 * consults, which otherwise would not recognize that pages deleted after
+	 * this VACUUM took its snapshot may be safe to reuse already.
+	 */
+	GetOldestNonRemovableTransactionId(info->heaprel);
+
+	for (int i = 0; i < npending; i++)
+	{
+		/*
+		 * The pages were deleted in this order, so their safexids do not
+		 * decrease: once one page is not yet recyclable, neither is any later
+		 * one.
+		 */
+		Assert(i == 0 ||
+			   FullTransactionIdFollowsOrEquals(pending[i].safexid,
+												pending[i - 1].safexid));
+		if (!GlobalVisCheckRemovableFullXid(info->heaprel, pending[i].safexid))
+			break;
+
+		RecordFreeIndexPage(info->index, pending[i].target);
+		stats->pages_free++;
+	}
+}
+
 static IndexBulkDeleteResult *
 barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 {
@@ -727,10 +787,14 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	BlockNumber *emptyleaves;
 	int			nempty = 0;
 	int			emptyalloc;
+	BarkPendingFSM *pending;
+	int			npending = 0;
 
 	/* ANALYZE has nothing to clean up. */
 	if (info->analyze_only)
 		return stats;
+
+	Assert(info->heaprel != NULL);
 
 	if (stats == NULL)
 		stats = palloc0_object(IndexBulkDeleteResult);
@@ -744,20 +808,28 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	 * worthwhile.
 	 *
 	 * In the same walk we collect the empty interior leaves VACUUM produced
-	 * (all their entries were removed as dead) so they can be unlinked and
-	 * returned to the FSM below -- this is what keeps a delete-heavy index from
-	 * growing the relation without bound across delete/vacuum/insert cycles.
-	 * We only collect them here (under a share lock); the actual unlink takes
-	 * exclusive locks on the siblings and parent in a second pass, so the walk
-	 * stays a cheap read.
+	 * (all their entries were removed as dead) so they can be deleted below;
+	 * this is what keeps a delete-heavy index from growing the relation
+	 * without bound across delete/vacuum/insert cycles.  We only collect them
+	 * here (under a share lock); the deletion takes exclusive locks on the
+	 * siblings and parent in a second pass, so the walk stays a cheap read.
+	 *
+	 * The walk also finds the pages already deleted, by an earlier VACUUM or
+	 * (overflow pages) by barkbulkdelete in this one, and records in the FSM
+	 * those that are now safe to reuse, as btvacuumpage does.  Recording one
+	 * that is already there is harmless.  The horizon is recomputed first,
+	 * for the reason given in bark_pendingfsm_finalize.
 	 */
 	npages = RelationGetNumberOfBlocks(index);
 	stats->num_pages = npages;
 	stats->num_index_tuples = 0;
+	stats->pages_deleted = 0;
 	stats->pages_free = 0;
 
 	emptyalloc = 64;
 	emptyleaves = (BlockNumber *) palloc(emptyalloc * sizeof(BlockNumber));
+
+	GetOldestNonRemovableTransactionId(info->heaprel);
 
 	for (BlockNumber blkno = BARK_METAPAGE + 1; blkno < npages; blkno++)
 	{
@@ -783,10 +855,10 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 
 			/*
 			 * An empty interior leaf (no data entries, has both siblings, not
-			 * deleted/half-dead) is a reclamation candidate.
+			 * half-dead) is a reclamation candidate.
 			 */
-			if (!BarkPageIsDeleted(opaque) &&
-				(opaque->bark_flags & BARK_INCOMPLETE_SPLIT) == 0 &&
+			if ((opaque->bark_flags &
+				 (BARK_INCOMPLETE_SPLIT | BARK_HALF_DEAD)) == 0 &&
 				!BarkPageIsRoot(opaque) &&
 				!BarkPageLeftmost(opaque) && !BarkPageRightmost(opaque) &&
 				maxoff < BarkPageFirstDataKey(opaque))
@@ -802,27 +874,48 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		}
 		else if (!PageIsNew(page) &&
 				 BarkPageIsDeleted(BarkPageGetOpaque(page)))
-			stats->pages_free++;
+		{
+			stats->pages_deleted++;
+			if (BarkPageIsRecyclable(page, info->heaprel))
+			{
+				RecordFreeIndexPage(index, blkno);
+				stats->pages_free++;
+			}
+		}
 
 		UnlockReleaseBuffer(buf);
 	}
 
 	/*
-	 * Second pass: unlink and FSM-recycle the empty leaves collected above.
-	 * Each deletion re-validates the page under exclusive locks, so a leaf that
-	 * was concurrently refilled or already reclaimed is simply skipped.
+	 * Second pass: delete the empty leaves collected above.  Each deletion
+	 * re-validates the page under exclusive locks, so a leaf that was
+	 * concurrently refilled or already reclaimed is simply skipped.  The
+	 * deleted pages are kept in `pending`, in deletion order, for the FSM.
 	 */
 	keyinfo = bark_build_keyinfo(index);
+	pending = palloc_array(BarkPendingFSM, Max(nempty, 1));
 	for (int i = 0; i < nempty; i++)
 	{
-		if (bark_delete_empty_leaf(index, keyinfo, emptyleaves[i]))
-			stats->pages_free++;
+		FullTransactionId safexid;
+
+		if (bark_delete_empty_leaf(index, keyinfo, emptyleaves[i], &safexid))
+		{
+			pending[npending].target = emptyleaves[i];
+			pending[npending].safexid = safexid;
+			npending++;
+			stats->pages_newly_deleted++;
+			stats->pages_deleted++;
+		}
 	}
 	pfree(keyinfo);
 	pfree(emptyleaves);
 
+	bark_pendingfsm_finalize(info, stats, pending, npending);
+	pfree(pending);
+
 	/* Make the FSM entries recorded this cycle durable and searchable. */
-	IndexFreeSpaceMapVacuum(index);
+	if (stats->pages_free > 0)
+		IndexFreeSpaceMapVacuum(index);
 
 	return stats;
 }
