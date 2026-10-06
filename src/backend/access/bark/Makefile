@@ -21,6 +21,7 @@ OBJS = \
 	barksort.o \
 	barksplitloc.o \
 	barkutils.o \
-	barkvalidate.o
+	barkvalidate.o \
+	barkxlog.o
 
 include $(top_srcdir)/src/backend/common.mk
