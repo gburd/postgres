@@ -9,8 +9,9 @@
 # 2. Reusing a deleted page logs a conflict horizon, which cancels a
 #    standby snapshot that might still hold a link to the page.
 # 3. VACUUM writes no BARK record for a leaf it does not change.
-# 4. Inserts are logged as BARK INSERT_LEAF, INSERT_UPPER and OVERWRITE
-#    records, and the standby's index finds the same rows as the primary's.
+# 4. Inserts are logged as BARK INSERT_LEAF, INSERT_UPPER, OVERWRITE and
+#    ADD_TID records, and the standby's index finds the same rows as the
+#    primary's.
 
 use strict;
 use warnings FATAL => 'all';
@@ -179,8 +180,9 @@ is(waldump_count($lsn_before, $lsn_after, 'VACUUM'), 0,
 $sect = 'insert records';
 
 # Unique keys add entries and split leaves under a parent with room
-# (INSERT_LEAF, INSERT_UPPER); keys inserted round-robin grow LIST entries,
-# and keys inserted in runs grow POSTING entries (OVERWRITE).
+# (INSERT_LEAF, INSERT_UPPER); keys inserted round-robin and in runs form
+# LIST and POSTING entries (OVERWRITE) and then grow them a TID at a time
+# (ADD_TID).
 $lsn_before = $node_primary->safe_psql($db, 'SELECT pg_current_wal_insert_lsn()');
 $node_primary->safe_psql(
 	$db, qq[
@@ -193,7 +195,7 @@ INSERT INTO ins_t SELECT 200000 + (g - 1) / 1000, g FROM generate_series(1, 2000
 $lsn_after = $node_primary->safe_psql($db, 'SELECT pg_current_wal_insert_lsn()');
 $node_primary->wait_for_replay_catchup($node_standby);
 
-foreach my $type ('INSERT_LEAF', 'INSERT_UPPER', 'OVERWRITE')
+foreach my $type ('INSERT_LEAF', 'INSERT_UPPER', 'OVERWRITE', 'ADD_TID')
 {
 	cmp_ok(waldump_count($lsn_before, $lsn_after, $type),
 		'>', 0, "$sect: primary logged Bark $type records");
