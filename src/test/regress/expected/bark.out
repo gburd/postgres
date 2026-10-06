@@ -3802,3 +3802,87 @@ RESET enable_seqscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_bld_nc;
 DROP FUNCTION bark_bld_check(text, bool);
+-- Parallel VACUUM (amparallelvacuumoptions): bulk delete and cleanup of BARK
+-- indexes in parallel workers.  Two indexes above min_parallel_index_scan_size
+-- make the VACUUM parallel, as in vacuum_parallel.sql.  The result must be the
+-- same as a serial VACUUM's: dead entries gone, emptied leaves deleted and
+-- later reused, amcheck clean, index counts equal to a sequential scan.
+SET max_parallel_maintenance_workers TO 4;
+SET min_parallel_index_scan_size TO '128kB';
+CREATE TABLE bark_pvac (a int, b int) WITH (autovacuum_enabled = off);
+INSERT INTO bark_pvac SELECT g, g % 100 FROM generate_series(1, 40000) g;
+CREATE INDEX bark_pvac_a ON bark_pvac USING bark (a);
+CREATE INDEX bark_pvac_b ON bark_pvac USING bark (b);
+CREATE INDEX bark_pvac_ab ON bark_pvac USING bark (a, b);
+SELECT count(*) AS parallel_eligible_indexes
+FROM pg_class
+WHERE oid IN ('bark_pvac_a'::regclass, 'bark_pvac_b'::regclass,
+              'bark_pvac_ab'::regclass) AND
+  pg_relation_size(oid) >=
+  pg_size_bytes(current_setting('min_parallel_index_scan_size'));
+ parallel_eligible_indexes 
+---------------------------
+                         3
+(1 row)
+
+DELETE FROM bark_pvac WHERE a BETWEEN 5000 AND 30000 OR b = 7;
+VACUUM (PARALLEL 4, INDEX_CLEANUP ON) bark_pvac;
+SELECT bark_index_check('bark_pvac_a'), bark_index_check('bark_pvac_b'),
+       bark_index_check('bark_pvac_ab');
+ bark_index_check | bark_index_check | bark_index_check 
+------------------+------------------+------------------
+                  |                  | 
+(1 row)
+
+-- Cleanup alone in parallel (no dead rows, so no bulk delete).
+VACUUM (PARALLEL 4, INDEX_CLEANUP ON) bark_pvac;
+INSERT INTO bark_pvac SELECT g, g % 100 FROM generate_series(5000, 30000) g;
+SELECT bark_index_check('bark_pvac_a'), bark_index_check('bark_pvac_ab');
+ bark_index_check | bark_index_check 
+------------------+------------------
+                  | 
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS idx_a FROM bark_pvac WHERE a > 0;
+ idx_a 
+-------
+ 39850
+(1 row)
+
+SELECT count(*) AS idx_b FROM bark_pvac WHERE b = 7;
+ idx_b 
+-------
+   250
+(1 row)
+
+SELECT count(*) AS idx_ab FROM bark_pvac WHERE a > 0 AND b >= 0;
+ idx_ab 
+--------
+  39850
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS seq_a FROM bark_pvac WHERE a > 0;
+ seq_a 
+-------
+ 39850
+(1 row)
+
+SELECT count(*) AS seq_b FROM bark_pvac WHERE b = 7;
+ seq_b 
+-------
+   250
+(1 row)
+
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+RESET max_parallel_maintenance_workers;
+RESET min_parallel_index_scan_size;
+DROP TABLE bark_pvac;
