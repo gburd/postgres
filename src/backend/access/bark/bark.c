@@ -704,10 +704,9 @@ bark_vacuum_page(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		 * Clear our cycle ID from a page split during this VACUUM, so that a
 		 * later backtrack stops here instead of cleaning the page again.
 		 * nbtree does this as an unlogged hint.  BARK logs it, in the page's
-		 * XLOG_BARK_VACUUM record, because inserts and splits still log the
-		 * whole page through generic WAL: a hint the standby never saw would
-		 * reappear in the next full-page image and fail the consistency
-		 * check.  A page that has nothing to delete gets a record only when
+		 * XLOG_BARK_VACUUM record, because splits still log the whole page
+		 * through generic WAL: a hint the standby never saw would reappear in
+		 * the next full-page image and fail the consistency check.  A page that has nothing to delete gets a record only when
 		 * it has a cycle ID to clear, so a VACUUM that finds nothing to do
 		 * logs nothing.
 		 */
