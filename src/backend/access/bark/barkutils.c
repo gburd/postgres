@@ -657,17 +657,22 @@ bark_form_posting(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids
 	Size		keysz = IndexTupleSize(key);
 	Size		listsz;
 	Size		total;
-	Sbm		   *map = NULL;
+	uint64	   *keys;
+	Sbm		   *map;
 	IndexTuple	entry;
 
 	Assert(ntids >= 1);
 
-	/* Build the sbm from the block-clustered keys. */
+	/*
+	 * Build the sbm from the block-clustered keys in one pass.  Adding them
+	 * one at a time re-walks the chunk list from its head on every add, which
+	 * is quadratic for a scattered set, where every member has a chunk.
+	 */
+	keys = palloc_array(uint64, ntids);
 	for (int i = 0; i < ntids; i++)
-	{
-		if (sbm_add_grow(&map, bark_tid_to_key(&tids[i])) == SBM_IDX_MAX)
-			elog(ERROR, "sbm_add_grow failed building BARK posting entry");
-	}
+		keys[i] = bark_tid_to_key(&tids[i]);
+	map = sbm_create_from_array(keys, ntids);
+	pfree(keys);
 
 	total = BarkPostingEntrySize(keysz, sbm_removal_bound(map));
 	listsz = MAXALIGN(MAXALIGN(keysz) + ntids * sizeof(ItemPointerData));
