@@ -27,6 +27,7 @@
 #include <math.h>
 
 #include "access/bark.h"
+#include "access/barkxlog.h"
 #include "access/detoast.h"
 #include "access/generic_xlog.h"
 #include "access/heaptoast.h"
@@ -35,6 +36,7 @@
 #include "access/toast_internals.h"
 #include "catalog/pg_type.h"
 #include "lib/sbm.h"
+#include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
 #include "utils/lsyscache.h"
@@ -104,6 +106,7 @@ bark_build_keyinfo(Relation index)
 
 	keyinfo = (BarkKeyInfo *) palloc0(offsetof(BarkKeyInfo, cols) +
 									  nkeys * sizeof(BarkKeyColumn));
+	keyinfo->heaprel = NULL;	/* writers set it */
 	keyinfo->nkeys = nkeys;
 
 	for (int i = 0; i < nkeys; i++)
@@ -189,10 +192,15 @@ bark_allequalimage(Relation index)
  * it is recyclable, so the second test normally passes; it is repeated here
  * because the FSM is not WAL-logged and a page can be listed there by mistake
  * (after a crash, say).  heaprel is the index's heap, which chooses the
- * visibility horizon for that test; callers that have none pass NULL, which
- * uses the stricter horizon of shared relations (see BarkPageIsRecyclable).
- * A deleted page that is not yet recyclable is left alone; a later VACUUM
- * records it again.
+ * visibility horizon for that test and tells a standby whether the page
+ * belongs to a catalog.  A deleted page that is not yet recyclable is left
+ * alone; a later VACUUM records it again.
+ *
+ * Before a deleted page is reused, an XLOG_BARK_REUSE_PAGE record is written
+ * when hot standby may be running queries, as _bt_allocbuf does: the page's
+ * safexid is the conflict horizon that cancels any standby query that may
+ * still hold a link to the page.  The page itself is reinitialized by the
+ * caller's own record.
  *
  * The returned buffer is pinned and exclusive-locked; its page is left as-is
  * (new or deleted), so the caller's PageInit fully reinitializes it.
@@ -201,6 +209,8 @@ Buffer
 bark_get_free_page(Relation index, Relation heaprel)
 {
 	Buffer		buf;
+
+	Assert(heaprel != NULL);
 
 	for (;;)
 	{
@@ -227,7 +237,28 @@ bark_get_free_page(Relation index, Relation heaprel)
 			if (PageIsNew(page))
 				return buf;		/* never initialized: OK */
 			if (BarkPageIsRecyclable(page, heaprel))
-				return buf;		/* deleted long enough ago: OK */
+			{
+				/* deleted long enough ago: OK */
+				if (RelationNeedsWAL(index) && XLogStandbyInfoActive())
+				{
+					xl_bark_reuse_page xlrec;
+
+					/*
+					 * No buffer is registered: this record changes no page
+					 * (see xl_bark_reuse_page).
+					 */
+					xlrec.locator = index->rd_locator;
+					xlrec.block = blkno;
+					xlrec.snapshotConflictHorizon = BarkPageGetDeleteXid(page);
+					xlrec.isCatalogRel =
+						RelationIsAccessibleInLogicalDecoding(heaprel);
+
+					XLogBeginInsert();
+					XLogRegisterData(&xlrec, SizeOfBarkReusePage);
+					XLogInsert(RM_BARK_ID, XLOG_BARK_REUSE_PAGE);
+				}
+				return buf;
+			}
 
 			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 		}
@@ -1084,10 +1115,11 @@ bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
 /*
  * Write `full` (fulllen bytes) across a fresh BARK_OVERFLOW chain via the
  * buffer pool, each page WAL-logged with generic WAL, and return the first
- * block.  Generic WAL covers at most MAX_GENERIC_XLOG_PAGES buffers per record,
- * so a long chain is written in several records; each page is self-contained
- * (it carries its own next-link and chunk bytes), so a crash between records
- * leaves only orphaned, BARK_P_NONE-terminated pages that no entry references.
+ * block.  heaprel is the index's heap, for bark_get_free_page.  Generic WAL
+ * covers at most MAX_GENERIC_XLOG_PAGES buffers per record, so a long chain
+ * is written in several records; each page is self-contained (it carries its
+ * own next-link and chunk bytes), so a crash between records leaves only
+ * orphaned, BARK_P_NONE-terminated pages that no entry references.
  */
 BlockNumber
 bark_write_overflow_chain(Relation index, Relation heaprel, IndexTuple full,
@@ -1183,7 +1215,9 @@ bark_fetch_oversized(Relation index, IndexTuple entry)
 /*
  * Free the overflow chain an OVERSIZED entry references: make each page a
  * deleted page (BarkPageSetDeleted).  Called by VACUUM when the owning leaf
- * entry is removed.  WAL-logged under its own generic-WAL records.
+ * entry is removed.  Each page is freed under its own XLOG_BARK_MARK_DELETED
+ * record; the pages are not in the tree, so there is nothing to unlink and a
+ * crash part-way leaves only a chain that no entry references.
  *
  * The pages are not put in the FSM here.  A scan that copied the OVERSIZED
  * entry from the leaf before VACUUM removed it may still be walking the
@@ -1201,17 +1235,39 @@ bark_free_oversized(Relation index, IndexTuple entry)
 	while (blkno != BARK_P_NONE)
 	{
 		Buffer		buf = ReadBuffer(index, blkno);
+		Page		page;
 		BlockNumber nextblk;
-		GenericXLogState *gstate;
-		Page		p;
+		FullTransactionId safexid;
+		XLogRecPtr	recptr;
 
 		LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
-		nextblk = BarkPageGetOpaque(BufferGetPage(buf))->bark_next;
+		page = BufferGetPage(buf);
+		nextblk = BarkPageGetOpaque(page)->bark_next;
+		safexid = ReadNextFullTransactionId();
 
-		gstate = GenericXLogStart(index);
-		p = GenericXLogRegisterBuffer(gstate, buf, 0);
-		BarkPageSetDeleted(p, ReadNextFullTransactionId());
-		GenericXLogFinish(gstate);
+		/* No ereport(ERROR) until changes are logged */
+		START_CRIT_SECTION();
+
+		BarkPageSetDeleted(page, BARK_P_NONE, nextblk, safexid);
+		MarkBufferDirty(buf);
+
+		if (RelationNeedsWAL(index))
+		{
+			xl_bark_mark_deleted xlrec;
+
+			xlrec.next = nextblk;
+			xlrec.safexid = safexid;
+
+			XLogBeginInsert();
+			XLogRegisterBuffer(0, buf, REGBUF_WILL_INIT);
+			XLogRegisterData(&xlrec, SizeOfBarkMarkDeleted);
+			recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_MARK_DELETED);
+		}
+		else
+			recptr = XLogGetFakeLSN(index);
+		PageSetLSN(page, recptr);
+
+		END_CRIT_SECTION();
 
 		UnlockReleaseBuffer(buf);
 		nfreed++;
