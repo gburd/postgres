@@ -3,9 +3,10 @@
  * barkxlog.h
  *	  header file for BARK WAL records and redo routines
  *
- * BARK changes that have no record of their own here are still WAL-logged
- * with generic WAL (generic_xlog.c).  Each change to a page is in exactly one
- * record of either kind, so replay applies them in LSN order per page.
+ * BARK changes that have no record of their own here (splits, new roots,
+ * overflow chains) are still WAL-logged with generic WAL (generic_xlog.c).
+ * Each change to a page is in exactly one record of either kind, so replay
+ * applies them in LSN order per page.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -34,6 +35,10 @@
 #define XLOG_BARK_REUSE_PAGE	0x20	/* deleted page is about to be reused
 										 * from the FSM */
 #define XLOG_BARK_MARK_DELETED	0x30	/* free one overflow page */
+#define XLOG_BARK_INSERT_LEAF	0x40	/* add an entry to a leaf */
+#define XLOG_BARK_INSERT_UPPER	0x50	/* add a downlink to an internal page,
+										 * finishing a child's split */
+#define XLOG_BARK_OVERWRITE		0x60	/* replace an entry on a leaf */
 
 /*
  * VACUUM's changes to one leaf page, as nbtree's xl_btree_vacuum: entries
@@ -115,6 +120,43 @@ typedef struct xl_bark_mark_deleted
 } xl_bark_mark_deleted;
 
 #define SizeOfBarkMarkDeleted	(offsetof(xl_bark_mark_deleted, safexid) + sizeof(FullTransactionId))
+
+/*
+ * Insertion of one entry, as nbtree's xl_btree_insert: a leaf entry
+ * (INSERT_LEAF), or a downlink to the right half of a split child
+ * (INSERT_UPPER), which also clears BARK_INCOMPLETE_SPLIT on the child, the
+ * left half.  The entry is MAXALIGN-sized, so the page that redo produces
+ * does not depend on the free space it is placed in.
+ *
+ * Backup Blk 0: page the entry is added to
+ * Backup Blk 1: child whose split the downlink finishes (INSERT_UPPER only)
+ *
+ * In payload of blk 0: the entry
+ */
+typedef struct xl_bark_insert
+{
+	OffsetNumber offnum;		/* where the entry goes */
+} xl_bark_insert;
+
+#define SizeOfBarkInsert	(offsetof(xl_bark_insert, offnum) + sizeof(OffsetNumber))
+
+/*
+ * Replacement of one leaf entry by a new one, usually larger: a LIST or
+ * POSTING entry that gains a locator, or a SINGLE or LIST that becomes a
+ * LIST or POSTING (bark_coalesce_list).  The primary and redo both use
+ * PageIndexTupleOverwrite, which keeps the entry's offset and moves only the
+ * entries stored below it.
+ *
+ * Backup Blk 0: leaf page
+ *
+ * In payload of blk 0: the new entry
+ */
+typedef struct xl_bark_overwrite
+{
+	OffsetNumber offnum;		/* entry being replaced */
+} xl_bark_overwrite;
+
+#define SizeOfBarkOverwrite	(offsetof(xl_bark_overwrite, offnum) + sizeof(OffsetNumber))
 
 /*
  * prototypes for functions in barkxlog.c
