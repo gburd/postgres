@@ -272,9 +272,10 @@ btree's.
   <code>deduplicate_items</code> on vs off (run 3): kc 5.6 vs 5.8 s, 8041 vs
   26127 pages; ks 10.5 vs 12.7 s. pg_waldump shows one
   <code>XLOG_BTREE_DEDUP</code> per 122 leaf inserts.
-* CREATE INDEX forms only SINGLE entries (current tip): ''one'' 2737 pages
-  vs btree 849; kc and ks 27346 vs 8489. Retail insert of the same data gives
-  28, 252 and 8028 pages (runs 4 and 5).
+* CREATE INDEX formed only SINGLE entries before option (f): ''one'' 2737
+  pages vs btree 849; kc and ks 27346 vs 8489. Retail insert of the same
+  data gives 28, 252 and 8028 pages (runs 4 and 5). With (f) the build gives
+  25, 253 and 7629 pages (run 6, below).
 * Freed heap space refilled with one hot key's new rows (run 3, TIDs
   arriving below the key's existing maximum): 451305 low TIDs went into the
   existing POSTING sets (an sbm takes a member anywhere), and the result was
@@ -318,8 +319,8 @@ No measured cost scales with how many entries a key has.
 
 ; (a) Nothing beyond what is merged.
 : Cost: none. Keeps hot-key insert at 3-8x btree (run 2), ks WAL at 9.4x
-  btree, POSTING bitmap scans at 3-3.6x btree's node time, and CREATE INDEX at
-  3.2x btree's size. Touches nothing.
+  btree, POSTING bitmap scans at 3-3.6x btree's node time, and CREATE INDEX
+  (before option (f)) at 3.2x btree's size. Touches nothing.
 
 ; (b) A GIN-style posting tree per key.
 : A TID-keyed B-tree rooted in the same relation, with sbm-compressed leaf
@@ -407,11 +408,31 @@ No measured cost scales with how many entries a key has.
   (<code>tuplesort_begin_index_btree</code> breaks ties on
   <code>t_tid</code>), so it can group each equal-key run, as nbtree's
   <code>_bt_load</code> does when it deduplicates, and emit SINGLE, LIST or
-  POSTING through the same chooser as insert. Moves: build size from 27346
-  pages to about the retail sizes (252 kc, 8028 ks, 28 ''one'') or below,
-  because the locators arrive sorted. Build time should drop with the page
-  count. It applies insert's <code>bark_allequalimage</code> gate. Touches
-  <code>barksort.c</code> only.
+  POSTING through the same chooser as insert. It applies insert's
+  <code>bark_allequalimage</code> gate. Done; see run 6 below.
+: Run 6 (release, serial build, three alternating rounds, CREATE INDEX
+  time / pages):
+{| class="wikitable"
+! dataset !! before (f) !! (f), per-locator <code>sbm_add_grow</code> !! (f) !! btree(a) pages
+|-
+| ''one'' || 0.18-0.19 s / 2737 || 0.86-0.94 s / 25 || 0.19-0.21 s / 25 || 849
+|-
+| kc || 1.57-1.68 s / 27346 || 7.59-8.17 s / 253 || 1.66-1.89 s / 253 || 8489
+|-
+| ks || 2.74-2.90 s / 27346 || 5.01-5.75 s / 7629 || 2.93-3.44 s / 7629 || 8489
+|}
+: Two choices differ from the first plan. A built entry is capped at a
+  tenth of a page (812 bytes), the limit nbtsort.c's <code>_bt_load</code>
+  puts on posting lists, not at <code>BarkMaxItemSize</code>: entries of a
+  third of a page leave room for only two beside the high key, and the
+  first version, cut at <code>BarkMaxItemSize</code>, built ks in 11041
+  pages, more than btree. And <code>bark_form_posting</code> built its sbm
+  one locator at a time, re-walking the chunk list from its head each time,
+  which is quadratic on a scattered set. The build probes POSTING on every
+  LIST-sized run (column 3). It now builds the sbm in one pass with
+  <code>sbm_create_from_array</code>, which retail insert's general
+  coalesce path also gets. A parallel build writes the same tree. Retail
+  insert can still grow a built entry up to <code>BarkMaxItemSize</code>.
 
 '''Recommendation, in order.'''
 
@@ -431,7 +452,7 @@ No measured cost scales with how many entries a key has.
   35-40% faster. The page-at-a-time scan position also reads members
   through <code>bark_entry_get_tids</code>, so it gets the speedup without
   changes.
-# '''Form LIST/POSTING at CREATE INDEX''' (option f). One commit in
+# '''Form LIST/POSTING at CREATE INDEX''' (option f), done. One commit in
   <code>barksort.c</code>, with a size test: build vs retail page counts
   within a factor, <code>bark_index_check</code> clean, index results equal
   to a sequential scan. Leaves stay packed to fillfactor, as now. The
