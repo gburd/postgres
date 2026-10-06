@@ -182,8 +182,17 @@ max_standby_streaming_delay has passed.
 Page deletion and recycling
 ---------------------------
 
-barkvacuumcleanup deletes the empty interior leaves the leaf pass left
-behind (bark_delete_empty_leaf): in one XLOG_BARK_UNLINK_PAGE record it
+VACUUM reads the index once, in physical order, as nbtree's btvacuumscan
+does (bark_vacuum_scan): the same pass that deletes dead entries counts the
+entries left and the deleted pages, records in the FSM the deleted pages that
+are safe to reuse, and notes each leaf it leaves empty.  barkvacuumcleanup
+does nothing after a bulk delete; when no bulk delete ran (no dead tuples
+this cycle) it runs the same pass without deleting entries.  So VACUUM's
+cleanup is cheap after a bulk delete, as nbtree's is, and BARK declares
+VACUUM_OPTION_PARALLEL_COND_CLEANUP as nbtree does.
+
+At the end of the pass, VACUUM deletes the empty interior leaves it noted
+(bark_delete_empty_leaf): in one XLOG_BARK_UNLINK_PAGE record it
 splices the leaf out of the sibling chain, points the leaf's downlink in the
 parent at the right sibling and removes the right sibling's old downlink (so
 the leaf's key space moves right, as in nbtree), and turns the leaf into a
