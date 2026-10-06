@@ -80,6 +80,21 @@ bark_desc(StringInfo buf, XLogReaderState *record)
 								 XidFromFullTransactionId(xlrec->safexid));
 				break;
 			}
+		case XLOG_BARK_INSERT_LEAF:
+		case XLOG_BARK_INSERT_UPPER:
+			{
+				xl_bark_insert *xlrec = (xl_bark_insert *) rec;
+
+				appendStringInfo(buf, "off: %u", xlrec->offnum);
+				break;
+			}
+		case XLOG_BARK_OVERWRITE:
+			{
+				xl_bark_overwrite *xlrec = (xl_bark_overwrite *) rec;
+
+				appendStringInfo(buf, "off: %u", xlrec->offnum);
+				break;
+			}
 	}
 }
 
@@ -101,6 +116,15 @@ bark_identify(uint8 info)
 			break;
 		case XLOG_BARK_MARK_DELETED:
 			id = "MARK_DELETED";
+			break;
+		case XLOG_BARK_INSERT_LEAF:
+			id = "INSERT_LEAF";
+			break;
+		case XLOG_BARK_INSERT_UPPER:
+			id = "INSERT_UPPER";
+			break;
+		case XLOG_BARK_OVERWRITE:
+			id = "OVERWRITE";
 			break;
 	}
 
