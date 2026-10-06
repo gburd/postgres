@@ -146,7 +146,7 @@ bark_find_parent_downlink(Relation index, BarkKeyInfo *keyinfo,
  * descent that read a link to it before the deletion moves right through it.
  * It is not handed to the FSM here: *safexid is set to the transaction ID it
  * must age past before reuse, and the caller records the page in the FSM once
- * that is safe (see barkvacuumcleanup).
+ * that is safe (see bark_vacuum_scan).
  *
  * Returns true when the leaf was deleted.  Declines (returns false, leaving the
  * leaf linked and correct) when the page is not an eligible interior empty
@@ -482,8 +482,8 @@ bark_delitems_vacuum(Relation index, Buffer buf,
 /*
  * Should bark_vacuum_page clean this page?  Only live leaf pages hold heap
  * TIDs: the meta page, internal pages, overflow pages and pages deleted from
- * the tree are skipped (barkvacuumcleanup accounts for deleted pages and
- * returns them to the FSM).  A page reached by
+ * the tree are skipped (bark_vacuum_page counts deleted pages and returns
+ * them to the FSM before asking).  A page reached by
  * backtracking is cleaned only if it was split during this VACUUM (it carries
  * our cycle ID); otherwise it was processed already, in its turn in the scan.
  */
@@ -501,8 +501,30 @@ bark_vacuum_target(Page page, bool backtracking, BTCycleId cycleid)
 }
 
 /*
- * Process one block of barkbulkdelete's physical-order scan: delete the
- * entries of a live leaf whose heap TIDs the callback reports dead.
+ * State of one VACUUM scan of a BARK index (bark_vacuum_scan), as nbtree's
+ * BTVacState.  callback is NULL for a scan that only counts entries, deletes
+ * empty leaves and recycles deleted pages (barkvacuumcleanup when no bulk
+ * delete ran).
+ */
+typedef struct BarkVacState
+{
+	IndexVacuumInfo *info;
+	IndexBulkDeleteResult *stats;
+	IndexBulkDeleteCallback callback;
+	void	   *callback_state;
+	BTCycleId	cycleid;
+	BlockNumber *emptyleaves;	/* empty interior leaves to delete */
+	int			nempty;
+	int			emptyalloc;
+} BarkVacState;
+
+/*
+ * Process one block of bark_vacuum_scan's physical-order scan.  On a live
+ * leaf, delete the entries whose heap TIDs the callback reports dead (when
+ * there is a callback), count the entries left, and remember the leaf if it
+ * is now an empty interior leaf, for bark_vacuum_scan to delete.  On a deleted
+ * page, count it, and record it in the FSM if it is safe to reuse, as
+ * btvacuumpage does.
  *
  * As in nbtree's btvacuumpage, a leaf split that happened after this VACUUM
  * started may have moved entries from a page the scan has not reached yet to
@@ -523,10 +545,13 @@ bark_vacuum_target(Page page, bool backtracking, BTCycleId cycleid)
  * pages that are not live leaves need no cleanup lock.
  */
 static void
-bark_vacuum_page(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
-				 IndexBulkDeleteCallback callback, void *callback_state,
-				 BTCycleId cycleid, BlockNumber scanblkno)
+bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 {
+	IndexVacuumInfo *info = vstate->info;
+	IndexBulkDeleteResult *stats = vstate->stats;
+	IndexBulkDeleteCallback callback = vstate->callback;
+	void	   *callback_state = vstate->callback_state;
+	BTCycleId	cycleid = vstate->cycleid;
 	Relation	index = info->index;
 	BlockNumber blkno = scanblkno;
 
@@ -550,25 +575,44 @@ bark_vacuum_page(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		buf = ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_NORMAL,
 								 info->strategy);
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		if (!bark_vacuum_target(BufferGetPage(buf), blkno != scanblkno,
-								cycleid))
+		page = BufferGetPage(buf);
+
+		/* A page deleted from the tree: count it, and recycle it if safe. */
+		if (blkno == scanblkno && !PageIsNew(page) &&
+			BarkPageIsDeleted(BarkPageGetOpaque(page)))
+		{
+			stats->pages_deleted++;
+			if (BarkPageIsRecyclable(page, info->heaprel))
+			{
+				RecordFreeIndexPage(index, blkno);
+				stats->pages_free++;
+			}
+			UnlockReleaseBuffer(buf);
+			break;
+		}
+
+		if (!bark_vacuum_target(page, blkno != scanblkno, cycleid))
 		{
 			UnlockReleaseBuffer(buf);
 			break;
 		}
 
 		/*
-		 * Trade the share lock for a cleanup lock, as nbtree's
-		 * _bt_upgradelockbufcleanup does, and look at the page again: it was
-		 * unlocked in between.
+		 * With entries to delete, trade the share lock for a cleanup lock, as
+		 * nbtree's _bt_upgradelockbufcleanup does, and look at the page
+		 * again: it was unlocked in between.  A scan that only counts keeps
+		 * the share lock.
 		 */
-		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-		LockBufferForCleanup(buf);
-		page = BufferGetPage(buf);
-		if (!bark_vacuum_target(page, blkno != scanblkno, cycleid))
+		if (callback != NULL)
 		{
-			UnlockReleaseBuffer(buf);
-			break;
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+			LockBufferForCleanup(buf);
+			page = BufferGetPage(buf);
+			if (!bark_vacuum_target(page, blkno != scanblkno, cycleid))
+			{
+				UnlockReleaseBuffer(buf);
+				break;
+			}
 		}
 		opaque = BarkPageGetOpaque(page);
 
@@ -593,7 +637,7 @@ bark_vacuum_page(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		 * as updates.
 		 */
 		for (OffsetNumber off = BarkPageFirstDataKey(opaque);
-			 off <= maxoff; off = OffsetNumberNext(off))
+			 callback != NULL && off <= maxoff; off = OffsetNumberNext(off))
 		{
 			ItemId		iid = PageGetItemId(page, off);
 			IndexTuple	itup = (IndexTuple) PageGetItem(page, iid);
@@ -719,6 +763,35 @@ bark_vacuum_page(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		for (int i = 0; i < nupdated; i++)
 			pfree(updated[i]);
 
+		/*
+		 * Count the leaf entries that remain.  The planner reads this as the
+		 * number of entries a scan visits, not heap rows (barkcostestimate):
+		 * a LIST or POSTING entry counts once.
+		 */
+		stats->num_index_tuples += PageGetMaxOffsetNumber(page) -
+			BarkPageFirstDataKey(opaque) + 1;
+
+		/*
+		 * An empty interior leaf (no data entries, both siblings, not
+		 * half-dead or mid-split) is a candidate for deletion, which
+		 * bark_vacuum_scan does once the scan is over: it needs the parent
+		 * and both siblings locked, so not under this page's lock.
+		 */
+		if ((opaque->bark_flags & (BARK_INCOMPLETE_SPLIT | BARK_HALF_DEAD)) == 0 &&
+			!BarkPageIsRoot(opaque) &&
+			!BarkPageLeftmost(opaque) && !BarkPageRightmost(opaque) &&
+			PageGetMaxOffsetNumber(page) < BarkPageFirstDataKey(opaque))
+		{
+			if (vstate->nempty >= vstate->emptyalloc)
+			{
+				vstate->emptyalloc *= 2;
+				vstate->emptyleaves = (BlockNumber *)
+					repalloc(vstate->emptyleaves,
+							 vstate->emptyalloc * sizeof(BlockNumber));
+			}
+			vstate->emptyleaves[vstate->nempty++] = blkno;
+		}
+
 		UnlockReleaseBuffer(buf);
 
 		/*
@@ -763,78 +836,6 @@ bark_vacuum_page(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 		INJECTION_POINT("bark-bulkdelete-after-page", blkstr);
 	}
 #endif
-}
-
-static IndexBulkDeleteResult *
-barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
-			   IndexBulkDeleteCallback callback, void *callback_state)
-{
-	Relation	index = info->index;
-
-	if (stats == NULL)
-		stats = palloc0_object(IndexBulkDeleteResult);
-
-	/*
-	 * Scan every page in physical order and delete the entries whose heap TID
-	 * the callback reports dead (bark_vacuum_page).  This is a linear scan of
-	 * the whole index, as nbtree, bloom and GIN do, rather than a walk of the
-	 * leaf chain.  An all-dead leaf is emptied here and deleted from the tree
-	 * in barkvacuumcleanup (not in this pass, which holds only one page's
-	 * lock); a now-empty but still-linked leaf between the two passes is
-	 * correct, just briefly not space-optimal.
-	 *
-	 * Leaf splits during the scan are detected with a vacuum cycle ID, as in
-	 * btbulkdelete.  The cycle IDs come from nbtree's registry
-	 * (_bt_start_vacuum and friends): it maps a relation's LockRelId to the
-	 * cycle ID of the VACUUM now scanning it and has nothing nbtree-specific
-	 * in it, so BARK shares it instead of keeping a copy.  It could move out
-	 * of nbtree into a common place.  The ENSURE block releases our registry
-	 * entry if the scan fails.
-	 *
-	 * Parallel VACUUM may run this, and barkvacuumcleanup, in a worker; each
-	 * index is still processed by one backend at a time, so nothing here is
-	 * shared with another backend beyond what serial VACUUM already shares
-	 * (the cycle-ID registry, buffer locks, WAL and the FSM).
-	 */
-	PG_ENSURE_ERROR_CLEANUP(_bt_end_vacuum_callback, PointerGetDatum(index));
-	{
-		BTCycleId	cycleid = _bt_start_vacuum(index);
-		bool		needLock = !RELATION_IS_LOCAL(index);
-		BlockNumber blkno = BARK_METAPAGE + 1;
-
-		/*
-		 * Pages added after the scan starts must be visited too, so recheck
-		 * the relation length until a pass finds no new pages.  Reading the
-		 * length under the extension lock means a page being added is either
-		 * not counted yet or already locked by the backend adding it (which
-		 * extends with EB_LOCK_FIRST), so we never see it uninitialized and
-		 * unlocked.  This is btvacuumscan's loop.
-		 */
-		for (;;)
-		{
-			BlockNumber npages;
-
-			if (needLock)
-				LockRelationForExtension(index, ExclusiveLock);
-			npages = RelationGetNumberOfBlocks(index);
-			if (needLock)
-				UnlockRelationForExtension(index, ExclusiveLock);
-
-			if (blkno >= npages)
-				break;
-
-			for (; blkno < npages; blkno++)
-			{
-				vacuum_delay_point(false);
-				bark_vacuum_page(info, stats, callback, callback_state,
-								 cycleid, blkno);
-			}
-		}
-	}
-	PG_END_ENSURE_ERROR_CLEANUP(_bt_end_vacuum_callback, PointerGetDatum(index));
-	_bt_end_vacuum(index);
-
-	return stats;
 }
 
 /*
@@ -887,135 +888,122 @@ bark_pendingfsm_finalize(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	}
 }
 
-static IndexBulkDeleteResult *
-barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
+/*
+ * Scan the whole index once, in physical order, as nbtree's btvacuumscan does:
+ * clean every live leaf (bark_vacuum_page), count the leaf entries and the
+ * deleted pages, return safe deleted pages to the FSM, and then delete the
+ * empty interior leaves the scan left behind.
+ *
+ * With a callback (barkbulkdelete) this is the whole of the VACUUM's work on
+ * the index, and barkvacuumcleanup has nothing left to do; without one
+ * (barkvacuumcleanup when no bulk delete ran this cycle) it only counts,
+ * deletes and recycles.
+ *
+ * Leaf splits during the scan are detected with a vacuum cycle ID, as in
+ * btbulkdelete.  The cycle IDs come from nbtree's registry (_bt_start_vacuum
+ * and friends): it maps a relation's LockRelId to the cycle ID of the VACUUM
+ * now scanning it and has nothing nbtree-specific in it, so BARK shares it
+ * instead of keeping a copy.  It could move out of nbtree into a common
+ * place.  The ENSURE block releases our registry entry if the scan fails.  A
+ * scan without a callback deletes no entries, so it needs no cycle ID, as
+ * btvacuumscan's cleanup-only scan does not.
+ *
+ * Parallel VACUUM may run this in a worker; each index is still processed by
+ * one backend at a time, so nothing here is shared with another backend
+ * beyond what serial VACUUM already shares (the cycle-ID registry, buffer
+ * locks, WAL and the FSM).
+ */
+static void
+bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
+				 IndexBulkDeleteCallback callback, void *callback_state)
 {
 	Relation	index = info->index;
+	BarkVacState vstate;
+	bool		needLock = !RELATION_IS_LOCAL(index);
+	BlockNumber blkno = BARK_METAPAGE + 1;
 	BlockNumber npages;
 	BarkKeyInfo *keyinfo;
-	BlockNumber *emptyleaves;
-	int			nempty = 0;
-	int			emptyalloc;
 	BarkPendingFSM *pending;
 	int			npending = 0;
 
-	/* ANALYZE has nothing to clean up. */
-	if (info->analyze_only)
-		return stats;
-
-	Assert(info->heaprel != NULL);
-
-	if (stats == NULL)
-		stats = palloc0_object(IndexBulkDeleteResult);
+	vstate.info = info;
+	vstate.stats = stats;
+	vstate.callback = callback;
+	vstate.callback_state = callback_state;
+	vstate.cycleid = 0;
+	vstate.emptyalloc = 64;
+	vstate.nempty = 0;
+	vstate.emptyleaves = palloc_array(BlockNumber, vstate.emptyalloc);
 
 	/*
-	 * This pass reads the whole index whether or not barkbulkdelete ran, so
-	 * BARK declares VACUUM_OPTION_PARALLEL_CLEANUP, as GIN does, rather than
-	 * nbtree's VACUUM_OPTION_PARALLEL_COND_CLEANUP: nbtree's cleanup is
-	 * nearly free after a bulk delete, BARK's is not.
-	 *
-	 * Report index-wide statistics.  When barkbulkdelete did not run (no dead
-	 * tuples this cycle) we count the live leaf entries here so the planner
-	 * has an up-to-date tuple count; when it did run, num_index_tuples is
-	 * recomputed the same way.  Returning valid stats also lets VACUUM finish
-	 * and set the heap visibility map, which is what makes index-only scans
-	 * worthwhile.
-	 *
-	 * In the same walk we collect the empty interior leaves VACUUM produced
-	 * (all their entries were removed as dead) so they can be deleted below;
-	 * this is what keeps a delete-heavy index from growing the relation
-	 * without bound across delete/vacuum/insert cycles.  We only collect them
-	 * here (under a share lock); the deletion takes exclusive locks on the
-	 * siblings and parent in a second pass, so the walk stays a cheap read.
-	 *
-	 * The walk also finds the pages already deleted, by an earlier VACUUM or
-	 * (overflow pages) by barkbulkdelete in this one, and records in the FSM
-	 * those that are now safe to reuse, as btvacuumpage does.  Recording one
-	 * that is already there is harmless.  The horizon is recomputed first,
-	 * for the reason given in bark_pendingfsm_finalize.
+	 * The counts are recomputed by every scan; tuples_removed and
+	 * pages_newly_deleted accumulate across the bulk deletes of one VACUUM.
 	 */
-	npages = RelationGetNumberOfBlocks(index);
-	stats->num_pages = npages;
 	stats->num_index_tuples = 0;
 	stats->pages_deleted = 0;
 	stats->pages_free = 0;
 
-	emptyalloc = 64;
-	emptyleaves = (BlockNumber *) palloc(emptyalloc * sizeof(BlockNumber));
-
+	/*
+	 * Recompute this backend's view of the XID horizon, so that pages
+	 * deleted after the VACUUM took its snapshot can be recognized as safe to
+	 * reuse (see bark_pendingfsm_finalize).
+	 */
 	GetOldestNonRemovableTransactionId(info->heaprel);
 
-	for (BlockNumber blkno = BARK_METAPAGE + 1; blkno < npages; blkno++)
+	PG_ENSURE_ERROR_CLEANUP(_bt_end_vacuum_callback, PointerGetDatum(index));
 	{
-		Buffer		buf;
-		Page		page;
-		BarkPageOpaque opaque;
+		if (callback != NULL)
+			vstate.cycleid = _bt_start_vacuum(index);
 
-		vacuum_delay_point(false);
-
-		buf = ReadBufferExtended(index, MAIN_FORKNUM, blkno, RBM_NORMAL,
-								 info->strategy);
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		page = BufferGetPage(buf);
-
-		if (!PageIsNew(page) && !BarkPageIsOverflow(BarkPageGetOpaque(page)) &&
-			BarkPageIsLeaf(BarkPageGetOpaque(page)))
+		/*
+		 * Pages added after the scan starts must be visited too, so recheck
+		 * the relation length until a pass finds no new pages.  Reading the
+		 * length under the extension lock means a page being added is either
+		 * not counted yet or already locked by the backend adding it (which
+		 * extends with EB_LOCK_FIRST), so we never see it uninitialized and
+		 * unlocked.  This is btvacuumscan's loop.
+		 */
+		for (;;)
 		{
-			OffsetNumber maxoff;
+			if (needLock)
+				LockRelationForExtension(index, ExclusiveLock);
+			npages = RelationGetNumberOfBlocks(index);
+			if (needLock)
+				UnlockRelationForExtension(index, ExclusiveLock);
 
-			opaque = BarkPageGetOpaque(page);
-			maxoff = PageGetMaxOffsetNumber(page);
-			stats->num_index_tuples += maxoff - BarkPageFirstDataKey(opaque) + 1;
+			if (blkno >= npages)
+				break;
 
-			/*
-			 * An empty interior leaf (no data entries, has both siblings, not
-			 * half-dead) is a reclamation candidate.
-			 */
-			if ((opaque->bark_flags &
-				 (BARK_INCOMPLETE_SPLIT | BARK_HALF_DEAD)) == 0 &&
-				!BarkPageIsRoot(opaque) &&
-				!BarkPageLeftmost(opaque) && !BarkPageRightmost(opaque) &&
-				maxoff < BarkPageFirstDataKey(opaque))
+			for (; blkno < npages; blkno++)
 			{
-				if (nempty >= emptyalloc)
-				{
-					emptyalloc *= 2;
-					emptyleaves = (BlockNumber *)
-						repalloc(emptyleaves, emptyalloc * sizeof(BlockNumber));
-				}
-				emptyleaves[nempty++] = blkno;
+				vacuum_delay_point(false);
+				bark_vacuum_page(&vstate, blkno);
 			}
 		}
-		else if (!PageIsNew(page) &&
-				 BarkPageIsDeleted(BarkPageGetOpaque(page)))
-		{
-			stats->pages_deleted++;
-			if (BarkPageIsRecyclable(page, info->heaprel))
-			{
-				RecordFreeIndexPage(index, blkno);
-				stats->pages_free++;
-			}
-		}
-
-		UnlockReleaseBuffer(buf);
 	}
+	PG_END_ENSURE_ERROR_CLEANUP(_bt_end_vacuum_callback, PointerGetDatum(index));
+	if (callback != NULL)
+		_bt_end_vacuum(index);
+
+	stats->num_pages = npages;
 
 	/*
-	 * Second pass: delete the empty leaves collected above.  Each deletion
+	 * Delete the empty interior leaves the scan found.  Each deletion
 	 * re-validates the page under exclusive locks, so a leaf that was
 	 * concurrently refilled or already reclaimed is simply skipped.  The
 	 * deleted pages are kept in `pending`, in deletion order, for the FSM.
 	 */
 	keyinfo = bark_build_keyinfo(index);
 	keyinfo->heaprel = info->heaprel;
-	pending = palloc_array(BarkPendingFSM, Max(nempty, 1));
-	for (int i = 0; i < nempty; i++)
+	pending = palloc_array(BarkPendingFSM, Max(vstate.nempty, 1));
+	for (int i = 0; i < vstate.nempty; i++)
 	{
 		FullTransactionId safexid;
 
-		if (bark_delete_empty_leaf(index, keyinfo, emptyleaves[i], &safexid))
+		if (bark_delete_empty_leaf(index, keyinfo, vstate.emptyleaves[i],
+								   &safexid))
 		{
-			pending[npending].target = emptyleaves[i];
+			pending[npending].target = vstate.emptyleaves[i];
 			pending[npending].safexid = safexid;
 			npending++;
 			stats->pages_newly_deleted++;
@@ -1023,7 +1011,7 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		}
 	}
 	pfree(keyinfo);
-	pfree(emptyleaves);
+	pfree(vstate.emptyleaves);
 
 	bark_pendingfsm_finalize(info, stats, pending, npending);
 	pfree(pending);
@@ -1031,6 +1019,43 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	/* Make the FSM entries recorded this cycle durable and searchable. */
 	if (stats->pages_free > 0)
 		IndexFreeSpaceMapVacuum(index);
+}
+
+static IndexBulkDeleteResult *
+barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
+			   IndexBulkDeleteCallback callback, void *callback_state)
+{
+	if (stats == NULL)
+		stats = palloc0_object(IndexBulkDeleteResult);
+
+	bark_vacuum_scan(info, stats, callback, callback_state);
+	return stats;
+}
+
+/*
+ * After a bulk delete there is nothing left to do: bark_vacuum_scan already
+ * counted the entries, deleted the empty leaves and recycled the deleted
+ * pages.  Without one (no dead tuples this cycle), scan the index to do those
+ * things, so that the planner gets a current entry count and pages deleted by
+ * an earlier VACUUM reach the FSM once they are safe.  Returning valid stats
+ * also lets VACUUM set the heap visibility map, which is what makes
+ * index-only scans worthwhile.  This is btvacuumcleanup without its
+ * skip-the-scan heuristic.
+ */
+static IndexBulkDeleteResult *
+barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
+{
+	/* ANALYZE has nothing to clean up. */
+	if (info->analyze_only)
+		return stats;
+
+	Assert(info->heaprel != NULL);
+
+	if (stats == NULL)
+	{
+		stats = palloc0_object(IndexBulkDeleteResult);
+		bark_vacuum_scan(info, stats, NULL, NULL);
+	}
 
 	return stats;
 }
@@ -1251,7 +1276,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amsummarizing = false,
 		.amcanlocators = LOCATOR_CAP_MASK(LOCATOR_CAP_TID),
 		.amparallelvacuumoptions =
-		VACUUM_OPTION_PARALLEL_BULKDEL | VACUUM_OPTION_PARALLEL_CLEANUP,
+		VACUUM_OPTION_PARALLEL_BULKDEL | VACUUM_OPTION_PARALLEL_COND_CLEANUP,
 		.amkeytype = InvalidOid,
 
 		.ambuild = barkbuild,
