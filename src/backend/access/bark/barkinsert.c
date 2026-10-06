@@ -11,9 +11,9 @@
  * it from the left page's last key), the right link is published before the
  * parent downlink, and a copy of the high key is inserted into the parent as
  * the right page's downlink (growing a new root if the split reached the
- * top).  Page changes are made through the buffer pool and WAL-logged with
- * generic WAL (the same facility bloom uses); BARK's own WAL records cover
- * only VACUUM and page deletion so far (see "WAL" in the README).
+ * top).  Adding an entry to a page, and replacing a leaf entry with a larger
+ * one, are logged with BARK's own WAL records, as nbtree logs them; splits
+ * and new roots still use generic WAL (see "WAL" in the README).
  *
  * Locks follow nbtree's protocol: a split keeps the left page write-locked
  * until the parent is write-locked and the new downlink written, the parent's
@@ -36,11 +36,13 @@
 #include "postgres.h"
 
 #include "access/bark.h"
+#include "access/barkxlog.h"
 #include "access/genam.h"
 #include "access/generic_xlog.h"
 #include "access/itup.h"
 #include "access/nbtree.h"
 #include "access/tableam.h"
+#include "access/xloginsert.h"
 #include "miscadmin.h"
 #include "nodes/execnodes.h"
 #include "storage/bufmgr.h"
@@ -245,6 +247,122 @@ bark_page_insert_at(Page page, IndexTuple itup, OffsetNumber off)
 	if (PageAddItem(page, (char *) itup, IndexTupleSize(itup), off,
 					false, false) == InvalidOffsetNumber)
 		elog(ERROR, "failed to insert item into BARK page");
+}
+
+/*
+ * Add `itup` at offset `off` on the write-locked page `buf`, and WAL-log it,
+ * as _bt_insertonpg does for an insert that needs no split.  When `cbuf` is
+ * valid, `itup` is the downlink to the right half of a split of the child
+ * `cbuf`, which the caller has kept write-locked since the split; its
+ * BARK_INCOMPLETE_SPLIT flag is cleared in the same record (INSERT_UPPER),
+ * so the split completes in the step that makes its right half reachable
+ * from the parent.  Otherwise this is a leaf insert (INSERT_LEAF).  The
+ * caller has checked that the entry fits.
+ *
+ * The entry is MAXALIGN-sized, as every SINGLE, OVERSIZED and pivot entry
+ * is: PageAddItem copies only the entry's own bytes, and alignment padding
+ * taken from the free space could differ between primary and standby.
+ */
+static void
+bark_insert_entry(Relation index, Buffer buf, IndexTuple itup,
+				  OffsetNumber off, Buffer cbuf)
+{
+	Page		page = BufferGetPage(buf);
+	Size		itemsz = IndexTupleSize(itup);
+	XLogRecPtr	recptr;
+
+	Assert(itemsz == MAXALIGN(itemsz));
+
+	/* No ereport(ERROR) until changes are logged */
+	START_CRIT_SECTION();
+
+	if (PageAddItem(page, itup, itemsz, off, false, false) == InvalidOffsetNumber)
+		elog(PANIC, "failed to add entry to block %u in BARK index \"%s\"",
+			 BufferGetBlockNumber(buf), RelationGetRelationName(index));
+
+	MarkBufferDirty(buf);
+
+	if (BufferIsValid(cbuf))
+	{
+		BarkPageOpaque copaque = BarkPageGetOpaque(BufferGetPage(cbuf));
+
+		Assert((copaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0);
+		copaque->bark_flags &= ~BARK_INCOMPLETE_SPLIT;
+		MarkBufferDirty(cbuf);
+	}
+
+	if (RelationNeedsWAL(index))
+	{
+		xl_bark_insert xlrec;
+		uint8		xlinfo = XLOG_BARK_INSERT_LEAF;
+
+		xlrec.offnum = off;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfBarkInsert);
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+		XLogRegisterBufData(0, itup, itemsz);
+		if (BufferIsValid(cbuf))
+		{
+			xlinfo = XLOG_BARK_INSERT_UPPER;
+			XLogRegisterBuffer(1, cbuf, REGBUF_STANDARD);
+		}
+
+		recptr = XLogInsert(RM_BARK_ID, xlinfo);
+	}
+	else
+		recptr = XLogGetFakeLSN(index);
+
+	PageSetLSN(page, recptr);
+	if (BufferIsValid(cbuf))
+		PageSetLSN(BufferGetPage(cbuf), recptr);
+
+	END_CRIT_SECTION();
+}
+
+/*
+ * Replace the leaf entry at `off` on the write-locked page `buf` with `itup`,
+ * and WAL-log it (OVERWRITE).  PageIndexTupleOverwrite keeps the entry at its
+ * offset and moves only the entries stored below it on the page, by the
+ * change in size; redo makes the same call.  The caller has checked that the
+ * new entry fits in the free space plus the old entry's.
+ */
+static void
+bark_overwrite_entry(Relation index, Buffer buf, OffsetNumber off,
+					 IndexTuple itup)
+{
+	Page		page = BufferGetPage(buf);
+	Size		itemsz = IndexTupleSize(itup);
+	XLogRecPtr	recptr;
+
+	/* No ereport(ERROR) until changes are logged */
+	START_CRIT_SECTION();
+
+	if (!PageIndexTupleOverwrite(page, off, itup, itemsz))
+		elog(PANIC, "failed to replace entry at offset %u of block %u in BARK index \"%s\"",
+			 off, BufferGetBlockNumber(buf), RelationGetRelationName(index));
+
+	MarkBufferDirty(buf);
+
+	if (RelationNeedsWAL(index))
+	{
+		xl_bark_overwrite xlrec;
+
+		xlrec.offnum = off;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfBarkOverwrite);
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+		XLogRegisterBufData(0, itup, itemsz);
+
+		recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_OVERWRITE);
+	}
+	else
+		recptr = XLogGetFakeLSN(index);
+
+	PageSetLSN(page, recptr);
+
+	END_CRIT_SECTION();
 }
 
 /*
@@ -873,12 +991,7 @@ bark_insert_parent(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 
 	if (PageGetFreeSpace(ppage) >= MAXALIGN(IndexTupleSize(downlink)))
 	{
-		GenericXLogState *gstate = GenericXLogStart(index);
-		Page		p = GenericXLogRegisterBuffer(gstate, pbuf, 0);
-
-		bark_page_insert_at(p, downlink, off);
-		bark_clear_incomplete_split(gstate, buf);
-		GenericXLogFinish(gstate);
+		bark_insert_entry(index, pbuf, downlink, off, buf);
 		UnlockReleaseBuffer(buf);
 		UnlockReleaseBuffer(pbuf);
 	}
@@ -1242,15 +1355,7 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 										   (OffsetNumber) ((uint16) (ncur + 1) |
 														   BARK_IS_LIST));
 
-				{
-					GenericXLogState *gstate = GenericXLogStart(index);
-					Page		p = GenericXLogRegisterBuffer(gstate, buf, 0);
-
-					if (!PageIndexTupleOverwrite(p, eqoff, (char *) ext,
-												 IndexTupleSize(ext)))
-						elog(ERROR, "failed to extend BARK list entry in place");
-					GenericXLogFinish(gstate);
-				}
+				bark_overwrite_entry(index, buf, eqoff, ext);
 				pfree(ext);
 				return true;
 			}
@@ -1277,13 +1382,7 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 
 		if (ext != NULL)
 		{
-			GenericXLogState *gstate = GenericXLogStart(index);
-			Page		p = GenericXLogRegisterBuffer(gstate, buf, 0);
-
-			if (!PageIndexTupleOverwrite(p, eqoff, (char *) ext,
-										 IndexTupleSize(ext)))
-				elog(ERROR, "failed to extend BARK posting entry in place");
-			GenericXLogFinish(gstate);
+			bark_overwrite_entry(index, buf, eqoff, ext);
 			pfree(ext);
 			return true;
 		}
@@ -1344,9 +1443,10 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 	}
 
 	/*
-	 * The merged entry replaces the old one.  Removing the old entry and
-	 * adding the (possibly larger) new one must fit: PageGetFreeSpace plus the
-	 * reclaimed old slot must cover it.
+	 * The merged entry replaces the old one at the same offset.  The free
+	 * space plus the old entry's must cover it.  PageGetFreeSpace keeps back
+	 * room for a line pointer that an overwrite does not need, so this is a
+	 * little stricter than PageIndexTupleOverwrite's own test.
 	 */
 	if (PageGetFreeSpace(page) + MAXALIGN(ItemIdGetLength(iid)) < newsz)
 	{
@@ -1354,18 +1454,7 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		return false;			/* no room to grow here: caller splits */
 	}
 
-	{
-		GenericXLogState *gstate = GenericXLogStart(index);
-		Page		p = GenericXLogRegisterBuffer(gstate, buf, 0);
-		OffsetNumber deloff = eqoff;
-
-		PageIndexMultiDelete(p, &deloff, 1);
-		if (PageAddItem(p, (char *) newentry, IndexTupleSize(newentry), eqoff,
-						false, false) == InvalidOffsetNumber)
-			elog(ERROR, "failed to replace BARK leaf entry with a merged entry");
-		GenericXLogFinish(gstate);
-	}
-
+	bark_overwrite_entry(index, buf, eqoff, newentry);
 	pfree(newentry);
 	return true;
 }
@@ -1542,11 +1631,7 @@ retry:
 
 		if (PageGetFreeSpace(page) >= itemsz)
 		{
-			GenericXLogState *gstate = GenericXLogStart(index);
-			Page		p = GenericXLogRegisterBuffer(gstate, buf, 0);
-
-			bark_page_insert_at(p, entry, off);
-			GenericXLogFinish(gstate);
+			bark_insert_entry(index, buf, entry, off, InvalidBuffer);
 			UnlockReleaseBuffer(buf);
 		}
 		else

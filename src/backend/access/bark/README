@@ -243,12 +243,35 @@ WAL
 ---
 
 BARK has its own WAL resource manager, "Bark" (RM_BARK_ID; barkxlog.h,
-barkxlog.c, rmgrdesc/barkdesc.c), for VACUUM and page deletion.  Inserts,
-splits, new roots, overflow chains and CREATE INDEX are still logged with
-generic WAL (generic_xlog.c), which logs a delta of each registered page.
-The two kinds coexist because each change to a page is in exactly one
-record: replay applies a page's records in LSN order whichever resource
-manager wrote them.  The records:
+barkxlog.c, rmgrdesc/barkdesc.c), for inserts that need no split, VACUUM
+and page deletion.  Splits, new roots, the first root of an empty index,
+overflow chains and CREATE INDEX are still logged with generic WAL
+(generic_xlog.c), which logs a delta of each registered page.  The two
+kinds coexist because each change to a page is in exactly one record:
+replay applies a page's records in LSN order whichever resource manager
+wrote them.  The records:
+
+  XLOG_BARK_INSERT_LEAF (bark_insert_entry, from bark_insert)
+      One leaf: the new entry and its offset, as nbtree's INSERT_LEAF.  An
+      OVERSIZED entry's overflow chain is written first, in its own generic
+      records.  Redo adds the entry with PageAddItem under an exclusive lock.
+
+  XLOG_BARK_INSERT_UPPER (bark_insert_entry, from bark_insert_parent)
+      Two pages: the parent, with the downlink to the right half of a split
+      and its offset, and the left half, whose BARK_INCOMPLETE_SPLIT flag is
+      cleared, as nbtree's INSERT_UPPER.  The primary holds both locks;
+      redo, like btree_xlog_insert, clears the flag first and then adds the
+      downlink, one page lock at a time, since only writers look at the flag.
+      A parent that must split to take the downlink is logged as a split.
+
+  XLOG_BARK_OVERWRITE (bark_overwrite_entry, from bark_coalesce_list)
+      One leaf: an entry's offset and its replacement, usually larger: a
+      LIST or POSTING that gains a locator, or a SINGLE or LIST re-encoded
+      as a LIST or POSTING.  Primary and redo both call
+      PageIndexTupleOverwrite, which keeps the offset and moves only the
+      entries stored below the replaced one.  The record carries just the
+      new entry, where a generic delta covered every byte that moved
+      (pd_upper to the entry).
 
   XLOG_BARK_VACUUM (bark_delitems_vacuum)
       One leaf: the offsets of entries deleted whole, and the offsets and new
@@ -287,10 +310,10 @@ manager wrote them.  The records:
 The vacuum cycle ID's clear is logged, in XLOG_BARK_VACUUM, although nbtree
 treats it as a hint and masks it in btree_mask.  A hint would make a
 standby's page differ from the primary's in a field that the generic records
-for inserts and splits copy whole, so a consistency check of the next such
-record, which compares the replayed page against the full-page image, would
-fail.  Once those records are BARK records too, the clear can become a hint
-and bark_mask can mask it.  Until then bark_mask (wal_consistency_checking)
+for splits copy whole, so a consistency check of the next such record, which
+compares the replayed page against the full-page image, would fail.  Once
+splits are BARK records too, the clear can become a hint and bark_mask can
+mask it.  Until then bark_mask (wal_consistency_checking)
 masks only the LSN, checksum, page-header hint bits and the unused space:
 BARK sets no LP_DEAD bits and makes no other unlogged changes.
 
