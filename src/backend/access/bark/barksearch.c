@@ -33,15 +33,102 @@
 #include "utils/injection_point.h"
 #include "utils/rel.h"
 
-/* Compare search key against the index tuple at offset `off` on `page`. */
+/*
+ * What a descent searches for: an index tuple (insert, and the internal
+ * lookups of VACUUM and split completion), or a scan's bound, whose
+ * arguments may be of another type in the column's opfamily.
+ */
+typedef struct BarkSearchKey
+{
+	IndexTuple	key;
+	const BarkScanBound *bound;
+} BarkSearchKey;
+
+/*
+ * Compare a scan bound with an index tuple: <0 or >0 as the bound sorts
+ * before or after the tuple in index order (never 0, see below).  Truncated
+ * pivot attributes are minus infinity, as in bark_compare_itups.
+ */
 static int
-bark_compare_off(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
-				 Page page, OffsetNumber off)
+bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
+				   const BarkScanBound *bound, IndexTuple itup)
+{
+	TupleDesc	tupdesc = RelationGetDescr(index);
+	IndexTuple	full = NULL;
+	int			natts;
+	int			ncmp;
+	int			result = 0;
+
+	if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+	{
+		natts = BarkOverflowIsLeaf(itup) ? keyinfo->nkeys :
+			BarkOverflowGetRef(itup)->natts;
+		itup = full = bark_fetch_oversized(index, itup);
+	}
+	else if (BarkEntryGetShape(itup) == BARK_SHAPE_PIVOT)
+		natts = BarkPivotGetNAtts(itup);
+	else
+		natts = keyinfo->nkeys;
+
+	ncmp = Min(natts, bound->nkeys);
+	for (int i = 0; i < ncmp; i++)
+	{
+		BarkKeyColumn *col = &keyinfo->cols[i];
+		bool		isnull;
+		Datum		datum = index_getattr(itup, i + 1, tupdesc, &isnull);
+		int32		cmp;
+
+		if (isnull)
+		{
+			/* A bound is never NULL; a NULL entry sorts per NULLS FIRST/LAST. */
+			result = col->nulls_first ? 1 : -1;
+			break;
+		}
+
+		/* The ORDER proc compares the entry with the argument, in value order. */
+		cmp = DatumGetInt32(FunctionCall2Coll(bound->procs[i],
+											  bound->collations[i],
+											  datum, bound->args[i]));
+		if (cmp != 0)
+		{
+			result = col->reverse ? cmp : -cmp;
+			break;
+		}
+	}
+
+	/*
+	 * Equal on every column both have.  A pivot truncated below the bound's
+	 * columns is minus infinity past its own, so the bound sorts after it.
+	 * Otherwise a lower bound sorts just before every tuple equal to it, and
+	 * an upper bound just after: a descent for a lower bound then stops at
+	 * the first page that can hold an equal key, and one for an upper bound
+	 * moves on to the last such page, past a high key equal to the bound.
+	 * A bound is never equal to a tuple, so nextkey does not matter.
+	 */
+	if (result == 0)
+	{
+		if (natts < bound->nkeys)
+			result = 1;
+		else
+			result = bound->upper ? 1 : -1;
+	}
+
+	if (full)
+		pfree(full);
+	return result;
+}
+
+/* Compare the search key with the index tuple at offset `off` on `page`. */
+static int
+bark_compare_off(Relation index, BarkKeyInfo *keyinfo,
+				 const BarkSearchKey *key, Page page, OffsetNumber off)
 {
 	ItemId		iid = PageGetItemId(page, off);
 	IndexTuple	itup = (IndexTuple) PageGetItem(page, iid);
 
-	return bark_compare_itups(keyinfo, index, key, itup);
+	if (key->bound != NULL)
+		return bark_compare_bound(index, keyinfo, key->bound, itup);
+	return bark_compare_itups(keyinfo, index, key->key, itup);
 }
 
 /*
@@ -65,7 +152,7 @@ bark_compare_off(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
  * the downlink is written.
  */
 static Buffer
-bark_moveright(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
+bark_moveright(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
 			   Buffer buf, bool forwrite, BarkStack stack,
 			   BufferLockMode access)
 {
@@ -143,8 +230,8 @@ bark_moveright(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
  * keys; landing on the last leaf of the run loses them.)
  */
 static OffsetNumber
-bark_binsrch(Relation index, BarkKeyInfo *keyinfo, IndexTuple key, Page page,
-			 bool nextkey)
+bark_binsrch(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
+			 Page page, bool nextkey)
 {
 	BarkPageOpaque opaque = BarkPageGetOpaque(page);
 	OffsetNumber low = BarkPageFirstDataKey(opaque);
@@ -222,9 +309,9 @@ bark_get_root(Relation index, uint32 *level_out)
  * Returns InvalidBuffer when the index has no root yet (empty index); the
  * caller creates the first leaf.
  */
-Buffer
-bark_search(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
-			bool forwrite, bool nextkey, BarkStack *stack)
+static Buffer
+bark_descend(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
+			 bool forwrite, bool nextkey, BarkStack *stack)
 {
 	BlockNumber blkno;
 	Buffer		buf;
@@ -306,6 +393,29 @@ bark_search(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 	else
 		bark_freestack(path);
 	return buf;
+}
+
+Buffer
+bark_search(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
+			bool forwrite, bool nextkey, BarkStack *stack)
+{
+	BarkSearchKey skey = {key, NULL};
+
+	return bark_descend(index, keyinfo, &skey, forwrite, nextkey, stack);
+}
+
+/*
+ * Descend to the leaf where a scan bounded by `bound` starts.  A read-only
+ * descent: like nbtree's readers, it moves right past splits and removed
+ * pages but never finishes an incomplete split.
+ */
+Buffer
+bark_search_bound(Relation index, BarkKeyInfo *keyinfo,
+				  const BarkScanBound *bound, bool nextkey)
+{
+	BarkSearchKey skey = {NULL, bound};
+
+	return bark_descend(index, keyinfo, &skey, false, nextkey, NULL);
 }
 
 void
