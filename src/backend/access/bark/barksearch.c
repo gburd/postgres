@@ -49,7 +49,7 @@ typedef struct BarkSearchKey
  * before or after the tuple in index order (never 0, see below).  Truncated
  * pivot attributes are minus infinity, as in bark_compare_itups.
  */
-static int
+int
 bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
 				   const BarkScanBound *bound, IndexTuple itup)
 {
