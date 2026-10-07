@@ -243,6 +243,29 @@ BarkPageIsRecyclable(Page page, Relation heaprel)
 	(BarkPageRightmost(opaque) ? BARK_P_HIKEY : BARK_P_FIRSTKEY)
 
 /*
+ * Workspace for BarkPageGetItem.  Every read of a data item (any item but
+ * the high key) goes through that function rather than PageGetItem, so that
+ * a page format whose items are stored encoded (leaf prefix compression) has
+ * one place to decode them.  The workspace holds a decoded copy; the
+ * returned tuple is valid until the workspace is reused or the page is
+ * unlocked.  High keys, and items a caller changes in place, are read with
+ * PageGetItem.
+ */
+typedef PGAlignedBlock BarkItemBuf;
+
+/*
+ * Return the data item at `off` on `page` as a BARK entry.  Today every item
+ * is stored as it is read, so this is the on-page tuple and `buf` is not
+ * used; callers must not write through the result.
+ */
+static inline IndexTuple
+BarkPageGetItem(Page page, OffsetNumber off, BarkItemBuf *buf)
+{
+	(void) buf;
+	return (IndexTuple) PageGetItem(page, PageGetItemId(page, off));
+}
+
+/*
  * The largest item BARK will place on a page.  Like nbtree's BTMaxItemSize,
  * this bounds a single entry to roughly a third of the usable page so at
  * least three entries fit, keeping the tree from degenerating.  A LIST or
