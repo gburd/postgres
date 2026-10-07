@@ -686,7 +686,7 @@ are cited by name in each phase's commit messages.
 
 '''M-series -- documents (multikey)'''
 
-These make BARK an index a document store such as DocumentDB can use in
+These make BARK an index that a document store such as DocumentDB can use in
 place of an inverted AM, without changing the scalar design above.
 
 * '''M1''' -- multikey keys: an opclass support procedure that extracts N
@@ -695,8 +695,20 @@ place of an inverted AM, without changing the scalar design above.
   that matches through several keys once. The meta page records whether the
   index has multikey rows. Needs H1, so that (key, TID) names exactly one
   entry member.
-* '''M2''' -- operator classes for extracted keys (a document store's term
-  type), and <code>barkvalidate</code> support for the extract procedure.
+* '''M2''' -- operator classes on RUM's model. BARK takes GIN's support
+  functions for extracted keys (extract a value's keys; extract a query's
+  keys, with partial match; consistent) and RUM's ordering and per-locator
+  data functions (config, which declares the per-locator type; ordering and
+  outer ordering; the join of per-locator values), so a RUM or GIN operator
+  class ports to BARK with little change. The per-locator functions need M3.
+  Plus classes matching RUM's for arrays (containment, overlap, equality,
+  similarity ordering) and for scalar types with RUM's distance operators,
+  which BARK's KNN scan already serves on a leading column. The new
+  procedures are numbered after btree's, since BARK's scalar classes live in
+  btree's operator families; <code>barkvalidate</code> checks them. RUM's
+  tsvector classes are out of scope: their ranking needs per-occurrence
+  positions (M3) and belongs to a text-search index (see "Containment
+  queries").
 * '''M3''' -- extra data per locator (RUM's addInfo): a LIST or POSTING
   variant whose members carry a small value beside each TID and are ordered
   by it, so "key X ordered by a value" keeps one entry per key. A composite
