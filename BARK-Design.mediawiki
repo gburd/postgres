@@ -649,7 +649,11 @@ are cited by name in each phase's commit messages.
   table is UNDO-backed. Page recycling follows nbtree: a deleted page keeps
   its sibling links and records a safexid, and is reused only once
   <code>GlobalVisCheckRemovableFullXid</code> says no snapshot can still hold
-  a link to it (the README's "Page deletion and recycling").
+  a link to it (the README's "Page deletion and recycling"). Bottom-up
+  deletion, as nbtree's: an <code>indexUnchanged</code> insert that would
+  split a leaf first asks the table AM which of the leaf's versions are dead
+  and deletes their entries (<code>XLOG_BARK_DELETE</code>; the README's
+  "Bottom-up deletion").
 * '''A16-A18''' -- parallel build, parallel scan, and the amcheck contract for
   BARK.
 
