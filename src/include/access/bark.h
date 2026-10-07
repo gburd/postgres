@@ -1414,6 +1414,15 @@ extern void bark_endscan(IndexScanDesc scan);
 extern void bark_markpos(IndexScanDesc scan);
 extern void bark_restrpos(IndexScanDesc scan);
 
+/* Leaf-read helpers shared by the plain and KNN scans (barkscan.c). */
+extern IndexTuple bark_scan_resolve(Relation index, IndexTuple itup,
+									bool *fetched);
+extern uint32 bark_save_tuple(BarkScanOpaque so, char **tuples,
+							  uint32 *tuplesSize, uint32 *nextoff,
+							  IndexTuple entry, IndexTuple resolved);
+extern Buffer bark_lock_and_validate_left(Relation index, BlockNumber *blkno,
+										  BlockNumber lastcurrblkno);
+
 /* KNN (ordered-operator) scan (barkknn.c). */
 extern void bark_knn_rescan(IndexScanDesc scan, ScanKey orderbys, int norderbys);
 extern bool bark_knn_gettuple(IndexScanDesc scan);
