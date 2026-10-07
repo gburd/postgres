@@ -12,8 +12,11 @@
  * second-column bound such as WHERE a = 5 AND b >= 100 lands near the match
  * rather than at the first a = 5 leaf.  Otherwise it starts at the leftmost
  * leaf.  A forward scan also stops early once the leading column passes an
- * upper bound (an =, <, or <= qual: bark_past_upper_bound), so a bounded scan
- * reads only the matching span, not the rest of the index.
+ * upper bound (an =, <, or <= qual: bark_past_bound), so a bounded scan
+ * reads only the matching span, not the rest of the index.  A row comparison
+ * such as (a, b) > (5, 10) positions and stops the scan the same way on its
+ * leading members (bark_row_prefix), so keyset pagination reads only the
+ * pages it returns.
  *
  * Modeled on nbtree's scan (nbtsearch.c _bt_first / _bt_next / _bt_readpage),
  * simplified for the SINGLE entry shape: every leaf entry is one heap TID in
@@ -28,10 +31,9 @@
  * than reading the whole index.  An inequality array (`col < ANY(array)`) is
  * reduced to a plain key on its extreme element instead.
  *
- * A backward scan starts at the rightmost leaf rather than descending to an
- * upper bound, and does not terminate early at a lower bound; sharper backward
- * positioning would be an optimization (symmetric to the forward case), with
- * no effect on correctness.
+ * A backward scan is the mirror image: it descends to the last leaf that can
+ * hold a match under an upper bound, and stops once the leading column passes
+ * a lower bound.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -345,8 +347,9 @@ bark_free_array_keys(BarkScanOpaque so)
  * preprocessing, so the comparison here is in value order with the strategy
  * the executor gave.
  *
- * A row comparison never positions or stops the scan (bark_key_bounds rejects
- * it): the scan reads the whole range the other keys allow and filters.
+ * A row comparison only filters here; bark_make_bound and bark_past_bound
+ * position and stop the scan on its leading members (bark_row_prefix), and
+ * this test still decides every entry they let through.
  */
 static bool
 bark_rowcompare_matches(ScanKey header, IndexTuple itup, TupleDesc tupdesc)
@@ -478,7 +481,8 @@ bark_tuple_matches(IndexScanDesc scan, IndexTuple itup)
  * Returns false for a key that cannot position or stop the scan; such a key
  * is still applied by bark_tuple_matches as a filter.  That covers a key with
  * a NULL argument (including IS [NOT] NULL), a SAOP array (the leading-array
- * logic positions on those), a row comparison, and a cross-type key whose
+ * logic positions on those), a row comparison (bark_row_prefix handles
+ * those), and a cross-type key whose
  * opfamily has no ORDER proc for its pair of types.  Every other key, cross-
  * type ones included, is compared through so->keyCmp, the ORDER proc for
  * the column type and the argument's type (bark_setup_key_procs), so a qual
@@ -517,6 +521,68 @@ bark_key_bounds(IndexScanDesc scan, ScanKey sk, bool *lower, bool *upper)
 }
 
 /*
+ * The usable prefix of row comparison header, for positioning and stopping
+ * the scan: the number of its leading members that each sit on the next index
+ * column after the previous one, are not NULL, and bound their column in the
+ * same role as the first member, as nbtree's _bt_first uses a row comparison.
+ * Every member has the row's strategy, so the role changes only where a
+ * column's DESC option differs from the first member's.  Sets *lower and
+ * *upper for the first member's column as bark_key_bounds does (a row
+ * comparison is never an equality, so exactly one is set).  Returns 0 when
+ * the first member is NULL: the row then matches nothing and only filters.
+ *
+ * Members' sk_func is already the three-way ORDER proc for the column type
+ * and the member's type (ExecIndexBuildScanKeys looks it up for row
+ * comparisons), so a prefix compares through it directly, cross-type members
+ * included.
+ */
+static int
+bark_row_prefix(IndexScanDesc scan, ScanKey header, bool *lower, bool *upper)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	ScanKey		member = (ScanKey) DatumGetPointer(header->sk_argument);
+	bool		reverse = so->keyinfo->cols[member->sk_attno - 1].reverse;
+	bool		less = (member->sk_strategy == BTLessStrategyNumber ||
+						member->sk_strategy == BTLessEqualStrategyNumber);
+	int			n = 0;
+
+	*upper = (less != reverse);
+	*lower = !*upper;
+	for (;;)
+	{
+		Assert(member->sk_flags & SK_ROW_MEMBER);
+		if ((member->sk_flags & SK_ISNULL) ||
+			member->sk_attno != header->sk_attno + n ||
+			so->keyinfo->cols[member->sk_attno - 1].reverse != reverse)
+			break;
+		n++;
+		if (member->sk_flags & SK_ROW_END)
+			break;
+		member++;
+	}
+	return n;
+}
+
+/*
+ * Put the first n members of row comparison header into bound as its columns
+ * from the header's column on, making them the bound's last columns.
+ */
+static void
+bark_row_bound(ScanKey header, int n, BarkScanBound *bound)
+{
+	ScanKey		member = (ScanKey) DatumGetPointer(header->sk_argument);
+	int			first = header->sk_attno - 1;
+
+	for (int m = 0; m < n; m++)
+	{
+		bound->args[first + m] = member[m].sk_argument;
+		bound->procs[first + m] = &member[m].sk_func;
+		bound->collations[first + m] = member[m].sk_collation;
+	}
+	bound->nkeys = first + n;
+}
+
+/*
  * Can a scan moving in direction dir stop at tuple itup, because itup's
  * leading column is already past a bound in that direction?
  *
@@ -530,10 +596,16 @@ bark_key_bounds(IndexScanDesc scan, ScanKey sk, bool *lower, bool *upper)
  *
  * Only column 1 is used: a bound on a later column cannot end the scan, since
  * a later leading value may still have matching trailing values.
+ *
+ * A row comparison on column 1 stops the scan the same way, on its usable
+ * prefix (bark_row_prefix) compared column by column: (a, b) < (5, 3) ends a
+ * forward scan at the first entry after (5, 3).  An entry equal to the prefix
+ * may still match (<=, or a longer row), so it is left to the filter too.
  */
 static bool
 bark_past_bound(IndexScanDesc scan, IndexTuple itup, ScanDirection dir)
 {
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	bool		forward = ScanDirectionIsForward(dir);
 
 	for (int i = 0; i < scan->numberOfKeys; i++)
@@ -543,6 +615,27 @@ bark_past_bound(IndexScanDesc scan, IndexTuple itup, ScanDirection dir)
 		bool		upper;
 		int			c;
 
+		if (sk->sk_attno == 1 && (sk->sk_flags & SK_ROW_HEADER))
+		{
+			int			n = bark_row_prefix(scan, sk, &lower, &upper);
+			BarkScanBound rowbound;
+
+			if (n == 0 || (forward ? !upper : !lower))
+				continue;
+
+			/*
+			 * An upper bound sorts after the entries equal to it and a lower
+			 * bound before them, so the entry is past exactly when the bound
+			 * sorts before it (forward) or after it (backward).
+			 */
+			bark_row_bound(sk, n, &rowbound);
+			rowbound.upper = forward;
+			c = bark_compare_bound(scan->indexRelation, so->keyinfo,
+								   &rowbound, itup);
+			if (forward ? c < 0 : c > 0)
+				return true;
+			continue;
+		}
 		if (sk->sk_attno != 1 || !bark_key_bounds(scan, sk, &lower, &upper))
 			continue;
 		if (forward ? !upper : !lower)
@@ -808,6 +901,15 @@ bark_skip_plan(IndexScanDesc scan, Page page, OffsetNumber lastoff)
  * the first match in scan order, never past it.  A key's argument may be of
  * any type the opfamily has an ORDER proc for, as nbtree's _bt_first allows.
  * When several keys bound one column, the first is used; the others filter.
+ *
+ * A row comparison bounds the scan from its first member's column on, with
+ * every column of its usable prefix (bark_row_prefix), and ends the bound
+ * there as a range key does: (a, b) > (5, 10) descends to (5, 10).  The
+ * prefix of a longer row, or a > row, is still a correct start: the bound
+ * only has to sort at or before the first match, and a lower bound sorts
+ * before the entries equal to it (an upper bound after them).  An equality
+ * on the column wins over a row, as over a range key; a row wins over a range
+ * key when its prefix bounds more than one column.
  */
 static bool
 bark_make_bound(IndexScanDesc scan, ScanDirection dir, BarkScanBound *bound)
@@ -833,6 +935,8 @@ bark_make_bound(IndexScanDesc scan, ScanDirection dir, BarkScanBound *bound)
 	{
 		int			found = -1;
 		bool		equality = false;
+		int			row = -1;
+		int			rowlen = 0;
 
 		if (col == 1 && so->leadArray != NULL && so->leadArray->nelems > 0 &&
 			forward)
@@ -850,6 +954,17 @@ bark_make_bound(IndexScanDesc scan, ScanDirection dir, BarkScanBound *bound)
 			bool		lower;
 			bool		upper;
 
+			if (sk->sk_attno == col && (sk->sk_flags & SK_ROW_HEADER))
+			{
+				int			n = bark_row_prefix(scan, sk, &lower, &upper);
+
+				if (n > rowlen && (forward ? lower : upper))
+				{
+					row = i;
+					rowlen = n;
+				}
+				continue;
+			}
 			if (sk->sk_attno != col ||
 				!bark_key_bounds(scan, sk, &lower, &upper) ||
 				!(forward ? lower : upper))
@@ -861,6 +976,11 @@ bark_make_bound(IndexScanDesc scan, ScanDirection dir, BarkScanBound *bound)
 			}
 			if (equality)
 				break;			/* prefer an equality on this column */
+		}
+		if (row >= 0 && !equality && (found < 0 || rowlen > 1))
+		{
+			bark_row_bound(&scan->keyData[row], rowlen, bound);
+			break;				/* the row's prefix ends the bound */
 		}
 		if (found < 0)
 			break;
