@@ -11,13 +11,22 @@
  * SP-GiST expose for multidimensional types, specialized to the one case a
  * total-order B-tree can answer: distance from a point on a scalar axis.
  *
- * Two position cursors walk the leaf chain from the center leaf: a forward
- * cursor over keys >= const (ascending) and a backward cursor over keys <
- * const (descending).  Both distance streams are monotonically increasing in
- * their own direction, so merging them -- popping whichever side's next
- * candidate is closer at each step -- yields keys in exact increasing
- * distance.  The scan stops the moment the caller (a LIMIT, typically) stops
- * pulling, so it never reads past the k nearest.
+ * Two cursors walk the leaf chain from the center leaf: a forward cursor over
+ * keys >= const (ascending) and a backward cursor over keys < const
+ * (descending).  Both distance streams are monotonically increasing in their
+ * own direction, so merging them -- popping whichever side's next candidate
+ * is closer at each step -- yields keys in exact increasing distance.
+ *
+ * Each cursor reads a leaf a page at a time, as the plain scan does
+ * (barkscan.c's bark_readpage, after nbtree's _bt_readpage): it copies the
+ * page's matching entries under one share lock and returns them from the
+ * copy, so concurrent inserts and splits cannot make it repeat or skip
+ * entries, and it moves on by the sibling link it saved when it read the
+ * page.  A cursor reads its next page only when the merge cannot pick the
+ * next candidate without it, that is, when the entries on its unread pages
+ * might be closer than everything already copied on both sides.  So a scan
+ * stopped by a LIMIT reads, on each side, at most one page whose entries are
+ * all farther from const than the last row it returned.
  *
  * Correctness relies only on the key order the comparator defines and on the
  * ordering operator computing a distance monotone in |key - const| on each
@@ -70,8 +79,22 @@
 #include "utils/rel.h"
 
 /*
- * Compute the ordering distance of index tuple `itup` from the center
- * constant.  A NULL key sorts last (distance +infinity), matching the
+ * Resolve a leaf entry to a tuple whose attributes can be read with
+ * index_getattr: the full tuple of an OVERSIZED entry, fetched from its
+ * overflow chain (*fetched is set and the caller pfrees it), or the entry
+ * itself.  The same as barkscan.c's bark_scan_resolve, which is static there;
+ * the two should become one shared function.
+ */
+static IndexTuple
+bark_knn_resolve(Relation index, IndexTuple itup, bool *fetched)
+{
+	*fetched = BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED;
+	return *fetched ? bark_fetch_oversized(index, itup) : itup;
+}
+
+/*
+ * Compute the ordering distance of index tuple `itup` (resolved) from the
+ * center constant.  A NULL key sorts last (distance +infinity), matching the
  * executor's NULLS LAST default for an ascending ORDER BY.
  */
 static double
@@ -92,24 +115,10 @@ bark_knn_distance(IndexScanDesc scan, IndexTuple itup)
 	return DatumGetFloat8(d);
 }
 
-/* Grow a cursor's TID buffer to hold at least n locators. */
-static void
-bark_knn_ensure_tids(BarkKnnCursor *cur, int n)
-{
-	if (n > cur->ntidsAlloc)
-	{
-		if (cur->tids)
-			pfree(cur->tids);
-		cur->ntidsAlloc = Max(n, 16);
-		cur->tids = (ItemPointer) palloc(cur->ntidsAlloc *
-										 sizeof(ItemPointerData));
-	}
-}
-
 /*
  * Build the lower-bound key tuple used to descend to the center leaf: the
- * center constant in the ordered column, every other attribute NULL (exactly
- * as a plain scan's lower bound does).  The caller pfrees it.
+ * center constant in the ordered column, every other attribute NULL.  The
+ * caller pfrees it.
  */
 static IndexTuple
 bark_knn_center_key(IndexScanDesc scan)
@@ -171,13 +180,324 @@ bark_knn_split_offset(IndexScanDesc scan, Page page, IndexTuple center)
 }
 
 /*
+ * Copy the key columns of a matching entry into the cursor's tuple workspace
+ * for an index-only scan, and return its offset there.  `resolved` is the
+ * entry with its attributes readable.  A LIST or POSTING entry is copied
+ * without its body; nothing reads xs_itup's t_tid, so its members all share
+ * the one copy.  This is barkscan.c's bark_save_tuple, which writes to the
+ * plain scan's single workspace; the two should share one function taking
+ * the workspace.
+ */
+static uint32
+bark_knn_save_tuple(BarkScanOpaque so, BarkKnnCursor *cur, IndexTuple entry,
+					IndexTuple resolved)
+{
+	BarkEntryShape shape = BarkEntryGetShape(entry);
+	Size		len;
+	uint32		off = cur->nextTupleOffset;
+	IndexTuple	copy;
+
+	if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
+		len = BarkEntryGetBodyOffset(entry);
+	else if (shape == BARK_SHAPE_OVERSIZED)
+		len = BarkOverflowGetRef(entry)->fulllen;
+	else
+		len = IndexTupleSize(entry);
+
+	if (cur->tuples == NULL || off + MAXALIGN(len) > cur->tuplesSize)
+	{
+		Size		newsize = Max((Size) BLCKSZ,
+								  Max(cur->tuplesSize * 2, off + MAXALIGN(len)));
+
+		if (cur->tuples == NULL)
+			cur->tuples = MemoryContextAlloc(so->scanCxt, newsize);
+		else
+			cur->tuples = repalloc(cur->tuples, newsize);
+		cur->tuplesSize = newsize;
+	}
+
+	copy = (IndexTuple) (cur->tuples + off);
+	memcpy(copy, resolved, len);
+	if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
+	{
+		/* Now a plain key tuple: drop the body's size and the alt-TID bit. */
+		copy->t_info = (copy->t_info & ~(INDEX_SIZE_MASK | INDEX_AM_RESERVED_BIT)) |
+			(uint16) len;
+	}
+	cur->nextTupleOffset = off + MAXALIGN(len);
+	return off;
+}
+
+/*
+ * Read the share-locked leaf `page` (block `blkno`) into cursor `cur`: copy
+ * every matching entry from offset `offnum` in the cursor's direction to the
+ * end of the page into cur->items, nearest to the center first, with its heap
+ * TIDs and (index-only scan) its key; record the page's sibling link in the
+ * cursor's direction; and advance cur->bound to the distance of the last
+ * entry examined.  The caller drops the lock.
+ */
+static void
+bark_knn_readpage(IndexScanDesc scan, BarkKnnCursor *cur, Page page,
+				  BlockNumber blkno, OffsetNumber offnum)
+{
+	Relation	index = scan->indexRelation;
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	OffsetNumber minoff = BarkPageFirstDataKey(opaque);
+	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+	bool		backward = cur->backward;
+
+	Assert(BarkPageIsLeaf(opaque) && !BarkPageIgnore(opaque));
+	cur->currPage = blkno;
+	cur->nextPage = backward ? opaque->bark_prev : opaque->bark_next;
+	cur->nitems = 0;
+	cur->itemIndex = 0;
+	cur->ntids = 0;
+	cur->nextTupleOffset = 0;
+
+	/*
+	 * Predicate-lock the leaf for serializable transactions: a read here
+	 * conflicts with a later insert onto the same page.
+	 */
+	PredicateLockPage(index, blkno, scan->xs_snapshot);
+
+	for (; backward ? offnum >= minoff : offnum <= maxoff;
+		 offnum = backward ? OffsetNumberPrev(offnum) : OffsetNumberNext(offnum))
+	{
+		IndexTuple	itup = (IndexTuple) PageGetItem(page,
+													PageGetItemId(page, offnum));
+		bool		fetched;
+		IndexTuple	resolved = bark_knn_resolve(index, itup, &fetched);
+		BarkKnnItem *item;
+		int			ntids;
+
+		cur->bound = bark_knn_distance(scan, resolved);
+		ntids = bark_entry_count_tids(itup);
+		if (ntids == 0 || !bark_tuple_matches(scan, resolved))
+		{
+			if (fetched)
+				pfree(resolved);
+			continue;
+		}
+
+		if (cur->nitems >= cur->maxItems)
+		{
+			cur->maxItems = Max(cur->maxItems * 2, 64);
+			if (cur->items == NULL)
+				cur->items = MemoryContextAlloc(so->scanCxt,
+												cur->maxItems * sizeof(BarkKnnItem));
+			else
+				cur->items = repalloc(cur->items,
+									  cur->maxItems * sizeof(BarkKnnItem));
+		}
+		if (cur->ntids + ntids > cur->maxTids)
+		{
+			cur->maxTids = Max(cur->ntids + ntids, Max(cur->maxTids * 2, 256));
+			if (cur->tids == NULL)
+				cur->tids = MemoryContextAlloc(so->scanCxt,
+											   cur->maxTids * sizeof(ItemPointerData));
+			else
+				cur->tids = repalloc(cur->tids,
+									 cur->maxTids * sizeof(ItemPointerData));
+		}
+
+		item = &cur->items[cur->nitems++];
+		item->dist = cur->bound;
+		item->firstTid = cur->ntids;
+		item->ntids = bark_entry_get_tids(itup, cur->tids + cur->ntids,
+										  cur->maxTids - cur->ntids);
+		cur->ntids += item->ntids;
+		item->tupleOffset = scan->xs_want_itup ?
+			bark_knn_save_tuple(so, cur, itup, resolved) : 0;
+		if (fetched)
+			pfree(resolved);
+	}
+}
+
+/*
+ * Lock the left sibling `*blkno` of `lastcurrblkno` for a backward step,
+ * recovering from concurrent splits and deletions, as nbtree's
+ * _bt_lock_and_validate_left does.  The left page is the right one when its
+ * right link still points at lastcurrblkno; if it split since, walk right
+ * from it to the page that does; if lastcurrblkno itself was deleted, start
+ * again from the page that took over its key space.  Returns the page
+ * share-locked, with *blkno set, or InvalidBuffer when there is no page to
+ * the left.  The page returned may be half-dead; the caller steps past it.
+ *
+ * This is a copy of barkscan.c's bark_lock_and_validate_left, which is
+ * static there; the two should become one shared function.
+ */
+static Buffer
+bark_knn_lock_and_validate_left(Relation index, BlockNumber *blkno,
+								BlockNumber lastcurrblkno)
+{
+	BlockNumber origblkno = *blkno;
+
+	for (;;)
+	{
+		Buffer		buf;
+		Page		page;
+		BarkPageOpaque opaque;
+		int			tries;
+
+		CHECK_FOR_INTERRUPTS();
+		buf = ReadBuffer(index, *blkno);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		opaque = BarkPageGetOpaque(page);
+
+		/*
+		 * Walk right to the page whose right link is lastcurrblkno, at most
+		 * four hops; past that, lastcurrblkno was most likely deleted.  Test
+		 * BARK_DELETED, not ignorable: a half-dead page is still linked.
+		 */
+		tries = 0;
+		for (;;)
+		{
+			if (!BarkPageIsDeleted(opaque) &&
+				opaque->bark_next == lastcurrblkno)
+				return buf;
+			if (BarkPageRightmost(opaque) || ++tries > 4)
+				break;
+			*blkno = opaque->bark_next;
+			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+			buf = ReleaseAndReadBuffer(buf, index, *blkno);
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+			page = BufferGetPage(buf);
+			opaque = BarkPageGetOpaque(page);
+		}
+
+		/* See what became of lastcurrblkno. */
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		buf = ReleaseAndReadBuffer(buf, index, lastcurrblkno);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		opaque = BarkPageGetOpaque(page);
+		if (BarkPageIsDeleted(opaque))
+		{
+			/*
+			 * Deleted: its key space moved to the first live page to its
+			 * right, and stepping left from that page goes where we want.
+			 */
+			for (;;)
+			{
+				if (BarkPageRightmost(opaque))
+					elog(ERROR, "fell off the end of BARK index \"%s\"",
+						 RelationGetRelationName(index));
+				lastcurrblkno = opaque->bark_next;
+				LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+				buf = ReleaseAndReadBuffer(buf, index, lastcurrblkno);
+				LockBuffer(buf, BUFFER_LOCK_SHARE);
+				page = BufferGetPage(buf);
+				opaque = BarkPageGetOpaque(page);
+				if (!BarkPageIsDeleted(opaque))
+					break;
+			}
+		}
+		else if (opaque->bark_prev == origblkno)
+		{
+			/* Not deleted, and its left link did not move: corrupt. */
+			elog(ERROR, "could not find left sibling of block %u in BARK index \"%s\"",
+				 lastcurrblkno, RelationGetRelationName(index));
+		}
+
+		if (BarkPageLeftmost(opaque))
+		{
+			UnlockReleaseBuffer(buf);
+			return InvalidBuffer;
+		}
+		*blkno = origblkno = opaque->bark_prev;
+		UnlockReleaseBuffer(buf);
+	}
+}
+
+/*
+ * Drop the lock on the leaf a cursor just read, and the pin too when
+ * so->dropPin (the plain scan's rule, set by bark_rescan: only an index-only
+ * scan or a non-MVCC scan keeps its pin).
+ */
+static void
+bark_knn_drop_lock_and_maybe_pin(BarkScanOpaque so, BarkKnnCursor *cur,
+								 Buffer buf)
+{
+	if (so->dropPin)
+	{
+		UnlockReleaseBuffer(buf);
+		cur->buf = InvalidBuffer;
+	}
+	else
+	{
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		cur->buf = buf;
+	}
+}
+
+/*
+ * Read cursor `cur`'s next live page by the link saved when it read its
+ * current one, stepping over deleted and half-dead pages.  A forward step
+ * follows the right link; a backward step validates the left page first.  At
+ * the end of the chain the cursor is left with no items and no next page.
+ */
+static void
+bark_knn_steppage(IndexScanDesc scan, BarkKnnCursor *cur)
+{
+	Relation	index = scan->indexRelation;
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BlockNumber blkno = cur->nextPage;
+	BlockNumber lastcurrblkno = cur->currPage;
+
+	Assert(blkno != BARK_P_NONE);
+	if (BufferIsValid(cur->buf))
+	{
+		ReleaseBuffer(cur->buf);
+		cur->buf = InvalidBuffer;
+	}
+	cur->nitems = cur->itemIndex = 0;
+	cur->currPage = InvalidBlockNumber;
+	cur->nextPage = BARK_P_NONE;
+
+	while (blkno != BARK_P_NONE)
+	{
+		Buffer		buf;
+		Page		page;
+		BarkPageOpaque opaque;
+
+		if (cur->backward)
+		{
+			buf = bark_knn_lock_and_validate_left(index, &blkno, lastcurrblkno);
+			if (!BufferIsValid(buf))
+				return;
+		}
+		else
+		{
+			CHECK_FOR_INTERRUPTS();
+			buf = ReadBuffer(index, blkno);
+			LockBuffer(buf, BUFFER_LOCK_SHARE);
+		}
+
+		page = BufferGetPage(buf);
+		opaque = BarkPageGetOpaque(page);
+		if (!BarkPageIgnore(opaque))
+		{
+			bark_knn_readpage(scan, cur, page, blkno,
+							  cur->backward ? PageGetMaxOffsetNumber(page) :
+							  BarkPageFirstDataKey(opaque));
+			bark_knn_drop_lock_and_maybe_pin(so, cur, buf);
+			return;
+		}
+		lastcurrblkno = blkno;
+		blkno = cur->backward ? opaque->bark_prev : opaque->bark_next;
+		UnlockReleaseBuffer(buf);
+	}
+}
+
+/*
  * Position both cursors around the center.  Descend to the first leaf that
  * could hold the center key (nextkey=false lands on the leftmost leaf of a
- * run of equal keys, so neither side skips a duplicate), then split that leaf
- * at the first entry whose key is >= center: the forward cursor starts there
- * and walks toward higher keys, the backward cursor starts one entry earlier
- * and walks toward lower keys.  Both pins are taken here and released as the
- * cursors walk off the chain.
+ * run of equal keys, so neither side skips a duplicate), then, under the
+ * share lock the descent leaves, split that leaf at the first entry whose key
+ * is >= center: the forward cursor reads the leaf from there toward higher
+ * keys, the backward cursor from the entry before it toward lower keys.
  */
 static void
 bark_knn_position(IndexScanDesc scan)
@@ -187,239 +507,135 @@ bark_knn_position(IndexScanDesc scan)
 	BarkKnnScanState *knn = so->knn;
 	IndexTuple	center;
 	Buffer		buf;
+	Page		page;
 	BlockNumber blkno;
 	OffsetNumber splitoff;
-
-	knn->fwd.buf = knn->bwd.buf = InvalidBuffer;
-	knn->fwd.primed = knn->bwd.primed = false;
-	knn->fwd.have = knn->bwd.have = false;
-	knn->fwd.centerleaf = knn->bwd.centerleaf = false;
 
 	if (knn->centernull)
 		return;					/* a NULL center matches nothing */
 
 	center = bark_knn_center_key(scan);
 	buf = bark_search(index, so->keyinfo, center, false, false, NULL);
-	if (buf == InvalidBuffer)
+	if (!BufferIsValid(buf))
 	{
+		/* Empty index.  A serializable scan must lock the whole relation. */
+		PredicateLockRelation(index, scan->xs_snapshot);
 		pfree(center);
-		return;					/* empty index */
+		return;
 	}
 
+	page = BufferGetPage(buf);
 	blkno = BufferGetBlockNumber(buf);
-	/* bark_search left the leaf share-locked: read the split boundary now. */
-	splitoff = bark_knn_split_offset(scan, BufferGetPage(buf), center);
-	UnlockReleaseBuffer(buf);
+	splitoff = bark_knn_split_offset(scan, page, center);
 	pfree(center);
 
-	knn->fwd.buf = ReadBuffer(index, blkno);
-	knn->fwd.off = InvalidOffsetNumber;
-	knn->fwd.centerleaf = true;
-	knn->fwd.splitoff = splitoff;
-	knn->bwd.buf = ReadBuffer(index, blkno);
-	knn->bwd.off = InvalidOffsetNumber;
-	knn->bwd.centerleaf = true;
-	knn->bwd.splitoff = splitoff;
+	bark_knn_readpage(scan, &knn->fwd, page, blkno, splitoff);
+	bark_knn_readpage(scan, &knn->bwd, page, blkno, OffsetNumberPrev(splitoff));
+
+	/* Both cursors are on this leaf; each holds its own pin, if any. */
+	if (!so->dropPin)
+		IncrBufferRefCount(buf);
+	bark_knn_drop_lock_and_maybe_pin(so, &knn->fwd, buf);
+	if (!so->dropPin)
+		knn->bwd.buf = buf;
 }
 
 /*
- * Advance one cursor to its next matching entry in its direction and buffer
- * the candidate (distance, locators, and the key tuple for an index-only
- * scan) in the cursor.  Sets cur->have on success; releases the cursor's
- * buffer and leaves cur->have false at end of chain.
+ * The merge: return the cursor whose current item is the next entry in
+ * distance order, reading cursors' next pages as needed, or NULL when both
+ * sides are exhausted.
  *
- * The backward cursor's very first step must land on the entry strictly
- * before the forward cursor's start, so the two sides never return the same
- * entry.  Priming encodes that: a fresh forward cursor (off ==
- * InvalidOffsetNumber) starts at the first data entry; a fresh backward
- * cursor starts one entry earlier.
+ * A cursor's next distance is exact when it has an unused item, and when it
+ * has none but has pages left it is at least cur->bound: the distance stream
+ * is monotone in the cursor's direction.  Take the side with the smaller of
+ * the two, the forward side on a tie as before.  If that side has an item,
+ * the other side cannot hold anything closer (nor, on a tie, anything that
+ * would win it), so the item is next; otherwise its unread pages might, so
+ * read its next page and decide again.
  */
-static void
-bark_knn_advance(IndexScanDesc scan, BarkKnnCursor *cur)
+static BarkKnnCursor *
+bark_knn_next(IndexScanDesc scan)
 {
-	Relation	index = scan->indexRelation;
-	bool		backward = cur->backward;
+	BarkKnnScanState *knn = ((BarkScanOpaque) scan->opaque)->knn;
+	BarkKnnCursor *fwd = &knn->fwd;
+	BarkKnnCursor *bwd = &knn->bwd;
 
-	cur->have = false;
-
-	while (BufferIsValid(cur->buf))
+	for (;;)
 	{
-		Buffer		buf = cur->buf;
-		Page		page;
-		BarkPageOpaque opaque;
-		OffsetNumber off,
-					maxoff,
-					firstdata;
-		bool		found = false;
+		bool		fhave = fwd->itemIndex < fwd->nitems;
+		bool		bhave = bwd->itemIndex < bwd->nitems;
+		bool		fmore = fhave || fwd->nextPage != BARK_P_NONE;
+		bool		bmore = bhave || bwd->nextPage != BARK_P_NONE;
+		BarkKnnCursor *cur;
 
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		PredicateLockPage(index, BufferGetBlockNumber(buf), scan->xs_snapshot);
-
-		page = BufferGetPage(buf);
-		opaque = BarkPageGetOpaque(page);
-		maxoff = PageGetMaxOffsetNumber(page);
-		firstdata = BarkPageFirstDataKey(opaque);
-
-		if (!cur->primed)
+		if (!fmore && !bmore)
+			return NULL;
+		if (fmore && bmore)
 		{
-			/*
-			 * First step on this page.  On the shared center leaf, the forward
-			 * cursor starts at the split boundary (first key >= center) and
-			 * the backward cursor one entry earlier, so the two sides partition
-			 * the center leaf without overlap.  On a fresh sibling, each starts
-			 * at the page's natural end for its direction: firstdata (forward)
-			 * or maxoff (backward).
-			 */
-			if (cur->centerleaf)
-				off = backward ? OffsetNumberPrev(cur->splitoff) : cur->splitoff;
-			else
-				off = backward ? maxoff : firstdata;
-			cur->primed = true;
+			double		fdist = fhave ? fwd->items[fwd->itemIndex].dist : fwd->bound;
+			double		bdist = bhave ? bwd->items[bwd->itemIndex].dist : bwd->bound;
+
+			cur = fdist <= bdist ? fwd : bwd;
 		}
 		else
-			off = backward ? OffsetNumberPrev(cur->off)
-				: OffsetNumberNext(cur->off);
+			cur = fmore ? fwd : bwd;
 
-		for (;
-			 backward ? (off >= firstdata && off != InvalidOffsetNumber)
-			 : off <= maxoff;
-			 off = backward ? OffsetNumberPrev(off) : OffsetNumberNext(off))
-		{
-			ItemId		iid;
-			IndexTuple	itup;
-
-			if (off < firstdata || off > maxoff)
-				break;			/* empty page */
-
-			iid = PageGetItemId(page, off);
-			itup = (IndexTuple) PageGetItem(page, iid);
-
-			if (!bark_tuple_matches(scan, itup))
-				continue;
-
-			/* Buffer this candidate: distance, locators, and (IOS) its key. */
-			cur->dist = bark_knn_distance(scan, itup);
-			{
-				int			n = bark_entry_count_tids(itup);
-
-				bark_knn_ensure_tids(cur, n);
-				cur->ntids = bark_entry_get_tids(itup, cur->tids,
-												 cur->ntidsAlloc);
-			}
-			if (scan->xs_want_itup)
-			{
-				TupleDesc	tupdesc = RelationGetDescr(index);
-				Datum		values[INDEX_MAX_KEYS];
-				bool		isnull[INDEX_MAX_KEYS];
-				IndexTuple	key;
-				Size		sz;
-
-				index_deform_tuple(itup, tupdesc, values, isnull);
-				key = index_form_tuple(tupdesc, values, isnull);
-				sz = IndexTupleSize(key);
-				Assert(sz <= BLCKSZ);
-				if (cur->keytup == NULL)
-					cur->keytup = palloc(BLCKSZ);
-				memcpy(cur->keytup, key, sz);
-				pfree(key);
-			}
-			cur->off = off;
-			cur->have = true;
-			found = true;
-			break;
-		}
-
-		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-
-		if (found)
-			return;
-
-		/* Exhausted this page; follow the sibling link in our direction. */
-		{
-			BlockNumber nextblk = backward ? opaque->bark_prev
-				: opaque->bark_next;
-
-			ReleaseBuffer(buf);
-			if (nextblk != BARK_P_NONE)
-			{
-				/*
-				 * Fresh sibling: it is no longer the center leaf, and we
-				 * re-prime at its natural end (firstdata forward, maxoff
-				 * backward) on the next iteration.
-				 */
-				cur->buf = ReadBuffer(index, nextblk);
-				cur->off = InvalidOffsetNumber;
-				cur->primed = false;
-				cur->centerleaf = false;
-			}
-			else
-				cur->buf = InvalidBuffer;
-		}
+		if (cur->itemIndex < cur->nitems)
+			return cur;
+		bark_knn_steppage(scan, cur);
 	}
 }
 
-/*
- * Stage the winning cursor's buffered candidate as the entry to emit (its
- * members are then returned one heap TID per gettuple call) and advance that
- * cursor to its next candidate.
- */
-static void
-bark_knn_take(IndexScanDesc scan, BarkKnnCursor *cur)
-{
-	BarkKnnScanState *knn = ((BarkScanOpaque) scan->opaque)->knn;
-
-	/* Free the previously-staged entry's buffers before taking a new one. */
-	if (knn->emitTids)
-		pfree(knn->emitTids);
-	if (knn->emitKey)
-		pfree(knn->emitKey);
-
-	knn->emitTids = cur->tids;
-	knn->nEmit = cur->ntids;
-	knn->emitIdx = 0;
-	knn->emitDist = cur->dist;
-	knn->emitKey = cur->keytup;
-
-	/*
-	 * The cursor's tids/keytup buffers are now owned by the emit slot for the
-	 * duration of this entry; hand the cursor fresh buffers so advancing it
-	 * does not clobber what we are emitting.
-	 */
-	cur->tids = NULL;
-	cur->ntidsAlloc = 0;
-	cur->keytup = NULL;
-	cur->have = false;
-
-	bark_knn_advance(scan, cur);
-}
-
-/* Emit the member at emitIdx: its heap TID, and (IOS) its key tuple. */
+/* Return member emitIdx of the emitting cursor's current item. */
 static void
 bark_knn_emit(IndexScanDesc scan)
 {
-	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
-	BarkKnnScanState *knn = so->knn;
+	BarkKnnScanState *knn = ((BarkScanOpaque) scan->opaque)->knn;
+	BarkKnnCursor *cur = knn->emitCur;
+	BarkKnnItem *item = &cur->items[cur->itemIndex];
 
-	Assert(knn->emitIdx >= 0 && knn->emitIdx < knn->nEmit);
-	scan->xs_heaptid = knn->emitTids[knn->emitIdx];
+	Assert(knn->emitIdx >= 0 && knn->emitIdx < item->ntids);
+	scan->xs_heaptid = cur->tids[item->firstTid + knn->emitIdx];
 	scan->xs_recheck = false;
-
 	if (scan->xs_want_itup)
-	{
-		IndexTuple	key = (IndexTuple) knn->emitKey;
-
-		key->t_tid = knn->emitTids[knn->emitIdx];
-		scan->xs_itup = key;
-	}
+		scan->xs_itup = (IndexTuple) (cur->tuples + item->tupleOffset);
 
 	/*
 	 * Report the exact distance for this tuple.  BARK is exact, so the
 	 * distance is never lossy and the executor needs no recheck (it returns
 	 * our tuples straight through in the order we hand them back).
 	 */
-	scan->xs_orderbyvals[0] = Float8GetDatum(knn->emitDist);
+	scan->xs_orderbyvals[0] = Float8GetDatum(item->dist);
 	scan->xs_orderbynulls[0] = false;
 	scan->xs_recheckorderby = false;
+}
+
+/* Release a cursor's pin and forget its page, keeping its allocations. */
+static void
+bark_knn_reset_cursor(BarkKnnCursor *cur, bool backward)
+{
+	if (BufferIsValid(cur->buf))
+		ReleaseBuffer(cur->buf);
+	cur->buf = InvalidBuffer;
+	cur->backward = backward;
+	cur->currPage = InvalidBlockNumber;
+	cur->nextPage = BARK_P_NONE;
+	cur->bound = -get_float8_infinity();
+	cur->nitems = cur->itemIndex = 0;
+	cur->ntids = 0;
+	cur->nextTupleOffset = 0;
+}
+
+static void
+bark_knn_free_cursor(BarkKnnCursor *cur)
+{
+	bark_knn_reset_cursor(cur, cur->backward);
+	if (cur->items)
+		pfree(cur->items);
+	if (cur->tids)
+		pfree(cur->tids);
+	if (cur->tuples)
+		pfree(cur->tuples);
 }
 
 void
@@ -432,38 +648,23 @@ bark_knn_rescan(IndexScanDesc scan, ScanKey orderbys, int norderbys)
 	Assert(norderbys > 0);
 
 	if (so->knn == NULL)
-		so->knn = (BarkKnnScanState *) palloc0(sizeof(BarkKnnScanState));
+		so->knn = (BarkKnnScanState *)
+			MemoryContextAllocZero(so->scanCxt, sizeof(BarkKnnScanState));
 	knn = so->knn;
 
-	/* Release any buffers a previous iteration held. */
-	if (BufferIsValid(knn->fwd.buf))
-		ReleaseBuffer(knn->fwd.buf);
-	if (BufferIsValid(knn->bwd.buf))
-		ReleaseBuffer(knn->bwd.buf);
-	knn->fwd.buf = knn->bwd.buf = InvalidBuffer;
-	knn->fwd.have = knn->bwd.have = false;
-	knn->fwd.primed = knn->bwd.primed = false;
-	knn->fwd.backward = false;
-	knn->bwd.backward = true;
-
-	/* Free any entry left staged for emit by a previous iteration. */
-	if (knn->emitTids)
-		pfree(knn->emitTids);
-	if (knn->emitKey)
-		pfree(knn->emitKey);
-	knn->emitTids = NULL;
-	knn->emitKey = NULL;
-	knn->nEmit = 0;
+	bark_knn_reset_cursor(&knn->fwd, false);
+	bark_knn_reset_cursor(&knn->bwd, true);
+	knn->emitCur = NULL;
 	knn->emitIdx = 0;
 
 	/*
 	 * Take the single ordering key.  Only the first ORDER BY <~> clause is
-	 * used (see the design note in bark.h); any further ordering keys are ones
-	 * a scalar B-tree cannot refine with and are ignored, which is correct
-	 * because a single scalar distance fully determines the order.
+	 * used (see the design note in bark.h); any further ordering keys are
+	 * ones a scalar B-tree cannot refine with and are ignored, which is
+	 * correct because a single scalar distance fully determines the order.
 	 */
 	ob = &orderbys[0];
-	fmgr_info_copy(&knn->distfn, &ob->sk_func, CurrentMemoryContext);
+	fmgr_info_copy(&knn->distfn, &ob->sk_func, so->scanCxt);
 	knn->distcollation = ob->sk_collation;
 	knn->center = ob->sk_argument;
 	knn->centernull = (ob->sk_flags & SK_ISNULL) != 0;
@@ -477,84 +678,46 @@ bark_knn_gettuple(IndexScanDesc scan)
 {
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	BarkKnnScanState *knn = so->knn;
+	BarkKnnCursor *cur;
 
 	if (so->firstCall)
 	{
 		so->firstCall = false;
 		bark_knn_position(scan);
-		bark_knn_advance(scan, &knn->fwd);
-		bark_knn_advance(scan, &knn->bwd);
 	}
 
-	/* More members of the entry we last staged? Emit the next one. */
-	if (knn->emitIdx + 1 < knn->nEmit)
+	/* More members of the entry being returned?  Return the next one. */
+	cur = knn->emitCur;
+	if (cur != NULL)
 	{
-		knn->emitIdx++;
-		bark_knn_emit(scan);
-		return true;
-	}
-	knn->nEmit = 0;
-
-	/*
-	 * Merge: pick whichever side's buffered candidate is closer to the
-	 * center.  A tie goes to the forward (>= center) side, which keeps a
-	 * stable, deterministic order when a value equidistant on each side
-	 * exists (e.g. center-1 and center+1).
-	 */
-	for (;;)
-	{
-		CHECK_FOR_INTERRUPTS();
-
-		if (knn->fwd.have && knn->bwd.have)
+		if (++knn->emitIdx < cur->items[cur->itemIndex].ntids)
 		{
-			if (knn->fwd.dist <= knn->bwd.dist)
-				bark_knn_take(scan, &knn->fwd);
-			else
-				bark_knn_take(scan, &knn->bwd);
-		}
-		else if (knn->fwd.have)
-			bark_knn_take(scan, &knn->fwd);
-		else if (knn->bwd.have)
-			bark_knn_take(scan, &knn->bwd);
-		else
-			return false;		/* both sides exhausted */
-
-		if (knn->nEmit > 0)
-		{
-			knn->emitIdx = 0;
 			bark_knn_emit(scan);
 			return true;
 		}
-		/* Staged an entry with no live members (shouldn't happen); loop. */
+		cur->itemIndex++;
+		knn->emitCur = NULL;
 	}
+
+	CHECK_FOR_INTERRUPTS();
+	cur = bark_knn_next(scan);
+	if (cur == NULL)
+		return false;			/* both sides exhausted */
+	knn->emitCur = cur;
+	knn->emitIdx = 0;
+	bark_knn_emit(scan);
+	return true;
 }
 
 void
 bark_knn_endscan(IndexScanDesc scan)
 {
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
-	BarkKnnScanState *knn;
 
 	if (so == NULL || so->knn == NULL)
 		return;
-	knn = so->knn;
-
-	if (BufferIsValid(knn->fwd.buf))
-		ReleaseBuffer(knn->fwd.buf);
-	if (BufferIsValid(knn->bwd.buf))
-		ReleaseBuffer(knn->bwd.buf);
-	if (knn->fwd.tids)
-		pfree(knn->fwd.tids);
-	if (knn->bwd.tids)
-		pfree(knn->bwd.tids);
-	if (knn->fwd.keytup)
-		pfree(knn->fwd.keytup);
-	if (knn->bwd.keytup)
-		pfree(knn->bwd.keytup);
-	if (knn->emitTids)
-		pfree(knn->emitTids);
-	if (knn->emitKey)
-		pfree(knn->emitKey);
-	pfree(knn);
+	bark_knn_free_cursor(&so->knn->fwd);
+	bark_knn_free_cursor(&so->knn->bwd);
+	pfree(so->knn);
 	so->knn = NULL;
 }
