@@ -989,22 +989,18 @@ extern void bark_set_oversized_prefix(IndexTuple entry, Relation index,
 
 /*
  * Write `full` (fulllen bytes) across a chain of BARK_OVERFLOW pages via the
- * buffer pool (bark_get_free_page + generic WAL), returning the first block.
- * Used by the insert path; the build path uses bark_init_overflow_page
- * directly against its bulk-write buffers.  heaprel is passed on to
- * bark_get_free_page.
+ * buffer pool (bark_get_free_page, XLOG_BARK_OVERFLOW records), returning
+ * the first block.  heaprel is passed on to bark_get_free_page.
  */
 extern BlockNumber bark_write_overflow_chain(Relation index, Relation heaprel,
 											 IndexTuple full, Size fulllen);
 
 /*
- * Lay out the `which`'th overflow chunk of a tuple of `fulllen` bytes into
- * `page` (already palloc'd / bulk-reserved), copying its slice of `full` and
- * linking it to `nextblk`.  The build path calls this to format bulk-write
- * buffers; the insert path uses bark_write_overflow_chain.
+ * Lay out an overflow page holding `len` bytes of a tuple, `chunk`, linked to
+ * `nextblk`.  Used by bark_write_overflow_chain and its redo.
  */
-extern void bark_init_overflow_page(Page page, const char *full, Size fulllen,
-									BlockNumber which, BlockNumber nextblk);
+extern void bark_init_overflow_page(Page page, const char *chunk, Size len,
+									BlockNumber nextblk);
 
 /*
  * Reconstruct the full index tuple an OVERSIZED entry references by walking its
@@ -1018,8 +1014,8 @@ extern IndexTuple bark_fetch_oversized(Relation index, IndexTuple entry);
 /*
  * Free the overflow chain an OVERSIZED entry references (its pages become
  * deleted pages, recycled once safe), as part of VACUUM removing the owning
- * leaf entry.  WAL-logged under its own generic-WAL records.  Returns the
- * number of pages freed.
+ * leaf entry.  Each page is freed in its own XLOG_BARK_MARK_DELETED record.
+ * Returns the number of pages freed.
  */
 extern BlockNumber bark_free_oversized(Relation index, IndexTuple entry);
 
