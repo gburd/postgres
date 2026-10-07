@@ -391,7 +391,7 @@ barkinsert(Relation index, Datum *values, bool *isnull,
 /*
  * Apply VACUUM's changes to leaf `buf` and WAL-log them as XLOG_BARK_VACUUM:
  * rewrite the entries at updatedoffsets with `updated` (each no larger than
- * the entry it replaces), delete the entries at `deletable`, and clear the
+ * the entry it replaces, and already coded for the page), delete the entries at `deletable`, and clear the
  * vacuum cycle ID.  As nbtree's _bt_delitems_vacuum, the rewrites come first,
  * since PageIndexTupleOverwrite keeps offsets stable and the deletion
  * renumbers them.  `buf` is cleanup-locked.  Redo (bark_xlog_vacuum) makes
@@ -709,11 +709,16 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 					 * (see bark_form_posting), which no subset exceeds; a LIST
 					 * of fewer locators is shorter; a LIST is chosen over the
 					 * POSTING only when it is the smaller; and a SINGLE is
-					 * smaller than either.
+					 * smaller than either.  On a BARK_PREFIX page the entry is
+					 * stored coded against the page's prefix; its key codes
+					 * as the old entry's did, so the coded entry shrinks with
+					 * the plain one.  It is coded here, and logged and
+					 * replayed as it is.
 					 */
 					IndexTuple	key = bark_single_from_list(index, itup, NULL);
 					IndexTuple	newentry;
 					IndexTuple	posting;
+					IndexTuple	coded;
 
 					if (nlive == 1)
 					{
@@ -732,13 +737,16 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 												  tids, nlive);
 						pfree(key);
 					}
-					if (MAXALIGN(IndexTupleSize(newentry)) >
+					coded = bark_prefix_encode(page, newentry);
+					if (coded != newentry)
+						pfree(newentry);
+					if (MAXALIGN(IndexTupleSize(coded)) >
 						MAXALIGN(ItemIdGetLength(iid)))
 						elog(ERROR, "failed to shrink BARK leaf entry during vacuum: entry at offset %u of block %u grew from %u to %zu bytes",
 							 off, blkno, ItemIdGetLength(iid),
-							 IndexTupleSize(newentry));
+							 IndexTupleSize(coded));
 					updatedoffsets[nupdated] = off;
-					updated[nupdated++] = newentry;
+					updated[nupdated++] = coded;
 				}
 				pfree(tids);
 			}
@@ -1179,6 +1187,8 @@ barkoptions(Datum reloptions, bool validate)
 {
 	static const relopt_parse_elt tab[] = {
 		{"fillfactor", RELOPT_TYPE_INT, offsetof(BarkOptions, fillfactor)},
+		{"prefix_compression", RELOPT_TYPE_BOOL,
+		offsetof(BarkOptions, prefix_compression)},
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate,

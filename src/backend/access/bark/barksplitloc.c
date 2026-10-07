@@ -61,11 +61,11 @@ typedef struct BarkSplitPoint
  */
 #define BARK_LEAF_SPLIT_DISTANCE	0.050
 
-/* Bytes an item takes on a page, line pointer included. */
+/* Bytes an item of (MAXALIGNed) size `sz` takes, line pointer included. */
 static inline int
-bark_split_itemsz(IndexTuple itup)
+bark_split_itemsz(Size sz)
 {
-	return MAXALIGN(IndexTupleSize(itup)) + sizeof(ItemIdData);
+	return sz + sizeof(ItemIdData);
 }
 
 /*
@@ -153,16 +153,20 @@ bark_split_interval(BarkSplitPoint *splits, int nsplits, int databytes)
  * Choose where to split a full page.
  *
  * `items` holds the page's n data items in key order, the incoming item
- * among them at `newitemidx`.  `orighikey` is the page's high key, which the
- * new right page keeps; NULL when the page is the rightmost on its level.
- * The left page gets a new high key formed from the right page's first item.
+ * among them at `newitemidx`, and `sizes` the MAXALIGNed space each takes on
+ * a page (less than its own size when it is stored prefix-coded); each half
+ * also gives up `reserve` bytes, for a PREFIX item.  `orighikey` is the
+ * page's high key, which the new right page keeps; NULL when the page is the
+ * rightmost on its level.  The left page gets a new high key formed from the
+ * right page's first item.
  *
  * Returns the index of the first item that goes to the right page, in
  * [1, n-1].
  */
 int
 bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo, IndexTuple *items,
-				  int n, int newitemidx, bool isleaf, IndexTuple orighikey)
+				  const Size *sizes, Size reserve, int n, int newitemidx,
+				  bool isleaf, IndexTuple orighikey)
 {
 	bool		rightmost = (orighikey == NULL);
 	int			nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
@@ -189,12 +193,12 @@ bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo, IndexTuple *items,
 
 	/* Room for items on an empty page; the right page keeps the high key. */
 	leftspace = rightspace = BLCKSZ - SizeOfPageHeaderData -
-		MAXALIGN(sizeof(BarkPageOpaqueData));
+		MAXALIGN(sizeof(BarkPageOpaqueData)) - reserve;
 	if (!rightmost)
-		rightspace -= bark_split_itemsz(orighikey);
+		rightspace -= bark_split_itemsz(MAXALIGN(IndexTupleSize(orighikey)));
 
 	for (int i = 0; i < n; i++)
-		totalbytes += bark_split_itemsz(items[i]);
+		totalbytes += bark_split_itemsz(sizes[i]);
 
 	/*
 	 * Record every split point at which both halves fit, in key order.  The
@@ -207,7 +211,7 @@ bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo, IndexTuple *items,
 		int			leftfree;
 		int			rightfree;
 
-		leftbytes += bark_split_itemsz(items[i - 1]);
+		leftbytes += bark_split_itemsz(sizes[i - 1]);
 		leftfree = leftspace - leftbytes - bark_split_hikeysz(index, items[i]);
 		rightfree = rightspace - (totalbytes - leftbytes);
 		if (leftfree < 0 || rightfree < 0)

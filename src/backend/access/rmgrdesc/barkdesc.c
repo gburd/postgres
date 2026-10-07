@@ -112,10 +112,12 @@ bark_desc(StringInfo buf, XLogReaderState *record)
 
 				XLogRecGetBlockTagExtended(record, 0, NULL, NULL, &left, NULL);
 				XLogRecGetBlockTagExtended(record, 1, NULL, NULL, &right, NULL);
-				appendStringInfo(buf, "level: %u, leaf: %c, left: %u, right: %u, cycleid: %u",
+				appendStringInfo(buf, "level: %u, leaf: %c, left: %u, right: %u, cycleid: %u, prefix: %c%c",
 								 xlrec->level,
 								 (xlrec->flags & XLH_BARK_SPLIT_LEAF) ? 'T' : 'F',
-								 left, right, xlrec->cycleid);
+								 left, right, xlrec->cycleid,
+								 (xlrec->flags & XLH_BARK_SPLIT_LPREFIX) ? 'L' : '-',
+								 (xlrec->flags & XLH_BARK_SPLIT_RPREFIX) ? 'R' : '-');
 				break;
 			}
 		case XLOG_BARK_NEWROOT:

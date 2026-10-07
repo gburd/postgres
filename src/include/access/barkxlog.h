@@ -88,6 +88,8 @@ typedef struct xl_bark_split
 #define SizeOfBarkSplit	(offsetof(xl_bark_split, rightnext) + sizeof(BlockNumber))
 
 #define XLH_BARK_SPLIT_LEAF		0x0001	/* the split page is a leaf */
+#define XLH_BARK_SPLIT_LPREFIX	0x0002	/* left half has BARK_PREFIX */
+#define XLH_BARK_SPLIT_RPREFIX	0x0004	/* right half has BARK_PREFIX */
 
 /*
  * A new root above the split of the old one (bark_new_root), as nbtree's
