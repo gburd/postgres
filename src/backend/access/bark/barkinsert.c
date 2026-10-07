@@ -1905,6 +1905,9 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 	Page		page;
 	OffsetNumber off;
 	bool		checkingunique = false;
+	bool		coalesce;
+	IndexTuple	replace = NULL;
+	IndexTuple	newitem = NULL;
 	bool		result = false;		/* significant only for UNIQUE_CHECK_PARTIAL */
 
 	itup->t_tid = *ht_ctid;		/* SINGLE shape: locator in t_tid */
@@ -2052,11 +2055,9 @@ retry:
 	 * shared entry would return one row's bytes for all of them (see
 	 * bark_allequalimage).
 	 */
-	if (!indexInfo->ii_Unique && !oversized && bark_allequalimage(index))
+	coalesce = !indexInfo->ii_Unique && !oversized && bark_allequalimage(index);
+	if (coalesce)
 	{
-		IndexTuple	replace = NULL;
-		IndexTuple	newitem = NULL;
-
 		switch (bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf,
 								   off, &replace, &newitem))
 		{
@@ -2115,6 +2116,22 @@ retry:
 			{
 				bark_insert_entry(index, buf, entry, off, InvalidBuffer);
 				UnlockReleaseBuffer(buf);
+			}
+			else if (coalesce &&
+					 bark_singleval_cut(index, keyinfo, page, off, itup,
+										&replace, &newitem))
+			{
+				/*
+				 * The page is all one key and the last of its run: the entry
+				 * at off - 1 is cut, and its upper part, with the new TID,
+				 * goes at off, so the left page ends at its single-value fill
+				 * factor.
+				 */
+				bark_split(index, heapRel, keyinfo, stack, buf, off, newitem,
+						   InvalidBuffer, OffsetNumberPrev(off), replace);
+				buf = InvalidBuffer;	/* bark_split released it */
+				pfree(replace);
+				pfree(newitem);
 			}
 			else
 			{
