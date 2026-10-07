@@ -257,7 +257,11 @@ The first descent uses the longest bound the keys give on the leading
 columns (bark_make_bound): equality on columns 1..k-1 and a bound on column
 k, compared through the opfamily's cross-type ORDER procs.  A lower bound
 sorts before every key equal to it and an upper bound after, so a backward
-scan descends straight to its last match.  A leading-column ScalarArrayOp
+scan descends straight to its last match.  A row comparison bounds the
+descent with its usable prefix, the members on consecutive columns from its
+first one that are not NULL and keep the first member's direction, as
+nbtree's _bt_first does, and one on column 1 also ends the scan once an
+entry sorts past that prefix.  A leading-column ScalarArrayOp
 re-descends to its next element when that element lies past the next page.
 
 Skip scan.  With no key on column 1 and a key that bounds column 2, the
