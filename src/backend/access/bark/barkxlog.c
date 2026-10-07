@@ -327,6 +327,37 @@ bark_xlog_overwrite(XLogReaderState *record)
 }
 
 /*
+ * Apply the block data of a VACUUM or DELETE record to its leaf, in the
+ * order the primary made the changes: rewrites, then deletions.
+ */
+static void
+bark_redo_delitems(XLogReaderState *record, Page page, uint16 ndeleted,
+				   uint16 nupdated)
+{
+	char	   *ptr = XLogRecGetBlockData(record, 0, NULL);
+	OffsetNumber *deleted = (OffsetNumber *) ptr;
+	OffsetNumber *updatedoffsets = deleted + ndeleted;
+	char	   *itup = (char *) (updatedoffsets + nupdated);
+
+	/*
+	 * The entries follow the offsets, each padded to MAXALIGN.  They are only
+	 * copied, so they need no alignment beyond the two bytes that reading
+	 * t_info takes.
+	 */
+	for (int i = 0; i < nupdated; i++)
+	{
+		Size		itemsz = IndexTupleSize((IndexTuple) itup);
+
+		if (!PageIndexTupleOverwrite(page, updatedoffsets[i], itup, itemsz))
+			elog(PANIC, "failed to rewrite BARK leaf entry during replay");
+		itup += MAXALIGN(itemsz);
+	}
+
+	if (ndeleted > 0)
+		PageIndexMultiDelete(page, deleted, ndeleted);
+}
+
+/*
  * Replay VACUUM's changes to one leaf, in the order bark_delitems_vacuum made
  * them: rewrites, then deletions, then the cycle-ID clear.
  */
@@ -349,32 +380,45 @@ bark_xlog_vacuum(XLogReaderState *record)
 
 		/* A record that only clears the cycle ID carries no block data */
 		if (xlrec->ndeleted > 0 || xlrec->nupdated > 0)
-		{
-			char	   *ptr = XLogRecGetBlockData(record, 0, NULL);
-			OffsetNumber *deleted = (OffsetNumber *) ptr;
-			OffsetNumber *updatedoffsets = deleted + xlrec->ndeleted;
-			char	   *itup = (char *) (updatedoffsets + xlrec->nupdated);
-
-			/*
-			 * The entries follow the offsets, each padded to MAXALIGN.  They
-			 * are only copied, so they need no alignment beyond the two bytes
-			 * that reading t_info takes.
-			 */
-			for (int i = 0; i < xlrec->nupdated; i++)
-			{
-				Size		itemsz = IndexTupleSize((IndexTuple) itup);
-
-				if (!PageIndexTupleOverwrite(page, updatedoffsets[i], itup,
-											 itemsz))
-					elog(PANIC, "failed to rewrite BARK leaf entry during vacuum replay");
-				itup += MAXALIGN(itemsz);
-			}
-
-			if (xlrec->ndeleted > 0)
-				PageIndexMultiDelete(page, deleted, xlrec->ndeleted);
-		}
+			bark_redo_delitems(record, page, xlrec->ndeleted, xlrec->nupdated);
 
 		BarkPageGetOpaque(page)->bark_cycleid = 0;
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
+
+/*
+ * Replay bottom-up deletion on one leaf (bark_delitems_delete), as
+ * btree_xlog_delete does: first cancel the standby queries whose snapshots
+ * could still see the heap tuples whose entries go, then make the changes
+ * under an exclusive lock.  No cleanup lock is needed, for the reason the
+ * primary needs none (see "Bottom-up deletion" in the README).
+ */
+static void
+bark_xlog_delete(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_bark_delete *xlrec = (xl_bark_delete *) XLogRecGetData(record);
+	Buffer		buffer;
+
+	if (InHotStandby)
+	{
+		RelFileLocator rlocator;
+
+		XLogRecGetBlockTag(record, 0, &rlocator, NULL, NULL);
+		ResolveRecoveryConflictWithSnapshot(xlrec->snapshotConflictHorizon,
+											xlrec->isCatalogRel, rlocator);
+	}
+
+	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
+	{
+		Page		page = BufferGetPage(buffer);
+
+		bark_redo_delitems(record, page, xlrec->ndeleted, xlrec->nupdated);
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
@@ -549,6 +593,9 @@ bark_redo(XLogReaderState *record)
 	{
 		case XLOG_BARK_VACUUM:
 			bark_xlog_vacuum(record);
+			break;
+		case XLOG_BARK_DELETE:
+			bark_xlog_delete(record);
 			break;
 		case XLOG_BARK_UNLINK_PAGE:
 			bark_xlog_unlink_page(record);

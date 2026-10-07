@@ -5508,3 +5508,79 @@ RESET enable_seqscan;
 DROP FUNCTION bark_rowcmp_check(text), bark_rowcmp_run(text, text),
   bark_rowcmp_pages(text);
 DROP TABLE bark_rowcmp;
+-- Bottom-up deletion.  Every UPDATE of v is non-HOT (v is indexed) and leaves
+-- k and u unchanged, so the executor inserts each new version into the k and
+-- u indexes with indexUnchanged set.  When such an insert would split a
+-- leaf, BARK first asks the heap which versions on the leaf are dead and
+-- deletes their entries, as nbtree does, so twenty rounds of UPDATEs leave
+-- the k index about the size of a btree index on k instead of twice it.  The
+-- u index (four rows per value, prefix-coded leaves) has LIST entries that
+-- lose some members and are re-formed.  A temp table, so that only this
+-- session's snapshot decides which versions are dead.
+CREATE TEMP TABLE bark_churn (id int, k int, v int, u text)
+  WITH (fillfactor = 100, autovacuum_enabled = off);
+CREATE INDEX bark_churn_k ON bark_churn USING bark (k);
+CREATE INDEX bark_churn_kbt ON bark_churn USING btree (k);
+CREATE INDEX bark_churn_v ON bark_churn USING bark (v);
+CREATE INDEX bark_churn_u ON bark_churn USING bark (u)
+  WITH (prefix_compression = on);
+CREATE INDEX bark_churn_ubt ON bark_churn USING btree (u);
+INSERT INTO bark_churn
+  SELECT g, g, 0, 'https://www.example.com/item/' || lpad((g % 2500)::text, 8, '0')
+  FROM generate_series(1, 10000) g;
+DO $$
+BEGIN
+  FOR i IN 1..20 LOOP
+    UPDATE bark_churn SET v = v + 1;
+    COMMIT;
+  END LOOP;
+END $$;
+SELECT pg_relation_size('bark_churn_k') <=
+         pg_relation_size('bark_churn_kbt') * 1.25 AS k_like_btree,
+       pg_relation_size('bark_churn_u') <=
+         pg_relation_size('bark_churn_ubt') * 1.25 AS u_like_btree;
+ k_like_btree | u_like_btree 
+--------------+--------------
+ t            | t
+(1 row)
+
+SELECT bark_index_check('bark_churn_k'), bark_index_check('bark_churn_v'),
+       bark_index_check('bark_churn_u');
+ bark_index_check | bark_index_check | bark_index_check 
+------------------+------------------+------------------
+                  |                  | 
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), sum(k), sum(v) FROM bark_churn WHERE k > 0;
+ count |   sum    |  sum   
+-------+----------+--------
+ 10000 | 50005000 | 200000
+(1 row)
+
+SELECT count(*), count(DISTINCT u) FROM bark_churn WHERE u > 'h';
+ count | count 
+-------+-------
+ 10000 |  2500
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), sum(k), sum(v) FROM bark_churn WHERE k > 0;
+ count |   sum    |  sum   
+-------+----------+--------
+ 10000 | 50005000 | 200000
+(1 row)
+
+SELECT count(*), count(DISTINCT u) FROM bark_churn WHERE u > 'h';
+ count | count 
+-------+-------
+ 10000 |  2500
+(1 row)
+
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_churn;

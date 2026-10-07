@@ -1856,10 +1856,33 @@ retry:
 		}
 		else
 		{
-			/* Leaf split: no child below, so no incomplete-split flag to clear. */
-			bark_split(index, heapRel, keyinfo, stack, buf, off, entry,
-					   InvalidBuffer);
-			buf = InvalidBuffer;	/* bark_split released it */
+			bool		roomnow = false;
+
+			/*
+			 * The entry is a new version of a row whose key here did not
+			 * change: before splitting, delete the entries of dead versions
+			 * (bottom-up deletion, barkdelete.c).  Deleting shifts offsets,
+			 * so find the entry's place again whether or not that made room.
+			 */
+			if (indexUnchanged && heapRel != NULL)
+			{
+				roomnow = bark_bottomup_delete(index, heapRel, keyinfo, buf,
+											   itup,
+											   bark_coded_size(page, entry));
+				off = bark_leaf_insert_off(index, keyinfo, itup, page);
+			}
+			if (roomnow)
+			{
+				bark_insert_entry(index, buf, entry, off, InvalidBuffer);
+				UnlockReleaseBuffer(buf);
+			}
+			else
+			{
+				/* A leaf split: no child's incomplete split to finish. */
+				bark_split(index, heapRel, keyinfo, stack, buf, off, entry,
+						   InvalidBuffer);
+				buf = InvalidBuffer;	/* bark_split released it */
+			}
 		}
 		pfree(entry);
 	}

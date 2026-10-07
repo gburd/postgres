@@ -4495,6 +4495,7 @@ wrap
 ws_file_info
 ws_options
 xl_bark_add_tid
+xl_bark_delete
 xl_bark_insert
 xl_bark_mark_deleted
 xl_bark_metadata
