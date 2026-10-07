@@ -1214,15 +1214,26 @@ typedef struct BarkKnnScanState
  * the sorted elements, the scan seeks to each in turn, so it starts at the
  * first element rather than the leftmost leaf and skips the gaps between
  * elements instead of filtering every tuple in between.
+ *
+ * The elements may be of another type than the column (an int4 column with
+ * an int8[] array), so they are compared through two ORDER procs from the
+ * column's opfamily, as in nbtree's _bt_setup_array_cmp: sortproc compares
+ * two elements and only sorts and de-duplicates them; cmpproc compares a
+ * column value (first argument) with an element, for everything the scan
+ * does with them.  Both are the column's own comparator when the types
+ * agree.  Only equality arrays get this state: bark_rescan reduces an
+ * inequality array (col < ANY(array)) to a plain key on its extreme element,
+ * unless it has no non-NULL element, when it stays an array with no elements.
  */
 typedef struct BarkArrayKeyState
 {
 	int			scankeyidx;		/* index into scan->keyData of the SAOP key */
 	AttrNumber	attno;			/* 1-based index column the array constrains */
+	FmgrInfo	sortproc;		/* ORDER proc for (element, element) */
+	FmgrInfo	cmpproc;		/* ORDER proc for (column, element) */
 	Datum	   *elems;			/* sorted, de-duplicated array elements */
 	int			nelems;			/* number of them (0: empty array, no matches) */
 	int			cur;			/* leading-array cursor: element the scan is on */
-	bool		elmbyval;		/* element type pass-by-value (for pfree care) */
 } BarkArrayKeyState;
 
 /*
@@ -1357,7 +1368,9 @@ typedef struct BarkScanOpaqueData
 	 * scankey, built by bark_rescan.  numArrayKeys == 0 for a plain scan.
 	 * leadArray points at the array key (if any) on the leading index column,
 	 * which drives positioning; it is NULL when no array constrains column 1.
+	 * All of it lives in arrayCxt, which each rescan resets.
 	 */
+	MemoryContext arrayCxt;		/* child of scanCxt, or NULL if never needed */
 	BarkArrayKeyState *arrayKeys;	/* palloc'd array, or NULL */
 	int			numArrayKeys;	/* number of SAOP keys */
 	BarkArrayKeyState *leadArray;	/* the array key on column 1, or NULL */
