@@ -1206,6 +1206,8 @@ typedef struct BarkScanBound
  * Descend to the leaf where a scan with this bound starts, share-locked;
  * InvalidBuffer for an empty index.  nextkey as for bark_search.
  */
+extern OffsetNumber bark_binsrch_bound(Relation index, BarkKeyInfo *keyinfo,
+									   const BarkScanBound *bound, Page page);
 extern Buffer bark_search_bound(Relation index, BarkKeyInfo *keyinfo,
 								const BarkScanBound *bound, bool nextkey);
 extern int	bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,

@@ -1152,15 +1152,18 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 
 /*
  * Descend to the leaf where a scan in direction dir must start, and return it
- * share-locked; InvalidBuffer for an empty index.
+ * share-locked; InvalidBuffer for an empty index.  *startoff is set to the
+ * offset on that leaf where the scan's read starts.
  *
  * A scan bounded in its direction on the leading columns descends to the
- * first leaf in that direction that can hold a match (bark_make_bound);
- * otherwise it starts at the leftmost or rightmost leaf.  The returned leaf
- * is never deleted or half-dead.
+ * first leaf in that direction that can hold a match (bark_make_bound), and
+ * starts its read at the bound's place on the leaf (bark_binsrch_bound), as
+ * nbtree's _bt_first starts at _bt_binsrch's offset rather than at the
+ * page's first item; otherwise it starts at the end of the leftmost or
+ * rightmost leaf.  The returned leaf is never deleted or half-dead.
  */
 static Buffer
-bark_start_leaf(IndexScanDesc scan, ScanDirection dir)
+bark_start_leaf(IndexScanDesc scan, ScanDirection dir, OffsetNumber *startoff)
 {
 	Relation	index = scan->indexRelation;
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
@@ -1177,7 +1180,23 @@ bark_start_leaf(IndexScanDesc scan, ScanDirection dir)
 	 * from which a backward scan reads leftward.
 	 */
 	if (bark_make_bound(scan, dir, &bound))
-		return bark_search_bound(index, so->keyinfo, &bound, backward);
+	{
+		OffsetNumber off;
+
+		buf = bark_search_bound(index, so->keyinfo, &bound, backward);
+		if (!BufferIsValid(buf))
+			return InvalidBuffer;
+
+		/*
+		 * The first entry after the bound: a forward scan starts there, a
+		 * backward one just before it.  bark_readpage clamps an offset past
+		 * either end of the page.
+		 */
+		off = bark_binsrch_bound(index, so->keyinfo, &bound,
+								 BufferGetPage(buf));
+		*startoff = backward ? OffsetNumberPrev(off) : off;
+		return buf;
+	}
 
 	/*
 	 * No usable bound: walk down the edge of the tree, as nbtree's
@@ -1210,7 +1229,11 @@ bark_start_leaf(IndexScanDesc scan, ScanDirection dir)
 			opaque = BarkPageGetOpaque(page);
 		}
 		if (BarkPageIsLeaf(opaque))
+		{
+			*startoff = backward ? PageGetMaxOffsetNumber(page) :
+				BarkPageFirstDataKey(opaque);
 			return buf;
+		}
 
 		off = backward ? PageGetMaxOffsetNumber(page) :
 			BarkPageFirstDataKey(opaque);
@@ -1832,6 +1855,8 @@ bark_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	bool		forward = ScanDirectionIsForward(dir);
 	bool		reseek;
+	OffsetNumber startoff;
+	OffsetNumber readoff = InvalidOffsetNumber;	/* where a re-descent starts */
 
 	Assert(!BarkScanPosIsPinned(so->currPos));
 
@@ -1867,13 +1892,14 @@ bark_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 				so->skipReseeking = true;
 			else
 				so->leadArray->cur = so->currPos.arrayCur;
-			so->currPos.buf = bark_start_leaf(scan, dir);
+			so->currPos.buf = bark_start_leaf(scan, dir, &startoff);
 			if (!BufferIsValid(so->currPos.buf))
 			{
 				BarkScanPosInvalidate(so->currPos);
 				return false;
 			}
 			blkno = BufferGetBlockNumber(so->currPos.buf);
+			readoff = startoff;
 		}
 		else if (blkno == BARK_P_NONE ||
 				 (forward ? !so->currPos.moreRight : !so->currPos.moreLeft))
@@ -1913,8 +1939,10 @@ bark_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 		lastcurrblkno = blkno;
 		if (!BarkPageIgnore(opaque))
 		{
-			if (bark_readpage(scan, dir, forward ? BarkPageFirstDataKey(opaque) :
-							  PageGetMaxOffsetNumber(page)))
+			if (readoff == InvalidOffsetNumber)
+				readoff = forward ? BarkPageFirstDataKey(opaque) :
+					PageGetMaxOffsetNumber(page);
+			if (bark_readpage(scan, dir, readoff))
 				break;
 			blkno = forward ? so->currPos.nextPage : so->currPos.prevPage;
 			reseek = forward && so->currPos.arrayReseek &&
@@ -1930,6 +1958,7 @@ bark_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 		UnlockReleaseBuffer(so->currPos.buf);
 		so->currPos.buf = InvalidBuffer;
 		seized = false;
+		readoff = InvalidOffsetNumber;
 	}
 
 	bark_drop_lock_and_maybe_pin(so);
@@ -1950,8 +1979,6 @@ bark_first(IndexScanDesc scan, ScanDirection dir)
 	BlockNumber blkno = InvalidBlockNumber;
 	BlockNumber lastcurrblkno = InvalidBlockNumber;
 	Buffer		buf;
-	Page		page;
-	BarkPageOpaque opaque;
 	OffsetNumber offnum;
 
 	Assert(!BarkScanPosIsValid(so->currPos));
@@ -1981,7 +2008,7 @@ bark_first(IndexScanDesc scan, ScanDirection dir)
 	if (so->leadArray != NULL && ScanDirectionIsBackward(dir))
 		so->leadArray->cur = 0;
 
-	buf = bark_start_leaf(scan, dir);
+	buf = bark_start_leaf(scan, dir, &offnum);
 	if (!BufferIsValid(buf))
 	{
 		/* Empty index.  A serializable scan must lock the whole relation. */
@@ -1990,10 +2017,6 @@ bark_first(IndexScanDesc scan, ScanDirection dir)
 		return false;
 	}
 
-	page = BufferGetPage(buf);
-	opaque = BarkPageGetOpaque(page);
-	offnum = ScanDirectionIsForward(dir) ? BarkPageFirstDataKey(opaque) :
-		PageGetMaxOffsetNumber(page);
 	so->currPos.buf = buf;
 
 	if (bark_readpage(scan, dir, offnum))
