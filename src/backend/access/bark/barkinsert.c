@@ -249,6 +249,89 @@ bark_page_insert_at(Page page, IndexTuple itup, OffsetNumber off)
 }
 
 /*
+ * Lay out items[0..n) on `page`, after its high key `hikey` (NULL for none),
+ * coded against a prefix of `prefixlen` bytes when that is not zero.  Returns
+ * false when they do not fit.
+ */
+static bool
+bark_split_fill(Page page, IndexTuple hikey, IndexTuple *items, int n,
+				const char *prefix, Size prefixlen)
+{
+	OffsetNumber o = BARK_P_HIKEY;
+
+	if (hikey != NULL &&
+		PageAddItem(page, hikey, IndexTupleSize(hikey), o++, false, false) ==
+		InvalidOffsetNumber)
+		return false;
+	if (prefixlen > 0)
+	{
+		bark_page_set_prefix(page, prefix, prefixlen);
+		o++;
+	}
+	for (int i = 0; i < n; i++)
+	{
+		IndexTuple	coded = bark_prefix_encode(page, items[i]);
+		bool		added;
+
+		added = PageAddItem(page, coded, IndexTupleSize(coded), o++,
+							false, false) != InvalidOffsetNumber;
+		if (coded != items[i])
+			pfree(coded);
+		if (!added)
+			return false;
+	}
+	return true;
+}
+
+/*
+ * Lay out one half of a leaf split on `page`, which the caller has
+ * initialized: the high key `hikey` (NULL for none), then items[0..n).
+ *
+ * The half is formed as a whole, so it may take a prefix of its own: its
+ * first item's leading bytes, if the items share enough of them
+ * (bark_prefix_choose).  bark_findsplitloc sized the items as they are
+ * coded on the original page, `origprefix` of `origprefixlen` bytes (zero
+ * when that page has none), which may be less than their plain size, and
+ * less than their size against the new prefix.  So when the half does not
+ * fit with its own prefix (or does not share enough of one to take it), it
+ * is laid out plain, and if that does not fit either, with the original
+ * page's prefix, against which it fits by construction: the items keep the
+ * shares they had, and the prefix need not lie within the half's key range
+ * for coding to be correct.  A half of a plain page always fits plain.
+ */
+static void
+bark_split_leaf_half(Relation index, Page page, IndexTuple hikey,
+					 IndexTuple *items, int n, const char *origprefix,
+					 Size origprefixlen)
+{
+	BarkPageOpaqueData opaque = *BarkPageGetOpaque(page);
+	const char *prefix[3];
+	Size		prefixlen[3];
+	int			ntries = 0;
+
+	Assert(!BarkPageHasPrefix(&opaque));
+	prefixlen[ntries] = bark_prefix_choose(index, items, n, &prefix[ntries]);
+	if (prefixlen[ntries] > 0)
+		ntries++;
+	prefix[ntries] = NULL;
+	prefixlen[ntries++] = 0;
+	if (origprefixlen > 0)
+	{
+		prefix[ntries] = origprefix;
+		prefixlen[ntries++] = origprefixlen;
+	}
+
+	for (int i = 0; i < ntries; i++)
+	{
+		PageInit(page, BLCKSZ, sizeof(BarkPageOpaqueData));
+		*BarkPageGetOpaque(page) = opaque;
+		if (bark_split_fill(page, hikey, items, n, prefix[i], prefixlen[i]))
+			return;
+	}
+	elog(ERROR, "failed to lay out half of a split of a BARK leaf");
+}
+
+/*
  * Clear the BARK_INCOMPLETE_SPLIT flag on the left half of a split, `cbuf`,
  * in the caller's critical section, which also writes the downlink to cbuf's
  * right sibling and logs both changes in one record.  The split thus becomes
@@ -278,15 +361,19 @@ bark_clear_incomplete_split(Buffer cbuf)
  * caller has checked that the entry fits.
  *
  * The entry is MAXALIGN-sized, as every SINGLE, OVERSIZED and pivot entry
- * is: PageAddItem copies only the entry's own bytes, and alignment padding
- * taken from the free space could differ between primary and standby.
+ * is, and so is its coded form on a BARK_PREFIX leaf: PageAddItem copies
+ * only the entry's own bytes, and alignment padding taken from the free space
+ * could differ between primary and standby.  The entry is coded here and the
+ * coded bytes logged, so redo adds them as they are; the caller's fit test
+ * used bark_coded_size.
  */
 static void
 bark_insert_entry(Relation index, Buffer buf, IndexTuple itup,
 				  OffsetNumber off, Buffer cbuf)
 {
 	Page		page = BufferGetPage(buf);
-	Size		itemsz = IndexTupleSize(itup);
+	IndexTuple	coded = bark_prefix_encode(page, itup);
+	Size		itemsz = IndexTupleSize(coded);
 	XLogRecPtr	recptr;
 
 	Assert(itemsz == MAXALIGN(itemsz));
@@ -294,7 +381,7 @@ bark_insert_entry(Relation index, Buffer buf, IndexTuple itup,
 	/* No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();
 
-	if (PageAddItem(page, itup, itemsz, off, false, false) == InvalidOffsetNumber)
+	if (PageAddItem(page, coded, itemsz, off, false, false) == InvalidOffsetNumber)
 		elog(PANIC, "failed to add entry to block %u in BARK index \"%s\"",
 			 BufferGetBlockNumber(buf), RelationGetRelationName(index));
 
@@ -313,7 +400,7 @@ bark_insert_entry(Relation index, Buffer buf, IndexTuple itup,
 		XLogBeginInsert();
 		XLogRegisterData(&xlrec, SizeOfBarkInsert);
 		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
-		XLogRegisterBufData(0, itup, itemsz);
+		XLogRegisterBufData(0, coded, itemsz);
 		if (BufferIsValid(cbuf))
 		{
 			xlinfo = XLOG_BARK_INSERT_UPPER;
@@ -330,27 +417,32 @@ bark_insert_entry(Relation index, Buffer buf, IndexTuple itup,
 		PageSetLSN(BufferGetPage(cbuf), recptr);
 
 	END_CRIT_SECTION();
+
+	if (coded != itup)
+		pfree(coded);
 }
 
 /*
  * Replace the leaf entry at `off` on the write-locked page `buf` with `itup`,
  * and WAL-log it (OVERWRITE).  PageIndexTupleOverwrite keeps the entry at its
  * offset and moves only the entries stored below it on the page, by the
- * change in size; redo makes the same call.  The caller has checked that the
- * new entry fits in the free space plus the old entry's.
+ * change in size; redo makes the same call.  As in bark_insert_entry, the
+ * entry is coded here and logged coded.  The caller has checked that the new
+ * entry, at bark_coded_size, fits in the free space plus the old entry's.
  */
 static void
 bark_overwrite_entry(Relation index, Buffer buf, OffsetNumber off,
 					 IndexTuple itup)
 {
 	Page		page = BufferGetPage(buf);
-	Size		itemsz = IndexTupleSize(itup);
+	IndexTuple	coded = bark_prefix_encode(page, itup);
+	Size		itemsz = IndexTupleSize(coded);
 	XLogRecPtr	recptr;
 
 	/* No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();
 
-	if (!PageIndexTupleOverwrite(page, off, itup, itemsz))
+	if (!PageIndexTupleOverwrite(page, off, coded, itemsz))
 		elog(PANIC, "failed to replace entry at offset %u of block %u in BARK index \"%s\"",
 			 off, BufferGetBlockNumber(buf), RelationGetRelationName(index));
 
@@ -365,7 +457,7 @@ bark_overwrite_entry(Relation index, Buffer buf, OffsetNumber off,
 		XLogBeginInsert();
 		XLogRegisterData(&xlrec, SizeOfBarkOverwrite);
 		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
-		XLogRegisterBufData(0, itup, itemsz);
+		XLogRegisterBufData(0, coded, itemsz);
 
 		recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_OVERWRITE);
 	}
@@ -375,26 +467,31 @@ bark_overwrite_entry(Relation index, Buffer buf, OffsetNumber off,
 	PageSetLSN(page, recptr);
 
 	END_CRIT_SECTION();
+
+	if (coded != itup)
+		pfree(coded);
 }
 
 /*
  * Add heap TID `tid` to the LIST or POSTING entry at `off` on the
  * exclusive-locked leaf `buf`, replacing it with `ext`, the result of
  * bark_entry_add_tid on it, and log just the TID (XLOG_BARK_ADD_TID): replay
- * re-forms `ext` from the entry and the TID.  The caller has checked that
- * `ext` fits.
+ * re-forms `ext` from the entry and the TID, and codes it for the page as
+ * this does, which depends on nothing but the page's prefix and `ext`.  The
+ * caller has checked that `ext` fits, at bark_coded_size.
  */
 static void
 bark_add_tid_entry(Relation index, Buffer buf, OffsetNumber off,
 				   IndexTuple ext, ItemPointer tid)
 {
 	Page		page = BufferGetPage(buf);
+	IndexTuple	coded = bark_prefix_encode(page, ext);
 	XLogRecPtr	recptr;
 
 	/* No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();
 
-	if (!PageIndexTupleOverwrite(page, off, ext, IndexTupleSize(ext)))
+	if (!PageIndexTupleOverwrite(page, off, coded, IndexTupleSize(coded)))
 		elog(PANIC, "failed to replace entry at offset %u of block %u in BARK index \"%s\"",
 			 off, BufferGetBlockNumber(buf), RelationGetRelationName(index));
 
@@ -419,6 +516,9 @@ bark_add_tid_entry(Relation index, Buffer buf, OffsetNumber off,
 	PageSetLSN(page, recptr);
 
 	END_CRIT_SECTION();
+
+	if (coded != ext)
+		pfree(coded);
 }
 
 static void bark_insert_parent(Relation index, Relation heaprel,
@@ -546,6 +646,10 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 	/* Build the full ordered item list (existing items + the new one). */
 	int			ntotal = (maxoff - firstdata + 1) + 1;
 	IndexTuple *items = palloc(ntotal * sizeof(IndexTuple));
+	Size	   *sizes = palloc(ntotal * sizeof(Size));
+	char		origprefix[BARK_PREFIX_MAX];
+	Size		origprefixlen = 0;
+	Size		reserve = 0;
 	int			n = 0;
 	int			splitidx;
 	IndexTuple	orighikey = NULL;
@@ -579,8 +683,24 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 		items[n++] = CopyIndexTuple(newitup);
 	Assert(n == ntotal);
 
+	/*
+	 * Choose the split point with each item's size as it is stored on the
+	 * original page, coded against its prefix if it has one, and room on each
+	 * half for that prefix (see bark_split_leaf_half).
+	 */
+	if (BarkPageHasPrefix(origopaque))
+	{
+		const char *p = bark_page_get_prefix(origpage, &origprefixlen);
+
+		memcpy(origprefix, p, origprefixlen);
+		reserve = MAXALIGN(sizeof(IndexTupleData) + origprefixlen) +
+			sizeof(ItemIdData);
+	}
+	for (int i = 0; i < n; i++)
+		sizes[i] = bark_coded_size(origpage, items[i]);
+
 	/* The right page gets items[splitidx..]; the new item is at newoff. */
-	splitidx = bark_findsplitloc(index, keyinfo, items, n,
+	splitidx = bark_findsplitloc(index, keyinfo, items, sizes, reserve, n,
 								 newoff - firstdata, isleaf, orighikey);
 
 	/*
@@ -638,34 +758,45 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 	 * descends here finishes the split (bark_finish_split).  The flag is
 	 * cleared atomically with the downlink insert in bark_insert_parent.
 	 *
-	 * Redo sets each half's flags from the record's leaf flag alone, so the
-	 * original page may carry no flag but BARK_LEAF and BARK_ROOT (which the
-	 * left half gives up: a new root is made above it).
+	 * Redo sets each half's flags from the record's leaf and prefix flags
+	 * alone, so the original page may carry no flag but BARK_LEAF,
+	 * BARK_PREFIX and BARK_ROOT (which the left half gives up: a new root is
+	 * made above it).
 	 */
-	Assert((origopaque->bark_flags & ~(BARK_LEAF | BARK_ROOT)) == 0);
+	Assert((origopaque->bark_flags &
+			~(BARK_LEAF | BARK_ROOT | BARK_PREFIX)) == 0);
 	leftpage = PageGetTempPage(origpage);
 	BarkPageInit(leftpage, origleft, rightblk, level,
 				 leafflag | BARK_INCOMPLETE_SPLIT, cycleid);
-	{
-		OffsetNumber o = BARK_P_HIKEY;
-
-		bark_page_insert_at(leftpage, lhikey, o++);
-		pfree(lhikey);
-		for (int i = 0; i < splitidx; i++)
-			bark_page_insert_at(leftpage, items[i], o++);
-	}
 
 	/* The right page: the original high key, then items[splitidx..] */
 	rightpage = PageGetTempPage(origpage);
 	BarkPageInit(rightpage, origblk, origright, level, leafflag, cycleid);
+
+	if (isleaf)
+	{
+		bark_split_leaf_half(index, leftpage, lhikey, items, splitidx,
+							 origprefix, origprefixlen);
+		bark_split_leaf_half(index, rightpage,
+							 origrightmost ? NULL : orighikey,
+							 items + splitidx, n - splitidx,
+							 origprefix, origprefixlen);
+	}
+	else
 	{
 		OffsetNumber o = BARK_P_HIKEY;
 
+		bark_page_insert_at(leftpage, lhikey, o++);
+		for (int i = 0; i < splitidx; i++)
+			bark_page_insert_at(leftpage, items[i], o++);
+
+		o = BARK_P_HIKEY;
 		if (!origrightmost)
 			bark_page_insert_at(rightpage, orighikey, o++);	/* keep high key */
 		for (int i = splitidx; i < n; i++)
 			bark_page_insert_at(rightpage, items[i], o++);
 	}
+	pfree(lhikey);
 
 	/*
 	 * If the original page had a right sibling, that sibling's bark_prev must
@@ -708,6 +839,10 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 
 		xlrec.level = level;
 		xlrec.flags = isleaf ? XLH_BARK_SPLIT_LEAF : 0;
+		if (BarkPageHasPrefix(BarkPageGetOpaque(origpage)))
+			xlrec.flags |= XLH_BARK_SPLIT_LPREFIX;
+		if (BarkPageHasPrefix(BarkPageGetOpaque(BufferGetPage(rbuf))))
+			xlrec.flags |= XLH_BARK_SPLIT_RPREFIX;
 		xlrec.cycleid = cycleid;
 		xlrec.leftprev = origleft;
 		xlrec.rightnext = origright;
@@ -791,6 +926,7 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 	for (int i = 0; i < n; i++)
 		pfree(items[i]);
 	pfree(items);
+	pfree(sizes);
 	if (orighikey)
 		pfree(orighikey);
 }
@@ -1460,6 +1596,15 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		IndexTuple	ext = bark_entry_add_tid(cur, newtid,
 											 Min((Size) BarkMaxItemSize, room));
 
+		/*
+		 * On a BARK_PREFIX page the entry is stored coded, which may take a
+		 * few bytes more than the plain entry bark_entry_add_tid measured.
+		 */
+		if (ext != NULL && bark_coded_size(page, ext) > room)
+		{
+			pfree(ext);
+			ext = NULL;
+		}
 		if (ext != NULL)
 		{
 			bark_add_tid_entry(index, buf, eqoff, ext, newtid);
@@ -1527,7 +1672,8 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 	 * room for a line pointer that an overwrite does not need, so this is a
 	 * little stricter than PageIndexTupleOverwrite's own test.
 	 */
-	if (PageGetFreeSpace(page) + MAXALIGN(ItemIdGetLength(iid)) < newsz)
+	if (PageGetFreeSpace(page) + MAXALIGN(ItemIdGetLength(iid)) <
+		bark_coded_size(page, newentry))
 	{
 		pfree(newentry);
 		return false;			/* no room to grow here: caller splits */
@@ -1552,7 +1698,6 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 	BarkStack	stack;
 	Page		page;
 	OffsetNumber off;
-	Size		itemsz;
 	bool		result = false;		/* significant only for UNIQUE_CHECK_PARTIAL */
 
 	itup->t_tid = *ht_ctid;		/* SINGLE shape: locator in t_tid */
@@ -1563,13 +1708,8 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 	 * compares it directly (index_getattr does not care about the 8191-byte
 	 * cap).  Only when the entry is actually placed on a page is an oversized
 	 * key written to an overflow chain and replaced by a small OVERSIZED entry
-	 * (done at the leaf-insert / coalesce / split sites below).  itemsz is the
-	 * page footprint: tiny for an oversized key, the tuple size otherwise.
+	 * (done at the leaf-insert / coalesce / split sites below).
 	 */
-	itemsz = oversized
-		? MAXALIGN(sizeof(IndexTupleData) + MAXALIGN(sizeof(BarkOverflowRef)))
-		: MAXALIGN(IndexTupleSize(itup));
-
 retry:
 	buf = bark_search(index, keyinfo, itup, true, true, &stack);
 
@@ -1708,7 +1848,8 @@ retry:
 		IndexTuple	entry = bark_leaf_page_entry(index, heapRel, itup,
 												 oversized, fulllen);
 
-		if (PageGetFreeSpace(page) >= itemsz)
+		/* The page footprint: the entry coded for the page, if it codes. */
+		if (PageGetFreeSpace(page) >= bark_coded_size(page, entry))
 		{
 			bark_insert_entry(index, buf, entry, off, InvalidBuffer);
 			UnlockReleaseBuffer(buf);

@@ -622,6 +622,14 @@ are cited by name in each phase's commit messages.
   C-STATS cost model tuned to the new shapes.
 * '''P07''' -- KNN / <code>amcanorderbyop</code>: implement ordered-''operator''
   scans and extend the capability sweep to ordered-operator path generation.
+* '''Leaf prefix compression''' -- the <code>prefix_compression</code>
+  reloption: a leaf flagged <code>BARK_PREFIX</code> holds a PREFIX item, and
+  its entries store the first key column front-coded against it (a shared
+  count, then the rest), each entry recording its own share, so the prefix is
+  chosen only when a leaf is written whole (CREATE INDEX, either half of a
+  split) and never forces a rewrite. <code>BarkPageGetItem</code> decodes;
+  coding is catalog-free, so ADD_TID redo repeats it. Format in the README's
+  "Leaf prefix compression". nbtree has nothing comparable. ''(done)''
 
 == Ground rules ==
 

@@ -93,6 +93,16 @@ typedef struct BarkPageState
 	BlockNumber prevblk;		/* previous page at this level (for right-link) */
 	BulkWriteBuffer prevbuf;	/* previous page's buffer, awaiting its next-link */
 	struct BarkPageState *parent;	/* next level up; created on demand */
+
+	/*
+	 * Leaf prefix compression (bark_build_place): the prefix the page's first
+	 * data item offers, whether or not the page took it, and how many bytes
+	 * of it the later items share, to decide whether the next leaf takes one.
+	 */
+	char		pcand[BARK_PREFIX_MAX];
+	Size		pcandlen;		/* 0 when the first item offers none */
+	int64		pshared;		/* bytes of pcand the later items share */
+	int			pcoded;			/* number of later items measured */
 } BarkPageState;
 
 /*
@@ -145,6 +155,8 @@ typedef struct BarkBuildState
 	bool		allequalimage;	/* bark_allequalimage(index) */
 	bool		has_oversized;	/* saw a key too large to sort/load inline */
 	IndexInfo  *indexInfo;		/* for the oversized second-pass insert */
+	bool		prefix;			/* bark_prefix_enabled(index) */
+	bool		prefixnext;		/* give the next leaf a prefix? */
 
 	/* the sort this build feeds; set up by the caller */
 	Tuplesortstate *sortstate;
@@ -328,6 +340,63 @@ static void bark_buildadd(BarkBuildState *bs, BulkWriteState *bulk,
 						  BarkPageState *st, IndexTuple itup);
 
 /*
+ * Add the data item `itup` to st's page at st->nextoff.
+ *
+ * On a leaf of an index with prefix compression, the page's first item
+ * offers its first-column bytes as the page's prefix (bark_prefix_candidate).
+ * The page takes it when the leaf before it shared enough of its own
+ * (bs->prefixnext; the first leaf always does), and then every item is coded
+ * against it.  Taken or not, the page measures how much of it the later items
+ * share, which decides for the next leaf (bark_flush_page): the build cannot
+ * look ahead at a page's items, so it assumes neighbouring leaves are alike.
+ */
+static void
+bark_build_place(BarkBuildState *bs, BarkPageState *st, IndexTuple itup)
+{
+	Page		page = (Page) st->buf;
+	IndexTuple	coded;
+
+	if (st->level == 0 && bs->prefix)
+	{
+		if (st->nextoff == BARK_P_HIKEY)
+		{
+			const char *cand = bark_prefix_candidate(itup, &st->pcandlen);
+
+			if (cand == NULL)
+				st->pcandlen = 0;
+			else
+			{
+				memcpy(st->pcand, cand, st->pcandlen);
+				if (bs->prefixnext)
+				{
+					bark_page_set_prefix(page, cand, st->pcandlen);
+					st->nextoff = OffsetNumberNext(st->nextoff);
+				}
+			}
+		}
+		else if (st->pcandlen > 0)
+		{
+			int			shared = bark_prefix_shared(st->pcand, st->pcandlen,
+													itup);
+
+			if (shared >= 0)
+			{
+				st->pshared += shared;
+				st->pcoded++;
+			}
+		}
+	}
+
+	coded = bark_prefix_encode(page, itup);
+	if (PageAddItem(page, (char *) coded, IndexTupleSize(coded), st->nextoff,
+					false, false) == InvalidOffsetNumber)
+		elog(ERROR, "failed to add item to BARK page during build");
+	st->nextoff = OffsetNumberNext(st->nextoff);
+	if (coded != itup)
+		pfree(coded);
+}
+
+/*
  * Rebuild `page` as [high key, data...]: the high key goes to BARK_P_HIKEY
  * and the existing data items (currently at offsets 1..maxoff) move up to
  * BARK_P_FIRSTKEY and beyond.  Used at flush, when a page gains a right
@@ -438,7 +507,7 @@ bark_flush_page(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 		OffsetNumber lastoff = OffsetNumberPrev(st->nextoff);
 		BarkItemBuf ibuf;
 
-		Assert(lastoff > BARK_P_HIKEY);
+		Assert(lastoff > BarkPageFirstDataKey(BarkPageGetOpaque(page)));
 		moved = CopyIndexTuple(BarkPageGetItem(page, lastoff, &ibuf));
 		PageIndexTupleDelete(page, lastoff);
 		st->nextoff = lastoff;
@@ -447,8 +516,17 @@ bark_flush_page(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 		Assert(PageGetFreeSpace(page) >= MAXALIGN(IndexTupleSize(hikey)));
 	}
 
-	/* Rebuild the page as [high key, data...]; the high key bounds the page. */
+	/*
+	 * Rebuild the page as [high key, data...]; the high key bounds the page.
+	 * A PREFIX item moves up with the data items, to BarkPagePrefixOff of a
+	 * page with a right sibling.
+	 */
 	bark_prepend_hikey(page, hikey);
+
+	/* The next leaf takes a prefix if this one's items shared enough of its. */
+	if (st->level == 0 && st->pcoded > 0)
+		bs->prefixnext = st->pshared >=
+			(int64) BARK_PREFIX_MIN_SHARED * st->pcoded;
 
 	/* Add the flushed page's downlink to the parent. */
 	if (parent == NULL)
@@ -476,16 +554,16 @@ bark_flush_page(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 	st->prevblk = flushedblk;
 	st->prevbuf = flushedbuf;
 	st->parent = parent;
+	st->pcandlen = 0;
+	st->pshared = 0;
+	st->pcoded = 0;
 	pfree(fresh->lowkey);
 	pfree(fresh);
 
 	/* The item moved off the flushed page leads the new one. */
 	if (moved != NULL)
 	{
-		if (PageAddItem((Page) st->buf, (char *) moved, IndexTupleSize(moved),
-						st->nextoff, false, false) == InvalidOffsetNumber)
-			elog(ERROR, "failed to add item to BARK page during build");
-		st->nextoff = OffsetNumberNext(st->nextoff);
+		bark_build_place(bs, st, moved);
 		pfree(moved);
 	}
 }
@@ -501,9 +579,9 @@ static void
 bark_buildadd(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 			  IndexTuple itup)
 {
-	Size		itemsz = IndexTupleSize(itup);
-	Size		hikeysz = itemsz;
-	OffsetNumber off;
+	Page		page = (Page) st->buf;
+	Size		hikeysz = IndexTupleSize(itup);
+	int			ndata;
 
 	/*
 	 * Flush when the page already holds a data item and the new item plus a
@@ -524,17 +602,13 @@ bark_buildadd(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 		BarkEntryGetShape(itup) == BARK_SHAPE_POSTING)
 		hikeysz = BarkEntryGetBodyOffset(itup);
 
-	if (st->nextoff > BARK_P_HIKEY &&
-		(!bark_page_has_room(st->buf, itemsz + hikeysz) ||
-		 (PageGetFreeSpace((Page) st->buf) < st->full &&
-		  st->nextoff > BARK_P_FIRSTKEY)))
+	ndata = st->nextoff - BarkPageFirstDataKey(BarkPageGetOpaque(page));
+	if (ndata >= 1 &&
+		(!bark_page_has_room(st->buf, bark_coded_size(page, itup) + hikeysz) ||
+		 (PageGetFreeSpace(page) < st->full && ndata >= 2)))
 		bark_flush_page(bs, bulk, st, itup);
 
-	off = st->nextoff;
-	if (PageAddItem((Page) st->buf, (char *) itup, itemsz, off, false, false) ==
-		InvalidOffsetNumber)
-		elog(ERROR, "failed to add item to BARK page during build");
-	st->nextoff = OffsetNumberNext(off);
+	bark_build_place(bs, st, itup);
 }
 
 /*
@@ -1279,6 +1353,8 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	bs.isunique = indexInfo->ii_Unique;
 	bs.allequalimage = bark_allequalimage(index);
 	bs.indexInfo = indexInfo;	/* for the oversized second-pass insert */
+	bs.prefix = bark_prefix_enabled(index);
+	bs.prefixnext = true;
 
 	/* Launch parallel workers when the planner asked for them. */
 	if (indexInfo->ii_ParallelWorkers > 0)
