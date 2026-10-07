@@ -4,8 +4,7 @@
  *	  WAL replay logic for BARK indexes.
  *
  * See "WAL" in src/backend/access/bark/README for the records and the locks
- * their redo takes.  Changes that have no record here (overflow chains) are
- * logged with generic WAL and replayed by generic_redo.
+ * their redo takes.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -248,6 +247,34 @@ bark_xlog_newroot(XLogReaderState *record)
 	bark_xlog_restore_meta(record, 2);
 
 	UnlockReleaseBuffer(rootbuf);
+}
+
+/*
+ * Replay the writing of overflow pages (bark_write_overflow_chain): each page
+ * is rebuilt from its link and its slice of the tuple.
+ */
+static void
+bark_xlog_overflow(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+
+	for (uint8 block_id = 0; block_id <= XLogRecMaxBlockId(record); block_id++)
+	{
+		Buffer		buf = XLogInitBufferForRedo(record, block_id);
+		Size		datalen;
+		char	   *data = XLogRecGetBlockData(record, block_id, &datalen);
+		xl_bark_overflow_page link;
+
+		Assert(datalen >= sizeof(xl_bark_overflow_page));
+		memcpy(&link, data, sizeof(xl_bark_overflow_page));
+		bark_init_overflow_page(BufferGetPage(buf),
+								data + sizeof(xl_bark_overflow_page),
+								datalen - sizeof(xl_bark_overflow_page),
+								link.next);
+		PageSetLSN(BufferGetPage(buf), lsn);
+		MarkBufferDirty(buf);
+		UnlockReleaseBuffer(buf);
+	}
 }
 
 /*
@@ -544,6 +571,9 @@ bark_redo(XLogReaderState *record)
 			break;
 		case XLOG_BARK_CREATE_ROOT:
 			bark_xlog_create_root(record);
+			break;
+		case XLOG_BARK_OVERFLOW:
+			bark_xlog_overflow(record);
 			break;
 		default:
 			elog(PANIC, "bark_redo: unknown op code %u", info);
