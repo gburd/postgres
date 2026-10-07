@@ -278,6 +278,7 @@ BarkParallelScanDesc
 BarkParallelScanDescData
 BarkParallelState
 BarkPendingFSM
+BarkRootCache
 BarkScanOpaque
 BarkScanOpaqueData
 BarkShared
