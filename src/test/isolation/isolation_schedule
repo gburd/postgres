@@ -115,6 +115,7 @@ test: predicate-bark
 test: insert-conflict-bark
 test: bark-vacuum-posting
 test: scan-shift-bark
+test: knn-shift-bark
 test: partition-concurrent-attach
 test: partition-drop-index-locking
 test: partition-key-update-1
