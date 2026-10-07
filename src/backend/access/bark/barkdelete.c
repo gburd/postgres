@@ -371,5 +371,5 @@ bark_bottomup_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 	pfree(firstid);
 	pfree(nids);
 
-	return PageGetFreeSpace(page) >= newitemsz;
+	return bark_leaf_free_space(page) >= newitemsz;
 }
