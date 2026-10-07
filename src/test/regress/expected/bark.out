@@ -5660,6 +5660,67 @@ SELECT count(*) AS out_of_order FROM
 RESET enable_seqscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_hk, bark_hk_size, bark_hk_idx;
+-- The same churn on indexes that existed before the rows were inserted.  The
+-- inserts come in heap TID order, so each key's last page receives them, and
+-- when it fills it is split leaving the left page at its single-value fill
+-- factor, cutting its last LIST to get there (bark_singleval_cut): the pages
+-- of a run end about 96% full, as nbtree's do.  Left with every entry that
+-- fits, they would be nearly full, the reinsert into the space VACUUM freed
+-- in them would overflow most, and the index would grow four times as much
+-- as btree's.  The rows are wide enough that each key has only a few
+-- on a heap page, so its entries are LISTs, as they are for a key with fewer
+-- rows than this one.
+CREATE TEMP TABLE bark_hkr (id int, d int, pad text)
+  WITH (autovacuum_enabled = off);
+CREATE INDEX bark_hkr_bark ON bark_hkr USING bark (d);
+CREATE INDEX bark_hkr_bt ON bark_hkr USING btree (d);
+INSERT INTO bark_hkr SELECT g, g % 20, repeat('x', 200)
+  FROM generate_series(1, 100000) g;
+SELECT bark_index_check('bark_hkr_bark');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+CREATE TEMP TABLE bark_hkr_size AS
+  SELECT pg_relation_size('bark_hkr_bark') AS bark0,
+         pg_relation_size('bark_hkr_bt') AS bt0;
+DELETE FROM bark_hkr WHERE hashint4(id) % 3 = 0;
+VACUUM bark_hkr;
+INSERT INTO bark_hkr SELECT g, g % 20, repeat('x', 200)
+  FROM generate_series(100001, 130000) g;
+VACUUM bark_hkr;
+SELECT pg_relation_size('bark_hkr_bark') - bark0 <=
+       (pg_relation_size('bark_hkr_bt') - bt0) * 1.2 AS bark_grows_no_more
+  FROM bark_hkr_size;
+ bark_grows_no_more 
+--------------------
+ t
+(1 row)
+
+SELECT bark_index_check('bark_hkr_bark');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), sum(id) FROM bark_hkr WHERE d >= 0;
+ count |    sum     
+-------+------------
+ 96657 | 6779609449
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT count(*), sum(id) FROM bark_hkr;
+ count |    sum     
+-------+------------
+ 96657 | 6779609449
+(1 row)
+
+DROP TABLE bark_hkr, bark_hkr_size;
 -- A heap TID that falls inside the TID range of a LIST or POSTING entry must
 -- go into that entry.  When the entry cannot take it (it is at the item
 -- ceiling, or the page is full), the entry is divided around it: in place
