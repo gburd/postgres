@@ -2858,3 +2858,133 @@ DROP TABLE bark_pfx;
 DROP FUNCTION bark_pfx_check(text);
 DROP FUNCTION bark_pfx_build(text);
 DROP COLLATION bark_pfx_coll;
+
+-- Row comparisons position and stop the scan.  A row comparison on column c
+-- bounds the descent with its leading members that sit on columns c, c+1, ...
+-- in the same direction (its usable prefix), and one on column 1 ends the scan
+-- once an entry sorts past that prefix.  Every case matches a sequential scan
+-- on each index shape; bark_rowcmp_check also names the scan direction.
+CREATE TABLE bark_rowcmp (a int, b int, c text);
+INSERT INTO bark_rowcmp SELECT g % 5000, (g / 5000) * 2, chr(97 + g % 26)
+  FROM generate_series(1, 50000) g;
+INSERT INTO bark_rowcmp VALUES (NULL, 1, 'n'), (NULL, NULL, NULL),
+  (2500, NULL, 'n'), (7, NULL, 'z'), (7, 5, NULL);
+VACUUM ANALYZE bark_rowcmp;
+CREATE FUNCTION bark_rowcmp_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  plan json;
+  node json;
+  r1 text;
+  r2 text;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL enable_sort = off;
+  EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO plan;
+  node := plan->0->'Plan';
+  WHILE node->>'Index Name' IS NULL AND node->'Plans' IS NOT NULL LOOP
+    node := node->'Plans'->0;
+  END LOOP;
+  EXECUTE 'SELECT md5(string_agg(x::text, '','')) FROM (' || q || ') x' INTO r1;
+  RESET enable_seqscan;
+  RESET enable_sort;
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_indexonlyscan = off;
+  EXECUTE 'SELECT md5(string_agg(x::text, '','')) FROM (' || q || ') x' INTO r2;
+  RETURN format('%s %s', coalesce(node->>'Scan Direction', 'no index scan'),
+    CASE WHEN r1 IS NOT DISTINCT FROM r2 THEN 'ok' ELSE 'mismatch' END);
+END $$;
+CREATE FUNCTION bark_rowcmp_run(fwd text, bwd text) RETURNS SETOF text
+LANGUAGE plpgsql AS $$
+DECLARE
+  q text;
+BEGIN
+  FOREACH q IN ARRAY ARRAY[
+    'WHERE (a, b) > (2500, 10) ORDER BY ' || fwd,
+    'WHERE (a, b) > (2500, 10) ORDER BY ' || bwd,
+    'WHERE (a, b) >= (2500, 10) ORDER BY ' || fwd,
+    'WHERE (a, b) >= (2500, 10) ORDER BY ' || bwd,
+    'WHERE (a, b) < (2500, 10) ORDER BY ' || fwd,
+    'WHERE (a, b) < (2500, 10) ORDER BY ' || bwd,
+    'WHERE (a, b) <= (2500, 10) ORDER BY ' || fwd,
+    'WHERE (a, b) <= (2500, 10) ORDER BY ' || bwd,
+    'WHERE (a, b, c) > (2500, 10, ''k'') ORDER BY ' || fwd,
+    'WHERE (a, b, c) <= (2500, 10, ''k'') ORDER BY ' || bwd,
+    'WHERE (a, b) > (2500, NULL) ORDER BY ' || fwd,
+    'WHERE (a, b) < (2500, NULL) ORDER BY ' || bwd,
+    'WHERE (a, b) > (NULL, 1) ORDER BY ' || fwd,
+    'WHERE (a, b) > (2500::int8, 10::int2) ORDER BY ' || fwd,
+    'WHERE (a, b) <= (2500::int8, 10::int2) ORDER BY ' || bwd,
+    'WHERE a = 7 AND (b, c) > (5, ''x'') ORDER BY ' || fwd,
+    'WHERE a = 7 AND (b, c) >= (6, ''f'') ORDER BY ' || bwd,
+    'WHERE (a, b) > (2500, 10) ORDER BY ' || fwd || ' LIMIT 20',
+    'WHERE (a, b) < (2500, 10) ORDER BY ' || bwd || ' LIMIT 20']
+  LOOP
+    RETURN NEXT bark_rowcmp_check('SELECT a, b FROM bark_rowcmp ' || q) ||
+      ': ' || q;
+  END LOOP;
+END $$;
+CREATE INDEX bark_rowcmp_i ON bark_rowcmp USING bark (a, b);
+SELECT bark_rowcmp_run('a, b', 'a DESC, b DESC');
+DROP INDEX bark_rowcmp_i;
+CREATE INDEX bark_rowcmp_i ON bark_rowcmp USING bark (a DESC, b);
+SELECT bark_rowcmp_run('a DESC, b', 'a, b DESC');
+DROP INDEX bark_rowcmp_i;
+CREATE INDEX bark_rowcmp_i ON bark_rowcmp USING bark (a, b DESC);
+SELECT bark_rowcmp_run('a, b DESC', 'a DESC, b');
+DROP INDEX bark_rowcmp_i;
+CREATE INDEX bark_rowcmp_i ON bark_rowcmp USING bark (a, b, c);
+SELECT bark_rowcmp_run('a, b', 'a DESC, b DESC');
+DROP INDEX bark_rowcmp_i;
+-- Keyset pagination reads a few pages from where the row starts, and an
+-- upper-bound row on column 1 stops the scan early: each reads under 10
+-- index pages of a 50000-row index.
+CREATE INDEX bark_rowcmp_i ON bark_rowcmp USING bark (a, b);
+CREATE FUNCTION bark_rowcmp_pages(q text) RETURNS boolean LANGUAGE plpgsql AS $$
+DECLARE
+  plan json;
+  node json;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, FORMAT JSON) ' || q
+    INTO plan;
+  node := plan->0->'Plan';
+  WHILE node->>'Index Name' IS NULL LOOP
+    node := node->'Plans'->0;
+  END LOOP;
+  RETURN (node->>'Shared Hit Blocks')::int + (node->>'Shared Read Blocks')::int < 10;
+END $$;
+SELECT bark_rowcmp_pages('SELECT a, b FROM bark_rowcmp WHERE (a, b) > (2500, 10) ORDER BY a, b LIMIT 20') AS keyset_pages_lt_10;
+SELECT bark_rowcmp_pages('SELECT a, b FROM bark_rowcmp WHERE (a, b) < (5, 3) ORDER BY a, b') AS early_stop_pages_lt_10;
+-- A scroll cursor moving back and forth over a row comparison returns the
+-- same rows as a sort over a sequential scan.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_sort = off;
+BEGIN;
+DECLARE c SCROLL CURSOR FOR
+  SELECT a, b FROM bark_rowcmp WHERE (a, b) > (2500, 10) ORDER BY a, b;
+FETCH 3 FROM c;
+FETCH BACKWARD 5 FROM c;
+FETCH 4 FROM c;
+MOVE 25 IN c;
+FETCH 2 FROM c;
+FETCH BACKWARD 3 FROM c;
+FETCH LAST FROM c;
+FETCH BACKWARD 2 FROM c;
+FETCH ABSOLUTE 2 FROM c;
+COMMIT;
+RESET enable_sort;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SELECT a, b FROM bark_rowcmp WHERE (a, b) > (2500, 10) ORDER BY a, b LIMIT 32;
+SELECT a, b FROM bark_rowcmp WHERE (a, b) > (2500, 10) ORDER BY a DESC, b DESC
+  LIMIT 3;
+RESET enable_indexonlyscan;
+RESET enable_indexscan;
+RESET enable_seqscan;
+DROP FUNCTION bark_rowcmp_check(text), bark_rowcmp_run(text, text),
+  bark_rowcmp_pages(text);
+DROP TABLE bark_rowcmp;
