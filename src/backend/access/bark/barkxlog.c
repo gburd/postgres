@@ -226,6 +226,7 @@ bark_xlog_unlink_page(XLogReaderState *record)
 	{
 		IndexTuple	downlink;
 
+		/* Changed in place: internal items are stored as they are read. */
 		page = BufferGetPage(parentbuf);
 		downlink = (IndexTuple) PageGetItem(page,
 											PageGetItemId(page, xlrec->poffset));
@@ -299,11 +300,11 @@ bark_xlog_add_tid(XLogReaderState *record)
 	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
 	{
 		Page		page = BufferGetPage(buffer);
+		BarkItemBuf ibuf;
 		IndexTuple	entry;
 		IndexTuple	ext;
 
-		entry = (IndexTuple) PageGetItem(page,
-										 PageGetItemId(page, xlrec->offnum));
+		entry = BarkPageGetItem(page, xlrec->offnum, &ibuf);
 		ext = bark_entry_add_tid(entry, &xlrec->tid, BarkMaxItemSize);
 		if (ext == NULL ||
 			!PageIndexTupleOverwrite(page, xlrec->offnum, ext,

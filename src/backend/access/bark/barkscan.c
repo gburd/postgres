@@ -655,7 +655,8 @@ bark_skip_on_page(IndexScanDesc scan, Page page, IndexTuple itup,
 	while (low < high)
 	{
 		OffsetNumber mid = low + (high - low) / 2;
-		IndexTuple	cur = (IndexTuple) PageGetItem(page, PageGetItemId(page, mid));
+		BarkItemBuf ibuf;
+		IndexTuple	cur = BarkPageGetItem(page, mid, &ibuf);
 
 		if (bark_compare_bound(index, so->keyinfo, &bound, cur) > 0)
 			low = OffsetNumberNext(mid);
@@ -683,7 +684,8 @@ bark_skip_plan(IndexScanDesc scan, Page page, OffsetNumber lastoff)
 	Relation	index = scan->indexRelation;
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	TupleDesc	tupdesc = RelationGetDescr(index);
-	IndexTuple	last = (IndexTuple) PageGetItem(page, PageGetItemId(page, lastoff));
+	BarkItemBuf ibuf;
+	IndexTuple	last = BarkPageGetItem(page, lastoff, &ibuf);
 	IndexTuple	hikey = (IndexTuple) PageGetItem(page,
 												 PageGetItemId(page, BARK_P_HIKEY));
 	bool		fetched;
@@ -990,6 +992,7 @@ bark_start_leaf(IndexScanDesc scan, ScanDirection dir)
 	{
 		OffsetNumber off;
 		IndexTuple	itup;
+		BarkItemBuf ibuf;
 
 		page = BufferGetPage(buf);
 		opaque = BarkPageGetOpaque(page);
@@ -1011,7 +1014,7 @@ bark_start_leaf(IndexScanDesc scan, ScanDirection dir)
 
 		off = backward ? PageGetMaxOffsetNumber(page) :
 			BarkPageFirstDataKey(opaque);
-		itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, off));
+		itup = BarkPageGetItem(page, off, &ibuf);
 		blkno = BarkEntryGetDownLink(itup);
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 		buf = ReleaseAndReadBuffer(buf, index, blkno);
@@ -1340,8 +1343,8 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 	for (; forward ? offnum <= maxoff : offnum >= minoff;
 		 offnum = forward ? OffsetNumberNext(offnum) : OffsetNumberPrev(offnum))
 	{
-		IndexTuple	itup = (IndexTuple) PageGetItem(page,
-													PageGetItemId(page, offnum));
+		BarkItemBuf ibuf;
+		IndexTuple	itup = BarkPageGetItem(page, offnum, &ibuf);
 		bool		fetched;
 		IndexTuple	resolved = bark_scan_resolve(index, itup, &fetched);
 		int			ntids;
