@@ -2502,3 +2502,37 @@ RESET enable_mergejoin;
 DROP TABLE bark_mj_o, bark_mj_list, bark_mj_post, bark_mj_misc, bark_mj_desc,
   bark_mj_wide, bark_mj_knn, bark_mj_dist;
 DROP FUNCTION bark_mj_check(text, text);
+
+-- KNN paths the scan can answer.  An ordering operator on a later column of
+-- a multicolumn BARK index gets no KNN path (the scan walks outward in the
+-- leading column's order only), and a SCROLL cursor over a KNN scan is
+-- materialized, since the scan cannot run its distance order backward.  The
+-- KNN scan's descent counts as an index search.
+CREATE TABLE bark_knnx (a int, b int);
+INSERT INTO bark_knnx SELECT g % 10, g FROM generate_series(1, 2000) g;
+CREATE INDEX bark_knnx_ab ON bark_knnx USING bark (a, b);
+ANALYZE bark_knnx;
+SET enable_seqscan = off;
+EXPLAIN (COSTS OFF) SELECT b FROM bark_knnx ORDER BY b <~> 1000 LIMIT 5;
+SELECT string_agg(b::text, ',' ORDER BY b <~> 1000, b) AS nearest_b FROM
+  (SELECT b FROM bark_knnx ORDER BY b <~> 1000 LIMIT 5) x;
+-- Two ordering operators on the leading column: one goes to the index, the
+-- second is an incremental sort.
+EXPLAIN (COSTS OFF)
+  SELECT a FROM bark_knnx ORDER BY a <~> 5, a <~> 7 LIMIT 3;
+CREATE TABLE bark_knnsc (a int);
+INSERT INTO bark_knnsc SELECT g FROM generate_series(1, 2000) g;
+CREATE INDEX bark_knnsc_a ON bark_knnsc USING bark (a);
+ANALYZE bark_knnsc;
+EXPLAIN (COSTS OFF)
+  DECLARE c SCROLL CURSOR FOR SELECT a FROM bark_knnsc ORDER BY a <~> 500;
+BEGIN;
+DECLARE c SCROLL CURSOR FOR SELECT a FROM bark_knnsc ORDER BY a <~> 500;
+FETCH 3 FROM c;
+FETCH BACKWARD 1 FROM c;
+FETCH 2 FROM c;
+COMMIT;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+  SELECT a FROM bark_knnsc ORDER BY a <~> 500 LIMIT 3;
+RESET enable_seqscan;
+DROP TABLE bark_knnx, bark_knnsc;
