@@ -123,6 +123,19 @@ the left page BARK_SINGLEVAL_FILLFACTOR full when the page holds a single key
 that no later page holds.  Equal keys may sit on both sides of a split; the
 high key between them then carries a heap TID (see "Heap TID order").
 
+A split point falls between entries, and a LIST or POSTING entry can take a
+third of the page, so on such a page the single-value split would leave the
+left page with every entry that fits, nearly full.  When the incoming heap
+TID sorts after every entry on it, as inserts in heap TID order do, the last
+entry is cut instead (bark_singleval_cut, bark_entry_cut): its lower part
+stays, sized so the left page ends at the fill factor, and its upper part,
+with the new TID, goes to the right page.  The split's record logs both
+whole.  nbtree reaches the same fill by capping the last posting list its
+deduplication pass forms on such a page (_bt_singleval_fillfactor).  The
+free space matters after VACUUM: rows inserted into the heap space it frees
+get heap TIDs throughout each key's run, and go back to these pages; pages
+left nearly full would mostly overflow and split evenly.
+
 Suffix truncation
 -----------------
 

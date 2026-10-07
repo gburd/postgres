@@ -388,7 +388,10 @@ BarkPageGetItem(Page page, OffsetNumber off, BarkItemBuf *buf)
  * later page holds the same key, as nbtree's single-value strategy does.
  * Equal keys are in heap TID order, and new rows mostly take higher heap
  * TIDs, so such a page mostly receives appends, which after the split go to
- * the right page; space left free on the left would mostly stay free.
+ * the right page; space left free on the left would mostly stay free.  Its
+ * last LIST or POSTING entry is cut to reach that fill (bark_singleval_cut):
+ * a split point falls between entries, and with entries a third of a page
+ * wide the left page would otherwise be left nearly full.
  */
 #define BARK_MIN_FILLFACTOR		10
 #define BARK_DEFAULT_FILLFACTOR	90
@@ -1104,6 +1107,8 @@ extern IndexTuple bark_entry_add_tid(IndexTuple entry, ItemPointer tid,
 extern bool bark_entry_has_tid(IndexTuple itup, ItemPointer tid);
 extern void bark_entry_swap_tid(IndexTuple entry, ItemPointer tid,
 								IndexTuple *left, IndexTuple *right);
+extern bool bark_entry_cut(IndexTuple entry, ItemPointer tid, Size leftmax,
+						   IndexTuple *left, IndexTuple *right);
 extern int	bark_posting_count(IndexTuple itup);
 extern int	bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout);
 
@@ -1284,6 +1289,9 @@ extern int	bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo,
 							  IndexTuple *items, const Size *sizes,
 							  Size reserve, int n, int newitemidx,
 							  bool isleaf, IndexTuple orighikey);
+extern bool bark_singleval_cut(Relation index, BarkKeyInfo *keyinfo,
+							   Page page, OffsetNumber off, IndexTuple newitem,
+							   IndexTuple *left, IndexTuple *right);
 
 /*
  * Finish the interrupted split of `lbuf` (write-locked, flagged
