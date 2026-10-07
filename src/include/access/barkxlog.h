@@ -3,10 +3,8 @@
  * barkxlog.h
  *	  header file for BARK WAL records and redo routines
  *
- * BARK changes that have no record of their own here (overflow chains) are
- * still WAL-logged with generic WAL (generic_xlog.c).
- * Each change to a page is in exactly one record of either kind, so replay
- * applies them in LSN order per page.
+ * Every change BARK makes to a page after CREATE INDEX is in exactly one of
+ * these records.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -43,6 +41,8 @@
 #define XLOG_BARK_ADD_TID		0x70	/* add one heap TID to a LIST or
 										 * POSTING entry */
 #define XLOG_BARK_SPLIT			0x80	/* split a leaf or internal page */
+#define XLOG_BARK_OVERFLOW		0x90	/* write overflow pages of an
+										 * oversized entry */
 #define XLOG_BARK_NEWROOT		0xA0	/* add a level above a split root */
 #define XLOG_BARK_CREATE_ROOT	0xB0	/* give an empty index its root leaf */
 
@@ -107,6 +107,21 @@ typedef struct xl_bark_newroot
 } xl_bark_newroot;
 
 #define SizeOfBarkNewroot	(offsetof(xl_bark_newroot, level) + sizeof(uint32))
+
+/*
+ * Overflow pages of an OVERSIZED entry's chain (bark_write_overflow_chain),
+ * up to BARK_OVERFLOW_PER_RECORD per record.  Each page is rebuilt from its
+ * block data: an xl_bark_overflow_page, then the page's slice of the tuple.
+ * No main data.
+ *
+ * Backup Blk 0..n-1: the overflow pages, in chain order
+ */
+#define BARK_OVERFLOW_PER_RECORD	XLR_NORMAL_MAX_BLOCK_ID
+
+typedef struct xl_bark_overflow_page
+{
+	BlockNumber next;			/* next page of the chain, or BARK_P_NONE */
+} xl_bark_overflow_page;
 
 /*
  * The first root of an empty index (bark_create_root_leaf): an empty leaf
