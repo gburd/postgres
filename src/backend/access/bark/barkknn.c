@@ -73,6 +73,7 @@
 #include "access/relscan.h"
 #include "access/skey.h"
 #include "miscadmin.h"
+#include "pgstat.h"
 #include "storage/bufmgr.h"
 #include "storage/predicate.h"
 #include "utils/float.h"
@@ -510,6 +511,11 @@ bark_knn_position(IndexScanDesc scan)
 	Page		page;
 	BlockNumber blkno;
 	OffsetNumber splitoff;
+
+	/* One descent, counted as nbtree counts each _bt_first. */
+	pgstat_count_index_scan(index);
+	if (scan->instrument)
+		scan->instrument->nsearches++;
 
 	if (knn->centernull)
 		return;					/* a NULL center matches nothing */
