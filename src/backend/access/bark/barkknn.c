@@ -80,20 +80,6 @@
 #include "utils/rel.h"
 
 /*
- * Resolve a leaf entry to a tuple whose attributes can be read with
- * index_getattr: the full tuple of an OVERSIZED entry, fetched from its
- * overflow chain (*fetched is set and the caller pfrees it), or the entry
- * itself.  The same as barkscan.c's bark_scan_resolve, which is static there;
- * the two should become one shared function.
- */
-static IndexTuple
-bark_knn_resolve(Relation index, IndexTuple itup, bool *fetched)
-{
-	*fetched = BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED;
-	return *fetched ? bark_fetch_oversized(index, itup) : itup;
-}
-
-/*
  * Compute the ordering distance of index tuple `itup` (resolved) from the
  * center constant.  A NULL key sorts last (distance +infinity), matching the
  * executor's NULLS LAST default for an ascending ORDER BY.
@@ -181,55 +167,6 @@ bark_knn_split_offset(IndexScanDesc scan, Page page, IndexTuple center)
 }
 
 /*
- * Copy the key columns of a matching entry into the cursor's tuple workspace
- * for an index-only scan, and return its offset there.  `resolved` is the
- * entry with its attributes readable.  A LIST or POSTING entry is copied
- * without its body; nothing reads xs_itup's t_tid, so its members all share
- * the one copy.  This is barkscan.c's bark_save_tuple, which writes to the
- * plain scan's single workspace; the two should share one function taking
- * the workspace.
- */
-static uint32
-bark_knn_save_tuple(BarkScanOpaque so, BarkKnnCursor *cur, IndexTuple entry,
-					IndexTuple resolved)
-{
-	BarkEntryShape shape = BarkEntryGetShape(entry);
-	Size		len;
-	uint32		off = cur->nextTupleOffset;
-	IndexTuple	copy;
-
-	if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
-		len = BarkEntryGetBodyOffset(entry);
-	else if (shape == BARK_SHAPE_OVERSIZED)
-		len = BarkOverflowGetRef(entry)->fulllen;
-	else
-		len = IndexTupleSize(entry);
-
-	if (cur->tuples == NULL || off + MAXALIGN(len) > cur->tuplesSize)
-	{
-		Size		newsize = Max((Size) BLCKSZ,
-								  Max(cur->tuplesSize * 2, off + MAXALIGN(len)));
-
-		if (cur->tuples == NULL)
-			cur->tuples = MemoryContextAlloc(so->scanCxt, newsize);
-		else
-			cur->tuples = repalloc(cur->tuples, newsize);
-		cur->tuplesSize = newsize;
-	}
-
-	copy = (IndexTuple) (cur->tuples + off);
-	memcpy(copy, resolved, len);
-	if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
-	{
-		/* Now a plain key tuple: drop the body's size and the alt-TID bit. */
-		copy->t_info = (copy->t_info & ~(INDEX_SIZE_MASK | INDEX_AM_RESERVED_BIT)) |
-			(uint16) len;
-	}
-	cur->nextTupleOffset = off + MAXALIGN(len);
-	return off;
-}
-
-/*
  * Read the share-locked leaf `page` (block `blkno`) into cursor `cur`: copy
  * every matching entry from offset `offnum` in the cursor's direction to the
  * end of the page into cur->items, nearest to the center first, with its heap
@@ -268,7 +205,7 @@ bark_knn_readpage(IndexScanDesc scan, BarkKnnCursor *cur, Page page,
 		IndexTuple	itup = (IndexTuple) PageGetItem(page,
 													PageGetItemId(page, offnum));
 		bool		fetched;
-		IndexTuple	resolved = bark_knn_resolve(index, itup, &fetched);
+		IndexTuple	resolved = bark_scan_resolve(index, itup, &fetched);
 		BarkKnnItem *item;
 		int			ntids;
 
@@ -309,106 +246,10 @@ bark_knn_readpage(IndexScanDesc scan, BarkKnnCursor *cur, Page page,
 										  cur->maxTids - cur->ntids);
 		cur->ntids += item->ntids;
 		item->tupleOffset = scan->xs_want_itup ?
-			bark_knn_save_tuple(so, cur, itup, resolved) : 0;
+			bark_save_tuple(so, &cur->tuples, &cur->tuplesSize,
+							&cur->nextTupleOffset, itup, resolved) : 0;
 		if (fetched)
 			pfree(resolved);
-	}
-}
-
-/*
- * Lock the left sibling `*blkno` of `lastcurrblkno` for a backward step,
- * recovering from concurrent splits and deletions, as nbtree's
- * _bt_lock_and_validate_left does.  The left page is the right one when its
- * right link still points at lastcurrblkno; if it split since, walk right
- * from it to the page that does; if lastcurrblkno itself was deleted, start
- * again from the page that took over its key space.  Returns the page
- * share-locked, with *blkno set, or InvalidBuffer when there is no page to
- * the left.  The page returned may be half-dead; the caller steps past it.
- *
- * This is a copy of barkscan.c's bark_lock_and_validate_left, which is
- * static there; the two should become one shared function.
- */
-static Buffer
-bark_knn_lock_and_validate_left(Relation index, BlockNumber *blkno,
-								BlockNumber lastcurrblkno)
-{
-	BlockNumber origblkno = *blkno;
-
-	for (;;)
-	{
-		Buffer		buf;
-		Page		page;
-		BarkPageOpaque opaque;
-		int			tries;
-
-		CHECK_FOR_INTERRUPTS();
-		buf = ReadBuffer(index, *blkno);
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		page = BufferGetPage(buf);
-		opaque = BarkPageGetOpaque(page);
-
-		/*
-		 * Walk right to the page whose right link is lastcurrblkno, at most
-		 * four hops; past that, lastcurrblkno was most likely deleted.  Test
-		 * BARK_DELETED, not ignorable: a half-dead page is still linked.
-		 */
-		tries = 0;
-		for (;;)
-		{
-			if (!BarkPageIsDeleted(opaque) &&
-				opaque->bark_next == lastcurrblkno)
-				return buf;
-			if (BarkPageRightmost(opaque) || ++tries > 4)
-				break;
-			*blkno = opaque->bark_next;
-			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-			buf = ReleaseAndReadBuffer(buf, index, *blkno);
-			LockBuffer(buf, BUFFER_LOCK_SHARE);
-			page = BufferGetPage(buf);
-			opaque = BarkPageGetOpaque(page);
-		}
-
-		/* See what became of lastcurrblkno. */
-		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-		buf = ReleaseAndReadBuffer(buf, index, lastcurrblkno);
-		LockBuffer(buf, BUFFER_LOCK_SHARE);
-		page = BufferGetPage(buf);
-		opaque = BarkPageGetOpaque(page);
-		if (BarkPageIsDeleted(opaque))
-		{
-			/*
-			 * Deleted: its key space moved to the first live page to its
-			 * right, and stepping left from that page goes where we want.
-			 */
-			for (;;)
-			{
-				if (BarkPageRightmost(opaque))
-					elog(ERROR, "fell off the end of BARK index \"%s\"",
-						 RelationGetRelationName(index));
-				lastcurrblkno = opaque->bark_next;
-				LockBuffer(buf, BUFFER_LOCK_UNLOCK);
-				buf = ReleaseAndReadBuffer(buf, index, lastcurrblkno);
-				LockBuffer(buf, BUFFER_LOCK_SHARE);
-				page = BufferGetPage(buf);
-				opaque = BarkPageGetOpaque(page);
-				if (!BarkPageIsDeleted(opaque))
-					break;
-			}
-		}
-		else if (opaque->bark_prev == origblkno)
-		{
-			/* Not deleted, and its left link did not move: corrupt. */
-			elog(ERROR, "could not find left sibling of block %u in BARK index \"%s\"",
-				 lastcurrblkno, RelationGetRelationName(index));
-		}
-
-		if (BarkPageLeftmost(opaque))
-		{
-			UnlockReleaseBuffer(buf);
-			return InvalidBuffer;
-		}
-		*blkno = origblkno = opaque->bark_prev;
-		UnlockReleaseBuffer(buf);
 	}
 }
 
@@ -465,7 +306,7 @@ bark_knn_steppage(IndexScanDesc scan, BarkKnnCursor *cur)
 
 		if (cur->backward)
 		{
-			buf = bark_knn_lock_and_validate_left(index, &blkno, lastcurrblkno);
+			buf = bark_lock_and_validate_left(index, &blkno, lastcurrblkno);
 			if (!BufferIsValid(buf))
 				return;
 		}
