@@ -638,7 +638,6 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 		for (OffsetNumber off = BarkPageFirstDataKey(opaque);
 			 callback != NULL && off <= maxoff; off = OffsetNumberNext(off))
 		{
-			ItemId		iid = PageGetItemId(page, off);
 			BarkItemBuf ibuf;
 			IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
 
@@ -698,56 +697,10 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 					continue;
 				}
 
-				{
-					/*
-					 * Rebuild with the surviving members, re-choosing the
-					 * shape: a POSTING if its sbm still wins, else a LIST,
-					 * else a plain SINGLE when exactly one survives.  The new
-					 * entry is never larger than the original, so
-					 * PageIndexTupleOverwrite rewrites it in place below.  A
-					 * POSTING entry is sized for the removal bound of its set
-					 * (see bark_form_posting), which no subset exceeds; a LIST
-					 * of fewer locators is shorter; a LIST is chosen over the
-					 * POSTING only when it is the smaller; and a SINGLE is
-					 * smaller than either.  On a BARK_PREFIX page the entry is
-					 * stored coded against the page's prefix; its key codes
-					 * as the old entry's did, so the coded entry shrinks with
-					 * the plain one.  It is coded here, and logged and
-					 * replayed as it is.
-					 */
-					IndexTuple	key = bark_single_from_list(index, itup, NULL);
-					IndexTuple	newentry;
-					IndexTuple	posting;
-					IndexTuple	coded;
-
-					if (nlive == 1)
-					{
-						newentry = key;
-						newentry->t_tid = tids[0];
-					}
-					else if ((posting = bark_form_posting(RelationGetDescr(index),
-															  key, tids, nlive)) != NULL)
-					{
-						newentry = posting;
-						pfree(key);
-					}
-					else
-					{
-						newentry = bark_form_list(RelationGetDescr(index), key,
-												  tids, nlive);
-						pfree(key);
-					}
-					coded = bark_prefix_encode(page, newentry);
-					if (coded != newentry)
-						pfree(newentry);
-					if (MAXALIGN(IndexTupleSize(coded)) >
-						MAXALIGN(ItemIdGetLength(iid)))
-						elog(ERROR, "failed to shrink BARK leaf entry during vacuum: entry at offset %u of block %u grew from %u to %zu bytes",
-							 off, blkno, ItemIdGetLength(iid),
-							 IndexTupleSize(coded));
-					updatedoffsets[nupdated] = off;
-					updated[nupdated++] = coded;
-				}
+				/* Rebuild with the surviving members (bark_reform_entry). */
+				updatedoffsets[nupdated] = off;
+				updated[nupdated++] = bark_reform_entry(index, buf, off, itup,
+														tids, nlive);
 				pfree(tids);
 			}
 		}
