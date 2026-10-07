@@ -905,6 +905,501 @@ bark_entry_add_tid(IndexTuple entry, ItemPointer tid, Size maxsz)
 }
 
 /* ----------------------------------------------------------------------------
+ * Leaf prefix compression (see BARK_PREFIX in bark.h for the format)
+ * ----------------------------------------------------------------------------
+ */
+
+/*
+ * Where each part of an entry goes in its coded form.  Coding and decoding
+ * both lay the entry out from this, so the two cannot disagree.
+ */
+typedef struct BarkPrefixPlan
+{
+	Size		hoff;			/* data offset: header and null bitmap */
+	Size		c1;				/* plain first column's size, with header */
+	Size		keyend;			/* end of the plain key (the body offset) */
+	uint8		code;			/* first payload byte of the coded column */
+	const char *suffix;			/* bytes stored after it */
+	Size		suffixlen;
+	Size		vsize;			/* coded column's size, with header */
+	Size		codedkeyend;	/* end of the coded key */
+	Size		total;			/* size of the coded entry */
+} BarkPrefixPlan;
+
+/*
+ * Is `itup` stored coded on a BARK_PREFIX page?  Only a leaf data entry
+ * whose first column is not NULL; an OVERSIZED entry keeps its key out of
+ * line and is stored as it is.
+ */
+static bool
+bark_prefix_codable(IndexTuple itup)
+{
+	BarkEntryShape shape = BarkEntryGetShape(itup);
+
+	if (shape != BARK_SHAPE_SINGLE && shape != BARK_SHAPE_LIST &&
+		shape != BARK_SHAPE_POSTING)
+		return false;
+	return !IndexTupleHasNulls(itup) ||
+		!att_isnull(0, (uint8 *) itup + sizeof(IndexTupleData));
+}
+
+/*
+ * Does the varlena `val` have the header decoding would give it back: the
+ * 1-byte header if its data fit one, else an uncompressed 4-byte header?
+ */
+static bool
+bark_prefix_canonical(const char *val)
+{
+	if (VARATT_IS_SHORT(val))
+		return !VARATT_IS_EXTERNAL(val);
+	return !VARATT_IS_EXTENDED(val) &&
+		VARSIZE(val) - VARHDRSZ + VARHDRSZ_SHORT > VARATT_SHORT_MAX;
+}
+
+/* End of a leaf entry's key: the body offset of a LIST or POSTING. */
+static Size
+bark_entry_keyend(IndexTuple itup)
+{
+	if (BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE)
+		return IndexTupleSize(itup);
+	return BarkEntryGetBodyOffset(itup);
+}
+
+/*
+ * The size of a coded first column whose payload is `payload` bytes: a
+ * varlena with a 1-byte header when it fits one.
+ */
+static inline Size
+bark_prefix_vsize(Size payload)
+{
+	if (payload + VARHDRSZ_SHORT <= VARATT_SHORT_MAX)
+		return payload + VARHDRSZ_SHORT;
+	return payload + VARHDRSZ;
+}
+
+/*
+ * Offset at which the bytes after the first column go in a coded entry
+ * whose coded column ends at `vend`, when in the plain entry they start at
+ * `restorig`: the first offset at or after `vend` that is the same distance
+ * past a MAXALIGN boundary.
+ */
+static inline Size
+bark_prefix_restoff(Size vend, Size restorig)
+{
+	return vend + (MAXIMUM_ALIGNOF + restorig % MAXIMUM_ALIGNOF -
+				   vend % MAXIMUM_ALIGNOF) % MAXIMUM_ALIGNOF;
+}
+
+/* Plan the coding of the codable entry `itup` against `prefix`. */
+static void
+bark_prefix_plan(const char *prefix, Size prefixlen, IndexTuple itup,
+				 BarkPrefixPlan *plan)
+{
+	const char *val;
+	Size		restorig;
+	bool		storerest;
+
+	plan->hoff = IndexInfoFindDataOffset(itup->t_info);
+	val = (const char *) itup + plan->hoff;
+	plan->c1 = VARSIZE_ANY(val);
+	plan->keyend = bark_entry_keyend(itup);
+
+	if (bark_prefix_canonical(val))
+	{
+		const char *data = VARDATA_ANY(val);
+		Size		datalen = VARSIZE_ANY_EXHDR(val);
+		Size		limit = Min(prefixlen, datalen);
+		Size		shared = 0;
+
+		while (shared < limit && prefix[shared] == data[shared])
+			shared++;
+		plan->code = (uint8) shared;
+		plan->suffix = data + shared;
+		plan->suffixlen = datalen - shared;
+	}
+	else
+	{
+		plan->code = BARK_PREFIX_RAW;
+		plan->suffix = val;
+		plan->suffixlen = plan->c1;
+	}
+	plan->vsize = bark_prefix_vsize(1 + plan->suffixlen);
+
+	/*
+	 * The bytes after the first column can be left out when they are just
+	 * the zero padding that ends the key.
+	 */
+	restorig = plan->hoff + plan->c1;
+	storerest = plan->keyend != MAXALIGN(restorig);
+	for (Size i = restorig; !storerest && i < plan->keyend; i++)
+		storerest = ((const char *) itup)[i] != 0;
+
+	if (storerest)
+	{
+		plan->code |= BARK_PREFIX_REST;
+		plan->codedkeyend = bark_prefix_restoff(plan->hoff + plan->vsize,
+												restorig) +
+			(plan->keyend - restorig);
+	}
+	else
+		plan->codedkeyend = MAXALIGN(plan->hoff + plan->vsize);
+	plan->total = plan->codedkeyend + (IndexTupleSize(itup) - plan->keyend);
+}
+
+/*
+ * Copy n bytes, as memcpy.  Decoding moves a few short runs of bytes per
+ * entry, and gcc expands a memcpy of a variable length into an aligned
+ * buffer into a string move, whose startup cost is most of a scan's
+ * decoding time; eight bytes at a time is several times faster for runs
+ * this short.
+ */
+static inline void
+bark_prefix_copy(char *dst, const char *src, Size n)
+{
+	while (n >= sizeof(uint64))
+	{
+		memcpy(dst, src, sizeof(uint64));
+		dst += sizeof(uint64);
+		src += sizeof(uint64);
+		n -= sizeof(uint64);
+	}
+	while (n-- > 0)
+		*dst++ = *src++;
+}
+
+/* The prefix of a BARK_PREFIX page, and its length in *len. */
+const char *
+bark_page_get_prefix(Page page, Size *len)
+{
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	IndexTuple	item;
+
+	Assert(BarkPageHasPrefix(opaque));
+	item = (IndexTuple) PageGetItem(page,
+									PageGetItemId(page,
+												  BarkPagePrefixOff(opaque)));
+	*len = IndexTupleSize(item) - sizeof(IndexTupleData);
+	return (const char *) item + sizeof(IndexTupleData);
+}
+
+/*
+ * Give `page`, a leaf holding nothing yet but its high key (if it has one),
+ * the prefix `prefix` of `len` bytes: add the PREFIX item and set
+ * BARK_PREFIX.  Its padding comes from the page's free space, which PageInit
+ * zeroed, so a page rebuilt in redo is the same.
+ */
+void
+bark_page_set_prefix(Page page, const char *prefix, Size len)
+{
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	union
+	{
+		IndexTupleData hdr;
+		char		data[sizeof(IndexTupleData) + BARK_PREFIX_MAX];
+	}			item;
+
+	Assert(BarkPageIsLeaf(opaque) && !BarkPageHasPrefix(opaque));
+	Assert(len >= 1 && len <= BARK_PREFIX_MAX);
+	Assert(PageGetMaxOffsetNumber(page) == BarkPagePrefixOff(opaque) - 1);
+
+	memset(&item.hdr, 0, sizeof(IndexTupleData));
+	item.hdr.t_info = (unsigned short) (sizeof(IndexTupleData) + len);
+	memcpy(item.data + sizeof(IndexTupleData), prefix, len);
+	if (PageAddItem(page, item.data, sizeof(IndexTupleData) + len,
+					BarkPagePrefixOff(opaque), false, false) ==
+		InvalidOffsetNumber)
+		elog(ERROR, "failed to add prefix item to BARK page");
+	opaque->bark_flags |= BARK_PREFIX;
+}
+
+/*
+ * The coded form of the leaf entry `itup` for `page`, palloc'd; `itup`
+ * itself when the page has no prefix or the entry is stored plain.
+ */
+IndexTuple
+bark_prefix_encode(Page page, IndexTuple itup)
+{
+	const char *prefix;
+	Size		prefixlen;
+	BarkPrefixPlan plan;
+	char	   *coded;
+	char	   *v;
+	char	   *payload;
+
+	if (!BarkPageHasPrefix(BarkPageGetOpaque(page)) ||
+		!bark_prefix_codable(itup))
+		return itup;
+
+	prefix = bark_page_get_prefix(page, &prefixlen);
+	bark_prefix_plan(prefix, prefixlen, itup, &plan);
+	Assert(plan.total <= INDEX_SIZE_MASK);
+
+	coded = palloc0(plan.total);
+	memcpy(coded, itup, plan.hoff);
+	v = coded + plan.hoff;
+	if (plan.vsize <= VARATT_SHORT_MAX)
+	{
+		SET_VARSIZE_SHORT(v, plan.vsize);
+		payload = v + VARHDRSZ_SHORT;
+	}
+	else
+	{
+		SET_VARSIZE(v, plan.vsize);
+		payload = v + VARHDRSZ;
+	}
+	payload[0] = (char) plan.code;
+	memcpy(payload + 1, plan.suffix, plan.suffixlen);
+	if (plan.code & BARK_PREFIX_REST)
+	{
+		Size		restorig = plan.hoff + plan.c1;
+
+		memcpy(coded + bark_prefix_restoff(plan.hoff + plan.vsize, restorig),
+			   (char *) itup + restorig, plan.keyend - restorig);
+	}
+	memcpy(coded + plan.codedkeyend, (char *) itup + plan.keyend,
+		   IndexTupleSize(itup) - plan.keyend);
+
+	((IndexTuple) coded)->t_info =
+		(itup->t_info & ~INDEX_SIZE_MASK) | (unsigned short) plan.total;
+	if (BarkEntryGetShape(itup) != BARK_SHAPE_SINGLE)
+		BarkEntrySetBodyOffset((IndexTuple) coded, (uint16) plan.codedkeyend);
+
+#ifdef USE_ASSERT_CHECKING
+	{
+		BarkItemBuf check;
+		IndexTuple	decoded = bark_prefix_decode(page, (IndexTuple) coded,
+												 &check);
+
+		Assert(IndexTupleSize(decoded) == IndexTupleSize(itup) &&
+			   memcmp(decoded, itup, IndexTupleSize(itup)) == 0);
+	}
+#endif
+
+	return (IndexTuple) coded;
+}
+
+/* The MAXALIGNed size `itup` takes on `page`, coded if the page codes it. */
+Size
+bark_coded_size(Page page, IndexTuple itup)
+{
+	const char *prefix;
+	Size		prefixlen;
+	BarkPrefixPlan plan;
+
+	if (!BarkPageHasPrefix(BarkPageGetOpaque(page)) ||
+		!bark_prefix_codable(itup))
+		return MAXALIGN(IndexTupleSize(itup));
+
+	prefix = bark_page_get_prefix(page, &prefixlen);
+	bark_prefix_plan(prefix, prefixlen, itup, &plan);
+	return MAXALIGN(plan.total);
+}
+
+/*
+ * Decode the item `itup` of the BARK_PREFIX page `page` into `buf`, and
+ * return it; an item stored plain is returned as it is.  The inverse of
+ * bark_prefix_encode, byte for byte.  An item that does not decode within
+ * its own bounds, or claims more of the prefix than the page has, is
+ * reported as corruption.
+ */
+IndexTuple
+bark_prefix_decode(Page page, IndexTuple itup, BarkItemBuf *buf)
+{
+	const char *prefix;
+	Size		prefixlen;
+	Size		size = IndexTupleSize(itup);
+	Size		hoff;
+	Size		codedkeyend;
+	const char *v;
+	Size		vsize;
+	const char *payload;
+	Size		paylen;
+	uint8		code;
+	Size		shared;
+	char	   *out = buf->data;
+	char	   *val = NULL;
+	Size		c1;
+	Size		restorig;
+	Size		keyend;
+
+	if (!bark_prefix_codable(itup))
+		return itup;
+
+	prefix = bark_page_get_prefix(page, &prefixlen);
+	hoff = IndexInfoFindDataOffset(itup->t_info);
+	codedkeyend = bark_entry_keyend(itup);
+	v = (const char *) itup + hoff;
+	if (hoff >= codedkeyend || codedkeyend > size ||
+		(vsize = VARSIZE_ANY(v)) > codedkeyend - hoff ||
+		(paylen = VARSIZE_ANY_EXHDR(v)) < 1)
+		goto corrupt;
+	payload = VARDATA_ANY(v);
+	code = (uint8) payload[0];
+	shared = code & BARK_PREFIX_SHARED_MASK;
+
+	bark_prefix_copy(out, (const char *) itup, hoff);
+	val = out + hoff;
+	if (shared == BARK_PREFIX_RAW)
+	{
+		c1 = paylen - 1;
+		bark_prefix_copy(val, payload + 1, c1);
+		if (c1 < VARHDRSZ_SHORT || VARSIZE_ANY(val) != c1)
+			goto corrupt;
+	}
+	else
+	{
+		Size		datalen = shared + paylen - 1;
+		char	   *data;
+
+		if (hoff + VARHDRSZ + datalen > sizeof(BarkItemBuf))
+			goto corrupt;
+		if (shared > prefixlen)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg_internal("BARK leaf entry shares %zu bytes of a %zu-byte page prefix",
+									 shared, prefixlen)));
+		if (datalen + VARHDRSZ_SHORT <= VARATT_SHORT_MAX)
+		{
+			c1 = datalen + VARHDRSZ_SHORT;
+			SET_VARSIZE_SHORT(val, c1);
+			data = val + VARHDRSZ_SHORT;
+		}
+		else
+		{
+			c1 = datalen + VARHDRSZ;
+			SET_VARSIZE(val, c1);
+			data = val + VARHDRSZ;
+		}
+		bark_prefix_copy(data, prefix, shared);
+		bark_prefix_copy(data + shared, payload + 1, paylen - 1);
+	}
+
+	restorig = hoff + c1;
+	if (code & BARK_PREFIX_REST)
+	{
+		Size		restoff = bark_prefix_restoff(hoff + vsize, restorig);
+
+		if (restoff > codedkeyend)
+			goto corrupt;
+		keyend = restorig + (codedkeyend - restoff);
+		if (keyend + (size - codedkeyend) > sizeof(BarkItemBuf))
+			goto corrupt;
+		bark_prefix_copy(out + restorig, (const char *) itup + restoff,
+						 codedkeyend - restoff);
+	}
+	else
+	{
+		keyend = MAXALIGN(restorig);
+		if (keyend + (size - codedkeyend) > sizeof(BarkItemBuf))
+			goto corrupt;
+		memset(out + restorig, 0, keyend - restorig);
+	}
+	bark_prefix_copy(out + keyend, (const char *) itup + codedkeyend,
+					 size - codedkeyend);
+
+	((IndexTuple) out)->t_info = (itup->t_info & ~INDEX_SIZE_MASK) |
+		(unsigned short) (keyend + (size - codedkeyend));
+	if (BarkEntryGetShape(itup) != BARK_SHAPE_SINGLE)
+		BarkEntrySetBodyOffset((IndexTuple) out, (uint16) keyend);
+	return (IndexTuple) out;
+
+corrupt:
+	ereport(ERROR,
+			(errcode(ERRCODE_INDEX_CORRUPTED),
+			 errmsg_internal("BARK leaf entry is not a valid prefix-coded entry")));
+	return NULL;				/* keep compiler quiet */
+}
+
+/*
+ * The bytes of `itup`'s first column a page prefix may be taken from, and
+ * how many (at most BARK_PREFIX_MAX) in *len; NULL when the entry has none:
+ * it is not coded, its value is empty, or it would be stored raw.
+ */
+const char *
+bark_prefix_candidate(IndexTuple itup, Size *len)
+{
+	const char *val;
+
+	if (!bark_prefix_codable(itup))
+		return NULL;
+	val = (const char *) itup + IndexInfoFindDataOffset(itup->t_info);
+	if (!bark_prefix_canonical(val) || VARSIZE_ANY_EXHDR(val) == 0)
+		return NULL;
+	*len = Min(VARSIZE_ANY_EXHDR(val), BARK_PREFIX_MAX);
+	return VARDATA_ANY(val);
+}
+
+/*
+ * How many bytes of `prefix` the first column of `itup` would share on a
+ * page with that prefix: -1 when the entry would not be coded, 0 when it
+ * would be stored raw.
+ */
+int
+bark_prefix_shared(const char *prefix, Size prefixlen, IndexTuple itup)
+{
+	BarkPrefixPlan plan;
+
+	if (!bark_prefix_codable(itup))
+		return -1;
+	bark_prefix_plan(prefix, prefixlen, itup, &plan);
+	if ((plan.code & BARK_PREFIX_SHARED_MASK) == BARK_PREFIX_RAW)
+		return 0;
+	return plan.code & BARK_PREFIX_SHARED_MASK;
+}
+
+/*
+ * May the leaves of `index` have a prefix?  Only when the prefix_compression
+ * reloption is on and the first column is of a varlena type.
+ */
+bool
+bark_prefix_enabled(Relation index)
+{
+	return BarkGetPrefixCompression(index) &&
+		TupleDescAttr(RelationGetDescr(index), 0)->attlen == -1;
+}
+
+/*
+ * Choose the prefix for a leaf about to be built from the `n` entries
+ * `items`, in key order: the first entry's first-column bytes, cut to the
+ * longest run any later entry shares, provided the entries share at least
+ * BARK_PREFIX_MIN_SHARED bytes of it on average.  Returns the prefix's
+ * length, with *prefix pointing into items[0], or 0 for no prefix.
+ */
+Size
+bark_prefix_choose(Relation index, IndexTuple *items, int n,
+				   const char **prefix)
+{
+	const char *cand;
+	Size		candlen;
+	Size		longest = 0;
+	Size		total = 0;
+	int			ncoded = 0;
+
+	if (!bark_prefix_enabled(index) ||
+		(cand = bark_prefix_candidate(items[0], &candlen)) == NULL)
+		return 0;
+	if (n == 1)
+	{
+		*prefix = cand;
+		return candlen;
+	}
+	for (int i = 1; i < n; i++)
+	{
+		int			shared = bark_prefix_shared(cand, candlen, items[i]);
+
+		if (shared < 0)
+			continue;
+		total += shared;
+		ncoded++;
+		longest = Max(longest, (Size) shared);
+	}
+	if (longest == 0 || total < (Size) BARK_PREFIX_MIN_SHARED * ncoded)
+		return 0;
+	*prefix = cand;
+	return longest;
+}
+
+/* ----------------------------------------------------------------------------
  * OVERSIZED entry construction and overflow-chain I/O
  *
  * nbtree errors on a key larger than ~1/3 page, and index_form_tuple itself
