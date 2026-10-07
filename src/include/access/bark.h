@@ -102,6 +102,7 @@ typedef BarkPageOpaqueData *BarkPageOpaque;
 #define BARK_INCOMPLETE_SPLIT (1 << 5)	/* right sibling's downlink is missing */
 #define BARK_HAS_GARBAGE	(1 << 6)	/* page has known-dead entries */
 #define BARK_OVERFLOW		(1 << 7)	/* holds a chunk of an oversized value */
+#define BARK_PREFIX			(1 << 10)	/* leaf keys coded against a prefix */
 
 #define BarkPageIsLeaf(opaque)		(((opaque)->bark_flags & BARK_LEAF) != 0)
 #define BarkPageIsRoot(opaque)		(((opaque)->bark_flags & BARK_ROOT) != 0)
@@ -260,8 +261,74 @@ BarkPageIsRecyclable(Page page, Relation heaprel)
 
 #define BARK_P_HIKEY		((OffsetNumber) 1)	/* high key, if present */
 #define BARK_P_FIRSTKEY		((OffsetNumber) 2)	/* first data item after it */
-#define BarkPageFirstDataKey(opaque) \
+
+/*
+ * Leaf prefix compression.
+ *
+ * A leaf of an index with the prefix_compression reloption, whose first key
+ * column is of a varlena type, may be flagged BARK_PREFIX.  Such a page holds
+ * one extra item, the PREFIX item, at BarkPagePrefixOff (where its first data
+ * item would otherwise be), and its data items start one offset later; so
+ * BarkPageFirstDataKey, which every loop over a page's data items starts
+ * from, accounts for the flag.  The PREFIX item is an IndexTupleData header
+ * (t_tid zero, t_info its size and nothing else, so that code that walks a
+ * page's items by IndexTupleSize, such as split redo, steps over it) followed
+ * by 1..BARK_PREFIX_MAX prefix bytes.  The prefix is chosen when the page is
+ * written as a whole (by CREATE INDEX, or as one half of a split) and never
+ * changes after that; a page's high key, which fixes the prefix item's
+ * offset, also changes only in a split.
+ *
+ * On a BARK_PREFIX page, every SINGLE, LIST and POSTING entry whose first key
+ * column is not NULL stores that column coded, as a varlena (1-byte header
+ * when it fits one, else 4-byte) whose payload starts with a uint8 `shared`:
+ *
+ *   shared <= BARK_PREFIX_MAX: the value's data bytes are the page prefix's
+ *                first `shared` bytes followed by the rest of the payload.
+ *                The value's own varlena header is not stored: it is the
+ *                1-byte header when the value fits one and the 4-byte header
+ *                otherwise, the form index_form_tuple gives a value of a
+ *                type it may pack.
+ *   shared == BARK_PREFIX_RAW: the rest of the payload is the value exactly
+ *                as it was stored, header included.  Used for a value that
+ *                is compressed inline (index_form_tuple compresses values
+ *                larger than TOAST_INDEX_TARGET), or whose header is not in
+ *                the form above (a type that may not be packed).
+ *
+ * The bytes after the first column (later key columns, INCLUDE columns and
+ * alignment padding) are kept as they are, moved to the first position after
+ * the coded column whose distance from the original position is a multiple
+ * of MAXALIGN, so that every alignment within them still holds and they need
+ * no tuple descriptor to move.  When they are only the zero padding that
+ * ends the key, they are left out, and decoding puts them back.  A LIST or
+ * POSTING body follows the key at the new key end, and the body offset in
+ * t_tid is changed to match.  NULL first columns, OVERSIZED entries, the
+ * high key and pivots are stored as on any other page.
+ *
+ * Coding and decoding therefore depend only on the page's prefix and the
+ * entry, not on the index's catalog entries, so WAL redo can repeat them,
+ * and decoding gives back the plain entry byte for byte.  A coded entry is
+ * at most MAXALIGN bytes larger than the plain one when it shares nothing
+ * with the prefix (the count byte can cross an alignment boundary), and a
+ * few more for a raw value.  Every reader goes through
+ * BarkPageGetItem, which returns the plain entry; writers code an entry with
+ * bark_prefix_encode just before placing it, and size it with
+ * bark_coded_size.  An entry that shares less of the prefix than the others,
+ * or none, is still stored correctly, so no insert, VACUUM or change of the
+ * page's key range ever has to rewrite the page.
+ */
+#define BARK_PREFIX_MAX			126
+#define BARK_PREFIX_RAW			127 /* shared count of a raw value */
+#define BARK_PREFIX_SHARED_MASK	0x7F	/* shared count bits */
+#define BARK_PREFIX_REST		0x80	/* bytes after the column follow */
+
+/* A leaf whose items share less of its prefix than this, on average, has none. */
+#define BARK_PREFIX_MIN_SHARED	4
+
+#define BarkPageHasPrefix(opaque)	(((opaque)->bark_flags & BARK_PREFIX) != 0)
+#define BarkPagePrefixOff(opaque) \
 	(BarkPageRightmost(opaque) ? BARK_P_HIKEY : BARK_P_FIRSTKEY)
+#define BarkPageFirstDataKey(opaque) \
+	(BarkPagePrefixOff(opaque) + (BarkPageHasPrefix(opaque) ? 1 : 0))
 
 /*
  * Workspace for BarkPageGetItem.  Every read of a data item (any item but
@@ -274,16 +341,26 @@ BarkPageIsRecyclable(Page page, Relation heaprel)
  */
 typedef PGAlignedBlock BarkItemBuf;
 
+extern IndexTuple bark_prefix_decode(Page page, IndexTuple itup,
+									 BarkItemBuf *buf);
+
 /*
- * Return the data item at `off` on `page` as a BARK entry.  Today every item
- * is stored as it is read, so this is the on-page tuple and `buf` is not
- * used; callers must not write through the result.
+ * Return the data item at `off` on `page` as a BARK entry: on a BARK_PREFIX
+ * page, the entry decoded into `buf`; otherwise the on-page tuple, and `buf`
+ * is not used.  Callers must not write through the result.
  */
 static inline IndexTuple
 BarkPageGetItem(Page page, OffsetNumber off, BarkItemBuf *buf)
 {
-	(void) buf;
-	return (IndexTuple) PageGetItem(page, PageGetItemId(page, off));
+	IndexTuple	itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, off));
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+
+	if (unlikely(BarkPageHasPrefix(opaque)))
+	{
+		Assert(off > BarkPagePrefixOff(opaque));
+		return bark_prefix_decode(page, itup, buf);
+	}
+	return itup;
 }
 
 /*
@@ -328,7 +405,14 @@ typedef struct BarkOptions
 {
 	int32		vl_len_;		/* varlena header (do not touch directly!) */
 	int			fillfactor;		/* leaf page fill factor in percent (10..100) */
+	bool		prefix_compression; /* code leaf keys against a page prefix? */
 } BarkOptions;
+
+#define BarkGetPrefixCompression(relation) \
+	(AssertMacro(relation->rd_rel->relkind == RELKIND_INDEX && \
+				 relation->rd_rel->relam == BARK_AM_OID), \
+	 (relation)->rd_options ? \
+	 ((BarkOptions *) (relation)->rd_options)->prefix_compression : false)
 
 #define BarkGetFillFactor(relation) \
 	(AssertMacro(relation->rd_rel->relkind == RELKIND_INDEX && \
@@ -908,6 +992,32 @@ extern IndexTuple bark_form_list(TupleDesc tupdesc, IndexTuple key,
  */
 extern int	bark_entry_get_tids(IndexTuple itup, ItemPointer out, int maxout);
 
+/*
+ * Leaf prefix compression (barkutils.c; see BARK_PREFIX for the format).
+ *
+ * bark_prefix_encode returns `itup` coded for `page`, palloc'd, or `itup`
+ * itself when the page has no prefix or the entry is stored plain.
+ * bark_coded_size is the MAXALIGNed size the entry takes on `page`.
+ * bark_page_set_prefix adds the PREFIX item to a page that holds nothing
+ * after its high key yet, and flags the page.  bark_prefix_shared is the
+ * length of the common prefix of `prefix` and the entry's first-column
+ * bytes, or -1 when the entry would not be coded; bark_prefix_candidate
+ * gives the bytes a page prefix may be taken from (NULL when it has none).
+ * bark_prefix_choose decides, for the items a page is about to be built
+ * from, whether to give it a prefix, and returns the prefix's length (0 for
+ * none) with *prefix pointing into items[0].
+ */
+extern IndexTuple bark_prefix_encode(Page page, IndexTuple itup);
+extern Size bark_coded_size(Page page, IndexTuple itup);
+extern void bark_page_set_prefix(Page page, const char *prefix, Size len);
+extern const char *bark_page_get_prefix(Page page, Size *len);
+extern int	bark_prefix_shared(const char *prefix, Size prefixlen,
+							   IndexTuple itup);
+extern const char *bark_prefix_candidate(IndexTuple itup, Size *len);
+extern bool bark_prefix_enabled(Relation index);
+extern Size bark_prefix_choose(Relation index, IndexTuple *items, int n,
+							   const char **prefix);
+
 /* Number of locators a leaf entry holds. */
 extern int	bark_entry_count_tids(IndexTuple itup);
 
@@ -1109,7 +1219,8 @@ extern IndexTuple bark_truncate_pivot(Relation index, BarkKeyInfo *keyinfo,
 
 /* Split-point choice for bark_split (barksplitloc.c). */
 extern int	bark_findsplitloc(Relation index, BarkKeyInfo *keyinfo,
-							  IndexTuple *items, int n, int newitemidx,
+							  IndexTuple *items, const Size *sizes,
+							  Size reserve, int n, int newitemidx,
 							  bool isleaf, IndexTuple orighikey);
 
 /*
