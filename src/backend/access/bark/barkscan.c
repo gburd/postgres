@@ -61,7 +61,6 @@
 #include "utils/wait_event.h"
 
 static int	bark_lead_cmp(IndexScanDesc scan, IndexTuple itup, Datum elem);
-static bool bark_array_reseek(IndexScanDesc scan, ScanDirection dir);
 static int	bark_key_cmp(IndexScanDesc scan, int i, IndexTuple itup);
 
 /*
@@ -509,6 +508,120 @@ bark_key_cmp(IndexScanDesc scan, int i, IndexTuple itup)
 }
 
 /*
+ * Can this scan skip over column 1's values?  It can when no key constrains
+ * column 1 and some key bounds column 2 (nbtree's skip scan, for the case
+ * that matters most; nbtree can also skip over several leading columns).  An
+ * ordered-operator scan has its own reads.
+ */
+static bool
+bark_skip_eligible(IndexScanDesc scan)
+{
+	bool		bounded = false;
+
+	if (IndexRelationGetNumberOfKeyAttributes(scan->indexRelation) < 2 ||
+		scan->numberOfOrderBys > 0)
+		return false;
+	for (int i = 0; i < scan->numberOfKeys; i++)
+	{
+		ScanKey		sk = &scan->keyData[i];
+		bool		lower;
+		bool		upper;
+
+		if (sk->sk_attno == 1)
+			return false;
+		if (sk->sk_attno == 2 && bark_key_bounds(scan, sk, &lower, &upper))
+			bounded = true;
+	}
+	return bounded;
+}
+
+/*
+ * Skip scan, after a forward read of page: should the next read re-descend
+ * rather than step right?  If so, build that descent's bound in
+ * so->skipBound and return true.
+ *
+ * The page's last entry decides.  When its column-2 value is past an upper
+ * bound on column 2, so is every later entry with the same column-1 value:
+ * descend past that group, to the first entry with a greater column-1 value.
+ * When it is before a lower bound on column 2, descend to (its column-1
+ * value, that bound).  Either descent is taken only when its bound sorts
+ * after the page's high key, which keeps it from landing on this page again;
+ * otherwise the next group starts on the right sibling and the plain step
+ * reaches it.  A NULL column-1 value is never a bound, so a NULL group is
+ * read through.
+ */
+static bool
+bark_skip_plan(IndexScanDesc scan, Page page, OffsetNumber lastoff)
+{
+	Relation	index = scan->indexRelation;
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	TupleDesc	tupdesc = RelationGetDescr(index);
+	IndexTuple	last = (IndexTuple) PageGetItem(page, PageGetItemId(page, lastoff));
+	IndexTuple	hikey = (IndexTuple) PageGetItem(page,
+												 PageGetItemId(page, BARK_P_HIKEY));
+	bool		fetched;
+	IndexTuple	resolved = bark_scan_resolve(index, last, &fetched);
+	bool		isnull;
+	Datum		value = index_getattr(resolved, 1, tupdesc, &isnull);
+	bool		past = false;
+	int			lowkey = -1;
+	bool		reseek = false;
+	BarkScanBound bound;
+
+	for (int i = 0; i < scan->numberOfKeys && !isnull; i++)
+	{
+		ScanKey		sk = &scan->keyData[i];
+		bool		lower;
+		bool		upper;
+		int			c;
+
+		if (sk->sk_attno != 2 || !bark_key_bounds(scan, sk, &lower, &upper))
+			continue;
+		c = bark_key_cmp(scan, i, resolved);
+		if (upper && c > 0)
+			past = true;
+		if (lower && c < 0 && lowkey < 0)
+			lowkey = i;
+	}
+
+	if (!isnull && (past || lowkey >= 0))
+	{
+		bound.nkeys = 1;
+		bound.upper = past;
+		bound.args[0] = value;
+		bound.procs[0] = &so->keyinfo->cols[0].cmp;
+		bound.collations[0] = so->keyinfo->cols[0].collation;
+		if (!past)
+		{
+			bound.nkeys = 2;
+			bound.args[1] = scan->keyData[lowkey].sk_argument;
+			bound.procs[1] = &so->keyCmp[lowkey];
+			bound.collations[1] = scan->keyData[lowkey].sk_collation;
+		}
+		reseek = bark_compare_bound(index, so->keyinfo, &bound, hikey) > 0;
+	}
+
+	if (reseek)
+	{
+		Form_pg_attribute att = TupleDescAttr(tupdesc, 0);
+		MemoryContext oldcxt;
+
+		/* The page is unlocked before the descent: keep a copy of the value. */
+		if (!so->skipValueByVal && so->skipValue != (Datum) 0)
+			pfree(DatumGetPointer(so->skipValue));
+		oldcxt = MemoryContextSwitchTo(so->scanCxt);
+		so->skipValue = datumCopy(value, att->attbyval, att->attlen);
+		MemoryContextSwitchTo(oldcxt);
+		so->skipValueByVal = att->attbyval;
+		bound.args[0] = so->skipValue;
+		so->skipBound = bound;
+	}
+	if (fetched)
+		pfree(resolved);
+	return reseek;
+}
+
+/*
  * Build the bound a scan in direction dir starts from: the leading index
  * columns the keys bound in index order, for bark_search_bound.  Returns
  * false when column 1 is unbounded in that direction; the scan then starts
@@ -532,6 +645,15 @@ bark_make_bound(IndexScanDesc scan, ScanDirection dir, BarkScanBound *bound)
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	int			nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	bool		forward = ScanDirectionIsForward(dir);
+
+	/* A skip scan's re-descent to its next column-1 group (bark_skip_plan). */
+	if (so->skipReseeking)
+	{
+		Assert(forward);
+		*bound = so->skipBound;
+		so->skipReseeking = false;
+		return true;
+	}
 
 	bound->nkeys = 0;
 	bound->upper = !forward;
@@ -713,6 +835,8 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	bark_free_array_keys(so);
 	bark_setup_array_keys(scan);
 	bark_setup_key_procs(scan);
+	so->skip = bark_skip_eligible(scan);
+	so->skipReseeking = false;
 
 	/*
 	 * An ordered-operator (KNN) scan carries ORDER BY <~> keys; copy them in
@@ -1248,6 +1372,10 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 	}
 	pos->arrayCur = lead != NULL ? lead->cur : 0;
 
+	if (so->skip && forward && pos->moreRight && scan->parallel_scan == NULL &&
+		!BarkPageRightmost(opaque) && maxoff >= minoff)
+		pos->arrayReseek = bark_skip_plan(scan, page, maxoff);
+
 	if (nitems == 0)
 		return false;
 
@@ -1393,8 +1521,20 @@ bark_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 	Relation	index = scan->indexRelation;
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	bool		forward = ScanDirectionIsForward(dir);
+	bool		reseek;
 
 	Assert(!BarkScanPosIsPinned(so->currPos));
+
+	/*
+	 * A forward read of the page we leave may have asked to re-descend
+	 * rather than step right: a leading-array scan whose next element lies
+	 * beyond the right sibling, or a skip scan whose next group does.  A
+	 * parallel scan reads whatever page the shared cursor hands it instead.
+	 * Each re-descent happens in this loop, so a long run of pages without
+	 * matches costs no stack.
+	 */
+	reseek = forward && so->currPos.dir == dir && so->currPos.arrayReseek &&
+		scan->parallel_scan == NULL;
 
 	if (forward)
 		so->currPos.moreLeft = true;
@@ -1406,30 +1546,48 @@ bark_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 		Page		page;
 		BarkPageOpaque opaque;
 
-		if (blkno == BARK_P_NONE ||
-			(forward ? !so->currPos.moreRight : !so->currPos.moreLeft))
+		if (reseek)
+		{
+			CHECK_FOR_INTERRUPTS();
+			reseek = false;
+			pgstat_count_index_scan(index);
+			if (scan->instrument)
+				scan->instrument->nsearches++;
+			if (so->skip)
+				so->skipReseeking = true;
+			else
+				so->leadArray->cur = so->currPos.arrayCur;
+			so->currPos.buf = bark_start_leaf(scan, dir);
+			if (!BufferIsValid(so->currPos.buf))
+			{
+				BarkScanPosInvalidate(so->currPos);
+				return false;
+			}
+			blkno = BufferGetBlockNumber(so->currPos.buf);
+		}
+		else if (blkno == BARK_P_NONE ||
+				 (forward ? !so->currPos.moreRight : !so->currPos.moreLeft))
 		{
 			BarkScanPosInvalidate(so->currPos);
 			bark_parallel_done(scan);
 			return false;
 		}
-
-		if (!seized && scan->parallel_scan != NULL &&
-			!bark_parallel_seize(scan, &blkno, &lastcurrblkno))
+		else if (!seized && scan->parallel_scan != NULL &&
+				 !bark_parallel_seize(scan, &blkno, &lastcurrblkno))
 		{
 			BarkScanPosInvalidate(so->currPos);
 			return false;
 		}
-		Assert(BlockNumberIsValid(blkno));
-
-		if (forward)
+		else if (forward)
 		{
+			Assert(BlockNumberIsValid(blkno));
 			CHECK_FOR_INTERRUPTS();
 			so->currPos.buf = ReadBuffer(index, blkno);
 			LockBuffer(so->currPos.buf, BUFFER_LOCK_SHARE);
 		}
 		else
 		{
+			Assert(BlockNumberIsValid(blkno));
 			so->currPos.buf = bark_lock_and_validate_left(index, &blkno,
 														  lastcurrblkno);
 			if (so->currPos.buf == InvalidBuffer)
@@ -1449,6 +1607,8 @@ bark_readnextpage(IndexScanDesc scan, BlockNumber blkno,
 							  PageGetMaxOffsetNumber(page)))
 				break;
 			blkno = forward ? so->currPos.nextPage : so->currPos.prevPage;
+			reseek = forward && so->currPos.arrayReseek &&
+				scan->parallel_scan == NULL;
 		}
 		else
 		{
@@ -1538,26 +1698,7 @@ bark_first(IndexScanDesc scan, ScanDirection dir)
 	lastcurrblkno = so->currPos.currPage;
 	UnlockReleaseBuffer(so->currPos.buf);
 	so->currPos.buf = InvalidBuffer;
-	if (so->currPos.arrayReseek && ScanDirectionIsForward(dir))
-		return bark_array_reseek(scan, dir);
 	return bark_readnextpage(scan, blkno, lastcurrblkno, dir, false);
-}
-
-/*
- * Forward leading-array scan whose next element lies beyond the right
- * sibling: re-descend to it.  The cursor was left on that element by
- * bark_readpage.  A parallel scan never takes this path (each worker reads
- * whatever page the shared cursor hands it).
- */
-static bool
-bark_array_reseek(IndexScanDesc scan, ScanDirection dir)
-{
-	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
-
-	Assert(scan->parallel_scan == NULL && so->leadArray != NULL);
-	so->leadArray->cur = so->currPos.arrayCur;
-	BarkScanPosInvalidate(so->currPos);
-	return bark_first(scan, dir);
 }
 
 /*
@@ -1595,20 +1736,15 @@ bark_steppage(IndexScanDesc scan, ScanDirection dir)
 		so->currPos.prevPage;
 	lastcurrblkno = so->currPos.currPage;
 
+	/*
+	 * The leading-array cursor drives only forward reads; a forward read
+	 * after a backward one, or after a reversal, restarts it from the
+	 * position's saved value (0 after a backward read), which is never ahead
+	 * of the page we step to.  A re-descent the page asked for
+	 * (arrayReseek) is taken by bark_readnextpage.
+	 */
 	if (so->leadArray != NULL)
-	{
-		if (ScanDirectionIsForward(dir) && so->currPos.dir == dir &&
-			so->currPos.arrayReseek && scan->parallel_scan == NULL)
-			return bark_array_reseek(scan, dir);
-
-		/*
-		 * The cursor drives only forward reads; a forward read after a
-		 * backward one, or after a reversal, restarts it from the position's
-		 * saved value (0 after a backward read), which is never ahead of the
-		 * page we step to.
-		 */
 		so->leadArray->cur = so->currPos.dir == dir ? so->currPos.arrayCur : 0;
-	}
 
 	return bark_readnextpage(scan, blkno, lastcurrblkno, dir, false);
 }
@@ -1717,6 +1853,8 @@ bark_endscan(IndexScanDesc scan)
 		pfree(so->entryTids);
 	if (so->keyCmp)
 		pfree(so->keyCmp);
+	if (!so->skipValueByVal && so->skipValue != (Datum) 0)
+		pfree(DatumGetPointer(so->skipValue));
 	if (so->keyinfo)
 		pfree(so->keyinfo);
 	pfree(so);
@@ -1778,8 +1916,17 @@ bark_restrpos(IndexScanDesc scan)
 	{
 		BarkScanPosUnpinIfPinned(so->currPos);
 		if (BarkScanPosIsValid(so->markPos))
+		{
 			bark_copy_pos(so, &so->currPos, &so->currTuples,
 						  &so->currTuplesSize, &so->markPos, so->markTuples);
+
+			/*
+			 * skipBound describes the page read last, not the marked one; the
+			 * restored scan steps right from the marked page instead.
+			 */
+			if (so->skip)
+				so->currPos.arrayReseek = false;
+		}
 		else
 		{
 			/*
