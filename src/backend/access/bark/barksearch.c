@@ -123,8 +123,13 @@ static int
 bark_compare_off(Relation index, BarkKeyInfo *keyinfo,
 				 const BarkSearchKey *key, Page page, OffsetNumber off)
 {
-	ItemId		iid = PageGetItemId(page, off);
-	IndexTuple	itup = (IndexTuple) PageGetItem(page, iid);
+	BarkItemBuf ibuf;
+	IndexTuple	itup;
+
+	if (off == BARK_P_HIKEY && !BarkPageRightmost(BarkPageGetOpaque(page)))
+		itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, off));
+	else
+		itup = BarkPageGetItem(page, off, &ibuf);
 
 	if (key->bound != NULL)
 		return bark_compare_bound(index, keyinfo, key->bound, itup);
@@ -418,6 +423,7 @@ bark_descend(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
 		OffsetNumber off;
 		IndexTuple	itup;
 		BarkStack	item;
+		BarkItemBuf ibuf;
 
 		/*
 		 * The page may have split since we read its downlink (or the meta
@@ -434,7 +440,7 @@ bark_descend(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
 
 		/* Internal page: find the downlink to follow and push the stack. */
 		off = bark_binsrch(index, keyinfo, key, page, nextkey);
-		itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, off));
+		itup = BarkPageGetItem(page, off, &ibuf);
 
 		item = palloc(sizeof(BarkStackData));
 		item->bark_blkno = BufferGetBlockNumber(buf);
