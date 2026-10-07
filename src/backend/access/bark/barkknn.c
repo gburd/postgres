@@ -154,8 +154,8 @@ bark_knn_split_offset(IndexScanDesc scan, Page page, IndexTuple center)
 	while (low < high)
 	{
 		OffsetNumber mid = low + ((high - low) / 2);
-		ItemId		iid = PageGetItemId(page, mid);
-		IndexTuple	itup = (IndexTuple) PageGetItem(page, iid);
+		BarkItemBuf ibuf;
+		IndexTuple	itup = BarkPageGetItem(page, mid, &ibuf);
 		int			cmp = bark_compare_itups(so->keyinfo, index, center, itup);
 
 		if (cmp > 0)
@@ -202,8 +202,8 @@ bark_knn_readpage(IndexScanDesc scan, BarkKnnCursor *cur, Page page,
 	for (; backward ? offnum >= minoff : offnum <= maxoff;
 		 offnum = backward ? OffsetNumberPrev(offnum) : OffsetNumberNext(offnum))
 	{
-		IndexTuple	itup = (IndexTuple) PageGetItem(page,
-													PageGetItemId(page, offnum));
+		BarkItemBuf ibuf;
+		IndexTuple	itup = BarkPageGetItem(page, offnum, &ibuf);
 		bool		fetched;
 		IndexTuple	resolved = bark_scan_resolve(index, itup, &fetched);
 		BarkKnnItem *item;

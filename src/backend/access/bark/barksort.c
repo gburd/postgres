@@ -343,6 +343,7 @@ bark_prepend_hikey(Page page, IndexTuple hikey)
 	Size	   *sizes = (Size *) palloc(n * sizeof(Size));
 	BarkPageOpaqueData saved = *BarkPageGetOpaque(page);
 
+	/* The items move as stored (not through BarkPageGetItem): only their offsets change. */
 	for (int i = 0; i < n; i++)
 	{
 		ItemId		iid = PageGetItemId(page, BARK_P_HIKEY + i);
@@ -383,8 +384,9 @@ bark_build_hikey(BarkBuildState *bs, BarkPageState *st, IndexTuple firstright)
 
 	if (st->level == 0)
 	{
-		IndexTuple	lastleft = (IndexTuple)
-			PageGetItem(page, PageGetItemId(page, OffsetNumberPrev(st->nextoff)));
+		BarkItemBuf ibuf;
+		IndexTuple	lastleft = BarkPageGetItem(page, OffsetNumberPrev(st->nextoff),
+											   &ibuf);
 
 		Assert(BarkEntryGetShape(firstright) != BARK_SHAPE_OVERSIZED);
 		hikey = bark_truncate_pivot(bs->index, bs->keyinfo, lastleft,
@@ -434,10 +436,10 @@ bark_flush_page(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 	if (PageGetFreeSpace(page) < MAXALIGN(IndexTupleSize(hikey)))
 	{
 		OffsetNumber lastoff = OffsetNumberPrev(st->nextoff);
+		BarkItemBuf ibuf;
 
 		Assert(lastoff > BARK_P_HIKEY);
-		moved = CopyIndexTuple((IndexTuple)
-							   PageGetItem(page, PageGetItemId(page, lastoff)));
+		moved = CopyIndexTuple(BarkPageGetItem(page, lastoff, &ibuf));
 		PageIndexTupleDelete(page, lastoff);
 		st->nextoff = lastoff;
 		pfree(hikey);
