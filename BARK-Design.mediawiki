@@ -500,8 +500,11 @@ No measured cost scales with how many entries a key has.
   only the added locator (<code>ADD_TID</code>, as nbtree's
   <code>INSERT_POST</code>; redo re-forms the entry): POSTING appends 1.74 to
   1.24 s and 705 to 121 MB (481 MB with generic WAL), LIST appends 2.44 to
-  1.42 s and 1282 to 129 MB (1782 MB with generic WAL). Still to come: split
-  and newroot, then overflow chains and the remaining generic sites.
+  1.42 s and 1282 to 129 MB (1782 MB with generic WAL). The fourth logs
+  splits, new roots and an empty index's first root (<code>SPLIT</code>,
+  <code>NEWROOT</code>, <code>CREATE_ROOT</code>): each split half is logged
+  as its packed entries and rebuilt in redo, with no page image. Still to
+  come: overflow chains.
 
 Not recommended: a per-key posting tree (b) and a pending list (d), for the
 reasons above. If C-DELETE or retail delete later needs to find one
