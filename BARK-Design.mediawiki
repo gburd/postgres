@@ -503,8 +503,9 @@ No measured cost scales with how many entries a key has.
   1.42 s and 1282 to 129 MB (1782 MB with generic WAL). The fourth logs
   splits, new roots and an empty index's first root (<code>SPLIT</code>,
   <code>NEWROOT</code>, <code>CREATE_ROOT</code>): each split half is logged
-  as its packed entries and rebuilt in redo, with no page image. Still to
-  come: overflow chains.
+  as its packed entries and rebuilt in redo, with no page image. The fifth
+  logs overflow chains (<code>OVERFLOW</code>), the last generic WAL: every
+  change BARK makes after CREATE INDEX is now in a Bark record.
 
 Not recommended: a per-key posting tree (b) and a pending list (d), for the
 reasons above. If C-DELETE or retail delete later needs to find one
