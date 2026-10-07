@@ -1049,6 +1049,8 @@ typedef struct BarkScanBound
  */
 extern Buffer bark_search_bound(Relation index, BarkKeyInfo *keyinfo,
 								const BarkScanBound *bound, bool nextkey);
+extern int	bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
+							   const BarkScanBound *bound, IndexTuple itup);
 extern BlockNumber bark_get_root(Relation index, uint32 *level_out);
 extern void bark_freestack(BarkStack stack);
 
@@ -1333,6 +1335,21 @@ typedef struct BarkScanOpaqueData
 	BarkArrayKeyState *arrayKeys;	/* palloc'd array, or NULL */
 	int			numArrayKeys;	/* number of SAOP keys */
 	BarkArrayKeyState *leadArray;	/* the array key on column 1, or NULL */
+
+	/*
+	 * Skip scan: no key on column 1, but a key that bounds column 2.  A
+	 * forward read whose page ends inside a column-1 group, on an entry past
+	 * column 2's bounds (or before them), re-descends to the next group (or
+	 * to the bounds within the same group) rather than reading every page in
+	 * between; bark_readpage builds that descent's bound in skipBound and
+	 * sets the position's arrayReseek.  skipValue is skipBound's copy of the
+	 * column-1 value, freed when replaced unless skipValueByVal.
+	 */
+	bool		skip;
+	bool		skipReseeking;	/* the next descent uses skipBound */
+	bool		skipValueByVal;
+	Datum		skipValue;
+	BarkScanBound skipBound;
 
 	/*
 	 * KNN (ordered-operator) scan state, allocated by the first rescan of a
