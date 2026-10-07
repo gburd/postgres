@@ -588,10 +588,11 @@ bark_buildadd(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 	 * high key would not fit.  The high key is formed from the next item and
 	 * is no larger than it; the new item stands in for it here, and for a
 	 * LIST or POSTING item only its key is counted, since that is all a high
-	 * key keeps (bark_make_pivot strips the body).  When the high key turns
-	 * out wider, bark_flush_page moves the page's last item to the next page.
-	 * Requiring room for the item and a high key keeps at least one item per
-	 * page.
+	 * key keeps (bark_make_pivot strips the body), plus, on a leaf, the heap
+	 * TID a high key inside a run of equal keys keeps.  When the high key
+	 * turns out wider, bark_flush_page moves the page's last item to the next
+	 * page. Requiring room for the item and a high key keeps at least one
+	 * item per page.
 	 *
 	 * Also flush, as nbtsort.c does, once the page's free space has dropped
 	 * below the fillfactor target, provided it already holds two data items;
@@ -601,6 +602,8 @@ bark_buildadd(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 	if (BarkEntryGetShape(itup) == BARK_SHAPE_LIST ||
 		BarkEntryGetShape(itup) == BARK_SHAPE_POSTING)
 		hikeysz = BarkEntryGetBodyOffset(itup);
+	if (st->level == 0)
+		hikeysz = MAXALIGN(hikeysz) + MAXALIGN(sizeof(ItemPointerData));
 
 	ndata = st->nextoff - BarkPageFirstDataKey(BarkPageGetOpaque(page));
 	if (ndata >= 1 &&
