@@ -1078,7 +1078,7 @@ extern void bark_finish_split(Relation index, BarkKeyInfo *keyinfo,
 /*
  * KNN (ordered-operator) scan state (barkknn.c).
  *
- * `ORDER BY col <-> const` over a scalar B-tree key is answered by descending
+ * `ORDER BY col <~> const` over a scalar B-tree key is answered by descending
  * to const and expanding OUTWARD in both directions: the nearest key values
  * to const are the ones immediately at/after it (walking the leaf chain
  * forward) merged with the ones immediately before it (walking backward).  At
@@ -1088,39 +1088,67 @@ extern void bark_finish_split(Relation index, BarkKeyInfo *keyinfo,
  * and stops as soon as the caller's LIMIT is satisfied -- it never scans the
  * whole index.
  *
- * Each side is an independent position cursor over the leaf chain: a pinned
- * leaf buffer and the offset of the entry it last produced.  The forward
- * cursor starts at the first entry whose key is >= const on the center leaf
- * and steps toward higher keys; the backward cursor starts just before it and
- * steps toward lower keys.  A matched entry may be a LIST/POSTING holding
- * several heap TIDs at one key (hence one distance): those are emitted one per
- * gettuple call, all before the merge advances.
+ * Each side is a cursor that reads the leaf chain a page at a time, as a
+ * plain scan's BarkScanPosData does: under one share lock it copies every
+ * matching entry on its current page, in its own direction, into items[]
+ * (with the entry's heap TIDs in tids[] and, for an index-only scan, its key
+ * in the tuples workspace), records the page's sibling link in its direction,
+ * and releases the lock.  The merge then takes candidates from these copies
+ * without touching the page again, so a concurrent insert or split on it
+ * cannot make the scan repeat or skip entries; the cursor moves on by the
+ * saved link once its copy is used up.  On the center leaf the forward cursor
+ * copies the entries from the first one whose key is >= const upward and the
+ * backward cursor the entries before it, downward, both under the lock the
+ * descent left on the page.
  *
- * This handles one ordering key (the first ORDER BY <-> clause); multi-key
+ * A matched entry may be a LIST/POSTING holding several heap TIDs at one key
+ * (hence one distance): those are emitted one per gettuple call, all before
+ * the merge advances.
+ *
+ * This handles one ordering key (the first ORDER BY <~> clause); multi-key
  * KNN would need a priority queue like GiST's, but a scalar B-tree has a
  * single distance axis, so one key is the whole useful case here.  KNN is
  * likewise never parallel -- that is intrinsic to a single-center outward
  * merge, not a deferred optimization; see the barkknn.c header for why a
  * two-sided split would buy nothing on an output-bounded scan.
  */
+typedef struct BarkKnnItem
+{
+	double		dist;			/* distance of the entry's key from const */
+	int			firstTid;		/* the entry's heap TIDs are tids[firstTid]... */
+	int			ntids;			/* ...and there are this many, ascending */
+	uint32		tupleOffset;	/* entry's key copy in tuples (IOS only) */
+} BarkKnnItem;
+
 typedef struct BarkKnnCursor
 {
-	Buffer		buf;			/* pinned leaf, or InvalidBuffer when exhausted */
-	OffsetNumber off;			/* offset last examined on buf */
 	bool		backward;		/* true: this cursor walks toward lower keys */
-	bool		primed;			/* true once positioned on its first entry */
-	bool		centerleaf;		/* buf is still the shared center leaf (the one
-								 * step where backward must start one entry before
-								 * the forward cursor so the sides don't overlap) */
-	OffsetNumber splitoff;		/* on the center leaf, the first offset whose key
-								 * is >= center: forward starts here, backward one
-								 * entry earlier (meaningful only when centerleaf) */
-	bool		have;			/* a buffered candidate is ready in dist/key */
-	double		dist;			/* distance of the buffered candidate */
-	ItemPointer tids;			/* buffered candidate's heap locators */
+	Buffer		buf;			/* currPage, pinned; InvalidBuffer if unpinned */
+
+	/* page details as of the read that filled items[] */
+	BlockNumber currPage;		/* page read, or InvalidBlockNumber if none */
+	BlockNumber nextPage;		/* its sibling in our direction when read;
+								 * BARK_P_NONE when no page is left to read */
+
+	/*
+	 * Distance of the last entry examined on currPage, matching or not: the
+	 * entries on the pages not yet read are no closer to const than this.
+	 * Minus infinity before any entry has been examined.
+	 */
+	double		bound;
+
+	BarkKnnItem *items;			/* matching entries of currPage, nearest first */
+	int			nitems;			/* number of them */
+	int			itemIndex;		/* next one to merge (== nitems: used up) */
+	int			maxItems;		/* allocated size of items */
+
+	ItemPointer tids;			/* heap TIDs of all the items */
 	int			ntids;			/* number of them */
-	int			ntidsAlloc;		/* capacity of tids */
-	char	   *keytup;			/* buffered candidate's key tuple (IOS), or NULL */
+	int			maxTids;		/* allocated size of tids */
+
+	char	   *tuples;			/* IOS: key copies of the items, or NULL */
+	uint32		tuplesSize;		/* allocated size of tuples */
+	uint32		nextTupleOffset;	/* first free byte in tuples */
 } BarkKnnCursor;
 
 typedef struct BarkKnnScanState
@@ -1133,12 +1161,14 @@ typedef struct BarkKnnScanState
 	BarkKnnCursor fwd;			/* forward (>= center) cursor */
 	BarkKnnCursor bwd;			/* backward (< center) cursor */
 
-	/* Members of the entry currently being emitted (one TID per gettuple). */
-	ItemPointer emitTids;		/* locators of the entry being emitted */
-	int			nEmit;			/* number of them */
-	int			emitIdx;		/* next one to return */
-	double		emitDist;		/* their shared distance */
-	char	   *emitKey;			/* their shared key tuple (IOS), or NULL */
+	/*
+	 * The cursor whose current item (items[itemIndex]) is being returned, one
+	 * heap TID per gettuple call, or NULL; emitIdx is the member returned
+	 * last.  The cursor moves past the item only once all its members are
+	 * returned, so it never reads its next page under an item in flight.
+	 */
+	BarkKnnCursor *emitCur;
+	int			emitIdx;
 } BarkKnnScanState;
 
 /*
@@ -1305,9 +1335,8 @@ typedef struct BarkScanOpaqueData
 	BarkArrayKeyState *leadArray;	/* the array key on column 1, or NULL */
 
 	/*
-	 * KNN (ordered-operator) scan state, allocated lazily on the first
-	 * ordered gettuple when the scan has ORDER BY <-> keys; NULL for a plain
-	 * scan, which takes exactly the same path as before.
+	 * KNN (ordered-operator) scan state, allocated by the first rescan of a
+	 * scan with ORDER BY <~> keys; NULL for a plain scan.
 	 */
 	BarkKnnScanState *knn;
 } BarkScanOpaqueData;

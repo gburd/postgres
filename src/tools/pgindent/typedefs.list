@@ -266,6 +266,7 @@ BarkEntryShape
 BarkKeyColumn
 BarkKeyInfo
 BarkKnnCursor
+BarkKnnItem
 BarkKnnScanState
 BarkLeader
 BarkMetaPageData
