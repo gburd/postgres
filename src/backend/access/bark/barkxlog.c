@@ -169,6 +169,8 @@ bark_xlog_split(XLogReaderState *record)
 	xl_bark_split *xlrec = (xl_bark_split *) XLogRecGetData(record);
 	bool		isleaf = (xlrec->flags & XLH_BARK_SPLIT_LEAF) != 0;
 	uint16		leafflag = isleaf ? BARK_LEAF : 0;
+	uint16		lprefix = (xlrec->flags & XLH_BARK_SPLIT_LPREFIX) ? BARK_PREFIX : 0;
+	uint16		rprefix = (xlrec->flags & XLH_BARK_SPLIT_RPREFIX) ? BARK_PREFIX : 0;
 	BlockNumber leftblk;
 	BlockNumber rightblk;
 	Buffer		lbuf;
@@ -187,8 +189,8 @@ bark_xlog_split(XLogReaderState *record)
 	/* The new right page */
 	rbuf = XLogInitBufferForRedo(record, 1);
 	page = BufferGetPage(rbuf);
-	BarkPageInit(page, leftblk, xlrec->rightnext, xlrec->level, leafflag,
-				 xlrec->cycleid);
+	BarkPageInit(page, leftblk, xlrec->rightnext, xlrec->level,
+				 leafflag | rprefix, xlrec->cycleid);
 	datapos = XLogRecGetBlockData(record, 1, &datalen);
 	bark_restore_page(page, datapos, datalen);
 	PageSetLSN(page, lsn);
@@ -198,7 +200,7 @@ bark_xlog_split(XLogReaderState *record)
 	lbuf = XLogInitBufferForRedo(record, 0);
 	page = BufferGetPage(lbuf);
 	BarkPageInit(page, xlrec->leftprev, rightblk, xlrec->level,
-				 leafflag | BARK_INCOMPLETE_SPLIT, xlrec->cycleid);
+				 leafflag | lprefix | BARK_INCOMPLETE_SPLIT, xlrec->cycleid);
 	datapos = XLogRecGetBlockData(record, 0, &datalen);
 	bark_restore_page(page, datapos, datalen);
 	PageSetLSN(page, lsn);
@@ -499,9 +501,10 @@ bark_xlog_reuse_page(XLogReaderState *record)
 
 /*
  * Replay the addition of one heap TID to a LIST or POSTING entry
- * (bark_add_tid_entry): re-form the entry as the primary did and overwrite
- * it.  The primary checked that the result fits the page, and the page
- * replayed here is the same, so a failure means the two disagree.
+ * (bark_add_tid_entry): re-form the entry as the primary did, code it for
+ * the page's prefix if it has one, and overwrite it.  The primary checked
+ * that the result fits the page, and the page replayed here is the same, so
+ * a failure means the two disagree.
  */
 static void
 bark_xlog_add_tid(XLogReaderState *record)
@@ -516,13 +519,18 @@ bark_xlog_add_tid(XLogReaderState *record)
 		BarkItemBuf ibuf;
 		IndexTuple	entry;
 		IndexTuple	ext;
+		IndexTuple	coded;
 
 		entry = BarkPageGetItem(page, xlrec->offnum, &ibuf);
 		ext = bark_entry_add_tid(entry, &xlrec->tid, BarkMaxItemSize);
-		if (ext == NULL ||
-			!PageIndexTupleOverwrite(page, xlrec->offnum, ext,
-									 IndexTupleSize(ext)))
+		if (ext == NULL)
 			elog(PANIC, "failed to add a TID to a BARK entry during replay");
+		coded = bark_prefix_encode(page, ext);
+		if (!PageIndexTupleOverwrite(page, xlrec->offnum, coded,
+									 IndexTupleSize(coded)))
+			elog(PANIC, "failed to add a TID to a BARK entry during replay");
+		if (coded != ext)
+			pfree(coded);
 		pfree(ext);
 
 		PageSetLSN(page, lsn);
