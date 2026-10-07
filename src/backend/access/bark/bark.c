@@ -104,8 +104,8 @@ bark_find_parent_downlink(Relation index, BarkKeyInfo *keyinfo,
 		for (OffsetNumber off = firstdata; off <= maxoff;
 			 off = OffsetNumberNext(off))
 		{
-			IndexTuple	itup = (IndexTuple)
-				PageGetItem(ppage, PageGetItemId(ppage, off));
+			BarkItemBuf ibuf;
+			IndexTuple	itup = BarkPageGetItem(ppage, off, &ibuf);
 
 			if (BarkEntryGetDownLink(itup) == childblk)
 			{
@@ -184,6 +184,7 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 	Page		rpage;
 	Page		ppage;
 	IndexTuple	downlink;
+	BarkItemBuf ibuf;
 	XLogRecPtr	recptr;
 	bool		lockedl;
 	bool		lockedt;
@@ -269,14 +270,11 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 		(opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0 ||
 		opaque->bark_prev != leftblk || opaque->bark_next != rightblk ||
 		PageGetMaxOffsetNumber(page) >= BarkPageFirstDataKey(opaque) ||
-		BarkEntryGetDownLink((IndexTuple)
-							 PageGetItem(BufferGetPage(pbuf),
-										 PageGetItemId(BufferGetPage(pbuf),
-													   downoff))) != blkno ||
-		BarkEntryGetDownLink((IndexTuple)
-							 PageGetItem(BufferGetPage(pbuf),
-										 PageGetItemId(BufferGetPage(pbuf),
-													   OffsetNumberNext(downoff)))) != rightblk ||
+		BarkEntryGetDownLink(BarkPageGetItem(BufferGetPage(pbuf), downoff,
+											 &ibuf)) != blkno ||
+		BarkEntryGetDownLink(BarkPageGetItem(BufferGetPage(pbuf),
+											 OffsetNumberNext(downoff),
+											 &ibuf)) != rightblk ||
 		(BarkPageGetOpaque(BufferGetPage(rbuf))->bark_flags &
 		 (BARK_DELETED | BARK_HALF_DEAD)) != 0)
 	{
@@ -318,6 +316,7 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 
 	BarkPageGetOpaque(lpage)->bark_next = rightblk;
 	BarkPageGetOpaque(rpage)->bark_prev = leftblk;
+	/* Changed in place: internal items are always stored as they are read. */
 	downlink = (IndexTuple) PageGetItem(ppage, PageGetItemId(ppage, downoff));
 	BarkEntrySetDownLink(downlink, rightblk);
 	PageIndexTupleDelete(ppage, OffsetNumberNext(downoff));
@@ -640,7 +639,8 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 			 callback != NULL && off <= maxoff; off = OffsetNumberNext(off))
 		{
 			ItemId		iid = PageGetItemId(page, off);
-			IndexTuple	itup = (IndexTuple) PageGetItem(page, iid);
+			BarkItemBuf ibuf;
+			IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
 
 			if (BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE)
 			{
