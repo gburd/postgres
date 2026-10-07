@@ -32,6 +32,7 @@
 #include "catalog/pg_am_d.h"
 #include "catalog/pg_class.h"
 #include "storage/block.h"
+#include "storage/bufmgr.h"
 #include "storage/bufpage.h"
 #include "storage/condition_variable.h"
 #include "storage/lwlock.h"
@@ -1052,6 +1053,8 @@ extern Buffer bark_search_bound(Relation index, BarkKeyInfo *keyinfo,
 extern int	bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
 							   const BarkScanBound *bound, IndexTuple itup);
 extern BlockNumber bark_get_root(Relation index, uint32 *level_out);
+extern uint32 bark_get_root_level(Relation index);
+extern Buffer bark_get_root_buffer(Relation index, BufferLockMode access);
 extern void bark_freestack(BarkStack stack);
 
 extern bool bark_insert(Relation index, Datum *values, bool *isnull,

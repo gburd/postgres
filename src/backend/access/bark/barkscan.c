@@ -983,11 +983,9 @@ bark_start_leaf(IndexScanDesc scan, ScanDirection dir)
 	 * the rightmost edge, past any page that split since we read its
 	 * downlink.
 	 */
-	blkno = bark_get_root(index, NULL);
-	if (blkno == BARK_P_NONE)
+	buf = bark_get_root_buffer(index, BUFFER_LOCK_SHARE);
+	if (!BufferIsValid(buf))
 		return InvalidBuffer;
-	buf = ReadBuffer(index, blkno);
-	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	for (;;)
 	{
 		OffsetNumber off;
