@@ -19,7 +19,11 @@
  *	- no page is still flagged with an unfinished split, which a clean index
  *	  never leaves behind;
  *	- no leaf entry is larger than BarkMaxItemSize, and every POSTING entry
- *	  reserves room for the largest encoding of any subset of its set.
+ *	  reserves room for the largest encoding of any subset of its set;
+ *	- a page flagged BARK_PREFIX is a leaf with a well-formed PREFIX item of
+ *	  1..BARK_PREFIX_MAX bytes, and every entry on it decodes within its
+ *	  bounds, sharing no more of the prefix than there is (the key checks
+ *	  above then apply to the decoded entries).
  *
  * This is a lightweight structural check: it does not cross-check the index
  * against the heap, nor verify that every page is reachable from the root.
@@ -171,6 +175,39 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 
 	maxoff = PageGetMaxOffsetNumber(page);
 	firstdata = BarkPageFirstDataKey(opaque);
+
+	/*
+	 * A prefix-compressed page is a leaf whose PREFIX item, just after the
+	 * high key, is an IndexTupleData header with nothing but its size set,
+	 * followed by the prefix.  Its entries are checked as they decode, below;
+	 * bark_prefix_decode reports one that does not decode within its bounds
+	 * or claims more of the prefix than the page has.
+	 */
+	if (BarkPageHasPrefix(opaque))
+	{
+		OffsetNumber poff = BarkPagePrefixOff(opaque);
+		ItemId		iid;
+		IndexTuple	pitem;
+		Size		plen;
+
+		if (!BarkPageIsLeaf(opaque) || maxoff < poff)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" has a prefix-compressed page %u that is not a leaf with a prefix item",
+							RelationGetRelationName(rel), blkno)));
+		iid = PageGetItemId(page, poff);
+		pitem = (IndexTuple) PageGetItem(page, iid);
+		plen = ItemIdGetLength(iid);
+		if (plen <= sizeof(IndexTupleData) ||
+			plen > sizeof(IndexTupleData) + BARK_PREFIX_MAX ||
+			pitem->t_info != plen ||
+			ItemPointerGetBlockNumberNoCheck(&pitem->t_tid) != 0 ||
+			ItemPointerGetOffsetNumberNoCheck(&pitem->t_tid) != 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" has a malformed prefix item on page %u",
+							RelationGetRelationName(rel), blkno)));
+	}
 
 	/*
 	 * The high key, when present, is the first item on a non-rightmost page.
