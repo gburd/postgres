@@ -15,6 +15,8 @@
 # 5. Splits of leaves and internal pages are logged as BARK SPLIT records,
 #    and new levels as NEWROOT, and the standby's index finds the same rows
 #    as the primary's.
+# 6. Bottom-up deletion logs a conflict horizon, which cancels a standby
+#    snapshot that can still see the heap tuples whose entries it deletes.
 
 use strict;
 use warnings FATAL => 'all';
@@ -31,6 +33,7 @@ max_standby_streaming_delay = 50ms
 log_recovery_conflict_waits = on
 deadlock_timeout = 10ms
 autovacuum = off
+wal_keep_size = 1GB
 ]);
 $node_primary->start;
 $node_primary->backup('backup');
@@ -246,6 +249,98 @@ $primary_count = $node_primary->safe_psql($db, $split_query);
 is($primary_count, '20000|200010000', "$sect: primary index scan finds every row");
 is($node_standby->safe_psql($db, $split_query),
 	$primary_count, "$sect: standby index scan matches the primary");
+
+
+
+## 6: snapshot conflict on bottom-up deletion
+$sect = 'bottom-up deletion conflict';
+
+# Every UPDATE of v is non-HOT and leaves k unchanged, so the k index takes
+# each new version with indexUnchanged set, and a leaf that is full first has
+# the entries of dead versions deleted, in a Bark/DELETE record whose conflict
+# horizon is the transaction that left them dead.  The standby snapshot is
+# taken before the first round of UPDATEs, so it can still see the versions
+# that round leaves dead.  The first round's sequential scan prunes nothing,
+# since the heap holds no dead tuples yet, and returns the new versions'
+# TIDs; the second round updates the rows by TID, and a TID scan does not
+# prune the pages it reads.  So the Bark/DELETE records of the second round
+# are the only records the standby snapshot conflicts with.  The u index
+# has prefix-coded leaves.  A tenth of the rows are deleted before the
+# snapshot, so that some entries die whole (their deletion has a horizon the
+# snapshot does not conflict with), while the updated rows' entries lose
+# members.  The UPDATEs set wal_consistency_checking, so the standby checks
+# each page that DELETE redo produces against the primary's.
+$node_primary->safe_psql(
+	$db, qq[
+CREATE TABLE churn_t (k int, v int, u text)
+  WITH (fillfactor = 100, autovacuum_enabled = off);
+CREATE INDEX churn_t_k ON churn_t USING bark (k);
+CREATE INDEX churn_t_v ON churn_t USING bark (v);
+CREATE INDEX churn_t_u ON churn_t USING bark (u)
+  WITH (prefix_compression = on);
+INSERT INTO churn_t
+  SELECT g, 0, 'https://www.example.com/item/' || lpad((g % 1250)::text, 8, '0')
+  FROM generate_series(1, 5000) g;
+DELETE FROM churn_t WHERE k % 10 = 0;
+]);
+$node_primary->wait_for_replay_catchup($node_standby);
+
+$res = $psql_standby->query_safe(
+	qq[
+BEGIN ISOLATION LEVEL REPEATABLE READ;
+SELECT count(*) FROM churn_t;
+]);
+like($res, qr/^4500$/m, "$sect: standby snapshot taken before the updates");
+
+# The page images wal_consistency_checking adds make replay fall behind, and
+# a standby more than max_standby_streaming_delay behind cancels a
+# conflicting query at once, without the wait whose log line names the
+# record.  So the standby waits longer in this section, and catches up
+# between the rounds.
+$node_standby->append_conf('postgresql.conf', 'max_standby_streaming_delay = 5s');
+$node_standby->reload;
+
+$log_location = -s $node_standby->logfile;
+$lsn_before = $node_primary->safe_psql($db, 'SELECT pg_current_wal_insert_lsn()');
+my $tids = $node_primary->safe_psql($db,
+	"SET wal_consistency_checking = 'Bark'; WITH u AS (UPDATE churn_t SET v = v + 1 RETURNING ctid) SELECT array_agg(ctid) FROM u"
+);
+$node_primary->wait_for_replay_catchup($node_standby);
+like(
+	$node_primary->safe_psql(
+		$db,
+		"SET enable_seqscan = off; EXPLAIN (COSTS OFF) UPDATE churn_t SET v = v + 1 WHERE ctid = ANY ('$tids'::tid[])"
+	),
+	qr/Tid Scan/,
+	"$sect: the second round updates by TID scan");
+$node_primary->safe_psql($db,
+	"SET wal_consistency_checking = 'Bark'; SET enable_seqscan = off; UPDATE churn_t SET v = v + 1 WHERE ctid = ANY ('$tids'::tid[])"
+);
+$node_primary->wait_for_replay_catchup($node_standby);
+$lsn_after = $node_primary->safe_psql($db, 'SELECT pg_current_wal_insert_lsn()');
+
+cmp_ok(waldump_count($lsn_before, $lsn_after, 'DELETE snapshotConflictHorizon: [1-9]\\d*,'),
+	'>', 0, "$sect: primary logged Bark DELETE records with a conflict horizon");
+cmp_ok(waldump_count($lsn_before, $lsn_after, 'DELETE [^\\n]* ndeleted: [1-9]\\d*,'),
+	'>', 0, "$sect: primary logged Bark DELETE records that delete entries");
+cmp_ok(waldump_count($lsn_before, $lsn_after, 'DELETE [^\\n]* nupdated: [1-9]\\d*,'),
+	'>', 0, "$sect: primary logged Bark DELETE records that rewrite entries");
+
+check_conflict_log(
+	"User query might have needed to see row versions that must be removed");
+check_conflict_record('snapshot', 'Bark/DELETE');
+$psql_standby->reconnect_and_clear();
+
+my $churn_query = qq[
+SET enable_seqscan = off; SET enable_bitmapscan = off;
+SELECT count(*), sum(k), sum(v) FROM churn_t WHERE k > 0
+UNION ALL
+SELECT count(*), count(DISTINCT u), 0 FROM churn_t WHERE u > 'h'];
+$primary_count = $node_primary->safe_psql($db, $churn_query);
+is($primary_count, "4500|11250000|9000\n4500|1125|0",
+	"$sect: primary index scans find every row");
+is($node_standby->safe_psql($db, $churn_query),
+	$primary_count, "$sect: standby index scans match the primary");
 
 $psql_standby->quit;
 $node_standby->stop;
