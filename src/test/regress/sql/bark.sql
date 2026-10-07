@@ -877,9 +877,10 @@ SELECT a, (a <~> 4999) AS d FROM bark_knn ORDER BY a <~> 4999 LIMIT 6;
 
 -- Early stop: the LIMIT must bound how much of the index the scan reads.  A
 -- full-table distance sort would touch all 3000 rows; the KNN scan reads only
--- a few around the constant.
+-- a few around the constant.  (ctid keeps this a plain index scan, whose
+-- output does not depend on the visibility map.)
 EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
-  SELECT a FROM bark_knn ORDER BY a <~> 5000 LIMIT 10;
+  SELECT a, ctid FROM bark_knn ORDER BY a <~> 5000 LIMIT 10;
 
 -- A WHERE qual combines with the ordering: nearest to 5000 among a > 5000.
 SELECT a FROM bark_knn WHERE a > 5000 ORDER BY a <~> 5000 LIMIT 5;
@@ -2533,7 +2534,7 @@ FETCH BACKWARD 1 FROM c;
 FETCH 2 FROM c;
 COMMIT;
 EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
-  SELECT a FROM bark_knnsc ORDER BY a <~> 500 LIMIT 3;
+  SELECT a, ctid FROM bark_knnsc ORDER BY a <~> 500 LIMIT 3;
 RESET enable_seqscan;
 DROP TABLE bark_knnx, bark_knnsc;
 
@@ -2583,6 +2584,18 @@ BEGIN
     (node->>'Shared Hit Blocks')::int + (node->>'Shared Read Blocks')::int <
       pg_relation_size(idx::regclass) / current_setting('block_size')::int / 2);
 END $$;
+CREATE FUNCTION bark_skip_searches(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  plan json;
+  node json;
+BEGIN
+  EXECUTE 'EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, FORMAT JSON) ' || q INTO plan;
+  node := plan->0->'Plan';
+  WHILE node->>'Index Name' IS NULL LOOP
+    node := node->'Plans'->0;
+  END LOOP;
+  RETURN format('%s: %s searches', node->>'Index Name', node->>'Index Searches');
+END $$;
 SELECT bark_skip_check('SELECT a, b FROM bark_skip WHERE b = 4321 ORDER BY a, b');
 SELECT bark_skip_check('SELECT a, b FROM bark_skip WHERE b BETWEEN 5000 AND 5100 ORDER BY a, b');
 SELECT bark_skip_check('SELECT a, b FROM bark_skip WHERE b BETWEEN 5000 AND 5100 ORDER BY a DESC, b DESC');
@@ -2599,8 +2612,7 @@ SELECT bark_skip_stats('SELECT t, b FROM bark_skip WHERE b BETWEEN 5000 AND 5100
 -- (next value, 5000), plus the first descent.
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
-EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
-  SELECT a, b FROM bark_skip WHERE b BETWEEN 5000 AND 5100;
+SELECT bark_skip_searches('SELECT a, b FROM bark_skip WHERE b BETWEEN 5000 AND 5100');
 RESET enable_bitmapscan;
 RESET enable_seqscan;
 -- A scroll cursor that reverses inside the scan returns the same rows as a
@@ -2622,7 +2634,8 @@ RESET enable_bitmapscan;
 RESET enable_seqscan;
 SELECT a, b FROM bark_skip WHERE b BETWEEN 3000 AND 3400 ORDER BY a, b
   LIMIT 25;
-DROP FUNCTION bark_skip_check(text), bark_skip_stats(text, text);
+DROP FUNCTION bark_skip_check(text), bark_skip_stats(text, text),
+  bark_skip_searches(text);
 DROP TABLE bark_skip;
 
 -- ScalarArrayOp with cross-type arrays and inequality operators.  An array
