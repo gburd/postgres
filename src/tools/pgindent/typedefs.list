@@ -4496,8 +4496,11 @@ ws_options
 xl_bark_add_tid
 xl_bark_insert
 xl_bark_mark_deleted
+xl_bark_metadata
+xl_bark_newroot
 xl_bark_overwrite
 xl_bark_reuse_page
+xl_bark_split
 xl_bark_unlink_page
 xl_bark_vacuum
 xl_brin_createidx

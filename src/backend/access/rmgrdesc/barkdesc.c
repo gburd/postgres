@@ -104,6 +104,36 @@ bark_desc(StringInfo buf, XLogReaderState *record)
 								 ItemPointerGetOffsetNumber(&xlrec->tid));
 				break;
 			}
+		case XLOG_BARK_SPLIT:
+			{
+				xl_bark_split *xlrec = (xl_bark_split *) rec;
+				BlockNumber left = InvalidBlockNumber;
+				BlockNumber right = InvalidBlockNumber;
+
+				XLogRecGetBlockTagExtended(record, 0, NULL, NULL, &left, NULL);
+				XLogRecGetBlockTagExtended(record, 1, NULL, NULL, &right, NULL);
+				appendStringInfo(buf, "level: %u, leaf: %c, left: %u, right: %u, cycleid: %u",
+								 xlrec->level,
+								 (xlrec->flags & XLH_BARK_SPLIT_LEAF) ? 'T' : 'F',
+								 left, right, xlrec->cycleid);
+				break;
+			}
+		case XLOG_BARK_NEWROOT:
+			{
+				xl_bark_newroot *xlrec = (xl_bark_newroot *) rec;
+
+				appendStringInfo(buf, "root: %u, level: %u",
+								 xlrec->rootblk, xlrec->level);
+				break;
+			}
+		case XLOG_BARK_CREATE_ROOT:
+			{
+				BlockNumber root = InvalidBlockNumber;
+
+				XLogRecGetBlockTagExtended(record, 0, NULL, NULL, &root, NULL);
+				appendStringInfo(buf, "root: %u", root);
+				break;
+			}
 	}
 }
 
@@ -137,6 +167,15 @@ bark_identify(uint8 info)
 			break;
 		case XLOG_BARK_ADD_TID:
 			id = "ADD_TID";
+			break;
+		case XLOG_BARK_SPLIT:
+			id = "SPLIT";
+			break;
+		case XLOG_BARK_NEWROOT:
+			id = "NEWROOT";
+			break;
+		case XLOG_BARK_CREATE_ROOT:
+			id = "CREATE_ROOT";
 			break;
 	}
 

@@ -12,6 +12,9 @@
 # 4. Inserts are logged as BARK INSERT_LEAF, INSERT_UPPER, OVERWRITE and
 #    ADD_TID records, and the standby's index finds the same rows as the
 #    primary's.
+# 5. Splits of leaves and internal pages are logged as BARK SPLIT records,
+#    and new levels as NEWROOT, and the standby's index finds the same rows
+#    as the primary's.
 
 use strict;
 use warnings FATAL => 'all';
@@ -208,6 +211,40 @@ $primary_count = $node_primary->safe_psql($db, $ins_query);
 is($primary_count, '60000|6201190000|600030000',
 	"$sect: primary index scan finds every row");
 is($node_standby->safe_psql($db, $ins_query),
+	$primary_count, "$sect: standby index scan matches the primary");
+
+
+## 5: split and new-root records
+$sect = 'split records';
+
+# 300-byte keys fit about 25 to a page at every level, so 20000 of them,
+# inserted in random order, split leaves and internal pages and grow the
+# tree to three levels.
+$lsn_before = $node_primary->safe_psql($db, 'SELECT pg_current_wal_insert_lsn()');
+$node_primary->safe_psql(
+	$db, qq[
+CREATE TABLE split_t (k int, s text);
+CREATE INDEX split_t_idx ON split_t USING bark (s);
+SELECT setseed(0.5);
+INSERT INTO split_t SELECT g, lpad(g::text, 300, '0')
+  FROM generate_series(1, 20000) g ORDER BY random();
+]);
+$lsn_after = $node_primary->safe_psql($db, 'SELECT pg_current_wal_insert_lsn()');
+$node_primary->wait_for_replay_catchup($node_standby);
+
+cmp_ok(waldump_count($lsn_before, $lsn_after, 'SPLIT level: 0,'),
+	'>', 0, "$sect: primary logged Bark SPLIT records for leaves");
+cmp_ok(waldump_count($lsn_before, $lsn_after, 'SPLIT level: [1-9]\\d*,'),
+	'>', 0, "$sect: primary logged Bark SPLIT records for internal pages");
+cmp_ok(waldump_count($lsn_before, $lsn_after, 'NEWROOT root: \\d+, level: 2,'),
+	'>', 0, "$sect: primary logged a Bark NEWROOT record for a third level");
+
+my $split_query = qq[
+SET enable_seqscan = off; SET enable_bitmapscan = off;
+SELECT count(*), sum(k) FROM split_t WHERE s > ''];
+$primary_count = $node_primary->safe_psql($db, $split_query);
+is($primary_count, '20000|200010000', "$sect: primary index scan finds every row");
+is($node_standby->safe_psql($db, $split_query),
 	$primary_count, "$sect: standby index scan matches the primary");
 
 $psql_standby->quit;
