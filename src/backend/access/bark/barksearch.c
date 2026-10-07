@@ -61,16 +61,26 @@ bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
 	IndexTuple	full = NULL;
 	int			natts;
 	int			ncmp;
+	bool		notid = false;
 	int			result = 0;
 
+	/* natts, and whether the tuple is a pivot whose heap TID was truncated. */
 	if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
 	{
-		natts = BarkOverflowIsLeaf(itup) ? keyinfo->nkeys :
-			BarkOverflowGetRef(itup)->natts;
+		if (BarkOverflowIsLeaf(itup))
+			natts = keyinfo->nkeys;
+		else
+		{
+			natts = BarkOverflowGetRef(itup)->natts;
+			notid = bark_pivot_heap_tid(itup) == NULL;
+		}
 		itup = full = bark_fetch_oversized(index, itup);
 	}
 	else if (BarkEntryGetShape(itup) == BARK_SHAPE_PIVOT)
+	{
 		natts = BarkPivotGetNAtts(itup);
+		notid = BarkPivotGetHeapTID(itup) == NULL;
+	}
 	else
 		natts = keyinfo->nkeys;
 
@@ -108,13 +118,25 @@ bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
 	 * the first page that can hold an equal key, and one for an upper bound
 	 * moves on to the last such page, past a high key equal to the bound.
 	 * A bound is never equal to a tuple, so nextkey does not matter.
+	 *
+	 * One exception, as in nbtree's _bt_compare: a lower bound sorts after a
+	 * pivot that has exactly the bound's columns and no heap TID.  Suffix
+	 * truncation kept one column more than lastleft and firstright share, so
+	 * lastleft is strictly less than the pivot on those columns, and so is
+	 * every entry left of the pivot (an insert equal to the pivot on them
+	 * goes right of it).  No entry there can be at or after the bound, and a
+	 * descent that went left would only read a page with no match and step
+	 * right.  A pivot with more columns than the bound, or with a heap TID,
+	 * may have entries equal to the bound on its left.  Leaf entries are
+	 * never truncated, and an upper bound sorts after the pivot anyway.
 	 */
 	if (result == 0)
 	{
-		if (natts < bound->nkeys)
+		if (natts < bound->nkeys || bound->upper ||
+			(notid && natts == bound->nkeys))
 			result = 1;
 		else
-			result = bound->upper ? 1 : -1;
+			result = -1;
 	}
 
 	if (full)

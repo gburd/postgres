@@ -178,11 +178,13 @@ right entry.  The consequences:
     attributes and sorts below firstright) now belongs to the right page, for
     inserts and searches alike.  No such key existed when the split was made,
     since lastleft and firstright were adjacent.
-  * A lower-bound scan whose bound equals a truncated pivot descends to the
-    page left of it and reads one leaf that holds no match before moving
-    right.  nbtree avoids that extra leaf for forward scans by treating a
-    bound equal to a truncated pivot as greater than it (_bt_compare); BARK
-    does not.
+  * A lower bound equal to a pivot that has exactly the bound's columns and
+    no heap TID sorts after the pivot (bark_compare_bound), as a forward
+    scankey does in nbtree's _bt_compare: every entry left of the pivot is
+    strictly less than it on those columns, so the descent goes right of
+    it rather than reading a leaf that holds no match.  A pivot with more
+    columns than the bound, or with a heap TID, may have entries equal to
+    the bound on its left, and the bound still sorts before it.
 
 The split-point choice (barksplitloc.c) prefers split points whose neighbors
 differ on an earlier attribute, so the high key keeps fewer attributes.  As

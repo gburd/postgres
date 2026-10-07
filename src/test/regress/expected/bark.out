@@ -3619,6 +3619,74 @@ SELECT bark_sfx_check('SELECT a, b FROM bark_sfx_lb WHERE a >= 1234 AND a < 1240
 (1 row)
 
 DROP TABLE bark_sfx_lb;
+-- Such a bound sorts after a pivot that has exactly its columns and no heap
+-- TID, as in nbtree: every entry left of the pivot is less than it, so the
+-- descent goes right of it instead of reading a leaf with no match.  200000
+-- rows over 100 values of a, inserted in random order, so that many leaf
+-- splits fall between two values and leave a high key of (a) alone.  Below
+-- the upper levels, a = v reads the leaves that hold v, and one more when v
+-- ends a leaf, since the scan stops at the first entry past v.  Each of the
+-- 99 boundaries between values adds one of the two, so the 100 queries
+-- together read every leaf, 99 more, and a descent each: no more than the
+-- leaves plus 100 times the pages of a descent (root to leaf).  A descent
+-- that went left of a (v) pivot would read one more leaf for each.  The
+-- leaf count and the height come from two scans this does not affect:
+-- a = -1 reads the upper levels and one leaf, a >= 0 every leaf.
+CREATE FUNCTION bark_sfx_blocks(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+  plan json;
+  node json;
+BEGIN
+  PERFORM set_config('enable_seqscan', 'off', true);
+  PERFORM set_config('enable_indexscan', 'off', true);
+  PERFORM set_config('enable_indexonlyscan', 'off', true);
+  PERFORM set_config('enable_bitmapscan', 'on', true);
+  PERFORM set_config('max_parallel_workers_per_gather', '0', true);
+  EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, FORMAT JSON) ' || q
+    INTO plan;
+  node := plan->0->'Plan';
+  WHILE node->>'Node Type' <> 'Bitmap Index Scan' LOOP
+    node := node->'Plans'->0;
+  END LOOP;
+  RETURN (node->>'Shared Hit Blocks')::int + (node->>'Shared Read Blocks')::int;
+END $$;
+CREATE TABLE bark_sfx_tp (a int, b int) WITH (autovacuum_enabled = off);
+CREATE INDEX bark_sfx_tp_idx ON bark_sfx_tp USING bark (a, b);
+INSERT INTO bark_sfx_tp
+  SELECT g % 100, g FROM generate_series(1, 200000) g ORDER BY md5(g::text);
+SELECT bark_index_check('bark_sfx_tp_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_sfx_check('SELECT s.a, count(t.a) FROM generate_series(-1, 100) s(a)
+  LEFT JOIN bark_sfx_tp t ON t.a = s.a GROUP BY s.a ORDER BY s.a');
+ bark_sfx_check 
+----------------
+ ok
+(1 row)
+
+SELECT bark_sfx_check('SELECT s.a, count(t.a) FROM generate_series(-1, 100) s(a)
+  LEFT JOIN bark_sfx_tp t ON t.a = s.a GROUP BY s.a ORDER BY s.a', true);
+ bark_sfx_check 
+----------------
+ ok
+(1 row)
+
+SELECT sum(bark_sfx_blocks('SELECT count(*) FROM bark_sfx_tp WHERE a = ' || v)) <=
+       bark_sfx_blocks('SELECT count(*) FROM bark_sfx_tp WHERE a >= 0') -
+       bark_sfx_blocks('SELECT count(*) FROM bark_sfx_tp WHERE a = -1') + 1 +
+       100 * bark_sfx_blocks('SELECT count(*) FROM bark_sfx_tp WHERE a = -1')
+         AS no_leaf_left_of_pivot
+  FROM generate_series(0, 99) v;
+ no_leaf_left_of_pivot 
+-----------------------
+ t
+(1 row)
+
+DROP TABLE bark_sfx_tp;
+DROP FUNCTION bark_sfx_blocks(text);
 -- OVERSIZED keys in the first column: a pivot keeps the oversized value when
 -- it is one of the attributes it needs, and stays OVERSIZED, recording the
 -- attributes it kept; otherwise the pivot drops it.  (Storage is plain so
