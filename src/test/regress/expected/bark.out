@@ -1774,6 +1774,182 @@ RESET debug_parallel_query;
 RESET parallel_setup_cost;
 RESET parallel_tuple_cost;
 RESET enable_seqscan;
+-- KNN scans against a sort of a sequential scan by distance: the two must
+-- return the same keys in the same order.  Each case runs as an index-only
+-- scan and as a plain index scan; bark_knn_check returns NULL, with a notice,
+-- if the plan is not a KNN scan of the requested kind.  At equal distance the
+-- scan returns its forward side first: keys >= the constant on an ASC index,
+-- keys <= it on a DESC one, so the reference sorts ties the same way.
+CREATE FUNCTION bark_knn_check(tbl text, expr text, c int, lim int, ios bool,
+                               descidx bool)
+RETURNS bool LANGUAGE plpgsql AS $$
+DECLARE
+  q text := format('SELECT (%s)::text FROM %I ORDER BY a <~> (%s) LIMIT %s',
+                   expr, tbl, c, lim);
+  line text;
+  plan text := '';
+  node text := CASE WHEN ios THEN 'Index Only Scan' ELSE 'Index Scan' END;
+  knn text[];
+  ref text[];
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL enable_sort = off;
+  SET LOCAL enable_indexscan = on;
+  EXECUTE format('SET LOCAL enable_indexonlyscan = %s', ios);
+  FOR line IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+    plan := plan || line || E'\n';
+  END LOOP;
+  IF plan !~ node OR plan !~ 'Order By' OR plan ~ 'Sort' THEN
+    RAISE NOTICE 'not a KNN scan: %', plan;
+    RETURN NULL;
+  END IF;
+  EXECUTE format('SELECT array(%s)', q) INTO knn;
+  SET LOCAL enable_seqscan = on;
+  SET LOCAL enable_sort = on;
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_indexonlyscan = off;
+  EXECUTE format('SELECT array(SELECT (%s)::text FROM %I ORDER BY a <~> (%s), a %s (%s) LIMIT %s)',
+                 expr, tbl, c, CASE WHEN descidx THEN '>' ELSE '<' END, c, lim)
+    INTO ref;
+  RETURN knn IS NOT DISTINCT FROM ref;
+END $$;
+CREATE TEMP TABLE bark_knn_q (tbl text, expr text, c int, lim int,
+                              descidx bool DEFAULT false);
+-- Inside the key range, at and beyond either end, and the whole index.
+INSERT INTO bark_knn_q (tbl, expr, c, lim) VALUES
+  ('bark_knn', 'a', 5000, 10), ('bark_knn', 'a', 5000, 100000),
+  ('bark_knn', 'a', 4999, 50), ('bark_knn', 'a', 3, 30),
+  ('bark_knn', 'a', 1, 20), ('bark_knn', 'a', -100, 100000),
+  ('bark_knn', 'a', 9000, 30), ('bark_knn', 'a', 1000000, 20),
+  ('bark_knn', 'a', 1000000, 100000);
+-- POSTING entries (300 rows per even key) and LIST entries (3 per odd key):
+-- the center on a POSTING key, on a LIST key, and outside the range.
+CREATE TABLE bark_knn_post (a int);
+CREATE INDEX bark_knn_post_idx ON bark_knn_post USING bark (a);
+INSERT INTO bark_knn_post SELECT k * 2 FROM generate_series(0, 29) k,
+  generate_series(1, 300) g;
+INSERT INTO bark_knn_post SELECT k * 2 + 1 FROM generate_series(0, 29) k,
+  generate_series(1, 3) g;
+VACUUM ANALYZE bark_knn_post;
+-- As LIST entries the 9090 TIDs alone would fill more than 6 leaves.
+SELECT pg_relation_size('bark_knn_post_idx') / 8192 < 8 AS post_has_posting;
+ post_has_posting 
+------------------
+ t
+(1 row)
+
+INSERT INTO bark_knn_q (tbl, expr, c, lim) VALUES
+  ('bark_knn_post', 'a', 30, 1000), ('bark_knn_post', 'a', 31, 1000),
+  ('bark_knn_post', 'a', 31, 100000), ('bark_knn_post', 'a', -5, 1000),
+  ('bark_knn_post', 'a', 100, 100000);
+-- A DESC index, with NULLs (which sort first in it, and come last here).
+CREATE TABLE bark_knn_desc (a int);
+INSERT INTO bark_knn_desc
+  SELECT CASE WHEN g % 97 = 0 THEN NULL ELSE g * 3 END
+    FROM generate_series(1, 3000) g;
+CREATE INDEX bark_knn_desc_idx ON bark_knn_desc USING bark (a DESC);
+VACUUM ANALYZE bark_knn_desc;
+INSERT INTO bark_knn_q VALUES
+  ('bark_knn_desc', 'a', 5000, 100, true), ('bark_knn_desc', 'a', 4999, 50, true),
+  ('bark_knn_desc', 'a', -10, 50, true), ('bark_knn_desc', 'a', 1000000, 50, true),
+  ('bark_knn_desc', 'a', 5000, 100000, true);
+-- Delete the middle of the key range and VACUUM, which deletes the emptied
+-- leaves (as for bark_dpg above; a temp table so that only this session's
+-- snapshot holds back removal), then scan across the range: from its right,
+-- the backward side walks left over it; from its left, the forward side
+-- walks right over it; from inside, both sides do.
+CREATE TEMP TABLE bark_knn_del (a int);
+CREATE INDEX bark_knn_del_idx ON bark_knn_del USING bark (a);
+INSERT INTO bark_knn_del SELECT g FROM generate_series(1, 6000) g;
+DELETE FROM bark_knn_del WHERE a BETWEEN 1500 AND 4500;
+VACUUM ANALYZE bark_knn_del;
+SELECT bark_index_check('bark_knn_del_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+INSERT INTO bark_knn_q (tbl, expr, c, lim) VALUES
+  ('bark_knn_del', 'a', 4800, 1000), ('bark_knn_del', 'a', 4800, 100000),
+  ('bark_knn_del', 'a', 1200, 1000), ('bark_knn_del', 'a', 3000, 500);
+-- OVERSIZED entries: there is no distance operator for text, so no oversized
+-- key can be KNN-ordered; an oversized INCLUDE payload makes the entries
+-- OVERSIZED instead.  The distance and the index-only scan's copy must come
+-- from the full tuple on the overflow chain, not from the small inline entry.
+-- Every other row is small, so pages mix the two shapes.  4000 bytes of hex
+-- digits cannot compress below the item size limit, so each oversized row
+-- has an overflow page of its own (the size check below).
+CREATE TABLE bark_knn_big (a int, p text);
+INSERT INTO bark_knn_big
+  SELECT g, CASE WHEN g % 2 = 0 THEN
+              (SELECT string_agg(md5(g::text || h::text), '')
+                 FROM generate_series(1, 125) h)
+            ELSE 'small' || g END
+    FROM generate_series(1, 400) g;
+CREATE INDEX bark_knn_big_idx ON bark_knn_big USING bark (a) INCLUDE (p);
+VACUUM ANALYZE bark_knn_big;
+SELECT pg_relation_size('bark_knn_big_idx') / 8192 > 200 AS big_has_overflow;
+ big_has_overflow 
+------------------
+ t
+(1 row)
+
+INSERT INTO bark_knn_q (tbl, expr, c, lim) VALUES
+  ('bark_knn_big', 'a', 200, 50), ('bark_knn_big', 'a', 200, 100000),
+  ('bark_knn_big', 'a || '':'' || md5(p)', 200, 50),
+  ('bark_knn_big', 'a || '':'' || md5(p)', 1, 100000);
+SELECT count(*) AS knn_checks,
+       string_agg(format('%s %s <~> %s limit %s%s', tbl, expr, c, lim,
+                         CASE WHEN ios THEN ' ios' ELSE '' END), '; ')
+         FILTER (WHERE ok IS NOT TRUE) AS knn_failed
+  FROM (SELECT q.*, v.ios,
+               bark_knn_check(q.tbl, q.expr, q.c, q.lim, v.ios, q.descidx) AS ok
+          FROM bark_knn_q q, (VALUES (true), (false)) v(ios)) s;
+ knn_checks | knn_failed 
+------------+------------
+         54 | 
+(1 row)
+
+-- The scan reads a page at a time and only when the merge needs it: the ten
+-- nearest rows to 5000 lie on one or two leaves, so the scan reads at most
+-- one more leaf on each side of them, beside the metapage and the root,
+-- while a scan of the whole index reads every leaf.  A temp table, so that
+-- VACUUM can set every heap page all-visible and the index-only scans count
+-- index pages only.
+CREATE FUNCTION bark_knn_buffers(q text) RETURNS int LANGUAGE plpgsql AS $$
+DECLARE
+  line text;
+  n int := 0;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  FOR line IN EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, SUMMARY OFF) ' || q LOOP
+    IF line ~ 'Buffers:' THEN
+      SELECT sum(m[2]::int) INTO n
+        FROM regexp_matches(line, '(hit|read)=([0-9]+)', 'g') m;
+      RETURN n;
+    END IF;
+  END LOOP;
+  RETURN NULL;
+END $$;
+CREATE TEMP TABLE bark_knn_rd (a int);
+INSERT INTO bark_knn_rd SELECT g * 3 FROM generate_series(1, 3000) g;
+CREATE INDEX bark_knn_rd_idx ON bark_knn_rd USING bark (a);
+VACUUM ANALYZE bark_knn_rd;
+SELECT bark_knn_buffers('SELECT a FROM bark_knn_rd ORDER BY a <~> 5000 LIMIT 10') <= 6
+         AS knn_limit_reads_few_pages,
+       bark_knn_buffers('SELECT a FROM bark_knn_rd ORDER BY a <~> 5000') >=
+         pg_relation_size('bark_knn_rd_idx') / 8192 - 2 AS knn_whole_scan_reads_all;
+ knn_limit_reads_few_pages | knn_whole_scan_reads_all 
+---------------------------+--------------------------
+ t                         | t
+(1 row)
+
+DROP FUNCTION bark_knn_buffers(text);
+DROP FUNCTION bark_knn_check(text, text, int, int, bool, bool);
+DROP TABLE bark_knn_q, bark_knn_post, bark_knn_desc, bark_knn_del, bark_knn_big,
+  bark_knn_rd;
 DROP TABLE bark_knn, bark_knn_dup, bark_knn_null, bark_knn8;
 DROP TABLE bark_tab, bark_small, bark_empty, bark_ins, bark_scan;
 -- ===========================================================================
