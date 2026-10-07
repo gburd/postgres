@@ -3781,6 +3781,15 @@ match_pathkeys_to_index(IndexOptInfo *index, List *pathkeys,
 		EquivalenceMemberIterator it;
 		EquivalenceMember *member;
 
+		/*
+		 * An index that is also ordered by its key (sortopfamily is set, as
+		 * for BARK) answers an ordering operator by walking outward from a
+		 * point in its key order, so it can produce only one distance order,
+		 * on its leading column.  Give it at most one ordering operator; the
+		 * caller sorts on the remaining pathkeys incrementally.
+		 */
+		if (index->sortopfamily != NULL && *orderby_clauses_p != NIL)
+			return;
 
 		/* Pathkey must request default sort order for the target opfamily */
 		if (pathkey->pk_cmptype != COMPARE_LT || pathkey->pk_nulls_first)
@@ -3812,11 +3821,14 @@ match_pathkeys_to_index(IndexOptInfo *index, List *pathkeys,
 			 * We allow any column of the index to match each pathkey; they
 			 * don't have to match left-to-right as you might expect.  This is
 			 * correct for GiST, and it doesn't matter for SP-GiST because
-			 * that doesn't handle multiple columns anyway, and no other
-			 * existing AMs support amcanorderbyop.  We might need different
-			 * logic in future for other implementations.
+			 * that doesn't handle multiple columns anyway.  An index ordered
+			 * by its key (see above) keeps the entries of a later column
+			 * spread over the whole index, one group per leading value, so
+			 * only its leading column can match.
 			 */
-			for (indexcol = 0; indexcol < index->nkeycolumns; indexcol++)
+			for (indexcol = 0;
+				 indexcol < (index->sortopfamily != NULL ? 1 : index->nkeycolumns);
+				 indexcol++)
 			{
 				Expr	   *expr;
 

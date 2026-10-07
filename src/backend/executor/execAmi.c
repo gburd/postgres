@@ -557,11 +557,19 @@ ExecSupportsBackwardScan(Plan *node)
 		case T_Gather:
 			return false;
 
+			/*
+			 * An index scan with ORDER BY operators returns tuples in
+			 * distance order, possibly through a reorder queue, and cannot
+			 * run that order backward, whatever the AM's amcanbackward says
+			 * about scans in key order.
+			 */
 		case T_IndexScan:
-			return IndexSupportsBackwardScan(((IndexScan *) node)->indexid);
+			return ((IndexScan *) node)->indexorderby == NIL &&
+				IndexSupportsBackwardScan(((IndexScan *) node)->indexid);
 
 		case T_IndexOnlyScan:
-			return IndexSupportsBackwardScan(((IndexOnlyScan *) node)->indexid);
+			return ((IndexOnlyScan *) node)->indexorderby == NIL &&
+				IndexSupportsBackwardScan(((IndexOnlyScan *) node)->indexid);
 
 		case T_SubqueryScan:
 			return ExecSupportsBackwardScan(((SubqueryScan *) node)->subplan);
