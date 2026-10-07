@@ -2731,3 +2731,130 @@ SELECT bark_saop_check('SELECT a FROM bark_xt_desc WHERE a < ANY(''{5,7}''::int8
 SELECT bark_saop_check('SELECT a FROM bark_xt_desc WHERE a >= ANY(''{99998,99990}''::int4[]) ORDER BY a DESC');
 DROP FUNCTION bark_saop_check(text);
 DROP TABLE bark_xt, bark_xt_mc, bark_xt_desc;
+
+--
+-- Leaf prefix compression (the prefix_compression reloption).  Each index is
+-- built with the option off and then on, the leaf counts compared, and the
+-- compressed index's results compared with a bitmap scan and a seqscan.
+--
+CREATE FUNCTION bark_pfx_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  how text;
+  res text[] := '{}';
+  cnt text[] := '{}';
+  r record;
+BEGIN
+  FOREACH how IN ARRAY ARRAY['index', 'bitmap', 'seq'] LOOP
+    PERFORM set_config('enable_seqscan', (how = 'seq')::text, true);
+    PERFORM set_config('enable_indexscan', (how = 'index')::text, true);
+    PERFORM set_config('enable_indexonlyscan', (how = 'index')::text, true);
+    PERFORM set_config('enable_bitmapscan', (how = 'bitmap')::text, true);
+    EXECUTE 'SELECT count(*) AS n, md5(string_agg(x::text, '','')) AS h FROM ('
+      || q || ') x' INTO r;
+    res := res || coalesce(r.h, '');
+    cnt := cnt || r.n::text;
+  END LOOP;
+  IF res[1] = res[3] AND res[2] = res[3] THEN
+    RETURN 'ok';
+  END IF;
+  RETURN format('mismatch: index %s, bitmap %s, seq %s rows',
+                cnt[1], cnt[2], cnt[3]);
+END $$;
+-- Build bark_pfx_idx on `def` with the option off, then on; leave the
+-- compressed one, checked by amcheck, and return both sizes in pages.
+CREATE FUNCTION bark_pfx_build(def text, OUT off_pages int, OUT on_pages int)
+LANGUAGE plpgsql AS $$
+BEGIN
+  DROP INDEX IF EXISTS bark_pfx_idx;
+  EXECUTE format('CREATE INDEX bark_pfx_idx ON bark_pfx USING bark %s WITH (prefix_compression = off)', def);
+  off_pages := pg_relation_size('bark_pfx_idx'::regclass) / 8192;
+  DROP INDEX bark_pfx_idx;
+  EXECUTE format('CREATE INDEX bark_pfx_idx ON bark_pfx USING bark %s WITH (prefix_compression = on)', def);
+  on_pages := pg_relation_size('bark_pfx_idx'::regclass) / 8192;
+  PERFORM bark_index_check('bark_pfx_idx'::regclass);
+END $$;
+-- A collation other than C: ICU's root locale where ICU is available.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_collation WHERE collname = 'und-x-icu') THEN
+    CREATE COLLATION bark_pfx_coll FROM "und-x-icu";
+  ELSE
+    CREATE COLLATION bark_pfx_coll FROM "POSIX";
+  END IF;
+END $$;
+-- URL-like keys (a long shared prefix), zero-padded codes with duplicates,
+-- md5 (little sharing), a mostly-NULL column, and long values: 330 bytes, or
+-- 600 compressible ones that are compressed inline and so stored raw.
+CREATE TABLE bark_pfx (id int, url text COLLATE "C", code text COLLATE "C",
+                       h text COLLATE "C", n int, z text COLLATE "C",
+                       big text COLLATE "C");
+INSERT INTO bark_pfx SELECT g,
+  'https://www.example.com/products/category/' || (g % 97) || '/item/' || md5(g::text),
+  'ACCT-' || lpad((g % 5000)::text, 12, '0'),
+  md5(g::text), g % 100,
+  CASE WHEN g % 4 = 0 THEN 'v' || (g % 300) END,
+  CASE WHEN g % 10 = 0 THEN repeat('b', 600) || g
+       ELSE repeat(md5((g % 50)::text), 10) || g END
+FROM generate_series(1, 20000) g ORDER BY md5(g::text || 'x');
+VACUUM ANALYZE bark_pfx;
+SELECT on_pages < off_pages AS smaller FROM bark_pfx_build('(url)');
+SELECT bark_pfx_check('SELECT id FROM bark_pfx WHERE url = ''https://www.example.com/products/category/5/item/'' || md5(''5'')');
+SELECT bark_pfx_check('SELECT url FROM bark_pfx WHERE url >= ''https://www.example.com/products/category/50'' AND url < ''https://www.example.com/products/category/6'' ORDER BY url');
+SELECT bark_pfx_check('SELECT url FROM bark_pfx WHERE url < ''https://www.example.com/products/category/2'' ORDER BY url DESC');
+SELECT bark_pfx_check('SELECT url, id FROM bark_pfx WHERE url > ''https://www.example.com/products/category/9'' ORDER BY url');
+SELECT on_pages < off_pages AS smaller FROM bark_pfx_build('(code)');
+SELECT bark_pfx_check('SELECT id FROM bark_pfx WHERE code = ''ACCT-000000001234'' ORDER BY id');
+SELECT bark_pfx_check('SELECT code FROM bark_pfx WHERE code BETWEEN ''ACCT-000000000100'' AND ''ACCT-000000002000'' ORDER BY code');
+SELECT bark_pfx_check('SELECT code FROM bark_pfx WHERE code > ''ACCT-000000004000'' ORDER BY code DESC');
+SELECT on_pages <= off_pages AS not_larger FROM bark_pfx_build('(h)');
+SELECT bark_pfx_check('SELECT h FROM bark_pfx WHERE h >= ''c'' AND h < ''d'' ORDER BY h');
+SELECT bark_pfx_check('SELECT id FROM bark_pfx WHERE h = md5(''777'')');
+SELECT on_pages < off_pages AS smaller FROM bark_pfx_build('(url COLLATE bark_pfx_coll)');
+SELECT bark_pfx_check('SELECT url FROM bark_pfx WHERE url COLLATE bark_pfx_coll >= ''https://www.example.com/products/category/50'' ORDER BY url COLLATE bark_pfx_coll');
+SELECT bark_pfx_check('SELECT url FROM bark_pfx WHERE url COLLATE bark_pfx_coll < ''https://www.example.com/products/category/3'' ORDER BY url COLLATE bark_pfx_coll DESC');
+SELECT on_pages < off_pages AS smaller FROM bark_pfx_build('(code DESC)');
+SELECT bark_pfx_check('SELECT code FROM bark_pfx WHERE code > ''ACCT-000000003000'' ORDER BY code DESC');
+SELECT bark_pfx_check('SELECT code FROM bark_pfx WHERE code < ''ACCT-000000000300'' ORDER BY code');
+SELECT on_pages < off_pages AS smaller FROM bark_pfx_build('(url, n)');
+SELECT bark_pfx_check('SELECT url, n FROM bark_pfx WHERE url >= ''https://www.example.com/products/category/4'' AND n = 3 ORDER BY url, n');
+SELECT bark_pfx_check('SELECT url, n FROM bark_pfx WHERE url < ''https://www.example.com/products/category/15'' ORDER BY url DESC, n DESC');
+SELECT on_pages <= off_pages AS not_larger FROM bark_pfx_build('(z)');
+SELECT bark_pfx_check('SELECT z FROM bark_pfx WHERE z > ''v1'' ORDER BY z');
+SELECT bark_pfx_check('SELECT id FROM bark_pfx WHERE z IS NULL AND id < 1000 ORDER BY id');
+SELECT on_pages < off_pages AS smaller FROM bark_pfx_build('(big)');
+SELECT bark_pfx_check('SELECT big FROM bark_pfx WHERE big > repeat(md5(''7''), 10) ORDER BY big');
+SELECT bark_pfx_check('SELECT id FROM bark_pfx WHERE big = repeat(''b'', 600) || ''120''');
+SELECT bark_pfx_check('SELECT id FROM bark_pfx WHERE big = repeat(md5(''7''), 10) || ''57''');
+-- A key column of a fixed-length type never has a prefix.
+SELECT on_pages = off_pages AS same FROM bark_pfx_build('(n)');
+-- Inserts after the build, VACUUM removing half the rows, and more inserts,
+-- into compressed indexes; coalescing extends LIST entries on coded pages.
+DROP INDEX bark_pfx_idx;
+CREATE INDEX bark_pfx_url ON bark_pfx USING bark (url) WITH (prefix_compression = on);
+CREATE INDEX bark_pfx_code ON bark_pfx USING bark (code DESC, n) WITH (prefix_compression = on);
+SELECT setseed(0.5);
+INSERT INTO bark_pfx SELECT g,
+  'https://www.example.com/products/category/' || (g % 89) || '/x/' || md5(g::text),
+  'ACCT-' || lpad((random() * 6000)::int::text, 12, '0'), md5(g::text), g % 100
+FROM generate_series(20001, 40000) g ORDER BY random();
+DELETE FROM bark_pfx WHERE id % 2 = 0;
+VACUUM bark_pfx;
+INSERT INTO bark_pfx SELECT g,
+  'https://www.example.com/products/' || (g % 13) || '/' || md5(g::text),
+  'ACCT-' || lpad((random() * 6000)::int::text, 12, '0'), md5(g::text), g % 100
+FROM generate_series(40001, 50000) g ORDER BY random();
+-- With the option turned off, compressed leaves stay readable, and their
+-- splits form plain halves, or keep the old prefix where plain does not fit.
+ALTER INDEX bark_pfx_url SET (prefix_compression = off);
+INSERT INTO bark_pfx SELECT g,
+  'https://www.example.com/products/category/' || (g % 7) || '/y/' || md5(g::text)
+FROM generate_series(50001, 60000) g ORDER BY md5(g::text);
+SELECT bark_index_check('bark_pfx_url'), bark_index_check('bark_pfx_code');
+SELECT bark_pfx_check('SELECT url FROM bark_pfx WHERE url >= ''https://www.example.com/products/c'' ORDER BY url');
+SELECT bark_pfx_check('SELECT url FROM bark_pfx ORDER BY url DESC');
+SELECT bark_pfx_check('SELECT code, n FROM bark_pfx WHERE code > ''ACCT-000000002000'' ORDER BY code DESC, n DESC');
+SELECT bark_pfx_check('SELECT id FROM bark_pfx WHERE code = ''ACCT-000000001234'' ORDER BY id');
+DROP TABLE bark_pfx;
+DROP FUNCTION bark_pfx_check(text);
+DROP FUNCTION bark_pfx_build(text);
+DROP COLLATION bark_pfx_coll;
