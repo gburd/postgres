@@ -1189,17 +1189,13 @@ barkoptions(Datum reloptions, bool validate)
 
 /*
  * Tree height for the planner's descent-cost charge: the level of the root,
- * zero for a single-page or empty index.  This reads the meta page each time
- * rather than caching it in rd_amcache as nbtree does; the planner calls it
- * once per index per plan, and BARK keeps no other meta page cache.
+ * zero for a single-page or empty index.  Taken from the root cache, as
+ * nbtree's _bt_getrootheight takes it from its meta page cache.
  */
 static int
 barkgettreeheight(Relation rel)
 {
-	uint32		level;
-
-	(void) bark_get_root(rel, &level);
-	return (int) level;
+	return (int) bark_get_root_level(rel);
 }
 
 /*
