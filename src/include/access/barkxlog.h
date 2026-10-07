@@ -3,8 +3,8 @@
  * barkxlog.h
  *	  header file for BARK WAL records and redo routines
  *
- * BARK changes that have no record of their own here (splits, new roots,
- * overflow chains) are still WAL-logged with generic WAL (generic_xlog.c).
+ * BARK changes that have no record of their own here (overflow chains) are
+ * still WAL-logged with generic WAL (generic_xlog.c).
  * Each change to a page is in exactly one record of either kind, so replay
  * applies them in LSN order per page.
  *
@@ -42,6 +42,81 @@
 #define XLOG_BARK_OVERWRITE		0x60	/* replace an entry on a leaf */
 #define XLOG_BARK_ADD_TID		0x70	/* add one heap TID to a LIST or
 										 * POSTING entry */
+#define XLOG_BARK_SPLIT			0x80	/* split a leaf or internal page */
+#define XLOG_BARK_NEWROOT		0xA0	/* add a level above a split root */
+#define XLOG_BARK_CREATE_ROOT	0xB0	/* give an empty index its root leaf */
+
+/*
+ * The meta page's root and level, set by NEWROOT and CREATE_ROOT, as
+ * nbtree's xl_btree_metadata.
+ */
+typedef struct xl_bark_metadata
+{
+	BlockNumber root;
+	uint32		level;
+} xl_bark_metadata;
+
+/*
+ * A page split (bark_split), as nbtree's xl_btree_split, but simpler: both
+ * halves are logged whole, as packed runs of their entries, so redo needs
+ * nothing from the original page.  Both halves get the cycle ID that the
+ * split stamped on them (zero for an internal page).
+ *
+ * Backup Blk 0: left page (the original block, rebuilt)
+ * Backup Blk 1: new right page
+ * Backup Blk 2: original right sibling (only if the original had one)
+ * Backup Blk 3: child whose split the new downlink finishes (internal only)
+ *
+ * In payload of blk 0: the left page's entries (its new high key, then the
+ * entries below the split point)
+ * In payload of blk 1: the right page's entries (the original high key unless
+ * the original page was rightmost, then the entries from the split point on)
+ *
+ * Each payload is the page's tuple area, pd_upper to pd_special, of the page
+ * the primary built by adding the entries in offset order to an empty page,
+ * the format bark_restore_page reads (as nbtree's _bt_restore_page).
+ */
+typedef struct xl_bark_split
+{
+	uint32		level;			/* tree level of the split page */
+	uint16		flags;			/* XLH_BARK_SPLIT_* */
+	uint16		cycleid;		/* BTCycleId stamped on both halves */
+	BlockNumber leftprev;		/* original page's left sibling */
+	BlockNumber rightnext;		/* original page's right sibling */
+} xl_bark_split;
+
+#define SizeOfBarkSplit	(offsetof(xl_bark_split, rightnext) + sizeof(BlockNumber))
+
+#define XLH_BARK_SPLIT_LEAF		0x0001	/* the split page is a leaf */
+
+/*
+ * A new root above the split of the old one (bark_new_root), as nbtree's
+ * xl_btree_newroot.
+ *
+ * Backup Blk 0: new root
+ * Backup Blk 1: left child, whose split the new root finishes
+ * Backup Blk 2: meta page
+ *
+ * In payload of blk 0: the root's two downlinks, as the tuple area of a split
+ * In payload of blk 2: xl_bark_metadata
+ */
+typedef struct xl_bark_newroot
+{
+	BlockNumber rootblk;		/* location of new root */
+	uint32		level;			/* its tree level */
+} xl_bark_newroot;
+
+#define SizeOfBarkNewroot	(offsetof(xl_bark_newroot, level) + sizeof(uint32))
+
+/*
+ * The first root of an empty index (bark_create_root_leaf): an empty leaf
+ * that is also the root.  No main data.
+ *
+ * Backup Blk 0: the new leaf
+ * Backup Blk 1: meta page
+ *
+ * In payload of blk 1: xl_bark_metadata
+ */
 
 /*
  * VACUUM's changes to one leaf page, as nbtree's xl_btree_vacuum: entries
