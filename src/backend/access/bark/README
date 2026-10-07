@@ -309,13 +309,12 @@ WAL
 ---
 
 BARK has its own WAL resource manager, "Bark" (RM_BARK_ID; barkxlog.h,
-barkxlog.c, rmgrdesc/barkdesc.c), for inserts that need no split, VACUUM
-and page deletion.  Splits, new roots, the first root of an empty index,
-overflow chains and CREATE INDEX are still logged with generic WAL
-(generic_xlog.c), which logs a delta of each registered page.  The two
-kinds coexist because each change to a page is in exactly one record:
-replay applies a page's records in LSN order whichever resource manager
-wrote them.  The records:
+barkxlog.c, rmgrdesc/barkdesc.c), for inserts, splits, new roots, VACUUM
+and page deletion.  Overflow chains are still logged with generic WAL
+(generic_xlog.c), which logs a delta of each registered page, and CREATE
+INDEX logs the pages it writes whole.  The kinds coexist because each
+change to a page is in exactly one record: replay applies a page's records
+in LSN order whichever resource manager wrote them.  The records:
 
   XLOG_BARK_INSERT_LEAF (bark_insert_entry, from bark_insert)
       One leaf: the new entry and its offset, as nbtree's INSERT_LEAF.  An
@@ -329,6 +328,36 @@ wrote them.  The records:
       redo, like btree_xlog_insert, clears the flag first and then adds the
       downlink, one page lock at a time, since only writers look at the flag.
       A parent that must split to take the downlink is logged as a split.
+
+  XLOG_BARK_SPLIT (bark_split)
+      Up to four pages: the left half (the original block), the new right
+      half, the original right sibling, whose left link now names the right
+      half, and, for an internal page taking a child's downlink, that child,
+      whose BARK_INCOMPLETE_SPLIT flag is cleared.  The record holds the
+      level, a leaf flag, the cycle ID stamped on both halves and the
+      original page's two sibling links; each half's data is its tuple area
+      (pd_upper to pd_special), which the primary builds by adding the
+      entries in offset order to an empty temporary page.  Redo initializes
+      both halves and re-adds their entries in offset order
+      (bark_restore_page, as nbtree's _bt_restore_page), so every entry lands
+      at the offset and position it has on the primary.  nbtree logs only the
+      right half and the new item, and rebuilds the left half from the
+      original page; BARK logs both halves whole, so neither half needs the
+      old page or a full-page image.  Redo clears the child's flag first,
+      then holds the right half, the left half and the right sibling locked
+      together, as btree_xlog_split does.
+
+  XLOG_BARK_NEWROOT (bark_new_root)
+      Three pages: the new root, rebuilt from its two downlinks as a split
+      half is; the old root, the left child, whose split the new root
+      finishes; and the meta page, which gets the new root and level.
+
+  XLOG_BARK_CREATE_ROOT (bark_create_root_leaf)
+      Two pages: the first root of an empty index, an empty leaf, and the
+      meta page.  CREATE INDEX always writes a root, so today only an
+      unlogged index reset to its init fork reaches bark_create_root_leaf,
+      and an unlogged index writes no WAL; the record covers any logged
+      index that is ever left without a root.
 
   XLOG_BARK_OVERWRITE (bark_overwrite_entry, from bark_coalesce_list)
       One leaf: an entry's offset and its replacement: a SINGLE or LIST
@@ -382,15 +411,14 @@ wrote them.  The records:
       (see "Page deletion and recycling").  The page's reinitialization is in
       the allocating record that follows.
 
-The vacuum cycle ID's clear is logged, in XLOG_BARK_VACUUM, although nbtree
-treats it as a hint and masks it in btree_mask.  A hint would make a
-standby's page differ from the primary's in a field that the generic records
-for splits copy whole, so a consistency check of the next such record, which
-compares the replayed page against the full-page image, would fail.  Once
-splits are BARK records too, the clear can become a hint and bark_mask can
-mask it.  Until then bark_mask (wal_consistency_checking)
-masks only the LSN, checksum, page-header hint bits and the unused space:
-BARK sets no LP_DEAD bits and makes no other unlogged changes.
+The vacuum cycle ID's clear is logged, in XLOG_BARK_VACUUM, and a split
+logs the cycle ID it stamps, although nbtree treats the clear as a hint and
+masks the field in btree_mask.  Overflow pages still use generic WAL, but
+they carry no cycle ID, so the clear could now become a hint with bark_mask
+masking the field; logging it keeps every BARK page byte-identical between
+primary and standby.  So bark_mask (wal_consistency_checking) masks only
+the LSN, checksum, page-header hint bits and the unused space: BARK sets no
+LP_DEAD bits and makes no other unlogged changes.
 
 Entry encoding (the C-KEYSHAPE contract)
 ----------------------------------------

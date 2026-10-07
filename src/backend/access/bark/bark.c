@@ -27,9 +27,9 @@
 #include "access/amlocator.h"
 #include "access/bark.h"
 #include "access/barkxlog.h"
-#include "access/generic_xlog.h"
 #include "access/nbtree.h"
 #include "access/reloptions.h"
+#include "access/xloginsert.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
@@ -748,11 +748,11 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 		 * Clear our cycle ID from a page split during this VACUUM, so that a
 		 * later backtrack stops here instead of cleaning the page again.
 		 * nbtree does this as an unlogged hint.  BARK logs it, in the page's
-		 * XLOG_BARK_VACUUM record, because splits still log the whole page
-		 * through generic WAL: a hint the standby never saw would reappear in
-		 * the next full-page image and fail the consistency check.  A page that has nothing to delete gets a record only when
-		 * it has a cycle ID to clear, so a VACUUM that finds nothing to do
-		 * logs nothing.
+		 * XLOG_BARK_VACUUM record, and bark_mask does not mask the field, so
+		 * every BARK page stays byte-identical between primary and standby
+		 * (see "WAL" in the README).  A page that has nothing to delete gets
+		 * a record only when it has a cycle ID to clear, so a VACUUM that
+		 * finds nothing to do logs nothing.
 		 */
 		clearcycleid = (cycleid != 0 && opaque->bark_cycleid == cycleid);
 
