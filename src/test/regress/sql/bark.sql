@@ -2624,3 +2624,97 @@ SELECT a, b FROM bark_skip WHERE b BETWEEN 3000 AND 3400 ORDER BY a, b
   LIMIT 25;
 DROP FUNCTION bark_skip_check(text), bark_skip_stats(text, text);
 DROP TABLE bark_skip;
+
+-- ScalarArrayOp with cross-type arrays and inequality operators.  An array
+-- whose element type differs from the column's (int8 elements on an int4
+-- column) is sorted with the element type's own comparator and compared
+-- with column values through the cross-type one; comparing through the
+-- column's comparator would truncate 4294967301 to 5.  An inequality array
+-- (a < ANY(...)) is a single bound on its extreme element, not a membership
+-- test.  bark_saop_check runs each query as an index (or index-only) scan,
+-- as a bitmap scan and as a sequential scan, and says ok when all three
+-- return the same rows in the same order.
+CREATE TABLE bark_xt (a int4, b int8);
+INSERT INTO bark_xt SELECT g, g FROM generate_series(1, 100000) g;
+CREATE INDEX bark_xt_a ON bark_xt USING bark (a);
+CREATE INDEX bark_xt_b ON bark_xt USING bark (b);
+CREATE TABLE bark_xt_mc (a int4, c int);
+INSERT INTO bark_xt_mc SELECT g, g % 3 FROM generate_series(1, 100000) g;
+CREATE INDEX bark_xt_mc_ac ON bark_xt_mc USING bark (a, c);
+CREATE TABLE bark_xt_desc (a int4, b int8);
+INSERT INTO bark_xt_desc SELECT g, g FROM generate_series(1, 100000) g;
+CREATE INDEX bark_xt_desc_a ON bark_xt_desc USING bark (a DESC);
+VACUUM ANALYZE bark_xt, bark_xt_mc, bark_xt_desc;
+CREATE FUNCTION bark_saop_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  how text;
+  res text[] := '{}';
+  cnt text[] := '{}';
+  r record;
+BEGIN
+  FOREACH how IN ARRAY ARRAY['index', 'bitmap', 'seq'] LOOP
+    PERFORM set_config('enable_seqscan', (how = 'seq')::text, true);
+    PERFORM set_config('enable_indexscan', (how = 'index')::text, true);
+    PERFORM set_config('enable_indexonlyscan', (how = 'index')::text, true);
+    PERFORM set_config('enable_bitmapscan', (how = 'bitmap')::text, true);
+    EXECUTE 'SELECT count(*) AS n, md5(string_agg(x::text, '','')) AS h FROM ('
+      || q || ') x' INTO r;
+    res := res || coalesce(r.h, '');
+    cnt := cnt || r.n::text;
+  END LOOP;
+  IF res[1] = res[3] AND res[2] = res[3] THEN
+    RETURN 'ok';
+  END IF;
+  RETURN format('mismatch: index %s, bitmap %s, seq %s rows',
+                cnt[1], cnt[2], cnt[3]);
+END $$;
+-- The array is an Index Cond of the bark scan.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF)
+  SELECT a, b FROM bark_xt WHERE a = ANY('{4294967301,7}'::int8[]) ORDER BY a;
+EXPLAIN (COSTS OFF)
+  SELECT a, b FROM bark_xt WHERE a < ANY('{5,7}'::int8[]) ORDER BY a;
+RESET enable_bitmapscan;
+RESET enable_seqscan;
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a = ANY(''{4294967301,7}''::int8[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a = ANY(''{-4294967291}''::int8[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a < ANY(''{5,7}''::int8[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a <= ANY(''{5,7}''::int4[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a >= ANY(''{99998,99990}''::int4[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a > ANY(''{99990,3000000000}''::int8[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a > ANY(''{99000,3000000000}''::int8[]) AND a < ANY(''{99010,5}''::int4[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE b = ANY(''{5,7,32767}''::int2[]) ORDER BY b');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a = ANY(ARRAY[NULL, 7]::int8[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a < ANY(ARRAY[NULL, 3]::int8[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a > ANY(''{}''::int8[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a > ANY(ARRAY[NULL]::int8[]) ORDER BY a');
+-- A runtime array, re-evaluated on each rescan: the first is all NULL (the
+-- key stays an empty array), the later ones reduce to plain bounds.
+SELECT bark_saop_check('SELECT v.i, x.a FROM (VALUES (1, ARRAY[NULL]::int8[]), (2, ''{5,3}''::int8[]), (3, ''{}''::int8[]), (4, ''{4294967296,-1}''::int8[])) v(i, arr), LATERAL (SELECT a FROM bark_xt WHERE a < ANY(v.arr) ORDER BY a LIMIT 3) x ORDER BY v.i, x.a');
+-- Index-only and backward scans of a cross-type array.
+SELECT bark_saop_check('SELECT a FROM bark_xt WHERE a = ANY(''{3000000000,-3000000000,4294967303,5,99999}''::int8[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt WHERE a = ANY(''{3000000000,-3000000000,4294967303,5,99999}''::int8[]) ORDER BY a DESC');
+SELECT bark_saop_check('SELECT a FROM bark_xt WHERE a = ANY(''{3000000000,-3000000000,4294967303,5,99999}''::int8[]) ORDER BY a DESC');
+-- Multicolumn: 200 int8 elements spread over the index, 20 of them beyond
+-- int4's range, drive the leading-array cursor and its re-descents; also an
+-- inequality array on the second column.
+SELECT bark_saop_check(format(
+  'SELECT a, c FROM bark_xt_mc WHERE a = ANY(%L::int8[]) AND c = 1 ORDER BY a',
+  (SELECT array_agg(CASE WHEN g % 10 = 0 THEN 4294967296 + g * 487 + 1
+                    ELSE g * 487 END)
+     FROM generate_series(1, 200) g)));
+SELECT bark_saop_check(format(
+  'SELECT a, c FROM bark_xt_mc WHERE a = ANY(%L::int8[]) AND c <= ANY(''{0,1}''::int8[]) ORDER BY a',
+  (SELECT array_agg(CASE WHEN g % 10 = 0 THEN 4294967296 + g * 487 + 1
+                    ELSE g * 487 END)
+     FROM generate_series(1, 200) g)));
+SELECT bark_saop_check('SELECT a, c FROM bark_xt_mc WHERE c > ANY(''{1,0}''::int8[]) AND a < 3000 ORDER BY a, c');
+SELECT bark_saop_check('SELECT a, c FROM bark_xt_mc WHERE c >= ANY(''{1,9}''::int8[]) ORDER BY a, c');
+-- DESC index, read forward (ORDER BY a DESC) and backward.
+SELECT bark_saop_check('SELECT a, b FROM bark_xt_desc WHERE a = ANY(''{4294967301,7,-4294967291,99999,3}''::int8[]) ORDER BY a DESC');
+SELECT bark_saop_check('SELECT a, b FROM bark_xt_desc WHERE a = ANY(''{4294967301,7,-4294967291,99999,3}''::int8[]) ORDER BY a');
+SELECT bark_saop_check('SELECT a FROM bark_xt_desc WHERE a < ANY(''{5,7}''::int8[]) ORDER BY a DESC');
+SELECT bark_saop_check('SELECT a FROM bark_xt_desc WHERE a >= ANY(''{99998,99990}''::int4[]) ORDER BY a DESC');
+DROP FUNCTION bark_saop_check(text);
+DROP TABLE bark_xt, bark_xt_mc, bark_xt_desc;
