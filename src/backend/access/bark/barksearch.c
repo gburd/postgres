@@ -271,9 +271,22 @@ bark_binsrch(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
 }
 
 /*
+ * The root block and its level as last read from the meta page, kept in
+ * rd_amcache so that a descent need not read the meta page (nbtree caches
+ * its meta page the same way).  The cache may be stale: bark_get_root_buffer
+ * checks the page it names before using it.  A relcache rebuild (REINDEX,
+ * TRUNCATE) drops it.
+ */
+typedef struct BarkRootCache
+{
+	BlockNumber root;
+	uint32		level;
+} BarkRootCache;
+
+/*
  * Read the root block number, and the root's level when level_out is not
- * NULL, from the meta page.  Returns BARK_P_NONE when the index is empty (no
- * root yet).
+ * NULL, from the meta page, and refresh the root cache.  Returns BARK_P_NONE
+ * when the index is empty (no root yet).
  */
 BlockNumber
 bark_get_root(Relation index, uint32 *level_out)
@@ -281,14 +294,87 @@ bark_get_root(Relation index, uint32 *level_out)
 	Buffer		metabuf = ReadBuffer(index, BARK_METAPAGE);
 	BarkMetaPageData *meta;
 	BlockNumber root;
+	uint32		level;
 
 	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
 	meta = BarkPageGetMeta(BufferGetPage(metabuf));
 	root = meta->bark_root;
-	if (level_out)
-		*level_out = meta->bark_level;
+	level = meta->bark_level;
 	UnlockReleaseBuffer(metabuf);
+
+	if (root != BARK_P_NONE)
+	{
+		BarkRootCache *cache = (BarkRootCache *) index->rd_amcache;
+
+		if (cache == NULL)
+			index->rd_amcache = cache =
+				MemoryContextAlloc(index->rd_indexcxt, sizeof(BarkRootCache));
+		cache->root = root;
+		cache->level = level;
+	}
+	if (level_out)
+		*level_out = level;
 	return root;
+}
+
+/*
+ * The root's level, for the planner: from the root cache when there is one,
+ * else from the meta page.  Zero for a single-page or empty index.
+ */
+uint32
+bark_get_root_level(Relation index)
+{
+	uint32		level;
+
+	if (index->rd_amcache != NULL)
+		return ((BarkRootCache *) index->rd_amcache)->level;
+	(void) bark_get_root(index, &level);
+	return level;
+}
+
+/*
+ * Return the root page locked in mode access, or InvalidBuffer when the
+ * index is empty.
+ *
+ * The cached root is used when, under the lock, it is still the root: the
+ * BARK_ROOT flag is set, the page is not being deleted, and it is at the
+ * cached level.  A root split clears the flag on the old root before the new
+ * root is made, so a page that passes is the root the meta page names, or
+ * the one it is about to name.  Otherwise the meta page is read, as it
+ * always was before the cache; the root it names may itself have split
+ * since, which the caller's move right handles.
+ */
+Buffer
+bark_get_root_buffer(Relation index, BufferLockMode access)
+{
+	BarkRootCache *cache = (BarkRootCache *) index->rd_amcache;
+	BlockNumber root;
+	Buffer		buf;
+
+	if (cache != NULL)
+	{
+		Page		page;
+
+		buf = ReadBuffer(index, cache->root);
+		LockBuffer(buf, access);
+		page = BufferGetPage(buf);
+		if (!PageIsNew(page))
+		{
+			BarkPageOpaque opaque = BarkPageGetOpaque(page);
+
+			if (BarkPageIsRoot(opaque) && !BarkPageIgnore(opaque) &&
+				opaque->bark_level == cache->level)
+				return buf;
+		}
+		UnlockReleaseBuffer(buf);
+	}
+
+	root = bark_get_root(index, NULL);
+	if (root == BARK_P_NONE)
+		return InvalidBuffer;
+	buf = ReadBuffer(index, root);
+	LockBuffer(buf, access);
+	return buf;
 }
 
 /*
@@ -321,12 +407,9 @@ bark_descend(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
 	if (stack)
 		*stack = NULL;
 
-	blkno = bark_get_root(index, NULL);
-	if (blkno == BARK_P_NONE)
+	buf = bark_get_root_buffer(index, access);
+	if (!BufferIsValid(buf))
 		return InvalidBuffer;	/* empty index */
-
-	buf = ReadBuffer(index, blkno);
-	LockBuffer(buf, access);
 
 	for (;;)
 	{
