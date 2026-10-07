@@ -79,7 +79,7 @@ bark_find_parent_downlink(Relation index, BarkKeyInfo *keyinfo,
 	 * on the recorded stack (or just right of it).
 	 */
 	{
-		Buffer		lbuf = bark_search(index, keyinfo, childhikey, false, false,
+		Buffer		lbuf = bark_search(index, keyinfo, childhikey, NULL, false, false,
 									   &stack);
 
 		if (lbuf != InvalidBuffer)

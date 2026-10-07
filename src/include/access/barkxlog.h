@@ -45,6 +45,8 @@
 										 * oversized entry */
 #define XLOG_BARK_NEWROOT		0xA0	/* add a level above a split root */
 #define XLOG_BARK_CREATE_ROOT	0xB0	/* give an empty index its root leaf */
+#define XLOG_BARK_INSERT_SWAP	0xC0	/* divide a LIST or POSTING entry
+										 * around a new heap TID */
 #define XLOG_BARK_DELETE		0xD0	/* delete entries on a leaf whose heap
 										 * tuples are dead (bottom-up
 										 * deletion) */
@@ -297,6 +299,24 @@ typedef struct xl_bark_add_tid
 } xl_bark_add_tid;
 
 #define SizeOfBarkAddTid	(offsetof(xl_bark_add_tid, tid) + sizeof(ItemPointerData))
+
+/*
+ * A heap TID inserted inside the TID range of a LIST or POSTING entry that
+ * cannot take it (bark_swap_tid_entry): the entry at offnum is divided around
+ * the TID into two entries of its key, which replace it at offnum and
+ * offnum + 1, as nbtree's posting-list split (XLOG_BTREE_INSERT_POST with a
+ * postingoff) rewrites the posting list and adds the new item.  Only the TID
+ * is logged: redo calls bark_entry_swap_tid on the entry, as the primary did.
+ *
+ * Backup Blk 0: leaf page
+ */
+typedef struct xl_bark_insert_swap
+{
+	OffsetNumber offnum;		/* entry being divided */
+	ItemPointerData tid;		/* the TID */
+} xl_bark_insert_swap;
+
+#define SizeOfBarkInsertSwap	(offsetof(xl_bark_insert_swap, tid) + sizeof(ItemPointerData))
 
 /*
  * prototypes for functions in barkxlog.c

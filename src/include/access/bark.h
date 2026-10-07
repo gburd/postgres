@@ -385,12 +385,10 @@ BarkPageGetItem(Page page, OffsetNumber off, BarkItemBuf *buf)
  *
  * A leaf page holding a single key value is split leaving the left page
  * BARK_SINGLEVAL_FILLFACTOR full, whether or not it is rightmost, provided no
- * later page holds the same key.  BARK has no heap-TID tiebreaker, but an
- * equal key is always inserted at the end of its run (the insert descent uses
- * nextkey), so such a page only receives appends.  After the split they all
- * go to the right page, whose downlink equals the key: the insert descent
- * follows the last downlink that is <= its key.  The left page receives no
- * more inserts of the key, so space left free there would mostly stay free.
+ * later page holds the same key, as nbtree's single-value strategy does.
+ * Equal keys are in heap TID order, and new rows mostly take higher heap
+ * TIDs, so such a page mostly receives appends, which after the split go to
+ * the right page; space left free on the left would mostly stay free.
  */
 #define BARK_MIN_FILLFACTOR		10
 #define BARK_DEFAULT_FILLFACTOR	90
@@ -432,7 +430,14 @@ typedef struct BarkOptions
  */
 #define BARK_METAPAGE		0	/* block number of the meta page */
 #define BARK_MAGIC			0x5241424B	/* "BARK" as a big-endian uint32 */
-#define BARK_VERSION		1	/* current on-disk version */
+#define BARK_VERSION		2	/* current on-disk version */
+
+/*
+ * The oldest version this code reads.  Version 2 orders the entries of a run
+ * of equal keys by heap TID and gives pivots a heap TID; a version 1 index
+ * has neither, so it must be rebuilt with REINDEX (bark_get_root refuses it).
+ */
+#define BARK_MIN_VERSION	2
 
 /*
  * BARK uses the btree strategy numbers and support-function convention: its
@@ -519,7 +524,14 @@ typedef struct BarkMetaPageData
  * contract): BARK_IS_DELETE_MARKED records that the entry is logically
  * deleted but retained for UNDO rollback, matching nbtree's
  * BT_IS_DELETE_MARKED.  It is a property of an entry, orthogonal to its shape,
- * so it shares the status-bit region and must never be set on a PIVOT.
+ * so it shares the status-bit region and must never be set on a PIVOT: on a
+ * pivot the same bit is BARK_PIVOT_HEAP_TID, so the two meanings never meet.
+ *
+ * Within a run of equal keys, leaf entries are ordered by heap TID, as
+ * nbtree's are since version 4: each entry covers a range of heap TIDs (see
+ * bark_entry_tid_range), and the ranges of successive entries of one key are
+ * disjoint and ascending, across pages too.  A pivot separating two entries
+ * of the same key carries the first right entry's lowest TID.
  * ----------------------------------------------------------------------------
  */
 
@@ -539,6 +551,10 @@ typedef struct BarkMetaPageData
 #define BARK_PIVOT_META				0x1000	/* pivot carries extra metadata */
 #define BARK_IS_POSTING				0x2000	/* leaf entry is a posting set */
 #define BARK_IS_DELETE_MARKED		0x4000	/* leaf entry is delete-marked */
+#define BARK_PIVOT_HEAP_TID			0x4000	/* pivot carries a heap TID; the
+											 * same bit as
+											 * BARK_IS_DELETE_MARKED, which is
+											 * never set on a pivot */
 #define BARK_IS_LIST				0x8000	/* leaf entry is a sorted list */
 
 /*
@@ -619,12 +635,29 @@ BarkEntryIsLeafData(const IndexTupleData *itup)
  * ----------------------------------------------------------------------------
  */
 
-/* Number of key attributes recorded in a pivot tuple. */
+/* Number of key attributes recorded in a pivot tuple (not the heap TID). */
 static inline uint16
 BarkPivotGetNAtts(const IndexTupleData *itup)
 {
 	return (ItemPointerGetOffsetNumberNoCheck(&itup->t_tid) &
 			BARK_OFFSET_MASK);
+}
+
+/*
+ * The heap TID of a plain PIVOT, or NULL when it has none.  A pivot keeps one
+ * only when it separates two entries equal on every key attribute (so it has
+ * all of them); it is the last ItemPointerData of the MAXALIGNed tuple, after
+ * the key data, as in nbtree.  A pivot without one has its heap TID truncated
+ * away: minus infinity.
+ */
+static inline ItemPointer
+BarkPivotGetHeapTID(IndexTupleData *itup)
+{
+	if ((ItemPointerGetOffsetNumberNoCheck(&itup->t_tid) &
+		 BARK_PIVOT_HEAP_TID) == 0)
+		return NULL;
+	return (ItemPointer) ((char *) itup + IndexTupleSize(itup) -
+						  sizeof(ItemPointerData));
 }
 
 /* Stamp a pivot tuple's status bits and attribute count into t_tid. */
@@ -835,6 +868,12 @@ typedef struct BarkOverflowRef
 	uint16		natts;			/* pivot key-attr count, or BARK_OVERFLOW_LEAF */
 
 	/*
+	 * A pivot's heap TID, as BarkPivotGetHeapTID's for a plain pivot; invalid
+	 * when the pivot has none (or for a leaf entry, whose TID is locator).
+	 */
+	ItemPointerData pivottid;
+
+	/*
 	 * Inline comparison prefix: the leading bytes of the first key column's
 	 * datum, used to order two OVERSIZED entries without fetching the overflow
 	 * chain when the prefixes already decide the order.  Only populated (and
@@ -953,6 +992,12 @@ extern BarkKeyInfo *bark_build_keyinfo(Relation index);
 extern bool bark_allequalimage(Relation index);
 extern int	bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
 							   IndexTuple a, IndexTuple b);
+extern int	bark_compare_itups_tid(BarkKeyInfo *keyinfo, Relation index,
+								   IndexTuple key, ItemPointer scantid,
+								   IndexTuple itup);
+extern ItemPointer bark_pivot_heap_tid(IndexTuple pivot);
+extern void bark_entry_tid_range(IndexTuple itup, ItemPointer lo,
+								 ItemPointer hi);
 extern int	bark_keep_natts(Relation index, BarkKeyInfo *keyinfo,
 							IndexTuple lastleft, IndexTuple firstright);
 
@@ -1056,6 +1101,9 @@ extern IndexTuple bark_posting_add_tid(IndexTuple key, IndexTuple posting,
  */
 extern IndexTuple bark_entry_add_tid(IndexTuple entry, ItemPointer tid,
 									 Size maxsz);
+extern bool bark_entry_has_tid(IndexTuple itup, ItemPointer tid);
+extern void bark_entry_swap_tid(IndexTuple entry, ItemPointer tid,
+								IndexTuple *left, IndexTuple *right);
 extern int	bark_posting_count(IndexTuple itup);
 extern int	bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout);
 
@@ -1130,6 +1178,7 @@ extern IndexTuple bark_fetch_oversized(Relation index, IndexTuple entry);
 extern BlockNumber bark_free_oversized(Relation index, IndexTuple entry);
 
 /* Bottom-up deletion, and re-forming entries that lose members (barkdelete.c). */
+extern Size bark_leaf_free_space(Page page);
 extern bool bark_bottomup_delete(Relation index, Relation heapRel,
 								 BarkKeyInfo *keyinfo, Buffer buf,
 								 IndexTuple newitem, Size newitemsz);
@@ -1170,7 +1219,10 @@ typedef BarkStackData *BarkStack;
 /*
  * Descend to the leaf that should contain `key`, returning that leaf's buffer
  * (write-locked when forwrite) and, when stack is non-NULL, the parent path.
- * key is an index tuple whose key columns are compared with bark_compare_itups.
+ * key is an index tuple whose key columns are compared with bark_compare_itups;
+ * with a heap TID `scantid`, (key, scantid) is compared with
+ * bark_compare_itups_tid, which places it within a run of equal keys, and
+ * nextkey must be true.
  *
  * nextkey chooses which leaf a run of equal keys lands on: true (insert / true
  * key) descends to the rightmost leaf that can hold the key; false (lower-bound
@@ -1179,8 +1231,8 @@ typedef BarkStackData *BarkStack;
  * spans several leaves.
  */
 extern Buffer bark_search(Relation index, BarkKeyInfo *keyinfo,
-						  IndexTuple key, bool forwrite, bool nextkey,
-						  BarkStack *stack);
+						  IndexTuple key, ItemPointer scantid, bool forwrite,
+						  bool nextkey, BarkStack *stack);
 
 /*
  * A scan's bound on the leading key columns, for descending to the leaf

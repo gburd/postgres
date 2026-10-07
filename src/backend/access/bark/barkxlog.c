@@ -584,6 +584,51 @@ bark_xlog_add_tid(XLogReaderState *record)
 		UnlockReleaseBuffer(buffer);
 }
 
+/*
+ * Replay the division of a LIST or POSTING entry around a new heap TID
+ * (bark_swap_tid_entry): divide the entry as the primary did, and put the two
+ * parts, coded for the page, at the entry's offset and the next one.
+ */
+static void
+bark_xlog_insert_swap(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_bark_insert_swap *xlrec = (xl_bark_insert_swap *) XLogRecGetData(record);
+	Buffer		buffer;
+
+	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
+	{
+		Page		page = BufferGetPage(buffer);
+		BarkItemBuf ibuf;
+		IndexTuple	left;
+		IndexTuple	right;
+		IndexTuple	lcoded;
+		IndexTuple	rcoded;
+
+		bark_entry_swap_tid(BarkPageGetItem(page, xlrec->offnum, &ibuf),
+							&xlrec->tid, &left, &right);
+		lcoded = bark_prefix_encode(page, left);
+		rcoded = bark_prefix_encode(page, right);
+		if (!PageIndexTupleOverwrite(page, xlrec->offnum, lcoded,
+									 IndexTupleSize(lcoded)) ||
+			PageAddItem(page, rcoded, IndexTupleSize(rcoded),
+						OffsetNumberNext(xlrec->offnum), false, false) ==
+			InvalidOffsetNumber)
+			elog(PANIC, "failed to divide a BARK entry during replay");
+		if (lcoded != left)
+			pfree(lcoded);
+		if (rcoded != right)
+			pfree(rcoded);
+		pfree(left);
+		pfree(right);
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
+
 void
 bark_redo(XLogReaderState *record)
 {
@@ -617,6 +662,9 @@ bark_redo(XLogReaderState *record)
 			break;
 		case XLOG_BARK_ADD_TID:
 			bark_xlog_add_tid(record);
+			break;
+		case XLOG_BARK_INSERT_SWAP:
+			bark_xlog_insert_swap(record);
 			break;
 		case XLOG_BARK_SPLIT:
 			bark_xlog_split(record);

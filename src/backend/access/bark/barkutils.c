@@ -43,6 +43,8 @@
 #include "utils/pg_locale.h"
 #include "utils/rel.h"
 
+static Sbm *bark_posting_open(IndexTuple itup);
+
 /*
  * Translate between BARK strategy numbers and the generic CompareType.  BARK
  * uses the btree strategy numbers (1=<, 2=<=, 3==, 4=>=, 5=>), so these are
@@ -497,6 +499,103 @@ bark_keep_natts(Relation index, BarkKeyInfo *keyinfo, IndexTuple lastleft,
 	return keepnatts;
 }
 
+/*
+ * The heap TID of a pivot of either shape (a plain PIVOT or an OVERSIZED
+ * pivot), or NULL when it has none: minus infinity on the heap TID.
+ */
+ItemPointer
+bark_pivot_heap_tid(IndexTuple pivot)
+{
+	if (BarkEntryGetShape(pivot) == BARK_SHAPE_OVERSIZED)
+	{
+		BarkOverflowRef *ref = BarkOverflowGetRef(pivot);
+
+		Assert(ref->natts != BARK_OVERFLOW_LEAF);
+		return ItemPointerIsValid(&ref->pivottid) ? &ref->pivottid : NULL;
+	}
+	Assert(BarkEntryGetShape(pivot) == BARK_SHAPE_PIVOT);
+	return BarkPivotGetHeapTID(pivot);
+}
+
+/*
+ * The lowest and highest heap TIDs of a leaf entry, the range the entry
+ * occupies in the order of a run of equal keys: its t_tid for a SINGLE, its
+ * ref's locator for an OVERSIZED entry, the first and last members of a LIST,
+ * the sbm minimum and maximum of a POSTING.
+ */
+void
+bark_entry_tid_range(IndexTuple itup, ItemPointer lo, ItemPointer hi)
+{
+	switch (BarkEntryGetShape(itup))
+	{
+		case BARK_SHAPE_SINGLE:
+			*lo = *hi = itup->t_tid;
+			break;
+		case BARK_SHAPE_OVERSIZED:
+			Assert(BarkOverflowIsLeaf(itup));
+			*lo = *hi = BarkOverflowGetRef(itup)->locator;
+			break;
+		case BARK_SHAPE_LIST:
+			*lo = *BarkListGetTID(itup, 0);
+			*hi = *BarkListGetTID(itup, BarkListGetCount(itup) - 1);
+			break;
+		case BARK_SHAPE_POSTING:
+			{
+				Sbm		   *map = bark_posting_open(itup);
+
+				bark_key_to_tid(sbm_minimum(map), lo);
+				bark_key_to_tid(sbm_maximum(map), hi);
+				sbm_free(map);
+				break;
+			}
+		default:
+			elog(ERROR, "BARK leaf entry has unexpected shape %d",
+				 (int) BarkEntryGetShape(itup));
+	}
+}
+
+/*
+ * Compare `key` and, when `scantid` is not NULL, the heap TID `scantid` with
+ * `itup`, a pivot or a leaf entry, in the order of the tree: by key first
+ * (bark_compare_itups), then, within a key, by heap TID.  This is the
+ * comparison of nbtree's insertion scan key with a scantid (_bt_compare).
+ *
+ * Against a pivot equal on every key attribute, the pivot's heap TID decides,
+ * and a pivot without one is minus infinity, so the search key sorts after
+ * it.  (A pivot truncated on key attributes never ties: bark_compare_itups
+ * sorts the shorter one first.)  Against a leaf entry, 0 means scantid lies
+ * inside the entry's TID range, which an insert of that TID must go into.
+ */
+int
+bark_compare_itups_tid(BarkKeyInfo *keyinfo, Relation index, IndexTuple key,
+					   ItemPointer scantid, IndexTuple itup)
+{
+	int			cmp = bark_compare_itups(keyinfo, index, key, itup);
+	ItemPointerData lo;
+	ItemPointerData hi;
+
+	if (cmp != 0 || scantid == NULL)
+		return cmp;
+
+	if (!BarkEntryIsLeafData(itup) ||
+		(BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED &&
+		 !BarkOverflowIsLeaf(itup)))
+	{
+		ItemPointer ptid = bark_pivot_heap_tid(itup);
+
+		if (ptid == NULL)
+			return 1;
+		return ItemPointerCompare(scantid, ptid);
+	}
+
+	bark_entry_tid_range(itup, &lo, &hi);
+	if (ItemPointerCompare(scantid, &lo) < 0)
+		return -1;
+	if (ItemPointerCompare(scantid, &hi) > 0)
+		return 1;
+	return 0;
+}
+
 /* ----------------------------------------------------------------------------
  * LIST entry construction and reading
  *
@@ -850,8 +949,8 @@ bark_entry_key_part(IndexTuple entry)
 
 /*
  * Return `entry`, a LIST or POSTING entry, with heap TID `tid` added, or NULL
- * when the result would be larger than `maxsz` (or, for a LIST, when the TID
- * does not sort after every member, or the LIST is full).
+ * when the result would be larger than `maxsz` (or, for a LIST, when the
+ * LIST is full or already holds the TID).
  *
  * This is the whole of an insert's change to the entry, so that WAL can log
  * just the TID (XLOG_BARK_ADD_TID) and replay can call this function again
@@ -869,23 +968,46 @@ bark_entry_add_tid(IndexTuple entry, ItemPointer tid, Size maxsz)
 		int			ncur = BarkListGetCount(entry);
 		Size		cursz = IndexTupleSize(entry);
 		Size		appended = cursz + sizeof(ItemPointerData);
+		Size		insoff;
+		int			ins = ncur;
 		IndexTuple	ext;
 
-		if (ncur >= BARK_LIST_MAX_COUNT ||
-			ItemPointerCompare(tid, BarkListGetTID(entry, ncur - 1)) <= 0 ||
-			MAXALIGN(appended) > maxsz)
+		if (ncur >= BARK_LIST_MAX_COUNT || MAXALIGN(appended) > maxsz)
 			return NULL;
 
 		/*
-		 * The body is a packed ascending ItemPointerData array ending at the
-		 * entry's used size; the new locator goes right after the last one.
-		 * The body offset (t_tid block field) is unchanged, so copying the
-		 * old entry verbatim and appending keeps the layout correct; only the
-		 * count and size change.
+		 * The new locator usually sorts after every member (heap TIDs mostly
+		 * ascend); otherwise binary-search for its place.
 		 */
+		if (ItemPointerCompare(tid, BarkListGetTID(entry, ncur - 1)) <= 0)
+		{
+			int			lo = 0;
+
+			while (lo < ins)
+			{
+				int			mid = lo + (ins - lo) / 2;
+
+				if (ItemPointerCompare(BarkListGetTID(entry, mid), tid) < 0)
+					lo = mid + 1;
+				else
+					ins = mid;
+			}
+			if (ItemPointerEquals(BarkListGetTID(entry, ins), tid))
+				return NULL;
+		}
+
+		/*
+		 * The body is a packed ascending ItemPointerData array ending at the
+		 * entry's used size; the new locator goes at its place in it, and the
+		 * members after it move up by one.  The body offset (t_tid block
+		 * field) is unchanged; only the count and size change.
+		 */
+		insoff = (char *) BarkListGetTID(entry, ins) - (char *) entry;
 		ext = (IndexTuple) palloc0(appended);
-		memcpy(ext, entry, cursz);
-		memcpy((char *) ext + cursz, tid, sizeof(ItemPointerData));
+		memcpy(ext, entry, insoff);
+		memcpy((char *) ext + insoff, tid, sizeof(ItemPointerData));
+		memcpy((char *) ext + insoff + sizeof(ItemPointerData),
+			   (char *) entry + insoff, cursz - insoff);
 		ext->t_info = (ext->t_info & ~INDEX_SIZE_MASK) | (uint16) appended;
 		ItemPointerSetOffsetNumber(&ext->t_tid,
 								   (OffsetNumber) ((uint16) (ncur + 1) |
@@ -902,6 +1024,148 @@ bark_entry_add_tid(IndexTuple entry, ItemPointer tid, Size maxsz)
 		pfree(key);
 		return ext;
 	}
+}
+
+/*
+ * Is `tid` one of the heap TIDs of the leaf entry `itup`?
+ */
+bool
+bark_entry_has_tid(IndexTuple itup, ItemPointer tid)
+{
+	switch (BarkEntryGetShape(itup))
+	{
+		case BARK_SHAPE_LIST:
+			{
+				int			lo = 0;
+				int			hi = BarkListGetCount(itup);
+
+				while (lo < hi)
+				{
+					int			mid = lo + (hi - lo) / 2;
+					int			c = ItemPointerCompare(BarkListGetTID(itup, mid),
+													   tid);
+
+					if (c == 0)
+						return true;
+					if (c < 0)
+						lo = mid + 1;
+					else
+						hi = mid;
+				}
+				return false;
+			}
+		case BARK_SHAPE_POSTING:
+			{
+				Sbm		   *map = bark_posting_open(itup);
+				bool		found = sbm_contains(map, bark_tid_to_key(tid), NULL);
+
+				sbm_free(map);
+				return found;
+			}
+		default:
+			{
+				ItemPointerData lo;
+				ItemPointerData hi;
+
+				bark_entry_tid_range(itup, &lo, &hi);
+				return ItemPointerEquals(&lo, tid);
+			}
+	}
+}
+
+/*
+ * The smallest leaf entry of `key` (a key part, see bark_entry_key_part)
+ * holding the ascending heap TIDs tids[0..n): a SINGLE for one, else the
+ * smaller of POSTING and LIST.  NULL when it would exceed BarkMaxItemSize.
+ */
+static IndexTuple
+bark_form_entry(IndexTuple key, ItemPointer tids, int n)
+{
+	IndexTuple	entry;
+
+	if (n == 1)
+	{
+		entry = CopyIndexTuple(key);
+		entry->t_tid = tids[0];
+		return entry;
+	}
+	entry = bark_form_posting(NULL, key, tids, n);
+	if (entry == NULL && n <= BARK_LIST_MAX_COUNT)
+		entry = bark_form_list(NULL, key, tids, n);
+	if (entry != NULL && MAXALIGN(IndexTupleSize(entry)) > BarkMaxItemSize)
+	{
+		pfree(entry);
+		entry = NULL;
+	}
+	return entry;
+}
+
+/*
+ * Make room for heap TID `tid`, which falls strictly inside the TID range of
+ * the LIST or POSTING entry `entry` but cannot be added to it, by dividing
+ * entry's members and tid between two entries of its key: *left, which
+ * replaces entry, and *right, which goes just after it.  Both are palloc'd.
+ * Each side's TIDs are below the other's, so the run stays in heap TID order.
+ *
+ * The members are divided in the middle.  nbtree's posting-list swap
+ * (_bt_swap_posting) instead keeps the list whole with tid in place of its
+ * highest member, which becomes a plain tuple; nbtree's deduplication pass
+ * later merges such tuples.  BARK has no such pass, and an entry that cannot
+ * take tid has usually reached the item ceiling, so every later TID in its
+ * range would push out one more member as a SINGLE of its own.  Halves have
+ * room for the TIDs that later fall in their ranges.
+ *
+ * Should a half of a POSTING not fit under BarkMaxItemSize (its sbm encoding
+ * is not monotone in the members), the members are cut at tid instead, with
+ * tid on either side.  The side without tid is a subset of entry, so it fits
+ * (a subset's removal bound is no larger), and the two sides' encodings
+ * together are entry's plus a few dozen bytes for tid and the cut, so at
+ * least one of those two cuts fits.
+ *
+ * Like bark_entry_add_tid, this depends only on its arguments, so WAL replay
+ * repeats it (XLOG_BARK_INSERT_SWAP).
+ */
+void
+bark_entry_swap_tid(IndexTuple entry, ItemPointer tid, IndexTuple *left,
+					IndexTuple *right)
+{
+	IndexTuple	key = bark_entry_key_part(entry);
+	int			n = bark_entry_count_tids(entry);
+	ItemPointer tids = palloc_array(ItemPointerData, n + 1);
+	int			ins;
+	int			cuts[3];
+
+	n = bark_entry_get_tids(entry, tids, n);
+	for (ins = 0; ins < n; ins++)
+	{
+		if (ItemPointerCompare(&tids[ins], tid) >= 0)
+			break;
+	}
+	Assert(ins > 0 && ins < n && !ItemPointerEquals(&tids[ins], tid));
+	memmove(&tids[ins + 1], &tids[ins], (n - ins) * sizeof(ItemPointerData));
+	tids[ins] = *tid;
+	n++;
+
+	/* Members tids[0..cut) go left, the rest right. */
+	cuts[0] = n / 2;
+	cuts[1] = ins + 1;
+	cuts[2] = ins;
+	for (int i = 0; i < lengthof(cuts); i++)
+	{
+		*left = bark_form_entry(key, tids, cuts[i]);
+		*right = bark_form_entry(key, tids + cuts[i], n - cuts[i]);
+		if (*left != NULL && *right != NULL)
+		{
+			pfree(tids);
+			pfree(key);
+			return;
+		}
+		if (*left)
+			pfree(*left);
+		if (*right)
+			pfree(*right);
+	}
+	elog(ERROR, "could not divide a BARK entry to add a heap TID");
 }
 
 /* ----------------------------------------------------------------------------
@@ -1539,11 +1803,18 @@ bark_form_full_tuple(TupleDesc tupleDescriptor, const Datum *values,
 	return tuple;
 }
 
-/* True when `fulllen` bytes cannot sit inline on a page under the item cap. */
+/*
+ * True when a leaf entry of `fulllen` bytes cannot sit inline on a page.  As
+ * nbtree's BTMaxItemSize does, the limit keeps room under the item ceiling
+ * for the heap TID a pivot formed from the entry may have to carry (see
+ * bark_truncate_pivot), so a pivot is never oversized when its leaf entry is
+ * not.
+ */
 bool
 bark_len_is_oversized(Size fulllen)
 {
-	return MAXALIGN(fulllen) > BarkMaxItemSize;
+	return MAXALIGN(fulllen) >
+		BarkMaxItemSize - MAXALIGN(sizeof(ItemPointerData));
 }
 
 /* Overflow pages a full tuple of `fulllen` bytes occupies (at least one). */
@@ -1614,6 +1885,7 @@ bark_form_oversized_entry(ItemPointer locator, Size fulllen,
 	ref->fulllen = (uint32) fulllen;
 	ref->locator = *locator;
 	ref->natts = is_leaf ? BARK_OVERFLOW_LEAF : natts;
+	ItemPointerSetInvalid(&ref->pivottid);
 	return entry;
 }
 

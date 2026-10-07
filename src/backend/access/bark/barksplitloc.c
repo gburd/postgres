@@ -80,7 +80,8 @@ bark_split_itemsz(Size sz)
  * it.  The one case where the high key can be larger than the item is an
  * oversized leaf key in an index of more than one column: without the
  * INCLUDE columns, or truncated to its leading key attributes, the key may
- * fit inline, at up to BarkMaxItemSize.
+ * fit inline, at up to BarkMaxItemSize.  As in nbtree, a leaf high key is
+ * assumed to keep a heap TID.
  */
 static int
 bark_split_hikeysz(Relation index, IndexTuple firstright)
@@ -88,11 +89,18 @@ bark_split_hikeysz(Relation index, IndexTuple firstright)
 	BarkEntryShape shape = BarkEntryGetShape(firstright);
 	Size		sz = IndexTupleSize(firstright);
 
-	if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
-		sz = BarkEntryGetBodyOffset(firstright);
-	else if (shape == BARK_SHAPE_OVERSIZED && BarkOverflowIsLeaf(firstright) &&
-			 IndexRelationGetNumberOfAttributes(index) > 1)
-		sz = BarkMaxItemSize;
+	if (shape == BARK_SHAPE_OVERSIZED)
+	{
+		if (BarkOverflowIsLeaf(firstright) &&
+			IndexRelationGetNumberOfAttributes(index) > 1)
+			sz = BarkMaxItemSize;
+	}
+	else if (shape != BARK_SHAPE_PIVOT)
+	{
+		if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
+			sz = BarkEntryGetBodyOffset(firstright);
+		sz = MAXALIGN(sz) + MAXALIGN(sizeof(ItemPointerData));
+	}
 	return MAXALIGN(sz) + sizeof(ItemIdData);
 }
 

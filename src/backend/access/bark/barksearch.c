@@ -36,11 +36,15 @@
 /*
  * What a descent searches for: an index tuple (insert, and the internal
  * lookups of VACUUM and split completion), or a scan's bound, whose
- * arguments may be of another type in the column's opfamily.
+ * arguments may be of another type in the column's opfamily.  An index tuple
+ * may come with a heap TID, scantid, which orders it within a run of equal
+ * keys (bark_compare_itups_tid); NULL compares the key only, as every scan
+ * does.
  */
 typedef struct BarkSearchKey
 {
 	IndexTuple	key;
+	ItemPointer scantid;
 	const BarkScanBound *bound;
 } BarkSearchKey;
 
@@ -133,7 +137,8 @@ bark_compare_off(Relation index, BarkKeyInfo *keyinfo,
 
 	if (key->bound != NULL)
 		return bark_compare_bound(index, keyinfo, key->bound, itup);
-	return bark_compare_itups(keyinfo, index, key->key, itup);
+	return bark_compare_itups_tid(keyinfo, index, key->key, key->scantid,
+								  itup);
 }
 
 /*
@@ -142,7 +147,9 @@ bark_compare_off(Relation index, BarkKeyInfo *keyinfo,
  * _bt_moveright.
  *
  * Move right past a page that split after our parent pointed at it (the key
- * is greater than its high key) and past a page that is being removed from
+ * is greater than its high key, or, with a heap TID, not less than it: a high
+ * key's heap TID is the lowest of the right page's first entry, so an equal
+ * TID belongs right) and past a page that is being removed from
  * the tree (BARK_DELETED or BARK_HALF_DEAD; such a page keeps its right link
  * so that descents and scans already on their way to it can step past it).
  *
@@ -193,7 +200,8 @@ bark_moveright(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
 		}
 
 		if ((opaque->bark_flags & (BARK_DELETED | BARK_HALF_DEAD)) != 0 ||
-			bark_compare_off(index, keyinfo, key, page, BARK_P_HIKEY) > 0)
+			bark_compare_off(index, keyinfo, key, page, BARK_P_HIKEY) >=
+			(key->scantid != NULL ? 0 : 1))
 		{
 			BlockNumber right = opaque->bark_next;
 
@@ -222,17 +230,17 @@ bark_moveright(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
  * entry whose key is > the search key).
  *
  * `nextkey` selects which child a run of equal keys routes to on an internal
- * page.  With nextkey=true (the insert / true-key descent) we follow the last
- * downlink whose key is <= the search key -- the rightmost child that can hold
- * the key.  With nextkey=false (a lower-bound scan descent) we follow the last
- * downlink whose key is strictly < the search key -- the leftmost child that
- * can hold the key.  The distinction matters only when equal downlink keys
- * exist, which happens when a leaf splits in the middle of a run of equal
- * keys: a forward equality or lower-bound scan must then start at the FIRST
- * such leaf, or it silently skips the earlier duplicates.  (Inside a run, a
- * leaf's high key equals the next leaf's first key, since suffix truncation
- * removes nothing there, so an earlier leaf of the run still holds matching
- * keys; landing on the last leaf of the run loses them.)
+ * page.  With nextkey=true we follow the last downlink whose key is <= the
+ * search key -- the rightmost child that can hold the key.  With
+ * nextkey=false (a lower-bound scan descent, and a unique check's) we follow
+ * the last downlink whose key is strictly < the search key -- the leftmost
+ * child that can hold the key.  The distinction matters only when equal
+ * downlink keys exist, which happens when a leaf splits in the middle of a
+ * run of equal keys: a forward equality or lower-bound scan must then start
+ * at the FIRST such leaf, or it silently skips the earlier duplicates.  An
+ * insert's search key has a heap TID (scantid), which a downlink with every
+ * key attribute is never equal to unless their TIDs are equal, and then the
+ * entry belongs right of it: so an insert uses nextkey=true.
  */
 static OffsetNumber
 bark_binsrch(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
@@ -292,6 +300,11 @@ typedef struct BarkRootCache
  * Read the root block number, and the root's level when level_out is not
  * NULL, from the meta page, and refresh the root cache.  Returns BARK_P_NONE
  * when the index is empty (no root yet).
+ *
+ * Every descent reaches the meta page here when the root cache is empty, so
+ * this is where an index in an on-disk format older than BARK_MIN_VERSION is
+ * refused.  The meta page is read under its lock before the error, which
+ * leaves the cache unset, so every later access is refused too.
  */
 BlockNumber
 bark_get_root(Relation index, uint32 *level_out)
@@ -303,6 +316,12 @@ bark_get_root(Relation index, uint32 *level_out)
 
 	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
 	meta = BarkPageGetMeta(BufferGetPage(metabuf));
+	if (meta->bark_version < BARK_MIN_VERSION)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("index \"%s\" was built by an older BARK version",
+						RelationGetRelationName(index)),
+				 errhint("REINDEX the index.")));
 	root = meta->bark_root;
 	level = meta->bark_level;
 	UnlockReleaseBuffer(metabuf);
@@ -486,9 +505,12 @@ bark_descend(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
 
 Buffer
 bark_search(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
-			bool forwrite, bool nextkey, BarkStack *stack)
+			ItemPointer scantid, bool forwrite, bool nextkey, BarkStack *stack)
 {
-	BarkSearchKey skey = {key, NULL};
+	BarkSearchKey skey = {key, scantid, NULL};
+
+	/* A heap TID equal to a pivot's belongs right of it (bark_moveright). */
+	Assert(scantid == NULL || nextkey);
 
 	return bark_descend(index, keyinfo, &skey, forwrite, nextkey, stack);
 }
@@ -502,7 +524,7 @@ Buffer
 bark_search_bound(Relation index, BarkKeyInfo *keyinfo,
 				  const BarkScanBound *bound, bool nextkey)
 {
-	BarkSearchKey skey = {NULL, bound};
+	BarkSearchKey skey = {NULL, NULL, bound};
 
 	return bark_descend(index, keyinfo, &skey, false, nextkey, NULL);
 }
@@ -518,7 +540,7 @@ OffsetNumber
 bark_binsrch_bound(Relation index, BarkKeyInfo *keyinfo,
 				   const BarkScanBound *bound, Page page)
 {
-	BarkSearchKey skey = {NULL, bound};
+	BarkSearchKey skey = {NULL, NULL, bound};
 
 	Assert(BarkPageIsLeaf(BarkPageGetOpaque(page)));
 	return bark_binsrch(index, keyinfo, &skey, page, false);
