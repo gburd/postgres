@@ -4556,6 +4556,23 @@ SELECT bark_skip_stats('SELECT t, b FROM bark_skip WHERE b BETWEEN 5000 AND 5100
  searches>=10 t, blocks<pages/2 t
 (1 row)
 
+-- Column 1 is int4, whose opclass has skip support: one descent per group
+-- (10 groups, then the NULL group past the last), each straight to
+-- (next value, 5000), plus the first descent.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+  SELECT a, b FROM bark_skip WHERE b BETWEEN 5000 AND 5100;
+                                  QUERY PLAN                                  
+------------------------------------------------------------------------------
+ Index Only Scan using bark_skip_ab on bark_skip (actual rows=101.00 loops=1)
+   Index Cond: ((b >= 5000) AND (b <= 5100))
+   Heap Fetches: 0
+   Index Searches: 12
+(4 rows)
+
+RESET enable_bitmapscan;
+RESET enable_seqscan;
 -- A scroll cursor that reverses inside the scan returns the same rows as a
 -- sort over a sequential scan.
 SET enable_seqscan = off;
