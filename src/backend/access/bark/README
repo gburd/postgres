@@ -234,6 +234,36 @@ as nbtree's does, so the interlock also holds for scans on a hot standby:
 replay waits for a standby scan's pin, or cancels the scan once
 max_standby_streaming_delay has passed.
 
+Bottom-up deletion
+------------------
+
+As in nbtree (see "Bottom-Up deletion" in the nbtree README), an insert
+that the executor marks indexUnchanged -- a new version from a non-HOT
+UPDATE that did not change this index's key -- and that would split a leaf
+first runs bark_bottomup_delete (barkdelete.c) on the leaf.  Every heap TID
+on the page goes to table_index_delete_tuples with bottomup set; the TIDs of
+entries whose key equals the new entry's, and every LIST and POSTING member,
+are marked promising.  The table AM visits a few heap blocks and reports the
+TIDs whose HOT chains are dead to every snapshot.  Their entries are deleted,
+and a LIST or POSTING that keeps some members is re-formed with them, by the
+same code VACUUM uses (bark_reform_entry), in one XLOG_BARK_DELETE record.
+If that left room for the new entry it is inserted; otherwise the leaf splits
+as before.  Coalescing into an equal-key LIST or POSTING still comes first.
+
+OVERSIZED entries are not offered to the table AM: deleting one has to free
+its overflow chain once the leaf no longer references it, which VACUUM does.
+
+The deletion runs under the exclusive lock the insert holds, not a cleanup
+lock, and its redo takes an exclusive lock too, as nbtree's simple and
+bottom-up deletion do (see "Simple deletion" there).  The heap tuples are
+dead to every snapshot, and the heap does not reuse their line pointers
+until VACUUM, which takes a cleanup lock on every leaf first; so a scan that
+copied one of the deleted TIDs before the deletion only finds a dead tuple
+at it.  On a hot standby, redo first cancels the queries whose snapshots
+could still see those tuples (the record's snapshotConflictHorizon).  No
+entry moves to another page, so VACUUM's cycle IDs are unaffected; a leaf
+the pass empties is an empty leaf, which VACUUM deletes.
+
 Scans
 -----
 
@@ -356,7 +386,7 @@ WAL
 
 BARK has its own WAL resource manager, "Bark" (RM_BARK_ID; barkxlog.h,
 barkxlog.c, rmgrdesc/barkdesc.c), for inserts, splits, new roots,
-overflow chains, VACUUM and page deletion; CREATE INDEX logs the pages it
+overflow chains, VACUUM, bottom-up deletion and page deletion; CREATE INDEX logs the pages it
 writes whole.  Each change to a page is in exactly one record.  The
 records:
 
@@ -430,6 +460,14 @@ records:
       Redo takes a cleanup lock, as btree_xlog_vacuum does.  A page with
       nothing to delete gets a record only when it carries the running
       VACUUM's cycle ID, so a VACUUM that finds nothing logs nothing.
+
+  XLOG_BARK_DELETE (bark_delitems_delete, from bark_bottomup_delete)
+      One leaf, as nbtree's XLOG_BTREE_DELETE: the same payload as
+      XLOG_BARK_VACUUM, plus the conflict horizon of the heap tuples whose
+      entries go and whether the heap is a catalog for logical decoding.
+      In hot standby, redo first resolves the snapshot conflict, then
+      rewrites and deletes under an exclusive lock (see "Bottom-up
+      deletion").  The page's vacuum cycle ID is left alone.
 
   XLOG_BARK_UNLINK_PAGE (bark_delete_empty_leaf)
       Four pages: the target leaf (reinitialized as a deleted page from the
