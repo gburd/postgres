@@ -4,8 +4,8 @@
  *	  WAL replay logic for BARK indexes.
  *
  * See "WAL" in src/backend/access/bark/README for the records and the locks
- * their redo takes.  Changes that have no record here (splits, new roots,
- * overflow chains) are logged with generic WAL and replayed by generic_redo.
+ * their redo takes.  Changes that have no record here (overflow chains) are
+ * logged with generic WAL and replayed by generic_redo.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -24,8 +24,76 @@
 #include "storage/standby.h"
 
 /*
+ * Re-add the entries of a page built by the primary, as nbtree's
+ * _bt_restore_page.  `page` is freshly initialized, and `from` is a copy of
+ * the primary's page from pd_upper to pd_special.  The primary added the
+ * entries in offset order to an empty page, so they lie back to back, each
+ * padded to MAXALIGN, the highest offset first.  Adding them again in offset
+ * order puts each at the same place with the same line pointer, so the page
+ * matches the primary's byte for byte.
+ */
+static void
+bark_restore_page(Page page, const char *from, Size len)
+{
+	const char *end = from + len;
+	const char *items[MaxIndexTuplesPerPage];
+	Size		itemsizes[MaxIndexTuplesPerPage];
+	int			nitems = 0;
+
+	/*
+	 * Find where each entry starts, scanning forward.  The data is MAXALIGNed
+	 * as a whole and so is each entry, but reading t_info into a local copy
+	 * keeps that from mattering.
+	 */
+	while (from < end)
+	{
+		IndexTupleData itupdata;
+
+		memcpy(&itupdata, from, sizeof(IndexTupleData));
+		items[nitems] = from;
+		itemsizes[nitems] = IndexTupleSize(&itupdata);
+		from += MAXALIGN(itemsizes[nitems]);
+		nitems++;
+	}
+
+	for (int i = nitems - 1; i >= 0; i--)
+	{
+		if (PageAddItem(page, items[i], itemsizes[i], nitems - i,
+						false, false) == InvalidOffsetNumber)
+			elog(PANIC, "failed to restore BARK page during replay");
+	}
+}
+
+/*
+ * Set the meta page's root and level from a NEWROOT or CREATE_ROOT record.
+ */
+static void
+bark_xlog_restore_meta(XLogReaderState *record, uint8 block_id)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	Buffer		metabuf;
+
+	if (XLogReadBufferForRedo(record, block_id, &metabuf) == BLK_NEEDS_REDO)
+	{
+		Page		metapage = BufferGetPage(metabuf);
+		xl_bark_metadata *md = (xl_bark_metadata *)
+			XLogRecGetBlockData(record, block_id, NULL);
+		BarkMetaPageData *meta = BarkPageGetMeta(metapage);
+
+		meta->bark_root = md->root;
+		meta->bark_level = md->level;
+
+		PageSetLSN(metapage, lsn);
+		MarkBufferDirty(metabuf);
+	}
+	if (BufferIsValid(metabuf))
+		UnlockReleaseBuffer(metabuf);
+}
+
+/*
  * Clear BARK_INCOMPLETE_SPLIT on the left half of a split whose downlink an
- * INSERT_UPPER record added, as nbtree's _bt_clear_incomplete_split.
+ * INSERT_UPPER, SPLIT or NEWROOT record added, as nbtree's
+ * _bt_clear_incomplete_split.
  */
 static void
 bark_xlog_clear_incomplete_split(XLogReaderState *record, uint8 block_id)
@@ -83,6 +151,124 @@ bark_xlog_insert(bool isleaf, XLogReaderState *record)
 	}
 	if (BufferIsValid(buffer))
 		UnlockReleaseBuffer(buffer);
+}
+
+/*
+ * Replay a page split (bark_split).  Both halves are rebuilt from the record,
+ * so neither depends on what the original page held.
+ *
+ * As btree_xlog_split does, the child whose split an internal page's new
+ * downlink finishes is updated first, without coupling its lock to the
+ * others, and the two halves and the right sibling are then held locked
+ * together, so a standby reader moving right sees the split whole or not at
+ * all.
+ */
+static void
+bark_xlog_split(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_bark_split *xlrec = (xl_bark_split *) XLogRecGetData(record);
+	bool		isleaf = (xlrec->flags & XLH_BARK_SPLIT_LEAF) != 0;
+	uint16		leafflag = isleaf ? BARK_LEAF : 0;
+	BlockNumber leftblk;
+	BlockNumber rightblk;
+	Buffer		lbuf;
+	Buffer		rbuf;
+	Buffer		sbuf = InvalidBuffer;
+	Page		page;
+	char	   *datapos;
+	Size		datalen;
+
+	XLogRecGetBlockTag(record, 0, NULL, NULL, &leftblk);
+	XLogRecGetBlockTag(record, 1, NULL, NULL, &rightblk);
+
+	if (!isleaf)
+		bark_xlog_clear_incomplete_split(record, 3);
+
+	/* The new right page */
+	rbuf = XLogInitBufferForRedo(record, 1);
+	page = BufferGetPage(rbuf);
+	BarkPageInit(page, leftblk, xlrec->rightnext, xlrec->level, leafflag,
+				 xlrec->cycleid);
+	datapos = XLogRecGetBlockData(record, 1, &datalen);
+	bark_restore_page(page, datapos, datalen);
+	PageSetLSN(page, lsn);
+	MarkBufferDirty(rbuf);
+
+	/* The left page, the original block */
+	lbuf = XLogInitBufferForRedo(record, 0);
+	page = BufferGetPage(lbuf);
+	BarkPageInit(page, xlrec->leftprev, rightblk, xlrec->level,
+				 leafflag | BARK_INCOMPLETE_SPLIT, xlrec->cycleid);
+	datapos = XLogRecGetBlockData(record, 0, &datalen);
+	bark_restore_page(page, datapos, datalen);
+	PageSetLSN(page, lsn);
+	MarkBufferDirty(lbuf);
+
+	/* The original right sibling's left link */
+	if (xlrec->rightnext != BARK_P_NONE &&
+		XLogReadBufferForRedo(record, 2, &sbuf) == BLK_NEEDS_REDO)
+	{
+		page = BufferGetPage(sbuf);
+		BarkPageGetOpaque(page)->bark_prev = rightblk;
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(sbuf);
+	}
+
+	if (BufferIsValid(sbuf))
+		UnlockReleaseBuffer(sbuf);
+	UnlockReleaseBuffer(rbuf);
+	UnlockReleaseBuffer(lbuf);
+}
+
+/*
+ * Replay the growth of a new level (bark_new_root): the new root, the old
+ * root's split finished, and the meta page pointed at the new root.
+ */
+static void
+bark_xlog_newroot(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_bark_newroot *xlrec = (xl_bark_newroot *) XLogRecGetData(record);
+	Buffer		rootbuf;
+	Page		page;
+	char	   *datapos;
+	Size		datalen;
+
+	bark_xlog_clear_incomplete_split(record, 1);
+
+	rootbuf = XLogInitBufferForRedo(record, 0);
+	page = BufferGetPage(rootbuf);
+	BarkPageInit(page, BARK_P_NONE, BARK_P_NONE, xlrec->level, BARK_ROOT, 0);
+	datapos = XLogRecGetBlockData(record, 0, &datalen);
+	bark_restore_page(page, datapos, datalen);
+	PageSetLSN(page, lsn);
+	MarkBufferDirty(rootbuf);
+
+	bark_xlog_restore_meta(record, 2);
+
+	UnlockReleaseBuffer(rootbuf);
+}
+
+/*
+ * Replay the creation of an empty index's root leaf (bark_create_root_leaf).
+ */
+static void
+bark_xlog_create_root(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	Buffer		leafbuf;
+	Page		page;
+
+	leafbuf = XLogInitBufferForRedo(record, 0);
+	page = BufferGetPage(leafbuf);
+	BarkPageInit(page, BARK_P_NONE, BARK_P_NONE, 0, BARK_LEAF | BARK_ROOT, 0);
+	PageSetLSN(page, lsn);
+	MarkBufferDirty(leafbuf);
+
+	bark_xlog_restore_meta(record, 1);
+
+	UnlockReleaseBuffer(leafbuf);
 }
 
 /*
@@ -349,6 +535,15 @@ bark_redo(XLogReaderState *record)
 			break;
 		case XLOG_BARK_ADD_TID:
 			bark_xlog_add_tid(record);
+			break;
+		case XLOG_BARK_SPLIT:
+			bark_xlog_split(record);
+			break;
+		case XLOG_BARK_NEWROOT:
+			bark_xlog_newroot(record);
+			break;
+		case XLOG_BARK_CREATE_ROOT:
+			bark_xlog_create_root(record);
 			break;
 		default:
 			elog(PANIC, "bark_redo: unknown op code %u", info);
