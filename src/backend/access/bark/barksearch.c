@@ -507,6 +507,23 @@ bark_search_bound(Relation index, BarkKeyInfo *keyinfo,
 	return bark_descend(index, keyinfo, &skey, false, nextkey, NULL);
 }
 
+/*
+ * On leaf `page`, the first offset whose entry sorts after `bound`, as
+ * nbtree's _bt_binsrch finds where _bt_first starts on the leaf.  A bound
+ * never equals an entry (see bark_compare_bound), so every entry before the
+ * offset sorts before the bound: a forward scan from a lower bound starts at
+ * the offset, and a backward scan from an upper bound starts just before it.
+ */
+OffsetNumber
+bark_binsrch_bound(Relation index, BarkKeyInfo *keyinfo,
+				   const BarkScanBound *bound, Page page)
+{
+	BarkSearchKey skey = {NULL, bound};
+
+	Assert(BarkPageIsLeaf(BarkPageGetOpaque(page)));
+	return bark_binsrch(index, keyinfo, &skey, page, false);
+}
+
 void
 bark_freestack(BarkStack stack)
 {
