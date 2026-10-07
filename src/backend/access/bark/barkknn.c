@@ -362,7 +362,7 @@ bark_knn_position(IndexScanDesc scan)
 		return;					/* a NULL center matches nothing */
 
 	center = bark_knn_center_key(scan);
-	buf = bark_search(index, so->keyinfo, center, false, false, NULL);
+	buf = bark_search(index, so->keyinfo, center, NULL, false, false, NULL);
 	if (!BufferIsValid(buf))
 	{
 		/* Empty index.  A serializable scan must lock the whole relation. */

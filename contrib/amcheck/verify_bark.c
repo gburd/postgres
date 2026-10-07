@@ -6,16 +6,19 @@
  * bark_index_check(index regclass) walks every page of a BARK index and
  * checks the invariants the access method relies on:
  *
- *	- within each page, data entries are in non-decreasing key order;
+ *	- the meta page's on-disk version is one this server reads;
+ *	- within each page, data entries are in non-decreasing key order, and on
+ *	  a leaf, entries of equal keys have disjoint, ascending heap TID ranges;
  *	- every data key is less than or equal to the page's high key (the bound
  *	  the page's parent downlink promises), and strictly less when suffix
  *	  truncation dropped key attributes from the high key, which has between
- *	  one and all of the key attributes;
+ *	  one and all of the key attributes; a leaf entry equal to the high key
+ *	  lies below the high key's heap TID;
  *	- sibling links are consistent (the right sibling's left link points back,
  *	  and levels match across a sibling link), and the right sibling's first
- *	  key is not less than the page's high key;
+ *	  key is not less than the page's high key, (key, heap TID) on a leaf;
  *	- every downlink points at a page one level down whose first key is not
- *	  less than the downlink;
+ *	  less than the downlink, (key, heap TID) for a leaf child;
  *	- no page is still flagged with an unfinished split, which a clean index
  *	  never leaves behind;
  *	- no leaf entry is larger than BarkMaxItemSize, and every POSTING entry
@@ -68,6 +71,22 @@ static void bark_check_oversized(Relation rel, BlockNumber blkno, OffsetNumber o
 								 IndexTuple itup, BarkKeyInfo *keyinfo);
 
 /*
+ * Compare the leaf entry `itup`, taken at its lowest heap TID (or its highest
+ * when `high`), with the pivot or leaf entry `other`, in the tree's order of
+ * (key, heap TID): bark_compare_itups_tid.
+ */
+static int
+bark_check_compare_leaf(Relation rel, BarkKeyInfo *keyinfo, IndexTuple itup,
+						bool high, IndexTuple other)
+{
+	ItemPointerData lo;
+	ItemPointerData hi;
+
+	bark_entry_tid_range(itup, &lo, &hi);
+	return bark_compare_itups_tid(keyinfo, rel, itup, high ? &hi : &lo, other);
+}
+
+/*
  * bark_index_check(index regclass)
  *
  * Verify the structural integrity of a BARK index.  Takes AccessShareLock on
@@ -97,6 +116,18 @@ bark_check_structure(Relation rel, Relation heaprel, void *callback_state,
 {
 	BarkKeyInfo *keyinfo = bark_build_keyinfo(rel);
 	BlockNumber npages = RelationGetNumberOfBlocks(rel);
+	Buffer		metabuf = ReadBuffer(rel, BARK_METAPAGE);
+	uint32		version;
+
+	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+	version = BarkPageGetMeta(BufferGetPage(metabuf))->bark_version;
+	UnlockReleaseBuffer(metabuf);
+	if (version < BARK_MIN_VERSION)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("index \"%s\" was built by an older BARK version",
+						RelationGetRelationName(rel)),
+				 errhint("REINDEX the index.")));
 
 	for (BlockNumber blkno = BARK_METAPAGE + 1; blkno < npages; blkno++)
 	{
@@ -237,13 +268,27 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 	{
 		IndexTuple	itup = BarkPageGetItem(page, off, &ibuf[cur]);
 
-		/* Keys must be in non-decreasing order within the page. */
-		if (prev != NULL &&
-			bark_compare_itups(keyinfo, rel, prev, itup) > 0)
-			ereport(ERROR,
-					(errcode(ERRCODE_INDEX_CORRUPTED),
-					 errmsg("BARK index \"%s\" has out-of-order keys on page %u at offset %u",
-							RelationGetRelationName(rel), blkno, off)));
+		/*
+		 * Keys must be in non-decreasing order within the page, and on a
+		 * leaf, the heap TIDs of a run of equal keys in ascending order: each
+		 * entry's lowest TID above the previous entry's highest.
+		 */
+		if (prev != NULL)
+		{
+			int			cmp = bark_compare_itups(keyinfo, rel, prev, itup);
+
+			if (cmp > 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has out-of-order keys on page %u at offset %u",
+								RelationGetRelationName(rel), blkno, off)));
+			if (cmp == 0 && BarkPageIsLeaf(opaque) &&
+				bark_check_compare_leaf(rel, keyinfo, prev, true, itup) >= 0)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has out-of-order heap TIDs among equal keys on page %u at offset %u",
+								RelationGetRelationName(rel), blkno, off)));
+		}
 
 		/*
 		 * Every data key must be within the page's high-key bound.  Equal
@@ -257,6 +302,18 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 			ereport(ERROR,
 					(errcode(ERRCODE_INDEX_CORRUPTED),
 					 errmsg("BARK index \"%s\" has a key past the high key on page %u at offset %u",
+							RelationGetRelationName(rel), blkno, off)));
+
+		/*
+		 * A leaf entry equal to the high key on every key attribute must lie
+		 * below the high key's heap TID, the lowest of the right sibling's
+		 * first entry; a high key without one would be minus infinity there.
+		 */
+		if (hikey != NULL && BarkPageIsLeaf(opaque) &&
+			bark_check_compare_leaf(rel, keyinfo, itup, true, hikey) >= 0)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" has a heap TID past the high key on page %u at offset %u",
 							RelationGetRelationName(rel), blkno, off)));
 
 		/*
@@ -330,7 +387,10 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 													 BarkPageFirstDataKey(ropaque),
 													 &ritem);
 
-				if (bark_compare_itups(keyinfo, rel, rfirst, hikey) < 0)
+				if (BarkPageIsLeaf(ropaque) ?
+					bark_check_compare_leaf(rel, keyinfo, rfirst, false,
+											hikey) < 0 :
+					bark_compare_itups(keyinfo, rel, rfirst, hikey) < 0)
 					ereport(ERROR,
 							(errcode(ERRCODE_INDEX_CORRUPTED),
 							 errmsg("BARK index \"%s\" has a first key on page %u that is less than the high key of its left sibling %u",
@@ -449,7 +509,10 @@ bark_check_downlinks(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 													BarkPageFirstDataKey(copaque),
 													&fbuf);
 
-				if (bark_compare_itups(keyinfo, rel, first, downlink) < 0)
+				if (BarkPageIsLeaf(copaque) ?
+					bark_check_compare_leaf(rel, keyinfo, first, false,
+											downlink) < 0 :
+					bark_compare_itups(keyinfo, rel, first, downlink) < 0)
 					ereport(ERROR,
 							(errcode(ERRCODE_INDEX_CORRUPTED),
 							 errmsg("BARK index \"%s\" has a first key on page %u that is less than its downlink on page %u",

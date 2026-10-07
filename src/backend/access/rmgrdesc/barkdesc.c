@@ -127,6 +127,15 @@ bark_desc(StringInfo buf, XLogReaderState *record)
 								 ItemPointerGetOffsetNumber(&xlrec->tid));
 				break;
 			}
+		case XLOG_BARK_INSERT_SWAP:
+			{
+				xl_bark_insert_swap *xlrec = (xl_bark_insert_swap *) rec;
+
+				appendStringInfo(buf, "off: %u, tid: (%u,%u)", xlrec->offnum,
+								 ItemPointerGetBlockNumber(&xlrec->tid),
+								 ItemPointerGetOffsetNumber(&xlrec->tid));
+				break;
+			}
 		case XLOG_BARK_SPLIT:
 			{
 				xl_bark_split *xlrec = (xl_bark_split *) rec;
@@ -198,6 +207,9 @@ bark_identify(uint8 info)
 			break;
 		case XLOG_BARK_ADD_TID:
 			id = "ADD_TID";
+			break;
+		case XLOG_BARK_INSERT_SWAP:
+			id = "INSERT_SWAP";
 			break;
 		case XLOG_BARK_SPLIT:
 			id = "SPLIT";
