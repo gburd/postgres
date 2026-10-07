@@ -715,6 +715,18 @@ place of an inverted AM, without changing the scalar design above.
   tsvector classes are out of scope: their ranking needs per-occurrence
   positions (M3) and belongs to a text-search index (see "Containment
   queries").
+  BARK also takes the query interface of DocumentDB's pg_extended_btree,
+  which suits an ordered index better than GIN's: an extract-value function
+  (a column value to its keys), an extract-query function that turns a
+  query operator and argument into a sorted set of disjoint key ranges
+  ("boundaries", each a lower and an upper bound with its strategy: = is a
+  point, $gt a half-open range, $in a set of points) plus data for a
+  recheck, and an index-recheck function that tests an index entry against
+  that data and answers true, false or maybe (maybe leaves the row to the
+  heap recheck). A scan walks the ranges in order, as BARK's array scan
+  walks an IN-list, re-descending only where the next range starts past the
+  page. An operator class may provide either interface; one written for
+  pg_extended_btree ports to BARK unchanged.
 * '''M3''' -- extra data per locator (RUM's addInfo): a LIST or POSTING
   variant whose members carry a small value beside each TID and are ordered
   by it, so "key X ordered by a value" keeps one entry per key. A composite
