@@ -185,6 +185,46 @@ non-increasing under removal. The reserve costs at most one bit per locator of
 a dense run (8 bytes per 64 locators), and the posting-set shape is chosen only
 when it beats the list shape with the reserve included.
 
+==== Containment queries: in BARK, or beside it ====
+
+"Which rows contain term X" is a key lookup in BARK: once M1 extracts a
+row's terms, the tree maps each term to its locator set, in SINGLE, LIST and
+POSTING entries over consecutive leaves, which is the shape GIN and pg_tre
+build from a term tree and per-term posting trees. What BARK keeps in house,
+and what it leaves to another index:
+
+* '''Exact containment''' (an array or document holds X; all of X, Y; any
+  of them) belongs in BARK. A single term is an equality scan. Several terms
+  combine either as bitmap scans the executor ANDs and ORs, which works
+  today, or inside one BARK scan: with H1, a term's run is in TID order, so
+  intersecting a rare term with a common one probes the common term's run
+  at (term, TID) for each candidate instead of reading it (a leapfrog join,
+  as a WAND cursor seeks), and two POSTING entries intersect as sbm sets
+  without materializing either (<code>sbm_intersection</code>,
+  <code>sbm_intersection_cardinality</code>).
+* '''Ranked, positional and fuzzy text search''' (BM25, phrases, regex,
+  edit distance) does not. It needs corpus statistics, per-occurrence data
+  (term frequency, positions) and immutable, bulk-encoded posting blocks
+  with impact metadata for block-max WAND, as pg_fts keeps in its segments,
+  or trigram formulas resolved over posting sets and rechecked against the
+  heap, as pg_tre does. Those designs trade in-place update for bulk
+  rewrite, which a B-tree that promises ordered, lock-coupled reads cannot.
+* '''Combining the two''' needs one thing core PostgreSQL lacks: an ordered
+  index scan filtered by another index's candidate set without visiting the
+  heap for the rows it rejects. <code>WHERE body @@@ q ORDER BY ts LIMIT
+  10</code> today either sorts all of the text index's matches or reads BARK
+  in order and checks every row in the heap. A TID filter on the scan
+  (another index's result as a TID set that the scan consults before
+  returning an item) gives the plan that touches only matching rows, in
+  order. With <code>amgetbatch</code> the filter belongs in the batch layer,
+  where it works for every AM; it is a core proposal, not a BARK format
+  change.
+
+The cost to watch in house is writes: a document with N distinct terms is N
+inserts. M1's one-pass insert of a row's sorted keys amortizes the descents,
+and D1 and coalescing keep version churn from growing the index; a GIN-style
+pending list is not an option, since ordered scans would have to merge it.
+
 ==== Value sets that outgrow one entry ====
 
 The question this section answers: should BARK keep a large key's locator set
@@ -630,6 +670,42 @@ are cited by name in each phase's commit messages.
   split) and never forces a rewrite. <code>BarkPageGetItem</code> decodes;
   coding is catalog-free, so ADD_TID redo repeats it. Format in the README's
   "Leaf prefix compression". nbtree has nothing comparable. ''(done)''
+
+'''H/D-series -- nbtree parity that remains'''
+
+* '''H1''' -- order duplicates by heap TID (nbtree's heapkeyspace): pivots
+  keep a heap TID when both sides are equal on every key column, inserts
+  descend by (key, TID), an insert inside a full LIST or POSTING swaps with
+  its highest TID. Requires REINDEX of indexes built before it.
+* '''D1''' -- bottom-up index deletion on the executor's
+  <code>indexUnchanged</code> hint, with its own WAL record and
+  recovery-conflict resolution.
+* '''K2''' -- dead-tuple hints from scans and simple deletion before a split.
+  After <code>amgetbatch</code> (CF 4351) is in core and BARK adopts it, since
+  the hint goes through <code>amkillitemsbatch</code>.
+
+'''M-series -- documents (multikey)'''
+
+These make BARK an index a document store such as DocumentDB can use in
+place of an inverted AM, without changing the scalar design above.
+
+* '''M1''' -- multikey keys: an opclass support procedure that extracts N
+  keys from one column value, called by insert and build; one row's sorted
+  keys are inserted in one pass that reuses the descent. A scan returns a row
+  that matches through several keys once. The meta page records whether the
+  index has multikey rows. Needs H1, so that (key, TID) names exactly one
+  entry member.
+* '''M2''' -- operator classes for extracted keys (a document store's term
+  type), and <code>barkvalidate</code> support for the extract procedure.
+* '''M3''' -- extra data per locator (RUM's addInfo): a LIST or POSTING
+  variant whose members carry a small value beside each TID and are ordered
+  by it, so "key X ordered by a value" keeps one entry per key. A composite
+  key (key, value) already does this when entries need not share; a design
+  note decides whether M3 is needed.
+* '''M4''' -- unique indexes over multikey keys with document-store
+  semantics: unique across rows, while one row may repeat a key.
+* '''T1''' -- term containment at scale; see "Containment queries" under
+  C-KEYSHAPE.
 
 == Ground rules ==
 
