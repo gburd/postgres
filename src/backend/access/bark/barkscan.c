@@ -71,7 +71,7 @@ static int	bark_key_cmp(IndexScanDesc scan, int i, IndexTuple itup);
  * when *fetched is set.  Every other shape carries its attributes inline, so
  * the entry is returned unchanged.
  */
-static IndexTuple
+IndexTuple
 bark_scan_resolve(Relation index, IndexTuple itup, bool *fetched)
 {
 	if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
@@ -1232,19 +1232,21 @@ bark_copy_pos(BarkScanOpaque so, BarkScanPosData *dst, char **dsttuples,
 }
 
 /*
- * Copy the key columns of a matching entry into the tuple workspace for an
- * index-only scan, once per entry, and return its offset there.  `resolved`
- * is the entry with its attributes readable (the full tuple of an OVERSIZED
+ * Copy the key columns of a matching entry into an index-only scan's tuple
+ * workspace (*tuples, *tuplesSize, grown as needed; *nextoff is its first
+ * free byte), once per entry, and return its offset there.  `resolved` is
+ * the entry with its attributes readable (the full tuple of an OVERSIZED
  * entry).  A LIST or POSTING entry is copied without its body; nothing reads
- * xs_itup's t_tid, so its members all share the one copy.
+ * xs_itup's t_tid, so its members all share the one copy.  The plain scan
+ * and each KNN cursor have their own workspace.
  */
-static uint32
-bark_save_tuple(BarkScanOpaque so, IndexTuple entry, IndexTuple resolved)
+uint32
+bark_save_tuple(BarkScanOpaque so, char **tuples, uint32 *tuplesSize,
+				uint32 *nextoff, IndexTuple entry, IndexTuple resolved)
 {
-	BarkScanPosData *pos = &so->currPos;
 	BarkEntryShape shape = BarkEntryGetShape(entry);
 	Size		len;
-	uint32		off = pos->nextTupleOffset;
+	uint32		off = *nextoff;
 	IndexTuple	copy;
 
 	if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
@@ -1254,9 +1256,8 @@ bark_save_tuple(BarkScanOpaque so, IndexTuple entry, IndexTuple resolved)
 	else
 		len = IndexTupleSize(entry);
 
-	bark_tuples_reserve(so, &so->currTuples, &so->currTuplesSize,
-						off + MAXALIGN(len));
-	copy = (IndexTuple) (so->currTuples + off);
+	bark_tuples_reserve(so, tuples, tuplesSize, off + MAXALIGN(len));
+	copy = (IndexTuple) (*tuples + off);
 	memcpy(copy, resolved, len);
 	if (shape == BARK_SHAPE_LIST || shape == BARK_SHAPE_POSTING)
 	{
@@ -1264,7 +1265,7 @@ bark_save_tuple(BarkScanOpaque so, IndexTuple entry, IndexTuple resolved)
 		copy->t_info = (copy->t_info & ~(INDEX_SIZE_MASK | INDEX_AM_RESERVED_BIT)) |
 			(uint16) len;
 	}
-	pos->nextTupleOffset = off + MAXALIGN(len);
+	*nextoff = off + MAXALIGN(len);
 	return off;
 }
 
@@ -1404,7 +1405,8 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 		}
 		ntids = bark_entry_get_tids(itup, so->entryTids, so->entryTidsAlloc);
 		if (scan->xs_want_itup)
-			tupoff = bark_save_tuple(so, itup, resolved);
+			tupoff = bark_save_tuple(so, &so->currTuples, &so->currTuplesSize,
+									 &pos->nextTupleOffset, itup, resolved);
 		if (fetched)
 			pfree(resolved);
 
@@ -1526,7 +1528,7 @@ bark_drop_lock_and_maybe_pin(BarkScanOpaque so)
  * share-locked, with *blkno set, or InvalidBuffer when there is no page to
  * the left.  The page returned may be half-dead; the caller steps past it.
  */
-static Buffer
+Buffer
 bark_lock_and_validate_left(Relation index, BlockNumber *blkno,
 							BlockNumber lastcurrblkno)
 {
