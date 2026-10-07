@@ -5584,3 +5584,188 @@ SELECT count(*), count(DISTINCT u) FROM bark_churn WHERE u > 'h';
 RESET enable_indexscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_churn;
+-- ===========================================================================
+-- Heap TID order.  The entries of a run of equal keys are in heap TID order,
+-- as nbtree's are: an insert goes to the place its heap TID gives it in the
+-- run, so space VACUUM frees inside a run is reused, and a pivot between
+-- entries of one key carries a heap TID.
+-- ===========================================================================
+-- Churn: DELETE a third of the rows at random and VACUUM, then insert new
+-- rows, which reuse the heap's free space and so take heap TIDs all through
+-- each key's run.  They go back into the space VACUUM freed in the index:
+-- the index grows no more than a btree index built the same way (it used to
+-- grow nearly three times as much, every new row going to the end of its
+-- key's run).  A temp table, so that only this session's snapshot limits
+-- what VACUUM can remove.
+CREATE EXTENSION IF NOT EXISTS amcheck;
+NOTICE:  extension "amcheck" already exists, skipping
+CREATE TEMP TABLE bark_hk (id int, d int) WITH (autovacuum_enabled = off);
+INSERT INTO bark_hk SELECT g, g % 20 FROM generate_series(1, 50000) g;
+CREATE INDEX bark_hk_bark ON bark_hk USING bark (d);
+CREATE INDEX bark_hk_bt ON bark_hk USING btree (d);
+CREATE TEMP TABLE bark_hk_size AS
+  SELECT pg_relation_size('bark_hk_bark') AS bark0,
+         pg_relation_size('bark_hk_bt') AS bt0;
+DELETE FROM bark_hk WHERE hashint4(id) % 3 = 0;
+VACUUM bark_hk;
+INSERT INTO bark_hk SELECT g, g % 20 FROM generate_series(50001, 65000) g;
+VACUUM bark_hk;
+SELECT pg_relation_size('bark_hk_bark') - bark0 <=
+       pg_relation_size('bark_hk_bt') - bt0 AS bark_grows_no_more
+  FROM bark_hk_size;
+ bark_grows_no_more 
+--------------------
+ t
+(1 row)
+
+SELECT bark_index_check('bark_hk_bark');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP INDEX bark_hk_bt;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT d, count(*), md5(string_agg(ctid::text, ',' ORDER BY ctid)) AS tids
+  INTO TEMP bark_hk_idx FROM bark_hk WHERE d >= 0 GROUP BY d;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS keys, sum(count) AS rows,
+       count(*) FILTER (WHERE s.tids IS DISTINCT FROM i.tids) AS mismatches
+  FROM (SELECT d, count(*), md5(string_agg(ctid::text, ',' ORDER BY ctid)) AS tids
+        FROM bark_hk GROUP BY d) s FULL JOIN bark_hk_idx i USING (d, count);
+ keys | rows  | mismatches 
+------+-------+------------
+   20 | 48350 |          0
+(1 row)
+
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+-- An index scan returns each key's rows in heap TID order.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS out_of_order FROM
+  (SELECT ctid, lag(ctid) OVER () AS prev FROM bark_hk WHERE d = 7) x
+  WHERE prev > ctid;
+ out_of_order 
+--------------
+            0
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_hk, bark_hk_size, bark_hk_idx;
+-- A heap TID that falls inside the TID range of a LIST or POSTING entry must
+-- go into that entry.  When the entry cannot take it (it is at the item
+-- ceiling, or the page is full), the entry is divided around it: in place
+-- when both parts fit on the page, else in a split of the page.  To get such
+-- TIDs, the heap leaves half of each page free (fillfactor 50) and rows of
+-- another key are updated to the key: each new version goes on its old
+-- version's page, after the rows already there, so inside the key's run.
+-- Key 1 of bark_hkl has a few TIDs per heap page (LIST entries), key 1 of
+-- bark_hkp nearly all of them (POSTING entries).  The indexes are filled by
+-- inserts, which grow entries to the item ceiling, then rebuilt by REINDEX,
+-- whose entries are smaller and whose pages are full, and updated again.
+CREATE FUNCTION bark_hk_check(tbl text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  r1 text;
+  r2 text;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  EXECUTE format('SELECT count(*) || md5(string_agg(ctid::text, '','' ORDER BY k, ctid)) FROM %I WHERE k >= 0', tbl) INTO r1;
+  SET LOCAL enable_seqscan = on;
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_indexonlyscan = off;
+  EXECUTE format('SELECT count(*) || md5(string_agg(ctid::text, '','' ORDER BY k, ctid)) FROM %I WHERE k >= 0', tbl) INTO r2;
+  RETURN CASE WHEN r1 = r2 THEN 'ok' ELSE 'mismatch' END;
+END $$;
+CREATE TABLE bark_hkl (k int, v int) WITH (fillfactor = 50, autovacuum_enabled = off);
+CREATE INDEX bark_hkl_idx ON bark_hkl USING bark (k);
+INSERT INTO bark_hkl SELECT g % 50, g FROM generate_series(1, 100000) g;
+UPDATE bark_hkl SET k = 1 WHERE k = 2 AND v % 4 = 2;
+SELECT bark_index_check('bark_hkl_idx'), bark_hk_check('bark_hkl');
+ bark_index_check | bark_hk_check 
+------------------+---------------
+                  | ok
+(1 row)
+
+REINDEX INDEX bark_hkl_idx;
+SELECT bark_index_check('bark_hkl_idx'), bark_hk_check('bark_hkl');
+ bark_index_check | bark_hk_check 
+------------------+---------------
+                  | ok
+(1 row)
+
+UPDATE bark_hkl SET k = 1 WHERE k = 3 AND v % 4 = 3;
+SELECT bark_index_check('bark_hkl_idx'), bark_hk_check('bark_hkl');
+ bark_index_check | bark_hk_check 
+------------------+---------------
+                  | ok
+(1 row)
+
+CREATE TABLE bark_hkp (k int, v int) WITH (fillfactor = 50, autovacuum_enabled = off);
+CREATE INDEX bark_hkp_idx ON bark_hkp USING bark (k);
+INSERT INTO bark_hkp SELECT CASE WHEN g % 10 = 0 THEN 2 ELSE 1 END, g
+  FROM generate_series(1, 60000) g;
+UPDATE bark_hkp SET k = 1 WHERE k = 2 AND v % 20 = 0;
+SELECT bark_index_check('bark_hkp_idx'), bark_hk_check('bark_hkp');
+ bark_index_check | bark_hk_check 
+------------------+---------------
+                  | ok
+(1 row)
+
+REINDEX INDEX bark_hkp_idx;
+UPDATE bark_hkp SET k = 1 WHERE k = 2;
+SELECT bark_index_check('bark_hkp_idx'), bark_hk_check('bark_hkp');
+ bark_index_check | bark_hk_check 
+------------------+---------------
+                  | ok
+(1 row)
+
+DROP TABLE bark_hkl, bark_hkp;
+DROP FUNCTION bark_hk_check(text);
+-- A unique check starts at the first leaf that can hold the key, since the
+-- live entry of a key may be anywhere in its run.  Dead versions of a key,
+-- not yet vacuumed, are wide enough (a 2000-byte INCLUDE column) to span a
+-- leaf boundary; the live version comes after them, and a conflicting insert
+-- must still find it.
+CREATE TABLE bark_hku (k int, pad text) WITH (autovacuum_enabled = off);
+CREATE UNIQUE INDEX bark_hku_idx ON bark_hku USING bark (k) INCLUDE (pad);
+INSERT INTO bark_hku SELECT g, 'x' FROM generate_series(0, 2) g;
+DO $$
+BEGIN
+  FOR i IN 1..4 LOOP
+    DELETE FROM bark_hku WHERE k = 1;
+    INSERT INTO bark_hku SELECT 1, string_agg(md5(i::text || g::text), '')
+      FROM generate_series(1, 63) g;
+  END LOOP;
+END $$;
+SELECT pg_relation_size('bark_hku_idx') / 8192 > 2 AS spans_leaves;
+ spans_leaves 
+--------------
+ t
+(1 row)
+
+INSERT INTO bark_hku VALUES (1, 'y');	-- fails
+ERROR:  duplicate key value violates unique constraint "bark_hku_idx"
+DETAIL:  Key (k)=(1) already exists.
+INSERT INTO bark_hku VALUES (1, 'y') ON CONFLICT DO NOTHING;
+SELECT count(*) FROM bark_hku WHERE k = 1;
+ count 
+-------
+     1
+(1 row)
+
+SELECT bark_index_check('bark_hku_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE bark_hku;
