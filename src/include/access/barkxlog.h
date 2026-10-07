@@ -45,6 +45,9 @@
 										 * oversized entry */
 #define XLOG_BARK_NEWROOT		0xA0	/* add a level above a split root */
 #define XLOG_BARK_CREATE_ROOT	0xB0	/* give an empty index its root leaf */
+#define XLOG_BARK_DELETE		0xD0	/* delete entries on a leaf whose heap
+										 * tuples are dead (bottom-up
+										 * deletion) */
 
 /*
  * The meta page's root and level, set by NEWROOT and CREATE_ROOT, as
@@ -160,6 +163,30 @@ typedef struct xl_bark_vacuum
 } xl_bark_vacuum;
 
 #define SizeOfBarkVacuum	(offsetof(xl_bark_vacuum, nupdated) + sizeof(uint16))
+
+/*
+ * Bottom-up deletion's changes to one leaf (bark_delitems_delete), as
+ * nbtree's xl_btree_delete: the same payload as xl_bark_vacuum, entries
+ * deleted whole and LIST or POSTING entries rewritten with the members that
+ * survive, plus the conflict horizon of the heap tuples whose entries go.
+ * Unlike VACUUM, the record leaves the page's vacuum cycle ID alone, and redo
+ * takes an exclusive lock rather than a cleanup lock (see "Bottom-up
+ * deletion" in the README).
+ *
+ * Backup Blk 0: leaf page
+ *
+ * In payload of blk 0: as xl_bark_vacuum
+ */
+typedef struct xl_bark_delete
+{
+	TransactionId snapshotConflictHorizon;
+	uint16		ndeleted;
+	uint16		nupdated;
+	bool		isCatalogRel;	/* to handle recovery conflict during logical
+								 * decoding on standby */
+} xl_bark_delete;
+
+#define SizeOfBarkDelete	(offsetof(xl_bark_delete, isCatalogRel) + sizeof(bool))
 
 /*
  * Deletion of an empty leaf (bark_delete_empty_leaf): the left sibling's
