@@ -4498,6 +4498,7 @@ xl_bark_insert
 xl_bark_mark_deleted
 xl_bark_metadata
 xl_bark_newroot
+xl_bark_overflow_page
 xl_bark_overwrite
 xl_bark_reuse_page
 xl_bark_split

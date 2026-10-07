@@ -134,6 +134,9 @@ bark_desc(StringInfo buf, XLogReaderState *record)
 				appendStringInfo(buf, "root: %u", root);
 				break;
 			}
+		case XLOG_BARK_OVERFLOW:
+			appendStringInfo(buf, "npages: %d", XLogRecMaxBlockId(record) + 1);
+			break;
 	}
 }
 
@@ -176,6 +179,9 @@ bark_identify(uint8 info)
 			break;
 		case XLOG_BARK_CREATE_ROOT:
 			id = "CREATE_ROOT";
+			break;
+		case XLOG_BARK_OVERFLOW:
+			id = "OVERFLOW";
 			break;
 	}
 

@@ -29,11 +29,11 @@
 #include "access/bark.h"
 #include "access/barkxlog.h"
 #include "access/detoast.h"
-#include "access/generic_xlog.h"
 #include "access/heaptoast.h"
 #include "access/htup_details.h"
 #include "access/itup.h"
 #include "access/toast_internals.h"
+#include "access/xloginsert.h"
 #include "catalog/pg_type.h"
 #include "lib/sbm.h"
 #include "miscadmin.h"
@@ -1060,17 +1060,16 @@ bark_overflow_nchunks(Size fulllen)
 }
 
 /*
- * Lay out the `which`'th overflow chunk of a tuple of `fulllen` bytes into
- * `page`, copying its slice of `full` and linking it to `nextblk`.
+ * Lay out an overflow page holding `len` bytes of a tuple, `chunk`, linked to
+ * `nextblk`.
  */
 void
-bark_init_overflow_page(Page page, const char *full, Size fulllen,
-						BlockNumber which, BlockNumber nextblk)
+bark_init_overflow_page(Page page, const char *chunk, Size len,
+						BlockNumber nextblk)
 {
 	BarkPageOpaque opaque;
-	Size		start = (Size) which * BarkOverflowChunkSize;
-	Size		len = Min((Size) BarkOverflowChunkSize, fulllen - start);
 
+	Assert(len <= BarkOverflowChunkSize);
 	PageInit(page, BLCKSZ, sizeof(BarkPageOpaqueData));
 	opaque = BarkPageGetOpaque(page);
 	opaque->bark_prev = BARK_P_NONE;
@@ -1080,7 +1079,7 @@ bark_init_overflow_page(Page page, const char *full, Size fulllen,
 	opaque->bark_flags = BARK_OVERFLOW;		/* not BARK_LEAF: vacuum skips it */
 	opaque->bark_page_id = BARK_PAGE_ID;
 
-	memcpy(BarkOverflowPageData(page), full + start, len);
+	memcpy(BarkOverflowPageData(page), chunk, len);
 	/* Advance pd_lower to cover the chunk so the page is not seen as empty. */
 	((PageHeader) page)->pd_lower = MAXALIGN(SizeOfPageHeaderData) + len;
 }
@@ -1187,12 +1186,13 @@ bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
 
 /*
  * Write `full` (fulllen bytes) across a fresh BARK_OVERFLOW chain via the
- * buffer pool, each page WAL-logged with generic WAL, and return the first
- * block.  heaprel is the index's heap, for bark_get_free_page.  Generic WAL
- * covers at most MAX_GENERIC_XLOG_PAGES buffers per record, so a long chain
- * is written in several records; each page is self-contained (it carries its
- * own next-link and chunk bytes), so a crash between records leaves only
- * orphaned, BARK_P_NONE-terminated pages that no entry references.
+ * buffer pool, and return the first block.  heaprel is the index's heap, for
+ * bark_get_free_page.  The pages are logged in XLOG_BARK_OVERFLOW records,
+ * BARK_OVERFLOW_PER_RECORD to a record, each page with its next link and its
+ * slice of the tuple, so redo rebuilds it without reading it.  A long chain
+ * takes several records; each page is self-contained, so a crash between
+ * them leaves only orphaned, BARK_P_NONE-terminated pages that no entry
+ * references (the entry is written after the whole chain).
  */
 BlockNumber
 bark_write_overflow_chain(Relation index, Relation heaprel, IndexTuple full,
@@ -1211,22 +1211,47 @@ bark_write_overflow_chain(Relation index, Relation heaprel, IndexTuple full,
 	}
 	firstblk = blks[0];
 
-	/* Write the chunks, up to MAX_GENERIC_XLOG_PAGES per generic-WAL record. */
 	for (BlockNumber i = 0; i < nchunks;)
 	{
-		GenericXLogState *gstate = GenericXLogStart(index);
-		int			nin = 0;
+		BlockNumber first = i;
+		BlockNumber last = Min(nchunks, i + BARK_OVERFLOW_PER_RECORD);
+		xl_bark_overflow_page links[BARK_OVERFLOW_PER_RECORD];
+		XLogRecPtr	recptr;
 
-		for (; i < nchunks && nin < MAX_GENERIC_XLOG_PAGES; i++, nin++)
+		START_CRIT_SECTION();
+		for (; i < last; i++)
 		{
-			Page		page = GenericXLogRegisterBuffer(gstate, bufs[i],
-														 GENERIC_XLOG_FULL_IMAGE);
-			BlockNumber nextblk = (i + 1 < nchunks) ? blks[i + 1] : BARK_P_NONE;
+			Size		start = (Size) i * BarkOverflowChunkSize;
 
-			bark_init_overflow_page(page, (const char *) full, fulllen,
-									i, nextblk);
+			links[i - first].next = (i + 1 < nchunks) ? blks[i + 1] : BARK_P_NONE;
+			bark_init_overflow_page(BufferGetPage(bufs[i]),
+									(const char *) full + start,
+									Min((Size) BarkOverflowChunkSize,
+										fulllen - start),
+									links[i - first].next);
+			MarkBufferDirty(bufs[i]);
 		}
-		GenericXLogFinish(gstate);
+		if (RelationNeedsWAL(index))
+		{
+			XLogBeginInsert();
+			for (i = first; i < last; i++)
+			{
+				Size		start = (Size) i * BarkOverflowChunkSize;
+
+				XLogRegisterBuffer(i - first, bufs[i], REGBUF_WILL_INIT);
+				XLogRegisterBufData(i - first, &links[i - first],
+									sizeof(xl_bark_overflow_page));
+				XLogRegisterBufData(i - first, (const char *) full + start,
+									Min((Size) BarkOverflowChunkSize,
+										fulllen - start));
+			}
+			recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_OVERFLOW);
+		}
+		else
+			recptr = XLogGetFakeLSN(index);
+		for (i = first; i < last; i++)
+			PageSetLSN(BufferGetPage(bufs[i]), recptr);
+		END_CRIT_SECTION();
 	}
 
 	for (BlockNumber i = 0; i < nchunks; i++)
