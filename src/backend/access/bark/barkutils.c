@@ -1168,6 +1168,90 @@ bark_entry_swap_tid(IndexTuple entry, ItemPointer tid, IndexTuple *left,
 	elog(ERROR, "could not divide a BARK entry to add a heap TID");
 }
 
+/*
+ * Divide `entry`, a LIST or POSTING entry, for heap TID `tid`, which sorts
+ * after all its members: *left, which replaces entry, keeps the lowest
+ * members, as many as fit in `leftmax` bytes, and *right, which goes just
+ * after it, holds the rest and tid.  Both are palloc'd.  Returns false, with
+ * neither set, when no member fits on the left, or every one does (the entry
+ * then needs no cut).
+ *
+ * This is the split of a page full of one key (see bark_singleval_cut):
+ * nbtree's single-value deduplication (_bt_singleval_fillfactor) likewise
+ * caps the last posting list on such a page, so the page can be split at
+ * its single-value fill factor rather than only at whole tuples.
+ *
+ * The search for a POSTING's cut assumes that its size grows with its
+ * members (its removal bound, and a LIST's size, do); only an entry that
+ * was formed and measured is used either way.
+ */
+bool
+bark_entry_cut(IndexTuple entry, ItemPointer tid, Size leftmax,
+			   IndexTuple *left, IndexTuple *right)
+{
+	IndexTuple	key = bark_entry_key_part(entry);
+	int			n = bark_entry_count_tids(entry);
+	ItemPointer tids = palloc_array(ItemPointerData, n + 1);
+	int			lo = 0;
+	int			hi;
+
+	n = bark_entry_get_tids(entry, tids, n);
+	Assert(n > 0 && ItemPointerCompare(&tids[n - 1], tid) < 0);
+	tids[n] = *tid;
+
+	/*
+	 * The most members whose entry fits leftmax: 0 if none, n if all.  A
+	 * LIST's size is linear in its members, so for a LIST that is a
+	 * division; for a POSTING it is searched for.
+	 */
+	hi = n;
+	if (BarkEntryGetShape(entry) == BARK_SHAPE_LIST)
+		lo = hi = Max(0, Min(n, ((int) MAXALIGN_DOWN(leftmax) -
+								 (int) MAXALIGN(IndexTupleSize(key))) /
+							 (int) sizeof(ItemPointerData)));
+	while (lo < hi)
+	{
+		int			mid = lo + (hi - lo + 1) / 2;
+		IndexTuple	probe = bark_form_entry(key, tids, mid);
+
+		if (probe != NULL && MAXALIGN(IndexTupleSize(probe)) <= leftmax)
+			lo = mid;
+		else
+			hi = mid - 1;
+		if (probe != NULL)
+			pfree(probe);
+	}
+
+	/*
+	 * A LIST's parts stay LISTs, as a LIST that grows one TID at a time does
+	 * (bark_entry_add_tid): trying each as a POSTING would build an sbm on
+	 * every such split, for parts that bark_coalesce_list re-forms as a
+	 * POSTING anyway once they stop growing as LISTs.
+	 */
+	*left = *right = NULL;
+	if (lo > 0 && lo < n && BarkEntryGetShape(entry) == BARK_SHAPE_LIST)
+	{
+		*left = lo == 1 ? bark_form_entry(key, tids, 1) :
+			bark_form_list(NULL, key, tids, lo);
+		*right = bark_form_list(NULL, key, tids + lo, n + 1 - lo);
+	}
+	else if (lo > 0 && lo < n)
+	{
+		*left = bark_form_entry(key, tids, lo);
+		*right = bark_form_entry(key, tids + lo, n + 1 - lo);
+	}
+	pfree(tids);
+	pfree(key);
+	if (*left != NULL && *right != NULL)
+		return true;
+	if (*left != NULL)
+		pfree(*left);
+	if (*right != NULL)
+		pfree(*right);
+	*left = *right = NULL;
+	return false;
+}
+
 /* ----------------------------------------------------------------------------
  * Leaf prefix compression (see BARK_PREFIX in bark.h for the format)
  * ----------------------------------------------------------------------------
