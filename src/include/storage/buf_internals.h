@@ -143,6 +143,35 @@ StaticAssertDecl(MAX_BACKENDS_BITS <= (BUF_LOCK_BITS - 2),
  */
 #define BM_MAX_USAGE_COUNT	5
 
+/*
+ * How many buffers a single StrategyGetBuffer() call will decrement before it
+ * abandons the usage-count ladder and claims a buffer whose count has not yet
+ * reached zero.
+ *
+ * A buffer only becomes a candidate if it survives BM_MAX_USAGE_COUNT passes of
+ * the clock hand untouched.  When the pool is accessed faster than the hand can
+ * traverse it, buffers are re-promoted before that happens, the supply of
+ * candidates collapses, and a sweep can decrement indefinitely without finding
+ * a victim.  Claiming after this many fruitless decrements bounds the work of
+ * one allocation.
+ *
+ * The value trades the tail against hit ratio, and both sides have been
+ * measured.  The worst-case advances an allocation performs is almost exactly
+ * this threshold plus two, so the tail is a direct and predictable function of
+ * it.  The cost is that a claimed buffer is evicted without having been passed
+ * over the full number of times: on a workload with a hot set re-read by most
+ * queries, a threshold of 4 evicts thousands of genuinely hot pages and costs
+ * 1.8 percentage points of hot-set hit ratio, a threshold of 32 evicts about
+ * ten and costs 0.03 points, and at 128 nothing hot is evicted and the cost is
+ * not measurable.  128 therefore buys a bound four orders of magnitude below an
+ * unbounded scan for no measurable loss of replacement quality, which is the
+ * right place to sit.
+ *
+ * A control loop that adapted this value was tried and was worse than a fixed
+ * one on both axes; see the commit message for that experiment.
+ */
+#define BUF_DECREMENT_CLAIM_THRESHOLD	128
+
 StaticAssertDecl(BM_MAX_USAGE_COUNT < (UINT64CONST(1) << BUF_USAGECOUNT_BITS),
 				 "BM_MAX_USAGE_COUNT doesn't fit in BUF_USAGECOUNT_BITS bits");
 
