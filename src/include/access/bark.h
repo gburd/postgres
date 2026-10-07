@@ -1352,6 +1352,15 @@ typedef struct BarkScanOpaqueData
 	BarkScanBound skipBound;
 
 	/*
+	 * Column 1's skip support (BTSKIPSUPPORT_PROC), or NULL when its opclass
+	 * has none: for a discrete type it gives the next possible value, so the
+	 * scan can descend straight to (next value, column 2's lower bound).
+	 * skipSupportReady says whether it has been looked up yet.
+	 */
+	struct SkipSupportData *skipSupport;
+	bool		skipSupportReady;
+
+	/*
 	 * KNN (ordered-operator) scan state, allocated by the first rescan of a
 	 * scan with ORDER BY <~> keys; NULL for a plain scan.
 	 */

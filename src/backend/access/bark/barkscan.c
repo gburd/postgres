@@ -57,6 +57,7 @@
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/skipsupport.h"
 #include "utils/snapmgr.h"
 #include "utils/wait_event.h"
 
@@ -536,19 +537,145 @@ bark_skip_eligible(IndexScanDesc scan)
 }
 
 /*
+ * Skip scan: where does the next possible match after entry itup start?
+ * Returns false when it may be the very next entry; otherwise builds in
+ * *bound a lower bound for it.
+ *
+ * Within one column-1 group the entries are in column-2 order.  When itup's
+ * column-2 value is past an upper bound on column 2, so is every later entry
+ * of its group: the next match is in a later group, at or after (the next
+ * column-1 value, column 2's lower bound) when column 1's opclass has skip
+ * support for a discrete type, or after the whole group (a column-1 bound
+ * that sorts after every equal entry) otherwise.  When itup's value is before
+ * a lower bound on column 2, the next match is at or after (itup's column-1
+ * value, that bound).  A NULL column-1 value is not a bound, so a NULL group
+ * is read through.  The bound's column-1 value may be itup's own: the caller
+ * copies it before letting go of the page.  *palloced says the value is
+ * instead a fresh skip-support result of a by-reference type, which the
+ * caller frees.
+ */
+static bool
+bark_skip_bound(IndexScanDesc scan, IndexTuple itup, BarkScanBound *bound,
+				bool *palloced)
+{
+	Relation	index = scan->indexRelation;
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	bool		isnull;
+	Datum		value = index_getattr(itup, 1, RelationGetDescr(index), &isnull);
+	bool		past = false;
+	bool		before = false;
+	int			lowkey = -1;
+
+	*palloced = false;
+	if (isnull)
+		return false;
+	for (int i = 0; i < scan->numberOfKeys; i++)
+	{
+		ScanKey		sk = &scan->keyData[i];
+		bool		lower;
+		bool		upper;
+		int			c;
+
+		if (sk->sk_attno != 2 || !bark_key_bounds(scan, sk, &lower, &upper))
+			continue;
+		c = bark_key_cmp(scan, i, itup);
+		if (upper && c > 0)
+			past = true;
+		if (lower && lowkey < 0)
+		{
+			lowkey = i;
+			before = c < 0;
+		}
+	}
+	if (!past && !before)
+		return false;
+
+	bound->args[0] = value;
+	bound->procs[0] = &so->keyinfo->cols[0].cmp;
+	bound->collations[0] = so->keyinfo->cols[0].collation;
+	bound->nkeys = 1;
+	bound->upper = false;
+	if (past)
+	{
+		bool		overflow = true;
+
+		if (!so->skipSupportReady)
+		{
+			MemoryContext oldcxt = MemoryContextSwitchTo(so->scanCxt);
+
+			so->skipSupport =
+				PrepareSkipSupportFromOpclass(index->rd_opfamily[0],
+											  index->rd_opcintype[0],
+											  so->keyinfo->cols[0].reverse);
+			so->skipSupportReady = true;
+			MemoryContextSwitchTo(oldcxt);
+		}
+		if (so->skipSupport != NULL)
+			bound->args[0] = so->skipSupport->increment(index, value, &overflow);
+		if (overflow)
+		{
+			/* No next value to name: descend past every equal entry. */
+			bound->args[0] = value;
+			bound->upper = true;
+			return true;
+		}
+		*palloced = !TupleDescAttr(RelationGetDescr(index), 0)->attbyval;
+	}
+	if (lowkey >= 0)
+	{
+		bound->nkeys = 2;
+		bound->args[1] = scan->keyData[lowkey].sk_argument;
+		bound->procs[1] = &so->keyCmp[lowkey];
+		bound->collations[1] = scan->keyData[lowkey].sk_collation;
+	}
+	return true;
+}
+
+/*
+ * Skip scan, reading page forward from entry itup at offnum, which failed the
+ * scan keys: return the offset to continue from, past the entries that
+ * bark_skip_bound shows cannot match, by binary search over the rest of the
+ * page.  maxoff + 1 when none of the rest can match.
+ */
+static OffsetNumber
+bark_skip_on_page(IndexScanDesc scan, Page page, IndexTuple itup,
+				  OffsetNumber offnum, OffsetNumber maxoff)
+{
+	Relation	index = scan->indexRelation;
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BarkScanBound bound;
+	bool		palloced;
+	OffsetNumber low = OffsetNumberNext(offnum);
+	OffsetNumber high = OffsetNumberNext(maxoff);
+
+	if (!bark_skip_bound(scan, itup, &bound, &palloced))
+		return OffsetNumberNext(offnum);
+
+	/* The first offset in [low, high) whose entry the bound sorts before. */
+	while (low < high)
+	{
+		OffsetNumber mid = low + (high - low) / 2;
+		IndexTuple	cur = (IndexTuple) PageGetItem(page, PageGetItemId(page, mid));
+
+		if (bark_compare_bound(index, so->keyinfo, &bound, cur) > 0)
+			low = OffsetNumberNext(mid);
+		else
+			high = mid;
+	}
+	if (palloced)
+		pfree(DatumGetPointer(bound.args[0]));
+	return low;
+}
+
+/*
  * Skip scan, after a forward read of page: should the next read re-descend
  * rather than step right?  If so, build that descent's bound in
  * so->skipBound and return true.
  *
- * The page's last entry decides.  When its column-2 value is past an upper
- * bound on column 2, so is every later entry with the same column-1 value:
- * descend past that group, to the first entry with a greater column-1 value.
- * When it is before a lower bound on column 2, descend to (its column-1
- * value, that bound).  Either descent is taken only when its bound sorts
- * after the page's high key, which keeps it from landing on this page again;
- * otherwise the next group starts on the right sibling and the plain step
- * reaches it.  A NULL column-1 value is never a bound, so a NULL group is
- * read through.
+ * The page's last entry decides, through bark_skip_bound.  The descent is
+ * taken only when its bound sorts after the page's high key, which keeps it
+ * from landing on the page just read; otherwise the next match can start on
+ * the right sibling and the plain step reaches it.
  */
 static bool
 bark_skip_plan(IndexScanDesc scan, Page page, OffsetNumber lastoff)
@@ -561,45 +688,12 @@ bark_skip_plan(IndexScanDesc scan, Page page, OffsetNumber lastoff)
 												 PageGetItemId(page, BARK_P_HIKEY));
 	bool		fetched;
 	IndexTuple	resolved = bark_scan_resolve(index, last, &fetched);
-	bool		isnull;
-	Datum		value = index_getattr(resolved, 1, tupdesc, &isnull);
-	bool		past = false;
-	int			lowkey = -1;
-	bool		reseek = false;
+	bool		reseek;
+	bool		palloced = false;
 	BarkScanBound bound;
 
-	for (int i = 0; i < scan->numberOfKeys && !isnull; i++)
-	{
-		ScanKey		sk = &scan->keyData[i];
-		bool		lower;
-		bool		upper;
-		int			c;
-
-		if (sk->sk_attno != 2 || !bark_key_bounds(scan, sk, &lower, &upper))
-			continue;
-		c = bark_key_cmp(scan, i, resolved);
-		if (upper && c > 0)
-			past = true;
-		if (lower && c < 0 && lowkey < 0)
-			lowkey = i;
-	}
-
-	if (!isnull && (past || lowkey >= 0))
-	{
-		bound.nkeys = 1;
-		bound.upper = past;
-		bound.args[0] = value;
-		bound.procs[0] = &so->keyinfo->cols[0].cmp;
-		bound.collations[0] = so->keyinfo->cols[0].collation;
-		if (!past)
-		{
-			bound.nkeys = 2;
-			bound.args[1] = scan->keyData[lowkey].sk_argument;
-			bound.procs[1] = &so->keyCmp[lowkey];
-			bound.collations[1] = scan->keyData[lowkey].sk_collation;
-		}
-		reseek = bark_compare_bound(index, so->keyinfo, &bound, hikey) > 0;
-	}
+	reseek = bark_skip_bound(scan, resolved, &bound, &palloced) &&
+		bark_compare_bound(index, so->keyinfo, &bound, hikey) > 0;
 
 	if (reseek)
 	{
@@ -610,12 +704,16 @@ bark_skip_plan(IndexScanDesc scan, Page page, OffsetNumber lastoff)
 		if (!so->skipValueByVal && so->skipValue != (Datum) 0)
 			pfree(DatumGetPointer(so->skipValue));
 		oldcxt = MemoryContextSwitchTo(so->scanCxt);
-		so->skipValue = datumCopy(value, att->attbyval, att->attlen);
+		so->skipValue = datumCopy(bound.args[0], att->attbyval, att->attlen);
 		MemoryContextSwitchTo(oldcxt);
 		so->skipValueByVal = att->attbyval;
+		if (palloced)
+			pfree(DatumGetPointer(bound.args[0]));
 		bound.args[0] = so->skipValue;
 		so->skipBound = bound;
 	}
+	else if (palloced)
+		pfree(DatumGetPointer(bound.args[0]));
 	if (fetched)
 		pfree(resolved);
 	return reseek;
@@ -1276,6 +1374,13 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum)
 			bool		stop = (lead == NULL || !forward) &&
 				bark_past_bound(scan, resolved, dir);
 
+			/*
+			 * Skip scan: jump over the entries of this page that cannot
+			 * match.  The loop's increment then lands on the entry found.
+			 */
+			if (so->skip && forward && !stop)
+				offnum = OffsetNumberPrev(bark_skip_on_page(scan, page, resolved,
+															offnum, maxoff));
 			if (fetched)
 				pfree(resolved);
 			if (stop)
@@ -1855,6 +1960,8 @@ bark_endscan(IndexScanDesc scan)
 		pfree(so->keyCmp);
 	if (!so->skipValueByVal && so->skipValue != (Datum) 0)
 		pfree(DatumGetPointer(so->skipValue));
+	if (so->skipSupport)
+		pfree(so->skipSupport);
 	if (so->keyinfo)
 		pfree(so->keyinfo);
 	pfree(so);

@@ -2594,6 +2594,15 @@ SELECT bark_skip_check('SELECT count(*) FROM bark_skip WHERE b BETWEEN 300 AND 4
 SELECT bark_skip_stats('SELECT a, b FROM bark_skip WHERE b = 4321', 'bark_skip_ab');
 SELECT bark_skip_stats('SELECT a, b FROM bark_skip WHERE b BETWEEN 5000 AND 5100', 'bark_skip_ab');
 SELECT bark_skip_stats('SELECT t, b FROM bark_skip WHERE b BETWEEN 5000 AND 5100', 'bark_skip_tb');
+-- Column 1 is int4, whose opclass has skip support: one descent per group
+-- (10 groups, then the NULL group past the last), each straight to
+-- (next value, 5000), plus the first descent.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF)
+  SELECT a, b FROM bark_skip WHERE b BETWEEN 5000 AND 5100;
+RESET enable_bitmapscan;
+RESET enable_seqscan;
 -- A scroll cursor that reverses inside the scan returns the same rows as a
 -- sort over a sequential scan.
 SET enable_seqscan = off;
