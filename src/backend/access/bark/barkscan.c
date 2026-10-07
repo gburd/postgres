@@ -25,7 +25,8 @@
  * matching keys in index order -- a merged sequence of equality scans.  Every
  * array key filters per tuple by membership; an array on the leading column
  * also drives positioning, so the scan seeks to each element in turn rather
- * than reading the whole index.
+ * than reading the whole index.  An inequality array (`col < ANY(array)`) is
+ * reduced to a plain key on its extreme element instead.
  *
  * A backward scan starts at the rightmost leaf rather than descending to an
  * upper bound, and does not terminate early at a lower bound; sharper backward
@@ -56,6 +57,7 @@
 #include "utils/array.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/skipsupport.h"
 #include "utils/snapmgr.h"
@@ -93,14 +95,15 @@ bark_scan_resolve(Relation index, IndexTuple itup, bool *fetched)
  * (a) filters every tuple by array membership and (b) for an array on the
  * leading column, seeks to each element in turn so it visits the matching
  * keys in index order without reading the whole index -- a merged sequence of
- * equality scans.
+ * equality scans.  An inequality array (col < ANY(array)) is not a set of
+ * values but a single bound, so it is reduced to a plain key instead.
  * ---------------------------------------------------------------------------
  */
 
-/* Per-column comparator state for sorting/searching array elements. */
+/* Comparator state for sorting/searching array elements. */
 typedef struct BarkArraySortCtx
 {
-	FmgrInfo   *cmp;			/* support-1 three-way comparator */
+	FmgrInfo   *cmp;			/* ORDER proc (sortproc or cmpproc) */
 	Oid			collation;		/* collation to pass it */
 	bool		reverse;		/* DESC column: invert the result */
 } BarkArraySortCtx;
@@ -120,7 +123,10 @@ bark_array_cmp(const void *a, const void *b, void *arg)
 	return c;
 }
 
-/* Is `datum` one of the array key's elements?  Binary search over the sort. */
+/*
+ * Is column value `datum` one of the array key's elements?  Binary search
+ * over the sorted elements, comparing through cmpproc.
+ */
 static bool
 bark_array_contains(BarkScanOpaque so, BarkArrayKeyState *ak, Datum datum)
 {
@@ -129,7 +135,7 @@ bark_array_contains(BarkScanOpaque so, BarkArrayKeyState *ak, Datum datum)
 	int			lo = 0;
 	int			hi = ak->nelems - 1;
 
-	ctx.cmp = &col->cmp;
+	ctx.cmp = &ak->cmpproc;
 	ctx.collation = col->collation;
 	ctx.reverse = col->reverse;
 
@@ -149,19 +155,66 @@ bark_array_contains(BarkScanOpaque so, BarkArrayKeyState *ak, Datum datum)
 }
 
 /*
- * Preprocess every SK_SEARCHARRAY scankey into a BarkArrayKeyState: deconstruct
- * its array, sort the elements into the index's key order for the column, drop
- * duplicates, and record the array key that constrains the leading column.  A
- * NULL array element is dropped (a NULL never satisfies an equality qual).  An
- * empty array leaves nelems == 0, which makes the scan return nothing.
+ * Set *finfo, in the array context, to the ORDER proc of index column attno's
+ * opfamily that compares lefttype with righttype.  The planner only builds a
+ * SAOP index qual from an operator of the column's opfamily, and a btree
+ * opfamily has an ORDER proc for each pair of types it has operators for, so
+ * a missing one means a broken opfamily.
+ */
+static void
+bark_array_proc(IndexScanDesc scan, AttrNumber attno, Oid lefttype,
+				Oid righttype, FmgrInfo *finfo)
+{
+	Relation	index = scan->indexRelation;
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	Oid			opcintype = index->rd_opcintype[attno - 1];
+	Oid			proc;
+
+	if (lefttype == opcintype && righttype == opcintype)
+	{
+		fmgr_info_copy(finfo, &so->keyinfo->cols[attno - 1].cmp, so->arrayCxt);
+		return;
+	}
+	proc = get_opfamily_proc(index->rd_opfamily[attno - 1], lefttype,
+							 righttype, BARK_ORDER_PROC);
+	if (!OidIsValid(proc))
+		elog(ERROR, "missing support function %d(%u,%u) for attribute %d of index \"%s\"",
+			 BARK_ORDER_PROC, lefttype, righttype, attno,
+			 RelationGetRelationName(index));
+	fmgr_info_cxt(proc, finfo, so->arrayCxt);
+}
+
+/*
+ * Preprocess every SK_SEARCHARRAY scankey, as nbtree's
+ * _bt_preprocess_array_keys does.  NULL array elements are dropped: btree
+ * operators are strict, so a NULL element never matches.
  *
- * Called from bark_rescan; freed by bark_free_array_keys (endscan/rescan).
+ * An equality array becomes a BarkArrayKeyState: its elements sorted into
+ * the index's key order for the column, without duplicates, and the array
+ * key that constrains the leading column is recorded.  An array with no
+ * non-NULL element leaves nelems == 0, which makes the scan return nothing.
+ *
+ * An inequality array is satisfied exactly when the column satisfies the
+ * operator against the array's extreme element in value order (whatever the
+ * column's DESC option): the greatest for < and <=, the least for > and >=.
+ * The key is rewritten in place into that plain key, keeping its strategy
+ * and subtype, so bark_setup_key_procs gives it an ORDER proc and it bounds
+ * the scan like any other key.  Its argument is a copy of the element in the
+ * array context, which lives until bark_rescan next overwrites scan->keyData
+ * with the executor's keys.  An inequality array with no non-NULL element
+ * stays an array key with no elements.
+ *
+ * Elements are of the operator's right-hand type, sk_subtype, which can
+ * differ from the column's type; see BarkArrayKeyState.  Everything built
+ * here lives in so->arrayCxt, reset by bark_free_array_keys.
  */
 static void
 bark_setup_array_keys(IndexScanDesc scan)
 {
+	Relation	index = scan->indexRelation;
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	int			narrays = 0;
+	MemoryContext oldcxt;
 
 	so->arrayKeys = NULL;
 	so->numArrayKeys = 0;
@@ -173,89 +226,107 @@ bark_setup_array_keys(IndexScanDesc scan)
 	if (narrays == 0)
 		return;
 
-	so->arrayKeys = (BarkArrayKeyState *)
-		palloc0(narrays * sizeof(BarkArrayKeyState));
+	if (so->arrayCxt == NULL)
+		so->arrayCxt = AllocSetContextCreate(so->scanCxt, "BARK array keys",
+											 ALLOCSET_SMALL_SIZES);
+	oldcxt = MemoryContextSwitchTo(so->arrayCxt);
+	so->arrayKeys = palloc0_array(BarkArrayKeyState, narrays);
 
 	for (int i = 0; i < scan->numberOfKeys; i++)
 	{
 		ScanKey		sk = &scan->keyData[i];
 		BarkArrayKeyState *ak;
-		ArrayType  *arr;
-		int16		elmlen;
-		bool		elmbyval;
+		Oid			opcintype;
+		Oid			elemtype;
+		int16		elmlen = 0;
+		bool		elmbyval = true;
 		char		elmalign;
-		Datum	   *rawelems;
-		bool	   *rawnulls;
-		int			nrawelems;
-		int			nelems;
-		BarkKeyColumn *col;
+		Datum	   *elems = NULL;
+		bool	   *nulls;
+		int			nelems = 0;
 		BarkArraySortCtx ctx;
 
 		if (!(sk->sk_flags & SK_SEARCHARRAY))
 			continue;
 
+		opcintype = index->rd_opcintype[sk->sk_attno - 1];
+		elemtype = OidIsValid(sk->sk_subtype) ? sk->sk_subtype : opcintype;
+
+		/* A NULL array argument matches nothing: leave nelems == 0. */
+		if (!(sk->sk_flags & SK_ISNULL))
+		{
+			ArrayType  *arr = DatumGetArrayTypeP(sk->sk_argument);
+			int			nraw;
+
+			get_typlenbyvalalign(ARR_ELEMTYPE(arr), &elmlen, &elmbyval,
+								 &elmalign);
+			deconstruct_array(arr, ARR_ELEMTYPE(arr), elmlen, elmbyval,
+							  elmalign, &elems, &nulls, &nraw);
+			for (int e = 0; e < nraw; e++)
+				if (!nulls[e])
+					elems[nelems++] = elems[e];
+		}
+
+		ctx.collation = so->keyinfo->cols[sk->sk_attno - 1].collation;
+
+		if (sk->sk_strategy != BTEqualStrategyNumber && nelems > 0)
+		{
+			FmgrInfo	sortproc;
+			bool		greatest = (sk->sk_strategy == BTLessStrategyNumber ||
+									sk->sk_strategy == BTLessEqualStrategyNumber);
+			Datum		extreme = elems[0];
+
+			bark_array_proc(scan, sk->sk_attno, elemtype, elemtype, &sortproc);
+			for (int e = 1; e < nelems; e++)
+			{
+				int32		c = DatumGetInt32(FunctionCall2Coll(&sortproc,
+																ctx.collation,
+																elems[e],
+																extreme));
+
+				if (greatest ? c > 0 : c < 0)
+					extreme = elems[e];
+			}
+			sk->sk_argument = datumCopy(extreme, elmbyval, elmlen);
+			sk->sk_flags &= ~SK_SEARCHARRAY;
+			continue;
+		}
+
 		ak = &so->arrayKeys[so->numArrayKeys++];
 		ak->scankeyidx = i;
 		ak->attno = sk->sk_attno;
 		ak->cur = 0;
-
-		/* A NULL array argument matches nothing: leave nelems == 0. */
-		if (sk->sk_flags & SK_ISNULL)
-		{
-			ak->elems = NULL;
-			ak->nelems = 0;
-			ak->elmbyval = true;
-			if (ak->attno == 1)
-				so->leadArray = ak;
-			continue;
-		}
-
-		arr = DatumGetArrayTypeP(sk->sk_argument);
-		get_typlenbyvalalign(ARR_ELEMTYPE(arr), &elmlen, &elmbyval, &elmalign);
-		ak->elmbyval = elmbyval;
-		deconstruct_array(arr, ARR_ELEMTYPE(arr), elmlen, elmbyval, elmalign,
-						  &rawelems, &rawnulls, &nrawelems);
-
-		/* Drop NULL elements (a NULL never satisfies an equality qual). */
-		nelems = 0;
-		for (int e = 0; e < nrawelems; e++)
-		{
-			if (rawnulls[e])
-				continue;
-			rawelems[nelems++] = rawelems[e];
-		}
-
-		col = &so->keyinfo->cols[ak->attno - 1];
-		ctx.cmp = &col->cmp;
-		ctx.collation = col->collation;
-		ctx.reverse = col->reverse;
-
-		if (nelems > 1)
-		{
-			qsort_arg(rawelems, nelems, sizeof(Datum), bark_array_cmp, &ctx);
-			nelems = qunique_arg(rawelems, nelems, sizeof(Datum),
-								 bark_array_cmp, &ctx);
-		}
-
-		ak->elems = rawelems;	/* deconstruct_array palloc'd this */
+		ak->elems = elems;
 		ak->nelems = nelems;
-		pfree(rawnulls);
-
 		if (ak->attno == 1)
 			so->leadArray = ak;
+		if (nelems == 0)
+			continue;
+
+		/*
+		 * Sort with the element type's comparator, then walk the index with
+		 * the cross-type one: the two agree, by the btree opfamily contract.
+		 */
+		bark_array_proc(scan, ak->attno, opcintype, elemtype, &ak->cmpproc);
+		bark_array_proc(scan, ak->attno, elemtype, elemtype, &ak->sortproc);
+		ctx.cmp = &ak->sortproc;
+		ctx.reverse = so->keyinfo->cols[ak->attno - 1].reverse;
+		if (nelems > 1)
+		{
+			qsort_arg(elems, nelems, sizeof(Datum), bark_array_cmp, &ctx);
+			ak->nelems = qunique_arg(elems, nelems, sizeof(Datum),
+									 bark_array_cmp, &ctx);
+		}
 	}
+	MemoryContextSwitchTo(oldcxt);
 }
 
-/* Release SAOP state (endscan, and before rebuilding it on rescan). */
+/* Release SAOP state before rebuilding it on rescan. */
 static void
 bark_free_array_keys(BarkScanOpaque so)
 {
-	if (so->arrayKeys == NULL)
-		return;
-	for (int i = 0; i < so->numArrayKeys; i++)
-		if (so->arrayKeys[i].elems)
-			pfree(so->arrayKeys[i].elems);
-	pfree(so->arrayKeys);
+	if (so->arrayCxt != NULL)
+		MemoryContextReset(so->arrayCxt);
 	so->arrayKeys = NULL;
 	so->numArrayKeys = 0;
 	so->leadArray = NULL;
@@ -767,7 +838,7 @@ bark_make_bound(IndexScanDesc scan, ScanDirection dir, BarkScanBound *bound)
 			forward)
 		{
 			bound->args[0] = so->leadArray->elems[so->leadArray->cur];
-			bound->procs[0] = &so->keyinfo->cols[0].cmp;
+			bound->procs[0] = &so->leadArray->cmpproc;
 			bound->collations[0] = so->keyinfo->cols[0].collation;
 			bound->nkeys = 1;
 			continue;			/* an equality, one element at a time */
@@ -832,9 +903,15 @@ bark_setup_key_procs(IndexScanDesc scan)
 		Oid			subtype;
 		Oid			proc;
 
+		/*
+		 * An inequality SAOP key gets its proc too: bark_setup_array_keys
+		 * reduces it to a plain key whenever its array has a non-NULL
+		 * element, which can change from one rescan to the next.
+		 */
 		so->keyCmp[i].fn_oid = InvalidOid;
-		if (sk->sk_flags & (SK_SEARCHARRAY | SK_ROW_HEADER | SK_SEARCHNULL |
-							SK_SEARCHNOTNULL))
+		if ((sk->sk_flags & (SK_ROW_HEADER | SK_SEARCHNULL | SK_SEARCHNOTNULL)) ||
+			((sk->sk_flags & SK_SEARCHARRAY) &&
+			 sk->sk_strategy == BTEqualStrategyNumber))
 			continue;
 		subtype = OidIsValid(sk->sk_subtype) ? sk->sk_subtype :
 			index->rd_opcintype[col];
@@ -929,8 +1006,11 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 
 	/*
 	 * Rebuild ScalarArrayOp state from the (possibly new) scan keys: sort and
-	 * de-duplicate each SK_SEARCHARRAY array once, so the scan can visit the
-	 * matching keys in index order.  A plain scan builds nothing here.
+	 * de-duplicate each equality array once, so the scan can visit the
+	 * matching keys in index order, and reduce each inequality array to a
+	 * plain key in scan->keyData.  That must come before bark_setup_key_procs,
+	 * which gives the reduced keys their ORDER procs.  A plain scan builds
+	 * nothing here.
 	 */
 	bark_free_array_keys(so);
 	bark_setup_array_keys(scan);
@@ -1147,9 +1227,10 @@ bark_parallel_release(IndexScanDesc scan, BlockNumber next_page,
 
 /*
  * Compare index tuple `itup`'s leading-column value against a leading-array
- * element `elem`, in the index's key order (DESC inverted).  A NULL leading
- * value sorts per the column's NULLS option.  Returns <0, 0, >0 as itup's
- * leading value is before, equal to, or after `elem`.
+ * element `elem`, through the array's cmpproc, in the index's key order (DESC
+ * inverted).  A NULL leading value sorts per the column's NULLS option.
+ * Returns <0, 0, >0 as itup's leading value is before, equal to, or after
+ * `elem`.
  */
 static int
 bark_lead_cmp(IndexScanDesc scan, IndexTuple itup, Datum elem)
@@ -1163,7 +1244,8 @@ bark_lead_cmp(IndexScanDesc scan, IndexTuple itup, Datum elem)
 
 	if (isnull)
 		return col->nulls_first ? -1 : 1;	/* NULL vs non-NULL elem */
-	c = DatumGetInt32(FunctionCall2Coll(&col->cmp, col->collation, datum, elem));
+	c = DatumGetInt32(FunctionCall2Coll(&so->leadArray->cmpproc,
+										col->collation, datum, elem));
 	return col->reverse ? -c : c;
 }
 
@@ -1946,7 +2028,8 @@ bark_endscan(IndexScanDesc scan)
 	if (so == NULL)
 		return;
 	bark_knn_endscan(scan);
-	bark_free_array_keys(so);
+	if (so->arrayCxt != NULL)
+		MemoryContextDelete(so->arrayCxt);
 	BarkScanPosUnpinIfPinned(so->currPos);
 	BarkScanPosUnpinIfPinned(so->markPos);
 	if (so->currPos.items)
