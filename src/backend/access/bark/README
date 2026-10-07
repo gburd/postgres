@@ -22,7 +22,8 @@ PostgreSQL page whose special space holds a BarkPageOpaqueData:
                             (16 bits; see "VACUUM" below)
     bark_flags              page role: BARK_LEAF, BARK_ROOT, BARK_META,
                             BARK_DELETED, BARK_HALF_DEAD,
-                            BARK_INCOMPLETE_SPLIT, BARK_HAS_GARBAGE
+                            BARK_INCOMPLETE_SPLIT, BARK_HAS_GARBAGE,
+                            BARK_OVERFLOW, BARK_PREFIX
     bark_page_id            BARK_PAGE_ID (0xFF84), so external tools can
                             tell BARK pages from nbtree pages: nbtree keeps
                             its vacuum cycle ID in the last two bytes of the
@@ -34,6 +35,47 @@ As in nbtree, each page carries a high key (an upper bound on the keys the
 page may hold) and a right-link to its sibling, which together let a scan
 detect and recover from a concurrent split without holding read locks across
 pages.
+
+Leaf prefix compression
+-----------------------
+
+With the prefix_compression reloption (default off), a leaf whose index has a
+varlena first key column may be flagged BARK_PREFIX.  Such a leaf holds a
+PREFIX item right after its high key (at BarkPagePrefixOff; the data items
+start one offset later, at BarkPageFirstDataKey): an IndexTupleData header,
+with t_tid zero and t_info set to the item's size, then 1..126 bytes of
+prefix.  Each SINGLE, LIST and POSTING entry with a non-NULL first column
+stores that column coded: a varlena whose payload's first byte gives how
+many bytes of the prefix the value starts with (0..126), the rest being the
+value's remaining bytes; the value's varlena header is recomputed on decode
+(1-byte when it fits, else 4-byte).  A value compressed inline, or with a
+header not in that form, is stored raw (count 127, then the value with its
+header).  The bytes after the first column are moved to keep their
+alignment, or left out when they are only the key's closing zero padding.
+The format comment at BARK_PREFIX in bark.h has the details.  OVERSIZED
+entries, NULL first columns, high keys and pivots are stored as on any page.
+
+Every read of a data item goes through BarkPageGetItem, which decodes on a
+BARK_PREFIX page, so comparisons always see the real datum and any collation
+works.  Coding needs only the page's prefix and the entry, not the catalog,
+so WAL redo can repeat it (ADD_TID redo decodes, adds the TID, and codes
+again); the other records carry coded bytes and redo adds them as they are.
+
+The prefix is chosen only when a leaf is written whole, and never changes:
+the build gives a leaf its first item's leading bytes when the previous
+leaf's items shared at least 4 of its own on average (the first leaf always
+gets one), and each half of a leaf split takes its first item's bytes, cut
+to the longest share, when its items share at least 4 bytes on average.
+Because each entry records its own share, an entry that shares less (an
+insert outside the page's original range, say) is still stored correctly,
+so no insert, VACUUM or change of the key range ever forces a page rewrite.
+A coded entry can be up to 8 bytes larger than the plain one (the count
+byte crossing an alignment boundary), so every free-space test before
+placing an entry on a leaf uses bark_coded_size.  A split sizes items as
+they are coded on the original page; a half that does not fit with its new
+prefix is laid out plain, or, if that does not fit either, with the original
+page's prefix, against which it fits by construction.  The split record
+says which halves have a prefix (XLH_BARK_SPLIT_LPREFIX / _RPREFIX).
 
 Page splits and the incomplete-split flag
 -----------------------------------------
@@ -153,8 +195,8 @@ split clears BARK_ROOT on the old root, so a stale cache entry fails that
 check and the meta page is read instead.
 
 Every read of a data item (any item but a high key) goes through
-BarkPageGetItem, so that a leaf format storing items encoded has one place
-to decode them.  Items are stored as they are read today.
+BarkPageGetItem, which decodes the prefix-coded items of a BARK_PREFIX leaf
+(see "Leaf prefix compression").
 
 VACUUM
 ------
