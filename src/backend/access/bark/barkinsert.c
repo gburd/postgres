@@ -95,8 +95,8 @@ bark_leaf_insert_off(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 	while (low < high)
 	{
 		OffsetNumber mid = low + ((high - low) / 2);
-		ItemId		iid = PageGetItemId(page, mid);
-		IndexTuple	mitup = (IndexTuple) PageGetItem(page, iid);
+		BarkItemBuf ibuf;
+		IndexTuple	mitup = BarkPageGetItem(page, mid, &ibuf);
 
 		if (bark_compare_itups(keyinfo, index, key, mitup) >= 0)
 			low = OffsetNumberNext(mid);
@@ -558,11 +558,11 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 
 	for (OffsetNumber off = firstdata; off <= maxoff; off = OffsetNumberNext(off))
 	{
+		BarkItemBuf ibuf;
+
 		if (off == newoff)
 			items[n++] = CopyIndexTuple(newitup);
-		items[n++] = CopyIndexTuple((IndexTuple)
-									PageGetItem(origpage,
-												PageGetItemId(origpage, off)));
+		items[n++] = CopyIndexTuple(BarkPageGetItem(origpage, off, &ibuf));
 	}
 	if (newoff > maxoff)
 		items[n++] = CopyIndexTuple(newitup);
@@ -857,8 +857,10 @@ bark_get_leftmost_at_level(Relation index, uint32 level)
 		}
 		else
 		{
-			IndexTuple	itup = (IndexTuple)
-				PageGetItem(page, PageGetItemId(page, BarkPageFirstDataKey(opaque)));
+			BarkItemBuf ibuf;
+			IndexTuple	itup = BarkPageGetItem(page,
+											   BarkPageFirstDataKey(opaque),
+											   &ibuf);
 
 			blkno = BarkEntryGetDownLink(itup);
 		}
@@ -925,8 +927,8 @@ bark_getstackbuf(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
 
 			for (off = start; off <= maxoff; off = OffsetNumberNext(off))
 			{
-				IndexTuple	itup = (IndexTuple)
-					PageGetItem(page, PageGetItemId(page, off));
+				BarkItemBuf ibuf;
+				IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
 
 				if (BarkEntryGetDownLink(itup) == child)
 				{
@@ -938,8 +940,8 @@ bark_getstackbuf(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
 			for (off = OffsetNumberPrev(start); off >= minoff;
 				 off = OffsetNumberPrev(off))
 			{
-				IndexTuple	itup = (IndexTuple)
-					PageGetItem(page, PageGetItemId(page, off));
+				BarkItemBuf ibuf;
+				IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
 
 				if (BarkEntryGetDownLink(itup) == child)
 				{
@@ -1168,8 +1170,8 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 		while (lo < hi)
 		{
 			OffsetNumber mid = lo + ((hi - lo) / 2);
-			ItemId		iid = PageGetItemId(page, mid);
-			IndexTuple	mitup = (IndexTuple) PageGetItem(page, iid);
+			BarkItemBuf ibuf;
+			IndexTuple	mitup = BarkPageGetItem(page, mid, &ibuf);
 
 			if (bark_compare_itups(keyinfo, index, itup, mitup) > 0)
 				lo = OffsetNumberNext(mid);	/* mid < itup: go right */
@@ -1179,8 +1181,8 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 
 		for (off = lo; off <= maxoff; off = OffsetNumberNext(off))
 		{
-			ItemId		iid = PageGetItemId(page, off);
-			IndexTuple	curitup = (IndexTuple) PageGetItem(page, iid);
+			BarkItemBuf ibuf;
+			IndexTuple	curitup = BarkPageGetItem(page, off, &ibuf);
 			ItemPointerData htid;
 			bool		all_dead = false;
 
@@ -1337,6 +1339,7 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 	OffsetNumber eqoff;
 	ItemId		iid;
 	IndexTuple	cur;
+	BarkItemBuf ibuf;
 	ItemPointer tids;
 	int			maxtids;
 	int			nold;
@@ -1351,7 +1354,7 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		return false;
 	eqoff = OffsetNumberPrev(off);
 	iid = PageGetItemId(page, eqoff);
-	cur = (IndexTuple) PageGetItem(page, iid);
+	cur = BarkPageGetItem(page, eqoff, &ibuf);
 
 	/* Only coalesce with a leaf-data entry whose key equals the new key. */
 	if (!BarkEntryIsLeafData(cur) ||

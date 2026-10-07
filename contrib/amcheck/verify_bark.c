@@ -118,6 +118,8 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 	IndexTuple	hikey = NULL;
 	int			hikeynatts = 0;
 	IndexTuple	prev = NULL;
+	BarkItemBuf ibuf[2];		/* this item's and the previous one's */
+	int			cur = 0;
 
 	LockBuffer(buf, BUFFER_LOCK_SHARE);
 	page = BufferGetPage(buf);
@@ -196,7 +198,7 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 	for (OffsetNumber off = firstdata; off <= maxoff;
 		 off = OffsetNumberNext(off))
 	{
-		IndexTuple	itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, off));
+		IndexTuple	itup = BarkPageGetItem(page, off, &ibuf[cur]);
 
 		/* Keys must be in non-decreasing order within the page. */
 		if (prev != NULL &&
@@ -251,6 +253,7 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 		}
 
 		prev = itup;
+		cur = 1 - cur;
 	}
 
 	/*
@@ -285,9 +288,10 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 				(ropaque->bark_flags & (BARK_DELETED | BARK_HALF_DEAD)) == 0 &&
 				PageGetMaxOffsetNumber(rpage) >= BarkPageFirstDataKey(ropaque))
 			{
-				IndexTuple	rfirst = (IndexTuple)
-					PageGetItem(rpage, PageGetItemId(rpage,
-													 BarkPageFirstDataKey(ropaque)));
+				BarkItemBuf ritem;
+				IndexTuple	rfirst = BarkPageGetItem(rpage,
+													 BarkPageFirstDataKey(ropaque),
+													 &ritem);
 
 				if (bark_compare_itups(keyinfo, rel, rfirst, hikey) < 0)
 					ereport(ERROR,
@@ -343,8 +347,12 @@ bark_check_downlinks(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 	children = palloc(MaxIndexTuplesPerPage * sizeof(BlockNumber));
 	for (OffsetNumber off = BarkPageFirstDataKey(popaque);
 		 off <= PageGetMaxOffsetNumber(ppage); off = OffsetNumberNext(off))
-		children[nchildren++] = BarkEntryGetDownLink((IndexTuple)
-													 PageGetItem(ppage, PageGetItemId(ppage, off)));
+	{
+		BarkItemBuf ibuf;
+
+		children[nchildren++] =
+			BarkEntryGetDownLink(BarkPageGetItem(ppage, off, &ibuf));
+	}
 	LockBuffer(pbuf, BUFFER_LOCK_UNLOCK);
 
 	for (int i = 0; i < nchildren; i++)
@@ -376,8 +384,8 @@ bark_check_downlinks(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 			 popaque->bark_level == level &&
 			 off <= PageGetMaxOffsetNumber(ppage); off = OffsetNumberNext(off))
 		{
-			IndexTuple	itup = (IndexTuple) PageGetItem(ppage,
-														PageGetItemId(ppage, off));
+			BarkItemBuf ibuf;
+			IndexTuple	itup = BarkPageGetItem(ppage, off, &ibuf);
 
 			if (BarkEntryGetDownLink(itup) == child)
 			{
@@ -399,9 +407,10 @@ bark_check_downlinks(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 								child, level - 1)));
 			if (PageGetMaxOffsetNumber(cpage) >= BarkPageFirstDataKey(copaque))
 			{
-				IndexTuple	first = (IndexTuple)
-					PageGetItem(cpage, PageGetItemId(cpage,
-													 BarkPageFirstDataKey(copaque)));
+				BarkItemBuf fbuf;
+				IndexTuple	first = BarkPageGetItem(cpage,
+													BarkPageFirstDataKey(copaque),
+													&fbuf);
 
 				if (bark_compare_itups(keyinfo, rel, first, downlink) < 0)
 					ereport(ERROR,
