@@ -145,7 +145,16 @@ sharing needs no reference count.
 Block 0 is always the meta page (BarkMetaPageData): a magic number
 (BARK_MAGIC), the on-disk version (BARK_VERSION), the current root block and
 its level, and whether all key columns are "equalimage" (which governs
-whether duplicate keys can be deduplicated losslessly).
+whether duplicate keys can be deduplicated losslessly).  A descent does not
+read it: the root block and level are cached in rd_amcache, as nbtree caches
+its meta page, and the cached page is used only if, under its lock, it is
+still a root (BARK_ROOT set, not being deleted) at the cached level.  A root
+split clears BARK_ROOT on the old root, so a stale cache entry fails that
+check and the meta page is read instead.
+
+Every read of a data item (any item but a high key) goes through
+BarkPageGetItem, so that a leaf format storing items encoded has one place
+to decode them.  Items are stored as they are read today.
 
 VACUUM
 ------
@@ -171,13 +180,61 @@ it as a hint.
 
 VACUUM takes a cleanup lock on every live leaf, whether or not it has
 entries to delete, as nbtree does (see "Deleting index tuples during VACUUM"
-in the nbtree README).  A scan keeps a pin on the leaf it is returning
-entries from, so VACUUM cannot delete a TID the scan has read but not yet
-returned, and the heap line pointer the TID refers to cannot be reused while
-the scan still needs it.  Replay of VACUUM's record takes a cleanup lock too,
+in the nbtree README).  An index-only scan, and any scan with a non-MVCC
+snapshot, keeps a pin on the leaf it is returning entries from, so VACUUM
+cannot delete a TID the scan has read but not yet returned, and the heap
+line pointer the TID refers to cannot be reused while the scan still needs
+it.  A plain index scan with an MVCC snapshot drops the pin once it has read
+the page (see "Scans" below), as nbtree's does: its snapshot rejects a
+recycled line pointer's new tuple, so an idle cursor does not hold up
+VACUUM.  Replay of VACUUM's record takes a cleanup lock too,
 as nbtree's does, so the interlock also holds for scans on a hot standby:
 replay waits for a standby scan's pin, or cancels the scan once
 max_standby_streaming_delay has passed.
+
+Scans
+-----
+
+A scan reads a leaf page at a time, as nbtree's _bt_readpage does
+(bark_readpage): under the page's share lock it copies every matching heap
+TID into the scan position (BarkScanPosData), and for an index-only scan
+each matching entry's key into a tuple workspace, then saves the sibling
+links and lets the lock go.  The executor is handed items from that copy, so
+concurrent inserts and splits on the page cannot make the scan return an
+entry twice or skip one.  Moving to the next page follows the saved right
+link; moving left goes through bark_lock_and_validate_left, which recovers
+from a split or deletion of the left sibling as nbtree's
+_bt_lock_and_validate_left does.  A plain MVCC scan drops its pin after the
+read (nbtree's dropPin rule); index-only scans and non-MVCC scans keep it.
+A parallel scan hands pages out through a shared cursor with nbtree's
+seize/release protocol.  Mark and restore copy the position, as nbtree's do;
+the executor does not restore a scan with ORDER BY operators, since its
+reorder queue would not be rewound.
+
+The first descent uses the longest bound the keys give on the leading
+columns (bark_make_bound): equality on columns 1..k-1 and a bound on column
+k, compared through the opfamily's cross-type ORDER procs.  A lower bound
+sorts before every key equal to it and an upper bound after, so a backward
+scan descends straight to its last match.  A leading-column ScalarArrayOp
+re-descends to its next element when that element lies past the next page.
+
+Skip scan.  With no key on column 1 and a key that bounds column 2, the
+scan skips the parts of each column-1 group that cannot match: on a page,
+by binary search to the next possible match (bark_skip_on_page); across
+pages, by re-descending when the next possible match sorts after the page's
+high key (bark_skip_plan).  When column 1's opclass has skip support (a
+discrete type such as int4 or date), the scan goes from a group past column
+2's bounds straight to (next value, column 2's lower bound); otherwise it
+descends past the whole group first.  It skips forward only, and only over
+column 1; nbtree also skips over several leading columns.
+
+Ordered-operator (KNN) scans, ORDER BY col <~> const, walk outward from
+the constant in two cursors, one in each direction, each reading a page at
+a time like the plain scan, and merge them by distance (barkknn.c).  They
+are planned only on an index's leading column, with one ordering operator;
+an ordered index keeps a later column's values spread over the whole index.
+A scroll cursor over a KNN scan is materialized: the scan cannot run its
+distance order backward.
 
 Page deletion and recycling
 ---------------------------
