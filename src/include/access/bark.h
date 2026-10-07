@@ -167,6 +167,27 @@ BarkPageGetDeletedContents(Page page)
 }
 
 /*
+ * Initialize `page` as an empty BARK page with the given sibling links,
+ * level, flags and vacuum cycle ID.  Splits, new roots and their WAL redo all
+ * build pages here, so a replayed page gets the opaque the primary wrote.
+ */
+static inline void
+BarkPageInit(Page page, BlockNumber prev, BlockNumber next, uint32 level,
+			 uint16 flags, uint16 cycleid)
+{
+	BarkPageOpaque opaque;
+
+	PageInit(page, BLCKSZ, sizeof(BarkPageOpaqueData));
+	opaque = BarkPageGetOpaque(page);
+	opaque->bark_prev = prev;
+	opaque->bark_next = next;
+	opaque->bark_level = level;
+	opaque->bark_cycleid = cycleid;
+	opaque->bark_flags = flags;
+	opaque->bark_page_id = BARK_PAGE_ID;
+}
+
+/*
  * Reinitialize `page` as a deleted page with sibling links `prev` and `next`
  * and deletion XID `safexid`.  BARK deletes only leaves and overflow pages, so
  * the level is zero, and BARK_DELETED is the only flag.  VACUUM and WAL redo
