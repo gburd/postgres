@@ -379,7 +379,9 @@ No measured cost scales with how many entries a key has.
   only for an exact (key, locator) lookup: retail delete, and C-DELETE's
   <code>amdeletemark</code>. That is better solved the way nbtree solved it
   (heap TID as the final key attribute, with posting splits), and it is
-  needed for SINGLE entries too.
+  needed for SINGLE entries too. Done: leaf entries are ordered by (key, heap
+  TID) since on-disk version 2, with pivots that keep a heap TID and entries
+  divided around a TID that falls inside them (README, "Heap TID order").
 : Cost: a second tree protocol inside one AM, at the moment the concurrency,
   scan, VACUUM and split work is making the one tree correct. Every one of
   them would need a posting-tree version: VACUUM cycle IDs, deleted-page
