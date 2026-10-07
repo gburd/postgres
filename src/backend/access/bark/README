@@ -309,17 +309,15 @@ WAL
 ---
 
 BARK has its own WAL resource manager, "Bark" (RM_BARK_ID; barkxlog.h,
-barkxlog.c, rmgrdesc/barkdesc.c), for inserts, splits, new roots, VACUUM
-and page deletion.  Overflow chains are still logged with generic WAL
-(generic_xlog.c), which logs a delta of each registered page, and CREATE
-INDEX logs the pages it writes whole.  The kinds coexist because each
-change to a page is in exactly one record: replay applies a page's records
-in LSN order whichever resource manager wrote them.  The records:
+barkxlog.c, rmgrdesc/barkdesc.c), for inserts, splits, new roots,
+overflow chains, VACUUM and page deletion; CREATE INDEX logs the pages it
+writes whole.  Each change to a page is in exactly one record.  The
+records:
 
   XLOG_BARK_INSERT_LEAF (bark_insert_entry, from bark_insert)
       One leaf: the new entry and its offset, as nbtree's INSERT_LEAF.  An
-      OVERSIZED entry's overflow chain is written first, in its own generic
-      records.  Redo adds the entry with PageAddItem under an exclusive lock.
+      OVERSIZED entry's overflow chain is written first, in its own
+      XLOG_BARK_OVERFLOW records.  Redo adds the entry with PageAddItem under an exclusive lock.
 
   XLOG_BARK_INSERT_UPPER (bark_insert_entry, from bark_insert_parent)
       Two pages: the parent, with the downlink to the right half of a split
@@ -398,6 +396,13 @@ in LSN order whichever resource manager wrote them.  The records:
       left sibling, target, right sibling and parent, in that order, and
       holds them all until the record is applied.
 
+  XLOG_BARK_OVERFLOW (bark_write_overflow_chain)
+      Up to XLR_NORMAL_MAX_BLOCK_ID new overflow pages, each with its next
+      link and its slice of the oversized tuple; redo rebuilds each page
+      from those.  A chain longer than that takes several records, written
+      before the entry that refers to the chain, so a crash in between
+      leaves only unreferenced pages.
+
   XLOG_BARK_MARK_DELETED (bark_free_oversized)
       One overflow page, reinitialized as a deleted page that keeps its link
       to the next chunk.  Overflow pages are not in the tree, so the page has
@@ -413,10 +418,9 @@ in LSN order whichever resource manager wrote them.  The records:
 
 The vacuum cycle ID's clear is logged, in XLOG_BARK_VACUUM, and a split
 logs the cycle ID it stamps, although nbtree treats the clear as a hint and
-masks the field in btree_mask.  Overflow pages still use generic WAL, but
-they carry no cycle ID, so the clear could now become a hint with bark_mask
-masking the field; logging it keeps every BARK page byte-identical between
-primary and standby.  So bark_mask (wal_consistency_checking) masks only
+masks the field in btree_mask.  The clear could become a hint, with
+bark_mask masking the field; logging it keeps every BARK page
+byte-identical between primary and standby.  So bark_mask (wal_consistency_checking) masks only
 the LSN, checksum, page-header hint bits and the unused space: BARK sets no
 LP_DEAD bits and makes no other unlogged changes.
 
