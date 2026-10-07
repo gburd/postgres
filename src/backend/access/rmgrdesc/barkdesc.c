@@ -17,6 +17,25 @@
 #include "access/barkxlog.h"
 #include "access/rmgrdesc_utils.h"
 
+/*
+ * The deleted and updated offsets at the start of the block data of a VACUUM
+ * or DELETE record.
+ */
+static void
+delitems_desc(StringInfo buf, XLogReaderState *record, uint16 ndeleted,
+			  uint16 nupdated)
+{
+	OffsetNumber *offsets = (OffsetNumber *) XLogRecGetBlockData(record, 0,
+																 NULL);
+
+	appendStringInfoString(buf, ", deleted:");
+	array_desc(buf, offsets, sizeof(OffsetNumber), ndeleted,
+			   &offset_elem_desc, NULL);
+	appendStringInfoString(buf, ", updated:");
+	array_desc(buf, offsets + ndeleted, sizeof(OffsetNumber), nupdated,
+			   &offset_elem_desc, NULL);
+}
+
 void
 bark_desc(StringInfo buf, XLogReaderState *record)
 {
@@ -33,18 +52,22 @@ bark_desc(StringInfo buf, XLogReaderState *record)
 								 xlrec->ndeleted, xlrec->nupdated);
 
 				if (XLogRecHasBlockData(record, 0))
-				{
-					OffsetNumber *offsets = (OffsetNumber *)
-						XLogRecGetBlockData(record, 0, NULL);
+					delitems_desc(buf, record, xlrec->ndeleted,
+								  xlrec->nupdated);
+				break;
+			}
+		case XLOG_BARK_DELETE:
+			{
+				xl_bark_delete *xlrec = (xl_bark_delete *) rec;
 
-					appendStringInfoString(buf, ", deleted:");
-					array_desc(buf, offsets, sizeof(OffsetNumber),
-							   xlrec->ndeleted, &offset_elem_desc, NULL);
-					appendStringInfoString(buf, ", updated:");
-					array_desc(buf, offsets + xlrec->ndeleted,
-							   sizeof(OffsetNumber), xlrec->nupdated,
-							   &offset_elem_desc, NULL);
-				}
+				appendStringInfo(buf, "snapshotConflictHorizon: %u, ndeleted: %u, nupdated: %u, isCatalogRel: %c",
+								 xlrec->snapshotConflictHorizon,
+								 xlrec->ndeleted, xlrec->nupdated,
+								 xlrec->isCatalogRel ? 'T' : 'F');
+
+				if (XLogRecHasBlockData(record, 0))
+					delitems_desc(buf, record, xlrec->ndeleted,
+								  xlrec->nupdated);
 				break;
 			}
 		case XLOG_BARK_UNLINK_PAGE:
@@ -151,6 +174,9 @@ bark_identify(uint8 info)
 	{
 		case XLOG_BARK_VACUUM:
 			id = "VACUUM";
+			break;
+		case XLOG_BARK_DELETE:
+			id = "DELETE";
 			break;
 		case XLOG_BARK_UNLINK_PAGE:
 			id = "UNLINK_PAGE";
