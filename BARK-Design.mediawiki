@@ -505,25 +505,26 @@ No measured cost scales with how many entries a key has.
   entry stripped to its key, as <code>bark_strip_to_key</code> does for
   insert-side splits. Suffix truncation's build path, which forms the pivot
   from lastleft and firstright, needs the same.
-# '''The page-fill merge pass''' (option c). One commit, after scans keep a
-  page-at-a-time position. Today a scan resumes by page offset, and a pass
-  that rewrites a page moves offsets just as an insert does. A page-at-a-time
-  scan copies a page's matches when it reads the page, as
-  <code>_bt_readpage</code> does, and that copy is what makes nbtree's
-  in-place dedup pass safe for scans. The pass runs under the leaf's exclusive
-  lock, at the point where <code>bark_insert</code> would call
-  <code>bark_split</code>. That is the slot nbtree uses
+# '''The page-fill merge pass''' (option c), done in part. The pass,
+  <code>bark_merge_page</code> in <code>barkdelete.c</code>, runs under the
+  leaf's exclusive lock where <code>bark_insert</code> would call
+  <code>bark_split</code>, nbtree's slot
   (<code>_bt_delete_or_dedup_one_page</code>, just before
-  <code>_bt_split</code>). It replaces <code>bark_coalesce_list</code>, leaves
-  the split protocol alone, and writes its page rewrite as one generic record.
-  VACUUM cycle IDs are not affected, because the pass never moves an entry to
-  another page. If leaf prefix compression lands first, the pass reads items
-  through its leaf-item accessor and rebuilds the page as a split does,
-  re-encoding against the page's anchor. Tests: bark.sql differential per-key
-  counts and order after mixed-order inserts into a few hot keys, amcheck
-  clean, and a WAL-volume check on ks against the per-insert coalesce.
-  Expected: ks WAL 11.6 GB down to about 2-3 GB, and insert time down to near
-  SINGLE-only, measured on a quiet host.
+  <code>_bt_split</code>): for an entry that does not fit, and for a heap TID
+  inside a LIST or POSTING that can neither take it nor be divided in place.
+  It merges adjacent entries of a key, in page order, into entries of up to
+  <code>BarkMaxItemSize</code>, and logs one <code>XLOG_BARK_MERGE</code>
+  record. Scans copy a page's matches under the share lock, as
+  <code>_bt_readpage</code> does, which is what makes the in-place rewrite
+  safe, and VACUUM cycle IDs are not affected, because no entry moves to
+  another page. It is added beside <code>bark_coalesce_list</code>, not in
+  place of it, and is aimed at CREATE INDEX-built leaves, whose LISTs are
+  capped at a tenth of a page: under churn their splits were 50/50 splits
+  that a merge avoids (see "Merging a page's entries before a split" in the
+  bark README). Still open: replacing the per-insert coalesce with SINGLE
+  inserts merged by this pass, with a WAL-volume check on ks against the
+  per-insert coalesce. Expected: ks WAL 11.6 GB down to about 2-3 GB, and
+  insert time down to near SINGLE-only, measured on a quiet host.
 # '''A BARK WAL rmgr''' (option e), as a series once the concurrency, VACUUM
   and split work has merged. The first commit is done: the "Bark" resource
   manager with <code>rm_mask</code>, and records for VACUUM (replayed under a
