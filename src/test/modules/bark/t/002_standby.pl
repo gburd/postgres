@@ -14,7 +14,9 @@
 #    primary's.
 # 5. Splits of leaves and internal pages are logged as BARK SPLIT records,
 #    and new levels as NEWROOT, and the standby's index finds the same rows
-#    as the primary's.
+#    as the primary's.  The left half of a split is rebuilt from the
+#    original page, with the new entry or a divided entry's left part when
+#    those stay left, or logged whole when it takes a new prefix.
 # 6. Bottom-up deletion logs a conflict horizon, which cancels a standby
 #    snapshot that can still see the heap tuples whose entries it deletes.
 
@@ -249,6 +251,64 @@ $primary_count = $node_primary->safe_psql($db, $split_query);
 is($primary_count, '20000|200010000', "$sect: primary index scan finds every row");
 is($node_standby->safe_psql($db, $split_query),
 	$primary_count, "$sect: standby index scan matches the primary");
+
+cmp_ok(waldump_count($lsn_before, $lsn_after, 'SPLIT [^\n]* firstrightoff: \\d+, newitemoff:'),
+	'>', 0, "$sect: primary logged SPLIT records with the new entry on the left");
+
+# Prefix-coded leaves: the first run of keys shares a long prefix, which
+# each left half keeps; the second run shares none, so a split among its
+# keys takes the prefix away from the left half, which is logged whole.
+# wal_consistency_checking makes the standby compare each half it rebuilds.
+$lsn_before = $node_primary->safe_psql($db, 'SELECT pg_current_wal_insert_lsn()');
+$node_primary->safe_psql(
+	$db, qq[
+SET wal_consistency_checking = 'Bark';
+CREATE EXTENSION amcheck;
+CREATE TABLE splitp_t (k int, s text);
+CREATE INDEX splitp_t_idx ON splitp_t USING bark (s)
+  WITH (prefix_compression = on);
+SELECT setseed(0.7);
+INSERT INTO splitp_t SELECT g, 'https://www.example.com/item/' || lpad(g::text, 8, '0')
+  FROM generate_series(1, 5000) g ORDER BY random();
+INSERT INTO splitp_t SELECT g, md5(g::text) || 'https://x/' || g
+  FROM generate_series(1, 2000) g ORDER BY random();
+]);
+$lsn_after = $node_primary->safe_psql($db, 'SELECT pg_current_wal_insert_lsn()');
+
+cmp_ok(waldump_count($lsn_before, $lsn_after, 'SPLIT [^\n]* prefix: L., firstrightoff:'),
+	'>', 0, "$sect: primary logged SPLIT records keeping the left prefix");
+cmp_ok(waldump_count($lsn_before, $lsn_after, 'SPLIT [^\n]* left logged'),
+	'>', 0, "$sect: primary logged SPLIT records with the left half whole");
+
+# One key: each split cuts the last POSTING entry of the left page, whose
+# left part stays there (the replaced entry).  Too many records for
+# wal_consistency_checking; the standby's index is checked instead.
+$lsn_before = $lsn_after;
+$node_primary->safe_psql(
+	$db, qq[
+CREATE TABLE splitv_t (k int);
+CREATE INDEX splitv_t_idx ON splitv_t USING bark (k);
+INSERT INTO splitv_t SELECT 1 FROM generate_series(1, 150000);
+]);
+$lsn_after = $node_primary->safe_psql($db, 'SELECT pg_current_wal_insert_lsn()');
+$node_primary->wait_for_replay_catchup($node_standby);
+
+cmp_ok(waldump_count($lsn_before, $lsn_after, 'SPLIT [^\n]* replaceoff:'),
+	'>', 0, "$sect: primary logged SPLIT records replacing an entry on the left");
+
+$split_query = qq[
+SET enable_seqscan = off; SET enable_bitmapscan = off;
+SELECT count(*), sum(k) FROM splitp_t WHERE s > ''
+UNION ALL
+SELECT count(*), sum(k) FROM splitv_t WHERE k = 1];
+$primary_count = $node_primary->safe_psql($db, $split_query);
+is($primary_count, "7000|14503500\n150000|150000",
+	"$sect: primary index scans find every row");
+is($node_standby->safe_psql($db, $split_query),
+	$primary_count, "$sect: standby index scans match the primary");
+is($node_standby->safe_psql($db,
+		"SELECT bark_index_check('splitp_t_idx'), bark_index_check('splitv_t_idx')"),
+	'|', "$sect: standby indexes pass bark_index_check");
 
 
 

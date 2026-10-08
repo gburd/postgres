@@ -64,24 +64,36 @@ typedef struct xl_bark_metadata
 } xl_bark_metadata;
 
 /*
- * A page split (bark_split), as nbtree's xl_btree_split, but simpler: both
- * halves are logged whole, as packed runs of their entries, so redo needs
- * nothing from the original page.  Both halves get the cycle ID that the
- * split stamped on them (zero for an internal page).
+ * A page split (bark_split), as nbtree's xl_btree_split.  Both halves get
+ * the cycle ID that the split stamped on them (zero for an internal page).
  *
  * Backup Blk 0: left page (the original block, rebuilt)
  * Backup Blk 1: new right page
  * Backup Blk 2: original right sibling (only if the original had one)
  * Backup Blk 3: child whose split the new downlink finishes (internal only)
  *
- * In payload of blk 0: the left page's entries (its new high key, then the
- * entries below the split point)
- * In payload of blk 1: the right page's entries (the original high key unless
- * the original page was rightmost, then the entries from the split point on)
+ * The right page is logged whole: its block data is the page's tuple area,
+ * pd_upper to pd_special, of the page the primary built by adding the
+ * entries in offset order to an empty page, the format bark_restore_page
+ * reads (as nbtree's _bt_restore_page).  It holds the original high key
+ * unless the original page was rightmost, then the entries from the split
+ * point on.
  *
- * Each payload is the page's tuple area, pd_upper to pd_special, of the page
- * the primary built by adding the entries in offset order to an empty page,
- * the format bark_restore_page reads (as nbtree's _bt_restore_page).
+ * The left page is usually rebuilt from the original page, which redo has
+ * (it is the same block, before the split), as btree_xlog_split does: its
+ * entries are the original page's entries before firstrightoff, stored as
+ * they are, with the new entry added before newitemoff if it went left
+ * (XLH_BARK_SPLIT_NEWLEFT) and the entry at replaceoff replaced if that
+ * entry stayed left (XLH_BARK_SPLIT_REPLACE), after the new high key and,
+ * on a BARK_PREFIX leaf, the original page's PREFIX item; both sides build
+ * it with bark_split_build_left.  The block data is then the new high key,
+ * the new entry if it went left and the replacement if it stayed left, in
+ * that order, each coded for the page and padded to MAXALIGN.  That works
+ * only while the left half keeps the original page's prefix, or neither has
+ * one: a leaf split that gives the left half a different prefix (or takes
+ * its prefix away) re-codes every entry, so the left page is then logged
+ * whole as the right page is (XLH_BARK_SPLIT_LWHOLE), and the offsets are
+ * unused.
  */
 typedef struct xl_bark_split
 {
@@ -90,13 +102,20 @@ typedef struct xl_bark_split
 	uint16		cycleid;		/* BTCycleId stamped on both halves */
 	BlockNumber leftprev;		/* original page's left sibling */
 	BlockNumber rightnext;		/* original page's right sibling */
+	OffsetNumber firstrightoff; /* first original entry that moved right */
+	OffsetNumber newitemoff;	/* new entry's offset, if it went left */
+	OffsetNumber replaceoff;	/* replaced entry's offset, if it stayed
+								 * left */
 } xl_bark_split;
 
-#define SizeOfBarkSplit	(offsetof(xl_bark_split, rightnext) + sizeof(BlockNumber))
+#define SizeOfBarkSplit	(offsetof(xl_bark_split, replaceoff) + sizeof(OffsetNumber))
 
 #define XLH_BARK_SPLIT_LEAF		0x0001	/* the split page is a leaf */
 #define XLH_BARK_SPLIT_LPREFIX	0x0002	/* left half has BARK_PREFIX */
 #define XLH_BARK_SPLIT_RPREFIX	0x0004	/* right half has BARK_PREFIX */
+#define XLH_BARK_SPLIT_NEWLEFT	0x0008	/* new entry went to the left half */
+#define XLH_BARK_SPLIT_REPLACE	0x0010	/* replaced entry stayed left */
+#define XLH_BARK_SPLIT_LWHOLE	0x0020	/* left half is logged whole */
 
 /*
  * A new root above the split of the old one (bark_new_root), as nbtree's

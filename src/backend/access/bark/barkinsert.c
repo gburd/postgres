@@ -402,6 +402,21 @@ bark_split_leaf_half(Relation index, Page page, IndexTuple hikey,
 }
 
 /*
+ * Register `itup` as block data of `block_id`, padded with zeros to MAXALIGN
+ * so that an entry registered after it starts aligned, as redo reads them.
+ */
+static void
+bark_register_entry(uint8 block_id, IndexTuple itup)
+{
+	static const char zeros[MAXIMUM_ALIGNOF] = {0};
+	Size		size = IndexTupleSize(itup);
+
+	XLogRegisterBufData(block_id, itup, size);
+	if (MAXALIGN(size) > size)
+		XLogRegisterBufData(block_id, zeros, MAXALIGN(size) - size);
+}
+
+/*
  * Clear the BARK_INCOMPLETE_SPLIT flag on the left half of a split, `cbuf`,
  * in the caller's critical section, which also writes the downlink to cbuf's
  * right sibling and logs both changes in one record.  The split thus becomes
@@ -757,7 +772,8 @@ bark_create_root_leaf(Relation index, Relation heaprel)
  * of a posting-list swap: an insert whose heap TID falls inside an entry's
  * range divides the entry (bark_entry_swap_tid), and when the two halves do
  * not fit on the page, they go into the split instead.  The split record
- * logs both halves whole, so redo needs nothing more.
+ * carries the replacement if it stays on the left page, and the right page
+ * whole.
  */
 static void
 bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
@@ -793,6 +809,13 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 	Page		leftpage;
 	IndexTuple	lhikey;
 	IndexTuple	downlink;
+	bool		newleft;
+	OffsetNumber firstrightoff;
+	const char *lprefix = NULL;
+	Size		lprefixlen = 0;
+	bool		lwhole;
+	IndexTuple	lnewitem = NULL;
+	IndexTuple	lreplace = NULL;
 	BTCycleId	cycleid = 0;
 	uint16		leafflag = isleaf ? BARK_LEAF : 0;
 	XLogRecPtr	recptr;
@@ -840,6 +863,14 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 								 newoff - firstdata, isleaf, orighikey);
 
 	/*
+	 * The offset on the original page of the first entry that moves right:
+	 * items[] holds the original entries in offset order with the new one
+	 * inserted at newoff, so it is one less when the new entry stays left.
+	 */
+	newleft = splitidx > newoff - firstdata;
+	firstrightoff = firstdata + splitidx - (newleft ? 1 : 0);
+
+	/*
 	 * Form the left page's high key before anything is changed: an oversized
 	 * key makes an OVERSIZED high key, which writes its own overflow chain
 	 * under its own WAL records, and none of that can happen inside the
@@ -883,9 +914,9 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 	/*
 	 * Build both halves in temporary pages, so that a failure leaves the
 	 * original page untouched; they are copied into the buffers in the
-	 * critical section below, as _bt_split does with its left page.  Both
-	 * get every entry in offset order, so each page's tuple area is exactly
-	 * what the WAL record carries and redo's bark_restore_page re-adds.
+	 * critical section below, as _bt_split does with its left page.  Each
+	 * gets its entries in offset order on an empty page, so redo, adding the
+	 * same entries the same way, builds the same bytes.
 	 *
 	 * The left page is marked as having an unfinished split: its new right
 	 * sibling exists and is right-linked, but the downlink that would make
@@ -905,35 +936,61 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 	BarkPageInit(leftpage, origleft, rightblk, level,
 				 leafflag | BARK_INCOMPLETE_SPLIT, cycleid);
 
-	/* The right page: the original high key, then items[splitidx..] */
+	/*
+	 * Copy the original page's LSN into the left page, which replaces it,
+	 * as _bt_split does: XLogInsert examines the LSN to decide whether the
+	 * page needs a full-page image, and with PageInit's zero it would take
+	 * one at every split.
+	 */
+	PageSetLSN(leftpage, PageGetLSN(origpage));
+
 	rightpage = PageGetTempPage(origpage);
 	BarkPageInit(rightpage, origblk, origright, level, leafflag, cycleid);
 
+	/*
+	 * The left page, as nbtree's _bt_split builds it: the original page's
+	 * entries before the split point, as they are stored, with the new entry
+	 * and the replacement substituted, coded for that page; redo builds it
+	 * the same way from the same page (bark_split_build_left).  That keeps
+	 * the original page's prefix, which is what bark_split_leaf_half's first
+	 * choice for the half would be when the half's own prefix
+	 * (bark_prefix_choose) is the same, or neither has one, as on every
+	 * internal page.  Otherwise the half is laid out from its decoded
+	 * entries, which re-codes them, and logged whole.
+	 */
 	if (isleaf)
-	{
+		lprefixlen = bark_prefix_choose(index, items, splitidx, &lprefix);
+	lwhole = lprefixlen != origprefixlen ||
+		(lprefixlen > 0 && memcmp(lprefix, origprefix, lprefixlen) != 0);
+	if (lwhole)
 		bark_split_leaf_half(index, leftpage, lhikey, items, splitidx,
 							 origprefix, origprefixlen);
+	else
+	{
+		if (newleft)
+			lnewitem = bark_prefix_encode(origpage, newitup);
+		if (replaceitup != NULL && replaceoff < firstrightoff)
+			lreplace = bark_prefix_encode(origpage, replaceitup);
+		if (!bark_split_build_left(leftpage, origpage, lhikey, firstrightoff,
+								   lnewitem, newoff, lreplace, replaceoff))
+			elog(ERROR, "failed to lay out left half of a split of a BARK page");
+	}
+
+	/* The right page: the original high key, then items[splitidx..] */
+	if (isleaf)
 		bark_split_leaf_half(index, rightpage,
 							 origrightmost ? NULL : orighikey,
 							 items + splitidx, n - splitidx,
 							 origprefix, origprefixlen);
-	}
 	else
 	{
 		OffsetNumber o = BARK_P_HIKEY;
 
-		bark_page_insert_at(leftpage, lhikey, o++);
-		for (int i = 0; i < splitidx; i++)
-			bark_page_insert_at(leftpage, items[i], o++);
-
-		o = BARK_P_HIKEY;
 		if (!origrightmost)
 			bark_page_insert_at(rightpage, orighikey, o++);	/* keep high key */
 		for (int i = splitidx; i < n; i++)
 			bark_page_insert_at(rightpage, items[i], o++);
 	}
-	pfree(lhikey);
-
 	/*
 	 * If the original page had a right sibling, that sibling's bark_prev must
 	 * now point at the new right page.  Lock it now, before the critical
@@ -979,23 +1036,43 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 			xlrec.flags |= XLH_BARK_SPLIT_LPREFIX;
 		if (BarkPageHasPrefix(BarkPageGetOpaque(BufferGetPage(rbuf))))
 			xlrec.flags |= XLH_BARK_SPLIT_RPREFIX;
+		if (lwhole)
+			xlrec.flags |= XLH_BARK_SPLIT_LWHOLE;
+		if (lnewitem != NULL)
+			xlrec.flags |= XLH_BARK_SPLIT_NEWLEFT;
+		if (lreplace != NULL)
+			xlrec.flags |= XLH_BARK_SPLIT_REPLACE;
 		xlrec.cycleid = cycleid;
 		xlrec.leftprev = origleft;
 		xlrec.rightnext = origright;
+		xlrec.firstrightoff = firstrightoff;
+		xlrec.newitemoff = newoff;
+		xlrec.replaceoff = replaceoff;
 
 		XLogBeginInsert();
 		XLogRegisterData(&xlrec, SizeOfBarkSplit);
 
 		/*
-		 * Both halves are rebuilt in redo from their logged entries alone,
-		 * so neither needs a full-page image: the left page is registered as
-		 * reinitialized, like the new right page.  This is where BARK departs
-		 * from nbtree, which logs only the right half and rebuilds the left
-		 * from the original page.
+		 * The left page is rebuilt from the original page and the entries
+		 * the record carries (a full-page image when this is the page's
+		 * first change since a checkpoint), or, when it was laid out from
+		 * decoded entries, from its whole tuple area, as the right page is.
 		 */
-		XLogRegisterBuffer(0, buf, REGBUF_WILL_INIT);
-		XLogRegisterBufData(0, (char *) origpage + lhdr->pd_upper,
-							lhdr->pd_special - lhdr->pd_upper);
+		if (lwhole)
+		{
+			XLogRegisterBuffer(0, buf, REGBUF_WILL_INIT);
+			XLogRegisterBufData(0, (char *) origpage + lhdr->pd_upper,
+								lhdr->pd_special - lhdr->pd_upper);
+		}
+		else
+		{
+			XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+			bark_register_entry(0, lhikey);
+			if (lnewitem != NULL)
+				bark_register_entry(0, lnewitem);
+			if (lreplace != NULL)
+				bark_register_entry(0, lreplace);
+		}
 		XLogRegisterBuffer(1, rbuf, REGBUF_WILL_INIT);
 		XLogRegisterBufData(1, (char *) rhdr + rhdr->pd_upper,
 							rhdr->pd_special - rhdr->pd_upper);
@@ -1020,6 +1097,11 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 
 	pfree(leftpage);
 	pfree(rightpage);
+	pfree(lhikey);
+	if (lnewitem != NULL && lnewitem != newitup)
+		pfree(lnewitem);
+	if (lreplace != NULL && lreplace != replaceitup)
+		pfree(lreplace);
 	if (BufferIsValid(cbuf))
 		UnlockReleaseBuffer(cbuf);
 	if (BufferIsValid(sbuf))
