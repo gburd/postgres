@@ -227,6 +227,19 @@ anywhere in the run; bark_check_unique scans right from there while keys
 are equal; the insert then steps right, with lock coupling, to the leaf the
 TID belongs on (bark_insert_stepright, _bt_stepright).
 
+As in nbtree's _bt_search_insert, an insert that placed its entry on the
+rightmost leaf of a tree whose root is at level 2 or higher caches that leaf
+(RelationSetTargetBlock), or after splitting it the new right page.  The next
+insert without a uniqueness check, of a key that is not oversized, takes the
+cached leaf instead of descending if a conditional exclusive lock on it
+succeeds and it is still a live rightmost leaf with no unfinished split,
+holding at least one entry, with (key, TID) sorting after the first and room
+for the new entry (bark_fastpath_leaf).  Such an insert has no stack and so
+must not split: an insert whose TID falls inside an entry that cannot take it
+gives the leaf up and descends.  A unique check never takes the fast path,
+since a run of the key may begin on the cached leaf's left sibling.  An
+insert that lands anywhere else forgets the cached leaf.
+
 Coalescing considers the entry just before the insert position, whose range
 starts at or below the new TID.  A TID above its range is added to it (the
 common case) or gets a SINGLE of its own.  A TID inside its range must go
