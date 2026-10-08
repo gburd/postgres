@@ -1066,6 +1066,13 @@ extern bool bark_prefix_enabled(Relation index);
 extern Size bark_prefix_choose(Relation index, IndexTuple *items, int n,
 							   const char **prefix);
 
+/* The left half of a page split, for bark_split and its redo (barkutils.c). */
+extern bool bark_split_build_left(Page page, Page origpage, IndexTuple hikey,
+								  OffsetNumber firstrightoff,
+								  IndexTuple newitem, OffsetNumber newitemoff,
+								  IndexTuple replaceitem,
+								  OffsetNumber replaceoff);
+
 /* Number of locators a leaf entry holds. */
 extern int	bark_entry_count_tids(IndexTuple itup);
 
