@@ -3415,3 +3415,49 @@ SELECT bark_sk_check('SELECT n FROM bark_sk_big WHERE k >= ''K0'' AND n > 100 AN
 SELECT bark_index_check('bark_sk_big_idx');
 DROP TABLE bark_sk, bark_sk_q, bark_sk_big;
 DROP FUNCTION bark_sk_check(text);
+
+-- The rightmost-leaf fast path: an insert into a tree of three levels or
+-- more that placed its entry on the rightmost leaf caches that leaf, and the
+-- next insert goes straight to it when its (key, heap TID) sorts after the
+-- leaf's first entry and fits there.  400-byte keys give a three-level index
+-- from 3000 rows.  Then 1000 single-row ascending inserts, every key twice so
+-- that half of them coalesce on the cached leaf, read about one index block
+-- each; a descent reads three.  An insert that lands on another leaf
+-- descends, and forgets the cached leaf.
+CREATE TABLE bark_fp (k text, v int) WITH (autovacuum_enabled = off);
+CREATE INDEX bark_fp_idx ON bark_fp USING bark (k);
+INSERT INTO bark_fp SELECT lpad(g::text, 400, '0'), g
+  FROM generate_series(1, 3000) g;
+DO $$
+DECLARE
+  b0 bigint := pg_stat_get_xact_idx_blocks_fetched('bark_fp_idx'::regclass);
+  b1 bigint;
+  b2 bigint;
+BEGIN
+  FOR g IN 6002..7001 LOOP
+    INSERT INTO bark_fp VALUES (lpad((g / 2)::text, 400, '0'), g);
+  END LOOP;
+  b1 := pg_stat_get_xact_idx_blocks_fetched('bark_fp_idx'::regclass);
+  INSERT INTO bark_fp VALUES (lpad('1', 400, '0'), 0);
+  b2 := pg_stat_get_xact_idx_blocks_fetched('bark_fp_idx'::regclass);
+  RAISE NOTICE 'ascending inserts read under 2 blocks each: %, descent reads 3 or more: %',
+    b1 - b0 < 2000, b2 - b1 >= 3;
+END $$;
+INSERT INTO bark_fp SELECT lpad((g / 2)::text, 400, '0'), g
+  FROM generate_series(7002, 9001) g;
+SELECT bark_index_check('bark_fp_idx');
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF)
+SELECT count(*), count(DISTINCT k), sum(v) FROM bark_fp WHERE k >= '';
+SELECT count(*), count(DISTINCT k), sum(v) FROM bark_fp WHERE k >= '';
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), count(DISTINCT k), sum(v) FROM bark_fp WHERE k >= '';
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_fp;
