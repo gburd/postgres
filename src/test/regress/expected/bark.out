@@ -6006,3 +6006,134 @@ SELECT bark_index_check('bark_hku_idx');
 (1 row)
 
 DROP TABLE bark_hku;
+-- A leaf read after a scan's first page tests the keys that its first and
+-- last data entries both satisfy only once, for the whole page
+-- (bark_page_satisfied_keys), when every entry between them must satisfy them
+-- too: a key on column k counts only where columns 1..k-1 are equal across
+-- the page.  In bark_sk, b runs through 0..999 twice within each a, so a page
+-- that crosses from one a to the next has first and last entries satisfying
+-- b > 100 and entries in between that do not; each a also ends in NULL b's,
+-- and some rows have a NULL a.  Every query reads several leaves, forward and
+-- backward, through ASC and then DESC columns, and must return what a
+-- sequential scan and a bitmap scan do.
+CREATE TABLE bark_sk (a int, b int, c int);
+INSERT INTO bark_sk SELECT g / 2000, (g * 7) % 1000, g
+  FROM generate_series(0, 59999) g;
+INSERT INTO bark_sk SELECT g % 30, NULL, g FROM generate_series(1, 300) g;
+INSERT INTO bark_sk SELECT NULL, g % 1000, g FROM generate_series(1, 1000) g;
+CREATE INDEX bark_sk_idx ON bark_sk USING bark (a, b);
+VACUUM ANALYZE bark_sk;
+CREATE FUNCTION bark_sk_check(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  plan json;
+  node json;
+  r1 text;
+  r2 text;
+  r3 text;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  SET LOCAL enable_sort = off;
+  EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q INTO plan;
+  node := plan->0->'Plan';
+  WHILE node->>'Index Name' IS NULL AND node->'Plans' IS NOT NULL LOOP
+    node := node->'Plans'->0;
+  END LOOP;
+  EXECUTE 'SELECT md5(string_agg(x::text, '','')) FROM (' || q || ') x' INTO r1;
+  RESET enable_bitmapscan;
+  RESET enable_sort;
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_indexonlyscan = off;
+  EXECUTE 'SELECT md5(string_agg(x::text, '','')) FROM (' || q || ') x' INTO r2;
+  RESET enable_seqscan;
+  SET LOCAL enable_bitmapscan = off;
+  EXECUTE 'SELECT md5(string_agg(x::text, '','')) FROM (' || q || ') x' INTO r3;
+  RETURN format('%s %s', coalesce(node->>'Scan Direction', 'no index scan'),
+    CASE WHEN r1 IS NOT DISTINCT FROM r3 AND r2 IS NOT DISTINCT FROM r3
+      THEN 'ok' ELSE 'mismatch' END);
+END $$;
+CREATE TABLE bark_sk_q (q text);
+INSERT INTO bark_sk_q VALUES
+  ('SELECT a, b FROM bark_sk WHERE a BETWEEN 3 AND 20 AND b > 100 ORDER BY a, b'),
+  ('SELECT a, b FROM bark_sk WHERE a BETWEEN 3 AND 20 AND b > 100 ORDER BY a DESC, b DESC'),
+  ('SELECT a, b FROM bark_sk WHERE a = 7 AND b BETWEEN 200 AND 700 ORDER BY a, b'),
+  ('SELECT a, b FROM bark_sk WHERE a = 7 AND b BETWEEN 200 AND 700 ORDER BY a DESC, b DESC'),
+  ('SELECT a, b FROM bark_sk WHERE a > 25 AND b < 900::int8 ORDER BY a, b'),
+  ('SELECT a, b FROM bark_sk WHERE a <= 4 AND b IS NOT NULL ORDER BY a DESC, b DESC'),
+  ('SELECT a, b FROM bark_sk WHERE a >= 0 AND b IS NULL ORDER BY a, b'),
+  ('SELECT a, b FROM bark_sk WHERE a IS NULL AND b > 500 ORDER BY a, b'),
+  ('SELECT a, b FROM bark_sk WHERE a IS NOT NULL AND b >= 990 ORDER BY a, b'),
+  ('SELECT a, b FROM bark_sk WHERE a = ANY (''{2, 9, 10}'') AND b > 500 ORDER BY a, b');
+SELECT q, bark_sk_check(q) FROM bark_sk_q;
+                                           q                                            | bark_sk_check 
+----------------------------------------------------------------------------------------+---------------
+ SELECT a, b FROM bark_sk WHERE a BETWEEN 3 AND 20 AND b > 100 ORDER BY a, b            | Forward ok
+ SELECT a, b FROM bark_sk WHERE a BETWEEN 3 AND 20 AND b > 100 ORDER BY a DESC, b DESC  | Backward ok
+ SELECT a, b FROM bark_sk WHERE a = 7 AND b BETWEEN 200 AND 700 ORDER BY a, b           | Forward ok
+ SELECT a, b FROM bark_sk WHERE a = 7 AND b BETWEEN 200 AND 700 ORDER BY a DESC, b DESC | Backward ok
+ SELECT a, b FROM bark_sk WHERE a > 25 AND b < 900::int8 ORDER BY a, b                  | Forward ok
+ SELECT a, b FROM bark_sk WHERE a <= 4 AND b IS NOT NULL ORDER BY a DESC, b DESC        | Backward ok
+ SELECT a, b FROM bark_sk WHERE a >= 0 AND b IS NULL ORDER BY a, b                      | Forward ok
+ SELECT a, b FROM bark_sk WHERE a IS NULL AND b > 500 ORDER BY a, b                     | Forward ok
+ SELECT a, b FROM bark_sk WHERE a IS NOT NULL AND b >= 990 ORDER BY a, b                | Forward ok
+ SELECT a, b FROM bark_sk WHERE a = ANY ('{2, 9, 10}') AND b > 500 ORDER BY a, b        | Forward ok
+(10 rows)
+
+DROP INDEX bark_sk_idx;
+CREATE INDEX bark_sk_idx ON bark_sk USING bark (a DESC, b DESC NULLS LAST);
+SELECT q, bark_sk_check(q) FROM bark_sk_q;
+                                           q                                            |  bark_sk_check   
+----------------------------------------------------------------------------------------+------------------
+ SELECT a, b FROM bark_sk WHERE a BETWEEN 3 AND 20 AND b > 100 ORDER BY a, b            | Backward ok
+ SELECT a, b FROM bark_sk WHERE a BETWEEN 3 AND 20 AND b > 100 ORDER BY a DESC, b DESC  | Forward ok
+ SELECT a, b FROM bark_sk WHERE a = 7 AND b BETWEEN 200 AND 700 ORDER BY a, b           | no index scan ok
+ SELECT a, b FROM bark_sk WHERE a = 7 AND b BETWEEN 200 AND 700 ORDER BY a DESC, b DESC | no index scan ok
+ SELECT a, b FROM bark_sk WHERE a > 25 AND b < 900::int8 ORDER BY a, b                  | Backward ok
+ SELECT a, b FROM bark_sk WHERE a <= 4 AND b IS NOT NULL ORDER BY a DESC, b DESC        | Forward ok
+ SELECT a, b FROM bark_sk WHERE a >= 0 AND b IS NULL ORDER BY a, b                      | Backward ok
+ SELECT a, b FROM bark_sk WHERE a IS NULL AND b > 500 ORDER BY a, b                     | Backward ok
+ SELECT a, b FROM bark_sk WHERE a IS NOT NULL AND b >= 990 ORDER BY a, b                | Backward ok
+ SELECT a, b FROM bark_sk WHERE a = ANY ('{2, 9, 10}') AND b > 500 ORDER BY a, b        | Backward ok
+(10 rows)
+
+SELECT bark_index_check('bark_sk_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+-- OVERSIZED first and last entries are read from their overflow chains.  The
+-- keys are incompressible, so every entry is OVERSIZED.
+CREATE TABLE bark_sk_big (k text, n int);
+INSERT INTO bark_sk_big SELECT 'K' || g / 250 ||
+  (SELECT string_agg(md5((g / 250)::text || h::text), '')
+   FROM generate_series(1, 100) h), g
+  FROM generate_series(0, 499) g;
+CREATE INDEX bark_sk_big_idx ON bark_sk_big USING bark (k, n);
+VACUUM ANALYZE bark_sk_big;
+SELECT pg_relation_size('bark_sk_big_idx') / 8192 > 500 AS oversized;
+ oversized 
+-----------
+ t
+(1 row)
+
+SELECT bark_sk_check('SELECT n FROM bark_sk_big WHERE k >= ''K0'' AND n > 100 AND n < 450 ORDER BY k, n');
+ bark_sk_check 
+---------------
+ Forward ok
+(1 row)
+
+SELECT bark_sk_check('SELECT n FROM bark_sk_big WHERE k >= ''K0'' AND n > 100 AND n < 450 ORDER BY k DESC, n DESC');
+ bark_sk_check 
+---------------
+ Backward ok
+(1 row)
+
+SELECT bark_index_check('bark_sk_big_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE bark_sk, bark_sk_q, bark_sk_big;
+DROP FUNCTION bark_sk_check(text);
