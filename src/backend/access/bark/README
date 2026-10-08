@@ -404,14 +404,19 @@ entry sorts past that prefix.  A leading-column ScalarArrayOp
 re-descends to its next element when that element lies past the next page.
 
 Skip scan.  With no key on column 1 and a key that bounds column 2, the
-scan skips the parts of each column-1 group that cannot match: on a page,
-by binary search to the next possible match (bark_skip_on_page); across
-pages, by re-descending when the next possible match sorts after the page's
-high key (bark_skip_plan).  When column 1's opclass has skip support (a
-discrete type such as int4 or date), the scan goes from a group past column
-2's bounds straight to (next value, column 2's lower bound); otherwise it
-descends past the whole group first.  It skips forward only, and only over
-column 1; nbtree also skips over several leading columns.
+scan skips the parts of each column-1 group that cannot match.  At the
+first entry that fails the keys, bark_skip_on_page builds the bound of the
+next possible match and compares it with the page's high key: past it, the
+scan stops reading the page and re-descends to the bound; otherwise a binary
+search finds the next possible match on the page.  A page read that ends
+without reaching that test decides from its last entry (bark_skip_plan).
+Either way the scan re-descends only when the bound sorts after the high
+key, so the descent never lands on the page just read.  When column 1's
+opclass has skip support (a discrete type such as int4 or date), the scan
+goes from a group past column 2's bounds straight to (next value, column
+2's lower bound); otherwise it descends past the whole group first.  It
+skips forward only, and only over column 1; nbtree also skips over several
+leading columns.
 
 On every leaf after a descent's first, bark_readpage first tests the scan
 keys against the page's first and last data entries, as nbtree's
