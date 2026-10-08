@@ -21,7 +21,8 @@
  *	  less than the downlink, (key, heap TID) for a leaf child;
  *	- no page is still flagged with an unfinished split, which a clean index
  *	  never leaves behind;
- *	- no leaf entry is larger than BarkMaxItemSize, and every POSTING entry
+ *	- no leaf entry is larger than BarkMaxItemSize, no SINGLE entry is large
+ *	  enough to belong on an overflow chain, and every POSTING entry
  *	  reserves room for the largest encoding of any subset of its set;
  *	- a page flagged BARK_PREFIX is a leaf with a well-formed PREFIX item of
  *	  1..BARK_PREFIX_MAX bytes, and every entry on it decodes within its
@@ -332,6 +333,18 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 						 errmsg("BARK index \"%s\" has a %zu-byte leaf entry on page %u at offset %u, larger than the %zu-byte limit",
 								RelationGetRelationName(rel), IndexTupleSize(itup),
 								blkno, off, (Size) BarkMaxItemSize)));
+
+			/*
+			 * Insert and CREATE INDEX both store a row too large to stay
+			 * inline as an OVERSIZED entry, so a SINGLE never is one.
+			 */
+			if (BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE &&
+				bark_len_is_oversized(IndexTupleSize(itup)))
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a %zu-byte SINGLE entry on page %u at offset %u that should be OVERSIZED",
+								RelationGetRelationName(rel), IndexTupleSize(itup),
+								blkno, off)));
 
 			if (BarkEntryGetShape(itup) == BARK_SHAPE_LIST)
 				bark_check_list(rel, blkno, off, itup);

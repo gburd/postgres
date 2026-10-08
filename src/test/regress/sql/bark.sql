@@ -2256,6 +2256,23 @@ INSERT INTO bark_bld_wkey
 CREATE INDEX bark_bld_wkey_idx ON bark_bld_wkey USING bark (t);
 SELECT bark_index_check('bark_bld_wkey_idx');
 
+-- Keys on both sides of the oversize threshold.  The build forms a row's
+-- tuple to measure it only when a bound on its size says it may be
+-- oversized; in-line incompressible keys (STORAGE plain) of 2660-2700 bytes
+-- with an int8 INCLUDE column straddle the threshold, so a bound that
+-- undercounts a key's length, header or alignment sends an oversized row
+-- through the sort and the loader, which the check rejects.
+CREATE TABLE bark_bld_edge (t text, i int8) WITH (autovacuum_enabled = off);
+ALTER TABLE bark_bld_edge ALTER t SET STORAGE plain;
+INSERT INTO bark_bld_edge
+  SELECT substr(lpad(n::text, 4, '0') ||
+                (SELECT string_agg(md5(n::text || i::text), '')
+                 FROM generate_series(1, 85) i), 1, 2660 + n), n
+  FROM generate_series(0, 40) n;
+INSERT INTO bark_bld_edge VALUES (NULL, 100), ('short', NULL);
+CREATE INDEX bark_bld_edge_idx ON bark_bld_edge USING bark (t) INCLUDE (i);
+SELECT bark_index_check('bark_bld_edge_idx');
+
 CREATE TABLE bark_bld_queries (n int, q text, bitmap bool);
 INSERT INTO bark_bld_queries VALUES
   (1, 'SELECT k, count(*) FROM bark_bld_one WHERE k >= 0 GROUP BY k', false),
@@ -2270,7 +2287,9 @@ INSERT INTO bark_bld_queries VALUES
   (10, 'SELECT k, count(*) FROM bark_bld_sparse WHERE k >= 0 GROUP BY k ORDER BY k', false),
   (11, 'SELECT count(*), sum(length(pad)) FROM bark_bld_sparse WHERE k = 7', true),
   (12, 'SELECT left(t, 4), length(t), count(*) FROM bark_bld_wkey WHERE t >= ''0020'' GROUP BY t ORDER BY t', false),
-  (13, 'SELECT count(*) FROM bark_bld_wkey WHERE t >= ''0020''', true);
+  (13, 'SELECT count(*) FROM bark_bld_wkey WHERE t >= ''0020''', true),
+  (14, 'SELECT left(t, 4), length(t), i FROM bark_bld_edge WHERE t >= ''0'' ORDER BY t', false),
+  (15, 'SELECT count(*), sum(i) FROM bark_bld_edge WHERE t >= ''0''', true);
 SELECT n, bark_bld_check(q, bitmap) FROM bark_bld_queries ORDER BY n;
 
 -- VACUUM after the build.  Built POSTING entries carry the removal reserve
@@ -2295,7 +2314,8 @@ SELECT bark_index_check('bark_bld_ks_idx');
 SELECT n, bark_bld_check(q, bitmap) FROM bark_bld_queries
   WHERE n IN (1, 2, 7, 8, 9) ORDER BY n;
 DROP TABLE bark_bld_queries;
-DROP TABLE bark_bld_one, bark_bld_kc, bark_bld_ks, bark_bld_sparse, bark_bld_wkey;
+DROP TABLE bark_bld_one, bark_bld_kc, bark_bld_ks, bark_bld_sparse, bark_bld_wkey,
+  bark_bld_edge;
 
 -- Where insert does not coalesce, neither does the build.  A unique index
 -- holds equal keys only when they are NULL, and builds the same tree as an
