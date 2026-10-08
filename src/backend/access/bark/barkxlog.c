@@ -153,8 +153,12 @@ bark_xlog_insert(bool isleaf, XLogReaderState *record)
 }
 
 /*
- * Replay a page split (bark_split).  Both halves are rebuilt from the record,
- * so neither depends on what the original page held.
+ * Replay a page split (bark_split).  The right half is rebuilt from the
+ * record alone.  The left half, the original block, is rebuilt as
+ * btree_xlog_split does, from the page as it was before the split and the
+ * entries the record carries for it, by the function the primary used
+ * (bark_split_build_left); or, when the primary logged it whole, from the
+ * record alone, as the right half.
  *
  * As btree_xlog_split does, the child whose split an internal page's new
  * downlink finishes is updated first, without coupling its lock to the
@@ -197,14 +201,53 @@ bark_xlog_split(XLogReaderState *record)
 	MarkBufferDirty(rbuf);
 
 	/* The left page, the original block */
-	lbuf = XLogInitBufferForRedo(record, 0);
-	page = BufferGetPage(lbuf);
-	BarkPageInit(page, xlrec->leftprev, rightblk, xlrec->level,
-				 leafflag | lprefix | BARK_INCOMPLETE_SPLIT, xlrec->cycleid);
-	datapos = XLogRecGetBlockData(record, 0, &datalen);
-	bark_restore_page(page, datapos, datalen);
-	PageSetLSN(page, lsn);
-	MarkBufferDirty(lbuf);
+	if (xlrec->flags & XLH_BARK_SPLIT_LWHOLE)
+	{
+		lbuf = XLogInitBufferForRedo(record, 0);
+		page = BufferGetPage(lbuf);
+		BarkPageInit(page, xlrec->leftprev, rightblk, xlrec->level,
+					 leafflag | lprefix | BARK_INCOMPLETE_SPLIT, xlrec->cycleid);
+		datapos = XLogRecGetBlockData(record, 0, &datalen);
+		bark_restore_page(page, datapos, datalen);
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(lbuf);
+	}
+	else if (XLogReadBufferForRedo(record, 0, &lbuf) == BLK_NEEDS_REDO)
+	{
+		Page		origpage = BufferGetPage(lbuf);
+		Page		leftpage = PageGetTempPage(origpage);
+		IndexTuple	hikey;
+		IndexTuple	newitem = NULL;
+		IndexTuple	replaceitem = NULL;
+
+		/* The new high key, then the new entry and the replacement, if any */
+		datapos = XLogRecGetBlockData(record, 0, &datalen);
+		hikey = (IndexTuple) datapos;
+		datapos += MAXALIGN(IndexTupleSize(hikey));
+		if (xlrec->flags & XLH_BARK_SPLIT_NEWLEFT)
+		{
+			newitem = (IndexTuple) datapos;
+			datapos += MAXALIGN(IndexTupleSize(newitem));
+		}
+		if (xlrec->flags & XLH_BARK_SPLIT_REPLACE)
+		{
+			replaceitem = (IndexTuple) datapos;
+			datapos += MAXALIGN(IndexTupleSize(replaceitem));
+		}
+		Assert(datapos == XLogRecGetBlockData(record, 0, NULL) + datalen);
+		Assert(BarkPageHasPrefix(BarkPageGetOpaque(origpage)) == (lprefix != 0));
+
+		BarkPageInit(leftpage, xlrec->leftprev, rightblk, xlrec->level,
+					 leafflag | BARK_INCOMPLETE_SPLIT, xlrec->cycleid);
+		if (!bark_split_build_left(leftpage, origpage, hikey,
+								   xlrec->firstrightoff,
+								   newitem, xlrec->newitemoff,
+								   replaceitem, xlrec->replaceoff))
+			elog(PANIC, "failed to rebuild left half of BARK split during replay");
+		PageRestoreTempPage(leftpage, origpage);
+		PageSetLSN(origpage, lsn);
+		MarkBufferDirty(lbuf);
+	}
 
 	/* The original right sibling's left link */
 	if (xlrec->rightnext != BARK_P_NONE &&
@@ -219,7 +262,8 @@ bark_xlog_split(XLogReaderState *record)
 	if (BufferIsValid(sbuf))
 		UnlockReleaseBuffer(sbuf);
 	UnlockReleaseBuffer(rbuf);
-	UnlockReleaseBuffer(lbuf);
+	if (BufferIsValid(lbuf))
+		UnlockReleaseBuffer(lbuf);
 }
 
 /*
