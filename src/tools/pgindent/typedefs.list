@@ -263,6 +263,7 @@ BarkArraySortCtx
 BarkBuildRun
 BarkDeletedPageData
 BarkEntryShape
+BarkInsertState
 BarkItemBuf
 BarkKeyColumn
 BarkKeyInfo
