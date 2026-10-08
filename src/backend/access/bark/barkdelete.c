@@ -483,7 +483,9 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 	while (off <= maxoff && saved < need)
 	{
 		BarkItemBuf ibuf;
+		BarkItemBuf nbuf;
 		IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
+		IndexTuple	next;
 		OffsetNumber first = off;
 		IndexTuple	key;
 		IndexTuple	merged = NULL;
@@ -492,6 +494,17 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 
 		off = OffsetNumberNext(off);
 		if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+			continue;
+
+		/*
+		 * Most entries start no group: test the next one before forming a
+		 * key and reading the members.
+		 */
+		if (off > maxoff || off == newitemoff)
+			continue;
+		next = BarkPageGetItem(page, off, &nbuf);
+		if (BarkEntryGetShape(next) == BARK_SHAPE_OVERSIZED ||
+			bark_compare_itups(keyinfo, index, itup, next) != 0)
 			continue;
 
 		key = bark_single_from_list(index, itup, NULL);
