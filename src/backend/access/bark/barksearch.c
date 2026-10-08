@@ -144,19 +144,16 @@ bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
 	return result;
 }
 
-/* Compare the search key with the index tuple at offset `off` on `page`. */
-static int
-bark_compare_off(Relation index, BarkKeyInfo *keyinfo,
-				 const BarkSearchKey *key, Page page, OffsetNumber off)
+/*
+ * Compare the search key with index tuple itup.  The caller reads the tuple
+ * (a high key with PageGetItem, a data item with BarkPageGetItem into a
+ * workspace it keeps for the whole page), so that this is cheap enough to
+ * inline into the binary search, which calls it once per probe.
+ */
+static inline int
+bark_compare_key(Relation index, BarkKeyInfo *keyinfo,
+				 const BarkSearchKey *key, IndexTuple itup)
 {
-	BarkItemBuf ibuf;
-	IndexTuple	itup;
-
-	if (off == BARK_P_HIKEY && !BarkPageRightmost(BarkPageGetOpaque(page)))
-		itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, off));
-	else
-		itup = BarkPageGetItem(page, off, &ibuf);
-
 	if (key->bound != NULL)
 		return bark_compare_bound(index, keyinfo, key->bound, itup);
 	return bark_compare_itups_tid(keyinfo, index, key->key, key->scantid,
@@ -221,8 +218,11 @@ bark_moveright(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
 			continue;
 		}
 
+		/* A page being removed may have no high key: test that first. */
 		if ((opaque->bark_flags & (BARK_DELETED | BARK_HALF_DEAD)) != 0 ||
-			bark_compare_off(index, keyinfo, key, page, BARK_P_HIKEY) >=
+			bark_compare_key(index, keyinfo, key,
+							 (IndexTuple) PageGetItem(page,
+													  PageGetItemId(page, BARK_P_HIKEY))) >=
 			(key->scantid != NULL ? 0 : 1))
 		{
 			BlockNumber right = opaque->bark_next;
@@ -272,6 +272,7 @@ bark_binsrch(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
 	OffsetNumber low = BarkPageFirstDataKey(opaque);
 	OffsetNumber high = PageGetMaxOffsetNumber(page);
 	bool		isleaf = BarkPageIsLeaf(opaque);
+	BarkItemBuf ibuf;
 
 	if (high < low)
 		return low;				/* empty page */
@@ -285,7 +286,8 @@ bark_binsrch(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
 	while (low < high)
 	{
 		OffsetNumber mid = low + ((high - low) / 2);
-		int			cmp = bark_compare_off(index, keyinfo, key, page, mid);
+		int			cmp = bark_compare_key(index, keyinfo, key,
+										   BarkPageGetItem(page, mid, &ibuf));
 
 		if (nextkey ? (cmp >= 0) : (cmp > 0))
 			low = OffsetNumberNext(mid);	/* mid is before the boundary */

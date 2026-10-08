@@ -889,14 +889,47 @@ bark_skip_bound(IndexScanDesc scan, IndexTuple itup, BarkScanBound *bound,
 }
 
 /*
+ * Keep bound as the skip scan's next re-descent, in so->skipBound.  The page
+ * is unlocked before the descent, so the column-1 value is copied.  palloced
+ * is bark_skip_bound's: the value is a fresh skip-support result, freed here.
+ */
+static void
+bark_skip_save(IndexScanDesc scan, BarkScanBound *bound, bool palloced)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	TupleDesc	tupdesc = RelationGetDescr(scan->indexRelation);
+	Form_pg_attribute att = TupleDescAttr(tupdesc, 0);
+	MemoryContext oldcxt;
+
+	if (!so->skipValueByVal && so->skipValue != (Datum) 0)
+		pfree(DatumGetPointer(so->skipValue));
+	oldcxt = MemoryContextSwitchTo(so->scanCxt);
+	so->skipValue = datumCopy(bound->args[0], att->attbyval, att->attlen);
+	MemoryContextSwitchTo(oldcxt);
+	so->skipValueByVal = att->attbyval;
+	if (palloced)
+		pfree(DatumGetPointer(bound->args[0]));
+	bound->args[0] = so->skipValue;
+	so->skipBound = *bound;
+}
+
+/*
  * Skip scan, reading page forward from entry itup at offnum, which failed the
  * scan keys: return the offset to continue from, past the entries that
- * bark_skip_bound shows cannot match, by binary search over the rest of the
- * page.  maxoff + 1 when none of the rest can match.
+ * bark_skip_bound shows cannot match.  maxoff + 1 when none of the rest can
+ * match; *reseek then says whether the next read re-descends (with the bound
+ * in so->skipBound) rather than step right, as bark_skip_plan decides.
+ *
+ * The high key is tested first: when the next possible match sorts after it,
+ * nothing else on the page can match, and the scan re-descends.  That is the
+ * usual case whenever skipping pays (a column-1 group spans pages), and one
+ * comparison settles it, as nbtree's skip scan settles it by testing the
+ * page's final tuple.  Otherwise the next match may be on this page, and a
+ * binary search over the rest of the page finds where.
  */
 static OffsetNumber
 bark_skip_on_page(IndexScanDesc scan, Page page, IndexTuple itup,
-				  OffsetNumber offnum, OffsetNumber maxoff)
+				  OffsetNumber offnum, OffsetNumber maxoff, bool *reseek)
 {
 	Relation	index = scan->indexRelation;
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
@@ -905,8 +938,23 @@ bark_skip_on_page(IndexScanDesc scan, Page page, IndexTuple itup,
 	OffsetNumber low = OffsetNumberNext(offnum);
 	OffsetNumber high = OffsetNumberNext(maxoff);
 
+	*reseek = false;
 	if (!bark_skip_bound(scan, itup, &bound, &palloced))
 		return OffsetNumberNext(offnum);
+
+	if (scan->parallel_scan == NULL &&
+		!BarkPageRightmost(BarkPageGetOpaque(page)))
+	{
+		IndexTuple	hikey = (IndexTuple) PageGetItem(page,
+													 PageGetItemId(page, BARK_P_HIKEY));
+
+		if (bark_compare_bound(index, so->keyinfo, &bound, hikey) > 0)
+		{
+			bark_skip_save(scan, &bound, palloced);
+			*reseek = true;
+			return high;
+		}
+	}
 
 	/* The first offset in [low, high) whose entry the bound sorts before. */
 	while (low < high)
@@ -926,9 +974,9 @@ bark_skip_on_page(IndexScanDesc scan, Page page, IndexTuple itup,
 }
 
 /*
- * Skip scan, after a forward read of page: should the next read re-descend
- * rather than step right?  If so, build that descent's bound in
- * so->skipBound and return true.
+ * Skip scan, after a forward read of page that did not end in
+ * bark_skip_on_page: should the next read re-descend rather than step right?
+ * If so, build that descent's bound in so->skipBound and return true.
  *
  * The page's last entry decides, through bark_skip_bound.  The descent is
  * taken only when its bound sorts after the page's high key, which keeps it
@@ -940,7 +988,6 @@ bark_skip_plan(IndexScanDesc scan, Page page, OffsetNumber lastoff)
 {
 	Relation	index = scan->indexRelation;
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
-	TupleDesc	tupdesc = RelationGetDescr(index);
 	BarkItemBuf ibuf;
 	IndexTuple	last = BarkPageGetItem(page, lastoff, &ibuf);
 	IndexTuple	hikey = (IndexTuple) PageGetItem(page,
@@ -955,22 +1002,7 @@ bark_skip_plan(IndexScanDesc scan, Page page, OffsetNumber lastoff)
 		bark_compare_bound(index, so->keyinfo, &bound, hikey) > 0;
 
 	if (reseek)
-	{
-		Form_pg_attribute att = TupleDescAttr(tupdesc, 0);
-		MemoryContext oldcxt;
-
-		/* The page is unlocked before the descent: keep a copy of the value. */
-		if (!so->skipValueByVal && so->skipValue != (Datum) 0)
-			pfree(DatumGetPointer(so->skipValue));
-		oldcxt = MemoryContextSwitchTo(so->scanCxt);
-		so->skipValue = datumCopy(bound.args[0], att->attbyval, att->attlen);
-		MemoryContextSwitchTo(oldcxt);
-		so->skipValueByVal = att->attbyval;
-		if (palloced)
-			pfree(DatumGetPointer(bound.args[0]));
-		bound.args[0] = so->skipValue;
-		so->skipBound = bound;
-	}
+		bark_skip_save(scan, &bound, palloced);
 	else if (palloced)
 		pfree(DatumGetPointer(bound.args[0]));
 	if (fetched)
@@ -1630,6 +1662,8 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 	int			nitems = 0;
 	uint64		skipkeys = 0;
 	bool		allsatisfied = false;
+	bool		skipdone = false;	/* bark_skip_on_page reached the page end */
+	bool		skipreseek = false; /* ... and asked for a re-descent */
 
 	Assert(!BarkPageIgnore(opaque));
 	pos->currPage = BufferGetBlockNumber(pos->buf);
@@ -1715,8 +1749,12 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 			 * match.  The loop's increment then lands on the entry found.
 			 */
 			if (so->skip && forward && !stop)
-				offnum = OffsetNumberPrev(bark_skip_on_page(scan, page, resolved,
-															offnum, maxoff));
+			{
+				offnum = bark_skip_on_page(scan, page, resolved, offnum, maxoff,
+										   &skipreseek);
+				skipdone = offnum > maxoff;
+				offnum = OffsetNumberPrev(offnum);
+			}
 			if (fetched)
 				pfree(resolved);
 			if (stop)
@@ -1816,7 +1854,8 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 
 	if (so->skip && forward && pos->moreRight && scan->parallel_scan == NULL &&
 		!BarkPageRightmost(opaque) && maxoff >= minoff)
-		pos->arrayReseek = bark_skip_plan(scan, page, maxoff);
+		pos->arrayReseek = skipdone ? skipreseek :
+			bark_skip_plan(scan, page, maxoff);
 
 	if (nitems == 0)
 		return false;
