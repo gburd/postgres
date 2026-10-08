@@ -514,17 +514,27 @@ records:
       half, and, for an internal page taking a child's downlink, that child,
       whose BARK_INCOMPLETE_SPLIT flag is cleared.  The record holds the
       level, a leaf flag, the cycle ID stamped on both halves and the
-      original page's two sibling links; each half's data is its tuple area
-      (pd_upper to pd_special), which the primary builds by adding the
-      entries in offset order to an empty temporary page.  Redo initializes
-      both halves and re-adds their entries in offset order
-      (bark_restore_page, as nbtree's _bt_restore_page), so every entry lands
-      at the offset and position it has on the primary.  nbtree logs only the
-      right half and the new item, and rebuilds the left half from the
-      original page; BARK logs both halves whole, so neither half needs the
-      old page or a full-page image.  Redo clears the child's flag first,
-      then holds the right half, the left half and the right sibling locked
-      together, as btree_xlog_split does.
+      original page's two sibling links.  As in nbtree, the right half is
+      logged whole and the left half is not.  The right half's data is its
+      tuple area (pd_upper to pd_special), which the primary builds by
+      adding the entries in offset order to an empty temporary page, and
+      redo re-adds them the same way (bark_restore_page, as nbtree's
+      _bt_restore_page), so every entry lands at the offset and position it
+      has on the primary.  The left half is rebuilt from the original page,
+      which redo has (it is the same block), as btree_xlog_split does: the
+      record carries the offset of the first entry that moved right, the new
+      high key, the new entry if it went left, and the replacement of a
+      divided or cut entry if that stayed left, both coded for the original
+      page; primary and redo both build the half with bark_split_build_left,
+      which copies the original page's entries as they are stored, PREFIX
+      item included.  A leaf split whose left half takes a prefix other than
+      the original page's (see "Leaf prefix compression") re-codes every
+      entry, so that half is then logged whole, like the right half, and a
+      record flag says so.  The left block is registered as a standard
+      page, so the first split after a checkpoint carries its full-page
+      image instead.  Redo clears the child's flag first, then holds the
+      right half, the left half and the right sibling locked together, as
+      btree_xlog_split does.
 
   XLOG_BARK_NEWROOT (bark_new_root)
       Three pages: the new root, rebuilt from its two downlinks as a split
