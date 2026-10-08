@@ -2058,8 +2058,34 @@ retry:
 	coalesce = !indexInfo->ii_Unique && !oversized && bark_allequalimage(index);
 	if (coalesce)
 	{
-		switch (bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf,
-								   off, &replace, &newitem))
+		BarkCoalesceResult cr;
+
+		cr = bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf, off,
+								&replace, &newitem);
+		if (cr == BARK_COALESCE_SPLIT)
+		{
+			/*
+			 * The entry the TID falls inside cannot take it, and the page
+			 * cannot hold the entry divided.  Merge the page's equal-key
+			 * entries first, as below for an entry that does not fit, and try
+			 * once more.  The merge moves entries, so the insert offset is
+			 * found again and the division recomputed, whether or not the
+			 * merge made enough room; if it did not, the page splits.
+			 */
+			Size		need = bark_coded_size(page, replace) +
+				bark_coded_size(page, newitem) -
+				MAXALIGN(ItemIdGetLength(PageGetItemId(page,
+													   OffsetNumberPrev(off))));
+
+			pfree(replace);
+			pfree(newitem);
+			bark_merge_page(index, keyinfo, buf, InvalidOffsetNumber, need);
+			off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
+									   page);
+			cr = bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf,
+									off, &replace, &newitem);
+		}
+		switch (cr)
 		{
 			case BARK_COALESCE_NONE:
 				break;
@@ -2133,9 +2159,29 @@ retry:
 				pfree(replace);
 				pfree(newitem);
 			}
+			else if (coalesce &&
+					 bark_merge_page(index, keyinfo, buf, off,
+									 bark_coded_size(page, entry)))
+			{
+				/*
+				 * Merging the page's equal-key entries made room, as nbtree's
+				 * deduplication pass does before a split.  Entries moved, so
+				 * find the entry's place again.
+				 */
+				off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid,
+										   page);
+				bark_insert_entry(index, buf, entry, off, InvalidBuffer);
+				UnlockReleaseBuffer(buf);
+			}
 			else
 			{
-				/* A leaf split: no child's incomplete split to finish. */
+				/*
+				 * A leaf split: no child's incomplete split to finish.  A
+				 * merge that did not make room may still have moved entries.
+				 */
+				if (coalesce)
+					off = bark_leaf_insert_off(index, keyinfo, itup,
+											   &itup->t_tid, page);
 				bark_split(index, heapRel, keyinfo, stack, buf, off, entry,
 						   InvalidBuffer, InvalidOffsetNumber, NULL);
 				buf = InvalidBuffer;	/* bark_split released it */
