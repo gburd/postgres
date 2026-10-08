@@ -329,6 +329,37 @@ could still see those tuples (the record's snapshotConflictHorizon).  No
 entry moves to another page, so VACUUM's cycle IDs are unaffected; a leaf
 the pass empties is an empty leaf, which VACUUM deletes.
 
+Merging a page's entries before a split
+---------------------------------------
+
+As nbtree runs its deduplication pass (_bt_dedup_pass) before splitting a
+leaf, an insert into an index whose entries coalesce (see
+bark_allequalimage) that would split a leaf first runs bark_merge_page
+(barkdelete.c) on it: runs of adjacent entries of one key are merged, in
+page order, into fewer, larger LIST or POSTING entries, each up to
+BarkMaxItemSize, in the shape bark_form_entry chooses by size.  Entries of
+a key are in heap TID order with disjoint ranges, so a merged entry's
+members are already ascending.  SINGLE entries fold in, OVERSIZED ones are
+skipped, and a merge never spans the new entry's insert offset.  The pass
+stops once the page has room for the new entry; if it made room, the entry
+is inserted, else the leaf splits as before (the merge stays).  The two
+places it runs are the ones where an insert would otherwise split: an entry
+that does not fit (after bottom-up deletion, if that ran), and a LIST or
+POSTING that a new heap TID falls inside but that can neither take it nor be
+divided in place (bark_coalesce_list's BARK_COALESCE_SPLIT), which is what a
+reinsert into a CREATE INDEX-built index meets, its LISTs covering the whole
+TID range of each page.  After the merge the insert offset is found again,
+and the coalesce is tried once more.  The single-value split's cut
+(bark_singleval_cut) is left alone: it means to split.
+
+Each group's first entry is overwritten with the merged entry and the rest
+are deleted, in one XLOG_BARK_MERGE record.  No heap TID leaves the page and
+no entry moves to another page, so the pass needs only the exclusive lock
+the insert holds, as nbtree's does: scans copy the items they return under
+the page's share lock and reposition by key and heap TID, never by offset,
+and VACUUM's cycle IDs are unaffected.  Redo takes an exclusive lock too and
+has no recovery conflict to resolve.
+
 Scans
 -----
 
@@ -451,7 +482,7 @@ WAL
 
 BARK has its own WAL resource manager, "Bark" (RM_BARK_ID; barkxlog.h,
 barkxlog.c, rmgrdesc/barkdesc.c), for inserts, splits, new roots,
-overflow chains, VACUUM, bottom-up deletion and page deletion; CREATE INDEX logs the pages it
+overflow chains, VACUUM, bottom-up deletion, merges and page deletion; CREATE INDEX logs the pages it
 writes whole.  Each change to a page is in exactly one record.  The
 records:
 
@@ -542,6 +573,16 @@ records:
       In hot standby, redo first resolves the snapshot conflict, then
       rewrites and deletes under an exclusive lock (see "Bottom-up
       deletion").  The page's vacuum cycle ID is left alone.
+
+  XLOG_BARK_MERGE (bark_delitems_delete, from bark_merge_page)
+      One leaf, as nbtree's XLOG_BTREE_DEDUP is a record of its own: the
+      payload of XLOG_BARK_VACUUM, the offsets of the entries absorbed and
+      the offsets and contents of the merged entries.  The changes are made
+      in the other order, deletions first, since a merged entry is larger
+      than the entry it replaces and fits on a full page only once the
+      absorbed entries' space is free; the merged entries' offsets are
+      numbered as after the deletions.  Redo takes an exclusive lock and
+      shares bark_redo_delitems with VACUUM and DELETE.
 
   XLOG_BARK_UNLINK_PAGE (bark_delete_empty_leaf)
       Four pages: the target leaf (reinitialized as a deleted page from the
