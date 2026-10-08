@@ -703,6 +703,9 @@ extern size_t sbm_serialized_size(const Sbm *map);
  */
 extern size_t sbm_removal_bound(const Sbm *map);
 
+/* sbm_removal_bound of the set of the ascending arr[0..n), without a map. */
+extern size_t sbm_removal_bound_sorted(const uint64 *arr, size_t n);
+
 /* Write map into out; returns bytes written, or 0 if out_size is short. */
 extern size_t sbm_serialize(const Sbm *map, uint8 *out, size_t out_size);
 
