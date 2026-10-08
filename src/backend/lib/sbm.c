@@ -10102,6 +10102,25 @@ sbm_serialized_size(const Sbm *map)
 }
 
 /*
+ * The removal bound (see sbm_removal_bound) of a set with members in nwin
+ * chunk windows and nvec 64-bit vectors, whose highest vector below
+ * SBM_SMALL_MAX_BITS is top (-1 if none).
+ */
+static size_t
+sbm_bound_from_counts(uint64 nwin, uint64 nvec, int top)
+{
+	size_t		chunkform;
+	size_t		smallform = 0;
+
+	chunkform = SBM_SIZEOF_OVERHEAD +
+		nwin * (SBM_SIZEOF_OVERHEAD + sizeof(SbmBitvec)) +
+		nvec * sizeof(SbmBitvec);
+	if (top >= 0)
+		smallform = SBM_SIZEOF_OVERHEAD + (top + 1) * sizeof(uint64);
+	return SBM_WIRE_HEADER_LEN + Max(chunkform, smallform);
+}
+
+/*
  * Upper bound on sbm_serialized_size() of map and of every subset of it.
  *
  * Removing members can make an encoding larger.  An all-ones vector costs
@@ -10140,8 +10159,6 @@ sbm_removal_bound(const Sbm *map)
 	uint64		nwin = 0;
 	uint64		nvec = 0;
 	int			top = -1;
-	size_t		chunkform;
-	size_t		smallform = 0;
 
 	if (map != NULL && sbm_is_small(map))
 	{
@@ -10208,12 +10225,39 @@ sbm_removal_bound(const Sbm *map)
 		}
 	}
 
-	chunkform = SBM_SIZEOF_OVERHEAD +
-		nwin * (SBM_SIZEOF_OVERHEAD + sizeof(SbmBitvec)) +
-		nvec * sizeof(SbmBitvec);
-	if (top >= 0)
-		smallform = SBM_SIZEOF_OVERHEAD + (top + 1) * sizeof(uint64);
-	return SBM_WIRE_HEADER_LEN + Max(chunkform, smallform);
+	return sbm_bound_from_counts(nwin, nvec, top);
+}
+
+/*
+ * sbm_removal_bound of the set of the n members arr[], ascending (duplicates
+ * allowed), computed from the members without building the map.  The bound
+ * depends only on the set, so this equals sbm_removal_bound of any map
+ * holding exactly those members.  A caller that builds a map only when its
+ * bound is small enough (a BARK POSTING entry, which must beat the equivalent
+ * flat TID list) can thus make the decision first.
+ */
+size_t
+sbm_removal_bound_sorted(const uint64 *arr, size_t n)
+{
+	uint64		nwin = 0;
+	uint64		nvec = 0;
+	int			top = -1;
+
+	for (size_t i = 0; i < n; i++)
+	{
+		const uint64 vec = arr[i] / SBM_BITS_PER_VECTOR;
+
+		Assert(i == 0 || arr[i - 1] <= arr[i]);
+		if (i > 0 && arr[i - 1] / SBM_BITS_PER_VECTOR == vec)
+			continue;
+		nvec++;
+		if (i == 0 || arr[i - 1] / SBM_CHUNK_MAX_CAPACITY !=
+			arr[i] / SBM_CHUNK_MAX_CAPACITY)
+			nwin++;
+		if (arr[i] < SBM_SMALL_MAX_BITS)
+			top = (int) vec;
+	}
+	return sbm_bound_from_counts(nwin, nvec, top);
 }
 
 size_t

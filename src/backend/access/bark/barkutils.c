@@ -804,23 +804,30 @@ bark_form_posting(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids
 	Assert(ntids >= 1);
 
 	/*
-	 * Build the sbm from the block-clustered keys in one pass.  Adding them
-	 * one at a time re-walks the chunk list from its head on every add, which
-	 * is quadratic for a scattered set, where every member has a chunk.
+	 * Decide the shape from the removal bound before building the sbm.  The
+	 * bound is a function of the set alone, so it can be computed from the
+	 * keys, and a set too scattered for POSTING to win, which is the common
+	 * case for a LIST that VACUUM or an insert re-forms, costs no sbm build.
 	 */
 	keys = palloc_array(uint64, ntids);
 	for (int i = 0; i < ntids; i++)
 		keys[i] = bark_tid_to_key(&tids[i]);
-	map = sbm_create_from_array(keys, ntids);
-	pfree(keys);
-
-	total = BarkPostingEntrySize(keysz, sbm_removal_bound(map));
+	total = BarkPostingEntrySize(keysz, sbm_removal_bound_sorted(keys, ntids));
 	listsz = MAXALIGN(MAXALIGN(keysz) + ntids * sizeof(ItemPointerData));
 	if (total >= listsz || total > INDEX_SIZE_MASK)
 	{
-		sbm_free(map);
+		pfree(keys);
 		return NULL;
 	}
+
+	/*
+	 * Build the sbm from the keys in one pass.  Adding them one at a time
+	 * re-walks the chunk list from its head on every add, which is quadratic
+	 * for a scattered set, where every member has a chunk.
+	 */
+	map = sbm_create_from_array(keys, ntids);
+	pfree(keys);
+	Assert(BarkPostingEntrySize(keysz, sbm_removal_bound(map)) == total);
 
 	entry = bark_posting_from_map(key, map, total);
 	sbm_free(map);
