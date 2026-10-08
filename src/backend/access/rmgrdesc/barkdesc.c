@@ -18,8 +18,8 @@
 #include "access/rmgrdesc_utils.h"
 
 /*
- * The deleted and updated offsets at the start of the block data of a VACUUM
- * or DELETE record.
+ * The deleted and updated offsets at the start of the block data of a VACUUM,
+ * DELETE or MERGE record.
  */
 static void
 delitems_desc(StringInfo buf, XLogReaderState *record, uint16 ndeleted,
@@ -64,6 +64,18 @@ bark_desc(StringInfo buf, XLogReaderState *record)
 								 xlrec->snapshotConflictHorizon,
 								 xlrec->ndeleted, xlrec->nupdated,
 								 xlrec->isCatalogRel ? 'T' : 'F');
+
+				if (XLogRecHasBlockData(record, 0))
+					delitems_desc(buf, record, xlrec->ndeleted,
+								  xlrec->nupdated);
+				break;
+			}
+		case XLOG_BARK_MERGE:
+			{
+				xl_bark_merge *xlrec = (xl_bark_merge *) rec;
+
+				appendStringInfo(buf, "ndeleted: %u, nupdated: %u",
+								 xlrec->ndeleted, xlrec->nupdated);
 
 				if (XLogRecHasBlockData(record, 0))
 					delitems_desc(buf, record, xlrec->ndeleted,
@@ -186,6 +198,9 @@ bark_identify(uint8 info)
 			break;
 		case XLOG_BARK_DELETE:
 			id = "DELETE";
+			break;
+		case XLOG_BARK_MERGE:
+			id = "MERGE";
 			break;
 		case XLOG_BARK_UNLINK_PAGE:
 			id = "UNLINK_PAGE";

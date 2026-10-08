@@ -327,12 +327,13 @@ bark_xlog_overwrite(XLogReaderState *record)
 }
 
 /*
- * Apply the block data of a VACUUM or DELETE record to its leaf, in the
- * order the primary made the changes: rewrites, then deletions.
+ * Apply the block data of a VACUUM, DELETE or MERGE record to its leaf, in
+ * the order the primary made the changes: rewrites, then deletions, or for a
+ * MERGE (`deletefirst`) deletions, then rewrites.
  */
 static void
 bark_redo_delitems(XLogReaderState *record, Page page, uint16 ndeleted,
-				   uint16 nupdated)
+				   uint16 nupdated, bool deletefirst)
 {
 	char	   *ptr = XLogRecGetBlockData(record, 0, NULL);
 	OffsetNumber *deleted = (OffsetNumber *) ptr;
@@ -344,6 +345,9 @@ bark_redo_delitems(XLogReaderState *record, Page page, uint16 ndeleted,
 	 * copied, so they need no alignment beyond the two bytes that reading
 	 * t_info takes.
 	 */
+	if (deletefirst && ndeleted > 0)
+		PageIndexMultiDelete(page, deleted, ndeleted);
+
 	for (int i = 0; i < nupdated; i++)
 	{
 		Size		itemsz = IndexTupleSize((IndexTuple) itup);
@@ -353,7 +357,7 @@ bark_redo_delitems(XLogReaderState *record, Page page, uint16 ndeleted,
 		itup += MAXALIGN(itemsz);
 	}
 
-	if (ndeleted > 0)
+	if (!deletefirst && ndeleted > 0)
 		PageIndexMultiDelete(page, deleted, ndeleted);
 }
 
@@ -380,7 +384,8 @@ bark_xlog_vacuum(XLogReaderState *record)
 
 		/* A record that only clears the cycle ID carries no block data */
 		if (xlrec->ndeleted > 0 || xlrec->nupdated > 0)
-			bark_redo_delitems(record, page, xlrec->ndeleted, xlrec->nupdated);
+			bark_redo_delitems(record, page, xlrec->ndeleted, xlrec->nupdated,
+							   false);
 
 		BarkPageGetOpaque(page)->bark_cycleid = 0;
 
@@ -418,7 +423,35 @@ bark_xlog_delete(XLogReaderState *record)
 	{
 		Page		page = BufferGetPage(buffer);
 
-		bark_redo_delitems(record, page, xlrec->ndeleted, xlrec->nupdated);
+		bark_redo_delitems(record, page, xlrec->ndeleted, xlrec->nupdated,
+						   false);
+
+		PageSetLSN(page, lsn);
+		MarkBufferDirty(buffer);
+	}
+	if (BufferIsValid(buffer))
+		UnlockReleaseBuffer(buffer);
+}
+
+/*
+ * Replay the merge of a leaf's equal-key entries (bark_merge_page):
+ * deletions, then rewrites.  Every heap TID stays on the page, so there is no
+ * recovery conflict to resolve and no cleanup lock to take; an exclusive
+ * lock keeps standby scans out while the entries move, as on the primary.
+ */
+static void
+bark_xlog_merge(XLogReaderState *record)
+{
+	XLogRecPtr	lsn = record->EndRecPtr;
+	xl_bark_merge *xlrec = (xl_bark_merge *) XLogRecGetData(record);
+	Buffer		buffer;
+
+	if (XLogReadBufferForRedo(record, 0, &buffer) == BLK_NEEDS_REDO)
+	{
+		Page		page = BufferGetPage(buffer);
+
+		bark_redo_delitems(record, page, xlrec->ndeleted, xlrec->nupdated,
+						   true);
 
 		PageSetLSN(page, lsn);
 		MarkBufferDirty(buffer);
@@ -641,6 +674,9 @@ bark_redo(XLogReaderState *record)
 			break;
 		case XLOG_BARK_DELETE:
 			bark_xlog_delete(record);
+			break;
+		case XLOG_BARK_MERGE:
+			bark_xlog_merge(record);
 			break;
 		case XLOG_BARK_UNLINK_PAGE:
 			bark_xlog_unlink_page(record);

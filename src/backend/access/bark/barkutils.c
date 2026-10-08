@@ -1074,11 +1074,12 @@ bark_entry_has_tid(IndexTuple itup, ItemPointer tid)
 }
 
 /*
- * The smallest leaf entry of `key` (a key part, see bark_entry_key_part)
- * holding the ascending heap TIDs tids[0..n): a SINGLE for one, else the
- * smaller of POSTING and LIST.  NULL when it would exceed BarkMaxItemSize.
+ * The smallest leaf entry of `key` (a SINGLE-shape key tuple, or a key part,
+ * see bark_entry_key_part) holding the ascending heap TIDs tids[0..n): a
+ * SINGLE for one, else the smaller of POSTING and LIST.  NULL when it would
+ * exceed BarkMaxItemSize.
  */
-static IndexTuple
+IndexTuple
 bark_form_entry(IndexTuple key, ItemPointer tids, int n)
 {
 	IndexTuple	entry;
