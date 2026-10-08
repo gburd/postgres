@@ -653,19 +653,26 @@ bark_row_bound(ScanKey header, int n, BarkScanBound *bound)
 }
 
 /*
- * Can a scan moving in direction dir stop at tuple itup, because itup's
- * leading column is already past a bound in that direction?
+ * Can a scan moving in direction dir stop at tuple itup, because itup is
+ * already past a bound in that direction that every later entry is past too?
  *
  * Entries are visited in index order (forward) or its reverse (backward).
  * Once the leading value sorts strictly after an upper bound on column 1
  * (forward), or strictly before a lower bound (backward), every later entry in
  * that direction does too, so nothing further can match.  A value equal to the
- * bound is left to bark_tuple_matches.  A NULL leading value sorts where the
- * column's NULLS option puts it, and fails every bounding key, so it ends the
- * scan exactly when the NULLs lie beyond the bound.
+ * bound is left to bark_tuple_matches.  A NULL value sorts where the column's
+ * NULLS option puts it, and fails every bounding key, so it ends the scan
+ * exactly when the NULLs lie beyond the bound.
  *
- * Only column 1 is used: a bound on a later column cannot end the scan, since
- * a later leading value may still have matching trailing values.
+ * A bound on a later column ends the scan the same way while every column
+ * before it has an equality key that itup's value equals, as nbtree's
+ * "required" keys do (_bt_check_compare): the scan then is inside one run of
+ * those leading values, ordered by the later column.  So a = 1 AND b = 2
+ * stops at the first entry after (1, 2), and a = 1 AND b < 5 at the first
+ * entry of a = 1 with b >= 5, instead of reading the rest of a = 1.  The walk
+ * stops at the first column with no such equality key, or whose value is not
+ * equal to it (an entry before the run, which a filter rejects without ending
+ * the scan).  Arrays, NULL tests and row comparisons are not equalities here.
  *
  * A row comparison on column 1 stops the scan the same way, on its usable
  * prefix (bark_row_prefix) compared column by column: (a, b) < (5, 3) ends a
@@ -678,41 +685,57 @@ bark_past_bound(IndexScanDesc scan, IndexTuple itup, ScanDirection dir)
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	bool		forward = ScanDirectionIsForward(dir);
 
-	for (int i = 0; i < scan->numberOfKeys; i++)
+	for (int col = 1; col <= so->keyinfo->nkeys; col++)
 	{
-		ScanKey		sk = &scan->keyData[i];
-		bool		lower;
-		bool		upper;
-		int			c;
+		bool		haveeq = false;
+		bool		noteq = false;
 
-		if (sk->sk_attno == 1 && (sk->sk_flags & SK_ROW_HEADER))
+		for (int i = 0; i < scan->numberOfKeys; i++)
 		{
-			int			n = bark_row_prefix(scan, sk, &lower, &upper);
-			BarkScanBound rowbound;
+			ScanKey		sk = &scan->keyData[i];
+			bool		lower;
+			bool		upper;
+			int			c;
 
-			if (n == 0 || (forward ? !upper : !lower))
+			if (sk->sk_attno != col)
 				continue;
+			if (col == 1 && (sk->sk_flags & SK_ROW_HEADER))
+			{
+				int			n = bark_row_prefix(scan, sk, &lower, &upper);
+				BarkScanBound rowbound;
 
-			/*
-			 * An upper bound sorts after the entries equal to it and a lower
-			 * bound before them, so the entry is past exactly when the bound
-			 * sorts before it (forward) or after it (backward).
-			 */
-			bark_row_bound(sk, n, &rowbound);
-			rowbound.upper = forward;
-			c = bark_compare_bound(scan->indexRelation, so->keyinfo,
-								   &rowbound, itup);
-			if (forward ? c < 0 : c > 0)
+				if (n == 0 || (forward ? !upper : !lower))
+					continue;
+
+				/*
+				 * An upper bound sorts after the entries equal to it and a
+				 * lower bound before them, so the entry is past exactly when
+				 * the bound sorts before it (forward) or after it (backward).
+				 */
+				bark_row_bound(sk, n, &rowbound);
+				rowbound.upper = forward;
+				c = bark_compare_bound(scan->indexRelation, so->keyinfo,
+									   &rowbound, itup);
+				if (forward ? c < 0 : c > 0)
+					return true;
+				continue;
+			}
+			if (!bark_key_bounds(scan, sk, &lower, &upper))
+				continue;
+			if (forward ? !upper : !lower)
+				continue;
+			c = bark_key_cmp(scan, i, itup);
+			if (forward ? c > 0 : c < 0)
 				return true;
-			continue;
+			if (lower && upper)
+			{
+				haveeq = true;
+				if (c != 0)
+					noteq = true;
+			}
 		}
-		if (sk->sk_attno != 1 || !bark_key_bounds(scan, sk, &lower, &upper))
-			continue;
-		if (forward ? !upper : !lower)
-			continue;
-		c = bark_key_cmp(scan, i, itup);
-		if (forward ? c > 0 : c < 0)
-			return true;
+		if (!haveeq || noteq)
+			break;
 	}
 	return false;
 }
