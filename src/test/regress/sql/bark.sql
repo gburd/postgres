@@ -2703,6 +2703,27 @@ RESET enable_bitmapscan;
 RESET enable_seqscan;
 SELECT a, b FROM bark_skip WHERE b BETWEEN 3000 AND 3400 ORDER BY a, b
   LIMIT 25;
+-- Groups shorter than a page and about a page long: the next possible
+-- match after a failing entry is often later on the same page (found by
+-- binary search) or past the high key (the scan re-descends at once).
+-- Both agree with a sequential scan, with and without skip support
+-- (int4 and text column 1).
+CREATE TABLE bark_skip2 (a int, b int, t text);
+INSERT INTO bark_skip2 SELECT g / 7, g % 7, 'k' || (g / 7)
+  FROM generate_series(1, 20000) g;
+INSERT INTO bark_skip2 SELECT 10000 + g / 400, g % 400, 'k' || (10000 + g / 400)
+  FROM generate_series(1, 40000) g;
+CREATE INDEX bark_skip2_ab ON bark_skip2 USING bark (a, b);
+CREATE INDEX bark_skip2_tb ON bark_skip2 USING bark (t DESC, b);
+VACUUM ANALYZE bark_skip2;
+SELECT bark_skip_check('SELECT a, b FROM bark_skip2 WHERE b = 3 ORDER BY a, b');
+SELECT bark_skip_check('SELECT a, b FROM bark_skip2 WHERE b BETWEEN 5 AND 6 ORDER BY a, b');
+SELECT bark_skip_check('SELECT a, b FROM bark_skip2 WHERE b > 395 ORDER BY a, b');
+SELECT bark_skip_check('SELECT a, b FROM bark_skip2 WHERE b < 2 ORDER BY a, b');
+SELECT bark_skip_check('SELECT t, b FROM bark_skip2 WHERE b = 3 ORDER BY t DESC, b');
+SELECT bark_skip_check('SELECT t, b FROM bark_skip2 WHERE b > 395 ORDER BY t DESC, b');
+SELECT bark_index_check('bark_skip2_ab');
+DROP TABLE bark_skip2;
 DROP FUNCTION bark_skip_check(text), bark_skip_stats(text, text),
   bark_skip_searches(text);
 DROP TABLE bark_skip;
