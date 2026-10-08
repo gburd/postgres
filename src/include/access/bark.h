@@ -1648,7 +1648,8 @@ extern void bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 						ScanKey orderbys, int norderbys);
 extern bool bark_gettuple(IndexScanDesc scan, ScanDirection dir);
 extern bool bark_canreturn(Relation index, int attno);
-extern bool bark_tuple_matches(IndexScanDesc scan, IndexTuple itup);
+extern bool bark_tuple_matches(IndexScanDesc scan, IndexTuple itup,
+							   uint64 skipkeys);
 extern int64 bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm);
 extern void bark_endscan(IndexScanDesc scan);
 extern void bark_markpos(IndexScanDesc scan);
