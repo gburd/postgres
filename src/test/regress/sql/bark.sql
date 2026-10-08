@@ -3002,7 +3002,11 @@ BEGIN
   WHILE node->>'Index Name' IS NULL LOOP
     node := node->'Plans'->0;
   END LOOP;
-  RETURN (node->>'Shared Hit Blocks')::int + (node->>'Shared Read Blocks')::int < 10;
+  -- The node's buffers include the heap pages an index-only scan fetches
+  -- when the visibility map is not set, which depends on concurrent
+  -- snapshots; at most one heap page per fetch, so count them out.
+  RETURN (node->>'Shared Hit Blocks')::int + (node->>'Shared Read Blocks')::int -
+    coalesce((node->>'Heap Fetches')::int, 0) < 10;
 END $$;
 SELECT bark_rowcmp_pages('SELECT a, b FROM bark_rowcmp WHERE (a, b) > (2500, 10) ORDER BY a, b LIMIT 20') AS keyset_pages_lt_10;
 SELECT bark_rowcmp_pages('SELECT a, b FROM bark_rowcmp WHERE (a, b) < (5, 3) ORDER BY a, b') AS early_stop_pages_lt_10;
