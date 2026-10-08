@@ -1109,6 +1109,7 @@ extern void bark_entry_swap_tid(IndexTuple entry, ItemPointer tid,
 								IndexTuple *left, IndexTuple *right);
 extern bool bark_entry_cut(IndexTuple entry, ItemPointer tid, Size leftmax,
 						   IndexTuple *left, IndexTuple *right);
+extern IndexTuple bark_form_entry(IndexTuple key, ItemPointer tids, int n);
 extern int	bark_posting_count(IndexTuple itup);
 extern int	bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout);
 
@@ -1182,7 +1183,10 @@ extern IndexTuple bark_fetch_oversized(Relation index, IndexTuple entry);
  */
 extern BlockNumber bark_free_oversized(Relation index, IndexTuple entry);
 
-/* Bottom-up deletion, and re-forming entries that lose members (barkdelete.c). */
+/*
+ * Bottom-up deletion, re-forming entries that lose members, and merging a
+ * leaf's equal-key entries before a split (barkdelete.c).
+ */
 extern Size bark_leaf_free_space(Page page);
 extern bool bark_bottomup_delete(Relation index, Relation heapRel,
 								 BarkKeyInfo *keyinfo, Buffer buf,
@@ -1190,6 +1194,8 @@ extern bool bark_bottomup_delete(Relation index, Relation heapRel,
 extern IndexTuple bark_reform_entry(Relation index, Buffer buf,
 									OffsetNumber off, IndexTuple itup,
 									ItemPointer tids, int nlive);
+extern bool bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
+							OffsetNumber newitemoff, Size newitemsz);
 
 extern IndexBuildResult *bark_build(Relation heap, Relation index,
 									IndexInfo *indexInfo);

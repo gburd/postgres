@@ -5789,6 +5789,114 @@ SELECT count(*), sum(id) FROM bark_hkr;
 (1 row)
 
 DROP TABLE bark_hkr, bark_hkr_size;
+-- The same churn on indexes built by CREATE INDEX after the load.  The build
+-- packs each key's rows into LISTs of a tenth of a page, so the reinsert's
+-- heap TIDs fall inside them, and a full LIST is divided around the TID it
+-- cannot take; on a full page that would be a 50/50 split.  Before it splits,
+-- the page's adjacent entries of the key are merged into fewer, larger ones
+-- (bark_merge_page, as nbtree's deduplication pass), which frees the room.
+-- Without the merge the index grows 40% more than btree's.  A temp table, so
+-- that only this session's snapshot limits what VACUUM can remove.
+CREATE TEMP TABLE bark_cim (id int, d int, pad text)
+  WITH (autovacuum_enabled = off);
+INSERT INTO bark_cim SELECT g, g % 20, repeat('x', 200)
+  FROM generate_series(1, 100000) g;
+CREATE INDEX bark_cim_bark ON bark_cim USING bark (d);
+CREATE INDEX bark_cim_bt ON bark_cim USING btree (d);
+CREATE TEMP TABLE bark_cim_size AS
+  SELECT pg_relation_size('bark_cim_bark') AS bark0,
+         pg_relation_size('bark_cim_bt') AS bt0;
+DELETE FROM bark_cim WHERE hashint4(id) % 3 = 0;
+VACUUM bark_cim;
+INSERT INTO bark_cim SELECT g, g % 20, repeat('x', 200)
+  FROM generate_series(100001, 130000) g;
+VACUUM bark_cim;
+SELECT pg_relation_size('bark_cim_bark') - bark0 <=
+       (pg_relation_size('bark_cim_bt') - bt0) * 1.1 AS bark_grows_no_more
+  FROM bark_cim_size;
+ bark_grows_no_more 
+--------------------
+ t
+(1 row)
+
+SELECT bark_index_check('bark_cim_bark');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), sum(id) FROM bark_cim WHERE d >= 0;
+ count |    sum     
+-------+------------
+ 96657 | 6779609449
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT count(*), sum(id) FROM bark_cim;
+ count |    sum     
+-------+------------
+ 96657 | 6779609449
+(1 row)
+
+DROP TABLE bark_cim, bark_cim_size;
+-- The merge on a regular table, whose changes are WAL-logged, so that a
+-- standby replaying this suite applies XLOG_BARK_MERGE records (and checks
+-- them, under wal_consistency_checking).  The heap leaves room on each page,
+-- so an UPDATE's new versions take heap TIDs inside the built LISTs of the
+-- key they move to, and the leaves fill without any VACUUM.  The u index's
+-- leaves are prefix-coded, so its merged entries are decoded and coded again.
+CREATE TABLE bark_cimu (id int, d int, u text, pad text)
+  WITH (fillfactor = 70, autovacuum_enabled = off);
+INSERT INTO bark_cimu
+  SELECT g, g % 20, 'https://www.example.com/item/' || lpad((g % 20)::text, 8, '0'),
+         repeat('x', 200)
+  FROM generate_series(1, 20000) g;
+CREATE INDEX bark_cimu_bark ON bark_cimu USING bark (d);
+CREATE INDEX bark_cimu_u ON bark_cimu USING bark (u)
+  WITH (prefix_compression = on);
+UPDATE bark_cimu
+  SET d = (d + 1) % 20,
+      u = 'https://www.example.com/item/' || lpad(((d + 1) % 20)::text, 8, '0')
+  WHERE hashint4(id) % 3 = 0;
+SELECT bark_index_check('bark_cimu_bark'), bark_index_check('bark_cimu_u');
+ bark_index_check | bark_index_check 
+------------------+------------------
+                  | 
+(1 row)
+
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), sum(id), sum(d) FROM bark_cimu WHERE d >= 0;
+ count |    sum    |  sum   
+-------+-----------+--------
+ 20000 | 200010000 | 189519
+(1 row)
+
+SELECT count(*), sum(id), md5(string_agg(u, ',' ORDER BY id)) FROM bark_cimu
+  WHERE u > 'h';
+ count |    sum    |               md5                
+-------+-----------+----------------------------------
+ 20000 | 200010000 | 56fb7e80b7fc83c131c4eaca59a1af3b
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT count(*), sum(id), sum(d) FROM bark_cimu;
+ count |    sum    |  sum   
+-------+-----------+--------
+ 20000 | 200010000 | 189519
+(1 row)
+
+SELECT count(*), sum(id), md5(string_agg(u, ',' ORDER BY id)) FROM bark_cimu;
+ count |    sum    |               md5                
+-------+-----------+----------------------------------
+ 20000 | 200010000 | 56fb7e80b7fc83c131c4eaca59a1af3b
+(1 row)
+
+DROP TABLE bark_cimu;
 -- A heap TID that falls inside the TID range of a LIST or POSTING entry must
 -- go into that entry.  When the entry cannot take it (it is at the item
 -- ceiling, or the page is full), the entry is divided around it: in place

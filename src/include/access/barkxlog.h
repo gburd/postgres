@@ -50,6 +50,8 @@
 #define XLOG_BARK_DELETE		0xD0	/* delete entries on a leaf whose heap
 										 * tuples are dead (bottom-up
 										 * deletion) */
+#define XLOG_BARK_MERGE			0xE0	/* merge a leaf's equal-key entries
+										 * before a split */
 
 /*
  * The meta page's root and level, set by NEWROOT and CREATE_ROOT, as
@@ -189,6 +191,29 @@ typedef struct xl_bark_delete
 } xl_bark_delete;
 
 #define SizeOfBarkDelete	(offsetof(xl_bark_delete, isCatalogRel) + sizeof(bool))
+
+/*
+ * The merge of adjacent equal-key entries on one leaf (bark_merge_page), as
+ * nbtree's xl_btree_dedup is a record of its own: the entries absorbed into
+ * the one before them are deleted, and that one is rewritten as the merged
+ * entry.  The payload is xl_bark_vacuum's, but the changes are applied in the
+ * other order, deletions first: a merged entry is larger than the entry it
+ * replaces, and on a full page it fits only once the absorbed entries' space
+ * is free.  The rewritten entries' offsets are therefore numbered as they are
+ * after the deletions.  No heap TID leaves the page, so there is no conflict
+ * horizon, and redo takes an exclusive lock, not a cleanup lock.
+ *
+ * Backup Blk 0: leaf page
+ *
+ * In payload of blk 0: as xl_bark_vacuum
+ */
+typedef struct xl_bark_merge
+{
+	uint16		ndeleted;
+	uint16		nupdated;
+} xl_bark_merge;
+
+#define SizeOfBarkMerge	(offsetof(xl_bark_merge, nupdated) + sizeof(uint16))
 
 /*
  * Deletion of an empty leaf (bark_delete_empty_leaf): the left sibling's
