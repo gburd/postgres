@@ -400,6 +400,15 @@ discrete type such as int4 or date), the scan goes from a group past column
 descends past the whole group first.  It skips forward only, and only over
 column 1; nbtree also skips over several leading columns.
 
+On every leaf after a descent's first, bark_readpage first tests the scan
+keys against the page's first and last data entries, as nbtree's
+_bt_set_startikey does (bark_page_satisfied_keys).  A key on column k that
+both satisfy, where the two are equal on columns 1..k-1, holds for every
+entry between them, so it is not tested again on that page.  Arrays and
+row comparisons are always tested.  The first leaf a descent reaches skips
+the check, as in nbtree: a selective lookup reads only that page and would
+pay for the check without gaining from it.
+
 Ordered-operator (KNN) scans, ORDER BY col <~> const, walk outward from
 the constant in two cursors, one in each direction, each reading a page at
 a time like the plain scan, and merge them by distance (barkknn.c).  They
