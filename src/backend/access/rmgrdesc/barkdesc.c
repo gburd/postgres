@@ -162,6 +162,19 @@ bark_desc(StringInfo buf, XLogReaderState *record)
 								 left, right, xlrec->cycleid,
 								 (xlrec->flags & XLH_BARK_SPLIT_LPREFIX) ? 'L' : '-',
 								 (xlrec->flags & XLH_BARK_SPLIT_RPREFIX) ? 'R' : '-');
+				if (xlrec->flags & XLH_BARK_SPLIT_LWHOLE)
+					appendStringInfoString(buf, ", left logged whole");
+				else
+				{
+					appendStringInfo(buf, ", firstrightoff: %u",
+									 xlrec->firstrightoff);
+					if (xlrec->flags & XLH_BARK_SPLIT_NEWLEFT)
+						appendStringInfo(buf, ", newitemoff: %u",
+										 xlrec->newitemoff);
+					if (xlrec->flags & XLH_BARK_SPLIT_REPLACE)
+						appendStringInfo(buf, ", replaceoff: %u",
+										 xlrec->replaceoff);
+				}
 				break;
 			}
 		case XLOG_BARK_NEWROOT:

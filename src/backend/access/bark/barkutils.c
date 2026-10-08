@@ -1748,6 +1748,80 @@ bark_prefix_choose(Relation index, IndexTuple *items, int n,
 	return longest;
 }
 
+/* Add `item` of `size` bytes at offset `off` of `page`; false if no room. */
+static bool
+bark_split_add(Page page, const void *item, Size size, OffsetNumber off)
+{
+	return PageAddItem(page, item, size, off, false, false) !=
+		InvalidOffsetNumber;
+}
+
+/*
+ * Build the left half of a split of `origpage` on `page`, which the caller
+ * has initialized as the left half without BARK_PREFIX: the high key
+ * `hikey`, then the PREFIX item of `origpage` if it has one, then the
+ * original page's entries before `firstrightoff`, stored as they are, with
+ * `newitem` added before the entry at `newitemoff` (or after the last, when
+ * that is `firstrightoff`) and the entry at `replaceoff` replaced by
+ * `replaceitem`.  `newitem` and `replaceitem` are NULL when the split puts
+ * them on the right page, or has none; when given, they are coded for the
+ * original page.  Returns false when they do not fit.
+ *
+ * bark_split builds the left page here, and so does split redo from the
+ * same original page and the entries the record carries, so the two match
+ * byte for byte (see xl_bark_split).  The entries are copied, not decoded
+ * and coded again, so the left half keeps the original page's prefix.
+ */
+bool
+bark_split_build_left(Page page, Page origpage, IndexTuple hikey,
+					  OffsetNumber firstrightoff, IndexTuple newitem,
+					  OffsetNumber newitemoff, IndexTuple replaceitem,
+					  OffsetNumber replaceoff)
+{
+	BarkPageOpaque origopaque = BarkPageGetOpaque(origpage);
+	OffsetNumber o = BARK_P_HIKEY;
+
+	Assert(!BarkPageHasPrefix(BarkPageGetOpaque(page)));
+	Assert(firstrightoff >= BarkPageFirstDataKey(origopaque) &&
+		   firstrightoff <= OffsetNumberNext(PageGetMaxOffsetNumber(origpage)));
+
+	if (!bark_split_add(page, hikey, IndexTupleSize(hikey), o++))
+		return false;
+	if (BarkPageHasPrefix(origopaque))
+	{
+		ItemId		iid = PageGetItemId(origpage, BarkPagePrefixOff(origopaque));
+
+		if (!bark_split_add(page, PageGetItem(origpage, iid),
+							ItemIdGetLength(iid), o++))
+			return false;
+		BarkPageGetOpaque(page)->bark_flags |= BARK_PREFIX;
+	}
+
+	for (OffsetNumber off = BarkPageFirstDataKey(origopaque);
+		 off <= firstrightoff; off = OffsetNumberNext(off))
+	{
+		ItemId		iid;
+
+		if (off == newitemoff && newitem != NULL &&
+			!bark_split_add(page, newitem, IndexTupleSize(newitem), o++))
+			return false;
+		if (off == firstrightoff)
+			break;
+		if (off == replaceoff && replaceitem != NULL)
+		{
+			if (!bark_split_add(page, replaceitem, IndexTupleSize(replaceitem),
+								o++))
+				return false;
+			continue;
+		}
+		iid = PageGetItemId(origpage, off);
+		if (!bark_split_add(page, PageGetItem(origpage, iid),
+							ItemIdGetLength(iid), o++))
+			return false;
+	}
+	return true;
+}
+
 /* ----------------------------------------------------------------------------
  * OVERSIZED entry construction and overflow-chain I/O
  *
