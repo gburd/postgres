@@ -3,10 +3,11 @@
  * barkinsert.c
  *	  Insert into a BARK index: leaf insert and Lehman & Yao page split.
  *
- * bark_insert descends to the target leaf (bark_search), inserts the new
- * SINGLE-shape entry in (key, heap TID) order, and -- when the page
- * overflows -- splits it: a new right page takes the items above a split point chosen by
- * bark_findsplitloc (barksplitloc.c), the left page gets a new high key (on a
+ * bark_insert descends to the target leaf (bark_search), or goes straight to
+ * the rightmost leaf it cached for ascending keys (bark_fastpath_leaf),
+ * inserts the new SINGLE-shape entry in (key, heap TID) order, and -- when
+ * the page overflows -- splits it: a new right page takes the items above a
+ * split point chosen by bark_findsplitloc (barksplitloc.c), the left page gets a new high key (on a
  * leaf, the right page's first key without the attributes not needed to tell
  * it from the left page's last key), the right link is published before the
  * parent downlink, and a copy of the high key is inserted into the parent as
@@ -49,6 +50,13 @@
 #include "utils/injection_point.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
+
+/*
+ * The fewest levels above the leaves a tree must have before an insert caches
+ * its rightmost leaf (bark_fastpath_leaf), as nbtree's
+ * BTREE_FASTPATH_MIN_LEVEL: a shorter descent costs little to repeat.
+ */
+#define BARK_FASTPATH_MIN_LEVEL	2
 
 /*
  * Materialize the page-resident SINGLE/OVERSIZED leaf entry for `full` (a full
@@ -663,10 +671,12 @@ bark_swap_tid_entry(Relation index, Buffer buf, OffsetNumber off,
 static void bark_insert_parent(Relation index, Relation heaprel,
 							   BarkKeyInfo *keyinfo, BarkStack stack,
 							   Buffer buf, IndexTuple downlink);
-static void bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
-					   BarkStack stack, Buffer buf, OffsetNumber newoff,
-					   IndexTuple newitup, Buffer cbuf,
-					   OffsetNumber replaceoff, IndexTuple replaceitup);
+static BlockNumber bark_split(Relation index, Relation heaprel,
+							  BarkKeyInfo *keyinfo, BarkStack stack,
+							  Buffer buf, OffsetNumber newoff,
+							  IndexTuple newitup, Buffer cbuf,
+							  OffsetNumber replaceoff,
+							  IndexTuple replaceitup);
 
 /*
  * Give an empty index, one whose meta page names no root, its first page: an
@@ -774,8 +784,11 @@ bark_create_root_leaf(Relation index, Relation heaprel)
  * not fit on the page, they go into the split instead.  The split record
  * carries the replacement if it stays on the left page, and the right page
  * whole.
+ *
+ * Returns the new right page's block number, which bark_insert caches as the
+ * insert target after a split of the rightmost leaf.
  */
-static void
+static BlockNumber
 bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 		   BarkStack stack, Buffer buf, OffsetNumber newoff,
 		   IndexTuple newitup, Buffer cbuf, OffsetNumber replaceoff,
@@ -1147,6 +1160,7 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 	pfree(sizes);
 	if (orighikey)
 		pfree(orighikey);
+	return rightblk;
 }
 
 /*
@@ -1972,6 +1986,75 @@ bark_insert_stepright(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 	}
 }
 
+/*
+ * The rightmost-leaf fast path of nbtree's _bt_search_insert.  An insert
+ * that placed its entry on the rightmost leaf of a tree with at least
+ * BARK_FASTPATH_MIN_LEVEL levels above the leaves remembers that leaf
+ * (RelationSetTargetBlock, in bark_insert); the next insert tries it before
+ * descending.  Ascending keys then go to the same leaf every time without
+ * reading the upper levels.
+ *
+ * The cached leaf is used only if, under a conditional exclusive lock (a
+ * contended page is not waited for, as in nbtree), it is still a live leaf
+ * with no unfinished split, still the rightmost page of its level, has room
+ * for itup without a split, and (itup's key, heap TID) sorts strictly after
+ * its first data item.  The rightmost leaf holds every entry from its low
+ * bound up, and its first data item is at or above that bound, so the entry
+ * belongs on it.  An empty page is not used: its low bound is unknown.
+ * Returns the leaf write-locked, or InvalidBuffer after forgetting the cached
+ * block.
+ *
+ * The caller takes the fast path only without a uniqueness check.  A unique
+ * check must start at the first leaf that can hold the key.  The test above
+ * compares the heap TID too, so a key equal to the first item's passes it,
+ * and entries of that key may sit on the cached leaf's left sibling, which
+ * the fast path never reads.  (nbtree's unique inserters make the test on the
+ * key alone and then check on the cached leaf; BARK's unique path, which
+ * descends on the key and then steps right by heap TID, is left as it is.)
+ */
+static Buffer
+bark_fastpath_leaf(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup)
+{
+	BlockNumber blkno = RelationGetTargetBlock(index);
+	Buffer		buf;
+
+	if (!BlockNumberIsValid(blkno))
+		return InvalidBuffer;
+
+	buf = ReadBuffer(index, blkno);
+	if (ConditionalLockBuffer(buf))
+	{
+		Page		page = BufferGetPage(buf);
+
+		/* The page may have been deleted and recycled since it was cached. */
+		if (!PageIsNew(page))
+		{
+			BarkPageOpaque opaque = BarkPageGetOpaque(page);
+			OffsetNumber firstdata = BarkPageFirstDataKey(opaque);
+
+			if (BarkPageIsLeaf(opaque) && !BarkPageIgnore(opaque) &&
+				(opaque->bark_flags & BARK_INCOMPLETE_SPLIT) == 0 &&
+				BarkPageRightmost(opaque) &&
+				bark_leaf_free_space(page) >= bark_coded_size(page, itup) &&
+				PageGetMaxOffsetNumber(page) >= firstdata)
+			{
+				BarkItemBuf ibuf;
+
+				if (bark_compare_itups_tid(keyinfo, index, itup, &itup->t_tid,
+										   BarkPageGetItem(page, firstdata,
+													   &ibuf)) > 0)
+					return buf;
+			}
+		}
+		UnlockReleaseBuffer(buf);
+	}
+	else
+		ReleaseBuffer(buf);
+
+	RelationSetTargetBlock(index, InvalidBlockNumber);
+	return InvalidBuffer;
+}
+
 bool
 bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 			Relation heapRel, IndexUniqueCheck checkUnique,
@@ -1988,6 +2071,9 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 	OffsetNumber off;
 	bool		checkingunique = false;
 	bool		coalesce;
+	bool		fastpath;
+	bool		rightmost;
+	BlockNumber target;
 	IndexTuple	replace = NULL;
 	IndexTuple	newitem = NULL;
 	bool		result = false;		/* significant only for UNIQUE_CHECK_PARTIAL */
@@ -2027,11 +2113,25 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 	 * hold the key, where any existing entry of it starts: as in nbtree's
 	 * _bt_doinsert, it descends on the key alone, checks from there, and only
 	 * then moves right to the leaf for the heap TID (bark_insert_stepright).
+	 *
+	 * Before descending, an insert with no uniqueness check tries the cached
+	 * rightmost leaf (bark_fastpath_leaf).  An oversized key does not: the
+	 * size of its entry is known only once its overflow chain is written.
+	 * The fast path has no stack, so it must never split; the leaf it returns
+	 * has room for the entry, and the one case in which the entry could still
+	 * need a split, coalescing into an entry that must be divided, goes back
+	 * to a descent below.
 	 */
 retry:
-	buf = bark_search(index, keyinfo, itup,
-					  checkingunique ? NULL : &itup->t_tid, true,
-					  !checkingunique, &stack);
+	buf = InvalidBuffer;
+	stack = NULL;
+	if (checkUnique == UNIQUE_CHECK_NO && !oversized)
+		buf = bark_fastpath_leaf(index, keyinfo, itup);
+	fastpath = BufferIsValid(buf);
+	if (!fastpath)
+		buf = bark_search(index, keyinfo, itup,
+						  checkingunique ? NULL : &itup->t_tid, true,
+						  !checkingunique, &stack);
 
 	if (buf == InvalidBuffer)
 	{
@@ -2124,6 +2224,14 @@ retry:
 	off = bark_leaf_insert_off(index, keyinfo, itup, &itup->t_tid, page);
 
 	/*
+	 * The leaf the entry goes on, or after a split the new right page, which
+	 * becomes the insert target below when it is the rightmost leaf.  Being
+	 * rightmost cannot change while the leaf is locked.
+	 */
+	rightmost = BarkPageRightmost(BarkPageGetOpaque(page));
+	target = BufferGetBlockNumber(buf);
+
+	/*
 	 * Non-unique index: coalesce the new locator into an existing equal-key
 	 * entry, forming or extending a LIST instead of adding another SINGLE.
 	 * A unique index never does this -- it would mean two live tuples with the
@@ -2144,6 +2252,19 @@ retry:
 
 		cr = bark_coalesce_list(index, keyinfo, itup, &itup->t_tid, buf, off,
 								&replace, &newitem);
+		if (cr == BARK_COALESCE_SPLIT && fastpath)
+		{
+			/*
+			 * The new TID falls inside an entry that cannot take it, which a
+			 * fast-path insert cannot divide without a split.  Rare (heap TIDs
+			 * mostly ascend), so give the page up and descend.
+			 */
+			pfree(replace);
+			pfree(newitem);
+			UnlockReleaseBuffer(buf);
+			RelationSetTargetBlock(index, InvalidBlockNumber);
+			goto retry;
+		}
 		if (cr == BARK_COALESCE_SPLIT)
 		{
 			/*
@@ -2181,8 +2302,9 @@ retry:
 				 * The entry at off - 1 is divided; its upper part goes at
 				 * off.
 				 */
-				bark_split(index, heapRel, keyinfo, stack, buf, off, newitem,
-						   InvalidBuffer, OffsetNumberPrev(off), replace);
+				target = bark_split(index, heapRel, keyinfo, stack, buf, off,
+									newitem, InvalidBuffer,
+									OffsetNumberPrev(off), replace);
 				buf = InvalidBuffer;	/* bark_split released it */
 				pfree(replace);
 				pfree(newitem);
@@ -2205,6 +2327,8 @@ retry:
 		else
 		{
 			bool		roomnow = false;
+
+			Assert(!fastpath);
 
 			/*
 			 * The entry is a new version of a row whose key here did not
@@ -2235,8 +2359,9 @@ retry:
 				 * goes at off, so the left page ends at its single-value fill
 				 * factor.
 				 */
-				bark_split(index, heapRel, keyinfo, stack, buf, off, newitem,
-						   InvalidBuffer, OffsetNumberPrev(off), replace);
+				target = bark_split(index, heapRel, keyinfo, stack, buf, off,
+									newitem, InvalidBuffer,
+									OffsetNumberPrev(off), replace);
 				buf = InvalidBuffer;	/* bark_split released it */
 				pfree(replace);
 				pfree(newitem);
@@ -2264,13 +2389,26 @@ retry:
 				if (coalesce)
 					off = bark_leaf_insert_off(index, keyinfo, itup,
 											   &itup->t_tid, page);
-				bark_split(index, heapRel, keyinfo, stack, buf, off, entry,
-						   InvalidBuffer, InvalidOffsetNumber, NULL);
+				target = bark_split(index, heapRel, keyinfo, stack, buf, off,
+									entry, InvalidBuffer, InvalidOffsetNumber,
+									NULL);
 				buf = InvalidBuffer;	/* bark_split released it */
 			}
 		}
 		pfree(entry);
 	}
+
+	/*
+	 * Cache the rightmost leaf for the next insert, now that no lock is held
+	 * (bark_get_root_level may read the meta page), as _bt_insertonpg does.
+	 * An insert that went elsewhere forgets it: keys are not ascending, and
+	 * trying the cached leaf would only cost the next insert a page lock.
+	 */
+	if (rightmost &&
+		bark_get_root_level(index) >= BARK_FASTPATH_MIN_LEVEL)
+		RelationSetTargetBlock(index, target);
+	else
+		RelationSetTargetBlock(index, InvalidBlockNumber);
 
 	if (stack)
 		bark_freestack(stack);
