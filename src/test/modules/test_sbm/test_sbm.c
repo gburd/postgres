@@ -1113,7 +1113,8 @@ test_sbm_random_operations(PG_FUNCTION_ARGS)
  * set, scattered members, small-set mode), compute the bound, and check it
  * against subsets made in two ways: by sbm_remove on a copy (the encoding the
  * removal path leaves) and by building the subset from scratch (what a
- * caller that re-encodes the survivors gets).
+ * caller that re-encodes the survivors gets).  sbm_removal_bound_sorted of
+ * each set's members must equal the bound of the map, whatever its encoding.
  *
  * Args: (seed bigint, rounds int).  Returns the number of subsets checked.
  */
@@ -1203,6 +1204,7 @@ test_sbm_removal_bound(PG_FUNCTION_ARGS)
 			EXPECT_TRUE(sbm_add_grow(&orig, members[i]) != SBM_IDX_MAX);
 		bound = sbm_removal_bound(orig);
 		EXPECT_TRUE(sbm_serialized_size(orig) <= bound);
+		EXPECT_TRUE(sbm_removal_bound_sorted(members, n) == bound);
 
 		for (int s = 0; s < 6; s++)
 		{
@@ -1255,6 +1257,10 @@ test_sbm_removal_bound(PG_FUNCTION_ARGS)
 				sbm_removal_bound(bulk) > bound)
 				elog(ERROR, "bound grew under removal, seed " UINT64_FORMAT " round %d",
 					 seed, r);
+			if (sbm_removal_bound_sorted(keep, nkeep) != sbm_removal_bound(viaremove) ||
+				sbm_removal_bound_sorted(keep, nkeep) != sbm_removal_bound(bulk))
+				elog(ERROR, "bound of %d sorted members differs from the map's, seed " UINT64_FORMAT " round %d",
+					 nkeep, seed, r);
 			sbm_free(viaremove);
 			sbm_free(fresh);
 			sbm_free(bulk);
