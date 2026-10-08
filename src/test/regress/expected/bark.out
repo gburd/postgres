@@ -6291,6 +6291,58 @@ RESET enable_indexscan;
 RESET enable_indexonlyscan;
 RESET enable_bitmapscan;
 DROP TABLE bark_fp;
+-- The same fast path for a unique index: the cached leaf is tested on the
+-- key alone, so ascending unique inserts go straight to it and are checked
+-- there, while a key equal to the leaf's first entry descends (its run may
+-- start on the left sibling).  A duplicate of every key of the rightmost leaf,
+-- and of keys further left, must still be refused, by the cached leaf or the
+-- descent.
+CREATE TABLE bark_fpu (k text, v int) WITH (autovacuum_enabled = off);
+CREATE UNIQUE INDEX bark_fpu_idx ON bark_fpu USING bark (k);
+INSERT INTO bark_fpu SELECT lpad(g::text, 400, '0'), g
+  FROM generate_series(1, 3000) g;
+DO $$
+DECLARE
+  b0 bigint := pg_stat_get_xact_idx_blocks_fetched('bark_fpu_idx'::regclass);
+  b1 bigint;
+BEGIN
+  FOR g IN 3001..4000 LOOP
+    INSERT INTO bark_fpu VALUES (lpad(g::text, 400, '0'), g);
+  END LOOP;
+  b1 := pg_stat_get_xact_idx_blocks_fetched('bark_fpu_idx'::regclass);
+  RAISE NOTICE 'ascending unique inserts read under 2 blocks each: %',
+    b1 - b0 < 2000;
+END $$;
+NOTICE:  ascending unique inserts read under 2 blocks each: t
+CREATE FUNCTION bark_fpu_dup(key int) RETURNS bool LANGUAGE plpgsql AS $$
+BEGIN
+  INSERT INTO bark_fpu VALUES (lpad(key::text, 400, '0'), -key);
+  RETURN false;
+EXCEPTION WHEN unique_violation THEN
+  RETURN true;
+END $$;
+SELECT count(*) FILTER (WHERE bark_fpu_dup(g)) AS refused, count(*)
+  FROM (SELECT g FROM generate_series(3800, 4000) g
+        UNION ALL VALUES (1), (1500)) d(g);
+ refused | count 
+---------+-------
+     203 |   203
+(1 row)
+
+SELECT count(*) FROM bark_fpu WHERE v < 0;
+ count 
+-------
+     0
+(1 row)
+
+SELECT bark_index_check('bark_fpu_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE bark_fpu;
+DROP FUNCTION bark_fpu_dup(int);
 -- Required keys: a bound on a later column ends the scan while every earlier
 -- column has an equality key, as nbtree's _bt_check_compare does.  The
 -- results match a sequential scan on ASC and DESC/NULLS FIRST indexes, in
