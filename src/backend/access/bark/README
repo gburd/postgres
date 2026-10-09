@@ -1,12 +1,100 @@
 BARK Indexing
 =============
 
-BARK is an index access method designed as a successor to nbtree (see the
-top-level BARK-Design.mediawiki for the full contract catalog and roadmap).
-This directory holds the implementation; this README describes the on-disk
-format defined in src/include/access/bark.h.  The reading and writing code
-arrives in later commits -- at this point the format is defined but no index
-can yet be built.
+BARK is an index access method modeled on nbtree and meant as its
+successor; BARK-Design.mediawiki at the top of the tree records its
+contracts, decisions and roadmap, and doc/src/sgml/bark.sgml is the user
+manual.  It is a Lehman and Yao B-tree over btree operator classes, with
+nbtree's suffix truncation, heap TID order among equal keys, bottom-up
+deletion and deduplication-before-split, and it adds what nbtree cannot
+store: keys of any size (OVERSIZED entries on overflow chains), sorted
+duplicates in two forms (LIST and sbm-compressed POSTING entries), leaf
+prefix compression, nearest-neighbor (KNN) ordering, and, being built now,
+operator classes that extract several keys from one value (multikey).
+This README describes the code as built: the on-disk format defined in
+src/include/access/bark.h and barkxlog.h, and the algorithms that keep it
+correct.  Where BARK does what nbtree does, the text says so and names the
+nbtree function, and the nbtree README is the longer explanation.
+
+The code
+--------
+
+  bark.c          the handler (barkhandler, the IndexAmRoutine), the
+                  reloptions, VACUUM (bark_vacuum_scan, bark_vacuum_page,
+                  bark_delete_empty_leaf, bark_pendingfsm_finalize), the
+                  cost estimate (barkcostestimate), amgettreeheight
+  barkinsert.c    insert (bark_insert, bark_insert_entries,
+                  bark_insert_key), the uniqueness check (bark_check_unique),
+                  coalescing into LIST and POSTING entries
+                  (bark_coalesce_list), the rightmost-leaf fast path
+                  (bark_fastpath_leaf), page splits (bark_split,
+                  bark_insert_parent, bark_getstackbuf, bark_finish_split,
+                  bark_new_root), the first root of an empty index
+                  (bark_create_root_leaf), suffix truncation
+                  (bark_truncate_pivot), and the WAL records of inserts
+  barksearch.c    descent (bark_search, bark_search_bound, bark_descend,
+                  bark_moveright, bark_binsrch), comparison of a scan bound
+                  with an entry (bark_compare_bound), the root cache in
+                  rd_amcache (bark_get_amcache, bark_get_root)
+  barkscan.c      ordinary scans (bark_beginscan, bark_rescan,
+                  bark_gettuple, bark_getbitmap): bounds (bark_make_bound),
+                  the page read (bark_readpage), stepping and re-descent
+                  (bark_readnextpage, bark_lock_and_validate_left), required
+                  array keys, skip scan, the per-page satisfied-key test,
+                  mark/restore and parallel scans
+  barkknn.c       ordered-operator (KNN) scans, ORDER BY col <~> const
+  barksort.c      CREATE INDEX (bark_build): heap scan, tuplesort, parallel
+                  build, the bottom-up load (bark_load) and the second pass
+                  for oversized keys; ambuildempty (bark_buildempty)
+  barkdelete.c    bottom-up deletion (bark_bottomup_delete), the merge of a
+                  leaf's equal-key entries before a split (bark_merge_page),
+                  and the re-forming of LIST and POSTING entries that both
+                  share with VACUUM (bark_reform_entry)
+  barkutils.c     comparison (bark_build_keyinfo, bark_compare_itups,
+                  bark_compare_itups_tid, bark_keep_natts), LIST and POSTING
+                  entries (bark_form_list, bark_form_posting,
+                  bark_form_entry, bark_entry_add_tid, bark_entry_swap_tid,
+                  bark_entry_cut), OVERSIZED entries and overflow chains,
+                  leaf prefix coding, page allocation (bark_get_free_page),
+                  multikey key extraction and markers, the meta page's
+                  multikey fields, the KNN distance functions, and the
+                  strategy translation the planner uses
+  barksplitloc.c  the split point (bark_findsplitloc, bark_singleval_cut)
+  barkxlog.c      WAL redo (bark_redo) and bark_mask
+  barkvalidate.c  operator class validation (barkvalidate) and
+                  barkadjustmembers
+  ../rmgrdesc/barkdesc.c   WAL record descriptions for pg_waldump
+
+amcheck's checks are contrib/amcheck/verify_bark.c, pageinspect's
+functions contrib/pageinspect/barkfuncs.c, and pgstatbarkindex is in
+contrib/pgstattuple/pgstatindex.c.
+
+The main data structures, all in bark.h unless noted:
+
+  BarkPageOpaqueData   a page's special space (see "Page structure")
+  BarkMetaPageData     block 0
+  BarkDeletedPageData  a deleted page's safexid
+  BarkOverflowRef      what an OVERSIZED entry keeps inline
+  BarkKeyInfo          per-index comparison state: each key column's
+                       support function 1, collation and ASC/DESC and NULLS
+                       options, built by bark_build_keyinfo
+  BarkStackData        a descent's path, for inserting downlinks
+  BarkAmCache          rd_amcache: the root block and level, the extracted
+                       column, the multikey flag and the markers seen
+  BarkInsertState      (barkinsert.c) ii_AmCache: what every insert of a
+                       statement reuses (see "Inserts")
+  BarkScanBound        a scan's bound on the leading columns, which the
+                       descent and the leaf binary search compare against
+  BarkScanOpaqueData   a scan's state; BarkScanPosData the copy of one
+                       leaf's matching items, as nbtree's BTScanPosData
+  BarkArrayKeyState    one ScalarArrayOp key, its elements sorted in the
+                       column's index order
+  BarkKnnScanState     a KNN scan's two cursors (BarkKnnCursor)
+  BarkParallelScanDescData   the shared cursor of a parallel scan
+  BarkBuildState, BarkPageState   (barksort.c) CREATE INDEX's state and
+                       its per-level page under construction
+  BarkItemBuf          workspace for BarkPageGetItem (see "Leaf prefix
+                       compression")
 
 Page structure
 --------------
@@ -21,9 +109,13 @@ PostgreSQL page whose special space holds a BarkPageOpaqueData:
     bark_cycleid            vacuum cycle ID of the latest leaf split, or 0
                             (16 bits; see "VACUUM" below)
     bark_flags              page role: BARK_LEAF, BARK_ROOT, BARK_META,
-                            BARK_DELETED, BARK_HALF_DEAD,
-                            BARK_INCOMPLETE_SPLIT, BARK_HAS_GARBAGE,
-                            BARK_OVERFLOW, BARK_PREFIX
+                            BARK_DELETED, BARK_INCOMPLETE_SPLIT,
+                            BARK_OVERFLOW, BARK_PREFIX.  BARK_HALF_DEAD and
+                            BARK_HAS_GARBAGE are defined, and readers
+                            treat a half-dead page as nbtree treats one,
+                            but no code sets either: page deletion is one
+                            step (see "Page deletion and recycling"), and
+                            scans set no LP_DEAD hints
     bark_page_id            BARK_PAGE_ID (0xFF84), so external tools can
                             tell BARK pages from nbtree pages: nbtree keeps
                             its vacuum cycle ID in the last two bytes of the
@@ -55,9 +147,10 @@ alignment, or left out when they are only the key's closing zero padding.
 The format comment at BARK_PREFIX in bark.h has the details.  OVERSIZED
 entries, NULL first columns, high keys and pivots are stored as on any page.
 
-Every read of a data item goes through BarkPageGetItem, which decodes on a
-BARK_PREFIX page, so comparisons always see the real datum and any collation
-works.  Coding needs only the page's prefix and the entry, not the catalog,
+Every read of a leaf's data items goes through BarkPageGetItem, which
+decodes on a BARK_PREFIX page, so comparisons always see the real datum and
+any collation works.  High keys, and internal-page items that a caller
+changes in place, are read with PageGetItem.  Coding needs only the page's prefix and the entry, not the catalog,
 so WAL redo can repeat it (ADD_TID redo decodes, adds the TID, and codes
 again); the other records carry coded bytes and redo adds them as they are.
 
@@ -76,6 +169,102 @@ they are coded on the original page; a half that does not fit with its new
 prefix is laid out plain, or, if that does not fit either, with the original
 page's prefix, against which it fits by construction.  The split record
 says which halves have a prefix (XLH_BARK_SPLIT_LPREFIX / _RPREFIX).
+
+Inserts
+-------
+
+bark_insert (barkinsert.c) is aminsert.  It forms the row's index tuple at
+full size with bark_form_full_tuple, which, unlike index_form_tuple, does
+not cap the size: an entry too large for a page becomes OVERSIZED only when
+it is placed (see "Entry encoding").  An index with an extracted column
+goes through bark_insert_row_keys instead (see "Multikey keys").  Every
+entry goes through bark_insert_entries, which positions it, and
+bark_insert_key, which places it on the leaf found.
+
+What every insert of one statement would otherwise rebuild is kept in
+indexInfo->ii_AmCache, in ii_Context, for the life of the IndexInfo
+(BarkInsertState, bark_insert_state): the BarkKeyInfo, whether the index
+coalesces (non-unique and bark_allequalimage, which takes a catalog lookup
+and a support-function call per key column), the extracted column, and a
+per-row memory context for multikey rows.  GIN keeps its GinState the same
+way; nbtree reads its allequalimage from the cached meta page instead.
+
+Positioning.  An insert descends with (key, heap TID) to the one leaf the
+entry belongs on (bark_search with a scantid; see "Heap TID order"), write
+locking it, finishing on the way any incomplete split it meets.  A unique
+check descends on the key alone instead (see "Uniqueness").  Before
+descending for a row's first entry, the insert tries the rightmost-leaf
+fast path, bark_fastpath_leaf, nbtree's _bt_search_insert: see "Heap TID
+order".  The insert then calls CheckForSerializableConflictIn for the leaf,
+once for each leaf a row's entries go on.
+
+Placing (bark_insert_key, the per-key function every key of a row uses).
+On the write-locked leaf, at the offset bark_leaf_insert_off found:
+
+  1. In an index that coalesces, and for a key that is not oversized,
+     bark_coalesce_list tries to add the heap TID to the equal-key entry
+     just before the offset, or divide that entry around it (see "Heap TID
+     order").  A coalesce that cannot be done in place and needs a split
+     first runs the merge pass (see "Merging a page's entries before a
+     split") and tries again.
+  2. Otherwise the entry goes in as a SINGLE (or an OVERSIZED entry, whose
+     overflow chain bark_leaf_page_entry writes first) when it fits in
+     bark_leaf_free_space.
+  3. If it does not fit: bottom-up deletion, when the executor says the
+     index is unchanged (see "Bottom-up deletion"); the single-value cut
+     when the page holds one key at the end of its run
+     (bark_singleval_cut, see "Page splits"); the merge pass; and only then
+     the split (bark_split).
+
+A fast-path insert has no stack and so never splits: where it would need
+to, bark_insert_key returns BARK_PLACE_RETRY, the leaf is forgotten as the
+target and the insert descends.  Each change is one WAL record (see
+"WAL").
+
+Uniqueness
+----------
+
+bark_check_unique is nbtree's _bt_check_unique.  The insert descends on the
+key alone (no heap TID, nextkey false) to the first leaf that can hold the
+key; the entries of the key, any of which may be the live one, start there,
+at the first entry not less than the key, and the check scans right from
+there while keys are equal, keeping the first leaf write-locked throughout
+and share-locking each later leaf before releasing the one before it.  For each equal entry it
+fetches the heap tuple with SnapshotDirty (table_fetch_tid):
+
+  * a tuple dead to everyone is no conflict;
+  * UNIQUE_CHECK_EXISTING skips the entry that is the row itself, and the
+    insert then adds nothing (the deferred recheck, unique_key_recheck);
+  * a live or in-progress match under UNIQUE_CHECK_PARTIAL (deferrable
+    constraints and speculative insertion) sets is_unique false and returns;
+  * a match whose inserting or deleting transaction is still running
+    returns its XID, and SnapshotDirty's speculativeToken when the inserter
+    is a speculative insertion (INSERT ... ON CONFLICT); bark_insert_entries
+    releases the leaf and waits, with SpeculativeInsertionWait or
+    XactLockTableWait, then descends and checks again;
+  * a committed live match raises the unique violation.
+
+When the first leaf holds no entry of the key, the check returns the offset
+its binary search found, which is the insert offset for any heap TID, so an
+insert that stays on that leaf skips a second search, as _bt_check_unique
+saves its bounds for _bt_findinsertloc.  After the check, the insert steps
+right, locking each right sibling before releasing the leaf, to the leaf
+its heap TID belongs on (bark_insert_stepright, nbtree's _bt_stepright); it
+rarely moves at all.
+
+A key with a NULL in any key column is not checked, and is unique, unless
+the index is NULLS NOT DISTINCT; then it is checked as any key is, since
+bark_compare_itups treats two NULLs in a column as equal.  CREATE INDEX of a
+unique index checks each sorted tuple against the previous one by the same
+rule (bark_load), and its second pass checks oversized keys by inserting
+them with UNIQUE_CHECK_YES.  A unique index never coalesces, so it holds
+only SINGLE and OVERSIZED entries.
+
+A unique BARK index can be an ON CONFLICT arbiter, a foreign key's
+referenced index and a replica identity, but no constraint can use one
+(parse_utilcmd.c accepts only DEFAULT_INDEX_TYPE for ADD CONSTRAINT ...
+USING INDEX, and CREATE TABLE's constraints build btree), so
+UNIQUE_CHECK_PARTIAL is reached only from speculative insertion.
 
 Page splits and the incomplete-split flag
 -----------------------------------------
@@ -207,7 +396,9 @@ locator, a LIST its first to last member, a POSTING its sbm's minimum to
 maximum.  Within a run of equal keys the ranges are disjoint and ascending,
 across pages too.  Nothing else is ordered by TID: scans, VACUUM, the KNN
 search, split-point choice and the build's grouping of runs compare keys
-only (bark_compare_itups); only placement uses bark_compare_itups_tid.
+only (bark_compare_itups); only placement (the descent, the fast path and
+the step right after a unique check) and amcheck's order checks use
+bark_compare_itups_tid.
 
 A pivot between two entries equal on every key attribute keeps the right
 entry's lowest TID after its key data, as the last ItemPointerData of the
@@ -270,14 +461,17 @@ Block 0 is always the meta page (BarkMetaPageData): a magic number
 (BARK_MAGIC), the on-disk version (BARK_VERSION), the current root block and
 its level, whether all key columns are "equalimage" (which governs
 whether duplicate keys can be deduplicated losslessly), bark_flags and
-bark_nkeys (see "Multikey keys").  A descent does not
-read it: the root block and level are cached in rd_amcache (BarkAmCache,
-which also caches the index's extracted column, whether it is multikey and
-the markers seen), as nbtree caches its meta
-page, and the cached page is used only if, under its lock, it is
-still a root (BARK_ROOT set, not being deleted) at the cached level.  A root
-split clears BARK_ROOT on the old root, so a stale cache entry fails that
-check and the meta page is read instead.
+bark_nkeys (see "Multikey keys").  bark_allequalimage is written by CREATE
+INDEX and ambuildempty and shown by pageinspect's bark_metap; the access
+method does not read it back: inserts and the build call
+bark_allequalimage() instead (see "Entry encoding").  A descent does not
+read the meta page: the root block and level are cached in rd_amcache
+(BarkAmCache, which also caches the index's extracted column, whether it is
+multikey and the markers seen), as nbtree caches its meta page, and the
+cached page is used only if, under its lock, it is still a root (BARK_ROOT
+set, not deleted or half-dead) at the cached level (bark_get_root_buffer).
+A root split clears BARK_ROOT on the old root, so a stale cache entry fails
+that check and the meta page is read instead.
 
 A meta page written before bark_flags and bark_nkeys existed ends, by its
 pd_lower, at bark_allequalimage, and PageInit zeroed the rest, so it reads 0
@@ -298,8 +492,16 @@ the column's index order and removes duplicates, as ginExtractEntries does.
 A NULL value, a value with no keys and a key flagged NULL all become one
 NULL key, so every row has an entry.
 
-bark_insert_entries inserts a row's entries in ascending (key, TID) order in
-one pass.  The first descends as any insert does, or takes the cached
+bark_insert_row_keys does this for an insert, in the per-row context of the
+BarkInsertState (reset after each row), sets the multikey flag and inserts
+the row's unseen markers (both below), forms one entry per key, and hands
+them to bark_insert_entries, which inserts them in ascending (key, TID)
+order in one pass.  CREATE INDEX extracts in its build callback
+(bark_build_row_keys) and spools one tuple per key; keys too large for the
+sort are inserted by the second pass (bark_insert_oversized_keys), which
+runs procedure 7 again.  A unique index or an exclusion constraint on an
+extracted column, and two extracted columns, are refused before anything is
+built (bark_check_multikey_index).  The first descends as any insert does, or takes the cached
 rightmost leaf; each later one goes on the leaf the previous one went on
 when it belongs there (searched from that offset), else on the right
 sibling, locked before the leaf is released, when it belongs there, else by
@@ -325,9 +527,10 @@ a SINGLE entry whose heap TID is (InvalidBlockNumber, 1): no heap block has
 that number, and it sorts after every real TID of the key.  Its other key
 columns are NULL.  An insert adds the row's markers that its backend has not
 seen, before the row's keys, never coalesced and not again when present;
-CREATE INDEX writes each distinct one once (parallel participants spool it
-with TIDs (InvalidBlockNumber, 2 + participant), since tuplesort refuses
-equal TIDs, and the load writes the reserved TID).  Markers are never
+CREATE INDEX writes each distinct one once (each participant spools it with
+the TID (InvalidBlockNumber, 2 + ParallelWorkerNumber), which for the
+leader, whose number is -1, is the reserved TID, since tuplesort refuses
+equal TIDs; the load writes the reserved TID).  Markers are never
 removed.  Every reader of heap TIDs skips them: scans, KNN, VACUUM's
 callback and its count, bottom-up deletion, merging and coalescing.
 bark_index_has_marker looks one up.
@@ -338,9 +541,64 @@ The planner treats such an index as ordered only by its columns before the
 extracted one: plancat leaves the sort family InvalidOid at a column whose
 operator family is not btree's, and build_index_pathkeys stops there.
 
-Every read of a data item (any item but a high key) goes through
-BarkPageGetItem, which decodes the prefix-coded items of a BARK_PREFIX leaf
-(see "Leaf prefix compression").
+
+Operator classes and validation
+-------------------------------
+
+BARK declares ambtreeopfamilies: a BARK operator class for a scalar type
+is a member of the btree operator family of its type, not of a family of
+its own.  pg_opclass has one bark row per btree row (45), with btree's name,
+family, input type, storage type and default, and pg_amop and pg_amproc
+have nothing for BARK beyond the KNN ordering operators: BARK uses the
+family's btree operators and support functions.  opclasscmds.c lets
+CREATE OPERATOR CLASS ... USING bark name a btree family (it looks in the
+AM's own families first, then btree's).  The planner treats such a column
+as it treats a btree column (pathkeys, row comparisons, equivalence
+classes); bark_translate_strategy and bark_translate_cmptype are btree's
+mapping.
+
+Only support function 1 is required; BARK calls it (bark_build_keyinfo) to
+order entries, and the family's cross-type ORDER procs to position scans on
+constants of other types (bark_setup_key_procs).  tuplesort reads 1 and 2
+for the build (tuplesort_begin_index_btree, through the shared family), 4
+decides coalescing (bark_allequalimage), and 6 drives the skip scan's next
+value (PrepareSkipSupportFromOpclass).  BARK never calls in_range (3).
+
+The KNN ordering operators <~> (int2, int4, int8; pg_operator OIDs
+9473-9475) are amop rows in btree's integer_ops family with amopmethod
+bark, strategy 6 (BARK_KNN_STRATEGY), purpose 'o' and sort family
+float_ops.  btree does not use them; opr_sanity's check that an amop row's AM is its
+family's exempts btree's families.
+The distance functions are bark_int2/4/8_distance in barkutils.c.
+
+A multikey class lives in an operator family whose opfmethod is bark
+("Multikey keys"; "M1: multikey keys" in the design document).  For BARK's
+own families the handler declares amstrategies 0 (any strategy number),
+amsupport 14 (BARK_MULTIKEY_NPROCS) and amstorage true, so the core code
+accepts any strategy, support functions up to 14 and a STORAGE clause.
+barkadjustmembers keeps btree families as strict as before: in a btree
+family it refuses strategies past 5, support functions past 6 and a
+storage type, any of which would make btvalidate report btree's own
+classes in the family invalid.  bark_translate_strategy and
+bark_translate_cmptype return COMPARE_INVALID and InvalidStrategy for a
+BARK family, so the planner never reads = or < semantics into a multikey
+class's operators, and plancat gives such a column InvalidOid as its sort
+family, where build_index_pathkeys stops.
+
+barkvalidate checks a class in a btree family as btvalidate would for the
+procedures BARK uses: support functions 1-6 with btree's signatures, the
+class's own-type comparator present, search operators at strategies 1-5
+returning bool, and ordering operators at strategy 6 with a sort family.
+A class in a BARK family goes to bark_validate_multikey, which checks
+procedures 1, 2, 4, 5 and 6 with btree's signatures over the storage type,
+7-9 with pg_extended_btree's (7 with two to five arguments, 8 with six or
+seven), 10-13 with GIN's and 14 as value (key); requires 1 and 7, and 9
+with 8; refuses in_range (3); and accepts any strategy number.  Support
+functions of a multikey class are registered under its input type, as
+GIN's are, and the report for a comparator registered under the storage
+type says so.  A class in a BARK family without procedure 7 is not
+extracted (bark_opfamily_extracts) and is used as a scalar class, but
+amvalidate reports it invalid.
 
 VACUUM
 ------
@@ -364,9 +622,10 @@ cleans, so the page is not cleaned a second time.  The clear is WAL-logged,
 in the page's XLOG_BARK_VACUUM record (see "WAL" below), where nbtree treats
 it as a hint.
 
-VACUUM takes a cleanup lock on every live leaf, whether or not it has
-entries to delete, as nbtree does (see "Deleting index tuples during VACUUM"
-in the nbtree README).  An index-only scan, and any scan with a non-MVCC
+A bulk delete takes a cleanup lock on every live leaf, whether or not it
+has entries to delete, as nbtree does (see "Deleting index tuples during
+VACUUM" in the nbtree README); the scan barkvacuumcleanup runs when there
+was no bulk delete deletes no entries and keeps a share lock.  An index-only scan, and any scan with a non-MVCC
 snapshot, keeps a pin on the leaf it is returning entries from, so VACUUM
 cannot delete a TID the scan has read but not yet returned, and the heap
 line pointer the TID refers to cannot be reused while the scan still needs
@@ -474,6 +733,23 @@ entry sorts past that prefix.  The prefix is strict only when it is the
 whole row: under (a, c) > (5, 10) on (a, b, c) the entries with a = 5 may
 match.
 
+A scan stops at the first entry past its bound in its direction
+(bark_past_bound), testing columns in order as nbtree's required keys do in
+_bt_check_compare: a key that bounds column k in the scan's direction ends
+the scan when an entry is past it, provided every earlier column has an
+equality key that the entry equals; at the first column without one, or
+where the entry differs from it, the test stops, and the entry is left to
+the filter.  So under a = 5 AND b < 10 the scan ends at (5, 10), and under
+a > 5 AND b < 10 only column 1 ends it.  A row comparison on column 1 ends
+the scan the same way on its usable prefix.  Every key, bounding or not, is
+also tested on each entry the scan reads (bark_tuple_matches), except the
+keys the per-page test below marks satisfied; for some keys that test is
+all they do: IS NULL and IS NOT NULL (bark_key_bounds returns false for any
+key with SK_ISNULL), a key with a NULL argument, which matches nothing, a
+cross-type key whose opfamily has no ORDER proc for its pair of types, and
+arrays outside the required keys.  An inequality array (col < ANY (...)) is reduced at rescan
+to a plain key on its extreme element (bark_setup_array_keys).
+
 ScalarArrayOp keys.  The equality keys of columns 1..m, each column having
 an equality array or a scalar equality, are the scan's required keys when
 one of them is an array, as in nbtree.  Their elements, sorted into the
@@ -521,6 +797,84 @@ an ordered index keeps a later column's values spread over the whole index.
 A scroll cursor over a KNN scan is materialized: the scan cannot run its
 distance order backward.
 
+Cost estimate
+-------------
+
+barkcostestimate (bark.c) is btcostestimate applied to the quals BARK's
+scan uses to position and stop it, the "boundary quals"; the others only
+filter.  As in nbtree, a column's quals bound the scan only when every
+earlier column has an equality.  The walk differs from btcostestimate's
+where BARK's scan does less:
+
+  * IS NULL and IS NOT NULL never bound (NullTest clauses are skipped).
+  * An equality ScalarArrayOp bounds like an equality, on any column of
+    the equality prefix and in either direction, and the scan descends once
+    per combination of the arrays' elements; a column with several
+    equalities counts the one with the fewest elements.  The number of
+    descents is clamped to a third of the index's pages, as btcostestimate
+    clamps it.
+  * A row comparison ends the walk; past column 1 it counts only when it
+    bounds the end where the scan starts, and not in a skip scan.
+  * A skip scan (bark_cost_skips: forward, no qual on column 1, a bounding
+    qual on column 2) costs one descent per distinct column-1 value plus
+    one, unless the number of values is a default guess or exceeds the
+    index's pages; only column 2's plain quals bound it.
+  * A KNN scan (ORDER BY operators) treats every qual as a filter.
+
+The rows read are the boundary quals' selectivity times the heap's rows, so
+LIST and POSTING entries lower the cost through the index's smaller page
+count, which genericcostestimate prorates over, as nbtree's posting lists
+do.  A unique index with equality on every column reads one row.  The
+descent charge (ceil(log2(tuples)) comparisons, plus 50 cpu_operator_cost
+per level, the leaf included, per descent), the meta page as the only
+non-leaf page counted, and the correlation (btcost_correlation, exported
+from selfuncs.c with examine_indexcol_variable and
+DEFAULT_PAGE_CPU_MULTIPLIER, so the two AMs share it) are btcostestimate's.
+On top, each entry read is charged a random page read per overflow page,
+estimated from the index's average bytes per row beyond BarkMaxItemSize:
+the expected charge for an index of uniformly large entries, nothing for
+one with none, and the average for a mixed one, since the index keeps no
+count of its OVERSIZED entries.
+
+VACUUM's num_index_tuples is the count of live heap TIDs, as nbtree's is,
+so reltuples (which plancat uses for a partial index's tuples) has the
+heap's unit.
+
+Tools
+-----
+
+contrib/amcheck/verify_bark.c: bark_index_check(index, heapallindexed)
+walks every page under AccessShareLock and checks the meta page's version,
+key order within each page, entries within the high key (strictly when
+attributes were truncated, and below its heap TID for an equal leaf entry),
+heap TID order among equal keys, sibling links both ways with matching
+levels, each right sibling's first key against the page's high key, each
+downlink's child level and first key, no unfinished split, entry sizes (no
+leaf entry over BarkMaxItemSize, no SINGLE large enough to be OVERSIZED, a
+POSTING entry no smaller than its removal bound), the deleted-page layout,
+BARK_PREFIX pages and their coded entries, OVERSIZED entries' chains read
+in full, and markers (the reserved TID only on a SINGLE of an index whose
+procedure 7 can return markers).  Each cross-page check holds share locks
+on both pages in an order the writers use.  heapallindexed fingerprints
+each member of each leaf entry, as the SINGLE it would be alone, in a Bloom
+filter and probes it with each tuple a new CREATE INDEX would index, as
+bt_index_check does; it is refused for an index with an extracted column,
+whose rows have several entries.  bark_index_parent_check takes ShareLock
+and also walks the tree level by level from the root: each level's
+downlinks must name, in order, exactly the pages of the level below, each
+equal to the high key of the child before it, and each parent's high key
+equal to its last child's.  pg_amcheck checks BARK indexes when the
+database's amcheck is version 1.7 or later (prepare_btree_command).
+
+contrib/pageinspect/barkfuncs.c: bark_metap, bark_page_stats,
+bark_multi_page_stats and bark_page_items (by relation and block, or of a
+raw page), which reports each item's shape, its heap TIDs (a LIST's or
+POSTING's in full), a pivot's downlink and heap TID, an OVERSIZED entry's
+first overflow block, and a prefix-compressed leaf's PREFIX item, with the
+data decoded.  contrib/pgstattuple/pgstatindex.c: pgstatbarkindex reports
+pgstatindex's columns, computed the same way, plus overflow pages and the
+leaf entries of each shape.
+
 Page deletion and recycling
 ---------------------------
 
@@ -529,16 +883,30 @@ does (bark_vacuum_scan): the same pass that deletes dead entries counts the
 entries left and the deleted pages, records in the FSM the deleted pages that
 are safe to reuse, and notes each leaf it leaves empty.  barkvacuumcleanup
 does nothing after a bulk delete; when no bulk delete ran (no dead tuples
-this cycle) it runs the same pass without deleting entries.  So VACUUM's
-cleanup is cheap after a bulk delete, as nbtree's is, and BARK declares
-VACUUM_OPTION_PARALLEL_COND_CLEANUP as nbtree does.
+this cycle) it runs the same pass without deleting entries, and marks its
+count estimated, so VACUUM leaves reltuples alone.  So VACUUM's cleanup is
+cheap after a bulk delete, as nbtree's is, and BARK declares
+VACUUM_OPTION_PARALLEL_COND_CLEANUP as nbtree does.  Either way
+barkvacuumcleanup caps the count at the heap's when that is exact and the
+index has no extracted column (as btvacuumcleanup does: concurrent splits
+can make the walk count an entry twice), and stores it in the meta page's
+bark_nkeys.  The count is of live heap TIDs, not entries, as
+btvacuumpage's is, so reltuples has the heap's unit.
 
 At the end of the pass, VACUUM deletes the empty interior leaves it noted
 (bark_delete_empty_leaf): in one XLOG_BARK_UNLINK_PAGE record it
 splices the leaf out of the sibling chain, points the leaf's downlink in the
 parent at the right sibling and removes the right sibling's old downlink (so
 the leaf's key space moves right, as in nbtree), and turns the leaf into a
-deleted page.
+deleted page.  Only a leaf with siblings on both sides that is not its
+parent's last child is deleted; leftmost and rightmost empty leaves, a last
+child and emptied internal pages stay.  The parent is found by descending
+with the leaf's high key and matching its downlink
+(bark_find_parent_downlink) and is locked before the three leaves, the
+reverse of a split's child-before-parent order, so the leaves are only
+locked conditionally and a busy leaf is left for a later VACUUM; nbtree
+avoids the inversion by marking the leaf half-dead first
+(_bt_mark_page_halfdead), which BARK does not do.
 VACUUM also deletes the overflow pages of the OVERSIZED entries it removes
 (bark_free_oversized).
 
@@ -565,10 +933,11 @@ safexid).  Any backend that might hold a link to the page took its snapshot
 before the deletion, so its xmin is no later than safexid; once safexid is
 removable by that horizon, no such backend remains.  VACUUM keeps the leaves
 it deletes in a pending list and records in the FSM, at its end, those whose
-safexid is already removable (nbtree's _bt_pendingfsm_finalize).  The cleanup
-pass's page walk records every other deleted page in the FSM once it becomes
-recyclable, so a page not recyclable at one VACUUM is recorded by a later
-one; it also counts the deleted pages (pages_deleted).  bark_get_free_page
+safexid is already removable (nbtree's _bt_pendingfsm_finalize).  VACUUM's page
+walk (the bulk delete's, or the cleanup-only scan's) records every other
+deleted page in the FSM once it becomes recyclable, so a page not
+recyclable at one VACUUM is recorded by a later one; it also counts the
+deleted pages (pages_deleted).  bark_get_free_page
 repeats the test before it reuses an FSM page, since the FSM is not crash-
 safe.  Every path that allocates a page passes the index's heap relation for
 the test: inserts and VACUUM directly, and the paths reached from a descent
@@ -761,11 +1130,13 @@ When it is set, t_tid is repurposed: its offset-number field is split into a
 high-nibble status region (BARK_STATUS_OFFSET_MASK) and a low twelve-bit count
 (BARK_OFFSET_MASK), the same partition nbtree uses.
 
-There are four entry shapes (BarkEntryShape):
+There are five entry shapes (BarkEntryShape):
 
   SINGLE   The plain nbtree shape.  The alt-TID bit is clear and t_tid holds a
-           single heap locator.  A scalar unique or ordinary index produces
-           only this shape.
+           single heap locator.  An index that does not coalesce (a unique
+           index, one with INCLUDE columns, or one whose keys are not all
+           equalimage) has only this shape and OVERSIZED.  A marker is a
+           SINGLE (see "Multikey keys").
 
   LIST     Sorted duplicates -- the libdb shape.  The alt-TID bit is set with
            BARK_IS_LIST; the locators are stored in ascending order in the
@@ -800,9 +1171,12 @@ There are four entry shapes (BarkEntryShape):
            its key-attribute count and heap TID), with the first overflow
            block in t_tid.
            This is what lets BARK index a key larger than ~1/3 page, where
-           nbtree errors: comparison, scan, uniqueness, and vacuum fetch the
-           full value from the chain, so an oversized key behaves exactly like
-           an inline key of the same value.  A normal-size entry never uses
+           nbtree errors: comparison (so descent, scan positioning and the
+           uniqueness check) fetches the full value from the chain
+           (bark_fetch_oversized), and an index-only scan returns it, so an
+           oversized key behaves exactly like an inline key of the same
+           value.  VACUUM needs only the heap locator in the ref, and frees
+           the chain of an entry it removes (bark_free_oversized).  A normal-size entry never uses
            this shape, so it is pure overhead-free opt-in.  When the first
            key column is text under a C/POSIX collation, the ref also keeps
            that column's first 32 bytes, which order two OVERSIZED entries
@@ -811,8 +1185,14 @@ There are four entry shapes (BarkEntryShape):
            compare element by element, and name is a cstring, so their bytes
            are not their order (bark_first_column_bytewise).
 
-The encoding of a leaf entry is chosen per entry, by cardinality: a key with
-one row is SINGLE, a few rows is LIST, and a large clustered set is POSTING.
+The encoding of a leaf entry is chosen per entry, by size (bark_form_entry):
+one heap TID is a SINGLE; more are a POSTING when its size, reserve
+included, is smaller than the LIST's (bark_form_posting decides from the
+removal bound, sbm_removal_bound_sorted, before building the sbm), else a
+LIST, which holds at most BARK_LIST_MAX_COUNT TIDs; neither is made larger
+than BarkMaxItemSize.  An insert that adds a TID to a LIST or POSTING
+entry keeps its shape when it can (bark_entry_add_tid), and a POSTING
+entry never turns back into a LIST on insert.
 This is what lets a scalar index and an inverted (GIN/RUM-style) index share
 one access method and one page format, rather than needing an AM apiece.
 
@@ -827,19 +1207,19 @@ a tenth of a page, the limit _bt_load puts on a posting list, then the same
 for the rest of the run.  Entries of BarkMaxItemSize would leave room for
 only two of them on a leaf beside its high key.  Insert may later grow a
 built entry up to BarkMaxItemSize.  The meta page's bark_allequalimage
-records the rule's result, as nbtree's btm_allequalimage does; nothing reads
-it yet.
+records the rule's result, as nbtree's btm_allequalimage does; only
+pageinspect's bark_metap reads it.
 
 Delete marking (the C-DELETE contract)
 --------------------------------------
 
-A leaf entry of any shape may be delete-marked: BARK_IS_DELETE_MARKED in the
-status region records that the entry is logically deleted but retained so an
-UNDO rollback can restore it, rather than being removed and left for VACUUM.
-The bit value matches nbtree's BT_IS_DELETE_MARKED so the generic index
-delete-marking path (index_delete_mark / index_undo_mark) treats both AMs
-alike.  Delete-marking is orthogonal to an entry's shape and shares the status
-region with it; it is never set on a PIVOT.
+BARK_IS_DELETE_MARKED (0x4000 in the status region) is reserved for marking
+a leaf entry of any shape as logically deleted but kept, so that an UNDO
+rollback can restore it, rather than removing it and leaving it for VACUUM
+(the C-DELETE contract in BARK-Design.mediawiki).  Nothing sets or tests it
+yet: there is no delete-marking interface in the tree, and nbtree has no
+such bit either; the bit is kept free for it.  On a pivot the same bit is
+BARK_PIVOT_HEAP_TID, so it can only ever mark a leaf entry.
 
 Invariants
 ----------
@@ -850,15 +1230,18 @@ Invariants
     member.  The heap TID (InvalidBlockNumber, 1) is a marker's, only on a
     SINGLE entry of an index whose procedure 7 can return markers, with
     every key column but the extracted one NULL.
-  * Keys are ordered by a btree-family operator class (BARK declares
-    ambtreeopfamilies), so BARK's opfamily OIDs are btree sort opfamilies.
+  * Every key column but an extracted one is ordered by an operator class
+    in a btree operator family (BARK declares ambtreeopfamilies); an
+    extracted column's keys are ordered by its class's procedure 1, in an
+    operator family of BARK's own.
   * On a leaf page, entries are in key order; within one key, LIST locators
-    are ascending and a POSTING set is canonical (see lib/sbm.h).  Entries of
+    are ascending and a POSTING set is in sbm's canonical encoding.  Entries of
     one key have disjoint TID ranges in ascending order, across pages too.
   * The alt-TID status bits are mutually exclusive in what they encode: an
     entry is exactly one of SINGLE, LIST, POSTING, OVERSIZED, or PIVOT;
     BARK_IS_DELETE_MARKED is an independent flag that may accompany a leaf
-    shape but never a PIVOT, where the same bit is BARK_PIVOT_HEAP_TID.
+    shape but never a PIVOT, where the same bit is BARK_PIVOT_HEAP_TID
+    (nothing sets it yet; see "Delete marking").
   * An OVERSIZED entry's full tuple lives on a chain of BARK_OVERFLOW pages
     (bark_flags has BARK_OVERFLOW, not BARK_LEAF): each page holds up to
     BarkOverflowChunkSize raw bytes of the tuple and links to the next chunk
