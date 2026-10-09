@@ -25,6 +25,7 @@ tests += {
       'bark_deleted_page',
       'bark_nnd_upsert',
       'bark_recently_dead',
+      'bark_broken_hot_chain',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # Injection points are cluster-wide.
