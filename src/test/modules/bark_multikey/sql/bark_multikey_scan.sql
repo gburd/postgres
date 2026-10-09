@@ -477,6 +477,7 @@ CREATE OPERATOR FAMILY mk_single_ops USING bark;
 CREATE OPERATOR CLASS mk_single_ops FOR TYPE int4[] USING bark
   FAMILY mk_single_ops AS
     OPERATOR 1 && (anyarray, anyarray),
+    OPERATOR 3 <@ (anyarray, anyarray),
     FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
     FUNCTION 7 bark_multikey_extract_value(int4[], internal, internal),
     FUNCTION 8 bark_multikey_extract_query(int4[], int2, internal, internal,
@@ -492,9 +493,34 @@ CREATE INDEX mk_single_a ON mk_single USING bark (a mk_single_ops, n, id);
 VACUUM ANALYZE mk_single;
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
+-- Procedure 14 is reserved and not used: an index-only scan never returns
+-- the multikey column (nor serves a query whose quals name it), since the
+-- NULL key stands for a NULL value, '{}' and '{NULL}' alike, and a row with
+-- several keys has an entry per key.  Rows with '{}', '{NULL}' and NULL
+-- (each one NULL entry, so the index stays single-key) show the values
+-- come from the heap.
+INSERT INTO mk_single VALUES (90001, '{}', 'n1'), (90002, '{NULL}', 'n1'),
+  (90003, NULL, 'n1');
 EXPLAIN (COSTS OFF) SELECT a, n, id FROM mk_single WHERE a && '{5,7}';
 SELECT count(*), md5(string_agg(a::text || n || id, ',' ORDER BY id))
   FROM mk_single WHERE a && '{5,7}';
+SELECT id, a FROM mk_single WHERE id > 90000 AND a IS NOT DISTINCT FROM a
+  AND (a = '{}' OR a = '{NULL}' OR a IS NULL) ORDER BY id;
+-- With procedure 14 rebuilding values, an index-only scan here returned {5}
+-- for '{5,6}' and dropped '{}' (its NULL entry rebuilt as NULL fails the
+-- recheck); both must come from the heap.
+CREATE TABLE mk_fetchless (id int, a int4[]);
+INSERT INTO mk_fetchless VALUES (1, '{}'), (2, '{NULL}'), (3, NULL), (4, '{5}'),
+  (5, '{5,6}');
+CREATE INDEX mk_fetchless_a ON mk_fetchless USING bark (a mk_single_ops, id);
+VACUUM ANALYZE mk_fetchless;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT id, a FROM mk_fetchless WHERE a <@ '{5,6}';
+SELECT id, a FROM mk_fetchless WHERE a <@ '{5,6}' ORDER BY id;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP TABLE mk_fetchless;
 SELECT count(*), md5(string_agg(coalesce(a::text, '-') || n || id, ',' ORDER BY id))
   FROM mk_single WHERE id < 300;
 RESET enable_seqscan;
