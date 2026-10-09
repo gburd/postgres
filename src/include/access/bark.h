@@ -880,10 +880,10 @@ typedef struct BarkOverflowRef
 	 * Inline comparison prefix: the leading bytes of the first key column's
 	 * datum, used to order two OVERSIZED entries without fetching the overflow
 	 * chain when the prefixes already decide the order.  Only populated (and
-	 * only consulted) when the first key column compares bytewise -- i.e. a
-	 * C/POSIX collation or a non-collatable binary-sortable type -- where a
-	 * leading-byte difference determines the full order.  For any other
-	 * column (locale-aware text, etc.) prefixlen is 0 and comparison always
+	 * only consulted) when the first key column compares bytewise -- text
+	 * under a C/POSIX collation -- where a leading-byte difference
+	 * determines the full order.  For any other column (locale-aware text,
+	 * bpchar, arrays, name, etc.) prefixlen is 0 and comparison always
 	 * fetches the full tuple.  prefixcomplete is true when the whole first
 	 * column fit in the prefix, so an exhausted prefix with equal bytes is a
 	 * genuine tie on that column rather than a truncation.
@@ -977,9 +977,8 @@ typedef struct BarkKeyColumn
 	bool		reverse;		/* DESC: invert the comparison result */
 	bool		nulls_first;	/* NULLs sort before non-NULLs */
 	bool		bytewise;		/* first-column prefix compare is byte-exact
-								 * (C/POSIX collation or a non-collatable
-								 * binary-sortable type); enables the OVERSIZED
-								 * inline-prefix fast path for this column */
+								 * (text under a C/POSIX collation); enables
+								 * the OVERSIZED inline-prefix fast path */
 } BarkKeyColumn;
 
 typedef struct BarkKeyInfo

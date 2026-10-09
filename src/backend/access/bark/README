@@ -729,7 +729,13 @@ There are four entry shapes (BarkEntryShape):
            nbtree errors: comparison, scan, uniqueness, and vacuum fetch the
            full value from the chain, so an oversized key behaves exactly like
            an inline key of the same value.  A normal-size entry never uses
-           this shape, so it is pure overhead-free opt-in.
+           this shape, so it is pure overhead-free opt-in.  When the first
+           key column is text under a C/POSIX collation, the ref also keeps
+           that column's first 32 bytes, which order two OVERSIZED entries
+           without reading their chains when they differ.  No other column
+           gets them, even under "C": bpchar ignores trailing spaces, arrays
+           compare element by element, and name is a cstring, so their bytes
+           are not their order (bark_first_column_bytewise).
 
 The encoding of a leaf entry is chosen per entry, by cardinality: a key with
 one row is SINGLE, a few rows is LIST, and a large clustered set is POSTING.
