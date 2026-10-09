@@ -32,6 +32,7 @@
 #include "access/xloginsert.h"
 #include "commands/vacuum.h"
 #include "miscadmin.h"
+#include "optimizer/optimizer.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
 #include "storage/ipc.h"
@@ -40,6 +41,7 @@
 #include "storage/procarray.h"
 #include "utils/fmgrprotos.h"
 #include "utils/injection_point.h"
+#include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
 
@@ -520,7 +522,7 @@ typedef struct BarkVacState
 /*
  * Process one block of bark_vacuum_scan's physical-order scan.  On a live
  * leaf, delete the entries whose heap TIDs the callback reports dead (when
- * there is a callback), count the entries left, and remember the leaf if it
+ * there is a callback), count the heap TIDs left, and remember the leaf if it
  * is now an empty interior leaf, for bark_vacuum_scan to delete.  On a deleted
  * page, count it, and record it in the FSM if it is safe to reuse, as
  * btvacuumpage does.
@@ -563,6 +565,7 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 		OffsetNumber todelete[MaxOffsetNumber];
 		int			ndelete = 0;
 		int			ndelete_single = 0;
+		int			nlivetids = 0;
 		OffsetNumber updatedoffsets[MaxOffsetNumber];
 		IndexTuple	updated[MaxOffsetNumber];
 		int			nupdated = 0;
@@ -648,6 +651,8 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 					todelete[ndelete++] = off;
 					ndelete_single++;
 				}
+				else
+					nlivetids++;
 			}
 			else if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
 			{
@@ -667,6 +672,8 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 					todelete[ndelete++] = off;
 					ndelete_single++;
 				}
+				else
+					nlivetids++;
 			}
 			else
 			{
@@ -681,6 +688,7 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 					if (!callback(&tids[i], callback_state))
 						tids[nlive++] = tids[i];
 				}
+				nlivetids += nlive;
 
 				if (nlive == ntids)
 				{
@@ -725,12 +733,17 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 			pfree(updated[i]);
 
 		/*
-		 * Count the leaf entries that remain.  The planner reads this as the
-		 * number of entries a scan visits, not heap rows (barkcostestimate):
-		 * a LIST or POSTING entry counts once.
+		 * Count the heap TIDs that remain, as btvacuumpage does: the planner
+		 * reads the count as the index's rows, in the same unit as the
+		 * heap's.  A scan that only counts takes each entry as one, which
+		 * undercounts LIST and POSTING entries, so barkvacuumcleanup marks
+		 * that count as an estimate.
 		 */
-		stats->num_index_tuples += PageGetMaxOffsetNumber(page) -
-			BarkPageFirstDataKey(opaque) + 1;
+		if (callback != NULL)
+			stats->num_index_tuples += nlivetids;
+		else
+			stats->num_index_tuples += PageGetMaxOffsetNumber(page) -
+				BarkPageFirstDataKey(opaque) + 1;
 
 		/*
 		 * An empty interior leaf (no data entries, both siblings, not
@@ -995,13 +1008,14 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 
 /*
  * After a bulk delete there is nothing left to do: bark_vacuum_scan already
- * counted the entries, deleted the empty leaves and recycled the deleted
- * pages.  Without one (no dead tuples this cycle), scan the index to do those
- * things, so that the planner gets a current entry count and pages deleted by
- * an earlier VACUUM reach the FSM once they are safe.  Returning valid stats
- * also lets VACUUM set the heap visibility map, which is what makes
- * index-only scans worthwhile.  This is btvacuumcleanup without its
- * skip-the-scan heuristic.
+ * counted the live heap TIDs, deleted the empty leaves and recycled the
+ * deleted pages.  Without one (no dead tuples this cycle), scan the index to
+ * do those things, so that pages deleted by an earlier VACUUM reach the FSM
+ * once they are safe.  That scan counts entries, not TIDs, so its count is
+ * only an estimate and VACUUM keeps the index's reltuples, as with
+ * btvacuumcleanup.  Returning valid stats also lets VACUUM set the heap
+ * visibility map, which is what makes index-only scans worthwhile.  This is
+ * btvacuumcleanup without its skip-the-scan heuristic.
  */
 static IndexBulkDeleteResult *
 barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
@@ -1016,43 +1030,94 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	{
 		stats = palloc0_object(IndexBulkDeleteResult);
 		bark_vacuum_scan(info, stats, NULL, NULL);
+		stats->estimated_count = true;
 	}
+
+	/*
+	 * Concurrent splits can make the scan count some entries twice, so
+	 * disbelieve a total above the heap's, when that one is exact, as
+	 * btvacuumcleanup does.
+	 */
+	if (!info->estimated_count &&
+		stats->num_index_tuples > info->num_heap_tuples)
+		stats->num_index_tuples = info->num_heap_tuples;
 
 	return stats;
 }
 
 /*
- * barkcostestimate -- the C-STATS cost model for a BARK index scan.
+ * Would a scan with these quals skip over column 1 (bark_skip_eligible)?
+ * That needs a forward scan, no qual on column 1 (the clauses are in column
+ * order) and a qual on column 2 that bounds it: a plain operator, or an
+ * inequality ScalarArrayOp, which rescan reduces to one.
+ */
+static bool
+bark_cost_skips(IndexPath *path)
+{
+	IndexOptInfo *index = path->indexinfo;
+	ListCell   *lc;
+
+	if (index->nkeycolumns < 2 || path->indexclauses == NIL ||
+		ScanDirectionIsBackward(path->indexscandir) ||
+		linitial_node(IndexClause, path->indexclauses)->indexcol != 1)
+		return false;
+
+	foreach(lc, path->indexclauses)
+	{
+		IndexClause *iclause = lfirst_node(IndexClause, lc);
+
+		if (iclause->indexcol != 1)
+			break;
+		foreach_node(RestrictInfo, rinfo, iclause->indexquals)
+		{
+			Expr	   *clause = rinfo->clause;
+
+			if (IsA(clause, OpExpr))
+				return true;
+			if (IsA(clause, ScalarArrayOpExpr) &&
+				get_op_opfamily_strategy(((ScalarArrayOpExpr *) clause)->opno,
+										 index->opfamily[1]) != BTEqualStrategyNumber)
+				return true;
+		}
+	}
+	return false;
+}
+
+/*
+ * barkcostestimate -- estimate the cost of a BARK index scan.
  *
- * Starts from genericcostestimate but tunes two things BARK does differently
- * from a plain one-tuple-per-row index, keeping the estimate honest rather than
- * elaborate:
+ * This is btcostestimate, applied to the quals as a BARK scan uses them.
+ * Only the quals that position and stop the scan (the boundary quals)
+ * decide how many entries it reads; the rest only filter.  As in nbtree, a
+ * column's quals bound the scan only when every earlier column has an
+ * equality.  BARK uses fewer quals than nbtree does (bark_make_bound and
+ * bark_past_bound):
  *
- *  1. Entry coalescing (LIST / POSTING).  A key with many duplicate rows is one
- *     leaf entry, not N, so a scan touches far fewer leaf tuples -- and pages --
- *     than the number of heap rows it returns.  index->tuples is the number of
- *     leaf entries (barkvacuumcleanup counts entries, not heap rows), so we feed
- *     genericcostestimate the number of *entries* a scan visits
- *     (indexSelectivity * entries) instead of letting it derive leaf tuples from
- *     the heap row count; its pro-rata page formula then reflects the
- *     compression.  (genericcostestimate still caps heap-row fetch cost
- *     elsewhere; here we only correct the index-page side.)
+ *  - IS NULL and IS NOT NULL never bound the scan.
+ *  - An equality ScalarArrayOp bounds it only on column 1 of a forward scan,
+ *    with one descent per element, and then no later column bounds it.  An
+ *    inequality ScalarArrayOp is reduced to a plain key at rescan.
+ *  - A row comparison ends the bound.  Past column 1 it bounds only where
+ *    the scan starts, not where it stops, and not a skip scan's groups.
+ *  - A skip scan descends once per column-1 value, and only column 2's
+ *    quals bound it (bark_cost_skips).
+ *  - An ordered-operator (KNN) scan walks outward from its constant and
+ *    tests every qual as a filter.
  *
- *  2. Oversized-key / oversized-INCLUDE overflow I/O.  An oversized entry's full
- *     value lives on an overflow chain the scan must read in addition to the
- *     leaf page.  We estimate the average overflow chain length from the index's
- *     own size -- bytes per entry beyond what a leaf slot holds -- and add a
- *     random-page charge per visited entry for those extra reads.  An index with
- *     no oversized entries (average entry well under the item cap) adds nothing,
- *     so a normal index costs exactly as genericcostestimate says.
+ * The number of entries read is counted in heap rows, as nbtree counts index
+ * tuples after deduplication: LIST and POSTING entries make the index
+ * smaller, and genericcostestimate prorates the scan's pages over the
+ * index's pages, so the smaller index costs fewer page reads.  The descent
+ * charge, the primitive-scan clamp and the correlation (from the leading
+ * column's statistics, or the expression index's own) are btcostestimate's.
  *
- * The overflow surcharge is derived from the index's average entry size, not
- * from a count of how many visited entries are actually oversized (which would
- * need a per-index oversized-entry statistic the AM does not keep).  It is a
- * correct expected-value charge for an index whose entries are uniformly large,
- * and zero for an index with none; a mixed index is charged the average.  A
- * dedicated oversized-entry count in the meta/stats would let the planner
- * sharpen this for a skewed mix.
+ * An oversized entry's full value lives on an overflow chain that the scan
+ * reads in addition to the leaf page.  The chain length is estimated from
+ * the index's average bytes per row beyond what a leaf slot holds, and each
+ * entry read is charged a random page read per chain page.  That is the
+ * expected charge for an index whose entries are uniformly large and zero
+ * for one with none; a mixed index is charged the average, since the index
+ * keeps no count of its oversized entries.
  */
 static void
 barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
@@ -1062,65 +1127,179 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 {
 	IndexOptInfo *index = path->indexinfo;
 	GenericCosts costs = {0};
-	double		entries = index->tuples;
-	double		nvisited;
+	VariableStatData vardata = {0};
+	List	   *indexBoundQuals = NIL;
+	bool		forward = !ScanDirectionIsBackward(path->indexscandir);
+	int			indexcol = 0;
+	bool		eqQualHere = false;
+	bool		lastcol = false;
+	bool		found_array = false;
+	double		num_sa_scans = 1;
+	double		numIndexTuples;
+	double		correlation = 0.0;
+	Cost		descentCost;
+	ListCell   *lc;
+
+	examine_indexcol_variable(root, index, 0, &vardata);
+	if (HeapTupleIsValid(vardata.statsTuple))
+		correlation = btcost_correlation(index, &vardata);
 
 	/*
-	 * (1) Model leaf *entries* visited, not heap rows.  genericcostestimate
-	 * derives numIndexTuples from indexSelectivity * heap-rows when we leave it
-	 * zero; for a coalescing index that overcounts whenever duplicates are
-	 * packed into LIST/POSTING entries.  Supply the entry estimate ourselves.
-	 * (genericcostestimate clamps it to [1, index->tuples] internally.)
+	 * A skip scan reads column 1's groups one primitive scan at a time.  As
+	 * in btcostestimate, count one per distinct column-1 value plus one to
+	 * find the first, and assume skipping does not pay when that is more than
+	 * the index has pages or the number of values is only a guess.
 	 */
-	if (entries > 0)
+	if (path->indexorderbys == NIL && bark_cost_skips(path))
 	{
-		Selectivity sel;
+		bool		isdefault;
+		double		ndistinct;
 
-		/*
-		 * Reuse genericcostestimate's own selectivity by a cheap pre-pass: run
-		 * it once to obtain indexSelectivity, then convert to entries.  (A
-		 * second call with numIndexTuples set is cheap; the quals are already
-		 * cached.)
-		 */
-		genericcostestimate(root, path, loop_count, &costs);
-		sel = costs.indexSelectivity;
-		nvisited = rint(sel * entries);
-		if (nvisited < 1.0)
-			nvisited = 1.0;
-
-		memset(&costs, 0, sizeof(costs));
-		costs.numIndexTuples = nvisited;
-		genericcostestimate(root, path, loop_count, &costs);
+		ndistinct = get_variable_numdistinct(&vardata, &isdefault) + 1;
+		if (!isdefault && ndistinct <= index->pages)
+		{
+			num_sa_scans = ndistinct;
+			indexcol = 1;
+			lastcol = true;
+			found_array = true;
+		}
 	}
+	ReleaseVariableStats(vardata);
+
+	foreach(lc, path->indexclauses)
+	{
+		IndexClause *iclause = lfirst_node(IndexClause, lc);
+
+		if (path->indexorderbys != NIL)
+			break;
+		if (iclause->indexcol != indexcol)
+		{
+			if (lastcol || !eqQualHere || iclause->indexcol != indexcol + 1)
+				break;
+			indexcol++;
+			eqQualHere = false;
+		}
+
+		foreach_node(RestrictInfo, rinfo, iclause->indexquals)
+		{
+			Expr	   *clause = rinfo->clause;
+			Oid			clause_op;
+			int			strategy;
+
+			if (IsA(clause, OpExpr))
+				clause_op = ((OpExpr *) clause)->opno;
+			else if (IsA(clause, ScalarArrayOpExpr))
+				clause_op = ((ScalarArrayOpExpr *) clause)->opno;
+			else if (IsA(clause, RowCompareExpr))
+			{
+				RowCompareExpr *rc = (RowCompareExpr *) clause;
+				bool		lower = (rc->cmptype == COMPARE_GT ||
+									 rc->cmptype == COMPARE_GE) !=
+					index->reverse_sort[indexcol];
+
+				/*
+				 * Past column 1, it only says where the scan starts, and a
+				 * skip scan does not use it.
+				 */
+				if (indexcol > 0 && (lower != forward || found_array))
+					continue;
+				clause_op = linitial_oid(rc->opnos);
+				lastcol = true;
+			}
+			else if (IsA(clause, NullTest))
+				continue;
+			else
+				elog(ERROR, "unsupported indexqual type: %d",
+					 (int) nodeTag(clause));
+
+			strategy = get_op_opfamily_strategy(clause_op,
+												index->opfamily[indexcol]);
+			Assert(strategy != 0);
+			if (IsA(clause, ScalarArrayOpExpr) &&
+				strategy == BTEqualStrategyNumber)
+			{
+				ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
+				double		alength;
+
+				if (indexcol > 0 || !forward)
+					continue;
+				alength = estimate_array_length(root, lsecond(saop->args));
+				if (alength > 1)
+					num_sa_scans *= alength;
+				found_array = true;
+				lastcol = true;
+			}
+			if (strategy == BTEqualStrategyNumber)
+				eqQualHere = true;
+			indexBoundQuals = lappend(indexBoundQuals, rinfo);
+		}
+	}
+
+	/*
+	 * A unique index with an equality on every column returns at most one
+	 * row, as in btcostestimate.
+	 */
+	if (index->unique && indexcol == index->nkeycolumns - 1 && eqQualHere &&
+		!found_array)
+		numIndexTuples = 1.0;
 	else
 	{
-		genericcostestimate(root, path, loop_count, &costs);
-		nvisited = costs.numIndexTuples;
+		List	   *selectivityQuals;
+
+		selectivityQuals = add_predicate_to_index_quals(index, indexBoundQuals);
+		numIndexTuples = clauselist_selectivity(root, selectivityQuals,
+												index->rel->relid,
+												JOIN_INNER, NULL) *
+			index->rel->tuples;
+
+		/*
+		 * A leading-array scan reads on along the leaf level when the next
+		 * element is on the same or the next page, so it cannot descend more
+		 * than once per page: clamp as btcostestimate does.
+		 */
+		num_sa_scans = Min(num_sa_scans, ceil(index->pages * 0.3333333));
+		num_sa_scans = Max(num_sa_scans, 1);
+		numIndexTuples = rint(numIndexTuples / num_sa_scans);
 	}
 
+	/* Count only the meta page as non-leaf, as btcostestimate does. */
+	costs.numIndexTuples = numIndexTuples;
+	costs.num_sa_scans = num_sa_scans;
+	costs.numNonLeafPages = 1;
+	genericcostestimate(root, path, loop_count, &costs);
+
 	/*
-	 * (2) Overflow-page surcharge.  Estimate the average bytes per entry from
-	 * the index's physical size; entries larger than a leaf slot (BarkMaxItemSize)
-	 * carry the overage on an overflow chain of ~overage / BarkOverflowChunkSize
-	 * pages.  Charge one random page read per such page per visited entry.  For
-	 * an index with small entries this is zero.
+	 * Charge each descent about log2(N) comparisons and 50 operator costs per
+	 * level, the leaf included, as btcostestimate does.  Descents after the
+	 * first are not startup cost.
 	 */
-	if (entries > 0 && index->pages > 0)
+	if (index->tuples > 1)
 	{
-		double		avg_entry_bytes = (double) index->pages * BLCKSZ / entries;
+		descentCost = ceil(log(index->tuples) / log(2.0)) * cpu_operator_cost;
+		costs.indexStartupCost += descentCost;
+		costs.indexTotalCost += costs.num_sa_scans * descentCost;
+	}
+	descentCost = (index->tree_height + 1) * DEFAULT_PAGE_CPU_MULTIPLIER *
+		cpu_operator_cost;
+	costs.indexStartupCost += descentCost;
+	costs.indexTotalCost += costs.num_sa_scans * descentCost;
+
+	/* The overflow-chain surcharge. */
+	if (index->tuples > 0 && index->pages > 0)
+	{
+		double		avg_entry_bytes = (double) index->pages * BLCKSZ / index->tuples;
 
 		if (avg_entry_bytes > BarkMaxItemSize)
 		{
-			double		overflow_bytes = avg_entry_bytes - BarkMaxItemSize;
-			double		chain_pages = ceil(overflow_bytes / BarkOverflowChunkSize);
+			double		chain_pages = ceil((avg_entry_bytes - BarkMaxItemSize) /
+										   BarkOverflowChunkSize);
 			double		spc_random_page_cost;
-			Cost		surcharge;
 
 			get_tablespace_page_costs(index->reltablespace,
 									  &spc_random_page_cost, NULL);
-			surcharge = nvisited * chain_pages * spc_random_page_cost;
-			costs.indexTotalCost += surcharge;
-			/* First overflow read is part of fetching the first matching entry. */
+			costs.indexTotalCost += costs.numIndexTuples * costs.num_sa_scans *
+				chain_pages * spc_random_page_cost;
+			/* The first entry's chain is read before its first row returns. */
 			costs.indexStartupCost += chain_pages * spc_random_page_cost;
 		}
 	}
@@ -1128,7 +1307,7 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	*indexStartupCost = costs.indexStartupCost;
 	*indexTotalCost = costs.indexTotalCost;
 	*indexSelectivity = costs.indexSelectivity;
-	*indexCorrelation = costs.indexCorrelation;
+	*indexCorrelation = correlation;
 	*indexPages = costs.numIndexPages;
 }
 

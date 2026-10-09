@@ -2220,6 +2220,146 @@ EXPLAIN (COSTS OFF) SELECT count(*) FROM bark_cost_dup WHERE k = 3;
 (5 rows)
 
 DROP TABLE bark_cost_dup;
+-- The index correlation comes from the leading column's statistics (or an
+-- expression index's own), as for btree.  On a table loaded in key order a
+-- range scan reads the heap in order and is a plain index scan, as btree's
+-- is; on one loaded in random order both take a bitmap scan.  30000 rows, so
+-- that ANALYZE reads them all; SELECT * keeps index-only scans, and with them
+-- the visibility map, out of the plans; temp tables keep autovacuum away.
+CREATE TEMP TABLE bark_corr AS
+  SELECT g AS a, md5(g::text) AS pad FROM generate_series(1, 30000) g;
+SELECT setseed(0.5);
+ setseed 
+---------
+ 
+(1 row)
+
+CREATE TEMP TABLE bark_uncorr AS SELECT * FROM bark_corr ORDER BY random();
+CREATE INDEX bark_corr_idx ON bark_corr USING bark (a);
+CREATE INDEX bark_corr_expr_idx ON bark_corr USING bark ((a + 1));
+CREATE INDEX bark_uncorr_idx ON bark_uncorr USING bark (a);
+ANALYZE bark_corr, bark_uncorr;
+EXPLAIN (COSTS OFF) SELECT * FROM bark_corr WHERE a BETWEEN 1000 AND 6000;
+                 QUERY PLAN                  
+---------------------------------------------
+ Index Scan using bark_corr_idx on bark_corr
+   Index Cond: ((a >= 1000) AND (a <= 6000))
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM bark_corr WHERE a + 1 BETWEEN 1000 AND 6000;
+                       QUERY PLAN                        
+---------------------------------------------------------
+ Index Scan using bark_corr_expr_idx on bark_corr
+   Index Cond: (((a + 1) >= 1000) AND ((a + 1) <= 6000))
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM bark_uncorr WHERE a BETWEEN 1000 AND 6000;
+                    QUERY PLAN                     
+---------------------------------------------------
+ Bitmap Heap Scan on bark_uncorr
+   Recheck Cond: ((a >= 1000) AND (a <= 6000))
+   ->  Bitmap Index Scan on bark_uncorr_idx
+         Index Cond: ((a >= 1000) AND (a <= 6000))
+(4 rows)
+
+DROP INDEX bark_corr_idx, bark_corr_expr_idx, bark_uncorr_idx;
+CREATE INDEX bark_corr_idx ON bark_corr USING btree (a);
+CREATE INDEX bark_corr_expr_idx ON bark_corr USING btree ((a + 1));
+CREATE INDEX bark_uncorr_idx ON bark_uncorr USING btree (a);
+ANALYZE bark_corr, bark_uncorr;
+EXPLAIN (COSTS OFF) SELECT * FROM bark_corr WHERE a BETWEEN 1000 AND 6000;
+                 QUERY PLAN                  
+---------------------------------------------
+ Index Scan using bark_corr_idx on bark_corr
+   Index Cond: ((a >= 1000) AND (a <= 6000))
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM bark_corr WHERE a + 1 BETWEEN 1000 AND 6000;
+                       QUERY PLAN                        
+---------------------------------------------------------
+ Index Scan using bark_corr_expr_idx on bark_corr
+   Index Cond: (((a + 1) >= 1000) AND ((a + 1) <= 6000))
+(2 rows)
+
+EXPLAIN (COSTS OFF) SELECT * FROM bark_uncorr WHERE a BETWEEN 1000 AND 6000;
+                    QUERY PLAN                     
+---------------------------------------------------
+ Bitmap Heap Scan on bark_uncorr
+   Recheck Cond: ((a >= 1000) AND (a <= 6000))
+   ->  Bitmap Index Scan on bark_uncorr_idx
+         Index Cond: ((a >= 1000) AND (a <= 6000))
+(4 rows)
+
+DROP TABLE bark_corr, bark_uncorr;
+-- Only the quals that bound a scan decide how many entries it reads, and a
+-- partial index's share of its rows comes from the heap's row count, as for
+-- btree.  A scan of bark_part_ac reads all of its 3000 entries, since c is
+-- not its leading column, to return the 150 rows that bark_part_bc reaches
+-- directly; costing every qual as a bound, and the predicate's selectivity
+-- against the partial index's own entry count as well, would put that scan
+-- at 15 entries, below bark_part_bc's 150, and prefer it.  a is a permutation of 1..30000, so that
+-- neither index has a heap correlation the other lacks.
+CREATE TEMP TABLE bark_part (a int, b int, c int);
+INSERT INTO bark_part
+  SELECT (g * 7907) % 30000, g % 10, (g / 10) % 1000
+  FROM generate_series(1, 30000) g;
+CREATE INDEX bark_part_bc ON bark_part USING bark (b, c);
+CREATE INDEX bark_part_ac ON bark_part USING bark (a, c) WHERE b = 0;
+ANALYZE bark_part;
+EXPLAIN (COSTS OFF) SELECT * FROM bark_part WHERE b = 0 AND c BETWEEN 1 AND 50;
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Bitmap Heap Scan on bark_part
+   Recheck Cond: ((b = 0) AND (c >= 1) AND (c <= 50))
+   ->  Bitmap Index Scan on bark_part_bc
+         Index Cond: ((b = 0) AND (c >= 1) AND (c <= 50))
+(4 rows)
+
+DROP INDEX bark_part_bc, bark_part_ac;
+CREATE INDEX bark_part_bc ON bark_part USING btree (b, c);
+CREATE INDEX bark_part_ac ON bark_part USING btree (a, c) WHERE b = 0;
+EXPLAIN (COSTS OFF) SELECT * FROM bark_part WHERE b = 0 AND c BETWEEN 1 AND 50;
+                        QUERY PLAN                        
+----------------------------------------------------------
+ Bitmap Heap Scan on bark_part
+   Recheck Cond: ((b = 0) AND (c >= 1) AND (c <= 50))
+   ->  Bitmap Index Scan on bark_part_bc
+         Index Cond: ((b = 0) AND (c >= 1) AND (c <= 50))
+(4 rows)
+
+DROP TABLE bark_part;
+-- VACUUM reports the index's live heap TIDs, as nbtree does, not its entries:
+-- the planner reads pg_class.reltuples of a partial index as its row count.
+-- A scan that only counts (no dead rows) cannot see a LIST or POSTING
+-- entry's TIDs without decoding it, so its count is an estimate and leaves
+-- reltuples alone.  A temp table, so that the deleted rows are removable.
+CREATE TEMP TABLE bark_vcount (k int, v int);
+INSERT INTO bark_vcount SELECT g % 10, g FROM generate_series(1, 100000) g;
+CREATE INDEX bark_vcount_idx ON bark_vcount USING bark (k) WHERE v <= 50000;
+VACUUM bark_vcount;
+SELECT reltuples = (SELECT count(*) FROM bark_vcount WHERE v <= 50000)
+  FROM pg_class WHERE relname = 'bark_vcount_idx';
+ ?column? 
+----------
+ t
+(1 row)
+
+DELETE FROM bark_vcount WHERE v % 7 = 0;
+VACUUM bark_vcount;
+SELECT reltuples = (SELECT count(*) FROM bark_vcount WHERE v <= 50000)
+  FROM pg_class WHERE relname = 'bark_vcount_idx';
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT bark_index_check('bark_vcount_idx');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE bark_vcount;
 -- ===========================================================================
 -- Page / FSM reclamation (A13-A15): VACUUM unlinks emptied interior leaves and
 -- returns them (plus freed overflow-chain pages) to the free space map, and the

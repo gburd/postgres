@@ -563,6 +563,16 @@ startup costs; <code>ANALYZE</code> sees index expressions the same way; the
 planner's ordered-path generation (see the sweep below) treats a BARK scalar
 index as interchangeable with a B-tree for costing.
 
+barkcostestimate is btcostestimate applied to the quals BARK's scan uses to
+position and stop (no IS NULL bound, an equality array only on column 1 of
+a forward scan, skipping only over column 1), with the index correlation
+from <code>btcost_correlation</code>, plus a charge for overflow chains.
+It counts the entries a scan reads in heap rows, as nbtree does after
+deduplication; LIST and POSTING entries lower the cost through the index's
+smaller page count. For the same reason VACUUM reports the index's live
+heap TIDs as its tuple count, not its entries, and a cleanup-only scan's
+count is an estimate that leaves <code>reltuples</code> alone.
+
 === The capability sweep ===
 
 There are currently '''30''' <code>BTREE_AM_OID</code> references in the tree.
@@ -930,7 +940,7 @@ through the column's family and input type, where a multikey class
 registers them. Parallel workers extract in their own callbacks. A key too
 large for the sort is left for the oversized pass, which runs procedure 7
 again on the row (it is immutable) and inserts only those keys. The build
-counts entries, not rows, as VACUUM does.
+counts (key, TID) members, not rows, as VACUUM does.
 
 ==== Scans ====
 
