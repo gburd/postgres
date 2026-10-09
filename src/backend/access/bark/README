@@ -404,8 +404,20 @@ scan descends straight to its last match.  A row comparison bounds the
 descent with its usable prefix, the members on consecutive columns from its
 first one that are not NULL and keep the first member's direction, as
 nbtree's _bt_first does, and one on column 1 also ends the scan once an
-entry sorts past that prefix.  A leading-column ScalarArrayOp
-re-descends to its next element when that element lies past the next page.
+entry sorts past that prefix.
+
+ScalarArrayOp keys.  The equality keys of columns 1..m, each column having
+an equality array or a scalar equality, are the scan's required keys when
+one of them is an array, as in nbtree.  Their elements, sorted into the
+column's key order, form an odometer whose combinations are in index order;
+the bound of each descent is the current combination plus column m+1's
+range bound.  When an entry that fails the keys sorts after the current
+combination, or equals it and is past column m+1's bound, the odometer
+moves to the first combination at or after the entry; when that one starts
+beyond the page (after the high key forward, before the first entry
+backward) the scan re-descends to it, and when none is left the scan ends.
+Arrays on later columns only filter.  A parallel scan stops reading a page
+the same way but never re-descends.
 
 Skip scan.  With no key on column 1 and a key that bounds column 2, the
 scan skips the parts of each column-1 group that cannot match.  At the
