@@ -585,6 +585,13 @@ BARK family, so the planner never reads = or < semantics into a multikey
 class's operators, and plancat gives such a column InvalidOid as its sort
 family, where build_index_pathkeys stops.
 
+CREATE INDEX refuses a column whose class is in a family of BARK's own but
+has no procedure 7 (bark_check_multikey_index).  Such a class is not
+multikey, so the scan would read its operators' strategy numbers as btree's
+(bark_key_bounds), but a BARK family allows any number: an operator <
+registered as strategy 4 would position and stop the scan as >=, and the
+scan would return wrong rows.  amvalidate reports the class invalid too.
+
 barkvalidate checks a class in a btree family as btvalidate would for the
 procedures BARK uses: support functions 1-6 with btree's signatures, the
 class's own-type comparator present, search operators at strategies 1-5
