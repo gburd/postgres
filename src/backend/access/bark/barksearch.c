@@ -92,9 +92,17 @@ bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
 		Datum		datum = index_getattr(itup, i + 1, tupdesc, &isnull);
 		int32		cmp;
 
+		if (bound->procs[i] == NULL)
+		{
+			/* A NULL bound, for a multikey scan of the NULL entries. */
+			if (isnull)
+				continue;
+			result = col->nulls_first ? -1 : 1;
+			break;
+		}
 		if (isnull)
 		{
-			/* A bound is never NULL; a NULL entry sorts per NULLS FIRST/LAST. */
+			/* A NULL entry sorts per NULLS FIRST/LAST. */
 			result = col->nulls_first ? 1 : -1;
 			break;
 		}
