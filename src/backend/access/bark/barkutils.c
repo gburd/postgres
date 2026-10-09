@@ -35,11 +35,13 @@
 #include "access/toast_internals.h"
 #include "access/xloginsert.h"
 #include "catalog/pg_type.h"
+#include "lib/qunique.h"
 #include "lib/sbm.h"
 #include "miscadmin.h"
 #include "nodes/execnodes.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
+#include "utils/datum.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/pg_locale.h"
@@ -249,6 +251,330 @@ bark_index_extracted_column(Relation index)
 }
 
 /*
+ * Make the meta page's pd_lower cover all of BarkMetaPageData.  A meta page
+ * written before bark_flags and bark_nkeys existed ends at
+ * bark_allequalimage, and a standard-layout page image (log_newpage_buffer,
+ * a full-page write) leaves out everything between pd_lower and pd_upper,
+ * so a change to either field would be lost in replay.  The caller holds
+ * the page exclusive-locked, inside its critical section.
+ */
+void
+bark_meta_cover(Page metapage)
+{
+	BarkMetaPageData *meta = BarkPageGetMeta(metapage);
+	LocationIndex lower = ((char *) meta + sizeof(BarkMetaPageData)) -
+		(char *) metapage;
+
+	if (((PageHeader) metapage)->pd_lower < lower)
+		((PageHeader) metapage)->pd_lower = lower;
+}
+
+/*
+ * Has the index held a row with more than one entry (BARK_META_MULTIKEY)?
+ * A cached true is used as it is, since the flag is never cleared; anything
+ * else reads the meta page under its share lock.  A scan that relies on the
+ * answer asks after taking its snapshot ("Multikey metadata" in
+ * BARK-Design.mediawiki).
+ */
+bool
+bark_index_is_multikey(Relation index)
+{
+	BarkAmCache *cache = bark_get_amcache(index);
+	Buffer		metabuf;
+
+	if (cache->multikey)
+		return true;
+
+	metabuf = ReadBuffer(index, BARK_METAPAGE);
+	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+	if ((BarkPageGetMeta(BufferGetPage(metabuf))->bark_flags &
+		 BARK_META_MULTIKEY) != 0)
+		cache->multikey = true;
+	UnlockReleaseBuffer(metabuf);
+
+	return cache->multikey;
+}
+
+/*
+ * Set BARK_META_MULTIKEY, before the first entry of a row with two or more
+ * keys is inserted.  The caller holds no page lock: the meta page is
+ * locked exclusive, the bit set, and the page logged whole.  That happens
+ * once in an index's life, so it needs no record type of its own.  An
+ * insert that finds the flag already set (by another backend, say) changes
+ * nothing.
+ */
+void
+bark_set_multikey(Relation index)
+{
+	BarkAmCache *cache = bark_get_amcache(index);
+	Buffer		metabuf;
+	Page		metapage;
+	BarkMetaPageData *meta;
+
+	if (cache->multikey)
+		return;
+
+	metabuf = ReadBuffer(index, BARK_METAPAGE);
+	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+	metapage = BufferGetPage(metabuf);
+	meta = BarkPageGetMeta(metapage);
+	if ((meta->bark_flags & BARK_META_MULTIKEY) == 0)
+	{
+		START_CRIT_SECTION();
+
+		bark_meta_cover(metapage);
+		meta->bark_flags |= BARK_META_MULTIKEY;
+		MarkBufferDirty(metabuf);
+		if (RelationNeedsWAL(index))
+			log_newpage_buffer(metabuf, true);
+		else
+			PageSetLSN(metapage, XLogGetFakeLSN(index));
+
+		END_CRIT_SECTION();
+	}
+	UnlockReleaseBuffer(metabuf);
+
+	cache->multikey = true;
+}
+
+/*
+ * Store nkeys as the meta page's bark_nkeys, logging the page whole, as
+ * VACUUM does once at its end.  Nothing is written when the value is
+ * already there.
+ */
+void
+bark_set_nkeys(Relation index, uint64 nkeys)
+{
+	Buffer		metabuf = ReadBuffer(index, BARK_METAPAGE);
+	Page		metapage;
+	BarkMetaPageData *meta;
+
+	LockBuffer(metabuf, BUFFER_LOCK_EXCLUSIVE);
+	metapage = BufferGetPage(metabuf);
+	meta = BarkPageGetMeta(metapage);
+	if (((PageHeader) metapage)->pd_lower <
+		((char *) meta + sizeof(BarkMetaPageData)) - (char *) metapage ||
+		meta->bark_nkeys != nkeys)
+	{
+		START_CRIT_SECTION();
+
+		bark_meta_cover(metapage);
+		meta->bark_nkeys = nkeys;
+		MarkBufferDirty(metabuf);
+		if (RelationNeedsWAL(index))
+			log_newpage_buffer(metabuf, true);
+		else
+			PageSetLSN(metapage, XLogGetFakeLSN(index));
+
+		END_CRIT_SECTION();
+	}
+	UnlockReleaseBuffer(metabuf);
+}
+
+/* qsort_arg comparator for one column's keys, in the column's index order. */
+static int
+bark_key_cmp(const void *a, const void *b, void *arg)
+{
+	BarkKeyColumn *col = (BarkKeyColumn *) arg;
+	int32		cmp = DatumGetInt32(FunctionCall2Coll(&col->cmp, col->collation,
+													  *(const Datum *) a,
+													  *(const Datum *) b));
+
+	return col->reverse ? -cmp : cmp;
+}
+
+/*
+ * Run procedure 7 of index's extracted column on the column's value (isnull
+ * when it is NULL) and fill *rk with the row's keys and markers, as
+ * BarkRowKeys describes: sorted with procedure 1 in the column's index order
+ * and de-duplicated, as ginExtractEntries does.  Everything is allocated in
+ * the current memory context, which the caller resets per row.
+ *
+ * Procedure 7 is called with all five arguments, nkeys, nullFlags, markers
+ * and nmarkers zeroed first; one declared with fewer never sets the rest.
+ */
+void
+bark_extract_row_keys(Relation index, BarkKeyInfo *keyinfo, Datum value,
+					  bool isnull, BarkRowKeys *rk)
+{
+	int			attno = bark_index_extracted_column(index);
+	BarkKeyColumn *col = &keyinfo->cols[attno - 1];
+	int32		nentries = 0;
+	bool	   *nullFlags = NULL;
+	Datum	   *entries = NULL;
+	Datum	   *markers = NULL;
+	int32		nmarkers = 0;
+	bool		hasnull = isnull;
+	int			nkeys = 0;
+
+	Assert(attno > 0);
+
+	if (!isnull)
+	{
+		entries = (Datum *)
+			DatumGetPointer(FunctionCall5Coll(index_getprocinfo(index, attno,
+																BARK_EXTRACTVALUE_PROC),
+											  index->rd_indcollation[attno - 1],
+											  value,
+											  PointerGetDatum(&nentries),
+											  PointerGetDatum(&nullFlags),
+											  PointerGetDatum(&markers),
+											  PointerGetDatum(&nmarkers)));
+
+		/* A value with no keys is one NULL key, as is any key flagged NULL. */
+		if (nentries <= 0)
+			hasnull = true;
+		for (int i = 0; i < nentries; i++)
+		{
+			if (nullFlags != NULL && nullFlags[i])
+				hasnull = true;
+			else
+				entries[nkeys++] = entries[i];
+		}
+		if (nkeys > 1)
+		{
+			qsort_arg(entries, nkeys, sizeof(Datum), bark_key_cmp, col);
+			nkeys = qunique_arg(entries, nkeys, sizeof(Datum), bark_key_cmp,
+								col);
+		}
+		if (nmarkers > 1)
+		{
+			qsort_arg(markers, nmarkers, sizeof(Datum), bark_key_cmp, col);
+			nmarkers = qunique_arg(markers, nmarkers, sizeof(Datum),
+								   bark_key_cmp, col);
+		}
+	}
+
+	rk->nkeys = nkeys + (hasnull ? 1 : 0);
+	rk->keys = palloc_array(Datum, rk->nkeys);
+	rk->nulls = palloc0_array(bool, rk->nkeys);
+	rk->nmarkers = Max(nmarkers, 0);
+	rk->markers = markers;
+
+	/* The NULL key goes where the column's NULLS option sorts it. */
+	if (hasnull && col->nulls_first)
+	{
+		rk->keys[0] = (Datum) 0;
+		rk->nulls[0] = true;
+		if (nkeys > 0)
+			memcpy(&rk->keys[1], entries, nkeys * sizeof(Datum));
+	}
+	else
+	{
+		if (nkeys > 0)
+			memcpy(rk->keys, entries, nkeys * sizeof(Datum));
+		if (hasnull)
+		{
+			rk->keys[nkeys] = (Datum) 0;
+			rk->nulls[nkeys] = true;
+		}
+	}
+}
+
+/*
+ * Form the marker entry for marker key `key` of index's extracted column:
+ * the key in that column, NULL in every other, and the reserved heap TID.
+ * *fulllen is its formed length, as bark_form_full_tuple reports it; a
+ * marker too large for a page is refused.
+ */
+IndexTuple
+bark_form_marker(Relation index, Datum key, Size *fulllen)
+{
+	int			attno = bark_index_extracted_column(index);
+	Datum		values[INDEX_MAX_KEYS] = {0};
+	bool		isnull[INDEX_MAX_KEYS];
+	IndexTuple	itup;
+
+	for (int i = 0; i < IndexRelationGetNumberOfAttributes(index); i++)
+		isnull[i] = true;
+	values[attno - 1] = key;
+	isnull[attno - 1] = false;
+	itup = bark_form_full_tuple(RelationGetDescr(index), values, isnull,
+								fulllen);
+
+	/*
+	 * A marker is a SINGLE entry, so readers can tell it by its TID alone; an
+	 * OVERSIZED entry keeps its TID elsewhere.
+	 */
+	if (bark_len_is_oversized(*fulllen))
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("marker key of BARK index \"%s\" is too large",
+						RelationGetRelationName(index)),
+				 errdetail("Index row size %zu exceeds maximum %zu for a marker.",
+						   *fulllen, (Size) BarkMaxItemSize)));
+	BarkSetMarkerTid(&itup->t_tid);
+	return itup;
+}
+
+/*
+ * Has this backend seen marker key `key` in the index (bark_cache_marker)?
+ * The cache is a list searched in order, with the column's comparator: a
+ * class gives its markers to facts about the index, not to rows, so an
+ * index has few of them.
+ */
+bool
+bark_marker_cached(Relation index, BarkKeyInfo *keyinfo, Datum key)
+{
+	BarkAmCache *cache = bark_get_amcache(index);
+	int			attno = bark_index_extracted_column(index);
+	BarkKeyColumn *col = &keyinfo->cols[attno - 1];
+	bool		byval = TupleDescAttr(RelationGetDescr(index),
+									  attno - 1)->attbyval;
+	char	   *p = cache->markerdata;
+
+	for (int i = 0; i < cache->nmarkers; i++)
+	{
+		Size		len = *(Size *) p;
+		char	   *data = p + MAXALIGN(sizeof(Size));
+		Datum		cached = byval ? *(Datum *) data : PointerGetDatum(data);
+
+		if (DatumGetInt32(FunctionCall2Coll(&col->cmp, col->collation,
+											key, cached)) == 0)
+			return true;
+		p = data + MAXALIGN(len);
+	}
+	return false;
+}
+
+/*
+ * Remember that marker key `key` is in the index.  Markers are never removed,
+ * so the entry never goes stale; a relcache rebuild (REINDEX among others)
+ * drops it with the rest of rd_amcache.  rd_amcache must stay one chunk, so
+ * the chunk grows.
+ */
+void
+bark_cache_marker(Relation index, BarkKeyInfo *keyinfo, Datum key)
+{
+	BarkAmCache *cache;
+	int			attno = bark_index_extracted_column(index);
+	Form_pg_attribute att = TupleDescAttr(RelationGetDescr(index), attno - 1);
+	Size		len;
+	Size		used;
+	char	   *p;
+
+	if (bark_marker_cached(index, keyinfo, key))
+		return;
+
+	len = att->attbyval ? sizeof(Datum) :
+		datumGetSize(key, false, att->attlen);
+	cache = bark_get_amcache(index);
+	used = offsetof(BarkAmCache, markerdata) + cache->markerlen;
+	cache = repalloc(cache, used + MAXALIGN(sizeof(Size)) + MAXALIGN(len));
+	index->rd_amcache = cache;
+
+	p = cache->markerdata + cache->markerlen;
+	*(Size *) p = len;
+	p += MAXALIGN(sizeof(Size));
+	if (att->attbyval)
+		*(Datum *) p = key;
+	else
+		memcpy(p, DatumGetPointer(key), len);
+	cache->markerlen += MAXALIGN(sizeof(Size)) + MAXALIGN(len);
+	cache->nmarkers++;
+}
+
+/*
  * Does an operator class in family opfamily with input type opcintype
  * extract keys?  See bark_column_is_extracted.
  */
@@ -267,8 +593,7 @@ bark_opfamily_extracts(Oid opfamily, Oid opcintype)
  * their keys, N times M entries per row ("parallel arrays", which MongoDB
  * refuses for the same reason).  Uniqueness over multikey keys needs
  * document-store semantics, unique across rows while one row may repeat a
- * key, which is later work.  Until the insert path extracts keys, building
- * any index with an extracted column is refused too.
+ * key, which is later work.
  */
 void
 bark_check_multikey_index(Relation index, IndexInfo *indexInfo)
@@ -298,12 +623,6 @@ bark_check_multikey_index(Relation index, IndexInfo *indexInfo)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("exclusion constraints are not supported for multikey operator classes in M1")));
-
-	ereport(ERROR,
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-			 errmsg("multikey keys are not implemented yet"),
-			 errdetail("Index \"%s\" has a column with a multikey operator class.",
-					   RelationGetRelationName(index))));
 }
 
 /*

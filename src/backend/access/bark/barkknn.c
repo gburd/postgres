@@ -211,7 +211,8 @@ bark_knn_readpage(IndexScanDesc scan, BarkKnnCursor *cur, Page page,
 
 		cur->bound = bark_knn_distance(scan, resolved);
 		ntids = bark_entry_count_tids(itup);
-		if (ntids == 0 || !bark_tuple_matches(scan, resolved, 0))
+		if (ntids == 0 || BarkEntryIsMarker(itup) ||
+			!bark_tuple_matches(scan, resolved, 0))
 		{
 			if (fetched)
 				pfree(resolved);

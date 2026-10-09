@@ -10,6 +10,10 @@ EXTENSION = bark_multikey
 DATA = bark_multikey--1.0.sql
 
 REGRESS = bark_multikey
+EXTRA_INSTALL = contrib/amcheck src/test/modules/injection_points
+TAP_TESTS = 1
+
+export enable_injection_points
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config

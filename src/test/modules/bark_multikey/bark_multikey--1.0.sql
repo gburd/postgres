@@ -65,3 +65,38 @@ CREATE FUNCTION bark_multikey_boundaries(opclass oid, query anyelement,
                                          strategy int2)
 RETURNS text
 AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+-- Procedure 7 of a class with markers: the elements, and a marker (the key
+-- -2147483648, which no element may be) for an array of two or more.
+CREATE FUNCTION bark_multikey_extract_marked(int4[], internal, internal,
+                                             internal, internal)
+RETURNS internal
+AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE OPERATOR FAMILY bark_int4_array_marked_ops USING bark;
+
+CREATE OPERATOR CLASS bark_int4_array_marked_ops
+FOR TYPE int4[] USING bark FAMILY bark_int4_array_marked_ops AS
+    OPERATOR 1 && (anyarray, anyarray),
+    FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
+    FUNCTION 2 btint4sortsupport(internal),
+    FUNCTION 4 btequalimage(oid),
+    FUNCTION 7 bark_multikey_extract_marked(int4[], internal, internal,
+                                            internal, internal),
+    STORAGE int4;
+
+-- What BARK stored: the meta page's multikey flag and member count; every
+-- (key, heap TID) member of an index whose first column is int4, in index
+-- order; and whether a marker key is in an index.
+CREATE FUNCTION bark_multikey_meta(index text, OUT multikey bool,
+                                   OUT nkeys int8)
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+CREATE FUNCTION bark_multikey_entries(index text, OUT key int4, OUT tid tid,
+                                      OUT marker bool)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+CREATE FUNCTION bark_multikey_has_marker(index text, key int4)
+RETURNS bool
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
