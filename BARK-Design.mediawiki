@@ -1531,6 +1531,370 @@ Nothing in this list changes the on-disk format.
   with GIN's <code>array_ops</code> and with a sequential scan on the same
   data.
 
+=== M4: unique indexes over multikey keys ===
+
+The design of record for M4; the implementation card follows from it. It
+builds on M1's terms (extracted column, fixed column, NULL key, marker) and
+on its "Uniqueness hooks".
+
+==== What is unique ====
+
+A unique index with an extracted column is unique over its entries' key
+columns: no two rows have an entry with equal key columns, that is, equal
+fixed columns and an equal key. Every row's keys are de-duplicated ("Keys of
+a row"), so a row may repeat a key in its value, and two rows conflict when
+they share one key under equal fixed columns. This is MongoDB's documented
+rule for unique multikey indexes: the constraint applies across separate
+documents, and one document's array may repeat a value. A compound index
+<code>bark(tenant, tags) UNIQUE</code> says that no two rows of one tenant
+share a tag; MongoDB's compound unique index over a scalar field and an
+array field means the same.
+
+'''NULLs.''' NULLs are distinct, as PostgreSQL's default for unique indexes
+has them, but per key: a key with a NULL in any key column is never checked
+and never conflicts. A NULL fixed column puts a NULL in every key of the
+row, so such a row is not checked at all, as today. A NULL value, an empty
+value or a NULL element is the NULL key, so it never conflicts, while the
+same row's other keys are still checked. So a unique index with an
+extracted column does not make the column's values unique: any number of
+rows may hold an empty array.
+
+'''NULLS NOT DISTINCT is refused''' on an index with an extracted column
+(bark_check_multikey_index). The NULL key stands for three things ("Keys
+of a row"), so under it a row with an empty array would conflict with a row
+with a NULL value or with <code>'{7,NULL}'</code>, which no user means. The
+executor's pre-check ("ON CONFLICT and the executor's pre-check" below) also
+could not find such a conflict: it scans with the column's conflict
+operator, and no operator over two values says "both have the NULL key".
+An insert that the pre-check passes and the index rejects is retried by
+ExecInsert without end. NULLS NOT DISTINCT over the fixed columns alone
+would be well defined. It is left out because PostgreSQL has a single
+per-index option.
+
+'''MongoDB's null and missing rules are the operator class's.''' MongoDB
+indexes a missing field and an explicit null as the key null, so a unique
+index accepts only one document that lacks the field. A null array element
+also indexes as null. An empty array indexes as undefined, so two documents
+with <code>a: []</code> conflict too; that is this note's reading of the
+documentation, not checked on a server. A sparse unique index skips
+the documents that lack the field, and a partial one skips those its filter
+rejects. DocumentDB's class emits those keys as ordinary, non-NULL BSON
+values (BSON null, undefined), so they conflict under BARK's default NULL
+rule, and BARK's NULL key never arises from a document. That is where
+pg_extended_btree's issue #17 puts the work too: "uniqueness constraints,
+specifically handling MongoDB's approach to null and missing fields", in the
+comparison and term logic of the class. MongoDB's sparse and partial unique
+indexes are partial indexes (<code>WHERE</code>), which BARK has. If
+DocumentDB expresses sparse in its term generation instead, by emitting no
+term for a missing path, that is a class matter as well; this note has not
+checked which it does.
+
+==== When the check runs ====
+
+'''Each key is checked as it is inserted.''' bark_insert_entries checks a
+row's keys one at a time, in the row's ascending key order, each under the
+exclusive lock of the leaf where the key's run starts, and inserts the key
+before releasing that lock. That is nbtree's protocol for one key
+(_bt_doinsert, _bt_check_unique, _bt_findinsertloc) applied N times: the
+check and the insert of a key are atomic with respect to every other
+inserter of that key, which must check from the same leaf. When key
+''k'' conflicts with a committed row the insert raises the unique violation
+as today. Keys 0..''k''-1 are already in the index, and the error aborts
+the transaction (or subtransaction) that inserted the heap tuple, so they
+are entries of a dead tuple, which VACUUM removes. A row that fails on its
+second unique index today leaves its first index's entry the same way.
+
+The alternative, checking all N keys before inserting any, is rejected.
+Without keeping every leaf locked from check to insert, another backend can
+insert a key between the two, so each key has to be checked again when it
+is inserted, and the first pass only makes the failing case cheaper: 2N
+leaf visits for every row that succeeds, to spare VACUUM ''k'' entries of
+one that fails. Keeping the leaves locked instead would hold up to N
+exclusive leaf locks at once, blocking every reader of those leaves for the
+whole row, and a document with a few hundred keys would exceed the
+per-backend limit on held LWLocks (MAX_SIMUL_LWLOCKS, 200, in lwlock.c).
+
+'''Cost.''' A row of N keys costs what M1's one pass costs, plus the
+per-key check: a search for the start of the key's run on the leaf the key
+goes on, and a heap fetch under SnapshotDirty for each entry of the key
+that is there (in a unique index, usually none, or the dead versions of
+one row). The descent is still shared. The one-pass rule changes in one
+place: a unique check must start on the first leaf that can hold the key,
+so, for a unique index, key ''i''+1 stays on L, or steps to R, by
+bark_search's move-right test for a unique check (the key alone, no heap
+TID), and then moves right to its heap TID's position with
+bark_insert_stepright as a single-key insert does. L is then the first
+leaf that can hold key ''i''+1, since key ''i'' is on L and sorts before
+it. M1's <code>Assert(nitups == 1 || !checkingunique)</code> in
+bark_insert_entries goes, and so does the Assert in bark_insert that a row
+with an extracted column has no unique check. A unique index never
+coalesces (bark_insert_state), with or without an extracted column, so
+every entry in it is SINGLE or OVERSIZED, as bark_check_unique expects.
+
+'''Waits.''' When key ''k'' conflicts with a row whose inserter or deleter
+is in progress, bark_insert_entries releases its leaf, waits
+(XactLockTableWait, or SpeculativeInsertionWait for a speculative
+inserter), and descends again for key ''k'', as M1's "Uniqueness hooks"
+require; keys 0..''k''-1 stay inserted. It waits holding no buffer lock,
+but with its own earlier keys in the index, where other inserters may
+wait on them. Waits on inserters cannot form a cycle between two rows. Say
+T1 waits on T2's entry of key ''a'' while T2 waits on T1's entry of key
+''b''. T1 inserted ''b'' before reaching ''a'', so ''b'' &lt; ''a''; T2
+inserted ''a'' before reaching ''b'', so ''a'' &lt; ''b''. Both rows insert
+in ascending key order under one opclass comparator, so this cannot hold.
+Waits on an in-progress deleter can form a cycle, as they can in nbtree
+with one key per row today (two UPDATEs that swap their keys). Multikey
+adds one shape: T1 waits on T2's delete of an old row that has key ''a'',
+while T2's new row waits on T1's entry of key ''b'', which T1 inserted
+first. T1's row and T2's new row share ''b'', so one of them was bound to
+fail; the deadlock detector aborts one, which is the outcome
+execIndexing.c's header accepts for exclusion constraints. A transaction
+that inserts two rows can deadlock with another as it can in nbtree.
+
+'''UNIQUE_CHECK_PARTIAL''' (ON CONFLICT's speculative insertion, and
+logical replication's conflict detection, which ExecInsertIndexTuples
+gives EIIT_NO_DUPE_ERROR) never waits and never errors: bark_check_unique
+returns at the first conflict, as _bt_check_unique does. The row's result
+is false if any key conflicted. Every key is still inserted, as nbtree
+inserts the entry, and once one key has conflicted the remaining keys are
+inserted without a check, since the result cannot change. The executor
+then kills the speculative tuple (table_tuple_complete_speculative), which
+makes all N entries dead, and retries from its pre-check, which is where
+an ON CONFLICT insert waits (next section). The AM never waits under
+PARTIAL, so the speculative path adds no wait between rows at all.
+
+==== ON CONFLICT and the executor's pre-check ====
+
+The executor finds conflicts without the AM as well. ExecInsert's
+pre-check, and logical replication's FindConflictTuple, call
+ExecCheckIndexConstraints, which scans the index under a dirty snapshot
+with one key per index column (check_exclusion_or_unique_constraint). The
+operators come from BuildSpeculativeIndexInfo (index.c), which asks the AM
+for each column's COMPARE_EQ strategy and errors when there is none.
+ExecOpenIndices calls it for ''every'' unique index of a table that an
+INSERT ... ON CONFLICT targets, arbiter or not, so today an ON CONFLICT
+insert into any table with a unique multikey index would fail there.
+
+'''The conflict operator.''' Two rows conflict on an extracted column when
+their values share a key: that is overlap, not equality. M4 adds
+procedure '''15''', translate-cmptype, <code>int2 (int4)</code>: GiST's
+procedure 12 in purpose and signature. For a BARK family,
+bark_translate_cmptype passes only COMPARE_OVERLAP to it and returns its
+strategy; every other compare type stays InvalidStrategy, and
+bark_translate_strategy stays COMPARE_INVALID, so the planner still reads no
+equality into a multikey operator, and a foreign key or a merge join still
+finds none. BuildSpeculativeIndexInfo, when a column has no COMPARE_EQ
+strategy, asks for COMPARE_OVERLAP before it errors. That is the only core
+change the pre-check needs. The operator is looked up with
+<code>get_opfamily_member(opfamily, opcintype, opcintype, strategy)</code>,
+as the equality is, so the class registers it under its input type.
+Core's <code>&amp;&amp;</code> is declared over <code>anyarray</code>, so
+the test class adds an overlap operator over <code>int4[]</code> under a
+name of its own. A new name keeps core's operator resolving as before, so
+the GIN comparisons in the test still plan. <code>amsupport</code> becomes
+15; barkvalidate checks the signature, barkadjustmembers makes it a soft
+dependency as gistadjustmembers does GiST's 12, and refuses it in a btree
+family as it refuses 7-14. bark_check_multikey_index refuses a unique index
+on an extracted column whose class does not translate COMPARE_OVERLAP.
+The strategy must be one that the class's procedure 8 accepts.
+
+'''The operator must agree with the keys.''' The class's overlap operator
+must be true exactly when the two values share a key that is not NULL. If
+it says false where the AM finds a conflict, ExecInsert retries without end:
+the pre-check passes, the index reports a speculative conflict, and the
+retry repeats both. If it says true where the AM finds none, ON CONFLICT
+fires for a row that could have been inserted. For arrays,
+<code>&amp;&amp;</code> qualifies: it ignores NULL elements, and an empty
+array overlaps nothing.
+
+'''The pre-check scan''' is an ordinary BARK scan: equality keys on the
+fixed columns and the overlap key on the extracted column, whose procedure
+8 gives one point boundary per key of the new value. It runs under a dirty
+snapshot, so it keeps a seen set ("Multikey metadata"), and returns each
+row once. That matters here: with a valid tupleid,
+check_exclusion_or_unique_constraint raises "found self tuple multiple
+times" for a row it sees twice. When the scan sets <code>xs_recheck</code>,
+index_recheck_constraint calls the overlap operator on the two values,
+which is exact. NULLs agree with the AM: under NULLS DISTINCT the pre-check
+passes a row with any NULL column, and such a row has only NULL keys or
+NULL fixed columns.
+
+'''One row may conflict with several.''' A new row <code>{1,2}</code>
+conflicts with a row <code>{1}</code> and a row <code>{2}</code>. The
+pre-check returns the first conflicting row it meets, which is the one
+holding the new value's smallest shared key. ON CONFLICT DO UPDATE updates
+that row only, and DO NOTHING inserts nothing. A single btree arbiter
+cannot produce this case, but PostgreSQL already accepts it for several
+arbiter indexes: one row per proposed row is affected. Logical
+replication reports such a row as one insert_exists conflict.
+
+==== Deferred checks, and UPDATE ====
+
+'''UNIQUE_CHECK_EXISTING''' is what unique_key_recheck (constraint.c)
+passes to recheck a deferred constraint. Only a constraint can be
+<code>DEFERRABLE</code>, and no constraint can use a BARK index until U1
+(parse_utilcmd.c refuses one "not a btree"), so it is unreachable in M4, as
+it is for scalar BARK indexes today; M4 only makes it right for when U1
+lands. Under it bark_insert extracts the row's keys and checks each, by
+the own-TID rule bark_check_unique already applies (M1's "Uniqueness
+hooks"), inserting nothing. Each key's check must also find the row's own
+entry, and raises nbtree's "failed to re-find tuple within index" if it
+does not, as _bt_check_unique does: procedure 7 is immutable, so a missing
+key means a broken class. A deferred row inserted under
+UNIQUE_CHECK_PARTIAL has every key in the index ("When the check runs"),
+so the recheck sees all of them.
+
+'''UPDATE of a row whose keys change partly''', from
+<code>{1,2,3}</code> to <code>{2,3,4}</code>, is a new heap version with a
+new TID (the column changed, so it is not HOT), and its keys 2 and 3 meet
+the old version's entries. Those are not conflicts. The updating
+transaction is the old version's deleter, and HeapTupleSatisfiesDirty
+treats a tuple deleted by the current transaction as invisible, so
+bark_check_unique's fetch under SnapshotDirty skips it. That is why a
+non-HOT UPDATE that keeps a btree unique key does not conflict with itself
+today; the own-TID rule is not involved, since the TIDs differ. Another
+transaction inserting key 2 meanwhile finds the old version with an
+in-progress deleter and waits for the update to finish, then finds the new
+version. An UPDATE that changes only another column of a non-HOT row
+re-inserts all of the row's keys (indexUnchanged), and each one meets the
+old version's entry of the same key, skipped the same way.
+
+'''Error detail.''' BuildIndexValueDescription (genam.c) prints each column
+with the output function of the opclass's input type, so it must never be
+given a key of the storage type: <code>array_out</code> on an
+<code>int4</code> key would crash. bark_check_unique passes it the row's
+values as bark_insert received them, and, when it returns a description (it
+returns NULL when the user may not see the columns, or under row security),
+adds the shared key, printed with the storage type's output function:
+<code>Key (tenant, tags)=(1, {1,2,3}) shares key 2
+with an existing row.</code> MongoDB's E11000 message also names the
+duplicate key, not the document. bark_load deforms a sorted key tuple and
+passes it to BuildIndexValueDescription, which for an extracted column is
+the same mistake; there it gives only <code>Duplicate keys exist.</code>,
+nbtree's detail when no description is available, and an insert of either
+row names the key.
+
+==== CREATE INDEX ====
+
+bark_load already raises the unique violation when a sorted tuple's key
+columns equal its predecessor's and have no NULL. With an extracted
+column, the sort holds one tuple per (key, TID), a row's keys are distinct,
+so two equal adjacent tuples come from two rows: the check is right for
+multikey as it stands. Markers are skipped before it, as they are now, and
+insert puts them in unchecked (bark_insert_markers); a marker's key equals
+no data key, so it can conflict with nothing. What the build must add is
+the treatment of dead rows.
+
+'''Dead rows are indexed and not checked.''' bark_build_callback, today
+and in M1b, drops a row that table_index_build_scan reports with
+<code>tupleIsAlive</code> false, a RECENTLY_DEAD row among them, which
+nbtree indexes because an older snapshot may still read it through the
+index. Card B12 fixes that as nbtree does with its second spool
+(_bt_build_callback, and _bt_load, which merges it): dead rows go to a
+second sort that is never unique-checked. M4 takes that from B12 and adds
+to it: a dead row's keys go to the second sort, and bark_load
+compares a live tuple only with the previous ''live'' tuple. A
+RECENTLY_DEAD row that shares a key with a live row, which is what an
+UPDATE that keeps a key leaves, is then not a violation. A dead row's
+oversized keys go to the oversized pass with UNIQUE_CHECK_NO, and a live
+row's with UNIQUE_CHECK_YES. bark_insert_oversized_keys, which passes
+UNIQUE_CHECK_NO for every row in M1b, takes the check from its caller.
+The live keys they meet are already loaded, and the dead ones are
+invisible to bark_check_unique's dirty snapshot. Parallel workers spool
+their dead rows' keys to the second sort the same way.
+
+CREATE INDEX CONCURRENTLY's validate_index inserts the rows the first scan
+missed through bark_insert with UNIQUE_CHECK_YES
+(heapam_index_validate_scan), so they are checked key by key as any insert
+is.
+
+==== Scans, the planner and amcheck ====
+
+'''Scans are unchanged.''' A unique index with an extracted column is read
+as M1's index is read: the seen set, <code>xs_recheck</code> wherever M1
+sets it, the same cost model. Uniqueness gives a scan nothing to drop:
+every rule in M1's "Scans" that sets <code>xs_recheck</code> (a NULL entry,
+two keys on the extracted column, procedure 9's maybe, a filter under an
+ordering key) is about which rows match the qual, not about how many rows
+hold a key, so it applies as before. The one fact uniqueness adds, that a
+point boundary on the extracted column under equalities on every fixed
+column finds at most one live row, is not used to stop the scan early;
+M1's seen set already returns that row once.
+
+'''Core must not read the index as a unique key.''' Core takes an index
+with <code>indisunique</code> and an equality clause on every key column as
+proof that at most one row matches. relation_has_unique_index_for
+(indxpath.c) and the GROUP BY reduction in remove_useless_groupby_columns
+(initsplan.c) check the clause's operator against the column's opfamily,
+and a BARK family has no equality (bark_translate_strategy), so they never
+match the extracted column. has_unique_index (plancat.c), which marks a
+column's statistics <code>isunique</code> for the equality-selectivity
+estimators, and barkcostestimate's <code>numIndexTuples = 1.0</code> look
+only at the column number and the clause positions, not the operator. Both
+would be wrong here: a row may hold many keys, and the column's values are
+not unique (two rows may both hold the empty array). M4 makes
+get_relation_info set <code>info->unique</code> false for an index with an
+extracted column, in the loop where M1 already gives such a column
+InvalidOid in <code>sortopfamily</code>; every planner reader above,
+barkcostestimate included, reads that field. infer_arbiter_indexes reads
+<code>pg_index</code> directly, so ON CONFLICT inference still finds the
+index.
+
+Two commands pick a unique index from <code>pg_index</code> and only then
+look for its columns' equality operators, and so would fail on this one
+rather than pass it by. transformFkeyCheckAttrs (tablecmds.c) takes the
+first valid unique index over the referenced columns, constraint or not,
+and ATAddForeignKeyConstraint then raises "could not identify an equality
+operator for foreign key", even when a btree unique index on the same
+columns comes later in the list. REFRESH MATERIALIZED VIEW CONCURRENTLY
+(matview.c's is_usable_unique_index, then refresh_by_match_merge) raises an
+internal "missing equality operator" error the same way. M4 makes both
+skip an index any of whose key columns has no COMPARE_EQ strategy
+(IndexAmTranslateCompareType), so a foreign key cannot reference the
+extracted column, and a btree index beside it is still found. REPLICA
+IDENTITY USING INDEX (ATExecReplicaIdentity) refuses such an index with an
+error saying why, since replication's lookup by identity
+(build_replindex_scan_key) needs equality on every column.
+
+'''amcheck.''' bark_index_check and bark_index_parent_check gain
+<code>checkunique</code> (amcheck 1.8), as bt_index_check and
+bt_index_parent_check have it, for every unique BARK index. It walks each run of equal key columns, which may
+cross leaves, and reports index corruption when two entries of the run
+point to heap tuples visible to the check's MVCC snapshot, as
+bt_entry_unique_check does. The run is of (fixed columns, key), so for an
+extracted column that is exactly M4's rule. One row's entries are never in
+one run, since its keys are distinct, so the check needs no own-row
+exception. A run whose key has a NULL column is skipped, as nbtree skips
+keys with <code>anynullkeys</code>. Markers are skipped, as every reader
+skips them; a marker's key equals no data key, so it is alone in its run.
+heapallindexed is refused on an index with an extracted
+column (bark_check_structure, M1b), unique or not; making it form a row's keys
+through procedure 7 is separate work, which uniqueness does not change.
+
+==== What M4 does not do ====
+
+* NULLS NOT DISTINCT on an index with an extracted column, or over its
+  fixed columns alone.
+* Exclusion constraints on an extracted column (the conflict operator would
+  serve them, but they come with U1's constraint surface).
+* Deferrable uniqueness and primary keys on the index (U1), and foreign
+  keys that reference an extracted column, which need an equality.
+* A unique wildcard index (M5): it is a unique index whose key is (path,
+  value), so M4 provides it, but its semantics, unique per path, are M5's
+  to state and test.
+* Any MongoDB value semantics: null, missing, undefined, type order and
+  sparseness are the class's.
+* A check of all of a row's keys before any is inserted.
+* Tests are the implementation card's: M4's rules, each against a unique
+  btree index over an expression that gives one key per row where it can
+  (<code>bark(a)</code> with one-element arrays against btree on
+  <code>a[1]</code>), and against a sequential scan elsewhere: a row that
+  repeats a key; two rows sharing one key; compound keys; NULL and empty
+  values; ON CONFLICT DO NOTHING and DO UPDATE with one and two conflicting
+  rows; an UPDATE that keeps some keys; a build over RECENTLY_DEAD rows;
+  concurrent inserters sharing keys (isolation spec, including the
+  deleter-wait deadlock); amcheck's checkunique on a corrupted index.
+
 == Ground rules ==
 
 * This document is authoritative for the contracts. A commit that changes a
