@@ -178,8 +178,12 @@ CREATE OPERATOR CLASS my_int4_ops FOR TYPE int4 USING bark FAMILY my_int4_ops AS
   An operator family that belongs to BARK itself (as
   <command>CREATE OPERATOR CLASS ... USING bark</command> creates when it
   names no existing family) is for multikey operator classes, described in
-  <xref linkend="bark-multikey-funcs"/>; such a class without support
-  function 7 is reported invalid by <function>amvalidate</function>.
+  <xref linkend="bark-multikey-funcs"/>.  A class there without support
+  function 7 is reported invalid by <function>amvalidate</function>, and
+  <command>CREATE INDEX</command> refuses to use it: BARK reads the strategy
+  numbers of a B-tree family's operators as B-tree's, but a family of its
+  own allows any number, so a scalar class there could be misread.  Put a
+  scalar operator class in a B-tree operator family, as above.
  </para>
 
 </sect2>
