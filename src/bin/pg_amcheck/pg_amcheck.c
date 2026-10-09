@@ -152,13 +152,15 @@ typedef struct DatabaseInfo
 	char	   *datname;
 	char	   *amcheck_schema; /* escaped, quoted literal */
 	bool		is_checkunique;
+	bool		check_bark;		/* amcheck checks bark indexes (>= 1.7) */
 } DatabaseInfo;
 
 typedef struct RelationInfo
 {
 	const DatabaseInfo *datinfo;	/* shared by other relinfos */
 	Oid			reloid;
-	bool		is_heap;		/* true if heap, false if btree */
+	bool		is_heap;		/* true if heap, false if index */
+	bool		is_bark;		/* true if a bark index */
 	char	   *nspname;
 	char	   *relname;
 	int			relpages;
@@ -601,9 +603,11 @@ main(int argc, char *argv[])
 		/*
 		 * Check the version of amcheck extension. Skip requested unique
 		 * constraint check with warning if it is not yet supported by
-		 * amcheck.
+		 * amcheck.  bark indexes are checked from version 1.7, which has
+		 * bark_index_check's heapallindexed option and
+		 * bark_index_parent_check; with an older amcheck they are not
+		 * selected.
 		 */
-		if (opts.checkunique == true)
 		{
 			/*
 			 * Now amcheck has only major and minor versions in the string but
@@ -616,11 +620,14 @@ main(int argc, char *argv[])
 			const char *amcheck_version = PQgetvalue(result, 0, 1);
 
 			sscanf(amcheck_version, "%d.%d.%d", &vmaj, &vmin, &vrev);
+			dat->check_bark = vmaj > 1 || (vmaj == 1 && vmin >= 7);
 
 			/*
 			 * checkunique option is supported in amcheck since version 1.4
 			 */
-			if ((vmaj == 1 && vmin < 4) || vmaj == 0)
+			if (!opts.checkunique)
+				;
+			else if ((vmaj == 1 && vmin < 4) || vmaj == 0)
 			{
 				pg_log_warning("option %s is not supported by amcheck version %s",
 							   "--checkunique", amcheck_version);
@@ -784,7 +791,8 @@ main(int argc, char *argv[])
 				if (opts.show_progress && progress_since_last_stderr)
 					fprintf(stderr, "\n");
 
-				pg_log_info("checking btree index \"%s.%s.%s\"",
+				pg_log_info("checking %s index \"%s.%s.%s\"",
+							rel->is_bark ? "bark" : "btree",
 							rel->datinfo->datname, rel->nspname, rel->relname);
 				progress_since_last_stderr = false;
 			}
@@ -865,8 +873,8 @@ prepare_heap_command(PQExpBuffer sql, RelationInfo *rel, PGconn *conn)
 /*
  * prepare_btree_command
  *
- * Creates a SQL command for running amcheck checking on the given btree index
- * relation.  The command does not select any columns, as btree checking
+ * Creates a SQL command for running amcheck checking on the given btree or
+ * bark index relation.  The command does not select any columns, as btree checking
  * functions do not return any, but rather return corruption information by
  * raising errors, which verify_btree_slot_handler expects.
  *
@@ -883,7 +891,24 @@ prepare_btree_command(PQExpBuffer sql, RelationInfo *rel, PGconn *conn)
 {
 	resetPQExpBuffer(sql);
 
-	if (opts.parent_check)
+	/*
+	 * A bark index has bark_index_check and bark_index_parent_check, with
+	 * heapallindexed; it has no rootdescend or checkunique option.
+	 */
+	if (rel->is_bark)
+		appendPQExpBuffer(sql,
+						  "SELECT %s.%s("
+						  "index := c.oid, heapallindexed := %s)"
+						  "\nFROM pg_catalog.pg_class c, pg_catalog.pg_index i "
+						  "WHERE c.oid = %u "
+						  "AND c.oid = i.indexrelid "
+						  "AND c.relpersistence != " CppAsString2(RELPERSISTENCE_TEMP) " "
+						  "AND i.indisready AND i.indisvalid AND i.indislive",
+						  rel->datinfo->amcheck_schema,
+						  (opts.parent_check ? "bark_index_parent_check" : "bark_index_check"),
+						  (opts.heapallindexed ? "true" : "false"),
+						  rel->reloid);
+	else if (opts.parent_check)
 		appendPQExpBuffer(sql,
 						  "SELECT %s.bt_index_parent_check("
 						  "index := c.oid, heapallindexed := %s, rootdescend := %s "
@@ -1142,7 +1167,8 @@ verify_btree_slot_handler(PGresult *res, PGconn *conn, void *context)
 			 */
 			if (opts.show_progress && progress_since_last_stderr)
 				fprintf(stderr, "\n");
-			pg_log_warning("btree index \"%s.%s.%s\": btree checking function returned unexpected number of rows: %d",
+			pg_log_warning("%s index \"%s.%s.%s\": index checking function returned unexpected number of rows: %d",
+						   rel->is_bark ? "bark" : "btree",
 						   rel->datinfo->datname, rel->nspname, rel->relname, ntups);
 			if (opts.verbose)
 				pg_log_warning_detail("Query was: %s", rel->sql);
@@ -1156,7 +1182,8 @@ verify_btree_slot_handler(PGresult *res, PGconn *conn, void *context)
 		char	   *msg = indent_lines(PQerrorMessage(conn));
 
 		all_checks_pass = false;
-		printf(_("btree index \"%s.%s.%s\":\n"),
+		printf(_("%s index \"%s.%s.%s\":\n"),
+			   rel->is_bark ? "bark" : "btree",
 			   rel->datinfo->datname, rel->nspname, rel->relname);
 		printf("%s", msg);
 		if (opts.verbose)
@@ -1887,6 +1914,13 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 	PQExpBufferData sql;
 	int			ntups;
 	int			i;
+	char		idxams[64];
+
+	/* The index access methods amcheck can check in this database. */
+	if (dat->check_bark)
+		snprintf(idxams, sizeof(idxams), "%u, %u", BTREE_AM_OID, BARK_AM_OID);
+	else
+		snprintf(idxams, sizeof(idxams), "%u", BTREE_AM_OID);
 
 	initPQExpBuffer(&sql);
 	appendPQExpBufferStr(&sql, "WITH");
@@ -1913,7 +1947,7 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 
 	/* Append the relation CTE. */
 	appendPQExpBufferStr(&sql,
-						 " relation (pattern_id, oid, nspname, relname, reltoastrelid, relpages, is_heap, is_btree) AS ("
+						 " relation (pattern_id, oid, nspname, relname, reltoastrelid, relpages, is_heap, is_btree, is_bark) AS ("
 						 "\nSELECT DISTINCT ON (c.oid");
 	if (!opts.allrel)
 		appendPQExpBufferStr(&sql, ", ip.pattern_id) ip.pattern_id,");
@@ -1922,27 +1956,28 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 	appendPQExpBuffer(&sql,
 					  "\nc.oid, n.nspname, c.relname, c.reltoastrelid, c.relpages, "
 					  "c.relam = %u AS is_heap, "
-					  "c.relam = %u AS is_btree"
+					  "c.relam IN (%s) AS is_btree, "
+					  "c.relam = %u AS is_bark"
 					  "\nFROM pg_catalog.pg_class c "
 					  "INNER JOIN pg_catalog.pg_namespace n "
 					  "ON c.relnamespace = n.oid",
-					  HEAP_TABLE_AM_OID, BTREE_AM_OID);
+					  HEAP_TABLE_AM_OID, idxams, BARK_AM_OID);
 	if (!opts.allrel)
 		appendPQExpBuffer(&sql,
 						  "\nINNER JOIN include_pat ip"
 						  "\nON (n.nspname ~ ip.nsp_regex OR ip.nsp_regex IS NULL)"
 						  "\nAND (c.relname ~ ip.rel_regex OR ip.rel_regex IS NULL)"
 						  "\nAND (c.relam = %u OR NOT ip.heap_only)"
-						  "\nAND (c.relam = %u OR NOT ip.btree_only)",
-						  HEAP_TABLE_AM_OID, BTREE_AM_OID);
+						  "\nAND (c.relam IN (%s) OR NOT ip.btree_only)",
+						  HEAP_TABLE_AM_OID, idxams);
 	if (opts.excludetbl || opts.excludeidx || opts.excludensp)
 		appendPQExpBuffer(&sql,
 						  "\nLEFT OUTER JOIN exclude_pat ep"
 						  "\nON (n.nspname ~ ep.nsp_regex OR ep.nsp_regex IS NULL)"
 						  "\nAND (c.relname ~ ep.rel_regex OR ep.rel_regex IS NULL)"
 						  "\nAND (c.relam = %u OR NOT ep.heap_only OR ep.rel_regex IS NULL)"
-						  "\nAND (c.relam = %u OR NOT ep.btree_only OR ep.rel_regex IS NULL)",
-						  HEAP_TABLE_AM_OID, BTREE_AM_OID);
+						  "\nAND (c.relam IN (%s) OR NOT ep.btree_only OR ep.rel_regex IS NULL)",
+						  HEAP_TABLE_AM_OID, idxams);
 
 	/*
 	 * Exclude temporary tables and indexes, which must necessarily belong to
@@ -1981,7 +2016,7 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 						  HEAP_TABLE_AM_OID, PG_TOAST_NAMESPACE);
 	else
 		appendPQExpBuffer(&sql,
-						  " AND c.relam IN (%u, %u)"
+						  " AND c.relam IN (%u, %s)"
 						  "AND c.relkind IN ("
 						  CppAsString2(RELKIND_RELATION) ", "
 						  CppAsString2(RELKIND_SEQUENCE) ", "
@@ -1993,10 +2028,10 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 						  CppAsString2(RELKIND_SEQUENCE) ", "
 						  CppAsString2(RELKIND_MATVIEW) ", "
 						  CppAsString2(RELKIND_TOASTVALUE) ")) OR "
-						  "(c.relam = %u AND c.relkind = "
+						  "(c.relam IN (%s) AND c.relkind = "
 						  CppAsString2(RELKIND_INDEX) "))",
-						  HEAP_TABLE_AM_OID, BTREE_AM_OID,
-						  HEAP_TABLE_AM_OID, BTREE_AM_OID);
+						  HEAP_TABLE_AM_OID, idxams,
+						  HEAP_TABLE_AM_OID, idxams);
 
 	appendPQExpBufferStr(&sql,
 						 "\nORDER BY c.oid)");
@@ -2028,13 +2063,14 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 	if (!opts.no_btree_expansion)
 	{
 		/*
-		 * Include a CTE for btree indexes associated with primary heap tables
-		 * selected above, filtering by exclusion patterns (if any) that match
-		 * btree index names.
+		 * Include a CTE for btree (and, with amcheck 1.7, bark) indexes
+		 * associated with primary heap tables selected above, filtering by
+		 * exclusion patterns (if any) that match index names.
 		 */
 		appendPQExpBufferStr(&sql,
-							 ", index (oid, nspname, relname, relpages) AS ("
-							 "\nSELECT c.oid, r.nspname, c.relname, c.relpages "
+							 ", index (oid, nspname, relname, relpages, is_bark) AS ("
+							 "\nSELECT c.oid, r.nspname, c.relname, c.relpages, "
+							 "c.relam = " CppAsString2(BARK_AM_OID) " "
 							 "FROM relation r"
 							 "\nINNER JOIN pg_catalog.pg_index i "
 							 "ON r.oid = i.indrelid "
@@ -2054,9 +2090,9 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 			appendPQExpBufferStr(&sql,
 								 "\nWHERE true");
 		appendPQExpBuffer(&sql,
-						  " AND c.relam = %u "
+						  " AND c.relam IN (%s) "
 						  "AND c.relkind = " CppAsString2(RELKIND_INDEX),
-						  BTREE_AM_OID);
+						  idxams);
 		if (opts.no_toast_expansion)
 			appendPQExpBuffer(&sql,
 							  " AND c.relnamespace != %u",
@@ -2072,8 +2108,8 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 		 * (if any) that match the toast index names.
 		 */
 		appendPQExpBufferStr(&sql,
-							 ", toast_index (oid, nspname, relname, relpages) AS ("
-							 "\nSELECT c.oid, 'pg_toast', c.relname, c.relpages "
+							 ", toast_index (oid, nspname, relname, relpages, is_bark) AS ("
+							 "\nSELECT c.oid, 'pg_toast', c.relname, c.relpages, false "
 							 "FROM toast t "
 							 "INNER JOIN pg_catalog.pg_index i "
 							 "ON t.oid = i.indrelid"
@@ -2105,7 +2141,7 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 	 * list.
 	 */
 	appendPQExpBufferStr(&sql,
-						 "\nSELECT pattern_id, is_heap, is_btree, oid, nspname, relname, relpages "
+						 "\nSELECT pattern_id, is_heap, is_btree, oid, nspname, relname, relpages, is_bark "
 						 "FROM (");
 	appendPQExpBufferStr(&sql,
 	/* Inclusion patterns that failed to match */
@@ -2113,34 +2149,36 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 						 "NULL::OID AS oid, "
 						 "NULL::TEXT AS nspname, "
 						 "NULL::TEXT AS relname, "
-						 "NULL::INTEGER AS relpages"
+						 "NULL::INTEGER AS relpages, "
+						 "NULL::BOOLEAN AS is_bark"
 						 "\nFROM relation "
 						 "WHERE pattern_id IS NOT NULL "
 						 "UNION"
 	/* Primary relations */
 						 "\nSELECT NULL::INTEGER AS pattern_id, "
-						 "is_heap, is_btree, oid, nspname, relname, relpages "
+						 "is_heap, is_btree, oid, nspname, relname, relpages, is_bark "
 						 "FROM relation");
 	if (!opts.no_toast_expansion)
 		appendPQExpBufferStr(&sql,
 							 " UNION"
 		/* Toast tables for primary relations */
 							 "\nSELECT NULL::INTEGER AS pattern_id, TRUE AS is_heap, "
-							 "FALSE AS is_btree, oid, nspname, relname, relpages "
+							 "FALSE AS is_btree, oid, nspname, relname, relpages, "
+							 "FALSE AS is_bark "
 							 "FROM toast");
 	if (!opts.no_btree_expansion)
 		appendPQExpBufferStr(&sql,
 							 " UNION"
 		/* Indexes for primary relations */
 							 "\nSELECT NULL::INTEGER AS pattern_id, FALSE AS is_heap, "
-							 "TRUE AS is_btree, oid, nspname, relname, relpages "
+							 "TRUE AS is_btree, oid, nspname, relname, relpages, is_bark "
 							 "FROM index");
 	if (!opts.no_toast_expansion && !opts.no_btree_expansion)
 		appendPQExpBufferStr(&sql,
 							 " UNION"
 		/* Indexes for toast relations */
 							 "\nSELECT NULL::INTEGER AS pattern_id, FALSE AS is_heap, "
-							 "TRUE AS is_btree, oid, nspname, relname, relpages "
+							 "TRUE AS is_btree, oid, nspname, relname, relpages, is_bark "
 							 "FROM toast_index");
 	appendPQExpBufferStr(&sql,
 						 "\n) AS combined_records "
@@ -2166,6 +2204,7 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 		const char *nspname = NULL;
 		const char *relname = NULL;
 		int			relpages = 0;
+		bool		is_bark = false;
 
 		if (!PQgetisnull(res, i, 0))
 			pattern_id = atoi(PQgetvalue(res, i, 0));
@@ -2181,6 +2220,8 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 			relname = PQgetvalue(res, i, 5);
 		if (!PQgetisnull(res, i, 6))
 			relpages = atoi(PQgetvalue(res, i, 6));
+		if (!PQgetisnull(res, i, 7))
+			is_bark = (PQgetvalue(res, i, 7)[0] == 't');
 
 		if (pattern_id >= 0)
 		{
@@ -2207,6 +2248,7 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 			rel->datinfo = dat;
 			rel->reloid = oid;
 			rel->is_heap = is_heap;
+			rel->is_bark = is_bark;
 			rel->nspname = pstrdup(nspname);
 			rel->relname = pstrdup(relname);
 			rel->relpages = relpages;
