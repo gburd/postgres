@@ -1094,13 +1094,16 @@ bark_cost_skips(IndexPath *path)
  * bark_past_bound):
  *
  *  - IS NULL and IS NOT NULL never bound the scan.
- *  - An equality ScalarArrayOp bounds it only on column 1 of a forward scan,
- *    with one descent per element, and then no later column bounds it.  An
+ *  - An equality ScalarArrayOp bounds it like any equality, in either
+ *    direction, and the scan descends once per combination of the arrays'
+ *    elements, as nbtree's does.  When a column has several equalities, the
+ *    scan walks the one with the fewest elements (a plain equality has one),
+ *    so that is the column's factor in the number of descents.  An
  *    inequality ScalarArrayOp is reduced to a plain key at rescan.
  *  - A row comparison ends the bound.  Past column 1 it bounds only where
  *    the scan starts, not where it stops, and not a skip scan's groups.
  *  - A skip scan descends once per column-1 value, and only column 2's
- *    quals bound it (bark_cost_skips).
+ *    plain quals bound it (bark_cost_skips).
  *  - An ordered-operator (KNN) scan walks outward from its constant and
  *    tests every qual as a filter.
  *
@@ -1134,6 +1137,8 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	bool		eqQualHere = false;
 	bool		lastcol = false;
 	bool		found_array = false;
+	bool		skipping = false;
+	double		colelems = 1;	/* fewest elements of an equality on indexcol */
 	double		num_sa_scans = 1;
 	double		numIndexTuples;
 	double		correlation = 0.0;
@@ -1162,6 +1167,7 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 			indexcol = 1;
 			lastcol = true;
 			found_array = true;
+			skipping = true;
 		}
 	}
 	ReleaseVariableStats(vardata);
@@ -1178,6 +1184,8 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 				break;
 			indexcol++;
 			eqQualHere = false;
+			num_sa_scans *= colelems;
+			colelems = 1;
 		}
 
 		foreach_node(RestrictInfo, rinfo, iclause->indexquals)
@@ -1201,7 +1209,7 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 				 * Past column 1, it only says where the scan starts, and a
 				 * skip scan does not use it.
 				 */
-				if (indexcol > 0 && (lower != forward || found_array))
+				if (indexcol > 0 && (lower != forward || skipping))
 					continue;
 				clause_op = linitial_oid(rc->opnos);
 				lastcol = true;
@@ -1221,19 +1229,22 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 				ScalarArrayOpExpr *saop = (ScalarArrayOpExpr *) clause;
 				double		alength;
 
-				if (indexcol > 0 || !forward)
+				/* A skip scan's column-2 arrays only filter. */
+				if (skipping)
 					continue;
-				alength = estimate_array_length(root, lsecond(saop->args));
-				if (alength > 1)
-					num_sa_scans *= alength;
+				alength = Max(estimate_array_length(root, lsecond(saop->args)),
+							  1);
+				colelems = eqQualHere ? Min(colelems, alength) : alength;
 				found_array = true;
-				lastcol = true;
 			}
+			else if (strategy == BTEqualStrategyNumber)
+				colelems = 1;
 			if (strategy == BTEqualStrategyNumber)
 				eqQualHere = true;
 			indexBoundQuals = lappend(indexBoundQuals, rinfo);
 		}
 	}
+	num_sa_scans *= colelems;
 
 	/*
 	 * A unique index with an equality on every column returns at most one
@@ -1253,9 +1264,9 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 			index->rel->tuples;
 
 		/*
-		 * A leading-array scan reads on along the leaf level when the next
-		 * element is on the same or the next page, so it cannot descend more
-		 * than once per page: clamp as btcostestimate does.
+		 * An array scan reads on along the leaf level when the next
+		 * combination starts on the page it is reading, so it cannot descend
+		 * more than once per page: clamp as btcostestimate does.
 		 */
 		num_sa_scans = Min(num_sa_scans, ceil(index->pages * 0.3333333));
 		num_sa_scans = Max(num_sa_scans, 1);
