@@ -20,7 +20,8 @@ WHERE c.opcname = 'bark_int4_array_ops';
 ------+------------+--------------+----------------------------+----------
  bark | integer[]  | integer      | bark_int4_array_marked_ops | no
  bark | integer[]  | integer      | bark_int4_array_ops        | no
-(2 rows)
+ bark | integer[]  | integer      | bark_int4_array_range_ops  | no
+(3 rows)
 
 \dAp bark bark_int4_array_ops
                                   List of support functions of operator families
@@ -276,19 +277,28 @@ SELECT bark_index_check('mk_one_a');
 (1 row)
 
 DROP TABLE mk_one;
--- Scans of such an index are refused until they are implemented, so no
--- query can return a row once per key.
+-- Scans of such an index return each row once, whatever its keys
+-- (bark_multikey_scan has the scan tests).
 SET enable_seqscan = off;
 SELECT count(*) FROM mk_t WHERE a && '{2}';
-ERROR:  multikey scans are not implemented yet
-DETAIL:  Index "mk_a_incl" has a column with a multikey operator class.
+ count 
+-------
+     3
+(1 row)
+
 SELECT count(*) FROM mk_t WHERE a IS NULL;
-ERROR:  multikey scans are not implemented yet
-DETAIL:  Index "mk_a_incl" has a column with a multikey operator class.
+ count 
+-------
+     1
+(1 row)
+
 RESET enable_seqscan;
 SELECT count(*) FROM mk_t WHERE a && '{2}';
-ERROR:  multikey scans are not implemented yet
-DETAIL:  Index "mk_a_incl" has a column with a multikey operator class.
+ count 
+-------
+     3
+(1 row)
+
 -- The index is not ordered by the extracted column's values, nor by any
 -- column after it (plancat gives it no sort family there), so queries that
 -- want an order on the column plan and run without asking the index for
@@ -345,12 +355,12 @@ RESET enable_hashjoin;
 RESET enable_nestloop;
 SET enable_seqscan = off;
 EXPLAIN (COSTS OFF) SELECT id FROM mk_t ORDER BY id, a;
-                 QUERY PLAN                  
----------------------------------------------
+               QUERY PLAN               
+----------------------------------------
  Incremental Sort
    Sort Key: id, a
    Presorted Key: id
-   ->  Index Only Scan using mk_id_a on mk_t
+   ->  Index Scan using mk_id_a on mk_t
 (4 rows)
 
 RESET enable_seqscan;
