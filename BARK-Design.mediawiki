@@ -1160,7 +1160,11 @@ Before inserting a row's keys, BARK inserts each of its markers that is
 not in the index yet, never coalesced, by the normal path. Markers are
 never removed, so a backend caches the markers it has seen present in
 <code>rd_amcache</code>, and a row whose markers are all cached costs
-nothing. CREATE INDEX writes each distinct marker once. Every reader skips
+nothing. CREATE INDEX writes each distinct marker once (tuplesort refuses two
+tuples with one heap TID, so parallel participants spool their copies with
+TIDs of their own on block InvalidBlockNumber, and the load writes the
+reserved one). A marker is a SINGLE entry, so a marker key too large for a
+page is refused. Every reader skips
 an entry with the reserved TID: bark_readpage before matching, barkbulkdelete
 before its callback, bottom-up deletion before offering TIDs to the table
 AM, the later K2 kill hints, and amcheck, which accepts the reserved TID
@@ -1196,8 +1200,8 @@ are not touched.
 '''Statistics.''' The cost model needs keys per row, ''K''. The meta page
 gains <code>uint64 bark_nkeys</code>, the number of (key, TID) members
 without markers. CREATE INDEX stores the count it inserted, and VACUUM, which
-already visits every member, stores the count it leaves (logged like the
-flag, once per VACUUM). barkcostestimate reads the meta page, as
+already visits every member (its cleanup-only scan too), stores the count
+it leaves (logged like the flag, once per VACUUM). barkcostestimate reads the meta page, as
 gincostestimate does, but only for an index with an extracted column, and
 takes ''K'' as <code>bark_nkeys</code> over the heap's reltuples, or 1 if the
 flag is clear. Between VACUUMs, ''K'' is as old as the last one.
