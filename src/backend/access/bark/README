@@ -255,10 +255,11 @@ rarely moves at all.
 A key with a NULL in any key column is not checked, and is unique, unless
 the index is NULLS NOT DISTINCT; then it is checked as any key is, since
 bark_compare_itups treats two NULLs in a column as equal.  CREATE INDEX of a
-unique index checks each sorted tuple against the previous one by the same
-rule (bark_load), and its second pass checks oversized keys by inserting
-them with UNIQUE_CHECK_YES.  A unique index never coalesces, so it holds
-only SINGLE and OVERSIZED entries.
+unique index checks each sorted live tuple against the previous live one by
+the same rule (bark_load), and its second pass checks live oversized keys by
+inserting them with UNIQUE_CHECK_YES; rows the table AM passes as not alive
+are indexed but not checked (see "CREATE INDEX").  A unique index never
+coalesces, so it holds only SINGLE and OVERSIZED entries.
 
 A unique BARK index can be an ON CONFLICT arbiter, a foreign key's
 referenced index and a replica identity, but no constraint can use one
@@ -606,6 +607,31 @@ GIN's are, and the report for a comparator registered under the storage
 type says so.  A class in a BARK family without procedure 7 is not
 extracted (bark_opfamily_extracts) and is used as a scalar class, but
 amvalidate reports it invalid.
+
+CREATE INDEX
+------------
+
+bark_build (barksort.c) scans the heap through table_index_build_scan into a
+tuplesort ordered by (key, heap TID), then writes the tree bottom-up, as
+nbtsort.c does; keys too large for the sort go in afterwards, by a second
+heap scan and the normal insert path.  A parallel build lets workers scan
+and sort; only the leader writes pages.
+
+The build indexes every row the table AM passes to its callback.  The table
+AM passes some with tupleIsAlive false: RECENTLY_DEAD rows, and rows deleted
+by a transaction still in progress (heapam_index_build_range_scan).  Such a
+row is no longer live, but a snapshot older than the build may still see it
+and may scan the new index, so it must be indexed; the flag says only that
+the row must not take part in the uniqueness check.  A truly dead row is
+never passed.  In a unique index those rows are sorted apart, and bark_load
+merges them into the live rows' order without checking them, as nbtsort.c's
+_bt_load merges spool2; the oversized pass inserts them with
+UNIQUE_CHECK_NO.  The fact is transient: it lives only in the build's sorts
+and is never recorded on a page (no entry bit, and in particular not
+BARK_IS_DELETE_MARKED, which belongs to the delete-marking protocol).  Each
+entry is the same entry insert would have made for the row.  The build's
+index_tuples count includes them, as nbtree's does; the table AM's
+reltuples does not.
 
 VACUUM
 ------
