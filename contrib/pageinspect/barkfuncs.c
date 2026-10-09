@@ -155,8 +155,8 @@ bark_metap(PG_FUNCTION_ARGS)
 	Page		page;
 	BarkMetaPageData *meta;
 	TupleDesc	tupleDesc;
-	Datum		values[5];
-	bool		nulls[5] = {0};
+	Datum		values[7];
+	bool		nulls[7] = {0};
 	int			j = 0;
 
 	check_superuser();
@@ -181,6 +181,12 @@ bark_metap(PG_FUNCTION_ARGS)
 	else
 		nulls[j] = true;
 	j++;
+
+	/* An index whose meta page predates these has neither: 0. */
+	values[j++] = Int64GetDatum(BarkMetaHasField(page, bark_flags) ?
+								meta->bark_flags : 0);
+	values[j++] = Int64GetDatum(BarkMetaHasField(page, bark_nkeys) ?
+								(int64) meta->bark_nkeys : 0);
 
 	Assert(j == tupleDesc->natts);
 	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupleDesc, values,
