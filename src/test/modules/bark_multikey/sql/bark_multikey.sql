@@ -118,8 +118,8 @@ SELECT * FROM bark_multikey_meta('mk_one_a');
 SELECT bark_index_check('mk_one_a');
 DROP TABLE mk_one;
 
--- Scans of such an index are refused until they are implemented, so no
--- query can return a row once per key.
+-- Scans of such an index return each row once, whatever its keys
+-- (bark_multikey_scan has the scan tests).
 SET enable_seqscan = off;
 SELECT count(*) FROM mk_t WHERE a && '{2}';
 SELECT count(*) FROM mk_t WHERE a IS NULL;

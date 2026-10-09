@@ -120,6 +120,7 @@ INSERT INTO s SELECT g, ARRAY(SELECT (g * 7 + i * 13) % 5000
   FROM generate_series(1, 1500) g;
 INSERT INTO s VALUES (4, '{NULL,3,3}');
 CREATE INDEX s_id_a ON s USING bark (id, a bark_int4_array_marked_ops);
+CREATE INDEX s_a_scan ON s USING bark (a bark_int4_array_ops);
 DELETE FROM s WHERE id % 4 = 0;
 VACUUM s;
 INSERT INTO t VALUES (3000, '{1,2,3}');
@@ -149,6 +150,29 @@ is( $standby->safe_psql(
 		'postgres',
 		"SELECT multikey, nkeys > 0 FROM bark_multikey_meta('s_a')"),
 	"t|t", 'the standby has the flag and the count');
+
+# Scans of a multikey index on the standby return the primary's rows, each
+# once, by index and by bitmap scan.  (The marked class has no procedure 8,
+# so s_a and s_id_a cannot be scanned on the multikey column.)
+foreach my $qual (
+	"a && '{7,13,20,33}'", "a @> '{}'", "a <@ '{3}'",
+	"id < 500 AND a && '{7,13,20,33}'")
+{
+	my $q =
+	  "SELECT count(*) || ':' || count(DISTINCT id) || ':' || coalesce(sum(id), 0) FROM s WHERE $qual";
+	my $want = $node->safe_psql('postgres',
+		"SET enable_indexscan = off; SET enable_bitmapscan = off; $q");
+	foreach my $mode ('enable_bitmapscan', 'enable_indexscan')
+	{
+		is( $standby->safe_psql(
+				'postgres',
+				"SET enable_seqscan = off; SET enable_indexonlyscan = off; "
+				  . "SET enable_bitmapscan = off; SET enable_indexscan = off; "
+				  . "SET $mode = on; $q"),
+			$want,
+			"standby $mode scan of s WHERE $qual matches the primary");
+	}
+}
 
 # wal_consistency_checking would have stopped the standby on a mismatch.
 ok($standby->safe_psql('postgres', 'SELECT 1') eq '1',
