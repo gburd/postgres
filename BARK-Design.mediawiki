@@ -1106,10 +1106,9 @@ column of every BARK index, scalar ones included.
 * '''10-13''' GIN's extractQuery, consistent, comparePartial and
   triConsistent (GIN's 3, 4, 5, 6), with GIN's signatures. barkvalidate
   accepts them from M1, so catalogs need not change; scans use them from M2.
-* '''14''' fetch, <code>value (key)</code>, optional: GiST's fetch in
-  purpose, not in signature (GiST's is <code>internal (internal)</code>).
-  It rebuilds the column value from a key, for index-only scans (see
-  "Scans").
+* '''14''' fetch, <code>value (key)</code>, optional and reserved:
+  barkvalidate accepts it, BARK does not call it (see "Index-only scans"
+  under "Scans": a key cannot be turned back into its row's value).
 
 '''Which interface first.''' BARK implements pg_extended_btree's (7-9) in
 M1. Its queries are key ranges in key order, which BARK's scan already walks:
@@ -1374,12 +1373,14 @@ Parallel CREATE INDEX is unaffected.
 '''Index-only scans.''' The entry holds a key, not the column's value, and
 its type is the class's storage type, so an index-only scan cannot return
 the extracted column. bark_canreturn, which the planner calls per column
-(index_can_return in plancat), answers false for it unless the class has
-procedure 14. Then the scan returns <code>fetch(key)</code> of the row's
-first entry. Procedure 14 is for classes whose single key determines the
-value (a scalar value under a class that also extracts arrays, say); a
-class that cannot rebuild the value from one key does not provide it. Fixed
-columns are returned as now, with the seen set.
+(index_can_return in plancat), answers false for it. A key does not
+determine its row's value: a row with several keys has an entry per key,
+and the NULL key stands for a NULL value, an empty value and a NULL
+element alike, so a value rebuilt from one entry could be a wrong value,
+which BARK never returns. (The design once let procedure 14 rebuild the
+value; M1c found the NULL key ambiguous, and the lead dropped it: MongoDB
+does not cover queries on a multikey path either.) Fixed columns are
+returned as now, with the seen set.
 
 '''As built (M1c).''' The scan follows this section, with these choices the
 section left open or that differ from it:
@@ -1410,11 +1411,8 @@ section left open or that differ from it:
 * Until M1d gives the planner per-index answers, the scan refuses rather
   than answers wrong: a change of direction with the set in use, a
   parallel scan that needs the set, and an ordering key on the extracted
-  column raise errors. bark_canreturn already answers false for the
-  extracted column without procedure 14 (an index-only scan would otherwise
-  return keys as values); with procedure 14 the scan returns an
-  <code>xs_hitup</code> whose extracted column is <code>fetch(key)</code>,
-  NULL for the NULL key.
+  column raise errors. bark_canreturn answers false for the extracted
+  column (an index-only scan would otherwise return keys as values).
 * A DEBUG1 message at scan start says whether the scan uses a seen set, for
   tests.
 
@@ -1570,8 +1568,8 @@ Nothing in this list changes the on-disk format.
 * Wildcard and path-projection operator classes (M5). M1 provides markers,
   boundaries and compound keys for them.
 * More than one extracted column in one index.
-* An index-only scan of the extracted column without procedure 14; a
-  backward or scroll scan, or a parallel amgettuple scan, on such an index.
+* An index-only scan of the extracted column; a backward or scroll scan, or
+  a parallel amgettuple scan, on such an index.
 * A WAL record for several keys of a row on one leaf.
 * Clearing the multikey flag or a marker without REINDEX.
 * Key statistics in ANALYZE, and any operator class semantics: type order,
