@@ -6343,6 +6343,290 @@ SELECT bark_index_check('bark_fpu_idx');
 
 DROP TABLE bark_fpu;
 DROP FUNCTION bark_fpu_dup(int);
+-- UNIQUE ... NULLS NOT DISTINCT: a NULL is equal to a NULL, so a key with
+-- NULLs is checked like any other, by inserts, by the build's duplicate check
+-- and by INSERT ... ON CONFLICT.  Every statement runs against a btree and a
+-- bark copy of the same table (bark_nnd_try substitutes the table for %1$I
+-- and %1$s and the access method for %2$s) and must have the same outcome
+-- and leave the same rows on both; it shows the outcome and the rows once
+-- when they agree, both when they do not.
+CREATE TABLE bark_nnd_btree (a int, b int, v text) WITH (autovacuum_enabled = off);
+CREATE TABLE bark_nnd_bark (a int, b int, v text) WITH (autovacuum_enabled = off);
+CREATE FUNCTION bark_nnd_try(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  res text[] := '{}';
+  tab text;
+  msg text;
+  det text;
+  rows text;
+BEGIN
+  FOREACH tab IN ARRAY ARRAY['bark_nnd_btree', 'bark_nnd_bark'] LOOP
+    BEGIN
+      EXECUTE format(q, tab, substr(tab, 10));
+      msg := 'ok';
+    EXCEPTION WHEN unique_violation THEN
+      GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT, det = PG_EXCEPTION_DETAIL;
+      msg := replace(msg, tab, 't') || ' ' || det;
+    END;
+    EXECUTE format($r$SELECT CASE WHEN count(*) > 10 THEN count(*) || ' rows'
+      ELSE string_agg(concat_ws('/', coalesce(a::text, '-'),
+                                coalesce(b::text, '-'), v), ' '
+                      ORDER BY a, b, v) END FROM %I$r$, tab) INTO rows;
+    res := res || (msg || ' [' || coalesce(rows, '') || ']');
+  END LOOP;
+  IF res[1] = res[2] THEN
+    RETURN res[1];
+  END IF;
+  RETURN 'btree: ' || res[1] || ' bark: ' || res[2];
+END $$;
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_u ON %1$I USING %2$s (a) NULLS NOT DISTINCT');
+ bark_nnd_try 
+--------------
+ ok []
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (1, 1, ''one''), (NULL, 1, ''first'')');
+      bark_nnd_try      
+------------------------
+ ok [1/1/one -/1/first]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 2, ''second'')');	-- fails
+                                              bark_nnd_try                                               
+---------------------------------------------------------------------------------------------------------
+ duplicate key value violates unique constraint "t_u" Key (a)=(null) already exists. [1/1/one -/1/first]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (2), (NULL)');			-- fails
+                                              bark_nnd_try                                               
+---------------------------------------------------------------------------------------------------------
+ duplicate key value violates unique constraint "t_u" Key (a)=(null) already exists. [1/1/one -/1/first]
+(1 row)
+
+SELECT bark_nnd_try('UPDATE %I SET a = NULL WHERE a = 1');			-- fails
+                                              bark_nnd_try                                               
+---------------------------------------------------------------------------------------------------------
+ duplicate key value violates unique constraint "t_u" Key (a)=(null) already exists. [1/1/one -/1/first]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 3, ''skip'') ON CONFLICT (a) DO NOTHING');
+      bark_nnd_try      
+------------------------
+ ok [1/1/one -/1/first]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 4, ''upd'') ON CONFLICT (a) DO UPDATE SET b = excluded.b, v = excluded.v');
+     bark_nnd_try     
+----------------------
+ ok [1/1/one -/4/upd]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (3, 5, ''new'') ON CONFLICT (a) DO UPDATE SET v = excluded.v');
+         bark_nnd_try         
+------------------------------
+ ok [1/1/one 3/5/new -/4/upd]
+(1 row)
+
+-- A dead NULL entry is no conflict.
+SELECT bark_nnd_try('DELETE FROM %I WHERE a IS NULL');
+     bark_nnd_try     
+----------------------
+ ok [1/1/one 3/5/new]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 6, ''again'')');
+          bark_nnd_try          
+--------------------------------
+ ok [1/1/one 3/5/new -/6/again]
+(1 row)
+
+SELECT bark_index_check('bark_nnd_bark_u');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+-- A build over duplicate NULLs fails as btree's does; the default (NULLS
+-- DISTINCT) index is built over them and takes more.
+SELECT bark_nnd_try('DROP INDEX %1$s_u');
+          bark_nnd_try          
+--------------------------------
+ ok [1/1/one 3/5/new -/6/again]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 7, ''dup'')');
+              bark_nnd_try              
+----------------------------------------
+ ok [1/1/one 3/5/new -/6/again -/7/dup]
+(1 row)
+
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_u ON %1$I USING %2$s (a) NULLS NOT DISTINCT');	-- fails
+                                             bark_nnd_try                                              
+-------------------------------------------------------------------------------------------------------
+ could not create unique index "t_u" Key (a)=(null) is duplicated. [1/1/one 3/5/new -/6/again -/7/dup]
+(1 row)
+
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_u ON %1$I USING %2$s (a)');
+              bark_nnd_try              
+----------------------------------------
+ ok [1/1/one 3/5/new -/6/again -/7/dup]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 8, ''more''), (NULL, 9, ''more'')');
+                       bark_nnd_try                       
+----------------------------------------------------------
+ ok [1/1/one 3/5/new -/6/again -/7/dup -/8/more -/9/more]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (1, 10, ''dup'')');		-- fails
+                                                              bark_nnd_try                                                              
+----------------------------------------------------------------------------------------------------------------------------------------
+ duplicate key value violates unique constraint "t_u" Key (a)=(1) already exists. [1/1/one 3/5/new -/6/again -/7/dup -/8/more -/9/more]
+(1 row)
+
+-- Two columns: keys conflict when they have their NULLs in the same columns
+-- and are equal elsewhere.
+SELECT bark_nnd_try('DROP INDEX %1$s_u');
+                       bark_nnd_try                       
+----------------------------------------------------------
+ ok [1/1/one 3/5/new -/6/again -/7/dup -/8/more -/9/more]
+(1 row)
+
+SELECT bark_nnd_try('TRUNCATE %I');
+ bark_nnd_try 
+--------------
+ ok []
+(1 row)
+
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_u ON %1$I USING %2$s (a, b) NULLS NOT DISTINCT');
+ bark_nnd_try 
+--------------
+ ok []
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (1, NULL), (2, NULL), (NULL, 1), (NULL, NULL)');
+     bark_nnd_try     
+----------------------
+ ok [1/- 2/- -/1 -/-]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (1, NULL)');				-- fails
+                                                bark_nnd_try                                                 
+-------------------------------------------------------------------------------------------------------------
+ duplicate key value violates unique constraint "t_u" Key (a, b)=(1, null) already exists. [1/- 2/- -/1 -/-]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, NULL)');			-- fails
+                                                  bark_nnd_try                                                  
+----------------------------------------------------------------------------------------------------------------
+ duplicate key value violates unique constraint "t_u" Key (a, b)=(null, null) already exists. [1/- 2/- -/1 -/-]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (NULL, 2), (3, NULL)');
+         bark_nnd_try         
+------------------------------
+ ok [1/- 2/- 3/- -/1 -/2 -/-]
+(1 row)
+
+SELECT bark_index_check('bark_nnd_bark_u');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+SELECT bark_nnd_try('DROP INDEX %1$s_u');
+         bark_nnd_try         
+------------------------------
+ ok [1/- 2/- 3/- -/1 -/2 -/-]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (2, NULL, ''dup'')');
+             bark_nnd_try             
+--------------------------------------
+ ok [1/- 2/-/dup 2/- 3/- -/1 -/2 -/-]
+(1 row)
+
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_u ON %1$I USING %2$s (a, b) NULLS NOT DISTINCT');	-- fails
+                                               bark_nnd_try                                                
+-----------------------------------------------------------------------------------------------------------
+ could not create unique index "t_u" Key (a, b)=(2, null) is duplicated. [1/- 2/-/dup 2/- 3/- -/1 -/2 -/-]
+(1 row)
+
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_u ON %1$I USING %2$s (a, b)');
+             bark_nnd_try             
+--------------------------------------
+ ok [1/- 2/-/dup 2/- 3/- -/1 -/2 -/-]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I VALUES (1, NULL)');
+               bark_nnd_try               
+------------------------------------------
+ ok [1/- 1/- 2/-/dup 2/- 3/- -/1 -/2 -/-]
+(1 row)
+
+-- A tall tree with its rightmost leaf cached by ascending inserts: a NULL
+-- key sorts after every other key, so its insert takes the fast path to
+-- that leaf, and is checked there.
+SELECT bark_nnd_try('DROP INDEX %1$s_u');
+               bark_nnd_try               
+------------------------------------------
+ ok [1/- 1/- 2/-/dup 2/- 3/- -/1 -/2 -/-]
+(1 row)
+
+SELECT bark_nnd_try('TRUNCATE %I');
+ bark_nnd_try 
+--------------
+ ok []
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I (v) SELECT lpad(g::text, 400, ''0'') FROM generate_series(1, 3000) g');
+  bark_nnd_try  
+----------------
+ ok [3000 rows]
+(1 row)
+
+SELECT bark_nnd_try('CREATE UNIQUE INDEX %1$s_v ON %1$I USING %2$s (v) NULLS NOT DISTINCT');
+  bark_nnd_try  
+----------------
+ ok [3000 rows]
+(1 row)
+
+SELECT bark_nnd_try('INSERT INTO %I (v) SELECT lpad(g::text, 400, ''0'') FROM generate_series(3001, 3100) g');
+  bark_nnd_try  
+----------------
+ ok [3100 rows]
+(1 row)
+
+INSERT INTO bark_nnd_btree (a) VALUES (1);
+DO $$
+DECLARE
+  b0 bigint := pg_stat_get_xact_idx_blocks_fetched('bark_nnd_bark_v'::regclass);
+BEGIN
+  INSERT INTO bark_nnd_bark (a) VALUES (1);
+  RAISE NOTICE 'NULL key insert read one block: %',
+    pg_stat_get_xact_idx_blocks_fetched('bark_nnd_bark_v'::regclass) - b0 = 1;
+END $$;
+NOTICE:  NULL key insert read one block: t
+SELECT bark_nnd_try('INSERT INTO %I (a) VALUES (2)');				-- fails
+                                          bark_nnd_try                                           
+-------------------------------------------------------------------------------------------------
+ duplicate key value violates unique constraint "t_v" Key (v)=(null) already exists. [3101 rows]
+(1 row)
+
+SELECT count(*) FROM bark_nnd_bark WHERE v IS NULL;
+ count 
+-------
+     1
+(1 row)
+
+SELECT bark_index_check('bark_nnd_bark_v');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE bark_nnd_btree, bark_nnd_bark;
+DROP FUNCTION bark_nnd_try(text);
 -- Required keys: a bound on a later column ends the scan while every earlier
 -- column has an equality key, as nbtree's _bt_check_compare does.  The
 -- results match a sequential scan on ASC and DESC/NULLS FIRST indexes, in

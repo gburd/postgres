@@ -154,6 +154,7 @@ typedef struct BarkBuildState
 	BlockNumber nblocks;		/* next block number to assign (after meta) */
 	int			nkeyatts;		/* number of key attributes */
 	bool		isunique;		/* enforce uniqueness during load */
+	bool		nullsnotdistinct;	/* unique index: NULLS NOT DISTINCT */
 	bool		allequalimage;	/* bark_allequalimage(index) */
 	bool		has_oversized;	/* saw a key too large to sort/load inline */
 	Size		sizebound;		/* row-independent part of the size bound */
@@ -225,7 +226,7 @@ typedef struct BarkLeader
 	BufferUsage *bufferusage;
 } BarkLeader;
 
-/* True when any key attribute of `itup` is NULL (NULLs are distinct in SQL). */
+/* True when any key attribute of `itup` is NULL. */
 static bool
 bark_itup_has_null_key(Relation index, int nkeyatts, IndexTuple itup)
 {
@@ -908,12 +909,15 @@ bark_load(BarkBuildState *bs, Tuplesortstate *sortstate)
 		 * A unique index must reject duplicate keys at build time too.  The
 		 * sort placed equal keys adjacently (with a heap-TID tiebreak), so
 		 * comparing each tuple with its predecessor catches every duplicate.
-		 * NULLs are distinct in SQL, so a key containing any NULL never
-		 * conflicts (bark_itup_has_null_key).
+		 * NULLs are distinct by default, so a key containing any NULL never
+		 * conflicts; under NULLS NOT DISTINCT bark_compare_itups's NULL-equals-
+		 * NULL decides, as in the btree tuplesort's own check.  Two equal keys
+		 * have their NULLs in the same columns, so testing itup alone is
+		 * enough.
 		 */
 		if (bs->isunique && prev != NULL &&
-			!bark_itup_has_null_key(bs->index, bs->nkeyatts, itup) &&
-			!bark_itup_has_null_key(bs->index, bs->nkeyatts, prev) &&
+			(bs->nullsnotdistinct ||
+			 !bark_itup_has_null_key(bs->index, bs->nkeyatts, itup)) &&
 			bark_compare_itups(bs->keyinfo, bs->index, itup, prev) == 0)
 		{
 			Datum		values[INDEX_MAX_KEYS];
@@ -1387,6 +1391,7 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	bs.nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	bs.nblocks = 1;				/* block 0 is reserved for the meta page */
 	bs.isunique = indexInfo->ii_Unique;
+	bs.nullsnotdistinct = indexInfo->ii_NullsNotDistinct;
 	bs.allequalimage = bark_allequalimage(index);
 	bs.indexInfo = indexInfo;	/* for the oversized second-pass insert */
 	bs.prefix = bark_prefix_enabled(index);

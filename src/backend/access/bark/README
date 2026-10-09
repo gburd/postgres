@@ -225,7 +225,10 @@ after it.  A unique check (nbtree's _bt_doinsert) descends on the key alone
 to the first leaf that can hold it, since the live entry of the key may be
 anywhere in the run; bark_check_unique scans right from there while keys
 are equal; the insert then steps right, with lock coupling, to the leaf the
-TID belongs on (bark_insert_stepright, _bt_stepright).
+TID belongs on (bark_insert_stepright, _bt_stepright).  A key with a NULL
+attribute skips the check unless the index is NULLS NOT DISTINCT; then it
+is checked like any other key, since the comparison treats two NULLs in a
+column as equal.  The build's duplicate check follows the same rule.
 
 As in nbtree's _bt_search_insert, an insert that placed its entry on the
 rightmost leaf of a tree whose root is at level 2 or higher caches that leaf
