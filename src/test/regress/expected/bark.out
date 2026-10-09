@@ -2328,6 +2328,69 @@ EXPLAIN (COSTS OFF) SELECT * FROM bark_part WHERE b = 0 AND c BETWEEN 1 AND 50;
 (4 rows)
 
 DROP TABLE bark_part;
+-- Equality arrays bound the scan on every column of its equality prefix, in
+-- either direction, with one descent per combination of their elements, as
+-- for btree.  Costing an array past column 1 as a filter would charge these
+-- scans the whole a group (half the index) and prefer a sequential scan.
+CREATE TEMP TABLE bark_cost_arr (a int, b int, c text);
+INSERT INTO bark_cost_arr
+  SELECT g % 2, (g / 2) % 1000, repeat('x', 100) || g
+  FROM generate_series(1, 50000) g;
+CREATE INDEX bark_cost_arr_idx ON bark_cost_arr USING bark (a, b, c);
+VACUUM ANALYZE bark_cost_arr;
+EXPLAIN (COSTS OFF)
+  SELECT * FROM bark_cost_arr WHERE a = 1 AND b IN (751, 84, 417);
+                            QUERY PLAN                             
+-------------------------------------------------------------------
+ Index Only Scan using bark_cost_arr_idx on bark_cost_arr
+   Index Cond: ((a = 1) AND (b = ANY ('{751,84,417}'::integer[])))
+(2 rows)
+
+EXPLAIN (COSTS OFF)
+  SELECT * FROM bark_cost_arr WHERE a = 1 AND b IN (751, 84, 417)
+  ORDER BY b DESC;
+                            QUERY PLAN                             
+-------------------------------------------------------------------
+ Index Only Scan Backward using bark_cost_arr_idx on bark_cost_arr
+   Index Cond: ((a = 1) AND (b = ANY ('{751,84,417}'::integer[])))
+(2 rows)
+
+EXPLAIN (COSTS OFF)
+  SELECT * FROM bark_cost_arr WHERE a IN (1, 0) AND b = 751;
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Index Only Scan using bark_cost_arr_idx on bark_cost_arr
+   Index Cond: ((a = ANY ('{1,0}'::integer[])) AND (b = 751))
+(2 rows)
+
+DROP INDEX bark_cost_arr_idx;
+CREATE INDEX bark_cost_arr_idx ON bark_cost_arr USING btree (a, b, c);
+EXPLAIN (COSTS OFF)
+  SELECT * FROM bark_cost_arr WHERE a = 1 AND b IN (751, 84, 417);
+                            QUERY PLAN                             
+-------------------------------------------------------------------
+ Index Only Scan using bark_cost_arr_idx on bark_cost_arr
+   Index Cond: ((a = 1) AND (b = ANY ('{751,84,417}'::integer[])))
+(2 rows)
+
+EXPLAIN (COSTS OFF)
+  SELECT * FROM bark_cost_arr WHERE a = 1 AND b IN (751, 84, 417)
+  ORDER BY b DESC;
+                            QUERY PLAN                             
+-------------------------------------------------------------------
+ Index Only Scan Backward using bark_cost_arr_idx on bark_cost_arr
+   Index Cond: ((a = 1) AND (b = ANY ('{751,84,417}'::integer[])))
+(2 rows)
+
+EXPLAIN (COSTS OFF)
+  SELECT * FROM bark_cost_arr WHERE a IN (1, 0) AND b = 751;
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Index Only Scan using bark_cost_arr_idx on bark_cost_arr
+   Index Cond: ((a = ANY ('{1,0}'::integer[])) AND (b = 751))
+(2 rows)
+
+DROP TABLE bark_cost_arr;
 -- VACUUM reports the index's live heap TIDs, as nbtree does, not its entries:
 -- the planner reads pg_class.reltuples of a partial index as its row count.
 -- A scan that only counts (no dead rows) cannot see a LIST or POSTING
@@ -4586,7 +4649,6 @@ SELECT count(*), sum(a) FROM
 RESET enable_mergejoin;
 DROP TABLE bark_mj_o, bark_mj_list, bark_mj_post, bark_mj_misc, bark_mj_desc,
   bark_mj_wide, bark_mj_knn, bark_mj_dist;
-DROP FUNCTION bark_mj_check(text, text);
 -- KNN paths the scan can answer.  An ordering operator on a later column of
 -- a multicolumn BARK index gets no KNN path (the scan walks outward in the
 -- leading column's order only), and a SCROLL cursor over a KNN scan is
@@ -6865,5 +6927,284 @@ SELECT bark_req_pages('SELECT a, b, c FROM bark_req WHERE a = 3 AND b = 517') AS
  t                 | t                          | t                 | t
 (1 row)
 
+-- Required array keys: the equality keys of the leading columns, scalars and
+-- arrays alike, position the scan when one of them is an array, as in
+-- nbtree.  The scan visits the combinations of their elements in index order
+-- in both directions, ends a combination's run at a bound on the next
+-- column, and re-descends to the next combination when it starts beyond the
+-- page.  Arrays after the first column without an equality only filter.
+-- Each query is checked against a sequential scan, as a plain and an
+-- index-only scan, forward and backward, on an ASC index and on one with
+-- DESC and NULLS FIRST columns.
+CREATE FUNCTION bark_arr_run(fwd text, bwd text) RETURNS SETOF text
+LANGUAGE plpgsql AS $$
+DECLARE
+  w text;
+  o text;
+  t text;
+BEGIN
+  FOREACH w IN ARRAY ARRAY[
+    'a IN (7, 3, 2) AND b = 517', 'a = 3 AND b IN (900, 5, 517, 5)',
+    'a IN (3, 9) AND b IN (5, 517, 999)',
+    'a IN (3, 9) AND b IN (5, 517) AND c IN (1, 6)',
+    'a IN (3, 9) AND b = 5 AND c IN (1, 6)',
+    'a = 3 AND b IN (5, 517) AND c = 2', 'a IN (3, 9) AND b < 3',
+    'a IN (3, 9) AND b > 997', 'a IN (3, 9) AND b BETWEEN 500 AND 502',
+    'a IN (3, 9) AND b IN (5, 517) AND c < 3',
+    'a IN (3, 9) AND b IN (5, 517) AND c >= 4',
+    'a = 3 AND b IN (5, 517) AND c > 2 AND c < 6',
+    'a IN (3, NULL) AND b = ANY (ARRAY[5, NULL, 517])',
+    'a IN (3, 9) AND b = ANY (''{}''::int[])',
+    'a = ANY (''{3, 4294967299}''::int8[]) AND b = ANY (''{5, 517, -4294967291}''::int8[])',
+    'a IN (3, 9) AND b = 517::int8', 'a IS NULL AND b IN (5, 517)',
+    'a IN (3, 9) AND b IS NULL', 'a IN (3, 9) AND b IN (5, 517) AND c IS NULL',
+    'a IN (2, 3, 4) AND a IN (3, 4, 8) AND b IN (5, 517)',
+    'a = 3 AND a IN (3, 4) AND b IN (5, 517)', 'a IN (3, 9) AND a >= 4 AND b = 5',
+    'b IN (5, 517) AND c = 2', 'a IN (3, 9) AND c IN (1, 6)',
+    'a IN (0, 9) AND b IN (0, 999)', 'a IN (-1, 3, 10) AND b IN (-5, 517, 2000)',
+    'a IN (3, 9) AND b IN (5, 517) AND b > 6']
+  LOOP
+    FOREACH o IN ARRAY ARRAY[fwd, bwd] LOOP
+      FOREACH t IN ARRAY ARRAY['a, b, c, v', 'a, b, c'] LOOP
+        RETURN NEXT bark_req_check(
+          'SELECT ' || t || ' FROM bark_req WHERE ' || w || ' ORDER BY ' || o);
+      END LOOP;
+    END LOOP;
+  END LOOP;
+END $$;
+-- A scroll cursor moving both ways across combinations and pages returns
+-- what a sequential scan's does, through a plain or an index-only scan
+-- (ios).  q returns a, b and c, which can tie, so rows are compared on them.
+CREATE FUNCTION bark_arr_scroll(q text, ios bool) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+  c refcursor := 'bark_arr_c';
+  cmds text[] := ARRAY['NEXT', 'NEXT', 'FORWARD 12', 'PRIOR', 'BACKWARD 7',
+    'MOVE FORWARD 30', 'NEXT', 'PRIOR', 'PRIOR', 'MOVE BACKWARD 20', 'PRIOR',
+    'LAST', 'PRIOR', 'BACKWARD 15', 'FIRST', 'MOVE FORWARD 60', 'NEXT',
+    'MOVE FORWARD ALL', 'PRIOR', 'BACKWARD 12', 'ABSOLUTE 45', 'RELATIVE -10',
+    'NEXT', 'FORWARD 22', 'PRIOR', 'MOVE BACKWARD ALL', 'NEXT'];
+  cmd text;
+  how text;
+  va int;
+  vb int;
+  vc int;
+  res text[] := '{}';
+  out text;
+BEGIN
+  FOREACH how IN ARRAY ARRAY['index', 'seq'] LOOP
+    PERFORM set_config('enable_seqscan', (how = 'seq')::text, true);
+    PERFORM set_config('enable_indexscan', (how = 'index')::text, true);
+    PERFORM set_config('enable_indexonlyscan', (how = 'index' AND ios)::text,
+                       true);
+    PERFORM set_config('enable_bitmapscan', 'off', true);
+    PERFORM set_config('enable_sort', (how = 'seq')::text, true);
+    OPEN c SCROLL FOR EXECUTE q;
+    out := '';
+    FOREACH cmd IN ARRAY cmds LOOP
+      IF cmd LIKE 'MOVE%' THEN
+        EXECUTE format('%s FROM bark_arr_c', cmd);
+      ELSE
+        EXECUTE format('FETCH %s FROM bark_arr_c', cmd) INTO va, vb, vc;
+        out := out || format('(%s,%s,%s)', va, vb, vc);
+      END IF;
+    END LOOP;
+    CLOSE c;
+    res := res || md5(out);
+  END LOOP;
+  RETURN CASE WHEN res[1] = res[2] THEN 'ok' ELSE 'mismatch: ' || q END;
+END $$;
+-- Index blocks read by q's index scan, heap fetches counted out, are at
+-- most lim.
+CREATE FUNCTION bark_arr_pages(q text, lim int) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+  plan json;
+  node json;
+  n int;
+BEGIN
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  EXECUTE 'EXPLAIN (ANALYZE, BUFFERS, COSTS OFF, TIMING OFF, FORMAT JSON) ' || q
+    INTO plan;
+  node := plan->0->'Plan';
+  WHILE node->>'Index Name' IS NULL LOOP
+    node := node->'Plans'->0;
+  END LOOP;
+  n := (node->>'Shared Hit Blocks')::int + (node->>'Shared Read Blocks')::int -
+    coalesce((node->>'Heap Fetches')::int, 0);
+  RETURN CASE WHEN n <= lim THEN 'ok'
+    ELSE format('%s blocks, %s searches: %s', n, node->>'Index Searches', q) END;
+END $$;
+BEGIN;
+SELECT r, count(*) FROM bark_arr_run('a, b, c', 'a DESC, b DESC, c DESC') r
+  GROUP BY r;
+ r  | count 
+----+-------
+ ok |   108
+(1 row)
+
+SELECT bark_arr_scroll('SELECT a, b, c FROM bark_req WHERE a IN (2, 5, 8) AND b IN (5, 517, 999) ORDER BY a, b, c', false) AS scroll_fwd,
+  bark_arr_scroll('SELECT a, b, c FROM bark_req WHERE a IN (2, 5, 8) AND b IN (5, 517, 999) ORDER BY a DESC, b DESC, c DESC', true) AS scroll_bwd_ios,
+  bark_arr_scroll('SELECT a, b, c FROM bark_req WHERE a = 5 AND b IN (5, 517, 999) AND c < 5 ORDER BY a, b, c', false) AS scroll_range;
+ scroll_fwd | scroll_bwd_ios | scroll_range 
+------------+----------------+--------------
+ ok         | ok             | ok
+(1 row)
+
+COMMIT;
+-- A merge join restores marks on its inner scan; the marked position
+-- carries the required keys' cursors.  Joined on a alone, an inner run spans
+-- several combinations and re-descents.
+CREATE TABLE bark_arr_o (a int, b int);
+INSERT INTO bark_arr_o SELECT a, b FROM generate_series(1, 9) a,
+  unnest(ARRAY[5, 6, 517, 999]) b, generate_series(1, 3);
+ANALYZE bark_arr_o;
+SELECT bark_mj_check('SELECT count(*), sum(i.v) FROM
+  (SELECT a, b FROM bark_arr_o ORDER BY a, b OFFSET 0) o
+  JOIN bark_req i ON o.a = i.a AND o.b = i.b
+  WHERE i.a IN (2, 5, 8) AND i.b IN (5, 517, 999)', 'bark_req_abc') AS mj_ab;
+       mj_ab       
+-------------------
+ ok (270,13520250)
+(1 row)
+
+SELECT bark_mj_check('SELECT count(*), sum(i.v) FROM
+  (SELECT a FROM bark_arr_o ORDER BY a OFFSET 0) o
+  JOIN bark_req i ON o.a = i.a
+  WHERE i.a IN (2, 5, 8) AND i.b IN (5, 517, 999)', 'bark_req_abc') AS mj_a;
+        mj_a        
+--------------------
+ ok (1080,54081000)
+(1 row)
+
+SELECT bark_mj_check('SELECT count(*), sum(i.c) FROM
+  (SELECT a FROM bark_arr_o ORDER BY a OFFSET 0) o
+  JOIN bark_req i ON o.a = i.a
+  WHERE i.a IN (2, 5, 8) AND i.b IN (5, 517, 999)', 'bark_req_abc') AS mj_a_ios;
+    mj_a_ios    
+----------------
+ ok (1080,3312)
+(1 row)
+
+-- A parallel scan does not re-descend: workers read the pages the shared
+-- cursor hands out, and the required keys only end page reads and the scan.
+BEGIN;
+SET LOCAL min_parallel_table_scan_size = 0;
+SET LOCAL min_parallel_index_scan_size = 0;
+SET LOCAL parallel_setup_cost = 0;
+SET LOCAL parallel_tuple_cost = 0;
+SET LOCAL max_parallel_workers_per_gather = 2;
+SET LOCAL enable_seqscan = off;
+SET LOCAL enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT count(*), sum(v) FROM bark_req
+  WHERE a IN (2, 5, 8) AND b < 500;
+                                    QUERY PLAN                                    
+----------------------------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather
+         Workers Planned: 2
+         ->  Partial Aggregate
+               ->  Parallel Index Scan using bark_req_abc on bark_req
+                     Index Cond: ((a = ANY ('{2,5,8}'::integer[])) AND (b < 500))
+(6 rows)
+
+SELECT count(*), sum(v) FROM bark_req WHERE a IN (2, 5, 8) AND b < 500;
+ count |    sum    
+-------+-----------
+ 15000 | 712500000
+(1 row)
+
+SELECT count(*), sum(v) FROM bark_req
+  WHERE a IN (2, 5, 8) AND b > 100 AND c IN (1, 2);
+ count |    sum    
+-------+-----------
+  7702 | 388982057
+(1 row)
+
+SET LOCAL max_parallel_workers_per_gather = 0;
+SET LOCAL enable_seqscan = on;
+SET LOCAL enable_indexscan = off;
+SET LOCAL enable_indexonlyscan = off;
+SELECT count(*), sum(v) FROM bark_req WHERE a IN (2, 5, 8) AND b < 500;
+ count |    sum    
+-------+-----------
+ 15000 | 712500000
+(1 row)
+
+SELECT count(*), sum(v) FROM bark_req
+  WHERE a IN (2, 5, 8) AND b > 100 AND c IN (1, 2);
+ count |    sum    
+-------+-----------
+  7702 | 388982057
+(1 row)
+
+COMMIT;
+-- Arrays on the first, the second and both columns read a few pages per
+-- combination (one descent each, about 3 pages), not the rest of each a
+-- group (about 35 pages); so does a range on the column after the arrays.
+SELECT q, bark_arr_pages('SELECT a, b, c FROM bark_req WHERE ' || q, lim)
+FROM (VALUES ('a IN (2, 5, 8) AND b = 517', 12),
+  ('a IN (2, 5, 8) AND b = 517 ORDER BY a DESC, b DESC', 12),
+  ('a = 5 AND b IN (5, 517, 999)', 12),
+  ('a = 5 AND b IN (5, 517, 999) ORDER BY a DESC, b DESC', 12),
+  ('a IN (2, 8) AND b IN (5, 999)', 16),
+  ('a IN (2, 8) AND b IN (5, 999) ORDER BY a DESC, b DESC', 16),
+  ('a IN (2, 8) AND b < 3', 9),
+  ('a IN (2, 8) AND b > 997 ORDER BY a DESC, b DESC', 9),
+  ('a IN (2, 3) AND b IN (5, 6, 7, 8)', 9)) v(q, lim);
+                           q                           | bark_arr_pages 
+-------------------------------------------------------+----------------
+ a IN (2, 5, 8) AND b = 517                            | ok
+ a IN (2, 5, 8) AND b = 517 ORDER BY a DESC, b DESC    | ok
+ a = 5 AND b IN (5, 517, 999)                          | ok
+ a = 5 AND b IN (5, 517, 999) ORDER BY a DESC, b DESC  | ok
+ a IN (2, 8) AND b IN (5, 999)                         | ok
+ a IN (2, 8) AND b IN (5, 999) ORDER BY a DESC, b DESC | ok
+ a IN (2, 8) AND b < 3                                 | ok
+ a IN (2, 8) AND b > 997 ORDER BY a DESC, b DESC       | ok
+ a IN (2, 3) AND b IN (5, 6, 7, 8)                     | ok
+(9 rows)
+
+DROP INDEX bark_req_abc;
+CREATE INDEX bark_req_abc ON bark_req USING bark (a DESC, b, c DESC NULLS FIRST);
+BEGIN;
+SELECT r, count(*) FROM bark_arr_run('a DESC, b, c DESC', 'a, b DESC, c') r
+  GROUP BY r;
+ r  | count 
+----+-------
+ ok |   108
+(1 row)
+
+SELECT bark_arr_scroll('SELECT a, b, c FROM bark_req WHERE a IN (2, 5, 8) AND b IN (5, 517, 999) ORDER BY a DESC, b, c DESC', false) AS scroll_fwd,
+  bark_arr_scroll('SELECT a, b, c FROM bark_req WHERE a IN (2, 5, 8) AND b IN (5, 517, 999) ORDER BY a, b DESC, c', true) AS scroll_bwd_ios;
+ scroll_fwd | scroll_bwd_ios 
+------------+----------------
+ ok         | ok
+(1 row)
+
+COMMIT;
+SELECT q, bark_arr_pages('SELECT a, b, c FROM bark_req WHERE ' || q, lim)
+FROM (VALUES ('a IN (2, 5, 8) AND b = 517 ORDER BY a DESC', 12),
+  ('a IN (2, 5, 8) AND b = 517 ORDER BY a', 12),
+  ('a = 5 AND b IN (5, 517, 999) ORDER BY a DESC, b', 12),
+  ('a = 5 AND b IN (5, 517, 999) ORDER BY a, b DESC', 12)) v(q, lim);
+                        q                        | bark_arr_pages 
+-------------------------------------------------+----------------
+ a IN (2, 5, 8) AND b = 517 ORDER BY a DESC      | ok
+ a IN (2, 5, 8) AND b = 517 ORDER BY a           | ok
+ a = 5 AND b IN (5, 517, 999) ORDER BY a DESC, b | ok
+ a = 5 AND b IN (5, 517, 999) ORDER BY a, b DESC | ok
+(4 rows)
+
+SELECT bark_index_check('bark_req_abc');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP TABLE bark_arr_o;
+DROP FUNCTION bark_arr_run(text, text), bark_arr_scroll(text, bool),
+  bark_arr_pages(text, int), bark_mj_check(text, text);
 DROP FUNCTION bark_req_check(text), bark_req_run(), bark_req_pages(text);
 DROP TABLE bark_req;
