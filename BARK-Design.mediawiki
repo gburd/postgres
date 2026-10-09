@@ -735,6 +735,20 @@ place of an inverted AM, without changing the scalar design above.
   note decides whether M3 is needed.
 * '''M4''' -- unique indexes over multikey keys with document-store
   semantics: unique across rows, while one row may repeat a key.
+* '''M5''' -- wildcard indexes, as MongoDB's: a test-module operator class
+  over <code>jsonb</code> whose extract-value procedure (7) emits one key
+  (path, value) for every path that the column's projection keeps, and one
+  per element under a path that holds an array; the projection (include or
+  exclude a list of paths) is an option of the class (procedure 5). Its
+  extract-query procedure (8) turns a qual on one path into boundaries
+  inside that path's range, and an ordering operator on a path sorts by it
+  with MongoDB's array rule. Markers record which paths have held an array,
+  so a query on a path that never has needs no seen set (an M5 extension of
+  procedure 8 tells the scan so). A compound index (fixed columns, then the
+  wildcard column) keeps (fixed columns, path, value). Needs M1 and M2's
+  procedures 7-9; unique wildcard indexes need M4. Nothing in it changes
+  the on-disk format; "Wildcard indexes as the check" under M1 is its
+  design.
 * '''T1''' -- term containment at scale; see "Containment queries" under
   C-KEYSHAPE.
 
