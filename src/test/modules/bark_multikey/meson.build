@@ -29,5 +29,14 @@ tests += {
     'sql': [
       'bark_multikey',
     ],
+    'regress_args': ['--load-extension=amcheck'],
+  },
+  'tap': {
+    'env': {
+       'enable_injection_points': get_option('injection_points') ? 'yes' : 'no',
+    },
+    'tests': [
+      't/001_crash_and_standby.pl',
+    ],
   },
 }

@@ -264,6 +264,7 @@ BarkArrayKeyState
 BarkArraySortCtx
 BarkBoundary
 BarkBuildRun
+BarkCoalesceResult
 BarkDeletedPageData
 BarkEntryShape
 BarkInsertState
@@ -282,9 +283,11 @@ BarkParallelScanDesc
 BarkParallelScanDescData
 BarkParallelState
 BarkPendingFSM
+BarkPlaceResult
 BarkPrefixPlan
 BarkQueryFlags
 BarkRecheckResult
+BarkRowKeys
 BarkScanOpaque
 BarkScanOpaqueData
 BarkSearchElement

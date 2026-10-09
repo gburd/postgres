@@ -1658,8 +1658,25 @@ bark_setup_key_procs(IndexScanDesc scan)
 IndexScanDesc
 bark_beginscan(Relation index, int nkeys, int norderbys)
 {
-	IndexScanDesc scan = RelationGetIndexScan(index, nkeys, norderbys);
-	BarkScanOpaque so = palloc0_object(BarkScanOpaqueData);
+	IndexScanDesc scan;
+	BarkScanOpaque so;
+
+	/*
+	 * A scan of an index with an extracted column needs procedure 8's
+	 * boundaries and a set of the rows already returned ("Scans" in
+	 * BARK-Design.mediawiki), without which it would read the class's
+	 * operators as btree comparisons and return a row once per key.  Until
+	 * then such an index is written and checked, but not read.
+	 */
+	if (bark_index_extracted_column(index) > 0)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("multikey scans are not implemented yet"),
+				 errdetail("Index \"%s\" has a column with a multikey operator class.",
+						   RelationGetRelationName(index))));
+
+	scan = RelationGetIndexScan(index, nkeys, norderbys);
+	so = palloc0_object(BarkScanOpaqueData);
 
 	so->keyinfo = bark_build_keyinfo(index);
 	so->firstCall = true;
@@ -2160,10 +2177,15 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 		BarkItemBuf ibuf;
 		IndexTuple	itup = BarkPageGetItem(page, offnum, &ibuf);
 		bool		fetched;
-		IndexTuple	resolved = bark_scan_resolve(index, itup, &fetched);
+		IndexTuple	resolved;
 		int			ntids;
 		uint32		tupoff = 0;
 
+		/* A marker names no row ("Markers" in BARK-Design.mediawiki). */
+		if (BarkEntryIsMarker(itup))
+			continue;
+
+		resolved = bark_scan_resolve(index, itup, &fetched);
 		if (!allsatisfied && !bark_tuple_matches(scan, resolved, skipkeys))
 		{
 			bool		stop = bark_past_bound(scan, resolved, dir);
