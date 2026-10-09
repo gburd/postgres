@@ -26,6 +26,7 @@ $node->append_conf(
 	'postgresql.conf', qq[
 autovacuum = off
 wal_consistency_checking = 'Bark'
+wal_keep_size = 1GB
 ]);
 $node->start;
 
