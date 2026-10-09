@@ -3,8 +3,9 @@
  * barksort.c
  *	  Index build (bulk load) for the BARK index access method.
  *
- * bark_build() scans the heap, forms a SINGLE-shape index tuple for each live
- * row, sorts them by key, and writes a complete BARK tree bottom-up: it fills
+ * bark_build() scans the heap, forms a SINGLE-shape index tuple for each row
+ * the table AM passes (see bark_build_callback for the rows that are not
+ * alive), sorts them by key, and writes a complete BARK tree bottom-up: it fills
  * leaf pages left to right (linking right-siblings and recording each page's
  * high key), then builds internal levels from the per-page downlinks until a
  * single root remains, and finally writes the meta page pointing at that root.
@@ -78,6 +79,7 @@
 #define PARALLEL_KEY_QUERY_TEXT			UINT64CONST(0xB42C000000000003)
 #define PARALLEL_KEY_WAL_USAGE			UINT64CONST(0xB42C000000000004)
 #define PARALLEL_KEY_BUFFER_USAGE		UINT64CONST(0xB42C000000000005)
+#define PARALLEL_KEY_TUPLESORT_DEAD		UINT64CONST(0xB42C000000000006)
 
 /*
  * One page under construction, per tree level.  A full page is flushed (its
@@ -167,6 +169,21 @@ typedef struct BarkBuildState
 
 	/* the sort this build feeds; set up by the caller */
 	Tuplesortstate *sortstate;
+
+	/*
+	 * A unique index's rows the table AM passes as not alive, sorted apart so
+	 * that bark_load writes them without checking them, as nbtsort.c's
+	 * spool2; NULL for any other index.  havedead says whether there were
+	 * any.  bark_load's merge of the two sorts keeps each one's next tuple,
+	 * fetching it again only after the previous one has been written.
+	 */
+	Tuplesortstate *deadsort;
+	bool		havedead;
+	IndexTuple	nextlive;
+	IndexTuple	nextdead;
+	bool		needlive;
+	bool		needdead;
+
 	double		indtuples;		/* (key, TID) members, reported to the planner
 								 * and stored as bark_nkeys */
 
@@ -187,14 +204,16 @@ typedef struct BarkBuildState
  * Immutable fields let a worker reconstruct the leader's build state; the
  * mutable fields (under mutex) accumulate the per-worker scan results the
  * leader needs once every participant is done.  Modeled on nbtsort.c's
- * BTShared, minus the uniqueness second-spool machinery BARK does not need
- * (BARK enforces uniqueness in the load phase, not the sort).
+ * BTShared.  BARK enforces uniqueness in the load phase, not the sort, but
+ * a unique index's not-alive rows still need a sort of their own
+ * (BarkBuildState.deadsort), shared as nbtsort.c shares spool2's.
  */
 typedef struct BarkShared
 {
 	/* Immutable: lets a worker rebuild the leader's spool. */
 	Oid			heaprelid;
 	Oid			indexrelid;
+	bool		isunique;		/* is there a shared sort of not-alive rows? */
 	bool		isconcurrent;
 	int			scantuplesortstates;
 	int64		queryid;
@@ -212,6 +231,7 @@ typedef struct BarkShared
 	double		reltuples;
 	double		indtuples;
 	bool		brokenhotchain;
+	bool		havedead;		/* any worker sorted a not-alive row */
 	bool		has_oversized;	/* any worker saw an oversized key */
 	bool		multikey;		/* any worker saw a row of two keys or more */
 
@@ -233,6 +253,7 @@ typedef struct BarkLeader
 	int			nparticipanttuplesorts; /* workers launched + leader */
 	BarkShared *barkshared;
 	Sharedsort *sharedsort;
+	Sharedsort *sharedsortdead; /* the not-alive rows' sort, or NULL */
 	Snapshot	snapshot;
 	WalUsage   *walusage;
 	BufferUsage *bufferusage;
@@ -440,15 +461,23 @@ bark_build_row_keys(BarkBuildState *bs, ItemPointer tid, Datum *values,
 	MemoryContextReset(bs->rowcxt);
 }
 
-/* table_index_build_scan callback: spool one index tuple into the sort. */
+/*
+ * table_index_build_scan callback: spool one index tuple into the sort.
+ *
+ * Every row the table AM passes is indexed.  It passes a row with
+ * tupleIsAlive false when the row is not live but a snapshot older than the
+ * build can still see it (RECENTLY_DEAD, or deleted by a transaction still
+ * in progress); such a row must be in the index for that snapshot's scans,
+ * and only stays out of the uniqueness check (heapam_index_build_range_scan).
+ * In a unique index it goes to bs->deadsort, which bark_load does not check.
+ * The fact lives only in the build: nothing on the page records it.
+ */
 static void
 bark_build_callback(Relation index, ItemPointer tid, Datum *values,
 					bool *isnull, bool tupleIsAlive, void *state)
 {
 	BarkBuildState *bs = (BarkBuildState *) state;
-
-	if (!tupleIsAlive)
-		return;
+	Tuplesortstate *sortstate = bs->sortstate;
 
 	if (bs->extracted > 0)
 	{
@@ -475,7 +504,12 @@ bark_build_callback(Relation index, ItemPointer tid, Datum *values,
 	 * t_tid.  tuplesort_putindextuplevalues forms the tuple and stamps t_tid
 	 * exactly as the serial build did by hand.
 	 */
-	tuplesort_putindextuplevalues(bs->sortstate, index, tid, values, isnull);
+	if (!tupleIsAlive && bs->deadsort != NULL)
+	{
+		sortstate = bs->deadsort;
+		bs->havedead = true;
+	}
+	tuplesort_putindextuplevalues(sortstate, index, tid, values, isnull);
 	bs->indtuples += 1;
 }
 
@@ -982,6 +1016,52 @@ bark_build_flush_run(BarkBuildState *bs, BulkWriteState *bulk,
 }
 
 /*
+ * The next tuple for bark_load, in (key, heap TID) order, or NULL at the end.
+ * A unique index's not-alive rows (bs->deadsort) are merged into the main
+ * sort's, as nbtsort.c's _bt_load merges spool2 into spool, and *isdead says
+ * the tuple came from them.  Both sorts order by key and then heap TID, as
+ * bark_compare_itups and ItemPointerCompare do, and no heap TID is in both.
+ * A tuple stays valid until its own sort is read again, which is why each
+ * sort is read only when the tuple it last returned has been used.
+ */
+static IndexTuple
+bark_load_next(BarkBuildState *bs, bool *isdead)
+{
+	*isdead = false;
+	if (bs->deadsort == NULL)
+		return tuplesort_getindextuple(bs->sortstate, true);
+
+	if (bs->needlive)
+		bs->nextlive = tuplesort_getindextuple(bs->sortstate, true);
+	if (bs->needdead)
+		bs->nextdead = tuplesort_getindextuple(bs->deadsort, true);
+	bs->needlive = bs->needdead = false;
+
+	if (bs->nextdead != NULL)
+	{
+		int			cmp = 1;
+
+		if (bs->nextlive != NULL)
+		{
+			cmp = bark_compare_itups(bs->keyinfo, bs->index, bs->nextlive,
+									 bs->nextdead);
+			if (cmp == 0)
+				cmp = ItemPointerCompare(&bs->nextlive->t_tid,
+										 &bs->nextdead->t_tid);
+			Assert(cmp != 0);
+		}
+		if (cmp > 0)
+		{
+			*isdead = true;
+			bs->needdead = true;
+			return bs->nextdead;
+		}
+	}
+	bs->needlive = true;
+	return bs->nextlive;
+}
+
+/*
  * Load the sorted spool into the tree: pull index tuples from the finished
  * tuplesort in key order, enforce uniqueness for a unique index, write leaf
  * pages left to right, and build the upper levels and meta page.  Only the
@@ -995,7 +1075,7 @@ bark_build_flush_run(BarkBuildState *bs, BulkWriteState *bulk,
  * store them.
  */
 static void
-bark_load(BarkBuildState *bs, Tuplesortstate *sortstate)
+bark_load(BarkBuildState *bs)
 {
 	BulkWriteState *bulk = smgr_bulk_start_rel(bs->index, MAIN_FORKNUM);
 	BarkPageState *leaf = bark_pagestate(bs, bulk, 0);
@@ -1004,6 +1084,7 @@ bark_load(BarkBuildState *bs, Tuplesortstate *sortstate)
 	IndexTuple	prevbuf = NULL;
 	IndexTuple	lastmarker = NULL;
 	bool		coalesce = bs->allequalimage && !bs->isunique;
+	bool		isdead;
 	BarkBuildRun run = {0};
 
 	if (bs->isunique)
@@ -1014,7 +1095,8 @@ bark_load(BarkBuildState *bs, Tuplesortstate *sortstate)
 		run.tids = palloc_array(ItemPointerData, BARK_BUILD_RUN_TIDS);
 	}
 
-	while ((itup = tuplesort_getindextuple(sortstate, true)) != NULL)
+	bs->needlive = bs->needdead = true;
+	while ((itup = bark_load_next(bs, &isdead)) != NULL)
 	{
 		/*
 		 * A marker (spooled by bark_build_marker) is a SINGLE entry, never
@@ -1067,8 +1149,15 @@ bark_load(BarkBuildState *bs, Tuplesortstate *sortstate)
 		 * NULL decides, as in the btree tuplesort's own check.  Two equal keys
 		 * have their NULLs in the same columns, so testing itup alone is
 		 * enough.
+		 *
+		 * A row that is not alive is neither checked nor kept as the
+		 * predecessor: it may legitimately share its key with a live row (the
+		 * old version of an updated row, a deleted row whose key was inserted
+		 * again), and equal live keys are adjacent in the live rows' own
+		 * sort, so comparing each live row with the previous live one still
+		 * catches every duplicate among them.
 		 */
-		if (bs->isunique && prev != NULL &&
+		if (bs->isunique && !isdead && prev != NULL &&
 			(bs->nullsnotdistinct ||
 			 !bark_itup_has_null_key(bs->index, bs->nkeyatts, itup)) &&
 			bark_compare_itups(bs->keyinfo, bs->index, itup, prev) == 0)
@@ -1097,7 +1186,7 @@ bark_load(BarkBuildState *bs, Tuplesortstate *sortstate)
 		 * the next call may overwrite; keep our own copy to compare against
 		 * the next one, in a buffer every tuple fits.
 		 */
-		if (bs->isunique)
+		if (bs->isunique && !isdead)
 		{
 			Assert(IndexTupleSize(itup) <= BarkMaxItemSize);
 			memcpy(prevbuf, itup, IndexTupleSize(itup));
@@ -1123,7 +1212,8 @@ bark_load(BarkBuildState *bs, Tuplesortstate *sortstate)
 /*
  * Second-pass callback: insert one oversized row into the just-loaded tree via
  * the normal overflow-aware insert path.  Non-oversized rows are already in the
- * tree from bark_load, so they are skipped here.
+ * tree from bark_load, so they are skipped here.  As in the first pass, every
+ * row the table AM passes is indexed (bark_build_callback).
  */
 static void
 bark_oversized_pass_callback(Relation index, ItemPointer tid, Datum *values,
@@ -1131,9 +1221,6 @@ bark_oversized_pass_callback(Relation index, ItemPointer tid, Datum *values,
 {
 	BarkBuildState *bs = (BarkBuildState *) state;
 	IndexUniqueCheck checkUnique;
-
-	if (!tupleIsAlive)
-		return;
 
 	/* Procedure 7 again, inserting only the keys the sort could not take. */
 	if (bs->extracted > 0)
@@ -1148,11 +1235,15 @@ bark_oversized_pass_callback(Relation index, ItemPointer tid, Datum *values,
 
 	/*
 	 * Insert via the normal path, which writes the overflow chain and places
-	 * an OVERSIZED entry.  A unique index checks uniqueness here (the heap
-	 * tuples are visible during build), matching how bark_load would have
-	 * rejected an inline duplicate.
+	 * an OVERSIZED entry.  A unique index checks a live row here, matching
+	 * how bark_load would have rejected an inline duplicate; the check reads
+	 * each equal entry's heap tuple under SnapshotDirty, which does not see a
+	 * row that is not alive, so such a row already loaded or inserted
+	 * conflicts with nothing.  A row that is not alive is not checked, as
+	 * bark_load does not check one.
 	 */
-	checkUnique = bs->isunique ? UNIQUE_CHECK_YES : UNIQUE_CHECK_NO;
+	checkUnique = bs->isunique && tupleIsAlive ?
+		UNIQUE_CHECK_YES : UNIQUE_CHECK_NO;
 	bark_insert(index, values, isnull, tid, bs->heap, checkUnique, false,
 				bs->indexInfo);
 }
@@ -1203,7 +1294,7 @@ bark_parallel_estimate_shared(Relation heap, Snapshot snapshot)
 static void
 bark_parallel_scan_and_sort(Relation heap, Relation index,
 							BarkShared *barkshared, Sharedsort *sharedsort,
-							int sortmem)
+							Sharedsort *sharedsortdead, int sortmem)
 {
 	SortCoordinate coordinate;
 	BarkBuildState bs;
@@ -1230,6 +1321,24 @@ bark_parallel_scan_and_sort(Relation heap, Relation index,
 	bs.nkeyatts = IndexRelationGetNumberOfKeyAttributes(index);
 	bs.isunique = false;		/* leader enforces uniqueness during load */
 	bs.sortstate = sortstate;
+
+	/*
+	 * A unique index's not-alive rows go to a partial sort of their own,
+	 * given only work_mem as in the serial build (or less, as each
+	 * participant's share of the main sort is).
+	 */
+	if (sharedsortdead != NULL)
+	{
+		SortCoordinate coordinatedead = palloc0_object(SortCoordinateData);
+
+		coordinatedead->isWorker = true;
+		coordinatedead->nParticipants = -1;
+		coordinatedead->sharedsort = sharedsortdead;
+		bs.deadsort = tuplesort_begin_index_btree(heap, index, false, false,
+												  Min(sortmem, work_mem),
+												  coordinatedead,
+												  TUPLESORT_NONE);
+	}
 	bark_build_init_sizebound(&bs);
 	bark_build_init_multikey(&bs);
 
@@ -1242,6 +1351,8 @@ bark_parallel_scan_and_sort(Relation heap, Relation index,
 									   bark_build_callback, &bs, scan);
 
 	tuplesort_performsort(sortstate);
+	if (bs.deadsort != NULL)
+		tuplesort_performsort(bs.deadsort);
 
 	/* Report this participant's results back to the leader. */
 	SpinLockAcquire(&barkshared->mutex);
@@ -1250,6 +1361,8 @@ bark_parallel_scan_and_sort(Relation heap, Relation index,
 	barkshared->indtuples += bs.indtuples;
 	if (indexInfo->ii_BrokenHotChain)
 		barkshared->brokenhotchain = true;
+	if (bs.havedead)
+		barkshared->havedead = true;
 	if (bs.has_oversized)
 		barkshared->has_oversized = true;
 	if (bs.multikey)
@@ -1259,6 +1372,8 @@ bark_parallel_scan_and_sort(Relation heap, Relation index,
 	ConditionVariableSignal(&barkshared->workersdonecv);
 
 	tuplesort_end(sortstate);
+	if (bs.deadsort != NULL)
+		tuplesort_end(bs.deadsort);
 }
 
 /*
@@ -1272,6 +1387,7 @@ _bark_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 	char	   *sharedquery;
 	BarkShared *barkshared;
 	Sharedsort *sharedsort;
+	Sharedsort *sharedsortdead = NULL;
 	Relation	heapRel;
 	Relation	indexRel;
 	LOCKMODE	heapLockmode;
@@ -1306,12 +1422,18 @@ _bark_parallel_build_main(dsm_segment *seg, shm_toc *toc)
 
 	sharedsort = shm_toc_lookup(toc, PARALLEL_KEY_TUPLESORT, false);
 	tuplesort_attach_shared(sharedsort, seg);
+	if (barkshared->isunique)
+	{
+		sharedsortdead = shm_toc_lookup(toc, PARALLEL_KEY_TUPLESORT_DEAD,
+										false);
+		tuplesort_attach_shared(sharedsortdead, seg);
+	}
 
 	InstrStartParallelQuery();
 
 	sortmem = maintenance_work_mem / barkshared->scantuplesortstates;
 	bark_parallel_scan_and_sort(heapRel, indexRel, barkshared, sharedsort,
-								sortmem);
+								sharedsortdead, sortmem);
 
 	bufferusage = shm_toc_lookup(toc, PARALLEL_KEY_BUFFER_USAGE, false);
 	walusage = shm_toc_lookup(toc, PARALLEL_KEY_WAL_USAGE, false);
@@ -1331,7 +1453,8 @@ bark_leader_participate_as_worker(BarkBuildState *bs)
 
 	sortmem = maintenance_work_mem / barkleader->nparticipanttuplesorts;
 	bark_parallel_scan_and_sort(bs->heap, bs->index, barkleader->barkshared,
-								barkleader->sharedsort, sortmem);
+								barkleader->sharedsort,
+								barkleader->sharedsortdead, sortmem);
 }
 
 /*
@@ -1349,6 +1472,7 @@ bark_begin_parallel(BarkBuildState *bs, bool isconcurrent, int request)
 	Size		estsort;
 	BarkShared *barkshared;
 	Sharedsort *sharedsort;
+	Sharedsort *sharedsortdead = NULL;
 	BarkLeader *barkleader = palloc0_object(BarkLeader);
 	WalUsage   *walusage;
 	BufferUsage *bufferusage;
@@ -1378,6 +1502,13 @@ bark_begin_parallel(BarkBuildState *bs, bool isconcurrent, int request)
 	estsort = tuplesort_estimate_shared(scantuplesortstates);
 	shm_toc_estimate_chunk(&pcxt->estimator, estsort);
 	shm_toc_estimate_keys(&pcxt->estimator, 2);
+
+	/* A unique index's not-alive rows get a shared sort of their own. */
+	if (bs->isunique)
+	{
+		shm_toc_estimate_chunk(&pcxt->estimator, estsort);
+		shm_toc_estimate_keys(&pcxt->estimator, 1);
+	}
 
 	/* Space for each worker's WAL and buffer usage. */
 	shm_toc_estimate_chunk(&pcxt->estimator,
@@ -1413,6 +1544,7 @@ bark_begin_parallel(BarkBuildState *bs, bool isconcurrent, int request)
 	barkshared = (BarkShared *) shm_toc_allocate(pcxt->toc, estbarkshared);
 	barkshared->heaprelid = RelationGetRelid(bs->heap);
 	barkshared->indexrelid = RelationGetRelid(bs->index);
+	barkshared->isunique = bs->isunique;
 	barkshared->isconcurrent = isconcurrent;
 	barkshared->scantuplesortstates = scantuplesortstates;
 	barkshared->queryid = pgstat_get_my_query_id();
@@ -1422,6 +1554,7 @@ bark_begin_parallel(BarkBuildState *bs, bool isconcurrent, int request)
 	barkshared->reltuples = 0.0;
 	barkshared->indtuples = 0.0;
 	barkshared->brokenhotchain = false;
+	barkshared->havedead = false;
 	barkshared->has_oversized = false;
 	barkshared->multikey = false;
 	table_parallelscan_initialize(bs->heap,
@@ -1434,6 +1567,14 @@ bark_begin_parallel(BarkBuildState *bs, bool isconcurrent, int request)
 
 	shm_toc_insert(pcxt->toc, PARALLEL_KEY_BARK_SHARED, barkshared);
 	shm_toc_insert(pcxt->toc, PARALLEL_KEY_TUPLESORT, sharedsort);
+
+	if (bs->isunique)
+	{
+		sharedsortdead = (Sharedsort *) shm_toc_allocate(pcxt->toc, estsort);
+		tuplesort_initialize_shared(sharedsortdead, scantuplesortstates,
+									pcxt->seg);
+		shm_toc_insert(pcxt->toc, PARALLEL_KEY_TUPLESORT_DEAD, sharedsortdead);
+	}
 
 	if (debug_query_string)
 	{
@@ -1458,6 +1599,7 @@ bark_begin_parallel(BarkBuildState *bs, bool isconcurrent, int request)
 		barkleader->nparticipanttuplesorts++;
 	barkleader->barkshared = barkshared;
 	barkleader->sharedsort = sharedsort;
+	barkleader->sharedsortdead = sharedsortdead;
 	barkleader->snapshot = snapshot;
 	barkleader->walusage = walusage;
 	barkleader->bufferusage = bufferusage;
@@ -1513,6 +1655,7 @@ bark_parallel_heapscan(BarkBuildState *bs)
 		if (barkshared->nparticipantsdone == nparticipanttuplesorts)
 		{
 			bs->indtuples = barkshared->indtuples;
+			bs->havedead = barkshared->havedead;
 			bs->has_oversized = barkshared->has_oversized;
 			bs->multikey = barkshared->multikey;
 			reltuples = barkshared->reltuples;
@@ -1592,6 +1735,28 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 											 TUPLESORT_NONE);
 	bs.sortstate = leadersort;
 
+	/*
+	 * A unique index's not-alive rows get a sort of their own, which, as in
+	 * nbtsort.c, is expected to stay small and so gets only work_mem.  In a
+	 * parallel build it merges the participants' sorts of those rows.
+	 */
+	if (bs.isunique)
+	{
+		SortCoordinate coordinatedead = NULL;
+
+		if (bs.barkleader)
+		{
+			coordinatedead = palloc0_object(SortCoordinateData);
+			coordinatedead->isWorker = false;
+			coordinatedead->nParticipants =
+				bs.barkleader->nparticipanttuplesorts;
+			coordinatedead->sharedsort = bs.barkleader->sharedsortdead;
+		}
+		bs.deadsort = tuplesort_begin_index_btree(heap, index, false, false,
+												  work_mem, coordinatedead,
+												  TUPLESORT_NONE);
+	}
+
 	/* Fill the sort: serial scan, or wait for the parallel participants. */
 	if (!bs.barkleader)
 		reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
@@ -1600,10 +1765,19 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		reltuples = bark_parallel_heapscan(&bs);
 
 	tuplesort_performsort(leadersort);
+	if (bs.deadsort != NULL && !bs.havedead)
+	{
+		tuplesort_end(bs.deadsort);
+		bs.deadsort = NULL;
+	}
+	if (bs.deadsort != NULL)
+		tuplesort_performsort(bs.deadsort);
 
 	/* Merge the sorted runs into the tree (leader only writes pages). */
-	bark_load(&bs, leadersort);
+	bark_load(&bs);
 	tuplesort_end(leadersort);
+	if (bs.deadsort != NULL)
+		tuplesort_end(bs.deadsort);
 
 	if (bs.barkleader)
 		bark_end_parallel(bs.barkleader);
