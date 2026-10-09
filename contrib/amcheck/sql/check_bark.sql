@@ -23,6 +23,16 @@ CREATE INDEX bark_check_multi
   ON bark_check_tab USING bark (b, a) INCLUDE (a);
 SELECT bark_index_check('bark_check_multi');
 
+-- heapallindexed and the parent check pass on both, after the splits,
+-- deletes and page deletions above.  The two-argument form and the
+-- one-argument form name the same check.
+SELECT bark_index_check('bark_check_idx', true);
+SELECT bark_index_check('bark_check_multi', heapallindexed => true);
+SELECT bark_index_parent_check('bark_check_idx');
+SELECT bark_index_parent_check('bark_check_idx', true);
+SELECT bark_index_parent_check('bark_check_multi', heapallindexed => true);
+SELECT bark_index_parent_check('bark_check_btree');  -- errors: not a BARK index
+
 -- Duplicate keys form LIST entries (sorted locator lists); the verifier checks
 -- that each list has >= 2 members stored strictly ascending.  Insert the
 -- duplicates (the insert path coalesces equal keys into LISTs) and verify, then
@@ -34,6 +44,10 @@ SELECT bark_index_check('bark_check_list_idx');
 DELETE FROM bark_check_list WHERE a = 10 AND b < 5000;
 VACUUM bark_check_list;
 SELECT bark_index_check('bark_check_list_idx');
+-- heapallindexed fingerprints each LIST member as the SINGLE entry its row
+-- would have; with a heap TID for every member, a list of 200 rows passes.
+SELECT bark_index_check('bark_check_list_idx', true);
+SELECT bark_index_parent_check('bark_check_list_idx', true);
 DROP TABLE bark_check_list;
 
 -- Enough clustered duplicates of one key promote its entry from LIST to
@@ -48,6 +62,8 @@ SELECT bark_index_check('bark_check_post_idx');
 DELETE FROM bark_check_post WHERE a = 2 AND b <= 300;
 VACUUM bark_check_post;
 SELECT bark_index_check('bark_check_post_idx');
+SELECT bark_index_check('bark_check_post_idx', true);
+SELECT bark_index_parent_check('bark_check_post_idx', true);
 DROP TABLE bark_check_post;
 
 DROP TABLE bark_check_tab;
@@ -78,6 +94,9 @@ INSERT INTO bark_check_big SELECT 200 + g,
   FROM generate_series(1, 40) g;
 INSERT INTO bark_check_big VALUES (999, bark_chk_bigstr(999, 65000));
 SELECT bark_index_check('bark_check_big_idx');
+-- An OVERSIZED entry's fingerprint is its full tuple's, read from the chain.
+SELECT bark_index_check('bark_check_big_idx', true);
+SELECT bark_index_parent_check('bark_check_big_idx', true);
 -- Delete the oversized rows and vacuum: the overflow chains are freed and the
 -- index stays structurally valid.
 DELETE FROM bark_check_big WHERE id >= 100;
@@ -103,6 +122,10 @@ SELECT bark_index_check('bark_check_inc_idx');
 DELETE FROM bark_check_inc WHERE k <= 10;
 VACUUM bark_check_inc;
 SELECT bark_index_check('bark_check_inc_idx');
+-- The payloads are compressed in the index and the heap alike; the
+-- fingerprints are formed from the uncompressed values either way.
+SELECT bark_index_check('bark_check_inc_idx', true);
+SELECT bark_index_parent_check('bark_check_inc_idx', true);
 DROP TABLE bark_check_inc;
 DROP FUNCTION bark_chk_bigstr(int, int);
 
@@ -119,6 +142,10 @@ SELECT bark_index_check('bark_par_idx');
 SET max_parallel_maintenance_workers = 0;
 CREATE INDEX bark_ser_idx ON bark_par_tab USING bark (a);  -- serial build
 SELECT bark_index_check('bark_ser_idx');
+-- Both are three levels deep; check each level against its parent, and the
+-- heap against both.
+SELECT bark_index_parent_check('bark_par_idx', true);
+SELECT bark_index_parent_check('bark_ser_idx', true);
 -- Both indexes return the same rows for the same scans.
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
@@ -129,3 +156,66 @@ RESET enable_bitmapscan;
 RESET max_parallel_maintenance_workers;
 RESET maintenance_work_mem;
 DROP TABLE bark_par_tab;
+
+-- heapallindexed finds a heap tuple with no entry.  With indisready off,
+-- inserts skip the index, as they do for an index that CREATE INDEX
+-- CONCURRENTLY has not yet made ready; turning it back on leaves the index
+-- without entries for those rows.  The structure is still sound, so only
+-- heapallindexed notices.  The same is done to a btree index for
+-- comparison.  The error names the heap tuple without an entry, the row
+-- inserted last.
+CREATE TABLE bark_check_missing (a int, b text);
+INSERT INTO bark_check_missing SELECT g, 'row ' || g FROM generate_series(1, 5000) g;
+CREATE INDEX bark_check_missing_idx ON bark_check_missing USING bark (a);
+CREATE INDEX bark_check_missing_inc ON bark_check_missing USING bark (b) INCLUDE (a);
+CREATE INDEX bark_check_missing_bt ON bark_check_missing USING btree (a);
+SELECT bark_index_check('bark_check_missing_idx', true);
+UPDATE pg_index SET indisready = false
+  WHERE indexrelid IN ('bark_check_missing_idx'::regclass,
+                       'bark_check_missing_inc'::regclass,
+                       'bark_check_missing_bt'::regclass);
+INSERT INTO bark_check_missing VALUES (5001, 'row 5001');
+UPDATE pg_index SET indisready = true
+  WHERE indexrelid IN ('bark_check_missing_idx'::regclass,
+                       'bark_check_missing_inc'::regclass,
+                       'bark_check_missing_bt'::regclass);
+SELECT bark_index_check('bark_check_missing_idx');
+SELECT bark_index_parent_check('bark_check_missing_idx');
+SELECT bark_index_check('bark_check_missing_idx', true);
+SELECT bark_index_parent_check('bark_check_missing_idx', true);
+SELECT bark_index_check('bark_check_missing_inc', true);
+SELECT bt_index_check('bark_check_missing_bt', true);
+-- REINDEX repairs it.
+REINDEX INDEX bark_check_missing_idx;
+SELECT bark_index_check('bark_check_missing_idx', true);
+SELECT bark_index_parent_check('bark_check_missing_idx', true);
+DROP TABLE bark_check_missing;
+
+-- An index with a key that coalesces into a POSTING entry, missing one
+-- member: the row's fingerprint is that of the SINGLE it would be, and the
+-- entry's members are fingerprinted the same way.
+CREATE TABLE bark_check_missing2 (k int);
+INSERT INTO bark_check_missing2 SELECT 1 FROM generate_series(1, 3000);
+CREATE INDEX bark_check_missing2_idx ON bark_check_missing2 USING bark (k);
+SELECT bark_index_check('bark_check_missing2_idx', true);
+UPDATE pg_index SET indisready = false
+  WHERE indexrelid = 'bark_check_missing2_idx'::regclass;
+INSERT INTO bark_check_missing2 VALUES (1);
+UPDATE pg_index SET indisready = true
+  WHERE indexrelid = 'bark_check_missing2_idx'::regclass;
+SELECT bark_index_check('bark_check_missing2_idx', true);
+DROP TABLE bark_check_missing2;
+
+-- An empty index passes every check, and the 1.6 one-argument form still
+-- works after an update from 1.6.
+CREATE TABLE bark_check_empty (a int);
+CREATE INDEX bark_check_empty_idx ON bark_check_empty USING bark (a);
+SELECT bark_index_check('bark_check_empty_idx', true);
+SELECT bark_index_parent_check('bark_check_empty_idx', true);
+DROP EXTENSION amcheck;
+CREATE EXTENSION amcheck VERSION '1.6';
+SELECT bark_index_check('bark_check_empty_idx');
+ALTER EXTENSION amcheck UPDATE TO '1.7';
+SELECT bark_index_check('bark_check_empty_idx');
+SELECT bark_index_check('bark_check_empty_idx', false);
+DROP TABLE bark_check_empty;
