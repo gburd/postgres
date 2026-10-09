@@ -2131,19 +2131,25 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 
 	/*
 	 * A uniqueness check is skipped when the caller doesn't want it, and when
-	 * the new key has any NULL attribute (SQL treats NULLs as distinct, so a
-	 * NULL key never conflicts).
+	 * the new key has any NULL attribute in an index whose NULLs are distinct
+	 * (the default: a NULL key then never conflicts), as in nbtree's
+	 * _bt_doinsert.  Under NULLS NOT DISTINCT a NULL key is checked like any
+	 * other: bark_compare_itups treats two NULLs in a column as equal and
+	 * sorts them together, so the check finds every entry of the key.
 	 */
 	if (checkUnique != UNIQUE_CHECK_NO)
 	{
 		checkingunique = true;
-		for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+		if (!indexInfo->ii_NullsNotDistinct)
 		{
-			if (isnull[i])
+			for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
 			{
-				checkingunique = false;
-				result = true;	/* a NULL key is unique */
-				break;
+				if (isnull[i])
+				{
+					checkingunique = false;
+					result = true;	/* a NULL key is unique */
+					break;
+				}
 			}
 		}
 	}
