@@ -27,6 +27,7 @@
 
 #include "postgres.h"
 
+#include "access/bark.h"
 #include "access/gin_private.h"
 #include "access/hash.h"
 #include "access/htup_details.h"
@@ -38,6 +39,7 @@
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/read_stream.h"
+#include "utils/float.h"
 #include "utils/rel.h"
 #include "utils/varlena.h"
 
@@ -56,6 +58,7 @@ PG_FUNCTION_INFO_V1(pg_relpages);
 PG_FUNCTION_INFO_V1(pg_relpagesbyid);
 PG_FUNCTION_INFO_V1(pgstatginindex);
 PG_FUNCTION_INFO_V1(pgstathashindex);
+PG_FUNCTION_INFO_V1(pgstatbarkindex);
 
 PG_FUNCTION_INFO_V1(pgstatindex_v1_5);
 PG_FUNCTION_INFO_V1(pgstatindexbyid_v1_5);
@@ -69,6 +72,7 @@ Datum		pgstatginindex_internal(Oid relid, FunctionCallInfo fcinfo);
 #define IS_BTREE(r) ((r)->rd_rel->relam == BTREE_AM_OID)
 #define IS_GIN(r) ((r)->rd_rel->relam == GIN_AM_OID)
 #define IS_HASH(r) ((r)->rd_rel->relam == HASH_AM_OID)
+#define IS_BARK(r) ((r)->rd_rel->relam == BARK_AM_OID)
 
 /* ------------------------------------------------
  * A structure for a whole btree index statistics
@@ -124,6 +128,35 @@ typedef struct HashIndexStat
 	int64		dead_items;
 	uint64		free_space;
 } HashIndexStat;
+
+/* ------------------------------------------------
+ * A structure for a whole BARK index statistics
+ * used by pgstatbarkindex().
+ * ------------------------------------------------
+ */
+typedef struct BarkIndexStat
+{
+	uint32		version;
+	uint32		level;
+	BlockNumber root_blkno;
+
+	uint64		internal_pages;
+	uint64		leaf_pages;
+	uint64		empty_pages;
+	uint64		deleted_pages;
+	uint64		overflow_pages;
+
+	uint64		max_avail;
+	uint64		free_space;
+
+	uint64		fragments;
+
+	/* leaf entries, by shape */
+	uint64		single_entries;
+	uint64		list_entries;
+	uint64		posting_entries;
+	uint64		oversized_entries;
+} BarkIndexStat;
 
 static Datum pgstatindex_impl(Relation rel, FunctionCallInfo fcinfo);
 static int64 pg_relpages_impl(Relation rel);
@@ -807,4 +840,204 @@ GetHashPageStats(Page page, HashIndexStat *stats)
 			stats->dead_items++;
 	}
 	stats->free_space += PageGetExactFreeSpace(page);
+}
+
+/* ------------------------------------------------------
+ * pgstatbarkindex()
+ *
+ * Usage: SELECT * FROM pgstatbarkindex('barkindex');
+ *
+ * The columns pgstatindex reports for a btree index, counted the same way,
+ * plus the overflow pages that hold OVERSIZED entries' keys and the number
+ * of leaf entries of each shape.  A BARK leaf entry can hold many heap TIDs
+ * (LIST, POSTING), so the number of entries is not the number of rows.
+ * ------------------------------------------------------
+ */
+Datum
+pgstatbarkindex(PG_FUNCTION_ARGS)
+{
+	Oid			relid = PG_GETARG_OID(0);
+	Relation	rel;
+	BarkIndexStat stats;
+	BufferAccessStrategy bstrategy = GetAccessStrategy(BAS_BULKREAD);
+	BlockRangeReadStreamPrivate p;
+	ReadStream *stream;
+	BlockNumber nblocks;
+	TupleDesc	tupleDesc;
+	Datum		values[15];
+	bool		nulls[15] = {0};
+	int			j = 0;
+
+	/* As in pgstathashindex, relation_open refuses partitioned indexes. */
+	rel = relation_open(relid, AccessShareLock);
+
+	if (!IS_INDEX(rel) || !IS_BARK(rel))
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("relation \"%s\" is not a bark index",
+						RelationGetRelationName(rel))));
+
+	/* see pgstatindex_impl */
+	if (RELATION_IS_OTHER_TEMP(rel))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot access temporary indexes of other sessions")));
+
+	/* see pgstatindex_impl */
+	if (!rel->rd_index->indisvalid)
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("index \"%s\" is not valid",
+						RelationGetRelationName(rel))));
+
+	memset(&stats, 0, sizeof(stats));
+	{
+		Buffer		buffer = ReadBufferExtended(rel, MAIN_FORKNUM, BARK_METAPAGE,
+												RBM_NORMAL, bstrategy);
+		BarkMetaPageData *meta;
+
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+		meta = BarkPageGetMeta(BufferGetPage(buffer));
+		stats.version = meta->bark_version;
+		stats.level = meta->bark_level;
+		stats.root_blkno = meta->bark_root;
+		UnlockReleaseBuffer(buffer);
+	}
+
+	/* Scan every block but the meta page, as pgstatindex_impl does. */
+	nblocks = RelationGetNumberOfBlocks(rel);
+	p.current_blocknum = BARK_METAPAGE + 1;
+	p.last_exclusive = nblocks;
+	stream = read_stream_begin_relation(READ_STREAM_FULL |
+										READ_STREAM_USE_BATCHING,
+										bstrategy,
+										rel,
+										MAIN_FORKNUM,
+										block_range_read_stream_cb,
+										&p,
+										0);
+
+	for (BlockNumber blkno = BARK_METAPAGE + 1; blkno < nblocks; blkno++)
+	{
+		Buffer		buffer;
+		Page		page;
+		BarkPageOpaque opaque;
+
+		CHECK_FOR_INTERRUPTS();
+
+		buffer = read_stream_next_buffer(stream, NULL);
+		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buffer);
+
+		/*
+		 * A page allocated but never initialized (an extension that a crash
+		 * interrupted) holds nothing, so it counts as empty, as a half-dead
+		 * page does.
+		 */
+		if (PageIsNew(page))
+		{
+			stats.empty_pages++;
+			UnlockReleaseBuffer(buffer);
+			continue;
+		}
+		if (PageGetSpecialSize(page) != MAXALIGN(sizeof(BarkPageOpaqueData)) ||
+			BarkPageGetOpaque(page)->bark_page_id != BARK_PAGE_ID)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("index \"%s\" contains corrupted page at block %u",
+							RelationGetRelationName(rel), blkno)));
+
+		opaque = BarkPageGetOpaque(page);
+		if (BarkPageIsDeleted(opaque))
+			stats.deleted_pages++;
+		else if (opaque->bark_flags & BARK_HALF_DEAD)
+			stats.empty_pages++;
+		else if (BarkPageIsOverflow(opaque))
+			stats.overflow_pages++;
+		else if (BarkPageIsLeaf(opaque))
+		{
+			OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+
+			stats.max_avail += BLCKSZ -
+				(BLCKSZ - ((PageHeader) page)->pd_special + SizeOfPageHeaderData);
+			stats.free_space += PageGetExactFreeSpace(page);
+			stats.leaf_pages++;
+
+			/* If the next leaf is on an earlier block, it is a fragment. */
+			if (opaque->bark_next != BARK_P_NONE && opaque->bark_next < blkno)
+				stats.fragments++;
+
+			/*
+			 * Prefix coding leaves an entry's shape bits alone, so the stored
+			 * entries need no decoding to be counted.
+			 */
+			for (OffsetNumber off = BarkPageFirstDataKey(opaque);
+				 off <= maxoff; off++)
+			{
+				IndexTuple	itup = (IndexTuple)
+					PageGetItem(page, PageGetItemId(page, off));
+
+				switch (BarkEntryGetShape(itup))
+				{
+					case BARK_SHAPE_SINGLE:
+						stats.single_entries++;
+						break;
+					case BARK_SHAPE_LIST:
+						stats.list_entries++;
+						break;
+					case BARK_SHAPE_POSTING:
+						stats.posting_entries++;
+						break;
+					case BARK_SHAPE_OVERSIZED:
+						stats.oversized_entries++;
+						break;
+					case BARK_SHAPE_PIVOT:
+						ereport(ERROR,
+								(errcode(ERRCODE_INDEX_CORRUPTED),
+								 errmsg("index \"%s\" has a pivot tuple among the data of leaf block %u",
+										RelationGetRelationName(rel), blkno)));
+				}
+			}
+		}
+		else if (!BarkPageIsMeta(opaque))
+			stats.internal_pages++;
+
+		UnlockReleaseBuffer(buffer);
+	}
+
+	Assert(read_stream_next_buffer(stream, NULL) == InvalidBuffer);
+	read_stream_end(stream);
+
+	relation_close(rel, AccessShareLock);
+
+	if (get_call_result_type(fcinfo, NULL, &tupleDesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+	tupleDesc = BlessTupleDesc(tupleDesc);
+
+	values[j++] = Int32GetDatum(stats.version);
+	values[j++] = Int32GetDatum(stats.level);
+	values[j++] = Int64GetDatum((int64) nblocks * BLCKSZ);
+	values[j++] = Int64GetDatum(stats.root_blkno);
+	values[j++] = Int64GetDatum(stats.internal_pages);
+	values[j++] = Int64GetDatum(stats.leaf_pages);
+	values[j++] = Int64GetDatum(stats.empty_pages);
+	values[j++] = Int64GetDatum(stats.deleted_pages);
+	values[j++] = Int64GetDatum(stats.overflow_pages);
+	/* Percentages to two decimals, as pgstatindex_impl prints them. */
+	values[j++] = Float8GetDatum(stats.max_avail > 0 ?
+								 rint(10000.0 - (double) stats.free_space /
+									  (double) stats.max_avail * 10000.0) / 100.0 :
+								 get_float8_nan());
+	values[j++] = Float8GetDatum(stats.leaf_pages > 0 ?
+								 rint((double) stats.fragments /
+									  (double) stats.leaf_pages * 10000.0) / 100.0 :
+								 get_float8_nan());
+	values[j++] = Int64GetDatum(stats.single_entries);
+	values[j++] = Int64GetDatum(stats.list_entries);
+	values[j++] = Int64GetDatum(stats.posting_entries);
+	values[j++] = Int64GetDatum(stats.oversized_entries);
+	Assert(j == lengthof(values));
+
+	PG_RETURN_DATUM(HeapTupleGetDatum(heap_form_tuple(tupleDesc, values,
+													  nulls)));
 }

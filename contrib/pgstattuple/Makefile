@@ -8,12 +8,12 @@ OBJS = \
 	pgstattuple.o
 
 EXTENSION = pgstattuple
-DATA = pgstattuple--1.4.sql pgstattuple--1.4--1.5.sql \
+DATA = pgstattuple--1.4.sql pgstattuple--1.5--1.6.sql pgstattuple--1.4--1.5.sql \
 	pgstattuple--1.3--1.4.sql pgstattuple--1.2--1.3.sql \
 	pgstattuple--1.1--1.2.sql pgstattuple--1.0--1.1.sql
 PGFILEDESC = "pgstattuple - tuple-level statistics"
 
-REGRESS = pgstattuple
+REGRESS = pgstattuple bark
 
 ifdef USE_PGXS
 PG_CONFIG = pg_config
