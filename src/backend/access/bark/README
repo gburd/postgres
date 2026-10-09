@@ -633,6 +633,16 @@ entry is the same entry insert would have made for the row.  The build's
 index_tuples count includes them, as nbtree's does; the table AM's
 reltuples does not.
 
+A HOT chain whose older members a snapshot still sees, but whose live member
+has another key, cannot be indexed for that snapshot: the entry points at
+the chain's root and leads to the live member.  The table AM leaves such
+members out and sets IndexInfo.ii_BrokenHotChain, and index.c then marks
+the new index indcheckxmin, so that older snapshots do not use it.  In a
+parallel build each participant, the leader included, scans with its own
+IndexInfo; a participant that saw a broken chain says so in the shared
+state, and the leader copies it into the build's IndexInfo before index.c
+looks, as nbtsort.c's _bt_parallel_heapscan does.
+
 VACUUM
 ------
 
