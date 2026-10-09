@@ -1,0 +1,99 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_begin s1_open1 s1_fetch s2_churn1 s2_vacuum1 s1_rest s1_cmp1 s1_commit s2_check
+step s1_begin: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1_open1: 
+	DECLARE c NO SCROLL CURSOR FOR
+		SELECT id FROM mks1 WHERE a && ARRAY[3,50,77,120,199];
+
+step s1_fetch: SELECT mks_fetch('c', 150);
+mks_fetch
+---------
+         
+(1 row)
+
+step s2_churn1: 
+	INSERT INTO mks1 SELECT g, g % 3,
+		ARRAY(SELECT (g * 11 + i * 17) % 200 FROM generate_series(1, 10) i)
+	  FROM generate_series(10001, 16000) g;
+	DELETE FROM mks1 WHERE id % 5 = 0 AND id > 3000 AND id <= 6000;
+
+step s2_vacuum1: VACUUM mks1;
+step s1_rest: SELECT mks_fetch('c', NULL);
+mks_fetch
+---------
+         
+(1 row)
+
+step s1_cmp1: 
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SELECT (SELECT count(*) || ':' || count(DISTINCT id) || ':' || sum(id) FROM mks_got) AS cursor,
+	       (SELECT count(*) || ':' || count(DISTINCT id) || ':' || sum(id)
+	          FROM mks1 WHERE a && ARRAY[3,50,77,120,199]) AS seqscan;
+
+cursor         |seqscan        
+---------------+---------------
+690:690:2074500|690:690:2074500
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_check: 
+	SELECT bark_index_check('mks1_a') AS mks1_a, bark_index_check('mks2_ta') AS mks2_ta,
+	       pg_relation_size('mks1_a') > 8192 * 40 AS mks1_a_grew,
+	       pg_relation_size('mks2_ta') > 8192 * 40 AS mks2_ta_grew;
+
+mks1_a|mks2_ta|mks1_a_grew|mks2_ta_grew
+------+-------+-----------+------------
+      |       |t          |f           
+(1 row)
+
+
+starting permutation: s1_begin s1_open2 s1_fetch s2_churn2 s2_vacuum2 s1_rest s1_cmp2 s1_commit s2_check
+step s1_begin: BEGIN ISOLATION LEVEL REPEATABLE READ;
+step s1_open2: 
+	DECLARE c NO SCROLL CURSOR FOR
+		SELECT id FROM mks2 WHERE tenant IN (0, 2) AND a && ARRAY[3,50,77,120,199];
+
+step s1_fetch: SELECT mks_fetch('c', 150);
+mks_fetch
+---------
+         
+(1 row)
+
+step s2_churn2: 
+	INSERT INTO mks2 SELECT g, g % 3,
+		ARRAY(SELECT (g * 11 + i * 17) % 200 FROM generate_series(1, 10) i)
+	  FROM generate_series(10001, 16000) g;
+	DELETE FROM mks2 WHERE id % 5 = 0 AND id > 3000 AND id <= 6000;
+
+step s2_vacuum2: VACUUM mks2;
+step s1_rest: SELECT mks_fetch('c', NULL);
+mks_fetch
+---------
+         
+(1 row)
+
+step s1_cmp2: 
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SELECT (SELECT count(*) || ':' || count(DISTINCT id) || ':' || sum(id) FROM mks_got) AS cursor,
+	       (SELECT count(*) || ':' || count(DISTINCT id) || ':' || sum(id)
+	          FROM mks2 WHERE tenant IN (0, 2) AND a && ARRAY[3,50,77,120,199]) AS seqscan;
+
+cursor         |seqscan        
+---------------+---------------
+460:460:1399000|460:460:1399000
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_check: 
+	SELECT bark_index_check('mks1_a') AS mks1_a, bark_index_check('mks2_ta') AS mks2_ta,
+	       pg_relation_size('mks1_a') > 8192 * 40 AS mks1_a_grew,
+	       pg_relation_size('mks2_ta') > 8192 * 40 AS mks2_ta_grew;
+
+mks1_a|mks2_ta|mks1_a_grew|mks2_ta_grew
+------+-------+-----------+------------
+      |       |f          |t           
+(1 row)
+
