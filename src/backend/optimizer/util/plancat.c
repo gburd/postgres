@@ -344,6 +344,27 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 
 						info->reverse_sort[i] = (opt & INDOPTION_DESC) != 0;
 						info->nulls_first[i] = (opt & INDOPTION_NULLS_FIRST) != 0;
+
+						/*
+						 * Such an AM may also have operator families of its
+						 * own (BARK's multikey classes), which order a
+						 * column's keys but not its values.  The index is
+						 * ordered by its columns before the first one in such
+						 * a family: give it its own array, with InvalidOid
+						 * there, where build_index_pathkeys stops.
+						 */
+						if (get_opfamily_method(info->opfamily[i]) !=
+							BTREE_AM_OID)
+						{
+							if (info->sortopfamily == info->opfamily)
+							{
+								info->sortopfamily = palloc_array(Oid,
+																  nkeycolumns);
+								memcpy(info->sortopfamily, info->opfamily,
+									   sizeof(Oid) * nkeycolumns);
+							}
+							info->sortopfamily[i] = InvalidOid;
+						}
 					}
 				}
 				else if (amroutine->amcanorder)

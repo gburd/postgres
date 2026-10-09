@@ -319,10 +319,14 @@ bark_get_amcache(Relation index)
 
 	if (cache == NULL)
 	{
-		cache = MemoryContextAlloc(index->rd_indexcxt, sizeof(BarkAmCache));
+		cache = MemoryContextAlloc(index->rd_indexcxt,
+								   offsetof(BarkAmCache, markerdata));
 		cache->root = BARK_P_NONE;
 		cache->level = 0;
 		cache->extracted = -1;
+		cache->multikey = false;
+		cache->nmarkers = 0;
+		cache->markerlen = 0;
 		index->rd_amcache = cache;
 	}
 	return cache;

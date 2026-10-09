@@ -11,6 +11,8 @@ version       | 2
 root          | 1
 level         | 0
 allequalimage | t
+flags         | 0
+nkeys         | 1
 
 SELECT * FROM bark_page_stats('bark1_a_idx', -1);
 ERROR:  invalid block number -1
@@ -22,7 +24,7 @@ live_items    | 0
 dead_items    | 0
 avg_item_size | 0
 page_size     | 8192
-free_size     | 8128
+free_size     | 8116
 bark_prev     | 0
 bark_next     | 0
 bark_level    | 0

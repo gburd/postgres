@@ -651,6 +651,9 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 			BarkItemBuf ibuf;
 			IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
 
+			/* A marker names no row; it is never removed. */
+			if (BarkEntryIsMarker(itup))
+				continue;
 			if (BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE)
 			{
 				if (callback(&itup->t_tid, callback_state))
@@ -742,15 +745,24 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 		/*
 		 * Count the heap TIDs that remain, as btvacuumpage does: the planner
 		 * reads the count as the index's rows, in the same unit as the
-		 * heap's.  A scan that only counts takes each entry as one, which
-		 * undercounts LIST and POSTING entries, so barkvacuumcleanup marks
-		 * that count as an estimate.
+		 * heap's, and barkvacuumcleanup stores it as bark_nkeys.  Markers are
+		 * not counted.  A scan that only counts reads each entry's count of
+		 * TIDs for itself.
 		 */
 		if (callback != NULL)
 			stats->num_index_tuples += nlivetids;
 		else
-			stats->num_index_tuples += PageGetMaxOffsetNumber(page) -
-				BarkPageFirstDataKey(opaque) + 1;
+		{
+			for (OffsetNumber off = BarkPageFirstDataKey(opaque);
+				 off <= maxoff; off = OffsetNumberNext(off))
+			{
+				BarkItemBuf ibuf;
+				IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
+
+				if (!BarkEntryIsMarker(itup))
+					stats->num_index_tuples += bark_entry_count_tids(itup);
+			}
+		}
 
 		/*
 		 * An empty interior leaf (no data entries, both siblings, not
@@ -1014,13 +1026,14 @@ barkbulkdelete(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 }
 
 /*
- * After a bulk delete there is nothing left to do: bark_vacuum_scan already
+ * After a bulk delete there is little left to do: bark_vacuum_scan already
  * counted the live heap TIDs, deleted the empty leaves and recycled the
  * deleted pages.  Without one (no dead tuples this cycle), scan the index to
  * do those things, so that pages deleted by an earlier VACUUM reach the FSM
- * once they are safe.  That scan counts entries, not TIDs, so its count is
- * only an estimate and VACUUM keeps the index's reltuples, as with
- * btvacuumcleanup.  Returning valid stats also lets VACUUM set the heap
+ * once they are safe.  That scan takes no cleanup locks, so concurrent
+ * splits can make it count an entry twice, and its count is only an
+ * estimate: VACUUM keeps the index's reltuples, as with btvacuumcleanup.
+ * Either way the count is stored as the meta page's bark_nkeys.  Returning valid stats also lets VACUUM set the heap
  * visibility map, which is what makes index-only scans worthwhile.  This is
  * btvacuumcleanup without its skip-the-scan heuristic.
  */
@@ -1043,11 +1056,20 @@ barkvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	/*
 	 * Concurrent splits can make the scan count some entries twice, so
 	 * disbelieve a total above the heap's, when that one is exact, as
-	 * btvacuumcleanup does.
+	 * btvacuumcleanup does.  An index with an extracted column has a member
+	 * per key of a row, so its total is not bounded by the heap's.
 	 */
 	if (!info->estimated_count &&
+		bark_index_extracted_column(info->index) == 0 &&
 		stats->num_index_tuples > info->num_heap_tuples)
 		stats->num_index_tuples = info->num_heap_tuples;
+
+	/*
+	 * The members left are the K of the cost estimate of an index with an
+	 * extracted column ("Statistics" in BARK-Design.mediawiki), stored once
+	 * per VACUUM.
+	 */
+	bark_set_nkeys(info->index, (uint64) stats->num_index_tuples);
 
 	return stats;
 }

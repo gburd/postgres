@@ -268,14 +268,75 @@ every descent reaches on a root-cache miss, and by bark_index_check.
 
 Block 0 is always the meta page (BarkMetaPageData): a magic number
 (BARK_MAGIC), the on-disk version (BARK_VERSION), the current root block and
-its level, and whether all key columns are "equalimage" (which governs
-whether duplicate keys can be deduplicated losslessly).  A descent does not
+its level, whether all key columns are "equalimage" (which governs
+whether duplicate keys can be deduplicated losslessly), bark_flags and
+bark_nkeys (see "Multikey keys").  A descent does not
 read it: the root block and level are cached in rd_amcache (BarkAmCache,
-which also caches the index's extracted column), as nbtree caches its meta
+which also caches the index's extracted column, whether it is multikey and
+the markers seen), as nbtree caches its meta
 page, and the cached page is used only if, under its lock, it is
 still a root (BARK_ROOT set, not being deleted) at the cached level.  A root
 split clears BARK_ROOT on the old root, so a stale cache entry fails that
 check and the meta page is read instead.
+
+A meta page written before bark_flags and bark_nkeys existed ends, by its
+pd_lower, at bark_allequalimage, and PageInit zeroed the rest, so it reads 0
+in both, which is right for an index with no extracted column.  The format
+version stays 2.  A writer of either field first moves pd_lower past them
+(bark_meta_cover), so the standard-layout image it logs keeps them.
+
+Multikey keys
+-------------
+
+An index column whose operator class extracts several keys from one value
+(procedure 7; "M1: multikey keys" in BARK-Design.mediawiki) is an extracted
+column, and an index has at most one.  A row has one entry per distinct key
+of that column, each with the row's other columns and heap TID; heap TID
+order makes (key, TID) name one entry member.  bark_extract_row_keys runs
+procedure 7 in a per-row memory context, sorts the keys with procedure 1 in
+the column's index order and removes duplicates, as ginExtractEntries does.
+A NULL value, a value with no keys and a key flagged NULL all become one
+NULL key, so every row has an entry.
+
+bark_insert_entries inserts a row's entries in ascending (key, TID) order in
+one pass.  The first descends as any insert does, or takes the cached
+rightmost leaf; each later one goes on the leaf the previous one went on
+when it belongs there (searched from that offset), else on the right
+sibling, locked before the leaf is released, when it belongs there, else by
+a new descent with no lock held.  A split is always followed by a new
+descent.  Each entry goes through bark_insert_key, the code a single entry
+always took (coalescing, bottom-up deletion, the single-value cut, merging,
+the split), and its own WAL record; there is no multi-key record.  A crash
+between two entries of a row leaves entries of an uncommitted row, which
+VACUUM removes.
+
+The meta page's BARK_META_MULTIKEY bit says the index has held a row with
+two or more entries.  An insert sets it before the first entry of such a
+row, with no other page locked, logging the meta page whole
+(log_newpage_buffer: once in an index's life, so no record type of its
+own); CREATE INDEX sets it when any row had two keys.  It is never cleared.
+bark_nkeys is the number of (key, TID) members, markers not counted, as of
+the last CREATE INDEX or VACUUM, which logs the meta page whole when the
+count changed.
+
+A marker is a key procedure 7 returns through its fourth and fifth
+arguments, a fact about the index rather than a row.  It is stored once, as
+a SINGLE entry whose heap TID is (InvalidBlockNumber, 1): no heap block has
+that number, and it sorts after every real TID of the key.  Its other key
+columns are NULL.  An insert adds the row's markers that its backend has not
+seen, before the row's keys, never coalesced and not again when present;
+CREATE INDEX writes each distinct one once (parallel participants spool it
+with TIDs (InvalidBlockNumber, 2 + participant), since tuplesort refuses
+equal TIDs, and the load writes the reserved TID).  Markers are never
+removed.  Every reader of heap TIDs skips them: scans, KNN, VACUUM's
+callback and its count, bottom-up deletion, merging and coalescing.
+bark_index_has_marker looks one up.
+
+Scans of an index with an extracted column are refused until the scan side
+is written ("multikey scans are not implemented yet", in bark_beginscan).
+The planner treats such an index as ordered only by its columns before the
+extracted one: plancat leaves the sort family InvalidOid at a column whose
+operator family is not btree's, and build_index_pathkeys stops there.
 
 Every read of a data item (any item but a high key) goes through
 BarkPageGetItem, which decodes the prefix-coded items of a BARK_PREFIX leaf
@@ -538,7 +599,7 @@ overflow chains, VACUUM, bottom-up deletion, merges and page deletion; CREATE IN
 writes whole.  Each change to a page is in exactly one record.  The
 records:
 
-  XLOG_BARK_INSERT_LEAF (bark_insert_entry, from bark_insert)
+  XLOG_BARK_INSERT_LEAF (bark_insert_entry, from bark_insert_key)
       One leaf: the new entry and its offset, as nbtree's INSERT_LEAF.  An
       OVERSIZED entry's overflow chain is written first, in its own
       XLOG_BARK_OVERFLOW records.  Redo adds the entry with PageAddItem under an exclusive lock.
@@ -677,6 +738,10 @@ records:
       (see "Page deletion and recycling").  The page's reinitialization is in
       the allocating record that follows.
 
+The meta page's bark_flags and bark_nkeys are logged as a full page image
+(log_newpage_buffer, an XLOG_FPI record) when they change: the multikey flag
+once in an index's life, bark_nkeys at most once per VACUUM.
+
 The vacuum cycle ID's clear is logged, in XLOG_BARK_VACUUM, and a split
 logs the cycle ID it stamps, although nbtree treats the clear as a hint and
 masks the field in btree_mask.  The clear could become a hint, with
@@ -781,6 +846,10 @@ Invariants
 
   * Block 0 is the meta page; its bark_magic is BARK_MAGIC and its
     bark_version is between BARK_MIN_VERSION and BARK_VERSION.
+  * In an index with an extracted column, each (key, TID) is one entry
+    member.  The heap TID (InvalidBlockNumber, 1) is a marker's, only on a
+    SINGLE entry of an index whose procedure 7 can return markers, with
+    every key column but the extracted one NULL.
   * Keys are ordered by a btree-family operator class (BARK declares
     ambtreeopfamilies), so BARK's opfamily OIDs are btree sort opfamilies.
   * On a leaf page, entries are in key order; within one key, LIST locators

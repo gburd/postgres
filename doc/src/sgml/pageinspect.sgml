@@ -543,9 +543,13 @@ test=# SELECT itemoffset, ctid, itemlen, nulls, vars, data, dead, htid, tids[0:2
      <para>
       <function>bark_metap</function> returns information about a BARK
       index's meta page: its magic number, on-disk version, root block and
-      the root's level, and whether all key columns are
+      the root's level, whether all key columns are
       <quote>equalimage</quote> (which decides whether equal keys are
-      coalesced into LIST and POSTING entries).  For example:
+      coalesced into LIST and POSTING entries), its flags (bit 0, multikey:
+      the index has held a row with more than one entry), and the number of
+      (key, heap TID) members as of the last <command>CREATE INDEX</command>
+      or <command>VACUUM</command>.  An index whose meta page predates the
+      last two reads 0 in both.  For example:
 <screen>
 test=# SELECT * FROM bark_metap('bark_idx');
 -[ RECORD 1 ]-+-----------
@@ -554,6 +558,8 @@ version       | 2
 root          | 2
 level         | 1
 allequalimage | t
+flags         | 0
+nkeys         | 10000
 </screen>
      </para>
     </listitem>
