@@ -548,10 +548,25 @@ typedef struct BarkMetaPageData
 	BlockNumber bark_root;		/* current root block, or BARK_P_NONE */
 	uint32		bark_level;		/* tree level of the root page */
 	bool		bark_allequalimage; /* are all key columns "equalimage"? */
+	uint32		bark_flags;		/* BARK_META_* bits */
+	uint64		bark_nkeys;		/* (key, TID) members, markers not counted, as
+								 * of the last CREATE INDEX or VACUUM */
 } BarkMetaPageData;
 
 #define BarkPageGetMeta(page) \
 	((BarkMetaPageData *) PageGetContents(page))
+
+/*
+ * BARK_META_MULTIKEY: the index has held a row with more than one entry.  Set
+ * before the first entry of such a row is inserted, never cleared (only
+ * REINDEX builds an index without it).  bark_flags and bark_nkeys follow
+ * the fields every version 2 meta page has had, and a meta page written
+ * before them ends (pd_lower) where bark_allequalimage does; PageInit zeroed
+ * what lies past it, so such an index reads 0 in both, which is right for
+ * it.  A writer of either field moves pd_lower past them first, so the
+ * standard-layout page image it logs includes them (bark_meta_cover).
+ */
+#define BARK_META_MULTIKEY	(1 << 0)
 
 /* ----------------------------------------------------------------------------
  * Index-entry encoding (the C-KEYSHAPE contract)
@@ -1067,6 +1082,64 @@ extern bool bark_column_is_extracted(Relation index, int attno);
 extern int	bark_index_extracted_column(Relation index);
 extern bool bark_opfamily_extracts(Oid opfamily, Oid opcintype);
 extern void bark_check_multikey_index(Relation index, IndexInfo *indexInfo);
+extern void bark_meta_cover(Page metapage);
+extern bool bark_index_is_multikey(Relation index);
+extern void bark_set_multikey(Relation index);
+extern void bark_set_nkeys(Relation index, uint64 nkeys);
+
+/*
+ * The entries one row has in an index with an extracted column: procedure
+ * 7's keys for the column's value, sorted in the column's index order (its
+ * comparator, ASC or DESC, and NULLS FIRST or LAST) and distinct, with at
+ * most one NULL key; and its marker keys, sorted and distinct.  A NULL
+ * value, a value with no keys and a key flagged NULL all give the NULL key,
+ * so nkeys is at least 1.  See "Insert and build" in BARK-Design.mediawiki.
+ */
+typedef struct BarkRowKeys
+{
+	int			nkeys;
+	Datum	   *keys;
+	bool	   *nulls;
+	int			nmarkers;
+	Datum	   *markers;
+} BarkRowKeys;
+
+/*
+ * A marker is a SINGLE entry with this heap TID, which names no row: no heap
+ * block has number InvalidBlockNumber (MaxBlockNumber is one less), and it
+ * sorts after every real TID of its key.  Its other key columns are NULL.
+ */
+#define BARK_MARKER_OFFSET	1
+
+static inline void
+BarkSetMarkerTid(ItemPointer tid)
+{
+	ItemPointerSet(tid, InvalidBlockNumber, BARK_MARKER_OFFSET);
+}
+
+static inline bool
+BarkTidIsMarker(const ItemPointerData *tid)
+{
+	return ItemPointerGetBlockNumberNoCheck(tid) == InvalidBlockNumber &&
+		ItemPointerGetOffsetNumberNoCheck(tid) == BARK_MARKER_OFFSET;
+}
+
+/* Is the leaf entry a marker?  Every reader of heap TIDs skips one. */
+static inline bool
+BarkEntryIsMarker(const IndexTupleData *itup)
+{
+	return BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE &&
+		BarkTidIsMarker(&itup->t_tid);
+}
+
+extern void bark_extract_row_keys(Relation index, BarkKeyInfo *keyinfo,
+								  Datum value, bool isnull, BarkRowKeys *rk);
+extern IndexTuple bark_form_marker(Relation index, Datum key, Size *fulllen);
+extern bool bark_marker_cached(Relation index, BarkKeyInfo *keyinfo,
+							   Datum key);
+extern void bark_cache_marker(Relation index, BarkKeyInfo *keyinfo,
+							  Datum key);
+extern bool bark_index_has_marker(Relation index, Datum key);
 extern int	bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
 							   IndexTuple a, IndexTuple b);
 extern int	bark_compare_itups_tid(BarkKeyInfo *keyinfo, Relation index,
@@ -1373,12 +1446,26 @@ extern int	bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
  * extracted is the key column whose operator class extracts several keys
  * from a value (bark_index_extracted_column), 0 for none, or -1 until first
  * asked.  It comes from the catalog, which an index keeps for its life.
+ *
+ * multikey is true once this backend has seen the meta page's
+ * BARK_META_MULTIKEY set, or set it.  The flag is never cleared, so a true
+ * here is never stale; false only means "read the meta page".
+ *
+ * markerdata holds the nmarkers marker keys this backend has seen in the
+ * index, each MAXALIGNed: a pass-by-value key as a Datum, any other as its
+ * bytes.  Markers are never removed, so they are never stale either.  They
+ * live in this one chunk, which grows, because rd_amcache must be a single
+ * chunk (see rel.h).
  */
 typedef struct BarkAmCache
 {
 	BlockNumber root;
 	uint32		level;
 	int			extracted;
+	bool		multikey;		/* BARK_META_MULTIKEY seen set */
+	int			nmarkers;		/* markers seen present */
+	Size		markerlen;		/* bytes of markerdata in use */
+	char		markerdata[FLEXIBLE_ARRAY_MEMBER];
 } BarkAmCache;
 
 extern BarkAmCache *bark_get_amcache(Relation index);
@@ -1391,6 +1478,9 @@ extern bool bark_insert(Relation index, Datum *values, bool *isnull,
 						 ItemPointer ht_ctid, Relation heapRel,
 						 IndexUniqueCheck checkUnique,
 						 bool indexUnchanged, IndexInfo *indexInfo);
+extern void bark_insert_oversized_keys(Relation index, Datum *values,
+									   bool *isnull, ItemPointer ht_ctid,
+									   Relation heapRel, IndexInfo *indexInfo);
 
 /* Leaf high key for a split between lastleft and firstright (barkinsert.c). */
 extern IndexTuple bark_truncate_pivot(Relation index, BarkKeyInfo *keyinfo,
