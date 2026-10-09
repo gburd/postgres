@@ -401,11 +401,17 @@ The first descent uses the longest bound the keys give on the leading
 columns (bark_make_bound): equality on columns 1..k-1 and a bound on column
 k, compared through the opfamily's cross-type ORDER procs.  A lower bound
 sorts before every key equal to it and an upper bound after, so a backward
-scan descends straight to its last match.  A row comparison bounds the
+scan descends straight to its last match.  When column k's key is a strict
+inequality (> or <) the roles swap, as nbtree's _bt_first sets nextkey for
+>: a forward scan's bound sorts after the keys equal to it and a backward
+one's before them, so the scan starts past the entries the key excludes
+instead of reading and rejecting them.  A row comparison bounds the
 descent with its usable prefix, the members on consecutive columns from its
 first one that are not NULL and keep the first member's direction, as
 nbtree's _bt_first does, and one on column 1 also ends the scan once an
-entry sorts past that prefix.
+entry sorts past that prefix.  The prefix is strict only when it is the
+whole row: under (a, c) > (5, 10) on (a, b, c) the entries with a = 5 may
+match.
 
 ScalarArrayOp keys.  The equality keys of columns 1..m, each column having
 an equality array or a scalar equality, are the scan's required keys when
@@ -439,8 +445,10 @@ On every leaf after a descent's first, bark_readpage first tests the scan
 keys against the page's first and last data entries, as nbtree's
 _bt_set_startikey does (bark_page_satisfied_keys).  A key on column k that
 both satisfy, where the two are equal on columns 1..k-1, holds for every
-entry between them, so it is not tested again on that page.  Arrays and
-row comparisons are always tested.  The first leaf a descent reaches skips
+entry between them, so it is not tested again on that page.  An equality
+array is marked when its column holds one value across the page, and that
+value is an element; a row comparison when both entries satisfy it on the
+same deciding member, as in nbtree.  The first leaf a descent reaches skips
 the check, as in nbtree: a selective lookup reads only that page and would
 pay for the check without gaining from it.
 

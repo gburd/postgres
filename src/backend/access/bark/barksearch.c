@@ -119,21 +119,23 @@ bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
 	 * moves on to the last such page, past a high key equal to the bound.
 	 * A bound is never equal to a tuple, so nextkey does not matter.
 	 *
-	 * One exception, as in nbtree's _bt_compare: a lower bound sorts after a
-	 * pivot that has exactly the bound's columns and no heap TID.  Suffix
-	 * truncation kept one column more than lastleft and firstright share, so
-	 * lastleft is strictly less than the pivot on those columns, and so is
-	 * every entry left of the pivot (an insert equal to the pivot on them
-	 * goes right of it).  No entry there can be at or after the bound, and a
-	 * descent that went left would only read a page with no match and step
-	 * right.  A pivot with more columns than the bound, or with a heap TID,
-	 * may have entries equal to the bound on its left.  Leaf entries are
-	 * never truncated, and an upper bound sorts after the pivot anyway.
+	 * One exception, as in nbtree's _bt_compare: a forward scan's lower
+	 * bound sorts after a pivot that has exactly the bound's columns and no
+	 * heap TID.  Suffix truncation kept one column more than lastleft and
+	 * firstright share, so lastleft is strictly less than the pivot on those
+	 * columns, and so is every entry left of the pivot (an insert equal to
+	 * the pivot on them goes right of it).  No entry there can be at or after
+	 * the bound, and a descent that went left would only read a page with no
+	 * match and step right.  A pivot with more columns than the bound, or
+	 * with a heap TID, may have entries equal to the bound on its left.  A
+	 * backward scan's lower bound (a strict <) wants the entries left of the
+	 * pivot, so it keeps sorting before it, as nbtree's does.  Leaf entries
+	 * are never truncated, and an upper bound sorts after the pivot anyway.
 	 */
 	if (result == 0)
 	{
 		if (natts < bound->nkeys || bound->upper ||
-			(notid && natts == bound->nkeys))
+			(notid && natts == bound->nkeys && !bound->backward))
 			result = 1;
 		else
 			result = -1;

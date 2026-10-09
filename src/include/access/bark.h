@@ -1337,12 +1337,15 @@ extern Buffer bark_search(Relation index, BarkKeyInfo *keyinfo,
  * int8 column) compares correctly.  The bound has a value for the first
  * nkeys columns only; on the columns after them it is minus infinity, or
  * plus infinity when `upper` (so that every entry equal to it on the bounded
- * columns sorts before it).
+ * columns sorts before it).  `backward` says a backward scan descends to it,
+ * which only changes how it compares with a truncated pivot
+ * (bark_compare_bound).
  */
 typedef struct BarkScanBound
 {
 	int			nkeys;
 	bool		upper;
+	bool		backward;
 	Datum		args[INDEX_MAX_KEYS];
 	FmgrInfo   *procs[INDEX_MAX_KEYS];
 	Oid			collations[INDEX_MAX_KEYS];
