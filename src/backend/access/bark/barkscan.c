@@ -442,9 +442,9 @@ typedef struct BarkMkScanState
 	/*
 	 * Index-only scans: the row an entry stands for, in xs_hitup, formed in
 	 * hitupCxt with hitupdesc, the index's columns with the extracted one as
-	 * the column's type.  fetch is procedure 14, or NULL.
+	 * the column's type (which the planner never reads; see
+	 * bark_mk_form_hitup).
 	 */
-	FmgrInfo   *fetch;
 	TupleDesc	hitupdesc;
 	MemoryContext hitupCxt;
 } BarkMkScanState;
@@ -944,11 +944,11 @@ bark_mk_seen(IndexScanDesc scan, IndexTuple itup, ItemPointer tids,
 /*
  * The row of entry itup for an index-only scan ("Index-only scans" in
  * BARK-Design.mediawiki).  The entry holds a key of the extracted column,
- * not its value, so that column is procedure 14's value for the key, or
- * NULL when the class has none: bark_canreturn then says the column cannot
- * be returned, and the planner does not read it.  A NULL key (a NULL value,
- * an empty value or a NULL element) gives NULL; a class that provides
- * procedure 14 is one whose single key determines the value.  The other
+ * not its value, and bark_canreturn says that column cannot be returned, so
+ * the planner never reads it: it is NULL here.  (A key cannot be turned back
+ * into the value: a row with several keys has one entry per key, and the
+ * NULL key stands for a NULL value, an empty value and a NULL element
+ * alike.  Procedure 14 is therefore not used.)  The other
  * columns are the entry's own, except that a name column, which name_ops
  * stores as a cstring, becomes a name again, as the executor does for
  * xs_itup (tableam_index_fill_ios_names).
@@ -967,15 +967,8 @@ bark_mk_form_hitup(IndexScanDesc scan, IndexTuple itup)
 	oldcxt = MemoryContextSwitchTo(mk->hitupCxt);
 	index_deform_tuple(itup, RelationGetDescr(scan->indexRelation), values,
 					   isnull);
-	if (mk->fetch == NULL || isnull[mk->attno - 1])
-	{
-		values[mk->attno - 1] = (Datum) 0;
-		isnull[mk->attno - 1] = true;
-	}
-	else
-		values[mk->attno - 1] = FunctionCall1Coll(mk->fetch,
-												  mk->col->collation,
-												  values[mk->attno - 1]);
+	values[mk->attno - 1] = (Datum) 0;
+	isnull[mk->attno - 1] = true;
 	for (int i = 0; i < natts; i++)
 	{
 		if (!isnull[i] &&
@@ -1016,8 +1009,6 @@ bark_mk_begin(IndexScanDesc scan, int attno)
 	if (OidIsValid(index_getprocid(index, attno, BARK_INDEXRECHECK_PROC)))
 		mk->indexrecheck = index_getprocinfo(index, attno,
 											 BARK_INDEXRECHECK_PROC);
-	if (OidIsValid(index_getprocid(index, attno, BARK_FETCH_PROC)))
-		mk->fetch = index_getprocinfo(index, attno, BARK_FETCH_PROC);
 	mk->hitupdesc = CreateTupleDescCopy(RelationGetDescr(index));
 	TupleDescInitEntry(mk->hitupdesc, attno, NULL,
 					   index->rd_opcintype[attno - 1], -1, 0);
@@ -3877,14 +3868,14 @@ bark_restrpos(IndexScanDesc scan)
  * A BARK leaf entry is the full index tuple (every indexed column plus the
  * heap TID in t_tid), so any column can be returned without a heap fetch,
  * except an extracted column: its entries hold keys, not the column's
- * value, which only procedure 14 can rebuild (bark_mk_form_hitup).
+ * value.  A key does not determine the value (a row with several keys has
+ * an entry per key, and the NULL key stands for a NULL value, an empty value
+ * and a NULL element alike), so an index-only scan never returns it.
  */
 bool
 bark_canreturn(Relation index, int attno)
 {
-	if (bark_column_is_extracted(index, attno))
-		return OidIsValid(index_getprocid(index, attno, BARK_FETCH_PROC));
-	return true;
+	return !bark_column_is_extracted(index, attno);
 }
 
 /*
