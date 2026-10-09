@@ -1420,11 +1420,15 @@ typedef struct BarkKnnScanState
  * BY stays correct) exactly as a merged sequence of equality scans would.
  *
  * Every array key filters per tuple by membership (bark_array_contains, a
- * binary search over `elems`), which alone makes the scan correct.  The array
- * key on the leading index column additionally drives positioning: `cur` walks
- * the sorted elements, the scan seeks to each in turn, so it starts at the
- * first element rather than the leftmost leaf and skips the gaps between
- * elements instead of filtering every tuple in between.
+ * binary search over `elems`), which alone makes the scan correct.  The
+ * required keys also drive positioning (nbtree's required array keys): on
+ * index columns 1..m, each with an equality array or a scalar equality (an
+ * array of one element, built for the purpose), stopping at the first column
+ * with neither, each key's `cur` is one digit of an odometer.  The
+ * combinations of the digits' elements, in column order, are in index order,
+ * and the scan visits them in turn, descending to a combination when it
+ * starts beyond the page being read, so it skips the gaps between them
+ * instead of filtering every tuple in between.
  *
  * The elements may be of another type than the column (an int4 column with
  * an int8[] array), so they are compared through two ORDER procs from the
@@ -1444,7 +1448,7 @@ typedef struct BarkArrayKeyState
 	FmgrInfo	cmpproc;		/* ORDER proc for (column, element) */
 	Datum	   *elems;			/* sorted, de-duplicated array elements */
 	int			nelems;			/* number of them (0: empty array, no matches) */
-	int			cur;			/* leading-array cursor: element the scan is on */
+	int			cur;			/* required key: element the scan is on */
 } BarkArrayKeyState;
 
 /*
@@ -1490,14 +1494,13 @@ typedef struct BarkScanPosData
 	bool		moreRight;
 
 	/*
-	 * Leading-array (SAOP) cursor as of the end of a forward read, and whether
-	 * the next element lies beyond the immediate right sibling, so the next
-	 * forward step should re-descend to it rather than read nextPage.  Kept in
-	 * the position, not only in the array state, so that a scroll cursor that
-	 * reverses direction cannot leave the cursor ahead of the position.  A
-	 * backward read leaves arrayCur at 0 and arrayReseek false (see barkscan.c).
+	 * The required keys' cursors (so->reqKeys[k]->cur) as of the end of the
+	 * read, and whether the next step in dir should re-descend to their
+	 * combination rather than read the sibling page.  Kept in the position,
+	 * not only in the array state, so that restoring a mark restores where
+	 * the scan goes next.  A skip scan also sets arrayReseek.
 	 */
-	int			arrayCur;
+	int			arrayCur[INDEX_MAX_KEYS];
 	bool		arrayReseek;
 
 	int			firstItem;		/* first valid index in items[] */
@@ -1577,14 +1580,15 @@ typedef struct BarkScanOpaqueData
 	/*
 	 * ScalarArrayOp (SAOP) state: one BarkArrayKeyState per SK_SEARCHARRAY
 	 * scankey, built by bark_rescan.  numArrayKeys == 0 for a plain scan.
-	 * leadArray points at the array key (if any) on the leading index column,
-	 * which drives positioning; it is NULL when no array constrains column 1.
-	 * All of it lives in arrayCxt, which each rescan resets.
+	 * reqKeys[k] is the required key on index column k + 1, for k <
+	 * numReqKeys (see BarkArrayKeyState); numReqKeys is 0 unless one of them
+	 * is an array.  All of it lives in arrayCxt, which each rescan resets.
 	 */
 	MemoryContext arrayCxt;		/* child of scanCxt, or NULL if never needed */
 	BarkArrayKeyState *arrayKeys;	/* palloc'd array, or NULL */
 	int			numArrayKeys;	/* number of SAOP keys */
-	BarkArrayKeyState *leadArray;	/* the array key on column 1, or NULL */
+	BarkArrayKeyState **reqKeys;	/* required keys, or NULL */
+	int			numReqKeys;		/* number of them */
 
 	/*
 	 * Skip scan: no key on column 1, but a key that bounds column 2.  A

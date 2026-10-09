@@ -564,8 +564,9 @@ planner's ordered-path generation (see the sweep below) treats a BARK scalar
 index as interchangeable with a B-tree for costing.
 
 barkcostestimate is btcostestimate applied to the quals BARK's scan uses to
-position and stop (no IS NULL bound, an equality array only on column 1 of
-a forward scan, skipping only over column 1), with the index correlation
+position and stop (no IS NULL bound, equality arrays on the equality prefix
+in either direction with one descent per combination of their elements,
+skipping only over column 1), with the index correlation
 from <code>btcost_correlation</code>, plus a charge for overflow chains.
 It counts the entries a scan reads in heap rows, as nbtree does after
 deduplication; LIST and POSTING entries lower the cost through the index's
