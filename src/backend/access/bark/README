@@ -601,13 +601,15 @@ extracted column (M1d serves those).  A KNN scan on a fixed leading column
 runs every entry through bark_mk_accept and bark_mk_seen, without group
 clears, since its two cursors interleave groups.
 
-Index-only scans: bark_canreturn answers false for the extracted column
-unless the class has procedure 14.  Such a scan returns xs_hitup, formed by
-bark_mk_form_hitup from the entry, with the extracted column replaced by
-fetch(key) (NULL for the NULL key, or when there is no procedure 14 and
-the planner reads only the other columns) and name_ops' cstring columns
-made names again, in hitupdesc, the index's descriptor with the column's
-input type.
+Index-only scans: bark_canreturn answers false for the extracted column,
+so the planner reads only the other columns.  A key does not determine its
+row's value: a row with several keys has an entry per key, and the single
+NULL key stands for a NULL value, an empty value and a NULL element alike,
+so any value rebuilt from one entry could be wrong.  Procedure 14 is
+therefore not called.  The scan returns xs_hitup, formed by
+bark_mk_form_hitup from the entry, with the extracted column NULL and
+name_ops' cstring columns made names again, in hitupdesc, the index's
+descriptor with the column's input type.
 
 
 Operator classes and validation
