@@ -49,6 +49,7 @@
 #include "postgres.h"
 
 #include "access/bark.h"
+#include "access/htup_details.h"
 #include "access/relscan.h"
 #include "access/skey.h"
 #include "catalog/pg_type.h"
@@ -60,6 +61,7 @@
 #include "storage/lwlock.h"
 #include "storage/predicate.h"
 #include "utils/array.h"
+#include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -191,6 +193,16 @@ bark_array_proc(IndexScanDesc scan, AttrNumber attno, Oid lefttype,
 	fmgr_info_cxt(proc, finfo, so->arrayCxt);
 }
 
+/* The context of the state rescan rebuilds, created when first needed. */
+static MemoryContext
+bark_array_cxt(BarkScanOpaque so)
+{
+	if (so->arrayCxt == NULL)
+		so->arrayCxt = AllocSetContextCreate(so->scanCxt, "BARK array keys",
+											 ALLOCSET_SMALL_SIZES);
+	return so->arrayCxt;
+}
+
 /*
  * Preprocess every SK_SEARCHARRAY scankey, as nbtree's
  * _bt_preprocess_array_keys does.  NULL array elements are dropped: btree
@@ -225,19 +237,16 @@ bark_setup_array_keys(IndexScanDesc scan)
 	so->arrayKeys = NULL;
 	so->numArrayKeys = 0;
 
-	for (int i = 0; i < scan->numberOfKeys; i++)
+	for (int i = 0; i < so->numberOfKeys; i++)
 		if (scan->keyData[i].sk_flags & SK_SEARCHARRAY)
 			narrays++;
 	if (narrays == 0)
 		return;
 
-	if (so->arrayCxt == NULL)
-		so->arrayCxt = AllocSetContextCreate(so->scanCxt, "BARK array keys",
-											 ALLOCSET_SMALL_SIZES);
-	oldcxt = MemoryContextSwitchTo(so->arrayCxt);
+	oldcxt = MemoryContextSwitchTo(bark_array_cxt(so));
 	so->arrayKeys = palloc0_array(BarkArrayKeyState, narrays);
 
-	for (int i = 0; i < scan->numberOfKeys; i++)
+	for (int i = 0; i < so->numberOfKeys; i++)
 	{
 		ScanKey		sk = &scan->keyData[i];
 		BarkArrayKeyState *ak;
@@ -337,6 +346,859 @@ bark_free_array_keys(BarkScanOpaque so)
 }
 
 /*
+ * ---------------------------------------------------------------------------
+ * Multikey scans ("Scans" under "M1: multikey keys" in BARK-Design.mediawiki)
+ *
+ * In an index with an extracted column, a row has one entry per key of the
+ * column's value, and the class's operators are not btree comparisons, so
+ * the keys on that column never reach the btree-style code above: rescan
+ * moves them after so->numberOfKeys.  Procedure 8 turns the first of them
+ * into boundaries over the column's keys (a ScalarArrayOp, once per
+ * element, unioned), which bark_mk_setup sorts into index order.  When every
+ * column before the extracted one has an equality, the boundaries are the
+ * last required key (BarkArrayKeyState.mk): the scan descends to each in
+ * turn, as to an equality array's elements.  Otherwise they only filter.
+ * Either way bark_mk_filter decides which entries are inside one, procedure
+ * 9 may drop or doubt an entry, and the seen set drops a row's later
+ * entries.
+ * ---------------------------------------------------------------------------
+ */
+
+/*
+ * One boundary over the extracted column's keys, in index order: from start
+ * to end, each excluded when strict, unbounded where absent.  On a DESC
+ * column start is procedure 8's upper search element.  A nulls boundary is
+ * instead the NULL entries, wherever the column's NULLS option puts them.
+ */
+typedef struct BarkMkBoundary
+{
+	Datum		start;
+	Datum		end;
+	bool		hasstart;
+	bool		hasend;
+	bool		startstrict;
+	bool		endstrict;
+	bool		nulls;
+	bool		point;			/* one key, or the NULL entries */
+	bool		recheck;		/* return its rows with xs_recheck */
+	bool		callproc9;		/* run procedure 9 on its entries */
+	StrategyNumber strategy;	/* the scan key's, for procedure 9 */
+	Pointer		extra;			/* procedure 8's extra, for procedure 9 */
+} BarkMkBoundary;
+
+/*
+ * The radix tree of the seen set (see bark_mk_seen): key bark_tid_to_key(tid)
+ * >> 6, value one bit per TID of that window of 64.
+ */
+#define RT_PREFIX bark_seen
+#define RT_SCOPE static inline
+#define RT_DECLARE
+#define RT_DEFINE
+#define RT_VALUE_TYPE uint64
+#include "lib/radixtree.h"
+
+typedef struct BarkMkScanState
+{
+	AttrNumber	attno;			/* the extracted column */
+	BarkKeyColumn *col;			/* its comparator and order */
+	FmgrInfo   *extractquery;	/* procedure 8 */
+	bool		queryflags;		/* it takes BarkQueryFlags, a 7th argument */
+	FmgrInfo   *indexrecheck;	/* procedure 9, or NULL */
+	ScanKey		keys;			/* the scan keys on the column ... */
+	int			nkeys;			/* ... and their number */
+
+	/* the first key's boundaries, sorted and disjoint, in arrayCxt */
+	BarkMkBoundary *bounds;
+	int			nbounds;
+	bool		recheckall;		/* several keys: xs_recheck on every row */
+	int			matched;		/* boundary of the entry bark_mk_filter passed */
+
+	/*
+	 * The seen set (bark_mk_seen).  seen is NULL until a TID goes in, and
+	 * lives in seenCxt, which is reset to empty it.  groupvals are the
+	 * columns before the extracted one of the rows in it.
+	 */
+	bool		useseen;		/* a row may match through two entries */
+	bool		bitmap;			/* an amgetbitmap scan, which needs none */
+	bool		started;		/* positioned since rescan, in direction dir */
+	ScanDirection dir;
+	MemoryContext seenCxt;
+	bark_seen_radix_tree *seen;
+	uint64		nseen;			/* TIDs in it */
+	bool		havegroup;
+	Datum		groupvals[INDEX_MAX_KEYS];
+	bool		groupnulls[INDEX_MAX_KEYS];
+
+	/*
+	 * Mark and restore (bark_markpos): while marked, every TID added to the
+	 * set goes on the undo list, which bark_restrpos takes out again, and the
+	 * set is never emptied for a new group.
+	 */
+	bool		marked;
+	ItemPointerData *undo;
+	int			nundo;
+	int			maxundo;
+
+	/*
+	 * Index-only scans: the row an entry stands for, in xs_hitup, formed in
+	 * hitupCxt with hitupdesc, the index's columns with the extracted one as
+	 * the column's type.  fetch is procedure 14, or NULL.
+	 */
+	FmgrInfo   *fetch;
+	TupleDesc	hitupdesc;
+	MemoryContext hitupCxt;
+} BarkMkScanState;
+
+/* Compare two keys of the extracted column in index order. */
+static inline int
+bark_mk_keycmp(BarkMkScanState *mk, Datum a, Datum b)
+{
+	int32		c = DatumGetInt32(FunctionCall2Coll(&mk->col->cmp,
+													mk->col->collation, a, b));
+
+	if (mk->col->reverse)
+		INVERT_COMPARE_RESULT(c);
+	return c;
+}
+
+/*
+ * Where does a value of the extracted column (isnull) sort against boundary
+ * b in index order: <0 before it, 0 inside it, >0 after it.
+ */
+static int
+bark_mk_cmp(BarkMkScanState *mk, Datum datum, bool isnull,
+			const BarkMkBoundary *b)
+{
+	int			c;
+
+	if (b->nulls || isnull)
+	{
+		if (b->nulls && isnull)
+			return 0;
+		return (isnull == mk->col->nulls_first) ? -1 : 1;
+	}
+	if (b->hasstart)
+	{
+		c = bark_mk_keycmp(mk, datum, b->start);
+		if (c < 0 || (c == 0 && b->startstrict))
+			return -1;
+	}
+	if (b->hasend)
+	{
+		c = bark_mk_keycmp(mk, datum, b->end);
+		if (c > 0 || (c == 0 && b->endstrict))
+			return 1;
+	}
+	return 0;
+}
+
+/* qsort_arg comparator: boundaries by their start in index order. */
+static int
+bark_mk_boundary_order(const void *a, const void *b, void *arg)
+{
+	BarkMkScanState *mk = (BarkMkScanState *) arg;
+	const BarkMkBoundary *x = (const BarkMkBoundary *) a;
+	const BarkMkBoundary *y = (const BarkMkBoundary *) b;
+	int			c;
+
+	if (x->nulls || y->nulls)
+	{
+		if (x->nulls && y->nulls)
+			return 0;
+		return (x->nulls == mk->col->nulls_first) ? -1 : 1;
+	}
+	if (!x->hasstart || !y->hasstart)
+		return (int) x->hasstart - (int) y->hasstart;
+	c = bark_mk_keycmp(mk, x->start, y->start);
+	if (c != 0)
+		return c;
+	return (int) x->startstrict - (int) y->startstrict;
+}
+
+/*
+ * Do boundaries x and y intersect, x sorting at or before y?  Every NULL
+ * entry is in a nulls boundary, and no key is.
+ */
+static bool
+bark_mk_intersect(BarkMkScanState *mk, const BarkMkBoundary *x,
+				  const BarkMkBoundary *y)
+{
+	int			c;
+
+	if (x->nulls || y->nulls)
+		return x->nulls && y->nulls;
+	if (!x->hasend || !y->hasstart)
+		return true;
+	c = bark_mk_keycmp(mk, x->end, y->start);
+	return c > 0 || (c == 0 && !x->endstrict && !y->startstrict);
+}
+
+/*
+ * Set one side of boundary b from procedure 8's search element e, the lower
+ * one in value order when lower.  Its strategy must say so: =, >= or > for
+ * a lower element, =, <= or < for an upper one.
+ */
+static void
+bark_mk_set_side(IndexScanDesc scan, BarkMkScanState *mk, BarkMkBoundary *b,
+				 const BarkSearchElement *e, bool lower)
+{
+	bool		strict;
+
+	if (e->strategy == BTEqualStrategyNumber)
+		strict = false;
+	else if (e->strategy == (lower ? BTGreaterEqualStrategyNumber :
+							 BTLessEqualStrategyNumber))
+		strict = false;
+	else if (e->strategy == (lower ? BTGreaterStrategyNumber :
+							 BTLessStrategyNumber))
+		strict = true;
+	else
+		elog(ERROR, "procedure %d of index \"%s\" returned strategy %d for the %s side of a boundary",
+			 BARK_EXTRACTQUERY_PROC, RelationGetRelationName(scan->indexRelation),
+			 e->strategy, lower ? "lower" : "upper");
+
+	/* In index order a DESC column's upper element comes first. */
+	if (lower != mk->col->reverse)
+	{
+		b->hasstart = true;
+		b->start = e->argument;
+		b->startstrict = strict;
+	}
+	else
+	{
+		b->hasend = true;
+		b->end = e->argument;
+		b->endstrict = strict;
+	}
+}
+
+/*
+ * Run procedure 8 on query, the argument of the scan key sk (or one element
+ * of its array), and append its boundaries to *bounds (*nbounds of them,
+ * *maxbounds allocated), followed by the nulls boundary when it set
+ * BarkQueryFlags.searchnulls.  Boundaries that contain no key (a start after
+ * the end) are left out.  Two of one call's boundaries must not intersect,
+ * as pg_extended_btree requires.  Runs in arrayCxt, so procedure 8's
+ * results last until the next rescan.
+ *
+ * A procedure 8 declared with six arguments, as pg_extended_btree's are, is
+ * called with six and never sees BarkQueryFlags.  BarkQueryFlags.backward
+ * is for ordering keys, which pick the direction of their own walk; a
+ * search key goes in the scan's direction and ignores it.
+ */
+static void
+bark_mk_extract(IndexScanDesc scan, BarkMkScanState *mk, ScanKey sk,
+				Datum query, BarkMkBoundary **bounds, int *nbounds,
+				int *maxbounds)
+{
+	BarkBoundary *result = NULL;
+	int32		nresult = 0;
+	Pointer		extra = NULL;
+	bool		recheck = false;
+	BarkQueryFlags flags;
+	int			first = *nbounds;
+
+	memset(&flags, 0, sizeof(flags));
+	if (mk->queryflags)
+		FunctionCall7Coll(mk->extractquery, mk->col->collation, query,
+						  Int16GetDatum(sk->sk_strategy),
+						  PointerGetDatum(&result), PointerGetDatum(&nresult),
+						  PointerGetDatum(&extra), PointerGetDatum(&recheck),
+						  PointerGetDatum(&flags));
+	else
+		FunctionCall6Coll(mk->extractquery, mk->col->collation, query,
+						  Int16GetDatum(sk->sk_strategy),
+						  PointerGetDatum(&result), PointerGetDatum(&nresult),
+						  PointerGetDatum(&extra), PointerGetDatum(&recheck));
+
+	if (*nbounds + nresult + 1 > *maxbounds)
+	{
+		*maxbounds = Max(*maxbounds * 2, *nbounds + nresult + 1);
+		*bounds = *bounds == NULL ? palloc_array(BarkMkBoundary, *maxbounds) :
+			repalloc_array(*bounds, BarkMkBoundary, *maxbounds);
+	}
+	for (int i = 0; i < nresult; i++)
+	{
+		BarkMkBoundary *b = &(*bounds)[*nbounds];
+
+		memset(b, 0, sizeof(*b));
+		if (result[i].lower != NULL)
+			bark_mk_set_side(scan, mk, b, result[i].lower, true);
+		if (result[i].upper != NULL)
+			bark_mk_set_side(scan, mk, b, result[i].upper, false);
+		if (b->hasstart && b->hasend)
+		{
+			int			c = bark_mk_keycmp(mk, b->start, b->end);
+
+			if (c > 0 || (c == 0 && (b->startstrict || b->endstrict)))
+				continue;		/* empty */
+			b->point = (c == 0);
+		}
+		if (recheck && mk->indexrecheck == NULL)
+			elog(ERROR, "missing support function %d for attribute %d of index \"%s\"",
+				 BARK_INDEXRECHECK_PROC, mk->attno,
+				 RelationGetRelationName(scan->indexRelation));
+		b->callproc9 = recheck;
+		b->strategy = sk->sk_strategy;
+		b->extra = extra;
+		(*nbounds)++;
+	}
+	if (flags.searchnulls)
+	{
+		BarkMkBoundary *b = &(*bounds)[(*nbounds)++];
+
+		memset(b, 0, sizeof(*b));
+		b->nulls = b->point = b->recheck = true;
+	}
+
+	if (*nbounds - first > 1)
+	{
+		qsort_arg(*bounds + first, *nbounds - first, sizeof(BarkMkBoundary),
+				  bark_mk_boundary_order, mk);
+		for (int i = first + 1; i < *nbounds; i++)
+			if (bark_mk_intersect(mk, &(*bounds)[i - 1], &(*bounds)[i]))
+				elog(ERROR, "procedure %d of index \"%s\" returned intersecting boundaries",
+					 BARK_EXTRACTQUERY_PROC,
+					 RelationGetRelationName(scan->indexRelation));
+	}
+}
+
+/*
+ * Build the extracted column's boundaries from its first scan key, at
+ * rescan.  A key that is not an operator of the class is a NULL test: IS
+ * NULL reads the NULL entries, IS NOT NULL every key and the NULL entries,
+ * whose rows the executor rechecks, since a NULL entry may be an empty
+ * value.  A strict operator with a NULL argument (or a NULL array element)
+ * matches nothing.  A ScalarArrayOp unions its elements' boundaries:
+ * boundaries that intersect are merged, and a merged boundary returns its
+ * rows with xs_recheck instead of running procedure 9, since its entries
+ * would need the procedure 9 of each part.  Further keys on the column do
+ * not narrow the boundaries: two keys on a multikey column may be satisfied
+ * by different keys of a row.  The scan positions on the first, and the
+ * executor rechecks every row against all of them.
+ */
+static void
+bark_mk_setup(IndexScanDesc scan)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BarkMkScanState *mk = so->mk;
+	ScanKey		sk;
+	BarkMkBoundary *bounds = NULL;
+	int			nbounds = 0;
+	int			maxbounds = 0;
+	int			n = 0;
+
+	mk->bounds = NULL;
+	mk->nbounds = 0;
+	mk->recheckall = mk->nkeys > 1;
+	if (mk->nkeys == 0)
+		return;
+	sk = &mk->keys[0];
+
+	if (sk->sk_flags & (SK_SEARCHNULL | SK_SEARCHNOTNULL))
+	{
+		bounds = palloc0_array(BarkMkBoundary, 2);
+		if (sk->sk_flags & SK_SEARCHNOTNULL)
+			n++;				/* every key */
+		bounds[n].nulls = bounds[n].point = bounds[n].recheck = true;
+		n++;
+		qsort_arg(bounds, n, sizeof(BarkMkBoundary), bark_mk_boundary_order,
+				  mk);
+		mk->bounds = bounds;
+		mk->nbounds = n;
+		return;
+	}
+	if (sk->sk_flags & SK_ISNULL)
+		return;
+
+	if (!(sk->sk_flags & SK_SEARCHARRAY))
+		bark_mk_extract(scan, mk, sk, sk->sk_argument, &bounds, &nbounds,
+						&maxbounds);
+	else
+	{
+		ArrayType  *arr = DatumGetArrayTypeP(sk->sk_argument);
+		int16		elmlen;
+		bool		elmbyval;
+		char		elmalign;
+		Datum	   *elems;
+		bool	   *nulls;
+		int			nelems;
+
+		get_typlenbyvalalign(ARR_ELEMTYPE(arr), &elmlen, &elmbyval, &elmalign);
+		deconstruct_array(arr, ARR_ELEMTYPE(arr), elmlen, elmbyval, elmalign,
+						  &elems, &nulls, &nelems);
+		for (int e = 0; e < nelems; e++)
+			if (!nulls[e])
+				bark_mk_extract(scan, mk, sk, elems[e], &bounds, &nbounds,
+								&maxbounds);
+		if (nbounds > 1)
+			qsort_arg(bounds, nbounds, sizeof(BarkMkBoundary),
+					  bark_mk_boundary_order, mk);
+	}
+
+	/* Merge intersecting boundaries, keeping the start of the first. */
+	for (int i = 0; i < nbounds; i++)
+	{
+		BarkMkBoundary *last = &bounds[n - 1];
+
+		if (n > 0 && bark_mk_intersect(mk, last, &bounds[i]))
+		{
+			const BarkMkBoundary *b = &bounds[i];
+
+			if (!last->nulls &&
+				(!b->hasend ||
+				 (last->hasend &&
+				  (bark_mk_keycmp(mk, b->end, last->end) > 0 ||
+				   (bark_mk_keycmp(mk, b->end, last->end) == 0 &&
+					!b->endstrict)))))
+			{
+				last->hasend = b->hasend;
+				last->end = b->end;
+				last->endstrict = b->endstrict;
+			}
+			last->point = last->nulls;
+			last->recheck = true;
+			last->callproc9 = false;
+			continue;
+		}
+		bounds[n++] = bounds[i];
+	}
+	mk->bounds = bounds;
+	mk->nbounds = n;
+}
+
+/*
+ * Empty the seen set.
+ */
+static void
+bark_mk_clear_seen(BarkMkScanState *mk)
+{
+	MemoryContextReset(mk->seenCxt);
+	mk->seen = NULL;
+	mk->nseen = 0;
+	mk->havegroup = false;
+}
+
+/*
+ * Decide, at rescan, whether the scan needs the seen set ("Returning a row
+ * once" in BARK-Design.mediawiki).  A row can come back through two entries
+ * unless the extracted column has exactly one boundary and it is a point (a
+ * row's keys are distinct, so one point matches one of its entries), or the
+ * index has never held a row with two entries.  The flag is read after the
+ * snapshot was taken, and every row visible to an MVCC snapshot committed
+ * before that, its insert having set the flag first.  A scan with any other
+ * snapshot may see a row whose insert is still running, so it always uses
+ * the set.
+ */
+static void
+bark_mk_rescan(IndexScanDesc scan)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BarkMkScanState *mk = so->mk;
+
+	bark_mk_clear_seen(mk);
+	mk->started = false;
+	mk->marked = false;
+	mk->nundo = 0;
+	if (!IsMVCCSnapshot(scan->xs_snapshot))
+		mk->useseen = true;
+	else if (mk->nkeys > 0 && mk->nbounds == 1 && mk->bounds[0].point)
+		mk->useseen = false;
+	else
+		mk->useseen = bark_index_is_multikey(scan->indexRelation);
+
+	/*
+	 * The workers of a parallel scan read different leaves, and a row's
+	 * entries may be on leaves that different workers read, so a scan that
+	 * needs the set cannot be parallel.
+	 */
+	if (mk->useseen && scan->parallel_scan != NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("parallel index scans of multikey BARK index \"%s\" are not supported",
+						RelationGetRelationName(scan->indexRelation))));
+
+	/*
+	 * An ordering operator of the extracted column has a key, not a value, to
+	 * order by, so it needs its own walk of the column.
+	 */
+	for (int i = 0; i < scan->numberOfOrderBys; i++)
+		if (scan->orderByData[i].sk_attno == mk->attno)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("ordered scans on the multikey column of BARK index \"%s\" are not supported",
+							RelationGetRelationName(scan->indexRelation))));
+}
+
+/*
+ * Does entry itup belong to another group of the columns before the
+ * extracted one than the rows in the seen set?  If so, make it the set's
+ * group.  Rows of different groups share no entry group, so the set then
+ * empties: it holds at most one group's rows.
+ */
+static void
+bark_mk_group(IndexScanDesc scan, BarkMkScanState *mk, IndexTuple itup)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	TupleDesc	tupdesc = RelationGetDescr(scan->indexRelation);
+	Datum		vals[INDEX_MAX_KEYS];
+	bool		nulls[INDEX_MAX_KEYS];
+	bool		same = mk->havegroup;
+	MemoryContext oldcxt;
+
+	for (int i = 0; i < mk->attno - 1; i++)
+	{
+		BarkKeyColumn *col = &so->keyinfo->cols[i];
+
+		vals[i] = index_getattr(itup, i + 1, tupdesc, &nulls[i]);
+		if (same &&
+			(nulls[i] != mk->groupnulls[i] ||
+			 (!nulls[i] &&
+			  DatumGetInt32(FunctionCall2Coll(&col->cmp, col->collation,
+											  vals[i], mk->groupvals[i])) != 0)))
+			same = false;
+	}
+	if (same)
+		return;
+
+	bark_mk_clear_seen(mk);
+	oldcxt = MemoryContextSwitchTo(mk->seenCxt);
+	for (int i = 0; i < mk->attno - 1; i++)
+	{
+		Form_pg_attribute att = TupleDescAttr(tupdesc, i);
+
+		mk->groupnulls[i] = nulls[i];
+		mk->groupvals[i] = nulls[i] ? (Datum) 0 :
+			datumCopy(vals[i], att->attbyval, att->attlen);
+	}
+	MemoryContextSwitchTo(oldcxt);
+	mk->havegroup = true;
+}
+
+/*
+ * The seen set: of the member TIDs tids[0 .. ntids - 1] of entry itup, which
+ * the scan is about to return, keep at the front those of rows not returned
+ * yet, add them to the set, and return how many there are.  The set is a
+ * radix tree whose key is bark_tid_to_key(tid) >> 6 and whose value has one
+ * bit per TID of that window, as TidStore uses lib/radixtree.h.  An entry
+ * that a filter or procedure 9 rejected never gets here: a later entry of
+ * its row may match.  newgroups lets the set empty for each group of the
+ * columns before the extracted one (bark_mk_group); a KNN scan, whose two
+ * cursors interleave groups, keeps it whole.
+ *
+ * The set is filled as a page is read, so the items a page read copies are
+ * already free of repeats; bark_gettuple returns them as they are, and a
+ * mark on the page restores to them (see bark_markpos for later pages).
+ * The set grows past get_hash_memory_limit() rather than return a row
+ * twice; the planner keeps plans inside it.
+ */
+int
+bark_mk_seen(IndexScanDesc scan, IndexTuple itup, ItemPointer tids,
+			 int ntids, bool newgroups)
+{
+	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
+	int			nkept = 0;
+
+	if (!mk->useseen || mk->bitmap)
+		return ntids;
+	if (newgroups && mk->attno > 1 && !mk->marked)
+		bark_mk_group(scan, mk, itup);
+	if (mk->seen == NULL)
+	{
+		MemoryContext oldcxt = MemoryContextSwitchTo(mk->seenCxt);
+
+		mk->seen = bark_seen_create(mk->seenCxt);
+		MemoryContextSwitchTo(oldcxt);
+	}
+
+	for (int i = 0; i < ntids; i++)
+	{
+		uint64		key = bark_tid_to_key(&tids[i]);
+		uint64		bit = UINT64CONST(1) << (key & 63);
+		uint64	   *word = bark_seen_find(mk->seen, key >> 6);
+
+		if (word != NULL && (*word & bit) != 0)
+			continue;
+		if (word != NULL)
+			*word |= bit;
+		else
+			bark_seen_set(mk->seen, key >> 6, &bit);
+		mk->nseen++;
+		if (mk->marked)
+		{
+			if (mk->nundo >= mk->maxundo)
+			{
+				mk->maxundo = Max(mk->maxundo * 2, 64);
+				mk->undo = mk->undo == NULL ?
+					MemoryContextAlloc(((BarkScanOpaque) scan->opaque)->scanCxt,
+									   mk->maxundo * sizeof(ItemPointerData)) :
+					repalloc_array(mk->undo, ItemPointerData, mk->maxundo);
+			}
+			mk->undo[mk->nundo++] = tids[i];
+		}
+		tids[nkept++] = tids[i];
+	}
+	return nkept;
+}
+
+/*
+ * The row of entry itup for an index-only scan ("Index-only scans" in
+ * BARK-Design.mediawiki).  The entry holds a key of the extracted column,
+ * not its value, so that column is procedure 14's value for the key, or
+ * NULL when the class has none: bark_canreturn then says the column cannot
+ * be returned, and the planner does not read it.  A NULL key (a NULL value,
+ * an empty value or a NULL element) gives NULL; a class that provides
+ * procedure 14 is one whose single key determines the value.  The other
+ * columns are the entry's own, except that a name column, which name_ops
+ * stores as a cstring, becomes a name again, as the executor does for
+ * xs_itup (tableam_index_fill_ios_names).
+ */
+HeapTuple
+bark_mk_form_hitup(IndexScanDesc scan, IndexTuple itup)
+{
+	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
+	int			natts = mk->hitupdesc->natts;
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+	MemoryContext oldcxt;
+	HeapTuple	tup;
+
+	MemoryContextReset(mk->hitupCxt);
+	oldcxt = MemoryContextSwitchTo(mk->hitupCxt);
+	index_deform_tuple(itup, RelationGetDescr(scan->indexRelation), values,
+					   isnull);
+	if (mk->fetch == NULL || isnull[mk->attno - 1])
+	{
+		values[mk->attno - 1] = (Datum) 0;
+		isnull[mk->attno - 1] = true;
+	}
+	else
+		values[mk->attno - 1] = FunctionCall1Coll(mk->fetch,
+												  mk->col->collation,
+												  values[mk->attno - 1]);
+	for (int i = 0; i < natts; i++)
+	{
+		if (!isnull[i] &&
+			TupleDescAttr(RelationGetDescr(scan->indexRelation), i)->atttypid ==
+			CSTRINGOID)
+		{
+			Name		name = palloc0_object(NameData);
+
+			namestrcpy(name, DatumGetCString(values[i]));
+			values[i] = NameGetDatum(name);
+		}
+	}
+	tup = heap_form_tuple(mk->hitupdesc, values, isnull);
+	MemoryContextSwitchTo(oldcxt);
+	return tup;
+}
+
+/*
+ * Set up a scan of an index with an extracted column, at beginscan.
+ */
+static BarkMkScanState *
+bark_mk_begin(IndexScanDesc scan, int attno)
+{
+	Relation	index = scan->indexRelation;
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BarkMkScanState *mk = palloc0_object(BarkMkScanState);
+
+	mk->attno = attno;
+	mk->col = &so->keyinfo->cols[attno - 1];
+	mk->seenCxt = AllocSetContextCreate(so->scanCxt, "BARK seen set",
+										ALLOCSET_DEFAULT_SIZES);
+	if (OidIsValid(index_getprocid(index, attno, BARK_EXTRACTQUERY_PROC)))
+	{
+		mk->extractquery = index_getprocinfo(index, attno,
+											 BARK_EXTRACTQUERY_PROC);
+		mk->queryflags = get_func_nargs(mk->extractquery->fn_oid) >= 7;
+	}
+	if (OidIsValid(index_getprocid(index, attno, BARK_INDEXRECHECK_PROC)))
+		mk->indexrecheck = index_getprocinfo(index, attno,
+											 BARK_INDEXRECHECK_PROC);
+	if (OidIsValid(index_getprocid(index, attno, BARK_FETCH_PROC)))
+		mk->fetch = index_getprocinfo(index, attno, BARK_FETCH_PROC);
+	mk->hitupdesc = CreateTupleDescCopy(RelationGetDescr(index));
+	TupleDescInitEntry(mk->hitupdesc, attno, NULL,
+					   index->rd_opcintype[attno - 1], -1, 0);
+	for (int i = 0; i < mk->hitupdesc->natts; i++)
+		if (TupleDescAttr(mk->hitupdesc, i)->atttypid == CSTRINGOID)
+			TupleDescInitEntry(mk->hitupdesc, i + 1, NULL, NAMEOID, -1, 0);
+	TupleDescFinalize(mk->hitupdesc);
+	mk->hitupCxt = AllocSetContextCreate(so->scanCxt, "BARK index-only row",
+										 ALLOCSET_SMALL_SIZES);
+	scan->xs_hitupdesc = mk->hitupdesc;
+	return mk;
+}
+
+/*
+ * At rescan, move the scan keys on the extracted column after every other,
+ * keeping their order, and count the others in so->numberOfKeys.  The
+ * planner only gives such a key an operator of the column's class, which
+ * needs procedure 8.
+ */
+static void
+bark_mk_partition_keys(IndexScanDesc scan)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BarkMkScanState *mk = so->mk;
+	ScanKey		moved;
+	int			n = 0;
+	int			m = 0;
+
+	so->numberOfKeys = scan->numberOfKeys;
+	if (mk == NULL)
+		return;
+	moved = palloc_array(ScanKeyData, Max(scan->numberOfKeys, 1));
+	for (int i = 0; i < scan->numberOfKeys; i++)
+	{
+		ScanKey		sk = &scan->keyData[i];
+
+		if (sk->sk_attno == mk->attno)
+		{
+			if (mk->extractquery == NULL &&
+				!(sk->sk_flags & (SK_SEARCHNULL | SK_SEARCHNOTNULL)))
+				elog(ERROR, "missing support function %d for attribute %d of index \"%s\"",
+					 BARK_EXTRACTQUERY_PROC, mk->attno,
+					 RelationGetRelationName(scan->indexRelation));
+			moved[m++] = *sk;
+		}
+		else
+			scan->keyData[n++] = *sk;
+	}
+	memcpy(&scan->keyData[n], moved, m * sizeof(ScanKeyData));
+	pfree(moved);
+	so->numberOfKeys = n;
+	mk->keys = &scan->keyData[n];
+	mk->nkeys = m;
+}
+
+/*
+ * Is entry itup inside one of the extracted column's boundaries?  A binary
+ * search, since they are sorted and disjoint; the boundary found is kept in
+ * mk->matched for bark_mk_accept.  True when the column has no scan key.
+ */
+static bool
+bark_mk_filter(IndexScanDesc scan, IndexTuple itup)
+{
+	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
+	bool		isnull;
+	Datum		datum;
+	int			lo = 0;
+	int			hi;
+
+	if (mk == NULL || mk->nkeys == 0)
+		return true;
+	datum = index_getattr(itup, mk->attno,
+						  RelationGetDescr(scan->indexRelation), &isnull);
+	hi = mk->nbounds;
+	while (lo < hi)
+	{
+		int			mid = lo + (hi - lo) / 2;
+		int			c = bark_mk_cmp(mk, datum, isnull, &mk->bounds[mid]);
+
+		if (c == 0)
+		{
+			mk->matched = mid;
+			return true;
+		}
+		if (c > 0)
+			lo = mid + 1;
+		else
+			hi = mid;
+	}
+	return false;
+}
+
+/*
+ * Put the boundary required key req (on column col) is on into bound, as
+ * bark_make_bound puts an element there: its start in index order for a
+ * forward scan, its end for a backward one, or a NULL for the NULL entries.
+ * Returns true when the bound may go on to the next column, which it may
+ * after a point only; an unbounded side leaves the bound on the columns
+ * before col.
+ */
+static bool
+bark_mk_bound(BarkScanOpaque so, BarkArrayKeyState *req, int col,
+			  bool forward, BarkScanBound *bound)
+{
+	BarkMkScanState *mk = req->mk;
+	const BarkMkBoundary *b = &mk->bounds[req->cur];
+	bool		has = forward ? b->hasstart : b->hasend;
+
+	if (b->nulls)
+	{
+		bound->args[col - 1] = (Datum) 0;
+		bound->procs[col - 1] = NULL;
+		bound->collations[col - 1] = InvalidOid;
+		bound->nkeys = col;
+		return true;
+	}
+	if (!has)
+		return false;
+	bound->args[col - 1] = forward ? b->start : b->end;
+	bound->procs[col - 1] = &mk->col->cmp;
+	bound->collations[col - 1] = mk->col->collation;
+	bound->nkeys = col;
+	if (forward ? b->startstrict : b->endstrict)
+	{
+		/* Past the entries equal to it, as bark_bound_strict puts it. */
+		bound->upper = forward;
+		return false;
+	}
+	return b->point;
+}
+
+/*
+ * Entry itup has passed the scan keys, bark_mk_filter among them, and its
+ * member TIDs are tids[0 .. ntids - 1]: which of them does the scan return?
+ * Returns how many are left at the front of tids, and sets *recheck when
+ * they come back with xs_recheck.
+ *
+ * In a boundary whose extract-query asked for a recheck, procedure 9 answers
+ * for the entry's key: false drops the entry, maybe returns it with
+ * xs_recheck.  A NULL key is never in such a boundary.  A boundary made by
+ * merging, the NULL entries, and every entry of a scan with several keys on
+ * the column, come back with xs_recheck.
+ */
+int
+bark_mk_accept(IndexScanDesc scan, IndexTuple itup, ItemPointer tids,
+			   int ntids, bool *recheck)
+{
+	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
+
+	*recheck = false;
+	if (mk->nkeys > 0)
+	{
+		const BarkMkBoundary *b = &mk->bounds[mk->matched];
+
+		*recheck = b->recheck || mk->recheckall;
+		if (b->callproc9)
+		{
+			bool		isnull;
+			Datum		key = index_getattr(itup, mk->attno,
+											RelationGetDescr(scan->indexRelation),
+											&isnull);
+			int16		answer;
+
+			answer = DatumGetInt16(FunctionCall3Coll(mk->indexrecheck,
+													 mk->col->collation, key,
+													 Int16GetDatum(b->strategy),
+													 PointerGetDatum(b->extra)));
+			if (answer == BARK_RECHECK_FALSE)
+				return 0;
+			if (answer == BARK_RECHECK_MAYBE)
+				*recheck = true;
+			else if (answer != BARK_RECHECK_TRUE)
+				elog(ERROR, "procedure %d of index \"%s\" returned %d",
+					 BARK_INDEXRECHECK_PROC,
+					 RelationGetRelationName(scan->indexRelation), answer);
+		}
+	}
+	return ntids;
+}
+
+/*
  * Choose the scan's required keys (see BarkArrayKeyState), as nbtree marks
  * the keys of the leading columns with equalities required: on index columns
  * 1..m in order, one equality per column, stopping at the first column that
@@ -361,7 +1223,10 @@ bark_setup_req_keys(IndexScanDesc scan)
 
 	so->reqKeys = NULL;
 	so->numReqKeys = 0;
-	if (so->numArrayKeys == 0 || scan->numberOfOrderBys > 0)
+	if (scan->numberOfOrderBys > 0)
+		return;
+	if (so->numArrayKeys == 0 &&
+		(so->mk == NULL || so->mk->nbounds == 0))
 		return;
 
 	/* chosen[k]: the scan key used on column k + 1 */
@@ -371,7 +1236,7 @@ bark_setup_req_keys(IndexScanDesc scan)
 		int			best = -1;
 		int			bestelems = 0;
 
-		for (int i = 0; i < scan->numberOfKeys; i++)
+		for (int i = 0; i < so->numberOfKeys; i++)
 		{
 			ScanKey		sk = &scan->keyData[i];
 			int			nelems;
@@ -404,17 +1269,37 @@ bark_setup_req_keys(IndexScanDesc scan)
 		if (scan->keyData[best].sk_flags & SK_SEARCHARRAY)
 			anyarray = true;
 	}
+
+	/*
+	 * The extracted column's boundaries are the next required key when every
+	 * column before it has an equality, as an equality array would be: the
+	 * scan visits them in order.  The column's keys are not in keyData[0 ..
+	 * so->numberOfKeys - 1], so the loop above stopped there.
+	 */
+	if (so->mk != NULL && so->mk->nbounds > 0 && nreq == so->mk->attno - 1)
+	{
+		chosen[nreq++] = -1;
+		anyarray = true;
+	}
 	if (!anyarray)
 		return;
 
-	oldcxt = MemoryContextSwitchTo(so->arrayCxt);
+	oldcxt = MemoryContextSwitchTo(bark_array_cxt(so));
 	so->reqKeys = palloc_array(BarkArrayKeyState *, nreq);
 	for (int k = 0; k < nreq; k++)
 	{
-		ScanKey		sk = &scan->keyData[chosen[k]];
+		ScanKey		sk = chosen[k] < 0 ? NULL : &scan->keyData[chosen[k]];
 		BarkArrayKeyState *req = NULL;
 
-		if (sk->sk_flags & SK_SEARCHARRAY)
+		if (sk == NULL)
+		{
+			req = palloc0_object(BarkArrayKeyState);
+			req->scankeyidx = -1;
+			req->attno = so->mk->attno;
+			req->nelems = so->mk->nbounds;
+			req->mk = so->mk;
+		}
+		else if (sk->sk_flags & SK_SEARCHARRAY)
 		{
 			for (int a = 0; a < so->numArrayKeys; a++)
 				if (so->arrayKeys[a].scankeyidx == chosen[k])
@@ -462,6 +1347,8 @@ bark_req_cmp(BarkScanOpaque so, int k, Datum datum, bool isnull, int e)
 	BarkKeyColumn *col = &so->keyinfo->cols[k];
 	int32		c;
 
+	if (req->mk != NULL)
+		return bark_mk_cmp(req->mk, datum, isnull, &req->mk->bounds[e]);
 	if (isnull)
 		return col->nulls_first ? -1 : 1;
 	c = DatumGetInt32(FunctionCall2Coll(&req->cmpproc, col->collation,
@@ -739,7 +1626,7 @@ bark_tuple_matches(IndexScanDesc scan, IndexTuple itup, uint64 skipkeys)
 	TupleDesc	tupdesc = RelationGetDescr(index);
 	int			nextarray = 0;
 
-	for (int i = 0; i < scan->numberOfKeys; i++)
+	for (int i = 0; i < so->numberOfKeys; i++)
 	{
 		ScanKey		key = &scan->keyData[i];
 		Datum		datum;
@@ -782,7 +1669,7 @@ bark_tuple_matches(IndexScanDesc scan, IndexTuple itup, uint64 skipkeys)
 		if (!bark_scalar_key_matches(key, datum, isnull))
 			return false;
 	}
-	return true;
+	return bark_mk_filter(scan, itup);
 }
 
 /*
@@ -834,7 +1721,7 @@ bark_page_satisfied_keys(IndexScanDesc scan, Page page, OffsetNumber minoff,
 							 &lastfetched);
 	keepnatts = bark_keep_natts(index, so->keyinfo, first, last);
 
-	for (int i = 0; i < Min(scan->numberOfKeys, 64); i++)
+	for (int i = 0; i < Min(so->numberOfKeys, 64); i++)
 	{
 		ScanKey		key = &scan->keyData[i];
 		Datum		datum;
@@ -1033,7 +1920,7 @@ bark_past_bound(IndexScanDesc scan, IndexTuple itup, ScanDirection dir)
 		bool		haveeq = false;
 		bool		noteq = false;
 
-		for (int i = 0; i < scan->numberOfKeys; i++)
+		for (int i = 0; i < so->numberOfKeys; i++)
 		{
 			ScanKey		sk = &scan->keyData[i];
 			bool		lower;
@@ -1118,12 +2005,14 @@ bark_key_cmp(IndexScanDesc scan, int i, IndexTuple itup)
 static bool
 bark_skip_eligible(IndexScanDesc scan)
 {
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	bool		bounded = false;
 
 	if (IndexRelationGetNumberOfKeyAttributes(scan->indexRelation) < 2 ||
-		scan->numberOfOrderBys > 0)
+		scan->numberOfOrderBys > 0 ||
+		(so->mk != NULL && so->mk->attno == 1 && so->mk->nkeys > 0))
 		return false;
-	for (int i = 0; i < scan->numberOfKeys; i++)
+	for (int i = 0; i < so->numberOfKeys; i++)
 	{
 		ScanKey		sk = &scan->keyData[i];
 		bool		lower;
@@ -1170,7 +2059,7 @@ bark_skip_bound(IndexScanDesc scan, IndexTuple itup, BarkScanBound *bound,
 	*palloced = false;
 	if (isnull)
 		return false;
-	for (int i = 0; i < scan->numberOfKeys; i++)
+	for (int i = 0; i < so->numberOfKeys; i++)
 	{
 		ScanKey		sk = &scan->keyData[i];
 		bool		lower;
@@ -1433,6 +2322,12 @@ bark_make_bound(IndexScanDesc scan, ScanDirection dir, BarkScanBound *bound)
 		{
 			BarkArrayKeyState *req = so->reqKeys[col - 1];
 
+			if (req->mk != NULL)
+			{
+				if (!bark_mk_bound(so, req, col, forward, bound))
+					break;
+				continue;		/* a point: later columns may bound it */
+			}
 			bound->args[col - 1] = req->elems[req->cur];
 			bound->procs[col - 1] = &req->cmpproc;
 			bound->collations[col - 1] = so->keyinfo->cols[col - 1].collation;
@@ -1440,7 +2335,7 @@ bark_make_bound(IndexScanDesc scan, ScanDirection dir, BarkScanBound *bound)
 			continue;			/* the current combination's element */
 		}
 
-		for (int i = 0; i < scan->numberOfKeys; i++)
+		for (int i = 0; i < so->numberOfKeys; i++)
 		{
 			ScanKey		sk = &scan->keyData[i];
 			bool		lower;
@@ -1506,8 +2401,13 @@ bark_req_past_range(IndexScanDesc scan, IndexTuple itup, ScanDirection dir)
 {
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	bool		forward = ScanDirectionIsForward(dir);
+	BarkArrayKeyState *last = so->reqKeys[so->numReqKeys - 1];
 
-	for (int i = 0; i < scan->numberOfKeys; i++)
+	/* Inside a range of the extracted column's keys the next is unordered. */
+	if (last->mk != NULL && !last->mk->bounds[last->cur].point)
+		return false;
+
+	for (int i = 0; i < so->numberOfKeys; i++)
 	{
 		ScanKey		sk = &scan->keyData[i];
 		bool		lower;
@@ -1618,9 +2518,9 @@ bark_setup_key_procs(IndexScanDesc scan)
 	if (so->keyCmpReady)
 		return;
 	oldcxt = MemoryContextSwitchTo(so->scanCxt);
-	if (scan->numberOfKeys > 0)
-		so->keyCmp = palloc0_array(FmgrInfo, scan->numberOfKeys);
-	for (int i = 0; i < scan->numberOfKeys; i++)
+	if (so->numberOfKeys > 0)
+		so->keyCmp = palloc0_array(FmgrInfo, so->numberOfKeys);
+	for (int i = 0; i < so->numberOfKeys; i++)
 	{
 		ScanKey		sk = &scan->keyData[i];
 		int			col = sk->sk_attno - 1;
@@ -1661,24 +2561,13 @@ bark_beginscan(Relation index, int nkeys, int norderbys)
 	IndexScanDesc scan;
 	BarkScanOpaque so;
 
-	/*
-	 * A scan of an index with an extracted column needs procedure 8's
-	 * boundaries and a set of the rows already returned ("Scans" in
-	 * BARK-Design.mediawiki), without which it would read the class's
-	 * operators as btree comparisons and return a row once per key.  Until
-	 * then such an index is written and checked, but not read.
-	 */
-	if (bark_index_extracted_column(index) > 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("multikey scans are not implemented yet"),
-				 errdetail("Index \"%s\" has a column with a multikey operator class.",
-						   RelationGetRelationName(index))));
-
 	scan = RelationGetIndexScan(index, nkeys, norderbys);
 	so = palloc0_object(BarkScanOpaqueData);
 
 	so->keyinfo = bark_build_keyinfo(index);
+	scan->opaque = so;
+	if (bark_index_extracted_column(index) > 0)
+		so->mk = bark_mk_begin(scan, bark_index_extracted_column(index));
 	so->firstCall = true;
 	so->scanCxt = CurrentMemoryContext;
 	so->knn = NULL;
@@ -1710,7 +2599,6 @@ bark_beginscan(Relation index, int nkeys, int norderbys)
 		memset(scan->xs_orderbynulls, true, sizeof(bool) * norderbys);
 	}
 
-	scan->opaque = so;
 	return scan;
 }
 
@@ -1744,6 +2632,7 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 
 	if (scankey && nscankeys > 0)
 		memcpy(scan->keyData, scankey, nscankeys * sizeof(ScanKeyData));
+	bark_mk_partition_keys(scan);
 
 	/*
 	 * Rebuild ScalarArrayOp state from the (possibly new) scan keys: sort and
@@ -1756,6 +2645,13 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	bark_free_array_keys(so);
 	bark_setup_array_keys(scan);
 	bark_setup_key_procs(scan);
+	if (so->mk != NULL)
+	{
+		MemoryContext oldcxt = MemoryContextSwitchTo(bark_array_cxt(so));
+
+		bark_mk_setup(scan);
+		MemoryContextSwitchTo(oldcxt);
+	}
 	bark_setup_req_keys(scan);
 	so->skip = bark_skip_eligible(scan);
 	so->skipReseeking = false;
@@ -1770,6 +2666,8 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 		memcpy(scan->orderByData, orderbys, norderbys * sizeof(ScanKeyData));
 		bark_knn_rescan(scan, scan->orderByData, norderbys);
 	}
+	if (so->mk != NULL)
+		bark_mk_rescan(scan);
 }
 
 /*
@@ -2164,11 +3062,12 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 	else
 		offnum = Min(offnum, maxoff);
 
-	if (!firstpage && minoff < maxoff && scan->numberOfKeys > 0)
+	if (!firstpage && minoff < maxoff && so->numberOfKeys > 0)
 	{
 		skipkeys = bark_page_satisfied_keys(scan, page, minoff, maxoff);
-		allsatisfied = scan->numberOfKeys < 64 &&
-			skipkeys == (UINT64CONST(1) << scan->numberOfKeys) - 1;
+		allsatisfied = so->numberOfKeys < 64 &&
+			skipkeys == (UINT64CONST(1) << so->numberOfKeys) - 1 &&
+			(so->mk == NULL || so->mk->nkeys == 0);
 	}
 
 	for (; forward ? offnum <= maxoff : offnum >= minoff;
@@ -2180,6 +3079,7 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 		IndexTuple	resolved;
 		int			ntids;
 		uint32		tupoff = 0;
+		bool		recheck = false;
 
 		/* A marker names no row ("Markers" in BARK-Design.mediawiki). */
 		if (BarkEntryIsMarker(itup))
@@ -2253,6 +3153,20 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 											   so->entryTidsAlloc * sizeof(ItemPointerData));
 		}
 		ntids = bark_entry_get_tids(itup, so->entryTids, so->entryTidsAlloc);
+		if (so->mk != NULL)
+		{
+			ntids = bark_mk_accept(scan, resolved, so->entryTids, ntids,
+								   &recheck);
+			if (ntids > 0)
+				ntids = bark_mk_seen(scan, resolved, so->entryTids, ntids,
+									 true);
+			if (ntids == 0)
+			{
+				if (fetched)
+					pfree(resolved);
+				continue;
+			}
+		}
 		if (scan->xs_want_itup)
 			tupoff = bark_save_tuple(so, &so->currTuples, &so->currTuplesSize,
 									 &pos->nextTupleOffset, itup, resolved);
@@ -2269,6 +3183,7 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 				item->heapTid = so->entryTids[i];
 				item->indexOffset = offnum;
 				item->tupleOffset = tupoff;
+				item->recheck = recheck;
 			}
 			pos->lastItem += ntids;
 		}
@@ -2286,6 +3201,7 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 				item->heapTid = so->entryTids[ntids - 1 - i];
 				item->indexOffset = offnum;
 				item->tupleOffset = tupoff;
+				item->recheck = recheck;
 			}
 			pos->lastItem += ntids;
 		}
@@ -2328,9 +3244,13 @@ bark_saveitem(IndexScanDesc scan)
 	BarkScanPosItem *item = &so->currPos.items[so->currPos.itemIndex];
 
 	scan->xs_heaptid = item->heapTid;
-	scan->xs_recheck = false;
+	scan->xs_recheck = item->recheck;
 	if (scan->xs_want_itup)
+	{
 		scan->xs_itup = (IndexTuple) (so->currTuples + item->tupleOffset);
+		if (so->mk != NULL)
+			scan->xs_hitup = bark_mk_form_hitup(scan, scan->xs_itup);
+	}
 }
 
 /*
@@ -2596,6 +3516,17 @@ bark_first(IndexScanDesc scan, ScanDirection dir)
 	for (int a = 0; a < so->numArrayKeys; a++)
 		if (so->arrayKeys[a].nelems == 0)
 			return false;
+	if (so->mk != NULL)
+	{
+		if (!so->mk->bitmap)
+			elog(DEBUG1, "BARK index \"%s\": scan %s",
+				 RelationGetRelationName(index),
+				 so->mk->useseen ? "uses a seen set" : "needs no seen set");
+		so->mk->started = true;
+		so->mk->dir = dir;
+		if (so->mk->nkeys > 0 && so->mk->nbounds == 0)
+			return false;
+	}
 	bark_req_reset(so, 0, dir);
 
 	if (scan->parallel_scan != NULL)
@@ -2707,6 +3638,18 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 	if (scan->numberOfOrderBys > 0)
 		return bark_knn_gettuple(scan);
 
+	/*
+	 * A scan with a seen set that reverses direction would meet the entries
+	 * of the rows it returned, and drop them.  A scroll cursor over such an
+	 * index has to be materialized.
+	 */
+	if (so->mk != NULL && so->mk->useseen && so->mk->started &&
+		dir != so->mk->dir)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot change the direction of a scan of multikey BARK index \"%s\"",
+						RelationGetRelationName(scan->indexRelation))));
+
 	if (!BarkScanPosIsValid(so->currPos))
 	{
 		/*
@@ -2755,8 +3698,9 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 /*
  * amgetbitmap: add every matching heap TID to the TIDBitmap.  Reads pages
  * through the same positioning and page reads as a forward gettuple scan,
- * as nbtree's btgetbitmap does, adding each page's items at once.  BARK is
- * exact, so every TID is added with recheck=false.
+ * as nbtree's btgetbitmap does, adding each page's items at once.  A TID
+ * needs a recheck only when a multikey scan says so (bark_mk_accept); a
+ * row's repeats under several keys are absorbed by the bitmap.
  */
 int64
 bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
@@ -2764,12 +3708,15 @@ bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	int64		ntids = 0;
 
+	if (so->mk != NULL)
+		so->mk->bitmap = true;
 	if (!bark_first(scan, ForwardScanDirection))
 		return 0;
 	do
 	{
 		for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
-			tbm_add_tuples(tbm, &so->currPos.items[i].heapTid, 1, false);
+			tbm_add_tuples(tbm, &so->currPos.items[i].heapTid, 1,
+						   so->currPos.items[i].recheck);
 		ntids += so->currPos.lastItem - so->currPos.firstItem + 1;
 	} while (bark_steppage(scan, ForwardScanDirection));
 	return ntids;
@@ -2805,6 +3752,15 @@ bark_endscan(IndexScanDesc scan)
 		pfree(so->skipSupport);
 	if (so->keyinfo)
 		pfree(so->keyinfo);
+	if (so->mk)
+	{
+		MemoryContextDelete(so->mk->seenCxt);
+		MemoryContextDelete(so->mk->hitupCxt);
+		FreeTupleDesc(so->mk->hitupdesc);
+		if (so->mk->undo)
+			pfree(so->mk->undo);
+		pfree(so->mk);
+	}
 	pfree(so);
 	scan->opaque = NULL;
 }
@@ -2827,6 +3783,17 @@ bark_markpos(IndexScanDesc scan)
 
 	/* An older mark may hold a pin (never a lock). */
 	BarkScanPosUnpinIfPinned(so->markPos);
+
+	/*
+	 * The rows the scan adds to the seen set from here on are the ones a
+	 * restore must take out again; the ones before stay, since the scan
+	 * returns them, or returns them again from the marked page's copy.
+	 */
+	if (so->mk != NULL)
+	{
+		so->mk->marked = true;
+		so->mk->nundo = 0;
+	}
 
 	if (BarkScanPosIsValid(so->currPos))
 		so->markItemIndex = so->currPos.itemIndex;
@@ -2851,6 +3818,21 @@ bark_restrpos(IndexScanDesc scan)
 	/* The planner never asks a parallel or an ordered-operator scan. */
 	Assert(scan->parallel_scan == NULL);
 	Assert(scan->numberOfOrderBys == 0);
+
+	if (so->mk != NULL)
+	{
+		BarkMkScanState *mk = so->mk;
+
+		for (int i = 0; i < mk->nundo; i++)
+		{
+			uint64		key = bark_tid_to_key(&mk->undo[i]);
+			uint64	   *word = bark_seen_find(mk->seen, key >> 6);
+
+			*word &= ~(UINT64CONST(1) << (key & 63));
+			mk->nseen--;
+		}
+		mk->nundo = 0;
+	}
 
 	if (so->markItemIndex >= 0)
 	{
@@ -2878,11 +3860,13 @@ bark_restrpos(IndexScanDesc scan)
 		else
 		{
 			/*
-			 * No mark was taken on a page, so the next gettuple starts the scan
-			 * again (bark_first), as nbtree's does, with the required keys on
-			 * their first combination.
+			 * No mark was taken on a page, so the next gettuple starts the
+			 * scan again (bark_first), as nbtree's does, with the required
+			 * keys on their first combination, and an empty seen set.
 			 */
 			BarkScanPosInvalidate(so->currPos);
+			if (so->mk != NULL)
+				bark_mk_clear_seen(so->mk);
 		}
 	}
 }
@@ -2891,11 +3875,15 @@ bark_restrpos(IndexScanDesc scan)
  * bark_canreturn -- can an index-only scan return column `attno`?
  *
  * A BARK leaf entry is the full index tuple (every indexed column plus the
- * heap TID in t_tid), so any column can be returned without a heap fetch.
+ * heap TID in t_tid), so any column can be returned without a heap fetch,
+ * except an extracted column: its entries hold keys, not the column's
+ * value, which only procedure 14 can rebuild (bark_mk_form_hitup).
  */
 bool
 bark_canreturn(Relation index, int attno)
 {
+	if (bark_column_is_extracted(index, attno))
+		return OidIsValid(index_getprocid(index, attno, BARK_FETCH_PROC));
 	return true;
 }
 
