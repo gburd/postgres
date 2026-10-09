@@ -11,7 +11,9 @@ CREATE FUNCTION bark_metap(IN relname text,
     OUT version int4,
     OUT root int8,
     OUT level int8,
-    OUT allequalimage boolean)
+    OUT allequalimage boolean,
+    OUT flags int8,
+    OUT nkeys int8)
 AS 'MODULE_PATHNAME', 'bark_metap'
 LANGUAGE C STRICT PARALLEL SAFE;
 
