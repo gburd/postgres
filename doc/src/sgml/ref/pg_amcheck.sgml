@@ -41,9 +41,10 @@ PostgreSQL documentation
   </para>
 
   <para>
-   Only ordinary and TOAST table relations, materialized views, sequences, and
-   btree indexes are currently supported.  Other relation types are silently
-   skipped.
+   Only ordinary and TOAST table relations, materialized views, sequences,
+   btree indexes, and (with <application>amcheck</application> version 1.7
+   or later) <literal>bark</literal> indexes are currently supported.  Other
+   relation types are silently skipped.
   </para>
 
   <para>
@@ -389,7 +390,8 @@ PostgreSQL documentation
       <para>
        For each index with unique constraint checked, verify that no more than
        one among duplicate entries is visible in the index using <xref linkend="amcheck"/>'s
-       <option>checkunique</option> option.
+       <option>checkunique</option> option.  It applies to btree indexes
+       only.
       </para>
      </listitem>
     </varlistentry>
@@ -412,6 +414,8 @@ PostgreSQL documentation
        For each btree index checked, use <xref linkend="amcheck"/>'s
        <function>bt_index_parent_check</function> function, which performs
        additional checks of parent/child relationships during index checking.
+       For each <literal>bark</literal> index, use
+       <function>bark_index_parent_check</function>.
       </para>
       <para>
        The default is to use <application>amcheck</application>'s
@@ -426,8 +430,8 @@ PostgreSQL documentation
      <term><option>--rootdescend</option></term>
      <listitem>
       <para>
-       For each index checked, re-find tuples on the leaf level by performing a
-       new search from the root page for each tuple using
+       For each btree index checked, re-find tuples on the leaf level by
+       performing a new search from the root page for each tuple using
        <xref linkend="amcheck"/>'s <option>rootdescend</option> option.
       </para>
       <para>
