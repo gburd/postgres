@@ -61,6 +61,7 @@
 
 #include "access/bark.h"
 #include "access/detoast.h"
+#include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/tableam.h"
 #include "access/xact.h"
@@ -72,6 +73,7 @@
 #include "lib/sbm.h"
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -105,6 +107,9 @@ static void bark_check_heap(Relation rel, Relation heaprel,
 							BarkCheckState *state, bool readonly);
 static void bark_check_downlinks(Relation rel, BlockNumber blkno,
 								 BarkKeyInfo *keyinfo);
+static void bark_check_marker(Relation rel, BarkKeyInfo *keyinfo,
+							  BlockNumber blkno, OffsetNumber off,
+							  IndexTuple itup);
 static void bark_check_list(Relation rel, BlockNumber blkno, OffsetNumber off,
 							IndexTuple itup);
 static void bark_check_posting(Relation rel, BlockNumber blkno, OffsetNumber off,
@@ -457,6 +462,8 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 								RelationGetRelationName(rel), IndexTupleSize(itup),
 								blkno, off)));
 
+			bark_check_marker(rel, keyinfo, blkno, off, itup);
+
 			if (BarkEntryGetShape(itup) == BARK_SHAPE_LIST)
 				bark_check_list(rel, blkno, off, itup);
 			else if (BarkEntryGetShape(itup) == BARK_SHAPE_POSTING)
@@ -679,6 +686,57 @@ bark_check_list(Relation rel, BlockNumber blkno, OffsetNumber off,
 					(errcode(ERRCODE_INDEX_CORRUPTED),
 					 errmsg("BARK index \"%s\" has out-of-order list locators on page %u at offset %u",
 							RelationGetRelationName(rel), blkno, off)));
+	}
+}
+
+/*
+ * Check a leaf entry against the rules for markers ("Markers" in
+ * BARK-Design.mediawiki).  The reserved heap TID (BarkTidIsMarker) is only
+ * ever the TID of a SINGLE entry, in an index with an extracted column
+ * whose procedure 7 can return markers, and the entry's other key columns
+ * are NULL.  It sorts after every real TID, so an
+ * entry of any other shape that held it would hold it as its highest.
+ *
+ * That each (key, TID) of such an index has one entry needs no check of its
+ * own: the TIDs of a run of equal keys are checked to ascend strictly, on a
+ * page and across a page boundary, and within a LIST or POSTING entry.
+ */
+static void
+bark_check_marker(Relation rel, BarkKeyInfo *keyinfo, BlockNumber blkno,
+				  OffsetNumber off, IndexTuple itup)
+{
+	int			extracted = bark_index_extracted_column(rel);
+	ItemPointerData lo;
+	ItemPointerData hi;
+
+	bark_entry_tid_range(itup, &lo, &hi);
+	if (!BarkTidIsMarker(&hi))
+		return;
+
+	/* Procedure 7 returns markers through its fourth and fifth arguments. */
+	if (extracted == 0 ||
+		get_func_nargs(index_getprocid(rel, extracted,
+									   BARK_EXTRACTVALUE_PROC)) < 5)
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("BARK index \"%s\" has a marker on page %u at offset %u but no column with markers",
+						RelationGetRelationName(rel), blkno, off)));
+	if (BarkEntryGetShape(itup) != BARK_SHAPE_SINGLE)
+		ereport(ERROR,
+				(errcode(ERRCODE_INDEX_CORRUPTED),
+				 errmsg("BARK index \"%s\" has the reserved marker heap TID in an entry that is not SINGLE on page %u at offset %u",
+						RelationGetRelationName(rel), blkno, off)));
+	for (int i = 0; i < keyinfo->nkeys; i++)
+	{
+		bool		isnull;
+
+		(void) index_getattr(itup, i + 1, RelationGetDescr(rel), &isnull);
+		if ((i + 1 == extracted) == isnull)
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("BARK index \"%s\" has a marker on page %u at offset %u whose key column %d is %s",
+							RelationGetRelationName(rel), blkno, off, i + 1,
+							isnull ? "NULL" : "not NULL")));
 	}
 }
 
