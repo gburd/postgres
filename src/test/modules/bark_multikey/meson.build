@@ -28,8 +28,14 @@ tests += {
   'regress': {
     'sql': [
       'bark_multikey',
+      'bark_multikey_scan',
     ],
     'regress_args': ['--load-extension=amcheck'],
+  },
+  'isolation': {
+    'specs': [
+      'bark_multikey_concurrent',
+    ],
   },
   'tap': {
     'env': {
