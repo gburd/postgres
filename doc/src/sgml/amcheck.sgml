@@ -208,6 +208,69 @@ ORDER BY c.relpages DESC LIMIT 10;
     </listitem>
    </varlistentry>
 
+   <varlistentry>
+    <term>
+     <function>bark_index_check(index regclass, heapallindexed boolean) returns void</function>
+     <indexterm>
+      <primary>bark_index_check</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <function>bark_index_check</function> tests that its target
+      <literal>bark</literal> index is structurally sound: that the meta
+      page's version is one the server reads, that the entries of each page
+      are in key order and within its high key, with equal keys in heap TID
+      order, that sibling links and downlinks agree with the pages they
+      point to, and that each LIST, POSTING and OVERSIZED entry is well
+      formed (an OVERSIZED entry's overflow chain is read in full).  It
+      acquires an <literal>AccessShareLock</literal> on the index and its
+      table, as <function>bt_index_check</function> does.  The
+      one-argument form <function>bark_index_check(index
+      regclass)</function> is the same as passing
+      <literal>false</literal> for <literal>heapallindexed</literal>.
+     </para>
+     <para>
+      When <parameter>heapallindexed</parameter> is
+      <literal>true</literal>, the function also checks that every heap
+      tuple a new <command>CREATE INDEX</command> would index has an entry,
+      as <function>bt_index_check</function> does: it fingerprints each heap
+      TID of each leaf entry, with the entry's key, in a Bloom filter (each
+      member of a LIST or POSTING entry as the entry it would be on its
+      own), then scans the table and probes the filter for each tuple.
+      This is not supported for an index with a multikey column, whose
+      rows have several entries each.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <function>bark_index_parent_check(index regclass, heapallindexed boolean) returns void</function>
+     <indexterm>
+      <primary>bark_index_parent_check</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <function>bark_index_parent_check</function> performs every check
+      <function>bark_index_check</function> does, then walks the tree level
+      by level from the root and checks each level against the one below:
+      the downlinks of each level must name, in order, every page of the
+      level below and no other, each downlink must equal the high key of
+      the page to its child's left, and each page's high key must equal its
+      last child's.  Every live page must be reachable from the root.  As
+      with <function>bt_index_parent_check</function>, it acquires a
+      <literal>ShareLock</literal> on the index and its table, which blocks
+      writes while it runs, and cannot be used in hot standby mode.
+      <parameter>heapallindexed</parameter> defaults to
+      <literal>false</literal>.
+     </para>
+    </listitem>
+   </varlistentry>
+
   </variablelist>
   <tip>
    <para>
