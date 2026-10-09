@@ -9,8 +9,8 @@
  * resolves that comparator (plus collation and sort direction) once per
  * index; bark_compare_itups() uses it to order two index tuples.
  *
- * This is the BARK-specific scankey machinery the build and (later) search
- * paths need: nbtree's _bt_mkscankey() cannot be reused because it reads the
+ * This is the BARK-specific scankey machinery the build, insert and search
+ * paths use: nbtree's _bt_mkscankey() cannot be reused because it reads the
  * index meta page as a btree meta page, and BARK's meta page has a different
  * layout.
  *
@@ -41,6 +41,7 @@
 #include "nodes/execnodes.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
+#include "utils/builtins.h"
 #include "utils/datum.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
@@ -587,13 +588,26 @@ bark_opfamily_extracts(Oid opfamily, Oid opcintype)
 }
 
 /*
- * Refuse, before anything is built, an index that M1 cannot build: one with
- * an extracted column that is unique or carries an exclusion constraint, or
- * that has two extracted columns.  Two would store the cross product of
- * their keys, N times M entries per row ("parallel arrays", which MongoDB
- * refuses for the same reason).  Uniqueness over multikey keys needs
- * document-store semantics, unique across rows while one row may repeat a
- * key, which is later work.
+ * Refuse, before anything is built, an index that BARK cannot serve
+ * correctly.
+ *
+ * A column whose operator class is in an operator family of BARK's own must
+ * extract keys (procedure 7).  BARK reads the strategy numbers of a btree
+ * family's operators as btree's, which is what positions and stops a scan;
+ * in a family of its own any number is allowed (amstrategies is 0) and only
+ * procedures 8 and 9 interpret them.  A class there without procedure 7
+ * would have its operators read as btree strategies they need not be: an
+ * operator < registered as strategy 4 would bound a scan as >=, and the
+ * scan would return wrong rows.  amvalidate already reports such a class
+ * invalid; a scalar class belongs in a btree family (CREATE OPERATOR CLASS
+ * ... FAMILY naming one, or a family created USING btree).
+ *
+ * Also refuse an index with an extracted column that is unique or carries
+ * an exclusion constraint, or that has two extracted columns.  Two would
+ * store the cross product of their keys, N times M entries per row
+ * ("parallel arrays", which MongoDB refuses for the same reason).
+ * Uniqueness over multikey keys needs document-store semantics, unique
+ * across rows while one row may repeat a key, which is later work.
  */
 void
 bark_check_multikey_index(Relation index, IndexInfo *indexInfo)
@@ -602,9 +616,19 @@ bark_check_multikey_index(Relation index, IndexInfo *indexInfo)
 
 	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
 	{
-		if (bark_opfamily_extracts(index->rd_opfamily[i],
-								   index->rd_opcintype[i]))
+		Oid			opfamily = index->rd_opfamily[i];
+
+		if (bark_opfamily_extracts(opfamily, index->rd_opcintype[i]))
 			nextracted++;
+		else if (get_opfamily_method(opfamily) != BTREE_AM_OID)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+					 errmsg("operator family \"%s\" of access method %s has no extract-value support function for type %s",
+							get_opfamily_name(opfamily, false), "bark",
+							format_type_be(index->rd_opcintype[i])),
+					 errdetail("An operator class in an operator family of access method %s must provide support function %d.",
+							   "bark", BARK_EXTRACTVALUE_PROC),
+					 errhint("Put a scalar operator class in a btree operator family, with CREATE OPERATOR CLASS ... FAMILY.")));
 	}
 	if (nextracted == 0)
 		return;
