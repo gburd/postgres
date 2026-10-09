@@ -572,6 +572,31 @@ bark_req_compare(IndexScanDesc scan, IndexTuple itup, ScanDirection dir)
 }
 
 /*
+ * Does three-way result cmpresult, of a row member's column value against the
+ * member's argument, satisfy the member's strategy?  nbtree's
+ * _bt_rowcompare_cmpresult.
+ */
+static bool
+bark_rowcompare_cmpresult(ScanKey subkey, int32 cmpresult)
+{
+	switch (subkey->sk_strategy)
+	{
+		case BTLessStrategyNumber:
+			return cmpresult < 0;
+		case BTLessEqualStrategyNumber:
+			return cmpresult <= 0;
+		case BTGreaterEqualStrategyNumber:
+			return cmpresult >= 0;
+		case BTGreaterStrategyNumber:
+			return cmpresult > 0;
+		default:
+			elog(ERROR, "unexpected strategy number %d in BARK row comparison",
+				 subkey->sk_strategy);
+			return false;		/* keep compiler quiet */
+	}
+}
+
+/*
  * Test a row comparison such as (a, b) > (100, 5) against an index tuple, as
  * a filter.  This is the comparison loop of nbtree's _bt_check_rowcompare:
  * compare column by column with each member's own comparator until one is
@@ -614,20 +639,65 @@ bark_rowcompare_matches(ScanKey header, IndexTuple itup, TupleDesc tupdesc)
 		subkey++;
 	}
 
-	switch (subkey->sk_strategy)
+	return bark_rowcompare_cmpresult(subkey, cmpresult);
+}
+
+/*
+ * Does every data entry of a leaf satisfy row comparison header, as shown by
+ * the page's first and last data entries?  keepnatts is bark_keep_natts of
+ * the two.  The row case of nbtree's _bt_set_startikey.
+ *
+ * Members are compared in order on both entries, as bark_rowcompare_matches
+ * compares one.  A member is considered only when every index column before
+ * its own is equal across the page, so the page's values on its column lie
+ * between the first entry's and the last's.  The row holds for every entry
+ * when both entries satisfy it as a whole on the same deciding member: the
+ * members before it are equal to their arguments on every entry, and every
+ * entry is on the same side of the deciding member's argument as the two.
+ * When the two are decided by different members, an entry between them can
+ * fail the row: under (a, b) > (7, 5) a page running from (7, 9) to (8, 1)
+ * holds (7, NULL) when b sorts NULLs last, and an index on (a DESC, b) puts
+ * (7, 1) between (8, 1) and (7, 9).  A NULL argument or value never
+ * satisfies a member, so it is never marked either.
+ */
+static bool
+bark_row_page_satisfied(ScanKey header, IndexTuple first, IndexTuple last,
+						TupleDesc tupdesc, int keepnatts)
+{
+	ScanKey		subkey = (ScanKey) DatumGetPointer(header->sk_argument);
+
+	for (;;)
 	{
-		case BTLessStrategyNumber:
-			return cmpresult < 0;
-		case BTLessEqualStrategyNumber:
-			return cmpresult <= 0;
-		case BTGreaterEqualStrategyNumber:
-			return cmpresult >= 0;
-		case BTGreaterStrategyNumber:
-			return cmpresult > 0;
-		default:
-			elog(ERROR, "unexpected strategy number %d in BARK row comparison",
-				 subkey->sk_strategy);
-			return false;		/* keep compiler quiet */
+		bool		decides = (subkey->sk_flags & SK_ROW_END) != 0;
+		Datum		datum;
+		bool		isnull;
+		int32		firstcmp;
+		int32		lastcmp;
+
+		Assert(subkey->sk_flags & SK_ROW_MEMBER);
+		if (subkey->sk_attno > keepnatts || (subkey->sk_flags & SK_ISNULL))
+			return false;
+
+		datum = index_getattr(first, subkey->sk_attno, tupdesc, &isnull);
+		if (isnull)
+			return false;
+		firstcmp = DatumGetInt32(FunctionCall2Coll(&subkey->sk_func,
+												   subkey->sk_collation,
+												   datum,
+												   subkey->sk_argument));
+		datum = index_getattr(last, subkey->sk_attno, tupdesc, &isnull);
+		if (isnull)
+			return false;
+		lastcmp = DatumGetInt32(FunctionCall2Coll(&subkey->sk_func,
+												  subkey->sk_collation,
+												  datum,
+												  subkey->sk_argument));
+
+		if (firstcmp != 0 || lastcmp != 0 || decides)
+			return (firstcmp != 0 || decides) && (lastcmp != 0 || decides) &&
+				bark_rowcompare_cmpresult(subkey, firstcmp) &&
+				bark_rowcompare_cmpresult(subkey, lastcmp);
+		subkey++;
 	}
 }
 
@@ -675,16 +745,20 @@ bark_tuple_matches(IndexScanDesc scan, IndexTuple itup, uint64 skipkeys)
 		Datum		datum;
 		bool		isnull;
 
+		if (i < 64 && (skipkeys & (UINT64CONST(1) << i)))
+		{
+			/* Keep the array keys in lockstep with the scan keys. */
+			if (key->sk_flags & SK_SEARCHARRAY)
+				nextarray++;
+			continue;
+		}
+
 		if (key->sk_flags & SK_ROW_HEADER)
 		{
 			if (!bark_rowcompare_matches(key, itup, tupdesc))
 				return false;
 			continue;
 		}
-
-		/* Never set for an array key, so the lockstep below holds. */
-		if (i < 64 && (skipkeys & (UINT64CONST(1) << i)))
-			continue;
 
 		datum = index_getattr(itup, key->sk_attno, tupdesc, &isnull);
 
@@ -726,9 +800,16 @@ bark_tuple_matches(IndexScanDesc scan, IndexTuple itup, uint64 skipkeys)
  * holds because the NULLs cannot sit between two values.  Equality of the
  * earlier columns is the opclass comparator's, as in bark_keep_natts.
  *
- * SAOP arrays and row comparisons are never marked, nor keys after the 64th;
- * bark_tuple_matches tests them on every entry.  An OVERSIZED entry is read
- * from its overflow chain, as the caller's loop does.
+ * An equality array is marked when its column holds one value across the
+ * page and that value is one of its elements; that covers the required
+ * arrays on a page inside one combination's run, as nbtree marks a SAOP
+ * array.  A row comparison is marked as bark_row_page_satisfied decides.
+ * Each key is decided on its own, so a key on a later column is marked only
+ * when its own test holds, which needs the columns before it to be equal
+ * across the page whatever happened to the keys before it; nbtree's rule
+ * for keys after a row comparison asks no less.  Keys after the 64th are
+ * never marked; bark_tuple_matches tests them on every entry.  An OVERSIZED
+ * entry is read from its overflow chain, as the caller's loop does.
  */
 static uint64
 bark_page_satisfied_keys(IndexScanDesc scan, Page page, OffsetNumber minoff,
@@ -744,6 +825,7 @@ bark_page_satisfied_keys(IndexScanDesc scan, Page page, OffsetNumber minoff,
 	IndexTuple	first;
 	IndexTuple	last;
 	int			keepnatts;
+	int			nextarray = 0;
 	uint64		satisfied = 0;
 
 	first = bark_scan_resolve(index, BarkPageGetItem(page, minoff, &firstbuf),
@@ -758,15 +840,38 @@ bark_page_satisfied_keys(IndexScanDesc scan, Page page, OffsetNumber minoff,
 		Datum		datum;
 		bool		isnull;
 
-		if ((key->sk_flags & (SK_SEARCHARRAY | SK_ROW_HEADER)) ||
-			key->sk_attno > keepnatts)
-			continue;
-		datum = index_getattr(first, key->sk_attno, tupdesc, &isnull);
-		if (!bark_scalar_key_matches(key, datum, isnull))
-			continue;
-		datum = index_getattr(last, key->sk_attno, tupdesc, &isnull);
-		if (!bark_scalar_key_matches(key, datum, isnull))
-			continue;
+		if (key->sk_flags & SK_SEARCHARRAY)
+		{
+			BarkArrayKeyState *ak = &so->arrayKeys[nextarray++];
+
+			/*
+			 * An array's elements need not be adjacent in the column's order,
+			 * so both ends being members says nothing of the entries between
+			 * them; the column must instead hold one value across the page.
+			 */
+			Assert(ak->scankeyidx == i);
+			if (key->sk_attno >= keepnatts)
+				continue;
+			datum = index_getattr(first, key->sk_attno, tupdesc, &isnull);
+			if (isnull || !bark_array_contains(so, ak, datum))
+				continue;
+		}
+		else if (key->sk_flags & SK_ROW_HEADER)
+		{
+			if (!bark_row_page_satisfied(key, first, last, tupdesc, keepnatts))
+				continue;
+		}
+		else
+		{
+			if (key->sk_attno > keepnatts)
+				continue;
+			datum = index_getattr(first, key->sk_attno, tupdesc, &isnull);
+			if (!bark_scalar_key_matches(key, datum, isnull))
+				continue;
+			datum = index_getattr(last, key->sk_attno, tupdesc, &isnull);
+			if (!bark_scalar_key_matches(key, datum, isnull))
+				continue;
+		}
 		satisfied |= UINT64CONST(1) << i;
 	}
 
@@ -952,6 +1057,7 @@ bark_past_bound(IndexScanDesc scan, IndexTuple itup, ScanDirection dir)
 				 */
 				bark_row_bound(sk, n, &rowbound);
 				rowbound.upper = forward;
+				rowbound.backward = !forward;
 				c = bark_compare_bound(scan->indexRelation, so->keyinfo,
 									   &rowbound, itup);
 				if (forward ? c < 0 : c > 0)
@@ -1090,6 +1196,7 @@ bark_skip_bound(IndexScanDesc scan, IndexTuple itup, BarkScanBound *bound,
 	bound->collations[0] = so->keyinfo->cols[0].collation;
 	bound->nkeys = 1;
 	bound->upper = false;
+	bound->backward = false;
 	if (past)
 	{
 		bool		overflow = true;
@@ -1249,14 +1356,33 @@ bark_skip_plan(IndexScanDesc scan, Page page, OffsetNumber lastoff)
 }
 
 /*
+ * A bound whose last column comes from a strict inequality (< or >, or a row
+ * comparison whose usable prefix is the whole row) excludes the entries equal
+ * to it on the bounded columns, so the scan starts past them, as nbtree's
+ * _bt_first descends with nextkey for > (and for < backward): forward, the
+ * bound sorts after those entries, backward before them.  Otherwise a
+ * forward scan's bound sorts before them and a backward one's after.
+ */
+static inline void
+bark_bound_strict(StrategyNumber strategy, bool forward, BarkScanBound *bound)
+{
+	if (strategy == BTLessStrategyNumber ||
+		strategy == BTGreaterStrategyNumber)
+		bound->upper = forward;
+}
+
+/*
  * Build the bound a scan in direction dir starts from: the leading index
  * columns the keys bound in index order, for bark_search_bound.  Returns
  * false when column 1 is unbounded in that direction; the scan then starts
  * at the end of the index.
  *
- * Forward, the bound is a lower bound; backward, an upper bound.  It uses the
- * longest run of leading columns 1..k where columns 1..k-1 each have an
- * equality key and column k has a key that bounds it in the scan direction.
+ * The bound sorts before the entries equal to it on its columns when a
+ * forward scan may match them, after them when a backward one may (a lower
+ * and an upper bound), and the other way around when its last column's key
+ * is a strict inequality (bark_bound_strict).  It uses the longest run of
+ * leading columns 1..k where columns 1..k-1 each have an equality key and
+ * column k has a key that bounds it in the scan direction.
  * Under required keys (see BarkArrayKeyState), columns 1..m are the current
  * combination of their elements, one equality scan of the merged sequence.  For
  * WHERE a = 5 AND b >= 100 on (a, b) a forward scan descends to (5, 100), not
@@ -1268,10 +1394,10 @@ bark_skip_plan(IndexScanDesc scan, Page page, OffsetNumber lastoff)
  *
  * A row comparison bounds the scan from its first member's column on, with
  * every column of its usable prefix (bark_row_prefix), and ends the bound
- * there as a range key does: (a, b) > (5, 10) descends to (5, 10).  The
- * prefix of a longer row, or a > row, is still a correct start: the bound
- * only has to sort at or before the first match, and a lower bound sorts
- * before the entries equal to it (an upper bound after them).  An equality
+ * there as a range key does: (a, b) > (5, 10) descends past (5, 10).  The
+ * prefix of a longer row is still a correct start, but not a strict one: the
+ * bound only has to sort at or before the first match, so under (a, c) >
+ * (5, 10) on (a, b, c) it sorts before the entries equal to (5).  An equality
  * on the column wins over a row, as over a range key; a row wins over a range
  * key when its prefix bounds more than one column.
  */
@@ -1294,6 +1420,7 @@ bark_make_bound(IndexScanDesc scan, ScanDirection dir, BarkScanBound *bound)
 
 	bound->nkeys = 0;
 	bound->upper = !forward;
+	bound->backward = !forward;
 
 	for (int col = 1; col <= nkeyatts; col++)
 	{
@@ -1344,7 +1471,12 @@ bark_make_bound(IndexScanDesc scan, ScanDirection dir, BarkScanBound *bound)
 		}
 		if (row >= 0 && !equality && (found < 0 || rowlen > 1))
 		{
-			bark_row_bound(&scan->keyData[row], rowlen, bound);
+			ScanKey		header = &scan->keyData[row];
+			ScanKey		member = (ScanKey) DatumGetPointer(header->sk_argument);
+
+			bark_row_bound(header, rowlen, bound);
+			if (member[rowlen - 1].sk_flags & SK_ROW_END)
+				bark_bound_strict(header->sk_strategy, forward, bound);
 			break;				/* the row's prefix ends the bound */
 		}
 		if (found < 0)
@@ -1355,7 +1487,10 @@ bark_make_bound(IndexScanDesc scan, ScanDirection dir, BarkScanBound *bound)
 		bound->collations[col - 1] = scan->keyData[found].sk_collation;
 		bound->nkeys = col;
 		if (!equality)
+		{
+			bark_bound_strict(scan->keyData[found].sk_strategy, forward, bound);
 			break;				/* a range bound is the last usable column */
+		}
 	}
 	return bound->nkeys > 0;
 }
@@ -1645,15 +1780,16 @@ bark_start_leaf(IndexScanDesc scan, ScanDirection dir, OffsetNumber *startoff)
 	BarkPageOpaque opaque;
 
 	/*
-	 * A lower bound descends to the leftmost leaf that can hold a match
-	 * (nextkey = false); an upper bound, to the rightmost (nextkey = true),
-	 * from which a backward scan reads leftward.
+	 * A lower bound descends to the leftmost leaf that can hold an entry
+	 * after it (nextkey = false); an upper bound, to the rightmost (nextkey =
+	 * true).  A forward scan reads rightward from there and a backward one
+	 * leftward, whichever the bound is (bark_bound_strict).
 	 */
 	if (bark_make_bound(scan, dir, &bound))
 	{
 		OffsetNumber off;
 
-		buf = bark_search_bound(index, so->keyinfo, &bound, backward);
+		buf = bark_search_bound(index, so->keyinfo, &bound, bound.upper);
 		if (!BufferIsValid(buf))
 			return InvalidBuffer;
 
