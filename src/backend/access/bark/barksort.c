@@ -66,6 +66,8 @@
 #include "storage/condition_variable.h"
 #include "storage/proc.h"
 #include "tcop/tcopprot.h"
+#include "utils/datum.h"
+#include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/tuplesort.h"
 #include "utils/wait_event.h"
@@ -165,7 +167,16 @@ typedef struct BarkBuildState
 
 	/* the sort this build feeds; set up by the caller */
 	Tuplesortstate *sortstate;
-	double		indtuples;		/* reported to the planner */
+	double		indtuples;		/* (key, TID) members, reported to the planner
+								 * and stored as bark_nkeys */
+
+	/* an index with an extracted column (bark_build_init_multikey) */
+	int			extracted;		/* bark_index_extracted_column, or 0 */
+	MemoryContext rowcxt;		/* one row's keys, reset per row */
+	bool		multikey;		/* a row had two or more keys */
+	int			nmarkers;		/* distinct markers spooled */
+	int			markersalloc;
+	Datum	   *markers;		/* ... their keys, in the build's context */
 
 	/* parallel coordination, NULL for a serial build */
 	struct BarkLeader *barkleader;
@@ -202,6 +213,7 @@ typedef struct BarkShared
 	double		indtuples;
 	bool		brokenhotchain;
 	bool		has_oversized;	/* any worker saw an oversized key */
+	bool		multikey;		/* any worker saw a row of two keys or more */
 
 	/*
 	 * A ParallelTableScanDescData follows, past the alignment padding; it
@@ -319,6 +331,115 @@ bark_build_row_oversized(BarkBuildState *bs, TupleDesc tupdesc,
 	return bark_len_is_oversized(fulllen);
 }
 
+/*
+ * Set up what a build of an index with an extracted column needs; nothing
+ * for any other index.
+ */
+static void
+bark_build_init_multikey(BarkBuildState *bs)
+{
+	bs->extracted = bark_index_extracted_column(bs->index);
+	if (bs->extracted == 0)
+		return;
+	bs->rowcxt = AllocSetContextCreate(CurrentMemoryContext,
+									   "BARK multikey build row",
+									   ALLOCSET_DEFAULT_SIZES);
+	bs->markersalloc = 8;
+	bs->markers = palloc_array(Datum, bs->markersalloc);
+}
+
+/*
+ * Spool marker key `key` into the sort the first time this participant sees
+ * it.  A class has few markers, so the ones seen are a list.  Parallel
+ * participants may each spool one, and the sort refuses two tuples with one
+ * heap TID, so each spools it with a TID of its own past every real one,
+ * (InvalidBlockNumber, 1 + participant number); bark_load writes each
+ * distinct marker once, with the reserved TID (BarkSetMarkerTid).
+ */
+static void
+bark_build_marker(BarkBuildState *bs, Datum key)
+{
+	Relation	index = bs->index;
+	int			attno = bs->extracted;
+	BarkKeyColumn *col = &bs->keyinfo->cols[attno - 1];
+	Form_pg_attribute att = TupleDescAttr(RelationGetDescr(index), attno - 1);
+	Datum		values[INDEX_MAX_KEYS] = {0};
+	bool		isnull[INDEX_MAX_KEYS];
+	ItemPointerData tid;
+	MemoryContext oldcxt;
+	Size		fulllen;
+
+	for (int i = 0; i < bs->nmarkers; i++)
+	{
+		if (DatumGetInt32(FunctionCall2Coll(&col->cmp, col->collation, key,
+											bs->markers[i])) == 0)
+			return;
+	}
+
+	/* Refuse one too large for a page, as an insert would. */
+	pfree(bark_form_marker(index, key, &fulllen));
+
+	oldcxt = MemoryContextSwitchTo(MemoryContextGetParent(bs->rowcxt));
+	if (bs->nmarkers == bs->markersalloc)
+	{
+		bs->markersalloc *= 2;
+		bs->markers = repalloc_array(bs->markers, Datum, bs->markersalloc);
+	}
+	bs->markers[bs->nmarkers++] = datumCopy(key, att->attbyval, att->attlen);
+	MemoryContextSwitchTo(oldcxt);
+
+	for (int i = 0; i < IndexRelationGetNumberOfAttributes(index); i++)
+		isnull[i] = true;
+	values[attno - 1] = key;
+	isnull[attno - 1] = false;
+	ItemPointerSet(&tid, InvalidBlockNumber,
+				   BARK_MARKER_OFFSET + 1 + ParallelWorkerNumber);
+	tuplesort_putindextuplevalues(bs->sortstate, index, &tid, values, isnull);
+}
+
+/*
+ * The build callback's work for an index with an extracted column: the
+ * row's keys (bark_extract_row_keys) become one tuple each in the sort, and
+ * its markers are spooled once.  A key too large for the sort is left for
+ * the oversized pass, which runs procedure 7 again on the row.
+ */
+static void
+bark_build_row_keys(BarkBuildState *bs, ItemPointer tid, Datum *values,
+					bool *isnull)
+{
+	Relation	index = bs->index;
+	TupleDesc	tupdesc = RelationGetDescr(index);
+	int			attno = bs->extracted;
+	MemoryContext oldcxt = MemoryContextSwitchTo(bs->rowcxt);
+	Datum		kvalues[INDEX_MAX_KEYS];
+	bool		knulls[INDEX_MAX_KEYS];
+	BarkRowKeys rk;
+
+	bark_extract_row_keys(index, bs->keyinfo, values[attno - 1],
+						  isnull[attno - 1], &rk);
+	if (rk.nkeys > 1)
+		bs->multikey = true;
+	for (int i = 0; i < rk.nmarkers; i++)
+		bark_build_marker(bs, rk.markers[i]);
+
+	memcpy(kvalues, values, tupdesc->natts * sizeof(Datum));
+	memcpy(knulls, isnull, tupdesc->natts * sizeof(bool));
+	for (int i = 0; i < rk.nkeys; i++)
+	{
+		kvalues[attno - 1] = rk.keys[i];
+		knulls[attno - 1] = rk.nulls[i];
+		if (bark_build_row_oversized(bs, tupdesc, kvalues, knulls))
+			bs->has_oversized = true;
+		else
+			tuplesort_putindextuplevalues(bs->sortstate, index, tid, kvalues,
+										  knulls);
+	}
+	bs->indtuples += rk.nkeys;
+
+	MemoryContextSwitchTo(oldcxt);
+	MemoryContextReset(bs->rowcxt);
+}
+
 /* table_index_build_scan callback: spool one index tuple into the sort. */
 static void
 bark_build_callback(Relation index, ItemPointer tid, Datum *values,
@@ -328,6 +449,12 @@ bark_build_callback(Relation index, ItemPointer tid, Datum *values,
 
 	if (!tupleIsAlive)
 		return;
+
+	if (bs->extracted > 0)
+	{
+		bark_build_row_keys(bs, tid, values, isnull);
+		return;
+	}
 
 	/*
 	 * Classify the row by its formed size.  An oversized key cannot go through
@@ -715,6 +842,8 @@ bark_finish(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *leaf)
 	meta->bark_root = rootblk;
 	meta->bark_level = rootlevel;
 	meta->bark_allequalimage = bs->allequalimage;
+	meta->bark_flags = bs->multikey ? BARK_META_MULTIKEY : 0;
+	meta->bark_nkeys = (uint64) bs->indtuples;
 	((PageHeader) metabuf)->pd_lower =
 		((char *) meta + sizeof(BarkMetaPageData)) - (char *) metabuf;
 
@@ -873,6 +1002,7 @@ bark_load(BarkBuildState *bs, Tuplesortstate *sortstate)
 	IndexTuple	itup;
 	IndexTuple	prev = NULL;
 	IndexTuple	prevbuf = NULL;
+	IndexTuple	lastmarker = NULL;
 	bool		coalesce = bs->allequalimage && !bs->isunique;
 	BarkBuildRun run = {0};
 
@@ -886,6 +1016,29 @@ bark_load(BarkBuildState *bs, Tuplesortstate *sortstate)
 
 	while ((itup = tuplesort_getindextuple(sortstate, true)) != NULL)
 	{
+		/*
+		 * A marker (spooled by bark_build_marker) is a SINGLE entry, never
+		 * coalesced, written once.  The copies parallel participants spooled
+		 * are equal in key, so they arrive together, and a marker sorts after
+		 * every real TID of its key, so a pending run of the key is complete.
+		 */
+		if (ItemPointerGetBlockNumberNoCheck(&itup->t_tid) == InvalidBlockNumber)
+		{
+			if (lastmarker != NULL &&
+				bark_compare_itups(bs->keyinfo, bs->index, itup,
+								   lastmarker) == 0)
+				continue;
+			if (run.ntids > 0)
+				bark_build_flush_run(bs, bulk, leaf, &run, true);
+			if (lastmarker == NULL)
+				lastmarker = (IndexTuple) palloc(BarkMaxItemSize);
+			Assert(IndexTupleSize(itup) <= BarkMaxItemSize);
+			memcpy(lastmarker, itup, IndexTupleSize(itup));
+			BarkSetMarkerTid(&lastmarker->t_tid);
+			bark_buildadd(bs, bulk, leaf, lastmarker);
+			continue;
+		}
+
 		if (coalesce)
 		{
 			if (run.ntids > 0 &&
@@ -953,6 +1106,8 @@ bark_load(BarkBuildState *bs, Tuplesortstate *sortstate)
 	}
 	if (prevbuf != NULL)
 		pfree(prevbuf);
+	if (lastmarker != NULL)
+		pfree(lastmarker);
 	if (run.ntids > 0)
 		bark_build_flush_run(bs, bulk, leaf, &run, true);
 	if (coalesce)
@@ -979,6 +1134,14 @@ bark_oversized_pass_callback(Relation index, ItemPointer tid, Datum *values,
 
 	if (!tupleIsAlive)
 		return;
+
+	/* Procedure 7 again, inserting only the keys the sort could not take. */
+	if (bs->extracted > 0)
+	{
+		bark_insert_oversized_keys(index, values, isnull, tid, bs->heap,
+								   bs->indexInfo);
+		return;
+	}
 
 	if (!bark_build_row_oversized(bs, RelationGetDescr(index), values, isnull))
 		return;					/* already loaded inline */
@@ -1068,6 +1231,7 @@ bark_parallel_scan_and_sort(Relation heap, Relation index,
 	bs.isunique = false;		/* leader enforces uniqueness during load */
 	bs.sortstate = sortstate;
 	bark_build_init_sizebound(&bs);
+	bark_build_init_multikey(&bs);
 
 	indexInfo = BuildIndexInfo(index);
 	indexInfo->ii_Concurrent = barkshared->isconcurrent;
@@ -1088,6 +1252,8 @@ bark_parallel_scan_and_sort(Relation heap, Relation index,
 		barkshared->brokenhotchain = true;
 	if (bs.has_oversized)
 		barkshared->has_oversized = true;
+	if (bs.multikey)
+		barkshared->multikey = true;
 	SpinLockRelease(&barkshared->mutex);
 
 	ConditionVariableSignal(&barkshared->workersdonecv);
@@ -1257,6 +1423,7 @@ bark_begin_parallel(BarkBuildState *bs, bool isconcurrent, int request)
 	barkshared->indtuples = 0.0;
 	barkshared->brokenhotchain = false;
 	barkshared->has_oversized = false;
+	barkshared->multikey = false;
 	table_parallelscan_initialize(bs->heap,
 								  ParallelTableScanFromBarkShared(barkshared),
 								  snapshot);
@@ -1347,6 +1514,7 @@ bark_parallel_heapscan(BarkBuildState *bs)
 		{
 			bs->indtuples = barkshared->indtuples;
 			bs->has_oversized = barkshared->has_oversized;
+			bs->multikey = barkshared->multikey;
 			reltuples = barkshared->reltuples;
 			SpinLockRelease(&barkshared->mutex);
 			break;
@@ -1397,6 +1565,7 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	bs.prefix = bark_prefix_enabled(index);
 	bs.prefixnext = true;
 	bark_build_init_sizebound(&bs);
+	bark_build_init_multikey(&bs);
 
 	/* Launch parallel workers when the planner asked for them. */
 	if (indexInfo->ii_ParallelWorkers > 0)
