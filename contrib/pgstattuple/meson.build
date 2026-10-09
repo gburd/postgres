@@ -25,6 +25,7 @@ install_data(
   'pgstattuple--1.2--1.3.sql',
   'pgstattuple--1.3--1.4.sql',
   'pgstattuple--1.4--1.5.sql',
+  'pgstattuple--1.5--1.6.sql',
   'pgstattuple--1.4.sql',
   'pgstattuple.control',
   kwargs: contrib_data_args,
@@ -37,6 +38,7 @@ tests += {
   'regress': {
     'sql': [
       'pgstattuple',
+      'bark',
     ],
   },
 }
