@@ -270,7 +270,9 @@ bark_bottomup_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 		IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
 		int			n;
 
-		if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+		/* A marker's TID names no row to offer the table AM. */
+		if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED ||
+			BarkEntryIsMarker(itup))
 			continue;
 		n = bark_entry_count_tids(itup);
 		if (ntids + n > PG_INT16_MAX)
@@ -437,7 +439,7 @@ bark_merge_form(Page page, IndexTuple key, ItemPointer tids, int n)
  * entry that does not fit starts the next group.  Equal-key entries are in
  * heap TID order with disjoint ranges, so the members of a group, read in
  * order, are already ascending.  SINGLE entries fold in like the rest;
- * OVERSIZED ones are left alone, and end a group.  A group never spans
+ * OVERSIZED ones and markers are left alone, and end a group.  A group never spans
  * newitemoff: the merged entry's TID range would then hold the new TID, and
  * the new entry could not go next to it.  A group that would save nothing (a
  * single entry, or alignment eating the gain) is left as it is.  The pass
@@ -493,7 +495,8 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 		int			groupsz;
 
 		off = OffsetNumberNext(off);
-		if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+		if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED ||
+			BarkEntryIsMarker(itup))
 			continue;
 
 		/*
@@ -504,6 +507,7 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 			continue;
 		next = BarkPageGetItem(page, off, &nbuf);
 		if (BarkEntryGetShape(next) == BARK_SHAPE_OVERSIZED ||
+			BarkEntryIsMarker(next) ||
 			bark_compare_itups(keyinfo, index, itup, next) != 0)
 			continue;
 
@@ -526,6 +530,7 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 			IndexTuple	candidate;
 
 			if (BarkEntryGetShape(cur) == BARK_SHAPE_OVERSIZED ||
+				BarkEntryIsMarker(cur) ||
 				bark_compare_itups(keyinfo, index, key, cur) != 0)
 				break;
 			n = bark_entry_count_tids(cur);
