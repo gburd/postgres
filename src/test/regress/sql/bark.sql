@@ -1,8 +1,8 @@
 --
 -- BARK index access method: registration, opclasses, build, insert, and scan.
 --
--- BARK is registered as an index AM, provides default operator classes for
--- the common scalar types (its operator families are btree operator
+-- BARK is registered as an index AM, provides an operator class for every
+-- btree operator class (its operator families are btree operator
 -- families), builds an index over a heap, accepts row inserts into an
 -- existing index (splitting pages and growing the tree), and supports index
 -- scans whose results match a sequential scan.
@@ -3982,3 +3982,257 @@ DROP FUNCTION bark_arr_run(text, text), bark_arr_scroll(text, bool),
   bark_arr_pages(text, int), bark_mj_check(text, text);
 DROP FUNCTION bark_req_check(text), bark_req_run(), bark_req_pages(text);
 DROP TABLE bark_req;
+
+-- ===========================================================================
+-- Operator classes.  BARK has one operator class for each btree class, in
+-- btree's operator family, with the same name, input and storage types and
+-- default, so CREATE INDEX ... USING bark accepts every type btree does.
+-- ===========================================================================
+SELECT b.opcname
+FROM pg_opclass b JOIN pg_am ba ON ba.oid = b.opcmethod AND ba.amname = 'btree'
+WHERE b.oid < 16384 AND NOT EXISTS
+  (SELECT 1 FROM pg_opclass k JOIN pg_am ka ON ka.oid = k.opcmethod AND ka.amname = 'bark'
+   WHERE (k.opcnamespace, k.opcname, k.opcfamily, k.opcintype, k.opckeytype, k.opcdefault) =
+         (b.opcnamespace, b.opcname, b.opcfamily, b.opcintype, b.opckeytype, b.opcdefault));
+SELECT count(*) AS bark_opclasses, count(*) FILTER (WHERE amvalidate(c.oid)) AS valid
+FROM pg_opclass c JOIN pg_am a ON a.oid = c.opcmethod
+WHERE a.amname = 'bark';
+\dAc bark
+
+-- Every class works, not only exists.  For each one, bark_opc_check builds a
+-- BARK index over 600 rows (400 keys, a few NULLs), inserts 600 more (so keys
+-- repeat and coalesce where the class allows it), runs bark_index_check, and
+-- runs a point lookup, a two-sided range, an ordered range and a full
+-- descending scan as an index-only scan, a plain index scan and (for the
+-- counts) a bitmap scan.  Each result must equal the sequential scan's, and
+-- each index plan must use the BARK index with no Sort.  ops names the
+-- class's =, >=, <=, < and > operators.  The result names each failed check,
+-- with its scan mode; "ok" when none failed.  The second run repeats it all
+-- with prefix_compression, which codes the leaf keys of varlena types.
+CREATE TYPE bark_opc_pair AS (a int, b text);
+CREATE TYPE bark_opc_color AS ENUM ('red', 'orange', 'yellow', 'green', 'blue', 'violet');
+CREATE TABLE bark_opc_case (opc text, typ text, gen text,
+                            ops text[] DEFAULT '{=,>=,<=,<,>}');
+INSERT INTO bark_opc_case (opc, typ, gen) VALUES
+  ('array_ops', 'int4[]', 'ARRAY[x % 7, x]'),
+  ('bit_ops', 'bit(12)', 'x::bit(12)'),
+  ('bool_ops', 'bool', 'x % 3 = 0'),
+  ('bpchar_ops', 'char(10)', '''c'' || x'),
+  ('bytea_ops', 'bytea', 'decode(md5(x::text), ''hex'')'),
+  ('char_ops', '"char"', 'chr(65 + x % 50)::"char"'),
+  ('cidr_ops', 'cidr', '(''10.'' || x % 256 || ''.'' || x / 256 || ''.0/24'')::cidr'),
+  ('date_ops', 'date', 'date ''2000-01-01'' + x * 37'),
+  ('float4_ops', 'float4', '((x - 200) / 7.0)::float4'),
+  ('float8_ops', 'float8', '(x - 200) / 7.0::float8'),
+  ('inet_ops', 'inet', '(''192.168.'' || x % 256 || ''.'' || x / 256)::inet'),
+  ('int2_ops', 'int2', '(x - 200)::int2'),
+  ('int4_ops', 'int4', 'x * 7919 % 400'),
+  ('int8_ops', 'int8', 'x * 10000000000'),
+  ('interval_ops', 'interval', 'x * interval ''1 hour 1 minute'''),
+  ('macaddr_ops', 'macaddr', '(''08:00:2b:01:'' || lpad(to_hex(x / 256), 2, ''0'') || '':'' || lpad(to_hex(x % 256), 2, ''0''))::macaddr'),
+  ('macaddr8_ops', 'macaddr8', '(''08:00:2b:01:02:03:'' || lpad(to_hex(x / 256), 2, ''0'') || '':'' || lpad(to_hex(x % 256), 2, ''0''))::macaddr8'),
+  ('name_ops', 'name', '(''n'' || x)::name'),
+  ('numeric_ops', 'numeric', '(x - 200) / 7.0'),
+  ('oid_ops', 'oid', '(x * 1000)::oid'),
+  ('oidvector_ops', 'oidvector', '(x % 7 || '' '' || x)::oidvector'),
+  ('record_ops', 'bark_opc_pair', 'ROW(x % 7, ''r'' || x)::bark_opc_pair'),
+  ('record_image_ops', 'bark_opc_pair', 'ROW(x % 7, ''r'' || x)::bark_opc_pair'),
+  ('text_ops', 'text', 'md5(x::text)'),
+  ('text_ops', 'text COLLATE "C"', 'md5(x::text)'),
+  ('time_ops', 'time', 'time ''00:00'' + x * interval ''3 minutes 7 seconds'''),
+  ('timestamptz_ops', 'timestamptz', 'timestamptz ''2000-01-01 00:00+00'' + x * interval ''7 hours'''),
+  ('timetz_ops', 'timetz', '(x % 24 || '':'' || x % 60 || '':00+'' || x % 5)::timetz'),
+  ('varbit_ops', 'varbit', 'substring(x::bit(12)::varbit from 1 for 1 + x % 12)'),
+  ('varchar_ops', 'varchar', '(''v'' || x)::varchar'),
+  ('timestamp_ops', 'timestamp', 'timestamp ''2000-01-01'' + x * interval ''7 hours 3 minutes'''),
+  ('text_pattern_ops', 'text', 'md5(x::text)'),
+  ('varchar_pattern_ops', 'varchar', 'md5(x::text)::varchar'),
+  ('bpchar_pattern_ops', 'char(10)', '''c'' || x'),
+  ('money_ops', 'money', '((x - 200) * 1.25)::numeric::money'),
+  ('tid_ops', 'tid', '(''('' || x / 10 || '','' || x % 10 || '')'')::tid'),
+  ('xid8_ops', 'xid8', '(x * 1000)::text::xid8'),
+  ('oid8_ops', 'oid8', '(x * 10000000000)::oid8'),
+  ('uuid_ops', 'uuid', 'md5(x::text)::uuid'),
+  ('pg_lsn_ops', 'pg_lsn', '(to_hex(x % 7) || ''/'' || to_hex(x * 4096))::pg_lsn'),
+  ('enum_ops', 'bark_opc_color', '(enum_range(NULL::bark_opc_color))[1 + x % 6]'),
+  ('tsvector_ops', 'tsvector', '(''w'' || x % 9 || '' z'' || x)::tsvector'),
+  ('tsquery_ops', 'tsquery', '(''w'' || x % 9 || '' & z'' || x)::tsquery'),
+  ('range_ops', 'int4range', 'int4range(x % 50, x % 50 + 1 + x / 50)'),
+  ('multirange_ops', 'int4multirange', 'int4multirange(int4range(x % 50, x % 50 + 3), int4range(100 + x, 200 + x))'),
+  ('jsonb_ops', 'jsonb', 'jsonb_build_object(''a'', x % 9, ''b'', ''v'' || x)');
+UPDATE bark_opc_case SET ops = '{*=,*>=,*<=,*<,*>}' WHERE opc = 'record_image_ops';
+UPDATE bark_opc_case SET ops = '{=,~>=~,~<=~,~<~,~>~}' WHERE opc LIKE '%pattern_ops';
+CREATE FUNCTION bark_opc_check(c bark_opc_case, reloptions text) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+  rows text := 'INSERT INTO bark_opc SELECT CASE WHEN g % 97 = 0 THEN NULL ELSE ' ||
+    c.gen || ' END FROM generate_series($1, $2) g, LATERAL (SELECT g % 400 AS x) s';
+  lo text;
+  mid text;
+  hi text;
+  q text[];
+  want text[];
+  got text;
+  plan text;
+  bad text[] := '{}';
+BEGIN
+  EXECUTE format('CREATE TEMP TABLE bark_opc (k %s)', c.typ);
+  EXECUTE rows USING 1, 600;
+  EXECUTE format('CREATE INDEX bark_opc_idx ON bark_opc USING bark (k %s) %s',
+                 c.opc, reloptions);
+  EXECUTE rows USING 601, 1200;
+  PERFORM bark_index_check('bark_opc_idx');
+  PERFORM set_config('enable_seqscan', 'on', true);
+  PERFORM set_config('enable_indexscan', 'off', true);
+  PERFORM set_config('enable_bitmapscan', 'off', true);
+  q[1] := format('SELECT k::text FROM bark_opc WHERE k IS NOT NULL ' ||
+                 'ORDER BY bark_opc.k USING %s OFFSET $1 LIMIT 1', c.ops[4]);
+  EXECUTE q[1] INTO lo USING 300;
+  EXECUTE q[1] INTO mid USING 550;
+  EXECUTE q[1] INTO hi USING 800;
+  q := ARRAY[
+    format('SELECT count(*) FROM bark_opc WHERE k %s %L::%s', c.ops[1], mid, c.typ),
+    format('SELECT count(*) FROM bark_opc WHERE k %s %L::%s AND k %s %L::%s',
+           c.ops[2], lo, c.typ, c.ops[3], hi, c.typ),
+    format('SELECT md5(string_agg(coalesce(k::text, ''-''), '','')) FROM ' ||
+           '(SELECT k FROM bark_opc WHERE k %s %L::%s ORDER BY k USING %s) s',
+           c.ops[2], lo, c.typ, c.ops[4]),
+    format('SELECT md5(string_agg(coalesce(k::text, ''-''), '','')) FROM ' ||
+           '(SELECT k FROM bark_opc ORDER BY k USING %s) s', c.ops[5])];
+  FOR i IN 1 .. 4 LOOP
+    EXECUTE q[i] INTO got;
+    want[i] := got;
+  END LOOP;
+  PERFORM set_config('enable_seqscan', 'off', true);
+  FOR m IN 1 .. 3 LOOP
+    PERFORM set_config('enable_indexscan', (m < 3)::text, true);
+    PERFORM set_config('enable_indexonlyscan', (m = 1)::text, true);
+    PERFORM set_config('enable_bitmapscan', (m = 3)::text, true);
+    FOR i IN 1 .. CASE WHEN m = 3 THEN 2 ELSE 4 END LOOP
+      EXECUTE 'EXPLAIN (COSTS OFF, FORMAT JSON) ' || q[i] INTO plan;
+      IF plan NOT LIKE '%"Node Type": "' ||
+           (ARRAY['Index Only Scan', 'Index Scan', 'Bitmap Index Scan'])[m] ||
+           '"%"Index Name": "bark_opc_idx"%' OR
+         (m < 3 AND plan LIKE '%"Node Type": "Sort"%') THEN
+        bad := bad || format('q%s/%s plan', i, (ARRAY['ios', 'idx', 'bitmap'])[m]);
+      END IF;
+      EXECUTE q[i] INTO got;
+      IF got IS DISTINCT FROM want[i] THEN
+        bad := bad || format('q%s/%s', i, (ARRAY['ios', 'idx', 'bitmap'])[m]);
+      END IF;
+    END LOOP;
+  END LOOP;
+  DROP TABLE bark_opc;
+  RETURN CASE WHEN bad = '{}' THEN 'ok' ELSE array_to_string(bad, ', ') END;
+END $$;
+SELECT opc, typ, bark_opc_check(c, '') AS plain,
+       bark_opc_check(c, 'WITH (prefix_compression = on)') AS prefix
+FROM bark_opc_case c ORDER BY opc, typ;
+DROP FUNCTION bark_opc_check(bark_opc_case, text);
+DROP TABLE bark_opc_case;
+
+-- An index on a non-default class names it, so pg_dump restores the same one.
+CREATE TABLE bark_opc_def (t text, v varchar, r bark_opc_pair, n cidr);
+CREATE INDEX bark_opc_def_t ON bark_opc_def USING bark (t text_pattern_ops);
+CREATE INDEX bark_opc_def_v ON bark_opc_def USING bark (v varchar_pattern_ops);
+CREATE INDEX bark_opc_def_r ON bark_opc_def USING bark (r record_image_ops);
+CREATE INDEX bark_opc_def_n ON bark_opc_def USING bark (n);
+SELECT pg_get_indexdef(indexrelid) FROM pg_index
+WHERE indrelid = 'bark_opc_def'::regclass ORDER BY indexrelid::regclass::text;
+DROP TABLE bark_opc_def;
+
+-- text_pattern_ops serves LIKE 'ab%' as a range scan under any collation,
+-- as with btree.
+CREATE TABLE bark_opc_like (t text);
+INSERT INTO bark_opc_like SELECT md5(g::text) FROM generate_series(1, 4000) g;
+CREATE INDEX bark_opc_like_idx ON bark_opc_like USING bark (t text_pattern_ops);
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM bark_opc_like WHERE t LIKE 'ab%';
+SELECT count(*) AS idx_count FROM bark_opc_like WHERE t LIKE 'ab%';
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*) AS seq_count FROM bark_opc_like WHERE t LIKE 'ab%';
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_opc_like;
+
+-- Classes whose keys can compare equal with different bytes have no
+-- equalimage support function (numeric: 1 = 1.0 = 1.00), so equal keys never
+-- share a LIST or POSTING entry, whether built or inserted: after VACUUM
+-- counts the leaf entries into reltuples, the numeric index has one entry per
+-- row, while int4 coalesces the same 600 equal keys into far fewer.  An
+-- index-only scan returns each row's own value.  Temp tables, so that
+-- autovacuum does not touch them.
+CREATE TEMP TABLE bark_opc_num (k numeric);
+INSERT INTO bark_opc_num SELECT (ARRAY[1, 1.0, 1.00])[1 + g % 3] FROM generate_series(1, 300) g;
+CREATE INDEX bark_opc_num_idx ON bark_opc_num USING bark (k);
+CREATE TEMP TABLE bark_opc_int (k int);
+INSERT INTO bark_opc_int SELECT 1 FROM generate_series(1, 300) g;
+CREATE INDEX bark_opc_int_idx ON bark_opc_int USING bark (k);
+INSERT INTO bark_opc_num SELECT (ARRAY[1, 1.0, 1.00])[1 + g % 3] FROM generate_series(1, 300) g;
+INSERT INTO bark_opc_int SELECT 1 FROM generate_series(1, 300) g;
+VACUUM bark_opc_num, bark_opc_int;
+SELECT bark_index_check('bark_opc_num_idx'), bark_index_check('bark_opc_int_idx');
+SELECT relname, reltuples = 600 AS one_entry_per_row
+FROM pg_class WHERE relname IN ('bark_opc_num_idx', 'bark_opc_int_idx') ORDER BY relname;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT k::text, count(*) FROM bark_opc_num WHERE k = 1 GROUP BY 1 ORDER BY 1;
+SELECT k::text, count(*) FROM bark_opc_num WHERE k = 1 GROUP BY 1 ORDER BY 1;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_opc_num, bark_opc_int;
+
+-- An OVERSIZED entry's inline prefix shortcuts a comparison only when the
+-- first key column sorts as its varlena bytes, which a "C" collation does not
+-- make true by itself: name is a cstring (no varlena header), bpchar ignores
+-- trailing spaces, and an array compares element by element.  Each index has
+-- oversized entries (an incompressible ~3kB INCLUDE payload or second key);
+-- bark_index_check passes and the index agrees with a sequential scan.
+CREATE TABLE bark_opc_big (n name, c char(4) COLLATE "C", a text[] COLLATE "C", p text);
+SELECT setseed(0.25);
+INSERT INTO bark_opc_big
+  SELECT ('l' || lpad(g::text, 3, '0') || chr(122 - g % 26))::name,
+         CASE WHEN g % 2 = 0 THEN 'a' ELSE 'a ' END,
+         CASE WHEN g % 2 = 0 THEN ARRAY[chr(98 + g % 20)]
+              ELSE ARRAY[chr(97 + g % 20), 'z'] END || g::text,
+         (SELECT string_agg(md5(g::text || i::text), '') FROM generate_series(1, 100) i)
+  FROM generate_series(1, 400) g ORDER BY random();
+CREATE INDEX bark_opc_big_n ON bark_opc_big USING bark (n) INCLUDE (p);
+CREATE INDEX bark_opc_big_c ON bark_opc_big USING bark (c, p);
+CREATE INDEX bark_opc_big_a ON bark_opc_big USING bark (a) INCLUDE (p);
+INSERT INTO bark_opc_big
+  SELECT ('l' || lpad(g::text, 3, '0') || chr(122 - g % 26))::name,
+         CASE WHEN g % 2 = 0 THEN 'a' ELSE 'a ' END,
+         CASE WHEN g % 2 = 0 THEN ARRAY[chr(98 + g % 20)]
+              ELSE ARRAY[chr(97 + g % 20), 'z'] END || g::text,
+         (SELECT string_agg(md5(g::text || i::text), '') FROM generate_series(1, 100) i)
+  FROM generate_series(401, 800) g ORDER BY random();
+SELECT bark_index_check('bark_opc_big_n'), bark_index_check('bark_opc_big_c'),
+       bark_index_check('bark_opc_big_a');
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+CREATE TEMP TABLE bark_opc_big_idx AS
+  SELECT (SELECT count(*) FROM bark_opc_big WHERE n > 'l300') AS n,
+         (SELECT count(*) FROM bark_opc_big WHERE c = 'a' AND p > '8') AS c,
+         (SELECT count(*) FROM bark_opc_big WHERE a > '{k}') AS a;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SET enable_bitmapscan = off;
+SELECT i.*, (i.n, i.c, i.a) = (s.n, s.c, s.a) AS matches_seqscan
+FROM bark_opc_big_idx i,
+  (SELECT (SELECT count(*) FROM bark_opc_big WHERE n > 'l300') AS n,
+          (SELECT count(*) FROM bark_opc_big WHERE c = 'a' AND p > '8') AS c,
+          (SELECT count(*) FROM bark_opc_big WHERE a > '{k}') AS a) s;
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+RESET enable_bitmapscan;
+DROP TABLE bark_opc_big, bark_opc_big_idx;
+DROP TYPE bark_opc_pair, bark_opc_color;
