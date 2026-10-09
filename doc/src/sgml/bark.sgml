@@ -751,6 +751,19 @@ SELECT id, id &lt;~&gt; 5000 AS distance FROM orders ORDER BY id &lt;~&gt; 5000 
    writes the tree from the bottom up, and can use parallel workers for the
    table scan and sort.
   </para>
+
+  <para>
+   As in B-tree, <command>CREATE INDEX</command> and
+   <command>REINDEX</command> also index row versions that have been
+   deleted or updated but that a transaction older than the build may
+   still see (<quote>recently dead</quote> rows), so that such a
+   transaction gets the same answer from the new index as from the table.
+   These row versions are left out of a unique index's uniqueness check: a
+   deleted row and a live row with the same key do not make the build of a
+   unique index fail, while two live rows with the same key do.  Nothing in
+   the index records which entries came from such rows; the table decides
+   their visibility, as for every other entry.
+  </para>
  </sect3>
 
  <sect3 id="bark-deletion">
