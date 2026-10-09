@@ -39,11 +39,13 @@
 #include "miscadmin.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
+#include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/pg_locale.h"
 #include "utils/rel.h"
 
 static Sbm *bark_posting_open(IndexTuple itup);
+static bool bark_first_column_bytewise(Relation index);
 
 /*
  * Translate between BARK strategy numbers and the generic CompareType.  BARK
@@ -129,21 +131,31 @@ bark_build_keyinfo(Relation index)
 		col->reverse = (indoption & INDOPTION_DESC) != 0;
 		col->nulls_first = (indoption & INDOPTION_NULLS_FIRST) != 0;
 
-		/*
-		 * The OVERSIZED inline-prefix fast path (see bark_compare_itups) is
-		 * sound only when a leading-byte difference in the first key column's
-		 * datum decides its order -- i.e. the column sorts bytewise.  That is
-		 * true for a text/bytea-style column under a C/POSIX collation; a
-		 * locale-aware collation can reorder across the prefix boundary, so
-		 * the fast path is disabled there and comparison fetches the full
-		 * value.  Only the first key column matters (the prefix only shortcuts
-		 * when the leading column differs).
-		 */
-		col->bytewise = (i == 0 && OidIsValid(col->collation) &&
-						 pg_newlocale_from_collation(col->collation)->collate_is_c);
+		/* Only the first key column has an OVERSIZED inline prefix. */
+		col->bytewise = (i == 0 && bark_first_column_bytewise(index));
 	}
 
 	return keyinfo;
+}
+
+/*
+ * Does the first key column of `index` sort as the bytes of its varlena
+ * datum's data area (memcmp, then length)?  The OVERSIZED inline-prefix fast
+ * path (bark_compare_itups, bark_set_oversized_prefix) is sound only then.
+ * A C/POSIX collation is not enough on its own: under it bpchar still ignores
+ * trailing spaces, an array still compares element by element, and name is
+ * stored as a cstring, not a varlena.  So require text's own comparator too.
+ * Any other column fetches the full value to compare, which is always
+ * correct.
+ */
+static bool
+bark_first_column_bytewise(Relation index)
+{
+	Oid			collation = index->rd_indcollation[0];
+
+	return index_getprocid(index, 1, BARK_ORDER_PROC) == F_BTTEXTCMP &&
+		OidIsValid(collation) &&
+		pg_newlocale_from_collation(collation)->collate_is_c;
 }
 
 /*
@@ -2070,7 +2082,6 @@ bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
 {
 	BarkOverflowRef *ref = BarkOverflowGetRef(entry);
 	TupleDesc	tupdesc = RelationGetDescr(index);
-	Oid			collation = index->rd_indcollation[0];
 	Datum		d;
 	bool		isnull;
 	char	   *data;
@@ -2081,13 +2092,10 @@ bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
 
 	/*
 	 * The prefix fast path is sound only when a leading-byte difference in the
-	 * first key column decides its order -- a text/bytea-style column under a
-	 * C/POSIX collation.  A locale-aware collation can reorder across the
-	 * prefix boundary, so leave prefixlen 0 and let comparison fetch the full
-	 * value.  (Only the first key column drives the prefix.)
+	 * first key column decides its order.  For any other column leave
+	 * prefixlen 0 and let comparison fetch the full value.
 	 */
-	if (!OidIsValid(collation) ||
-		!pg_newlocale_from_collation(collation)->collate_is_c)
+	if (!bark_first_column_bytewise(index))
 		return;
 
 	d = index_getattr(full, 1, tupdesc, &isnull);
@@ -2105,7 +2113,7 @@ bark_set_oversized_prefix(IndexTuple entry, Relation index, IndexTuple full)
 		return;
 	Assert(!VARATT_IS_EXTERNAL(DatumGetPointer(d)));
 
-	/* A C-collation text/bytea datum is a varlena: use its data area. */
+	/* A C-collation text datum is a varlena: use its data area. */
 	data = VARDATA_ANY(DatumGetPointer(d));
 	len = VARSIZE_ANY_EXHDR(DatumGetPointer(d));
 
