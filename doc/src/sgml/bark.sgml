@@ -390,11 +390,12 @@ int2 indexRecheck(<replaceable>key</replaceable>, int2 strategy, internal extra)
 <programlisting>
 <replaceable>input type</replaceable> fetch(<replaceable>key</replaceable>)
 </programlisting>
-      Rebuilds a column value from a key, for index-only scans.  Without
-      it, an index-only scan cannot return the multikey column (the
-      entries hold keys, not values), though it can return the other
-      columns.  A class should provide it only when one key determines
-      the value; a NULL key is returned as a NULL value.
+      Reserved: <function>amvalidate</function> accepts it, but BARK does
+      not call it.  An index-only scan never returns the multikey column,
+      only the other columns: the entries hold keys, not values, and a key
+      does not determine its row's value (a row with several keys has an
+      entry per key, and the single NULL key stands for a NULL value, an
+      empty value and a NULL element alike).
      </para>
     </listitem>
    </varlistentry>
