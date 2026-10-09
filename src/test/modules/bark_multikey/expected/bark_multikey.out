@@ -660,6 +660,26 @@ INFO:  operator class "mk_no_extract" of access method bark is missing support f
  f
 (1 row)
 
+-- CREATE INDEX refuses it too.  A scalar class in a family of BARK's own
+-- would have its operators read as btree strategies: here < is strategy 4
+-- and > strategy 2, which BARK would take for >= and <, positioning and
+-- stopping the scan wrongly.
+CREATE OPERATOR CLASS mk_scalar_renumbered FOR TYPE int4 USING bark AS
+    OPERATOR 4 < (int4, int4),
+    OPERATOR 2 > (int4, int4),
+    FUNCTION 1 (int4, int4) btint4cmp(int4, int4);
+CREATE TABLE mk_scalar (a int4, b int4[]);
+INSERT INTO mk_scalar SELECT g, ARRAY[g] FROM generate_series(1, 1000) g;
+CREATE INDEX mk_scalar_i ON mk_scalar USING bark (a mk_scalar_renumbered);
+ERROR:  operator family "mk_scalar_renumbered" of access method bark has no extract-value support function for type integer
+DETAIL:  An operator class in an operator family of access method bark must provide support function 7.
+HINT:  Put a scalar operator class in a btree operator family, with CREATE OPERATOR CLASS ... FAMILY.
+CREATE INDEX mk_scalar_i ON mk_scalar USING bark (b mk_no_extract);
+ERROR:  operator family "mk_no_extract" of access method bark has no extract-value support function for type integer[]
+DETAIL:  An operator class in an operator family of access method bark must provide support function 7.
+HINT:  Put a scalar operator class in a btree operator family, with CREATE OPERATOR CLASS ... FAMILY.
+DROP TABLE mk_scalar;
+DROP OPERATOR CLASS mk_scalar_renumbered USING bark CASCADE;
 -- Procedure 8 without 9.  A six-argument procedure 8 is fine.
 CREATE OPERATOR CLASS mk_no_recheck FOR TYPE int4[] USING bark AS
     OPERATOR 1 && (anyarray, anyarray),
