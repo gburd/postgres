@@ -1640,9 +1640,19 @@ bark_end_parallel(BarkLeader *barkleader)
 	ExitParallelMode();
 }
 
-/* Wait in the leader for every participant to finish its scan and sort. */
+/*
+ * Wait in the leader for every participant to finish its scan and sort.
+ *
+ * A participant that skipped a HOT-updated row of a broken HOT chain set
+ * barkshared->brokenhotchain; that is reported in *brokenhotchain, which the
+ * caller points at index.c's indexInfo->ii_BrokenHotChain, so that a new
+ * index is marked indcheckxmin and not used by snapshots older than it, as
+ * nbtsort.c's _bt_parallel_heapscan does.  Each participant, the leader
+ * included, scans with an IndexInfo of its own, so this is the only way the
+ * fact reaches index.c.
+ */
 static double
-bark_parallel_heapscan(BarkBuildState *bs)
+bark_parallel_heapscan(BarkBuildState *bs, bool *brokenhotchain)
 {
 	BarkShared *barkshared = bs->barkleader->barkshared;
 	int			nparticipanttuplesorts;
@@ -1658,6 +1668,7 @@ bark_parallel_heapscan(BarkBuildState *bs)
 			bs->havedead = barkshared->havedead;
 			bs->has_oversized = barkshared->has_oversized;
 			bs->multikey = barkshared->multikey;
+			*brokenhotchain = barkshared->brokenhotchain;
 			reltuples = barkshared->reltuples;
 			SpinLockRelease(&barkshared->mutex);
 			break;
@@ -1762,7 +1773,8 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 		reltuples = table_index_build_scan(heap, index, indexInfo, true, true,
 										   bark_build_callback, &bs, NULL);
 	else
-		reltuples = bark_parallel_heapscan(&bs);
+		reltuples = bark_parallel_heapscan(&bs,
+										   &indexInfo->ii_BrokenHotChain);
 
 	tuplesort_performsort(leadersort);
 	if (bs.deadsort != NULL && !bs.havedead)
