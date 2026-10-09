@@ -270,8 +270,9 @@ Block 0 is always the meta page (BarkMetaPageData): a magic number
 (BARK_MAGIC), the on-disk version (BARK_VERSION), the current root block and
 its level, and whether all key columns are "equalimage" (which governs
 whether duplicate keys can be deduplicated losslessly).  A descent does not
-read it: the root block and level are cached in rd_amcache, as nbtree caches
-its meta page, and the cached page is used only if, under its lock, it is
+read it: the root block and level are cached in rd_amcache (BarkAmCache,
+which also caches the index's extracted column), as nbtree caches its meta
+page, and the cached page is used only if, under its lock, it is
 still a root (BARK_ROOT set, not being deleted) at the cached level.  A root
 split clears BARK_ROOT on the old root, so a stale cache entry fails that
 check and the meta page is read instead.
