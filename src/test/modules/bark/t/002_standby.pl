@@ -113,6 +113,15 @@ check_conflict_stat('bufferpin');
 ## 2: snapshot conflict when a deleted page is reused
 $sect = 'page reuse conflict';
 
+# As in the bottom-up deletion section below: the page images
+# wal_consistency_checking adds can put replay more than
+# max_standby_streaming_delay behind, and then the standby cancels the
+# conflicting query at once, without the wait whose log line names the
+# record.  Wait longer here; the buffer pin section above relies on the
+# short delay and has run.
+$node_standby->append_conf('postgresql.conf', 'max_standby_streaming_delay = 5s');
+$node_standby->reload;
+
 $log_location = -s $node_standby->logfile;
 my $lsn_before = $node_primary->safe_psql($db,
 	'SELECT pg_current_wal_insert_lsn()');
