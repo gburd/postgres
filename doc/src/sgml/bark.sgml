@@ -270,16 +270,11 @@ CREATE OPERATOR CLASS my_int4_ops FOR TYPE int4 USING bark FAMILY my_int4_ops AS
    from one column value, as a GIN operator class does, and stores one
    index entry for each distinct key of each row; the keys are ordered,
    so the index stays a B-tree over them.  The support functions described
-   here are the interface for extension authors.  It is new and still
-   being completed: at present, an index with a multikey column can be
-   built and maintained (<command>CREATE INDEX</command>,
-   <command>INSERT</command>, <command>UPDATE</command>,
-   <command>VACUUM</command>, <command>REINDEX</command>, and the
-   <application>amcheck</application> checks without
-   <literal>heapallindexed</literal>), but it cannot be scanned:
-   a query plan that would scan it fails with <quote>multikey scans are not
-   implemented yet</quote>.  The planner does not use such an index to
-   provide a sort order on the multikey column or on any column after it.
+   here are the interface for extension authors.  An index with a multikey
+   column is built, maintained and scanned like any other BARK index;
+   <xref linkend="bark-multikey-scans"/> describes how a scan reads it.
+   The planner does not use such an index to provide a sort order on the
+   multikey column or on any column after it.
   </para>
 
   <para>
@@ -358,6 +353,8 @@ void extractQuery(<replaceable>query</replaceable>, int2 strategy, internal boun
       must also read the rows whose only entry is the NULL key.  These
       types are declared in <filename>src/include/access/bark.h</filename>.
       A function written for six arguments never sees the seventh.
+      Two ranges returned by one call must not overlap; BARK raises an
+      error if they do.  No ranges means that nothing matches.
      </para>
     </listitem>
    </varlistentry>
@@ -393,7 +390,11 @@ int2 indexRecheck(<replaceable>key</replaceable>, int2 strategy, internal extra)
 <programlisting>
 <replaceable>input type</replaceable> fetch(<replaceable>key</replaceable>)
 </programlisting>
-      Rebuilds a column value from a key, for index-only scans.
+      Rebuilds a column value from a key, for index-only scans.  Without
+      it, an index-only scan cannot return the multikey column (the
+      entries hold keys, not values), though it can return the other
+      columns.  A class should provide it only when one key determines
+      the value; a NULL key is returned as a NULL value.
      </para>
     </listitem>
    </varlistentry>
@@ -403,10 +404,9 @@ int2 indexRecheck(<replaceable>key</replaceable>, int2 strategy, internal extra)
    Support functions 7 through 9 follow the interface of DocumentDB's
    <literal>pg_extended_btree</literal> access method (its support
    functions 101 through 103), so an operator class written for it can be
-   ported by renumbering them.  At present BARK calls only support
-   functions 1, 2, 4, 5 and 7 of a multikey class;
-   <function>amvalidate</function> checks the signatures of all of them,
-   and scans will use the others when they are implemented.
+   ported by renumbering them.  Scans use support functions 8, 9 and 14;
+   support functions 10 through 13 are validated by
+   <function>amvalidate</function> but not yet used.
   </para>
 
   <para>
@@ -449,6 +449,65 @@ CREATE INDEX tagged_tags_idx ON tagged USING bark (tags my_int4_array_ops);
    first two rows, and the NULL key for each of the other two.  Rows with
    equal keys share entries (see <xref linkend="bark-features-duplicates"/>),
    so these six are stored in four entries.
+  </para>
+ </sect3>
+
+ <sect3 id="bark-multikey-scans">
+  <title>Scanning a Multikey Index</title>
+
+  <para>
+   A scan calls support function 8 for the first condition on the
+   multikey column and reads the ranges of keys it returns.  When every
+   column before the multikey one has an equality condition (or an
+   <literal>IN</literal> list), the scan descends to each range in turn and
+   reads only the entries inside it, as it does for the elements of an
+   <literal>IN</literal> list; otherwise it reads the entries the other
+   conditions allow and keeps those inside a range.  For an entry inside a
+   range whose function 8 asked for a recheck, support function 9 decides
+   whether the row is returned, dropped, or returned to be rechecked
+   against the table row.  A condition <literal>col = ANY
+   (<replaceable>array</replaceable>)</literal> combines the ranges of each
+   array element; ranges of different elements that overlap are merged,
+   and their rows are rechecked rather than passed to support function 9.
+   Further conditions on the multikey column do not narrow the ranges,
+   since a row may satisfy two conditions through two different keys; the
+   rows the scan returns are rechecked against all of them.
+  </para>
+
+  <para>
+   The NULL key stands for a NULL value, a value with no keys and a key
+   flagged NULL alike, so a scan reads the NULL entries only for
+   <literal>IS NULL</literal>, for <literal>IS NOT NULL</literal> (which
+   also reads every key), or when support function 8 set
+   <structfield>searchnulls</structfield>, and it returns their rows to be
+   rechecked.  With the test module's class, for example,
+   <literal>tags &lt;@ '{1,2}'</literal>, <literal>tags @&gt; '{}'</literal>
+   and <literal>tags = '{}'</literal> must find the empty array, which has
+   only the NULL key.
+  </para>
+
+  <para>
+   A row with several keys can be inside the ranges several times.  An
+   index scan or index-only scan returns it at its first entry and skips
+   the rest, keeping the rows it has returned in a set in memory; the set
+   is emptied whenever the columns before the multikey one change value,
+   since a row's entries all have the same values there.  The set is not
+   needed, and not built, when the index has never held a row with more
+   than one entry, or when the condition is a single key; a bitmap scan
+   never needs it.  The set may grow past <xref linkend="guc-work-mem"/>
+   (times <xref linkend="guc-hash-mem-multiplier"/>) rather than return a
+   row twice.  A merge join's restore to a mark takes the rows returned
+   after the mark out of the set, so they are returned again.
+  </para>
+
+  <para>
+   Because of the set, a scan of a multikey index cannot change direction:
+   fetching backward in a scrollable cursor over such a scan raises an
+   error, and a parallel index scan that needs the set raises one too.
+   An ordering operator on the multikey column itself is not supported
+   yet; one on an ordinary leading column (<literal>ORDER BY tenant
+   &lt;~&gt; 3</literal>) is, and returns each row once.  A bitmap scan
+   has none of these limits.
   </para>
  </sect3>
 
@@ -942,8 +1001,10 @@ SELECT single_entries, list_entries, posting_entries, oversized_entries
   </listitem>
   <listitem>
    <para>
-    An index with a multikey column cannot yet be scanned (see
-    <xref linkend="bark-multikey-funcs"/>).
+    A scan of an index with a multikey column cannot change direction,
+    nor be a parallel scan when it has to skip a row's repeated entries,
+    nor order by an operator on the multikey column (see
+    <xref linkend="bark-multikey-scans"/>).
    </para>
   </listitem>
   <listitem>

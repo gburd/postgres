@@ -25,9 +25,12 @@
 #include "postgres.h"
 
 #include "access/bark.h"
+#include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/relation.h"
 #include "access/stratnum.h"
+#include "access/table.h"
+#include "access/tableam_indexscan.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_am_d.h"
 #include "catalog/pg_type.h"
@@ -42,6 +45,7 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 #include "utils/tuplestore.h"
 #include "utils/varlena.h"
 
@@ -54,11 +58,28 @@ PG_MODULE_MAGIC;
 #define BARK_MK_EQUAL		4	/* = */
 #define BARK_MK_ORDER		5	/* |<|, ordering */
 
+/*
+ * The range class's strategies, for the scan's boundary walk: an element
+ * above a value, one at or below it, one in [q[1], q[2]), an even element
+ * of the query, an element equal to a value, and a strategy whose
+ * procedures misbehave on purpose.
+ */
+#define BARK_MK_GT			6	/* |>| */
+#define BARK_MK_LE			7	/* |<=| */
+#define BARK_MK_WITHIN		8	/* |><| */
+#define BARK_MK_EVEN_IN		9	/* |%| */
+#define BARK_MK_HAS			10	/* |=| */
+#define BARK_MK_BROKEN		11	/* |!| */
+#define BARK_MK_NONE_GT		12	/* |?| */
+#define BARK_MK_NE			13	/* |<>| */
+#define BARK_MK_NEAR		14	/* |~| */
+
 PG_FUNCTION_INFO_V1(bark_multikey_extract_value);
 PG_FUNCTION_INFO_V1(bark_multikey_extract_marked);
 PG_FUNCTION_INFO_V1(bark_multikey_meta);
 PG_FUNCTION_INFO_V1(bark_multikey_entries);
 PG_FUNCTION_INFO_V1(bark_multikey_has_marker);
+PG_FUNCTION_INFO_V1(bark_multikey_mark_restore);
 PG_FUNCTION_INFO_V1(bark_multikey_extract_query);
 PG_FUNCTION_INFO_V1(bark_multikey_recheck);
 PG_FUNCTION_INFO_V1(bark_multikey_least);
@@ -193,6 +214,8 @@ bark_multikey_extract_query(PG_FUNCTION_ARGS)
 	int			nkeys;
 	BarkBoundary *result;
 	BarkSearchElement *points;
+	Datum	   *qelems;
+	bool	   *qnulls;
 
 	/* Declared with six arguments, as for pg_extended_btree, it has none. */
 	if (PG_NARGS() >= 7)
@@ -211,8 +234,125 @@ bark_multikey_extract_query(PG_FUNCTION_ARGS)
 		PG_RETURN_VOID();
 	}
 
+	/*
+	 * The range class.  |>| and |<=| are one half-bounded boundary, |=| a
+	 * point, |><| a boundary closed below and open above, and |%| a point per
+	 * query element whose entries procedure 9 decides.  |?| (no element above
+	 * x) is every key up to x and the NULL entries, rechecked, as <@ is.
+	 * |<>| (an element other than x) is the keys below x and those above it,
+	 * in that order reversed.  |~| reads x as 10 * c + f: the keys from c - 2
+	 * to c + 2, the lower end excluded when f has bit 1 and the upper end
+	 * when f has bit 2, and no upper end when f has bit 4.  |!| misbehaves:
+	 * for a positive argument its two boundaries intersect, for one below
+	 * -100 its upper search element has a lower strategy, for another
+	 * negative one its lower element has an upper strategy, and for 0
+	 * procedure 9 gives an answer that is not one.
+	 */
+	if (strategy == BARK_MK_GT || strategy == BARK_MK_LE ||
+		strategy == BARK_MK_HAS || strategy == BARK_MK_BROKEN ||
+		strategy == BARK_MK_NONE_GT || strategy == BARK_MK_NE ||
+		strategy == BARK_MK_NEAR)
+	{
+		int32		x = PG_GETARG_INT32(0);
+
+		result = palloc0_array(BarkBoundary, 2);
+		points = palloc_array(BarkSearchElement, 2);
+		points[0].argument = Int32GetDatum(x);
+		points[1].argument = Int32GetDatum(x + 1);
+		*boundaries = result;
+		*nboundaries = 1;
+		if (strategy == BARK_MK_GT)
+		{
+			points[0].strategy = BTGreaterStrategyNumber;
+			result[0].lower = &points[0];
+		}
+		else if (strategy == BARK_MK_LE)
+		{
+			points[0].strategy = BTLessEqualStrategyNumber;
+			result[0].upper = &points[0];
+		}
+		else if (strategy == BARK_MK_HAS)
+		{
+			points[0].strategy = BTEqualStrategyNumber;
+			result[0].lower = result[0].upper = &points[0];
+		}
+		else if (strategy == BARK_MK_NONE_GT)
+		{
+			points[0].strategy = BTLessEqualStrategyNumber;
+			result[0].upper = &points[0];
+			*recheck = true;
+			flags->searchnulls = true;
+		}
+		else if (strategy == BARK_MK_NE)
+		{
+			points[0].strategy = BTGreaterStrategyNumber;
+			points[1].argument = Int32GetDatum(x);
+			points[1].strategy = BTLessStrategyNumber;
+			result[0].lower = &points[0];
+			result[1].upper = &points[1];
+			*nboundaries = 2;
+		}
+		else if (strategy == BARK_MK_NEAR)
+		{
+			int32		c = x / 10;
+
+			points[0].argument = Int32GetDatum(c - 2);
+			points[0].strategy = (x % 10) & 1 ? BTGreaterStrategyNumber :
+				BTGreaterEqualStrategyNumber;
+			points[1].argument = Int32GetDatum(c + 2);
+			points[1].strategy = (x % 10) & 2 ? BTLessStrategyNumber :
+				BTLessEqualStrategyNumber;
+			result[0].lower = &points[0];
+			result[0].upper = (x % 10) & 4 ? NULL : &points[1];
+		}
+		else if (x > 0)
+		{
+			/* (-inf, x] and [x, +inf) share x */
+			points[0].strategy = BTLessEqualStrategyNumber;
+			points[1].argument = Int32GetDatum(x);
+			points[1].strategy = BTGreaterEqualStrategyNumber;
+			result[0].upper = &points[0];
+			result[1].lower = &points[1];
+			*nboundaries = 2;
+		}
+		else if (x < -100)
+		{
+			points[0].strategy = BTGreaterStrategyNumber;
+			result[0].upper = &points[0];
+		}
+		else if (x < 0)
+		{
+			points[0].strategy = BTLessStrategyNumber;
+			result[0].lower = &points[0];
+		}
+		else
+		{
+			points[0].strategy = BTEqualStrategyNumber;
+			result[0].lower = result[0].upper = &points[0];
+			*recheck = true;
+		}
+		PG_RETURN_VOID();
+	}
+
 	query = PG_GETARG_ARRAYTYPE_P(0);
 	keys = sorted_elements(query, &nkeys);
+	if (strategy == BARK_MK_WITHIN)
+	{
+		deconstruct_array_builtin(query, INT4OID, &qelems, &qnulls, &nkeys);
+		if (nkeys < 2 || qnulls[0] || qnulls[1])
+			PG_RETURN_VOID();
+		result = palloc0_object(BarkBoundary);
+		points = palloc_array(BarkSearchElement, 2);
+		points[0].argument = qelems[0];
+		points[0].strategy = BTGreaterEqualStrategyNumber;
+		points[1].argument = qelems[1];
+		points[1].strategy = BTLessStrategyNumber;
+		result->lower = &points[0];
+		result->upper = &points[1];
+		*boundaries = result;
+		*nboundaries = 1;
+		PG_RETURN_VOID();
+	}
 	switch (strategy)
 	{
 		case BARK_MK_OVERLAP:
@@ -238,6 +378,9 @@ bark_multikey_extract_query(PG_FUNCTION_ARGS)
 			if (nkeys == 0)
 				flags->searchnulls = true;
 			break;
+		case BARK_MK_EVEN_IN:
+			*recheck = true;
+			break;
 		default:
 			elog(ERROR, "bark_multikey_extract_query: unknown strategy number: %d",
 				 strategy);
@@ -260,13 +403,21 @@ bark_multikey_extract_query(PG_FUNCTION_ARGS)
 /*
  * Procedure 9: one entry's key, for a strategy whose boundaries asked for a
  * recheck.  A single element cannot decide @>, <@ or = for the row, so the
- * answer is maybe, which leaves the row to the executor's recheck.
+ * answer is maybe, which leaves the row to the executor's recheck.  An
+ * element of |%|'s query is a match exactly when it is even.
  */
 Datum
 bark_multikey_recheck(PG_FUNCTION_ARGS)
 {
+	int32		key = PG_GETARG_INT32(0);
 	StrategyNumber strategy = PG_GETARG_UINT16(1);
 
+	if (strategy == BARK_MK_EVEN_IN)
+		PG_RETURN_INT16(key % 2 == 0 ? BARK_RECHECK_TRUE : BARK_RECHECK_FALSE);
+	if (strategy == BARK_MK_NONE_GT)
+		PG_RETURN_INT16(BARK_RECHECK_MAYBE);
+	if (strategy == BARK_MK_BROKEN)
+		PG_RETURN_INT16(7);
 	if (strategy == BARK_MK_OVERLAP || strategy == BARK_MK_ORDER)
 		PG_RETURN_INT16(BARK_RECHECK_TRUE);
 	PG_RETURN_INT16(BARK_RECHECK_MAYBE);
@@ -581,4 +732,79 @@ bark_multikey_has_marker(PG_FUNCTION_ARGS)
 
 	relation_close(rel, AccessShareLock);
 	PG_RETURN_BOOL(found);
+}
+
+/*
+ * Read up to max heap TIDs from an index scan in TID order of return.
+ */
+static int
+read_tids(IndexScanDesc scan, ItemPointer tids, int max)
+{
+	int			n = 0;
+
+	while (n < max && tableam_index_getnext_tid(scan, ForwardScanDirection))
+		tids[n++] = scan->xs_heaptid;
+	return n;
+}
+
+/*
+ * bark_multikey_mark_restore(index, op, query, mark_at, read_after) -> text:
+ * scan index with one key, column 1 op query, and read every TID; then scan
+ * again, mark after mark_at TIDs (0: before the first), read read_after
+ * more, restore, and read the rest, as a merge join does.  The answer is
+ * "total:<n> resumed:<m> same:<bool>": n TIDs in the plain scan, m read
+ * after the restore, and whether those are the plain scan's from mark_at
+ * on.
+ */
+Datum
+bark_multikey_mark_restore(PG_FUNCTION_ARGS)
+{
+	Relation	index = open_bark_index(PG_GETARG_TEXT_PP(0));
+	Oid			opno = PG_GETARG_OID(1);
+	Datum		query = PG_GETARG_DATUM(2);
+	int			mark_at = PG_GETARG_INT32(3);
+	int			read_after = PG_GETARG_INT32(4);
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	int			max = 1000000;
+	ItemPointer all = palloc_array(ItemPointerData, max);
+	ItemPointer resumed = palloc_array(ItemPointerData, max);
+	int			nall;
+	int			nresumed;
+	int			strategy;
+	Oid			lefttype;
+	Oid			righttype;
+	ScanKeyData key;
+	IndexScanDesc scan;
+	bool		same;
+
+	get_op_opfamily_properties(opno, index->rd_opfamily[0], false, &strategy,
+							   &lefttype, &righttype);
+	ScanKeyEntryInitialize(&key, 0, 1, strategy, righttype,
+						   index->rd_indcollation[0], get_opcode(opno), query);
+
+	scan = index_beginscan(heap, index, false, GetActiveSnapshot(), NULL, 1, 0,
+						   0);
+	index_rescan(scan, &key, 1, NULL, 0);
+	nall = read_tids(scan, all, max);
+	index_endscan(scan);
+
+	scan = index_beginscan(heap, index, false, GetActiveSnapshot(), NULL, 1, 0,
+						   0);
+	index_rescan(scan, &key, 1, NULL, 0);
+	(void) read_tids(scan, resumed, mark_at);
+	index_markpos(scan);
+	(void) read_tids(scan, resumed, read_after);
+	index_restrpos(scan);
+	nresumed = read_tids(scan, resumed, max);
+	index_endscan(scan);
+
+	same = nresumed == nall - mark_at;
+	for (int i = 0; same && i < nresumed; i++)
+		same = ItemPointerEquals(&resumed[i], &all[mark_at + i]);
+
+	table_close(heap, AccessShareLock);
+	relation_close(index, AccessShareLock);
+	PG_RETURN_TEXT_P(cstring_to_text(psprintf("total:%d resumed:%d same:%s",
+											  nall, nresumed,
+											  same ? "true" : "false")));
 }

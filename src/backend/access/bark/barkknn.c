@@ -240,11 +240,28 @@ bark_knn_readpage(IndexScanDesc scan, BarkKnnCursor *cur, Page page,
 									 cur->maxTids * sizeof(ItemPointerData));
 		}
 
-		item = &cur->items[cur->nitems++];
+		item = &cur->items[cur->nitems];
 		item->dist = cur->bound;
 		item->firstTid = cur->ntids;
 		item->ntids = bark_entry_get_tids(itup, cur->tids + cur->ntids,
 										  cur->maxTids - cur->ntids);
+		item->recheck = false;
+		if (so->mk != NULL)
+		{
+			item->ntids = bark_mk_accept(scan, resolved, cur->tids + cur->ntids,
+										 item->ntids, &item->recheck);
+			if (item->ntids > 0)
+				item->ntids = bark_mk_seen(scan, resolved,
+										   cur->tids + cur->ntids,
+										   item->ntids, false);
+			if (item->ntids == 0)
+			{
+				if (fetched)
+					pfree(resolved);
+				continue;
+			}
+		}
+		cur->nitems++;
 		cur->ntids += item->ntids;
 		item->tupleOffset = scan->xs_want_itup ?
 			bark_save_tuple(so, &cur->tuples, &cur->tuplesSize,
@@ -444,9 +461,13 @@ bark_knn_emit(IndexScanDesc scan)
 
 	Assert(knn->emitIdx >= 0 && knn->emitIdx < item->ntids);
 	scan->xs_heaptid = cur->tids[item->firstTid + knn->emitIdx];
-	scan->xs_recheck = false;
+	scan->xs_recheck = item->recheck;
 	if (scan->xs_want_itup)
+	{
 		scan->xs_itup = (IndexTuple) (cur->tuples + item->tupleOffset);
+		if (((BarkScanOpaque) scan->opaque)->mk != NULL)
+			scan->xs_hitup = bark_mk_form_hitup(scan, scan->xs_itup);
+	}
 
 	/*
 	 * Report the exact distance for this tuple.  BARK is exact, so the

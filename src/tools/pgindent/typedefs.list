@@ -275,6 +275,8 @@ BarkKnnItem
 BarkKnnScanState
 BarkLeader
 BarkMetaPageData
+BarkMkBoundary
+BarkMkScanState
 BarkOptions
 BarkOverflowRef
 BarkPageState

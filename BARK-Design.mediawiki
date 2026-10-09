@@ -66,7 +66,9 @@ simple deletion before a split (K2), and skip scan runs forward only and
 over one column; both wait on <code>amgetbatch</code> (cf/4351, G1). CLUSTER
 and REPACK read through a BARK index rather than sorting
 (<code>tuplesort_begin_cluster</code> asserts btree). The RI trigger fast
-path is btree-only. Multikey indexes can be built but not yet scanned (M1c).
+path is btree-only. A multikey index cannot be scanned backward after a
+forward start, in parallel when it needs a seen set, or in the order of an
+operator on its extracted column, until M1d.
 
 '''Performance.''' From the Z2 benchmark (BENCHMARK-2026-10b.md): idxam at
 5d4e2883b10, release build (<code>-O3</code>, no assertions), EC2
@@ -239,8 +241,9 @@ BARK entries obey the same visibility rules as nbtree. Four obligations:
   entry that requires a heap recheck, and <code>tbm_add_tuples</code> already
   consumes it to force a page lossy. ''Status:'' every BARK entry is exact
   today, so BARK never sets the bit; bitmap scans add TIDs with recheck
-  false. Multikey scans (M1c) will report rechecks through
-  <code>xs_recheck</code>.
+  false. Multikey scans (M1c) report rechecks through
+  <code>xs_recheck</code> and the recheck argument of
+  <code>tbm_add_tuples</code>.
 
 === C-DELETE: delete-marking via UNDO ===
 
@@ -962,8 +965,9 @@ place of an inverted AM, without changing the scalar design above.
   index has multikey rows. Needs H1, so that (key, TID) names exactly one
   entry member. Design: [[#M1: multikey keys|M1: multikey keys]] below.
   ''(in progress: design 76d2f802ab2; M1a catalog interface done,
-  36e18a3ca93; M1b insert and build done, ac12fa1e140; M1c scans in
-  progress; M1d planner to follow)''
+  36e18a3ca93; M1b insert and build done, ac12fa1e140; M1c scans done, the
+  M1c commit on bark-m1c (see "As built" under "Scans"); M1d planner to
+  follow)''
 * '''M2''' -- operator classes on RUM's model. BARK takes GIN's support
   functions for extracted keys (extract a value's keys; extract a query's
   keys, with partial match; consistent) and RUM's ordering functions
@@ -1376,6 +1380,43 @@ first entry. Procedure 14 is for classes whose single key determines the
 value (a scalar value under a class that also extracts arrays, say); a
 class that cannot rebuild the value from one key does not provide it. Fixed
 columns are returned as now, with the seen set.
+
+'''As built (M1c).''' The scan follows this section, with these choices the
+section left open or that differ from it:
+
+* The keys on the extracted column are moved after the scan's other keys at
+  rescan, so the btree-style key code (bounds, skip scan, the page-satisfied
+  test) never reads them; only the boundaries do.
+* Boundaries are kept in index order: on a DESC column procedure 8's upper
+  element is a boundary's start. A procedure 8 declared with six arguments
+  is called with six, so <code>PG_NARGS()</code> tells a C function shared
+  by both declarations whether it has the flags.
+* <code>IS NULL</code> on the extracted column reads the NULL entries, and
+  <code>IS NOT NULL</code> every key and the NULL entries, both with
+  <code>xs_recheck</code>: a NULL entry may stand for an empty value.
+* Procedure 9 runs before the seen set, so a rejected entry never enters
+  it. A scan with no procedure 9 whose procedure 8 asks for a recheck is
+  an error, as is a key on the column of a class without procedure 8.
+* The boundaries are the last required key of A2's odometer
+  (<code>BarkArrayKeyState.mk</code>), so they position, re-descend and end
+  the scan with the code that walks equality arrays; no third cursor kind.
+* The seen set is filled as a page is read, so a page's copied items are
+  free of repeats; a mark on that page restores to them unchanged, and the
+  undo list covers the pages read after a mark. While a mark is set, the
+  set is not emptied for a new group of the fixed columns (a merge join
+  re-reads across groups), so it can then hold more than one group's rows.
+* The single-point shortcut applies under an MVCC snapshot only; any other
+  snapshot always uses the set, as the card for M1c asked.
+* Until M1d gives the planner per-index answers, the scan refuses rather
+  than answers wrong: a change of direction with the set in use, a
+  parallel scan that needs the set, and an ordering key on the extracted
+  column raise errors. bark_canreturn already answers false for the
+  extracted column without procedure 14 (an index-only scan would otherwise
+  return keys as values); with procedure 14 the scan returns an
+  <code>xs_hitup</code> whose extracted column is <code>fetch(key)</code>,
+  NULL for the NULL key.
+* A DEBUG1 message at scan start says whether the scan uses a seen set, for
+  tests.
 
 ==== Multikey metadata ====
 
