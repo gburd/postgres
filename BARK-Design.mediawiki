@@ -961,17 +961,20 @@ place of an inverted AM, without changing the scalar design above.
   progress; M1d planner to follow)''
 * '''M2''' -- operator classes on RUM's model. BARK takes GIN's support
   functions for extracted keys (extract a value's keys; extract a query's
-  keys, with partial match; consistent) and RUM's ordering and per-locator
-  data functions (config, which declares the per-locator type; ordering and
-  outer ordering; the join of per-locator values), so a RUM or GIN operator
-  class ports to BARK with little change. The per-locator functions need M3.
+  keys, with partial match; consistent) and RUM's ordering functions
+  (ordering and outer ordering), so a RUM or GIN operator class ports to
+  BARK with little change. RUM's per-locator data functions (config, which
+  declares the per-locator type, and the join of per-locator values) are
+  not taken: M3 is closed, and a class that attaches a column to its keys
+  becomes a composite key, the column after the extracted one, ordered by
+  M2's KNN scan inside a key's run ("M3: per-locator data" below).
   Plus classes matching RUM's for arrays (containment, overlap, equality,
   similarity ordering) and for scalar types with RUM's distance operators,
   which BARK's KNN scan already serves on a leading column. The new
   procedures are numbered after btree's, since BARK's scalar classes live in
   btree's operator families; <code>barkvalidate</code> checks them. RUM's
   tsvector classes are out of scope: their ranking needs per-occurrence
-  positions (M3) and belongs to a text-search index (see "Containment
+  positions and belongs to a text-search index (see "Containment
   queries").
   BARK also takes the query interface of DocumentDB's pg_extended_btree,
   which suits an ordered index better than GIN's: an extract-value function
@@ -986,14 +989,15 @@ place of an inverted AM, without changing the scalar design above.
   page. An operator class may provide either interface; one written for
   pg_extended_btree ports to BARK unchanged. ''(blocked on M1c's scans;
   barkvalidate accepts procedures 7-14 since 36e18a3ca93)''
-* '''M3''' -- extra data per locator (RUM's addInfo): a LIST or POSTING
-  variant whose members carry a small value beside each TID and are ordered
-  by it, so "key X ordered by a value" keeps one entry per key. A composite
-  key (key, value) already does this when entries need not share; a design
-  note decides whether M3 is needed. ''(in progress: the design note)''
+* '''M3''' -- extra data per locator (RUM's addInfo). ''Closed, not
+  needed'': a composite key (key, value) holds the same members in the same
+  order, and every use case found is served by one. What both would need,
+  an ordering operator on the column after the extracted one inside a
+  key's run, is M2's. Design note:
+  [[#M3: per-locator data (closed)|M3: per-locator data]] below.
 * '''M4''' -- unique indexes over multikey keys with document-store
   semantics: unique across rows, while one row may repeat a key.
-  ''(in progress: design note)''
+  ''(designed; not started.  Design: [[#M4: unique indexes over multikey keys|M4]] below)''
 * '''M5''' -- wildcard indexes, as MongoDB's: a test-module operator class
   over <code>jsonb</code> whose extract-value procedure (7) emits one key
   (path, value) for every path that the column's projection keeps, and one
@@ -1515,7 +1519,8 @@ Nothing in this list changes the on-disk format.
 * Unique indexes, exclusion constraints and ON CONFLICT on an extracted
   column (M4). M1 refuses them.
 * GIN's query interface in scans (procedures 10-13; M2). M1 validates them.
-* Per-locator data (RUM's addInfo; M3).
+* Per-locator data (RUM's addInfo). M3 is closed: a composite key serves
+  it.
 * Wildcard and path-projection operator classes (M5). M1 provides markers,
   boundaries and compound keys for them.
 * More than one extracted column in one index.
@@ -1894,6 +1899,153 @@ through procedure 7 is separate work, which uniqueness does not change.
   rows; an UPDATE that keeps some keys; a build over RECENTLY_DEAD rows;
   concurrent inserters sharing keys (isolation spec, including the
   deleter-wait deadlock); amcheck's checkunique on a corrupted index.
+
+=== M3: per-locator data (closed) ===
+
+'''Decision: M3 is not needed and is closed.''' An entry whose members
+carry a value and are ordered by it is in the same order as a composite
+key (key, value), and holds the same members. Its one gain is size, a
+little over half a composite key's per member for an 8-byte value. In return every
+reader that treats an entry as one key would have to learn otherwise, and
+every insert would rewrite an entry. Each use case below is served by a
+composite key. The limit they share is a scan and planner limit, ordering
+past the extracted column, which M3 would have had too. It goes to M2.
+
+==== What M3 would be ====
+
+A LIST variant, <code>(key, [(value, TID), ...])</code> with members
+ordered by (value, TID). No POSTING variant is possible: an sbm is a set of
+TIDs, and its only order is TID order. Values kept beside it in a parallel
+array cost at least the value per member and are not in value order. Under
+H1 a composite key <code>bark(k, v)</code> orders its entries by (k, v, TID),
+so an M3 entry is a run of composite-key entries with the key stored once.
+Any scan over one is the same scan over the other.
+
+What that costs, beyond writing the shape:
+
+* An entry would hold members that differ in a key column. The scan tests
+  a qual once per entry (bark_readpage), the split cuts an entry by TID
+  (bark_entry_cut, bark_singleval_cut), amcheck and H1 require the entries
+  of one key to have disjoint, ascending TID ranges (the README's
+  "Invariants"), and a pivot can only fall between entries. Each of these
+  would have to treat an M3 entry as a sequence of keys.
+* Every insert would rewrite a LIST entry through the overwrite path. The
+  insert measurements under "Value sets that outgrow one entry" give that
+  path's cost: 10M scattered rows took 11593 MB of WAL as LIST appends and
+  1672 MB as SINGLE entries (ks, run 5). Those were appends. In value
+  order a member lands inside the entry whenever values do not arrive
+  ascending, and a full entry must then be cut. A timestamp mostly
+  ascends; a score does not.
+* A composite key inserts a SINGLE, the cheap path, or coalesces into an
+  entry of equal (k, v) as any BARK key does. Distinct values mean
+  SINGLE entries.
+
+==== Worked examples ====
+
+Sizes are computed from the formats, with an 8-kB page, and are not
+measured. A SINGLE entry is an 8-byte IndexTupleData header plus its key
+columns, MAXALIGNed, plus a 4-byte line pointer.
+
+'''Term search ordered by a timestamp''' (RUM's
+<code>rum_tsvector_addon_ops</code> with <code>WITH (attach = 'ts', to =
+'body')</code>, queried with <code>ORDER BY ts &lt;=| now()</code>; the
+operator names are from RUM's README as this note recalls it). In BARK it is
+<code>bark(tags bark_int4_array_ops, ts)</code>: one entry (tag, ts, TID)
+per tag of a row. For <code>WHERE tags @&gt; '{7}' ORDER BY ts DESC LIMIT
+10</code>, tag 7's run is in ts order, and the extracted column has one
+point boundary, so no row repeats and no seen set is needed (M1's
+"Returning a row once"). A walk backward from the end of the run could stop
+after ten rows; the scan rule that lets the planner ask for it is the third
+example's, and it is the same rule for M3's entry.
+An entry is 8 + 4 + 8, with ts aligned, which is 24 bytes, plus 4: 28 bytes
+per (tag, row). A normalized table of (tag, ts) rows under nbtree takes
+the same 28, since deduplication needs equal (tag, ts). M3 would take a 6-byte TID and an
+8-byte value, 14 to 16 bytes per member, plus about 20 bytes per entry of
+up to about 170 members. RUM's own format stores a compressed TID and the
+value, so it should be near M3's size; this note has not measured it.
+The plain alternative, <code>bark(tags)</code> with LIST and POSTING
+entries and a Sort, costs at most 6 bytes per member, but it fetches every
+matching row from the heap before the first row comes back. With a
+varlena key, a DocumentDB term say, leaf prefix compression stores only
+the bytes a key does not share with its page's prefix, so a long key that
+repeats on a page costs little more than an int4 one.
+
+Two terms, <code>@&gt; '{7,9}'</code>, are two point boundaries, and M1
+returns their rows in no order. But ts is a column of the row, so both runs
+are in (ts, TID) order and a row has the same (ts, TID) in each. Their
+intersection is a merge in that order, which can stop at the LIMIT: the
+leapfrog of "Containment queries", over (ts, TID) instead of TID. It is a
+later scan feature, and it works the same with a composite key or with M3.
+
+'''Ranking by a per-key score''' (a weight per term and document). The
+score differs between a row's keys, so it cannot be a fixed column. It
+is part of the class's key, as M5's path is: a storage type (term, score),
+ordered by term, then score descending, with one key per distinct term from
+procedure 7. For an int4 term and a float4 score packed into an 8-byte
+pass-by-value key, an entry is 16 bytes plus 4: 20 per member, against 10
+for M3 with a 4-byte value. "By the score of term t" is an ordering
+operator of the class whose procedure 8 returns t's range. M1's ordered
+scan walks that range, so rows come back in score order, each once, with the
+key as <code>xs_orderbyvals</code>. A rank over several terms (a sum,
+BM25) needs neither design. It is the block-max work that "Containment
+queries" leaves to a text-search index. So does RUM's tsvector ranking,
+whose positions are variable-length data per occurrence, which M3's "small
+value" would not have held either.
+
+'''ORDER BY a column after the extracted one.''' MongoDB's compound index
+<code>{tags: 1, created: -1}</code> with <code>find({tags: "x"}).sort({created:
+-1})</code>: MongoDB's documented rule lets an index provide a sort on the
+fields after an equality prefix. This note takes that rule to hold when the
+equality field is multikey and the sort field is not an array, and has not
+checked it on a server. In BARK the index is <code>bark(tags ops, created
+DESC)</code>, and the entries for tag x are in created order, which is the
+order the query wants. M1 cannot produce the plan. build_index_pathkeys
+stops at the extracted column (InvalidOid in <code>sortopfamily</code>,
+M1's "Ordered scans"), and nothing makes that column redundant, as an
+equivalence class with a constant makes <code>a</code> redundant under
+<code>a = 5</code> for btree(a, b). So <code>ORDER BY created</code> never
+matches the index. M3 would not have changed that: its entry for tag x
+would be in the same order, behind the same pathkeys.
+
+So M2 needs a scan rule, which M3 would have needed too: an ordering
+operator on a fixed column after the extracted one, KNN as BARK serves it
+on a leading column today, when every earlier column has an equality and
+the extracted column has one point boundary. The KNN scan's two cursors
+then run inside that point's run, and no row repeats in it.
+match_pathkeys_to_index offers an ordered index's ordering operator on its
+leading column only, since a later column's entries are spread over one
+group per leading value. Which later column the run fixes depends on the
+query's quals, so the planner change is to build_index_paths, which has
+them, as well as to BARK's scan and barkcostestimate. This is RUM's
+<code>ORDER BY ts &lt;=&gt; x</code> form. A plain <code>ORDER BY
+created</code> would need the planner to learn from a qual that the
+extracted column is fixed, and is left out.
+
+==== Which operator classes would need it ====
+
+None of M2's or M5's. M5's keys are (path, value), and its sort on a path
+is key order. RUM's <code>*_addon_ops</code> classes are the timestamp
+example above. RUM's README describes <code>rum_anyarray_ops</code> as
+storing each array's length with its elements, for the <code>&lt;=&gt;</code>
+similarity ordering; this note has not checked RUM's source. A per-row
+value that is carried, not ordered, is a fixed column after the extracted
+one, <code>bark(tags ops, cardinality(tags))</code>. Entries of equal
+(tag, length) coalesce, so it costs between a LIST's 6 bytes per member and
+a SINGLE's 20, for an int4 key and an int4 length. M2 can also do without
+it. With RUM's cosine-like measure, as
+this note understands it, a row that matches ''m'' of the query's ''q''
+elements has at least ''m'' elements, so its similarity is at most
+&radic;(m/q). That bounds its distance from below, which is what
+<code>xs_recheckorderby</code> and the executor's reorder queue
+(IndexNextWithReorder) take, and the heap value gives the exact distance.
+M2 chooses between the two; neither needs M3.
+
+'''Upgrade path.''' If composite-key indexes of this shape turn out too
+large in practice, the cheaper change is a more compact leaf format for
+entries that share their leading columns, an extension of leaf prefix
+compression past the first column. It keeps one key per entry, so no reader
+changes. Its ceiling is the 12 bytes of header and line pointer that every
+entry keeps.
 
 == Ground rules ==
 
