@@ -3,13 +3,12 @@
  * bark.c
  *	  Implementation of the BARK index access method.
  *
- * This is the skeleton registration of the BARK index access method (see
- * BARK-Design.mediawiki).  It declares BARK's capabilities and passes
- * opclass validation so that CREATE INDEX ... USING bark is accepted and
- * validated, but every operation that would read or write index data errors
- * out: the storage format and the search/build machinery arrive in later
- * commits of the series.  Registering the AM first, on its own, keeps each
- * commit independently buildable and testable.
+ * The access method's handler (barkhandler), which declares BARK's
+ * capabilities and entry points, and the entry points that are not in a
+ * file of their own: barkbuild and barkbuildempty, VACUUM (barkbulkdelete,
+ * barkvacuumcleanup and the leaf page pass), the reloptions, the tree
+ * height, and the cost estimate.  The README in this directory maps the
+ * other files.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -44,15 +43,6 @@
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 #include "utils/spccache.h"
-
-/*
- * Every data-touching entry point routes through this: BARK accepts and
- * validates an index definition but cannot yet build, populate, or scan one.
- */
-#define BARK_NOT_IMPLEMENTED() \
-	ereport(ERROR, \
-			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED), \
-			 errmsg("BARK index access method is not yet implemented")))
 
 /*
  * Find the parent page that holds the downlink to `childblk` and the offset of

@@ -367,8 +367,8 @@ BarkPageGetItem(Page page, OffsetNumber off, BarkItemBuf *buf)
  * The largest item BARK will place on a page.  Like nbtree's BTMaxItemSize,
  * this bounds a single entry to roughly a third of the usable page so at
  * least three entries fit, keeping the tree from degenerating.  A LIST or
- * POSTING entry that would exceed this is split (A10) or, for POSTING,
- * compacted; see the LIST/POSTING growth paths in barkinsert.c.
+ * POSTING entry that would exceed this is divided, or a LIST becomes a
+ * POSTING entry; see bark_entry_add_tid and bark_entry_swap_tid.
  */
 #define BarkMaxItemSize \
 	MAXALIGN_DOWN((BLCKSZ - \
@@ -610,9 +610,10 @@ typedef struct BarkMetaPageData
  *				  pivot may be truncated by suffix truncation).
  *
  * A leaf entry of any shape may additionally be delete-marked (the C-DELETE
- * contract): BARK_IS_DELETE_MARKED records that the entry is logically
- * deleted but retained for UNDO rollback, matching nbtree's
- * BT_IS_DELETE_MARKED.  It is a property of an entry, orthogonal to its shape,
+ * contract, BARK-Design.mediawiki): BARK_IS_DELETE_MARKED is reserved to
+ * record that the entry is logically deleted but retained for UNDO
+ * rollback.  Nothing sets it yet; it waits for an UNDO-backed table AM.  It
+ * is a property of an entry, orthogonal to its shape,
  * so it shares the status-bit region and must never be set on a PIVOT: on a
  * pivot the same bit is BARK_PIVOT_HEAP_TID, so the two meanings never meet.
  *
