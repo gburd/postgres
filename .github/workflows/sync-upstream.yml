@@ -1,0 +1,256 @@
+name: Sync from Upstream (Automatic)
+
+on:
+  schedule:
+    # Run hourly every day
+    - cron: '0 * * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/postgres/postgres.git || true
+          git remote -v
+
+      - name: Fetch upstream
+        run: |
+          echo "Fetching from upstream postgres/postgres..."
+          git fetch upstream master
+
+      - name: Check for local commits
+        id: check_commits
+        run: |
+          git checkout master
+          LOCAL_COMMITS=$(git rev-list origin/master..upstream/master --count)
+          DIVERGED=$(git rev-list upstream/master..origin/master --count)
+          echo "commits_behind=$LOCAL_COMMITS" >> $GITHUB_OUTPUT
+          echo "commits_ahead=$DIVERGED" >> $GITHUB_OUTPUT
+
+          if [ "$LOCAL_COMMITS" -eq 0 ]; then
+            echo "✓ Already up to date with upstream"
+          else
+            echo "Mirror is $LOCAL_COMMITS commits behind upstream"
+          fi
+
+          if [ "$DIVERGED" -gt 0 ]; then
+            echo "⚠️ Local master has $DIVERGED commits not in upstream"
+
+            # Check commit messages for "dev setup" or "dev v" pattern
+            DEV_SETUP_COMMITS=$(git log --format=%s upstream/master..origin/master | grep -iE "^dev (setup|v[0-9])" | wc -l)
+            echo "dev_setup_commits=$DEV_SETUP_COMMITS" >> $GITHUB_OUTPUT
+
+            # Check if diverged commits only touch .github/ directory
+            NON_GITHUB_CHANGES=$(git diff --name-only upstream/master...origin/master | grep -v "^\.github/" | wc -l)
+            echo "non_github_changes=$NON_GITHUB_CHANGES" >> $GITHUB_OUTPUT
+
+            if [ "$NON_GITHUB_CHANGES" -eq 0 ]; then
+              echo "✓ All local commits are CI/CD configuration (.github/ only) - will merge"
+            elif [ "$DEV_SETUP_COMMITS" -gt 0 ]; then
+              echo "✓ Found $DEV_SETUP_COMMITS 'dev setup/version' commit(s)"
+            else
+              echo "⚠️ WARNING: Local commits modify files outside .github/ and are not 'dev setup/version' commits!"
+              git diff --name-only upstream/master...origin/master | grep -v "^\.github/" || true
+              echo "Non-dev commits:"
+              git log --format="  %h %s" upstream/master..origin/master | grep -ivE "^  [a-f0-9]* dev (setup|v[0-9])" || true
+            fi
+          else
+            echo "non_github_changes=0" >> $GITHUB_OUTPUT
+            echo "dev_setup_commits=0" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Attempt merge
+        id: merge
+        run: |
+          COMMITS_AHEAD=${{ steps.check_commits.outputs.commits_ahead }}
+          COMMITS_BEHIND=${{ steps.check_commits.outputs.commits_behind }}
+          NON_GITHUB_CHANGES=${{ steps.check_commits.outputs.non_github_changes }}
+          DEV_SETUP_COMMITS=${{ steps.check_commits.outputs.dev_setup_commits }}
+
+          # Check if there are problematic local commits
+          # Allow commits if:
+          # 1. Only .github/ changes (CI/CD config)
+          # 2. Has "dev setup/version" commits (personal development environment)
+          if [ "$COMMITS_AHEAD" -gt 0 ] && [ "$NON_GITHUB_CHANGES" -gt 0 ]; then
+            if [ "$DEV_SETUP_COMMITS" -eq 0 ]; then
+              echo "❌ Local master has commits outside .github/ that are not 'dev setup/version' commits!"
+              echo "merge_status=conflict" >> $GITHUB_OUTPUT
+              exit 1
+            else
+              echo "✓ Non-.github/ changes are from 'dev setup/version' commits - allowed"
+            fi
+          fi
+
+          # Already up to date
+          if [ "$COMMITS_BEHIND" -eq 0 ]; then
+            echo "✓ Already up to date with upstream"
+            echo "merge_status=uptodate" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Try fast-forward first (clean case)
+          if [ "$COMMITS_AHEAD" -eq 0 ]; then
+            echo "Fast-forwarding to upstream (no local commits)..."
+            git merge --ff-only upstream/master
+            echo "merge_status=success" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Local commits exist (.github/ and/or dev setup/version) - rebase onto upstream
+          if [ "$DEV_SETUP_COMMITS" -gt 0 ]; then
+            echo "Rebasing local CI/CD and dev setup/version commits onto upstream..."
+          else
+            echo "Rebasing local CI/CD commits (.github/ only) onto upstream..."
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git rebase upstream/master; then
+            echo "✓ Successfully rebased local commits onto upstream"
+            echo "merge_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Rebase conflict occurred"
+            echo "merge_status=conflict" >> $GITHUB_OUTPUT
+
+            # Abort the failed rebase to clean up state
+            git rebase --abort
+            exit 1
+          fi
+        continue-on-error: true
+
+      - name: Push to origin
+        if: steps.merge.outputs.merge_status == 'success'
+        run: |
+          git push origin master --force-with-lease
+
+          COMMITS_SYNCED="${{ steps.check_commits.outputs.commits_behind }}"
+          echo "✓ Successfully synced $COMMITS_SYNCED commits from upstream"
+
+      - name: Create issue on failure
+        if: steps.merge.outputs.merge_status == 'conflict'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '🚨 Automated Upstream Sync Failed';
+            const body = `## Automatic Sync Failure
+
+            The daily sync from \`postgres/postgres\` failed.
+
+            **Details:**
+            - Local master has ${{ steps.check_commits.outputs.commits_ahead }} commit(s) not in upstream
+            - Upstream has ${{ steps.check_commits.outputs.commits_behind }} new commit(s)
+            - Non-.github/ changes: ${{ steps.check_commits.outputs.non_github_changes }} files
+            - **Run date:** ${new Date().toISOString()}
+
+            **Root cause:** Commits were made directly to master outside of .github/, which violates the pristine mirror policy.
+
+            **Note:** Commits to .github/ (CI/CD configuration) are allowed and will be preserved during sync.
+
+            ### Resolution Steps:
+
+            1. Review the conflicting commits:
+               \`\`\`bash
+               git log upstream/master..origin/master --oneline
+               \`\`\`
+
+            2. Determine if commits should be:
+               - **Preserved:** Create feature branch and reset master
+               - **Discarded:** Hard reset master to upstream
+
+            3. See [sync documentation](.github/docs/sync-setup.md) for detailed recovery procedures
+
+            4. Run manual sync workflow after resolution to verify
+
+            **Workflow run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            `;
+
+            // Check if issue already exists
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'sync-failure'
+            });
+
+            if (issues.data.length === 0) {
+              await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: title,
+                body: body,
+                labels: ['sync-failure', 'automation', 'urgent']
+              });
+            } else {
+              // Update existing issue
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issues.data[0].number,
+                body: `Sync failed again on ${new Date().toISOString()}\n\nWorkflow: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}`
+              });
+            }
+
+      - name: Close sync-failure issues
+        if: steps.merge.outputs.merge_status == 'success'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'sync-failure'
+            });
+
+            for (const issue of issues.data) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `✓ Automatic sync successful on ${new Date().toISOString()} - synced ${{ steps.check_commits.outputs.commits_behind }} commits.\n\nClosing issue automatically.`
+              });
+
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed'
+              });
+            }
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Daily Sync Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Date:** $(date -u)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ steps.merge.outputs.merge_status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commits synced:** ${{ steps.check_commits.outputs.commits_behind }}" >> $GITHUB_STEP_SUMMARY
+
+          if [ "${{ steps.merge.outputs.merge_status }}" == "success" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✓ Mirror successfully updated with upstream postgres/postgres" >> $GITHUB_STEP_SUMMARY
+          elif [ "${{ steps.merge.outputs.merge_status }}" == "uptodate" ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✓ Mirror already up to date" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ Sync failed - check created issue for details" >> $GITHUB_STEP_SUMMARY
+          fi
