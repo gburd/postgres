@@ -521,6 +521,169 @@ test=# SELECT itemoffset, ctid, itemlen, nulls, vars, data, dead, htid, tids[0:2
   </variablelist>
  </sect2>
 
+ <sect2 id="pageinspect-bark-funcs">
+  <title>BARK Functions</title>
+
+  <para>
+   These functions are the counterparts, for <literal>bark</literal>
+   indexes, of the B-tree functions above.  The page layout they report is
+   described in <filename>src/backend/access/bark/README</filename>.
+  </para>
+
+  <variablelist>
+   <varlistentry>
+    <term>
+     <function>bark_metap(relname text) returns record</function>
+     <indexterm>
+      <primary>bark_metap</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <function>bark_metap</function> returns information about a BARK
+      index's meta page: its magic number, on-disk version, root block and
+      the root's level, and whether all key columns are
+      <quote>equalimage</quote> (which decides whether equal keys are
+      coalesced into LIST and POSTING entries).  For example:
+<screen>
+test=# SELECT * FROM bark_metap('bark_idx');
+-[ RECORD 1 ]-+-----------
+magic         | 1380008523
+version       | 2
+root          | 2
+level         | 1
+allequalimage | t
+</screen>
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <function>bark_page_stats(relname text, blkno bigint) returns record</function>
+     <indexterm>
+      <primary>bark_page_stats</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <function>bark_page_stats</function> returns summary information about
+      a page of a BARK index.  <structfield>type</structfield> is one of
+      <literal>meta</literal>, <literal>root</literal>,
+      <literal>internal</literal>, <literal>leaf</literal>,
+      <literal>overflow</literal> (a page holding part of an oversized
+      entry), <literal>deleted</literal>, <literal>half-dead</literal> or
+      <literal>new</literal> (allocated but never initialized); a root that
+      is also a leaf is reported as <literal>leaf</literal>.
+      <structfield>flags</structfield> lists the page's flag bits by name.
+      For example:
+<screen>
+test=# SELECT * FROM bark_page_stats('bark_idx', 1);
+-[ RECORD 1 ]-+-------
+blkno         | 1
+type          | leaf
+live_items    | 335
+dead_items    | 0
+avg_item_size | 17
+page_size     | 8192
+free_size     | 784
+bark_prev     | 0
+bark_next     | 3
+bark_level    | 0
+bark_cycleid  | 0
+flags         | {leaf}
+</screen>
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <function>bark_multi_page_stats(relname text, blkno bigint, blk_count bigint) returns setof record</function>
+     <indexterm>
+      <primary>bark_multi_page_stats</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <function>bark_multi_page_stats</function> returns the same information
+      as <function>bark_page_stats</function> for each page of the range
+      beginning at <parameter>blkno</parameter> and extending for
+      <parameter>blk_count</parameter> pages, or to the end of the index if
+      <parameter>blk_count</parameter> is negative.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <function>bark_page_items(relname text, blkno bigint) returns setof record</function>
+     <indexterm>
+      <primary>bark_page_items</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      <function>bark_page_items</function> returns one row per item on a
+      page of a BARK index.  <structfield>shape</structfield> is the entry's
+      shape: <literal>SINGLE</literal> (one heap TID),
+      <literal>LIST</literal> (a sorted list of heap TIDs),
+      <literal>POSTING</literal> (a compressed set of heap TIDs),
+      <literal>OVERSIZED</literal> (a key stored on a chain of overflow
+      pages starting at <structfield>overflow_blkno</structfield>),
+      <literal>PIVOT</literal> (a high key or a downlink), or
+      <literal>PREFIX</literal> (the prefix of a prefix-compressed leaf,
+      shown in <structfield>data</structfield>).
+      <structfield>ntids</structfield> is the number of heap TIDs of a leaf
+      entry and <structfield>htid</structfield> the first of them, or a
+      pivot's heap TID if it has one; <structfield>tids</structfield> lists
+      every heap TID of a LIST or POSTING entry.
+      <structfield>downlink</structfield> is the child block of a pivot on
+      an internal page.  <structfield>data</structfield> shows the key
+      columns' bytes, without the TIDs, and on a prefix-compressed leaf with
+      the prefix restored; <structfield>itemlen</structfield> and
+      <structfield>ctid</structfield> are the item as stored.
+      For example:
+<screen>
+test=# SELECT itemoffset, shape, ntids, htid, tids[1:2] AS some_tids, data
+        FROM bark_page_items('bark_idx', 1) LIMIT 4;
+ itemoffset |  shape  | ntids |   htid   |       some_tids        |          data
+------------+---------+-------+----------+------------------------+-------------------------
+          1 | PIVOT   |       |          |                        | 5a 01 00 00 00 00 00 00
+          2 | LIST    |    20 | (13,162) | {"(13,162)","(14,36)"} | 01 00 00 00 00 00 00 00
+          3 | POSTING |  3000 | (0,1)    | {"(0,1)","(0,2)"}      | 02 00 00 00 00 00 00 00
+          4 | SINGLE  |     1 | (13,63)  |                        | 0b 00 00 00 00 00 00 00
+(4 rows)
+</screen>
+      Item 1 is the page's high key; the leaf entries follow it in key
+      order.
+     </para>
+    </listitem>
+   </varlistentry>
+
+   <varlistentry>
+    <term>
+     <function>bark_page_items(page bytea) returns setof record</function>
+     <indexterm>
+      <primary>bark_page_items</primary>
+     </indexterm>
+    </term>
+
+    <listitem>
+     <para>
+      It is also possible to pass a page to
+      <function>bark_page_items</function> as a <type>bytea</type> value, as
+      returned by <function>get_raw_page</function>.
+     </para>
+    </listitem>
+   </varlistentry>
+  </variablelist>
+ </sect2>
+
  <sect2 id="pageinspect-brin-funcs">
   <title>BRIN Functions</title>
 
