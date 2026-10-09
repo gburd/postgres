@@ -1,0 +1,778 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_begin s2_change s2_build s1_idx s1_ios s1_bmp s1_seq s1_commit s2_check
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s2_change: 
+	DELETE FROM rd WHERE id IN (5, 10000);
+	INSERT INTO rd VALUES (5, 1005, 0, 'again');
+	UPDATE rd SET k = k + 1000, h = h + 1 WHERE id = 7;
+	UPDATE rd SET id = -id, h = h + 1 WHERE id = 9;
+
+step s2_build: CREATE INDEX rd_i ON rd USING bark (id);
+step s1_idx: 
+	SET LOCAL enable_seqscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                    
+----------------------------------------------
+Aggregate                                     
+  ->  Index Scan using rd_i on rd             
+        Index Cond: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_ios: 
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(id) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(id) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                    
+----------------------------------------------
+Aggregate                                     
+  ->  Index Only Scan using rd_i on rd        
+        Index Cond: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_bmp: 
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_bitmapscan = on;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                          
+----------------------------------------------------
+Aggregate                                           
+  ->  Bitmap Heap Scan on rd                        
+        Recheck Cond: ((id >= 1) AND (id <= 20))    
+        ->  Bitmap Index Scan on rd_i               
+              Index Cond: ((id >= 1) AND (id <= 20))
+(5 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_seq: 
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_bitmapscan = off;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                
+------------------------------------------
+Aggregate                                 
+  ->  Seq Scan on rd                      
+        Filter: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_check: 
+	SELECT c.relname, bark_index_parent_check(c.oid, true)
+	FROM pg_class c JOIN pg_am a ON a.oid = c.relam
+	WHERE a.amname = 'bark' AND c.relname IN ('rd_i', 'rdo_k');
+
+relname|bark_index_parent_check
+-------+-----------------------
+rd_i   |                       
+(1 row)
+
+
+starting permutation: s1_begin s2_change s2_build_unique s2_dup s1_idx s1_ios s1_bmp s1_seq s1_commit s2_check
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s2_change: 
+	DELETE FROM rd WHERE id IN (5, 10000);
+	INSERT INTO rd VALUES (5, 1005, 0, 'again');
+	UPDATE rd SET k = k + 1000, h = h + 1 WHERE id = 7;
+	UPDATE rd SET id = -id, h = h + 1 WHERE id = 9;
+
+step s2_build_unique: CREATE UNIQUE INDEX rd_i ON rd USING bark (id);
+step s2_dup: INSERT INTO rd VALUES (7, 0, 0, 'dup');
+ERROR:  duplicate key value violates unique constraint "rd_i"
+step s1_idx: 
+	SET LOCAL enable_seqscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                    
+----------------------------------------------
+Aggregate                                     
+  ->  Index Scan using rd_i on rd             
+        Index Cond: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_ios: 
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(id) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(id) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                    
+----------------------------------------------
+Aggregate                                     
+  ->  Index Only Scan using rd_i on rd        
+        Index Cond: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_bmp: 
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_bitmapscan = on;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                          
+----------------------------------------------------
+Aggregate                                           
+  ->  Bitmap Heap Scan on rd                        
+        Recheck Cond: ((id >= 1) AND (id <= 20))    
+        ->  Bitmap Index Scan on rd_i               
+              Index Cond: ((id >= 1) AND (id <= 20))
+(5 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_seq: 
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_bitmapscan = off;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                
+------------------------------------------
+Aggregate                                 
+  ->  Seq Scan on rd                      
+        Filter: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_check: 
+	SELECT c.relname, bark_index_parent_check(c.oid, true)
+	FROM pg_class c JOIN pg_am a ON a.oid = c.relam
+	WHERE a.amname = 'bark' AND c.relname IN ('rd_i', 'rdo_k');
+
+relname|bark_index_parent_check
+-------+-----------------------
+rd_i   |                       
+(1 row)
+
+
+starting permutation: s1_begin s2_change_m s2_build_m s1_m s1_commit
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s2_change_m: 
+	DELETE FROM rdm WHERE id = 3;
+	UPDATE rdm SET a = ARRAY[9999], h = h + 1 WHERE id = 4;
+
+step s2_build_m: CREATE INDEX rdm_a ON rdm USING bark (a bark_int4_array_ops);
+step s1_m: 
+	SELECT count(*) AS missing FROM
+		(SELECT DISTINCT e, rdm.ctid FROM rdm, unnest(a) e
+		 EXCEPT SELECT key, tid FROM bark_multikey_entries('rdm_a')) x;
+
+missing
+-------
+      0
+(1 row)
+
+step s1_commit: COMMIT;
+
+starting permutation: s1_begin s2_change_o s2_build_o s1_o_idx s1_o_ios s1_o_bmp s1_o_seq s1_commit s2_check
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s2_change_o: 
+	DELETE FROM rdo WHERE id IN (2, 102);
+	INSERT INTO rdo VALUES (12, rd_big(2)), (112, 'small2');
+
+step s2_build_o: CREATE UNIQUE INDEX rdo_k ON rdo USING bark (k);
+step s1_o_idx: 
+	SET LOCAL enable_seqscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(id) FROM rdo WHERE k > '';
+	SELECT count(*), sum(id) FROM rdo WHERE k > '';
+
+QUERY PLAN                         
+-----------------------------------
+Aggregate                          
+  ->  Index Scan using rdo_k on rdo
+        Index Cond: (k > ''::text) 
+(3 rows)
+
+count|sum
+-----+---
+    6|312
+(1 row)
+
+step s1_o_ios: 
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(length(k)) FROM rdo WHERE k > '';
+	SELECT count(*), sum(length(k)) FROM rdo WHERE k > '';
+
+QUERY PLAN                              
+----------------------------------------
+Aggregate                               
+  ->  Index Only Scan using rdo_k on rdo
+        Index Cond: (k > ''::text)      
+(3 rows)
+
+count|  sum
+-----+-----
+    6|15384
+(1 row)
+
+step s1_o_bmp: 
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_bitmapscan = on;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(id) FROM rdo WHERE k > '';
+	SELECT count(*), sum(id) FROM rdo WHERE k > '';
+
+QUERY PLAN                              
+----------------------------------------
+Aggregate                               
+  ->  Bitmap Heap Scan on rdo           
+        Recheck Cond: (k > ''::text)    
+        ->  Bitmap Index Scan on rdo_k  
+              Index Cond: (k > ''::text)
+(5 rows)
+
+count|sum
+-----+---
+    6|312
+(1 row)
+
+step s1_o_seq: 
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_bitmapscan = off;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(id), sum(length(k)) FROM rdo WHERE k > '';
+	SELECT count(*), sum(id), sum(length(k)) FROM rdo WHERE k > '';
+
+QUERY PLAN                    
+------------------------------
+Aggregate                     
+  ->  Seq Scan on rdo         
+        Filter: (k > ''::text)
+(3 rows)
+
+count|sum|  sum
+-----+---+-----
+    6|312|15384
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_check: 
+	SELECT c.relname, bark_index_parent_check(c.oid, true)
+	FROM pg_class c JOIN pg_am a ON a.oid = c.relam
+	WHERE a.amname = 'bark' AND c.relname IN ('rd_i', 'rdo_k');
+
+relname|bark_index_parent_check
+-------+-----------------------
+rdo_k  |                       
+(1 row)
+
+
+starting permutation: s1_begin s2_change s2_build_par s1_idx s1_ios s1_bmp s1_seq s1_commit s2_check
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s2_change: 
+	DELETE FROM rd WHERE id IN (5, 10000);
+	INSERT INTO rd VALUES (5, 1005, 0, 'again');
+	UPDATE rd SET k = k + 1000, h = h + 1 WHERE id = 7;
+	UPDATE rd SET id = -id, h = h + 1 WHERE id = 9;
+
+step s2_build_par: 
+	SET min_parallel_table_scan_size = 0;
+	SET max_parallel_maintenance_workers = 2;
+	CREATE INDEX rd_i ON rd USING bark (id);
+	RESET min_parallel_table_scan_size;
+	RESET max_parallel_maintenance_workers;
+
+step s1_idx: 
+	SET LOCAL enable_seqscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                    
+----------------------------------------------
+Aggregate                                     
+  ->  Index Scan using rd_i on rd             
+        Index Cond: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_ios: 
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(id) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(id) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                    
+----------------------------------------------
+Aggregate                                     
+  ->  Index Only Scan using rd_i on rd        
+        Index Cond: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_bmp: 
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_bitmapscan = on;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                          
+----------------------------------------------------
+Aggregate                                           
+  ->  Bitmap Heap Scan on rd                        
+        Recheck Cond: ((id >= 1) AND (id <= 20))    
+        ->  Bitmap Index Scan on rd_i               
+              Index Cond: ((id >= 1) AND (id <= 20))
+(5 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_seq: 
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_bitmapscan = off;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                
+------------------------------------------
+Aggregate                                 
+  ->  Seq Scan on rd                      
+        Filter: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_check: 
+	SELECT c.relname, bark_index_parent_check(c.oid, true)
+	FROM pg_class c JOIN pg_am a ON a.oid = c.relam
+	WHERE a.amname = 'bark' AND c.relname IN ('rd_i', 'rdo_k');
+
+relname|bark_index_parent_check
+-------+-----------------------
+rd_i   |                       
+(1 row)
+
+
+starting permutation: s1_begin s2_change s2_build_par_unique s1_idx s1_ios s1_bmp s1_seq s1_commit s2_check
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s2_change: 
+	DELETE FROM rd WHERE id IN (5, 10000);
+	INSERT INTO rd VALUES (5, 1005, 0, 'again');
+	UPDATE rd SET k = k + 1000, h = h + 1 WHERE id = 7;
+	UPDATE rd SET id = -id, h = h + 1 WHERE id = 9;
+
+step s2_build_par_unique: 
+	SET min_parallel_table_scan_size = 0;
+	SET max_parallel_maintenance_workers = 2;
+	CREATE UNIQUE INDEX rd_i ON rd USING bark (id);
+	RESET min_parallel_table_scan_size;
+	RESET max_parallel_maintenance_workers;
+
+step s1_idx: 
+	SET LOCAL enable_seqscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                    
+----------------------------------------------
+Aggregate                                     
+  ->  Index Scan using rd_i on rd             
+        Index Cond: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_ios: 
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(id) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(id) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                    
+----------------------------------------------
+Aggregate                                     
+  ->  Index Only Scan using rd_i on rd        
+        Index Cond: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_bmp: 
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_bitmapscan = on;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                          
+----------------------------------------------------
+Aggregate                                           
+  ->  Bitmap Heap Scan on rd                        
+        Recheck Cond: ((id >= 1) AND (id <= 20))    
+        ->  Bitmap Index Scan on rd_i               
+              Index Cond: ((id >= 1) AND (id <= 20))
+(5 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_seq: 
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_bitmapscan = off;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                
+------------------------------------------
+Aggregate                                 
+  ->  Seq Scan on rd                      
+        Filter: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_check: 
+	SELECT c.relname, bark_index_parent_check(c.oid, true)
+	FROM pg_class c JOIN pg_am a ON a.oid = c.relam
+	WHERE a.amname = 'bark' AND c.relname IN ('rd_i', 'rdo_k');
+
+relname|bark_index_parent_check
+-------+-----------------------
+rd_i   |                       
+(1 row)
+
+
+starting permutation: s2_pre s1_begin s2_change s2_reindex s1_idx s1_ios s1_bmp s1_seq s1_commit s2_check
+step s2_pre: CREATE INDEX rd_i ON rd USING bark (id);
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s2_change: 
+	DELETE FROM rd WHERE id IN (5, 10000);
+	INSERT INTO rd VALUES (5, 1005, 0, 'again');
+	UPDATE rd SET k = k + 1000, h = h + 1 WHERE id = 7;
+	UPDATE rd SET id = -id, h = h + 1 WHERE id = 9;
+
+step s2_reindex: REINDEX INDEX rd_i;
+step s1_idx: 
+	SET LOCAL enable_seqscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                    
+----------------------------------------------
+Aggregate                                     
+  ->  Index Scan using rd_i on rd             
+        Index Cond: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_ios: 
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(id) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(id) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                    
+----------------------------------------------
+Aggregate                                     
+  ->  Index Only Scan using rd_i on rd        
+        Index Cond: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_bmp: 
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_bitmapscan = on;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                          
+----------------------------------------------------
+Aggregate                                           
+  ->  Bitmap Heap Scan on rd                        
+        Recheck Cond: ((id >= 1) AND (id <= 20))    
+        ->  Bitmap Index Scan on rd_i               
+              Index Cond: ((id >= 1) AND (id <= 20))
+(5 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_seq: 
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_bitmapscan = off;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                
+------------------------------------------
+Aggregate                                 
+  ->  Seq Scan on rd                      
+        Filter: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_check: 
+	SELECT c.relname, bark_index_parent_check(c.oid, true)
+	FROM pg_class c JOIN pg_am a ON a.oid = c.relam
+	WHERE a.amname = 'bark' AND c.relname IN ('rd_i', 'rdo_k');
+
+relname|bark_index_parent_check
+-------+-----------------------
+rd_i   |                       
+(1 row)
+
+
+starting permutation: s2_pre s1_begin s2_change s2_reindex_conc s1_idx s1_ios s1_bmp s1_seq s1_commit s1_after s2_check
+step s2_pre: CREATE INDEX rd_i ON rd USING bark (id);
+step s1_begin: 
+	BEGIN ISOLATION LEVEL REPEATABLE READ;
+	SELECT 1 AS snapshot;
+
+snapshot
+--------
+       1
+(1 row)
+
+step s2_change: 
+	DELETE FROM rd WHERE id IN (5, 10000);
+	INSERT INTO rd VALUES (5, 1005, 0, 'again');
+	UPDATE rd SET k = k + 1000, h = h + 1 WHERE id = 7;
+	UPDATE rd SET id = -id, h = h + 1 WHERE id = 9;
+
+step s2_reindex_conc: REINDEX INDEX CONCURRENTLY rd_i; <waiting ...>
+step s1_idx: 
+	SET LOCAL enable_seqscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                    
+----------------------------------------------
+Aggregate                                     
+  ->  Index Scan using rd_i on rd             
+        Index Cond: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_ios: 
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(id) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(id) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                    
+----------------------------------------------
+Aggregate                                     
+  ->  Index Only Scan using rd_i on rd        
+        Index Cond: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_bmp: 
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_bitmapscan = on;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                          
+----------------------------------------------------
+Aggregate                                           
+  ->  Bitmap Heap Scan on rd                        
+        Recheck Cond: ((id >= 1) AND (id <= 20))    
+        ->  Bitmap Index Scan on rd_i               
+              Index Cond: ((id >= 1) AND (id <= 20))
+(5 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_seq: 
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_bitmapscan = off;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+
+QUERY PLAN                                
+------------------------------------------
+Aggregate                                 
+  ->  Seq Scan on rd                      
+        Filter: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count|sum
+-----+---
+   20|210
+(1 row)
+
+step s1_commit: COMMIT;
+step s2_reindex_conc: <... completed>
+step s1_after: 
+	BEGIN;
+	SET LOCAL enable_seqscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	EXPLAIN (COSTS OFF) SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SELECT count(*), sum(k) FROM rd WHERE id BETWEEN 1 AND 20;
+	COMMIT;
+
+QUERY PLAN                                    
+----------------------------------------------
+Aggregate                                     
+  ->  Index Scan using rd_i on rd             
+        Index Cond: ((id >= 1) AND (id <= 20))
+(3 rows)
+
+count| sum
+-----+----
+   19|2201
+(1 row)
+
+count| sum
+-----+----
+   19|2201
+(1 row)
+
+step s2_check: 
+	SELECT c.relname, bark_index_parent_check(c.oid, true)
+	FROM pg_class c JOIN pg_am a ON a.oid = c.relam
+	WHERE a.amname = 'bark' AND c.relname IN ('rd_i', 'rdo_k');
+
+relname|bark_index_parent_check
+-------+-----------------------
+rd_i   |                       
+(1 row)
+

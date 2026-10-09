@@ -213,11 +213,16 @@ a format change; none is planned.
 
 === C-MVCC: visibility, SSI, and the index-only / recheck path ===
 
-BARK entries obey the same visibility rules as nbtree. Three obligations:
+BARK entries obey the same visibility rules as nbtree. Four obligations:
 
 * '''Snapshot visibility and SSI.''' Scans acquire the same predicate locks
   and honor the same snapshot semantics as nbtree; a serialization-relevant
   read takes a predicate lock at the granularity nbtree would.
+* '''A build serves snapshots older than itself.''' CREATE INDEX and REINDEX
+  index every row the table AM passes, including those it marks not alive
+  (RECENTLY_DEAD), which are kept only out of the uniqueness check, as
+  nbtree's spool2 keeps them; nothing on the page records the fact
+  (README "CREATE INDEX"; tested by <code>bark_recently_dead.spec</code>).
 * '''Index-only scans need a leaf-key recheck that deduplicates.''' Re-running
   <code>indexqualorig</code> against the live tuple drops false positives but
   '''cannot''' dedup two index entries that chain-walk to the same live tuple
@@ -1790,15 +1795,17 @@ insert puts them in unchecked (bark_insert_markers); a marker's key equals
 no data key, so it can conflict with nothing. What the build must add is
 the treatment of dead rows.
 
-'''Dead rows are indexed and not checked.''' bark_build_callback, today
-and in M1b, drops a row that table_index_build_scan reports with
+'''Dead rows are indexed and not checked.''' Before card B12,
+bark_build_callback dropped a row that table_index_build_scan reports with
 <code>tupleIsAlive</code> false, a RECENTLY_DEAD row among them, which
 nbtree indexes because an older snapshot may still read it through the
-index. Card B12 fixes that as nbtree does with its second spool
-(_bt_build_callback, and _bt_load, which merges it): dead rows go to a
-second sort that is never unique-checked. M4 takes that from B12 and adds
-to it: a dead row's keys go to the second sort, and bark_load
-compares a live tuple only with the previous ''live'' tuple. A
+index. B12 fixed that as nbtree does with its second spool
+(_bt_build_callback, and _bt_load, which merges it): in a unique index,
+dead rows go to a second sort that is never unique-checked, and bark_load
+compares a live tuple only with the previous ''live'' tuple. A multikey
+index cannot be unique in M1, so bark_build_row_keys still puts every key
+in the main sort. M4 takes that from B12 and adds to it: a dead row's keys
+go to the second sort. A
 RECENTLY_DEAD row that shares a key with a live row, which is what an
 UPDATE that keeps a key leaves, is then not a violation. A dead row's
 oversized keys go to the oversized pass with UNIQUE_CHECK_NO, and a live
