@@ -536,11 +536,78 @@ removed.  Every reader of heap TIDs skips them: scans, KNN, VACUUM's
 callback and its count, bottom-up deletion, merging and coalescing.
 bark_index_has_marker looks one up.
 
-Scans of an index with an extracted column are refused until the scan side
-is written ("multikey scans are not implemented yet", in bark_beginscan).
 The planner treats such an index as ordered only by its columns before the
 extracted one: plancat leaves the sort family InvalidOid at a column whose
 operator family is not btree's, and build_index_pathkeys stops there.
+
+Scans of an index with an extracted column ("Scans" under "M1: multikey
+keys" in the design document) keep the btree-style key code away from the
+column's keys, whose operators are not btree comparisons:
+bark_mk_partition_keys moves them after so->numberOfKeys, the count every
+other key loop uses, and only BarkMkScanState reads them.  bark_mk_setup
+calls procedure 8 on the first of them (once per element of a
+ScalarArrayOp), with BarkQueryFlags as a seventh argument when the function
+takes one, and turns the boundaries into BarkMkBoundary ranges in the
+column's index order (a DESC column swaps the sides), sorted.  Two
+boundaries of one call that intersect are an error; those of different
+SAOP elements are merged, and a merged range returns its rows with
+xs_recheck instead of running procedure 9.  searchnulls, IS NULL and IS NOT
+NULL add a range of the NULL entries, whose rows also come back with
+xs_recheck, since the NULL key may be a NULL value, an empty one or a NULL
+element.  Further keys on the column only make every row come back with
+xs_recheck: a row may satisfy two of them through two keys.
+
+When every column before the extracted one has an equality (or an
+equality array), the ranges are one more required key: a BarkArrayKeyState
+whose mk field points at them, the last digit of the required-key odometer.
+bark_req_cmp, bark_req_seek and bark_req_advance compare an entry with the
+current range as they compare it with an element, bark_mk_bound puts the
+range's start (its end, backward; a NULL bound column for the NULL range,
+which bark_compare_bound places by the column's NULLS option) into the
+descent bound, and the scan re-descends where the next range starts past
+the page, as for the next element.  bark_req_past_range reads the column
+after the extracted one only inside a point range.  Otherwise the ranges
+filter: bark_tuple_matches ends with bark_mk_filter, a binary search over
+them.  Skip scan is off when the extracted column is column 1 and has keys.
+
+An entry that passes goes to bark_mk_accept (procedure 9 when its range
+asked for it: false drops the entry, maybe sets the item's recheck flag)
+and then, in bark_readpage, to bark_mk_seen, the seen set: a radix tree
+(lib/radixtree.h, local, in its own context) from bark_tid_to_key(tid) >> 6
+to a 64-bit word with one bit per TID of that window.  A TID already in it
+is dropped; a new one is set and kept.  So a page's items are free of
+repeats when the read copies them, and gettuple returns them as they are.
+Entries rejected by a filter or procedure 9 never reach the set.  With
+fixed columns before the extracted one, bark_mk_group empties the set when
+the entry's values there differ from those of the rows in it: all of a
+row's entries share them.  bark_mk_rescan decides whether the set is used:
+not for a scan with exactly one range that is a point, nor when the meta
+page's BARK_META_MULTIKEY is clear (read by bark_index_is_multikey after the
+scan's snapshot was taken; a cached true is never stale), but always under
+a non-MVCC snapshot, whose rows' inserts may still be running.  A bitmap
+scan never uses it (TIDBitmap absorbs repeats) and passes the items'
+recheck flags to tbm_add_tuples.  The set grows past get_hash_memory_limit()
+rather than return a row twice; it holds at most one group's rows.
+
+Mark and restore: bark_markpos starts an undo list; every TID added to the
+set while marked is appended to it, and the set is not emptied for a new
+group.  bark_restrpos clears those TIDs from the set and empties the list,
+so the rows after the mark come back; a restore with no position (the mark
+was taken before the first row) empties the set.  A scan that changes
+direction with the set in use raises an error, since it would walk back
+over entries whose rows the set drops; so does a parallel scan that needs
+the set (workers read different leaves) and an ordering key on the
+extracted column (M1d serves those).  A KNN scan on a fixed leading column
+runs every entry through bark_mk_accept and bark_mk_seen, without group
+clears, since its two cursors interleave groups.
+
+Index-only scans: bark_canreturn answers false for the extracted column
+unless the class has procedure 14.  Such a scan returns xs_hitup, formed by
+bark_mk_form_hitup from the entry, with the extracted column replaced by
+fetch(key) (NULL for the NULL key, or when there is no procedure 14 and
+the planner reads only the other columns) and name_ops' cstring columns
+made names again, in hitupdesc, the index's descriptor with the column's
+input type.
 
 
 Operator classes and validation

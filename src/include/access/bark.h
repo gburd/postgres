@@ -1413,11 +1413,13 @@ extern Buffer bark_search(Relation index, BarkKeyInfo *keyinfo,
  * plus infinity when `upper` (so that every entry equal to it on the bounded
  * columns sorts before it).  `backward` says a backward scan descends to it,
  * which only changes how it compares with a truncated pivot
- * (bark_compare_bound).
+ * (bark_compare_bound).  A column whose procs[i] is NULL is a NULL value,
+ * which sorts where the column's NULLS option puts NULLs; only a multikey
+ * scan reading the NULL entries (BarkMkBoundary) builds one.
  */
 typedef struct BarkScanBound
 {
-	int			nkeys;
+	int			nkeys;			/* procs[i] NULL: column i's value is NULL */
 	bool		upper;
 	bool		backward;
 	Datum		args[INDEX_MAX_KEYS];
@@ -1548,6 +1550,7 @@ typedef struct BarkKnnItem
 	int			firstTid;		/* the entry's heap TIDs are tids[firstTid]... */
 	int			ntids;			/* ...and there are this many, ascending */
 	uint32		tupleOffset;	/* entry's key copy in tuples (IOS only) */
+	bool		recheck;		/* return its members with xs_recheck */
 } BarkKnnItem;
 
 typedef struct BarkKnnCursor
@@ -1640,6 +1643,13 @@ typedef struct BarkArrayKeyState
 	Datum	   *elems;			/* sorted, de-duplicated array elements */
 	int			nelems;			/* number of them (0: empty array, no matches) */
 	int			cur;			/* required key: element the scan is on */
+
+	/*
+	 * The extracted column's boundaries, when this required key is the last
+	 * one and walks them (see barkscan.c, "Multikey scans"); then elems is
+	 * NULL and nelems is the number of boundaries.
+	 */
+	struct BarkMkScanState *mk;
 } BarkArrayKeyState;
 
 /*
@@ -1668,6 +1678,7 @@ typedef struct BarkScanPosItem
 	ItemPointerData heapTid;	/* one member TID */
 	OffsetNumber indexOffset;	/* entry's offset on the page when read */
 	uint32		tupleOffset;	/* entry's copy in currTuples (IOS only) */
+	bool		recheck;		/* return it with xs_recheck (multikey) */
 } BarkScanPosItem;
 
 typedef struct BarkScanPosData
@@ -1810,6 +1821,21 @@ typedef struct BarkScanOpaqueData
 	 * scan with ORDER BY <~> keys; NULL for a plain scan.
 	 */
 	BarkKnnScanState *knn;
+
+	/*
+	 * The scan keys the btree-style code reads are scan->keyData[0 ..
+	 * numberOfKeys - 1].  In an index with an extracted column, rescan moves
+	 * the keys on that column after them, where only the multikey state
+	 * reads them; otherwise numberOfKeys is scan->numberOfKeys.
+	 */
+	int			numberOfKeys;
+
+	/*
+	 * Multikey scan state (barkscan.c, "Multikey scans"): the extracted
+	 * column's boundaries and the set of rows returned.  NULL for an index
+	 * without an extracted column.
+	 */
+	struct BarkMkScanState *mk;
 } BarkScanOpaqueData;
 
 typedef BarkScanOpaqueData *BarkScanOpaque;
@@ -1865,6 +1891,11 @@ extern uint32 bark_save_tuple(BarkScanOpaque so, char **tuples,
 							  IndexTuple entry, IndexTuple resolved);
 extern Buffer bark_lock_and_validate_left(Relation index, BlockNumber *blkno,
 										  BlockNumber lastcurrblkno);
+extern int	bark_mk_accept(IndexScanDesc scan, IndexTuple itup,
+						   ItemPointer tids, int ntids, bool *recheck);
+extern int	bark_mk_seen(IndexScanDesc scan, IndexTuple itup, ItemPointer tids,
+						 int ntids, bool newgroups);
+extern HeapTuple bark_mk_form_hitup(IndexScanDesc scan, IndexTuple itup);
 
 /* KNN (ordered-operator) scan (barkknn.c). */
 extern void bark_knn_rescan(IndexScanDesc scan, ScanKey orderbys, int norderbys);
