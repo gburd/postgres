@@ -797,12 +797,16 @@ column of every BARK index, scalar ones included.
   as GIN's compare procedure does, and is registered under the class's input
   type as GIN's are; so tuplesort, bark_build_keyinfo and every descent use
   it unchanged. barkvalidate checks its arguments against the key type, as
-  ginvalidate does.
+  ginvalidate does. CREATE OPERATOR CLASS registers a comparator under its
+  own argument types for an ordering AM such as BARK, so a multikey class
+  writes <code>FUNCTION 1 (input type, input type)</code>; barkvalidate
+  reports a comparator registered under the key type with a hint saying
+  so.
 * '''2, 4, 5, 6''' sortsupport, equalimage, options, skipsupport: optional,
   btree's meanings, over the key type. Equalimage (4) is what lets the
   column's keys coalesce into LIST and POSTING entries
   (bark_allequalimage). Options (5) become BARK's
-  <code>amoptsprocnum</code> (now 0), for per-column options such as M5's
+  <code>amoptsprocnum</code> (it was 0), for per-column options such as M5's
   projection. In_range (3) is not allowed on an extracted column.
 * '''7''' extract-value, <code>internal (value, internal nkeys, internal
   nullFlags, internal markers, internal nmarkers)</code>, required; returns
@@ -813,9 +817,18 @@ column of every BARK index, scalar ones included.
   ginExtractEntries does.
 * '''8''' extract-query, <code>void (query, int2 strategy, internal
   boundaries, internal nboundaries, internal extra, internal recheck [,
-  internal backward])</code>, required for scans: pg_extended_btree's
-  procedure 102, plus an optional seventh argument for ordering operators
-  (see "Scans"). It turns an operator's strategy and argument into
+  internal flags])</code>, required for scans: pg_extended_btree's
+  procedure 102, plus an optional seventh argument, a
+  <code>BarkQueryFlags *</code> (bark.h) that BARK zeroes before the call.
+  A class written for pg_extended_btree declares six arguments and never
+  sees it; barkvalidate accepts six or seven. Its fields are
+  <code>backward</code>, which an ordering operator sets to walk its
+  boundaries backward (see "Ordered scans"), and <code>searchnulls</code>,
+  which asks the scan to read the NULL entries too (a NULL value, an empty
+  value or a NULL element), at the position the column's NULLS option gives
+  them, and to return those rows with <code>xs_recheck</code> set, as
+  GIN's INCLUDE_EMPTY search mode does. Fields are only appended (M5 adds
+  "this scan needs no seen set"). It turns an operator's strategy and argument into
   boundaries, each a lower and an upper search element (an argument of the
   key type and a strategy 1-5; either may be absent, meaning unbounded; a
   point has = in both). BARK sorts the boundaries and raises an error if two
@@ -830,8 +843,10 @@ column of every BARK index, scalar ones included.
 * '''10-13''' GIN's extractQuery, consistent, comparePartial and
   triConsistent (GIN's 3, 4, 5, 6), with GIN's signatures. barkvalidate
   accepts them from M1, so catalogs need not change; scans use them from M2.
-* '''14''' fetch, <code>value (key)</code>, optional, GiST's fetch: rebuilds
-  the column value from a key, for index-only scans (see "Scans").
+* '''14''' fetch, <code>value (key)</code>, optional: GiST's fetch in
+  purpose, not in signature (GiST's is <code>internal (internal)</code>).
+  It rebuilds the column value from a key, for index-only scans (see
+  "Scans").
 
 '''Which interface first.''' BARK implements pg_extended_btree's (7-9) in
 M1. Its queries are key ranges in key order, which BARK's scan already walks:
@@ -852,12 +867,18 @@ renumbering 101-103 as 7-9.
 its class gives it, as in GIN; the number is only passed to procedures 8 and
 9. <code>amstrategies</code> becomes 0, so CREATE OPERATOR CLASS accepts any
 <code>int2</code>; barkvalidate keeps checking 1-5 and the KNN strategy 6 in
-btree families. bark_translate_strategy returns COMPARE_INVALID for a BARK
-family, so the planner never reads <code>=</code> or <code>&lt;</code>
-semantics into its operators. <code>amstorage</code> becomes true: the key
-type is the class's <code>STORAGE</code> type (opckeytype), which index.c
-already gives the column's attribute; a btree-family class must keep its
-input type.
+btree families, and barkadjustmembers keeps CREATE OPERATOR CLASS refusing,
+in a btree family, the strategies past 5 and support procedures past 6 that
+it refused before (such a member would make btvalidate report btree's own
+classes in the family invalid). bark_translate_strategy returns
+COMPARE_INVALID for a BARK family, so the planner never reads
+<code>=</code> or <code>&lt;</code> semantics into its operators.
+<code>amstorage</code> becomes true: the key type is the class's
+<code>STORAGE</code> type (opckeytype), which index.c already gives the
+column's attribute; a btree-family class must keep its input type, and
+barkadjustmembers refuses a <code>STORAGE</code> clause for one, as
+CREATE OPERATOR CLASS did before (the catalog's <code>name_ops</code> keeps
+btree's cstring).
 
 '''Columns.''' At most one extracted column per index, in any key position;
 CREATE INDEX raises an error for two. Two would store the cross product of
@@ -955,9 +976,14 @@ next boundary starts past the page's high key, as the leading-column array
 scan does. Otherwise the boundaries are a filter on each entry. An entry
 inside a boundary whose extract-query asked for a recheck goes to procedure
 9; false drops the entry, maybe returns it with <code>xs_recheck</code>.
-NULL entries match only a scan for NULLs, so a key such as "the array
-holds NULL" scans them and rechecks, since a NULL entry may be an empty
-array.
+NULL entries match only a scan for NULLs, or a scan key whose procedure 8
+set <code>searchnulls</code>; such a key reads them as well as its
+boundaries, and its rows come back with <code>xs_recheck</code>, since a
+NULL entry may be a NULL value, an empty value or a NULL element. A query
+whose answer includes the empty value needs it: for <code>int4[]</code>,
+<code>&lt;@</code> (the empty array is contained in every array),
+<code>@&gt; '{}'</code> (one unbounded boundary, which does not reach the
+NULL entries) and <code>= '{}'</code> (no boundaries at all).
 
 If there are several keys on the extracted column, BARK positions on the
 first and sets <code>xs_recheck</code> for every row the scan returns. Two
@@ -1033,7 +1059,12 @@ family of its sort type, as DocumentDB's <code>|&lt;&gt;</code> and
 <code>&lt;&gt;|</code> are). BARK serves it on the leading column only, as
 it serves KNN (match_pathkeys_to_index). For the ordering key, procedure 8
 returns the boundaries to walk (all of the column, or one path's range under
-M5) and sets its seventh argument to walk them backward. The scan walks
+M5) and sets <code>backward</code> in its seventh argument to walk them
+backward. An ordered scan with no filter on the column must return every
+row, and a row whose value has no keys has only its NULL entry, so the
+ordering key also sets <code>searchnulls</code>: the scan reads the NULL
+entries at the position the column's NULLS option gives them, and their rows
+sort as the operator's NULL result does. The scan walks
 them in key order, forward or backward, with the seen set, and returns the
 key of each row's first entry as <code>xs_orderbyvals</code>, exact. This is
 MongoDB's sort rule for arrays, without a Sort node: an ascending sort sees

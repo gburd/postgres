@@ -37,6 +37,7 @@
 #include "catalog/pg_type.h"
 #include "lib/sbm.h"
 #include "miscadmin.h"
+#include "nodes/execnodes.h"
 #include "storage/bufmgr.h"
 #include "storage/indexfsm.h"
 #include "utils/fmgroids.h"
@@ -52,11 +53,17 @@ static bool bark_first_column_bytewise(Relation index);
  * uses the btree strategy numbers (1=<, 2=<=, 3==, 4=>=, 5=>), so these are
  * the same mappings the btree AM uses; the planner needs them to find an
  * opfamily's equality operator by compare type (e.g. when building pathkeys
- * for an ordered scan).
+ * for an ordered scan).  An operator in an operator family of BARK's own (a
+ * multikey family) has whatever strategy number its class gave it, and its
+ * values are not ordered by it, so it has no compare type: the planner must
+ * not read = or < semantics into it.
  */
 CompareType
 bark_translate_strategy(StrategyNumber strategy, Oid opfamily)
 {
+	if (OidIsValid(opfamily) && get_opfamily_method(opfamily) == BARK_AM_OID)
+		return COMPARE_INVALID;
+
 	switch (strategy)
 	{
 		case BTLessStrategyNumber:
@@ -77,6 +84,9 @@ bark_translate_strategy(StrategyNumber strategy, Oid opfamily)
 StrategyNumber
 bark_translate_cmptype(CompareType cmptype, Oid opfamily)
 {
+	if (OidIsValid(opfamily) && get_opfamily_method(opfamily) == BARK_AM_OID)
+		return InvalidStrategy;
+
 	switch (cmptype)
 	{
 		case COMPARE_LT:
@@ -191,6 +201,109 @@ bark_allequalimage(Relation index)
 	}
 
 	return true;
+}
+
+/*
+ * Is key column attno of `index` an extracted column: does its operator
+ * class extract several keys from one value?  It is exactly when the class's
+ * operator family belongs to BARK (a scalar class's family is btree's) and
+ * has procedure 7, extract-value, registered under the class's input type.
+ * INCLUDE columns have no operator class, so they are never extracted.
+ */
+bool
+bark_column_is_extracted(Relation index, int attno)
+{
+	Assert(attno >= 1 && attno <= IndexRelationGetNumberOfAttributes(index));
+
+	if (attno > IndexRelationGetNumberOfKeyAttributes(index))
+		return false;
+	return bark_index_extracted_column(index) == attno;
+}
+
+/*
+ * The attribute number of `index`'s extracted column, or 0 when it has none.
+ * CREATE INDEX allows at most one (bark_check_multikey_index); when the
+ * catalog has more, the first is returned.  The answer depends only on the
+ * index's operator classes, which do not change for the life of the
+ * relcache entry, so it is computed once and kept in rd_amcache.
+ */
+int
+bark_index_extracted_column(Relation index)
+{
+	BarkAmCache *cache = bark_get_amcache(index);
+
+	if (cache->extracted < 0)
+	{
+		cache->extracted = 0;
+		for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+		{
+			if (bark_opfamily_extracts(index->rd_opfamily[i],
+									   index->rd_opcintype[i]))
+			{
+				cache->extracted = i + 1;
+				break;
+			}
+		}
+	}
+	return cache->extracted;
+}
+
+/*
+ * Does an operator class in family opfamily with input type opcintype
+ * extract keys?  See bark_column_is_extracted.
+ */
+bool
+bark_opfamily_extracts(Oid opfamily, Oid opcintype)
+{
+	return get_opfamily_method(opfamily) == BARK_AM_OID &&
+		OidIsValid(get_opfamily_proc(opfamily, opcintype, opcintype,
+									 BARK_EXTRACTVALUE_PROC));
+}
+
+/*
+ * Refuse, before anything is built, an index that M1 cannot build: one with
+ * an extracted column that is unique or carries an exclusion constraint, or
+ * that has two extracted columns.  Two would store the cross product of
+ * their keys, N times M entries per row ("parallel arrays", which MongoDB
+ * refuses for the same reason).  Uniqueness over multikey keys needs
+ * document-store semantics, unique across rows while one row may repeat a
+ * key, which is later work.  Until the insert path extracts keys, building
+ * any index with an extracted column is refused too.
+ */
+void
+bark_check_multikey_index(Relation index, IndexInfo *indexInfo)
+{
+	int			nextracted = 0;
+
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+	{
+		if (bark_opfamily_extracts(index->rd_opfamily[i],
+								   index->rd_opcintype[i]))
+			nextracted++;
+	}
+	if (nextracted == 0)
+		return;
+
+	if (nextracted > 1)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("index \"%s\" has more than one column with a multikey operator class",
+						RelationGetRelationName(index)),
+				 errdetail("A BARK index may extract keys from at most one column.")));
+	if (indexInfo->ii_Unique)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("unique indexes are not supported for multikey operator classes in M1")));
+	if (indexInfo->ii_ExclusionOps != NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("exclusion constraints are not supported for multikey operator classes in M1")));
+
+	ereport(ERROR,
+			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+			 errmsg("multikey keys are not implemented yet"),
+			 errdetail("Index \"%s\" has a column with a multikey operator class.",
+					   RelationGetRelationName(index))));
 }
 
 /*

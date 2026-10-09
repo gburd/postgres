@@ -258,8 +258,10 @@ BackgroundWorkerHandle
 BackgroundWorkerSlot
 BackupState
 Barrier
+BarkAmCache
 BarkArrayKeyState
 BarkArraySortCtx
+BarkBoundary
 BarkBuildRun
 BarkDeletedPageData
 BarkEntryShape
@@ -280,9 +282,11 @@ BarkParallelScanDescData
 BarkParallelState
 BarkPendingFSM
 BarkPrefixPlan
-BarkRootCache
+BarkQueryFlags
+BarkRecheckResult
 BarkScanOpaque
 BarkScanOpaqueData
+BarkSearchElement
 BarkShared
 BarkSplitPoint
 BarkStack

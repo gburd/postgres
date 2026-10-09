@@ -368,9 +368,16 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 	return true;
 }
 
+/*
+ * Every build of an index (CREATE INDEX, REINDEX, CONCURRENTLY, and before
+ * ambuildempty for an unlogged one) comes through here, so this is where an
+ * index BARK cannot hold is refused.  Refusing UNIQUE and exclusion
+ * constraints also covers ON CONFLICT, whose arbiters are such indexes.
+ */
 static IndexBuildResult *
 barkbuild(Relation heap, Relation index, IndexInfo *indexInfo)
 {
+	bark_check_multikey_index(index, indexInfo);
 	return bark_build(heap, index, indexInfo);
 }
 
@@ -1400,9 +1407,9 @@ barkhandler(PG_FUNCTION_ARGS)
 {
 	static const IndexAmRoutine amroutine = {
 		.type = T_IndexAmRoutine,
-		.amstrategies = 5,
-		.amsupport = BARK_NPROCS,
-		.amoptsprocnum = 0,
+		.amstrategies = 0,		/* any int2: a multikey family numbers its own */
+		.amsupport = BARK_MULTIKEY_NPROCS,
+		.amoptsprocnum = BARK_OPTIONS_PROC,
 		.amcanorder = true,
 		.ambtreeopfamilies = true,
 		.amcanorderbyop = true,	/* KNN: ORDER BY col <~> const (see barkknn.c) */
@@ -1415,7 +1422,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amoptionalkey = true,
 		.amsearcharray = true,	/* ScalarArrayOp (SAOP): col = ANY(array), see barkscan.c */
 		.amsearchnulls = true,
-		.amstorage = false,
+		.amstorage = true,		/* a multikey class stores its keys' type */
 		.amclusterable = true,
 		.ampredlocks = true,
 		.amcanparallel = true,
@@ -1441,7 +1448,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amproperty = NULL,
 		.ambuildphasename = NULL,
 		.amvalidate = barkvalidate,
-		.amadjustmembers = NULL,
+		.amadjustmembers = barkadjustmembers,
 		.ambeginscan = barkbeginscan,
 		.amrescan = barkrescan,
 		.amgettuple = barkgettuple,

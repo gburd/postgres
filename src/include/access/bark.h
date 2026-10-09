@@ -444,18 +444,89 @@ typedef struct BarkOptions
 
 /*
  * BARK uses the btree strategy numbers and support-function convention: its
- * operator classes live in the btree operator families (see
+ * scalar operator classes live in the btree operator families (see
  * ambtreeopfamilies), so it shares btree's numbering.  Strategies 1..5 are
  * <, <=, =, >=, >.  Support function 1 is the ordering comparator (btree's
  * BTORDER_PROC), the only one BARK requires; the remaining btree support
  * functions (2..6: sortsupport, in_range, equalimage, options, skipsupport)
  * are optional and may be present in the shared family without BARK using
- * them, so amsupport covers the whole btree range.
+ * them.
  */
 #define BARK_NSTRATEGIES	5	/* number of strategies (btree's set) */
 #define BARK_NPROCS			6	/* btree's support-function range (BTNProcs) */
 #define BARK_ORDER_PROC		1	/* support function 1: 3-way comparator */
+#define BARK_SORTSUPPORT_PROC 2 /* support function 2: sortsupport */
+#define BARK_INRANGE_PROC	3	/* support function 3: in_range */
 #define BARK_EQUALIMAGE_PROC 4	/* support function 4: equalimage (BTEQUALIMAGE_PROC) */
+#define BARK_OPTIONS_PROC	5	/* support function 5: options */
+#define BARK_SKIPSUPPORT_PROC 6 /* support function 6: skipsupport */
+
+/*
+ * Multikey operator classes ("M1: multikey keys" in BARK-Design.mediawiki).
+ * A class in an operator family of BARK's own (opfmethod = bark, never a
+ * btree family) that has procedure 7 extracts several keys of its storage
+ * type from one column value; such a column is an extracted column.
+ * Procedures 1, 2, 4, 5 and 6 keep btree's meanings over the key type.
+ * Procedures 7-9 are DocumentDB's pg_extended_btree interface (its 101-103),
+ * 10-13 GIN's extractQuery, consistent, comparePartial and triConsistent
+ * (its 3-6), and 14 GiST's fetch.  amsupport covers all fourteen, and
+ * amstrategies is 0, so a BARK family's operators may carry any strategy
+ * number; the number only reaches procedures 8 and 9.
+ */
+#define BARK_EXTRACTVALUE_PROC			7
+#define BARK_EXTRACTQUERY_PROC			8
+#define BARK_INDEXRECHECK_PROC			9
+#define BARK_GIN_EXTRACTQUERY_PROC		10
+#define BARK_GIN_CONSISTENT_PROC		11
+#define BARK_GIN_COMPAREPARTIAL_PROC	12
+#define BARK_GIN_TRICONSISTENT_PROC		13
+#define BARK_FETCH_PROC					14
+#define BARK_MULTIKEY_NPROCS			14
+
+/*
+ * The types procedures 8 and 9 exchange with BARK.  They are laid out as
+ * pg_extended_btree's, so a class written for it ports by renumbering its
+ * procedures.
+ *
+ * Procedure 8 returns an array of boundaries.  Each is a lower and an upper
+ * search element; a NULL pointer means unbounded on that side, and a point
+ * has BTEqualStrategyNumber in both.  The argument is of the class's
+ * storage (key) type and the strategy is a btree strategy, 1-5.
+ */
+typedef struct BarkSearchElement
+{
+	Datum		argument;
+	StrategyNumber strategy;
+} BarkSearchElement;
+
+typedef struct BarkBoundary
+{
+	BarkSearchElement *lower;
+	BarkSearchElement *upper;
+} BarkBoundary;
+
+/*
+ * Procedure 8's optional seventh argument.  BARK zeroes it before the call;
+ * a class declared with six arguments never sees it.  backward asks an
+ * ordering operator's scan to walk its boundaries in descending key order.
+ * searchnulls asks the scan to read the NULL entries as well (a NULL value,
+ * an empty value or a NULL element), where the column's NULLS option puts
+ * them, and to return those rows with xs_recheck set, as GIN's
+ * INCLUDE_EMPTY search mode does.  Fields are only ever appended.
+ */
+typedef struct BarkQueryFlags
+{
+	bool		backward;
+	bool		searchnulls;
+} BarkQueryFlags;
+
+/* Procedure 9's answer for one entry, as an int2. */
+typedef enum BarkRecheckResult
+{
+	BARK_RECHECK_TRUE = 0,
+	BARK_RECHECK_MAYBE = 1,
+	BARK_RECHECK_FALSE = 2,
+} BarkRecheckResult;
 
 /*
  * Ordered-operator (KNN) scans.  Strategy 6 is BARK's distance ordering
@@ -992,6 +1063,10 @@ typedef struct BarkKeyInfo
 
 extern BarkKeyInfo *bark_build_keyinfo(Relation index);
 extern bool bark_allequalimage(Relation index);
+extern bool bark_column_is_extracted(Relation index, int attno);
+extern int	bark_index_extracted_column(Relation index);
+extern bool bark_opfamily_extracts(Oid opfamily, Oid opcintype);
+extern void bark_check_multikey_index(Relation index, IndexInfo *indexInfo);
 extern int	bark_compare_itups(BarkKeyInfo *keyinfo, Relation index,
 							   IndexTuple a, IndexTuple b);
 extern int	bark_compare_itups_tid(BarkKeyInfo *keyinfo, Relation index,
@@ -1207,6 +1282,8 @@ extern IndexBuildResult *bark_build(Relation heap, Relation index,
 									IndexInfo *indexInfo);
 extern void bark_buildempty(Relation index);
 extern bool barkvalidate(Oid opclassoid);
+extern void barkadjustmembers(Oid opfamilyoid, Oid opclassoid,
+							  List *operators, List *functions);
 
 /*
  * Parallel index-build worker entry point.  Reachable by name from
@@ -1281,6 +1358,27 @@ extern Buffer bark_search_bound(Relation index, BarkKeyInfo *keyinfo,
 								const BarkScanBound *bound, bool nextkey);
 extern int	bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
 							   const BarkScanBound *bound, IndexTuple itup);
+/*
+ * What a backend caches about an index in its relcache entry's rd_amcache.
+ * A relcache rebuild (REINDEX, TRUNCATE, an invalidation) drops it.
+ *
+ * root and level are the root as last read from the meta page (root is
+ * BARK_P_NONE until then), so that a descent need not read the meta page,
+ * as nbtree caches its meta page.  They may be stale: bark_get_root_buffer
+ * checks the page it names before using it.
+ *
+ * extracted is the key column whose operator class extracts several keys
+ * from a value (bark_index_extracted_column), 0 for none, or -1 until first
+ * asked.  It comes from the catalog, which an index keeps for its life.
+ */
+typedef struct BarkAmCache
+{
+	BlockNumber root;
+	uint32		level;
+	int			extracted;
+} BarkAmCache;
+
+extern BarkAmCache *bark_get_amcache(Relation index);
 extern BlockNumber bark_get_root(Relation index, uint32 *level_out);
 extern uint32 bark_get_root_level(Relation index);
 extern Buffer bark_get_root_buffer(Relation index, BufferLockMode access);
