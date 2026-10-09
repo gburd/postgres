@@ -308,17 +308,23 @@ bark_binsrch(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
 }
 
 /*
- * The root block and its level as last read from the meta page, kept in
- * rd_amcache so that a descent need not read the meta page (nbtree caches
- * its meta page the same way).  The cache may be stale: bark_get_root_buffer
- * checks the page it names before using it.  A relcache rebuild (REINDEX,
- * TRUNCATE) drops it.
+ * Return the index's BarkAmCache, creating it empty on first use.
  */
-typedef struct BarkRootCache
+BarkAmCache *
+bark_get_amcache(Relation index)
 {
-	BlockNumber root;
-	uint32		level;
-} BarkRootCache;
+	BarkAmCache *cache = (BarkAmCache *) index->rd_amcache;
+
+	if (cache == NULL)
+	{
+		cache = MemoryContextAlloc(index->rd_indexcxt, sizeof(BarkAmCache));
+		cache->root = BARK_P_NONE;
+		cache->level = 0;
+		cache->extracted = -1;
+		index->rd_amcache = cache;
+	}
+	return cache;
+}
 
 /*
  * Read the root block number, and the root's level when level_out is not
@@ -352,11 +358,8 @@ bark_get_root(Relation index, uint32 *level_out)
 
 	if (root != BARK_P_NONE)
 	{
-		BarkRootCache *cache = (BarkRootCache *) index->rd_amcache;
+		BarkAmCache *cache = bark_get_amcache(index);
 
-		if (cache == NULL)
-			index->rd_amcache = cache =
-				MemoryContextAlloc(index->rd_indexcxt, sizeof(BarkRootCache));
 		cache->root = root;
 		cache->level = level;
 	}
@@ -374,8 +377,10 @@ bark_get_root_level(Relation index)
 {
 	uint32		level;
 
-	if (index->rd_amcache != NULL)
-		return ((BarkRootCache *) index->rd_amcache)->level;
+	BarkAmCache *cache = (BarkAmCache *) index->rd_amcache;
+
+	if (cache != NULL && cache->root != BARK_P_NONE)
+		return cache->level;
 	(void) bark_get_root(index, &level);
 	return level;
 }
@@ -395,11 +400,11 @@ bark_get_root_level(Relation index)
 Buffer
 bark_get_root_buffer(Relation index, BufferLockMode access)
 {
-	BarkRootCache *cache = (BarkRootCache *) index->rd_amcache;
+	BarkAmCache *cache = (BarkAmCache *) index->rd_amcache;
 	BlockNumber root;
 	Buffer		buf;
 
-	if (cache != NULL)
+	if (cache != NULL && cache->root != BARK_P_NONE)
 	{
 		Page		page;
 
