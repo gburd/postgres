@@ -1,0 +1,160 @@
+--
+-- Bottom-up deletion (bark_bottomup_delete) and the merge pass
+-- (bark_merge_page) over leaves that hold OVERSIZED entries, markers and
+-- POSTING entries, and with logical decoding active, so that the deletion
+-- record says whether the table is a user catalog table.  Each index is
+-- built with fillfactor 100, so its leaves are full and the first insert
+-- into one of them runs the pass.  Every result is compared with a seqscan
+-- and every index is checked with bark_index_check(index, true).
+--
+set client_min_messages TO 'warning';
+create extension if not exists amcheck;
+create extension if not exists bark_multikey;
+reset client_min_messages;
+
+-- A logical slot makes logical decoding active at wal_level = replica; a
+-- new session sees it.
+SELECT 1 FROM pg_create_logical_replication_slot('bark_bottomup_slot', 'pgoutput');
+\c -
+
+-- The rows of q by index scan (and index-only scan), bitmap scan and
+-- seqscan: 'ok' when all three agree.
+CREATE FUNCTION bbu_same(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  m text;
+  r text[] := '{}';
+  h text;
+BEGIN
+  FOREACH m IN ARRAY ARRAY['index', 'bitmap', 'seq'] LOOP
+    PERFORM set_config('enable_seqscan', (m = 'seq')::text, true);
+    PERFORM set_config('enable_indexscan', (m = 'index')::text, true);
+    PERFORM set_config('enable_indexonlyscan', (m = 'index')::text, true);
+    PERFORM set_config('enable_bitmapscan', (m = 'bitmap')::text, true);
+    EXECUTE 'SELECT md5(coalesce(string_agg(x::text, '','' ORDER BY x::text), '''')) FROM ('
+      || q || ') x' INTO h;
+    r := r || h;
+  END LOOP;
+  RETURN CASE WHEN r[1] = r[3] AND r[2] = r[3] THEN 'ok'
+              ELSE 'MISMATCH ' || array_to_string(r, ' ') END;
+END $$;
+
+-- Deterministic incompressible string of n bytes, seeded by s.
+CREATE FUNCTION bbu_bigstr(s int, n int) RETURNS text LANGUAGE sql IMMUTABLE AS
+$$ SELECT substr(string_agg(md5(s::text || g::text), ''), 1, n)
+   FROM generate_series(1, (n + 31) / 32) g $$;
+
+-- OVERSIZED entries.  Every third key is oversized, so most leaves mix
+-- SINGLE and OVERSIZED entries; the 'z' keys fill leaves with OVERSIZED
+-- entries only, which offer the table AM no TID at all.  Each UPDATE is
+-- non-HOT (v is indexed) and leaves k unchanged.
+CREATE TABLE bbu_big (id int, k text, v int)
+  WITH (fillfactor = 100, autovacuum_enabled = off);
+INSERT INTO bbu_big
+  SELECT g, lpad(g::text, 5, '0') ||
+            CASE WHEN g % 3 = 0 THEN bbu_bigstr(g, 3500) ELSE '' END, 0
+  FROM generate_series(1, 1200) g;
+INSERT INTO bbu_big
+  SELECT g, 'z' || bbu_bigstr(g, 3500), 0 FROM generate_series(1201, 1600) g;
+CREATE INDEX bbu_big_k ON bbu_big USING bark (k) WITH (fillfactor = 100);
+CREATE INDEX bbu_big_v ON bbu_big USING bark (v);
+UPDATE bbu_big SET v = v + 1;
+UPDATE bbu_big SET v = v + 1;
+SELECT bbu_same('SELECT id, k FROM bbu_big WHERE k >= ''''');
+SELECT bbu_same('SELECT k FROM bbu_big WHERE k > ''z''');
+SELECT bbu_same('SELECT id, v FROM bbu_big WHERE v >= 0');
+SELECT bark_index_check('bbu_big_k', true), bark_index_check('bbu_big_v', true);
+
+-- POSTING entries.  Keys 0..399 have 500 rows each, together on the heap:
+-- small run-length POSTING entries, fewer bytes than members, so a full
+-- leaf holds more TIDs than the table AM may be offered at once.  Keys
+-- 1000..1015 take every sixteenth row: POSTING entries with more bytes
+-- than members.
+CREATE TABLE bbu_post (id int, k int, v int)
+  WITH (fillfactor = 100, autovacuum_enabled = off);
+INSERT INTO bbu_post SELECT g, g / 500, 0 FROM generate_series(0, 199999) g;
+INSERT INTO bbu_post
+  SELECT g, 1000 + g % 16, 0 FROM generate_series(200000, 263999) g;
+CREATE INDEX bbu_post_k ON bbu_post USING bark (k) WITH (fillfactor = 100);
+CREATE INDEX bbu_post_v ON bbu_post USING bark (v);
+UPDATE bbu_post SET v = 1 WHERE id % 101 = 0;
+UPDATE bbu_post SET v = 2 WHERE id % 101 = 0;
+SELECT bbu_same('SELECT k, count(*) FROM bbu_post WHERE k >= 0 GROUP BY k');
+SELECT bbu_same('SELECT id FROM bbu_post WHERE k = 7 OR k = 1003');
+SELECT bbu_same('SELECT id FROM bbu_post WHERE v > 0');
+SELECT bark_index_check('bbu_post_k', true), bark_index_check('bbu_post_v', true);
+
+-- Markers.  The marker of bbu_mk_ba is (NULL, -2147483648), after every
+-- non-NULL b and before the other NULL-b keys.  The 250 rows of b = 100000
+-- are spread over the heap, so the build stores their key as two LIST
+-- entries, right before the marker on the first leaf.  The insert of
+-- (100000, 0) before them merges the two up to the marker; the UPDATE runs
+-- bottom-up deletion over the leaf with the marker; the inserts of b = 99999
+-- run the merge pass over the merged entry and the marker after it.
+CREATE TABLE bbu_mk (id int, b int, a int4[], v int)
+  WITH (fillfactor = 100, autovacuum_enabled = off);
+INSERT INTO bbu_mk
+  SELECT g, CASE WHEN g % 97 = 0 THEN 100000 END,
+         CASE WHEN g % 97 = 0 THEN '{1}'::int4[] ELSE ARRAY[g] END, 0
+  FROM generate_series(1, 24250) g;
+INSERT INTO bbu_mk VALUES (0, NULL, '{1,2}', 0);
+CREATE INDEX bbu_mk_ba ON bbu_mk
+  USING bark (b, a bark_int4_array_marked_ops) WITH (fillfactor = 100);
+CREATE INDEX bbu_mk_v ON bbu_mk USING bark (v);
+SELECT bark_multikey_has_marker('bbu_mk_ba', -2147483648);
+INSERT INTO bbu_mk VALUES (-1, 100000, '{0}', 0);
+UPDATE bbu_mk SET v = 1 WHERE b = 100000;
+INSERT INTO bbu_mk SELECT -g, 99999, ARRAY[g], 0 FROM generate_series(2, 400) g;
+SELECT bbu_same('SELECT id FROM bbu_mk WHERE b >= 99999');
+-- The marked class has no procedure 8, so a qual on a cannot use the
+-- index: compare the rows of b = 100000 and their arrays instead.
+SELECT bbu_same('SELECT id, a FROM bbu_mk WHERE b = 100000');
+SELECT bbu_same('SELECT id, v FROM bbu_mk WHERE v >= 0');
+-- heapallindexed is refused for an index with an extracted column.
+SELECT bark_index_check('bbu_mk_ba'), bark_index_check('bbu_mk_v', true);
+
+-- A merge run that ends at an OVERSIZED entry: the 250 'a' rows are two
+-- LIST entries on the first leaf, then five OVERSIZED 'b' keys.  The insert
+-- of '0' before them merges the 'a' entries up to the first OVERSIZED one.
+CREATE TABLE bbu_run (id int, k text)
+  WITH (fillfactor = 100, autovacuum_enabled = off);
+INSERT INTO bbu_run
+  SELECT g, CASE WHEN g % 97 = 0 THEN 'a' ELSE 'c' || lpad(g::text, 6, '0') END
+  FROM generate_series(1, 24250) g;
+INSERT INTO bbu_run SELECT -g, 'b' || bbu_bigstr(g, 3500) FROM generate_series(1, 5) g;
+CREATE INDEX bbu_run_k ON bbu_run USING bark (k) WITH (fillfactor = 100);
+INSERT INTO bbu_run VALUES (0, '0');
+SELECT bbu_same('SELECT id, k FROM bbu_run WHERE k < ''c''');
+SELECT bbu_same('SELECT k, count(*) FROM bbu_run WHERE k >= '''' GROUP BY k');
+SELECT bark_index_check('bbu_run_k', true);
+
+-- The heap's kind decides the deletion record's isCatalogRel: a table with
+-- no reloptions, a user catalog table, and a temporary table (not
+-- WAL-logged).  Keys of four rows each, so entries are LISTs.
+CREATE TABLE bbu_plain (id int, k int, v int);
+CREATE TABLE bbu_uct (id int, k int, v int) WITH (user_catalog_table = true);
+CREATE TEMP TABLE bbu_temp (id int, k int, v int);
+INSERT INTO bbu_plain SELECT g, g / 4, 0 FROM generate_series(1, 20000) g;
+INSERT INTO bbu_uct SELECT g, g / 4, 0 FROM generate_series(1, 20000) g;
+INSERT INTO bbu_temp SELECT g, g / 4, 0 FROM generate_series(1, 20000) g;
+CREATE INDEX bbu_plain_k ON bbu_plain USING bark (k) WITH (fillfactor = 100);
+CREATE INDEX bbu_plain_v ON bbu_plain USING bark (v);
+CREATE INDEX bbu_uct_k ON bbu_uct USING bark (k) WITH (fillfactor = 100);
+CREATE INDEX bbu_uct_v ON bbu_uct USING bark (v);
+CREATE INDEX bbu_temp_k ON bbu_temp USING bark (k) WITH (fillfactor = 100);
+CREATE INDEX bbu_temp_v ON bbu_temp USING bark (v);
+UPDATE bbu_plain SET v = v + 1;
+UPDATE bbu_plain SET v = v + 1;
+UPDATE bbu_uct SET v = v + 1;
+UPDATE bbu_uct SET v = v + 1;
+UPDATE bbu_temp SET v = v + 1;
+UPDATE bbu_temp SET v = v + 1;
+SELECT bbu_same('SELECT id, k, v FROM bbu_plain WHERE k >= 0');
+SELECT bbu_same('SELECT id, k, v FROM bbu_uct WHERE k >= 0');
+SELECT bbu_same('SELECT id, k, v FROM bbu_temp WHERE k >= 0');
+SELECT bark_index_check('bbu_plain_k', true), bark_index_check('bbu_plain_v', true),
+       bark_index_check('bbu_uct_k', true), bark_index_check('bbu_uct_v', true),
+       bark_index_check('bbu_temp_k', true), bark_index_check('bbu_temp_v', true);
+
+SELECT pg_drop_replication_slot('bark_bottomup_slot');
+DROP TABLE bbu_big, bbu_post, bbu_mk, bbu_run, bbu_plain, bbu_uct, bbu_temp;
+DROP FUNCTION bbu_same(text), bbu_bigstr(int, int);
