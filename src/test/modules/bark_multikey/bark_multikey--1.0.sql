@@ -266,3 +266,70 @@ AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
 CREATE FUNCTION bark_multikey_precheck(index regclass, tid tid)
 RETURNS text
 AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+-- GIN's query interface (procedures 10-13) over int4[]: core's GIN array
+-- support functions, unchanged.  ginarrayextract has GIN's extractValue
+-- signature, which is procedure 7's three-argument form, so it needs no
+-- wrapper.  With procedure 10 and not 8 the class has bitmap scans only.
+CREATE OPERATOR FAMILY bark_gin_int4_array_ops USING bark;
+CREATE OPERATOR CLASS bark_gin_int4_array_ops
+FOR TYPE int4[] USING bark FAMILY bark_gin_int4_array_ops AS
+    OPERATOR 1 && (anyarray, anyarray),
+    OPERATOR 2 @> (anyarray, anyarray),
+    OPERATOR 3 <@ (anyarray, anyarray),
+    OPERATOR 4 = (anyarray, anyarray),
+    FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
+    FUNCTION 4 btequalimage(oid),
+    FUNCTION 7 ginarrayextract(anyarray, internal, internal),
+    FUNCTION 10 ginqueryarrayextract(anyarray, internal, int2, internal,
+                                     internal, internal, internal),
+    FUNCTION 11 ginarrayconsistent(internal, int2, anyarray, int4, internal,
+                                   internal, internal, internal),
+    FUNCTION 13 ginarraytriconsistent(internal, int2, anyarray, int4,
+                                      internal, internal, internal),
+    STORAGE int4;
+
+-- The same without triConsistent, so that consistent (11) decides.
+CREATE OPERATOR FAMILY bark_gin11_int4_array_ops USING bark;
+CREATE OPERATOR CLASS bark_gin11_int4_array_ops
+FOR TYPE int4[] USING bark FAMILY bark_gin11_int4_array_ops AS
+    OPERATOR 1 && (anyarray, anyarray),
+    OPERATOR 2 @> (anyarray, anyarray),
+    OPERATOR 3 <@ (anyarray, anyarray),
+    OPERATOR 4 = (anyarray, anyarray),
+    FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
+    FUNCTION 4 btequalimage(oid),
+    FUNCTION 7 ginarrayextract(anyarray, internal, internal),
+    FUNCTION 10 ginqueryarrayextract(anyarray, internal, int2, internal,
+                                     internal, internal, internal),
+    FUNCTION 11 ginarrayconsistent(internal, int2, anyarray, int4, internal,
+                                   internal, internal, internal),
+    STORAGE int4;
+
+-- Partial match: some element of a text[] starts with the query (%^%),
+-- under the C collation, whose order is gin_cmp_prefix's byte order.
+CREATE FUNCTION bark_multikey_prefix_query(text, internal, int2, internal,
+                                           internal, internal, internal)
+RETURNS internal AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT;
+CREATE FUNCTION bark_multikey_prefix_consistent(internal, int2, text, int4,
+                                                internal, internal, internal,
+                                                internal)
+RETURNS bool AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT;
+CREATE FUNCTION bark_multikey_any_prefix(text[], text) RETURNS bool
+  AS 'SELECT EXISTS (SELECT 1 FROM unnest($1) e WHERE starts_with(e, $2))'
+  LANGUAGE sql IMMUTABLE STRICT;
+CREATE OPERATOR %^% (LEFTARG = text[], RIGHTARG = text,
+                     FUNCTION = bark_multikey_any_prefix);
+CREATE OPERATOR FAMILY bark_text_prefix_ops USING bark;
+CREATE OPERATOR CLASS bark_text_prefix_ops
+FOR TYPE text[] USING bark FAMILY bark_text_prefix_ops AS
+    OPERATOR 1 %^% (text[], text),
+    FUNCTION 1 (text[], text[]) bttextcmp(text, text),
+    FUNCTION 7 ginarrayextract(anyarray, internal, internal),
+    FUNCTION 10 bark_multikey_prefix_query(text, internal, int2, internal,
+                                           internal, internal, internal),
+    FUNCTION 11 bark_multikey_prefix_consistent(internal, int2, text, int4,
+                                                internal, internal, internal,
+                                                internal),
+    FUNCTION 12 gin_cmp_prefix(text, text, int2, internal),
+    STORAGE text;
