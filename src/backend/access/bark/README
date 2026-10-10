@@ -982,6 +982,43 @@ the expected charge for an index of uniformly large entries, nothing for
 one with none, and the average for a mixed one, since the index keeps no
 count of its OVERSIZED entries.
 
+An index with an extracted column has K entries per row: the meta page's
+bark_nkeys over the heap's rows, as of the last CREATE INDEX or VACUUM, or
+1 while BARK_META_MULTIKEY is clear (bark_cost_keys_per_row reads the meta
+page as gincostestimate reads GIN's; a hypothetical index has K = 1 and is
+taken to need the seen set).  The extracted column's first qual positions
+the scan and ends the walk; its later quals filter.  bark_cost_boundaries
+runs procedure 8 on the qual's constant, as gincost_pattern runs GIN's
+extractQuery, and counts one descent per boundary (one for a qual whose
+argument is not a constant); an equality ScalarArrayOp there counts one per
+element.  The entries read are the rows times K, capped at the index's
+entries, each charged cpu_index_tuple_cost, plus cpu_operator_cost per
+entry for the seen set when the scan needs it (the flag is set and the
+boundaries are not a single point) and again when procedure 8 asked for
+procedure 9.  The rows returned stay the quals' selectivity times the
+heap's rows, since the scan returns each row once, and the correlation is
+0 when the extracted column is first: its statistics are of values, not
+keys.
+
+A path that needs the seen set and whose rows per group of the fixed
+columns, at 16 bytes each, exceed get_hash_memory_limit() gets
+disabled_nodes incremented, so the planner takes a bitmap scan (which never
+builds the set) or a sequential scan.  The rows per group are the scan's
+rows, divided by the extracted column's descents when every fixed column
+has an equality.  disable_cost would be wrong here: cost_bitmap_tree_node
+reuses the IndexPath's indextotalcost for the bitmap path, so the penalty
+would rule out the bitmap scan too, while the bitmap path does not inherit
+the IndexPath's disabled_nodes.  An operator class that declares an
+operator on its extracted column but has no procedure 8 is costed as one
+boundary; a scan using it raises an error.
+
+An ordered scan on the extracted column (ORDER BY its ordering operator)
+follows the KNN rule and counts every entry.  The column's quals neither
+position nor filter it, and every row it returns is rechecked, so its heap
+fetches are the rows the other columns' quals pass, not the column quals'
+selectivity: with a LIMIT it beats a sort, and a filter on the column alone
+does not make it look cheap.
+
 VACUUM's num_index_tuples is the count of live heap TIDs, as nbtree's is,
 so reltuples (which plancat uses for a partial index's tuples) has the
 heap's unit.
