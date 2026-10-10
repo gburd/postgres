@@ -366,8 +366,7 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 /*
  * Every build of an index (CREATE INDEX, REINDEX, CONCURRENTLY, and before
  * ambuildempty for an unlogged one) comes through here, so this is where an
- * index BARK cannot hold is refused.  Refusing UNIQUE and exclusion
- * constraints also covers ON CONFLICT, whose arbiters are such indexes.
+ * index BARK cannot hold is refused.
  */
 static IndexBuildResult *
 barkbuild(Relation heap, Relation index, IndexInfo *indexInfo)

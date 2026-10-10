@@ -1009,7 +1009,11 @@ place of an inverted AM, without changing the scalar design above.
   [[#M3: per-locator data (closed)|M3: per-locator data]] below.
 * '''M4''' -- unique indexes over multikey keys with document-store
   semantics: unique across rows, while one row may repeat a key.
-  ''(designed; not started.  Design: [[#M4: unique indexes over multikey keys|M4]] below)''
+  ''(in progress. M4a, the insert, build and planner sides, is built:
+  "As built (M4a)" under [[#M4: unique indexes over multikey keys|M4]]
+  below. M4b, procedure 15 and ON CONFLICT, with the foreign-key,
+  REFRESH MATERIALIZED VIEW CONCURRENTLY and REPLICA IDENTITY guards, and
+  M4c, amcheck's checkunique, are not started)''
 * '''M5''' -- wildcard indexes, as MongoDB's: a test-module operator class
   over <code>jsonb</code> whose extract-value procedure (7) emits one key
   (path, value) for every path that the column's projection keeps, and one
@@ -2021,6 +2025,32 @@ skips them; a marker's key equals no data key, so it is alone in its run.
 heapallindexed is refused on an index with an extracted
 column (bark_check_structure, M1b), unique or not; making it form a row's keys
 through procedure 7 is separate work, which uniqueness does not change.
+
+==== As built (M4a) ====
+
+bark_check_multikey_index accepts a unique index on an extracted column
+and refuses NULLS NOT DISTINCT there. bark_insert_row_keys marks the keys
+to check (none under a NULL fixed column, never the NULL key), and
+bark_insert_entries checks each in ascending order under its leaf's lock,
+waits and re-descends for that key only, and under UNIQUE_CHECK_PARTIAL
+inserts every key with the result false after the first conflict, as
+"When the check runs" says; bark_belongs_on_leaf takes the key-only
+move-right test for a checked key. The error detail is the caller's row
+plus the shared key ("Error detail"); bark_load gives "Duplicate keys
+exist." for such an index. A dead row's keys go to the second sort in the
+build callback, which covers the parallel build, and
+bark_insert_oversized_keys takes the caller's check. get_relation_info
+sets info->unique false. Until M4b, INSERT ... ON CONFLICT into a table
+with such an index fails in core (BuildSpeculativeIndexInfo finds no
+equality), which bark_multikey_unique.sql records.
+
+Tests: bark_multikey_unique.sql (one-element arrays decided as a unique
+btree on a[1] does, row by row; repeated, shared and NULL keys; the failed
+row's earlier keys removed by VACUUM; an UPDATE keeping keys; compound
+keys; CREATE UNIQUE INDEX over a shared key and over an updated row's old
+version) and the isolation spec bark_multikey_unique_concurrent (a wait
+then failure or success, keys in opposite order, and the deleter-wait
+deadlock).
 
 ==== What M4 does not do ====
 
