@@ -29,7 +29,7 @@
  *	  bounds, sharing no more of the prefix than there is (the key checks
  *	  above then apply to the decoded entries).
  *
- * Two optional checks follow, as in bt_index_check and bt_index_parent_check
+ * Further checks follow, as in bt_index_check and bt_index_parent_check
  * (verify_nbtree.c):
  *
  *	- heapallindexed: every heap tuple that a fresh CREATE INDEX would index
@@ -37,6 +37,9 @@
  *	  a Bloom filter, each member of a LIST or POSTING entry as the SINGLE
  *	  entry it would be on its own, and the heap is then scanned, probing the
  *	  filter with each indexable tuple;
+ *	- checkunique, for a unique index: no two entries of a run of equal key
+ *	  columns point to heap tuples visible to one MVCC snapshot.  For an
+ *	  extracted column a run is one (fixed columns, key), M4's rule;
  *	- bark_index_parent_check: the tree is walked level by level from the
  *	  root, under a ShareLock that keeps writers out, and each internal page's
  *	  downlinks must name, in order, exactly the pages of the level below,
@@ -86,10 +89,11 @@ PG_FUNCTION_INFO_V1(bark_index_parent_check);
 typedef struct BarkCheckState
 {
 	bool		heapallindexed; /* check that every heap tuple is indexed */
+	bool		checkunique;	/* check a unique index's constraint */
+	Relation	heaprel;		/* the index's table */
+	Snapshot	snapshot;		/* heapallindexed's and checkunique's */
 
 	/* heapallindexed only: */
-	Relation	heaprel;		/* the index's table */
-	Snapshot	snapshot;		/* the heap scan's snapshot */
 	bloom_filter *filter;		/* fingerprints of the (key, TID) pairs */
 	int64		heaptuplespresent;	/* heap tuples found in the filter */
 	bool		readonly;		/* ShareLock held (bark_index_parent_check) */
@@ -102,7 +106,10 @@ static void bark_check_structure(Relation rel, Relation heaprel,
 static bool bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo);
 static void bark_check_levels(Relation rel, BarkKeyInfo *keyinfo,
 							  BlockNumber npages, int64 nlive);
+static Buffer bark_check_leftmost_leaf(Relation rel);
 static void bark_fingerprint_leaves(Relation rel, BarkCheckState *state);
+static void bark_check_unique_runs(Relation rel, BarkKeyInfo *keyinfo,
+								   BarkCheckState *state);
 static void bark_check_heap(Relation rel, Relation heaprel,
 							BarkCheckState *state, bool readonly);
 static void bark_check_downlinks(Relation rel, BlockNumber blkno,
@@ -134,12 +141,13 @@ bark_check_compare_leaf(Relation rel, BarkKeyInfo *keyinfo, IndexTuple itup,
 }
 
 /*
- * bark_index_check(index regclass, heapallindexed boolean)
+ * bark_index_check(index regclass, heapallindexed boolean, checkunique boolean)
  *
- * Verify the structural integrity of a BARK index, and with heapallindexed
- * that every heap tuple has an entry.  Takes AccessShareLock on the heap and
- * index, as bt_index_check does.  The one-argument form of amcheck 1.6
- * reaches this function too.
+ * Verify the structural integrity of a BARK index, with heapallindexed that
+ * every heap tuple has an entry, and with checkunique that a unique index
+ * holds no two visible rows of one key.  Takes AccessShareLock on the heap
+ * and index, as bt_index_check does.  The one- and two-argument forms of
+ * amcheck 1.6 and 1.7 reach this function too.
  */
 Datum
 bark_index_check(PG_FUNCTION_ARGS)
@@ -149,7 +157,8 @@ bark_index_check(PG_FUNCTION_ARGS)
 }
 
 /*
- * bark_index_parent_check(index regclass, heapallindexed boolean)
+ * bark_index_parent_check(index regclass, heapallindexed boolean,
+ *						   checkunique boolean)
  *
  * As bark_index_check, plus the checks of each level against the level
  * above.  Takes ShareLock on the heap and index, as bt_index_parent_check
@@ -170,6 +179,8 @@ bark_check_common(FunctionCallInfo fcinfo, bool parentcheck)
 
 	if (PG_NARGS() >= 2)
 		state.heapallindexed = PG_GETARG_BOOL(1);
+	if (PG_NARGS() >= 3)
+		state.checkunique = PG_GETARG_BOOL(2);
 
 	amcheck_lock_relation_and_check(indrelid,
 									BARK_AM_OID,
@@ -194,6 +205,7 @@ bark_check_structure(Relation rel, Relation heaprel, void *callback_state,
 	uint32		version;
 	int64		nlive = 0;
 
+	state->heaprel = heaprel;
 	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
 	version = BarkPageGetMeta(BufferGetPage(metabuf))->bark_version;
 	UnlockReleaseBuffer(metabuf);
@@ -233,6 +245,15 @@ bark_check_structure(Relation rel, Relation heaprel, void *callback_state,
 							RelationGetRelationName(rel))));
 	}
 
+	/*
+	 * checkunique needs an MVCC snapshot to tell which entries' rows are
+	 * visible, and shares heapallindexed's.  A non-unique index has nothing
+	 * to check, as in bt_index_check.
+	 */
+	state->checkunique = state->checkunique && rel->rd_index->indisunique;
+	if (state->checkunique && state->snapshot == NULL)
+		state->snapshot = RegisterSnapshot(GetTransactionSnapshot());
+
 	for (BlockNumber blkno = BARK_METAPAGE + 1; blkno < npages; blkno++)
 	{
 		CHECK_FOR_INTERRUPTS();
@@ -244,11 +265,14 @@ bark_check_structure(Relation rel, Relation heaprel, void *callback_state,
 	if (readonly)
 		bark_check_levels(rel, keyinfo, npages, nlive);
 
+	if (state->checkunique)
+		bark_check_unique_runs(rel, keyinfo, state);
+
 	if (state->heapallindexed)
-	{
 		bark_check_heap(rel, heaprel, state, readonly);
+
+	if (state->snapshot != NULL)
 		UnregisterSnapshot(state->snapshot);
-	}
 
 	pfree(keyinfo);
 }
@@ -1222,25 +1246,16 @@ bark_fingerprint_entry(Relation rel, BarkCheckState *state, IndexTuple itup)
 }
 
 /*
- * Fingerprint every leaf entry, reading the leaves left to right through
- * their sibling links from the leftmost leaf.
- *
- * Reading the leaves in key order rather than block order is what lets an
- * entry moved by a concurrent split still be found: a split moves entries
- * only to a new right sibling, which this walk reaches after the page it
- * came from.  Every entry the heap scan's snapshot needs was in the index
- * when the snapshot was taken, before this walk started, so it is either on
- * a leaf the walk has yet to reach or on a page split off one.  Under
- * ShareLock nothing moves at all.
+ * Return the leftmost leaf, share-locked, or InvalidBuffer for an empty
+ * index.
  */
-static void
-bark_fingerprint_leaves(Relation rel, BarkCheckState *state)
+static Buffer
+bark_check_leftmost_leaf(Relation rel)
 {
 	Buffer		buf = bark_get_root_buffer(rel, BUFFER_LOCK_SHARE);
-	MemoryContext oldcxt;
 
 	if (!BufferIsValid(buf))
-		return;					/* an empty index has no entries */
+		return buf;
 
 	/* Descend by first downlinks to the leftmost leaf. */
 	for (;;)
@@ -1279,6 +1294,29 @@ bark_fingerprint_leaves(Relation rel, BarkCheckState *state)
 		buf = ReadBuffer(rel, child);
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 	}
+	return buf;
+}
+
+/*
+ * Fingerprint every leaf entry, reading the leaves left to right through
+ * their sibling links from the leftmost leaf.
+ *
+ * Reading the leaves in key order rather than block order is what lets an
+ * entry moved by a concurrent split still be found: a split moves entries
+ * only to a new right sibling, which this walk reaches after the page it
+ * came from.  Every entry the heap scan's snapshot needs was in the index
+ * when the snapshot was taken, before this walk started, so it is either on
+ * a leaf the walk has yet to reach or on a page split off one.  Under
+ * ShareLock nothing moves at all.
+ */
+static void
+bark_fingerprint_leaves(Relation rel, BarkCheckState *state)
+{
+	Buffer		buf = bark_check_leftmost_leaf(rel);
+	MemoryContext oldcxt;
+
+	if (!BufferIsValid(buf))
+		return;					/* an empty index has no entries */
 
 	oldcxt = MemoryContextSwitchTo(state->tmpcxt);
 	for (;;)
@@ -1310,6 +1348,194 @@ bark_fingerprint_leaves(Relation rel, BarkCheckState *state)
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 	}
 	MemoryContextSwitchTo(oldcxt);
+}
+
+/*
+ * checkunique: the run of equal key columns being walked.  Its first entry's
+ * heap TID is fetched only once a second entry joins the run, as
+ * bt_entry_unique_check postpones a key's first appearance, so a key with a
+ * single entry costs no heap access.
+ */
+typedef struct BarkUniqueRun
+{
+	IndexTuple	key;			/* the run's key tuple; NULL: no run */
+	bool		pending;		/* the first entry is still unchecked */
+	BlockNumber blkno;			/* the first entry, while pending */
+	OffsetNumber off;
+	ItemPointerData tid;
+	BlockNumber visblkno;		/* the entry with the run's visible row */
+	OffsetNumber visoff;
+	ItemPointerData vistid;		/* invalid until a visible row is found */
+} BarkUniqueRun;
+
+/*
+ * checkunique: fetch the rows that one entry's heap TIDs point to with the
+ * check's MVCC snapshot, and report a second visible row in the run.  The
+ * fetch follows a HOT chain from its root, as the insert path's unique check
+ * does, so a row updated in place is found at its visible version.
+ */
+static void
+bark_check_unique_tids(Relation rel, BarkCheckState *state,
+					   BarkUniqueRun *run, BlockNumber blkno,
+					   OffsetNumber off, ItemPointer tids, int ntids)
+{
+	for (int i = 0; i < ntids; i++)
+	{
+		ItemPointerData tid = tids[i];	/* table_fetch_tid may move it */
+		bool		all_dead;
+
+		if (!table_fetch_tid(state->heaprel, &tid, state->snapshot, &all_dead))
+			continue;
+		if (ItemPointerIsValid(&run->vistid))
+			ereport(ERROR,
+					(errcode(ERRCODE_INDEX_CORRUPTED),
+					 errmsg("index uniqueness is violated for index \"%s\"",
+							RelationGetRelationName(rel)),
+					 errdetail("Index tid=(%u,%u) and tid=(%u,%u) have equal keys and point to visible heap tid=(%u,%u) and tid=(%u,%u).",
+							   run->visblkno, run->visoff, blkno, off,
+							   ItemPointerGetBlockNumber(&run->vistid),
+							   ItemPointerGetOffsetNumber(&run->vistid),
+							   ItemPointerGetBlockNumber(&tids[i]),
+							   ItemPointerGetOffsetNumber(&tids[i]))));
+		run->visblkno = blkno;
+		run->visoff = off;
+		run->vistid = tids[i];
+	}
+}
+
+/*
+ * checkunique: walk the leaves left to right, as bark_fingerprint_leaves
+ * does, through each run of entries with equal key columns, which may cross
+ * leaves, and report two entries of a run whose rows are both visible to the
+ * check's snapshot, as bt_index_check's checkunique does.  Entries compare on
+ * their key columns only (bark_compare_itups), so for an extracted column a
+ * run is one (fixed columns, key), M4's rule; one row's keys are distinct,
+ * so its entries are never in one run and need no exception.  A key with a
+ * NULL column, in an index whose NULLs are distinct, never conflicts and
+ * ends the run, as nbtree treats a key with anynullkeys.  Markers name no
+ * row and are skipped.
+ *
+ * Under AccessShareLock rows may come and go meanwhile, but no row visible
+ * to the snapshot can be removed (the snapshot holds VACUUM back), and a
+ * concurrent split moves entries only to the right, where the walk still
+ * finds them, so the entries of two visible rows of one key are always met
+ * in one run.
+ */
+static void
+bark_check_unique_runs(Relation rel, BarkKeyInfo *keyinfo,
+					   BarkCheckState *state)
+{
+	TupleDesc	tupdesc = RelationGetDescr(rel);
+	bool		nullsdistinct = !rel->rd_index->indnullsnotdistinct;
+	Buffer		buf = bark_check_leftmost_leaf(rel);
+	BarkUniqueRun run = {0};
+	MemoryContext runcxt;
+	MemoryContext tmpcxt;
+	MemoryContext oldcxt;
+
+	if (!BufferIsValid(buf))
+		return;					/* an empty index has no entries */
+
+	runcxt = AllocSetContextCreate(CurrentMemoryContext,
+								   "bark_check_unique_runs run",
+								   ALLOCSET_SMALL_SIZES);
+	tmpcxt = AllocSetContextCreate(CurrentMemoryContext,
+								   "bark_check_unique_runs",
+								   ALLOCSET_DEFAULT_SIZES);
+	oldcxt = MemoryContextSwitchTo(tmpcxt);
+	for (;;)
+	{
+		Page		page = BufferGetPage(buf);
+		BarkPageOpaque opaque = BarkPageGetOpaque(page);
+		BlockNumber blkno = BufferGetBlockNumber(buf);
+		BlockNumber next = opaque->bark_next;
+
+		CHECK_FOR_INTERRUPTS();
+
+		if (BarkPageIsLeaf(opaque) && !BarkPageIgnore(opaque))
+		{
+			OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
+
+			for (OffsetNumber off = BarkPageFirstDataKey(opaque);
+				 off <= maxoff; off = OffsetNumberNext(off))
+			{
+				BarkItemBuf ibuf;
+				IndexTuple	itup = BarkPageGetItem(page, off, &ibuf);
+				IndexTuple	keytup = itup;
+				Size		keylen = IndexTupleSize(itup);
+				bool		anynull = false;
+				ItemPointer tids;
+				int			ntids;
+
+				if (BarkEntryIsMarker(itup))
+					continue;
+
+				/* Compare the full key, which the walk keeps past the lock. */
+				if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+				{
+					keylen = BarkOverflowGetRef(itup)->fulllen;
+					keytup = bark_fetch_oversized(rel, itup);
+				}
+				for (int i = 0; nullsdistinct && i < keyinfo->nkeys; i++)
+				{
+					bool		isnull;
+
+					(void) index_getattr(keytup, i + 1, tupdesc, &isnull);
+					anynull |= isnull;
+				}
+				if (anynull)
+				{
+					run.key = NULL;
+					run.pending = false;
+					MemoryContextReset(tmpcxt);
+					continue;
+				}
+
+				ntids = bark_entry_count_tids(itup);
+				tids = palloc_array(ItemPointerData, ntids);
+				ntids = bark_entry_get_tids(itup, tids, ntids);
+
+				if (run.key != NULL &&
+					bark_compare_itups(keyinfo, rel, run.key, keytup) == 0)
+				{
+					if (run.pending)
+						bark_check_unique_tids(rel, state, &run, run.blkno,
+											   run.off, &run.tid, 1);
+					run.pending = false;
+					bark_check_unique_tids(rel, state, &run, blkno, off,
+										   tids, ntids);
+				}
+				else
+				{
+					MemoryContextReset(runcxt);
+					run.key = MemoryContextAlloc(runcxt, keylen);
+					memcpy(run.key, keytup, keylen);
+					ItemPointerSetInvalid(&run.vistid);
+
+					/* An entry with several rows is checked at once. */
+					run.pending = (ntids == 1);
+					if (run.pending)
+					{
+						run.blkno = blkno;
+						run.off = off;
+						run.tid = tids[0];
+					}
+					else
+						bark_check_unique_tids(rel, state, &run, blkno, off,
+											   tids, ntids);
+				}
+				MemoryContextReset(tmpcxt);
+			}
+		}
+		UnlockReleaseBuffer(buf);
+		if (next == BARK_P_NONE)
+			break;
+		buf = ReadBuffer(rel, next);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+	}
+	MemoryContextSwitchTo(oldcxt);
+	MemoryContextDelete(tmpcxt);
+	MemoryContextDelete(runcxt);
 }
 
 /*
