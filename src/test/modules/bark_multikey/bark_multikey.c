@@ -25,17 +25,21 @@
 #include "postgres.h"
 
 #include "access/bark.h"
+#include "access/cmptype.h"
 #include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/relation.h"
 #include "access/relscan.h"
 #include "access/stratnum.h"
 #include "access/table.h"
+#include "access/tableam.h"
 #include "access/tableam_indexscan.h"
+#include "catalog/index.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_am_d.h"
 #include "catalog/pg_type.h"
 #include "common/int.h"
+#include "executor/executor.h"
 #include "fmgr.h"
 #include "funcapi.h"
 #include "lib/qunique.h"
@@ -86,6 +90,8 @@ PG_FUNCTION_INFO_V1(bark_multikey_reverse);
 PG_FUNCTION_INFO_V1(bark_multikey_parallel);
 PG_FUNCTION_INFO_V1(bark_multikey_extract_query);
 PG_FUNCTION_INFO_V1(bark_multikey_recheck);
+PG_FUNCTION_INFO_V1(bark_multikey_translate_cmptype);
+PG_FUNCTION_INFO_V1(bark_multikey_precheck);
 PG_FUNCTION_INFO_V1(bark_multikey_least);
 PG_FUNCTION_INFO_V1(bark_multikey_greatest);
 PG_FUNCTION_INFO_V1(bark_multikey_keys);
@@ -426,6 +432,56 @@ bark_multikey_recheck(PG_FUNCTION_ARGS)
 	if (strategy == BARK_MK_OVERLAP || strategy == BARK_MK_ORDER)
 		PG_RETURN_INT16(BARK_RECHECK_TRUE);
 	PG_RETURN_INT16(BARK_RECHECK_MAYBE);
+}
+
+/*
+ * Procedure 15: the overlap operator, |&&|, is strategy 1, which procedure 8
+ * reads as && (both are overlap over int4[]).  No other compare type has a
+ * strategy.
+ */
+Datum
+bark_multikey_translate_cmptype(PG_FUNCTION_ARGS)
+{
+	CompareType cmptype = PG_GETARG_INT32(0);
+
+	PG_RETURN_UINT16(cmptype == COMPARE_OVERLAP ? BARK_MK_OVERLAP :
+					 InvalidStrategy);
+}
+
+/*
+ * Run the executor's conflict pre-check (check_exclusion_constraint, with
+ * BuildSpeculativeIndexInfo's operators) on index for the row at tid,
+ * passing the row's own TID as logical replication's FindConflictTuple
+ * does.  The scan must return that row once, or the executor raises "found
+ * self tuple multiple times"; another row that conflicts raises the
+ * violation.  Returns "ok".
+ */
+Datum
+bark_multikey_precheck(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), AccessShareLock);
+	ItemPointer tid = PG_GETARG_ITEMPOINTER(1);
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	IndexInfo  *ii = BuildIndexInfo(index);
+	EState	   *estate = CreateExecutorState();
+	TupleTableSlot *slot = table_slot_create(heap, NULL);
+	Datum		values[INDEX_MAX_KEYS];
+	bool		isnull[INDEX_MAX_KEYS];
+
+	if (!table_tuple_fetch_row_version(heap, tid, GetActiveSnapshot(), slot))
+		elog(ERROR, "no visible row at (%u,%u)",
+			 ItemPointerGetBlockNumber(tid), ItemPointerGetOffsetNumber(tid));
+	BuildSpeculativeIndexInfo(index, ii);
+	GetPerTupleExprContext(estate)->ecxt_scantuple = slot;
+	FormIndexDatum(ii, slot, estate, values, isnull);
+	check_exclusion_constraint(heap, index, ii, tid, values, isnull, estate,
+							   false);
+
+	ExecDropSingleTupleTableSlot(slot);
+	FreeExecutorState(estate);
+	table_close(heap, AccessShareLock);
+	index_close(index, AccessShareLock);
+	PG_RETURN_TEXT_P(cstring_to_text("ok"));
 }
 
 /*
