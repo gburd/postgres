@@ -213,7 +213,7 @@ ORDER BY c.relpages DESC LIMIT 10;
 
    <varlistentry>
     <term>
-     <function>bark_index_check(index regclass, heapallindexed boolean) returns void</function>
+     <function>bark_index_check(index regclass, heapallindexed boolean, checkunique boolean) returns void</function>
      <indexterm>
       <primary>bark_index_check</primary>
      </indexterm>
@@ -245,12 +245,24 @@ ORDER BY c.relpages DESC LIMIT 10;
       This is not supported for an index with a multikey column, whose
       rows have several entries each.
      </para>
+     <para>
+      When <parameter>checkunique</parameter> is <literal>true</literal>
+      and the index is unique, the function also checks that no two of its
+      entries with equal key columns point to rows that are both visible to
+      the check's snapshot, as <function>bt_index_check</function> does.
+      Runs of equal keys are followed across leaf pages.  For an index with
+      a multikey column the run is of the other key columns and one key, so
+      it checks the index's rule that no two rows share a key; a key with a
+      NULL column is not checked unless the index is <literal>NULLS NOT
+      DISTINCT</literal>.  The one- and two-argument forms do not check
+      uniqueness.
+     </para>
     </listitem>
    </varlistentry>
 
    <varlistentry>
     <term>
-     <function>bark_index_parent_check(index regclass, heapallindexed boolean) returns void</function>
+     <function>bark_index_parent_check(index regclass, heapallindexed boolean, checkunique boolean) returns void</function>
      <indexterm>
       <primary>bark_index_parent_check</primary>
      </indexterm>
@@ -268,7 +280,8 @@ ORDER BY c.relpages DESC LIMIT 10;
       with <function>bt_index_parent_check</function>, it acquires a
       <literal>ShareLock</literal> on the index and its table, which blocks
       writes while it runs, and cannot be used in hot standby mode.
-      <parameter>heapallindexed</parameter> defaults to
+      <parameter>heapallindexed</parameter> and
+      <parameter>checkunique</parameter> default to
       <literal>false</literal>.
      </para>
     </listitem>

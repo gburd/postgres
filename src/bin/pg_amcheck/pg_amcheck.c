@@ -153,6 +153,7 @@ typedef struct DatabaseInfo
 	char	   *amcheck_schema; /* escaped, quoted literal */
 	bool		is_checkunique;
 	bool		check_bark;		/* amcheck checks bark indexes (>= 1.7) */
+	bool		check_bark_unique;	/* with checkunique (>= 1.8) */
 } DatabaseInfo;
 
 typedef struct RelationInfo
@@ -606,7 +607,7 @@ main(int argc, char *argv[])
 		 * amcheck.  bark indexes are checked from version 1.7, which has
 		 * bark_index_check's heapallindexed option and
 		 * bark_index_parent_check; with an older amcheck they are not
-		 * selected.
+		 * selected.  Their checkunique option is in version 1.8.
 		 */
 		{
 			/*
@@ -635,6 +636,8 @@ main(int argc, char *argv[])
 			}
 			else
 				dat->is_checkunique = true;
+			dat->check_bark_unique = dat->is_checkunique &&
+				(vmaj > 1 || (vmaj == 1 && vmin >= 8));
 		}
 
 		PQclear(result);
@@ -893,12 +896,13 @@ prepare_btree_command(PQExpBuffer sql, RelationInfo *rel, PGconn *conn)
 
 	/*
 	 * A bark index has bark_index_check and bark_index_parent_check, with
-	 * heapallindexed; it has no rootdescend or checkunique option.
+	 * heapallindexed, and checkunique from amcheck 1.8; it has no
+	 * rootdescend option.
 	 */
 	if (rel->is_bark)
 		appendPQExpBuffer(sql,
 						  "SELECT %s.%s("
-						  "index := c.oid, heapallindexed := %s)"
+						  "index := c.oid, heapallindexed := %s%s)"
 						  "\nFROM pg_catalog.pg_class c, pg_catalog.pg_index i "
 						  "WHERE c.oid = %u "
 						  "AND c.oid = i.indexrelid "
@@ -907,6 +911,7 @@ prepare_btree_command(PQExpBuffer sql, RelationInfo *rel, PGconn *conn)
 						  rel->datinfo->amcheck_schema,
 						  (opts.parent_check ? "bark_index_parent_check" : "bark_index_check"),
 						  (opts.heapallindexed ? "true" : "false"),
+						  (rel->datinfo->check_bark_unique ? ", checkunique := true" : ""),
 						  rel->reloid);
 	else if (opts.parent_check)
 		appendPQExpBuffer(sql,

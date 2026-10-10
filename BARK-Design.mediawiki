@@ -1034,7 +1034,8 @@ place of an inverted AM, without changing the scalar design above.
   "As built (M4a)" under [[#M4: unique indexes over multikey keys|M4]]
   below; M4b, procedure 15, ON CONFLICT and the foreign-key, REFRESH
   MATERIALIZED VIEW CONCURRENTLY and REPLICA IDENTITY guards, is built:
-  "As built (M4b)". M4c, amcheck's checkunique, is in progress)''
+  "As built (M4b)"; M4c, amcheck's checkunique (amcheck 1.8), is built:
+  "As built (M4c)". M4 is done)''
 * '''M5''' -- wildcard indexes, as MongoDB's: a test-module operator class
   over <code>jsonb</code> whose extract-value procedure (7) emits one key
   (path, value) for every path that the column's projection keeps, and one
@@ -2110,6 +2111,24 @@ REFRESH MATERIALIZED VIEW CONCURRENTLY and REPLICA IDENTITY guards, each
 with and without a btree index beside. The isolation spec adds two ON
 CONFLICT DO NOTHING inserts sharing a key: the second waits, then does
 nothing.
+
+==== As built (M4c) ====
+
+bark_index_check and bark_index_parent_check take checkunique (amcheck
+1.8, three-argument overloads beside the 1.7 forms, as amcheck 1.4 added
+them for btree). bark_check_unique_runs walks the leaves by right links,
+following each run of equal key columns across leaves, skipping markers
+and runs with a NULL key column (unless NULLS NOT DISTINCT), and reports
+"index uniqueness is violated" when two entries of a run point to rows
+visible to the check's MVCC snapshot (table_fetch_tid follows HOT chains).
+OVERSIZED keys are compared in full. pg_amcheck --checkunique passes it
+to BARK indexes when amcheck is 1.8. bark_check_unique, the insert's check,
+also refuses an entry with several heap TIDs in a unique index as
+corruption instead of reading only its first. Tests (check_bark_unique.sql):
+healthy scalar and multikey unique indexes with dead duplicates; violations
+of a scalar index, a run across a leaf boundary, OVERSIZED keys (and a
+same-prefix non-violation), a multikey index and a compound one, each
+reported and cleared when the duplicate goes.
 
 ==== What M4 does not do ====
 

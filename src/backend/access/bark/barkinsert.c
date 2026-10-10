@@ -1667,8 +1667,23 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 			 * holds SINGLE or OVERSIZED entries (it never coalesces), each with
 			 * exactly one locator.  An OVERSIZED entry keeps the locator in its
 			 * ref, not in t_tid (which holds the overflow block), so read it the
-			 * uniform way rather than from t_tid directly.
+			 * uniform way rather than from t_tid directly.  Any other shape is
+			 * corruption (or an index whose indisunique was changed after it
+			 * coalesced), and copying its locators into htid would overrun it.
 			 */
+			if (BarkEntryGetShape(curitup) != BARK_SHAPE_SINGLE &&
+				BarkEntryGetShape(curitup) != BARK_SHAPE_OVERSIZED)
+			{
+				BlockNumber cblk = BufferGetBlockNumber(curbuf);
+
+				if (ownbuf)
+					UnlockReleaseBuffer(curbuf);
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("unique BARK index \"%s\" has an entry with several heap TIDs on page %u at offset %u",
+								RelationGetRelationName(index), cblk, off),
+						 errhint("REINDEX the index.")));
+			}
 			bark_entry_get_tids(curitup, &htid, 1);
 
 			/* The tuple we are checking is itself, not a conflict. */
