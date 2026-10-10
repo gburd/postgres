@@ -968,3 +968,35 @@ bark_multikey_parallel(PG_FUNCTION_ARGS)
 	relation_close(index, AccessShareLock);
 	PG_RETURN_INT64(n);
 }
+
+/*
+ * GIN-style procedures for a prefix class over text[] (bark_text_prefix_ops):
+ * extractQuery returns the query text as one partial-match key, consistent
+ * accepts a row that has it.  comparePartial is core's gin_cmp_prefix.
+ */
+PG_FUNCTION_INFO_V1(bark_multikey_prefix_query);
+PG_FUNCTION_INFO_V1(bark_multikey_prefix_consistent);
+
+Datum
+bark_multikey_prefix_query(PG_FUNCTION_ARGS)
+{
+	int32	   *nkeys = (int32 *) PG_GETARG_POINTER(1);
+	bool	  **pmatch = (bool **) PG_GETARG_POINTER(3);
+	Datum	   *keys = palloc_object(Datum);
+
+	keys[0] = PointerGetDatum(PG_GETARG_TEXT_P_COPY(0));
+	*nkeys = 1;
+	*pmatch = palloc_object(bool);
+	(*pmatch)[0] = true;
+	PG_RETURN_POINTER(keys);
+}
+
+Datum
+bark_multikey_prefix_consistent(PG_FUNCTION_ARGS)
+{
+	bool	   *check = (bool *) PG_GETARG_POINTER(0);
+	bool	   *recheck = (bool *) PG_GETARG_POINTER(5);
+
+	*recheck = false;
+	PG_RETURN_BOOL(check[0]);
+}
