@@ -53,12 +53,18 @@ tests += {
       'page',
       'btree',
       'bark',
+      'bark_pages',
       'brin',
       'gin',
       'gist',
       'hash',
       'checksum',
       'oldextversions',
+    ],
+  },
+  'tap': {
+    'tests': [
+      't/001_bark_pages.pl',
     ],
   },
 }

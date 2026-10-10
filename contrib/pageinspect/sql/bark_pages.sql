@@ -1,0 +1,162 @@
+-- BARK pages the bark test cannot build: crafted and corrupt pages passed as
+-- bytea, a prefix-compressed leaf with a right sibling, OVERSIZED pivots,
+-- and the privilege and block-number checks.  t/001_bark_pages.pl patches
+-- pages on disk for the cases a bytea cannot reach.
+
+-- Native-order uint16 access to a page held as bytea.  The low byte of
+-- pd_pagesize_version (offset 18) is the page layout version, 4, so it
+-- shows the byte order.
+CREATE FUNCTION bark_g16(p bytea, o int) RETURNS int
+  LANGUAGE sql IMMUTABLE AS
+$$ SELECT CASE WHEN get_byte(p, 18) = 4
+               THEN get_byte(p, o) | (get_byte(p, o + 1) << 8)
+               ELSE (get_byte(p, o) << 8) | get_byte(p, o + 1) END $$;
+CREATE FUNCTION bark_s16(p bytea, o int, v int) RETURNS bytea
+  LANGUAGE sql IMMUTABLE AS
+$$ SELECT CASE WHEN get_byte(p, 18) = 4
+               THEN set_byte(set_byte(p, o, v & 255), o + 1, v >> 8)
+               ELSE set_byte(set_byte(p, o, v >> 8), o + 1, v & 255) END $$;
+
+-- A root leaf with one 16-byte SINGLE entry, at the page's pd_upper (u);
+-- s is pd_special.  The key reads the same in either byte order.
+CREATE TABLE barkp1 (a int8);
+INSERT INTO barkp1 VALUES (72057594037927937);
+CREATE INDEX barkp1_idx ON barkp1 USING bark (a);
+CREATE TABLE barkp_page AS
+  SELECT r.p, h.upper AS u, h.special AS s
+  FROM (SELECT get_raw_page('barkp1_idx', 1) AS p) r, page_header(r.p) h;
+
+-- The entry with t_info, the low half of the t_tid block (a LIST or
+-- POSTING entry's body offset) and the t_tid offset (the status bits)
+-- replaced.
+CREATE FUNCTION barkp_entry(tinfo int, body int, posid int) RETURNS bytea
+  LANGUAGE sql AS
+$$ SELECT bark_s16(bark_s16(bark_s16(p, u + 6, tinfo), u + 2, body), u + 4, posid)
+   FROM barkp_page $$;
+
+SELECT itemoffset, ctid, itemlen, shape, ntids, htid, data
+  FROM bark_page_items((SELECT p FROM barkp_page));
+
+-- Line pointers with no storage, and running past the page.
+SELECT * FROM bark_page_items((SELECT overlay(p placing '\x00000000' from 25) FROM barkp_page));
+SELECT * FROM bark_page_items((SELECT overlay(p placing '\xffffffff' from 25) FROM barkp_page));
+-- Tuple lengths shorter than a tuple header, and longer than the item.
+SELECT * FROM bark_page_items((SELECT bark_s16(p, u + 6, 0) FROM barkp_page));
+SELECT * FROM bark_page_items((SELECT bark_s16(p, u + 6, 65535) FROM barkp_page));
+
+-- Entries whose parts lie outside the entry are reported, by shape.
+-- t_info 40968 (0xA008) is an 8-byte tuple with a null bitmap, so its data
+-- would start past its end; 8208 (0x2010) and 8200 (0x2008) are 16- and
+-- 8-byte tuples with the alt-TID bit.  Status bits: 0x8000 + count LIST,
+-- 0x2000 POSTING, 0xA000 OVERSIZED, 0x1000 PIVOT (+ 0x4000 heap TID).
+-- A POSTING entry whose body fits but is not an sbm is reported by the
+-- sbm decoder.
+SELECT * FROM bark_page_items(barkp_entry(40968, 8, 32769));
+SELECT * FROM bark_page_items(barkp_entry(8208, 0, 32769));
+SELECT * FROM bark_page_items(barkp_entry(8208, 8, 32770));
+SELECT * FROM bark_page_items(barkp_entry(40968, 8, 8192));
+SELECT * FROM bark_page_items(barkp_entry(8208, 0, 8192));
+SELECT * FROM bark_page_items((SELECT overlay(barkp_entry(8208, 8, 8192)
+                                              placing '\xffff' from u + 9)
+                               FROM barkp_page));
+SELECT * FROM bark_page_items(barkp_entry(8208, 8, 8192));
+SELECT * FROM bark_page_items(barkp_entry(40968, 8, 40960));
+SELECT * FROM bark_page_items(barkp_entry(8208, 8, 40960));
+SELECT * FROM bark_page_items(barkp_entry(40968, 8, 4096));
+SELECT * FROM bark_page_items(barkp_entry(8200, 8, 20480));
+-- A LIST of no TIDs fits, and lists as such.
+SELECT * FROM bark_page_items(barkp_entry(8208, 8, 32768));
+
+-- A leaf above level 0; a deleted page and an overflow page list no items,
+-- with a NOTICE, and quietly when NOTICEs are not wanted.
+SELECT * FROM bark_page_items((SELECT bark_s16(p, s + 8, 1) FROM barkp_page));
+SELECT count(*) FROM bark_page_items((SELECT bark_s16(p, s + 12, 4) FROM barkp_page));
+SELECT count(*) FROM bark_page_items((SELECT bark_s16(p, s + 12, 128) FROM barkp_page));
+SET client_min_messages = warning;
+SELECT count(*) FROM bark_page_items((SELECT bark_s16(p, s + 12, 4) FROM barkp_page));
+SELECT count(*) FROM bark_page_items((SELECT bark_s16(p, s + 12, 128) FROM barkp_page));
+RESET client_min_messages;
+
+-- An internal page lists an entry of any shape, but only a pivot has a
+-- downlink: clear the alt-TID bit of one of the root's pivots.
+CREATE TABLE barkp2 AS SELECT g::int8 AS a FROM generate_series(1, 10000) g;
+CREATE INDEX barkp2_idx ON barkp2 USING bark (a);
+SELECT shape, downlink IS NULL AS no_downlink, count(*) > 0 AS present
+  FROM bark_page_items((SELECT bark_s16(r.p, h.upper + 6, bark_g16(r.p, h.upper + 6) & ~8192)
+                        FROM (SELECT get_raw_page('barkp2_idx',
+                                (SELECT root FROM bark_metap('barkp2_idx'))::int) AS p) r,
+                             page_header(r.p) h))
+  GROUP BY 1, 2 ORDER BY 1, 2;
+
+-- Prefix compression on leaves with a right sibling: the PREFIX item
+-- follows the high key, and the leaves decode to the keys of an
+-- uncompressed index.
+CREATE TABLE barkp3 (k text);
+INSERT INTO barkp3 SELECT 'a common prefix for all keys ' || lpad(g::text, 5, '0')
+  FROM generate_series(1, 3000) g;
+CREATE INDEX barkp3_plain ON barkp3 USING bark (k);
+CREATE INDEX barkp3_pfx ON barkp3 USING bark (k) WITH (prefix_compression = on);
+SELECT count(*) > 1 AS several, bool_and(i.itemoffset = 2) AS after_hikey
+  FROM bark_multi_page_stats('barkp3_pfx', 1, -1) s,
+       bark_page_items('barkp3_pfx', s.blkno) i
+  WHERE s.type = 'leaf' AND s.bark_next <> 0 AND i.shape = 'PREFIX';
+SELECT (SELECT array_agg(i.data || i.htid::text ORDER BY i.htid)
+          FROM bark_multi_page_stats('barkp3_pfx', 1, -1) s,
+               bark_page_items('barkp3_pfx', s.blkno) i
+          WHERE s.type = 'leaf' AND i.shape <> 'PREFIX'
+            AND (s.bark_next = 0 OR i.itemoffset > 1)) =
+       (SELECT array_agg(i.data || i.htid::text ORDER BY i.htid)
+          FROM bark_multi_page_stats('barkp3_plain', 1, -1) s,
+               bark_page_items('barkp3_plain', s.blkno) i
+          WHERE s.type = 'leaf' AND (s.bark_next = 0 OR i.itemoffset > 1))
+  AS same_keys;
+
+-- OVERSIZED pivots: leaf splits among incompressible keys too large for a
+-- page.  A pivot between two distinct keys has no heap TID; one inside the
+-- run of equal keys keeps one in its ref.  Its downlink is in the ref too.
+CREATE FUNCTION bark_bigstr(s int, n int) RETURNS text
+  LANGUAGE sql IMMUTABLE AS
+$$ SELECT substr(string_agg(md5(s::text || g::text), ''), 1, n)
+   FROM generate_series(1, (n + 31) / 32) g $$;
+CREATE TABLE barkp4 (k text);
+CREATE INDEX barkp4_idx ON barkp4 USING bark (k);
+INSERT INTO barkp4 SELECT bark_bigstr(g, 5000) FROM generate_series(1, 300) g;
+INSERT INTO barkp4 SELECT bark_bigstr(0, 5000) FROM generate_series(1, 300) g;
+SELECT root AS barkp4_root, level FROM bark_metap('barkp4_idx') \gset
+SELECT :level = 1 AS two_levels;
+SELECT shape, htid IS NOT NULL AS has_htid, downlink IS NOT NULL AS has_downlink,
+       overflow_blkno IS NOT NULL AS has_overflow, count(*) > 0 AS present
+  FROM bark_page_items('barkp4_idx', :barkp4_root)
+  GROUP BY 1, 2, 3, 4 ORDER BY 1, 2, 3, 4;
+-- The downlinks reach every leaf once, a pivot's chain is on overflow
+-- pages, and a pivot's heap TID is a row of the equal keys.
+SELECT (SELECT array_agg(downlink ORDER BY downlink)
+          FROM bark_page_items('barkp4_idx', :barkp4_root)) =
+       (SELECT array_agg(blkno ORDER BY blkno)
+          FROM bark_multi_page_stats('barkp4_idx', 1, -1) WHERE type = 'leaf')
+  AS downlinks_ok;
+SELECT bool_and(s.type = 'overflow') AS chains_ok
+  FROM bark_page_items('barkp4_idx', :barkp4_root) i,
+       bark_page_stats('barkp4_idx', i.overflow_blkno) s;
+SELECT bool_and(i.htid IN (SELECT ctid FROM barkp4 WHERE k = bark_bigstr(0, 5000)))
+  AS pivot_htids_ok
+  FROM bark_page_items('barkp4_idx', :barkp4_root) i
+  WHERE i.shape = 'OVERSIZED' AND i.htid IS NOT NULL;
+-- A leaf's high key is such a pivot, without a downlink.
+SELECT i.shape, i.downlink IS NULL AS no_downlink, count(*) > 0 AS present
+  FROM bark_multi_page_stats('barkp4_idx', 1, -1) s,
+       bark_page_items('barkp4_idx', s.blkno) i
+  WHERE s.type = 'leaf' AND s.bark_next <> 0 AND i.itemoffset = 1
+  GROUP BY 1, 2 ORDER BY 1, 2;
+
+-- A block number past MaxBlockNumber, and callers that are not superusers.
+SELECT bark_page_stats('barkp1_idx', 4294967295);
+CREATE ROLE regress_bark_pages;
+SET ROLE regress_bark_pages;
+SELECT bark_metap('barkp1_idx');
+SELECT bark_page_items('\x00'::bytea);
+RESET ROLE;
+DROP ROLE regress_bark_pages;
+
+DROP TABLE barkp1, barkp2, barkp3, barkp4, barkp_page;
+DROP FUNCTION barkp_entry, bark_g16, bark_s16, bark_bigstr;
