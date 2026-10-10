@@ -1,0 +1,442 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_explain s1_attach s1_scan s2_split_once s2_wakeup s1_detach s2_check
+step s1_explain: 
+	EXPLAIN (COSTS OFF) SELECT col FROM bwl
+	 WHERE col % 1000 = 0 AND pg_backend_pid() <> 0 ORDER BY col DESC;
+
+QUERY PLAN                                         
+---------------------------------------------------
+Result                                             
+  One-Time Filter: (pg_backend_pid() <> 0)         
+  ->  Index Only Scan Backward using bwl_idx on bwl
+        Filter: ((col % 1000) = 0)                 
+(4 rows)
+
+step s1_attach: 
+	SELECT injection_points_attach('bark-walk-left', 'wait');
+	SELECT injection_points_attach('bark-walk-left-step-right', 'notice');
+	SELECT injection_points_attach('bark-walk-left-deleted', 'notice');
+	SELECT injection_points_attach('bark-walk-left-restart', 'notice');
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_scan: 
+	SELECT array_agg(col) AS index_desc FROM
+		(SELECT col FROM bwl WHERE col % 1000 = 0 AND pg_backend_pid() <> 0
+		 ORDER BY col DESC) s;
+ <waiting ...>
+step s2_split_once: 
+	INSERT INTO bwl SELECT 14681 + 2 * g FROM generate_series(0, 59) g;
+
+step s2_wakeup: 
+	SELECT injection_points_detach('bark-walk-left');
+	SELECT injection_points_wakeup('bark-walk-left');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+s1: NOTICE:  notice triggered for injection point bark-walk-left-step-right
+step s1_scan: <... completed>
+index_desc                                                                                                        
+------------------------------------------------------------------------------------------------------------------
+{20000,19000,18000,17000,16000,15000,14000,13000,12000,11000,10000,9000,8000,7000,6000,5000,4000,3000,2000,1000,0}
+(1 row)
+
+step s1_detach: 
+	SELECT injection_points_detach('bark-walk-left-step-right');
+	SELECT injection_points_detach('bark-walk-left-deleted');
+	SELECT injection_points_detach('bark-walk-left-restart');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+step s2_check: 
+	SELECT bark_index_check('bwl_idx', true);
+	BEGIN;
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_indexonlyscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	SELECT array_agg(col ORDER BY col DESC) AS seqscan_desc FROM bwl
+	 WHERE col % 1000 = 0;
+	SELECT array_agg(col ORDER BY col DESC) AS seqscan_desc_14000 FROM bwl
+	 WHERE col <= 14000 AND col % 1000 = 0;
+	COMMIT;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+seqscan_desc                                                                                                      
+------------------------------------------------------------------------------------------------------------------
+{20000,19000,18000,17000,16000,15000,14000,13000,12000,11000,10000,9000,8000,7000,6000,5000,4000,3000,2000,1000,0}
+(1 row)
+
+seqscan_desc_14000                                                            
+------------------------------------------------------------------------------
+{14000,13000,12000,11000,10000,9000,8000,7000,6000,5000,4000,3000,2000,1000,0}
+(1 row)
+
+
+starting permutation: s1_attach s1_scan s2_split_many s2_wakeup s1_detach s2_check
+step s1_attach: 
+	SELECT injection_points_attach('bark-walk-left', 'wait');
+	SELECT injection_points_attach('bark-walk-left-step-right', 'notice');
+	SELECT injection_points_attach('bark-walk-left-deleted', 'notice');
+	SELECT injection_points_attach('bark-walk-left-restart', 'notice');
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_scan: 
+	SELECT array_agg(col) AS index_desc FROM
+		(SELECT col FROM bwl WHERE col % 1000 = 0 AND pg_backend_pid() <> 0
+		 ORDER BY col DESC) s;
+ <waiting ...>
+step s2_split_many: 
+	INSERT INTO bwl SELECT g FROM generate_series(14681, 18349) g
+	 WHERE g % 10 <> 0;
+
+step s2_wakeup: 
+	SELECT injection_points_detach('bark-walk-left');
+	SELECT injection_points_wakeup('bark-walk-left');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+s1: NOTICE:  notice triggered for injection point bark-walk-left-step-right
+s1: NOTICE:  notice triggered for injection point bark-walk-left-step-right
+s1: NOTICE:  notice triggered for injection point bark-walk-left-step-right
+s1: NOTICE:  notice triggered for injection point bark-walk-left-step-right
+s1: NOTICE:  notice triggered for injection point bark-walk-left-restart
+step s1_scan: <... completed>
+index_desc                                                                                                        
+------------------------------------------------------------------------------------------------------------------
+{20000,19000,18000,17000,16000,15000,14000,13000,12000,11000,10000,9000,8000,7000,6000,5000,4000,3000,2000,1000,0}
+(1 row)
+
+step s1_detach: 
+	SELECT injection_points_detach('bark-walk-left-step-right');
+	SELECT injection_points_detach('bark-walk-left-deleted');
+	SELECT injection_points_detach('bark-walk-left-restart');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+step s2_check: 
+	SELECT bark_index_check('bwl_idx', true);
+	BEGIN;
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_indexonlyscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	SELECT array_agg(col ORDER BY col DESC) AS seqscan_desc FROM bwl
+	 WHERE col % 1000 = 0;
+	SELECT array_agg(col ORDER BY col DESC) AS seqscan_desc_14000 FROM bwl
+	 WHERE col <= 14000 AND col % 1000 = 0;
+	COMMIT;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+seqscan_desc                                                                                                      
+------------------------------------------------------------------------------------------------------------------
+{20000,19000,18000,17000,16000,15000,14000,13000,12000,11000,10000,9000,8000,7000,6000,5000,4000,3000,2000,1000,0}
+(1 row)
+
+seqscan_desc_14000                                                            
+------------------------------------------------------------------------------
+{14000,13000,12000,11000,10000,9000,8000,7000,6000,5000,4000,3000,2000,1000,0}
+(1 row)
+
+
+starting permutation: s2_delete_mid s2_wait_prunable s1_attach s1_scan_14000 s2_vacuum s2_wakeup s1_detach s2_check
+step s2_delete_mid: DELETE FROM bwl WHERE col BETWEEN 11010 AND 18340;
+step s2_wait_prunable: CALL bwl_wait_prunable();
+step s1_attach: 
+	SELECT injection_points_attach('bark-walk-left', 'wait');
+	SELECT injection_points_attach('bark-walk-left-step-right', 'notice');
+	SELECT injection_points_attach('bark-walk-left-deleted', 'notice');
+	SELECT injection_points_attach('bark-walk-left-restart', 'notice');
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_scan_14000: 
+	SELECT array_agg(col) AS index_desc FROM
+		(SELECT col FROM bwl
+		  WHERE col <= 14000 AND col % 1000 = 0 AND pg_backend_pid() <> 0
+		  ORDER BY col DESC) s;
+ <waiting ...>
+step s2_vacuum: VACUUM bwl;
+step s2_wakeup: 
+	SELECT injection_points_detach('bark-walk-left');
+	SELECT injection_points_wakeup('bark-walk-left');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+s1: NOTICE:  notice triggered for injection point bark-walk-left-step-right
+s1: NOTICE:  notice triggered for injection point bark-walk-left-deleted
+s1: NOTICE:  notice triggered for injection point bark-walk-left-restart
+step s1_scan_14000: <... completed>
+index_desc                                                  
+------------------------------------------------------------
+{11000,10000,9000,8000,7000,6000,5000,4000,3000,2000,1000,0}
+(1 row)
+
+step s1_detach: 
+	SELECT injection_points_detach('bark-walk-left-step-right');
+	SELECT injection_points_detach('bark-walk-left-deleted');
+	SELECT injection_points_detach('bark-walk-left-restart');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+step s2_check: 
+	SELECT bark_index_check('bwl_idx', true);
+	BEGIN;
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_indexonlyscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	SELECT array_agg(col ORDER BY col DESC) AS seqscan_desc FROM bwl
+	 WHERE col % 1000 = 0;
+	SELECT array_agg(col ORDER BY col DESC) AS seqscan_desc_14000 FROM bwl
+	 WHERE col <= 14000 AND col % 1000 = 0;
+	COMMIT;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+seqscan_desc                                                            
+------------------------------------------------------------------------
+{20000,19000,11000,10000,9000,8000,7000,6000,5000,4000,3000,2000,1000,0}
+(1 row)
+
+seqscan_desc_14000                                          
+------------------------------------------------------------
+{11000,10000,9000,8000,7000,6000,5000,4000,3000,2000,1000,0}
+(1 row)
+
+
+starting permutation: s2_delete_6 s2_wait_prunable s1_attach s1_scan_plain s2_vacuum s2_wakeup s1_detach s2_check
+step s2_delete_6: DELETE FROM bwl WHERE col BETWEEN 14680 AND 18340;
+step s2_wait_prunable: CALL bwl_wait_prunable();
+step s1_attach: 
+	SELECT injection_points_attach('bark-walk-left', 'wait');
+	SELECT injection_points_attach('bark-walk-left-step-right', 'notice');
+	SELECT injection_points_attach('bark-walk-left-deleted', 'notice');
+	SELECT injection_points_attach('bark-walk-left-restart', 'notice');
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_scan_plain: 
+	SET enable_indexonlyscan = off;
+	SELECT array_agg(col) AS index_desc FROM
+		(SELECT col FROM bwl WHERE col % 1000 = 0 AND pg_backend_pid() <> 0
+		 ORDER BY col DESC) s;
+	RESET enable_indexonlyscan;
+ <waiting ...>
+step s2_vacuum: VACUUM bwl;
+step s2_wakeup: 
+	SELECT injection_points_detach('bark-walk-left');
+	SELECT injection_points_wakeup('bark-walk-left');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_scan_plain: <... completed>
+index_desc                                                                                
+------------------------------------------------------------------------------------------
+{20000,19000,14000,13000,12000,11000,10000,9000,8000,7000,6000,5000,4000,3000,2000,1000,0}
+(1 row)
+
+step s1_detach: 
+	SELECT injection_points_detach('bark-walk-left-step-right');
+	SELECT injection_points_detach('bark-walk-left-deleted');
+	SELECT injection_points_detach('bark-walk-left-restart');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+step s2_check: 
+	SELECT bark_index_check('bwl_idx', true);
+	BEGIN;
+	SET LOCAL enable_seqscan = on;
+	SET LOCAL enable_indexscan = off;
+	SET LOCAL enable_indexonlyscan = off;
+	SET LOCAL enable_bitmapscan = off;
+	SELECT array_agg(col ORDER BY col DESC) AS seqscan_desc FROM bwl
+	 WHERE col % 1000 = 0;
+	SELECT array_agg(col ORDER BY col DESC) AS seqscan_desc_14000 FROM bwl
+	 WHERE col <= 14000 AND col % 1000 = 0;
+	COMMIT;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+seqscan_desc                                                                              
+------------------------------------------------------------------------------------------
+{20000,19000,14000,13000,12000,11000,10000,9000,8000,7000,6000,5000,4000,3000,2000,1000,0}
+(1 row)
+
+seqscan_desc_14000                                                            
+------------------------------------------------------------------------------
+{14000,13000,12000,11000,10000,9000,8000,7000,6000,5000,4000,3000,2000,1000,0}
+(1 row)
+

@@ -7,7 +7,7 @@ EXTRA_INSTALL = src/test/modules/injection_points src/test/modules/bark_multikey
 REGRESS = bark_incomplete_splits bark_split_moveright
 ISOLATION = bark_concurrent_split bark_vacuum_split bark_deleted_page \
 	bark_nnd_upsert bark_recently_dead bark_broken_hot_chain \
-	bark_lock_right bark_root_split_race
+	bark_lock_right bark_root_split_race bark_walk_left
 TAP_TESTS = 1
 
 ifdef USE_PGXS
