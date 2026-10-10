@@ -55,9 +55,18 @@ CREATE OPERATOR #? (LEFTARG = jsonb, RIGHTARG = text,
                     FUNCTION = bark_wildcard_exists,
                     RESTRICT = matchingsel, JOIN = matchingjoinsel);
 
+-- doc |<| path: the smallest key [path, value] at path, NULL if none, for
+-- ORDER BY doc |<| 'path' (MongoDB's sort by a path).  It returns the key,
+-- jsonb, the class's storage type, because the scan reports the key it
+-- meets first as the ORDER BY value; jsonb's btree family sorts it.
+CREATE FUNCTION bark_wildcard_least(jsonb, text) RETURNS jsonb
+AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE OPERATOR |<| (LEFTARG = jsonb, RIGHTARG = text,
+                     FUNCTION = bark_wildcard_least);
+
 -- Procedure 8, with BarkQueryFlags: a query's boundaries inside its path.
 -- Its first argument is the operator's right operand: jsonb [path, value],
--- or text for #?.
+-- or text for #? and |<|.
 CREATE FUNCTION bark_wildcard_extract_query(jsonb, int2, internal, internal,
                                             internal, internal, internal)
 RETURNS void
@@ -102,6 +111,7 @@ FOR TYPE jsonb USING bark FAMILY bark_jsonb_wildcard_ops AS
     OPERATOR 4 #>= (jsonb, jsonb),
     OPERATOR 5 #> (jsonb, jsonb),
     OPERATOR 6 #? (jsonb, text),
+    OPERATOR 7 |<| (jsonb, text) FOR ORDER BY jsonb_ops,
     FUNCTION 1 (jsonb, jsonb) jsonb_cmp(jsonb, jsonb),
     FUNCTION 5 (jsonb, jsonb) bark_wildcard_options(internal),
     FUNCTION 7 (jsonb, jsonb) bark_wildcard_extract_value(jsonb, internal,
