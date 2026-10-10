@@ -1020,8 +1020,10 @@ place of an inverted AM, without changing the scalar design above.
   page. An operator class may provide either interface; one written for
   pg_extended_btree ports to BARK unchanged. ''(the pg_extended_btree
   interface, procedures 7-9, is built and used by M1c's scans and M5a's
-  wildcard class; GIN's and RUM's support functions, partial match, and
-  the array and scalar classes are not started)''
+  wildcard class; M2a, GIN's query interface (procedures 10-13, partial
+  match included) in bitmap scans, is built: "As built (M2a)" under
+  "Which interface first." RUM's ordering functions and the array and
+  scalar classes are not started)''
 * '''M3''' -- extra data per locator (RUM's addInfo). ''Closed, not
   needed'': a composite key (key, value) holds the same members in the same
   order, and every use case found is served by one. What both would need,
@@ -1156,7 +1158,8 @@ column of every BARK index, scalar ones included.
   with <code>xs_recheck</code> set.
 * '''10-13''' GIN's extractQuery, consistent, comparePartial and
   triConsistent (GIN's 3, 4, 5, 6), with GIN's signatures. barkvalidate
-  accepts them from M1, so catalogs need not change; scans use them from M2.
+  accepts them from M1, so catalogs need not change; bitmap scans use them
+  from M2a.
 * '''14''' fetch, <code>value (key)</code>, optional and reserved:
   barkvalidate accepts it, BARK does not call it (see "Index-only scans"
   under "Scans": a key cannot be turned back into its row's value).
@@ -1175,6 +1178,32 @@ GIN classes get no ordered scans. GIN's INCLUDE_EMPTY and ALL search modes
 read the NULL entries (see "Insert and build"). A class provides 8 and 9,
 or 10 and 11 or 13, or both; one written for pg_extended_btree ports by
 renumbering 101-103 as 7-9.
+
+'''As built (M2a).''' A column whose class has procedure 10 and not 8
+(bark_index_gin_query) is read by bitmap scans only: bark_property answers
+<code>index_scan</code> false, get_relation_info asks amproperty for
+AMPROP_INDEX_SCAN and clears <code>amhasgettuple</code>, so the planner
+builds no index scan path, and bark_gettuple refuses a direct caller. The
+bitmap scan calls extractQuery (GIN's signature, with nullFlags and
+searchMode), makes each key a point boundary, a NULL key the NULL
+entries, and a partial-match key a range from the key upward filtered by
+comparePartial (which also ends the range when the column leads the index
+in ascending order); GIN_SEARCH_MODE_INCLUDE_EMPTY reads the NULL entries
+and ALL every entry. Each boundary's TIDs are read through the ordinary
+descent code into one array sorted by TID, and for each TID
+triConsistent (MAYBE is a recheck), or consistent (whose recheck flag is
+set first, as GIN does), decides on the per-key presence vector. Several
+keys on the column are intersected. This is the simple implementation;
+merging the boundaries' TID streams without collecting them is later work.
+barkcostestimate counts extractQuery's keys (plus one for INCLUDE_EMPTY,
+two for ALL) as descents and charges no seen set. Tests
+(bark_multikey_gin.sql): the core GIN array support functions unchanged
+(ginarrayextract is procedure 7's three-argument form), with and without
+triConsistent, on 40 queries over && @&gt; &lt;@ = against empty, NULL,
+absent and many-element arrays, IS NULL and two keys on the column, each
+compared with a seqscan and with a GIN index, before and after DELETE,
+INSERT and VACUUM; a prefix-match class on <code>text[]</code> with core's
+gin_cmp_prefix as comparePartial, compared with LIKE.
 
 '''Strategies.''' An operator in a BARK family has whatever strategy number
 its class gives it, as in GIN; the number is only passed to procedures 8 and
