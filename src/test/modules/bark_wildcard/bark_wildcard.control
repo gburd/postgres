@@ -1,0 +1,4 @@
+comment = 'A wildcard operator class for BARK over jsonb, for testing'
+default_version = '1.0'
+module_pathname = '$libdir/bark_wildcard'
+relocatable = true

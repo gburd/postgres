@@ -1020,8 +1020,25 @@ place of an inverted AM, without changing the scalar design above.
   wildcard column) keeps (fixed columns, path, value). Needs M1 and M2's
   procedures 7-9; unique wildcard indexes need M4. Nothing in it changes
   the on-disk format; "Wildcard indexes as the check" under M1 is its
-  design. ''(in progress: M5a, the wildcard operator class module, against
-  M1a's interface; roadmap entry f24f7e10cab)''
+  design. ''(in progress. M5a, the test module bark_wildcard, is built:
+  procedure 7 emits [path, value] keys, one per array element, with
+  markers [path] for paths that hold an array and member names escaped;
+  procedure 5 takes include or exclude; the operators #&lt; #&lt;= #= #&gt;=
+  #&gt; compare a path's indexed values with a value of the same jsonb
+  type, and #? tests that a path holds one; procedure 8 makes one
+  boundary per qual inside the path's range, bracketed by the value's type
+  in jsonb_cmp order (a string's range ends below [p, -Infinity], and
+  [p, {}] is a path's last key), with procedure 9 only for a path the
+  projection drops. Two of MongoDB's rules are not followed: a missing
+  path does not equal null, and a non-empty object or a whole non-empty
+  array is not a value to compare with. The scan tests compare forced
+  index and bitmap scans of plain, include, exclude and compound indexes
+  with a sequential scan on 151 quals over 4000 documents, and a lax
+  jsonpath oracle where the semantics coincide; the index's (key, TID)
+  members are compared both ways with the keys of the heap's rows, since
+  heapallindexed refuses a multikey index. Not yet: M5b, the per-path
+  no-seen-set extension, sorting by a path, and a comparison with GIN's
+  jsonb_path_ops)''
 * '''T1''' -- term containment at scale; see "Containment queries" under
   C-KEYSHAPE. ''(not started; the TID filter for an ordered scan is blocked
   on cf/4351)''

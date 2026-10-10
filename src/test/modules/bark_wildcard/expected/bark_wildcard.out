@@ -1,0 +1,253 @@
+-- A wildcard operator class over jsonb, as MongoDB's wildcard indexes.
+CREATE EXTENSION bark_wildcard;
+CREATE EXTENSION amcheck;
+SELECT amvalidate(oid) FROM pg_opclass WHERE opcname = 'bark_jsonb_wildcard_ops';
+ amvalidate 
+------------
+ t
+(1 row)
+
+-- The keys procedure 7 should produce, computed independently in SQL: one
+-- [path, scalar] per scalar, [path, {}] / [path, []] for an empty container,
+-- an array's elements at the array's own path, a nested array as a value,
+-- and a marker [path] for every path that holds an array.  Member names
+-- have dots and backslashes escaped.
+CREATE FUNCTION wc_expected(doc jsonb, OUT k jsonb) RETURNS SETOF jsonb
+LANGUAGE sql IMMUTABLE AS $$
+WITH RECURSIVE w(path, v, inarray) AS (
+  SELECT ''::text, doc, false
+  UNION ALL
+  SELECT CASE WHEN x.member IS NULL THEN w.path
+              WHEN w.path = '' THEN x.member
+              ELSE w.path || '.' || x.member END,
+         x.value, x.member IS NULL
+  FROM w, LATERAL (
+    SELECT replace(replace(key, '\', '\\'), '.', '\.') AS member, value
+      FROM jsonb_each(CASE WHEN jsonb_typeof(w.v) = 'object' THEN w.v END)
+    UNION ALL
+    SELECT NULL, value
+      FROM jsonb_array_elements(CASE WHEN jsonb_typeof(w.v) = 'array'
+                                      AND NOT w.inarray THEN w.v END)) x
+)
+SELECT jsonb_build_array(path, v) FROM w
+ WHERE jsonb_typeof(v) NOT IN ('object', 'array')
+    OR (jsonb_typeof(v) = 'array' AND inarray)
+    OR v = '{}' OR (v = '[]' AND NOT inarray)
+UNION ALL
+SELECT jsonb_build_array(path) FROM w
+ WHERE jsonb_typeof(v) = 'array' AND NOT inarray
+$$;
+CREATE TABLE wc_docs (id int, doc jsonb);
+INSERT INTO wc_docs VALUES
+  (1, '{"a": 1}'),
+  (2, '{"a": {"b": 2, "c": "x"}, "d": null}'),
+  (3, '{"a": [1, 2, 2, {"b": 3}], "e": []}'),
+  (4, '{"a": [[1, 2], [3]], "f": {}}'),
+  (5, '{"a.b": 1, "x\\y": 2, "n": {"m": [true, false, null]}}'),
+  (6, '[1, {"a": 2}, [3]]'),
+  (7, '42'),
+  (8, '"s"'),
+  (9, '{}'),
+  (10, '[]'),
+  (11, '{"a": 1.0, "b": 1.00, "c": -0, "d": 1e3}');
+-- Procedure 7's keys and markers equal the independent computation, as
+-- multisets, for every document.
+SELECT id,
+       (SELECT array_agg(k ORDER BY k) FROM bark_wildcard_keys(doc) k) IS NOT DISTINCT FROM
+       (SELECT array_agg(k ORDER BY k) FROM wc_expected(doc) k) AS same,
+       (SELECT count(*) FROM bark_wildcard_keys(doc)) AS nkeys
+FROM wc_docs ORDER BY id;
+ id | same | nkeys 
+----+------+-------
+  1 | t    |     1
+  2 | t    |     3
+  3 | t    |     7
+  4 | t    |     4
+  5 | t    |     6
+  6 | t    |     4
+  7 | t    |     1
+  8 | t    |     1
+  9 | t    |     1
+ 10 | t    |     2
+ 11 | t    |     4
+(11 rows)
+
+SELECT bark_wildcard_keys(doc) FROM wc_docs WHERE id = 3;
+ bark_wildcard_keys 
+--------------------
+ ["a", 1]
+ ["a", 2]
+ ["a", 2]
+ ["a.b", 3]
+ ["e", []]
+ ["a"]
+ ["e"]
+(7 rows)
+
+-- Projections: include keeps those paths and those below them; exclude the
+-- others; both at once is an error.
+SELECT k FROM bark_wildcard_keys('{"a": {"b": 1, "c": 2}, "ab": 3, "d": [4]}', 'a.b,d') k ORDER BY k;
+     k      
+------------
+ ["d"]
+ ["a.b", 1]
+ ["d", 4]
+(3 rows)
+
+SELECT k FROM bark_wildcard_keys('{"a": {"b": 1, "c": 2}, "ab": 3, "d": [4]}', NULL, 'a') k ORDER BY k;
+     k     
+-----------
+ ["d"]
+ ["ab", 3]
+ ["d", 4]
+(3 rows)
+
+SELECT bark_wildcard_keys('{}', 'a', 'b');
+ERROR:  include and exclude cannot both be set
+SELECT bark_wildcard_keys('{}', 'a,,b');
+ERROR:  invalid path list "a,,b"
+DETAIL:  A path list is dotted member names separated by commas.
+-- Procedure 8: the boundaries of each operator for a value of each type, at
+-- one path.  Each type is a bracket of the path's range, in jsonb_cmp's
+-- order null < string < number < boolean < array < object: a string ends
+-- below [p, -Infinity] (a search key only: jsonb stores no infinite
+-- number), a number below [p, false], an array below [p, {}], and [p, {}]
+-- is the path's last key (the only object the class indexes).  #? is the
+-- whole path, [p, null] to [p, {}].
+SELECT t, s, bark_wildcard_boundaries(jsonb_build_array('a', val), s::int2)
+  FROM (VALUES (1, 'null', 'null'::jsonb), (2, 'string', '"s"'), (3, 'number', '5'),
+               (4, 'boolean', 'true'), (5, 'array', '[1, 2]'), (6, 'object', '{}')) x(o, t, val),
+       generate_series(1, 5) s
+ ORDER BY o, s;
+    t    | s |                  bark_wildcard_boundaries                   
+---------+---+-------------------------------------------------------------
+ null    | 1 | (>= ["a", null], < ["a", null]) recheck=f searchnulls=f
+ null    | 2 | (>= ["a", null], <= ["a", null]) recheck=f searchnulls=f
+ null    | 3 | (= ["a", null], = ["a", null]) recheck=f searchnulls=f
+ null    | 4 | (>= ["a", null], <= ["a", null]) recheck=f searchnulls=f
+ null    | 5 | (> ["a", null], <= ["a", null]) recheck=f searchnulls=f
+ string  | 1 | (> ["a", null], < ["a", "s"]) recheck=f searchnulls=f
+ string  | 2 | (> ["a", null], <= ["a", "s"]) recheck=f searchnulls=f
+ string  | 3 | (= ["a", "s"], = ["a", "s"]) recheck=f searchnulls=f
+ string  | 4 | (>= ["a", "s"], < ["a", -Infinity]) recheck=f searchnulls=f
+ string  | 5 | (> ["a", "s"], < ["a", -Infinity]) recheck=f searchnulls=f
+ number  | 1 | (>= ["a", -Infinity], < ["a", 5]) recheck=f searchnulls=f
+ number  | 2 | (>= ["a", -Infinity], <= ["a", 5]) recheck=f searchnulls=f
+ number  | 3 | (= ["a", 5], = ["a", 5]) recheck=f searchnulls=f
+ number  | 4 | (>= ["a", 5], < ["a", false]) recheck=f searchnulls=f
+ number  | 5 | (> ["a", 5], < ["a", false]) recheck=f searchnulls=f
+ boolean | 1 | (>= ["a", false], < ["a", true]) recheck=f searchnulls=f
+ boolean | 2 | (>= ["a", false], <= ["a", true]) recheck=f searchnulls=f
+ boolean | 3 | (= ["a", true], = ["a", true]) recheck=f searchnulls=f
+ boolean | 4 | (>= ["a", true], <= ["a", true]) recheck=f searchnulls=f
+ boolean | 5 | (> ["a", true], <= ["a", true]) recheck=f searchnulls=f
+ array   | 1 | (> ["a", true], < ["a", [1, 2]]) recheck=f searchnulls=f
+ array   | 2 | (> ["a", true], <= ["a", [1, 2]]) recheck=f searchnulls=f
+ array   | 3 | (= ["a", [1, 2]], = ["a", [1, 2]]) recheck=f searchnulls=f
+ array   | 4 | (>= ["a", [1, 2]], < ["a", {}]) recheck=f searchnulls=f
+ array   | 5 | (> ["a", [1, 2]], < ["a", {}]) recheck=f searchnulls=f
+ object  | 1 | (>= ["a", {}], < ["a", {}]) recheck=f searchnulls=f
+ object  | 2 | (>= ["a", {}], <= ["a", {}]) recheck=f searchnulls=f
+ object  | 3 | (= ["a", {}], = ["a", {}]) recheck=f searchnulls=f
+ object  | 4 | (>= ["a", {}], <= ["a", {}]) recheck=f searchnulls=f
+ object  | 5 | (> ["a", {}], <= ["a", {}]) recheck=f searchnulls=f
+(30 rows)
+
+SELECT bark_wildcard_boundaries('a'::text, 6::int2);
+                bark_wildcard_boundaries                
+--------------------------------------------------------
+ (>= ["a", null], <= ["a", {}]) recheck=f searchnulls=f
+(1 row)
+
+-- A path the projection drops has no keys: the scan reads every key and
+-- the NULL entries, and rechecks (procedure 9 says maybe).
+SELECT bark_wildcard_boundaries('["b", 1]'::jsonb, 3::int2, 'a'),
+       bark_wildcard_boundaries('a.b'::text, 6::int2, NULL, 'a');
+           bark_wildcard_boundaries           |           bark_wildcard_boundaries           
+----------------------------------------------+----------------------------------------------
+ (-inf, +inf) recheck=t searchnulls=t proc9=1 | (-inf, +inf) recheck=t searchnulls=t proc9=1
+(1 row)
+
+-- The boundaries against real keys in jsonb_cmp's order: the keys of one
+-- document holding a value of each type at path a (and keys of the
+-- neighbouring paths A, a.b and a0), sorted with jsonb's order.  For each
+-- key: the types whose bracket at a holds it (the union of #<= and #>= for
+-- a value of that type), whether #? a holds it, and which of the five
+-- operators against ["a", 0] hold it.  Each key of a is in its own type's
+-- bracket only; keys of other paths and the marker ["a"] are in none, and
+-- outside #?.
+SELECT k,
+       (SELECT string_agg(t, ',' ORDER BY o)
+          FROM (VALUES (1, 'null', 'null'::jsonb), (2, 'string', '"x"'), (3, 'number', '0'),
+                       (4, 'boolean', 'true'), (5, 'array', '[0]'), (6, 'object', '{}')) b(o, t, v)
+         WHERE bark_wildcard_in_boundaries(k, jsonb_build_array('a', v), 2::int2)
+            OR bark_wildcard_in_boundaries(k, jsonb_build_array('a', v), 4::int2)) AS brackets,
+       bark_wildcard_in_boundaries(k, 'a'::text, 6::int2) AS exists_a,
+       (SELECT string_agg(op, ' ' ORDER BY s)
+          FROM (VALUES (1, '<'), (2, '<='), (3, '='), (4, '>='), (5, '>')) o(s, op)
+         WHERE bark_wildcard_in_boundaries(k, '["a", 0]'::jsonb, s::int2)) AS vs_0
+  FROM bark_wildcard_keys('{"A": 1, "a": [null, "", "s", -1e20, -5, 0, 2.5, 1e20, false, true,
+                                         [], [1, 2], [1, 2, 3], {}, {"b": 1}], "a0": 1}') k
+ ORDER BY k;
+               k               | brackets | exists_a |  vs_0   
+-------------------------------+----------+----------+---------
+ ["a"]                         |          | f        | 
+ ["A", 1]                      |          | f        | 
+ ["a", null]                   | null     | t        | 
+ ["a", ""]                     | string   | t        | 
+ ["a", "s"]                    | string   | t        | 
+ ["a", -100000000000000000000] | number   | t        | < <=
+ ["a", -5]                     | number   | t        | < <=
+ ["a", 0]                      | number   | t        | <= = >=
+ ["a", 2.5]                    | number   | t        | >= >
+ ["a", 100000000000000000000]  | number   | t        | >= >
+ ["a", false]                  | boolean  | t        | 
+ ["a", true]                   | boolean  | t        | 
+ ["a", []]                     | array    | t        | 
+ ["a", [1, 2]]                 | array    | t        | 
+ ["a", [1, 2, 3]]              | array    | t        | 
+ ["a", {}]                     | object   | t        | 
+ ["a.b", 1]                    |          | f        | 
+ ["a0", 1]                     |          | f        | 
+(18 rows)
+
+-- An index over the documents, built and inserted into, with and without a
+-- projection, and a compound (tenant, doc) index.
+CREATE INDEX wc_docs_doc ON wc_docs USING bark (doc bark_jsonb_wildcard_ops);
+CREATE INDEX wc_docs_inc ON wc_docs USING bark (doc bark_jsonb_wildcard_ops (include = 'a'));
+CREATE INDEX wc_docs_both ON wc_docs USING bark (doc bark_jsonb_wildcard_ops (include = 'a', exclude = 'b'));
+ERROR:  include and exclude cannot both be set
+CREATE INDEX wc_docs_tenant ON wc_docs USING bark (id, doc bark_jsonb_wildcard_ops);
+INSERT INTO wc_docs SELECT g, jsonb_build_object('a', g % 7, 'b', jsonb_build_array(g, g + 1),
+                                                 'c', jsonb_build_object('d', 'v' || g % 3))
+  FROM generate_series(100, 2100) g;
+SELECT bark_index_check('wc_docs_doc'), bark_index_check('wc_docs_inc'),
+       bark_index_check('wc_docs_tenant');
+ bark_index_check | bark_index_check | bark_index_check 
+------------------+------------------+------------------
+                  |                  | 
+(1 row)
+
+-- The index holds one member per distinct data key of every document (BARK
+-- removes a row's repeated keys), and one NULL key for a document with none
+-- (here, one whose paths the projection drops): its meta page's key count
+-- (members, markers excluded) after VACUUM equals the independent
+-- computation's, with and without the projection.  (amcheck's
+-- heapallindexed does not check multikey indexes yet.)
+CREATE EXTENSION pageinspect;
+VACUUM wc_docs;
+SELECT (SELECT nkeys FROM bark_metap('wc_docs_doc')) =
+       (SELECT sum(greatest(1, (SELECT count(DISTINCT k) FROM wc_expected(doc) k
+                                 WHERE jsonb_array_length(k) = 2))) FROM wc_docs) AS all_keys,
+       (SELECT nkeys FROM bark_metap('wc_docs_inc')) =
+       (SELECT sum(greatest(1, (SELECT count(DISTINCT k) FROM wc_expected(doc) k
+                                 WHERE jsonb_array_length(k) = 2
+                                   AND (k->>0 = 'a' OR k->>0 LIKE 'a.%')))) FROM wc_docs) AS included_keys,
+       (SELECT flags FROM bark_metap('wc_docs_doc')) & 1 = 1 AS multikey;
+ all_keys | included_keys | multikey 
+----------+---------------+----------
+ t        | t             | t
+(1 row)
+
+DROP TABLE wc_docs;
+DROP FUNCTION wc_expected(jsonb);
