@@ -1037,7 +1037,12 @@ The page keeps the sibling links it had (an overflow page keeps its link to
 the next chunk).  A descent that read the parent's downlink, or a scan that
 read a sibling link, before the deletion can arrive at the page afterwards;
 it moves right through it, as nbtree's readers move through P_IGNORE pages.
-Its neighbours no longer link back to it, which amcheck allows.
+Its neighbours no longer link back to it, which amcheck allows.  A page's
+right link, read under its lock, never names a deleted page: deletion holds
+that page's lock while it rewrites the link.  So a writer that moves right
+with its page still locked (bark_lock_right) never meets a deleted sibling,
+and only leaves are deleted, so neither does a writer at an internal
+level; their tests for one are defensive.
 
 A deleted page is reused only when BarkPageIsRecyclable says so, which is
 nbtree's BTPageIsRecyclable test: GlobalVisCheckRemovableFullXid(heaprel,
