@@ -1147,14 +1147,15 @@ bark_cost_keys_per_row(IndexOptInfo *index, bool *multikey)
 /*
  * The number of boundaries procedure 8 makes of clause, a qual on the
  * extracted column indexcol, run on its constant as gincost_pattern runs
- * GIN's extractQuery: the scan descends once per boundary.  *point says
- * whether the only boundary is a single key (such a scan needs no seen set),
- * *recheck whether procedure 9 runs on every entry.  A qual whose argument is
- * not a constant counts as one boundary.
+ * GIN's extractQuery: the scan descends once per boundary.  *noseen says
+ * whether the scan needs no seen set (its only boundary is a single key, or
+ * procedure 8 set BarkQueryFlags.oneentry, which the scan asks again at
+ * rescan), *recheck whether procedure 9 runs on every entry.  A qual whose
+ * argument is not a constant counts as one boundary.
  */
 static double
 bark_cost_boundaries(IndexOptInfo *index, int indexcol, Expr *clause,
-					 bool *point, bool *recheck)
+					 bool *noseen, bool *recheck)
 {
 	OpExpr     *op = (OpExpr *) clause;
 	Node       *arg;
@@ -1165,8 +1166,9 @@ bark_cost_boundaries(IndexOptInfo *index, int indexcol, Expr *clause,
 	Pointer     extra = NULL;
 	BarkQueryFlags flags;
 	Datum       strategy;
+	Relation	indexRel = NULL;
 
-	*point = false;
+	*noseen = false;
 	*recheck = false;
 	if (!IsA(clause, OpExpr) || list_length(op->args) != 2)
 		return 1;
@@ -1187,6 +1189,12 @@ bark_cost_boundaries(IndexOptInfo *index, int indexcol, Expr *clause,
 	fmgr_info(procoid, &flinfo);
 	set_fn_opclass_options(&flinfo, index->opclassoptions[indexcol]);
 	memset(&flags, 0, sizeof(flags));
+	if (!index->hypothetical)
+	{
+		/* plancat.c has locked the index. */
+		indexRel = index_open(index->indexoid, NoLock);
+		flags.index = indexRel;
+	}
 	if (get_func_nargs(procoid) >= 7)
 		FunctionCall7Coll(&flinfo, index->indexcollations[indexcol],
 						  ((Const *) arg)->constvalue, strategy,
@@ -1198,12 +1206,15 @@ bark_cost_boundaries(IndexOptInfo *index, int indexcol, Expr *clause,
 						  ((Const *) arg)->constvalue, strategy,
 						  PointerGetDatum(&result), PointerGetDatum(&nresult),
 						  PointerGetDatum(&extra), PointerGetDatum(recheck));
+	if (indexRel != NULL)
+		index_close(indexRel, NoLock);
 
-	if (nresult == 1 && !flags.searchnulls &&
-		result[0].lower != NULL && result[0].upper != NULL &&
-		result[0].lower->strategy == BTEqualStrategyNumber &&
-		result[0].upper->strategy == BTEqualStrategyNumber)
-		*point = true;
+	if (flags.oneentry ||
+		(nresult == 1 && !flags.searchnulls &&
+		 result[0].lower != NULL && result[0].upper != NULL &&
+		 result[0].lower->strategy == BTEqualStrategyNumber &&
+		 result[0].upper->strategy == BTEqualStrategyNumber))
+		*noseen = true;
 	return Max(nresult + (flags.searchnulls ? 1 : 0), 1);
 }
 
@@ -1289,7 +1300,7 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	ListCell   *lc;
 	int         mkcol = -1;     /* extracted column, 0-based, or -1 */
 	bool        mkcounted = false;
-	bool        mkpoint = false;
+	bool        mknoseen = false;
 	bool        mkrecheck = false;
 	bool        multikey = false;
 	double      mkdescents = 1;
@@ -1399,7 +1410,7 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 										 1);
 					else
 						mkdescents = bark_cost_boundaries(index, mkcol, clause,
-														  &mkpoint, &mkrecheck);
+														  &mknoseen, &mkrecheck);
 					colelems = mkdescents;
 					mkcounted = true;
 					indexBoundQuals = lappend(indexBoundQuals, rinfo);
@@ -1509,7 +1520,7 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 		double      rows = costs.numIndexTuples * costs.num_sa_scans;
 		double      entries = Min(rows * keysperrow, index->tuples * keysperrow);
 		double      grouprows = rows;
-		bool        useseen = multikey && !(mkcounted && mkdescents == 1 && mkpoint);
+		bool        useseen = multikey && !(mkcounted && mknoseen);
 
 		costs.indexTotalCost += Max(entries - rows, 0) * cpu_index_tuple_cost;
 		if (useseen)
