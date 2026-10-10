@@ -859,6 +859,72 @@ SELECT count(*) FROM mk_r1 WHERE a |!| 0;
 RESET enable_seqscan;
 RESET enable_bitmapscan;
 
+-- Costing.  An index scan that needs the seen set is not planned when its
+-- rows per group of the fixed columns, at 16 bytes each, exceed work_mem
+-- times hash_mem_multiplier: at work_mem = 64 and a multiplier of 1 that is
+-- 4096 rows, below a tenant's 5000.  The heap is in tenant order, so at the
+-- default work_mem an index scan of one tenant wins.  Every row carries
+-- 1000, so a && '{1000}' is one point that selects the whole tenant; such a
+-- scan needs no seen set and keeps its index scan.  The range class makes
+-- |=| ANY a ScalarArrayOp on the extracted column.  A bitmap scan builds no
+-- set and takes over when the index scan is ruled out.  Each plan's answer
+-- must match the sequential scan's at the end.
+CREATE TABLE mk_cost AS
+  SELECT g AS id, g / 5000 AS tenant, ARRAY[g % 300, (g * 7) % 300, 1000] AS a
+  FROM generate_series(1, 200000) g;
+CREATE INDEX mk_cost_ta ON mk_cost USING bark (tenant, a bark_int4_array_range_ops);
+VACUUM ANALYZE mk_cost;
+CREATE VIEW mk_cost_q AS
+  SELECT 1 AS q, count(*) AS n, count(DISTINCT id) AS ndistinct, sum(id) AS total FROM mk_cost
+    WHERE tenant = 3
+  UNION ALL
+  SELECT 2, count(*) AS n, count(DISTINCT id) AS ndistinct, sum(id) AS total FROM mk_cost
+    WHERE tenant = 3 AND a && '{1,2,3}'
+  UNION ALL
+  SELECT 3, count(*) AS n, count(DISTINCT id) AS ndistinct, sum(id) AS total FROM mk_cost
+    WHERE tenant = 3 AND a && '{1000}'
+  UNION ALL
+  SELECT 4, count(*) AS n, count(DISTINCT id) AS ndistinct, sum(id) AS total FROM mk_cost
+    WHERE tenant = 3 AND a |=| ANY (ARRAY[1, 2, 3]);
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT * FROM mk_cost_q;
+SELECT * FROM mk_cost_q;
+SET work_mem = 64;
+SET hash_mem_multiplier = 1;
+EXPLAIN (COSTS OFF) SELECT * FROM mk_cost_q;
+SET client_min_messages = debug1;
+SELECT * FROM mk_cost_q;
+RESET client_min_messages;
+RESET enable_bitmapscan;
+EXPLAIN (COSTS OFF) SELECT * FROM mk_cost_q;
+SELECT * FROM mk_cost_q;
+RESET work_mem;
+RESET hash_mem_multiplier;
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT * FROM mk_cost_q;
+SELECT * FROM mk_cost_q;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+DROP VIEW mk_cost_q;
+
+-- An ordered scan on the extracted column reads every entry, but fetches
+-- only the rows the fixed columns' quals pass.  With LIMIT it wins over a
+-- sort; a filter on the extracted column alone is only rechecked, so it
+-- does not make the ordered scan look cheap.  Answers match the seqscan.
+CREATE INDEX mk_cost_a ON mk_cost USING bark (a bark_int4_array_ops);
+EXPLAIN (COSTS OFF) SELECT id FROM mk_cost ORDER BY a |<| 0 LIMIT 5;
+WITH s AS (SELECT id, a, a |<| 0 AS k FROM mk_cost ORDER BY a |<| 0 LIMIT 300)
+SELECT count(*), count(DISTINCT id),
+       bool_and(k = (SELECT min(e) FROM unnest(a) e)) AS exact,
+       max(k) <= (SELECT k FROM (SELECT (SELECT min(e) FROM unnest(a) e) AS k
+                                   FROM mk_cost ORDER BY 1 OFFSET 299 LIMIT 1) r)
+         AS smallest
+  FROM s;
+EXPLAIN (COSTS OFF) SELECT id FROM mk_cost WHERE a && '{7}' ORDER BY a |<| 0;
+DROP INDEX mk_cost_a;
+DROP TABLE mk_cost;
+
 DROP TABLE mk_3, mk_big, mk_empty;
 DROP TABLE mk_seq, mk_gin, mk_b1, mk_b2, mk_bd, mk_bn, mk_rn, mk_r1, mk_ins, mk_once,
   mk_outer, mk_single, mk_quals, mk_rquals, mk_nulls;
