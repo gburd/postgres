@@ -12,6 +12,7 @@ tests += {
     'sql': [
       'bark_incomplete_splits',
       'bark_split_moveright',
+      'bark_walinspect',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # The injection points are run in the same backend, so disable
