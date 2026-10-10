@@ -1,0 +1,119 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_begin s1_ins15 s2_ins59 s1_commit s1_check
+step s1_begin: BEGIN;
+step s1_ins15: INSERT INTO mku VALUES (1, ARRAY[1,5]);
+step s2_ins59: INSERT INTO mku VALUES (5, ARRAY[5,9]); <waiting ...>
+step s1_commit: COMMIT;
+step s2_ins59: <... completed>
+ERROR:  duplicate key value violates unique constraint "mku_a"
+step s1_check: 
+	SELECT id, a FROM mku ORDER BY id;
+	SELECT count(*) AS entries FROM bark_multikey_entries('mku_a') WHERE NOT marker;
+	SELECT bark_index_check('mku_a');
+
+id|a    
+--+-----
+ 0|{7}  
+ 1|{1,5}
+(2 rows)
+
+entries
+-------
+      3
+(1 row)
+
+bark_index_check
+----------------
+                
+(1 row)
+
+
+starting permutation: s1_begin s1_ins15 s2_ins59 s1_abort s1_check
+step s1_begin: BEGIN;
+step s1_ins15: INSERT INTO mku VALUES (1, ARRAY[1,5]);
+step s2_ins59: INSERT INTO mku VALUES (5, ARRAY[5,9]); <waiting ...>
+step s1_abort: ROLLBACK;
+step s2_ins59: <... completed>
+step s1_check: 
+	SELECT id, a FROM mku ORDER BY id;
+	SELECT count(*) AS entries FROM bark_multikey_entries('mku_a') WHERE NOT marker;
+	SELECT bark_index_check('mku_a');
+
+id|a    
+--+-----
+ 0|{7}  
+ 5|{5,9}
+(2 rows)
+
+entries
+-------
+      5
+(1 row)
+
+bark_index_check
+----------------
+                
+(1 row)
+
+
+starting permutation: s1_begin s1_ins34 s2_ins43 s1_commit s1_check
+step s1_begin: BEGIN;
+step s1_ins34: INSERT INTO mku VALUES (3, ARRAY[3,4]);
+step s2_ins43: INSERT INTO mku VALUES (4, ARRAY[4,3]); <waiting ...>
+step s1_commit: COMMIT;
+step s2_ins43: <... completed>
+ERROR:  duplicate key value violates unique constraint "mku_a"
+step s1_check: 
+	SELECT id, a FROM mku ORDER BY id;
+	SELECT count(*) AS entries FROM bark_multikey_entries('mku_a') WHERE NOT marker;
+	SELECT bark_index_check('mku_a');
+
+id|a    
+--+-----
+ 0|{7}  
+ 3|{3,4}
+(2 rows)
+
+entries
+-------
+      3
+(1 row)
+
+bark_index_check
+----------------
+                
+(1 row)
+
+
+starting permutation: s2_begin s2_del7 s1_begin s1_ins27 s2_ins2 s1_abort s2_commit s1_check
+step s2_begin: BEGIN;
+step s2_del7: DELETE FROM mku WHERE id = 0;
+step s1_begin: BEGIN;
+step s1_ins27: INSERT INTO mku VALUES (2, ARRAY[2,7]); <waiting ...>
+step s2_ins2: INSERT INTO mku VALUES (6, ARRAY[2]); <waiting ...>
+step s1_ins27: <... completed>
+ERROR:  deadlock detected
+step s2_ins2: <... completed>
+step s1_abort: ROLLBACK;
+step s2_commit: COMMIT;
+step s1_check: 
+	SELECT id, a FROM mku ORDER BY id;
+	SELECT count(*) AS entries FROM bark_multikey_entries('mku_a') WHERE NOT marker;
+	SELECT bark_index_check('mku_a');
+
+id|a  
+--+---
+ 6|{2}
+(1 row)
+
+entries
+-------
+      3
+(1 row)
+
+bark_index_check
+----------------
+                
+(1 row)
+
