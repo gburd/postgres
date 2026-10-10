@@ -1,0 +1,421 @@
+-- Scans of wildcard indexes.  Every query is answered by a sequential scan
+-- and by each wildcard index through an index scan and a bitmap scan; the
+-- count, the number of distinct rows and an md5 of the sorted ids must all
+-- agree, so a row returned twice, a missing row or a wrong row shows.
+-- bark_wildcard.sql left the extensions installed.
+-- A value of one of twelve shapes: null, numbers (integers, negatives,
+-- quarters, so 1.0 equals 1), strings, booleans, arrays of scalars, arrays
+-- holding nested arrays, empty arrays and objects, mixed arrays.
+CREATE FUNCTION wc_val(g int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+  SELECT CASE g % 12
+    WHEN 0 THEN 'null'::jsonb
+    WHEN 1 THEN to_jsonb(g % 23)
+    WHEN 2 THEN to_jsonb('s' || g % 17)
+    WHEN 3 THEN to_jsonb(g % 3 = 0)
+    WHEN 4 THEN jsonb_build_array(g % 23, g * 7 % 23, 's' || g % 5)
+    WHEN 5 THEN jsonb_build_array(jsonb_build_array(g % 5, g % 7), g % 11, NULL)
+    WHEN 6 THEN '[]'
+    WHEN 7 THEN '{}'
+    WHEN 8 THEN to_jsonb((g % 40) / 4.0)
+    WHEN 9 THEN jsonb_build_array(true, NULL, g % 23, '{}'::jsonb, '[]'::jsonb)
+    WHEN 10 THEN jsonb_build_array('s' || g % 17, 's' || g % 13)
+    ELSE to_jsonb(-(g % 23))
+  END $$;
+-- Documents: path a of every shape, or missing; path b an object, an array
+-- of objects (b.c and b.d), a value, or missing; a member name with a dot;
+-- scalar and array documents (path ""), and NULL documents.
+CREATE FUNCTION wc_doc(g int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+  SELECT CASE
+    WHEN g % 211 = 0 THEN NULL
+    WHEN g % 101 = 0 THEN wc_val(g / 101)
+    WHEN g % 103 = 0 THEN jsonb_build_array(wc_val(g), jsonb_build_object('a', wc_val(g + 1)))
+    ELSE CASE WHEN g % 5 <> 0 THEN jsonb_build_object('a', wc_val(g)) ELSE '{}' END ||
+         CASE g % 4
+           WHEN 0 THEN jsonb_build_object('b', jsonb_build_object('c', wc_val(g / 3)))
+           WHEN 1 THEN jsonb_build_object('b', jsonb_build_array(
+                         jsonb_build_object('c', wc_val(g / 5)),
+                         jsonb_build_object('c', wc_val(g / 7), 'd', g % 9)))
+           WHEN 2 THEN jsonb_build_object('b', wc_val(g / 11))
+           ELSE '{}' END ||
+         jsonb_build_object('n', g % 31) ||
+         CASE WHEN g % 9 = 0 THEN jsonb_build_object('x.y', g % 4) ELSE '{}' END
+  END $$;
+-- The same rows in one table per index, so each query can be forced onto
+-- one index: no projection, an include list, an exclude list, and a
+-- compound (id, doc) index created before the rows were inserted.
+CREATE TABLE wc_seq AS SELECT g AS id, wc_doc(g) AS doc FROM generate_series(1, 4000) g;
+CREATE TABLE wc_plain AS SELECT * FROM wc_seq;
+CREATE INDEX wc_plain_doc ON wc_plain USING bark (doc bark_jsonb_wildcard_ops);
+CREATE TABLE wc_inc AS SELECT * FROM wc_seq;
+CREATE INDEX wc_inc_doc ON wc_inc USING bark (doc bark_jsonb_wildcard_ops (include = 'a,b.c'));
+CREATE TABLE wc_exc AS SELECT * FROM wc_seq;
+CREATE INDEX wc_exc_doc ON wc_exc USING bark (doc bark_jsonb_wildcard_ops (exclude = 'b'));
+CREATE TABLE wc_tid (id int, doc jsonb);
+CREATE INDEX wc_tid_doc ON wc_tid USING bark (id, doc bark_jsonb_wildcard_ops);
+INSERT INTO wc_tid SELECT * FROM wc_seq;
+ANALYZE wc_seq, wc_plain, wc_inc, wc_exc, wc_tid;
+-- wc_run(table, index, qual, mode): count, distinct ids and md5 of the ids
+-- of table's rows that satisfy qual, read by a sequential scan ('seq'), an
+-- index scan or a bitmap scan of index; 'wrong plan' when the plan does not
+-- read that way.
+CREATE FUNCTION wc_run(tbl text, idx text, qual text, mode text) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+  sql text := format('SELECT count(*) || '':'' || count(DISTINCT id) || '':'' ||
+                        coalesce(md5(string_agg(id::text, '','' ORDER BY id)), ''-'')
+                      FROM (SELECT id FROM %I WHERE %s) s', tbl, qual);
+  plan text;
+  r text;
+BEGIN
+  PERFORM set_config('enable_seqscan', (mode = 'seq')::text, true);
+  PERFORM set_config('enable_indexscan', (mode = 'index')::text, true);
+  PERFORM set_config('enable_indexonlyscan', 'off', true);
+  PERFORM set_config('enable_bitmapscan', (mode = 'bitmap')::text, true);
+  FOR plan IN EXECUTE 'EXPLAIN (COSTS OFF) ' || sql LOOP
+    IF (mode = 'seq' AND plan LIKE '%Seq Scan on ' || tbl || '%') OR
+       (mode = 'index' AND plan LIKE '%Index Scan using ' || idx || ' on ' || tbl || '%') OR
+       (mode = 'bitmap' AND plan LIKE '%Bitmap Index Scan on ' || idx || '%') THEN
+      EXECUTE sql INTO r;
+      RETURN r;
+    END IF;
+  END LOOP;
+  RETURN 'wrong plan';
+END $$;
+-- wc_compare(qual, oracle): the sequential scan's answer; every index or
+-- bitmap answer that differs from it (NULL when none does); and, given an
+-- oracle (the same question as a jsonpath in lax mode), 'same' or the
+-- oracle's differing answer.
+CREATE FUNCTION wc_compare(qual text, oracle text, OUT seq text,
+                           OUT mismatches text, OUT jsonpath text)
+LANGUAGE plpgsql AS $$
+DECLARE
+  t text[];
+  m text;
+  r text;
+BEGIN
+  seq := wc_run('wc_seq', NULL, qual, 'seq');
+  FOREACH t SLICE 1 IN ARRAY ARRAY[['wc_plain', 'wc_plain_doc'], ['wc_inc', 'wc_inc_doc'],
+                                   ['wc_exc', 'wc_exc_doc'], ['wc_tid', 'wc_tid_doc']] LOOP
+    FOREACH m IN ARRAY ARRAY['index', 'bitmap'] LOOP
+      r := wc_run(t[1], t[2], qual, m);
+      IF r IS DISTINCT FROM seq THEN
+        mismatches := concat_ws(' ', mismatches, t[1] || '/' || m || '=' || r);
+      END IF;
+    END LOOP;
+  END LOOP;
+  IF oracle IS NOT NULL THEN
+    r := wc_run('wc_seq', NULL, oracle, 'seq');
+    jsonpath := CASE WHEN r = seq THEN 'same' ELSE r END;
+  END IF;
+END $$;
+-- The jsonpath of a dotted path without escapes: $."b"."c".
+CREATE FUNCTION wc_jpath(p text) RETURNS text LANGUAGE sql IMMUTABLE AS $$
+  SELECT '$' || coalesce(string_agg('."' || c || '"', '' ORDER BY i), '')
+    FROM unnest(string_to_array(nullif(p, ''), '.')) WITH ORDINALITY u(c, i)
+$$;
+-- Every comparison operator against a value of every type, on a path of
+-- documents (a), on one below arrays of objects (b.c, which wc_exc's
+-- projection drops), and on scalar documents (""); #? on every path, on a
+-- missing one, and on paths wc_inc drops (b, b.d, n, x\.y).  Scalar
+-- comparisons carry the jsonpath oracle: in lax mode, $.a ? (@ == 5) also
+-- looks into an array at a, and compares only values of one type, as the
+-- class does.  Lax mode also unwraps an array nested in that array, which
+-- the class indexes as a value, so the oracle skips array items
+-- (@.type() != "array"); the difference itself is shown below.  jsonpath
+-- cannot compare arrays or objects, so those have no oracle.
+CREATE TABLE wc_quals (n serial, q text, oracle text);
+INSERT INTO wc_quals (q, oracle)
+SELECT format('doc %s %L', op, jsonb_build_array(p, v)),
+       CASE WHEN jsonb_typeof(v) NOT IN ('array', 'object') THEN
+         format('doc @? %L', format('%s ? (@.type() != "array" && @ %s %s)',
+                                    wc_jpath(p), jop, v)) END
+  FROM (VALUES (1, 'a'), (2, 'b.c'), (3, '')) p(po, p),
+       (VALUES (1, 'null'::jsonb), (2, '"s5"'), (3, '5'), (4, '2.5'), (5, '-3'),
+               (6, 'true'), (7, 'false'), (8, '[1, 3]'), (9, '[]'), (10, '{}')) v(vo, v),
+       (VALUES (1, '#<', '<'), (2, '#<=', '<='), (3, '#=', '=='), (4, '#>=', '>='),
+               (5, '#>', '>')) o(oo, op, jop)
+ WHERE p <> '' OR vo IN (1, 2, 3, 6, 9, 10)
+ ORDER BY po, vo, oo;
+INSERT INTO wc_quals (q, oracle) VALUES
+  ('doc #= ''["b.d", 3]''', 'doc @? ''$."b"."d" ? (@.type() != "array" && @ == 3)'''),
+  ('doc #< ''["n", 5]''', 'doc @? ''$."n" ? (@.type() != "array" && @ < 5)'''),
+  ('doc #= ''["x\\.y", 2]''', 'doc @? ''$."x.y" ? (@.type() != "array" && @ == 2)'''),
+  ('doc #= ''["a", 1.00]''', 'doc @? ''$."a" ? (@.type() != "array" && @ == 1)'''),
+  ('doc #= ''["zz", 1]''', NULL),
+  ('doc #> ''["a", 3]'' AND doc #< ''["a", 7]''', NULL),
+  ('doc #= ANY (ARRAY[''["a", 5]'', ''["a", "s3"]'', ''["b.c", true]'']::jsonb[])', NULL),
+  ('id < 1500 AND doc #= ''["a", 5]''', NULL),
+  ('id = 404 AND doc #? ''''', NULL),
+  ('id IN (5, 10, 15, 20, 101) AND doc #? ''a''', NULL),
+  ('id BETWEEN 100 AND 300 AND doc #> ''["b.c", 3]''', NULL),
+  ('doc IS NULL', NULL);
+INSERT INTO wc_quals (q)
+SELECT format('doc #? %L', p)
+  FROM unnest(ARRAY['a', 'b', 'b.c', 'b.d', '', 'n', 'x\.y', 'zz', 'a.b']) p;
+SELECT n, q, (wc_compare(q, oracle)).* FROM wc_quals ORDER BY n;
+  n  |                                    q                                    |                    seq                     | mismatches | jsonpath 
+-----+-------------------------------------------------------------------------+--------------------------------------------+------------+----------
+   1 | doc #< '["a", null]'                                                    | 0:0:-                                      |            | same
+   2 | doc #<= '["a", null]'                                                   | 790:790:7b3f73c2958e038644c30bfcac563dd0   |            | same
+   3 | doc #= '["a", null]'                                                    | 790:790:7b3f73c2958e038644c30bfcac563dd0   |            | same
+   4 | doc #>= '["a", null]'                                                   | 790:790:7b3f73c2958e038644c30bfcac563dd0   |            | same
+   5 | doc #> '["a", null]'                                                    | 0:0:-                                      |            | same
+   6 | doc #< '["a", "s5"]'                                                    | 678:678:f1460cf7a17352474111006350f49b64   |            | same
+   7 | doc #<= '["a", "s5"]'                                                   | 705:705:c2b94523cab6073778119c625b03f3d8   |            | same
+   8 | doc #= '["a", "s5"]'                                                    | 47:47:f4db0e47d7c8937e56a0d5d07c3be487     |            | same
+   9 | doc #>= '["a", "s5"]'                                                   | 225:225:c9de5a30c9a58ff58d11001fc8d0faa4   |            | same
+  10 | doc #> '["a", "s5"]'                                                    | 188:188:5f8f97578e23c4211437807187c46ca5   |            | same
+  11 | doc #< '["a", 5]'                                                       | 731:731:4bfd6bcc3975896bd1b254ec06840a52   |            | same
+  12 | doc #<= '["a", 5]'                                                      | 789:789:8bba78b084770090bafe7d25585a929a   |            | same
+  13 | doc #= '["a", 5]'                                                       | 70:70:848eeb37af587e4582264f3f5e478c4e     |            | same
+  14 | doc #>= '["a", 5]'                                                      | 943:943:c161d5a12a5064ef140880cbad78a09a   |            | same
+  15 | doc #> '["a", 5]'                                                       | 885:885:4dd4b7efe2c122c3dd61d5aefde87dda   |            | same
+  16 | doc #< '["a", 2.5]'                                                     | 524:524:fdc6fbf233f010e427eeea9a6a586b62   |            | same
+  17 | doc #<= '["a", 2.5]'                                                    | 524:524:fdc6fbf233f010e427eeea9a6a586b62   |            | same
+  18 | doc #= '["a", 2.5]'                                                     | 0:0:-                                      |            | same
+  19 | doc #>= '["a", 2.5]'                                                    | 1103:1103:cf5a2f5d89258d8f890e446e888c25b1 |            | same
+  20 | doc #> '["a", 2.5]'                                                     | 1103:1103:cf5a2f5d89258d8f890e446e888c25b1 |            | same
+  21 | doc #< '["a", -3]'                                                      | 217:217:e5a675658f805a8c2c3698d25bb06906   |            | same
+  22 | doc #<= '["a", -3]'                                                     | 227:227:0cc825fa06a142cbef8ea5f9d5ef0222   |            | same
+  23 | doc #= '["a", -3]'                                                      | 10:10:b93977d6f94c08ed22caf46f1756a9e6     |            | same
+  24 | doc #>= '["a", -3]'                                                     | 1364:1364:5003345159a90954e938a664ae9703f4 |            | same
+  25 | doc #> '["a", -3]'                                                      | 1354:1354:9f96e6db7bdfeb0e145a8ba122bc231e |            | same
+  26 | doc #< '["a", true]'                                                    | 0:0:-                                      |            | same
+  27 | doc #<= '["a", true]'                                                   | 528:528:ed18be662b294c5b2e3f90f39aaefeb8   |            | same
+  28 | doc #= '["a", true]'                                                    | 528:528:ed18be662b294c5b2e3f90f39aaefeb8   |            | same
+  29 | doc #>= '["a", true]'                                                   | 528:528:ed18be662b294c5b2e3f90f39aaefeb8   |            | same
+  30 | doc #> '["a", true]'                                                    | 0:0:-                                      |            | same
+  31 | doc #< '["a", false]'                                                   | 0:0:-                                      |            | same
+  32 | doc #<= '["a", false]'                                                  | 0:0:-                                      |            | same
+  33 | doc #= '["a", false]'                                                   | 0:0:-                                      |            | same
+  34 | doc #>= '["a", false]'                                                  | 528:528:ed18be662b294c5b2e3f90f39aaefeb8   |            | same
+  35 | doc #> '["a", false]'                                                   | 528:528:ed18be662b294c5b2e3f90f39aaefeb8   |            | same
+  36 | doc #< '["a", [1, 3]]'                                                  | 556:556:4dbca90e3af303072f41da2de0e7a240   |            | 
+  37 | doc #<= '["a", [1, 3]]'                                                 | 565:565:83c615dc77567b449310c5ca76915f3a   |            | 
+  38 | doc #= '["a", [1, 3]]'                                                  | 9:9:cc0db08fcc7bfa62bf03751dd08d08fe       |            | 
+  39 | doc #>= '["a", [1, 3]]'                                                 | 234:234:05b3cfe804fec0c4040b744637bf95b2   |            | 
+  40 | doc #> '["a", [1, 3]]'                                                  | 225:225:a98d6b52fd558803422ca3093fa082c6   |            | 
+  41 | doc #< '["a", []]'                                                      | 0:0:-                                      |            | 
+  42 | doc #<= '["a", []]'                                                     | 527:527:2777e83faf7ba43e2d1be1c9fd38d3a6   |            | 
+  43 | doc #= '["a", []]'                                                      | 527:527:2777e83faf7ba43e2d1be1c9fd38d3a6   |            | 
+  44 | doc #>= '["a", []]'                                                     | 790:790:8210a00cc55c9e7c20d49762c11acd3f   |            | 
+  45 | doc #> '["a", []]'                                                      | 263:263:64ac622a1d8b100a95a873bbd8b1a751   |            | 
+  46 | doc #< '["a", {}]'                                                      | 0:0:-                                      |            | 
+  47 | doc #<= '["a", {}]'                                                     | 527:527:9b4729147817ccdf35bb8cd80f454d29   |            | 
+  48 | doc #= '["a", {}]'                                                      | 527:527:9b4729147817ccdf35bb8cd80f454d29   |            | 
+  49 | doc #>= '["a", {}]'                                                     | 527:527:9b4729147817ccdf35bb8cd80f454d29   |            | 
+  50 | doc #> '["a", {}]'                                                      | 0:0:-                                      |            | 
+  51 | doc #< '["b.c", null]'                                                  | 0:0:-                                      |            | same
+  52 | doc #<= '["b.c", null]'                                                 | 834:834:a79797d4f4ea4f94d1b34c9c842d56d7   |            | same
+  53 | doc #= '["b.c", null]'                                                  | 834:834:a79797d4f4ea4f94d1b34c9c842d56d7   |            | same
+  54 | doc #>= '["b.c", null]'                                                 | 834:834:a79797d4f4ea4f94d1b34c9c842d56d7   |            | same
+  55 | doc #> '["b.c", null]'                                                  | 0:0:-                                      |            | same
+  56 | doc #< '["b.c", "s5"]'                                                  | 584:584:b5882ac028bba4c882ae7a9f89f6c041   |            | same
+  57 | doc #<= '["b.c", "s5"]'                                                 | 606:606:dfd7293566d5d6cf55c50c252dc8e4df   |            | same
+  58 | doc #= '["b.c", "s5"]'                                                  | 40:40:e2e98d95cc61b4fdca49f1d12b523e85     |            | same
+  59 | doc #>= '["b.c", "s5"]'                                                 | 183:183:02f689214b542de9c8477c471deb5164   |            | same
+  60 | doc #> '["b.c", "s5"]'                                                  | 154:154:2db5b63e1ee7014485a8c7ac3459e967   |            | same
+  61 | doc #< '["b.c", 5]'                                                     | 621:621:baf44b400d450aee3f160e75283e668a   |            | same
+  62 | doc #<= '["b.c", 5]'                                                    | 703:703:8da95e13fa69493893ef93ec3cc39669   |            | same
+  63 | doc #= '["b.c", 5]'                                                     | 110:110:f033999cd138672ad50185197cbd853f   |            | same
+  64 | doc #>= '["b.c", 5]'                                                    | 954:954:faaa1aefc4c9f28c1647372ab6775f90   |            | same
+  65 | doc #> '["b.c", 5]'                                                     | 877:877:474ccd7c2dbb56e0c8c31b07a753cd96   |            | same
+  66 | doc #< '["b.c", 2.5]'                                                   | 434:434:ec87d6b699a1178cbb8eb4068d324804   |            | same
+  67 | doc #<= '["b.c", 2.5]'                                                  | 434:434:ec87d6b699a1178cbb8eb4068d324804   |            | same
+  68 | doc #= '["b.c", 2.5]'                                                   | 0:0:-                                      |            | same
+  69 | doc #>= '["b.c", 2.5]'                                                  | 1082:1082:6d11f3380d2d3482a53264aa18e8bd2b |            | same
+  70 | doc #> '["b.c", 2.5]'                                                   | 1082:1082:6d11f3380d2d3482a53264aa18e8bd2b |            | same
+  71 | doc #< '["b.c", -3]'                                                    | 123:123:3da3215122ba8e80351eb56d09021f71   |            | same
+  72 | doc #<= '["b.c", -3]'                                                   | 130:130:d2c96b3f8783c384c29f2be6da514805   |            | same
+  73 | doc #= '["b.c", -3]'                                                    | 7:7:0345c6d778a49a363d3122c3289c9a06       |            | same
+  74 | doc #>= '["b.c", -3]'                                                   | 1290:1290:e33597a03470d5b2e6ab514e2d4b6f39 |            | same
+  75 | doc #> '["b.c", -3]'                                                    | 1288:1288:a99c10373933975e1cc593316405b033 |            | same
+  76 | doc #< '["b.c", true]'                                                  | 0:0:-                                      |            | same
+  77 | doc #<= '["b.c", true]'                                                 | 452:452:d3ac4f47270de0973d8a2b57d3bd55b3   |            | same
+  78 | doc #= '["b.c", true]'                                                  | 452:452:d3ac4f47270de0973d8a2b57d3bd55b3   |            | same
+  79 | doc #>= '["b.c", true]'                                                 | 452:452:d3ac4f47270de0973d8a2b57d3bd55b3   |            | same
+  80 | doc #> '["b.c", true]'                                                  | 0:0:-                                      |            | same
+  81 | doc #< '["b.c", false]'                                                 | 0:0:-                                      |            | same
+  82 | doc #<= '["b.c", false]'                                                | 0:0:-                                      |            | same
+  83 | doc #= '["b.c", false]'                                                 | 0:0:-                                      |            | same
+  84 | doc #>= '["b.c", false]'                                                | 452:452:d3ac4f47270de0973d8a2b57d3bd55b3   |            | same
+  85 | doc #> '["b.c", false]'                                                 | 452:452:d3ac4f47270de0973d8a2b57d3bd55b3   |            | same
+  86 | doc #< '["b.c", [1, 3]]'                                                | 599:599:1b6e141e8906a147bc53afc76c02f5e2   |            | 
+  87 | doc #<= '["b.c", [1, 3]]'                                               | 607:607:8f08ef8f43c6e09bed0d5e682d366ef3   |            | 
+  88 | doc #= '["b.c", [1, 3]]'                                                | 10:10:94e462de2bcdbc41c5c7db969bdf1982     |            | 
+  89 | doc #>= '["b.c", [1, 3]]'                                               | 224:224:af3c1ecf8083d4e0bdc48c4c914fbfb9   |            | 
+  90 | doc #> '["b.c", [1, 3]]'                                                | 214:214:9e1e16ca1768561d49b0de1db6d14461   |            | 
+  91 | doc #< '["b.c", []]'                                                    | 0:0:-                                      |            | 
+  92 | doc #<= '["b.c", []]'                                                   | 513:513:1c335762f9d762bfa5ebbecb558d454a   |            | 
+  93 | doc #= '["b.c", []]'                                                    | 513:513:1c335762f9d762bfa5ebbecb558d454a   |            | 
+  94 | doc #>= '["b.c", []]'                                                   | 807:807:b10f5dcf6acfac9eefe6d3bd996e41b2   |            | 
+  95 | doc #> '["b.c", []]'                                                    | 313:313:3fc8096577894df45010afc2da127df6   |            | 
+  96 | doc #< '["b.c", {}]'                                                    | 0:0:-                                      |            | 
+  97 | doc #<= '["b.c", {}]'                                                   | 457:457:e233f788bcf3586f75358927f2e7649a   |            | 
+  98 | doc #= '["b.c", {}]'                                                    | 457:457:e233f788bcf3586f75358927f2e7649a   |            | 
+  99 | doc #>= '["b.c", {}]'                                                   | 457:457:e233f788bcf3586f75358927f2e7649a   |            | 
+ 100 | doc #> '["b.c", {}]'                                                    | 0:0:-                                      |            | 
+ 101 | doc #< '["", null]'                                                     | 0:0:-                                      |            | same
+ 102 | doc #<= '["", null]'                                                    | 12:12:2f9ea05ca104cb776e0fc1fdfd78f6f0     |            | same
+ 103 | doc #= '["", null]'                                                     | 12:12:2f9ea05ca104cb776e0fc1fdfd78f6f0     |            | same
+ 104 | doc #>= '["", null]'                                                    | 12:12:2f9ea05ca104cb776e0fc1fdfd78f6f0     |            | same
+ 105 | doc #> '["", null]'                                                     | 0:0:-                                      |            | same
+ 106 | doc #< '["", "s5"]'                                                     | 11:11:d2dff7c11b8b2727adcb5d343fa3ab50     |            | same
+ 107 | doc #<= '["", "s5"]'                                                    | 12:12:cde9e42c69bf7e5ccc8e0b1ae549ff65     |            | same
+ 108 | doc #= '["", "s5"]'                                                     | 1:1:934b535800b1cba8f96a5d72f72f1611       |            | same
+ 109 | doc #>= '["", "s5"]'                                                    | 4:4:8b8b1cb416dc2852c41556238c20b19f       |            | same
+ 110 | doc #> '["", "s5"]'                                                     | 4:4:8b8b1cb416dc2852c41556238c20b19f       |            | same
+ 111 | doc #< '["", 5]'                                                        | 12:12:fc189c38b55af8564659224e231e284f     |            | same
+ 112 | doc #<= '["", 5]'                                                       | 16:16:b119e59b30a1013900be22dd0e7ab61c     |            | same
+ 113 | doc #= '["", 5]'                                                        | 5:5:501f6ca906ae6a913160ed054694798d       |            | same
+ 114 | doc #>= '["", 5]'                                                       | 17:17:21328edd5332f54a7942fffd4626613a     |            | same
+ 115 | doc #> '["", 5]'                                                        | 13:13:5a6502bccc080c01fbba742b220c69ef     |            | same
+ 116 | doc #< '["", true]'                                                     | 0:0:-                                      |            | same
+ 117 | doc #<= '["", true]'                                                    | 10:10:7d60b1e369efac452c008b12761039c0     |            | same
+ 118 | doc #= '["", true]'                                                     | 10:10:7d60b1e369efac452c008b12761039c0     |            | same
+ 119 | doc #>= '["", true]'                                                    | 10:10:7d60b1e369efac452c008b12761039c0     |            | same
+ 120 | doc #> '["", true]'                                                     | 0:0:-                                      |            | same
+ 121 | doc #< '["", []]'                                                       | 0:0:-                                      |            | 
+ 122 | doc #<= '["", []]'                                                      | 9:9:20529358ed4adfec71a85c2f774faaee       |            | 
+ 123 | doc #= '["", []]'                                                       | 9:9:20529358ed4adfec71a85c2f774faaee       |            | 
+ 124 | doc #>= '["", []]'                                                      | 24:24:e18f401533f0bf33a12301277f6a0ca1     |            | 
+ 125 | doc #> '["", []]'                                                       | 15:15:ec8f87d0b828d9bd14c4e9f2433ffddd     |            | 
+ 126 | doc #< '["", {}]'                                                       | 0:0:-                                      |            | 
+ 127 | doc #<= '["", {}]'                                                      | 10:10:f110b9aae351d678d40925da38b8112c     |            | 
+ 128 | doc #= '["", {}]'                                                       | 10:10:f110b9aae351d678d40925da38b8112c     |            | 
+ 129 | doc #>= '["", {}]'                                                      | 10:10:f110b9aae351d678d40925da38b8112c     |            | 
+ 130 | doc #> '["", {}]'                                                       | 0:0:-                                      |            | 
+ 131 | doc #= '["b.d", 3]'                                                     | 108:108:3294b96067f84528e7c224b1b580c731   |            | same
+ 132 | doc #< '["n", 5]'                                                       | 631:631:24e858ea989a7e62485a099bba83cbb9   |            | same
+ 133 | doc #= '["x\\.y", 2]'                                                   | 108:108:f65ae602d327323bf46de9efb0d96cec   |            | same
+ 134 | doc #= '["a", 1.00]'                                                    | 102:102:4b59abef6c9c431b4e07c8cb5923c019   |            | same
+ 135 | doc #= '["zz", 1]'                                                      | 0:0:-                                      |            | 
+ 136 | doc #> '["a", 3]' AND doc #< '["a", 7]'                                 | 334:334:9daf0fabce4b40a04f0dc49e1720ce54   |            | 
+ 137 | doc #= ANY (ARRAY['["a", 5]', '["a", "s3"]', '["b.c", true]']::jsonb[]) | 587:587:e25ea11ced934d322ef6917f6abbe5a7   |            | 
+ 138 | id < 1500 AND doc #= '["a", 5]'                                         | 28:28:74b1938d51929aae2a518780e818ab9b     |            | 
+ 139 | id = 404 AND doc #? ''                                                  | 1:1:4f4adcbf8c6f66dcfc8a3282ac2bf10a       |            | 
+ 140 | id IN (5, 10, 15, 20, 101) AND doc #? 'a'                               | 0:0:-                                      |            | 
+ 141 | id BETWEEN 100 AND 300 AND doc #> '["b.c", 3]'                          | 50:50:dd8b33938f8f95bf33a2ded1d39c1bed     |            | 
+ 142 | doc IS NULL                                                             | 18:18:0e0ac07b09ec388ca8176e527458fdf2     |            | 
+ 143 | doc #? 'a'                                                              | 3160:3160:7628e1029744c1a75861c7c9a5f86a4e |            | 
+ 144 | doc #? 'b'                                                              | 975:975:2a65ab598635d5eb097f7f75977774d7   |            | 
+ 145 | doc #? 'b.c'                                                            | 1955:1955:277eca79005a6edf186afb2b17e432f0 |            | 
+ 146 | doc #? 'b.d'                                                            | 977:977:ca1d73c3892d6fbde46e3de2084c325e   |            | 
+ 147 | doc #? ''                                                               | 77:77:b5f6899cec0cef5e4fb4407fc86d4113     |            | 
+ 148 | doc #? 'n'                                                              | 3905:3905:c922e96a8dcb8f96893fbbcde012f512 |            | 
+ 149 | doc #? E'x\\.y'                                                         | 434:434:55d4b9583d29820371b2a88d1f119a01   |            | 
+ 150 | doc #? 'zz'                                                             | 0:0:-                                      |            | 
+ 151 | doc #? 'a.b'                                                            | 0:0:-                                      |            | 
+(151 rows)
+
+-- The plans wc_run accepted, two of them in full: the projected-out path
+-- b.c on wc_exc (every row the scan reads is rechecked), and the compound
+-- index with a range on its first column.
+SET enable_seqscan = off;
+EXPLAIN (COSTS OFF) SELECT id FROM wc_exc WHERE doc #= '["b.c", 5]';
+                    QUERY PLAN                    
+--------------------------------------------------
+ Bitmap Heap Scan on wc_exc
+   Recheck Cond: (doc #= '["b.c", 5]'::jsonb)
+   ->  Bitmap Index Scan on wc_exc_doc
+         Index Cond: (doc #= '["b.c", 5]'::jsonb)
+(4 rows)
+
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT id FROM wc_tid WHERE id < 1500 AND doc #= '["a", 5]';
+                         QUERY PLAN                         
+------------------------------------------------------------
+ Index Scan using wc_tid_doc on wc_tid
+   Index Cond: ((id < 1500) AND (doc #= '["a", 5]'::jsonb))
+(2 rows)
+
+RESET enable_bitmapscan;
+RESET enable_seqscan;
+-- Where jsonpath and the class differ: #? says a path holds a value the
+-- class indexes, so a path holding only a non-empty object has none, while
+-- $.a exists; and an empty array at a is the value [], which a lax-mode
+-- filter unwraps to nothing.  Arrays and objects compare in the class (by
+-- jsonb_cmp) but not in jsonpath.
+SELECT d, d #? 'a' AS "#?", d @? '$.a' AS "@? $.a",
+       d @? '$.a ? (@.type() != "object")' AS "@? filtered"
+  FROM (VALUES ('{"a": {"b": 1}}'::jsonb), ('{"a": []}'), ('{"a": [[1, 3]]}')) v(d);
+        d        | #? | @? $.a | @? filtered 
+-----------------+----+--------+-------------
+ {"a": {"b": 1}} | f  | t      | f
+ {"a": []}       | t  | t      | f
+ {"a": [[1, 3]]} | t  | t      | t
+(3 rows)
+
+SELECT '{"a": [[1, 3]]}'::jsonb #= '["a", 1]' AS "#= 1",
+       '{"a": [[1, 3]]}'::jsonb @? '$.a ? (@ == 1)' AS "@? == 1",
+       '{"a": [[1, 3]]}'::jsonb #= '["a", [1, 3]]' AS "#= [1, 3]";
+ #= 1 | @? == 1 | #= [1, 3] 
+------+---------+-----------
+ f    | t       | t
+(1 row)
+
+-- The rows where the unguarded oracle differs, for one query.
+SELECT count(*) FILTER (WHERE doc #= '["a", 3]') AS "#=",
+       count(*) FILTER (WHERE doc @? '$.a ? (@ == 3)') AS "@?",
+       count(*) FILTER (WHERE doc @? '$.a ? (@ == 3)' AND NOT doc #= '["a", 3]') AS "@? only"
+  FROM wc_seq;
+ #=  | @?  | @? only 
+-----+-----+---------
+ 106 | 190 |      84
+(1 row)
+
+-- The indexes are sound, and each holds exactly the (key, heap TID) members
+-- bark_wildcard_keys gives the heap's rows under its projection (a row with
+-- no kept key, or a NULL document, has a NULL entry), compared both ways,
+-- and the markers of the paths that hold an array.  amcheck's
+-- heapallindexed refuses an index with an extracted column, so this
+-- comparison stands in for it.
+SELECT bark_index_check('wc_plain_doc'), bark_index_check('wc_inc_doc'),
+       bark_index_check('wc_exc_doc'), bark_index_check('wc_tid_doc');
+ bark_index_check | bark_index_check | bark_index_check | bark_index_check 
+------------------+------------------+------------------+------------------
+                  |                  |                  | 
+(1 row)
+
+SELECT bark_index_check('wc_plain_doc', true);
+ERROR:  heapallindexed is not supported for index "wc_plain_doc", which has a multikey column
+CREATE FUNCTION wc_heap_keys(tbl regclass, include text, exclude text,
+                             OUT key jsonb, OUT tid tid, OUT marker bool)
+RETURNS SETOF record LANGUAGE plpgsql AS $$
+BEGIN
+  RETURN QUERY EXECUTE format($q$
+    SELECT k, ctid, false FROM %1$s, bark_wildcard_keys(doc, $1, $2) k
+     WHERE jsonb_array_length(k) = 2
+    UNION ALL
+    SELECT NULL, ctid, false FROM %1$s
+     WHERE doc IS NULL OR NOT EXISTS (SELECT FROM bark_wildcard_keys(doc, $1, $2) k
+                                       WHERE jsonb_array_length(k) = 2)
+    UNION
+    SELECT k, NULL, true FROM %1$s, bark_wildcard_keys(doc, $1, $2) k
+     WHERE jsonb_array_length(k) = 1$q$, tbl) USING include, exclude;
+END $$;
+CREATE FUNCTION wc_index_keys(idx regclass, OUT key jsonb, OUT tid tid,
+                              OUT marker bool)
+RETURNS SETOF record LANGUAGE sql AS $$
+  SELECT key, CASE WHEN NOT marker THEN tid END, marker
+    FROM bark_wildcard_entries(idx)
+$$;
+SELECT i, (SELECT count(*) FROM wc_index_keys(i::regclass)) AS entries,
+       (SELECT count(*) FROM (SELECT * FROM wc_index_keys(i::regclass)
+                              EXCEPT ALL SELECT * FROM wc_heap_keys(t::regclass, inc, exc)) x) AS index_only,
+       (SELECT count(*) FROM (SELECT * FROM wc_heap_keys(t::regclass, inc, exc)
+                              EXCEPT ALL SELECT * FROM wc_index_keys(i::regclass)) x) AS heap_only
+  FROM (VALUES ('wc_plain_doc', 'wc_plain', NULL, NULL), ('wc_inc_doc', 'wc_inc', 'a,b.c', NULL),
+               ('wc_exc_doc', 'wc_exc', NULL, 'b'), ('wc_tid_doc', 'wc_tid', NULL, NULL)) v(i, t, inc, exc)
+ ORDER BY i;
+      i       | entries | index_only | heap_only 
+--------------+---------+------------+-----------
+ wc_exc_doc   |    9965 |          0 |         0
+ wc_inc_doc   |   11369 |          0 |         0
+ wc_plain_doc |   17939 |          0 |         0
+ wc_tid_doc   |   17939 |          0 |         0
+(4 rows)
+
+DROP TABLE wc_seq, wc_plain, wc_inc, wc_exc, wc_tid, wc_quals;
+DROP FUNCTION wc_run, wc_compare, wc_jpath, wc_doc, wc_val, wc_heap_keys, wc_index_keys;
+DROP EXTENSION bark_wildcard;
