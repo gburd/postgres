@@ -921,7 +921,23 @@ SELECT count(*), count(DISTINCT id),
                                    FROM mk_cost ORDER BY 1 OFFSET 299 LIMIT 1) r)
          AS smallest
   FROM s;
-EXPLAIN (COSTS OFF) SELECT id FROM mk_cost WHERE a && '{7}' ORDER BY a |<| 0;
+-- Only the kind of plan is shown: the index or bitmap scan under the sort
+-- depends on ANALYZE's sample.
+CREATE FUNCTION mk_cost_plan(q text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  l text;
+  sorted bool := false;
+  ordered bool := false;
+BEGIN
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+    sorted := sorted OR l ~ '^ *Sort$';
+    ordered := ordered OR l ~ 'Order By:';
+  END LOOP;
+  RETURN CASE WHEN ordered THEN 'ordered index scan'
+              WHEN sorted THEN 'sort' ELSE 'other' END;
+END $$;
+SELECT mk_cost_plan($q$SELECT id FROM mk_cost WHERE a && '{7}' ORDER BY a |<| 0$q$);
+DROP FUNCTION mk_cost_plan;
 DROP INDEX mk_cost_a;
 DROP TABLE mk_cost;
 
