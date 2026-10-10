@@ -579,6 +579,17 @@ The planner treats such an index as ordered only by its columns before the
 extracted one: plancat leaves the sort family InvalidOid at a column whose
 operator family is not btree's, and build_index_pathkeys stops there.
 
+A column whose class has GIN's query interface (procedures 10 and 11 or
+13, and 12 for partial match) and no procedure 8 is read by bitmap scans
+only (bark_index_gin_query; "As built (M2a)" in the design document).
+bark_property answers index_scan false, get_relation_info clears
+amhasgettuple for it, and bark_gettuple refuses a direct caller.  The
+bitmap scan calls extractQuery, turns its keys into point boundaries (a
+partial-match key into a range filtered and ended by comparePartial),
+collects each boundary's TIDs into one TID-sorted array, and calls
+triConsistent, or consistent, per TID on the per-key presence vector,
+adding the TID with its recheck flag.
+
 Scans of an index with an extracted column ("Scans" under "M1: multikey
 keys" in the design document) keep the btree-style key code away from the
 column's keys, whose operators are not btree comparisons:
