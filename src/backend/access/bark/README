@@ -500,9 +500,9 @@ them to bark_insert_entries, which inserts them in ascending (key, TID)
 order in one pass.  CREATE INDEX extracts in its build callback
 (bark_build_row_keys) and spools one tuple per key; keys too large for the
 sort are inserted by the second pass (bark_insert_oversized_keys), which
-runs procedure 7 again.  A unique index or an exclusion constraint on an
-extracted column, and two extracted columns, are refused before anything is
-built (bark_check_multikey_index).  The first descends as any insert does, or takes the cached
+runs procedure 7 again.  An exclusion constraint on an extracted column,
+NULLS NOT DISTINCT on a unique one, and two extracted columns are refused
+before anything is built (bark_check_multikey_index).  The first descends as any insert does, or takes the cached
 rightmost leaf; each later one goes on the leaf the previous one went on
 when it belongs there (searched from that offset), else on the right
 sibling, locked before the leaf is released, when it belongs there, else by
@@ -512,6 +512,34 @@ always took (coalescing, bottom-up deletion, the single-value cut, merging,
 the split), and its own WAL record; there is no multi-key record.  A crash
 between two entries of a row leaves entries of an uncommitted row, which
 VACUUM removes.
+
+A unique index with an extracted column is unique over its entries' key
+columns ("M4" in BARK-Design.mediawiki): two rows conflict when they share
+a key under equal fixed columns.  bark_insert_row_keys marks each key to
+check in checkkeys: none when a fixed column is NULL, and never the NULL
+key.  bark_insert_entries checks each marked key, in the row's ascending
+order, under the exclusive lock of the first leaf that can hold it, and
+inserts it before releasing that lock, nbtree's protocol for one key
+applied per key.  For a later key the step from the previous key's leaf
+uses the key-only move-right test (bark_belongs_on_leaf with no scantid),
+then bark_insert_stepright moves to the key's heap TID place.  A conflict
+with an in-progress row releases the leaf, waits, and descends again for
+that key only; the keys before it stay in.  Two inserters cannot wait on
+each other in a cycle, since both insert in ascending key order; a wait on
+an in-progress deleter can deadlock as in nbtree, and the deadlock detector
+ends one.  A committed conflict raises the unique violation with the
+row's values as bark_insert received them (never the stored key, which is
+of the storage type) and the shared key printed with the storage type's
+output function; the keys already inserted are entries of the failed row,
+which VACUUM removes.  UNIQUE_CHECK_PARTIAL neither waits nor errors: the
+result becomes false at the first conflict and the remaining keys are
+inserted unchecked.  UNIQUE_CHECK_EXISTING checks every key and inserts
+none.  CREATE INDEX puts the keys of a row that is not alive in the second
+sort, which bark_load does not check, and passes the oversized pass the
+row's check; bark_load's detail is "Duplicate keys exist." for such an
+index.  get_relation_info sets info->unique false for it, since a row may
+hold many keys.  INSERT ... ON CONFLICT is not supported yet: the executor
+looks for each column's equality operator and fails in core.
 
 The meta page's BARK_META_MULTIKEY bit says the index has held a row with
 two or more entries.  An insert sets it before the first entry of such a

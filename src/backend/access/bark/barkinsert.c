@@ -48,6 +48,7 @@
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
 #include "utils/injection_point.h"
+#include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -1571,7 +1572,11 @@ bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
  *    kills, not when its whole xact ends) rather than on the xact.
  *  - UNIQUE_CHECK_PARTIAL never errors: on any conflict it sets *is_unique to
  *    false and returns, letting a deferred constraint recheck decide later.
- *  - Otherwise a live conflict raises ERRCODE_UNIQUE_VIOLATION.
+ *  - Otherwise a live conflict raises ERRCODE_UNIQUE_VIOLATION.  Its detail
+ *    describes the row as the caller received it (values, isnull), never
+ *    itup: an extracted column's key is of the storage type, which the
+ *    column's output function cannot print.  For such a column the detail
+ *    adds the shared key, printed with the storage type's output function.
  *
  * Returns InvalidTransactionId when no wait is needed (unique, or already
  * errored); *speculativeToken is set to zero unless a speculative conflict was
@@ -1590,6 +1595,7 @@ bark_finish_split(Relation index, BarkKeyInfo *keyinfo, Buffer lbuf,
 static TransactionId
 bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 				  Buffer buf, Relation heapRel, IndexUniqueCheck checkUnique,
+				  const Datum *values, const bool *isnull,
 				  bool *is_unique, uint32 *speculativeToken,
 				  OffsetNumber *insertoff)
 {
@@ -1603,10 +1609,12 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 	InitDirtySnapshot(SnapshotDirty);
 
 	/*
-	 * `buf` is the first leaf that can hold itup's key: bark_insert descends
-	 * for a unique check on the key alone (no heap TID) with nextkey=false,
-	 * which follows the last downlink strictly less than the key and stops
-	 * moving right at a high key equal to it.  Entries of equal keys are in
+	 * `buf` is the first leaf that can hold itup's key: bark_insert_entries
+	 * descends for a unique check on the key alone (no heap TID) with
+	 * nextkey=false, which follows the last downlink strictly less than the
+	 * key and stops moving right at a high key equal to it, or, for a later
+	 * key of a row, reaches it from the leaf of the row's previous key by the
+	 * same move-right test.  Entries of equal keys are in
 	 * heap TID order, so the live entry of the key, if there is one, can be
 	 * anywhere in its run, which starts on this leaf at or after the first
 	 * entry >= the key; scanning right from there while keys stay equal sees
@@ -1700,16 +1708,35 @@ bark_check_unique(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 
 				/* A committed, visible duplicate: raise the constraint error. */
 				{
-					Datum		values[INDEX_MAX_KEYS];
-					bool		isnull[INDEX_MAX_KEYS];
+					int			attno = bark_index_extracted_column(index);
 					char	   *key_desc;
 
 					if (ownbuf)
 						UnlockReleaseBuffer(curbuf);
 
-					index_deform_tuple(itup, RelationGetDescr(index),
-									   values, isnull);
 					key_desc = BuildIndexValueDescription(index, values, isnull);
+					if (key_desc != NULL && attno > 0)
+					{
+						TupleDesc	tupdesc = RelationGetDescr(index);
+						Oid			typoutput;
+						bool		typisvarlena;
+						bool		knull;
+						Datum		key = index_getattr(itup, attno, tupdesc,
+														&knull);
+
+						Assert(!knull);
+						getTypeOutputInfo(TupleDescAttr(tupdesc, attno - 1)->atttypid,
+										  &typoutput, &typisvarlena);
+						ereport(ERROR,
+								(errcode(ERRCODE_UNIQUE_VIOLATION),
+								 errmsg("duplicate key value violates unique constraint \"%s\"",
+										RelationGetRelationName(index)),
+								 errdetail("Key %s shares key %s with an existing row.",
+										   key_desc,
+										   OidOutputFunctionCall(typoutput, key)),
+								 errtableconstraint(heapRel,
+													RelationGetRelationName(index))));
+					}
 					ereport(ERROR,
 							(errcode(ERRCODE_UNIQUE_VIOLATION),
 							 errmsg("duplicate key value violates unique constraint \"%s\"",
@@ -1998,14 +2025,17 @@ bark_lock_right(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 }
 
 /*
- * Does (itup's key, itup's heap TID) belong on the write-locked leaf `buf`,
- * given that it sorts at or above the leaf's low bound?  It does when the
- * leaf is rightmost or it sorts before the high key; a heap TID equal to the
- * high key's belongs right.
+ * Does (itup's key, scantid) belong on the write-locked leaf `buf`, given
+ * that it sorts at or above the leaf's low bound?  It does when the leaf is
+ * rightmost or it sorts before the high key; a heap TID equal to the high
+ * key's belongs right.  With scantid NULL, for a unique check, the test is
+ * bark_moveright's for a descent on the key alone: a key equal to the high
+ * key stays, since entries of it may be on this leaf, and the leaf is then
+ * the first that can hold the key.
  */
 static bool
 bark_belongs_on_leaf(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
-					 Buffer buf)
+					 ItemPointer scantid, Buffer buf)
 {
 	Page		page = BufferGetPage(buf);
 	IndexTuple	hikey;
@@ -2013,8 +2043,8 @@ bark_belongs_on_leaf(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 	if (BarkPageRightmost(BarkPageGetOpaque(page)))
 		return true;
 	hikey = (IndexTuple) PageGetItem(page, PageGetItemId(page, BARK_P_HIKEY));
-	return bark_compare_itups_tid(keyinfo, index, itup, &itup->t_tid,
-								  hikey) < 0;
+	return bark_compare_itups_tid(keyinfo, index, itup, scantid, hikey) <
+		(scantid != NULL ? 0 : 1);
 }
 
 /*
@@ -2032,7 +2062,7 @@ static Buffer
 bark_insert_stepright(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
 					  Buffer buf, BarkStack stack)
 {
-	while (!bark_belongs_on_leaf(index, keyinfo, itup, buf))
+	while (!bark_belongs_on_leaf(index, keyinfo, itup, &itup->t_tid, buf))
 	{
 		Buffer		rbuf = bark_lock_right(index, keyinfo, buf, stack);
 
@@ -2406,8 +2436,21 @@ bark_marker_present(Relation index, BarkKeyInfo *keyinfo, IndexTuple marker,
  * bark_getstackbuf, which moves right from a stale stack entry.  Each entry
  * goes through bark_insert_key and its own WAL record.
  *
- * A unique check is made for a row of one entry only (checkingunique), as
- * bark_insert describes, and the result is the check's.  When `markers`,
+ * A unique index checks each entry whose checkkeys[i] is set (NULL checks
+ * none), in this ascending order, under the exclusive lock of the first
+ * leaf that can hold the key, and inserts it before that lock is released,
+ * as nbtree's _bt_doinsert does for its one key ("When the check runs" in
+ * M4 of BARK-Design.mediawiki).  For such an entry the step from entry i's
+ * leaf L uses the move-right test for the key alone, and the entry then
+ * moves right to its heap TID's place (bark_insert_stepright): L is the
+ * first leaf that can hold it, since entry i is on L and sorts before it.
+ * A conflict with an in-progress transaction releases the leaf, waits, and
+ * descends again for that entry only; the entries before it stay in.  A
+ * committed conflict raises the unique violation, whose detail describes
+ * the row as values and isnull give it.  Under UNIQUE_CHECK_PARTIAL a
+ * conflict neither waits nor errors: the result becomes false and the
+ * remaining entries are inserted unchecked.  The result is false only
+ * then.  UNIQUE_CHECK_EXISTING checks each entry and inserts none.  When `markers`,
  * the entries are marker keys: never coalesced, never the cause of a
  * bottom-up deletion pass, and not inserted again when already present.
  */
@@ -2415,7 +2458,8 @@ static bool
 bark_insert_entries(Relation index, BarkInsertState *state,
 					IndexTuple *itups, Size *fulllens, int nitups,
 					Relation heapRel, IndexUniqueCheck checkUnique,
-					bool checkingunique, bool indexUnchanged, bool markers)
+					const bool *checkkeys, const Datum *values,
+					const bool *isnull, bool indexUnchanged, bool markers)
 {
 	BarkKeyInfo *keyinfo = state->keyinfo;
 	bool		coalesce = state->coalesce && !markers;
@@ -2429,10 +2473,10 @@ bark_insert_entries(Relation index, BarkInsertState *state,
 	bool		fastpath;
 	bool		rightmost;
 	BlockNumber target;
-	bool		result = false;
+	bool		checking;		/* is itup's key checked? */
+	bool		result = true;
 
 	Assert(nitups >= 1);
-	Assert(nitups == 1 || !checkingunique);
 	keyinfo->heaprel = heapRel; /* for pages a split allocates */
 	if (markers)
 		indexUnchanged = false;
@@ -2462,6 +2506,8 @@ bark_insert_entries(Relation index, BarkInsertState *state,
 	 */
 retry:
 	itup = itups[i];
+	checking = checkkeys != NULL && checkkeys[i];
+	insertoff = InvalidOffsetNumber;
 
 	/*
 	 * Tests stop an insert here, between two entries of a row that descends
@@ -2475,12 +2521,12 @@ retry:
 	stack = NULL;
 	if (i == 0 && !markers && !bark_len_is_oversized(fulllens[i]))
 		buf = bark_fastpath_leaf(index, keyinfo, itup,
-								 checkingunique ? NULL : &itup->t_tid);
+								 checking ? NULL : &itup->t_tid);
 	fastpath = BufferIsValid(buf);
 	if (!fastpath)
 		buf = bark_search(index, keyinfo, itup,
-						  checkingunique ? NULL : &itup->t_tid, true,
-						  !checkingunique, &stack);
+						  checking ? NULL : &itup->t_tid, true,
+						  !checking, &stack);
 
 	if (buf == InvalidBuffer)
 	{
@@ -2529,16 +2575,19 @@ retry:
 	 * wakes us the moment the speculative inserter confirms or kills its tuple,
 	 * so a losing speculative insert of the same key does not block to end of
 	 * xact.  This matches nbtree's _bt_doinsert speculative-wait path exactly.
+	 * The insert descends again for the key it was checking, and a later key
+	 * of a row comes back here from the loop below.
 	 */
-	if (checkingunique)
+check:
+	if (checking)
 	{
 		TransactionId xwait;
 		uint32		speculativeToken;
 		bool		is_unique;
 
 		xwait = bark_check_unique(index, keyinfo, itup, buf, heapRel,
-								  checkUnique, &is_unique, &speculativeToken,
-								  &insertoff);
+								  checkUnique, values, isnull, &is_unique,
+								  &speculativeToken, &insertoff);
 		if (TransactionIdIsValid(xwait))
 		{
 			/* Conflict with an in-progress xact: wait and retry. */
@@ -2552,11 +2601,16 @@ retry:
 								  XLTW_InsertIndex);
 			goto retry;
 		}
-		result = is_unique;
+		if (!is_unique)
+		{
+			/* UNIQUE_CHECK_PARTIAL: the result cannot change any more. */
+			result = false;
+			checkkeys = NULL;
+		}
 	}
 
 	/*
-	 * UNIQUE_CHECK_EXISTING only verifies that the already-inserted tuple is
+	 * UNIQUE_CHECK_EXISTING only verifies that the already-inserted row is
 	 * unique; it must not add another index entry.
 	 */
 	if (checkUnique == UNIQUE_CHECK_EXISTING)
@@ -2564,10 +2618,12 @@ retry:
 		UnlockReleaseBuffer(buf);
 		if (stack)
 			bark_freestack(stack);
-		return result;
+		if (++i == nitups)
+			return result;
+		goto retry;
 	}
 
-	if (checkingunique)
+	if (checking)
 	{
 		Buffer		checked = buf;
 
@@ -2616,17 +2672,20 @@ retry:
 		}
 
 		itup = itups[i];
+		checking = checkkeys != NULL && checkkeys[i];
 		if (placed == BARK_PLACE_SPLIT)
 		{
 			if (stack)
 				bark_freestack(stack);
 			goto retry;
 		}
-		if (!bark_belongs_on_leaf(index, keyinfo, itup, buf))
+		if (!bark_belongs_on_leaf(index, keyinfo, itup,
+								  checking ? NULL : &itup->t_tid, buf))
 		{
 			Buffer		rbuf = bark_lock_right(index, keyinfo, buf, stack);
 
-			if (!bark_belongs_on_leaf(index, keyinfo, itup, rbuf))
+			if (!bark_belongs_on_leaf(index, keyinfo, itup,
+									  checking ? NULL : &itup->t_tid, rbuf))
 			{
 				UnlockReleaseBuffer(rbuf);
 				UnlockReleaseBuffer(buf);
@@ -2641,6 +2700,8 @@ retry:
 										   BufferGetBlockNumber(buf));
 			off = InvalidOffsetNumber;
 		}
+		if (checking)
+			goto check;
 		off = bark_leaf_insert_off_from(index, keyinfo, itup, &itup->t_tid,
 										page, off);
 	}
@@ -2696,7 +2757,7 @@ bark_insert_markers(Relation index, BarkInsertState *state, BarkRowKeys *rk,
 		return;
 
 	(void) bark_insert_entries(index, state, itups, fulllens, n, heapRel,
-							   UNIQUE_CHECK_NO, false, false, true);
+							   UNIQUE_CHECK_NO, NULL, NULL, NULL, false, true);
 	for (int i = 0; i < rk->nmarkers; i++)
 		bark_cache_marker(index, state->keyinfo, rk->markers[i]);
 }
@@ -2762,15 +2823,22 @@ bark_index_has_marker(Relation index, Datum key)
  * crash or error after them leaves nothing to undo.  Everything the row
  * needs is allocated in state->rowcxt, which is reset at the end.
  *
+ * A unique index (checkUnique other than UNIQUE_CHECK_NO) checks each key
+ * that has no NULL column.  A NULL fixed column puts a NULL in every key,
+ * so such a row is not checked at all; the NULL key is not checked, and
+ * the row's other keys are (NULLS NOT DISTINCT is refused on such an index,
+ * bark_check_multikey_index).  Returns bark_insert_entries's result.
+ *
  * With oversizedonly, only the keys too large for CREATE INDEX's sort are
  * inserted: the build's second pass (bark_insert_oversized_keys) does that
  * for a row whose other keys the build loaded, after writing the flag and
  * the markers itself.
  */
-static void
+static bool
 bark_insert_row_keys(Relation index, BarkInsertState *state, Datum *values,
 					 bool *isnull, ItemPointer ht_ctid, Relation heapRel,
-					 bool indexUnchanged, bool oversizedonly)
+					 IndexUniqueCheck checkUnique, bool indexUnchanged,
+					 bool oversizedonly)
 {
 	TupleDesc	tupdesc = RelationGetDescr(index);
 	int			attno = state->extracted;
@@ -2780,10 +2848,25 @@ bark_insert_row_keys(Relation index, BarkInsertState *state, Datum *values,
 	BarkRowKeys rk;
 	IndexTuple *itups;
 	Size	   *fulllens;
+	bool	   *checkkeys = NULL;
+	bool		result = true;
 	int			n = 0;
 
 	bark_extract_row_keys(index, state->keyinfo, values[attno - 1],
 						  isnull[attno - 1], &rk);
+
+	if (checkUnique != UNIQUE_CHECK_NO)
+	{
+		checkkeys = palloc_array(bool, rk.nkeys);
+		for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+		{
+			if (i != attno - 1 && isnull[i])
+			{
+				checkkeys = NULL;
+				break;
+			}
+		}
+	}
 
 	if (!oversizedonly)
 	{
@@ -2805,15 +2888,18 @@ bark_insert_row_keys(Relation index, BarkInsertState *state, Datum *values,
 		if (oversizedonly && !bark_len_is_oversized(fulllens[n]))
 			continue;
 		itups[n]->t_tid = *ht_ctid;
+		if (checkkeys != NULL)
+			checkkeys[n] = !rk.nulls[i];
 		n++;
 	}
 	if (n > 0)
-		(void) bark_insert_entries(index, state, itups, fulllens, n, heapRel,
-								   UNIQUE_CHECK_NO, false, indexUnchanged,
-								   false);
+		result = bark_insert_entries(index, state, itups, fulllens, n,
+									 heapRel, checkUnique, checkkeys, values,
+									 isnull, indexUnchanged, false);
 
 	MemoryContextSwitchTo(oldcxt);
 	MemoryContextReset(state->rowcxt);
+	return result;
 }
 
 bool
@@ -2827,14 +2913,10 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 	bool		checkingunique = false;
 	bool		result = false; /* significant only for UNIQUE_CHECK_PARTIAL */
 
-	/* bark_check_multikey_index refuses a unique index of such a column. */
 	if (state->extracted > 0)
-	{
-		Assert(checkUnique == UNIQUE_CHECK_NO);
-		bark_insert_row_keys(index, state, values, isnull, ht_ctid, heapRel,
-							 indexUnchanged, false);
-		return false;
-	}
+		return bark_insert_row_keys(index, state, values, isnull, ht_ctid,
+									heapRel, checkUnique, indexUnchanged,
+									false);
 
 	/*
 	 * A uniqueness check is skipped when the caller doesn't want it, and when
@@ -2866,11 +2948,12 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
 	itup->t_tid = *ht_ctid;		/* SINGLE shape: locator in t_tid */
 	if (checkingunique)
 		result = bark_insert_entries(index, state, &itup, &fulllen, 1,
-									 heapRel, checkUnique, true,
-									 indexUnchanged, false);
+									 heapRel, checkUnique, &checkingunique,
+									 values, isnull, indexUnchanged, false);
 	else
 		(void) bark_insert_entries(index, state, &itup, &fulllen, 1, heapRel,
-								   checkUnique, false, indexUnchanged, false);
+								   checkUnique, NULL, values, isnull,
+								   indexUnchanged, false);
 	pfree(itup);
 	return result;
 }
@@ -2879,15 +2962,17 @@ bark_insert(Relation index, Datum *values, bool *isnull, ItemPointer ht_ctid,
  * CREATE INDEX's second pass over a row of an index with an extracted
  * column: insert those of the row's keys that were too large for the sort.
  * Procedure 7 is run again (it is immutable, so it returns the same keys).
+ * checkUnique is the caller's: UNIQUE_CHECK_YES for a live row of a unique
+ * index, else UNIQUE_CHECK_NO.
  */
 void
 bark_insert_oversized_keys(Relation index, Datum *values, bool *isnull,
 						   ItemPointer ht_ctid, Relation heapRel,
-						   IndexInfo *indexInfo)
+						   IndexUniqueCheck checkUnique, IndexInfo *indexInfo)
 {
 	BarkInsertState *state = bark_insert_state(index, indexInfo);
 
 	Assert(state->extracted > 0);
-	bark_insert_row_keys(index, state, values, isnull, ht_ctid, heapRel,
-						 false, true);
+	(void) bark_insert_row_keys(index, state, values, isnull, ht_ctid,
+								heapRel, checkUnique, false, true);
 }

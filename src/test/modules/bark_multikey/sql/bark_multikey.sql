@@ -37,15 +37,17 @@ SELECT bark_multikey_boundaries(mk_opc('bark_int4_array_ops'), 0, 15::int2);
 SELECT a, a |<| 0 AS least, a |>>| 0 AS greatest
 FROM (VALUES ('{4,2,9}'::int4[]), ('{}'), ('{NULL,8}'), (NULL)) AS t(a);
 
--- What M1 never allows on an extracted column.
+-- What is never allowed on an extracted column: two of them, an exclusion
+-- constraint, and NULLS NOT DISTINCT.  A unique index is allowed
+-- (bark_multikey_unique has its tests).
 CREATE TABLE mk (id int, a int4[], b int4[]);
 INSERT INTO mk VALUES (1, '{1,2}', '{3}'), (2, '{}', NULL);
 CREATE INDEX ON mk USING bark (a bark_int4_array_ops, b bark_int4_array_ops);
-CREATE UNIQUE INDEX ON mk USING bark (a bark_int4_array_ops);
 ALTER TABLE mk ADD CONSTRAINT mk_excl
   EXCLUDE USING bark (a bark_int4_array_ops WITH =);
--- With no unique or exclusion index on an extracted column, ON CONFLICT
--- has no arbiter on one.
+CREATE UNIQUE INDEX ON mk USING bark (a bark_int4_array_ops) NULLS NOT DISTINCT;
+-- With no unique index on an extracted column, ON CONFLICT has no arbiter
+-- on one.
 INSERT INTO mk VALUES (3, '{1}', NULL) ON CONFLICT (a) DO NOTHING;
 -- An INCLUDE column has no operator class, so it is never extracted.
 CREATE INDEX mk_incl ON mk USING bark (id) INCLUDE (a);

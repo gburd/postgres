@@ -696,12 +696,14 @@ bark_property(Oid index_oid, int attno, IndexAMProperty prop,
  * invalid; a scalar class belongs in a btree family (CREATE OPERATOR CLASS
  * ... FAMILY naming one, or a family created USING btree).
  *
- * Also refuse an index with an extracted column that is unique or carries
- * an exclusion constraint, or that has two extracted columns.  Two would
- * store the cross product of their keys, N times M entries per row
- * ("parallel arrays", which MongoDB refuses for the same reason).
- * Uniqueness over multikey keys needs document-store semantics, unique
- * across rows while one row may repeat a key, which is later work.
+ * Also refuse an index with two extracted columns, which would store the
+ * cross product of their keys, N times M entries per row ("parallel
+ * arrays", which MongoDB refuses for the same reason), and an index with an
+ * extracted column that carries an exclusion constraint or is unique with
+ * NULLS NOT DISTINCT.  A unique one is unique over its keys ("M4" in
+ * BARK-Design.mediawiki); its NULL key stands for a NULL value, an empty
+ * value and a NULL element alike, so under NULLS NOT DISTINCT a row with
+ * an empty array would conflict with one holding {7,NULL}.
  */
 void
 bark_check_multikey_index(Relation index, IndexInfo *indexInfo)
@@ -733,10 +735,11 @@ bark_check_multikey_index(Relation index, IndexInfo *indexInfo)
 				 errmsg("index \"%s\" has more than one column with a multikey operator class",
 						RelationGetRelationName(index)),
 				 errdetail("A BARK index may extract keys from at most one column.")));
-	if (indexInfo->ii_Unique)
+	if (indexInfo->ii_NullsNotDistinct)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("unique indexes are not supported for multikey operator classes in M1")));
+				 errmsg("NULLS NOT DISTINCT is not supported for multikey operator classes"),
+				 errdetail("A NULL value, an empty value and a NULL element all have the NULL key.")));
 	if (indexInfo->ii_ExclusionOps != NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),

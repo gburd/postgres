@@ -421,8 +421,29 @@ int2 indexRecheck(<replaceable>key</replaceable>, int2 strategy, internal extra)
    An index may have at most one multikey column, in any key position;
    the other key columns use ordinary operator classes, and every entry of
    a row carries the same values for them.  An <literal>INCLUDE</literal>
-   column is never multikey.  A unique index or an exclusion constraint
-   cannot have a multikey column.
+   column is never multikey.  An exclusion constraint cannot have a
+   multikey column.
+  </para>
+
+  <para>
+   A unique index with a multikey column is unique over its keys: two rows
+   conflict when they share a key under equal values of the other key
+   columns, while one row may repeat a key.  So
+   <literal>CREATE UNIQUE INDEX ON docs USING bark (tenant, tags
+   my_int4_array_ops)</literal> says that no two rows of one tenant share a
+   tag.  A key with a NULL in any column never conflicts: a NULL value, an
+   empty array and a NULL element all give the NULL key, so any number of
+   rows may hold an empty array, and a row whose other key column is NULL
+   is not checked.  <literal>NULLS NOT DISTINCT</literal> is refused on
+   such an index.  An insert checks and inserts a row's keys one at a time,
+   in ascending order; when a key conflicts, the error detail names the
+   shared key, and the keys inserted before it are left to
+   <command>VACUUM</command> as entries of the failed row.  An
+   <command>UPDATE</command> that keeps some of a row's keys does not
+   conflict with itself.  <literal>INSERT ... ON CONFLICT</literal> into a
+   table with such an index is not yet supported and fails with an error
+   saying the index's equality cannot be found.  The planner does not treat
+   such an index as proof that at most one row matches.
   </para>
 
   <para>
