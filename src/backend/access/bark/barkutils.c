@@ -64,6 +64,14 @@ static bool bark_first_column_bytewise(Relation index);
  * multikey family) has whatever strategy number its class gave it, and its
  * values are not ordered by it, so it has no compare type: the planner must
  * not read = or < semantics into it.
+ *
+ * The one compare type a BARK family may translate is COMPARE_OVERLAP, and
+ * only through the class's procedure 15.  Two rows conflict in a unique
+ * index with an extracted column when their values share a key, which is
+ * overlap, not equality; the executor's ON CONFLICT pre-check asks for
+ * overlap when a column has no equality (BuildSpeculativeIndexInfo).  The
+ * reverse mapping stays COMPARE_INVALID, so the planner still reads nothing
+ * into the operator.
  */
 CompareType
 bark_translate_strategy(StrategyNumber strategy, Oid opfamily)
@@ -92,7 +100,18 @@ StrategyNumber
 bark_translate_cmptype(CompareType cmptype, Oid opfamily)
 {
 	if (OidIsValid(opfamily) && get_opfamily_method(opfamily) == BARK_AM_OID)
-		return InvalidStrategy;
+	{
+		Oid			funcid;
+
+		if (cmptype != COMPARE_OVERLAP)
+			return InvalidStrategy;
+		funcid = get_opfamily_proc(opfamily, ANYOID, ANYOID,
+								   BARK_TRANSLATE_CMPTYPE_PROC);
+		if (!OidIsValid(funcid))
+			return InvalidStrategy;
+		return DatumGetUInt16(OidFunctionCall1Coll(funcid, InvalidOid,
+												   Int32GetDatum(cmptype)));
+	}
 
 	switch (cmptype)
 	{
@@ -704,18 +723,29 @@ bark_property(Oid index_oid, int attno, IndexAMProperty prop,
  * BARK-Design.mediawiki); its NULL key stands for a NULL value, an empty
  * value and a NULL element alike, so under NULLS NOT DISTINCT a row with
  * an empty array would conflict with one holding {7,NULL}.
+ *
+ * A unique one must also name its conflict operator: the class's procedure
+ * 15 must translate COMPARE_OVERLAP to an operator registered under the
+ * input type.  The executor's ON CONFLICT pre-check scans with that
+ * operator (BuildSpeculativeIndexInfo), and ExecOpenIndices builds the
+ * pre-check for every unique index of a table an ON CONFLICT insert
+ * targets, so without it such an insert would fail in core.
  */
 void
 bark_check_multikey_index(Relation index, IndexInfo *indexInfo)
 {
 	int			nextracted = 0;
+	int			extracted = -1;
 
 	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
 	{
 		Oid			opfamily = index->rd_opfamily[i];
 
 		if (bark_opfamily_extracts(opfamily, index->rd_opcintype[i]))
+		{
 			nextracted++;
+			extracted = i;
+		}
 		else if (get_opfamily_method(opfamily) != BTREE_AM_OID)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
@@ -744,6 +774,24 @@ bark_check_multikey_index(Relation index, IndexInfo *indexInfo)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("exclusion constraints are not supported for multikey operator classes in M1")));
+	if (indexInfo->ii_Unique)
+	{
+		Oid			opfamily = index->rd_opfamily[extracted];
+		Oid			opcintype = index->rd_opcintype[extracted];
+		StrategyNumber strategy;
+
+		strategy = bark_translate_cmptype(COMPARE_OVERLAP, opfamily);
+		if (strategy == InvalidStrategy ||
+			!OidIsValid(get_opfamily_member(opfamily, opcintype, opcintype,
+											strategy)))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("operator family \"%s\" of access method %s has no overlap operator for type %s",
+							get_opfamily_name(opfamily, false), "bark",
+							format_type_be(opcintype)),
+					 errdetail("A unique index on a column with a multikey operator class needs support function %d to name an overlap operator over the column's type.",
+							   BARK_TRANSLATE_CMPTYPE_PROC)));
+	}
 }
 
 /*

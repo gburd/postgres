@@ -14074,6 +14074,23 @@ transformFkeyCheckAttrs(Relation pkrel,
 			}
 
 			/*
+			 * A unique index need not be unique under equality: one whose
+			 * column holds several keys per row (BARK's multikey operator
+			 * classes) is unique over the keys, and its operator family has
+			 * no equality.  The foreign key needs one on every column but
+			 * the PERIOD part, so pass such an index by; a btree index on
+			 * the same columns may follow.
+			 */
+			for (i = 0; found && i < numattrs - (with_period ? 1 : 0); i++)
+			{
+				if (IndexAmTranslateCompareType(COMPARE_EQ,
+												get_opclass_method(opclasses[i]),
+												get_opclass_family(opclasses[i]),
+												true) == InvalidStrategy)
+					found = false;
+			}
+
+			/*
 			 * Refuse to use a deferrable unique/primary key.  This is per SQL
 			 * spec, and there would be a lot of interesting semantic problems
 			 * if we tried to allow it.
@@ -19245,6 +19262,26 @@ ATExecReplicaIdentity(Relation rel, ReplicaIdentityStmt *stmt, LOCKMODE lockmode
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot use partial index \"%s\" as replica identity",
 						RelationGetRelationName(indexRel))));
+
+	/*
+	 * Replication finds a row by its identity with an equality scan on every
+	 * key column (build_replindex_scan_key).  A unique index whose column
+	 * holds several keys per row (BARK's multikey operator classes) is
+	 * unique over the keys and has no equality.
+	 */
+	for (key = 0; key < IndexRelationGetNumberOfKeyAttributes(indexRel); key++)
+	{
+		if (IndexAmTranslateCompareType(COMPARE_EQ, indexRel->rd_rel->relam,
+										indexRel->rd_opfamily[key],
+										true) == InvalidStrategy)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("cannot use index \"%s\" as replica identity",
+							RelationGetRelationName(indexRel)),
+					 errdetail("Operator family \"%s\" of key column %d has no equality operator.",
+							   get_opfamily_name(indexRel->rd_opfamily[key], false),
+							   key + 1)));
+	}
 
 	/* Check index for nullable columns. */
 	for (key = 0; key < IndexRelationGetNumberOfKeyAttributes(indexRel); key++)
