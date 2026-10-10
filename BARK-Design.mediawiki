@@ -1417,7 +1417,7 @@ section left open or that differ from it:
 '''As built (M1d, in progress).''' Done: plancat sets
 <code>amcanparallel</code> false for an index with an extracted column (the
 same test that puts InvalidOid in its <code>sortopfamily</code>), so the
-scan's parallel refusal became an assertion; IndexSupportsBackwardScan asks
+planner never makes a parallel scan that needs the seen set; IndexSupportsBackwardScan asks
 <code>amproperty</code> (AMPROP_BACKWARD_SCAN, attno 0) and falls back to
 <code>amcanbackward</code> when the AM has none or does not answer, and
 bark_property answers backward_scan from the operator classes (it opens
