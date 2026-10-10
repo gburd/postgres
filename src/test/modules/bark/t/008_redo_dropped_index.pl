@@ -208,6 +208,9 @@ sub waldump
 			'pg_waldump', '--rmgr=Bark',
 			'--path=' . $node->data_dir . '/pg_wal', @args
 		]);
+	# A start LSN on a page boundary makes pg_waldump report, on stderr,
+	# skipping the page header; that is not an error.
+	$err =~ s/^pg_waldump: first record is after .*\n//m;
 	is($err, '', "pg_waldump @args reads the WAL without errors");
 	return $out;
 }
