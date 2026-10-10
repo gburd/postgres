@@ -615,8 +615,9 @@ bark_opfamily_extracts(Oid opfamily, Oid opcintype)
  * an ordering operator (amoppurpose 'o') whose result its sort family can
  * sort, as SP-GiST decides it.  BARK walks outward from a point in its key
  * order, so only the leading column can be ordered so
- * (match_pathkeys_to_index), and not an extracted one, whose ordering
- * operators the scan does not serve.
+ * (match_pathkeys_to_index).  On an extracted column the scan reports a
+ * row's first key as its ORDER BY value, so the operator must also return
+ * the key type.
  */
 bool
 bark_property(Oid index_oid, int attno, IndexAMProperty prop,
@@ -656,9 +657,10 @@ bark_property(Oid index_oid, int attno, IndexAMProperty prop,
 		answered = false;
 	else if (prop != AMPROP_DISTANCE_ORDERABLE)
 		answered = extracted > 0 && attno >= extracted;
-	else if (attno == 1 && extracted != 1)
+	else if (attno == 1)
 	{
 		Oid			opcintype = index->rd_opcintype[0];
+		Oid			keytype = TupleDescAttr(RelationGetDescr(index), 0)->atttypid;
 		CatCList   *catlist = SearchSysCacheList1(AMOPSTRATEGY,
 												  ObjectIdGetDatum(index->rd_opfamily[0]));
 
@@ -670,7 +672,8 @@ bark_property(Oid index_oid, int attno, IndexAMProperty prop,
 				(amop->amoplefttype == opcintype ||
 				 amop->amoprighttype == opcintype) &&
 				opfamily_can_sort_type(amop->amopsortfamily,
-									   get_op_rettype(amop->amopopr));
+									   get_op_rettype(amop->amopopr)) &&
+				(extracted != 1 || get_op_rettype(amop->amopopr) == keytype);
 		}
 		ReleaseSysCacheList(catlist);
 	}

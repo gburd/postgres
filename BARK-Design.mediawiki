@@ -1429,8 +1429,28 @@ column as SP-GiST does (an ordering operator whose result its sort family
 can sort). A cursor not declared SCROLL is not made scrollable over such
 an index, as over GIN. The scan's errors for a direction change and for a
 parallel scan with the set in use stay, for callers of the AM that do not
-ask the planner's questions. Not yet: the ordering operator on the
-extracted column, and the costing.
+ask the planner's questions. Not yet: the costing.
+
+'''As built (M1d step 3), the ordering operator on the extracted column.'''
+match_pathkeys_to_index already offered it (the leading column of an
+ordered AM), and the scan now serves it rather than refusing. Procedure 8
+runs on the ordering key; its boundaries become the one required key and
+the scan walks them, with the seen set, in the direction that gives the
+operator's order: <code>backward</code> asks for descending key order, and
+a DESC column reverses the index direction. Each row comes back at its
+first entry with that entry's key as <code>xs_orderbyvals</code> (exact,
+so the operator must return the class's storage type: bark_property's
+distance_orderable and the scan both require it). The NULL result sorts
+last, as match_pathkeys_to_index requires (no NULLS FIRST pathkey); when
+the column's NULLS option puts the NULL entries first in the walk they are
+read after the keys by a second positioning on the NULL boundary alone. A
+strict operator with a NULL argument walks every entry and reports NULL.
+Search keys on the column neither position nor filter the walk; every row
+comes back with <code>xs_recheck</code>. A descending order needs an
+operator whose sort family orders its type descending, since an ordering
+pathkey is always ascending in its family (the test module's
+<code>|&gt;&gt;|</code> sorts in a family whose less-than is int4's
+<code>&gt;</code>, as <code>ORDER BY a |&gt;&gt;| 0 USING &gt;&gt;&gt;</code>).
 * A DEBUG1 message at scan start says whether the scan uses a seen set, for
   tests.
 

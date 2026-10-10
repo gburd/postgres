@@ -58,6 +58,7 @@ PG_MODULE_MAGIC;
 #define BARK_MK_CONTAINED	3	/* <@ */
 #define BARK_MK_EQUAL		4	/* = */
 #define BARK_MK_ORDER		5	/* |<|, ordering */
+#define BARK_MK_ORDER_DESC	15	/* |>>|, ordering by the greatest element */
 
 /*
  * The range class's strategies, for the scan's boundary walk: an element
@@ -86,6 +87,7 @@ PG_FUNCTION_INFO_V1(bark_multikey_parallel);
 PG_FUNCTION_INFO_V1(bark_multikey_extract_query);
 PG_FUNCTION_INFO_V1(bark_multikey_recheck);
 PG_FUNCTION_INFO_V1(bark_multikey_least);
+PG_FUNCTION_INFO_V1(bark_multikey_greatest);
 PG_FUNCTION_INFO_V1(bark_multikey_keys);
 PG_FUNCTION_INFO_V1(bark_multikey_boundaries);
 
@@ -199,9 +201,9 @@ bark_multikey_extract_marked(PG_FUNCTION_ARGS)
  * NULL elements only) are what searchnulls is for.  <@ needs them, since
  * the empty array is contained in every array, and so do @> '{}', which
  * every array satisfies (one unbounded boundary), and an = whose query has
- * no element to point at.  The ordering operator reads every row: the whole
- * key range, ascending, and the NULL entries, whose rows sort last as the
- * operator's NULL does.
+ * no element to point at.  The ordering operators read every row: the whole
+ * key range, ascending for |<| and descending for |>>|, and the NULL
+ * entries, whose rows sort last as the operator's NULL does.
  */
 Datum
 bark_multikey_extract_query(PG_FUNCTION_ARGS)
@@ -228,11 +230,11 @@ bark_multikey_extract_query(PG_FUNCTION_ARGS)
 	*recheck = false;
 
 	/* The ordering key's argument is |<|'s right operand, not an array. */
-	if (strategy == BARK_MK_ORDER)
+	if (strategy == BARK_MK_ORDER || strategy == BARK_MK_ORDER_DESC)
 	{
 		*boundaries = palloc0_object(BarkBoundary);
 		*nboundaries = 1;
-		flags->backward = false;
+		flags->backward = (strategy == BARK_MK_ORDER_DESC);
 		flags->searchnulls = true;
 		PG_RETURN_VOID();
 	}
@@ -441,6 +443,22 @@ bark_multikey_least(PG_FUNCTION_ARGS)
 	if (nkeys == 0)
 		PG_RETURN_NULL();
 	PG_RETURN_INT32(keys[0]);
+}
+
+/*
+ * int4[] |>>| int4: the array's greatest non-NULL element, or NULL when it
+ * has none.  Its sort family orders int4 descending.
+ */
+Datum
+bark_multikey_greatest(PG_FUNCTION_ARGS)
+{
+	int32	   *keys;
+	int			nkeys;
+
+	keys = sorted_elements(PG_GETARG_ARRAYTYPE_P(0), &nkeys);
+	if (nkeys == 0)
+		PG_RETURN_NULL();
+	PG_RETURN_INT32(keys[nkeys - 1]);
 }
 
 /*
