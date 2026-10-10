@@ -925,6 +925,24 @@ an ordered index keeps a later column's values spread over the whole index.
 A scroll cursor over a KNN scan is materialized: the scan cannot run its
 distance order backward.
 
+An ordering operator of a multikey class on a leading extracted column is
+not a KNN scan (bark_mk_order_setup in barkscan.c).  Procedure 8 is called
+with the ordering key and returns the boundaries to walk, normally all of
+the column, with BarkQueryFlags.searchnulls for the NULL entries and
+BarkQueryFlags.backward for a descending order.  The boundaries become the
+scan's one required key, as a search key's do, and the scan walks them
+with the ordinary page reads in the direction that gives that key order
+(backward XOR the column's DESC), with the seen set.  So a row comes back
+once, at its first entry, and that entry's key is its exact ORDER BY value
+(xs_orderbyvals; the operator must return the key type).  The NULL result
+sorts last; when the column's NULLS option puts the NULL entries first in
+the walk, the NULL boundary is held back and read by a second positioning
+once the keys are done (bark_mk_order_nulls), the seen set dropping the
+rows already returned.  Search keys on the column do not position or
+filter this walk (a row met first at a failing key would come back later,
+out of order); every row comes back with xs_recheck and the executor
+applies them.
+
 Cost estimate
 -------------
 
