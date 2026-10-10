@@ -609,12 +609,15 @@ ExecSupportsBackwardScan(Plan *node)
 
 /*
  * An IndexScan or IndexOnlyScan node supports backward scan only if the
- * index's AM does.
+ * index does.  An AM whose indexes differ in that (BARK's, by operator
+ * class) answers per index through amproperty; otherwise amcanbackward is
+ * the answer for every index of the AM.
  */
 static bool
 IndexSupportsBackwardScan(Oid indexid)
 {
 	bool		result;
+	bool		isnull = false;
 	HeapTuple	ht_idxrel;
 	Form_pg_class idxrelrec;
 	const IndexAmRoutine *amroutine;
@@ -628,7 +631,12 @@ IndexSupportsBackwardScan(Oid indexid)
 	/* Fetch the index AM's API struct */
 	amroutine = GetIndexAmRoutineByAmId(idxrelrec->relam, false);
 
-	result = amroutine->amcanbackward;
+	result = false;
+	if (amroutine->amproperty == NULL ||
+		!amroutine->amproperty(indexid, 0, AMPROP_BACKWARD_SCAN,
+							   "backward_scan", &result, &isnull) ||
+		isnull)
+		result = amroutine->amcanbackward;
 
 	ReleaseSysCache(ht_idxrel);
 

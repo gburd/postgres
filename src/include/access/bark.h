@@ -1082,6 +1082,8 @@ extern bool bark_allequalimage(Relation index);
 extern bool bark_column_is_extracted(Relation index, int attno);
 extern int	bark_index_extracted_column(Relation index);
 extern bool bark_opfamily_extracts(Oid opfamily, Oid opcintype);
+extern bool bark_property(Oid index_oid, int attno, IndexAMProperty prop,
+						  const char *propname, bool *res, bool *isnull);
 extern void bark_check_multikey_index(Relation index, IndexInfo *indexInfo);
 extern void bark_meta_cover(Page metapage);
 extern bool bark_index_is_multikey(Relation index);

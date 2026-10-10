@@ -28,6 +28,7 @@
 #include "access/genam.h"
 #include "access/htup_details.h"
 #include "access/relation.h"
+#include "access/relscan.h"
 #include "access/stratnum.h"
 #include "access/table.h"
 #include "access/tableam_indexscan.h"
@@ -80,6 +81,8 @@ PG_FUNCTION_INFO_V1(bark_multikey_meta);
 PG_FUNCTION_INFO_V1(bark_multikey_entries);
 PG_FUNCTION_INFO_V1(bark_multikey_has_marker);
 PG_FUNCTION_INFO_V1(bark_multikey_mark_restore);
+PG_FUNCTION_INFO_V1(bark_multikey_reverse);
+PG_FUNCTION_INFO_V1(bark_multikey_parallel);
 PG_FUNCTION_INFO_V1(bark_multikey_extract_query);
 PG_FUNCTION_INFO_V1(bark_multikey_recheck);
 PG_FUNCTION_INFO_V1(bark_multikey_least);
@@ -807,4 +810,87 @@ bark_multikey_mark_restore(PG_FUNCTION_ARGS)
 	PG_RETURN_TEXT_P(cstring_to_text(psprintf("total:%d resumed:%d same:%s",
 											  nall, nresumed,
 											  same ? "true" : "false")));
+}
+
+/*
+ * bark_multikey_reverse(index, op, query, n) -> text: scan index with one
+ * key, column 1 op query, read n TIDs forward and then one backward, as a
+ * caller would that does not ask IndexSupportsBackwardScan.  The answer is
+ * "forward:<n> back:<bool>": the TIDs read forward, and whether the
+ * backward step returned the one before the last of them, as a scroll
+ * cursor expects.  A scan that keeps a seen set raises an error instead.
+ */
+Datum
+bark_multikey_reverse(PG_FUNCTION_ARGS)
+{
+	Relation	index = open_bark_index(PG_GETARG_TEXT_PP(0));
+	Oid			opno = PG_GETARG_OID(1);
+	Datum		query = PG_GETARG_DATUM(2);
+	int			n = Max(PG_GETARG_INT32(3), 2);
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	ItemPointer tids = palloc_array(ItemPointerData, n);
+	int			nread;
+	bool		back;
+	int			strategy;
+	Oid			lefttype;
+	Oid			righttype;
+	ScanKeyData key;
+	IndexScanDesc scan;
+
+	get_op_opfamily_properties(opno, index->rd_opfamily[0], false, &strategy,
+							   &lefttype, &righttype);
+	ScanKeyEntryInitialize(&key, 0, 1, strategy, righttype,
+						   index->rd_indcollation[0], get_opcode(opno), query);
+	scan = index_beginscan(heap, index, false, GetActiveSnapshot(), NULL, 1, 0,
+						   0);
+	index_rescan(scan, &key, 1, NULL, 0);
+	nread = read_tids(scan, tids, n);
+	back = nread >= 2 &&
+		tableam_index_getnext_tid(scan, BackwardScanDirection) &&
+		ItemPointerEquals(&scan->xs_heaptid, &tids[nread - 2]);
+	index_endscan(scan);
+
+	table_close(heap, AccessShareLock);
+	relation_close(index, AccessShareLock);
+	PG_RETURN_TEXT_P(cstring_to_text(psprintf("forward:%d back:%s", nread,
+											  back ? "true" : "false")));
+}
+
+/*
+ * bark_multikey_parallel(index, op, query) -> int: scan index with one key,
+ * column 1 op query, as the only participant of a parallel scan, and count
+ * the TIDs, as a caller would that does not ask amcanparallel.  A scan that
+ * keeps a seen set raises an error instead.
+ */
+Datum
+bark_multikey_parallel(PG_FUNCTION_ARGS)
+{
+	Relation	index = open_bark_index(PG_GETARG_TEXT_PP(0));
+	Oid			opno = PG_GETARG_OID(1);
+	Datum		query = PG_GETARG_DATUM(2);
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	Snapshot	snapshot = GetActiveSnapshot();
+	ParallelIndexScanDesc pscan;
+	int			strategy;
+	Oid			lefttype;
+	Oid			righttype;
+	ScanKeyData key;
+	IndexScanDesc scan;
+	int64		n = 0;
+
+	get_op_opfamily_properties(opno, index->rd_opfamily[0], false, &strategy,
+							   &lefttype, &righttype);
+	ScanKeyEntryInitialize(&key, 0, 1, strategy, righttype,
+						   index->rd_indcollation[0], get_opcode(opno), query);
+	pscan = palloc0(index_parallelscan_estimate(index, 1, 0, snapshot));
+	index_parallelscan_initialize(heap, index, snapshot, pscan);
+	scan = index_beginscan_parallel(heap, index, false, NULL, 1, 0, pscan, 0);
+	index_rescan(scan, &key, 1, NULL, 0);
+	while (tableam_index_getnext_tid(scan, ForwardScanDirection))
+		n++;
+	index_endscan(scan);
+
+	table_close(heap, AccessShareLock);
+	relation_close(index, AccessShareLock);
+	PG_RETURN_INT64(n);
 }

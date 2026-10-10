@@ -502,9 +502,23 @@ CREATE INDEX tagged_tags_idx ON tagged USING bark (tags my_int4_array_ops);
   </para>
 
   <para>
-   Because of the set, a scan of a multikey index cannot change direction:
-   fetching backward in a scrollable cursor over such a scan raises an
-   error, and a parallel index scan that needs the set raises one too.
+   Because of the set, a scan of a multikey index cannot change
+   direction, and such an index reports
+   <literal>pg_index_has_property(index, 'backward_scan')</literal> false.
+   A cursor declared <literal>SCROLL</literal> over it reads through a
+   <literal>Materialize</literal> node, which can go back; a cursor
+   declared without <literal>SCROLL</literal> can then only fetch forward,
+   as over a GIN index.  The planner never chooses a parallel index scan
+   of a multikey index; a parallel bitmap heap scan works as usual.
+   Since the index orders a multikey column's keys rather than its values,
+   <function>pg_index_column_has_property</function> reports
+   <literal>orderable</literal>, <literal>asc</literal>,
+   <literal>desc</literal>, <literal>nulls_first</literal> and
+   <literal>nulls_last</literal> false for that column and for every key
+   column after it, and <literal>returnable</literal> false for the
+   multikey column; <literal>distance_orderable</literal> is true for a
+   leading column with an ordering operator such as
+   <literal>&lt;~&gt;</literal>.
    An ordering operator on the multikey column itself is not supported
    yet; one on an ordinary leading column (<literal>ORDER BY tenant
    &lt;~&gt; 3</literal>) is, and returns each row once.  A bitmap scan
@@ -1002,8 +1016,8 @@ SELECT single_entries, list_entries, posting_entries, oversized_entries
   </listitem>
   <listitem>
    <para>
-    A scan of an index with a multikey column cannot change direction,
-    nor be a parallel scan when it has to skip a row's repeated entries,
+    A scan of an index with a multikey column cannot change direction
+    (a scrollable cursor is materialized), nor be a parallel index scan,
     nor order by an operator on the multikey column (see
     <xref linkend="bark-multikey-scans"/>).
    </para>

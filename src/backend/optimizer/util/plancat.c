@@ -352,10 +352,17 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 						 * ordered by its columns before the first one in such
 						 * a family: give it its own array, with InvalidOid
 						 * there, where build_index_pathkeys stops.
+						 *
+						 * Such a column has an entry per key of a row, and a
+						 * scan drops a row's later entries with a set of the
+						 * rows it returned.  The workers of a parallel scan
+						 * read different leaves and could not share it, so
+						 * the index gets no parallel scans.
 						 */
 						if (get_opfamily_method(info->opfamily[i]) !=
 							BTREE_AM_OID)
 						{
+							info->amcanparallel = false;
 							if (info->sortopfamily == info->opfamily)
 							{
 								info->sortopfamily = palloc_array(Oid,

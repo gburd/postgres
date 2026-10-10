@@ -1413,6 +1413,24 @@ section left open or that differ from it:
   parallel scan that needs the set, and an ordering key on the extracted
   column raise errors. bark_canreturn answers false for the extracted
   column (an index-only scan would otherwise return keys as values).
+
+'''As built (M1d, in progress).''' Done: plancat sets
+<code>amcanparallel</code> false for an index with an extracted column (the
+same test that puts InvalidOid in its <code>sortopfamily</code>), so the
+scan's parallel refusal became an assertion; IndexSupportsBackwardScan asks
+<code>amproperty</code> (AMPROP_BACKWARD_SCAN, attno 0) and falls back to
+<code>amcanbackward</code> when the AM has none or does not answer, and
+bark_property answers backward_scan from the operator classes (it opens
+the index for bark_index_extracted_column), orderable, asc, desc,
+nulls_first and nulls_last false for the extracted column and every key
+column after it (they form no pathkeys; the generic code answers for the
+others and for INCLUDE columns), and distance_orderable for the leading
+column as SP-GiST does (an ordering operator whose result its sort family
+can sort). A cursor not declared SCROLL is not made scrollable over such
+an index, as over GIN. The scan's errors for a direction change and for a
+parallel scan with the set in use stay, for callers of the AM that do not
+ask the planner's questions. Not yet: the ordering operator on the
+extracted column, and the costing.
 * A DEBUG1 message at scan start says whether the scan uses a seen set, for
   tests.
 
