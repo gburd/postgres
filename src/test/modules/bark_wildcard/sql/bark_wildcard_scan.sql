@@ -226,6 +226,29 @@ SELECT i, (SELECT count(*) FROM wc_index_keys(i::regclass)) AS entries,
                ('wc_exc_doc', 'wc_exc', NULL, 'b'), ('wc_tid_doc', 'wc_tid', NULL, NULL)) v(i, t, inc, exc)
  ORDER BY i;
 
+-- A member named "" at the root adds no path segment, so its values are at
+-- the paths below it: {"": {"s": 5}} has 5 at s.  Every operator must agree
+-- with the index there.  Each query's ids by seqscan and by forced index and
+-- bitmap scans, which must be equal.
+CREATE TABLE wc_empty (id int, doc jsonb);
+INSERT INTO wc_empty VALUES (1, '{"": {"s": 5}}'), (2, '{"s": 5}'),
+  (3, '{"": {"s": 6}, "s": 5}'), (4, '{"": 5}'), (5, '{"a": {"": 5}}'),
+  (6, '{"a.": 5}'), (7, '5'), (8, '{"": [5, 6]}'), (9, '{"": {"": {"s": 7}}}');
+CREATE INDEX wc_empty_doc ON wc_empty USING bark (doc bark_jsonb_wildcard_ops);
+CREATE TABLE wc_empty_q AS
+  SELECT q FROM unnest(ARRAY['doc #= ''["s", 5]''', 'doc #< ''["s", 7]''',
+                             'doc #>= ''["s", 6]''', 'doc #= ''["", 5]''',
+                             'doc #= ''["a.", 5]''', 'doc #? ''s''',
+                             'doc #? ''''']) q;
+SELECT q, wc_run('wc_empty', NULL, q, 'seq') AS seq,
+       wc_run('wc_empty', 'wc_empty_doc', q, 'index') AS index,
+       wc_run('wc_empty', 'wc_empty_doc', q, 'bitmap') AS bitmap
+  FROM wc_empty_q ORDER BY q;
+SELECT q, (SELECT array_agg(id ORDER BY id) FROM wc_empty e
+            WHERE CASE q WHEN 's=5' THEN doc #= '["s", 5]'
+                         WHEN 's?' THEN doc #? 's' END) AS ids
+  FROM unnest('{s=5,s?}'::text[]) q;
+DROP TABLE wc_empty, wc_empty_q;
 DROP TABLE wc_seq, wc_plain, wc_inc, wc_exc, wc_tid, wc_quals;
 DROP FUNCTION wc_run, wc_compare, wc_jpath, wc_doc, wc_val, wc_heap_keys, wc_index_keys;
 DROP EXTENSION bark_wildcard;
