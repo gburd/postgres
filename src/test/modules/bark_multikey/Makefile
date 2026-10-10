@@ -9,7 +9,7 @@ PGFILEDESC = "bark_multikey - test code for BARK multikey operator classes"
 EXTENSION = bark_multikey
 DATA = bark_multikey--1.0.sql
 
-REGRESS = bark_multikey bark_multikey_scan bark_multikey_unique
+REGRESS = bark_multikey bark_multikey_scan bark_multikey_unique bark_multikey_gin
 ISOLATION = bark_multikey_concurrent bark_multikey_unique_concurrent
 EXTRA_INSTALL = contrib/amcheck src/test/modules/injection_points
 TAP_TESTS = 1
