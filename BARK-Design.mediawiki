@@ -1299,8 +1299,12 @@ the last clear. A <code>LIMIT</code> bounds it. Its budget is
 <code>get_hash_memory_limit()</code> (work_mem times hash_mem_multiplier),
 since it is a hash-like table. barkcostestimate keeps plans inside it: an
 amgettuple path that needs the set and whose estimated rows per group,
-times 16 bytes, exceed the budget gets <code>disable_cost</code> added, so
-the planner takes a bitmap scan and a Sort. At run time the set grows past
+times 16 bytes, exceed the budget is marked disabled
+(<code>disabled_nodes</code>), so the planner takes a bitmap scan and a Sort.
+Not <code>disable_cost</code>: cost_bitmap_tree_node reuses the IndexPath's
+<code>indextotalcost</code> for the bitmap path, so that would rule out the
+bitmap scan as well, while the bitmap path does not inherit
+<code>disabled_nodes</code>. At run time the set grows past
 the budget rather than return a row twice, as a hashed RecursiveUnion's table
 does. Spilling would not help, since every entry must be tested in order.
 
@@ -1429,7 +1433,19 @@ column as SP-GiST does (an ordering operator whose result its sort family
 can sort). A cursor not declared SCROLL is not made scrollable over such
 an index, as over GIN. The scan's errors for a direction change and for a
 parallel scan with the set in use stay, for callers of the AM that do not
-ask the planner's questions. Not yet: the costing.
+ask the planner's questions. The costing is done: barkcostestimate as
+described under "Costing" below, with the work_mem penalty of "Memory" as
+<code>disabled_nodes</code>, because cost_bitmap_tree_node reuses
+<code>indextotalcost</code> and <code>disable_cost</code> would also rule out
+the bitmap scan. Tested by the "Costing" block of bark_multikey_scan.sql: at
+the default work_mem an index scan of one tenant wins, at work_mem 64kB the
+planner takes a sequential or bitmap scan, a single point and a
+ScalarArrayOp on the extracted column keep their index scans, and every plan
+matches a sequential scan. An ordered scan on the extracted column (step 3,
+below) takes the KNN rule, which counts every entry; its heap fetches are
+the rows the other columns' quals pass, since the column's own quals are
+only rechecked, so a LIMIT makes it win over a sort and a filter on the
+column alone does not.
 
 '''As built (M1d step 3), the ordering operator on the extracted column.'''
 match_pathkeys_to_index already offered it (the leading column of an
@@ -1552,12 +1568,17 @@ over keys, rather than values, are not part of M1.
 
 '''Costing.''' barkcostestimate counts the entries a scan visits as the
 qual's selectivity times reltuples times ''K'', capped at the index's
-entries, with one descent per boundary that is not on the page before it,
-as the array scan is costed. It adds <code>cpu_operator_cost</code> per
-entry for the seen set and for procedure 9 when the boundaries ask for a
-recheck. It adds the work_mem penalty above, and for an ordered scan with a
-filter on the extracted column, the whole ordering range and a heap fetch
-per row. The index correlation is 0 when the extracted column is first. The
+entries. ''K'' is the meta page's member count over reltuples, as of the
+last CREATE INDEX or VACUUM, and 1 while the multikey flag is clear. The
+extracted column's first qual positions the scan, with one descent per
+boundary procedure 8 makes of its constant (run at plan time, as
+gincost_pattern runs extractQuery) or per element of a ScalarArrayOp; its
+other quals filter. It adds <code>cpu_operator_cost</code> per entry for
+the seen set (unless the flag is clear or the boundaries are one point) and
+for procedure 9 when the boundaries ask for a recheck. It adds the work_mem
+penalty above. An ordered scan with a filter on the extracted column, which
+would add the whole ordering range and a heap fetch per row, waits for the
+ordering operator on that column. The index correlation is 0 when the extracted column is first. The
 rows the scan returns are the qual's selectivity times reltuples, without
 ''K'': the scan returns each row once.
 

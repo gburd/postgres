@@ -26,6 +26,7 @@
 #include "access/amlocator.h"
 #include "access/bark.h"
 #include "access/barkxlog.h"
+#include "access/genam.h"
 #include "access/nbtree.h"
 #include "access/reloptions.h"
 #include "access/xloginsert.h"
@@ -1103,6 +1104,106 @@ bark_cost_skips(IndexPath *path)
 }
 
 /*
+ * K, the entries per row of an index with an extracted column: the meta
+ * page's count of (key, TID) members over the heap's rows, as of the last
+ * CREATE INDEX or VACUUM, and 1 while the multikey flag is clear.  *multikey
+ * returns the flag, which decides whether a scan needs the seen set.  The
+ * meta page is read as gincostestimate reads GIN's; a hypothetical index has
+ * none and is taken to need the set.
+ */
+static double
+bark_cost_keys_per_row(IndexOptInfo *index, bool *multikey)
+{
+	Relation    indexRel;
+	Buffer      metabuf;
+	BarkMetaPageData *meta;
+	uint32      flags;
+	uint64      nkeys;
+
+	*multikey = true;
+	if (index->hypothetical)
+		return 1.0;
+
+	/* plancat.c has locked the index. */
+	indexRel = index_open(index->indexoid, NoLock);
+	metabuf = ReadBuffer(indexRel, BARK_METAPAGE);
+	LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+	meta = BarkPageGetMeta(BufferGetPage(metabuf));
+	flags = meta->bark_flags;
+	nkeys = meta->bark_nkeys;
+	UnlockReleaseBuffer(metabuf);
+	index_close(indexRel, NoLock);
+
+	*multikey = (flags & BARK_META_MULTIKEY) != 0;
+	if (!*multikey || nkeys == 0 || index->rel->tuples <= 0)
+		return 1.0;
+	return Max((double) nkeys / index->rel->tuples, 1.0);
+}
+
+/*
+ * The number of boundaries procedure 8 makes of clause, a qual on the
+ * extracted column indexcol, run on its constant as gincost_pattern runs
+ * GIN's extractQuery: the scan descends once per boundary.  *point says
+ * whether the only boundary is a single key (such a scan needs no seen set),
+ * *recheck whether procedure 9 runs on every entry.  A qual whose argument is
+ * not a constant counts as one boundary.
+ */
+static double
+bark_cost_boundaries(IndexOptInfo *index, int indexcol, Expr *clause,
+					 bool *point, bool *recheck)
+{
+	OpExpr     *op = (OpExpr *) clause;
+	Node       *arg;
+	Oid         procoid;
+	FmgrInfo    flinfo;
+	BarkBoundary *result = NULL;
+	int32       nresult = 0;
+	Pointer     extra = NULL;
+	BarkQueryFlags flags;
+	Datum       strategy;
+
+	*point = false;
+	*recheck = false;
+	if (!IsA(clause, OpExpr) || list_length(op->args) != 2)
+		return 1;
+	arg = (Node *) lsecond(op->args);
+	if (IsA(arg, RelabelType))
+		arg = (Node *) ((RelabelType *) arg)->arg;
+	if (!IsA(arg, Const) || ((Const *) arg)->constisnull)
+		return 1;
+	procoid = get_opfamily_proc(index->opfamily[indexcol],
+								index->opcintype[indexcol],
+								index->opcintype[indexcol],
+								BARK_EXTRACTQUERY_PROC);
+	if (!OidIsValid(procoid))
+		return 1;
+
+	strategy = Int16GetDatum(get_op_opfamily_strategy(op->opno,
+													  index->opfamily[indexcol]));
+	fmgr_info(procoid, &flinfo);
+	set_fn_opclass_options(&flinfo, index->opclassoptions[indexcol]);
+	memset(&flags, 0, sizeof(flags));
+	if (get_func_nargs(procoid) >= 7)
+		FunctionCall7Coll(&flinfo, index->indexcollations[indexcol],
+						  ((Const *) arg)->constvalue, strategy,
+						  PointerGetDatum(&result), PointerGetDatum(&nresult),
+						  PointerGetDatum(&extra), PointerGetDatum(recheck),
+						  PointerGetDatum(&flags));
+	else
+		FunctionCall6Coll(&flinfo, index->indexcollations[indexcol],
+						  ((Const *) arg)->constvalue, strategy,
+						  PointerGetDatum(&result), PointerGetDatum(&nresult),
+						  PointerGetDatum(&extra), PointerGetDatum(recheck));
+
+	if (nresult == 1 && !flags.searchnulls &&
+		result[0].lower != NULL && result[0].upper != NULL &&
+		result[0].lower->strategy == BTEqualStrategyNumber &&
+		result[0].upper->strategy == BTEqualStrategyNumber)
+		*point = true;
+	return Max(nresult + (flags.searchnulls ? 1 : 0), 1);
+}
+
+/*
  * barkcostestimate -- estimate the cost of a BARK index scan.
  *
  * This is btcostestimate, applied to the quals as a BARK scan uses them.
@@ -1140,6 +1241,25 @@ bark_cost_skips(IndexPath *path)
  * expected charge for an index whose entries are uniformly large and zero
  * for one with none; a mixed index is charged the average, since the index
  * keeps no count of its oversized entries.
+ *
+ * An index with an extracted column has K entries per row
+ * (bark_cost_keys_per_row).  The column's first qual positions the scan at
+ * procedure 8's boundaries, one descent each, and ends the walk of the
+ * quals; its other quals filter.  The entries read are the rows times K,
+ * capped at the index's entries, each charged cpu_index_tuple_cost, plus
+ * cpu_operator_cost for the seen set when the scan needs it and again for
+ * procedure 9 when the boundaries ask for it.  A scan that needs the set and
+ * whose rows per group of the fixed columns, at about 16 bytes each, exceed
+ * get_hash_memory_limit() is marked disabled (disabled_nodes, which the
+ * bitmap path built from the same IndexPath does not inherit, where
+ * disable_cost in indexTotalCost would reach it through
+ * cost_bitmap_tree_node), so the planner takes a bitmap scan.  The rows
+ * per group are the scan's rows unless every fixed column has an equality,
+ * which overstates them for a scan across many groups.  The rows returned
+ * stay the qual's selectivity times reltuples, and the correlation is 0
+ * when the extracted column is first.  An ordered scan on the extracted
+ * column reads every entry, and fetches from the heap every row the other
+ * columns' quals pass, since the column's own quals are only rechecked.
  */
 static void
 barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
@@ -1163,6 +1283,13 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	double		correlation = 0.0;
 	Cost		descentCost;
 	ListCell   *lc;
+	int         mkcol = -1;     /* extracted column, 0-based, or -1 */
+	bool        mkcounted = false;
+	bool        mkpoint = false;
+	bool        mkrecheck = false;
+	bool        multikey = false;
+	double      mkdescents = 1;
+	double      keysperrow = 1.0;
 
 	examine_indexcol_variable(root, index, 0, &vardata);
 	if (HeapTupleIsValid(vardata.statsTuple))
@@ -1190,6 +1317,21 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 		}
 	}
 	ReleaseVariableStats(vardata);
+
+	for (int i = 0; i < index->nkeycolumns; i++)
+	{
+		if (bark_opfamily_extracts(index->opfamily[i], index->opcintype[i]))
+		{
+			mkcol = i;
+			break;
+		}
+	}
+	if (mkcol >= 0)
+		keysperrow = bark_cost_keys_per_row(index, &multikey);
+
+	/* A leading extracted column's statistics are of values, not keys. */
+	if (mkcol == 0)
+		correlation = 0.0;
 
 	foreach(lc, path->indexclauses)
 	{
@@ -1238,6 +1380,29 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 			else
 				elog(ERROR, "unsupported indexqual type: %d",
 					 (int) nodeTag(clause));
+
+			/*
+			 * The extracted column's first qual positions the scan at its
+			 * boundaries, the last ones the scan uses; the others filter.
+			 */
+			if (indexcol == mkcol)
+			{
+				if (!mkcounted)
+				{
+					if (IsA(clause, ScalarArrayOpExpr))
+						mkdescents = Max(estimate_array_length(root,
+															   lsecond(((ScalarArrayOpExpr *) clause)->args)),
+										 1);
+					else
+						mkdescents = bark_cost_boundaries(index, mkcol, clause,
+														  &mkpoint, &mkrecheck);
+					colelems = mkdescents;
+					mkcounted = true;
+					indexBoundQuals = lappend(indexBoundQuals, rinfo);
+				}
+				lastcol = true;
+				continue;
+			}
 
 			strategy = get_op_opfamily_strategy(clause_op,
 												index->opfamily[indexcol]);
@@ -1331,6 +1496,51 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 				chain_pages * spc_random_page_cost;
 			/* The first entry's chain is read before its first row returns. */
 			costs.indexStartupCost += chain_pages * spc_random_page_cost;
+		}
+	}
+
+	/* An extracted column: K entries per row, the seen set, procedure 9. */
+	if (mkcol >= 0)
+	{
+		double      rows = costs.numIndexTuples * costs.num_sa_scans;
+		double      entries = Min(rows * keysperrow, index->tuples * keysperrow);
+		double      grouprows = rows;
+		bool        useseen = multikey && !(mkcounted && mkdescents == 1 && mkpoint);
+
+		costs.indexTotalCost += Max(entries - rows, 0) * cpu_index_tuple_cost;
+		if (useseen)
+			costs.indexTotalCost += entries * cpu_operator_cost;
+		if (mkrecheck)
+			costs.indexTotalCost += entries * cpu_operator_cost;
+
+		if (mkcol > 0 && mkcounted)
+			grouprows = Min(rows, rows * mkdescents / costs.num_sa_scans);
+		if (useseen && grouprows * 16.0 > (double) get_hash_memory_limit())
+			path->path.disabled_nodes++;
+
+		/*
+		 * An ordered scan on the extracted column walks the whole ordering
+		 * range (rows above is every row), and the column's quals neither
+		 * position nor filter it: each row comes back for the executor's
+		 * recheck.  So the heap fetches, which cost_index takes from the
+		 * selectivity, are the rows the other columns' quals let through.
+		 */
+		if (list_member_int(path->indexorderbycols, mkcol))
+		{
+			List	   *otherquals = NIL;
+
+			foreach(lc, path->indexclauses)
+			{
+				IndexClause *iclause = lfirst_node(IndexClause, lc);
+
+				if (iclause->indexcol != mkcol)
+					otherquals = list_concat(otherquals, iclause->indexquals);
+			}
+			costs.indexSelectivity =
+				clauselist_selectivity(root,
+									   add_predicate_to_index_quals(index,
+																otherquals),
+									   index->rel->relid, JOIN_INNER, NULL);
 		}
 	}
 

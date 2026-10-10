@@ -152,8 +152,11 @@ is( $standby->safe_psql(
 	"t|t", 'the standby has the flag and the count');
 
 # Scans of a multikey index on the standby return the primary's rows, each
-# once, by index and by bitmap scan.  (The marked class has no procedure 8,
-# so s_a and s_id_a cannot be scanned on the multikey column.)
+# once, by index and by bitmap scan.  The marked class has no procedure 8,
+# so s_a and s_id_a cannot be scanned on the multikey column; they are
+# dropped first, since the planner would otherwise cost them as usable.
+$node->safe_psql('postgres', 'DROP INDEX s_a, s_id_a');
+$node->wait_for_replay_catchup($standby);
 foreach my $qual (
 	"a && '{7,13,20,33}'", "a @> '{}'", "a <@ '{3}'",
 	"id < 500 AND a && '{7,13,20,33}'")
