@@ -972,8 +972,15 @@ once, at its first entry, and that entry's key is its exact ORDER BY value
 (xs_orderbyvals; the operator must return the key type).  The NULL result
 sorts last; when the column's NULLS option puts the NULL entries first in
 the walk, the NULL boundary is held back and read by a second positioning
-once the keys are done (bark_mk_order_nulls), the seen set dropping the
-rows already returned.  Search keys on the column do not position or
+once the keys are done (bark_mk_order_rest), the seen set dropping the
+rows already returned.  When procedure 8 also sets BarkQueryFlags.orderrest,
+its boundaries do not hold every row (a wildcard class's path range misses
+the documents without that path): the second positioning then reads the
+rest of the column, every key and the NULL entries, and the rows not yet
+returned come back with a NULL ORDER BY value, last.  The seen set is then
+used even for an index that is not multikey, since a row met in the
+boundaries is met again in the rest, and the boundaries' entries are read
+twice.  Search keys on the column do not position or
 filter this walk (a row met first at a failing key would come back later,
 out of order); every row comes back with xs_recheck and the executor
 applies them.
