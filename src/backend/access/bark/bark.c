@@ -24,6 +24,7 @@
 
 #include "access/amapi.h"
 #include "access/bark.h"
+#include "access/gin.h"
 #include "access/barkxlog.h"
 #include "access/genam.h"
 #include "access/nbtree.h"
@@ -1180,7 +1181,40 @@ bark_cost_boundaries(IndexOptInfo *index, int indexcol, Expr *clause,
 								index->opcintype[indexcol],
 								BARK_EXTRACTQUERY_PROC);
 	if (!OidIsValid(procoid))
-		return 1;
+	{
+		/*
+		 * GIN's interface: a bitmap scan, which needs no seen set, reading
+		 * each entry of extractQuery, plus the NULL entries for a search mode
+		 * that wants them and every key for ALL, as gincost_pattern counts.
+		 */
+		int32		nentries = 0;
+		bool	   *pmatch = NULL;
+		Pointer    *ginextra = NULL;
+		bool	   *nullFlags = NULL;
+		int32		searchMode = GIN_SEARCH_MODE_DEFAULT;
+
+		procoid = get_opfamily_proc(index->opfamily[indexcol],
+									index->opcintype[indexcol],
+									index->opcintype[indexcol],
+									BARK_GIN_EXTRACTQUERY_PROC);
+		if (!OidIsValid(procoid))
+			return 1;
+		*noseen = true;
+		fmgr_info(procoid, &flinfo);
+		set_fn_opclass_options(&flinfo, index->opclassoptions[indexcol]);
+		(void) FunctionCall7Coll(&flinfo, index->indexcollations[indexcol],
+								((Const *) arg)->constvalue,
+								PointerGetDatum(&nentries),
+								UInt16GetDatum(get_op_opfamily_strategy(op->opno,
+																			index->opfamily[indexcol])),
+								PointerGetDatum(&pmatch),
+								PointerGetDatum(&ginextra),
+								PointerGetDatum(&nullFlags),
+								PointerGetDatum(&searchMode));
+		return Max(Max(nentries, 0) +
+				   (searchMode == GIN_SEARCH_MODE_DEFAULT ? 0 :
+					searchMode == GIN_SEARCH_MODE_INCLUDE_EMPTY ? 1 : 2), 1);
+	}
 
 	strategy = Int16GetDatum(get_op_opfamily_strategy(op->opno,
 													  index->opfamily[indexcol]));
