@@ -280,12 +280,93 @@ SELECT mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq'),
        mk_run('mk_seq', 'tenant IN (1, 3, 5) AND a && ''{1,5,77}''', 'seq');
 SET enable_seqscan = off;
 -- The rows a scan with a seen set returned would be dropped if it walked
--- back over them, so a scan does not change direction.
-BEGIN;
+-- back over them, so an index with an extracted column has no backward
+-- scans (backward_scan is false, from its operator classes, whatever the
+-- meta page says), and a scroll cursor over it reads through a Material
+-- node, as over a KNN scan.  A scalar BARK index scans backward itself.
+CREATE TABLE mk_prop (id int, tenant int, a int4[], t text);
+CREATE INDEX mk_prop_ita ON mk_prop USING bark (id, t) INCLUDE (tenant);
+CREATE INDEX mk_prop_ta ON mk_prop USING bark (tenant, a bark_int4_array_ops);
+CREATE INDEX mk_prop_a ON mk_prop USING bark (a bark_int4_array_ops, id);
+CREATE INDEX mk_prop_t ON mk_prop USING bark (t);
+SELECT i::regclass, pg_index_has_property(i, 'backward_scan') AS backward,
+       pg_index_has_property(i, 'index_scan') AS index_scan,
+       pg_index_has_property(i, 'bitmap_scan') AS bitmap_scan
+  FROM unnest('{mk_prop_ita,mk_prop_ta,mk_prop_a,mk_b1_a}'::regclass[]) i;
+-- Column properties: an extracted column is not returnable (its entries
+-- hold keys); distance_orderable needs an ordering operator (int4's <~>)
+-- on the leading column, which an extracted column never is.
+SELECT i::regclass, c, pg_index_column_has_property(i, c, 'returnable') AS ret,
+       pg_index_column_has_property(i, c, 'orderable') AS ord,
+       pg_index_column_has_property(i, c, 'distance_orderable') AS dist,
+       pg_index_column_has_property(i, c, 'search_array') AS saop
+  FROM unnest('{mk_prop_ita,mk_prop_ta,mk_prop_a,mk_prop_t}'::regclass[]) i,
+       generate_series(1, 3) c
+  WHERE c <= (SELECT indnatts FROM pg_index WHERE indexrelid = i)
+  ORDER BY 1, 2;
+DROP TABLE mk_prop;
+EXPLAIN (COSTS OFF)
 DECLARE c SCROLL CURSOR FOR SELECT id FROM mk_b1 WHERE a && '{1,5,77}';
+EXPLAIN (COSTS OFF)
+DECLARE c SCROLL CURSOR FOR SELECT tenant FROM mk_b2 WHERE tenant = 3;
+-- mk_scroll(qual): read a scroll cursor over mk_b1 forward 3 rows, back 1
+-- (the second row again), then to the end, then back to the start; the
+-- step back must repeat the second row, and both passes must return the
+-- sequential scan's rows.
+CREATE FUNCTION mk_scroll(qual text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  c refcursor;
+  r record;
+  first int[] := '{}';
+  fwd int[] := '{}';
+  bwd int[] := '{}';
+  again int;
+BEGIN
+  OPEN c SCROLL FOR EXECUTE 'SELECT id FROM mk_b1 WHERE ' || qual;
+  FOR i IN 1 .. 3 LOOP
+    FETCH c INTO r;
+    first := first || r.id;
+  END LOOP;
+  FETCH PRIOR FROM c INTO r;
+  again := r.id;
+  MOVE ABSOLUTE 0 IN c;
+  LOOP
+    FETCH c INTO r;
+    EXIT WHEN NOT FOUND;
+    fwd := fwd || r.id;
+  END LOOP;
+  LOOP
+    FETCH PRIOR FROM c INTO r;
+    EXIT WHEN NOT FOUND;
+    bwd := bwd || r.id;
+  END LOOP;
+  CLOSE c;
+  RETURN (again = first[2]) || ':' ||
+    (SELECT count(*) || ':' || count(DISTINCT x) || ':' ||
+            md5(string_agg(x::text, ',' ORDER BY x)) FROM unnest(fwd) x) ||
+    ':' || (fwd = (SELECT array_agg(x ORDER BY o DESC)
+                     FROM unnest(bwd) WITH ORDINALITY u(x, o)));
+END $$;
+SELECT mk_scroll('a && ''{1,5,77}''');
+SELECT mk_scroll('a <@ ''{1,2,3,4,5,6,7,8,9,10,11}''');
+RESET enable_seqscan;
+SELECT 'true:' || mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq') || ':true',
+       'true:' || mk_run('mk_seq', 'a <@ ''{1,2,3,4,5,6,7,8,9,10,11}''', 'seq') ||
+       ':true';
+SET enable_seqscan = off;
+-- A cursor not declared SCROLL is not scrollable over such an index.
+BEGIN;
+DECLARE c CURSOR FOR SELECT id FROM mk_b1 WHERE a && '{1,5,77}';
 FETCH 3 FROM c;
 FETCH BACKWARD 1 FROM c;
 ROLLBACK;
+-- A caller of the index AM that does not ask, and changes direction, gets
+-- an error from a scan that keeps a seen set, never wrong rows; a scan for
+-- one point keeps none and steps back.
+SELECT bark_multikey_reverse('mk_b1_a', '&&(anyarray,anyarray)',
+                             '{1,5,77}'::int4[], 3);
+SELECT bark_multikey_reverse('mk_b1_a', '&&(anyarray,anyarray)',
+                             '{5}'::int4[], 3);
 -- A scan that starts backward is fine.
 EXPLAIN (COSTS OFF)
 SELECT id FROM mk_b2 WHERE tenant IN (1, 3) AND a && '{1,5,77}'
@@ -650,5 +731,5 @@ DROP TABLE mk_seq, mk_gin, mk_b1, mk_b2, mk_bd, mk_bn, mk_rn, mk_r1, mk_ins, mk_
   mk_outer, mk_single, mk_quals, mk_rquals, mk_nulls;
 DROP OPERATOR CLASS mk_single_ops USING bark CASCADE;
 DROP FUNCTION mk_rows(), mk_run(text, text, text), mk_compare(text, text[]),
-  mk_fetch(int4), mk_cursor(text), mk_backward(text, text);
+  mk_fetch(int4), mk_cursor(text), mk_backward(text, text), mk_scroll(text);
 DROP EXTENSION bark_multikey;

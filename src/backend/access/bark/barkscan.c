@@ -3628,8 +3628,10 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 
 	/*
 	 * A scan with a seen set that reverses direction would meet the entries
-	 * of the rows it returned, and drop them.  A scroll cursor over such an
-	 * index has to be materialized.
+	 * of the rows it returned, and drop them.  The executor never asks for
+	 * that: bark_property says such an index has no backward scans, so a
+	 * scroll cursor over it is materialized.  A caller of the index AM that
+	 * does not ask gets an error, not wrong rows.
 	 */
 	if (so->mk != NULL && so->mk->useseen && so->mk->started &&
 		dir != so->mk->dir)

@@ -189,3 +189,10 @@ CREATE FUNCTION bark_multikey_mark_restore(index text, op regoperator,
                                            read_after int)
 RETURNS text
 AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+-- Scan an index on column 1 op query, read n rows forward, then one
+-- backward, without asking whether the index scans backward.
+CREATE FUNCTION bark_multikey_reverse(index text, op regoperator,
+                                      query anyelement, n int)
+RETURNS text
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
