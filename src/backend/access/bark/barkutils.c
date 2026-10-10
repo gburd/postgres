@@ -247,6 +247,21 @@ bark_column_is_extracted(Relation index, int attno)
 }
 
 /*
+ * Does index answer the scan keys on its extracted column through GIN's
+ * query interface, its class having procedure 10 and not 8?  Such a column
+ * has bitmap scans only ("Which interface first." in BARK-Design.mediawiki).
+ */
+bool
+bark_index_gin_query(Relation index)
+{
+	int			attno = bark_index_extracted_column(index);
+
+	return attno > 0 &&
+		!OidIsValid(index_getprocid(index, attno, BARK_EXTRACTQUERY_PROC)) &&
+		OidIsValid(index_getprocid(index, attno, BARK_GIN_EXTRACTQUERY_PROC));
+}
+
+/*
  * The attribute number of `index`'s extracted column, or 0 when it has none.
  * CREATE INDEX allows at most one (bark_check_multikey_index); when the
  * catalog has more, the first is returned.  The answer depends only on the
@@ -651,6 +666,7 @@ bark_property(Oid index_oid, int attno, IndexAMProperty prop,
 	switch (prop)
 	{
 		case AMPROP_BACKWARD_SCAN:
+		case AMPROP_INDEX_SCAN:
 			if (attno != 0)
 				return false;
 			break;
@@ -670,7 +686,9 @@ bark_property(Oid index_oid, int attno, IndexAMProperty prop,
 	index = index_open(index_oid, AccessShareLock);
 	extracted = bark_index_extracted_column(index);
 	*res = false;
-	if (attno == 0)
+	if (prop == AMPROP_INDEX_SCAN)
+		*res = !bark_index_gin_query(index);
+	else if (attno == 0)
 		*res = extracted == 0;
 	else if (attno > IndexRelationGetNumberOfKeyAttributes(index))
 		answered = false;
