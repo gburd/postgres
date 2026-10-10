@@ -37,6 +37,7 @@ tests += {
       't/002_standby.pl',
       't/003_split_recovery.pl',
       't/004_insert_fpi_recovery.pl',
+      't/005_insert_done_recovery.pl',
     ],
   },
 }
