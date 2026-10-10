@@ -433,6 +433,7 @@ typedef struct BarkMkScanState
 	 * columns before the extracted one of the rows in it.
 	 */
 	bool		useseen;		/* a row may match through two entries */
+	bool		oneentry;		/* procedure 8 said it cannot */
 	bool		bitmap;			/* an amgetbitmap scan, which needs none */
 	bool		started;		/* positioned since rescan, in direction dir */
 	ScanDirection dir;
@@ -596,15 +597,15 @@ bark_mk_set_side(IndexScanDesc scan, BarkMkScanState *mk, BarkMkBoundary *b,
  * results last until the next rescan.
  *
  * A procedure 8 declared with six arguments, as pg_extended_btree's are, is
- * called with six and never sees BarkQueryFlags.  BarkQueryFlags.backward
- * is for ordering keys, which pick the direction of their own walk; it is
- * returned in *backward.  A search key passes NULL: it goes in the scan's
- * direction.
+ * called with six and never sees BarkQueryFlags, whose fields then stay
+ * false.  The flags procedure 8 set are returned in *flagsout unless it is
+ * NULL: backward for an ordering key, which picks the direction of its own
+ * walk, and oneentry for a search key.
  */
 static void
 bark_mk_extract(IndexScanDesc scan, BarkMkScanState *mk, ScanKey sk,
 				Datum query, BarkMkBoundary **bounds, int *nbounds,
-				int *maxbounds, bool *backward)
+				int *maxbounds, BarkQueryFlags *flagsout)
 {
 	BarkBoundary *result = NULL;
 	int32		nresult = 0;
@@ -614,6 +615,7 @@ bark_mk_extract(IndexScanDesc scan, BarkMkScanState *mk, ScanKey sk,
 	int			first = *nbounds;
 
 	memset(&flags, 0, sizeof(flags));
+	flags.index = scan->indexRelation;
 	if (mk->queryflags)
 		FunctionCall7Coll(mk->extractquery, mk->col->collation, query,
 						  Int16GetDatum(sk->sk_strategy),
@@ -625,8 +627,10 @@ bark_mk_extract(IndexScanDesc scan, BarkMkScanState *mk, ScanKey sk,
 						  Int16GetDatum(sk->sk_strategy),
 						  PointerGetDatum(&result), PointerGetDatum(&nresult),
 						  PointerGetDatum(&extra), PointerGetDatum(&recheck));
-	if (backward != NULL)
-		*backward = flags.backward;
+	if (!mk->queryflags)
+		memset(&flags, 0, sizeof(flags));
+	if (flagsout != NULL)
+		*flagsout = flags;
 
 	if (*nbounds + nresult + 1 > *maxbounds)
 	{
@@ -705,7 +709,8 @@ bark_mk_order_setup(IndexScanDesc scan, BarkMkScanState *mk, ScanKey ob)
 	BarkMkBoundary *bounds = NULL;
 	int			nbounds = 0;
 	int			maxbounds = 0;
-	bool		backward = false;
+	BarkQueryFlags flags = {0};
+	bool		backward;
 	int			first;
 
 	if (get_func_rettype(ob->sk_func.fn_oid) !=
@@ -731,7 +736,8 @@ bark_mk_order_setup(IndexScanDesc scan, BarkMkScanState *mk, ScanKey ob)
 	}
 	else
 		bark_mk_extract(scan, mk, ob, ob->sk_argument, &bounds, &nbounds,
-						&maxbounds, &backward);
+						&maxbounds, &flags);
+	backward = flags.backward;
 
 	/* Index order is ascending key order unless the column is DESC. */
 	mk->orderdir = backward == mk->col->reverse ? ForwardScanDirection :
@@ -778,6 +784,7 @@ bark_mk_setup(IndexScanDesc scan)
 	mk->nbounds = 0;
 	mk->recheckall = mk->nkeys > 1;
 	mk->order = false;
+	mk->oneentry = false;
 	mk->nullspending = false;
 	if (scan->numberOfOrderBys > 0 &&
 		scan->orderByData[0].sk_attno == mk->attno)
@@ -806,8 +813,13 @@ bark_mk_setup(IndexScanDesc scan)
 		return;
 
 	if (!(sk->sk_flags & SK_SEARCHARRAY))
+	{
+		BarkQueryFlags flags;
+
 		bark_mk_extract(scan, mk, sk, sk->sk_argument, &bounds, &nbounds,
-						&maxbounds, NULL);
+						&maxbounds, &flags);
+		mk->oneentry = flags.oneentry;
+	}
 	else
 	{
 		ArrayType  *arr = DatumGetArrayTypeP(sk->sk_argument);
@@ -877,8 +889,12 @@ bark_mk_clear_seen(BarkMkScanState *mk)
  * Decide, at rescan, whether the scan needs the seen set ("Returning a row
  * once" in BARK-Design.mediawiki).  A row can come back through two entries
  * unless the extracted column has exactly one boundary and it is a point (a
- * row's keys are distinct, so one point matches one of its entries), or the
- * index has never held a row with two entries.  The flag is read after the
+ * row's keys are distinct, so one point matches one of its entries), or
+ * procedure 8 set BarkQueryFlags.oneentry for the column's first key, or the
+ * index has never held a row with two entries.  Procedure 8 ran in
+ * bark_mk_setup, at this rescan, so oneentry, like the multikey flag, says
+ * what the index held after the snapshot was taken, never what it held when
+ * the plan was made.  The multikey flag is read after the
  * snapshot was taken, and every row visible to an MVCC snapshot committed
  * before that, its insert having set the flag first.  A scan with any other
  * snapshot may see a row whose insert is still running, so it always uses
@@ -896,8 +912,8 @@ bark_mk_rescan(IndexScanDesc scan)
 	mk->nundo = 0;
 	if (!IsMVCCSnapshot(scan->xs_snapshot))
 		mk->useseen = true;
-	else if (mk->nkeys > 0 && !mk->order && mk->nbounds == 1 &&
-			 mk->bounds[0].point)
+	else if (mk->nkeys > 0 && !mk->order &&
+			 (mk->oneentry || (mk->nbounds == 1 && mk->bounds[0].point)))
 		mk->useseen = false;
 	else
 		mk->useseen = bark_index_is_multikey(scan->indexRelation);

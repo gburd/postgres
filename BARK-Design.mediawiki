@@ -1039,8 +1039,9 @@ place of an inverted AM, without changing the scalar design above.
   with a sequential scan on 151 quals over 4000 documents, and a lax
   jsonpath oracle where the semantics coincide; the index's (key, TID)
   members are compared both ways with the keys of the heap's rows, since
-  heapallindexed refuses a multikey index. Not yet: M5b, the per-path
-  no-seen-set extension, sorting by a path, and a comparison with GIN's
+  heapallindexed refuses a multikey index. M5b part 1, the per-path
+  no-seen-set extension (BarkQueryFlags.oneentry and .index), is built.
+  Not yet: sorting by a path, and a comparison with GIN's
   jsonb_path_ops)''
 * '''T1''' -- term containment at scale; see "Containment queries" under
   C-KEYSHAPE. ''(not started; the TID filter for an ordered scan is blocked
@@ -1110,8 +1111,12 @@ column of every BARK index, scalar ones included.
   which asks the scan to read the NULL entries too (a NULL value, an empty
   value or a NULL element), at the position the column's NULLS option gives
   them, and to return those rows with <code>xs_recheck</code> set, as
-  GIN's INCLUDE_EMPTY search mode does. Fields are only appended (M5 adds
-  "this scan needs no seen set"). It turns an operator's strategy and argument into
+  GIN's INCLUDE_EMPTY search mode does. Fields are only appended. M5b
+  appends <code>oneentry</code>, which procedure 8 sets to say that a row
+  matches these boundaries through at most one entry, so the scan needs no
+  seen set, and <code>index</code>, which BARK sets (NULL when no index is
+  open) so procedure 8 can read the index's markers with
+  <code>bark_index_has_marker</code>. It turns an operator's strategy and argument into
   boundaries, each a lower and an upper search element (an argument of the
   key type and a strategy 1-5; either may be absent, meaning unbounded; a
   point has = in both). BARK sorts the boundaries and raises an error if two
@@ -1283,7 +1288,9 @@ not passed to procedure 9; its rows are returned with
 a row at its first entry in scan order and drops its later entries. It does
 this whenever a row can match through two keys: always, unless the meta
 page says the index has never held a multikey row ("Multikey metadata"
-below), or the extracted column has exactly one boundary and it is a point.
+below), or the extracted column has exactly one boundary and it is a point,
+or procedure 8 set <code>oneentry</code> for the column's first key (not a
+ScalarArrayOp: two of its elements may each match one entry of a row).
 A bitmap scan never does: TIDBitmap absorbs repeats.
 
 The returned rows are kept in a ''seen set'' per scan: a radix tree
@@ -1626,7 +1633,21 @@ What that needs from M1, and where M1 provides it:
   array"). A query on a path without its marker is known to match each row
   at most once, and a class can then plan an index-only scan or an ordered
   scan with no Sort. Telling the AM "this scan needs no seen set" is an M5
-  extension of procedure 8. M1 stores, caches and reads the markers.
+  extension of procedure 8. M1 stores, caches and reads the markers. M5b's
+  extension: procedure 8 cannot see the index from its arguments, so BARK
+  passes the open index in <code>BarkQueryFlags.index</code> rather than
+  checking a class's markers itself (only the class knows which marker
+  belongs to a query), and the class answers in
+  <code>BarkQueryFlags.oneentry</code>. Procedure 8 runs at every rescan,
+  after the scan's snapshot, so the answer is never the plan's: a path that
+  gains its first array after a generic plan was made gets the seen set at
+  the next execution (markers go in before the row's entries, as the
+  multikey flag does). The planner runs procedure 8 with the index too, for
+  the cost only. The wildcard class sets the flag when no prefix of the
+  path, the document's root included, has a marker; an include projection
+  keeps the markers of the paths above its paths, and a member named
+  <code>""</code> of the root marks the root, since its members' paths are
+  the root's members' paths.
 * '''Write volume.''' A document with ''N'' projected paths is ''N''
   entries, inserted in one pass. Adjacent paths of one document usually
   land on one leaf, which is where a per-leaf WAL record would pay; M1

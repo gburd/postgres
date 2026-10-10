@@ -512,12 +512,21 @@ typedef struct BarkBoundary
  * searchnulls asks the scan to read the NULL entries as well (a NULL value,
  * an empty value or a NULL element), where the column's NULLS option puts
  * them, and to return those rows with xs_recheck set, as GIN's
- * INCLUDE_EMPTY search mode does.  Fields are only ever appended.
+ * INCLUDE_EMPTY search mode does.  oneentry says that a row matches these
+ * boundaries through at most one of its entries, so the scan needs no seen
+ * set; BARK honors it for the first search key on the column when that key
+ * is not a ScalarArrayOp (whose elements' boundaries may each hold one entry
+ * of a row), and asks again at every rescan.  index is set by BARK, not by
+ * the procedure: the index being scanned, whose markers the procedure may
+ * read with bark_index_has_marker to decide oneentry; it is NULL when no
+ * scan is running.  Fields are only ever appended.
  */
 typedef struct BarkQueryFlags
 {
 	bool		backward;
 	bool		searchnulls;
+	bool		oneentry;
+	Relation	index;
 } BarkQueryFlags;
 
 /* Procedure 9's answer for one entry, as an int2. */

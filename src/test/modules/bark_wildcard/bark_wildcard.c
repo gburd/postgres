@@ -16,7 +16,12 @@
  *
  * Markers: for every path that holds an array, a one-element jsonb array
  * [path].  It sorts before every two-element data key (jsonb orders arrays
- * by length first), so no marker equals a data key.
+ * by length first), so no marker equals a data key.  A path below no marked
+ * path has at most one value per document, so procedure 8 tells the scan
+ * that a query on it needs no seen set.  For that, an include projection
+ * keeps the markers of the paths above its paths too, and a member named ""
+ * of an object at path "" marks "": its members' paths are those of the
+ * object's own members ({"": {"a": 1}, "a": 2} has two values at a).
  *
  * The column's options (procedure 5) are include and exclude, each a
  * comma-separated list of dotted paths, mutually exclusive, as MongoDB's
@@ -262,23 +267,45 @@ bark_wildcard_add_key(BarkWildcardKeys *k, const char *path, JsonbValue *value)
 	k->keys[k->nkeys++] = bark_wildcard_key(path, value);
 }
 
-static void
-bark_wildcard_add_marker(BarkWildcardKeys *k, const char *path)
+/*
+ * Does the projection keep the marker of `path`: the path, or a path below
+ * it, is kept?  Under exclude, a path above a kept one is kept itself.
+ */
+static bool
+bark_wildcard_keeps_marker(const BarkWildcardProjection *proj, const char *path)
+{
+	if (bark_wildcard_keeps(proj, path))
+		return true;
+	for (int i = 0; i < proj->npaths && proj->include; i++)
+		if (path[0] == '\0' || bark_wildcard_path_under(proj->paths[i], path))
+			return true;
+	return false;
+}
+
+/* The marker [path]. */
+static Datum
+bark_wildcard_marker(const char *path, int len)
 {
 	JsonbValue	p;
 
-	if (!bark_wildcard_keeps(k->proj, path) ||
-		(k->only != NULL && strcmp(path, k->only) != 0))
-		return;
 	p.type = jbvString;
 	p.val.string.val = (char *) path;
-	p.val.string.len = strlen(path);
+	p.val.string.len = len;
+	return bark_wildcard_array(&p, 1);
+}
+
+static void
+bark_wildcard_add_marker(BarkWildcardKeys *k, const char *path)
+{
+	if (!bark_wildcard_keeps_marker(k->proj, path) ||
+		(k->only != NULL && strcmp(path, k->only) != 0))
+		return;
 	if (k->nmarkers == k->maxmarkers)
 	{
 		k->maxmarkers *= 2;
 		k->markers = repalloc_array(k->markers, Datum, k->maxmarkers);
 	}
-	k->markers[k->nmarkers++] = bark_wildcard_array(&p, 1);
+	k->markers[k->nmarkers++] = bark_wildcard_marker(path, strlen(path));
 }
 
 /* A jsonb {} or [] as a scalar value, for an empty container. */
@@ -383,6 +410,8 @@ bark_wildcard_walk(BarkWildcardKeys *k, const char *path,
 			case WJB_KEY:
 				member = bark_wildcard_child(path, v.val.string.val,
 											 v.val.string.len);
+				if (member[0] == '\0')
+					bark_wildcard_add_marker(k, member);
 				break;
 			case WJB_VALUE:
 				/* a walk for one path enters only the members on its way */
@@ -751,12 +780,38 @@ bark_wildcard_bracket_ends(const char *path, int bracket,
 }
 
 /*
+ * Does the index hold the marker of `path` or of a path above it, "" (the
+ * document) included?  If not, no document has an array there or a second
+ * value at `path`.  Dots escaped with a backslash do not end a path.
+ */
+static bool
+bark_wildcard_marked(Relation index, const char *path)
+{
+	int			len = 0;
+
+	for (;;)
+	{
+		if (bark_index_has_marker(index, bark_wildcard_marker(path, len)))
+			return true;
+		if (path[len] == '\0')
+			return false;
+		if (len > 0)
+			len++;				/* past the dot */
+		while (path[len] != '\0' && path[len] != '.')
+			len += (path[len] == '\\' && path[len + 1] != '\0') ? 2 : 1;
+	}
+}
+
+/*
  * Procedure 8's work, with the column's projection given: the query's one
  * boundary, inside its path's range and its value's type bracket.  #= is
  * the point [path, value]; #< and #<= run from the bracket's start to the
  * query, #> and #>= from the query to the bracket's end; #? is the path's
  * whole range, from its first bracket's start to its last's end.  These
- * are exact, so procedure 9 is not asked.
+ * are exact, so procedure 9 is not asked.  The boundary holds keys of one
+ * path only, so when BARK names the index and the index has no marker on
+ * the way to that path, a row matches through at most one entry and the
+ * scan needs no seen set (BarkQueryFlags.oneentry).
  *
  * A path the projection does not keep has no keys, though its documents
  * may match, so the scan then reads every key and the NULL entries (where
@@ -794,6 +849,8 @@ bark_wildcard_bounds(const BarkWildcardProjection *proj, Datum querydatum,
 		flags->searchnulls = true;
 		return;
 	}
+	if (flags->index != NULL)
+		flags->oneentry = !bark_wildcard_marked(flags->index, path);
 
 	if (strategy == BARK_WC_EXISTS)
 	{

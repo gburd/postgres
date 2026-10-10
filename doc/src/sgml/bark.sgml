@@ -349,8 +349,15 @@ void extractQuery(<replaceable>query</replaceable>, int2 strategy, internal boun
       <structname>BarkQueryFlags</structname> that BARK zeroes before the
       call: the function sets <structfield>backward</structfield> for an
       ordering operator whose ranges are to be read in descending key
-      order, and <structfield>searchnulls</structfield> when the query
-      must also read the rows whose only entry is the NULL key.  These
+      order, <structfield>searchnulls</structfield> when the query
+      must also read the rows whose only entry is the NULL key, and
+      <structfield>oneentry</structfield> when no row can match the ranges
+      through more than one of its entries, so that the scan need not keep
+      the rows it has returned.  BARK sets <structfield>index</structfield>
+      to the index being scanned (NULL when there is none), so the function
+      can test for a marker key with
+      <function>bark_index_has_marker</function>; it is called again at
+      every scan, so the answer may change after a plan was made.  These
       types are declared in <filename>src/include/access/bark.h</filename>.
       A function written for six arguments never sees the seventh.
       Two ranges returned by one call must not overlap; BARK raises an
@@ -494,8 +501,9 @@ CREATE INDEX tagged_tags_idx ON tagged USING bark (tags my_int4_array_ops);
    is emptied whenever the columns before the multikey one change value,
    since a row's entries all have the same values there.  The set is not
    needed, and not built, when the index has never held a row with more
-   than one entry, or when the condition is a single key; a bitmap scan
-   never needs it.  The set may grow past <xref linkend="guc-work-mem"/>
+   than one entry, when the condition is a single key, or when support
+   function 8 set <structfield>oneentry</structfield> for it (not for
+   <literal>= ANY</literal>); a bitmap scan never needs it.  The set may grow past <xref linkend="guc-work-mem"/>
    (times <xref linkend="guc-hash-mem-multiplier"/>) rather than return a
    row twice; the planner does not choose an index scan whose estimated
    rows per value of the columns before the multikey one, at about 16
