@@ -1457,7 +1457,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amcostestimate = barkcostestimate,
 		.amgettreeheight = barkgettreeheight,
 		.amoptions = barkoptions,
-		.amproperty = NULL,
+		.amproperty = bark_property,
 		.ambuildphasename = NULL,
 		.amvalidate = barkvalidate,
 		.amadjustmembers = barkadjustmembers,
