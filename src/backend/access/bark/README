@@ -593,11 +593,27 @@ Mark and restore: bark_markpos starts an undo list; every TID added to the
 set while marked is appended to it, and the set is not emptied for a new
 group.  bark_restrpos clears those TIDs from the set and empties the list,
 so the rows after the mark come back; a restore with no position (the mark
-was taken before the first row) empties the set.  A scan that changes
-direction with the set in use raises an error, since it would walk back
-over entries whose rows the set drops; so does a parallel scan that needs
-the set (workers read different leaves) and an ordering key on the
-extracted column (M1d serves those).  A KNN scan on a fixed leading column
+was taken before the first row) empties the set.
+
+A scan that changed direction with the set in use would walk back over
+entries whose rows the set drops, so an index with an extracted column
+has no backward scans: bark_property answers backward_scan false for it,
+from its operator classes, and the executor's IndexSupportsBackwardScan
+asks amproperty before amcanbackward, so a scroll cursor over such an
+index gets a Material node.  The scan still raises an error if a caller
+that did not ask changes direction with the set in use.  A cursor not
+declared SCROLL is then not made scrollable (portalcmds.c makes it so only
+when the plan runs backward without a Material node).  plancat gives the
+index no parallel scans (amcanparallel false), since the workers read
+different leaves and could not share the set; a direct caller's parallel
+scan that needs the set still gets an error.  A parallel bitmap heap scan
+is fine.  An ordering key on the extracted column raises an error (not
+served yet).  bark_property also reports orderable, asc, desc, nulls_first
+and nulls_last false for the extracted column and every key column after
+it, which form no pathkeys, and distance_orderable true for a leading
+column whose family has an ordering operator its sort family can sort
+(the KNN classes), false otherwise; INCLUDE columns and the other
+properties get the generic answers.  A KNN scan on a fixed leading column
 runs every entry through bark_mk_accept and bark_mk_seen, without group
 clears, since its two cursors interleave groups.
 

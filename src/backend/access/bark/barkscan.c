@@ -811,7 +811,10 @@ bark_mk_rescan(IndexScanDesc scan)
 	/*
 	 * The workers of a parallel scan read different leaves, and a row's
 	 * entries may be on leaves that different workers read, so a scan that
-	 * needs the set cannot be parallel.
+	 * needs the set cannot be parallel.  The planner never makes one: an
+	 * index with an extracted column has no amcanparallel (plancat.c).  A
+	 * caller of the index AM that asks anyway gets an error, never a row
+	 * twice.
 	 */
 	if (mk->useseen && scan->parallel_scan != NULL)
 		ereport(ERROR,
@@ -3641,8 +3644,10 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 
 	/*
 	 * A scan with a seen set that reverses direction would meet the entries
-	 * of the rows it returned, and drop them.  A scroll cursor over such an
-	 * index has to be materialized.
+	 * of the rows it returned, and drop them.  The executor never asks for
+	 * that: bark_property says such an index has no backward scans, so a
+	 * scroll cursor over it is materialized.  A caller of the index AM that
+	 * does not ask gets an error, not wrong rows.
 	 */
 	if (so->mk != NULL && so->mk->useseen && so->mk->started &&
 		dir != so->mk->dir)
