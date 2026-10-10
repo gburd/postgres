@@ -479,9 +479,203 @@ SELECT mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq'),
 
 SET enable_seqscan = off;
 -- The rows a scan with a seen set returned would be dropped if it walked
--- back over them, so a scan does not change direction.
-BEGIN;
+-- back over them, so an index with an extracted column has no backward
+-- scans (backward_scan is false, from its operator classes, whatever the
+-- meta page says), and a scroll cursor over it reads through a Material
+-- node, as over a KNN scan.  A scalar BARK index scans backward itself.
+CREATE TABLE mk_prop (id int, tenant int, a int4[], t text);
+CREATE INDEX mk_prop_it ON mk_prop USING bark (id DESC, t NULLS FIRST)
+  INCLUDE (tenant);
+CREATE INDEX mk_prop_bt ON mk_prop USING btree (id DESC, t NULLS FIRST)
+  INCLUDE (tenant);
+CREATE INDEX mk_prop_ta ON mk_prop USING bark
+  (tenant DESC NULLS LAST, a bark_int4_array_ops) INCLUDE (t);
+CREATE INDEX mk_prop_a ON mk_prop USING bark (a bark_int4_array_ops DESC, id);
+CREATE INDEX mk_prop_tai ON mk_prop USING bark
+  (tenant, a bark_int4_array_ops NULLS FIRST, id DESC);
+CREATE INDEX mk_prop_t ON mk_prop USING bark (t);
+SELECT i::regclass, pg_index_has_property(i, 'backward_scan') AS backward,
+       pg_index_has_property(i, 'index_scan') AS index_scan,
+       pg_index_has_property(i, 'bitmap_scan') AS bitmap_scan
+  FROM unnest('{mk_prop_it,mk_prop_ta,mk_prop_a,mk_prop_tai,mk_b1_a}'::regclass[]) i;
+      i      | backward | index_scan | bitmap_scan 
+-------------+----------+------------+-------------
+ mk_prop_it  | t        | t          | t
+ mk_prop_ta  | f        | t          | t
+ mk_prop_a   | f        | t          | t
+ mk_prop_tai | f        | t          | t
+ mk_b1_a     | f        | t          | t
+(5 rows)
+
+-- Column properties.  The extracted column and every key column after it
+-- have no order the planner can use (the index orders the column's keys,
+-- not its values), so they report orderable, asc, desc and the nulls
+-- properties false, as for a GIN column; an INCLUDE column and the columns
+-- before the extracted one get the generic answers.  The extracted column
+-- is not returnable (its entries hold keys).  distance_orderable needs an
+-- ordering operator (int4's <~>) on the leading column, which an extracted
+-- column never is.
+CREATE FUNCTION mk_props(i regclass) RETURNS TABLE (c int, props text)
+LANGUAGE sql AS $$
+  SELECT c, string_agg(p || '=' ||
+           coalesce(pg_index_column_has_property(i, c, p)::text, 'null'),
+           ' ' ORDER BY o)
+    FROM generate_series(1, (SELECT indnatts FROM pg_index
+                              WHERE indexrelid = i)) c,
+         unnest('{orderable,asc,desc,nulls_first,nulls_last,distance_orderable,returnable,search_array,search_nulls}'::text[])
+           WITH ORDINALITY u(p, o)
+   GROUP BY c
+$$;
+SELECT i::regclass, c, props
+  FROM unnest('{mk_prop_it,mk_prop_ta,mk_prop_a,mk_prop_tai,mk_prop_t}'::regclass[]) i,
+       LATERAL mk_props(i)
+  ORDER BY 1, 2;
+      i      | c |                                                                         props                                                                         
+-------------+---+-------------------------------------------------------------------------------------------------------------------------------------------------------
+ mk_prop_it  | 1 | orderable=true asc=false desc=true nulls_first=true nulls_last=false distance_orderable=true returnable=true search_array=true search_nulls=true
+ mk_prop_it  | 2 | orderable=true asc=true desc=false nulls_first=true nulls_last=false distance_orderable=false returnable=true search_array=true search_nulls=true
+ mk_prop_it  | 3 | orderable=false asc=null desc=null nulls_first=null nulls_last=null distance_orderable=false returnable=true search_array=null search_nulls=null
+ mk_prop_ta  | 1 | orderable=true asc=false desc=true nulls_first=false nulls_last=true distance_orderable=true returnable=true search_array=true search_nulls=true
+ mk_prop_ta  | 2 | orderable=false asc=false desc=false nulls_first=false nulls_last=false distance_orderable=false returnable=false search_array=true search_nulls=true
+ mk_prop_ta  | 3 | orderable=false asc=null desc=null nulls_first=null nulls_last=null distance_orderable=false returnable=true search_array=null search_nulls=null
+ mk_prop_a   | 1 | orderable=false asc=false desc=false nulls_first=false nulls_last=false distance_orderable=false returnable=false search_array=true search_nulls=true
+ mk_prop_a   | 2 | orderable=false asc=false desc=false nulls_first=false nulls_last=false distance_orderable=false returnable=true search_array=true search_nulls=true
+ mk_prop_tai | 1 | orderable=true asc=true desc=false nulls_first=false nulls_last=true distance_orderable=true returnable=true search_array=true search_nulls=true
+ mk_prop_tai | 2 | orderable=false asc=false desc=false nulls_first=false nulls_last=false distance_orderable=false returnable=false search_array=true search_nulls=true
+ mk_prop_tai | 3 | orderable=false asc=false desc=false nulls_first=false nulls_last=false distance_orderable=false returnable=true search_array=true search_nulls=true
+ mk_prop_t   | 1 | orderable=true asc=true desc=false nulls_first=false nulls_last=true distance_orderable=false returnable=true search_array=true search_nulls=true
+(12 rows)
+
+-- A scalar BARK index answers as btree does, but for distance_orderable
+-- (btree has no ordering operators).
+SELECT b.c, b.props AS bark, t.props AS btree
+  FROM mk_props('mk_prop_it') b JOIN mk_props('mk_prop_bt') t USING (c)
+  WHERE b.props IS DISTINCT FROM t.props;
+ c |                                                                       bark                                                                       |                                                                       btree                                                                       
+---+--------------------------------------------------------------------------------------------------------------------------------------------------+---------------------------------------------------------------------------------------------------------------------------------------------------
+ 1 | orderable=true asc=false desc=true nulls_first=true nulls_last=false distance_orderable=true returnable=true search_array=true search_nulls=true | orderable=true asc=false desc=true nulls_first=true nulls_last=false distance_orderable=false returnable=true search_array=true search_nulls=true
+(1 row)
+
+DROP TABLE mk_prop;
+DROP FUNCTION mk_props(regclass);
+-- The order the planner reads from an index stops before the extracted
+-- column: ORDER BY tenant, a sorts within each tenant on top of the index.
+EXPLAIN (COSTS OFF)
+SELECT id FROM mk_b2 WHERE tenant IN (1, 2) AND a && '{5,77}' ORDER BY tenant, a;
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
+ Incremental Sort
+   Sort Key: tenant, a
+   Presorted Key: tenant
+   ->  Index Scan using mk_b2_ta on mk_b2
+         Index Cond: ((tenant = ANY ('{1,2}'::integer[])) AND (a && '{5,77}'::integer[]))
+(5 rows)
+
+EXPLAIN (COSTS OFF)
 DECLARE c SCROLL CURSOR FOR SELECT id FROM mk_b1 WHERE a && '{1,5,77}';
+                    QUERY PLAN                    
+--------------------------------------------------
+ Materialize
+   ->  Index Scan using mk_b1_a on mk_b1
+         Index Cond: (a && '{1,5,77}'::integer[])
+(3 rows)
+
+EXPLAIN (COSTS OFF)
+DECLARE c SCROLL CURSOR FOR SELECT tenant FROM mk_b2 WHERE tenant = 3;
+                  QUERY PLAN                   
+-----------------------------------------------
+ Materialize
+   ->  Index Only Scan using mk_b2_ta on mk_b2
+         Index Cond: (tenant = 3)
+(3 rows)
+
+-- mk_scroll(qual): read a scroll cursor over mk_b1 forward 3 rows, back 1
+-- (the second row again), then to the end, then back to the start; the
+-- step back must repeat the second row, and both passes must return the
+-- sequential scan's rows.
+CREATE FUNCTION mk_scroll(qual text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  c refcursor;
+  r record;
+  first int[] := '{}';
+  fwd int[] := '{}';
+  bwd int[] := '{}';
+  again int;
+BEGIN
+  OPEN c SCROLL FOR EXECUTE 'SELECT id FROM mk_b1 WHERE ' || qual;
+  FOR i IN 1 .. 3 LOOP
+    FETCH c INTO r;
+    first := first || r.id;
+  END LOOP;
+  FETCH PRIOR FROM c INTO r;
+  again := r.id;
+  MOVE ABSOLUTE 0 IN c;
+  LOOP
+    FETCH c INTO r;
+    EXIT WHEN NOT FOUND;
+    fwd := fwd || r.id;
+  END LOOP;
+  LOOP
+    FETCH PRIOR FROM c INTO r;
+    EXIT WHEN NOT FOUND;
+    bwd := bwd || r.id;
+  END LOOP;
+  CLOSE c;
+  RETURN (again = first[2]) || ':' ||
+    (SELECT count(*) || ':' || count(DISTINCT x) || ':' ||
+            md5(string_agg(x::text, ',' ORDER BY x)) FROM unnest(fwd) x) ||
+    ':' || (fwd = (SELECT array_agg(x ORDER BY o DESC)
+                     FROM unnest(bwd) WITH ORDINALITY u(x, o)));
+END $$;
+SELECT mk_scroll('a && ''{1,5,77}''');
+                     mk_scroll                      
+----------------------------------------------------
+ true:921:921:74cc59826d987b936848c2ce155dd906:true
+(1 row)
+
+SELECT mk_scroll('a <@ ''{1,2,3,4,5,6,7,8,9,10,11}''');
+                     mk_scroll                      
+----------------------------------------------------
+ true:448:448:559beb4600cc59f247ba6714280cc501:true
+(1 row)
+
+RESET enable_seqscan;
+SELECT 'true:' || mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq') || ':true',
+       'true:' || mk_run('mk_seq', 'a <@ ''{1,2,3,4,5,6,7,8,9,10,11}''', 'seq') ||
+       ':true';
+                      ?column?                      |                      ?column?                      
+----------------------------------------------------+----------------------------------------------------
+ true:921:921:74cc59826d987b936848c2ce155dd906:true | true:448:448:559beb4600cc59f247ba6714280cc501:true
+(1 row)
+
+SET enable_seqscan = off;
+-- A cursor not declared SCROLL is not made scrollable over such an index
+-- (PostgreSQL makes it so only when the plan can run backward without a
+-- Material node), so it fetches forward only, as over a GIN or KNN scan;
+-- declare it SCROLL to fetch backward.  An explicit NO SCROLL cursor too.
+EXPLAIN (COSTS OFF)
+DECLARE c CURSOR FOR SELECT id FROM mk_b1 WHERE a && '{1,5,77}';
+                 QUERY PLAN                 
+--------------------------------------------
+ Index Scan using mk_b1_a on mk_b1
+   Index Cond: (a && '{1,5,77}'::integer[])
+(2 rows)
+
+BEGIN;
+DECLARE c NO SCROLL CURSOR FOR SELECT id FROM mk_b1 WHERE a && '{1,5,77}';
+FETCH 2 FROM c;
+ id 
+----
+ 26
+ 98
+(2 rows)
+
+FETCH BACKWARD 1 FROM c;
+ERROR:  cursor can only scan forward
+HINT:  Declare it with SCROLL option to enable backward scan.
+ROLLBACK;
+BEGIN;
+DECLARE c CURSOR FOR SELECT id FROM mk_b1 WHERE a && '{1,5,77}';
 FETCH 3 FROM c;
  id  
 -----
@@ -491,8 +685,34 @@ FETCH 3 FROM c;
 (3 rows)
 
 FETCH BACKWARD 1 FROM c;
-ERROR:  cannot change the direction of a scan of multikey BARK index "mk_b1_a"
+ERROR:  cursor can only scan forward
+HINT:  Declare it with SCROLL option to enable backward scan.
 ROLLBACK;
+-- A caller of the index AM that does not ask, and changes direction, gets
+-- an error from a scan that keeps a seen set, never wrong rows; a scan for
+-- one point keeps none and steps back.
+SELECT bark_multikey_reverse('mk_b1_a', '&&(anyarray,anyarray)',
+                             '{1,5,77}'::int4[], 3);
+ERROR:  cannot change the direction of a scan of multikey BARK index "mk_b1_a"
+SELECT bark_multikey_reverse('mk_b1_a', '&&(anyarray,anyarray)',
+                             '{5}'::int4[], 3);
+ bark_multikey_reverse 
+-----------------------
+ forward:3 back:true
+(1 row)
+
+-- Likewise a direct parallel scan: one that needs the set is refused,
+-- never answered with a row twice; a scan for one point needs none.
+SELECT bark_multikey_parallel('mk_b1_a', '&&(anyarray,anyarray)',
+                              '{1,5,77}'::int4[]);
+ERROR:  parallel index scans of multikey BARK index "mk_b1_a" are not supported
+SELECT bark_multikey_parallel('mk_b1_a', '&&(anyarray,anyarray)',
+                              '{5}'::int4[]);
+ bark_multikey_parallel 
+------------------------
+                    310
+(1 row)
+
 -- A scan that starts backward is fine.
 EXPLAIN (COSTS OFF)
 SELECT id FROM mk_b2 WHERE tenant IN (1, 3) AND a && '{1,5,77}'
@@ -1104,15 +1324,19 @@ SELECT mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq');
  921:921:74cc59826d987b936848c2ce155dd906
 (1 row)
 
--- What M1 does not serve: an ordering operator on the extracted column,
--- and a parallel scan that needs a seen set.  They are refused rather than
--- answered wrong.
+-- What M1 does not serve: an ordering operator on the extracted column.
+-- It is refused rather than answered wrong.
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
 SET enable_sort = off;
 SELECT id FROM mk_b1 ORDER BY a |<| 0 LIMIT 3;
 ERROR:  ordered scans on the multikey column of BARK index "mk_b1_a" are not supported
 RESET enable_sort;
+-- No parallel index scan of an index with an extracted column: the workers
+-- would read a row's entries on different leaves, and could not share the
+-- seen set.  The planner never offers one, even for a scan that needs no
+-- set (one point), or for an index-only scan of the fixed column.  A
+-- parallel bitmap heap scan is fine: one process builds the bitmap.
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_index_scan_size = 0;
@@ -1120,30 +1344,34 @@ SET min_parallel_table_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SET random_page_cost = 1;
 ALTER TABLE mk_b1 SET (parallel_workers = 2);
+ALTER TABLE mk_b2 SET (parallel_workers = 2);
 EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b1 WHERE a @> '{}';
-                          QUERY PLAN                          
---------------------------------------------------------------
- Finalize Aggregate
-   ->  Gather
-         Workers Planned: 2
-         ->  Partial Aggregate
-               ->  Parallel Index Scan using mk_b1_a on mk_b1
-                     Index Cond: (a @> '{}'::integer[])
-(6 rows)
+                 QUERY PLAN                 
+--------------------------------------------
+ Aggregate
+   ->  Index Scan using mk_b1_a on mk_b1
+         Index Cond: (a @> '{}'::integer[])
+(3 rows)
 
 SELECT count(*) FROM mk_b1 WHERE a @> '{}';
-ERROR:  parallel index scans of multikey BARK index "mk_b1_a" are not supported
--- A scan for one point needs no set, so it may be parallel.
+ count 
+-------
+ 19600
+(1 row)
+
+SELECT mk_run('mk_seq', 'a @> ''{}''', 'seq');
+                    mk_run                    
+----------------------------------------------
+ 19600:19600:a4b71c036623a390084f0672e8376c42
+(1 row)
+
 EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b1 WHERE a && '{5}';
-                          QUERY PLAN                          
---------------------------------------------------------------
- Finalize Aggregate
-   ->  Gather
-         Workers Planned: 2
-         ->  Partial Aggregate
-               ->  Parallel Index Scan using mk_b1_a on mk_b1
-                     Index Cond: (a && '{5}'::integer[])
-(6 rows)
+                 QUERY PLAN                  
+---------------------------------------------
+ Aggregate
+   ->  Index Scan using mk_b1_a on mk_b1
+         Index Cond: (a && '{5}'::integer[])
+(3 rows)
 
 SELECT count(*) FROM mk_b1 WHERE a && '{5}';
  count 
@@ -1157,7 +1385,54 @@ SELECT mk_run('mk_seq', 'a && ''{5}''', 'seq');
  310:310:63054ff39d1aad06507ae1355cca37c2
 (1 row)
 
+EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b2 WHERE tenant > 2;
+                  QUERY PLAN                   
+-----------------------------------------------
+ Aggregate
+   ->  Index Only Scan using mk_b2_ta on mk_b2
+         Index Cond: (tenant > 2)
+(3 rows)
+
+SELECT count(*) FROM mk_b2 WHERE tenant > 2;
+ count 
+-------
+ 11428
+(1 row)
+
+SET enable_bitmapscan = on;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b1 WHERE a && '{1,5,77}';
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather
+         Workers Planned: 2
+         ->  Partial Aggregate
+               ->  Parallel Bitmap Heap Scan on mk_b1
+                     Recheck Cond: (a && '{1,5,77}'::integer[])
+                     ->  Bitmap Index Scan on mk_b1_a
+                           Index Cond: (a && '{1,5,77}'::integer[])
+(8 rows)
+
+SELECT count(*) FROM mk_b1 WHERE a && '{1,5,77}';
+ count 
+-------
+   921
+(1 row)
+
+SELECT mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq');
+                  mk_run                  
+------------------------------------------
+ 921:921:74cc59826d987b936848c2ce155dd906
+(1 row)
+
+SELECT count(*) FROM mk_seq WHERE tenant > 2;
+ count 
+-------
+ 11428
+(1 row)
+
 ALTER TABLE mk_b1 RESET (parallel_workers);
+ALTER TABLE mk_b2 RESET (parallel_workers);
 RESET random_page_cost;
 RESET max_parallel_workers_per_gather;
 RESET min_parallel_table_scan_size;
@@ -1186,5 +1461,5 @@ DROP TABLE mk_seq, mk_gin, mk_b1, mk_b2, mk_bd, mk_bn, mk_rn, mk_r1, mk_ins, mk_
   mk_outer, mk_single, mk_quals, mk_rquals, mk_nulls;
 DROP OPERATOR CLASS mk_single_ops USING bark CASCADE;
 DROP FUNCTION mk_rows(), mk_run(text, text, text), mk_compare(text, text[]),
-  mk_fetch(int4), mk_cursor(text), mk_backward(text, text);
+  mk_fetch(int4), mk_cursor(text), mk_backward(text, text), mk_scroll(text);
 DROP EXTENSION bark_multikey;
