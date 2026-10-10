@@ -30,6 +30,7 @@ install_data(
   'amcheck--1.4--1.5.sql',
   'amcheck--1.5--1.6.sql',
   'amcheck--1.6--1.7.sql',
+  'amcheck--1.7--1.8.sql',
   kwargs: contrib_data_args,
 )
 
@@ -43,6 +44,7 @@ tests += {
       'check_btree',
       'check_gin',
       'check_bark',
+      'check_bark_unique',
       'check_heap',
       'check_subattr',
     ],
