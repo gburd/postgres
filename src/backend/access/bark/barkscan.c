@@ -417,15 +417,18 @@ typedef struct BarkMkScanState
 	/*
 	 * An ordering key on the column (bark_mk_order_setup): the scan walks its
 	 * boundaries in orderdir and reports each row's first key as its ORDER
-	 * BY value, NULL for every row when ordernull.  While nullspending,
-	 * nullsbound holds the NULL entries, which come first in the walk but
-	 * must be read last (bark_mk_order_nulls).
+	 * BY value, NULL for every row when ordernull.  The npending boundaries
+	 * in pending are read after them, by a second positioning, and their rows
+	 * come back with a NULL ORDER BY value (bark_mk_order_rest): the NULL
+	 * entries when they come first in the walk, or with orderrest the whole
+	 * column, for the rows the boundaries do not hold.
 	 */
 	bool		order;
 	bool		ordernull;
+	bool		orderrest;		/* procedure 8 set BarkQueryFlags.orderrest */
 	ScanDirection orderdir;
-	bool		nullspending;
-	BarkMkBoundary nullsbound;
+	int			npending;
+	BarkMkBoundary pending[2];
 
 	/*
 	 * The seen set (bark_mk_seen).  seen is NULL until a TID goes in, and
@@ -694,7 +697,13 @@ bark_mk_extract(IndexScanDesc scan, BarkMkScanState *mk, ScanKey sk,
  * descending one at its largest.  The operator must therefore return the
  * column's key type.  An ordering operator's NULL result sorts last, so
  * when the column's NULLS option puts the NULL entries first in the walk,
- * they are read after the keys.  A strict operator with a NULL argument
+ * they are read after the keys.  When procedure 8 sets orderrest, the
+ * boundaries do not hold every row (a wildcard class's path range misses
+ * the documents without the path), so the rest of the column, every key
+ * and the NULL entries, is read after them, with the seen set even when the
+ * index is not multikey, since a row met in the boundaries is met again
+ * there.  That reads the boundaries' entries twice, which is the price of
+ * walking the rest as one range.  A strict operator with a NULL argument
  * orders every row as NULL, in any order, so the walk reads every entry.
  *
  * The column's scan keys neither position nor filter the walk: a row met
@@ -745,11 +754,20 @@ bark_mk_order_setup(IndexScanDesc scan, BarkMkScanState *mk, ScanKey ob)
 	first = ScanDirectionIsForward(mk->orderdir) ? 0 : nbounds - 1;
 	if (nbounds > 0 && bounds[first].nulls)
 	{
-		mk->nullsbound = bounds[first];
-		mk->nullspending = true;
+		mk->pending[0] = bounds[first];
+		mk->npending = 1;
 		nbounds--;
 		if (first == 0)
 			memmove(bounds, bounds + 1, nbounds * sizeof(BarkMkBoundary));
+	}
+	if (flags.orderrest)
+	{
+		mk->orderrest = true;
+		memset(mk->pending, 0, sizeof(mk->pending));
+		mk->pending[1].nulls = mk->pending[1].point = mk->pending[1].recheck = true;
+		mk->npending = 2;
+		qsort_arg(mk->pending, 2, sizeof(BarkMkBoundary),
+				  bark_mk_boundary_order, mk);
 	}
 	mk->bounds = bounds;
 	mk->nbounds = nbounds;
@@ -785,7 +803,8 @@ bark_mk_setup(IndexScanDesc scan)
 	mk->recheckall = mk->nkeys > 1;
 	mk->order = false;
 	mk->oneentry = false;
-	mk->nullspending = false;
+	mk->orderrest = false;
+	mk->npending = 0;
 	if (scan->numberOfOrderBys > 0 &&
 		scan->orderByData[0].sk_attno == mk->attno)
 	{
@@ -910,7 +929,7 @@ bark_mk_rescan(IndexScanDesc scan)
 	mk->started = false;
 	mk->marked = false;
 	mk->nundo = 0;
-	if (!IsMVCCSnapshot(scan->xs_snapshot))
+	if (!IsMVCCSnapshot(scan->xs_snapshot) || mk->orderrest)
 		mk->useseen = true;
 	else if (mk->nkeys > 0 && !mk->order &&
 			 (mk->oneentry || (mk->nbounds == 1 && mk->bounds[0].point)))
@@ -3746,26 +3765,29 @@ bark_steppage(IndexScanDesc scan, ScanDirection dir)
 }
 
 /*
- * An ordered scan of the extracted column whose NULL entries come first in
- * its walk reads them once the keys are done (bark_mk_order_setup): position
- * the scan again, on them alone.  A row already returned at a key is in the
- * seen set, so a row with a NULL element and other keys does not come back.
- * Returns false when there is nothing left to read.
+ * An ordered scan of the extracted column reads its pending boundaries once
+ * its own are done (bark_mk_order_setup): the NULL entries, when they come
+ * first in its walk, or the rest of the column.  Position the scan again, on
+ * them alone.  A row already returned is in the seen set, so it does not
+ * come back; the others have no key in the ordering key's boundaries, and
+ * their ORDER BY value is NULL.  Returns false when there is nothing left to
+ * read.
  */
 static bool
-bark_mk_order_nulls(IndexScanDesc scan, ScanDirection dir)
+bark_mk_order_rest(IndexScanDesc scan, ScanDirection dir)
 {
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	BarkMkScanState *mk = so->mk;
 
-	if (mk == NULL || !mk->nullspending)
+	if (mk == NULL || mk->npending == 0)
 		return false;
-	mk->nullspending = false;
-	mk->bounds = &mk->nullsbound;
-	mk->nbounds = 1;
+	mk->bounds = mk->pending;
+	mk->nbounds = mk->npending;
+	mk->npending = 0;
+	mk->ordernull = true;
 	for (int k = 0; k < so->numReqKeys; k++)
 		if (so->reqKeys[k]->mk != NULL)
-			so->reqKeys[k]->nelems = 1;
+			so->reqKeys[k]->nelems = mk->nbounds;
 	BarkScanPosUnpinIfPinned(so->currPos);
 	BarkScanPosInvalidate(so->currPos);
 	return bark_first(scan, dir);
@@ -3812,7 +3834,7 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 		 * nbtree restarts from that end in both cases (a scroll cursor that
 		 * fetched past the last row and then fetches backward); so do we.
 		 */
-		if (!bark_first(scan, dir) && !bark_mk_order_nulls(scan, dir))
+		if (!bark_first(scan, dir) && !bark_mk_order_rest(scan, dir))
 			return false;
 	}
 	else
@@ -3827,7 +3849,7 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 			if (++so->currPos.itemIndex > so->currPos.lastItem)
 			{
 				if (!bark_steppage(scan, dir) &&
-					!bark_mk_order_nulls(scan, dir))
+					!bark_mk_order_rest(scan, dir))
 					return false;
 			}
 		}
@@ -3836,7 +3858,7 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 			if (--so->currPos.itemIndex < so->currPos.firstItem)
 			{
 				if (!bark_steppage(scan, dir) &&
-					!bark_mk_order_nulls(scan, dir))
+					!bark_mk_order_rest(scan, dir))
 					return false;
 			}
 		}

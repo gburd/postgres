@@ -1044,9 +1044,9 @@ place of an inverted AM, without changing the scalar design above.
   jsonpath oracle where the semantics coincide; the index's (key, TID)
   members are compared both ways with the keys of the heap's rows, since
   heapallindexed refuses a multikey index. M5b part 1, the per-path
-  no-seen-set extension (BarkQueryFlags.oneentry and .index), is built.
-  Not yet: sorting by a path, and a comparison with GIN's
-  jsonb_path_ops)''
+  no-seen-set extension (BarkQueryFlags.oneentry and .index), and part 2,
+  sorting by a path (BarkQueryFlags.orderrest), are built. Not yet: a
+  comparison with GIN's jsonb_path_ops)''
 * '''T1''' -- term containment at scale; see "Containment queries" under
   C-KEYSHAPE. ''(not started; the TID filter for an ordered scan is blocked
   on cf/4351)''
@@ -1658,7 +1658,16 @@ What that needs from M1, and where M1 provides it:
   leaves that to measurement.
 * '''Sorting by a path''' is an ordering operator whose procedure 8 returns
   the path's range, so MongoDB's array sort rule holds per path, the filter
-  rule as above.
+  rule as above. The range misses the documents without the path, which
+  have neither a key there nor a NULL entry, so <code>searchnulls</code>
+  cannot bring them back: procedure 8 sets
+  <code>BarkQueryFlags.orderrest</code>, and after the range the scan
+  reads the rest of the column (every key and the NULL entries) by a second
+  positioning, returning the rows it has not returned yet with a NULL
+  order value, last, with the seen set. ''As built (M5b part 2): the test
+  module's <code>doc |&lt;| 'path'</code> returns the smallest key
+  [path, value], FOR ORDER BY jsonb_ops; a path the projection drops is
+  refused at scan start. The range's entries are read twice.''
 
 Nothing in this list changes the on-disk format.
 

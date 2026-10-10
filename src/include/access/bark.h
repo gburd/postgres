@@ -519,7 +519,11 @@ typedef struct BarkBoundary
  * of a row), and asks again at every rescan.  index is set by BARK, not by
  * the procedure: the index being scanned, whose markers the procedure may
  * read with bark_index_has_marker to decide oneentry; it is NULL when no
- * scan is running.  Fields are only ever appended.
+ * scan is running.  orderrest, for an ordering key, says that its
+ * boundaries do not hold every row: after them the scan reads the rest of
+ * the column, every key and the NULL entries, and returns the rows it has
+ * not returned yet with a NULL ORDER BY value, last.  Fields are only ever
+ * appended.
  */
 typedef struct BarkQueryFlags
 {
@@ -527,6 +531,7 @@ typedef struct BarkQueryFlags
 	bool		searchnulls;
 	bool		oneentry;
 	Relation	index;
+	bool		orderrest;
 } BarkQueryFlags;
 
 /* Procedure 9's answer for one entry, as an int2. */
