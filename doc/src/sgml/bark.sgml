@@ -519,10 +519,18 @@ CREATE INDEX tagged_tags_idx ON tagged USING bark (tags my_int4_array_ops);
    multikey column; <literal>distance_orderable</literal> is true for a
    leading column with an ordering operator such as
    <literal>&lt;~&gt;</literal>.
-   An ordering operator on the multikey column itself is not supported
-   yet; one on an ordinary leading column (<literal>ORDER BY tenant
-   &lt;~&gt; 3</literal>) is, and returns each row once.  A bitmap scan
-   has none of these limits.
+   An ordering operator of the class, on a leading multikey column, orders
+   rows as MongoDB sorts arrays: the scan walks the column's keys in the
+   direction the class's support function 8 asks for, ascending or
+   descending, and returns each row once, at its first key, so an ascending
+   order sees a row at its smallest element and a descending one at its
+   largest.  The operator must return the class's storage type, and its
+   NULL result (a row with no key) comes last.  A <literal>WHERE</literal>
+   condition on the column does not change that order: the scan reads the
+   whole column and each row is rechecked against the condition.  An
+   ordering operator on an ordinary leading column (<literal>ORDER BY
+   tenant &lt;~&gt; 3</literal>) also returns each row once.  A bitmap
+   scan has none of these limits.
   </para>
  </sect3>
 
