@@ -355,4 +355,35 @@ DROP OPERATOR CLASS mk_fetch_ok USING bark CASCADE;
 DROP OPERATOR FAMILY mk_bt USING btree;
 DROP FUNCTION mk_opc(text), mk_cmp(int4[], int4[]), mk_query6(int4[], int2, internal, internal, internal, internal),
   mk_inrange(int4, int4, int4, bool, bool), mk_fetch(int4);
+
+-- Bottom-up deletion on a leaf holding two entries of one row: a row of a
+-- multikey index has an entry per key, and when two of them are on the leaf
+-- that a non-HOT update fills, its TID must be offered to the table AM only
+-- once (heapam's sort refuses two equal TIDs, an assertion failure).  The
+-- update leaves a unchanged and indexes v, so each new version comes back
+-- to the full leaf with indexUnchanged set.  Both entries of row 0 go
+-- together: deleted with the row's old version, or both kept.
+CREATE TABLE mk_bu (id int, a int4[], v int)
+  WITH (fillfactor = 100, autovacuum_enabled = off);
+INSERT INTO mk_bu SELECT g, ARRAY[g], 0 FROM generate_series(1, 2000) g;
+INSERT INTO mk_bu VALUES (0, '{1,2}', 0);
+CREATE INDEX mk_bu_a ON mk_bu USING bark (a bark_int4_array_ops)
+  WITH (fillfactor = 100);
+CREATE INDEX mk_bu_v ON mk_bu (v);
+UPDATE mk_bu SET v = 1 WHERE id BETWEEN 3 AND 40;
+UPDATE mk_bu SET v = 2 WHERE id = 0;
+UPDATE mk_bu SET v = 3 WHERE id BETWEEN 3 AND 40;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT count(*), count(DISTINCT id) FROM mk_bu WHERE a && '{1,2,3,40}';
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+SELECT count(*), count(DISTINCT id) FROM mk_bu WHERE a && '{1,2,3,40}';
+SELECT bark_index_check('mk_bu_a');
+WITH heap AS (SELECT DISTINCT e AS key, ctid AS tid FROM mk_bu, unnest(a) e),
+     idx AS (SELECT key, tid FROM bark_multikey_entries('mk_bu_a')
+              WHERE NOT marker AND tid IN (SELECT ctid FROM mk_bu))
+SELECT (SELECT count(*) FROM (TABLE heap EXCEPT TABLE idx) x) AS missing,
+       (SELECT count(*) FROM (TABLE idx EXCEPT TABLE heap) y) AS extra;
+DROP TABLE mk_bu;
 DROP EXTENSION bark_multikey;

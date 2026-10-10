@@ -197,6 +197,19 @@ bark_delitems_delete(Relation index, Buffer buf, bool merge,
 		pfree(updatedbuf);
 }
 
+/* qsort comparator: TM_IndexDelete by TID, then by id (stable order). */
+static int
+bark_deltid_cmp(const void *a, const void *b)
+{
+	const TM_IndexDelete *da = (const TM_IndexDelete *) a;
+	const TM_IndexDelete *db = (const TM_IndexDelete *) b;
+	int			c = ItemPointerCompare(&da->tid, &db->tid);
+
+	if (c != 0)
+		return c;
+	return (da->id > db->id) - (da->id < db->id);
+}
+
 /*
  * Bottom-up deletion pass over the exclusive-locked leaf `buf`, as nbtree's
  * _bt_bottomupdel_pass and _bt_delitems_delete_check.  bark_insert calls this
@@ -239,6 +252,7 @@ bark_bottomup_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
 	TM_IndexDeleteOp delstate;
 	ItemPointer tids;			/* every candidate TID, indexed by id */
+	int		   *dupof;			/* per id: the id offered for its TID, or -1 */
 	int			ntids = 0;
 	int			tidsalloc = MaxIndexTuplesPerPage;
 	int		   *firstid;		/* per offset: id of its first TID */
@@ -340,6 +354,45 @@ bark_bottomup_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 	delstate.ndeltids = ntids;
 
 	/*
+	 * The table AM requires each TID at most once (heapam's sort asserts
+	 * that no two are equal), but a row of an index with an extracted column
+	 * has an entry per key, and several of them may be on this leaf.  Offer
+	 * each TID once: sort by TID, keep the first of each run, and remember
+	 * the others in dupof[] so that the answer for the one offered applies to
+	 * all.  A TID offered more than once is promising if any of its entries
+	 * is, and frees the space of all of them.
+	 */
+	dupof = palloc_array(int, ntids);
+	for (int i = 0; i < ntids; i++)
+		dupof[i] = -1;
+	if (bark_index_extracted_column(index) > 0 && ntids > 1)
+	{
+		int			nkept = 0;
+
+		qsort(delstate.deltids, ntids, sizeof(TM_IndexDelete),
+			  bark_deltid_cmp);
+		for (int i = 0; i < ntids; i++)
+		{
+			TM_IndexDelete *d = &delstate.deltids[i];
+
+			if (nkept > 0 &&
+				ItemPointerEquals(&delstate.deltids[nkept - 1].tid, &d->tid))
+			{
+				TM_IndexStatus *keep = &delstate.status[delstate.deltids[nkept - 1].id];
+				TM_IndexStatus *dup = &delstate.status[d->id];
+
+				dupof[d->id] = delstate.deltids[nkept - 1].id;
+				keep->promising = keep->promising || dup->promising;
+				keep->freespace = Min(PG_INT16_MAX,
+									  (int) keep->freespace + dup->freespace);
+				continue;
+			}
+			delstate.deltids[nkept++] = *d;
+		}
+		delstate.ndeltids = nkept;
+	}
+
+	/*
 	 * Ask the table AM.  It sorts and shrinks deltids, so read its answer
 	 * back through the ids, which are the indexes into tids[].
 	 */
@@ -353,6 +406,11 @@ bark_bottomup_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 	{
 		if (delstate.status[delstate.deltids[i].id].knowndeletable)
 			dead[delstate.deltids[i].id] = true;
+	}
+	for (int i = 0; i < ntids; i++)
+	{
+		if (dupof[i] >= 0)
+			dead[i] = dead[dupof[i]];
 	}
 
 	/* Decide each entry's fate, then make the changes in one record */
@@ -388,6 +446,7 @@ bark_bottomup_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 	for (int i = 0; i < nupdated; i++)
 		pfree(updated[i]);
 	pfree(dead);
+	pfree(dupof);
 	pfree(delstate.deltids);
 	pfree(delstate.status);
 	pfree(tids);
