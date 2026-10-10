@@ -497,7 +497,13 @@ CREATE INDEX tagged_tags_idx ON tagged USING bark (tags my_int4_array_ops);
    than one entry, or when the condition is a single key; a bitmap scan
    never needs it.  The set may grow past <xref linkend="guc-work-mem"/>
    (times <xref linkend="guc-hash-mem-multiplier"/>) rather than return a
-   row twice.  A merge join's restore to a mark takes the rows returned
+   row twice; the planner does not choose an index scan whose estimated
+   rows per value of the columns before the multikey one, at about 16
+   bytes each, exceed that budget, and takes a bitmap scan or a
+   sequential scan instead.  Its cost estimate counts the index's entries
+   per row (as of the last <command>CREATE INDEX</command> or
+   <command>VACUUM</command>) and one descent per key or range that the
+   operator class makes of the condition.  A merge join's restore to a mark takes the rows returned
    after the mark out of the set, so they are returned again.
   </para>
 
@@ -527,7 +533,9 @@ CREATE INDEX tagged_tags_idx ON tagged USING bark (tags my_int4_array_ops);
    largest.  The operator must return the class's storage type, and its
    NULL result (a row with no key) comes last.  A <literal>WHERE</literal>
    condition on the column does not change that order: the scan reads the
-   whole column and each row is rechecked against the condition.  An
+   whole column and each row is rechecked against the condition, so with
+   such a condition the planner usually prefers a bitmap scan and a sort,
+   while a <literal>LIMIT</literal> without one favors the ordered scan.  An
    ordering operator on an ordinary leading column (<literal>ORDER BY
    tenant &lt;~&gt; 3</literal>) also returns each row once.  A bitmap
    scan has none of these limits.
