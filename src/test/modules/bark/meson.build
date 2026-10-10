@@ -44,6 +44,7 @@ tests += {
       't/005_insert_done_recovery.pl',
       't/006_split_fpi_recovery.pl',
       't/007_split_done_recovery.pl',
+      't/008_redo_dropped_index.pl',
     ],
   },
 }
