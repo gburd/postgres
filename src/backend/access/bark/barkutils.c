@@ -2775,7 +2775,6 @@ bark_fetch_oversized(Relation index, IndexTuple entry)
 
 		LockBuffer(buf, BUFFER_LOCK_SHARE);
 		page = BufferGetPage(buf);
-		opaque = BarkPageGetOpaque(page);
 
 		/*
 		 * Callers read a chain while holding a lock on the page of the entry
@@ -2783,9 +2782,11 @@ bark_fetch_oversized(Relation index, IndexTuple entry)
 		 * entry under a cleanup lock, so a chain page is never found freed
 		 * (deleted, or reused for something else).  Check anyway: a freed
 		 * page's chunk bytes are gone, and copying them would return a wrong
-		 * value rather than fail.
+		 * value rather than fail.  A new page has no special space, so test
+		 * for one before reading the flags.
 		 */
-		if (PageIsNew(page) || !BarkPageIsOverflow(opaque))
+		if (PageIsNew(page) ||
+			!BarkPageIsOverflow((opaque = BarkPageGetOpaque(page))))
 			elog(ERROR, "BARK overflow chain for an oversized entry reaches block %u, which is not an overflow page",
 				 blkno);
 		len = Min((Size) BarkOverflowChunkSize, fulllen - got);
