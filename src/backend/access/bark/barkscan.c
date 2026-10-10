@@ -415,6 +415,19 @@ typedef struct BarkMkScanState
 	int			matched;		/* boundary of the entry bark_mk_filter passed */
 
 	/*
+	 * An ordering key on the column (bark_mk_order_setup): the scan walks its
+	 * boundaries in orderdir and reports each row's first key as its ORDER
+	 * BY value, NULL for every row when ordernull.  While nullspending,
+	 * nullsbound holds the NULL entries, which come first in the walk but
+	 * must be read last (bark_mk_order_nulls).
+	 */
+	bool		order;
+	bool		ordernull;
+	ScanDirection orderdir;
+	bool		nullspending;
+	BarkMkBoundary nullsbound;
+
+	/*
 	 * The seen set (bark_mk_seen).  seen is NULL until a TID goes in, and
 	 * lives in seenCxt, which is reset to empty it.  groupvals are the
 	 * columns before the extracted one of the rows in it.
@@ -584,13 +597,14 @@ bark_mk_set_side(IndexScanDesc scan, BarkMkScanState *mk, BarkMkBoundary *b,
  *
  * A procedure 8 declared with six arguments, as pg_extended_btree's are, is
  * called with six and never sees BarkQueryFlags.  BarkQueryFlags.backward
- * is for ordering keys, which pick the direction of their own walk; a
- * search key goes in the scan's direction and ignores it.
+ * is for ordering keys, which pick the direction of their own walk; it is
+ * returned in *backward.  A search key passes NULL: it goes in the scan's
+ * direction.
  */
 static void
 bark_mk_extract(IndexScanDesc scan, BarkMkScanState *mk, ScanKey sk,
 				Datum query, BarkMkBoundary **bounds, int *nbounds,
-				int *maxbounds)
+				int *maxbounds, bool *backward)
 {
 	BarkBoundary *result = NULL;
 	int32		nresult = 0;
@@ -611,6 +625,8 @@ bark_mk_extract(IndexScanDesc scan, BarkMkScanState *mk, ScanKey sk,
 						  Int16GetDatum(sk->sk_strategy),
 						  PointerGetDatum(&result), PointerGetDatum(&nresult),
 						  PointerGetDatum(&extra), PointerGetDatum(&recheck));
+	if (backward != NULL)
+		*backward = flags.backward;
 
 	if (*nbounds + nresult + 1 > *maxbounds)
 	{
@@ -665,6 +681,75 @@ bark_mk_extract(IndexScanDesc scan, BarkMkScanState *mk, ScanKey sk,
 }
 
 /*
+ * Build the boundaries of ob, an ordering key on the extracted column, at
+ * rescan ("Ordered scans" in BARK-Design.mediawiki).  Procedure 8 returns
+ * the boundaries to walk and whether to walk them in descending key order.
+ * The scan walks them so with the seen set, which returns a row once, at
+ * its first key, and that key is the row's ORDER BY value: MongoDB's sort
+ * rule for arrays, an ascending order sees a row at its smallest key and a
+ * descending one at its largest.  The operator must therefore return the
+ * column's key type.  An ordering operator's NULL result sorts last, so
+ * when the column's NULLS option puts the NULL entries first in the walk,
+ * they are read after the keys.  A strict operator with a NULL argument
+ * orders every row as NULL, in any order, so the walk reads every entry.
+ *
+ * The column's scan keys neither position nor filter the walk: a row met
+ * first at a key that fails them would otherwise come back later, at a
+ * key that passes, out of order.  Its rows come back with xs_recheck, and
+ * the executor applies the keys.
+ */
+static void
+bark_mk_order_setup(IndexScanDesc scan, BarkMkScanState *mk, ScanKey ob)
+{
+	Relation	index = scan->indexRelation;
+	BarkMkBoundary *bounds = NULL;
+	int			nbounds = 0;
+	int			maxbounds = 0;
+	bool		backward = false;
+	int			first;
+
+	if (get_func_rettype(ob->sk_func.fn_oid) !=
+		TupleDescAttr(RelationGetDescr(index), mk->attno - 1)->atttypid)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("the ordering operator on the multikey column of BARK index \"%s\" does not return the column's key type",
+						RelationGetRelationName(index))));
+	if (mk->extractquery == NULL)
+		elog(ERROR, "missing support function %d for attribute %d of index \"%s\"",
+			 BARK_EXTRACTQUERY_PROC, mk->attno, RelationGetRelationName(index));
+
+	mk->order = true;
+	mk->ordernull = (ob->sk_flags & SK_ISNULL) != 0;
+	mk->recheckall = mk->nkeys > 0;
+	if (mk->ordernull)
+	{
+		bounds = palloc0_array(BarkMkBoundary, 2);
+		bounds[1].nulls = bounds[1].point = bounds[1].recheck = true;
+		nbounds = 2;
+		qsort_arg(bounds, nbounds, sizeof(BarkMkBoundary),
+				  bark_mk_boundary_order, mk);
+	}
+	else
+		bark_mk_extract(scan, mk, ob, ob->sk_argument, &bounds, &nbounds,
+						&maxbounds, &backward);
+
+	/* Index order is ascending key order unless the column is DESC. */
+	mk->orderdir = backward == mk->col->reverse ? ForwardScanDirection :
+		BackwardScanDirection;
+	first = ScanDirectionIsForward(mk->orderdir) ? 0 : nbounds - 1;
+	if (nbounds > 0 && bounds[first].nulls)
+	{
+		mk->nullsbound = bounds[first];
+		mk->nullspending = true;
+		nbounds--;
+		if (first == 0)
+			memmove(bounds, bounds + 1, nbounds * sizeof(BarkMkBoundary));
+	}
+	mk->bounds = bounds;
+	mk->nbounds = nbounds;
+}
+
+/*
  * Build the extracted column's boundaries from its first scan key, at
  * rescan.  A key that is not an operator of the class is a NULL test: IS
  * NULL reads the NULL entries, IS NOT NULL every key and the NULL entries,
@@ -692,6 +777,14 @@ bark_mk_setup(IndexScanDesc scan)
 	mk->bounds = NULL;
 	mk->nbounds = 0;
 	mk->recheckall = mk->nkeys > 1;
+	mk->order = false;
+	mk->nullspending = false;
+	if (scan->numberOfOrderBys > 0 &&
+		scan->orderByData[0].sk_attno == mk->attno)
+	{
+		bark_mk_order_setup(scan, mk, &scan->orderByData[0]);
+		return;
+	}
 	if (mk->nkeys == 0)
 		return;
 	sk = &mk->keys[0];
@@ -714,7 +807,7 @@ bark_mk_setup(IndexScanDesc scan)
 
 	if (!(sk->sk_flags & SK_SEARCHARRAY))
 		bark_mk_extract(scan, mk, sk, sk->sk_argument, &bounds, &nbounds,
-						&maxbounds);
+						&maxbounds, NULL);
 	else
 	{
 		ArrayType  *arr = DatumGetArrayTypeP(sk->sk_argument);
@@ -731,7 +824,7 @@ bark_mk_setup(IndexScanDesc scan)
 		for (int e = 0; e < nelems; e++)
 			if (!nulls[e])
 				bark_mk_extract(scan, mk, sk, elems[e], &bounds, &nbounds,
-								&maxbounds);
+								&maxbounds, NULL);
 		if (nbounds > 1)
 			qsort_arg(bounds, nbounds, sizeof(BarkMkBoundary),
 					  bark_mk_boundary_order, mk);
@@ -803,7 +896,8 @@ bark_mk_rescan(IndexScanDesc scan)
 	mk->nundo = 0;
 	if (!IsMVCCSnapshot(scan->xs_snapshot))
 		mk->useseen = true;
-	else if (mk->nkeys > 0 && mk->nbounds == 1 && mk->bounds[0].point)
+	else if (mk->nkeys > 0 && !mk->order && mk->nbounds == 1 &&
+			 mk->bounds[0].point)
 		mk->useseen = false;
 	else
 		mk->useseen = bark_index_is_multikey(scan->indexRelation);
@@ -821,17 +915,6 @@ bark_mk_rescan(IndexScanDesc scan)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("parallel index scans of multikey BARK index \"%s\" are not supported",
 						RelationGetRelationName(scan->indexRelation))));
-
-	/*
-	 * An ordering operator of the extracted column has a key, not a value, to
-	 * order by, so it needs its own walk of the column.
-	 */
-	for (int i = 0; i < scan->numberOfOrderBys; i++)
-		if (scan->orderByData[i].sk_attno == mk->attno)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("ordered scans on the multikey column of BARK index \"%s\" are not supported",
-							RelationGetRelationName(scan->indexRelation))));
 }
 
 /*
@@ -1071,7 +1154,8 @@ bark_mk_partition_keys(IndexScanDesc scan)
 /*
  * Is entry itup inside one of the extracted column's boundaries?  A binary
  * search, since they are sorted and disjoint; the boundary found is kept in
- * mk->matched for bark_mk_accept.  True when the column has no scan key.
+ * mk->matched for bark_mk_accept.  True when the column has no scan key
+ * and no ordering key.
  */
 static bool
 bark_mk_filter(IndexScanDesc scan, IndexTuple itup)
@@ -1082,7 +1166,7 @@ bark_mk_filter(IndexScanDesc scan, IndexTuple itup)
 	int			lo = 0;
 	int			hi;
 
-	if (mk == NULL || mk->nkeys == 0)
+	if (mk == NULL || (mk->nkeys == 0 && !mk->order))
 		return true;
 	datum = index_getattr(itup, mk->attno,
 						  RelationGetDescr(scan->indexRelation), &isnull);
@@ -1163,7 +1247,7 @@ bark_mk_accept(IndexScanDesc scan, IndexTuple itup, ItemPointer tids,
 	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
 
 	*recheck = false;
-	if (mk->nkeys > 0)
+	if (mk->nkeys > 0 || mk->order)
 	{
 		const BarkMkBoundary *b = &mk->bounds[mk->matched];
 
@@ -1203,7 +1287,8 @@ bark_mk_accept(IndexScanDesc scan, IndexTuple itup, ItemPointer tids,
  * array of one element, so that one cursor walks every column.  Unless one of
  * the keys is an array, the scan has no required keys: bark_make_bound and
  * bark_past_bound handle an equality prefix of scalars on their own.  A KNN
- * scan reads in distance order and has none either.
+ * scan reads in distance order and has none either; an ordering key on the
+ * extracted column has its boundaries as its one required key.
  *
  * Runs after bark_setup_key_procs, whose ORDER procs the scalar keys use.
  */
@@ -1218,7 +1303,7 @@ bark_setup_req_keys(IndexScanDesc scan)
 
 	so->reqKeys = NULL;
 	so->numReqKeys = 0;
-	if (scan->numberOfOrderBys > 0)
+	if (scan->numberOfOrderBys > 0 && (so->mk == NULL || !so->mk->order))
 		return;
 	if (so->numArrayKeys == 0 &&
 		(so->mk == NULL || so->mk->nbounds == 0))
@@ -2005,7 +2090,8 @@ bark_skip_eligible(IndexScanDesc scan)
 
 	if (IndexRelationGetNumberOfKeyAttributes(scan->indexRelation) < 2 ||
 		scan->numberOfOrderBys > 0 ||
-		(so->mk != NULL && so->mk->attno == 1 && so->mk->nkeys > 0))
+		(so->mk != NULL && so->mk->attno == 1 &&
+		 (so->mk->nkeys > 0 || so->mk->order)))
 		return false;
 	for (int i = 0; i < so->numberOfKeys; i++)
 	{
@@ -2627,6 +2713,8 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 
 	if (scankey && nscankeys > 0)
 		memcpy(scan->keyData, scankey, nscankeys * sizeof(ScanKeyData));
+	if (orderbys && norderbys > 0)
+		memcpy(scan->orderByData, orderbys, norderbys * sizeof(ScanKeyData));
 	bark_mk_partition_keys(scan);
 
 	/*
@@ -2652,15 +2740,14 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	so->skipReseeking = false;
 
 	/*
-	 * An ordered-operator (KNN) scan carries ORDER BY <~> keys; copy them in
-	 * and hand them to the KNN machinery, which runs the outward two-sided
-	 * merge in bark_gettuple.
+	 * An ordered-operator (KNN) scan carries ORDER BY <~> keys; hand them to
+	 * the KNN machinery, which runs the outward two-sided merge in
+	 * bark_gettuple.  An ordering key on the extracted column walks the
+	 * column instead (bark_mk_order_setup).
 	 */
-	if (scan->numberOfOrderBys > 0 && orderbys && norderbys > 0)
-	{
-		memcpy(scan->orderByData, orderbys, norderbys * sizeof(ScanKeyData));
+	if (scan->numberOfOrderBys > 0 && orderbys && norderbys > 0 &&
+		(so->mk == NULL || !so->mk->order))
 		bark_knn_rescan(scan, scan->orderByData, norderbys);
-	}
 	if (so->mk != NULL)
 		bark_mk_rescan(scan);
 }
@@ -3062,7 +3149,7 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 		skipkeys = bark_page_satisfied_keys(scan, page, minoff, maxoff);
 		allsatisfied = so->numberOfKeys < 64 &&
 			skipkeys == (UINT64CONST(1) << so->numberOfKeys) - 1 &&
-			(so->mk == NULL || so->mk->nkeys == 0);
+			(so->mk == NULL || (so->mk->nkeys == 0 && !so->mk->order));
 	}
 
 	for (; forward ? offnum <= maxoff : offnum >= minoff;
@@ -3162,7 +3249,7 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 				continue;
 			}
 		}
-		if (scan->xs_want_itup)
+		if (scan->xs_want_itup || (so->mk != NULL && so->mk->order))
 			tupoff = bark_save_tuple(so, &so->currTuples, &so->currTuplesSize,
 									 &pos->nextTupleOffset, itup, resolved);
 		if (fetched)
@@ -3245,6 +3332,19 @@ bark_saveitem(IndexScanDesc scan)
 		scan->xs_itup = (IndexTuple) (so->currTuples + item->tupleOffset);
 		if (so->mk != NULL)
 			scan->xs_hitup = bark_mk_form_hitup(scan, scan->xs_itup);
+	}
+
+	/* An ordering key on the extracted column: the entry's key, exact. */
+	if (so->mk != NULL && so->mk->order)
+	{
+		IndexTuple	itup = (IndexTuple) (so->currTuples + item->tupleOffset);
+		bool		isnull;
+
+		scan->xs_orderbyvals[0] = index_getattr(itup, so->mk->attno,
+												RelationGetDescr(scan->indexRelation),
+												&isnull);
+		scan->xs_orderbynulls[0] = isnull || so->mk->ordernull;
+		scan->xs_recheckorderby = false;
 	}
 }
 
@@ -3528,7 +3628,7 @@ bark_first(IndexScanDesc scan, ScanDirection dir)
 				 so->mk->useseen ? "uses a seen set" : "needs no seen set");
 		so->mk->started = true;
 		so->mk->dir = dir;
-		if (so->mk->nkeys > 0 && so->mk->nbounds == 0)
+		if ((so->mk->nkeys > 0 || so->mk->order) && so->mk->nbounds == 0)
 			return false;
 	}
 	bark_req_reset(so, 0, dir);
@@ -3629,6 +3729,32 @@ bark_steppage(IndexScanDesc scan, ScanDirection dir)
 	return bark_readnextpage(scan, blkno, lastcurrblkno, dir, false);
 }
 
+/*
+ * An ordered scan of the extracted column whose NULL entries come first in
+ * its walk reads them once the keys are done (bark_mk_order_setup): position
+ * the scan again, on them alone.  A row already returned at a key is in the
+ * seen set, so a row with a NULL element and other keys does not come back.
+ * Returns false when there is nothing left to read.
+ */
+static bool
+bark_mk_order_nulls(IndexScanDesc scan, ScanDirection dir)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BarkMkScanState *mk = so->mk;
+
+	if (mk == NULL || !mk->nullspending)
+		return false;
+	mk->nullspending = false;
+	mk->bounds = &mk->nullsbound;
+	mk->nbounds = 1;
+	for (int k = 0; k < so->numReqKeys; k++)
+		if (so->reqKeys[k]->mk != NULL)
+			so->reqKeys[k]->nelems = 1;
+	BarkScanPosUnpinIfPinned(so->currPos);
+	BarkScanPosInvalidate(so->currPos);
+	return bark_first(scan, dir);
+}
+
 bool
 bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 {
@@ -3639,8 +3765,15 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 	 * order, so hand off to the two-sided outward merge.  The executor only
 	 * ever drives a KNN scan forward.
 	 */
-	if (scan->numberOfOrderBys > 0)
+	if (scan->numberOfOrderBys > 0 && (so->mk == NULL || !so->mk->order))
 		return bark_knn_gettuple(scan);
+
+	/*
+	 * An ordering key on the extracted column walks the column in the
+	 * direction its procedure 8 chose; the executor drives it forward.
+	 */
+	if (so->mk != NULL && so->mk->order)
+		dir = so->mk->orderdir;
 
 	/*
 	 * A scan with a seen set that reverses direction would meet the entries
@@ -3663,7 +3796,7 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 		 * nbtree restarts from that end in both cases (a scroll cursor that
 		 * fetched past the last row and then fetches backward); so do we.
 		 */
-		if (!bark_first(scan, dir))
+		if (!bark_first(scan, dir) && !bark_mk_order_nulls(scan, dir))
 			return false;
 	}
 	else
@@ -3677,7 +3810,8 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 		{
 			if (++so->currPos.itemIndex > so->currPos.lastItem)
 			{
-				if (!bark_steppage(scan, dir))
+				if (!bark_steppage(scan, dir) &&
+					!bark_mk_order_nulls(scan, dir))
 					return false;
 			}
 		}
@@ -3685,7 +3819,8 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 		{
 			if (--so->currPos.itemIndex < so->currPos.firstItem)
 			{
-				if (!bark_steppage(scan, dir))
+				if (!bark_steppage(scan, dir) &&
+					!bark_mk_order_nulls(scan, dir))
 					return false;
 			}
 		}
