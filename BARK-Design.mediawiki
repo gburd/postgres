@@ -1032,9 +1032,9 @@ place of an inverted AM, without changing the scalar design above.
   semantics: unique across rows, while one row may repeat a key.
   ''(in progress. M4a, the insert, build and planner sides, is built:
   "As built (M4a)" under [[#M4: unique indexes over multikey keys|M4]]
-  below. M4b, procedure 15 and ON CONFLICT, with the foreign-key,
-  REFRESH MATERIALIZED VIEW CONCURRENTLY and REPLICA IDENTITY guards, and
-  M4c, amcheck's checkunique, are not started)''
+  below; M4b, procedure 15, ON CONFLICT and the foreign-key, REFRESH
+  MATERIALIZED VIEW CONCURRENTLY and REPLICA IDENTITY guards, is built:
+  "As built (M4b)". M4c, amcheck's checkunique, is in progress)''
 * '''M5''' -- wildcard indexes, as MongoDB's: a test-module operator class
   over <code>jsonb</code> whose extract-value procedure (7) emits one key
   (path, value) for every path that the column's projection keeps, and one
@@ -2070,9 +2070,7 @@ plus the shared key ("Error detail"); bark_load gives "Duplicate keys
 exist." for such an index. A dead row's keys go to the second sort in the
 build callback, which covers the parallel build, and
 bark_insert_oversized_keys takes the caller's check. get_relation_info
-sets info->unique false. Until M4b, INSERT ... ON CONFLICT into a table
-with such an index fails in core (BuildSpeculativeIndexInfo finds no
-equality), which bark_multikey_unique.sql records.
+sets info->unique false.
 
 Tests: bark_multikey_unique.sql (one-element arrays decided as a unique
 btree on a[1] does, row by row; repeated, shared and NULL keys; the failed
@@ -2081,6 +2079,37 @@ keys; CREATE UNIQUE INDEX over a shared key and over an updated row's old
 version) and the isolation spec bark_multikey_unique_concurrent (a wait
 then failure or success, keys in opposite order, and the deleter-wait
 deadlock).
+
+==== As built (M4b) ====
+
+Procedure 15 is BARK_TRANSLATE_CMPTYPE_PROC, registered under ("any",
+"any") as GiST's procedure 12 is, since bark_translate_cmptype has only the
+operator family; amsupport is 15. barkvalidate checks its signature,
+<code>int2 (int4)</code>, and barkadjustmembers gives it a soft dependency
+on the family. bark_translate_cmptype passes it COMPARE_OVERLAP only;
+bark_translate_strategy is unchanged. BuildSpeculativeIndexInfo asks for
+COMPARE_OVERLAP when a column has no COMPARE_EQ strategy, the one core
+change for the pre-check. bark_check_multikey_index refuses a unique index
+whose procedure 15 names no operator under the input type. The test class
+<code>bark_int4_array_ops</code> gains <code>|&amp;&amp;|</code> over
+<code>int4[]</code> at strategy 1, beside core's <code>&amp;&amp;</code>
+over <code>anyarray</code>. transformFkeyCheckAttrs and matview.c's
+is_usable_unique_index pass by an index with a key column that has no
+COMPARE_EQ (outside a foreign key's PERIOD part), and ATExecReplicaIdentity
+refuses one with an error naming the family.
+
+Tests (bark_multikey_unique.sql): ON CONFLICT DO NOTHING and DO UPDATE on
+one-element arrays decided as on a unique btree over a[1]; several keys
+per row, with one, two and same-statement conflicts, NULL and empty values,
+and DO UPDATE choosing the row with the smallest shared key; the executor's
+pre-check run with a row's own TID (bark_multikey_precheck, as logical
+replication runs it), which returns each row once; a btree arbiter beside
+the BARK index; refusals for a class without procedure 15, one naming no
+operator, and one with the wrong signature; the foreign-key,
+REFRESH MATERIALIZED VIEW CONCURRENTLY and REPLICA IDENTITY guards, each
+with and without a btree index beside. The isolation spec adds two ON
+CONFLICT DO NOTHING inserts sharing a key: the second waits, then does
+nothing.
 
 ==== What M4 does not do ====
 
