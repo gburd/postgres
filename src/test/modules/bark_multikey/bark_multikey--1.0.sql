@@ -63,8 +63,29 @@ CREATE FUNCTION bark_multikey_least8(int4[], int4) RETURNS int8
 CREATE OPERATOR |<<| (LEFTARG = int4[], RIGHTARG = int4,
                       FUNCTION = bark_multikey_least8);
 
+-- The conflict operator of a unique index: overlap over int4[].  BARK and
+-- the executor look it up under the class's input type, and core's && is
+-- declared over anyarray; a name of its own leaves && resolving as before.
+-- arrayoverlap ignores NULL elements and an empty array overlaps nothing,
+-- so it is true exactly when two values share a key that is not NULL.
+CREATE FUNCTION bark_multikey_overlap(int4[], int4[]) RETURNS bool
+AS 'arrayoverlap' LANGUAGE internal IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE OPERATOR |&&| (
+    LEFTARG = int4[],
+    RIGHTARG = int4[],
+    FUNCTION = bark_multikey_overlap,
+    COMMUTATOR = |&&|
+);
+
+-- Procedure 15: COMPARE_OVERLAP is strategy 1.
+CREATE FUNCTION bark_multikey_translate_cmptype(int4)
+RETURNS int2
+AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
 -- The class.  Its operators are core's array operators, numbered as GIN's
--- array_ops numbers them, and the element-order operator.  Procedures 1, 2,
+-- array_ops numbers them, the element-order operator, and |&&| under the
+-- input type, at &&'s number, which procedure 15 names.  Procedures 1, 2,
 -- 4 and 6 are core's int4 ones, over the storage type.  BARK looks every
 -- support function up under the input type; procedure 1 has to say so,
 -- since CREATE OPERATOR CLASS would register a comparator under its
@@ -74,6 +95,7 @@ CREATE OPERATOR FAMILY bark_int4_array_ops USING bark;
 CREATE OPERATOR CLASS bark_int4_array_ops
 FOR TYPE int4[] USING bark FAMILY bark_int4_array_ops AS
     OPERATOR 1 && (anyarray, anyarray),
+    OPERATOR 1 |&&| (int4[], int4[]),
     OPERATOR 2 @> (anyarray, anyarray),
     OPERATOR 3 <@ (anyarray, anyarray),
     OPERATOR 4 = (anyarray, anyarray),
@@ -87,6 +109,7 @@ FOR TYPE int4[] USING bark FAMILY bark_int4_array_ops AS
     FUNCTION 8 bark_multikey_extract_query(int4[], int2, internal, internal,
                                            internal, internal, internal),
     FUNCTION 9 bark_multikey_recheck(int4, int2, internal),
+    FUNCTION 15 ("any", "any") bark_multikey_translate_cmptype(int4),
     STORAGE int4;
 
 -- Operators over an array's elements, for the range class below: some
@@ -236,4 +259,10 @@ AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
 CREATE FUNCTION bark_multikey_parallel(index text, op regoperator,
                                        query anyelement)
 RETURNS int8
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+-- The executor's conflict pre-check for the row at tid, which passes its own
+-- TID; "ok" or the violation.
+CREATE FUNCTION bark_multikey_precheck(index regclass, tid tid)
+RETURNS text
 AS 'MODULE_PATHNAME' LANGUAGE C STRICT;

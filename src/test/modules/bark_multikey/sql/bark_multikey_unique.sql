@@ -65,15 +65,112 @@ SELECT e, count(DISTINCT id) FROM um, unnest(a) e WHERE e IS NOT NULL
 GROUP BY e HAVING count(DISTINCT id) > 1;
 SELECT bark_index_check('um_a');
 
--- Until ON CONFLICT is supported (M4b), an INSERT ... ON CONFLICT into a
--- table with such an index fails in core, where the executor looks for each
--- column's equality operator, rather than give a wrong result.
-DO $$
-BEGIN
-  INSERT INTO um VALUES (30, '{30}') ON CONFLICT DO NOTHING;
-EXCEPTION WHEN OTHERS THEN
-  RAISE NOTICE '%', regexp_replace(SQLERRM, '[0-9]+', 'N', 'g');
-END $$;
+-- ON CONFLICT.  One key per row: on bark(a) over one-element arrays, DO
+-- NOTHING and DO UPDATE decide as on the unique btree on (a[1]).
+INSERT INTO ub VALUES ('{2}'), ('{5}'), ('{NULL}') ON CONFLICT DO NOTHING
+  RETURNING a;
+INSERT INTO ut VALUES ('{2}'), ('{5}'), ('{NULL}') ON CONFLICT DO NOTHING
+  RETURNING a;
+INSERT INTO ub VALUES ('{3}'), ('{6}') ON CONFLICT (a)
+  DO UPDATE SET a = ARRAY[ub.a[1] + 100] RETURNING a;
+INSERT INTO ut VALUES ('{3}'), ('{6}') ON CONFLICT ((a[1]))
+  DO UPDATE SET a = ARRAY[ut.a[1] + 100] RETURNING a;
+SELECT (SELECT count(*) FROM (SELECT a FROM ub EXCEPT ALL SELECT a FROM ut) x)
+       AS bark_only,
+       (SELECT count(*) FROM (SELECT a FROM ut EXCEPT ALL SELECT a FROM ub) y)
+       AS btree_only;
+SELECT bark_index_check('ub_a');
+
+-- Several keys per row: the pre-check scans with the class's overlap
+-- operator.  A row conflicting with one row, then with two, inserts
+-- nothing; so does the second of two rows of one statement that share a
+-- key; a row sharing no key is inserted.
+CREATE TABLE uo (id int, a int4[], note text);
+CREATE UNIQUE INDEX uo_a ON uo USING bark (a bark_int4_array_ops);
+INSERT INTO uo VALUES (1, '{1,4}'), (2, '{2,5}'), (3, '{3}');
+INSERT INTO uo VALUES (10, '{4,7}') ON CONFLICT DO NOTHING;
+INSERT INTO uo VALUES (11, '{5,1}') ON CONFLICT DO NOTHING;
+INSERT INTO uo VALUES (12, '{7,8}') ON CONFLICT DO NOTHING;
+INSERT INTO uo VALUES (13, '{9,9,NULL}'), (14, '{9}') ON CONFLICT DO NOTHING;
+INSERT INTO uo VALUES (15, '{NULL}'), (16, '{}') ON CONFLICT DO NOTHING;
+SELECT id, a FROM uo ORDER BY id;
+-- One row may conflict with several: DO UPDATE updates the one holding the
+-- new value's smallest shared key, which a sequential scan names first.
+SET enable_indexscan = off;
+SET enable_bitmapscan = off;
+SELECT id FROM uo WHERE a && '{5,3,1}'
+ORDER BY (SELECT min(e) FROM unnest(a) e WHERE e = ANY ('{5,3,1}')) LIMIT 1;
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+INSERT INTO uo VALUES (20, '{5,3,1}') ON CONFLICT (a)
+  DO UPDATE SET note = 'hit by ' || EXCLUDED.id RETURNING id, note;
+-- A row sharing every key with one row updates it once.
+INSERT INTO uo VALUES (21, '{5,2}') ON CONFLICT (a)
+  DO UPDATE SET note = 'hit by ' || EXCLUDED.id RETURNING id, note;
+-- The pre-check scan returns a row with several keys once: given the row's
+-- own TID, as logical replication gives it, it finds no conflict.
+SELECT id, bark_multikey_precheck('uo_a', ctid) FROM uo WHERE id IN (2, 13)
+ORDER BY id;
+SELECT e, count(DISTINCT id) FROM uo, unnest(a) e WHERE e IS NOT NULL
+GROUP BY e HAVING count(DISTINCT id) > 1;
+SELECT bark_index_check('uo_a');
+
+-- A btree arbiter beside a unique multikey index: ON CONFLICT (id) decides
+-- on id alone, and the BARK index still raises its violation; with no
+-- conflict target both indexes are arbiters.
+CREATE TABLE ua (id int UNIQUE, a int4[]);
+CREATE UNIQUE INDEX ua_a ON ua USING bark (a bark_int4_array_ops);
+INSERT INTO ua VALUES (1, '{1,2}'), (2, '{3}');
+INSERT INTO ua VALUES (1, '{4}') ON CONFLICT (id) DO UPDATE SET a = EXCLUDED.a;
+INSERT INTO ua VALUES (3, '{2}') ON CONFLICT (id) DO NOTHING;
+SELECT u_try('INSERT INTO ua VALUES (4, ''{3,9}'') ON CONFLICT (id) DO NOTHING');
+SELECT u_try('INSERT INTO ua VALUES (4, ''{3,9}'') ON CONFLICT DO NOTHING');
+SELECT u_try('INSERT INTO ua VALUES (2, ''{9}'') ON CONFLICT DO NOTHING');
+SELECT id, a FROM ua ORDER BY id;
+SELECT bark_index_check('ua_a');
+
+-- A unique index needs the class's overlap operator (procedure 15); the
+-- range class has none.  It may still build a non-unique index.
+CREATE UNIQUE INDEX ON uo USING bark (a bark_int4_array_range_ops);
+CREATE INDEX uo_range ON uo USING bark (a bark_int4_array_range_ops);
+DROP INDEX uo_range;
+
+-- A unique multikey index has no equality.  A foreign key passes it by and
+-- finds a btree index on the same column; with none it fails as for a
+-- table with no unique index.  The foreign key compares by equality.
+CREATE TABLE fkp (a int4[]);
+CREATE UNIQUE INDEX fkp_a ON fkp USING bark (a bark_int4_array_ops);
+CREATE TABLE fkc (a int4[] REFERENCES fkp (a));
+CREATE UNIQUE INDEX fkp_bt ON fkp (a);
+CREATE TABLE fkc (a int4[] REFERENCES fkp (a));
+SELECT conindid::regclass FROM pg_constraint WHERE conrelid = 'fkc'::regclass;
+INSERT INTO fkp VALUES ('{1,2}');
+INSERT INTO fkc VALUES ('{1,2}');
+INSERT INTO fkc VALUES ('{1}');
+DROP TABLE fkc, fkp;
+
+-- REFRESH MATERIALIZED VIEW CONCURRENTLY joins on a unique index's
+-- equality: a multikey index alone does not qualify, and beside a btree
+-- one it is passed by.
+CREATE MATERIALIZED VIEW umv AS SELECT id, a FROM uo;
+CREATE UNIQUE INDEX umv_a ON umv USING bark (a bark_int4_array_ops);
+REFRESH MATERIALIZED VIEW CONCURRENTLY umv;
+CREATE UNIQUE INDEX umv_id ON umv (id);
+UPDATE uo SET a = '{30,31}' WHERE id = 3;
+DELETE FROM uo WHERE id = 12;
+REFRESH MATERIALIZED VIEW CONCURRENTLY umv;
+SELECT (SELECT count(*) FROM (TABLE umv EXCEPT ALL SELECT id, a FROM uo) x)
+       AS mv_only,
+       (SELECT count(*) FROM (SELECT id, a FROM uo EXCEPT ALL TABLE umv) y)
+       AS table_only;
+SELECT bark_index_check('umv_a');
+DROP MATERIALIZED VIEW umv;
+
+-- Replication looks a row up by equality on its identity's columns.
+CREATE TABLE uri (a int4[] NOT NULL);
+CREATE UNIQUE INDEX uri_a ON uri USING bark (a bark_int4_array_ops);
+ALTER TABLE uri REPLICA IDENTITY USING INDEX uri_a;
+DROP TABLE uri;
 
 -- Compound: unique per tenant.  A NULL fixed column puts a NULL in every
 -- key, so such a row is never checked.
@@ -114,5 +211,44 @@ INSERT INTO ubuild VALUES (4, '{1}');
 SELECT id, a FROM ubuild ORDER BY id;
 SELECT bark_index_check('ubuild_a');
 
-DROP TABLE ub, ut, um, uc, ubuild;
+DROP TABLE ub, ut, um, uo, ua, uc, ubuild;
+
+-- Procedure 15 that names a strategy with no operator under the column's
+-- type, one with the wrong signature, and dropping it again: a unique index
+-- is refused, amvalidate reports the signature, and the family loses the
+-- member without losing its classes.
+CREATE FUNCTION u_cmp_bad(int4) RETURNS int2 LANGUAGE sql IMMUTABLE
+  AS 'SELECT 99::int2';
+CREATE FUNCTION u_cmp_badsig(int8) RETURNS int2 LANGUAGE sql IMMUTABLE
+  AS 'SELECT 1::int2';
+ALTER OPERATOR FAMILY bark_int4_array_range_ops USING bark ADD
+  FUNCTION 15 ("any", "any") u_cmp_bad(int4);
+CREATE TABLE ur (a int4[]);
+CREATE UNIQUE INDEX ur_a ON ur USING bark (a bark_int4_array_range_ops);
+ALTER OPERATOR FAMILY bark_int4_array_range_ops USING bark
+  DROP FUNCTION 15 ("any", "any");
+ALTER OPERATOR FAMILY bark_int4_array_range_ops USING bark ADD
+  FUNCTION 15 ("any", "any") u_cmp_badsig(int8);
+SELECT amvalidate(oid) FROM pg_opclass WHERE opcname = 'bark_int4_array_range_ops';
+ALTER OPERATOR FAMILY bark_int4_array_range_ops USING bark
+  DROP FUNCTION 15 ("any", "any");
+SELECT amvalidate(oid) FROM pg_opclass WHERE opcname = 'bark_int4_array_range_ops';
+-- Procedure 15 is looked up under ("any", "any") only; under other types
+-- amvalidate reports it.
+CREATE FUNCTION u_cmp_ok(int4) RETURNS int2 LANGUAGE sql IMMUTABLE
+  AS 'SELECT 1::int2';
+ALTER OPERATOR FAMILY bark_int4_array_range_ops USING bark ADD
+  FUNCTION 15 (int4[], int4[]) u_cmp_ok(int4);
+SELECT amvalidate(oid) FROM pg_opclass WHERE opcname = 'bark_int4_array_range_ops';
+ALTER OPERATOR FAMILY bark_int4_array_range_ops USING bark
+  DROP FUNCTION 15 (int4[], int4[]);
+ALTER OPERATOR FAMILY bark_int4_array_range_ops USING bark ADD
+  FUNCTION 15 ("any", int4[]) u_cmp_ok(int4);
+SELECT amvalidate(oid) FROM pg_opclass WHERE opcname = 'bark_int4_array_range_ops';
+ALTER OPERATOR FAMILY bark_int4_array_range_ops USING bark
+  DROP FUNCTION 15 ("any", int4[]);
+DROP FUNCTION u_cmp_ok(int4);
+CREATE INDEX ur_a ON ur USING bark (a bark_int4_array_range_ops);
+DROP TABLE ur;
+DROP FUNCTION u_cmp_bad(int4), u_cmp_badsig(int8);
 DROP FUNCTION u_try(text);
