@@ -10,7 +10,8 @@
 # the row holding 7; s1 inserts {2,7}, inserting 2 and waiting on s2's
 # delete for 7; s2 inserts {2}, which waits on s1's entry of 2.  The
 # deadlock detector aborts s1 (its deadlock_timeout is the shorter) and s2
-# commits.  After each permutation the index answers as a sequential scan
+# commits.  ON CONFLICT DO NOTHING: s2's {12,13} shares 12 with s1's
+# uncommitted {11,12}; its pre-check waits for s1, then inserts nothing.  After each permutation the index answers as a sequential scan
 # and passes bark_index_check.
 
 setup
@@ -33,6 +34,7 @@ step s1_begin	{ BEGIN; }
 step s1_ins15	{ INSERT INTO mku VALUES (1, ARRAY[1,5]); }
 step s1_ins34	{ INSERT INTO mku VALUES (3, ARRAY[3,4]); }
 step s1_ins27	{ INSERT INTO mku VALUES (2, ARRAY[2,7]); }
+step s1_oc	{ INSERT INTO mku VALUES (11, ARRAY[11,12]) ON CONFLICT DO NOTHING; }
 step s1_commit	{ COMMIT; }
 step s1_abort	{ ROLLBACK; }
 step s1_check
@@ -49,6 +51,7 @@ step s2_ins59	{ INSERT INTO mku VALUES (5, ARRAY[5,9]); }
 step s2_ins43	{ INSERT INTO mku VALUES (4, ARRAY[4,3]); }
 step s2_del7	{ DELETE FROM mku WHERE id = 0; }
 step s2_ins2	{ INSERT INTO mku VALUES (6, ARRAY[2]); }
+step s2_oc	{ INSERT INTO mku VALUES (12, ARRAY[12,13]) ON CONFLICT DO NOTHING; }
 step s2_commit	{ COMMIT; }
 
 # Shared key, inserter commits: the waiter fails.
@@ -59,3 +62,5 @@ permutation s1_begin s1_ins15 s2_ins59 s1_abort s1_check
 permutation s1_begin s1_ins34 s2_ins43 s1_commit s1_check
 # Deleter wait: one aborts with a deadlock, the other commits.
 permutation s2_begin s2_del7 s1_begin s1_ins27 s2_ins2 s1_abort s2_commit s1_check
+# ON CONFLICT DO NOTHING sharing a key: the second waits, then does nothing.
+permutation s1_begin s1_oc s2_oc s1_commit s1_check
