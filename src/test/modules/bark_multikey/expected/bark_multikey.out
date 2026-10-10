@@ -18,10 +18,12 @@ WHERE c.opcname = 'bark_int4_array_ops';
                          List of operator classes
   AM  | Input type | Storage type |       Operator class       | Default? 
 ------+------------+--------------+----------------------------+----------
+ bark | integer[]  | integer      | bark_gin11_int4_array_ops  | no
+ bark | integer[]  | integer      | bark_gin_int4_array_ops    | no
  bark | integer[]  | integer      | bark_int4_array_marked_ops | no
  bark | integer[]  | integer      | bark_int4_array_ops        | no
  bark | integer[]  | integer      | bark_int4_array_range_ops  | no
-(3 rows)
+(5 rows)
 
 \dAp bark bark_int4_array_ops
                                     List of support functions of operator families
