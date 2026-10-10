@@ -24,9 +24,10 @@ WHERE c.opcname = 'bark_int4_array_ops';
 (3 rows)
 
 \dAp bark bark_int4_array_ops
-                                  List of support functions of operator families
-  AM  |   Operator family   | Registered left type | Registered right type | Number |          Function           
-------+---------------------+----------------------+-----------------------+--------+-----------------------------
+                                    List of support functions of operator families
+  AM  |   Operator family   | Registered left type | Registered right type | Number |            Function             
+------+---------------------+----------------------+-----------------------+--------+---------------------------------
+ bark | bark_int4_array_ops | "any"                | "any"                 |     15 | bark_multikey_translate_cmptype
  bark | bark_int4_array_ops | integer[]            | integer[]             |      1 | btint4cmp
  bark | bark_int4_array_ops | integer[]            | integer[]             |      2 | btint4sortsupport
  bark | bark_int4_array_ops | integer[]            | integer[]             |      4 | btequalimage
@@ -34,19 +35,20 @@ WHERE c.opcname = 'bark_int4_array_ops';
  bark | bark_int4_array_ops | integer[]            | integer[]             |      7 | bark_multikey_extract_value
  bark | bark_int4_array_ops | integer[]            | integer[]             |      8 | bark_multikey_extract_query
  bark | bark_int4_array_ops | integer[]            | integer[]             |      9 | bark_multikey_recheck
-(7 rows)
+(8 rows)
 
 \dAo bark bark_int4_array_ops
-                   List of operators of operator families
-  AM  |   Operator family   |        Operator         | Strategy | Purpose  
-------+---------------------+-------------------------+----------+----------
- bark | bark_int4_array_ops | &&(anyarray,anyarray)   |        1 | search
- bark | bark_int4_array_ops | @>(anyarray,anyarray)   |        2 | search
- bark | bark_int4_array_ops | <@(anyarray,anyarray)   |        3 | search
- bark | bark_int4_array_ops | =(anyarray,anyarray)    |        4 | search
- bark | bark_int4_array_ops | |<|(integer[],integer)  |        5 | ordering
- bark | bark_int4_array_ops | |>>|(integer[],integer) |       15 | ordering
-(6 rows)
+                    List of operators of operator families
+  AM  |   Operator family   |         Operator          | Strategy | Purpose  
+------+---------------------+---------------------------+----------+----------
+ bark | bark_int4_array_ops | &&(anyarray,anyarray)     |        1 | search
+ bark | bark_int4_array_ops | @>(anyarray,anyarray)     |        2 | search
+ bark | bark_int4_array_ops | <@(anyarray,anyarray)     |        3 | search
+ bark | bark_int4_array_ops | =(anyarray,anyarray)      |        4 | search
+ bark | bark_int4_array_ops | |&&|(integer[],integer[]) |        1 | search
+ bark | bark_int4_array_ops | |<|(integer[],integer)    |        5 | ordering
+ bark | bark_int4_array_ops | |>>|(integer[],integer)   |       15 | ordering
+(7 rows)
 
 -- A BARK operator class by name, for the checks below.
 CREATE FUNCTION mk_opc(text) RETURNS oid AS

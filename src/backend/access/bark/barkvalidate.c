@@ -11,7 +11,7 @@
  * class lives in an operator family of BARK's own and extracts several keys
  * from one value (see "M1: multikey keys" in BARK-Design.mediawiki); its
  * operators may have any strategy number, and its support functions are
- * btree's over the class's storage type plus procedures 7..14.
+ * btree's over the class's storage type plus procedures 7..15.
  *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
@@ -284,6 +284,28 @@ bark_validate_multikey(Form_pg_opclass classform)
 			procform->amprocrighttype == opckeytype)
 			keytype_order_proc = true;
 
+		/*
+		 * Procedure 15 is looked up by operator family alone, under ("any",
+		 * "any"), as GiST's procedure 12 is (gistvalidate).
+		 */
+		if (procform->amprocnum == BARK_TRANSLATE_CMPTYPE_PROC)
+		{
+			if (!check_amproc_signature(procform->amproc, INT2OID, true,
+										1, 1, INT4OID) ||
+				procform->amproclefttype != ANYOID ||
+				procform->amprocrighttype != ANYOID)
+			{
+				ereport(INFO,
+						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+						 errmsg("operator family \"%s\" of access method %s contains function %s with wrong signature for support number %d",
+								opfamilyname, "bark",
+								format_procedure(procform->amproc),
+								procform->amprocnum)));
+				result = false;
+			}
+			continue;
+		}
+
 		/* Signatures depend on the storage type, known only for this class. */
 		if (procform->amproclefttype != opcintype ||
 			procform->amprocrighttype != opcintype)
@@ -462,9 +484,13 @@ bark_validate_multikey(Form_pg_opclass classform)
 
 /*
  * Check new members of an operator family as CREATE OPERATOR CLASS adds
- * them.  For its own families BARK's amstrategies is 0, its amsupport 14
+ * them.  For its own families BARK's amstrategies is 0, its amsupport 15
  * and its amstorage true, so the core code accepts any strategy number,
- * support functions up to 14 and a STORAGE clause.  A BARK class in a btree
+ * support functions up to 15 and a STORAGE clause.  In such a family,
+ * procedure 15 gets a soft dependency on the family, as GiST's procedure 12
+ * does (gistadjustmembers): it is optional, registered under ("any",
+ * "any") and not tied to one class, so ALTER OPERATOR FAMILY may drop it.
+ * A BARK class in a btree
  * family must not get any of them: such a member would make btvalidate
  * report btree's own classes in that family invalid, and the class stores
  * its input type, as btree does.  So a btree family keeps the limits it had
@@ -484,7 +510,20 @@ barkadjustmembers(Oid opfamilyoid, Oid opclassoid, List *operators,
 	if (OidIsValid(opclassoid))
 		CommandCounterIncrement();
 	if (get_opfamily_method(opfamilyoid) != BTREE_AM_OID)
+	{
+		foreach(lc, functions)
+		{
+			OpFamilyMember *proc = (OpFamilyMember *) lfirst(lc);
+
+			if (proc->number == BARK_TRANSLATE_CMPTYPE_PROC)
+			{
+				proc->ref_is_hard = false;
+				proc->ref_is_family = true;
+				proc->refobjid = opfamilyoid;
+			}
+		}
 		return;
+	}
 
 	foreach(lc, operators)
 	{

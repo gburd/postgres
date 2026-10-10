@@ -538,8 +538,19 @@ none.  CREATE INDEX puts the keys of a row that is not alive in the second
 sort, which bark_load does not check, and passes the oversized pass the
 row's check; bark_load's detail is "Duplicate keys exist." for such an
 index.  get_relation_info sets info->unique false for it, since a row may
-hold many keys.  INSERT ... ON CONFLICT is not supported yet: the executor
-looks for each column's equality operator and fails in core.
+hold many keys.  Such an index needs the class's procedure 15
+(translate-cmptype, registered under ("any", "any") as GiST's 12 is),
+which bark_translate_cmptype asks for COMPARE_OVERLAP only: two rows
+conflict when their values share a key, which is overlap, not equality.
+bark_check_multikey_index refuses a unique index whose class names no
+overlap operator under its input type.  INSERT ... ON CONFLICT's
+pre-check (BuildSpeculativeIndexInfo, which falls back to COMPARE_OVERLAP
+when a column has no equality) scans with that operator, and the seen set
+returns each row once, so check_exclusion_or_unique_constraint never sees
+its own row twice.  A foreign key (transformFkeyCheckAttrs), REFRESH
+MATERIALIZED VIEW CONCURRENTLY (is_usable_unique_index) and REPLICA
+IDENTITY (ATExecReplicaIdentity) need equality on every column, so the
+first two pass such an index by and the third refuses it.
 
 The meta page's BARK_META_MULTIKEY bit says the index has held a row with
 two or more entries.  An insert sets it before the first entry of such a
@@ -695,14 +706,14 @@ The distance functions are bark_int2/4/8_distance in barkutils.c.
 A multikey class lives in an operator family whose opfmethod is bark
 ("Multikey keys"; "M1: multikey keys" in the design document).  For BARK's
 own families the handler declares amstrategies 0 (any strategy number),
-amsupport 14 (BARK_MULTIKEY_NPROCS) and amstorage true, so the core code
-accepts any strategy, support functions up to 14 and a STORAGE clause.
+amsupport 15 (BARK_MULTIKEY_NPROCS) and amstorage true, so the core code
+accepts any strategy, support functions up to 15 and a STORAGE clause.
 barkadjustmembers keeps btree families as strict as before: in a btree
 family it refuses strategies past 5, support functions past 6 and a
 storage type, any of which would make btvalidate report btree's own
 classes in the family invalid.  bark_translate_strategy and
 bark_translate_cmptype return COMPARE_INVALID and InvalidStrategy for a
-BARK family, so the planner never reads = or < semantics into a multikey
+BARK family (except COMPARE_OVERLAP through procedure 15, above), so the planner never reads = or < semantics into a multikey
 class's operators, and plancat gives such a column InvalidOid as its sort
 family, where build_index_pathkeys stops.
 

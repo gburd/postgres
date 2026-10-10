@@ -410,14 +410,34 @@ int2 indexRecheck(<replaceable>key</replaceable>, int2 strategy, internal extra)
      </para>
     </listitem>
    </varlistentry>
+   <varlistentry>
+    <term><function>translate_cmptype</function> (15)</term>
+    <listitem>
+     <para>
+      Optional, and required for a unique index on the column:
+<programlisting>
+int2 translate_cmptype(int4 cmptype)
+</programlisting>
+      Registered under <literal>("any", "any")</literal>, as GiST's support
+      function 12 is.  BARK passes it only
+      <literal>COMPARE_OVERLAP</literal>, and it returns the strategy
+      number of the class's overlap operator: true when two values share a
+      key that is not NULL.  The operator must be registered under the
+      class's input type, and support function 8 must accept its strategy.
+      <literal>INSERT ... ON CONFLICT</literal> finds a conflicting row by
+      scanning with it.
+     </para>
+    </listitem>
+   </varlistentry>
   </variablelist>
 
   <para>
    Support functions 7 through 9 follow the interface of DocumentDB's
    <literal>pg_extended_btree</literal> access method (its support
    functions 101 through 103), so an operator class written for it can be
-   ported by renumbering them.  Scans use support functions 8, 9 and 14;
-   support functions 10 through 13 are validated by
+   ported by renumbering them.  Scans use support functions 8 and 9,
+   unique indexes and <literal>INSERT ... ON CONFLICT</literal> use 15, and
+   support functions 10 through 13 and 14 are validated by
    <function>amvalidate</function> but not yet used.
   </para>
 
@@ -444,10 +464,16 @@ int2 indexRecheck(<replaceable>key</replaceable>, int2 strategy, internal extra)
    shared key, and the keys inserted before it are left to
    <command>VACUUM</command> as entries of the failed row.  An
    <command>UPDATE</command> that keeps some of a row's keys does not
-   conflict with itself.  <literal>INSERT ... ON CONFLICT</literal> into a
-   table with such an index is not yet supported and fails with an error
-   saying the index's equality cannot be found.  The planner does not treat
-   such an index as proof that at most one row matches.
+   conflict with itself.  Such an index needs support function 15 to name
+   the class's overlap operator.  <literal>INSERT ... ON CONFLICT</literal>
+   uses it to find a conflicting row: when a new row shares keys with
+   several, <literal>DO UPDATE</literal> updates the one holding the
+   smallest shared key.  The planner does not treat such an index as proof
+   that at most one row matches, a foreign key cannot reference its
+   multikey column (a B-tree unique index on the same columns is used
+   instead, if there is one), <command>REFRESH MATERIALIZED VIEW
+   CONCURRENTLY</command> does not use it, and it cannot be a replica
+   identity, since each of those needs equality on every column.
   </para>
 
   <para>
@@ -1024,7 +1050,8 @@ SELECT single_entries, list_entries, posting_entries, oversized_entries
     index.  A unique BARK index made with <command>CREATE UNIQUE
     INDEX</command> enforces uniqueness, and it can be the target of a
     foreign key, an <literal>INSERT ... ON CONFLICT</literal> arbiter and a
-    replica identity.
+    replica identity (not when it has a multikey column, except as an
+    arbiter).
    </para>
   </listitem>
   <listitem>

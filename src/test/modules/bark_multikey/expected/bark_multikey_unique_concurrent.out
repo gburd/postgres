@@ -117,3 +117,31 @@ bark_index_check
                 
 (1 row)
 
+
+starting permutation: s1_begin s1_oc s2_oc s1_commit s1_check
+step s1_begin: BEGIN;
+step s1_oc: INSERT INTO mku VALUES (11, ARRAY[11,12]) ON CONFLICT DO NOTHING;
+step s2_oc: INSERT INTO mku VALUES (12, ARRAY[12,13]) ON CONFLICT DO NOTHING; <waiting ...>
+step s1_commit: COMMIT;
+step s2_oc: <... completed>
+step s1_check: 
+	SELECT id, a FROM mku ORDER BY id;
+	SELECT count(*) AS entries FROM bark_multikey_entries('mku_a') WHERE NOT marker;
+	SELECT bark_index_check('mku_a');
+
+id|a      
+--+-------
+ 0|{7}    
+11|{11,12}
+(2 rows)
+
+entries
+-------
+      3
+(1 row)
+
+bark_index_check
+----------------
+                
+(1 row)
+
