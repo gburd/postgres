@@ -437,8 +437,15 @@ int2 translate_cmptype(int4 cmptype)
    functions 101 through 103), so an operator class written for it can be
    ported by renumbering them.  Scans use support functions 8 and 9,
    unique indexes and <literal>INSERT ... ON CONFLICT</literal> use 15, and
-   support functions 10 through 13 and 14 are validated by
-   <function>amvalidate</function> but not yet used.
+   support function 14 is validated by <function>amvalidate</function> but
+   not used.  A class with support functions 10 and 11 or 13 (GIN's
+   <function>extractQuery</function>, <function>consistent</function> and
+   <function>triConsistent</function>, with GIN's signatures, and 12,
+   <function>comparePartial</function>, for partial match) and without 8
+   uses GIN's query interface: such a column can be read by bitmap scans
+   only, so an operator class written for GIN ports to BARK by adding
+   support function 1 (the key comparison) and a storage type; core's
+   GIN array support functions work unchanged.
   </para>
 
   <para>
