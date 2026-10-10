@@ -37,15 +37,16 @@ WHERE c.opcname = 'bark_int4_array_ops';
 (7 rows)
 
 \dAo bark bark_int4_array_ops
-                  List of operators of operator families
-  AM  |   Operator family   |        Operator        | Strategy | Purpose  
-------+---------------------+------------------------+----------+----------
- bark | bark_int4_array_ops | &&(anyarray,anyarray)  |        1 | search
- bark | bark_int4_array_ops | @>(anyarray,anyarray)  |        2 | search
- bark | bark_int4_array_ops | <@(anyarray,anyarray)  |        3 | search
- bark | bark_int4_array_ops | =(anyarray,anyarray)   |        4 | search
- bark | bark_int4_array_ops | |<|(integer[],integer) |        5 | ordering
-(5 rows)
+                   List of operators of operator families
+  AM  |   Operator family   |        Operator         | Strategy | Purpose  
+------+---------------------+-------------------------+----------+----------
+ bark | bark_int4_array_ops | &&(anyarray,anyarray)   |        1 | search
+ bark | bark_int4_array_ops | @>(anyarray,anyarray)   |        2 | search
+ bark | bark_int4_array_ops | <@(anyarray,anyarray)   |        3 | search
+ bark | bark_int4_array_ops | =(anyarray,anyarray)    |        4 | search
+ bark | bark_int4_array_ops | |<|(integer[],integer)  |        5 | ordering
+ bark | bark_int4_array_ops | |>>|(integer[],integer) |       15 | ordering
+(6 rows)
 
 -- A BARK operator class by name, for the checks below.
 CREATE FUNCTION mk_opc(text) RETURNS oid AS
@@ -89,21 +90,28 @@ ORDER BY s, q;
  4 | {NULL}   | recheck=t searchnulls=t backward=f
 (16 rows)
 
--- |<| reads every row: the whole key range and the NULL entries.
+-- |<| reads every row: the whole key range and the NULL entries; |>>|
+-- the same, backward.
 SELECT bark_multikey_boundaries(mk_opc('bark_int4_array_ops'), 0, 5::int2);
             bark_multikey_boundaries            
 ------------------------------------------------
  [-inf,+inf] recheck=f searchnulls=t backward=f
 (1 row)
 
-SELECT a, a |<| 0 AS least
+SELECT bark_multikey_boundaries(mk_opc('bark_int4_array_ops'), 0, 15::int2);
+            bark_multikey_boundaries            
+------------------------------------------------
+ [-inf,+inf] recheck=f searchnulls=t backward=t
+(1 row)
+
+SELECT a, a |<| 0 AS least, a |>>| 0 AS greatest
 FROM (VALUES ('{4,2,9}'::int4[]), ('{}'), ('{NULL,8}'), (NULL)) AS t(a);
-    a     | least 
-----------+-------
- {4,2,9}  |     2
- {}       |      
- {NULL,8} |     8
-          |      
+    a     | least | greatest 
+----------+-------+----------
+ {4,2,9}  |     2 |        9
+ {}       |       |         
+ {NULL,8} |     8 |        8
+          |       |         
 (4 rows)
 
 -- What M1 never allows on an extracted column.
