@@ -305,8 +305,8 @@ SELECT i::regclass, pg_index_has_property(i, 'backward_scan') AS backward,
 -- properties false, as for a GIN column; an INCLUDE column and the columns
 -- before the extracted one get the generic answers.  The extracted column
 -- is not returnable (its entries hold keys).  distance_orderable needs an
--- ordering operator (int4's <~>) on the leading column, which an extracted
--- column never is.
+-- ordering operator on the leading column: int4's <~>, or the class's |<|
+-- and |>>| on an extracted column.
 CREATE FUNCTION mk_props(i regclass) RETURNS TABLE (c int, props text)
 LANGUAGE sql AS $$
   SELECT c, string_agg(p || '=' ||
@@ -713,13 +713,102 @@ RESET enable_sort;
 SELECT mk_run('mk_seq', 'a |%| ''{2,3,4,5,6,7,8}''', 'seq');
 SELECT mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq');
 
--- What M1 does not serve: an ordering operator on the extracted column.
--- It is refused rather than answered wrong.
+-- An ordering operator on the extracted column, MongoDB's sort rule for
+-- arrays: |<| orders rows by their smallest element, and |>>| (sorted by
+-- >>>) by their largest, descending.  A row with no element (a NULL or
+-- empty array, or NULL elements only) has a NULL result and comes last.
+-- The index serves both without a Sort, returning each row once, at its
+-- first key, whatever the column's order and NULLS option, and a filter on
+-- the column does not change the order (the executor rechecks it).
+-- Compared with a Sort over unnest from a sequential scan: the sequence of
+-- ORDER BY values, and the (id, value) pairs.  (enable_sort is off because
+-- a selective filter would otherwise be planned as an Index Cond under a
+-- Sort, which is a different plan, not the one under test.)
+CREATE TABLE mk_onf AS SELECT * FROM mk_rows();
+CREATE INDEX mk_onf_a ON mk_onf USING bark (a bark_int4_array_ops NULLS FIRST);
+CREATE TABLE mk_od AS SELECT * FROM mk_rows();
+CREATE INDEX mk_od_a ON mk_od USING bark (a bark_int4_array_ops DESC);
+CREATE FUNCTION mk_order(tbl text, op text, filter text) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+  q text := format('SELECT id, a %s 0 AS k FROM %I WHERE %s ORDER BY a %s 0 %s',
+                   op, tbl, filter, op,
+                   CASE op WHEN '|>>|' THEN 'USING >>>' ELSE '' END);
+  ref text := format('SELECT id, (SELECT %s(e) FROM unnest(a) e) AS k
+                        FROM mk_seq WHERE %s',
+                     CASE op WHEN '|<|' THEN 'min' ELSE 'max' END, filter);
+  plan text;
+  sorted bool := false;
+  indexed bool := false;
+  r record;
+  ids int[] := '{}';
+  ks int[] := '{}';
+  refseq text;
+  refpairs text;
+BEGIN
+  PERFORM set_config('enable_seqscan', 'off', true);
+  PERFORM set_config('enable_bitmapscan', 'off', true);
+  PERFORM set_config('enable_sort', 'off', true);
+  FOR plan IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
+    sorted := sorted OR plan LIKE '%Sort%';
+    indexed := indexed OR plan LIKE '%Index Scan using%';
+  END LOOP;
+  IF sorted OR NOT indexed THEN
+    RETURN 'wrong plan';
+  END IF;
+  FOR r IN EXECUTE q LOOP
+    ids := array_append(ids, r.id);
+    ks := array_append(ks, r.k);
+  END LOOP;
+  PERFORM set_config('enable_seqscan', 'on', true);
+  EXECUTE format('SELECT md5(string_agg(coalesce(k::text, ''N''), '',''
+                                        ORDER BY k %s NULLS LAST)),
+                         md5(string_agg(id || '':'' || coalesce(k::text, ''N''),
+                                        '','' ORDER BY id))
+                    FROM (%s) s',
+                 CASE op WHEN '|<|' THEN 'ASC' ELSE 'DESC' END, ref)
+    INTO refseq, refpairs;
+  RETURN cardinality(ids) || ' rows, order ' ||
+    (md5(array_to_string(ks, ',', 'N')) IS NOT DISTINCT FROM refseq) ||
+    ', pairs ' ||
+    ((SELECT md5(string_agg(i || ':' || coalesce(k::text, 'N'), ',' ORDER BY i))
+        FROM unnest(ids, ks) u(i, k)) IS NOT DISTINCT FROM refpairs);
+END $$;
+SELECT t, op, f, mk_order(t, op, f)
+  FROM unnest('{mk_b1,mk_onf,mk_od}'::text[]) t,
+       unnest('{|<|,|>>|}'::text[]) op,
+       unnest(ARRAY['true', 'a && ''{1,5,77}''',
+                    'a <@ ''{1,2,3,4,5,6,7,8,9,10}''', 'a IS NOT NULL']) f
+  ORDER BY 1, 2, 3;
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF)
+SELECT a |<| 0 FROM mk_b1 WHERE a && '{1,5,77}' ORDER BY a |<| 0 LIMIT 3;
+SELECT a |<| 0 FROM mk_b1 WHERE a && '{1,5,77}' ORDER BY a |<| 0 LIMIT 3;
+EXPLAIN (COSTS OFF)
+SELECT a |>>| 0 FROM mk_od ORDER BY a |>>| 0 USING >>> LIMIT 3;
+SELECT a |>>| 0 FROM mk_od ORDER BY a |>>| 0 USING >>> LIMIT 3;
+-- A NULL argument makes every result NULL: any order, but every row once.
+SET plan_cache_mode = force_generic_plan;
+PREPARE mk_onull(int) AS
+  SELECT count(*), count(DISTINCT id)
+    FROM (SELECT id FROM mk_onf ORDER BY a |<| $1) s;
+EXPLAIN (COSTS OFF) EXECUTE mk_onull(NULL);
+EXECUTE mk_onull(NULL);
+DEALLOCATE mk_onull;
+RESET plan_cache_mode;
+-- The scan reports a row's key as its ORDER BY value, so an ordering
+-- operator must return the key type: |<<| returns int8, and is refused,
+-- and distance_orderable says so.
+CREATE TABLE mk_o8 AS SELECT * FROM mk_rows() WHERE id <= 200;
+CREATE INDEX mk_o8_a ON mk_o8 USING bark (a bark_int4_array_range_ops);
 SET enable_sort = off;
-SELECT id FROM mk_b1 ORDER BY a |<| 0 LIMIT 3;
+SELECT id FROM mk_o8 ORDER BY a |<<| 0 LIMIT 1;
 RESET enable_sort;
+SELECT i, pg_index_column_has_property(i, 1, 'distance_orderable')
+  FROM unnest('{mk_b1_a,mk_onf_a,mk_od_a,mk_o8_a}'::regclass[]) i;
+DROP TABLE mk_onf, mk_od, mk_o8;
+DROP FUNCTION mk_order;
 
 -- No parallel index scan of an index with an extracted column: the workers
 -- would read a row's entries on different leaves, and could not share the

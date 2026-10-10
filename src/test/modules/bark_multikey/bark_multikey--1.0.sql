@@ -31,6 +31,38 @@ CREATE OPERATOR |<| (
     FUNCTION = bark_multikey_least
 );
 
+-- The greatest element, for a descending order.  An ordering operator is
+-- read ascending in its sort family, so |>>| sorts in a btree family whose
+-- less-than is int4's > (>>>): ORDER BY a |>>| 0 USING >>> asks for the
+-- largest element first.
+CREATE FUNCTION bark_multikey_greatest(int4[], int4)
+RETURNS int4
+AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
+CREATE OPERATOR |>>| (
+    LEFTARG = int4[],
+    RIGHTARG = int4,
+    FUNCTION = bark_multikey_greatest
+);
+
+CREATE FUNCTION bark_multikey_desc_cmp(int4, int4) RETURNS int4
+  AS 'SELECT btint4cmp($2, $1)' LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE;
+CREATE OPERATOR >>> (LEFTARG = int4, RIGHTARG = int4, FUNCTION = int4gt);
+CREATE OPERATOR === (LEFTARG = int4, RIGHTARG = int4, FUNCTION = int4eq);
+CREATE OPERATOR FAMILY bark_int4_desc_ops USING btree;
+CREATE OPERATOR CLASS bark_int4_desc_ops
+FOR TYPE int4 USING btree FAMILY bark_int4_desc_ops AS
+    OPERATOR 1 >>>,
+    OPERATOR 3 ===,
+    FUNCTION 1 bark_multikey_desc_cmp(int4, int4);
+
+-- |<| as an int8, which a BARK scan cannot report: the keys are int4.
+-- (PL/pgSQL, so that the planner does not inline it into a cast of |<|.)
+CREATE FUNCTION bark_multikey_least8(int4[], int4) RETURNS int8
+  AS 'BEGIN RETURN $1 |<| $2; END' LANGUAGE plpgsql IMMUTABLE STRICT;
+CREATE OPERATOR |<<| (LEFTARG = int4[], RIGHTARG = int4,
+                      FUNCTION = bark_multikey_least8);
+
 -- The class.  Its operators are core's array operators, numbered as GIN's
 -- array_ops numbers them, and the element-order operator.  Procedures 1, 2,
 -- 4 and 6 are core's int4 ones, over the storage type.  BARK looks every
@@ -46,6 +78,7 @@ FOR TYPE int4[] USING bark FAMILY bark_int4_array_ops AS
     OPERATOR 3 <@ (anyarray, anyarray),
     OPERATOR 4 = (anyarray, anyarray),
     OPERATOR 5 |<| (int4[], int4) FOR ORDER BY integer_ops,
+    OPERATOR 15 |>>| (int4[], int4) FOR ORDER BY bark_int4_desc_ops,
     FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
     FUNCTION 2 btint4sortsupport(internal),
     FUNCTION 4 btequalimage(oid),
@@ -128,6 +161,7 @@ FOR TYPE int4[] USING bark FAMILY bark_int4_array_range_ops AS
     OPERATOR 12 |?| (int4[], int4),
     OPERATOR 13 |<>| (int4[], int4),
     OPERATOR 14 |~| (int4[], int4),
+    OPERATOR 16 |<<| (int4[], int4) FOR ORDER BY integer_ops,
     FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
     FUNCTION 2 btint4sortsupport(internal),
     FUNCTION 4 btequalimage(oid),
