@@ -469,9 +469,13 @@ typedef struct BarkOptions
  * Procedures 1, 2, 4, 5 and 6 keep btree's meanings over the key type.
  * Procedures 7-9 are DocumentDB's pg_extended_btree interface (its 101-103),
  * 10-13 GIN's extractQuery, consistent, comparePartial and triConsistent
- * (its 3-6), and 14 GiST's fetch.  amsupport covers all fourteen, and
- * amstrategies is 0, so a BARK family's operators may carry any strategy
- * number; the number only reaches procedures 8 and 9.
+ * (its 3-6), 14 GiST's fetch, and 15 GiST's translate-cmptype (its 12),
+ * which names the class's overlap operator, the conflict operator of a
+ * unique index ("M4" in BARK-Design.mediawiki).  Procedure 15 is registered
+ * under ("any", "any"), as GiST's is, since it is looked up by operator
+ * family alone.  amsupport covers all fifteen, and amstrategies is 0, so a
+ * BARK family's operators may carry any strategy number; the number only
+ * reaches procedures 8 and 9, and through procedure 15 the executor.
  */
 #define BARK_EXTRACTVALUE_PROC			7
 #define BARK_EXTRACTQUERY_PROC			8
@@ -481,7 +485,8 @@ typedef struct BarkOptions
 #define BARK_GIN_COMPAREPARTIAL_PROC	12
 #define BARK_GIN_TRICONSISTENT_PROC		13
 #define BARK_FETCH_PROC					14
-#define BARK_MULTIKEY_NPROCS			14
+#define BARK_TRANSLATE_CMPTYPE_PROC		15
+#define BARK_MULTIKEY_NPROCS			15
 
 /*
  * The types procedures 8 and 9 exchange with BARK.  They are laid out as
