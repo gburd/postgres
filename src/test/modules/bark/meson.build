@@ -28,6 +28,7 @@ tests += {
       'bark_broken_hot_chain',
       'bark_lock_right',
       'bark_root_split_race',
+      'bark_walk_left',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # Injection points are cluster-wide.
