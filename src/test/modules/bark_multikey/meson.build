@@ -29,12 +29,14 @@ tests += {
     'sql': [
       'bark_multikey',
       'bark_multikey_scan',
+      'bark_multikey_unique',
     ],
     'regress_args': ['--load-extension=amcheck'],
   },
   'isolation': {
     'specs': [
       'bark_multikey_concurrent',
+      'bark_multikey_unique_concurrent',
     ],
   },
   'tap': {
