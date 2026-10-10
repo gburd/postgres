@@ -26,14 +26,17 @@
 
 #include <math.h>
 
+#include "access/amvalidate.h"
 #include "access/bark.h"
 #include "access/barkxlog.h"
 #include "access/detoast.h"
+#include "access/genam.h"
 #include "access/heaptoast.h"
 #include "access/htup_details.h"
 #include "access/itup.h"
 #include "access/toast_internals.h"
 #include "access/xloginsert.h"
+#include "catalog/pg_amop.h"
 #include "catalog/pg_type.h"
 #include "lib/qunique.h"
 #include "lib/sbm.h"
@@ -47,6 +50,7 @@
 #include "utils/lsyscache.h"
 #include "utils/pg_locale.h"
 #include "utils/rel.h"
+#include "utils/syscache.h"
 
 static Sbm *bark_posting_open(IndexTuple itup);
 static bool bark_first_column_bytewise(Relation index);
@@ -585,6 +589,93 @@ bark_opfamily_extracts(Oid opfamily, Oid opcintype)
 	return get_opfamily_method(opfamily) == BARK_AM_OID &&
 		OidIsValid(get_opfamily_proc(opfamily, opcintype, opcintype,
 									 BARK_EXTRACTVALUE_PROC));
+}
+
+/*
+ * bark_property() -- the properties in which a BARK index differs from what
+ * the AM-wide flags say; the generic code (amutils.c) answers the rest, as it
+ * does for nbtree.  The answers follow the index's operator classes, never
+ * the meta page's multikey flag, so a plan that relied on one stays valid
+ * while the index fills.
+ *
+ * backward_scan is false for an index with an extracted column: a scan
+ * there drops a row's later entries with its seen set, so one that changed
+ * direction would drop the rows it walked back over.  The executor asks
+ * (IndexSupportsBackwardScan), and a scroll cursor gets a Material node.
+ *
+ * orderable, asc, desc, nulls_first and nulls_last are false for the
+ * extracted column and every key column after it, as the generic code
+ * answers for a column of an AM that does not order: the index orders a
+ * row's entries by the extracted column's keys, not its values, so the
+ * planner reads no order from that column on (build_index_pathkeys stops at
+ * its InvalidOid sortopfamily).  The columns before it, and INCLUDE
+ * columns, get the generic answers.
+ *
+ * distance_orderable, which the generic code cannot answer: the column has
+ * an ordering operator (amoppurpose 'o') whose result its sort family can
+ * sort, as SP-GiST decides it.  BARK walks outward from a point in its key
+ * order, so only the leading column can be ordered so
+ * (match_pathkeys_to_index), and not an extracted one, whose ordering
+ * operators the scan does not serve.
+ */
+bool
+bark_property(Oid index_oid, int attno, IndexAMProperty prop,
+			  const char *propname, bool *res, bool *isnull)
+{
+	Relation	index;
+	int			extracted;
+	bool		answered = true;
+
+	if (!OidIsValid(index_oid))
+		return false;
+	switch (prop)
+	{
+		case AMPROP_BACKWARD_SCAN:
+			if (attno != 0)
+				return false;
+			break;
+		case AMPROP_ASC:
+		case AMPROP_DESC:
+		case AMPROP_NULLS_FIRST:
+		case AMPROP_NULLS_LAST:
+		case AMPROP_ORDERABLE:
+		case AMPROP_DISTANCE_ORDERABLE:
+			if (attno == 0)
+				return false;
+			break;
+		default:
+			return false;
+	}
+
+	index = index_open(index_oid, AccessShareLock);
+	extracted = bark_index_extracted_column(index);
+	*res = false;
+	if (attno == 0)
+		*res = extracted == 0;
+	else if (attno > IndexRelationGetNumberOfKeyAttributes(index))
+		answered = false;
+	else if (prop != AMPROP_DISTANCE_ORDERABLE)
+		answered = extracted > 0 && attno >= extracted;
+	else if (attno == 1 && extracted != 1)
+	{
+		Oid			opcintype = index->rd_opcintype[0];
+		CatCList   *catlist = SearchSysCacheList1(AMOPSTRATEGY,
+												  ObjectIdGetDatum(index->rd_opfamily[0]));
+
+		for (int i = 0; i < catlist->n_members && !*res; i++)
+		{
+			Form_pg_amop amop = (Form_pg_amop) GETSTRUCT(&catlist->members[i]->tuple);
+
+			*res = amop->amoppurpose == AMOP_ORDER &&
+				(amop->amoplefttype == opcintype ||
+				 amop->amoprighttype == opcintype) &&
+				opfamily_can_sort_type(amop->amopsortfamily,
+									   get_op_rettype(amop->amopopr));
+		}
+		ReleaseSysCacheList(catlist);
+	}
+	index_close(index, AccessShareLock);
+	return answered;
 }
 
 /*

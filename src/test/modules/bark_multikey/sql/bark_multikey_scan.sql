@@ -280,12 +280,137 @@ SELECT mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq'),
        mk_run('mk_seq', 'tenant IN (1, 3, 5) AND a && ''{1,5,77}''', 'seq');
 SET enable_seqscan = off;
 -- The rows a scan with a seen set returned would be dropped if it walked
--- back over them, so a scan does not change direction.
-BEGIN;
+-- back over them, so an index with an extracted column has no backward
+-- scans (backward_scan is false, from its operator classes, whatever the
+-- meta page says), and a scroll cursor over it reads through a Material
+-- node, as over a KNN scan.  A scalar BARK index scans backward itself.
+CREATE TABLE mk_prop (id int, tenant int, a int4[], t text);
+CREATE INDEX mk_prop_it ON mk_prop USING bark (id DESC, t NULLS FIRST)
+  INCLUDE (tenant);
+CREATE INDEX mk_prop_bt ON mk_prop USING btree (id DESC, t NULLS FIRST)
+  INCLUDE (tenant);
+CREATE INDEX mk_prop_ta ON mk_prop USING bark
+  (tenant DESC NULLS LAST, a bark_int4_array_ops) INCLUDE (t);
+CREATE INDEX mk_prop_a ON mk_prop USING bark (a bark_int4_array_ops DESC, id);
+CREATE INDEX mk_prop_tai ON mk_prop USING bark
+  (tenant, a bark_int4_array_ops NULLS FIRST, id DESC);
+CREATE INDEX mk_prop_t ON mk_prop USING bark (t);
+SELECT i::regclass, pg_index_has_property(i, 'backward_scan') AS backward,
+       pg_index_has_property(i, 'index_scan') AS index_scan,
+       pg_index_has_property(i, 'bitmap_scan') AS bitmap_scan
+  FROM unnest('{mk_prop_it,mk_prop_ta,mk_prop_a,mk_prop_tai,mk_b1_a}'::regclass[]) i;
+-- Column properties.  The extracted column and every key column after it
+-- have no order the planner can use (the index orders the column's keys,
+-- not its values), so they report orderable, asc, desc and the nulls
+-- properties false, as for a GIN column; an INCLUDE column and the columns
+-- before the extracted one get the generic answers.  The extracted column
+-- is not returnable (its entries hold keys).  distance_orderable needs an
+-- ordering operator (int4's <~>) on the leading column, which an extracted
+-- column never is.
+CREATE FUNCTION mk_props(i regclass) RETURNS TABLE (c int, props text)
+LANGUAGE sql AS $$
+  SELECT c, string_agg(p || '=' ||
+           coalesce(pg_index_column_has_property(i, c, p)::text, 'null'),
+           ' ' ORDER BY o)
+    FROM generate_series(1, (SELECT indnatts FROM pg_index
+                              WHERE indexrelid = i)) c,
+         unnest('{orderable,asc,desc,nulls_first,nulls_last,distance_orderable,returnable,search_array,search_nulls}'::text[])
+           WITH ORDINALITY u(p, o)
+   GROUP BY c
+$$;
+SELECT i::regclass, c, props
+  FROM unnest('{mk_prop_it,mk_prop_ta,mk_prop_a,mk_prop_tai,mk_prop_t}'::regclass[]) i,
+       LATERAL mk_props(i)
+  ORDER BY 1, 2;
+-- A scalar BARK index answers as btree does, but for distance_orderable
+-- (btree has no ordering operators).
+SELECT b.c, b.props AS bark, t.props AS btree
+  FROM mk_props('mk_prop_it') b JOIN mk_props('mk_prop_bt') t USING (c)
+  WHERE b.props IS DISTINCT FROM t.props;
+DROP TABLE mk_prop;
+DROP FUNCTION mk_props(regclass);
+-- The order the planner reads from an index stops before the extracted
+-- column: ORDER BY tenant, a sorts within each tenant on top of the index.
+EXPLAIN (COSTS OFF)
+SELECT id FROM mk_b2 WHERE tenant IN (1, 2) AND a && '{5,77}' ORDER BY tenant, a;
+EXPLAIN (COSTS OFF)
 DECLARE c SCROLL CURSOR FOR SELECT id FROM mk_b1 WHERE a && '{1,5,77}';
+EXPLAIN (COSTS OFF)
+DECLARE c SCROLL CURSOR FOR SELECT tenant FROM mk_b2 WHERE tenant = 3;
+-- mk_scroll(qual): read a scroll cursor over mk_b1 forward 3 rows, back 1
+-- (the second row again), then to the end, then back to the start; the
+-- step back must repeat the second row, and both passes must return the
+-- sequential scan's rows.
+CREATE FUNCTION mk_scroll(qual text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE
+  c refcursor;
+  r record;
+  first int[] := '{}';
+  fwd int[] := '{}';
+  bwd int[] := '{}';
+  again int;
+BEGIN
+  OPEN c SCROLL FOR EXECUTE 'SELECT id FROM mk_b1 WHERE ' || qual;
+  FOR i IN 1 .. 3 LOOP
+    FETCH c INTO r;
+    first := first || r.id;
+  END LOOP;
+  FETCH PRIOR FROM c INTO r;
+  again := r.id;
+  MOVE ABSOLUTE 0 IN c;
+  LOOP
+    FETCH c INTO r;
+    EXIT WHEN NOT FOUND;
+    fwd := fwd || r.id;
+  END LOOP;
+  LOOP
+    FETCH PRIOR FROM c INTO r;
+    EXIT WHEN NOT FOUND;
+    bwd := bwd || r.id;
+  END LOOP;
+  CLOSE c;
+  RETURN (again = first[2]) || ':' ||
+    (SELECT count(*) || ':' || count(DISTINCT x) || ':' ||
+            md5(string_agg(x::text, ',' ORDER BY x)) FROM unnest(fwd) x) ||
+    ':' || (fwd = (SELECT array_agg(x ORDER BY o DESC)
+                     FROM unnest(bwd) WITH ORDINALITY u(x, o)));
+END $$;
+SELECT mk_scroll('a && ''{1,5,77}''');
+SELECT mk_scroll('a <@ ''{1,2,3,4,5,6,7,8,9,10,11}''');
+RESET enable_seqscan;
+SELECT 'true:' || mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq') || ':true',
+       'true:' || mk_run('mk_seq', 'a <@ ''{1,2,3,4,5,6,7,8,9,10,11}''', 'seq') ||
+       ':true';
+SET enable_seqscan = off;
+-- A cursor not declared SCROLL is not made scrollable over such an index
+-- (PostgreSQL makes it so only when the plan can run backward without a
+-- Material node), so it fetches forward only, as over a GIN or KNN scan;
+-- declare it SCROLL to fetch backward.  An explicit NO SCROLL cursor too.
+EXPLAIN (COSTS OFF)
+DECLARE c CURSOR FOR SELECT id FROM mk_b1 WHERE a && '{1,5,77}';
+BEGIN;
+DECLARE c NO SCROLL CURSOR FOR SELECT id FROM mk_b1 WHERE a && '{1,5,77}';
+FETCH 2 FROM c;
+FETCH BACKWARD 1 FROM c;
+ROLLBACK;
+BEGIN;
+DECLARE c CURSOR FOR SELECT id FROM mk_b1 WHERE a && '{1,5,77}';
 FETCH 3 FROM c;
 FETCH BACKWARD 1 FROM c;
 ROLLBACK;
+-- A caller of the index AM that does not ask, and changes direction, gets
+-- an error from a scan that keeps a seen set, never wrong rows; a scan for
+-- one point keeps none and steps back.
+SELECT bark_multikey_reverse('mk_b1_a', '&&(anyarray,anyarray)',
+                             '{1,5,77}'::int4[], 3);
+SELECT bark_multikey_reverse('mk_b1_a', '&&(anyarray,anyarray)',
+                             '{5}'::int4[], 3);
+-- Likewise a direct parallel scan: one that needs the set is refused,
+-- never answered with a row twice; a scan for one point needs none.
+SELECT bark_multikey_parallel('mk_b1_a', '&&(anyarray,anyarray)',
+                              '{1,5,77}'::int4[]);
+SELECT bark_multikey_parallel('mk_b1_a', '&&(anyarray,anyarray)',
+                              '{5}'::int4[]);
 -- A scan that starts backward is fine.
 EXPLAIN (COSTS OFF)
 SELECT id FROM mk_b2 WHERE tenant IN (1, 3) AND a && '{1,5,77}'
@@ -588,14 +713,19 @@ RESET enable_sort;
 SELECT mk_run('mk_seq', 'a |%| ''{2,3,4,5,6,7,8}''', 'seq');
 SELECT mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq');
 
--- What M1 does not serve: an ordering operator on the extracted column,
--- and a parallel scan that needs a seen set.  They are refused rather than
--- answered wrong.
+-- What M1 does not serve: an ordering operator on the extracted column.
+-- It is refused rather than answered wrong.
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
 SET enable_sort = off;
 SELECT id FROM mk_b1 ORDER BY a |<| 0 LIMIT 3;
 RESET enable_sort;
+
+-- No parallel index scan of an index with an extracted column: the workers
+-- would read a row's entries on different leaves, and could not share the
+-- seen set.  The planner never offers one, even for a scan that needs no
+-- set (one point), or for an index-only scan of the fixed column.  A
+-- parallel bitmap heap scan is fine: one process builds the bitmap.
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_index_scan_size = 0;
@@ -603,13 +733,22 @@ SET min_parallel_table_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SET random_page_cost = 1;
 ALTER TABLE mk_b1 SET (parallel_workers = 2);
+ALTER TABLE mk_b2 SET (parallel_workers = 2);
 EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b1 WHERE a @> '{}';
 SELECT count(*) FROM mk_b1 WHERE a @> '{}';
--- A scan for one point needs no set, so it may be parallel.
+SELECT mk_run('mk_seq', 'a @> ''{}''', 'seq');
 EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b1 WHERE a && '{5}';
 SELECT count(*) FROM mk_b1 WHERE a && '{5}';
 SELECT mk_run('mk_seq', 'a && ''{5}''', 'seq');
+EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b2 WHERE tenant > 2;
+SELECT count(*) FROM mk_b2 WHERE tenant > 2;
+SET enable_bitmapscan = on;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b1 WHERE a && '{1,5,77}';
+SELECT count(*) FROM mk_b1 WHERE a && '{1,5,77}';
+SELECT mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq');
+SELECT count(*) FROM mk_seq WHERE tenant > 2;
 ALTER TABLE mk_b1 RESET (parallel_workers);
+ALTER TABLE mk_b2 RESET (parallel_workers);
 RESET random_page_cost;
 RESET max_parallel_workers_per_gather;
 RESET min_parallel_table_scan_size;
@@ -636,5 +775,5 @@ DROP TABLE mk_seq, mk_gin, mk_b1, mk_b2, mk_bd, mk_bn, mk_rn, mk_r1, mk_ins, mk_
   mk_outer, mk_single, mk_quals, mk_rquals, mk_nulls;
 DROP OPERATOR CLASS mk_single_ops USING bark CASCADE;
 DROP FUNCTION mk_rows(), mk_run(text, text, text), mk_compare(text, text[]),
-  mk_fetch(int4), mk_cursor(text), mk_backward(text, text);
+  mk_fetch(int4), mk_cursor(text), mk_backward(text, text), mk_scroll(text);
 DROP EXTENSION bark_multikey;
