@@ -581,10 +581,17 @@ Entries rejected by a filter or procedure 9 never reach the set.  With
 fixed columns before the extracted one, bark_mk_group empties the set when
 the entry's values there differ from those of the rows in it: all of a
 row's entries share them.  bark_mk_rescan decides whether the set is used:
-not for a scan with exactly one range that is a point, nor when the meta
+not for a scan with exactly one range that is a point, nor for one whose
+first key (not a ScalarArrayOp) procedure 8 answered with
+BarkQueryFlags.oneentry, nor when the meta
 page's BARK_META_MULTIKEY is clear (read by bark_index_is_multikey after the
 scan's snapshot was taken; a cached true is never stale), but always under
-a non-MVCC snapshot, whose rows' inserts may still be running.  A bitmap
+a non-MVCC snapshot, whose rows' inserts may still be running.  BARK sets
+BarkQueryFlags.index to the scanned index before calling procedure 8, so a
+class can read its markers there (bark_index_has_marker); procedure 8 runs
+at every rescan, so its answer is the index's after the scan's snapshot,
+whatever the plan was made from.  The markers are read as the multikey flag
+is: a row visible to the snapshot inserted its markers before its entries.  A bitmap
 scan never uses it (TIDBitmap absorbs repeats) and passes the items'
 recheck flags to tbm_add_tuples.  The set grows past get_hash_memory_limit()
 rather than return a row twice; it holds at most one group's rows.
@@ -993,8 +1000,9 @@ extractQuery, and counts one descent per boundary (one for a qual whose
 argument is not a constant); an equality ScalarArrayOp there counts one per
 element.  The entries read are the rows times K, capped at the index's
 entries, each charged cpu_index_tuple_cost, plus cpu_operator_cost per
-entry for the seen set when the scan needs it (the flag is set and the
-boundaries are not a single point) and again when procedure 8 asked for
+entry for the seen set when the scan needs it (the flag is set, the
+boundaries are not a single point and procedure 8 did not set oneentry) and
+again when procedure 8 asked for
 procedure 9.  The rows returned stay the quals' selectivity times the
 heap's rows, since the scan returns each row once, and the correlation is
 0 when the extracted column is first: its statistics are of values, not
