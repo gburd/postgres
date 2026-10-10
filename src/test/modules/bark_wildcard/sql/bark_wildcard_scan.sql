@@ -249,6 +249,139 @@ SELECT q, (SELECT array_agg(id ORDER BY id) FROM wc_empty e
                          WHEN 's?' THEN doc #? 's' END) AS ids
   FROM unnest('{s=5,s?}'::text[]) q;
 DROP TABLE wc_empty, wc_empty_q;
+
+-- A row matches a boundary of one path through at most one entry unless
+-- the path, or a path above it, has held an array: procedure 8 then sets
+-- BarkQueryFlags.oneentry and the scan keeps no seen set.  Every document
+-- here has a scalar at s, x\.y and t.u, an array at arr, and b.c below an
+-- array of objects in a third of them; include = 'b.c,s,arr' keeps the
+-- marker [b] above b.c, and drops t.u and x\.y, whose scans read every key.
+-- One point needs no set anyway; = ANY never takes the flag.  Each answer
+-- is compared with a sequential scan's by count, distinct ids and md5.
+CREATE FUNCTION wc1_doc(g int) RETURNS jsonb LANGUAGE sql IMMUTABLE AS $$
+  SELECT jsonb_build_object('s', g % 23, 't', jsonb_build_object('u', 's' || g % 7),
+                            'x.y', g % 5, 'arr', jsonb_build_array(g % 11, g % 13, g % 3)) ||
+         CASE WHEN g % 3 = 0
+           THEN jsonb_build_object('b', jsonb_build_array(jsonb_build_object('c', g % 4),
+                                                          jsonb_build_object('c', g % 6)))
+           ELSE jsonb_build_object('b', jsonb_build_object('c', g % 5)) END $$;
+CREATE TABLE wc1_seq AS SELECT g AS id, wc1_doc(g) AS doc FROM generate_series(1, 3000) g;
+CREATE TABLE wc1_plain AS SELECT * FROM wc1_seq;
+CREATE INDEX wc1_plain_doc ON wc1_plain USING bark (doc bark_jsonb_wildcard_ops);
+CREATE TABLE wc1_inc AS SELECT * FROM wc1_seq;
+CREATE INDEX wc1_inc_doc ON wc1_inc USING bark (doc bark_jsonb_wildcard_ops (include = 'b.c,s,arr'));
+CREATE TABLE wc1_tid (id int, doc jsonb);
+CREATE INDEX wc1_tid_doc ON wc1_tid USING bark (id, doc bark_jsonb_wildcard_ops);
+INSERT INTO wc1_tid SELECT * FROM wc1_seq;
+ANALYZE wc1_seq, wc1_plain, wc1_inc, wc1_tid;
+CREATE TABLE wc1_quals (n int, q text);
+INSERT INTO wc1_quals VALUES
+  (1, 'doc #>= ''["s", 10]'''), (2, 'doc #? ''t.u'''), (3, 'doc #< ''["x\\.y", 3]'''),
+  (4, 'doc #>= ''["arr", 5]'''), (5, 'doc #>= ''["b.c", 2]'''), (6, 'doc #= ''["s", 1]'''),
+  (7, 'doc #= ANY (ARRAY[''["s", 1]'', ''["s", 2]'']::jsonb[])'),
+  (8, 'id > 100 AND doc #> ''["s", 3]''');
+SELECT n, q, wc_run('wc1_seq', NULL, q, 'seq') AS seq FROM wc1_quals ORDER BY n;
+SET client_min_messages = debug1;
+SELECT n, t, wc_run(t, i, q, 'index') = wc_run('wc1_seq', NULL, q, 'seq') AS same
+  FROM wc1_quals,
+       (VALUES (1, 'wc1_plain', 'wc1_plain_doc'), (2, 'wc1_inc', 'wc1_inc_doc'),
+               (3, 'wc1_tid', 'wc1_tid_doc')) v(o, t, i)
+ WHERE n < 8 OR t = 'wc1_tid'
+ ORDER BY n, o;
+RESET client_min_messages;
+SELECT n, t, wc_run(t, i, q, 'bitmap') = wc_run('wc1_seq', NULL, q, 'seq') AS same
+  FROM wc1_quals,
+       (VALUES (1, 'wc1_plain', 'wc1_plain_doc'), (2, 'wc1_inc', 'wc1_inc_doc'),
+               (3, 'wc1_tid', 'wc1_tid_doc')) v(o, t, i)
+ WHERE n < 8 OR t = 'wc1_tid'
+ ORDER BY n, o;
+-- An ordered scan on the fixed leading column of the compound index.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_sort = off;
+EXPLAIN (COSTS OFF)
+SELECT id FROM wc1_tid WHERE doc #>= '["s", 10]' ORDER BY id <~> 1500;
+SET client_min_messages = debug1;
+SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
+  FROM (SELECT id FROM wc1_tid WHERE doc #>= '["s", 10]' ORDER BY id <~> 1500) s;
+RESET client_min_messages;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET enable_sort;
+SELECT wc_run('wc1_seq', NULL, 'doc #>= ''["s", 10]''', 'seq');
+
+-- The member "" of the document has the document's own path, so its
+-- members repeat the document's paths: {"": {"s": 5}, "s": 6} has two
+-- values at s.  It marks [""], above every path.
+INSERT INTO wc1_plain VALUES (0, '{"": {"s": 5}, "s": 6}');
+INSERT INTO wc1_seq VALUES (0, '{"": {"s": 5}, "s": 6}');
+SELECT k FROM bark_wildcard_keys('{"": {"s": 5}, "s": 6}') k ORDER BY k;
+SET client_min_messages = debug1;
+SELECT wc_run('wc1_plain', 'wc1_plain_doc', 'doc #>= ''["s", 5]''', 'index') =
+       wc_run('wc1_seq', NULL, 'doc #>= ''["s", 5]''', 'seq') AS same;
+RESET client_min_messages;
+
+-- The flag is decided at every rescan, never at plan time: a generic plan
+-- made while q held no array, run again after a document puts one there,
+-- uses the set, and so does each rescan of one scan for a path with one.
+CREATE TABLE wc_gen (id int, doc jsonb);
+CREATE INDEX wc_gen_doc ON wc_gen USING bark (doc bark_jsonb_wildcard_ops);
+INSERT INTO wc_gen SELECT g, jsonb_build_object('q', g % 10, 'r', jsonb_build_array(g % 3, g % 3 + 1))
+  FROM generate_series(1, 2000) g;
+ANALYZE wc_gen;
+SET plan_cache_mode = force_generic_plan;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+PREPARE wc_q(jsonb) AS
+  SELECT count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
+    FROM wc_gen WHERE doc #>= $1;
+EXPLAIN (COSTS OFF) EXECUTE wc_q('["q", 3]');
+SET client_min_messages = debug1;
+EXECUTE wc_q('["q", 3]');
+RESET client_min_messages;
+INSERT INTO wc_gen SELECT g, jsonb_build_object('q', jsonb_build_array(g % 10, g % 10 + 1, g % 10 + 2))
+  FROM generate_series(2001, 2100) g;
+SET client_min_messages = debug1;
+EXECUTE wc_q('["q", 3]');
+RESET client_min_messages;
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+EXECUTE wc_q('["q", 3]');
+RESET enable_indexscan;
+SET enable_seqscan = off;
+SET enable_hashjoin = off;
+SET enable_mergejoin = off;
+SET enable_material = off;
+PREPARE wc_q2 AS
+  SELECT x, count(*), count(DISTINCT id), md5(string_agg(id::text, ',' ORDER BY id))
+    FROM (VALUES ('["r", 1]'::jsonb), ('["q", 7]'), ('["s", 0]')) v(x)
+         JOIN wc_gen ON doc #>= x
+   GROUP BY x ORDER BY x;
+EXPLAIN (COSTS OFF) EXECUTE wc_q2;
+SET client_min_messages = debug1;
+EXECUTE wc_q2;
+RESET client_min_messages;
+INSERT INTO wc_gen VALUES (3000, '{"s": [0, 1]}');
+SET client_min_messages = debug1;
+EXECUTE wc_q2;
+RESET client_min_messages;
+SET enable_seqscan = on;
+SET enable_indexscan = off;
+EXECUTE wc_q2;
+DEALLOCATE wc_q;
+DEALLOCATE wc_q2;
+RESET plan_cache_mode;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET enable_indexscan;
+RESET enable_hashjoin;
+RESET enable_mergejoin;
+RESET enable_material;
+SELECT bark_index_check('wc_gen_doc'), bark_index_check('wc1_plain_doc'),
+       bark_index_check('wc1_inc_doc'), bark_index_check('wc1_tid_doc');
+
+DROP TABLE wc1_seq, wc1_plain, wc1_inc, wc1_tid, wc1_quals, wc_gen;
+DROP FUNCTION wc1_doc;
 DROP TABLE wc_seq, wc_plain, wc_inc, wc_exc, wc_tid, wc_quals;
 DROP FUNCTION wc_run, wc_compare, wc_jpath, wc_doc, wc_val, wc_heap_keys, wc_index_keys;
 DROP EXTENSION bark_wildcard;
