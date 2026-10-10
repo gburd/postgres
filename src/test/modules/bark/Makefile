@@ -1,7 +1,7 @@
 # src/test/modules/bark/Makefile
 
 EXTRA_INSTALL = src/test/modules/injection_points src/test/modules/bark_multikey \
-	contrib/amcheck \
+	contrib/amcheck contrib/pg_buffercache \
 	contrib/pg_freespacemap
 
 REGRESS = bark_incomplete_splits bark_split_moveright
