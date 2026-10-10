@@ -29,6 +29,8 @@ CREATE INDEX split_idx ON split_t USING bark (s)
   WITH (prefix_compression = on);
 CREATE TABLE wide_t (id int, s text COLLATE "C");
 CREATE INDEX wide_idx ON wide_t USING bark (s);
+CREATE TABLE posting_t (k int);
+CREATE INDEX posting_idx ON posting_t USING bark (k);
 CHECKPOINT;
 ]);
 
@@ -61,6 +63,16 @@ INSERT INTO wide_t
   SELECT g, lpad(g::text, 300, '0')
   FROM generate_series(1, 20000) g ORDER BY random();
 ]);
+
+# Reuse 002_standby.pl's single-key POSTING workload: splitting an entry
+# leaves its left part as a replacement on the original page.  Avoid a
+# consistency image for every TID addition; the recovered index is checked
+# below.  This setting affects only this session, not the earlier workloads.
+$node->safe_psql(
+	'postgres', q[
+SET wal_consistency_checking = '';
+INSERT INTO posting_t SELECT 1 FROM generate_series(1, 150000);
+]);
 my $end = $node->safe_psql('postgres',
 	'SELECT pg_current_wal_insert_lsn()');
 
@@ -84,6 +96,8 @@ like($wal, qr/desc: SPLIT level: [1-9]\d*, leaf: F,/,
 	'workload logged an internal-page split');
 like($wal, qr/desc: NEWROOT root: \d+, level: 2,/,
 	'workload logged a new root above the split internal root');
+like($wal, qr/desc: SPLIT level: 0, [^\n]*firstrightoff: \d+, [^\n]*replaceoff: [1-9]\d*,/,
+	'workload logged a compact split with a replacement entry');
 
 # Consistency images make this workload WAL-heavy.  Both the time and size
 # limits above must keep automatic checkpoints from moving recovery past the
@@ -107,10 +121,14 @@ SET enable_seqscan = off;
 SET enable_bitmapscan = off;
 SET enable_indexonlyscan = off;
 ];
-foreach my $name ('split', 'wide')
+foreach my $name ('split', 'wide', 'posting')
 {
-	my $query = "SELECT id, s FROM ${name}_t ORDER BY s, id";
-	my $rows = $name eq 'split' ? 7000 : 20000;
+	# Include heap TIDs for the duplicate-key workload so equality checks
+	# individual row identities as well as the repeated key value.
+	my $query = $name eq 'posting'
+	  ? 'SELECT ctid, k FROM posting_t WHERE k = 1 ORDER BY ctid'
+	  : "SELECT id, s FROM ${name}_t ORDER BY s, id";
+	my $rows = $name eq 'split' ? 7000 : $name eq 'wide' ? 20000 : 150000;
 
 	like($node->safe_psql('postgres',
 			"$seq_settings EXPLAIN (COSTS OFF) $query"),
