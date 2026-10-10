@@ -386,6 +386,53 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 		IndexTuple	itup = BarkPageGetItem(page, off, &ibuf[cur]);
 
 		/*
+		 * A LIST entry (sorted duplicates) on a leaf page must carry at least
+		 * two locators, stored strictly ascending.  A POSTING entry must hold
+		 * a valid sbm serialization with at least two members.  SINGLE
+		 * entries and pivots need no extra checks here.  No leaf entry may
+		 * exceed the item ceiling the insert and vacuum paths keep to (an
+		 * OVERSIZED entry is a small stub, so it always passes).  These come
+		 * first: the order and marker checks below read the entry's heap TIDs
+		 * and key, which a corrupt LIST, POSTING or overflow chain would make
+		 * them fail on without saying where.
+		 */
+		if (BarkPageIsLeaf(opaque))
+		{
+			if (IndexTupleSize(itup) > BarkMaxItemSize)
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a %zu-byte leaf entry on page %u at offset %u, larger than the %zu-byte limit",
+								RelationGetRelationName(rel), IndexTupleSize(itup),
+								blkno, off, (Size) BarkMaxItemSize)));
+
+			/*
+			 * Insert and CREATE INDEX both store a row too large to stay
+			 * inline as an OVERSIZED entry, so a SINGLE never is one.
+			 */
+			if (BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE &&
+				bark_len_is_oversized(IndexTupleSize(itup)))
+				ereport(ERROR,
+						(errcode(ERRCODE_INDEX_CORRUPTED),
+						 errmsg("BARK index \"%s\" has a %zu-byte SINGLE entry on page %u at offset %u that should be OVERSIZED",
+								RelationGetRelationName(rel), IndexTupleSize(itup),
+								blkno, off)));
+
+			if (BarkEntryGetShape(itup) == BARK_SHAPE_LIST)
+				bark_check_list(rel, blkno, off, itup);
+			else if (BarkEntryGetShape(itup) == BARK_SHAPE_POSTING)
+				bark_check_posting(rel, blkno, off, itup);
+			else if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+				bark_check_oversized(rel, blkno, off, itup, keyinfo);
+
+			bark_check_marker(rel, keyinfo, blkno, off, itup);
+		}
+		else if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
+		{
+			/* An oversized downlink / high key also has a chain to validate. */
+			bark_check_oversized(rel, blkno, off, itup, keyinfo);
+		}
+
+		/*
 		 * Keys must be in non-decreasing order within the page, and on a
 		 * leaf, the heap TIDs of a run of equal keys in ascending order: each
 		 * entry's lowest TID above the previous entry's highest.
@@ -433,49 +480,6 @@ bark_check_page(Relation rel, BlockNumber blkno, BarkKeyInfo *keyinfo)
 					 errmsg("BARK index \"%s\" has a heap TID past the high key on page %u at offset %u",
 							RelationGetRelationName(rel), blkno, off)));
 
-		/*
-		 * A LIST entry (sorted duplicates) on a leaf page must carry at least
-		 * two locators, stored strictly ascending.  A POSTING entry must hold
-		 * a valid sbm serialization with at least two members.  SINGLE
-		 * entries and pivots need no extra checks here.  No leaf entry may
-		 * exceed the item ceiling the insert and vacuum paths keep to (an
-		 * OVERSIZED entry is a small stub, so it always passes).
-		 */
-		if (BarkPageIsLeaf(opaque))
-		{
-			if (IndexTupleSize(itup) > BarkMaxItemSize)
-				ereport(ERROR,
-						(errcode(ERRCODE_INDEX_CORRUPTED),
-						 errmsg("BARK index \"%s\" has a %zu-byte leaf entry on page %u at offset %u, larger than the %zu-byte limit",
-								RelationGetRelationName(rel), IndexTupleSize(itup),
-								blkno, off, (Size) BarkMaxItemSize)));
-
-			/*
-			 * Insert and CREATE INDEX both store a row too large to stay
-			 * inline as an OVERSIZED entry, so a SINGLE never is one.
-			 */
-			if (BarkEntryGetShape(itup) == BARK_SHAPE_SINGLE &&
-				bark_len_is_oversized(IndexTupleSize(itup)))
-				ereport(ERROR,
-						(errcode(ERRCODE_INDEX_CORRUPTED),
-						 errmsg("BARK index \"%s\" has a %zu-byte SINGLE entry on page %u at offset %u that should be OVERSIZED",
-								RelationGetRelationName(rel), IndexTupleSize(itup),
-								blkno, off)));
-
-			bark_check_marker(rel, keyinfo, blkno, off, itup);
-
-			if (BarkEntryGetShape(itup) == BARK_SHAPE_LIST)
-				bark_check_list(rel, blkno, off, itup);
-			else if (BarkEntryGetShape(itup) == BARK_SHAPE_POSTING)
-				bark_check_posting(rel, blkno, off, itup);
-			else if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
-				bark_check_oversized(rel, blkno, off, itup, keyinfo);
-		}
-		else if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
-		{
-			/* An oversized downlink / high key also has a chain to validate. */
-			bark_check_oversized(rel, blkno, off, itup, keyinfo);
-		}
 
 		prev = itup;
 		cur = 1 - cur;
