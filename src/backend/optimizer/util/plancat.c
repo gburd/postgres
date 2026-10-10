@@ -232,6 +232,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 			int			ncolumns,
 						nkeycolumns;
 			int			i;
+			bool		extracted = false;
 
 			/*
 			 * Extract info from the relation descriptor for the index.
@@ -358,11 +359,18 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 						 * rows it returned.  The workers of a parallel scan
 						 * read different leaves and could not share it, so
 						 * the index gets no parallel scans.
+						 *
+						 * A unique such index is unique over its keys: a
+						 * row may hold many keys and the column's values are
+						 * not unique, so it is no proof that at most one row
+						 * matches; info->unique is false below.  ON CONFLICT
+						 * inference reads pg_index and still finds it.
 						 */
 						if (get_opfamily_method(info->opfamily[i]) !=
 							BTREE_AM_OID)
 						{
 							info->amcanparallel = false;
+							extracted = true;
 							if (info->sortopfamily == info->opfamily)
 							{
 								info->sortopfamily = palloc_array(Oid,
@@ -489,7 +497,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 
 			info->indrestrictinfo = NIL;	/* set later, in indxpath.c */
 			info->predOK = false;	/* set later, in indxpath.c */
-			info->unique = index->indisunique;
+			info->unique = index->indisunique && !extracted;
 			info->nullsnotdistinct = index->indnullsnotdistinct;
 			info->immediate = index->indimmediate;
 			info->hypothetical = false;
