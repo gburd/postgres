@@ -63,6 +63,7 @@
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
+#include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -3276,6 +3277,12 @@ bark_lock_and_validate_left(Relation index, BlockNumber *blkno,
 {
 	BlockNumber origblkno = *blkno;
 
+	/*
+	 * Tests stop a backward step here, between pages, while other sessions
+	 * split or delete pages, as nbtree's tests do at nbtree-walk-left.
+	 */
+	INJECTION_POINT("bark-walk-left", NULL);
+
 	for (;;)
 	{
 		Buffer		buf;
@@ -3302,6 +3309,7 @@ bark_lock_and_validate_left(Relation index, BlockNumber *blkno,
 				return buf;
 			if (BarkPageRightmost(opaque) || ++tries > 4)
 				break;
+			INJECTION_POINT("bark-walk-left-step-right", NULL);
 			*blkno = opaque->bark_next;
 			LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 			buf = ReleaseAndReadBuffer(buf, index, *blkno);
@@ -3322,6 +3330,7 @@ bark_lock_and_validate_left(Relation index, BlockNumber *blkno,
 			 * Deleted: its key space moved to the first live page to its
 			 * right, and stepping left from that page goes where we want.
 			 */
+			INJECTION_POINT("bark-walk-left-deleted", NULL);
 			for (;;)
 			{
 				if (BarkPageRightmost(opaque))
@@ -3351,6 +3360,7 @@ bark_lock_and_validate_left(Relation index, BlockNumber *blkno,
 		}
 		*blkno = origblkno = opaque->bark_prev;
 		UnlockReleaseBuffer(buf);
+		INJECTION_POINT("bark-walk-left-restart", NULL);
 	}
 }
 
