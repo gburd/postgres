@@ -1108,6 +1108,15 @@ equal to the high key of the child before it, and each parent's high key
 equal to its last child's.  pg_amcheck checks BARK indexes when the
 database's amcheck is version 1.7 or later (prepare_btree_command).
 
+With checkunique (amcheck 1.8), both functions also walk the leaves of a
+unique index by right links and report a run of equal key columns, which
+may cross leaves, holding two entries whose heap rows are both visible to
+the check's snapshot (bark_check_unique_runs, as bt_entry_unique_check).
+For an index with an extracted column the run is of the fixed columns and
+one key; markers and keys with a NULL column (unless NULLS NOT DISTINCT)
+are skipped, and OVERSIZED keys are compared in full.  pg_amcheck
+--checkunique passes it through for BARK indexes from amcheck 1.8.
+
 contrib/pageinspect/barkfuncs.c: bark_metap, bark_page_stats,
 bark_multi_page_stats and bark_page_items (by relation and block, or of a
 raw page), which reports each item's shape, its heap TIDs (a LIST's or
