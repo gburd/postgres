@@ -41,6 +41,19 @@
  * do not answer those queries either).  A path that holds only non-empty
  * objects has no value, so #? is false there.
  *
+ * Sorting by a path: doc |<| path is the smallest key [path, value] the
+ * class indexes at the path, in jsonb_cmp order, or NULL when there is
+ * none; an ordering operator, sorted by jsonb's btree family.  So ORDER BY
+ * doc |<| 'a' orders documents by their smallest value at a (MongoDB's sort
+ * rule for arrays), across types in jsonb_cmp's order, documents without a
+ * value at a last.  The index serves it without a Sort: procedure 8 returns
+ * the path's range and sets BarkQueryFlags.orderrest, so the scan reports
+ * each row's first key in the range as its ORDER BY value and then reads
+ * the rest of the column for the documents without the path.  It returns
+ * the key, not the value, because the scan reports an index key, exactly.
+ * A path the projection drops has no keys to sort by, so procedure 8 then
+ * raises an error rather than order every row as NULL.
+ *
  * Copyright (c) 2026, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
@@ -78,6 +91,7 @@ PG_FUNCTION_INFO_V1(bark_wildcard_eq);
 PG_FUNCTION_INFO_V1(bark_wildcard_ge);
 PG_FUNCTION_INFO_V1(bark_wildcard_gt);
 PG_FUNCTION_INFO_V1(bark_wildcard_exists);
+PG_FUNCTION_INFO_V1(bark_wildcard_least);
 PG_FUNCTION_INFO_V1(bark_wildcard_extract_query);
 PG_FUNCTION_INFO_V1(bark_wildcard_recheck);
 PG_FUNCTION_INFO_V1(bark_wildcard_boundaries);
@@ -91,6 +105,7 @@ PG_FUNCTION_INFO_V1(bark_wildcard_entries);
 #define BARK_WC_GE		BTGreaterEqualStrategyNumber	/* #>= */
 #define BARK_WC_GT		BTGreaterStrategyNumber /* #> */
 #define BARK_WC_EXISTS	6				/* #? */
+#define BARK_WC_ORDER	7				/* |<|, ordering */
 
 /* The column's options, procedure 5. */
 typedef struct BarkWildcardOptions
@@ -682,6 +697,32 @@ bark_wildcard_exists(PG_FUNCTION_ARGS)
 }
 
 /*
+ * doc |<| path: the smallest key [path, value] the class indexes at the
+ * path, or NULL.
+ */
+Datum
+bark_wildcard_least(PG_FUNCTION_ARGS)
+{
+	static const BarkWildcardProjection all = {0};
+	BarkWildcardKeys k = {0};
+	Jsonb	   *least = NULL;
+
+	k.proj = &all;
+	k.only = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	bark_wildcard_doc(&k, PG_GETARG_JSONB_P(0));
+	for (int i = 0; i < k.nkeys; i++)
+	{
+		Jsonb	   *key = DatumGetJsonbP(k.keys[i]);
+
+		if (least == NULL || compareJsonbContainers(&key->root, &least->root) < 0)
+			least = key;
+	}
+	if (least == NULL)
+		PG_RETURN_NULL();
+	PG_RETURN_JSONB_P(least);
+}
+
+/*
  * The key [path, value] of one end of a boundary, value a scalar of the
  * given type, false for jbvBool, or {} for jbvObject.
  */
@@ -807,7 +848,9 @@ bark_wildcard_marked(Relation index, const char *path)
  * boundary, inside its path's range and its value's type bracket.  #= is
  * the point [path, value]; #< and #<= run from the bracket's start to the
  * query, #> and #>= from the query to the bracket's end; #? is the path's
- * whole range, from its first bracket's start to its last's end.  These
+ * whole range, from its first bracket's start to its last's end, and so is
+ * |<|, which also sets orderrest: the documents without a value at the
+ * path have no key in the range, and the scan reads them after it.  These
  * are exact, so procedure 9 is not asked.  The boundary holds keys of one
  * path only, so when BARK names the index and the index has no marker on
  * the way to that path, a row matches through at most one entry and the
@@ -829,7 +872,7 @@ bark_wildcard_bounds(const BarkWildcardProjection *proj, Datum querydatum,
 	JsonbValue	value = {0};
 	char	   *path = NULL;
 
-	if (strategy == BARK_WC_EXISTS)
+	if (strategy == BARK_WC_EXISTS || strategy == BARK_WC_ORDER)
 		path = text_to_cstring(DatumGetTextPP(querydatum));
 	else if (strategy >= BARK_WC_LT && strategy <= BARK_WC_GT)
 	{
@@ -845,6 +888,11 @@ bark_wildcard_bounds(const BarkWildcardProjection *proj, Datum querydatum,
 	*recheck = false;
 	if (!bark_wildcard_keeps(proj, path))
 	{
+		if (strategy == BARK_WC_ORDER)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("cannot sort by path \"%s\", which the wildcard index's projection does not keep",
+							path)));
 		*recheck = true;
 		flags->searchnulls = true;
 		return;
@@ -852,8 +900,9 @@ bark_wildcard_bounds(const BarkWildcardProjection *proj, Datum querydatum,
 	if (flags->index != NULL)
 		flags->oneentry = !bark_wildcard_marked(flags->index, path);
 
-	if (strategy == BARK_WC_EXISTS)
+	if (strategy == BARK_WC_EXISTS || strategy == BARK_WC_ORDER)
 	{
+		flags->orderrest = (strategy == BARK_WC_ORDER);
 		bark_wildcard_bracket_ends(path, jbvNull, &e[0], &e[1]);
 		bark_wildcard_bracket_ends(path, jbvObject, &e[2], &e[3]);
 		b->lower = &e[0];
@@ -925,7 +974,8 @@ bark_wildcard_append_element(StringInfo buf, const BarkSearchElement *e)
 /*
  * bark_wildcard_boundaries(query, strategy, include, exclude) -> text: what
  * procedure 8 returns for a query (jsonb, or text for #?) under the given
- * projection, with BarkQueryFlags zeroed first as BARK zeroes them.
+ * projection (text for #? and |<|), with BarkQueryFlags zeroed first as
+ * BARK zeroes them.
  */
 Datum
 bark_wildcard_boundaries(PG_FUNCTION_ARGS)
@@ -958,6 +1008,8 @@ bark_wildcard_boundaries(PG_FUNCTION_ARGS)
 	}
 	appendStringInfo(&buf, "recheck=%s searchnulls=%s", recheck ? "t" : "f",
 					 flags.searchnulls ? "t" : "f");
+	if (flags.orderrest)
+		appendStringInfoString(&buf, " orderrest=t");
 	if (recheck)
 		appendStringInfo(&buf, " proc9=%d",
 						 DatumGetInt16(DirectFunctionCall3(bark_wildcard_recheck,
