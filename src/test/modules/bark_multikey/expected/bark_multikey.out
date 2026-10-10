@@ -114,19 +114,22 @@ FROM (VALUES ('{4,2,9}'::int4[]), ('{}'), ('{NULL,8}'), (NULL)) AS t(a);
           |       |         
 (4 rows)
 
--- What M1 never allows on an extracted column.
+-- What is never allowed on an extracted column: two of them, an exclusion
+-- constraint, and NULLS NOT DISTINCT.  A unique index is allowed
+-- (bark_multikey_unique has its tests).
 CREATE TABLE mk (id int, a int4[], b int4[]);
 INSERT INTO mk VALUES (1, '{1,2}', '{3}'), (2, '{}', NULL);
 CREATE INDEX ON mk USING bark (a bark_int4_array_ops, b bark_int4_array_ops);
 ERROR:  index "mk_a_b_idx" has more than one column with a multikey operator class
 DETAIL:  A BARK index may extract keys from at most one column.
-CREATE UNIQUE INDEX ON mk USING bark (a bark_int4_array_ops);
-ERROR:  unique indexes are not supported for multikey operator classes in M1
 ALTER TABLE mk ADD CONSTRAINT mk_excl
   EXCLUDE USING bark (a bark_int4_array_ops WITH =);
 ERROR:  exclusion constraints are not supported for multikey operator classes in M1
--- With no unique or exclusion index on an extracted column, ON CONFLICT
--- has no arbiter on one.
+CREATE UNIQUE INDEX ON mk USING bark (a bark_int4_array_ops) NULLS NOT DISTINCT;
+ERROR:  NULLS NOT DISTINCT is not supported for multikey operator classes
+DETAIL:  A NULL value, an empty value and a NULL element all have the NULL key.
+-- With no unique index on an extracted column, ON CONFLICT has no arbiter
+-- on one.
 INSERT INTO mk VALUES (3, '{1}', NULL) ON CONFLICT (a) DO NOTHING;
 ERROR:  there is no unique or exclusion constraint matching the ON CONFLICT specification
 -- An INCLUDE column has no operator class, so it is never extracted.
