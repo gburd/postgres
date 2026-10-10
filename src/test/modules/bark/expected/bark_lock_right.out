@@ -1,0 +1,160 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_attach_wait s1_split s2_insert s3_release s2_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_attach_wait: 
+	SELECT injection_points_attach('bark-leave-leaf-split-incomplete', 'wait');
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_split: INSERT INTO lr SELECT ARRAY[20000 + g] FROM generate_series(1, 1000) g; <waiting ...>
+step s2_insert: INSERT INTO lr SELECT ARRAY[k1, k2] FROM lr_keys; <waiting ...>
+step s3_release: 
+	SELECT bark_wait_for_buffer_lock('s2');
+	SELECT injection_points_detach('bark-leave-leaf-split-incomplete');
+	SELECT injection_points_wakeup('bark-leave-leaf-split-incomplete');
+
+bark_wait_for_buffer_lock
+-------------------------
+blocked on buffer lock   
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_split: <... completed>
+step s2_insert: <... completed>
+step s2_check: 
+	SELECT bark_index_check('lr_a');
+	SELECT count(*) AS incomplete_leaves
+	  FROM bark_multi_page_stats('lr_a', 1, -1)
+	 WHERE 'incomplete_split' = ANY (flags);
+	WITH heap AS (SELECT DISTINCT e AS key, ctid AS tid FROM lr, unnest(a) e),
+		 idx AS (SELECT key, tid FROM bark_multikey_entries('lr_a')
+				  WHERE NOT marker AND tid IN (SELECT ctid FROM lr))
+	SELECT (SELECT count(*) FROM (TABLE heap EXCEPT TABLE idx) x) AS missing,
+		   (SELECT count(*) FROM (TABLE idx EXCEPT TABLE heap) x) AS extra,
+		   (SELECT count(*) FROM idx) = (SELECT count(*) FROM heap) AS no_repeats,
+		   (SELECT count(*) FROM bark_multikey_entries('lr_a')
+			 WHERE tid NOT IN (SELECT ctid FROM lr)) AS dead_entries;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+incomplete_leaves
+-----------------
+                0
+(1 row)
+
+missing|extra|no_repeats|dead_entries
+-------+-----+----------+------------
+      0|    0|t         |           0
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+
+starting permutation: s1_abandon s2_insert s2_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_abandon: 
+	SELECT injection_points_attach('bark-leave-leaf-split-incomplete', 'error');
+	DO $$
+	BEGIN
+		FOR n IN 1..1000 LOOP
+			BEGIN
+				INSERT INTO lr VALUES (ARRAY[20000 + n]);
+			EXCEPTION WHEN OTHERS THEN
+				RETURN;
+			END;
+		END LOOP;
+		RAISE EXCEPTION 'no split was interrupted';
+	END $$;
+	SELECT injection_points_detach('bark-leave-leaf-split-incomplete');
+	SELECT count(*) AS incomplete_leaves
+	  FROM bark_multi_page_stats('lr_a', 1, -1)
+	 WHERE 'incomplete_split' = ANY (flags);
+
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+incomplete_leaves
+-----------------
+                1
+(1 row)
+
+s2: NOTICE:  notice triggered for injection point bark-finish-incomplete-split
+step s2_insert: INSERT INTO lr SELECT ARRAY[k1, k2] FROM lr_keys;
+step s2_check: 
+	SELECT bark_index_check('lr_a');
+	SELECT count(*) AS incomplete_leaves
+	  FROM bark_multi_page_stats('lr_a', 1, -1)
+	 WHERE 'incomplete_split' = ANY (flags);
+	WITH heap AS (SELECT DISTINCT e AS key, ctid AS tid FROM lr, unnest(a) e),
+		 idx AS (SELECT key, tid FROM bark_multikey_entries('lr_a')
+				  WHERE NOT marker AND tid IN (SELECT ctid FROM lr))
+	SELECT (SELECT count(*) FROM (TABLE heap EXCEPT TABLE idx) x) AS missing,
+		   (SELECT count(*) FROM (TABLE idx EXCEPT TABLE heap) x) AS extra,
+		   (SELECT count(*) FROM idx) = (SELECT count(*) FROM heap) AS no_repeats,
+		   (SELECT count(*) FROM bark_multikey_entries('lr_a')
+			 WHERE tid NOT IN (SELECT ctid FROM lr)) AS dead_entries;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+incomplete_leaves
+-----------------
+                0
+(1 row)
+
+missing|extra|no_repeats|dead_entries
+-------+-----+----------+------------
+      0|    0|t         |           1
+(1 row)
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
