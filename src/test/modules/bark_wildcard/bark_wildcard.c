@@ -193,14 +193,20 @@ bark_wildcard_projection(FunctionCallInfo fcinfo)
 	return proj;
 }
 
-/* Is `path` equal to `prefix`, or below it (prefix + "." + more)? */
+/*
+ * Is `path` equal to `prefix`, or below it (prefix + "." + more)?  Every
+ * path is below "": a member named "" at the root adds no segment
+ * (bark_wildcard_child), so {"": {"s": 5}} has 5 at path s, as procedure 7
+ * indexes it, and the operators' walk must enter that member.
+ */
 static bool
 bark_wildcard_path_under(const char *path, const char *prefix)
 {
 	size_t		n = strlen(prefix);
 
-	return strncmp(path, prefix, n) == 0 &&
-		(path[n] == '\0' || path[n] == '.');
+	return n == 0 ||
+		(strncmp(path, prefix, n) == 0 &&
+		 (path[n] == '\0' || path[n] == '.'));
 }
 
 /* Does the projection keep the scalar at `path`? */
