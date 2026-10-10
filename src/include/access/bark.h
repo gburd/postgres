@@ -1494,7 +1494,9 @@ extern bool bark_insert(Relation index, Datum *values, bool *isnull,
 						 bool indexUnchanged, IndexInfo *indexInfo);
 extern void bark_insert_oversized_keys(Relation index, Datum *values,
 									   bool *isnull, ItemPointer ht_ctid,
-									   Relation heapRel, IndexInfo *indexInfo);
+									   Relation heapRel,
+									   IndexUniqueCheck checkUnique,
+									   IndexInfo *indexInfo);
 
 /* Leaf high key for a split between lastleft and firstright (barkinsert.c). */
 extern IndexTuple bark_truncate_pivot(Relation index, BarkKeyInfo *keyinfo,

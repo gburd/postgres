@@ -422,12 +422,17 @@ bark_build_marker(BarkBuildState *bs, Datum key)
  * The build callback's work for an index with an extracted column: the
  * row's keys (bark_extract_row_keys) become one tuple each in the sort, and
  * its markers are spooled once.  A key too large for the sort is left for
- * the oversized pass, which runs procedure 7 again on the row.
+ * the oversized pass, which runs procedure 7 again on the row.  In a unique
+ * index a row that is not alive puts its keys in bs->deadsort, as
+ * bark_build_callback does a scalar row, so that a RECENTLY_DEAD row
+ * sharing a key with a live one is not a violation; markers go to the main
+ * sort, which is never checked for them.
  */
 static void
 bark_build_row_keys(BarkBuildState *bs, ItemPointer tid, Datum *values,
-					bool *isnull)
+					bool *isnull, bool tupleIsAlive)
 {
+	Tuplesortstate *sortstate = bs->sortstate;
 	Relation	index = bs->index;
 	TupleDesc	tupdesc = RelationGetDescr(index);
 	int			attno = bs->extracted;
@@ -440,6 +445,11 @@ bark_build_row_keys(BarkBuildState *bs, ItemPointer tid, Datum *values,
 						  isnull[attno - 1], &rk);
 	if (rk.nkeys > 1)
 		bs->multikey = true;
+	if (!tupleIsAlive && bs->deadsort != NULL)
+	{
+		sortstate = bs->deadsort;
+		bs->havedead = true;
+	}
 	for (int i = 0; i < rk.nmarkers; i++)
 		bark_build_marker(bs, rk.markers[i]);
 
@@ -452,7 +462,7 @@ bark_build_row_keys(BarkBuildState *bs, ItemPointer tid, Datum *values,
 		if (bark_build_row_oversized(bs, tupdesc, kvalues, knulls))
 			bs->has_oversized = true;
 		else
-			tuplesort_putindextuplevalues(bs->sortstate, index, tid, kvalues,
+			tuplesort_putindextuplevalues(sortstate, index, tid, kvalues,
 										  knulls);
 	}
 	bs->indtuples += rk.nkeys;
@@ -481,7 +491,7 @@ bark_build_callback(Relation index, ItemPointer tid, Datum *values,
 
 	if (bs->extracted > 0)
 	{
-		bark_build_row_keys(bs, tid, values, isnull);
+		bark_build_row_keys(bs, tid, values, isnull, tupleIsAlive);
 		return;
 	}
 
@@ -1156,6 +1166,11 @@ bark_load(BarkBuildState *bs)
 		 * again), and equal live keys are adjacent in the live rows' own
 		 * sort, so comparing each live row with the previous live one still
 		 * catches every duplicate among them.
+		 *
+		 * The detail names the key only for an index without an extracted
+		 * column: BuildIndexValueDescription prints a column with its
+		 * operator class's input type, and an extracted column's key is of
+		 * the storage type.  An insert of either row names the shared key.
 		 */
 		if (bs->isunique && !isdead && prev != NULL &&
 			(bs->nullsnotdistinct ||
@@ -1164,11 +1179,15 @@ bark_load(BarkBuildState *bs)
 		{
 			Datum		values[INDEX_MAX_KEYS];
 			bool		isnull[INDEX_MAX_KEYS];
-			char	   *key_desc;
+			char	   *key_desc = NULL;
 
-			index_deform_tuple(itup, RelationGetDescr(bs->index),
-							   values, isnull);
-			key_desc = BuildIndexValueDescription(bs->index, values, isnull);
+			if (bs->extracted == 0)
+			{
+				index_deform_tuple(itup, RelationGetDescr(bs->index),
+								   values, isnull);
+				key_desc = BuildIndexValueDescription(bs->index, values,
+													  isnull);
+			}
 			ereport(ERROR,
 					(errcode(ERRCODE_UNIQUE_VIOLATION),
 					 errmsg("could not create unique index \"%s\"",
@@ -1220,13 +1239,17 @@ bark_oversized_pass_callback(Relation index, ItemPointer tid, Datum *values,
 							 bool *isnull, bool tupleIsAlive, void *state)
 {
 	BarkBuildState *bs = (BarkBuildState *) state;
-	IndexUniqueCheck checkUnique;
+	IndexUniqueCheck checkUnique = bs->isunique && tupleIsAlive ?
+		UNIQUE_CHECK_YES : UNIQUE_CHECK_NO;
 
-	/* Procedure 7 again, inserting only the keys the sort could not take. */
+	/*
+	 * Procedure 7 again, inserting only the keys the sort could not take,
+	 * each checked as described below.
+	 */
 	if (bs->extracted > 0)
 	{
 		bark_insert_oversized_keys(index, values, isnull, tid, bs->heap,
-								   bs->indexInfo);
+								   checkUnique, bs->indexInfo);
 		return;
 	}
 
@@ -1242,8 +1265,6 @@ bark_oversized_pass_callback(Relation index, ItemPointer tid, Datum *values,
 	 * conflicts with nothing.  A row that is not alive is not checked, as
 	 * bark_load does not check one.
 	 */
-	checkUnique = bs->isunique && tupleIsAlive ?
-		UNIQUE_CHECK_YES : UNIQUE_CHECK_NO;
 	bark_insert(index, values, isnull, tid, bs->heap, checkUnique, false,
 				bs->indexInfo);
 }
