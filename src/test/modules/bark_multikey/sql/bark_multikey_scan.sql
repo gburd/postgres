@@ -588,14 +588,19 @@ RESET enable_sort;
 SELECT mk_run('mk_seq', 'a |%| ''{2,3,4,5,6,7,8}''', 'seq');
 SELECT mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq');
 
--- What M1 does not serve: an ordering operator on the extracted column,
--- and a parallel scan that needs a seen set.  They are refused rather than
--- answered wrong.
+-- What M1 does not serve: an ordering operator on the extracted column.
+-- It is refused rather than answered wrong.
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
 SET enable_sort = off;
 SELECT id FROM mk_b1 ORDER BY a |<| 0 LIMIT 3;
 RESET enable_sort;
+
+-- No parallel index scan of an index with an extracted column: the workers
+-- would read a row's entries on different leaves, and could not share the
+-- seen set.  The planner never offers one, even for a scan that needs no
+-- set (one point), or for an index-only scan of the fixed column.  A
+-- parallel bitmap heap scan is fine: one process builds the bitmap.
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_index_scan_size = 0;
@@ -603,13 +608,22 @@ SET min_parallel_table_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SET random_page_cost = 1;
 ALTER TABLE mk_b1 SET (parallel_workers = 2);
+ALTER TABLE mk_b2 SET (parallel_workers = 2);
 EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b1 WHERE a @> '{}';
 SELECT count(*) FROM mk_b1 WHERE a @> '{}';
--- A scan for one point needs no set, so it may be parallel.
+SELECT mk_run('mk_seq', 'a @> ''{}''', 'seq');
 EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b1 WHERE a && '{5}';
 SELECT count(*) FROM mk_b1 WHERE a && '{5}';
 SELECT mk_run('mk_seq', 'a && ''{5}''', 'seq');
+EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b2 WHERE tenant > 2;
+SELECT count(*) FROM mk_b2 WHERE tenant > 2;
+SET enable_bitmapscan = on;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b1 WHERE a && '{1,5,77}';
+SELECT count(*) FROM mk_b1 WHERE a && '{1,5,77}';
+SELECT mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq');
+SELECT count(*) FROM mk_seq WHERE tenant > 2;
 ALTER TABLE mk_b1 RESET (parallel_workers);
+ALTER TABLE mk_b2 RESET (parallel_workers);
 RESET random_page_cost;
 RESET max_parallel_workers_per_gather;
 RESET min_parallel_table_scan_size;

@@ -810,13 +810,10 @@ bark_mk_rescan(IndexScanDesc scan)
 	/*
 	 * The workers of a parallel scan read different leaves, and a row's
 	 * entries may be on leaves that different workers read, so a scan that
-	 * needs the set cannot be parallel.
+	 * needs the set cannot be parallel.  The planner never makes one: an
+	 * index with an extracted column has no amcanparallel (plancat.c).
 	 */
-	if (mk->useseen && scan->parallel_scan != NULL)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("parallel index scans of multikey BARK index \"%s\" are not supported",
-						RelationGetRelationName(scan->indexRelation))));
+	Assert(!mk->useseen || scan->parallel_scan == NULL);
 
 	/*
 	 * An ordering operator of the extracted column has a key, not a value, to

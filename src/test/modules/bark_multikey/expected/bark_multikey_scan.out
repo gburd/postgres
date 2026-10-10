@@ -1104,15 +1104,19 @@ SELECT mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq');
  921:921:74cc59826d987b936848c2ce155dd906
 (1 row)
 
--- What M1 does not serve: an ordering operator on the extracted column,
--- and a parallel scan that needs a seen set.  They are refused rather than
--- answered wrong.
+-- What M1 does not serve: an ordering operator on the extracted column.
+-- It is refused rather than answered wrong.
 SET enable_seqscan = off;
 SET enable_bitmapscan = off;
 SET enable_sort = off;
 SELECT id FROM mk_b1 ORDER BY a |<| 0 LIMIT 3;
 ERROR:  ordered scans on the multikey column of BARK index "mk_b1_a" are not supported
 RESET enable_sort;
+-- No parallel index scan of an index with an extracted column: the workers
+-- would read a row's entries on different leaves, and could not share the
+-- seen set.  The planner never offers one, even for a scan that needs no
+-- set (one point), or for an index-only scan of the fixed column.  A
+-- parallel bitmap heap scan is fine: one process builds the bitmap.
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
 SET min_parallel_index_scan_size = 0;
@@ -1120,30 +1124,34 @@ SET min_parallel_table_scan_size = 0;
 SET max_parallel_workers_per_gather = 2;
 SET random_page_cost = 1;
 ALTER TABLE mk_b1 SET (parallel_workers = 2);
+ALTER TABLE mk_b2 SET (parallel_workers = 2);
 EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b1 WHERE a @> '{}';
-                          QUERY PLAN                          
---------------------------------------------------------------
- Finalize Aggregate
-   ->  Gather
-         Workers Planned: 2
-         ->  Partial Aggregate
-               ->  Parallel Index Scan using mk_b1_a on mk_b1
-                     Index Cond: (a @> '{}'::integer[])
-(6 rows)
+                 QUERY PLAN                 
+--------------------------------------------
+ Aggregate
+   ->  Index Scan using mk_b1_a on mk_b1
+         Index Cond: (a @> '{}'::integer[])
+(3 rows)
 
 SELECT count(*) FROM mk_b1 WHERE a @> '{}';
-ERROR:  parallel index scans of multikey BARK index "mk_b1_a" are not supported
--- A scan for one point needs no set, so it may be parallel.
+ count 
+-------
+ 19600
+(1 row)
+
+SELECT mk_run('mk_seq', 'a @> ''{}''', 'seq');
+                    mk_run                    
+----------------------------------------------
+ 19600:19600:a4b71c036623a390084f0672e8376c42
+(1 row)
+
 EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b1 WHERE a && '{5}';
-                          QUERY PLAN                          
---------------------------------------------------------------
- Finalize Aggregate
-   ->  Gather
-         Workers Planned: 2
-         ->  Partial Aggregate
-               ->  Parallel Index Scan using mk_b1_a on mk_b1
-                     Index Cond: (a && '{5}'::integer[])
-(6 rows)
+                 QUERY PLAN                  
+---------------------------------------------
+ Aggregate
+   ->  Index Scan using mk_b1_a on mk_b1
+         Index Cond: (a && '{5}'::integer[])
+(3 rows)
 
 SELECT count(*) FROM mk_b1 WHERE a && '{5}';
  count 
@@ -1157,7 +1165,54 @@ SELECT mk_run('mk_seq', 'a && ''{5}''', 'seq');
  310:310:63054ff39d1aad06507ae1355cca37c2
 (1 row)
 
+EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b2 WHERE tenant > 2;
+                  QUERY PLAN                   
+-----------------------------------------------
+ Aggregate
+   ->  Index Only Scan using mk_b2_ta on mk_b2
+         Index Cond: (tenant > 2)
+(3 rows)
+
+SELECT count(*) FROM mk_b2 WHERE tenant > 2;
+ count 
+-------
+ 11428
+(1 row)
+
+SET enable_bitmapscan = on;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM mk_b1 WHERE a && '{1,5,77}';
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ Finalize Aggregate
+   ->  Gather
+         Workers Planned: 2
+         ->  Partial Aggregate
+               ->  Parallel Bitmap Heap Scan on mk_b1
+                     Recheck Cond: (a && '{1,5,77}'::integer[])
+                     ->  Bitmap Index Scan on mk_b1_a
+                           Index Cond: (a && '{1,5,77}'::integer[])
+(8 rows)
+
+SELECT count(*) FROM mk_b1 WHERE a && '{1,5,77}';
+ count 
+-------
+   921
+(1 row)
+
+SELECT mk_run('mk_seq', 'a && ''{1,5,77}''', 'seq');
+                  mk_run                  
+------------------------------------------
+ 921:921:74cc59826d987b936848c2ce155dd906
+(1 row)
+
+SELECT count(*) FROM mk_seq WHERE tenant > 2;
+ count 
+-------
+ 11428
+(1 row)
+
 ALTER TABLE mk_b1 RESET (parallel_workers);
+ALTER TABLE mk_b2 RESET (parallel_workers);
 RESET random_page_cost;
 RESET max_parallel_workers_per_gather;
 RESET min_parallel_table_scan_size;
