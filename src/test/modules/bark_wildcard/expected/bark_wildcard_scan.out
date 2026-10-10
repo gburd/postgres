@@ -770,6 +770,159 @@ SELECT bark_index_check('wc_gen_doc'), bark_index_check('wc1_plain_doc'),
 
 DROP TABLE wc1_seq, wc1_plain, wc1_inc, wc1_tid, wc1_quals, wc_gen;
 DROP FUNCTION wc1_doc;
+-- Sorting by a path: doc |<| 'a' is the smallest key [a, value] (MongoDB's
+-- array sort rule, across types in jsonb_cmp order), NULL without one.
+-- The index serves it without a Sort: the path's range, then the rest of
+-- the column (orderrest) for the documents without the path, which come
+-- back last.  Every result is compared, row by row, with the key that
+-- bark_wildcard_keys gives under a sequential scan: each row once, the
+-- order value exact, nondecreasing, NULLs last; with a filter (rechecked,
+-- not positioning), a LIMIT, a NULLS FIRST index and nested-loop rescans.
+CREATE TABLE wo (id int, doc jsonb);
+INSERT INTO wo SELECT g,
+  CASE g % 9
+    WHEN 0 THEN jsonb_build_object('a', g % 37)
+    WHEN 1 THEN jsonb_build_object('a', jsonb_build_array(g % 41, (g * 7) % 41, 's' || g % 5))
+    WHEN 2 THEN jsonb_build_object('b', g)
+    WHEN 3 THEN jsonb_build_object('a', 'str' || g % 13)
+    WHEN 4 THEN jsonb_build_object('a', (g % 2 = 0))
+    WHEN 5 THEN jsonb_build_object('a', jsonb_build_array(jsonb_build_array(g % 3, 1), g % 50))
+    WHEN 6 THEN jsonb_build_object('a', NULL::int)
+    WHEN 7 THEN jsonb_build_object('a', '[]'::jsonb, 'c', g)
+    ELSE CASE WHEN g % 2 = 0 THEN NULL ELSE to_jsonb(g) END END
+  FROM generate_series(1, 3000) g;
+CREATE INDEX wo_doc ON wo USING bark (doc bark_jsonb_wildcard_ops);
+ANALYZE wo;
+SELECT bark_wildcard_boundaries('a'::text, 7::int2);
+                      bark_wildcard_boundaries                      
+--------------------------------------------------------------------
+ (>= ["a", null], <= ["a", {}]) recheck=f searchnulls=f orderrest=t
+(1 row)
+
+CREATE TABLE wo_want AS SELECT id, doc,
+  (SELECT k FROM bark_wildcard_keys(doc) k
+    WHERE jsonb_array_length(k) = 2 AND k->>0 = 'a' ORDER BY k LIMIT 1) AS k
+  FROM wo;
+SELECT count(*) FILTER (WHERE k IS NULL) AS without_a, count(*) FROM wo_want;
+ without_a | count 
+-----------+-------
+       667 |  3000
+(1 row)
+
+-- wo_check(q): q's rows (id, k) in its order, compared with wo_want.
+CREATE FUNCTION wo_check(q text, OUT n bigint, OUT ids bigint,
+                         OUT wrong_value bigint, OUT out_of_order bigint,
+                         OUT nulls bigint)
+LANGUAGE plpgsql AS $$
+BEGIN
+  EXECUTE format($f$
+    WITH got AS (SELECT row_number() OVER () AS rn, id, k FROM (%s) s),
+         lagged AS (SELECT rn, k, lag(k) OVER (ORDER BY rn) AS pk FROM got)
+    SELECT (SELECT count(*) FROM got), (SELECT count(DISTINCT id) FROM got),
+           (SELECT count(*) FROM got JOIN wo_want w USING (id)
+             WHERE got.k IS DISTINCT FROM w.k),
+           (SELECT count(*) FROM lagged
+             WHERE (pk IS NULL AND k IS NOT NULL AND rn > 1) OR k < pk),
+           (SELECT count(*) FROM got WHERE k IS NULL)$f$, q)
+    INTO n, ids, wrong_value, out_of_order, nulls;
+END $$;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_sort = off;
+EXPLAIN (COSTS OFF) SELECT id FROM wo ORDER BY doc |<| 'a';
+           QUERY PLAN            
+---------------------------------
+ Index Scan using wo_doc on wo
+   Order By: (doc |<| 'a'::text)
+(2 rows)
+
+SELECT * FROM wo_check('SELECT id, doc |<| ''a'' AS k FROM wo ORDER BY doc |<| ''a''');
+  n   | ids  | wrong_value | out_of_order | nulls 
+------+------+-------------+--------------+-------
+ 3000 | 3000 |           0 |            0 |   667
+(1 row)
+
+EXPLAIN (COSTS OFF)
+SELECT id FROM wo WHERE doc #? 'b' OR doc #= '["a", 3]' ORDER BY doc |<| 'a';
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Index Scan using wo_doc on wo
+   Order By: (doc |<| 'a'::text)
+   Filter: ((doc #? 'b'::text) OR (doc #= '["a", 3]'::jsonb))
+(3 rows)
+
+SELECT * FROM wo_check('SELECT id, doc |<| ''a'' AS k FROM wo
+                        WHERE doc #? ''b'' OR doc #= ''["a", 3]'' ORDER BY doc |<| ''a''');
+  n  | ids | wrong_value | out_of_order | nulls 
+-----+-----+-------------+--------------+-------
+ 366 | 366 |           0 |            0 |   334
+(1 row)
+
+SELECT count(*) FROM wo_want WHERE doc #? 'b' OR doc #= '["a", 3]';
+ count 
+-------
+   366
+(1 row)
+
+SELECT * FROM wo_check('SELECT id, doc |<| ''a'' AS k FROM wo ORDER BY doc |<| ''a'' LIMIT 500');
+  n  | ids | wrong_value | out_of_order | nulls 
+-----+-----+-------------+--------------+-------
+ 500 | 500 |           0 |            0 |     0
+(1 row)
+
+SELECT (SELECT array_agg(k) FROM (SELECT doc |<| 'a' AS k FROM wo ORDER BY doc |<| 'a' LIMIT 500) s) =
+       (SELECT array_agg(k) FROM (SELECT k FROM wo_want ORDER BY k NULLS LAST LIMIT 500) x)
+       AS limit_is_the_500_smallest;
+ limit_is_the_500_smallest 
+---------------------------
+ t
+(1 row)
+
+SET enable_hashjoin = off;
+SET enable_mergejoin = off;
+SET enable_material = off;
+SELECT p, count(*), count(DISTINCT id)
+  FROM (VALUES ('a'), ('b'), ('zz')) v(p),
+       LATERAL (SELECT id FROM wo ORDER BY doc |<| p LIMIT 2900) s
+ GROUP BY p ORDER BY p;
+ p  | count | count 
+----+-------+-------
+ a  |  2900 |  2900
+ b  |  2900 |  2900
+ zz |  2900 |  2900
+(3 rows)
+
+RESET enable_hashjoin;
+RESET enable_mergejoin;
+RESET enable_material;
+CREATE INDEX wo_doc_nf ON wo USING bark (doc bark_jsonb_wildcard_ops NULLS FIRST);
+DROP INDEX wo_doc;
+SELECT * FROM wo_check('SELECT id, doc |<| ''a'' AS k FROM wo ORDER BY doc |<| ''a''');
+  n   | ids  | wrong_value | out_of_order | nulls 
+------+------+-------------+--------------+-------
+ 3000 | 3000 |           0 |            0 |   667
+(1 row)
+
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET enable_sort;
+SELECT bark_index_check('wo_doc_nf');
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+-- A path the projection drops has no keys to sort by.
+CREATE INDEX wo_inc ON wo USING bark (doc bark_jsonb_wildcard_ops (include = 'b'));
+DROP INDEX wo_doc_nf;
+SET enable_seqscan = off;
+SET enable_sort = off;
+SELECT id FROM wo ORDER BY doc |<| 'a' LIMIT 1;
+ERROR:  cannot sort by path "a", which the wildcard index's projection does not keep
+RESET enable_seqscan;
+RESET enable_sort;
+DROP TABLE wo, wo_want;
+DROP FUNCTION wo_check;
 DROP TABLE wc_seq, wc_plain, wc_inc, wc_exc, wc_tid, wc_quals;
 DROP FUNCTION wc_run, wc_compare, wc_jpath, wc_doc, wc_val, wc_heap_keys, wc_index_keys;
 DROP EXTENSION bark_wildcard;
