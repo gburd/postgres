@@ -1,0 +1,275 @@
+Parsed test spec with 3 sessions
+
+starting permutation: s1_split s2_grow1 s3_release s1_check
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_split: INSERT INTO rs SELECT rs_key(g) FROM generate_series(1, 20) g; <waiting ...>
+step s2_grow1: SELECT rs_grow(2);
+rs_grow        
+---------------
+root at level 2
+(1 row)
+
+step s3_release: 
+	SELECT injection_points_detach('bark-leave-leaf-split-incomplete');
+	SELECT injection_points_wakeup('bark-leave-leaf-split-incomplete');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_split: <... completed>
+step s1_check: 
+	SELECT bark_index_check('rs_idx', true);
+	SELECT count(*) AS incomplete_pages
+	  FROM bark_multi_page_stats('rs_idx', 1, -1)
+	 WHERE 'incomplete_split' = ANY (flags);
+	SET enable_seqscan = off;
+	SET enable_bitmapscan = off;
+	SELECT count(*) AS index_count, sum(hashtext(k)) AS index_hash
+	  FROM rs WHERE k >= '';
+	RESET enable_seqscan;
+	RESET enable_bitmapscan;
+	SET enable_indexscan = off;
+	SET enable_indexonlyscan = off;
+	SET enable_bitmapscan = off;
+	SELECT count(*) AS heap_count, sum(hashtext(k)) AS heap_hash FROM rs;
+	RESET enable_indexscan;
+	RESET enable_indexonlyscan;
+	RESET enable_bitmapscan;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+incomplete_pages
+----------------
+               0
+(1 row)
+
+index_count|index_hash
+-----------+----------
+         75|3406308806
+(1 row)
+
+heap_count| heap_hash
+----------+----------
+        75|3406308806
+(1 row)
+
+
+starting permutation: s1_split s2_grow2 s3_release s1_check
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_split: INSERT INTO rs SELECT rs_key(g) FROM generate_series(1, 20) g; <waiting ...>
+step s2_grow2: SELECT rs_grow(3);
+rs_grow        
+---------------
+root at level 3
+(1 row)
+
+step s3_release: 
+	SELECT injection_points_detach('bark-leave-leaf-split-incomplete');
+	SELECT injection_points_wakeup('bark-leave-leaf-split-incomplete');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_split: <... completed>
+step s1_check: 
+	SELECT bark_index_check('rs_idx', true);
+	SELECT count(*) AS incomplete_pages
+	  FROM bark_multi_page_stats('rs_idx', 1, -1)
+	 WHERE 'incomplete_split' = ANY (flags);
+	SET enable_seqscan = off;
+	SET enable_bitmapscan = off;
+	SELECT count(*) AS index_count, sum(hashtext(k)) AS index_hash
+	  FROM rs WHERE k >= '';
+	RESET enable_seqscan;
+	RESET enable_bitmapscan;
+	SET enable_indexscan = off;
+	SET enable_indexonlyscan = off;
+	SET enable_bitmapscan = off;
+	SELECT count(*) AS heap_count, sum(hashtext(k)) AS heap_hash FROM rs;
+	RESET enable_indexscan;
+	RESET enable_indexonlyscan;
+	RESET enable_bitmapscan;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+incomplete_pages
+----------------
+               0
+(1 row)
+
+index_count|index_hash
+-----------+----------
+        203| -64538742
+(1 row)
+
+heap_count|heap_hash
+----------+---------
+       203|-64538742
+(1 row)
+
+
+starting permutation: s1_split s2_grow3 s3_release s1_check
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_split: INSERT INTO rs SELECT rs_key(g) FROM generate_series(1, 20) g; <waiting ...>
+step s2_grow3: SELECT rs_grow(4);
+rs_grow        
+---------------
+root at level 4
+(1 row)
+
+step s3_release: 
+	SELECT injection_points_detach('bark-leave-leaf-split-incomplete');
+	SELECT injection_points_wakeup('bark-leave-leaf-split-incomplete');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_split: <... completed>
+step s1_check: 
+	SELECT bark_index_check('rs_idx', true);
+	SELECT count(*) AS incomplete_pages
+	  FROM bark_multi_page_stats('rs_idx', 1, -1)
+	 WHERE 'incomplete_split' = ANY (flags);
+	SET enable_seqscan = off;
+	SET enable_bitmapscan = off;
+	SELECT count(*) AS index_count, sum(hashtext(k)) AS index_hash
+	  FROM rs WHERE k >= '';
+	RESET enable_seqscan;
+	RESET enable_bitmapscan;
+	SET enable_indexscan = off;
+	SET enable_indexonlyscan = off;
+	SET enable_bitmapscan = off;
+	SELECT count(*) AS heap_count, sum(hashtext(k)) AS heap_hash FROM rs;
+	RESET enable_indexscan;
+	RESET enable_indexonlyscan;
+	RESET enable_bitmapscan;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+incomplete_pages
+----------------
+               0
+(1 row)
+
+index_count| index_hash
+-----------+-----------
+        699|43841304548
+(1 row)
+
+heap_count|  heap_hash
+----------+-----------
+       699|43841304548
+(1 row)
+
+
+starting permutation: s1_split_right s2_grow1 s3_release s1_check
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_split_right: 
+	INSERT INTO rs SELECT rs_key(3000000 + g) FROM generate_series(1, 20) g;
+ <waiting ...>
+step s2_grow1: SELECT rs_grow(2);
+rs_grow        
+---------------
+root at level 2
+(1 row)
+
+step s3_release: 
+	SELECT injection_points_detach('bark-leave-leaf-split-incomplete');
+	SELECT injection_points_wakeup('bark-leave-leaf-split-incomplete');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_split_right: <... completed>
+step s1_check: 
+	SELECT bark_index_check('rs_idx', true);
+	SELECT count(*) AS incomplete_pages
+	  FROM bark_multi_page_stats('rs_idx', 1, -1)
+	 WHERE 'incomplete_split' = ANY (flags);
+	SET enable_seqscan = off;
+	SET enable_bitmapscan = off;
+	SELECT count(*) AS index_count, sum(hashtext(k)) AS index_hash
+	  FROM rs WHERE k >= '';
+	RESET enable_seqscan;
+	RESET enable_bitmapscan;
+	SET enable_indexscan = off;
+	SET enable_indexonlyscan = off;
+	SET enable_bitmapscan = off;
+	SELECT count(*) AS heap_count, sum(hashtext(k)) AS heap_hash FROM rs;
+	RESET enable_indexscan;
+	RESET enable_indexonlyscan;
+	RESET enable_bitmapscan;
+
+bark_index_check
+----------------
+                
+(1 row)
+
+incomplete_pages
+----------------
+               0
+(1 row)
+
+index_count|index_hash
+-----------+----------
+         75|6823606421
+(1 row)
+
+heap_count| heap_hash
+----------+----------
+        75|6823606421
+(1 row)
+
