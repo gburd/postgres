@@ -1249,6 +1249,7 @@ HeapScanDesc
 HeapScanDescData
 HeapTuple
 HeapTupleData
+HeapTupleFailureData
 HeapTupleFields
 HeapTupleForceOption
 HeapTupleFreeze
