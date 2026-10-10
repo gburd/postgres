@@ -815,6 +815,11 @@ and a LIST or POSTING that keeps some members is re-formed with them, by the
 same code VACUUM uses (bark_reform_entry), in one XLOG_BARK_DELETE record.
 If that left room for the new entry it is inserted; otherwise the leaf splits
 as before.  Coalescing into an equal-key LIST or POSTING still comes first.
+In an index with an extracted column one row may have several entries on
+the leaf, but the table AM takes each TID at most once (heapam's sort of
+the TIDs refuses two equal ones), so the TIDs are sorted and each is
+offered once, promising if any of its entries is, with the free space of
+all of them; its answer applies to every entry of that TID.
 
 OVERSIZED entries are not offered to the table AM: deleting one has to free
 its overflow chain once the leaf no longer references it, which VACUUM does.
