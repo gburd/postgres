@@ -964,10 +964,11 @@ place of an inverted AM, without changing the scalar design above.
   that matches through several keys once. The meta page records whether the
   index has multikey rows. Needs H1, so that (key, TID) names exactly one
   entry member. Design: [[#M1: multikey keys|M1: multikey keys]] below.
-  ''(in progress: design 76d2f802ab2; M1a catalog interface done,
-  36e18a3ca93; M1b insert and build done, ac12fa1e140; M1c scans done, the
-  M1c commit on bark-m1c (see "As built" under "Scans"); M1d planner to
-  follow)''
+  ''(done: design 76d2f802ab2; M1a catalog interface 36e18a3ca93; M1b
+  insert and build ac12fa1e140; M1c scans 181eb9d700d; M1d planner
+  3d965d5537d (no parallel or backward plans, amproperty), 60c38f44e86
+  (ordering operators on the multikey column) and 90fc2758f2f (costing).
+  See "As built" under "Scans")''
 * '''M2''' -- operator classes on RUM's model. BARK takes GIN's support
   functions for extracted keys (extract a value's keys; extract a query's
   keys, with partial match; consistent) and RUM's ordering functions
@@ -996,8 +997,10 @@ place of an inverted AM, without changing the scalar design above.
   heap recheck). A scan walks the ranges in order, as BARK's array scan
   walks an IN-list, re-descending only where the next range starts past the
   page. An operator class may provide either interface; one written for
-  pg_extended_btree ports to BARK unchanged. ''(blocked on M1c's scans;
-  barkvalidate accepts procedures 7-14 since 36e18a3ca93)''
+  pg_extended_btree ports to BARK unchanged. ''(the pg_extended_btree
+  interface, procedures 7-9, is built and used by M1c's scans and M5a's
+  wildcard class; GIN's and RUM's support functions, partial match, and
+  the array and scalar classes are not started)''
 * '''M3''' -- extra data per locator (RUM's addInfo). ''Closed, not
   needed'': a composite key (key, value) holds the same members in the same
   order, and every use case found is served by one. What both would need,
