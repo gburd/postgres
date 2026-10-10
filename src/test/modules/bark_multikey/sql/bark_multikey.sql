@@ -30,9 +30,11 @@ SELECT s, q, bark_multikey_boundaries(mk_opc('bark_int4_array_ops'), q, s)
 FROM (VALUES ('{5,1,5}'::int4[]), ('{}'), ('{NULL}'), ('{2,NULL}')) AS t(q),
      (VALUES (1::int2), (2::int2), (3::int2), (4::int2)) AS u(s)
 ORDER BY s, q;
--- |<| reads every row: the whole key range and the NULL entries.
+-- |<| reads every row: the whole key range and the NULL entries; |>>|
+-- the same, backward.
 SELECT bark_multikey_boundaries(mk_opc('bark_int4_array_ops'), 0, 5::int2);
-SELECT a, a |<| 0 AS least
+SELECT bark_multikey_boundaries(mk_opc('bark_int4_array_ops'), 0, 15::int2);
+SELECT a, a |<| 0 AS least, a |>>| 0 AS greatest
 FROM (VALUES ('{4,2,9}'::int4[]), ('{}'), ('{NULL,8}'), (NULL)) AS t(a);
 
 -- What M1 never allows on an extracted column.
