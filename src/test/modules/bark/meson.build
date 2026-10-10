@@ -13,6 +13,7 @@ tests += {
       'bark_incomplete_splits',
       'bark_split_moveright',
       'bark_walinspect',
+      'bark_validate',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # The injection points are run in the same backend, so disable
@@ -45,6 +46,7 @@ tests += {
       't/006_split_fpi_recovery.pl',
       't/007_split_done_recovery.pl',
       't/008_redo_dropped_index.pl',
+      't/009_validate_single_user.pl',
     ],
   },
 }
