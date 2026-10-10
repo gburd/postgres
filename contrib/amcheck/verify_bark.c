@@ -820,9 +820,10 @@ bark_check_oversized(Relation rel, BlockNumber blkno, OffsetNumber off,
 		cbuf = ReadBuffer(rel, chainblk);
 		LockBuffer(cbuf, BUFFER_LOCK_SHARE);
 		cpage = BufferGetPage(cbuf);
-		copaque = BarkPageGetOpaque(cpage);
 
-		if (PageIsNew(cpage) || !BarkPageIsOverflow(copaque))
+		/* A new page has no special space to read the flags from. */
+		if (PageIsNew(cpage) ||
+			!BarkPageIsOverflow((copaque = BarkPageGetOpaque(cpage))))
 		{
 			UnlockReleaseBuffer(cbuf);
 			ereport(ERROR,

@@ -256,10 +256,14 @@ bark_delete_empty_leaf(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 	}
 
 	page = BufferGetPage(buf);
-	opaque = BarkPageGetOpaque(page);
 
-	/* Re-check the target is still the empty interior leaf we expect. */
-	if (PageIsNew(page) || !BarkPageIsLeaf(opaque) || BarkPageIsDeleted(opaque) ||
+	/*
+	 * Re-check the target is still the empty interior leaf we expect.  A new
+	 * page has no special space, so test for one before reading the flags.
+	 */
+	if (PageIsNew(page) ||
+		!BarkPageIsLeaf((opaque = BarkPageGetOpaque(page))) ||
+		BarkPageIsDeleted(opaque) ||
 		(opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0 ||
 		opaque->bark_prev != leftblk || opaque->bark_next != rightblk ||
 		PageGetMaxOffsetNumber(page) >= BarkPageFirstDataKey(opaque) ||
