@@ -36,6 +36,7 @@ tests += {
       't/001_empty_index_race.pl',
       't/002_standby.pl',
       't/003_split_recovery.pl',
+      't/004_insert_fpi_recovery.pl',
     ],
   },
 }
