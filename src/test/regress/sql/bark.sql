@@ -907,6 +907,23 @@ SELECT count(*) AS total,
        count(*) FILTER (WHERE a IS NULL) AS nulls
   FROM (SELECT a FROM bark_knn_null ORDER BY a <~> 300) s;
 
+-- A NULL constant makes every distance NULL, which sorts last and as equal,
+-- so the scan returns every row, as a Sort does.  A generic plan keeps the
+-- index scan with a parameter the executor sets to NULL.
+SET plan_cache_mode = force_generic_plan;
+PREPARE bark_knn_nullc(int) AS
+  SELECT count(*) AS total, count(DISTINCT a) AS keys,
+         count(*) FILTER (WHERE d IS NULL) AS nulldist
+    FROM (SELECT a, a <~> $1 AS d FROM bark_knn_null ORDER BY a <~> $1) s;
+EXPLAIN (COSTS OFF) EXECUTE bark_knn_nullc(NULL);
+EXECUTE bark_knn_nullc(NULL);
+PREPARE bark_knn_nullc_lim(int) AS
+  SELECT count(*) FROM (SELECT a FROM bark_knn_null ORDER BY a <~> $1 LIMIT 5) s;
+EXECUTE bark_knn_nullc_lim(NULL);
+DEALLOCATE bark_knn_nullc;
+DEALLOCATE bark_knn_nullc_lim;
+RESET plan_cache_mode;
+
 -- bigint keys use the int8 distance operator the same way.
 CREATE TABLE bark_knn8 (a bigint);
 INSERT INTO bark_knn8 SELECT g * 7 FROM generate_series(1, 5000) g;

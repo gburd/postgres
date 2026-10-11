@@ -93,6 +93,13 @@ bark_knn_distance(IndexScanDesc scan, IndexTuple itup)
 	bool		isnull;
 	Datum		d;
 
+	/*
+	 * A NULL center makes every distance NULL (the ordering operators are
+	 * strict), which ORDER BY sorts last and as equal: every entry is as far
+	 * as a NULL key.
+	 */
+	if (knn->centernull)
+		return get_float8_infinity();
 	datum = index_getattr(itup, knn->attno, tupdesc, &isnull);
 	if (isnull)
 		return get_float8_infinity();
@@ -124,7 +131,7 @@ bark_knn_center_key(IndexScanDesc scan)
 		isnull[c] = true;
 	}
 	values[knn->attno - 1] = knn->center;
-	isnull[knn->attno - 1] = false;
+	isnull[knn->attno - 1] = knn->centernull;
 
 	key = index_form_tuple(tupdesc, values, isnull);
 	pfree(values);
@@ -376,9 +383,12 @@ bark_knn_position(IndexScanDesc scan)
 	if (scan->instrument)
 		scan->instrument->nsearches++;
 
-	if (knn->centernull)
-		return;					/* a NULL center matches nothing */
-
+	/*
+	 * A NULL center returns every entry, at distance infinity
+	 * (bark_knn_distance), as a Sort returns every row for a NULL distance:
+	 * the cursors start at the NULL keys and read the index to both ends.
+	 * Returning nothing would drop rows.
+	 */
 	center = bark_knn_center_key(scan);
 	buf = bark_search(index, so->keyinfo, center, NULL, false, false, NULL);
 	if (!BufferIsValid(buf))
