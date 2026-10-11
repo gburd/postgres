@@ -1002,8 +1002,9 @@ place of an inverted AM, without changing the scalar design above.
   wildcard class; M2a, GIN's query interface (procedures 10-13, partial
   match included) in bitmap scans, is built: "As built (M2a)" under
   "Which interface first.", P1, merging its TID streams with required
-  keys, "As built (P1)" there, and M2c, index scans of such a column,
-  "As built (M2c)" there. M2b part 1, RUM's addon ordering (an
+  keys, "As built (P1)" there, P2, coalescing its keys by GIN's rule,
+  "As built (P2)", and M2c, index scans of such a column, "As built (M2c)"
+  there. M2b part 1, RUM's addon ordering (an
   ordering operator on the column after the extracted one, inside a
   point's run), is built: "As built (M2b part 1)" under "M3: per-locator
   data". RUM's ordering functions, the array similarity class (M2b part 2)
@@ -1234,6 +1235,29 @@ and an index with the column second, each compared with a seqscan and GIN,
 before and after DELETE, INSERT (LIST entries) and VACUUM; core's tsvector
 support functions as a BARK class, mixing point and prefix (partial-match)
 keys, NOT and phrase queries, compared with a seqscan and GIN.
+
+'''As built (P2).''' A GIN-interface column coalesces equal keys whatever
+equalimage says (bark_index_may_coalesce), the GIN key rule: keys that
+procedure 1 finds equal are one key, stored in the first row's image.
+DocumentDB's index terms have no equalimage and cannot have one (int32 1,
+int64 1 and double 1.0 compare equal), so before P2 every (term, row) was a
+SINGLE entry: 520 MB of BARK indexes against RUM's 211 MB on a million
+documents. bark_coalesce_list keeps the existing entry's image when it
+turns a SINGLE into a LIST; the build already kept a run's first. A point
+boundary is now compared once per entry, against its start (bark_mk_cmp),
+where it was compared with both ends, for every multikey scan. Measured on
+100k rows of three int4[] keys, about 1000 rows per key, through a class
+without procedure 4 (release build): the index 825 -> 134 pages (300000
+SINGLE entries -> 800 LIST and 600 POSTING; GIN 80), compares per entry
+read 2.02 -> 0.02, and @> '{7,107}' 7970 -> 12960 tps (GIN 14598), @>
+'{7,207}' 8047 -> 9423 (GIN 14625), @> '{7}' 2407 -> 2411 (GIN 2724; heap
+bound). Tests (bark_multikey_ginco.sql): a numeric[] class without
+procedure 4 on 1, 1.0 and 1.00, by insert and by CREATE INDEX: one LIST of
+three holding the first row's image, kept after that row is deleted and
+vacuumed; allequalimage still false; an index with a numeric column before
+the array, or with INCLUDE, keeps SINGLE entries; 47 queries equal to a
+seqscan and a GIN index on three indexes before and after DELETE, INSERT,
+VACUUM and bottom-up deletion; amcheck's checks pass.
 
 '''As built (M2c).''' A GIN-interface column that leads its index has
 index scans too. bark_mk_gin_items, factored out of the bitmap scan,

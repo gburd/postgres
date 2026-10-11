@@ -2032,6 +2032,7 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		int			nold = bark_entry_count_tids(cur);
 		ItemPointer all = palloc_array(ItemPointerData, nold + 1);
 		int			ins;
+		IndexTuple	curkey;
 		IndexTuple	posting;
 
 		nold = bark_entry_get_tids(cur, all, nold);
@@ -2040,14 +2041,22 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		memmove(&all[ins + 1], &all[ins], (nold - ins) * sizeof(ItemPointerData));
 		all[ins] = *newtid;
 
-		posting = bark_form_posting(RelationGetDescr(index), key, all, nold + 1);
+		/*
+		 * The key is the existing entry's, not the inserted tuple's: they
+		 * compare equal, but on a GIN-interface column their images may
+		 * differ (bark_index_may_coalesce), and the entry keeps the first.
+		 */
+		curkey = bark_single_from_list(index, cur, NULL);
+		posting = bark_form_posting(RelationGetDescr(index), curkey, all,
+									nold + 1);
 		if (posting != NULL)
 			newentry = posting;
 		else if (nold + 1 <= BARK_LIST_MAX_COUNT)
-			newentry = bark_form_list(RelationGetDescr(index), key, all,
+			newentry = bark_form_list(RelationGetDescr(index), curkey, all,
 									  nold + 1);
 		else
 			newentry = NULL;
+		pfree(curkey);
 		pfree(all);
 	}
 	if (newentry != NULL &&
@@ -2241,14 +2250,14 @@ bark_fastpath_leaf(Relation index, BarkKeyInfo *keyinfo, IndexTuple itup,
  * What every insert of one statement into the index would otherwise rebuild:
  * the comparison state, and whether equal keys coalesce, which takes a
  * catalog lookup and a support-function call per key column
- * (bark_allequalimage).  Kept in indexInfo->ii_AmCache, in ii_Context, for the
+ * (bark_index_may_coalesce).  Kept in indexInfo->ii_AmCache, in ii_Context, for the
  * life of the IndexInfo, as GIN keeps its GinState (nbtree reads its
  * allequalimage from the cached meta page instead).
  */
 typedef struct BarkInsertState
 {
 	BarkKeyInfo *keyinfo;
-	bool		coalesce;		/* non-unique and bark_allequalimage */
+	bool		coalesce;		/* non-unique and bark_index_may_coalesce */
 	int			extracted;		/* bark_index_extracted_column, or 0 */
 	MemoryContext rowcxt;		/* one row's keys and entries, reset per row */
 } BarkInsertState;
@@ -2264,7 +2273,8 @@ bark_insert_state(Relation index, IndexInfo *indexInfo)
 
 		state = palloc_object(BarkInsertState);
 		state->keyinfo = bark_build_keyinfo(index);
-		state->coalesce = !indexInfo->ii_Unique && bark_allequalimage(index);
+		state->coalesce = !indexInfo->ii_Unique &&
+			bark_index_may_coalesce(index);
 		state->extracted = bark_index_extracted_column(index);
 		state->rowcxt = NULL;
 		if (state->extracted > 0)
@@ -2298,7 +2308,7 @@ typedef enum BarkPlaceResult
  * whether the row has one key or several.
  *
  * coalesce says the index's equal keys may share an entry (non-unique and
- * bark_allequalimage).  `stack` is the descent's path to `buf`, for a
+ * bark_index_may_coalesce).  `stack` is the descent's path to `buf`, for a
  * split; a leaf the fast path found (fastpath) has none, so an entry that
  * could only be placed by a split is not placed: the leaf is released and
  * BARK_PLACE_RETRY returned, for the caller to descend.  After a split,
@@ -2332,7 +2342,7 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 	 * would be a space optimization, not a correctness matter).  Nor do keys
 	 * whose equal values can have different stored images, or indexes with
 	 * INCLUDE columns: a shared entry would return one row's bytes for all of
-	 * them (see bark_allequalimage).
+	 * them (see bark_index_may_coalesce).
 	 */
 	coalesce = coalesce && !oversized;
 	if (coalesce)
