@@ -250,7 +250,10 @@ CREATE OPERATOR CLASS my_int4_ops FOR TYPE int4 USING bark FAMILY my_int4_ops AS
      <xref linkend="bark-features-duplicates"/>) only when every key
      column's operator class has an <function>equalimage</function>
      function that returns true for the column's collation, the rule
-     B-tree applies to deduplication.
+     B-tree applies to deduplication.  A column whose class uses GIN's
+     query interface (support functions 10 and 11 or 13, without 8) is
+     exempt, as GIN's keys are: keys that support function 1 finds equal
+     are one key, stored in the image of the first row that had it.
     </para>
    </listitem>
   </varlistentry>
@@ -730,7 +733,11 @@ CREATE INDEX docs_body_idx ON docs USING bark (body);
    nondeterministic collation, keeps one entry per row.  The
    <structfield>allequalimage</structfield> column of
    <function>bark_metap</function> (<xref linkend="pageinspect"/>) shows
-   the result.  There is no storage parameter that turns this off.
+   the result of that test.  A column whose operator class uses GIN's
+   query interface follows GIN's rule instead, since no scan returns its
+   stored keys: equal keys are combined whatever their images, the entry
+   keeping the first row's, and the other key columns must still pass the
+   test.  There is no storage parameter that turns this off.
   </para>
 
   <para>

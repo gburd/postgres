@@ -1096,6 +1096,7 @@ typedef struct BarkKeyInfo
 
 extern BarkKeyInfo *bark_build_keyinfo(Relation index);
 extern bool bark_allequalimage(Relation index);
+extern bool bark_index_may_coalesce(Relation index);
 extern bool bark_column_is_extracted(Relation index, int attno);
 extern int	bark_index_extracted_column(Relation index);
 extern bool bark_index_gin_query(Relation index);
