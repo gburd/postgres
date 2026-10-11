@@ -352,3 +352,58 @@ FOR TYPE text[] USING bark FAMILY bark_text_prefix_ops AS
                                                 internal),
     FUNCTION 12 gin_cmp_prefix(text, text, int2, internal),
     STORAGE text;
+
+-- Array similarity, after RUM's rum_anyarray_ops: a % b when the cosine
+-- similarity of the two sets of non-NULL elements, |a & b| / sqrt(|a| |b|),
+-- is at least 0.5, and a <=> b is 1 minus it.  The class serves % through
+-- GIN's interface; <=> is not in it, since BARK's scans cannot order by it
+-- (BARK-Design.mediawiki, "As built (M2b part 2)"), so ORDER BY a <=> q
+-- sorts.
+CREATE FUNCTION bark_multikey_sim_match(int4[], int4[]) RETURNS bool
+AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE FUNCTION bark_multikey_sim_distance(int4[], int4[]) RETURNS float8
+AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+CREATE OPERATOR % (LEFTARG = int4[], RIGHTARG = int4[],
+                   FUNCTION = bark_multikey_sim_match, COMMUTATOR = %);
+CREATE OPERATOR <=> (LEFTARG = int4[], RIGHTARG = int4[],
+                     FUNCTION = bark_multikey_sim_distance, COMMUTATOR = <=>);
+CREATE FUNCTION bark_multikey_sim_query(int4[], internal, int2, internal,
+                                        internal, internal, internal)
+RETURNS internal AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT;
+CREATE FUNCTION bark_multikey_sim_consistent(internal, int2, int4[], int4,
+                                             internal, internal, internal,
+                                             internal)
+RETURNS bool AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT;
+CREATE FUNCTION bark_multikey_sim_triconsistent(internal, int2, int4[], int4,
+                                                internal, internal, internal)
+RETURNS "char" AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT;
+CREATE OPERATOR FAMILY bark_int4_array_sim_ops USING bark;
+CREATE OPERATOR CLASS bark_int4_array_sim_ops
+FOR TYPE int4[] USING bark FAMILY bark_int4_array_sim_ops AS
+    OPERATOR 1 % (int4[], int4[]),
+    FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
+    FUNCTION 4 btequalimage(oid),
+    FUNCTION 7 ginarrayextract(anyarray, internal, internal),
+    FUNCTION 10 bark_multikey_sim_query(int4[], internal, int2, internal,
+                                        internal, internal, internal),
+    FUNCTION 11 bark_multikey_sim_consistent(internal, int2, int4[], int4,
+                                             internal, internal, internal,
+                                             internal),
+    FUNCTION 13 bark_multikey_sim_triconsistent(internal, int2, int4[], int4,
+                                                internal, internal, internal),
+    STORAGE int4;
+
+-- The same without triConsistent, as RUM's class has none.
+CREATE OPERATOR FAMILY bark_int4_array_sim11_ops USING bark;
+CREATE OPERATOR CLASS bark_int4_array_sim11_ops
+FOR TYPE int4[] USING bark FAMILY bark_int4_array_sim11_ops AS
+    OPERATOR 1 % (int4[], int4[]),
+    FUNCTION 1 (int4[], int4[]) btint4cmp(int4, int4),
+    FUNCTION 4 btequalimage(oid),
+    FUNCTION 7 ginarrayextract(anyarray, internal, internal),
+    FUNCTION 10 bark_multikey_sim_query(int4[], internal, int2, internal,
+                                        internal, internal, internal),
+    FUNCTION 11 bark_multikey_sim_consistent(internal, int2, int4[], int4,
+                                             internal, internal, internal,
+                                             internal),
+    STORAGE int4;
