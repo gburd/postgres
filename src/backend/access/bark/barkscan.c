@@ -2899,6 +2899,18 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 				   IsMVCCLikeSnapshot(scan->xs_snapshot) &&
 				   scan->heapRelation != NULL);
 
+	/*
+	 * The number of keys handed to amrescan is authoritative, not the count
+	 * from beginscan.  index_rescan asserts the two are equal, but an
+	 * extension AM that wraps BARK and calls amrescan directly (DocumentDB's
+	 * composite-scan fold in pg_documentdb's rum.c folds several planner
+	 * scan keys into one key and calls amrescan with nscankeys = 1) may pass
+	 * fewer, having asked beginscan for extra key storage.  Believe the
+	 * argument, as nbtree and RUM do; every reader below uses
+	 * scan->numberOfKeys.
+	 */
+	scan->numberOfKeys = nscankeys;
+
 	if (scankey && nscankeys > 0)
 		memcpy(scan->keyData, scankey, nscankeys * sizeof(ScanKeyData));
 	if (orderbys && norderbys > 0)

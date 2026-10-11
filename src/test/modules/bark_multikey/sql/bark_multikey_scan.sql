@@ -411,6 +411,12 @@ SELECT bark_multikey_parallel('mk_b1_a', '&&(anyarray,anyarray)',
                               '{1,5,77}'::int4[]);
 SELECT bark_multikey_parallel('mk_b1_a', '&&(anyarray,anyarray)',
                               '{5}'::int4[]);
+-- The AM must believe amrescan's nscankeys, not scan->numberOfKeys: a scan
+-- begun with two key slots but rescanned with one key (DocumentDB's
+-- composite-scan fold) reads the same TIDs as a plain one-key scan of the
+-- same qual, not a wrong set or an error from an uninitialized second slot.
+SELECT bark_multikey_rescan_fewer('mk_b1_a', '&&(anyarray,anyarray)',
+                                  '{5}'::int4[]) AS fewer_ok;
 -- A scan that starts backward is fine.
 EXPLAIN (COSTS OFF)
 SELECT id FROM mk_b2 WHERE tenant IN (1, 3) AND a && '{1,5,77}'
