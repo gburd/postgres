@@ -186,6 +186,19 @@ CREATE OPERATOR CLASS my_int4_ops FOR TYPE int4 USING bark FAMILY my_int4_ops AS
   scalar operator class in a B-tree operator family, as above.
  </para>
 
+ <para>
+  <command>CREATE ACCESS METHOD <replaceable>name</replaceable> TYPE INDEX
+  HANDLER barkhandler</command> makes another access method that runs BARK's
+  code, as an extension that names its own access method (DocumentDB names
+  its alternate index access method <literal>documentdb_bark</literal>, for
+  example) may need.  Its indexes, and the operator families created
+  <literal>USING</literal> it, behave as BARK's: a family of the new access
+  method is BARK's own, and the functions of <xref linkend="amcheck"/>,
+  <xref linkend="pageinspect"/> and <xref linkend="pgstattuple"/> accept its
+  indexes.  <xref linkend="app-pgamcheck"/> selects indexes by access method
+  and does not check them.
+ </para>
+
 </sect2>
 
 <sect2 id="bark-support-funcs">
