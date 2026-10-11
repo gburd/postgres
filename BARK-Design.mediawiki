@@ -1023,8 +1023,11 @@ place of an inverted AM, without changing the scalar design above.
   wildcard class; M2a, GIN's query interface (procedures 10-13, partial
   match included) in bitmap scans, is built: "As built (M2a)" under
   "Which interface first.", and P1, merging its TID streams with required
-  keys, "As built (P1)" there. RUM's ordering functions and the array and
-  scalar classes are not started)''
+  keys, "As built (P1)" there. M2b part 1, RUM's addon ordering (an
+  ordering operator on the column after the extracted one, inside a
+  point's run), is built: "As built (M2b part 1)" under "M3: per-locator
+  data". RUM's ordering functions, the array similarity class (M2b part 2)
+  and the scalar classes are not started)''
 * '''M3''' -- extra data per locator (RUM's addInfo). ''Closed, not
   needed'': a composite key (key, value) holds the same members in the same
   order, and every use case found is served by one. What both would need,
@@ -2349,6 +2352,62 @@ them, as well as to BARK's scan and barkcostestimate. This is RUM's
 <code>ORDER BY ts &lt;=&gt; x</code> form. A plain <code>ORDER BY
 created</code> would need the planner to learn from a qual that the
 extracted column is fixed, and is left out.
+
+'''As built (M2b part 1).''' The planner asks the AM. A new optional
+IndexAmRoutine callback, <code>amorderbyopcolumn(IndexOptInfo *, List
+*indexclauses)</code>, copied into IndexOptInfo by get_relation_info, names
+the one column besides the leading one on which an index that is both
+amcanorder and amcanorderbyop can serve an ordering operator for a path's
+clauses; step 6 of build_index_paths calls it and passes the column to
+match_pathkeys_to_index, which otherwise still matches the leading column
+only. The core change is those few lines; an AM without the callback is
+unaffected. barkorderbyopcolumn walks the key columns from the first: a
+btree column is fixed by an equality among its clauses, the extracted
+column by its only clause when that has a Const and procedure 8 returns one
+point boundary whose two ends are the same argument (bark_cost_boundaries
+now reports it), and the answer is the column after the fixed prefix,
+unless that is the extracted column (its own ordering walks boundaries, not
+a run). So <code>tags &amp;&amp; '{x}'</code> and <code>tags @&gt;
+'{x}'</code> fix the column; <code>'{x,y}'</code>, two clauses on the
+column, an IN list on an earlier column, or a Param in the extracted
+column's clause fix nothing and leave a Sort. A Param in an earlier
+column's equality does fix it.
+
+The scan (barkknn.c): at rescan bark_knn_fix_column puts each fixed
+column's value from the scan keys into a BarkScanBound, the extracted
+column's point from its boundary (bark_mk_point in barkscan.c, the NULL
+entries' boundary as a NULL) and a plain equality's argument with its ORDER
+proc, then the center; bark_search_bound and bark_binsrch_bound position the
+two cursors as a plain scan's bound does, and bark_knn_readpage ends a
+cursor at the first entry outside the run. A row's keys are distinct, so a
+row has at most one entry in a point's run: the cursors use no seen set and
+no row repeats. A NULL fixed value (a generic plan's <code>tenant =
+$1</code> with $1 NULL) makes the run empty and the scan returns nothing, as
+the qual matches nothing; a NULL center (12b6ed60d3a) returns every row of
+the run at distance infinity. A scan whose keys do not fix the prefix
+raises an error rather than return rows out of order; only a direct caller
+of the AM can build one, since the planner offers the path only when they
+do. barkcostestimate counts the quals on the columns before the ordered one
+as bounding the scan, the extracted column's point as an equality, and
+leaves the others as filters. bark_property answers
+<code>distance_orderable</code> false for the later column, since whether
+it is ordered depends on the query.
+
+Tested in bark_multikey_scan.sql ("RUM's addon ordering") on 30000 rows
+with bark(tags, created) and bark(tenant, tags, created), the run of a tag
+spanning many leaves, created repeating about six times (ties) and NULL in
+one row of 97: EXPLAIN shows an index scan with Order By and no Sort for a
+point qual, with and without a tenant equality, and a Sort for two keys,
+two clauses, @&gt; of two elements; 21 queries (LIMIT 7 to 3001 and none,
+centers inside and outside the data, an empty run, a tenant with no rows)
+match a Sort over a seqscan of the same rows in count, distinct ids, the
+exact distance sequence and the ids inside the cut, before and after
+inserts that split the run's leaves; and a generic plan (force_generic_plan)
+on both indexes with a NULL center, a NULL tenant, NULL LIMIT and real
+values, ten executions, each compared with the seqscan's rows of the run
+(none outside it, none missing without a LIMIT, the same distances). The
+lead's randomized check, 600 queries over six index shapes before and after
+inserts and deletes, matched a seqscan Sort exactly.
 
 ==== Which operator classes would need it ====
 

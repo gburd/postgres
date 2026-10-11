@@ -87,6 +87,7 @@ PG_FUNCTION_INFO_V1(bark_multikey_has_marker);
 PG_FUNCTION_INFO_V1(bark_multikey_mark_restore);
 PG_FUNCTION_INFO_V1(bark_multikey_reverse);
 PG_FUNCTION_INFO_V1(bark_multikey_parallel);
+PG_FUNCTION_INFO_V1(bark_multikey_knn);
 PG_FUNCTION_INFO_V1(bark_multikey_extract_query);
 PG_FUNCTION_INFO_V1(bark_multikey_recheck);
 PG_FUNCTION_INFO_V1(bark_multikey_translate_cmptype);
@@ -965,6 +966,124 @@ bark_multikey_parallel(PG_FUNCTION_ARGS)
 	table_close(heap, AccessShareLock);
 	relation_close(index, AccessShareLock);
 	PG_RETURN_INT64(n);
+}
+
+/*
+ * bark_multikey_knn(index, cols, ops, args, ordcol, ordop, center) -> setof
+ * (tid, dist, recheck): an ordered scan of index with the scan keys and the
+ * one ordering key the caller gives, passed to the index AM as given, so
+ * that keys the planner never pairs with an ordering key can be tried.  Key
+ * i is column cols[i] ops[i] args[i], args[i] read as the operator's right
+ * type (the column's type for a polymorphic one), an array of it (a
+ * ScalarArrayOp key) when it is not an array type and args[i] starts with
+ * '{', and NULL for a NULL argument; a NULL ops[i] is a NULL test, IS NULL
+ * when args[i] is 'null' and IS NOT NULL otherwise.  The ordering key is
+ * column ordcol ordop center.  The scan is rescanned once before it is
+ * read, as a nested loop rescans its inner side.  Every TID comes back in
+ * the order returned, with its distance and whether the executor would
+ * recheck it.
+ */
+Datum
+bark_multikey_knn(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	Relation	index = open_bark_index(PG_GETARG_TEXT_PP(0));
+	AttrNumber	ordcol = PG_GETARG_INT32(4);
+	Oid			ordop = PG_GETARG_OID(5);
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	Datum	   *cols;
+	Datum	   *ops;
+	Datum	   *args;
+	bool	   *colnulls;
+	bool	   *opnulls;
+	bool	   *argnulls;
+	int			nkeys;
+	int			nops;
+	int			nargs;
+	ScanKey		keys;
+	ScanKeyData ob;
+	int			strategy;
+	Oid			lefttype;
+	Oid			righttype;
+	IndexScanDesc scan;
+
+	InitMaterializedSRF(fcinfo, 0);
+	deconstruct_array_builtin(PG_GETARG_ARRAYTYPE_P(1), INT2OID, &cols,
+							  &colnulls, &nkeys);
+	deconstruct_array(PG_GETARG_ARRAYTYPE_P(2), REGOPERATOROID,
+					  sizeof(Oid), true, TYPALIGN_INT, &ops, &opnulls, &nops);
+	deconstruct_array_builtin(PG_GETARG_ARRAYTYPE_P(3), TEXTOID, &args,
+							  &argnulls, &nargs);
+	if (nops != nkeys || nargs != nkeys)
+		elog(ERROR, "cols, ops and args must have the same length");
+	keys = palloc0_array(ScanKeyData, Max(nkeys, 1));
+	for (int i = 0; i < nkeys; i++)
+	{
+		AttrNumber	col = DatumGetInt16(cols[i]);
+		Oid			opno;
+		Oid			typinput;
+		Oid			typioparam;
+		char	   *arg;
+		bool		saop;
+
+		if (opnulls[i])
+		{
+			bool		isnull = !argnulls[i] &&
+				strcmp(TextDatumGetCString(args[i]), "null") == 0;
+
+			ScanKeyEntryInitialize(&keys[i], SK_ISNULL |
+								   (isnull ? SK_SEARCHNULL : SK_SEARCHNOTNULL),
+								   col, InvalidStrategy, InvalidOid,
+								   InvalidOid, InvalidOid, (Datum) 0);
+			continue;
+		}
+		opno = DatumGetObjectId(ops[i]);
+		get_op_opfamily_properties(opno, index->rd_opfamily[col - 1], false,
+								   &strategy, &lefttype, &righttype);
+		if (IsPolymorphicType(righttype))
+			righttype = index->rd_opcintype[col - 1];
+		arg = argnulls[i] ? NULL : TextDatumGetCString(args[i]);
+		saop = arg != NULL && arg[0] == '{' && !type_is_array(righttype);
+		ScanKeyEntryInitialize(&keys[i], (arg == NULL ? SK_ISNULL : 0) |
+							   (saop ? SK_SEARCHARRAY : 0), col,
+							   strategy, righttype,
+							   index->rd_indcollation[col - 1],
+							   get_opcode(opno), (Datum) 0);
+		if (arg != NULL)
+		{
+			getTypeInputInfo(saop ? get_array_type(righttype) : righttype,
+							 &typinput, &typioparam);
+			keys[i].sk_argument = OidInputFunctionCall(typinput, arg,
+													   typioparam, -1);
+		}
+	}
+	get_op_opfamily_properties(ordop, index->rd_opfamily[ordcol - 1], true,
+							   &strategy, &lefttype, &righttype);
+	ScanKeyEntryInitialize(&ob, SK_ORDER_BY, ordcol, strategy, righttype,
+						   index->rd_indcollation[ordcol - 1],
+						   get_opcode(ordop), PG_GETARG_DATUM(6));
+
+	scan = index_beginscan(heap, index, false, GetActiveSnapshot(), NULL,
+						   nkeys, 1, 0);
+	index_rescan(scan, keys, nkeys, &ob, 1);
+	index_rescan(scan, keys, nkeys, &ob, 1);
+	while (tableam_index_getnext_tid(scan, ForwardScanDirection))
+	{
+		Datum		values[3];
+		bool		nulls[3] = {0};
+
+		values[0] = ItemPointerGetDatum(&scan->xs_heaptid);
+		values[1] = scan->xs_orderbyvals[0];
+		nulls[1] = scan->xs_orderbynulls[0];
+		values[2] = BoolGetDatum(scan->xs_recheck);
+		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values,
+							 nulls);
+	}
+	index_endscan(scan);
+
+	table_close(heap, AccessShareLock);
+	relation_close(index, AccessShareLock);
+	return (Datum) 0;
 }
 
 /*
