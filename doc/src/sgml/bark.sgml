@@ -779,7 +779,9 @@ SELECT id, id &lt;~&gt; 5000 AS distance FROM orders ORDER BY id &lt;~&gt; 5000 
  4999 |        1
 (3 rows)
 </programlisting>
-   Rows with a NULL key come last.  Only one such ordering operator is used
+   Rows with a NULL key come last.  A NULL constant makes every distance
+   NULL, so the scan then returns every row, as a sort would.  Only one
+   such ordering operator is used
    per scan.  A nearest-neighbor scan is never parallel, and it can be
    combined with other index conditions, which then filter the rows it
    reads.
