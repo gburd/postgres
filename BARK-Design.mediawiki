@@ -1028,8 +1028,10 @@ place of an inverted AM, without changing the scalar design above.
   there. M2b part 1, RUM's addon ordering (an
   ordering operator on the column after the extracted one, inside a
   point's run), is built: "As built (M2b part 1)" under "M3: per-locator
-  data". RUM's ordering functions, the array similarity class (M2b part 2)
-  and the scalar classes are not started)''
+  data". M2b part 2, an array similarity class after rum_anyarray_ops, is
+  built for its % operator, "As built (M2b part 2)" there, with the <=>
+  ordering operator left to the executor's Sort for the reasons given.
+  The scalar classes are not started)''
 * '''M3''' -- extra data per locator (RUM's addInfo). ''Closed, not
   needed'': a composite key (key, value) holds the same members in the same
   order, and every use case found is served by one. What both would need,
@@ -2467,6 +2469,39 @@ values, ten executions, each compared with the seqscan's rows of the run
 (none outside it, none missing without a LIMIT, the same distances). The
 lead's randomized check, 600 queries over six index shapes before and after
 inserts and deletes, matched a seqscan Sort exactly.
+
+'''As built (M2b part 2).''' The bark_multikey test module adds an array
+similarity class after RUM's rum_anyarray_ops, over int4[]: a % q when the
+cosine similarity |a &cap; q| / sqrt(|a| |q|) of the non-NULL element sets
+is at least 0.5, and a <=> q = 1 minus it. % is a GIN-interface operator
+(strategy with procedures 7/10/11 and 13): extractQuery returns q's
+distinct non-NULL elements with GIN_SEARCH_MODE_DEFAULT, and consistent
+(and triConsistent) count the query elements the row holds and apply the
+0.5 cosine threshold, with the row's own |a| from its recheck of the heap
+tuple. So BARK serves % by the bitmap and (M2c) index scans, through
+bark_int4_array_sim_ops and the procedure-13-less bark_int4_array_sim11_ops;
+the class bark(a sim_ops, cardinality(a)) adds the length as a fixed column.
+
+<=> is not served as an ordered index scan, and the planner leaves it to a
+Sort over the % bitmap. The KNN machinery (barkknn.c) cannot answer it
+without changes outside M2b's scope: it computes an entry's distance as the
+ordering operator of (that entry's key, the center), but <=>'s distance
+depends on m, the number of q's elements the row holds, which no single
+entry carries (bark(a, cardinality(a)) gives only a bound, 1 -
+min(n,q)/sqrt(nq), which would need a class bound function, not the
+operator); the candidate rows lie in q runs, one per query element, and
+bark_knn positions its two cursors in one run; a row has up to m entries in
+those runs, and bark_knn assumes one entry per row; and bark_mk_order_setup
+requires the ordering operator to return the column's key type, which
+float8 is not. The lower-bound route a true <=> scan would take (sort the
+GIN item list by m, return 1 - sqrt(m/q) with xs_recheckorderby and let the
+executor reorder) still computes the whole result first, no better than the
+Sort the planner already uses, so it is not built. The test
+(bark_multikey_sim.sql) runs every query's % as a bitmap and an index scan
+on all three classes, whole and under LIMIT 1 and 7, against a seqscan
+ordered by the exact distance, before and after DELETE/UPDATE/INSERT/VACUUM:
+60 of 60 equal; the exact <=> distances match a seqscan's; and ORDER BY a
+<=> q without % has no index path.
 
 ==== Which operator classes would need it ====
 
