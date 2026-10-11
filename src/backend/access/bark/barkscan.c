@@ -520,7 +520,9 @@ bark_mk_keycmp(BarkMkScanState *mk, Datum a, Datum b)
 
 /*
  * Where does a value of the extracted column (isnull) sort against boundary
- * b in index order: <0 before it, 0 inside it, >0 after it.
+ * b in index order: <0 before it, 0 inside it, >0 after it.  A point's start
+ * and end are the same key, so one comparison with it answers; this is the
+ * compare every entry of an = or GIN-interface key pays.
  */
 static int
 bark_mk_cmp(BarkMkScanState *mk, Datum datum, bool isnull,
@@ -534,6 +536,9 @@ bark_mk_cmp(BarkMkScanState *mk, Datum datum, bool isnull,
 			return 0;
 		return (isnull == mk->col->nulls_first) ? -1 : 1;
 	}
+	/* A point is non-strict at both ends, which are the one key. */
+	if (b->point)
+		return bark_mk_keycmp(mk, datum, b->start);
 	if (b->hasstart)
 	{
 		c = bark_mk_keycmp(mk, datum, b->start);
