@@ -144,6 +144,99 @@ my $final = $node->safe_psql('postgres',
 is($final, '0',
 	'two VACUUM (FREEZE) passes after DELETE reclaim the chain post-recovery');
 
+# Keep three disjoint producing hops across repeated pruning.  Later repeated
+# v hops and an empty-bitmap payload hop must not strand the older u anchor.
+# Nine attributes also exercise re-stubbing an eight-attribute bitmap after
+# ADD COLUMN, when its write-time bitmap width differs from the relation's.
+$node->safe_psql('postgres', q{
+	CREATE EXTENSION pageinspect;
+	CREATE TABLE repeat_prune (id int PRIMARY KEY, u int UNIQUE, v int, k int,
+		payload text, a int, b int, c int)
+		WITH (fillfactor = 40, autovacuum_enabled = false);
+	CREATE INDEX repeat_prune_v ON repeat_prune(v);
+	CREATE INDEX repeat_prune_k ON repeat_prune(k);
+	INSERT INTO repeat_prune VALUES (1, 10, 20, 30, 'start', 0, 0, 0);
+});
+my $holder = $node->background_psql('postgres');
+$holder->query_safe('BEGIN ISOLATION LEVEL REPEATABLE READ');
+is($holder->query_safe('SELECT u FROM repeat_prune'), '10',
+	'old snapshot sees original key');
+$node->safe_psql('postgres', 'UPDATE repeat_prune SET u = 11');
+$node->safe_psql('postgres', 'VACUUM (INDEX_CLEANUP OFF) repeat_prune');
+is($holder->query_safe('SELECT u FROM repeat_prune'), '10',
+	'pruning preserves snapshot-visible predecessor');
+$holder->query_safe('COMMIT');
+$holder->quit;
+
+my $wal_start = $node->safe_psql('postgres', 'SELECT pg_current_wal_insert_lsn()');
+for my $sql (
+	'UPDATE repeat_prune SET v = 21',
+	'UPDATE repeat_prune SET k = 31',
+	'ALTER TABLE repeat_prune ADD COLUMN d int DEFAULT 0',
+	'UPDATE repeat_prune SET v = 22',
+	"UPDATE repeat_prune SET payload = 'end'")
+{
+	$node->safe_psql('postgres', $sql);
+	$node->safe_psql('postgres', 'VACUUM (INDEX_CLEANUP OFF) repeat_prune');
+}
+
+# No checkpoint intervenes between the updates and repeated prunes, so the
+# dirty heap page needs no new backup image for the rewritten stub links.
+my $stub_query = q{
+	SELECT lp, t_ctid, t_infomask2, encode(t_data, 'hex')
+	FROM heap_page_items(get_raw_page('repeat_prune', 0)) ORDER BY lp
+};
+my $before_crash = $node->safe_psql('postgres', $stub_query);
+my $wal_end = $node->safe_psql('postgres', 'SELECT pg_current_wal_insert_lsn()');
+my ($wal_dump) = run_command(
+	['pg_waldump', '-p', $node->data_dir . '/pg_wal',
+	 '-s', $wal_start, '-e', $wal_end]);
+like($wal_dump, qr/PRUNE[^\n]*nstubs: [1-9][^\n]*stubs:[^\n]*2->4[^\n]*FPW for WAL verification/,
+	'WAL contains re-pointing of an existing stub without a new heap image');
+$node->safe_psql('postgres', 'SELECT pg_switch_wal()');
+like($before_crash, qr/\(8,/, 'existing stubs retain eight-attribute bitmap width');
+$node->stop('immediate');
+$node->start;
+is($node->safe_psql('postgres', $stub_query), $before_crash,
+	'prune redo preserves physical stub links and bitmaps');
+for my $probe (
+	['id', 1, '1|11|22|31|end'],
+	['u', 10, ''], ['u', 11, '1|11|22|31|end'],
+	['v', 20, ''], ['v', 21, ''], ['v', 22, '1|11|22|31|end'],
+	['k', 30, ''], ['k', 31, '1|11|22|31|end'])
+{
+	my ($column, $key, $expected) = @$probe;
+	is($node->safe_psql('postgres', qq{
+		SET enable_seqscan = off;
+		SET enable_bitmapscan = off;
+		SET enable_indexonlyscan = off;
+		SELECT id, u, v, k, payload FROM repeat_prune WHERE $column = $key;
+	}), $expected, "re-pruned anchor $column=$key after recovery");
+}
+
+$node->safe_psql('postgres', 'DELETE FROM repeat_prune');
+for (1 .. 2)
+{
+	$node->safe_psql('postgres', 'VACUUM (FREEZE, TRUNCATE OFF) repeat_prune');
+}
+is($node->safe_psql('postgres', q{
+	SELECT count(*) FROM heap_page_items(get_raw_page('repeat_prune', 0))
+	WHERE lp_flags IN (1, 2)
+}), '0', 'terminal pruning reclaims stubs and their incoming links');
+$node->safe_psql('postgres', q{
+	INSERT INTO repeat_prune SELECT g, g, g, g, 'reuse', 0, 0, 0, 0
+	FROM generate_series(100, 110) g
+});
+is($node->safe_psql('postgres', q{
+	SELECT min(ctid)::text FROM repeat_prune
+}), '(0,1)', 'insertion reuses reclaimed anchor offset');
+is($node->safe_psql('postgres', q{
+	SET enable_seqscan = off;
+	SET enable_bitmapscan = off;
+	SET enable_indexonlyscan = off;
+	SELECT count(*) FROM repeat_prune WHERE u BETWEEN 10 AND 11
+}), '0', 'reused offsets do not resurrect obsolete keys');
+
 $node->stop;
 
 done_testing();
