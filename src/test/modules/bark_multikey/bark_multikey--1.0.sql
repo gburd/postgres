@@ -254,6 +254,13 @@ CREATE FUNCTION bark_multikey_reverse(index text, op regoperator,
 RETURNS text
 AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
 
+-- Scan an index on column 1 op query, one step per character of steps
+-- ('f' forward, 'b' backward), and list the TIDs read ("-" for none).
+CREATE FUNCTION bark_multikey_walk(index text, op regoperator,
+                                   query anyelement, steps text)
+RETURNS text
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
 -- Scan an index on column 1 op query as the only participant of a parallel
 -- scan, and count the rows, without asking whether it may be parallel.
 CREATE FUNCTION bark_multikey_parallel(index text, op regoperator,
@@ -282,7 +289,7 @@ AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
 -- GIN's query interface (procedures 10-13) over int4[]: core's GIN array
 -- support functions, unchanged.  ginarrayextract has GIN's extractValue
 -- signature, which is procedure 7's three-argument form, so it needs no
--- wrapper.  With procedure 10 and not 8 the class has bitmap scans only.
+-- wrapper.  With procedure 10 and not 8 a scan computes its whole result first.
 CREATE OPERATOR FAMILY bark_gin_int4_array_ops USING bark;
 CREATE OPERATOR CLASS bark_gin_int4_array_ops
 FOR TYPE int4[] USING bark FAMILY bark_gin_int4_array_ops AS
