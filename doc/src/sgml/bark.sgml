@@ -287,7 +287,8 @@ CREATE OPERATOR CLASS my_int4_ops FOR TYPE int4 USING bark FAMILY my_int4_ops AS
    column is built, maintained and scanned like any other BARK index;
    <xref linkend="bark-multikey-scans"/> describes how a scan reads it.
    The planner does not use such an index to provide a sort order on the
-   multikey column or on any column after it.
+   multikey column or on any column after it, except through an ordering
+   operator (<xref linkend="bark-multikey-scans"/>).
   </para>
 
   <para>
@@ -622,7 +623,13 @@ CREATE INDEX tagged_tags_idx ON tagged USING bark (tags my_int4_array_ops);
    such a condition the planner usually prefers a bitmap scan and a sort,
    while a <literal>LIMIT</literal> without one favors the ordered scan.  An
    ordering operator on an ordinary leading column (<literal>ORDER BY
-   tenant &lt;~&gt; 3</literal>) also returns each row once.  A bitmap
+   tenant &lt;~&gt; 3</literal>) also returns each row once.  So does an
+   ordering operator on the ordinary column after the multikey one, when
+   the multikey column has a single condition with one key and every column
+   before it an equality (<literal>WHERE tags &amp;&amp; '{42}' ORDER BY
+   created &lt;~&gt; 5000</literal>): a row has at most one entry for that
+   key, and the scan reads that key's entries in <literal>created</literal>
+   order (see <xref linkend="bark-features-knn"/>).  A bitmap
    scan has none of these limits.
   </para>
  </sect3>
@@ -777,7 +784,8 @@ CREATE INDEX urls_url_idx ON urls USING bark (url) WITH (prefix_compression = on
    BARK answers <literal>ORDER BY <replaceable>column</replaceable> &lt;~&gt;
    <replaceable>constant</replaceable></literal> for a
    <type>smallint</type>, <type>integer</type> or <type>bigint</type>
-   column that is the index's first column.  The operator
+   column that is the index's first column, or that follows columns the
+   query's conditions fix to one value each (see below).  The operator
    <literal>&lt;~&gt;</literal> returns the absolute difference of its
    operands as <type>double precision</type>.  The scan descends to the
    constant and reads outward in both directions, returning rows in order
@@ -798,6 +806,31 @@ SELECT id, id &lt;~&gt; 5000 AS distance FROM orders ORDER BY id &lt;~&gt; 5000 
    per scan.  A nearest-neighbor scan is never parallel, and it can be
    combined with other index conditions, which then filter the rows it
    reads.
+  </para>
+
+  <para>
+   A later column can be ordered too, when every column before it is fixed
+   to one value by the query: an ordinary column by an equality, and a
+   multikey column (<xref linkend="bark-multikey-scans"/>) by a single
+   condition with a constant that its support function 8 turns into one
+   key.  The index keeps the entries of one such prefix together and in
+   the order of the next column, so the scan descends to the prefix and the
+   constant and reads outward inside that run of entries only:
+<programlisting>
+CREATE INDEX ON events USING bark (tenant, tags bark_int4_array_ops, created);
+SELECT id FROM events
+ WHERE tenant = 7 AND tags &amp;&amp; '{42}'
+ ORDER BY created &lt;~&gt; 5000 LIMIT 10;
+</programlisting>
+   This is the form RUM's <literal>ORDER BY ts &lt;=&gt; x</literal> takes
+   after a term condition.  An <literal>IN</literal> list, a range, a
+   parameter in the multikey condition, a condition that yields more than
+   one key, or a second condition on the multikey column fixes nothing, and
+   the planner sorts instead.  A parameter in an equality on an ordinary
+   column does fix it; if the parameter is NULL the scan returns no row, as
+   the condition matches none.  <function>pg_index_column_has_property</function>
+   reports <literal>distance_orderable</literal> false for such a later
+   column, since whether it can be ordered depends on the query.
   </para>
  </sect3>
 
