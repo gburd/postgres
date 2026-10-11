@@ -50,6 +50,7 @@ tests += {
       't/008_redo_dropped_index.pl',
       't/009_validate_single_user.pl',
       't/010_bottomup_wal_level.pl',
+      't/011_insert_multi_recovery.pl',
     ],
   },
 }

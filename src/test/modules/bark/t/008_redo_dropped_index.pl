@@ -35,6 +35,7 @@ $node->start;
 $node->safe_psql(
 	'postgres', q[
 CREATE EXTENSION amcheck;
+CREATE EXTENSION bark_multikey;
 CREATE TABLE wi_split (k int, s text) WITH (autovacuum_enabled = off);
 CREATE INDEX wi_split_idx ON wi_split USING bark (s);
 CREATE TABLE wi_prefix (k int, s text) WITH (autovacuum_enabled = off);
@@ -58,15 +59,17 @@ CREATE TABLE wi_vac (a int, pad text) WITH (autovacuum_enabled = off);
 INSERT INTO wi_vac SELECT g, repeat('x', 100) FROM generate_series(1, 20000) g;
 INSERT INTO wi_vac SELECT 100000 + g % 20, 'y' FROM generate_series(1, 20000) g;
 CREATE INDEX wi_vac_idx ON wi_vac USING bark (a);
+CREATE TABLE wi_multi (id int, a int4[]) WITH (autovacuum_enabled = off);
+CREATE INDEX wi_multi_idx ON wi_multi USING bark (a bark_int4_array_ops);
 CREATE TABLE keep_t (k int, v int, pad text)
   WITH (fillfactor = 100, autovacuum_enabled = off);
 CREATE INDEX keep_t_k ON keep_t USING bark (k);
 CREATE INDEX keep_t_v ON keep_t USING bark (v);
 ]);
 my @dropped = qw(wi_split_idx wi_prefix_idx wi_dup_idx wi_hkl_idx wi_hkp_idx
-  wi_big_idx wi_churn_k wi_churn_v wi_churn_u wi_vac_idx keep_t_v);
+  wi_big_idx wi_churn_k wi_churn_v wi_churn_u wi_vac_idx wi_multi_idx keep_t_v);
 my @tables = qw(wi_split wi_prefix wi_dup wi_hkl wi_hkp wi_big wi_churn
-  wi_vac keep_t);
+  wi_vac wi_multi keep_t);
 
 # pg_waldump's --relation argument for an index's current file.
 sub relpath
@@ -154,6 +157,8 @@ SELECT 1 FROM txid_current();
 VACUUM wi_vac;
 INSERT INTO wi_vac SELECT 2000 + g % 10000, repeat('z', 100)
   FROM generate_series(1, 20000) g;
+INSERT INTO wi_multi SELECT g, ARRAY[3 * g, 3 * g + 1, 3 * g + 2]
+  FROM generate_series(1, 3000) g;
 ]);
 
 # keep_t, as wi_churn then wi_vac: bottom-up deletion (DELETE), then emptied
@@ -181,6 +186,9 @@ SELECT count(*) FILTER (WHERE bark_index_check(i, true) IS NOT NULL)
                     'wi_hkp_idx', 'wi_big_idx', 'wi_churn_k', 'wi_churn_v',
                     'wi_churn_u', 'wi_vac_idx', 'keep_t_k', 'keep_t_v']::regclass[]) i;
 ]), '12', 'every index passes amcheck before the crash');
+# heapallindexed does not cover a multikey column.
+is($node->safe_psql('postgres', "SELECT bark_index_check('wi_multi_idx')"),
+	'', 'the multikey index passes amcheck before the crash');
 
 # The pre-crash snapshot of every table, read by sequential scans.
 my $seq_settings = q[
@@ -237,7 +245,7 @@ foreach my $file (sort keys %files)
 }
 # REUSE_PAGE changes no page: it names its index in the record, not in a
 # block reference, so the type is checked over the whole interval.
-foreach my $type (qw(INSERT_LEAF INSERT_UPPER SPLIT NEWROOT OVERWRITE ADD_TID
+foreach my $type (qw(INSERT_LEAF INSERT_MULTI INSERT_UPPER SPLIT NEWROOT OVERWRITE ADD_TID
 	INSERT_SWAP OVERFLOW VACUUM DELETE MERGE UNLINK_PAGE MARK_DELETED))
 {
 	ok($dropped_types{$type}, "$type records of dropped indexes are replayed");
@@ -280,7 +288,8 @@ ok(defined $done && lsn_ge($done, $drop_start),
 is($node->safe_psql('postgres', q[
 SELECT count(*) FROM pg_class WHERE relname IN ('wi_split_idx', 'wi_prefix_idx',
   'wi_dup_idx', 'wi_hkl_idx', 'wi_hkp_idx', 'wi_big_idx', 'wi_churn_k',
-  'wi_churn_v', 'wi_churn_u', 'wi_vac_idx', 'keep_t_v', 'keep_t_k');
+  'wi_churn_v', 'wi_churn_u', 'wi_vac_idx', 'wi_multi_idx', 'keep_t_v',
+  'keep_t_k');
 ]), '1', 'only the kept index remains');
 is($node->safe_psql('postgres', $snapshot_sql), $snapshot,
 	'every table matches its pre-crash snapshot');

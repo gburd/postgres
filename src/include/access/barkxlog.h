@@ -52,6 +52,8 @@
 										 * deletion) */
 #define XLOG_BARK_MERGE			0xE0	/* merge a leaf's equal-key entries
 										 * before a split */
+#define XLOG_BARK_INSERT_MULTI	0xF0	/* add several entries of one row to
+										 * a leaf */
 
 /*
  * The meta page's root and level, set by NEWROOT and CREATE_ROOT, as
@@ -307,6 +309,30 @@ typedef struct xl_bark_insert
 } xl_bark_insert;
 
 #define SizeOfBarkInsert	(offsetof(xl_bark_insert, offnum) + sizeof(OffsetNumber))
+
+/*
+ * Insertion of several leaf entries of one row on one leaf
+ * (bark_insert_multi): the run of a multikey row's keys that go on the leaf
+ * as plain new entries, one after another, which would otherwise each be an
+ * INSERT_LEAF record.  The entries are in ascending order, and each offset
+ * is where its entry is once the entries before it are in, so redo adds them
+ * in order at the logged offsets, as the primary did.  A run of one entry is
+ * logged as INSERT_LEAF.  The entries are coded for the page and
+ * MAXALIGN-sized, as an INSERT_LEAF's entry.
+ *
+ * Backup Blk 0: leaf page
+ *
+ * Main data: xl_bark_insert_multi, then the entries' offsets (nentries)
+ * In payload of blk 0: the entries, back to back, in offset order
+ */
+typedef struct xl_bark_insert_multi
+{
+	uint16		nentries;
+
+	/* OFFSET NUMBERS FOLLOW (nentries) */
+} xl_bark_insert_multi;
+
+#define SizeOfBarkInsertMulti	(offsetof(xl_bark_insert_multi, nentries) + sizeof(uint16))
 
 /*
  * Replacement of one leaf entry by a new one, usually larger: a LIST or

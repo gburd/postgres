@@ -532,6 +532,86 @@ bark_insert_entry(Relation index, Buffer buf, IndexTuple itup,
 }
 
 /*
+ * Add the entries itups[0..n), n >= 2, of one row at offsets offs[0..n) of
+ * the write-locked leaf `buf`, in that order, and WAL-log them in one record
+ * (INSERT_MULTI), where bark_insert_entry would log one INSERT_LEAF each.
+ * bark_plan_multi chose them: each is a plain new entry, the page has room
+ * for all of them, and each offset counts the entries added before it.  As in
+ * bark_insert_entry, the entries are coded for the page before the critical
+ * section, and logged coded.
+ */
+static void
+bark_insert_multi(Relation index, Buffer buf, IndexTuple *itups, int n,
+				  const OffsetNumber *offs)
+{
+	Page		page = BufferGetPage(buf);
+	Size		len = 0;
+	char	   *data;
+	char	   *pos;
+	XLogRecPtr	recptr;
+
+	Assert(n >= 2);
+	for (int k = 0; k < n; k++)
+		len += bark_coded_size(page, itups[k]);
+	data = palloc(len);
+	pos = data;
+	for (int k = 0; k < n; k++)
+	{
+		IndexTuple	coded = bark_prefix_encode(page, itups[k]);
+		Size		itemsz = IndexTupleSize(coded);
+
+		Assert(itemsz == MAXALIGN(itemsz));
+		/* Strictly ascending entries, each placed after those before it. */
+		Assert(k == 0 || offs[k] > offs[k - 1]);
+		memcpy(pos, coded, itemsz);
+		pos += itemsz;
+		if (coded != itups[k])
+			pfree(coded);
+	}
+	Assert(pos == data + len);
+
+	/* No ereport(ERROR) until changes are logged */
+	START_CRIT_SECTION();
+
+	pos = data;
+	for (int k = 0; k < n; k++)
+	{
+		Size		itemsz = IndexTupleSize((IndexTuple) pos);
+
+		if (PageAddItem(page, pos, itemsz, offs[k], false, false) ==
+			InvalidOffsetNumber)
+			elog(PANIC, "failed to add entry to block %u in BARK index \"%s\"",
+				 BufferGetBlockNumber(buf), RelationGetRelationName(index));
+		pos += itemsz;
+	}
+
+	MarkBufferDirty(buf);
+
+	if (RelationNeedsWAL(index))
+	{
+		xl_bark_insert_multi xlrec;
+
+		xlrec.nentries = n;
+
+		XLogBeginInsert();
+		XLogRegisterData(&xlrec, SizeOfBarkInsertMulti);
+		XLogRegisterData(offs, n * sizeof(OffsetNumber));
+		XLogRegisterBuffer(0, buf, REGBUF_STANDARD);
+		XLogRegisterBufData(0, data, len);
+
+		recptr = XLogInsert(RM_BARK_ID, XLOG_BARK_INSERT_MULTI);
+	}
+	else
+		recptr = XLogGetFakeLSN(index);
+
+	PageSetLSN(page, recptr);
+
+	END_CRIT_SECTION();
+
+	pfree(data);
+}
+
+/*
  * Replace the leaf entry at `off` on the write-locked page `buf` with `itup`,
  * and WAL-log it (OVERWRITE).  PageIndexTupleOverwrite keeps the entry at its
  * offset and moves only the entries stored below it on the page, by the
@@ -2411,6 +2491,83 @@ bark_insert_key(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 }
 
 /*
+ * Plan the insert of a row's entries itups[0..nitups), in ascending order,
+ * on the write-locked leaf `buf`, where itups[0] goes at offset `off`: return
+ * how many of them, from the first, bark_insert_key would add one after
+ * another as plain new entries, and set offs[k] to where entry k goes once
+ * the entries before it are in.  Such an entry is not oversized, needs no
+ * unique check (the first entry's, if any, is done), belongs on the leaf,
+ * finds no equal-key entry to coalesce into (with coalesce), and fits in
+ * the space the entries before it leave.  The first entry that fails a test
+ * ends the run; it, and anything after it, takes the per-entry path.
+ *
+ * The page is not changed while planning, so each entry's offset and its
+ * coalesce test are worked out on the page as it is.  Both are sound only
+ * because a row's keys are distinct and its entries, which share the heap
+ * TID, strictly ascend (asserted below).  Entry k's offset on the unchanged
+ * page counts the page's entries that sort before it; entries 0..k-1 of the
+ * run sort before it too, so once they are in it goes k places further up.
+ * Its search can start at entry k-1's offset, since every page entry before
+ * that sorts before entry k-1.  The coalesce test looks only at the page's
+ * entry before that offset, never at entry k-1, which would be just before
+ * entry k once added when no page entry falls between the two: entry k-1's
+ * key differs from entry k's, so the per-entry path would not coalesce into
+ * it either, and the page's entry, which then sorts before entry k-1, cannot
+ * have entry k's key.
+ */
+static int
+bark_plan_multi(Relation index, BarkKeyInfo *keyinfo, bool coalesce,
+				IndexTuple *itups, const Size *fulllens,
+				const bool *checkkeys, int nitups, Buffer buf,
+				OffsetNumber off, OffsetNumber *offs)
+{
+	Page		page = BufferGetPage(buf);
+	OffsetNumber firstdata = BarkPageFirstDataKey(BarkPageGetOpaque(page));
+	Size		room = bark_leaf_free_space(page);
+	Size		used = 0;
+	int			n;
+
+	for (n = 0; n < nitups; n++)
+	{
+		IndexTuple	itup = itups[n];
+		Size		itemsz;
+
+		if (bark_len_is_oversized(fulllens[n]))
+			break;
+		if (n > 0)
+		{
+			/* The offsets and the coalesce test rely on this; see above. */
+			Assert(bark_compare_itups_tid(keyinfo, index, itup, &itup->t_tid,
+										  itups[n - 1]) > 0);
+			if (checkkeys != NULL && checkkeys[n])
+				break;
+			if (!bark_belongs_on_leaf(index, keyinfo, itup, &itup->t_tid, buf))
+				break;
+			off = bark_leaf_insert_off_from(index, keyinfo, itup,
+											&itup->t_tid, page, off);
+		}
+		if (coalesce && off > firstdata)
+		{
+			BarkItemBuf ibuf;
+			IndexTuple	prev = BarkPageGetItem(page, OffsetNumberPrev(off),
+											   &ibuf);
+
+			if (BarkEntryIsLeafData(prev) && !BarkEntryIsMarker(prev) &&
+				bark_compare_itups(keyinfo, index, itup, prev) == 0)
+				break;
+		}
+
+		/* As bark_insert_key's test, on the page with the entries before. */
+		itemsz = bark_coded_size(page, itup);
+		if (used + itemsz > room)
+			break;
+		used += itemsz + sizeof(ItemIdData);
+		offs[n] = off + n;
+	}
+	return n;
+}
+
+/*
  * Is the marker `marker` already the entry just before offset `off` of the
  * leaf `page`, where an insert of it would go?  A marker's (key, TID) is
  * unique, and a descent with its TID reaches the one leaf that holds it if
@@ -2449,7 +2606,9 @@ bark_marker_present(Relation index, BarkKeyInfo *keyinfo, IndexTuple marker,
  * halves) is followed by a new descent too.  The stack from the last descent
  * is kept across steps right: a split finds its parent through
  * bark_getstackbuf, which moves right from a stale stack entry.  Each entry
- * goes through bark_insert_key and its own WAL record.
+ * goes through bark_insert_key and its own WAL record, except that a run of
+ * entries that go on the leaf as plain new entries, one after another, is
+ * added and logged together (bark_plan_multi, bark_insert_multi).
  *
  * A unique index checks each entry whose checkkeys[i] is set (NULL checks
  * none), in this ascending order, under the exclusive lock of the first
@@ -2657,6 +2816,8 @@ check:
 	for (;;)
 	{
 		BarkPlaceResult placed;
+		OffsetNumber runoffs[MaxIndexTuplesPerPage];
+		int			nrun = 0;
 
 		/*
 		 * The leaf the entry goes on, or after a split the new right page,
@@ -2666,7 +2827,20 @@ check:
 		rightmost = BarkPageRightmost(BarkPageGetOpaque(page));
 		target = BufferGetBlockNumber(buf);
 
-		if (markers && bark_marker_present(index, keyinfo, itup, page, off))
+		if (!markers && i + 1 < nitups)
+			nrun = bark_plan_multi(index, keyinfo, coalesce, itups + i,
+								   fulllens + i,
+								   checkkeys ? checkkeys + i : NULL,
+								   nitups - i, buf, off, runoffs);
+		if (nrun > 1)
+		{
+			/* The run's last entry is the one placed, for the code below. */
+			bark_insert_multi(index, buf, itups + i, nrun, runoffs);
+			i += nrun - 1;
+			off = runoffs[nrun - 1];
+			placed = BARK_PLACE_ONPAGE;
+		}
+		else if (markers && bark_marker_present(index, keyinfo, itup, page, off))
 			placed = BARK_PLACE_ONPAGE;
 		else
 			placed = bark_insert_key(index, heapRel, keyinfo, coalesce, itup,
