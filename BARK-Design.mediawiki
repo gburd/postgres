@@ -1022,7 +1022,8 @@ place of an inverted AM, without changing the scalar design above.
   interface, procedures 7-9, is built and used by M1c's scans and M5a's
   wildcard class; M2a, GIN's query interface (procedures 10-13, partial
   match included) in bitmap scans, is built: "As built (M2a)" under
-  "Which interface first." RUM's ordering functions and the array and
+  "Which interface first.", and P1, merging its TID streams with required
+  keys, "As built (P1)" there. RUM's ordering functions and the array and
   scalar classes are not started)''
 * '''M3''' -- extra data per locator (RUM's addInfo). ''Closed, not
   needed'': a composite key (key, value) holds the same members in the same
@@ -1193,8 +1194,8 @@ and ALL every entry. Each boundary's TIDs are read through the ordinary
 descent code into one array sorted by TID, and for each TID
 triConsistent (MAYBE is a recheck), or consistent (whose recheck flag is
 set first, as GIN does), decides on the per-key presence vector. Several
-keys on the column are intersected. This is the simple implementation;
-merging the boundaries' TID streams without collecting them is later work.
+keys on the column are intersected (P1 below replaced the sort with a
+merge).
 barkcostestimate counts extractQuery's keys (plus one for INCLUDE_EMPTY,
 two for ALL) as descents and charges no seen set. Tests
 (bark_multikey_gin.sql): the core GIN array support functions unchanged
@@ -1204,6 +1205,35 @@ absent and many-element arrays, IS NULL and two keys on the column, each
 compared with a seqscan and with a GIN index, before and after DELETE,
 INSERT and VACUUM; a prefix-match class on <code>text[]</code> with core's
 gin_cmp_prefix as comparePartial, compared with LIKE.
+
+'''As built (P1).''' The boundaries' TIDs are merged as ginget.c merges
+posting lists, not collected and sorted together. Each boundary is read into
+a stream of distinct, ascending TIDs: a point boundary of a column that leads
+the index already comes out in TID order (H1; LIST and POSTING members
+ascend), and any other (a partial-match range, every key, a column after
+another key column) is sorted and made distinct once. A binary heap on the
+streams' next TIDs visits each TID once with its presence vector. With
+triConsistent, the streams are taken rarest first (their sizes are exact,
+where GIN predicts them) until a vector with those FALSE and the rest MAYBE
+gives FALSE, as startScanKey divides required from additional entries; only
+the required streams feed the heap, and an additional stream is searched
+forward (exponential, then binary search) at each candidate TID. Without
+triConsistent, and with the hidden streams of INCLUDE_EMPTY and ALL, every
+stream is required. The presence vectors are allocated once per scan key.
+Limit: a stream is its boundary read to the end, since the scan has one
+leaf position, so the skip saves the merge and the consistent calls but not
+the frequent key's leaf pages: @&gt; with a rare and a common element went
+from 33 times GIN's time to 3.6 times (15.8 ms to 1.7 ms, GIN 0.47 ms, on
+200k rows of int4[]), and @&gt; on two common elements from 4 times to 1.1.
+Skipping those pages needs a re-descent by (key, TID) per candidate, or a
+leaf position per stream. Tests (bark_multikey_ginmerge.sql): 39 queries
+over skewed int4[] with POSTING entries (&amp;&amp; @&gt; &lt;@ = with one
+rare and several common elements, 21 and 41 elements, a repeated element,
+an absent one, NULL), through the classes with and without triConsistent
+and an index with the column second, each compared with a seqscan and GIN,
+before and after DELETE, INSERT (LIST entries) and VACUUM; core's tsvector
+support functions as a BARK class, mixing point and prefix (partial-match)
+keys, NOT and phrase queries, compared with a seqscan and GIN.
 
 '''Strategies.''' An operator in a BARK family has whatever strategy number
 its class gives it, as in GIN; the number is only passed to procedures 8 and

@@ -585,10 +585,20 @@ only (bark_index_gin_query; "As built (M2a)" in the design document).
 bark_property answers index_scan false, get_relation_info clears
 amhasgettuple for it, and bark_gettuple refuses a direct caller.  The
 bitmap scan calls extractQuery, turns its keys into point boundaries (a
-partial-match key into a range filtered and ended by comparePartial),
-collects each boundary's TIDs into one TID-sorted array, and calls
-triConsistent, or consistent, per TID on the per-key presence vector,
-adding the TID with its recheck flag.
+partial-match key into a range filtered and ended by comparePartial), and
+reads each boundary into a stream of distinct TIDs in TID order: a point
+of a column that leads the index already comes out in that order (H1),
+anything else is sorted once.  bark_mk_gin_key merges the streams with a
+binary heap, as ginget.c merges posting lists, and calls triConsistent, or
+consistent, once per TID on the per-key presence vector, adding the TID
+with its recheck flag.  With triConsistent, the streams are tried rarest
+first until a vector with them FALSE and the rest MAYBE gives FALSE
+(startScanKey's required entries); only those feed the heap, and the
+others are searched forward (bark_gin_stream_seek) at each candidate TID,
+so a rare key with a frequent one costs about as many consistent calls as
+the rare key has rows.  Every stream is still read to its end: the scan
+has one leaf position, so the frequent key's leaf pages are read even when
+few of its TIDs are needed.
 
 Scans of an index with an extracted column ("Scans" under "M1: multikey
 keys" in the design document) keep the btree-style key code away from the
