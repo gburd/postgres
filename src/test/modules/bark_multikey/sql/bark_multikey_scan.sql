@@ -948,3 +948,341 @@ DROP OPERATOR CLASS mk_single_ops USING bark CASCADE;
 DROP FUNCTION mk_rows(), mk_run(text, text, text), mk_compare(text, text[]),
   mk_fetch(int4), mk_cursor(text), mk_backward(text, text), mk_scroll(text);
 DROP EXTENSION bark_multikey;
+
+-- RUM's addon ordering: an ordering operator on the column after the
+-- extracted one, when the extracted column's qual is one point and every
+-- column before it has an equality.  The KNN scan runs inside that point's
+-- run.  Each answer is compared with a Sort over a sequential scan of the
+-- same rows: count, distinct ids, the exact distances in order, and the ids
+-- strictly inside the LIMIT's last distance (ties at the cut may differ),
+-- or every id without a LIMIT.  NULL created sorts last.
+CREATE EXTENSION bark_multikey;
+CREATE FUNCTION mk_ord_rows() RETURNS TABLE (id int, tenant int, tags int4[], created int)
+LANGUAGE sql AS $$
+  SELECT g, g % 3,
+         CASE WHEN g % 101 = 0 THEN '{}'::int4[] WHEN g % 103 = 0 THEN NULL
+              ELSE ARRAY[g % 10, 100 + g % 7] END,
+         CASE WHEN g % 97 = 0 THEN NULL ELSE (g * 7919) % 5000 END
+  FROM generate_series(1, 30000) g
+$$;
+CREATE TABLE mk_ord AS SELECT * FROM mk_ord_rows();
+CREATE INDEX mk_ord_ac ON mk_ord USING bark (tags bark_int4_array_ops, created);
+CREATE INDEX mk_ord_tac ON mk_ord USING bark (tenant, tags bark_int4_array_ops, created);
+CREATE TABLE mk_ord_seq AS SELECT * FROM mk_ord_rows();
+ANALYZE mk_ord, mk_ord_seq;
+SELECT bark_index_check('mk_ord_ac'), bark_index_check('mk_ord_tac');
+CREATE FUNCTION mk_ord_one(tbl text, qual text, ctr int, lim int) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE r text;
+BEGIN
+  EXECUTE format($q$
+    SELECT count(*) || ':' || count(DISTINCT id) || ':' ||
+           md5(coalesce(string_agg(coalesce(d::text, 'N'), ',' ORDER BY n), '')) || ':' ||
+           md5(coalesce(string_agg(id::text, ',' ORDER BY id)
+                          FILTER (WHERE %s OR d < maxd), ''))
+      FROM (SELECT id, d, n, max(d) OVER () AS maxd
+              FROM (SELECT id, abs(created - %s) AS d, row_number() OVER () AS n
+                      FROM (SELECT id, created FROM %I WHERE %s
+                             ORDER BY created <~> %s LIMIT %s) s) s) s$q$,
+    (lim IS NULL)::text, ctr, tbl, qual, ctr, coalesce(lim::text, 'ALL')) INTO r;
+  RETURN r;
+END $$;
+CREATE FUNCTION mk_ord_cmp(qual text, ctr int, lim int) RETURNS text
+LANGUAGE plpgsql AS $$
+DECLARE
+  plan text;
+  a text;
+  b text;
+BEGIN
+  PERFORM set_config('enable_seqscan', 'off', true);
+  PERFORM set_config('enable_bitmapscan', 'off', true);
+  PERFORM set_config('enable_sort', 'off', true);
+  FOR plan IN EXECUTE format('EXPLAIN (COSTS OFF) SELECT id FROM mk_ord WHERE %s ORDER BY created <~> %s LIMIT %s',
+                 qual, ctr, coalesce(lim::text, 'ALL')) LOOP
+    IF plan ~ 'Order By' THEN a := 'knn'; END IF;
+  END LOOP;
+  b := coalesce(a, 'sort');
+  plan := b;
+  a := mk_ord_one('mk_ord', qual, ctr, lim);
+  PERFORM set_config('enable_seqscan', 'on', true);
+  PERFORM set_config('enable_bitmapscan', 'on', true);
+  PERFORM set_config('enable_sort', 'on', true);
+  b := mk_ord_one('mk_ord_seq', qual, ctr, lim);
+  RETURN CASE WHEN a <> b THEN 'DIFF index ' || a || ' seq ' || b
+              ELSE plan || ' ' || split_part(a, ':', 1) || ' rows' END;
+END $$;
+-- The plans: an index scan with the ordering operator and no Sort.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF)
+SELECT id FROM mk_ord WHERE tags && '{3}' ORDER BY created <~> 2500 LIMIT 10;
+EXPLAIN (COSTS OFF)
+SELECT id FROM mk_ord WHERE tenant = 1 AND tags @> '{103}' ORDER BY created <~> 700 LIMIT 10;
+-- Not one point, or not every earlier column fixed: a Sort.
+EXPLAIN (COSTS OFF)
+SELECT id FROM mk_ord WHERE tags && '{3,4}' ORDER BY created <~> 2500 LIMIT 10;
+EXPLAIN (COSTS OFF)
+SELECT id FROM mk_ord WHERE tags && '{3}' AND tags && '{103}' ORDER BY created <~> 2500 LIMIT 10;
+EXPLAIN (COSTS OFF)
+SELECT id FROM mk_ord WHERE tenant IN (1, 2) AND tags && '{3}' ORDER BY created <~> 2500 LIMIT 10;
+EXPLAIN (COSTS OFF)
+SELECT id FROM mk_ord WHERE tags @> '{3,103}' ORDER BY created <~> 2500 LIMIT 10;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+-- The answers.  The run of tag 3 is 3000 rows over many leaves; created
+-- repeats about six times, so there are ties; some created are NULL.
+SELECT q, ctr, lim, mk_ord_cmp(q, ctr, lim)
+  FROM (VALUES ('tags && ''{3}''', 2500, 10), ('tags && ''{3}''', 2500, 500),
+               ('tags && ''{3}''', 2500, NULL), ('tags && ''{3}''', 0, 7),
+               ('tags && ''{3}''', 4999, 13), ('tags && ''{3}''', -100, 40),
+               ('tags && ''{3}''', 100000, 25), ('tags && ''{0}''', 1234, NULL),
+               ('tags && ''{9}''', 2500, 3001), ('tags @> ''{103}''', 1, 50),
+               ('tags && ''{55}''', 2500, 10), ('tags && ''{55}''', 2500, NULL),
+               ('tenant = 1 AND tags && ''{3}''', 1000, 20),
+               ('tenant = 1 AND tags @> ''{103}''', 700, NULL),
+               ('tenant = 2 AND tags && ''{106}'' AND created > 100', 4000, 30),
+               ('tenant = 5 AND tags && ''{3}''', 1000, 20),
+               ('tags && ''{3,4}''', 2500, 30),
+               ('tenant IN (0, 1) AND tags && ''{3}''', 1000, 20)) v(q, ctr, lim);
+-- After inserts that split the run's leaves.
+INSERT INTO mk_ord SELECT id + 100000, tenant, tags, created FROM mk_ord_rows() WHERE id % 4 = 0;
+INSERT INTO mk_ord_seq SELECT id + 100000, tenant, tags, created FROM mk_ord_rows() WHERE id % 4 = 0;
+SELECT bark_index_check('mk_ord_ac'), bark_index_check('mk_ord_tac');
+SELECT q, ctr, lim, mk_ord_cmp(q, ctr, lim)
+  FROM (VALUES ('tags && ''{4}''', 3000, 100), ('tags && ''{4}''', 3000, NULL),
+               ('tenant = 0 AND tags && ''{104}''', 10, 60)) v(q, ctr, lim);
+-- A generic plan keeps the KNN scan with parameters the executor may set to
+-- NULL.  A NULL ordering constant makes every distance NULL, so the scan
+-- returns every row of the run, as a Sort over the NULL distances does; a
+-- NULL equality on the fixed prefix matches no entry, so the run is empty,
+-- as tenant = NULL matches no row.  mk_ord_gcheck runs the prepared
+-- statement and compares its rows with the seqscan's rows for the same
+-- qual: the rows returned, distinct ids, NULL distances, ids outside the
+-- run, ids of the run not returned, and whether the distances in order are
+-- the first n of the seqscan's sorted distances.
+CREATE FUNCTION mk_ord_gcheck(exec text, qual text, ctr int,
+  OUT n bigint, OUT ids bigint, OUT nulld bigint, OUT outside bigint,
+  OUT missing bigint, OUT exact bool)
+LANGUAGE plpgsql AS $$
+BEGIN
+  EXECUTE 'CREATE TEMP TABLE mk_ord_r AS ' || exec;
+  EXECUTE format($q$
+    SELECT count(*), count(DISTINCT id), count(*) FILTER (WHERE d IS NULL),
+           (SELECT count(*) FROM mk_ord_r
+             WHERE id NOT IN (SELECT id FROM mk_ord_seq WHERE %s)),
+           (SELECT count(*) FROM mk_ord_seq
+             WHERE %s AND id NOT IN (SELECT id FROM mk_ord_r)),
+           md5(coalesce(string_agg(coalesce(d::text, 'N'), ',' ORDER BY rn), '')) =
+           (SELECT md5(coalesce(string_agg(coalesce(d::text, 'N'), ',' ORDER BY rn), ''))
+              FROM (SELECT created <~> %L::int AS d, row_number() OVER () AS rn
+                      FROM (SELECT created FROM mk_ord_seq WHERE %s
+                             ORDER BY created <~> %L::int
+                             LIMIT (SELECT count(*) FROM mk_ord_r)) s) s)
+      FROM mk_ord_r$q$, qual, qual, ctr, qual, ctr)
+    INTO n, ids, nulld, outside, missing, exact;
+  DROP TABLE mk_ord_r;
+END $$;
+SET plan_cache_mode = force_generic_plan;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+PREPARE mk_ord_g_ac(int, int) AS
+  SELECT id, d, row_number() OVER () AS rn
+    FROM (SELECT id, created <~> $1 AS d FROM mk_ord
+           WHERE tags && '{3}' ORDER BY created <~> $1 LIMIT $2) s;
+PREPARE mk_ord_g_tac(int, int, int) AS
+  SELECT id, d, row_number() OVER () AS rn
+    FROM (SELECT id, created <~> $2 AS d FROM mk_ord
+           WHERE tenant = $1 AND tags && '{3}'
+           ORDER BY created <~> $2 LIMIT $3) s;
+EXPLAIN (COSTS OFF) EXECUTE mk_ord_g_ac(NULL, NULL);
+EXPLAIN (COSTS OFF) EXECUTE mk_ord_g_tac(NULL, NULL, NULL);
+SELECT e, r.*
+  FROM (VALUES ('EXECUTE mk_ord_g_ac(NULL, NULL)', 'tags && ''{3}''', NULL),
+               ('EXECUTE mk_ord_g_ac(NULL, 5)', 'tags && ''{3}''', NULL),
+               ('EXECUTE mk_ord_g_ac(2500, NULL)', 'tags && ''{3}''', 2500),
+               ('EXECUTE mk_ord_g_ac(2500, 9)', 'tags && ''{3}''', 2500),
+               ('EXECUTE mk_ord_g_tac(1, NULL, NULL)', 'tenant = 1 AND tags && ''{3}''', NULL),
+               ('EXECUTE mk_ord_g_tac(2, NULL, 7)', 'tenant = 2 AND tags && ''{3}''', NULL),
+               ('EXECUTE mk_ord_g_tac(1, 1000, NULL)', 'tenant = 1 AND tags && ''{3}''', 1000),
+               ('EXECUTE mk_ord_g_tac(NULL, 1000, NULL)', 'tenant = NULL AND tags && ''{3}''', 1000),
+               ('EXECUTE mk_ord_g_tac(NULL, NULL, NULL)', 'tenant = NULL AND tags && ''{3}''', NULL),
+               ('EXECUTE mk_ord_g_tac(5, NULL, NULL)', 'tenant = 5 AND tags && ''{3}''', NULL))
+       v(e, q, c),
+       LATERAL mk_ord_gcheck(e, q, c) r;
+DEALLOCATE mk_ord_g_ac;
+DEALLOCATE mk_ord_g_tac;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET plan_cache_mode;
+-- Paths the planner never builds, through bark_multikey_knn, which hands
+-- the index AM the scan keys and ordering key it is given.  mk_knn_check
+-- compares an ordered scan's TIDs with the rows of mk_ord that the same
+-- condition (qual) selects: n rows, duplicates, rows outside qual, rows of
+-- qual missing, and whether the distances come in order.
+CREATE FUNCTION mk_knn_check(idx text, cols int2[], ops regoperator[],
+  args text[], ctr int, qual text,
+  OUT n bigint, OUT dup bigint, OUT outside bigint, OUT missing bigint,
+  OUT ordered bool)
+LANGUAGE plpgsql AS $$
+BEGIN
+  EXECUTE format($q$
+    WITH r AS (SELECT tid, dist, row_number() OVER () AS rn
+                 FROM bark_multikey_knn(%L, %L, %L, %L, %s,
+                                        '<~>(int4,int4)'::regoperator, %s)),
+         want AS (SELECT ctid FROM mk_ord WHERE %s)
+    SELECT (SELECT count(*) FROM r),
+           (SELECT count(*) - count(DISTINCT tid) FROM r),
+           (SELECT count(*) FROM r WHERE tid NOT IN (SELECT ctid FROM want)),
+           (SELECT count(*) FROM want WHERE ctid NOT IN (SELECT tid FROM r)),
+           (SELECT coalesce(bool_and(p <= d), true)
+              FROM (SELECT dist AS d, lag(dist) OVER (ORDER BY rn) AS p FROM r) s
+             WHERE p IS NOT NULL)$q$,
+    idx, cols, ops, args,
+    (SELECT attnum FROM pg_attribute WHERE attrelid = idx::regclass AND attname = 'created'),
+    ctr, qual)
+    INTO n, dup, outside, missing, ordered;
+END $$;
+SELECT c, (mk_knn_check(i, cols, ops, args, 1000, q)).*
+  FROM (VALUES
+    -- An inequality and an equality on tenant: the inequality only filters.
+    ('ineq then eq', 'mk_ord_tac', '{1,1,2}'::int2[],
+     '{">(int4,int4)","=(int4,int4)","&&(anyarray,anyarray)"}'::regoperator[],
+     '{0,1,"{3}"}'::text[], 'tenant > 0 AND tenant = 1 AND tags && ''{3}'''),
+    -- A ScalarArrayOp on tenant is skipped for the equality after it.
+    ('saop then eq', 'mk_ord_tac', '{1,1,2}',
+     '{"=(int4,int4)","=(int4,int4)","&&(anyarray,anyarray)"}',
+     '{"{1,2}",2,"{3}"}', 'tenant IN (1, 2) AND tenant = 2 AND tags && ''{3}'''),
+    -- A cross-type equality fixes the column through its ORDER proc.
+    ('cross-type eq', 'mk_ord_tac', '{1,2}',
+     '{"=(int4,int8)","&&(anyarray,anyarray)"}', '{1,"{3}"}',
+     'tenant = 1 AND tags && ''{3}'''),
+    -- A NULL equality: the run is empty.
+    ('null eq', 'mk_ord_tac', '{1,2}',
+     '{"=(int4,int4)","&&(anyarray,anyarray)"}', '{NULL,"{3}"}', 'false'),
+    -- An empty array: no boundary, so no entry.
+    ('empty point', 'mk_ord_ac', '{1}', '{"&&(anyarray,anyarray)"}', '{"{}"}',
+     'false'),
+    -- = '{}' has no key: procedure 8 asks for the NULL entries, which stand
+    -- for NULL and empty arrays alike, so the run is those entries, and the
+    -- backward cursor stops at the tenant's last non-NULL entry.
+    ('null point', 'mk_ord_tac', '{1,2}', '{"=(int4,int4)","=(anyarray,anyarray)"}',
+     '{1,"{}"}', 'tenant = 1 AND (tags IS NULL OR tags = ''{}'')'),
+    -- A key on the ordered column itself only filters.
+    ('key on ordered col', 'mk_ord_tac', '{1,2,3}',
+     '{"=(int4,int4)","&&(anyarray,anyarray)",">(int4,int4)"}', '{1,"{3}",2500}',
+     'tenant = 1 AND tags && ''{3}'' AND created > 2500')
+  ) v(c, i, cols, ops, args, q);
+-- A NULL test on the extracted column is not a point of the class's
+-- procedure 8, so it fixes nothing either, and neither does a NULL test
+-- on a fixed column.
+SELECT count(*) FROM bark_multikey_knn('mk_ord_tac', '{1,2}',
+  '{"=(int4,int4)",NULL}', '{1,null}', 3, '<~>(int4,int4)', 1000);
+-- Scan keys that do not fix the columns before the ordered one: the scan
+-- refuses them rather than return rows out of order.
+SELECT count(*) FROM bark_multikey_knn('mk_ord_tac', '{2}',
+  '{"&&(anyarray,anyarray)"}', '{"{3}"}', 3, '<~>(int4,int4)', 1000);
+SELECT count(*) FROM bark_multikey_knn('mk_ord_tac', '{1}',
+  '{"=(int4,int4)"}', '{1}', 3, '<~>(int4,int4)', 1000);
+SELECT count(*) FROM bark_multikey_knn('mk_ord_tac', '{1,2}',
+  '{"=(int4,int4)","&&(anyarray,anyarray)"}', '{1,"{3,4}"}', 3,
+  '<~>(int4,int4)', 1000);
+-- A cross-type equality whose family has no ORDER proc for its types only
+-- filters, so it does not fix the column either.
+CREATE OPERATOR FAMILY mk_kp_ops USING btree;
+CREATE OPERATOR CLASS mk_kp_int4_ops FOR TYPE int4 USING bark FAMILY mk_kp_ops AS
+  OPERATOR 1 <, OPERATOR 2 <=, OPERATOR 3 =, OPERATOR 4 >=, OPERATOR 5 >,
+  FUNCTION 1 btint4cmp(int4, int4);
+ALTER OPERATOR FAMILY mk_kp_ops USING btree ADD OPERATOR 3 = (int4, int8);
+CREATE INDEX mk_ord_kp ON mk_ord USING bark (tenant mk_kp_int4_ops,
+  tags bark_int4_array_ops, created);
+SELECT count(*) FROM bark_multikey_knn('mk_ord_kp', '{1,2}',
+  '{"=(int4,int8)","&&(anyarray,anyarray)"}', '{1,"{3}"}', 3,
+  '<~>(int4,int4)', 1000);
+DROP INDEX mk_ord_kp;
+DROP OPERATOR FAMILY mk_kp_ops USING btree;
+-- Rows whose fixed column is NULL sit after every value in the index: a
+-- run that ends at them stops there.
+INSERT INTO mk_ord VALUES (900001, NULL, '{3}', 10), (900002, NULL, '{3}', 4000);
+INSERT INTO mk_ord_seq VALUES (900001, NULL, '{3}', 10), (900002, NULL, '{3}', 4000);
+SELECT (mk_knn_check('mk_ord_tac', '{1,2}',
+          '{"=(int4,int4)","&&(anyarray,anyarray)"}', '{2,"{3}"}', 4500,
+          'tenant = 2 AND tags && ''{3}''')).*;
+SELECT count(*) FROM bark_multikey_knn('mk_ord_tac', '{1,2}',
+  '{NULL,"&&(anyarray,anyarray)"}', '{null,"{3}"}', 3, '<~>(int4,int4)', 0);
+-- An empty index with a fixed prefix, in a generic plan.
+CREATE TABLE mk_ord_e (tenant int, tags int4[], created int);
+CREATE INDEX mk_ord_e_i ON mk_ord_e USING bark (tenant, tags bark_int4_array_ops, created);
+SET plan_cache_mode = force_generic_plan;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+PREPARE mk_ord_e_q(int) AS
+  SELECT * FROM mk_ord_e WHERE tenant = $1 AND tags && '{3}' ORDER BY created <~> 7;
+EXPLAIN (COSTS OFF) EXECUTE mk_ord_e_q(1);
+EXECUTE mk_ord_e_q(1);
+DEALLOCATE mk_ord_e_q;
+-- The planner skips an empty index's scan; the AM still answers one.
+SELECT count(*) FROM bark_multikey_knn('mk_ord_e_i', '{1,2}',
+  '{"=(int4,int4)","&&(anyarray,anyarray)"}', '{1,"{3}"}', 3,
+  '<~>(int4,int4)', 7);
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET plan_cache_mode;
+DROP TABLE mk_ord_e;
+-- A fixed column of long text keys, stored OVERSIZED: the run's entries
+-- and the entry after its end are fetched to be compared.  |%| keeps a
+-- row whose key is even (procedure 9), so the run of an odd key is read
+-- and dropped; created > 250 is a filter on the ordered column.
+CREATE FUNCTION mk_long_key(k int) RETURNS text IMMUTABLE LANGUAGE sql AS
+  $$SELECT string_agg(md5(k || ':' || i), '') FROM generate_series(1, 94) i$$;
+CREATE TABLE mk_long (id int, t text, tags int4[], created int);
+ALTER TABLE mk_long ALTER t SET STORAGE external;
+INSERT INTO mk_long
+  SELECT g, mk_long_key(g % 3), ARRAY[g % 4, 10 + g % 5], (g * 37) % 500
+    FROM generate_series(1, 600) g;
+CREATE INDEX mk_long_i ON mk_long USING bark (t, tags bark_int4_array_range_ops, created);
+CREATE EXTENSION IF NOT EXISTS pageinspect;
+SELECT shape, count(*) FROM bark_page_items('mk_long_i', 1) GROUP BY 1 ORDER BY 1;
+CREATE FUNCTION mk_long_check(q text, ctr int, OUT plan text, OUT n bigint,
+  OUT same bool)
+LANGUAGE plpgsql AS $$
+DECLARE
+  l text;
+  got text;
+  want text;
+  sq text := format('SELECT count(*), string_agg(id || '':'' || d, '','' ORDER BY rn) FROM
+                       (SELECT id, created <~> %s AS d, row_number() OVER () AS rn
+                          FROM (SELECT id, created FROM mk_long WHERE %s
+                                 ORDER BY created <~> %s, id) s) s', ctr, q, ctr);
+BEGIN
+  PERFORM set_config('enable_seqscan', 'off', true);
+  PERFORM set_config('enable_bitmapscan', 'off', true);
+  plan := 'sort';
+  FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) SELECT id FROM mk_long WHERE ' || q ||
+                   ' ORDER BY created <~> ' || ctr LOOP
+    IF l ~ 'Order By' THEN plan := 'knn'; END IF;
+  END LOOP;
+  EXECUTE sq INTO n, got;
+  PERFORM set_config('enable_seqscan', 'on', true);
+  PERFORM set_config('enable_bitmapscan', 'on', true);
+  PERFORM set_config('enable_indexscan', 'off', true);
+  EXECUTE sq INTO n, want;
+  PERFORM set_config('enable_indexscan', 'on', true);
+  same := got IS NOT DISTINCT FROM want;
+END $$;
+-- Ties in distance are broken by id on both sides, after the scan.
+SELECT q, (mk_long_check(q, 300)).*
+  FROM (VALUES ('t = mk_long_key(1) AND tags |%| ''{2}'''),
+               ('t = mk_long_key(1) AND tags |%| ''{3}'''),
+               ('t = mk_long_key(0) AND tags |%| ''{0}'' AND created > 250'),
+               ('t = mk_long_key(2) AND tags |%| ''{2}''')) v(q);
+DROP FUNCTION mk_long_check(text, int);
+DROP TABLE mk_long;
+DROP FUNCTION mk_long_key(int);
+DROP EXTENSION pageinspect;
+DELETE FROM mk_ord WHERE id > 900000;
+DELETE FROM mk_ord_seq WHERE id > 900000;
+DROP FUNCTION mk_knn_check(text, int2[], regoperator[], text[], int, text);
+DROP TABLE mk_ord, mk_ord_seq;
+DROP FUNCTION mk_ord_rows(), mk_ord_one(text, text, int, int), mk_ord_cmp(text, int, int),
+  mk_ord_gcheck(text, text, int);
+DROP EXTENSION bark_multikey;

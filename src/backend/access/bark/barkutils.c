@@ -682,10 +682,12 @@ bark_opfamily_extracts(Oid opfamily, Oid opcintype)
  * distance_orderable, which the generic code cannot answer: the column has
  * an ordering operator (amoppurpose 'o') whose result its sort family can
  * sort, as SP-GiST decides it.  BARK walks outward from a point in its key
- * order, so only the leading column can be ordered so
- * (match_pathkeys_to_index).  On an extracted column the scan reports a
- * row's first key as its ORDER BY value, so the operator must also return
- * the key type.
+ * order, so only the leading column can be ordered so by itself
+ * (match_pathkeys_to_index); a later column only inside a run that a
+ * query's quals fix (barkorderbyopcolumn), which a property of the column
+ * cannot promise, so it answers false.  On an extracted column the scan
+ * reports a row's first key as its ORDER BY value, so the operator must
+ * also return the key type.
  */
 bool
 bark_property(Oid index_oid, int attno, IndexAMProperty prop,
