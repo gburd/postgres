@@ -68,7 +68,7 @@ barkvalidate(Oid opclassoid)
 		elog(ERROR, "cache lookup failed for operator class %u", opclassoid);
 	classform = (Form_pg_opclass) GETSTRUCT(classtup);
 
-	if (get_opfamily_method(classform->opcfamily) == BARK_AM_OID)
+	if (bark_opfamily_is_own(classform->opcfamily))
 	{
 		result = bark_validate_multikey(classform);
 		ReleaseSysCache(classtup);
@@ -509,7 +509,7 @@ barkadjustmembers(Oid opfamilyoid, Oid opclassoid, List *operators,
 	 */
 	if (OidIsValid(opclassoid))
 		CommandCounterIncrement();
-	if (get_opfamily_method(opfamilyoid) != BTREE_AM_OID)
+	if (bark_opfamily_is_own(opfamilyoid))
 	{
 		foreach(lc, functions)
 		{
