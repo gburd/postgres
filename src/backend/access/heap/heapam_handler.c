@@ -23,6 +23,7 @@
 #include "access/amlocator.h"
 #include "access/heapam.h"
 #include "access/heaptoast.h"
+#include "access/hot_indexed.h"
 #include "access/multixact.h"
 #include "access/rewriteheap.h"
 #include "access/syncscan.h"
@@ -1914,6 +1915,9 @@ heapam_index_validate_scan(Relation heapRelation,
 	BlockNumber root_blkno = InvalidBlockNumber;
 	OffsetNumber root_offsets[MaxHeapTuplesPerPage];
 	bool		in_index[MaxHeapTuplesPerPage];
+	Bitmapset  *indexattrs = RelationGetIndexedAttrs(indexRelation);
+	uint8	   *crossed = palloc(HotIndexedBitmapBytes(
+												 RelationGetNumberOfAttributes(heapRelation)));
 	BlockNumber previous_blkno = InvalidBlockNumber;
 
 	/* state variables for the merge */
@@ -1980,30 +1984,84 @@ heapam_index_validate_scan(Relation heapRelation,
 		}
 
 		/*
-		 * As commented in table_index_build_scan, we should index heap-only
-		 * tuples under the TIDs of their root tuples; so when we advance onto
-		 * a new heap page, build a map of root item offsets on the page.
-		 *
-		 * This complicates merging against the tuplesort output: we will
-		 * visit the live tuples in order by their offsets, but the root
-		 * offsets that we need to compare against the index contents might be
-		 * ordered differently.  So we might have to "look back" within the
-		 * tuplesort output, but only within the current page.  We handle that
-		 * by keeping a bool array in_index[] showing all the
-		 * already-passed-over tuplesort output TIDs of the current page. We
-		 * clear that array here, when advancing onto a new heap page.
+		 * Consume the whole page's sorted index TIDs before checking coverage:
+		 * an anchor can precede or follow its visible member in offset order.
+		 * A pin keeps the chain members from being pruned while we use this
+		 * map.  Later updates cannot change which member our snapshot sees.
 		 */
 		if (hscan->rs_cblock != root_blkno)
 		{
+			bool		anchors[MaxHeapTuplesPerPage] = {false};
 			Page		page = BufferGetPage(hscan->rs_cbuf);
+			OffsetNumber off;
+
+			root_blkno = hscan->rs_cblock;
+			memset(in_index, 0, sizeof(in_index));
+			while (!tuplesort_empty)
+			{
+				Datum		ts_val;
+				bool		ts_isnull;
+
+				if (indexcursor)
+				{
+					if (ItemPointerGetBlockNumber(indexcursor) > root_blkno)
+						break;
+					if (ItemPointerGetBlockNumber(indexcursor) == root_blkno)
+						anchors[ItemPointerGetOffsetNumber(indexcursor) - 1] = true;
+				}
+				tuplesort_empty = !tuplesort_getdatum(state->tuplesort, true,
+												  false, &ts_val, &ts_isnull, NULL);
+				Assert(tuplesort_empty || !ts_isnull);
+				if (!tuplesort_empty)
+				{
+					itemptr_decode(&decoded, DatumGetInt64(ts_val));
+					indexcursor = &decoded;
+				}
+				else
+					indexcursor = NULL;
+			}
 
 			LockBuffer(hscan->rs_cbuf, BUFFER_LOCK_SHARE);
 			heap_get_root_tuples(page, root_offsets);
+			/*
+			 * The per-anchor walks are bounded by MaxHeapTuplesPerPage.
+			 * A per-page suffix map could avoid repeated walks if needed.
+			 */
+			for (off = FirstOffsetNumber; off <= PageGetMaxOffsetNumber(page); off++)
+			{
+				ItemPointerData tid;
+				HeapTupleData tuple;
+				bool		recheck;
+				bool		stale = false;
+				int			x = -1;
+
+				if (!anchors[off - 1])
+					continue;
+				ItemPointerSet(&tid, root_blkno, off);
+				if (!heap_hot_search_buffer(&tid, heapRelation, hscan->rs_cbuf,
+											snapshot, &tuple, NULL, true,
+											&recheck, crossed, NULL))
+					continue;
+
+				/*
+				 * Matching endpoint values is insufficient (A->B->A).  Use
+				 * the same crossed-hop test as an index scan, including the
+				 * index's expression, predicate and INCLUDE attributes.
+				 */
+				while (recheck && (x = bms_next_member(indexattrs, x)) >= 0)
+				{
+					AttrNumber attnum = x + FirstLowInvalidHeapAttributeNumber;
+
+					if (attnum >= 1 && HotIndexedAttrIsModified(crossed, attnum))
+					{
+						stale = true;
+						break;
+					}
+				}
+				if (!stale)
+					in_index[ItemPointerGetOffsetNumber(&tid) - 1] = true;
+			}
 			LockBuffer(hscan->rs_cbuf, BUFFER_LOCK_UNLOCK);
-
-			memset(in_index, 0, sizeof(in_index));
-
-			root_blkno = hscan->rs_cblock;
 		}
 
 		/* Convert actual tuple TID to root TID */
@@ -2024,49 +2082,8 @@ heapam_index_validate_scan(Relation heapRelation,
 			ItemPointerSetOffsetNumber(&rootTuple, root_offnum);
 		}
 
-		/*
-		 * "merge" by skipping through the index tuples until we find or pass
-		 * the current root tuple.
-		 */
-		while (!tuplesort_empty &&
-			   (!indexcursor ||
-				ItemPointerCompare(indexcursor, &rootTuple) < 0))
-		{
-			Datum		ts_val;
-			bool		ts_isnull;
-
-			if (indexcursor)
-			{
-				/*
-				 * Remember index items seen earlier on the current heap page
-				 */
-				if (ItemPointerGetBlockNumber(indexcursor) == root_blkno)
-					in_index[ItemPointerGetOffsetNumber(indexcursor) - 1] = true;
-			}
-
-			tuplesort_empty = !tuplesort_getdatum(state->tuplesort, true,
-												  false, &ts_val, &ts_isnull,
-												  NULL);
-			Assert(tuplesort_empty || !ts_isnull);
-			if (!tuplesort_empty)
-			{
-				itemptr_decode(&decoded, DatumGetInt64(ts_val));
-				indexcursor = &decoded;
-			}
-			else
-			{
-				/* Be tidy */
-				indexcursor = NULL;
-			}
-		}
-
-		/*
-		 * If the tuplesort has overshot *and* we didn't see a match earlier,
-		 * then this tuple is missing from the index, so insert it.
-		 */
-		if ((tuplesort_empty ||
-			 ItemPointerCompare(indexcursor, &rootTuple) > 0) &&
-			!in_index[root_offnum - 1])
+		/* Insert only if no valid anchor reaches this visible version. */
+		if (!in_index[ItemPointerGetOffsetNumber(heapcursor) - 1])
 		{
 			MemoryContextReset(econtext->ecxt_per_tuple_memory);
 
@@ -2131,6 +2148,8 @@ heapam_index_validate_scan(Relation heapRelation,
 	ExecDropSingleTupleTableSlot(slot);
 
 	FreeExecutorState(estate);
+	bms_free(indexattrs);
+	pfree(crossed);
 
 	/* These may have been pointing to the now-gone estate */
 	indexInfo->ii_ExpressionsState = NIL;
