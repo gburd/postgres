@@ -17,6 +17,7 @@
 set client_min_messages TO 'warning';
 create extension if not exists pg_walinspect;
 create extension if not exists amcheck;
+create extension if not exists bark_multikey;
 reset client_min_messages;
 
 -- Keep the WAL from the start of the workload until it has been read, even
@@ -121,10 +122,19 @@ VACUUM wi_vac;
 INSERT INTO wi_vac SELECT 2000 + g % 10000, repeat('z', 100)
   FROM generate_series(1, 20000) g;
 
+-- A multikey index: each row's three keys are new to the index and adjacent,
+-- so they go on one leaf together (INSERT_MULTI), except where a leaf fills.
+CREATE TABLE wi_multi (id int, a int4[]) WITH (autovacuum_enabled = off);
+CREATE INDEX wi_multi_idx ON wi_multi USING bark (a bark_int4_array_ops);
+INSERT INTO wi_multi SELECT g, ARRAY[3 * g, 3 * g + 1, 3 * g + 2]
+  FROM generate_series(1, 3000) g;
+
 SELECT bark_index_check(i, true)
   FROM unnest(ARRAY['wi_split_idx', 'wi_prefix_idx', 'wi_dup_idx', 'wi_hkl_idx',
                     'wi_hkp_idx', 'wi_big_idx', 'wi_churn_k', 'wi_churn_v',
                     'wi_churn_u', 'wi_vac_idx']::regclass[]) i;
+-- heapallindexed does not cover a multikey column.
+SELECT bark_index_check('wi_multi_idx', false);
 
 CREATE TEMP TABLE wi_rec AS
   SELECT record_type, description
@@ -141,6 +151,7 @@ WITH f(rtype, pat) AS (VALUES
   ('MARK_DELETED', '^next: \d+, safexid: \d+:\d+$'),
   ('INSERT_LEAF', '^off: \d+$'),
   ('INSERT_UPPER', '^off: \d+$'),
+  ('INSERT_MULTI', '^nentries: ([2-9]|\d\d+), offsets: \[\d+(, \d+)+\]$'),
   ('OVERWRITE', '^off: \d+$'),
   ('ADD_TID', '^off: \d+, tid: \(\d+,\d+\)$'),
   ('SPLIT', '^level: \d+, leaf: [TF], left: \d+, right: \d+, cycleid: \d+, prefix: [L-][R-](, left logged whole|, firstrightoff: \d+(, newitemoff: \d+)?(, replaceoff: \d+)?)$'),
@@ -173,10 +184,13 @@ SELECT
   bool_or(record_type = 'SPLIT' AND description ~ 'left logged whole') AS split_leftwhole,
   bool_or(record_type = 'SPLIT' AND description ~ 'firstrightoff: \d+$') AS split_newright,
   bool_or(record_type = 'SPLIT' AND description ~ 'newitemoff:') AS split_newleft,
-  bool_or(record_type = 'SPLIT' AND description ~ 'replaceoff:') AS split_replace
+  bool_or(record_type = 'SPLIT' AND description ~ 'replaceoff:') AS split_replace,
+  bool_and((regexp_match(description, '^nentries: (\d+)'))[1]::int =
+           array_length(string_to_array((regexp_match(description, '\[(.*)\]'))[1], ', '), 1))
+    FILTER (WHERE record_type = 'INSERT_MULTI') AS multi_offsets_counted
   FROM wi_rec;
 \x off
 
 SELECT pg_drop_replication_slot('bark_walinspect');
 DROP TABLE wi_rec, wi_split, wi_prefix, wi_dup, wi_hkl, wi_hkp, wi_big,
-  wi_churn, wi_vac;
+  wi_churn, wi_vac, wi_multi;
