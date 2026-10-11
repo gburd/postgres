@@ -11,6 +11,7 @@
 
 EXTRA_INSTALL=contrib/amcheck \
 	contrib/pageinspect \
+	contrib/pg_buffercache \
 	contrib/pg_prewarm \
 	contrib/pg_stat_statements \
 	contrib/test_decoding \
