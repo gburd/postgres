@@ -865,10 +865,16 @@ heap_xlog_update(XLogReaderState *record, bool hot_update)
 		Assert(xlrec->flags &
 			   (XLH_UPDATE_OLD_ALL_VISIBLE_CLEARED | XLH_UPDATE_NEW_LOCATOR_SPLIT));
 
-		if (XLogReadBufferForRedo(record, HEAP_UPDATE_BLKREF_VM_OLD,
-								  &vmbuffer_old) == BLK_NEEDS_REDO)
+		if (XLogReadBufferForRedoExtended(record, HEAP_UPDATE_BLKREF_VM_OLD,
+										  RBM_ZERO_ON_ERROR, false,
+										  &vmbuffer_old) == BLK_NEEDS_REDO)
 		{
+			Page		vmpage = BufferGetPage(vmbuffer_old);
 			bool		dirtied = false;
+
+			/* Setting the split bit can be the first use of this VM page. */
+			if (PageIsNew(vmpage))
+				PageInit(vmpage, BLCKSZ, 0);
 
 			if ((xlrec->flags & XLH_UPDATE_OLD_ALL_VISIBLE_CLEARED) &&
 				visibilitymap_clear(rlocator, oldblk, vmbuffer_old,
