@@ -76,8 +76,7 @@ bark_open_index(text *relname)
 	relrv = makeRangeVarFromNameList(textToQualifiedNameList(relname));
 	rel = relation_openrv(relrv, AccessShareLock);
 
-	if (rel->rd_rel->relkind != RELKIND_INDEX ||
-		rel->rd_rel->relam != BARK_AM_OID)
+	if (!bark_relation_is_bark(rel))
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is not a %s index",

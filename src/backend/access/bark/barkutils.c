@@ -76,7 +76,7 @@ static bool bark_first_column_bytewise(Relation index);
 CompareType
 bark_translate_strategy(StrategyNumber strategy, Oid opfamily)
 {
-	if (OidIsValid(opfamily) && get_opfamily_method(opfamily) == BARK_AM_OID)
+	if (bark_opfamily_is_own(opfamily))
 		return COMPARE_INVALID;
 
 	switch (strategy)
@@ -99,7 +99,7 @@ bark_translate_strategy(StrategyNumber strategy, Oid opfamily)
 StrategyNumber
 bark_translate_cmptype(CompareType cmptype, Oid opfamily)
 {
-	if (OidIsValid(opfamily) && get_opfamily_method(opfamily) == BARK_AM_OID)
+	if (bark_opfamily_is_own(opfamily))
 	{
 		Oid			funcid;
 
@@ -614,13 +614,47 @@ bark_cache_marker(Relation index, BarkKeyInfo *keyinfo, Datum key)
 }
 
 /*
+ * Is opfamily one of BARK's own operator families (a multikey family), as
+ * opposed to a btree family that a scalar class joined?
+ *
+ * Callers pass only a family of a BARK index or operator class.  BARK
+ * declares ambtreeopfamilies, so the only foreign families such a class can
+ * name are btree's; every other family was created USING an access method
+ * whose handler is barkhandler.  That need not be the AM named bark: CREATE
+ * ACCESS METHOD x TYPE INDEX HANDLER barkhandler gives the same code another
+ * OID, and its families are BARK's own just the same.  Testing for btree's
+ * OID rather than BARK_AM_OID answers correctly under such an alias, where
+ * the latter would read a multikey family's strategies as btree's and never
+ * extract keys.
+ */
+bool
+bark_opfamily_is_own(Oid opfamily)
+{
+	return OidIsValid(opfamily) &&
+		get_opfamily_method(opfamily) != BTREE_AM_OID;
+}
+
+/*
+ * Is rel an index of BARK, under any access method whose handler is
+ * barkhandler?  The access method's OID names one of them only; code that
+ * reads a relation as a BARK index (its meta page, its reloptions) must
+ * accept them all.
+ */
+bool
+bark_relation_is_bark(Relation rel)
+{
+	return rel->rd_rel->relkind == RELKIND_INDEX &&
+		rel->rd_amhandler == F_BARKHANDLER;
+}
+
+/*
  * Does an operator class in family opfamily with input type opcintype
  * extract keys?  See bark_column_is_extracted.
  */
 bool
 bark_opfamily_extracts(Oid opfamily, Oid opcintype)
 {
-	return get_opfamily_method(opfamily) == BARK_AM_OID &&
+	return bark_opfamily_is_own(opfamily) &&
 		OidIsValid(get_opfamily_proc(opfamily, opcintype, opcintype,
 									 BARK_EXTRACTVALUE_PROC));
 }
@@ -764,7 +798,7 @@ bark_check_multikey_index(Relation index, IndexInfo *indexInfo)
 			nextracted++;
 			extracted = i;
 		}
-		else if (get_opfamily_method(opfamily) != BTREE_AM_OID)
+		else if (bark_opfamily_is_own(opfamily))
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 					 errmsg("operator family \"%s\" of access method %s has no extract-value support function for type %s",

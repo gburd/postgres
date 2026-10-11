@@ -67,8 +67,6 @@
 #include "access/relation.h"
 #include "access/reloptions.h"
 #include "access/stratnum.h"
-#include "catalog/pg_am_d.h"
-#include "catalog/pg_class.h"
 #include "fmgr.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
@@ -1090,8 +1088,7 @@ bark_wildcard_entries(PG_FUNCTION_ARGS)
 	BlockNumber blkno;
 	Buffer		buf;
 
-	if (rel->rd_rel->relkind != RELKIND_INDEX ||
-		rel->rd_rel->relam != BARK_AM_OID ||
+	if (!bark_relation_is_bark(rel) ||
 		(attno = bark_index_extracted_column(rel)) == 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
