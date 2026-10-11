@@ -248,8 +248,9 @@ bark_column_is_extracted(Relation index, int attno)
 
 /*
  * Does index answer the scan keys on its extracted column through GIN's
- * query interface, its class having procedure 10 and not 8?  Such a column
- * has bitmap scans only ("Which interface first." in BARK-Design.mediawiki).
+ * query interface, its class having procedure 10 and not 8?  A scan with
+ * keys on such a column computes its whole result in TID order before the
+ * first row ("As built (M2c)" in BARK-Design.mediawiki).
  */
 bool
 bark_index_gin_query(Relation index)
@@ -723,7 +724,18 @@ bark_property(Oid index_oid, int attno, IndexAMProperty prop,
 	extracted = bark_index_extracted_column(index);
 	*res = false;
 	if (prop == AMPROP_INDEX_SCAN)
-		*res = !bark_index_gin_query(index);
+	{
+		/*
+		 * A scan with keys on a GIN-interface column returns its rows in TID
+		 * order (bark_mk_gin_gettuple), not in the order of the columns
+		 * before that column, which the planner takes an index scan to
+		 * return (pathkeys, merge joins, a KNN scan on the leading column).
+		 * Such an index keeps bitmap scans only; get_relation_info clears
+		 * amhasgettuple for it.  With the column first, the index orders no
+		 * column for the planner, and an index scan is safe.
+		 */
+		*res = !(bark_index_gin_query(index) && extracted > 1);
+	}
 	else if (attno == 0)
 		*res = extracted == 0;
 	else if (attno > IndexRelationGetNumberOfKeyAttributes(index))
