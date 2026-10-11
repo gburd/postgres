@@ -75,6 +75,7 @@
 #include "utils/wait_event.h"
 
 static int	bark_key_cmp(IndexScanDesc scan, int i, IndexTuple itup);
+static bool bark_mk_gin_gettuple(IndexScanDesc scan, ScanDirection dir);
 static bool bark_key_bounds(IndexScanDesc scan, ScanKey sk, bool *lower,
 							bool *upper);
 
@@ -403,6 +404,14 @@ typedef struct BarkMkBoundary
 #define RT_VALUE_TYPE uint64
 #include "lib/radixtree.h"
 
+/* A row of a GIN-interface scan: its TID, and its recheck flag. */
+typedef struct BarkGinItem
+{
+	ItemPointerData tid;
+	int			entry;			/* the query key, or nentries for a hidden one */
+	bool		recheck;
+} BarkGinItem;
+
 typedef struct BarkMkScanState
 {
 	AttrNumber	attno;			/* the extracted column */
@@ -413,8 +422,8 @@ typedef struct BarkMkScanState
 
 	/*
 	 * GIN's query interface (procedures 10-13), which the column's keys use
-	 * when its class has procedure 10 and not 8 (gin): only bitmap scans,
-	 * through bark_mk_gin_getbitmap.
+	 * when its class has procedure 10 and not 8 (gin), through
+	 * bark_mk_gin_items.
 	 */
 	bool		gin;
 	FmgrInfo   *ginquery;		/* procedure 10, extractQuery */
@@ -422,6 +431,19 @@ typedef struct BarkMkScanState
 	FmgrInfo   *gincompare;		/* procedure 12, comparePartial, or NULL */
 	FmgrInfo   *gintriconsistent;	/* procedure 13, triConsistent, or NULL */
 	bool		partialpast;	/* procedure 12 said the range is over */
+
+	/*
+	 * An index scan through GIN's interface (bark_mk_gin_gettuple): the rows
+	 * of bark_mk_gin_items, computed into ginCxt on the first call after a
+	 * rescan, the place in them (-1 or nginitems off either end), and the
+	 * marked place.
+	 */
+	bool		ginready;
+	BarkGinItem *ginitems;
+	int			nginitems;
+	int			ginpos;
+	int			ginmark;
+	MemoryContext ginCxt;
 	ScanKey		keys;			/* the scan keys on the column ... */
 	int			nkeys;			/* ... and their number */
 
@@ -959,7 +981,20 @@ bark_mk_rescan(IndexScanDesc scan)
 	mk->started = false;
 	mk->marked = false;
 	mk->nundo = 0;
-	if (!IsMVCCSnapshot(scan->xs_snapshot) || mk->orderrest)
+	if (mk->ginCxt != NULL)
+		MemoryContextReset(mk->ginCxt);
+	mk->ginready = false;
+	mk->ginitems = NULL;
+	mk->nginitems = 0;
+	mk->ginpos = mk->ginmark = -1;
+	/*
+	 * GIN's interface reads each boundary into a stream of distinct TIDs and
+	 * merges the streams (bark_mk_gin_items): a seen set there would drop a
+	 * row's TID from every boundary after the first that holds it.
+	 */
+	if (mk->gin && mk->nkeys > 0)
+		mk->useseen = false;
+	else if (!IsMVCCSnapshot(scan->xs_snapshot) || mk->orderrest)
 		mk->useseen = true;
 	else if (mk->nkeys > 0 && !mk->order &&
 			 (mk->oneentry || (mk->nbounds == 1 && mk->bounds[0].point)))
@@ -1177,6 +1212,9 @@ bark_mk_begin(IndexScanDesc scan, int attno)
 									   BARK_GIN_TRICONSISTENT_PROC)))
 			mk->gintriconsistent = index_getprocinfo(index, attno,
 													  BARK_GIN_TRICONSISTENT_PROC);
+		mk->ginCxt = AllocSetContextCreate(CurrentMemoryContext,
+										   "BARK GIN result",
+										   ALLOCSET_DEFAULT_SIZES);
 		if (mk->ginconsistent == NULL && mk->gintriconsistent == NULL)
 			elog(ERROR, "missing support function %d or %d for attribute %d of index \"%s\"",
 				 BARK_GIN_CONSISTENT_PROC, BARK_GIN_TRICONSISTENT_PROC, attno,
@@ -3908,17 +3946,8 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
 {
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 
-	/*
-	 * GIN's query interface decides a row from all of its entries at once,
-	 * so it has bitmap scans only.  The planner never makes another
-	 * (bark_property answers index_scan false for such an index); a caller
-	 * of the index AM that does not ask gets an error.
-	 */
 	if (so->mk != NULL && so->mk->gin && so->mk->nkeys > 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("BARK index \"%s\" supports only bitmap scans on a column whose operator class uses GIN's query interface",
-						RelationGetRelationName(scan->indexRelation))));
+		return bark_mk_gin_gettuple(scan, dir);
 
 	/*
 	 * Ordered-operator (KNN) scan: distances dictate the order, not the key
@@ -4005,7 +4034,9 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
  * for a search mode that includes empty values, every key for ALL); each
  * row met is given its per-key presence vector, and triConsistent (13), or
  * consistent (11), decides it.  That needs every entry of a row before the
- * answer, so these scans are bitmap scans only.
+ * answer, so a scan computes its whole result, in TID order, before its
+ * first row: a bitmap scan adds it to the bitmap, an index scan returns it
+ * a row at a time (bark_mk_gin_gettuple).
  *
  * Each boundary is read into a stream of distinct TIDs in TID order.  A
  * point boundary of a column that leads the index already comes out that
@@ -4029,13 +4060,6 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
  * a recheck, since that entry stands for a NULL value, an empty value and a
  * NULL element alike.
  */
-typedef struct BarkGinItem
-{
-	ItemPointerData tid;
-	int			entry;			/* the query key, or nentries for a hidden one */
-	bool		recheck;
-} BarkGinItem;
-
 /* One boundary's TIDs, distinct and ascending, and the merge's place in it. */
 typedef struct BarkGinStream
 {
@@ -4440,11 +4464,14 @@ bark_mk_gin_combine(BarkGinItem **a, int na, BarkGinItem *b, int nb,
 }
 
 /*
- * amgetbitmap for a scan with keys on a column that uses GIN's query
- * interface.  Every key must accept a row, as in GIN.
+ * The rows that a scan with keys on a column that uses GIN's query
+ * interface accepts, every key accepting each, as in GIN: palloc'd in the
+ * caller's memory context, sorted by TID, with their recheck flags.
+ * *nitems is set to their number.  The work happens in a context of its
+ * own, deleted before returning, and no buffer stays pinned.
  */
-static int64
-bark_mk_gin_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
+static BarkGinItem *
+bark_mk_gin_items(IndexScanDesc scan, int *nitems)
 {
 	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext,
@@ -4453,6 +4480,7 @@ bark_mk_gin_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	MemoryContext oldcxt = MemoryContextSwitchTo(cxt);
 	BarkGinItem *acc = NULL;
 	int			nacc = 0;
+	BarkGinItem *result;
 
 	Assert(scan->parallel_scan == NULL);
 	for (int k = 0; k < mk->nkeys; k++)
@@ -4505,11 +4533,103 @@ bark_mk_gin_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	BarkScanPosUnpinIfPinned(((BarkScanOpaque) scan->opaque)->currPos);
 	BarkScanPosInvalidate(((BarkScanOpaque) scan->opaque)->currPos);
 
-	for (int i = 0; i < nacc; i++)
-		tbm_add_tuples(tbm, &acc[i].tid, 1, acc[i].recheck);
 	MemoryContextSwitchTo(oldcxt);
+	result = palloc_array(BarkGinItem, Max(nacc, 1));
+	if (nacc > 0)
+		memcpy(result, acc, nacc * sizeof(BarkGinItem));
 	MemoryContextDelete(cxt);
-	return nacc;
+	*nitems = nacc;
+	return result;
+}
+
+/* amgetbitmap for a scan with keys on a GIN-interface column. */
+static int64
+bark_mk_gin_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
+{
+	int			nitems;
+	BarkGinItem *items = bark_mk_gin_items(scan, &nitems);
+
+	for (int i = 0; i < nitems; i++)
+		tbm_add_tuples(tbm, &items[i].tid, 1, items[i].recheck);
+	pfree(items);
+	return nitems;
+}
+
+/*
+ * amgettuple for a scan with keys on a GIN-interface column.  The first call
+ * after a rescan computes the scan's whole result, as a bitmap scan does,
+ * and each call returns the next of its rows, in TID order, or in reverse
+ * TID order for a backward scan (one that reverses continues from the same
+ * place, and one that ran off an end restarts from it, as in bark_gettuple).
+ *
+ * The TIDs are collected with no pin held on any leaf, so VACUUM may remove
+ * an entry, and the heap reuse its slot for a new row, before the scan
+ * returns its TID.  Only an MVCC snapshot makes that harmless: the new row
+ * is not visible to it, nbtree's argument for dropping its pin
+ * (so->dropPin).  A scan with any other snapshot (the dirty snapshot of an
+ * exclusion constraint's check) gets an error.  The scan has no leaf
+ * position, and BARK sets no LP_DEAD hints, so kill_prior_tuple is ignored.
+ * The planner makes no index-only, ordered or parallel scan of such an index
+ * (bark_canreturn; the column has no sort family, and bark_property keeps an
+ * index with columns before it to bitmap scans; plancat.c's amcanparallel);
+ * a caller of the index AM that asks for one gets an error.  Mark and
+ * restore keep a place in the result (bark_markpos).
+ */
+static bool
+bark_mk_gin_gettuple(IndexScanDesc scan, ScanDirection dir)
+{
+	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
+	BarkGinItem *item;
+
+	if (!mk->ginready)
+	{
+		MemoryContext oldcxt;
+
+		if (!IsMVCCLikeSnapshot(scan->xs_snapshot))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("index scans of BARK index \"%s\" through GIN's query interface require an MVCC snapshot",
+							RelationGetRelationName(scan->indexRelation))));
+		/*
+		 * An ordering key on the column was refused at rescan
+		 * (bark_mk_order_setup: a GIN-interface class has no procedure 8),
+		 * and the planner makes no parallel scan of such an index.
+		 */
+		Assert(scan->numberOfOrderBys == 0);
+		if (scan->parallel_scan != NULL)
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("parallel index scans of BARK index \"%s\" through GIN's query interface are not supported",
+							RelationGetRelationName(scan->indexRelation))));
+		oldcxt = MemoryContextSwitchTo(mk->ginCxt);
+		mk->ginitems = bark_mk_gin_items(scan, &mk->nginitems);
+		MemoryContextSwitchTo(oldcxt);
+		mk->ginpos = ScanDirectionIsForward(dir) ? -1 : mk->nginitems;
+		mk->ginready = true;
+	}
+
+	if (ScanDirectionIsForward(dir))
+	{
+		if (mk->ginpos >= mk->nginitems - 1)
+		{
+			mk->ginpos = mk->nginitems;
+			return false;
+		}
+		mk->ginpos++;
+	}
+	else
+	{
+		if (mk->ginpos <= 0)
+		{
+			mk->ginpos = -1;
+			return false;
+		}
+		mk->ginpos--;
+	}
+	item = &mk->ginitems[mk->ginpos];
+	scan->xs_heaptid = item->tid;
+	scan->xs_recheck = item->recheck;
+	return true;
 }
 
 /*
@@ -4575,6 +4695,8 @@ bark_endscan(IndexScanDesc scan)
 	{
 		MemoryContextDelete(so->mk->seenCxt);
 		MemoryContextDelete(so->mk->hitupCxt);
+		if (so->mk->ginCxt != NULL)
+			MemoryContextDelete(so->mk->ginCxt);
 		FreeTupleDesc(so->mk->hitupdesc);
 		if (so->mk->undo)
 			pfree(so->mk->undo);
@@ -4599,6 +4721,13 @@ bark_markpos(IndexScanDesc scan)
 	/* The planner never asks a parallel or an ordered-operator scan. */
 	Assert(scan->parallel_scan == NULL);
 	Assert(scan->numberOfOrderBys == 0);
+
+	/* A GIN-interface scan marks its place in its result. */
+	if (so->mk != NULL && so->mk->gin && so->mk->nkeys > 0)
+	{
+		so->mk->ginmark = so->mk->ginready ? so->mk->ginpos : -1;
+		return;
+	}
 
 	/* An older mark may hold a pin (never a lock). */
 	BarkScanPosUnpinIfPinned(so->markPos);
@@ -4637,6 +4766,13 @@ bark_restrpos(IndexScanDesc scan)
 	/* The planner never asks a parallel or an ordered-operator scan. */
 	Assert(scan->parallel_scan == NULL);
 	Assert(scan->numberOfOrderBys == 0);
+
+	if (so->mk != NULL && so->mk->gin && so->mk->nkeys > 0)
+	{
+		if (so->mk->ginready)
+			so->mk->ginpos = so->mk->ginmark;
+		return;
+	}
 
 	if (so->mk != NULL)
 	{

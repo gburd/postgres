@@ -86,6 +86,7 @@ PG_FUNCTION_INFO_V1(bark_multikey_entries);
 PG_FUNCTION_INFO_V1(bark_multikey_has_marker);
 PG_FUNCTION_INFO_V1(bark_multikey_mark_restore);
 PG_FUNCTION_INFO_V1(bark_multikey_reverse);
+PG_FUNCTION_INFO_V1(bark_multikey_walk);
 PG_FUNCTION_INFO_V1(bark_multikey_parallel);
 PG_FUNCTION_INFO_V1(bark_multikey_knn);
 PG_FUNCTION_INFO_V1(bark_multikey_extract_query);
@@ -821,6 +822,74 @@ read_tids(IndexScanDesc scan, ItemPointer tids, int max)
 	while (n < max && tableam_index_getnext_tid(scan, ForwardScanDirection))
 		tids[n++] = scan->xs_heaptid;
 	return n;
+}
+
+/*
+ * bark_multikey_walk(index, op, query, steps) -> text: scan index with one
+ * key, column 1 op query, taking one step per character of steps, 'f'
+ * forward and 'b' backward, without asking whether the index scans
+ * backward.  The answer has a word per step: the TID read, or "-".  A
+ * leading 'a' scans with SnapshotAny instead of the active snapshot, as a
+ * caller of the AM with a non-MVCC snapshot would; 'o' adds an ordering
+ * key, column 1 op query, that the AM did not ask for.
+ */
+Datum
+bark_multikey_walk(PG_FUNCTION_ARGS)
+{
+	Relation	index = open_bark_index(PG_GETARG_TEXT_PP(0));
+	Oid			opno = PG_GETARG_OID(1);
+	Datum		query = PG_GETARG_DATUM(2);
+	char	   *steps = text_to_cstring(PG_GETARG_TEXT_PP(3));
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	StringInfoData buf;
+	int			strategy;
+	Oid			lefttype;
+	Oid			righttype;
+	ScanKeyData key;
+	ScanKeyData ob;
+	IndexScanDesc scan;
+	Snapshot	snapshot = GetActiveSnapshot();
+	int			norderbys = 0;
+
+	if (*steps == 'a')
+	{
+		snapshot = SnapshotAny;
+		steps++;
+	}
+	if (*steps == 'o')
+	{
+		norderbys = 1;
+		steps++;
+	}
+	get_op_opfamily_properties(opno, index->rd_opfamily[0], false, &strategy,
+							   &lefttype, &righttype);
+	ScanKeyEntryInitialize(&key, 0, 1, strategy, righttype,
+						   index->rd_indcollation[0], get_opcode(opno), query);
+	ScanKeyEntryInitialize(&ob, SK_ORDER_BY, 1, strategy, righttype,
+						   index->rd_indcollation[0], get_opcode(opno), query);
+	scan = index_beginscan(heap, index, false, snapshot, NULL, 1, norderbys,
+						   0);
+	index_rescan(scan, &key, 1, norderbys ? &ob : NULL, norderbys);
+	initStringInfo(&buf);
+	for (char *c = steps; *c; c++)
+	{
+		ScanDirection dir = *c == 'b' ? BackwardScanDirection :
+			ForwardScanDirection;
+
+		if (buf.len > 0)
+			appendStringInfoChar(&buf, ' ');
+		if (tableam_index_getnext_tid(scan, dir))
+			appendStringInfo(&buf, "(%u,%u)",
+							 ItemPointerGetBlockNumber(&scan->xs_heaptid),
+							 ItemPointerGetOffsetNumber(&scan->xs_heaptid));
+		else
+			appendStringInfoChar(&buf, '-');
+	}
+	index_endscan(scan);
+
+	table_close(heap, AccessShareLock);
+	relation_close(index, AccessShareLock);
+	PG_RETURN_TEXT_P(cstring_to_text(buf.data));
 }
 
 /*
