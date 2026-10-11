@@ -1551,6 +1551,24 @@ built entry up to BarkMaxItemSize.  The meta page's bark_allequalimage
 records the rule's result, as nbtree's btm_allequalimage does; only
 pageinspect's bark_metap reads it.
 
+A column whose class uses GIN's query interface (bark_index_gin_query) is
+exempt from the equalimage half of the rule, as GIN's keys are: GIN finds a
+key's entry by its compare procedure and adds the TID to that entry, keeping
+the first key image.  bark_index_may_coalesce is the rule insert and build
+use: non-unique, no INCLUDE columns, and every key column equalimage except
+such a column.  It is sound because nothing returns the stored image as a
+row's value (bark_canreturn is false for an extracted column, and a
+GIN-interface class has no procedure 8, so no ordering operator reports a
+key), and its consistent, comparePartial and triConsistent see the stored
+image exactly as GIN's do.  The entry keeps the first row's image:
+bark_coalesce_list builds a new LIST or POSTING from the existing entry's
+key (bark_single_from_list), not the inserted tuple's, and the build's run
+keeps the key of its first, lowest-TID row.  Everything that rewrites an
+entry later (the merge pass, VACUUM, bottom-up deletion, ADD_TID and
+INSERT_SWAP redo) already takes the key from the stored entry.  The meta
+page's bark_allequalimage keeps its meaning (the plain test), so it reads
+false for such an index although its keys coalesce.
+
 Delete marking (the C-DELETE contract)
 --------------------------------------
 
