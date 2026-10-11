@@ -995,7 +995,9 @@ a time like the plain scan, and merge them by distance (barkknn.c).  They
 are planned only on an index's leading column, with one ordering operator;
 an ordered index keeps a later column's values spread over the whole index.
 A scroll cursor over a KNN scan is materialized: the scan cannot run its
-distance order backward.
+distance order backward.  A NULL key's distance is infinity, so its rows
+come last, and a NULL constant makes every entry's distance infinity: the
+scan then returns every row, as a Sort over the NULL distances would.
 
 An ordering operator of a multikey class on a leading extracted column is
 not a KNN scan (bark_mk_order_setup in barkscan.c).  Procedure 8 is called

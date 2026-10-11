@@ -1613,7 +1613,7 @@ typedef struct BarkKnnScanState
 	FmgrInfo	distfn;			/* the ordering operator's distance function */
 	Oid			distcollation;	/* its input collation */
 	Datum		center;			/* the ORDER BY constant (sk_argument) */
-	bool		centernull;		/* the constant is NULL (no rows ordered) */
+	bool		centernull;		/* the constant is NULL (every distance NULL) */
 	AttrNumber	attno;			/* index column being ordered (1-based) */
 	BarkKnnCursor fwd;			/* forward (>= center) cursor */
 	BarkKnnCursor bwd;			/* backward (< center) cursor */
