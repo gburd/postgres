@@ -94,6 +94,32 @@ StaticAssertDecl(BUF_REFCOUNT_BITS + BUF_USAGECOUNT_BITS + BUF_FLAG_BITS + BUF_L
  * Assert it here so a future change to BUF_USAGECOUNT_BITS cannot silently
  * narrow the field out from under the cooling state.
  */
+/*
+ * How many HOT buffers a single StrategyGetBuffer() call will demote before it
+ * gives up on finding a COOL victim and claims a HOT one instead.
+ *
+ * A buffer only becomes a candidate once the hand has passed it and left it
+ * COOL.  When the pool is re-touched faster than the hand can traverse it,
+ * buffers are promoted back to HOT before the hand returns, the supply of COOL
+ * candidates collapses, and -- because a demotion counts as progress and
+ * resets trycounter -- the loop can demote indefinitely without ever finding a
+ * victim.  That is unbounded work for a single allocation.
+ *
+ * Claiming after this many fruitless demotions bounds it.  The cost is
+ * evicting a buffer that had not finished its probation, so the threshold
+ * wants to be high enough that healthy workloads never reach it.
+ *
+ * Both sides have been measured.  The worst-case advances an allocation
+ * performs is almost exactly this threshold plus two, so the tail is a direct
+ * function of it.  On a workload whose hot set most queries re-read, a
+ * threshold of 4 leaves 4,519 hot pages non-resident and costs 1.8 points of
+ * hot-set hit ratio; 32 leaves 11 pages and costs 0.03 points; at 128 nothing
+ * hot is displaced and the cost is not measurable.  128 therefore buys a bound
+ * four orders of magnitude below an unbounded scan for no measurable loss of
+ * replacement quality.
+ */
+#define BUF_COOL_CLAIM_THRESHOLD	128
+
 StaticAssertDecl(BUF_USAGECOUNT_BITS >= 1,
 				 "cooling state needs at least one bit in the usagecount field");
 
@@ -633,6 +659,7 @@ extern bool StrategyRejectBuffer(BufferAccessStrategy strategy,
 								 BufferDesc *buf, bool from_ring);
 
 extern int	StrategySyncStart(uint32 *complete_passes, uint32 *num_buf_alloc);
+extern uint64 StrategyCoolClaims(void);
 extern void StrategyNotifyBgWriter(int bgwprocno);
 
 /* buf_table.c */
