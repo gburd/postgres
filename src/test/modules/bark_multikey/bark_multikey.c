@@ -90,6 +90,7 @@ PG_FUNCTION_INFO_V1(bark_multikey_has_marker);
 PG_FUNCTION_INFO_V1(bark_multikey_mark_restore);
 PG_FUNCTION_INFO_V1(bark_multikey_reverse);
 PG_FUNCTION_INFO_V1(bark_multikey_walk);
+PG_FUNCTION_INFO_V1(bark_multikey_rescan_fewer);
 PG_FUNCTION_INFO_V1(bark_multikey_parallel);
 PG_FUNCTION_INFO_V1(bark_multikey_knn);
 PG_FUNCTION_INFO_V1(bark_multikey_extract_query);
@@ -893,6 +894,75 @@ bark_multikey_walk(PG_FUNCTION_ARGS)
 	table_close(heap, AccessShareLock);
 	relation_close(index, AccessShareLock);
 	PG_RETURN_TEXT_P(cstring_to_text(buf.data));
+}
+
+/*
+ * bark_multikey_rescan_fewer(index, op, query) -> text: ask the AM for a
+ * scan with two key slots, then call its amrescan DIRECTLY with ONE key and
+ * nscankeys = 1, as DocumentDB's composite-scan fold does (pg_documentdb's
+ * rum.c folds several planner keys into one BSON_INDEX_STRATEGY_COMPOSITE_QUERY
+ * key and calls coreRoutine->amrescan(scan, &key, 1, ...), bypassing
+ * index_rescan, while scan->numberOfKeys still holds the beginscan count).
+ * BARK must believe the argument, not scan->numberOfKeys, or it would read a
+ * second, uninitialized key slot and return wrong rows or error.  The answer
+ * is true when the folded scan reads exactly the same TID multiset, in the
+ * same order, as a plain one-key index_rescan of the qual.  index_rescan
+ * cannot stand in for the fold here: it asserts nscankeys == numberOfKeys.
+ */
+Datum
+bark_multikey_rescan_fewer(PG_FUNCTION_ARGS)
+{
+	Relation	index = open_bark_index(PG_GETARG_TEXT_PP(0));
+	Oid			opno = PG_GETARG_OID(1);
+	Datum		query = PG_GETARG_DATUM(2);
+	Relation	heap = table_open(index->rd_index->indrelid, AccessShareLock);
+	int			strategy;
+	Oid			lefttype;
+	Oid			righttype;
+	ScanKeyData key;
+	IndexScanDesc scan;
+	ItemPointer tids;
+	ItemPointer tids2;
+	int			cap = 1024;
+	int			n;
+	int			n2;
+	bool		same;
+
+	if (heap->rd_rel->reltuples > cap)
+		cap = (int) heap->rd_rel->reltuples + 1;
+	tids = palloc(cap * sizeof(ItemPointerData));
+	tids2 = palloc(cap * sizeof(ItemPointerData));
+	get_op_opfamily_properties(opno, index->rd_opfamily[0], false, &strategy,
+							   &lefttype, &righttype);
+	ScanKeyEntryInitialize(&key, 0, 1, strategy, righttype,
+						   index->rd_indcollation[0], get_opcode(opno), query);
+
+	/*
+	 * The fold: ask beginscan for two key slots (scan->numberOfKeys becomes
+	 * 2), then call the AM's amrescan with a single key.  The second slot is
+	 * left as index_beginscan palloc0'd it; if BARK trusted numberOfKeys it
+	 * would process that empty key and read the wrong rows.
+	 */
+	scan = index_beginscan(heap, index, false, GetActiveSnapshot(), NULL,
+						   2, 0, 0);
+	index->rd_indam->amrescan(scan, &key, 1, NULL, 0);
+	n = read_tids(scan, tids, cap);
+	index_endscan(scan);
+
+	/* The plain one-key scan of the same qual. */
+	scan = index_beginscan(heap, index, false, GetActiveSnapshot(), NULL,
+						   1, 0, 0);
+	index_rescan(scan, &key, 1, NULL, 0);
+	n2 = read_tids(scan, tids2, cap);
+	index_endscan(scan);
+
+	same = (n == n2);
+	for (int i = 0; same && i < n; i++)
+		same = ItemPointerEquals(&tids[i], &tids2[i]);
+
+	table_close(heap, AccessShareLock);
+	relation_close(index, AccessShareLock);
+	PG_RETURN_BOOL(same);
 }
 
 /*
