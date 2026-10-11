@@ -470,6 +470,60 @@ RESET enable_sort;
 DROP TABLE wo, wo_want;
 DROP FUNCTION wo_check;
 
+-- Numbers are written in one form, their scale trimmed, so keys that
+-- compare equal have equal bytes and coalesce (the class's equalimage):
+-- 1, 1.0 and 1.00 at one path are one key, inside an inner array too, and
+-- |<| reports that key.  wc_num's index takes its rows by insert; wc_numb's
+-- is built over them, with prefix compression.  Every query agrees with a
+-- sequential scan, each index holds exactly the heap's keys (compared as
+-- text, so as bytes), and their equal keys share LIST or POSTING entries.
+CREATE TABLE wc_num (id int, doc jsonb);
+CREATE INDEX wc_num_doc ON wc_num USING bark (doc bark_jsonb_wildcard_ops);
+INSERT INTO wc_num SELECT g, jsonb_build_object('a',
+    (ARRAY['1', '1.0', '1.00', '2.50', '2.5', '[1.0, 1, 3]',
+           '[[1.0], [1], [1.00, 0.0]]'])[1 + g % 7]::jsonb)
+  FROM generate_series(1, 1400) g;
+CREATE TABLE wc_numb AS SELECT * FROM wc_num;
+CREATE INDEX wc_numb_doc ON wc_numb USING bark (doc bark_jsonb_wildcard_ops)
+  WITH (prefix_compression = on);
+SELECT DISTINCT k::text FROM wc_num, bark_wildcard_keys(doc) k ORDER BY 1;
+SELECT DISTINCT (doc |<| 'a')::text AS least FROM wc_num ORDER BY 1;
+SELECT q, wc_run('wc_num', NULL, q, 'seq') AS seq,
+       wc_run('wc_num', 'wc_num_doc', q, 'index') = wc_run('wc_num', NULL, q, 'seq') AND
+       wc_run('wc_num', 'wc_num_doc', q, 'bitmap') = wc_run('wc_num', NULL, q, 'seq') AND
+       wc_run('wc_numb', 'wc_numb_doc', q, 'index') = wc_run('wc_num', NULL, q, 'seq') AND
+       wc_run('wc_numb', 'wc_numb_doc', q, 'bitmap') = wc_run('wc_num', NULL, q, 'seq') AS same
+  FROM unnest(ARRAY['doc #= ''["a", 1]''', 'doc #= ''["a", 1.00]''', 'doc #< ''["a", 2.500]''',
+                    'doc #>= ''["a", 2.5]''', 'doc #= ''["a", [1]]''',
+                    'doc #= ''["a", [1.0, 0]]''', 'doc #? ''a''']) q;
+SELECT i, (SELECT count(*) FROM (SELECT key::text, tid, marker FROM wc_index_keys(i::regclass)
+                                 EXCEPT ALL
+                                 SELECT key::text, tid, marker FROM wc_heap_keys(t::regclass, NULL, NULL)) x) AS index_only,
+       (SELECT count(*) FROM (SELECT key::text, tid, marker FROM wc_heap_keys(t::regclass, NULL, NULL)
+                              EXCEPT ALL
+                              SELECT key::text, tid, marker FROM wc_index_keys(i::regclass)) x) AS heap_only
+  FROM (VALUES ('wc_num_doc', 'wc_num'), ('wc_numb_doc', 'wc_numb')) v(i, t) ORDER BY i;
+SELECT i, shape, count(*) AS entries, sum(ntids) AS tids
+  FROM unnest(ARRAY['wc_num_doc', 'wc_numb_doc']) i, bark_page_items(i, 1)
+ GROUP BY i, shape ORDER BY i, shape;
+-- An ordered scan reads each row once, nondecreasing, with |<|'s value.
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET enable_sort = off;
+EXPLAIN (COSTS OFF) SELECT id FROM wc_num ORDER BY doc |<| 'a';
+SELECT count(*), count(DISTINCT id), count(*) FILTER (WHERE k < pk) AS out_of_order,
+       count(*) FILTER (WHERE k::text IS DISTINCT FROM want::text) AS wrong_value
+  FROM (SELECT id, k, lag(k) OVER (ORDER BY rn) AS pk,
+               (SELECT kk FROM wc_num w, bark_wildcard_keys(w.doc) kk
+                 WHERE w.id = s.id AND jsonb_array_length(kk) = 2 ORDER BY kk LIMIT 1) AS want
+          FROM (SELECT row_number() OVER () AS rn, id, k
+                  FROM (SELECT id, doc |<| 'a' AS k FROM wc_num ORDER BY doc |<| 'a') o) s) x;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET enable_sort;
+SELECT bark_index_check('wc_num_doc'), bark_index_check('wc_numb_doc');
+DROP TABLE wc_num, wc_numb;
+
 DROP TABLE wc_seq, wc_plain, wc_inc, wc_exc, wc_tid, wc_quals;
 DROP FUNCTION wc_run, wc_compare, wc_jpath, wc_doc, wc_val, wc_heap_keys, wc_index_keys;
 DROP EXTENSION bark_wildcard;

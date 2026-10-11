@@ -14,6 +14,13 @@
  * at a.b, as in MongoDB.  An array of arrays is indexed one level deep, as
  * MongoDB does: the inner arrays are values.
  *
+ * Every number in a key, an inner array's included, is written in one form,
+ * its scale trimmed as trim_scale does (1.0 and 1.00 are written 1).
+ * jsonb_cmp compares numbers with numeric_cmp, which ignores the scale, so
+ * without this keys it finds equal could differ in their bytes; with it
+ * they are identical, which is what lets the class declare equalimage and
+ * BARK coalesce equal keys into LIST and POSTING entries.
+ *
  * Markers: for every path that holds an array, a one-element jsonb array
  * [path].  It sorts before every two-element data key (jsonb orders arrays
  * by length first), so no marker equals a data key.  A path below no marked
@@ -254,17 +261,50 @@ bark_wildcard_array(JsonbValue *elems, int nelems)
 	return JsonbPGetDatum(JsonbValueToJsonb(state.result));
 }
 
-/* The key [path, value]. */
+/* A jsonb scalar with its number, if it is one, in canonical form. */
+static void
+bark_wildcard_canonical(JsonbValue *v)
+{
+	if (v->type == jbvNumeric)
+		v->val.numeric = DatumGetNumeric(DirectFunctionCall1(numeric_trim_scale,
+																	 NumericGetDatum(v->val.numeric)));
+}
+
+/*
+ * The key [path, value], every number in value in canonical form (see the
+ * file header).  A container (an empty one, or an array nested in an array)
+ * is pushed token by token, to reach the numbers inside it.
+ */
 static Datum
 bark_wildcard_key(const char *path, JsonbValue *value)
 {
-	JsonbValue	pair[2];
+	JsonbInState state = {0};
+	JsonbValue	v;
 
-	pair[0].type = jbvString;
-	pair[0].val.string.val = (char *) path;
-	pair[0].val.string.len = strlen(path);
-	pair[1] = *value;
-	return bark_wildcard_array(pair, 2);
+	v.type = jbvString;
+	v.val.string.val = (char *) path;
+	v.val.string.len = strlen(path);
+	pushJsonbValue(&state, WJB_BEGIN_ARRAY, NULL);
+	pushJsonbValue(&state, WJB_ELEM, &v);
+	if (value->type != jbvBinary)
+	{
+		v = *value;
+		bark_wildcard_canonical(&v);
+		pushJsonbValue(&state, WJB_ELEM, &v);
+	}
+	else
+	{
+		JsonbIterator *it = JsonbIteratorInit(value->val.binary.data);
+		JsonbIteratorToken tok;
+
+		while ((tok = JsonbIteratorNext(&it, &v, false)) != WJB_DONE)
+		{
+			bark_wildcard_canonical(&v);
+			pushJsonbValue(&state, tok, tok < WJB_BEGIN_ARRAY ? &v : NULL);
+		}
+	}
+	pushJsonbValue(&state, WJB_END_ARRAY, NULL);
+	return JsonbPGetDatum(JsonbValueToJsonb(state.result));
 }
 
 static void

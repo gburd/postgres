@@ -99,10 +99,21 @@ AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
 CREATE OPERATOR FAMILY bark_jsonb_wildcard_ops USING bark;
 
 -- Keys and markers are jsonb, compared with jsonb_cmp; procedure 1 is
--- registered under the input type, as BARK looks it up.  No equalimage:
--- jsonb's 1.0 and 1.00 are equal with different images, so entries do not
--- coalesce.  The comparison operators have btree's strategy numbers; they
--- reach only procedures 8 and 9.
+-- registered under the input type, as BARK looks it up.  The comparison
+-- operators have btree's strategy numbers; they reach only procedures 8
+-- and 9.
+--
+-- Equalimage (4) is btequalimage, always true, so equal keys coalesce into
+-- LIST and POSTING entries, whose one stored key the scans report for every
+-- member.  That is sound because two keys jsonb_cmp finds equal have the
+-- same bytes.  The one place its equality is looser than the bytes is a
+-- number's scale (numeric_cmp finds 1.0 and 1.00 equal), and procedure 7
+-- writes every number with its scale trimmed.  Strings compare in the
+-- database's default collation, which is deterministic, so equal strings
+-- are equal bytes; an object's keys are stored sorted and unique; and
+-- jsonb's binary layout (entry lengths and offsets, alignment padding)
+-- follows from the values alone.  jsonb is not collatable, so no column
+-- collation can change the answer.
 CREATE OPERATOR CLASS bark_jsonb_wildcard_ops
 FOR TYPE jsonb USING bark FAMILY bark_jsonb_wildcard_ops AS
     OPERATOR 1 #< (jsonb, jsonb),
@@ -113,6 +124,7 @@ FOR TYPE jsonb USING bark FAMILY bark_jsonb_wildcard_ops AS
     OPERATOR 6 #? (jsonb, text),
     OPERATOR 7 |<| (jsonb, text) FOR ORDER BY jsonb_ops,
     FUNCTION 1 (jsonb, jsonb) jsonb_cmp(jsonb, jsonb),
+    FUNCTION 4 (jsonb, jsonb) btequalimage(oid),
     FUNCTION 5 (jsonb, jsonb) bark_wildcard_options(internal),
     FUNCTION 7 (jsonb, jsonb) bark_wildcard_extract_value(jsonb, internal,
                                                            internal, internal,
