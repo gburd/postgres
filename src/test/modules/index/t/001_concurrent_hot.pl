@@ -75,13 +75,10 @@ for my $phase ('create', 'reindex_not_ready', 'reindex_ready')
 		is($node->safe_psql('postgres', q(
 			SELECT indisready AND indisvalid FROM pg_index WHERE indexrelid='target'::regclass)),
 			't', "$label: index is ready and valid");
-		if ($name ne 'expression_unchanged')
-		{
 		my ($stdout, $stderr);
 		is($node->psql('postgres', 'INSERT INTO t SELECT * FROM t WHERE id = 1',
 			stdout => \$stdout, stderr => \$stderr), 3, "$label: duplicate rejected");
 		like($stderr, qr/duplicate key value violates unique constraint/, "$label: uniqueness enforced");
-		}
 		$node->safe_psql('postgres', 'DROP TABLE t');
 	}
 }

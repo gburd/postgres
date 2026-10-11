@@ -45,7 +45,9 @@ static pg_always_inline bool heapam_index_heap_fetch(IndexScanDesc scan,
 static pg_noinline bool heapam_index_only_heap_fetch(IndexScanDesc scan);
 static pg_noinline void heapam_index_kill_item(IndexScanDesc scan);
 static inline bool heapam_index_visited_pages_exceeded(IndexScanDesc scan);
-static bool heapam_index_entry_needs_recheck(IndexScanDesc scan, Relation indexRelation);
+static bool heapam_index_entry_needs_recheck(bool hot_indexed_recheck,
+										   const uint8 *crossed,
+										   Relation indexRelation);
 
 /*
  * TID-based lookup used by constraint enforcement code (e.g., unique index
@@ -81,13 +83,15 @@ heapam_fetch_tid(Relation rel, ItemPointer tid, Snapshot snapshot,
  *
  * Walks the HOT chain from *tid; on a visible match stores the live tuple into
  * *slot and returns true, and sets *recheck true iff the walk crossed a
- * HOT-selectively-updated hop after the arriving entry's own tuple (its stored
- * key may no longer match the live tuple).  The caller performs its own key
- * comparison in that case.  This is heap's implementation of the
+ * HOT-selectively-updated hop after the arriving entry's own tuple that changed
+ * an attribute referenced by indexRelation.  With indexRelation NULL, any such
+ * hop requires a recheck.  The caller performs its own key comparison in that
+ * case.  This is heap's implementation of the
  * fetch_tid_check table-AM callback (see table_index_fetch_tuple_check).
  */
 bool
-heapam_fetch_tid_check(Relation rel, ItemPointer tid, Snapshot snapshot,
+heapam_fetch_tid_check(Relation rel, Relation indexRelation,
+					   ItemPointer tid, Snapshot snapshot,
 					   bool *all_dead, bool *recheck, TupleTableSlot *slot)
 {
 	BufferHeapTupleTableSlot *bslot = (BufferHeapTupleTableSlot *) slot;
@@ -114,10 +118,11 @@ heapam_fetch_tid_check(Relation rel, ItemPointer tid, Snapshot snapshot,
 	else
 		UnlockReleaseBuffer(buf);
 
-	pfree(crossed);
-
 	if (recheck != NULL)
-		*recheck = found && hi_recheck;
+		*recheck = found &&
+			heapam_index_entry_needs_recheck(hi_recheck, crossed, indexRelation);
+
+	pfree(crossed);
 
 	return found;
 }
@@ -611,7 +616,9 @@ heapam_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 			 * drops it; the fresh entry supplies the row).
 			 */
 			scan->xs_entry_needs_recheck =
-				heapam_index_entry_needs_recheck(scan, scan->indexRelation);
+				heapam_index_entry_needs_recheck(hscan->xs_hot_indexed_recheck,
+											   hscan->xs_hot_indexed_crossed,
+											   scan->indexRelation);
 		}
 		else
 		{
@@ -643,7 +650,9 @@ heapam_index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 				 * fetch happened here), so drop the stale entry now; the fresh
 				 * entry for the new value returns the row correctly.
 				 */
-				if (heapam_index_entry_needs_recheck(scan, scan->indexRelation))
+				if (heapam_index_entry_needs_recheck(hscan->xs_hot_indexed_recheck,
+												   hscan->xs_hot_indexed_crossed,
+												   scan->indexRelation))
 					continue;	/* stale leaf, try next index entry */
 			}
 			else
@@ -868,27 +877,29 @@ heapam_index_visited_pages_exceeded(IndexScanDesc scan)
  *
  * Report whether the entry that led to the last-fetched tuple may fail to
  * exactly identify the live tuple's current key.  The chain walk in
- * heap_hot_search_buffer recorded, privately in IndexScanHeapData, whether it
- * crossed a HOT/SIU hop after the arriving entry's own tuple
- * (xs_hot_indexed_recheck) and the union of modified attributes it crossed
- * (xs_hot_indexed_crossed).
+ * heap_hot_search_buffer recorded whether it crossed a HOT-selectively-updated
+ * hop after the arriving entry's own tuple and the union of modified attributes
+ * it crossed.  Both index scans and constraint-enforcement fetches use this
+ * per-index test.
  *
  * With indexRelation NULL, report the raw "a hop was crossed at all" signal.
- * With indexRelation given, narrow it: the entry is stale only if a crossed
- * hop changed one of the columns that index covers, tested by overlapping the
- * crossed-attribute bitmap with the index's indexed attributes.  No key
- * comparison is needed: any overlap means one of this index's inputs changed
- * after the entry's tuple, so its key is stale.
+ * With indexRelation given, report whether a crossed hop changed an attribute
+ * that index references, by overlapping the crossed-attribute bitmap with the
+ * index's indexed attributes.  Overlap means the entry may need a recheck,
+ * not that its key differs: ABA, INCLUDE-only changes and opclass-equal values
+ * can leave the key equal.  Scans can discard a superseded entry because the
+ * fresh entry supplies the row; uniqueness checks must still compare the
+ * stored key with the live tuple's key to decide whether there is a conflict.
  */
 static bool
-heapam_index_entry_needs_recheck(IndexScanDesc scan, Relation indexRelation)
+heapam_index_entry_needs_recheck(bool hot_indexed_recheck, const uint8 *crossed,
+							   Relation indexRelation)
 {
-	IndexScanHeapData *hscan = (IndexScanHeapData *) scan->xs_table_opaque;
 	Bitmapset  *idxattrs;
 	int			x = -1;
 	bool		needs_recheck = false;
 
-	if (!hscan->xs_hot_indexed_recheck || hscan->xs_hot_indexed_crossed == NULL)
+	if (!hot_indexed_recheck || crossed == NULL)
 		return false;
 
 	/* Raw signal: a HOT/SIU hop was crossed, un-narrowed to any index. */
@@ -902,7 +913,7 @@ heapam_index_entry_needs_recheck(IndexScanDesc scan, Relation indexRelation)
 
 		/* the crossed bitmap records only user attributes */
 		if (attnum >= 1 &&
-			HotIndexedAttrIsModified(hscan->xs_hot_indexed_crossed, attnum))
+			HotIndexedAttrIsModified(crossed, attnum))
 		{
 			needs_recheck = true;
 			break;

@@ -515,7 +515,8 @@ extern TransactionId heap_index_delete_tuples(Relation rel,
 /* in heap/heapam_indexscan.c */
 extern bool heapam_fetch_tid(Relation rel, ItemPointer tid, Snapshot snapshot,
 							 bool *all_dead);
-extern bool heapam_fetch_tid_check(Relation rel, ItemPointer tid,
+extern bool heapam_fetch_tid_check(Relation rel, Relation indexRelation,
+								   ItemPointer tid,
 								   Snapshot snapshot, bool *all_dead,
 								   bool *recheck, TupleTableSlot *slot);
 extern void heapam_index_scan_begin(IndexScanDesc scan, uint32 flags);
