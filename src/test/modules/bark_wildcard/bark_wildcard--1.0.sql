@@ -36,24 +36,32 @@ AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 CREATE FUNCTION bark_wildcard_exists(jsonb, text) RETURNS bool
 AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
 
+-- The operators' restriction selectivity.  matchingsel runs the operator
+-- over every row of the column's statistics sample; this estimates from the
+-- strategy and the column's NULL fraction alone, so planning does not scale
+-- with the statistics target (see bark_wildcard.c).
+CREATE FUNCTION bark_wildcard_sel(internal, oid, internal, int4)
+RETURNS float8
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT STABLE PARALLEL SAFE;
+
 CREATE OPERATOR #< (LEFTARG = jsonb, RIGHTARG = jsonb,
                     FUNCTION = bark_wildcard_lt,
-                    RESTRICT = matchingsel, JOIN = matchingjoinsel);
+                    RESTRICT = bark_wildcard_sel, JOIN = matchingjoinsel);
 CREATE OPERATOR #<= (LEFTARG = jsonb, RIGHTARG = jsonb,
                      FUNCTION = bark_wildcard_le,
-                     RESTRICT = matchingsel, JOIN = matchingjoinsel);
+                     RESTRICT = bark_wildcard_sel, JOIN = matchingjoinsel);
 CREATE OPERATOR #= (LEFTARG = jsonb, RIGHTARG = jsonb,
                     FUNCTION = bark_wildcard_eq,
-                    RESTRICT = matchingsel, JOIN = matchingjoinsel);
+                    RESTRICT = bark_wildcard_sel, JOIN = matchingjoinsel);
 CREATE OPERATOR #>= (LEFTARG = jsonb, RIGHTARG = jsonb,
                      FUNCTION = bark_wildcard_ge,
-                     RESTRICT = matchingsel, JOIN = matchingjoinsel);
+                     RESTRICT = bark_wildcard_sel, JOIN = matchingjoinsel);
 CREATE OPERATOR #> (LEFTARG = jsonb, RIGHTARG = jsonb,
                     FUNCTION = bark_wildcard_gt,
-                    RESTRICT = matchingsel, JOIN = matchingjoinsel);
+                    RESTRICT = bark_wildcard_sel, JOIN = matchingjoinsel);
 CREATE OPERATOR #? (LEFTARG = jsonb, RIGHTARG = text,
                     FUNCTION = bark_wildcard_exists,
-                    RESTRICT = matchingsel, JOIN = matchingjoinsel);
+                    RESTRICT = bark_wildcard_sel, JOIN = matchingjoinsel);
 
 -- doc |<| path: the smallest key [path, value] at path, NULL if none, for
 -- ORDER BY doc |<| 'path' (MongoDB's sort by a path).  It returns the key,

@@ -522,6 +522,39 @@ RESET enable_seqscan;
 RESET enable_bitmapscan;
 RESET enable_sort;
 SELECT bark_index_check('wc_num_doc'), bark_index_check('wc_numb_doc');
+-- WSEL: the wildcard operators estimate without scanning the stats sample, so
+-- their row estimate does not change with default_statistics_target, and the
+-- plan the planner picks is the same shape as before (index/bitmap for the
+-- selective operators).  (COSTS OFF hides the row count; we read it from the
+-- planner directly and check it is identical at target 100 and 1000.)
+ANALYZE wc_num;
+SET enable_seqscan = off;
+EXPLAIN (COSTS OFF) SELECT id FROM wc_num WHERE doc #= '["a", 1]';
+EXPLAIN (COSTS OFF) SELECT id FROM wc_num WHERE doc #< '["a", 5]';
+EXPLAIN (COSTS OFF) SELECT id FROM wc_num WHERE doc #? 'a';
+RESET enable_seqscan;
+CREATE FUNCTION wc_rows(q text) RETURNS bigint LANGUAGE plpgsql AS $$
+DECLARE p jsonb; r bigint;
+BEGIN
+  EXECUTE 'EXPLAIN (FORMAT json) SELECT id FROM wc_num WHERE ' || q INTO p;
+  r := (p -> 0 -> 'Plan' ->> 'Plan Rows')::bigint;
+  RETURN r;
+END$$;
+SET default_statistics_target = 100;
+ANALYZE wc_num;
+SELECT wc_rows('doc #= ''["a", 1]''') AS eq100,
+       wc_rows('doc #< ''["a", 5]''') AS lt100,
+       wc_rows('doc #? ''a''') AS ex100 INTO TEMP wc_est100;
+SET default_statistics_target = 1000;
+ANALYZE wc_num;
+-- Identical estimates prove the estimator never touched the (now 10x larger)
+-- sample; a sample-scanning estimator would move with the target.
+SELECT wc_rows('doc #= ''["a", 1]''') = eq100 AS eq_stable,
+       wc_rows('doc #< ''["a", 5]''') = lt100 AS lt_stable,
+       wc_rows('doc #? ''a''') = ex100 AS ex_stable
+  FROM wc_est100;
+RESET default_statistics_target;
+DROP FUNCTION wc_rows;
 DROP TABLE wc_num, wc_numb;
 
 DROP TABLE wc_seq, wc_plain, wc_inc, wc_exc, wc_tid, wc_quals;
