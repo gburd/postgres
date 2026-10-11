@@ -16,6 +16,7 @@ tests += {
       'bark_validate',
       'bark_bottomup',
       'bark_alias_am',
+      'bark_knn_inttypes',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # The injection points are run in the same backend, so disable
