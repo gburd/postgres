@@ -179,4 +179,12 @@ SELECT count(*) FILTER (WHERE (doc #? p) IS DISTINCT FROM
                                 ORDER BY k LIMIT 1)) AS least_wrong,
        count(*) FILTER (WHERE doc #? p) AS exists_true
   FROM (SELECT DISTINCT id, doc, p FROM wc_opq) x;
+-- Procedure 2's comparator agrees in sign with jsonb_cmp on every pair of
+-- keys the class forms (data keys and markers of every document), so the
+-- build sort and the per-row dedup order keys exactly as procedure 1 does.
+WITH keys AS (SELECT DISTINCT k FROM wc_opdocs, bark_wildcard_keys(doc) k)
+SELECT count(*) AS pairs,
+       count(*) FILTER (WHERE bark_wildcard_cmp(a.k, b.k) IS DISTINCT FROM
+                              sign(jsonb_cmp(a.k, b.k))) AS wrong
+  FROM keys a, keys b;
 DROP TABLE wc_opq, wc_opdocs;

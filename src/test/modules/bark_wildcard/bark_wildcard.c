@@ -71,6 +71,7 @@
 #include "postgres.h"
 
 #include "access/bark.h"
+#include "access/detoast.h"
 #include "access/relation.h"
 #include "access/reloptions.h"
 #include "access/stratnum.h"
@@ -81,6 +82,8 @@
 #include "funcapi.h"
 #include "storage/bufmgr.h"
 #include "utils/builtins.h"
+#include "utils/pg_locale.h"
+#include "utils/sortsupport.h"
 #include "utils/tuplestore.h"
 #include "utils/jsonb.h"
 #include "utils/numeric.h"
@@ -89,6 +92,8 @@
 
 PG_MODULE_MAGIC;
 
+PG_FUNCTION_INFO_V1(bark_wildcard_sortsupport);
+PG_FUNCTION_INFO_V1(bark_wildcard_cmp);
 PG_FUNCTION_INFO_V1(bark_wildcard_options);
 PG_FUNCTION_INFO_V1(bark_wildcard_extract_value);
 PG_FUNCTION_INFO_V1(bark_wildcard_keys);
@@ -805,6 +810,115 @@ bark_wildcard_value_cmp(JsonbValue *a, JsonbValue *b)
 			elog(ERROR, "unexpected jsonb value type %d", a->type);
 	}
 	return 0;					/* keep compiler quiet */
+}
+
+/*
+ * Procedure 2 (sortsupport): a comparator over the class's keys, used by the
+ * build sort (through BARK's barksort) and by procedure 1's per-row dedup.
+ *
+ * A key is a jsonb array, [path, value] or the one-element marker [path].
+ * jsonb_cmp (compareJsonbContainers) orders two arrays by length first, then
+ * element by element; the class never stores any other jsonb at a key, so a
+ * comparator that reproduces that for a two-element path/value array (and the
+ * marker that precedes it) matches jsonb_cmp on every key the class forms.
+ * It avoids jsonb_cmp's two full JsonbIterator walks per comparison, and
+ * reads the key in place: index_form_tuple leaves a short varlena header on
+ * keys below TOAST_INDEX_TARGET (the common case), which PG_GETARG_JSONB_P
+ * would copy to a four-byte header on every comparison, so we detoast only a
+ * key that is actually externally stored or compressed.
+ *
+ * ssup_extra carries whether the default collation (jsonb_cmp always compares
+ * strings in it) is C, decided once here, so string comparisons can take the
+ * memcmp path without a locale lookup per call.
+ */
+static Jsonb *
+bark_wildcard_key_in_place(Datum d)
+{
+	struct varlena *raw = (struct varlena *) DatumGetPointer(d);
+
+	if (VARATT_IS_EXTENDED(raw))
+		return (Jsonb *) PG_DETOAST_DATUM(d);
+	return (Jsonb *) raw;
+}
+
+static int
+bark_wildcard_key_cmp(Datum x, Datum y, SortSupport ssup)
+{
+	bool		collate_is_c = *(bool *) ssup->ssup_extra;
+	Jsonb	   *ka = bark_wildcard_key_in_place(x);
+	Jsonb	   *kb = bark_wildcard_key_in_place(y);
+	int			na = JB_ROOT_COUNT(ka);
+	int			nb = JB_ROOT_COUNT(kb);
+	JsonbValue *pa;
+	JsonbValue *pb;
+	JsonbValue *va;
+	JsonbValue *vb;
+	int			c;
+
+	/* A marker [path] (length 1) sorts before a data key [path, value]. */
+	if (na != nb)
+		return na < nb ? -1 : 1;
+
+	/* The path element: a jsonb string, compared in the default collation. */
+	pa = getIthJsonbValueFromContainer(&ka->root, 0);
+	pb = getIthJsonbValueFromContainer(&kb->root, 0);
+	Assert(pa->type == jbvString && pb->type == jbvString);
+	if (collate_is_c)
+	{
+		int			minlen = Min(pa->val.string.len, pb->val.string.len);
+
+		c = memcmp(pa->val.string.val, pb->val.string.val, minlen);
+		if (c == 0)
+			c = (pa->val.string.len == pb->val.string.len) ? 0 :
+				(pa->val.string.len < pb->val.string.len) ? -1 : 1;
+	}
+	else
+		c = varstr_cmp(pa->val.string.val, pa->val.string.len,
+					   pb->val.string.val, pb->val.string.len,
+					   DEFAULT_COLLATION_OID);
+	if (c != 0 || na == 1)
+		return c;
+
+	/* The value element, by the scalar/bracket rules jsonb_cmp uses. */
+	va = getIthJsonbValueFromContainer(&ka->root, 1);
+	vb = getIthJsonbValueFromContainer(&kb->root, 1);
+	return bark_wildcard_value_cmp(va, vb);
+}
+
+/*
+ * Procedure 2's entry point.  barkvalidate accepts it; BARK's build sort and
+ * bark_build_keyinfo install its comparator in place of a per-call
+ * FunctionCall2Coll on procedure 1.
+ */
+Datum
+bark_wildcard_sortsupport(PG_FUNCTION_ARGS)
+{
+	SortSupport ssup = (SortSupport) PG_GETARG_POINTER(0);
+	MemoryContext oldcxt = MemoryContextSwitchTo(ssup->ssup_cxt);
+	bool	   *collate_is_c = palloc(sizeof(bool));
+
+	*collate_is_c = pg_newlocale_from_collation(DEFAULT_COLLATION_OID)->collate_is_c;
+	ssup->ssup_extra = collate_is_c;
+	ssup->comparator = bark_wildcard_key_cmp;
+	MemoryContextSwitchTo(oldcxt);
+	PG_RETURN_VOID();
+}
+
+/*
+ * bark_wildcard_cmp(a jsonb, b jsonb) -> int: the sign of procedure 2's
+ * comparator on two keys, for tests to check against sign(jsonb_cmp(a, b))
+ * on every pair of keys the class forms.
+ */
+Datum
+bark_wildcard_cmp(PG_FUNCTION_ARGS)
+{
+	SortSupportData ssup = {0};
+	int			c;
+
+	ssup.ssup_cxt = CurrentMemoryContext;
+	DirectFunctionCall1(bark_wildcard_sortsupport, PointerGetDatum(&ssup));
+	c = ssup.comparator(PG_GETARG_DATUM(0), PG_GETARG_DATUM(1), &ssup);
+	PG_RETURN_INT32((c > 0) - (c < 0));
 }
 
 /*

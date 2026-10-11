@@ -168,6 +168,29 @@ bark_build_keyinfo(Relation index)
 		col->reverse = (indoption & INDOPTION_DESC) != 0;
 		col->nulls_first = (indoption & INDOPTION_NULLS_FIRST) != 0;
 
+		/*
+		 * Support function 2 (sortsupport), when the column's opfamily has
+		 * one, gives a comparator that avoids an fmgr call per comparison.
+		 * bark_extract_row_keys' per-row dedup sort uses it; the main build
+		 * sort already does, through PrepareSortSupportFromIndexRel in
+		 * tuplesort_begin_index_btree.  Leave ssup.comparator NULL for a
+		 * column whose opfamily has no procedure 2, so it keeps using
+		 * procedure 1 through FunctionCall2Coll; this does not fall back to
+		 * the comparison shim, which would merely wrap procedure 1 at the
+		 * same cost.
+		 */
+		if (OidIsValid(get_opfamily_proc(index->rd_opfamily[i],
+										 index->rd_opcintype[i],
+										 index->rd_opcintype[i],
+										 BARK_SORTSUPPORT_PROC)))
+		{
+			col->ssup.ssup_cxt = CurrentMemoryContext;
+			col->ssup.ssup_collation = col->collation;
+			col->ssup.ssup_attno = i + 1;
+			col->ssup.ssup_nulls_first = col->nulls_first;
+			PrepareSortSupportFromIndexRel(index, col->reverse, &col->ssup);
+		}
+
 		/* Only the first key column has an OVERSIZED inline prefix. */
 		col->bytewise = (i == 0 && bark_first_column_bytewise(index));
 	}
@@ -455,10 +478,20 @@ static int
 bark_key_cmp(const void *a, const void *b, void *arg)
 {
 	BarkKeyColumn *col = (BarkKeyColumn *) arg;
-	int32		cmp = DatumGetInt32(FunctionCall2Coll(&col->cmp, col->collation,
-													  *(const Datum *) a,
-													  *(const Datum *) b));
+	int32		cmp;
 
+	/*
+	 * Procedure 2's comparator, when the column has one, reads keys in place
+	 * and already applies the column's sort direction (ssup_reverse, set from
+	 * col->reverse at setup).  The keys here are never NULL.
+	 */
+	if (col->ssup.comparator != NULL)
+		return ApplySortComparator(*(const Datum *) a, false,
+								   *(const Datum *) b, false, &col->ssup);
+
+	cmp = DatumGetInt32(FunctionCall2Coll(&col->cmp, col->collation,
+										  *(const Datum *) a,
+										  *(const Datum *) b));
 	return col->reverse ? -cmp : cmp;
 }
 
