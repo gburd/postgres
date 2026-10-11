@@ -37,7 +37,7 @@ FOR TYPE int4[] USING bark_alias FAMILY bark_alias_int4_array_ops AS
     FUNCTION 9 bark_multikey_recheck(int4, int2, internal),
     FUNCTION 15 ("any", "any") bark_multikey_translate_cmptype(int4),
     STORAGE int4;
--- And its GIN-interface class, which has bitmap scans only.
+-- And its GIN-interface class.
 CREATE OPERATOR FAMILY bark_alias_gin_int4_array_ops USING bark_alias;
 CREATE OPERATOR CLASS bark_alias_gin_int4_array_ops
 FOR TYPE int4[] USING bark_alias FAMILY bark_alias_gin_int4_array_ops AS
