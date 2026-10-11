@@ -580,11 +580,23 @@ extracted one: plancat leaves the sort family InvalidOid at a column whose
 operator family is not btree's, and build_index_pathkeys stops there.
 
 A column whose class has GIN's query interface (procedures 10 and 11 or
-13, and 12 for partial match) and no procedure 8 is read by bitmap scans
-only (bark_index_gin_query; "As built (M2a)" in the design document).
-bark_property answers index_scan false, get_relation_info clears
-amhasgettuple for it, and bark_gettuple refuses a direct caller.  The
-bitmap scan calls extractQuery, turns its keys into point boundaries (a
+13, and 12 for partial match) and no procedure 8 (bark_index_gin_query;
+"As built (M2a)" and "As built (M2c)" in the design document) is answered
+row by row from all of a row's entries, so a scan computes its whole
+result, in TID order, before its first row (bark_mk_gin_items).  A bitmap
+scan adds it to the bitmap; an index scan (bark_mk_gin_gettuple) keeps it
+in ginCxt and returns it a row at a time, forward or backward, with mark
+and restore as a place in it.  The TIDs are collected with no leaf pinned,
+so an index scan needs an MVCC snapshot (nbtree's dropPin argument: a slot
+VACUUM frees and the heap reuses holds a row the snapshot cannot see), and
+refuses any other.  It has no leaf position and BARK sets no LP_DEAD hints,
+so kill_prior_tuple is ignored, and the seen set is off (a row's TID is in
+several boundaries' streams, merged into one).  bark_property answers
+index_scan false only when the column is not the index's first: rows come
+back in TID order, not in the order of the columns before it, which the
+planner would assume (pathkeys, merge joins, KNN); get_relation_info then
+clears amhasgettuple.  barkcostestimate makes the whole index cost startup
+cost.  The scan calls extractQuery, turns its keys into point boundaries (a
 partial-match key into a range filtered and ended by comparePartial), and
 reads each boundary into a stream of distinct TIDs in TID order: a point
 of a column that leads the index already comes out in that order (H1),

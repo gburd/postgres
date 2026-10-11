@@ -32,6 +32,7 @@ tests += {
       'bark_multikey_unique',
       'bark_multikey_gin',
       'bark_multikey_ginmerge',
+      'bark_multikey_ginscan',
     ],
     'regress_args': ['--load-extension=amcheck'],
   },
