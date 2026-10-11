@@ -261,6 +261,18 @@ CREATE FUNCTION bark_multikey_parallel(index text, op regoperator,
 RETURNS int8
 AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
 
+-- An ordered scan with the scan keys and ordering key given, as the index
+-- AM gets them: key i is column cols[i] ops[i] args[i] (a NULL op is a NULL
+-- test, IS NULL for 'null'; an argument '{...}' of an operator on scalars is
+-- a ScalarArrayOp), the ordering key column ordcol ordop center.
+-- Returns each TID in the order returned, its distance and its recheck flag.
+CREATE FUNCTION bark_multikey_knn(index text, cols int2[], ops regoperator[],
+                                  args text[], ordcol int, ordop regoperator,
+                                  center int4, OUT tid tid, OUT dist float8,
+                                  OUT recheck bool)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
 -- The executor's conflict pre-check for the row at tid, which passes its own
 -- TID; "ok" or the violation.
 CREATE FUNCTION bark_multikey_precheck(index regclass, tid tid)

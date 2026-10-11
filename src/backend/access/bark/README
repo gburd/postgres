@@ -1005,13 +1005,39 @@ pay for the check without gaining from it.
 
 Ordered-operator (KNN) scans, ORDER BY col <~> const, walk outward from
 the constant in two cursors, one in each direction, each reading a page at
-a time like the plain scan, and merge them by distance (barkknn.c).  They
-are planned only on an index's leading column, with one ordering operator;
-an ordered index keeps a later column's values spread over the whole index.
+a time like the plain scan, and merge them by distance (barkknn.c), with
+one ordering operator.  An ordered index keeps a later column's values
+spread over the whole index, one group per value of the columns before it,
+so the operator is planned on the leading column, or on the column after a
+prefix that the path's clauses fix to one value each, inside whose run the
+column is in order.  The planner asks the AM which column that is
+(amorderbyopcolumn, called from build_index_paths with the path's clauses
+and passed to match_pathkeys_to_index).  barkorderbyopcolumn counts the
+leading columns fixed by an equality on a btree column, or, on the
+extracted column, by its only clause when that has a Const whose procedure
+8 boundaries are one point with the same argument at both ends
+(bark_cost_boundaries reports it), and answers the column after them,
+unless that column is itself extracted.  This is RUM's ORDER BY ts <=> x
+after a term qual.  A row's keys are distinct, so a row has at most one
+entry in a point's run: the scan needs no seen set and returns each row
+once.  An array, a range, several boundaries, a Param or a second clause on
+the extracted column fixes nothing.  At rescan bark_knn_fix_column takes
+each fixed column's value from the scan keys (bark_mk_point for the
+extracted column's point, else a plain equality's argument and ORDER proc)
+into a BarkScanBound with the center after it; the descent is
+bark_search_bound and the split offset bark_binsrch_bound, as a plain
+scan's, and bark_knn_readpage ends a cursor at the first entry outside the
+run (bark_knn_in_run).  A scan whose keys do not fix the prefix (a caller
+of the AM that is not the planner) raises an error rather than return rows
+out of order.  A NULL fixed value, which a generic plan's parameter can
+give (tenant = $1), matches nothing, so the run is empty (knn->emptyrun)
+and the scan returns no row, as the qual does.
 A scroll cursor over a KNN scan is materialized: the scan cannot run its
 distance order backward.  A NULL key's distance is infinity, so its rows
 come last, and a NULL constant makes every entry's distance infinity: the
-scan then returns every row, as a Sort over the NULL distances would.
+scan then returns every row, as a Sort over the NULL distances would; in
+a run, every row of the run (the center's procs entry is NULL, so the
+descent lands on the run's NULL keys).
 
 An ordering operator of a multikey class on a leading extracted column is
 not a KNN scan (bark_mk_order_setup in barkscan.c).  Procedure 8 is called
@@ -1060,7 +1086,10 @@ where BARK's scan does less:
     qual on column 2) costs one descent per distinct column-1 value plus
     one, unless the number of values is a default guess or exceeds the
     index's pages; only column 2's plain quals bound it.
-  * A KNN scan (ORDER BY operators) treats every qual as a filter.
+  * A KNN scan (ORDER BY operators) treats every qual as a filter, except
+    the quals on the columns before the ordered one, which fix them
+    (barkorderbyopcolumn) and bound it as an equality prefix does; the
+    extracted column's point counts as an equality.
 
 The rows read are the boundary quals' selectivity times the heap's rows, so
 LIST and POSTING entries lower the cost through the index's smaller page
