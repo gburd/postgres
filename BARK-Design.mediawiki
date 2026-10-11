@@ -1031,7 +1031,9 @@ place of an inverted AM, without changing the scalar design above.
   data". M2b part 2, an array similarity class after rum_anyarray_ops, is
   built for its % operator, "As built (M2b part 2)" there, with the <=>
   ordering operator left to the executor's Sort for the reasons given.
-  The scalar classes are not started)''
+  M2 is done. The scalar classes in a BARK family (a class whose operators
+  are not btree's but whose keys are scalar) are not needed by any M or M5
+  case and are not started)''
 * '''M3''' -- extra data per locator (RUM's addInfo). ''Closed, not
   needed'': a composite key (key, value) holds the same members in the same
   order, and every use case found is served by one. What both would need,
