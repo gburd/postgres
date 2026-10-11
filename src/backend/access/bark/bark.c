@@ -1416,6 +1416,7 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	bool        mknoseen = false;
 	bool        mkrecheck = false;
 	bool        multikey = false;
+	bool		mkgin = false;
 	double      mkdescents = 1;
 	double      keysperrow = 1.0;
 
@@ -1633,6 +1634,22 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 		}
 	}
 
+	/*
+	 * An index scan through GIN's interface computes its whole result before
+	 * its first row (bark_mk_gin_gettuple), so all of the index cost is
+	 * startup cost, and a LIMIT does not stop it early.
+	 */
+	if (mkcol >= 0 && mkcounted &&
+		!OidIsValid(get_opfamily_proc(index->opfamily[mkcol],
+									  index->opcintype[mkcol],
+									  index->opcintype[mkcol],
+									  BARK_EXTRACTQUERY_PROC)) &&
+		OidIsValid(get_opfamily_proc(index->opfamily[mkcol],
+									 index->opcintype[mkcol],
+									 index->opcintype[mkcol],
+									 BARK_GIN_EXTRACTQUERY_PROC)))
+		mkgin = true;
+
 	/* An extracted column: K entries per row, the seen set, procedure 9. */
 	if (mkcol >= 0)
 	{
@@ -1677,6 +1694,9 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 									   index->rel->relid, JOIN_INNER, NULL);
 		}
 	}
+
+	if (mkgin)
+		costs.indexStartupCost = costs.indexTotalCost;
 
 	*indexStartupCost = costs.indexStartupCost;
 	*indexTotalCost = costs.indexTotalCost;
