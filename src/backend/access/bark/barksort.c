@@ -14,11 +14,11 @@
  * without any BARK-specific WAL record.
  *
  * Leaf entries are the ones insert would form.  Where insert coalesces equal
- * keys (bark_allequalimage, in a non-unique index), bark_load writes each run
- * of equal keys as LIST and POSTING entries, as nbtsort.c's _bt_load
- * deduplicates into posting lists; otherwise every row is a SINGLE (one heap
- * TID in t_tid, no alt-TID bit).  Internal downlinks are PIVOT tuples (see
- * bark.h).
+ * keys (bark_index_may_coalesce, in a non-unique index), bark_load writes
+ * each run of equal keys as LIST and POSTING entries, as nbtsort.c's
+ * _bt_load deduplicates into posting lists; otherwise every row is a SINGLE
+ * (one heap TID in t_tid, no alt-TID bit).  Internal downlinks are PIVOT
+ * tuples (see bark.h).
  *
  * The write follows nbtsort.c's model: block numbers are assigned in a single
  * increasing sequence as pages are handed to the writer, so a page's block is
@@ -159,7 +159,8 @@ typedef struct BarkBuildState
 	int			nkeyatts;		/* number of key attributes */
 	bool		isunique;		/* enforce uniqueness during load */
 	bool		nullsnotdistinct;	/* unique index: NULLS NOT DISTINCT */
-	bool		allequalimage;	/* bark_allequalimage(index) */
+	bool		allequalimage;	/* bark_allequalimage(index), for the meta page */
+	bool		coalesce;		/* non-unique and bark_index_may_coalesce */
 	bool		has_oversized;	/* saw a key too large to sort/load inline */
 	Size		sizebound;		/* row-independent part of the size bound */
 	bool		sizevaries;		/* any variable-width attribute? */
@@ -1078,11 +1079,13 @@ bark_load_next(BarkBuildState *bs, bool *isdead)
  * leader ever calls this -- workers only feed the shared sort.
  *
  * Where insert would coalesce equal keys (bark_insert: a non-unique index
- * whose equal keys have equal images; oversized keys never reach this
+ * that bark_index_may_coalesce allows; oversized keys never reach this
  * point), each run of equal keys becomes LIST and POSTING entries, as
  * nbtsort.c's _bt_load deduplicates into posting lists.  The sort breaks
  * ties on the heap TID, so a run's locators arrive ascending, as both shapes
- * store them.
+ * store them.  Every entry of a run takes the image of the run's first key,
+ * the lowest TID's, which is what insert keeps too when equal keys have
+ * different images (a GIN-interface column).
  */
 static void
 bark_load(BarkBuildState *bs)
@@ -1093,7 +1096,7 @@ bark_load(BarkBuildState *bs)
 	IndexTuple	prev = NULL;
 	IndexTuple	prevbuf = NULL;
 	IndexTuple	lastmarker = NULL;
-	bool		coalesce = bs->allequalimage && !bs->isunique;
+	bool		coalesce = bs->coalesce;
 	bool		isdead;
 	BarkBuildRun run = {0};
 
@@ -1754,6 +1757,7 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	bs.isunique = indexInfo->ii_Unique;
 	bs.nullsnotdistinct = indexInfo->ii_NullsNotDistinct;
 	bs.allequalimage = bark_allequalimage(index);
+	bs.coalesce = !bs.isunique && bark_index_may_coalesce(index);
 	bs.indexInfo = indexInfo;	/* for the oversized second-pass insert */
 	bs.prefix = bark_prefix_enabled(index);
 	bs.prefixnext = true;

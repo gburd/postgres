@@ -490,7 +490,7 @@ bark_merge_form(Page page, IndexTuple key, ItemPointer tids, int n)
  * goes into an existing entry, which may itself be merged).  Returns true if
  * the page now has room for `newitemsz` bytes and a line pointer
  * (bark_leaf_free_space).  Only for an index whose entries coalesce (see
- * bark_allequalimage).
+ * bark_index_may_coalesce).
  *
  * Entries are taken in page order.  A group starts at an entry and absorbs
  * the next while that one has the same key and the merged entry, in the
