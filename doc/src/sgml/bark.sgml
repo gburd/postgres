@@ -456,10 +456,16 @@ int2 translate_cmptype(int4 cmptype)
    <function>extractQuery</function>, <function>consistent</function> and
    <function>triConsistent</function>, with GIN's signatures, and 12,
    <function>comparePartial</function>, for partial match) and without 8
-   uses GIN's query interface: such a column can be read by bitmap scans
-   only, so an operator class written for GIN ports to BARK by adding
-   support function 1 (the key comparison) and a storage type; core's
-   GIN array support functions work unchanged.  As in GIN, a bitmap scan
+   uses GIN's query interface, so an operator class written for GIN ports
+   to BARK by adding support function 1 (the key comparison) and a storage
+   type; core's GIN array support functions work unchanged.  Such a column
+   is read by bitmap scans and, when it is the index's first column, by
+   index scans, which compute the scan's whole result before returning its
+   first row (so a <literal>LIMIT</literal> does not make them cheaper),
+   and return rows in heap order, forward or backward; they need an MVCC
+   snapshot.  An index with columns before such a column has bitmap scans
+   only, since an index scan of it would not return rows in the order of
+   those columns.  As in GIN, a scan
    merges the row lists of the query's keys, and when
    <function>triConsistent</function> shows that a row must have one of
    some keys (as for <literal>@&gt;</literal>), it tests only the rows of
