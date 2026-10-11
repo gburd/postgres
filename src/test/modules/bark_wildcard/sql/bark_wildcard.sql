@@ -133,3 +133,50 @@ SELECT (SELECT nkeys FROM bark_metap('wc_docs_doc')) =
        (SELECT flags FROM bark_metap('wc_docs_doc')) & 1 = 1 AS multikey;
 DROP TABLE wc_docs;
 DROP FUNCTION wc_expected(jsonb);
+
+-- The operators find a path's values by descending to it; they must agree
+-- with procedure 7's keys of the whole document, which is what the index
+-- holds: doc OP q is true exactly when some key [path, v] of doc, v in q's
+-- type bracket, compares so with q in jsonb's order; #? is true when the
+-- path has a key; |<| is the least key at the path.
+CREATE TABLE wc_opdocs (id int, doc jsonb);
+INSERT INTO wc_opdocs VALUES
+  (1, '{"a": 1}'), (2, '{"a": {"b": 2, "c": "x"}, "d": null}'),
+  (3, '{"a": [1, 2, 2, {"b": 3}], "e": []}'), (4, '{"a": [[1, 2], [3]], "f": {}}'),
+  (5, '{"a.b": 1, "x\\y": 2, "n": {"m": [true, false, null]}}'),
+  (6, '[1, {"a": 2}, [3]]'), (7, '42'), (8, '"s"'), (9, '{}'), (10, '[]'),
+  (11, '{"a": 1.0, "b": 1.00, "c": -0, "d": 1e3}'),
+  (12, '{"": {"a": 1}, "a": 2}'), (13, '[{"": [{"a": 3}, "y"]}, {"a": {}}]'),
+  (14, '{"a": {"": {"b": [5, [6], {}]}}, "": 7}'), (15, '{"": {"": 8}}'),
+  (16, '{"a": [[{"b": 1}]], "b": [{"c": [1, "1", true, null, [], {}]}]}'),
+  (17, '{"a\\.b": {"c\\\\d": "e"}, "a": {"b": 9}}');
+CREATE TABLE wc_opq AS
+  SELECT id, doc, p, q, s
+    FROM wc_opdocs,
+         LATERAL (SELECT k->>0 AS p FROM bark_wildcard_keys(doc) k
+                  UNION SELECT unnest(ARRAY['', 'zz', 'a.', 'a\q', '.a', 'a.b.c'])) ps,
+         LATERAL (SELECT jsonb_build_array(p, v) AS q
+                    FROM (SELECT k->1 AS v FROM bark_wildcard_keys(doc) k
+                           WHERE k->>0 = p AND jsonb_array_length(k) = 2
+                          UNION SELECT unnest('{null, "\"\"", "\"y\"", 0, 1, 1.5, -1, true, false, "[]", "[1, 2]", "{}"}'::jsonb[])) vs) qs,
+         generate_series(1, 5) s;
+SELECT count(*) AS cases, count(*) FILTER (WHERE got IS DISTINCT FROM want) AS wrong,
+       count(*) FILTER (WHERE want) AS true_cases
+  FROM (SELECT CASE s WHEN 1 THEN doc #< q WHEN 2 THEN doc #<= q WHEN 3 THEN doc #= q
+                      WHEN 4 THEN doc #>= q ELSE doc #> q END AS got,
+               EXISTS (SELECT FROM bark_wildcard_keys(doc) k
+                        WHERE jsonb_array_length(k) = 2 AND k->>0 = q->>0
+                          AND jsonb_typeof(k->1) = jsonb_typeof(q->1)
+                          AND CASE s WHEN 1 THEN k < q WHEN 2 THEN k <= q WHEN 3 THEN k = q
+                                     WHEN 4 THEN k >= q ELSE k > q END) AS want
+          FROM wc_opq) x;
+SELECT count(*) FILTER (WHERE (doc #? p) IS DISTINCT FROM
+                              EXISTS (SELECT FROM bark_wildcard_keys(doc) k
+                                       WHERE jsonb_array_length(k) = 2 AND k->>0 = p)) AS exists_wrong,
+       count(*) FILTER (WHERE (doc |<| p) IS DISTINCT FROM
+                              (SELECT k FROM bark_wildcard_keys(doc) k
+                                WHERE jsonb_array_length(k) = 2 AND k->>0 = p
+                                ORDER BY k LIMIT 1)) AS least_wrong,
+       count(*) FILTER (WHERE doc #? p) AS exists_true
+  FROM (SELECT DISTINCT id, doc, p FROM wc_opq) x;
+DROP TABLE wc_opq, wc_opdocs;
