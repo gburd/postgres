@@ -24,9 +24,12 @@
  */
 #include "postgres.h"
 
+#include <math.h>
+
 #include "access/bark.h"
 #include "access/cmptype.h"
 #include "access/genam.h"
+#include "access/gin.h"
 #include "access/htup_details.h"
 #include "access/relation.h"
 #include "access/relscan.h"
@@ -1185,4 +1188,110 @@ bark_multikey_prefix_consistent(PG_FUNCTION_ARGS)
 
 	*recheck = false;
 	PG_RETURN_BOOL(check[0]);
+}
+
+/*
+ * An array similarity class over int4[], after RUM's rum_anyarray_ops:
+ * a % b when the similarity of their sets of non-NULL elements,
+ * |a & b| / sqrt(|a| |b|), is at least 0.5, and a <=> b is 1 minus it.  An
+ * empty set is similar to nothing.  The class is GIN-interface: a row
+ * matching m of the query's q keys has at least m elements, so its
+ * similarity is at most sqrt(m / q), and % needs 4 m >= q; the heap
+ * recheck applies the exact test.
+ */
+PG_FUNCTION_INFO_V1(bark_multikey_sim_match);
+PG_FUNCTION_INFO_V1(bark_multikey_sim_distance);
+PG_FUNCTION_INFO_V1(bark_multikey_sim_query);
+PG_FUNCTION_INFO_V1(bark_multikey_sim_consistent);
+PG_FUNCTION_INFO_V1(bark_multikey_sim_triconsistent);
+
+/* |a & b|, |a| and |b| over the arrays' distinct non-NULL elements. */
+static void
+sim_counts(ArrayType *a, ArrayType *b, int *common, int *na, int *nb)
+{
+	int32	   *ka = sorted_elements(a, na);
+	int32	   *kb = sorted_elements(b, nb);
+	int			i = 0,
+				j = 0;
+
+	*common = 0;
+	while (i < *na && j < *nb)
+	{
+		if (ka[i] < kb[j])
+			i++;
+		else if (ka[i] > kb[j])
+			j++;
+		else
+		{
+			(*common)++;
+			i++;
+			j++;
+		}
+	}
+}
+
+Datum
+bark_multikey_sim_match(PG_FUNCTION_ARGS)
+{
+	int			m,
+				na,
+				nb;
+
+	sim_counts(PG_GETARG_ARRAYTYPE_P(0), PG_GETARG_ARRAYTYPE_P(1),
+			   &m, &na, &nb);
+	/* m / sqrt(na nb) >= 1/2, in integers so that 0.5 itself is exact */
+	PG_RETURN_BOOL(m > 0 && 4 * (int64) m * m >= (int64) na * nb);
+}
+
+Datum
+bark_multikey_sim_distance(PG_FUNCTION_ARGS)
+{
+	int			m,
+				na,
+				nb;
+
+	sim_counts(PG_GETARG_ARRAYTYPE_P(0), PG_GETARG_ARRAYTYPE_P(1),
+			   &m, &na, &nb);
+	PG_RETURN_FLOAT8(m == 0 ? 1.0 : 1.0 - m / sqrt((double) na * nb));
+}
+
+/* extractQuery: the query's distinct non-NULL elements; none matches nothing. */
+Datum
+bark_multikey_sim_query(PG_FUNCTION_ARGS)
+{
+	int32	   *nkeys = (int32 *) PG_GETARG_POINTER(1);
+	int			n;
+	int32	   *elems = sorted_elements(PG_GETARG_ARRAYTYPE_P(0), &n);
+	Datum	   *keys = palloc_array(Datum, Max(n, 1));
+
+	for (int i = 0; i < n; i++)
+		keys[i] = Int32GetDatum(elems[i]);
+	*nkeys = n;
+	PG_RETURN_POINTER(keys);
+}
+
+Datum
+bark_multikey_sim_consistent(PG_FUNCTION_ARGS)
+{
+	bool	   *check = (bool *) PG_GETARG_POINTER(0);
+	int32		nkeys = PG_GETARG_INT32(3);
+	bool	   *recheck = (bool *) PG_GETARG_POINTER(5);
+	int			m = 0;
+
+	for (int i = 0; i < nkeys; i++)
+		m += check[i];
+	*recheck = true;
+	PG_RETURN_BOOL(4 * m >= nkeys);
+}
+
+Datum
+bark_multikey_sim_triconsistent(PG_FUNCTION_ARGS)
+{
+	GinTernaryValue *check = (GinTernaryValue *) PG_GETARG_POINTER(0);
+	int32		nkeys = PG_GETARG_INT32(3);
+	int			m = 0;
+
+	for (int i = 0; i < nkeys; i++)
+		m += check[i] != GIN_FALSE;
+	PG_RETURN_GIN_TERNARY_VALUE(4 * m >= nkeys ? GIN_MAYBE : GIN_FALSE);
 }
