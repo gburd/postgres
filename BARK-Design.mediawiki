@@ -1340,7 +1340,9 @@ block reference per key, where one record per leaf would do. A record that
 carries several keys for one leaf can be added later (rmgr opcodes 0xE0 and
 0xF0 are free), if measurements of documents with many neighboring keys
 show it matters; it would need a redo that applies a sequence of per-key
-changes.
+changes. Done (W6 part 3): a run of a row's keys that go on one leaf as
+plain new entries is one INSERT_MULTI record (0xF0); other keys keep their
+per-key records.
 
 '''Uniqueness hooks.''' M1 refuses UNIQUE indexes, exclusion constraints
 and ON CONFLICT arbiters on an index with an extracted column; M4 allows
