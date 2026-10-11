@@ -161,13 +161,28 @@ amcheck_lock_relation_and_check(Oid indrelid,
 static bool
 index_checkable(Relation rel, Oid am_id)
 {
+	HeapTuple	amtup;
+	regproc		amhandler;
+
 	if (rel->rd_rel->relkind != RELKIND_INDEX)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("expected index as targets for verification"),
 				 errdetail_relkind_not_supported(rel->rd_rel->relkind)));
 
-	if (rel->rd_rel->relam != am_id)
+	/*
+	 * The check reads the index as am_id's code writes it, and the handler
+	 * function is that code.  CREATE ACCESS METHOD ... HANDLER can run the
+	 * same handler under another name and OID, and that access method's
+	 * indexes are checkable too, so compare handlers rather than OIDs.
+	 */
+	amtup = SearchSysCache1(AMOID, ObjectIdGetDatum(am_id));
+	if (!HeapTupleIsValid(amtup))
+		elog(ERROR, "cache lookup failed for access method %u", am_id);
+	amhandler = ((Form_pg_am) GETSTRUCT(amtup))->amhandler;
+	ReleaseSysCache(amtup);
+
+	if (rel->rd_amhandler != amhandler)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("expected \"%s\" index as targets for verification", get_am_name(am_id)),
