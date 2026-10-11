@@ -54,6 +54,7 @@
 
 static Sbm *bark_posting_open(IndexTuple itup);
 static bool bark_first_column_bytewise(Relation index);
+static bool bark_column_equalimage(Relation index, int i);
 
 /*
  * Translate between BARK strategy numbers and the generic CompareType.  BARK
@@ -215,16 +216,54 @@ bark_allequalimage(Relation index)
 		return false;
 
 	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
-	{
-		Oid			opcintype = index->rd_opcintype[i];
-		Oid			proc = get_opfamily_proc(index->rd_opfamily[i], opcintype,
-											opcintype, BARK_EQUALIMAGE_PROC);
-
-		if (!OidIsValid(proc) ||
-			!DatumGetBool(OidFunctionCall1Coll(proc, index->rd_indcollation[i],
-											   ObjectIdGetDatum(opcintype))))
+		if (!bark_column_equalimage(index, i))
 			return false;
-	}
+
+	return true;
+}
+
+/* Does key column i's operator class say equal values have equal images? */
+static bool
+bark_column_equalimage(Relation index, int i)
+{
+	Oid			opcintype = index->rd_opcintype[i];
+	Oid			proc = get_opfamily_proc(index->rd_opfamily[i], opcintype,
+										opcintype, BARK_EQUALIMAGE_PROC);
+
+	return OidIsValid(proc) &&
+		DatumGetBool(OidFunctionCall1Coll(proc, index->rd_indcollation[i],
+										  ObjectIdGetDatum(opcintype)));
+}
+
+/*
+ * May the equal keys of this non-unique index share one leaf entry?  When
+ * bark_allequalimage says so, and also when the only column that fails its
+ * test is an extracted column answered through GIN's query interface
+ * (bark_index_gin_query).  That column follows GIN's key rule: keys that
+ * compare equal by procedure 1 are one key, and an entry keeps the image of
+ * the first key that formed it, as ginEntryInsert does.  Nothing hands that
+ * image back as a row's value: an extracted column is never returned by an
+ * index-only scan (bark_canreturn), and a GIN-interface class has no
+ * procedure 8, so no ordering operator reports a key.  Only consistent,
+ * triConsistent and comparePartial see the stored key, as in GIN.  The
+ * other key columns still need equalimage, since an index-only scan returns
+ * them, and INCLUDE columns still forbid it.  The meta page's
+ * bark_allequalimage keeps bark_allequalimage's answer.
+ */
+bool
+bark_index_may_coalesce(Relation index)
+{
+	int			ginattno;
+
+	if (IndexRelationGetNumberOfAttributes(index) !=
+		IndexRelationGetNumberOfKeyAttributes(index))
+		return false;
+
+	ginattno = bark_index_gin_query(index) ?
+		bark_index_extracted_column(index) : 0;
+	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(index); i++)
+		if (i + 1 != ginattno && !bark_column_equalimage(index, i))
+			return false;
 
 	return true;
 }
@@ -1643,8 +1682,9 @@ bark_entry_key_part(IndexTuple entry)
  * on the same entry.  It must therefore depend on nothing but its arguments:
  * the key comes from the entry itself, not from the inserted tuple, whose key
  * is equal but whose image may differ (the TOAST compression method of a
- * large value, say); bark_allequalimage only promises that equal keys mean
- * the same value.
+ * large value, say; bark_allequalimage only promises that equal keys mean
+ * the same value), and on a GIN-interface column may even be a different
+ * value that compares equal (bark_index_may_coalesce).
  */
 IndexTuple
 bark_entry_add_tid(IndexTuple entry, ItemPointer tid, Size maxsz)
