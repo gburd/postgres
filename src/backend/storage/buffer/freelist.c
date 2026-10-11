@@ -349,7 +349,7 @@ ClockSweepTick(ClockSweep *sweep)
 	 * Make sure we've calculated a buffer in the range of the partition. Buffer
 	 * IDs are 1-based, we're calculating 0-based indexes.
 	 */
-	Assert((victim >= 0) && (victim < sweep->numBuffers));
+	Assert(victim < sweep->numBuffers);
 	Assert(BufferIsValid(1 + sweep->firstBuffer + victim));
 
 	return sweep->firstBuffer + victim;
