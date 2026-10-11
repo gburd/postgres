@@ -445,7 +445,13 @@ int2 translate_cmptype(int4 cmptype)
    uses GIN's query interface: such a column can be read by bitmap scans
    only, so an operator class written for GIN ports to BARK by adding
    support function 1 (the key comparison) and a storage type; core's
-   GIN array support functions work unchanged.
+   GIN array support functions work unchanged.  As in GIN, a bitmap scan
+   merges the row lists of the query's keys, and when
+   <function>triConsistent</function> shows that a row must have one of
+   some keys (as for <literal>@&gt;</literal>), it tests only the rows of
+   the rarest such keys.  Unlike GIN, it still reads every index entry of
+   each key, so <literal>@&gt;</literal> with one rare and one very common
+   element takes several times as long as on a GIN index.
   </para>
 
   <para>
