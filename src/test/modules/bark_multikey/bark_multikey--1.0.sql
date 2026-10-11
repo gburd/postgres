@@ -261,6 +261,14 @@ CREATE FUNCTION bark_multikey_walk(index text, op regoperator,
 RETURNS text
 AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
 
+-- Begin a scan with two key slots, then call the AM's amrescan directly with
+-- one key (as DocumentDB's composite-scan fold does), and report whether it
+-- read the same TIDs as a plain one-key scan of the qual.
+CREATE FUNCTION bark_multikey_rescan_fewer(index text, op regoperator,
+                                           query anyelement)
+RETURNS bool
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
 -- Scan an index on column 1 op query as the only participant of a parallel
 -- scan, and count the rows, without asking whether it may be parallel.
 CREATE FUNCTION bark_multikey_parallel(index text, op regoperator,
