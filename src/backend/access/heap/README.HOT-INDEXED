@@ -192,10 +192,9 @@ bitmaps and the resulting verdict) lives in heap's private IndexScanHeapData
 (reached through IndexScanDesc.xs_table_opaque), and the decision to drop a
 stale entry is made inside heap's getnext_slot implementations; the generic
 scan carries only the one boolean xs_entry_needs_recheck.  Constraint
-enforcement (_bt_check_unique,
-unique_key_recheck) holds a TID taken from an index but performs no index scan,
-so it uses the fetch_tid_check table-AM callback, which reports the same
-verdict alongside the fetched tuple.
+enforcement (_bt_check_unique) holds a TID taken from an index but performs no
+index scan, so it uses the fetch_tid_check table-AM callback, which reports
+the same verdict alongside the fetched tuple.
 
 The read mechanism never reconstructs or compares an index key, so it needs no
 per-access-method support.  (nbtree keeps an internal leaf-key comparison,
@@ -204,13 +203,15 @@ entry from a live duplicate during a unique insert; it is not part of the read
 path.)
 
 Unique checks.  _bt_check_unique fetches the conflicting tuple under
-SnapshotDirty and, when the chain walk crossed a HOT-indexed hop, compares the
-live tuple's current key against the arriving leaf with the index's own
-ordering procedure (_bt_heap_keys_equal_leaf, using BTORDER_PROC under each
-column's collation).  This recheck is reached only for an index receiving a
-fresh entry during a HOT-indexed update; HeapUpdateHotAllowable disqualifies
-any UPDATE that touches an expression-index attribute, so the index here never
-has an expression key column (every key column is a plain attribute), and the
+SnapshotDirty and, when the chain walk crossed a HOT-indexed hop affecting
+that index, compares the live tuple's current key against the arriving leaf
+with the index's own ordering procedure (_bt_heap_keys_equal_leaf, using
+BTORDER_PROC under each column's collation).  The fetch receives the index relation and tests the
+crossed attributes against that index, just as an index scan does; a NULL
+index relation requests the conservative any-hop result.  HeapUpdateHotAllowable
+disqualifies any UPDATE that touches an expression-index attribute (including
+INCLUDE and predicate attributes), so a heap chain cannot leave an expression
+index entry stale.  Changes to other indexes do not trigger a recheck.  The
 comparison reads attribute values straight from the heap slot; no expression
 evaluation or executor state is needed.  Using the opclass comparator (not a
 bitwise image comparison) means a key
@@ -470,16 +471,21 @@ both directions.
 
 _bt_heap_keys_equal_leaf reads each key column straight from the heap slot
 (slot_getattr) and compares it to the leaf datum; it does not evaluate indexed
-expressions and needs no executor state.  That is sufficient because the
-recheck is only ever reached for an index receiving a fresh entry during a
-HOT-indexed update, and HeapUpdateHotAllowable disqualifies any UPDATE that
-touches an attribute referenced by an expression index
-(INDEX_ATTR_BITMAP_EXPRESSION captures every such attribute).  So a HOT-indexed
-chain never has a crossed hop affecting an expression index, the index reaching
-the recheck never has an expression key column (every indkey is a real
-attribute number), and there is nothing to evaluate.  If selective maintenance
-of expression indexes is implemented in the future, this is where an
-expression-evaluating comparison (e.g. FormIndexDatum) would be reintroduced.
+expressions and needs no executor state.  For heap, HeapUpdateHotAllowable
+forces a non-HOT update when any attribute referenced by an expression index
+changes, including its plain keys, INCLUDE columns and predicate inputs
+(INDEX_ATTR_BITMAP_EXPRESSION captures all of these).  The constraint fetch
+checks crossed attributes against the arriving index, so changes affecting
+only other indexes do not request a recheck of an unchanged expression index.
+This applies to ordinary INSERT uniqueness checks as well as UPDATE checks.
+
+This is a heap guarantee, not support for stale expression keys from every
+table AM.  A future AM must keep expression-index entries exact and report
+rechecks accordingly, or obtain additional expression-safe unique-check
+support.  Suppressing a recheck for a genuinely stale expression entry is not
+safe.  Such support must respect the B-tree leaf write lock held here; simply
+calling FormIndexDatum in this comparison would evaluate expressions under
+that lock and is not safe.
 
 5. Why the asymmetry (bitmap on read, value recheck on unique) is intentional
 
