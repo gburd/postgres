@@ -189,6 +189,7 @@ static IndexClause *expand_indexqual_rowcompare(PlannerInfo *root,
 												Oid expr_op,
 												bool var_on_left);
 static void match_pathkeys_to_index(IndexOptInfo *index, List *pathkeys,
+									int ordercol,
 									List **orderby_clauses_p,
 									List **clause_columns_p);
 static Expr *match_clause_to_ordering_op(IndexOptInfo *index,
@@ -932,7 +933,7 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 		 * query_pathkeys will allow an incremental sort to be considered on
 		 * the index's partially sorted results.
 		 */
-		match_pathkeys_to_index(index, root->query_pathkeys,
+		match_pathkeys_to_index(index, root->query_pathkeys, 0,
 								&orderbyclauses,
 								&orderbyclausecols);
 		if (list_length(root->query_pathkeys) == list_length(orderbyclauses))
@@ -1074,8 +1075,17 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 		List	   *obclauses = NIL;
 		List	   *obcols = NIL;
 		List	   *obpathkeys;
+		int			ordercol = 0;
 
-		match_pathkeys_to_index(index, root->query_pathkeys,
+		/*
+		 * Such an index also orders a later column inside a run of entries
+		 * that the path's clauses fix on every column before it.  Which
+		 * clauses fix a column is the AM's to say (an operator class may fix
+		 * one with an operator that is not an equality).
+		 */
+		if (index->amorderbyopcolumn != NULL)
+			ordercol = index->amorderbyopcolumn(index, index_clauses);
+		match_pathkeys_to_index(index, root->query_pathkeys, ordercol,
 								&obclauses, &obcols);
 		if (obclauses != NIL)
 		{
@@ -3759,9 +3769,13 @@ expand_indexqual_rowcompare(PlannerInfo *root,
  * can determine a partial match vs a full match by checking the outputted
  * list lengths.  A full match will have one item in the output lists for each
  * item in the given 'pathkeys' list.
+ *
+ * 'ordercol' is, for an index ordered by its key, the one column besides the
+ * leading one that may match: the column after those the path's clauses fix
+ * (amorderbyopcolumn; 0 when none).
  */
 static void
-match_pathkeys_to_index(IndexOptInfo *index, List *pathkeys,
+match_pathkeys_to_index(IndexOptInfo *index, List *pathkeys, int ordercol,
 						List **orderby_clauses_p,
 						List **clause_columns_p)
 {
@@ -3824,13 +3838,16 @@ match_pathkeys_to_index(IndexOptInfo *index, List *pathkeys,
 			 * that doesn't handle multiple columns anyway.  An index ordered
 			 * by its key (see above) keeps the entries of a later column
 			 * spread over the whole index, one group per leading value, so
-			 * only its leading column can match.
+			 * only its leading column can match, or the column after a
+			 * prefix the path's clauses fix to one group (ordercol).
 			 */
-			for (indexcol = 0;
-				 indexcol < (index->sortopfamily != NULL ? 1 : index->nkeycolumns);
-				 indexcol++)
+			for (indexcol = 0; indexcol < index->nkeycolumns; indexcol++)
 			{
 				Expr	   *expr;
+
+				if (index->sortopfamily != NULL && indexcol != 0 &&
+					indexcol != ordercol)
+					continue;
 
 				expr = match_clause_to_ordering_op(index,
 												   indexcol,

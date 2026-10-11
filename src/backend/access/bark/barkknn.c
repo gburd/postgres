@@ -35,6 +35,14 @@
  * false) and the executor returns tuples straight through without a reorder
  * queue.
  *
+ * The ordered column need not lead.  Inside a run of entries equal on every
+ * column before it, the entries are in its order, so when the scan keys fix
+ * those columns to one value each (an equality, or the extracted column's
+ * single point: RUM's ORDER BY ts <=> x after a term qual; see
+ * barkorderbyopcolumn), the cursors start at (fixed values, const) and stop
+ * at the ends of that run.  A row's keys are distinct, so a point holds at
+ * most one entry per row and no row repeats.
+ *
  * A scalar B-tree orders on a single distance axis, so only one ordering key
  * (the first ORDER BY <~> clause) is meaningful: a second ordering key cannot
  * refine the order the way it would for a multidimensional GiST index, which
@@ -110,67 +118,34 @@ bark_knn_distance(IndexScanDesc scan, IndexTuple itup)
 }
 
 /*
- * Build the lower-bound key tuple used to descend to the center leaf: the
- * center constant in the ordered column, every other attribute NULL.  The
- * caller pfrees it.
+ * Is entry itup in the run the scan's fixed columns pick, that is, equal to
+ * knn->bound on every column before the ordered one?  Always when the
+ * ordered column leads.
  */
-static IndexTuple
-bark_knn_center_key(IndexScanDesc scan)
+static bool
+bark_knn_in_run(IndexScanDesc scan, IndexTuple itup)
 {
-	Relation	index = scan->indexRelation;
-	TupleDesc	tupdesc = RelationGetDescr(index);
 	BarkKnnScanState *knn = ((BarkScanOpaque) scan->opaque)->knn;
-	int			natts = IndexRelationGetNumberOfAttributes(index);
-	Datum	   *values = (Datum *) palloc(natts * sizeof(Datum));
-	bool	   *isnull = (bool *) palloc(natts * sizeof(bool));
-	IndexTuple	key;
+	TupleDesc	tupdesc = RelationGetDescr(scan->indexRelation);
 
-	for (int c = 0; c < natts; c++)
+	for (int i = 0; i < knn->attno - 1; i++)
 	{
-		values[c] = (Datum) 0;
-		isnull[c] = true;
+		bool		isnull;
+		Datum		datum = index_getattr(itup, i + 1, tupdesc, &isnull);
+
+		if (knn->bound.procs[i] == NULL)
+		{
+			if (!isnull)
+				return false;
+		}
+		else if (isnull ||
+				 DatumGetInt32(FunctionCall2Coll(knn->bound.procs[i],
+												 knn->bound.collations[i],
+												 datum,
+												 knn->bound.args[i])) != 0)
+			return false;
 	}
-	values[knn->attno - 1] = knn->center;
-	isnull[knn->attno - 1] = knn->centernull;
-
-	key = index_form_tuple(tupdesc, values, isnull);
-	pfree(values);
-	pfree(isnull);
-	return key;
-}
-
-/*
- * Find the first offset on `page` whose key is >= the center key tuple
- * `center` -- the boundary that splits the center leaf into the backward
- * (< center) and forward (>= center) sides.  Binary search with the opclass
- * comparator, exactly as barksearch.c's bark_binsrch does for descent.
- */
-static OffsetNumber
-bark_knn_split_offset(IndexScanDesc scan, Page page, IndexTuple center)
-{
-	Relation	index = scan->indexRelation;
-	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
-	BarkPageOpaque opaque = BarkPageGetOpaque(page);
-	OffsetNumber low = BarkPageFirstDataKey(opaque);
-	OffsetNumber high = PageGetMaxOffsetNumber(page);
-
-	if (high < low)
-		return low;				/* empty page */
-
-	high = OffsetNumberNext(high);	/* one past the last item */
-	while (low < high)
-	{
-		OffsetNumber mid = low + ((high - low) / 2);
-		BarkItemBuf ibuf;
-		IndexTuple	itup = BarkPageGetItem(page, mid, &ibuf);
-		int			cmp = bark_compare_itups(so->keyinfo, index, center, itup);
-
-		if (cmp > 0)
-			low = OffsetNumberNext(mid);	/* center > itup: boundary later */
-		else
-			high = mid;			/* itup >= center: boundary here or earlier */
-	}
-	return low;
+	return true;
 }
 
 /*
@@ -215,6 +190,15 @@ bark_knn_readpage(IndexScanDesc scan, BarkKnnCursor *cur, Page page,
 		IndexTuple	resolved = bark_scan_resolve(index, itup, &fetched);
 		BarkKnnItem *item;
 		int			ntids;
+
+		/* Past the end of the fixed columns' run: nothing further matches. */
+		if (!bark_knn_in_run(scan, resolved))
+		{
+			if (fetched)
+				pfree(resolved);
+			cur->nextPage = BARK_P_NONE;
+			break;
+		}
 
 		cur->bound = bark_knn_distance(scan, resolved);
 		ntids = bark_entry_count_tids(itup);
@@ -360,11 +344,12 @@ bark_knn_steppage(IndexScanDesc scan, BarkKnnCursor *cur)
 
 /*
  * Position both cursors around the center.  Descend to the first leaf that
- * could hold the center key (nextkey=false lands on the leftmost leaf of a
- * run of equal keys, so neither side skips a duplicate), then, under the
- * share lock the descent leaves, split that leaf at the first entry whose key
- * is >= center: the forward cursor reads the leaf from there toward higher
- * keys, the backward cursor from the entry before it toward lower keys.
+ * could hold an entry at or after knn->bound, the fixed columns' values and
+ * the center (a lower bound lands on the leftmost leaf of a run of equal
+ * keys, so neither side skips a duplicate), then, under the share lock the
+ * descent leaves, split that leaf at the first such entry: the forward
+ * cursor reads the leaf from there toward higher keys, the backward cursor
+ * from the entry before it toward lower keys.
  */
 static void
 bark_knn_position(IndexScanDesc scan)
@@ -372,7 +357,6 @@ bark_knn_position(IndexScanDesc scan)
 	Relation	index = scan->indexRelation;
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
 	BarkKnnScanState *knn = so->knn;
-	IndexTuple	center;
 	Buffer		buf;
 	Page		page;
 	BlockNumber blkno;
@@ -384,25 +368,25 @@ bark_knn_position(IndexScanDesc scan)
 		scan->instrument->nsearches++;
 
 	/*
-	 * A NULL center returns every entry, at distance infinity
+	 * A NULL center returns every entry of the run, at distance infinity
 	 * (bark_knn_distance), as a Sort returns every row for a NULL distance:
-	 * the cursors start at the NULL keys and read the index to both ends.
+	 * the cursors start at the run's NULL keys and read it to both ends.
 	 * Returning nothing would drop rows.
 	 */
-	center = bark_knn_center_key(scan);
-	buf = bark_search(index, so->keyinfo, center, NULL, false, false, NULL);
+	if (knn->emptyrun)
+		return;					/* a fixed value matches nothing */
+
+	buf = bark_search_bound(index, so->keyinfo, &knn->bound, false);
 	if (!BufferIsValid(buf))
 	{
 		/* Empty index.  A serializable scan must lock the whole relation. */
 		PredicateLockRelation(index, scan->xs_snapshot);
-		pfree(center);
 		return;
 	}
 
 	page = BufferGetPage(buf);
 	blkno = BufferGetBlockNumber(buf);
-	splitoff = bark_knn_split_offset(scan, page, center);
-	pfree(center);
+	splitoff = bark_binsrch_bound(index, so->keyinfo, &knn->bound, page);
 
 	bark_knn_readpage(scan, &knn->fwd, page, blkno, splitoff);
 	bark_knn_readpage(scan, &knn->bwd, page, blkno, OffsetNumberPrev(splitoff));
@@ -517,6 +501,53 @@ bark_knn_free_cursor(BarkKnnCursor *cur)
 		pfree(cur->tuples);
 }
 
+/*
+ * Put the value the scan keys fix column col to into knn->bound: the
+ * extracted column's one point (bark_mk_point), or a plain equality's
+ * argument, compared by its ORDER proc.  A fixed value that matches nothing
+ * (an equality with NULL, a point query with no boundary) sets
+ * knn->emptyrun.  False when nothing fixes the column.  Further keys on the
+ * column only filter, as in any scan.
+ */
+static bool
+bark_knn_fix_column(IndexScanDesc scan, AttrNumber col)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	BarkKnnScanState *knn = so->knn;
+	BarkScanBound *bound = &knn->bound;
+	int			point = bark_mk_point(scan, col, &bound->args[col - 1],
+									  &bound->procs[col - 1],
+									  &bound->collations[col - 1]);
+
+	if (point != 0)
+	{
+		if (point == 2)
+			knn->emptyrun = true;
+		return point > 0;
+	}
+	for (int i = 0; i < so->numberOfKeys; i++)
+	{
+		ScanKey		sk = &scan->keyData[i];
+
+		if (sk->sk_attno != col || sk->sk_strategy != BTEqualStrategyNumber ||
+			(sk->sk_flags & (SK_SEARCHARRAY | SK_ROW_HEADER |
+							 SK_SEARCHNULL | SK_SEARCHNOTNULL)))
+			continue;
+		if (sk->sk_flags & SK_ISNULL)
+		{
+			knn->emptyrun = true;
+			return true;
+		}
+		if (!OidIsValid(so->keyCmp[i].fn_oid))
+			continue;
+		bound->args[col - 1] = sk->sk_argument;
+		bound->procs[col - 1] = &so->keyCmp[i];
+		bound->collations[col - 1] = sk->sk_collation;
+		return true;
+	}
+	return false;
+}
+
 void
 bark_knn_rescan(IndexScanDesc scan, ScanKey orderbys, int norderbys)
 {
@@ -548,6 +579,26 @@ bark_knn_rescan(IndexScanDesc scan, ScanKey orderbys, int norderbys)
 	knn->center = ob->sk_argument;
 	knn->centernull = (ob->sk_flags & SK_ISNULL) != 0;
 	knn->attno = ob->sk_attno;
+
+	/*
+	 * The bound the scan descends to: the values the scan keys fix on the
+	 * columns before the ordered one (barkorderbyopcolumn chose the column
+	 * so that they do), then the center.
+	 */
+	memset(&knn->bound, 0, sizeof(knn->bound));
+	knn->emptyrun = false;
+	for (AttrNumber col = 1; col < knn->attno; col++)
+		if (!bark_knn_fix_column(scan, col))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("ordering operator on column %d of BARK index \"%s\" needs every earlier column fixed by the scan keys",
+							knn->attno, RelationGetRelationName(scan->indexRelation))));
+	knn->bound.args[knn->attno - 1] = knn->center;
+	knn->bound.procs[knn->attno - 1] = knn->centernull ? NULL :
+		&so->keyinfo->cols[knn->attno - 1].cmp;
+	knn->bound.collations[knn->attno - 1] =
+		so->keyinfo->cols[knn->attno - 1].collation;
+	knn->bound.nkeys = knn->attno;
 
 	so->firstCall = true;
 }
