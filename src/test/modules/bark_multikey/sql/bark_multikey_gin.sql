@@ -65,7 +65,7 @@ END $$;
 SELECT cardinality(mg_saop(NULL)) AS n, mg_saop('mg_bark') = mg_saop(NULL) AS bark_ok,
        mg_saop('mg_gin') = mg_saop(NULL) AS gin_ok;
 
--- Bitmap scans only: with bitmap scans off the planner takes a seqscan.
+-- Bitmap and index scans (bark_multikey_ginscan compares the latter).
 UPDATE pg_index SET indisvalid = (indexrelid = 'mg_bark'::regclass)
   WHERE indrelid = 'mg'::regclass AND indexrelid <> 'mg_pkey'::regclass;
 SET enable_seqscan = off;
@@ -79,7 +79,7 @@ UPDATE pg_index SET indisvalid = true WHERE indrelid = 'mg'::regclass;
 SELECT pg_index_column_has_property('mg_bark', 1, 'orderable'),
        pg_index_has_property('mg_bark', 'index_scan'),
        pg_index_has_property('mg_bark', 'bitmap_scan');
--- A direct caller of amgettuple gets an error.
+-- A direct caller of amgettuple reads the result both ways.
 SELECT bark_multikey_reverse('mg_bark', '@>(anyarray,anyarray)', '{3}'::int4[], 2);
 
 -- Changes after the build, then the comparison again.
