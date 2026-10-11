@@ -1155,7 +1155,7 @@ bark_cost_keys_per_row(IndexOptInfo *index, bool *multikey)
  */
 static double
 bark_cost_boundaries(IndexOptInfo *index, int indexcol, Expr *clause,
-					 bool *noseen, bool *recheck)
+					 bool *noseen, bool *recheck, bool *point)
 {
 	OpExpr     *op = (OpExpr *) clause;
 	Node       *arg;
@@ -1170,6 +1170,7 @@ bark_cost_boundaries(IndexOptInfo *index, int indexcol, Expr *clause,
 
 	*noseen = false;
 	*recheck = false;
+	*point = false;
 	if (!IsA(clause, OpExpr) || list_length(op->args) != 2)
 		return 1;
 	arg = (Node *) lsecond(op->args);
@@ -1248,7 +1249,84 @@ bark_cost_boundaries(IndexOptInfo *index, int indexcol, Expr *clause,
 		 result[0].lower->strategy == BTEqualStrategyNumber &&
 		 result[0].upper->strategy == BTEqualStrategyNumber))
 		*noseen = true;
+
+	/*
+	 * One point, with both sides the same element or argument: a different
+	 * argument that compares equal is taken for a range, which only costs
+	 * the plan barkorderbyopcolumn would allow.
+	 */
+	*point = nresult == 1 && !flags.searchnulls &&
+		result[0].lower != NULL && result[0].upper != NULL &&
+		result[0].lower->strategy == BTEqualStrategyNumber &&
+		result[0].upper->strategy == BTEqualStrategyNumber &&
+		(result[0].lower == result[0].upper ||
+		 result[0].lower->argument == result[0].upper->argument);
 	return Max(nresult + (flags.searchnulls ? 1 : 0), 1);
+}
+
+/*
+ * barkorderbyopcolumn -- the column an ordering operator can be served on.
+ *
+ * The KNN scan walks outward from its constant in index order, so it orders
+ * a column only inside a run of entries equal on every column before it:
+ * the leading column, or the column after a prefix that the path's clauses
+ * fix to one value.  A btree column is fixed by an equality.  The extracted
+ * column is fixed by a single clause, with a constant, whose procedure 8
+ * boundaries are one point: a row's keys are distinct, so a row has at most
+ * one entry in the run and needs no seen set.  This is RUM's ORDER BY ts <=>
+ * x after a term qual.  An array, a range, several boundaries or a Param fix
+ * nothing.  The extracted column's own ordering (bark_mk_order_setup) walks
+ * its boundaries, not a run, so it is offered only when the column leads.
+ * The scan checks the prefix again (bark_knn_prefix) and refuses a scan
+ * whose keys do not fix it, rather than return rows out of order.
+ */
+static int
+barkorderbyopcolumn(IndexOptInfo *index, List *indexclauses)
+{
+	int			ncol = 0;
+
+	for (int col = 0; col < index->nkeycolumns - 1; col++)
+	{
+		bool		extracts = bark_opfamily_extracts(index->opfamily[col],
+													  index->opcintype[col]);
+		int			nclauses = 0;
+		bool		fixed = false;
+
+		foreach_node(IndexClause, iclause, indexclauses)
+		{
+			if (iclause->indexcol != col)
+				continue;
+			foreach_node(RestrictInfo, rinfo, iclause->indexquals)
+			{
+				Expr	   *clause = rinfo->clause;
+
+				nclauses++;
+				if (!IsA(clause, OpExpr))
+					continue;
+				if (extracts)
+				{
+					bool		noseen;
+					bool		recheck;
+					bool		point;
+
+					(void) bark_cost_boundaries(index, col, clause, &noseen,
+												&recheck, &point);
+					fixed = point;
+				}
+				else if (get_op_opfamily_strategy(((OpExpr *) clause)->opno,
+												  index->opfamily[col]) ==
+						 BTEqualStrategyNumber)
+					fixed = true;
+			}
+		}
+		if (!fixed || (extracts && nclauses > 1))
+			break;
+		ncol = col + 1;
+	}
+	if (ncol > 0 && bark_opfamily_extracts(index->opfamily[ncol],
+										   index->opcintype[ncol]))
+		return 0;
+	return ncol;
 }
 
 /*
@@ -1273,7 +1351,9 @@ bark_cost_boundaries(IndexOptInfo *index, int indexcol, Expr *clause,
  *  - A skip scan descends once per column-1 value, and only column 2's
  *    plain quals bound it (bark_cost_skips).
  *  - An ordered-operator (KNN) scan walks outward from its constant and
- *    tests every qual as a filter.
+ *    tests every qual as a filter, except that the quals on the columns
+ *    before the ordered one, which fix them (barkorderbyopcolumn), bound it
+ *    as an equality prefix does.
  *
  * The number of entries read is counted in heap rows, as nbtree counts index
  * tuples after deduplication: LIST and POSTING entries make the index
@@ -1385,7 +1465,8 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 	{
 		IndexClause *iclause = lfirst_node(IndexClause, lc);
 
-		if (path->indexorderbys != NIL)
+		if (path->indexorderbys != NIL &&
+			iclause->indexcol >= linitial_int(path->indexorderbycols))
 			break;
 		if (iclause->indexcol != indexcol)
 		{
@@ -1442,8 +1523,13 @@ barkcostestimate(PlannerInfo *root, IndexPath *path, double loop_count,
 															   lsecond(((ScalarArrayOpExpr *) clause)->args)),
 										 1);
 					else
+					{
+						bool		point;
+
 						mkdescents = bark_cost_boundaries(index, mkcol, clause,
-														  &mknoseen, &mkrecheck);
+														  &mknoseen, &mkrecheck,
+														  &point);
+					}
 					colelems = mkdescents;
 					mkcounted = true;
 					indexBoundQuals = lappend(indexBoundQuals, rinfo);
@@ -1714,6 +1800,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amcanreturn = bark_canreturn,
 		.amcostestimate = barkcostestimate,
 		.amgettreeheight = barkgettreeheight,
+		.amorderbyopcolumn = barkorderbyopcolumn,
 		.amoptions = barkoptions,
 		.amproperty = bark_property,
 		.ambuildphasename = NULL,

@@ -1386,6 +1386,39 @@ bark_mk_accept(IndexScanDesc scan, IndexTuple itup, ItemPointer tids,
 }
 
 /*
+ * What do the scan keys fix column attno to, for a KNN scan ordered on a
+ * later column (barkknn.c)?  0: attno is not the extracted column.  -1: its
+ * boundaries are not one point, so its entries in the scan are not one run.
+ * 1: one point, returned in *key with the column's comparator in *cmp and
+ * its collation, or *cmp NULL for the NULL entries.  2: no boundary, so no
+ * entry matches.
+ */
+int
+bark_mk_point(IndexScanDesc scan, AttrNumber attno, Datum *key,
+			  FmgrInfo **cmp, Oid *collation)
+{
+	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
+	const BarkMkBoundary *b;
+
+	if (mk == NULL || mk->attno != attno)
+		return 0;
+
+	/* An ordering key on the extracted column makes no KNN scan. */
+	Assert(!mk->order);
+	if (mk->nkeys == 0 || mk->gin)
+		return -1;
+	if (mk->nbounds == 0)
+		return 2;
+	b = &mk->bounds[0];
+	if (mk->nbounds > 1 || !b->point)
+		return -1;
+	*key = b->start;
+	*cmp = b->nulls ? NULL : &mk->col->cmp;
+	*collation = mk->col->collation;
+	return 1;
+}
+
+/*
  * Choose the scan's required keys (see BarkArrayKeyState), as nbtree marks
  * the keys of the leading columns with equalities required: on index columns
  * 1..m in order, one equality per column, stopping at the first column that
