@@ -1626,6 +1626,17 @@ typedef struct BarkKnnScanState
 	 */
 	BarkKnnCursor *emitCur;
 	int			emitIdx;
+
+	/*
+	 * Ordering a column after the first (barkorderbyopcolumn): the scan runs
+	 * inside the run of entries equal to the values its scan keys fix on
+	 * every column before it.  bound holds those values and then the center
+	 * (bound.nkeys is the ordered column's number), and is where the scan
+	 * descends to.  emptyrun: a fixed value matches no entry (a NULL, or no
+	 * boundary), so the scan returns nothing.
+	 */
+	BarkScanBound bound;
+	bool		emptyrun;
 } BarkKnnScanState;
 
 /*
@@ -1919,6 +1930,8 @@ extern int	bark_mk_accept(IndexScanDesc scan, IndexTuple itup,
 						   ItemPointer tids, int ntids, bool *recheck);
 extern int	bark_mk_seen(IndexScanDesc scan, IndexTuple itup, ItemPointer tids,
 						 int ntids, bool newgroups);
+extern int	bark_mk_point(IndexScanDesc scan, AttrNumber attno, Datum *key,
+						  FmgrInfo **cmp, Oid *collation);
 extern HeapTuple bark_mk_form_hitup(IndexScanDesc scan, IndexTuple itup);
 
 /* KNN (ordered-operator) scan (barkknn.c). */
