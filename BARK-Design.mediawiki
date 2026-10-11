@@ -1001,8 +1001,9 @@ place of an inverted AM, without changing the scalar design above.
   interface, procedures 7-9, is built and used by M1c's scans and M5a's
   wildcard class; M2a, GIN's query interface (procedures 10-13, partial
   match included) in bitmap scans, is built: "As built (M2a)" under
-  "Which interface first.", and P1, merging its TID streams with required
-  keys, "As built (P1)" there. M2b part 1, RUM's addon ordering (an
+  "Which interface first.", P1, merging its TID streams with required
+  keys, "As built (P1)" there, and M2c, index scans of such a column,
+  "As built (M2c)" there. M2b part 1, RUM's addon ordering (an
   ordering operator on the column after the extracted one, inside a
   point's run), is built: "As built (M2b part 1)" under "M3: per-locator
   data". RUM's ordering functions, the array similarity class (M2b part 2)
@@ -1179,7 +1180,8 @@ or 10 and 11 or 13, or both; one written for pg_extended_btree ports by
 renumbering 101-103 as 7-9.
 
 '''As built (M2a).''' A column whose class has procedure 10 and not 8
-(bark_index_gin_query) is read by bitmap scans only: bark_property answers
+(bark_index_gin_query) is read by bitmap scans only (M2c, below, adds index
+scans when the column leads the index): bark_property answers
 <code>index_scan</code> false, get_relation_info asks amproperty for
 AMPROP_INDEX_SCAN and clears <code>amhasgettuple</code>, so the planner
 builds no index scan path, and bark_gettuple refuses a direct caller. The
@@ -1232,6 +1234,37 @@ and an index with the column second, each compared with a seqscan and GIN,
 before and after DELETE, INSERT (LIST entries) and VACUUM; core's tsvector
 support functions as a BARK class, mixing point and prefix (partial-match)
 keys, NOT and phrase queries, compared with a seqscan and GIN.
+
+'''As built (M2c).''' A GIN-interface column that leads its index has
+index scans too. bark_mk_gin_items, factored out of the bitmap scan,
+computes the scan's rows (TID order, with recheck flags) as before; the
+bitmap scan adds them to its bitmap, and bark_mk_gin_gettuple keeps them in
+a per-scan context, computed on the first call after a rescan, and returns
+one per call, forward or backward (a scan that reverses continues from its
+place, one that ran off an end restarts from it), with mark and restore as
+a place in the array. Found by the DocumentDB A/B: DocumentDB updates and
+deletes by a filter with <code>SELECT ... LIMIT 1 FOR UPDATE</code>, which
+with bitmap scans only planned a seqscan (9 against RUM's 490 updates a
+second on 1M documents). The TIDs are collected with no leaf pinned, so the
+scan requires an MVCC snapshot (nbtree's dropPin argument) and errors
+otherwise; no SQL reaches that today, since exclusion constraints are
+refused for multikey classes. The seen set is off for these scans (a TID in
+several boundaries' streams is merged into one row already), and
+kill_prior_tuple is ignored (no leaf position, no LP_DEAD hints).
+bark_property keeps <code>index_scan</code> false when the column is not
+the first: rows come back in TID order, and the planner would take the
+scan to return the columns before it in order (pathkeys, merge joins, KNN).
+barkcostestimate makes all of the index cost startup cost, so a LIMIT does
+not make the scan look cheaper than it is. Tests
+(bark_multikey_ginscan.sql): every query of bark_multikey_gin (40) and
+bark_multikey_ginmerge (39 array, 13 tsvector) through both array classes
+as an Index Scan, whole, LIMIT 1 and LIMIT 7, equal to a seqscan, before
+and after DELETE, INSERT and VACUUM; a NO SCROLL cursor read in pieces
+(726 rows); LIMIT 1 FOR UPDATE; a nested loop with the index scan as its
+parameterized inner side, NULL and empty keys among the outer rows; a
+direct caller reading forward and backward (bark_multikey_walk); mark and
+restore at four places; and the leading-column rule (gm_bark_g stays
+bitmap-only).
 
 '''Strategies.''' An operator in a BARK family has whatever strategy number
 its class gives it, as in GIN; the number is only passed to procedures 8 and

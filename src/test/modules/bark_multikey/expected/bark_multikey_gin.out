@@ -123,7 +123,7 @@ SELECT cardinality(mg_saop(NULL)) AS n, mg_saop('mg_bark') = mg_saop(NULL) AS ba
  775 | t       | t
 (1 row)
 
--- Bitmap scans only: with bitmap scans off the planner takes a seqscan.
+-- Bitmap and index scans (bark_multikey_ginscan compares the latter).
 UPDATE pg_index SET indisvalid = (indexrelid = 'mg_bark'::regclass)
   WHERE indrelid = 'mg'::regclass AND indexrelid <> 'mg_pkey'::regclass;
 SET enable_seqscan = off;
@@ -139,10 +139,10 @@ EXPLAIN (COSTS OFF) SELECT id FROM mg WHERE a @> '{3}';
 RESET enable_seqscan;
 SET enable_bitmapscan = off;
 EXPLAIN (COSTS OFF) SELECT id FROM mg WHERE a @> '{3}';
-            QUERY PLAN             
------------------------------------
- Seq Scan on mg
-   Filter: (a @> '{3}'::integer[])
+              QUERY PLAN               
+---------------------------------------
+ Index Scan using mg_bark on mg
+   Index Cond: (a @> '{3}'::integer[])
 (2 rows)
 
 RESET enable_bitmapscan;
@@ -153,12 +153,16 @@ SELECT pg_index_column_has_property('mg_bark', 1, 'orderable'),
        pg_index_has_property('mg_bark', 'bitmap_scan');
  pg_index_column_has_property | pg_index_has_property | pg_index_has_property 
 ------------------------------+-----------------------+-----------------------
- f                            | f                     | t
+ f                            | t                     | t
 (1 row)
 
--- A direct caller of amgettuple gets an error.
+-- A direct caller of amgettuple reads the result both ways.
 SELECT bark_multikey_reverse('mg_bark', '@>(anyarray,anyarray)', '{3}'::int4[], 2);
-ERROR:  BARK index "mg_bark" supports only bitmap scans on a column whose operator class uses GIN's query interface
+ bark_multikey_reverse 
+-----------------------
+ forward:2 back:true
+(1 row)
+
 -- Changes after the build, then the comparison again.
 DELETE FROM mg WHERE id % 7 = 0;
 INSERT INTO mg SELECT i, ARRAY[i % 13, i % 17] FROM generate_series(3001, 4000) i;
