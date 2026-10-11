@@ -71,16 +71,22 @@
 #include "postgres.h"
 
 #include "access/bark.h"
+#include "access/detoast.h"
 #include "access/relation.h"
 #include "access/reloptions.h"
 #include "access/stratnum.h"
 #include "catalog/pg_collation.h"
+#include "common/hashfn.h"
 #include "fmgr.h"
+#include "lib/hyperloglog.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "funcapi.h"
+#include "port/pg_bswap.h"
 #include "storage/bufmgr.h"
 #include "utils/builtins.h"
+#include "utils/pg_locale.h"
+#include "utils/sortsupport.h"
 #include "utils/tuplestore.h"
 #include "utils/jsonb.h"
 #include "utils/numeric.h"
@@ -89,6 +95,8 @@
 
 PG_MODULE_MAGIC;
 
+PG_FUNCTION_INFO_V1(bark_wildcard_sortsupport);
+PG_FUNCTION_INFO_V1(bark_wildcard_cmp);
 PG_FUNCTION_INFO_V1(bark_wildcard_options);
 PG_FUNCTION_INFO_V1(bark_wildcard_extract_value);
 PG_FUNCTION_INFO_V1(bark_wildcard_keys);
@@ -806,6 +814,275 @@ bark_wildcard_value_cmp(JsonbValue *a, JsonbValue *b)
 	}
 	return 0;					/* keep compiler quiet */
 }
+
+/*
+ * Procedure 2 (sortsupport) for bark_jsonb_wildcard_ops, with an abbreviated
+ * key.  Used by BARK's build sort (through tuplesort_begin_index_btree, which
+ * calls PrepareSortSupportFromIndexRel) and by procedure 1's per-row dedup
+ * sort (through bark_build_keyinfo).  It reproduces jsonb_cmp on the keys the
+ * class forms while avoiding jsonb_cmp's two full JsonbIterator walks per
+ * comparison, and -- when the index collation lets it -- resolves most
+ * comparisons from an abbreviated Datum without touching the key at all.
+ *
+ * A key is a jsonb array: the one-element marker [path] or the data key
+ * [path, value].  jsonb_cmp (compareJsonbContainers) orders two arrays by
+ * length first (so a marker always sorts before a data key), then element by
+ * element; the class stores no other jsonb at a key, so matching that for a
+ * one/two-element path/value array matches jsonb_cmp on every key the class
+ * forms.
+ *
+ * The path element is a jsonb string, which jsonb_cmp compares with varstr_cmp
+ * in the default collation.  The value element, when present, is compared by
+ * jsonb_cmp's scalar rules (bark_wildcard_value_cmp).
+ */
+
+/* HyperLogLog state for abbrev_abort, as varlena's VarStringSortSupport. */
+typedef struct BarkWildcardSortSupport
+{
+	bool		collate_c;		/* default collation is C: path bytes == order */
+	double		prop_card;		/* required abbrev/full cardinality ratio */
+	hyperLogLogState abbr_card; /* cardinality of abbreviated keys */
+	hyperLogLogState full_card; /* cardinality of authoritative keys */
+} BarkWildcardSortSupport;
+
+/*
+ * A key below TOAST_INDEX_TARGET keeps a short varlena header after
+ * index_form_tuple, which PG_GETARG_JSONB_P would copy to a four-byte header
+ * on every comparison; read it in place and detoast only a key that is
+ * actually externally stored or compressed.
+ */
+static Jsonb *
+bark_wildcard_key_in_place(Datum d)
+{
+	struct varlena *raw = (struct varlena *) DatumGetPointer(d);
+
+	if (VARATT_IS_EXTENDED(raw))
+		return (Jsonb *) PG_DETOAST_DATUM(d);
+	return (Jsonb *) raw;
+}
+
+/*
+ * The authoritative comparator (abbreviated keys tie, or no abbreviation).
+ */
+static int
+bark_wildcard_key_cmp(Datum x, Datum y, SortSupport ssup)
+{
+	BarkWildcardSortSupport *sss = (BarkWildcardSortSupport *) ssup->ssup_extra;
+	Jsonb	   *ka = bark_wildcard_key_in_place(x);
+	Jsonb	   *kb = bark_wildcard_key_in_place(y);
+	int			na = JB_ROOT_COUNT(ka);
+	int			nb = JB_ROOT_COUNT(kb);
+	JsonbValue *pa;
+	JsonbValue *pb;
+	JsonbValue *va;
+	JsonbValue *vb;
+	int			c;
+
+	/* A marker [path] (length 1) sorts before a data key [path, value]. */
+	if (na != nb)
+		return na < nb ? -1 : 1;
+
+	/* The path element: a jsonb string, in the default collation. */
+	pa = getIthJsonbValueFromContainer(&ka->root, 0);
+	pb = getIthJsonbValueFromContainer(&kb->root, 0);
+	Assert(pa->type == jbvString && pb->type == jbvString);
+	if (sss->collate_c)
+	{
+		int			minlen = Min(pa->val.string.len, pb->val.string.len);
+
+		c = memcmp(pa->val.string.val, pb->val.string.val, minlen);
+		if (c == 0)
+			c = (pa->val.string.len == pb->val.string.len) ? 0 :
+				(pa->val.string.len < pb->val.string.len) ? -1 : 1;
+	}
+	else
+		c = varstr_cmp(pa->val.string.val, pa->val.string.len,
+					   pb->val.string.val, pb->val.string.len,
+					   DEFAULT_COLLATION_OID);
+	if (c != 0 || na == 1)
+		return c;
+
+	/* The value element, by the scalar rules jsonb_cmp uses. */
+	va = getIthJsonbValueFromContainer(&ka->root, 1);
+	vb = getIthJsonbValueFromContainer(&kb->root, 1);
+	return bark_wildcard_value_cmp(va, vb);
+}
+
+/*
+ * abbrev_converter: pack a sort-order prefix of the key into a Datum.
+ *
+ * The most significant byte encodes the array size so a marker [path]
+ * (JB_ROOT_COUNT 1) always abbreviates below a data key [path, value]
+ * (JB_ROOT_COUNT 2), as the full comparator orders them regardless of path.
+ * The remaining bytes hold the leading bytes of the path string.  The Datum
+ * is filled big-endian and then byteswapped by DatumBigEndianToNative so
+ * ssup_datum_uint64_cmp (an unsigned 64-bit comparator) reproduces the
+ * most-significant-first byte order.
+ *
+ * This is only installed when the default collation is C (see
+ * bark_wildcard_sortsupport), so the path's byte order is exactly the order
+ * varstr_cmp -- and thus jsonb_cmp -- gives it.  Under any other collation the
+ * raw path bytes do not match the sort order, so abbreviation is not used and
+ * the full comparator runs directly.
+ */
+static Datum
+bark_wildcard_abbrev_convert(Datum original, SortSupport ssup)
+{
+	BarkWildcardSortSupport *sss = (BarkWildcardSortSupport *) ssup->ssup_extra;
+	Jsonb	   *key = bark_wildcard_key_in_place(original);
+	int			count = JB_ROOT_COUNT(key);
+	JsonbValue *path = getIthJsonbValueFromContainer(&key->root, 0);
+	const size_t max_path_bytes = sizeof(Datum) - 1;
+	Datum		res;
+	unsigned char *pres = (unsigned char *) &res;
+	int			plen;
+	uint32		hash;
+
+	Assert(path->type == jbvString);
+
+	/* memset so any non-overwritten bytes are NUL (smallest prefix). */
+	memset(pres, 0, sizeof(Datum));
+
+	/* Byte 0 (most significant, big-endian) orders markers before data. */
+	pres[0] = (count == 1) ? 0x00 : 0x01;
+
+	plen = path->val.string.len;
+	memcpy(pres + 1, path->val.string.val, Min(plen, max_path_bytes));
+
+	/*
+	 * Maintain approximate cardinality of abbreviated and authoritative keys
+	 * for bark_wildcard_abbrev_abort, as varstr_abbrev_convert does.  Mix the
+	 * path length into the full-key hash so differences past the cache line
+	 * still register.
+	 */
+	hash = hash_bytes((const unsigned char *) path->val.string.val,
+					  Min(plen, PG_CACHE_LINE_SIZE));
+	if (plen > PG_CACHE_LINE_SIZE)
+		hash ^= murmurhash32((uint32) plen);
+	hash ^= murmurhash32((uint32) count);
+	addHyperLogLog(&sss->full_card, hash);
+
+	hash = (uint32) murmurhash64(DatumGetUInt64(res));
+	addHyperLogLog(&sss->abbr_card, hash);
+
+	/* Byteswap so ssup_datum_uint64_cmp sees most-significant byte first. */
+	res = DatumBigEndianToNative(res);
+
+	if (PointerGetDatum(key) != original)
+		pfree(key);
+
+	return res;
+}
+
+/*
+ * abbrev_abort: give up on abbreviation when too few distinct abbreviated
+ * keys would be produced to pay for the conversions, the standard
+ * varstr_abbrev_abort heuristic.
+ */
+static bool
+bark_wildcard_abbrev_abort(int memtupcount, SortSupport ssup)
+{
+	BarkWildcardSortSupport *sss = (BarkWildcardSortSupport *) ssup->ssup_extra;
+	double		abbrev_distinct,
+				key_distinct;
+
+	Assert(ssup->abbreviate);
+
+	if (memtupcount < 100)
+		return false;
+
+	abbrev_distinct = estimateHyperLogLog(&sss->abbr_card);
+	key_distinct = estimateHyperLogLog(&sss->full_card);
+	if (abbrev_distinct < 1.0)
+		abbrev_distinct = 1.0;
+	if (key_distinct < 1.0)
+		key_distinct = 1.0;
+
+	if (abbrev_distinct > key_distinct * sss->prop_card)
+	{
+		if (memtupcount > 10000)
+			sss->prop_card *= 0.65;
+		return false;
+	}
+	return true;
+}
+
+/*
+ * Procedure 2's entry point.  barkvalidate accepts it; BARK's build sort and
+ * bark_build_keyinfo install its comparator in place of a per-call
+ * FunctionCall2Coll on procedure 1.  The abbreviated key is installed only
+ * when the default collation (which jsonb_cmp uses for path strings) is C, so
+ * the raw path bytes carry the sort order; otherwise the full comparator runs
+ * directly and no abbreviation happens.
+ */
+Datum
+bark_wildcard_sortsupport(PG_FUNCTION_ARGS)
+{
+	SortSupport ssup = (SortSupport) PG_GETARG_POINTER(0);
+	MemoryContext oldcxt = MemoryContextSwitchTo(ssup->ssup_cxt);
+	BarkWildcardSortSupport *sss = palloc_object(BarkWildcardSortSupport);
+
+	sss->collate_c =
+		pg_newlocale_from_collation(DEFAULT_COLLATION_OID)->collate_is_c;
+	ssup->ssup_extra = sss;
+	ssup->comparator = bark_wildcard_key_cmp;
+
+	if (ssup->abbreviate && sss->collate_c)
+	{
+		sss->prop_card = 0.20;
+		initHyperLogLog(&sss->abbr_card, 10);
+		initHyperLogLog(&sss->full_card, 10);
+		ssup->abbrev_full_comparator = ssup->comparator;
+		ssup->comparator = ssup_datum_uint64_cmp;
+		ssup->abbrev_converter = bark_wildcard_abbrev_convert;
+		ssup->abbrev_abort = bark_wildcard_abbrev_abort;
+	}
+
+	MemoryContextSwitchTo(oldcxt);
+	PG_RETURN_VOID();
+}
+
+/*
+ * bark_wildcard_cmp(a jsonb, b jsonb) -> int: the sign of procedure 2's
+ * authoritative comparator on two keys, for tests to check against
+ * sign(jsonb_cmp(a, b)) over every key the class forms, and to check that the
+ * abbreviated-key order agrees with that sign.
+ */
+Datum
+bark_wildcard_cmp(PG_FUNCTION_ARGS)
+{
+	SortSupportData ssup = {0};
+	Datum		a = PG_GETARG_DATUM(0);
+	Datum		b = PG_GETARG_DATUM(1);
+	int			c;
+
+	ssup.ssup_cxt = CurrentMemoryContext;
+	ssup.abbreviate = true;
+	DirectFunctionCall1(bark_wildcard_sortsupport, PointerGetDatum(&ssup));
+
+	/*
+	 * When abbreviation is in effect, check that the abbreviated order agrees
+	 * with the authoritative one; the sign returned is always the
+	 * authoritative comparator's so the test compares like with like.
+	 */
+	if (ssup.abbrev_converter != NULL)
+	{
+		Datum		aa = ssup.abbrev_converter(a, &ssup);
+		Datum		ab = ssup.abbrev_converter(b, &ssup);
+		int			ac = ssup_datum_uint64_cmp(aa, ab, &ssup);
+		int			fc = ssup.abbrev_full_comparator(a, b, &ssup);
+
+		/* Abbreviations may tie where the full keys differ, never disagree. */
+		if ((ac < 0 && fc > 0) || (ac > 0 && fc < 0))
+			elog(ERROR, "abbreviated key order disagrees with full comparator");
+		c = fc;
+	}
+	else
+		c = ssup.comparator(a, b, &ssup);
+
+	PG_RETURN_INT32((c > 0) - (c < 0));
+}
+
 
 /*
  * The comparison operators, which are the heap recheck: is some value the

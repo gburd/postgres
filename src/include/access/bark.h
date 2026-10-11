@@ -37,6 +37,7 @@
 #include "storage/condition_variable.h"
 #include "storage/lwlock.h"
 #include "utils/snapmgr.h"
+#include "utils/sortsupport.h"
 
 /*
  * BARK uses the same page size and block-addressing as the rest of the
@@ -1077,6 +1078,9 @@ BarkEntryGetPivotNAtts(IndexTupleData *itup)
 typedef struct BarkKeyColumn
 {
 	FmgrInfo	cmp;			/* support function 1 (3-way comparator) */
+	SortSupportData ssup;		/* support function 2 (sortsupport), if the
+								 * opfamily has one; ssup.comparator is NULL
+								 * when it does not */
 	Oid			collation;		/* collation to pass to the comparator */
 	bool		reverse;		/* DESC: invert the comparison result */
 	bool		nulls_first;	/* NULLs sort before non-NULLs */

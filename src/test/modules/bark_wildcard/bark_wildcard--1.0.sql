@@ -8,6 +8,20 @@ CREATE FUNCTION bark_wildcard_options(internal)
 RETURNS void
 AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE PARALLEL SAFE;
 
+-- Procedure 2: sortsupport over the class's [path, value] keys, with an
+-- abbreviated key (when the default collation is C), matching jsonb_cmp
+-- without its per-comparison iterator walks (see bark_wildcard.c).
+CREATE FUNCTION bark_wildcard_sortsupport(internal)
+RETURNS void
+AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE PARALLEL SAFE;
+
+-- Procedure 2's authoritative comparator sign on two keys, for tests to check
+-- against sign(jsonb_cmp(a, b)); it also verifies the abbreviated-key order
+-- agrees with that sign over every key the class forms.
+CREATE FUNCTION bark_wildcard_cmp(a jsonb, b jsonb)
+RETURNS int
+AS 'MODULE_PATHNAME' LANGUAGE C IMMUTABLE STRICT PARALLEL SAFE;
+
 -- Procedure 7, with markers: a document's [path, value] keys.
 CREATE FUNCTION bark_wildcard_extract_value(jsonb, internal, internal,
                                             internal, internal)
@@ -124,6 +138,7 @@ FOR TYPE jsonb USING bark FAMILY bark_jsonb_wildcard_ops AS
     OPERATOR 6 #? (jsonb, text),
     OPERATOR 7 |<| (jsonb, text) FOR ORDER BY jsonb_ops,
     FUNCTION 1 (jsonb, jsonb) jsonb_cmp(jsonb, jsonb),
+    FUNCTION 2 (jsonb, jsonb) bark_wildcard_sortsupport(internal),
     FUNCTION 4 (jsonb, jsonb) btequalimage(oid),
     FUNCTION 5 (jsonb, jsonb) bark_wildcard_options(internal),
     FUNCTION 7 (jsonb, jsonb) bark_wildcard_extract_value(jsonb, internal,
