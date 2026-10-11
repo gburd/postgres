@@ -67,6 +67,7 @@
 #include "access/relation.h"
 #include "access/reloptions.h"
 #include "access/stratnum.h"
+#include "catalog/pg_collation.h"
 #include "fmgr.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
@@ -77,6 +78,7 @@
 #include "utils/jsonb.h"
 #include "utils/numeric.h"
 #include "utils/rel.h"
+#include "utils/varlena.h"
 
 PG_MODULE_MAGIC;
 
@@ -125,7 +127,6 @@ typedef struct BarkWildcardProjection
 typedef struct BarkWildcardKeys
 {
 	const BarkWildcardProjection *proj;
-	const char *only;			/* if set, only the keys of this path */
 	Datum	   *keys;
 	int			nkeys;
 	int			maxkeys;
@@ -269,8 +270,7 @@ bark_wildcard_key(const char *path, JsonbValue *value)
 static void
 bark_wildcard_add_key(BarkWildcardKeys *k, const char *path, JsonbValue *value)
 {
-	if (!bark_wildcard_keeps(k->proj, path) ||
-		(k->only != NULL && strcmp(path, k->only) != 0))
+	if (!bark_wildcard_keeps(k->proj, path))
 		return;
 	if (k->nkeys == k->maxkeys)
 	{
@@ -310,8 +310,7 @@ bark_wildcard_marker(const char *path, int len)
 static void
 bark_wildcard_add_marker(BarkWildcardKeys *k, const char *path)
 {
-	if (!bark_wildcard_keeps_marker(k->proj, path) ||
-		(k->only != NULL && strcmp(path, k->only) != 0))
+	if (!bark_wildcard_keeps_marker(k->proj, path))
 		return;
 	if (k->nmarkers == k->maxmarkers)
 	{
@@ -427,9 +426,7 @@ bark_wildcard_walk(BarkWildcardKeys *k, const char *path,
 					bark_wildcard_add_marker(k, member);
 				break;
 			case WJB_VALUE:
-				/* a walk for one path enters only the members on its way */
-				if (k->only == NULL || bark_wildcard_path_under(k->only, member))
-					bark_wildcard_value(k, member, &v, false);
+				bark_wildcard_value(k, member, &v, false);
 				break;
 			case WJB_ELEM:
 				bark_wildcard_value(k, path, &v, inarray);
@@ -441,7 +438,7 @@ bark_wildcard_walk(BarkWildcardKeys *k, const char *path,
 }
 
 /*
- * The keys and markers of doc, into k, whose proj (and only) are set.  A
+ * The keys and markers of doc, into k, whose proj is set.  A
  * scalar document (a top-level number, say) has the empty path "".
  */
 static void
@@ -588,34 +585,213 @@ bark_wildcard_query(Jsonb *query, char **path, JsonbValue *value)
 }
 
 /*
+ * The values the class indexes at one path of a document, as procedure 7
+ * would find them, but found by descending to the path alone: each object
+ * on the way is searched for the path's next member name only, so the cost
+ * is that of the path, not of the document.
+ */
+typedef struct BarkWildcardFound
+{
+	char	  **segs;			/* the path's member names, unescaped */
+	int		   *seglens;
+	int			nsegs;
+	JsonbValue *values;
+	int			nvalues;
+	int			maxvalues;
+} BarkWildcardFound;
+
+static void
+bark_wildcard_found(BarkWildcardFound *f, JsonbValue *v)
+{
+	if (f->nvalues == f->maxvalues)
+	{
+		f->maxvalues = Max(8, f->maxvalues * 2);
+		f->values = f->values == NULL ?
+			palloc_array(JsonbValue, f->maxvalues) :
+			repalloc_array(f->values, JsonbValue, f->maxvalues);
+	}
+	f->values[f->nvalues++] = *v;
+}
+
+/*
+ * Split a path, written as bark_wildcard_child writes one, into its member
+ * names.  "" has none.  A backslash that escapes neither a dot nor a
+ * backslash never occurs in a path the class writes, so such a path has no
+ * values; return false for it.
+ */
+static bool
+bark_wildcard_split(BarkWildcardFound *f, const char *path)
+{
+	int			len = strlen(path);
+	char	   *seg = palloc(len + 1);
+
+	f->segs = palloc_array(char *, len + 1);
+	f->seglens = palloc_array(int, len + 1);
+	f->nsegs = 0;
+	if (len == 0)
+		return true;
+	f->segs[0] = seg;
+	f->seglens[0] = 0;
+	for (int i = 0; i < len; i++)
+	{
+		if (path[i] == '\\')
+		{
+			if (i + 1 == len || (path[i + 1] != '.' && path[i + 1] != '\\'))
+				return false;
+			seg[f->seglens[f->nsegs]++] = path[++i];
+		}
+		else if (path[i] == '.')
+		{
+			seg += f->seglens[f->nsegs++];
+			f->segs[f->nsegs] = seg;
+			f->seglens[f->nsegs] = 0;
+		}
+		else
+			seg[f->seglens[f->nsegs]++] = path[i];
+	}
+	f->nsegs++;
+	return true;
+}
+
+/*
+ * bark_wildcard_value's walk restricted to one path: v is a value at the
+ * path's first `depth` member names; `inarray` as there.  A member named ""
+ * of an object at path "" stays at "" (bark_wildcard_child), so at depth 0
+ * it is entered too, and never consumes a name.
+ */
+static void
+bark_wildcard_descend(BarkWildcardFound *f, int depth, JsonbValue *v,
+					  bool inarray)
+{
+	JsonbContainer *c;
+
+	check_stack_depth();
+	if (v->type != jbvBinary)
+	{
+		if (depth == f->nsegs)
+			bark_wildcard_found(f, v);
+		return;
+	}
+	c = v->val.binary.data;
+	if (JsonContainerIsObject(c))
+	{
+		JsonbValue	member;
+
+		if (JsonContainerSize(c) == 0)
+		{
+			if (depth == f->nsegs)
+				bark_wildcard_found(f, v);
+			return;
+		}
+		if (depth == 0 && getKeyJsonValueFromContainer(c, "", 0, &member))
+			bark_wildcard_descend(f, 0, &member, false);
+		if (depth < f->nsegs && (depth > 0 || f->seglens[0] > 0) &&
+			getKeyJsonValueFromContainer(c, f->segs[depth], f->seglens[depth],
+										 &member))
+			bark_wildcard_descend(f, depth + 1, &member, false);
+		return;
+	}
+	/* an array: a nested one, or an empty one, is a value */
+	if (inarray || JsonContainerSize(c) == 0)
+	{
+		if (depth == f->nsegs)
+			bark_wildcard_found(f, v);
+		return;
+	}
+	{
+		JsonbIterator *it = JsonbIteratorInit(c);
+		JsonbValue	elem;
+		JsonbIteratorToken tok;
+
+		while ((tok = JsonbIteratorNext(&it, &elem, true)) != WJB_DONE)
+			if (tok == WJB_ELEM)
+				bark_wildcard_descend(f, depth, &elem, true);
+	}
+}
+
+/* The values the class indexes at `path` of doc, into f. */
+static void
+bark_wildcard_find(BarkWildcardFound *f, Jsonb *doc, const char *path)
+{
+	JsonbValue	v;
+
+	memset(f, 0, sizeof(*f));
+	if (!bark_wildcard_split(f, path))
+		return;
+	if (JB_ROOT_IS_SCALAR(doc))
+	{
+		if (!JsonbExtractScalar(&doc->root, &v))
+			elog(ERROR, "could not extract a scalar from a scalar jsonb");
+	}
+	else
+	{
+		v.type = jbvBinary;
+		v.val.binary.data = &doc->root;
+		v.val.binary.len = VARSIZE(doc) - VARHDRSZ;
+	}
+	bark_wildcard_descend(f, 0, &v, false);
+}
+
+/*
+ * Compare two values found at one path as jsonb_cmp compares their keys
+ * [path, value]: by type bracket, then within it as jsonb compares scalars
+ * (strings in the default collation, as jsonb_cmp does) or containers.
+ */
+static int
+bark_wildcard_value_cmp(JsonbValue *a, JsonbValue *b)
+{
+	int			ba = bark_wildcard_bracket(a);
+	int			bb = bark_wildcard_bracket(b);
+
+	if (ba != bb)
+		return ba > bb ? 1 : -1;
+	switch (a->type)
+	{
+		case jbvNull:
+			return 0;
+		case jbvString:
+			return varstr_cmp(a->val.string.val, a->val.string.len,
+							  b->val.string.val, b->val.string.len,
+							  DEFAULT_COLLATION_OID);
+		case jbvNumeric:
+			return DatumGetInt32(DirectFunctionCall2(numeric_cmp,
+													 NumericGetDatum(a->val.numeric),
+													 NumericGetDatum(b->val.numeric)));
+		case jbvBool:
+			return (int) a->val.boolean - (int) b->val.boolean;
+		case jbvBinary:
+			return compareJsonbContainers(a->val.binary.data, b->val.binary.data);
+		default:
+			elog(ERROR, "unexpected jsonb value type %d", a->type);
+	}
+	return 0;					/* keep compiler quiet */
+}
+
+/*
  * The comparison operators, which are the heap recheck: is some value the
  * class indexes at the query's path in the query's type bracket, and does
- * its key [path, value] compare with the query, in jsonb_cmp's order, as
- * the strategy asks?  The keys are compared rather than the values so that
- * the operators and the index agree on the order by construction.
+ * it compare with the query's value as the strategy asks?  Within a path,
+ * keys [path, value] order as their values (bark_wildcard_value_cmp), so
+ * the operators and the index agree on the order.
  */
 static bool
 bark_wildcard_compare(Jsonb *doc, Jsonb *query, StrategyNumber strategy)
 {
-	static const BarkWildcardProjection all = {0};
-	BarkWildcardKeys k = {0};
+	BarkWildcardFound f;
 	JsonbValue	qvalue;
 	char	   *path;
 	int			bracket;
 
 	bark_wildcard_query(query, &path, &qvalue);
 	bracket = bark_wildcard_bracket(&qvalue);
-	k.proj = &all;
-	k.only = path;
-	bark_wildcard_doc(&k, doc);
-	for (int i = 0; i < k.nkeys; i++)
+	bark_wildcard_find(&f, doc, path);
+	for (int i = 0; i < f.nvalues; i++)
 	{
-		Jsonb	   *key = DatumGetJsonbP(k.keys[i]);
 		int			c;
 
-		if (bark_wildcard_bracket(getIthJsonbValueFromContainer(&key->root, 1)) != bracket)
+		if (bark_wildcard_bracket(&f.values[i]) != bracket)
 			continue;
-		c = compareJsonbContainers(&key->root, &query->root);
+		c = bark_wildcard_value_cmp(&f.values[i], &qvalue);
 		switch (strategy)
 		{
 			case BARK_WC_LT:
@@ -685,13 +861,11 @@ bark_wildcard_gt(PG_FUNCTION_ARGS)
 Datum
 bark_wildcard_exists(PG_FUNCTION_ARGS)
 {
-	static const BarkWildcardProjection all = {0};
-	BarkWildcardKeys k = {0};
+	BarkWildcardFound f;
 
-	k.proj = &all;
-	k.only = text_to_cstring(PG_GETARG_TEXT_PP(1));
-	bark_wildcard_doc(&k, PG_GETARG_JSONB_P(0));
-	PG_RETURN_BOOL(k.nkeys > 0);
+	bark_wildcard_find(&f, PG_GETARG_JSONB_P(0),
+					   text_to_cstring(PG_GETARG_TEXT_PP(1)));
+	PG_RETURN_BOOL(f.nvalues > 0);
 }
 
 /*
@@ -701,23 +875,17 @@ bark_wildcard_exists(PG_FUNCTION_ARGS)
 Datum
 bark_wildcard_least(PG_FUNCTION_ARGS)
 {
-	static const BarkWildcardProjection all = {0};
-	BarkWildcardKeys k = {0};
-	Jsonb	   *least = NULL;
+	char	   *path = text_to_cstring(PG_GETARG_TEXT_PP(1));
+	BarkWildcardFound f;
+	JsonbValue *least = NULL;
 
-	k.proj = &all;
-	k.only = text_to_cstring(PG_GETARG_TEXT_PP(1));
-	bark_wildcard_doc(&k, PG_GETARG_JSONB_P(0));
-	for (int i = 0; i < k.nkeys; i++)
-	{
-		Jsonb	   *key = DatumGetJsonbP(k.keys[i]);
-
-		if (least == NULL || compareJsonbContainers(&key->root, &least->root) < 0)
-			least = key;
-	}
+	bark_wildcard_find(&f, PG_GETARG_JSONB_P(0), path);
+	for (int i = 0; i < f.nvalues; i++)
+		if (least == NULL || bark_wildcard_value_cmp(&f.values[i], least) < 0)
+			least = &f.values[i];
 	if (least == NULL)
 		PG_RETURN_NULL();
-	PG_RETURN_JSONB_P(least);
+	PG_RETURN_DATUM(bark_wildcard_key(path, least));
 }
 
 /*
