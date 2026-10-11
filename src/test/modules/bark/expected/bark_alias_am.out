@@ -91,9 +91,13 @@ BEGIN
   PERFORM set_config('enable_bitmapscan', 'off', true);
   EXECUTE digest INTO want;
   PERFORM set_config('enable_seqscan', 'off', true);
-  PERFORM set_config(CASE node WHEN 'Index Only Scan' THEN 'enable_indexonlyscan'
-                     WHEN 'Bitmap Index Scan' THEN 'enable_bitmapscan'
+  -- enable_indexscan gates index-only scans too; enable_indexonlyscan
+  -- alone would leave only the bitmap scan.
+  PERFORM set_config(CASE node WHEN 'Bitmap Index Scan' THEN 'enable_bitmapscan'
                      ELSE 'enable_indexscan' END, 'on', true);
+  IF node = 'Index Only Scan' THEN
+    PERFORM set_config('enable_indexonlyscan', 'on', true);
+  END IF;
   FOR l IN EXECUTE 'EXPLAIN (COSTS OFF) ' || q LOOP
     plan := plan || l || E'\n';
   END LOOP;
