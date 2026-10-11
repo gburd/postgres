@@ -509,7 +509,8 @@ sibling, locked before the leaf is released, when it belongs there, else by
 a new descent with no lock held.  A split is always followed by a new
 descent.  Each entry goes through bark_insert_key, the code a single entry
 always took (coalescing, bottom-up deletion, the single-value cut, merging,
-the split), and its own WAL record; there is no multi-key record.  A crash
+the split), and its own WAL record, except that a run of the row's keys that go on
+one leaf as plain new entries is logged as one INSERT_MULTI record.  A crash
 between two entries of a row leaves entries of an uncommitted row, which
 VACUUM removes.
 
@@ -1307,6 +1308,12 @@ records:
       OVERSIZED entry's overflow chain is written first, in its own
       XLOG_BARK_OVERFLOW records.  Redo adds the entry with PageAddItem under an exclusive lock.
 
+  XLOG_BARK_INSERT_MULTI (bark_insert_multi, from bark_insert_entries)
+      One leaf: several new entries of one multikey row, coded, and their
+      offsets, each counting the entries before it, so redo adds them in
+      order as the primary did.  bark_plan_multi picks the run: entries
+      that are not oversized, need no unique check, belong on the leaf,
+      coalesce into nothing and fit.  A run of one is an INSERT_LEAF.
   XLOG_BARK_INSERT_UPPER (bark_insert_entry, from bark_insert_parent)
       Two pages: the parent, with the downlink to the right half of a split
       and its offset, and the left half, whose BARK_INCOMPLETE_SPLIT flag is
