@@ -55,6 +55,7 @@
 #include "access/skey.h"
 #include "catalog/pg_type.h"
 #include "common/int.h"
+#include "lib/binaryheap.h"
 #include "lib/qunique.h"
 #include "miscadmin.h"
 #include "nodes/tidbitmap.h"
@@ -3973,11 +3974,27 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
  * consistent (11), decides it.  That needs every entry of a row before the
  * answer, so these scans are bitmap scans only.
  *
- * This first version reads each boundary's TIDs into one array, sorts it by
- * TID, and calls the consistent function once per TID; several keys on the
- * column are intersected and a ScalarArrayOp's elements unioned, by TID.
- * A row met through a NULL entry comes back with a recheck, since that
- * entry stands for a NULL value, an empty value and a NULL element alike.
+ * Each boundary is read into a stream of distinct TIDs in TID order.  A
+ * point boundary of a column that leads the index already comes out that
+ * way (with H1 a key's entries, and the members of its LIST and POSTING
+ * entries, ascend by TID); any other boundary (a partial-match range, every
+ * key, a column after another key column) is sorted once.  The streams are
+ * merged as ginget.c merges posting lists: a binary heap on the streams'
+ * next TIDs visits the TIDs in order, gathering a TID's presence vector from
+ * every stream that holds it.  When triConsistent says that no row lacking
+ * all of some streams can match (a pure AND such as @>), only those
+ * required streams feed the heap, rarest first, and the others are only
+ * searched forward for each of their TIDs (GIN's required and additional
+ * entries), so a rare key with a frequent one costs about as many
+ * consistent calls as the rare key has rows.  The frequent key's entries
+ * are still read: a stream is a boundary read to its end, since the scan
+ * has one position, so the skip saves the merge and the consistent calls,
+ * not the leaf pages.
+ *
+ * Several keys on the column are intersected and a ScalarArrayOp's
+ * elements unioned, by TID.  A row met through a NULL entry comes back with
+ * a recheck, since that entry stands for a NULL value, an empty value and a
+ * NULL element alike.
  */
 typedef struct BarkGinItem
 {
@@ -3985,6 +4002,14 @@ typedef struct BarkGinItem
 	int			entry;			/* the query key, or nentries for a hidden one */
 	bool		recheck;
 } BarkGinItem;
+
+/* One boundary's TIDs, distinct and ascending, and the merge's place in it. */
+typedef struct BarkGinStream
+{
+	BarkGinItem *items;
+	int			nitems;
+	int			pos;			/* the next item */
+} BarkGinStream;
 
 static int
 bark_gin_item_cmp(const void *a, const void *b)
@@ -3998,16 +4023,43 @@ bark_gin_item_cmp(const void *a, const void *b)
 	return pg_cmp_s32(x->entry, y->entry);
 }
 
+/* binaryheap comparator: the stream with the smallest next TID on top. */
+static int
+bark_gin_stream_cmp(Datum a, Datum b, void *arg)
+{
+	BarkGinStream *streams = (BarkGinStream *) arg;
+	BarkGinStream *x = &streams[DatumGetInt32(a)];
+	BarkGinStream *y = &streams[DatumGetInt32(b)];
+
+	return ItemPointerCompare(&y->items[y->pos].tid, &x->items[x->pos].tid);
+}
+
+/* qsort_arg comparator: stream indexes by the streams' sizes. */
+static int
+bark_gin_stream_size_cmp(const void *a, const void *b, void *arg)
+{
+	BarkGinStream *streams = (BarkGinStream *) arg;
+
+	return pg_cmp_s32(streams[*(const int *) a].nitems,
+					  streams[*(const int *) b].nitems);
+}
+
 /*
- * Read boundary b's entries, with the scan's other keys as filters, and
- * append one item per heap TID, for query key entry, to *items.
+ * Read boundary b's entries, with the scan's other keys as filters, into
+ * stream s, one item per heap TID for query key entry: sorted by TID, and
+ * a TID met twice (a row with several keys in the boundary) kept once, with
+ * a recheck if any of its entries asked for one.
  */
 static void
 bark_mk_gin_read(IndexScanDesc scan, const BarkMkBoundary *b, int entry,
-				 BarkGinItem **items, int *nitems, int *maxitems)
+				 BarkGinStream *s)
 {
 	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	int			maxitems = 0;
+	bool		sorted = true;
+	int			n;
 
+	memset(s, 0, sizeof(*s));
 	so->mk->bounds[0] = *b;
 	so->mk->partialpast = false;
 	BarkScanPosUnpinIfPinned(so->currPos);
@@ -4018,18 +4070,75 @@ bark_mk_gin_read(IndexScanDesc scan, const BarkMkBoundary *b, int entry,
 	{
 		for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
 		{
-			if (*nitems >= *maxitems)
+			BarkGinItem *it;
+
+			if (s->nitems >= maxitems)
 			{
-				*maxitems = Max(*maxitems * 2, 256);
-				*items = *items == NULL ? palloc_array(BarkGinItem, *maxitems) :
-					repalloc_array(*items, BarkGinItem, *maxitems);
+				maxitems = Max(maxitems * 2, 256);
+				s->items = s->items == NULL ?
+					palloc_array(BarkGinItem, maxitems) :
+					repalloc_array(s->items, BarkGinItem, maxitems);
 			}
-			(*items)[*nitems].tid = so->currPos.items[i].heapTid;
-			(*items)[*nitems].entry = entry;
-			(*items)[*nitems].recheck = so->currPos.items[i].recheck;
-			(*nitems)++;
+			it = &s->items[s->nitems];
+			it->tid = so->currPos.items[i].heapTid;
+			it->entry = entry;
+			it->recheck = so->currPos.items[i].recheck;
+			if (s->nitems > 0 &&
+				ItemPointerCompare(&it->tid, &it[-1].tid) <= 0)
+				sorted = false;
+			s->nitems++;
 		}
 	} while (bark_steppage(scan, ForwardScanDirection));
+
+	if (sorted)
+		return;
+	qsort(s->items, s->nitems, sizeof(BarkGinItem), bark_gin_item_cmp);
+	n = 1;
+	for (int i = 1; i < s->nitems; i++)
+	{
+		if (ItemPointerEquals(&s->items[i].tid, &s->items[n - 1].tid))
+			s->items[n - 1].recheck |= s->items[i].recheck;
+		else
+			s->items[n++] = s->items[i];
+	}
+	s->nitems = n;
+}
+
+/*
+ * Move stream s on to its first TID at or after tid: an exponential search
+ * forward from where it is, then a binary search.  Is that TID tid?
+ */
+static bool
+bark_gin_stream_seek(BarkGinStream *s, ItemPointer tid)
+{
+	int			lo = s->pos;
+	int			hi;
+	int			step = 1;
+
+	if (lo >= s->nitems)
+		return false;
+	if (ItemPointerCompare(&s->items[lo].tid, tid) < 0)
+	{
+		/* items[lo] < tid; find hi with items[hi] >= tid, or the end */
+		hi = lo + 1;
+		while (hi < s->nitems && ItemPointerCompare(&s->items[hi].tid, tid) < 0)
+		{
+			lo = hi;
+			step *= 2;
+			hi = Min(lo + step, s->nitems);
+		}
+		while (hi - lo > 1)
+		{
+			int			mid = lo + (hi - lo) / 2;
+
+			if (ItemPointerCompare(&s->items[mid].tid, tid) < 0)
+				lo = mid;
+			else
+				hi = mid;
+		}
+		s->pos = hi;
+	}
+	return s->pos < s->nitems && ItemPointerEquals(&s->items[s->pos].tid, tid);
 }
 
 /*
@@ -4040,9 +4149,6 @@ static int
 bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out)
 {
 	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
-	BarkGinItem *items = NULL;
-	int			nitems = 0;
-	int			maxitems = 0;
 	int32		nentries = 0;
 	Datum	   *qkeys = NULL;
 	bool	   *pmatch = NULL;
@@ -4051,6 +4157,12 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out)
 	int32		mode = GIN_SEARCH_MODE_DEFAULT;
 	bool		nulltest = (sk->sk_flags & (SK_SEARCHNULL | SK_SEARCHNOTNULL)) != 0;
 	BarkMkBoundary b;
+	BarkGinStream *streams;
+	int			nstreams = 0;
+	int		   *order;
+	int			nrequired;
+	int			maxout = 0;
+	binaryheap *heap;
 	bool	   *check;
 	GinTernaryValue *tcheck;
 	int			nout = 0;
@@ -4078,6 +4190,8 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out)
 			nullFlags = palloc0_array(bool, nentries);
 	}
 
+	/* Streams 0 .. nentries - 1 are the query keys', then the hidden ones. */
+	streams = palloc_array(BarkGinStream, nentries + 2);
 	for (int i = 0; i < nentries; i++)
 	{
 		memset(&b, 0, sizeof(b));
@@ -4098,7 +4212,7 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out)
 			b.hasstart = b.hasend = b.point = true;
 			b.start = b.end = qkeys[i];
 		}
-		bark_mk_gin_read(scan, &b, i, &items, &nitems, &maxitems);
+		bark_mk_gin_read(scan, &b, i, &streams[nstreams++]);
 	}
 
 	/* The hidden entries: the NULL entries, and for ALL every key. */
@@ -4106,33 +4220,102 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out)
 	{
 		memset(&b, 0, sizeof(b));
 		b.nulls = b.point = b.recheck = true;
-		bark_mk_gin_read(scan, &b, nentries, &items, &nitems, &maxitems);
+		bark_mk_gin_read(scan, &b, nentries, &streams[nstreams++]);
 		if (mode == GIN_SEARCH_MODE_ALL || (sk->sk_flags & SK_SEARCHNOTNULL))
 		{
 			memset(&b, 0, sizeof(b));
 			b.recheck = nulltest;
-			bark_mk_gin_read(scan, &b, nentries, &items, &nitems, &maxitems);
+			bark_mk_gin_read(scan, &b, nentries, &streams[nstreams++]);
 		}
 	}
-	if (nitems == 0)
-		return 0;
-	qsort(items, nitems, sizeof(BarkGinItem), bark_gin_item_cmp);
 
-	check = palloc_array(bool, nentries + 1);
+	/*
+	 * Which streams are required: as startScanKey, take them rarest first
+	 * until triConsistent says that a row in none of them cannot match, with
+	 * every other key unknown.  A stream's size is exact here, where GIN has
+	 * to predict it.  Every stream is required without triConsistent, and
+	 * with hidden streams, whose rows consistent may accept with no key
+	 * present at all.
+	 */
+	order = palloc_array(int, nstreams);
+	for (int i = 0; i < nstreams; i++)
+		order[i] = i;
+	nrequired = nstreams;
+	check = palloc0_array(bool, nentries + 1);
 	tcheck = palloc_array(GinTernaryValue, nentries + 1);
-	*out = palloc_array(BarkGinItem, nitems);
-	for (int i = 0; i < nitems;)
+	if (!nulltest && mk->gintriconsistent != NULL && nstreams == nentries &&
+		nentries > 1)
 	{
-		int			j = i;
+		qsort_arg(order, nstreams, sizeof(int), bark_gin_stream_size_cmp,
+				  streams);
+		for (int i = 0; i < nentries; i++)
+			tcheck[i] = GIN_MAYBE;
+		for (nrequired = 1; nrequired < nstreams; nrequired++)
+		{
+			tcheck[order[nrequired - 1]] = GIN_FALSE;
+			if (DatumGetGinTernaryValue(FunctionCall7Coll(mk->gintriconsistent,
+														  mk->col->collation,
+														  PointerGetDatum(tcheck),
+														  UInt16GetDatum(sk->sk_strategy),
+														  query,
+														  Int32GetDatum(nentries),
+														  PointerGetDatum(extra),
+														  PointerGetDatum(qkeys),
+														  PointerGetDatum(nullFlags))) == GIN_FALSE)
+				break;
+			CHECK_FOR_INTERRUPTS();
+		}
+	}
+
+	heap = binaryheap_allocate(nrequired, bark_gin_stream_cmp, streams);
+	for (int i = 0; i < nrequired; i++)
+	{
+		if (streams[order[i]].nitems > 0)
+			binaryheap_add_unordered(heap, Int32GetDatum(order[i]));
+		maxout += streams[order[i]].nitems;
+	}
+	if (binaryheap_empty(heap))
+		return 0;
+	binaryheap_build(heap);
+	*out = palloc_array(BarkGinItem, maxout);
+
+	while (!binaryheap_empty(heap))
+	{
+		BarkGinStream *top = &streams[DatumGetInt32(binaryheap_first(heap))];
+		ItemPointerData tid = top->items[top->pos].tid;
 		bool		recheck = false;
 		bool		match;
 
 		memset(check, 0, sizeof(bool) * (nentries + 1));
-		for (; j < nitems && ItemPointerEquals(&items[j].tid, &items[i].tid); j++)
+
+		/* Every required stream at tid, each moved past it. */
+		do
 		{
-			check[items[j].entry] = true;
-			recheck |= items[j].recheck;
+			BarkGinItem *it = &top->items[top->pos++];
+
+			check[it->entry] = true;
+			recheck |= it->recheck;
+			if (top->pos < top->nitems)
+				binaryheap_replace_first(heap, binaryheap_first(heap));
+			else
+				binaryheap_remove_first(heap);
+			if (binaryheap_empty(heap))
+				break;
+			top = &streams[DatumGetInt32(binaryheap_first(heap))];
+		} while (ItemPointerEquals(&top->items[top->pos].tid, &tid));
+
+		/* The others only where a required stream has a row. */
+		for (int i = nrequired; i < nstreams; i++)
+		{
+			BarkGinStream *s = &streams[order[i]];
+
+			if (bark_gin_stream_seek(s, &tid))
+			{
+				check[s->items[s->pos].entry] = true;
+				recheck |= s->items[s->pos].recheck;
+			}
 		}
+
 		if (nulltest)
 			match = true;
 		else if (mk->gintriconsistent != NULL)
@@ -4172,12 +4355,12 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out)
 		}
 		if (match)
 		{
-			(*out)[nout].tid = items[i].tid;
+			(*out)[nout].tid = tid;
 			(*out)[nout].entry = 0;
 			(*out)[nout].recheck = recheck;
 			nout++;
 		}
-		i = j;
+		CHECK_FOR_INTERRUPTS();
 	}
 	return nout;
 }
