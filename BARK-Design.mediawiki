@@ -1831,6 +1831,22 @@ What that needs from M1, and where M1 provides it:
   module's <code>doc |&lt;| 'path'</code> returns the smallest key
   [path, value], FOR ORDER BY jsonb_ops; a path the projection drops is
   refused at scan start. The range's entries are read twice.''
+* '''Qual selectivity.''' ''As built (WSEL): the test module's wildcard
+  operators (<code>#= #&lt; #&lt;= #&gt; #&gt;= #?</code>) estimate their
+  selectivity with <code>bark_wildcard_sel</code>, not the generic
+  <code>matchingsel</code>. <code>matchingsel</code> runs the operator over
+  every row of the column's statistics sample; a jsonb column's MCV and
+  histogram describe whole documents, not the per-path values these
+  operators test, so the sample buys no accuracy, only cost -- planning a
+  <code>#=</code> cost 0.25 to 0.68 ms against GIN's 0.04 to 0.08
+  (BENCHMARK-M5b.md), almost all of it the per-sample-row call, and it grew
+  with <code>default_statistics_target</code>. <code>bark_wildcard_sel</code>
+  returns a fixed selectivity per strategy -- equality the planner's
+  <code>DEFAULT_EQ_SEL</code>, a range <code>DEFAULT_INEQ_SEL</code>, path
+  existence <code>DEFAULT_MATCHING_SEL</code>, each scaled by the column's
+  NULL fraction -- without touching the sample. The estimate is coarse but
+  drives the index-vs-seqscan choice the same way, and planning no longer
+  scales with the statistics target.''
 
 Nothing in this list changes the on-disk format.
 

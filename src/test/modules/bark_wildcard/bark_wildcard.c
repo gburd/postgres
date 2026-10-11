@@ -71,16 +71,26 @@
 #include "postgres.h"
 
 #include "access/bark.h"
+#include "access/htup_details.h"
 #include "access/relation.h"
 #include "access/reloptions.h"
 #include "access/stratnum.h"
+#include "catalog/pg_am.h"
+#include "catalog/pg_amop.h"
 #include "catalog/pg_collation.h"
+#include "catalog/pg_statistic.h"
+#include "commands/defrem.h"
 #include "fmgr.h"
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "funcapi.h"
+#include "nodes/primnodes.h"
 #include "storage/bufmgr.h"
 #include "utils/builtins.h"
+#include "utils/catcache.h"
+#include "utils/lsyscache.h"
+#include "utils/selfuncs.h"
+#include "utils/syscache.h"
 #include "utils/tuplestore.h"
 #include "utils/jsonb.h"
 #include "utils/numeric.h"
@@ -104,6 +114,7 @@ PG_FUNCTION_INFO_V1(bark_wildcard_recheck);
 PG_FUNCTION_INFO_V1(bark_wildcard_boundaries);
 PG_FUNCTION_INFO_V1(bark_wildcard_in_boundaries);
 PG_FUNCTION_INFO_V1(bark_wildcard_entries);
+PG_FUNCTION_INFO_V1(bark_wildcard_sel);
 
 /* The operators' strategy numbers: btree's for the comparisons. */
 #define BARK_WC_LT		BTLessStrategyNumber	/* #< */
@@ -1378,4 +1389,126 @@ bark_wildcard_entries(PG_FUNCTION_ARGS)
 	UnlockReleaseBuffer(buf);
 	relation_close(rel, AccessShareLock);
 	return (Datum) 0;
+}
+
+/*
+ * The strategy number an operator holds in the wildcard operator family
+ * (BARK_WC_LT .. BARK_WC_EXISTS), or 0 if it holds none -- which only
+ * happens if the estimator is attached to the wrong operator.
+ */
+static StrategyNumber
+bark_wildcard_strategy(Oid operator)
+{
+	Oid			barkam = get_index_am_oid("bark", false);
+	CatCList   *catlist;
+	StrategyNumber strategy = 0;
+
+	catlist = SearchSysCacheList1(AMOPOPID, ObjectIdGetDatum(operator));
+	for (int i = 0; i < catlist->n_members; i++)
+	{
+		Form_pg_amop aform = (Form_pg_amop) GETSTRUCT(&catlist->members[i]->tuple);
+
+		if (aform->amopmethod == barkam)
+		{
+			strategy = aform->amopstrategy;
+			break;
+		}
+	}
+	ReleaseSysCacheList(catlist);
+	return strategy;
+}
+
+/*
+ * bark_wildcard_sel(root, operator, args, varRelid) -> float8: the
+ * restriction selectivity of a wildcard operator, registered as each
+ * operator's RESTRICT in place of matchingsel.
+ *
+ * matchingsel estimates by applying the operator to every row of the
+ * column's statistics sample (generic_restriction_selectivity).  That is
+ * sound for an operator the planner has standard statistics for, but a
+ * jsonb column's MCV and histogram describe whole documents, not the
+ * per-path values these operators test, so the sample buys no accuracy
+ * here; it only runs the operator -- about ten times the cost of jsonb's
+ * own containment per document -- once per sample row, and that cost grows
+ * with default_statistics_target.  BENCHMARK-M5b.md measured a #= planning
+ * at 0.25 to 0.68 ms against GIN's 0.04 to 0.08, almost all of it this
+ * per-row cost.
+ *
+ * So estimate without touching the sample: a fixed selectivity per
+ * strategy, equality the most selective, a range the least, path existence
+ * in between, each the default the planner uses for its kind, scaled down
+ * by the column's NULL fraction.  The estimate is coarse, but these
+ * queries drive the index-vs-seqscan choice the same way the sample-based
+ * estimate did (equality and existence stay selective enough for an index
+ * or bitmap scan, a range stays below a seqscan's cost), and planning no
+ * longer scans the sample.
+ */
+Datum
+bark_wildcard_sel(PG_FUNCTION_ARGS)
+{
+	PlannerInfo *root = (PlannerInfo *) PG_GETARG_POINTER(0);
+	Oid			operator = PG_GETARG_OID(1);
+	List	   *args = (List *) PG_GETARG_POINTER(2);
+	int			varRelid = PG_GETARG_INT32(3);
+	VariableStatData vardata;
+	Node	   *other;
+	bool		varonleft;
+	double		selec;
+	double		nullfrac = 0.0;
+	StrategyNumber strategy;
+
+	/*
+	 * Not "variable OP constant" (or the mirror): fall back to the generic
+	 * default, as matchingsel does for such an expression.
+	 */
+	if (!get_restriction_variable(root, args, varRelid,
+								  &vardata, &other, &varonleft))
+		PG_RETURN_FLOAT8(DEFAULT_MATCHING_SEL);
+
+	/* A NULL constant: the operators are strict, so nothing matches. */
+	if (IsA(other, Const) && ((Const *) other)->constisnull)
+	{
+		ReleaseVariableStats(vardata);
+		PG_RETURN_FLOAT8(0.0);
+	}
+
+	/* A non-constant right operand: nothing to key an estimate on. */
+	if (!IsA(other, Const))
+	{
+		ReleaseVariableStats(vardata);
+		PG_RETURN_FLOAT8(DEFAULT_MATCHING_SEL);
+	}
+
+	/* The documents that are NULL match nothing, so discount them. */
+	if (HeapTupleIsValid(vardata.statsTuple))
+		nullfrac = ((Form_pg_statistic) GETSTRUCT(vardata.statsTuple))->stanullfrac;
+
+	strategy = bark_wildcard_strategy(operator);
+	switch (strategy)
+	{
+		case BARK_WC_EQ:
+			/* Equality on a path's value: as selective as a scalar =. */
+			selec = DEFAULT_EQ_SEL;
+			break;
+		case BARK_WC_LT:
+		case BARK_WC_LE:
+		case BARK_WC_GE:
+		case BARK_WC_GT:
+			/* A range on a path's value: as a scalar inequality. */
+			selec = DEFAULT_INEQ_SEL;
+			break;
+		case BARK_WC_EXISTS:
+			/* Path existence: a middling fraction of documents. */
+			selec = DEFAULT_MATCHING_SEL;
+			break;
+		default:
+			selec = DEFAULT_MATCHING_SEL;
+			break;
+	}
+
+	selec *= 1.0 - nullfrac;
+	ReleaseVariableStats(vardata);
+
+	CLAMP_PROBABILITY(selec);
+	PG_RETURN_FLOAT8((float8) selec);
 }
