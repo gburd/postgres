@@ -36,7 +36,6 @@
 #include "access/tableam_indexscan.h"
 #include "catalog/index.h"
 #include "catalog/namespace.h"
-#include "catalog/pg_am_d.h"
 #include "catalog/pg_type.h"
 #include "common/int.h"
 #include "executor/executor.h"
@@ -666,8 +665,7 @@ open_bark_index(text *relname)
 	RangeVar   *rv = makeRangeVarFromNameList(textToQualifiedNameList(relname));
 	Relation	rel = relation_openrv(rv, AccessShareLock);
 
-	if (rel->rd_rel->relkind != RELKIND_INDEX ||
-		rel->rd_rel->relam != BARK_AM_OID)
+	if (!bark_relation_is_bark(rel))
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("\"%s\" is not a BARK index",

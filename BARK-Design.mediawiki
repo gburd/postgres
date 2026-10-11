@@ -1101,6 +1101,19 @@ column is extracted exactly when its class's family belongs to BARK and has
 support procedure 7. Fixed columns use btree families, as every BARK column
 does today.
 
+'''Aliases.''' "Belongs to BARK" means any access method whose handler is
+barkhandler, not only the one named bark: an extension may run BARK under a
+name of its own (<code>CREATE ACCESS METHOD documentdb_bark TYPE INDEX
+HANDLER barkhandler</code>, which DocumentDB's alternate index AM hook
+needs, since it creates indexes <code>USING documentdb_<am_name></code>). So
+BARK tests a family for not being btree's (bark_opfamily_is_own; with
+ambtreeopfamilies those are the only foreign families a BARK class can name)
+and a relation for its handler (bark_relation_is_bark). Testing for
+BARK_AM_OID, as M1 first did, read an alias's multikey family as a btree
+family: its strategies taken for btree's, its keys never extracted, and an
+assertion failure in an assert build. amcheck compares handlers too;
+pg_amcheck still selects indexes by access method OID.
+
 '''Support procedures.''' Numbered after btree's 1-6, so the scalar classes
 keep btree's numbering. <code>amsupport</code> becomes 14, not 103 as in
 pg_extended_btree: relcache allocates <code>amsupport</code> FmgrInfo per

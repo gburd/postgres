@@ -738,6 +738,20 @@ BARK family (except COMPARE_OVERLAP through procedure 15, above), so the planner
 class's operators, and plancat gives such a column InvalidOid as its sort
 family, where build_index_pathkeys stops.
 
+A family is BARK's own when its access method is not btree
+(bark_opfamily_is_own), not when it is BARK_AM_OID: CREATE ACCESS METHOD x
+TYPE INDEX HANDLER barkhandler runs this code under another OID, and its
+families must be read as BARK's (an alias's multikey family read as a btree
+family would have its strategies taken for btree's and its keys never
+extracted).  The test is sound because the callers pass only a family of a
+BARK index or class, and with ambtreeopfamilies the only foreign families
+such a class can name are btree's.  Likewise code that reads a relation as
+a BARK index (pageinspect, pgstattuple, the reloption accessors, the
+multikey test modules) asks bark_relation_is_bark, which tests the
+relation's handler, and amcheck's index_checkable compares the index's
+handler with the expected access method's.  pg_amcheck selects indexes by
+access method OID in SQL and so does not check an alias's indexes.
+
 CREATE INDEX refuses a column whose class is in a family of BARK's own but
 has no procedure 7 (bark_check_multikey_index).  Such a class is not
 multikey, so the scan would read its operators' strategy numbers as btree's
