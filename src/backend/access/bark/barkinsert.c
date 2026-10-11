@@ -2794,7 +2794,7 @@ bark_index_has_marker(Relation index, Datum key)
 	Buffer		buf;
 	bool		found = false;
 
-	if (index->rd_rel->relam != BARK_AM_OID ||
+	if (!bark_relation_is_bark(index) ||
 		bark_index_extracted_column(index) == 0)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
