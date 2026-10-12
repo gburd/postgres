@@ -998,10 +998,11 @@ SELECT i, shape, count(*) AS entries, sum(ntids) AS tids
  wc_num_doc  | LIST    |       4 | 1000
  wc_num_doc  | POSTING |       1 |  800
  wc_num_doc  | SINGLE  |       1 |    1
- wc_numb_doc | POSTING |       5 | 1800
+ wc_numb_doc | LIST    |       8 |  856
+ wc_numb_doc | POSTING |       2 |  944
  wc_numb_doc | PREFIX  |       1 |     
  wc_numb_doc | SINGLE  |       1 |    1
-(6 rows)
+(7 rows)
 
 -- An ordered scan reads each row once, nondecreasing, with |<|'s value.
 SET enable_seqscan = off;

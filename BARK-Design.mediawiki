@@ -923,6 +923,19 @@ BENCHMARK-2026-10b.md, at 5d4e2883b10)
   ''(done: f0b25ae677f)''
 * '''V5''' -- decide a POSTING entry's shape before building its sbm, which
   brought serial VACUUM to parity. ''(done: 54b9ed6c092)''
+* '''V6''' -- delta+varbyte coded LIST entries, GIN's posting-list coding.
+  ''As built: a coded LIST is the 0x1000 status bit on a LIST (free on leaf
+  entries), a header with the stream length and the last TID, the first TID
+  raw, then varbyte deltas of block << 11 | offset; the entry takes the
+  smallest of POSTING, coded LIST and plain LIST, and bark_form_posting
+  compares against the coded LIST so every caller (build, insert, VACUUM,
+  split) agrees.  No format break: plain LISTs are untouched.  VACUUM keeps a
+  coded LIST coded, since a plain subset can exceed the coded slot (found in
+  testing: "failed to shrink BARK leaf entry").  Index pages (BENCHMARK-P1.md
+  "V6"): Z1 (d) 1610 -> 621 (btree 1789), clustered runs of 20 1082 -> 819
+  (btree 1896), a DocumentDB-like int4[] GIN-interface index 253 -> 92 (GIN
+  133), 1M rows of 10-element arrays 8040 -> 3429 (GIN 5026).  A cost: denser
+  leaves fill later, so bottom-up deletion runs less often between VACUUMs.''
 * '''K3''' -- a descent as cheap as nbtree's, and a cheaper skip-scan group.
   ''(done: bd501974823)''
 * '''I2''' -- per-insert overhead: the unique-index fast path and the insert

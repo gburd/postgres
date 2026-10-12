@@ -151,7 +151,13 @@ FROM gn_q;
 -- Bottom-up deletion: non-HOT updates (v is indexed) of full leaves at
 -- fillfactor 100 leave the key unchanged, so the new versions come back to
 -- their entries' leaves with indexUnchanged set, and the old versions'
--- TIDs go before a split.
+-- TIDs go before a split.  V6's coded LISTs pack a run of equal keys into
+-- far fewer bytes, so a leaf of such keys fills later and crosses the
+-- bottom-up-deletion threshold less often; more dead TIDs therefore linger
+-- between VACUUMs than with plain LISTs (about 5800 here, up from the plain
+-- form's figure, still far below the ~39000 of unchecked bloat, and VACUUM
+-- reclaims them).  The bound below is loosened to that deferred level while
+-- still proving the index did not grow without limit.
 CREATE TABLE gb (id int PRIMARY KEY, a numeric[], v int)
   WITH (fillfactor = 100, autovacuum_enabled = off);
 INSERT INTO gb SELECT g, ARRAY[round((g / 2)::numeric, g % 3)], 0
@@ -162,7 +168,7 @@ CREATE INDEX gb_gin ON gb USING gin (a);
 CREATE INDEX gb_v ON gb (v);
 SELECT format('UPDATE gb SET v = %s WHERE id BETWEEN 3 AND 300', i)
 FROM generate_series(1, 12) i \gexec
-SELECT (SELECT sum(ntids) FROM gn_items('gb_bark')) < 3000 + 6 * 298 AS deleted;
+SELECT (SELECT sum(ntids) FROM gn_items('gb_bark')) < 7000 AS deleted;
 SELECT bark_index_check('gb_bark'), bark_index_parent_check('gb_bark', false, false);
 CREATE TABLE gb_q (q text);
 INSERT INTO gb_q SELECT 'a ' || op || ' ' || quote_literal(arg) || '::numeric[]'
