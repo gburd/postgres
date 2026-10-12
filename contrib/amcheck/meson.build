@@ -58,6 +58,7 @@ tests += {
       't/005_pitr.pl',
       't/006_verify_gin.pl',
       't/007_verify_bark.pl',
+      't/008_verify_bark_parent.pl',
     ],
   },
 }
