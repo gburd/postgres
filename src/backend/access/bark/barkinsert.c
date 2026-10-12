@@ -2052,8 +2052,8 @@ bark_coalesce_list(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		if (posting != NULL)
 			newentry = posting;
 		else if (nold + 1 <= BARK_LIST_MAX_COUNT)
-			newentry = bark_form_list(RelationGetDescr(index), curkey, all,
-									  nold + 1);
+			newentry = bark_form_list_best(RelationGetDescr(index), curkey, all,
+										   nold + 1);
 		else
 			newentry = NULL;
 		pfree(curkey);

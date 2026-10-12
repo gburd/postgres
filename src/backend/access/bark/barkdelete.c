@@ -44,10 +44,13 @@
  * old one's place.  A POSTING entry is sized for the removal bound of its set
  * (see bark_form_posting), which no subset exceeds; a LIST of fewer locators
  * is shorter; a LIST is chosen over the POSTING only when it is the smaller;
- * and a SINGLE is smaller than either.  On a BARK_PREFIX page the key codes
- * as the old entry's did, so the coded entry shrinks with the plain one.
- * VACUUM and bottom-up deletion both rely on this; the check below turns a
- * violation into an error before the caller enters its critical section.
+ * and a SINGLE is smaller than either.  A coded LIST re-forms to a coded LIST
+ * (bark_reform_list), whose survivors never code larger than the whole, so it
+ * fits where a plain or POSTING re-form of the same survivors might not.  On
+ * a BARK_PREFIX page the key codes as the old entry's did, so the coded entry
+ * shrinks with the plain one.  VACUUM and bottom-up deletion both rely on
+ * this; the check below turns a violation into an error before the caller
+ * enters its critical section.
  */
 IndexTuple
 bark_reform_entry(Relation index, Buffer buf, OffsetNumber off,
@@ -55,6 +58,8 @@ bark_reform_entry(Relation index, Buffer buf, OffsetNumber off,
 {
 	Page		page = BufferGetPage(buf);
 	ItemId		iid = PageGetItemId(page, off);
+	bool		wascoded = (BarkEntryGetShape(itup) == BARK_SHAPE_LIST &&
+							BarkListIsCoded(itup));
 	IndexTuple	key = bark_single_from_list(index, itup, NULL);
 	IndexTuple	newentry;
 	IndexTuple	posting;
@@ -67,6 +72,17 @@ bark_reform_entry(Relation index, Buffer buf, OffsetNumber off,
 		newentry = key;
 		newentry->t_tid = tids[0];
 	}
+	else if (wascoded)
+	{
+		/*
+		 * A coded LIST re-forms to a coded LIST of its survivors, which is no
+		 * larger than the old entry (bark_reform_list): trying a POSTING or a
+		 * plain LIST here could pick a form larger than the old coded slot.
+		 */
+		newentry = bark_reform_list(RelationGetDescr(index), key, tids, nlive,
+									true);
+		pfree(key);
+	}
 	else if ((posting = bark_form_posting(RelationGetDescr(index),
 										  key, tids, nlive)) != NULL)
 	{
@@ -75,7 +91,7 @@ bark_reform_entry(Relation index, Buffer buf, OffsetNumber off,
 	}
 	else
 	{
-		newentry = bark_form_list(RelationGetDescr(index), key, tids, nlive);
+		newentry = bark_form_list_best(RelationGetDescr(index), key, tids, nlive);
 		pfree(key);
 	}
 

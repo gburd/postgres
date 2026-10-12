@@ -442,9 +442,22 @@ bark_check_entry_bounds(IndexTuple itup, BarkEntryShape shape, OffsetNumber off)
 	switch (shape)
 	{
 		case BARK_SHAPE_LIST:
-			ok = ok && BarkEntryGetBodyOffset(itup) >= dataoff &&
-				BarkEntryGetBodyOffset(itup) +
-				BarkListGetCount(itup) * sizeof(ItemPointerData) <= size;
+			if (BarkListIsCoded(itup))
+			{
+				/* body: header + raw first locator + varbyte delta stream */
+				Size		bodyoff = BarkEntryGetBodyOffset(itup);
+
+				ok = ok && bodyoff >= dataoff &&
+					bodyoff + sizeof(BarkCodedListHdr) +
+					sizeof(ItemPointerData) <= size &&
+					bodyoff + sizeof(BarkCodedListHdr) +
+					sizeof(ItemPointerData) +
+					BarkCodedListGetHdr(itup)->nbytes <= size;
+			}
+			else
+				ok = ok && BarkEntryGetBodyOffset(itup) >= dataoff &&
+					BarkEntryGetBodyOffset(itup) +
+					BarkListGetCount(itup) * sizeof(ItemPointerData) <= size;
 			break;
 		case BARK_SHAPE_POSTING:
 			ok = ok && BarkEntryGetBodyOffset(itup) >= dataoff &&
