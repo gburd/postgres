@@ -958,7 +958,7 @@ bark_build_form_entry(BarkBuildState *bs, IndexTuple key, ItemPointer tids,
 	if (entry == NULL)
 	{
 		*nused = n;
-		return bark_form_list(tupdesc, key, tids, n);
+		return bark_form_list_best(tupdesc, key, tids, n);
 	}
 
 	if (ntids > n)
