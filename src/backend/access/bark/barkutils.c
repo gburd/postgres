@@ -1254,8 +1254,16 @@ bark_entry_tid_range(IndexTuple itup, ItemPointer lo, ItemPointer hi)
 			*lo = *hi = BarkOverflowGetRef(itup)->locator;
 			break;
 		case BARK_SHAPE_LIST:
-			*lo = *BarkListGetTID(itup, 0);
-			*hi = *BarkListGetTID(itup, BarkListGetCount(itup) - 1);
+			if (BarkListIsCoded(itup))
+			{
+				*lo = *BarkCodedListGetFirst(itup);
+				*hi = BarkCodedListGetHdr(itup)->last;
+			}
+			else
+			{
+				*lo = *BarkListGetTID(itup, 0);
+				*hi = *BarkListGetTID(itup, BarkListGetCount(itup) - 1);
+			}
 			break;
 		case BARK_SHAPE_POSTING:
 			{
@@ -1360,6 +1368,240 @@ bark_form_list(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids)
 	return entry;
 }
 
+/*
+ * Delta+varbyte coding of a LIST's locators, as GIN codes a posting list
+ * (ginpostinglist.c).  A heap TID maps to a 48-bit integer whose low 11 bits
+ * are the offset number and whose next bits are the block number; the
+ * locators are stored as the varbyte encoding of the ascending differences of
+ * those integers, which for a clustered or duplicate-heavy index is one to a
+ * few bytes each rather than the six a raw ItemPointerData takes.  The mapping
+ * and encoding are GIN's; sharing them keeps BARK's coded LIST the same size
+ * as GIN's posting list on the same locators (the V6 benchmark).
+ */
+#define BARK_TID_OFFSET_BITS	11
+#define BARK_VARBYTE_MAX		7	/* bytes a 48-bit integer takes at most */
+
+StaticAssertDecl(MaxHeapTuplesPerPage < (1 << BARK_TID_OFFSET_BITS),
+				 "BARK_TID_OFFSET_BITS too small for MaxHeapTuplesPerPage");
+
+static inline uint64
+bark_tid_to_vb(ItemPointer tid)
+{
+	uint64		val = ItemPointerGetBlockNumberNoCheck(tid);
+
+	val <<= BARK_TID_OFFSET_BITS;
+	val |= ItemPointerGetOffsetNumberNoCheck(tid);
+	return val;
+}
+
+static inline void
+bark_vb_to_tid(uint64 val, ItemPointer tid)
+{
+	OffsetNumber off = (OffsetNumber) (val & ((1 << BARK_TID_OFFSET_BITS) - 1));
+	BlockNumber blk = (BlockNumber) (val >> BARK_TID_OFFSET_BITS);
+
+	ItemPointerSet(tid, blk, off);
+}
+
+/* Varbyte-encode `val` at *ptr, advancing *ptr; as GIN's encode_varbyte. */
+static void
+bark_encode_varbyte(uint64 val, unsigned char **ptr)
+{
+	unsigned char *p = *ptr;
+
+	while (val > 0x7F)
+	{
+		*(p++) = 0x80 | (val & 0x7F);
+		val >>= 7;
+	}
+	*(p++) = (unsigned char) val;
+	*ptr = p;
+}
+
+/* Decode a varbyte integer at *ptr, advancing *ptr; as GIN's decode_varbyte. */
+static uint64
+bark_decode_varbyte(unsigned char **ptr)
+{
+	unsigned char *p = *ptr;
+	uint64		val = 0;
+	int			shift = 0;
+	unsigned char c;
+
+	do
+	{
+		c = *(p++);
+		val |= (uint64) (c & 0x7F) << shift;
+		shift += 7;
+	} while (c & 0x80);
+
+	*ptr = p;
+	return val;
+}
+
+/*
+ * The length in bytes of the varbyte delta stream for the ascending,
+ * distinct locators tids[1..ntids) against tids[0].  (The first locator is
+ * stored raw, so it contributes no delta.)
+ */
+static Size
+bark_coded_deltas_size(ItemPointer tids, int ntids)
+{
+	uint64		prev = bark_tid_to_vb(&tids[0]);
+	Size		nbytes = 0;
+
+	for (int i = 1; i < ntids; i++)
+	{
+		uint64		val = bark_tid_to_vb(&tids[i]);
+		uint64		delta = val - prev;
+
+		do
+		{
+			nbytes++;
+			delta >>= 7;
+		} while (delta > 0);
+		prev = val;
+	}
+	return nbytes;
+}
+
+/*
+ * The whole size of the coded LIST entry for `ntids` locators whose delta
+ * stream is `nbytes` bytes, given a key tuple of `keysz` bytes.
+ */
+static inline Size
+bark_coded_list_size(Size keysz, Size nbytes)
+{
+	return MAXALIGN(MAXALIGN(keysz) + sizeof(BarkCodedListHdr) +
+					sizeof(ItemPointerData) + nbytes);
+}
+
+/*
+ * Form a delta+varbyte coded LIST entry (BarkListIsCoded) from a SINGLE-shape
+ * key tuple and `ntids` ascending, distinct locators.  Unless `force`, returns
+ * NULL when the coded entry would not be smaller than the equivalent plain
+ * LIST (a very scattered set), so a caller keeps the plain LIST.  `force`
+ * codes regardless, for re-forming a coded LIST whose survivors must stay
+ * coded to fit the old slot (bark_reform_list).  See the coding note above.
+ */
+static IndexTuple
+bark_form_coded_list(IndexTuple key, ItemPointer tids, int ntids, bool force)
+{
+	Size		keysz = IndexTupleSize(key);
+	Size		bodyoff = MAXALIGN(keysz);
+	Size		nbytes = bark_coded_deltas_size(tids, ntids);
+	Size		plainsz = MAXALIGN(bodyoff + (Size) ntids * sizeof(ItemPointerData));
+	Size		total = bark_coded_list_size(keysz, nbytes);
+	BarkCodedListHdr *hdr;
+	unsigned char *ptr;
+	uint64		prev;
+	IndexTuple	entry;
+
+	Assert(ntids >= 2 && ntids <= BARK_LIST_MAX_COUNT);
+	Assert(bodyoff <= BARK_OFFSET_MASK);
+
+	/* Keep the plain LIST unless coding is strictly smaller, or it overflows. */
+	if (nbytes > PG_UINT16_MAX || total > INDEX_SIZE_MASK)
+		return NULL;
+	if (!force && total >= plainsz)
+		return NULL;
+
+	entry = (IndexTuple) palloc0(total);
+	memcpy(entry, key, keysz);
+	entry->t_info = (key->t_info & ~INDEX_SIZE_MASK) | (uint16) total;
+	entry->t_info |= INDEX_AM_RESERVED_BIT;
+	ItemPointerSetOffsetNumber(&entry->t_tid,
+							   (OffsetNumber) ((uint16) ntids |
+											   BARK_IS_LIST | BARK_LIST_CODED));
+	BarkEntrySetBodyOffset(entry, (uint16) bodyoff);
+
+	hdr = BarkCodedListGetHdr(entry);
+	hdr->nbytes = (uint16) nbytes;
+	hdr->last = tids[ntids - 1];
+	*BarkCodedListGetFirst(entry) = tids[0];
+
+	ptr = BarkCodedListGetDeltas(entry);
+	prev = bark_tid_to_vb(&tids[0]);
+	for (int i = 1; i < ntids; i++)
+	{
+		uint64		val = bark_tid_to_vb(&tids[i]);
+
+		Assert(val > prev);
+		bark_encode_varbyte(val - prev, &ptr);
+		prev = val;
+	}
+	Assert((unsigned char *) BarkCodedListGetDeltas(entry) + nbytes == ptr);
+	return entry;
+}
+
+/*
+ * Decode a coded LIST entry's locators, ascending, into `out` (capacity
+ * maxout).  Returns the number written.
+ */
+static int
+bark_coded_list_get_tids(IndexTuple itup, ItemPointer out, int maxout)
+{
+	int			n = BarkListGetCount(itup);
+	BarkCodedListHdr *hdr = BarkCodedListGetHdr(itup);
+	unsigned char *ptr = BarkCodedListGetDeltas(itup);
+	unsigned char *endptr = ptr + hdr->nbytes;
+	uint64		val;
+
+	Assert(maxout >= n);
+	out[0] = *BarkCodedListGetFirst(itup);
+	val = bark_tid_to_vb(&out[0]);
+	for (int i = 1; i < n; i++)
+	{
+		Assert(ptr < endptr);
+		val += bark_decode_varbyte(&ptr);
+		bark_vb_to_tid(val, &out[i]);
+	}
+	Assert(ptr == endptr);
+	return n;
+}
+
+/*
+ * The smaller of a plain and a coded LIST entry (see bark.h).  A LIST of one
+ * locator is never coded (a SINGLE is used before a LIST reaches here); the
+ * caller passes two or more.
+ */
+IndexTuple
+bark_form_list_best(TupleDesc tupdesc, IndexTuple key, ItemPointer tids,
+					int ntids)
+{
+	IndexTuple	coded = NULL;
+
+	if (ntids >= 2)
+		coded = bark_form_coded_list(key, tids, ntids, false);
+	if (coded != NULL)
+		return coded;
+	return bark_form_list(tupdesc, key, tids, ntids);
+}
+
+/*
+ * Re-form a LIST entry's survivors during VACUUM or bottom-up deletion.  When
+ * the old entry was coded, the survivors are kept coded: removing a member
+ * replaces two deltas by their sum, whose varbyte length is at most one more
+ * than the larger summand, while the removed member's delta was at least one
+ * byte, so the delta stream never grows; the raw first and last locators are
+ * fixed size.  A coded subset of a coded entry is therefore no larger than
+ * the entry, which is what bark_reform_entry's shrink check requires -- a
+ * plain subset can be larger (6 bytes a locator) and would not fit the old
+ * coded slot.  When the old entry was plain, this is the ordinary chooser.
+ */
+IndexTuple
+bark_reform_list(TupleDesc tupdesc, IndexTuple key, ItemPointer tids,
+				 int ntids, bool wascoded)
+{
+	if (wascoded && ntids >= 2)
+	{
+		IndexTuple	coded = bark_form_coded_list(key, tids, ntids, true);
+
+		if (coded != NULL)
+			return coded;
+	}
+	return bark_form_list_best(tupdesc, key, tids, ntids);
+}
+
 /* Number of heap locators a leaf entry holds (SINGLE = 1, LIST/POSTING = set). */
 int
 bark_entry_count_tids(IndexTuple itup)
@@ -1404,6 +1646,8 @@ bark_entry_get_tids(IndexTuple itup, ItemPointer out, int maxout)
 			{
 				int			n = BarkListGetCount(itup);
 
+				if (BarkListIsCoded(itup))
+					return bark_coded_list_get_tids(itup, out, maxout);
 				Assert(maxout >= n);
 				memcpy(out, BarkListGetTIDArray(itup),
 					   n * sizeof(ItemPointerData));
@@ -1505,9 +1749,12 @@ bark_posting_from_map(IndexTuple key, Sbm *map, Size total)
  * distinct locators.  The locator set is serialized with sbm into the entry's
  * body, and the entry is sized for the set's removal bound, so that VACUUM
  * can rewrite it in place whatever members it removes.  Returns NULL when
- * that size is not smaller than the equivalent LIST (the caller then keeps
- * the LIST), so POSTING is used only when it saves space even with the
- * reserve, or when it would not fit t_info's size field.
+ * that size is not smaller than the equivalent LIST -- plain, or coded when
+ * coding is smaller (V6) -- and the caller then keeps the LIST
+ * (bark_form_list_best), so POSTING is used only when it saves space even
+ * with the reserve, or when it would not fit t_info's size field.  Deciding
+ * here covers every caller: CREATE INDEX, insert coalescing, VACUUM and
+ * page-split re-forms.
  */
 IndexTuple
 bark_form_posting(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids)
@@ -1532,6 +1779,10 @@ bark_form_posting(TupleDesc tupdesc, IndexTuple key, ItemPointer tids, int ntids
 		keys[i] = bark_tid_to_key(&tids[i]);
 	total = BarkPostingEntrySize(keysz, sbm_removal_bound_sorted(keys, ntids));
 	listsz = MAXALIGN(MAXALIGN(keysz) + ntids * sizeof(ItemPointerData));
+	if (ntids >= 2 && ntids <= BARK_LIST_MAX_COUNT)
+		listsz = Min(listsz,
+					 bark_coded_list_size(keysz,
+										  bark_coded_deltas_size(tids, ntids)));
 	if (total >= listsz || total > INDEX_SIZE_MASK)
 	{
 		pfree(keys);
@@ -1689,7 +1940,50 @@ bark_entry_key_part(IndexTuple entry)
 IndexTuple
 bark_entry_add_tid(IndexTuple entry, ItemPointer tid, Size maxsz)
 {
-	if (BarkEntryGetShape(entry) == BARK_SHAPE_LIST)
+	if (BarkEntryGetShape(entry) == BARK_SHAPE_LIST && BarkListIsCoded(entry))
+	{
+		/*
+		 * A coded LIST is re-formed as the smaller of a coded and a plain
+		 * LIST around the new TID.  Decode, insert in order (dropping a
+		 * duplicate), and re-code: a pure function of the resulting sorted
+		 * set, so WAL replay repeats it.  There is no in-place append the way
+		 * a plain LIST has, since a delta may change width.
+		 */
+		int			ncur = BarkListGetCount(entry);
+		ItemPointer tids = palloc_array(ItemPointerData, ncur + 1);
+		int			ins;
+		IndexTuple	key;
+		IndexTuple	ext;
+
+		if (ncur >= BARK_LIST_MAX_COUNT)
+		{
+			pfree(tids);
+			return NULL;
+		}
+		bark_entry_get_tids(entry, tids, ncur);
+		for (ins = ncur; ins > 0 && ItemPointerCompare(&tids[ins - 1], tid) > 0;)
+			ins--;
+		if (ins > 0 && ItemPointerEquals(&tids[ins - 1], tid))
+		{
+			pfree(tids);
+			return NULL;
+		}
+		memmove(&tids[ins + 1], &tids[ins],
+				(ncur - ins) * sizeof(ItemPointerData));
+		tids[ins] = *tid;
+
+		key = bark_entry_key_part(entry);
+		ext = bark_form_list_best(NULL, key, tids, ncur + 1);
+		pfree(key);
+		pfree(tids);
+		if (MAXALIGN(IndexTupleSize(ext)) > maxsz)
+		{
+			pfree(ext);
+			return NULL;
+		}
+		return ext;
+	}
+	else if (BarkEntryGetShape(entry) == BARK_SHAPE_LIST)
 	{
 		int			ncur = BarkListGetCount(entry);
 		Size		cursz = IndexTupleSize(entry);
@@ -1765,6 +2059,32 @@ bark_entry_has_tid(IndexTuple itup, ItemPointer tid)
 				int			lo = 0;
 				int			hi = BarkListGetCount(itup);
 
+				if (BarkListIsCoded(itup))
+				{
+					ItemPointerData lorange;
+					ItemPointerData hirange;
+					ItemPointer tids;
+					bool		found = false;
+
+					/* Outside the range is a cheap no without decoding. */
+					bark_entry_tid_range(itup, &lorange, &hirange);
+					if (ItemPointerCompare(tid, &lorange) < 0 ||
+						ItemPointerCompare(tid, &hirange) > 0)
+						return false;
+					tids = palloc_array(ItemPointerData, hi);
+					bark_coded_list_get_tids(itup, tids, hi);
+					for (int i = 0; i < hi; i++)
+					{
+						if (ItemPointerEquals(&tids[i], tid))
+						{
+							found = true;
+							break;
+						}
+					}
+					pfree(tids);
+					return found;
+				}
+
 				while (lo < hi)
 				{
 					int			mid = lo + (hi - lo) / 2;
@@ -1816,9 +2136,11 @@ bark_form_entry(IndexTuple key, ItemPointer tids, int n)
 		entry->t_tid = tids[0];
 		return entry;
 	}
+
+	/* bark_form_posting returns NULL unless it beats both LIST forms. */
 	entry = bark_form_posting(NULL, key, tids, n);
 	if (entry == NULL && n <= BARK_LIST_MAX_COUNT)
-		entry = bark_form_list(NULL, key, tids, n);
+		entry = bark_form_list_best(NULL, key, tids, n);
 	if (entry != NULL && MAXALIGN(IndexTupleSize(entry)) > BarkMaxItemSize)
 	{
 		pfree(entry);
@@ -1953,14 +2275,16 @@ bark_entry_cut(IndexTuple entry, ItemPointer tid, Size leftmax,
 	 * A LIST's parts stay LISTs, as a LIST that grows one TID at a time does
 	 * (bark_entry_add_tid): trying each as a POSTING would build an sbm on
 	 * every such split, for parts that bark_coalesce_list re-forms as a
-	 * POSTING anyway once they stop growing as LISTs.
+	 * POSTING anyway once they stop growing as LISTs.  Each part is still
+	 * coded or left plain by whichever is smaller (bark_form_list_best); the
+	 * delta coding is one pass, not an sbm build.
 	 */
 	*left = *right = NULL;
 	if (lo > 0 && lo < n && BarkEntryGetShape(entry) == BARK_SHAPE_LIST)
 	{
 		*left = lo == 1 ? bark_form_entry(key, tids, 1) :
-			bark_form_list(NULL, key, tids, lo);
-		*right = bark_form_list(NULL, key, tids + lo, n + 1 - lo);
+			bark_form_list_best(NULL, key, tids, lo);
+		*right = bark_form_list_best(NULL, key, tids + lo, n + 1 - lo);
 	}
 	else if (lo > 0 && lo < n)
 	{
