@@ -958,7 +958,7 @@ bark_build_form_entry(BarkBuildState *bs, IndexTuple key, ItemPointer tids,
 	if (entry == NULL)
 	{
 		*nused = n;
-		return bark_form_list(tupdesc, key, tids, n);
+		return bark_form_list_best(tupdesc, key, tids, n);
 	}
 
 	if (ntids > n)
@@ -1732,7 +1732,9 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 	/*
 	 * A POSTING entry maps a TID to block * MaxHeapTuplesPerPage + offset - 1
 	 * (bark_tid_to_key), which is reversible only for offsets up to
-	 * MaxHeapTuplesPerPage; GIN refuses such a table for the same bound.
+	 * MaxHeapTuplesPerPage; GIN refuses such a table for the same bound.  A
+	 * coded LIST packs the offset into BARK_TID_OFFSET_BITS (11) bits, a
+	 * looser bound of 2047, so the POSTING bound is the one that binds.
 	 */
 	{
 		const LocatorDesc *locdesc = RelationGetLocatorDesc(heap);

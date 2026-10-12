@@ -83,5 +83,30 @@ $node->safe_psql('postgres', 'UPDATE t SET v = v + 1');
 $node->safe_psql('postgres', 'UPDATE t SET v = v + 1');
 check('wal_level = logical');
 
+# Dense keys (many rows a key, POSTING entries) and keys of a few rows each
+# (coded LIST entries) created in the transaction at wal_level = minimal: the
+# bottom-up pass and the merge pass rewrite every entry shape unlogged.
+$node->append_conf('postgresql.conf', "wal_level = minimal\nmax_wal_senders = 0\n");
+$node->restart;
+foreach my $spec ([ 3000, 20000 ], [ 7, 20000 ], [ 4, 60000 ])
+{
+	my ($div, $n) = @$spec;
+	$node->safe_psql(
+		'postgres', qq{
+BEGIN;
+TRUNCATE t;
+INSERT INTO t SELECT g, g / $div, 0 FROM generate_series(1, $n) g;
+SAVEPOINT s;
+UPDATE t SET v = v + 1 WHERE id % 10 = 0;
+ROLLBACK TO s;
+UPDATE t SET v = v + 1 WHERE id % 10 = 0;
+UPDATE t SET v = v + 1 WHERE id % 10 = 0;
+UPDATE t SET v = v + 1 WHERE id % 10 = 0;
+UPDATE t SET v = v + 1;
+COMMIT;
+});
+	check("$n rows, keys of $div rows, unlogged");
+}
+
 $node->stop;
 done_testing();

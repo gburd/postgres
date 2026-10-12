@@ -66,6 +66,11 @@ SELECT * FROM bark_page_items(barkp_entry(40968, 8, 4096));
 SELECT * FROM bark_page_items(barkp_entry(8200, 8, 20480));
 -- A LIST of no TIDs fits, and lists as such.
 SELECT * FROM bark_page_items(barkp_entry(8208, 8, 32768));
+-- Coded LISTs (status 0x8000 + count with 0x1000, so 36866 is a coded LIST
+-- of two) whose header and first TID do not fit: data that starts past the
+-- entry, and a 16-byte entry whose body at 8 leaves no room for them.
+SELECT * FROM bark_page_items(barkp_entry(40968, 8, 36866));
+SELECT * FROM bark_page_items(barkp_entry(8208, 8, 36866));
 
 -- A leaf above level 0; a deleted page and an overflow page list no items,
 -- with a NOTICE, and quietly when NOTICEs are not wanted.

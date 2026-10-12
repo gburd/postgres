@@ -17,6 +17,7 @@ tests += {
       'bark_bottomup',
       'bark_alias_am',
       'bark_knn_inttypes',
+      'bark_codedlist',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # The injection points are run in the same backend, so disable
@@ -52,6 +53,7 @@ tests += {
       't/009_validate_single_user.pl',
       't/010_bottomup_wal_level.pl',
       't/011_insert_multi_recovery.pl',
+      't/012_codedlist_recovery.pl',
     ],
   },
 }

@@ -4330,7 +4330,7 @@ WHERE oid IN ('bark_pvac_a'::regclass, 'bark_pvac_b'::regclass,
   pg_size_bytes(current_setting('min_parallel_index_scan_size'));
  parallel_eligible_indexes 
 ---------------------------
-                         3
+                         2
 (1 row)
 
 DELETE FROM bark_pvac WHERE a BETWEEN 5000 AND 30000 OR b = 7;

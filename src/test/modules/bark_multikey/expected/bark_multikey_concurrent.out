@@ -45,7 +45,7 @@ step s2_check:
 
 mks1_a|mks2_ta|mks1_a_grew|mks2_ta_grew
 ------+-------+-----------+------------
-      |       |t          |f           
+      |       |f          |f           
 (1 row)
 
 
@@ -94,6 +94,6 @@ step s2_check:
 
 mks1_a|mks2_ta|mks1_a_grew|mks2_ta_grew
 ------+-------+-----------+------------
-      |       |f          |t           
+      |       |f          |f           
 (1 row)
 
