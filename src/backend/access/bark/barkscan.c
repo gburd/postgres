@@ -4148,10 +4148,20 @@ bark_mk_gin_read(IndexScanDesc scan, const BarkMkBoundary *b, int entry,
 
 			if (s->nitems >= maxitems)
 			{
+				/*
+				 * A partial-match boundary can cover a whole path (an
+				 * operator class's extractQuery may ask for every key of a
+				 * path, as DocumentDB's $elemMatch on scalars does), so a
+				 * stream can hold every TID of the column: allocate huge.
+				 * ponytail: the streams are exact and unbounded, 12 bytes a
+				 * TID; GIN bounds a partial match by a work_mem TIDBitmap
+				 * that goes lossy.  Spill to a lossy bitmap past work_mem if
+				 * memory per query matters.
+				 */
 				maxitems = Max(maxitems * 2, 256);
 				s->items = s->items == NULL ?
-					palloc_array(BarkGinItem, maxitems) :
-					repalloc_array(s->items, BarkGinItem, maxitems);
+					palloc_extended(sizeof(BarkGinItem) * maxitems, MCXT_ALLOC_HUGE) :
+					repalloc_huge(s->items, sizeof(BarkGinItem) * maxitems);
 			}
 			it = &s->items[s->nitems];
 			it->tid = so->currPos.items[i].heapTid;
@@ -4351,7 +4361,7 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out)
 	if (binaryheap_empty(heap))
 		return 0;
 	binaryheap_build(heap);
-	*out = palloc_array(BarkGinItem, maxout);
+	*out = palloc_extended(sizeof(BarkGinItem) * maxout, MCXT_ALLOC_HUGE);
 
 	while (!binaryheap_empty(heap))
 	{
@@ -4448,7 +4458,8 @@ static int
 bark_mk_gin_combine(BarkGinItem **a, int na, BarkGinItem *b, int nb,
 					bool intersect)
 {
-	BarkGinItem *r = palloc_array(BarkGinItem, na + nb + 1);
+	BarkGinItem *r = palloc_extended(sizeof(BarkGinItem) * ((Size) na + nb + 1),
+									 MCXT_ALLOC_HUGE);
 	int			n = 0;
 	int			i = 0;
 	int			j = 0;
@@ -4551,7 +4562,7 @@ bark_mk_gin_items(IndexScanDesc scan, int *nitems)
 	BarkScanPosInvalidate(((BarkScanOpaque) scan->opaque)->currPos);
 
 	MemoryContextSwitchTo(oldcxt);
-	result = palloc_array(BarkGinItem, Max(nacc, 1));
+	result = palloc_extended(sizeof(BarkGinItem) * Max(nacc, 1), MCXT_ALLOC_HUGE);
 	if (nacc > 0)
 		memcpy(result, acc, nacc * sizeof(BarkGinItem));
 	MemoryContextDelete(cxt);
