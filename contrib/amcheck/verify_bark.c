@@ -699,6 +699,7 @@ bark_check_list(Relation rel, BlockNumber blkno, OffsetNumber off,
 				IndexTuple itup)
 {
 	int			n = BarkListGetCount(itup);
+	ItemPointer tids;
 
 	if (n < 2)
 		ereport(ERROR,
@@ -706,15 +707,25 @@ bark_check_list(Relation rel, BlockNumber blkno, OffsetNumber off,
 				 errmsg("BARK index \"%s\" has a list entry with %d locators on page %u at offset %u",
 						RelationGetRelationName(rel), n, blkno, off)));
 
+	/*
+	 * Read the locators through the accessor so a delta+varbyte coded LIST
+	 * (BarkListIsCoded) is decoded; a plain LIST reads its array in place.
+	 */
+	tids = palloc_array(ItemPointerData, n);
+	bark_entry_get_tids(itup, tids, n);
+
 	for (int i = 1; i < n; i++)
 	{
-		if (ItemPointerCompare(BarkListGetTID(itup, i - 1),
-							   BarkListGetTID(itup, i)) >= 0)
+		if (ItemPointerCompare(&tids[i - 1], &tids[i]) >= 0)
+		{
+			pfree(tids);
 			ereport(ERROR,
 					(errcode(ERRCODE_INDEX_CORRUPTED),
 					 errmsg("BARK index \"%s\" has out-of-order list locators on page %u at offset %u",
 							RelationGetRelationName(rel), blkno, off)));
+		}
 	}
+	pfree(tids);
 }
 
 /*
