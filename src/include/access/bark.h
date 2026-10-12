@@ -665,6 +665,16 @@ typedef struct BarkMetaPageData
 #define BARK_IS_LIST				0x8000	/* leaf entry is a sorted list */
 
 /*
+ * A LIST entry whose body is delta+varbyte coded (barkutils.c) sets this bit
+ * alongside BARK_IS_LIST.  It is BARK_PIVOT_META, which marks a pivot and so
+ * is never set on a leaf entry; BARK_IS_LIST | BARK_PIVOT_META is thus a free
+ * code point in the status nibble, and BarkEntryGetShape still reads such an
+ * entry as a LIST.  A plain LIST leaves it clear and is byte-identical to
+ * before, so no REINDEX is needed to read indexes written without this code.
+ */
+#define BARK_LIST_CODED				BARK_PIVOT_META
+
+/*
  * An oversized entry (a key, or key + INCLUDE payload, too large to fit on a
  * page under the BarkMaxItemSize ceiling) is marked with BARK_IS_LIST and
  * BARK_IS_POSTING set together -- a combination no SINGLE/LIST/POSTING/PIVOT
@@ -851,11 +861,61 @@ BarkListGetTIDArray(IndexTupleData *itup)
 	return (ItemPointer) ((char *) itup + BarkEntryGetBodyOffset(itup));
 }
 
-/* The n'th locator (0-based) of a LIST entry. */
+/* The n'th locator (0-based) of a plain (uncoded) LIST entry. */
 static inline ItemPointer
 BarkListGetTID(IndexTupleData *itup, int n)
 {
 	return &BarkListGetTIDArray(itup)[n];
+}
+
+/*
+ * True when a LIST entry's body is delta+varbyte coded rather than a plain
+ * locator array.  Call only on a BARK_SHAPE_LIST entry.
+ */
+static inline bool
+BarkListIsCoded(const IndexTupleData *itup)
+{
+	return (ItemPointerGetOffsetNumberNoCheck(&itup->t_tid) &
+			BARK_LIST_CODED) != 0;
+}
+
+/*
+ * Header of a coded LIST body, at BarkEntryGetBodyOffset: the length in bytes
+ * of the varbyte delta stream that follows the first locator, and the last
+ * locator stored raw so BarkEntryGetBodyOffset gives the low end and this the
+ * high end of the TID range in O(1) (bark_entry_tid_range is on the insert
+ * descent's hot path).  The first locator is stored raw just after this
+ * header; the remaining locators follow as varbyte deltas of their 48-bit
+ * encodings (see bark_tid_to_vb in barkutils.c), ascending as the plain array
+ * is.  nbytes covers only the delta stream.
+ */
+typedef struct BarkCodedListHdr
+{
+	uint16		nbytes;			/* length of the varbyte delta stream */
+	ItemPointerData last;		/* highest locator, stored raw */
+}			BarkCodedListHdr;
+
+/* The coded LIST header at the body of a coded LIST entry. */
+static inline BarkCodedListHdr *
+BarkCodedListGetHdr(IndexTupleData *itup)
+{
+	return (BarkCodedListHdr *) ((char *) itup + BarkEntryGetBodyOffset(itup));
+}
+
+/* The first (lowest) locator of a coded LIST, stored raw after the header. */
+static inline ItemPointer
+BarkCodedListGetFirst(IndexTupleData *itup)
+{
+	return (ItemPointer) ((char *) BarkCodedListGetHdr(itup) +
+						  sizeof(BarkCodedListHdr));
+}
+
+/* The varbyte delta stream of a coded LIST, after the raw first locator. */
+static inline unsigned char *
+BarkCodedListGetDeltas(IndexTupleData *itup)
+{
+	return (unsigned char *) BarkCodedListGetFirst(itup) +
+		sizeof(ItemPointerData);
 }
 
 /* ----------------------------------------------------------------------------
@@ -1202,6 +1262,29 @@ extern StrategyNumber bark_translate_cmptype(CompareType cmptype, Oid opfamily);
  */
 extern IndexTuple bark_form_list(TupleDesc tupdesc, IndexTuple key,
 								 ItemPointer tids, int ntids);
+
+/*
+ * Build the smaller of a plain and a delta+varbyte coded LIST entry for the
+ * key columns of `key` and the `ntids` ascending, distinct locators in `tids`
+ * (BARK_SHAPE_LIST either way; see BARK_LIST_CODED).  A coded LIST stores the
+ * locators as 48-bit deltas, about 1-3 bytes each for a clustered or
+ * duplicate-heavy index, where the plain 6-bytes-each array is larger; a very
+ * scattered set codes larger than plain, and then the plain LIST is returned.
+ * Returns a palloc'd entry; it is the shape decision for LISTs, so every
+ * LIST-forming path uses it rather than bark_form_list directly.
+ */
+extern IndexTuple bark_form_list_best(TupleDesc tupdesc, IndexTuple key,
+									 ItemPointer tids, int ntids);
+
+/*
+ * Re-form a LIST entry's surviving locators during VACUUM or bottom-up
+ * deletion.  When the old entry was coded (`wascoded`), the result is kept
+ * coded so it cannot exceed the old entry's size (a coded subset never grows
+ * past the coded whole; a plain subset can).  Otherwise it is the
+ * bark_form_list_best chooser.  Returns a palloc'd entry.
+ */
+extern IndexTuple bark_reform_list(TupleDesc tupdesc, IndexTuple key,
+								   ItemPointer tids, int ntids, bool wascoded);
 
 /*
  * Collect the heap locators of a leaf entry (SINGLE, LIST, or POSTING) into
