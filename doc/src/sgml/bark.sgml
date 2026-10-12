@@ -692,8 +692,13 @@ CREATE INDEX docs_body_idx ON docs USING bark (body);
   <itemizedlist>
    <listitem>
     <para>
-     A <literal>LIST</literal> holds the heap TIDs as an array, six bytes
-     each.
+     A <literal>LIST</literal> holds the heap TIDs in order, either as an
+     array, six bytes each, or, when that is smaller, as the first TID
+     followed by the differences between consecutive TIDs in a variable
+     number of bytes each, as GIN codes its posting lists.  Rows of the key
+     that are close together in the table then take one or two bytes each.
+     Removing rows during <command>VACUUM</command> never makes the coded
+     form larger, so a coded list keeps that form when it shrinks.
     </para>
    </listitem>
    <listitem>
@@ -703,8 +708,8 @@ CREATE INDEX docs_body_idx ON docs USING bark (body);
      fraction of a byte per row.  It is sized so that removing any of its
      rows during <command>VACUUM</command> never makes it larger, and for
      scattered rows that size is larger than a list's, so an entry is made a
-     <literal>POSTING</literal> entry only when that is the smaller of the
-     two.
+     <literal>POSTING</literal> entry only when it is smaller than either
+     form of list.
     </para>
    </listitem>
   </itemizedlist>

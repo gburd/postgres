@@ -219,14 +219,15 @@ promises more than BARK's entry shapes can encode; never assume more of the
 locator than the descriptor states. ''Status:'' BARK leaves
 <code>amcanvarlocator</code> false, because its format stores a fixed 6-byte
 <code>ItemPointerData</code>: SINGLE entries keep the locator in
-<code>t_tid</code>, LIST entries are arrays of it, and POSTING entries map a
-TID to the 64-bit key
+<code>t_tid</code>, LIST entries are arrays of it (a coded LIST packs the
+offset into 11 bits), and POSTING entries map a TID to the 64-bit key
 <code>block * MaxHeapTuplesPerPage + offset - 1</code>.
 <code>index_check_locator()</code> therefore admits a BARK index only on a
 table whose locator is fixed-width and fits in 6 bytes, and
 <code>bark_build()</code> refuses a table whose <code>max_offset</code>
 exceeds <code>MaxHeapTuplesPerPage</code>, the bound the POSTING key
-needs; <code>ginbuild()</code> refuses such a table too.
+needs (the coded LIST's 2047 is looser); <code>ginbuild()</code> refuses
+such a table too.
 The other fields ask nothing of an index AM: <code>stable</code> and
 <code>old_version_retained</code> are the executor's, and the bitmap
 callbacks are the table AM's. A wider locator would need a format change;
@@ -944,6 +945,19 @@ BENCHMARK-2026-10b.md, at 5d4e2883b10)
   ''(done: f0b25ae677f)''
 * '''V5''' -- decide a POSTING entry's shape before building its sbm, which
   brought serial VACUUM to parity. ''(done: 54b9ed6c092)''
+* '''V6''' -- delta+varbyte coded LIST entries, GIN's posting-list coding.
+  ''As built: a coded LIST is the 0x1000 status bit on a LIST (free on leaf
+  entries), a header with the stream length and the last TID, the first TID
+  raw, then varbyte deltas of block << 11 | offset; the entry takes the
+  smallest of POSTING, coded LIST and plain LIST, and bark_form_posting
+  compares against the coded LIST so every caller (build, insert, VACUUM,
+  split) agrees.  No format break: plain LISTs are untouched.  VACUUM keeps a
+  coded LIST coded, since a plain subset can exceed the coded slot (found in
+  testing: "failed to shrink BARK leaf entry").  Index pages (BENCHMARK-P1.md
+  "V6"): Z1 (d) 1610 -> 621 (btree 1789), clustered runs of 20 1082 -> 819
+  (btree 1896), a DocumentDB-like int4[] GIN-interface index 253 -> 92 (GIN
+  133), 1M rows of 10-element arrays 8040 -> 3429 (GIN 5026).  A cost: denser
+  leaves fill later, so bottom-up deletion runs less often between VACUUMs.''
 * '''K3''' -- a descent as cheap as nbtree's, and a cheaper skip-scan group.
   ''(done: bd501974823)''
 * '''I2''' -- per-insert overhead: the unique-index fast path and the insert
