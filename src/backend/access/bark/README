@@ -1528,10 +1528,26 @@ There are five entry shapes (BarkEntryShape):
 
 The encoding of a leaf entry is chosen per entry, by size (bark_form_entry):
 one heap TID is a SINGLE; more are a POSTING when its size, reserve
-included, is smaller than the LIST's (bark_form_posting decides from the
-removal bound, sbm_removal_bound_sorted, before building the sbm), else a
-LIST, which holds at most BARK_LIST_MAX_COUNT TIDs; neither is made larger
-than BarkMaxItemSize.  An insert that adds a TID to a LIST or POSTING
+included, is smaller than the LIST's, plain or coded (bark_form_posting
+decides from the removal bound, sbm_removal_bound_sorted, and the coded
+LIST's length, before building the sbm), else a LIST, which holds at most
+BARK_LIST_MAX_COUNT TIDs; neither is made larger than BarkMaxItemSize.
+
+A LIST is plain or coded (V6; bark_form_list_best keeps the smaller).  A
+plain LIST is an ItemPointerData array.  A coded LIST sets BARK_LIST_CODED
+(the 0x1000 status bit, BARK_PIVOT_META on a pivot, never set on a leaf
+entry) and holds a BarkCodedListHdr (the varbyte stream's length and the
+last TID raw), the first TID raw, then the varbyte deltas of the rest, each
+TID mapped to block << 11 | offset as ginpostinglist.c does.  The first and
+last TIDs stay readable in O(1) for bark_entry_tid_range.  Every reader goes
+through bark_entry_get_tids / bark_entry_count_tids / bark_entry_has_tid, and
+bark_entry_add_tid re-forms a coded LIST (decode, insert, re-encode), which
+is a function of the sorted TID set alone, so redo is deterministic.  Plain
+LISTs are unchanged, so no REINDEX is needed.  A subset of a coded LIST never
+codes longer than the whole (a removed member's two deltas become their sum),
+but a plain subset can be longer than the coded original, so VACUUM re-forms
+a coded LIST as a coded LIST (bark_reform_list) to keep the in-place rewrite
+within the old slot.  An insert that adds a TID to a LIST or POSTING
 entry keeps its shape when it can (bark_entry_add_tid), and a POSTING
 entry never turns back into a LIST on insert.
 This is what lets a scalar index and an inverted (GIN/RUM-style) index share
