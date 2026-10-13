@@ -126,7 +126,8 @@ OBJS = \
 	prop_arraycmp.o \
 	prop_arrayconstruct.o \
 	prop_arrayreduce.o \
-	prop_arraysort.o
+	prop_arraysort.o \
+	prop_arraynull.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)

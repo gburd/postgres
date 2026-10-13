@@ -124,6 +124,7 @@ prop_area_sources = files(
   'prop_arrayconstruct.c',
   'prop_arrayreduce.c',
   'prop_arraysort.c',
+  'prop_arraynull.c',
 )
 
 
