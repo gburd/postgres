@@ -57,6 +57,7 @@ prop_area_sources = files(
   'prop_textpos.c',
   'prop_textcase.c',
   'prop_textlength.c',
+  'prop_textnum.c',
 )
 
 
