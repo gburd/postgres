@@ -231,6 +231,7 @@ prop_area_sources = files(
   'prop_unnestjoin.c',
   'prop_distinct.c',
   'prop_distincton.c',
+  'prop_sortlimit.c',
 )
 
 
