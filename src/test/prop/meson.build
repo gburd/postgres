@@ -197,6 +197,7 @@ prop_area_sources = files(
   'prop_windowrank.c',
   'prop_windowexcl.c',
   'prop_windowagg.c',
+  'prop_windownav.c',
 )
 
 
