@@ -243,6 +243,7 @@ prop_area_sources = files(
   'prop_mvcc.c',
   'prop_savepoint.c',
   'prop_returning.c',
+  'prop_upsert.c',
 )
 
 
