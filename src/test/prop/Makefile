@@ -152,7 +152,8 @@ OBJS = \
 	prop_datecast.o \
 	prop_datetrunc.o \
 	prop_timeops.o \
-	prop_timeextract.o
+	prop_timeextract.o \
+	prop_timestamptz.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
