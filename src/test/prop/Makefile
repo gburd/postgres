@@ -209,7 +209,8 @@ OBJS = \
 	prop_havingclause.o \
 	prop_rollup2.o \
 	prop_partprune.o \
-	prop_nbtree.o
+	prop_nbtree.o \
+	prop_indexscan.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
