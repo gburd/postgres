@@ -249,6 +249,7 @@ prop_area_sources = files(
   'prop_defaults.c',
   'prop_checkconstraint.c',
   'prop_foreignkey.c',
+  'prop_views.c',
 )
 
 
