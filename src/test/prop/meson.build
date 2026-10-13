@@ -51,6 +51,7 @@ prop_area_sources = files(
   'prop_bitstringops.c',
   'prop_safemath.c',
   'prop_arithcmp.c',
+  'prop_cmpops.c',
 )
 
 
