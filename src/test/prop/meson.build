@@ -285,6 +285,7 @@ prop_query_sources = files(
   'sql/prop_query_planadvice.c',
   'sql/prop_query_ext_citext.c',
   'sql/prop_query_multi.c',
+  'sql/prop_query_deep.c',
 )
 
 pg_prop = executable('pg_prop',
