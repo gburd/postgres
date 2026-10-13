@@ -279,6 +279,25 @@ reference answer, so a disagreement is unambiguously a server bug:
   small/fast default profile (used by the committed TAP run) and a wide/deep
   profile (many wide tables, up to thousands of rows, TOAST-sized columns, low-
   versus high-cardinality columns) for the opt-in high-iteration bug hunt.
+  The deep profile also varies TOAST storage mode per column (PLAIN / MAIN /
+  EXTERNAL / EXTENDED) and attaches result-neutral BEFORE-row triggers to some
+  tables (they return the row unchanged, so SELECT oracles stay sound while the
+  relation still carries trigger metadata and the write path runs the trigger).
+
+* query_deep -- the oracles over an arbitrary generated query shape, not just a
+  single join.  qg_build_query() walks the foreign-key graph to build a random
+  left-deep join tree (inner and left joins) of configurable depth, projecting
+  a stable key list and exposing one mutable predicate over the anchor relation
+  so a metamorphic oracle can vary just that predicate while the join stays
+  fixed.  Properties: deep_tlp (the predicate partitioned three ways
+  reconstructs the join), deep_norec (the predicate in WHERE versus the same
+  predicate wrapped in a CASE barrier must count the same rows), deep_cte_inline
+  (the filtered query as an inline subquery, a plain CTE, and a MATERIALIZED CTE
+  must return identical rows -- the subquery-pullup and CTE-inlining rewrites),
+  deep_const_fold (ANDing a plan-time-foldable tautology (1=1) and a run-time
+  tautology (col - col = 0) must not change the result -- constant folding), and
+  deep_corr_subquery (a parent-filtered semijoin written as IN, as EXISTS, and
+  as a DISTINCT join must agree -- subquery unnesting).
 
 
 Build-system integration

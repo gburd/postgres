@@ -279,7 +279,8 @@ OBJS = \
 	sql/prop_query_pqs.o \
 	sql/prop_query_planadvice.o \
 	sql/prop_query_ext_citext.o \
-	sql/prop_query_multi.o
+	sql/prop_query_multi.o \
+	sql/prop_query_deep.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir) -I$(srcdir)/sql
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
