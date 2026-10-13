@@ -86,7 +86,8 @@ OBJS = \
 	prop_casewhen.o \
 	prop_condexpr.o \
 	prop_coalesce.o \
-	prop_coalescefn.o
+	prop_coalescefn.o \
+	prop_nullsemantics.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
