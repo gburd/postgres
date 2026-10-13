@@ -32,7 +32,8 @@ OBJS = \
 	prop_scram.o \
 	prop_binaryheap.o \
 	prop_bitutils.o \
-	prop_numeric.o
+	prop_numeric.o \
+	prop_numcast.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
