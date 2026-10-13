@@ -230,6 +230,7 @@ prop_area_sources = files(
   'prop_srf.c',
   'prop_unnestjoin.c',
   'prop_distinct.c',
+  'prop_distincton.c',
 )
 
 
