@@ -161,7 +161,8 @@ OBJS = \
 	prop_intervalcmp.o \
 	prop_intervalio.o \
 	prop_tochar.o \
-	prop_toformat.o
+	prop_toformat.o \
+	prop_scalarfn.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
