@@ -52,7 +52,8 @@ OBJS = \
 	prop_bitint.o \
 	prop_bitlogic.o \
 	prop_bitstringops.o \
-	prop_safemath.o
+	prop_safemath.o \
+	prop_arithcmp.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)

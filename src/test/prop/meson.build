@@ -50,6 +50,7 @@ prop_area_sources = files(
   'prop_bitlogic.c',
   'prop_bitstringops.c',
   'prop_safemath.c',
+  'prop_arithcmp.c',
 )
 
 
