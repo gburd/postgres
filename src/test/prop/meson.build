@@ -164,6 +164,7 @@ prop_area_sources = files(
   'prop_hashfns2.c',
   'prop_pglsn.c',
   'prop_width_bucket.c',
+  'prop_genseries.c',
 )
 
 
