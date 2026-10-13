@@ -138,6 +138,7 @@ prop_area_sources = files(
   'prop_inet6.c',
   'prop_macaddr.c',
   'prop_macaddr8.c',
+  'prop_tsquery.c',
 )
 
 
