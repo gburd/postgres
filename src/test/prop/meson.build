@@ -209,6 +209,7 @@ prop_area_sources = files(
   'prop_nbtree.c',
   'prop_indexscan.c',
   'prop_indexdiff.c',
+  'prop_joinmethods.c',
 )
 
 
