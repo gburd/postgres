@@ -228,6 +228,7 @@ prop_area_sources = files(
   'prop_lateral.c',
   'prop_valuesrows.c',
   'prop_srf.c',
+  'prop_unnestjoin.c',
 )
 
 
