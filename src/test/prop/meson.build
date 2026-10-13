@@ -88,6 +88,7 @@ prop_area_sources = files(
   'prop_nulldistinct.c',
   'prop_oid.c',
   'prop_uuid.c',
+  'prop_uuidops.c',
 )
 
 
