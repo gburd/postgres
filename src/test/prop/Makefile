@@ -21,7 +21,8 @@ OBJS = \
 	pg_prop.o \
 	pg_prop_sql.o \
 	prop_path.o \
-	prop_jsonapi.o
+	prop_jsonapi.o \
+	prop_encoding.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)

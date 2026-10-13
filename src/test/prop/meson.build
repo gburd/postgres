@@ -19,6 +19,7 @@ prop_area_sources = files(
   # Tier B: SQL oracle (needs a running node)
   'prop_path.c',
   'prop_jsonapi.c',
+  'prop_encoding.c',
 )
 
 
