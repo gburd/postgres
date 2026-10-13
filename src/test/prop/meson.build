@@ -204,6 +204,7 @@ prop_area_sources = files(
   'prop_groupsets2.c',
   'prop_grouphash.c',
   'prop_havingclause.c',
+  'prop_rollup2.c',
 )
 
 
