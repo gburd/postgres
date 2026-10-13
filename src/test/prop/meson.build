@@ -119,6 +119,7 @@ prop_area_sources = files(
   'prop_jsoneach.c',
   'prop_array.c',
   'prop_arrayops.c',
+  'prop_arrayslice.c',
 )
 
 
