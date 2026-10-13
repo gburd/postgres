@@ -227,6 +227,7 @@ prop_area_sources = files(
   'prop_dmlcte.c',
   'prop_lateral.c',
   'prop_valuesrows.c',
+  'prop_srf.c',
 )
 
 
