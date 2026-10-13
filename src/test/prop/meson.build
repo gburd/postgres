@@ -262,6 +262,7 @@ prop_area_sources = files(
   'prop_seg.c',
   'prop_intarray.c',
   'prop_intarrayext.c',
+  'prop_pgtrgm.c',
 )
 
 
