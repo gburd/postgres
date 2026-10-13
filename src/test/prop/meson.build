@@ -62,6 +62,7 @@ prop_area_sources = files(
   'prop_strfunc.c',
   'prop_strpos.c',
   'prop_substring.c',
+  'prop_padtrim.c',
 )
 
 
