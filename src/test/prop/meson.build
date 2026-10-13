@@ -254,6 +254,7 @@ prop_area_sources = files(
   'prop_hstore.c',
   'prop_hstore2.c',
   'prop_ltree.c',
+  'prop_ltree2.c',
 )
 
 
