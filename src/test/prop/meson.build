@@ -160,6 +160,7 @@ prop_area_sources = files(
   'prop_tochar.c',
   'prop_toformat.c',
   'prop_scalarfn.c',
+  'prop_hashfn.c',
 )
 
 
