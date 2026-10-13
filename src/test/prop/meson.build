@@ -237,6 +237,7 @@ prop_area_sources = files(
   'prop_fetchties.c',
   'prop_pagination.c',
   'prop_predpushdown.c',
+  'prop_spillpaths.c',
 )
 
 
