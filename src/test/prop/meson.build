@@ -170,6 +170,7 @@ prop_area_sources = files(
   'prop_concatop.c',
   'prop_coerce.c',
   'prop_collate.c',
+  'prop_textord.c',
 )
 
 
