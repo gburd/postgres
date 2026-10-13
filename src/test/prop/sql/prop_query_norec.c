@@ -163,6 +163,69 @@ PG_PROP(count_false_matches_norec)
 }
 
 /*
+ * NoREC across a join: the optimisable form filters the inner relation of a
+ * self-join with p in the WHERE clause, where the planner may push p below
+ * the join or turn it into an index qual.  The un-optimisable twin forms the
+ * full (unfiltered) join and counts (p IS TRUE) from the target list, so the
+ * predicate cannot be pushed down or indexed.  Both count the join rows whose
+ * left side satisfies p.  Join-filter interaction with pushdown is exactly
+ * where NoREC found real optimiser bugs in other engines.
+ */
+PG_PROP(join_filter_matches_norec)
+{
+	pg_prop_conn *conn;
+	char	   *err = NULL;
+	int			nrows;
+	StringInfoData pred;
+	StringInfoData opt;
+	StringInfoData noropt;
+
+	conn = pg_prop_connect(&err);
+	if (conn == NULL)
+		pg_prop_fail(tc, "connect failed: %s", err ? err : "");
+
+	qg_build_table(tc, conn, &nrows);
+
+	initStringInfo(&pred);
+	qg_draw_predicate(tc, &pred);
+
+	/*
+	 * Optimisable: p applied to t in the WHERE of a t-JOIN-u self-join on a
+	 * fixed inner row (u.id = 1), so the join cardinality is just the number
+	 * of t rows satisfying p when such a u row exists, else zero.  p uses
+	 * unqualified names so it is evaluated inside a single-table subquery over
+	 * t where they are unambiguous.
+	 */
+	initStringInfo(&opt);
+	appendStringInfo(&opt,
+					 "SELECT count(*) FROM "
+					 "(SELECT * FROM " QG_TABLE " WHERE (%s)) t "
+					 "JOIN " QG_TABLE " u ON u.id = 1",
+					 pred.data);
+
+	/*
+	 * Un-optimisable twin: the full join with no filter, counting (p IS TRUE)
+	 * pulled into the projection so it is evaluated per surviving join row
+	 * with no pushdown available.
+	 */
+	initStringInfo(&noropt);
+	appendStringInfo(&noropt,
+					 "SELECT count(*) FROM "
+					 "(SELECT (t.p) AS keep FROM "
+					 "(SELECT *, (%s) AS p FROM " QG_TABLE ") t "
+					 "JOIN " QG_TABLE " u ON u.id = 1) s "
+					 "WHERE s.keep IS TRUE",
+					 pred.data);
+
+	require_same_scalar(tc, conn, opt.data, noropt.data);
+
+	pfree(pred.data);
+	pfree(opt.data);
+	pfree(noropt.data);
+	pg_prop_disconnect(conn);
+}
+
+/*
  * NoREC over a sum: sum(a) WHERE p vs sum of a*(p IS TRUE)::int over a bare
  * scan.  Exercises aggregate pushdown interacting with the filter.  coalesce
  * so NULL a does not make the two forms disagree on NULL vs 0 (both treat a
