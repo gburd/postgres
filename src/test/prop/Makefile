@@ -215,7 +215,8 @@ OBJS = \
 	prop_joinmethods.o \
 	prop_outerjoin.o \
 	prop_joincard.o \
-	prop_selfjoin.o
+	prop_selfjoin.o \
+	prop_jointypes.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
