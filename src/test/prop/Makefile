@@ -122,7 +122,8 @@ OBJS = \
 	prop_jsoneach.o \
 	prop_array.o \
 	prop_arrayops.o \
-	prop_arrayslice.o
+	prop_arrayslice.o \
+	prop_arraycmp.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
