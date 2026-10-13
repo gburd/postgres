@@ -264,7 +264,8 @@ OBJS = \
 	prop_cubedist.o \
 	prop_seg.o \
 	prop_intarray.o \
-	prop_intarrayext.o
+	prop_intarrayext.o \
+	prop_pgtrgm.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
