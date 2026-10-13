@@ -134,6 +134,7 @@ prop_area_sources = files(
   'prop_inet.c',
   'prop_inetarith.c',
   'prop_networkops.c',
+  'prop_cidrops.c',
 )
 
 
