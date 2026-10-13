@@ -17,6 +17,7 @@
 prop_area_sources = files(
   # Tier A: in-process
   # Tier B: SQL oracle (needs a running node)
+  'prop_path.c',
 )
 
 
