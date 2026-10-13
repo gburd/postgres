@@ -190,6 +190,7 @@ prop_area_sources = files(
   'prop_stringagg.c',
   'prop_strconcat.c',
   'prop_jsonagg.c',
+  'prop_jsonaggord.c',
 )
 
 
