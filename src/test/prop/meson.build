@@ -178,6 +178,7 @@ prop_area_sources = files(
   'prop_xmlfmt.c',
   'prop_aggregate.c',
   'prop_aggstrategies.c',
+  'prop_aggorder.c',
 )
 
 
