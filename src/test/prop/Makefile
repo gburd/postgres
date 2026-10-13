@@ -93,7 +93,8 @@ OBJS = \
 	prop_uuid.o \
 	prop_uuidops.o \
 	prop_bytea.o \
-	prop_byteaops.o
+	prop_byteaops.o \
+	prop_bit.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
