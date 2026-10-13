@@ -174,6 +174,7 @@ prop_area_sources = files(
   'prop_jsonvsjsonb.c',
   'prop_geopoint.c',
   'prop_geoseg.c',
+  'prop_boxops.c',
 )
 
 
