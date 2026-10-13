@@ -197,7 +197,8 @@ OBJS = \
 	prop_jsonobjectagg.o \
 	prop_window.o \
 	prop_windowframes.o \
-	prop_windowrank.o
+	prop_windowrank.o \
+	prop_windowexcl.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
