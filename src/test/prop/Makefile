@@ -83,7 +83,8 @@ OBJS = \
 	prop_boolcast.o \
 	prop_booltest.o \
 	prop_boolexpr.o \
-	prop_casewhen.o
+	prop_casewhen.o \
+	prop_condexpr.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)

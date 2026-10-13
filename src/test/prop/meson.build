@@ -81,6 +81,7 @@ prop_area_sources = files(
   'prop_booltest.c',
   'prop_boolexpr.c',
   'prop_casewhen.c',
+  'prop_condexpr.c',
 )
 
 
