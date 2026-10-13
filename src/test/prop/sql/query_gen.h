@@ -200,4 +200,44 @@ extern void qg_drop_db(pg_prop_tc *tc, pg_prop_conn *conn, qg_db *db);
 extern void qg_draw_predicate_on(pg_prop_tc *tc, StringInfo buf,
 								 const qg_table *t, const char *alias);
 
+/* ---- deep query builder (Phase 1) ------------------------------------ *
+ *
+ * Compose a legal multi-table SELECT over a qg_db: a join tree across the FK
+ * graph (inner/left joins), optionally wrapped in a derived-table subquery or
+ * a CTE, projecting a stable key list and ordered by it.  The query is split
+ * into a fixed "prefix" (everything up to and including the join tree and any
+ * fixed filters) and a single mutable WHERE predicate over one designated
+ * alias, so a metamorphic oracle can partition on that predicate (TLP) or pull
+ * it into an opaque per-row test (NoREC) while the rest stays constant.
+ *
+ * qg_build_query fills a qg_query: the three pieces an oracle needs to assemble
+ * both sides of its comparison without re-parsing SQL text.
+ */
+typedef struct qg_query
+{
+	/*
+	 * select_from is "SELECT <keys> FROM <join tree/subquery/CTE>" with no
+	 * WHERE; pred_alias.pred_col are a column reference the oracle may build a
+	 * predicate over via qg_draw_predicate_on on pred_table; order_by is the
+	 * trailing "ORDER BY <keys>".  keys is the projected key list text (for
+	 * count/other rewrites).
+	 */
+	char	   *select_from;	/* palloc'd */
+	char	   *order_by;		/* palloc'd */
+	char	   *keys;			/* palloc'd: the projected key expression list */
+	const qg_table *pred_table; /* table the mutable predicate ranges over */
+	char		pred_alias[QG_NAME_LEN];	/* its alias in the query */
+} qg_query;
+
+/*
+ * Build a random query over db with the given maximum join/nesting depth.
+ * Returns true and fills *q on success; returns false if db is too small to
+ * build anything interesting (e.g. zero tables), in which case the caller
+ * treats the case as vacuous.  Strings in *q are palloc'd; qg_free_query frees
+ * them.
+ */
+extern bool qg_build_query(pg_prop_tc *tc, const qg_db *db, int max_depth,
+						   qg_query *q);
+extern void qg_free_query(qg_query *q);
+
 #endif							/* QUERY_GEN_H */
