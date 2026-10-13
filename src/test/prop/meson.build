@@ -218,6 +218,7 @@ prop_area_sources = files(
   'prop_setops.c',
   'prop_setopstrat.c',
   'prop_exceptintersect.c',
+  'prop_unionall.c',
 )
 
 
