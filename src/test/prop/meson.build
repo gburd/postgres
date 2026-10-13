@@ -114,6 +114,7 @@ prop_area_sources = files(
   'prop_jsontext.c',
   'prop_jsonformat.c',
   'prop_jsonpath.c',
+  'prop_jsonpathq.c',
 )
 
 
