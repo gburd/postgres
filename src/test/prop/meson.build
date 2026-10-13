@@ -30,6 +30,7 @@ prop_area_sources = files(
   'prop_binaryheap.c',
   'prop_bitutils.c',
   'prop_numeric.c',
+  'prop_numcast.c',
 )
 
 
