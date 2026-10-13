@@ -433,6 +433,15 @@ typedef struct BarkMkScanState
 	bool		partialpast;	/* procedure 12 said the range is over */
 
 	/*
+	 * A read of an open-ended partial-match boundary (bark_mk_gin_first) in a
+	 * forward scan of an ascending leading column: once one key is inside
+	 * it, every later non-NULL key is (instart), so bark_mk_cmp stops
+	 * comparing keys with its start (startlatch says the read qualifies).
+	 */
+	bool		startlatch;
+	bool		instart;
+
+	/*
 	 * An index scan through GIN's interface (bark_mk_gin_gettuple): the rows
 	 * of bark_mk_gin_items, computed into ginCxt on the first call after a
 	 * rescan, the place in them (-1 or nginitems off either end), and the
@@ -539,11 +548,19 @@ bark_mk_cmp(BarkMkScanState *mk, Datum datum, bool isnull,
 	/* A point is non-strict at both ends, which are the one key. */
 	if (b->point)
 		return bark_mk_keycmp(mk, datum, b->start);
+	/* Inside an open boundary read forward (see BarkMkScanState). */
+	if (mk->instart)
+		return 0;
 	if (b->hasstart)
 	{
 		c = bark_mk_keycmp(mk, datum, b->start);
 		if (c < 0 || (c == 0 && b->startstrict))
 			return -1;
+	}
+	if (mk->startlatch)
+	{
+		mk->instart = true;
+		return 0;
 	}
 	if (b->hasend)
 	{
@@ -848,6 +865,7 @@ bark_mk_setup(IndexScanDesc scan)
 	mk->order = false;
 	mk->oneentry = false;
 	mk->orderrest = false;
+	mk->startlatch = mk->instart = false;
 	mk->npending = 0;
 	if (scan->numberOfOrderBys > 0 &&
 		scan->orderByData[0].sk_attno == mk->attno)
@@ -4130,6 +4148,21 @@ bark_mk_gin_first(IndexScanDesc scan, const BarkMkBoundary *b)
 
 	so->mk->bounds[0] = *b;
 	so->mk->partialpast = false;
+
+	/*
+	 * The read goes forward from the boundary's start.  On the leading
+	 * column, ascending, entries come in key order with the NULLs together
+	 * at one end, so the non-NULL keys met after one inside an open-ended
+	 * boundary are inside it too (bark_mk_cmp skips their compares).  A
+	 * later column restarts its keys at each new value of the columns
+	 * before, so it never latches.  A partial boundary has one side, set by
+	 * bark_mk_set_side from its lower element: the start on an ascending
+	 * column, the end on a DESC one, which therefore never latches either.
+	 * The GIN reads use bounds[0] alone (nbounds is 1), so no other
+	 * boundary is ever compared while the latch is set.
+	 */
+	so->mk->startlatch = b->partial && b->hasstart && so->mk->attno == 1;
+	so->mk->instart = false;
 	BarkScanPosUnpinIfPinned(so->currPos);
 	BarkScanPosInvalidate(so->currPos);
 	return bark_first(scan, ForwardScanDirection);
@@ -4700,6 +4733,7 @@ bark_mk_gin_items(IndexScanDesc scan, BarkGinItem **items, TIDBitmap *tbm)
 	}
 	BarkScanPosUnpinIfPinned(((BarkScanOpaque) scan->opaque)->currPos);
 	BarkScanPosInvalidate(((BarkScanOpaque) scan->opaque)->currPos);
+	mk->startlatch = mk->instart = false;
 
 	MemoryContextSwitchTo(oldcxt);
 	if (tbm != NULL)
