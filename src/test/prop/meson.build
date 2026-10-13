@@ -234,6 +234,7 @@ prop_area_sources = files(
   'prop_sortlimit.c',
   'prop_sortmerge.c',
   'prop_orderbynulls.c',
+  'prop_fetchties.c',
 )
 
 
