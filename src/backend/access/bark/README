@@ -628,6 +628,18 @@ Only a single key on the column (or each element of its ScalarArrayOp,
 whose union the bitmap is) takes this path; several keys are intersected
 through the streams as before.
 
+A read of an open-ended partial-match boundary pays procedure 12 on every
+entry, and used to pay the column comparator against the boundary's start
+twice more (bark_mk_filter, and bark_req_advance when procedure 12 refuses
+the entry).  On the leading column, ascending, the read goes forward from
+the start in key order with the NULLs at one end, so once one non-NULL key
+is inside the boundary every later one is: bark_mk_gin_first sets
+startlatch for such a read, and bark_mk_cmp, after the first key it finds
+inside, answers "inside" without comparing (instart).  A later column
+restarts its keys at each value of the columns before, and a DESC column's
+lower side is its end, so neither latches.  The end of the range is still
+procedure 12's to say.
+
 Scans of an index with an extracted column ("Scans" under "M1: multikey
 keys" in the design document) keep the btree-style key code away from the
 column's keys, whose operators are not btree comparisons:

@@ -182,6 +182,46 @@ RESET work_mem;
 DROP TABLE mb, mb_q;
 DROP FUNCTION mb_run(text, bool);
 
+-- An open-ended partial-match boundary read forward on the leading,
+-- ascending column stops comparing its keys with the start once one is
+-- inside it (bark_mk_gin_first's startlatch).  A DESC column and a later
+-- column (whose keys restart at each value of the first) compare every key.
+-- Each index's rows, through a bitmap scan and an index scan, are the
+-- seqscan's; the NULL and empty arrays sort at one end and never match.
+CREATE TABLE ml_asc (id int, g int, t text[] COLLATE "C");
+INSERT INTO ml_asc SELECT i, i % 5, ARRAY['k' || (i % 97), 'm' || (i % 13), 'z' || i]
+FROM generate_series(1, 5000) i;
+INSERT INTO ml_asc VALUES (5001, 1, NULL), (5002, 2, '{}'), (5003, 3, '{NULL,k1}');
+CREATE TABLE ml_desc AS SELECT * FROM ml_asc;
+CREATE TABLE ml_two AS SELECT * FROM ml_asc;
+CREATE INDEX ON ml_asc USING bark (t bark_text_prefix_ops);
+CREATE INDEX ON ml_desc USING bark (t bark_text_prefix_ops DESC);
+CREATE INDEX ON ml_two USING bark (g, t bark_text_prefix_ops);
+SELECT bark_index_check(indexrelid) FROM pg_index
+WHERE indrelid IN ('ml_asc'::regclass, 'ml_desc'::regclass, 'ml_two'::regclass);
+CREATE FUNCTION ml_run(tab text, q text, how text) RETURNS int[]
+LANGUAGE plpgsql AS $$
+DECLARE r int[];
+BEGIN
+  PERFORM set_config('enable_seqscan', (how = 'seq')::text, true);
+  PERFORM set_config('enable_bitmapscan', (how = 'bitmap')::text, true);
+  PERFORM set_config('enable_indexscan', (how = 'index')::text, true);
+  EXECUTE format('SELECT coalesce(array_agg(id ORDER BY id), ''{}'') FROM %I WHERE %s', tab, q) INTO r;
+  RETURN r;
+END $$;
+CREATE TABLE ml_q (q text);
+INSERT INTO ml_q VALUES ($$t %^% 'k'$$), ($$t %^% 'k1'$$), ($$t %^% 'k96'$$),
+  ($$t %^% 'm'$$), ($$t %^% 'z49'$$), ($$t %^% ''$$), ($$t %^% 'zzz'$$),
+  ($$g = 3 AND t %^% 'k2'$$), ($$g IN (1, 4) AND t %^% 'm1'$$);
+SELECT tab, q, cardinality(s) AS n,
+  ml_run(tab, q, 'bitmap') = s AS bitmap_ok,
+  ml_run(tab, q, 'index') = s AS index_ok
+FROM unnest(ARRAY['ml_asc', 'ml_desc', 'ml_two']) tab, ml_q,
+     LATERAL ml_run(tab, q, 'seq') s
+ORDER BY tab, q;
+DROP TABLE ml_asc, ml_desc, ml_two, ml_q;
+DROP FUNCTION ml_run(text, text, text);
+
 DROP TABLE mg, mg_q, mg_arr, mp, mp_res, mp_any;
 DROP FUNCTION mg_run(text, text), mg_saop(text);
 DROP EXTENSION bark_multikey;
