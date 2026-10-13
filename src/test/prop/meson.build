@@ -129,6 +129,7 @@ prop_area_sources = files(
   'prop_inlist.c',
   'prop_range.c',
   'prop_rangeops.c',
+  'prop_rangeagg.c',
 )
 
 
