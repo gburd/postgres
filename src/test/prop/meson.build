@@ -137,6 +137,7 @@ prop_area_sources = files(
   'prop_cidrops.c',
   'prop_inet6.c',
   'prop_macaddr.c',
+  'prop_macaddr8.c',
 )
 
 
