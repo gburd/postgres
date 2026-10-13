@@ -2428,6 +2428,7 @@ ProjectSetState
 ProjectionInfo
 ProjectionPath
 PromptInterruptContext
+PropEntry
 ProtocolVersion
 PrsStorage
 PruneFreezeParams
@@ -4039,6 +4040,10 @@ pg_md5_ctx
 pg_on_exit_callback
 pg_plan_advice_advisor_hook
 pg_prng_state
+pg_prop_conn
+pg_prop_fn
+pg_prop_isolated_fn
+pg_prop_tc
 pg_re_flags
 pg_regex_t
 pg_regmatch_t

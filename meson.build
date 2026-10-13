@@ -1828,6 +1828,49 @@ endif
 
 
 ###############################################################
+# Library: libhegel (property-based testing engine)
+###############################################################
+
+# Property-based tests (src/test/prop) require all three of:
+#   1. -Dprop_tests=enabled (explicit opt-in; default disabled),
+#   2. libhegel's header and shared library present (found via
+#      extra_include_dirs / extra_lib_dirs or a system path), and
+#   3. TAP tests enabled (the prop suite is driven through the TAP wrapper).
+# Any missing piece disables the suite; with -Dprop_tests=enabled a missing
+# piece is a hard error so the opt-in cannot silently do nothing.
+prop_tests_enabled = false
+libhegel = not_found_dep
+propopt = get_option('prop_tests')
+if not propopt.disabled()
+  if not tap_tests_enabled
+    if propopt.enabled()
+      error('prop_tests requires tap_tests to be enabled')
+    else
+      message('property-based tests disabled: TAP tests are not enabled')
+    endif
+  else
+    # The C ABI header has no PostgreSQL dependencies; the engine ships as a
+    # plain shared library named libhegel_c.  Look for both.
+    libhegel_h = cc.has_header('hegel.h',
+      args: test_c_args, include_directories: postgres_inc,
+      required: propopt)
+    libhegel_lib = cc.find_library('hegel_c',
+      dirs: postgres_lib_d, required: propopt)
+    if libhegel_h and libhegel_lib.found()
+      libhegel = declare_dependency(dependencies: libhegel_lib)
+      prop_tests_enabled = true
+    elif propopt.enabled()
+      error('prop_tests requires libhegel (hegel.h and libhegel_c); ' +
+            'point --extra-include-dirs / --extra-lib-dirs at its install')
+    else
+      message('property-based tests disabled: libhegel not found')
+    endif
+  endif
+endif
+
+
+
+###############################################################
 # Library: zstd
 ###############################################################
 
@@ -4322,6 +4365,7 @@ summary(
     'icu': icu,
     'ldap': ldap,
     'libcurl': libcurl,
+    'libhegel (prop_tests)': libhegel,
     'libnuma': libnuma,
     'liburing': liburing,
     'libxml': libxml,

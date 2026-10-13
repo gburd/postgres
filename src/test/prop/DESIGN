@@ -1,0 +1,380 @@
+src/test/prop/DESIGN
+
+Design of the property-based test harness
+=========================================
+
+This document explains how the property-based test (PBT) harness is put
+together and why.  README covers how to run it and when to use it; this is the
+under-the-covers companion.
+
+
+Goals and constraints
+======================
+
+1. Optional and opt-in.  PostgreSQL must build and test exactly as before when
+   the feature is off.  The engine is an external dependency with prebuilt
+   binaries for a limited set of platforms, so it cannot be a mandatory part of
+   the tree.
+
+2. C, not C++.  PostgreSQL is a C project maintained by C programmers.  The
+   engine, libhegel, exposes a stable C ABI; everything in this directory is
+   plain C that calls it.  No C++ appears in the tree.
+
+3. Fits the existing test world.  When enabled, the suite is just more TAP
+   tests, discovered and run by "meson test" / "make check-world" like any
+   other.
+
+4. Reproducible.  Every run has a seed (printed if not supplied); every failure
+   prints a replay blob and shrinks to a minimal counterexample.
+
+
+What Hegel provides
+===================
+
+libhegel is the engine behind Hegel, shipped as a shared library (libhegel_c)
+with a C ABI declared in hegel.h.  It owns the hard parts of property-based
+testing: input generation, the shrinking search, and the example database.  The
+harness drives it through a small slice of that ABI:
+
+* hegel_settings_* -- configure a run (test-case count, seed, verbosity,
+  database path and key).
+
+* hegel_run_start / hegel_next_test_case / hegel_run_result -- the run loop: the
+  engine hands us one test case at a time; we execute the property body against
+  it and report the outcome with hegel_mark_complete.
+
+* hegel_generate_integer / _float / _boolean / _bytes, and
+  hegel_string_generator_text + hegel_generate_string -- the generators the
+  property body draws from.
+
+* hegel_run_result_failure / hegel_failure_reproduction_blob -- the minimal
+  counterexample and its replay blob after a failing run.
+
+* hegel_test_case_from_blob -- replay a counterexample for reporting.
+
+The engine runs in-process: there is no separate server process and it starts no
+threads of its own.  One property run is single-threaded.
+
+
+Shape of the tree
+=================
+
+    pg_prop.h           public harness API: the PG_PROP() macro, draws,
+                        assume/note/fail, isolate(), and the Tier-B SQL helpers.
+    pg_prop.c           the libhegel driver, generators, CLI, TAP output; main().
+    pg_prop_sql.c       libpq oracle helpers (Tier B); isolates the libpq
+                        dependency.
+    prop_<area>.c       one file per area; a set of PG_PROP() properties.
+    sql/                query-level areas that generate whole SQL statements
+                        (query_gen.c plus the TLP, NoREC, and plan-advice areas).
+    t/001_prop.pl       TAP driver for the in-process (Tier A) areas.
+    t/002_sql_props.pl  TAP driver for the SQL-oracle (Tier B) areas; starts a
+                        node.
+    Makefile            autoconf build (one program, pg_prop).
+    meson.build         meson build (same program) plus test registration.
+
+All areas compile into one program, pg_prop.  The first command-line argument
+selects the area; the rest select individual properties.  One binary (rather
+than one per area) keeps the build small and gives the "pg_prop <area>" dispatch
+the user-facing CLI wants.
+
+
+The PG_PROP registry
+--------------------
+
+Each prop_<area>.c does:
+
+    #define PG_PROP_AREA "path"
+    #include "pg_prop.h"
+
+    PG_PROP(canonicalize_idempotent)
+    {
+        ...
+    }
+
+PG_PROP(name) expands to the property function plus a function-pointer
+registration run before main() via __attribute__((constructor)).  Each
+registration records the area (from PG_PROP_AREA), the name, and the function.
+main() then looks up the area named on the command line and runs its properties.
+Because registration is a constructor, simply linking an area file into pg_prop
+makes its properties available -- there is no central table to edit.
+
+
+The run loop and failure reporting
+----------------------------------
+
+For each selected property, run_property():
+
+1. builds a hegel_settings_t from the CLI (test_cases, seed, verbosity, and a
+   database_key of "area/name" so persisted counterexamples are scoped per
+   property);
+
+2. starts a run and pulls test cases until the engine signals completion;
+
+3. for each case, run_one_case() sets up a pg_prop_tc and calls the property body
+   inside sigsetjmp.  The body reports its outcome by not returning normally:
+
+   * returning normally        -> HEGEL_STATUS_VALID (property held),
+   * pg_prop_assume(false)      -> siglongjmp(..., 2) -> HEGEL_STATUS_INVALID
+                                   (case discarded),
+   * pg_prop_fail(...)          -> siglongjmp(..., 1) -> HEGEL_STATUS_INTERESTING
+                                   (counterexample),
+   * a draw past the budget     -> siglongjmp -> HEGEL_STATUS_OVERRUN.
+
+   setjmp/longjmp lets pg_prop_fail be called from arbitrarily deep in a property
+   body and still be pg_noreturn;
+
+4. after the run, if it failed, replays each counterexample's blob through
+   hegel_test_case_from_blob to re-derive the failing message, and prints the
+   "falsified:" line plus the "rerun with" blob as TAP diagnostics.
+
+Output is TAP by default (one ok/not ok per property), so the surrounding "meson
+test" / "prove" consumes it directly; --no-tap switches to plain text for
+interactive use.
+
+
+Seeds and the example database
+------------------------------
+
+If -s is not given, main() picks a seed from the PID and clock and prints
+"# seed: N".  A buildfarm failure is therefore always reproducible with -s N.
+The example database (where Hegel persists counterexamples so a known failure
+replays first) is placed under TESTDATADIR when the TAP wrapper sets it, and
+disabled otherwise, so nothing is written into the source tree.
+
+
+Two tiers
+=========
+
+Backend code -- the planner, executor, type I/O -- cannot be linked into a
+frontend program, so the harness has two tiers that differ only in how the code
+under test is reached.
+
+
+Tier A: in-process
+------------------
+
+src/common and src/port code (path, jsonapi, encoding, unicode_case,
+unicode_norm, pglz, base64, prng, crypto, scram, binaryheap, bitutils) is linked
+directly into pg_prop and called in the property body.  Each case is a function
+call: microseconds.  t/001_prop.pl runs these; no server is needed.
+
+Crash isolation.  Frontend PostgreSQL code reports fatal problems by abort() (a
+failed Assert under cassert) or exit().  In-process, either would take down the
+whole pg_prop process and lose the counterexample.  pg_prop_run_isolated() forks
+a child to run code that might do this and turns a crash, signal, or non-zero
+exit into an ordinary value the property can test and pg_prop_fail on -- with
+the drawn inputs, generated in the parent, still in hand for shrinking.  (The
+current area files mostly do not need it, since their functions return error
+codes rather than aborting, but it is there for code that does and for running
+under a sanitizer.)
+
+
+Tier B: SQL oracle
+------------------
+
+Backend behavior is tested differentially over libpq against a live node: the
+property generates SQL and compares the answer to an oracle that must agree.
+pg_prop_sql.c wraps just enough of libpq -- connect, run a scalar/rowset/DDL
+query, render the result as a comparable string -- and keeps the libpq
+dependency out of the rest of the harness.  t/002_sql_props.pl starts one node,
+exports PGHOST/PGPORT, and runs these areas against it.
+
+The oracles are chosen so a disagreement is unambiguously a bug, never a
+difference of opinion:
+
+* partprune: a partitioned table with pruning on, the same table with pruning
+  off, and an unpartitioned table holding identical rows must all return the
+  same result for any query.  Pruning is a performance optimization that must
+  never change results.
+
+* scan and join differentials (nbtree, indexscan, indexdiff, joinmethods,
+  outerjoin, ...): the same query run under forced scan methods, or forced join
+  methods, or a tiny versus ample work_mem, must return identical rows.
+
+* type algebra (interval, numeric, numfmt, float, cash, date, timestamptz, and
+  the rest): algebraic identities evaluated in SQL -- round-trips, a = q*b + r,
+  distributivity, a total order, text output that re-parses, add/subtract
+  inverses -- that the type is required to satisfy for all finite inputs (with
+  legitimate overflow skipped, and never silently wrapped).
+
+* structured types (jsonb, jsonpath, array, range, multirange, record,
+  tsvector, and friends): round-trips through text and the set/algebra laws of
+  the type's operators (containment, union, intersection, key dedup,
+  aggregate/unnest inverse, builder/accessor inverse, lexicographic ordering),
+  exact because these types normalize on input.
+
+* parsing and formatting (like, tsquery, tochar, bool, char): matching,
+  formatting, and parsing cross-checked against independent builtins
+  (starts_with, length, an explicit unnest membership scan) and the boolean
+  structure of the operators.
+
+Connection hygiene.  A property that fails or is assumed away unwinds by
+longjmp, jumping over its own pg_prop_disconnect().  The driver therefore calls
+pg_prop_sql_cleanup() after every case, which closes any connection a case left
+open; otherwise a long run would exhaust the server's connection slots.  (It is
+a no-op for Tier A.)
+
+
+Query-level areas (sql/)
+========================
+
+The highest-value Tier-B areas do not test one function; they test the query
+processor.  They live in sql/ and share query_gen.c, which builds a random table
+and a random three-valued boolean predicate as SQL text.  Each area wraps that
+in a metamorphic oracle -- a relationship that must hold with no independent
+reference answer, so a disagreement is unambiguously a server bug:
+
+* query_tlp -- Ternary Logic Partitioning (Rigger and Su, OOPSLA 2020).  For
+  any predicate p every row falls in exactly one of WHERE p, WHERE NOT p, WHERE
+  p IS NULL, so the three partitions UNION ALL'd must reconstruct the unfiltered
+  relation.
+
+* query_norec -- compare an optimizable count(*) ... WHERE p against the
+  un-optimizable twin that pulls p into a bare per-row scan; the counts must
+  match.
+
+* query_planadvice -- run a generated query with the planner free and again
+  steered by contrib/pg_plan_advice (SEQ_SCAN, NESTED_LOOP_PLAIN, and so on, via
+  the pg_plan_advice.advice GUC), plus a tiny-work_mem spill variant; the result
+  must not depend on the plan the planner chose.  Advice is used in preference
+  to the blunt enable_* GUCs because it names the exact relation or join to
+  re-shape and the extension rejects advice it cannot honor, so the alternate
+  plan is a targeted legal variant of the same query rather than a global cost
+  distortion.
+
+
+Build-system integration
+========================
+
+meson
+-----
+
+* meson_options.txt adds a feature option prop_tests (default disabled).
+
+* The top-level meson.build, right after the TAP-tests block, resolves
+  prop_tests_enabled: it requires tap_tests_enabled, then looks for hegel.h (via
+  postgres_inc, which includes --extra-include-dirs) and the hegel_c library
+  (via postgres_lib_d, i.e. --extra-lib-dirs).  All three present -> enabled;
+  -Dprop_tests=enabled with a piece missing -> hard error; otherwise silently
+  off.  A summary() line reports the result.
+
+* src/test/meson.build descends into prop/ only when prop_tests_enabled.
+  src/test/prop/meson.build builds pg_prop (linking frontend_code, libpq, and
+  libhegel) and registers the two TAP drivers as the "prop" suite.
+
+autoconf
+--------
+
+* configure.ac adds --with-hegel (default no); it errors immediately if
+  --enable-tap-tests was not also given.  Down with the other library probes
+  (where --with-includes/--with-libraries are in effect) it runs
+  AC_CHECK_HEADER(hegel.h) and AC_CHECK_LIB(hegel_c, hegel_version), both hard
+  errors under --with-hegel.  The AC_CHECK_LIB deliberately does not add
+  -lhegel_c to the global LIBS; only pg_prop links it.
+
+* with_hegel flows through Makefile.global.in.  src/test/Makefile adds prop to
+  SUBDIRS when with_hegel = yes (and always to ALWAYS_SUBDIRS so "make clean"
+  recurses).  src/test/prop/Makefile builds the one program and declares
+  TAP_TESTS = 1, so "make check" runs t/*.pl.
+
+
+Measuring the value: coverage and input diversity
+==================================================
+
+Two things were measured on an instrumented build (meson setup ...
+-Db_coverage=true), PostgreSQL src/ only, branch coverage off, comparing the PBT
+suite against "test-world" (the regress and isolation suites).
+
+Line coverage, the number that undersells it:
+
+    configuration                      line coverage         function coverage
+    test-world (regress + isolation)   72.1% (315,641)       77.6%
+    PBT suite only                     32.6% (130,227)       42.4%
+    union (test-world + PBT)           72.8% (327,606)       79.0%
+
+The PBTs add 1,293 server lines test-world never reaches (+0.41% relative).
+That is small, and honestly so: test-world already touches almost every adt/*.c
+line at least once.
+
+Execution depth per line, what we hoped for and did not find.  It is tempting to
+argue the PBTs at least execute the shared lines far more often -- more inputs
+per line.  Measured directly with gcov execution counts, the honest result is
+no, not in raw count.  Run for run, the dense regression corpus executes the hot
+type-I/O and planner lines more than a 100-iteration PBT pass, and even a single
+area at 8,000 iterations executes src/common/jsonapi.c only about 0.2x as many
+times total as the json/jsonb regression tests do.  Per hot file the PBT/world
+execution-count ratios ran from about 0.1x (formatting.c, selfuncs.c) to about
+2.7x (nodeAgg.c); there is no "orders of magnitude" effect and none is claimed.
+
+Input diversity via differential coverage, the real measured gain.  The gain is
+on a different axis: the generators reach different lines, not the same lines
+more.  Measured on the file each area targets, the jsonapi area at 8,000
+iterations covers 527 lines of src/common/jsonapi.c, of which 242 are lines the
+json and jsonb regression tests never reach (test-world covers 464).  Those 242
+lines are overwhelmingly the incremental-parser state machine, which only
+executes when a value is delivered one byte at a time -- precisely what the
+generator does and what no hand-written case enumerates.  This is the same
+mechanism that caught the reverted jsonapi "0.0" bug.
+
+To reproduce the measurement, build with -Db_coverage=true, zero the counters
+(find ... -name '*.gcda' -delete), run one suite, capture with lcov (adding
+--ignore-errors inconsistent,corrupt), extract the PostgreSQL src/ paths, repeat
+for the other suite, and compare the per-line DA: counts and the covered-line
+sets between the two tracefiles.
+
+The takeaway for a reviewer: judge this suite by which code it reaches and by
+the standing differential net, not by a coverage-percentage delta or a
+depth-per-line multiplier -- the latter does not favor PBT and we do not claim
+it does.
+
+
+Why this shape
+==============
+
+* One binary, area-dispatched.  Matches the "pg_prop <area>" CLI, keeps the
+  build to a single target, and lets a developer run or debug exactly one
+  property with a fixed seed.
+
+* C ABI, not the C++ frontend.  Keeps the tree C-only; the only non-C artifact
+  is the prebuilt engine library itself.
+
+* setjmp for fail/assume.  Lets assertions sit naturally deep in a property body
+  and keeps pg_prop_fail pg_noreturn.
+
+* Differential oracles for backend code.  Avoids running the engine inside a
+  backend (which would need PG_TRY shims to keep longjmp out of the engine's
+  frames -- not needed here, and not worth the complexity until a round-trip
+  through SQL becomes a measured bottleneck).
+
+* Default 100 iterations.  Keeps check-world cheap; the iteration count is a knob
+  (-n / PG_PROP_ITERATIONS) you turn up when hunting.
+
+
+Limitations and future work
+===========================
+
+* Platform coverage is whatever libhegel ships a prebuilt library for (Linux
+  x86_64/arm64, macOS arm64, Windows at the time of writing); other platforms
+  would need a source build of the engine.  The opt-in default keeps this from
+  affecting anyone who does not ask for it.
+
+* Beta engine.  Hegel is pre-1.0; its API can change and replay blobs are only
+  guaranteed to reproduce on the same engine version.  The configure checks pin
+  to the header and library actually installed.
+
+* In-backend properties (running the engine inside a running backend, for
+  cheaper backend coverage than round-tripping SQL) are deliberately not
+  attempted yet; they would require PG_TRY-based shims so a longjmp cannot cross
+  the engine's frames.  Worth revisiting only if the SQL round-trip cost becomes
+  the bottleneck.
+
+* Stateful and model testing (sequences of operations checked against a
+  reference model) is supported by Hegel but not yet used here; the data
+  structures in src/backend/lib (for example the radix tree and the TID store)
+  are the natural first customers.
+
+* More query-generation oracles are the obvious growth area: TLP for aggregates
+  and DISTINCT, Pivoted Query Synthesis, join-order metamorphic testing via
+  pg_plan_advice, and cardinality-monotonicity checks.  These are where a live
+  wrong-results bug is most likely to turn up.

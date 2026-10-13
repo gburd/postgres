@@ -242,6 +242,23 @@ PGAC_ARG_BOOL(enable, injection-points, no, [enable injection points (for testin
 AC_SUBST(enable_injection_points)
 
 #
+# Property-based tests (src/test/prop), built on libhegel.  Requires
+# --enable-tap-tests as well, since the suite is driven through the TAP
+# harness; the actual presence of libhegel's header and library is checked
+# further below, once --with-includes / --with-libraries are in effect.
+#
+PGAC_ARG_BOOL(with, hegel, no,
+              [build property-based tests (requires libhegel and --enable-tap-tests)])
+if test "$with_hegel" = yes && test "$enable_tap_tests" != yes; then
+  AC_MSG_ERROR([--with-hegel requires --enable-tap-tests])
+fi
+AC_SUBST(with_hegel)
+# Export the extra library directories so the property-test Makefile can add
+# them to pg_prop's rpath; libhegel is typically installed outside the system
+# loader path and reached via --with-libraries.
+AC_SUBST(LIBRARY_DIRS)
+
+#
 # Block size
 #
 AC_MSG_CHECKING([for block size])
@@ -1414,6 +1431,18 @@ if test "$with_zlib" = yes; then
 If you have zlib already installed, see config.log for details on the
 failure.  It is possible the compiler isn't looking in the proper directory.
 Use --without-zlib to disable zlib support.])])
+fi
+
+# libhegel for property-based tests.  The C ABI header has no PostgreSQL
+# dependencies; the engine ships as a plain shared library, libhegel_c.  Both
+# must be reachable via --with-includes / --with-libraries (or a system path).
+if test "$with_hegel" = yes; then
+  AC_CHECK_HEADER(hegel.h, [],
+                  [AC_MSG_ERROR([header file <hegel.h> is required for --with-hegel
+Point --with-includes at libhegel's include directory.])])
+  AC_CHECK_LIB(hegel_c, hegel_version, [],
+               [AC_MSG_ERROR([library 'hegel_c' (libhegel) is required for --with-hegel
+Point --with-libraries at libhegel's library directory.])])
 fi
 
 if test "$with_libcurl" = yes ; then
