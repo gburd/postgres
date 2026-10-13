@@ -130,4 +130,74 @@ extern void qg_draw_int_expr(pg_prop_tc *tc, StringInfo buf);
  */
 extern const qg_schema *qg_current_schema(pg_prop_tc *tc);
 
+/* ---- multi-table database model (Phase 0) ---------------------------- *
+ *
+ * The single-table API above builds qg_t and the areas self-join it.  The
+ * deep oracles instead generate a small random *database* -- several related
+ * tables with declared keys and foreign keys and correlated data -- so the
+ * planner has real join-order and subquery-unnesting choices to make.  This is
+ * additive: the single-table API is unchanged and the existing areas keep
+ * using it.
+ */
+#define QG_MAX_TABLES 12
+#define QG_NAME_LEN 16
+
+typedef struct qg_table
+{
+	char		name[QG_NAME_LEN];	/* qg_t0, qg_t1, ... */
+	qg_schema	schema;			/* its columns (id is implicit col -1) */
+	int			nrows;			/* rows populated this case */
+	int			fkcol;			/* schema index of a FK column, or -1 */
+	int			fkref;			/* table index this FK references, or -1 */
+} qg_table;
+
+typedef struct qg_db
+{
+	qg_table	tables[QG_MAX_TABLES];
+	int			ntables;
+} qg_db;
+
+/*
+ * Knobs for qg_build_db.  qg_db_params_default() fills a small, fast, fully
+ * deterministic profile (safe for the committed TAP run); qg_db_params_deep()
+ * fills the wide/deep/high-volume profile for the opt-in bug hunt.  Both are
+ * then jittered per case by the drawn values within [min,max].
+ */
+typedef struct qg_db_params
+{
+	int			min_tables,
+				max_tables;		/* 1 .. QG_MAX_TABLES */
+	int			min_cols,
+				max_cols;		/* extra columns beyond id/fk */
+	int			min_rows,
+				max_rows;		/* per-table row count range */
+	bool		allow_fk;		/* declare + correlate FKs between tables */
+	bool		allow_triggers;	/* attach result-neutral triggers (0c) */
+	int			toast_profile;	/* 0 none .. 3 always (0b) */
+	int			cardinality_bias;	/* 0 mixed, 1 favour low-card columns */
+} qg_db_params;
+
+extern void qg_db_params_default(qg_db_params *p);
+extern void qg_db_params_deep(qg_db_params *p);
+
+/*
+ * Build a random database per the params (dropping any prior qg_t* tables).
+ * Parents are built before children so a child's FK column can be drawn from
+ * the parent's actual key values (correlated data).  Returns a palloc'd qg_db
+ * describing what was built; qg_drop_db drops the tables.  Fails the case (does
+ * not return) on any SQL error -- the generator must never emit invalid SQL.
+ */
+extern qg_db *qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn,
+						  const qg_db_params *p);
+extern void qg_drop_db(pg_prop_tc *tc, pg_prop_conn *conn, qg_db *db);
+
+/*
+ * Append a random boolean predicate over a specific table's columns to buf,
+ * qualifying column references with the given alias (so it is unambiguous
+ * inside a multi-table query).  Same grammar as qg_draw_predicate but schema-
+ * and alias-aware.
+ */
+extern void qg_draw_predicate_on(pg_prop_tc *tc, StringInfo buf,
+								 const qg_table *t, const char *alias);
+
 #endif							/* QUERY_GEN_H */
