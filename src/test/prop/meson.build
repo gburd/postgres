@@ -20,6 +20,7 @@ prop_area_sources = files(
   'prop_path.c',
   'prop_jsonapi.c',
   'prop_encoding.c',
+  'prop_unicode_case.c',
 )
 
 
