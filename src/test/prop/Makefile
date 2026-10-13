@@ -73,7 +73,8 @@ OBJS = \
 	prop_regexp.o \
 	prop_regexfns.o \
 	prop_regexmatch.o \
-	prop_regexpreplace.o
+	prop_regexpreplace.o \
+	prop_char.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)

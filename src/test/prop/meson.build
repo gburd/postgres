@@ -71,6 +71,7 @@ prop_area_sources = files(
   'prop_regexfns.c',
   'prop_regexmatch.c',
   'prop_regexpreplace.c',
+  'prop_char.c',
 )
 
 
