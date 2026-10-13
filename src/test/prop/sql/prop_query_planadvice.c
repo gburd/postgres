@@ -236,6 +236,44 @@ PG_PROP(join_plan_invariant)
 }
 
 /*
+ * A three-way self-join steered to a specific join order.  The planner is
+ * free to associate and commute the joins however it costs cheapest; forcing
+ * a particular JOIN_ORDER must not change the rows.  Join reordering is a
+ * distinct code path from join-method selection and has its own history of
+ * wrong-results bugs (outer-join reordering, equivalence-class handling), so
+ * it is worth steering explicitly.  Aliases x, y, z are joined on their keys;
+ * the advice names a left-deep order over them.
+ */
+PG_PROP(join_order_plan_invariant)
+{
+	pg_prop_conn *conn;
+	int			nrows;
+	StringInfoData q;
+
+	conn = connect_advice(tc);
+	qg_build_table(tc, conn, &nrows);
+
+	/*
+	 * x JOIN y ON y.id = x.a joins on a possibly-NULL, non-unique key (so the
+	 * join is interesting), then z on z.id = x.b.  All keys are coalesced into
+	 * the id range only implicitly; non-matching rows simply drop, which is
+	 * fine -- the invariant is that the surviving set is order-independent.
+	 */
+	initStringInfo(&q);
+	appendStringInfoString(&q,
+						   "SELECT x.id, y.id, z.id FROM " QG_TABLE " x "
+						   "JOIN " QG_TABLE " y ON y.id = x.a "
+						   "JOIN " QG_TABLE " z ON z.id = x.b "
+						   "ORDER BY x.id, y.id, z.id");
+
+	require_plan_invariant(tc, conn, q.data,
+						   "JOIN_ORDER((x y) z)", "");
+
+	pfree(q.data);
+	pg_prop_disconnect(conn);
+}
+
+/*
  * DISTINCT with ORDER BY ... LIMIT, run under a tiny work_mem to force the
  * sort/limit and hash-distinct spill paths.  ORDER BY the primary key keeps
  * the top-N result deterministic so the oracle stays sound.
