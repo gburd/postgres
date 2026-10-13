@@ -140,6 +140,7 @@ prop_area_sources = files(
   'prop_macaddr8.c',
   'prop_tsquery.c',
   'prop_tsvector.c',
+  'prop_tsvector2.c',
 )
 
 
