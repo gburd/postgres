@@ -93,6 +93,7 @@ prop_area_sources = files(
   'prop_byteaops.c',
   'prop_bit.c',
   'prop_record.c',
+  'prop_enum.c',
 )
 
 
