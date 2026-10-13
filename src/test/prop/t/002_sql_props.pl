@@ -25,7 +25,7 @@ use PostgreSQL::Test::Utils;
 use Test::More;
 
 # Keep in step with the Tier-B entries in prop_area_sources (meson.build).
-my @areas = qw(numeric numcast numscale numround numfmt numericalg numericcmp numericdiv decimalfmt mathfn mathround powexp float floatspecial floatcast intops intbit bitint bitlogic bitstringops safemath arithcmp cmpops text textfns textpos textcase textlength textnum textsplit strfunc strpos substring padtrim trimfns like likepattern stringmatch regexp regexfns regexmatch regexpreplace char charconv charfuncs varchartypmod cash bool boolcast booltest boolexpr casewhen condexpr coalesce coalescefn nullsemantics nulldistinct oid uuid uuidops bytea byteaops bit record enum jsonb jsonbops jsonbpath jsonbagg2 jsonbnum jsonbtype jsonbsub jsonbkeys jsonbcontain);
+my @areas = qw(numeric numcast numscale numround numfmt numericalg numericcmp numericdiv decimalfmt mathfn mathround powexp float floatspecial floatcast intops intbit bitint bitlogic bitstringops safemath arithcmp cmpops text textfns textpos textcase textlength textnum textsplit strfunc strpos substring padtrim trimfns like likepattern stringmatch regexp regexfns regexmatch regexpreplace char charconv charfuncs varchartypmod cash bool boolcast booltest boolexpr casewhen condexpr coalesce coalescefn nullsemantics nulldistinct oid uuid uuidops bytea byteaops bit record enum jsonb jsonbops jsonbpath jsonbagg2 jsonbnum jsonbtype jsonbsub jsonbkeys jsonbcontain jsonbdelete);
 
 # No Tier-B areas wired in yet (e.g. the initial harness-only commit): nothing
 # to run, which is a pass.  Skip before starting a node, so we don't pay for a
