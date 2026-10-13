@@ -103,6 +103,7 @@ prop_area_sources = files(
   'prop_jsonbsub.c',
   'prop_jsonbkeys.c',
   'prop_jsonbcontain.c',
+  'prop_jsonbdelete.c',
 )
 
 
