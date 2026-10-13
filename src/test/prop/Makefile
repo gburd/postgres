@@ -260,7 +260,8 @@ OBJS = \
 	prop_ltree2.o \
 	prop_citext.o \
 	prop_citext2.o \
-	prop_cube.o
+	prop_cube.o \
+	prop_cubedist.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)

@@ -258,6 +258,7 @@ prop_area_sources = files(
   'prop_citext.c',
   'prop_citext2.c',
   'prop_cube.c',
+  'prop_cubedist.c',
 )
 
 
