@@ -248,6 +248,7 @@ prop_area_sources = files(
   'prop_updatesem.c',
   'prop_defaults.c',
   'prop_checkconstraint.c',
+  'prop_foreignkey.c',
 )
 
 
