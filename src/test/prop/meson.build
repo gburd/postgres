@@ -58,6 +58,7 @@ prop_area_sources = files(
   'prop_textcase.c',
   'prop_textlength.c',
   'prop_textnum.c',
+  'prop_textsplit.c',
 )
 
 
