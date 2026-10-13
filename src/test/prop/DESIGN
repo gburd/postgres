@@ -275,14 +275,17 @@ reference answer, so a disagreement is unambiguously a server bug:
   column is drawn from the parent's actual key values), so joins have a real
   referential structure for the planner to exploit.  Properties: TLP over a FK
   join, join-cardinality commutativity and the cross-product bound, and that a
-  FK equi-join returns exactly the non-NULL-FK child rows.  The generator has a
-  small/fast default profile (used by the committed TAP run) and a wide/deep
-  profile (many wide tables, up to thousands of rows, TOAST-sized columns, low-
-  versus high-cardinality columns) for the opt-in high-iteration bug hunt.
-  The deep profile also varies TOAST storage mode per column (PLAIN / MAIN /
-  EXTERNAL / EXTENDED) and attaches result-neutral BEFORE-row triggers to some
-  tables (they return the row unchanged, so SELECT oracles stay sound while the
-  relation still carries trigger metadata and the write path runs the trigger).
+  FK equi-join returns exactly the non-NULL-FK child rows.  The generator has
+  three profiles selected by the PG_PROP_DEEP environment variable: unset (the
+  small, fast, deterministic default the committed TAP run uses); "fast" (a
+  leaner deep profile -- a few bounded-size tables, still multi-table with FKs,
+  subqueries, TOAST and triggers -- cheap enough to run tens of thousands of
+  iterations unattended); and "full" (the maximal profile: many wide tables, up
+  to thousands of rows, heavy TOAST, for a short, heavily-resourced run).  The
+  deep profiles vary TOAST storage mode per column (PLAIN / MAIN / EXTERNAL /
+  EXTENDED) and attach result-neutral BEFORE-row triggers to some tables (they
+  return the row unchanged, so SELECT oracles stay sound while the relation
+  still carries trigger metadata and the write path runs the trigger).
 
 * query_deep -- the oracles over an arbitrary generated query shape, not just a
   single join.  qg_build_query() walks the foreign-key graph to build a random
