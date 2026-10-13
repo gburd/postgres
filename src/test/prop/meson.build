@@ -225,6 +225,7 @@ prop_area_sources = files(
   'prop_cte.c',
   'prop_recursivecte.c',
   'prop_dmlcte.c',
+  'prop_lateral.c',
 )
 
 
