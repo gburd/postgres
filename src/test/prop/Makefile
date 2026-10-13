@@ -201,7 +201,8 @@ OBJS = \
 	prop_windowexcl.o \
 	prop_windowagg.o \
 	prop_windownav.o \
-	prop_windowdistinct.o
+	prop_windowdistinct.o \
+	prop_grouphaving.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
