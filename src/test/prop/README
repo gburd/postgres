@@ -207,3 +207,36 @@ the OBJS list in Makefile, and the area list in the matching TAP driver
 
 See pg_prop.h for the full generator and assertion API, and DESIGN for the
 rationale and internals.
+
+
+Extensions
+==========
+
+An extension can take part in the suite in two ways, and may do either or both.
+
+(a) Add its own area.  This is just "add a new area" above with the extension's
+name: a prop_<ext>.c that defines PG_PROP_AREA and uses PG_PROP(), whose connect
+helper runs CREATE EXTENSION IF NOT EXISTS <ext>.  Every contrib area already in
+this tree (hstore, ltree, citext, cube, seg, intarray, pg_trgm, ...) is exactly
+this shape.  An out-of-tree extension ships the file and arranges for it to be
+compiled into the pg_prop binary.
+
+(b) Augment an existing area through an extension point.  A core area may
+publish a named point and call pg_prop_run_hooks() there; an extension registers
+a contributor with PG_PROP_HOOK("point", fn).  The SQL query generator
+(sql/query_gen.h) publishes three:
+
+    query_gen.setup      run DDL (CREATE EXTENSION) before each generated table;
+                         ctx is the live connection.
+    query_gen.column     add a typed column to the generated table; ctx is the
+                         qg_schema being assembled.
+    query_gen.predicate  emit a predicate leaf over the extension's column; ctx
+                         is a qg_pred_ctx (schema + buffer).
+
+Registering those three teaches the generator about the extension's type, after
+which every query-level oracle -- TLP, NoREC, cardinality, PQS, plan-advice --
+generates tables and queries that use the type and checks all of its invariants
+over it, with no new oracle code.  sql/prop_query_ext_citext.c is a complete
+worked example (it also adds one citext-specific area, to show both styles in
+one file).  A core area makes itself extensible simply by publishing a point and
+documenting the ctx type its contributors receive.
