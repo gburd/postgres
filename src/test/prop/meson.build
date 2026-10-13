@@ -109,6 +109,7 @@ prop_area_sources = files(
   'prop_jsonbarray.c',
   'prop_jsonbroundtrip.c',
   'prop_jsonnest.c',
+  'prop_jsonbuild.c',
 )
 
 
