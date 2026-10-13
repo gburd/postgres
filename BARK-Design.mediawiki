@@ -1323,6 +1323,17 @@ POSTING key, seven queries (prefix, POSTING key, no match, = ANY, two keys)
 equal to a seqscan at work_mem 64kB (lossy) and 64MB (exact);
 bark_multikey_ginmerge adds weighted tsqueries (recheck per vector).
 
+'''As built (RXSIZE, start latch).''' A read of an open-ended
+partial-match boundary on the leading, ascending column stops comparing
+each key with the boundary's start once one key is inside it (startlatch
+and instart in BarkMkScanState, set by bark_mk_gin_first, honoured by
+bark_mk_cmp): the keys only grow from there, so the column comparator's
+two calls per entry (filter and required-key advance) go, and procedure 12
+alone decides each entry and the range's end. A later column or a DESC
+column compares as before. Tests (bark_multikey_gin.sql): nine prefix
+queries over an ascending, a DESC and a two-column index, NULL and empty
+arrays among the rows, bitmap and index scan each equal to a seqscan.
+
 '''Strategies.''' An operator in a BARK family has whatever strategy number
 its class gives it, as in GIN; the number is only passed to procedures 8 and
 9. <code>amstrategies</code> becomes 0, so CREATE OPERATOR CLASS accepts any
