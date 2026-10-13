@@ -150,6 +150,7 @@ prop_area_sources = files(
   'prop_datetrunc.c',
   'prop_timeops.c',
   'prop_timeextract.c',
+  'prop_timestamptz.c',
 )
 
 
