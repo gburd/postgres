@@ -79,6 +79,7 @@ prop_area_sources = files(
   'prop_bool.c',
   'prop_boolcast.c',
   'prop_booltest.c',
+  'prop_boolexpr.c',
 )
 
 
