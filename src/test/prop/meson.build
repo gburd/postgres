@@ -147,6 +147,7 @@ prop_area_sources = files(
   'prop_dateparts.c',
   'prop_datefmt.c',
   'prop_datecast.c',
+  'prop_datetrunc.c',
 )
 
 
