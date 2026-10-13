@@ -43,6 +43,7 @@ prop_area_sources = files(
   'prop_powexp.c',
   'prop_float.c',
   'prop_floatspecial.c',
+  'prop_floatcast.c',
 )
 
 
