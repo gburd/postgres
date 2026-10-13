@@ -186,7 +186,8 @@ OBJS = \
 	prop_aggdedup.o \
 	prop_boolagg.o \
 	prop_minmaxagg.o \
-	prop_ordagg.o
+	prop_ordagg.o \
+	prop_percentilefn.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
