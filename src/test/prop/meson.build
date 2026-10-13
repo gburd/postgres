@@ -85,6 +85,7 @@ prop_area_sources = files(
   'prop_coalesce.c',
   'prop_coalescefn.c',
   'prop_nullsemantics.c',
+  'prop_nulldistinct.c',
 )
 
 
