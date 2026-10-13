@@ -173,7 +173,8 @@ CREATE TABLE gt_q (q text);
 INSERT INTO gt_q SELECT format('v @@ %L::tsquery', t) FROM unnest(ARRAY[
   'apple', 'zebra & apple', 'ban:* & cherry', 'ban:* | cat:*', 'apple & ban:* & cat:* & dog',
   'zebra & !apple', '!apple', 'ap:* & !apricot', 'apple <-> banana', 'cat:* & zebra1:*',
-  'nomatch:*', 'zebra & nomatch', 'b:* & c:* & d:*']) t;
+  'nomatch:*', 'zebra & nomatch', 'b:* & c:* & d:*',
+  'apple:D | banana:D', 'ban:* | cherry:D']) t;
 SELECT q, cardinality(gm_run('gt', NULL, q)) AS n,
        gm_run('gt', 'gt_bark', q) = gm_run('gt', NULL, q) AS bark_ok,
        gm_run('gt', 'gt_gin', q) = gm_run('gt', NULL, q) AS gin_ok
@@ -185,15 +186,17 @@ FROM gt_q ORDER BY q;
  v @@ 'apple & ban:* & cat:* & dog'::tsquery |  130 | t       | t
  v @@ 'apple <-> banana'::tsquery            |  351 | t       | t
  v @@ 'apple'::tsquery                       | 2987 | t       | t
+ v @@ 'apple:D | banana:D'::tsquery          | 3367 | t       | t
  v @@ 'b:* & c:* & d:*'::tsquery             |  295 | t       | t
  v @@ 'ban:* & cherry'::tsquery              |  657 | t       | t
  v @@ 'ban:* | cat:*'::tsquery               | 3319 | t       | t
+ v @@ 'ban:* | cherry:D'::tsquery            | 3098 | t       | t
  v @@ 'cat:* & zebra1:*'::tsquery            |    9 | t       | t
  v @@ 'nomatch:*'::tsquery                   |    0 | t       | t
  v @@ 'zebra & !apple'::tsquery              |  201 | t       | t
  v @@ 'zebra & apple'::tsquery               |  519 | t       | t
  v @@ 'zebra & nomatch'::tsquery             |    0 | t       | t
-(13 rows)
+(15 rows)
 
 DROP TABLE gm, gm_q, gm_res, gt, gt_q;
 DROP FUNCTION gm_run(text, text, text);

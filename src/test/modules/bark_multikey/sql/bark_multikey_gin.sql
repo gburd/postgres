@@ -135,6 +135,53 @@ SELECT cardinality(bark) AS n,
   AS like_ok
 FROM mp_any;
 
+-- A bitmap scan of a partial match reads each boundary straight into the
+-- TIDBitmap (bark_mk_gin_key), so the bitmap's work_mem bounds it: at 64kB
+-- it goes lossy, at 64MB it stays exact, and the rows are the seqscan's
+-- either way.  Every row holds 'pp', one key of 60000 rows in POSTING
+-- entries; 'p' matches it and the 'p<n>' keys, 'q1' some rows, 'zz' none.
+-- The heap rows are wide, so that 64kB of bitmap cannot hold every page.
+CREATE TABLE mb (id int, t text[] COLLATE "C", pad text);
+INSERT INTO mb SELECT i, ARRAY['pp', 'p' || (i % 37), 'q' || (i % 11)], repeat('x', 200)
+FROM generate_series(1, 60000) i;
+CREATE INDEX mb_bark ON mb USING bark (t bark_text_prefix_ops);
+VACUUM ANALYZE mb;
+SELECT bark_index_check('mb_bark');
+CREATE EXTENSION pageinspect;
+SELECT count(*) FILTER (WHERE shape = 'POSTING') > 0 AS has_posting
+FROM generate_series(1, pg_relation_size('mb_bark') / 8192 - 1) b,
+     bark_page_items('mb_bark', b);
+DROP EXTENSION pageinspect;
+-- The rows of q through a bitmap scan (bitmap) or a seqscan, and whether
+-- the scan's heap blocks went lossy.
+CREATE FUNCTION mb_run(q text, bitmap bool, OUT ids int[], OUT lossy bool)
+LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+  PERFORM set_config('enable_seqscan', (NOT bitmap)::text, true);
+  PERFORM set_config('enable_bitmapscan', bitmap::text, true);
+  PERFORM set_config('enable_indexscan', 'off', true);
+  EXECUTE format('SELECT coalesce(array_agg(id ORDER BY id), ''{}'') FROM mb WHERE %s', q)
+    INTO ids;
+  lossy := false;
+  FOR l IN EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) SELECT id FROM mb WHERE %s', q) LOOP
+    lossy := lossy OR l LIKE '%lossy=%';
+  END LOOP;
+END $$;
+CREATE TABLE mb_q (q text);
+INSERT INTO mb_q VALUES ($$t %^% 'p'$$), ($$t %^% 'pp'$$), ($$t %^% 'p1'$$),
+  ($$t %^% 'q1'$$), ($$t %^% 'zz'$$), ($$t %^% ANY (ARRAY['p3', 'q10'])$$),
+  ($$t %^% 'p1' AND t %^% 'q1'$$);
+SET work_mem = '64kB';
+SELECT q, cardinality(b.ids) AS n, b.ids = s.ids AS ok, b.lossy
+FROM mb_q, mb_run(q, true) b, mb_run(q, false) s ORDER BY q;
+SET work_mem = '64MB';
+SELECT q, cardinality(b.ids) AS n, b.ids = s.ids AS ok, b.lossy
+FROM mb_q, mb_run(q, true) b, mb_run(q, false) s ORDER BY q;
+RESET work_mem;
+DROP TABLE mb, mb_q;
+DROP FUNCTION mb_run(text, bool);
+
 DROP TABLE mg, mg_q, mg_arr, mp, mp_res, mp_any;
 DROP FUNCTION mg_run(text, text), mg_saop(text);
 DROP EXTENSION bark_multikey;
