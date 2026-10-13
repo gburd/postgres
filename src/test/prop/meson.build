@@ -83,6 +83,7 @@ prop_area_sources = files(
   'prop_casewhen.c',
   'prop_condexpr.c',
   'prop_coalesce.c',
+  'prop_coalescefn.c',
 )
 
 
