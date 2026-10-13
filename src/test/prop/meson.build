@@ -244,6 +244,7 @@ prop_area_sources = files(
   'prop_savepoint.c',
   'prop_returning.c',
   'prop_upsert.c',
+  'prop_mergecmd.c',
 )
 
 
