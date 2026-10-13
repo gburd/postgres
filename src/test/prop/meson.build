@@ -26,6 +26,7 @@ prop_area_sources = files(
   'prop_base64.c',
   'prop_prng.c',
   'prop_crypto.c',
+  'prop_scram.c',
 )
 
 
