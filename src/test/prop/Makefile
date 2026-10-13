@@ -173,7 +173,8 @@ OBJS = \
 	prop_concatop.o \
 	prop_coerce.o \
 	prop_collate.o \
-	prop_textord.o
+	prop_textord.o \
+	prop_jsonvsjsonb.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
