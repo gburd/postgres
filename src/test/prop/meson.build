@@ -239,6 +239,7 @@ prop_area_sources = files(
   'prop_predpushdown.c',
   'prop_spillpaths.c',
   'prop_tablesample.c',
+  'prop_rowcompare.c',
 )
 
 
