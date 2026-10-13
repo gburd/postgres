@@ -118,6 +118,7 @@ prop_area_sources = files(
   'prop_jsonpathmath.c',
   'prop_jsoneach.c',
   'prop_array.c',
+  'prop_arrayops.c',
 )
 
 
