@@ -90,6 +90,7 @@ prop_area_sources = files(
   'prop_uuid.c',
   'prop_uuidops.c',
   'prop_bytea.c',
+  'prop_byteaops.c',
 )
 
 
