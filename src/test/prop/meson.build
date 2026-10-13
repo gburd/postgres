@@ -27,6 +27,7 @@ prop_area_sources = files(
   'prop_prng.c',
   'prop_crypto.c',
   'prop_scram.c',
+  'prop_binaryheap.c',
 )
 
 
