@@ -207,6 +207,7 @@ prop_area_sources = files(
   'prop_rollup2.c',
   'prop_partprune.c',
   'prop_nbtree.c',
+  'prop_indexscan.c',
 )
 
 
