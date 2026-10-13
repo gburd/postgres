@@ -145,6 +145,7 @@ prop_area_sources = files(
   'prop_tsrank.c',
   'prop_date.c',
   'prop_dateparts.c',
+  'prop_datefmt.c',
 )
 
 
