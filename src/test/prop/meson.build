@@ -106,6 +106,7 @@ prop_area_sources = files(
   'prop_jsonbdelete.c',
   'prop_jsonbexists.c',
   'prop_jsonbmerge.c',
+  'prop_jsonbarray.c',
 )
 
 
