@@ -177,6 +177,7 @@ prop_area_sources = files(
   'prop_boxops.c',
   'prop_xmlfmt.c',
   'prop_aggregate.c',
+  'prop_aggstrategies.c',
 )
 
 
