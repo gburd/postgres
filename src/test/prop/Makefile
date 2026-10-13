@@ -268,7 +268,8 @@ OBJS = \
 	prop_pgtrgm.o \
 	prop_pgtrgm2.o \
 	prop_fuzzystr.o \
-	prop_unaccent.o
+	prop_unaccent.o \
+	prop_isn.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
