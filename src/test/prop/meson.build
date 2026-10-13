@@ -24,6 +24,7 @@ prop_area_sources = files(
   'prop_unicode_norm.c',
   'prop_pglz.c',
   'prop_base64.c',
+  'prop_prng.c',
 )
 
 
