@@ -123,6 +123,7 @@ prop_area_sources = files(
   'prop_arraycmp.c',
   'prop_arrayconstruct.c',
   'prop_arrayreduce.c',
+  'prop_arraysort.c',
 )
 
 
