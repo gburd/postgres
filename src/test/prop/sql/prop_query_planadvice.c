@@ -236,6 +236,42 @@ PG_PROP(join_plan_invariant)
 }
 
 /*
+ * The same self-join steered to a merge join (MERGE_JOIN_PLAIN).  A merge join
+ * sorts both inputs and advances them in lockstep, a wholly different executor
+ * path from nested-loop and hash joins and one with its own NULL-key and tie
+ * handling; the rows must not change.  The equi-join key uses IS NOT DISTINCT
+ * FROM so NULL keys participate, which is where merge-join bugs tend to hide.
+ */
+PG_PROP(mergejoin_plan_invariant)
+{
+	pg_prop_conn *conn;
+	int			nrows;
+	StringInfoData pred;
+	StringInfoData q;
+
+	conn = connect_advice(tc);
+	qg_build_table(tc, conn, &nrows);
+
+	initStringInfo(&pred);
+	qg_draw_predicate(tc, &pred);
+
+	initStringInfo(&q);
+	appendStringInfo(&q,
+					 "SELECT t.id, u.id FROM "
+					 "(SELECT * FROM " QG_TABLE " WHERE (%s)) t "
+					 "JOIN " QG_TABLE
+					 " u ON (t.a IS NOT DISTINCT FROM u.b) "
+					 "ORDER BY t.id, u.id",
+					 pred.data);
+
+	require_plan_invariant(tc, conn, q.data, "MERGE_JOIN_PLAIN(u)", "");
+
+	pfree(pred.data);
+	pfree(q.data);
+	pg_prop_disconnect(conn);
+}
+
+/*
  * A three-way self-join steered to a specific join order.  The planner is
  * free to associate and commute the joins however it costs cheapest; forcing
  * a particular JOIN_ORDER must not change the rows.  Join reordering is a
