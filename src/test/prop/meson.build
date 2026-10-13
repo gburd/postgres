@@ -76,6 +76,7 @@ prop_area_sources = files(
   'prop_charfuncs.c',
   'prop_varchartypmod.c',
   'prop_cash.c',
+  'prop_bool.c',
 )
 
 
