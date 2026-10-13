@@ -243,7 +243,8 @@ OBJS = \
 	prop_spillpaths.o \
 	prop_tablesample.o \
 	prop_rowcompare.o \
-	prop_mvcc.o
+	prop_mvcc.o \
+	prop_savepoint.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
