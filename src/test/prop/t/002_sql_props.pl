@@ -25,7 +25,7 @@ use PostgreSQL::Test::Utils;
 use Test::More;
 
 # Keep in step with the Tier-B entries in prop_area_sources (meson.build).
-my @areas = qw(numeric numcast numscale numround);
+my @areas = qw(numeric numcast numscale numround numfmt);
 
 # No Tier-B areas wired in yet (e.g. the initial harness-only commit): nothing
 # to run, which is a pass.  Skip before starting a node, so we don't pay for a
