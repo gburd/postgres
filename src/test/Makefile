@@ -34,12 +34,15 @@ endif
 ifeq ($(with_ssl),openssl)
 SUBDIRS += ssl
 endif
+ifeq ($(with_hegel),yes)
+SUBDIRS += prop
+endif
 
 # We don't build or execute these by default, but we do want "make
 # clean" etc to recurse into them.  (We must filter out those that we
 # have conditionally included into SUBDIRS above, else there will be
 # make confusion.)
-ALWAYS_SUBDIRS = $(filter-out $(SUBDIRS),examples kerberos icu ldap ssl)
+ALWAYS_SUBDIRS = $(filter-out $(SUBDIRS),examples kerberos icu ldap ssl prop)
 
 # We want to recurse to all subdirs for all standard targets, except that
 # installcheck and install should not recurse into the subdirectory "modules".
