@@ -260,6 +260,7 @@ prop_area_sources = files(
   'prop_cube.c',
   'prop_cubedist.c',
   'prop_seg.c',
+  'prop_intarray.c',
 )
 
 
