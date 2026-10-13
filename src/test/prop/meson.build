@@ -94,6 +94,7 @@ prop_area_sources = files(
   'prop_bit.c',
   'prop_record.c',
   'prop_enum.c',
+  'prop_jsonb.c',
 )
 
 
