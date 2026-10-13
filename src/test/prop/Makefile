@@ -176,7 +176,8 @@ OBJS = \
 	prop_textord.o \
 	prop_jsonvsjsonb.o \
 	prop_geopoint.o \
-	prop_geoseg.o
+	prop_geoseg.o \
+	prop_boxops.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
