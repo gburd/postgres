@@ -223,6 +223,7 @@ prop_area_sources = files(
   'prop_subqscalar.c',
   'prop_corrsubq.c',
   'prop_cte.c',
+  'prop_recursivecte.c',
 )
 
 
