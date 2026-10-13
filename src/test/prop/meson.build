@@ -67,6 +67,7 @@ prop_area_sources = files(
   'prop_like.c',
   'prop_likepattern.c',
   'prop_stringmatch.c',
+  'prop_regexp.c',
 )
 
 
