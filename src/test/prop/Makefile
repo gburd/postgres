@@ -223,7 +223,8 @@ OBJS = \
 	prop_exceptintersect.o \
 	prop_unionall.o \
 	prop_subquery.o \
-	prop_subqscalar.o
+	prop_subqscalar.o \
+	prop_corrsubq.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
