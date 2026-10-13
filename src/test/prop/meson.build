@@ -161,6 +161,7 @@ prop_area_sources = files(
   'prop_toformat.c',
   'prop_scalarfn.c',
   'prop_hashfn.c',
+  'prop_hashfns2.c',
 )
 
 
