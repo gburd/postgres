@@ -205,7 +205,8 @@ OBJS = \
 	prop_grouphaving.o \
 	prop_groupingsets.o \
 	prop_groupsets2.o \
-	prop_grouphash.o
+	prop_grouphash.o \
+	prop_havingclause.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
