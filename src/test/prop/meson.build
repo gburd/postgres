@@ -212,6 +212,7 @@ prop_area_sources = files(
   'prop_joinmethods.c',
   'prop_outerjoin.c',
   'prop_joincard.c',
+  'prop_selfjoin.c',
 )
 
 
