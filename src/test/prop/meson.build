@@ -44,6 +44,7 @@ prop_area_sources = files(
   'prop_float.c',
   'prop_floatspecial.c',
   'prop_floatcast.c',
+  'prop_intops.c',
 )
 
 
