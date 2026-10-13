@@ -280,8 +280,17 @@ PG_PROP(to_char_numeric_scale)
 	if (conn == NULL)
 		pg_prop_fail(tc, "connect failed: %s", err ? err : "");
 
-	/* up to 6 integer digits (fits '999999') and 4 fractional digits */
-	ipart = pg_prop_draw_int(tc, 0, 999999);
+	/*
+	 * Up to 6 integer digits ('FM999999' has six nine-positions) and 4
+	 * fractional digits.  Cap the integer part at 999998 (not 999999): a
+	 * fractional part >= .9995 rounds the thousandths up and carries into the
+	 * integer part, so 999999.9995 would round to 1000000.000 -- seven integer
+	 * digits, which overflows the six-position format and makes to_char emit
+	 * '#' fill that to_number cannot parse.  Leaving one digit of headroom
+	 * keeps the rounded value within six integer digits for every fractional
+	 * part.
+	 */
+	ipart = pg_prop_draw_int(tc, 0, 999998);
 	fpart = pg_prop_draw_int(tc, 0, 9999);
 	neg = pg_prop_draw_bool(tc);
 
