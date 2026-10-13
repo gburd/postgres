@@ -22,6 +22,7 @@ prop_area_sources = files(
   'prop_encoding.c',
   'prop_unicode_case.c',
   'prop_unicode_norm.c',
+  'prop_pglz.c',
 )
 
 

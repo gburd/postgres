@@ -24,7 +24,8 @@ OBJS = \
 	prop_jsonapi.o \
 	prop_encoding.o \
 	prop_unicode_case.o \
-	prop_unicode_norm.o
+	prop_unicode_norm.o \
+	prop_pglz.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
