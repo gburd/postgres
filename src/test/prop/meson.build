@@ -194,6 +194,7 @@ prop_area_sources = files(
   'prop_jsonobjectagg.c',
   'prop_window.c',
   'prop_windowframes.c',
+  'prop_windowrank.c',
 )
 
 
