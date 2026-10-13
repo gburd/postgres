@@ -188,6 +188,7 @@ prop_area_sources = files(
   'prop_filteragg.c',
   'prop_countfilter.c',
   'prop_stringagg.c',
+  'prop_strconcat.c',
 )
 
 
