@@ -222,6 +222,7 @@ prop_area_sources = files(
   'prop_subquery.c',
   'prop_subqscalar.c',
   'prop_corrsubq.c',
+  'prop_cte.c',
 )
 
 
