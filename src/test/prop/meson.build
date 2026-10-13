@@ -220,6 +220,7 @@ prop_area_sources = files(
   'prop_exceptintersect.c',
   'prop_unionall.c',
   'prop_subquery.c',
+  'prop_subqscalar.c',
 )
 
 
