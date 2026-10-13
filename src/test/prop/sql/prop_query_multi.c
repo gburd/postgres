@@ -132,7 +132,7 @@ PG_PROP(join_tlp)
 	if (conn == NULL)
 		pg_prop_fail(tc, "connect failed: %s", err ? err : "");
 
-	qg_db_params_default(&p);
+	qg_db_params_for_env(&p);
 	db = qg_build_db(tc, conn, &p);
 
 	ci = find_child(db);
@@ -204,7 +204,7 @@ PG_PROP(join_card_commutes_and_bounded)
 	if (conn == NULL)
 		pg_prop_fail(tc, "connect failed: %s", err ? err : "");
 
-	qg_db_params_default(&p);
+	qg_db_params_for_env(&p);
 	db = qg_build_db(tc, conn, &p);
 
 	ci = find_child(db);
@@ -267,7 +267,7 @@ PG_PROP(fk_join_eq_nonnull_children)
 	if (conn == NULL)
 		pg_prop_fail(tc, "connect failed: %s", err ? err : "");
 
-	qg_db_params_default(&p);
+	qg_db_params_for_env(&p);
 	db = qg_build_db(tc, conn, &p);
 
 	ci = find_child(db);

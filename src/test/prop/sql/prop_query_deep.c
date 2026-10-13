@@ -112,7 +112,7 @@ setup(pg_prop_tc *tc, pg_prop_conn **conn_out, qg_db **db_out, qg_query *q)
 	if (conn == NULL)
 		pg_prop_fail(tc, "connect failed: %s", err ? err : "");
 
-	qg_db_params_default(&p);
+	qg_db_params_for_env(&p);
 	db = qg_build_db(tc, conn, &p);
 
 	if (!qg_build_query(tc, db, QG_DEEP_MAX, q))
@@ -367,7 +367,7 @@ PG_PROP(deep_corr_subquery)
 	if (conn == NULL)
 		pg_prop_fail(tc, "connect failed: %s", err ? err : "");
 
-	qg_db_params_default(&p);
+	qg_db_params_for_env(&p);
 	db = qg_build_db(tc, conn, &p);
 
 	for (int i = 0; i < db->ntables; i++)
