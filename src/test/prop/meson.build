@@ -202,6 +202,7 @@ prop_area_sources = files(
   'prop_grouphaving.c',
   'prop_groupingsets.c',
   'prop_groupsets2.c',
+  'prop_grouphash.c',
 )
 
 
