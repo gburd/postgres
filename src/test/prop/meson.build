@@ -34,6 +34,7 @@ prop_area_sources = files(
   'prop_numscale.c',
   'prop_numround.c',
   'prop_numfmt.c',
+  'prop_numericalg.c',
 )
 
 
