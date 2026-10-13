@@ -183,6 +183,7 @@ prop_area_sources = files(
   'prop_aggdedup.c',
   'prop_boolagg.c',
   'prop_minmaxagg.c',
+  'prop_ordagg.c',
 )
 
 
