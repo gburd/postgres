@@ -206,6 +206,7 @@ prop_area_sources = files(
   'prop_havingclause.c',
   'prop_rollup2.c',
   'prop_partprune.c',
+  'prop_nbtree.c',
 )
 
 
