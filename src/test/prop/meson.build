@@ -122,6 +122,7 @@ prop_area_sources = files(
   'prop_arrayslice.c',
   'prop_arraycmp.c',
   'prop_arrayconstruct.c',
+  'prop_arrayreduce.c',
 )
 
 
