@@ -240,6 +240,7 @@ prop_area_sources = files(
   'prop_spillpaths.c',
   'prop_tablesample.c',
   'prop_rowcompare.c',
+  'prop_mvcc.c',
 )
 
 
