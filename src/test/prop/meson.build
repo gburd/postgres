@@ -265,6 +265,7 @@ prop_area_sources = files(
   'prop_pgtrgm.c',
   'prop_pgtrgm2.c',
   'prop_fuzzystr.c',
+  'prop_unaccent.c',
 )
 
 
