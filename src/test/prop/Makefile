@@ -109,7 +109,8 @@ OBJS = \
 	prop_jsonbdelete.o \
 	prop_jsonbexists.o \
 	prop_jsonbmerge.o \
-	prop_jsonbarray.o
+	prop_jsonbarray.o \
+	prop_jsonbroundtrip.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
