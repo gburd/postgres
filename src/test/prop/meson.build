@@ -144,6 +144,7 @@ prop_area_sources = files(
   'prop_tsquerylaw.c',
   'prop_tsrank.c',
   'prop_date.c',
+  'prop_dateparts.c',
 )
 
 
