@@ -467,7 +467,7 @@ qg_db_params_deep(qg_db_params *p)
 	p->min_rows = 0;
 	p->max_rows = 2000;			/* volume extremes: some empty, some large */
 	p->allow_fk = true;
-	p->allow_triggers = false;	/* 0c enables */
+	p->allow_triggers = true;	/* result-neutral triggers in the deep hunt */
 	p->toast_profile = 2;
 	p->cardinality_bias = 0;
 }
@@ -545,6 +545,45 @@ build_table_schema(pg_prop_tc *tc, qg_table *t, int ncols, int fkref,
 	}
 }
 
+/*
+ * Emit SET STORAGE for the varlena (text/numeric) columns of a table, cycling
+ * through PLAIN/MAIN/EXTERNAL/EXTENDED so the TOAST storage machinery is
+ * exercised in all its modes.  PLAIN forbids out-of-line storage (so a large
+ * value would error) -- so only choose PLAIN for columns the generator keeps
+ * small; the TOAST-eligible text columns (draw == draw_toast_text_or_null) get
+ * EXTERNAL (uncompressed out-of-line) or EXTENDED (compressed), never PLAIN.
+ */
+static void
+emit_storage_modes(pg_prop_tc *tc, StringInfo ddl, const qg_table *t)
+{
+	int			col;
+
+	for (col = 0; col < t->schema.ncols; col++)
+	{
+		const qg_column *c = &t->schema.cols[col];
+		const char *mode;
+		bool		toastable = c->is_text_like || !c->is_numeric_like;
+
+		/* only varlena columns have a meaningful STORAGE setting */
+		if (!c->is_text_like &&
+			strncmp(c->sqltype, "numeric", 7) != 0)
+			continue;
+
+		if (c->draw == draw_toast_text_or_null)
+			mode = pg_prop_draw_bool(tc) ? "EXTERNAL" : "EXTENDED";
+		else
+		{
+			static const char *const modes[] = {"PLAIN", "MAIN",
+				"EXTERNAL", "EXTENDED"};
+
+			mode = modes[pg_prop_draw_int(tc, 0, 3)];
+		}
+		(void) toastable;
+		appendStringInfo(ddl, "ALTER TABLE %s ALTER COLUMN %s SET STORAGE %s; ",
+						 t->name, c->name, mode);
+	}
+}
+
 qg_db *
 qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn, const qg_db_params *p)
 {
@@ -564,6 +603,19 @@ qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn, const qg_db_params *p)
 	db->ntables = nt;
 
 	initStringInfo(&ddl);
+
+	/*
+	 * A result-neutral trigger function: it fires on write but returns the
+	 * row unchanged, so it changes nothing a SELECT can observe while still
+	 * forcing the relation to carry trigger metadata and the executor to run
+	 * the trigger-firing path (which disables some optimisations, e.g.
+	 * tuple-routing and HOT shortcuts).  Created idempotently.
+	 */
+	if (p->allow_triggers)
+		appendStringInfoString(&ddl,
+							   "CREATE OR REPLACE FUNCTION qg_noop_trig() "
+							   "RETURNS trigger LANGUAGE plpgsql AS "
+							   "$$ BEGIN RETURN NEW; END $$; ");
 
 	for (ti = 0; ti < nt; ti++)
 	{
@@ -595,6 +647,20 @@ qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn, const qg_db_params *p)
 							 ", FOREIGN KEY (fk) REFERENCES %s(id)",
 							 db->tables[t->fkref].name);
 		appendStringInfoString(&ddl, "); ");
+
+		/* 0b: vary TOAST storage modes on the varlena columns */
+		emit_storage_modes(tc, &ddl, t);
+
+		/*
+		 * 0c: attach a result-neutral BEFORE INSERT/UPDATE row trigger to some
+		 * tables, so the relation carries trigger metadata and the write path
+		 * runs the trigger.  Result-neutral, so SELECT oracles stay sound.
+		 */
+		if (p->allow_triggers && pg_prop_draw_bool(tc))
+			appendStringInfo(&ddl,
+							 "CREATE TRIGGER %s_trig BEFORE INSERT OR UPDATE ON %s "
+							 "FOR EACH ROW EXECUTE FUNCTION qg_noop_trig(); ",
+							 t->name, t->name);
 	}
 
 	/* populate parents before children (ascending ti == build order) */
@@ -743,4 +809,160 @@ qg_draw_predicate_on(pg_prop_tc *tc, StringInfo buf, const qg_table *t,
 					 const char *alias)
 {
 	draw_predicate_on_rec(tc, buf, t, alias, 0);
+}
+
+/* ---- deep query builder (Phase 1) ------------------------------------ */
+
+/*
+ * Build a left-deep join chain starting at table "start", following FK edges:
+ * each step joins in the table that "start"'s current frontier references (its
+ * parent) or a child that references the frontier.  Aliases are r0, r1, ...
+ * The chain is at most max_joins long and stops when no further FK edge is
+ * available.  Appends the "<tbl> r0 JOIN <tbl> r1 ON ..." text to "from" and
+ * records each alias's table in used[] / aliases[].
+ *
+ * Returns the number of tables in the chain (>= 1).
+ */
+static int
+build_join_chain(pg_prop_tc *tc, const qg_db *db, int start, int max_joins,
+				 StringInfo from, const qg_table *used[], char aliases[][QG_NAME_LEN])
+{
+	int			n = 0;
+	int			cur = start;
+
+	used[0] = &db->tables[cur];
+	snprintf(aliases[0], QG_NAME_LEN, "r0");
+	appendStringInfo(from, "%s r0", db->tables[cur].name);
+	n = 1;
+
+	while (n <= max_joins)
+	{
+		const qg_table *frontier = used[n - 1];
+		int			nexttab = -1;
+		bool		frontier_is_child = false;
+
+		/* prefer the frontier's own parent (frontier.fk -> parent.id) */
+		if (frontier->fkref >= 0)
+		{
+			nexttab = frontier->fkref;
+			frontier_is_child = true;
+		}
+		else
+		{
+			/* else find any child that references the frontier */
+			for (int i = 0; i < db->ntables; i++)
+				if (db->tables[i].fkref >= 0 &&
+					&db->tables[db->tables[i].fkref] == frontier)
+				{
+					nexttab = i;
+					frontier_is_child = false;
+					break;
+				}
+		}
+		if (nexttab < 0)
+			break;
+
+		used[n] = &db->tables[nexttab];
+		snprintf(aliases[n], QG_NAME_LEN, "r%d", n);
+
+		/* inner or left join, drawn */
+		appendStringInfo(from, " %s JOIN %s %s ON ",
+						 pg_prop_draw_bool(tc) ? "" : "LEFT",
+						 db->tables[nexttab].name, aliases[n]);
+		if (frontier_is_child)
+			/* frontier.fk = new.id */
+			appendStringInfo(from, "%s.fk = %s.id", aliases[n - 1], aliases[n]);
+		else
+			/* new.fk = frontier.id */
+			appendStringInfo(from, "%s.fk = %s.id", aliases[n], aliases[n - 1]);
+		n++;
+	}
+	return n;
+}
+
+bool
+qg_build_query(pg_prop_tc *tc, const qg_db *db, int max_depth, qg_query *q)
+{
+	const qg_table *used[QG_MAX_TABLES];
+	char		aliases[QG_MAX_TABLES][QG_NAME_LEN];
+	StringInfoData from;
+	StringInfoData keys;
+	StringInfoData sel;
+	int			start;
+	int			nchain;
+	int			maxj;
+	int			i;
+
+	if (db->ntables == 0)
+		return false;
+
+	start = (int) pg_prop_draw_int(tc, 0, db->ntables - 1);
+	maxj = (max_depth < 1) ? 1 : max_depth;
+	if (maxj > db->ntables - 1)
+		maxj = db->ntables - 1;
+	if (maxj < 0)
+		maxj = 0;
+
+	initStringInfo(&from);
+	nchain = build_join_chain(tc, db, start, maxj, &from, used, aliases);
+
+	/*
+	 * Project each joined table's id as the stable key list, aliased k0, k1,
+	 * ... so the output column names are unique (two relations both have a
+	 * column named id) and an outer query that wraps select_from can order by
+	 * and reference the keys by those names.
+	 */
+	initStringInfo(&keys);		/* SELECT target list: r0.id AS k0, ... */
+	{
+		StringInfoData keynames;	/* k0, k1, ... for ORDER BY / outer refs */
+
+		initStringInfo(&keynames);
+		for (i = 0; i < nchain; i++)
+		{
+			if (i > 0)
+			{
+				appendStringInfoString(&keys, ", ");
+				appendStringInfoString(&keynames, ", ");
+			}
+			appendStringInfo(&keys, "%s.id AS k%d", aliases[i], i);
+			appendStringInfo(&keynames, "k%d", i);
+		}
+
+		/* the mutable predicate ranges over the anchor r0 */
+		q->pred_table = used[0];
+		snprintf(q->pred_alias, QG_NAME_LEN, "%s", aliases[0]);
+
+		/*
+		 * The builder returns the plain join tree: select_from is always
+		 * "SELECT <keys> FROM <join>" with the mutable predicate ranging over
+		 * the anchor alias r0.  Wrapping in a derived table or CTE is left to
+		 * the oracles that want it (deep_cte_inline builds the inline / CTE /
+		 * materialized forms on top of this), which keeps string assembly free
+		 * of nested-WITH and alias collisions.  keys holds the k-named output
+		 * columns, so an outer wrapper orders by and selects them by name.
+		 */
+		initStringInfo(&sel);
+		appendStringInfo(&sel, "SELECT %s FROM %s", keys.data, from.data);
+		q->select_from = pstrdup(sel.data);
+		q->keys = pstrdup(keynames.data);
+		q->order_by = psprintf("ORDER BY %s", keynames.data);
+		pfree(keynames.data);
+	}
+
+	pfree(from.data);
+	pfree(keys.data);
+	pfree(sel.data);
+	return true;
+}
+
+void
+qg_free_query(qg_query *q)
+{
+	if (q->select_from)
+		pfree(q->select_from);
+	if (q->order_by)
+		pfree(q->order_by);
+	if (q->keys)
+		pfree(q->keys);
+	q->select_from = q->order_by = q->keys = NULL;
 }
