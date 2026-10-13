@@ -169,7 +169,8 @@ OBJS = \
 	prop_width_bucket.o \
 	prop_genseries.o \
 	prop_genseries2.o \
-	prop_castchain.o
+	prop_castchain.o \
+	prop_concatop.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
