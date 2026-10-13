@@ -91,7 +91,8 @@ OBJS = \
 	prop_nulldistinct.o \
 	prop_oid.o \
 	prop_uuid.o \
-	prop_uuidops.o
+	prop_uuidops.o \
+	prop_bytea.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
