@@ -201,6 +201,7 @@ prop_area_sources = files(
   'prop_windowdistinct.c',
   'prop_grouphaving.c',
   'prop_groupingsets.c',
+  'prop_groupsets2.c',
 )
 
 
