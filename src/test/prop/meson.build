@@ -173,6 +173,7 @@ prop_area_sources = files(
   'prop_textord.c',
   'prop_jsonvsjsonb.c',
   'prop_geopoint.c',
+  'prop_geoseg.c',
 )
 
 
