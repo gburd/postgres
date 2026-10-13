@@ -187,6 +187,7 @@ prop_area_sources = files(
   'prop_percentilefn.c',
   'prop_filteragg.c',
   'prop_countfilter.c',
+  'prop_stringagg.c',
 )
 
 
