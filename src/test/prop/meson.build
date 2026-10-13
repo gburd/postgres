@@ -97,6 +97,7 @@ prop_area_sources = files(
   'prop_jsonb.c',
   'prop_jsonbops.c',
   'prop_jsonbpath.c',
+  'prop_jsonbagg2.c',
 )
 
 
