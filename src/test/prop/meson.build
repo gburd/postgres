@@ -28,6 +28,7 @@ prop_area_sources = files(
   'prop_crypto.c',
   'prop_scram.c',
   'prop_binaryheap.c',
+  'prop_bitutils.c',
 )
 
 
