@@ -127,6 +127,7 @@ prop_area_sources = files(
   'prop_arraynull.c',
   'prop_anyall.c',
   'prop_inlist.c',
+  'prop_range.c',
 )
 
 
