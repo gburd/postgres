@@ -30,7 +30,8 @@ OBJS = \
 	prop_prng.o \
 	prop_crypto.o \
 	prop_scram.o \
-	prop_binaryheap.o
+	prop_binaryheap.o \
+	prop_bitutils.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
