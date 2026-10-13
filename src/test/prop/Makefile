@@ -238,7 +238,8 @@ OBJS = \
 	prop_sortmerge.o \
 	prop_orderbynulls.o \
 	prop_fetchties.o \
-	prop_pagination.o
+	prop_pagination.o \
+	prop_predpushdown.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
