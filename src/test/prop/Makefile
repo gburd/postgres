@@ -234,7 +234,8 @@ OBJS = \
 	prop_unnestjoin.o \
 	prop_distinct.o \
 	prop_distincton.o \
-	prop_sortlimit.o
+	prop_sortlimit.o \
+	prop_sortmerge.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
