@@ -349,6 +349,35 @@ To reproduce the measurement, build with -Db_coverage=true, zero the counters
 for the other suite, and compare the per-line DA: counts and the covered-line
 sets between the two tracefiles.
 
+Function and branch coverage of the query-level areas.  The query-generation
+areas (sql/) are measured separately because their value is executing planner
+and executor paths, where branch coverage is the metric that matters -- a wrong
+turn at a branch is exactly how a plan produces wrong rows.  On a branch-enabled
+coverage build (lcov --rc branch_coverage=1), the seven query areas alone,
+measured over src/backend/{optimizer,executor,parser} and nbtree, reach:
+
+    subtree                            lines    functions   branches
+    optimizer + executor + parser      29.2%    42.3%       20.1%
+
+and drive the specific files the oracles target:
+
+    file                               lines    functions   branches
+    optimizer/path/clausesel.c         85.2%    100%        72.4%
+    optimizer/prep/prepunion.c         77.3%    91.7%       55.8%
+    optimizer/plan/planner.c           43.8%    59.7%       31.0%
+    executor/nodeAgg.c                 53.8%    61.1%       36.4%
+    executor/nodeNestloop.c            69.2%    75.0%       47.2%
+    executor/nodeHashjoin.c            35.0%    35.3%       14.3%
+    executor/nodeMergejoin.c           57.6%    63.6%       29.5%
+
+clausesel.c and prepunion.c are high precisely because the predicate generator
+and the TLP/distinct set-operation oracles hammer them.  nodeMergejoin.c was at
+0% until a plan-advice property steering MERGE_JOIN_PLAIN was added -- branch
+coverage, not line or function, is what surfaced that the file was never entered
+at all, and the single new property took it to 57.6%/63.6%/29.5%.  The remaining
+nodeHashjoin.c branches are the spill paths, which the tiny-work_mem variants
+reach only intermittently at this table size.
+
 The takeaway for a reviewer: judge this suite by which code it reaches and by
 the standing differential net, not by a coverage-percentage delta or a
 depth-per-line multiplier -- the latter does not favor PBT and we do not claim
