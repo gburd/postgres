@@ -181,6 +181,7 @@ prop_area_sources = files(
   'prop_aggorder.c',
   'prop_aggdistinct.c',
   'prop_aggdedup.c',
+  'prop_boolagg.c',
 )
 
 
