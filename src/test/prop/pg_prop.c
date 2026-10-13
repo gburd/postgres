@@ -85,6 +85,85 @@ pg_prop_register(const char *area, const char *name, pg_prop_fn fn, void *arg)
 	nprops++;
 }
 
+/* ---- extension-point (hook) registry --------------------------------- *
+ *
+ * An extension that wants to augment an existing area -- rather than add a
+ * whole new area of its own -- registers a hook against a named extension
+ * point that the area publishes.  The area calls pg_prop_run_hooks() at the
+ * point, and every registered contributor runs in registration order with the
+ * area's context pointer.  This is how, for example, a contrib type can teach
+ * the SQL query generator to emit predicates over its own columns, so the
+ * existing TLP/NoREC/cardinality/PQS oracles then cover that type for free.
+ *
+ * Hooks are a flat list keyed by point name; areas and extensions agree on
+ * the point name and the concrete type behind the void *ctx out of band (in
+ * the point's documentation), exactly as a C callback contract always does.
+ */
+typedef struct HookEntry
+{
+	const char *point;
+	pg_prop_hook_fn fn;
+} HookEntry;
+
+#define MAX_HOOKS 1024
+static HookEntry hooks[MAX_HOOKS];
+static int	nhooks = 0;
+
+void
+pg_prop_register_hook(const char *point, pg_prop_hook_fn fn)
+{
+	if (nhooks >= MAX_HOOKS)
+	{
+		fprintf(stderr, "pg_prop: too many hooks (max %d)\n", MAX_HOOKS);
+		exit(2);
+	}
+	hooks[nhooks].point = point;
+	hooks[nhooks].fn = fn;
+	nhooks++;
+}
+
+int
+pg_prop_hooks_count(const char *point)
+{
+	int			n = 0;
+
+	for (int i = 0; i < nhooks; i++)
+		if (strcmp(hooks[i].point, point) == 0)
+			n++;
+	return n;
+}
+
+void
+pg_prop_run_hooks(pg_prop_tc *tc, const char *point, void *ctx)
+{
+	for (int i = 0; i < nhooks; i++)
+		if (strcmp(hooks[i].point, point) == 0)
+			hooks[i].fn(tc, point, ctx);
+}
+
+/*
+ * Run the Nth hook registered against "point" (0-based over just that point's
+ * contributors), or do nothing if n is out of range.  Lets an area pick one
+ * contributor at random -- e.g. the query generator choosing one extension
+ * type for a column -- rather than running all of them.
+ */
+void
+pg_prop_run_hook_n(pg_prop_tc *tc, const char *point, int n, void *ctx)
+{
+	int			seen = 0;
+
+	for (int i = 0; i < nhooks; i++)
+		if (strcmp(hooks[i].point, point) == 0)
+		{
+			if (seen == n)
+			{
+				hooks[i].fn(tc, point, ctx);
+				return;
+			}
+			seen++;
+		}
+}
+
 /* ---- per-case handle ------------------------------------------------- */
 
 /*

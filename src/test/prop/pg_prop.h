@@ -92,10 +92,55 @@ extern void pg_prop_register(const char *area, const char *name,
 	static void ident(pg_prop_tc *tc, void *arg)
 
 /*
- * pg_attribute_constructor runs a function before main().  c.h does not define
- * one, so define it here (GCC/Clang only, which is all the platforms libhegel
- * ships a prebuilt engine for).
+ * Extension points (hooks).
+ *
+ * Two ways an extension can participate in this suite:
+ *
+ *	 (a) Add a whole new area.  Compile a prop_<ext>.c into the pg_prop binary
+ *		 (see src/test/prop/README, "Extensions") that defines PG_PROP_AREA to
+ *		 the extension's name and uses PG_PROP() exactly as a core area does.
+ *		 Nothing else is needed: the constructor registers it and it appears as
+ *		 its own subcommand.  CREATE EXTENSION in the area's connect helper.
+ *
+ *	 (b) Augment an existing area.  A core area may publish a named extension
+ *		 point and call pg_prop_run_hooks() at it; an extension registers a
+ *		 contributor with PG_PROP_HOOK(point).  The contributor receives the
+ *		 point name and a void *ctx whose concrete type is documented by the
+ *		 point.  For example, the SQL query generator (sql/query_gen.h)
+ *		 publishes "query_gen.column" and "query_gen.predicate" so an
+ *		 extension type can add columns and predicate leaves to the generated
+ *		 tables and queries, after which every query-level oracle (TLP, NoREC,
+ *		 cardinality, PQS, plan-advice) covers that type with no further work.
+ *
+ * A hook contributor:
+ *
+ *		static void my_ext_cols(pg_prop_tc *tc, const char *point, void *ctx)
+ *		{
+ *			qg_schema *s = ctx;		// concrete type for this point
+ *			qg_add_column(s, "ck", "citext");
+ *		}
+ *		PG_PROP_HOOK("query_gen.column", my_ext_cols);
  */
+typedef void (*pg_prop_hook_fn) (pg_prop_tc *tc, const char *point, void *ctx);
+
+extern void pg_prop_register_hook(const char *point, pg_prop_hook_fn fn);
+extern int	pg_prop_hooks_count(const char *point);
+extern void pg_prop_run_hooks(pg_prop_tc *tc, const char *point, void *ctx);
+extern void pg_prop_run_hook_n(pg_prop_tc *tc, const char *point, int n,
+							   void *ctx);
+
+/*
+ * Register a hook contributor before main().  "point" is the extension-point
+ * name; "fn" runs when the publishing area reaches that point.  Place these at
+ * file scope in an extension's prop_<ext>.c.
+ */
+#define PG_PROP_HOOK(point, fn) \
+	static void pg_prop_hookreg_##fn(void) pg_attribute_constructor; \
+	static void pg_prop_hookreg_##fn(void) \
+	{ \
+		pg_prop_register_hook((point), (fn)); \
+	} \
+	struct pg_prop_hook_force_semicolon_##fn
 #ifndef pg_attribute_constructor
 #define pg_attribute_constructor __attribute__((constructor))
 #endif
