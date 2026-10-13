@@ -255,7 +255,8 @@ OBJS = \
 	prop_views.o \
 	prop_countsem.o \
 	prop_hstore.o \
-	prop_hstore2.o
+	prop_hstore2.o \
+	prop_ltree.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
