@@ -40,6 +40,7 @@ prop_area_sources = files(
   'prop_decimalfmt.c',
   'prop_mathfn.c',
   'prop_mathround.c',
+  'prop_powexp.c',
 )
 
 
