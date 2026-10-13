@@ -61,7 +61,8 @@ OBJS = \
 	prop_textcase.o \
 	prop_textlength.o \
 	prop_textnum.o \
-	prop_textsplit.o
+	prop_textsplit.o \
+	prop_strfunc.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
