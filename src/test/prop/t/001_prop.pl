@@ -25,7 +25,7 @@ use Test::More;
 # cluster.  The SQL-oracle (Tier B) areas run from t/002_sql_props.pl instead.
 #
 # Keep in step with the Tier-A entries in prop_area_sources (meson.build).
-my @areas = qw(path jsonapi encoding unicode_case unicode_norm pglz base64 prng);
+my @areas = qw(path jsonapi encoding unicode_case unicode_norm pglz base64 prng crypto);
 
 # No Tier-A areas wired in yet (e.g. the initial harness-only commit): nothing
 # to run, which is a pass, not a failure.

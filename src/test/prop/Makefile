@@ -27,7 +27,8 @@ OBJS = \
 	prop_unicode_norm.o \
 	prop_pglz.o \
 	prop_base64.o \
-	prop_prng.o
+	prop_prng.o \
+	prop_crypto.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
