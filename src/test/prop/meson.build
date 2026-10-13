@@ -246,6 +246,7 @@ prop_area_sources = files(
   'prop_upsert.c',
   'prop_mergecmd.c',
   'prop_updatesem.c',
+  'prop_defaults.c',
 )
 
 
