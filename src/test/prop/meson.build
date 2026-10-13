@@ -242,6 +242,7 @@ prop_area_sources = files(
   'prop_rowcompare.c',
   'prop_mvcc.c',
   'prop_savepoint.c',
+  'prop_returning.c',
 )
 
 
