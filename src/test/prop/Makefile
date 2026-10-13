@@ -77,7 +77,8 @@ OBJS = \
 	prop_char.o \
 	prop_charconv.o \
 	prop_charfuncs.o \
-	prop_varchartypmod.o
+	prop_varchartypmod.o \
+	prop_cash.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
