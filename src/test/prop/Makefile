@@ -192,7 +192,8 @@ OBJS = \
 	prop_countfilter.o \
 	prop_stringagg.o \
 	prop_strconcat.o \
-	prop_jsonagg.o
+	prop_jsonagg.o \
+	prop_jsonaggord.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
