@@ -56,7 +56,8 @@ OBJS = \
 	prop_arithcmp.o \
 	prop_cmpops.o \
 	prop_text.o \
-	prop_textfns.o
+	prop_textfns.o \
+	prop_textpos.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)

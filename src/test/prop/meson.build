@@ -54,6 +54,7 @@ prop_area_sources = files(
   'prop_cmpops.c',
   'prop_text.c',
   'prop_textfns.c',
+  'prop_textpos.c',
 )
 
 
