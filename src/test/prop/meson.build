@@ -232,6 +232,7 @@ prop_area_sources = files(
   'prop_distinct.c',
   'prop_distincton.c',
   'prop_sortlimit.c',
+  'prop_sortmerge.c',
 )
 
 
