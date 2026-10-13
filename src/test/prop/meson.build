@@ -52,6 +52,7 @@ prop_area_sources = files(
   'prop_safemath.c',
   'prop_arithcmp.c',
   'prop_cmpops.c',
+  'prop_text.c',
 )
 
 
