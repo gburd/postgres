@@ -235,6 +235,7 @@ prop_area_sources = files(
   'prop_sortmerge.c',
   'prop_orderbynulls.c',
   'prop_fetchties.c',
+  'prop_pagination.c',
 )
 
 
