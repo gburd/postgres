@@ -60,6 +60,7 @@ prop_area_sources = files(
   'prop_textnum.c',
   'prop_textsplit.c',
   'prop_strfunc.c',
+  'prop_strpos.c',
 )
 
 
