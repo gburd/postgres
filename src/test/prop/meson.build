@@ -277,8 +277,12 @@ prop_area_sources = files(
 prop_query_sources = files(
   'sql/query_gen.c',
   'sql/prop_query_tlp.c',
-  'sql/prop_query_planadvice.c',
+  'sql/prop_query_tlp_agg.c',
+  'sql/prop_query_tlp_distinct.c',
   'sql/prop_query_norec.c',
+  'sql/prop_query_cardinality.c',
+  'sql/prop_query_pqs.c',
+  'sql/prop_query_planadvice.c',
 )
 
 pg_prop = executable('pg_prop',

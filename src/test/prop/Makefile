@@ -272,8 +272,12 @@ OBJS = \
 	prop_isn.o \
 	sql/query_gen.o \
 	sql/prop_query_tlp.o \
-	sql/prop_query_planadvice.o \
-	sql/prop_query_norec.o
+	sql/prop_query_tlp_agg.o \
+	sql/prop_query_tlp_distinct.o \
+	sql/prop_query_norec.o \
+	sql/prop_query_cardinality.o \
+	sql/prop_query_pqs.o \
+	sql/prop_query_planadvice.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir) -I$(srcdir)/sql
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
