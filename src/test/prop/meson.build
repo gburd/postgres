@@ -171,6 +171,7 @@ prop_area_sources = files(
   'prop_coerce.c',
   'prop_collate.c',
   'prop_textord.c',
+  'prop_jsonvsjsonb.c',
 )
 
 
