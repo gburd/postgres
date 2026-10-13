@@ -136,6 +136,7 @@ prop_area_sources = files(
   'prop_networkops.c',
   'prop_cidrops.c',
   'prop_inet6.c',
+  'prop_macaddr.c',
 )
 
 
