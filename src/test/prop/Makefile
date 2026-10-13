@@ -45,7 +45,8 @@ OBJS = \
 	prop_mathround.o \
 	prop_powexp.o \
 	prop_float.o \
-	prop_floatspecial.o
+	prop_floatspecial.o \
+	prop_floatcast.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
