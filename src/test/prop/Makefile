@@ -39,7 +39,8 @@ OBJS = \
 	prop_numfmt.o \
 	prop_numericalg.o \
 	prop_numericcmp.o \
-	prop_numericdiv.o
+	prop_numericdiv.o \
+	prop_decimalfmt.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
