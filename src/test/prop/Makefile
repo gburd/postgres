@@ -156,7 +156,8 @@ OBJS = \
 	prop_timestamptz.o \
 	prop_tstzarith.o \
 	prop_tzconv.o \
-	prop_interval.o
+	prop_interval.o \
+	prop_intervalparts.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)

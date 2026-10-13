@@ -154,6 +154,7 @@ prop_area_sources = files(
   'prop_tstzarith.c',
   'prop_tzconv.c',
   'prop_interval.c',
+  'prop_intervalparts.c',
 )
 
 
