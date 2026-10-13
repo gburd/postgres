@@ -73,6 +73,7 @@ prop_area_sources = files(
   'prop_regexpreplace.c',
   'prop_char.c',
   'prop_charconv.c',
+  'prop_charfuncs.c',
 )
 
 
