@@ -165,6 +165,7 @@ prop_area_sources = files(
   'prop_pglsn.c',
   'prop_width_bucket.c',
   'prop_genseries.c',
+  'prop_genseries2.c',
 )
 
 
