@@ -103,7 +103,8 @@ CREATE TABLE gt_q (q text);
 INSERT INTO gt_q SELECT format('v @@ %L::tsquery', t) FROM unnest(ARRAY[
   'apple', 'zebra & apple', 'ban:* & cherry', 'ban:* | cat:*', 'apple & ban:* & cat:* & dog',
   'zebra & !apple', '!apple', 'ap:* & !apricot', 'apple <-> banana', 'cat:* & zebra1:*',
-  'nomatch:*', 'zebra & nomatch', 'b:* & c:* & d:*']) t;
+  'nomatch:*', 'zebra & nomatch', 'b:* & c:* & d:*',
+  'apple:D | banana:D', 'ban:* | cherry:D']) t;
 SELECT q, cardinality(gm_run('gt', NULL, q)) AS n,
        gm_run('gt', 'gt_bark', q) = gm_run('gt', NULL, q) AS bark_ok,
        gm_run('gt', 'gt_gin', q) = gm_run('gt', NULL, q) AS gin_ok

@@ -1329,6 +1329,22 @@ direct caller reading forward and backward (bark_multikey_walk); mark and
 restore at four places; and the leading-column rule (gm_bark_g stays
 bitmap-only).
 
+'''As built (RXSIZE, bitmap partial match).''' A bitmap scan of a
+GIN-interface key whose rows are the union of its boundaries' reads each
+boundary straight into the TIDBitmap (bark_mk_gin_union decides: consistent
+accepts every non-empty presence vector of at most four query keys; a key
+whose rows need a recheck, alone or in a vector none of whose other keys
+has one, goes in with one). No stream is built, sorted or merged, and the
+bitmap's work_mem bound replaces the exact, unbounded stream that
+6854f021dd8 allocated huge: past work_mem the bitmap goes lossy and the
+heap recheck decides, as for a GIN partial match. Several keys on the
+column, and keys consistent does not reduce to a union (AND, NOT, phrase),
+merge through the streams as before; index scans keep the streams (M2c).
+Tests (bark_multikey_gin.sql): a prefix class on 60000 rows with a
+POSTING key, seven queries (prefix, POSTING key, no match, = ANY, two keys)
+equal to a seqscan at work_mem 64kB (lossy) and 64MB (exact);
+bark_multikey_ginmerge adds weighted tsqueries (recheck per vector).
+
 '''Strategies.''' An operator in a BARK family has whatever strategy number
 its class gives it, as in GIN; the number is only passed to procedures 8 and
 9. <code>amstrategies</code> becomes 0, so CREATE OPERATOR CLASS accepts any
