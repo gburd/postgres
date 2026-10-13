@@ -176,6 +176,7 @@ prop_area_sources = files(
   'prop_geoseg.c',
   'prop_boxops.c',
   'prop_xmlfmt.c',
+  'prop_aggregate.c',
 )
 
 

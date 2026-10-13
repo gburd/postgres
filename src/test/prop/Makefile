@@ -178,7 +178,8 @@ OBJS = \
 	prop_geopoint.o \
 	prop_geoseg.o \
 	prop_boxops.o \
-	prop_xmlfmt.o
+	prop_xmlfmt.o \
+	prop_aggregate.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
