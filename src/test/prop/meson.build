@@ -169,6 +169,7 @@ prop_area_sources = files(
   'prop_castchain.c',
   'prop_concatop.c',
   'prop_coerce.c',
+  'prop_collate.c',
 )
 
 
