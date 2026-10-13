@@ -269,6 +269,17 @@ reference answer, so a disagreement is unambiguously a server bug:
   honor, so the alternate plan is a targeted legal variant of the same query
   rather than a global cost distortion.
 
+* query_multi -- the oracles above over a multi-table generated database rather
+  than a self-joined single table.  qg_build_db() creates 2..N related tables
+  with declared primary and foreign keys and correlated data (a child's FK
+  column is drawn from the parent's actual key values), so joins have a real
+  referential structure for the planner to exploit.  Properties: TLP over a FK
+  join, join-cardinality commutativity and the cross-product bound, and that a
+  FK equi-join returns exactly the non-NULL-FK child rows.  The generator has a
+  small/fast default profile (used by the committed TAP run) and a wide/deep
+  profile (many wide tables, up to thousands of rows, TOAST-sized columns, low-
+  versus high-cardinality columns) for the opt-in high-iteration bug hunt.
+
 
 Build-system integration
 ========================
