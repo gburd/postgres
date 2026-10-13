@@ -259,6 +259,7 @@ prop_area_sources = files(
   'prop_citext2.c',
   'prop_cube.c',
   'prop_cubedist.c',
+  'prop_seg.c',
 )
 
 
