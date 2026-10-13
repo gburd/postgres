@@ -473,6 +473,49 @@ qg_db_params_deep(qg_db_params *p)
 }
 
 /*
+ * A leaner deep profile: still multi-table with FKs, subquery/unnest shapes,
+ * TOAST and triggers, but with bounded table and row counts so the per-case
+ * DDL cost and memory stay low enough to run tens of thousands of iterations
+ * unattended on a modest box.  This is the profile the opt-in high-iteration
+ * hunt should use; qg_db_params_deep() is the "everything maximal" profile for
+ * a short, heavily-resourced run.
+ */
+void
+qg_db_params_deep_fast(qg_db_params *p)
+{
+	p->min_tables = 2;
+	p->max_tables = 6;
+	p->min_cols = 3;
+	p->max_cols = 10;
+	p->min_rows = 0;
+	p->max_rows = 200;
+	p->allow_fk = true;
+	p->allow_triggers = true;
+	p->toast_profile = 1;		/* ~10% large values: TOAST path, less bulk */
+	p->cardinality_bias = 0;
+}
+
+/*
+ * Choose the profile for a query area honouring the PG_PROP_DEEP environment
+ * variable: unset/0 -> the fast, deterministic default (committed TAP run);
+ * "fast" -> the leaner deep profile; "full" or any other non-empty value ->
+ * the maximal deep profile.  Areas call this instead of hard-coding a profile
+ * so the same binary runs the quick suite and the deep hunt.
+ */
+void
+qg_db_params_for_env(qg_db_params *p)
+{
+	const char *v = getenv("PG_PROP_DEEP");
+
+	if (v == NULL || v[0] == '\0' || strcmp(v, "0") == 0)
+		qg_db_params_default(p);
+	else if (strcmp(v, "fast") == 0)
+		qg_db_params_deep_fast(p);
+	else
+		qg_db_params_deep(p);
+}
+
+/*
  * Fill one table's schema with id (implicit PK), an optional FK column, and
  * ncols drawn data columns of mixed types and cardinalities.  Column names are
  * c0, c1, ...  Returns the FK column index (or -1) via *fkcol.

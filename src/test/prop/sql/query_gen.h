@@ -179,6 +179,17 @@ typedef struct qg_db_params
 
 extern void qg_db_params_default(qg_db_params *p);
 extern void qg_db_params_deep(qg_db_params *p);
+extern void qg_db_params_deep_fast(qg_db_params *p);
+
+/*
+ * Fill *p from the PG_PROP_DEEP environment variable: unset/0 -> the fast
+ * deterministic default profile (what the committed TAP run uses); "fast" ->
+ * the leaner deep profile (bounded rows/tables, still multi-table + subquery +
+ * TOAST + triggers) for a long unattended high-iteration hunt; "full" (or any
+ * other value) -> the maximal deep profile for a short, heavily-resourced run.
+ * Query areas call this so one binary serves both the quick suite and the hunt.
+ */
+extern void qg_db_params_for_env(qg_db_params *p);
 
 /*
  * Build a random database per the params (dropping any prior qg_t* tables).
