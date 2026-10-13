@@ -31,6 +31,7 @@ prop_area_sources = files(
   'prop_bitutils.c',
   'prop_numeric.c',
   'prop_numcast.c',
+  'prop_numscale.c',
 )
 
 
