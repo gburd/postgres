@@ -19,7 +19,8 @@ PROGRAM = pg_prop
 OBJS = \
 	$(WIN32RES) \
 	pg_prop.o \
-	pg_prop_sql.o
+	pg_prop_sql.o \
+	prop_path.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
