@@ -219,7 +219,8 @@ OBJS = \
 	prop_jointypes.o \
 	prop_antisemijoin.o \
 	prop_setops.o \
-	prop_setopstrat.o
+	prop_setopstrat.o \
+	prop_exceptintersect.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
