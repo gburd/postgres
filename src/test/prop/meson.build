@@ -211,6 +211,7 @@ prop_area_sources = files(
   'prop_indexdiff.c',
   'prop_joinmethods.c',
   'prop_outerjoin.c',
+  'prop_joincard.c',
 )
 
 
