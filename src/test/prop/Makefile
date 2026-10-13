@@ -49,7 +49,8 @@ OBJS = \
 	prop_floatcast.o \
 	prop_intops.o \
 	prop_intbit.o \
-	prop_bitint.o
+	prop_bitint.o \
+	prop_bitlogic.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
