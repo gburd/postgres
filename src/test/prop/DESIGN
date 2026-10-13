@@ -66,7 +66,8 @@ Shape of the tree
                         dependency.
     prop_<area>.c       one file per area; a set of PG_PROP() properties.
     sql/                query-level areas that generate whole SQL statements
-                        (query_gen.c plus the TLP, NoREC, and plan-advice areas).
+                        (query_gen.c plus the TLP, NoREC, cardinality, PQS, and
+                        plan-advice areas).
     t/001_prop.pl       TAP driver for the in-process (Tier A) areas.
     t/002_sql_props.pl  TAP driver for the SQL-oracle (Tier B) areas; starts a
                         node.
@@ -230,18 +231,43 @@ reference answer, so a disagreement is unambiguously a server bug:
   p IS NULL, so the three partitions UNION ALL'd must reconstruct the unfiltered
   relation.
 
+* query_tlp_agg -- the same ternary partition applied to aggregates: count(*),
+  sum, min and max over the whole table must equal the fold of the three
+  partition aggregates.  Exercises the hash/sorted aggregation paths and the
+  NULL/empty-group folding that plain row return does not.
+
+* query_tlp_distinct -- the ternary partition under DISTINCT and the set
+  operators: DISTINCT distributes over the partition up to UNION, the p and
+  NOT-p partitions are disjoint (INTERSECT is empty), and EXCEPT recovers the
+  p-IS-NULL partition.  Exercises duplicate elimination and set-operation
+  handling.
+
 * query_norec -- compare an optimizable count(*) ... WHERE p against the
   un-optimizable twin that pulls p into a bare per-row scan; the counts must
-  match.
+  match.  Variants cover the FALSE partition, a sum under the filter, and the
+  predicate across a self-join (where pushdown interacts with the join).
+
+* query_cardinality -- metamorphic relations on result size rather than
+  contents: adding a conjunct cannot grow and adding a disjunct cannot shrink a
+  result, the ternary partition tiles the table exactly, DISTINCT never grows a
+  projection, and UNION ALL is additive while UNION is no larger.  Cheap (one
+  count per query) yet broad.
+
+* query_pqs -- Pivoted Query Synthesis (Rigger and Su, ESEC/FSE 2020).  Pick a
+  real pivot row, read its values, synthesize a WHERE predicate guaranteed TRUE
+  for it by rectifying every leaf against those values, and require the pivot's
+  id in the result.  Unlike the metamorphic oracles it checks a single query
+  against a single known-true fact, so it catches a bug that corrupts both
+  sides of a comparison identically.
 
 * query_planadvice -- run a generated query with the planner free and again
-  steered by contrib/pg_plan_advice (SEQ_SCAN, NESTED_LOOP_PLAIN, and so on, via
-  the pg_plan_advice.advice GUC), plus a tiny-work_mem spill variant; the result
-  must not depend on the plan the planner chose.  Advice is used in preference
-  to the blunt enable_* GUCs because it names the exact relation or join to
-  re-shape and the extension rejects advice it cannot honor, so the alternate
-  plan is a targeted legal variant of the same query rather than a global cost
-  distortion.
+  steered by contrib/pg_plan_advice (SEQ_SCAN, NESTED_LOOP_PLAIN, JOIN_ORDER,
+  and so on, via the pg_plan_advice.advice GUC), plus a tiny-work_mem spill
+  variant; the result must not depend on the plan the planner chose.  Advice is
+  used in preference to the blunt enable_* GUCs because it names the exact
+  relation or join to re-shape and the extension rejects advice it cannot
+  honor, so the alternate plan is a targeted legal variant of the same query
+  rather than a global cost distortion.
 
 
 Build-system integration
@@ -374,7 +400,11 @@ Limitations and future work
   structures in src/backend/lib (for example the radix tree and the TID store)
   are the natural first customers.
 
-* More query-generation oracles are the obvious growth area: TLP for aggregates
-  and DISTINCT, Pivoted Query Synthesis, join-order metamorphic testing via
-  pg_plan_advice, and cardinality-monotonicity checks.  These are where a live
-  wrong-results bug is most likely to turn up.
+* More query-generation oracles remain a growth area.  Implemented so far: TLP
+  (rows, aggregates, DISTINCT/set-ops), NoREC, plan-advice metamorphic testing
+  (scan/join method, join order, spill), result-cardinality monotonicity, and
+  Pivoted Query Synthesis.  Still open and likely to find a live wrong-results
+  bug: a multi-table generator for richer join-order and subquery-unnesting
+  equivalence, constant-folding metamorphic checks, and correlated-subquery
+  rewrites.  A larger/deeper generator (wider joins, more columns, correlated
+  data) run at high iteration is the lever most likely to turn one up.
