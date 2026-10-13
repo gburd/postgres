@@ -46,6 +46,7 @@ prop_area_sources = files(
   'prop_floatcast.c',
   'prop_intops.c',
   'prop_intbit.c',
+  'prop_bitint.c',
 )
 
 
