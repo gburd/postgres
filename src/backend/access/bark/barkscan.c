@@ -4072,6 +4072,10 @@ bark_gettuple(IndexScanDesc scan, ScanDirection dir)
  * has one position, so the skip saves the merge and the consistent calls,
  * not the leaf pages.
  *
+ * A bitmap scan of a key that every row of any of its boundaries matches (a
+ * partial match over a path, an OR of prefixes) skips the streams: each
+ * boundary's TIDs go straight into the TIDBitmap (bark_mk_gin_union).
+ *
  * Several keys on the column are intersected and a ScalarArrayOp's
  * elements unioned, by TID.  A row met through a NULL entry comes back with
  * a recheck, since that entry stands for a NULL value, an empty value and a
@@ -4118,6 +4122,19 @@ bark_gin_stream_size_cmp(const void *a, const void *b, void *arg)
 					  streams[*(const int *) b].nitems);
 }
 
+/* Position the scan on boundary b, for a read of its entries. */
+static bool
+bark_mk_gin_first(IndexScanDesc scan, const BarkMkBoundary *b)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+
+	so->mk->bounds[0] = *b;
+	so->mk->partialpast = false;
+	BarkScanPosUnpinIfPinned(so->currPos);
+	BarkScanPosInvalidate(so->currPos);
+	return bark_first(scan, ForwardScanDirection);
+}
+
 /*
  * Read boundary b's entries, with the scan's other keys as filters, into
  * stream s, one item per heap TID for query key entry: sorted by TID, and
@@ -4134,11 +4151,7 @@ bark_mk_gin_read(IndexScanDesc scan, const BarkMkBoundary *b, int entry,
 	int			n;
 
 	memset(s, 0, sizeof(*s));
-	so->mk->bounds[0] = *b;
-	so->mk->partialpast = false;
-	BarkScanPosUnpinIfPinned(so->currPos);
-	BarkScanPosInvalidate(so->currPos);
-	if (!bark_first(scan, ForwardScanDirection))
+	if (!bark_mk_gin_first(scan, b))
 		return;
 	do
 	{
@@ -4153,10 +4166,10 @@ bark_mk_gin_read(IndexScanDesc scan, const BarkMkBoundary *b, int entry,
 				 * operator class's extractQuery may ask for every key of a
 				 * path, as DocumentDB's $elemMatch on scalars does), so a
 				 * stream can hold every TID of the column: allocate huge.
-				 * ponytail: the streams are exact and unbounded, 12 bytes a
-				 * TID; GIN bounds a partial match by a work_mem TIDBitmap
-				 * that goes lossy.  Spill to a lossy bitmap past work_mem if
-				 * memory per query matters.
+				 * The streams are exact, 12 bytes a TID, and unbounded; a
+				 * bitmap scan avoids them for the common shape, a key whose
+				 * rows all come from one partial-match boundary
+				 * (bark_mk_gin_key), whose memory the TIDBitmap bounds.
 				 */
 				maxitems = Max(maxitems * 2, 256);
 				s->items = s->items == NULL ?
@@ -4186,6 +4199,83 @@ bark_mk_gin_read(IndexScanDesc scan, const BarkMkBoundary *b, int entry,
 			s->items[n++] = s->items[i];
 	}
 	s->nitems = n;
+}
+
+/*
+ * Read boundary b's entries straight into tbm, each TID with recheck when
+ * recheck or its entry asks for one.  Returns how many TIDs were added.
+ */
+static int64
+bark_mk_gin_read_bitmap(IndexScanDesc scan, const BarkMkBoundary *b,
+						bool recheck, TIDBitmap *tbm)
+{
+	BarkScanOpaque so = (BarkScanOpaque) scan->opaque;
+	int64		ntids = 0;
+
+	if (!bark_mk_gin_first(scan, b))
+		return 0;
+	do
+	{
+		for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
+			tbm_add_tuples(tbm, &so->currPos.items[i].heapTid, 1,
+						   recheck || so->currPos.items[i].recheck);
+		ntids += so->currPos.lastItem - so->currPos.firstItem + 1;
+	} while (bark_steppage(scan, ForwardScanDirection));
+	return ntids;
+}
+
+/*
+ * Does a row whose presence vector is check[0 .. nentries] match scan key
+ * sk, with query as its argument?  triConsistent (13) answers when the
+ * class has it, else consistent (11); *recheck is set when the answer needs
+ * one.  A NULL test matches every row its hidden streams hold.
+ */
+static bool
+bark_mk_gin_consistent(BarkMkScanState *mk, ScanKey sk, Datum query,
+					   bool nulltest, int32 nentries, bool *check,
+					   GinTernaryValue *tcheck, Pointer *extra,
+					   Datum *qkeys, bool *nullFlags, bool *recheck)
+{
+	*recheck = false;
+	if (nulltest)
+		return true;
+	if (mk->gintriconsistent != NULL)
+	{
+		GinTernaryValue r;
+
+		for (int k = 0; k < nentries; k++)
+			tcheck[k] = check[k] ? GIN_TRUE : GIN_FALSE;
+		r = DatumGetGinTernaryValue(FunctionCall7Coll(mk->gintriconsistent,
+													  mk->col->collation,
+													  PointerGetDatum(tcheck),
+													  UInt16GetDatum(sk->sk_strategy),
+													  query,
+													  Int32GetDatum(nentries),
+													  PointerGetDatum(extra),
+													  PointerGetDatum(qkeys),
+													  PointerGetDatum(nullFlags)));
+		*recheck = r == GIN_MAYBE;
+		return r != GIN_FALSE;
+	}
+	else
+	{
+		/* As GIN's directBoolConsistentFn: recheck unless told not to. */
+		bool		crecheck = true;
+		bool		match;
+
+		match = DatumGetBool(FunctionCall8Coll(mk->ginconsistent,
+											   mk->col->collation,
+											   PointerGetDatum(check),
+											   UInt16GetDatum(sk->sk_strategy),
+											   query,
+											   Int32GetDatum(nentries),
+											   PointerGetDatum(extra),
+											   PointerGetDatum(&crecheck),
+											   PointerGetDatum(qkeys),
+											   PointerGetDatum(nullFlags)));
+		*recheck = crecheck;
+		return match;
+	}
 }
 
 /*
@@ -4226,11 +4316,57 @@ bark_gin_stream_seek(BarkGinStream *s, ItemPointer tid)
 }
 
 /*
+ * Is every row that any of key sk's nentries query keys holds a match,
+ * whichever of the others hold it too?  Then the key's rows are the union
+ * of its boundaries', and a bitmap scan can read each boundary straight
+ * into its bitmap (bark_mk_gin_key).  Consistent is asked about every
+ * non-empty presence vector, as ginlogic.c's shim enumerates MAYBE inputs,
+ * so only a few keys are tried.  The bitmap keeps a recheck per key, not
+ * per vector, so *rmask gets the keys whose rows go in with a recheck: each
+ * key whose rows alone need one, and every key of a vector that needs one
+ * when none of its keys is in the mask yet.  The vectors come in numeric
+ * order, so each single key is tried before the vectors that contain it.
+ */
+static bool
+bark_mk_gin_union(BarkMkScanState *mk, ScanKey sk, Datum query,
+				  int32 nentries, Pointer *extra, Datum *qkeys,
+				  bool *nullFlags, bool *check, GinTernaryValue *tcheck,
+				  uint32 *rmask)
+{
+	Assert(nentries >= 1);
+	*rmask = 0;
+	if (nentries > 4)
+		return false;
+	for (uint32 v = 1; v < ((uint32) 1 << nentries); v++)
+	{
+		bool		recheck;
+
+		for (int i = 0; i < nentries; i++)
+			check[i] = (v & ((uint32) 1 << i)) != 0;
+		if (!bark_mk_gin_consistent(mk, sk, query, false, nentries, check,
+									tcheck, extra, qkeys, nullFlags, &recheck))
+			return false;
+		if (recheck && (v & *rmask) == 0)
+			*rmask |= v;
+	}
+	return true;
+}
+
+/*
  * The rows that scan key sk, with query as its argument, accepts: sorted by
  * TID into *out, with their recheck flags.  Returns how many.
+ *
+ * With tbm (a bitmap scan) the rows go into tbm instead, and the count is of
+ * the TIDs added.  When the key's rows are the union of its boundaries'
+ * (bark_mk_gin_union) each boundary is read straight into tbm, as ginget.c's
+ * collectMatchBitmap reads a partial match: no stream, no sort and no merge,
+ * and the memory is the bitmap's, bounded by work_mem (lossy beyond it).
+ * That is the common shape of a partial match over a whole path.  Any other
+ * key is merged as an index scan merges it, and its rows added at the end.
  */
-static int
-bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out)
+static int64
+bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out,
+				TIDBitmap *tbm)
 {
 	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
 	int32		nentries = 0;
@@ -4249,8 +4385,14 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out)
 	binaryheap *heap;
 	bool	   *check;
 	GinTernaryValue *tcheck;
+	BarkGinItem *items;
 	int			nout = 0;
+	bool		direct = false;
+	uint32		rmask = 0;
+	int64		nadded = 0;
 
+	if (out != NULL)
+		*out = NULL;
 	if (!nulltest)
 	{
 		qkeys = (Datum *)
@@ -4273,6 +4415,11 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out)
 		if (nullFlags == NULL)
 			nullFlags = palloc0_array(bool, nentries);
 	}
+	check = palloc0_array(bool, nentries + 1);
+	tcheck = palloc_array(GinTernaryValue, nentries + 1);
+	direct = tbm != NULL && !nulltest && mode == GIN_SEARCH_MODE_DEFAULT &&
+		bark_mk_gin_union(mk, sk, query, nentries, extra, qkeys, nullFlags,
+						  check, tcheck, &rmask);
 
 	/* Streams 0 .. nentries - 1 are the query keys', then the hidden ones. */
 	streams = palloc_array(BarkGinStream, nentries + 2);
@@ -4296,8 +4443,15 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out)
 			b.hasstart = b.hasend = b.point = true;
 			b.start = b.end = qkeys[i];
 		}
-		bark_mk_gin_read(scan, &b, i, &streams[nstreams++]);
+		if (direct)
+			nadded += bark_mk_gin_read_bitmap(scan, &b,
+											  (rmask & (((uint32) 1) << i)) != 0,
+											  tbm);
+		else
+			bark_mk_gin_read(scan, &b, i, &streams[nstreams++]);
 	}
+	if (direct)
+		return nadded;
 
 	/* The hidden entries: the NULL entries, and for ALL every key. */
 	if (nulltest || mode != GIN_SEARCH_MODE_DEFAULT)
@@ -4325,8 +4479,6 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out)
 	for (int i = 0; i < nstreams; i++)
 		order[i] = i;
 	nrequired = nstreams;
-	check = palloc0_array(bool, nentries + 1);
-	tcheck = palloc_array(GinTernaryValue, nentries + 1);
 	if (!nulltest && mk->gintriconsistent != NULL && nstreams == nentries &&
 		nentries > 1)
 	{
@@ -4361,6 +4513,8 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out)
 	if (binaryheap_empty(heap))
 		return 0;
 	binaryheap_build(heap);
+	if (out == NULL)
+		out = &items;
 	*out = palloc_extended(sizeof(BarkGinItem) * maxout, MCXT_ALLOC_HUGE);
 
 	while (!binaryheap_empty(heap))
@@ -4368,6 +4522,7 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out)
 		BarkGinStream *top = &streams[DatumGetInt32(binaryheap_first(heap))];
 		ItemPointerData tid = top->items[top->pos].tid;
 		bool		recheck = false;
+		bool		crecheck;
 		bool		match;
 
 		memset(check, 0, sizeof(bool) * (nentries + 1));
@@ -4400,43 +4555,10 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out)
 			}
 		}
 
-		if (nulltest)
-			match = true;
-		else if (mk->gintriconsistent != NULL)
-		{
-			GinTernaryValue r;
-
-			for (int k = 0; k < nentries; k++)
-				tcheck[k] = check[k] ? GIN_TRUE : GIN_FALSE;
-			r = DatumGetGinTernaryValue(FunctionCall7Coll(mk->gintriconsistent,
-														  mk->col->collation,
-														  PointerGetDatum(tcheck),
-														  UInt16GetDatum(sk->sk_strategy),
-														  query,
-														  Int32GetDatum(nentries),
-														  PointerGetDatum(extra),
-														  PointerGetDatum(qkeys),
-														  PointerGetDatum(nullFlags)));
-			match = r != GIN_FALSE;
-			recheck |= r == GIN_MAYBE;
-		}
-		else
-		{
-			/* As GIN's directBoolConsistentFn: recheck unless told not to. */
-			bool		crecheck = true;
-
-			match = DatumGetBool(FunctionCall8Coll(mk->ginconsistent,
-												   mk->col->collation,
-												   PointerGetDatum(check),
-												   UInt16GetDatum(sk->sk_strategy),
-												   query,
-												   Int32GetDatum(nentries),
-												   PointerGetDatum(extra),
-												   PointerGetDatum(&crecheck),
-												   PointerGetDatum(qkeys),
-												   PointerGetDatum(nullFlags)));
-			recheck |= crecheck;
-		}
+		match = bark_mk_gin_consistent(mk, sk, query, nulltest, nentries,
+									   check, tcheck, extra, qkeys, nullFlags,
+									   &crecheck);
+		recheck |= crecheck;
 		if (match)
 		{
 			(*out)[nout].tid = tid;
@@ -4445,6 +4567,11 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out)
 			nout++;
 		}
 		CHECK_FOR_INTERRUPTS();
+	}
+	if (tbm != NULL)
+	{
+		for (int i = 0; i < nout; i++)
+			tbm_add_tuples(tbm, &(*out)[i].tid, 1, (*out)[i].recheck);
 	}
 	return nout;
 }
@@ -4493,13 +4620,16 @@ bark_mk_gin_combine(BarkGinItem **a, int na, BarkGinItem *b, int nb,
 
 /*
  * The rows that a scan with keys on a column that uses GIN's query
- * interface accepts, every key accepting each, as in GIN: palloc'd in the
- * caller's memory context, sorted by TID, with their recheck flags.
- * *nitems is set to their number.  The work happens in a context of its
- * own, deleted before returning, and no buffer stays pinned.
+ * interface accepts, every key accepting each, as in GIN: palloc'd into
+ * *items in the caller's memory context, sorted by TID, with their recheck
+ * flags, and their number returned.  With tbm (a bitmap scan) they go into
+ * tbm instead, and the count is of the TIDs added; a single key on the
+ * column passes tbm down, so that bark_mk_gin_key can fill it directly.
+ * The work happens in a context of its own, deleted before returning, and
+ * no buffer stays pinned.
  */
-static BarkGinItem *
-bark_mk_gin_items(IndexScanDesc scan, int *nitems)
+static int64
+bark_mk_gin_items(IndexScanDesc scan, BarkGinItem **items, TIDBitmap *tbm)
 {
 	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext,
@@ -4508,9 +4638,11 @@ bark_mk_gin_items(IndexScanDesc scan, int *nitems)
 	MemoryContext oldcxt = MemoryContextSwitchTo(cxt);
 	BarkGinItem *acc = NULL;
 	int			nacc = 0;
-	BarkGinItem *result;
+	TIDBitmap  *ktbm = mk->nkeys == 1 ? tbm : NULL;
+	int64		nadded = 0;
 
 	Assert(scan->parallel_scan == NULL);
+	Assert((items == NULL) != (tbm == NULL));
 	for (int k = 0; k < mk->nkeys; k++)
 	{
 		ScanKey		sk = &mk->keys[k];
@@ -4541,12 +4673,20 @@ bark_mk_gin_items(IndexScanDesc scan, int *nitems)
 
 				if (nulls[e])
 					continue;
-				none = bark_mk_gin_key(scan, sk, elems[e], &one);
+				if (ktbm != NULL)
+				{
+					/* The bitmap is the union. */
+					nadded += bark_mk_gin_key(scan, sk, elems[e], NULL, ktbm);
+					continue;
+				}
+				none = bark_mk_gin_key(scan, sk, elems[e], &one, NULL);
 				nres = bark_mk_gin_combine(&res, nres, one, none, false);
 			}
 		}
+		else if (ktbm != NULL)
+			nadded = bark_mk_gin_key(scan, sk, sk->sk_argument, NULL, ktbm);
 		else
-			nres = bark_mk_gin_key(scan, sk, sk->sk_argument, &res);
+			nres = bark_mk_gin_key(scan, sk, sk->sk_argument, &res, NULL);
 
 		if (k == 0)
 		{
@@ -4562,25 +4702,25 @@ bark_mk_gin_items(IndexScanDesc scan, int *nitems)
 	BarkScanPosInvalidate(((BarkScanOpaque) scan->opaque)->currPos);
 
 	MemoryContextSwitchTo(oldcxt);
-	result = palloc_extended(sizeof(BarkGinItem) * Max(nacc, 1), MCXT_ALLOC_HUGE);
-	if (nacc > 0)
-		memcpy(result, acc, nacc * sizeof(BarkGinItem));
+	if (tbm != NULL)
+	{
+		if (ktbm == NULL)
+		{
+			for (int i = 0; i < nacc; i++)
+				tbm_add_tuples(tbm, &acc[i].tid, 1, acc[i].recheck);
+			nadded = nacc;
+		}
+	}
+	else
+	{
+		*items = palloc_extended(sizeof(BarkGinItem) * Max(nacc, 1),
+								 MCXT_ALLOC_HUGE);
+		if (nacc > 0)
+			memcpy(*items, acc, nacc * sizeof(BarkGinItem));
+		nadded = nacc;
+	}
 	MemoryContextDelete(cxt);
-	*nitems = nacc;
-	return result;
-}
-
-/* amgetbitmap for a scan with keys on a GIN-interface column. */
-static int64
-bark_mk_gin_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
-{
-	int			nitems;
-	BarkGinItem *items = bark_mk_gin_items(scan, &nitems);
-
-	for (int i = 0; i < nitems; i++)
-		tbm_add_tuples(tbm, &items[i].tid, 1, items[i].recheck);
-	pfree(items);
-	return nitems;
+	return nadded;
 }
 
 /*
@@ -4630,7 +4770,7 @@ bark_mk_gin_gettuple(IndexScanDesc scan, ScanDirection dir)
 					 errmsg("parallel index scans of BARK index \"%s\" through GIN's query interface are not supported",
 							RelationGetRelationName(scan->indexRelation))));
 		oldcxt = MemoryContextSwitchTo(mk->ginCxt);
-		mk->ginitems = bark_mk_gin_items(scan, &mk->nginitems);
+		mk->nginitems = bark_mk_gin_items(scan, &mk->ginitems, NULL);
 		MemoryContextSwitchTo(oldcxt);
 		mk->ginpos = ScanDirectionIsForward(dir) ? -1 : mk->nginitems;
 		mk->ginready = true;
@@ -4676,7 +4816,7 @@ bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	if (so->mk != NULL)
 		so->mk->bitmap = true;
 	if (so->mk != NULL && so->mk->gin && so->mk->nkeys > 0)
-		return bark_mk_gin_getbitmap(scan, tbm);
+		return bark_mk_gin_items(scan, NULL, tbm);
 	if (!bark_first(scan, ForwardScanDirection))
 		return 0;
 	do
