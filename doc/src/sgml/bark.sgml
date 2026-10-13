@@ -474,7 +474,10 @@ int2 translate_cmptype(int4 cmptype)
    some keys (as for <literal>@&gt;</literal>), it tests only the rows of
    the rarest such keys.  Unlike GIN, it still reads every index entry of
    each key, so <literal>@&gt;</literal> with one rare and one very common
-   element takes several times as long as on a GIN index.
+   element takes several times as long as on a GIN index.  A bitmap scan
+   of a key that any of its index keys satisfies alone (a partial match,
+   an <literal>OR</literal>) adds each index entry's rows straight to the
+   bitmap, whose size <xref linkend="guc-work-mem"/> bounds, as in GIN.
   </para>
 
   <para>
