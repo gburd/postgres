@@ -613,6 +613,21 @@ the rare key has rows.  Every stream is still read to its end: the scan
 has one leaf position, so the frequent key's leaf pages are read even when
 few of its TIDs are needed.
 
+A bitmap scan whose key is the union of its boundaries skips the streams
+(bark_mk_gin_union decides it): when consistent accepts every non-empty
+presence vector of at most four query keys, every row of any boundary
+matches, so bark_mk_gin_read_bitmap adds each boundary's TIDs straight to
+the TIDBitmap, page by page, as ginget.c's collectMatchBitmap reads a
+partial match.  A key whose rows alone need a recheck adds them with one,
+and so does every key of a vector that needs a recheck when none of its
+keys has one already.  That is the common shape of a partial match over a
+whole path (DocumentDB's $regex, $size, $exists): there is no stream, no
+sort and no merge, and memory is the bitmap's, bounded by work_mem and
+lossy beyond it, where a stream is exact and unbounded (12 bytes a TID).
+Only a single key on the column (or each element of its ScalarArrayOp,
+whose union the bitmap is) takes this path; several keys are intersected
+through the streams as before.
+
 Scans of an index with an extracted column ("Scans" under "M1: multikey
 keys" in the design document) keep the btree-style key code away from the
 column's keys, whose operators are not btree comparisons:
