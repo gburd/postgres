@@ -216,6 +216,7 @@ prop_area_sources = files(
   'prop_jointypes.c',
   'prop_antisemijoin.c',
   'prop_setops.c',
+  'prop_setopstrat.c',
 )
 
 
