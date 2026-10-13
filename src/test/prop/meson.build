@@ -47,6 +47,7 @@ prop_area_sources = files(
   'prop_intops.c',
   'prop_intbit.c',
   'prop_bitint.c',
+  'prop_bitlogic.c',
 )
 
 
