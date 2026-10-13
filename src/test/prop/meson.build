@@ -251,6 +251,7 @@ prop_area_sources = files(
   'prop_foreignkey.c',
   'prop_views.c',
   'prop_countsem.c',
+  'prop_hstore.c',
 )
 
 
