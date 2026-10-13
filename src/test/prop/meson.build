@@ -133,6 +133,7 @@ prop_area_sources = files(
   'prop_multirange.c',
   'prop_inet.c',
   'prop_inetarith.c',
+  'prop_networkops.c',
 )
 
 
