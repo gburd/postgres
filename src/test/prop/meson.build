@@ -37,6 +37,7 @@ prop_area_sources = files(
   'prop_numericalg.c',
   'prop_numericcmp.c',
   'prop_numericdiv.c',
+  'prop_decimalfmt.c',
 )
 
 
