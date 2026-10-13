@@ -156,6 +156,7 @@ prop_area_sources = files(
   'prop_interval.c',
   'prop_intervalparts.c',
   'prop_intervalcmp.c',
+  'prop_intervalio.c',
 )
 
 
