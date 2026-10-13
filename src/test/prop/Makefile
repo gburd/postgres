@@ -67,7 +67,8 @@ OBJS = \
 	prop_substring.o \
 	prop_padtrim.o \
 	prop_trimfns.o \
-	prop_like.o
+	prop_like.o \
+	prop_likepattern.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)

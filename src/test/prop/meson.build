@@ -65,6 +65,7 @@ prop_area_sources = files(
   'prop_padtrim.c',
   'prop_trimfns.c',
   'prop_like.c',
+  'prop_likepattern.c',
 )
 
 
