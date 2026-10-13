@@ -269,9 +269,13 @@ OBJS = \
 	prop_pgtrgm2.o \
 	prop_fuzzystr.o \
 	prop_unaccent.o \
-	prop_isn.o
+	prop_isn.o \
+	sql/query_gen.o \
+	sql/prop_query_tlp.o \
+	sql/prop_query_planadvice.o \
+	sql/prop_query_norec.o
 
-PG_CPPFLAGS = -I$(libpq_srcdir)
+PG_CPPFLAGS = -I$(libpq_srcdir) -I$(srcdir)/sql
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
 # libhegel's C engine.  Its include/lib dirs reach us through --with-includes
 # / --with-libraries (CPPFLAGS / LDFLAGS); here we just name the library.

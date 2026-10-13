@@ -270,8 +270,20 @@ prop_area_sources = files(
 )
 
 
+# Query-level areas live in the sql/ subdirectory and share query_gen.c,
+# which generates a random table and predicate.  They compile into the same
+# pg_prop binary and self-register the same way; t/002_sql_props.pl runs them
+# against the node it starts.
+prop_query_sources = files(
+  'sql/query_gen.c',
+  'sql/prop_query_tlp.c',
+  'sql/prop_query_planadvice.c',
+  'sql/prop_query_norec.c',
+)
+
 pg_prop = executable('pg_prop',
-  files('pg_prop.c', 'pg_prop_sql.c') + prop_area_sources,
+  files('pg_prop.c', 'pg_prop_sql.c') + prop_area_sources + prop_query_sources,
+  include_directories: include_directories('.', 'sql'),
   dependencies: [frontend_code, libpq, libhegel],
   kwargs: default_bin_args + {
     'install': false,
