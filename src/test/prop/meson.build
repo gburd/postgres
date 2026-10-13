@@ -179,6 +179,7 @@ prop_area_sources = files(
   'prop_aggregate.c',
   'prop_aggstrategies.c',
   'prop_aggorder.c',
+  'prop_aggdistinct.c',
 )
 
 
