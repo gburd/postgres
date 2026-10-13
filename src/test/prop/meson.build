@@ -252,6 +252,7 @@ prop_area_sources = files(
   'prop_views.c',
   'prop_countsem.c',
   'prop_hstore.c',
+  'prop_hstore2.c',
 )
 
 
