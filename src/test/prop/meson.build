@@ -158,6 +158,7 @@ prop_area_sources = files(
   'prop_intervalcmp.c',
   'prop_intervalio.c',
   'prop_tochar.c',
+  'prop_toformat.c',
 )
 
 
