@@ -164,7 +164,8 @@ OBJS = \
 	prop_toformat.o \
 	prop_scalarfn.o \
 	prop_hashfn.o \
-	prop_hashfns2.o
+	prop_hashfns2.o \
+	prop_pglsn.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir)
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
