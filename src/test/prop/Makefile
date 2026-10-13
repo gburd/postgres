@@ -1,0 +1,46 @@
+# src/test/prop/Makefile
+#
+# Property-based tests built on libhegel.  Only reachable when configure was
+# run with --with-hegel (which also requires --enable-tap-tests); see
+# src/test/Makefile.
+#
+# Everything links into one program, pg_prop, whose first argument selects the
+# area:  pg_prop <area> [options] [property ...].  The TAP driver runs each
+# area; a developer debugging a failure runs one area or one property by hand
+# with --iterations / --seed.  See README and DESIGN.
+
+PGFILEDESC = "pg_prop - property-based tests"
+PGAPPICON = win32
+
+PROGRAM = pg_prop
+# One object per area file, plus the shared harness (pg_prop.o) and the SQL
+# oracle helper (pg_prop_sql.o).  Add prop_<area>.o here as each area lands
+# (keep in step with the area lists in t/001_prop.pl and t/002_sql_props.pl).
+OBJS = \
+	$(WIN32RES) \
+	pg_prop.o \
+	pg_prop_sql.o
+
+PG_CPPFLAGS = -I$(libpq_srcdir)
+PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
+# libhegel's C engine.  Its include/lib dirs reach us through --with-includes
+# / --with-libraries (CPPFLAGS / LDFLAGS); here we just name the library.
+PG_LIBS_INTERNAL += -lhegel_c
+
+NO_INSTALL = 1
+TAP_TESTS = 1
+
+subdir = src/test/prop
+top_builddir = ../../..
+include $(top_builddir)/src/Makefile.global
+include $(top_srcdir)/contrib/contrib-global.mk
+
+# libhegel is usually installed outside the system loader path (reached via
+# --with-libraries), so record each configured extra library directory in
+# pg_prop's rpath; otherwise the dynamic loader cannot find libhegel_c.so at
+# run time.  Must come after Makefile.global, which defines LIBRARY_DIRS.
+# Harmless when LIBRARY_DIRS is empty.
+LDFLAGS += $(foreach dir,$(LIBRARY_DIRS),-Wl,-rpath,$(dir))
+
+pg_prop$(X): | submake-libpgfeutils
+check: pg_prop$(X)
