@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "version": "1.0.0",
+  "description": "PostgreSQL Windows dependency versions and build configuration",
+  "last_updated": "2026-03-10",
+
+  "build_config": {
+    "visual_studio_version": "2022",
+    "platform_toolset": "v143",
+    "target_architecture": "x64",
+    "configuration": "Release",
+    "runtime_library": "MultiThreadedDLL"
+  },
+
+  "dependencies": {
+    "openssl": {
+      "version": "3.0.13",
+      "url": "https://www.openssl.org/source/openssl-3.0.13.tar.gz",
+      "sha256": "88525753f79d3bec27d2fa7c66aa0b92b3aa9498dafd93d7cfa4b3780cdae313",
+      "description": "SSL/TLS library",
+      "required": true,
+      "build_time_minutes": 15
+    },
+
+    "zlib": {
+      "version": "1.3.1",
+      "url": "https://zlib.net/zlib-1.3.1.tar.gz",
+      "sha256": "9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23",
+      "description": "Compression library",
+      "required": true,
+      "build_time_minutes": 5
+    },
+
+    "libxml2": {
+      "version": "2.12.6",
+      "url": "https://download.gnome.org/sources/libxml2/2.12/libxml2-2.12.6.tar.xz",
+      "sha256": "889c593a881a3db5fdd96cc9318c87df34eb648edfc458272ad46fd607353fbb",
+      "description": "XML parsing library",
+      "required": false,
+      "build_time_minutes": 10
+    },
+
+    "libxslt": {
+      "version": "1.1.39",
+      "url": "https://download.gnome.org/sources/libxslt/1.1/libxslt-1.1.39.tar.xz",
+      "sha256": "2a20ad621148339b0759c4d17caf9acdb9bf2020031c1c4dccd43f80e8b0d7a2",
+      "description": "XSLT transformation library",
+      "required": false,
+      "depends_on": ["libxml2"],
+      "build_time_minutes": 8
+    },
+
+    "icu": {
+      "version": "74.2",
+      "version_major": "74",
+      "version_minor": "2",
+      "url": "https://github.com/unicode-org/icu/releases/download/release-74-2/icu4c-74_2-src.tgz",
+      "sha256": "68db082212a96d6f53e35d60f47d38b962e9f9d207a74cfac78029ae8ff5e08c",
+      "description": "International Components for Unicode",
+      "required": false,
+      "build_time_minutes": 20
+    },
+
+    "gettext": {
+      "version": "0.22.5",
+      "url": "https://ftp.gnu.org/pub/gnu/gettext/gettext-0.22.5.tar.xz",
+      "sha256": "fe10c37353213d78a5b83d48af231e005c4da84db5ce88037d88355938259640",
+      "description": "Internationalization library",
+      "required": false,
+      "build_time_minutes": 12
+    },
+
+    "libiconv": {
+      "version": "1.17",
+      "url": "https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.17.tar.gz",
+      "sha256": "8f74213b56238c85a50a5329f77e06198771e70dd9a739779f4c02f65d971313",
+      "description": "Character encoding conversion library",
+      "required": false,
+      "build_time_minutes": 8
+    },
+
+    "perl": {
+      "version": "5.38.2",
+      "url": "https://www.cpan.org/src/5.0/perl-5.38.2.tar.gz",
+      "sha256": "a0a31534451eb7b83c7d6594a497543a54d488bc90ca00f5e34762577f40655e",
+      "description": "Perl language interpreter",
+      "required": false,
+      "build_time_minutes": 30,
+      "note": "Required for building from git checkout"
+    },
+
+    "python": {
+      "version": "3.12.2",
+      "url": "https://www.python.org/ftp/python/3.12.2/Python-3.12.2.tgz",
+      "sha256": "be28112dac813d2053545c14bf13a16401a21877f1a69eb6ea5d84c4a0f3d870",
+      "description": "Python language interpreter",
+      "required": false,
+      "build_time_minutes": 25,
+      "note": "Required for PL/Python"
+    },
+
+    "tcl": {
+      "version": "8.6.14",
+      "url": "https://prdownloads.sourceforge.net/tcl/tcl8.6.14-src.tar.gz",
+      "sha256": "5880225babf7954c58d4fb0f5cf6279104ce1cd6aa9b71e9a6322540e1c4de66",
+      "description": "TCL language interpreter",
+      "required": false,
+      "build_time_minutes": 15,
+      "note": "Required for PL/TCL"
+    },
+
+    "mit-krb5": {
+      "version": "1.21.2",
+      "url": "https://kerberos.org/dist/krb5/1.21/krb5-1.21.2.tar.gz",
+      "sha256": "9560941a9d843c0243a71b17a7ac6fe31c7cebb5bce3983db79e52ae7e850491",
+      "description": "Kerberos authentication",
+      "required": false,
+      "build_time_minutes": 18
+    },
+
+    "openldap": {
+      "version": "2.6.7",
+      "url": "https://www.openldap.org/software/download/OpenLDAP/openldap-release/openldap-2.6.7.tgz",
+      "sha256": "b92d5093e19d4e8c0a4bcfe4b40dff0e1aa3540b805b6483c2f1e4f2b01fa789",
+      "description": "LDAP client library",
+      "required": false,
+      "build_time_minutes": 20,
+      "depends_on": ["openssl"]
+    }
+  },
+
+  "build_order": [
+    "zlib",
+    "openssl",
+    "libiconv",
+    "gettext",
+    "libxml2",
+    "libxslt",
+    "icu",
+    "mit-krb5",
+    "openldap",
+    "perl",
+    "python",
+    "tcl"
+  ],
+
+  "notes": {
+    "artifact_retention": "GitHub Actions artifacts are retained for 90 days. For long-term storage, consider GitHub Releases.",
+    "cirrus_integration": "Optional: Cirrus CI can download pre-built artifacts from GitHub Actions to speed up Windows builds.",
+    "caching": "Build artifacts are cached by dependency version hash to avoid rebuilding unchanged dependencies.",
+    "windows_sdk": "Requires Windows SDK 10.0.19041.0 or later",
+    "total_build_time": "Estimated 3-4 hours for full clean build of all dependencies"
+  }
+}
