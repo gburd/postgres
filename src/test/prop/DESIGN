@@ -424,11 +424,18 @@ valuable class from wrong results.  btree_amcheck (bt_index_check on a freshly
 built index), heap_verify (verify_heapam finds no corruption after churn),
 vm_consistent (pg_check_visible / pg_check_frozen find no wrongly-set
 visibility-map bits after VACUUM FREEZE), and stattuple_bounds (pgstattuple's
-byte accounting is non-negative and bounded by the table size).  Each requires
-its contrib extension and skips cleanly if absent.  (A check function that
-reports via RAISE, like bt_index_check, is invoked as a plain top-level SELECT,
-never buried in a subquery a constant-false outer query could optimize away --
-that elision would make the oracle vacuous; see finding 024.)
+byte accounting is non-negative and bounded by the table size).  Beyond those,
+gin_amcheck (gin_index_check on a GIN index over a generated int[] column),
+btree_amcheck_heapallindexed (bt_index_check with heapallindexed => true, which
+also verifies every heap tuple is represented in the index, over btree /
+multicolumn / expression / partial / covering shapes), and
+pageinspect_header_bounds (a heap page's header offsets satisfy 0 <= lower <=
+upper <= special <= pagesize, and every line pointer's tuple extent stays within
+the page).  Each requires its contrib extension and skips cleanly if absent.
+(A check function that reports via RAISE, like bt_index_check, is invoked as a
+plain top-level SELECT, never buried in a subquery a constant-false outer query
+could optimize away -- that elision would make the oracle vacuous; see finding
+024.)
 
 
 Constraint enforcement (sql/prop_constraints.c)
@@ -461,8 +468,30 @@ both commit -- at least one must fail with a serialization error),
 rr_snapshot_stable (under REPEATABLE READ a repeated read returns the same
 value despite a concurrent committed update), and rc_sees_committed (under READ
 COMMITTED a new statement sees a concurrently committed change and does not see
-an uncommitted one).  The harness's per-case cleanup closes every connection a
-body opened, so the extra sessions never leak across cases.
+an uncommitted one).  Two more: ser_phantom_prevented (SERIALIZABLE's predicate
+locking stops a phantom/write-skew anomaly where each txn reads a range and
+inserts into the other's range from both committing), and
+row_lock_conflict_times_out (a row locked FOR UPDATE by one session blocks a
+conflicting write from another, which with a short lock_timeout fails with
+55P03 rather than waiting forever, and succeeds once the lock is released --
+exercising the row-lock machinery synchronously, without a second thread).  The
+harness's per-case cleanup closes every connection a body opened, so the extra
+sessions never leak across cases.
+
+
+Contrib breadth (sql/prop_contrib.c)
+====================================
+
+A grab-bag of smaller contrib modules, each a bounded invariant with a
+skip-if-absent guard: tablefunc_normal_rand (normal_rand(n, mean, sd) returns
+exactly n finite rows), tsm_system_rows_bound (TABLESAMPLE SYSTEM_ROWS(n)
+returns at most n rows, all genuine table rows), tsm_system_time_bound (every
+SYSTEM_TIME sample is a real table row), walinspect_monotonic (records read
+over a generated LSN range have non-decreasing start_lsn -- WAL is an ordered
+append-only log), and dblink_roundtrip (a value sent through a dblink loopback
+back to this very node -- conninfo built from the server's own
+unix_socket_directories and port -- returns unchanged, exercising connection
+setup and result marshalling).
 
 
 The skip / availability framework
