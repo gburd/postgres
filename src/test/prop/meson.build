@@ -291,6 +291,8 @@ prop_query_sources = files(
   'sql/prop_table_am.c',
   'sql/prop_pl_langs.c',
   'sql/prop_integrity.c',
+  'sql/prop_constraints.c',
+  'sql/prop_isolation.c',
 )
 
 pg_prop = executable('pg_prop',

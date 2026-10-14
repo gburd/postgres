@@ -38,31 +38,7 @@
 #include "lib/stringinfo.h"
 
 /*
- * Draw a random SQL integer-array literal into buf as an ARRAY[...] expression
- * typed ::int[].  n is drawn in 0..10 elements, each a small int in -20..20,
- * with NO NULL elements so every = comparison and slice reconstruction stays
- * exact.  The ::int[] cast is always emitted so an empty array
- * (ARRAY[]::int[]) still carries a type.  *n receives the element count.
- */
-static void
-draw_arr(pg_prop_tc *tc, StringInfo buf, int *n)
-{
-	int			len = (int) pg_prop_draw_int(tc, 0, 10);
-
-	appendStringInfoString(buf, "ARRAY[");
-	for (int i = 0; i < len; i++)
-	{
-		if (i > 0)
-			appendStringInfoString(buf, ", ");
-		appendStringInfo(buf, "%d", (int) pg_prop_draw_int(tc, -20, 20));
-	}
-	appendStringInfoString(buf, "]::int[]");
-
-	*n = len;
-}
-
-/*
- * Draw an array like draw_arr but forced non-empty (n in 1..10), for the
+ * Draw a non-empty array (n in 1..10), for the
  * bound/dims/slice-length properties: an empty 1-D array has NULL bounds and
  * NULL array_dims, so those identities only hold for n >= 1.
  */

@@ -31,7 +31,7 @@
 #include "lib/stringinfo.h"
 
 /*
- * Draw a (year, month, day) triple into *y/*mo/*d, with y 2000..2030,
+ * Draw a (year, month, day) triple into y, mo and d, with y 2000..2030,
  * mo 1..12 and d 1..28 (so every month is valid without leap/length cases).
  */
 static void
