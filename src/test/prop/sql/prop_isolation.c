@@ -252,3 +252,112 @@ PG_PROP(rc_sees_committed)
 	pg_prop_disconnect(t2);
 	pg_prop_disconnect(admin);
 }
+
+/*
+ * SERIALIZABLE phantom / predicate-lock anomaly: T1 and T2 each count the rows
+ * matching a range predicate and then insert a new row that falls in the
+ * *other* transaction's predicate.  Serially one would see the other's insert;
+ * concurrently this is a write-skew-via-phantom, and SERIALIZABLE's predicate
+ * locking must stop both from committing.  At least one COMMIT must fail with a
+ * serialization error.
+ */
+PG_PROP(ser_phantom_prevented)
+{
+	pg_prop_conn *admin = open_conn(tc);
+	pg_prop_conn *t1 = open_conn(tc);
+	pg_prop_conn *t2 = open_conn(tc);
+	char	   *err = NULL,
+			   *e1 = NULL,
+			   *e2 = NULL;
+	bool		c1,
+				c2;
+
+	/* a table of integer "marks"; T1 works the even side, T2 the odd side */
+	if (!run(admin,
+			 "DROP TABLE IF EXISTS ph_t; "
+			 "CREATE TABLE ph_t (id serial PRIMARY KEY, g int); "
+			 "INSERT INTO ph_t (g) SELECT (i % 4) FROM generate_series(1, 8) i;",
+			 &err))
+		pg_prop_fail(tc, "phantom setup failed: %s", err ? err : "");
+
+	run(t1, "BEGIN ISOLATION LEVEL SERIALIZABLE", &err);
+	run(t2, "BEGIN ISOLATION LEVEL SERIALIZABLE", &err);
+
+	/* each reads a predicate range (establishing a predicate lock) ... */
+	(void) scalar_long(tc, t1, "SELECT count(*) FROM ph_t WHERE g = 0");
+	(void) scalar_long(tc, t2, "SELECT count(*) FROM ph_t WHERE g = 2");
+
+	/* ... then each inserts a phantom into the other's range */
+	run(t1, "INSERT INTO ph_t (g) VALUES (2)", &err);
+	run(t2, "INSERT INTO ph_t (g) VALUES (0)", &err);
+
+	c1 = run(t1, "COMMIT", &e1);
+	c2 = run(t2, "COMMIT", &e2);
+
+	if (c1 && c2)
+		pg_prop_fail(tc,
+					 "SERIALIZABLE allowed a phantom anomaly: both committed");
+
+	if (e1)
+		pg_free(e1);
+	if (e2)
+		pg_free(e2);
+	if (err)
+		pg_free(err);
+	pg_prop_disconnect(t1);
+	pg_prop_disconnect(t2);
+	pg_prop_disconnect(admin);
+}
+
+/*
+ * Lock conflicts are detected and bounded: a row locked by one session blocks
+ * a conflicting write from another, and with a short lock_timeout that write
+ * fails (SQLSTATE 55P03) rather than waiting forever.  This exercises the
+ * row-lock machinery synchronously (no second thread): T2 holds the lock, T1
+ * tries to take it with a timeout and must fail; after T2 commits, T1 can take
+ * it.  A write that neither waits nor fails would be a lock-correctness bug.
+ */
+PG_PROP(row_lock_conflict_times_out)
+{
+	pg_prop_conn *admin = open_conn(tc);
+	pg_prop_conn *t1 = open_conn(tc);
+	pg_prop_conn *t2 = open_conn(tc);
+	char	   *err = NULL;
+	bool		blocked_update_ok;
+	int			delta = (int) pg_prop_draw_int(tc, 1, 100);
+	StringInfoData q;
+
+	setup_iso(tc, admin);
+
+	/* T2 locks row 1 for update and holds it (open transaction) */
+	run(t2, "BEGIN", &err);
+	(void) scalar_long(tc, t2, "SELECT v FROM iso_t WHERE id = 1 FOR UPDATE");
+
+	/* T1, with a short lock_timeout, tries to update the same row: must fail */
+	run(t1, "BEGIN", &err);
+	run(t1, "SET lock_timeout = '300ms'", &err);
+	initStringInfo(&q);
+	appendStringInfo(&q, "UPDATE iso_t SET v = v + %d WHERE id = 1", delta);
+	blocked_update_ok = run(t1, q.data, &err);
+	if (blocked_update_ok)
+		pg_prop_fail(tc,
+					 "conflicting UPDATE succeeded while row was locked "
+					 "(expected lock_timeout)");
+	run(t1, "ROLLBACK", &err);
+
+	/* T2 releases; now T1 can take the lock and update */
+	run(t2, "COMMIT", &err);
+	run(t1, "BEGIN", &err);
+	run(t1, "SET lock_timeout = '5s'", &err);
+	if (!run(t1, q.data, &err))
+		pg_prop_fail(tc, "UPDATE failed after lock released: %s",
+					 err ? err : "");
+	run(t1, "COMMIT", &err);
+
+	if (err)
+		pg_free(err);
+	pfree(q.data);
+	pg_prop_disconnect(t1);
+	pg_prop_disconnect(t2);
+	pg_prop_disconnect(admin);
+}
