@@ -382,17 +382,35 @@ integer opclass); it is a candidate for its own area over the scalar types it
 supports.
 
 
-Procedural languages (sql/prop_pl_langs.c)
-==========================================
+The procedural-language / SQL boundary (sql/prop_pl_langs.c)
+============================================================
 
-The same pure, deterministic integer computation expressed in each procedural
-language -- PL/pgSQL, PL/Python (plpython3u), PL/Perl, PL/Tcl -- must equal the
-pure-SQL computation of the same expression.  This is a differential oracle
-across language implementations; a disagreement is a bug in a PL's argument
-marshalling, integer handling, or return conversion.  Each property probes its
-language with pg_prop_require_extension and pg_prop_skips when the server was
-not built with it, so the area runs whatever PLs are present and reports the
-rest as TAP SKIP rather than failing.
+The languages themselves work; what is not obvious is whether they behave
+correctly at the boundary with SQL inside PostgreSQL -- when a PL function runs
+a query via SPI, marshals a composite / array / set across the boundary, fires
+as a trigger during DML, or round-trips a value through the PL's own type
+system.  That boundary, over the generated schemas, is the surface this area
+targets, across PL/pgSQL, PL/Python, PL/Perl and PL/Tcl.  Each property is a
+differential oracle: the PL path must agree with the equivalent pure-SQL path.
+
+  spi_count_matches  -- a PL function that SPI-executes a count query over the
+                       generated table with a generated predicate returns the
+                       same count as the direct SQL query (SPI from the PL).
+  srf_matches_sql    -- a PL set-returning function yielding the matching ids
+                       returns the same multiset as the SQL query (set return
+                       and materialization).
+  roundtrip_jsonb    -- a jsonb passed into a PL function and returned is
+                       unchanged (the PL's jsonb <-> native conversion).
+  trigger_derived    -- a PL BEFORE trigger that maintains a derived column
+                       keeps it consistent with the SQL expression after
+                       arbitrary INSERT/UPDATE churn (trigger firing and NEW-
+                       tuple modification across the boundary).
+
+Each probes its language with pg_prop_require_extension and skips (TAP SKIP)
+when the server was not built with it, so the area runs whatever PLs are
+present.  (Generating source for a whitespace-sensitive language through a SQL
+dollar-quoted literal, and keeping the draw count independent of which PLs the
+server has, both matter for reproducibility; see finding 025.)
 
 
 Integrity oracles (sql/prop_integrity.c)
@@ -411,6 +429,40 @@ its contrib extension and skips cleanly if absent.  (A check function that
 reports via RAISE, like bt_index_check, is invoked as a plain top-level SELECT,
 never buried in a subquery a constant-false outer query could optimize away --
 that elision would make the oracle vacuous; see finding 024.)
+
+
+Constraint enforcement (sql/prop_constraints.c)
+===============================================
+
+A constraint is a promise about the data, and the property is that it is
+enforced *exactly*: a candidate row is rejected if and only if it violates the
+constraint.  The oracle for each is a pure-SQL predicate that decides whether a
+row is a violation; the property generates candidate rows, computes which the
+predicate marks as violations, inserts them one at a time, and requires the
+server to reject exactly that set.  A constraint accepting a violator is a
+correctness bug of the most serious kind; rejecting a valid row is an equally
+real false positive.  unique_rejects_dups (UNIQUE/PK, NULLs distinct),
+check_rejects_false (CHECK accepts unless the expression is FALSE -- NULL is
+accepted, per SQL three-valued logic), notnull_rejects_null, fk_rejects_orphan
+(a child is accepted iff its key is NULL or present in the parent), and
+exclusion_rejects_overlap (a range is accepted iff it overlaps no existing one;
+skipped if gist-on-int4range is unavailable).
+
+
+Transaction isolation (sql/prop_isolation.c)
+============================================
+
+Isolation is among the hardest guarantees a database makes and the most
+important to verify.  These properties drive two or three concurrent sessions
+(separate libpq connections) through interleavings and assert the guarantee of
+each level; the oracle is the documented guarantee, not a generated reference.
+ser_write_skew_prevented (under SERIALIZABLE the classic write-skew pair cannot
+both commit -- at least one must fail with a serialization error),
+rr_snapshot_stable (under REPEATABLE READ a repeated read returns the same
+value despite a concurrent committed update), and rc_sees_committed (under READ
+COMMITTED a new statement sees a concurrently committed change and does not see
+an uncommitted one).  The harness's per-case cleanup closes every connection a
+body opened, so the extra sessions never leak across cases.
 
 
 The skip / availability framework

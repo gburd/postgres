@@ -66,30 +66,6 @@ draw_text(pg_prop_tc *tc, StringInfo buf)
 }
 
 /*
- * Draw 0..8 tokens into buf as a bare LIKE pattern.  Each token is a literal
- * letter from "abc", a '%' (match any run), or a '_' (match any one char).
- * The tiny alphabet keeps patterns matching often.
- */
-static void
-draw_pattern(pg_prop_tc *tc, StringInfo buf)
-{
-	static const char letters[] = "abc";
-	int			n = (int) pg_prop_draw_int(tc, 0, 8);
-
-	for (int i = 0; i < n; i++)
-	{
-		int			kind = (int) pg_prop_draw_int(tc, 0, 4);
-
-		if (kind == 3)
-			appendStringInfoChar(buf, '%');
-		else if (kind == 4)
-			appendStringInfoChar(buf, '_');
-		else
-			appendStringInfoChar(buf, letters[kind]);
-	}
-}
-
-/*
  * Draw 0..10 mixed-case characters from "abAB" into buf as a bare string, for
  * exercising case folding (ILIKE vs lower()+LIKE).  Letters only.
  */
