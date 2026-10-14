@@ -193,3 +193,150 @@ PG_PROP(stattuple_bounds)
 		pg_prop_fail(tc, "pgstattuple byte accounting inconsistent");
 	pg_prop_disconnect(conn);
 }
+
+/*
+ * A GIN index over an int[] column built from random data passes amcheck's
+ * gin_index_check (GIN posting-tree / entry-tree structural consistency).
+ * Requires the btree_gin opclass extension for a scalar int, or a native array
+ * GIN opclass -- we use an int[] column with the built-in array_ops.
+ */
+PG_PROP(gin_amcheck)
+{
+	pg_prop_conn *conn = connect_integ(tc);
+	char	   *err = NULL;
+	int			n;
+	int			i;
+	StringInfoData ddl;
+
+	if (!pg_prop_require_extension(conn, "amcheck"))
+		pg_prop_skip(tc, "amcheck not available");
+
+	/* build a table with an int[] column and random small arrays */
+	n = (int) pg_prop_draw_int(tc, 0, 120);
+	initStringInfo(&ddl);
+	appendStringInfoString(&ddl,
+						   "SET client_min_messages=warning; "
+						   "DROP TABLE IF EXISTS gin_t; "
+						   "CREATE TABLE gin_t (id int PRIMARY KEY, a int[]); ");
+	for (i = 0; i < n; i++)
+	{
+		int			m = (int) pg_prop_draw_int(tc, 0, 5);
+		int			j;
+
+		appendStringInfo(&ddl, "INSERT INTO gin_t VALUES (%d, ARRAY[", i);
+		for (j = 0; j < m; j++)
+		{
+			if (j > 0)
+				appendStringInfoString(&ddl, ",");
+			appendStringInfo(&ddl, "%d", (int) pg_prop_draw_int(tc, -10, 10));
+		}
+		appendStringInfoString(&ddl, "]::int[]); ");
+	}
+	appendStringInfoString(&ddl,
+						   "CREATE INDEX gin_t_idx ON gin_t USING gin (a); "
+						   "ANALYZE gin_t;");
+	if (!pg_prop_sql_exec(conn, ddl.data, &err))
+		pg_prop_fail(tc, "GIN build failed: %s", err ? err : "");
+	pfree(ddl.data);
+
+	/* gin_index_check raises on structural corruption */
+	if (!pg_prop_sql_exec(conn,
+						  "SELECT gin_index_check('gin_t_idx'::regclass)", &err))
+		pg_prop_fail(tc, "gin_index_check failed: %s", err ? err : "");
+	if (err)
+		pg_free(err);
+	pg_prop_sql_exec(conn, "DROP TABLE IF EXISTS gin_t", &err);
+	if (err)
+		pg_free(err);
+	pg_prop_disconnect(conn);
+}
+
+/*
+ * The stronger btree check: bt_index_check(index, heapallindexed => true) also
+ * verifies that every heap tuple is represented in the index.  Run it over the
+ * generated btree plus multicolumn, expression and partial variants -- each a
+ * different index shape that must still be internally consistent and complete.
+ */
+PG_PROP(btree_amcheck_heapallindexed)
+{
+	pg_prop_conn *conn = connect_integ(tc);
+	char	   *err = NULL;
+	static const char *const defs[] = {
+		"CREATE INDEX integ_idx ON integ_t (k)",
+		"CREATE INDEX integ_idx ON integ_t (k, id)",	/* multicolumn */
+		"CREATE INDEX integ_idx ON integ_t ((k * k))",	/* expression */
+		"CREATE INDEX integ_idx ON integ_t (k) WHERE k > 0",	/* partial */
+		"CREATE INDEX integ_idx ON integ_t (k) INCLUDE (pl)",	/* covering */
+	};
+	int			which;
+	StringInfoData ddl;
+
+	if (!pg_prop_require_extension(conn, "amcheck"))
+		pg_prop_skip(tc, "amcheck not available");
+	build_and_churn(tc, conn);
+
+	which = (int) pg_prop_draw_int(tc, 0, 4);
+	initStringInfo(&ddl);
+	appendStringInfo(&ddl, "DROP INDEX IF EXISTS integ_idx; %s;", defs[which]);
+	if (!pg_prop_sql_exec(conn, ddl.data, &err))
+		pg_prop_fail(tc, "index build failed (%s): %s", defs[which],
+					 err ? err : "");
+	pfree(ddl.data);
+
+	/* heapallindexed = true: full index-vs-heap consistency */
+	if (!pg_prop_sql_exec(conn,
+						  "SELECT bt_index_check('integ_idx'::regclass, true)", &err))
+		pg_prop_fail(tc, "bt_index_check(heapallindexed) failed on %s: %s",
+					 defs[which], err ? err : "");
+	if (err)
+		pg_free(err);
+	pg_prop_disconnect(conn);
+}
+
+/*
+ * pageinspect page-structure invariants: for a heap page, the page_header
+ * offsets must satisfy 0 <= lower <= upper <= special <= pagesize, and every
+ * line pointer in heap_page_items that points to a tuple must have its
+ * [lp_off, lp_off+lp_len) within the page.  A violated offset means a corrupt
+ * or misread page -- caught before it becomes a wrong answer.
+ */
+PG_PROP(pageinspect_header_bounds)
+{
+	pg_prop_conn *conn = connect_integ(tc);
+	char	   *err = NULL;
+	long		badhdr,
+				baditem;
+
+	if (!pg_prop_require_extension(conn, "pageinspect"))
+		pg_prop_skip(tc, "pageinspect not available");
+	build_and_churn(tc, conn);
+
+	/*
+	 * Check page 0's header offsets.  (A tiny table may have no page 0 if
+	 * empty; get_raw_page then errors, so guard with a row count.)
+	 */
+	if (scalar_long(tc, conn, "SELECT count(*) FROM integ_t") == 0)
+	{
+		pg_prop_disconnect(conn);
+		return;
+	}
+
+	badhdr = scalar_long(tc, conn,
+						 "SELECT count(*) FROM page_header(get_raw_page('integ_t', 0)) h "
+						 "WHERE NOT (h.lower >= 0 AND h.lower <= h.upper "
+						 "AND h.upper <= h.special AND h.special <= 8192)");
+	if (badhdr != 0)
+		pg_prop_fail(tc, "heap page 0 header offsets out of range");
+
+	/* every normal line pointer's tuple extent stays within the page */
+	baditem = scalar_long(tc, conn,
+						  "SELECT count(*) FROM heap_page_items(get_raw_page('integ_t', 0)) i "
+						  "WHERE i.lp_off <> 0 "
+						  "AND (i.lp_off < 0 OR i.lp_off + i.lp_len > 8192)");
+	if (baditem != 0)
+		pg_prop_fail(tc, "heap page 0 line pointer extent outside the page");
+
+	if (err)
+		pg_free(err);
+	pg_prop_disconnect(conn);
+}
