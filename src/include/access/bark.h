@@ -1550,7 +1550,10 @@ extern int	bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
  * root and level are the root as last read from the meta page (root is
  * BARK_P_NONE until then), so that a descent need not read the meta page,
  * as nbtree caches its meta page.  They may be stale: bark_get_root_buffer
- * checks the page it names before using it.
+ * checks the page it names before using it.  rootbuf is the shared buffer
+ * that held the root when this backend last read it, or InvalidBuffer, so
+ * that the next descent can re-pin it without a buffer mapping lookup
+ * (ReadRecentBuffer); it is only a hint, checked like root itself.
  *
  * extracted is the key column whose operator class extracts several keys
  * from a value (bark_index_extracted_column), 0 for none, or -1 until first
@@ -1570,6 +1573,7 @@ typedef struct BarkAmCache
 {
 	BlockNumber root;
 	uint32		level;
+	Buffer		rootbuf;		/* hint: buffer that last held root */
 	int			extracted;
 	bool		multikey;		/* BARK_META_MULTIKEY seen set */
 	int			nmarkers;		/* markers seen present */

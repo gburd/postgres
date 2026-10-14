@@ -331,6 +331,7 @@ bark_get_amcache(Relation index)
 								   offsetof(BarkAmCache, markerdata));
 		cache->root = BARK_P_NONE;
 		cache->level = 0;
+		cache->rootbuf = InvalidBuffer;
 		cache->extracted = -1;
 		cache->multikey = false;
 		cache->nmarkers = 0;
@@ -374,6 +375,8 @@ bark_get_root(Relation index, uint32 *level_out)
 	{
 		BarkAmCache *cache = bark_get_amcache(index);
 
+		if (cache->root != root)
+			cache->rootbuf = InvalidBuffer;
 		cache->root = root;
 		cache->level = level;
 	}
@@ -410,6 +413,13 @@ bark_get_root_level(Relation index)
  * the one it is about to name.  Otherwise the meta page is read, as it
  * always was before the cache; the root it names may itself have split
  * since, which the caller's move right handles.
+ *
+ * Every descent starts here, so the root's buffer is the hottest in the
+ * index.  The buffer it was last found in is re-pinned with
+ * ReadRecentBuffer, which checks the buffer still holds the root's block,
+ * so that a descent skips the buffer mapping lookup and its partition lock;
+ * when it does not, the block is read as before.  The page checks above
+ * apply either way.
  */
 Buffer
 bark_get_root_buffer(Relation index, BufferLockMode access)
@@ -422,7 +432,17 @@ bark_get_root_buffer(Relation index, BufferLockMode access)
 	{
 		Page		page;
 
-		buf = ReadBuffer(index, cache->root);
+		if (BufferIsValid(cache->rootbuf) &&
+			ReadRecentBuffer(index->rd_locator, MAIN_FORKNUM, cache->root,
+							 cache->rootbuf))
+			buf = cache->rootbuf;
+		else
+		{
+			/* Tests watch for the hint missing (see bark_recent_root). */
+			INJECTION_POINT("bark-root-hint-miss", NULL);
+			buf = ReadBuffer(index, cache->root);
+			cache->rootbuf = buf;
+		}
 		LockBuffer(buf, access);
 		page = BufferGetPage(buf);
 		if (!PageIsNew(page))
@@ -434,12 +454,17 @@ bark_get_root_buffer(Relation index, BufferLockMode access)
 				return buf;
 		}
 		UnlockReleaseBuffer(buf);
+		/* Tests watch for a cached root that is no longer the root. */
+		INJECTION_POINT("bark-root-cache-stale", NULL);
 	}
 
 	root = bark_get_root(index, NULL);
 	if (root == BARK_P_NONE)
 		return InvalidBuffer;
 	buf = ReadBuffer(index, root);
+	cache = bark_get_amcache(index);
+	if (cache->root == root)
+		cache->rootbuf = buf;
 	LockBuffer(buf, access);
 	return buf;
 }

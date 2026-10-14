@@ -1,0 +1,71 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_warm s1_level s2_split s1_level s1_look s1_look2 s1_look s2_evict s1_look s1_look2
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+s1: NOTICE:  notice triggered for injection point bark-root-hint-miss
+step s1_warm: SELECT count(*) FROM rh WHERE i IN (17, 4242, 19999);
+count
+-----
+    3
+(1 row)
+
+step s1_level: SELECT level FROM bark_metap('rh_idx');
+level
+-----
+    1
+(1 row)
+
+step s2_split: INSERT INTO rh SELECT g FROM generate_series(20001, 400000) g;
+step s1_level: SELECT level FROM bark_metap('rh_idx');
+level
+-----
+    2
+(1 row)
+
+s1: NOTICE:  notice triggered for injection point bark-root-cache-stale
+step s1_look: SELECT count(*) FROM rh WHERE i = 4242;
+count
+-----
+    1
+(1 row)
+
+step s1_look2: SELECT count(*) FROM rh WHERE i = 350000;
+count
+-----
+    1
+(1 row)
+
+step s1_look: SELECT count(*) FROM rh WHERE i = 4242;
+count
+-----
+    1
+(1 row)
+
+step s2_evict: 
+	SELECT bool_and((pg_buffercache_evict(b.bufferid)).buffer_evicted) AS evicted
+	FROM pg_buffercache b
+	WHERE b.relfilenode = pg_relation_filenode('rh_idx')
+	  AND b.relblocknumber = (SELECT root FROM bark_metap('rh_idx'));
+
+evicted
+-------
+t      
+(1 row)
+
+s1: NOTICE:  notice triggered for injection point bark-root-hint-miss
+step s1_look: SELECT count(*) FROM rh WHERE i = 4242;
+count
+-----
+    1
+(1 row)
+
+step s1_look2: SELECT count(*) FROM rh WHERE i = 350000;
+count
+-----
+    1
+(1 row)
+

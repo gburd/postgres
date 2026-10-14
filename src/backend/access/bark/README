@@ -79,8 +79,9 @@ The main data structures, all in bark.h unless noted:
                        support function 1, collation and ASC/DESC and NULLS
                        options, built by bark_build_keyinfo
   BarkStackData        a descent's path, for inserting downlinks
-  BarkAmCache          rd_amcache: the root block and level, the extracted
-                       column, the multikey flag and the markers seen
+  BarkAmCache          rd_amcache: the root block, level and buffer hint,
+                       the extracted column, the multikey flag and the
+                       markers seen
   BarkInsertState      (barkinsert.c) ii_AmCache: what every insert of a
                        statement reuses (see "Inserts")
   BarkScanBound        a scan's bound on the leading columns, which the
@@ -473,6 +474,19 @@ cached page is used only if, under its lock, it is still a root (BARK_ROOT
 set, not deleted or half-dead) at the cached level (bark_get_root_buffer).
 A root split clears BARK_ROOT on the old root, so a stale cache entry fails
 that check and the meta page is read instead.
+
+Every descent starts at the root, so its buffer is the most contended one in
+the index: on a many-core machine each lookup's pin, share lock, unlock and
+unpin bounce its buffer header between cores.  The cache also keeps the
+shared buffer the root was last found in (rootbuf), and the next descent
+re-pins it with ReadRecentBuffer, which checks that the buffer still holds
+the root's block, so a descent skips the buffer mapping lookup and its
+partition lock.  The hint is only a hint: when ReadRecentBuffer declines (the
+buffer was evicted or reused), the block is read as before, and the page
+checks above apply either way.  Tests: bark_recent_root (eviction, reuse, a
+root split, a temporary index) and the bark_root_hint isolation spec
+(another backend's root split, then eviction), which watch the
+bark-root-hint-miss and bark-root-cache-stale injection points.
 
 A meta page written before bark_flags and bark_nkeys existed ends, by its
 pd_lower, at bark_allequalimage, and PageInit zeroed the rest, so it reads 0

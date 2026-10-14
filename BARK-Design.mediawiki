@@ -938,6 +938,17 @@ BENCHMARK-2026-10b.md, at 5d4e2883b10)
   leaves fill later, so bottom-up deletion runs less often between VACUUMs.''
 * '''K3''' -- a descent as cheap as nbtree's, and a cheaper skip-scan group.
   ''(done: bd501974823)''
+* '''R1''' -- root contention on many-core machines.  Every descent pins and
+  share-locks the root, so its buffer header is written by every lookup.
+  Step 1 (done, RECENTROOT): the root cache keeps the buffer the root was
+  last found in and re-pins it with <code>ReadRecentBuffer</code>, skipping
+  the buffer mapping lookup and its partition lock; a miss falls back to a
+  plain read.  Next, if <code>perf c2c</code> on metal still shows the root's
+  header hot: a per-backend cache of level-1 pages and their low keys, so a
+  descent starts below the root.  That is safe because BARK never deletes an
+  internal page and an internal page's low key never changes (splits move
+  only its high key), so Lehman and Yao move-right from any cached level-1
+  page whose low key is at or below the search key reaches the right leaf.
 * '''I2''' -- per-insert overhead: the unique-index fast path and the insert
   state cached in <code>ii_AmCache</code>. ''(done: 5d4e2883b10)''
 * '''N1''' -- honor <code>UNIQUE ... NULLS NOT DISTINCT</code>.
