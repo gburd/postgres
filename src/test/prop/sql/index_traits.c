@@ -415,6 +415,7 @@ trait_unique(pg_prop_tc *tc, pg_prop_conn *conn, const am_driver *d)
 	 * insert a duplicate key (must fail).
 	 */
 	pg_prop_sql_exec(conn,
+					 "SET client_min_messages = warning; "
 					 "DROP TABLE IF EXISTS uq_t; "
 					 "CREATE TABLE uq_t (id int, k int); "
 					 "INSERT INTO uq_t VALUES (1,10),(2,20),(3,30);", &err);

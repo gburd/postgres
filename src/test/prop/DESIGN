@@ -486,6 +486,20 @@ the standing differential net, not by a coverage-percentage delta or a
 depth-per-line multiplier -- the latter does not favor PBT and we do not claim
 it does.
 
+Whole-suite lift over the regression tests.  On a branch-coverage build,
+measured over src/backend + src/common, the core regression suite alone covers
+70.0% of lines, 73.3% of functions and 53.4% of branches; adding the full PBT
+suite on top raises that to 72.0% / 76.3% / 54.7%.  The property suite executes
+544 backend/common functions and 7,933 lines the entire regression suite never
+reaches, plus 3,082 additional branches.  Branch coverage moves least, as
+expected -- the regression suite already drives most hot branches, so the PBT
+win is breadth (new functions and lines, in the incremental jsonapi parser, the
+access-method trait paths, and the deep planner transformations) more than
+depth on branches already covered.  This is the concrete argument for carrying
+the suite in core: not to replace the golden-master tests (the union is what
+matters) but to reach a standing slice of the backend they structurally do not,
+with generated rather than hand-enumerated inputs.
+
 
 Why this shape
 ==============
