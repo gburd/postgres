@@ -101,35 +101,6 @@ build_table(pg_prop_tc *tc, pg_prop_conn *conn)
 	pfree(ddl.data);
 }
 
-/* Shape B: two queries must return identical rows. */
-static void
-require_same_rows(pg_prop_tc *tc, pg_prop_conn *conn,
-				  const char *q1, const char *q2)
-{
-	bool		f1 = false,
-				f2 = false;
-	char	   *e1 = NULL,
-			   *e2 = NULL,
-			   *r1,
-			   *r2;
-
-	r1 = pg_prop_sql_rows(conn, q1, &f1, &e1);
-	if (f1)
-		pg_prop_fail(tc, "q1 failed: %s\n  SQL: %s", e1 ? e1 : "", q1);
-	r2 = pg_prop_sql_rows(conn, q2, &f2, &e2);
-	if (f2)
-		pg_prop_fail(tc, "q2 failed: %s\n  SQL: %s", e2 ? e2 : "", q2);
-	if (strcmp(r1, r2) != 0)
-		pg_prop_fail(tc, "mismatch:\n  q1: %s\n  q2: %s\n  r1:\n%s\n  r2:\n%s",
-					 q1, q2, r1, r2);
-	pg_free(r1);
-	pg_free(r2);
-	if (e1)
-		pg_free(e1);
-	if (e2)
-		pg_free(e2);
-}
-
 /*
  * Run "select" first with index scans forced on and seqscan off, then with
  * seqscan forced and all index paths off, and require identical rows.  Resets

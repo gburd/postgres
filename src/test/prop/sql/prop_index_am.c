@@ -78,3 +78,20 @@ PG_PROP(gist_traits)
 
 	index_traits_check(tc, &d);
 }
+
+PG_PROP(bloom_traits)
+{
+	/*
+	 * bloom (contrib) is a signature index: bitmap-only, lossy (every match is
+	 * rechecked), no ordering and no unique.  It indexes the int column k via
+	 * its default opclass.  The trait harness will find index_scan=false,
+	 * bitmap_scan=true and no can_order, so it exercises the exact (via the
+	 * recheck/bitmap path) and summarizing-shaped checks -- the lossy-but-
+	 * never-drops-a-row contract.  Skipped cleanly if contrib/bloom is not
+	 * installed.
+	 */
+	am_driver	d = {"bloom",
+		"CREATE EXTENSION IF NOT EXISTS bloom", "k"};
+
+	index_traits_check(tc, &d);
+}
