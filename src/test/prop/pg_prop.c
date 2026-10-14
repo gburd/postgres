@@ -211,6 +211,15 @@ check_rc(hegel_context_t *ctx, hegel_result_t rc, const char *what)
 static pg_prop_tc *current_tc;	/* for the stop/overrun jump */
 static bool overrun;
 
+/*
+ * Set when the body called pg_prop_skip(): the property is abandoned and
+ * reported skipped.  Module-global (not per-case) because the whole property
+ * is skipped, not one case; run_property reads and clears it.
+ */
+static bool skip_requested;
+static StringInfoData skip_reason;
+static bool skip_reason_inited;
+
 static void
 stop_test(pg_prop_tc *tc)
 {
@@ -393,6 +402,24 @@ pg_prop_fail(pg_prop_tc *tc, const char *fmt,...)
 	siglongjmp(tc->jmp, 1);		/* 1 == interesting/failure */
 }
 
+void
+pg_prop_skip(pg_prop_tc *tc, const char *fmt,...)
+{
+	va_list		ap;
+
+	if (!skip_reason_inited)
+	{
+		initStringInfo(&skip_reason);
+		skip_reason_inited = true;
+	}
+	resetStringInfo(&skip_reason);
+	va_start(ap, fmt);
+	appendStringInfoVA(&skip_reason, fmt, ap);
+	va_end(ap);
+	skip_requested = true;
+	siglongjmp(tc->jmp, 3);		/* 3 == skip the whole property */
+}
+
 /* ---- fork isolation -------------------------------------------------- */
 
 int
@@ -518,6 +545,13 @@ run_one_case(RunState *rs, hegel_context_t *ctx, hegel_test_case_t *handle)
 	{
 		status = HEGEL_STATUS_OVERRUN;
 	}
+	else if (jmpval == 3)
+	{
+		/* skip: the whole property is abandoned; treat this case as valid so
+		 * the engine does not try to shrink it.  skip_requested is read by
+		 * run_property, which reports the property as skipped. */
+		status = HEGEL_STATUS_VALID;
+	}
 	else
 	{
 		/* failure: keep the message for the report */
@@ -602,6 +636,8 @@ run_property(PropEntry *prop, uint64 iterations, bool have_seed, uint64 seed,
 
 	check_rc(ctx, hegel_run_start(ctx, s, NULL, NULL, &run), "run_start");
 
+	skip_requested = false;
+
 	for (;;)
 	{
 		hegel_test_case_t *handle = NULL;
@@ -620,6 +656,28 @@ run_property(PropEntry *prop, uint64 iterations, bool have_seed, uint64 seed,
 	check_rc(ctx, hegel_run_result_status(ctx, result, &rstatus), "run_result_status");
 
 	ok = (rstatus == HEGEL_RUN_STATUS_PASSED);
+
+	/*
+	 * The body called pg_prop_skip(): report the property as skipped (TAP
+	 * SKIP directive) and count it as passed, regardless of the engine's
+	 * status for the one case that ran before the skip.
+	 */
+	if (skip_requested)
+	{
+		const char *reason = skip_reason_inited ? skip_reason.data : "";
+
+		if (tap)
+			printf("ok %d - %s/%s # SKIP %s\n", testno,
+				   prop->area, prop->name, reason);
+		else
+			printf("%s/%s: SKIPPED (%s)\n", prop->area, prop->name, reason);
+		hegel_run_result_free(ctx, result);
+		hegel_run_free(ctx, run);
+		hegel_settings_free(ctx, s);
+		hegel_context_free(ctx);
+		pfree(rs.last_fail.data);
+		return true;
+	}
 
 	if (tap)
 		printf("%s %d - %s/%s\n", ok ? "ok" : "not ok", testno,

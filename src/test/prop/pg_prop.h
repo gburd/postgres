@@ -191,6 +191,16 @@ extern char *pg_prop_draw_from(pg_prop_tc *tc, const char *alphabet,
 extern void pg_prop_assume(pg_prop_tc *tc, bool condition);
 
 /*
+ * Skip the whole property: its precondition cannot be met in this environment
+ * (a required extension or procedural language is not installed, a platform
+ * feature is absent).  Unlike pg_prop_assume -- which discards one generated
+ * case -- this abandons the entire property and reports it as skipped, with
+ * "reason" shown as the TAP SKIP directive.  Call it at the top of the body,
+ * before drawing inputs.  Does not return.
+ */
+extern pg_noreturn void pg_prop_skip(pg_prop_tc *tc, const char *fmt,...) pg_attribute_printf(2, 3);
+
+/*
  * Attach a diagnostic note to the current case.  It is printed only when this
  * case is the final shrunk counterexample, so use it to record context the
  * drawn values alone don't show (e.g. an intermediate the property computed).
@@ -234,6 +244,18 @@ extern int	pg_prop_run_isolated(pg_prop_isolated_fn body, void *arg,
  * not include libpq-fe.h.
  */
 typedef struct pg_prop_conn pg_prop_conn;
+
+/*
+ * Ensure an extension (contrib module or procedural language) is available for
+ * the session, loading it with CREATE EXTENSION IF NOT EXISTS.  Returns true
+ * if it is now present.  If the extension is not installed on this server,
+ * returns false; the caller then typically pg_prop_skip()s.  "conn" is an open
+ * connection.  Example:
+ *
+ *		if (!pg_prop_require_extension(conn, "pageinspect"))
+ *			pg_prop_skip(tc, "pageinspect not installed");
+ */
+extern bool pg_prop_require_extension(pg_prop_conn *conn, const char *extname);
 
 /*
  * Connect to the test cluster named by PGHOST/PGPORT/PGDATABASE in the
