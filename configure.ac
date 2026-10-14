@@ -242,16 +242,15 @@ PGAC_ARG_BOOL(enable, injection-points, no, [enable injection points (for testin
 AC_SUBST(enable_injection_points)
 
 #
-# Property-based tests (src/test/prop), built on libhegel.  Requires
-# --enable-tap-tests as well, since the suite is driven through the TAP
-# harness; the actual presence of libhegel's header and library is checked
-# further below, once --with-includes / --with-libraries are in effect.
+# Property-based tests (src/test/prop), built on libhegel.  TAP is NOT
+# required: pg_prop is a standalone C program that emits TAP output and runs on
+# its own.  When --enable-tap-tests is also given, the Perl drivers are run as
+# part of the TAP suite; otherwise the binary is still built (run it directly).
+# The actual presence of libhegel's header and library is checked further
+# below, once --with-includes / --with-libraries are in effect.
 #
 PGAC_ARG_BOOL(with, hegel, no,
-              [build property-based tests (requires libhegel and --enable-tap-tests)])
-if test "$with_hegel" = yes && test "$enable_tap_tests" != yes; then
-  AC_MSG_ERROR([--with-hegel requires --enable-tap-tests])
-fi
+              [build property-based tests (requires libhegel; uses TAP when --enable-tap-tests)])
 AC_SUBST(with_hegel)
 # Export the extra library directories so the property-test Makefile can add
 # them to pg_prop's rpath; libhegel is typically installed outside the system

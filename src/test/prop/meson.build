@@ -289,6 +289,8 @@ prop_query_sources = files(
   'sql/index_traits.c',
   'sql/prop_index_am.c',
   'sql/prop_table_am.c',
+  'sql/prop_pl_langs.c',
+  'sql/prop_integrity.c',
 )
 
 pg_prop = executable('pg_prop',
@@ -301,15 +303,20 @@ pg_prop = executable('pg_prop',
 )
 testprep_targets += pg_prop
 
-tests += {
-  'name': 'prop',
-  'sd': meson.current_source_dir(),
-  'bd': meson.current_build_dir(),
-  'tap': {
-    'tests': [
-      't/001_prop.pl',
-      't/002_sql_props.pl',
-    ],
-    'deps': [pg_prop],
-  },
-}
+# Register the Perl TAP drivers only when TAP is available (prop_tests_tap).
+# Without TAP the pg_prop binary above still builds and can be run directly;
+# the suite is a methodology on the harness, not gated by it.
+if prop_tests_tap
+  tests += {
+    'name': 'prop',
+    'sd': meson.current_source_dir(),
+    'bd': meson.current_build_dir(),
+    'tap': {
+      'tests': [
+        't/001_prop.pl',
+        't/002_sql_props.pl',
+      ],
+      'deps': [pg_prop],
+    },
+  }
+endif
