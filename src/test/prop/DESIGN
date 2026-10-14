@@ -80,6 +80,31 @@ than one per area) keeps the build small and gives the "pg_prop <area>" dispatch
 the user-facing CLI wants.
 
 
+Why TAP, and not a fourth kind of test
+======================================
+
+PostgreSQL has three test *harnesses* -- pg_regress (SQL golden-master),
+isolation (interleaved sessions), and TAP (Perl scripts emitting the TAP
+protocol).  These are harnesses, not separate categories of truth: TAP in
+particular is just "a program the meson/make test runner launches, which prints
+ok / not ok lines", and the runner already gives it suite grouping, parallelism,
+per-test timeouts, and log capture.
+
+Property-based testing is a *methodology*, not a harness.  The pg_prop binary
+prints TAP, and t/001_prop.pl and t/002_sql_props.pl are ordinary TAP scripts
+that run it, so the suite rides on the existing TAP machinery with no new
+infrastructure.  Making PBT a fourth top-level concept would mean reinventing
+test discovery, a new meson suite type, and new CI plumbing solely to
+re-implement what TAP already provides -- so it is deliberately not done.
+
+What makes the PBTs distinguishable is the suite name, not the harness: they are
+registered as the "prop" suite (postgresql:prop), so they can be selected,
+skipped, or reported on as a unit (meson test --suite prop) without being a
+separate driver.  A reviewer who wants "just the property tests" asks for that
+suite; a reviewer who wants "all TAP" gets these along with the rest, which is
+correct -- they are TAP.
+
+
 The PG_PROP registry
 --------------------
 
@@ -301,6 +326,51 @@ reference answer, so a disagreement is unambiguously a server bug:
   tautology (col - col = 0) must not change the result -- constant folding), and
   deep_corr_subquery (a parent-filtered semijoin written as IN, as EXISTS, and
   as a DISTINCT join must agree -- subquery unnesting).
+
+
+Trait-based access-method areas
+===============================
+
+An access method is described by *traits* -- capabilities it declares and the
+server exposes at runtime -- and the tests are organized along them so that the
+generic part is reusable by any implementation of the trait, in core or out of
+tree.
+
+Index AMs (sql/index_traits.c, driven by sql/prop_index_am.c).  A trait is a
+contract that must hold for ANY index AM claiming it: exact (equality equals a
+seqscan), ordered (ranges, ORDER BY satisfied by the index, backward scan),
+summarizing (BRIN-style lossy block ranges never drop a matching row),
+multicol, include (index-only scans), search_nulls, unique.  The harness takes
+an am_driver (the AM name, its setup DDL, and the indexed column/opclass) and
+runs, for each trait the AM actually claims, that trait's properties -- the
+core oracle throughout being differential: force the plan onto the index, force
+it onto a seqscan, require identical rows.
+
+Crucially the harness asks the server which traits the AM has, at the right
+granularity: pg_indexam_has_property for AM-level traits (can_order, can_unique,
+can_multi_col, can_include), pg_index_has_property for index-level ones
+(index_scan, bitmap_scan, backward_scan), and pg_index_column_has_property for
+column-level ones (asc, orderable, search_nulls).  So prop_index_am.c encodes no
+capability matrix -- it supplies one driver per shipped AM (btree, hash, brin,
+gin, gist) and the server decides what runs.  That is exactly what lets an
+out-of-tree AM reuse the whole applicable suite: BARK, a B+-tree successor to
+nbtree, declares amcanorder/amcanunique/amcaninclude in its amhandler and gets
+the entire ordered + unique + include + exact + search_nulls trait suite by
+adding one am_driver; a summarizing extension AM gets the summarizing suite the
+same way.  AM-specific behaviour that is not a shared trait (nbtree skip scan)
+stays in its own area (prop_nbtree.c).
+
+Table AMs (sql/prop_table_am.c).  The same split: the generic contract every
+table AM must satisfy -- insert/delete/update row-count correctness, MVCC
+visibility and rollback, one distinct ctid per live row, aggregates agreeing
+with the scan -- is written over "CREATE TABLE ... USING <am>" with the AM named
+by PG_PROP_TABLE_AM (default heap).  Another table AM (OrioleDB, the undo-based
+FLUX AM) reuses the whole suite by building the binary with its extension loaded
+and the AM name supplied; nothing in it is heap-specific.
+
+The older indexdiff area is kept as-is: it tests index *features* orthogonal to
+AM traits (partial and expression indexes), which are not AM capabilities, so it
+complements rather than duplicates the trait areas.
 
 
 Build-system integration
