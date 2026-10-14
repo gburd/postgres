@@ -80,29 +80,32 @@ than one per area) keeps the build small and gives the "pg_prop <area>" dispatch
 the user-facing CLI wants.
 
 
-Why TAP, and not a fourth kind of test
-======================================
+Relationship to TAP: integrated with, not gated by
+==================================================
 
 PostgreSQL has three test *harnesses* -- pg_regress (SQL golden-master),
 isolation (interleaved sessions), and TAP (Perl scripts emitting the TAP
-protocol).  These are harnesses, not separate categories of truth: TAP in
-particular is just "a program the meson/make test runner launches, which prints
-ok / not ok lines", and the runner already gives it suite grouping, parallelism,
-per-test timeouts, and log capture.
+protocol).  These are harnesses, not separate categories of truth, and the
+meson/make runner gives TAP suite grouping, parallelism, per-test timeouts, and
+log capture.
 
-Property-based testing is a *methodology*, not a harness.  The pg_prop binary
-prints TAP, and t/001_prop.pl and t/002_sql_props.pl are ordinary TAP scripts
-that run it, so the suite rides on the existing TAP machinery with no new
-infrastructure.  Making PBT a fourth top-level concept would mean reinventing
-test discovery, a new meson suite type, and new CI plumbing solely to
-re-implement what TAP already provides -- so it is deliberately not done.
+Property-based testing is a *methodology*, and the engine is harness-
+independent: pg_prop is a standalone C program that emits the TAP protocol and
+runs on its own -- ./pg_prop <area> [-n N] [-s SEED] for the in-process (Tier A)
+areas, and the same with PGHOST/PGPORT pointed at any cluster for the SQL-oracle
+(Tier B) areas.  It needs neither Perl nor the TAP harness to run.
 
-What makes the PBTs distinguishable is the suite name, not the harness: they are
-registered as the "prop" suite (postgresql:prop), so they can be selected,
-skipped, or reported on as a unit (meson test --suite prop) without being a
-separate driver.  A reviewer who wants "just the property tests" asks for that
-suite; a reviewer who wants "all TAP" gets these along with the rest, which is
-correct -- they are TAP.
+So the suite is *not gated by* TAP.  The build requires only the opt-in flag
+(-Dprop_tests=enabled / --with-hegel) and libhegel; it does not require
+tap_tests.  When TAP tests are also enabled, the two Perl drivers
+(t/001_prop.pl, t/002_sql_props.pl) are additionally registered as the "prop"
+meson suite (postgresql:prop) for convenience -- they start a throwaway cluster
+and run the binary -- so a reviewer can "meson test --suite prop".  When TAP is
+disabled the binary still builds and is run directly; only the convenience
+driver registration is skipped.  This is the deliberate design: PBT integrates
+with the TAP harness where it helps (test collection, a named suite) without
+inheriting TAP as a hard dependency, and without reinventing a fourth test
+runner.
 
 
 The PG_PROP registry
@@ -371,6 +374,54 @@ and the AM name supplied; nothing in it is heap-specific.
 The older indexdiff area is kept as-is: it tests index *features* orthogonal to
 AM traits (partial and expression indexes), which are not AM capabilities, so it
 complements rather than duplicates the trait areas.
+
+The bloom contrib AM is driven by the index trait harness too (it declares
+bitmap-only, lossy, no ordering), so it exercises the exact and summarizing-
+shaped trait checks.  spgist is not in the int-column trait suite (it ships no
+integer opclass); it is a candidate for its own area over the scalar types it
+supports.
+
+
+Procedural languages (sql/prop_pl_langs.c)
+==========================================
+
+The same pure, deterministic integer computation expressed in each procedural
+language -- PL/pgSQL, PL/Python (plpython3u), PL/Perl, PL/Tcl -- must equal the
+pure-SQL computation of the same expression.  This is a differential oracle
+across language implementations; a disagreement is a bug in a PL's argument
+marshalling, integer handling, or return conversion.  Each property probes its
+language with pg_prop_require_extension and pg_prop_skips when the server was
+not built with it, so the area runs whatever PLs are present and reports the
+rest as TAP SKIP rather than failing.
+
+
+Integrity oracles (sql/prop_integrity.c)
+========================================
+
+The integrity-checking contrib extensions make powerful oracles: for any table
+and index the generator builds, and after any DML churn it applies, the
+structure the server produced must pass the extension's own self-check.  A
+failure is a storage- or access-method-level corruption bug -- a different and
+valuable class from wrong results.  btree_amcheck (bt_index_check on a freshly
+built index), heap_verify (verify_heapam finds no corruption after churn),
+vm_consistent (pg_check_visible / pg_check_frozen find no wrongly-set
+visibility-map bits after VACUUM FREEZE), and stattuple_bounds (pgstattuple's
+byte accounting is non-negative and bounded by the table size).  Each requires
+its contrib extension and skips cleanly if absent.  (A check function that
+reports via RAISE, like bt_index_check, is invoked as a plain top-level SELECT,
+never buried in a subquery a constant-false outer query could optimize away --
+that elision would make the oracle vacuous; see finding 024.)
+
+
+The skip / availability framework
+=================================
+
+pg_prop_require_extension(conn, name) checks pg_available_extensions and, if the
+module is installable, loads it with CREATE EXTENSION IF NOT EXISTS, returning
+whether it is now present.  pg_prop_skip(tc, fmt, ...) abandons the whole
+property and reports it as skipped (TAP "ok N # SKIP reason").  Together they
+let an extension or PL area degrade gracefully: it loads what it needs if the
+server offers it, and marks itself skipped -- not failed -- when it does not.
 
 
 Build-system integration
