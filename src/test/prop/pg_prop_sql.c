@@ -193,3 +193,36 @@ pg_prop_sql_exec(pg_prop_conn *conn, const char *sql, char **errmsg)
 	PQclear(res);
 	return true;
 }
+
+/*
+ * Load an extension (contrib module or procedural language) into the session,
+ * returning true if it is now available.  Checks pg_available_extensions first
+ * so a missing module is reported as "unavailable" (false) rather than a hard
+ * SQL error; if present, runs CREATE EXTENSION IF NOT EXISTS.  Used by areas
+ * that test an extension so they can pg_prop_skip() cleanly when it is not
+ * installed on the server under test.
+ */
+bool
+pg_prop_require_extension(pg_prop_conn *conn, const char *extname)
+{
+	PGresult   *res;
+	char		q[256];
+	bool		avail;
+
+	/* is it installable here at all? */
+	snprintf(q, sizeof(q),
+			 "SELECT 1 FROM pg_available_extensions WHERE name = '%s'",
+			 extname);
+	res = PQexec(conn->conn, q);
+	avail = (PQresultStatus(res) == PGRES_TUPLES_OK && PQntuples(res) == 1);
+	PQclear(res);
+	if (!avail)
+		return false;
+
+	snprintf(q, sizeof(q), "CREATE EXTENSION IF NOT EXISTS \"%s\"", extname);
+	res = PQexec(conn->conn, q);
+	avail = (PQresultStatus(res) == PGRES_COMMAND_OK ||
+			 PQresultStatus(res) == PGRES_TUPLES_OK);
+	PQclear(res);
+	return avail;
+}

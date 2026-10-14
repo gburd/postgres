@@ -1831,40 +1831,45 @@ endif
 # Library: libhegel (property-based testing engine)
 ###############################################################
 
-# Property-based tests (src/test/prop) require all three of:
-#   1. -Dprop_tests=enabled (explicit opt-in; default disabled),
+# Property-based tests (src/test/prop) require:
+#   1. -Dprop_tests=enabled (explicit opt-in; default disabled), and
 #   2. libhegel's header and shared library present (found via
-#      extra_include_dirs / extra_lib_dirs or a system path), and
-#   3. TAP tests enabled (the prop suite is driven through the TAP wrapper).
-# Any missing piece disables the suite; with -Dprop_tests=enabled a missing
-# piece is a hard error so the opt-in cannot silently do nothing.
+#      extra_include_dirs / extra_lib_dirs or a system path).
+# TAP is NOT required: the pg_prop binary is a standalone C program that emits
+# TAP output and runs on its own (./pg_prop <area> ...), against any cluster
+# PGHOST/PGPORT point at for the SQL-oracle areas.  When TAP tests are also
+# enabled the Perl drivers (t/001_prop.pl, t/002_sql_props.pl) are registered
+# as the 'prop' meson suite for convenience -- they start a throwaway cluster
+# and run the binary -- but the suite is a methodology on top of the harness,
+# not gated by TAP.  With -Dprop_tests=enabled a missing libhegel is a hard
+# error so the opt-in cannot silently do nothing.
 prop_tests_enabled = false
+prop_tests_tap = false
 libhegel = not_found_dep
 propopt = get_option('prop_tests')
 if not propopt.disabled()
-  if not tap_tests_enabled
-    if propopt.enabled()
-      error('prop_tests requires tap_tests to be enabled')
-    else
-      message('property-based tests disabled: TAP tests are not enabled')
+  # The C ABI header has no PostgreSQL dependencies; the engine ships as a
+  # plain shared library named libhegel_c.  Look for both.
+  libhegel_h = cc.has_header('hegel.h',
+    args: test_c_args, include_directories: postgres_inc,
+    required: propopt)
+  libhegel_lib = cc.find_library('hegel_c',
+    dirs: postgres_lib_d, required: propopt)
+  if libhegel_h and libhegel_lib.found()
+    libhegel = declare_dependency(dependencies: libhegel_lib)
+    prop_tests_enabled = true
+    # Register the Perl TAP drivers only when TAP is available; without it the
+    # binary still builds and can be run by hand.
+    prop_tests_tap = tap_tests_enabled
+    if not tap_tests_enabled
+      message('property-based tests: building pg_prop; TAP drivers not ' +
+              'registered (tap_tests disabled) -- run the binary directly')
     endif
+  elif propopt.enabled()
+    error('prop_tests requires libhegel (hegel.h and libhegel_c); ' +
+          'point --extra-include-dirs / --extra-lib-dirs at its install')
   else
-    # The C ABI header has no PostgreSQL dependencies; the engine ships as a
-    # plain shared library named libhegel_c.  Look for both.
-    libhegel_h = cc.has_header('hegel.h',
-      args: test_c_args, include_directories: postgres_inc,
-      required: propopt)
-    libhegel_lib = cc.find_library('hegel_c',
-      dirs: postgres_lib_d, required: propopt)
-    if libhegel_h and libhegel_lib.found()
-      libhegel = declare_dependency(dependencies: libhegel_lib)
-      prop_tests_enabled = true
-    elif propopt.enabled()
-      error('prop_tests requires libhegel (hegel.h and libhegel_c); ' +
-            'point --extra-include-dirs / --extra-lib-dirs at its install')
-    else
-      message('property-based tests disabled: libhegel not found')
-    endif
+    message('property-based tests disabled: libhegel not found')
   endif
 endif
 
