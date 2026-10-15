@@ -638,6 +638,13 @@ bark_cache_marker(Relation index, BarkKeyInfo *keyinfo, Datum key)
 	len = att->attbyval ? sizeof(Datum) :
 		datumGetSize(key, false, att->attlen);
 	cache = bark_get_amcache(index);
+
+	/*
+	 * The level-1 entry table follows the markers in the chunk; a new marker
+	 * drops it rather than move it (markers are rare, and descents refill
+	 * the table).
+	 */
+	bark_l1_reset(cache);
 	used = offsetof(BarkAmCache, markerdata) + cache->markerlen;
 	cache = repalloc(cache, used + MAXALIGN(sizeof(Size)) + MAXALIGN(len));
 	index->rd_amcache = cache;
