@@ -640,14 +640,23 @@ bark_cache_marker(Relation index, BarkKeyInfo *keyinfo, Datum key)
 	cache = bark_get_amcache(index);
 
 	/*
-	 * The level-1 entry table follows the markers in the chunk; a new marker
-	 * drops it rather than move it (markers are rare, and descents refill
-	 * the table).
+	 * The level-1 entry table follows the markers in the chunk
+	 * (bark_l1_region): grow the chunk by the new marker and move the table
+	 * up past it, so the marker goes in without dropping the table.
 	 */
-	bark_l1_reset(cache);
-	used = offsetof(BarkAmCache, markerdata) + cache->markerlen;
-	cache = repalloc(cache, used + MAXALIGN(sizeof(Size)) + MAXALIGN(len));
-	index->rd_amcache = cache;
+	{
+		Size		add = MAXALIGN(sizeof(Size)) + MAXALIGN(len);
+		Size		l1len = bark_l1_region_size(cache);
+		Size		oldmarkers = MAXALIGN(cache->markerlen);
+		Size		newmarkers = MAXALIGN(cache->markerlen + add);
+
+		used = offsetof(BarkAmCache, markerdata) + oldmarkers + l1len;
+		cache = repalloc(cache, used + (newmarkers - oldmarkers));
+		index->rd_amcache = cache;
+		if (l1len > 0)
+			memmove(cache->markerdata + newmarkers,
+					cache->markerdata + oldmarkers, l1len);
+	}
 
 	p = cache->markerdata + cache->markerlen;
 	*(Size *) p = len;
