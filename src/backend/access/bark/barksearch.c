@@ -426,7 +426,7 @@ bark_l1_thin(BarkAmCache *cache)
 }
 
 /*
- * The slot a read descent for key may start at: the one with the greatest
+ * The slot a descent for key may start at: the one with the greatest
  * low key that the key does not sort before (nextkey) or after (!nextkey),
  * by the same rule bark_binsrch uses to pick a downlink, so that starting
  * there and moving right reaches the page the root would have led to.
@@ -479,14 +479,13 @@ bark_l1_remember(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 	if (cache->nl1 >= BARK_L1_MAX_SLOTS ||
 		cache->l1keylen + keysz > BARK_L1_MAX_KEYLEN)
 	{
+		/*
+		 * Thinning only drops slots, so blkno is still absent; one pivot
+		 * (at most BarkMaxItemSize) is far below the key budget, so it fits.
+		 */
 		bark_l1_thin(cache);
-		/* The new key's place in the thinned table. */
 		pos = bark_l1_find(index, keyinfo, cache, &skey, true) + 1;
-		if (pos > 0 && bark_l1_slots(cache)[pos - 1].blkno == blkno)
-			return;
-		/* A single key larger than the whole budget is not cached. */
-		if (cache->l1keylen + keysz > BARK_L1_MAX_KEYLEN)
-			return;
+		Assert(cache->l1keylen + keysz <= BARK_L1_MAX_KEYLEN);
 	}
 
 	/* Grow the chunk: double the slots or the key space as needed. */
@@ -638,7 +637,7 @@ bark_get_root_buffer(Relation index, BufferLockMode access)
 }
 
 /*
- * The cached level-1 page a read descent for key may start at, share-locked,
+ * The cached level-1 page a descent for key may start at, share-locked,
  * or InvalidBuffer when there is none (the table is empty, or the key sorts
  * before every cached low key).  The page is checked under its lock to be a
  * live level-1 internal page; the caller then moves right from it as from
@@ -735,21 +734,23 @@ bark_descend(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
 	Buffer		buf;
 	BarkStack	path = NULL;
 	BufferLockMode access = BUFFER_LOCK_SHARE;
+	bool		started_cached = false;
 
 	if (stack)
 		*stack = NULL;
 
 	/*
-	 * A read descent that needs no parent path starts at a cached level-1
-	 * page when one may hold the key, and never touches the root, whose
-	 * buffer header every descent would otherwise write (see "Level-1 entry
-	 * cache" in the README).  A write descent, or one recording its path,
-	 * starts at the root as before.
+	 * A descent starts at a cached level-1 page when one may hold the key,
+	 * and never touches the root, whose buffer header every descent would
+	 * otherwise write (see "Level-1 entry cache" in the README).  That holds
+	 * for write descents too: the path it records starts at the level-1
+	 * page, whose frame is marked bark_cached, and a split that reaches
+	 * past it finds the missing parent then (bark_insert_parent).
 	 */
-	buf = InvalidBuffer;
-	if (!forwrite && stack == NULL)
-		buf = bark_l1_start(index, keyinfo, key, nextkey);
-	if (!BufferIsValid(buf))
+	buf = bark_l1_start(index, keyinfo, key, nextkey);
+	if (BufferIsValid(buf))
+		started_cached = true;
+	else
 		buf = bark_get_root_buffer(index, access);
 	if (!BufferIsValid(buf))
 		return InvalidBuffer;	/* empty index */
@@ -784,6 +785,8 @@ bark_descend(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
 		item->bark_blkno = BufferGetBlockNumber(buf);
 		item->bark_offset = off;
 		item->bark_parent = path;
+		item->bark_cached = started_cached;
+		started_cached = false; /* only the first frame starts below the root */
 		path = item;
 
 		/* The children of a level-1 page are leaves: lock them for write. */
@@ -829,6 +832,85 @@ bark_descend(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
 	else
 		bark_freestack(path);
 	return buf;
+}
+
+/*
+ * The path from the root down to, but not including, level `level`, for a
+ * write descent that started below the root (from the level-1 entry cache)
+ * and now needs the parent of a page at `level` that is splitting: the path
+ * the descent would have recorded had it started at the root.  `key` is the
+ * splitting page's high key, as page deletion finds a leaf's parent
+ * (bark_find_parent_downlink).
+ *
+ * The caller holds the page at `level` and a child of it exclusive-locked.
+ * This takes share locks top-down on the levels above `level` only, one at
+ * a time, and releases each before the next: the same order and kind of
+ * locks a descent from the root takes, so it cannot deadlock with the locks
+ * held.  It never locks a page at `level` or below.  The page at `level`
+ * is never the root: it was cached from a downlink above it, and a root
+ * only grows.  The frames are allocated as bark_descend allocates them; the
+ * caller frees them with the rest of the stack.
+ */
+BarkStack
+bark_find_upper_path(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
+					 uint32 level)
+{
+	BarkSearchKey skey = {key, NULL, NULL};
+	BarkStack	path = NULL;
+	Buffer		buf;
+
+	/*
+	 * Tests stop here, with the level-1 page and its child locked, to let
+	 * another backend split the levels above first.
+	 */
+	INJECTION_POINT("bark-find-upper-path", NULL);
+
+	/* The caller holds a page below the root, so there is one. */
+	buf = bark_get_root_buffer(index, BUFFER_LOCK_SHARE);
+	Assert(BufferIsValid(buf));
+
+	for (;;)
+	{
+		Page		page;
+		BarkPageOpaque opaque;
+		OffsetNumber off;
+		IndexTuple	itup;
+		BarkStack	item;
+		BarkItemBuf ibuf;
+		BlockNumber blkno;
+
+		buf = bark_moveright(index, keyinfo, &skey, buf, false, path,
+							 BUFFER_LOCK_SHARE);
+		page = BufferGetPage(buf);
+		opaque = BarkPageGetOpaque(page);
+
+		/*
+		 * A cached page is named by a level-2 downlink, and a root only
+		 * grows, so the root is always above `level`.
+		 */
+		Assert(opaque->bark_level > level);
+
+		/* nextkey=false, as page deletion does: at or left of the page. */
+		off = bark_binsrch(index, keyinfo, &skey, page, false);
+		itup = BarkPageGetItem(page, off, &ibuf);
+		item = palloc(sizeof(BarkStackData));
+		item->bark_blkno = BufferGetBlockNumber(buf);
+		item->bark_offset = off;
+		item->bark_parent = path;
+		item->bark_cached = false;
+		path = item;
+
+		blkno = BarkEntryGetDownLink(itup);
+		if (opaque->bark_level == level + 1)
+		{
+			/* This is the parent's level: no need to read the child. */
+			UnlockReleaseBuffer(buf);
+			return path;
+		}
+		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
+		buf = ReleaseAndReadBuffer(buf, index, blkno);
+		LockBuffer(buf, BUFFER_LOCK_SHARE);
+	}
 }
 
 Buffer
