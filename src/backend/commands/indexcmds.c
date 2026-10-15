@@ -885,6 +885,32 @@ DefineIndex(ParseState *pstate,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("access method \"%s\" does not support unique indexes",
 						accessMethodName)));
+
+	/*
+	 * The index has to be able to store the locator the table's AM identifies
+	 * rows with.  Every in-core table AM provides LOCATOR_CAP_TID and every
+	 * in-core index AM stores it, so this cannot fail today; it exists so that
+	 * a table AM which identifies rows some other way gets a clear error
+	 * rather than an index full of values its AM cannot interpret.
+	 *
+	 * A partitioned table has no table AM of its own -- the access method is a
+	 * setting its partitions inherit -- so there is nothing to check here.  The
+	 * recursive DefineIndex() call for each partition performs the check
+	 * against that partition's own AM.
+	 */
+	if (rel->rd_tableam != NULL)
+	{
+		LocatorCapability tablecap = rel->rd_tableam->locator_capability;
+
+		if (!(amRoutine->amcanlocators & LOCATOR_CAP_MASK(tablecap)))
+			ereport(ERROR,
+					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					 errmsg("access method \"%s\" cannot index table \"%s\"",
+							accessMethodName, RelationGetRelationName(rel)),
+					 errdetail("The table's access method identifies rows using the \"%s\" locator, which \"%s\" does not support.",
+							   GetLocatorCapability(tablecap)->name,
+							   accessMethodName)));
+	}
 	if (stmt->indexIncludingParams != NIL && !amRoutine->amcaninclude)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
