@@ -371,3 +371,43 @@ PG_PROP(outer_join_order_invariant)
 	pfree(q.data);
 	pg_prop_disconnect(conn);
 }
+
+/*
+ * GEQO equivalence: the genetic query optimizer searches the join-order space
+ * heuristically instead of exhaustively, but it must never change the ANSWER
+ * -- only which plan is chosen.  Run the same multi-way self-join with the
+ * exhaustive planner (geqo off) and with GEQO forced (geqo on, threshold 2),
+ * and require identical rows.  A difference would mean GEQO produced a plan
+ * that computes the wrong result -- a serious optimizer bug.  Uses the plan-
+ * invariant comparator with GEQO toggled via the extra SET.
+ */
+PG_PROP(geqo_equivalence)
+{
+	pg_prop_conn *conn;
+	int			nrows;
+	StringInfoData q;
+
+	conn = connect_advice(tc);
+	qg_build_table(tc, conn, &nrows);
+
+	/* a 4-way self-join: well above geqo_threshold=2 when GEQO is forced */
+	initStringInfo(&q);
+	appendStringInfoString(&q,
+						   "SELECT w.id, x.id, y.id, z.id FROM " QG_TABLE " w "
+						   "JOIN " QG_TABLE " x ON x.id = w.a "
+						   "JOIN " QG_TABLE " y ON y.id = w.b "
+						   "JOIN " QG_TABLE " z ON z.id = x.a "
+						   "ORDER BY w.id, x.id, y.id, z.id");
+
+	/*
+	 * Default run has geqo off (RESET ALL in require_plan_invariant); the
+	 * steered run forces GEQO on with the minimum threshold so the genetic
+	 * search is used for this join.  No plan advice -- just the GEQO toggle.
+	 */
+	require_plan_invariant(tc, conn, q.data, "",
+						   "SET geqo = on; SET geqo_threshold = 2; "
+						   "SET geqo_seed = 0.5;");
+
+	pfree(q.data);
+	pg_prop_disconnect(conn);
+}
