@@ -41,6 +41,51 @@ const ShmemCallbacks VarsupShmemCallbacks = {
 };
 
 /*
+ * XidGenLimitActionNeeded
+ *
+ * Called by GetNewTransactionId() with XidGenLock held, once nextXid is past
+ * xidVacLimit.  Returns true if the slow path in GetNewTransactionId() would
+ * do something: signal the postmaster, raise an ERROR, or emit a WARNING.
+ *
+ * Stock PostgreSQL enters the slow path for every XID past xidVacLimit.  The
+ * slow path releases XidGenLock, makes the three checks below, and then
+ * re-acquires XidGenLock.  Between xidVacLimit and xidWarnLimit all three
+ * checks are false for 65535 of every 65536 XIDs, so the release and
+ * re-acquire do nothing.  The cluster stays in that state until autovacuum
+ * advances the oldest datfrozenxid, which can take hours, and until then
+ * every XID assignment takes this contended lock twice instead of once.
+ *
+ * The checks below are the slow path's own checks, in the same order, made
+ * while we still hold the lock.  The slow path still makes them again after
+ * it releases the lock, because it must not call get_database_name() or
+ * ereport() while holding XidGenLock.  So signals, warnings, and errors
+ * happen exactly as before; only the trip through the lock that does
+ * nothing goes away.
+ */
+static inline bool
+XidGenLimitActionNeeded(TransactionId xid)
+{
+	Assert(LWLockHeldByMeInMode(XidGenLock, LW_EXCLUSIVE));
+
+	/* Slow path: signal the postmaster to start the autovacuum launcher. */
+	if (IsUnderPostmaster && (xid % 65536) == 0)
+		return true;
+
+	/* Slow path: ERROR, not accepting commands that assign new XIDs. */
+	if (IsUnderPostmaster &&
+		TransactionIdFollowsOrEquals(xid, TransamVariables->xidStopLimit))
+		return true;
+
+	/* Slow path: WARNING, database must be vacuumed within N transactions. */
+	if (TransactionIdFollowsOrEquals(xid, TransamVariables->xidWarnLimit))
+		return true;
+
+	/* None of the above: the slow path would do nothing. */
+	return false;
+}
+
+
+/*
  * Request shared memory for TransamVariables.
  */
 static void
@@ -109,9 +154,13 @@ GetNewTransactionId(bool isSubXact)
 	 * to the DBA who somehow got past the earlier defenses).
 	 *
 	 * Note that this coding also appears in GetNewMultiXactId.
+	 *
+	 * Past xidVacLimit, enter the slow path only if it has something to do;
+	 * see XidGenLimitActionNeeded().
 	 *----------
 	 */
-	if (TransactionIdFollowsOrEquals(xid, TransamVariables->xidVacLimit))
+	if (TransactionIdFollowsOrEquals(xid, TransamVariables->xidVacLimit) &&
+		XidGenLimitActionNeeded(xid))
 	{
 		/*
 		 * For safety's sake, we release XidGenLock while sending signals,
