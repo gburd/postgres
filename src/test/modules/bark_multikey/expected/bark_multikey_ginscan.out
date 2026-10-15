@@ -398,6 +398,33 @@ FROM (VALUES (0, 0), (0, 5), (3, 4), (10, 1000000)) v(m, r);
  10 | 1000000 | total:385 resumed:375 same:true
 (4 rows)
 
+-- Driven through the AM's routine alone, with no heap relation and no
+-- snapshot (DocumentDB's metadata probe), a GIN-interface scan returns the
+-- same rows as an ordinary one.
+SELECT bark_multikey_bare_scan('mg_bark', '@>(anyarray,anyarray)', '{3}'::int4[]) =
+       (SELECT count(*) FROM mg WHERE a @> '{3}') AS bare_ok;
+ bare_ok 
+---------
+ t
+(1 row)
+
+-- No index-only scan, even of a column the index holds whole: the scan
+-- computes TIDs, not entries (bark_canreturn).
+CREATE INDEX mg_cov ON mg USING bark (a bark_gin_int4_array_ops) INCLUDE (id);
+SELECT pg_index_column_has_property('mg_cov', 2, 'returnable') AS id_returnable;
+ id_returnable 
+---------------
+ f
+(1 row)
+
+EXPLAIN (COSTS OFF) SELECT id FROM mg WHERE a @> '{3}';
+              QUERY PLAN               
+---------------------------------------
+ Index Scan using mg_cov on mg
+   Index Cond: (a @> '{3}'::integer[])
+(2 rows)
+
+DROP INDEX mg_cov;
 -- SELECT ... LIMIT 1 FOR UPDATE, as DocumentDB updates by a filter.
 EXPLAIN (COSTS OFF) SELECT id FROM mg WHERE a @> '{3,7}' LIMIT 1 FOR UPDATE;
                      QUERY PLAN                      

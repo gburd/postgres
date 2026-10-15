@@ -179,7 +179,8 @@ bark_knn_readpage(IndexScanDesc scan, BarkKnnCursor *cur, Page page,
 	 * Predicate-lock the leaf for serializable transactions: a read here
 	 * conflicts with a later insert onto the same page.
 	 */
-	PredicateLockPage(index, blkno, scan->xs_snapshot);
+	if (scan->xs_snapshot != NULL)
+		PredicateLockPage(index, blkno, scan->xs_snapshot);
 
 	for (; backward ? offnum >= minoff : offnum <= maxoff;
 		 offnum = backward ? OffsetNumberPrev(offnum) : OffsetNumberNext(offnum))
@@ -380,7 +381,8 @@ bark_knn_position(IndexScanDesc scan)
 	if (!BufferIsValid(buf))
 	{
 		/* Empty index.  A serializable scan must lock the whole relation. */
-		PredicateLockRelation(index, scan->xs_snapshot);
+		if (scan->xs_snapshot != NULL)
+			PredicateLockRelation(index, scan->xs_snapshot);
 		return;
 	}
 
