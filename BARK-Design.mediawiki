@@ -1078,8 +1078,8 @@ place of an inverted AM, without changing the scalar design above.
   index and bitmap scans of plain, include, exclude and compound indexes
   with a sequential scan on 151 quals over 4000 documents, and a lax
   jsonpath oracle where the semantics coincide; the index's (key, TID)
-  members are compared both ways with the keys of the heap's rows, since
-  heapallindexed refuses a multikey index. M5b part 1, the per-path
+  members are compared both ways with the keys of the heap's rows, which
+  heapallindexed now also checks one way (2026-10-15). M5b part 1, the per-path
   no-seen-set extension (BarkQueryFlags.oneentry and .index), and part 2,
   sorting by a path (BarkQueryFlags.orderrest), are built. W6: procedure 7
   writes every number with its scale trimmed, so keys that jsonb_cmp finds
@@ -2239,9 +2239,13 @@ one run, since its keys are distinct, so the check needs no own-row
 exception. A run whose key has a NULL column is skipped, as nbtree skips
 keys with <code>anynullkeys</code>. Markers are skipped, as every reader
 skips them; a marker's key equals no data key, so it is alone in its run.
-heapallindexed is refused on an index with an extracted
-column (bark_check_structure, M1b), unique or not; making it form a row's keys
-through procedure 7 is separate work, which uniqueness does not change.
+heapallindexed was refused on an index with an extracted column (M1b)
+until 2026-10-15; it now forms each row's keys through procedure 7, as
+CREATE INDEX does (bark_extract_row_keys), and probes the filter for each,
+and markers are not fingerprinted.  Uniqueness does not change it.  It is
+still refused where the column coalesces keys of different images (a
+GIN-interface class without equalimage, bark_index_may_coalesce): a row's
+own key image may then be in no entry.
 
 ==== As built (M4a) ====
 
