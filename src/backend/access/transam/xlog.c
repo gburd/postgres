@@ -460,7 +460,12 @@ typedef struct XLogCtlData
 	/* Protected by info_lck: */
 	XLogwrtRqst LogwrtRqst;
 	XLogRecPtr	RedoRecPtr;		/* a recent copy of Insert->RedoRecPtr */
-	XLogRecPtr	asyncXactLSN;	/* LSN of newest async commit/abort */
+	/*
+	 * LSN of newest async commit/abort.  Updated lock-free with a monotonic
+	 * max instead of under info_lck, since every async commit touches it.
+	 * See XLogSetAsyncXactLSN / XLogBackgroundFlush.
+	 */
+	pg_atomic_uint64 asyncXactLSN;
 	XLogRecPtr	replicationSlotMinLSN;	/* oldest LSN needed by any slot */
 
 	XLogSegNo	lastRemovedSegNo;	/* latest removed/recycled XLOG segment */
@@ -533,9 +538,10 @@ typedef struct XLogCtlData
 	/*
 	 * WalWriterSleeping indicates whether the WAL writer is currently in
 	 * low-power mode (and hence should be nudged if an async commit occurs).
-	 * Protected by info_lck.
+	 * Read/written with atomics (no info_lck) so async commits can check it
+	 * without taking a spinlock.
 	 */
-	bool		WalWriterSleeping;
+	pg_atomic_uint32 WalWriterSleeping;
 
 	/*
 	 * During recovery, we keep a copy of the latest checkpoint record here.
@@ -2801,21 +2807,22 @@ XLogSetAsyncXactLSN(XLogRecPtr asyncXactLSN)
 	XLogRecPtr	WriteRqstPtr = asyncXactLSN;
 	bool		sleeping;
 	bool		wakeup = false;
-	XLogRecPtr	prevAsyncXactLSN;
-
-	SpinLockAcquire(&XLogCtl->info_lck);
-	sleeping = XLogCtl->WalWriterSleeping;
-	prevAsyncXactLSN = XLogCtl->asyncXactLSN;
-	if (XLogCtl->asyncXactLSN < asyncXactLSN)
-		XLogCtl->asyncXactLSN = asyncXactLSN;
-	SpinLockRelease(&XLogCtl->info_lck);
+	uint64		observed;
 
 	/*
-	 * If somebody else already called this function with a more aggressive
-	 * LSN, they will have done what we needed (and perhaps more).
+	 * Advance the shared async-commit LSN to at least ours, lock-free.
+	 *
+	 * If it was already at or ahead of our LSN, some other backend already ran
+	 * this function with an equal-or-more aggressive LSN, so it has done (at
+	 * least) the wakeup work we would have, and we can return.
 	 */
-	if (asyncXactLSN <= prevAsyncXactLSN)
+	observed = pg_atomic_monotonic_advance_u64(&XLogCtl->asyncXactLSN,
+											   asyncXactLSN);
+	if (observed > asyncXactLSN)
 		return;
+
+	/* Read the sleep flag without a lock. */
+	sleeping = pg_atomic_read_u32(&XLogCtl->WalWriterSleeping);
 
 	/*
 	 * If the WALWriter is sleeping, kick it to make it come out of low-power
@@ -3199,9 +3206,8 @@ XLogBackgroundFlush(void)
 	RefreshXLogWriteResult(LogwrtResult);
 	if (WriteRqst.Write <= LogwrtResult.Flush)
 	{
-		SpinLockAcquire(&XLogCtl->info_lck);
-		WriteRqst.Write = XLogCtl->asyncXactLSN;
-		SpinLockRelease(&XLogCtl->info_lck);
+		/* lock-free read of the shared async-commit LSN */
+		WriteRqst.Write = pg_atomic_read_u64(&XLogCtl->asyncXactLSN);
 		flexible = false;		/* ensure it all gets written */
 	}
 
@@ -5733,7 +5739,8 @@ XLOGShmemInit(void *arg)
 	XLogCtl->XLogCacheBlck = XLOGbuffers - 1;
 	XLogCtl->SharedRecoveryState = RECOVERY_STATE_CRASH;
 	XLogCtl->InstallXLogFileSegmentActive = false;
-	XLogCtl->WalWriterSleeping = false;
+	pg_atomic_init_u32(&XLogCtl->WalWriterSleeping, 0);
+	pg_atomic_init_u64(&XLogCtl->asyncXactLSN, 0);
 
 	/* Use the checksum info from control file */
 	XLogCtl->data_checksum_version = ControlFile->data_checksum_version;
@@ -10829,7 +10836,5 @@ IsInstallXLogFileSegmentActive(void)
 void
 SetWalWriterSleeping(bool sleeping)
 {
-	SpinLockAcquire(&XLogCtl->info_lck);
-	XLogCtl->WalWriterSleeping = sleeping;
-	SpinLockRelease(&XLogCtl->info_lck);
+	pg_atomic_write_u32(&XLogCtl->WalWriterSleeping, sleeping ? 1 : 0);
 }
