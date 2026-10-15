@@ -147,9 +147,19 @@ FROM unnest(ARRAY['gn_bark', 'gn_bark_g', 'gn_bark_n', 'gn_bark_inc']) i;
                   | 
 (4 rows)
 
--- heapallindexed stays refused for a multikey index.
+-- heapallindexed is refused where equal keys of different images share an
+-- entry (numeric is not equalimage); an INCLUDE column forbids coalescing,
+-- so gn_bark_inc is checked.
 SELECT bark_index_check('gn_bark', true, false);
-ERROR:  heapallindexed is not supported for index "gn_bark", which has a multikey column
+ERROR:  heapallindexed is not supported for index "gn_bark"
+DETAIL:  Its multikey column stores one image for keys that compare equal.
+SELECT bark_index_check('gn_bark_inc', true, false),
+       bark_index_parent_check('gn_bark_inc', true, false);
+ bark_index_check | bark_index_parent_check 
+------------------+-------------------------
+                  | 
+(1 row)
+
 -- Rows of a query on table tab through index idx (NULL: seqscan).
 CREATE FUNCTION gn_run(tab text, idx text, q text) RETURNS int[]
 LANGUAGE plpgsql AS $$
