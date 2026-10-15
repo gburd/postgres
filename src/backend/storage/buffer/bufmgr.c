@@ -3076,6 +3076,37 @@ ExtendBufferedRelShared(BufferManagerRelation bmr,
 }
 
 /*
+ * BufferIsExclusiveLockedByAnyone
+ *
+ * True if any backend holds the content lock of the buffer in exclusive mode.
+ *
+ * The result is a snapshot.  It can become incorrect immediately.  Use it for
+ * an optimistic reader that holds a pin but no content lock.  A writer must hold
+ * the content lock in exclusive mode to change the page.  Thus this function
+ * shows that a change is in progress.  The reader must still validate its data.
+ * A writer can take and release the lock between two calls.
+ *
+ * Local buffers have no content lock, so this returns false.  Only one backend
+ * can use a local buffer, so no other backend can change it.
+ *
+ * This is a plain atomic load of the state word.  It does not write to it, so
+ * the cache line does not move between CPUs.
+ */
+bool
+BufferIsExclusiveLockedByAnyone(Buffer buffer)
+{
+	BufferDesc *bufHdr;
+
+	Assert(BufferIsPinned(buffer));
+
+	if (BufferIsLocal(buffer))
+		return false;
+
+	bufHdr = GetBufferDescriptor(buffer - 1);
+	return (pg_atomic_read_u64(&bufHdr->state) & BM_LOCK_VAL_EXCLUSIVE) != 0;
+}
+
+/*
  * BufferIsLockedByMe
  *
  *      Checks if this backend has the buffer locked in any mode.

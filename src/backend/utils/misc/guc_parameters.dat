@@ -387,6 +387,13 @@
   boot_val => '""',
 },
 
+{ name => 'btree_optimistic_root', type => 'bool', context => 'PGC_USERSET', group => 'LOCK_MANAGEMENT',
+  short_desc => 'Enables a read of the btree root page with no lock during index descent.',
+  long_desc => 'If the root changes during the read, the locked path is used.',
+  variable => 'btree_optimistic_root',
+  boot_val => 'true',
+},
+
 { name => 'bytea_output', type => 'enum', context => 'PGC_USERSET', group => 'CLIENT_CONN_STATEMENT',
   short_desc => 'Sets the output format for bytea.',
   variable => 'bytea_output',

@@ -31,6 +31,7 @@
 
 #include "access/commit_ts.h"
 #include "access/gin.h"
+#include "access/nbtree.h"
 #include "access/slru.h"
 #include "access/toast_compression.h"
 #include "access/twophase.h"

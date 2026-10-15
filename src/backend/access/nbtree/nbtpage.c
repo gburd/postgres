@@ -347,6 +347,12 @@ _bt_set_cleanup_info(Relation rel, BlockNumber num_delpages)
  */
 #define BTREE_ROOT_PIN_CACHE_SIZE	64
 
+/*
+ * GUC: enable the optimistic root read in _bt_search().  Use it to measure the
+ * fast path on and off with one binary.
+ */
+bool		btree_optimistic_root = true;
+
 typedef struct BTRootPinEntry
 {
 	Oid			relid;			/* OID of the index, for invalidation */
@@ -560,6 +566,49 @@ _bt_root_pin_remember(Relation rel, Buffer rootbuf, BlockNumber rootblkno)
 	entry->rlocator = rel->rd_locator;
 	entry->rootblkno = rootblkno;
 	entry->rootbuf = rootbuf;
+}
+
+/*
+ * _bt_peek_root
+ *
+ * Get the root buffer for a read that takes no lock.  This function takes no
+ * content lock and no new pin.  It returns InvalidBuffer if local state cannot
+ * supply the buffer.
+ *
+ * Two conditions are necessary:
+ *
+ *	- The cached metapage (rel->rd_amcache) is present.  It gives the fast root
+ *	  block and its level, so we do not read the metapage.
+ *	- We hold a base pin on that root block from earlier in this transaction.
+ *	  The pin keeps the buffer in memory, so no backend can replace the page.
+ *	  A relcache invalidation drops the pin.  Thus a dropped or rebuilt index
+ *	  gives no pin.
+ *
+ * Do not unlock or unpin the buffer.  The base pin owns it.  No content lock is
+ * held, so you must validate all data that you read.
+ */
+Buffer
+_bt_peek_root(Relation rel, BlockNumber *rootblkno, uint32 *rootlevel)
+{
+	BTMetaPageData *metad;
+	BTRootPinEntry *pinentry;
+
+	if (rel->rd_amcache == NULL)
+		return InvalidBuffer;
+
+	metad = (BTMetaPageData *) rel->rd_amcache;
+	Assert(metad->btm_magic == BTREE_MAGIC);
+
+	*rootblkno = metad->btm_fastroot;
+	*rootlevel = metad->btm_fastlevel;
+	if (*rootblkno == P_NONE)
+		return InvalidBuffer;
+
+	pinentry = _bt_root_pin_lookup(rel);
+	if (pinentry == NULL || pinentry->rootblkno != *rootblkno)
+		return InvalidBuffer;
+
+	return pinentry->rootbuf;
 }
 
 /*

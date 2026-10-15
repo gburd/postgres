@@ -22,6 +22,7 @@
 #include "executor/instrument_node.h"
 #include "miscadmin.h"
 #include "pgstat.h"
+#include "port/atomics.h"
 #include "storage/predicate.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
@@ -33,6 +34,10 @@ static Buffer _bt_moveright(Relation rel, Relation heaprel, BTScanInsert key,
 							Buffer buf, bool forupdate, BTStack stack,
 							int access);
 static OffsetNumber _bt_binsrch(Relation rel, BTScanInsert key, Buffer buf);
+static OffsetNumber _bt_binsrch_page(Relation rel, BTScanInsert key, Page page);
+static bool _bt_search_optimistic_root(Relation rel, BTScanInsert key,
+									   Buffer *bufP, BTStack *stackp,
+									   bool returnstack);
 static int	_bt_binsrch_posting(BTScanInsert key, Page page,
 								OffsetNumber offnum);
 static inline void _bt_returnitem(IndexScanDesc scan, BTScanOpaque so);
@@ -109,12 +114,25 @@ _bt_search(Relation rel, Relation heaprel, BTScanInsert key, Buffer *bufP,
 	Assert(access == BT_READ || access == BT_WRITE);
 	Assert(access == BT_READ || heaprel != NULL);
 
-	/* Get the root page to start with */
-	*bufP = _bt_getroot(rel, heaprel, access);
+	/*
+	 * Try to get past the root without a lock on it.  Read mode only.  If this
+	 * succeeds, we are one level down.  *bufP is the child, and stack_in holds
+	 * the stack entry for the root.  The loop below continues from the child.
+	 */
+	if (access == BT_READ &&
+		_bt_search_optimistic_root(rel, key, bufP, &stack_in, returnstack))
+	{
+		/* We are past the root.  Do nothing more here. */
+	}
+	else
+	{
+		/* Get the root page to start with */
+		*bufP = _bt_getroot(rel, heaprel, access);
 
-	/* If index is empty and access = BT_READ, no root page is created. */
-	if (!BufferIsValid(*bufP))
-		return (BTStack) NULL;
+		/* If index is empty and access = BT_READ, no root page is created. */
+		if (!BufferIsValid(*bufP))
+			return (BTStack) NULL;
+	}
 
 	/* Loop iterates once per level descended in the tree */
 	for (;;)
@@ -207,6 +225,154 @@ _bt_search(Relation rel, Relation heaprel, BTScanInsert key, Buffer *bufP,
 	}
 
 	return stack_in;
+}
+
+/*
+ * Private copy of the root page for the optimistic read.  It is static, so the
+ * fast path does not allocate memory and does not use much stack.
+ */
+static PGAlignedBlock bt_optimistic_root_page;
+
+/*
+ * _bt_search_optimistic_root
+ *
+ * Get past the root with no lock on it.
+ *
+ * The root changes only when it splits or when it gets a downlink from a child
+ * that split.  This is rare.  But all backends read the root on each descent.
+ * The base pin (see _bt_getroot) removed the write to the root pin count.  But
+ * each descent still took the content lock of the root in shared mode.  A
+ * shared LWLock acquire is an atomic read-modify-write.  Thus the cache line of
+ * the lock continued to move between CPUs.
+ *
+ * This function reads the root with no content lock.  It validates the data
+ * before it uses the data.  If a concurrent change is possible, it returns
+ * false, and the caller uses the usual locked path.  A miss costs one page copy.
+ *
+ * Sequence:
+ *
+ *	1. Make sure that the index is WAL-logged.  We use the page LSN to find a
+ *	   concurrent change.  Writers set the LSN only for WAL-logged indexes.
+ *	2. Make sure that no backend holds the content lock in exclusive mode.
+ *	   This is only an early exit.  Step 4 does not need it.
+ *	3. Read the LSN.  Then copy the page.  After this, use only the copy.  The
+ *	   live page can change during the copy, so the copy can be inconsistent.
+ *	4. Validate.  Examine the lock first, then the LSN.  This order is
+ *	   necessary:
+ *	   - If a writer still holds the lock, the lock check fails.
+ *	   - If a writer took and released the lock during the copy, it set a new
+ *	     LSN before the release.  Thus the LSN check fails.
+ *	   - If we read the LSN first, a writer can set the LSN and unlock
+ *	     between the reads.  Then both checks pass, which is wrong.
+ *	5. Use the copy.  It is now a consistent snapshot.
+ *
+ * Validate the copy before you compare keys in it.  A torn page can contain a
+ * corrupt tuple.  _bt_compare() on a corrupt tuple can fail or crash.
+ *
+ * If this function succeeds, *bufP is the child buffer, pinned and read-locked.
+ * If returnstack, *stackp is the stack entry for the root; otherwise it is
+ * NULL, as in _bt_search().  This is one step of the _bt_search() loop.
+ *
+ * Read mode only.  A descent in write mode can have to complete a split on the
+ * way down.  Thus it uses the locked path.
+ */
+static bool
+_bt_search_optimistic_root(Relation rel, BTScanInsert key,
+						   Buffer *bufP, BTStack *stackp, bool returnstack)
+{
+	Buffer		rootbuf;
+	BlockNumber rootblkno;
+	uint32		rootlevel;
+	Page		livepage;
+	Page		page;
+	BTPageOpaque opaque;
+	OffsetNumber offnum;
+	OffsetNumber maxoff;
+	IndexTuple	itup;
+	BlockNumber child;
+	XLogRecPtr	lsn;
+	BTStack		new_stack;
+
+	if (!btree_optimistic_root)
+		return false;
+
+	/*
+	 * A change of the page LSN shows a concurrent change.  nbtree sets the LSN
+	 * only when the index needs WAL.  For other indexes the LSN does not change,
+	 * so the check cannot find a change.
+	 */
+	if (!RelationNeedsWAL(rel))
+		return false;
+
+	/* Use only a base pin from earlier in this transaction. */
+	rootbuf = _bt_peek_root(rel, &rootblkno, &rootlevel);
+	if (!BufferIsValid(rootbuf))
+		return false;
+
+	livepage = BufferGetPage(rootbuf);
+
+	/* A writer holds this lock while it changes the page. */
+	if (BufferIsExclusiveLockedByAnyone(rootbuf))
+		return false;
+
+	lsn = PageGetLSN(livepage);
+	pg_read_barrier();
+
+	page = (Page) bt_optimistic_root_page.data;
+	memcpy(page, livepage, BLCKSZ);
+	pg_read_barrier();
+
+	/* Validate the copy.  Look at the lock first, then the LSN. */
+	if (BufferIsExclusiveLockedByAnyone(rootbuf))
+		return false;
+	pg_read_barrier();
+	if (PageGetLSN(livepage) != lsn)
+		return false;
+
+	/*
+	 * The copy is consistent.  Accept it only if it is a normal internal root
+	 * for the full key range.  It must be in use and not a leaf.  Its level must
+	 * be the level from the cached metapage.  It must be the only page on its
+	 * level, with no incomplete split.  This type of page never needs
+	 * _bt_moveright(), so the downlink that we select is correct.
+	 */
+	opaque = BTPageGetOpaque(page);
+	if (P_IGNORE(opaque) ||
+		P_ISLEAF(opaque) ||
+		P_INCOMPLETE_SPLIT(opaque) ||
+		!P_LEFTMOST(opaque) ||
+		!P_RIGHTMOST(opaque) ||
+		opaque->btpo_level != rootlevel)
+		return false;
+
+	/* Find the downlink for the key in the copy. */
+	offnum = _bt_binsrch_page(rel, key, page);
+	maxoff = PageGetMaxOffsetNumber(page);
+	if (offnum < P_FIRSTDATAKEY(opaque) || offnum > maxoff)
+		return false;
+
+	itup = (IndexTuple) PageGetItem(page, PageGetItemId(page, offnum));
+	child = BTreeTupleGetDownLink(itup);
+	if (child == P_NONE || child == rootblkno)
+		return false;
+
+	/*
+	 * Record the root in the descent stack, as the locked path does (only if
+	 * the caller wants a stack).  Then lock the child.  The caller continues
+	 * from the child.
+	 */
+	new_stack = NULL;
+	if (returnstack)
+	{
+		new_stack = palloc_object(BTStackData);
+		new_stack->bts_blkno = rootblkno;
+		new_stack->bts_offset = offnum;
+		new_stack->bts_parent = NULL;
+	}
+
+	*bufP = _bt_getbuf(rel, child, BT_READ);
+	*stackp = new_stack;
+	return true;
 }
 
 /*
@@ -347,14 +513,27 @@ _bt_binsrch(Relation rel,
 			BTScanInsert key,
 			Buffer buf)
 {
-	Page		page;
+	return _bt_binsrch_page(rel, key, BufferGetPage(buf));
+}
+
+/*
+ * _bt_binsrch_page
+ *
+ * Do _bt_binsrch() on a page, not on a buffer.  The caller supplies the page.
+ * Thus a caller can search a private copy of a page.  The optimistic root read
+ * uses this.
+ */
+static OffsetNumber
+_bt_binsrch_page(Relation rel,
+				 BTScanInsert key,
+				 Page page)
+{
 	BTPageOpaque opaque;
 	OffsetNumber low,
 				high;
 	int32		result,
 				cmpval;
 
-	page = BufferGetPage(buf);
 	opaque = BTPageGetOpaque(page);
 
 	/* Requesting nextkey semantics while using scantid seems nonsensical */

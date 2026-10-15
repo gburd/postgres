@@ -884,6 +884,7 @@
                                         # (max_pred_locks_per_transaction
                                         #  / -max_pred_locks_per_relation) - 1
 #max_pred_locks_per_page = 2            # min 0
+#btree_optimistic_root = on             # read btree root pages with no lock
 
 
 #------------------------------------------------------------------------------

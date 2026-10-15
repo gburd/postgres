@@ -1246,6 +1246,11 @@ extern Buffer _bt_allocbuf(Relation rel, Relation heaprel);
 extern Buffer _bt_relandgetbuf(Relation rel, Buffer obuf,
 							   BlockNumber blkno, int access);
 extern void _bt_relbuf(Relation rel, Buffer buf);
+extern Buffer _bt_peek_root(Relation rel, BlockNumber *rootblkno,
+							uint32 *rootlevel);
+
+/* GUC: see _bt_search_optimistic_root() */
+extern PGDLLIMPORT bool btree_optimistic_root;
 extern void _bt_lockbuf(Relation rel, Buffer buf, int access);
 extern void _bt_unlockbuf(Relation rel, Buffer buf);
 extern bool _bt_conditionallockbuf(Relation rel, Buffer buf);
