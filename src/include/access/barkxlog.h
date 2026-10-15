@@ -101,7 +101,7 @@ typedef struct xl_bark_split
 {
 	uint32		level;			/* tree level of the split page */
 	uint16		flags;			/* XLH_BARK_SPLIT_* */
-	uint16		cycleid;		/* BTCycleId stamped on both halves */
+	uint16		cycleid;		/* BarkCycleId stamped on both halves */
 	BlockNumber leftprev;		/* original page's left sibling */
 	BlockNumber rightnext;		/* original page's right sibling */
 	OffsetNumber firstrightoff; /* first original entry that moved right */

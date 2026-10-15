@@ -39,7 +39,6 @@
 #include "access/barkxlog.h"
 #include "access/genam.h"
 #include "access/itup.h"
-#include "access/nbtree.h"
 #include "access/tableam.h"
 #include "access/xloginsert.h"
 #include "miscadmin.h"
@@ -939,7 +938,7 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 	bool		lwhole;
 	IndexTuple	lnewitem = NULL;
 	IndexTuple	lreplace = NULL;
-	BTCycleId	cycleid = 0;
+	BarkCycleId	cycleid = 0;
 	uint16		leafflag = isleaf ? BARK_LEAF : 0;
 	XLogRecPtr	recptr;
 
@@ -1032,7 +1031,7 @@ bark_split(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 	 * right after cannot process either page before the split is complete.
 	 */
 	if (isleaf)
-		cycleid = _bt_vacuum_cycleid(index);
+		cycleid = bark_vacuum_cycleid(index);
 
 	/*
 	 * Build both halves in temporary pages, so that a failure leaves the
