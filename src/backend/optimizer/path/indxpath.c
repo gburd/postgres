@@ -3213,8 +3213,8 @@ match_rowcompare_to_indexcol(PlannerInfo *root,
 	Oid			expr_op;
 	Oid			expr_coll;
 
-	/* Forget it if we're not dealing with a btree index */
-	if (index->relam != BTREE_AM_OID)
+	/* Forget it if the index's operator families aren't btree ones */
+	if (!index->ambtreeopfamilies)
 		return NULL;
 
 	index_relid = index->rel->relid;
@@ -4100,16 +4100,16 @@ ec_member_matches_indexcol(PlannerInfo *root, RelOptInfo *rel,
 	curCollation = index->indexcollations[indexcol];
 
 	/*
-	 * If it's a btree index, we can reject it if its opfamily isn't
-	 * compatible with the EC, since no clause generated from the EC could be
-	 * used with the index.  For non-btree indexes, we can't easily tell
-	 * whether clauses generated from the EC could be used with the index, so
-	 * don't check the opfamily.  This might mean we return "true" for a
-	 * useless EC, so we have to recheck the results of
-	 * generate_implied_equalities_for_column; see
+	 * If the index's operator families are btree ones, we can reject it if its
+	 * opfamily isn't compatible with the EC, since no clause generated from the
+	 * EC could be used with the index.  For indexes with other operator
+	 * families, we can't easily tell whether clauses generated from the EC
+	 * could be used with the index, so don't check the opfamily.  This might
+	 * mean we return "true" for a useless EC, so we have to recheck the results
+	 * of generate_implied_equalities_for_column; see
 	 * match_eclass_clauses_to_index.
 	 */
-	if (index->relam == BTREE_AM_OID &&
+	if (index->ambtreeopfamilies &&
 		!list_member_oid(ec->ec_opfamilies, curFamily))
 		return false;
 

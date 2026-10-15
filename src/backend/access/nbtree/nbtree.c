@@ -123,6 +123,7 @@ bthandler(PG_FUNCTION_ARGS)
 		.amsupport = BTNProcs,
 		.amoptsprocnum = BTOPTIONS_PROC,
 		.amcanorder = true,
+		.ambtreeopfamilies = true,
 		.amcanorderbyop = false,
 		.amcanhash = false,
 		.amconsistentequality = true,
