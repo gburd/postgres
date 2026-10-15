@@ -25,6 +25,7 @@
  */
 typedef struct PlannerInfo PlannerInfo;
 typedef struct IndexPath IndexPath;
+typedef struct IndexOptInfo IndexOptInfo;
 
 /* Likewise, this file shouldn't depend on execnodes.h. */
 typedef struct IndexInfo IndexInfo;
@@ -162,6 +163,13 @@ typedef void (*amcostestimate_function) (PlannerInfo *root,
  * API could be expanded to support passing more values if the need arises.
  */
 typedef int (*amgettreeheight_function) (Relation rel);
+
+/*
+ * which index column can an ordered index (amcanorder and amcanorderbyop)
+ * serve an ordering operator on, given an index path's clauses?
+ */
+typedef int (*amorderbyopcolumn_function) (IndexOptInfo *index,
+										   List *indexclauses);
 
 /* parse index reloptions */
 typedef bytea *(*amoptions_function) (Datum reloptions,
@@ -318,6 +326,7 @@ typedef struct IndexAmRoutine
 	amcanreturn_function amcanreturn;	/* can be NULL */
 	amcostestimate_function amcostestimate;
 	amgettreeheight_function amgettreeheight;	/* can be NULL */
+	amorderbyopcolumn_function amorderbyopcolumn;	/* can be NULL */
 	amoptions_function amoptions;
 	amproperty_function amproperty; /* can be NULL */
 	ambuildphasename_function ambuildphasename; /* can be NULL */
