@@ -198,6 +198,48 @@ FullTransactionIdAdvance(FullTransactionId *dest)
 #define FirstNormalObjectId		16384
 
 /*
+ * TRANSAM_VARS_CACHELINE_SPLIT
+ *
+ * When 1, TransamVariablesData is split so that fields protected by
+ * different LWLocks, and with very different write rates, do not share a
+ * cache line.  Set to 0 (e.g. -DTRANSAM_VARS_CACHELINE_SPLIT=0) to get the
+ * stock 18.6 layout for A/B testing.  Changing it changes the shared memory
+ * layout, so rebuild everything (not just one file) after changing it.
+ *
+ * In stock, nextXid (written under XidGenLock once per XID assignment) sits
+ * at offset 8 while latestCompletedXid (offset 48) and xactCompletionCount
+ * (offset 56) are read-modify-written under ProcArrayLock once per
+ * *transaction end*, and are also read by every GetSnapshotData().  Since
+ * ShmemInitStruct() hands back a CACHELINEALIGN'd pointer (see the assertion
+ * in ShmemInitStruct()), all of these live in the first 64/128 byte line, so
+ * the XID counter's line is invalidated by unrelated commit and snapshot
+ * traffic.  On a many-core machine with more than one coherence domain that
+ * turns the read of nextXid inside the XidGenLock critical section into a
+ * remote transfer, lengthening a strictly serial section.
+ *
+ * The split below gives: nextXid its own line (exclusively bounced only
+ * between XID allocators), the read-mostly wrap-limit fields their own line
+ * (written only by SetTransactionIdLimit(), so they stay Shared in every
+ * core's cache), and the ProcArrayLock-protected counters their own line.
+ * This is a pure layout change: no field changes type, order, or protecting
+ * lock, so it cannot alter behaviour.
+ */
+#ifndef TRANSAM_VARS_CACHELINE_SPLIT
+#define TRANSAM_VARS_CACHELINE_SPLIT 1
+#endif
+
+/*
+ * Cache-line separator for TransamVariablesData.  pg_attribute_aligned() is
+ * deliberately not given a fallback definition in c.h, so guard on it; if the
+ * compiler cannot align struct members we simply get the stock layout.
+ */
+#if TRANSAM_VARS_CACHELINE_SPLIT && defined(pg_attribute_aligned)
+#define PG_TRANSAM_VARS_ALIGNED	pg_attribute_aligned(PG_CACHE_LINE_SIZE)
+#else
+#define PG_TRANSAM_VARS_ALIGNED
+#endif
+
+/*
  * TransamVariables is a data structure in shared memory that is used to track
  * OID and XID assignment state.  For largely historical reasons, there is
  * just one struct with different fields that are protected by different
@@ -216,11 +258,18 @@ typedef struct TransamVariablesData
 	uint32		oidCount;		/* OIDs available before must do XLOG work */
 
 	/*
-	 * These fields are protected by XidGenLock.
+	 * This field is protected by XidGenLock.  It is written once per XID
+	 * assignment, so it gets a cache line to itself.
 	 */
-	FullTransactionId nextXid;	/* next XID to assign */
+	PG_TRANSAM_VARS_ALIGNED FullTransactionId nextXid;	/* next XID to assign */
 
-	TransactionId oldestXid;	/* cluster-wide minimum datfrozenxid */
+	/*
+	 * These fields are also protected by XidGenLock, but they are read-mostly:
+	 * they are written only by SetTransactionIdLimit().  Keeping them off
+	 * nextXid's line lets them stay resident in every core's cache.
+	 */
+	PG_TRANSAM_VARS_ALIGNED TransactionId oldestXid;	/* cluster-wide minimum
+														 * datfrozenxid */
 	TransactionId xidVacLimit;	/* start forcing autovacuums here */
 	TransactionId xidWarnLimit; /* start complaining here */
 	TransactionId xidStopLimit; /* refuse to advance nextXid beyond here */
@@ -230,14 +279,18 @@ typedef struct TransamVariablesData
 	/*
 	 * These fields are protected by CommitTsLock
 	 */
-	TransactionId oldestCommitTsXid;
+	PG_TRANSAM_VARS_ALIGNED TransactionId oldestCommitTsXid;
 	TransactionId newestCommitTsXid;
 
 	/*
-	 * These fields are protected by ProcArrayLock.
+	 * These fields are protected by ProcArrayLock.  latestCompletedXid and
+	 * xactCompletionCount are written at every transaction end and read by
+	 * every snapshot, so they are kept away from the XID counter.
 	 */
-	FullTransactionId latestCompletedXid;	/* newest full XID that has
-											 * committed or aborted */
+	PG_TRANSAM_VARS_ALIGNED FullTransactionId latestCompletedXid;	/* newest full
+																	 * XID that has
+																	 * committed or
+																	 * aborted */
 
 	/*
 	 * Number of top-level transactions with xids (i.e. which may have
@@ -251,7 +304,8 @@ typedef struct TransamVariablesData
 	/*
 	 * These fields are protected by XactTruncationLock
 	 */
-	TransactionId oldestClogXid;	/* oldest it's safe to look up in clog */
+	PG_TRANSAM_VARS_ALIGNED TransactionId oldestClogXid; /* oldest it's safe to
+														  * look up in clog */
 
 } TransamVariablesData;
 
