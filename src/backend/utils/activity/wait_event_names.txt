@@ -373,6 +373,7 @@ LogicalDecodingControl	"Waiting to read or update logical decoding status inform
 DataChecksumsWorker	"Waiting for data checksums worker."
 AioWorkerControl	"Waiting to update AIO worker information."
 DataChecksumTransition	"Waiting for a data checksum state transition to be written to WAL."
+BarkVacuum	"Waiting to read or update vacuum-related information for a BARK index."
 
 #
 # END OF PREDEFINED LWLOCKS (DO NOT CHANGE THIS LINE)
