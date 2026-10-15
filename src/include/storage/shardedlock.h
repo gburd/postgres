@@ -14,15 +14,20 @@
  * nshards extra cache lines of shared memory.
  *
  * Design:
- *	- The lock wraps an ordinary LWLock, which still serves as the writer mutex,
- *	  the waiter/wakeup queue, and the "slow path" for readers.
- *	- A reader normally just bumps its own shard counter (its own cache line)
- *	  and checks that no writer holds the underlying LWLock exclusively.  If a
- *	  writer is present it backs out and falls back to LWLockAcquire(LW_SHARED),
- *	  blocking via the existing LWLock machinery.
- *	- A writer takes the underlying LWLock exclusively (which serializes writers,
- *	  makes the exclusive bit visible so new readers back off, and waits out any
- *	  fallback readers) and then drains the per-shard reader counters.
+ *	- Each shard is one cache line.  It holds a reader count and a writer flag
+ *	  word.  A reader uses only the cache line of its own shard.
+ *	- A reader increments the count of its shard, then reads the flag word of
+ *	  the same shard.  If no writer is present, the reader holds the lock.
+ *	- If a writer is present, the reader decrements the count and sleeps on the
+ *	  flag word with a futex.  It does not spin, and it does not touch the
+ *	  underlying LWLock.  When it wakes, it tries again.
+ *	- A writer takes the underlying LWLock in exclusive mode.  The LWLock only
+ *	  serializes writers.  Then the writer sets the writer flag in each shard,
+ *	  and waits (perform_spin_delay) until each reader count is zero.
+ *	- On release, the writer clears the flag in each shard.  It wakes the
+ *	  readers of a shard only if a reader sleeps on that shard.
+ *	- Without futex support (not Linux), a reader that finds a writer uses
+ *	  LWLockAcquire(LW_SHARED) on the underlying LWLock.
  *
  * When nshards == 0 the lock is "disabled": every operation is a straight
  * pass-through to the underlying LWLock, so behavior is identical to stock.
@@ -46,7 +51,11 @@
  */
 typedef union ShardedLWLockCounter
 {
-	pg_atomic_uint32 count;
+	struct
+	{
+		pg_atomic_uint32 count; /* readers that hold the lock in this shard */
+		pg_atomic_uint32 wflag; /* SHARDED_WRITER and SHARDED_WAITERS bits */
+	}			s;
 	char		pad[PG_CACHE_LINE_SIZE];
 } ShardedLWLockCounter;
 
