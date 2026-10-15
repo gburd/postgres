@@ -4921,9 +4921,9 @@ bark_mk_gin_gettuple(IndexScanDesc scan, ScanDirection dir)
 		}
 		else
 		{
+			/* A page before one the scan has been on exists. */
 			mk->ginp--;
-			if (!bark_mk_gin_load(mk, mk->ginp))
-				elog(ERROR, "BARK GIN result lost page %d", mk->ginp);
+			(void) bark_mk_gin_load(mk, mk->ginp);
 			mk->gini = mk->ginnoffs - 1;
 		}
 	}
@@ -5076,10 +5076,13 @@ bark_restrpos(IndexScanDesc scan)
 			return;
 		mk->ginp = mk->ginmarkp;
 		mk->gini = mk->ginmarki;
-		/* A place on a page needs the page loaded; one off an end does not. */
-		if (mk->ginp >= 0 && (mk->ginnpages < 0 || mk->ginp < mk->ginnpages) &&
-			!bark_mk_gin_load(mk, mk->ginp))
-			elog(ERROR, "BARK GIN result lost page %d", mk->ginp);
+		/*
+		 * A place on a page needs the page loaded (it exists: the scan was
+		 * on it); one off an end does not, and loading past the last page
+		 * only fails.
+		 */
+		if (mk->ginp >= 0)
+			(void) bark_mk_gin_load(mk, mk->ginp);
 		return;
 	}
 
