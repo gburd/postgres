@@ -92,6 +92,17 @@
 #include "utils/hsearch.h"
 #endif
 
+#if defined(__linux__) && defined(__aarch64__)
+#define LWLOCK_HAS_FUTEX
+#endif
+
+#ifdef LWLOCK_HAS_FUTEX
+#include <errno.h>
+#include <linux/futex.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
 
 #define LW_FLAG_HAS_WAITERS			((uint32) 1 << 31)
 #define LW_FLAG_WAKE_IN_PROGRESS	((uint32) 1 << 30)
@@ -823,6 +834,28 @@ LWLockAttemptLock(LWLock *lock, LWLockMode mode)
 	pg_unreachable();
 }
 
+#ifdef LWLOCK_HAS_FUTEX
+/*
+ * https://www.man7.org/linux/man-pages/man2/FUTEX_WAIT.2const.html
+ * Not using FUTEX_PRIVATE_FLAG/FUTEX_WAIT_PRIVATE so that uaddr can
+ * reside in shared memory between processes.
+ */
+static inline long int sys_futex_wait(volatile uint32 *uaddr, const uint32 val)
+{
+	return syscall(SYS_futex, uaddr, FUTEX_WAIT, val, (void*)NULL /* no timeout */);
+}
+
+/*
+ * https://www.man7.org/linux/man-pages/man2/FUTEX_WAKE.2const.html
+ * Not using FUTEX_PRIVATE_FLAG/FUTEX_WAKE_PRIVATE so that uaddr can
+ * reside in shared memory between processes.
+ */
+static inline long int sys_futex_wake(volatile uint32 *uaddr, const uint32 count)
+{
+	return syscall(SYS_futex, uaddr, FUTEX_WAKE, count);
+}
+#endif
+
 /*
  * Lock the LWLock's wait list against concurrent activity.
  *
@@ -835,6 +868,9 @@ static void
 LWLockWaitListLock(LWLock *lock)
 {
 	uint32		old_state;
+#ifdef LWLOCK_HAS_FUTEX
+	long int futex_res PG_USED_FOR_ASSERTS_ONLY;
+#endif
 #ifdef LWLOCK_STATS
 	lwlock_stats *lwstats;
 	uint32		delays = 0;
@@ -853,7 +889,24 @@ LWLockWaitListLock(LWLock *lock)
 		if (likely(!(old_state & LW_FLAG_LOCKED)))
 			break;				/* got lock */
 
-		/* and then spin without atomic operations until lock is released */
+#ifdef LWLOCK_HAS_FUTEX
+
+#ifdef LWLOCK_STATS
+		delays += 1;
+#endif
+
+		/*
+		 * Calling task is put to sleep until signaled by LWLockWaitListUnlock().
+		 * Futex operation can spuriously wake, e.g. if `state` changes before
+		 * the kernel scheduler acts or an interrupt occurs; retry in those cases.
+		 * We assert the futex returns a reasonable result value.
+ 		 */
+		futex_res = sys_futex_wait(&lock->state.value, old_state);
+		Assert(futex_res == 0 || errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR);
+
+#else
+
+		/* Spin until lock is released if we don't have futex. */
 		{
 			SpinDelayStatus delayStatus;
 
@@ -869,6 +922,8 @@ LWLockWaitListLock(LWLock *lock)
 #endif
 			finish_spin_delay(&delayStatus);
 		}
+
+#endif
 
 		/*
 		 * Retry. The lock might obviously already be re-acquired by the time
@@ -895,6 +950,11 @@ LWLockWaitListUnlock(LWLock *lock)
 	old_state = pg_atomic_fetch_and_u32(&lock->state, ~LW_FLAG_LOCKED);
 
 	Assert(old_state & LW_FLAG_LOCKED);
+
+#ifdef LWLOCK_HAS_FUTEX
+	/* Wake the next task sleeping on `state`. */
+	sys_futex_wake(&lock->state.value, 1);
+#endif
 }
 
 /*
@@ -981,7 +1041,14 @@ LWLockWakeup(LWLock *lock)
 
 			if (pg_atomic_compare_exchange_u32(&lock->state, &old_state,
 											   desired_state))
+			{
+#ifdef LWLOCK_HAS_FUTEX
+				/* Wake the next task sleeping on `state`. */
+				sys_futex_wake(&lock->state.value, 1);
+#endif
+
 				break;
+			}
 		}
 	}
 
