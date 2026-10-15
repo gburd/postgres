@@ -557,6 +557,34 @@ RESET default_statistics_target;
 DROP FUNCTION wc_rows;
 DROP TABLE wc_num, wc_numb;
 
+-- The level-1 entry cache shares its chunk with the markers this backend
+-- has seen, after them.  A new marker grows the chunk and moves the table
+-- up past it; the table survives.  Wide keys give a tree with many level-1
+-- pages; lookups warm the table, then each insert brings a path with a new
+-- array (a new marker), and every lookup after it must still match a
+-- sequential scan, by an index scan that starts below the root.
+CREATE TABLE wc_l1 (id int, doc jsonb);
+INSERT INTO wc_l1 SELECT g, jsonb_build_object('k', lpad(g::text, 6, '0') || repeat('x', 300))
+  FROM generate_series(1, 6000) g;
+CREATE INDEX wc_l1_doc ON wc_l1 USING bark (doc bark_jsonb_wildcard_ops);
+SET enable_seqscan = off; SET enable_bitmapscan = off;
+SELECT count(*) FROM generate_series(1, 6000, 9) g, LATERAL
+  (SELECT id FROM wc_l1 WHERE doc #= jsonb_build_array('k', lpad(g::text, 6, '0') || repeat('x', 300))) s;
+RESET enable_seqscan; RESET enable_bitmapscan;
+DO $$
+BEGIN
+  FOR i IN 1..12 LOOP
+    INSERT INTO wc_l1 VALUES (10000 + i, jsonb_build_object('arr' || i, jsonb_build_array(i, i + 1)));
+  END LOOP;
+END $$;
+SELECT count(*) FILTER (WHERE seq <> idx) AS mismatches, count(*) AS checks
+  FROM (SELECT wc_run('wc_l1', NULL, q, 'seq') AS seq, wc_run('wc_l1', 'wc_l1_doc', q, 'index') AS idx
+          FROM (SELECT format('doc #= %L', jsonb_build_array('k', lpad(g::text, 6, '0') || repeat('x', 300))) AS q
+                  FROM generate_series(1, 6000, 37) g
+                UNION ALL
+                SELECT format('doc #? %L', 'arr' || i) FROM generate_series(1, 12) i) qs) r;
+DROP TABLE wc_l1;
+
 DROP TABLE wc_seq, wc_plain, wc_inc, wc_exc, wc_tid, wc_quals;
 DROP FUNCTION wc_run, wc_compare, wc_jpath, wc_doc, wc_val, wc_heap_keys, wc_index_keys;
 DROP EXTENSION bark_wildcard;

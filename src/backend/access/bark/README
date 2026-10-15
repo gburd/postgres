@@ -520,9 +520,11 @@ records the pair (bark_l1_remember).  Slots are kept sorted; the table
 lives in the same rd_amcache chunk as the markers, after them, so a
 relcache rebuild (REINDEX, TRUNCATE, an invalidation) drops it with the
 rest, and a new relfilenode starts empty.  It is capped at 2048 slots and
-256 kB of keys per index, then dropped and refilled.  A new marker drops it
-too, rather than move it.  Write descents still start at the root: an
-insert needs the parent path to finish a split.
+256 kB of keys per index.  At the cap it is thinned, not dropped: every other
+slot is forgotten (bark_l1_thin), so the table keeps covering the whole key
+range at half the density, and the descents that miss refill it.  A new
+marker, which goes before the table in the chunk, moves the table up past it
+rather than dropping it.
 
 Tests: bark_l1_cache (every value, ranges across cached boundaries, missing
 keys, backward scans, inserts that split cached pages, VACUUM page deletion,
