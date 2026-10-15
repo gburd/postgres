@@ -222,6 +222,22 @@ SET enable_seqscan = off;
 SELECT m, r, bark_multikey_mark_restore('mg_bark', '@>(anyarray,anyarray)', '{3}'::int4[], m, r)
 FROM (VALUES (0, 0), (0, 5), (3, 4), (10, 1000000)) v(m, r);
 
+-- Driven through the AM's routine alone, with no heap relation and no
+-- snapshot (DocumentDB's metadata probe), a GIN-interface scan returns the
+-- same rows as an ordinary one.
+SELECT bark_multikey_bare_scan('mg_bark', '@>(anyarray,anyarray)', '{3}'::int4[]) =
+       (SELECT count(*) FROM mg WHERE a @> '{3}') AS bare_ok;
+
+-- No index-only scan, even of a column the index holds whole: the scan
+-- computes TIDs, not entries (bark_canreturn).  mg_bark is set aside so
+-- that mg_cov is the only candidate.
+UPDATE pg_index SET indisvalid = false WHERE indexrelid = 'mg_bark'::regclass;
+CREATE INDEX mg_cov ON mg USING bark (a bark_gin_int4_array_ops) INCLUDE (id);
+SELECT pg_index_column_has_property('mg_cov', 2, 'returnable') AS id_returnable;
+EXPLAIN (COSTS OFF) SELECT id FROM mg WHERE a @> '{3}';
+DROP INDEX mg_cov;
+UPDATE pg_index SET indisvalid = true WHERE indexrelid = 'mg_bark'::regclass;
+
 -- SELECT ... LIMIT 1 FOR UPDATE, as DocumentDB updates by a filter.
 EXPLAIN (COSTS OFF) SELECT id FROM mg WHERE a @> '{3,7}' LIMIT 1 FOR UPDATE;
 SELECT (SELECT id FROM mg WHERE a @> '{3,7}' LIMIT 1 FOR UPDATE) =

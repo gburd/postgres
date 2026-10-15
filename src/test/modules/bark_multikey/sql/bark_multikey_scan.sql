@@ -417,6 +417,16 @@ SELECT bark_multikey_parallel('mk_b1_a', '&&(anyarray,anyarray)',
 -- same qual, not a wrong set or an error from an uninitialized second slot.
 SELECT bark_multikey_rescan_fewer('mk_b1_a', '&&(anyarray,anyarray)',
                                   '{5}'::int4[]) AS fewer_ok;
+-- A scan driven through the AM's routine alone, with no heap relation and
+-- no snapshot (DocumentDB's metadata probe), returns the same TIDs as an
+-- ordinary scan, also inside a serializable transaction, whose predicate
+-- locks need a snapshot.
+SELECT bark_multikey_bare_scan('mk_b1_a', '&&(anyarray,anyarray)', '{5}'::int4[]) =
+       (SELECT count(*) FROM mk_b1 WHERE a && '{5}') AS bare_ok;
+BEGIN ISOLATION LEVEL SERIALIZABLE;
+SELECT bark_multikey_bare_scan('mk_b1_a', '&&(anyarray,anyarray)', '{5}'::int4[]) =
+       (SELECT count(*) FROM mk_b1 WHERE a && '{5}') AS bare_serializable_ok;
+COMMIT;
 -- A scan that starts backward is fine.
 EXPLAIN (COSTS OFF)
 SELECT id FROM mk_b2 WHERE tenant IN (1, 3) AND a && '{1,5,77}'
@@ -599,6 +609,32 @@ SELECT count(*), sum(tenant) FROM mk_b2 WHERE tenant = 3;
 EXPLAIN (COSTS OFF) SELECT tenant FROM mk_b2 WHERE tenant IN (3, 5);
 SELECT count(*), sum(tenant) FROM mk_b2 WHERE tenant IN (3, 5);
 EXPLAIN (COSTS OFF) SELECT a FROM mk_b1 WHERE a && '{1}';
+-- The extracted column again as an INCLUDE column holds its value, so an
+-- index-only scan returns it and rechecks the qual on it; each row once,
+-- and NULL and empty arrays come back as themselves.
+CREATE TABLE mk_cov (id int, a int4[]);
+INSERT INTO mk_cov SELECT g, CASE WHEN g % 97 = 0 THEN NULL WHEN g % 89 = 0 THEN '{}'
+                                  ELSE ARRAY[g % 50, g % 7 + 100] END
+  FROM generate_series(1, 6000) g;
+CREATE INDEX mk_cov_a ON mk_cov USING bark (a bark_int4_array_ops) INCLUDE (a, id);
+VACUUM ANALYZE mk_cov;
+EXPLAIN (COSTS OFF) SELECT id, a FROM mk_cov WHERE a && '{3,101}';
+CREATE TEMP TABLE mk_cov_ios AS SELECT id, a FROM mk_cov WHERE a && '{3,101}';
+CREATE TEMP TABLE mk_cov_ios2 AS SELECT id, a FROM mk_cov WHERE a @> '{3,101}';
+CREATE TEMP TABLE mk_cov_ios3 AS SELECT id, a FROM mk_cov WHERE a IS NULL;
+RESET enable_seqscan;
+SET enable_indexscan = off;
+SET enable_indexonlyscan = off;
+SELECT (SELECT count(*) FROM mk_cov_ios) AS n,
+       (SELECT array_agg(id || ':' || a::text ORDER BY id) FROM mk_cov_ios) =
+       (SELECT array_agg(id || ':' || a::text ORDER BY id) FROM mk_cov WHERE a && '{3,101}') AS overlap_ok,
+       (SELECT array_agg(id ORDER BY id) FROM mk_cov_ios2) =
+       (SELECT array_agg(id ORDER BY id) FROM mk_cov WHERE a @> '{3,101}') AS contains_ok,
+       (SELECT array_agg(id ORDER BY id) FROM mk_cov_ios3) =
+       (SELECT array_agg(id ORDER BY id) FROM mk_cov WHERE a IS NULL) AS isnull_ok;
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+DROP TABLE mk_cov, mk_cov_ios, mk_cov_ios2, mk_cov_ios3;
 RESET enable_seqscan;
 RESET enable_bitmapscan;
 SELECT count(*), sum(tenant) FROM mk_seq WHERE tenant IN (3, 5);

@@ -423,7 +423,13 @@ int2 indexRecheck(<replaceable>key</replaceable>, int2 strategy, internal extra)
       only the other columns: the entries hold keys, not values, and a key
       does not determine its row's value (a row with several keys has an
       entry per key, and the single NULL key stands for a NULL value, an
-      empty value and a NULL element alike).
+      empty value and a NULL element alike).  To have an index-only scan
+      return the value, name the column again as an
+      <literal>INCLUDE</literal> column, which holds it whole, as in
+      <literal>CREATE INDEX ON docs USING bark (tags my_int4_array_ops)
+      INCLUDE (tags)</literal>.  An index whose multikey
+      column uses GIN's query interface has no index-only scans at all:
+      its scans compute row identifiers, not entries.
      </para>
     </listitem>
    </varlistentry>

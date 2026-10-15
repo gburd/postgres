@@ -269,6 +269,14 @@ CREATE FUNCTION bark_multikey_rescan_fewer(index text, op regoperator,
 RETURNS bool
 AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
 
+-- Count the TIDs a scan on column 1 op query returns when driven through the
+-- AM's routine alone, with no heap relation and no snapshot (DocumentDB's
+-- metadata probe).
+CREATE FUNCTION bark_multikey_bare_scan(index text, op regoperator,
+                                        query anyelement)
+RETURNS int
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
 -- Scan an index on column 1 op query as the only participant of a parallel
 -- scan, and count the rows, without asking whether it may be parallel.
 CREATE FUNCTION bark_multikey_parallel(index text, op regoperator,
