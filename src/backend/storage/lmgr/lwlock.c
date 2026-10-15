@@ -1479,6 +1479,31 @@ LWLockAcquireOrWait(LWLock *lock, LWLockMode mode)
 	{
 		LWLockQueueSelf(lock, LW_WAIT_UNTIL_FREE);
 
+		/*
+		 * Clear LW_FLAG_WAKE_IN_PROGRESS now that we are queued, as
+		 * LWLockWaitForVar() does.  LWLockWakeup() sets the flag when it wakes
+		 * an exclusive or shared waiter, and the woken waiter clears it when it
+		 * retries (see LWLockAcquire()).  That throttle does not fit
+		 * LW_WAIT_UNTIL_FREE waiters: we never retry the lock from inside the
+		 * wait, and unlike LWLockAcquire() we have no later point at which to
+		 * clear the flag.
+		 *
+		 * Without this, if we queue while WAKE_IN_PROGRESS is set, a release
+		 * in that window skips LWLockWakeup() and we stay asleep although the
+		 * lock is free, until the woken retryer gets CPU and the lock is
+		 * released once more.  LW_WAIT_UNTIL_FREE waiters are at the head of
+		 * the queue, so any wakeup that does run wakes us.  This is the
+		 * WALWriteLock pattern: committing backends wait LW_WAIT_UNTIL_FREE
+		 * here from XLogFlush(), while the WAL writer and
+		 * AdvanceXLInsertBuffer() wait LW_EXCLUSIVE.
+		 *
+		 * The flag is cleared after we have queued, so that a releaser that
+		 * sees it clear also sees LW_FLAG_HAS_WAITERS.  Clearing it early only
+		 * allows a release to wake waiters sooner; every waiter handles a
+		 * wakeup that finds the lock taken.
+		 */
+		pg_atomic_fetch_and_u32(&lock->state, ~LW_FLAG_WAKE_IN_PROGRESS);
+
 		mustwait = LWLockAttemptLock(lock, mode);
 
 		if (mustwait)
