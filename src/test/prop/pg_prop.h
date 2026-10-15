@@ -287,10 +287,36 @@ extern char *pg_prop_sql_rows(pg_prop_conn *conn, const char *sql,
 							  bool *failed, char **errmsg);
 
 /*
+ * Like pg_prop_sql_rows, but return an md5 digest of the whole result
+ * (computed server-side) instead of the full rendered text.  Use this for
+ * oracles over large/deep results: the client holds only a 32-char hash, so a
+ * result that would overflow the 1 GB StringInfo cap when rendered
+ * client-side (the deep generators can produce such results) still compares in
+ * O(1) client memory.  Two queries that return the same rows in the same order
+ * return the same digest; the caller supplies the ORDER BY that fixes the
+ * order.  Caller frees; *failed / *errmsg as above.
+ */
+extern char *pg_prop_sql_rowhash(pg_prop_conn *conn, const char *sql,
+								 bool *failed, char **errmsg);
+
+/*
  * Run "sql" for side effects (DDL/DML), returning true on success.  On error
  * returns false and sets *errmsg (malloc'd).
  */
 extern bool pg_prop_sql_exec(pg_prop_conn *conn, const char *sql, char **errmsg);
+
+/*
+ * Asynchronous statement support, for properties that need two sessions in
+ * flight at once (e.g. provoking a deadlock, where both sessions must be
+ * blocked before either can resolve).  pg_prop_sql_send dispatches "sql"
+ * without waiting (returns false if it could not be sent); pg_prop_sql_await
+ * then blocks for the result, returning true on success and, on error, the
+ * SQLSTATE via *sqlstate (malloc'd 5-char code, or NULL) so the caller can
+ * tell a deadlock (40P01) from a serialization failure (40001) or a lock
+ * timeout (55P03).  Use pg_prop_sql_send on both connections, then await each.
+ */
+extern bool pg_prop_sql_send(pg_prop_conn *conn, const char *sql);
+extern bool pg_prop_sql_await(pg_prop_conn *conn, char **sqlstate, char **errmsg);
 
 /*
  * Close any connections still open at the end of a test case.  A property that
