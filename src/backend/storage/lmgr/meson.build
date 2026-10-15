@@ -9,4 +9,5 @@ backend_sources += files(
   'predicate.c',
   'proc.c',
   's_lock.c',
+  'shardedlock.c',
 )

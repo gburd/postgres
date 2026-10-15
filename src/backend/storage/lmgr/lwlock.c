@@ -83,6 +83,7 @@
 #include "storage/proc.h"
 #include "storage/proclist.h"
 #include "storage/procnumber.h"
+#include "storage/shardedlock.h"
 #include "storage/spin.h"
 #include "storage/subsystems.h"
 #include "utils/memutils.h"
@@ -1932,6 +1933,13 @@ LWLockReleaseClearVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 val)
 void
 LWLockReleaseAll(void)
 {
+	/*
+	 * Also drop any fast-path (shard) reader holds on ShardedLWLocks; those are
+	 * not tracked in held_lwlocks.  Underlying-LWLock holds taken by sharded
+	 * writers/fallback readers are released by the loop below as usual.
+	 */
+	ShardedLWLockReleaseAll();
+
 	while (num_held_lwlocks > 0)
 	{
 		HOLD_INTERRUPTS();		/* match the upcoming RESUME_INTERRUPTS */

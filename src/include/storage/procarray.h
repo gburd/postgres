@@ -19,10 +19,13 @@
 #include "utils/relcache.h"
 #include "utils/snapshot.h"
 
+/* GUC: number of reader shards for the sharded ProcArrayLock (0 = disabled) */
+extern PGDLLIMPORT int procarray_lock_shards;
+
 /*
- * ProcArrayLock wrappers.  Use these, not LWLockAcquire(ProcArrayLock, ...)
- * and the related LWLock calls.  They give one place to change how
- * ProcArrayLock is implemented.
+ * ProcArrayLock acquire/release wrappers.  These route ProcArrayLock traffic
+ * through a sharded reader/writer lock (see storage/shardedlock.h).  Callers
+ * use these instead of LWLockAcquire(ProcArrayLock, ...) etc.
  */
 extern bool ProcArrayLockAcquire(LWLockMode mode);
 extern bool ProcArrayLockConditionalAcquire(LWLockMode mode);

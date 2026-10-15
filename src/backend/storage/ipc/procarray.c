@@ -61,6 +61,7 @@
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/procsignal.h"
+#include "storage/shardedlock.h"
 #include "storage/subsystems.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
@@ -387,6 +388,16 @@ static inline FullTransactionId FullXidRelativeTo(FullTransactionId rel,
 static void GlobalVisUpdateApply(ComputeXidHorizonsResult *horizons);
 
 /*
+ * ProcArrayLock as a sharded reader/writer lock.  All ProcArrayLock traffic
+ * goes through the ProcArrayLock*() wrappers below, which operate on this
+ * object.  When procarray_lock_shards == 0 the sharded lock is a pass-through
+ * to the underlying LWLock (ProcArrayLock), so behavior is identical to stock.
+ */
+int			procarray_lock_shards = 0;	/* GUC: number of reader shards */
+static ShardedLWLock ProcArraySLL;
+static ShardedLWLockCounter *ProcArrayLockShards = NULL;
+
+/*
  * Register the shared PGPROC array during postmaster startup.
  */
 static void
@@ -429,6 +440,13 @@ ProcArrayShmemRequest(void *arg)
 										mul_size(sizeof(int), PROCARRAY_MAXPROCS)),
 					   .ptr = (void **) &procArray,
 		);
+
+	/* Reader-shard array for the sharded ProcArrayLock (none if disabled) */
+	if (procarray_lock_shards > 0)
+		ShmemRequestStruct(.name = "ProcArrayLockShards",
+						   .size = ShardedLWLockShardsSize(procarray_lock_shards),
+						   .ptr = (void **) &ProcArrayLockShards,
+			);
 }
 
 /*
@@ -448,6 +466,14 @@ ProcArrayShmemInit(void *arg)
 	procArray->replication_slot_catalog_xmin = InvalidTransactionId;
 	TransamVariables->xactCompletionCount = 1;
 
+	/*
+	 * Wrap ProcArrayLock in a sharded reader/writer lock.  With
+	 * procarray_lock_shards == 0 there is no shard array and the lock is a
+	 * plain-LWLock pass-through.
+	 */
+	ShardedLWLockInit(&ProcArraySLL, ProcArrayLock, ProcArrayLockShards,
+					  procarray_lock_shards);
+
 	allProcs = ProcGlobal->allProcs;
 }
 
@@ -455,43 +481,49 @@ static void
 ProcArrayShmemAttach(void *arg)
 {
 	allProcs = ProcGlobal->allProcs;
+
+	/* Shared counters already initialized by the postmaster; only bind them */
+	ProcArraySLL.lock = ProcArrayLock;
+	ProcArraySLL.nshards = procarray_lock_shards;
+	ProcArraySLL.shards = procarray_lock_shards > 0 ?
+		(ShardedLWLockCounter *) TYPEALIGN(PG_CACHE_LINE_SIZE, ProcArrayLockShards) : NULL;
 }
 
 /*
  * ProcArrayLock wrappers.
  *
- * All code takes and releases ProcArrayLock through these functions.  Now
- * they only call the LWLock functions.  With one entry point, you can change
- * how ProcArrayLock works without a change to each caller.
+ * Every ProcArrayLock acquisition/release in the tree goes through these so the
+ * sharded reader path is used uniformly.  They are thin shims over the
+ * ShardedLWLock API operating on the ProcArraySLL object.
  */
 bool
 ProcArrayLockAcquire(LWLockMode mode)
 {
-	return LWLockAcquire(ProcArrayLock, mode);
+	return ShardedLWLockAcquire(&ProcArraySLL, mode);
 }
 
 bool
 ProcArrayLockConditionalAcquire(LWLockMode mode)
 {
-	return LWLockConditionalAcquire(ProcArrayLock, mode);
+	return ShardedLWLockConditionalAcquire(&ProcArraySLL, mode);
 }
 
 void
 ProcArrayLockRelease(void)
 {
-	LWLockRelease(ProcArrayLock);
+	ShardedLWLockRelease(&ProcArraySLL);
 }
 
 bool
 ProcArrayLockHeldByMe(void)
 {
-	return LWLockHeldByMe(ProcArrayLock);
+	return ShardedLWLockHeldByMe(&ProcArraySLL);
 }
 
 bool
 ProcArrayLockHeldByMeInMode(LWLockMode mode)
 {
-	return LWLockHeldByMeInMode(ProcArrayLock, mode);
+	return ShardedLWLockHeldByMeInMode(&ProcArraySLL, mode);
 }
 
 /*

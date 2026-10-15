@@ -2430,6 +2430,15 @@
   check_hook => 'check_primary_slot_name',
 },
 
+{ name => 'procarray_lock_shards', type => 'int', context => 'PGC_POSTMASTER', group => 'LOCK_MANAGEMENT',
+  short_desc => 'Number of reader shards for ProcArrayLock.',
+  long_desc => '0 uses a plain LWLock (stock behavior).  A positive value shards the shared (reader) side of ProcArrayLock across that many cache lines to reduce contention on large multi-core servers, at the cost of a longer exclusive-acquire drain and some shared memory.',
+  variable => 'procarray_lock_shards',
+  boot_val => '0',
+  min => '0',
+  max => '1024',
+},
+
 { name => 'quote_all_identifiers', type => 'bool', context => 'PGC_USERSET', group => 'COMPAT_OPTIONS_PREVIOUS',
   short_desc => 'When generating SQL fragments, quote all identifiers.',
   variable => 'quote_all_identifiers',
