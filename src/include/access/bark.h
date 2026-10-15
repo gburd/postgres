@@ -1565,7 +1565,22 @@ extern int	bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
  * bytes.  Markers are never removed, so they are never stale either.  They
  * live in this one chunk, which grows, because rd_amcache must be a single
  * chunk (see rel.h).
+ *
+ * After the markers, at markerlen, comes the level-1 entry table: nl1
+ * slots (BarkL1Slot), sorted by low key, then l1keylen bytes of the low keys
+ * they point at (pivot tuples copied from the downlinks that named the
+ * pages).  A read descent starts at the slot with the greatest low key it
+ * may start at, so that it never touches the root (see "Level-1 entry
+ * cache" in the README).  An internal page is never deleted and its low key
+ * never changes, so a slot is never wrong about which keys may start there;
+ * the page it names is still checked under its lock.
  */
+typedef struct BarkL1Slot
+{
+	BlockNumber blkno;			/* a level-1 page */
+	uint32		keyoff;			/* its low key, at l1keys() + keyoff */
+} BarkL1Slot;
+
 typedef struct BarkAmCache
 {
 	BlockNumber root;
@@ -1574,10 +1589,15 @@ typedef struct BarkAmCache
 	bool		multikey;		/* BARK_META_MULTIKEY seen set */
 	int			nmarkers;		/* markers seen present */
 	Size		markerlen;		/* bytes of markerdata in use */
+	int			nl1;			/* level-1 slots in use */
+	int			maxl1;			/* level-1 slots allocated */
+	Size		l1keylen;		/* bytes of level-1 low keys in use */
+	Size		maxl1keylen;	/* bytes of level-1 low keys allocated */
 	char		markerdata[FLEXIBLE_ARRAY_MEMBER];
 } BarkAmCache;
 
 extern BarkAmCache *bark_get_amcache(Relation index);
+extern void bark_l1_reset(BarkAmCache *cache);
 extern BlockNumber bark_get_root(Relation index, uint32 *level_out);
 extern uint32 bark_get_root_level(Relation index);
 extern Buffer bark_get_root_buffer(Relation index, BufferLockMode access);

@@ -960,6 +960,17 @@ BENCHMARK-2026-10b.md, at 5d4e2883b10)
   leaves fill later, so bottom-up deletion runs less often between VACUUMs.''
 * '''K3''' -- a descent as cheap as nbtree's, and a cheaper skip-scan group.
   ''(done: bd501974823)''
+* '''R1''' -- root contention on many-core machines.  Every descent pins and
+  share-locks the root, so its buffer header (pin count and content lock in
+  one state word) is written by every lookup; measured on m7i.metal-48xl
+  (2 sockets) it tops the <code>perf c2c</code> table and throughput falls
+  past one socket.  Re-pinning it through <code>ReadRecentBuffer</code> made
+  that worse (0.89-0.94x).  ''As built (L1CACHE):'' a per-backend table of
+  level-1 pages and their low keys, filled from level-2 downlinks as
+  descents pass, lets a read descent start below the root.  Safe because an
+  internal page is never deleted and its low key never changes, so moving
+  right from a cached page reaches the page the root would have chosen.
+  Write descents keep starting at the root (they need the parent path).
 * '''I2''' -- per-insert overhead: the unique-index fast path and the insert
   state cached in <code>ii_AmCache</code>. ''(done: 5d4e2883b10)''
 * '''N1''' -- honor <code>UNIQUE ... NULLS NOT DISTINCT</code>.
