@@ -335,9 +335,148 @@ bark_get_amcache(Relation index)
 		cache->multikey = false;
 		cache->nmarkers = 0;
 		cache->markerlen = 0;
+		cache->nl1 = cache->maxl1 = 0;
+		cache->l1keylen = cache->maxl1keylen = 0;
 		index->rd_amcache = cache;
 	}
 	return cache;
+}
+
+/*
+ * The level-1 entry table (see BarkAmCache and "Level-1 entry cache" in the
+ * README).  Its slots and keys sit after the markers in the cache's chunk:
+ * slots first, at a MAXALIGNed offset, then the keys.
+ */
+#define BARK_L1_MAX_SLOTS	2048
+#define BARK_L1_MAX_KEYLEN	(256 * 1024)
+
+static inline BarkL1Slot *
+bark_l1_slots(BarkAmCache *cache)
+{
+	return (BarkL1Slot *) (cache->markerdata + MAXALIGN(cache->markerlen));
+}
+
+static inline char *
+bark_l1_keys(BarkAmCache *cache)
+{
+	return (char *) bark_l1_slots(cache) +
+		MAXALIGN(sizeof(BarkL1Slot) * cache->maxl1);
+}
+
+static inline IndexTuple
+bark_l1_key(BarkAmCache *cache, int i)
+{
+	return (IndexTuple) (bark_l1_keys(cache) + bark_l1_slots(cache)[i].keyoff);
+}
+
+/* Forget the level-1 table (the chunk keeps its size until it next grows). */
+void
+bark_l1_reset(BarkAmCache *cache)
+{
+	cache->nl1 = cache->maxl1 = 0;
+	cache->l1keylen = cache->maxl1keylen = 0;
+}
+
+/*
+ * The slot a read descent for key may start at: the one with the greatest
+ * low key that the key does not sort before (nextkey) or after (!nextkey),
+ * by the same rule bark_binsrch uses to pick a downlink, so that starting
+ * there and moving right reaches the page the root would have led to.
+ * Returns -1 when no slot qualifies.
+ */
+static int
+bark_l1_find(Relation index, BarkKeyInfo *keyinfo, BarkAmCache *cache,
+			 const BarkSearchKey *key, bool nextkey)
+{
+	int			low = 0;
+	int			high = cache->nl1;
+
+	/* The first slot whose low key the search key is not past. */
+	while (low < high)
+	{
+		int			mid = low + (high - low) / 2;
+		int			cmp = bark_compare_key(index, keyinfo, key,
+										   bark_l1_key(cache, mid));
+
+		if (nextkey ? (cmp >= 0) : (cmp > 0))
+			low = mid + 1;
+		else
+			high = mid;
+	}
+	return low - 1;
+}
+
+/*
+ * Remember that level-1 page blkno has low key lowkey, a pivot read from the
+ * downlink that named it, under the parent's lock.  The table is kept
+ * sorted; an entry for a block already present is left alone (its low key
+ * cannot have changed), and when the table is full it is dropped and
+ * started again, so that a long-lived backend follows a tree that grows.
+ */
+static void
+bark_l1_remember(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
+				 IndexTuple lowkey)
+{
+	BarkAmCache *cache = bark_get_amcache(index);
+	BarkSearchKey skey = {lowkey, NULL, NULL};
+	Size		keysz = MAXALIGN(IndexTupleSize(lowkey));
+	int			pos;
+	BarkL1Slot *slots;
+
+	/* Where it goes: after every slot whose low key is <= lowkey. */
+	pos = bark_l1_find(index, keyinfo, cache, &skey, true) + 1;
+	if (pos > 0 && bark_l1_slots(cache)[pos - 1].blkno == blkno)
+		return;
+
+	if (cache->nl1 >= BARK_L1_MAX_SLOTS ||
+		cache->l1keylen + keysz > BARK_L1_MAX_KEYLEN)
+	{
+		bark_l1_reset(cache);
+		pos = 0;
+	}
+
+	/* Grow the chunk: double the slots or the key space as needed. */
+	if (cache->nl1 >= cache->maxl1 || cache->l1keylen + keysz > cache->maxl1keylen)
+	{
+		int			maxl1 = Max(cache->maxl1, 16);
+		Size		maxkey = Max(cache->maxl1keylen, 1024);
+		char	   *oldkeys = cache->nl1 > 0 ? palloc(cache->l1keylen) : NULL;
+		BarkL1Slot *oldslots = cache->nl1 > 0 ?
+			palloc(sizeof(BarkL1Slot) * cache->nl1) : NULL;
+		int			n = cache->nl1;
+		Size		klen = cache->l1keylen;
+
+		while (maxl1 <= cache->nl1)
+			maxl1 *= 2;
+		while (maxkey < cache->l1keylen + keysz)
+			maxkey *= 2;
+		if (n > 0)
+		{
+			memcpy(oldkeys, bark_l1_keys(cache), klen);
+			memcpy(oldslots, bark_l1_slots(cache), sizeof(BarkL1Slot) * n);
+		}
+		cache = repalloc(cache, offsetof(BarkAmCache, markerdata) +
+						 MAXALIGN(cache->markerlen) +
+						 MAXALIGN(sizeof(BarkL1Slot) * maxl1) + maxkey);
+		index->rd_amcache = cache;
+		cache->maxl1 = maxl1;
+		cache->maxl1keylen = maxkey;
+		if (n > 0)
+		{
+			memcpy(bark_l1_slots(cache), oldslots, sizeof(BarkL1Slot) * n);
+			memcpy(bark_l1_keys(cache), oldkeys, klen);
+			pfree(oldslots);
+			pfree(oldkeys);
+		}
+	}
+
+	slots = bark_l1_slots(cache);
+	memmove(&slots[pos + 1], &slots[pos], sizeof(BarkL1Slot) * (cache->nl1 - pos));
+	slots[pos].blkno = blkno;
+	slots[pos].keyoff = cache->l1keylen;
+	memcpy(bark_l1_keys(cache) + cache->l1keylen, lowkey, IndexTupleSize(lowkey));
+	cache->l1keylen += keysz;
+	cache->nl1++;
 }
 
 /*
@@ -445,6 +584,78 @@ bark_get_root_buffer(Relation index, BufferLockMode access)
 }
 
 /*
+ * The cached level-1 page a read descent for key may start at, share-locked,
+ * or InvalidBuffer when there is none (the table is empty, or the key sorts
+ * before every cached low key).  The page is checked under its lock to be a
+ * live level-1 internal page; the caller then moves right from it as from
+ * any page it reached through a downlink, so a split since it was cached is
+ * handled the same way.
+ */
+static Buffer
+bark_l1_start(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
+			  bool nextkey)
+{
+	BarkAmCache *cache = (BarkAmCache *) index->rd_amcache;
+	int			slot;
+	Buffer		buf;
+	Page		page;
+
+	if (cache == NULL || cache->nl1 == 0)
+		return InvalidBuffer;
+	slot = bark_l1_find(index, keyinfo, cache, key, nextkey);
+	if (slot < 0)
+		return InvalidBuffer;
+
+	buf = ReadBuffer(index, bark_l1_slots(cache)[slot].blkno);
+	LockBuffer(buf, BUFFER_LOCK_SHARE);
+	page = BufferGetPage(buf);
+	if (!PageIsNew(page))
+	{
+		BarkPageOpaque opaque = BarkPageGetOpaque(page);
+
+		/*
+		 * Tests make the check fail (bark-l1-stale) to exercise the fallback
+		 * below, which the invariants otherwise keep unreachable.
+		 */
+		if (!BarkPageIsLeaf(opaque) && !BarkPageIgnore(opaque) &&
+			opaque->bark_level == 1 &&
+			!IS_INJECTION_POINT_ATTACHED("bark-l1-stale"))
+		{
+			/*
+			 * The slot is the nearest cached page at or left of the key's,
+			 * not necessarily the key's: the pages between may not be in
+			 * the table yet.  Use it only when the key is within it (not
+			 * past its high key, by bark_moveright's rule); otherwise moving
+			 * right would lock page after page, each a buffer header every
+			 * descent writes, which is what starting below the root avoids.
+			 * The root's descent then records the key's page.
+			 */
+			if (BarkPageRightmost(opaque) ||
+				bark_compare_key(index, keyinfo, key,
+								 (IndexTuple) PageGetItem(page,
+														  PageGetItemId(page, BARK_P_HIKEY))) <
+				(key->scantid != NULL ? 0 : 1))
+			{
+				/* Tests watch which descents start below the root. */
+				INJECTION_POINT("bark-l1-start", NULL);
+				return buf;
+			}
+			UnlockReleaseBuffer(buf);
+			return InvalidBuffer;
+		}
+	}
+
+	/*
+	 * Not a level-1 page any more (an internal page is never freed, so this
+	 * means the index was rebuilt under a cache that survived, which a
+	 * relcache rebuild should prevent): forget the table and use the root.
+	 */
+	UnlockReleaseBuffer(buf);
+	bark_l1_reset(cache);
+	return InvalidBuffer;
+}
+
+/*
  * Descend to the leaf that should contain `key`.
  *
  * Returns the leaf buffer, locked for write when forwrite (else share), after
@@ -474,7 +685,18 @@ bark_descend(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
 	if (stack)
 		*stack = NULL;
 
-	buf = bark_get_root_buffer(index, access);
+	/*
+	 * A read descent that needs no parent path starts at a cached level-1
+	 * page when one may hold the key, and never touches the root, whose
+	 * buffer header every descent would otherwise write (see "Level-1 entry
+	 * cache" in the README).  A write descent, or one recording its path,
+	 * starts at the root as before.
+	 */
+	buf = InvalidBuffer;
+	if (!forwrite && stack == NULL)
+		buf = bark_l1_start(index, keyinfo, key, nextkey);
+	if (!BufferIsValid(buf))
+		buf = bark_get_root_buffer(index, access);
 	if (!BufferIsValid(buf))
 		return InvalidBuffer;	/* empty index */
 
@@ -515,6 +737,15 @@ bark_descend(Relation index, BarkKeyInfo *keyinfo, const BarkSearchKey *key,
 			access = BUFFER_LOCK_EXCLUSIVE;
 
 		blkno = BarkEntryGetDownLink(itup);
+
+		/*
+		 * A level-2 page's downlink names a level-1 page and is its low key,
+		 * fixed for the page's life: remember the pair for later read
+		 * descents.  A page's first downlink is minus infinity on that page
+		 * only (its true low key is the page's own), so it is skipped.
+		 */
+		if (opaque->bark_level == 2 && off > BarkPageFirstDataKey(opaque))
+			bark_l1_remember(index, keyinfo, blkno, itup);
 		LockBuffer(buf, BUFFER_LOCK_UNLOCK);
 
 		/*
