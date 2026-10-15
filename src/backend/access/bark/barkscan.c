@@ -1030,7 +1030,8 @@ bark_mk_rescan(IndexScanDesc scan)
 	 */
 	if (mk->gin && mk->nkeys > 0)
 		mk->useseen = false;
-	else if (!IsMVCCSnapshot(scan->xs_snapshot) || mk->orderrest)
+	else if (scan->xs_snapshot == NULL ||
+			 !IsMVCCSnapshot(scan->xs_snapshot) || mk->orderrest)
 		mk->useseen = true;
 	else if (mk->nkeys > 0 && !mk->order &&
 			 (mk->oneentry || (mk->nbounds == 1 && mk->bounds[0].point)))
@@ -2927,8 +2928,8 @@ bark_rescan(IndexScanDesc scan, ScanKey scankey, int nscankeys,
 	 * keep the pin, as must a scan with a non-MVCC snapshot.
 	 */
 	so->dropPin = (!scan->xs_want_itup &&
-				   IsMVCCLikeSnapshot(scan->xs_snapshot) &&
-				   scan->heapRelation != NULL);
+				   scan->heapRelation != NULL &&
+				   IsMVCCLikeSnapshot(scan->xs_snapshot));
 
 	/*
 	 * The number of keys handed to amrescan is authoritative, not the count
@@ -3368,7 +3369,8 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 	 * Predicate-lock the leaf for serializable transactions: a read here
 	 * conflicts with a later insert onto the same page.
 	 */
-	PredicateLockPage(index, pos->currPage, scan->xs_snapshot);
+	if (scan->xs_snapshot != NULL)
+		PredicateLockPage(index, pos->currPage, scan->xs_snapshot);
 
 	if (forward)
 		offnum = Max(offnum, minoff);
@@ -3883,7 +3885,8 @@ bark_first(IndexScanDesc scan, ScanDirection dir)
 	if (!BufferIsValid(buf))
 	{
 		/* Empty index.  A serializable scan must lock the whole relation. */
-		PredicateLockRelation(index, scan->xs_snapshot);
+		if (scan->xs_snapshot != NULL)
+			PredicateLockRelation(index, scan->xs_snapshot);
 		bark_parallel_done(scan);
 		return false;
 	}
@@ -4848,7 +4851,14 @@ bark_mk_gin_gettuple(IndexScanDesc scan, ScanDirection dir)
 	{
 		MemoryContext oldcxt;
 
-		if (!IsMVCCLikeSnapshot(scan->xs_snapshot))
+		/*
+		 * A caller of the AM with no heap relation (and so no snapshot)
+		 * reads TIDs, not rows: DocumentDB asks whether a metadata key is
+		 * present this way (ambeginscan, amrescan, amgettuple).  No heap
+		 * slot is fetched, so recycling cannot hurt it.
+		 */
+		if (scan->heapRelation != NULL &&
+			!IsMVCCLikeSnapshot(scan->xs_snapshot))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("index scans of BARK index \"%s\" through GIN's query interface require an MVCC snapshot",
@@ -5133,11 +5143,19 @@ bark_restrpos(IndexScanDesc scan)
  * except an extracted column: its entries hold keys, not the column's
  * value.  A key does not determine the value (a row with several keys has
  * an entry per key, and the NULL key stands for a NULL value, an empty value
- * and a NULL element alike), so an index-only scan never returns it.
+ * and a NULL element alike), so an index-only scan never returns it.  A
+ * query that needs the value index-only names the column again as an
+ * INCLUDE column, which holds the value whole and is returned; the qual is
+ * then rechecked on it.  An
+ * index whose extracted column uses GIN's query interface returns no column
+ * at all: its scans compute TIDs (bark_mk_gin_gettuple) and never read an
+ * entry for a row.
  */
 bool
 bark_canreturn(Relation index, int attno)
 {
+	if (bark_index_gin_query(index))
+		return false;
 	return !bark_column_is_extracted(index, attno);
 }
 

@@ -91,6 +91,7 @@ PG_FUNCTION_INFO_V1(bark_multikey_mark_restore);
 PG_FUNCTION_INFO_V1(bark_multikey_reverse);
 PG_FUNCTION_INFO_V1(bark_multikey_walk);
 PG_FUNCTION_INFO_V1(bark_multikey_rescan_fewer);
+PG_FUNCTION_INFO_V1(bark_multikey_bare_scan);
 PG_FUNCTION_INFO_V1(bark_multikey_parallel);
 PG_FUNCTION_INFO_V1(bark_multikey_knn);
 PG_FUNCTION_INFO_V1(bark_multikey_extract_query);
@@ -963,6 +964,41 @@ bark_multikey_rescan_fewer(PG_FUNCTION_ARGS)
 	table_close(heap, AccessShareLock);
 	relation_close(index, AccessShareLock);
 	PG_RETURN_BOOL(same);
+}
+
+/*
+ * bark_multikey_bare_scan(index, op, query) -> int: count the TIDs a scan of
+ * index with one key, column 1 op query, returns when it is driven through
+ * the AM's routine alone -- ambeginscan, amrescan, amgettuple, amendscan --
+ * with no heap relation and no snapshot, as DocumentDB asks a RUM index
+ * whether a metadata key is present (rum.c's CheckIndexHasArrays).
+ */
+Datum
+bark_multikey_bare_scan(PG_FUNCTION_ARGS)
+{
+	Relation	index = open_bark_index(PG_GETARG_TEXT_PP(0));
+	Oid			opno = PG_GETARG_OID(1);
+	Datum		query = PG_GETARG_DATUM(2);
+	const IndexAmRoutine *am = index->rd_indam;
+	int			strategy;
+	Oid			lefttype;
+	Oid			righttype;
+	ScanKeyData key;
+	IndexScanDesc scan;
+	int			n = 0;
+
+	get_op_opfamily_properties(opno, index->rd_opfamily[0], false, &strategy,
+							   &lefttype, &righttype);
+	ScanKeyEntryInitialize(&key, 0, 1, strategy, righttype,
+						   index->rd_indcollation[0], get_opcode(opno), query);
+	scan = am->ambeginscan(index, 1, 0);
+	scan->parallel_scan = NULL;
+	am->amrescan(scan, &key, 1, NULL, 0);
+	while (am->amgettuple(scan, ForwardScanDirection))
+		n++;
+	am->amendscan(scan);
+	relation_close(index, AccessShareLock);
+	PG_RETURN_INT32(n);
 }
 
 /*
