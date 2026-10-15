@@ -191,8 +191,7 @@ SELECT count(*) FILTER (WHERE doc #= '["a", 3]') AS "#=",
 -- bark_wildcard_keys gives the heap's rows under its projection (a row with
 -- no kept key, or a NULL document, has a NULL entry), compared both ways,
 -- and the markers of the paths that hold an array.  amcheck's
--- heapallindexed refuses an index with an extracted column, so this
--- comparison stands in for it.
+-- heapallindexed checks the heap-to-index direction, through procedure 7.
 SELECT bark_index_check('wc_plain_doc'), bark_index_check('wc_inc_doc'),
        bark_index_check('wc_exc_doc'), bark_index_check('wc_tid_doc');
 SELECT bark_index_check('wc_plain_doc', true);

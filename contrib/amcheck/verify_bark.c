@@ -36,7 +36,12 @@
  *	  has an entry.  The entries' (key, heap TID) pairs are fingerprinted into
  *	  a Bloom filter, each member of a LIST or POSTING entry as the SINGLE
  *	  entry it would be on its own, and the heap is then scanned, probing the
- *	  filter with each indexable tuple;
+ *	  filter with each indexable tuple.  With an extracted column a row has
+ *	  one entry per key, so the scan runs procedure 7 on the row, as CREATE
+ *	  INDEX does (bark_extract_row_keys), and probes for each key; markers
+ *	  name no row and are not fingerprinted.  An index that coalesces keys
+ *	  of different images (a non-equalimage GIN-interface column) is
+ *	  refused, since a row's own key image may be in no entry;
  *	- checkunique, for a unique index: no two entries of a run of equal key
  *	  columns point to heap tuples visible to one MVCC snapshot.  For an
  *	  extracted column a run is one (fixed columns, key), M4's rule;
@@ -95,6 +100,8 @@ typedef struct BarkCheckState
 
 	/* heapallindexed only: */
 	bloom_filter *filter;		/* fingerprints of the (key, TID) pairs */
+	BarkKeyInfo *keyinfo;		/* for procedure 7, with an extracted column */
+	int			extracted;		/* the extracted column's attno, or 0 */
 	int64		heaptuplespresent;	/* heap tuples found in the filter */
 	bool		readonly;		/* ShareLock held (bark_index_parent_check) */
 	MemoryContext tmpcxt;		/* reset after every fingerprinted entry */
@@ -108,10 +115,13 @@ static void bark_check_levels(Relation rel, BarkKeyInfo *keyinfo,
 							  BlockNumber npages, int64 nlive);
 static Buffer bark_check_leftmost_leaf(Relation rel);
 static void bark_fingerprint_leaves(Relation rel, BarkCheckState *state);
+static void bark_probe_entry(Relation index, BarkCheckState *state,
+							 Datum *values, bool *isnull, ItemPointer tid);
 static void bark_check_unique_runs(Relation rel, BarkKeyInfo *keyinfo,
 								   BarkCheckState *state);
 static void bark_check_heap(Relation rel, Relation heaprel,
-							BarkCheckState *state, bool readonly);
+							BarkKeyInfo *keyinfo, BarkCheckState *state,
+							bool readonly);
 static void bark_check_downlinks(Relation rel, BlockNumber blkno,
 								 BarkKeyInfo *keyinfo);
 static void bark_check_marker(Relation rel, BarkKeyInfo *keyinfo,
@@ -225,15 +235,22 @@ bark_check_structure(Relation rel, Relation heaprel, void *callback_state,
 	if (state->heapallindexed)
 	{
 		/*
-		 * An extracted column makes several entries of one row, and the heap
-		 * scan would have to form them all, through the operator class's
-		 * extraction procedure, to probe for each.
+		 * The heap scan forms each row's entries as CREATE INDEX does and
+		 * probes for their bytes.  An extracted column answered through
+		 * GIN's interface whose class is not equalimage breaks that: equal
+		 * keys of different images share the entry of the first one
+		 * (bark_index_may_coalesce), so a row's own image may be in no
+		 * entry.  Only that case is refused.
 		 */
-		if (bark_index_extracted_column(rel) != 0)
+		int			extracted = bark_index_extracted_column(rel);
+
+		if (extracted != 0 && !bark_allequalimage(rel) &&
+			bark_index_may_coalesce(rel))
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("heapallindexed is not supported for index \"%s\", which has a multikey column",
-							RelationGetRelationName(rel))));
+					 errmsg("heapallindexed is not supported for index \"%s\"",
+							RelationGetRelationName(rel)),
+					 errdetail("Its multikey column stores one image for keys that compare equal.")));
 
 		state->snapshot = RegisterSnapshot(GetTransactionSnapshot());
 		if (IsolationUsesXactSnapshot() && rel->rd_index->indcheckxmin &&
@@ -269,7 +286,7 @@ bark_check_structure(Relation rel, Relation heaprel, void *callback_state,
 		bark_check_unique_runs(rel, keyinfo, state);
 
 	if (state->heapallindexed)
-		bark_check_heap(rel, heaprel, state, readonly);
+		bark_check_heap(rel, heaprel, keyinfo, state, readonly);
 
 	if (state->snapshot != NULL)
 		UnregisterSnapshot(state->snapshot);
@@ -1238,6 +1255,10 @@ bark_fingerprint_entry(Relation rel, BarkCheckState *state, IndexTuple itup)
 	ItemPointer tids;
 	int			ntids;
 
+	/* A marker is a fact about the index, not a row: no row probes for it. */
+	if (BarkEntryIsMarker(itup))
+		return;
+
 	if (BarkEntryGetShape(itup) == BARK_SHAPE_OVERSIZED)
 		keytup = bark_fetch_oversized(rel, itup);
 	index_deform_tuple(keytup, tupdesc, values, isnull);
@@ -1560,6 +1581,42 @@ bark_tuple_present_callback(Relation index, ItemPointer tid, Datum *values,
 {
 	BarkCheckState *state = (BarkCheckState *) checkstate;
 	MemoryContext oldcxt = MemoryContextSwitchTo(state->tmpcxt);
+	int			attno = state->extracted;
+	BarkRowKeys rk;
+	Datum		kvalues[INDEX_MAX_KEYS];
+	bool		knulls[INDEX_MAX_KEYS];
+
+	/*
+	 * Without an extracted column the row is one entry; with one, it is one
+	 * entry per key procedure 7 gives the row (bark_build_row_keys).
+	 */
+	if (attno == 0)
+		bark_probe_entry(index, state, values, isnull, tid);
+	else
+	{
+		int			natts = RelationGetDescr(index)->natts;
+
+		bark_extract_row_keys(index, state->keyinfo, values[attno - 1],
+							  isnull[attno - 1], &rk);
+		memcpy(kvalues, values, natts * sizeof(Datum));
+		memcpy(knulls, isnull, natts * sizeof(bool));
+		for (int i = 0; i < rk.nkeys; i++)
+		{
+			kvalues[attno - 1] = rk.keys[i];
+			knulls[attno - 1] = rk.nulls[i];
+			bark_probe_entry(index, state, kvalues, knulls, tid);
+		}
+	}
+	state->heaptuplespresent++;
+	MemoryContextSwitchTo(oldcxt);
+	MemoryContextReset(state->tmpcxt);
+}
+
+/* The entry the row has for these key values must be in the filter. */
+static void
+bark_probe_entry(Relation index, BarkCheckState *state, Datum *values,
+				 bool *isnull, ItemPointer tid)
+{
 	Size		len;
 	IndexTuple	norm = bark_check_normalize(index, values, isnull, tid, &len);
 
@@ -1574,9 +1631,7 @@ bark_tuple_present_callback(Relation index, ItemPointer tid, Datum *values,
 				 !state->readonly
 				 ? errhint("Retrying verification using the function bark_index_parent_check() might provide a more specific error.")
 				 : 0));
-	state->heaptuplespresent++;
-	MemoryContextSwitchTo(oldcxt);
-	MemoryContextReset(state->tmpcxt);
+	pfree(norm);
 }
 
 /*
@@ -1585,23 +1640,38 @@ bark_tuple_present_callback(Relation index, ItemPointer tid, Datum *values,
  * walk, and probe for every tuple it would index.
  */
 static void
-bark_check_heap(Relation rel, Relation heaprel, BarkCheckState *state,
-				bool readonly)
+bark_check_heap(Relation rel, Relation heaprel, BarkKeyInfo *keyinfo,
+				BarkCheckState *state, bool readonly)
 {
 	IndexInfo  *indexinfo;
 	TableScanDesc scan;
 	int64		total_elems;
+	int64		nmembers;
 
 	/*
-	 * Size the filter for the larger of the index's row count as of its last
-	 * build or VACUUM and a full leaf's worth of SINGLE entries on every
-	 * page, as verify_nbtree.c sizes its own.  A POSTING entry can hold more
-	 * rows than that, which the row count covers.  An undersized filter only
-	 * makes a missing entry likelier to go unnoticed.
+	 * Size the filter for the larger of the index's (key, TID) member count
+	 * as of its last build or VACUUM and a full leaf's worth of SINGLE
+	 * entries on every page, as verify_nbtree.c sizes its own.  A POSTING
+	 * entry can hold more members than that, which the count covers.  The
+	 * count is the row count, reltuples, but for an extracted column, whose
+	 * rows each have as many members as keys: the meta page's bark_nkeys.
+	 * An undersized filter only makes a missing entry likelier to go
+	 * unnoticed.
 	 */
+	state->keyinfo = keyinfo;
+	state->extracted = bark_index_extracted_column(rel);
+	nmembers = (int64) rel->rd_rel->reltuples;
+	if (state->extracted != 0)
+	{
+		Buffer		metabuf = ReadBuffer(rel, BARK_METAPAGE);
+
+		LockBuffer(metabuf, BUFFER_LOCK_SHARE);
+		nmembers = Max(nmembers, (int64)
+					   BarkPageGetMeta(BufferGetPage(metabuf))->bark_nkeys);
+		UnlockReleaseBuffer(metabuf);
+	}
 	total_elems = Max((int64) RelationGetNumberOfBlocks(rel) *
-					  (MaxIndexTuplesPerPage / 3),
-					  (int64) rel->rd_rel->reltuples);
+					  (MaxIndexTuplesPerPage / 3), nmembers);
 	state->filter = bloom_create(total_elems, maintenance_work_mem,
 								 pg_prng_uint64(&pg_global_prng_state));
 	state->heaprel = heaprel;
