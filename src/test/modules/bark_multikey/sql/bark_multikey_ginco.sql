@@ -93,8 +93,12 @@ FROM unnest(ARRAY['gn_bark', 'gn_bark_g', 'gn_bark_n', 'gn_bark_inc']) i;
 SELECT pg_relation_size('gn_bark') < pg_relation_size('gn_bark_inc') / 2 AS smaller;
 SELECT bark_index_check(i), bark_index_parent_check(i, false, false)
 FROM unnest(ARRAY['gn_bark', 'gn_bark_g', 'gn_bark_n', 'gn_bark_inc']) i;
--- heapallindexed stays refused for a multikey index.
+-- heapallindexed is refused where equal keys of different images share an
+-- entry (numeric is not equalimage); an INCLUDE column forbids coalescing,
+-- so gn_bark_inc is checked.
 SELECT bark_index_check('gn_bark', true, false);
+SELECT bark_index_check('gn_bark_inc', true, false),
+       bark_index_parent_check('gn_bark_inc', true, false);
 
 -- Rows of a query on table tab through index idx (NULL: seqscan).
 CREATE FUNCTION gn_run(tab text, idx text, q text) RETURNS int[]

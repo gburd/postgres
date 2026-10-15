@@ -1089,8 +1089,12 @@ SELECT id FROM events
     every row of the table that the index should hold has an entry; and
     <function>bark_index_parent_check(index regclass, heapallindexed
     boolean)</function>, which also checks each level of the tree against
-    the level below.  <literal>heapallindexed</literal> is not supported
-    for an index with a multikey column.
+    the level below.  For an index with a multikey column,
+    <literal>heapallindexed</literal> forms each row's keys with the
+    operator class's key extraction procedure, as <command>CREATE
+    INDEX</command> does, and checks that each has an entry; it is not
+    supported when that column stores one image for keys that compare
+    equal (a GIN-interface class without an equalimage procedure).
    </para>
   </listitem>
   <listitem>

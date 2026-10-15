@@ -158,5 +158,30 @@ UPDATE pg_index SET indisunique = true WHERE indexrelid = 'bcu_c_k'::regclass;
 \c -
 INSERT INTO bcu_c VALUES (1);
 DROP TABLE bcu_c;
+
+-- heapallindexed on a multikey index forms each row's keys with procedure 7
+-- and probes for each: it passes on a sound index, with LIST and POSTING
+-- entries and NULL and empty arrays, unique or not, and reports the row
+-- whose keys an insert that bypassed the index left out, here one array of
+-- several keys.
+CREATE TABLE bcu_mk (id int, a int4[]);
+INSERT INTO bcu_mk SELECT g, ARRAY[g % 50, g % 7 + 100, g] FROM generate_series(1, 3000) g;
+INSERT INTO bcu_mk VALUES (3001, NULL), (3002, '{}'), (3003, '{NULL,5}');
+CREATE INDEX bcu_mk_a ON bcu_mk USING bark (a bark_int4_array_ops);
+CREATE INDEX bcu_mk_ia ON bcu_mk USING bark (id, a bark_int4_array_ops);
+CREATE UNIQUE INDEX bcu_mk_u ON bcu_mk USING bark ((ARRAY[id]) bark_int4_array_ops);
+SELECT bark_index_check(i, true), bark_index_parent_check(i, true)
+  FROM unnest('{bcu_mk_a,bcu_mk_ia,bcu_mk_u}'::regclass[]) i;
+UPDATE pg_index SET indisready = false WHERE indexrelid = 'bcu_mk_a'::regclass;
+\c -
+INSERT INTO bcu_mk VALUES (3004, '{7,8,9}');
+UPDATE pg_index SET indisready = true WHERE indexrelid = 'bcu_mk_a'::regclass;
+\c -
+SELECT bark_index_check('bcu_mk_a');
+SELECT bark_index_check('bcu_mk_a', true);
+SELECT bark_index_parent_check('bcu_mk_a', true);
+REINDEX INDEX bcu_mk_a;
+SELECT bark_index_check('bcu_mk_a', true);
+DROP TABLE bcu_mk;
 DROP EXTENSION bark_multikey;
 DROP EXTENSION pageinspect;
