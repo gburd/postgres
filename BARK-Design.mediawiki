@@ -253,18 +253,16 @@ BARK entries obey the same visibility rules as nbtree. Four obligations:
   position). The correct general mechanism is comparing the '''stored leaf
   key''': BARK must retain enough of the leaf key to do this.
 * '''The recheck-hint bit.''' ''Source: <code>tepid</code> @
-  <code>236cff2f</code> (<code>src/include/storage/itemptr.h</code>).'' A
-  locator whose match is not exact carries
-  <code>ItemPointerRecheckHintFlag</code> (bit 14 of the offset;
-  <code>ItemPointerHasRecheckHint</code> / <code>ItemPointerSetRecheckHint</code>,
-  masked off by <code>ItemPointerOffsetNumberMask</code>). BARK sets it on any
-  entry that requires a heap recheck, and <code>tbm_add_tuples</code> already
-  consumes it to force a page lossy. ''Status:'' every BARK entry is exact
-  today, so BARK never sets the bit; bitmap scans add TIDs with recheck
-  false. Multikey scans (M1c) report rechecks through
-  <code>xs_recheck</code> and the recheck argument of
+  <code>236cff2f</code> (<code>src/include/storage/itemptr.h</code>).'' The
+  tepid branch reserves bit 14 of a TID's offset for a locator whose match is
+  not exact, and <code>tbm_add_tuples</code> turns such a TID's page lossy.
+  ''Status:'' not in this tree.  Every BARK entry is exact, so BARK would
+  never set the bit, and carrying it cost a mask in
+  <code>ItemPointerCompare</code> and <code>ItemPointerGetOffsetNumber</code>
+  for every caller; it was dropped from the series (2026-10-15) and stays on
+  the tepid branch for the table AM that needs it.  BARK's rechecks go
+  through <code>xs_recheck</code> and the recheck argument of
   <code>tbm_add_tuples</code>.
-
 === C-DELETE: delete-marking via UNDO ===
 
 ''Source: undo branch v11 (<code>src/include/access/amapi.h</code>,
@@ -805,7 +803,8 @@ Each entry is marked ''done'' with its commits on <code>idxam</code>,
   <code>amcanlocators</code> bitmask.)''
 * '''F03''' -- cherry-pick the recheck-hint bit
   (<code>ItemPointerRecheckHintFlag</code>) from <code>tepid</code>.
-  ''(done: 869809d71bc)''
+  ''(done, then dropped 2026-10-15: nothing in this tree sets it; see
+  C-MVCC.)''
 * '''F04''' -- the capability sweep, group 2: make ordered-''sort'' path
   generation, <code>tuplesort</code> variants, <code>repack</code>, and the RI
   trigger ask an AM capability instead of comparing to
