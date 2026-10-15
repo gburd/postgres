@@ -1,0 +1,106 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s1_warm s1_level s2_split s2_more s1_notice s1_one s1_one s1_quiet s1_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s1_warm: 
+	SELECT count(*) FROM generate_series(0, 7999, 5) g,
+		LATERAL (SELECT k FROM l1s WHERE k >= l1k(g) ORDER BY k LIMIT 1) s;
+
+count
+-----
+ 1600
+(1 row)
+
+step s1_level: SELECT level >= 2 AS tall FROM bark_metap('l1s_idx');
+tall
+----
+t   
+(1 row)
+
+step s2_split: INSERT INTO l1s SELECT l1k(g), g FROM generate_series(1, 7999, 2) g;
+step s2_more: INSERT INTO l1s SELECT l1k(g) || 'z', 100000 + g FROM generate_series(0, 7999) g;
+step s1_notice: SELECT injection_points_attach('bark-l1-start', 'notice');
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_one: SELECT count(*) FROM l1s WHERE k = l1k(4000);
+count
+-----
+    1
+(1 row)
+
+s1: NOTICE:  notice triggered for injection point bark-l1-start
+step s1_one: SELECT count(*) FROM l1s WHERE k = l1k(4000);
+count
+-----
+    1
+(1 row)
+
+step s1_quiet: SELECT injection_points_detach('bark-l1-start');
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+step s1_check: SELECT l1s_ok() AS mismatches;
+mismatches
+----------
+         0
+(1 row)
+
+
+starting permutation: s1_warm s1_wait s1_stuck s2_near s2_wake s1_check
+injection_points_set_local
+--------------------------
+                          
+(1 row)
+
+step s1_warm: 
+	SELECT count(*) FROM generate_series(0, 7999, 5) g,
+		LATERAL (SELECT k FROM l1s WHERE k >= l1k(g) ORDER BY k LIMIT 1) s;
+
+count
+-----
+ 1600
+(1 row)
+
+step s1_wait: SELECT injection_points_attach('bark-search-descend', 'wait');
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step s1_stuck: SELECT n FROM l1s WHERE k = l1k(6000); <waiting ...>
+step s2_near: INSERT INTO l1s SELECT l1k(5990 + g) || 'q', 200000 + g FROM generate_series(0, 20) g;
+step s2_wake: 
+	SELECT injection_points_detach('bark-search-descend');
+	SELECT injection_points_wakeup('bark-search-descend');
+
+injection_points_detach
+-----------------------
+                       
+(1 row)
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step s1_stuck: <... completed>
+   n
+----
+6000
+(1 row)
+
+step s1_check: SELECT l1s_ok() AS mismatches;
+mismatches
+----------
+         0
+(1 row)
+
