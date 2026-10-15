@@ -670,10 +670,18 @@ A column whose class has GIN's query interface (procedures 10 and 11 or
 13, and 12 for partial match) and no procedure 8 (bark_index_gin_query;
 "As built (M2a)" and "As built (M2c)" in the design document) is answered
 row by row from all of a row's entries, so a scan computes its whole
-result, in TID order, before its first row (bark_mk_gin_items).  A bitmap
-scan adds it to the bitmap; an index scan (bark_mk_gin_gettuple) keeps it
-in ginCxt and returns it a row at a time, forward or backward, with mark
-and restore as a place in it.  The TIDs are collected with no leaf pinned,
+result, in TID order, before its first row (bark_mk_gin_items), into a
+TIDBitmap.  A bitmap scan's is the executor's; an index scan
+(bark_mk_gin_gettuple) makes its own in ginCxt, bounded by work_mem alike,
+and returns it a row at a time, forward or backward, with mark and restore
+as a place in it (a page in iteration order and an offset on it).  Past
+work_mem the bitmap goes lossy, and the index scan returns every offset of
+a lossy heap page with a recheck: a fetch finds nothing at an offset with
+no tuple, or with a heap-only tuple (found from its chain's root), so each
+row comes back once and the recheck decides it.  A TIDBitmap iterates
+forward only, so a backward step across a page or a restore walks a new
+iteration to the page; the planner never asks a backward scan of such an
+index.  The TIDs are collected with no leaf pinned,
 so an index scan needs an MVCC snapshot (nbtree's dropPin argument: a slot
 VACUUM frees and the heap reuses holds a row the snapshot cannot see), and
 refuses any other.  It has no leaf position and BARK sets no LP_DEAD hints,
