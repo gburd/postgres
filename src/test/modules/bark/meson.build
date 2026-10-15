@@ -18,6 +18,7 @@ tests += {
       'bark_alias_am',
       'bark_knn_inttypes',
       'bark_codedlist',
+      'bark_l1_cache',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # The injection points are run in the same backend, so disable
@@ -34,6 +35,7 @@ tests += {
       'bark_broken_hot_chain',
       'bark_lock_right',
       'bark_root_split_race',
+      'bark_l1_concurrent',
       'bark_walk_left',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],

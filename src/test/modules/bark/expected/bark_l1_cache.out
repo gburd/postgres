@@ -1,0 +1,400 @@
+--
+-- The level-1 entry cache (BarkAmCache's level-1 table): a read descent
+-- that needs no parent path starts at a cached level-1 page instead of the
+-- root.  Every lookup here is compared with a sequential scan, across the
+-- boundaries between cached pages, after the pages split, after the root
+-- splits, with truncated pivots, DESC and NULLs, and after REINDEX and
+-- TRUNCATE give the index a new relfilenode.
+--
+set client_min_messages TO 'warning';
+create extension if not exists injection_points;
+create extension if not exists amcheck;
+create extension if not exists pageinspect;
+reset client_min_messages;
+SELECT injection_points_set_local();
+ injection_points_set_local 
+----------------------------
+ 
+(1 row)
+
+-- Wide keys, so that a few thousand rows make a tree with its root at level
+-- 2 or more, whose level-2 pages have many downlinks to level-1 pages.
+create function l1k(int) returns text language sql immutable as
+  $$ select lpad($1::text, 8, '0') || repeat('x', 380) $$;
+create table l1 (k text collate "C", n int) with (autovacuum_enabled = off);
+-- Runs of equal keys (every value 3 times), so that some runs span a
+-- level-1 boundary.
+insert into l1 select l1k(g / 3), g from generate_series(0, 23999) g;
+create index l1_idx on l1 using bark (k);
+select level >= 2 as tall from bark_metap('l1_idx');
+ tall 
+------
+ t
+(1 row)
+
+-- The rows a predicate returns through the index (index and bitmap scans
+-- off, then on) and through a sequential scan must be the same.
+create function l1_check(pred text) returns table(idx bigint, seq bigint, same bool)
+language plpgsql as $$
+declare a text; b text;
+begin
+  perform set_config('enable_seqscan', 'off', true);
+  perform set_config('enable_bitmapscan', 'off', true);
+  execute format('select count(*) || '':'' || coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1 where %s', pred) into a;
+  perform set_config('enable_seqscan', 'on', true);
+  perform set_config('enable_indexscan', 'off', true);
+  execute format('select count(*) || '':'' || coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1 where %s', pred) into b;
+  perform set_config('enable_indexscan', 'on', true);
+  idx := split_part(a, ':', 1)::bigint; seq := split_part(b, ':', 1)::bigint; same := a = b;
+  return next;
+end $$;
+-- Warm the table: a descent through the root records the level-1 pages its
+-- level-2 page names.  A full ordered scan descends once; point lookups
+-- across the key range record the rest.
+set enable_seqscan = off; set enable_bitmapscan = off;
+select count(*) from generate_series(0, 300) g,
+  lateral (select k from l1 where k >= l1k(g * 97 % 8000) order by k limit 1) s;
+ count 
+-------
+   301
+(1 row)
+
+reset enable_seqscan; reset enable_bitmapscan;
+-- Now descents start below the root: one NOTICE per lookup.
+SELECT injection_points_attach('bark-l1-start', 'notice');
+ injection_points_attach 
+-------------------------
+ 
+(1 row)
+
+set enable_seqscan = off; set enable_bitmapscan = off;
+select count(*) from l1 where k = l1k(4000);
+NOTICE:  notice triggered for injection point bark-l1-start
+ count 
+-------
+     3
+(1 row)
+
+reset enable_seqscan; reset enable_bitmapscan;
+SELECT injection_points_detach('bark-l1-start');
+ injection_points_detach 
+-------------------------
+ 
+(1 row)
+
+-- Every value, its neighbours, and ranges starting and ending at each one:
+-- among them every cached low key and every run that spans a boundary.
+create table l1_keys as select g from generate_series(0, 7999) g;
+select count(*) filter (where not c.same) as mismatches, count(*) as checks
+from (select g from l1_keys where g % 5 = 0) s, l1_check(format('k = %L', l1k(g))) c;
+ mismatches | checks 
+------------+--------
+          0 |   1600
+(1 row)
+
+select count(*) filter (where not c.same) as mismatches, count(*) as checks
+from (select g from l1_keys where g % 37 = 0) s,
+     l1_check(format('k >= %L and k < %L', l1k(g), l1k(g + 5))) c;
+ mismatches | checks 
+------------+--------
+          0 |    217
+(1 row)
+
+select count(*) filter (where not c.same) as mismatches, count(*) as checks
+from (select g from l1_keys where g % 41 = 0) s,
+     l1_check(format('k > %L and k <= %L', l1k(g), l1k(g + 3))) c;
+ mismatches | checks 
+------------+--------
+          0 |    196
+(1 row)
+
+-- Between two values: no row, and the descent must not start past one.
+select count(*) filter (where not c.same) as mismatches, count(*) as checks
+from (select g from l1_keys where g % 43 = 0) s,
+     l1_check(format('k = %L', l1k(g) || 'y')) c;
+ mismatches | checks 
+------------+--------
+          0 |    187
+(1 row)
+
+-- Backward: the last rows of each range.
+select count(*) filter (where not c.same) as mismatches, count(*) as checks
+from (select g from l1_keys where g % 53 = 0) s,
+     l1_check(format('k in (select k from l1 where k <= %L order by k desc limit 4)', l1k(g))) c;
+ mismatches | checks 
+------------+--------
+          0 |    151
+(1 row)
+
+-- Splits of cached level-1 pages: insert keys between the existing ones
+-- across the whole range.  Cached slots then name pages whose high keys
+-- moved left; descents move right from them.
+insert into l1 select l1k(g / 3) || 'm', 100000 + g from generate_series(0, 23999) g;
+insert into l1 select l1k(g / 3) || 'n', 200000 + g from generate_series(0, 23999) g;
+select count(*) filter (where not c.same) as mismatches, count(*) as checks
+from (select g from l1_keys where g % 29 = 0) s,
+     l1_check(format('k = %L or k = %L or k = %L', l1k(g), l1k(g) || 'm', l1k(g) || 'n')) c;
+ mismatches | checks 
+------------+--------
+          0 |    276
+(1 row)
+
+select count(*) filter (where not c.same) as mismatches, count(*) as checks
+from (select g from l1_keys where g % 61 = 0) s,
+     l1_check(format('k >= %L and k < %L', l1k(g), l1k(g + 2))) c;
+ mismatches | checks 
+------------+--------
+          0 |    132
+(1 row)
+
+-- VACUUM deletes the emptied leaves under cached level-1 pages.
+delete from l1 where n >= 100000 or n % 2 = 0;
+vacuum l1;
+select count(*) filter (where not c.same) as mismatches, count(*) as checks
+from (select g from l1_keys where g % 11 = 0) s,
+     l1_check(format('k >= %L and k <= %L', l1k(g), l1k(g) || 'n')) c;
+ mismatches | checks 
+------------+--------
+          0 |    728
+(1 row)
+
+select bark_index_check('l1_idx', true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+-- A slot whose page fails the check under its lock (bark-l1-stale stands in
+-- for a level-1 page that is not one any more, which the invariants rule
+-- out): the table is dropped, the descent starts at the root, and the next
+-- descents refill the table and start below the root again.
+SELECT injection_points_attach('bark-l1-stale', 'notice');
+ injection_points_attach 
+-------------------------
+ 
+(1 row)
+
+set enable_seqscan = off; set enable_bitmapscan = off;
+select count(*) from l1 where k = l1k(3000);
+ count 
+-------
+     1
+(1 row)
+
+SELECT injection_points_detach('bark-l1-stale');
+ injection_points_detach 
+-------------------------
+ 
+(1 row)
+
+select count(*) from l1 where k = l1k(3000);
+ count 
+-------
+     1
+(1 row)
+
+SELECT injection_points_attach('bark-l1-start', 'notice');
+ injection_points_attach 
+-------------------------
+ 
+(1 row)
+
+select count(*) from l1 where k = l1k(3000);
+NOTICE:  notice triggered for injection point bark-l1-start
+ count 
+-------
+     1
+(1 row)
+
+SELECT injection_points_detach('bark-l1-start');
+ injection_points_detach 
+-------------------------
+ 
+(1 row)
+
+reset enable_seqscan; reset enable_bitmapscan;
+-- REINDEX gives the index a new relfilenode; the relcache rebuild drops the
+-- cache, so no descent may start at a page of the old file.
+reindex index l1_idx;
+SELECT injection_points_attach('bark-l1-start', 'notice');
+ injection_points_attach 
+-------------------------
+ 
+(1 row)
+
+set enable_seqscan = off; set enable_bitmapscan = off;
+select count(*) from l1 where k = l1k(4001);
+ count 
+-------
+     2
+(1 row)
+
+reset enable_seqscan; reset enable_bitmapscan;
+SELECT injection_points_detach('bark-l1-start');
+ injection_points_detach 
+-------------------------
+ 
+(1 row)
+
+select count(*) filter (where not c.same) as mismatches, count(*) as checks
+from (select g from l1_keys where g % 13 = 0) s, l1_check(format('k = %L', l1k(g))) c;
+ mismatches | checks 
+------------+--------
+          0 |    616
+(1 row)
+
+-- TRUNCATE likewise: the empty index has no root, then a reload refills it.
+truncate l1;
+insert into l1 select l1k(g / 3), g from generate_series(0, 23999) g;
+select count(*) filter (where not c.same) as mismatches, count(*) as checks
+from (select g from l1_keys where g % 17 = 0) s, l1_check(format('k = %L', l1k(g))) c;
+ mismatches | checks 
+------------+--------
+          0 |    471
+(1 row)
+
+-- A root split under a warm cache: a tree whose root is at level 2 grows to
+-- level 3.  The cached level-1 pages stay level-1 pages with the same low
+-- keys, so descents keep starting at them, and every lookup still matches.
+create table l1r (k text collate "C", n int) with (autovacuum_enabled = off);
+insert into l1r select l1k(g), g from generate_series(0, 2999, 2) g;
+create index l1r_idx on l1r using bark (k);
+select level as level_before from bark_metap('l1r_idx');
+ level_before 
+--------------
+            2
+(1 row)
+
+set enable_seqscan = off; set enable_bitmapscan = off;
+select count(*) from generate_series(0, 2999, 7) g,
+  lateral (select k from l1r where k >= l1k(g) order by k limit 1) s;
+ count 
+-------
+   429
+(1 row)
+
+insert into l1r select l1k(g), g from generate_series(1, 2999, 2) g;
+insert into l1r select l1k(g) || 'z', 10000 + g from generate_series(0, 2999) g;
+select level as level_after from bark_metap('l1r_idx');
+ level_after 
+-------------
+           3
+(1 row)
+
+reset enable_seqscan; reset enable_bitmapscan;
+create function l1r_same(pred text) returns bool language plpgsql as $$
+declare a text; b text;
+begin
+  perform set_config('enable_seqscan', 'off', true);
+  perform set_config('enable_bitmapscan', 'off', true);
+  execute format('select coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1r where %s', pred) into a;
+  perform set_config('enable_seqscan', 'on', true);
+  perform set_config('enable_indexscan', 'off', true);
+  execute format('select coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1r where %s', pred) into b;
+  perform set_config('enable_indexscan', 'on', true);
+  return a = b;
+end $$;
+select count(*) filter (where not l1r_same(format('k = %L or k = %L', l1k(g), l1k(g) || 'z'))) as mismatches,
+       count(*) as checks
+from generate_series(0, 2999, 3) g;
+ mismatches | checks 
+------------+--------
+          0 |   1000
+(1 row)
+
+select bark_index_check('l1r_idx', true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+drop table l1r;
+drop function l1r_same(text);
+-- A two-column index: its pivots are truncated to the first column where
+-- that separates the pages, and the cached low keys are those pivots.
+create index l1_idx2 on l1 using bark (substr(k, 1, 8), n);
+drop index l1_idx;
+create function l1_check2(pred text) returns bool language plpgsql as $$
+declare a text; b text;
+begin
+  perform set_config('enable_seqscan', 'off', true);
+  perform set_config('enable_bitmapscan', 'off', true);
+  execute format('select coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1 where %s', pred) into a;
+  perform set_config('enable_seqscan', 'on', true);
+  perform set_config('enable_indexscan', 'off', true);
+  execute format('select coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1 where %s', pred) into b;
+  perform set_config('enable_indexscan', 'on', true);
+  return a = b;
+end $$;
+select count(*) filter (where not l1_check2(format('substr(k, 1, 8) = %L', lpad(g::text, 8, '0')))) as mismatches,
+       count(*) as checks
+from (select g from l1_keys where g % 59 = 0) s;
+ mismatches | checks 
+------------+--------
+          0 |    136
+(1 row)
+
+select count(*) filter (where not l1_check2(format('substr(k, 1, 8) = %L and n > %s', lpad(g::text, 8, '0'), g * 3)))
+         as mismatches, count(*) as checks
+from (select g from l1_keys where g % 71 = 0) s;
+ mismatches | checks 
+------------+--------
+          0 |    113
+(1 row)
+
+-- DESC with NULLs: a descending index sorts its low keys the other way.
+create index l1_idx3 on l1 using bark (k desc nulls first);
+drop index l1_idx2;
+insert into l1 select null, 300000 + g from generate_series(1, 2000) g;
+select count(*) filter (where not c.same) as mismatches, count(*) as checks
+from (select g from l1_keys where g % 29 = 0) s,
+     l1_check(format('k <= %L and k > %L', l1k(g), l1k(g - 4))) c;
+ mismatches | checks 
+------------+--------
+          0 |    276
+(1 row)
+
+select * from l1_check('k is null');
+ idx  | seq  | same 
+------+------+------
+ 2000 | 2000 | t
+(1 row)
+
+drop table l1, l1_keys;
+drop function l1k(int), l1_check(text), l1_check2(text);
+-- The table's cap: wide keys and enough of them that the level-1 pages'
+-- low keys outgrow 256 kB, so the table is dropped and refilled while
+-- descents go on; every lookup must still match.
+create function l1w(int) returns text language sql immutable as
+  $$ select lpad($1::text, 8, '0') || repeat('w', 2000) $$;
+create table l1w (k text collate "C", n int) with (autovacuum_enabled = off);
+alter table l1w alter column k set storage plain;
+insert into l1w select l1w(g), g from generate_series(0, 39999) g;
+create index l1w_idx on l1w using bark (k);
+select level >= 2 as tall from bark_metap('l1w_idx');
+ tall 
+------
+ t
+(1 row)
+
+create function l1w_same(pred text) returns bool language plpgsql as $$
+declare a text; b text;
+begin
+  perform set_config('enable_seqscan', 'off', true);
+  perform set_config('enable_bitmapscan', 'off', true);
+  execute format('select coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1w where %s', pred) into a;
+  perform set_config('enable_seqscan', 'on', true);
+  perform set_config('enable_indexscan', 'off', true);
+  execute format('select coalesce(md5(string_agg(n::text, '','' order by n)), '''') from l1w where %s', pred) into b;
+  perform set_config('enable_indexscan', 'on', true);
+  return a = b;
+end $$;
+select count(*) filter (where not l1w_same(format('k = %L', l1w(g)))) as mismatches, count(*) as checks
+from generate_series(0, 39999, 131) g;
+ mismatches | checks 
+------------+--------
+          0 |    306
+(1 row)
+
+drop table l1w;
+drop function l1w(int), l1w_same(text);

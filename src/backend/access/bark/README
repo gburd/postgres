@@ -80,7 +80,8 @@ The main data structures, all in bark.h unless noted:
                        options, built by bark_build_keyinfo
   BarkStackData        a descent's path, for inserting downlinks
   BarkAmCache          rd_amcache: the root block and level, the extracted
-                       column, the multikey flag and the markers seen
+                       column, the multikey flag, the markers seen and the
+                       level-1 entry table (BarkL1Slot)
   BarkInsertState      (barkinsert.c) ii_AmCache: what every insert of a
                        statement reuses (see "Inserts")
   BarkScanBound        a scan's bound on the leading columns, which the
@@ -473,6 +474,71 @@ cached page is used only if, under its lock, it is still a root (BARK_ROOT
 set, not deleted or half-dead) at the cached level (bark_get_root_buffer).
 A root split clears BARK_ROOT on the old root, so a stale cache entry fails
 that check and the meta page is read instead.
+
+Level-1 entry cache
+-------------------
+
+Every descent starting at the root writes the root's buffer header: its pin
+count and its content lock's share count live in one state word.  On a
+machine with more than one socket that word's cache line moves between
+sockets on every lookup, and measured throughput falls past one socket's
+worth of clients.  Re-pinning the root through ReadRecentBuffer made it
+worse (its tag reads share the line); only not touching the root helps.
+
+So the root cache also keeps a table of level-1 pages and their low keys
+(BarkAmCache's level-1 slots), and a read descent that needs no parent path
+(!forwrite and no stack: scans, lookups, KNN, marker lookups) starts at
+the slot with the greatest low key it may start at (bark_l1_start), by the
+rule bark_binsrch uses to pick a downlink: low key <= key for nextkey,
+< key otherwise.  It locks that page, checks it is still a live level-1
+internal page and that the key is within it (not past its high key, by
+bark_moveright's rule), and goes on as if it had reached it through a
+downlink: bark_moveright first, then down to the leaf.  It never reads the
+root or the levels between.  When no slot qualifies, the page check fails,
+or the key is past the page, the descent starts at the root as before, and
+records the key's own page on the way.  The second check matters: the
+table holds only pages descents have passed, so the nearest cached page
+can be far left of the key's, and moving right across the pages between
+would lock and pin each one, which costs more than the root (measured: 30
+to 78 buffer hits a lookup, against 4).
+
+Correctness rests on two facts.  BARK never deletes or merges an internal
+page (VACUUM removes only empty interior leaves, see "Page deletion and
+recycling"), so a level-1 page stays a level-1 page for the life of the
+relfilenode.  And an internal page's low key never changes: a split keeps a
+page's left part, so it moves only the high key left.  Every key the root
+would route to a page P at or right of the slot's page S is >= S's low key,
+every page between S and P has a high key <= that key, and so moving right
+from S reaches P, as moving right does after a concurrent split.  A slot
+may name a page that has split since; that costs move-rights, not a wrong
+answer.
+
+The table is filled as a side effect of ordinary descents: a level-2 page's
+downlink is its child's low key, so each time a descent follows one (other
+than the page's first, whose minus-infinity key is local to the page) it
+records the pair (bark_l1_remember).  Slots are kept sorted; the table
+lives in the same rd_amcache chunk as the markers, after them, so a
+relcache rebuild (REINDEX, TRUNCATE, an invalidation) drops it with the
+rest, and a new relfilenode starts empty.  It is capped at 2048 slots and
+256 kB of keys per index, then dropped and refilled.  A new marker drops it
+too, rather than move it.  Write descents still start at the root: an
+insert needs the parent path to finish a split.
+
+Tests: bark_l1_cache (every value, ranges across cached boundaries, missing
+keys, backward scans, inserts that split cached pages, VACUUM page deletion,
+a root split from level 2 to 3, REINDEX, TRUNCATE, a two-column index with
+truncated pivots, DESC NULLS FIRST, and 2 kB keys that overflow the table's
+256 kB cap), each compared with a sequential scan;
+the bark_l1_concurrent isolation spec (another backend splitting cached
+pages and the root, and a split while a descent from a cached page is
+stopped before its leaf); the bark-l1-start injection point shows which
+descents start below the root, and bark-l1-stale makes the page check fail
+so that the fallback (drop the table, start at the root) is tested.
+
+Measured on m7i.metal-48xl (2 sockets, 192 vCPU), prepared point lookups
+on a 10M-row unique index whose root is at level 2: 0.99x at 1 client,
+1.08x at 16-48, 1.42-1.58x at 96-768; the root's buffer header leaves the
+top of perf c2c's table and remote HITMs fall a third.
 
 A meta page written before bark_flags and bark_nkeys existed ends, by its
 pd_lower, at bark_allequalimage, and PageInit zeroed the rest, so it reads 0
