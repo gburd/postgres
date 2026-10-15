@@ -486,8 +486,7 @@ worth of clients.  Re-pinning the root through ReadRecentBuffer made it
 worse (its tag reads share the line); only not touching the root helps.
 
 So the root cache also keeps a table of level-1 pages and their low keys
-(BarkAmCache's level-1 slots), and a read descent that needs no parent path
-(!forwrite and no stack: scans, lookups, KNN, marker lookups) starts at
+(BarkAmCache's level-1 slots), and every descent, read or write, starts at
 the slot with the greatest low key it may start at (bark_l1_start), by the
 rule bark_binsrch uses to pick a downlink: low key <= key for nextkey,
 < key otherwise.  It locks that page, checks it is still a live level-1
@@ -525,6 +524,25 @@ slot is forgotten (bark_l1_thin), so the table keeps covering the whole key
 range at half the density, and the descents that miss refill it.  A new
 marker, which goes before the table in the chunk, moves the table up past it
 rather than dropping it.
+
+A write descent that starts at a cached level-1 page records a path that
+begins there: the page's frame has no parent though the page is not the
+root, and says so (BarkStackData.bark_cached).  Most inserts never need
+more.  A leaf split puts its downlink into the level-1 page through that
+frame as usual.  When the level-1 page splits too, and must put a downlink
+into its parent, bark_stack_resolve_parent first finds the path above it
+by a share-locked descent from the root with the page's high key, stopping
+above its level (bark_find_upper_path), as page deletion finds a leaf's
+parent.  It runs with the level-1 page and its child exclusive-locked, and
+locks only pages above them, top down and one at a time, as any descent
+from the root does, so it cannot deadlock with them; bark_getstackbuf then
+moves right from the frame it gives if that page split since.  The cost is
+one descent from the root per split that reaches past level 1, not one per
+insert.  Finishing an incomplete split of the level-1 page (bark_moveright
+before the page has a frame, or bark_getstackbuf) passes no path above it,
+and takes bark_insert_parent's no-stack branch, which finds the parent from
+the leftmost page of the level above; such splits are rare (an error or a
+crash left them).
 
 Tests: bark_l1_cache (every value, ranges across cached boundaries, missing
 keys, backward scans, inserts that split cached pages, VACUUM page deletion,
