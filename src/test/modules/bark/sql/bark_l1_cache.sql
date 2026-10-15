@@ -196,8 +196,8 @@ drop table l1, l1_keys;
 drop function l1k(int), l1_check(text), l1_check2(text);
 
 -- The table's cap: wide keys and enough of them that the level-1 pages'
--- low keys outgrow 256 kB, so the table is dropped and refilled while
--- descents go on; every lookup must still match.
+-- low keys outgrow 256 kB, so the table is thinned to half and refilled
+-- while descents go on; every lookup must still match.
 create function l1w(int) returns text language sql immutable as
   $$ select lpad($1::text, 8, '0') || repeat('w', 2000) $$;
 create table l1w (k text collate "C", n int) with (autovacuum_enabled = off);
