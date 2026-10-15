@@ -302,8 +302,11 @@ static bool doPageWrites;
  * In addition to the shared variable, each backend has a private copy of
  * both in LogwrtResult, which is updated when convenient.
  *
- * The request bookkeeping is simpler: there is a shared XLogCtl->LogwrtRqst
- * (protected by info_lck), but we don't need to cache any copies of it.
+ * The request bookkeeping is simpler: the shared request positions are
+ * maintained in logWriteRqst and logFlushRqst using atomic access (each is a
+ * monotonically increasing "last byte + 1" position, advanced with a
+ * compare-and-max), so no lock is needed to read or advance them, and we don't
+ * need to cache any copies.
  *
  * info_lck is only held long enough to read/update the protected variables,
  * so it's a plain spinlock.  The other locks are held longer (potentially
@@ -457,8 +460,15 @@ typedef struct XLogCtlData
 {
 	XLogCtlInsert Insert;
 
+	/*
+	 * Shared write/flush request positions.  Each is a monotonically
+	 * increasing "last byte + 1" position, read and advanced lock-free with
+	 * atomics (compare-and-max), so info_lck is not needed for them.
+	 */
+	pg_atomic_uint64 logWriteRqst; /* last byte + 1 requested to write out */
+	pg_atomic_uint64 logFlushRqst; /* last byte + 1 requested to flush */
+
 	/* Protected by info_lck: */
-	XLogwrtRqst LogwrtRqst;
 	XLogRecPtr	RedoRecPtr;		/* a recent copy of Insert->RedoRecPtr */
 	/*
 	 * LSN of newest async commit/abort.  Updated lock-free with a monotonic
@@ -1097,11 +1107,8 @@ XLogInsertRecord(XLogRecData *rdata,
 	 */
 	if (StartPos / XLOG_BLCKSZ != EndPos / XLOG_BLCKSZ)
 	{
-		SpinLockAcquire(&XLogCtl->info_lck);
 		/* advance global request to include new block(s) */
-		if (XLogCtl->LogwrtRqst.Write < EndPos)
-			XLogCtl->LogwrtRqst.Write = EndPos;
-		SpinLockRelease(&XLogCtl->info_lck);
+		pg_atomic_monotonic_advance_u64(&XLogCtl->logWriteRqst, EndPos);
 		RefreshXLogWriteResult(LogwrtResult);
 	}
 
@@ -2228,10 +2235,8 @@ AdvanceXLInsertBuffer(XLogRecPtr upto, TimeLineID tli, bool opportunistic)
 				break;
 
 			/* Advance shared memory write request position */
-			SpinLockAcquire(&XLogCtl->info_lck);
-			if (XLogCtl->LogwrtRqst.Write < OldPageRqstPtr)
-				XLogCtl->LogwrtRqst.Write = OldPageRqstPtr;
-			SpinLockRelease(&XLogCtl->info_lck);
+			pg_atomic_monotonic_advance_u64(&XLogCtl->logWriteRqst,
+											OldPageRqstPtr);
 
 			/*
 			 * Acquire an up-to-date LogwrtResult value and see if we still
@@ -2755,12 +2760,8 @@ XLogWrite(XLogwrtRqst WriteRqst, TimeLineID tli, bool flexible)
 	 * 'result' values.  This is not absolutely essential, but it saves some
 	 * code in a couple of places.
 	 */
-	SpinLockAcquire(&XLogCtl->info_lck);
-	if (XLogCtl->LogwrtRqst.Write < LogwrtResult.Write)
-		XLogCtl->LogwrtRqst.Write = LogwrtResult.Write;
-	if (XLogCtl->LogwrtRqst.Flush < LogwrtResult.Flush)
-		XLogCtl->LogwrtRqst.Flush = LogwrtResult.Flush;
-	SpinLockRelease(&XLogCtl->info_lck);
+	pg_atomic_monotonic_advance_u64(&XLogCtl->logWriteRqst, LogwrtResult.Write);
+	pg_atomic_monotonic_advance_u64(&XLogCtl->logFlushRqst, LogwrtResult.Flush);
 
 	/*
 	 * We write Write first, bar, then Flush.  When reading, the opposite must
@@ -3032,10 +3033,12 @@ XLogFlush(XLogRecPtr record)
 		 * Before actually performing the write, wait for all in-flight
 		 * insertions to the pages we're about to write to finish.
 		 */
-		SpinLockAcquire(&XLogCtl->info_lck);
-		if (WriteRqstPtr < XLogCtl->LogwrtRqst.Write)
-			WriteRqstPtr = XLogCtl->LogwrtRqst.Write;
-		SpinLockRelease(&XLogCtl->info_lck);
+		{
+			XLogRecPtr	rqstWrite = pg_atomic_read_u64(&XLogCtl->logWriteRqst);
+
+			if (WriteRqstPtr < rqstWrite)
+				WriteRqstPtr = rqstWrite;
+		}
 		insertpos = WaitXLogInsertionsToFinish(WriteRqstPtr);
 
 		/*
@@ -3194,10 +3197,9 @@ XLogBackgroundFlush(void)
 	 */
 	insertTLI = XLogCtl->InsertTimeLineID;
 
-	/* read updated LogwrtRqst */
-	SpinLockAcquire(&XLogCtl->info_lck);
-	WriteRqst = XLogCtl->LogwrtRqst;
-	SpinLockRelease(&XLogCtl->info_lck);
+	/* read updated LogwrtRqst (lock-free; only .Write is used below) */
+	WriteRqst.Write = pg_atomic_read_u64(&XLogCtl->logWriteRqst);
+	WriteRqst.Flush = pg_atomic_read_u64(&XLogCtl->logFlushRqst);
 
 	/* back off to last completed page boundary */
 	WriteRqst.Write -= WriteRqst.Write % XLOG_BLCKSZ;
@@ -5753,6 +5755,8 @@ XLOGShmemInit(void *arg)
 	pg_atomic_init_u64(&XLogCtl->logInsertResult, InvalidXLogRecPtr);
 	pg_atomic_init_u64(&XLogCtl->logWriteResult, InvalidXLogRecPtr);
 	pg_atomic_init_u64(&XLogCtl->logFlushResult, InvalidXLogRecPtr);
+	pg_atomic_init_u64(&XLogCtl->logWriteRqst, InvalidXLogRecPtr);
+	pg_atomic_init_u64(&XLogCtl->logFlushRqst, InvalidXLogRecPtr);
 	pg_atomic_init_u64(&XLogCtl->unloggedLSN, InvalidXLogRecPtr);
 	pg_atomic_init_u64(&XLogCtl->lastChecksumChangeRecPtr, InvalidXLogRecPtr);
 }
@@ -6887,8 +6891,8 @@ StartupXLOG(void)
 	pg_atomic_write_u64(&XLogCtl->logInsertResult, EndOfLog);
 	pg_atomic_write_u64(&XLogCtl->logWriteResult, EndOfLog);
 	pg_atomic_write_u64(&XLogCtl->logFlushResult, EndOfLog);
-	XLogCtl->LogwrtRqst.Write = EndOfLog;
-	XLogCtl->LogwrtRqst.Flush = EndOfLog;
+	pg_atomic_write_u64(&XLogCtl->logWriteRqst, EndOfLog);
+	pg_atomic_write_u64(&XLogCtl->logFlushRqst, EndOfLog);
 
 	/*
 	 * Preallocate additional log files, if wanted.
@@ -7391,9 +7395,7 @@ GetInsertRecPtr(void)
 {
 	XLogRecPtr	recptr;
 
-	SpinLockAcquire(&XLogCtl->info_lck);
-	recptr = XLogCtl->LogwrtRqst.Write;
-	SpinLockRelease(&XLogCtl->info_lck);
+	recptr = pg_atomic_read_u64(&XLogCtl->logWriteRqst);
 
 	return recptr;
 }
