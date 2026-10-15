@@ -55,19 +55,19 @@ require_same_rows(pg_prop_tc *tc, pg_prop_conn *conn,
 	char	   *r1,
 			   *r2;
 
-	r1 = pg_prop_sql_rows(conn, lhs, &f1, &e1);
+	r1 = pg_prop_sql_rowhash(conn, lhs, &f1, &e1);
 	if (f1)
 		pg_prop_fail(tc, "lhs query failed: %s\n  SQL: %s",
 					 e1 ? e1 : "(unknown)", lhs);
-	r2 = pg_prop_sql_rows(conn, rhs, &f2, &e2);
+	r2 = pg_prop_sql_rowhash(conn, rhs, &f2, &e2);
 	if (f2)
 		pg_prop_fail(tc, "rhs query failed: %s\n  SQL: %s",
 					 e2 ? e2 : "(unknown)", rhs);
 
 	if (strcmp(r1, r2) != 0)
 		pg_prop_fail(tc,
-					 "multi-table mismatch:\n  lhs: %s\n  rhs: %s\n"
-					 "  lhs rows:\n%s\n  rhs rows:\n%s",
+					 "multi-table digest mismatch:\n  lhs: %s\n  rhs: %s\n"
+					 "  lhs md5: %s\n  rhs md5: %s",
 					 lhs, rhs, r1, r2);
 	pg_free(r1);
 	pg_free(r2);
