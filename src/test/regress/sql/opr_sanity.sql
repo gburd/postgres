@@ -1187,11 +1187,16 @@ FROM pg_opclass AS c1
 WHERE c1.opcmethod = 0 OR c1.opcnamespace = 0 OR c1.opcfamily = 0
     OR c1.opcintype = 0;
 
--- opcmethod must match owning opfamily's opfmethod
+-- opcmethod must match owning opfamily's opfmethod, except that an operator
+-- class may live in a btree operator family even when its own access method
+-- is a different, btree-compatible one (the ambtreeopfamilies capability): such
+-- an AM reuses btree's operator families rather than registering redundant
+-- ones of its own.
 
 SELECT c1.oid, f1.oid
 FROM pg_opclass AS c1, pg_opfamily AS f1
-WHERE c1.opcfamily = f1.oid AND c1.opcmethod != f1.opfmethod;
+WHERE c1.opcfamily = f1.oid AND c1.opcmethod != f1.opfmethod
+  AND f1.opfmethod != (SELECT oid FROM pg_am WHERE amname = 'btree');
 
 -- There should not be multiple entries in pg_opclass with opcdefault true
 -- and the same opcmethod/opcintype combination.
@@ -1252,9 +1257,16 @@ WHERE NOT ((a1.amoppurpose = 's' AND a1.amopsortfamily = 0) OR
 
 -- amopmethod must match owning opfamily's opfmethod
 
+-- amopmethod must match owning opfamily's opfmethod, except that a
+-- btree-compatible access method may add its own ORDER BY (KNN) operators to
+-- a btree operator family it shares (the ambtreeopfamilies capability): such
+-- amop rows name the compatible AM but live in btree's family, mirroring the
+-- opcmethod/opfmethod exemption above.
+
 SELECT a1.oid, f1.oid
 FROM pg_amop AS a1, pg_opfamily AS f1
-WHERE a1.amopfamily = f1.oid AND a1.amopmethod != f1.opfmethod;
+WHERE a1.amopfamily = f1.oid AND a1.amopmethod != f1.opfmethod
+  AND f1.opfmethod != (SELECT oid FROM pg_am WHERE amname = 'btree');
 
 -- Make a list of all the distinct operator names being used in particular
 -- strategy slots.  This is a bit hokey, since the list might need to change
