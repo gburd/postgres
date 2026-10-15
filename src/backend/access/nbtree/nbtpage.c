@@ -26,16 +26,20 @@
 #include "access/nbtxlog.h"
 #include "access/tableam.h"
 #include "access/transam.h"
+#include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
+#include "catalog/catalog.h"
 #include "common/int.h"
 #include "miscadmin.h"
 #include "storage/indexfsm.h"
 #include "storage/predicate.h"
 #include "storage/procarray.h"
 #include "utils/injection_point.h"
+#include "utils/inval.h"
 #include "utils/memdebug.h"
 #include "utils/memutils.h"
+#include "utils/resowner.h"
 #include "utils/snapmgr.h"
 
 static BTMetaPageData *_bt_getmeta(Relation rel, Buffer metabuf);
@@ -315,6 +319,250 @@ _bt_set_cleanup_info(Relation rel, BlockNumber num_delpages)
 }
 
 /*
+ * Per-backend cache of base pins on btree root pages.
+ *
+ * _bt_getroot() pins the root page of an index on each index scan.  Some
+ * workloads probe the same index many times in one transaction.  The most
+ * important example is the inner side of a nested-loop join.  Each first pin
+ * and each last unpin is an atomic read-modify-write on the "state" word of
+ * the buffer.  All backends use the same root buffer.  Thus that cache line
+ * moves between CPUs and limits scaling.
+ *
+ * To prevent this, the first root lookup for an index in a transaction pins
+ * the root one more time.  We call this extra pin the base pin.  It belongs to
+ * TopTransactionResourceOwner, and we keep it until the end of the
+ * transaction.  While we hold it, this backend has a private refcount entry
+ * for the buffer.  Thus each later pin in the transaction uses only local
+ * state.  ReadRecentBuffer() pins the buffer with no buffer mapping lock and
+ * no buffer header spinlock.  PinBuffer() does not write to shared state.  The
+ * shared cache line changes one time for each transaction, not for each scan.
+ *
+ * The cache is only a hint.  ReadRecentBuffer() makes sure that the buffer
+ * still holds the expected page.  _bt_getroot() also does its usual root
+ * checks.  Thus a stale entry cannot give an incorrect result.  In the worst
+ * case, we use the usual metapage path.
+ *
+ * An xact callback releases all base pins at the end of the transaction.  A
+ * relcache callback releases the pin of an index that is dropped or rebuilt.
+ */
+#define BTREE_ROOT_PIN_CACHE_SIZE	64
+
+typedef struct BTRootPinEntry
+{
+	Oid			relid;			/* OID of the index, for invalidation */
+	RelFileLocator rlocator;	/* physical identity of the index */
+	BlockNumber rootblkno;		/* block of the base-pinned (fast) root */
+	Buffer		rootbuf;		/* buffer with the base pin, or InvalidBuffer
+								 * if the slot is not used */
+} BTRootPinEntry;
+
+static BTRootPinEntry BTRootPinCache[BTREE_ROOT_PIN_CACHE_SIZE];
+static int	BTRootPinCacheClock = 0;
+static bool BTRootPinCacheCallbacksSet = false;
+
+/*
+ * Release the base pin of a cache slot, and mark the slot as not used.
+ *
+ * Call this only inside the transaction that took the base pin.  The pin
+ * belongs to TopTransactionResourceOwner, and this function releases it
+ * against that owner.  The callers are eviction, stale-root detection,
+ * relcache invalidation, and the end-of-transaction callback.
+ */
+static void
+_bt_root_pin_forget(BTRootPinEntry *entry)
+{
+	if (BufferIsValid(entry->rootbuf))
+	{
+		if (TopTransactionResourceOwner != NULL)
+		{
+			ResourceOwner save = CurrentResourceOwner;
+
+			CurrentResourceOwner = TopTransactionResourceOwner;
+			ReleaseBuffer(entry->rootbuf);
+			CurrentResourceOwner = save;
+		}
+		entry->rootbuf = InvalidBuffer;
+		entry->relid = InvalidOid;
+	}
+}
+
+/*
+ * End-of-transaction callback.  Release all base pins and clear the cache.
+ *
+ * We must release the pins here.  ResourceOwnerRelease() gives a warning for
+ * each buffer that is still pinned at commit.  This callback runs before that
+ * release.  For example, XACT_EVENT_COMMIT comes before
+ * RESOURCE_RELEASE_BEFORE_LOCKS.  ReleaseBuffer() also removes the pin from
+ * the resource owner, so the owner has no pin to warn about.
+ *
+ * The callback runs for each end-of-transaction event.  A second release does
+ * nothing, because the release skips a slot that is already clear.
+ */
+static void
+_bt_root_pin_reset(XactEvent event, void *arg)
+{
+	int			i;
+
+	for (i = 0; i < BTREE_ROOT_PIN_CACHE_SIZE; i++)
+		_bt_root_pin_forget(&BTRootPinCache[i]);
+}
+
+/*
+ * Relcache callback.  Release the base pin of the affected index.  Thus a
+ * dropped or rebuilt index cannot keep a pin on an old buffer.  If relid is
+ * InvalidOid, release all pins.
+ */
+static void
+_bt_root_pin_invalidate(Datum arg, Oid relid)
+{
+	int			i;
+
+	for (i = 0; i < BTREE_ROOT_PIN_CACHE_SIZE; i++)
+	{
+		BTRootPinEntry *entry = &BTRootPinCache[i];
+
+		if (BufferIsValid(entry->rootbuf) &&
+			(relid == InvalidOid || relid == entry->relid))
+			_bt_root_pin_forget(entry);
+	}
+}
+
+/*
+ * Find the cache slot with a base pin for the index.  Return NULL if there is
+ * no slot.
+ */
+/*
+ * Buffer drop callback.  Release each base pin on a buffer that this backend
+ * is about to drop: a pin on the index rlocator, or, if rlocator is NULL, a
+ * pin on any index of database dbOid.
+ *
+ * The buffer manager cannot drop a buffer that this backend has pinned.  A
+ * relcache invalidation does not always come first.  For example, TRUNCATE
+ * of a table created in the same transaction truncates the index files in
+ * place, and rolling back a savepoint deletes the files of an index created
+ * after it.  Without this callback, the base pin would make those operations
+ * fail with "buffer is pinned in InvalidateBuffer" inside a critical section,
+ * which is a PANIC.
+ */
+static void
+_bt_root_pin_drop(Oid dbOid, const RelFileLocator *rlocator)
+{
+	int			i;
+
+	for (i = 0; i < BTREE_ROOT_PIN_CACHE_SIZE; i++)
+	{
+		BTRootPinEntry *entry = &BTRootPinCache[i];
+
+		if (!BufferIsValid(entry->rootbuf))
+			continue;
+
+		if (rlocator != NULL ?
+			RelFileLocatorEquals(entry->rlocator, *rlocator) :
+			entry->rlocator.dbOid == dbOid)
+			_bt_root_pin_forget(entry);
+	}
+}
+
+static BTRootPinEntry *
+_bt_root_pin_lookup(Relation rel)
+{
+	int			i;
+
+	for (i = 0; i < BTREE_ROOT_PIN_CACHE_SIZE; i++)
+	{
+		BTRootPinEntry *entry = &BTRootPinCache[i];
+
+		if (BufferIsValid(entry->rootbuf) &&
+			RelFileLocatorEquals(entry->rlocator, rel->rd_locator))
+			return entry;
+	}
+	return NULL;
+}
+
+/*
+ * Take a base pin on the root buffer of an index, and record it in the cache.
+ * Then later root lookups in this transaction do not write to shared buffer
+ * state.  Do nothing if we are outside a transaction.  Also do nothing if a
+ * base pin for this index already covers this root block.
+ */
+static void
+_bt_root_pin_remember(Relation rel, Buffer rootbuf, BlockNumber rootblkno)
+{
+	BTRootPinEntry *entry;
+	ResourceOwner save;
+	int			slot;
+
+	/*
+	 * A base pin must belong to the top-level transaction resource owner.  If
+	 * there is no such owner, we cannot keep the pin.
+	 */
+	if (TopTransactionResourceOwner == NULL)
+		return;
+
+	/*
+	 * Do not keep a base pin on the index of a system catalog.  VACUUM FULL,
+	 * CLUSTER, and REINDEX on a catalog can reclaim its buffers, also in this
+	 * backend.  Catalog locks are not held until the end of the transaction.
+	 * Thus a long-lived pin can block buffer reclamation and cause a
+	 * buffer-pin deadlock that is not detected.  Also, catalog root
+	 * contention is not the workload that this change is for.
+	 */
+	if (IsCatalogRelation(rel))
+		return;
+
+	/* Register the callbacks one time for each backend. */
+	if (!BTRootPinCacheCallbacksSet)
+	{
+		RegisterXactCallback(_bt_root_pin_reset, NULL);
+		CacheRegisterRelcacheCallback(_bt_root_pin_invalidate, (Datum) 0);
+		RegisterBufferDropCallback(_bt_root_pin_drop);
+		BTRootPinCacheCallbacksSet = true;
+	}
+
+	entry = _bt_root_pin_lookup(rel);
+	if (entry != NULL)
+	{
+		if (entry->rootblkno == rootblkno)
+			return;				/* the correct block has the pin */
+		_bt_root_pin_forget(entry); /* the root moved, so release the pin */
+	}
+
+	/* Find a free slot.  If there is none, evict one in round-robin order. */
+	slot = -1;
+	for (int i = 0; i < BTREE_ROOT_PIN_CACHE_SIZE; i++)
+	{
+		if (!BufferIsValid(BTRootPinCache[i].rootbuf))
+		{
+			slot = i;
+			break;
+		}
+	}
+	if (slot < 0)
+	{
+		slot = BTRootPinCacheClock;
+		BTRootPinCacheClock = (BTRootPinCacheClock + 1) % BTREE_ROOT_PIN_CACHE_SIZE;
+		_bt_root_pin_forget(&BTRootPinCache[slot]);
+	}
+	entry = &BTRootPinCache[slot];
+
+	/*
+	 * Take the extra pin for the top-level transaction resource owner.  The
+	 * caller already pinned the buffer.  Thus IncrBufferRefCount() changes
+	 * only the local refcount of this backend.  It does not write to shared
+	 * buffer state.
+	 */
+	save = CurrentResourceOwner;
+	CurrentResourceOwner = TopTransactionResourceOwner;
+	IncrBufferRefCount(rootbuf);
+	CurrentResourceOwner = save;
+
+	entry->relid = RelationGetRelid(rel);
+	entry->rlocator = rel->rd_locator;
+	entry->rootblkno = rootblkno;
+	entry->rootbuf = rootbuf;
+}
+
+/*
  *	_bt_getroot() -- Get the root page of the btree.
  *
  *		Since the root page can move around the btree file, we have to read
@@ -364,6 +612,8 @@ _bt_getroot(Relation rel, Relation heaprel, int access)
 	 */
 	if (rel->rd_amcache != NULL)
 	{
+		BTRootPinEntry *pinentry;
+
 		metad = (BTMetaPageData *) rel->rd_amcache;
 		/* We shouldn't have cached it if any of these fail */
 		Assert(metad->btm_magic == BTREE_MAGIC);
@@ -377,7 +627,30 @@ _bt_getroot(Relation rel, Relation heaprel, int access)
 		Assert(rootblkno != P_NONE);
 		rootlevel = metad->btm_fastlevel;
 
-		rootbuf = _bt_getbuf(rel, rootblkno, BT_READ);
+		/*
+		 * If we hold a base pin on the root of this index, pin the root again
+		 * from local state.  ReadRecentBuffer() pins the known buffer with no
+		 * buffer mapping lock.  It also makes sure that the tag is correct.
+		 * If the hint is stale, we use the usual path below.
+		 *
+		 * This path still pins the root.  But the base pin gives this backend
+		 * a private refcount entry for the buffer.  Thus PinBuffer()
+		 * increments only the local refcount, and does an atomic read of the
+		 * buffer state.  It does no read-modify-write.  The 0 to 1 pin
+		 * transition is the atomic read-modify-write that moves the cache
+		 * line between CPUs.  The 1 to 2 local increment does not move it.
+		 */
+		pinentry = _bt_root_pin_lookup(rel);
+		if (pinentry != NULL && pinentry->rootblkno == rootblkno &&
+			ReadRecentBuffer(rel->rd_locator, MAIN_FORKNUM, rootblkno,
+							 pinentry->rootbuf))
+		{
+			rootbuf = pinentry->rootbuf;
+			_bt_lockbuf(rel, rootbuf, BT_READ);
+		}
+		else
+			rootbuf = _bt_getbuf(rel, rootblkno, BT_READ);
+
 		rootpage = BufferGetPage(rootbuf);
 		rootopaque = BTPageGetOpaque(rootpage);
 
@@ -393,11 +666,25 @@ _bt_getroot(Relation rel, Relation heaprel, int access)
 			P_LEFTMOST(rootopaque) &&
 			P_RIGHTMOST(rootopaque))
 		{
-			/* OK, accept cached page as the root */
+			/*
+			 * Accept the cached page as the root.  Take a base pin, or
+			 * refresh it.  Then later lookups in this transaction do not write
+			 * to shared buffer state.
+			 *
+			 * Do this only when the root is an internal page.  btree VACUUM
+			 * takes a cleanup lock on each leaf page.  A cleanup lock needs
+			 * the only pin on the page.  Thus a long-lived pin on a leaf page
+			 * would block vacuum.  A single-page index has no root contention
+			 * to solve, because its root is also its only leaf.
+			 */
+			if (!P_ISLEAF(rootopaque))
+				_bt_root_pin_remember(rel, rootbuf, rootblkno);
 			return rootbuf;
 		}
 		_bt_relbuf(rel, rootbuf);
-		/* Cache is stale, throw it away */
+		/* Cache is stale.  Throw it away, and release any old base pin. */
+		if (pinentry != NULL)
+			_bt_root_pin_forget(pinentry);
 		if (rel->rd_amcache)
 			pfree(rel->rd_amcache);
 		rel->rd_amcache = NULL;
