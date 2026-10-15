@@ -59,7 +59,8 @@
  * while VACUUM is scanning the index stamps both halves with that VACUUM's
  * cycle ID (zero when no VACUUM is running), so VACUUM can tell that entries
  * moved to a right sibling it may already have passed, and go back for them.
- * The values come from nbtree's cycle-ID registry (a BTCycleId).  nbtree keeps
+ * The values come from BARK's own cycle-ID registry (barkvacuum.c, a
+ * BarkCycleId, as nbtree's btvacinfo hands out BTCycleIds).  nbtree keeps
  * its cycle ID in the last two bytes of the special space; BARK keeps
  * BARK_PAGE_ID there, so the cycle ID takes half of the old 32-bit level
  * field instead.  A 16-bit level is ample (a tree of 65536 levels cannot be
@@ -67,6 +68,17 @@
  * BarkMaxItemSize do not change.
  * ----------------------------------------------------------------------------
  */
+/*
+ * A vacuum cycle ID (barkvacuum.c).  Zero means no VACUUM; IDs run from 1 to
+ * BARK_MAX_CYCLE_ID and wrap.  The bound is nbtree's MAX_BT_CYCLE_ID only
+ * because BARK_PAGE_ID's comment below relies on BARK pages never carrying
+ * a value above it in that field either; BARK keeps its ID elsewhere, so any
+ * 16-bit bound would do.
+ */
+typedef uint16 BarkCycleId;
+
+#define BARK_MAX_CYCLE_ID	0xFF7F
+
 typedef struct BarkPageOpaqueData
 {
 	BlockNumber bark_prev;		/* left sibling, or BARK_P_NONE if leftmost */
@@ -1595,6 +1607,12 @@ typedef struct BarkAmCache
 	Size		maxl1keylen;	/* bytes of level-1 low keys allocated */
 	char		markerdata[FLEXIBLE_ARRAY_MEMBER];
 } BarkAmCache;
+
+/* barkvacuum.c (BarkShmemCallbacks is declared in storage/subsystems.h) */
+extern BarkCycleId bark_vacuum_cycleid(Relation rel);
+extern BarkCycleId bark_start_vacuum(Relation rel);
+extern void bark_end_vacuum(void);
+extern void bark_end_vacuum_callback(int code, Datum arg);
 
 extern BarkAmCache *bark_get_amcache(Relation index);
 extern void bark_l1_reset(BarkAmCache *cache);

@@ -22,6 +22,7 @@ OBJS = \
 	barksort.o \
 	barksplitloc.o \
 	barkutils.o \
+	barkvacuum.o \
 	barkvalidate.o \
 	barkxlog.o
 
