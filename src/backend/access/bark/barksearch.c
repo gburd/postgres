@@ -378,6 +378,54 @@ bark_l1_reset(BarkAmCache *cache)
 }
 
 /*
+ * The bytes the level-1 table takes after the markers (its slots and keys,
+ * as allocated), for bark_cache_marker, which moves the table when a marker
+ * is added before it.
+ */
+Size
+bark_l1_region_size(BarkAmCache *cache)
+{
+	if (cache->maxl1 == 0)
+		return 0;
+	return MAXALIGN(sizeof(BarkL1Slot) * cache->maxl1) + cache->maxl1keylen;
+}
+
+/*
+ * Make room in a full level-1 table by forgetting half its slots: every
+ * other one, so the table still covers the whole key range at half the
+ * density, and the descents that miss refill the gaps.  The surviving
+ * keys are packed down to the start of the key space.
+ */
+static void
+bark_l1_thin(BarkAmCache *cache)
+{
+	BarkL1Slot *slots = bark_l1_slots(cache);
+	char	   *keys = bark_l1_keys(cache);
+	char	   *packed = palloc(cache->l1keylen);
+	int			n = 0;
+	Size		keylen = 0;
+
+	/*
+	 * Slots are in key order but keys sit in the order they were added, so
+	 * copy the survivors out and back rather than pack them in place.
+	 */
+	for (int i = 0; i < cache->nl1; i += 2)
+	{
+		IndexTuple	key = (IndexTuple) (keys + slots[i].keyoff);
+
+		memcpy(packed + keylen, key, IndexTupleSize(key));
+		slots[n].blkno = slots[i].blkno;
+		slots[n].keyoff = keylen;
+		keylen += MAXALIGN(IndexTupleSize(key));
+		n++;
+	}
+	memcpy(keys, packed, keylen);
+	pfree(packed);
+	cache->nl1 = n;
+	cache->l1keylen = keylen;
+}
+
+/*
  * The slot a read descent for key may start at: the one with the greatest
  * low key that the key does not sort before (nextkey) or after (!nextkey),
  * by the same rule bark_binsrch uses to pick a downlink, so that starting
@@ -410,8 +458,8 @@ bark_l1_find(Relation index, BarkKeyInfo *keyinfo, BarkAmCache *cache,
  * Remember that level-1 page blkno has low key lowkey, a pivot read from the
  * downlink that named it, under the parent's lock.  The table is kept
  * sorted; an entry for a block already present is left alone (its low key
- * cannot have changed), and when the table is full it is dropped and
- * started again, so that a long-lived backend follows a tree that grows.
+ * cannot have changed), and when the table is full it is thinned to half
+ * (bark_l1_thin), so that a long-lived backend follows a tree that grows.
  */
 static void
 bark_l1_remember(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
@@ -431,8 +479,14 @@ bark_l1_remember(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 	if (cache->nl1 >= BARK_L1_MAX_SLOTS ||
 		cache->l1keylen + keysz > BARK_L1_MAX_KEYLEN)
 	{
-		bark_l1_reset(cache);
-		pos = 0;
+		bark_l1_thin(cache);
+		/* The new key's place in the thinned table. */
+		pos = bark_l1_find(index, keyinfo, cache, &skey, true) + 1;
+		if (pos > 0 && bark_l1_slots(cache)[pos - 1].blkno == blkno)
+			return;
+		/* A single key larger than the whole budget is not cached. */
+		if (cache->l1keylen + keysz > BARK_L1_MAX_KEYLEN)
+			return;
 	}
 
 	/* Grow the chunk: double the slots or the key space as needed. */
