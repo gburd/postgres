@@ -925,9 +925,14 @@ are cleaned; deleted pages, internal pages and overflow pages are skipped.
 A leaf split during the scan can move entries from a page the scan has not
 reached yet to a right page at a block it has already passed (a split takes
 its right page from the free space map, which can hand out any block).  To
-catch that, BARK uses nbtree's vacuum cycle IDs, and nbtree's registry of
-them (_bt_start_vacuum, _bt_vacuum_cycleid, _bt_end_vacuum), which keys on
-the relation's LockRelId and is not specific to nbtree.  A leaf split stamps
+catch that, BARK uses vacuum cycle IDs, as nbtree does, from a registry of
+its own (barkvacuum.c: bark_start_vacuum, bark_vacuum_cycleid,
+bark_end_vacuum), so that BARK uses no nbtree internals.  It lives in shared
+memory (BarkShmemCallbacks) under BarkVacuumLock: one slot per backend,
+indexed by ProcNumber, holding the index's LockRelId and the cycle ID of the
+VACUUM that backend runs on it, where nbtree's btvacinfo keeps a dense
+array.  Starting and ending a VACUUM is a store to the backend's own slot; a
+split's lookup reads all of them.  A leaf split stamps
 both halves with the cycle ID of the VACUUM running on the index, if any,
 while it holds both pages locked.  When VACUUM cleans a page that carries its
 cycle ID and whose right sibling is at a lower block than the scan position,
