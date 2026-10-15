@@ -87,6 +87,7 @@
 #include "storage/pg_shmem.h"
 #include "storage/predicate.h"
 #include "storage/proc.h"
+#include "storage/procarray.h"
 #include "storage/procnumber.h"
 #include "storage/standby.h"
 #include "tcop/backend_startup.h"

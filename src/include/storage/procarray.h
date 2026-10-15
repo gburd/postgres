@@ -24,6 +24,9 @@
  * and the related LWLock calls.  They give one place to change how
  * ProcArrayLock is implemented.
  */
+extern PGDLLIMPORT bool procarray_seqlock;
+extern PGDLLIMPORT bool procarray_seqlock_stats;
+
 extern bool ProcArrayLockAcquire(LWLockMode mode);
 extern bool ProcArrayLockConditionalAcquire(LWLockMode mode);
 extern void ProcArrayLockRelease(void);
