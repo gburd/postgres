@@ -1895,6 +1895,26 @@ LWLockHeldByMe(LWLock *lock)
 }
 
 /*
+ * LWLockExclusiveHeld
+ *
+ * True if any backend holds the lock in exclusive mode.  LWLockHeldByMe()
+ * examines only the locks of this backend.  This function examines the shared
+ * state word of the lock.
+ *
+ * The result is a snapshot.  A backend can take or release the lock just after
+ * the read.  Use this function only where an old result is safe.  An example is
+ * an optimistic read that validates its data.
+ *
+ * This is a plain atomic load.  It does not write to the lock, so the cache
+ * line of the lock does not move between CPUs.
+ */
+bool
+LWLockExclusiveHeld(LWLock *lock)
+{
+	return (pg_atomic_read_u32(&lock->state) & LW_VAL_EXCLUSIVE) != 0;
+}
+
+/*
  * LWLockAnyHeldByMe - test whether my process holds any of an array of locks
  *
  * This is meant as debug support only.

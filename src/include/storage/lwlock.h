@@ -123,6 +123,12 @@ extern bool LWLockHeldByMe(LWLock *lock);
 extern bool LWLockAnyHeldByMe(LWLock *lock, int nlocks, size_t stride);
 extern bool LWLockHeldByMeInMode(LWLock *lock, LWLockMode mode);
 
+/*
+ * True if any backend holds the lock in exclusive mode.  A reader that holds no
+ * lock can use this to find an active writer.  See LWLockExclusiveHeld().
+ */
+extern bool LWLockExclusiveHeld(LWLock *lock);
+
 extern bool LWLockWaitForVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 oldval, uint64 *newval);
 extern void LWLockUpdateVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 val);
 
