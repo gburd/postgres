@@ -1335,6 +1335,15 @@ AtSubStart_ResourceOwner(void)
  */
 
 /*
+ * Set by RecordTransactionCommit() when a synchronous_commit=on commit wrote its
+ * record on the asynchronous path and deferred durability to the WAL writer.
+ * CommitTransaction() reads it to decide, at the transaction-end (ProcArray) gate,
+ * whether to park for the WAL notifier (which flushes durably and clears our XID
+ * as one action) or to clear our XID immediately like a legacy/async commit.
+ */
+static bool xactDeferredDurable = false;
+
+/*
  *	RecordTransactionCommit
  *
  * Returns latest XID among xact and its children, or InvalidTransactionId
@@ -1359,6 +1368,9 @@ RecordTransactionCommit(void)
 	bool		RelcacheInitFileInval = false;
 	bool		wrote_xlog;
 	bool		waitForDurability = false;
+
+	/* Reset the deferred-durable signal for this commit (see below). */
+	xactDeferredDurable = false;
 
 	/*
 	 * Log pending invalidations for logical decoding of in-progress
@@ -1623,19 +1635,20 @@ RecordTransactionCommit(void)
 		END_CRIT_SECTION();
 	}
 
-	/*
-	 * Gate 1 of deferred-durable commit: now that we have left the commit
-	 * critical section, wait until the WAL writer has flushed our commit record
-	 * to disk (instead of flushing it ourselves).  We are still shown as running
-	 * in the ProcArray and still hold our locks; the stock ProcArrayEndTransaction
-	 * (gate 2) clears our XID only after we return, so we never become visible as
-	 * committed before our commit is durable.
-	 */
-	if (waitForDurability)
-		XLogWaitForFlush(XactLastRecEnd);
-
 	/* Compute latestXid while we have the child XIDs handy */
 	latestXid = TransactionIdLatest(xid, nchildren, children);
+
+	/*
+	 * Deferred-durable synchronous commit does NOT wait here.  Like an
+	 * asynchronous (synchronous_commit=off) commit, the commit record was
+	 * written on the async path and durability is deferred to the WAL writer.
+	 * The single gate lives at the transaction-end point: we record that this
+	 * was a deferred-durable commit, and CommitTransaction() parks for the WAL
+	 * notifier at the ProcArray gate (which flushes durably and clears our XID
+	 * as one action).  This keeps SyncRepWaitForLSN below in its stock position
+	 * (before the XID clear) and mirrors the async workflow.
+	 */
+	xactDeferredDurable = waitForDurability;
 
 	/*
 	 * Wait for synchronous replication, if required. Similar to the decision
@@ -2483,8 +2496,21 @@ CommitTransaction(void)
 	 * Let others know about no transaction in progress by me. Note that this
 	 * must be done _before_ releasing locks we hold and _after_
 	 * RecordTransactionCommit.
+	 *
+	 * This is the single deferred-durable gate.  For an asynchronous or
+	 * otherwise non-deferred commit we clear our XID immediately (the legacy
+	 * path).  For a synchronous_commit=on deferred commit we instead park until
+	 * the WAL notifier has made our commit durable and cleared our XID under
+	 * ProcArrayLock as one action; only if it did not defer us (already durable,
+	 * or no WAL writer to defer to) do we clear our own XID here.
 	 */
-	ProcArrayEndTransaction(MyProc, latestXid);
+	if (xactDeferredDurable &&
+		XLogWaitForFlush(XactLastCommitEnd, latestXid))
+	{
+		/* WAL notifier cleared our XID as part of waking us; nothing to do. */
+	}
+	else
+		ProcArrayEndTransaction(MyProc, latestXid);
 
 	/*
 	 * This is all post-commit cleanup.  Note that if an error is raised here,

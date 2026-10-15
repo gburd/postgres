@@ -837,6 +837,49 @@ ProcArrayEndTransactionInternal(PGPROC *proc, TransactionId latestXid)
 	TransamVariables->xactCompletionCount++;
 }
 
+/* Number of XIDs cleared in the current ProcArrayClearSyncFlushXid() batch */
+
+/*
+ * ProcArrayClearSyncFlushXidsBegin -- start a batch of
+ * ProcArrayClearSyncFlushXid() calls.
+ *
+ * The WAL notifier clears several committers' XIDs under one ProcArrayLock
+ * acquisition.  The caller must hold ProcArrayLock in exclusive mode, and must
+ * call ProcArrayClearSyncFlushXidsEnd() before it releases ProcArrayLock.
+ */
+void
+ProcArrayClearSyncFlushXidsBegin(void)
+{
+	Assert(ProcArrayLockHeldByMeInMode(LW_EXCLUSIVE));
+}
+
+/*
+ * ProcArrayClearSyncFlushXid -- clear a deferred-durable committer's XID.
+ *
+ * Thin exported wrapper letting the WAL notifier clear a parked committer's
+ * XID from the ProcArray at the moment its commit record becomes durable
+ * (fusing gate 2 into the gate-1 wake).  The caller must already hold
+ * ProcArrayLock in exclusive mode, so several parked committers can be cleared
+ * under a single lock acquisition, and must be between
+ * ProcArrayClearSyncFlushXidsBegin() and ProcArrayClearSyncFlushXidsEnd().
+ */
+void
+ProcArrayClearSyncFlushXid(PGPROC *proc, TransactionId latestXid)
+{
+	Assert(ProcArrayLockHeldByMeInMode(LW_EXCLUSIVE));
+	ProcArrayEndTransactionInternal(proc, latestXid);
+}
+
+/*
+ * ProcArrayClearSyncFlushXidsEnd -- end a batch of
+ * ProcArrayClearSyncFlushXid() calls.
+ */
+void
+ProcArrayClearSyncFlushXidsEnd(void)
+{
+	Assert(ProcArrayLockHeldByMeInMode(LW_EXCLUSIVE));
+}
+
 /*
  * ProcArrayGroupClearXid -- group XID clearing
  *

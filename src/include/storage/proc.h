@@ -371,10 +371,17 @@ typedef struct PGPROC
 	 * syncFlushLSN, instead of flushing the WAL itself.  syncFlushLSN is the LSN
 	 * we are waiting to become durable, or InvalidXLogRecPtr (0) when we are not
 	 * waiting; the WAL writer sets it back to 0 to signal completion.
-	 * syncFlushNext links this proc into the lock-free wait stack whose head is
-	 * XLogCtl->syncFlushFirst (same idiom as procArrayGroupNext).
+	 * syncFlushNext links this proc into the lock-free wait stack of its shard
+	 * (XLogCtl->syncFlushShards[MyProcNumber % notifier_shards].s.head; same idiom
+	 * as procArrayGroupNext).
+	 *
+	 * syncFlushLatestXid carries the transaction's latestXid to the notifier so
+	 * that, when the commit record becomes durable, the notifier can clear this
+	 * proc's XID from the ProcArray under ProcArrayLock (fusing gate 2 into the
+	 * gate-1 wake).  It is set before the CAS-push, alongside syncFlushLSN.
 	 */
 	XLogRecPtr	syncFlushLSN;
+	TransactionId syncFlushLatestXid;
 	pg_atomic_uint32 syncFlushNext;
 
 	/************************************************************************
@@ -506,7 +513,6 @@ typedef struct PROC_HDR
 	 * of each of these running at a time.
 	 */
 	pg_atomic_uint32 walwriterProc;
-	pg_atomic_uint32 walnotifierProc;
 	pg_atomic_uint32 checkpointerProc;
 	/* avlauncher is not an aux process, but it is advertised the same way */
 	pg_atomic_uint32 avLauncherProc;
@@ -541,14 +547,18 @@ extern PGDLLIMPORT PGPROC *PreparedXactProcs;
  * ie things that aren't full-fledged backends (they cannot run transactions
  * or take heavyweight locks) but need shmem access.
  *
- * Background writer, checkpointer, WAL writer, WAL notifier, WAL summarizer,
- * and archiver run during normal operation.  Startup process and WAL receiver
- * also consume 2 slots, but WAL writer and WAL notifier are launched only
- * after startup has exited.  One more slot is kept as headroom for the
- * promotion window, so we need 7 slots.
+ * Background writer, checkpointer, WAL writer, WAL summarizer, and archiver
+ * run during normal operation.  Startup process and WAL receiver also consume
+ * 2 slots, but WAL writer is launched only after startup has exited, so we
+ * only need 6 slots.
+ *
+ * In addition, up to MAX_IO_WORKERS I/O workers and up to MAX_NOTIFIER_SHARDS
+ * WAL notifiers (see notifier_shards) can run concurrently, so we reserve a
+ * slot for each of those maxima.
  */
 #define MAX_IO_WORKERS          32
-#define NUM_AUXILIARY_PROCS		(7 + MAX_IO_WORKERS)
+#define MAX_NOTIFIER_SHARDS		64
+#define NUM_AUXILIARY_PROCS		(6 + MAX_IO_WORKERS + MAX_NOTIFIER_SHARDS)
 
 #define FIRST_PREPARED_XACT_PROC_NUMBER	(MaxBackends + NUM_AUXILIARY_PROCS)
 

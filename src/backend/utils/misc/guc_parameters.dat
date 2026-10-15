@@ -2291,6 +2291,15 @@
   check_hook => 'check_multixact_offset_buffers',
 },
 
+{ name => 'notifier_shards', type => 'int', context => 'PGC_POSTMASTER', group => 'WAL_SETTINGS',
+  short_desc => 'Number of WAL notifier shards (and notifier processes) that wake deferred-durable committers.',
+  long_desc => '0 means a single shard; a positive value shards the wake across that many notifier processes.',
+  variable => 'notifier_shards',
+  boot_val => '0',
+  min => '0',
+  max => 'MAX_NOTIFIER_SHARDS',
+},
+
 { name => 'notify_buffers', type => 'int', context => 'PGC_POSTMASTER', group => 'RESOURCES_MEM',
   short_desc => 'Sets the size of the dedicated buffer pool used for the LISTEN/NOTIFY message cache.',
   flags => 'GUC_UNIT_BLOCKS',

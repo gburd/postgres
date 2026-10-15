@@ -105,6 +105,7 @@
 #include "postmaster/pgarch.h"
 #include "postmaster/postmaster.h"
 #include "postmaster/syslogger.h"
+#include "postmaster/walnotifier.h"
 #include "postmaster/walsummarizer.h"
 #include "replication/logicallauncher.h"
 #include "replication/slotsync.h"
@@ -262,13 +263,20 @@ static PMChild *StartupPMChild = NULL,
 		   *BgWriterPMChild = NULL,
 		   *CheckpointerPMChild = NULL,
 		   *WalWriterPMChild = NULL,
-		   *WalNotifierPMChild = NULL,
 		   *WalReceiverPMChild = NULL,
 		   *WalSummarizerPMChild = NULL,
 		   *AutoVacLauncherPMChild = NULL,
 		   *PgArchPMChild = NULL,
 		   *SysLoggerPMChild = NULL,
 		   *SlotSyncWorkerPMChild = NULL;
+
+/*
+ * WAL notifier children.  There are notifier_shards of them (fixed at boot,
+ * <= MAX_NOTIFIER_SHARDS), each draining one shard's wait stack.  NULL slots
+ * are not running.
+ */
+static PMChild *WalNotifierPMChild[MAX_NOTIFIER_SHARDS];
+static int	WalNotifierCount = 0;
 
 /* Startup process's status */
 typedef enum
@@ -2450,17 +2458,28 @@ process_pm_child_exit(void)
 		}
 
 		/*
-		 * Was it the wal notifier?  Like the wal writer, normal exit can be
-		 * ignored; any other exit condition is treated as a crash.
+		 * Was it one of the wal notifiers?  Like the wal writer, normal exit
+		 * can be ignored; any other exit condition is treated as a crash.
 		 */
-		if (WalNotifierPMChild && pid == WalNotifierPMChild->pid)
 		{
-			ReleasePostmasterChildSlot(WalNotifierPMChild);
-			WalNotifierPMChild = NULL;
-			if (!EXIT_STATUS_0(exitstatus))
-				HandleChildCrash(pid, exitstatus,
-								 _("WAL notifier process"));
-			continue;
+			bool		was_notifier = false;
+
+			for (int i = 0; i < MAX_NOTIFIER_SHARDS; i++)
+			{
+				if (WalNotifierPMChild[i] && pid == WalNotifierPMChild[i]->pid)
+				{
+					ReleasePostmasterChildSlot(WalNotifierPMChild[i]);
+					WalNotifierPMChild[i] = NULL;
+					--WalNotifierCount;
+					if (!EXIT_STATUS_0(exitstatus))
+						HandleChildCrash(pid, exitstatus,
+										 _("WAL notifier process"));
+					was_notifier = true;
+					break;
+				}
+			}
+			if (was_notifier)
+				continue;
 		}
 
 		/*
@@ -3207,7 +3226,7 @@ PostmasterStateMachine(void)
 			Assert(BgWriterPMChild == NULL);
 			Assert(CheckpointerPMChild == NULL);
 			Assert(WalWriterPMChild == NULL);
-			Assert(WalNotifierPMChild == NULL);
+			Assert(WalNotifierCount == 0);
 			Assert(AutoVacLauncherPMChild == NULL);
 			Assert(SlotSyncWorkerPMChild == NULL);
 			/* syslogger is not considered here */
@@ -3404,11 +3423,36 @@ LaunchMissingBackgroundProcesses(void)
 		WalWriterPMChild = StartChildProcess(B_WAL_WRITER);
 
 	/*
-	 * WAL notifier wakes deferred-durable committers; like the WAL writer it
-	 * is needed only in normal operation.
+	 * WAL notifiers wake deferred-durable committers; like the WAL writer they
+	 * are needed only in normal operation.  Start notifier_shards of them, one
+	 * per shard, filling free slots in the array.  A launch failure just leaves
+	 * the count short; we retry on the next maybe_start call.
 	 */
-	if (WalNotifierPMChild == NULL && pmState == PM_RUN)
-		WalNotifierPMChild = StartChildProcess(B_WAL_NOTIFIER);
+	if (pmState == PM_RUN)
+	{
+		while (WalNotifierCount < GetNotifierShards())
+		{
+			PMChild    *child;
+			int			i;
+
+			/* find an unused entry in the array */
+			for (i = 0; i < MAX_NOTIFIER_SHARDS; i++)
+			{
+				if (WalNotifierPMChild[i] == NULL)
+					break;
+			}
+			Assert(i < MAX_NOTIFIER_SHARDS);
+
+			child = StartChildProcess(B_WAL_NOTIFIER);
+			if (child != NULL)
+			{
+				WalNotifierPMChild[i] = child;
+				++WalNotifierCount;
+			}
+			else
+				break;			/* try again next time */
+		}
+	}
 
 	/*
 	 * We don't want autovacuum to run in binary upgrade mode because

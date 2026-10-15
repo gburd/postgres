@@ -33,6 +33,7 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include "access/xact.h"
 #include "access/xlog.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
@@ -45,6 +46,7 @@
 #include "storage/bufmgr.h"
 #include "storage/condition_variable.h"
 #include "storage/fd.h"
+#include "storage/ipc.h"
 #include "storage/lwlock.h"
 #include "storage/proc.h"
 #include "storage/procsignal.h"
@@ -53,6 +55,27 @@
 #include "utils/memutils.h"
 #include "utils/resowner.h"
 #include "utils/wait_event.h"
+
+
+/*
+ * GUC: number of WAL notifier shards (and hence notifier processes).  Fixed at
+ * postmaster start (PGC_POSTMASTER).  0 means a single shard; a positive value
+ * shards the wake work across that many notifier processes.  Do not read this
+ * directly for the effective count -- call GetNotifierShards().
+ */
+int			notifier_shards = 0;
+
+/* Which shard this notifier owns; claimed once at startup. */
+static int	MyNotifierShard = 0;
+
+/*
+ * shmem-exit callback: release our shard so a relaunched notifier reclaims it.
+ */
+static void
+WalNotifierReleaseShard(int code, Datum arg)
+{
+	XLogSyncFlushReleaseShard(MyNotifierShard);
+}
 
 
 /*
@@ -178,6 +201,18 @@ WalNotifierMain(const void *startup_data, size_t startup_data_len)
 	sigprocmask(SIG_SETMASK, &UnBlockSig, NULL);
 
 	/*
+	 * Claim a distinct shard and advertise our proc number on it, so committers
+	 * on that shard (and the WAL writer) can wake us while we're sleeping.  We
+	 * claim the lowest free shard and release it on exit (WalNotifierReleaseShard),
+	 * so a clean exit + postmaster relaunch reclaims the same low slot rather than
+	 * an ever-increasing index.  A crash instead forces a full cluster restart,
+	 * which resets all shard state.  Stable shard indices matter for the NUMA
+	 * pinning below: the shard must keep equalling its node across restarts.
+	 */
+	MyNotifierShard = XLogSyncFlushClaimShard(MyProcNumber);
+	before_shmem_exit(WalNotifierReleaseShard, 0);
+
+	/*
 	 * Loop forever
 	 */
 	for (;;)
@@ -200,16 +235,43 @@ WalNotifierMain(const void *startup_data, size_t startup_data_len)
 		 * committers nudge it when they enqueue, so we re-drain exactly when
 		 * there is new progress to act on.
 		 */
-		XLogSyncFlushDrain();
+		XLogSyncFlushDrain(MyNotifierShard);
 
 		/*
-		 * Sleep until a committer wakes us via SetLatch.  The timeout is a
-		 * defensive re-check only; committers set our latch when they park, so
-		 * in normal operation we are woken promptly.
+		 * Choose the wait timeout from two signals: whether this shard has
+		 * parked committers right now, and the server's synchronous_commit
+		 * level (for the notifier this is the cluster default, refreshed on
+		 * SIGHUP by ProcessMainLoopInterrupts() above).
+		 *
+		 *  - synchronous_commit=off AND shard empty: nobody parks here, so wait
+		 *    with NO timeout.  Nobody sets our latch, so we stay fully dormant --
+		 *    zero wakeups, zero CPU -- until a committer parks and latches us.
+		 *    The deferred-durable machinery is a true no-op in that state.
+		 *
+		 *  - otherwise (synchronous_commit>off, or items are parked on the
+		 *    shard): keep the WalWriterDelay periodic re-check as a defensive
+		 *    backstop, exactly as the original single-notifier design did.  This
+		 *    preserves synchronous_commit=on behavior unchanged, and also keeps a
+		 *    backstop whenever there are not-yet-durable waiters, even if the
+		 *    cluster default is off but a session set synchronous_commit=on.
+		 *
+		 * Re-decided every iteration, so a runtime synchronous_commit change (or
+		 * items arriving/draining on the shard) flips us between the two modes on
+		 * the next cycle.  Correctness never depends on the timeout: a parking
+		 * committer always latches us (so already-durable arrivals are handled
+		 * immediately, without sleeping), and the WAL writer nudges us after it
+		 * advances the flush LSN.
 		 */
-		(void) WaitLatch(MyLatch,
-						 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
-						 WalWriterDelay,	/* in ms */
-						 WAIT_EVENT_WAL_WRITER_MAIN);
+		if (XLogSyncFlushShardPending(MyNotifierShard) ||
+			synchronous_commit > SYNCHRONOUS_COMMIT_OFF)
+			(void) WaitLatch(MyLatch,
+							 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
+							 WalWriterDelay,	/* in ms */
+							 WAIT_EVENT_WAL_WRITER_MAIN);
+		else
+			(void) WaitLatch(MyLatch,
+							 WL_LATCH_SET | WL_EXIT_ON_PM_DEATH,
+							 -1L,	/* no timeout: dormant until latched */
+							 WAIT_EVENT_WAL_WRITER_MAIN);
 	}
 }

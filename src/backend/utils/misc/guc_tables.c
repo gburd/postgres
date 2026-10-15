@@ -71,6 +71,7 @@
 #include "postmaster/postmaster.h"
 #include "postmaster/startup.h"
 #include "postmaster/syslogger.h"
+#include "postmaster/walnotifier.h"
 #include "postmaster/walsummarizer.h"
 #include "postmaster/walwriter.h"
 #include "replication/logical.h"

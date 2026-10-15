@@ -17,6 +17,7 @@
 #include "datatype/timestamp.h"
 #include "lib/stringinfo.h"
 #include "nodes/pg_list.h"
+#include "storage/procnumber.h"
 
 
 /* Sync methods */
@@ -230,9 +231,14 @@ extern XLogRecPtr XLogInsertRecord(struct XLogRecData *rdata,
 								   uint64 fpi_bytes,
 								   bool topxid_included);
 extern void XLogFlush(XLogRecPtr record);
-extern void XLogWaitForFlush(XLogRecPtr lsn);
-extern void XLogSyncFlushDrain(void);
+extern bool XLogWaitForFlush(XLogRecPtr lsn, TransactionId latestXid);
+extern void XLogSyncFlushDrain(int shard);
+extern bool XLogSyncFlushShardPending(int shard);
 extern bool XLogSyncFlushWorkPending(void);
+extern ProcNumber XLogSyncFlushNotifierProc(int shard);
+extern int	XLogSyncFlushClaimShard(ProcNumber notifierProc);
+extern void XLogSyncFlushReleaseShard(int shard);
+extern int	GetNotifierShards(void);
 extern bool XLogBackgroundFlush(void);
 extern bool XLogNeedsFlush(XLogRecPtr record);
 extern int	XLogFileInit(XLogSegNo logsegno, TimeLineID logtli);

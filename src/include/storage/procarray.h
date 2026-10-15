@@ -37,6 +37,9 @@ extern void ProcArrayAdd(PGPROC *proc);
 extern void ProcArrayRemove(PGPROC *proc, TransactionId latestXid);
 
 extern void ProcArrayEndTransaction(PGPROC *proc, TransactionId latestXid);
+extern void ProcArrayClearSyncFlushXidsBegin(void);
+extern void ProcArrayClearSyncFlushXid(PGPROC *proc, TransactionId latestXid);
+extern void ProcArrayClearSyncFlushXidsEnd(void);
 extern void ProcArrayClearTransaction(PGPROC *proc);
 
 extern void ProcArrayInitRecovery(TransactionId initializedUptoXID);

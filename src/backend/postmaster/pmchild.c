@@ -34,6 +34,7 @@
 #include "miscadmin.h"
 #include "postmaster/autovacuum.h"
 #include "postmaster/postmaster.h"
+#include "postmaster/walnotifier.h"
 #include "replication/walsender.h"
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
@@ -127,7 +128,7 @@ InitPostmasterChildSlots(void)
 	pmchild_pools[B_WAL_RECEIVER].size = 1;
 	pmchild_pools[B_WAL_SUMMARIZER].size = 1;
 	pmchild_pools[B_WAL_WRITER].size = 1;
-	pmchild_pools[B_WAL_NOTIFIER].size = 1;
+	pmchild_pools[B_WAL_NOTIFIER].size = MAX_NOTIFIER_SHARDS;
 	pmchild_pools[B_LOGGER].size = 1;
 
 	/* The rest of the pmchild_pools are left at zero size */

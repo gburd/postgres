@@ -77,6 +77,7 @@
 #include "postmaster/bgwriter.h"
 #include "postmaster/datachecksum_state.h"
 #include "postmaster/startup.h"
+#include "postmaster/walnotifier.h"
 #include "postmaster/walsummarizer.h"
 #include "postmaster/walwriter.h"
 #include "replication/origin.h"
@@ -454,6 +455,22 @@ typedef struct XLogCtlInsert
 } XLogCtlInsert;
 
 /*
+ * Per-shard state for the deferred-durable synchronous-commit wait (gate 1).
+ * Each shard has its own lock-free wait-stack head and records the ProcNumber
+ * of the WAL notifier that owns (drains) it.  Padded to a cache line so that
+ * activity on one shard does not cause false sharing with another.
+ */
+typedef union SyncFlushShard
+{
+	struct
+	{
+		pg_atomic_uint32 head;	/* stack head: proc number or INVALID_PROC_NUMBER */
+		pg_atomic_uint32 notifierProc;	/* owning notifier's ProcNumber, or INVALID */
+	}			s;
+	char		pad[PG_CACHE_LINE_SIZE];
+} SyncFlushShard;
+
+/*
  * Total shared-memory state for XLOG.
  */
 typedef struct XLogCtlData
@@ -554,15 +571,23 @@ typedef struct XLogCtlData
 	pg_atomic_uint32 WalWriterSleeping;
 
 	/*
-	 * Head of the lock-free stack of backends parked in XLogWaitForFlush()
-	 * waiting for their commit record to become durable (deferred-durable
-	 * synchronous commit, gate 1).  Holds a proc number, or INVALID_PROC_NUMBER
-	 * when empty.  Backends CAS-push themselves (linked via PGPROC.syncFlushNext);
-	 * the WAL writer is the sole consumer -- it detaches the stack, wakes every
-	 * waiter whose PGPROC.syncFlushLSN is now flushed, and re-pushes the rest.
-	 * No lock is involved (same idiom as ProcGlobal->procArrayGroupFirst).
+	 * Sharded lock-free stacks of backends parked in XLogWaitForFlush() waiting
+	 * for their commit record to become durable (deferred-durable synchronous
+	 * commit, gate 1).  There are notifier_shards active shards (<= MAX_NOTIFIER
+	 * _SHARDS); a committer uses shard (MyProcNumber % notifier_shards).  Each
+	 * shard's head holds a proc number, or INVALID_PROC_NUMBER when empty:
+	 * backends CAS-push themselves (linked via PGPROC.syncFlushNext); the shard's
+	 * owning WAL notifier is the sole consumer -- it detaches the stack, wakes
+	 * every waiter whose PGPROC.syncFlushLSN is now flushed, and re-pushes the
+	 * rest.  No lock is involved (same idiom as ProcGlobal->procArrayGroupFirst).
+	 * Each shard also records the ProcNumber of its owning notifier so committers
+	 * and the WAL writer can nudge exactly that notifier's latch.  The array is
+	 * cache-line padded per shard to avoid false sharing between shards.
+	 *
+	 * With notifier_shards = 1 this collapses to a single shard/stack/notifier,
+	 * identical to the pre-sharding single-notifier design.
 	 */
-	pg_atomic_uint32 syncFlushFirst;
+	SyncFlushShard syncFlushShards[MAX_NOTIFIER_SHARDS];
 
 	/*
 	 * During recovery, we keep a copy of the latest checkpoint record here.
@@ -2887,57 +2912,64 @@ XLogSetAsyncXactLSN(XLogRecPtr asyncXactLSN)
  * writer to defer to (bootstrap / single-user, or a brief startup window) flush
  * synchronously instead and never enqueue.
  */
-void
-XLogWaitForFlush(XLogRecPtr lsn)
+bool
+XLogWaitForFlush(XLogRecPtr lsn, TransactionId latestXid)
 {
 	PROC_HDR   *procglobal = ProcGlobal;
 	ProcNumber	walwriterProc;
 	uint32		mypno;
 	uint32		next;
+	int			shard;
 	int			extraWaits = 0;
 
 	if (RecoveryInProgress())
-		return;
+		return false;
 
-	/* Fast path: already durable. */
+	/* Fast path: already durable.  Caller must still clear its own XID. */
 	if (GetFlushRecPtr(NULL) >= lsn)
-		return;
+		return false;
 
 	/*
 	 * If there is no WAL writer to defer to, flush it ourselves.  Callers reach
 	 * the deferred path only under the postmaster, but the WAL writer might not
-	 * have advertised itself yet during a narrow startup window.
+	 * have advertised itself yet during a narrow startup window.  We did not
+	 * enqueue, so the notifier did not clear us: the caller does gate 2 itself.
 	 */
 	walwriterProc = pg_atomic_read_u32(&procglobal->walwriterProc);
 	if (!IsUnderPostmaster || walwriterProc == INVALID_PROC_NUMBER)
 	{
 		XLogFlush(lsn);
-		return;
+		return false;
 	}
 
 	/*
-	 * Publish the LSN we are waiting for, then CAS-push ourselves onto the
-	 * lock-free wait stack.  syncFlushLSN must be set before the push so the WAL
-	 * writer, once it can reach us, sees a valid (nonzero) LSN.
+	 * Publish the LSN we are waiting for and the XID the notifier must clear on
+	 * our behalf, then CAS-push ourselves onto our shard's lock-free wait stack.
+	 * We use shard (MyProcNumber % notifier_shards), which is drained by exactly
+	 * one WAL notifier.  Both fields must be set before the push so the notifier,
+	 * once it can reach us, sees a valid (nonzero) LSN and the right latestXid.
 	 */
+	shard = (int) (MyProcNumber % GetNotifierShards());
+	MyProc->syncFlushLatestXid = latestXid;
 	MyProc->syncFlushLSN = lsn;
 	mypno = (uint32) MyProcNumber;
-	next = pg_atomic_read_u32(&XLogCtl->syncFlushFirst);
+	next = pg_atomic_read_u32(&XLogCtl->syncFlushShards[shard].s.head);
 	do
 	{
 		pg_atomic_write_u32(&MyProc->syncFlushNext, next);
-	} while (!pg_atomic_compare_exchange_u32(&XLogCtl->syncFlushFirst,
+	} while (!pg_atomic_compare_exchange_u32(&XLogCtl->syncFlushShards[shard].s.head,
 											 &next, mypno));
 
-	/* Make sure the WAL writer is awake to flush and drain on our behalf. */
+	/* Make sure the WAL writer is awake to flush on our behalf. */
 	SetLatch(&GetPGProcByNumber(walwriterProc)->procLatch);
 
 	/*
-	 * Also wake the WAL notifier, which performs the drain/wake on our behalf
-	 * once the flusher has made our commit record durable.
+	 * Also wake the WAL notifier that owns our shard; it performs the drain/wake
+	 * on our behalf once the flusher has made our commit record durable.
 	 */
 	{
-		ProcNumber	walnotifierProc = pg_atomic_read_u32(&procglobal->walnotifierProc);
+		ProcNumber	walnotifierProc =
+			pg_atomic_read_u32(&XLogCtl->syncFlushShards[shard].s.notifierProc);
 
 		if (walnotifierProc != INVALID_PROC_NUMBER)
 			SetLatch(&GetPGProcByNumber(walnotifierProc)->procLatch);
@@ -2971,82 +3003,258 @@ XLogWaitForFlush(XLogRecPtr lsn)
 	/* Restore the semaphore count for any wakeups we absorbed. */
 	while (extraWaits-- > 0)
 		PGSemaphoreUnlock(MyProc->sem);
+
+	/*
+	 * The notifier cleared our XID from the ProcArray under ProcArrayLock when
+	 * it woke us (fused gate 2), so the caller must NOT clear it again.
+	 */
+	return true;
 }
 
 /*
- * XLogSyncFlushDrain -- WAL writer side of gate 1.
+ * XLogSyncFlushDrain -- notifier side of gate 1, for one shard, fused with gate 2.
  *
- * Detach the whole wait stack, wake every parked committer whose syncFlushLSN is
- * now flushed (resetting its syncFlushLSN to 0 and setting its latch), and
- * re-push the committers that are not yet durable.  The WAL writer is the sole
- * consumer, so detaching with a single atomic exchange is safe (as in the
- * ProcArray group-clear leader path); concurrent committers keep pushing onto
- * the head meanwhile.
+ * Detach shard 'shard''s whole wait stack and partition it into the committers
+ * whose syncFlushLSN is now durable and those that are not yet.  The durable
+ * ones have their XID cleared from the ProcArray -- gate 2, done here under a
+ * single ProcArrayLock acquisition -- and are then woken (resetting syncFlushLSN
+ * to 0 and posting their semaphore) OUTSIDE the lock, exactly like the ProcArray
+ * group-XID-clear leader wakes its followers.  The not-yet-durable committers
+ * are re-pushed to be re-examined after more flushing.
+ *
+ * The shard's owning WAL notifier (or the WAL writer at shutdown) is the sole
+ * detacher, so a single atomic exchange is safe; concurrent committers keep
+ * pushing onto the fresh head meanwhile.  A parked committer that reaches the
+ * durable set returns from XLogWaitForFlush() WITHOUT calling
+ * ProcArrayEndTransaction, since we already cleared it here.
  */
 void
-XLogSyncFlushDrain(void)
+XLogSyncFlushDrain(int shard)
 {
+	pg_atomic_uint32 *shardHead = &XLogCtl->syncFlushShards[shard].s.head;
 	uint32		head;
+	uint32		durable = INVALID_PROC_NUMBER;
+	uint32		pending = INVALID_PROC_NUMBER;
 	XLogRecPtr	flushed;
 
-	/* Cheap exit when nobody is waiting. */
-	if (pg_atomic_read_u32(&XLogCtl->syncFlushFirst) == INVALID_PROC_NUMBER)
+	/* Cheap exit when nobody is waiting on this shard.  No lock. */
+	if (pg_atomic_read_u32(shardHead) == INVALID_PROC_NUMBER)
 		return;
+
+	/*
+	 * Acquire ProcArrayLock FIRST, then read the flush position and detach the
+	 * stack.  Doing the snapshot under the lock is deliberate: while we wait to
+	 * acquire the (possibly contended) lock, more committers keep CAS-pushing
+	 * onto this shard's head and the WAL writer keeps advancing the flush LSN,
+	 * so by the time we detach, this one lock acquisition sweeps out every
+	 * committer that piled up during the wait and is now durable.  The detach is
+	 * a single atomic exchange and the flush read is a lock-free atomic, so
+	 * almost nothing is added to the lock hold beyond the clear itself.
+	 */
+	ProcArrayLockAcquire(LW_EXCLUSIVE);
+	ProcArrayClearSyncFlushXidsBegin();
 
 	flushed = GetFlushRecPtr(NULL);
 
 	/* Detach the entire stack; new waiters accumulate on a fresh head. */
-	head = pg_atomic_exchange_u32(&XLogCtl->syncFlushFirst, INVALID_PROC_NUMBER);
+	head = pg_atomic_exchange_u32(shardHead, INVALID_PROC_NUMBER);
 
+	/*
+	 * Walk the detached stack once: clear the durable committers' XIDs in place
+	 * (gate 2, under the lock we hold) and thread them onto a local "durable"
+	 * list to wake later; thread the not-yet-durable ones onto "pending".  Both
+	 * lists reuse PGPROC.syncFlushNext; read each proc's link before relinking.
+	 * ProcArrayClearSyncFlushXid() does not touch syncFlushNext.
+	 */
 	while (head != INVALID_PROC_NUMBER)
 	{
 		PGPROC	   *proc = GetPGProcByNumber(head);
 		uint32		next;
 		XLogRecPtr	waitLSN;
 
-		/* Capture the link before we might re-push this proc. */
 		next = pg_atomic_read_u32(&proc->syncFlushNext);
 		waitLSN = proc->syncFlushLSN;
 
 		if (waitLSN != InvalidXLogRecPtr && waitLSN <= flushed)
 		{
-			/*
-			 * Durable: signal completion and wake exactly this waiter with a
-			 * futex (PGSemaphoreUnlock), not a SIGURG signal (SetLatch).
-			 */
-			proc->syncFlushLSN = InvalidXLogRecPtr;
-			pg_write_barrier();
-			PGSemaphoreUnlock(proc->sem);
+			/* Durable: clear its XID now, then link onto the durable list. */
+			ProcArrayClearSyncFlushXid(proc, proc->syncFlushLatestXid);
+			pg_atomic_write_u32(&proc->syncFlushNext, durable);
+			durable = head;
 		}
 		else if (waitLSN != InvalidXLogRecPtr)
 		{
-			/* Not yet durable: re-push, to be re-examined after more flushing. */
-			uint32		oldhead;
-
-			oldhead = pg_atomic_read_u32(&XLogCtl->syncFlushFirst);
-			do
-			{
-				pg_atomic_write_u32(&proc->syncFlushNext, oldhead);
-			} while (!pg_atomic_compare_exchange_u32(&XLogCtl->syncFlushFirst,
-													 &oldhead, head));
+			/* Not yet durable: link onto the local pending list. */
+			pg_atomic_write_u32(&proc->syncFlushNext, pending);
+			pending = head;
 		}
 
 		head = next;
 	}
+
+	/* End the batch before releasing the lock */
+	ProcArrayClearSyncFlushXidsEnd();
+	ProcArrayLockRelease();
+
+	/*
+	 * Re-push the not-yet-durable committers onto this shard's stack, to be
+	 * re-examined after more flushing.
+	 */
+	while (pending != INVALID_PROC_NUMBER)
+	{
+		PGPROC	   *proc = GetPGProcByNumber(pending);
+		uint32		next = pg_atomic_read_u32(&proc->syncFlushNext);
+		uint32		oldhead;
+
+		oldhead = pg_atomic_read_u32(shardHead);
+		do
+		{
+			pg_atomic_write_u32(&proc->syncFlushNext, oldhead);
+		} while (!pg_atomic_compare_exchange_u32(shardHead,
+												 &oldhead, pending));
+
+		pending = next;
+	}
+
+	/*
+	 * Now wake the durable committers, OUTSIDE ProcArrayLock.  Signal completion
+	 * with a futex (PGSemaphoreUnlock), not a SIGURG signal (SetLatch).  We must
+	 * capture each proc's link before resetting syncFlushLSN + waking it, since a
+	 * woken committer may immediately reuse its PGPROC and re-enqueue.
+	 */
+	while (durable != INVALID_PROC_NUMBER)
+	{
+		PGPROC	   *proc = GetPGProcByNumber(durable);
+		uint32		next = pg_atomic_read_u32(&proc->syncFlushNext);
+
+		proc->syncFlushLSN = InvalidXLogRecPtr;
+		pg_write_barrier();
+		PGSemaphoreUnlock(proc->sem);
+
+		durable = next;
+	}
+}
+
+/*
+ * XLogSyncFlushShardPending -- is any committer parked on this shard?
+ */
+bool
+XLogSyncFlushShardPending(int shard)
+{
+	return pg_atomic_read_u32(&XLogCtl->syncFlushShards[shard].s.head) !=
+		INVALID_PROC_NUMBER;
+}
+
+/*
+ * XLogSyncFlushNotifierProc -- ProcNumber of the WAL notifier owning this
+ * shard, or INVALID_PROC_NUMBER if none has claimed it yet.  Lets callers
+ * outside xlog.c (the WAL writer) nudge the right notifier's latch.
+ */
+ProcNumber
+XLogSyncFlushNotifierProc(int shard)
+{
+	return (ProcNumber) pg_atomic_read_u32(&XLogCtl->syncFlushShards[shard].s.notifierProc);
+}
+
+/*
+ * GetNotifierShards -- effective number of WAL notifier shards / processes.
+ *
+ * Resolves the notifier_shards GUC: an explicit value (>0) wins; 0 means "auto",
+ * which is the number of NUMA nodes when NUMA process interleaving is on
+ * (matching the per-node PGPROC/buffer partitioning), else 1.  Clamped to
+ * [1, MAX_NOTIFIER_SHARDS].  The result is stable for the life of the process
+ * (the GUC is PGC_POSTMASTER and the node count is fixed at boot), so we cache
+ * it; every process computes the same value, so postmaster, backends, and
+ * notifiers agree on the shard count without shared state.
+ */
+int
+GetNotifierShards(void)
+{
+	static int	cached = 0;
+
+	if (cached == 0)
+	{
+		int			n = notifier_shards;
+
+		if (n <= 0)
+			n = 1;
+
+		if (n < 1)
+			n = 1;
+		else if (n > MAX_NOTIFIER_SHARDS)
+			n = MAX_NOTIFIER_SHARDS;
+
+		cached = n;
+	}
+
+	return cached;
+}
+
+/*
+ * XLogSyncFlushClaimShard -- called by a starting WAL notifier to claim the
+ * lowest free shard and advertise itself as that shard's owner.  Returns the
+ * claimed shard number.
+ *
+ * Claiming scans for a shard whose owner is INVALID_PROC_NUMBER and CAS-installs
+ * our ProcNumber.  A notifier releases its shard on exit
+ * (XLogSyncFlushReleaseShard), so a relaunched notifier reclaims a freed low
+ * slot rather than an ever-increasing index.  This keeps the shard set to
+ * exactly [0, GetNotifierShards()) across restarts -- otherwise a benign
+ * notifier exit + postmaster relaunch (which does not reset shared state) would
+ * hand the replacement an out-of-range index, orphaning its old shard's waiters
+ * and skipping its NUMA node pinning.
+ */
+int
+XLogSyncFlushClaimShard(ProcNumber notifierProc)
+{
+	int			nshards = GetNotifierShards();
+
+	for (int shard = 0; shard < nshards; shard++)
+	{
+		uint32		expected = INVALID_PROC_NUMBER;
+
+		if (pg_atomic_compare_exchange_u32(&XLogCtl->syncFlushShards[shard].s.notifierProc,
+										   &expected, (uint32) notifierProc))
+			return shard;
+	}
+
+	elog(ERROR, "could not find a free WAL notifier shard slot");
+	return -1;					/* keep compiler quiet */
+}
+
+/*
+ * XLogSyncFlushReleaseShard -- called by an exiting WAL notifier to release its
+ * shard so a replacement notifier can reclaim it.  Runs from the notifier's
+ * shmem-exit path; the postmaster only relaunches after reaping the exited
+ * child, so the slot is always free by the time a replacement claims it.
+ */
+void
+XLogSyncFlushReleaseShard(int shard)
+{
+	if (shard >= 0 && shard < MAX_NOTIFIER_SHARDS)
+		pg_atomic_write_u32(&XLogCtl->syncFlushShards[shard].s.notifierProc,
+							INVALID_PROC_NUMBER);
 }
 
 /*
  * XLogSyncFlushWorkPending -- does the WAL writer have gate-1 work to drive?
  *
- * True while any committer is parked in XLogWaitForFlush() (the wait stack is
- * non-empty).  The WAL writer uses this to flush greedily (no sleep) until every
- * parked committer's record is durable; with synchronous_commit=off nobody
- * parks, so it stays on its normal lazy schedule.
+ * True while any committer is parked in XLogWaitForFlush() on any active shard
+ * (a shard's wait stack is non-empty).  The WAL writer uses this to flush
+ * greedily (no sleep) until every parked committer's record is durable; with
+ * synchronous_commit=off nobody parks, so it stays on its normal lazy schedule.
  */
 bool
 XLogSyncFlushWorkPending(void)
 {
-	return pg_atomic_read_u32(&XLogCtl->syncFlushFirst) != INVALID_PROC_NUMBER;
+	int			nshards = GetNotifierShards();
+
+	for (int i = 0; i < nshards; i++)
+	{
+		if (XLogSyncFlushShardPending(i))
+			return true;
+	}
+	return false;
 }
 
 /*
@@ -5957,7 +6165,13 @@ XLOGShmemInit(void *arg)
 	XLogCtl->SharedRecoveryState = RECOVERY_STATE_CRASH;
 	XLogCtl->InstallXLogFileSegmentActive = false;
 	pg_atomic_init_u32(&XLogCtl->WalWriterSleeping, 0);
-	pg_atomic_init_u32(&XLogCtl->syncFlushFirst, INVALID_PROC_NUMBER);
+	for (int s = 0; s < MAX_NOTIFIER_SHARDS; s++)
+	{
+		pg_atomic_init_u32(&XLogCtl->syncFlushShards[s].s.head,
+						   INVALID_PROC_NUMBER);
+		pg_atomic_init_u32(&XLogCtl->syncFlushShards[s].s.notifierProc,
+						   INVALID_PROC_NUMBER);
+	}
 	pg_atomic_init_u64(&XLogCtl->asyncXactLSN, 0);
 
 	/* Use the checksum info from control file */

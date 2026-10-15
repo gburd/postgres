@@ -50,6 +50,7 @@
 #include "pgstat.h"
 #include "postmaster/auxprocess.h"
 #include "postmaster/interrupt.h"
+#include "postmaster/walnotifier.h"
 #include "postmaster/walwriter.h"
 #include "storage/aio_subsys.h"
 #include "storage/bufmgr.h"
@@ -108,9 +109,12 @@ WalWriterFinalDrain(int code, Datum arg)
 	 */
 	do
 	{
+		int			nshards = GetNotifierShards();
+
 		while (XLogBackgroundFlush())
 			;
-		XLogSyncFlushDrain();
+		for (int i = 0; i < nshards; i++)
+			XLogSyncFlushDrain(i);
 	} while (XLogSyncFlushWorkPending());
 }
 
@@ -310,17 +314,21 @@ WalWriterMain(const void *startup_data, size_t startup_data_len)
 
 		/*
 		 * Our flush above may have made parked deferred-durable committers
-		 * durable.  Waking them is the WAL notifier's job, not ours -- nudge it
-		 * so it re-drains against the advanced flush LSN.  This is a single
-		 * latch set on one fixed process per flush cycle (not per waiter), so it
-		 * does not reintroduce the per-committer signal cost we split out.
+		 * durable.  Waking them is the WAL notifiers' job, not ours -- nudge
+		 * each shard's notifier that has waiters so it re-drains against the
+		 * advanced flush LSN.  This is at most one latch set per shard per flush
+		 * cycle (not per waiter), so it does not reintroduce the per-committer
+		 * signal cost we split out.
 		 */
-		if (XLogSyncFlushWorkPending())
+		for (int i = 0, nshards = GetNotifierShards(); i < nshards; i++)
 		{
-			ProcNumber	walnotifierProc = pg_atomic_read_u32(&ProcGlobal->walnotifierProc);
+			if (XLogSyncFlushShardPending(i))
+			{
+				ProcNumber	walnotifierProc = XLogSyncFlushNotifierProc(i);
 
-			if (walnotifierProc != INVALID_PROC_NUMBER)
-				SetLatch(&GetPGProcByNumber(walnotifierProc)->procLatch);
+				if (walnotifierProc != INVALID_PROC_NUMBER)
+					SetLatch(&GetPGProcByNumber(walnotifierProc)->procLatch);
+			}
 		}
 
 		/*

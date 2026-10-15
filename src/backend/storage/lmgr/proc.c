@@ -241,7 +241,6 @@ ProcGlobalShmemInit(void *arg)
 	pg_atomic_init_u32(&ProcGlobal->startupBufferPinWaitBuf, InvalidBuffer);
 	pg_atomic_init_u32(&ProcGlobal->avLauncherProc, INVALID_PROC_NUMBER);
 	pg_atomic_init_u32(&ProcGlobal->walwriterProc, INVALID_PROC_NUMBER);
-	pg_atomic_init_u32(&ProcGlobal->walnotifierProc, INVALID_PROC_NUMBER);
 	pg_atomic_init_u32(&ProcGlobal->checkpointerProc, INVALID_PROC_NUMBER);
 	pg_atomic_init_u32(&ProcGlobal->procArrayGroupFirst, INVALID_PROC_NUMBER);
 	pg_atomic_init_u32(&ProcGlobal->clogGroupFirst, INVALID_PROC_NUMBER);
@@ -374,6 +373,7 @@ ProcGlobalShmemInit(void *arg)
 		pg_atomic_init_u32(&(proc->clogGroupNext), INVALID_PROC_NUMBER);
 		pg_atomic_init_u32(&(proc->syncFlushNext), INVALID_PROC_NUMBER);
 		proc->syncFlushLSN = InvalidXLogRecPtr;
+		proc->syncFlushLatestXid = InvalidTransactionId;
 		pg_atomic_init_u64(&(proc->waitStart), 0);
 	}
 
@@ -734,8 +734,6 @@ InitAuxiliaryProcess(void)
 	/* Some aux processes are also advertised in ProcGlobal */
 	if (MyBackendType == B_WAL_WRITER)
 		pg_atomic_write_u32(&ProcGlobal->walwriterProc, MyProcNumber);
-	if (MyBackendType == B_WAL_NOTIFIER)
-		pg_atomic_write_u32(&ProcGlobal->walnotifierProc, MyProcNumber);
 	if (MyBackendType == B_CHECKPOINTER)
 		pg_atomic_write_u32(&ProcGlobal->checkpointerProc, MyProcNumber);
 
@@ -1121,11 +1119,6 @@ AuxiliaryProcKill(int code, Datum arg)
 	{
 		Assert(pg_atomic_read_u32(&ProcGlobal->walwriterProc) == MyProcNumber);
 		pg_atomic_write_u32(&ProcGlobal->walwriterProc, INVALID_PROC_NUMBER);
-	}
-	if (MyBackendType == B_WAL_NOTIFIER)
-	{
-		Assert(pg_atomic_read_u32(&ProcGlobal->walnotifierProc) == MyProcNumber);
-		pg_atomic_write_u32(&ProcGlobal->walnotifierProc, INVALID_PROC_NUMBER);
 	}
 	if (MyBackendType == B_CHECKPOINTER)
 	{
