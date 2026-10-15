@@ -759,9 +759,11 @@ build_index_pathkeys(PlannerInfo *root,
 
 		/*
 		 * INCLUDE columns are stored in index unordered, so they don't
-		 * support ordered index scan.
+		 * support ordered index scan.  Nor does a column whose operator
+		 * family orders something other than its values (sortopfamily
+		 * InvalidOid), nor any column after it.
 		 */
-		if (i >= index->nkeycolumns)
+		if (i >= index->nkeycolumns || !OidIsValid(index->sortopfamily[i]))
 			break;
 
 		/* We assume we don't need to make a copy of the tlist item */
