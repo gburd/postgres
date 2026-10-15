@@ -296,6 +296,8 @@ prop_query_sources = files(
   'sql/prop_contrib.c',
   'sql/prop_query_window.c',
   'sql/prop_spgist.c',
+  'sql/prop_authz.c',
+  'sql/prop_concurrency.c',
 )
 
 pg_prop = executable('pg_prop',

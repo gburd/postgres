@@ -522,6 +522,54 @@ and inet_contains (a network-containment query over inet, skipped if the inet
 opclass is absent).
 
 
+Authorization model (sql/prop_authz.c)
+======================================
+
+The access-control model, where a single wrong answer is a security hole, is
+tested against a catalog oracle over randomly generated roles, memberships and
+grants: grant_then_has (GRANT makes has_table_privilege true, REVOKE makes it
+false -- the exact inverse), privilege_matches_catalog (has_table_privilege
+agrees with information_schema.role_table_grants for every privilege type -- two
+catalog representations of the same fact must match), membership_transitive
+(privileges flow through an a->b->c INHERIT chain iff every link inherits, and a
+NOINHERIT link blocks them), owner_and_public (a table's owner has every
+privilege without a grant; a PUBLIC grant reaches an unrelated role but confers
+only what was granted), and column_privilege_scoped (a SELECT(col) grant is
+visible on that column, not another).  Roles/tables get unique per-case names
+and are dropped per case.
+
+
+Multi-backend concurrency (sql/prop_concurrency.c)
+==================================================
+
+Most areas use one backend; this one orchestrates a POOL of backends whose
+membership churns -- sessions connect, work, and disconnect throughout a case,
+so the system runs under a constantly changing concurrency level -- and asserts
+conservation/consistency laws that hold under any serializable schedule.
+transfer_conserves_total (many concurrent SERIALIZABLE transfers between
+accounts preserve the total balance exactly; a lost update would change it),
+counter_increments_exact (N sessions each do atomic UPDATE c=c+1; the final
+value equals the committed increment count -- no lost updates under row
+locking), and churn_no_orphan_xacts (while sessions open/close every op, the
+visible row count equals committed inserts -- no rolled-back row leaks).  Built
+on the async primitives below.
+
+
+Async statements and the server-side digest
+===========================================
+
+Two harness additions support the areas above.  pg_prop_sql_send /
+pg_prop_sql_await dispatch a statement without waiting and later block for its
+result (with the SQLSTATE), so two sessions can be in flight at once -- needed
+to provoke a real deadlock and let the detector pick exactly one 40P01 victim
+(isolation/deadlock_one_victim), and to drive the concurrency pool.
+pg_prop_sql_rowhash returns an md5 digest of the whole result computed server-
+side, so a row oracle over a deep generated query holds only a 32-char hash
+instead of shipping and rendering the full result -- which can exceed the 1 GB
+StringInfo cap (finding 027).  The deep row oracles (query_deep, query_multi)
+use the digest.
+
+
 The skip / availability framework
 =================================
 
