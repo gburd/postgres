@@ -402,6 +402,9 @@ INSERT INTO ubuild VALUES (1, '{1,2,3}'), (2, '{3,7}');
 CREATE UNIQUE INDEX ubuild_a ON ubuild USING bark (a bark_int4_array_ops);
 ERROR:  could not create unique index "ubuild_a"
 DETAIL:  Duplicate keys exist.
+-- The build also indexes the deleted row when any snapshot (an autoanalyze
+-- of any table) still sees it; the count leaves that row out.
+SELECT ctid AS deltid FROM ubuild WHERE id = 2 \gset
 DELETE FROM ubuild WHERE id = 2;
 BEGIN;
 UPDATE ubuild SET a = '{2,3,4}' WHERE id = 1;
@@ -412,7 +415,8 @@ SELECT bark_index_check('ubuild_a');
  
 (1 row)
 
-SELECT count(*) FROM bark_multikey_entries('ubuild_a') WHERE NOT marker;
+SELECT count(*) FROM bark_multikey_entries('ubuild_a')
+WHERE NOT marker AND tid <> :'deltid';
  count 
 -------
      6
