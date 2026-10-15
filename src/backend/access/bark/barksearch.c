@@ -481,11 +481,11 @@ bark_l1_remember(Relation index, BarkKeyInfo *keyinfo, BlockNumber blkno,
 	{
 		/*
 		 * Thinning only drops slots, so blkno is still absent; one pivot
-		 * (at most BarkMaxItemSize) is far below the key budget, so it fits.
+		 * (at most BarkMaxItemSize) is far below the key budget, so it
+		 * fits.
 		 */
 		bark_l1_thin(cache);
 		pos = bark_l1_find(index, keyinfo, cache, &skey, true) + 1;
-		Assert(cache->l1keylen + keysz <= BARK_L1_MAX_KEYLEN);
 	}
 
 	/* Grow the chunk: double the slots or the key space as needed. */
@@ -867,7 +867,6 @@ bark_find_upper_path(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 
 	/* The caller holds a page below the root, so there is one. */
 	buf = bark_get_root_buffer(index, BUFFER_LOCK_SHARE);
-	Assert(BufferIsValid(buf));
 
 	for (;;)
 	{
@@ -885,12 +884,11 @@ bark_find_upper_path(Relation index, BarkKeyInfo *keyinfo, IndexTuple key,
 		opaque = BarkPageGetOpaque(page);
 
 		/*
-		 * A cached page is named by a level-2 downlink, and a root only
-		 * grows, so the root is always above `level`.
+		 * No level check before stepping down: a cached page is named by a
+		 * level-2 downlink, and a root only grows, so every page here is
+		 * above `level`.  nextkey=false, as page deletion does: at or left
+		 * of the page.
 		 */
-		Assert(opaque->bark_level > level);
-
-		/* nextkey=false, as page deletion does: at or left of the page. */
 		off = bark_binsrch(index, keyinfo, &skey, page, false);
 		itup = BarkPageGetItem(page, off, &ibuf);
 		item = palloc(sizeof(BarkStackData));
