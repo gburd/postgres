@@ -199,12 +199,16 @@ CREATE TABLE ubuild (id int, a int4[]);
 CREATE INDEX ubuild_bt ON ubuild (a);	-- so the UPDATE below is not HOT
 INSERT INTO ubuild VALUES (1, '{1,2,3}'), (2, '{3,7}');
 CREATE UNIQUE INDEX ubuild_a ON ubuild USING bark (a bark_int4_array_ops);
+-- The build also indexes the deleted row when any snapshot (an autoanalyze
+-- of any table) still sees it; the count leaves that row out.
+SELECT ctid AS deltid FROM ubuild WHERE id = 2 \gset
 DELETE FROM ubuild WHERE id = 2;
 BEGIN;
 UPDATE ubuild SET a = '{2,3,4}' WHERE id = 1;
 CREATE UNIQUE INDEX ubuild_a ON ubuild USING bark (a bark_int4_array_ops);
 SELECT bark_index_check('ubuild_a');
-SELECT count(*) FROM bark_multikey_entries('ubuild_a') WHERE NOT marker;
+SELECT count(*) FROM bark_multikey_entries('ubuild_a')
+WHERE NOT marker AND tid <> :'deltid';
 COMMIT;
 INSERT INTO ubuild VALUES (3, '{4}');
 INSERT INTO ubuild VALUES (4, '{1}');
