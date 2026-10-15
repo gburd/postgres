@@ -139,6 +139,16 @@ btvalidate(Oid opclassoid)
 		HeapTuple	oprtup = &oprlist->members[i]->tuple;
 		Form_pg_amop oprform = (Form_pg_amop) GETSTRUCT(oprtup);
 
+		/*
+		 * A btree-compatible access method may add its own operators (for
+		 * example KNN ordering operators) to a btree operator family it
+		 * shares, via amop rows that name that AM rather than btree (the
+		 * ambtreeopfamilies capability).  btree neither uses nor validates
+		 * those; skip any amop row that is not btree's own.
+		 */
+		if (oprform->amopmethod != BTREE_AM_OID)
+			continue;
+
 		/* Check that only allowed strategy numbers exist */
 		if (oprform->amopstrategy < 1 ||
 			oprform->amopstrategy > BTMaxStrategyNumber)
@@ -219,8 +229,13 @@ btvalidate(Oid opclassoid)
 		 * Complain if there seems to be an incomplete set of either operators
 		 * or support functions for this datatype pair.  The sortsupport,
 		 * in_range, and equalimage functions are considered optional.
+		 *
+		 * Mask the comparison to btree's own strategy range: a btree-compatible
+		 * AM may add operators at higher strategy numbers to a shared family
+		 * (for example a KNN ordering operator); identify_opfamily_groups still
+		 * records those bits, but they are not btree's concern.
 		 */
-		if (thisgroup->operatorset !=
+		if ((thisgroup->operatorset & ((1 << (BTMaxStrategyNumber + 1)) - 1)) !=
 			((1 << BTLessStrategyNumber) |
 			 (1 << BTLessEqualStrategyNumber) |
 			 (1 << BTEqualStrategyNumber) |
