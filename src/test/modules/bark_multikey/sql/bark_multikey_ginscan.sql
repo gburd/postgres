@@ -209,6 +209,12 @@ SELECT bark_multikey_walk('mg_bark', '@>(anyarray,anyarray)', '{3,7}'::int4[], '
        (SELECT string_agg(ctid::text, ' ' ORDER BY ctid DESC) FROM
           (SELECT ctid FROM mg WHERE a @> '{3,7}' ORDER BY ctid DESC LIMIT 2) s) AS seq;
 SELECT bark_multikey_walk('mg_bark', '@>(anyarray,anyarray)', '{100,200}'::int4[], 'fbf');
+-- Off the far end and still forward stays there; back from there returns
+-- the last row.
+SELECT w[n] <> '-' AND w[n + 1] = '-' AND w[n + 2] = '-' AND w[n + 3] = w[n] AS far_end_ok
+FROM (SELECT count(*)::int AS n FROM mg WHERE a @> '{3,7}') c,
+     string_to_array(bark_multikey_walk('mg_bark', '@>(anyarray,anyarray)', '{3,7}'::int4[],
+                                        repeat('f', n + 2) || 'b'), ' ') w;
 -- The TIDs are collected with no leaf pinned, which only an MVCC snapshot
 -- makes safe, and the scan has no order: a caller asking otherwise gets an
 -- error.
