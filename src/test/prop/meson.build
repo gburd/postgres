@@ -294,6 +294,8 @@ prop_query_sources = files(
   'sql/prop_constraints.c',
   'sql/prop_isolation.c',
   'sql/prop_contrib.c',
+  'sql/prop_query_window.c',
+  'sql/prop_spgist.c',
 )
 
 pg_prop = executable('pg_prop',

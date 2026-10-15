@@ -494,6 +494,34 @@ unix_socket_directories and port -- returns unchanged, exercising connection
 setup and result marshalling).
 
 
+Window functions and grouping sets (sql/prop_query_window.c)
+===========================================================
+
+The planner/executor transformations with the richest wrong-results history,
+as metamorphic oracles over a generated table.  Window: window_count_over_all
+(count(*) OVER () equals the total on every row), window_running_sum (the final
+value of a running sum over a total order equals the plain sum -- taken as
+max(rs) since a non-negative summand makes it monotone -- and it never
+decreases), window_row_number_perm (row_number() is a permutation of 1..n), and
+window_rank_bounds (dense_rank <= rank <= row_number).  Grouping sets:
+rollup_grand_total (the all-NULL grouping row equals the ungrouped aggregate),
+rollup_detail_matches (ROLLUP detail rows equal plain GROUP BY), cube_superset_
+rollup (CUBE returns at least as many grouping rows as ROLLUP), and
+groupingsets_union (GROUPING SETS ((a),(b),()) equals the UNION ALL of the
+three component groupings).
+
+
+SP-GiST (sql/prop_spgist.c)
+===========================
+
+SP-GiST ships no integer opclass, so it is outside the generic int-column index
+trait suite; this AM-specific area exercises the opclasses it does support with
+the same index-vs-seqscan differential: text_prefix (text_ops over equality,
+LIKE prefix and range), point_contains (a box-containment query over point),
+and inet_contains (a network-containment query over inet, skipped if the inet
+opclass is absent).
+
+
 The skip / availability framework
 =================================
 

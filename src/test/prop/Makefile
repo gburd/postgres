@@ -288,7 +288,9 @@ OBJS = \
 	sql/prop_integrity.o \
 	sql/prop_constraints.o \
 	sql/prop_isolation.o \
-	sql/prop_contrib.o
+	sql/prop_contrib.o \
+	sql/prop_query_window.o \
+	sql/prop_spgist.o
 
 PG_CPPFLAGS = -I$(libpq_srcdir) -I$(srcdir)/sql
 PG_LIBS_INTERNAL += -L$(top_builddir)/src/fe_utils -lpgfeutils $(libpq_pgport)
