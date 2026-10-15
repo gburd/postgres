@@ -1498,6 +1498,13 @@ typedef struct BarkStackData
 	BlockNumber bark_blkno;		/* internal page visited */
 	OffsetNumber bark_offset;	/* offset of the downlink followed */
 	struct BarkStackData *bark_parent;	/* next level up, or NULL at the root */
+
+	/*
+	 * The descent started at this page from the level-1 entry cache, not at
+	 * the root, so bark_parent is NULL although the page is not the root:
+	 * its parent is found when a split needs it (bark_insert_parent).
+	 */
+	bool		bark_cached;
 } BarkStackData;
 
 typedef BarkStackData *BarkStack;
@@ -1551,6 +1558,8 @@ typedef struct BarkScanBound
  */
 extern OffsetNumber bark_binsrch_bound(Relation index, BarkKeyInfo *keyinfo,
 									   const BarkScanBound *bound, Page page);
+extern BarkStack bark_find_upper_path(Relation index, BarkKeyInfo *keyinfo,
+									  IndexTuple key, uint32 level);
 extern Buffer bark_search_bound(Relation index, BarkKeyInfo *keyinfo,
 								const BarkScanBound *bound, bool nextkey);
 extern int	bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
@@ -1581,7 +1590,7 @@ extern int	bark_compare_bound(Relation index, BarkKeyInfo *keyinfo,
  * After the markers, at markerlen, comes the level-1 entry table: nl1
  * slots (BarkL1Slot), sorted by low key, then l1keylen bytes of the low keys
  * they point at (pivot tuples copied from the downlinks that named the
- * pages).  A read descent starts at the slot with the greatest low key it
+ * pages).  A descent starts at the slot with the greatest low key it
  * may start at, so that it never touches the root (see "Level-1 entry
  * cache" in the README).  An internal page is never deleted and its low key
  * never changes, so a slot is never wrong about which keys may start there;

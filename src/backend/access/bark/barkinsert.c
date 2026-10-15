@@ -777,6 +777,8 @@ bark_swap_tid_entry(Relation index, Buffer buf, OffsetNumber off,
 		pfree(rcoded);
 }
 
+static void bark_stack_resolve_parent(Relation index, BarkKeyInfo *keyinfo,
+									  BarkStack stack, Page page);
 static void bark_insert_parent(Relation index, Relation heaprel,
 							   BarkKeyInfo *keyinfo, BarkStack stack,
 							   Buffer buf, IndexTuple downlink);
@@ -1461,6 +1463,10 @@ bark_getstackbuf(Relation index, BarkKeyInfo *keyinfo, BarkStack stack,
 
 		if ((opaque->bark_flags & BARK_INCOMPLETE_SPLIT) != 0)
 		{
+			/*
+			 * A frame from the level-1 entry cache has no parent; with NULL,
+			 * bark_insert_parent finds it from the leftmost page above.
+			 */
 			bark_finish_split(index, keyinfo, buf, stack->bark_parent);
 			continue;
 		}
@@ -1574,6 +1580,7 @@ bark_insert_parent(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 		fakestack.bark_blkno = bark_get_leftmost_at_level(index, level + 1);
 		fakestack.bark_offset = InvalidOffsetNumber;
 		fakestack.bark_parent = NULL;
+		fakestack.bark_cached = false;
 		stack = &fakestack;
 	}
 
@@ -1596,10 +1603,49 @@ bark_insert_parent(Relation index, Relation heaprel, BarkKeyInfo *keyinfo,
 		bark_insert_entry(index, pbuf, downlink, off, buf);
 		UnlockReleaseBuffer(buf);
 		UnlockReleaseBuffer(pbuf);
+		return;
 	}
+
+	/* The parent splits too, and its split needs the path above it. */
+	bark_stack_resolve_parent(index, keyinfo, stack, ppage);
+	bark_split(index, heaprel, keyinfo, stack->bark_parent, pbuf, off,
+			   downlink, buf, InvalidOffsetNumber, NULL);
+}
+
+/*
+ * Give `stack`, the frame of the page `page` (which the caller holds
+ * exclusive-locked), the path above it when it has none although the page
+ * is not the root: a descent that started at the page from the level-1
+ * entry cache recorded nothing above it (bark_cached).  The page is about to
+ * split, and its split puts a downlink into its parent.
+ *
+ * The path comes from a share-locked descent from the root with the page's
+ * high key, which stops above the page's level (bark_find_upper_path): it
+ * locks only pages above the ones the caller holds, top down, one at a time,
+ * so it cannot deadlock with them.  A rightmost page has no high key; the
+ * rightmost page of the level above is its parent, which the page's last
+ * downlink reaches as well as any key would.  This runs once per split that
+ * reaches past the cached level, not per insert.  The new frames hang off
+ * the caller's stack, which frees them.
+ */
+static void
+bark_stack_resolve_parent(Relation index, BarkKeyInfo *keyinfo,
+						  BarkStack stack, Page page)
+{
+	BarkPageOpaque opaque = BarkPageGetOpaque(page);
+	BarkItemBuf ibuf;
+	IndexTuple	key;
+
+	if (stack->bark_parent != NULL || !stack->bark_cached)
+		return;
+
+	if (BarkPageRightmost(opaque))
+		key = BarkPageGetItem(page, PageGetMaxOffsetNumber(page), &ibuf);
 	else
-		bark_split(index, heaprel, keyinfo, stack->bark_parent, pbuf, off,
-				   downlink, buf, InvalidOffsetNumber, NULL);
+		key = (IndexTuple) PageGetItem(page, PageGetItemId(page, BARK_P_HIKEY));
+	stack->bark_parent = bark_find_upper_path(index, keyinfo, key,
+											  opaque->bark_level);
+	stack->bark_cached = false;
 }
 
 /*

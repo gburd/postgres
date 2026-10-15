@@ -1,10 +1,10 @@
 --
--- The level-1 entry cache (BarkAmCache's level-1 table): a read descent
--- that needs no parent path starts at a cached level-1 page instead of the
--- root.  Every lookup here is compared with a sequential scan, across the
--- boundaries between cached pages, after the pages split, after the root
--- splits, with truncated pivots, DESC and NULLs, and after REINDEX and
--- TRUNCATE give the index a new relfilenode.
+-- The level-1 entry cache (BarkAmCache's level-1 table): a descent, read
+-- or write, starts at a cached level-1 page instead of the root.  Every
+-- lookup here is compared with a sequential scan, across the boundaries
+-- between cached pages, after the pages split, after the root splits, with
+-- truncated pivots, DESC and NULLs, and after REINDEX and TRUNCATE give the
+-- index a new relfilenode.
 --
 set client_min_messages TO 'warning';
 create extension if not exists injection_points;
@@ -126,11 +126,36 @@ from (select g from l1_keys where g % 53 = 0) s,
           0 |    151
 (1 row)
 
+-- An insert's descent starts below the root too: one NOTICE.
+SELECT injection_points_attach('bark-l1-start', 'notice');
+ injection_points_attach 
+-------------------------
+ 
+(1 row)
+
+insert into l1 values (l1k(4000) || 'q', 99999);
+NOTICE:  notice triggered for injection point bark-l1-start
+SELECT injection_points_detach('bark-l1-start');
+ injection_points_detach 
+-------------------------
+ 
+(1 row)
+
+delete from l1 where n = 99999;
 -- Splits of cached level-1 pages: insert keys between the existing ones
 -- across the whole range.  Cached slots then name pages whose high keys
--- moved left; descents move right from them.
+-- moved left; descents move right from them.  The inserts' descents start
+-- at cached level-1 pages, so each split of one finds the path above it
+-- then (bark_stack_resolve_parent); the parent check proves every downlink
+-- went where a descent from the root would have put it.
 insert into l1 select l1k(g / 3) || 'm', 100000 + g from generate_series(0, 23999) g;
 insert into l1 select l1k(g / 3) || 'n', 200000 + g from generate_series(0, 23999) g;
+select bark_index_parent_check('l1_idx', true);
+ bark_index_parent_check 
+-------------------------
+ 
+(1 row)
+
 select count(*) filter (where not c.same) as mismatches, count(*) as checks
 from (select g from l1_keys where g % 29 = 0) s,
      l1_check(format('k = %L or k = %L or k = %L', l1k(g), l1k(g) || 'm', l1k(g) || 'n')) c;
@@ -147,6 +172,43 @@ from (select g from l1_keys where g % 61 = 0) s,
           0 |    132
 (1 row)
 
+-- An incomplete split of a cached level-1 page: an insert splits a leaf,
+-- whose downlink splits its level-1 parent, which stops after publishing
+-- its right half (bark-leave-internal-split-incomplete, as an error).  The
+-- next insert there starts at the page from the cache, finds it flagged,
+-- and finishes the split with no path above it (bark_insert_parent finds
+-- the parent from the leftmost page of level 2).
+SELECT injection_points_attach('bark-leave-internal-split-incomplete', 'error');
+ injection_points_attach 
+-------------------------
+ 
+(1 row)
+
+do $$
+begin
+  for n in 0..23999 loop
+    begin
+      insert into l1 values (l1k(n / 3) || 'p', 400000 + n);
+    exception when others then
+      return;
+    end;
+  end loop;
+  raise exception 'test did not produce an incomplete level-1 split';
+end $$;
+SELECT injection_points_detach('bark-leave-internal-split-incomplete');
+ injection_points_detach 
+-------------------------
+ 
+(1 row)
+
+insert into l1 select l1k(g / 3) || 'p', 400000 + g from generate_series(0, 23999) g;
+select bark_index_parent_check('l1_idx', true);
+ bark_index_parent_check 
+-------------------------
+ 
+(1 row)
+
+delete from l1 where n >= 400000;
 -- VACUUM deletes the emptied leaves under cached level-1 pages.
 delete from l1 where n >= 100000 or n % 2 = 0;
 vacuum l1;
