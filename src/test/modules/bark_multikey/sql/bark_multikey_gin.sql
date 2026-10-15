@@ -178,9 +178,34 @@ FROM mb_q, mb_run(q, true) b, mb_run(q, false) s ORDER BY q;
 SET work_mem = '64MB';
 SELECT q, cardinality(b.ids) AS n, b.ids = s.ids AS ok, b.lossy
 FROM mb_q, mb_run(q, true) b, mb_run(q, false) s ORDER BY q;
+-- An index scan keeps its result in a TIDBitmap too (bark_mk_gin_gettuple),
+-- so work_mem bounds it alike: at 64kB its heap pages go lossy, each lossy
+-- page returns every offset with a recheck, and the recheck removes the
+-- rows that do not match; at 64MB nothing is removed.  The rows are the
+-- seqscan's either way, each once.
+CREATE FUNCTION mb_idx(q text, OUT ids int[], OUT removed bool)
+LANGUAGE plpgsql AS $$
+DECLARE l text;
+BEGIN
+  PERFORM set_config('enable_seqscan', 'off', true);
+  PERFORM set_config('enable_bitmapscan', 'off', true);
+  PERFORM set_config('enable_indexscan', 'on', true);
+  EXECUTE format('SELECT coalesce(array_agg(id ORDER BY id), ''{}'') FROM mb WHERE %s', q)
+    INTO ids;
+  removed := false;
+  FOR l IN EXECUTE format('EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF, SUMMARY OFF, BUFFERS OFF) SELECT id FROM mb WHERE %s', q) LOOP
+    removed := removed OR l LIKE '%Removed by Index Recheck%';
+  END LOOP;
+END $$;
+SET work_mem = '64kB';
+SELECT q, cardinality(i.ids) AS n, i.ids = s.ids AS ok, i.removed
+FROM mb_q, mb_idx(q) i, mb_run(q, false) s ORDER BY q;
+SET work_mem = '64MB';
+SELECT q, cardinality(i.ids) AS n, i.ids = s.ids AS ok, i.removed
+FROM mb_q, mb_idx(q) i, mb_run(q, false) s ORDER BY q;
 RESET work_mem;
 DROP TABLE mb, mb_q;
-DROP FUNCTION mb_run(text, bool);
+DROP FUNCTION mb_run(text, bool), mb_idx(text);
 
 -- An open-ended partial-match boundary read forward on the leading,
 -- ascending column stops comparing its keys with the start once one is
