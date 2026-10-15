@@ -361,3 +361,72 @@ PG_PROP(row_lock_conflict_times_out)
 	pg_prop_disconnect(t2);
 	pg_prop_disconnect(admin);
 }
+
+/*
+ * Deadlock detection and victim selection: two sessions lock rows in opposite
+ * order, so each ends up waiting on a lock the other holds -- a true deadlock.
+ * PostgreSQL's deadlock detector must break it by aborting exactly ONE session
+ * (SQLSTATE 40P01) while the other proceeds to commit.  This requires genuine
+ * concurrency: both UPDATEs must be in flight at once, so they are dispatched
+ * asynchronously (pg_prop_sql_send) and then awaited.  A deadlock that hangs
+ * both, or aborts both, or aborts neither, is a detector bug.
+ */
+PG_PROP(deadlock_one_victim)
+{
+	pg_prop_conn *admin = open_conn(tc);
+	pg_prop_conn *t1 = open_conn(tc);
+	pg_prop_conn *t2 = open_conn(tc);
+	char	   *err = NULL,
+			   *ss1 = NULL,
+			   *ss2 = NULL;
+	bool		ok1,
+				ok2;
+	int			victims;
+
+	setup_iso(tc, admin);
+
+	run(t1, "BEGIN", &err);
+	run(t2, "BEGIN", &err);
+
+	/* T1 locks row 1; T2 locks row 2 (no conflict yet) */
+	(void) scalar_long(tc, t1, "SELECT v FROM iso_t WHERE id = 1 FOR UPDATE");
+	(void) scalar_long(tc, t2, "SELECT v FROM iso_t WHERE id = 2 FOR UPDATE");
+
+	/*
+	 * Now each asks for the row the other holds, both in flight at once.
+	 * Dispatch both async so they are simultaneously blocked; the deadlock
+	 * detector then fires.
+	 */
+	if (!pg_prop_sql_send(t1, "UPDATE iso_t SET v = v + 1 WHERE id = 2"))
+		pg_prop_fail(tc, "could not dispatch T1 update");
+	if (!pg_prop_sql_send(t2, "UPDATE iso_t SET v = v + 1 WHERE id = 1"))
+		pg_prop_fail(tc, "could not dispatch T2 update");
+
+	/* await both; exactly one must fail with 40P01 (deadlock_detected) */
+	ok1 = pg_prop_sql_await(t1, &ss1, &err);
+	ok2 = pg_prop_sql_await(t2, &ss2, &err);
+
+	victims = 0;
+	if (!ok1 && ss1 && strcmp(ss1, "40P01") == 0)
+		victims++;
+	if (!ok2 && ss2 && strcmp(ss2, "40P01") == 0)
+		victims++;
+
+	/* the surviving session commits; the victim's transaction is already aborted */
+	run(ok1 ? t1 : t2, "COMMIT", &err);
+	run(ok1 ? t1 : t2, "ROLLBACK", &err);	/* no-op if already committed */
+
+	if (victims != 1)
+		pg_prop_fail(tc,
+					 "deadlock did not select exactly one victim: "
+					 "t1 ok=%d ss=%s, t2 ok=%d ss=%s (victims=%d)",
+					 (int) ok1, ss1 ? ss1 : "-", (int) ok2, ss2 ? ss2 : "-",
+					 victims);
+
+	if (ss1) pg_free(ss1);
+	if (ss2) pg_free(ss2);
+	if (err) pg_free(err);
+	pg_prop_disconnect(t1);
+	pg_prop_disconnect(t2);
+	pg_prop_disconnect(admin);
+}
