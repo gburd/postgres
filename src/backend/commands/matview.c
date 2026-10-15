@@ -14,6 +14,7 @@
  */
 #include "postgres.h"
 
+#include "access/amapi.h"
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/htup_details.h"
@@ -931,6 +932,21 @@ is_usable_unique_index(Relation indexRel)
 			int			attnum = indexStruct->indkey.values[i];
 
 			if (attnum <= 0)
+				return false;
+		}
+
+		/*
+		 * refresh_by_match_merge joins on each key column's equality.  A
+		 * unique index whose column holds several keys per row (an operator
+		 * class that indexes an array's elements, say) is unique over the
+		 * keys and has none.
+		 */
+		for (i = 0; i < indexStruct->indnkeyatts; i++)
+		{
+			if (IndexAmTranslateCompareType(COMPARE_EQ,
+											indexRel->rd_rel->relam,
+											indexRel->rd_opfamily[i],
+											true) == InvalidStrategy)
 				return false;
 		}
 		return true;
