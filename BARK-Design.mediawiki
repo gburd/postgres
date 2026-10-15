@@ -1334,6 +1334,19 @@ POSTING key, seven queries (prefix, POSTING key, no match, = ANY, two keys)
 equal to a seqscan at work_mem 64kB (lossy) and 64MB (exact);
 bark_multikey_ginmerge adds weighted tsqueries (recheck per vector).
 
+'''As built (2026-10-15, index scan bound).''' An index scan of a
+GIN-interface column (M2c) kept its whole result as an array of
+(TID, recheck) items, exact and unbounded. It now builds the same TIDBitmap
+a bitmap scan does, bounded by work_mem, in its own context, and walks it
+with a private iterator: the place is (page in iteration order, offset), a
+lossy page returns every offset a TIDBitmap can hold with a recheck (an
+empty offset or a heap-only tuple fetches nothing), and a backward step
+across a page or a restore starts a new iteration and walks to the page
+(O(pages), only for a direct caller of the AM or a merge join's restore).
+Tests (bark_multikey_gin.sql): the 60000-row prefix table's seven queries
+by index scan at work_mem 64kB (recheck removes rows) and 64MB (none),
+equal to a seqscan.
+
 '''As built (RXSIZE, start latch).''' A read of an open-ended
 partial-match boundary on the leading, ascending column stops comparing
 each key with the boundary's start once one key is inside it (startlatch

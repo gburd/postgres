@@ -443,15 +443,26 @@ typedef struct BarkMkScanState
 
 	/*
 	 * An index scan through GIN's interface (bark_mk_gin_gettuple): the rows
-	 * of bark_mk_gin_items, computed into ginCxt on the first call after a
-	 * rescan, the place in them (-1 or nginitems off either end), and the
-	 * marked place.
+	 * of bark_mk_gin_items, put into a TIDBitmap bounded by work_mem in
+	 * ginCxt on the first call after a rescan; an iterator over it, at page
+	 * ginpage (in iteration order) whose offsets are in ginoffs; the number
+	 * of pages once an iteration has ended (else -1); the place, page ginp
+	 * and offset gini (ginp -1 before the first row, ginnpages past the
+	 * last); and the marked place.
 	 */
 	bool		ginready;
-	BarkGinItem *ginitems;
-	int			nginitems;
-	int			ginpos;
-	int			ginmark;
+	TIDBitmap  *gintbm;
+	TBMPrivateIterator *giniter;
+	int			ginpage;
+	int			ginnpages;
+	BlockNumber ginblkno;
+	bool		ginrecheck;
+	int			ginnoffs;
+	OffsetNumber ginoffs[TBM_MAX_TUPLES_PER_PAGE];
+	int			ginp;
+	int			gini;
+	int			ginmarkp;
+	int			ginmarki;
 	MemoryContext ginCxt;
 	ScanKey		keys;			/* the scan keys on the column ... */
 	int			nkeys;			/* ... and their number */
@@ -1007,9 +1018,11 @@ bark_mk_rescan(IndexScanDesc scan)
 	if (mk->ginCxt != NULL)
 		MemoryContextReset(mk->ginCxt);
 	mk->ginready = false;
-	mk->ginitems = NULL;
-	mk->nginitems = 0;
-	mk->ginpos = mk->ginmark = -1;
+	mk->gintbm = NULL;
+	mk->giniter = NULL;
+	mk->ginpage = mk->ginnpages = -1;
+	mk->ginp = mk->ginmarkp = -1;
+	mk->gini = mk->ginmarki = 0;
 	/*
 	 * GIN's interface reads each boundary into a stream of distinct TIDs and
 	 * merges the streams (bark_mk_gin_items): a seen set there would drop a
@@ -4652,17 +4665,16 @@ bark_mk_gin_combine(BarkGinItem **a, int na, BarkGinItem *b, int nb,
 }
 
 /*
- * The rows that a scan with keys on a column that uses GIN's query
- * interface accepts, every key accepting each, as in GIN: palloc'd into
- * *items in the caller's memory context, sorted by TID, with their recheck
- * flags, and their number returned.  With tbm (a bitmap scan) they go into
- * tbm instead, and the count is of the TIDs added; a single key on the
+ * Add the rows that a scan with keys on a column that uses GIN's query
+ * interface accepts, every key accepting each, as in GIN, to tbm, with their
+ * recheck flags, and return how many TIDs were added.  A single key on the
  * column passes tbm down, so that bark_mk_gin_key can fill it directly.
  * The work happens in a context of its own, deleted before returning, and
- * no buffer stays pinned.
+ * no buffer stays pinned.  Both a bitmap scan and an index scan
+ * (bark_mk_gin_gettuple) come here, so both are bounded alike.
  */
 static int64
-bark_mk_gin_items(IndexScanDesc scan, BarkGinItem **items, TIDBitmap *tbm)
+bark_mk_gin_items(IndexScanDesc scan, TIDBitmap *tbm)
 {
 	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
 	MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext,
@@ -4675,7 +4687,6 @@ bark_mk_gin_items(IndexScanDesc scan, BarkGinItem **items, TIDBitmap *tbm)
 	int64		nadded = 0;
 
 	Assert(scan->parallel_scan == NULL);
-	Assert((items == NULL) != (tbm == NULL));
 	for (int k = 0; k < mk->nkeys; k++)
 	{
 		ScanKey		sk = &mk->keys[k];
@@ -4736,21 +4747,10 @@ bark_mk_gin_items(IndexScanDesc scan, BarkGinItem **items, TIDBitmap *tbm)
 	mk->startlatch = mk->instart = false;
 
 	MemoryContextSwitchTo(oldcxt);
-	if (tbm != NULL)
+	if (ktbm == NULL)
 	{
-		if (ktbm == NULL)
-		{
-			for (int i = 0; i < nacc; i++)
-				tbm_add_tuples(tbm, &acc[i].tid, 1, acc[i].recheck);
-			nadded = nacc;
-		}
-	}
-	else
-	{
-		*items = palloc_extended(sizeof(BarkGinItem) * Max(nacc, 1),
-								 MCXT_ALLOC_HUGE);
-		if (nacc > 0)
-			memcpy(*items, acc, nacc * sizeof(BarkGinItem));
+		for (int i = 0; i < nacc; i++)
+			tbm_add_tuples(tbm, &acc[i].tid, 1, acc[i].recheck);
 		nadded = nacc;
 	}
 	MemoryContextDelete(cxt);
@@ -4758,11 +4758,73 @@ bark_mk_gin_items(IndexScanDesc scan, BarkGinItem **items, TIDBitmap *tbm)
 }
 
 /*
+ * Load page k (in iteration order) of an index scan's bitmap into ginoffs:
+ * its offsets, or every offset a TIDBitmap can hold for a lossy page, whose
+ * rows then all need a recheck.  Returns false when there is no page k, and
+ * then knows the number of pages.
+ *
+ * ponytail: a TIDBitmap iterates forward only, so moving back (a backward
+ * step across a page, a restore) starts a new iteration and walks to the
+ * page, O(pages) a step; the planner never asks a backward scan of such an
+ * index (bark_property), so only a direct caller of the AM or a restore
+ * pays it.  A doubly linked page list would cost memory past work_mem.
+ */
+static bool
+bark_mk_gin_load(BarkMkScanState *mk, int k)
+{
+	TBMIterateResult res = {0};
+
+	if (k == mk->ginpage)
+		return true;
+	if (mk->ginnpages >= 0 && k >= mk->ginnpages)
+		return false;
+	if (mk->giniter == NULL || k < mk->ginpage)
+	{
+		MemoryContext oldcxt = MemoryContextSwitchTo(mk->ginCxt);
+
+		if (mk->giniter != NULL)
+			tbm_end_private_iterate(mk->giniter);
+		mk->giniter = tbm_begin_private_iterate(mk->gintbm);
+		mk->ginpage = -1;
+		MemoryContextSwitchTo(oldcxt);
+	}
+	while (mk->ginpage < k)
+	{
+		if (!tbm_private_iterate(mk->giniter, &res))
+		{
+			mk->ginnpages = mk->ginpage + 1;
+			tbm_end_private_iterate(mk->giniter);
+			mk->giniter = NULL;
+			mk->ginpage = -1;
+			return false;
+		}
+		mk->ginpage++;
+	}
+	mk->ginblkno = res.blockno;
+	mk->ginrecheck = res.recheck;
+	if (res.lossy)
+	{
+		mk->ginnoffs = TBM_MAX_TUPLES_PER_PAGE;
+		for (int i = 0; i < mk->ginnoffs; i++)
+			mk->ginoffs[i] = FirstOffsetNumber + i;
+	}
+	else
+		mk->ginnoffs = tbm_extract_page_tuple(&res, mk->ginoffs,
+											  TBM_MAX_TUPLES_PER_PAGE);
+	return true;
+}
+
+/*
  * amgettuple for a scan with keys on a GIN-interface column.  The first call
- * after a rescan computes the scan's whole result, as a bitmap scan does,
- * and each call returns the next of its rows, in TID order, or in reverse
- * TID order for a backward scan (one that reverses continues from the same
- * place, and one that ran off an end restarts from it, as in bark_gettuple).
+ * after a rescan computes the scan's whole result into a TIDBitmap, as a
+ * bitmap scan does and bounded by work_mem as it is, and each call returns
+ * the next of its rows, in TID order, or in reverse TID order for a backward
+ * scan (one that reverses continues from the same place, and one that ran
+ * off an end restarts from it, as in bark_gettuple).  Past work_mem the
+ * bitmap goes lossy, and a lossy heap page returns every offset a TIDBitmap
+ * can hold, each with a recheck: a fetch finds nothing at an offset with no
+ * tuple, and nothing at a heap-only tuple's (it is found from its chain's
+ * root), so each row comes back once, and the recheck decides it.
  *
  * The TIDs are collected with no pin held on any leaf, so VACUUM may remove
  * an entry, and the heap reuse its slot for a new row, before the scan
@@ -4781,7 +4843,6 @@ static bool
 bark_mk_gin_gettuple(IndexScanDesc scan, ScanDirection dir)
 {
 	BarkMkScanState *mk = ((BarkScanOpaque) scan->opaque)->mk;
-	BarkGinItem *item;
 
 	if (!mk->ginready)
 	{
@@ -4804,33 +4865,60 @@ bark_mk_gin_gettuple(IndexScanDesc scan, ScanDirection dir)
 					 errmsg("parallel index scans of BARK index \"%s\" through GIN's query interface are not supported",
 							RelationGetRelationName(scan->indexRelation))));
 		oldcxt = MemoryContextSwitchTo(mk->ginCxt);
-		mk->nginitems = bark_mk_gin_items(scan, &mk->ginitems, NULL);
+		mk->gintbm = tbm_create(work_mem * (Size) 1024, NULL);
+		(void) bark_mk_gin_items(scan, mk->gintbm);
 		MemoryContextSwitchTo(oldcxt);
-		mk->ginpos = ScanDirectionIsForward(dir) ? -1 : mk->nginitems;
 		mk->ginready = true;
+		mk->ginp = -1;
+		if (!ScanDirectionIsForward(dir))
+		{
+			/* Start past the last row: count the pages. */
+			(void) bark_mk_gin_load(mk, INT_MAX);
+			mk->ginp = mk->ginnpages;
+		}
 	}
 
 	if (ScanDirectionIsForward(dir))
 	{
-		if (mk->ginpos >= mk->nginitems - 1)
+		if (mk->ginnpages >= 0 && mk->ginp >= mk->ginnpages)
+			return false;		/* past the last row: stay there */
+		if (mk->ginp >= 0 && mk->gini + 1 < mk->ginnoffs)
+			mk->gini++;
+		else if (bark_mk_gin_load(mk, mk->ginp + 1))
 		{
-			mk->ginpos = mk->nginitems;
+			mk->ginp++;
+			mk->gini = 0;
+		}
+		else
+		{
+			mk->ginp = mk->ginnpages;	/* the failed load counted them */
 			return false;
 		}
-		mk->ginpos++;
 	}
 	else
 	{
-		if (mk->ginpos <= 0)
+		bool		onpage = mk->ginp >= 0 &&
+			(mk->ginnpages < 0 || mk->ginp < mk->ginnpages);
+
+		if (mk->ginp < 0)
+			return false;		/* before the first row: stay there */
+		if (onpage && mk->gini > 0)
+			mk->gini--;
+		else if (mk->ginp == 0)
 		{
-			mk->ginpos = -1;
+			mk->ginp = -1;
 			return false;
 		}
-		mk->ginpos--;
+		else
+		{
+			mk->ginp--;
+			if (!bark_mk_gin_load(mk, mk->ginp))
+				elog(ERROR, "BARK GIN result lost page %d", mk->ginp);
+			mk->gini = mk->ginnoffs - 1;
+		}
 	}
-	item = &mk->ginitems[mk->ginpos];
-	scan->xs_heaptid = item->tid;
-	scan->xs_recheck = item->recheck;
+	ItemPointerSet(&scan->xs_heaptid, mk->ginblkno, mk->ginoffs[mk->gini]);
+	scan->xs_recheck = mk->ginrecheck;
 	return true;
 }
 
@@ -4850,7 +4938,7 @@ bark_getbitmap(IndexScanDesc scan, TIDBitmap *tbm)
 	if (so->mk != NULL)
 		so->mk->bitmap = true;
 	if (so->mk != NULL && so->mk->gin && so->mk->nkeys > 0)
-		return bark_mk_gin_items(scan, NULL, tbm);
+		return bark_mk_gin_items(scan, tbm);
 	if (!bark_first(scan, ForwardScanDirection))
 		return 0;
 	do
@@ -4927,7 +5015,8 @@ bark_markpos(IndexScanDesc scan)
 	/* A GIN-interface scan marks its place in its result. */
 	if (so->mk != NULL && so->mk->gin && so->mk->nkeys > 0)
 	{
-		so->mk->ginmark = so->mk->ginready ? so->mk->ginpos : -1;
+		so->mk->ginmarkp = so->mk->ginready ? so->mk->ginp : -1;
+		so->mk->ginmarki = so->mk->gini;
 		return;
 	}
 
@@ -4971,8 +5060,16 @@ bark_restrpos(IndexScanDesc scan)
 
 	if (so->mk != NULL && so->mk->gin && so->mk->nkeys > 0)
 	{
-		if (so->mk->ginready)
-			so->mk->ginpos = so->mk->ginmark;
+		BarkMkScanState *mk = so->mk;
+
+		if (!mk->ginready)
+			return;
+		mk->ginp = mk->ginmarkp;
+		mk->gini = mk->ginmarki;
+		/* A place on a page needs the page loaded; one off an end does not. */
+		if (mk->ginp >= 0 && (mk->ginnpages < 0 || mk->ginp < mk->ginnpages) &&
+			!bark_mk_gin_load(mk, mk->ginp))
+			elog(ERROR, "BARK GIN result lost page %d", mk->ginp);
 		return;
 	}
 
