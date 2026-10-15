@@ -44,6 +44,7 @@
 #include "postmaster/startup.h"
 #include "postmaster/syslogger.h"
 #include "postmaster/walsummarizer.h"
+#include "postmaster/walnotifier.h"
 #include "postmaster/walwriter.h"
 #include "replication/slotsync.h"
 #include "replication/walreceiver.h"

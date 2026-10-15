@@ -15,6 +15,7 @@ backend_sources += files(
   'postmaster.c',
   'startup.c',
   'syslogger.c',
+  'walnotifier.c',
   'walsummarizer.c',
   'walwriter.c',
 )

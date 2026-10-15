@@ -50,4 +50,5 @@ PG_PROCTYPE(B_STARTUP, "startup", gettext_noop("startup"), StartupProcessMain, t
 PG_PROCTYPE(B_WAL_RECEIVER, "walreceiver", gettext_noop("walreceiver"), WalReceiverMain, true)
 PG_PROCTYPE(B_WAL_SENDER, "walsender", gettext_noop("walsender"), NULL, true)
 PG_PROCTYPE(B_WAL_SUMMARIZER, "walsummarizer", gettext_noop("walsummarizer"), WalSummarizerMain, true)
+PG_PROCTYPE(B_WAL_NOTIFIER, "walnotifier", gettext_noop("walnotifier"), WalNotifierMain, true)
 PG_PROCTYPE(B_WAL_WRITER, "walwriter", gettext_noop("walwriter"), WalWriterMain, true)

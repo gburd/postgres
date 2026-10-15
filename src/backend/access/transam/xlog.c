@@ -554,6 +554,17 @@ typedef struct XLogCtlData
 	pg_atomic_uint32 WalWriterSleeping;
 
 	/*
+	 * Head of the lock-free stack of backends parked in XLogWaitForFlush()
+	 * waiting for their commit record to become durable (deferred-durable
+	 * synchronous commit, gate 1).  Holds a proc number, or INVALID_PROC_NUMBER
+	 * when empty.  Backends CAS-push themselves (linked via PGPROC.syncFlushNext);
+	 * the WAL writer is the sole consumer -- it detaches the stack, wakes every
+	 * waiter whose PGPROC.syncFlushLSN is now flushed, and re-pushes the rest.
+	 * No lock is involved (same idiom as ProcGlobal->procArrayGroupFirst).
+	 */
+	pg_atomic_uint32 syncFlushFirst;
+
+	/*
 	 * During recovery, we keep a copy of the latest checkpoint record here.
 	 * lastCheckPointRecPtr points to start of checkpoint record and
 	 * lastCheckPointEndPtr points to end+1 of checkpoint record.  Used by the
@@ -2856,6 +2867,189 @@ XLogSetAsyncXactLSN(XLogRecPtr asyncXactLSN)
 }
 
 /*
+ * XLogWaitForFlush -- gate 1 of deferred-durable synchronous commit.
+ *
+ * Wait until the WAL up to 'lsn' has been flushed to disk by the WAL writer,
+ * rather than flushing it ourselves.  The caller has already written its commit
+ * record on the asynchronous path (XLogSetAsyncXactLSN, which nudges the WAL
+ * writer).  We park on a lock-free stack (XLogCtl->syncFlushFirst); the WAL
+ * writer flushes greedily while the stack is non-empty (XLogSyncFlushWorkPending)
+ * and, after each flush, wakes every waiter whose LSN is now durable
+ * (XLogSyncFlushDrain), signalling completion by resetting our syncFlushLSN to 0.
+ *
+ * This touches no ProcArray or commit-group state, so there is nothing shared to
+ * race on: a spurious wakeup simply re-checks syncFlushLSN.  Must be called after
+ * leaving the commit critical section, since it sleeps.
+ *
+ * Like the ProcArray group-clear queue, a proc that has pushed itself must wait
+ * until the consumer (the WAL writer) removes it; it must not abandon the queue
+ * and reuse its PGPROC, or it would corrupt the stack.  Callers that have no WAL
+ * writer to defer to (bootstrap / single-user, or a brief startup window) flush
+ * synchronously instead and never enqueue.
+ */
+void
+XLogWaitForFlush(XLogRecPtr lsn)
+{
+	PROC_HDR   *procglobal = ProcGlobal;
+	ProcNumber	walwriterProc;
+	uint32		mypno;
+	uint32		next;
+	int			extraWaits = 0;
+
+	if (RecoveryInProgress())
+		return;
+
+	/* Fast path: already durable. */
+	if (GetFlushRecPtr(NULL) >= lsn)
+		return;
+
+	/*
+	 * If there is no WAL writer to defer to, flush it ourselves.  Callers reach
+	 * the deferred path only under the postmaster, but the WAL writer might not
+	 * have advertised itself yet during a narrow startup window.
+	 */
+	walwriterProc = pg_atomic_read_u32(&procglobal->walwriterProc);
+	if (!IsUnderPostmaster || walwriterProc == INVALID_PROC_NUMBER)
+	{
+		XLogFlush(lsn);
+		return;
+	}
+
+	/*
+	 * Publish the LSN we are waiting for, then CAS-push ourselves onto the
+	 * lock-free wait stack.  syncFlushLSN must be set before the push so the WAL
+	 * writer, once it can reach us, sees a valid (nonzero) LSN.
+	 */
+	MyProc->syncFlushLSN = lsn;
+	mypno = (uint32) MyProcNumber;
+	next = pg_atomic_read_u32(&XLogCtl->syncFlushFirst);
+	do
+	{
+		pg_atomic_write_u32(&MyProc->syncFlushNext, next);
+	} while (!pg_atomic_compare_exchange_u32(&XLogCtl->syncFlushFirst,
+											 &next, mypno));
+
+	/* Make sure the WAL writer is awake to flush and drain on our behalf. */
+	SetLatch(&GetPGProcByNumber(walwriterProc)->procLatch);
+
+	/*
+	 * Also wake the WAL notifier, which performs the drain/wake on our behalf
+	 * once the flusher has made our commit record durable.
+	 */
+	{
+		ProcNumber	walnotifierProc = pg_atomic_read_u32(&procglobal->walnotifierProc);
+
+		if (walnotifierProc != INVALID_PROC_NUMBER)
+			SetLatch(&GetPGProcByNumber(walnotifierProc)->procLatch);
+	}
+
+	/*
+	 * Park on our own semaphore until the WAL writer clears syncFlushLSN.  We
+	 * are woken with PGSemaphoreUnlock (a futex wake), not SetLatch (which would
+	 * cost a SIGURG signal delivery per waiter on the single WAL writer) -- the
+	 * same wake mechanism the ProcArray group-XID-clear followers use.
+	 *
+	 * The semaphore is counting, so a wakeup posted before we reach
+	 * PGSemaphoreLock is not lost: the Lock returns immediately and we observe
+	 * syncFlushLSN == 0.  A parked committer never leaves the queue on its own;
+	 * only the WAL writer removes it.  Our wake of the WAL writer (the SetLatch
+	 * above) stays a latch and is reliable -- the latch flag persists and the WAL
+	 * writer re-checks XLogSyncFlushWorkPending() every cycle, so it cannot miss
+	 * us.  PGSemaphoreLock acts as the read barrier paired with the WAL writer's
+	 * PGSemaphoreUnlock.
+	 */
+	pgstat_report_wait_start(WAIT_EVENT_SYNC_REP);
+	for (;;)
+	{
+		PGSemaphoreLock(MyProc->sem);
+		if (MyProc->syncFlushLSN == InvalidXLogRecPtr)
+			break;
+		extraWaits++;
+	}
+	pgstat_report_wait_end();
+
+	/* Restore the semaphore count for any wakeups we absorbed. */
+	while (extraWaits-- > 0)
+		PGSemaphoreUnlock(MyProc->sem);
+}
+
+/*
+ * XLogSyncFlushDrain -- WAL writer side of gate 1.
+ *
+ * Detach the whole wait stack, wake every parked committer whose syncFlushLSN is
+ * now flushed (resetting its syncFlushLSN to 0 and setting its latch), and
+ * re-push the committers that are not yet durable.  The WAL writer is the sole
+ * consumer, so detaching with a single atomic exchange is safe (as in the
+ * ProcArray group-clear leader path); concurrent committers keep pushing onto
+ * the head meanwhile.
+ */
+void
+XLogSyncFlushDrain(void)
+{
+	uint32		head;
+	XLogRecPtr	flushed;
+
+	/* Cheap exit when nobody is waiting. */
+	if (pg_atomic_read_u32(&XLogCtl->syncFlushFirst) == INVALID_PROC_NUMBER)
+		return;
+
+	flushed = GetFlushRecPtr(NULL);
+
+	/* Detach the entire stack; new waiters accumulate on a fresh head. */
+	head = pg_atomic_exchange_u32(&XLogCtl->syncFlushFirst, INVALID_PROC_NUMBER);
+
+	while (head != INVALID_PROC_NUMBER)
+	{
+		PGPROC	   *proc = GetPGProcByNumber(head);
+		uint32		next;
+		XLogRecPtr	waitLSN;
+
+		/* Capture the link before we might re-push this proc. */
+		next = pg_atomic_read_u32(&proc->syncFlushNext);
+		waitLSN = proc->syncFlushLSN;
+
+		if (waitLSN != InvalidXLogRecPtr && waitLSN <= flushed)
+		{
+			/*
+			 * Durable: signal completion and wake exactly this waiter with a
+			 * futex (PGSemaphoreUnlock), not a SIGURG signal (SetLatch).
+			 */
+			proc->syncFlushLSN = InvalidXLogRecPtr;
+			pg_write_barrier();
+			PGSemaphoreUnlock(proc->sem);
+		}
+		else if (waitLSN != InvalidXLogRecPtr)
+		{
+			/* Not yet durable: re-push, to be re-examined after more flushing. */
+			uint32		oldhead;
+
+			oldhead = pg_atomic_read_u32(&XLogCtl->syncFlushFirst);
+			do
+			{
+				pg_atomic_write_u32(&proc->syncFlushNext, oldhead);
+			} while (!pg_atomic_compare_exchange_u32(&XLogCtl->syncFlushFirst,
+													 &oldhead, head));
+		}
+
+		head = next;
+	}
+}
+
+/*
+ * XLogSyncFlushWorkPending -- does the WAL writer have gate-1 work to drive?
+ *
+ * True while any committer is parked in XLogWaitForFlush() (the wait stack is
+ * non-empty).  The WAL writer uses this to flush greedily (no sleep) until every
+ * parked committer's record is durable; with synchronous_commit=off nobody
+ * parks, so it stays on its normal lazy schedule.
+ */
+bool
+XLogSyncFlushWorkPending(void)
+{
+	return pg_atomic_read_u32(&XLogCtl->syncFlushFirst) != INVALID_PROC_NUMBER;
+}
+
+/*
  * Record the LSN up to which we can remove WAL because it's not required by
  * any replication slot.
  */
@@ -3186,10 +3380,19 @@ XLogBackgroundFlush(void)
 	TimestampTz now;
 	int			flushblocks;
 	TimeLineID	insertTLI;
+	bool		syncWaiters;
 
 	/* XLOG doesn't need flushing during recovery */
 	if (RecoveryInProgress())
 		return false;
+
+	/*
+	 * Are there deferred-durable committers parked in XLogWaitForFlush()?  If
+	 * so, flush on demand below (regardless of the lazy wal_writer_flush_after /
+	 * wal_writer_delay schedule) so their commit records reach disk as fast as
+	 * the storage allows; the WAL writer's main loop drains and wakes them.
+	 */
+	syncWaiters = XLogSyncFlushWorkPending();
 
 	/*
 	 * Since we're not in recovery, InsertTimeLineID is set and can't change,
@@ -3269,6 +3472,18 @@ XLogBackgroundFlush(void)
 	{
 		/* no flushing, this time round */
 		WriteRqst.Flush = InvalidXLogRecPtr;
+	}
+
+	/*
+	 * If deferred-durable committers are parked waiting on us, flush now
+	 * regardless of the lazy throttle above -- they are blocked until their
+	 * records are durable.  Flushing to WriteRqst.Write covers the whole
+	 * committed prefix.
+	 */
+	if (syncWaiters)
+	{
+		WriteRqst.Flush = WriteRqst.Write;
+		lastflush = now;
 	}
 
 #ifdef WAL_DEBUG
@@ -5742,6 +5957,7 @@ XLOGShmemInit(void *arg)
 	XLogCtl->SharedRecoveryState = RECOVERY_STATE_CRASH;
 	XLogCtl->InstallXLogFileSegmentActive = false;
 	pg_atomic_init_u32(&XLogCtl->WalWriterSleeping, 0);
+	pg_atomic_init_u32(&XLogCtl->syncFlushFirst, INVALID_PROC_NUMBER);
 	pg_atomic_init_u64(&XLogCtl->asyncXactLSN, 0);
 
 	/* Use the checksum info from control file */

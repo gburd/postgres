@@ -127,6 +127,7 @@ InitPostmasterChildSlots(void)
 	pmchild_pools[B_WAL_RECEIVER].size = 1;
 	pmchild_pools[B_WAL_SUMMARIZER].size = 1;
 	pmchild_pools[B_WAL_WRITER].size = 1;
+	pmchild_pools[B_WAL_NOTIFIER].size = 1;
 	pmchild_pools[B_LOGGER].size = 1;
 
 	/* The rest of the pmchild_pools are left at zero size */

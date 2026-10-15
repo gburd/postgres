@@ -262,6 +262,7 @@ static PMChild *StartupPMChild = NULL,
 		   *BgWriterPMChild = NULL,
 		   *CheckpointerPMChild = NULL,
 		   *WalWriterPMChild = NULL,
+		   *WalNotifierPMChild = NULL,
 		   *WalReceiverPMChild = NULL,
 		   *WalSummarizerPMChild = NULL,
 		   *AutoVacLauncherPMChild = NULL,
@@ -2449,6 +2450,20 @@ process_pm_child_exit(void)
 		}
 
 		/*
+		 * Was it the wal notifier?  Like the wal writer, normal exit can be
+		 * ignored; any other exit condition is treated as a crash.
+		 */
+		if (WalNotifierPMChild && pid == WalNotifierPMChild->pid)
+		{
+			ReleasePostmasterChildSlot(WalNotifierPMChild);
+			WalNotifierPMChild = NULL;
+			if (!EXIT_STATUS_0(exitstatus))
+				HandleChildCrash(pid, exitstatus,
+								 _("WAL notifier process"));
+			continue;
+		}
+
+		/*
 		 * Was it the wal receiver?  If exit status is zero (normal) or one
 		 * (FATAL exit), we assume everything is all right just like normal
 		 * backends.  (If we need a new wal receiver, we'll start one at the
@@ -2967,6 +2982,7 @@ PostmasterStateMachine(void)
 		 */
 		targetMask = btmask_add(targetMask,
 								B_WAL_WRITER,
+								B_WAL_NOTIFIER,
 								B_BG_WRITER,
 								B_SLOTSYNC_WORKER,
 								B_WAL_SUMMARIZER);
@@ -3191,6 +3207,7 @@ PostmasterStateMachine(void)
 			Assert(BgWriterPMChild == NULL);
 			Assert(CheckpointerPMChild == NULL);
 			Assert(WalWriterPMChild == NULL);
+			Assert(WalNotifierPMChild == NULL);
 			Assert(AutoVacLauncherPMChild == NULL);
 			Assert(SlotSyncWorkerPMChild == NULL);
 			/* syslogger is not considered here */
@@ -3385,6 +3402,13 @@ LaunchMissingBackgroundProcesses(void)
 	 */
 	if (WalWriterPMChild == NULL && pmState == PM_RUN)
 		WalWriterPMChild = StartChildProcess(B_WAL_WRITER);
+
+	/*
+	 * WAL notifier wakes deferred-durable committers; like the WAL writer it
+	 * is needed only in normal operation.
+	 */
+	if (WalNotifierPMChild == NULL && pmState == PM_RUN)
+		WalNotifierPMChild = StartChildProcess(B_WAL_NOTIFIER);
 
 	/*
 	 * We don't want autovacuum to run in binary upgrade mode because

@@ -55,8 +55,11 @@
 #include "storage/bufmgr.h"
 #include "storage/condition_variable.h"
 #include "storage/fd.h"
+#include "storage/ipc.h"
 #include "storage/lwlock.h"
+#include "storage/pmsignal.h"
 #include "storage/proc.h"
+#include "storage/procarray.h"
 #include "storage/procsignal.h"
 #include "storage/smgr.h"
 #include "utils/hsearch.h"
@@ -79,6 +82,37 @@ int			WalWriterFlushAfter = DEFAULT_WAL_WRITER_FLUSH_AFTER;
  */
 #define LOOPS_UNTIL_HIBERNATE		50
 #define HIBERNATE_FACTOR			25
+
+static void WalWriterFinalDrain(int code, Datum arg);
+
+/*
+ * Shutdown callback: flush everything committed to disk and then wake any
+ * deferred-durable committers that are now durable.
+ *
+ * The wake work is normally done by the WAL notifier, but the notifier just
+ * exits at shutdown.  A committer parked in XLogWaitForFlush() waits on a
+ * no-timeout semaphore, so if we exited without waking it, it would stay
+ * parked forever, keeping its backend alive and blocking PM_WAIT_BACKENDS.
+ * This callback closes that shutdown-wake dependency by draining here.
+ */
+static void
+WalWriterFinalDrain(int code, Datum arg)
+{
+	/*
+	 * Flush everything committed to disk, then wake the committers it made
+	 * durable.  We flush again inside the loop so that a committer which
+	 * enqueues a beyond-flushed LSN while we are draining still gets flushed
+	 * and woken -- otherwise the drain (which re-pushes not-yet-durable
+	 * waiters) could spin.  Backends are terminating, so no new WAL is
+	 * generated indefinitely and this converges.
+	 */
+	do
+	{
+		while (XLogBackgroundFlush())
+			;
+		XLogSyncFlushDrain();
+	} while (XLogSyncFlushWorkPending());
+}
 
 /*
  * Main entry point for walwriter process
@@ -114,6 +148,12 @@ WalWriterMain(const void *startup_data, size_t startup_data_len)
 	 * Reset some signals that are accepted by postmaster but not here
 	 */
 	pqsignal(SIGCHLD, PG_SIG_DFL);
+
+	/*
+	 * On exit, flush everything committed and wake any parked committers, so a
+	 * committer waiting on a no-timeout semaphore cannot block shutdown.
+	 */
+	before_shmem_exit(WalWriterFinalDrain, 0);
 
 	/*
 	 * Create a memory context that we will do all our work in.  We do this so
@@ -238,6 +278,25 @@ WalWriterMain(const void *startup_data, size_t startup_data_len)
 		INJECTION_POINT("walwriter-before-background-flush", NULL);
 
 		/*
+		 * Optional batching for deferred-durable (synchronous_commit=on)
+		 * committers.  By default (commit_delay = 0) the WAL writer is fully
+		 * greedy: it flushes parked committers' records as fast as the storage
+		 * allows.  When commit_delay > 0, pause briefly before flushing so that
+		 * more commits coalesce into a single fsync -- the same throughput /
+		 * latency trade-off that commit_delay provides on the legacy XLogFlush
+		 * group-commit path, now driven from the single flusher.
+		 *
+		 * We only delay when committers are actually parked
+		 * (XLogSyncFlushWorkPending) and, like XLogFlush, when fsync is enabled
+		 * and there are at least commit_siblings other active backends -- so we
+		 * never add latency when there is little concurrency to batch.
+		 */
+		if (CommitDelay > 0 && enableFsync &&
+			XLogSyncFlushWorkPending() &&
+			MinimumActiveBackends(CommitSiblings))
+			pg_usleep(CommitDelay);
+
+		/*
 		 * Do what we're here for; then, if XLogBackgroundFlush() found useful
 		 * work to do, reset hibernation counter.
 		 */
@@ -248,6 +307,43 @@ WalWriterMain(const void *startup_data, size_t startup_data_len)
 
 		/* report pending statistics to the cumulative stats system */
 		pgstat_report_wal(false);
+
+		/*
+		 * Our flush above may have made parked deferred-durable committers
+		 * durable.  Waking them is the WAL notifier's job, not ours -- nudge it
+		 * so it re-drains against the advanced flush LSN.  This is a single
+		 * latch set on one fixed process per flush cycle (not per waiter), so it
+		 * does not reintroduce the per-committer signal cost we split out.
+		 */
+		if (XLogSyncFlushWorkPending())
+		{
+			ProcNumber	walnotifierProc = pg_atomic_read_u32(&ProcGlobal->walnotifierProc);
+
+			if (walnotifierProc != INVALID_PROC_NUMBER)
+				SetLatch(&GetPGProcByNumber(walnotifierProc)->procLatch);
+		}
+
+		/*
+		 * While a deferred-durable committer is still parked with unflushed WAL,
+		 * don't sleep: loop straight back and flush again so its commit reaches
+		 * disk as fast as the storage allows (the fsync itself paces the loop).
+		 * When no such committer is waiting (e.g. synchronous_commit=off), this
+		 * is false and we fall through to the normal lazy schedule below.
+		 */
+		if (XLogSyncFlushWorkPending())
+		{
+			/*
+			 * This path skips WaitLatch(), so it must make the postmaster-death
+			 * check that WL_EXIT_ON_PM_DEATH would, and exit the same way, so
+			 * WalWriterFinalDrain() flushes and wakes the parked committers.
+			 * Without it, a crash of the postmaster leaves us spinning here
+			 * forever: the notifiers have exited, so the parked committers are
+			 * never woken.
+			 */
+			if (!PostmasterIsAlive())
+				proc_exit(1);
+			continue;
+		}
 
 		/*
 		 * Sleep until we are signaled or WalWriterDelay has elapsed.  If we

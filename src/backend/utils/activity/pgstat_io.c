@@ -352,6 +352,7 @@ pgstat_tracks_io_bktype(BackendType bktype)
 		case B_DEAD_END_BACKEND:
 		case B_ARCHIVER:
 		case B_LOGGER:
+		case B_WAL_NOTIFIER:
 			return false;
 
 		case B_DATACHECKSUMSWORKER_LAUNCHER:

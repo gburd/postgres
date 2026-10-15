@@ -1358,6 +1358,7 @@ RecordTransactionCommit(void)
 	SharedInvalidationMessage *invalMessages = NULL;
 	bool		RelcacheInitFileInval = false;
 	bool		wrote_xlog;
+	bool		waitForDurability = false;
 
 	/*
 	 * Log pending invalidations for logical decoding of in-progress
@@ -1541,10 +1542,19 @@ RecordTransactionCommit(void)
 	 * if all to-be-deleted tables are temporary though, since they are lost
 	 * anyway if we crash.)
 	 */
-	if ((wrote_xlog && markXidCommitted &&
-		 synchronous_commit > SYNCHRONOUS_COMMIT_OFF) ||
-		forceSyncCommit || nrels > 0)
+	if (forceSyncCommit || nrels > 0 ||
+		(wrote_xlog && markXidCommitted &&
+		 synchronous_commit > SYNCHRONOUS_COMMIT_OFF && !IsUnderPostmaster))
 	{
+		/*
+		 * We must flush synchronously right here in any of these cases:
+		 *  - a forced sync commit;
+		 *  - a commit that drops files (which must not be removed before the
+		 *    COMMIT record is durable);
+		 *  - a synchronous commit with no WAL writer to defer to (bootstrap or
+		 *    single-user mode, i.e. !IsUnderPostmaster) -- otherwise the
+		 *    deferred-durable wait below would block forever.
+		 */
 		XLogFlush(XactLastRecEnd);
 
 		/*
@@ -1558,6 +1568,26 @@ RecordTransactionCommit(void)
 		 */
 		if (markXidCommitted)
 			TransactionIdCommitTree(xid, nchildren, children);
+	}
+	else if (wrote_xlog && markXidCommitted &&
+			 synchronous_commit > SYNCHRONOUS_COMMIT_OFF)
+	{
+		/*
+		 * Deferred-durable synchronous commit (IsUnderPostmaster is implied
+		 * here, so a WAL writer exists):
+		 *
+		 * Write the commit record asynchronously and let the WAL writer flush
+		 * it; we wait for that flush below (gate 1, after leaving the critical
+		 * section) instead of flushing it ourselves and contending on
+		 * WALWriteLock.  We use the asynchronous CLOG path, so this is exactly
+		 * as crash-correct as an ordinary asynchronous commit -- the only added
+		 * behavior is that we do not return to the client (nor clear our XID)
+		 * until our commit record is durable.
+		 */
+		XLogSetAsyncXactLSN(XactLastRecEnd);
+		if (markXidCommitted)
+			TransactionIdAsyncCommitTree(xid, nchildren, children, XactLastRecEnd);
+		waitForDurability = true;
 	}
 	else
 	{
@@ -1592,6 +1622,17 @@ RecordTransactionCommit(void)
 		MyProc->delayChkptFlags &= ~DELAY_CHKPT_IN_COMMIT;
 		END_CRIT_SECTION();
 	}
+
+	/*
+	 * Gate 1 of deferred-durable commit: now that we have left the commit
+	 * critical section, wait until the WAL writer has flushed our commit record
+	 * to disk (instead of flushing it ourselves).  We are still shown as running
+	 * in the ProcArray and still hold our locks; the stock ProcArrayEndTransaction
+	 * (gate 2) clears our XID only after we return, so we never become visible as
+	 * committed before our commit is durable.
+	 */
+	if (waitForDurability)
+		XLogWaitForFlush(XactLastRecEnd);
 
 	/* Compute latestXid while we have the child XIDs handy */
 	latestXid = TransactionIdLatest(xid, nchildren, children);
