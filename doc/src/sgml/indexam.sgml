@@ -159,6 +159,7 @@ typedef struct IndexAmRoutine
     amcanreturn_function amcanreturn;   /* can be NULL */
     amcostestimate_function amcostestimate;
     amgettreeheight_function amgettreeheight;   /* can be NULL */
+    amorderbyopcolumn_function amorderbyopcolumn;   /* can be NULL */
     amoptions_function amoptions;
     amproperty_function amproperty;     /* can be NULL */
     ambuildphasename_function ambuildphasename;   /* can be NULL */
@@ -508,6 +509,32 @@ amgettreeheight (Relation rel);
    an integer) about the index that the cost estimation function might want to
    know.  If the computation is expensive, it could be useful to cache the
    result as part of <literal>RelationData.rd_amcache</literal>.
+  </para>
+
+  <para>
+<programlisting>
+int
+amorderbyopcolumn (IndexOptInfo *index,
+                   List *indexclauses);
+</programlisting>
+   Name the one index column, besides the first, on which an index that
+   is both ordered (<structfield>amcanorder</structfield>) and able to
+   answer ordering operators (<structfield>amcanorderbyop</structfield>)
+   can serve an ordering operator for an index path with the given
+   clauses (a list of <structname>IndexClause</structname>).  Such an index
+   keeps a later column's entries in order only within a run of entries
+   equal on every column before it, so it can order that column when the
+   path's clauses fix those columns to one value each.  The function returns
+   the zero-based column number, or 0 if no later column can be ordered.
+   Which clauses fix a column is the access method's to say: besides an
+   equality, an operator class may fix a column with an operator that is
+   not one.  The planner then matches the query's ordering operators to
+   that column as well as the first, and the scan must return the rows of
+   the run in the operator's order, given the scan keys built from the
+   same clauses.  If the function is not provided
+   (<literal>NULL</literal>), only the first column of such an index can be
+   ordered by an operator.  An index that is not ordered by its key is not
+   affected: its ordering operators may be matched on any column.
   </para>
 
   <para>
