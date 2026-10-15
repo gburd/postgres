@@ -1616,6 +1616,7 @@ extern void bark_end_vacuum_callback(int code, Datum arg);
 
 extern BarkAmCache *bark_get_amcache(Relation index);
 extern void bark_l1_reset(BarkAmCache *cache);
+extern Size bark_l1_region_size(BarkAmCache *cache);
 extern BlockNumber bark_get_root(Relation index, uint32 *level_out);
 extern uint32 bark_get_root_level(Relation index);
 extern Buffer bark_get_root_buffer(Relation index, BufferLockMode access);
