@@ -336,3 +336,38 @@ PG_PROP(distinct_limit_plan_invariant)
 	pfree(q.data);
 	pg_prop_disconnect(conn);
 }
+
+/*
+ * Outer-join reordering: a three-way LEFT JOIN chain, steered to a specific
+ * JOIN_ORDER, must return the same rows as the planner's free choice.  Outer-
+ * join reordering is a distinct and historically bug-prone transformation
+ * (the planner must respect outer-join identities and not reorder across a
+ * nullable side incorrectly); forcing a legal order must not change the result.
+ * Built over three self-joined copies of the generated table.
+ */
+PG_PROP(outer_join_order_invariant)
+{
+	pg_prop_conn *conn;
+	int			nrows;
+	StringInfoData q;
+
+	conn = connect_advice(tc);
+	qg_build_table(tc, conn, &nrows);
+
+	/*
+	 * x LEFT JOIN y on y.id = x.a, that LEFT JOIN z on z.id = x.b.  Project
+	 * all three ids (NULL-extended on the right where no match), ordered for a
+	 * stable comparison.  Steer a left-deep order over the aliases.
+	 */
+	initStringInfo(&q);
+	appendStringInfoString(&q,
+						   "SELECT x.id, y.id, z.id FROM " QG_TABLE " x "
+						   "LEFT JOIN " QG_TABLE " y ON y.id = x.a "
+						   "LEFT JOIN " QG_TABLE " z ON z.id = x.b "
+						   "ORDER BY x.id, y.id NULLS FIRST, z.id NULLS FIRST");
+
+	require_plan_invariant(tc, conn, q.data, "JOIN_ORDER((x y) z)", "");
+
+	pfree(q.data);
+	pg_prop_disconnect(conn);
+}
