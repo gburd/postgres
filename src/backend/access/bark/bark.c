@@ -27,7 +27,6 @@
 #include "access/gin.h"
 #include "access/barkxlog.h"
 #include "access/genam.h"
-#include "access/nbtree.h"
 #include "access/reloptions.h"
 #include "access/xloginsert.h"
 #include "commands/vacuum.h"
@@ -490,7 +489,7 @@ bark_delitems_vacuum(Relation index, Buffer buf,
  * our cycle ID); otherwise it was processed already, in its turn in the scan.
  */
 static bool
-bark_vacuum_target(Page page, bool backtracking, BTCycleId cycleid)
+bark_vacuum_target(Page page, bool backtracking, BarkCycleId cycleid)
 {
 	BarkPageOpaque opaque;
 
@@ -514,7 +513,7 @@ typedef struct BarkVacState
 	IndexBulkDeleteResult *stats;
 	IndexBulkDeleteCallback callback;
 	void	   *callback_state;
-	BTCycleId	cycleid;
+	BarkCycleId	cycleid;
 	BlockNumber *emptyleaves;	/* empty interior leaves to delete */
 	int			nempty;
 	int			emptyalloc;
@@ -553,7 +552,7 @@ bark_vacuum_page(BarkVacState *vstate, BlockNumber scanblkno)
 	IndexBulkDeleteResult *stats = vstate->stats;
 	IndexBulkDeleteCallback callback = vstate->callback;
 	void	   *callback_state = vstate->callback_state;
-	BTCycleId	cycleid = vstate->cycleid;
+	BarkCycleId	cycleid = vstate->cycleid;
 	Relation	index = info->index;
 	BlockNumber blkno = scanblkno;
 
@@ -887,12 +886,11 @@ bark_pendingfsm_finalize(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
  * deletes and recycles.
  *
  * Leaf splits during the scan are detected with a vacuum cycle ID, as in
- * btbulkdelete.  The cycle IDs come from nbtree's registry (_bt_start_vacuum
- * and friends): it maps a relation's LockRelId to the cycle ID of the VACUUM
- * now scanning it and has nothing nbtree-specific in it, so BARK shares it
- * instead of keeping a copy.  It could move out of nbtree into a common
- * place.  The ENSURE block releases our registry entry if the scan fails.  A
- * scan without a callback deletes no entries, so it needs no cycle ID, as
+ * btbulkdelete.  The cycle IDs come from BARK's own registry (barkvacuum.c,
+ * bark_start_vacuum and friends), which maps an index's LockRelId to the
+ * cycle ID of the VACUUM now scanning it, as nbtree's btvacinfo does for
+ * nbtree indexes.  The ENSURE block clears this backend's registry slot if
+ * the scan fails.  A scan without a callback deletes no entries, so it needs no cycle ID, as
  * btvacuumscan's cleanup-only scan does not.
  *
  * Parallel VACUUM may run this in a worker; each index is still processed by
@@ -937,10 +935,10 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 	 */
 	GetOldestNonRemovableTransactionId(info->heaprel);
 
-	PG_ENSURE_ERROR_CLEANUP(_bt_end_vacuum_callback, PointerGetDatum(index));
+	PG_ENSURE_ERROR_CLEANUP(bark_end_vacuum_callback, (Datum) 0);
 	{
 		if (callback != NULL)
-			vstate.cycleid = _bt_start_vacuum(index);
+			vstate.cycleid = bark_start_vacuum(index);
 
 		/*
 		 * Pages added after the scan starts must be visited too, so recheck
@@ -968,9 +966,9 @@ bark_vacuum_scan(IndexVacuumInfo *info, IndexBulkDeleteResult *stats,
 			}
 		}
 	}
-	PG_END_ENSURE_ERROR_CLEANUP(_bt_end_vacuum_callback, PointerGetDatum(index));
+	PG_END_ENSURE_ERROR_CLEANUP(bark_end_vacuum_callback, (Datum) 0);
 	if (callback != NULL)
-		_bt_end_vacuum(index);
+		bark_end_vacuum();
 
 	stats->num_pages = npages;
 
