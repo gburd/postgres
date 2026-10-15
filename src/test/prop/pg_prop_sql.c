@@ -177,6 +177,55 @@ pg_prop_sql_rows(pg_prop_conn *conn, const char *sql, bool *failed, char **errms
 	return s.data;				/* caller frees */
 }
 
+char *
+pg_prop_sql_rowhash(pg_prop_conn *conn, const char *sql, bool *failed,
+					char **errmsg)
+{
+	StringInfoData q;
+	PGresult   *res;
+	ExecStatusType st;
+	char	   *out;
+
+	if (failed)
+		*failed = false;
+
+	/*
+	 * Digest the whole result server-side: md5 of the newline-joined text of
+	 * every row of the caller's query, taken in the query's own output order
+	 * (so the caller's ORDER BY fixes the order).  Returning a 32-char hash
+	 * instead of the full result keeps the client memory O(1) regardless of
+	 * result size -- the deep generators can produce results that overflow the
+	 * 1 GB StringInfo cap when rendered client-side (see finding 027).  The
+	 * empty result hashes md5('') deterministically, so two empty results
+	 * compare equal.
+	 */
+	initStringInfo(&q);
+	appendStringInfo(&q,
+					 "SELECT md5(coalesce(string_agg(q.r, E'\\n'), '')) "
+					 "FROM (SELECT (sub)::text AS r FROM (%s) sub) q",
+					 sql);
+	res = PQexec(conn->conn, q.data);
+	pfree(q.data);
+	st = PQresultStatus(res);
+	if (st != PGRES_TUPLES_OK)
+	{
+		if (failed)
+			*failed = true;
+		if (errmsg)
+			*errmsg = pg_strdup(PQresultErrorMessage(res));
+		PQclear(res);
+		return NULL;
+	}
+	if (PQntuples(res) == 0 || PQgetisnull(res, 0, 0))
+	{
+		PQclear(res);
+		return pg_strdup("");	/* no rows -> empty digest */
+	}
+	out = pg_strdup(PQgetvalue(res, 0, 0));
+	PQclear(res);
+	return out;
+}
+
 bool
 pg_prop_sql_exec(pg_prop_conn *conn, const char *sql, char **errmsg)
 {
@@ -225,4 +274,54 @@ pg_prop_require_extension(pg_prop_conn *conn, const char *extname)
 			 PQresultStatus(res) == PGRES_TUPLES_OK);
 	PQclear(res);
 	return avail;
+}
+
+/*
+ * Asynchronous statement support, for properties that need two sessions in
+ * flight at once (e.g. provoking a deadlock, where both must be blocked before
+ * either can resolve).  pg_prop_sql_send dispatches a statement without waiting
+ * for its result; pg_prop_sql_await then blocks for the result and reports
+ * whether it succeeded, returning the SQLSTATE (a malloc'd 5-char code, or NULL)
+ * via *sqlstate so the caller can distinguish, e.g., a deadlock (40P01) from a
+ * serialization failure (40001).
+ */
+bool
+pg_prop_sql_send(pg_prop_conn *conn, const char *sql)
+{
+	return PQsendQuery(conn->conn, sql) == 1;
+}
+
+bool
+pg_prop_sql_await(pg_prop_conn *conn, char **sqlstate, char **errmsg)
+{
+	PGresult   *res;
+	bool		ok = true;
+
+	if (sqlstate)
+		*sqlstate = NULL;
+	if (errmsg)
+		*errmsg = NULL;
+
+	/* drain all results for the dispatched command(s) */
+	while ((res = PQgetResult(conn->conn)) != NULL)
+	{
+		ExecStatusType st = PQresultStatus(res);
+
+		if (st != PGRES_COMMAND_OK && st != PGRES_TUPLES_OK &&
+			st != PGRES_EMPTY_QUERY)
+		{
+			ok = false;
+			if (sqlstate && *sqlstate == NULL)
+			{
+				char	   *s = PQresultErrorField(res, PG_DIAG_SQLSTATE);
+
+				if (s)
+					*sqlstate = pg_strdup(s);
+			}
+			if (errmsg && *errmsg == NULL)
+				*errmsg = pg_strdup(PQresultErrorMessage(res));
+		}
+		PQclear(res);
+	}
+	return ok;
 }
