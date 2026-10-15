@@ -714,10 +714,10 @@ bark_add_tid_entry(Relation index, Buffer buf, OffsetNumber off,
  * entry at `off` on the exclusive-locked leaf `buf` but does not fit in it,
  * by replacing the entry with `left` and adding `right` just after it, the
  * results of bark_entry_swap_tid on the entry, and log just the TID
- * (XLOG_BARK_INSERT_SWAP); replay repeats bark_entry_swap_tid.  The caller
- * has checked that both fit, at bark_coded_size.
+ * (XLOG_BARK_INSERT_SWAP); replay repeats bark_entry_swap_tid.  Returns
+ * false, changing nothing, when the two do not fit, and the caller splits.
  */
-static void
+static bool
 bark_swap_tid_entry(Relation index, Buffer buf, OffsetNumber off,
 					IndexTuple left, IndexTuple right, ItemPointer tid)
 {
@@ -729,16 +729,26 @@ bark_swap_tid_entry(Relation index, Buffer buf, OffsetNumber off,
 
 	/*
 	 * The two parts and the right part's line pointer must fit in the old
-	 * entry's slot plus the page's free bytes.  The caller checks this; test
-	 * it again here, before the critical section, so that a wrong estimate
-	 * is an ERROR and not a PANIC.
+	 * entry's slot plus the page's free bytes, measured on the coded parts
+	 * that go on the page, before the critical section.  The line pointer
+	 * must be counted, not left to PageGetFreeSpace's hold-back: on a page
+	 * with no free bytes at all (pd_lower == pd_upper) PageGetFreeSpace
+	 * clamps to zero instead of holding one back, so two parts that fill
+	 * exactly the old entry's room would leave PageAddItem no line pointer
+	 * -- a PANIC below (found at 100M DocumentDB documents, a full leaf of
+	 * POSTING entries).
 	 */
 	if (MAXALIGN(IndexTupleSize(lcoded)) + MAXALIGN(IndexTupleSize(rcoded)) +
 		sizeof(ItemIdData) >
 		MAXALIGN(ItemIdGetLength(PageGetItemId(page, off))) +
 		phdr->pd_upper - phdr->pd_lower)
-		elog(ERROR, "no room to divide entry at offset %u of block %u in BARK index \"%s\"",
-			 off, BufferGetBlockNumber(buf), RelationGetRelationName(index));
+	{
+		if (lcoded != left)
+			pfree(lcoded);
+		if (rcoded != right)
+			pfree(rcoded);
+		return false;
+	}
 
 	/* No ereport(ERROR) until changes are logged */
 	START_CRIT_SECTION();
@@ -775,6 +785,7 @@ bark_swap_tid_entry(Relation index, Buffer buf, OffsetNumber off,
 		pfree(lcoded);
 	if (rcoded != right)
 		pfree(rcoded);
+	return true;
 }
 
 static void bark_stack_resolve_parent(Relation index, BarkKeyInfo *keyinfo,
@@ -2136,20 +2147,11 @@ swap:
 	/*
 	 * newtid falls inside the entry, which cannot take it: divide the entry
 	 * around it.  In place when both parts and the new part's line pointer
-	 * fit, else in a split.  The line pointer must be counted here, not left
-	 * to PageGetFreeSpace's hold-back: on a page with no free bytes at all
-	 * (pd_lower == pd_upper) PageGetFreeSpace clamps to zero instead of
-	 * holding one back, so room is just the old entry's size, and two parts
-	 * that fill exactly that would leave PageAddItem no line pointer -- a
-	 * PANIC in the critical section below (found at 100M DocumentDB
-	 * documents, a full leaf of POSTING entries).
+	 * fit (bark_swap_tid_entry decides, on the coded parts), else in a split.
 	 */
 	bark_entry_swap_tid(cur, newtid, &left, &right);
-	if (bark_coded_size(page, left) + bark_coded_size(page, right) +
-		sizeof(ItemIdData) <= MAXALIGN(ItemIdGetLength(iid)) +
-		((PageHeader) page)->pd_upper - ((PageHeader) page)->pd_lower)
+	if (bark_swap_tid_entry(index, buf, eqoff, left, right, newtid))
 	{
-		bark_swap_tid_entry(index, buf, eqoff, left, right, newtid);
 		pfree(left);
 		pfree(right);
 		return BARK_COALESCE_DONE;
