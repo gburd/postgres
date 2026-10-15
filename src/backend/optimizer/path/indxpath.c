@@ -189,6 +189,7 @@ static IndexClause *expand_indexqual_rowcompare(PlannerInfo *root,
 												Oid expr_op,
 												bool var_on_left);
 static void match_pathkeys_to_index(IndexOptInfo *index, List *pathkeys,
+									int ordercol,
 									List **orderby_clauses_p,
 									List **clause_columns_p);
 static Expr *match_clause_to_ordering_op(IndexOptInfo *index,
@@ -932,7 +933,7 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 		 * query_pathkeys will allow an incremental sort to be considered on
 		 * the index's partially sorted results.
 		 */
-		match_pathkeys_to_index(index, root->query_pathkeys,
+		match_pathkeys_to_index(index, root->query_pathkeys, 0,
 								&orderbyclauses,
 								&orderbyclausecols);
 		if (list_length(root->query_pathkeys) == list_length(orderbyclauses))
@@ -1055,6 +1056,64 @@ build_index_paths(PlannerInfo *root, RelOptInfo *rel,
 				else
 					pfree(ipath);
 			}
+		}
+	}
+
+	/*
+	 * 6. If the index can also answer ordering-operator (KNN) scans, generate
+	 * those paths too.  An index may be both key-ordered (amcanorder, handled
+	 * in steps 2/5 above) and able to return rows in an ordering operator's
+	 * order (amcanorderbyop).  The two are independent path
+	 * shapes: the steps above produced the key-ordered paths, and this step
+	 * adds a path for ORDER BY col <-> const.  (For an AM that is only
+	 * amcanorderbyop, like GiST/SP-GiST, index_is_ordered is false and the
+	 * amcanorderbyop branch in step 2 already produced this path, so skip to
+	 * avoid duplicating it.)
+	 */
+	if (index->amcanorderbyop && index_is_ordered && pathkeys_possibly_useful)
+	{
+		List	   *obclauses = NIL;
+		List	   *obcols = NIL;
+		List	   *obpathkeys;
+		int			ordercol = 0;
+
+		/*
+		 * Such an index also orders a later column inside a run of entries
+		 * that the path's clauses fix on every column before it.  Which
+		 * clauses fix a column is the AM's to say (an operator class may fix
+		 * one with an operator that is not an equality).
+		 */
+		if (index->amorderbyopcolumn != NULL)
+			ordercol = index->amorderbyopcolumn(index, index_clauses);
+		match_pathkeys_to_index(index, root->query_pathkeys, ordercol,
+								&obclauses, &obcols);
+		if (obclauses != NIL)
+		{
+			if (list_length(root->query_pathkeys) == list_length(obclauses))
+				obpathkeys = root->query_pathkeys;
+			else
+				obpathkeys = list_copy_head(root->query_pathkeys,
+											list_length(obclauses));
+
+			ipath = create_index_path(root, index,
+									  index_clauses,
+									  obclauses,
+									  obcols,
+									  obpathkeys,
+									  ForwardScanDirection,
+									  index_only_scan,
+									  outer_relids,
+									  loop_count,
+									  false);
+			result = lappend(result, ipath);
+
+			/*
+			 * No parallel KNN path: the outward two-sided merge is driven from a
+			 * single center position, not a page cursor handed out across
+			 * workers, so it is not parallelized here (each worker would restart
+			 * at the center and re-emit the same nearest rows).  The key-ordered
+			 * paths above still consider parallelism.
+			 */
 		}
 	}
 
@@ -3710,9 +3769,13 @@ expand_indexqual_rowcompare(PlannerInfo *root,
  * can determine a partial match vs a full match by checking the outputted
  * list lengths.  A full match will have one item in the output lists for each
  * item in the given 'pathkeys' list.
+ *
+ * 'ordercol' is, for an index ordered by its key, the one column besides the
+ * leading one that may match: the column after those the path's clauses fix
+ * (amorderbyopcolumn; 0 when none).
  */
 static void
-match_pathkeys_to_index(IndexOptInfo *index, List *pathkeys,
+match_pathkeys_to_index(IndexOptInfo *index, List *pathkeys, int ordercol,
 						List **orderby_clauses_p,
 						List **clause_columns_p)
 {
@@ -3732,6 +3795,15 @@ match_pathkeys_to_index(IndexOptInfo *index, List *pathkeys,
 		EquivalenceMemberIterator it;
 		EquivalenceMember *member;
 
+		/*
+		 * An index that is also ordered by its key (sortopfamily is set)
+		 * answers an ordering operator by walking outward from a
+		 * point in its key order, so it can produce only one distance order,
+		 * on its leading column.  Give it at most one ordering operator; the
+		 * caller sorts on the remaining pathkeys incrementally.
+		 */
+		if (index->sortopfamily != NULL && *orderby_clauses_p != NIL)
+			return;
 
 		/* Pathkey must request default sort order for the target opfamily */
 		if (pathkey->pk_cmptype != COMPARE_LT || pathkey->pk_nulls_first)
@@ -3763,13 +3835,19 @@ match_pathkeys_to_index(IndexOptInfo *index, List *pathkeys,
 			 * We allow any column of the index to match each pathkey; they
 			 * don't have to match left-to-right as you might expect.  This is
 			 * correct for GiST, and it doesn't matter for SP-GiST because
-			 * that doesn't handle multiple columns anyway, and no other
-			 * existing AMs support amcanorderbyop.  We might need different
-			 * logic in future for other implementations.
+			 * that doesn't handle multiple columns anyway.  An index ordered
+			 * by its key (see above) keeps the entries of a later column
+			 * spread over the whole index, one group per leading value, so
+			 * only its leading column can match, or the column after a
+			 * prefix the path's clauses fix to one group (ordercol).
 			 */
 			for (indexcol = 0; indexcol < index->nkeycolumns; indexcol++)
 			{
 				Expr	   *expr;
+
+				if (index->sortopfamily != NULL && indexcol != 0 &&
+					indexcol != ordercol)
+					continue;
 
 				expr = match_clause_to_ordering_op(index,
 												   indexcol,

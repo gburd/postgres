@@ -322,6 +322,7 @@ get_relation_info(PlannerInfo *root, Oid relationObjectId, bool inhparent,
 				info->amcanmarkpos = (amroutine->ammarkpos != NULL &&
 									  amroutine->amrestrpos != NULL);
 				info->amcostestimate = amroutine->amcostestimate;
+				info->amorderbyopcolumn = amroutine->amorderbyopcolumn;
 				Assert(info->amcostestimate != NULL);
 
 				/* Fetch index opclass options */
