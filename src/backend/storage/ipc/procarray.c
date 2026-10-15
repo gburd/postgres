@@ -58,6 +58,7 @@
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
 #include "port/pg_lfind.h"
+#include "storage/ipc.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/procsignal.h"
@@ -72,6 +73,153 @@
 #include "utils/wait_event.h"
 
 #define UINT32_ACCESS_ONCE(var)		 ((uint32)(*((volatile uint32 *)&(var))))
+
+/*
+ * ProcArray sequence lock.
+ *
+ * GetSnapshotData() and TransactionIdIsInProgress() can read the ProcArray
+ * without acquiring ProcArrayLock: they read this counter, read the shared
+ * arrays, and re-read the counter, and retry if a writer ran in between.
+ * Every holder of ProcArrayLock in exclusive mode makes the counter odd
+ * after it acquires the lock and even again before it releases the lock (see
+ * the ProcArrayLock wrappers), so an unchanged even value proves that no
+ * exclusive holder changed the ProcArray during the read.
+ *
+ * XID assignment changes xids[] and the subxid caches without ProcArrayLock,
+ * and does not touch the counter.  That is safe for the same reason it is
+ * safe for a reader holding ProcArrayLock in shared mode: an XID assigned
+ * during the read is newer than the latestCompletedXid that the reader saw,
+ * and latestCompletedXid only advances under ProcArrayLock exclusive, which
+ * bumps the counter.
+ *
+ * The counter has its own cache line: readers only load it, and only
+ * exclusive holders store to it.
+ */
+typedef union ProcArraySeqData
+{
+	pg_atomic_uint32 seq;
+	char		pad[PG_CACHE_LINE_SIZE];
+} ProcArraySeqData;
+
+static ProcArraySeqData *ProcArraySeq;
+
+/* GUC (developer): log this backend's sequence-lock counters at exit */
+bool		procarray_seqlock_stats = false;
+
+/* Per-backend counters, reported at exit when procarray_seqlock_stats is on */
+static uint64 seqstat_snap_ok;		/* fast-path snapshots */
+static uint64 seqstat_snap_reuse;	/* ... of which reused */
+static uint64 seqstat_snap_retry;	/* failed attempts that were retried */
+static uint64 seqstat_snap_fallback;	/* snapshots taken under the lock */
+static uint64 seqstat_inprog_ok;
+static uint64 seqstat_inprog_retry;
+static uint64 seqstat_inprog_fallback;
+static bool seqstat_registered = false;
+
+static void
+ProcArraySeqStatsAtExit(int code, Datum arg)
+{
+	if (seqstat_snap_ok + seqstat_snap_fallback + seqstat_inprog_ok +
+		seqstat_inprog_fallback == 0)
+		return;
+	elog(LOG, "procarray seqlock stats: snap ok=" UINT64_FORMAT " reuse=" UINT64_FORMAT
+		 " retry=" UINT64_FORMAT " fallback=" UINT64_FORMAT
+		 " inprogress ok=" UINT64_FORMAT " retry=" UINT64_FORMAT " fallback=" UINT64_FORMAT,
+		 seqstat_snap_ok, seqstat_snap_reuse, seqstat_snap_retry,
+		 seqstat_snap_fallback, seqstat_inprog_ok, seqstat_inprog_retry,
+		 seqstat_inprog_fallback);
+}
+
+static inline void
+ProcArraySeqStatsRegister(void)
+{
+	if (unlikely(procarray_seqlock_stats && !seqstat_registered))
+	{
+		before_shmem_exit(ProcArraySeqStatsAtExit, (Datum) 0);
+		seqstat_registered = true;
+	}
+}
+
+/* Validation attempts before falling back to ProcArrayLock in shared mode */
+#define PROCARRAY_SEQ_MAX_TRIES		8
+/* Spins on an odd counter, per attempt, before giving up on that attempt */
+#define PROCARRAY_SEQ_MAX_SPINS		64
+
+/*
+ * Begin a read.  Returns the even counter value, or an odd value if a writer
+ * is still active after a short spin (the caller then counts the attempt as
+ * failed).
+ */
+static inline uint32
+ProcArraySeqReadBegin(void)
+{
+	uint32		seq = 0;
+
+	for (int spins = 0; spins < PROCARRAY_SEQ_MAX_SPINS; spins++)
+	{
+		seq = pg_atomic_read_u32(&ProcArraySeq->seq);
+		if ((seq & 1) == 0)
+			break;
+		SPIN_DELAY();
+	}
+	/* the reads of the protected data must not happen before this load */
+	pg_read_barrier();
+	return seq;
+}
+
+/* Check that no writer ran since ProcArraySeqReadBegin() returned seq. */
+static inline bool
+ProcArraySeqReadValid(uint32 seq)
+{
+	/* the reads of the protected data must happen before this load */
+	pg_read_barrier();
+	return pg_atomic_read_u32(&ProcArraySeq->seq) == seq;
+}
+
+/*
+ * Writer side.  Called with ProcArrayLock held exclusively, so there is one
+ * writer at a time and a plain read-modify-write of the counter suffices.
+ *
+ * If an ERROR was raised while ProcArrayLock was held exclusively,
+ * LWLockReleaseAll() released the lock without making the counter even.
+ * Repair that here: no other writer can be active while we hold the lock.
+ */
+static inline void
+ProcArraySeqWriteBegin(void)
+{
+	uint32		seq = pg_atomic_read_u32(&ProcArraySeq->seq);
+
+	if (unlikely(seq & 1))
+		seq++;
+	pg_atomic_write_u32(&ProcArraySeq->seq, seq + 1);
+	/* the counter must be odd before any change of the protected data */
+	pg_write_barrier();
+}
+
+static inline void
+ProcArraySeqWriteEnd(void)
+{
+	uint32		seq = pg_atomic_read_u32(&ProcArraySeq->seq);
+
+	/* the changes must be visible before the counter is even */
+	pg_write_barrier();
+	pg_atomic_write_u32(&ProcArraySeq->seq, seq + 1);
+}
+
+/*
+ * Repair a counter left odd by an ERROR (see ProcArraySeqWriteBegin()).
+ * Called with ProcArrayLock held in shared mode, when no exclusive holder can
+ * exist, so an odd value can only be stale.
+ */
+static inline void
+ProcArraySeqRepair(void)
+{
+	uint32		seq = pg_atomic_read_u32(&ProcArraySeq->seq);
+
+	if (unlikely(seq & 1))
+		(void) pg_atomic_compare_exchange_u32(&ProcArraySeq->seq, &seq,
+											  seq + 1);
+}
 
 /* Our shared memory area */
 typedef struct ProcArrayStruct
@@ -434,6 +582,12 @@ ProcArrayShmemRequest(void *arg)
 			);
 	}
 
+	/* The sequence lock, on its own cache line */
+	ShmemRequestStruct(.name = "ProcArray Seqlock",
+					   .size = sizeof(ProcArraySeqData),
+					   .ptr = (void **) &ProcArraySeq,
+		);
+
 	/* Register the ProcArray shared structure */
 	ShmemRequestStruct(.name = "Proc Array",
 					   .size = add_size(offsetof(ProcArrayStruct, pgprocnos),
@@ -474,6 +628,8 @@ ProcArrayShmemInit(void *arg)
 	ShardedLWLockInit(&ProcArraySLL, ProcArrayLock, ProcArrayLockShards,
 					  procarray_lock_shards);
 
+	pg_atomic_init_u32(&ProcArraySeq->seq, 0);
+
 	allProcs = ProcGlobal->allProcs;
 }
 
@@ -494,23 +650,35 @@ ProcArrayShmemAttach(void *arg)
  *
  * Every ProcArrayLock acquisition/release in the tree goes through these so the
  * sharded reader path is used uniformly.  They are thin shims over the
- * ShardedLWLock API operating on the ProcArraySLL object.
+ * ShardedLWLock API operating on the ProcArraySLL object.  An exclusive hold
+ * is also a write section of the ProcArray sequence lock: the counter is odd
+ * from just after the acquisition to just before the release.
  */
 bool
 ProcArrayLockAcquire(LWLockMode mode)
 {
-	return ShardedLWLockAcquire(&ProcArraySLL, mode);
+	bool		result = ShardedLWLockAcquire(&ProcArraySLL, mode);
+
+	if (mode == LW_EXCLUSIVE)
+		ProcArraySeqWriteBegin();
+	return result;
 }
 
 bool
 ProcArrayLockConditionalAcquire(LWLockMode mode)
 {
-	return ShardedLWLockConditionalAcquire(&ProcArraySLL, mode);
+	if (!ShardedLWLockConditionalAcquire(&ProcArraySLL, mode))
+		return false;
+	if (mode == LW_EXCLUSIVE)
+		ProcArraySeqWriteBegin();
+	return true;
 }
 
 void
 ProcArrayLockRelease(void)
 {
+	if (ShardedLWLockHeldByMeInMode(&ProcArraySLL, LW_EXCLUSIVE))
+		ProcArraySeqWriteEnd();
 	ShardedLWLockRelease(&ProcArraySLL);
 }
 
@@ -1571,7 +1739,100 @@ TransactionIdIsInProgress(TransactionId xid)
 	other_xids = ProcGlobal->xids;
 	other_subxidstates = ProcGlobal->subxidStates;
 
+	/*
+	 * Sequence-lock fast path: scan the ProcArray without ProcArrayLock, and
+	 * keep the result only if no exclusive holder ran during the scan.  Not
+	 * used in recovery, where KnownAssignedXids is the source.
+	 */
+	if (!RecoveryInProgress())
+	{
+		ProcArraySeqStatsRegister();
+		for (int attempt = 0; attempt < PROCARRAY_SEQ_MAX_TRIES; attempt++)
+		{
+			uint32		seq;
+			bool		found = false;
+			bool		torn = false;
+
+			if (attempt > 0)
+				seqstat_inprog_retry++;
+			seq = ProcArraySeqReadBegin();
+			if (seq & 1)
+				continue;		/* a writer is still active */
+
+			nxids = 0;
+			latestCompletedXid =
+				XidFromFullTransactionId(TransamVariables->latestCompletedXid);
+			if (TransactionIdPrecedes(latestCompletedXid, xid))
+				found = true;
+			else
+			{
+				mypgxactoff = MyProc->pgxactoff;
+				numProcs = UINT32_ACCESS_ONCE(arrayP->numProcs);
+				if (numProcs > arrayP->maxProcs)
+					continue;	/* torn read; retry */
+
+				for (int pgxactoff = 0; pgxactoff < numProcs; pgxactoff++)
+				{
+					int			pgprocno;
+					PGPROC	   *proc;
+					TransactionId pxid;
+					int			pxids;
+
+					if (pgxactoff == mypgxactoff)
+						continue;
+					pxid = UINT32_ACCESS_ONCE(other_xids[pgxactoff]);
+					if (!TransactionIdIsValid(pxid))
+						continue;
+					if (TransactionIdEquals(pxid, xid))
+					{
+						found = true;
+						break;
+					}
+					if (TransactionIdPrecedes(xid, pxid))
+						continue;
+
+					pxids = other_subxidstates[pgxactoff].count;
+					pg_read_barrier();	/* pairs with GetNewTransactionId() */
+					pgprocno = UINT32_ACCESS_ONCE(arrayP->pgprocnos[pgxactoff]);
+					/* a torn read can yield garbage; never dereference it */
+					if (pgprocno < 0 || pgprocno >= ProcGlobal->allProcCount ||
+						pxids > PGPROC_MAX_CACHED_SUBXIDS)
+					{
+						torn = true;
+						break;
+					}
+					proc = &allProcs[pgprocno];
+					for (j = pxids - 1; j >= 0; j--)
+					{
+						if (TransactionIdEquals(UINT32_ACCESS_ONCE(proc->subxids.xids[j]),
+												xid))
+						{
+							found = true;
+							break;
+						}
+					}
+					if (found)
+						break;
+					if (other_subxidstates[pgxactoff].overflowed)
+						xids[nxids++] = pxid;
+				}
+			}
+
+			if (torn || !ProcArraySeqReadValid(seq))
+				continue;
+
+			seqstat_inprog_ok++;
+			if (found)
+				return true;
+			goto scan_done;
+		}
+		/* Too many writers; take the lock, which guarantees progress. */
+		seqstat_inprog_fallback++;
+	}
+
+	nxids = 0;
 	ProcArrayLockAcquire(LW_SHARED);
+	ProcArraySeqRepair();
 
 	/*
 	 * Now that we have the lock, we can check latestCompletedXid; if the
@@ -1682,6 +1943,8 @@ TransactionIdIsInProgress(TransactionId xid)
 	}
 
 	ProcArrayLockRelease();
+
+scan_done:
 
 	/*
 	 * If none of the relevant caches overflowed, we know the Xid is not
@@ -2191,6 +2454,207 @@ GetSnapshotDataReuse(Snapshot snapshot)
 }
 
 /*
+ * Sequence-lock fast path for GetSnapshotData(): build the snapshot without
+ * ProcArrayLock.  Returns true and fills *snapshot and the out parameters if
+ * a scan completed with no exclusive holder running; returns false if the
+ * caller must use the ProcArrayLock path.
+ *
+ * This computes exactly what the locked path computes, from the same shared
+ * data; the counter check makes the result describe one instant, as holding
+ * ProcArrayLock in shared mode does.
+ *
+ * MyProc->xmin.  The locked path sets MyProc->xmin while it holds
+ * ProcArrayLock, so a transaction that the snapshot sees as running cannot
+ * end before ComputeXidHorizons() can see our xmin.  Here a transaction can
+ * end during the scan, so each attempt stores its xmin *before* validating,
+ * with a full barrier between the store and the counter load.  If the
+ * validation succeeds, no writer had started before that load; a later
+ * writer's changes become visible only after our xmin store (store-load
+ * ordering on our side, store-store ordering on the writer's side), so
+ * ComputeXidHorizons() sees either the running transaction or our xmin.  If
+ * the validation fails, the stored xmin is older than needed (harmless), and
+ * the next attempt or the locked path overwrites it.
+ *
+ * *xmin_stored is set to true when this function stored MyProc->xmin, so that
+ * the locked path also overwrites it after a fallback.
+ */
+static bool
+GetSnapshotDataSeq(Snapshot snapshot, bool set_xmin, bool *xmin_stored,
+				   FullTransactionId *latest_completed_p,
+				   TransactionId *oldestxid_p, TransactionId *myxid_p,
+				   TransactionId *xmin_p, TransactionId *xmax_p,
+				   int *count_p, int *subcount_p, bool *suboverflowed_p,
+				   uint64 *completion_p, TransactionId *slot_xmin_p,
+				   TransactionId *slot_catalog_xmin_p)
+{
+	ProcArrayStruct *arrayP = procArray;
+	TransactionId *other_xids = ProcGlobal->xids;
+	XidCacheStatus *subxidStates = ProcGlobal->subxidStates;
+	uint8	   *allStatusFlags = ProcGlobal->statusFlags;
+	TransactionId *xip = snapshot->xip;
+	int			maxsubxids = GetMaxSnapshotSubxidCount();
+
+	for (int attempt = 0; attempt < PROCARRAY_SEQ_MAX_TRIES; attempt++)
+	{
+		uint32		seq;
+		FullTransactionId latest_completed;
+		TransactionId xmin;
+		TransactionId xmax;
+		TransactionId myxid;
+		uint64		completion;
+		int			numProcs;
+		int			mypgxactoff;
+		int			count = 0;
+		int			subcount = 0;
+		bool		suboverflowed = false;
+		bool		torn = false;
+
+		if (attempt > 0)
+			seqstat_snap_retry++;
+		seq = ProcArraySeqReadBegin();
+		if (seq & 1)
+			continue;			/* a writer is still active */
+
+		/*
+		 * Snapshot reuse, as GetSnapshotDataReuse(): if no transaction with an
+		 * XID has ended since the snapshot was built, it is still correct.
+		 */
+		completion = TransamVariables->xactCompletionCount;
+		if (snapshot->snapXactCompletionCount != 0 &&
+			completion == snapshot->snapXactCompletionCount)
+		{
+			if (set_xmin)
+			{
+				MyProc->xmin = snapshot->xmin;
+				*xmin_stored = true;
+				pg_memory_barrier();
+			}
+			if (!ProcArraySeqReadValid(seq))
+				continue;
+			if (set_xmin)
+				TransactionXmin = snapshot->xmin;
+			RecentXmin = snapshot->xmin;
+			Assert(TransactionIdPrecedesOrEquals(TransactionXmin, RecentXmin));
+			snapshot->curcid = GetCurrentCommandId(false);
+			snapshot->active_count = 0;
+			snapshot->regd_count = 0;
+			snapshot->copied = false;
+			*count_p = -1;		/* tells the caller: reused */
+			seqstat_snap_ok++;
+			seqstat_snap_reuse++;
+			return true;
+		}
+
+		latest_completed = TransamVariables->latestCompletedXid;
+		mypgxactoff = MyProc->pgxactoff;
+		myxid = MyProc->xid;
+
+		xmax = XidFromFullTransactionId(latest_completed);
+		TransactionIdAdvance(xmax);
+		xmin = xmax;
+		if (TransactionIdIsNormal(myxid) && NormalTransactionIdPrecedes(myxid, xmin))
+			xmin = myxid;
+
+		numProcs = UINT32_ACCESS_ONCE(arrayP->numProcs);
+		if (numProcs > arrayP->maxProcs)
+			continue;			/* torn read; retry */
+
+		for (int pgxactoff = 0; pgxactoff < numProcs; pgxactoff++)
+		{
+			TransactionId xid = UINT32_ACCESS_ONCE(other_xids[pgxactoff]);
+			uint8		statusFlags;
+
+			if (likely(xid == InvalidTransactionId))
+				continue;
+			if (pgxactoff == mypgxactoff)
+				continue;
+			/* a torn read can yield a non-normal value; never trust it */
+			if (!TransactionIdIsNormal(xid))
+			{
+				torn = true;
+				break;
+			}
+			if (!NormalTransactionIdPrecedes(xid, xmax))
+				continue;
+
+			statusFlags = allStatusFlags[pgxactoff];
+			if (statusFlags & (PROC_IN_LOGICAL_DECODING | PROC_IN_VACUUM))
+				continue;
+
+			if (NormalTransactionIdPrecedes(xid, xmin))
+				xmin = xid;
+
+			xip[count++] = xid;
+
+			if (!suboverflowed)
+			{
+				if (subxidStates[pgxactoff].overflowed)
+					suboverflowed = true;
+				else
+				{
+					int			nsubxids = subxidStates[pgxactoff].count;
+
+					if (nsubxids > 0)
+					{
+						int			pgprocno = UINT32_ACCESS_ONCE(arrayP->pgprocnos[pgxactoff]);
+						PGPROC	   *proc;
+
+						if (pgprocno < 0 || pgprocno >= ProcGlobal->allProcCount ||
+							nsubxids > PGPROC_MAX_CACHED_SUBXIDS ||
+							subcount + nsubxids > maxsubxids)
+						{
+							torn = true;
+							break;
+						}
+						proc = &allProcs[pgprocno];
+
+						pg_read_barrier();	/* pairs with GetNewTransactionId */
+						memcpy(snapshot->subxip + subcount,
+							   (TransactionId *) proc->subxids.xids,
+							   nsubxids * sizeof(TransactionId));
+						subcount += nsubxids;
+					}
+				}
+			}
+		}
+		if (torn)
+			continue;
+
+		*slot_xmin_p = procArray->replication_slot_xmin;
+		*slot_catalog_xmin_p = procArray->replication_slot_catalog_xmin;
+		*oldestxid_p = TransamVariables->oldestXid;
+
+		/* the horizon interlock: store our xmin, then validate */
+		if (set_xmin)
+		{
+			MyProc->xmin = xmin;
+			*xmin_stored = true;
+			pg_memory_barrier();
+		}
+
+		if (!ProcArraySeqReadValid(seq))
+			continue;
+
+		if (set_xmin)
+			TransactionXmin = xmin;
+
+		*latest_completed_p = latest_completed;
+		*myxid_p = myxid;
+		*xmin_p = xmin;
+		*xmax_p = xmax;
+		*count_p = count;
+		*subcount_p = subcount;
+		*suboverflowed_p = suboverflowed;
+		*completion_p = completion;
+		seqstat_snap_ok++;
+		return true;
+	}
+
+	seqstat_snap_fallback++;
+	return false;
+}
+
+/*
  * GetSnapshotData -- returns information about running transactions.
  *
  * The returned snapshot includes xmin (lowest still-running xact ID),
@@ -2284,10 +2748,45 @@ GetSnapshotData(Snapshot snapshot)
 	}
 
 	/*
+	 * Outside recovery, first try to build the snapshot without
+	 * ProcArrayLock.
+	 */
+	ProcArraySeqStatsRegister();
+	if (!RecoveryInProgress())
+	{
+		bool		set_xmin = !TransactionIdIsValid(MyProc->xmin);
+		bool		xmin_stored = false;
+
+		if (GetSnapshotDataSeq(snapshot, set_xmin, &xmin_stored,
+							   &latest_completed, &oldestxid, &myxid,
+							   &xmin, &xmax, &count, &subcount,
+							   &suboverflowed, &curXactCompletionCount,
+							   &replication_slot_xmin,
+							   &replication_slot_catalog_xmin))
+		{
+			if (count < 0)
+				return snapshot;	/* reused */
+			snapshot->takenDuringRecovery = false;
+			goto snapshot_built;
+		}
+
+		/*
+		 * Too many writers: fall back to the lock, which guarantees
+		 * progress.  If we stored a provisional MyProc->xmin, the locked path
+		 * must replace it, so make it look unset there.
+		 */
+		ProcArrayLockAcquire(LW_SHARED);
+		if (xmin_stored)
+			MyProc->xmin = InvalidTransactionId;
+	}
+	else
+		ProcArrayLockAcquire(LW_SHARED);	/* recovery: KnownAssignedXids */
+
+	/*
 	 * It is sufficient to get shared lock on ProcArrayLock, even if we are
 	 * going to set MyProc->xmin.
 	 */
-	ProcArrayLockAcquire(LW_SHARED);
+	ProcArraySeqRepair();
 
 	if (GetSnapshotDataReuse(snapshot))
 	{
@@ -2473,6 +2972,8 @@ GetSnapshotData(Snapshot snapshot)
 		MyProc->xmin = TransactionXmin = xmin;
 
 	ProcArrayLockRelease();
+
+snapshot_built:
 
 	/* maintain state for GlobalVis* */
 	{

@@ -27,6 +27,8 @@ extern PGDLLIMPORT int procarray_lock_shards;
  * through a sharded reader/writer lock (see storage/shardedlock.h).  Callers
  * use these instead of LWLockAcquire(ProcArrayLock, ...) etc.
  */
+extern PGDLLIMPORT bool procarray_seqlock_stats;
+
 extern bool ProcArrayLockAcquire(LWLockMode mode);
 extern bool ProcArrayLockConditionalAcquire(LWLockMode mode);
 extern void ProcArrayLockRelease(void);

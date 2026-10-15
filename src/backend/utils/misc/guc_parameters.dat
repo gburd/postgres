@@ -2493,6 +2493,13 @@
   max => '1024',
 },
 
+{ name => 'procarray_seqlock_stats', type => 'bool', context => 'PGC_SIGHUP', group => 'DEVELOPER_OPTIONS',
+  short_desc => 'Logs each backend\'s ProcArray sequence-lock counters at exit.',
+  flags => 'GUC_NOT_IN_SAMPLE',
+  variable => 'procarray_seqlock_stats',
+  boot_val => 'false',
+},
+
 { name => 'quote_all_identifiers', type => 'bool', context => 'PGC_USERSET', group => 'COMPAT_OPTIONS_PREVIOUS',
   short_desc => 'When generating SQL fragments, quote all identifiers.',
   variable => 'quote_all_identifiers',
