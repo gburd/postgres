@@ -2477,6 +2477,7 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 	bms_free(relation->rd_idattr);
 	bms_free(relation->rd_indexedattr);
 	bms_free(relation->rd_summarizedattr);
+	bms_free(relation->rd_exprattr);
 	if (relation->rd_pubdesc)
 		pfree(relation->rd_pubdesc);
 	if (relation->rd_options)
@@ -5325,6 +5326,9 @@ RelationGetIndexPredicate(Relation relation)
  *									index (empty if FULL)
  *	INDEX_ATTR_BITMAP_INDEXED		Columns referenced by indexes
  *	INDEX_ATTR_BITMAP_SUMMARIZED	Columns only included in summarizing indexes
+ *	INDEX_ATTR_BITMAP_EXPRESSION	Columns that non-summarizing indexes
+ *									reference only through expressions or
+ *									as partial indexes
  *
  * Attribute numbers are offset by FirstLowInvalidHeapAttributeNumber so that
  * we can include system attributes (e.g., OID) in the bitmap representation.
@@ -5349,6 +5353,10 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 	Bitmapset  *idindexattrs;	/* columns in the replica identity */
 	Bitmapset  *indexedattrs;	/* columns referenced by indexes */
 	Bitmapset  *summarizedattrs;	/* columns only in summarizing indexes */
+	Bitmapset  *exprattrs;		/* columns of expression or partial
+								 * non-summarizing indexes */
+	Bitmapset  *plainattrs;		/* columns of other non-summarizing indexes,
+								 * and plain columns of expression indexes */
 	List	   *indexoidlist;
 	List	   *newindexoidlist;
 	Oid			relpkindex;
@@ -5371,6 +5379,8 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 				return bms_copy(relation->rd_indexedattr);
 			case INDEX_ATTR_BITMAP_SUMMARIZED:
 				return bms_copy(relation->rd_summarizedattr);
+			case INDEX_ATTR_BITMAP_EXPRESSION:
+				return bms_copy(relation->rd_exprattr);
 			default:
 				elog(ERROR, "unknown attrKind %u", attrKind);
 		}
@@ -5415,6 +5425,8 @@ restart:
 	idindexattrs = NULL;
 	indexedattrs = NULL;
 	summarizedattrs = NULL;
+	exprattrs = NULL;
+	plainattrs = NULL;
 	foreach(l, indexoidlist)
 	{
 		Oid			indexOid = lfirst_oid(l);
@@ -5498,6 +5510,15 @@ restart:
 			{
 				*attrs = bms_add_member(*attrs,
 										attrnum - FirstLowInvalidHeapAttributeNumber);
+				if (attrs == &indexedattrs)
+				{
+					if (indexPredicate != NULL)
+						exprattrs = bms_add_member(exprattrs,
+												   attrnum - FirstLowInvalidHeapAttributeNumber);
+					else
+						plainattrs = bms_add_member(plainattrs,
+													attrnum - FirstLowInvalidHeapAttributeNumber);
+				}
 
 				if (isKey && i < indexDesc->rd_index->indnkeyatts)
 					uindexattrs = bms_add_member(uindexattrs,
@@ -5518,6 +5539,12 @@ restart:
 
 		/* Collect all attributes in the index predicate, too */
 		pull_varattnos(indexPredicate, 1, attrs);
+
+		if (attrs == &indexedattrs)
+		{
+			pull_varattnos(indexExpressions, 1, &exprattrs);
+			pull_varattnos(indexPredicate, 1, &exprattrs);
+		}
 
 		index_close(indexDesc, AccessShareLock);
 	}
@@ -5547,9 +5574,23 @@ restart:
 		bms_free(idindexattrs);
 		bms_free(indexedattrs);
 		bms_free(summarizedattrs);
+		bms_free(exprattrs);
+		bms_free(plainattrs);
 
 		goto restart;
 	}
+
+	/*
+	 * Record what attributes non-summarizing indexes reference only through
+	 * expressions, or only as partial indexes.  A change to one of these
+	 * needs new index entries only if it changes the value of an index's
+	 * expressions or a row's membership in, or key within, a partial index.
+	 * An attribute a summarizing index references is left out, as that index
+	 * needs to see any change to it.
+	 */
+	exprattrs = bms_del_members(exprattrs, plainattrs);
+	exprattrs = bms_del_members(exprattrs, summarizedattrs);
+	bms_free(plainattrs);
 
 	/*
 	 * Record what attributes are only referenced by summarizing indexes. Then
@@ -5571,6 +5612,8 @@ restart:
 	relation->rd_indexedattr = NULL;
 	bms_free(relation->rd_summarizedattr);
 	relation->rd_summarizedattr = NULL;
+	bms_free(relation->rd_exprattr);
+	relation->rd_exprattr = NULL;
 
 	/*
 	 * Now save copies of the bitmaps in the relcache entry.  We intentionally
@@ -5585,6 +5628,7 @@ restart:
 	relation->rd_idattr = bms_copy(idindexattrs);
 	relation->rd_indexedattr = bms_copy(indexedattrs);
 	relation->rd_summarizedattr = bms_copy(summarizedattrs);
+	relation->rd_exprattr = bms_copy(exprattrs);
 	relation->rd_attrsvalid = true;
 	MemoryContextSwitchTo(oldcxt);
 
@@ -5601,6 +5645,8 @@ restart:
 			return indexedattrs;
 		case INDEX_ATTR_BITMAP_SUMMARIZED:
 			return summarizedattrs;
+		case INDEX_ATTR_BITMAP_EXPRESSION:
+			return exprattrs;
 		default:
 			elog(ERROR, "unknown attrKind %u", attrKind);
 			return NULL;
