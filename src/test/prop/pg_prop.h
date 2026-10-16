@@ -305,6 +305,9 @@ extern char *pg_prop_sql_rowhash(pg_prop_conn *conn, const char *sql,
  */
 extern bool pg_prop_sql_exec(pg_prop_conn *conn, const char *sql, char **errmsg);
 
+/* "area/property" currently running (NULL outside a run); for diagnostics. */
+extern const char *pg_prop_current_area;
+
 /*
  * Asynchronous statement support, for properties that need two sessions in
  * flight at once (e.g. provoking a deadlock, where both sessions must be
