@@ -217,6 +217,10 @@ static bool overrun;
  * is skipped, not one case; run_property reads and clears it.
  */
 static bool skip_requested;
+
+/* "area/property" now running, for diagnostics (see pg_prop_sql.c). */
+const char *pg_prop_current_area = NULL;
+static char current_area_buf[256];
 static StringInfoData skip_reason;
 static bool skip_reason_inited;
 
@@ -630,6 +634,8 @@ run_property(PropEntry *prop, uint64 iterations, bool have_seed, uint64 seed,
 	check_rc(ctx, hegel_settings_set_verbosity(ctx, s, verbosity), "set_verbosity");
 	check_rc(ctx, hegel_settings_set_seed(ctx, s, seed, have_seed), "set_seed");
 	snprintf(dbkey, sizeof(dbkey), "%s/%s", prop->area, prop->name);
+	snprintf(current_area_buf, sizeof(current_area_buf), "%s", dbkey);
+	pg_prop_current_area = current_area_buf;
 	check_rc(ctx, hegel_settings_set_database_key(ctx, s, dbkey), "set_db_key");
 	check_rc(ctx, hegel_settings_set_database(ctx, s, dbpath ? dbpath : ""),
 			 "set_database");

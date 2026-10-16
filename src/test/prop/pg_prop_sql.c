@@ -18,6 +18,9 @@
  */
 #include "postgres_fe.h"
 
+#include <time.h>
+#include <unistd.h>
+
 #include "lib/stringinfo.h"
 #include "libpq-fe.h"
 #include "pg_prop.h"
@@ -70,6 +73,55 @@ pg_prop_connect(char **err)
 
 /* Unlink c from the live list, if present. */
 static void
+unlink_conn(pg_prop_conn *c);
+
+/*
+ * Crash tripwire.  A backend that dies (assertion failure, segfault) takes
+ * its connection with it, and the property would otherwise see only a
+ * confusing SQL failure, which the engine then "shrinks" by trying other
+ * inputs until the case stops reproducing -- by which time the postmaster is
+ * in crash recovery and every following area fails to connect.  So every
+ * statement helper calls this after PQexec: if the connection is now bad,
+ * the statement that killed it is appended to $PG_PROP_CRASH_LOG (default
+ * pg_prop_crashes.sql in the working directory), stamped with the area
+ * and time, and the run aborts at once with a distinct exit code.  The
+ * crashing statement is the reproducer; it is captured before shrinking can
+ * lose it, and nothing downstream runs against a recovering server.
+ */
+static void
+check_backend_alive(pg_prop_conn *conn, const char *sql)
+{
+	FILE	   *f;
+	const char *path;
+	time_t		now;
+
+	if (PQstatus(conn->conn) == CONNECTION_OK)
+		return;
+
+	path = getenv("PG_PROP_CRASH_LOG");
+	if (path == NULL || path[0] == '\0')
+		path = "pg_prop_crashes.sql";
+	now = time(NULL);
+	f = fopen(path, "a");
+	if (f != NULL)
+	{
+		fprintf(f, "-- backend died: area=%s pid=%d at %s"
+				"-- server said: %s\n%s;\n\n",
+				pg_prop_current_area ? pg_prop_current_area : "?",
+				(int) getpid(), ctime(&now),
+				PQerrorMessage(conn->conn), sql);
+		fclose(f);
+	}
+	fprintf(stderr,
+			"pg_prop: BACKEND CRASH -- the server connection died while running:\n"
+			"%s\n(statement saved to %s; aborting so no further area runs "
+			"against a recovering server)\n", sql, path);
+	fflush(stdout);
+	exit(3);
+}
+
+/* Unlink c from the live list, if present. */
+static void
 unlink_conn(pg_prop_conn *c)
 {
 	pg_prop_conn **pp = &live_conns;
@@ -112,8 +164,11 @@ char *
 pg_prop_sql_scalar(pg_prop_conn *conn, const char *sql, bool *failed, char **errmsg)
 {
 	PGresult   *res = PQexec(conn->conn, sql);
-	ExecStatusType st = PQresultStatus(res);
+	ExecStatusType st;
 	char	   *out;
+
+	check_backend_alive(conn, sql);
+	st = PQresultStatus(res);
 
 	if (failed)
 		*failed = false;
@@ -140,10 +195,13 @@ char *
 pg_prop_sql_rows(pg_prop_conn *conn, const char *sql, bool *failed, char **errmsg)
 {
 	PGresult   *res = PQexec(conn->conn, sql);
-	ExecStatusType st = PQresultStatus(res);
+	ExecStatusType st;
 	StringInfoData s;
 	int			nrows,
 				ncols;
+
+	check_backend_alive(conn, sql);
+	st = PQresultStatus(res);
 
 	if (failed)
 		*failed = false;
@@ -205,6 +263,7 @@ pg_prop_sql_rowhash(pg_prop_conn *conn, const char *sql, bool *failed,
 					 "FROM (SELECT (sub)::text AS r FROM (%s) sub) q",
 					 sql);
 	res = PQexec(conn->conn, q.data);
+	check_backend_alive(conn, sql);
 	pfree(q.data);
 	st = PQresultStatus(res);
 	if (st != PGRES_TUPLES_OK)
@@ -230,7 +289,10 @@ bool
 pg_prop_sql_exec(pg_prop_conn *conn, const char *sql, char **errmsg)
 {
 	PGresult   *res = PQexec(conn->conn, sql);
-	ExecStatusType st = PQresultStatus(res);
+	ExecStatusType st;
+
+	check_backend_alive(conn, sql);
+	st = PQresultStatus(res);
 
 	if (st != PGRES_COMMAND_OK && st != PGRES_TUPLES_OK)
 	{
