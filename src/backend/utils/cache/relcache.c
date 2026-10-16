@@ -2478,6 +2478,7 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 	bms_free(relation->rd_indexedattr);
 	bms_free(relation->rd_summarizedattr);
 	bms_free(relation->rd_exprattr);
+	bms_free(relation->rd_cmpattr);
 	if (relation->rd_pubdesc)
 		pfree(relation->rd_pubdesc);
 	if (relation->rd_options)
@@ -5355,6 +5356,9 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 	Bitmapset  *summarizedattrs;	/* columns only in summarizing indexes */
 	Bitmapset  *exprattrs;		/* columns of expression or partial
 								 * non-summarizing indexes */
+	Bitmapset  *cmpattrs;		/* plain columns of indexes whose AM can
+								 * compare entries (amcomparedatums) */
+	Bitmapset  *nocmpattrs;		/* plain columns of indexes whose AM cannot */
 	Bitmapset  *plainattrs;		/* columns of other non-summarizing indexes,
 								 * and plain columns of expression indexes */
 	List	   *indexoidlist;
@@ -5381,6 +5385,8 @@ RelationGetIndexAttrBitmap(Relation relation, IndexAttrBitmapKind attrKind)
 				return bms_copy(relation->rd_summarizedattr);
 			case INDEX_ATTR_BITMAP_EXPRESSION:
 				return bms_copy(relation->rd_exprattr);
+			case INDEX_ATTR_BITMAP_COMPARABLE:
+				return bms_copy(relation->rd_cmpattr);
 			default:
 				elog(ERROR, "unknown attrKind %u", attrKind);
 		}
@@ -5426,6 +5432,8 @@ restart:
 	indexedattrs = NULL;
 	summarizedattrs = NULL;
 	exprattrs = NULL;
+	cmpattrs = NULL;
+	nocmpattrs = NULL;
 	plainattrs = NULL;
 	foreach(l, indexoidlist)
 	{
@@ -5518,6 +5526,13 @@ restart:
 					else
 						plainattrs = bms_add_member(plainattrs,
 													attrnum - FirstLowInvalidHeapAttributeNumber);
+					if (indexDesc->rd_indam->amcomparedatums != NULL &&
+						!indexDesc->rd_index->indisexclusion)
+						cmpattrs = bms_add_member(cmpattrs,
+												  attrnum - FirstLowInvalidHeapAttributeNumber);
+					else
+						nocmpattrs = bms_add_member(nocmpattrs,
+													attrnum - FirstLowInvalidHeapAttributeNumber);
 				}
 
 				if (isKey && i < indexDesc->rd_index->indnkeyatts)
@@ -5575,6 +5590,8 @@ restart:
 		bms_free(indexedattrs);
 		bms_free(summarizedattrs);
 		bms_free(exprattrs);
+		bms_free(cmpattrs);
+		bms_free(nocmpattrs);
 		bms_free(plainattrs);
 
 		goto restart;
@@ -5591,6 +5608,26 @@ restart:
 	exprattrs = bms_del_members(exprattrs, plainattrs);
 	exprattrs = bms_del_members(exprattrs, summarizedattrs);
 	bms_free(plainattrs);
+
+	/*
+	 * Record what attributes non-summarizing indexes also reference directly,
+	 * as key or included columns, only in indexes whose access method can
+	 * tell whether a new value gives the same entries (amcomparedatums).  A
+	 * change to one of these needs new index entries only if, for some index,
+	 * it does not.  Like those above, and for the same reason, these leave
+	 * out what summarizing indexes reference.  They also leave out the
+	 * columns of candidate keys and the replica identity, whose changes are
+	 * decided by value as before: the table AM takes its tuple lock strength
+	 * and what it logs for logical decoding from them.  Indexes of exclusion
+	 * constraints count as unable to compare: the constraint is checked on
+	 * the values when an entry is inserted, and values that give the same
+	 * entries need not have the same conflicts.
+	 */
+	cmpattrs = bms_del_members(cmpattrs, nocmpattrs);
+	cmpattrs = bms_del_members(cmpattrs, summarizedattrs);
+	cmpattrs = bms_del_members(cmpattrs, uindexattrs);
+	cmpattrs = bms_del_members(cmpattrs, idindexattrs);
+	bms_free(nocmpattrs);
 
 	/*
 	 * Record what attributes are only referenced by summarizing indexes. Then
@@ -5614,6 +5651,8 @@ restart:
 	relation->rd_summarizedattr = NULL;
 	bms_free(relation->rd_exprattr);
 	relation->rd_exprattr = NULL;
+	bms_free(relation->rd_cmpattr);
+	relation->rd_cmpattr = NULL;
 
 	/*
 	 * Now save copies of the bitmaps in the relcache entry.  We intentionally
@@ -5629,6 +5668,7 @@ restart:
 	relation->rd_indexedattr = bms_copy(indexedattrs);
 	relation->rd_summarizedattr = bms_copy(summarizedattrs);
 	relation->rd_exprattr = bms_copy(exprattrs);
+	relation->rd_cmpattr = bms_copy(cmpattrs);
 	relation->rd_attrsvalid = true;
 	MemoryContextSwitchTo(oldcxt);
 
@@ -5647,6 +5687,8 @@ restart:
 			return summarizedattrs;
 		case INDEX_ATTR_BITMAP_EXPRESSION:
 			return exprattrs;
+		case INDEX_ATTR_BITMAP_COMPARABLE:
+			return cmpattrs;
 		default:
 			elog(ERROR, "unknown attrKind %u", attrKind);
 			return NULL;
