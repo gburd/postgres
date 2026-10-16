@@ -305,7 +305,7 @@ qg_build_table(pg_prop_tc *tc, pg_prop_conn *conn, int *nrows)
 	if (pg_prop_draw_int(tc, 0, 2) == 0)
 		appendStringInfoString(&ddl, "CREATE INDEX ON " QG_TABLE " (d) WHERE d IS NOT NULL; ");
 	if (pg_prop_draw_int(tc, 0, 2) == 0)
-		appendStringInfoString(&ddl, "CREATE INDEX ON " QG_TABLE " ((coalesce(a, 0) + 1)); ");
+		appendStringInfoString(&ddl, "CREATE INDEX ON " QG_TABLE " ((coalesce(a, 0)::bigint + 1)); ");
 
 	/* ANALYZE so the planner has stats and will actually consider plans. */
 	appendStringInfoString(&ddl, "ANALYZE " QG_TABLE ";");
