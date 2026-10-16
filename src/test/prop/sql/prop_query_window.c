@@ -146,10 +146,10 @@ PG_PROP(window_running_sum)
 
 	last_running = scalar_long(tc, conn,
 							   "SELECT coalesce(max(rs), 0) FROM "
-							   "(SELECT sum(coalesce(abs(a),0)) OVER "
+							   "(SELECT sum(coalesce(abs(a::bigint),0)) OVER "
 							   "(ORDER BY a, id) AS rs FROM qg_t) s");
 	plain_sum = scalar_long(tc, conn,
-							"SELECT coalesce(sum(coalesce(abs(a),0)),0) FROM qg_t");
+							"SELECT coalesce(sum(coalesce(abs(a::bigint),0)),0) FROM qg_t");
 	if (last_running != plain_sum)
 		pg_prop_fail(tc, "running sum last=%ld != plain sum=%ld",
 					 last_running, plain_sum);
@@ -158,7 +158,7 @@ PG_PROP(window_running_sum)
 	nonmonotone = scalar_long(tc, conn,
 							  "SELECT count(*) FROM "
 							  "(SELECT rs, lag(rs) OVER (ORDER BY a, id) AS prev FROM "
-							  "(SELECT a, id, sum(coalesce(abs(a),0)) OVER (ORDER BY a, id) AS rs "
+							  "(SELECT a, id, sum(coalesce(abs(a::bigint),0)) OVER (ORDER BY a, id) AS rs "
 							  "FROM qg_t) t) u WHERE prev IS NOT NULL AND rs < prev");
 	if (nonmonotone != 0)
 		pg_prop_fail(tc, "running sum of non-negative values decreased %ld times",
@@ -216,12 +216,12 @@ PG_PROP(rollup_grand_total)
 	 * bits set); its sum equals the whole-table sum */
 	rollup_total = scalar_long(tc, conn,
 							   "SELECT coalesce(s,0) FROM "
-							   "(SELECT sum(coalesce(a,0)) AS s, "
+							   "(SELECT sum(coalesce(a::bigint,0)) AS s, "
 							   "grouping(a) AS ga, grouping(b) AS gb "
 							   "FROM qg_t GROUP BY ROLLUP(a, b)) r "
 							   "WHERE ga = 1 AND gb = 1");
 	plain_total = scalar_long(tc, conn,
-							  "SELECT coalesce(sum(coalesce(a,0)),0) FROM qg_t");
+							  "SELECT coalesce(sum(coalesce(a::bigint,0)),0) FROM qg_t");
 	if (rollup_total != plain_total)
 		pg_prop_fail(tc, "ROLLUP grand total=%ld != plain total=%ld",
 					 rollup_total, plain_total);
@@ -236,10 +236,10 @@ PG_PROP(rollup_detail_matches)
 
 	require_same_rows(tc, conn,
 		/* ROLLUP detail = rows with no grouping bit set, projected like GROUP BY */
-					  "SELECT a, b, sum(coalesce(a,0)) AS s, count(*) AS c "
+					  "SELECT a, b, sum(coalesce(a::bigint,0)) AS s, count(*) AS c "
 					  "FROM qg_t GROUP BY a, b ORDER BY a, b",
 					  "SELECT a, b, s, c FROM "
-					  "(SELECT a, b, sum(coalesce(a,0)) AS s, count(*) AS c, "
+					  "(SELECT a, b, sum(coalesce(a::bigint,0)) AS s, count(*) AS c, "
 					  "grouping(a) AS ga, grouping(b) AS gb "
 					  "FROM qg_t GROUP BY ROLLUP(a, b)) r "
 					  "WHERE ga = 0 AND gb = 0 ORDER BY a, b");
