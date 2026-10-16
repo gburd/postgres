@@ -286,6 +286,7 @@ prop_query_sources = files(
   'sql/prop_query_ext_citext.c',
   'sql/prop_query_multi.c',
   'sql/prop_query_deep.c',
+  'sql/prop_query_diff.c',
   'sql/index_traits.c',
   'sql/prop_index_am.c',
   'sql/prop_table_am.c',
