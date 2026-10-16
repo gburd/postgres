@@ -160,11 +160,15 @@ append_true_leaf(pg_prop_tc *tc, StringInfo buf, const PivotRow *pv)
 			append_text_leaf(tc, buf, pv->c);
 			break;
 		default:
-			/* f: only an equality or IS NULL; avoid float range edge cases. */
+			/* f: only an equality or IS NULL; avoid float range edge cases.
+			 * Quote and cast the value so special floats (Infinity, -Infinity,
+			 * NaN) are valid literals rather than bare identifiers.  Postgres
+			 * defines 'NaN'::float8 = 'NaN'::float8 as TRUE, so pivot
+			 * containment stays sound even for NaN. */
 			if (pv->f == NULL)
 				appendStringInfoString(buf, "f IS NULL");
 			else
-				appendStringInfo(buf, "f = %s", pv->f);
+				appendStringInfo(buf, "f = '%s'::float8", pv->f);
 			break;
 	}
 }

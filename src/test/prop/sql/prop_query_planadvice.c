@@ -182,7 +182,7 @@ PG_PROP(groupagg_plan_invariant)
 
 	initStringInfo(&q);
 	appendStringInfo(&q,
-					 "SELECT g, count(*), sum(a), min(b), max(b), "
+					 "SELECT g, count(*), sum(a::bigint), min(b), max(b), "
 					 "count(DISTINCT c) FROM "
 					 "(SELECT (%s) AS g, a, b, c FROM " QG_TABLE ") s "
 					 "GROUP BY g ORDER BY g",
