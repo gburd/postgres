@@ -260,6 +260,53 @@ qg_build_table(pg_prop_tc *tc, pg_prop_conn *conn, int *nrows)
 		appendStringInfoString(&ddl, "); ");
 	}
 
+	/*
+	 * Under the deep-hunt profiles, sometimes append a server-generated bulk
+	 * of rows after the drawn ones.  A planner does not consider an index for
+	 * a 40-row table, so without volume the index, bitmap, parallel and spill
+	 * paths a differential oracle wants to compare never get chosen.  The bulk
+	 * is skewed the same way the drawn values are (a dominant 0, NULLs, the
+	 * int extremes) and deterministic in the drawn size, so cases replay.
+	 */
+	if (qg_deep_requested() && pg_prop_draw_bool(tc))
+	{
+		int			bulk = (int) pg_prop_draw_int(tc, 500, 20000);
+
+		appendStringInfo(&ddl,
+						 "INSERT INTO " QG_TABLE " (id, a, b, c, d, f, g) "
+						 "SELECT %d + i, "
+						 "CASE WHEN i %% 10 < 6 THEN 0 WHEN i %% 10 = 6 THEN NULL "
+						 "WHEN i %% 97 = 0 THEN 2147483647 WHEN i %% 89 = 0 THEN (-2147483647 - 1) "
+						 "ELSE (hashint4(i) %% 1000) END, "
+						 "CASE WHEN i %% 7 = 0 THEN NULL ELSE hashint4(i * 31) %% 50 END, "
+						 "CASE WHEN i %% 11 = 0 THEN NULL WHEN i %% 3 = 0 THEN 'a' "
+						 "ELSE chr(97 + abs(hashint4(i)) %% 3) || repeat('b', i %% 3) END, "
+						 "CASE WHEN i %% 13 = 0 THEN NULL ELSE ((hashint4(i * 7) %% 99999) / 100.0)::numeric(5,2) END, "
+						 "CASE WHEN i %% 17 = 0 THEN NULL WHEN i %% 101 = 0 THEN 'NaN'::float8 "
+						 "ELSE (hashint4(i * 13) %% 1000) / 10.0 END, "
+						 "CASE WHEN i %% 5 = 0 THEN NULL ELSE i %% 2 = 0 END "
+						 "FROM generate_series(1, %d) i; ",
+						 n, bulk);
+		n += bulk;
+	}
+
+	/*
+	 * Secondary indexes, drawn per case: without them the planner has a single
+	 * path for a one-table query (seqscan), and a differential oracle compares
+	 * a plan with itself.  Single-column, composite, partial and expression
+	 * indexes open index, index-only, bitmap-AND/OR and presorted paths.
+	 */
+	if (pg_prop_draw_bool(tc))
+		appendStringInfoString(&ddl, "CREATE INDEX ON " QG_TABLE " (a); ");
+	if (pg_prop_draw_bool(tc))
+		appendStringInfoString(&ddl, "CREATE INDEX ON " QG_TABLE " (b, a); ");
+	if (pg_prop_draw_bool(tc))
+		appendStringInfoString(&ddl, "CREATE INDEX ON " QG_TABLE " (c); ");
+	if (pg_prop_draw_int(tc, 0, 2) == 0)
+		appendStringInfoString(&ddl, "CREATE INDEX ON " QG_TABLE " (d) WHERE d IS NOT NULL; ");
+	if (pg_prop_draw_int(tc, 0, 2) == 0)
+		appendStringInfoString(&ddl, "CREATE INDEX ON " QG_TABLE " ((coalesce(a, 0) + 1)); ");
+
 	/* ANALYZE so the planner has stats and will actually consider plans. */
 	appendStringInfoString(&ddl, "ANALYZE " QG_TABLE ";");
 
@@ -566,6 +613,7 @@ qg_db_params_default(qg_db_params *p)
 	p->max_rows = 30;
 	p->allow_fk = true;
 	p->allow_triggers = false;
+	p->allow_inherit = false;
 	p->toast_profile = 0;
 	p->cardinality_bias = 0;
 }
@@ -581,6 +629,7 @@ qg_db_params_deep(qg_db_params *p)
 	p->max_rows = 2000;			/* volume extremes: some empty, some large */
 	p->allow_fk = true;
 	p->allow_triggers = true;	/* result-neutral triggers in the deep hunt */
+	p->allow_inherit = true;
 	p->toast_profile = 2;
 	p->cardinality_bias = 0;
 }
@@ -604,6 +653,7 @@ qg_db_params_deep_fast(qg_db_params *p)
 	p->max_rows = 200;
 	p->allow_fk = true;
 	p->allow_triggers = true;
+	p->allow_inherit = true;
 	p->toast_profile = 1;		/* ~10% large values: TOAST path, less bulk */
 	p->cardinality_bias = 0;
 }
@@ -615,6 +665,15 @@ qg_db_params_deep_fast(qg_db_params *p)
  * the maximal deep profile.  Areas call this instead of hard-coding a profile
  * so the same binary runs the quick suite and the deep hunt.
  */
+/* true when PG_PROP_DEEP asks for one of the deep-hunt profiles */
+bool
+qg_deep_requested(void)
+{
+	const char *v = getenv("PG_PROP_DEEP");
+
+	return !(v == NULL || v[0] == '\0' || strcmp(v, "0") == 0);
+}
+
 void
 qg_db_params_for_env(qg_db_params *p)
 {
@@ -855,6 +914,78 @@ qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn, const qg_db_params *p)
 			}
 			appendStringInfoString(&ddl, "); ");
 		}
+
+		/*
+		 * Secondary indexes.  Without them the planner has nothing to choose
+		 * between on a single relation (seqscan is the only path), so most of
+		 * a differential oracle's forced configurations collapse onto the same
+		 * plan.  An index on the FK and on one or two data columns (sometimes
+		 * composite, sometimes partial) opens index, index-only, bitmap and
+		 * merge-join-on-presorted paths, plus Memoize over a parameterized
+		 * inner index scan.
+		 */
+		if (t->fkcol >= 0 && pg_prop_draw_int(tc, 0, 3) != 0)
+			appendStringInfo(&ddl, "CREATE INDEX ON %s (%s); ", t->name,
+							 t->schema.cols[t->fkcol].name);
+		for (col = 0; col < t->schema.ncols; col++)
+		{
+			int			k;
+
+			/*
+			 * Text-like columns can carry TOAST-sized values that exceed the
+			 * btree tuple limit, so only scalar columns are indexed.
+			 */
+			if (col == t->fkcol || t->schema.cols[col].is_text_like ||
+				pg_prop_draw_int(tc, 0, 2) != 0)
+				continue;
+			k = (int) pg_prop_draw_int(tc, 0, 2);
+			if (k == 1 && (col + 1 >= t->schema.ncols ||
+						   t->schema.cols[col + 1].is_text_like))
+				k = 0;
+			if (k == 0)
+				appendStringInfo(&ddl, "CREATE INDEX ON %s (%s); ", t->name,
+								 t->schema.cols[col].name);
+			else if (k == 1)
+				appendStringInfo(&ddl, "CREATE INDEX ON %s (%s, %s); ", t->name,
+								 t->schema.cols[col].name,
+								 t->schema.cols[col + 1].name);
+			else
+				appendStringInfo(&ddl,
+								 "CREATE INDEX ON %s (%s) WHERE %s IS NOT NULL; ",
+								 t->name, t->schema.cols[col].name,
+								 t->schema.cols[col].name);
+		}
+
+		/*
+		 * Inheritance child.  Some tables get a child holding a few rows that
+		 * duplicate the parent's ids (a parent PRIMARY KEY does not constrain
+		 * its children).  A query over the parent scans both, so a planner
+		 * proof that leans on the parent's unique index -- self-join
+		 * elimination, uniqueness-based join removal, DISTINCT elision -- is
+		 * unsound there, while "ONLY parent" must still see only the parent.
+		 */
+		if (p->allow_inherit && n > 0 && pg_prop_draw_int(tc, 0, 2) == 0)
+		{
+			int			m = (int) pg_prop_draw_int(tc, 1, n < 5 ? n : 5);
+
+			appendStringInfo(&ddl, "CREATE TABLE %s_c () INHERITS (%s); ",
+							 t->name, t->name);
+			for (r = 1; r <= m; r++)
+			{
+				appendStringInfo(&ddl, "INSERT INTO %s_c VALUES (%d", t->name,
+								 (int) pg_prop_draw_int(tc, 1, n));
+				for (col = 0; col < t->schema.ncols; col++)
+				{
+					appendStringInfoString(&ddl, ", ");
+					if (col == t->fkcol)
+						appendStringInfoString(&ddl, "NULL");	/* FK not inherited */
+					else
+						t->schema.cols[col].draw(tc, &ddl);
+				}
+				appendStringInfoString(&ddl, "); ");
+			}
+			appendStringInfo(&ddl, "ANALYZE %s_c; ", t->name);
+		}
 		appendStringInfo(&ddl, "ANALYZE %s; ", t->name);
 	}
 
@@ -1021,10 +1152,88 @@ build_join_chain(pg_prop_tc *tc, const qg_db *db, int start, int max_joins,
 		used[n] = &db->tables[nexttab];
 		snprintf(aliases[n], QG_NAME_LEN, "r%d", n);
 
-		/* inner or left join, drawn */
-		appendStringInfo(from, " %s JOIN %s %s ON ",
-						 pg_prop_draw_bool(tc) ? "" : "LEFT",
-						 db->tables[nexttab].name, aliases[n]);
+		/*
+		 * The join member is not always a plain relation.  The planner's most
+		 * fragile code is in pulling up subqueries, translating appendrel
+		 * (UNION ALL / inheritance) members, and placing lateral references --
+		 * so the member is drawn from those shapes too.  Every shape exposes
+		 * the columns id and fk under the member alias, so the join clause,
+		 * the key projection and the predicates stay unchanged.
+		 *
+		 *   0  plain relation (inner or LEFT join, as before)
+		 *   1  ONLY relation (excludes any inheritance child)
+		 *   2  derived table with DISTINCT (subquery with sorted paths)
+		 *   3  UNION ALL of two filtered halves of the relation (appendrel)
+		 *   4  LATERAL subquery correlated to the previous member, OFFSET 0
+		 *      so it is not flattened
+		 *   5  LATERAL UNION ALL whose first arm is itself a DISTINCT subquery
+		 *      and whose correlation references the previous member
+		 */
+		{
+			const char *tn = db->tables[nexttab].name;
+			const char *prev = aliases[n - 1];
+			const char *jt = pg_prop_draw_bool(tc) ? "" : "LEFT";
+			int			shape = (int) pg_prop_draw_int(tc, 0, 5);
+			/* derived shapes expose id, plus fk when the table has one */
+			const char *cols = db->tables[nexttab].fkcol >= 0 ? "id, fk" : "id";
+			const char *xcols = db->tables[nexttab].fkcol >= 0 ? "x.id, x.fk" : "x.id";
+
+			switch (shape)
+			{
+				case 1:
+					appendStringInfo(from, " %s JOIN ONLY %s %s ON ", jt, tn,
+									 aliases[n]);
+					break;
+				case 2:
+					appendStringInfo(from,
+									 " %s JOIN (SELECT DISTINCT %s FROM %s) %s ON ",
+									 jt, cols, tn, aliases[n]);
+					break;
+				case 3:
+					appendStringInfo(from,
+									 " %s JOIN (SELECT %s FROM %s WHERE id %% 2 = 0 "
+									 "UNION ALL SELECT %s FROM %s WHERE id %% 2 <> 0) %s ON ",
+									 jt, cols, tn, cols, tn, aliases[n]);
+					break;
+				case 4:
+				case 5:
+					{
+						/*
+						 * The correlation is the FK equality itself, moved
+						 * inside the lateral subquery; the outer ON is TRUE.
+						 * Same rows as the plain join, different tree.
+						 */
+						StringInfoData corr;
+
+						initStringInfo(&corr);
+						if (frontier_is_child)
+							appendStringInfo(&corr, "%s.fk = x.id", prev);
+						else
+							appendStringInfo(&corr, "x.fk = %s.id", prev);
+						if (shape == 4)
+							appendStringInfo(from,
+											 " %s JOIN LATERAL (SELECT %s FROM %s x "
+											 "WHERE %s OFFSET 0) %s ON true",
+											 jt, xcols, tn, corr.data, aliases[n]);
+						else
+							appendStringInfo(from,
+											 " %s JOIN LATERAL (SELECT %s FROM "
+											 "(SELECT DISTINCT %s FROM %s) x WHERE %s "
+											 "AND x.id %% 2 = 0 "
+											 "UNION ALL SELECT %s FROM %s x WHERE %s "
+											 "AND x.id %% 2 <> 0) %s ON true",
+											 jt, xcols, cols, tn, corr.data,
+											 xcols, tn, corr.data, aliases[n]);
+						pfree(corr.data);
+						n++;
+						continue;	/* join condition already placed */
+					}
+				default:
+					appendStringInfo(from, " %s JOIN %s %s ON ", jt, tn,
+									 aliases[n]);
+					break;
+			}
+		}
 		if (frontier_is_child)
 			/* frontier.fk = new.id */
 			appendStringInfo(from, "%s.fk = %s.id", aliases[n - 1], aliases[n]);

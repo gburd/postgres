@@ -173,6 +173,7 @@ typedef struct qg_db_params
 				max_rows;		/* per-table row count range */
 	bool		allow_fk;		/* declare + correlate FKs between tables */
 	bool		allow_triggers;	/* attach result-neutral triggers (0c) */
+	bool		allow_inherit;	/* give some tables an inheritance child */
 	int			toast_profile;	/* 0 none .. 3 always (0b) */
 	int			cardinality_bias;	/* 0 mixed, 1 favour low-card columns */
 } qg_db_params;
@@ -190,6 +191,7 @@ extern void qg_db_params_deep_fast(qg_db_params *p);
  * Query areas call this so one binary serves both the quick suite and the hunt.
  */
 extern void qg_db_params_for_env(qg_db_params *p);
+extern bool qg_deep_requested(void);
 
 /*
  * Build a random database per the params (dropping any prior qg_t* tables).

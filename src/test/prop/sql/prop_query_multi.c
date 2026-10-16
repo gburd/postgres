@@ -228,8 +228,17 @@ PG_PROP(join_card_commutes_and_bounded)
 					 parent->name, child->name);
 	ba = count_of(tc, conn, sql.data);
 
-	na = child->nrows;
-	nb = parent->nrows;
+	/*
+	 * The cross-product bound is over what the query actually scans, which
+	 * includes any inheritance child of either table -- so read the sizes from
+	 * the server, not from the generator's per-table row counts.
+	 */
+	resetStringInfo(&sql);
+	appendStringInfo(&sql, "SELECT count(*) FROM %s", child->name);
+	na = count_of(tc, conn, sql.data);
+	resetStringInfo(&sql);
+	appendStringInfo(&sql, "SELECT count(*) FROM %s", parent->name);
+	nb = count_of(tc, conn, sql.data);
 
 	if (ab != ba)
 		pg_prop_fail(tc,
@@ -248,7 +257,10 @@ PG_PROP(join_card_commutes_and_bounded)
 /*
  * A FK equi-join to the parent's primary key returns exactly the child rows
  * whose fk is non-NULL (each matches exactly one parent, since fk references a
- * unique id and the FK is enforced so no orphans exist).
+ * unique id and the FK is enforced so no orphans exist).  ONLY on both sides:
+ * the uniqueness and the FK are properties of the declared tables, not of any
+ * inheritance child the generator may have attached, whose rows a plain scan
+ * would also return.
  */
 PG_PROP(fk_join_eq_nonnull_children)
 {
@@ -282,11 +294,11 @@ PG_PROP(fk_join_eq_nonnull_children)
 
 	initStringInfo(&sql);
 	appendStringInfo(&sql,
-					 "SELECT count(*) FROM %s ch JOIN %s pa ON ch.fk = pa.id",
+					 "SELECT count(*) FROM ONLY %s ch JOIN ONLY %s pa ON ch.fk = pa.id",
 					 child->name, parent->name);
 	joined = count_of(tc, conn, sql.data);
 	resetStringInfo(&sql);
-	appendStringInfo(&sql, "SELECT count(*) FROM %s WHERE fk IS NOT NULL",
+	appendStringInfo(&sql, "SELECT count(*) FROM ONLY %s WHERE fk IS NOT NULL",
 					 child->name);
 	nonnull = count_of(tc, conn, sql.data);
 
