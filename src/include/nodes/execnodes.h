@@ -504,9 +504,9 @@ typedef struct ResultRelInfo
 
 	/*
 	 * For UPDATE, the table attributes each index references through
-	 * expressions or its predicate, offset by
-	 * FirstLowInvalidHeapAttributeNumber.  Built on first use; NULL until
-	 * then.
+	 * expressions or its predicate, and directly if its access method has
+	 * amcomparedatums, offset by FirstLowInvalidHeapAttributeNumber.  Built
+	 * on first use; NULL until then.
 	 */
 	Bitmapset **ri_IndexExprAttrs;
 
