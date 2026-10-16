@@ -67,6 +67,11 @@ tests += {
     # runningcheck users do not have (e.g. buildfarm clients).
     'runningcheck': false,
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_010_restart.py',
+    ],
+  },
   'tap': {
     'tests': [
       't/010_restart.pl',

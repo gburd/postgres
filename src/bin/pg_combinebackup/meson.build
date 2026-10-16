@@ -26,6 +26,21 @@ tests += {
   'name': 'pg_combinebackup',
   'sd': meson.current_source_dir(),
   'bd': meson.current_build_dir(),
+  'pytest': {
+    'tests': [
+      'pyt/test_001_basic.py',
+      'pyt/test_005_integrity.py',
+      'pyt/test_006_db_file_copy.py',
+      'pyt/test_002_compare_backups.py',
+      'pyt/test_003_timeline.py',
+      'pyt/test_004_manifest.py',
+      'pyt/test_007_wal_level_minimal.py',
+      'pyt/test_008_promote.py',
+      'pyt/test_009_no_full_file.py',
+      'pyt/test_010_hardlink.py',
+      'pyt/test_011_ib_truncation.py',
+    ],
+  },
   'tap': {
     'tests': [
       't/001_basic.pl',

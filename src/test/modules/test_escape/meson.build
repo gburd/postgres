@@ -28,4 +28,10 @@ tests += {
     ],
     'deps': [test_escape],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_test_escape.py',
+    ],
+    'deps': [test_escape],
+  },
 }

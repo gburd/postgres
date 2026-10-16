@@ -14,4 +14,14 @@ tests += {
       'with_ldap': ldap.found() ? 'yes' : 'no',
     },
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_auth.py',
+      'pyt/test_002_bindpasswd.py',
+      'pyt/test_003_ldap_connection_param_lookup.py',
+    ],
+    'env': {
+      'with_ldap': ldap.found() ? 'yes' : 'no',
+    },
+  },
 }

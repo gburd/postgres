@@ -27,6 +27,12 @@ tests += {
       't/002_corrupted.pl',
     ],
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_basic.py',
+      'pyt/test_002_corrupted.py',
+    ],
+  },
 }
 
 subdir('po', if_found: libintl)

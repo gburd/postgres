@@ -30,4 +30,10 @@ tests += {
     ],
   'env': {'with_ldap': 'yes'}
   },
+  'pytest': {
+    'tests': [
+      'pyt/test_001_mutated_bindpasswd.py',
+    ],
+  'env': {'with_ldap': 'yes'}
+  },
 }
