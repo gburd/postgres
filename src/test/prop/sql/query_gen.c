@@ -27,67 +27,139 @@
 
 #include "query_gen.h"
 
-/* Small domains keep counterexamples legible and cases fast. */
+/*
+ * Value domains deliberately favour the cases that break planners and
+ * executors, not uniform small noise: boundary integers (INT_MIN/MAX, 0, +-1),
+ * heavy NULL, and skew (one value dominating) so selectivity estimates diverge
+ * from reality and plan choice flips.  Legible counterexamples still shrink
+ * because the engine prefers the small/boundary draws.
+ */
 #define QG_VAL_MIN (-5)
 #define QG_VAL_MAX 5
 
+/* INT_MIN / INT_MAX as SQL text (INT_MIN written to avoid the unary-minus
+ * literal-overflow trap). */
+#define SQL_INT_MIN "(-2147483647 - 1)"
+#define SQL_INT_MAX "2147483647"
+
 /* ---- core column value generators ------------------------------------ */
 
-/* int in [QG_VAL_MIN, QG_VAL_MAX] or SQL NULL, ~15% NULL. */
+/*
+ * Draw an int as SQL text with an adversarial, skewed distribution:
+ *   ~18% NULL,
+ *   ~22% a boundary value (INT_MIN, INT_MAX, 0, -1, 1),
+ *   ~35% the skew value 0 (so one value dominates -> bad selectivity est),
+ *   else a small value in [-5,5].
+ */
 static void
 draw_int_or_null(pg_prop_tc *tc, StringInfo buf)
 {
-	if (pg_prop_draw_int(tc, 0, 6) == 0)
+	int			roll = (int) pg_prop_draw_int(tc, 0, 99);
+
+	if (roll < 18)
 		appendStringInfoString(buf, "NULL");
+	else if (roll < 40)
+	{
+		static const char *const edge[] =
+		{SQL_INT_MIN, SQL_INT_MAX, "0", "(-1)", "1"};
+
+		appendStringInfoString(buf, edge[pg_prop_draw_int(tc, 0, 4)]);
+	}
+	else if (roll < 75)
+		appendStringInfoString(buf, "0");	/* skew: 0 dominates */
 	else
 		appendStringInfo(buf, "%d",
 						 (int) pg_prop_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX));
 }
 
-/* short [a-c] string literal or SQL NULL, ~15% NULL. */
+/*
+ * Draw a text literal, adversarial: ~18% NULL, ~15% empty string, often a
+ * repeated short run (skew + collation edge cases), occasionally a value with
+ * a trailing space or an upper-case letter (case/space sensitivity).
+ */
 static void
 draw_text_or_null(pg_prop_tc *tc, StringInfo buf)
 {
+	int			roll = (int) pg_prop_draw_int(tc, 0, 99);
 	int			len;
 	int			i;
 
-	if (pg_prop_draw_int(tc, 0, 6) == 0)
+	if (roll < 18)
 	{
 		appendStringInfoString(buf, "NULL");
+		return;
+	}
+	if (roll < 33)
+	{
+		appendStringInfoString(buf, "''");	/* empty string (distinct from NULL) */
+		return;
+	}
+	if (roll < 55)
+	{
+		appendStringInfoString(buf, "'a'");	/* skew: 'a' dominates */
 		return;
 	}
 	len = (int) pg_prop_draw_int(tc, 0, 3);
 	appendStringInfoChar(buf, '\'');
 	for (i = 0; i < len; i++)
-		appendStringInfoChar(buf, (char) ('a' + pg_prop_draw_int(tc, 0, 2)));
+	{
+		/* mostly a-c; occasionally an uppercase letter or a trailing space */
+		int			k = (int) pg_prop_draw_int(tc, 0, 9);
+
+		if (k == 0)
+			appendStringInfoChar(buf, (char) ('A' + pg_prop_draw_int(tc, 0, 2)));
+		else if (k == 1)
+			appendStringInfoChar(buf, ' ');
+		else
+			appendStringInfoChar(buf, (char) ('a' + pg_prop_draw_int(tc, 0, 2)));
+	}
 	appendStringInfoChar(buf, '\'');
 }
 
-/* float8 literal (small, one decimal) or SQL NULL, ~15% NULL. */
+/* float8: adversarial -- NULL, +-0.0, +-Infinity, NaN, or a small value. */
 static void
 draw_float_or_null(pg_prop_tc *tc, StringInfo buf)
 {
-	if (pg_prop_draw_int(tc, 0, 6) == 0)
+	int			roll = (int) pg_prop_draw_int(tc, 0, 99);
+
+	if (roll < 15)
 		appendStringInfoString(buf, "NULL");
+	else if (roll < 35)
+	{
+		static const char *const edge[] =
+		{"'0'::float8", "'-0'::float8", "'Infinity'::float8",
+			"'-Infinity'::float8", "'NaN'::float8"};
+
+		appendStringInfoString(buf, edge[pg_prop_draw_int(tc, 0, 4)]);
+	}
 	else
 		appendStringInfo(buf, "%d.%d",
 						 (int) pg_prop_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
 						 (int) pg_prop_draw_int(tc, 0, 9));
 }
 
-/* numeric literal with a scale, or SQL NULL -- exercises exact decimal paths. */
+/* numeric: NULL, boundary (0, huge, tiny-scale), or a scaled value. */
 static void
 draw_numeric_or_null(pg_prop_tc *tc, StringInfo buf)
 {
-	if (pg_prop_draw_int(tc, 0, 6) == 0)
+	int			roll = (int) pg_prop_draw_int(tc, 0, 99);
+
+	if (roll < 15)
 		appendStringInfoString(buf, "NULL");
+	else if (roll < 30)
+	{
+		static const char *const edge[] =
+		{"0", "0.00", "999.99", "-999.99", "'NaN'::numeric"};
+
+		appendStringInfoString(buf, edge[pg_prop_draw_int(tc, 0, 4)]);
+	}
 	else
 		appendStringInfo(buf, "%d.%02d",
 						 (int) pg_prop_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
 						 (int) pg_prop_draw_int(tc, 0, 99));
 }
 
-/* boolean literal or SQL NULL. */
+/* boolean literal or SQL NULL (balanced three-valued). */
 static void
 draw_bool_or_null(pg_prop_tc *tc, StringInfo buf)
 {
@@ -209,13 +281,20 @@ pick_num_col(pg_prop_tc *tc)
 	return (col == 0) ? "a" : (col == 1) ? "b" : "f";
 }
 
-/* One leaf comparison against a column, or an IS NULL test, or an ext leaf. */
+/*
+ * One leaf comparison. The grammar is deliberately rich: besides the plain
+ * comparisons it emits three-valued-logic edge forms (IS DISTINCT FROM, IS
+ * NULL/NOT NULL), CASE expressions, and cross-type comparisons -- exactly the
+ * type-interaction and NULL-handling code where planner/executor bugs hide.
+ */
 static void
 draw_leaf(pg_prop_tc *tc, StringInfo buf)
 {
 	static const char *const cmp[] = {"=", "<>", "<", "<=", ">", ">="};
-	int			next_kinds = pg_prop_hooks_count("query_gen.predicate") > 0 ? 8 : 7;
-	int			kind = (int) pg_prop_draw_int(tc, 0, next_kinds - 1);
+	int			have_ext = pg_prop_hooks_count("query_gen.predicate") > 0 ? 1 : 0;
+	/* kinds 0..10 are built-in; 11 is the extension leaf when present. */
+	int			n_builtin = 11;
+	int			kind = (int) pg_prop_draw_int(tc, 0, n_builtin - 1 + have_ext);
 	const char *colname;
 
 	switch (kind)
@@ -266,7 +345,41 @@ draw_leaf(pg_prop_tc *tc, StringInfo buf)
 				appendStringInfo(buf, "g IS %s",
 								 pg_prop_draw_bool(tc) ? "TRUE" : "NOT TRUE");
 			break;
-		case 7:					/* extension-contributed leaf */
+		case 7:					/* col IS [NOT] DISTINCT FROM const (3VL edge) */
+			colname = pick_num_col(tc);
+			appendStringInfo(buf, "%s IS %sDISTINCT FROM ", colname,
+							 pg_prop_draw_bool(tc) ? "" : "NOT ");
+			if (strcmp(colname, "f") == 0)
+				draw_float_or_null(tc, buf);
+			else
+				draw_int_or_null(tc, buf);
+			break;
+		case 8:					/* CASE expression used as a boolean */
+			appendStringInfoString(buf, "(CASE WHEN ");
+			appendStringInfo(buf, "a %s ", cmp[pg_prop_draw_int(tc, 0, 5)]);
+			draw_int_or_null(tc, buf);
+			appendStringInfoString(buf, " THEN b ELSE ");
+			draw_int_or_null(tc, buf);
+			appendStringInfo(buf, " END) %s ", cmp[pg_prop_draw_int(tc, 0, 5)]);
+			draw_int_or_null(tc, buf);
+			break;
+		case 9:					/* cross-type: int column vs numeric/text cast */
+			if (pg_prop_draw_bool(tc))
+				appendStringInfo(buf, "a::numeric %s %d.%02d",
+								 cmp[pg_prop_draw_int(tc, 0, 5)],
+								 (int) pg_prop_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
+								 (int) pg_prop_draw_int(tc, 0, 99));
+			else
+				appendStringInfo(buf, "a::text %s c",
+								 cmp[pg_prop_draw_int(tc, 0, 5)]);
+			break;
+		case 10:				/* COALESCE in the comparison (NULL coalescing) */
+			appendStringInfo(buf, "coalesce(a, b, %d) %s ",
+							 (int) pg_prop_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX),
+							 cmp[pg_prop_draw_int(tc, 0, 5)]);
+			draw_int_or_null(tc, buf);
+			break;
+		case 11:				/* extension-contributed leaf */
 			{
 				qg_pred_ctx pctx;
 				int			n = pg_prop_hooks_count("query_gen.predicate");
@@ -350,11 +463,11 @@ qg_draw_int_expr(pg_prop_tc *tc, StringInfo buf)
 							 (int) pg_prop_draw_int(tc, QG_VAL_MIN, QG_VAL_MAX));
 			break;
 		case 3:
-			/* coalesce so NULLs don't dominate; a + b */
-			appendStringInfoString(buf, "(coalesce(a,0) + coalesce(b,0))");
+			/* coalesce so NULLs don't dominate; a + b, bigint-safe vs INT_MAX */
+			appendStringInfoString(buf, "(coalesce(a::bigint,0) + coalesce(b::bigint,0))");
 			break;
 		default:
-			appendStringInfoString(buf, "(coalesce(a,0) * 2)");
+			appendStringInfoString(buf, "(coalesce(a::bigint,0) * 2)");
 			break;
 	}
 }
