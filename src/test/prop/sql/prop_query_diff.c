@@ -67,6 +67,34 @@ static const char *const configs[] =
 	"SET LOCAL jit=on; SET LOCAL jit_above_cost=0; SET LOCAL jit_inline_above_cost=0;"
 	"SET LOCAL jit_optimize_above_cost=0;",
 	"SET LOCAL jit=off;",
+
+	/*
+	 * The planner's proof-based rewrites, each switched off on its own.  These
+	 * rewrites delete or restructure work only when they can prove it
+	 * redundant (a join to a uniquely-keyed self, a GROUP BY order, a Memoize
+	 * cache hit), so a wrong proof is a wrong answer.  Turning one off gives
+	 * the unrewritten plan to compare against.
+	 */
+	"SET LOCAL enable_self_join_elimination=off;",
+	"SET LOCAL enable_memoize=off;",
+	"SET LOCAL enable_material=off;",
+	"SET LOCAL enable_incremental_sort=off;",
+	"SET LOCAL enable_eager_aggregate=off;",
+	"SET LOCAL enable_group_by_reordering=off; SET LOCAL enable_distinct_reordering=off;",
+	"SET LOCAL enable_presorted_aggregate=off;",
+	"SET LOCAL enable_groupagg=off;",
+	"SET LOCAL enable_gathermerge=off; SET LOCAL enable_parallel_hash=off;"
+	"SET LOCAL enable_parallel_append=off;",
+	"SET LOCAL enable_partitionwise_join=on; SET LOCAL enable_partitionwise_aggregate=on;",
+	"SET LOCAL enable_partition_pruning=off;",
+	/* join-search limits: no subquery/join flattening into one search */
+	"SET LOCAL from_collapse_limit=1; SET LOCAL join_collapse_limit=1;",
+	/* every rewrite at once off, nested loops only: the most naive plan */
+	"SET LOCAL enable_self_join_elimination=off; SET LOCAL enable_memoize=off;"
+	"SET LOCAL enable_hashjoin=off; SET LOCAL enable_mergejoin=off;"
+	"SET LOCAL enable_hashagg=off; SET LOCAL enable_eager_aggregate=off;"
+	"SET LOCAL enable_incremental_sort=off; SET LOCAL enable_indexscan=off;"
+	"SET LOCAL enable_bitmapscan=off; SET LOCAL enable_indexonlyscan=off;",
 };
 #define N_CONFIGS ((int) (sizeof(configs) / sizeof(configs[0])))
 
@@ -273,4 +301,164 @@ PG_PROP(diff_deep_join)
 	qg_free_query(&q);
 	qg_drop_db(tc, conn, db);
 	pg_prop_disconnect(conn);
+}
+
+/*
+ * Shared setup for the shapes below: build the related database and one deep
+ * join query over it.  Returns false (case vacuous) if the database is too
+ * small to join.
+ */
+static bool
+deep_setup(pg_prop_tc *tc, pg_prop_conn **connp, qg_db **dbp, qg_query *q)
+{
+	char	   *err = NULL;
+	qg_db_params p;
+
+	*connp = pg_prop_connect(&err);
+	if (*connp == NULL)
+		pg_prop_fail(tc, "connect failed: %s", err ? err : "");
+	qg_db_params_for_env(&p);
+	*dbp = qg_build_db(tc, *connp, &p);
+	if (!qg_build_query(tc, *dbp, 4, q))
+	{
+		qg_drop_db(tc, *connp, *dbp);
+		pg_prop_disconnect(*connp);
+		return false;
+	}
+	return true;
+}
+
+static void
+deep_teardown(pg_prop_tc *tc, pg_prop_conn *conn, qg_db *db, qg_query *q)
+{
+	qg_free_query(q);
+	qg_drop_db(tc, conn, db);
+	pg_prop_disconnect(conn);
+}
+
+/*
+ * Aggregation over a deep join, grouped by the anchor's key.  This is the
+ * input eager aggregation (pushing a partial aggregate below a join) and
+ * GROUP BY reordering act on, and where hash vs sort vs presorted aggregation
+ * all apply.  count(kN) for each joined key counts the NULL-extended rows of
+ * the LEFT JOINs differently from count(*), so a wrong join-null placement
+ * shows up as a different count.
+ */
+PG_PROP(diff_deep_aggregate)
+{
+	pg_prop_conn *conn;
+	qg_db	   *db;
+	qg_query	q;
+	StringInfoData sql;
+	StringInfoData aggs;
+	char	   *keys;
+	char	   *tok;
+	char	   *save = NULL;
+
+	if (!deep_setup(tc, &conn, &db, &q))
+		return;
+
+	/* one count(kN) per projected key: "count(k0), count(k1), ..." */
+	initStringInfo(&aggs);
+	keys = pstrdup(q.keys);
+	for (tok = strtok_r(keys, ", ", &save); tok; tok = strtok_r(NULL, ", ", &save))
+		appendStringInfo(&aggs, "%scount(%s)", aggs.len ? ", " : "", tok);
+	pfree(keys);
+
+	initStringInfo(&sql);
+	appendStringInfo(&sql,
+					 "SELECT k0, count(*), %s, count(DISTINCT k1) "
+					 "FROM (%s) j GROUP BY k0 ORDER BY k0 NULLS FIRST",
+					 aggs.data, q.select_from);
+	run_diff(tc, conn, sql.data);
+
+	pfree(aggs.data);
+	pfree(sql.data);
+	deep_teardown(tc, conn, db, &q);
+}
+
+/*
+ * Semijoin / antijoin over the deep join: rows of the anchor table that do (or
+ * do not) have a match in the join, written with EXISTS, NOT EXISTS, IN and
+ * NOT IN.  The planner turns these into semi/anti joins (and right-semi /
+ * right-anti hash joins, unique-ified inner rels, ...), so each form exercises
+ * a different conversion while the answer is fixed by the data.
+ */
+PG_PROP(diff_semi_anti_join)
+{
+	pg_prop_conn *conn;
+	qg_db	   *db;
+	qg_query	q;
+	StringInfoData sql;
+	const char *anchor;
+	int			form;
+
+	if (!deep_setup(tc, &conn, &db, &q))
+		return;
+
+	anchor = q.pred_table->name;
+	form = (int) pg_prop_draw_int(tc, 0, 3);
+	initStringInfo(&sql);
+	switch (form)
+	{
+		case 0:
+			appendStringInfo(&sql,
+							 "SELECT a.id FROM %s a WHERE EXISTS "
+							 "(SELECT 1 FROM (%s) j WHERE j.k0 = a.id) ORDER BY a.id",
+							 anchor, q.select_from);
+			break;
+		case 1:
+			appendStringInfo(&sql,
+							 "SELECT a.id FROM %s a WHERE NOT EXISTS "
+							 "(SELECT 1 FROM (%s) j WHERE j.k1 = a.id) ORDER BY a.id",
+							 anchor, q.select_from);
+			break;
+		case 2:
+			appendStringInfo(&sql,
+							 "SELECT a.id FROM %s a WHERE a.id IN "
+							 "(SELECT j.k0 FROM (%s) j) ORDER BY a.id",
+							 anchor, q.select_from);
+			break;
+		default:
+			/* NOT IN with a possibly-NULL subquery column: three-valued */
+			appendStringInfo(&sql,
+							 "SELECT a.id FROM %s a WHERE a.id NOT IN "
+							 "(SELECT j.k1 FROM (%s) j) ORDER BY a.id",
+							 anchor, q.select_from);
+			break;
+	}
+	run_diff(tc, conn, sql.data);
+
+	pfree(sql.data);
+	deep_teardown(tc, conn, db, &q);
+}
+
+/*
+ * Window functions over the deep join: a partitioned running count, row
+ * numbers, and a lag over a total order.  Window evaluation runs above the
+ * join, so its input order and partitioning come from whatever plan produced
+ * the join, and incremental sort / presorted paths feed it differently.
+ */
+PG_PROP(diff_deep_window)
+{
+	pg_prop_conn *conn;
+	qg_db	   *db;
+	qg_query	q;
+	StringInfoData sql;
+
+	if (!deep_setup(tc, &conn, &db, &q))
+		return;
+
+	initStringInfo(&sql);
+	appendStringInfo(&sql,
+					 "SELECT %s, "
+					 "count(*) OVER (PARTITION BY k0), "
+					 "row_number() OVER (PARTITION BY k0 ORDER BY %s), "
+					 "lag(k0) OVER (ORDER BY %s) "
+					 "FROM (%s) j %s",
+					 q.keys, q.keys, q.keys, q.select_from, q.order_by);
+	run_diff(tc, conn, sql.data);
+
+	pfree(sql.data);
+	deep_teardown(tc, conn, db, &q);
 }
