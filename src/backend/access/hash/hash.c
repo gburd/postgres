@@ -123,7 +123,7 @@ hashhandler(PG_FUNCTION_ARGS)
 		.amparallelrescan = NULL,
 		.amtranslatestrategy = hashtranslatestrategy,
 		.amtranslatecmptype = hashtranslatecmptype,
-		.amcomparedatums = NULL,
+		.amcomparedatums = hashcomparedatums,
 	};
 
 	PG_RETURN_POINTER(&amroutine);
@@ -1028,4 +1028,22 @@ hashtranslatecmptype(CompareType cmptype, Oid opfamily)
 	if (cmptype == COMPARE_EQ)
 		return HTEqualStrategyNumber;
 	return InvalidStrategy;
+}
+
+/*
+ * hashcomparedatums() -- would newValue give the same index entry as oldValue?
+ *
+ * A hash index stores only the hash code of the value, and every scan
+ * rechecks the heap tuple, so the entries are the same if the hash codes
+ * are.  Then, for example, numeric 1.0 and 1.00, or strings equal under a
+ * case-insensitive collation, make no new entries.
+ */
+bool
+hashcomparedatums(Relation index, IndexInfo *indexInfo, int attnum,
+				  Oid typid, int16 typlen, bool typbyval,
+				  Datum oldValue, Datum newValue)
+{
+	Assert(attnum == 1);
+	return _hash_datum2hashkey(index, oldValue) ==
+		_hash_datum2hashkey(index, newValue);
 }
