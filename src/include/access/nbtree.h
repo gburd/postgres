@@ -1179,6 +1179,9 @@ extern int	btgettreeheight(Relation rel);
 
 extern CompareType bttranslatestrategy(StrategyNumber strategy, Oid opfamily);
 extern StrategyNumber bttranslatecmptype(CompareType cmptype, Oid opfamily);
+extern bool btcomparedatums(Relation index, IndexInfo *indexInfo,
+							int attnum, Oid typid,
+							Datum oldValue, Datum newValue);
 
 /*
  * prototypes for internal functions in nbtree.c
