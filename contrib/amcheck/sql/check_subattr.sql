@@ -16,7 +16,7 @@ RETURNS void LANGUAGE plpgsql AS $f$
 DECLARE h0 bigint; u0 bigint; ac text := 'ok'; i regclass;
 BEGIN
   CREATE TABLE subattr (id int PRIMARY KEY, d jsonb, a int[], x int)
-    WITH (fillfactor = 50);
+    WITH (fillfactor = 10);
   CREATE INDEX subattr_name ON subattr ((d->>'name'));
   CREATE INDEX subattr_nested ON subattr ((d->'o'->>'k'));
   CREATE INDEX subattr_path ON subattr ((d #>> '{p,q}'));
@@ -113,7 +113,7 @@ SELECT subattr_probe('param-doc',          $$UPDATE subattr SET d = $1$$, '{"nam
 SELECT subattr_probe('self-ref-value',     $$UPDATE subattr SET d = jsonb_set(d, '{age}', d->'name')$$);
 SELECT subattr_probe('null-doc',           $$UPDATE subattr SET d = jsonb_set(NULL::jsonb, '{age}', '1')$$);
 
-SELECT name, upd, hot, amcheck FROM subattr_results ORDER BY name;
+SELECT name, upd, hot, amcheck FROM subattr_results ORDER BY name COLLATE "C";
 DROP TABLE subattr_results;
 DROP FUNCTION subattr_probe;
 

@@ -33,7 +33,6 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
-#include "utils/relcache.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
@@ -978,7 +977,6 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,
 								  modified_idx_attrs, &update_indexes);
 		bms_free(modified_idx_attrs);
-
 
 		conflictindexes = resultRelInfo->ri_onConflictArbiterIndexes;
 

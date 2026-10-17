@@ -239,8 +239,9 @@ SELECT * FROM tenk1 a JOIN my_gen_series(1,10) g ON a.unique1 = g;
 --
 -- Test SupportRequestSubattr with a function that reads two parts of a
 -- document.  An UPDATE that changes neither need not evaluate an index on
--- it; one that changes either must, and must give the index a new entry.
--- Assert-enabled builds also check that no index skipped this way changes.
+-- it, which DEBUG1 reports; one that changes either must, and must give the
+-- index a new entry.  Assert-enabled builds also check that no index skipped
+-- this way changes.
 --
 CREATE FUNCTION test_subattr_support(internal)
     RETURNS internal
@@ -255,8 +256,10 @@ CREATE TABLE subattr_two (id int, d jsonb) WITH (fillfactor = 50);
 CREATE INDEX subattr_two_idx ON subattr_two (two_keys(d, 'a', 'b'));
 INSERT INTO subattr_two SELECT g, jsonb_build_object('a', g, 'b', g, 'c', g)
   FROM generate_series(1, 2) g;
+SET client_min_messages = debug1;
 UPDATE subattr_two SET d = jsonb_set(d, '{c}', '0');
 UPDATE subattr_two SET d = jsonb_set(d, '{b}', '0');
+RESET client_min_messages;
 SET enable_seqscan = off;
 SELECT id FROM subattr_two WHERE two_keys(d, 'a', 'b') = '2/0';
 RESET enable_seqscan;

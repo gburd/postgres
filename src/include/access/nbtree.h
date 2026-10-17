@@ -1179,7 +1179,7 @@ extern int	btgettreeheight(Relation rel);
 
 extern CompareType bttranslatestrategy(StrategyNumber strategy, Oid opfamily);
 extern StrategyNumber bttranslatecmptype(CompareType cmptype, Oid opfamily);
-extern bool btcomparedatums(Relation index, IndexInfo *indexInfo,
+extern bool btcomparedatums(Relation index, struct IndexInfo *indexInfo,
 							int attnum, Oid typid,
 							Datum oldValue, Datum newValue);
 

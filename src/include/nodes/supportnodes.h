@@ -489,7 +489,6 @@ typedef enum SubattrPathElemKind
 	SUBATTR_ELEM_KEY,			/* object member by name */
 	SUBATTR_ELEM_POSITION,		/* array element by position */
 	SUBATTR_ELEM_ANY_POSITION,	/* any array element */
-	SUBATTR_ELEM_ANY,			/* any member or element */
 } SubattrPathElemKind;
 
 typedef struct SubattrPathElem

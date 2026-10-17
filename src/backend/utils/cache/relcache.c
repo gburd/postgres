@@ -5330,6 +5330,11 @@ RelationGetIndexPredicate(Relation relation)
  *	INDEX_ATTR_BITMAP_EXPRESSION	Columns that non-summarizing indexes
  *									reference only through expressions or
  *									as partial indexes
+ *	INDEX_ATTR_BITMAP_COMPARABLE	Columns that non-summarizing indexes
+ *									reference directly only if their
+ *									access method can compare entries
+ *									(amcomparedatums), less key and replica
+ *									identity columns
  *
  * Attribute numbers are offset by FirstLowInvalidHeapAttributeNumber so that
  * we can include system attributes (e.g., OID) in the bitmap representation.

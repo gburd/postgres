@@ -389,8 +389,8 @@ extern TM_Result heap_update(Relation relation, const ItemPointerData *otid,
 							 HeapTuple newtup,
 							 CommandId cid, uint32 options,
 							 Snapshot crosscheck, bool wait,
-							 TM_FailureData *tmfd, const LockTupleMode lockmode,
-							 const Bitmapset *modified_idx_attrs, const bool hot_allowed);
+							 TM_FailureData *tmfd, LockTupleMode lockmode,
+							 const Bitmapset *modified_idx_attrs, bool hot_allowed);
 extern TM_Result heap_lock_tuple(Relation relation, HeapTuple tuple,
 								 CommandId cid, LockTupleMode mode, LockWaitPolicy wait_policy,
 								 bool follow_updates,

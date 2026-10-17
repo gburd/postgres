@@ -5148,7 +5148,7 @@ ExecModifyTable(PlanState *pstate)
 		 * For UPDATE/DELETE/MERGE, fetch the row identity info for the tuple
 		 * to be updated/deleted/merged.  For a heap relation, that's a TID;
 		 * otherwise we may have a wholerow junk attr that carries the old
-		 * tuple in total.  Keep this in step with the part of
+		 * tuple in toto.  Keep this in step with the part of
 		 * ExecInitModifyTable that sets up ri_RowIdAttNo.
 		 */
 		if (operation == CMD_UPDATE || operation == CMD_DELETE ||

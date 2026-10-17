@@ -558,5 +558,3 @@ DROP FUNCTION update_case(text, text);
 DROP FUNCTION has_hot_chain(text, tid);
 DROP FUNCTION print_hot_chain(text, tid);
 DROP FUNCTION get_hot_count(text);
--- Leave pageinspect installed: this runs inside the pageinspect regress suite
--- (page.sql created it), and other tests in the schedule still need it.

@@ -3271,8 +3271,8 @@ simple_heap_delete(Relation relation, const ItemPointerData *tid)
 TM_Result
 heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 			CommandId cid, uint32 options, Snapshot crosscheck, bool wait,
-			TM_FailureData *tmfd, const LockTupleMode lockmode,
-			const Bitmapset *modified_idx_attrs, const bool hot_allowed)
+			TM_FailureData *tmfd, LockTupleMode lockmode,
+			const Bitmapset *modified_idx_attrs, bool hot_allowed)
 {
 	TM_Result	result;
 	TransactionId xid = GetCurrentTransactionId();
@@ -3424,11 +3424,11 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 	newtup->t_tableOid = RelationGetRelid(relation);
 
 	/*
-	 * ExtractReplicaIdentity() needs to know if a modified indexed attrbute
-	 * is used as a replica indentity or if any of the replica identity
+	 * ExtractReplicaIdentity() needs to know if a modified indexed attribute
+	 * is used as a replica identity or if any of the replica identity
 	 * attributes are referenced in an index, unmodified, and are stored
 	 * externally in the old tuple being replaced.  In those cases it may be
-	 * necessary to WAL log them to so they are available to replicas.
+	 * necessary to WAL log them so they are available to replicas.
 	 */
 	rep_id_key_required = bms_overlap(modified_idx_attrs, id_attrs);
 	if (!rep_id_key_required)
@@ -4709,22 +4709,12 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 	BufferHeapTupleTableSlot *bslot;
 	HeapTuple	oldtup;
 	bool		shouldFree = true;
-	Bitmapset  *idx_attrs,
-			   *modified_idx_attrs;
+	Bitmapset  *modified_idx_attrs;
 	bool		hot_allowed,
 				summarized_only;
 	Buffer		buffer;
 
 	Assert(ItemPointerIsValid(otid));
-
-	/*
-	 * Fetch this bitmap of interesting attributes from relcache before
-	 * obtaining a buffer lock because if we are doing an update on one of the
-	 * relevant system catalogs we could deadlock if we try to fetch them
-	 * later on. Relcache will return copies of each bitmap, so we need not
-	 * worry about relcache flush happening midway through this operation.
-	 */
-	idx_attrs = RelationGetIndexAttrBitmap(relation, INDEX_ATTR_BITMAP_INDEXED);
 
 	INJECTION_POINT("simple_heap_update-before-pin", NULL);
 
@@ -4767,14 +4757,8 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 		Assert(RelationSupportsSysCache(RelationGetRelid(relation)));
 
 		*update_indexes = TU_None;
-
-		/* modified_idx_attrs not yet initialized */
-		bms_free(idx_attrs);
 		ExecDropSingleTupleTableSlot(slot);
-
 		elog(ERROR, "tuple concurrently deleted");
-
-		return;
 	}
 
 	Assert(buffer != InvalidBuffer);
@@ -4795,7 +4779,7 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 		heap_freetuple(oldtup);
 
 	ExecDropSingleTupleTableSlot(slot);
-	bms_free(idx_attrs);
+	bms_free(modified_idx_attrs);
 
 	/*
 	 * Decide whether new index entries are needed for the tuple

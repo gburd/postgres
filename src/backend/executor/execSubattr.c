@@ -455,32 +455,33 @@ paths_may_overlap(List *a, List *b)
 		SubattrPathElem *ea = lfirst(la);
 		SubattrPathElem *eb = lfirst(lb);
 
-		if (ea->kind == SUBATTR_ELEM_ANY || eb->kind == SUBATTR_ELEM_ANY)
-			continue;
-
 		if (ea->kind == SUBATTR_ELEM_KEY && eb->kind == SUBATTR_ELEM_KEY)
 		{
 			if (strcmp(ea->key, eb->key) != 0 &&
 				!(key_may_be_position(ea->key) &&
 				  key_may_be_position(eb->key)))
 				return false;
-			continue;
 		}
-
-		if (ea->kind == SUBATTR_ELEM_KEY || eb->kind == SUBATTR_ELEM_KEY)
+		else if (ea->kind == SUBATTR_ELEM_KEY || eb->kind == SUBATTR_ELEM_KEY)
 		{
 			/* a key against a position or any position */
 			SubattrPathElem *key = ea->kind == SUBATTR_ELEM_KEY ? ea : eb;
 
 			if (!key_may_be_position(key->key))
 				return false;
-			continue;
 		}
-
-		if (ea->kind == SUBATTR_ELEM_POSITION &&
-			eb->kind == SUBATTR_ELEM_POSITION &&
-			ea->position != eb->position)
-			return false;
+		else if (ea->kind == SUBATTR_ELEM_POSITION &&
+				 eb->kind == SUBATTR_ELEM_POSITION)
+		{
+			if (ea->position != eb->position)
+				return false;
+		}
+		else
+		{
+			/* any position against a position or any position: overlap */
+			Assert(ea->kind == SUBATTR_ELEM_ANY_POSITION ||
+				   eb->kind == SUBATTR_ELEM_ANY_POSITION);
+		}
 	}
 	return true;
 }
