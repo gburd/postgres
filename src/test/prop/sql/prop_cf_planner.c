@@ -554,6 +554,15 @@ PG_PROP(jsonexpr_pullup_matches_offset0_fence)
 	if (wrap)
 		appendStringInfoString(&e, " || '>'");
 
+	/*
+	 * FULL JOIN needs a hash- or merge-joinable condition; "a.k > 1" and IS
+	 * NOT DISTINCT FROM are not, and the server rightly rejects them.  (The
+	 * outcome is plan-dependent: the patched planner keeps a qual that the
+	 * buggy one dropped, so only the patched server raised the error.)
+	 */
+	if (strcmp(jn, "FULL JOIN") == 0 && strcmp(cond, "false") != 0)
+		cond = "a.k = ss.y";
+
 	initStringInfo(&qa);
 	initStringInfo(&qb);
 	for (int v = 0; v < 2; v++)
