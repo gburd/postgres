@@ -107,27 +107,26 @@ static const char *const configs[] =
  */
 static char *
 digest_under(pg_prop_conn *conn, const char *setup, const char *query,
-			 bool *errored)
+			 bool *errored, char **errmsg)
 {
 	char	   *dig;
 	bool		failed = false;
 	char	   *err = NULL;
 
 	*errored = false;
+	*errmsg = NULL;
 
 	if (!pg_prop_sql_exec(conn, "BEGIN", &err))
 	{
-		if (err)
-			free(err);
 		*errored = true;
+		*errmsg = err;
 		return NULL;
 	}
 	if (setup[0] != '\0' && !pg_prop_sql_exec(conn, setup, &err))
 	{
-		if (err)
-			free(err);
 		pg_prop_sql_exec(conn, "ROLLBACK", NULL);
 		*errored = true;
+		*errmsg = err;
 		return NULL;
 	}
 	dig = pg_prop_sql_rowhash(conn, query, &failed, &err);
@@ -135,14 +134,30 @@ digest_under(pg_prop_conn *conn, const char *setup, const char *query,
 
 	if (failed)
 	{
-		if (err)
-			free(err);
 		if (dig)
 			free(dig);
 		*errored = true;
+		*errmsg = err;
 		return NULL;
 	}
 	return dig;
+}
+
+/*
+ * Errors a correct server may raise or not depending on the plan: arithmetic
+ * overflow and division by zero are evaluated per row, so a plan that filters
+ * first never evaluates the expression on the offending row.  Anything else --
+ * an unknown column, a syntax error, an internal error -- means the query
+ * itself is malformed (a generator bug) or the server failed, and is never
+ * waved through as "vacuous".
+ */
+static bool
+plan_dependent_error(const char *msg)
+{
+	return msg != NULL &&
+		(strstr(msg, "out of range") != NULL ||
+		 strstr(msg, "division by zero") != NULL ||
+		 strstr(msg, "overflow") != NULL);
 }
 
 /*
@@ -152,38 +167,50 @@ digest_under(pg_prop_conn *conn, const char *setup, const char *query,
 static void
 run_diff(pg_prop_tc *tc, pg_prop_conn *conn, const char *query)
 {
-	char	   *ref = NULL;
+	char	   *ref;
+	char	   *err = NULL;
 	bool		errored;
 	int			i;
-	int			ref_cfg = -1;
 
-	for (i = 0; i < N_CONFIGS; i++)
+	/*
+	 * The reference is config[0], the planner's free choice.  If it errors,
+	 * the case is vacuous only for a plan-dependent runtime error; anything
+	 * else fails the case so a malformed generated query cannot pass silently.
+	 */
+	ref = digest_under(conn, configs[0], query, &errored, &err);
+	if (errored)
 	{
-		ref = digest_under(conn, configs[i], query, &errored);
-		if (!errored && ref != NULL)
+		if (plan_dependent_error(err))
 		{
-			ref_cfg = i;
-			break;
+			pg_free(err);
+			return;
 		}
-		if (ref)
-		{
-			free(ref);
-			ref = NULL;
-		}
+		pg_prop_fail(tc, "reference query failed: %s\n  query: %s",
+					 err ? err : "", query);
 	}
-	if (ref == NULL)
-		return;					/* query errors under every config: vacuous */
+	pg_free(err);
 
-	for (i = ref_cfg + 1; i < N_CONFIGS; i++)
+	for (i = 1; i < N_CONFIGS; i++)
 	{
-		char	   *d = digest_under(conn, configs[i], query, &errored);
+		char	   *d = digest_under(conn, configs[i], query, &errored, &err);
 
-		if (errored || d == NULL)
+		if (errored)
 		{
-			if (d)
-				free(d);
-			continue;			/* config not applicable; skip */
+			/*
+			 * A forced config may legitimately hit a runtime error the
+			 * reference plan avoided (see plan_dependent_error).  Any other
+			 * error under a config whose reference succeeded is a bug: the
+			 * same query must not become invalid because of a planner GUC.
+			 */
+			if (!plan_dependent_error(err))
+				pg_prop_fail(tc,
+							 "config[%d] errored where the reference succeeded: %s\n"
+							 "  config: %s\n  query: %s",
+							 i, err ? err : "", configs[i], query);
+			pg_free(err);
+			continue;
 		}
+		pg_free(err);
 		if (strcmp(ref, d) != 0)
 		{
 			char	   *rc = pstrdup(ref);
@@ -193,12 +220,10 @@ run_diff(pg_prop_tc *tc, pg_prop_conn *conn, const char *query)
 			free(d);
 			pg_prop_fail(tc,
 						 "two execution strategies disagree on the same query.\n"
-						 "  config[%d] %s -> %s\n"
+						 "  config[0] (free choice) -> %s\n"
 						 "  config[%d] %s -> %s\n"
 						 "  query: %s",
-						 ref_cfg, configs[ref_cfg][0] ? configs[ref_cfg] : "(free choice)", rc,
-						 i, configs[i], dc,
-						 query);
+						 rc, i, configs[i], dc, query);
 		}
 		free(d);
 	}
@@ -303,6 +328,21 @@ PG_PROP(diff_deep_join)
 	pg_prop_disconnect(conn);
 }
 
+
+/*
+ * The name of the last projected key ("k0" for a one-table chain, "kN" for an
+ * N+1-table chain).  Properties that need a second key use this rather than
+ * hard-coding k1, which does not exist when the chain has one table.
+ */
+static const char *
+last_key(const qg_query *q, char *buf, size_t len)
+{
+	const char *p = strrchr(q->keys, 'k');
+
+	snprintf(buf, len, "%s", p ? p : "k0");
+	return buf;
+}
+
 /*
  * Shared setup for the shapes below: build the related database and one deep
  * join query over it.  Returns false (case vacuous) if the database is too
@@ -354,6 +394,7 @@ PG_PROP(diff_deep_aggregate)
 	char	   *keys;
 	char	   *tok;
 	char	   *save = NULL;
+	char		lk[16];
 
 	if (!deep_setup(tc, &conn, &db, &q))
 		return;
@@ -367,9 +408,9 @@ PG_PROP(diff_deep_aggregate)
 
 	initStringInfo(&sql);
 	appendStringInfo(&sql,
-					 "SELECT k0, count(*), %s, count(DISTINCT k1) "
+					 "SELECT k0, count(*), %s, count(DISTINCT %s) "
 					 "FROM (%s) j GROUP BY k0 ORDER BY k0 NULLS FIRST",
-					 aggs.data, q.select_from);
+					 aggs.data, last_key(&q, lk, sizeof(lk)), q.select_from);
 	run_diff(tc, conn, sql.data);
 
 	pfree(aggs.data);
@@ -392,9 +433,11 @@ PG_PROP(diff_semi_anti_join)
 	StringInfoData sql;
 	const char *anchor;
 	int			form;
+	char		lk[16];
 
 	if (!deep_setup(tc, &conn, &db, &q))
 		return;
+	last_key(&q, lk, sizeof(lk));
 
 	anchor = q.pred_table->name;
 	form = (int) pg_prop_draw_int(tc, 0, 3);
@@ -410,8 +453,8 @@ PG_PROP(diff_semi_anti_join)
 		case 1:
 			appendStringInfo(&sql,
 							 "SELECT a.id FROM %s a WHERE NOT EXISTS "
-							 "(SELECT 1 FROM (%s) j WHERE j.k1 = a.id) ORDER BY a.id",
-							 anchor, q.select_from);
+							 "(SELECT 1 FROM (%s) j WHERE j.%s = a.id) ORDER BY a.id",
+							 anchor, q.select_from, lk);
 			break;
 		case 2:
 			appendStringInfo(&sql,
@@ -423,8 +466,8 @@ PG_PROP(diff_semi_anti_join)
 			/* NOT IN with a possibly-NULL subquery column: three-valued */
 			appendStringInfo(&sql,
 							 "SELECT a.id FROM %s a WHERE a.id NOT IN "
-							 "(SELECT j.k1 FROM (%s) j) ORDER BY a.id",
-							 anchor, q.select_from);
+							 "(SELECT j.%s FROM (%s) j) ORDER BY a.id",
+							 anchor, lk, q.select_from);
 			break;
 	}
 	run_diff(tc, conn, sql.data);
