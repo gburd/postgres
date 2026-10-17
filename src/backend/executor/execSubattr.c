@@ -416,7 +416,8 @@ collect_modifies(Node *expr, SubattrWalk *walk)
 /*
  * Could the key be read as an array position?  jsonb reads a path element
  * as a position with strtoint(), which allows leading white space and a
- * sign; we also allow trailing white space, to be safe.
+ * sign.  Trailing white space is allowed too: answering yes too often only
+ * makes two paths overlap that need not.
  */
 static bool
 key_may_be_position(const char *key)

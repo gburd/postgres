@@ -3261,7 +3261,13 @@ simple_heap_delete(Relation relation, const ItemPointerData *tid)
  *	heap_update - replace a tuple
  *
  * See table_tuple_update() for an explanation of the parameters, except that
- * this routine directly takes a heap tuple rather than a slot.
+ * this routine directly takes a heap tuple rather than a slot, and that the
+ * caller decides what table_tuple_update() leaves to the table AM:
+ * modified_idx_attrs are the indexed attributes the update changes, lockmode
+ * the tuple lock to take (HeapUpdateDetermineLockmode()), and hot_allowed
+ * whether the new version may be heap-only (HeapUpdateHotAllowable()).  The
+ * caller then learns from HeapTupleIsHeapOnly(newtup) which indexes need new
+ * entries.
  *
  * In the failure cases, the routine fills *tmfd with the tuple's t_ctid,
  * t_xmax (resolving a possible MultiXact, if necessary), and t_cmax (the last
@@ -3455,8 +3461,8 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 			bool		isnull;
 
 			/*
-			 * System attributes are not added into INDEX_ATTR_BITMAP_INDEXED
-			 * bitmap by relcache.
+			 * These are replica identity columns: an index's plain key
+			 * columns, never system attributes.
 			 */
 			Assert(attrnum > 0);
 
@@ -4708,7 +4714,6 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 	TupleTableSlot *slot;
 	BufferHeapTupleTableSlot *bslot;
 	HeapTuple	oldtup;
-	bool		shouldFree = true;
 	Bitmapset  *modified_idx_attrs;
 	bool		hot_allowed,
 				summarized_only;
@@ -4734,11 +4739,9 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 	 * heapam_fetch_row_version() is static, we replicate in part that code
 	 * here.
 	 *
-	 * This is a bit repetitive because heap_update() will again find and form
-	 * the old HeapTuple from the old TID and in most cases the callers
-	 * (ignoring extensions, are always catalog tuple updates) already had the
-	 * set of changed attributes (the "replaces" array), but for now this
-	 * minor repetition of work is necessary.
+	 * heap_update() reads the old tuple again under the buffer lock.  Reading
+	 * it here first, unlocked, keeps that lock as short as before: the
+	 * comparison used to run while it was held.
 	 */
 	slot = MakeTupleTableSlot(RelationGetDescr(relation), &TTSOpsBufferHeapTuple, 0);
 	bslot = (BufferHeapTupleTableSlot *) slot;
@@ -4765,7 +4768,7 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 
 	/* Store in slot, transferring existing pin */
 	ExecStorePinnedBufferHeapTuple(&bslot->base.tupdata, slot, buffer);
-	oldtup = ExecFetchSlotHeapTuple(slot, false, &shouldFree);
+	oldtup = ExecFetchSlotHeapTuple(slot, false, NULL);
 
 	modified_idx_attrs = HeapUpdateModifiedIdxAttrs(relation, oldtup, tup);
 	lockmode = HeapUpdateDetermineLockmode(relation, modified_idx_attrs);
@@ -4774,9 +4777,6 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 	result = heap_update(relation, otid, tup, GetCurrentCommandId(true), 0,
 						 InvalidSnapshot, true /* wait for commit */ ,
 						 &tmfd, lockmode, modified_idx_attrs, hot_allowed);
-
-	if (shouldFree)
-		heap_freetuple(oldtup);
 
 	ExecDropSingleTupleTableSlot(slot);
 	bms_free(modified_idx_attrs);

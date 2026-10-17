@@ -163,7 +163,8 @@ typedef struct RelationData
 	Bitmapset  *rd_pkattr;		/* cols included in primary key */
 	Bitmapset  *rd_idattr;		/* included in replica identity index */
 	Bitmapset  *rd_indexedattr; /* all cols referenced by indexes */
-	Bitmapset  *rd_summarizedattr;	/* cols indexed by summarizing indexes */
+	Bitmapset  *rd_summarizedattr;	/* cols indexed only by summarizing
+									 * indexes */
 	Bitmapset  *rd_exprattr;	/* cols indexed only via expressions or
 								 * partial indexes */
 	Bitmapset  *rd_cmpattr;		/* cols indexed directly only by indexes with

@@ -26,8 +26,8 @@ SELECT * FROM dummy_cmp_hot();
 -- b is not indexed: HOT
 UPDATE dummy_cmp SET b = b + 1;
 SELECT * FROM dummy_cmp_hot();
--- id is in a btree index, which cannot compare: not HOT, even though a
--- changes in a way dummy_index_am accepts
+-- id + 100 needs a new entry in the btree index on id: not HOT, even though
+-- a changes in a way dummy_index_am accepts
 UPDATE dummy_cmp SET a = a + 10, id = id + 100;
 SELECT * FROM dummy_cmp_hot();
 -- to and from null always needs new entries
@@ -35,8 +35,8 @@ UPDATE dummy_cmp SET a = NULL WHERE id = 101;
 UPDATE dummy_cmp SET a = 2 WHERE id = 101;
 SELECT * FROM dummy_cmp_hot();
 COMMIT;
--- A column also used by an index with no amcomparedatums is decided as
--- before.
+-- A change to a column that another index also stores needs a new entry
+-- if that index needs one: a + 10 does in a btree index on a, so not HOT.
 CREATE INDEX dummy_cmp_a2 ON dummy_cmp (a);
 -- count from zero: flush what earlier transactions counted
 SELECT pg_stat_force_next_flush();
@@ -46,7 +46,8 @@ SELECT * FROM dummy_cmp_hot();
 COMMIT;
 DROP INDEX dummy_cmp_a2;
 -- The columns of a unique index that a foreign key could reference are
--- never compared this way, nor are those of the replica identity.
+-- never compared this way.  (Nor are those of the replica identity, but an
+-- index that can be the replica identity is always such a key.)
 CREATE UNIQUE INDEX dummy_cmp_id_u ON dummy_cmp (id);
 CREATE INDEX dummy_cmp_id_d ON dummy_cmp USING dummy_index_am (id)
   WITH (option_real = 1, option_int = 100);

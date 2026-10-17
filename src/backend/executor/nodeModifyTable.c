@@ -1176,7 +1176,12 @@ ExecInitUpdateUntouched(ModifyTableState *mtstate,
 				IsA(child, TidRangeScan))
 			{
 				if (((Scan *) child)->scanrelid == rti)
+				{
+					/* a relation is scanned once per Append */
+					if (found != NULL)
+						return;
 					found = child;
+				}
 			}
 		}
 		if (found == NULL)
