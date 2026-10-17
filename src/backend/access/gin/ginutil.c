@@ -729,6 +729,8 @@ gincomparedatums(Relation index, IndexInfo *indexInfo, int attnum,
 		return false;
 	for (int32 i = 0; i < noldEntries; i++)
 	{
+		/* there could be many entries, so be willing to abort here */
+		CHECK_FOR_INTERRUPTS();
 		if (ginCompareEntries(ginstate, (OffsetNumber) attnum,
 							  oldEntries[i], oldCategories[i],
 							  newEntries[i], newCategories[i]) != 0)

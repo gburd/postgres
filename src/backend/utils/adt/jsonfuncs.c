@@ -6354,8 +6354,10 @@ jsonb_subattr_support(PG_FUNCTION_ARGS)
 					PG_RETURN_POINTER(NULL);
 				if (req->funcid == F_JSONB_DELETE_JSONB_TEXT)
 				{
-					elems = &c->constvalue;
-					nulls = &c->constisnull;
+					/* a one-element array of keys */
+					elems = palloc_object(Datum);
+					nulls = palloc0_object(bool);
+					elems[0] = c->constvalue;
 					nelems = 1;
 				}
 				else

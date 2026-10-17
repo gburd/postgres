@@ -480,7 +480,7 @@ typedef struct SupportRequestModifyInPlace
  *
  * Two paths are taken to name overlapping parts unless, at some depth, both
  * have an element and those elements cannot name the same part: two
- * different keys, two different non-negative positions, a position or
+ * different keys, two different positions, a position or
  * SUBATTR_ELEM_ANY_POSITION against a key that does not read as an integer.
  * A path overlaps every path it is a prefix of.
  */

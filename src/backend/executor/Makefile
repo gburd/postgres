@@ -24,11 +24,11 @@ OBJS = \
 	execMain.o \
 	execParallel.o \
 	execPartition.o \
-	execSubattr.o \
 	execProcnode.o \
 	execReplication.o \
 	execSRF.o \
 	execScan.o \
+	execSubattr.o \
 	execTuples.o \
 	execUtils.o \
 	functions.o \

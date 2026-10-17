@@ -3345,7 +3345,7 @@ heap_update(Relation relation, const ItemPointerData *otid, HeapTuple newtup,
 
 	/*
 	 * Fetch the attributes used across all indexes on this relation as well
-	 * as the replica identity and columns.
+	 * as the replica identity columns.
 	 *
 	 * Note: We must compute the list before obtaining buffer lock. In the
 	 * worst case, if we are doing an update on one of the relevant system
@@ -4739,9 +4739,11 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 	 * heapam_fetch_row_version() is static, we replicate in part that code
 	 * here.
 	 *
-	 * heap_update() reads the old tuple again under the buffer lock.  Reading
-	 * it here first, unlocked, keeps that lock as short as before: the
-	 * comparison used to run while it was held.
+	 * heap_update() reads the old tuple again, under the buffer lock.  The
+	 * comparison used to run there; running it here, before the lock, keeps
+	 * the lock short.  Callers do not expect concurrent updates of the tuple
+	 * (see above), so both reads see the same version; if one happens anyway,
+	 * heap_update() reports it.
 	 */
 	slot = MakeTupleTableSlot(RelationGetDescr(relation), &TTSOpsBufferHeapTuple, 0);
 	bslot = (BufferHeapTupleTableSlot *) slot;
@@ -4759,7 +4761,6 @@ simple_heap_update(Relation relation, const ItemPointerData *otid, HeapTuple tup
 		 */
 		Assert(RelationSupportsSysCache(RelationGetRelid(relation)));
 
-		*update_indexes = TU_None;
 		ExecDropSingleTupleTableSlot(slot);
 		elog(ERROR, "tuple concurrently deleted");
 	}

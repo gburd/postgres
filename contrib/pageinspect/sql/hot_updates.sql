@@ -416,8 +416,9 @@ SELECT * FROM update_case(
     INSERT INTO hot_expr_test SELECT g, point(g, g) FROM generate_series(1, 10) g$$,
   $$UPDATE hot_expr_test SET p = point(p[0], p[1] + 1)$$);
 
--- An expression that is a point, stored by the gist index as a box.  This
--- update crashed the server in PostgreSQL 11.0.
+-- An expression that is a point, stored by the gist index as a box.
+-- Comparing it as the box the index stores rather than as the point it is
+-- crashed the server in 2018 (2877.1541538838@sss.pgh.pa.us).
 SELECT * FROM update_case(
   $$CREATE TABLE hot_expr_test (id int PRIMARY KEY, d smallint) WITH (fillfactor = 50);
     CREATE INDEX ON hot_expr_test USING gist ((point(d::integer % 7, 0)));

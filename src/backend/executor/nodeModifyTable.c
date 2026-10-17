@@ -259,8 +259,10 @@ IndexDatumsDiffer(Relation heapRel, Relation indexRel, IndexInfo *indexInfo,
  * Would the update from old_tts to new_tts give this index a new entry, or
  * take one away?
  *
- * What this allocates goes in the per-tuple memory context, which callers
- * reset for each row.
+ * The index datums are formed in the per-tuple memory context, which
+ * callers reset for each row.  The predicate's ExprState is built in the
+ * caller's context and kept in the IndexInfo, as ExecInsertIndexTuples()
+ * does, so it has to be a context that lasts the query.
  */
 static bool
 IndexEntryChanges(ResultRelInfo *resultRelInfo, Relation indexRel,
@@ -1150,6 +1152,7 @@ ExecInitUpdateUntouched(ModifyTableState *mtstate,
 	Bitmapset  *exprattrs;
 	ListCell   *lt,
 			   *lc;
+	MemoryContext tmpcxt;
 	MemoryContext oldcxt;
 
 	Assert(whichrel >= 0 && whichrel < mtstate->mt_nrels);
@@ -1207,7 +1210,10 @@ ExecInitUpdateUntouched(ModifyTableState *mtstate,
 	if (bms_is_empty(exprattrs))
 		return;
 
-	oldcxt = MemoryContextSwitchTo(estate->es_query_cxt);
+	/* the analysis is thrown away; only the bitmaps are kept */
+	tmpcxt = AllocSetContextCreate(CurrentMemoryContext, "subattr proof",
+								   ALLOCSET_SMALL_SIZES);
+	oldcxt = MemoryContextSwitchTo(tmpcxt);
 	forboth(lt, subplan->targetlist, lc, updateColnos)
 	{
 		TargetEntry *tle = lfirst_node(TargetEntry, lt);
@@ -1231,15 +1237,18 @@ ExecInitUpdateUntouched(ModifyTableState *mtstate,
 									NameStr(TupleDescAttr(RelationGetDescr(rel),
 														  attnum - 1)->attname),
 									RelationGetRelationName(resultRelInfo->ri_IndexRelationDescs[i])));
+			MemoryContextSwitchTo(estate->es_query_cxt);
 			if (resultRelInfo->ri_IndexUntouchedAttrs == NULL)
 				resultRelInfo->ri_IndexUntouchedAttrs =
 					palloc0_array(Bitmapset *, resultRelInfo->ri_NumIndices);
 			resultRelInfo->ri_IndexUntouchedAttrs[i] =
 				bms_add_member(resultRelInfo->ri_IndexUntouchedAttrs[i],
 							   attnum - FirstLowInvalidHeapAttributeNumber);
+			MemoryContextSwitchTo(tmpcxt);
 		}
 	}
 	MemoryContextSwitchTo(oldcxt);
+	MemoryContextDelete(tmpcxt);
 	bms_free(exprattrs);
 }
 
@@ -2868,14 +2877,6 @@ lreplace:
 	 */
 	if (resultRelationDesc->rd_att->constr)
 		ExecConstraints(resultRelInfo, slot, estate);
-
-	/*
-	 * Next up we need to find out the set of indexed attributes that have
-	 * changed in value and should trigger a new index tuple.  We could start
-	 * with the set of updated columns via ExecGetUpdatedCols(), but if we do
-	 * we will overlook attributes directly modified by heap_modify_tuple()
-	 * which are not known to ExecGetUpdatedCols().
-	 */
 
 	/*
 	 * From the second row on, use what the SET clause shows about which
