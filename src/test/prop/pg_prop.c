@@ -633,6 +633,19 @@ run_property(PropEntry *prop, uint64 iterations, bool have_seed, uint64 seed,
 	check_rc(ctx, hegel_settings_set_test_cases(ctx, s, iterations), "set_test_cases");
 	check_rc(ctx, hegel_settings_set_verbosity(ctx, s, verbosity), "set_verbosity");
 	check_rc(ctx, hegel_settings_set_seed(ctx, s, seed, have_seed), "set_seed");
+
+	/*
+	 * Under a deep hunt (PG_PROP_DEEP set), a test case's "generation" is
+	 * dominated by server-side DDL/DML building the database, which on a
+	 * loaded machine routinely exceeds the engine's 30-second TooSlow
+	 * threshold -- the check then measures server load, not the engine, and
+	 * aborts the run.  Suppress just that check in hunt mode; the committed
+	 * TAP run (PG_PROP_DEEP unset) keeps every health check.
+	 */
+	if (getenv("PG_PROP_DEEP") != NULL && getenv("PG_PROP_DEEP")[0] != '\0' &&
+		strcmp(getenv("PG_PROP_DEEP"), "0") != 0)
+		check_rc(ctx, hegel_settings_set_suppress_health_check(ctx, s, HEGEL_HC_TOO_SLOW),
+				 "suppress_health_check");
 	snprintf(dbkey, sizeof(dbkey), "%s/%s", prop->area, prop->name);
 	snprintf(current_area_buf, sizeof(current_area_buf), "%s", dbkey);
 	pg_prop_current_area = current_area_buf;
