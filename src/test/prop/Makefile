@@ -282,6 +282,7 @@ OBJS = \
 	sql/prop_query_multi.o \
 	sql/prop_query_deep.o \
 	sql/prop_query_diff.o \
+	sql/prop_dml_model.o \
 	sql/index_traits.o \
 	sql/prop_index_am.o \
 	sql/prop_table_am.o \
