@@ -1,0 +1,242 @@
+src/test/prop/README
+
+Property-based tests
+====================
+
+This directory holds PostgreSQL's optional property-based tests (PBTs), built
+on the Hegel engine (libhegel; see https://hegel.dev).  A property-based test
+states a property that must hold for every input in some domain -- a
+round-trip, an invariant, an algebraic identity, or agreement between two ways
+of computing the same answer -- and the engine generates many inputs trying to
+falsify it.  When it finds a counterexample it shrinks it to a minimal failing
+input and prints a blob that replays it exactly.
+
+These tests are entirely optional and are off by default.  They are built and
+run only when all of the following hold:
+
+1. you explicitly enable them at configure time (--with-hegel for autoconf,
+   -Dprop_tests=enabled for meson);
+
+2. libhegel (its hegel.h header and libhegel_c shared library) is present and
+   reachable via --with-includes/--with-libraries (autoconf) or
+   --extra-include-dirs/--extra-lib-dirs (meson); and
+
+3. TAP tests are enabled (--enable-tap-tests / -Dtap_tests=enabled).
+
+If any piece is missing the suite is silently skipped.  If the opt-in flag is
+set but a piece is missing, configure fails with a clear message rather than
+quietly doing nothing.
+
+See DESIGN in this directory for how it all works under the covers.
+
+
+When to use a property-based test (and when not to)
+===================================================
+
+Reach for a PBT when the code has a property that should hold across a large
+input space:
+
+* Round-trips: parse(format(x)) = x, decompress(compress(x)) = x.
+
+* Idempotence: f(f(x)) = f(x) -- normalization, case folding, canonical path
+  cleanup.
+
+* Invariants and contracts: a verifier stops on a character boundary; a
+  function's output stays within documented bounds; a comparator is a total
+  order.
+
+* Differential oracles: two ways of computing the same answer must agree -- an
+  index scan versus a sequential scan, a query with an optimization on versus
+  off, a partitioned table versus an unpartitioned one with the same rows.
+
+* No-crash and robustness: a parser handles arbitrary bytes without crashing.
+
+Prefer an ordinary regression or TAP test when:
+
+* The test checks exact output.  "render(x) = <html>..." depends on a specific
+  format; there is no general property, just a fixed expectation.
+
+* The test checks a specific error message.  PBTs are good at "an error is
+  raised", poor at "the error says exactly this".  Test the error class or
+  SQLSTATE, never the wording (it is reworded and translated between releases).
+
+* The output is deliberately nondeterministic: random(), unseeded
+  gen_random_uuid(), clock_timestamp(), pg_stat_*, timing, memory figures.
+  There is no stable oracle.
+
+* The target is plan shape or cost, not plan results.  EXPLAIN output is
+  cost-model dependent and is intended to change across releases and with
+  statistics.  (Plan results are a prime PBT target -- see the query_* areas;
+  plan shape is not.)
+
+* The only oracle is a second copy of the same algorithm.  If the test
+  reimplements the function to check the function, it finds bugs in the test,
+  not the server.  This is the single most common way a property goes wrong;
+  prefer a round-trip or a differential oracle (two independent ways that must
+  agree) over an invented formula.
+
+* The target is floating-point textual edge output (extra_float_digits,
+  last-ULP rendering): that is platform and libc behavior, not PostgreSQL's.
+
+* The target is performance or resource use.  PBT asserts correctness, not
+  speed; that is a benchmark.
+
+* Setup dominates.  If each case needs elaborate fixtures, the generator is
+  mostly scaffolding and a few hand-written cases are clearer.
+
+* No real property is apparent.  Don't force a tautology ("x = x"); a good
+  unit test beats a contrived PBT.
+
+The rule of thumb: a PBT belongs only where a disagreement is unambiguously a
+bug.  That is why the SQL-oracle (Tier B) areas lean on differential oracles
+and round-trips, not invented formulas.
+
+A PBT complements, rather than replaces, the existing regression and TAP
+suites.  Its value is exercising the combinations and boundary inputs a human
+does not think to write by hand -- the three-byte "0.0" fed one byte at a time,
+the two-partition prefix-equality query -- not raising line coverage.  Measured,
+the suite adds only about 0.4% line coverage over the regression and isolation
+suites, and it does not execute shared lines more often than they do; its
+measurable gain is reaching different lines (for example, 242 lines of
+src/common/jsonapi.c that the json and jsonb regression tests never reach) plus
+the standing differential net over the planner and executor.  See DESIGN for
+the measurement method and figures.
+
+
+Running
+=======
+
+The tests are organized into areas, each targeting one piece of code.  There
+are two kinds.  In-process (Tier A) areas link the code under test directly
+into the test program and need no server.  SQL-oracle (Tier B) areas drive SQL
+against a running cluster and compare the answer to an oracle.  All areas are
+compiled into one program, pg_prop, whose first argument selects the area:
+
+    pg_prop <area> [options] [property ...]
+
+Through the test harness:
+
+    # meson: run the whole prop suite (both TAP drivers)
+    meson test --suite prop
+
+    # meson: one driver (001 = in-process areas, 002 = SQL-oracle areas)
+    meson test prop/001_prop
+    meson test prop/002_sql_props
+
+    # autoconf
+    make -C src/test/prop check
+
+Directly, for development and debugging.  An in-process area needs no server:
+
+    pg_prop --list                               # list every area/property
+    pg_prop jsonapi --list                        # any area filters the list
+    pg_prop jsonapi                               # all jsonapi properties
+    pg_prop jsonapi chunking_agrees_with_oneshot  # one property
+    pg_prop jsonapi chunking_agrees_with_oneshot -n 100000 -s 42
+
+A SQL-oracle area reads PGHOST/PGPORT/PGDATABASE from the environment, so point
+it at any cluster:
+
+    PGHOST=/tmp PGPORT=5432 PGDATABASE=postgres \
+        pg_prop partprune pruning_preserves_rows -n 100000 -s 42
+
+Controlling iterations and the seed:
+
+* -n, --iterations N -- number of test cases per property (default 100, kept
+  low so check-world stays cheap; raise it when hunting a bug).
+
+* -s, --seed N -- fix the RNG seed for a reproducible run.  When you do not give
+  one, pg_prop picks a seed and prints it ("# seed: NNN"), so a failure seen in
+  CI can be replayed with -s NNN.
+
+The same three controls are available as the environment variables
+PG_PROP_ITERATIONS, PG_PROP_SEED, and PG_PROP_TESTS (a space-separated list of
+property names), which the TAP drivers forward -- so you can raise the
+iteration count of a meson test run without editing anything:
+
+    PG_PROP_ITERATIONS=10000 PG_PROP_SEED=42 meson test --suite prop
+    PG_PROP_TESTS="pruning_preserves_rows" meson test prop/002_sql_props
+
+
+Debugging a failure
+===================
+
+1. Read the counterexample.  On failure pg_prop prints a one-line "falsified:"
+   message that includes the minimal inputs Hegel shrank to, plus a "rerun
+   with" blob.  The TAP drivers echo this as "#" diagnostics.
+
+2. Reproduce it deterministically.  Re-run the single property with the seed
+   from the run's "# seed:" line:
+
+       pg_prop <area> <property> -s <seed> -n <iterations>
+
+   (For a SQL area, set PGHOST/PGPORT first.)  You can also raise verbosity with
+   -v to see every drawn value, not just the final counterexample.
+
+3. Decide what the failure means.  There are three possibilities:
+
+   * A real bug in the code under test -- the code violated its own contract.
+     Capture the reproducer.
+
+   * An unsound property -- the test asserted something the code never promised
+     (for example, that a string verifier and a character verifier agree on a
+     NUL byte -- they deliberately do not).  Fix the property.
+
+   * An over-broad generator -- the failing input is genuinely outside the
+     function's domain.  Only then narrow the generator, and say why in a
+     comment.
+
+4. Step through it.  The reproducing command is an ordinary process; run it
+   under gdb or lldb with a breakpoint in the code under test.  Because the seed
+   is fixed, the same inputs are generated every time.
+
+
+Adding a property
+=================
+
+To add a property to an existing area, add a PG_PROP(name) { ... } function to
+that area's prop_<area>.c.  It is registered automatically.
+
+To add a new area, create prop_<area>.c beginning with
+
+    #define PG_PROP_AREA "<area>"
+
+before including pg_prop.h, then add the file to the source list in meson.build,
+the OBJS list in Makefile, and the area list in the matching TAP driver
+(t/001_prop.pl for in-process areas, t/002_sql_props.pl for SQL-oracle areas).
+
+See pg_prop.h for the full generator and assertion API, and DESIGN for the
+rationale and internals.
+
+
+Extensions
+==========
+
+An extension can take part in the suite in two ways, and may do either or both.
+
+(a) Add its own area.  This is just "add a new area" above with the extension's
+name: a prop_<ext>.c that defines PG_PROP_AREA and uses PG_PROP(), whose connect
+helper runs CREATE EXTENSION IF NOT EXISTS <ext>.  Every contrib area already in
+this tree (hstore, ltree, citext, cube, seg, intarray, pg_trgm, ...) is exactly
+this shape.  An out-of-tree extension ships the file and arranges for it to be
+compiled into the pg_prop binary.
+
+(b) Augment an existing area through an extension point.  A core area may
+publish a named point and call pg_prop_run_hooks() there; an extension registers
+a contributor with PG_PROP_HOOK("point", fn).  The SQL query generator
+(sql/query_gen.h) publishes three:
+
+    query_gen.setup      run DDL (CREATE EXTENSION) before each generated table;
+                         ctx is the live connection.
+    query_gen.column     add a typed column to the generated table; ctx is the
+                         qg_schema being assembled.
+    query_gen.predicate  emit a predicate leaf over the extension's column; ctx
+                         is a qg_pred_ctx (schema + buffer).
+
+Registering those three teaches the generator about the extension's type, after
+which every query-level oracle -- TLP, NoREC, cardinality, PQS, plan-advice --
+generates tables and queries that use the type and checks all of its invariants
+over it, with no new oracle code.  sql/prop_query_ext_citext.c is a complete
+worked example (it also adds one citext-specific area, to show both styles in
+one file).  A core area makes itself extensible simply by publishing a point and
+documenting the ctx type its contributors receive.
