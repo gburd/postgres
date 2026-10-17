@@ -1155,10 +1155,19 @@ build_join_chain(pg_prop_tc *tc, const qg_db *db, int start, int max_joins,
 	int			n = 0;
 	int			cur = start;
 
+	/*
+	 * exposes_fk[i]: member i's alias has an fk column.  A plain or ONLY
+	 * member has whatever its table has; a derived member has only what it
+	 * projects.  The walk continues through a member's fk only if exposed.
+	 */
+	bool		exposes_fk[QG_MAX_TABLES];
+
 	used[0] = &db->tables[cur];
 	snprintf(aliases[0], QG_NAME_LEN, "r0");
 	appendStringInfo(from, "%s r0", db->tables[cur].name);
 	n = 1;
+
+	exposes_fk[0] = db->tables[cur].fkcol >= 0;
 
 	while (n <= max_joins)
 	{
@@ -1167,7 +1176,7 @@ build_join_chain(pg_prop_tc *tc, const qg_db *db, int start, int max_joins,
 		bool		frontier_is_child = false;
 
 		/* prefer the frontier's own parent (frontier.fk -> parent.id) */
-		if (frontier->fkref >= 0)
+		if (frontier->fkref >= 0 && exposes_fk[n - 1])
 		{
 			nexttab = frontier->fkref;
 			frontier_is_child = true;
@@ -1189,6 +1198,7 @@ build_join_chain(pg_prop_tc *tc, const qg_db *db, int start, int max_joins,
 
 		used[n] = &db->tables[nexttab];
 		snprintf(aliases[n], QG_NAME_LEN, "r%d", n);
+		exposes_fk[n] = db->tables[nexttab].fkcol >= 0;
 
 		/*
 		 * The join member is not always a plain relation.  The planner's most
@@ -1293,13 +1303,10 @@ build_join_chain(pg_prop_tc *tc, const qg_db *db, int start, int max_joins,
 						 * new.id), so that argument applies.
 						 */
 						/*
-						 * The member exposes only id, so it is used only for a
-						 * parent table with no fk column of its own: the chain
-						 * then continues through a child referencing it (new.fk
-						 * = this.id), never through this.fk.
+						 * The member projects only id; exposes_fk records that
+						 * so the walk never continues through this.fk.
 						 */
-						if (!frontier_is_child || db->tables[nexttab].nrows == 0 ||
-							db->tables[nexttab].fkcol >= 0)
+						if (!frontier_is_child || db->tables[nexttab].nrows == 0)
 						{
 							appendStringInfo(from, " %s JOIN %s %s ON ", jt, tn,
 											 aliases[n]);
@@ -1313,6 +1320,7 @@ build_join_chain(pg_prop_tc *tc, const qg_db *db, int start, int max_joins,
 										 ") %s ON %s.fk = %s.id",
 										 jt, prev, tn, tn,
 										 aliases[n], prev, aliases[n]);
+						exposes_fk[n] = false;	/* projects id only */
 						n++;
 						continue;
 					}
