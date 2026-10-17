@@ -386,9 +386,17 @@ pg_prop_note(pg_prop_tc *tc, const char *fmt,...)
 	StringInfoData s;
 
 	initStringInfo(&s);
-	va_start(ap, fmt);
-	appendStringInfoVA(&s, fmt, ap);
-	va_end(ap);
+	for (;;)
+	{
+		int			needed;
+
+		va_start(ap, fmt);
+		needed = appendStringInfoVA(&s, fmt, ap);
+		va_end(ap);
+		if (needed == 0)
+			break;
+		enlargeStringInfo(&s, needed);
+	}
 	hegel_note(tc->ctx, tc->tc, (const unsigned char *) s.data, s.len);
 	pfree(s.data);
 }
@@ -399,9 +407,17 @@ pg_prop_fail(pg_prop_tc *tc, const char *fmt,...)
 	va_list		ap;
 
 	resetStringInfo(&tc->failmsg);
-	va_start(ap, fmt);
-	appendStringInfoVA(&tc->failmsg, fmt, ap);
-	va_end(ap);
+	for (;;)
+	{
+		int			needed;
+
+		va_start(ap, fmt);
+		needed = appendStringInfoVA(&tc->failmsg, fmt, ap);
+		va_end(ap);
+		if (needed == 0)
+			break;
+		enlargeStringInfo(&tc->failmsg, needed);
+	}
 	tc->failed = true;
 	siglongjmp(tc->jmp, 1);		/* 1 == interesting/failure */
 }
@@ -417,9 +433,17 @@ pg_prop_skip(pg_prop_tc *tc, const char *fmt,...)
 		skip_reason_inited = true;
 	}
 	resetStringInfo(&skip_reason);
-	va_start(ap, fmt);
-	appendStringInfoVA(&skip_reason, fmt, ap);
-	va_end(ap);
+	for (;;)
+	{
+		int			needed;
+
+		va_start(ap, fmt);
+		needed = appendStringInfoVA(&skip_reason, fmt, ap);
+		va_end(ap);
+		if (needed == 0)
+			break;
+		enlargeStringInfo(&skip_reason, needed);
+	}
 	skip_requested = true;
 	siglongjmp(tc->jmp, 3);		/* 3 == skip the whole property */
 }
