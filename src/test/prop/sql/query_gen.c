@@ -1211,7 +1211,7 @@ build_join_chain(pg_prop_tc *tc, const qg_db *db, int start, int max_joins,
 			const char *tn = db->tables[nexttab].name;
 			const char *prev = aliases[n - 1];
 			const char *jt = pg_prop_draw_bool(tc) ? "" : "LEFT";
-			int			shape = (int) pg_prop_draw_int(tc, 0, 5);
+			int			shape = (int) pg_prop_draw_int(tc, 0, 6);
 			/* derived shapes expose id, plus fk when the table has one */
 			const char *cols = db->tables[nexttab].fkcol >= 0 ? "id, fk" : "id";
 			const char *xcols = db->tables[nexttab].fkcol >= 0 ? "x.id, x.fk" : "x.id";
@@ -1265,6 +1265,56 @@ build_join_chain(pg_prop_tc *tc, const qg_db *db, int start, int max_joins,
 						pfree(corr.data);
 						n++;
 						continue;	/* join condition already placed */
+					}
+				case 6:
+					{
+						/*
+						 * LATERAL UNION ALL whose first arm is an uncorrelated
+						 * sorted subquery (a DISTINCT ... ORDER BY ... LIMIT 1)
+						 * projecting only the outer reference.  After pull-up
+						 * the appendrel child's translated tlist is a Var of
+						 * the outer rel, and the child has sorted paths, which
+						 * is the combination find_var_for_subquery_tle
+						 * mishandled (assertion failure in cassert builds,
+						 * possible wrong Var match otherwise; fixed upstream in
+						 * 11b56ee2731).  The arm must not be correlated or
+						 * filtered, or the planner never builds that path.
+						 *
+						 * Rows stay those of the plain FK join.  The first arm
+						 * yields the outer key exactly once when the member
+						 * table is non-empty (LIMIT 1 over a DISTINCT); the
+						 * second arm is the member's rows with that key, so the
+						 * union is {prev.fk} plus every matching member row.
+						 * The second arm is filtered to an impossible id so the
+						 * union is {prev.fk} alone, and the ON clause keeps it
+						 * only where a member row with that id exists -- which
+						 * the enforced FK guarantees for every non-NULL fk.
+						 * Used only where the frontier holds the FK (prev.fk =
+						 * new.id), so that argument applies.
+						 */
+						/*
+						 * The member exposes only id, so it is used only for a
+						 * parent table with no fk column of its own: the chain
+						 * then continues through a child referencing it (new.fk
+						 * = this.id), never through this.fk.
+						 */
+						if (!frontier_is_child || db->tables[nexttab].nrows == 0 ||
+							db->tables[nexttab].fkcol >= 0)
+						{
+							appendStringInfo(from, " %s JOIN %s %s ON ", jt, tn,
+											 aliases[n]);
+							break;
+						}
+						appendStringInfo(from,
+										 " %s JOIN LATERAL ("
+										 "SELECT %s.fk AS id FROM "
+										 "(SELECT DISTINCT id FROM %s ORDER BY id LIMIT 1) s "
+										 "UNION ALL SELECT id FROM %s WHERE id < 0"
+										 ") %s ON %s.fk = %s.id",
+										 jt, prev, tn, tn,
+										 aliases[n], prev, aliases[n]);
+						n++;
+						continue;
 					}
 				default:
 					appendStringInfo(from, " %s JOIN %s %s ON ", jt, tn,
