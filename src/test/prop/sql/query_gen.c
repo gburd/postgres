@@ -1039,13 +1039,51 @@ draw_leaf_on(pg_prop_tc *tc, StringInfo buf, const qg_table *t,
 	ci = (int) pg_prop_draw_int(tc, 0, t->schema.ncols - 1);
 	c = &t->schema.cols[ci];
 
-	switch ((int) pg_prop_draw_int(tc, 0, 3))
+	switch ((int) pg_prop_draw_int(tc, 0, 7))
 	{
 		case 0:
 			appendStringInfo(buf, "%s.%s IS NULL", alias, c->name);
 			break;
 		case 1:
 			appendStringInfo(buf, "%s.%s IS NOT NULL", alias, c->name);
+			break;
+		case 2:					/* IS [NOT] DISTINCT FROM: null-safe equality */
+			appendStringInfo(buf, "%s.%s IS %sDISTINCT FROM ", alias, c->name,
+							 pg_prop_draw_bool(tc) ? "NOT " : "");
+			if (c->is_text_like)
+				draw_text_or_null(tc, buf);
+			else
+				draw_int_or_null(tc, buf);
+			break;
+		case 3:					/* = ANY / <> ALL over an array that may hold NULL */
+			{
+				int			n = (int) pg_prop_draw_int(tc, 0, 3);
+				bool		any = pg_prop_draw_bool(tc);
+
+				appendStringInfo(buf, "%s.%s %s (ARRAY[", alias, c->name,
+								 any ? "= ANY" : "<> ALL");
+				for (int i = 0; i < n; i++)
+				{
+					if (i > 0)
+						appendStringInfoString(buf, ", ");
+					if (c->is_text_like)
+						draw_text_or_null(tc, buf);
+					else
+						draw_int_or_null(tc, buf);
+				}
+				/* typed so an empty / all-NULL array still resolves */
+				appendStringInfo(buf, "]::%s[])",
+								 c->is_text_like ? "text" : (strstr(c->sqltype, "numeric") ? "numeric" : "int"));
+			}
+			break;
+		case 4:					/* cross-type: compare through a cast */
+			if (c->is_text_like)
+				appendStringInfo(buf, "%s.%s::varchar %s 'b'", alias, c->name,
+								 cmp[pg_prop_draw_int(tc, 0, 5)]);
+			else
+				appendStringInfo(buf, "%s.%s::numeric %s %d.5", alias, c->name,
+								 cmp[pg_prop_draw_int(tc, 0, 5)],
+								 (int) pg_prop_draw_int(tc, -3, 9));
 			break;
 		default:
 			appendStringInfo(buf, "%s.%s %s ", alias, c->name,

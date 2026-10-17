@@ -505,3 +505,33 @@ PG_PROP(diff_deep_window)
 	pfree(sql.data);
 	deep_teardown(tc, conn, db, &q);
 }
+
+/*
+ * Deep join filtered by a generated predicate on the anchor.  The predicate
+ * grammar (IS DISTINCT FROM, = ANY / <> ALL over arrays holding NULL,
+ * cross-type casts, NULL tests) is where the planner's nullability and
+ * strictness reasoning runs: outer-join reduction, qual pushdown below or
+ * above a LEFT JOIN, and index-qual matching all depend on proving a
+ * predicate strict.  A wrong proof changes the rows.
+ */
+PG_PROP(diff_deep_filtered)
+{
+	pg_prop_conn *conn;
+	qg_db	   *db;
+	qg_query	q;
+	StringInfoData pred;
+	StringInfoData sql;
+
+	if (!deep_setup(tc, &conn, &db, &q))
+		return;
+
+	initStringInfo(&pred);
+	qg_draw_predicate_on(tc, &pred, q.pred_table, q.pred_alias);
+	initStringInfo(&sql);
+	appendStringInfo(&sql, "%s WHERE %s %s", q.select_from, pred.data, q.order_by);
+	run_diff(tc, conn, sql.data);
+
+	pfree(pred.data);
+	pfree(sql.data);
+	deep_teardown(tc, conn, db, &q);
+}
