@@ -1,0 +1,748 @@
+/*-------------------------------------------------------------------------
+ *
+ * prop_cf_exec.c
+ *	  No-internal-error and model properties around open commitfest bug fixes
+ *	  in the executor, PL/pgSQL and the plan cache.
+ *
+ * Each property draws a small schema and a statement sequence around the
+ * trigger of one CF bug fix.  The common oracle is "a legal statement must
+ * not raise an internal error": SQLSTATE class XX (elog(ERROR) without an
+ * errcode), "cache lookup failed", or a backend crash (the harness then saves
+ * the statement and exits 3).  Where the statement can also be given a
+ * reference meaning, its result is compared with that reference.
+ *
+ * Objects are temp tables, or carry the cfa2_ prefix and are dropped by the
+ * case that made them.
+ *
+ * Copyright (c) 2026, PostgreSQL Global Development Group
+ *
+ * IDENTIFICATION
+ *	  src/test/prop/sql/prop_cf_exec.c
+ *
+ *-------------------------------------------------------------------------
+ */
+#include "postgres_fe.h"
+
+#define PG_PROP_AREA "cf_exec"
+#include "pg_prop.h"
+
+#include "lib/stringinfo.h"
+
+static pg_prop_conn *
+cfe_connect(pg_prop_tc *tc)
+{
+	char	   *err = NULL;
+	pg_prop_conn *conn = pg_prop_connect(&err);
+
+	if (conn == NULL)
+		pg_prop_fail(tc, "connect failed: %s", err ? err : "");
+	return conn;
+}
+
+static void
+cfe_exec(pg_prop_tc *tc, pg_prop_conn *conn, const char *sql)
+{
+	char	   *err = NULL;
+
+	if (!pg_prop_sql_exec(conn, sql, &err))
+		pg_prop_fail(tc, "setup failed: %s\n  SQL: %s", err ? err : "", sql);
+}
+
+/*
+ * Run "sql" and report success; on error return the SQLSTATE and message.
+ * pg_prop_sql_await does not run the crash tripwire, so after an error probe
+ * the connection with a statement that carries "sql" in a dollar-quoted
+ * literal: if the backend died, the tripwire logs it (and so the statement)
+ * and exits 3.
+ */
+static bool
+cfe_try(pg_prop_conn *conn, const char *sql, char **sqlstate, char **errmsg)
+{
+	bool		ok;
+	StringInfoData probe;
+
+	*sqlstate = NULL;
+	*errmsg = NULL;
+	if (!pg_prop_sql_send(conn, sql))
+		ok = false;
+	else
+		ok = pg_prop_sql_await(conn, sqlstate, errmsg);
+	if (!ok)
+	{
+		initStringInfo(&probe);
+		appendStringInfo(&probe, "SELECT $cfe_probe$ liveness probe after:\n%s\n$cfe_probe$", sql);
+		pg_prop_sql_exec(conn, probe.data, NULL);
+		pfree(probe.data);
+	}
+	return ok;
+}
+
+/* is this error one a legal statement must never raise? */
+static bool
+cfe_internal(const char *sqlstate, const char *errmsg)
+{
+	if (sqlstate == NULL)
+		return true;			/* no SQLSTATE at all: connection-level */
+	if (strncmp(sqlstate, "XX", 2) == 0)
+		return true;
+	if (errmsg && strstr(errmsg, "cache lookup failed") != NULL)
+		return true;
+	return false;
+}
+
+/* run "sql"; fail the case on an internal error; return success */
+static bool
+cfe_try_noint(pg_prop_tc *tc, pg_prop_conn *conn, const char *sql,
+			  const char *ctx)
+{
+	char	   *ss;
+	char	   *err;
+
+	if (cfe_try(conn, sql, &ss, &err))
+		return true;
+	if (cfe_internal(ss, err))
+		pg_prop_fail(tc, "internal error (SQLSTATE %s): %s\n  statement: %s\n"
+					 "  context:\n%s",
+					 ss ? ss : "none", err ? err : "", sql, ctx ? ctx : "");
+	return false;
+}
+
+static char *
+cfe_rows(pg_prop_tc *tc, pg_prop_conn *conn, const char *sql)
+{
+	bool		failed = false;
+	char	   *err = NULL;
+	char	   *r = pg_prop_sql_rows(conn, sql, &failed, &err);
+
+	if (failed)
+		pg_prop_fail(tc, "query failed: %s\n  SQL: %s", err ? err : "", sql);
+	return r;
+}
+
+/* ----------------------------------------------------------------------
+ * CF 7295: EXCLUDED.<virtual generated column> in ON CONFLICT.
+ *
+ * A virtual generated column g is, by definition, its generation expression
+ * evaluated over the row it is read from.  So any INSERT ... ON CONFLICT
+ * statement on a table with virtual columns must behave exactly like the same
+ * statement on a plain table with the generation expressions written inline:
+ * EXCLUDED.g -> E(EXCLUDED.b, EXCLUDED.c), t.g -> E(t.b, t.c), RETURNING g /
+ * old.g / new.g likewise.  Both the RETURNING rows and the table contents
+ * afterwards must agree, and both statements must succeed or fail together.
+ *
+ * The test table is drawn: column order permuted, a dropped column, one or two
+ * virtual columns, partitioned (range / hash / list) or not, with partitions
+ * created by PARTITION OF or built separately (own column order and a dropped
+ * column) and attached -- the attribute maps the EXCLUDED projection must
+ * survive.  Generation expressions include a bare Var and expressions using
+ * tableoid that do not depend on its value (for the reference those are
+ * written tableoid-free).
+ *
+ * EXCLUDED has no system columns, so EXCLUDED.g with g using tableoid may be
+ * rejected; a correct server raises a user error (master: XX000 "variable not
+ * found in subplan target lists", CF 7295).  That case is the one where only
+ * "no internal error" is checked.
+ * ----------------------------------------------------------------------
+ */
+
+/* '$' marks a column qualifier position; tf = tableoid-free equivalent */
+typedef struct CfeGen
+{
+	const char *expr;
+	const char *tf;
+} CfeGen;
+
+static const CfeGen cfe_gens[] = {
+	{"$b * 2", NULL},
+	{"$b + $c", NULL},
+	{"coalesce($b, $c)", NULL},
+	{"$c", NULL},				/* bare Var: matched without non-Var search */
+	{"CASE WHEN $b > $c THEN $b ELSE $c END", NULL},
+	{"nullif($b, $c)", NULL},
+	{"$b - 3 * $c", NULL},
+	{"$c + ($tableoid <> 0)::int", "$c + 1"},
+	{"$b + $tableoid::int * 0", "$b"},
+	{"CASE WHEN $tableoid IS NULL THEN $c ELSE $b END", "$b"},
+};
+
+#define CFE_KMAX 8
+
+/* append template with '$' -> "qual." (or nothing for an empty qual) */
+static void
+cfe_expand(StringInfo b, const char *tmpl, const char *qual)
+{
+	appendStringInfoChar(b, '(');
+	for (const char *p = tmpl; *p; p++)
+	{
+		if (*p == '$')
+		{
+			if (qual[0] != '\0')
+				appendStringInfo(b, "%s.", qual);
+		}
+		else
+			appendStringInfoChar(b, *p);
+	}
+	appendStringInfoChar(b, ')');
+}
+
+typedef struct CfeVg
+{
+	int			ngen;			/* 1 or 2 virtual columns g1, g2 */
+	const CfeGen *gen[2];
+	bool		excl_tableoid;	/* this statement read EXCLUDED.g with tableoid */
+} CfeVg;
+
+/* reference to virtual column i via qual: the column (test) or E inline (ref) */
+static void
+cfe_vg(StringInfo b, CfeVg *v, int i, bool ref, const char *qual)
+{
+	const CfeGen *g = v->gen[i];
+
+	if (!ref)
+	{
+		if (qual[0] != '\0')
+			appendStringInfo(b, "%s.", qual);
+		appendStringInfo(b, "g%d", i + 1);
+		if (strcmp(qual, "excluded") == 0 && g->tf != NULL)
+			v->excl_tableoid = true;
+	}
+	else
+		cfe_expand(b, g->tf ? g->tf : g->expr, qual);
+}
+
+/* an int-valued expression over EXCLUDED and the target row t */
+static void
+cfe_upsert_expr(StringInfo b, CfeVg *v, bool ref, int kind, int gi)
+{
+	switch (kind)
+	{
+		case 0:
+			cfe_vg(b, v, gi, ref, "excluded");
+			break;
+		case 1:
+			cfe_vg(b, v, gi, ref, "t");
+			break;
+		case 2:
+			appendStringInfoString(b, "excluded.b");
+			break;
+		case 3:
+			appendStringInfoString(b, "t.b + ");
+			cfe_vg(b, v, gi, ref, "excluded");
+			break;
+		case 4:
+			appendStringInfoString(b, "coalesce(");
+			cfe_vg(b, v, gi, ref, "excluded");
+			appendStringInfoString(b, ", -1)");
+			break;
+		case 5:
+			appendStringInfoString(b, "(SELECT ");
+			cfe_vg(b, v, gi, ref, "excluded");
+			appendStringInfoString(b, ")");
+			break;
+		default:
+			appendStringInfoString(b, "CASE WHEN ");
+			cfe_vg(b, v, gi, ref, "excluded");
+			appendStringInfoString(b, " > ");
+			cfe_vg(b, v, gi, ref, "t");
+			appendStringInfoString(b, " THEN ");
+			cfe_vg(b, v, gi, ref, "excluded");
+			appendStringInfoString(b, " ELSE t.c END");
+			break;
+	}
+}
+
+/* a boolean condition over EXCLUDED and t */
+static void
+cfe_upsert_cond(StringInfo b, CfeVg *v, bool ref, int kind, int gi)
+{
+	switch (kind)
+	{
+		case 0:
+			cfe_vg(b, v, gi, ref, "excluded");
+			appendStringInfoString(b, " IS NOT NULL");
+			break;
+		case 1:
+			cfe_vg(b, v, gi, ref, "excluded");
+			appendStringInfoString(b, " > ");
+			cfe_vg(b, v, gi, ref, "t");
+			break;
+		case 2:
+			cfe_vg(b, v, gi, ref, "t");
+			appendStringInfoString(b, " IS DISTINCT FROM ");
+			cfe_vg(b, v, gi, ref, "excluded");
+			break;
+		default:
+			appendStringInfoString(b, "excluded.b >= 0");
+			break;
+	}
+}
+
+/* drawn choices of one upsert statement, rendered twice (test, ref) */
+typedef struct CfeStmt
+{
+	int			nrows;
+	int			key[4];
+	int			bv[4];
+	int			cv[4];			/* PG_INT32_MIN = NULL */
+	int			colorder;		/* permutation of (a, b, c) in the column list */
+	int			action;			/* 0 DO UPDATE, 1 DO SELECT, 2 DO SELECT FOR UPDATE */
+	int			nset;			/* DO UPDATE: 1 = b, 2 = b and c, 3 = (b, c) = ROW */
+	int			ekind[2];
+	int			egi[2];
+	bool		has_where;
+	int			ckind;
+	int			cgi;
+	bool		returning;
+	int			rgi;
+} CfeStmt;
+
+static const char *const cfe_perm3[6][3] = {
+	{"a", "b", "c"}, {"a", "c", "b"}, {"b", "a", "c"},
+	{"b", "c", "a"}, {"c", "a", "b"}, {"c", "b", "a"},
+};
+
+static void
+cfe_val(StringInfo b, int v)
+{
+	if (v == PG_INT32_MIN)
+		appendStringInfoString(b, "NULL");
+	else
+		appendStringInfo(b, "%d", v);
+}
+
+static void
+cfe_render(StringInfo b, const CfeStmt *s, CfeVg *v, bool ref)
+{
+	const char *tbl = ref ? "cfa2_r" : "cfa2_v";
+
+	if (s->returning)
+		appendStringInfo(b, "TRUNCATE cfa2_ret_%s; WITH r AS (", ref ? "r" : "v");
+	appendStringInfo(b, "INSERT INTO %s AS t (%s, %s, %s) VALUES ", tbl,
+					 cfe_perm3[s->colorder][0], cfe_perm3[s->colorder][1],
+					 cfe_perm3[s->colorder][2]);
+	for (int i = 0; i < s->nrows; i++)
+	{
+		appendStringInfoString(b, i ? ", (" : "(");
+		for (int j = 0; j < 3; j++)
+		{
+			char		col = cfe_perm3[s->colorder][j][0];
+
+			if (j)
+				appendStringInfoString(b, ", ");
+			cfe_val(b, col == 'a' ? s->key[i] : col == 'b' ? s->bv[i] : s->cv[i]);
+		}
+		appendStringInfoChar(b, ')');
+	}
+	appendStringInfoString(b, " ON CONFLICT (a) ");
+	if (s->action == 0)
+	{
+		appendStringInfoString(b, "DO UPDATE SET ");
+		if (s->nset == 3)
+		{
+			appendStringInfoString(b, "(b, c) = ROW(");
+			cfe_upsert_expr(b, v, ref, s->ekind[0], s->egi[0]);
+			appendStringInfoString(b, ", ");
+			cfe_upsert_expr(b, v, ref, s->ekind[1], s->egi[1]);
+			appendStringInfoChar(b, ')');
+		}
+		else
+		{
+			appendStringInfoString(b, "b = ");
+			cfe_upsert_expr(b, v, ref, s->ekind[0], s->egi[0]);
+			if (s->nset == 2)
+			{
+				appendStringInfoString(b, ", c = ");
+				cfe_upsert_expr(b, v, ref, s->ekind[1], s->egi[1]);
+			}
+		}
+	}
+	else
+		appendStringInfo(b, "DO SELECT%s", s->action == 2 ? " FOR UPDATE" : "");
+	if (s->has_where)
+	{
+		appendStringInfoString(b, " WHERE ");
+		cfe_upsert_cond(b, v, ref, s->ckind, s->cgi);
+	}
+	if (s->returning)
+	{
+		appendStringInfoString(b, " RETURNING a, b, c, ");
+		cfe_vg(b, v, s->rgi, ref, "");
+		appendStringInfoString(b, ", ");
+		cfe_vg(b, v, s->rgi, ref, "old");
+		appendStringInfoString(b, ", ");
+		cfe_vg(b, v, s->rgi, ref, "new");
+		appendStringInfo(b, ") INSERT INTO cfa2_ret_%s SELECT * FROM r",
+						 ref ? "r" : "v");
+	}
+}
+
+static int
+cfe_draw_val(pg_prop_tc *tc)
+{
+	return pg_prop_draw_int(tc, 0, 6) == 0 ? PG_INT32_MIN : (int) pg_prop_draw_int(tc, -3, 9);
+}
+
+/* column definitions of one (sub)table in a drawn order, with a dropped "x" */
+static void
+cfe_coldefs(pg_prop_tc *tc, StringInfo b, CfeVg *v, bool *has_x)
+{
+	const char *cols[6];
+	int			n = 0;
+	char		gdef[2][128];
+
+	cols[n++] = "a int NOT NULL";
+	cols[n++] = "b int";
+	cols[n++] = "c int";
+	for (int i = 0; i < v->ngen; i++)
+	{
+		StringInfoData e;
+
+		initStringInfo(&e);
+		cfe_expand(&e, v->gen[i]->expr, "");
+		snprintf(gdef[i], sizeof(gdef[i]),
+				 "g%d int GENERATED ALWAYS AS %s VIRTUAL", i + 1, e.data);
+		pfree(e.data);
+		cols[n++] = gdef[i];
+	}
+	*has_x = pg_prop_draw_bool(tc);
+	if (*has_x)
+		cols[n++] = "x int";
+	/* Fisher-Yates over the drawn order */
+	for (int i = n - 1; i > 0; i--)
+	{
+		int			j = (int) pg_prop_draw_int(tc, 0, i);
+		const char *t = cols[i];
+
+		cols[i] = cols[j];
+		cols[j] = t;
+	}
+	for (int i = 0; i < n; i++)
+		appendStringInfo(b, "%s%s", i ? ", " : "", cols[i]);
+}
+
+PG_PROP(excluded_virtual_generated_matches_inline_expression)
+{
+	pg_prop_conn *conn = cfe_connect(tc);
+	CfeVg		v;
+	StringInfoData s;
+	StringInfoData log;
+	bool		has_x;
+	int			pkind;
+	int			nparts = 0;
+	int			nstmts;
+	char	   *want;
+	char	   *got;
+
+	memset(&v, 0, sizeof(v));
+	v.ngen = (int) pg_prop_draw_int(tc, 1, 2);
+	for (int i = 0; i < v.ngen; i++)
+		v.gen[i] = &cfe_gens[pg_prop_draw_int(tc, 0, lengthof(cfe_gens) - 1)];
+
+	initStringInfo(&s);
+	initStringInfo(&log);
+
+	/* the test table: drawn layout, maybe partitioned */
+	pkind = (int) pg_prop_draw_int(tc, 0, 3);
+	appendStringInfoString(&s, "CREATE TEMP TABLE cfa2_v (");
+	cfe_coldefs(tc, &s, &v, &has_x);
+	appendStringInfoString(&s, ", PRIMARY KEY (a))");
+	if (pkind == 1)
+		appendStringInfoString(&s, " PARTITION BY RANGE (a)");
+	else if (pkind == 2)
+		appendStringInfoString(&s, " PARTITION BY HASH (a)");
+	else if (pkind == 3)
+		appendStringInfoString(&s, " PARTITION BY LIST (a)");
+	appendStringInfoString(&s, "; ");
+	if (has_x)
+		appendStringInfoString(&s, "ALTER TABLE cfa2_v DROP COLUMN x; ");
+	if (pkind != 0)
+	{
+		int			split = (int) pg_prop_draw_int(tc, 2, CFE_KMAX - 1);
+
+		nparts = (int) pg_prop_draw_int(tc, 1, 3);
+		if (pkind == 1)
+			nparts = nparts < 2 ? 2 : nparts;
+		for (int i = 0; i < nparts; i++)
+		{
+			StringInfoData bound;
+			bool		separate = pg_prop_draw_bool(tc);
+
+			initStringInfo(&bound);
+			if (pkind == 1)
+			{
+				/* (MINVALUE, split), [split, split+1), ..., [.., MAXVALUE) */
+				if (i == 0)
+					appendStringInfo(&bound, "FROM (MINVALUE) TO (%d)", split);
+				else if (i == nparts - 1)
+					appendStringInfo(&bound, "FROM (%d) TO (MAXVALUE)", split + i - 1);
+				else
+					appendStringInfo(&bound, "FROM (%d) TO (%d)", split + i - 1, split + i);
+			}
+			else if (pkind == 2)
+				appendStringInfo(&bound, "WITH (MODULUS %d, REMAINDER %d)", nparts, i);
+			else if (i == nparts - 1)
+				appendStringInfoString(&bound, "DEFAULT");
+			else
+				appendStringInfo(&bound, "IN (%d, %d)", i + 1, i + 1 + nparts);
+
+			if (!separate)
+				appendStringInfo(&s,
+								 "CREATE TEMP TABLE cfa2_v%d PARTITION OF cfa2_v %s%s; ",
+								 i, strcmp(bound.data, "DEFAULT") == 0 ? "" : "FOR VALUES ",
+								 bound.data);
+			else
+			{
+				bool		cx;
+
+				appendStringInfo(&s, "CREATE TEMP TABLE cfa2_v%d (", i);
+				cfe_coldefs(tc, &s, &v, &cx);
+				appendStringInfoString(&s, "); ");
+				if (cx)
+					appendStringInfo(&s, "ALTER TABLE cfa2_v%d DROP COLUMN x; ", i);
+				appendStringInfo(&s, "ALTER TABLE cfa2_v ATTACH PARTITION cfa2_v%d %s%s; ",
+								 i, strcmp(bound.data, "DEFAULT") == 0 ? "" : "FOR VALUES ",
+								 bound.data);
+			}
+			pfree(bound.data);
+		}
+	}
+	/* the reference: a plain table, generated columns computed inline */
+	appendStringInfoString(&s,
+						   "CREATE TEMP TABLE cfa2_r (a int PRIMARY KEY, b int, c int); "
+						   "CREATE TEMP TABLE cfa2_ret_v (a int, b int, c int, g int, og int, ng int); "
+						   "CREATE TEMP TABLE cfa2_ret_r (a int, b int, c int, g int, og int, ng int); ");
+	cfe_exec(tc, conn, s.data);
+	appendStringInfoString(&log, s.data);
+
+	/* initial rows, copied into the reference */
+	resetStringInfo(&s);
+	for (int k = 1; k <= CFE_KMAX; k++)
+	{
+		if (!pg_prop_draw_bool(tc))
+			continue;
+		appendStringInfo(&s, "INSERT INTO cfa2_v (a, b, c) VALUES (%d, ", k);
+		cfe_val(&s, cfe_draw_val(tc));
+		appendStringInfoString(&s, ", ");
+		cfe_val(&s, cfe_draw_val(tc));
+		appendStringInfoString(&s, "); ");
+	}
+	appendStringInfoString(&s, "INSERT INTO cfa2_r SELECT a, b, c FROM cfa2_v");
+	cfe_exec(tc, conn, s.data);
+	appendStringInfo(&log, "%s;\n", s.data);
+
+	nstmts = (int) pg_prop_draw_int(tc, 1, 4);
+	for (int n = 0; n < nstmts; n++)
+	{
+		CfeStmt		st;
+		StringInfoData tq;
+		StringInfoData rq;
+		char	   *ss;
+		char	   *err;
+		bool		tok;
+		bool		rok;
+
+		memset(&st, 0, sizeof(st));
+		st.nrows = (int) pg_prop_draw_int(tc, 1, 4);
+		for (int i = 0; i < st.nrows; i++)
+		{
+			st.key[i] = (int) pg_prop_draw_int(tc, 1, CFE_KMAX);
+			st.bv[i] = cfe_draw_val(tc);
+			st.cv[i] = cfe_draw_val(tc);
+		}
+		st.colorder = (int) pg_prop_draw_int(tc, 0, 5);
+		st.action = (int) pg_prop_draw_int(tc, 0, 3);
+		if (st.action == 3)
+			st.action = 0;		/* DO UPDATE twice as likely */
+		st.nset = (int) pg_prop_draw_int(tc, 1, 3);
+		for (int i = 0; i < 2; i++)
+		{
+			st.ekind[i] = (int) pg_prop_draw_int(tc, 0, 6);
+			st.egi[i] = (int) pg_prop_draw_int(tc, 0, v.ngen - 1);
+		}
+		st.has_where = pg_prop_draw_bool(tc);
+		st.ckind = (int) pg_prop_draw_int(tc, 0, 3);
+		st.cgi = (int) pg_prop_draw_int(tc, 0, v.ngen - 1);
+		st.returning = st.action != 0 || pg_prop_draw_bool(tc);
+		st.rgi = (int) pg_prop_draw_int(tc, 0, v.ngen - 1);
+
+		initStringInfo(&tq);
+		initStringInfo(&rq);
+		v.excl_tableoid = false;
+		cfe_render(&tq, &st, &v, false);
+		cfe_render(&rq, &st, &v, true);
+		appendStringInfo(&log, "%s;\n", tq.data);
+
+		tok = cfe_try(conn, tq.data, &ss, &err);
+		if (!tok && cfe_internal(ss, err))
+			pg_prop_fail(tc, "internal error (SQLSTATE %s): %s\n  statement: %s\n"
+						 "  reference: %s\n  history:\n%s",
+						 ss ? ss : "none", err ? err : "", tq.data, rq.data, log.data);
+		if (!tok && v.excl_tableoid)
+			continue;			/* EXCLUDED has no tableoid: a user error is right */
+		rok = cfe_try_noint(tc, conn, rq.data, log.data);
+		if (tok != rok)
+			pg_prop_fail(tc, "virtual-column statement %s but its inline reference %s\n"
+						 "  statement: %s\n  reference: %s\n  error: %s\n  history:\n%s",
+						 tok ? "succeeded" : "failed", rok ? "succeeded" : "failed",
+						 tq.data, rq.data, err ? err : "", log.data);
+		if (!tok)
+			continue;
+
+		if (st.returning)
+		{
+			want = cfe_rows(tc, conn, "SELECT * FROM cfa2_ret_r ORDER BY 1, 2, 3, 4, 5, 6");
+			got = cfe_rows(tc, conn, "SELECT * FROM cfa2_ret_v ORDER BY 1, 2, 3, 4, 5, 6");
+			if (strcmp(want, got) != 0)
+				pg_prop_fail(tc, "RETURNING differs from the inline-expression reference\n"
+							 "  statement: %s\n  reference: %s\n  got:\n%s  want:\n%s"
+							 "  history:\n%s", tq.data, rq.data, got, want, log.data);
+			pg_free(want);
+			pg_free(got);
+		}
+
+		resetStringInfo(&s);
+		appendStringInfoString(&s, "SELECT a, b, c");
+		for (int i = 0; i < v.ngen; i++)
+		{
+			appendStringInfoString(&s, ", ");
+			cfe_vg(&s, &v, i, true, "");
+		}
+		appendStringInfoString(&s, " FROM cfa2_r ORDER BY a");
+		want = cfe_rows(tc, conn, s.data);
+		got = cfe_rows(tc, conn, v.ngen == 1 ?
+					   "SELECT a, b, c, g1 FROM cfa2_v ORDER BY a" :
+					   "SELECT a, b, c, g1, g2 FROM cfa2_v ORDER BY a");
+		if (strcmp(want, got) != 0)
+			pg_prop_fail(tc, "table contents differ from the inline-expression reference\n"
+						 "  after: %s\n  reference: %s\n  got:\n%s  want:\n%s"
+						 "  history:\n%s", tq.data, rq.data, got, want, log.data);
+		pg_free(want);
+		pg_free(got);
+		pfree(tq.data);
+		pfree(rq.data);
+	}
+
+	pfree(s.data);
+	pfree(log.data);
+	pg_prop_disconnect(conn);
+}
+
+/*
+ * CF 6825: an ON DELETE CASCADE on a self-referencing table, fired while a
+ * BEFORE DELETE trigger on the same table invalidates the cascade's cached RI
+ * plan (any DDL that bumps the relcache -- GRANT/REVOKE, ANALYZE, ...) and
+ * then deletes from the table itself, re-entering the same RI query.  The
+ * outer execution of the replaced plan must still finish.  On master it
+ * crashes the backend.
+ *
+ * Invariant (a model, not just "no crash"): deleting a row removes exactly
+ * its descendants in the parent_id forest, whatever the trigger does in
+ * between, because the trigger's own DELETE removes a subset of those same
+ * descendants.  The forest, the deleted root, the rows whose trigger
+ * invalidates, the invalidating statement and the trigger's timing (whether
+ * it deletes its own children before the cascade reaches them) are drawn.
+ */
+PG_PROP(self_ref_cascade_with_replanning_trigger_matches_model)
+{
+	static const char *const inval[] = {
+		"GRANT SELECT ON cfa2_sr TO PUBLIC; REVOKE SELECT ON cfa2_sr FROM PUBLIC;",
+		"ANALYZE cfa2_sr;",
+		"COMMENT ON TABLE cfa2_sr IS 'x';",
+		"ALTER TABLE cfa2_sr ALTER COLUMN parent_id SET STATISTICS 50;",
+	};
+	pg_prop_conn *conn = cfe_connect(tc);
+	int			n = (int) pg_prop_draw_int(tc, 2, 24);
+	int			parent[25];
+	bool		gone[25];
+	bool		fires[25];
+	int			root;
+	const char *iv = inval[pg_prop_draw_int(tc, 0, lengthof(inval) - 1)];
+	StringInfoData s;
+	StringInfoData model;
+	char	   *got;
+	bool		failed = false;
+	char	   *err = NULL;
+	bool		changed;
+
+	/* a forest: each row's parent is an earlier row, or none */
+	for (int i = 1; i <= n; i++)
+	{
+		parent[i] = (i > 1 && pg_prop_draw_int(tc, 0, 3) != 0)
+			? (int) pg_prop_draw_int(tc, 1, i - 1) : 0;
+		fires[i] = pg_prop_draw_int(tc, 0, 2) == 0;
+		gone[i] = false;
+	}
+	root = (int) pg_prop_draw_int(tc, 1, n);
+
+	initStringInfo(&s);
+	appendStringInfo(&s,
+					 "DROP TABLE IF EXISTS cfa2_sr; "
+					 "CREATE TABLE cfa2_sr (id int PRIMARY KEY, "
+					 "parent_id int REFERENCES cfa2_sr (id) ON DELETE CASCADE); "
+					 "CREATE OR REPLACE FUNCTION cfa2_sr_bd() RETURNS trigger LANGUAGE plpgsql AS $f$ "
+					 "BEGIN IF OLD.id = ANY (ARRAY[");
+	{
+		bool		first = true;
+
+		for (int i = 1; i <= n; i++)
+			if (fires[i])
+			{
+				appendStringInfo(&s, "%s%d", first ? "" : ",", i);
+				first = false;
+			}
+		if (first)
+			appendStringInfoString(&s, "0");
+	}
+	appendStringInfo(&s,
+					 "]) THEN %s DELETE FROM cfa2_sr WHERE parent_id = OLD.id; END IF; "
+					 "RETURN OLD; END $f$; "
+					 "CREATE TRIGGER cfa2_sr_bd BEFORE DELETE ON cfa2_sr "
+					 "FOR EACH ROW EXECUTE FUNCTION cfa2_sr_bd(); "
+					 "INSERT INTO cfa2_sr VALUES ", iv);
+	for (int i = 1; i <= n; i++)
+	{
+		appendStringInfo(&s, "%s(%d, ", i > 1 ? ", " : "", i);
+		if (parent[i])
+			appendStringInfo(&s, "%d)", parent[i]);
+		else
+			appendStringInfoString(&s, "NULL)");
+	}
+	cfe_exec(tc, conn, s.data);
+
+	/* the statement under test; a crash makes the harness exit 3 */
+	resetStringInfo(&s);
+	appendStringInfo(&s, "DELETE FROM cfa2_sr WHERE id = %d", root);
+
+	/*
+	 * A user error (some invalidating statements are rejected inside a
+	 * trigger on a table in use, e.g. ALTER TABLE) rolls the DELETE back, so
+	 * the model is then "nothing deleted".  An internal error fails the case.
+	 */
+	if (cfe_try_noint(tc, conn, s.data, iv))
+		gone[root] = true;
+	do
+	{
+		changed = false;
+		for (int i = 1; i <= n; i++)
+			if (gone[root] && !gone[i] && parent[i] && gone[parent[i]])
+				gone[i] = changed = true;
+	} while (changed);
+	initStringInfo(&model);
+	for (int i = 1; i <= n; i++)
+		if (!gone[i])
+			appendStringInfo(&model, "%d\n", i);
+
+	got = pg_prop_sql_rows(conn, "SELECT id FROM cfa2_sr ORDER BY id", &failed, &err);
+	if (failed)
+		pg_prop_fail(tc, "read-back failed: %s", err ? err : "");
+	if (strcmp(got, model.data) != 0)
+		pg_prop_fail(tc, "after DELETE id=%d with a trigger running \"%s\", "
+					 "rows left differ from the cascade model\n  model:\n%s  table:\n%s",
+					 root, iv, model.data, got);
+
+	pg_free(got);
+	cfe_exec(tc, conn, "DROP TABLE cfa2_sr; DROP FUNCTION cfa2_sr_bd()");
+	pfree(s.data);
+	pfree(model.data);
+	pg_prop_disconnect(conn);
+}
