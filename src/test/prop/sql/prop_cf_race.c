@@ -444,3 +444,89 @@ PG_PROP(create_index_races_index_attach)
 	pg_prop_disconnect(s2);
 	pg_prop_disconnect(s1);
 }
+
+/*
+ * CF 6442: a recursing ALTER TABLE on the root of a partition tree (locks
+ * top-down) racing ATTACH PARTITION deeper in the tree (locks the target,
+ * then the new partition, then the ancestors through
+ * generate_partition_qual: bottom-up) must not deadlock -- each is a single
+ * DDL statement, no user-visible lock ordering is involved.
+ *
+ * The interleaving is forced, so the case is deterministic: a third session
+ * holds a lock on the partition being attached; ATTACH then holds the
+ * target and waits for it; the root ALTER then holds the root and waits for
+ * the target; the third session commits.  ATTACH proceeds to lock the root
+ * -- a cycle.  Drawn: tree depth, attach level, the root command, the lock
+ * the third session holds.
+ *
+ * Known open: the CF 6442 entry carries only an injection-point TAP test
+ * documenting this deadlock, no fix, so this property fails on master and
+ * on the patched server alike.
+ */
+PG_PROP(root_alter_races_deep_attach_without_deadlock)
+{
+	static const char *const root_cmds[] = {
+		"ALTER TABLE cfr_t0 ALTER COLUMN id SET DEFAULT 0",
+		"ALTER TABLE cfr_t0 ALTER COLUMN id DROP DEFAULT",
+		"ALTER TABLE cfr_t0 ALTER COLUMN id SET STATISTICS 50",
+		"ALTER TABLE cfr_t0 ADD CONSTRAINT cfr_ck CHECK (id >= 0)",
+	};
+	static const char *const holds[] = {"ACCESS SHARE", "ROW EXCLUSIVE", "SHARE"};
+	pg_prop_conn *s1 = rc_connect(tc);
+	pg_prop_conn *s2 = rc_connect(tc);
+	pg_prop_conn *s3 = rc_connect(tc);
+	int			depth = (int) pg_prop_draw_int(tc, 2, 5);
+	int			lvl = (int) pg_prop_draw_int(tc, 1, depth - 1);
+	const char *root = root_cmds[pg_prop_draw_int(tc, 0, lengthof(root_cmds) - 1)];
+	const char *hold = holds[pg_prop_draw_int(tc, 0, lengthof(holds) - 1)];
+	char	   *pid1 = rc_pid(tc, s1);
+	char	   *pid2 = rc_pid(tc, s2);
+	char	   *st1 = NULL;
+	char	   *st2 = NULL;
+	char	   *e1 = NULL;
+	char	   *e2 = NULL;
+	bool		ok1;
+	bool		ok2;
+	StringInfoData s;
+	char		att[200];
+
+	initStringInfo(&s);
+	appendStringInfoString(&s, "DROP TABLE IF EXISTS cfr_t0, cfr_new; "
+						   "CREATE TABLE cfr_t0 (id int) PARTITION BY RANGE (id); ");
+	for (int i = 1; i < depth; i++)
+		appendStringInfo(&s, "CREATE TABLE cfr_t%d PARTITION OF cfr_t%d FOR VALUES FROM (0) TO (%d) "
+						 "PARTITION BY RANGE (id); ", i, i - 1, 1000000 >> (i - 1));
+	appendStringInfoString(&s, "CREATE TABLE cfr_new (id int)");
+	rc_exec(tc, s1, s.data);
+	snprintf(att, sizeof(att), "ALTER TABLE cfr_t%d ATTACH PARTITION cfr_new FOR VALUES FROM (%d) TO (%d)",
+			 lvl, (1000000 >> lvl) / 2, 1000000 >> lvl);
+
+	resetStringInfo(&s);
+	appendStringInfo(&s, "LOCK TABLE cfr_new IN %s MODE", hold);
+	rc_exec(tc, s3, "BEGIN");
+	rc_exec(tc, s3, s.data);
+	if (!pg_prop_sql_send(s2, att))
+		pg_prop_fail(tc, "could not dispatch");
+	rc_wait_blocked(tc, s3, pid2);
+	if (!pg_prop_sql_send(s1, root))
+		pg_prop_fail(tc, "could not dispatch");
+	rc_wait_blocked(tc, s3, pid1);
+	rc_exec(tc, s3, "COMMIT");
+
+	ok2 = pg_prop_sql_await(s2, &st2, &e2);
+	ok1 = pg_prop_sql_await(s1, &st1, &e1);
+	if ((!ok1 && st1 && strcmp(st1, "40P01") == 0) || (!ok2 && st2 && strcmp(st2, "40P01") == 0))
+		pg_prop_fail(tc, "deadlock between a root ALTER TABLE and a deeper ATTACH PARTITION\n"
+					 "  root: %s\n  attach: %s\n  tree depth %d",
+					 root, att, depth);
+	if ((!ok1 && rc_internal(st1, e1)) || (!ok2 && rc_internal(st2, e2)))
+		pg_prop_fail(tc, "internal error: %s / %s", e1 ? e1 : "-", e2 ? e2 : "-");
+
+	pg_prop_sql_exec(s1, "DROP TABLE IF EXISTS cfr_t0, cfr_new", NULL);
+	pg_free(pid1);
+	pg_free(pid2);
+	pfree(s.data);
+	pg_prop_disconnect(s3);
+	pg_prop_disconnect(s2);
+	pg_prop_disconnect(s1);
+}
