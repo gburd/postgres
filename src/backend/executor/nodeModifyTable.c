@@ -291,20 +291,30 @@ DropRestoredAttrs(Relation relation, Bitmapset *attrs,
  * access method can tell (amcomparedatums), ask it, but not for a column the
  * index can return in index-only scans, where only the same value will do.
  *
- * Not for an exclusion constraint's index, though: the constraint is checked
- * when an entry is inserted, with its operators, against the values, and two
- * values that give the same entries need not have the same conflicts.  (A
- * value that is the same byte for byte has, so the check is not needed.)
+ * *valchanged is set if some value changed although the entries are the
+ * same.  That matters for an exclusion constraint's index:
+ * the constraint is checked on the values, and values that give the same
+ * entries need not have the same conflicts, so the caller must check the
+ * constraint itself if the update keeps the old entries.  That is only done
+ * for a constraint checked immediately: a deferred check at commit
+ * (unique_key_recheck()) takes the values the entries were made from to be
+ * those of every version of the row they lead to, so a deferrable
+ * constraint's index is not asked.
  */
 static bool
 IndexDatumsDiffer(Relation heapRel, Relation indexRel, IndexInfo *indexInfo,
 				  const Bitmapset *changed,
 				  const Datum *old_values, const bool *old_isnull,
-				  const Datum *new_values, const bool *new_isnull)
+				  const Datum *new_values, const bool *new_isnull,
+				  bool *valchanged)
 {
 	ListCell   *expr = list_head(indexInfo->ii_Expressions);
-	amcomparedatums_function cmp = indexRel->rd_index->indisexclusion ? NULL :
-		indexRel->rd_indam->amcomparedatums;
+	amcomparedatums_function cmp = indexRel->rd_indam->amcomparedatums;
+
+	if (indexInfo->ii_ExclusionOps != NULL &&
+		!indexRel->rd_index->indimmediate)
+		cmp = NULL;
+	*valchanged = false;
 
 	for (int i = 0; i < indexInfo->ii_NumIndexAttrs; i++)
 	{
@@ -345,6 +355,7 @@ IndexDatumsDiffer(Relation heapRel, Relation indexRel, IndexInfo *indexInfo,
 			!cmp(indexRel, indexInfo, i + 1, typid, typlen, typbyval,
 				 old_values[i], new_values[i]))
 			return true;
+		*valchanged = true;
 	}
 	return false;
 }
@@ -363,7 +374,7 @@ static bool
 IndexEntryChanges(ResultRelInfo *resultRelInfo, Relation indexRel,
 				  IndexInfo *indexInfo, const Bitmapset *changed,
 				  TupleTableSlot *old_tts, TupleTableSlot *new_tts,
-				  EState *estate)
+				  EState *estate, bool *valchanged)
 {
 	ExprContext *econtext = GetPerTupleExprContext(estate);
 	TupleTableSlot *save_scantuple = econtext->ecxt_scantuple;
@@ -374,6 +385,7 @@ IndexEntryChanges(ResultRelInfo *resultRelInfo, Relation indexRel,
 	bool		new_isnull[INDEX_MAX_KEYS];
 	bool		result;
 
+	*valchanged = false;
 	if (indexInfo->ii_Predicate != NIL)
 	{
 		bool		old_member;
@@ -409,7 +421,7 @@ IndexEntryChanges(ResultRelInfo *resultRelInfo, Relation indexRel,
 
 	result = IndexDatumsDiffer(resultRelInfo->ri_RelationDesc, indexRel,
 							   indexInfo, changed, old_values, old_isnull,
-							   new_values, new_isnull);
+							   new_values, new_isnull, valchanged);
 	MemoryContextSwitchTo(oldcxt);
 	return result;
 }
@@ -439,8 +451,7 @@ IndexExprAttrs(ResultRelInfo *resultRelInfo, int i, EState *estate)
 			pull_varattnos((Node *) ii->ii_Predicate, 1, &attrs);
 			if (ii->ii_Predicate != NIL ||
 				(resultRelInfo->ri_IndexRelationDescs[j] != NULL &&
-				 resultRelInfo->ri_IndexRelationDescs[j]->rd_indam->amcomparedatums != NULL &&
-				 !resultRelInfo->ri_IndexRelationDescs[j]->rd_index->indisexclusion))
+				 resultRelInfo->ri_IndexRelationDescs[j]->rd_indam->amcomparedatums != NULL))
 			{
 				for (int k = 0; k < ii->ii_NumIndexAttrs; k++)
 				{
@@ -467,10 +478,12 @@ IndexExprAttrs(ResultRelInfo *resultRelInfo, int i, EState *estate)
 static bool
 IndexUnaffected(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
 				TupleTableSlot *old_tts, TupleTableSlot *new_tts,
-				EState *estate)
+				EState *estate, bool *valchanged)
 {
 	IndexInfo  *indexInfo = resultRelInfo->ri_IndexRelationInfo[i];
 	bool		proven = false;
+
+	*valchanged = false;
 
 	if (resultRelInfo->ri_IndexUntouchedAttrs != NULL &&
 		bms_is_subset(mine, resultRelInfo->ri_IndexUntouchedAttrs[i]))
@@ -491,13 +504,19 @@ IndexUnaffected(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
 		}
 	}
 
+	/*
+	 * A proof says the index reads nothing the update changes, so its datums
+	 * are the same byte for byte and *valchanged stays false.
+	 */
 #ifdef USE_ASSERT_CHECKING
 	if (proven)
 	{
+		bool		changed;
+
 		if (IndexEntryChanges(resultRelInfo,
 							  resultRelInfo->ri_IndexRelationDescs[i],
 							  indexInfo, mine, old_tts, new_tts,
-							  estate))
+							  estate, &changed) || changed)
 			elog(ERROR, "index \"%s\" proven unaffected by UPDATE, but its entry changed",
 				 RelationGetRelationName(resultRelInfo->ri_IndexRelationDescs[i]));
 		return true;
@@ -510,7 +529,7 @@ IndexUnaffected(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
 	return !IndexEntryChanges(resultRelInfo,
 							  resultRelInfo->ri_IndexRelationDescs[i],
 							  indexInfo, mine, old_tts, new_tts,
-							  estate);
+							  estate, valchanged);
 }
 
 /*
@@ -550,6 +569,13 @@ IndexUnaffected(ResultRelInfo *resultRelInfo, int i, Bitmapset *mine,
  * is unaffected when, column by column, its datums are equal or its access
  * method's amcomparedatums says they give the same entries.
  *
+ * That includes the index of an exclusion constraint.  But the constraint is
+ * checked on the values, when an entry is inserted, and two values that give
+ * the same entries need not have the same conflicts.  So when such an index
+ * keeps its entries although a value changed, it is noted in
+ * ri_HotExclusionCheck, and the caller must call ExecCheckHotExclusion()
+ * after the update if the update inserts no index entries.
+ *
  * An index that is not ready for inserts or not valid counts as affected by
  * any change to an attribute it references, without evaluating anything.
  * Such an index is being built, or its build failed, so the old row may be
@@ -572,6 +598,10 @@ ExecUpdateModifiedIdxAttrs(ResultRelInfo *resultRelInfo,
 	Bitmapset  *attrs;
 	Bitmapset  *exprattrs;
 	Bitmapset  *candidates;
+
+	/* what follows describes this row */
+	bms_free(resultRelInfo->ri_HotExclusionCheck);
+	resultRelInfo->ri_HotExclusionCheck = NULL;
 
 	if (resultRelInfo->ri_NumIndices == 0)
 		return NULL;
@@ -628,6 +658,7 @@ ExecUpdateModifiedIdxAttrs(ResultRelInfo *resultRelInfo,
 	 */
 	{
 		Bitmapset  *keep = NULL;
+		bool		valchanged;
 
 		for (int i = 0; i < resultRelInfo->ri_NumIndices; i++)
 		{
@@ -649,7 +680,7 @@ ExecUpdateModifiedIdxAttrs(ResultRelInfo *resultRelInfo,
 			if (!indexInfo->ii_ReadyForInserts ||
 				!resultRelInfo->ri_IndexRelationDescs[i]->rd_index->indisvalid ||
 				!IndexUnaffected(resultRelInfo, i, mine, old_tts, new_tts,
-								 estate))
+								 estate, &valchanged))
 			{
 				keep = bms_add_members(keep, mine);
 				if (bms_is_subset(candidates, keep))
@@ -657,6 +688,14 @@ ExecUpdateModifiedIdxAttrs(ResultRelInfo *resultRelInfo,
 					bms_free(mine);
 					break;
 				}
+			}
+			else if (valchanged && indexInfo->ii_ExclusionOps != NULL)
+			{
+				MemoryContext oldcxt = MemoryContextSwitchTo(estate->es_query_cxt);
+
+				resultRelInfo->ri_HotExclusionCheck =
+					bms_add_member(resultRelInfo->ri_HotExclusionCheck, i);
+				MemoryContextSwitchTo(oldcxt);
 			}
 			bms_free(mine);
 		}
@@ -3012,6 +3051,20 @@ ExecUpdateEpilogue(ModifyTableContext *context, UpdateContext *updateCxt,
 											   flags, slot, NIL,
 											   NULL);
 	}
+
+	/*
+	 * If no non-summarizing index got an entry, check the exclusion
+	 * constraints whose entries the row kept although their values changed.
+	 */
+	if (updateCxt->updateIndexes != TU_All &&
+		resultRelInfo->ri_HotExclusionCheck != NULL)
+		recheckIndexes = list_concat(recheckIndexes,
+									 ExecCheckHotExclusion(resultRelInfo,
+														   context->estate,
+														   EIIT_IS_UPDATE,
+														   slot, NIL, NULL));
+	bms_free(resultRelInfo->ri_HotExclusionCheck);
+	resultRelInfo->ri_HotExclusionCheck = NULL;
 
 	/* AFTER ROW UPDATE Triggers */
 	ExecARUpdateTriggers(context->estate, resultRelInfo,
