@@ -995,6 +995,23 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		}
 
 		/*
+		 * If no non-summarizing index got an entry, check the exclusion
+		 * constraints whose entries the row kept although their values
+		 * changed.
+		 */
+		if (update_indexes != TU_All)
+			recheckIndexes =
+				list_concat(recheckIndexes,
+							ExecCheckHotExclusion(resultRelInfo, estate,
+												  conflictindexes != NIL ?
+												  EIIT_IS_UPDATE | EIIT_NO_DUPE_ERROR :
+												  EIIT_IS_UPDATE,
+												  slot, conflictindexes,
+												  &conflict));
+		bms_free(resultRelInfo->ri_HotExclusionCheck);
+		resultRelInfo->ri_HotExclusionCheck = NULL;
+
+		/*
 		 * Refer to the comments above the call to CheckAndReportConflict() in
 		 * ExecSimpleRelationInsert to understand why this check is done at
 		 * this point.

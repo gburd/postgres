@@ -524,6 +524,17 @@ typedef struct ResultRelInfo
 	int			ri_UpdateCount;
 
 	/*
+	 * For UPDATE, the indexes of exclusion constraints, as positions in the
+	 * index arrays, that ExecUpdateModifiedIdxAttrs() let the row being
+	 * updated keep its entries in although their values changed (their access
+	 * method said the entries were the same).  If the update is then HOT, no
+	 * index entry is inserted, so the constraint must be checked separately;
+	 * see ExecCheckHotExclusion().  Describes the row whose update was
+	 * decided last.
+	 */
+	Bitmapset  *ri_HotExclusionCheck;
+
+	/*
 	 * For UPDATE/DELETE/MERGE result relations, the attribute number of the
 	 * row identity junk attribute in the source plan's output tuples
 	 */

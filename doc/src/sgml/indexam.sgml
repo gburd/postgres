@@ -959,8 +959,12 @@ amcomparedatums (Relation indexRelation,
    is always correct.  It must not modify the index, and it may be called for
    an index that is not yet valid.  Columns of unique indexes that can be
    referenced by a foreign key, and of the replica identity index, are not
-   compared this way, and the function is not called for the index of an
-   exclusion constraint, whose check needs the values themselves.  If <structfield>amcomparedatums</structfield> is
+   compared this way.  For the index of an exclusion constraint, the
+   function's answer only means the entries are the same: the executor then
+   checks the constraint itself, against the new values, whenever the
+   update makes no new index entries.  The function is not called for the
+   index of a deferrable exclusion constraint.  If
+   <structfield>amcomparedatums</structfield> is
    <literal>NULL</literal>, a change to a column that the index stores
    always needs new index entries.
   </para>

@@ -1,0 +1,56 @@
+Parsed test spec with 2 sessions
+
+starting permutation: wait_before_lock update_hot wakeup_before_lock check_after_repack insert_conflict
+injection_points_attach
+-----------------------
+                       
+(1 row)
+
+step wait_before_lock: 
+	REPACK (CONCURRENTLY) repack_hot_excl USING INDEX repack_hot_excl_pkey;
+ <waiting ...>
+step update_hot: 
+	UPDATE repack_hot_excl SET k = 4294967296 WHERE id = 1;
+	SELECT pg_stat_get_xact_tuples_hot_updated('repack_hot_excl'::regclass)
+		AS hot;
+
+hot
+---
+  1
+(1 row)
+
+step wakeup_before_lock: 
+	SELECT injection_points_wakeup('repack-concurrently-before-lock');
+
+injection_points_wakeup
+-----------------------
+                       
+(1 row)
+
+step wait_before_lock: <... completed>
+step check_after_repack: 
+	SET enable_seqscan = off;
+	SET enable_bitmapscan = off;
+	SELECT id, k FROM repack_hot_excl WHERE k = 4294967296;
+	SELECT id, k FROM repack_hot_excl WHERE k = 1;
+	RESET enable_seqscan;
+	RESET enable_bitmapscan;
+
+id|         k
+--+----------
+ 1|4294967296
+(1 row)
+
+id|k
+--+-
+(0 rows)
+
+step insert_conflict: 
+	INSERT INTO repack_hot_excl VALUES (3, 4294967296);
+
+ERROR:  conflicting key value violates exclusion constraint "repack_hot_excl_k_excl"
+injection_points_detach
+-----------------------
+                       
+(1 row)
+

@@ -1126,7 +1126,9 @@ data. Empty in ordinary tables.</entry>
      methods, that depends on the method and on the change (see
      <xref linkend="indexam"/>).  This does not apply to the columns of
      unique indexes that a foreign key can reference, of the replica
-     identity index, or of exclusion constraints.
+     identity index, or of deferrable exclusion constraints.  It does apply
+     to other exclusion constraints, which are then checked against the new
+     values although no index entry is made.
      </para>
    </listitem>
    <listitem>

@@ -458,8 +458,9 @@ RESET enable_indexscan;
 RESET enable_seqscan;
 DROP TABLE hash_hot;
 -- An exclusion constraint is checked on the values, so a change to a value
--- with the same hash code must still make a new entry and be checked.
--- hashint8 folds the high half into the low, so 1 and 2^32 collide.
+-- with the same hash code must still be checked, even when the index keeps
+-- its entry and the update is HOT.  hashint8 folds the high half into the
+-- low, so 1 and 2^32 collide.
 SELECT hashint8(1) = hashint8(4294967296) AS same_hash;
  same_hash 
 -----------
@@ -482,12 +483,12 @@ SELECT pg_stat_force_next_flush();
 
 BEGIN;
 DELETE FROM hash_hot WHERE id = 2;
--- without a conflict, the update is checked and is not HOT
+-- without a conflict, the update is checked, and is HOT
 UPDATE hash_hot SET k = 4294967296 WHERE id = 1;
 SELECT * FROM hash_hot_count();
  updated | hot 
 ---------+-----
-       1 |   0
+       1 |   1
 (1 row)
 
 COMMIT;
@@ -497,5 +498,114 @@ SELECT * FROM hash_hot;
   1 | 4294967296
 (1 row)
 
+-- with a conflict, the HOT update fails
+INSERT INTO hash_hot VALUES (3, 1);
+UPDATE hash_hot SET k = 4294967296 WHERE id = 3;
+ERROR:  conflicting key value violates exclusion constraint "hash_hot_k_excl"
+DETAIL:  Key (k)=(4294967296) conflicts with existing key (k)=(4294967296).
+-- the index still finds both rows under their values
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT * FROM hash_hot WHERE k = 4294967296;
+ id |     k      
+----+------------
+  1 | 4294967296
+(1 row)
+
+SELECT * FROM hash_hot WHERE k = 1;
+ id | k 
+----+---
+  3 | 1
+(1 row)
+
+RESET enable_bitmapscan;
+RESET enable_seqscan;
+DROP TABLE hash_hot;
+-- A deferrable exclusion constraint is checked at commit, on the values the
+-- row has then.  Its index is not asked whether entries are the same, so
+-- such an update is not HOT; its recheck relies on the values in the index
+-- entries being those of every row version they lead to.
+CREATE TABLE hash_hot (id int, k int8, n int,
+  CONSTRAINT hash_hot_k EXCLUDE USING hash (k WITH =)
+    DEFERRABLE INITIALLY DEFERRED)
+  WITH (fillfactor = 10);
+INSERT INTO hash_hot VALUES (1, 1), (2, 4294967296);
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+BEGIN;
+UPDATE hash_hot SET k = 4294967296 WHERE id = 1;
+SELECT * FROM hash_hot_count();
+ updated | hot 
+---------+-----
+       1 |   0
+(1 row)
+
+COMMIT;
+ERROR:  conflicting key value violates exclusion constraint "hash_hot_k"
+DETAIL:  Key (k)=(4294967296) conflicts with existing key (k)=(4294967296).
+-- updated again before commit, back to no conflict
+BEGIN;
+UPDATE hash_hot SET k = 4294967296 WHERE id = 1;
+UPDATE hash_hot SET k = 1 WHERE id = 1;
+COMMIT;
+-- the other row moves away before commit
+BEGIN;
+UPDATE hash_hot SET k = 4294967296 WHERE id = 1;
+UPDATE hash_hot SET k = 3 WHERE id = 2;
+COMMIT;
+-- the row is deleted before commit
+BEGIN;
+UPDATE hash_hot SET k = 3 WHERE id = 1;
+DELETE FROM hash_hot WHERE id = 1;
+COMMIT;
+-- another column changes (HOT) after the conflicting update: still checked
+INSERT INTO hash_hot VALUES (1, 1), (5, 4294967296);
+BEGIN;
+UPDATE hash_hot SET k = 4294967296 WHERE id = 1;
+UPDATE hash_hot SET n = 1 WHERE id = 1;
+COMMIT;
+ERROR:  conflicting key value violates exclusion constraint "hash_hot_k"
+DETAIL:  Key (k)=(4294967296) conflicts with existing key (k)=(4294967296).
+DELETE FROM hash_hot WHERE id IN (1, 5);
+-- checked when the constraint is made immediate
+BEGIN;
+UPDATE hash_hot SET k = 3 WHERE id = 2;
+INSERT INTO hash_hot VALUES (4, 4294967296);
+UPDATE hash_hot SET k = 3 WHERE id = 4;
+SET CONSTRAINTS hash_hot_k IMMEDIATE;
+ERROR:  conflicting key value violates exclusion constraint "hash_hot_k"
+DETAIL:  Key (k)=(3) conflicts with existing key (k)=(3).
+ROLLBACK;
+SELECT * FROM hash_hot ORDER BY id;
+ id | k | n 
+----+---+---
+  2 | 3 |  
+(1 row)
+
+DROP TABLE hash_hot;
+-- the same when the index is evaluated, being on an expression
+CREATE TABLE hash_hot (id int, k int8,
+  EXCLUDE USING hash ((k + 0) WITH =) DEFERRABLE INITIALLY DEFERRED)
+  WITH (fillfactor = 10);
+INSERT INTO hash_hot VALUES (1, 1), (2, 2);
+SELECT pg_stat_force_next_flush();
+ pg_stat_force_next_flush 
+--------------------------
+ 
+(1 row)
+
+BEGIN;
+UPDATE hash_hot SET k = 4294967296 WHERE id = 1;
+SELECT * FROM hash_hot_count();
+ updated | hot 
+---------+-----
+       1 |   0
+(1 row)
+
+COMMIT;
 DROP TABLE hash_hot;
 DROP FUNCTION hash_hot_count;
