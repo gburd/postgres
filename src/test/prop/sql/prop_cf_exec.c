@@ -746,3 +746,337 @@ PG_PROP(self_ref_cascade_with_replanning_trigger_matches_model)
 	pfree(model.data);
 	pg_prop_disconnect(conn);
 }
+
+/*
+ * CF 7094: a cast to "unknown" of a typed (non-literal) value must either work
+ * or raise a user error, never XX000 "failed to find conversion function
+ * from unknown to text".  Drawn: the source type and whether the value is a
+ * literal, a column, or a PL/pgSQL assignment.
+ */
+PG_PROP(cast_to_unknown_is_not_internal)
+{
+	static const char *const srcs[] = {
+		"'s'::text", "'s'::varchar", "1::int", "'s'::name", "'{1}'::int[]", "now()::text"
+	};
+	pg_prop_conn *conn = cfe_connect(tc);
+	const char *src = srcs[pg_prop_draw_int(tc, 0, lengthof(srcs) - 1)];
+	int			shape = (int) pg_prop_draw_int(tc, 0, 2);
+	StringInfoData s;
+
+	initStringInfo(&s);
+	if (shape == 0)
+		appendStringInfo(&s, "SELECT %s::unknown", src);
+	else if (shape == 1)
+		appendStringInfo(&s, "SELECT cast(v AS unknown) FROM (SELECT %s AS v) s", src);
+	else
+		appendStringInfo(&s, "DO $$ DECLARE a text; BEGIN a := %s::unknown; END $$", src);
+	cfe_try_noint(tc, conn, s.data, "CF 7094 cast to unknown");
+	pfree(s.data);
+	pg_prop_disconnect(conn);
+}
+
+/*
+ * CF 7176: currtid2(view, tid) on a view must error with a proper SQLSTATE
+ * (the view has no single underlying ctid) -- never XX000.  Drawn: the view
+ * shape (GROUP BY ctid, DISTINCT, UNION, join, plain), the tid.
+ */
+PG_PROP(currtid2_on_view_is_not_internal)
+{
+	static const char *const views[] = {
+		"SELECT ctid, a FROM cfa4_tid GROUP BY ctid, a",
+		"SELECT DISTINCT ctid, a FROM cfa4_tid",
+		"SELECT ctid, a FROM cfa4_tid UNION ALL SELECT ctid, a FROM cfa4_tid",
+		"SELECT ctid, a FROM cfa4_tid",
+		"SELECT x.ctid, x.a FROM cfa4_tid x JOIN cfa4_tid y USING (a)",
+	};
+	pg_prop_conn *conn = cfe_connect(tc);
+	const char *v = views[pg_prop_draw_int(tc, 0, lengthof(views) - 1)];
+	StringInfoData s;
+
+	initStringInfo(&s);
+	appendStringInfo(&s,
+					 "DROP TABLE IF EXISTS cfa4_tid CASCADE; CREATE TABLE cfa4_tid (a int); "
+					 "INSERT INTO cfa4_tid SELECT generate_series(1, %d); "
+					 "CREATE VIEW cfa4_tid_v AS %s",
+					 (int) pg_prop_draw_int(tc, 1, 20), v);
+	cfe_exec(tc, conn, s.data);
+	resetStringInfo(&s);
+	appendStringInfo(&s, "SELECT currtid2('cfa4_tid_v'::text, '(0,%d)'::tid)",
+					 (int) pg_prop_draw_int(tc, 1, 5));
+	cfe_try_noint(tc, conn, s.data, v);
+	cfe_exec(tc, conn, "DROP TABLE cfa4_tid CASCADE");
+	pfree(s.data);
+	pg_prop_disconnect(conn);
+}
+
+/*
+ * CF 7296: a set operation over zero-column inputs under GUCs that push the
+ * planner to parallel plans must not crash (Assert nkeys > 0 in
+ * tuplesort_begin_heap), and must return what the serial plan returns.
+ * Drawn: set operation, sizes, parallel/cost GUCs.
+ */
+PG_PROP(zero_column_setop_parallel_matches_serial)
+{
+	static const char *const ops[] = {"UNION", "INTERSECT", "EXCEPT", "UNION ALL"};
+	pg_prop_conn *conn = cfe_connect(tc);
+	const char *op = ops[pg_prop_draw_int(tc, 0, lengthof(ops) - 1)];
+	int			n1 = (int) pg_prop_draw_int(tc, 0, 3000);
+	int			n2 = (int) pg_prop_draw_int(tc, 0, 3000);
+	StringInfoData s;
+	StringInfoData q;
+	char	   *par;
+	char	   *ser;
+	bool		failed = false;
+	char	   *err = NULL;
+
+	initStringInfo(&s);
+	appendStringInfo(&s,
+					 "DROP TABLE IF EXISTS cfa4_z1, cfa4_z2; "
+					 "CREATE TABLE cfa4_z1 AS SELECT g FROM generate_series(1, %d) g; "
+					 "CREATE TABLE cfa4_z2 AS SELECT g FROM generate_series(1, %d) g; "
+					 "ANALYZE cfa4_z1, cfa4_z2", n1, n2);
+	cfe_exec(tc, conn, s.data);
+
+	initStringInfo(&q);
+	appendStringInfo(&q, "SELECT count(*) FROM (SELECT FROM cfa4_z1 %s SELECT FROM cfa4_z2) s", op);
+	ser = pg_prop_sql_scalar(conn, q.data, &failed, &err);
+	if (failed)
+		pg_prop_fail(tc, "serial plan failed: %s\n  %s", err ? err : "", q.data);
+
+	resetStringInfo(&s);
+	appendStringInfo(&s,
+					 "SET cpu_tuple_cost = %d; SET min_parallel_table_scan_size = 1; "
+					 "SET parallel_setup_cost = 0; SET parallel_tuple_cost = 0",
+					 (int) pg_prop_draw_int(tc, 1, 2000));
+	cfe_exec(tc, conn, s.data);
+	par = pg_prop_sql_scalar(conn, q.data, &failed, &err);	/* crash -> harness exits 3 */
+	cfe_exec(tc, conn, "RESET ALL");
+	if (failed)
+		pg_prop_fail(tc, "parallel-costed plan failed: %s\n  %s", err ? err : "", q.data);
+	if (strcmp(par, ser) != 0)
+		pg_prop_fail(tc, "zero-column %s: parallel-costed plan %s rows, serial %s\n  sizes %d, %d",
+					 op, par, ser, n1, n2);
+	pg_free(par);
+	pg_free(ser);
+	cfe_exec(tc, conn, "DROP TABLE cfa4_z1, cfa4_z2");
+	pfree(s.data);
+	pfree(q.data);
+	pg_prop_disconnect(conn);
+}
+
+/*
+ * CF 7097: an error raised inside an SQL-callable replication-slot function
+ * and caught by a PL/pgSQL EXCEPTION block must release the slot; the next
+ * slot operation in the session must work.  On master the slot stays
+ * acquired (active = t) and the next acquire trips
+ * Assert(MyReplicationSlot == NULL).  Needs wal_level = logical; skipped
+ * otherwise.  Drawn: the failing call (advance to an invalid LSN, peek with
+ * a bad option), the follow-up operation, how many times the pair repeats.
+ */
+PG_PROP(slot_function_error_releases_slot)
+{
+	static const char *const fail_calls[] = {
+		"PERFORM pg_replication_slot_advance('cfa4_slot', '0/1')",
+		"PERFORM count(*) FROM pg_logical_slot_peek_changes('cfa4_slot', NULL, NULL, 'no-such-option', 'x')",
+		"PERFORM count(*) FROM pg_logical_slot_get_changes('cfa4_slot', NULL, NULL, 'include-xids', 'notabool')",
+	};
+	static const char *const follow[] = {
+		"SELECT count(*) >= 0 FROM pg_logical_slot_peek_changes('cfa4_slot', NULL, NULL)",
+		"SELECT count(*) >= 0 FROM pg_logical_slot_get_changes('cfa4_slot', NULL, NULL)",
+		"SELECT pg_replication_slot_advance('cfa4_slot', pg_current_wal_lsn()) IS NOT NULL",
+	};
+	pg_prop_conn *conn = cfe_connect(tc);
+	bool		failed = false;
+	char	   *wl = pg_prop_sql_scalar(conn, "SHOW wal_level", &failed, NULL);
+	int			reps = (int) pg_prop_draw_int(tc, 1, 3);
+	StringInfoData s;
+	char	   *act;
+
+	if (wl == NULL || strcmp(wl, "logical") != 0)
+	{
+		if (wl)
+			pg_free(wl);
+		pg_prop_disconnect(conn);
+		pg_prop_skip(tc, "needs wal_level = logical");
+	}
+	pg_free(wl);
+	pg_prop_sql_exec(conn, "SELECT pg_drop_replication_slot('cfa4_slot') "
+					 "FROM pg_replication_slots WHERE slot_name = 'cfa4_slot'", NULL);
+	cfe_exec(tc, conn, "SELECT pg_create_logical_replication_slot('cfa4_slot', 'test_decoding')");
+
+	initStringInfo(&s);
+	for (int r = 0; r < reps; r++)
+	{
+		resetStringInfo(&s);
+		appendStringInfo(&s, "DO $$ BEGIN %s; EXCEPTION WHEN OTHERS THEN NULL; END $$",
+						 fail_calls[pg_prop_draw_int(tc, 0, lengthof(fail_calls) - 1)]);
+		cfe_try_noint(tc, conn, s.data, "CF 7097 slot error inside an exception block");
+
+		act = pg_prop_sql_scalar(conn,
+								 "SELECT active_pid IS NOT DISTINCT FROM pg_backend_pid() "
+								 "FROM pg_replication_slots WHERE slot_name = 'cfa4_slot'",
+								 &failed, NULL);
+		if (act && strcmp(act, "t") == 0)
+			pg_prop_fail(tc, "slot still held by this session after the caught error\n  %s", s.data);
+		if (act)
+			pg_free(act);
+
+		/* the next slot operation; a crash exits the harness */
+		cfe_try_noint(tc, conn, follow[pg_prop_draw_int(tc, 0, lengthof(follow) - 1)],
+					  "CF 7097 follow-up slot operation");
+	}
+	pg_prop_sql_exec(conn, "SELECT pg_drop_replication_slot('cfa4_slot')", NULL);
+	pfree(s.data);
+	pg_prop_disconnect(conn);
+}
+
+/*
+ * CF 7459: a PL/pgSQL record assigned from a function returning a row keeps
+ * TOAST pointers into the source table.  In a non-atomic DO block the source
+ * row is deleted and the transaction committed; if VACUUM then removes the
+ * dead row and its TOAST chunks before the record is read, the read raises
+ * "missing chunk number 0 for toast value".  Invariant: a record's value is
+ * the value that was read, whatever happens to the source row later.
+ *
+ * Interleaving (two sessions, as in the patch's isolation spec): session A
+ * holds an advisory lock; session B runs the DO block, which deletes the
+ * row, COMMITs, then blocks on the advisory lock; A runs VACUUM and releases
+ * the lock; B then reads the record.  Drawn: value size (inline or toasted),
+ * storage mode, DELETE vs UPDATE, and VACUUM vs no VACUUM (the control).
+ */
+PG_PROP(nonatomic_record_survives_source_row_removal)
+{
+	static const char *const storages[] = {"EXTERNAL", "EXTENDED"};
+	pg_prop_conn *a = cfe_connect(tc);
+	pg_prop_conn *b = cfe_connect(tc);
+	int			len = pg_prop_draw_int(tc, 0, 3) == 0 ? (int) pg_prop_draw_int(tc, 1, 1500)
+		: (int) pg_prop_draw_int(tc, 3000, 200000);
+	const char *st = storages[pg_prop_draw_int(tc, 0, lengthof(storages) - 1)];
+	bool		delete_row = pg_prop_draw_bool(tc);
+	bool		vacuum = pg_prop_draw_int(tc, 0, 3) != 0;
+	StringInfoData s;
+	char	   *ss = NULL;
+	char	   *err = NULL;
+	bool		ok;
+
+	initStringInfo(&s);
+	appendStringInfo(&s,
+					 "DROP TABLE IF EXISTS cfa4_t1 CASCADE; CREATE TABLE cfa4_t1 (id int, t text) "
+					 "WITH (autovacuum_enabled = off); "
+					 "ALTER TABLE cfa4_t1 ALTER COLUMN t SET STORAGE %s; "
+					 "INSERT INTO cfa4_t1 SELECT 1, string_agg(md5(i::text), '') FROM generate_series(1, %d) i; "
+					 "CREATE OR REPLACE FUNCTION cfa4_get() RETURNS cfa4_t1 LANGUAGE plpgsql AS "
+					 "$f$ DECLARE r cfa4_t1; BEGIN SELECT * INTO r FROM cfa4_t1; RETURN r; END $f$",
+					 st, len / 32 + 1);
+	cfe_exec(tc, a, s.data);
+	cfe_exec(tc, a, "SELECT pg_advisory_lock(74590)");
+
+	resetStringInfo(&s);
+	appendStringInfo(&s,
+					 "DO $$ DECLARE r cfa4_t1; want int; BEGIN "
+					 "SELECT length(t) INTO want FROM cfa4_t1; "
+					 "r := cfa4_get(); "
+					 "%s "
+					 "COMMIT; "
+					 "PERFORM pg_advisory_lock(74590); "
+					 "IF length(r.t) IS DISTINCT FROM want THEN "
+					 "RAISE EXCEPTION 'record value changed: %% vs %%', length(r.t), want; END IF; "
+					 "PERFORM pg_advisory_unlock(74590); "
+					 "END $$",
+					 delete_row ? "DELETE FROM cfa4_t1;" : "UPDATE cfa4_t1 SET t = 'x';");
+	if (!pg_prop_sql_send(b, s.data))
+		pg_prop_fail(tc, "could not dispatch the DO block");
+
+	/* let B reach the advisory lock (after its COMMIT), then clean the row away */
+	cfe_exec(tc, a, "SELECT pg_sleep(0.2)");
+	if (vacuum)
+		cfe_exec(tc, a, "VACUUM cfa4_t1");
+	cfe_exec(tc, a, "SELECT pg_advisory_unlock(74590)");
+
+	ok = pg_prop_sql_await(b, &ss, &err);
+	if (!ok && err && (strstr(err, "missing chunk") || strstr(err, "record value changed") ||
+					   strstr(err, "unexpected chunk")))
+		pg_prop_fail(tc, "a record read before COMMIT lost its value after %s: %s\n"
+					 "  storage %s, %d bytes, %s",
+					 vacuum ? "VACUUM" : "no VACUUM", err, st, len,
+					 delete_row ? "DELETE" : "UPDATE");
+	if (!ok && cfe_internal(ss, err))
+		pg_prop_fail(tc, "internal error: %s", err ? err : "");
+
+	cfe_exec(tc, a, "DROP TABLE cfa4_t1 CASCADE");
+	pfree(s.data);
+	pg_prop_disconnect(b);
+	pg_prop_disconnect(a);
+}
+
+/*
+ * CF 6903: a PL/pgSQL RETURN QUERY over a non-inlined SETOF function
+ * returning a named composite; after ALTER TYPE ... ADD ATTRIBUTE widens the
+ * composite (and the underlying table gains the column), the cached plan
+ * must be invalidated -- the second call in the same session must return
+ * what a fresh session returns.  On master the plan is not invalidated and
+ * the call raises "structure of query does not match function result type".
+ *
+ * Invariant: same-session result after the DDL = fresh-session result.
+ * Drawn: inlining blockers (SECURITY DEFINER / VOLATILE / plain), SRF
+ * language (sql / plpgsql RETURN QUERY), the DDL pair, rows.
+ */
+PG_PROP(cached_return_query_sees_widened_composite)
+{
+	static const char *const attrs[] = {"STABLE SECURITY DEFINER", "VOLATILE", "STABLE", "SECURITY DEFINER"};
+	pg_prop_conn *conn = cfe_connect(tc);
+	pg_prop_conn *fresh;
+	const char *attr = attrs[pg_prop_draw_int(tc, 0, lengthof(attrs) - 1)];
+	bool		plpgsql_srf = pg_prop_draw_bool(tc);
+	int			nrows = (int) pg_prop_draw_int(tc, 1, 5);
+	StringInfoData s;
+	char	   *a;
+	char	   *b;
+	bool		fa = false;
+	bool		fb = false;
+	char	   *ea = NULL;
+	char	   *eb = NULL;
+
+	initStringInfo(&s);
+	appendStringInfo(&s,
+					 "DROP FUNCTION IF EXISTS cfa4_caller() CASCADE; DROP FUNCTION IF EXISTS cfa4_srf() CASCADE; "
+					 "DROP TABLE IF EXISTS cfa4_tbl; DROP TYPE IF EXISTS cfa4_ct CASCADE; "
+					 "CREATE TYPE cfa4_ct AS (a int, b int); "
+					 "CREATE TABLE cfa4_tbl (a int, b int); "
+					 "INSERT INTO cfa4_tbl SELECT i, i * 10 FROM generate_series(1, %d) i; ", nrows);
+	if (plpgsql_srf)
+		appendStringInfo(&s,
+						 "CREATE FUNCTION cfa4_srf() RETURNS SETOF cfa4_ct LANGUAGE plpgsql %s AS "
+						 "$f$ BEGIN RETURN QUERY SELECT * FROM cfa4_tbl; END $f$; ", attr);
+	else
+		appendStringInfo(&s,
+						 "CREATE FUNCTION cfa4_srf() RETURNS SETOF cfa4_ct LANGUAGE sql %s AS "
+						 "$f$ SELECT * FROM cfa4_tbl $f$; ", attr);
+	appendStringInfoString(&s,
+						   "CREATE FUNCTION cfa4_caller() RETURNS SETOF cfa4_ct LANGUAGE plpgsql AS "
+						   "$f$ BEGIN RETURN QUERY SELECT r.* FROM cfa4_srf() r; END $f$");
+	cfe_exec(tc, conn, s.data);
+
+	/* warm the plan cache in this session */
+	pg_free(pg_prop_sql_rows(conn, "SELECT * FROM cfa4_caller() ORDER BY 1", &fa, NULL));
+
+	cfe_exec(tc, conn, "ALTER TYPE cfa4_ct ADD ATTRIBUTE c int");
+	cfe_exec(tc, conn, "ALTER TABLE cfa4_tbl ADD COLUMN c int DEFAULT 99");
+
+	a = pg_prop_sql_rows(conn, "SELECT * FROM cfa4_caller() ORDER BY 1", &fa, &ea);
+	fresh = cfe_connect(tc);
+	b = pg_prop_sql_rows(fresh, "SELECT * FROM cfa4_caller() ORDER BY 1", &fb, &eb);
+	if (fa != fb || (!fa && strcmp(a, b) != 0))
+		pg_prop_fail(tc, "after ALTER TYPE ADD ATTRIBUTE the cached plan disagrees with a fresh session\n"
+					 "  same session: %s\n  fresh session: %s\n  srf: %s %s",
+					 fa ? (ea ? ea : "error") : a, fb ? (eb ? eb : "error") : b,
+					 plpgsql_srf ? "plpgsql" : "sql", attr);
+	if (a)
+		pg_free(a);
+	if (b)
+		pg_free(b);
+	pg_prop_disconnect(fresh);
+	cfe_exec(tc, conn, "DROP FUNCTION cfa4_caller(); DROP FUNCTION cfa4_srf(); DROP TABLE cfa4_tbl; DROP TYPE cfa4_ct");
+	pfree(s.data);
+	pg_prop_disconnect(conn);
+}
