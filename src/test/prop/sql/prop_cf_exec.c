@@ -1307,3 +1307,68 @@ PG_PROP(streaming_decode_with_toasted_constraint)
 	pfree(s.data);
 	pg_prop_disconnect(conn);
 }
+
+/*
+ * CF 6304: fast-forwarding a logical slot (pg_replication_slot_advance)
+ * over an INSERT into a user_catalog_table -- which emits NEW_CID but no
+ * invalidation -- must still record that transaction as a catalog-modifying
+ * one in the historic snapshot it serializes.  Checked through
+ * pg_logicalinspect: some serialized snapshot's committed_xip holds the
+ * inserting transaction's xid.  An older transaction is kept open so that
+ * xid stays in the snapshot's interesting range.  Drawn: rows inserted,
+ * extra non-catalog writes, whether the older transaction has an xid
+ * before or after.  Needs wal_level = logical and pg_logicalinspect.
+ */
+PG_PROP(fast_forward_snapshot_tracks_user_catalog_xid)
+{
+	pg_prop_conn *s0 = cfe_connect(tc);
+	pg_prop_conn *s1;
+	bool		failed = false;
+	char	   *wl = pg_prop_sql_scalar(s0, "SHOW wal_level", &failed, NULL);
+	int			rows = (int) pg_prop_draw_int(tc, 1, 20);
+	bool		other = pg_prop_draw_bool(tc);
+	StringInfoData s;
+	char	   *r;
+
+	if (wl == NULL || strcmp(wl, "logical") != 0)
+		pg_prop_skip(tc, "needs wal_level = logical");
+	pg_free(wl);
+	if (!pg_prop_require_extension(s0, "pg_logicalinspect"))
+		pg_prop_skip(tc, "pg_logicalinspect not installed");
+	pg_prop_sql_exec(s0, "SELECT pg_drop_replication_slot('cfa4_ff') FROM pg_replication_slots "
+					 "WHERE slot_name = 'cfa4_ff'", NULL);
+	cfe_exec(tc, s0, "DROP TABLE IF EXISTS cfa4_ucat, cfa4_plain; "
+			 "CREATE TABLE cfa4_ucat (v int) WITH (user_catalog_table = true); "
+			 "CREATE TABLE cfa4_plain (v int)");
+	cfe_exec(tc, s0, "SELECT 'init' FROM pg_create_logical_replication_slot('cfa4_ff', 'test_decoding')");
+
+	/* s0: older transaction with an xid, held open */
+	cfe_exec(tc, s0, "BEGIN");
+	cfe_exec(tc, s0, "SELECT pg_current_xact_id()");
+
+	s1 = cfe_connect(tc);
+	initStringInfo(&s);
+	appendStringInfo(&s, "INSERT INTO cfa4_ucat SELECT generate_series(1, %d)", rows);
+	cfe_exec(tc, s1, s.data);
+	if (other)
+		cfe_exec(tc, s1, "INSERT INTO cfa4_plain VALUES (1)");
+	cfe_exec(tc, s1, "CHECKPOINT");
+	cfe_exec(tc, s1, "SELECT slot_name FROM pg_replication_slot_advance('cfa4_ff', pg_current_wal_lsn())");
+	r = pg_prop_sql_scalar(s1,
+						   "SELECT count(*) > 0 FROM pg_ls_logicalsnapdir() f, "
+						   "pg_get_logical_snapshot_info(f.name) i, cfa4_ucat u "
+						   "WHERE u.xmin = ANY (i.committed_xip)",
+						   &failed, NULL);
+	cfe_exec(tc, s0, "COMMIT");
+	if (r && strcmp(r, "t") != 0)
+		pg_prop_fail(tc, "the snapshot serialized while fast-forwarding does not track the xid that "
+					 "inserted into a user_catalog_table (%d rows%s)",
+					 rows, other ? ", plus a non-catalog write" : "");
+	if (r)
+		pg_free(r);
+	pg_prop_sql_exec(s1, "SELECT pg_drop_replication_slot('cfa4_ff')", NULL);
+	pg_prop_sql_exec(s1, "DROP TABLE IF EXISTS cfa4_ucat, cfa4_plain", NULL);
+	pfree(s.data);
+	pg_prop_disconnect(s1);
+	pg_prop_disconnect(s0);
+}
