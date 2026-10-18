@@ -293,6 +293,7 @@ OBJS = \
 	sql/prop_cf_deparse.o \
 	sql/prop_cf_stats.o \
 	sql/prop_cf_planner.o \
+	sql/prop_cf_race.o \
 	sql/index_traits.o \
 	sql/prop_index_am.o \
 	sql/prop_table_am.o \
