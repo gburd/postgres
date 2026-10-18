@@ -296,6 +296,7 @@ prop_query_sources = files(
   'sql/prop_cf_ddl.c',
   'sql/prop_cf_ddl2.c',
   'sql/prop_cf_deparse.c',
+  'sql/prop_cf_stats.c',
   'sql/prop_cf_planner.c',
   'sql/index_traits.c',
   'sql/prop_index_am.c',
