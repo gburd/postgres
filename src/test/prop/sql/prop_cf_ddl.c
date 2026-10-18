@@ -101,13 +101,17 @@ cd_step(pg_prop_tc *tc, pg_prop_conn *conn, const char *sql, const StringInfo lo
 		ok = pg_prop_sql_await(conn, &ss, &err);
 	if (ok)
 		return true;
-	/* liveness probe: exits 3 (and logs) if the backend died */
+	/*
+	 * Liveness probe: exits 3 (and logs the probe) if the backend died.  The
+	 * probe carries the step log, so the crash log names what crashed.
+	 */
 	{
-		bool		f = false;
-		char	   *v = pg_prop_sql_scalar(conn, "SELECT 1", &f, NULL);
+		StringInfoData probe;
 
-		if (v)
-			pg_free(v);
+		initStringInfo(&probe);
+		appendStringInfo(&probe, "SELECT $cd_probe$ liveness probe after:\n%s$cd_probe$", log->data);
+		pg_prop_sql_exec(conn, probe.data, NULL);
+		pfree(probe.data);
 	}
 	if (cd_internal(ss, err))
 		pg_prop_fail(tc, "internal error (SQLSTATE %s): %s\n  steps:\n%s",
@@ -525,5 +529,78 @@ PG_PROP(partition_set_expression_keeps_generated_consistent)
 	pg_prop_sql_exec(conn, "DROP TABLE IF EXISTS cfd_gp CASCADE", NULL);
 	pfree(log.data);
 	pfree(s.data);
+	pg_prop_disconnect(conn);
+}
+
+/*
+ * CF 6431 / 6449: a composite value produced before ALTER TYPE ... ALTER
+ * ATTRIBUTE ... TYPE in the same transaction, then read after it, must not
+ * be interpreted with the new row type: either an error is raised or the
+ * value reads back correctly.  Reading the old int4 bits as text crashes
+ * (textout memcpy of a bogus length).  Drawn: the holder of the old value
+ * (cursor, PL/pgSQL row variable, generic RECORD, OUT parameter, nested
+ * composite), the old value (biased to large ints, which become bogus
+ * varlena lengths), the new attribute type.  Invariant: the backend
+ * survives and no internal error is raised (cd_step checks both).
+ */
+PG_PROP(composite_read_after_alter_attribute_type)
+{
+	static const char *const newtypes[] = {"text", "numeric", "bigint", "varchar(20)"};
+	pg_prop_conn *conn = cd_connect(tc);
+	int			holder = (int) pg_prop_draw_int(tc, 0, 4);
+	const char *nt = newtypes[pg_prop_draw_int(tc, 0, lengthof(newtypes) - 1)];
+	long		v = pg_prop_draw_bool(tc) ? (1L << pg_prop_draw_int(tc, 20, 30)) : (long) pg_prop_draw_int(tc, 0, 1000);
+	StringInfoData s;
+	StringInfoData log;
+
+	initStringInfo(&s);
+	initStringInfo(&log);
+	cd_step(tc, conn, "DROP TYPE IF EXISTS cfd_co CASCADE", &log);
+	cd_step(tc, conn, "DROP TYPE IF EXISTS cfd_ci CASCADE", &log);
+	cd_step(tc, conn, "CREATE TYPE cfd_ci AS (x int, y int)", &log);
+	cd_step(tc, conn, "CREATE TYPE cfd_co AS (a int, b int, c cfd_ci)", &log);
+	if (holder == 0)
+	{
+		/* cursor (CF 6431) */
+		cd_step(tc, conn, "BEGIN", &log);
+		appendStringInfo(&s, "DECLARE cfd_cur CURSOR FOR SELECT (i, %ld, NULL)::cfd_co "
+						 "FROM generate_series(1, 3) i", v);
+		cd_step(tc, conn, s.data, &log);
+		cd_step(tc, conn, "FETCH FROM cfd_cur", &log);
+		resetStringInfo(&s);
+		appendStringInfo(&s, "ALTER TYPE cfd_co ALTER ATTRIBUTE b TYPE %s", nt);
+		cd_step(tc, conn, s.data, &log);
+		cd_step(tc, conn, "FETCH FROM cfd_cur", &log);
+		cd_step(tc, conn, "ROLLBACK", &log);
+	}
+	else
+	{
+		/* PL/pgSQL (CF 6449): row variable, generic RECORD, OUT parameter, nested */
+		if (holder == 4)
+			appendStringInfo(&s,
+							 "CREATE FUNCTION cfd_f() RETURNS record LANGUAGE plpgsql AS $f$ "
+							 "DECLARE r cfd_co; BEGIN "
+							 "r := row(1, 2, row(10, %ld)::cfd_ci)::cfd_co; "
+							 "ALTER TYPE cfd_ci ALTER ATTRIBUTE y TYPE %s; "
+							 "RETURN r; END $f$", v, nt);
+		else
+			appendStringInfo(&s,
+							 "CREATE FUNCTION cfd_f(%s) RETURNS %s LANGUAGE plpgsql AS $f$ "
+							 "DECLARE r %s; BEGIN "
+							 "%s := row(1, %ld, NULL)::cfd_co; "
+							 "ALTER TYPE cfd_co ALTER ATTRIBUTE b TYPE %s; "
+							 "%s END $f$",
+							 holder == 3 ? "OUT o cfd_co" : "",
+							 holder == 3 ? "cfd_co" : "record",
+							 holder == 2 ? "record" : "cfd_co",
+							 holder == 3 ? "o" : "r", v, nt,
+							 holder == 3 ? "RETURN;" : "RETURN r;");
+		cd_step(tc, conn, s.data, &log);
+		cd_step(tc, conn, "SELECT cfd_f()::text", &log);
+		cd_step(tc, conn, "DROP FUNCTION cfd_f", &log);
+	}
+	pg_prop_sql_exec(conn, "DROP TYPE IF EXISTS cfd_co CASCADE; DROP TYPE IF EXISTS cfd_ci CASCADE", NULL);
+	pfree(s.data);
+	pfree(log.data);
 	pg_prop_disconnect(conn);
 }
