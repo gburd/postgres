@@ -537,10 +537,22 @@ typedef struct ResultRelInfo
 	int			ri_UpdateCount;
 
 	/*
+	 * For UPDATE, the indexes of exclusion constraints, as positions in the
+	 * index arrays, that ExecUpdateModifiedIdxAttrs() let the row being
+	 * updated keep its entries in although their values changed (their access
+	 * method said the entries were the same).  If the update is then HOT, no
+	 * index entry is inserted, so the constraint must be checked separately;
+	 * see ExecCheckHotExclusion().  Describes the row whose update was
+	 * decided last.
+	 */
+	Bitmapset  *ri_HotExclusionCheck;
+
+	/*
 	 * For UPDATE, per index (NULL until first needed), what
 	 * ExecUpdateModifiedIdxAttrs() learned of the new row while deciding the
 	 * row's update: whether it satisfies the index's predicate, and its index
-	 * datums.  Inserting the new row's index entries uses these instead of
+	 * datums.  Inserting the new row's index entries, and checking an
+	 * exclusion constraint after a HOT update, use these instead of
 	 * evaluating the index's expressions and predicate again.  The datums are
 	 * in the per-tuple memory context, so they are valid until the next row.
 	 */
