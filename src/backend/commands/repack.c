@@ -2953,6 +2953,11 @@ apply_concurrent_update(Relation rel, TupleTableSlot *spilled_tuple,
 							  modified_idx_attrs,
 							  NIL, NULL);
 	}
+	if (update_indexes != TU_All)
+		(void) ExecCheckHotExclusion(chgcxt->cc_rri, chgcxt->cc_estate,
+									 EIIT_IS_UPDATE, spilled_tuple, NIL, NULL);
+	bms_free(chgcxt->cc_rri->ri_HotExclusionCheck);
+	chgcxt->cc_rri->ri_HotExclusionCheck = NULL;
 	bms_free(modified_idx_attrs);
 
 	pgstat_progress_incr_param(PROGRESS_REPACK_HEAP_TUPLES_UPDATED, 1);

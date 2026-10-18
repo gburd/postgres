@@ -761,6 +761,10 @@ extern List *ExecInsertIndexTuples(ResultRelInfo *resultRelInfo, EState *estate,
 								   const Bitmapset *modified_idx_attrs,
 								   List *arbiterIndexes,
 								   bool *specConflict);
+extern List *ExecCheckHotExclusion(ResultRelInfo *resultRelInfo,
+								   EState *estate, uint32 flags,
+								   TupleTableSlot *slot, List *arbiterIndexes,
+								   bool *specConflict);
 extern bool ExecCheckIndexConstraints(ResultRelInfo *resultRelInfo,
 									  TupleTableSlot *slot,
 									  EState *estate, ItemPointer conflictTid,
