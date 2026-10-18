@@ -1175,11 +1175,41 @@ sj_default_is_cast(pg_prop_tc *tc, bool boolean)
 						 "COLUMNS (c %s PATH '%s $.a'%s DEFAULT %s ON %s))",
 						 doc.data, typ, on_error ? "strict" : "lax", quotes,
 						 e.data, on_error ? "ERROR" : "EMPTY");
-	initStringInfo(&m);
-	appendStringInfo(&m, "SELECT CAST((%s) AS %s)::text", e.data, typ);
-
+	/*
+	 * The reference: the DEFAULT converted to the RETURNING type.  For a
+	 * boolean DEFAULT and a type with a cast from boolean that is the cast;
+	 * for one without (bigint, smallint, numeric and the int-based domains)
+	 * the parser converts through jsonb, so the reference is the JSON
+	 * boolean's conversion -- an error for a number type -- or NULL if the
+	 * expression is NULL.  (A CAST cannot be written for those: the parser
+	 * rejects it even in an untaken CASE branch.)  Either way the value the
+	 * expression evaluates to decides the outcome, never a constant
+	 * 'false'.
+	 */
 	conn = cfb3_connect(tc);
 	cfb3_exec(tc, conn, sj_setup);
+	initStringInfo(&m);
+	if (boolean)
+	{
+		/* does the type (or its domain base) have a cast from boolean? */
+		char	   *castq = psprintf("SELECT EXISTS (SELECT 1 FROM pg_cast WHERE castsource = 'bool'::regtype "
+									 "AND casttarget = (SELECT CASE typtype WHEN 'd' THEN typbasetype ELSE oid END "
+									 "FROM pg_type WHERE oid = '%s'::regtype)) "
+									 "OR '%s'::regtype IN ('text'::regtype, 'varchar'::regtype)", typ, typ);
+		bool		f = false;
+		char	   *has = pg_prop_sql_scalar(conn, castq, &f, NULL);
+
+		if (has && strcmp(has, "t") != 0)
+			appendStringInfo(&m, "SELECT CASE WHEN (%s) IS NULL THEN NULL "
+							 "ELSE JSON_VALUE(to_jsonb(%s), '$' RETURNING %s ERROR ON ERROR) END::text",
+							 e.data, e.data, typ);
+		if (has)
+			pg_free(has);
+		pfree(castq);
+	}
+	if (m.len == 0)
+		appendStringInfo(&m, "SELECT CAST((%s) AS %s)::text", e.data, typ);
+
 	got = sj_outcome(tc, conn, q.data);
 	want = sj_outcome(tc, conn, m.data);
 	if (strcmp(got, want) != 0)
