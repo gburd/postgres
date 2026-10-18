@@ -291,6 +291,7 @@ OBJS = \
 	sql/prop_cf_ddl.o \
 	sql/prop_cf_ddl2.o \
 	sql/prop_cf_deparse.o \
+	sql/prop_cf_stats.o \
 	sql/prop_cf_planner.o \
 	sql/index_traits.o \
 	sql/prop_index_am.o \
