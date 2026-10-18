@@ -1372,3 +1372,74 @@ PG_PROP(fast_forward_snapshot_tracks_user_catalog_xid)
 	pg_prop_disconnect(s1);
 	pg_prop_disconnect(s0);
 }
+
+/*
+ * CF 7229: pageinspect's item functions given a corrupt page image (a
+ * line pointer or header field overwritten) must raise a clean error, not
+ * read out of bounds -- under cassert an overread may crash, and the crash
+ * tripwire turns that into exit 3.  The page is a real page of a drawn index
+ * or heap, then drawn bytes of the header / line pointer array are
+ * overwritten.  Invariant: the backend survives.  (Any ERROR is a clean
+ * rejection -- pageinspect's own pre-existing bounds checks are elog()s
+ * with SQLSTATE XX000, so "not internal" would flag correct rejections.)
+ * Needs pageinspect (superuser).
+ */
+PG_PROP(pageinspect_survives_corrupt_page)
+{
+	static const struct
+	{
+		const char *setup;
+		const char *rel;
+		int			blk;
+		const char *fn;			/* %s = the page expression */
+	}			targets[] = {
+		{"CREATE INDEX cfa4_pi_bt ON cfa4_pi (a)", "cfa4_pi_bt", 1, "SELECT count(*) FROM bt_page_items(%s)"},
+		{"CREATE INDEX cfa4_pi_hash ON cfa4_pi USING hash (a)", "cfa4_pi_hash", 3,
+		"SELECT count(*) FROM hash_page_items(%s)"},
+		{"CREATE INDEX cfa4_pi_gist ON cfa4_pi USING gist (p)", "cfa4_pi_gist", 0,
+		"SELECT count(*) FROM gist_page_items_bytea(%s)"},
+		{"CREATE INDEX cfa4_pi_brin ON cfa4_pi USING brin (a)", "cfa4_pi_brin", 2,
+		"SELECT count(*) FROM brin_page_items(%s, 'cfa4_pi_brin')"},
+		{"SELECT 1", "cfa4_pi", 0, "SELECT count(*) FROM heap_page_items(%s)"},
+	};
+	pg_prop_conn *conn = cfe_connect(tc);
+	int			t = (int) pg_prop_draw_int(tc, 0, lengthof(targets) - 1);
+	int			nb = (int) pg_prop_draw_int(tc, 1, 6);
+	StringInfoData page;
+	StringInfoData s;
+
+	if (!pg_prop_require_extension(conn, "pageinspect"))
+		pg_prop_skip(tc, "pageinspect not installed");
+	cfe_exec(tc, conn, "DROP TABLE IF EXISTS cfa4_pi; CREATE TABLE cfa4_pi (a int, p point); "
+			 "INSERT INTO cfa4_pi SELECT g, point(g, g) FROM generate_series(1, 2000) g");
+	cfe_exec(tc, conn, targets[t].setup);
+
+	/* the page, with nb drawn bytes of the first 64 overwritten */
+	initStringInfo(&page);
+	appendStringInfo(&page, "get_raw_page('%s', %d)", targets[t].rel, targets[t].blk);
+	for (int i = 0; i < nb; i++)
+	{
+		/* bias to the header (pd_lower/upper/special at 12..17) and the first line pointers (24..) */
+		int			off = pg_prop_draw_bool(tc) ? (int) pg_prop_draw_int(tc, 12, 17)
+			: (int) pg_prop_draw_int(tc, 24, 63);
+		int			val = pg_prop_draw_bool(tc) ? 255 : (int) pg_prop_draw_int(tc, 0, 255);
+		char	   *prev = pstrdup(page.data);
+
+		resetStringInfo(&page);
+		appendStringInfo(&page, "set_byte(%s, %d, %d)", prev, off, val);
+		pfree(prev);
+	}
+	initStringInfo(&s);
+	appendStringInfo(&s, targets[t].fn, page.data);
+	{
+		char	   *ss;
+		char	   *err;
+
+		/* a crash is caught by cfe_try's liveness probe (tripwire, exit 3) */
+		(void) cfe_try(conn, s.data, &ss, &err);
+	}
+	cfe_exec(tc, conn, "DROP TABLE cfa4_pi");
+	pfree(page.data);
+	pfree(s.data);
+	pg_prop_disconnect(conn);
+}
