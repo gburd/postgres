@@ -933,3 +933,189 @@ PG_PROP(trgm_scan_equals_seqscan)
 	pfree(gucs.data);
 	pg_prop_disconnect(conn);
 }
+
+/*
+ * CF 7385 (BUG #19720): gtrgm_union() set flag = ALLISTRUE instead of OR-ing
+ * it in, dropping SIGNKEY; unionkey() then reads the key as a zero-length
+ * array, so an internal downlink loses its children's signature bits and an
+ * index scan stops finding them.  Needs: a small siglen (so a long string's
+ * signature saturates to all-true), a NULL (the null branch calls the union),
+ * enough rows that the root splits into internal pages, and then a row whose
+ * trigrams set no bits ('').
+ *
+ * Invariant: index scan = seqscan.  Drawn: siglen, how many NULL and
+ * all-true rows go in and when, the repeated value and its count, whether
+ * the index exists before the load, and the final probe value(s).
+ */
+PG_PROP(trgm_gist_union_scan_equals_seqscan)
+{
+	static const char *const fillers[] = {"test", "abc", "w1", "xyz word"};
+	pg_prop_conn *conn = cf_connect(tc);
+	int			siglen = (int) pg_prop_draw_int(tc, 1, 4) * 2;	/* 2,4,6,8 */
+	/* the NULL and the all-true row are both needed; zero of either is a control */
+	int			nnull = pg_prop_draw_int(tc, 0, 3) == 0 ? 0 : (int) pg_prop_draw_int(tc, 1, 3);
+	int			nall = pg_prop_draw_int(tc, 0, 3) == 0 ? 0 : (int) pg_prop_draw_int(tc, 1, 3);
+	const char *fill = fillers[pg_prop_draw_int(tc, 0, lengthof(fillers) - 1)];
+	int			nempty = (int) pg_prop_draw_int(tc, 1, 3);
+	StringInfoData s;
+	StringInfoData where;
+
+	if (!pg_prop_require_extension(conn, "pg_trgm"))
+		pg_prop_skip(tc, "pg_trgm not installed");
+	if (!pg_prop_require_extension(conn, "pageinspect"))
+		pg_prop_skip(tc, "pageinspect not installed");
+
+	initStringInfo(&s);
+	appendStringInfo(&s,
+					 "DROP TABLE IF EXISTS cfb1_tu; CREATE TABLE cfb1_tu (id serial, v text); "
+					 "CREATE INDEX cfb1_tu_v ON cfb1_tu USING gist (v gist_trgm_ops(siglen=%d))",
+					 siglen);
+	cf_exec(tc, conn, s.data);
+
+	/*
+	 * The NULLs and all-true rows go in first, so the union that builds the
+	 * first internal level sees them.  Then load the filler one row at a
+	 * time until the root's first child is itself an internal page: that is
+	 * the split which writes the broken downlink, and it is not a fixed row
+	 * count (gistchoose breaks penalty ties at random), so stop on the page
+	 * structure, as the bug report does.  The check must run after EVERY
+	 * insert: stopping even a few rows late lets the next ordinary insert
+	 * adjust the downlink and OR the lost bits back in, and the index then
+	 * finds every row (checking every 50th row passed 2/2 on master; every
+	 * row failed 2/2).  Capped so a large siglen cannot loop for long.
+	 */
+	resetStringInfo(&s);
+	for (int i = 0; i < nnull; i++)
+		appendStringInfoString(&s, "INSERT INTO cfb1_tu (v) VALUES (NULL); ");
+	for (int i = 0; i < nall; i++)
+		appendStringInfo(&s,
+						 "INSERT INTO cfb1_tu (v) SELECT string_agg((i + %d)::text, ' ') "
+						 "FROM generate_series(1, 100) i; ", i * 1000);
+	appendStringInfo(&s,
+					 "DO $do$ BEGIN FOR n IN 1..120000 LOOP "
+					 "INSERT INTO cfb1_tu (v) VALUES ('%s'); "
+					 "EXIT WHEN EXISTS ("
+					 "SELECT FROM gist_page_items_bytea(get_raw_page('cfb1_tu_v', 0)) r, "
+					 "gist_page_opaque_info(get_raw_page('cfb1_tu_v', (r.ctid::text::point)[0]::int)) c "
+					 "WHERE r.itemoffset = 1 AND NOT 'leaf' = ANY (c.flags)); "
+					 "END LOOP; END $do$",
+					 fill);
+	cf_exec(tc, conn, s.data);
+
+	/*
+	 * Then rows whose trigrams set no signature bits, each its own statement.
+	 * The bug is visible only while one of these was the last key adjusted
+	 * into the broken downlink (a later filler insert ORs its bits back in),
+	 * so the probe below runs immediately after them.
+	 */
+	for (int i = 0; i < nempty; i++)
+		cf_exec(tc, conn, "INSERT INTO cfb1_tu (v) VALUES ('')");
+
+	initStringInfo(&where);
+	switch ((int) pg_prop_draw_int(tc, 0, 2))
+	{
+		case 0:
+			appendStringInfo(&where, "FROM cfb1_tu WHERE v = '%s'", fill);
+			break;
+		case 1:
+			appendStringInfo(&where, "FROM cfb1_tu WHERE v LIKE '%%%.2s%%'", fill);
+			break;
+		default:
+			appendStringInfo(&where, "FROM cfb1_tu WHERE v %% '%s'", fill);
+			break;
+	}
+	resetStringInfo(&s);
+	appendStringInfo(&s, "siglen=%d, %d NULL + %d all-true rows, '%s' until the root's child is internal, then %d x ''",
+					 siglen, nnull, nall, fill, nempty);
+	cf_diff(tc, conn, "", where.data, s.data, NULL);
+
+	cf_exec(tc, conn, "DROP TABLE cfb1_tu");
+	pfree(s.data);
+	pfree(where.data);
+	pg_prop_disconnect(conn);
+}
+
+/*
+ * CF 7413: ALTER TABLE ... ALTER COLUMN ... SET STORAGE copies the column's
+ * new attstorage onto every index column built over it, even when the index
+ * column's type (the opclass's opckeytype -- gtrgm for gist_trgm_ops, whose
+ * typstorage is 'p') is not the table column's type.  The index tuple then
+ * claims a compressible/toastable key it never was; the next INSERT, non-HOT
+ * UPDATE or REINDEX hands the AM a mangled datum and crashes the backend
+ * (makesign / unionkey in pg_trgm), or an intarray GiST index loses rows.
+ *
+ * Invariant: after SET STORAGE (any mode), the table must still accept
+ * INSERT/UPDATE and an index scan must equal a seqscan -- never a crash.
+ * Drawn: the opclass (gist_trgm_ops, gin_trgm_ops, core tsvector GiST as a
+ * control), siglen, the storage mode, row counts, and the follow-up
+ * statement (INSERT, UPDATE, REINDEX).  The harness exits 3 and saves the
+ * statement if the backend dies.
+ */
+PG_PROP(set_storage_keeps_index_usable)
+{
+	static const char *const storages[] = {"EXTENDED", "MAIN", "EXTERNAL", "PLAIN"};
+	pg_prop_conn *conn = cf_connect(tc);
+	int			kind = (int) pg_prop_draw_int(tc, 0, 2);
+	const char *st = storages[pg_prop_draw_int(tc, 0, lengthof(storages) - 1)];
+	int			nrows = (int) pg_prop_draw_int(tc, 100, 12000);
+	int			follow = (int) pg_prop_draw_int(tc, 0, 2);
+	StringInfoData s;
+	StringInfoData note;
+	char	   *err = NULL;
+
+	if (!pg_prop_require_extension(conn, "pg_trgm"))
+		pg_prop_skip(tc, "pg_trgm not installed");
+
+	initStringInfo(&s);
+	initStringInfo(&note);
+	appendStringInfo(&s,
+					 "DROP TABLE IF EXISTS cfb1_ss; CREATE TABLE cfb1_ss (id int, s text); "
+					 "INSERT INTO cfb1_ss SELECT g, 'item ' || g || ' ' || left(md5(g::text), 8) "
+					 "FROM generate_series(1, %d) g; ", nrows);
+	if (kind == 0)
+		appendStringInfo(&s, "CREATE INDEX cfb1_ss_i ON cfb1_ss USING gist (s gist_trgm_ops(siglen=%d)); ",
+						 (int) pg_prop_draw_int(tc, 1, 32) * 4);
+	else if (kind == 1)
+		appendStringInfoString(&s, "CREATE INDEX cfb1_ss_i ON cfb1_ss USING gin (s gin_trgm_ops); ");
+	else
+		appendStringInfoString(&s, "CREATE INDEX cfb1_ss_i ON cfb1_ss USING gist (to_tsvector('simple', s)); ");
+	cf_exec(tc, conn, s.data);
+
+	resetStringInfo(&s);
+	appendStringInfo(&s, "ALTER TABLE cfb1_ss ALTER COLUMN s SET STORAGE %s", st);
+	cf_exec(tc, conn, s.data);
+
+	/* the follow-up that reads or writes index keys; a crash exits the harness */
+	resetStringInfo(&s);
+	switch (follow)
+	{
+		case 0:
+			appendStringInfo(&s, "INSERT INTO cfb1_ss SELECT g, 'new item ' || g "
+							 "FROM generate_series(%d, %d) g", nrows + 1, nrows + 1000);
+			break;
+		case 1:
+			appendStringInfoString(&s, "UPDATE cfb1_ss SET s = s || ' x' WHERE id % 7 = 0");
+			break;
+		default:
+			appendStringInfoString(&s, "REINDEX INDEX cfb1_ss_i");
+			break;
+	}
+	appendStringInfo(&note, "%s index, %d rows, SET STORAGE %s, then: %s",
+					 kind == 0 ? "gist_trgm_ops" : kind == 1 ? "gin_trgm_ops" : "tsvector gist",
+					 nrows, st, s.data);
+	if (!pg_prop_sql_exec(conn, s.data, &err))
+		pg_prop_fail(tc, "after SET STORAGE the table rejects a legal statement: %s\n  %s",
+					 err ? err : "", note.data);
+
+	/* the index must still answer like a seqscan */
+	if (kind == 2)
+		cf_diff(tc, conn, "", "FROM cfb1_ss WHERE to_tsvector('simple', s) @@ 'item'::tsquery",
+				note.data, NULL);
+	else
+		cf_diff(tc, conn, "", "FROM cfb1_ss WHERE s LIKE '%item 1%'", note.data, NULL);
+
+	cf_exec(tc, conn, "DROP TABLE cfb1_ss");
+	pfree(s.data);
+	pfree(note.data);
+	pg_prop_disconnect(conn);
+}
