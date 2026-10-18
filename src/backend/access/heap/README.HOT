@@ -46,7 +46,9 @@ index that does so has an access method that can tell, from the old and
 new values, that it would store the same entries (amcomparedatums), and
 the column is in no candidate key or replica identity.  The executor
 works that out before calling the table AM, and passes on only the
-indexed columns whose change matters.
+indexed columns whose change matters.  If the update then needs new index
+entries anyway, the new tuple's entries are made from the values the
+executor computed for it, not evaluated again.
 
 An exclusion constraint is checked when its index gets an entry, against
 the values, and values that give the same entries need not have the same
