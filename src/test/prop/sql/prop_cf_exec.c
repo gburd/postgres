@@ -1080,3 +1080,230 @@ PG_PROP(cached_return_query_sees_widened_composite)
 	pfree(s.data);
 	pg_prop_disconnect(conn);
 }
+
+/*
+ * CF 7347 (on top of 7097): a temporary logical slot whose creation fails
+ * inside a subtransaction (the output plugin fails to load; the error is
+ * caught by an EXCEPTION block) must not be left behind: no slot of that
+ * name may be listed and the name must be reusable.  Drawn: the failure,
+ * how many attempts.  Needs wal_level = logical.  On master the second
+ * attempt trips the CF 7097 assertion first, so validate on 7097 + 7347.
+ */
+PG_PROP(failed_temp_slot_creation_leaves_no_slot)
+{
+	/*
+	 * Each fails while loading the output plugin, i.e. after the slot was
+	 * created.  (An error raised after a successful creation is not a case:
+	 * slot creation is not transactional, the slot is meant to survive.)
+	 */
+	static const char *const bad[] = {
+		"PERFORM pg_create_logical_replication_slot('cfa4_tmp', 'no_such_plugin', true)",
+		"PERFORM pg_create_logical_replication_slot('cfa4_tmp', 'plpgsql', true)",
+	};
+	pg_prop_conn *conn = cfe_connect(tc);
+	bool		failed = false;
+	char	   *wl = pg_prop_sql_scalar(conn, "SHOW wal_level", &failed, NULL);
+	int			tries = (int) pg_prop_draw_int(tc, 1, 3);
+	int			which = (int) pg_prop_draw_int(tc, 0, lengthof(bad) - 1);
+	StringInfoData s;
+	char	   *n;
+
+	if (wl == NULL || strcmp(wl, "logical") != 0)
+		pg_prop_skip(tc, "needs wal_level = logical");
+	pg_free(wl);
+	pg_prop_sql_exec(conn, "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots "
+					 "WHERE slot_name = 'cfa4_tmp' AND active_pid IS NULL", NULL);
+	initStringInfo(&s);
+	for (int i = 0; i < tries; i++)
+	{
+		resetStringInfo(&s);
+		appendStringInfo(&s, "DO $$ BEGIN %s; EXCEPTION WHEN OTHERS THEN NULL; END $$", bad[which]);
+		cfe_try_noint(tc, conn, s.data, "CF 7347 failed temporary slot creation");
+	}
+	n = pg_prop_sql_scalar(conn, "SELECT count(*) FROM pg_replication_slots WHERE slot_name = 'cfa4_tmp'",
+						   &failed, NULL);
+	if (n && strcmp(n, "0") != 0)
+		pg_prop_fail(tc, "a temporary slot whose creation was rolled back is still listed (%s)\n  %s",
+					 n, bad[which]);
+	if (n)
+		pg_free(n);
+	/* the name must be free for a real slot */
+	cfe_try_noint(tc, conn, "SELECT 'init' FROM pg_create_logical_replication_slot('cfa4_tmp', 'test_decoding', true)",
+				  "CF 7347 reuse of the name");
+	pg_prop_sql_exec(conn, "SELECT pg_drop_replication_slot('cfa4_tmp')", NULL);
+	pfree(s.data);
+	pg_prop_disconnect(conn);
+}
+
+/*
+ * CF 6828: a physical slot created without reserving WAL has no restart_lsn;
+ * with a finite max_slot_wal_keep_size its wal_status and safe_wal_size must
+ * still be NULL (there is nothing to be safe about).  The setting is a
+ * SIGHUP GUC, so the property sets it with ALTER SYSTEM and reloads, then
+ * resets it.  Drawn: the keep size, reserve or not.
+ */
+PG_PROP(unreserved_slot_has_no_safe_wal_size)
+{
+	pg_prop_conn *conn = cfe_connect(tc);
+	int			mb = (int) pg_prop_draw_int(tc, 1, 64);
+	bool		reserve = pg_prop_draw_int(tc, 0, 3) == 0;
+	StringInfoData s;
+	char	   *r;
+	bool		failed = false;
+
+	initStringInfo(&s);
+	appendStringInfo(&s, "ALTER SYSTEM SET max_slot_wal_keep_size = '%dMB'", mb);
+	cfe_exec(tc, conn, s.data);
+	cfe_exec(tc, conn, "SELECT pg_reload_conf()");
+	pg_prop_sql_exec(conn, "SELECT pg_drop_replication_slot('cfa4_phys') FROM pg_replication_slots "
+					 "WHERE slot_name = 'cfa4_phys'", NULL);
+	resetStringInfo(&s);
+	appendStringInfo(&s, "SELECT pg_create_physical_replication_slot('cfa4_phys', %s)",
+					 reserve ? "true" : "false");
+	cfe_exec(tc, conn, s.data);
+	/* the reload is asynchronous: wait until this backend sees the value */
+	for (int i = 0; i < 100; i++)
+	{
+		char	   *v = pg_prop_sql_scalar(conn, "SHOW max_slot_wal_keep_size", &failed, NULL);
+		bool		done = v && strcmp(v, "-1") != 0;
+
+		if (v)
+			pg_free(v);
+		if (done)
+			break;
+		cfe_exec(tc, conn, "SELECT pg_sleep(0.02)");
+	}
+	r = pg_prop_sql_scalar(conn,
+						   "SELECT (restart_lsn IS NULL)::text || '|' || coalesce(wal_status, 'NULL') || '|' || "
+						   "coalesce(safe_wal_size::text, 'NULL') FROM pg_replication_slots WHERE slot_name = 'cfa4_phys'",
+						   &failed, NULL);
+	pg_prop_sql_exec(conn, "SELECT pg_drop_replication_slot('cfa4_phys')", NULL);
+	pg_prop_sql_exec(conn, "ALTER SYSTEM RESET max_slot_wal_keep_size", NULL);
+	pg_prop_sql_exec(conn, "SELECT pg_reload_conf()", NULL);
+	if (r && strncmp(r, "true|", 5) == 0 && strcmp(r, "true|NULL|NULL") != 0)
+		pg_prop_fail(tc, "slot without restart_lsn reports restart_lsn-null|wal_status|safe_wal_size = %s "
+					 "(max_slot_wal_keep_size %dMB)", r, mb);
+	if (r)
+		pg_free(r);
+	pfree(s.data);
+	pg_prop_disconnect(conn);
+}
+
+/*
+ * CF 7432: a CALL whose error is caught by an exception block, in a
+ * non-atomic loop, must not keep its CachedPlan pinned: the number of
+ * CachedPlan contexts after the second round of N caught calls equals the
+ * number after the first.  Drawn: N, the failing callee's shape.
+ */
+PG_PROP(caught_call_error_does_not_pin_plans)
+{
+	static const char *const bodies[] = {
+		"RAISE EXCEPTION 'error %', x",
+		"PERFORM 1 / (x - x)",
+		"INSERT INTO cfa4_never_exists VALUES (x)",
+	};
+	pg_prop_conn *conn = cfe_connect(tc);
+	int			n = (int) pg_prop_draw_int(tc, 2, 40);
+	const char *body = bodies[pg_prop_draw_int(tc, 0, lengthof(bodies) - 1)];
+	StringInfoData s;
+	char	   *r;
+	bool		failed = false;
+
+	initStringInfo(&s);
+	appendStringInfo(&s,
+					 "CREATE OR REPLACE PROCEDURE cfa4_err(x int) LANGUAGE plpgsql AS $p$ BEGIN %s; END $p$",
+					 body);
+	cfe_exec(tc, conn, s.data);
+	resetStringInfo(&s);
+	appendStringInfo(&s,
+					 "CREATE OR REPLACE PROCEDURE cfa4_catch(INOUT kept int DEFAULT 0) LANGUAGE plpgsql AS $p$ "
+					 "DECLARE b int; a int; BEGIN "
+					 "FOR round IN 1..2 LOOP "
+					 "b := (SELECT count(*) FROM pg_backend_memory_contexts WHERE name = 'CachedPlan'); "
+					 "FOR i IN 1..%d LOOP BEGIN CALL cfa4_err(i); EXCEPTION WHEN OTHERS THEN NULL; END; END LOOP; "
+					 "a := (SELECT count(*) FROM pg_backend_memory_contexts WHERE name = 'CachedPlan'); "
+					 "END LOOP; kept := a - b; END $p$", n);
+	cfe_exec(tc, conn, s.data);
+	r = pg_prop_sql_scalar(conn, "CALL cfa4_catch()", &failed, NULL);
+	if (r == NULL || failed)
+		pg_prop_fail(tc, "CALL cfa4_catch() failed");
+	if (strcmp(r, "0") != 0)
+		pg_prop_fail(tc, "%s CachedPlans are still pinned after %d caught CALL errors (callee: %s)",
+					 r, n, body);
+	pg_free(r);
+	pg_prop_sql_exec(conn, "DROP PROCEDURE cfa4_catch(int); DROP PROCEDURE cfa4_err(int)", NULL);
+	pfree(s.data);
+	pg_prop_disconnect(conn);
+}
+
+/*
+ * CF 7404: streaming logical decoding of an in-progress transaction on a
+ * table whose CHECK constraint is TOASTed in pg_constraint (and is followed
+ * by more constraints in scan order) must decode, not fail with "unexpected
+ * table_index_fetch_tuple call during logical decoding".  The failure needs
+ * the relcache entry to be built during decoding, so the decoding session
+ * is a fresh backend while the writing transaction is still open (as in the
+ * report's reproducer).  Drawn: constraint size, constraints after it, the
+ * volume written (enough or not to stream).
+ *
+ * A guard: neither this property nor the report's own script reproduced
+ * the error on FreeBSD/arm64 at 45fc51f (both decode 10k+ changes).
+ */
+PG_PROP(streaming_decode_with_toasted_constraint)
+{
+	pg_prop_conn *conn = cfe_connect(tc);
+	pg_prop_conn *w;
+	pg_prop_conn *d;
+	bool		failed = false;
+	char	   *wl = pg_prop_sql_scalar(conn, "SHOW wal_level", &failed, NULL);
+	int			big = (int) pg_prop_draw_int(tc, 100, 600);
+	int			after = (int) pg_prop_draw_int(tc, 0, 3);
+	int			rows = pg_prop_draw_bool(tc) ? (int) pg_prop_draw_int(tc, 2000, 12000)
+		: (int) pg_prop_draw_int(tc, 1, 50);
+	StringInfoData s;
+
+	if (wl == NULL || strcmp(wl, "logical") != 0)
+		pg_prop_skip(tc, "needs wal_level = logical");
+	pg_free(wl);
+	pg_prop_sql_exec(conn, "SELECT pg_drop_replication_slot('cfa4_ss') FROM pg_replication_slots "
+					 "WHERE slot_name = 'cfa4_ss'", NULL);
+	cfe_exec(tc, conn, "DROP TABLE IF EXISTS cfa4_nst, cfa4_fill");
+	initStringInfo(&s);
+	appendStringInfo(&s,
+					 "DO $$ DECLARE extra text := ''; BEGIN "
+					 "FOR k IN 1..%d LOOP extra := extra || format(', CONSTRAINT z_%%s CHECK (true)', k); END LOOP; "
+					 "EXECUTE format('CREATE TABLE cfa4_nst (id int PRIMARY KEY, v text, "
+					 "CONSTRAINT a_big CHECK (v <> ALL (ARRAY[%%s]))%%s)', "
+					 "(SELECT string_agg(quote_literal(md5(i::text)), ',') FROM generate_series(1, %d) i), extra); "
+					 "END $$; CREATE TABLE cfa4_fill (id int, pad text)",
+					 after, big);
+	cfe_exec(tc, conn, s.data);
+	cfe_exec(tc, conn, "SELECT 'init' FROM pg_create_logical_replication_slot('cfa4_ss', 'test_decoding')");
+
+	/* the writer: an open transaction touching cfa4_nst first */
+	w = cfe_connect(tc);
+	cfe_exec(tc, w, "SET logical_decoding_work_mem = '64kB'");
+	cfe_exec(tc, w, "BEGIN");
+	cfe_exec(tc, w, "INSERT INTO cfa4_nst VALUES (1, 'y')");
+	resetStringInfo(&s);
+	appendStringInfo(&s, "INSERT INTO cfa4_fill SELECT i, repeat('x', 200) FROM generate_series(1, %d) i", rows);
+	cfe_exec(tc, w, s.data);
+
+	/* the decoder: a fresh backend, cold relcache */
+	d = cfe_connect(tc);
+	cfe_exec(tc, d, "SET logical_decoding_work_mem = '64kB'");
+	resetStringInfo(&s);
+	appendStringInfo(&s, "streaming decode of an open transaction: CHECK over %d literals, "
+					 "%d constraints after it, %d filler rows", big, after, rows);
+	/* the bug is an elog(ERROR), XX000: cfe_try_noint fails the case on it */
+	cfe_try_noint(tc, d,
+				  "SELECT count(*) FROM pg_logical_slot_peek_changes('cfa4_ss', NULL, NULL, 'stream-changes', '1')",
+				  s.data);
+	pg_prop_disconnect(d);
+	pg_prop_sql_exec(w, "ROLLBACK", NULL);
+	pg_prop_disconnect(w);
+	pg_prop_sql_exec(conn, "SELECT pg_drop_replication_slot('cfa4_ss')", NULL);
+	pg_prop_sql_exec(conn, "DROP TABLE IF EXISTS cfa4_nst, cfa4_fill", NULL);
+	pfree(s.data);
+	pg_prop_disconnect(conn);
+}
