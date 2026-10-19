@@ -11,8 +11,9 @@ DATA = bark_multikey--1.0.sql
 
 REGRESS = bark_multikey bark_multikey_scan bark_multikey_unique bark_multikey_gin \
 	bark_multikey_ginmerge bark_multikey_ginscan bark_multikey_ginco bark_multikey_sim \
-	bark_locator
-ISOLATION = bark_multikey_concurrent bark_multikey_unique_concurrent
+	bark_locator bark_multikey_hot
+ISOLATION = bark_multikey_concurrent bark_multikey_unique_concurrent \
+	bark_multikey_hot_epq
 EXTRA_INSTALL = contrib/amcheck contrib/pageinspect src/test/modules/injection_points
 TAP_TESTS = 1
 
