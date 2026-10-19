@@ -60,6 +60,10 @@ typedef struct qg_column
 	qg_value_fn draw;			/* emits one literal or NULL */
 	bool		is_text_like;	/* comparable with text operators/order */
 	bool		is_numeric_like;	/* usable in arithmetic / numeric compare */
+	bool		nondet_collation;	/* text column with a nondeterministic
+									 * collation: only the operators on the
+									 * nondeterministic-safe allow-list may be
+									 * used over it (false_positives.md 6.3) */
 } qg_column;
 
 typedef struct qg_schema
@@ -176,6 +180,10 @@ typedef struct qg_db_params
 	bool		allow_inherit;	/* give some tables an inheritance child */
 	int			toast_profile;	/* 0 none .. 3 always (0b) */
 	int			cardinality_bias;	/* 0 mixed, 1 favour low-card columns */
+	bool		allow_nondet_collation; /* add text columns with a nondeterministic
+										 * ICU collation (case-insensitive); only in
+										 * the deep profiles, and only if the server
+										 * has ICU (probed at build time) */
 } qg_db_params;
 
 extern void qg_db_params_default(qg_db_params *p);

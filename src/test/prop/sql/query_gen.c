@@ -181,6 +181,7 @@ qg_add_column(qg_schema *s, const char *name, const char *sqltype,
 	s->cols[s->ncols].draw = draw;
 	s->cols[s->ncols].is_text_like = is_text_like;
 	s->cols[s->ncols].is_numeric_like = is_numeric_like;
+	s->cols[s->ncols].nondet_collation = false;
 	s->ncols++;
 }
 
@@ -616,6 +617,7 @@ qg_db_params_default(qg_db_params *p)
 	p->allow_inherit = false;
 	p->toast_profile = 0;
 	p->cardinality_bias = 0;
+	p->allow_nondet_collation = false;
 }
 
 void
@@ -632,6 +634,7 @@ qg_db_params_deep(qg_db_params *p)
 	p->allow_inherit = true;
 	p->toast_profile = 2;
 	p->cardinality_bias = 0;
+	p->allow_nondet_collation = true;
 }
 
 /*
@@ -656,6 +659,7 @@ qg_db_params_deep_fast(qg_db_params *p)
 	p->allow_inherit = true;
 	p->toast_profile = 1;		/* ~10% large values: TOAST path, less bulk */
 	p->cardinality_bias = 0;
+	p->allow_nondet_collation = true;
 }
 
 /*
@@ -694,7 +698,7 @@ qg_db_params_for_env(qg_db_params *p)
  */
 static void
 build_table_schema(pg_prop_tc *tc, qg_table *t, int ncols, int fkref,
-				   int cardinality_bias)
+				   int cardinality_bias, bool nondet)
 {
 	char	   *namebuf;
 	int			i;
@@ -756,7 +760,23 @@ build_table_schema(pg_prop_tc *tc, qg_table *t, int ncols, int fkref,
 				break;
 		}
 		namebuf = psprintf("c%d", i);
-		qg_add_column(&t->schema, namebuf, type, draw, textlike, numlike);
+
+		/*
+		 * Occasionally make a plain-text column use the nondeterministic
+		 * (case-insensitive ICU) collation qg_ci.  Only plain draw_text_or_null
+		 * columns qualify: the collation reaches equality, grouping, join and
+		 * index code without the TOAST-sized values that would make the leaf
+		 * allow-list (6.3) harder to reason about.  The column is marked so
+		 * draw_leaf_on restricts it to the nondeterministic-safe operators.
+		 */
+		if (nondet && draw == draw_text_or_null && pg_prop_draw_int(tc, 0, 2) == 0)
+		{
+			qg_add_column(&t->schema, namebuf, "text COLLATE qg_ci", draw,
+						  textlike, numlike);
+			t->schema.cols[t->schema.ncols - 1].nondet_collation = true;
+		}
+		else
+			qg_add_column(&t->schema, namebuf, type, draw, textlike, numlike);
 	}
 }
 
@@ -799,6 +819,30 @@ emit_storage_modes(pg_prop_tc *tc, StringInfo ddl, const qg_table *t)
 	}
 }
 
+/*
+ * Does this server have ICU (so a nondeterministic ICU collation can be
+ * created)?  Probed once per process and cached: 1 yes, 0 no, -1 unknown.
+ */
+static int qg_has_icu = -1;
+
+static bool
+qg_server_has_icu(pg_prop_tc *tc, pg_prop_conn *conn)
+{
+	bool		failed = false;
+	char	   *v;
+
+	(void) tc;
+	if (qg_has_icu >= 0)
+		return qg_has_icu == 1;
+	v = pg_prop_sql_scalar(conn,
+						   "SELECT EXISTS (SELECT 1 FROM pg_collation WHERE collprovider = 'i')",
+						   &failed, NULL);
+	qg_has_icu = (!failed && v && strcmp(v, "t") == 0) ? 1 : 0;
+	if (v)
+		pg_free(v);
+	return qg_has_icu == 1;
+}
+
 qg_db *
 qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn, const qg_db_params *p)
 {
@@ -807,8 +851,16 @@ qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn, const qg_db_params *p)
 	char	   *err = NULL;
 	int			nt;
 	int			ti;
+	bool		nondet;
 
 	qg_toast_profile = p->toast_profile;
+
+	/*
+	 * Nondeterministic collations need ICU.  Probe once per process; if the
+	 * server has no ICU-provided collation, drop the feature for this run
+	 * rather than failing every case with "collation ... does not exist".
+	 */
+	nondet = p->allow_nondet_collation && qg_server_has_icu(tc, conn);
 
 	nt = (int) pg_prop_draw_int(tc, p->min_tables, p->max_tables);
 	if (nt < 1)
@@ -818,6 +870,19 @@ qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn, const qg_db_params *p)
 	db->ntables = nt;
 
 	initStringInfo(&ddl);
+
+	/*
+	 * Create the nondeterministic (case-insensitive, accent-sensitive) ICU
+	 * collation this case will use, if it does not already exist.  Dropping
+	 * it is not worth the churn: it is harmless to leave behind and reused
+	 * across cases.
+	 */
+	if (nondet)
+		appendStringInfoString(&ddl,
+							   "DO $qg$ BEGIN "
+							   "IF NOT EXISTS (SELECT 1 FROM pg_collation WHERE collname = 'qg_ci') THEN "
+							   "CREATE COLLATION qg_ci (provider = icu, locale = 'und-u-ks-level2', "
+							   "deterministic = false); END IF; END $qg$; ");
 
 	/*
 	 * A result-neutral trigger function: it fires on write but returns the
@@ -847,7 +912,7 @@ qg_build_db(pg_prop_tc *tc, pg_prop_conn *conn, const qg_db_params *p)
 			fkref = (int) pg_prop_draw_int(tc, 0, ti - 1);
 
 		ncols = (int) pg_prop_draw_int(tc, p->min_cols, p->max_cols);
-		build_table_schema(tc, t, ncols, fkref, p->cardinality_bias);
+		build_table_schema(tc, t, ncols, fkref, p->cardinality_bias, nondet);
 
 		/* DROP first (reverse order handled by qg_drop_db; here just reset) */
 		appendStringInfo(&ddl, "DROP TABLE IF EXISTS %s CASCADE; ", t->name);
@@ -1039,6 +1104,40 @@ draw_leaf_on(pg_prop_tc *tc, StringInfo buf, const qg_table *t,
 	ci = (int) pg_prop_draw_int(tc, 0, t->schema.ncols - 1);
 	c = &t->schema.cols[ci];
 
+	/*
+	 * A nondeterministic-collation column admits only the operators that do
+	 * not distinguish values the collation treats as equal and do not error
+	 * (false_positives.md 6.3): the six comparisons and IS [NOT] DISTINCT
+	 * FROM against a bare text literal (which takes the column's collation),
+	 * plus the null tests.  No cast to another collation, no array ANY/ALL
+	 * (whose element comparison re-derives a collation), no LIKE / pattern /
+	 * function.  The literal is drawn to hit the equal-but-different-bytes
+	 * case ('a' vs 'A') so the collation's merging actually matters.
+	 */
+	if (c->nondet_collation)
+	{
+		switch ((int) pg_prop_draw_int(tc, 0, 3))
+		{
+			case 0:
+				appendStringInfo(buf, "%s.%s IS NULL", alias, c->name);
+				break;
+			case 1:
+				appendStringInfo(buf, "%s.%s IS NOT NULL", alias, c->name);
+				break;
+			case 2:
+				appendStringInfo(buf, "%s.%s IS %sDISTINCT FROM ", alias, c->name,
+								 pg_prop_draw_bool(tc) ? "NOT " : "");
+				draw_text_or_null(tc, buf);
+				break;
+			default:
+				appendStringInfo(buf, "%s.%s %s ", alias, c->name,
+								 cmp[pg_prop_draw_int(tc, 0, 5)]);
+				draw_text_or_null(tc, buf);
+				break;
+		}
+		return;
+	}
+
 	switch ((int) pg_prop_draw_int(tc, 0, 7))
 	{
 		case 0:
@@ -1220,11 +1319,29 @@ build_join_chain(pg_prop_tc *tc, const qg_db *db, int start, int max_joins,
 		{
 			const char *tn = db->tables[nexttab].name;
 			const char *prev = aliases[n - 1];
-			const char *jt = pg_prop_draw_bool(tc) ? "" : "LEFT";
 			int			shape = (int) pg_prop_draw_int(tc, 0, 6);
 			/* derived shapes expose id, plus fk when the table has one */
 			const char *cols = db->tables[nexttab].fkcol >= 0 ? "id, fk" : "id";
 			const char *xcols = db->tables[nexttab].fkcol >= 0 ? "x.id, x.fk" : "x.id";
+
+			/*
+			 * Join type.  INNER / LEFT apply to any shape.  RIGHT and FULL
+			 * null-extend the *left* input, which the planner's outer-join
+			 * reduction, qual placement and PlaceHolderVar machinery handle
+			 * on a different path than LEFT -- the source of many recent
+			 * wrong-results fixes (false_positives.md 7.7).  They are only
+			 * legal where the right side does not reference the left, so they
+			 * are drawn only for the non-lateral shapes (0-3 and default); the
+			 * LATERAL shapes (4-6) stay INNER / LEFT.  A FULL/RIGHT join can
+			 * leave every projected key NULL in an unmatched row, so the
+			 * oracle must compare the row multiset, not a key-ordered
+			 * sequence (rowhash_unordered); the deep oracles do.
+			 */
+			static const char *const jts[] = {"", "LEFT", "RIGHT", "FULL"};
+			bool		lateral = (shape == 4 || shape == 5 || shape == 6);
+			const char *jt = lateral
+				? (pg_prop_draw_bool(tc) ? "" : "LEFT")
+				: jts[pg_prop_draw_int(tc, 0, 3)];
 
 			switch (shape)
 			{
