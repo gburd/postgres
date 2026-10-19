@@ -158,6 +158,33 @@ iteration count of a meson test run without editing anything:
     PG_PROP_TESTS="pruning_preserves_rows" meson test prop/002_sql_props
 
 
+Active and frozen areas
+=======================
+
+The SQL-oracle driver runs the active areas by default: the query generator
+and its oracles (query_*), the stateful, concurrency and access-method areas,
+and the commitfest areas (cf_*).  The per-type scalar areas (numeric, text,
+jsonb, ...) are frozen: they compile and run with PG_PROP_FROZEN=1, but are
+not maintained.  In the 2026 evaluation they found no server bug and most of
+their findings were unsound oracles.  A frozen area that breaks after an
+upstream change may be deleted rather than fixed.
+
+New work goes into the generator (sql/query_gen.c) rather than new oracles.
+A new query shape is checked by every existing oracle at once; a new oracle
+checks only the shapes the generator already makes.
+
+
+Commitfest properties and retirement
+====================================
+
+A cf_* property encodes one open commitfest entry: it fails on master and
+passes with that entry's patch.  It earns its keep while the patch is under
+review.  Once the fix is committed, the patch's own regression test covers
+the case, and the property is retired: delete it (or move its invariant into
+a generator shape, if it generalises).  scripts/cf-retire.sh lists the
+properties whose CF entry is committed, withdrawn or rejected.
+
+
 Debugging a failure
 ===================
 

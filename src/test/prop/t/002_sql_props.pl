@@ -12,6 +12,7 @@
 #   PG_PROP_ITERATIONS   test cases per property (default: pg_prop's own 100)
 #   PG_PROP_SEED         fixed RNG seed (default: pg_prop picks and prints one)
 #   PG_PROP_TESTS        whitespace-separated property names to run
+#   PG_PROP_FROZEN       also run the frozen scalar/type areas (see below)
 #
 # To debug one failure interactively, start a node, point PGHOST/PGPORT at it,
 # then run e.g.  pg_prop partprune pruning_preserves_rows -n 100000 -s 42
@@ -25,7 +26,62 @@ use PostgreSQL::Test::Utils;
 use Test::More;
 
 # Keep in step with the Tier-B entries in prop_area_sources (meson.build).
-my @areas = qw(numeric numcast numscale numround numfmt numericalg numericcmp numericdiv decimalfmt mathfn mathround powexp float floatspecial floatcast intops intbit bitint bitlogic bitstringops safemath arithcmp cmpops text textfns textpos textcase textlength textnum textsplit strfunc strpos substring padtrim trimfns like likepattern stringmatch regexp regexfns regexmatch regexpreplace char charconv charfuncs varchartypmod cash bool boolcast booltest boolexpr casewhen condexpr coalesce coalescefn nullsemantics nulldistinct oid uuid uuidops bytea byteaops bit record enum jsonb jsonbops jsonbpath jsonbagg2 jsonbnum jsonbtype jsonbsub jsonbkeys jsonbcontain jsonbdelete jsonbexists jsonbmerge jsonbarray jsonbroundtrip jsonnest jsonbuild jsonconstruct jsontext jsonformat jsonpath jsonpathq jsonpathmath jsoneach array arrayops arrayslice arraycmp arrayconstruct arrayreduce arraysort arraynull anyall inlist range rangeops rangeagg multirange inet inetarith networkops cidrops inet6 macaddr macaddr8 tsquery tsvector tsvector2 tsquerylaw tsrank date dateparts datefmt datecast datetrunc timeops timeextract timestamptz tstzarith tzconv interval intervalparts intervalcmp intervalio tochar toformat scalarfn hashfn hashfns2 pglsn width_bucket genseries genseries2 castchain concatop coerce collate textord jsonvsjsonb geopoint geoseg boxops xmlfmt aggregate aggstrategies aggorder aggdistinct aggdedup boolagg minmaxagg ordagg percentilefn filteragg countfilter stringagg strconcat jsonagg jsonaggord jsonobjectagg window windowframes windowrank windowexcl windowagg windownav windowdistinct grouphaving groupingsets groupsets2 grouphash havingclause rollup2 partprune nbtree indexscan indexdiff joinmethods outerjoin joincard selfjoin jointypes antisemijoin setops setopstrat exceptintersect unionall subquery subqscalar corrsubq cte recursivecte dmlcte lateral valuesrows srf unnestjoin distinct distincton sortlimit sortmerge orderbynulls fetchties pagination predpushdown spillpaths tablesample rowcompare mvcc savepoint returning upsert mergecmd updatesem defaults checkconstraint foreignkey views countsem hstore hstore2 ltree ltree2 citext citext2 cube cubedist seg intarray intarrayext pgtrgm pgtrgm2 fuzzystr unaccent isn query_tlp query_tlp_agg query_tlp_distinct query_norec query_cardinality query_pqs query_planadvice query_ext_citext query_multi query_deep query_diff dml_model syscol collation cf_types cf_index cf_exec cf_ddl cf_ddl2 cf_deparse cf_stats cf_encoding cf_planner cf_race index_am table_am pl_langs integrity constraints isolation contrib query_window spgist authz concurrency);
+#
+# Active areas run by default: the query generator and its oracles, the
+# stateful / concurrency / AM areas, and the commitfest properties.  These
+# are where the suite has found real bugs.
+my @active = qw(
+  query_tlp query_tlp_agg query_tlp_distinct query_norec query_cardinality
+  query_pqs query_planadvice query_ext_citext query_multi query_deep
+  query_diff dml_model syscol collation cf_types cf_index cf_exec cf_ddl
+  cf_ddl2 cf_deparse cf_stats cf_encoding cf_planner cf_race index_am
+  table_am pl_langs integrity constraints isolation contrib query_window
+  spgist authz concurrency
+);
+
+# Frozen areas: the per-type scalar properties (one function, one oracle).
+# They compile and still run on request (PG_PROP_FROZEN=1), but are not
+# maintained: in the 2026 evaluation they found no server bug, and their
+# findings were almost all unsound oracles.  A frozen area that breaks after
+# an upstream change may be deleted rather than fixed.
+my @frozen = qw(
+  numeric numcast numscale numround numfmt numericalg numericcmp numericdiv
+  decimalfmt mathfn mathround powexp float floatspecial floatcast intops
+  intbit bitint bitlogic bitstringops safemath arithcmp cmpops text textfns
+  textpos textcase textlength textnum textsplit strfunc strpos substring
+  padtrim trimfns like likepattern stringmatch regexp regexfns regexmatch
+  regexpreplace char charconv charfuncs varchartypmod cash bool boolcast
+  booltest boolexpr casewhen condexpr coalesce coalescefn nullsemantics
+  nulldistinct oid uuid uuidops bytea byteaops bit record enum jsonb jsonbops
+  jsonbpath jsonbagg2 jsonbnum jsonbtype jsonbsub jsonbkeys jsonbcontain
+  jsonbdelete jsonbexists jsonbmerge jsonbarray jsonbroundtrip jsonnest
+  jsonbuild jsonconstruct jsontext jsonformat jsonpath jsonpathq jsonpathmath
+  jsoneach array arrayops arrayslice arraycmp arrayconstruct arrayreduce
+  arraysort arraynull anyall inlist range rangeops rangeagg multirange inet
+  inetarith networkops cidrops inet6 macaddr macaddr8 tsquery tsvector
+  tsvector2 tsquerylaw tsrank date dateparts datefmt datecast datetrunc
+  timeops timeextract timestamptz tstzarith tzconv interval intervalparts
+  intervalcmp intervalio tochar toformat scalarfn hashfn hashfns2 pglsn
+  width_bucket genseries genseries2 castchain concatop coerce collate textord
+  jsonvsjsonb geopoint geoseg boxops xmlfmt aggregate aggstrategies aggorder
+  aggdistinct aggdedup boolagg minmaxagg ordagg percentilefn filteragg
+  countfilter stringagg strconcat jsonagg jsonaggord jsonobjectagg window
+  windowframes windowrank windowexcl windowagg windownav windowdistinct
+  grouphaving groupingsets groupsets2 grouphash havingclause rollup2
+  partprune nbtree indexscan indexdiff joinmethods outerjoin joincard
+  selfjoin jointypes antisemijoin setops setopstrat exceptintersect unionall
+  subquery subqscalar corrsubq cte recursivecte dmlcte lateral valuesrows srf
+  unnestjoin distinct distincton sortlimit sortmerge orderbynulls fetchties
+  pagination predpushdown spillpaths tablesample rowcompare mvcc savepoint
+  returning upsert mergecmd updatesem defaults checkconstraint foreignkey
+  views countsem hstore hstore2 ltree ltree2 citext citext2 cube cubedist seg
+  intarray intarrayext pgtrgm pgtrgm2 fuzzystr unaccent isn
+);
+
+my @areas = @active;
+push @areas, @frozen
+  if defined $ENV{PG_PROP_FROZEN} && $ENV{PG_PROP_FROZEN} ne ''
+  && $ENV{PG_PROP_FROZEN} ne '0';
 
 # No Tier-B areas wired in yet (e.g. the initial harness-only commit): nothing
 # to run, which is a pass.  Skip before starting a node, so we don't pay for a
