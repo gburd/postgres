@@ -1586,7 +1586,7 @@ reset_conflict_slot_xmin_to_safe_horizon(void)
 	Assert(MyReplicationSlot);
 
 	LWLockAcquire(ReplicationSlotControlLock, LW_EXCLUSIVE);
-	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+	ProcArrayLockAcquire(LW_EXCLUSIVE);
 
 	xmin_horizon = GetOldestSafeDecodingTransactionId(false);
 	old_xmin = MyReplicationSlot->data.xmin;
@@ -1601,7 +1601,7 @@ reset_conflict_slot_xmin_to_safe_horizon(void)
 	if (TransactionIdIsValid(old_xmin) &&
 		TransactionIdPrecedesOrEquals(old_xmin, xmin_horizon))
 	{
-		LWLockRelease(ProcArrayLock);
+		ProcArrayLockRelease();
 		LWLockRelease(ReplicationSlotControlLock);
 		return;
 	}
@@ -1615,7 +1615,7 @@ reset_conflict_slot_xmin_to_safe_horizon(void)
 
 	ReplicationSlotsComputeRequiredXmin(true);
 
-	LWLockRelease(ProcArrayLock);
+	ProcArrayLockRelease();
 	LWLockRelease(ReplicationSlotControlLock);
 
 	/* Write this slot to disk */

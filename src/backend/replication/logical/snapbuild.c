@@ -491,7 +491,7 @@ SnapBuildInitialSnapshot(SnapBuild *builder)
 		RunningTransactions running;
 
 		running = GetRunningTransactionData();
-		LWLockRelease(ProcArrayLock);
+		ProcArrayLockRelease();
 		LWLockRelease(XidGenLock);
 
 		/*
@@ -514,9 +514,9 @@ SnapBuildInitialSnapshot(SnapBuild *builder)
 	 * horizon would have bad consequences, therefore always double-check that
 	 * the horizon is enforced.
 	 */
-	LWLockAcquire(ProcArrayLock, LW_SHARED);
+	ProcArrayLockAcquire(LW_SHARED);
 	safeXid = GetOldestSafeDecodingTransactionId(false);
-	LWLockRelease(ProcArrayLock);
+	ProcArrayLockRelease();
 
 	if (TransactionIdFollows(safeXid, snap->xmin))
 		elog(ERROR, "cannot build an initial slot snapshot as oldest safe xid %u follows snapshot's xmin %u",

@@ -839,10 +839,10 @@ ReplicationSlotRelease(void)
 	 */
 	if (MyProc->statusFlags & PROC_IN_LOGICAL_DECODING)
 	{
-		LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+		ProcArrayLockAcquire(LW_EXCLUSIVE);
 		MyProc->statusFlags &= ~PROC_IN_LOGICAL_DECODING;
 		ProcGlobal->statusFlags[MyProc->pgxactoff] = MyProc->statusFlags;
-		LWLockRelease(ProcArrayLock);
+		ProcArrayLockRelease();
 	}
 
 	if (am_walsender)
@@ -1238,7 +1238,7 @@ ReplicationSlotsComputeRequiredXmin(bool already_locked)
 	Assert(ReplicationSlotCtl != NULL);
 	Assert(!already_locked ||
 		   (LWLockHeldByMeInMode(ReplicationSlotControlLock, LW_EXCLUSIVE) &&
-			LWLockHeldByMeInMode(ProcArrayLock, LW_EXCLUSIVE)));
+			ProcArrayLockHeldByMeInMode(LW_EXCLUSIVE)));
 
 	/*
 	 * Hold the ReplicationSlotControlLock until after updating the slot xmin

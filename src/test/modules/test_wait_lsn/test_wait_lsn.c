@@ -77,7 +77,7 @@ test_wait_lsn_waiter_is_registered(PG_FUNCTION_ARGS)
 	bool		registered = false;
 	PGPROC	   *proc;
 
-	LWLockAcquire(ProcArrayLock, LW_SHARED);
+	ProcArrayLockAcquire(LW_SHARED);
 	proc = BackendPidGetProcWithLock(pid);
 
 	if (proc != NULL)
@@ -93,7 +93,7 @@ test_wait_lsn_waiter_is_registered(PG_FUNCTION_ARGS)
 		LWLockRelease(WaitLSNLock);
 	}
 
-	LWLockRelease(ProcArrayLock);
+	ProcArrayLockRelease();
 
 	PG_RETURN_BOOL(registered);
 }

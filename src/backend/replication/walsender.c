@@ -356,10 +356,10 @@ InitWalSender(void)
 	if (MyDatabaseId == InvalidOid)
 	{
 		Assert(MyProc->xmin == InvalidTransactionId);
-		LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+		ProcArrayLockAcquire(LW_EXCLUSIVE);
 		MyProc->statusFlags |= PROC_AFFECTS_ALL_HORIZONS;
 		ProcGlobal->statusFlags[MyProc->pgxactoff] = MyProc->statusFlags;
-		LWLockRelease(ProcArrayLock);
+		ProcArrayLockRelease();
 	}
 
 	/* Initialize empty timestamp buffer for lag tracking. */

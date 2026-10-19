@@ -1445,7 +1445,7 @@ TerminateBackgroundWorkersForDatabase(Oid databaseId)
 			PGPROC	   *proc;
 			pid_t		pid = slot->pid;
 
-			LWLockAcquire(ProcArrayLock, LW_SHARED);
+			ProcArrayLockAcquire(LW_SHARED);
 			proc = BackendPidGetProcWithLock(pid);
 			if (proc && proc->databaseId == databaseId)
 			{
@@ -1455,7 +1455,7 @@ TerminateBackgroundWorkersForDatabase(Oid databaseId)
 				elog(DEBUG1, "termination requested for worker (PID %d) on database %u",
 					 (int) pid, databaseId);
 			}
-			LWLockRelease(ProcArrayLock);
+			ProcArrayLockRelease();
 		}
 	}
 

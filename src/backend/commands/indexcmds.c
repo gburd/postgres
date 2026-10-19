@@ -4809,8 +4809,8 @@ set_indexsafe_procflags(void)
 	Assert(MyProc->xid == InvalidTransactionId &&
 		   MyProc->xmin == InvalidTransactionId);
 
-	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+	ProcArrayLockAcquire(LW_EXCLUSIVE);
 	MyProc->statusFlags |= PROC_IN_SAFE_IC;
 	ProcGlobal->statusFlags[MyProc->pgxactoff] = MyProc->statusFlags;
-	LWLockRelease(ProcArrayLock);
+	ProcArrayLockRelease();
 }

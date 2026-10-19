@@ -6790,10 +6790,10 @@ StartupXLOG(void)
 	XLogCtl->lastSegSwitchLSN = EndOfLog;
 
 	/* also initialize latestCompletedXid, to nextXid - 1 */
-	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+	ProcArrayLockAcquire(LW_EXCLUSIVE);
 	TransamVariables->latestCompletedXid = TransamVariables->nextXid;
 	FullTransactionIdRetreat(&TransamVariables->latestCompletedXid);
-	LWLockRelease(ProcArrayLock);
+	ProcArrayLockRelease();
 
 	/*
 	 * Start up subtrans, if not already done for hot standby.  (commit

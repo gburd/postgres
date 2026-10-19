@@ -2080,12 +2080,12 @@ vacuum_rel(Oid relid, RangeVar *relation, VacuumParams params,
 		 * set PROC_IN_VACUUM *before* taking our own snapshot, so that our
 		 * xmin doesn't become visible ahead of setting the flag.)
 		 */
-		LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+		ProcArrayLockAcquire(LW_EXCLUSIVE);
 		MyProc->statusFlags |= PROC_IN_VACUUM;
 		if (params.is_wraparound)
 			MyProc->statusFlags |= PROC_VACUUM_FOR_WRAPAROUND;
 		ProcGlobal->statusFlags[MyProc->pgxactoff] = MyProc->statusFlags;
-		LWLockRelease(ProcArrayLock);
+		ProcArrayLockRelease();
 	}
 
 	/*
