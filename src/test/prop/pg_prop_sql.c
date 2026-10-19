@@ -235,9 +235,19 @@ pg_prop_sql_rows(pg_prop_conn *conn, const char *sql, bool *failed, char **errms
 	return s.data;				/* caller frees */
 }
 
-char *
-pg_prop_sql_rowhash(pg_prop_conn *conn, const char *sql, bool *failed,
-					char **errmsg)
+/*
+ * Shared body for the two rowhash variants.  Digests the whole result
+ * server-side: md5 of the newline-joined per-row text.  Returning a 32-char
+ * hash instead of the full result keeps client memory O(1) regardless of
+ * result size (the deep generators can produce results that overflow the
+ * 1 GB StringInfo cap when rendered client-side; see finding 027).  When
+ * "ordered" is false the per-row text is sorted first, so the digest is of
+ * the row multiset rather than the row sequence.  An empty result hashes
+ * md5('') so two empty results compare equal.
+ */
+static char *
+rowhash_body(pg_prop_conn *conn, const char *sql, bool ordered,
+			 bool *failed, char **errmsg)
 {
 	StringInfoData q;
 	PGresult   *res;
@@ -247,21 +257,17 @@ pg_prop_sql_rowhash(pg_prop_conn *conn, const char *sql, bool *failed,
 	if (failed)
 		*failed = false;
 
-	/*
-	 * Digest the whole result server-side: md5 of the newline-joined text of
-	 * every row of the caller's query, taken in the query's own output order
-	 * (so the caller's ORDER BY fixes the order).  Returning a 32-char hash
-	 * instead of the full result keeps the client memory O(1) regardless of
-	 * result size -- the deep generators can produce results that overflow the
-	 * 1 GB StringInfo cap when rendered client-side (see finding 027).  The
-	 * empty result hashes md5('') deterministically, so two empty results
-	 * compare equal.
-	 */
 	initStringInfo(&q);
-	appendStringInfo(&q,
-					 "SELECT md5(coalesce(string_agg(q.r, E'\\n'), '')) "
-					 "FROM (SELECT (sub)::text AS r FROM (%s) sub) q",
-					 sql);
+	if (ordered)
+		appendStringInfo(&q,
+						 "SELECT md5(coalesce(string_agg(q.r, E'\\n'), '')) "
+						 "FROM (SELECT (sub)::text AS r FROM (%s) sub) q",
+						 sql);
+	else
+		appendStringInfo(&q,
+						 "SELECT md5(coalesce(string_agg(q.r, E'\\n' ORDER BY q.r), '')) "
+						 "FROM (SELECT (sub)::text AS r FROM (%s) sub) q",
+						 sql);
 	res = PQexec(conn->conn, q.data);
 	check_backend_alive(conn, sql);
 	pfree(q.data);
@@ -283,6 +289,20 @@ pg_prop_sql_rowhash(pg_prop_conn *conn, const char *sql, bool *failed,
 	out = pg_strdup(PQgetvalue(res, 0, 0));
 	PQclear(res);
 	return out;
+}
+
+char *
+pg_prop_sql_rowhash(pg_prop_conn *conn, const char *sql, bool *failed,
+					char **errmsg)
+{
+	return rowhash_body(conn, sql, true, failed, errmsg);
+}
+
+char *
+pg_prop_sql_rowhash_unordered(pg_prop_conn *conn, const char *sql,
+							  bool *failed, char **errmsg)
+{
+	return rowhash_body(conn, sql, false, failed, errmsg);
 }
 
 bool
