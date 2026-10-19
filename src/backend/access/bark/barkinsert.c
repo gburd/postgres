@@ -46,6 +46,7 @@
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
+#include "utils/datum.h"
 #include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -2327,6 +2328,8 @@ typedef struct BarkInsertState
 {
 	BarkKeyInfo *keyinfo;
 	bool		coalesce;		/* non-unique and bark_index_may_coalesce */
+	bool		ginrule;		/* coalesce, though the extracted column is
+								 * not equalimage: GIN's key rule */
 	int			extracted;		/* bark_index_extracted_column, or 0 */
 	MemoryContext rowcxt;		/* one row's keys and entries, reset per row */
 } BarkInsertState;
@@ -2345,6 +2348,8 @@ bark_insert_state(Relation index, IndexInfo *indexInfo)
 		state->coalesce = !indexInfo->ii_Unique &&
 			bark_index_may_coalesce(index);
 		state->extracted = bark_index_extracted_column(index);
+		state->ginrule = state->coalesce && state->extracted > 0 &&
+			!bark_allequalimage(index);
 		state->rowcxt = NULL;
 		if (state->extracted > 0)
 			state->rowcxt = AllocSetContextCreate(indexInfo->ii_Context,
@@ -3243,4 +3248,207 @@ bark_insert_oversized_keys(Relation index, Datum *values, bool *isnull,
 	Assert(state->extracted > 0);
 	(void) bark_insert_row_keys(index, state, values, isnull, ht_ctid,
 								heapRel, checkUnique, false, true);
+}
+
+#ifdef USE_ASSERT_CHECKING
+/*
+ * An independent check of a true answer of barkcomparedatums: form the leaf
+ * entries that inserting each value would make, as bark_insert_row_keys and
+ * bark_insert form them (with the index's other columns NULL; core compares
+ * those itself), and compare them.  Varlenas are detoasted first, as
+ * amcheck's heapallindexed does: a value stored compressed and the same
+ * value plain give entries of the same content.  The entries must be the
+ * same bytes, except where the extracted column follows GIN's key rule
+ * (BarkInsertState.ginrule), where procedure 1 decides, as the insert that
+ * coalesces them does.  Each marker of the new value must equal one of the
+ * old value's, by procedure 1, as the insert's test for a present marker
+ * compares.
+ */
+static bool
+bark_entries_same(Relation index, BarkInsertState *state, int attnum,
+				  Datum oldValue, Datum newValue)
+{
+	TupleDesc	tupdesc = RelationGetDescr(index);
+	bool		extracted = (attnum == state->extracted);
+	Datum		value[2] = {oldValue, newValue};
+	bool		notnull = false;
+	BarkRowKeys rk[2];
+	Datum		values[INDEX_MAX_KEYS] = {0};
+	bool		isnull[INDEX_MAX_KEYS];
+
+	for (int i = 0; i < tupdesc->natts; i++)
+		isnull[i] = true;
+	for (int v = 0; v < 2; v++)
+	{
+		rk[v].nkeys = 1;
+		rk[v].keys = &value[v];
+		rk[v].nulls = &notnull;
+		rk[v].nmarkers = 0;
+		if (extracted)
+			bark_extract_row_keys(index, state->keyinfo, value[v], false,
+								  &rk[v]);
+	}
+	if (rk[0].nkeys != rk[1].nkeys)
+		return false;
+
+	for (int i = 0; i < rk[0].nkeys; i++)
+	{
+		IndexTuple	itup[2];
+		Size		len[2];
+
+		for (int v = 0; v < 2; v++)
+		{
+			values[attnum - 1] = rk[v].keys[i];
+			isnull[attnum - 1] = rk[v].nulls[i];
+			if (!rk[v].nulls[i] &&
+				TupleDescAttr(tupdesc, attnum - 1)->attlen == -1)
+				values[attnum - 1] =
+					PointerGetDatum(PG_DETOAST_DATUM_PACKED(rk[v].keys[i]));
+			itup[v] = bark_form_full_tuple(tupdesc, values, isnull, &len[v]);
+		}
+		if ((extracted && state->ginrule) ?
+			bark_compare_itups(state->keyinfo, index, itup[0], itup[1]) != 0 :
+			(len[0] != len[1] || memcmp(itup[0], itup[1], len[0]) != 0))
+			return false;
+	}
+
+	for (int i = 0; i < rk[1].nmarkers; i++)
+	{
+		Size		len;
+		IndexTuple	newm = bark_form_marker(index, rk[1].markers[i], &len);
+		bool		found = false;
+
+		for (int j = 0; !found && j < rk[0].nmarkers; j++)
+			found = bark_compare_itups(state->keyinfo, index, newm,
+									   bark_form_marker(index,
+														rk[0].markers[j],
+														&len)) == 0;
+		if (!found)
+			return false;
+	}
+	return true;
+}
+#endif
+
+/*
+ * barkcomparedatums() -- would newValue give the index the entries oldValue
+ * gave it?
+ *
+ * The executor asks this during UPDATE, before the table AM is called, for
+ * index column attnum of a row whose value changed (amcomparedatums in
+ * amapi.h).  When every index that uses the column answers true, the update
+ * may be HOT: the index makes no entries for the new version and reaches it
+ * through the old version's entries.  Both values are non-NULL (core
+ * decides a change to or from NULL itself) and of type typid, the table
+ * column's or expression's type.  false is always a correct answer.
+ *
+ * true must mean that no scan, unique check, VACUUM pass or amcheck probe
+ * could tell the old entries from those an insert of newValue would make:
+ *
+ *	- A column that is not extracted, a scalar key or an INCLUDE column, is
+ *	  stored as it is given, and an index-only scan returns it, so the two
+ *	  values must be the same bytes once detoasted (datum_image_eq), as for
+ *	  nbtree (btcomparedatums).  numeric 1.0 and 1.00 are not.
+ *
+ *	- An extracted column has one entry per distinct key procedure 7 gives
+ *	  (bark_extract_row_keys sorts and de-duplicates them), so the values'
+ *	  keys must pair off one to one: as many, NULL where the other is NULL,
+ *	  and equal by procedure 1 and as images, since an entry stores its
+ *	  key's bytes and procedures 9 and 12 read them.  The image test is
+ *	  dropped in one case, an index whose extracted column is not equalimage
+ *	  but coalesces by GIN's key rule (bark_index_may_coalesce).  There an
+ *	  entry keeps the image of the first row that formed it and later rows
+ *	  of an equal key only add their TIDs, so a row's own image need not be
+ *	  in the index whatever the update does; nothing returns the key as a
+ *	  row's value (bark_canreturn), and the class only ever compares it with
+ *	  procedure 1, as gincomparedatums relies on for GIN.  amcheck's
+ *	  heapallindexed refuses such an index for the same reason.  A unique
+ *	  index, or one with an INCLUDE column, does not coalesce, so it
+ *	  compares images.
+ *
+ *	- A marker is inserted the first time a row gives it, and never
+ *	  removed.  Every marker of the new value must therefore be one of the
+ *	  old value's, which the index already holds; a new one is an insert the
+ *	  index needs.  A marker of the old value that the new one lacks stays
+ *	  in the index either way.
+ *
+ * A unique index needs nothing more: its old entries keep their keys and
+ * reach the live version through the HOT chain, so a later insert of an
+ * equal key meets them and its check (table_fetch_tid follows the chain)
+ * reports the conflict, as it would against new entries; and the updated
+ * row shares no key with another row that it did not share before.  The
+ * index of an exclusion constraint is refused, since its check runs on the
+ * values when an entry is inserted, and values with the same entries need
+ * not have the same conflicts; the executor does not ask about one either.
+ * So is an index that is not ready or not valid.
+ *
+ * Nothing here locks a buffer or writes the index.  The statement's insert
+ * state (BarkInsertState, in ii_AmCache) is reused; the keys are allocated
+ * in the caller's context, which the executor resets per row.
+ * Assert-enabled builds check a true answer with bark_entries_same: core's
+ * own check of an access method's answer does not cover the access method.
+ */
+bool
+barkcomparedatums(Relation index, IndexInfo *indexInfo, int attnum,
+				  Oid typid, Datum oldValue, Datum newValue)
+{
+	BarkInsertState *state;
+	bool		same;
+
+	if (!index->rd_index->indisready || !index->rd_index->indisvalid ||
+		indexInfo->ii_ExclusionOps != NULL)
+		return false;
+
+	state = bark_insert_state(index, indexInfo);
+	if (attnum != state->extracted)
+	{
+		int16		typlen;
+		bool		typbyval;
+
+		get_typlenbyval(typid, &typlen, &typbyval);
+		same = datum_image_eq(oldValue, newValue, typbyval, typlen);
+	}
+	else
+	{
+		BarkKeyColumn *col = &state->keyinfo->cols[attnum - 1];
+		Form_pg_attribute att = TupleDescAttr(RelationGetDescr(index),
+											  attnum - 1);
+		BarkRowKeys oldrk;
+		BarkRowKeys newrk;
+
+		bark_extract_row_keys(index, state->keyinfo, oldValue, false, &oldrk);
+		bark_extract_row_keys(index, state->keyinfo, newValue, false, &newrk);
+
+		same = oldrk.nkeys == newrk.nkeys;
+		for (int i = 0; same && i < oldrk.nkeys; i++)
+		{
+			if (oldrk.nulls[i] || newrk.nulls[i])
+				same = oldrk.nulls[i] == newrk.nulls[i];
+			else
+				same = DatumGetInt32(FunctionCall2Coll(&col->cmp,
+													   col->collation,
+													   oldrk.keys[i],
+													   newrk.keys[i])) == 0 &&
+					(state->ginrule ||
+					 datum_image_eq(oldrk.keys[i], newrk.keys[i],
+									att->attbyval, att->attlen));
+		}
+		for (int i = 0; same && i < newrk.nmarkers; i++)
+		{
+			same = false;
+			for (int j = 0; !same && j < oldrk.nmarkers; j++)
+				same = DatumGetInt32(FunctionCall2Coll(&col->cmp,
+													   col->collation,
+													   newrk.markers[i],
+													   oldrk.markers[j])) == 0;
+		}
+	}
+
+#ifdef USE_ASSERT_CHECKING
+	if (same && !bark_entries_same(index, state, attnum, oldValue, newValue))
+		elog(ERROR, "BARK index \"%s\" found column %d of an UPDATE unchanged, but its entries differ",
+			 RelationGetRelationName(index), attnum);
+#endif
+
+	return same;
 }

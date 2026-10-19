@@ -1840,6 +1840,33 @@ ordering operator on that column. The index correlation is 0 when the extracted 
 rows the scan returns are the qual's selectivity times reltuples, without
 ''K'': the scan returns each row once.
 
+'''As built (HOT, amcomparedatums).''' BARK implements core's
+<code>amcomparedatums</code> (CF 5556) as barkcomparedatums, so an UPDATE
+whose new value gives a BARK index the entries the old one gave can be
+HOT. A scalar or INCLUDE column compares by image (datum_image_eq). The
+extracted column runs procedure 7 on both values through
+bark_extract_row_keys and compares the sorted, distinct keys pairwise by
+procedure 1 and by image, NULL keys alike; every marker of the new value
+must be among the old value's, since a new marker is an insert the index
+needs and markers are never removed. A GIN-interface column that is not
+equalimage and coalesces compares by procedure 1 only: its entries keep
+the first row's image of an equal key, as GIN's do. Not-ready, invalid
+and exclusion-constraint indexes answer no; unique indexes are answered
+like any other (the HOT chain keeps the old entries pointing at the live
+version, so later inserts still conflict), though core asks only about a
+partial one. An optional opclass procedure that answers without
+extracting (CF 5556's "keys-changed") is not used yet; its number would
+be 16, since BARK's procedure 15 is translate-cmptype. Under cassert a
+yes is checked by forming both values' leaf entries and comparing their
+bytes. Tests: bark.sql (scalar, INCLUDE, numeric scale),
+bark_multikey_hot.sql (reorder, add and remove elements, NULL and empty
+values, markers, GIN int4 and numeric with and without coalescing, a
+fixed column before the extracted one, unique and partial unique),
+bark_wildcard.sql (paths the projection drops and keeps, a scalar
+becoming an array, number scale), and the isolation spec
+bark_multikey_hot_epq (the waiting UPDATE compares with the version it
+waited for).
+
 ==== Wildcard indexes as the check ====
 
 M5's wildcard index is the hardest case M1 has to carry, so it is the check

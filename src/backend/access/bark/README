@@ -31,7 +31,8 @@ The code
                   bark_insert_parent, bark_getstackbuf, bark_finish_split,
                   bark_new_root), the first root of an empty index
                   (bark_create_root_leaf), suffix truncation
-                  (bark_truncate_pivot), and the WAL records of inserts
+                  (bark_truncate_pivot), the WAL records of inserts, and
+                  amcomparedatums (barkcomparedatums, "HOT updates")
   barksearch.c    descent (bark_search, bark_search_bound, bark_descend,
                   bark_moveright, bark_binsrch), comparison of a scan bound
                   with an entry (bark_compare_bound), the root cache in
@@ -83,7 +84,8 @@ The main data structures, all in bark.h unless noted:
                        column, the multikey flag, the markers seen and the
                        level-1 entry table (BarkL1Slot)
   BarkInsertState      (barkinsert.c) ii_AmCache: what every insert of a
-                       statement reuses (see "Inserts")
+                       statement reuses (see "Inserts"), and
+                       barkcomparedatums too
   BarkScanBound        a scan's bound on the leading columns, which the
                        descent and the leaf binary search compare against
   BarkScanOpaqueData   a scan's state; BarkScanPosData the copy of one
@@ -827,6 +829,60 @@ therefore not called.  The scan returns xs_hitup, formed by
 bark_mk_form_hitup from the entry, with the extracted column NULL and
 name_ops' cstring columns made names again, in hitupdesc, the index's
 descriptor with the column's input type.
+
+
+HOT updates
+-----------
+
+barkcomparedatums is BARK's amcomparedatums.  During UPDATE, for a column a
+BARK index uses whose value changed, the executor asks whether the new
+value gives the index exactly the entries the old one gave it; if every
+index using the column says yes, the update may be HOT and no index gets
+an entry for the new version.  So yes must mean that no scan, unique
+check, VACUUM pass or amcheck probe could tell the old entries from those
+an insert of the new value would make.  BARK answers no for an index that
+is not ready or not valid, and for an exclusion constraint's index, whose
+check runs on the values.
+
+A column that is not extracted, a scalar key or an INCLUDE column, is
+stored as given and returned by index-only scans, so yes means the same
+bytes once detoasted (datum_image_eq), as btcomparedatums says for nbtree:
+numeric 1.0 and 1.00 differ.  For the extracted column both values go
+through bark_extract_row_keys, as an insert's do, and yes means the same
+number of keys, NULL in the same places, each pair equal by procedure 1
+and as images (the entry stores the key's bytes, which procedures 9 and
+12 read), and every marker of the new value among the old value's.
+Markers are inserted once and never removed, so a marker only the new
+value has is an insert the index needs; one only the old value has stays
+either way.  {NULL} and {} both give the single NULL key, so their entries
+are the same bytes, and an update between them is HOT; a scan that has to
+tell them apart rechecks the row anyway.
+
+The image test is dropped for one kind of index, one whose extracted
+column uses GIN's query interface, is not equalimage, and coalesces
+(BarkInsertState.ginrule, bark_index_may_coalesce): there an entry keeps
+the image of the first row that formed it and later rows of an equal key
+add only their TIDs, so a row's own image need not be in the index
+whatever the update does.  Nothing returns the key as a row's value, and
+the class only compares it with procedure 1, as gincomparedatums relies on
+for GIN.  heapallindexed refuses such an index for the same reason.  A
+unique index and an index with INCLUDE columns do not coalesce, and
+compare images.
+
+A unique index needs nothing more.  Its old entries keep their keys and
+reach the live version through the HOT chain, so the next insert of an
+equal key meets them and its check (table_fetch_tid follows the chain)
+finds the conflict.  Core does not ask about the columns of a unique index
+without a predicate (they can be referenced as keys, and core decides
+them by value), so in practice this matters for partial unique indexes.
+
+The call reuses the statement's BarkInsertState from ii_AmCache, and the
+keys are allocated in the caller's per-row context.  Core's cassert
+cross-check covers expression proofs, not an access method's answer, so
+under USE_ASSERT_CHECKING a yes is checked by bark_entries_same, which
+forms both values' leaf entries as bark_insert_row_keys would and compares
+their bytes (by procedure 1 for a GIN-rule column), and raises an error
+when they differ.
 
 
 Operator classes and validation
