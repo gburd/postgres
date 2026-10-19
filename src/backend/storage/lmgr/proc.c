@@ -1551,11 +1551,11 @@ ProcSleep(LOCALLOCK *locallock)
 			 * that could happen in any case unless we were to do kill() with
 			 * the lock held, which is much more undesirable.
 			 */
-			LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+			ProcArrayLockAcquire(LW_EXCLUSIVE);
 			statusFlags = ProcGlobal->statusFlags[autovac->pgxactoff];
 			lockmethod_copy = lock->tag.locktag_lockmethodid;
 			locktag_copy = lock->tag;
-			LWLockRelease(ProcArrayLock);
+			ProcArrayLockRelease();
 
 			/*
 			 * Only do it if the worker is not working to protect against Xid

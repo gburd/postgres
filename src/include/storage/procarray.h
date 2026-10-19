@@ -14,10 +14,21 @@
 #ifndef PROCARRAY_H
 #define PROCARRAY_H
 
+#include "storage/lwlock.h"
 #include "storage/standby.h"
 #include "utils/relcache.h"
 #include "utils/snapshot.h"
 
+/*
+ * ProcArrayLock wrappers.  Use these, not LWLockAcquire(ProcArrayLock, ...)
+ * and the related LWLock calls.  They give one place to change how
+ * ProcArrayLock is implemented.
+ */
+extern bool ProcArrayLockAcquire(LWLockMode mode);
+extern bool ProcArrayLockConditionalAcquire(LWLockMode mode);
+extern void ProcArrayLockRelease(void);
+extern bool ProcArrayLockHeldByMe(void);
+extern bool ProcArrayLockHeldByMeInMode(LWLockMode mode);
 
 extern void ProcArrayAdd(PGPROC *proc);
 extern void ProcArrayRemove(PGPROC *proc, TransactionId latestXid);

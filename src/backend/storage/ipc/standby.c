@@ -1329,13 +1329,13 @@ LogStandbySnapshot(void)
 	 * only a shared lock.
 	 */
 	if (!logical_decoding_enabled)
-		LWLockRelease(ProcArrayLock);
+		ProcArrayLockRelease();
 
 	recptr = LogCurrentRunningXacts(running);
 
 	/* Release lock if we kept it longer ... */
 	if (logical_decoding_enabled)
-		LWLockRelease(ProcArrayLock);
+		ProcArrayLockRelease();
 
 	/* GetRunningTransactionData() acquired XidGenLock, we must release it */
 	LWLockRelease(XidGenLock);

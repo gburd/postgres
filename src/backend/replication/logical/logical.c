@@ -272,10 +272,10 @@ StartupDecodingContext(List *output_plugin_options,
 	 */
 	if (!IsTransactionOrTransactionBlock())
 	{
-		LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+		ProcArrayLockAcquire(LW_EXCLUSIVE);
 		MyProc->statusFlags |= PROC_IN_LOGICAL_DECODING;
 		ProcGlobal->statusFlags[MyProc->pgxactoff] = MyProc->statusFlags;
-		LWLockRelease(ProcArrayLock);
+		ProcArrayLockRelease();
 	}
 
 	ctx->slot = slot;
@@ -500,7 +500,7 @@ CreateInitDecodingContext(const char *plugin,
 	 * ----
 	 */
 	LWLockAcquire(ReplicationSlotControlLock, LW_EXCLUSIVE);
-	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+	ProcArrayLockAcquire(LW_EXCLUSIVE);
 
 	xmin_horizon = GetOldestSafeDecodingTransactionId(!need_full_snapshot);
 
@@ -513,7 +513,7 @@ CreateInitDecodingContext(const char *plugin,
 
 	ReplicationSlotsComputeRequiredXmin(true);
 
-	LWLockRelease(ProcArrayLock);
+	ProcArrayLockRelease();
 	LWLockRelease(ReplicationSlotControlLock);
 
 	ReplicationSlotMarkDirty();
