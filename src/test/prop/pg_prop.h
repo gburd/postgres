@@ -300,6 +300,21 @@ extern char *pg_prop_sql_rowhash(pg_prop_conn *conn, const char *sql,
 								 bool *failed, char **errmsg);
 
 /*
+ * Like pg_prop_sql_rowhash but order-insensitive: the per-row text is sorted
+ * server-side before hashing, so two queries that return the same *multiset*
+ * of rows compare equal regardless of row order.  Use this for any oracle
+ * that compares results across plans or query rewrites: SQL never guarantees
+ * row order without ORDER BY, and even with ORDER BY a tie among equal sort
+ * keys (equal numeric scales, a nondeterministic collation, a FULL/RIGHT join
+ * that null-extends every key) leaves the order unspecified.  Comparing
+ * multisets removes that whole class of false positive (false_positives.md
+ * 2.1-2.2) and lets the generator emit shapes whose output has no total order.
+ * Counts and duplicates are preserved (it is a multiset, not a set).
+ */
+extern char *pg_prop_sql_rowhash_unordered(pg_prop_conn *conn, const char *sql,
+										   bool *failed, char **errmsg);
+
+/*
  * Run "sql" for side effects (DDL/DML), returning true on success.  On error
  * returns false and sets *errmsg (malloc'd).
  */

@@ -22,8 +22,11 @@
  *
  * The configurations are applied with SET LOCAL inside a transaction so they
  * cannot leak between runs.  Results are compared by server-side digest
- * (pg_prop_sql_rowhash), so arbitrarily large results cost O(1) client memory.
- * Every query carries a total ORDER BY so "same rows" means "same digest".
+ * (pg_prop_sql_rowhash_unordered), so arbitrarily large results cost O(1)
+ * client memory and row order never matters: two plans that return the same
+ * multiset of rows agree, even when the query has no total order (a FULL/RIGHT
+ * join that null-extends every key, equal sort keys under a nondeterministic
+ * collation).  See false_positives.md 2.1-2.2.
  *
  * Portions Copyright (c) 2024, PostgreSQL Global Development Group
  *
@@ -129,7 +132,7 @@ digest_under(pg_prop_conn *conn, const char *setup, const char *query,
 		*errmsg = err;
 		return NULL;
 	}
-	dig = pg_prop_sql_rowhash(conn, query, &failed, &err);
+	dig = pg_prop_sql_rowhash_unordered(conn, query, &failed, &err);
 	pg_prop_sql_exec(conn, "ROLLBACK", NULL);
 
 	if (failed)
