@@ -1834,6 +1834,7 @@ barkhandler(PG_FUNCTION_ARGS)
 		.amparallelrescan = bark_parallelrescan,
 		.amtranslatestrategy = bark_translate_strategy,
 		.amtranslatecmptype = bark_translate_cmptype,
+		.amcomparedatums = barkcomparedatums,
 	};
 
 	PG_RETURN_POINTER(&amroutine);
