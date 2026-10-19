@@ -538,3 +538,124 @@ PG_PROP(diff_deep_filtered)
 	pfree(sql.data);
 	deep_teardown(tc, conn, db, &q);
 }
+
+/*
+ * Set-operation differential: two filtered scans of the adversarial table
+ * combined with a drawn set operator (UNION / INTERSECT / EXCEPT, each with
+ * and without ALL).  The planner has several ways to run each -- hashed
+ * setop, sort+unique, append then dedup -- and they must agree on the
+ * result multiset.  Set operations use the row type's equality (not image
+ * equality), so a NULL in one side matches a NULL in the other; that is
+ * well-defined and the same for every plan, so the comparison is sound even
+ * with NULLs and mixed numeric scales in the projection (the scale is fixed
+ * by numeric(5,2), false_positives.md 1.2).  No ORDER BY needed: the digest
+ * is order-insensitive.
+ */
+PG_PROP(diff_setops)
+{
+	static const char *const ops[] = {
+		"UNION", "UNION ALL", "INTERSECT", "INTERSECT ALL", "EXCEPT", "EXCEPT ALL",
+	};
+	pg_prop_conn *conn;
+	char	   *err = NULL;
+	StringInfoData q;
+	StringInfoData p1;
+	StringInfoData p2;
+	const char *op = ops[pg_prop_draw_int(tc, 0, lengthof(ops) - 1)];
+	int			nrows;
+
+	conn = pg_prop_connect(&err);
+	if (conn == NULL)
+		pg_prop_fail(tc, "connect failed: %s", err ? err : "");
+	qg_build_table(tc, conn, &nrows);
+
+	initStringInfo(&p1);
+	qg_draw_predicate(tc, &p1);
+	initStringInfo(&p2);
+	qg_draw_predicate(tc, &p2);
+
+	/*
+	 * Project the data columns, not id: a set operation over the unique key
+	 * would make every INTERSECT empty and every EXCEPT trivial.  The data
+	 * columns repeat, so INTERSECT / EXCEPT actually do work.
+	 */
+	initStringInfo(&q);
+	appendStringInfo(&q,
+					 "SELECT a, b, c, d, f, g FROM " QG_TABLE " WHERE %s "
+					 "%s "
+					 "SELECT a, b, c, d, f, g FROM " QG_TABLE " WHERE %s",
+					 p1.data, op, p2.data);
+	run_diff(tc, conn, q.data);
+
+	pfree(p1.data);
+	pfree(p2.data);
+	pfree(q.data);
+	pg_prop_disconnect(conn);
+}
+
+/*
+ * Empty-arm and FROM-less differential: a join or set operation against a
+ * provably-empty relation (WHERE false, or a FROM-less SELECT whose WHERE is
+ * false) and against a FROM-less constant SELECT.  These are the shapes
+ * behind several 2026 join-removal / set-op-dummy-elimination wrong-results
+ * fixes (false_positives.md none -- these are true-positive territory): the
+ * planner eliminates the empty arm or the dummy rel, and a wrong
+ * elimination drops a qual or emits a spurious row.  Every plan must still
+ * produce the same multiset.
+ */
+PG_PROP(diff_empty_and_fromless)
+{
+	pg_prop_conn *conn;
+	char	   *err = NULL;
+	StringInfoData q;
+	StringInfoData pred;
+	int			shape = (int) pg_prop_draw_int(tc, 0, 4);
+	int			nrows;
+
+	conn = pg_prop_connect(&err);
+	if (conn == NULL)
+		pg_prop_fail(tc, "connect failed: %s", err ? err : "");
+	qg_build_table(tc, conn, &nrows);
+
+	initStringInfo(&pred);
+	qg_draw_predicate(tc, &pred);
+	initStringInfo(&q);
+	switch (shape)
+	{
+		case 0:					/* LEFT JOIN to a provably-empty subquery */
+			appendStringInfo(&q,
+							 "SELECT t.id, e.x FROM " QG_TABLE " t "
+							 "LEFT JOIN (SELECT id, a AS x FROM " QG_TABLE " WHERE false) e "
+							 "ON e.id = t.id WHERE %s", pred.data);
+			break;
+		case 1:					/* FULL JOIN to a FROM-less constant */
+			appendStringInfo(&q,
+							 "SELECT t.id, v.k FROM " QG_TABLE " t "
+							 "FULL JOIN (SELECT 1 AS k WHERE %s) v ON v.k = t.id",
+							 pg_prop_draw_bool(tc) ? "true" : "false");
+			break;
+		case 2:					/* UNION with an empty arm */
+			appendStringInfo(&q,
+							 "SELECT a, b FROM " QG_TABLE " WHERE %s "
+							 "UNION ALL SELECT a, b FROM " QG_TABLE " WHERE false",
+							 pred.data);
+			break;
+		case 3:					/* INTERSECT with a FROM-less row */
+			appendStringInfo(&q,
+							 "SELECT a FROM " QG_TABLE " WHERE %s "
+							 "INTERSECT SELECT %d",
+							 pred.data, (int) pg_prop_draw_int(tc, -1, 2));
+			break;
+		default:				/* NOT EXISTS over an empty subquery (anti-join) */
+			appendStringInfo(&q,
+							 "SELECT t.id FROM " QG_TABLE " t WHERE %s AND NOT EXISTS "
+							 "(SELECT 1 FROM " QG_TABLE " e WHERE false AND e.id = t.id)",
+							 pred.data);
+			break;
+	}
+	run_diff(tc, conn, q.data);
+
+	pfree(pred.data);
+	pfree(q.data);
+	pg_prop_disconnect(conn);
+}
