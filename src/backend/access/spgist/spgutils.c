@@ -99,6 +99,7 @@ spghandler(PG_FUNCTION_ARGS)
 		.amparallelrescan = NULL,
 		.amtranslatestrategy = NULL,
 		.amtranslatecmptype = NULL,
+		.amcomparedatums = NULL,
 	};
 
 	PG_RETURN_POINTER(&amroutine);

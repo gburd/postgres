@@ -600,6 +600,7 @@ typedef struct TableAmRoutine
 								 bool wait,
 								 TM_FailureData *tmfd,
 								 LockTupleMode *lockmode,
+								 const Bitmapset *modified_idx_attrs,
 								 TU_UpdateIndexes *update_indexes);
 
 	/* see table_tuple_lock() for reference about parameters */
@@ -1642,6 +1643,10 @@ table_tuple_delete(Relation rel, ItemPointer tid, CommandId cid,
  *		during table rewrites where RelationIsLogicallyLogged(rel) is not
  *		yet accurate for the new relation.
  *	crosscheck - if not InvalidSnapshot, also check old tuple against this
+ *	modified_idx_attrs - the indexed attributes whose values differ between
+ *		the old tuple and the new one, offset by
+ *		FirstLowInvalidHeapAttributeNumber; see ExecUpdateModifiedIdxAttrs().
+ *		The caller owns it.
  *
  * Output parameters:
  *	slot - newly constructed tuple data to store
@@ -1669,12 +1674,12 @@ table_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot,
 				   CommandId cid, uint32 options,
 				   Snapshot snapshot, Snapshot crosscheck,
 				   bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
-				   TU_UpdateIndexes *update_indexes)
+				   const Bitmapset *modified_idx_attrs, TU_UpdateIndexes *update_indexes)
 {
 	return rel->rd_tableam->tuple_update(rel, otid, slot,
 										 cid, options, snapshot, crosscheck,
-										 wait, tmfd,
-										 lockmode, update_indexes);
+										 wait, tmfd, lockmode,
+										 modified_idx_attrs, update_indexes);
 }
 
 /*
@@ -2159,6 +2164,7 @@ extern void simple_table_tuple_delete(Relation rel, ItemPointer tid,
 									  Snapshot snapshot);
 extern void simple_table_tuple_update(Relation rel, ItemPointer otid,
 									  TupleTableSlot *slot, Snapshot snapshot,
+									  const Bitmapset *modified_idx_attrs,
 									  TU_UpdateIndexes *update_indexes);
 
 

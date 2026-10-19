@@ -35,7 +35,8 @@ REGRESS = \
 	gin \
 	gist \
 	hash \
-	oldextversions
+	oldextversions \
+	hot_updates
 
 TAP_TESTS = 1
 
