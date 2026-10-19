@@ -173,6 +173,15 @@ New work goes into the generator (sql/query_gen.c) rather than new oracles.
 A new query shape is checked by every existing oracle at once; a new oracle
 checks only the shapes the generator already makes.
 
+The single-table generator (qg_build_table) and the oracles over it are
+reproducible: a counterexample replays from its seed.  The deep multi-table
+generator (qg_build_db / qg_build_query, used by the query_deep, query_multi
+and diff_deep_* properties under PG_PROP_DEEP) is not currently reproducible
+for a fixed seed -- the engine's failure-replay can build a different query
+(see findings 041).  Treat a deep disagreement as a lead to reproduce by
+hand, not as a replayable counterexample, and do not use a deep run as a
+regression gate until that is fixed.
+
 
 Commitfest properties and retirement
 ====================================
