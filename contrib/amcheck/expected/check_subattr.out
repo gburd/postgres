@@ -390,13 +390,13 @@ SELECT subattr_probe('null-doc',           $$UPDATE subattr SET d = jsonb_set(NU
  
 (1 row)
 
-SELECT name, upd, hot, amcheck FROM subattr_results ORDER BY name;
+SELECT name, upd, hot, amcheck FROM subattr_results ORDER BY name COLLATE "C";
         name        | upd | hot | amcheck 
 --------------------+-----+-----+---------
+ array-a-neg        |  50 |  50 | ok
  array-a2           |  50 |   0 | ok
  array-a3           |  50 |  50 | ok
  array-a9-extend    |  50 |  50 | ok
- array-a-neg        |  50 |  50 | ok
  array-whole        |  50 |  50 | ok
  case-wrap          |  50 |   0 | ok
  coalesce-wrap      |  50 |  50 | ok
