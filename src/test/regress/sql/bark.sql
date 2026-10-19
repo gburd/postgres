@@ -4469,3 +4469,71 @@ SELECT bark_nk_check('SELECT a, b FROM bark_rme WHERE (a, b) > (' || k || ', 5) 
 FROM (VALUES (3), (11)) v(k);
 DROP TABLE bark_rme, bark_nk;
 DROP FUNCTION bark_nk_check(text);
+
+-- HOT updates of a scalar BARK index (barkcomparedatums): a change to a
+-- column no index uses is HOT; a change to the key is not; and neither is
+-- numeric 1.0 to 1.00, which compare equal but are stored differently and
+-- an index-only scan returns the stored value.  A new value that is the
+-- same bytes as the old one stored compressed or out of line is HOT; a key
+-- too large for a page (OVERSIZED) that differs in its last byte is not.
+-- INCLUDE columns are stored whole too.  Afterwards the index checks clean
+-- with heapallindexed, and index-only, index, bitmap and sequential scans
+-- agree.
+CREATE TABLE bark_hot (id int, k int, n numeric, t text, x int, w text)
+  WITH (fillfactor = 10);
+CREATE INDEX bark_hot_k ON bark_hot USING bark (k);
+CREATE INDEX bark_hot_n ON bark_hot USING bark (n) INCLUDE (t);
+CREATE INDEX bark_hot_w ON bark_hot USING bark (w);
+INSERT INTO bark_hot SELECT g, g, 1.0, repeat('t', 3000) || g, 0,
+    (SELECT string_agg(md5(g::text || i::text), '') FROM generate_series(1, 300) i)
+  FROM generate_series(1, 20) g;
+SELECT pg_column_compression(t) IS NOT NULL AS t_compressed,
+       pg_column_size(w) > 9000 AS w_out_of_line
+  FROM bark_hot WHERE id = 1;
+CREATE FUNCTION bark_hot_count(OUT upd bigint, OUT hot bigint)
+LANGUAGE sql AS $$
+  SELECT pg_stat_get_xact_tuples_updated('bark_hot'::regclass),
+         pg_stat_get_xact_tuples_hot_updated('bark_hot'::regclass) $$;
+BEGIN;
+UPDATE bark_hot SET x = 1;
+SELECT 'other column' AS step, * FROM bark_hot_count();
+UPDATE bark_hot SET k = k + 100 WHERE id <= 2;
+SELECT 'key' AS step, * FROM bark_hot_count();
+UPDATE bark_hot SET n = 1.00 WHERE id <= 3;
+SELECT 'numeric 1.0 to 1.00' AS step, * FROM bark_hot_count();
+UPDATE bark_hot SET n = 1.00 WHERE id <= 3;
+SELECT 'numeric 1.00 to 1.00' AS step, * FROM bark_hot_count();
+UPDATE bark_hot SET t = repeat('t', 3000) || id WHERE id > 10;
+SELECT 'INCLUDE, same value' AS step, * FROM bark_hot_count();
+UPDATE bark_hot SET t = 'short' WHERE id = 20;
+SELECT 'INCLUDE, new value' AS step, * FROM bark_hot_count();
+UPDATE bark_hot SET w = w || '' WHERE id <= 5;
+SELECT 'oversized key, same value' AS step, * FROM bark_hot_count();
+UPDATE bark_hot SET w = left(w, -1) || 'x' WHERE id = 6;
+SELECT 'oversized key, last byte' AS step, * FROM bark_hot_count();
+COMMIT;
+SELECT bark_index_check('bark_hot_k', true), bark_index_check('bark_hot_n', true),
+       bark_index_check('bark_hot_w', true);
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+EXPLAIN (COSTS OFF) SELECT n, right(t, 2) FROM bark_hot WHERE n = 1;
+SELECT n::text, count(*), sum(length(t)) FROM bark_hot WHERE n = 1 GROUP BY 1 ORDER BY 1;
+SET enable_indexonlyscan = off;
+SELECT n::text, count(*), sum(length(t)) FROM bark_hot WHERE n = 1 GROUP BY 1 ORDER BY 1;
+SELECT array_agg(id ORDER BY id) FROM bark_hot WHERE k > 100;
+SET enable_indexscan = off;
+SET enable_bitmapscan = on;
+SELECT array_agg(id ORDER BY id) FROM bark_hot WHERE k > 100;
+SELECT count(*) FROM bark_hot WHERE n = 1;
+SELECT array_agg(id ORDER BY id) FROM bark_hot
+  WHERE w = ANY (ARRAY(SELECT w FROM bark_hot WHERE id IN (5, 6)));
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+RESET enable_indexscan;
+RESET enable_indexonlyscan;
+SELECT n::text, count(*), sum(length(t)) FROM bark_hot GROUP BY 1 ORDER BY 1;
+SELECT array_agg(id ORDER BY id) FROM bark_hot WHERE k > 100;
+SELECT array_agg(id ORDER BY id) FROM bark_hot
+  WHERE w = ANY (ARRAY(SELECT w FROM bark_hot WHERE id IN (5, 6)));
+DROP TABLE bark_hot;
+DROP FUNCTION bark_hot_count;
