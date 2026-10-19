@@ -1,0 +1,131 @@
+Parsed test spec with 2 sessions
+
+starting permutation: s2_begin s2_add s1_begin s1_rev s2_commit s1_count s1_commit s1_check
+step s2_begin: BEGIN;
+step s2_add: UPDATE mhe SET a = a || 99 WHERE id = 2;
+step s1_begin: BEGIN;
+step s1_rev: UPDATE mhe SET a = array_reverse(a); <waiting ...>
+step s2_commit: COMMIT;
+step s1_rev: <... completed>
+step s1_count: 
+	SELECT pg_stat_get_xact_tuples_updated('mhe'::regclass) AS upd,
+		   pg_stat_get_xact_tuples_hot_updated('mhe'::regclass) AS hot;
+
+upd|hot
+---+---
+  2|  2
+(1 row)
+
+step s1_commit: COMMIT;
+step s1_check: 
+	SET enable_seqscan = off;
+	SET enable_bitmapscan = off;
+	SELECT id, a FROM mhe WHERE a && ARRAY[99];
+	SELECT id, a FROM mhe WHERE a && ARRAY[11,20] ORDER BY id;
+	SET enable_indexscan = off;
+	SET enable_bitmapscan = on;
+	SELECT id, a FROM mhe WHERE a && ARRAY[99];
+	SELECT id, a FROM mhe WHERE a && ARRAY[11,20] ORDER BY id;
+	RESET enable_seqscan;
+	RESET enable_indexscan;
+	RESET enable_bitmapscan;
+	SELECT id, a FROM mhe ORDER BY id;
+	SELECT bark_index_check('mhe_a', true);
+
+id|a         
+--+----------
+ 2|{99,21,20}
+(1 row)
+
+id|a         
+--+----------
+ 1|{11,10}   
+ 2|{99,21,20}
+(2 rows)
+
+id|a         
+--+----------
+ 2|{99,21,20}
+(1 row)
+
+id|a         
+--+----------
+ 1|{11,10}   
+ 2|{99,21,20}
+(2 rows)
+
+id|a         
+--+----------
+ 1|{11,10}   
+ 2|{99,21,20}
+(2 rows)
+
+bark_index_check
+----------------
+                
+(1 row)
+
+
+starting permutation: s2_begin s2_add s1_begin s1_const s2_commit s1_count s1_commit s1_check
+step s2_begin: BEGIN;
+step s2_add: UPDATE mhe SET a = a || 99 WHERE id = 2;
+step s1_begin: BEGIN;
+step s1_const: UPDATE mhe SET a = ARRAY[21,20] WHERE id = 2; <waiting ...>
+step s2_commit: COMMIT;
+step s1_const: <... completed>
+step s1_count: 
+	SELECT pg_stat_get_xact_tuples_updated('mhe'::regclass) AS upd,
+		   pg_stat_get_xact_tuples_hot_updated('mhe'::regclass) AS hot;
+
+upd|hot
+---+---
+  1|  0
+(1 row)
+
+step s1_commit: COMMIT;
+step s1_check: 
+	SET enable_seqscan = off;
+	SET enable_bitmapscan = off;
+	SELECT id, a FROM mhe WHERE a && ARRAY[99];
+	SELECT id, a FROM mhe WHERE a && ARRAY[11,20] ORDER BY id;
+	SET enable_indexscan = off;
+	SET enable_bitmapscan = on;
+	SELECT id, a FROM mhe WHERE a && ARRAY[99];
+	SELECT id, a FROM mhe WHERE a && ARRAY[11,20] ORDER BY id;
+	RESET enable_seqscan;
+	RESET enable_indexscan;
+	RESET enable_bitmapscan;
+	SELECT id, a FROM mhe ORDER BY id;
+	SELECT bark_index_check('mhe_a', true);
+
+id|a
+--+-
+(0 rows)
+
+id|a      
+--+-------
+ 1|{10,11}
+ 2|{21,20}
+(2 rows)
+
+id|a
+--+-
+(0 rows)
+
+id|a      
+--+-------
+ 1|{10,11}
+ 2|{21,20}
+(2 rows)
+
+id|a      
+--+-------
+ 1|{10,11}
+ 2|{21,20}
+(2 rows)
+
+bark_index_check
+----------------
+                
+(1 row)
+

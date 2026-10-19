@@ -1003,6 +1003,26 @@ SELECT id FROM events
   </para>
  </sect3>
 
+ <sect3 id="bark-hot">
+  <title>Heap-Only Tuple Updates</title>
+
+  <para>
+   An <command>UPDATE</command> that changes a column a BARK index uses can
+   still be a heap-only tuple (<acronym>HOT</acronym>) update (see
+   <xref linkend="storage-hot"/>) if the new value gives the index exactly
+   the entries the old one gave it.  For a scalar or <literal>INCLUDE</literal>
+   column that means the same bytes, so changing a <type>numeric</type>
+   key from <literal>1.0</literal> to <literal>1.00</literal> is not HOT.
+   For a multikey column it means the same keys from support function 7,
+   stored alike, and no marker the old value did not have: reordering the
+   elements of an array, or changing a part of a document the operator
+   class does not index, is HOT.  Where a multikey column uses GIN's query
+   interface and its class has no <function>equalimage</function>
+   function, keys need only compare equal, as in GIN, since the index
+   keeps one image of such keys.
+  </para>
+ </sect3>
+
  <sect3 id="bark-deletion">
   <title>Deletion and VACUUM</title>
 

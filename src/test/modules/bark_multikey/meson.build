@@ -36,6 +36,7 @@ tests += {
       'bark_multikey_ginco',
       'bark_multikey_sim',
       'bark_locator',
+      'bark_multikey_hot',
     ],
     'regress_args': ['--load-extension=amcheck'],
   },
@@ -43,6 +44,7 @@ tests += {
     'specs': [
       'bark_multikey_concurrent',
       'bark_multikey_unique_concurrent',
+      'bark_multikey_hot_epq',
     ],
   },
   'tap': {
