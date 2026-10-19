@@ -1640,6 +1640,9 @@ extern void bark_insert_oversized_keys(Relation index, Datum *values,
 									   Relation heapRel,
 									   IndexUniqueCheck checkUnique,
 									   IndexInfo *indexInfo);
+extern bool barkcomparedatums(Relation index, IndexInfo *indexInfo,
+							  int attnum, Oid typid,
+							  Datum oldValue, Datum newValue);
 
 /* Leaf high key for a split between lastleft and firstright (barkinsert.c). */
 extern IndexTuple bark_truncate_pivot(Relation index, BarkKeyInfo *keyinfo,
