@@ -459,6 +459,9 @@ typedef struct BarkMkScanState
 	bool		ginrecheck;
 	int			ginnoffs;
 	OffsetNumber ginoffs[TBM_MAX_TUPLES_PER_PAGE];
+	int			ginfold;		/* bitmap pages per heap block, see
+								 * bark_mk_gin_tbm_add */
+	uint16		ginstride;		/* the index's TID stride */
 	int			ginp;
 	int			gini;
 	int			ginmarkp;
@@ -1253,6 +1256,9 @@ bark_mk_begin(IndexScanDesc scan, int attno)
 		mk->ginCxt = AllocSetContextCreate(CurrentMemoryContext,
 										   "BARK GIN result",
 										   ALLOCSET_DEFAULT_SIZES);
+		mk->ginstride = so->keyinfo->tidstride;
+		mk->ginfold = (mk->ginstride + TBM_MAX_TUPLES_PER_PAGE - 1) /
+			TBM_MAX_TUPLES_PER_PAGE;
 		if (mk->ginconsistent == NULL && mk->gintriconsistent == NULL)
 			elog(ERROR, "missing support function %d or %d for attribute %d of index \"%s\"",
 				 BARK_GIN_CONSISTENT_PROC, BARK_GIN_TRICONSISTENT_PROC, attno,
@@ -4253,6 +4259,46 @@ bark_mk_gin_read(IndexScanDesc scan, const BarkMkBoundary *b, int entry,
 }
 
 /*
+ * Add tid to tbm with recheck.  A TIDBitmap holds offsets only up to
+ * TBM_MAX_TUPLES_PER_PAGE, so the bitmap of an index scan (gintbm) of an
+ * index whose TID stride is larger keeps heap block B's offset O at page
+ * B * ginfold + (O - 1) / TBM_MAX_TUPLES_PER_PAGE, offset
+ * (O - 1) % TBM_MAX_TUPLES_PER_PAGE + 1: one-to-one, and in TID order, so
+ * the iteration is still in TID order; bark_mk_gin_load turns each page
+ * back.  Any other bitmap is the executor's, which gets the TID as it is
+ * (the planner makes no bitmap scan of such a table; a caller of the AM
+ * that asks gets tbm_add_tuples's error).
+ *
+ * shortcut: a heap block past MaxBlockNumber / ginfold (4 TB at BLCKSZ 8192)
+ * has no page, and the scan errors; a TID set of its own would lift that.
+ */
+static void
+bark_mk_gin_tbm_add(BarkMkScanState *mk, TIDBitmap *tbm, ItemPointer tid,
+					bool recheck)
+{
+	BlockNumber blk;
+	OffsetNumber off;
+	ItemPointerData folded;
+
+	if (tbm != mk->gintbm || mk->ginfold == 1)
+	{
+		tbm_add_tuples(tbm, tid, 1, recheck);
+		return;
+	}
+	blk = ItemPointerGetBlockNumber(tid);
+	off = ItemPointerGetOffsetNumber(tid) - 1;
+	if (blk > (MaxBlockNumber - (mk->ginfold - 1)) / mk->ginfold)
+		ereport(ERROR,
+				(errcode(ERRCODE_PROGRAM_LIMIT_EXCEEDED),
+				 errmsg("heap block %u is too large for an index scan through GIN's query interface",
+						blk)));
+	ItemPointerSet(&folded,
+				   blk * mk->ginfold + off / TBM_MAX_TUPLES_PER_PAGE,
+				   off % TBM_MAX_TUPLES_PER_PAGE + 1);
+	tbm_add_tuples(tbm, &folded, 1, recheck);
+}
+
+/*
  * Read boundary b's entries straight into tbm, each TID with recheck when
  * recheck or its entry asks for one.  Returns how many TIDs were added.
  */
@@ -4268,8 +4314,8 @@ bark_mk_gin_read_bitmap(IndexScanDesc scan, const BarkMkBoundary *b,
 	do
 	{
 		for (int i = so->currPos.firstItem; i <= so->currPos.lastItem; i++)
-			tbm_add_tuples(tbm, &so->currPos.items[i].heapTid, 1,
-						   recheck || so->currPos.items[i].recheck);
+			bark_mk_gin_tbm_add(so->mk, tbm, &so->currPos.items[i].heapTid,
+								recheck || so->currPos.items[i].recheck);
 		ntids += so->currPos.lastItem - so->currPos.firstItem + 1;
 	} while (bark_steppage(scan, ForwardScanDirection));
 	return ntids;
@@ -4622,7 +4668,7 @@ bark_mk_gin_key(IndexScanDesc scan, ScanKey sk, Datum query, BarkGinItem **out,
 	if (tbm != NULL)
 	{
 		for (int i = 0; i < nout; i++)
-			tbm_add_tuples(tbm, &(*out)[i].tid, 1, (*out)[i].recheck);
+			bark_mk_gin_tbm_add(mk, tbm, &(*out)[i].tid, (*out)[i].recheck);
 	}
 	return nout;
 }
@@ -4755,7 +4801,7 @@ bark_mk_gin_items(IndexScanDesc scan, TIDBitmap *tbm)
 	if (ktbm == NULL)
 	{
 		for (int i = 0; i < nacc; i++)
-			tbm_add_tuples(tbm, &acc[i].tid, 1, acc[i].recheck);
+			bark_mk_gin_tbm_add(mk, tbm, &acc[i].tid, acc[i].recheck);
 		nadded = nacc;
 	}
 	MemoryContextDelete(cxt);
@@ -4763,10 +4809,11 @@ bark_mk_gin_items(IndexScanDesc scan, TIDBitmap *tbm)
 }
 
 /*
- * Load page k (in iteration order) of an index scan's bitmap into ginoffs:
- * its offsets, or every offset a TIDBitmap can hold for a lossy page, whose
- * rows then all need a recheck.  Returns false when there is no page k, and
- * then knows the number of pages.
+ * Load page k (in iteration order) of an index scan's bitmap into ginblkno
+ * and ginoffs: its offsets, or every offset a TIDBitmap can hold for a lossy
+ * page, whose rows then all need a recheck, as the heap block and offsets
+ * they stand for (bark_mk_gin_tbm_add).  Returns false when there is no page
+ * k, and then knows the number of pages.
  *
  * ponytail: a TIDBitmap iterates forward only, so moving back (a backward
  * step across a page, a restore) starts a new iteration and walks to the
@@ -4816,6 +4863,21 @@ bark_mk_gin_load(BarkMkScanState *mk, int k)
 	else
 		mk->ginnoffs = tbm_extract_page_tuple(&res, mk->ginoffs,
 											  TBM_MAX_TUPLES_PER_PAGE);
+	if (mk->ginfold > 1)
+	{
+		int			base = (res.blockno % mk->ginfold) * TBM_MAX_TUPLES_PER_PAGE;
+		int			n = 0;
+
+		/* A lossy page's last offsets may be past the stride. */
+		mk->ginblkno = res.blockno / mk->ginfold;
+		for (int i = 0; i < mk->ginnoffs; i++)
+		{
+			if (base + mk->ginoffs[i] <= mk->ginstride)
+				mk->ginoffs[n++] = base + mk->ginoffs[i];
+		}
+		mk->ginnoffs = n;
+		Assert(n > 0);
+	}
 	return true;
 }
 
