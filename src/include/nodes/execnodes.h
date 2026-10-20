@@ -232,6 +232,8 @@ typedef struct IndexInfo
 
 	/* Oid of index AM */
 	Oid			ii_Am;
+	/* Oid of the index AM implementing it, or InvalidOid for ii_Am itself */
+	Oid			ii_ImplAm;
 	/* private cache area for index AM */
 	void	   *ii_AmCache;
 

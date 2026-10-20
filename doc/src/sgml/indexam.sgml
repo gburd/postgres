@@ -151,6 +151,8 @@ typedef struct IndexAmRoutine
     uint8       amparallelvacuumoptions;
     /* type of data stored in index, or InvalidOid if variable */
     Oid         amkeytype;
+    /* built-in index AM whose indexes this AM can implement, or InvalidOid */
+    Oid         amimplements;
 
     /* interface functions */
     ambuild_function ambuild;
@@ -283,6 +285,70 @@ typedef struct IndexAmRoutine
    to continue. This does not apply to attributes referenced in index
    predicates, an update of such an attribute always disables <acronym>HOT</acronym>.
   </para>
+
+  <sect2 id="index-implementations">
+   <title>Index Implementations</title>
+
+   <para>
+    An index's <firstterm>logical</firstterm> access method is the one it
+    names, <structname>pg_class</structname>.<structfield>relam</structfield>:
+    it owns the index's operator classes, decides how the planner may use
+    the index, validates operator families, and is what
+    <function>pg_get_indexdef</function> prints.  The code that stores and
+    searches the index is its <firstterm>implementation</firstterm>.
+    Normally these are the same access method, but an index access method
+    can offer to implement indexes of a built-in access method by setting
+    <structfield>amimplements</structfield> to that access method's OID.
+    Currently only <literal>btree</literal> indexes can be implemented this
+    way.
+   </para>
+
+   <para>
+    The implementation is chosen once, when the index is created, and
+    recorded in
+    <structname>pg_index</structname>.<structfield>indimplam</structfield>.
+    The table's access method is asked first, through its optional
+    <function>index_implementation</function> callback (see
+    <xref linkend="tableam"/>); if it has no preference, a
+    <literal>btree</literal> index is implemented by the access method named
+    by <xref linkend="guc-default-btree-implementation"/>, if any.  Indexes
+    on system catalogs and TOAST tables are always implemented by their own
+    access method.  <command>REINDEX</command>, <command>CLUSTER</command>,
+    <command>VACUUM FULL</command> and similar rebuilds keep the
+    implementation.
+   </para>
+
+   <para>
+    The relation cache calls the implementation's handler for an index's
+    <structname>IndexAmRoutine</structname>, so every callback and every
+    per-index capability flag comes from the implementation, and its
+    <function>amoptions</function> parses the index's reloptions.  In
+    return, the implementation promises to behave as the logical access
+    method's indexes do: it must accept the logical access method's operator
+    classes, with the same support function and strategy numbering
+    (<structfield>amstrategies</structfield>,
+    <structfield>amsupport</structfield>,
+    <structfield>amoptsprocnum</structfield>), the same
+    <structfield>amkeytype</structfield>, the same reloptions, and it must
+    set every capability flag that the logical access method sets, such as
+    <structfield>amcanunique</structfield>,
+    <structfield>amcaninclude</structfield>,
+    <structfield>amcanorder</structfield>,
+    <structfield>amcanbackward</structfield> and mark/restore support.
+    The implementation may number more support functions than the logical
+    access method: those beyond the logical access method's
+    <structfield>amsupport</structfield> are optional, and the logical
+    access method's operator classes never have them, so the implementation
+    must treat a missing one as absent.  Its
+    <structfield>amstrategies</structfield> may also be zero, meaning it
+    accepts any strategy numbering.
+    <command>CREATE INDEX</command> checks the numbering and the flags the
+    new index needs, and refuses an implementation that falls short.
+    Tools that read an index's pages directly, such as
+    <xref linkend="amcheck"/> and <xref linkend="pageinspect"/>, check the
+    implementation, not the logical access method.
+   </para>
+  </sect2>
 
  </sect1>
 
