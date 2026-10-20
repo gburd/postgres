@@ -457,6 +457,10 @@ aminsert (Relation indexRelation,
    it is without tags: any entry of the same row, whatever its tag, is not a
    conflict.  The tag of a deferred recheck
    (<literal>UNIQUE_CHECK_EXISTING</literal>) is 0, for the same reason.
+   To ask whether a conflicting entry's row is live, an index access method
+   calls <function>table_fetch_tid_version</function> with the entry's tag
+   and the index, rather than <function>table_fetch_tid</function>; for a
+   table whose locator is not versioned the two are the same.
   </para>
 
   <para>
