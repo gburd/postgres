@@ -756,10 +756,18 @@ extern void ExecCloseIndices(ResultRelInfo *resultRelInfo);
 #define		EIIT_IS_UPDATE			(1<<0)
 #define		EIIT_NO_DUPE_ERROR		(1<<1)
 #define		EIIT_ONLY_SUMMARIZING	(1<<2)
+#define		EIIT_ONLY_AFFECTED		(1<<3)
 extern List *ExecInsertIndexTuples(ResultRelInfo *resultRelInfo, EState *estate,
 								   uint32 flags, TupleTableSlot *slot,
 								   List *arbiterIndexes,
 								   bool *specConflict);
+extern bool ExecUpdateMayKeepLocator(ResultRelInfo *resultRelInfo,
+									 const Bitmapset *modified_idx_attrs);
+extern List *ExecUpdateIndexTuples(ResultRelInfo *resultRelInfo, EState *estate,
+								   uint32 flags, TupleTableSlot *slot,
+								   IndexVersionTag version_tag,
+								   const Bitmapset *modified_idx_attrs,
+								   List *arbiterIndexes, bool *specConflict);
 extern bool ExecCheckIndexConstraints(ResultRelInfo *resultRelInfo,
 									  TupleTableSlot *slot,
 									  EState *estate, ItemPointer conflictTid,

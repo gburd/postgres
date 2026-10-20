@@ -141,6 +141,15 @@ typedef enum TU_UpdateIndexes
 
 	/* Only summarized columns were updated, TID is unchanged */
 	TU_Summarizing,
+
+	/*
+	 * The row kept its locator, and the modified_idx_attrs passed to
+	 * table_tuple_update changed: every non-summarizing index whose
+	 * attributes overlap them, and every summarizing index, needs an entry
+	 * carrying the new version's (valid) tag; the others keep theirs.  Only
+	 * with TABLE_UPDATE_MAY_KEEP_LOCATOR.
+	 */
+	TU_Affected,
 } TU_UpdateIndexes;
 
 /*
@@ -321,6 +330,7 @@ typedef struct TM_IndexDeleteOp
 /* "options" flag bits for table_tuple_update */
 #define TABLE_UPDATE_NO_LOGICAL					(1 << 0)
 #define TABLE_UPDATE_LOCKED_VERSION				(1 << 1)
+#define TABLE_UPDATE_MAY_KEEP_LOCATOR			(1 << 2)
 
 /* flag bits for table_tuple_lock */
 /* Follow tuples whose update is in progress if lock modes don't conflict  */
@@ -660,7 +670,8 @@ typedef struct TableAmRoutine
 								 TM_FailureData *tmfd,
 								 LockTupleMode *lockmode,
 								 const Bitmapset *modified_idx_attrs,
-								 TU_UpdateIndexes *update_indexes);
+								 TU_UpdateIndexes *update_indexes,
+								 IndexVersionTag *version_tag);
 
 	/* see table_tuple_lock() for reference about parameters */
 	TM_Result	(*tuple_lock) (Relation rel,
@@ -1755,6 +1766,9 @@ table_tuple_delete(Relation rel, ItemPointer tid, CommandId cid,
  *		yet accurate for the new relation.
  *		TABLE_UPDATE_LOCKED_VERSION: otid names the version this transaction
  *		has already locked; see TUPLE_LOCK_FLAG_LOCKED_VERSION.
+ *		TABLE_UPDATE_MAY_KEEP_LOCATOR: the relation's locator is versioned
+ *		(see amlocator.h), and every index that needs a new entry because of
+ *		this update can store version tags; see below.
  *	crosscheck - if not InvalidSnapshot, also check old tuple against this
  *	modified_idx_attrs - the indexed attributes whose values differ between
  *		the old tuple and the new one, offset by
@@ -1767,6 +1781,22 @@ table_tuple_delete(Relation rel, ItemPointer tid, CommandId cid,
  *	lockmode - filled with lock mode acquired on tuple
  *	update_indexes - in success cases this is set if new index entries
  *		are required for this tuple; see TU_UpdateIndexes
+ *	version_tag - in success cases, the version tag of the new row version,
+ *		which every index entry made for it carries, or InvalidIndexVersionTag;
+ *		see "Versioned locators" in amlocator.h
+ *
+ * An index entry promises that its key describes the row version its
+ * locator and tag name.  Heap keeps that promise for an update that changes
+ * an indexed attribute of a non-summarizing index by giving the new version
+ * a new TID, and so must any AM, unless the caller passes
+ * TABLE_UPDATE_MAY_KEEP_LOCATOR.  With it, an AM whose locator is versioned
+ * may instead keep the row's locator and report TU_Affected, with the new
+ * version's tag, which must be valid, in *version_tag.  The caller then
+ * inserts entries into the summarizing indexes and the non-summarizing
+ * indexes whose attributes (RelationGetIndexedAttrs) overlap
+ * modified_idx_attrs, and into no other index; see ExecUpdateIndexTuples().
+ * Heap ignores the option, never reports TU_Affected, and its *version_tag
+ * is always InvalidIndexVersionTag.
  *
  * Normal, successful return value is TM_Ok, which means we did actually
  * update it.  Failure return codes are TM_SelfModified, TM_Updated, and
@@ -1786,12 +1816,14 @@ table_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot,
 				   CommandId cid, uint32 options,
 				   Snapshot snapshot, Snapshot crosscheck,
 				   bool wait, TM_FailureData *tmfd, LockTupleMode *lockmode,
-				   const Bitmapset *modified_idx_attrs, TU_UpdateIndexes *update_indexes)
+				   const Bitmapset *modified_idx_attrs, TU_UpdateIndexes *update_indexes,
+				   IndexVersionTag *version_tag)
 {
 	return rel->rd_tableam->tuple_update(rel, otid, slot,
 										 cid, options, snapshot, crosscheck,
 										 wait, tmfd, lockmode,
-										 modified_idx_attrs, update_indexes);
+										 modified_idx_attrs, update_indexes,
+										 version_tag);
 }
 
 /*
@@ -2287,7 +2319,9 @@ extern void simple_table_tuple_delete(Relation rel, ItemPointer tid,
 extern void simple_table_tuple_update(Relation rel, ItemPointer otid,
 									  TupleTableSlot *slot, Snapshot snapshot,
 									  const Bitmapset *modified_idx_attrs,
-									  TU_UpdateIndexes *update_indexes);
+									  uint32 options,
+									  TU_UpdateIndexes *update_indexes,
+									  IndexVersionTag *version_tag);
 
 
 /* ----------------------------------------------------------------------------

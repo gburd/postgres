@@ -1595,6 +1595,7 @@ RelationInitIndexAccessInfo(Relation relation)
 	 */
 	relation->rd_indexprs = NIL;
 	relation->rd_indpred = NIL;
+	relation->rd_indattr = NULL;
 	relation->rd_exclops = NULL;
 	relation->rd_exclprocs = NULL;
 	relation->rd_exclstrats = NULL;
@@ -5364,6 +5365,60 @@ RelationGetIndexPredicate(Relation relation)
 }
 
 /*
+ * RelationGetIndexedAttrs -- get the table attributes an index reads
+ *
+ * The result has a bit for each table attribute the index references: key
+ * and INCLUDE columns, and every attribute its expressions and predicate
+ * reference, offset by FirstLowInvalidHeapAttributeNumber.  It is the
+ * index's share of RelationGetIndexAttrBitmap(INDEX_ATTR_BITMAP_INDEXED),
+ * and like that it is taken from the stored trees, before constant folding
+ * could drop an attribute.
+ *
+ * The executor gives an index a new entry on UPDATE only if these overlap
+ * the modified indexed attributes, so a table AM with a versioned locator
+ * must use exactly this set when it decides whether an index entry is
+ * valid for a row version; see amlocator.h.
+ *
+ * The result is palloc'd in the caller's memory context.
+ */
+Bitmapset *
+RelationGetIndexedAttrs(Relation indexRel)
+{
+	Bitmapset  *attrs = NULL;
+	Form_pg_index indexStruct = indexRel->rd_index;
+	Datum		datum;
+	bool		isnull;
+	MemoryContext oldcxt;
+
+	if (indexRel->rd_indattr != NULL)
+		return bms_copy(indexRel->rd_indattr);
+
+	for (int i = 0; i < indexStruct->indnatts; i++)
+	{
+		AttrNumber	attrnum = indexStruct->indkey.values[i];
+
+		if (attrnum != 0)
+			attrs = bms_add_member(attrs,
+								   attrnum - FirstLowInvalidHeapAttributeNumber);
+	}
+
+	datum = heap_getattr(indexRel->rd_indextuple, Anum_pg_index_indexprs,
+						 GetPgIndexDescriptor(), &isnull);
+	if (!isnull)
+		pull_varattnos(stringToNode(TextDatumGetCString(datum)), 1, &attrs);
+	datum = heap_getattr(indexRel->rd_indextuple, Anum_pg_index_indpred,
+						 GetPgIndexDescriptor(), &isnull);
+	if (!isnull)
+		pull_varattnos(stringToNode(TextDatumGetCString(datum)), 1, &attrs);
+
+	oldcxt = MemoryContextSwitchTo(indexRel->rd_indexcxt);
+	indexRel->rd_indattr = bms_copy(attrs);
+	MemoryContextSwitchTo(oldcxt);
+
+	return attrs;
+}
+
+/*
  * RelationGetIndexAttrBitmap -- get a bitmap of index attribute numbers
  *
  * The result has a bit set for each attribute used anywhere in the index
@@ -6690,6 +6745,7 @@ load_relcache_init_file(bool shared)
 		rel->rd_partcheckcxt = NULL;
 		rel->rd_indexprs = NIL;
 		rel->rd_indpred = NIL;
+		rel->rd_indattr = NULL;
 		rel->rd_exclops = NULL;
 		rel->rd_exclprocs = NULL;
 		rel->rd_exclstrats = NULL;
