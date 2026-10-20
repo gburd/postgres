@@ -19,6 +19,7 @@ tests += {
       'bark_knn_inttypes',
       'bark_codedlist',
       'bark_l1_cache',
+      'bark_btree_impl',
     ],
     'regress_args': ['--temp-config', files('../injection_points/extra.conf')],
     # The injection points are run in the same backend, so disable
@@ -56,6 +57,7 @@ tests += {
       't/010_bottomup_wal_level.pl',
       't/011_insert_multi_recovery.pl',
       't/012_codedlist_recovery.pl',
+      't/013_btree_impl_dump_upgrade.pl',
     ],
   },
 }
