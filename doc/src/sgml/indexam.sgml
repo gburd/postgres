@@ -537,6 +537,20 @@ ambulkdelete (IndexVacuumInfo *info,
   </para>
 
   <para>
+   An access method that sets <structfield>amcanversion</structfield> must
+   also check <literal>info-&gt;version_callback</literal>.  A table access
+   method whose locator is versioned may set it when it vacuums such an
+   index; it is NULL otherwise.  When it is set, the access method calls it
+   instead of <literal>callback</literal> for every entry, tagged or not, in
+   the style
+   <literal>info-&gt;version_callback(<replaceable>TID</replaceable>, <replaceable>tag</replaceable>, info-&gt;version_state)</literal>,
+   which returns <literal>INDEX_ENTRY_DEAD</literal> to delete the entry,
+   <literal>INDEX_ENTRY_LIVE</literal> to keep it, or
+   <literal>INDEX_ENTRY_LIVE_UNTAG</literal> to keep it and allow the access
+   method to rewrite it with tag 0 (it may also keep it as it is).
+  </para>
+
+  <para>
    Because of limited <varname>maintenance_work_mem</varname>,
    <function>ambulkdelete</function> might need to be called more than once when many
    tuples are to be deleted.  The <literal>stats</literal> argument is the result
