@@ -44,6 +44,35 @@
  *   expose it.  BRIN summarizes rows by ranges of block numbers, read through
  *   table_index_build_range_scan().
  *
+ * Versioned locators
+ * ------------------
+ *
+ * Heap gives a row a new locator whenever an UPDATE changes an indexed
+ * column, so an index entry (key, locator) names one version of the row and
+ * its key always describes that version.  A table AM that updates rows in
+ * place keeps the locator, so an entry made for an older version would still
+ * reach the row after its key had changed.  Such an AM can say its locator
+ * is versioned: every index entry then carries a version tag, and an entry
+ * names a row version as (key, locator, tag).
+ *
+ * - A tag is an IndexVersionTag.  InvalidIndexVersionTag (0) means untagged:
+ *   the entry was made by a table AM that does not tag, or for a version
+ *   older than whatever the table AM keeps history for (its "base").  An
+ *   untagged entry does not mean "the current version".
+ *
+ * - The table AM hands out tags (with a new row version from
+ *   table_tuple_update, and before each callback of its index build and
+ *   validation scans) and alone defines what they mean.
+ *
+ * - An index AM that can store tags (amcanversion) stores each entry's tag,
+ *   orders equal (key, locator) entries by it as an unsigned integer, and
+ *   returns it with the locator, but never interprets it.  Other index AMs
+ *   store no tag; their entries are untagged.
+ *
+ * - Deciding whether an entry is valid for the version a snapshot sees, and
+ *   when tags may be discarded, is the table AM's obligation.  Core only
+ *   carries tags between the index AM and the table AM.
+ *
  * Portions Copyright (c) 1996-2026, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
@@ -59,6 +88,14 @@
 
 /* avoid including rel.h here; rel.h and tableam.h include this header */
 struct RelationData;
+
+/*
+ * The version tag an index entry carries when the table's locator is
+ * versioned; see above.  Code outside the table AM treats it as opaque.
+ */
+typedef uint32 IndexVersionTag;
+
+#define InvalidIndexVersionTag	((IndexVersionTag) 0)
 
 /*
  * A description of the locator a relation's table AM hands to its indexes.
@@ -128,6 +165,16 @@ typedef struct LocatorDesc
 	 * version current at that time, not the one the event was queued for.
 	 */
 	bool		old_version_retained;
+
+	/*
+	 * Does an index entry name a row version as (locator, tag)?  See
+	 * "Versioned locators" above.  Heap says false: its locator alone names a
+	 * version, and every entry is untagged.  An AM that says true hands out
+	 * tags with new row versions, and must resolve every (locator, tag) an
+	 * index hands back to it, wherever core code does that; tableam.h says
+	 * where.
+	 */
+	bool		versioned;
 
 	/*
 	 * May a set intersection (BitmapAnd) lose a row in this group?  A bitmap
