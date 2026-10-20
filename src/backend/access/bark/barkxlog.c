@@ -19,6 +19,7 @@
 #include "access/bark.h"
 #include "access/barkxlog.h"
 #include "access/bufmask.h"
+#include "access/htup_details.h"
 #include "access/xlogutils.h"
 #include "storage/standby.h"
 
@@ -661,6 +662,24 @@ bark_xlog_reuse_page(XLogReaderState *record)
 }
 
 /*
+ * The TID stride of an ADD_TID or INSERT_SWAP record's index: the uint16
+ * after the record's struct, or MaxHeapTuplesPerPage when there is none
+ * (see xl_bark_add_tid).  Both structs have the same size.
+ */
+static uint16
+bark_xlog_tid_stride(XLogReaderState *record)
+{
+	uint16		stride = MaxHeapTuplesPerPage;
+
+	StaticAssertStmt(SizeOfBarkAddTid == SizeOfBarkInsertSwap,
+					 "ADD_TID and INSERT_SWAP records differ in size");
+	if (XLogRecGetDataLen(record) >= SizeOfBarkAddTid + sizeof(uint16))
+		memcpy(&stride, XLogRecGetData(record) + SizeOfBarkAddTid,
+			   sizeof(uint16));
+	return stride;
+}
+
+/*
  * Replay the addition of one heap TID to a LIST or POSTING entry
  * (bark_add_tid_entry): re-form the entry as the primary did, code it for
  * the page's prefix if it has one, and overwrite it.  The primary checked
@@ -683,7 +702,8 @@ bark_xlog_add_tid(XLogReaderState *record)
 		IndexTuple	coded;
 
 		entry = BarkPageGetItem(page, xlrec->offnum, &ibuf);
-		ext = bark_entry_add_tid(entry, &xlrec->tid, BarkMaxItemSize);
+		ext = bark_entry_add_tid(entry, &xlrec->tid, BarkMaxItemSize,
+								 bark_xlog_tid_stride(record));
 		if (ext == NULL)
 			elog(PANIC, "failed to add a TID to a BARK entry during replay");
 		coded = bark_prefix_encode(page, ext);
@@ -723,7 +743,8 @@ bark_xlog_insert_swap(XLogReaderState *record)
 		IndexTuple	rcoded;
 
 		bark_entry_swap_tid(BarkPageGetItem(page, xlrec->offnum, &ibuf),
-							&xlrec->tid, &left, &right);
+							&xlrec->tid, &left, &right,
+							bark_xlog_tid_stride(record));
 		lcoded = bark_prefix_encode(page, left);
 		rcoded = bark_prefix_encode(page, right);
 		if (!PageIndexTupleOverwrite(page, xlrec->offnum, lcoded,

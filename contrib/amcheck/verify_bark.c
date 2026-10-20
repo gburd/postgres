@@ -146,7 +146,7 @@ bark_check_compare_leaf(Relation rel, BarkKeyInfo *keyinfo, IndexTuple itup,
 	ItemPointerData lo;
 	ItemPointerData hi;
 
-	bark_entry_tid_range(itup, &lo, &hi);
+	bark_entry_tid_range(itup, &lo, &hi, keyinfo->tidstride);
 	return bark_compare_itups_tid(keyinfo, rel, itup, high ? &hi : &lo, other);
 }
 
@@ -729,7 +729,7 @@ bark_check_list(Relation rel, BlockNumber blkno, OffsetNumber off,
 	 * (BarkListIsCoded) is decoded; a plain LIST reads its array in place.
 	 */
 	tids = palloc_array(ItemPointerData, n);
-	bark_entry_get_tids(itup, tids, n);
+	bark_entry_get_tids(itup, tids, n, bark_index_tid_stride(rel));
 
 	for (int i = 1; i < n; i++)
 	{
@@ -765,7 +765,7 @@ bark_check_marker(Relation rel, BarkKeyInfo *keyinfo, BlockNumber blkno,
 	ItemPointerData lo;
 	ItemPointerData hi;
 
-	bark_entry_tid_range(itup, &lo, &hi);
+	bark_entry_tid_range(itup, &lo, &hi, keyinfo->tidstride);
 	if (!BarkTidIsMarker(&hi))
 		return;
 
@@ -1265,7 +1265,7 @@ bark_fingerprint_entry(Relation rel, BarkCheckState *state, IndexTuple itup)
 
 	ntids = bark_entry_count_tids(itup);
 	tids = palloc_array(ItemPointerData, ntids);
-	ntids = bark_entry_get_tids(itup, tids, ntids);
+	ntids = bark_entry_get_tids(itup, tids, ntids, bark_index_tid_stride(rel));
 	for (int i = 0; i < ntids; i++)
 	{
 		Size		len;
@@ -1525,7 +1525,8 @@ bark_check_unique_runs(Relation rel, BarkKeyInfo *keyinfo,
 
 				ntids = bark_entry_count_tids(itup);
 				tids = palloc_array(ItemPointerData, ntids);
-				ntids = bark_entry_get_tids(itup, tids, ntids);
+				ntids = bark_entry_get_tids(itup, tids, ntids,
+											keyinfo->tidstride);
 
 				if (run.key != NULL &&
 					bark_compare_itups(keyinfo, rel, run.key, keytup) == 0)
