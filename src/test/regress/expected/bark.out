@@ -3179,8 +3179,29 @@ DETAIL:  Valid values are between "10" and "100".
 CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (fillfactor = 101);
 ERROR:  value 101 out of bounds for option "fillfactor"
 DETAIL:  Valid values are between "10" and "100".
-CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (deduplicate_items = off);
-ERROR:  unrecognized parameter "deduplicate_items"
+-- btree's other parameters are accepted, so that BARK can implement btree
+-- indexes (bark_btree_impl in src/test/modules/bark tests what
+-- deduplicate_items = off stores).
+CREATE INDEX bark_ff_dd ON bark_ff USING bark (a)
+  WITH (deduplicate_items = off, vacuum_cleanup_index_scale_factor = 0.5);
+SELECT reloptions FROM pg_class WHERE relname = 'bark_ff_dd';
+                          reloptions                           
+---------------------------------------------------------------
+ {deduplicate_items=off,vacuum_cleanup_index_scale_factor=0.5}
+(1 row)
+
+SELECT bark_index_check('bark_ff_dd', true);
+ bark_index_check 
+------------------
+ 
+(1 row)
+
+DROP INDEX bark_ff_dd;
+CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (deduplicate_items = 2);
+ERROR:  invalid value for boolean option "deduplicate_items": 2
+CREATE INDEX bark_ff_bad ON bark_ff USING bark (a) WITH (vacuum_cleanup_index_scale_factor = -1);
+ERROR:  value -1 out of bounds for option "vacuum_cleanup_index_scale_factor"
+DETAIL:  Valid values are between "0.000000" and "10000000000.000000".
 -- A low fillfactor with wide keys still puts at least two entries on each
 -- page: 200 incompressible ~1kB keys at fillfactor 10 must take fewer than
 -- 200 pages, internal levels and meta page included.

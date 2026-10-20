@@ -249,6 +249,9 @@ bark_column_equalimage(Relation index, int i)
  * other key columns still need equalimage, since an index-only scan returns
  * them, and INCLUDE columns still forbid it.  The meta page's
  * bark_allequalimage keeps bark_allequalimage's answer.
+ *
+ * This is what the operator classes allow, which amcheck relies on.  The
+ * writers also honor the deduplicate_items reloption (bark_index_coalesces).
  */
 bool
 bark_index_may_coalesce(Relation index)
@@ -266,6 +269,21 @@ bark_index_may_coalesce(Relation index)
 			return false;
 
 	return true;
+}
+
+/*
+ * Do the writers (insert and CREATE INDEX) coalesce this index's equal keys?
+ * Not in a unique index, nor when bark_index_may_coalesce says the operator
+ * classes forbid it, nor with the deduplicate_items reloption off, which
+ * turns BARK's coalescing off as it turns off nbtree's deduplication: later
+ * inserts store every row as a SINGLE, and entries already coalesced stay as
+ * they are.
+ */
+bool
+bark_index_coalesces(Relation index, bool unique)
+{
+	return !unique && BarkGetDeduplicateItems(index) &&
+		bark_index_may_coalesce(index);
 }
 
 /*
