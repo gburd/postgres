@@ -1867,6 +1867,33 @@ becoming an array, number scale), and the isolation spec
 bark_multikey_hot_epq (the waiting UPDATE compares with the version it
 waited for).
 
+'''As built (BARK as a btree implementation).''' Core's implementation
+hook (<code>pg_index.indimplam</code>, <code>IndexAmRoutine.amimplements</code>,
+<code>default_btree_implementation</code>) lets an index AM's code serve
+indexes created <code>USING btree</code>. barkhandler sets
+<code>amimplements = BTREE_AM_OID</code>; nothing else in BARK changed
+for it, because BARK never tests relam and a btree class's family is
+btree's, so every column takes the scalar path (no extracted column, no
+procedure past 6, no procedure 15). Core's agreement check was relaxed
+for it: an implementation may number more support procedures (BARK's
+15 against btree's 6) and may have amstrategies 0; the relcache's
+opclass cache keeps the procedures for the largest count asked for. The
+<code>&lt;~&gt;</code> operators in btree's integer_ops give a
+BARK-implemented int btree index KNN paths that an nbtree one lacks, a
+capability of the implementation. btree's
+<code>deduplicate_items</code> (off: SINGLEs only, through
+bark_index_coalesces) and <code>vacuum_cleanup_index_scale_factor</code>
+(ignored) are BARK reloptions too. bt_* tools refuse such an index,
+bark_index_check and pageinspect's bark_* accept it; pg_amcheck skips
+it. REPACK sorts on it (tuplesort_begin_cluster reads only opclass
+data). Multikey classes still need <code>USING bark</code>. Run with
+<code>default_btree_implementation = bark</code> cluster-wide, the core
+regression and isolation suites show no wrong result or crash; their
+differences are plans, sizes (no LP_DEAD marking), <code>\d</code>'s
+"implemented by", index properties and one error detail. Tests:
+bark_btree_impl.sql and t/013_btree_impl_dump_upgrade.pl (bark module),
+test_index_impl.
+
 ==== Wildcard indexes as the check ====
 
 M5's wildcard index is the hardest case M1 has to carry, so it is the check

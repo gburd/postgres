@@ -68,9 +68,11 @@
   B-tree's size limit, an index with many rows per key, an index on long
   keys that share leading bytes (URLs, paths, prefixed codes), or an
   integer column queried for the nearest values to a constant.  For other
-  indexes, BARK and B-tree behave alike.  B-tree remains the right choice
-  for a primary key or a unique constraint, which BARK cannot back today,
-  and for anything else listed in <xref linkend="bark-limitations"/>.
+  indexes, BARK and B-tree behave alike.  An index created
+  <literal>USING bark</literal> cannot back a primary key or a unique
+  constraint, but BARK can also implement ordinary B-tree indexes,
+  constraints' included (<xref linkend="bark-btree-impl"/>).  See
+  <xref linkend="bark-limitations"/> for the rest.
  </para>
 
  <para>
@@ -925,12 +927,128 @@ SELECT id FROM events
     </para>
    </listitem>
   </varlistentry>
+  <varlistentry>
+   <term><literal>deduplicate_items</literal> (<type>boolean</type>)</term>
+   <listitem>
+    <para>
+     Whether rows of equal keys may share a LIST or POSTING entry, as
+     B-tree's parameter of the same name controls its deduplication (see
+     <xref linkend="btree-deduplication"/>).  With it on, the default,
+     they do as described in <xref linkend="bark-features-duplicates"/>;
+     with it off, every row gets an entry of its own.  A change affects
+     only rows inserted afterward.
+    </para>
+   </listitem>
+  </varlistentry>
+  <varlistentry>
+   <term><literal>vacuum_cleanup_index_scale_factor</literal> (<type>floating point</type>)</term>
+   <listitem>
+    <para>
+     Accepted for compatibility with B-tree, and ignored, as by B-tree.
+    </para>
+   </listitem>
+  </varlistentry>
  </variablelist>
 
+</sect2>
+
+<sect2 id="bark-btree-impl">
+ <title>BARK as the Implementation of B-Tree Indexes</title>
+
  <para>
-  B-tree's <literal>deduplicate_items</literal> parameter does not exist
-  for BARK: whether rows of a key share an entry is decided by the rule in
-  <xref linkend="bark-features-duplicates"/>.
+  BARK can also store and search ordinary B-tree indexes, those created
+  <literal>USING btree</literal> (see
+  <xref linkend="index-implementations"/>).  Such an index remains a
+  B-tree index for everything but its storage: it has B-tree's operator
+  classes, the planner treats it as a B-tree index,
+  <function>pg_get_indexdef</function> and <application>pg_dump</application>
+  show <literal>USING btree</literal>, and it can back a primary key, a
+  unique constraint (deferrable or not) and an exclusion constraint, as
+  any B-tree index can.  Its pages are BARK's.
+ </para>
+
+ <para>
+  To create B-tree indexes implemented by BARK, set
+  <xref linkend="guc-default-btree-implementation"/>:
+<programlisting>
+SET default_btree_implementation = bark;
+CREATE TABLE orders (id int PRIMARY KEY, customer int);
+CREATE INDEX orders_customer_idx ON orders (customer);
+</programlisting>
+  Both indexes are B-tree indexes implemented by BARK, as
+  <command>\d</command> shows (<literal>btree, for table
+  "public.orders", implemented by bark</literal>) and
+  <structname>pg_index</structname>.<structfield>indimplam</structfield>
+  records.  The choice is made when an index is created and kept by
+  <command>REINDEX</command>, <command>CLUSTER</command>,
+  <command>VACUUM FULL</command>, <command>REPACK</command> and
+  <command>ALTER TABLE</command>, whatever the setting says later;
+  <application>pg_dump</application> and <application>pg_upgrade</application>
+  preserve it.  Indexes of system catalogs and TOAST tables are always
+  implemented by B-tree itself.
+ </para>
+
+ <para>
+  Everything B-tree indexes support works on such an index, and
+  everything in <xref linkend="bark-features"/> that does not need a BARK
+  operator class: keys of any size, LIST and POSTING entries, prefix
+  compression, and the nearest-neighbor ordering operators on integer
+  columns, which an index implemented by B-tree itself cannot serve.  That
+  ordering is a capability of the implementation, not of B-tree: a query
+  that sorts by <literal>col &lt;~&gt; constant</literal> uses an index
+  scan when the index on <literal>col</literal> is implemented by BARK, and
+  a sort otherwise.  The index's properties
+  (<function>pg_index_has_property</function>,
+  <function>pg_index_column_has_property</function>) are BARK's, so
+  <literal>distance_orderable</literal> is true for such a column.
+ </para>
+
+ <para>
+  It differs from a B-tree index implemented by B-tree's own code in these
+  ways:
+ </para>
+
+ <itemizedlist>
+  <listitem>
+   <para>
+    It takes B-tree's storage parameters, <literal>fillfactor</literal>,
+    <literal>deduplicate_items</literal> and
+    <literal>vacuum_cleanup_index_scale_factor</literal>, and BARK's own,
+    <literal>prefix_compression</literal>.  With
+    <literal>deduplicate_items</literal> off, BARK forms no LIST or
+    POSTING entries, as B-tree forms no posting lists;
+    <literal>vacuum_cleanup_index_scale_factor</literal> is accepted and
+    ignored, as by B-tree.  The default fill factor is BARK's, 90.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Tools that read its pages must be BARK's:
+    <function>bark_index_check</function> and
+    <function>bark_index_parent_check</function> rather than
+    <function>bt_index_check</function> and
+    <function>bt_index_parent_check</function>, which refuse it,
+    <xref linkend="pageinspect"/>'s <function>bark_*</function>
+    functions rather than its <function>bt_*</function> ones, and
+    <function>pgstatbarkindex</function> rather than
+    <function>pgstatindex</function>.  <xref linkend="app-pgamcheck"/>
+    skips it.
+   </para>
+  </listitem>
+  <listitem>
+   <para>
+    Its plans can differ from those of a B-tree index implemented by B-tree
+    itself, since BARK estimates its own costs; and scans do not mark the
+    entries of dead rows (see <xref linkend="bark-limitations"/>), so an
+    index with many dead entries may grow until <command>VACUUM</command>.
+   </para>
+  </listitem>
+ </itemizedlist>
+
+ <para>
+  An index with a multikey column (<xref linkend="bark-multikey-funcs"/>),
+  or any other BARK operator class, still needs <literal>USING
+  bark</literal>: a B-tree index has B-tree's operator classes only.
  </para>
 
 </sect2>
@@ -1156,8 +1274,9 @@ SELECT single_entries, list_entries, posting_entries, oversized_entries
   <listitem>
    <para>
     A <literal>PRIMARY KEY</literal> or <literal>UNIQUE</literal> constraint
-    cannot use a BARK index.  Such constraints always create a B-tree
-    index, and <literal>ALTER TABLE ... ADD CONSTRAINT ... PRIMARY KEY USING
+    cannot use an index created <literal>USING bark</literal>.  Such
+    constraints always create a B-tree index (which BARK can implement; see
+    <xref linkend="bark-btree-impl"/>), and <literal>ALTER TABLE ... ADD CONSTRAINT ... PRIMARY KEY USING
     INDEX</literal> (or <literal>UNIQUE USING INDEX</literal>) refuses a BARK
     index.  A unique BARK index made with <command>CREATE UNIQUE
     INDEX</command> enforces uniqueness, and it can be the target of a
@@ -1168,8 +1287,9 @@ SELECT single_entries, list_entries, posting_entries, oversized_entries
   </listitem>
   <listitem>
    <para>
-    Since only a constraint can be deferrable, a BARK index cannot
-    enforce a deferrable uniqueness constraint.  An exclusion constraint
+    Since only a constraint can be deferrable, an index created
+    <literal>USING bark</literal> cannot enforce a deferrable uniqueness
+    constraint; a B-tree index implemented by BARK can.  An exclusion constraint
     (<literal>EXCLUDE USING bark</literal>) works, deferrable or not.
    </para>
   </listitem>
@@ -1197,9 +1317,10 @@ SELECT single_entries, list_entries, posting_entries, oversized_entries
   </listitem>
   <listitem>
    <para>
-    <command>CLUSTER</command> and <command>REPACK</command> using a BARK
-    index read the table through the index, rather than sorting it as
-    they can with a B-tree index.
+    <command>CLUSTER</command> and <command>REPACK</command> using an index
+    created <literal>USING bark</literal> read the table through the
+    index, rather than sorting it as they can with a B-tree index.  A
+    B-tree index implemented by BARK is sorted on, as any B-tree index.
    </para>
   </listitem>
   <listitem>
