@@ -1401,3 +1401,40 @@ bark_multikey_sim_triconsistent(PG_FUNCTION_ARGS)
 		m += check[i] != GIN_FALSE;
 	PG_RETURN_GIN_TERNARY_VALUE(4 * m >= nkeys ? GIN_MAYBE : GIN_FALSE);
 }
+
+/*
+ * bark_test_bigoffset: heap, declaring locator offsets up to MaxOffsetNumber.
+ * It exists only to reach bark_build's refusal of a table whose offsets exceed
+ * MaxHeapTuplesPerPage (bark_locator.sql), and is good for nothing else:
+ * heap's index build scan refuses a routine that is not heap's, so only BARK,
+ * which refuses first, may be asked to index such a table, and it must have
+ * no column that needs a TOAST table.
+ */
+static const LocatorDesc bigoffset_locator = {
+	.width = sizeof(ItemPointerData),
+	.max_offset = MaxOffsetNumber,
+	.name = "bigoffset",
+	.stable = false,
+	.old_version_retained = true,
+};
+
+static const LocatorDesc *
+bigoffset_relation_locator(Relation rel)
+{
+	return &bigoffset_locator;
+}
+
+PG_FUNCTION_INFO_V1(bark_test_bigoffset_handler);
+
+Datum
+bark_test_bigoffset_handler(PG_FUNCTION_ARGS)
+{
+	static TableAmRoutine methods;
+
+	if (methods.type == 0)
+	{
+		methods = *GetHeapamTableAmRoutine();
+		methods.relation_locator = bigoffset_relation_locator;
+	}
+	PG_RETURN_POINTER(&methods);
+}
