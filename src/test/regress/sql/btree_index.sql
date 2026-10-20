@@ -520,3 +520,35 @@ CREATE TABLE btree_part (id int4) PARTITION BY RANGE (id);
 CREATE INDEX btree_part_idx ON btree_part(id);
 ALTER INDEX btree_part_idx ALTER COLUMN id SET (n_distinct=100);
 DROP TABLE btree_part;
+
+-- Base pins on index roots survive changes to max_pinned_blocks: raising
+-- it after the first pin was taken, and lowering it while pins are held.
+-- Each probe below descends a different multi-level index, so each one
+-- takes a pin on a different root.
+CREATE TABLE btree_basepin (a int, b int, c int);
+INSERT INTO btree_basepin SELECT g, g, g FROM generate_series(1, 2000) g;
+CREATE INDEX btree_basepin_a ON btree_basepin (a);
+CREATE INDEX btree_basepin_b ON btree_basepin (b);
+CREATE INDEX btree_basepin_c ON btree_basepin (c);
+VACUUM ANALYZE btree_basepin;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SET max_pinned_blocks = 1;
+BEGIN;
+SELECT count(*) FROM btree_basepin WHERE a = 1;
+COMMIT;
+SET max_pinned_blocks = 1024;
+BEGIN;
+SELECT count(*) FROM btree_basepin WHERE a = 1;
+SELECT count(*) FROM btree_basepin WHERE b = 1;
+SELECT count(*) FROM btree_basepin WHERE c = 1;
+COMMIT;
+BEGIN;
+SELECT count(*) FROM btree_basepin WHERE a = 1;
+SELECT count(*) FROM btree_basepin WHERE b = 1;
+SET LOCAL max_pinned_blocks = 0;
+COMMIT;
+RESET max_pinned_blocks;
+RESET enable_seqscan;
+RESET enable_bitmapscan;
+DROP TABLE btree_basepin;
