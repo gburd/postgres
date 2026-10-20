@@ -671,6 +671,7 @@ _bt_bottomupdel_finish_pending(Page page, BTDedupState state,
 			istatus->knowndeletable = false;	/* for now */
 			istatus->promising = dupinterval;	/* simple rule */
 			istatus->freespace = ItemIdGetLength(itemid) + sizeof(ItemIdData);
+			istatus->tag = InvalidIndexVersionTag;
 
 			delstate->ndeltids++;
 		}
@@ -732,6 +733,7 @@ _bt_bottomupdel_finish_pending(Page page, BTDedupState state,
 					(lastpromising && p == nitem - 1))
 					istatus->promising = true;
 				istatus->freespace = sizeof(ItemPointerData);	/* at worst */
+				istatus->tag = InvalidIndexVersionTag;
 
 				ideltid++;
 				istatus++;
