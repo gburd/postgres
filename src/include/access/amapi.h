@@ -311,6 +311,28 @@ typedef struct IndexAmRoutine
 	Oid			amkeytype;
 
 	/*
+	 * pg_am OID of a built-in index AM whose indexes this AM can implement,
+	 * or InvalidOid.  An index created with that AM can then be stored and
+	 * searched by this AM's code instead; see pg_index.indimplam.  The
+	 * implementation promises to accept the implemented AM's operator classes
+	 * (with the same support procedure and strategy numbering) and its
+	 * reloptions, and to set every capability flag the implemented AM's
+	 * routine sets (amcanunique, amcaninclude, amcanorder, amcanbackward,
+	 * ammarkpos/amrestrpos, and so on), with the same amkeytype.
+	 *
+	 * Its amsupport may exceed the implemented AM's: support procedures past
+	 * the implemented AM's are optional, and the implemented AM's operator
+	 * classes have none, so the implementation must treat a missing one as
+	 * absent (index_getprocid returns InvalidOid).  Its amstrategies is
+	 * either the implemented AM's or 0 (any numbering).
+	 *
+	 * shortcut: only built-in AMs, which have fixed OIDs, can be implemented,
+	 * and core lets only btree be; allow others once their relam ==
+	 * FOO_AM_OID tests are audited for "this is FOO's own code".
+	 */
+	Oid			amimplements;
+
+	/*
 	 * If you add new properties to either the above or the below lists, then
 	 * they should also (usually) be exposed via the property API (see
 	 * IndexAMProperty at the top of the file, and utils/adt/amutils.c).
@@ -350,6 +372,9 @@ typedef struct IndexAmRoutine
 	amtranslate_cmptype_function amtranslatecmptype;	/* can be NULL */
 } IndexAmRoutine;
 
+
+/* GUC parameter */
+extern PGDLLIMPORT char *default_btree_implementation;
 
 /* Functions in access/index/amapi.c */
 extern const IndexAmRoutine *GetIndexAmRoutine(Oid amhandler);

@@ -15,10 +15,16 @@
 
 #include "access/amapi.h"
 #include "access/htup_details.h"
+#include "access/xact.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_opclass.h"
+#include "miscadmin.h"
 #include "utils/fmgrprotos.h"
+#include "utils/guc_hooks.h"
 #include "utils/syscache.h"
+
+/* GUC variable: index AM implementing new btree indexes, or "" for nbtree */
+char	   *default_btree_implementation = "";
 
 
 /*
@@ -211,4 +217,59 @@ amvalidate(PG_FUNCTION_ARGS)
 	result = amroutine->amvalidate(opclassoid);
 
 	PG_RETURN_BOOL(result);
+}
+
+
+/* check_hook: validate new default_btree_implementation */
+bool
+check_default_btree_implementation(char **newval, void **extra,
+								   GucSource source)
+{
+	HeapTuple	tuple;
+	bool		isindex;
+
+	if (**newval == '\0')
+		return true;
+
+	if (strlen(*newval) >= NAMEDATALEN)
+	{
+		GUC_check_errdetail("\"%s\" is too long (maximum %d characters).",
+							"default_btree_implementation", NAMEDATALEN - 1);
+		return false;
+	}
+
+	/*
+	 * If we aren't inside a transaction, or not connected to a database, we
+	 * cannot do the catalog access necessary to verify the method.  Must
+	 * accept the value on faith.  Whether the method can implement btree
+	 * indexes is checked when an index is created.
+	 */
+	if (!IsTransactionState() || MyDatabaseId == InvalidOid)
+		return true;
+
+	tuple = SearchSysCache1(AMNAME, CStringGetDatum(*newval));
+	if (!HeapTupleIsValid(tuple))
+	{
+		/* As for default_table_access_method, only a NOTICE when testing. */
+		if (source == PGC_S_TEST)
+		{
+			ereport(NOTICE,
+					(errcode(ERRCODE_UNDEFINED_OBJECT),
+					 errmsg("access method \"%s\" does not exist", *newval)));
+			return true;
+		}
+		GUC_check_errdetail("Access method \"%s\" does not exist.", *newval);
+		return false;
+	}
+	isindex = ((Form_pg_am) GETSTRUCT(tuple))->amtype == AMTYPE_INDEX;
+	ReleaseSysCache(tuple);
+
+	if (!isindex)
+	{
+		GUC_check_errdetail("Access method \"%s\" is not of type %s.",
+							*newval, "INDEX");
+		return false;
+	}
+
+	return true;
 }

@@ -1776,6 +1776,8 @@ generateClonedIndexStmt(RangeVar *heapRel, Relation source_idx,
 	index->oldNumber = InvalidRelFileNumber;
 	index->oldCreateSubid = InvalidSubTransactionId;
 	index->oldFirstRelfilelocatorSubid = InvalidSubTransactionId;
+	index->oldImplRels = NIL;
+	index->oldImplAms = NIL;
 	index->unique = idxrec->indisunique;
 	index->nulls_not_distinct = idxrec->indnullsnotdistinct;
 	index->primary = idxrec->indisprimary;
@@ -2409,6 +2411,8 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 	index->oldNumber = InvalidRelFileNumber;
 	index->oldCreateSubid = InvalidSubTransactionId;
 	index->oldFirstRelfilelocatorSubid = InvalidSubTransactionId;
+	index->oldImplRels = NIL;
+	index->oldImplAms = NIL;
 	index->transformed = false;
 	index->concurrent = false;
 	index->if_not_exists = false;
