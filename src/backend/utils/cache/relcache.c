@@ -76,6 +76,7 @@
 #include "pgstat.h"
 #include "rewrite/rewriteDefine.h"
 #include "rewrite/rowsecurity.h"
+#include "storage/bufmgr.h"
 #include "storage/fd.h"
 #include "storage/lmgr.h"
 #include "storage/lock.h"
@@ -2483,6 +2484,7 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 		pfree(relation->rd_options);
 	if (relation->rd_indextuple)
 		pfree(relation->rd_indextuple);
+	ReleaseNailedBuffersOfRelation(relation->rd_locator);
 	if (relation->rd_amcache)
 		pfree(relation->rd_amcache);
 	if (relation->rd_fdwroutine)
@@ -2520,6 +2522,14 @@ RelationInvalidateRelation(Relation relation)
 	 * truncation.
 	 */
 	RelationCloseSmgr(relation);
+
+	/*
+	 * Drop any buffers this backend nailed for this relation.  A nail is a
+	 * pin held across statements, and both InvalidateBuffer() and
+	 * LockBufferForCleanup() wait for the refcount to fall, so a nail must
+	 * never outlive the relation it was taken for.
+	 */
+	ReleaseNailedBuffersOfRelation(relation->rd_locator);
 
 	/* Free AM cached data, if any */
 	if (relation->rd_amcache)

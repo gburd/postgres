@@ -539,6 +539,7 @@ bool		AllowAlterSystem = true;
  * on platforms with System V shared memory; Windows links win32_shmem.c
  * instead, and the GUC machinery below needs these on every platform.
  */
+int			max_nailed_buffers = 0;
 bool		shmem_populate = false;
 bool		shmem_interleave = false;
 bool		log_duration = false;
