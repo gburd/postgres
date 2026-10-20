@@ -533,7 +533,7 @@ bark_items_page_check(Page page)
  * and an OVERSIZED entry, whose key is on its overflow chain, has none.
  */
 static void
-bark_page_items_internal(FunctionCallInfo fcinfo, Page page)
+bark_page_items_internal(FunctionCallInfo fcinfo, Page page, uint16 stride)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	BarkPageOpaque opaque = BarkPageGetOpaque(page);
@@ -605,7 +605,7 @@ bark_page_items_internal(FunctionCallInfo fcinfo, Page page)
 			case BARK_SHAPE_POSTING:
 				ntids = bark_entry_count_tids(itup);
 				tids = palloc_array(ItemPointerData, Max(ntids, 1));
-				ntids = bark_entry_get_tids(itup, tids, ntids);
+				ntids = bark_entry_get_tids(itup, tids, ntids, stride);
 				htid = ntids > 0 ? &tids[0] : NULL;
 				dlen = BarkEntryGetBodyOffset(itup) - dataoff;
 				break;
@@ -704,6 +704,7 @@ bark_page_items(PG_FUNCTION_ARGS)
 	int64		blkno = PG_GETARG_INT64(1);
 	Relation	rel;
 	Page		page;
+	uint16		stride;
 
 	check_superuser();
 
@@ -721,10 +722,11 @@ bark_page_items(PG_FUNCTION_ARGS)
 	 * the call.
 	 */
 	page = bark_copy_block(rel, (BlockNumber) blkno);
+	stride = bark_index_tid_stride(rel);
 	relation_close(rel, AccessShareLock);
 
 	if (!PageIsNew(page))
-		bark_page_items_internal(fcinfo, page);
+		bark_page_items_internal(fcinfo, page, stride);
 	pfree(page);
 
 	return (Datum) 0;
@@ -749,9 +751,13 @@ bark_page_items_bytea(PG_FUNCTION_ARGS)
 
 	InitMaterializedSRF(fcinfo, 0);
 
+	/*
+	 * A bare page does not say its index's TID stride; decode it as a heap
+	 * table's index's (bark_index_tid_stride's default).
+	 */
 	page = get_page_from_raw(raw_page);
 	if (!PageIsNew(page))
-		bark_page_items_internal(fcinfo, page);
+		bark_page_items_internal(fcinfo, page, MaxHeapTuplesPerPage);
 	pfree(page);
 
 	return (Datum) 0;

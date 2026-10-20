@@ -1137,7 +1137,8 @@ bark_mk_seen(IndexScanDesc scan, IndexTuple itup, ItemPointer tids,
 
 	for (int i = 0; i < ntids; i++)
 	{
-		uint64		key = bark_tid_to_key(&tids[i]);
+		uint64		key = bark_tid_to_key(&tids[i],
+										((BarkScanOpaque) scan->opaque)->keyinfo->tidstride);
 		uint64		bit = UINT64CONST(1) << (key & 63);
 		uint64	   *word = bark_seen_find(mk->seen, key >> 6);
 
@@ -3467,7 +3468,8 @@ bark_readpage(IndexScanDesc scan, ScanDirection dir, OffsetNumber offnum,
 			so->entryTids = MemoryContextAlloc(so->scanCxt,
 											   so->entryTidsAlloc * sizeof(ItemPointerData));
 		}
-		ntids = bark_entry_get_tids(itup, so->entryTids, so->entryTidsAlloc);
+		ntids = bark_entry_get_tids(itup, so->entryTids, so->entryTidsAlloc,
+									so->keyinfo->tidstride);
 		if (so->mk != NULL)
 		{
 			ntids = bark_mk_accept(scan, resolved, so->entryTids, ntids,
@@ -5092,7 +5094,8 @@ bark_restrpos(IndexScanDesc scan)
 
 		for (int i = 0; i < mk->nundo; i++)
 		{
-			uint64		key = bark_tid_to_key(&mk->undo[i]);
+			uint64		key = bark_tid_to_key(&mk->undo[i],
+											so->keyinfo->tidstride);
 			uint64	   *word = bark_seen_find(mk->seen, key >> 6);
 
 			*word &= ~(UINT64CONST(1) << (key & 63));
