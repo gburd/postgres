@@ -915,8 +915,10 @@ bt_index_check, pageinspect's bt_* functions and pgstatindex refuse the
 index (they compare the implementation, IndexIsNbtree); bark_index_check
 accepts it, since index_checkable compares the index's handler
 (rd_amhandler, the implementation's) with barkhandler, as for an alias
-access method.  pg_amcheck skips such indexes: it selects by relam, and
-would call bt_index_check.
+access method.  pg_amcheck checks such an index as a BARK index, with
+bark_index_check or bark_index_parent_check (it reads pg_index.indimplam),
+given amcheck 1.7; it skips a btree index any other access method
+implements, which bt_index_check would refuse.
 
 
 HOT updates
@@ -1454,8 +1456,9 @@ whose rows have several entries.  bark_index_parent_check takes ShareLock
 and also walks the tree level by level from the root: each level's
 downlinks must name, in order, exactly the pages of the level below, each
 equal to the high key of the child before it, and each parent's high key
-equal to its last child's.  pg_amcheck checks BARK indexes when the
-database's amcheck is version 1.7 or later (prepare_btree_command).
+equal to its last child's.  pg_amcheck checks BARK indexes, and btree
+indexes BARK implements, when the database's amcheck is version 1.7 or
+later (prepare_btree_command).
 
 With checkunique (amcheck 1.8), both functions also walk the leaves of a
 unique index by right links and report a run of equal key columns, which

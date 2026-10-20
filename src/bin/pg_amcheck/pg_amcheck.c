@@ -1920,12 +1920,45 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 	int			ntups;
 	int			i;
 	char		idxams[64];
+	char		implams[64];
+	char		bark_test[256];
+	char		index_bark_test[128];
+	bool		has_implam = PQserverVersion(conn) >= 200000;
 
-	/* The index access methods amcheck can check in this database. */
+	/*
+	 * The index access methods amcheck can check in this database, and the
+	 * implementations (pg_index.indimplam, 0 for none) of a btree index it
+	 * can check.  bark_index_check reads a btree index that bark implements,
+	 * so with amcheck 1.7 such an index is checked as a bark index; one
+	 * implemented by any other access method's code is skipped, since
+	 * bt_index_check() cannot read it.
+	 */
 	if (dat->check_bark)
+	{
 		snprintf(idxams, sizeof(idxams), "%u, %u", BTREE_AM_OID, BARK_AM_OID);
+		snprintf(implams, sizeof(implams), "0, %u", BARK_AM_OID);
+	}
 	else
+	{
 		snprintf(idxams, sizeof(idxams), "%u", BTREE_AM_OID);
+		snprintf(implams, sizeof(implams), "0");
+	}
+	if (has_implam)
+	{
+		snprintf(bark_test, sizeof(bark_test),
+				 "(c.relam = %u OR EXISTS (SELECT 1 FROM pg_catalog.pg_index i"
+				 " WHERE i.indexrelid = c.oid AND i.indimplam = %u))",
+				 BARK_AM_OID, BARK_AM_OID);
+		snprintf(index_bark_test, sizeof(index_bark_test),
+				 "(c.relam = %u OR i.indimplam = %u)",
+				 BARK_AM_OID, BARK_AM_OID);
+	}
+	else
+	{
+		snprintf(bark_test, sizeof(bark_test), "c.relam = %u", BARK_AM_OID);
+		snprintf(index_bark_test, sizeof(index_bark_test), "c.relam = %u",
+				 BARK_AM_OID);
+	}
 
 	initPQExpBuffer(&sql);
 	appendPQExpBufferStr(&sql, "WITH");
@@ -1962,11 +1995,11 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 					  "\nc.oid, n.nspname, c.relname, c.reltoastrelid, c.relpages, "
 					  "c.relam = %u AS is_heap, "
 					  "c.relam IN (%s) AS is_btree, "
-					  "c.relam = %u AS is_bark"
+					  "%s AS is_bark"
 					  "\nFROM pg_catalog.pg_class c "
 					  "INNER JOIN pg_catalog.pg_namespace n "
 					  "ON c.relnamespace = n.oid",
-					  HEAP_TABLE_AM_OID, idxams, BARK_AM_OID);
+					  HEAP_TABLE_AM_OID, idxams, bark_test);
 	if (!opts.allrel)
 		appendPQExpBuffer(&sql,
 						  "\nINNER JOIN include_pat ip"
@@ -2038,11 +2071,13 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 						  HEAP_TABLE_AM_OID, idxams,
 						  HEAP_TABLE_AM_OID, idxams);
 
-	/* As below, skip btree indexes implemented by another AM's code. */
-	if (!opts.allrel && PQserverVersion(conn) >= 200000)
-		appendPQExpBufferStr(&sql,
-							 " AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_index i"
-							 " WHERE i.indexrelid = c.oid AND i.indimplam <> 0)");
+	/* Skip btree indexes implemented by code amcheck cannot check. */
+	if (!opts.allrel && has_implam)
+		appendPQExpBuffer(&sql,
+						  " AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_index i"
+						  " WHERE i.indexrelid = c.oid"
+						  " AND i.indimplam NOT IN (%s))",
+						  implams);
 
 	appendPQExpBufferStr(&sql,
 						 "\nORDER BY c.oid)");
@@ -2076,15 +2111,16 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 		/*
 		 * Include a CTE for btree (and, with amcheck 1.7, bark) indexes
 		 * associated with primary heap tables selected above, filtering by
-		 * exclusion patterns (if any) that match index names.  Skip btree
-		 * indexes implemented by another access method's code, which
-		 * bt_index_check() cannot read.
+		 * exclusion patterns (if any) that match index names, and by
+		 * implementation as above.
 		 */
+		appendPQExpBuffer(&sql,
+						  ", index (oid, nspname, relname, relpages, is_bark) AS ("
+						  "\nSELECT c.oid, r.nspname, c.relname, c.relpages, "
+						  "%s "
+						  "FROM relation r",
+						  index_bark_test);
 		appendPQExpBufferStr(&sql,
-							 ", index (oid, nspname, relname, relpages, is_bark) AS ("
-							 "\nSELECT c.oid, r.nspname, c.relname, c.relpages, "
-							 "c.relam = " CppAsString2(BARK_AM_OID) " "
-							 "FROM relation r"
 							 "\nINNER JOIN pg_catalog.pg_index i "
 							 "ON r.oid = i.indrelid "
 							 "INNER JOIN pg_catalog.pg_class c "
@@ -2106,8 +2142,8 @@ compile_relation_list_one_db(PGconn *conn, SimplePtrList *relations,
 						  " AND c.relam IN (%s) "
 						  "AND c.relkind = " CppAsString2(RELKIND_INDEX),
 						  idxams);
-		if (PQserverVersion(conn) >= 200000)
-			appendPQExpBufferStr(&sql, " AND i.indimplam = 0");
+		if (has_implam)
+			appendPQExpBuffer(&sql, " AND i.indimplam IN (%s)", implams);
 		if (opts.no_toast_expansion)
 			appendPQExpBuffer(&sql,
 							  " AND c.relnamespace != %u",
