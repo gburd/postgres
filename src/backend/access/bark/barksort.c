@@ -807,7 +807,7 @@ bark_buildadd(BarkBuildState *bs, BulkWriteState *bulk, BarkPageState *st,
 		BarkEntryGetShape(itup) == BARK_SHAPE_POSTING)
 		hikeysz = BarkEntryGetBodyOffset(itup);
 	if (st->level == 0)
-		hikeysz = MAXALIGN(hikeysz) + MAXALIGN(sizeof(ItemPointerData));
+		hikeysz = MAXALIGN(hikeysz) + BarkPivotSuffixReserve;
 
 	ndata = st->nextoff - BarkPageFirstDataKey(BarkPageGetOpaque(page));
 	if (ndata >= 1 &&

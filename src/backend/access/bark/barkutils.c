@@ -3171,8 +3171,7 @@ bark_form_full_tuple(TupleDesc tupleDescriptor, const Datum *values,
 bool
 bark_len_is_oversized(Size fulllen)
 {
-	return MAXALIGN(fulllen) >
-		BarkMaxItemSize - MAXALIGN(sizeof(ItemPointerData));
+	return MAXALIGN(fulllen) > BarkMaxItemSize - BarkPivotSuffixReserve;
 }
 
 /* Overflow pages a full tuple of `fulllen` bytes occupies (at least one). */

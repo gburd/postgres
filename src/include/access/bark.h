@@ -406,6 +406,18 @@ BarkPageGetItem(Page page, OffsetNumber off, BarkItemBuf *buf)
 				   MAXALIGN(sizeof(BarkPageOpaqueData))) / 3)
 
 /*
+ * The bytes a pivot's suffix adds to its MAXALIGNed key: the heap TID a pivot
+ * between two entries equal on every key attribute keeps (see
+ * BarkPivotGetHeapTID).  Every size calculation that must leave room for a
+ * high key formed from a leaf entry uses this one value: the leaf free space
+ * an insert may take, the high key a split or CREATE INDEX plans for, the
+ * room bark_merge_page frees, and the inline limit of a leaf entry.  The
+ * version tag of the versioned-entry design (phase 5b) adds 4 bytes to the
+ * suffix, which makes it 16; it grows here, and only here.
+ */
+#define BarkPivotSuffixReserve	MAXALIGN(sizeof(ItemPointerData))
+
+/*
  * Fill factors, as in nbtree.  CREATE INDEX packs leaf pages to the index's
  * fillfactor reloption and internal pages to BARK_NONLEAF_FILLFACTOR, so the
  * first inserts after a build do not split every page they touch.  A split of
