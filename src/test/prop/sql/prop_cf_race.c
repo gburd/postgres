@@ -39,6 +39,51 @@ rc_connect(pg_prop_tc *tc)
 	return conn;
 }
 
+/*
+ * Connect to a named database (creating it from template0 if absent), by
+ * briefly pointing PGDATABASE at it around pg_prop_connect.  Used where a
+ * property needs a connection in a database other than the one the driver
+ * selected -- e.g. a cross-database xmin holder.  Returns NULL if the
+ * database cannot be created.
+ */
+static pg_prop_conn *
+rc_connect_db(pg_prop_tc *tc, const char *dbname)
+{
+	char	   *err = NULL;
+	pg_prop_conn *admin = rc_connect(tc);
+	bool		f = false;
+	char	   *ex;
+	StringInfoData q;
+	const char *saved;
+	pg_prop_conn *conn;
+
+	initStringInfo(&q);
+	appendStringInfo(&q, "SELECT count(*) FROM pg_database WHERE datname = '%s'", dbname);
+	ex = pg_prop_sql_scalar(admin, q.data, &f, NULL);
+	if (!f && ex && strcmp(ex, "0") == 0)
+	{
+		resetStringInfo(&q);
+		appendStringInfo(&q, "CREATE DATABASE %s TEMPLATE template0", dbname);
+		if (!pg_prop_sql_exec(admin, q.data, &err))
+			pg_prop_fail(tc, "CREATE DATABASE %s failed: %s", dbname, err ? err : "");
+	}
+	if (ex)
+		pg_free(ex);
+	pfree(q.data);
+	pg_prop_disconnect(admin);
+
+	saved = getenv("PGDATABASE");
+	setenv("PGDATABASE", dbname, 1);
+	conn = pg_prop_connect(&err);
+	if (saved)
+		setenv("PGDATABASE", saved, 1);
+	else
+		unsetenv("PGDATABASE");
+	if (conn == NULL)
+		pg_prop_fail(tc, "connect to %s failed: %s", dbname, err ? err : "");
+	return conn;
+}
+
 static void
 rc_exec(pg_prop_tc *tc, pg_prop_conn *conn, const char *sql)
 {
@@ -529,4 +574,102 @@ PG_PROP(root_alter_races_deep_attach_without_deadlock)
 	pg_prop_disconnect(s3);
 	pg_prop_disconnect(s2);
 	pg_prop_disconnect(s1);
+}
+
+/*
+ * CF 6824: a heap rewrite (VACUUM FULL / CLUSTER / REPACK) or an index build
+ * must not fail with "missing chunk number N for toast value" when a dead
+ * heap tuple's TOAST has already been vacuumed away while the main tuple is
+ * still held back by a concurrent transaction's xmin.  The rewrite copies
+ * the dead tuple (it is not yet removable) and tries to detoast a value whose
+ * chunks are gone.
+ *
+ * Precondition, from the patch's own recovery test:
+ *   - a global xmin holder in another database (holds back the global horizon
+ *     so the dead main tuple is copied, not removed);
+ *   - a same-database REPEATABLE READ holder open across the DELETE and a
+ *     VACUUM (PROCESS_TOAST false), so the main tuple survives that vacuum;
+ *   - release the same-db holder, then VACUUM the toast table directly, which
+ *     removes the now-dead toast chunks.
+ * Then the rewrite / index build runs while the global holder is still open.
+ *
+ * Invariant: the operation succeeds or raises no missing/unexpected-chunk
+ * error.  Drawn: the operation, value size (all out-of-line), row count,
+ * which row is deleted.  Fails on master; passes with the CF 6824 patch.
+ */
+PG_PROP(rewrite_with_vacuumed_toast_of_held_tuple)
+{
+	static const char *const ops[] = {
+		"VACUUM FULL cfr_rw",
+		"CLUSTER cfr_rw USING cfr_rw_pkey",
+		"CREATE INDEX cfr_rw_i ON cfr_rw ((cfr_rw IS NOT NULL))",
+	};
+	pg_prop_conn *work = rc_connect(tc);
+	pg_prop_conn *gholder;
+	pg_prop_conn *sholder;
+	const char *op = ops[pg_prop_draw_int(tc, 0, lengthof(ops) - 1)];
+	int			nrows = (int) pg_prop_draw_int(tc, 2, 12);
+	int			len = (int) pg_prop_draw_int(tc, 2500, 8000);
+	int			delid = (int) pg_prop_draw_int(tc, 1, nrows);
+	StringInfoData s;
+	char	   *toast;
+	bool		f = false;
+	char	   *st = NULL;
+	char	   *err = NULL;
+
+	/* global cross-database xmin holder, open for the whole case */
+	gholder = rc_connect_db(tc, "pgprop_rw_holder");
+	rc_exec(tc, gholder, "BEGIN");
+	rc_exec(tc, gholder, "CREATE TEMP TABLE IF NOT EXISTS cfr_xid_holder (x int)");
+	/* ensure it has a real XID so it holds back the global horizon */
+	rc_exec(tc, gholder, "INSERT INTO cfr_xid_holder VALUES (1)");
+
+	initStringInfo(&s);
+	appendStringInfo(&s,
+					 "DROP TABLE IF EXISTS cfr_rw; "
+					 "CREATE TABLE cfr_rw (id int PRIMARY KEY, data text) WITH (autovacuum_enabled = off); "
+					 "ALTER TABLE cfr_rw ALTER COLUMN data SET STORAGE EXTERNAL; "
+					 "INSERT INTO cfr_rw SELECT g, repeat('x', %d) FROM generate_series(1, %d) g",
+					 len, nrows);
+	rc_exec(tc, work, s.data);
+	toast = rc_scalar(tc, work,
+					  "SELECT 'pg_toast.' || relname FROM pg_class "
+					  "WHERE oid = (SELECT reltoastrelid FROM pg_class WHERE relname = 'cfr_rw')");
+
+	/* same-db holder pins the dead main tuple across the no-toast vacuum */
+	sholder = rc_connect(tc);
+	rc_exec(tc, sholder, "BEGIN ISOLATION LEVEL REPEATABLE READ");
+	rc_exec(tc, sholder, "SELECT 1");
+	resetStringInfo(&s);
+	appendStringInfo(&s, "DELETE FROM cfr_rw WHERE id = %d", delid);
+	rc_exec(tc, work, s.data);
+	rc_exec(tc, work, "VACUUM (PROCESS_TOAST false) cfr_rw");
+	rc_exec(tc, sholder, "COMMIT");
+	pg_prop_disconnect(sholder);
+
+	/* now remove the dead toast chunks while the main tuple is still held */
+	resetStringInfo(&s);
+	appendStringInfo(&s, "VACUUM %s", toast);
+	rc_exec(tc, work, s.data);
+
+	/* the operation under test */
+	if (!pg_prop_sql_send(work, op))
+		pg_prop_fail(tc, "could not dispatch %s", op);
+	if (!pg_prop_sql_await(work, &st, &err))
+	{
+		if (err && (strstr(err, "missing chunk") || strstr(err, "unexpected chunk")))
+			pg_prop_fail(tc, "%s failed after the tuple's toast was vacuumed: %s\n"
+						 "  %d rows, %d-byte values, deleted id %d",
+						 op, err, nrows, len, delid);
+		if (rc_internal(st, err))
+			pg_prop_fail(tc, "%s raised an internal error: %s", op, err ? err : "");
+	}
+
+	rc_exec(tc, gholder, "COMMIT");
+	pg_prop_disconnect(gholder);
+	pg_prop_sql_exec(work, "DROP TABLE IF EXISTS cfr_rw", NULL);
+	pg_free(toast);
+	pfree(s.data);
+	pg_prop_disconnect(work);
+	(void) f;
 }
