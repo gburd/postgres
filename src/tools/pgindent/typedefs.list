@@ -1520,6 +1520,7 @@ JsonbValue
 JumbleState
 JunkFilter
 KAXCompressReason
+KeepLocatorMode
 KeyAction
 KeyActions
 KeyArray
@@ -3153,6 +3154,8 @@ TableSpaceOpts
 TableToProcess
 TablespaceList
 TablespaceListCell
+TagEntry
+TagKey
 TapeBlockTrailer
 TapeShare
 TarMethodData
@@ -3283,6 +3286,12 @@ TuplesortPublic
 TuplesortSpaceType
 Tuplesortstate
 Tuplestorestate
+TvCounter
+TvShared
+TvbVacuumState
+TvhBuildState
+TvhScanState
+TvhVacuumState
 TwoPhaseCallback
 TwoPhaseFileHeader
 TwoPhaseLockRecord
