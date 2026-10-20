@@ -1426,6 +1426,321 @@ bigoffset_relation_locator(Relation rel)
 PG_FUNCTION_INFO_V1(bark_test_bigoffset_handler);
 PG_FUNCTION_INFO_V1(bark_test_tid_stride);
 PG_FUNCTION_INFO_V1(bark_test_meta_stride);
+PG_FUNCTION_INFO_V1(bark_test_tid_mappings);
+PG_FUNCTION_INFO_V1(bark_test_insert_tid);
+
+/* bark_test_insert_tid(index, key, tid): index_insert of (key) at tid. */
+Datum
+bark_test_insert_tid(PG_FUNCTION_ARGS)
+{
+	Relation	index = index_open(PG_GETARG_OID(0), RowExclusiveLock);
+	Datum		value = PG_GETARG_DATUM(1);
+	bool		isnull = false;
+	Relation	heap = table_open(index->rd_index->indrelid, RowExclusiveLock);
+	IndexInfo  *ii = BuildIndexInfo(index);
+
+	if (!bark_relation_is_bark(index) || ii->ii_NumIndexAttrs != 1 ||
+		TupleDescAttr(RelationGetDescr(index), 0)->atttypid != INT4OID)
+		elog(ERROR, "bark_test_insert_tid needs a BARK index on one int4 column");
+	index_insert(index, &value, &isnull, PG_GETARG_ITEMPOINTER(2), heap,
+				 UNIQUE_CHECK_NO, false, ii);
+	table_close(heap, RowExclusiveLock);
+	index_close(index, RowExclusiveLock);
+	PG_RETURN_VOID();
+}
+
+/* The scan seen set's radix tree, as barkscan.c declares it. */
+#define RT_PREFIX test_seen
+#define RT_SCOPE static inline
+#define RT_DECLARE
+#define RT_DEFINE
+#define RT_VALUE_TYPE uint64
+#include "lib/radixtree.h"
+
+/* A key tuple of one int4 column, 42, for bark_test_tid_mappings' entries. */
+static IndexTuple
+mapping_key(TupleDesc *desc)
+{
+	Datum		v = Int32GetDatum(42);
+	bool		n = false;
+
+	*desc = CreateTemplateTupleDesc(1);
+	TupleDescInitBuiltinEntry(*desc, 1, "k", INT4OID, -1, 0);
+	TupleDescFinalize(*desc);
+	return index_form_tuple(*desc, &v, &n);
+}
+
+/* Do entry's TIDs, read back at stride, equal tids[0..n)? */
+static bool
+mapping_entry_holds(IndexTuple entry, ItemPointer tids, int n, uint16 stride)
+{
+	ItemPointer out = palloc_array(ItemPointerData, n + 1);
+	ItemPointerData lo;
+	ItemPointerData hi;
+	bool		ok;
+
+	ok = bark_entry_count_tids(entry) == n &&
+		bark_entry_get_tids(entry, out, n + 1, stride) == n &&
+		memcmp(out, tids, n * sizeof(ItemPointerData)) == 0;
+	bark_entry_tid_range(entry, &lo, &hi, stride);
+	ok = ok && ItemPointerEquals(&lo, &tids[0]) &&
+		ItemPointerEquals(&hi, &tids[n - 1]);
+	for (int i = 0; ok && i < n; i++)
+		ok = bark_entry_has_tid(entry, &tids[i], stride);
+	pfree(out);
+	return ok;
+}
+
+static void
+mapping_result(ReturnSetInfo *rsinfo, const char *name, bool ok, int64 n)
+{
+	Datum		values[3];
+	bool		nulls[3] = {0};
+
+	values[0] = CStringGetTextDatum(name);
+	values[1] = BoolGetDatum(ok);
+	values[2] = Int64GetDatum(n);
+	tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+}
+
+/*
+ * bark_test_tid_mappings(stride): check BARK's TID mappings at TID stride
+ * `stride` (0 means MaxOffsetNumber) on synthetic TIDs, every offset 1 ..
+ * stride on blocks 0, 1, 2^20 and MaxBlockNumber, without an index:
+ *
+ * - posting_key: bark_tid_to_key / bark_key_to_tid round trip, and the keys
+ *   ascend with the TIDs, so distinct TIDs never share a key;
+ * - coded_list: a coded LIST (forced through bark_form_list_best on a
+ *   clustered set) of runs that cross each boundary reads back exactly;
+ * - posting_entry: likewise for a POSTING entry (bark_form_posting);
+ * - add_tid: a LIST and a POSTING each take a TID at the boundaries by
+ *   bark_entry_add_tid, as WAL replay of ADD_TID does;
+ * - seen_set: the scan seen set's window (key >> 6, bit key & 63) of every
+ *   TID is distinct.
+ * - heap_coding: at stride MaxHeapTuplesPerPage, a coded LIST's bytes are
+ *   GIN's (offset in the low 11 bits): the first delta of (0,1), (0,2) is 1,
+ *   and of (0,1), (1,1) is 2048.
+ */
+Datum
+bark_test_tid_mappings(PG_FUNCTION_ARGS)
+{
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	int32		arg = PG_GETARG_INT32(0);
+	uint16		stride = arg == 0 ? MaxOffsetNumber : (uint16) arg;
+	BlockNumber blocks[] = {0, 1, 1 << 20, MaxBlockNumber - 1, MaxBlockNumber};
+	OffsetNumber bounds[] = {1, 2, MaxHeapTuplesPerPage - 1,
+		MaxHeapTuplesPerPage, MaxHeapTuplesPerPage + 1, 2046, 2047, 2048};
+	TupleDesc	desc;
+	IndexTuple	key;
+	bool		ok;
+	int64		n;
+	uint64		prevkey = 0;
+
+	if (arg < 0 || arg > MaxOffsetNumber || (arg > 0 && arg < MaxHeapTuplesPerPage))
+		elog(ERROR, "stride must be 0 or between %d and %d",
+			 (int) MaxHeapTuplesPerPage, (int) MaxOffsetNumber);
+	InitMaterializedSRF(fcinfo, 0);
+	key = mapping_key(&desc);
+
+	/* posting_key and seen_set over every offset of each block */
+	ok = true;
+	n = 0;
+	for (int b = 0; b < lengthof(blocks); b++)
+	{
+		for (int off = 1; off <= stride; off++)
+		{
+			ItemPointerData tid;
+			ItemPointerData back;
+			uint64		k;
+
+			ItemPointerSet(&tid, blocks[b], off);
+			k = bark_tid_to_key(&tid, stride);
+			bark_key_to_tid(k, &back, stride);
+			if (!ItemPointerEquals(&tid, &back) || (n > 0 && k <= prevkey))
+				ok = false;
+			prevkey = k;
+			n++;
+		}
+	}
+	mapping_result(rsinfo, "posting_key", ok, n);
+
+	/*
+	 * seen_set: the scan's seen set as bark_mk_seen builds it, a radix tree
+	 * from bark_tid_to_key(tid) >> 6 to a word with bit key & 63, takes
+	 * every TID of blocks b and b + 1 as new, once.
+	 */
+	{
+		MemoryContext cxt = AllocSetContextCreate(CurrentMemoryContext,
+												  "seen", ALLOCSET_DEFAULT_SIZES);
+		test_seen_radix_tree *seen = test_seen_create(cxt);
+
+		ok = true;
+		n = 0;
+		for (int b = 0; b < lengthof(blocks); b++)
+		{
+			for (int off = 1; off <= stride; off++)
+			{
+				ItemPointerData tid;
+				uint64		k;
+				uint64		bit;
+				uint64	   *word;
+
+				ItemPointerSet(&tid, blocks[b], off);
+				k = bark_tid_to_key(&tid, stride);
+				bit = UINT64CONST(1) << (k & 63);
+				word = test_seen_find(seen, k >> 6);
+				if (word != NULL && (*word & bit) != 0)
+					ok = false; /* a TID taken for one already seen */
+				else if (word != NULL)
+					*word |= bit;
+				else
+					test_seen_set(seen, k >> 6, &bit);
+				n++;
+			}
+		}
+		mapping_result(rsinfo, "seen_set", ok, n);
+		MemoryContextDelete(cxt);
+	}
+
+	/*
+	 * coded_list and posting_entry: for each block and each boundary offset
+	 * not past the stride, the run of offsets around it, and a run that
+	 * spans into the next block.
+	 */
+	{
+		bool		okl = true;
+		bool		okp = true;
+		int64		nl = 0;
+		int64		np = 0;
+
+		for (int b = 0; b < lengthof(blocks); b++)
+		{
+			for (int j = 0; j < lengthof(bounds); j++)
+			{
+				ItemPointerData tids[16];
+				int			ntids = 0;
+				IndexTuple	entry;
+
+				if (bounds[j] > stride)
+					continue;
+				for (int d = -4; d <= 4; d++)
+				{
+					int			off = bounds[j] + d;
+
+					if (off >= 1 && off <= stride)
+						ItemPointerSet(&tids[ntids++], blocks[b], off);
+				}
+				if (blocks[b] < MaxBlockNumber)
+				{
+					ItemPointerSet(&tids[ntids++], blocks[b] + 1, 1);
+					ItemPointerSet(&tids[ntids++], blocks[b] + 1, stride);
+				}
+				entry = bark_form_list_best(desc, key, tids, ntids, stride);
+				okl &= BarkListIsCoded(entry) &&
+					mapping_entry_holds(entry, tids, ntids, stride);
+				pfree(entry);
+				nl += ntids;
+
+				/*
+				 * A POSTING beats a LIST only for a dense set: every offset
+				 * within 200 of the boundary, and the next block's first 50.
+				 */
+				{
+					ItemPointerData many[460];
+					int			nmany = 0;
+
+					for (int off = Max(1, bounds[j] - 200);
+						 off <= Min(stride, bounds[j] + 200); off++)
+						ItemPointerSet(&many[nmany++], blocks[b], off);
+					for (int off = 1; blocks[b] < MaxBlockNumber && off <= 50; off++)
+						ItemPointerSet(&many[nmany++], blocks[b] + 1, off);
+					entry = bark_form_posting(desc, key, many, nmany, stride);
+					okp &= entry != NULL &&
+						mapping_entry_holds(entry, many, nmany, stride);
+					np += nmany;
+					if (entry)
+						pfree(entry);
+				}
+			}
+		}
+		mapping_result(rsinfo, "coded_list", okl, nl);
+		mapping_result(rsinfo, "posting_entry", okp, np);
+	}
+
+	/* add_tid: grow a coded LIST and a POSTING by the boundary TIDs */
+	{
+		ItemPointerData tids[2];
+		ItemPointerData all[600];
+		int			nall = 0;
+		IndexTuple	list;
+		IndexTuple	posting;
+
+		ok = true;
+		n = 0;
+		ItemPointerSet(&tids[0], 7, 1);
+		ItemPointerSet(&tids[1], 7, 2);
+		list = bark_form_list_best(desc, key, tids, 2, stride);
+		for (int off = 1; off <= stride && nall < 590; off++)
+			ItemPointerSet(&all[nall++], 9, off);
+		posting = bark_form_posting(desc, key, all, nall, stride);
+		ok = posting != NULL;
+		for (int j = 0; ok && j < lengthof(bounds); j++)
+		{
+			ItemPointerData t;
+			IndexTuple	ext;
+
+			if (bounds[j] > stride)
+				continue;
+			ItemPointerSet(&t, 8, bounds[j]);
+			ext = bark_entry_add_tid(list, &t, BLCKSZ, stride);
+			ok = ext != NULL && bark_entry_has_tid(ext, &t, stride) &&
+				bark_entry_count_tids(ext) == bark_entry_count_tids(list) + 1;
+			if (ext != NULL)
+			{
+				pfree(list);
+				list = ext;
+			}
+			ItemPointerSet(&t, 10, bounds[j]);
+			ext = bark_entry_add_tid(posting, &t, BLCKSZ, stride);
+			ok = ok && ext != NULL && bark_entry_has_tid(ext, &t, stride) &&
+				bark_entry_count_tids(ext) == bark_entry_count_tids(posting) + 1;
+			if (ext != NULL)
+			{
+				pfree(posting);
+				posting = ext;
+			}
+			n += 2;
+		}
+		mapping_result(rsinfo, "add_tid", ok, n);
+	}
+
+	/*
+	 * heap_coding: heap's stride codes the offset in GIN's 11 bits.  (0,1),
+	 * (0,2) .. (0,8) code their first delta as 1; (0,1), (1,1) .. (1,7) as
+	 * 1 << 11 = 2048, varbyte 0x80 0x10.  (Eight TIDs, so the coded LIST is
+	 * the smaller.)
+	 */
+	if (stride == MaxHeapTuplesPerPage)
+	{
+		ItemPointerData tids[8];
+		IndexTuple	entry;
+		unsigned char *d;
+
+		for (int i = 0; i < 8; i++)
+			ItemPointerSet(&tids[i], 0, i + 1);
+		entry = bark_form_list_best(desc, key, tids, 8, stride);
+		d = BarkListIsCoded(entry) ? BarkCodedListGetDeltas(entry) : NULL;
+		ok = d != NULL && d[0] == 1;
+		for (int i = 1; i < 8; i++)
+			ItemPointerSet(&tids[i], 1, i);
+		entry = bark_form_list_best(desc, key, tids, 8, stride);
+		d = BarkListIsCoded(entry) ? BarkCodedListGetDeltas(entry) : NULL;
+		ok = ok && d != NULL && d[0] == 0x80 && d[1] == 0x10;
+		mapping_result(rsinfo, "heap_coding", ok, 16);
+	}
+
+	return (Datum) 0;
+}
 
 /* bark_test_tid_stride(index): bark_index_tid_stride. */
 Datum
