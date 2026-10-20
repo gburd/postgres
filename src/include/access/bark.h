@@ -584,6 +584,8 @@ typedef struct BarkMetaPageData
 	BlockNumber bark_root;		/* current root block, or BARK_P_NONE */
 	uint32		bark_level;		/* tree level of the root page */
 	bool		bark_allequalimage; /* are all key columns "equalimage"? */
+	uint16		bark_tid_stride;	/* the heap's largest locator offset at
+									 * CREATE INDEX (0: MaxHeapTuplesPerPage) */
 	uint32		bark_flags;		/* BARK_META_* bits */
 	uint64		bark_nkeys;		/* (key, TID) members, markers not counted, as
 								 * of the last CREATE INDEX or VACUUM */
@@ -603,6 +605,19 @@ typedef struct BarkMetaPageData
  * standard-layout page image it logs includes them (bark_meta_cover).
  */
 #define BARK_META_MULTIKEY	(1 << 0)
+
+/*
+ * bark_tid_stride is the largest locator offset of the table, its
+ * LocatorDesc's max_offset, when the index was built: every mapping of a
+ * heap TID to an integer (bark_tid_to_key, and a coded LIST's) is laid out
+ * for it.  It sits in what was the padding after bark_allequalimage, so the
+ * struct keeps its size, and a meta page written before the field existed,
+ * whose padding PageInit zeroed, reads 0, which means MaxHeapTuplesPerPage,
+ * heap's bound and the only one such an index can hold.  For a heap table
+ * the field is that value, so the mappings, and the other pages, are what
+ * they were.  Only a rebuild (REINDEX, or the rewrite of ALTER TABLE ... SET
+ * ACCESS METHOD) changes it.  See bark_index_tid_stride.
+ */
 
 /* ----------------------------------------------------------------------------
  * Index-entry encoding (the C-KEYSHAPE contract)
@@ -1170,10 +1185,13 @@ typedef struct BarkKeyInfo
 								 * for the pages a split allocates (see
 								 * bark_get_free_page) */
 	int			nkeys;			/* number of key columns */
+	uint16		tidstride;		/* bark_index_tid_stride: the TID mappings'
+								 * stride */
 	BarkKeyColumn cols[FLEXIBLE_ARRAY_MEMBER];
 } BarkKeyInfo;
 
 extern BarkKeyInfo *bark_build_keyinfo(Relation index);
+extern BarkKeyInfo *bark_build_keyinfo_stride(Relation index, uint16 stride);
 extern bool bark_allequalimage(Relation index);
 extern bool bark_index_may_coalesce(Relation index);
 extern bool bark_column_is_extracted(Relation index, int attno);
@@ -1190,6 +1208,8 @@ extern void bark_meta_cover(Page metapage);
 extern bool bark_index_is_multikey(Relation index);
 extern void bark_set_multikey(Relation index);
 extern void bark_set_nkeys(Relation index, uint64 nkeys);
+extern uint16 bark_index_tid_stride(Relation index);
+extern uint16 bark_heap_tid_stride(Relation heap);
 
 /*
  * The entries one row has in an index with an extracted column: procedure
@@ -1251,7 +1271,7 @@ extern int	bark_compare_itups_tid(BarkKeyInfo *keyinfo, Relation index,
 								   IndexTuple itup);
 extern ItemPointer bark_pivot_heap_tid(IndexTuple pivot);
 extern void bark_entry_tid_range(IndexTuple itup, ItemPointer lo,
-								 ItemPointer hi);
+								 ItemPointer hi, uint16 stride);
 extern int	bark_keep_natts(Relation index, BarkKeyInfo *keyinfo,
 							IndexTuple lastleft, IndexTuple firstright);
 
@@ -1294,7 +1314,8 @@ extern IndexTuple bark_form_list(TupleDesc tupdesc, IndexTuple key,
  * LIST-forming path uses it rather than bark_form_list directly.
  */
 extern IndexTuple bark_form_list_best(TupleDesc tupdesc, IndexTuple key,
-									 ItemPointer tids, int ntids);
+									 ItemPointer tids, int ntids,
+									 uint16 stride);
 
 /*
  * Re-form a LIST entry's surviving locators during VACUUM or bottom-up
@@ -1304,7 +1325,8 @@ extern IndexTuple bark_form_list_best(TupleDesc tupdesc, IndexTuple key,
  * bark_form_list_best chooser.  Returns a palloc'd entry.
  */
 extern IndexTuple bark_reform_list(TupleDesc tupdesc, IndexTuple key,
-								   ItemPointer tids, int ntids, bool wascoded);
+								   ItemPointer tids, int ntids, bool wascoded,
+								   uint16 stride);
 
 /*
  * Collect the heap locators of a leaf entry (SINGLE, LIST, or POSTING) into
@@ -1312,7 +1334,8 @@ extern IndexTuple bark_reform_list(TupleDesc tupdesc, IndexTuple key,
  * least bark_entry_count_tids(itup) locators.  A POSTING entry is iterated
  * through its sbm.
  */
-extern int	bark_entry_get_tids(IndexTuple itup, ItemPointer out, int maxout);
+extern int	bark_entry_get_tids(IndexTuple itup, ItemPointer out, int maxout,
+								uint16 stride);
 
 /*
  * Leaf prefix compression (barkutils.c; see BARK_PREFIX for the format).
@@ -1372,27 +1395,34 @@ extern IndexTuple bark_single_from_list(Relation index, IndexTuple entry,
  * equivalent LIST (caller keeps the LIST).  bark_posting_count /
  * bark_posting_get_tids read a POSTING entry's set back.
  */
-extern uint64 bark_tid_to_key(ItemPointer tid);
-extern void bark_key_to_tid(uint64 key, ItemPointer tid);
+extern uint64 bark_tid_to_key(ItemPointer tid, uint16 stride);
+extern void bark_key_to_tid(uint64 key, ItemPointer tid, uint16 stride);
 extern IndexTuple bark_form_posting(TupleDesc tupdesc, IndexTuple key,
-									ItemPointer tids, int ntids);
+									ItemPointer tids, int ntids,
+									uint16 stride);
 extern IndexTuple bark_posting_add_tid(IndexTuple key, IndexTuple posting,
-									   ItemPointer newtid, Size maxsz);
+									   ItemPointer newtid, Size maxsz,
+									   uint16 stride);
 
 /*
  * A LIST or POSTING entry with one more heap TID, or NULL if it would not fit
  * in maxsz; deterministic in its arguments, so WAL replay can repeat it.
  */
 extern IndexTuple bark_entry_add_tid(IndexTuple entry, ItemPointer tid,
-									 Size maxsz);
-extern bool bark_entry_has_tid(IndexTuple itup, ItemPointer tid);
+									 Size maxsz, uint16 stride);
+extern bool bark_entry_has_tid(IndexTuple itup, ItemPointer tid,
+							   uint16 stride);
 extern void bark_entry_swap_tid(IndexTuple entry, ItemPointer tid,
-								IndexTuple *left, IndexTuple *right);
+								IndexTuple *left, IndexTuple *right,
+								uint16 stride);
 extern bool bark_entry_cut(IndexTuple entry, ItemPointer tid, Size leftmax,
-						   IndexTuple *left, IndexTuple *right);
-extern IndexTuple bark_form_entry(IndexTuple key, ItemPointer tids, int n);
+						   IndexTuple *left, IndexTuple *right,
+						   uint16 stride);
+extern IndexTuple bark_form_entry(IndexTuple key, ItemPointer tids, int n,
+								  uint16 stride);
 extern int	bark_posting_count(IndexTuple itup);
-extern int	bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout);
+extern int	bark_posting_get_tids(IndexTuple itup, ItemPointer out, int maxout,
+								  uint16 stride);
 
 /* ----------------------------------------------------------------------------
  * OVERSIZED entry construction and overflow-chain I/O (barkutils.c)
@@ -1616,6 +1646,7 @@ typedef struct BarkAmCache
 	uint32		level;
 	int			extracted;
 	bool		multikey;		/* BARK_META_MULTIKEY seen set */
+	uint16		tidstride;		/* bark_index_tid_stride, or 0 until read */
 	int			nmarkers;		/* markers seen present */
 	Size		markerlen;		/* bytes of markerdata in use */
 	int			nl1;			/* level-1 slots in use */
