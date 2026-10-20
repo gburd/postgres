@@ -235,7 +235,8 @@ bark_knn_readpage(IndexScanDesc scan, BarkKnnCursor *cur, Page page,
 		item->dist = cur->bound;
 		item->firstTid = cur->ntids;
 		item->ntids = bark_entry_get_tids(itup, cur->tids + cur->ntids,
-										  cur->maxTids - cur->ntids);
+										  cur->maxTids - cur->ntids,
+										  so->keyinfo->tidstride);
 		item->recheck = false;
 		if (so->mk != NULL)
 		{

@@ -61,6 +61,7 @@ bark_reform_entry(Relation index, Buffer buf, OffsetNumber off,
 	bool		wascoded = (BarkEntryGetShape(itup) == BARK_SHAPE_LIST &&
 							BarkListIsCoded(itup));
 	IndexTuple	key = bark_single_from_list(index, itup, NULL);
+	uint16		stride = bark_index_tid_stride(index);
 	IndexTuple	newentry;
 	IndexTuple	posting;
 	IndexTuple	coded;
@@ -80,18 +81,19 @@ bark_reform_entry(Relation index, Buffer buf, OffsetNumber off,
 		 * plain LIST here could pick a form larger than the old coded slot.
 		 */
 		newentry = bark_reform_list(RelationGetDescr(index), key, tids, nlive,
-									true);
+									true, stride);
 		pfree(key);
 	}
 	else if ((posting = bark_form_posting(RelationGetDescr(index),
-										  key, tids, nlive)) != NULL)
+										  key, tids, nlive, stride)) != NULL)
 	{
 		newentry = posting;
 		pfree(key);
 	}
 	else
 	{
-		newentry = bark_form_list_best(RelationGetDescr(index), key, tids, nlive);
+		newentry = bark_form_list_best(RelationGetDescr(index), key, tids, nlive,
+									   stride);
 		pfree(key);
 	}
 
@@ -313,7 +315,8 @@ bark_bottomup_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
 			tids = repalloc_array(tids, ItemPointerData, tidsalloc);
 		}
 		firstid[off] = ntids;
-		nids[off] = bark_entry_get_tids(itup, tids + ntids, n);
+		nids[off] = bark_entry_get_tids(itup, tids + ntids, n,
+										keyinfo->tidstride);
 		ntids += nids[off];
 	}
 
@@ -477,9 +480,10 @@ bark_bottomup_delete(Relation index, Relation heapRel, BarkKeyInfo *keyinfo,
  * `page`, or NULL when it would exceed the item ceiling (plain or coded).
  */
 static IndexTuple
-bark_merge_form(Page page, IndexTuple key, ItemPointer tids, int n)
+bark_merge_form(Page page, IndexTuple key, ItemPointer tids, int n,
+				uint16 stride)
 {
-	IndexTuple	entry = bark_form_entry(key, tids, n);
+	IndexTuple	entry = bark_form_entry(key, tids, n, stride);
 	IndexTuple	coded;
 
 	if (entry == NULL)
@@ -594,7 +598,7 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 				tidsalloc *= 2;
 			tids = repalloc_array(tids, ItemPointerData, tidsalloc);
 		}
-		ntids = bark_entry_get_tids(itup, tids, ntids);
+		ntids = bark_entry_get_tids(itup, tids, ntids, keyinfo->tidstride);
 		groupsz = MAXALIGN(ItemIdGetLength(PageGetItemId(page, first)));
 
 		/* Absorb the following entries of the key while the result fits */
@@ -615,10 +619,11 @@ bark_merge_page(Relation index, BarkKeyInfo *keyinfo, Buffer buf,
 					tidsalloc *= 2;
 				tids = repalloc_array(tids, ItemPointerData, tidsalloc);
 			}
-			n = bark_entry_get_tids(cur, tids + ntids, n);
+			n = bark_entry_get_tids(cur, tids + ntids, n, keyinfo->tidstride);
 			Assert(ItemPointerCompare(&tids[ntids - 1], &tids[ntids]) < 0);
 
-			candidate = bark_merge_form(page, key, tids, ntids + n);
+			candidate = bark_merge_form(page, key, tids, ntids + n,
+										keyinfo->tidstride);
 			if (candidate == NULL)
 				break;
 			if (merged != NULL)
