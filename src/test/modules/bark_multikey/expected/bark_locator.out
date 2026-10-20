@@ -92,5 +92,46 @@ SELECT a FROM bl WHERE b = 3 ORDER BY a LIMIT 3;
 
 RESET enable_seqscan;
 DROP TABLE bl;
+-- The TID mappings on synthetic TIDs, every offset up to the stride on
+-- blocks 0, 1, 2^20, MaxBlockNumber - 1 and MaxBlockNumber, with runs
+-- crossing offsets 291/292 and 2047/2048: heap's stride, which must code as
+-- GIN does, and MaxOffsetNumber.
+SELECT * FROM bark_test_tid_mappings(291);
+  check_name   | ok | ntids 
+---------------+----+-------
+ posting_key   | t  |  1455
+ seen_set      | t  |  1455
+ coded_list    | t  |   142
+ posting_entry | t  |  4830
+ add_tid       | t  |     8
+ heap_coding   | t  |    16
+(6 rows)
+
+SELECT * FROM bark_test_tid_mappings(0);
+  check_name   | ok | ntids 
+---------------+----+-------
+ posting_key   | t  | 10240
+ seen_set      | t  | 10240
+ coded_list    | t  |   344
+ posting_entry | t  | 12660
+ add_tid       | t  |    16
+(5 rows)
+
+SELECT bark_test_tid_mappings(100);
+ERROR:  stride must be 0 or between 291 and 2048
+-- A TID past the index's stride is refused at insert: here an index of a
+-- heap table (stride 291) is offered offset 292, as it would be by a table
+-- AM whose locators widened without a rebuild.  Offset 291 goes in.
+CREATE TABLE bh (a int);
+CREATE INDEX bh_a ON bh USING bark (a);
+SELECT bark_test_insert_tid('bh_a', 1, '(0,291)');
+ bark_test_insert_tid 
+----------------------
+ 
+(1 row)
+
+SELECT bark_test_insert_tid('bh_a', 1, '(0,292)');
+ERROR:  heap TID (0,292) exceeds the largest offset 291 of BARK index "bh_a"
+DROP TABLE bh;
 \set VERBOSITY default
 DROP EXTENSION bark_multikey;
