@@ -3065,7 +3065,10 @@ ri_check_fastpath_index(RI_ConstraintInfo *riinfo, Relation fk_rel,
 	 * referenced index need not be a primary key; transformFkeyCheckAttrs()
 	 * accepts any unique index, so an out-of-tree amcanunique access method
 	 * could reach here.  Restrict the fast path to btree; other access
-	 * methods fall back to SPI.
+	 * methods fall back to SPI.  This is about btree semantics (equality
+	 * strategy numbers, keys ordered by attribute number), not nbtree's code:
+	 * the probe goes through the generic index AM API, which a btree index's
+	 * implementation, if it has one, honors the same way.
 	 */
 	if (idx_rel->rd_rel->relam != BTREE_AM_OID)
 	{

@@ -62,6 +62,7 @@
 #include "executor/nodeWorktablescan.h"
 #include "nodes/extensible.h"
 #include "nodes/pathnodes.h"
+#include "utils/lsyscache.h"
 #include "utils/syscache.h"
 
 static bool IndexSupportsBackwardScan(Oid indexid);
@@ -609,15 +610,16 @@ ExecSupportsBackwardScan(Plan *node)
 
 /*
  * An IndexScan or IndexOnlyScan node supports backward scan only if the
- * index does.  An AM whose indexes differ in that (by operator class,
- * say) answers per index through amproperty; otherwise amcanbackward is the
- * answer for every index of the AM.
+ * code implementing the index does.  An AM whose indexes differ in that (by
+ * operator class, say) answers per index through amproperty; otherwise
+ * amcanbackward is the answer for every index of the AM.
  */
 static bool
 IndexSupportsBackwardScan(Oid indexid)
 {
 	bool		result;
 	bool		isnull = false;
+	Oid			implam;
 	HeapTuple	ht_idxrel;
 	Form_pg_class idxrelrec;
 	const IndexAmRoutine *amroutine;
@@ -628,8 +630,10 @@ IndexSupportsBackwardScan(Oid indexid)
 		elog(ERROR, "cache lookup failed for relation %u", indexid);
 	idxrelrec = (Form_pg_class) GETSTRUCT(ht_idxrel);
 
-	/* Fetch the index AM's API struct */
-	amroutine = GetIndexAmRoutineByAmId(idxrelrec->relam, false);
+	/* Fetch the API struct of the AM implementing the index */
+	implam = get_index_implam(indexid);
+	amroutine = GetIndexAmRoutineByAmId(OidIsValid(implam) ? implam :
+										idxrelrec->relam, false);
 
 	result = false;
 	if (amroutine->amproperty == NULL ||
