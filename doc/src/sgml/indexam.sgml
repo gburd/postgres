@@ -147,6 +147,10 @@ typedef struct IndexAmRoutine
     /* does AM summarize tuples, with at least all tuples in the block
      * summarized in one summary */
     bool        amsummarizing;
+    /* can AM store a variable-width locator? */
+    bool        amcanvarlocator;
+    /* can AM store a version tag with each entry? */
+    bool        amcanversion;
     /* OR of parallel vacuum flags */
     uint8       amparallelvacuumoptions;
     /* type of data stored in index, or InvalidOid if variable */
@@ -286,6 +290,22 @@ typedef struct IndexAmRoutine
    (like <acronym>BRIN</acronym>), may allow the <acronym>HOT</acronym> optimization
    to continue. This does not apply to attributes referenced in index
    predicates, an update of such an attribute always disables <acronym>HOT</acronym>.
+  </para>
+
+  <para>
+   The <structfield>amcanversion</structfield> flag indicates that the access
+   method can store a <firstterm>version tag</firstterm> with each entry, for
+   tables whose row locator is versioned (see
+   <xref linkend="tableam-locator"/>).  Such an access method stores the tag
+   it is given with each new entry, orders entries with equal key and
+   <acronym>TID</acronym> by tag as an unsigned integer, and returns the tag
+   with the <acronym>TID</acronym>.  It never interprets a
+   tag: what a tag means, and which entries are valid for which row version,
+   is up to the table access method.  A tag of 0 means
+   <quote>untagged</quote>.  An access method that leaves the flag false
+   stores no tags, so all its entries are untagged; the executor then never
+   lets a versioned table keep a row's locator across an update that
+   changes the index's columns.
   </para>
 
   <sect2 id="index-implementations">
