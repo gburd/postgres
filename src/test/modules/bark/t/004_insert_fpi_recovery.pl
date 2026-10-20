@@ -49,7 +49,7 @@ my ($wal, $stderr) = run_command(
 	]);
 # pg_waldump reports, on stderr, skipping a page header when a start LSN
 # falls on a page boundary; that is not an error.
-$stderr =~ s/^pg_waldump: first record is after .*\n//m;
+$stderr =~ s/^pg_waldump: first record is after .*(\n|$)//m;
 is($stderr, '', 'pg_waldump reads the workload WAL without errors');
 append_to_file("$PostgreSQL::Test::Utils::log_path/insert_fpi_wal.log",
 	"WAL interval: $start .. $end\n$wal\n");
