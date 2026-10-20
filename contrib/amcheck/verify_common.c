@@ -174,6 +174,15 @@ index_checkable(Relation rel, Oid am_id)
 				 errdetail("Relation \"%s\" is a %s index.",
 						   RelationGetRelationName(rel), get_am_name(rel->rd_rel->relam))));
 
+	/* The checks read the index's pages, so they need am_id's own code. */
+	if (IndexRelationGetImplAm(rel) != am_id)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("expected \"%s\" index as targets for verification", get_am_name(am_id)),
+				 errdetail("Index \"%s\" is implemented by access method \"%s\".",
+						   RelationGetRelationName(rel),
+						   get_am_name(IndexRelationGetImplAm(rel)))));
+
 	if (RELATION_IS_OTHER_TEMP(rel))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
