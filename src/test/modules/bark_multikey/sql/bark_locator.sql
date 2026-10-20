@@ -37,5 +37,22 @@ SET enable_seqscan = off;
 SELECT a FROM bl WHERE b = 3 ORDER BY a LIMIT 3;
 RESET enable_seqscan;
 DROP TABLE bl;
+
+-- The TID mappings on synthetic TIDs, every offset up to the stride on
+-- blocks 0, 1, 2^20, MaxBlockNumber - 1 and MaxBlockNumber, with runs
+-- crossing offsets 291/292 and 2047/2048: heap's stride, which must code as
+-- GIN does, and MaxOffsetNumber.
+SELECT * FROM bark_test_tid_mappings(291);
+SELECT * FROM bark_test_tid_mappings(0);
+SELECT bark_test_tid_mappings(100);
+
+-- A TID past the index's stride is refused at insert: here an index of a
+-- heap table (stride 291) is offered offset 292, as it would be by a table
+-- AM whose locators widened without a rebuild.  Offset 291 goes in.
+CREATE TABLE bh (a int);
+CREATE INDEX bh_a ON bh USING bark (a);
+SELECT bark_test_insert_tid('bh_a', 1, '(0,291)');
+SELECT bark_test_insert_tid('bh_a', 1, '(0,292)');
+DROP TABLE bh;
 \set VERBOSITY default
 DROP EXTENSION bark_multikey;
