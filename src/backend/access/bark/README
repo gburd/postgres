@@ -831,6 +831,55 @@ name_ops' cstring columns made names again, in hitupdesc, the index's
 descriptor with the column's input type.
 
 
+Implementing btree
+------------------
+
+barkhandler sets amimplements = btree, so BARK's code can store and
+search an index created USING btree (pg_index.indimplam; "Index
+Implementations" in indexam.sgml), chosen by default_btree_implementation
+or a table AM's index_implementation callback.  The relcache takes
+rd_indam from BARK's handler, so every callback and capability flag of
+such an index is BARK's, and barkoptions parses its reloptions; but its
+relam is btree, its operator classes are btree's, and everything about
+btree semantics (planner, opclass commands, pg_get_indexdef, strategy
+translation) goes through btree.
+
+Nothing in BARK tests relam, so only the operator families matter.  A
+btree class's family is btree's, so bark_opfamily_is_own is false for
+every column, which takes BARK's scalar path throughout: no column
+extracts keys, no procedure past 6 is read (index_getprocid returns
+InvalidOid for 7-15, since a btree family has none), and
+bark_translate_cmptype's procedure 15 is never consulted.  The planner
+and executor translate strategies with the logical AM's routine
+(IndexAmTranslate* take relam or the family's opfmethod), and amvalidate
+and amadjustmembers are called for the class's own AM, never BARK's for a
+btree class.  Core accepts BARK's amsupport of 15 (more than btree's 6;
+the relcache sizes the support arrays from it) and amstrategies of 0
+(no core code reads an index's amstrategies).
+
+The <~> ordering operators in pg_amop.dat sit in btree's integer_ops
+with amopmethod bark, so a BARK-implemented int2/int4/int8 btree index
+has distance-ordered paths and an nbtree one has none: its amcanorderbyop
+is nbtree's false.  That is the intended difference, a capability of the
+implementation.
+
+btree's reloptions deduplicate_items and vacuum_cleanup_index_scale_factor
+are registered for RELOPT_KIND_BARK as well.  deduplicate_items = off makes
+the writers (bark_index_coalesces) store SINGLEs only, as for a unique
+index; the scale factor is ignored.
+
+REPACK's sort path tests relam == btree and sorts with
+tuplesort_begin_cluster, whose _bt_mkscankey(rel, NULL) reads only the
+relcache's opclass data, so it is right for a BARK-implemented index.  The
+RI fast path tests relam too and probes through the index AM API.
+bt_index_check, pageinspect's bt_* functions and pgstatindex refuse the
+index (they compare the implementation, IndexIsNbtree); bark_index_check
+accepts it, since index_checkable compares the index's handler
+(rd_amhandler, the implementation's) with barkhandler, as for an alias
+access method.  pg_amcheck skips such indexes: it selects by relam, and
+would call bt_index_check.
+
+
 HOT updates
 -----------
 
