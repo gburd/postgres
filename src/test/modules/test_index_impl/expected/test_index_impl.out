@@ -1,0 +1,555 @@
+--
+-- Indexes created USING btree but implemented by another index AM's code.
+--
+CREATE EXTENSION test_index_impl;
+CREATE EXTENSION amcheck;
+CREATE EXTENSION pageinspect;
+CREATE EXTENSION pgstattuple;
+CREATE FUNCTION implam(idx regclass) RETURNS name
+LANGUAGE sql AS $$
+  SELECT coalesce((SELECT amname FROM pg_am WHERE oid = i.indimplam), '-')
+  FROM pg_index i WHERE i.indexrelid = idx
+$$;
+-- The setting is validated when it can be.
+SET default_btree_implementation = no_such_am;
+ERROR:  invalid value for parameter "default_btree_implementation": "no_such_am"
+DETAIL:  Access method "no_such_am" does not exist.
+SET default_btree_implementation = heap;
+ERROR:  invalid value for parameter "default_btree_implementation": "heap"
+DETAIL:  Access method "heap" is not of type INDEX.
+SET default_btree_implementation = btree;
+CREATE TABLE plain (a int);
+CREATE INDEX plain_a ON plain (a);
+SELECT implam('plain_a');
+ implam 
+--------
+ -
+(1 row)
+
+RESET default_btree_implementation;
+-- The setting picks the implementation; the index is still btree.
+SET default_btree_implementation = test_btree_impl;
+CREATE TABLE t (a int, b text, c int);
+CREATE INDEX t_a ON t (a);
+CREATE UNIQUE INDEX t_c ON t (c) INCLUDE (b);
+ALTER TABLE t ADD PRIMARY KEY (a);
+CREATE INDEX t_ab ON t (a, b);
+CREATE INDEX t_b_hash ON t USING hash (b);
+RESET default_btree_implementation;
+SELECT c.relname, a.amname AS relam, implam(c.oid)
+  FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+  JOIN pg_am a ON a.oid = c.relam
+  WHERE i.indrelid = 't'::regclass ORDER BY 1;
+ relname  | relam |     implam      
+----------+-------+-----------------
+ t_a      | btree | test_btree_impl
+ t_ab     | btree | test_btree_impl
+ t_b_hash | hash  | -
+ t_c      | btree | test_btree_impl
+ t_pkey   | btree | test_btree_impl
+(5 rows)
+
+SELECT pg_get_indexdef('t_a'::regclass);
+               pg_get_indexdef                
+----------------------------------------------
+ CREATE INDEX t_a ON public.t USING btree (a)
+(1 row)
+
+\d t_a
+          Index "public.t_a"
+ Column |  Type   | Key? | Definition 
+--------+---------+------+------------
+ a      | integer | yes  | a
+btree, for table "public.t", implemented by test_btree_impl
+
+\d t_pkey
+        Index "public.t_pkey"
+ Column |  Type   | Key? | Definition 
+--------+---------+------+------------
+ a      | integer | yes  | a
+primary key, btree, for table "public.t", implemented by test_btree_impl
+
+\d t
+                 Table "public.t"
+ Column |  Type   | Collation | Nullable | Default 
+--------+---------+-----------+----------+---------
+ a      | integer |           | not null | 
+ b      | text    |           |          | 
+ c      | integer |           |          | 
+Indexes:
+    "t_pkey" PRIMARY KEY, btree (a)
+    "t_a" btree (a)
+    "t_ab" btree (a, b)
+    "t_b_hash" hash (b)
+    "t_c" UNIQUE, btree (c) INCLUDE (b)
+
+-- Its code serves the index: inserts and scans go through it.
+SELECT test_index_impl_reset();
+ test_index_impl_reset 
+-----------------------
+ 
+(1 row)
+
+INSERT INTO t SELECT g, 'v' || g, g FROM generate_series(1, 1000) g;
+SELECT test_index_impl_inserts();
+ test_index_impl_inserts 
+-------------------------
+                    4000
+(1 row)
+
+ANALYZE t;
+SET enable_seqscan = off;
+SET enable_bitmapscan = off;
+SELECT test_index_impl_reset();
+ test_index_impl_reset 
+-----------------------
+ 
+(1 row)
+
+SELECT b FROM t WHERE a = 42;
+  b  
+-----
+ v42
+(1 row)
+
+SELECT test_index_impl_scans() > 0 AS scanned;
+ scanned 
+---------
+ t
+(1 row)
+
+-- It behaves as a btree index.
+INSERT INTO t VALUES (1001, 'x', 5);
+ERROR:  duplicate key value violates unique constraint "t_c"
+DETAIL:  Key (c)=(5) already exists.
+INSERT INTO t VALUES (5, 'x', 2000);
+ERROR:  duplicate key value violates unique constraint "t_pkey"
+DETAIL:  Key (a)=(5) already exists.
+EXPLAIN (COSTS OFF) SELECT a FROM t WHERE a < 5 ORDER BY a;
+            QUERY PLAN             
+-----------------------------------
+ Index Only Scan using t_pkey on t
+   Index Cond: (a < 5)
+(2 rows)
+
+SELECT a FROM t WHERE a < 5 ORDER BY a;
+ a 
+---
+ 1
+ 2
+ 3
+ 4
+(4 rows)
+
+EXPLAIN (COSTS OFF) SELECT a FROM t WHERE a > 995 ORDER BY a DESC;
+                 QUERY PLAN                 
+--------------------------------------------
+ Index Only Scan Backward using t_pkey on t
+   Index Cond: (a > 995)
+(2 rows)
+
+SELECT a FROM t WHERE a > 995 ORDER BY a DESC;
+  a   
+------
+ 1000
+  999
+  998
+  997
+  996
+(5 rows)
+
+BEGIN;
+DECLARE cur SCROLL CURSOR FOR SELECT a FROM t WHERE a BETWEEN 10 AND 12 ORDER BY a;
+FETCH FORWARD 3 FROM cur;
+ a  
+----
+ 10
+ 11
+ 12
+(3 rows)
+
+FETCH BACKWARD 2 FROM cur;
+ a  
+----
+ 11
+ 10
+(2 rows)
+
+COMMIT;
+VACUUM t;
+EXPLAIN (COSTS OFF) SELECT a FROM t WHERE a BETWEEN 20 AND 22;
+               QUERY PLAN                
+-----------------------------------------
+ Index Only Scan using t_ab on t
+   Index Cond: ((a >= 20) AND (a <= 22))
+(2 rows)
+
+SELECT a FROM t WHERE a BETWEEN 20 AND 22;
+ a  
+----
+ 20
+ 21
+ 22
+(3 rows)
+
+SET enable_indexscan = off;
+SET enable_bitmapscan = on;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM t WHERE a < 100;
+              QUERY PLAN               
+---------------------------------------
+ Aggregate
+   ->  Bitmap Heap Scan on t
+         Recheck Cond: (a < 100)
+         ->  Bitmap Index Scan on t_ab
+               Index Cond: (a < 100)
+(5 rows)
+
+SELECT count(*) FROM t WHERE a < 100;
+ count 
+-------
+    99
+(1 row)
+
+RESET enable_indexscan;
+RESET enable_bitmapscan;
+SELECT a FROM t WHERE a = ANY ('{3,7,11}') ORDER BY a;
+ a  
+----
+  3
+  7
+ 11
+(3 rows)
+
+SELECT count(*) FROM t WHERE c IS NULL;
+ count 
+-------
+     0
+(1 row)
+
+-- Merge join with mark and restore.
+CREATE TABLE u (a int);
+INSERT INTO u SELECT g % 50 FROM generate_series(1, 200) g;
+CREATE INDEX u_a ON u (a);
+SET default_btree_implementation = test_btree_impl;
+CREATE TABLE dup (a int);
+INSERT INTO dup SELECT g % 50 FROM generate_series(1, 200) g;
+CREATE INDEX dup_a ON dup (a);
+RESET default_btree_implementation;
+ANALYZE u, dup;
+SET enable_hashjoin = off;
+SET enable_nestloop = off;
+SET enable_sort = off;
+EXPLAIN (COSTS OFF) SELECT count(*) FROM u JOIN dup USING (a);
+                      QUERY PLAN                      
+------------------------------------------------------
+ Aggregate
+   ->  Merge Join
+         Merge Cond: (u.a = dup.a)
+         ->  Index Only Scan using u_a on u
+         ->  Materialize
+               ->  Index Only Scan using dup_a on dup
+(6 rows)
+
+SELECT count(*) FROM u JOIN dup USING (a);
+ count 
+-------
+   800
+(1 row)
+
+RESET enable_hashjoin;
+RESET enable_nestloop;
+RESET enable_sort;
+RESET enable_seqscan;
+-- Index and column properties come from the implementation.
+SELECT p, pg_index_has_property('t_a', p)
+  FROM unnest('{clusterable,index_scan,bitmap_scan,backward_scan}'::text[]) p;
+       p       | pg_index_has_property 
+---------------+-----------------------
+ clusterable   | t
+ index_scan    | t
+ bitmap_scan   | t
+ backward_scan | t
+(4 rows)
+
+SELECT pg_index_column_has_property('t_a', 1, 'returnable');
+ pg_index_column_has_property 
+------------------------------
+ t
+(1 row)
+
+-- Tools that read nbtree pages refuse it.
+SELECT bt_index_check('t_a');
+ERROR:  expected "btree" index as targets for verification
+DETAIL:  Index "t_a" is implemented by access method "test_btree_impl".
+SELECT bt_index_parent_check('t_a');
+ERROR:  expected "btree" index as targets for verification
+DETAIL:  Index "t_a" is implemented by access method "test_btree_impl".
+SELECT bt_metap('t_a');
+ERROR:  "t_a" is not a btree index
+SELECT pgstatindex('t_a');
+ERROR:  relation "t_a" is not a btree index
+SELECT pgstattuple('t_a');
+ERROR:  index "t_a" (btree index implemented by another access method) is not supported
+SELECT bt_index_check('plain_a');
+ bt_index_check 
+----------------
+ 
+(1 row)
+
+-- An implementation must be able to implement the index.
+SET default_btree_implementation = test_hash_impl;
+CREATE INDEX t_bad ON t (a);
+ERROR:  access method "test_hash_impl" cannot implement btree indexes
+SET default_btree_implementation = test_btree_impl_nounique;
+CREATE UNIQUE INDEX t_bad ON t (a);
+ERROR:  access method "test_btree_impl_nounique" cannot implement this btree index
+DETAIL:  It does not support unique indexes.
+ALTER TABLE t ADD CONSTRAINT t_bad UNIQUE (b);
+ERROR:  access method "test_btree_impl_nounique" cannot implement this btree index
+DETAIL:  It does not support unique indexes.
+CREATE INDEX t_ok ON t (b);
+SELECT implam('t_ok');
+          implam          
+--------------------------
+ test_btree_impl_nounique
+(1 row)
+
+DROP INDEX t_ok;
+RESET default_btree_implementation;
+-- An implementation can't be dropped while indexes use it.
+CREATE ACCESS METHOD test_btree_impl2 TYPE INDEX HANDLER test_btree_impl_handler;
+SET default_btree_implementation = test_btree_impl2;
+CREATE INDEX t_impl2 ON t (b);
+RESET default_btree_implementation;
+DROP ACCESS METHOD test_btree_impl2;
+ERROR:  cannot drop access method test_btree_impl2 because other objects depend on it
+DETAIL:  index t_impl2 depends on access method test_btree_impl2
+HINT:  Use DROP ... CASCADE to drop the dependent objects too.
+DROP INDEX t_impl2;
+DROP ACCESS METHOD test_btree_impl2;
+-- The table AM's choice comes first; without one, the setting applies.
+SET default_btree_implementation = test_btree_impl_nounique;
+CREATE TABLE ta (a int) USING test_impl_heap;
+CREATE TABLE tn (a int) USING test_impl_heap_nopref;
+CREATE INDEX ta_a ON ta (a);
+CREATE INDEX tn_a ON tn (a);
+CREATE UNIQUE INDEX tn_bad ON tn (a);
+ERROR:  access method "test_btree_impl_nounique" cannot implement this btree index
+DETAIL:  It does not support unique indexes.
+RESET default_btree_implementation;
+SELECT implam('ta_a'), implam('tn_a');
+     implam      |          implam          
+-----------------+--------------------------
+ test_btree_impl | test_btree_impl_nounique
+(1 row)
+
+CREATE INDEX tn_a2 ON tn (a);
+SELECT implam('tn_a2');
+ implam 
+--------
+ -
+(1 row)
+
+-- test_impl_heap asks for test_hash_impl for hash indexes, which can't be.
+CREATE INDEX ta_hash ON ta USING hash (a);
+ERROR:  access method "test_hash_impl" cannot implement hash indexes
+DETAIL:  Only btree indexes can be implemented by another access method.
+-- Non-btree indexes are not affected by the setting.
+CREATE INDEX tn_hash ON tn USING hash (a);
+SELECT implam('tn_hash');
+ implam 
+--------
+ -
+(1 row)
+
+-- Partitions choose for themselves; the partitioned index has none.
+CREATE TABLE p (a int NOT NULL, b int NOT NULL, c varchar(10))
+  PARTITION BY RANGE (a);
+CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (100) USING test_impl_heap;
+CREATE TABLE p2 PARTITION OF p FOR VALUES FROM (100) TO (200) USING heap;
+SET default_btree_implementation = test_btree_impl_nounique;
+CREATE INDEX p_a ON p (a);
+CREATE INDEX p_c ON p (c);
+RESET default_btree_implementation;
+ALTER TABLE p ADD PRIMARY KEY (a, b);
+CREATE TABLE p3 PARTITION OF p FOR VALUES FROM (200) TO (300) USING test_impl_heap;
+-- ATTACH keeps a matching index whatever implements it, else creates one.
+CREATE TABLE p4 (a int NOT NULL, b int NOT NULL, c varchar(10)) USING heap;
+SET default_btree_implementation = test_btree_impl;
+CREATE INDEX p4_a ON p4 (a);
+RESET default_btree_implementation;
+ALTER TABLE p ATTACH PARTITION p4 FOR VALUES FROM (300) TO (400);
+CREATE TEMP TABLE pbefore AS
+  SELECT c.relname, c.relkind, implam(c.oid) AS impl
+  FROM pg_class c WHERE c.relname ~ '^p[0-9]?_' AND c.relkind IN ('i', 'I');
+SELECT * FROM pbefore ORDER BY 1;
+ relname  | relkind |           impl           
+----------+---------+--------------------------
+ p1_a_idx | i       | test_btree_impl
+ p1_c_idx | i       | test_btree_impl
+ p1_pkey  | i       | test_btree_impl
+ p2_a_idx | i       | test_btree_impl_nounique
+ p2_c_idx | i       | test_btree_impl_nounique
+ p2_pkey  | i       | -
+ p3_a_idx | i       | test_btree_impl
+ p3_c_idx | i       | test_btree_impl
+ p3_pkey  | i       | test_btree_impl
+ p4_a     | i       | test_btree_impl
+ p4_c_idx | i       | -
+ p4_pkey  | i       | -
+ p_a      | I       | -
+ p_c      | I       | -
+ p_pkey   | I       | -
+(15 rows)
+
+INSERT INTO p SELECT g, g, g FROM generate_series(0, 399) g;
+-- Re-created partition indexes keep their own implementations.
+ALTER TABLE p ALTER COLUMN c TYPE varchar(20);
+SELECT b.relname, b.impl, implam(c.oid)
+  FROM pbefore b LEFT JOIN pg_class c USING (relname)
+  WHERE implam(c.oid) IS DISTINCT FROM b.impl;
+ relname | impl | implam 
+---------+------+--------
+(0 rows)
+
+SET enable_seqscan = off;
+SELECT count(*) FROM p WHERE c IN ('50', '150', '250', '350');
+ count 
+-------
+     4
+(1 row)
+
+RESET enable_seqscan;
+-- Catalog and TOAST indexes never get one.
+SET default_btree_implementation = test_btree_impl;
+CREATE TABLE toasty (a int, b text);
+REINDEX TABLE toasty;
+SELECT count(*) FROM pg_index i
+  WHERE i.indimplam <> 0 AND i.indexrelid < 16384;
+ count 
+-------
+     0
+(1 row)
+
+SELECT implam(i.indexrelid) FROM pg_index i
+  WHERE i.indrelid = (SELECT reltoastrelid FROM pg_class WHERE relname = 'toasty');
+ implam 
+--------
+ -
+(1 row)
+
+RESET default_btree_implementation;
+-- Rebuilds keep the implementation.
+CREATE TEMP TABLE before AS
+  SELECT c.relname, implam(c.oid) AS impl FROM pg_index i
+  JOIN pg_class c ON c.oid = i.indexrelid
+  WHERE i.indrelid IN ('t'::regclass, 'ta'::regclass);
+CREATE FUNCTION changed() RETURNS TABLE (relname name, was name, now name)
+LANGUAGE sql AS $$
+  SELECT b.relname, b.impl, implam(c.oid) FROM before b
+  LEFT JOIN pg_class c ON c.relname = b.relname
+  WHERE implam(c.oid) IS DISTINCT FROM b.impl
+$$;
+REINDEX TABLE t;
+REINDEX INDEX CONCURRENTLY t_a;
+REINDEX TABLE CONCURRENTLY ta;
+SELECT * FROM changed();
+ relname | was | now 
+---------+-----+-----
+(0 rows)
+
+CLUSTER t USING t_a;
+VACUUM FULL t;
+TRUNCATE t;
+SELECT * FROM changed();
+ relname | was | now 
+---------+-----+-----
+(0 rows)
+
+-- ALTER COLUMN TYPE re-creates indexes; they keep their implementation,
+-- whatever the setting now says, also when they keep their storage.
+SET default_btree_implementation = test_btree_impl_nounique;
+ALTER TABLE t ALTER COLUMN b TYPE varchar(100);
+ALTER TABLE t ALTER COLUMN c TYPE bigint;
+ALTER TABLE t ALTER COLUMN b TYPE varchar(200);
+RESET default_btree_implementation;
+SELECT * FROM changed();
+ relname | was | now 
+---------+-----+-----
+(0 rows)
+
+-- Changing the table AM rebuilds indexes but keeps their implementation.
+ALTER TABLE ta SET ACCESS METHOD heap;
+ALTER TABLE t SET ACCESS METHOD test_impl_heap_nopref;
+SELECT * FROM changed();
+ relname | was | now 
+---------+-----+-----
+(0 rows)
+
+INSERT INTO t SELECT g, 'v' || g, g FROM generate_series(1, 1000) g;
+-- Implemented indexes return what a sequential scan does, and their code
+-- serves the scans.
+CREATE FUNCTION agrees() RETURNS TABLE (scan text, same bool, impl_scans bool)
+LANGUAGE plpgsql AS $$
+DECLARE
+  q text := 'SELECT count(*) || '','' || sum(a) || '','' || sum(c) FROM t
+             WHERE a BETWEEN 100 AND 899 AND c BETWEEN 100 AND 899';
+  seq text;
+  r text;
+BEGIN
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_indexonlyscan = off;
+  SET LOCAL enable_bitmapscan = off;
+  EXECUTE q INTO seq;
+  SET LOCAL enable_seqscan = off;
+  SET LOCAL enable_indexscan = on;
+  PERFORM test_index_impl_reset();
+  EXECUTE q INTO r;
+  RETURN QUERY SELECT 'index', r = seq, test_index_impl_scans() > 0;
+  SET LOCAL enable_indexscan = off;
+  SET LOCAL enable_bitmapscan = on;
+  PERFORM test_index_impl_reset();
+  EXECUTE q INTO r;
+  RETURN QUERY SELECT 'bitmap', r = seq, test_index_impl_scans() > 0;
+END $$;
+SELECT * FROM agrees();
+  scan  | same | impl_scans 
+--------+------+------------
+ index  | t    | t
+ bitmap | t    | t
+(2 rows)
+
+-- REPACK on an implemented index, by sorting and by scanning it.  Terse,
+-- to leave out the timing DETAIL.
+\set VERBOSITY terse
+SET client_min_messages = info;
+SET enable_indexscan = off;
+REPACK (VERBOSE) t USING INDEX t_a;
+INFO:  repacking "public.t" using sequential scan and sort
+INFO:  "public.t": found 0 removable, 1000 nonremovable row versions in 7 pages
+RESET enable_indexscan;
+SET enable_sort = off;
+REPACK (VERBOSE) t USING INDEX t_a;
+INFO:  repacking "public.t" using index scan on "t_a"
+INFO:  "public.t": found 0 removable, 1000 nonremovable row versions in 7 pages
+RESET enable_sort;
+RESET client_min_messages;
+\set VERBOSITY default
+SELECT count(*), sum(a) FROM t;
+ count |  sum   
+-------+--------
+  1000 | 500500
+(1 row)
+
+SELECT * FROM agrees();
+  scan  | same | impl_scans 
+--------+------+------------
+ index  | t    | t
+ bitmap | t    | t
+(2 rows)
+
+SELECT * FROM changed();
+ relname | was | now 
+---------+-----+-----
+(0 rows)
+
