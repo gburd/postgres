@@ -490,6 +490,7 @@ bark_build_callback(Relation index, ItemPointer tid, Datum *values,
 	BarkBuildState *bs = (BarkBuildState *) state;
 	Tuplesortstate *sortstate = bs->sortstate;
 
+	bark_check_tid_offset(index, tid, bs->keyinfo->tidstride);
 	if (bs->extracted > 0)
 	{
 		bark_build_row_keys(bs, tid, values, isnull, tupleIsAlive);
@@ -1735,25 +1736,11 @@ bark_build(Relation heap, Relation index, IndexInfo *indexInfo)
 			 RelationGetRelationName(index));
 
 	/*
-	 * A POSTING entry maps a TID to block * MaxHeapTuplesPerPage + offset - 1
-	 * (bark_tid_to_key), which is reversible only for offsets up to
-	 * MaxHeapTuplesPerPage; GIN refuses such a table for the same bound.  A
-	 * coded LIST packs the offset into BARK_TID_OFFSET_BITS (11) bits, a
-	 * looser bound of 2047, so the POSTING bound is the one that binds.
+	 * The index's TID mappings are laid out for the table's largest locator
+	 * offset, its TID stride, which bark_load records in the meta page
+	 * (bark_index_tid_stride).  A table whose offsets exceed heap's is
+	 * indexed like any other.
 	 */
-	{
-		const LocatorDesc *locdesc = RelationGetLocatorDesc(heap);
-
-		if (locdesc->max_offset > MaxHeapTuplesPerPage)
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("access method \"%s\" cannot index table \"%s\"",
-							"bark", RelationGetRelationName(heap)),
-					 errdetail("The table's \"%s\" locator uses offsets up to %u, but \"%s\" can store offsets only up to %u.",
-							   locdesc->name, (unsigned int) locdesc->max_offset,
-							   "bark", (unsigned int) MaxHeapTuplesPerPage)));
-	}
-
 	memset(&bs, 0, sizeof(bs));
 	bs.heap = heap;
 	bs.index = index;
