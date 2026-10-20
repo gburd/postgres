@@ -527,6 +527,13 @@ typedef struct TableAmRoutine
 	 * The xs_getnext_slot callback is also responsible for whatever
 	 * bookkeeping its callers expect of an index scan, such as maintaining
 	 * instrumentation counters.
+	 *
+	 * If the relation's locator is versioned (see amlocator.h), an entry
+	 * names a row version as (scan->xs_heaptid, scan->xs_heaptag), and the
+	 * callback returns the row only if that entry is valid for the version
+	 * the scan's snapshot sees.  Index-only scans are no different: the
+	 * callback must not return index data through an entry that is not valid
+	 * for the visible version.
 	 */
 	void		(*index_scan_begin) (IndexScanDesc scan, uint32 flags);
 
@@ -879,6 +886,12 @@ typedef struct TableAmRoutine
 	 * display in EXPLAIN ANALYZE output.
 	 *
 	 * Prefetching additional data from the bitmap is left to the table AM.
+	 *
+	 * A TID bitmap holds locators only, without version tags.  If the
+	 * relation's locator is versioned (see amlocator.h), a bitmap can hold a
+	 * row's locator only because some index has an entry for it that is not
+	 * valid for the visible version, so the callback sets *recheck for any
+	 * row for which such an entry may exist.
 	 *
 	 * This is an optional callback.
 	 */
@@ -2005,6 +2018,11 @@ table_scan_analyze_next_tuple(TableScanDesc scan,
  * very hard to detect whether they're really incompatible with the chain tip.
  * This only really makes sense for heap AM, it might need to be generalized
  * for other AMs later.
+ *
+ * A table AM whose locator is versioned (see amlocator.h) sets
+ * index_info->ii_VersionTag to the tag of the row version it hands to each
+ * callback call, before the call; the index AM's callback reads it there.
+ * Other AMs leave it InvalidIndexVersionTag.
  */
 static inline double
 table_index_build_scan(Relation table_rel,
@@ -2068,7 +2086,9 @@ table_index_build_range_scan(Relation table_rel,
 /*
  * table_index_validate_scan - second table scan for concurrent index build
  *
- * See validate_index() for an explanation.
+ * See validate_index() for an explanation.  A table AM whose locator is
+ * versioned sets index_info->ii_VersionTag before each index_insert() it
+ * makes, as for table_index_build_range_scan().
  */
 static inline void
 table_index_validate_scan(Relation table_rel,
