@@ -335,6 +335,16 @@ extern void DropRelationsAllBuffers(SMgrRelation *smgr_reln,
 									int nlocators);
 extern void DropDatabaseBuffers(Oid dbid);
 
+/*
+ * A buffer drop callback is called before this backend drops the buffers of
+ * a relation (rlocator is that relation) or of a whole database (rlocator is
+ * NULL).  It lets a module that keeps buffers pinned across statements
+ * release those pins first: dropping a buffer that this backend has pinned is
+ * an error.
+ */
+typedef void (*BufferDropCallback) (Oid dbOid, const RelFileLocator *rlocator);
+extern void RegisterBufferDropCallback(BufferDropCallback callback);
+
 #define RelationGetNumberOfBlocks(reln) \
 	RelationGetNumberOfBlocksInFork(reln, MAIN_FORKNUM)
 
