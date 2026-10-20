@@ -50,7 +50,9 @@ SELECT gn_image(1) <> gn_image(1.00) AS images_differ,
 -- Each entry keeps the image of the first row that formed it, as GIN's
 -- entry does: by insert (a SINGLE becomes a LIST with the existing image,
 -- not the inserted row's) and by CREATE INDEX (the run's lowest heap TID).
-CREATE TABLE gi (id int, a numeric[]);
+-- A temporary table, so that the VACUUM below removes the deleted row
+-- whatever snapshots other sessions (an autovacuum's, say) hold.
+CREATE TEMP TABLE gi (id int, a numeric[]);
 CREATE INDEX gi_ins ON gi USING bark (a bark_gin_numeric_array_ops);
 INSERT INTO gi VALUES (1, '{1.00}');
 INSERT INTO gi VALUES (2, '{1}');
