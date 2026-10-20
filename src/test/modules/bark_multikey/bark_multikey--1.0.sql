@@ -438,3 +438,16 @@ CREATE FUNCTION bark_test_tid_stride(text) RETURNS int4
 AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
 CREATE FUNCTION bark_test_meta_stride(text) RETURNS int4
 AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+-- Round trips of BARK's TID mappings at TID stride stride (0: MaxOffsetNumber)
+-- for synthetic TIDs: each check, whether it held, and how many TIDs it ran.
+CREATE FUNCTION bark_test_tid_mappings(stride int4,
+    OUT check_name text, OUT ok bool, OUT ntids int8)
+RETURNS SETOF record
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+
+-- aminsert of (key) at tid into a BARK index on one int4 column, as a table
+-- AM whose locators changed under the index would.
+CREATE FUNCTION bark_test_insert_tid(index regclass, key int4, tid tid)
+RETURNS void
+AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
